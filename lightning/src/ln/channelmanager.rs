@@ -3247,7 +3247,6 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 
 								macro_rules! check_total_value {
 									($payment_data_total_msat: expr, $payment_secret: expr, $payment_preimage: expr) => {{
-										let mut total_value = 0;
 										let mut payment_received_generated = false;
 										let htlcs = channel_state.claimable_htlcs.entry(payment_hash)
 											.or_insert(Vec::new());
@@ -3258,7 +3257,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 												continue
 											}
 										}
-										htlcs.push(claimable_htlc);
+										let mut total_value = claimable_htlc.value;
 										for htlc in htlcs.iter() {
 											total_value += htlc.value;
 											match &htlc.onion_payload {
@@ -3276,10 +3275,9 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 										if total_value >= msgs::MAX_VALUE_MSAT || total_value > $payment_data_total_msat {
 											log_trace!(self.logger, "Failing HTLCs with payment_hash {} as the total value {} ran over expected value {} (or HTLCs were inconsistent)",
 												log_bytes!(payment_hash.0), total_value, $payment_data_total_msat);
-											for htlc in htlcs.iter() {
-												fail_htlc!(htlc);
-											}
+											fail_htlc!(claimable_htlc);
 										} else if total_value == $payment_data_total_msat {
+											htlcs.push(claimable_htlc);
 											new_events.push(events::Event::PaymentReceived {
 												payment_hash,
 												purpose: events::PaymentPurpose::InvoicePayment {
@@ -3293,6 +3291,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 											// Nothing to do - we haven't reached the total
 											// payment value yet, wait until we receive more
 											// MPP parts.
+											htlcs.push(claimable_htlc);
 										}
 										payment_received_generated
 									}}
