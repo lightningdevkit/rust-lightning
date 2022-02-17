@@ -11,7 +11,6 @@ Still missing tons of error-handling. See GitHub issues for suggested projects i
 """
 
 [features]
-fuzztarget = ["bitcoin/fuzztarget", "regex"]
 # Internal test utilities exposed to other repo crates
 _test_utils = ["hex", "regex", "bitcoin/bitcoinconsensus"]
 # Unlog messages superior at targeted level.

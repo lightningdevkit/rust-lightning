@@ -29,14 +29,14 @@ pub mod chan_utils;
 pub mod features;
 pub mod script;
 
-#[cfg(feature = "fuzztarget")]
+#[cfg(fuzzing)]
 pub mod peer_channel_encryptor;
-#[cfg(not(feature = "fuzztarget"))]
+#[cfg(not(fuzzing))]
 pub(crate) mod peer_channel_encryptor;
 
-#[cfg(feature = "fuzztarget")]
+#[cfg(fuzzing)]
 pub mod channel;
-#[cfg(not(feature = "fuzztarget"))]
+#[cfg(not(fuzzing))]
 pub(crate) mod channel;
 
 mod onion_utils;

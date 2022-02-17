@@ -937,9 +937,9 @@ mod fuzzy_internal_msgs {
 		pub(crate) pad: Vec<u8>,
 	}
 }
-#[cfg(feature = "fuzztarget")]
+#[cfg(fuzzing)]
 pub use self::fuzzy_internal_msgs::*;
-#[cfg(not(feature = "fuzztarget"))]
+#[cfg(not(fuzzing))]
 pub(crate) use self::fuzzy_internal_msgs::*;
 
 #[derive(Clone)]

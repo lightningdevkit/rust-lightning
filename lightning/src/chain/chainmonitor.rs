@@ -474,7 +474,7 @@ where C::Target: chain::Filter,
 	/// This wrapper avoids having to update some of our tests for now as they assume the direct
 	/// chain::Watch API wherein we mark a monitor fully-updated by just calling
 	/// channel_monitor_updated once with the highest ID.
-	#[cfg(any(test, feature = "fuzztarget"))]
+	#[cfg(any(test, fuzzing))]
 	pub fn force_channel_monitor_updated(&self, funding_txo: OutPoint, monitor_update_id: u64) {
 		self.pending_monitor_events.lock().unwrap().push(MonitorEvent::UpdateCompleted {
 			funding_txo,
@@ -482,7 +482,7 @@ where C::Target: chain::Filter,
 		});
 	}
 
-	#[cfg(any(test, feature = "fuzztarget", feature = "_test_utils"))]
+	#[cfg(any(test, fuzzing, feature = "_test_utils"))]
 	pub fn get_and_clear_pending_events(&self) -> Vec<events::Event> {
 		use util::events::EventsProvider;
 		let events = core::cell::RefCell::new(Vec::new());
@@ -630,9 +630,9 @@ where C::Target: chain::Filter,
 				// We should never ever trigger this from within ChannelManager. Technically a
 				// user could use this object with some proxying in between which makes this
 				// possible, but in tests and fuzzing, this should be a panic.
-				#[cfg(any(test, feature = "fuzztarget"))]
+				#[cfg(any(test, fuzzing))]
 				panic!("ChannelManager generated a channel update for a channel that was not yet registered!");
-				#[cfg(not(any(test, feature = "fuzztarget")))]
+				#[cfg(not(any(test, fuzzing)))]
 				Err(ChannelMonitorUpdateErr::PermanentFailure)
 			},
 			Some(monitor_state) => {

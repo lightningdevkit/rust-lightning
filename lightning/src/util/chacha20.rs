@@ -11,7 +11,7 @@
 
 use io;
 
-#[cfg(not(feature = "fuzztarget"))]
+#[cfg(not(fuzzing))]
 mod real_chacha {
 	use core::cmp;
 	use core::convert::TryInto;
@@ -272,10 +272,10 @@ mod real_chacha {
 		}
 	}
 }
-#[cfg(not(feature = "fuzztarget"))]
+#[cfg(not(fuzzing))]
 pub use self::real_chacha::ChaCha20;
 
-#[cfg(feature = "fuzztarget")]
+#[cfg(fuzzing)]
 mod fuzzy_chacha {
 	pub struct ChaCha20 {}
 
@@ -297,7 +297,7 @@ mod fuzzy_chacha {
 		pub fn process_in_place(&mut self, _input_output: &mut [u8]) {}
 	}
 }
-#[cfg(feature = "fuzztarget")]
+#[cfg(fuzzing)]
 pub use self::fuzzy_chacha::ChaCha20;
 
 pub(crate) struct ChaChaReader<'a, R: io::Read> {

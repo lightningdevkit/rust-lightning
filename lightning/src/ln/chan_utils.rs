@@ -1251,7 +1251,7 @@ impl CommitmentTransaction {
 				if let &Some(ref b_htlcout) = b {
 					a_htlcout.cltv_expiry.cmp(&b_htlcout.cltv_expiry)
 						// Note that due to hash collisions, we have to have a fallback comparison
-						// here for fuzztarget mode (otherwise at least chanmon_fail_consistency
+						// here for fuzzing mode (otherwise at least chanmon_fail_consistency
 						// may fail)!
 						.then(a_htlcout.payment_hash.0.cmp(&b_htlcout.payment_hash.0))
 				// For non-HTLC outputs, if they're copying our SPK we don't really care if we
