@@ -1788,7 +1788,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		let mut channel_state = self.channel_state.lock().unwrap();
 		match channel_state.by_id.entry(temporary_channel_id) {
 			hash_map::Entry::Occupied(_) => {
-				if cfg!(feature = "fuzztarget") {
+				if cfg!(fuzzing) {
 					return Err(APIError::APIMisuseError { err: "Fuzzy bad RNG".to_owned() });
 				} else {
 					panic!("RNG is bad???");
@@ -4913,7 +4913,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// In chanmon_consistency_target, we'd like to be able to restore monitor updating without
 	/// handling all pending events (i.e. not PendingHTLCsForwardable). Thus, we expose monitor
 	/// update events as a separate process method here.
-	#[cfg(feature = "fuzztarget")]
+	#[cfg(fuzzing)]
 	pub fn process_monitor_events(&self) {
 		self.process_pending_monitor_events();
 	}
@@ -5235,7 +5235,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		}
 	}
 
-	#[cfg(any(test, feature = "fuzztarget", feature = "_test_utils"))]
+	#[cfg(any(test, fuzzing, feature = "_test_utils"))]
 	pub fn get_and_clear_pending_events(&self) -> Vec<events::Event> {
 		let events = core::cell::RefCell::new(Vec::new());
 		let event_handler = |event: &events::Event| events.borrow_mut().push(event.clone());

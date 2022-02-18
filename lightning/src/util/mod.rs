@@ -24,11 +24,11 @@ pub mod invoice;
 pub(crate) mod atomic_counter;
 pub(crate) mod byte_utils;
 pub(crate) mod chacha20;
-#[cfg(feature = "fuzztarget")]
+#[cfg(fuzzing)]
 pub mod zbase32;
-#[cfg(not(feature = "fuzztarget"))]
+#[cfg(not(fuzzing))]
 pub(crate) mod zbase32;
-#[cfg(not(feature = "fuzztarget"))]
+#[cfg(not(fuzzing))]
 pub(crate) mod poly1305;
 pub(crate) mod chacha20poly1305rfc;
 pub(crate) mod transaction_utils;
@@ -45,11 +45,11 @@ pub(crate) mod crypto;
 pub mod logger;
 pub mod config;
 
-#[cfg(any(test, feature = "fuzztarget", feature = "_test_utils"))]
+#[cfg(any(test, fuzzing, feature = "_test_utils"))]
 pub mod test_utils;
 
 /// impls of traits that add exra enforcement on the way they're called. Useful for detecting state
 /// machine errors and used in fuzz targets and tests.
-#[cfg(any(test, feature = "fuzztarget", feature = "_test_utils"))]
+#[cfg(any(test, fuzzing, feature = "_test_utils"))]
 pub mod enforcing_trait_impls;
 

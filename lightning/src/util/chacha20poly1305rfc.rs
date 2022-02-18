@@ -10,7 +10,7 @@
 // This is a port of Andrew Moons poly1305-donna
 // https://github.com/floodyberry/poly1305-donna
 
-#[cfg(not(feature = "fuzztarget"))]
+#[cfg(not(fuzzing))]
 mod real_chachapoly {
 	use util::chacha20::ChaCha20;
 	use util::poly1305::Poly1305;
@@ -94,10 +94,10 @@ mod real_chachapoly {
 		}
 	}
 }
-#[cfg(not(feature = "fuzztarget"))]
+#[cfg(not(fuzzing))]
 pub use self::real_chachapoly::ChaCha20Poly1305RFC;
 
-#[cfg(feature = "fuzztarget")]
+#[cfg(fuzzing)]
 mod fuzzy_chachapoly {
 	#[derive(Clone, Copy)]
 	pub struct ChaCha20Poly1305RFC {
@@ -141,5 +141,5 @@ mod fuzzy_chachapoly {
 		}
 	}
 }
-#[cfg(feature = "fuzztarget")]
+#[cfg(fuzzing)]
 pub use self::fuzzy_chachapoly::ChaCha20Poly1305RFC;

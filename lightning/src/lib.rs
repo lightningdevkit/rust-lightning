@@ -18,8 +18,8 @@
 //! generated/etc. This makes it a good candidate for tight integration into an existing wallet
 //! instead of having a rather-separate lightning appendage to a wallet.
 
-#![cfg_attr(not(any(test, feature = "fuzztarget", feature = "_test_utils")), deny(missing_docs))]
-#![cfg_attr(not(any(test, feature = "fuzztarget", feature = "_test_utils")), forbid(unsafe_code))]
+#![cfg_attr(not(any(test, fuzzing, feature = "_test_utils")), deny(missing_docs))]
+#![cfg_attr(not(any(test, fuzzing, feature = "_test_utils")), forbid(unsafe_code))]
 #![deny(broken_intra_doc_links)]
 
 // In general, rust is absolutely horrid at supporting users doing things like,
@@ -36,6 +36,9 @@
 #[cfg(not(any(feature = "std", feature = "no-std")))]
 compile_error!("at least one of the `std` or `no-std` features must be enabled");
 
+#[cfg(all(fuzzing, test))]
+compile_error!("Tests will always fail with cfg=fuzzing");
+
 #[macro_use]
 extern crate alloc;
 extern crate bitcoin;
@@ -43,7 +46,7 @@ extern crate bitcoin;
 extern crate core;
 
 #[cfg(any(test, feature = "_test_utils"))] extern crate hex;
-#[cfg(any(test, feature = "fuzztarget", feature = "_test_utils"))] extern crate regex;
+#[cfg(any(test, fuzzing, feature = "_test_utils"))] extern crate regex;
 
 #[cfg(not(feature = "std"))] extern crate core2;
 
