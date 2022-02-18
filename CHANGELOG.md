@@ -1,3 +1,102 @@
+# 0.0.105 - 2022-02-28
+
+## API Updates
+ * `Phantom node` payments are now supported, allowing receipt of a payment on
+   any one of multiple nodes without any coordination across the nodes being
+   required. See the new `PhantomKeysManager`'s docs for more, as well as
+   requirements on `KeysInterface::get_inbound_payment_key_material` and
+   `lightning_invoice::utils::create_phantom_invoice` (#1199).
+ * In order to support phantom node payments, several `KeysInterface` methods
+   now accept a `Recipient` parameter to select between the local `node_id` and
+   a phantom-specific one.
+ * `ProbabilisticScorer`, a `Score` based on learning the current balances of
+   channels in the network, was added. It attempts to better capture payment
+   success probability than the existing `Scorer`, though may underperform on
+   nodes with low payment volume. We welcome feedback on performance (#1227).
+ * `Score::channel_penalty_msat` now always takes the channel value, instead of
+   an `Option` (#1227).
+ * `UserConfig::manually_accept_inbound_channels` was added which, when set,
+   generates a new `Event::OpenChannelRequest`, which allows manual acceptance
+   or rejection of incoming channels on a per-channel basis (#1281).
+ * `Payee` has been renamed to `PaymentParameters` (#1271).
+ * `PaymentParameters` now has a `max_total_cltv_expiry_delta` field. This
+   defaults to 1008 and limits the maximum amount of time an HTLC can be pending
+   before it will either fail or be claimed (#1234).
+ * The `lightning-invoice` crate now supports no-std environments. This required
+   numerous API changes around timestamp handling and std+no-std versions of
+   several methods that previously assumed knowledge of the time (#1223, #1230).
+ * `lightning-invoice` now supports parsing invoices with expiry times of more
+   than one year. This required changing the semantics of `ExpiryTime` (#1273).
+ * The `CounterpartyCommitmentSecrets` is now public, allowing external uses of
+   the `BOLT 3` secret storage scheme (#1299).
+ * Several `Sign` methods now receive HTLC preimages as proof of state
+   transition, see new documentation for more (#1251).
+ * `KeysInterface::sign_invoice` now provides the HRP and other invoice data
+   separately to make it simpler for external signers to parse (#1272).
+ * `Sign::sign_channel_announcement` now returns both the node's signature and
+   the per-channel signature. `InMemorySigner` now requires the node's secret
+   key in order to implement this (#1179).
+ * `ChannelManager` deserialization will now fail if the `KeysInterface` used
+   has a different `node_id` than the `ChannelManager` expects (#1250).
+ * A new `ErrorAction` variant was added to send `warning` messages (#1013).
+ * Several references to `chain::Listen` objects in `lightning-block-sync` no
+   longer require a mutable reference (#1304).
+
+## Bug Fixes
+ * Fixed a regression introduced in 0.0.104 where `ChannelManager`'s internal
+   locks could have an order violation leading to a deadlock (#1238).
+ * Fixed cases where slow code (including user I/O) could cause us to
+   disconnect peers with ping timeouts in `BackgroundProcessor` (#1269).
+ * Now persist the `ChannelManager` prior to `BackgroundProcessor` stopping,
+   preventing race conditions where channels are closed on startup even with a
+   clean shutdown. This requires that users stop network processing and
+   disconnect peers prior to `BackgroundProcessor` shutdown (#1253).
+ * Fields in `ChannelHandshakeLimits` provided via the `override_config` to
+   `create_channel` are now applied instead of the default config (#1292).
+ * Fixed the generation of documentation on docs.rs to include API surfaces
+   which are hidden behind feature flags (#1303).
+ * Added the `channel_type` field to `accept_channel` messages we send, which
+   may avoid some future compatibility issues with other nodes (#1314).
+ * Fixed a bug where, if a previous LDK run using `lightning-persister` crashed
+   while persisting updated data, we may have failed to initialize (#1332).
+ * Fixed a rare bug where having both pending inbound and outbound HTLCs on a
+   just-opened inbound channel could cause `ChannelDetails::balance_msat` to
+   underflow and be reported as large, or cause panics in debug mode (#1268).
+ * Moved more instances of verbose gossip logging from the `Trace` level to the
+   `Gossip` level (#1220).
+ * Delayed `announcement_signatures` until the channel has six confirmations,
+   slightly improving propagation of channel announcements (#1179).
+ * Several fixes in script and transaction weight calculations when anchor
+   outputs are enabled (#1229).
+
+## Serialization Compatibility
+ * Using `ChannelManager` data written by versions prior to 0.0.105 will result
+   in preimages for HTLCs that were pending at startup to be missing in calls
+   to `KeysInterface` methods (#1251).
+ * Any phantom invoice payments received on a node that is not upgraded to
+   0.0.105 will fail with an "unknown channel" error. Further, downgrading to
+   0.0.104 or before and then upgrading again will invalidate existing phantom
+   SCIDs which may be included in invoices (#1199).
+
+In total, this release features 108 files changed, 6914 insertions, 2095
+deletions in 102 commits from 15 authors, in alphabetical order:
+ * Conor Okus
+ * Devrandom
+ * Elias Rohrer
+ * Jeffrey Czyz
+ * Jurvis Tan
+ * Ken Sedgwick
+ * Matt Corallo
+ * Naveen
+ * Tibo-lg
+ * Valentine Wallace
+ * Viktor Tigerström
+ * dependabot[bot]
+ * hackerrdave
+ * naveen
+ * vss96
+
+
 # 0.0.104 - 2021-12-17
 
 ## API Updates
