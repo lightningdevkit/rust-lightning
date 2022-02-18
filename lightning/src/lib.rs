@@ -36,6 +36,9 @@
 #[cfg(not(any(feature = "std", feature = "no-std")))]
 compile_error!("at least one of the `std` or `no-std` features must be enabled");
 
+#[cfg(all(fuzzing, test))]
+compile_error!("Tests will always fail with cfg=fuzzing");
+
 #[macro_use]
 extern crate alloc;
 extern crate bitcoin;

@@ -12,6 +12,9 @@
 
 #![cfg_attr(feature = "libfuzzer_fuzz", no_main)]
 
+#[cfg(not(fuzzing))]
+compile_error!("Fuzz targets need cfg=fuzzing");
+
 extern crate lightning_fuzz;
 use lightning_fuzz::chanmon_consistency::*;
 
