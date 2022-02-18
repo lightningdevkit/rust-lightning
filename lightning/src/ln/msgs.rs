@@ -204,6 +204,12 @@ pub struct AcceptChannel {
 	pub first_per_commitment_point: PublicKey,
 	/// Optionally, a request to pre-set the to-sender output's scriptPubkey for when we collaboratively close
 	pub shutdown_scriptpubkey: OptionalField<Script>,
+	/// The channel type that this channel will represent. If none is set, we derive the channel
+	/// type from the intersection of our feature bits with our counterparty's feature bits from
+	/// the Init message.
+	///
+	/// This is required to match the equivalent field in [`OpenChannel::channel_type`].
+	pub channel_type: Option<ChannelTypeFeatures>,
 }
 
 /// A funding_created message to be sent or received from a peer
@@ -1064,7 +1070,9 @@ impl_writeable_msg!(AcceptChannel, {
 	htlc_basepoint,
 	first_per_commitment_point,
 	shutdown_scriptpubkey
-}, {});
+}, {
+	(1, channel_type, option),
+});
 
 impl_writeable_msg!(AnnouncementSignatures, {
 	channel_id,
@@ -2191,7 +2199,8 @@ mod tests {
 			delayed_payment_basepoint: pubkey_4,
 			htlc_basepoint: pubkey_5,
 			first_per_commitment_point: pubkey_6,
-			shutdown_scriptpubkey: if shutdown { OptionalField::Present(Address::p2pkh(&::bitcoin::PublicKey{compressed: true, key: pubkey_1}, Network::Testnet).script_pubkey()) } else { OptionalField::Absent }
+			shutdown_scriptpubkey: if shutdown { OptionalField::Present(Address::p2pkh(&::bitcoin::PublicKey{compressed: true, key: pubkey_1}, Network::Testnet).script_pubkey()) } else { OptionalField::Absent },
+			channel_type: None,
 		};
 		let encoded_value = accept_channel.encode();
 		let mut target_value = hex::decode("020202020202020202020202020202020202020202020202020202020202020212345678901234562334032891223698321446687011447600083a840000034d000c89d4c0bcc0bc031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f024d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d076602531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe33703462779ad4aad39514614751a71085f2f10e1c7a593e4e030efb5b8721ce55b0b0362c0a046dacce86ddd0343c6d3c7c79c2208ba0d9c9cf24a6d046d21d21f90f703f006a18d5653c4edf5391ff23a61f03ff83d237e880ee61187fa9f379a028e0a").unwrap();

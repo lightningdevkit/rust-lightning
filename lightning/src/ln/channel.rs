@@ -1895,6 +1895,16 @@ impl<Signer: Sign> Channel<Signer> {
 			return Err(ChannelError::Close("Minimum confirmation depth must be at least 1".to_owned()));
 		}
 
+		if let Some(ty) = &msg.channel_type {
+			if *ty != self.channel_type {
+				return Err(ChannelError::Close("Channel Type in accept_channel didn't match the one sent in open_channel.".to_owned()));
+			}
+		} else if their_features.supports_channel_type() {
+			// Assume they've accepted the channel type as they said they understand it.
+		} else {
+			self.channel_type = ChannelTypeFeatures::from_counterparty_init(&their_features)
+		}
+
 		let counterparty_shutdown_scriptpubkey = if their_features.supports_upfront_shutdown_script() {
 			match &msg.shutdown_scriptpubkey {
 				&OptionalField::Present(ref script) => {
@@ -2174,11 +2184,11 @@ impl<Signer: Sign> Channel<Signer> {
 
 	/// Returns transaction if there is pending funding transaction that is yet to broadcast
 	pub fn unbroadcasted_funding(&self) -> Option<Transaction> {
-		 if self.channel_state & (ChannelState::FundingCreated as u32) != 0 {
-			 self.funding_transaction.clone()
-		 } else {
-			 None
-		 }
+		if self.channel_state & (ChannelState::FundingCreated as u32) != 0 {
+			self.funding_transaction.clone()
+		} else {
+			None
+		}
 	}
 
 	/// Returns a HTLCStats about inbound pending htlcs
@@ -4720,6 +4730,7 @@ impl<Signer: Sign> Channel<Signer> {
 				Some(script) => script.clone().into_inner(),
 				None => Builder::new().into_script(),
 			}),
+			channel_type: Some(self.channel_type.clone()),
 		}
 	}
 
