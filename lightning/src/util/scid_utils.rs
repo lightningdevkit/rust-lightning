@@ -104,18 +104,15 @@ pub(crate) mod fake_scid {
 			let rand_bytes = keys_manager.get_secure_random_bytes();
 
 			let segwit_activation_height = segwit_activation_height(genesis_hash);
-			let mut valid_block_range = if highest_seen_blockheight > segwit_activation_height {
-				highest_seen_blockheight - segwit_activation_height
-			} else {
-				1
-			};
+			let mut blocks_since_segwit_activation = highest_seen_blockheight.saturating_sub(segwit_activation_height);
+
 			// We want to ensure that this fake channel won't conflict with any transactions we haven't
 			// seen yet, in case `highest_seen_blockheight` is updated before we get full information
 			// about transactions confirmed in the given block.
-			if valid_block_range > BLOCKS_PER_MONTH { valid_block_range -= BLOCKS_PER_MONTH; }
+			blocks_since_segwit_activation = blocks_since_segwit_activation.saturating_sub(BLOCKS_PER_MONTH);
 
 			let rand_for_height = u32::from_be_bytes(rand_bytes[..4].try_into().unwrap());
-			let fake_scid_height = segwit_activation_height + rand_for_height % valid_block_range;
+			let fake_scid_height = segwit_activation_height + rand_for_height % (blocks_since_segwit_activation + 1);
 
 			let rand_for_tx_index = u32::from_be_bytes(rand_bytes[4..8].try_into().unwrap());
 			let fake_scid_tx_index = rand_for_tx_index % MAX_TX_INDEX;
