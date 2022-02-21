@@ -333,7 +333,7 @@ mod test {
 	use bitcoin_hashes::sha256::Hash as Sha256;
 	use lightning::chain::keysinterface::PhantomKeysManager;
 	use lightning::ln::{PaymentPreimage, PaymentHash};
-	use lightning::ln::channelmanager::MIN_FINAL_CLTV_EXPIRY;
+	use lightning::ln::channelmanager::{PhantomRouteHints, MIN_FINAL_CLTV_EXPIRY};
 	use lightning::ln::functional_test_utils::*;
 	use lightning::ln::features::InitFeatures;
 	use lightning::ln::msgs::ChannelMessageHandler;
@@ -686,5 +686,333 @@ mod test {
 			},
 			_ => panic!("Unexpected event")
 		}
+	}
+
+	#[test]
+	#[cfg(feature = "std")]
+	fn test_multi_node_hints_includes_single_channels_to_participating_nodes() {
+		let mut chanmon_cfgs = create_chanmon_cfgs(3);
+		let seed_1 = [42 as u8; 32];
+		let seed_2 = [43 as u8; 32];
+		let cross_node_seed = [44 as u8; 32];
+		chanmon_cfgs[1].keys_manager.backing = PhantomKeysManager::new(&seed_1, 43, 44, &cross_node_seed);
+		chanmon_cfgs[2].keys_manager.backing = PhantomKeysManager::new(&seed_2, 43, 44, &cross_node_seed);
+		let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+		let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+		let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+		let chan_0_1 = create_unannounced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 10001, InitFeatures::known(), InitFeatures::known());
+		let chan_0_2 = create_unannounced_chan_between_nodes_with_value(&nodes, 0, 2, 100000, 10001, InitFeatures::known(), InitFeatures::known());
+
+		let mut scid_aliases = HashSet::new();
+		scid_aliases.insert(chan_0_1.0.short_channel_id_alias.unwrap());
+		scid_aliases.insert(chan_0_2.0.short_channel_id_alias.unwrap());
+
+		match_multi_node_invoice_routes(
+			Some(10_000),
+			&nodes[1],
+			vec![&nodes[1], &nodes[2],],
+			scid_aliases,
+			false
+		);
+	}
+
+	#[test]
+	#[cfg(feature = "std")]
+	fn test_multi_node_hints_includes_one_channel_of_each_counterparty_nodes_per_participating_node() {
+		let mut chanmon_cfgs = create_chanmon_cfgs(4);
+		let seed_1 = [42 as u8; 32];
+		let seed_2 = [43 as u8; 32];
+		let cross_node_seed = [44 as u8; 32];
+		chanmon_cfgs[2].keys_manager.backing = PhantomKeysManager::new(&seed_1, 43, 44, &cross_node_seed);
+		chanmon_cfgs[3].keys_manager.backing = PhantomKeysManager::new(&seed_2, 43, 44, &cross_node_seed);
+		let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
+		let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, None, None, None]);
+		let nodes = create_network(4, &node_cfgs, &node_chanmgrs);
+
+		let chan_0_2 = create_unannounced_chan_between_nodes_with_value(&nodes, 0, 2, 100000, 10001, InitFeatures::known(), InitFeatures::known());
+		let chan_0_3 = create_unannounced_chan_between_nodes_with_value(&nodes, 0, 3, 1000000, 10001, InitFeatures::known(), InitFeatures::known());
+		let chan_1_3 = create_unannounced_chan_between_nodes_with_value(&nodes, 1, 3, 3_000_000, 10005, InitFeatures::known(), InitFeatures::known());
+
+		let mut scid_aliases = HashSet::new();
+		scid_aliases.insert(chan_0_2.0.short_channel_id_alias.unwrap());
+		scid_aliases.insert(chan_0_3.0.short_channel_id_alias.unwrap());
+		scid_aliases.insert(chan_1_3.0.short_channel_id_alias.unwrap());
+
+		match_multi_node_invoice_routes(
+			Some(10_000),
+			&nodes[2],
+			vec![&nodes[2], &nodes[3],],
+			scid_aliases,
+			false
+		);
+	}
+
+	#[test]
+	#[cfg(feature = "std")]
+	fn test_multi_node_forwarding_info_not_assigned_channel_excluded_from_hints() {
+		let mut chanmon_cfgs = create_chanmon_cfgs(4);
+		let seed_1 = [42 as u8; 32];
+		let seed_2 = [43 as u8; 32];
+		let cross_node_seed = [44 as u8; 32];
+		chanmon_cfgs[2].keys_manager.backing = PhantomKeysManager::new(&seed_1, 43, 44, &cross_node_seed);
+		chanmon_cfgs[3].keys_manager.backing = PhantomKeysManager::new(&seed_2, 43, 44, &cross_node_seed);
+		let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
+		let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, None, None, None]);
+		let nodes = create_network(4, &node_cfgs, &node_chanmgrs);
+
+		let chan_0_2 = create_unannounced_chan_between_nodes_with_value(&nodes, 0, 2, 100000, 10001, InitFeatures::known(), InitFeatures::known());
+		let chan_0_3 = create_unannounced_chan_between_nodes_with_value(&nodes, 0, 3, 1000000, 10001, InitFeatures::known(), InitFeatures::known());
+
+		// Create an unannonced channel between `nodes[1]` and `nodes[3]`, for which the
+		// `msgs::ChannelUpdate` is never handled for the node(s). As the `msgs::ChannelUpdate`
+		// is never handled, the `channel.counterparty.forwarding_info` is never assigned.
+		let mut private_chan_cfg = UserConfig::default();
+		private_chan_cfg.channel_options.announced_channel = false;
+		let temporary_channel_id = nodes[1].node.create_channel(nodes[3].node.get_our_node_id(), 1_000_000, 500_000_000, 42, Some(private_chan_cfg)).unwrap();
+		let open_channel = get_event_msg!(nodes[1], MessageSendEvent::SendOpenChannel, nodes[3].node.get_our_node_id());
+		nodes[3].node.handle_open_channel(&nodes[1].node.get_our_node_id(), InitFeatures::known(), &open_channel);
+		let accept_channel = get_event_msg!(nodes[3], MessageSendEvent::SendAcceptChannel, nodes[1].node.get_our_node_id());
+		nodes[1].node.handle_accept_channel(&nodes[3].node.get_our_node_id(), InitFeatures::known(), &accept_channel);
+
+		let tx = sign_funding_transaction(&nodes[1], &nodes[3], 1_000_000, temporary_channel_id);
+
+		let conf_height = core::cmp::max(nodes[1].best_block_info().1 + 1, nodes[3].best_block_info().1 + 1);
+		confirm_transaction_at(&nodes[1], &tx, conf_height);
+		connect_blocks(&nodes[1], CHAN_CONFIRM_DEPTH - 1);
+		confirm_transaction_at(&nodes[3], &tx, conf_height);
+		connect_blocks(&nodes[3], CHAN_CONFIRM_DEPTH - 1);
+		let as_funding_locked = get_event_msg!(nodes[1], MessageSendEvent::SendFundingLocked, nodes[3].node.get_our_node_id());
+		nodes[1].node.handle_funding_locked(&nodes[3].node.get_our_node_id(), &get_event_msg!(nodes[3], MessageSendEvent::SendFundingLocked, nodes[1].node.get_our_node_id()));
+		get_event_msg!(nodes[1], MessageSendEvent::SendChannelUpdate, nodes[3].node.get_our_node_id());
+		nodes[3].node.handle_funding_locked(&nodes[1].node.get_our_node_id(), &as_funding_locked);
+		get_event_msg!(nodes[3], MessageSendEvent::SendChannelUpdate, nodes[1].node.get_our_node_id());
+
+		// As `msgs::ChannelUpdate` was never handled for the participating node(s) of the third
+		// channel, the channel will never be assigned any `counterparty.forwarding_info`.
+		// Therefore only `chan_0_3` should be included in the hints for `nodes[3]`.
+		let mut scid_aliases = HashSet::new();
+		scid_aliases.insert(chan_0_2.0.short_channel_id_alias.unwrap());
+		scid_aliases.insert(chan_0_3.0.short_channel_id_alias.unwrap());
+
+		match_multi_node_invoice_routes(
+			Some(10_000),
+			&nodes[2],
+			vec![&nodes[2], &nodes[3],],
+			scid_aliases,
+			false
+		);
+	}
+
+	#[test]
+	#[cfg(feature = "std")]
+	fn test_multi_node_with_only_public_channels_hints_includes_only_phantom_route() {
+		let mut chanmon_cfgs = create_chanmon_cfgs(3);
+		let seed_1 = [42 as u8; 32];
+		let seed_2 = [43 as u8; 32];
+		let cross_node_seed = [44 as u8; 32];
+		chanmon_cfgs[1].keys_manager.backing = PhantomKeysManager::new(&seed_1, 43, 44, &cross_node_seed);
+		chanmon_cfgs[2].keys_manager.backing = PhantomKeysManager::new(&seed_2, 43, 44, &cross_node_seed);
+		let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+		let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+		let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+		let chan_0_1 = create_unannounced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 10001, InitFeatures::known(), InitFeatures::known());
+
+		let chan_2_0 = create_announced_chan_between_nodes_with_value(&nodes, 2, 0, 100000, 10001, InitFeatures::known(), InitFeatures::known());
+		nodes[2].node.handle_channel_update(&nodes[0].node.get_our_node_id(), &chan_2_0.1);
+		nodes[0].node.handle_channel_update(&nodes[2].node.get_our_node_id(), &chan_2_0.0);
+
+		// Hints should include `chan_0_1` from as `nodes[1]` only have private channels, but not
+		// `chan_0_2` as `nodes[2]` only has public channels.
+		let mut scid_aliases = HashSet::new();
+		scid_aliases.insert(chan_0_1.0.short_channel_id_alias.unwrap());
+
+		match_multi_node_invoice_routes(
+			Some(10_000),
+			&nodes[1],
+			vec![&nodes[1], &nodes[2],],
+			scid_aliases,
+			true
+		);
+	}
+
+	#[test]
+	#[cfg(feature = "std")]
+	fn test_multi_node_with_mixed_public_and_private_channel_hints_includes_only_phantom_route() {
+		let mut chanmon_cfgs = create_chanmon_cfgs(4);
+		let seed_1 = [42 as u8; 32];
+		let seed_2 = [43 as u8; 32];
+		let cross_node_seed = [44 as u8; 32];
+		chanmon_cfgs[1].keys_manager.backing = PhantomKeysManager::new(&seed_1, 43, 44, &cross_node_seed);
+		chanmon_cfgs[2].keys_manager.backing = PhantomKeysManager::new(&seed_2, 43, 44, &cross_node_seed);
+		let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
+		let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, None, None, None]);
+		let nodes = create_network(4, &node_cfgs, &node_chanmgrs);
+
+		let chan_0_2 = create_announced_chan_between_nodes_with_value(&nodes, 0, 2, 100000, 10001, InitFeatures::known(), InitFeatures::known());
+		nodes[0].node.handle_channel_update(&nodes[2].node.get_our_node_id(), &chan_0_2.1);
+		nodes[2].node.handle_channel_update(&nodes[0].node.get_our_node_id(), &chan_0_2.0);
+		let _chan_1_2 = create_unannounced_chan_between_nodes_with_value(&nodes, 1, 2, 100000, 10001, InitFeatures::known(), InitFeatures::known());
+
+		let chan_0_3 = create_unannounced_chan_between_nodes_with_value(&nodes, 0, 3, 100000, 10001, InitFeatures::known(), InitFeatures::known());
+
+		// Hints should include `chan_0_3` from as `nodes[3]` only have private channels, and no
+		// channels for `nodes[2]` as it contains a mix of public and private channels.
+		let mut scid_aliases = HashSet::new();
+		scid_aliases.insert(chan_0_3.0.short_channel_id_alias.unwrap());
+
+		match_multi_node_invoice_routes(
+			Some(10_000),
+			&nodes[2],
+			vec![&nodes[2], &nodes[3],],
+			scid_aliases,
+			true
+		);
+	}
+
+	#[test]
+	#[cfg(feature = "std")]
+	fn test_multi_node_hints_has_only_highest_inbound_capacity_channel() {
+		let mut chanmon_cfgs = create_chanmon_cfgs(3);
+		let seed_1 = [42 as u8; 32];
+		let seed_2 = [43 as u8; 32];
+		let cross_node_seed = [44 as u8; 32];
+		chanmon_cfgs[1].keys_manager.backing = PhantomKeysManager::new(&seed_1, 43, 44, &cross_node_seed);
+		chanmon_cfgs[2].keys_manager.backing = PhantomKeysManager::new(&seed_2, 43, 44, &cross_node_seed);
+		let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+		let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+		let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+		let _chan_0_1_low_inbound_capacity = create_unannounced_chan_between_nodes_with_value(&nodes, 0, 1, 100_000, 0, InitFeatures::known(), InitFeatures::known());
+		let chan_0_1_high_inbound_capacity = create_unannounced_chan_between_nodes_with_value(&nodes, 0, 1, 10_000_000, 0, InitFeatures::known(), InitFeatures::known());
+		let _chan_0_1_medium_inbound_capacity = create_unannounced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0, InitFeatures::known(), InitFeatures::known());
+		let chan_0_2 = create_unannounced_chan_between_nodes_with_value(&nodes, 0, 2, 100000, 10001, InitFeatures::known(), InitFeatures::known());
+
+		let mut scid_aliases = HashSet::new();
+		scid_aliases.insert(chan_0_1_high_inbound_capacity.0.short_channel_id_alias.unwrap());
+		scid_aliases.insert(chan_0_2.0.short_channel_id_alias.unwrap());
+
+		match_multi_node_invoice_routes(
+			Some(10_000),
+			&nodes[1],
+			vec![&nodes[1], &nodes[2],],
+			scid_aliases,
+			false
+		);
+	}
+
+	#[test]
+	#[cfg(feature = "std")]
+	fn test_multi_node_channels_inbound_capacity_lower_than_invoice_amt_filtering() {
+		let mut chanmon_cfgs = create_chanmon_cfgs(4);
+		let seed_1 = [42 as u8; 32];
+		let seed_2 = [43 as u8; 32];
+		let cross_node_seed = [44 as u8; 32];
+		chanmon_cfgs[1].keys_manager.backing = PhantomKeysManager::new(&seed_1, 43, 44, &cross_node_seed);
+		chanmon_cfgs[2].keys_manager.backing = PhantomKeysManager::new(&seed_2, 43, 44, &cross_node_seed);
+		let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
+		let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, None, None, None]);
+		let nodes = create_network(4, &node_cfgs, &node_chanmgrs);
+
+		let chan_0_2 = create_unannounced_chan_between_nodes_with_value(&nodes, 0, 2, 1_000_000, 0, InitFeatures::known(), InitFeatures::known());
+		let chan_0_3 = create_unannounced_chan_between_nodes_with_value(&nodes, 0, 3, 100_000, 0, InitFeatures::known(), InitFeatures::known());
+		let chan_1_3 = create_unannounced_chan_between_nodes_with_value(&nodes, 1, 3, 200_000, 0, InitFeatures::known(), InitFeatures::known());
+
+		// Since the invoice 1 msat above chan_0_3's inbound capacity, it should be filtered out.
+		let mut scid_aliases_99_000_001_msat = HashSet::new();
+		scid_aliases_99_000_001_msat.insert(chan_0_2.0.short_channel_id_alias.unwrap());
+		scid_aliases_99_000_001_msat.insert(chan_1_3.0.short_channel_id_alias.unwrap());
+
+		match_multi_node_invoice_routes(
+			Some(99_000_001),
+			&nodes[2],
+			vec![&nodes[2], &nodes[3],],
+			scid_aliases_99_000_001_msat,
+			false
+		);
+
+		// Since the invoice is exactly at chan_0_3's inbound capacity, it should be included.
+		let mut scid_aliases_99_000_000_msat = HashSet::new();
+		scid_aliases_99_000_000_msat.insert(chan_0_2.0.short_channel_id_alias.unwrap());
+		scid_aliases_99_000_000_msat.insert(chan_0_3.0.short_channel_id_alias.unwrap());
+		scid_aliases_99_000_000_msat.insert(chan_1_3.0.short_channel_id_alias.unwrap());
+
+		match_multi_node_invoice_routes(
+			Some(99_000_000),
+			&nodes[2],
+			vec![&nodes[2], &nodes[3],],
+			scid_aliases_99_000_000_msat,
+			false
+		);
+
+		// Since the invoice is above all of `nodes[2]` channels' inbound capacity, all of
+		// `nodes[2]` them should be included.
+		let mut scid_aliases_300_000_000_msat = HashSet::new();
+		scid_aliases_300_000_000_msat.insert(chan_0_2.0.short_channel_id_alias.unwrap());
+		scid_aliases_300_000_000_msat.insert(chan_0_3.0.short_channel_id_alias.unwrap());
+		scid_aliases_300_000_000_msat.insert(chan_1_3.0.short_channel_id_alias.unwrap());
+
+		match_multi_node_invoice_routes(
+			Some(300_000_000),
+			&nodes[2],
+			vec![&nodes[2], &nodes[3],],
+			scid_aliases_300_000_000_msat,
+			false
+		);
+
+		// Since the no specified amount, all channels should included.
+		let mut scid_aliases_no_specified_amount = HashSet::new();
+		scid_aliases_no_specified_amount.insert(chan_0_2.0.short_channel_id_alias.unwrap());
+		scid_aliases_no_specified_amount.insert(chan_0_3.0.short_channel_id_alias.unwrap());
+		scid_aliases_no_specified_amount.insert(chan_1_3.0.short_channel_id_alias.unwrap());
+
+		match_multi_node_invoice_routes(
+			None,
+			&nodes[2],
+			vec![&nodes[2], &nodes[3],],
+			scid_aliases_no_specified_amount,
+			false
+		);
+	}
+
+	#[cfg(feature = "std")]
+	fn match_multi_node_invoice_routes<'a, 'b: 'a, 'c: 'b>(
+		invoice_amt: Option<u64>,
+		invoice_node: &Node<'a, 'b, 'c>,
+		network_multi_nodes: Vec<&Node<'a, 'b, 'c>>,
+		mut chan_ids_to_match: HashSet<u64>,
+		nodes_contains_public_channels: bool
+	){
+		let (payment_hash, payment_secret) = invoice_node.node.create_inbound_payment(invoice_amt, 3600).unwrap();
+		let phantom_route_hints = network_multi_nodes.iter()
+			.map(|node| node.node.get_phantom_route_hints())
+			.collect::<Vec<PhantomRouteHints>>();
+		let phantom_scids = phantom_route_hints.iter()
+			.map(|route_hint| route_hint.phantom_scid)
+			.collect::<HashSet<u64>>();
+
+		let invoice = ::utils::create_phantom_invoice::<EnforcingSigner, &test_utils::TestKeysInterface>(invoice_amt, "test".to_string(), payment_hash, payment_secret, phantom_route_hints, &invoice_node.keys_manager, Currency::BitcoinTestnet).unwrap();
+
+		let invoice_hints = invoice.private_routes();
+
+		for hint in invoice_hints {
+			let hints = &(hint.0).0;
+			match hints.len() {
+				1 => {
+					assert!(nodes_contains_public_channels);
+					let phantom_scid = hints[0].short_channel_id;
+					assert!(phantom_scids.contains(&phantom_scid));
+				},
+				2 => {
+					let hint_short_chan_id = hints[0].short_channel_id;
+					assert!(chan_ids_to_match.remove(&hint_short_chan_id));
+					let phantom_scid = hints[1].short_channel_id;
+					assert!(phantom_scids.contains(&phantom_scid));
+				},
+				_ => panic!("Incorrect hint length generated")
+			}
+		}
+		assert!(chan_ids_to_match.is_empty(), "Unmatched short channel ids: {:?}", chan_ids_to_match);
 	}
 }
