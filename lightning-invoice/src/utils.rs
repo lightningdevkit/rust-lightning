@@ -161,30 +161,7 @@ where
 	F::Target: FeeEstimator,
 	L::Target: Logger,
 {
-	// Marshall route hints.
-	let our_channels = channelmanager.list_usable_channels();
-	let mut route_hints = vec![];
-	for channel in our_channels {
-		let short_channel_id = match channel.get_inbound_payment_scid() {
-			Some(id) => id,
-			None => continue,
-		};
-		let forwarding_info = match channel.counterparty.forwarding_info {
-			Some(info) => info,
-			None => continue,
-		};
-		route_hints.push(RouteHint(vec![RouteHintHop {
-			src_node_id: channel.counterparty.node_id,
-			short_channel_id,
-			fees: RoutingFees {
-				base_msat: forwarding_info.fee_base_msat,
-				proportional_millionths: forwarding_info.fee_proportional_millionths,
-			},
-			cltv_expiry_delta: forwarding_info.cltv_expiry_delta,
-			htlc_minimum_msat: None,
-			htlc_maximum_msat: None,
-		}]));
-	}
+	let route_hints = filter_channels(channelmanager.list_usable_channels(), amt_msat);
 
 	// `create_inbound_payment` only returns an error if the amount is greater than the total bitcoin
 	// supply.
@@ -219,6 +196,74 @@ where
 		Ok(inv) => Ok(Invoice::from_signed(inv).unwrap()),
 		Err(e) => Err(SignOrCreationError::SignError(e))
 	}
+}
+
+/// Filters the `channels` for an invoice, and returns the corresponding `RouteHint`s to include
+/// in the invoice.
+///
+/// The filtering is based on the following criteria:
+/// * Only one channel per counterparty node
+/// * Always select the channel with the highest inbound capacity per counterparty node
+/// * Filter out channels with a lower inbound capacity than `min_inbound_capacity_msat`, if any
+/// channel with a higher or equal inbound capacity than `min_inbound_capacity_msat` exists
+/// * If any public channel exists, the returned `RouteHint`s will be empty, and the sender will
+/// need to find the path by looking at the public channels instead
+fn filter_channels(channels: Vec<ChannelDetails>, min_inbound_capacity_msat: Option<u64>) -> Vec<RouteHint>{
+	let mut filtered_channels: HashMap<PublicKey, &ChannelDetails> = HashMap::new();
+	let min_inbound_capacity = min_inbound_capacity_msat.unwrap_or(0);
+	let mut min_capacity_channel_exists = false;
+
+	for channel in channels.iter() {
+		if channel.get_inbound_payment_scid().is_none() || channel.counterparty.forwarding_info.is_none() {
+			continue;
+		}
+
+		if channel.is_public {
+			// If any public channel exists, return no hints and let the sender
+			// look at the public channels instead.
+			return vec![]
+		}
+
+		if channel.inbound_capacity_msat >= min_inbound_capacity {
+			min_capacity_channel_exists = true;
+		};
+		match filtered_channels.entry(channel.counterparty.node_id) {
+			hash_map::Entry::Occupied(mut entry) => {
+				let current_max_capacity = entry.get().inbound_capacity_msat;
+				if channel.inbound_capacity_msat < current_max_capacity {
+					continue;
+				}
+				entry.insert(channel);
+			}
+			hash_map::Entry::Vacant(entry) => {
+				entry.insert(channel);
+			}
+		}
+	}
+
+	let route_hint_from_channel = |channel: &ChannelDetails| {
+		let forwarding_info = channel.counterparty.forwarding_info.as_ref().unwrap();
+		RouteHint(vec![RouteHintHop {
+			src_node_id: channel.counterparty.node_id,
+			short_channel_id: channel.get_inbound_payment_scid().unwrap(),
+			fees: RoutingFees {
+				base_msat: forwarding_info.fee_base_msat,
+				proportional_millionths: forwarding_info.fee_proportional_millionths,
+			},
+			cltv_expiry_delta: forwarding_info.cltv_expiry_delta,
+			htlc_minimum_msat: None,
+			htlc_maximum_msat: None,}])
+	};
+	// If all channels are private, return the route hint for the highest inbound capacity channel
+	// per counterparty node. If channels with an higher inbound capacity than the
+	// min_inbound_capacity exists, filter out the channels with a lower capacity than that.
+	filtered_channels.into_iter()
+		.filter(|(_counterparty_id, channel)| {
+			min_capacity_channel_exists && channel.inbound_capacity_msat >= min_inbound_capacity ||
+			!min_capacity_channel_exists
+		})
+		.map(|(_counterparty_id, channel)| route_hint_from_channel(&channel))
+		.collect::<Vec<RouteHint>>()
 }
 
 /// A [`Router`] implemented using [`find_route`].
@@ -317,7 +362,7 @@ mod test {
 		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-		let _chan = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
+		create_unannounced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 10001, InitFeatures::known(), InitFeatures::known());
 		let invoice = create_invoice_from_channelmanager_and_duration_since_epoch(
 			&nodes[1].node, nodes[1].keys_manager, Currency::BitcoinTestnet, Some(10_000), "test".to_string(),
 			Duration::from_secs(1234567)).unwrap();
