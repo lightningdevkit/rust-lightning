@@ -66,40 +66,28 @@ pub fn create_phantom_invoice<Signer: Sign, K: Deref>(
 		invoice = invoice.amount_milli_satoshis(amt);
 	}
 
-	for hint in phantom_route_hints {
-		for channel in &hint.channels {
-			let short_channel_id = match channel.get_inbound_payment_scid() {
-				Some(id) => id,
-				None => continue,
-			};
-			let forwarding_info = match &channel.counterparty.forwarding_info {
-				Some(info) => info.clone(),
-				None => continue,
-			};
-			invoice = invoice.private_route(RouteHint(vec![
-					RouteHintHop {
-						src_node_id: channel.counterparty.node_id,
-						short_channel_id,
-						fees: RoutingFees {
-							base_msat: forwarding_info.fee_base_msat,
-							proportional_millionths: forwarding_info.fee_proportional_millionths,
-						},
-						cltv_expiry_delta: forwarding_info.cltv_expiry_delta,
-						htlc_minimum_msat: None,
-						htlc_maximum_msat: None,
-					},
-					RouteHintHop {
-						src_node_id: hint.real_node_pubkey,
-						short_channel_id: hint.phantom_scid,
-						fees: RoutingFees {
-							base_msat: 0,
-							proportional_millionths: 0,
-						},
-						cltv_expiry_delta: MIN_CLTV_EXPIRY_DELTA,
-						htlc_minimum_msat: None,
-						htlc_maximum_msat: None,
-					}])
-			);
+	for PhantomRouteHints { channels, phantom_scid, real_node_pubkey } in phantom_route_hints {
+		let mut route_hints = filter_channels(channels, amt_msat);
+
+		// If we have any public channel, the route hints from `filter_channels` will be empty.
+		// In that case we create a RouteHint on which we will push a single hop with the phantom
+		// route into the invoice, and let the sender find the path to the `real_node_pubkey`
+		// node by looking at our public channels.
+		if route_hints.is_empty() {
+			route_hints.push(RouteHint(vec![]))
+		}
+		for mut route_hint in route_hints {
+			route_hint.0.push(RouteHintHop {
+				src_node_id: real_node_pubkey,
+				short_channel_id: phantom_scid,
+				fees: RoutingFees {
+					base_msat: 0,
+					proportional_millionths: 0,
+				},
+				cltv_expiry_delta: MIN_CLTV_EXPIRY_DELTA,
+				htlc_minimum_msat: None,
+				htlc_maximum_msat: None,});
+			invoice = invoice.private_route(route_hint.clone());
 		}
 	}
 
