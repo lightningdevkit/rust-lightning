@@ -719,8 +719,9 @@ where L::Target: Logger {
 			node_info.features.supports_basic_mpp()
 		} else { false }
 	} else { false };
-	log_trace!(logger, "Searching for a route from payer {} to payee {} {} MPP", our_node_pubkey,
-		payment_params.payee_pubkey, if allow_mpp { "with" } else { "without" });
+	log_trace!(logger, "Searching for a route from payer {} to payee {} {} MPP and {} first hops {}overriding the network graph", our_node_pubkey,
+		payment_params.payee_pubkey, if allow_mpp { "with" } else { "without" },
+		first_hops.map(|hops| hops.len()).unwrap_or(0), if first_hops.is_some() { "" } else { "not " });
 
 	// Step (1).
 	// Prepare the data we'll use for payee-to-payer search by
