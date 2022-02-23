@@ -610,9 +610,9 @@ impl<D: tb::Bool, H: tb::Bool, T: tb::Bool, S: tb::Bool> InvoiceBuilder<D, H, T,
 impl<D: tb::Bool, H: tb::Bool, T: tb::Bool, C: tb::Bool> InvoiceBuilder<D, H, T, C, tb::False> {
 	/// Sets the payment secret and relevant features.
 	pub fn payment_secret(mut self, payment_secret: PaymentSecret) -> InvoiceBuilder<D, H, T, C, tb::True> {
-		let features = InvoiceFeatures::empty()
-			.set_variable_length_onion_required()
-			.set_payment_secret_required();
+		let mut features = InvoiceFeatures::empty();
+		features.set_variable_length_onion_required();
+		features.set_payment_secret_required();
 		self.tagged_fields.push(TaggedField::PaymentSecret(payment_secret));
 		self.tagged_fields.push(TaggedField::Features(features));
 		self.set_flags()
@@ -622,13 +622,11 @@ impl<D: tb::Bool, H: tb::Bool, T: tb::Bool, C: tb::Bool> InvoiceBuilder<D, H, T,
 impl<D: tb::Bool, H: tb::Bool, T: tb::Bool, C: tb::Bool> InvoiceBuilder<D, H, T, C, tb::True> {
 	/// Sets the `basic_mpp` feature as optional.
 	pub fn basic_mpp(mut self) -> Self {
-		self.tagged_fields = self.tagged_fields
-			.drain(..)
-			.map(|field| match field {
-				TaggedField::Features(f) => TaggedField::Features(f.set_basic_mpp_optional()),
-				_ => field,
-			})
-			.collect();
+		for field in self.tagged_fields.iter_mut() {
+			if let TaggedField::Features(f) = field {
+				f.set_basic_mpp_optional();
+			}
+		}
 		self
 	}
 }

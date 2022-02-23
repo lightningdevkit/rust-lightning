@@ -318,15 +318,13 @@ mod sealed {
 
 			impl <T: $feature> Features<T> {
 				/// Set this feature as optional.
-				pub fn $optional_setter(mut self) -> Self {
+				pub fn $optional_setter(&mut self) {
 					<T as $feature>::set_optional_bit(&mut self.flags);
-					self
 				}
 
 				/// Set this feature as required.
-				pub fn $required_setter(mut self) -> Self {
+				pub fn $required_setter(&mut self) {
 					<T as $feature>::set_required_bit(&mut self.flags);
-					self
 				}
 
 				/// Checks if this feature is supported.
@@ -506,7 +504,9 @@ impl InvoiceFeatures {
 	/// [`PaymentParameters::for_keysend`]: crate::routing::router::PaymentParameters::for_keysend
 	/// [`find_route`]: crate::routing::router::find_route
 	pub(crate) fn for_keysend() -> InvoiceFeatures {
-		InvoiceFeatures::empty().set_variable_length_onion_optional()
+		let mut res = InvoiceFeatures::empty();
+		res.set_variable_length_onion_optional();
+		res
 	}
 }
 
@@ -838,11 +838,13 @@ mod tests {
 		assert!(!features.requires_unknown_bits());
 		assert!(!features.supports_unknown_bits());
 
-		let features = ChannelFeatures::empty().set_unknown_feature_required();
+		let mut features = ChannelFeatures::empty();
+		features.set_unknown_feature_required();
 		assert!(features.requires_unknown_bits());
 		assert!(features.supports_unknown_bits());
 
-		let features = ChannelFeatures::empty().set_unknown_feature_optional();
+		let mut features = ChannelFeatures::empty();
+		features.set_unknown_feature_optional();
 		assert!(!features.requires_unknown_bits());
 		assert!(features.supports_unknown_bits());
 	}
@@ -886,7 +888,8 @@ mod tests {
 	fn convert_to_context_with_unknown_flags() {
 		// Ensure the `from` context has fewer known feature bytes than the `to` context.
 		assert!(InvoiceFeatures::known().flags.len() < NodeFeatures::known().flags.len());
-		let invoice_features = InvoiceFeatures::known().set_unknown_feature_optional();
+		let mut invoice_features = InvoiceFeatures::known();
+		invoice_features.set_unknown_feature_optional();
 		assert!(invoice_features.supports_unknown_bits());
 		let node_features: NodeFeatures = invoice_features.to_context();
 		assert!(!node_features.supports_unknown_bits());
@@ -894,9 +897,9 @@ mod tests {
 
 	#[test]
 	fn set_feature_bits() {
-		let features = InvoiceFeatures::empty()
-			.set_basic_mpp_optional()
-			.set_payment_secret_required();
+		let mut features = InvoiceFeatures::empty();
+		features.set_basic_mpp_optional();
+		features.set_payment_secret_required();
 		assert!(features.supports_basic_mpp());
 		assert!(!features.requires_basic_mpp());
 		assert!(features.requires_payment_secret());
@@ -938,7 +941,8 @@ mod tests {
 	fn test_channel_type_mapping() {
 		// If we map an InvoiceFeatures with StaticRemoteKey optional, it should map into a
 		// required-StaticRemoteKey ChannelTypeFeatures.
-		let init_features = InitFeatures::empty().set_static_remote_key_optional();
+		let mut init_features = InitFeatures::empty();
+		init_features.set_static_remote_key_optional();
 		let converted_features = ChannelTypeFeatures::from_counterparty_init(&init_features);
 		assert_eq!(converted_features, ChannelTypeFeatures::only_static_remote_key());
 		assert!(!converted_features.supports_any_optional_bits());
