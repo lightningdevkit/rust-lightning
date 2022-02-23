@@ -122,6 +122,12 @@ impl FilesystemPersister {
 					"Invalid ChannelMonitor file name",
 				));
 			}
+			if filename.unwrap().ends_with(".tmp") {
+				// If we were in the middle of committing an new update and crashed, it should be
+				// safe to ignore the update - we should never have returned to the caller and
+				// irrevocably committed to the new state in any way.
+				continue;
+			}
 
 			let txid = Txid::from_hex(filename.unwrap().split_at(64).0);
 			if txid.is_err() {
