@@ -284,3 +284,164 @@ fn test_routed_scid_alias() {
 	// Note that because we never send a duplicate funding_locked we can't send a payment through
 	// the 0xdeadbeef SCID alias.
 }
+
+#[test]
+fn test_scid_privacy_on_pub_channel() {
+	// Tests rejecting the scid_privacy feature for public channels and that we don't ever try to
+	// send them.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let mut scid_privacy_cfg = test_default_channel_config();
+	scid_privacy_cfg.channel_options.announced_channel = true;
+	scid_privacy_cfg.own_channel_config.negotiate_scid_privacy = true;
+	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100000, 10001, 42, Some(scid_privacy_cfg)).unwrap();
+	let mut open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
+
+	assert!(!open_channel.channel_type.as_ref().unwrap().supports_scid_privacy()); // we ignore `negotiate_scid_privacy` on pub channels
+	open_channel.channel_type.as_mut().unwrap().set_scid_privacy_required();
+	assert_eq!(open_channel.channel_flags & 1, 1); // The `announce_channel` bit is set.
+
+	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), InitFeatures::known(), &open_channel);
+	let err = get_err_msg!(nodes[1], nodes[0].node.get_our_node_id());
+	assert_eq!(err.data, "SCID Alias/Privacy Channel Type cannot be set on a public channel");
+}
+
+#[test]
+fn test_scid_privacy_negotiation() {
+	// Tests of the negotiation of SCID alias and falling back to non-SCID-alias if our
+	// counterparty doesn't support it.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let mut scid_privacy_cfg = test_default_channel_config();
+	scid_privacy_cfg.channel_options.announced_channel = false;
+	scid_privacy_cfg.own_channel_config.negotiate_scid_privacy = true;
+	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100000, 10001, 42, Some(scid_privacy_cfg)).unwrap();
+
+	let init_open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
+	assert!(init_open_channel.channel_type.as_ref().unwrap().supports_scid_privacy());
+	assert!(nodes[0].node.list_channels()[0].channel_type.is_none()); // channel_type is none until counterparty accepts
+
+	// now simulate nodes[1] responding with an Error message, indicating it doesn't understand
+	// SCID alias.
+	nodes[0].node.handle_error(&nodes[1].node.get_our_node_id(), &msgs::ErrorMessage {
+		channel_id: init_open_channel.temporary_channel_id,
+		data: "Yo, no SCID aliases, no privacy here!".to_string()
+	});
+	assert!(nodes[0].node.list_channels()[0].channel_type.is_none()); // channel_type is none until counterparty accepts
+
+	let second_open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
+	assert!(!second_open_channel.channel_type.as_ref().unwrap().supports_scid_privacy());
+	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), InitFeatures::known(), &second_open_channel);
+	nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), InitFeatures::known(), &get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id()));
+
+	let events = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	match events[0] {
+		Event::FundingGenerationReady { .. } => {},
+		_ => panic!("Unexpected event"),
+	}
+
+	assert!(!nodes[0].node.list_channels()[0].channel_type.as_ref().unwrap().supports_scid_privacy());
+	assert!(!nodes[1].node.list_channels()[0].channel_type.as_ref().unwrap().supports_scid_privacy());
+}
+
+#[test]
+fn test_inbound_scid_privacy() {
+	// Tests accepting channels with the scid_privacy feature and rejecting forwards using the
+	// channel's real SCID as required by the channel feature.
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let mut accept_forward_cfg = test_default_channel_config();
+	accept_forward_cfg.accept_forwards_to_priv_channels = true;
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, Some(accept_forward_cfg), None]);
+	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0, InitFeatures::known(), InitFeatures::known());
+
+	let mut no_announce_cfg = test_default_channel_config();
+	no_announce_cfg.channel_options.announced_channel = false;
+	no_announce_cfg.own_channel_config.negotiate_scid_privacy = true;
+	nodes[1].node.create_channel(nodes[2].node.get_our_node_id(), 100_000, 10_000, 42, Some(no_announce_cfg)).unwrap();
+	let mut open_channel = get_event_msg!(nodes[1], MessageSendEvent::SendOpenChannel, nodes[2].node.get_our_node_id());
+
+	assert!(open_channel.channel_type.as_ref().unwrap().requires_scid_privacy());
+
+	nodes[2].node.handle_open_channel(&nodes[1].node.get_our_node_id(), InitFeatures::known(), &open_channel);
+	let accept_channel = get_event_msg!(nodes[2], MessageSendEvent::SendAcceptChannel, nodes[1].node.get_our_node_id());
+	nodes[1].node.handle_accept_channel(&nodes[2].node.get_our_node_id(), InitFeatures::known(), &accept_channel);
+
+	let (temporary_channel_id, tx, _) = create_funding_transaction(&nodes[1], 100_000, 42);
+	nodes[1].node.funding_transaction_generated(&temporary_channel_id, tx.clone()).unwrap();
+	nodes[2].node.handle_funding_created(&nodes[1].node.get_our_node_id(), &get_event_msg!(nodes[1], MessageSendEvent::SendFundingCreated, nodes[2].node.get_our_node_id()));
+	check_added_monitors!(nodes[2], 1);
+
+	let cs_funding_signed = get_event_msg!(nodes[2], MessageSendEvent::SendFundingSigned, nodes[1].node.get_our_node_id());
+	nodes[1].node.handle_funding_signed(&nodes[2].node.get_our_node_id(), &cs_funding_signed);
+	check_added_monitors!(nodes[1], 1);
+
+	let conf_height = core::cmp::max(nodes[1].best_block_info().1 + 1, nodes[2].best_block_info().1 + 1);
+	confirm_transaction_at(&nodes[1], &tx, conf_height);
+	connect_blocks(&nodes[1], CHAN_CONFIRM_DEPTH - 1);
+	confirm_transaction_at(&nodes[2], &tx, conf_height);
+	connect_blocks(&nodes[2], CHAN_CONFIRM_DEPTH - 1);
+	let bs_funding_locked = get_event_msg!(nodes[1], MessageSendEvent::SendFundingLocked, nodes[2].node.get_our_node_id());
+	nodes[1].node.handle_funding_locked(&nodes[2].node.get_our_node_id(), &get_event_msg!(nodes[2], MessageSendEvent::SendFundingLocked, nodes[1].node.get_our_node_id()));
+	let bs_update = get_event_msg!(nodes[1], MessageSendEvent::SendChannelUpdate, nodes[2].node.get_our_node_id());
+	nodes[2].node.handle_funding_locked(&nodes[1].node.get_our_node_id(), &bs_funding_locked);
+	let cs_update = get_event_msg!(nodes[2], MessageSendEvent::SendChannelUpdate, nodes[1].node.get_our_node_id());
+
+	nodes[1].node.handle_channel_update(&nodes[2].node.get_our_node_id(), &cs_update);
+	nodes[2].node.handle_channel_update(&nodes[1].node.get_our_node_id(), &bs_update);
+
+	// Now we can pay just fine using the SCID alias nodes[2] gave to nodes[1]...
+
+	let last_hop = nodes[2].node.list_usable_channels();
+	let mut hop_hints = vec![RouteHint(vec![RouteHintHop {
+		src_node_id: nodes[1].node.get_our_node_id(),
+		short_channel_id: last_hop[0].inbound_scid_alias.unwrap(),
+		fees: RoutingFees {
+			base_msat: last_hop[0].counterparty.forwarding_info.as_ref().unwrap().fee_base_msat,
+			proportional_millionths: last_hop[0].counterparty.forwarding_info.as_ref().unwrap().fee_proportional_millionths,
+		},
+		cltv_expiry_delta: last_hop[0].counterparty.forwarding_info.as_ref().unwrap().cltv_expiry_delta,
+		htlc_maximum_msat: None,
+		htlc_minimum_msat: None,
+	}])];
+	let (route, payment_hash, payment_preimage, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], hop_hints.clone(), 100_000, 42);
+	assert_eq!(route.paths[0][1].short_channel_id, last_hop[0].inbound_scid_alias.unwrap());
+	nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret)).unwrap();
+	check_added_monitors!(nodes[0], 1);
+
+	pass_along_route(&nodes[0], &[&[&nodes[1], &nodes[2]]], 100_000, payment_hash, payment_secret);
+	claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_preimage);
+
+	// ... but if we try to pay using the real SCID, nodes[1] will just tell us they don't know
+	// what channel we're talking about.
+	hop_hints[0].0[0].short_channel_id = last_hop[0].short_channel_id.unwrap();
+
+	let (route_2, payment_hash_2, _, payment_secret_2) = get_route_and_payment_hash!(nodes[0], nodes[2], hop_hints, 100_000, 42);
+	assert_eq!(route_2.paths[0][1].short_channel_id, last_hop[0].short_channel_id.unwrap());
+	nodes[0].node.send_payment(&route_2, payment_hash_2, &Some(payment_secret_2)).unwrap();
+	check_added_monitors!(nodes[0], 1);
+
+	let payment_event = SendEvent::from_node(&nodes[0]);
+	assert_eq!(nodes[1].node.get_our_node_id(), payment_event.node_id);
+	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
+	commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, true, true);
+
+	nodes[1].logger.assert_log_regex("lightning::ln::channelmanager".to_string(), regex::Regex::new(r"Refusing to forward over real channel SCID as our counterparty requested").unwrap(), 1);
+
+	let mut updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+	nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &updates.update_fail_htlcs[0]);
+	commitment_signed_dance!(nodes[0], nodes[1], updates.commitment_signed, false);
+
+	expect_payment_failed_conditions!(nodes[0], payment_hash_2, false,
+		PaymentFailedConditions::new().blamed_scid(last_hop[0].short_channel_id.unwrap())
+			.blamed_chan_closed(true).expected_htlc_error_data(0x4000|10, &[0; 0]));
+}
