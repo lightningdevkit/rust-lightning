@@ -37,6 +37,7 @@ use core::fmt;
 use core::fmt::Debug;
 use io::{self, Read};
 use io_extras::read_to_end;
+use std::convert::TryFrom;
 
 use util::events::MessageSendEventsProvider;
 use util::logger;
@@ -434,6 +435,12 @@ pub enum NetAddress {
 		/// The port on which the node is listening
 		port: u16,
 	},
+	DNSHostname {
+		/// The dns hostname on which the node is listening, length hostname len 
+		hostname: String,
+		/// The port on which the node is listening
+		port: u16,
+	}
 }
 impl NetAddress {
 	/// Gets the ID of this address type. Addresses in node_announcement messages should be sorted
@@ -444,6 +451,7 @@ impl NetAddress {
 			&NetAddress::IPv6 {..} => { 2 },
 			&NetAddress::OnionV2(_) => { 3 },
 			&NetAddress::OnionV3 {..} => { 4 },
+			&NetAddress::DNSHostname {..} => { 5 },
 		}
 	}
 
@@ -454,11 +462,14 @@ impl NetAddress {
 			&NetAddress::IPv6 { .. } => { 18 },
 			&NetAddress::OnionV2(_) => { 12 },
 			&NetAddress::OnionV3 { .. } => { 37 },
+			&NetAddress::DNSHostname { ref hostname, .. } => {
+				return (1 + hostname.len() + 2) as u16
+			}
 		}
 	}
 
 	/// The maximum length of any address descriptor, not including the 1-byte type
-	pub(crate) const MAX_LEN: u16 = 37;
+	pub(crate) const MAX_LEN: u16 = 258;
 }
 
 impl Writeable for NetAddress {
@@ -483,6 +494,11 @@ impl Writeable for NetAddress {
 				ed25519_pubkey.write(writer)?;
 				checksum.write(writer)?;
 				version.write(writer)?;
+				port.write(writer)?;
+			}
+			&NetAddress::DNSHostname { ref hostname, ref port } => {
+				5u8.write(writer)?;
+				hostname.write(writer)?;
 				port.write(writer)?;
 			}
 		}
@@ -512,6 +528,13 @@ impl Readable for Result<NetAddress, u8> {
 					ed25519_pubkey: Readable::read(reader)?,
 					checksum: Readable::read(reader)?,
 					version: Readable::read(reader)?,
+					port: Readable::read(reader)?,
+				}))
+			},
+			5 => {
+				Readable::read(reader)?;
+				Ok(Ok(NetAddress::DNSHostname {
+					hostname: Readable::read(reader)?,
 					port: Readable::read(reader)?,
 				}))
 			},
@@ -1956,7 +1979,7 @@ mod tests {
 		do_encoding_channel_announcement(true, true);
 	}
 
-	fn do_encoding_node_announcement(unknown_features_bits: bool, ipv4: bool, ipv6: bool, onionv2: bool, onionv3: bool, excess_address_data: bool, excess_data: bool) {
+	fn do_encoding_node_announcement(unknown_features_bits: bool, ipv4: bool, ipv6: bool, onionv2: bool, onionv3: bool, dns_hostname: bool, excess_address_data: bool, excess_data: bool) {
 		let secp_ctx = Secp256k1::new();
 		let (privkey_1, pubkey_1) = get_keys_from!("0101010101010101010101010101010101010101010101010101010101010101", secp_ctx);
 		let sig_1 = get_sig_on!(privkey_1, secp_ctx, String::from("01010101010101010101010101010101"));
@@ -1989,6 +2012,12 @@ mod tests {
 				ed25519_pubkey:	[255, 254, 253, 252, 251, 250, 249, 248, 247, 246, 245, 244, 243, 242, 241, 240, 239, 238, 237, 236, 235, 234, 233, 232, 231, 230, 229, 228, 227, 226, 225, 224],
 				checksum: 32,
 				version: 16,
+				port: 9735
+			});
+		}
+		if dns_hostname {
+			addresses.push(msgs::NetAddress::DNSHostname {
+				hostname: String::from("somehostname"),
 				port: 9735
 			});
 		}
@@ -2032,6 +2061,9 @@ mod tests {
 		if onionv3 {
 			target_value.append(&mut hex::decode("04fffefdfcfbfaf9f8f7f6f5f4f3f2f1f0efeeedecebeae9e8e7e6e5e4e3e2e1e00020102607").unwrap());
 		}
+		if dns_hostname {
+			target_value.append(&mut hex::decode("05fffefdfcfbfaf9f8f7f6f5f4f3f2f1f0efeeedecebeae9e8e7e6e5e4e3e2e1e00020102607").unwrap());
+		}
 		if excess_address_data {
 			target_value.append(&mut hex::decode("216c280b5395a2546e7e4b2663e04f811622f15a4f92e83aa2e92ba2a573c139142c54ae63072a1ec1ee7dc0c04bde5c847806172aa05c92c22ae8e308d1d269").unwrap());
 		}
@@ -2043,15 +2075,15 @@ mod tests {
 
 	#[test]
 	fn encoding_node_announcement() {
-		do_encoding_node_announcement(true, true, true, true, true, true, true);
-		do_encoding_node_announcement(false, false, false, false, false, false, false);
-		do_encoding_node_announcement(false, true, false, false, false, false, false);
-		do_encoding_node_announcement(false, false, true, false, false, false, false);
-		do_encoding_node_announcement(false, false, false, true, false, false, false);
-		do_encoding_node_announcement(false, false, false, false, true, false, false);
-		do_encoding_node_announcement(false, false, false, false, false, true, false);
-		do_encoding_node_announcement(false, true, false, true, false, true, false);
-		do_encoding_node_announcement(false, false, true, false, true, false, false);
+		do_encoding_node_announcement(true, true, true, true, true, true, true, true);
+		do_encoding_node_announcement(false, false, false, false, false, false, false, false);
+		do_encoding_node_announcement(false, true, false, false, false, false, false, false);
+		do_encoding_node_announcement(false, false, true, false, false, false, false, false);
+		do_encoding_node_announcement(false, false, false, true, false, false, false, false);
+		do_encoding_node_announcement(false, false, false, false, true, false, false, false);
+		do_encoding_node_announcement(false, false, false, false, false, true, false, false);
+		do_encoding_node_announcement(false, true, false, true, false, false, true, false);
+		do_encoding_node_announcement(false, false, true, false, true, false, false, false);
 	}
 
 	fn do_encoding_channel_update(direction: bool, disable: bool, htlc_maximum_msat: bool, excess_data: bool) {
