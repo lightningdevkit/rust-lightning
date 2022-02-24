@@ -423,7 +423,7 @@ impl<'a> CandidateRouteHop<'a> {
 /// so that we can choose cheaper paths (as per Dijkstra's algorithm).
 /// Fee values should be updated only in the context of the whole path, see update_value_and_recompute_fees.
 /// These fee values are useful to choose hops as we traverse the graph "payee-to-payer".
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 struct PathBuildingHop<'a> {
 	// Note that this should be dropped in favor of loading it from CandidateRouteHop, but doing so
 	// is a larger refactor and will require careful performance analysis.
@@ -461,6 +461,22 @@ struct PathBuildingHop<'a> {
 	// value_contribution_msat, which requires tracking it here. See comments below where it is
 	// used for more info.
 	value_contribution_msat: u64,
+}
+
+impl<'a> core::fmt::Debug for PathBuildingHop<'a> {
+	fn fmt(&self, f: &mut core::fmt::Formatter) -> Result<(), core::fmt::Error> {
+		f.debug_struct("PathBuildingHop")
+			.field("node_id", &self.node_id)
+			.field("short_channel_id", &self.candidate.short_channel_id())
+			.field("total_fee_msat", &self.total_fee_msat)
+			.field("next_hops_fee_msat", &self.next_hops_fee_msat)
+			.field("hop_use_fee_msat", &self.hop_use_fee_msat)
+			.field("total_fee_msat - (next_hops_fee_msat + hop_use_fee_msat)", &(&self.total_fee_msat - (&self.next_hops_fee_msat + &self.hop_use_fee_msat)))
+			.field("path_penalty_msat", &self.path_penalty_msat)
+			.field("path_htlc_minimum_msat", &self.path_htlc_minimum_msat)
+			.field("cltv_expiry_delta", &self.candidate.cltv_expiry_delta())
+			.finish()
+	}
 }
 
 // Instantiated with a list of hops with correct data in them collected during path finding,
@@ -1300,8 +1316,8 @@ where L::Target: Logger {
 				ordered_hops.last_mut().unwrap().0.fee_msat = value_contribution_msat;
 				ordered_hops.last_mut().unwrap().0.hop_use_fee_msat = 0;
 
-				log_trace!(logger, "Found a path back to us from the target with {} hops contributing up to {} msat: {:?}",
-					ordered_hops.len(), value_contribution_msat, ordered_hops);
+				log_trace!(logger, "Found a path back to us from the target with {} hops contributing up to {} msat: \n {:#?}",
+					ordered_hops.len(), value_contribution_msat, ordered_hops.iter().map(|h| &(h.0)).collect::<Vec<&PathBuildingHop>>());
 
 				let mut payment_path = PaymentPath {hops: ordered_hops};
 
