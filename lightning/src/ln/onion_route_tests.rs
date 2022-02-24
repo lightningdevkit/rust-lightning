@@ -900,6 +900,49 @@ fn test_phantom_failure_too_low_recv_amt() {
 }
 
 #[test]
+fn test_phantom_dust_exposure_failure() {
+	// Set the max dust exposure to the dust limit.
+	let max_dust_exposure = 546;
+	let mut receiver_config = UserConfig::default();
+	receiver_config.channel_options.max_dust_htlc_exposure_msat = max_dust_exposure;
+	receiver_config.channel_options.announced_channel = true;
+
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(receiver_config)]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let channel = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
+
+	// Get the route with an amount exceeding the dust exposure threshold of nodes[1].
+	let (_, payment_hash, payment_secret) = get_payment_preimage_hash!(nodes[1], Some(max_dust_exposure + 1));
+	let (mut route, _) = get_phantom_route!(nodes, max_dust_exposure + 1, channel);
+
+	// Route the HTLC through to the destination.
+	nodes[0].node.send_payment(&route, payment_hash.clone(), &Some(payment_secret)).unwrap();
+	check_added_monitors!(nodes[0], 1);
+	let update_0 = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+	let mut update_add = update_0.update_add_htlcs[0].clone();
+
+	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &update_add);
+	commitment_signed_dance!(nodes[1], nodes[0], &update_0.commitment_signed, false, true);
+
+	let update_1 = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+	assert!(update_1.update_fail_htlcs.len() == 1);
+	let fail_msg = update_1.update_fail_htlcs[0].clone();
+	nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &fail_msg);
+	commitment_signed_dance!(nodes[0], nodes[1], update_1.commitment_signed, false);
+
+	// Ensure the payment fails with the expected error.
+	let mut error_data = channel.1.encode_with_len();
+	let mut fail_conditions = PaymentFailedConditions::new()
+		.blamed_scid(channel.0.contents.short_channel_id)
+		.blamed_chan_closed(false)
+		.expected_htlc_error_data(0x1000 | 7, &error_data);
+		expect_payment_failed_conditions!(nodes[0], payment_hash, false, fail_conditions);
+}
+
+#[test]
 fn test_phantom_failure_reject_payment() {
 	// Test that the user can successfully fail back a phantom node payment.
 	let chanmon_cfgs = create_chanmon_cfgs(2);

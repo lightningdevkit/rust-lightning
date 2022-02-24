@@ -4504,7 +4504,9 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 									onion_utils::build_first_hop_failure_packet(incoming_shared_secret, error_code, &{
 										let mut res = Vec::with_capacity(8 + 128);
 										// TODO: underspecified, follow https://github.com/lightningnetwork/lightning-rfc/issues/791
-										res.extend_from_slice(&byte_utils::be16_to_array(0));
+										if error_code == 0x1000 | 20 {
+											res.extend_from_slice(&byte_utils::be16_to_array(0));
+										}
 										res.extend_from_slice(&upd.encode_with_len()[..]);
 										res
 									}[..])
