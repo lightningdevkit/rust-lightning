@@ -423,7 +423,9 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 	check_spends!(bs_htlc_claim_txn[0], as_commitment_tx);
 	expect_payment_forwarded!(nodes[1], None, false);
 
-	mine_transaction(&nodes[0], &as_commitment_tx);
+	if !confirm_before_reload {
+		mine_transaction(&nodes[0], &as_commitment_tx);
+	}
 	mine_transaction(&nodes[0], &bs_htlc_claim_txn[0]);
 	expect_payment_sent!(nodes[0], payment_preimage_1);
 	connect_blocks(&nodes[0], TEST_FINAL_CLTV*4 + 20);
@@ -515,6 +517,10 @@ fn do_test_dup_htlc_onchain_fails_on_reload(persist_manager_post_event: bool, co
 	check_added_monitors!(nodes[1], 1);
 	check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed);
 	let claim_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
+	assert_eq!(claim_txn.len(), 3);
+	check_spends!(claim_txn[0], node_txn[1]);
+	check_spends!(claim_txn[1], funding_tx);
+	check_spends!(claim_txn[2], claim_txn[1]);
 
 	header.prev_blockhash = nodes[0].best_block_hash();
 	connect_block(&nodes[0], &Block { header, txdata: vec![node_txn[1].clone()]});
@@ -524,7 +530,7 @@ fn do_test_dup_htlc_onchain_fails_on_reload(persist_manager_post_event: bool, co
 	}
 
 	header.prev_blockhash = nodes[0].best_block_hash();
-	let claim_block = Block { header, txdata: if payment_timeout { timeout_txn } else { claim_txn } };
+	let claim_block = Block { header, txdata: if payment_timeout { timeout_txn } else { vec![claim_txn[0].clone()] } };
 
 	if payment_timeout {
 		assert!(confirm_commitment_tx); // Otherwise we're spending below our CSV!
