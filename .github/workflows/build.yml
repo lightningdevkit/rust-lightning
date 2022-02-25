@@ -267,10 +267,10 @@ jobs:
     steps:
       - name: Checkout source code
         uses: actions/checkout@v2
-      - name: Install Rust ${{ env.TOOLCHAIN }} toolchain
+      - name: Install Rust 1.58 toolchain
         uses: actions-rs/toolchain@v1
         with:
-          toolchain: ${{ env.TOOLCHAIN }}
+          toolchain: 1.58
           override: true
           profile: minimal
       - name: Install dependencies for honggfuzz
