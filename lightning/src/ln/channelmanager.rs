@@ -420,6 +420,7 @@ pub(crate) struct HTLCPreviousHopData {
 	short_channel_id: u64,
 	htlc_id: u64,
 	incoming_packet_shared_secret: [u8; 32],
+	phantom_shared_secret: Option<[u8; 32]>,
 
 	// This field is consumed by `claim_funds_from_hop()` when updating a force-closed backwards
 	// channel with a preimage provided by the forward channel.
@@ -3014,17 +3015,18 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 										routing, incoming_shared_secret, payment_hash, amt_to_forward, outgoing_cltv_value },
 										prev_funding_outpoint } => {
 											macro_rules! fail_forward {
-												($msg: expr, $err_code: expr, $err_data: expr) => {
+												($msg: expr, $err_code: expr, $err_data: expr, $phantom_ss: expr) => {
 													{
 														log_info!(self.logger, "Failed to accept/forward incoming HTLC: {}", $msg);
 														let htlc_source = HTLCSource::PreviousHopData(HTLCPreviousHopData {
-															short_channel_id: short_chan_id,
+															short_channel_id: prev_short_channel_id,
 															outpoint: prev_funding_outpoint,
 															htlc_id: prev_htlc_id,
 															incoming_packet_shared_secret: incoming_shared_secret,
+															phantom_shared_secret: $phantom_ss,
 														});
 														failed_forwards.push((htlc_source, payment_hash,
-																HTLCFailReason::Reason { failure_code: $err_code, data: $err_data }
+															HTLCFailReason::Reason { failure_code: $err_code, data: $err_data }
 														));
 														continue;
 													}
@@ -3041,26 +3043,26 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 													let next_hop = match onion_utils::decode_next_hop(phantom_shared_secret, &onion_packet.hop_data, onion_packet.hmac, payment_hash) {
 														Ok(res) => res,
 														Err(onion_utils::OnionDecodeErr::Malformed { err_msg, err_code }) => {
-															fail_forward!(err_msg, err_code, Vec::new());
+															fail_forward!(err_msg, err_code, Vec::new(), None);
 														},
 														Err(onion_utils::OnionDecodeErr::Relay { err_msg, err_code }) => {
-															fail_forward!(err_msg, err_code, Vec::new());
+															fail_forward!(err_msg, err_code, Vec::new(), Some(phantom_shared_secret));
 														},
 													};
 													match next_hop {
 														onion_utils::Hop::Receive(hop_data) => {
 															match self.construct_recv_pending_htlc_info(hop_data, incoming_shared_secret, payment_hash, amt_to_forward, outgoing_cltv_value, Some(phantom_shared_secret)) {
 																Ok(info) => phantom_receives.push((prev_short_channel_id, prev_funding_outpoint, vec![(info, prev_htlc_id)])),
-																Err(ReceiveError { err_code, err_data, msg }) => fail_forward!(msg, err_code, err_data)
+																Err(ReceiveError { err_code, err_data, msg }) => fail_forward!(msg, err_code, err_data, Some(phantom_shared_secret))
 															}
 														},
 														_ => panic!(),
 													}
 												} else {
-													fail_forward!(format!("Unknown short channel id {} for forward HTLC", short_chan_id), 0x4000 | 10, Vec::new());
+													fail_forward!(format!("Unknown short channel id {} for forward HTLC", short_chan_id), 0x4000 | 10, Vec::new(), None);
 												}
 											} else {
-												fail_forward!(format!("Unknown short channel id {} for forward HTLC", short_chan_id), 0x4000 | 10, Vec::new());
+												fail_forward!(format!("Unknown short channel id {} for forward HTLC", short_chan_id), 0x4000 | 10, Vec::new(), None);
 											}
 										},
 									HTLCForwardInfo::FailHTLC { .. } => {
@@ -3093,6 +3095,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 										outpoint: prev_funding_outpoint,
 										htlc_id: prev_htlc_id,
 										incoming_packet_shared_secret: incoming_shared_secret,
+										// Phantom payments are only PendingHTLCRouting::Receive.
+										phantom_shared_secret: None,
 									});
 									match chan.get_mut().send_htlc(amt_to_forward, payment_hash, outgoing_cltv_value, htlc_source.clone(), onion_packet, &self.logger) {
 										Err(e) => {
@@ -3224,6 +3228,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 										outpoint: prev_funding_outpoint,
 										htlc_id: prev_htlc_id,
 										incoming_packet_shared_secret: incoming_shared_secret,
+										phantom_shared_secret,
 									},
 									value: amt_to_forward,
 									cltv_expiry,
@@ -3241,6 +3246,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 												outpoint: prev_funding_outpoint,
 												htlc_id: $htlc.prev_hop.htlc_id,
 												incoming_packet_shared_secret: $htlc.prev_hop.incoming_packet_shared_secret,
+												phantom_shared_secret,
 											}), payment_hash,
 											HTLCFailReason::Reason { failure_code: 0x4000 | 15, data: htlc_msat_height_data }
 										));
@@ -6073,6 +6079,7 @@ impl_writeable_tlv_based_enum!(PendingHTLCStatus, ;
 
 impl_writeable_tlv_based!(HTLCPreviousHopData, {
 	(0, short_channel_id, required),
+	(1, phantom_shared_secret, option),
 	(2, outpoint, required),
 	(4, htlc_id, required),
 	(6, incoming_packet_shared_secret, required)
