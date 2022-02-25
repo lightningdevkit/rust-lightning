@@ -12,25 +12,28 @@
 //! returned errors decode to the correct thing.
 
 use chain::channelmonitor::{CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS};
+use chain::keysinterface::{KeysInterface, Recipient};
 use ln::{PaymentHash, PaymentSecret};
-use ln::channelmanager::{HTLCForwardInfo, CLTV_FAR_FAR_AWAY};
+use ln::channelmanager::{HTLCForwardInfo, CLTV_FAR_FAR_AWAY, MIN_CLTV_EXPIRY_DELTA, PendingHTLCInfo, PendingHTLCRouting};
 use ln::onion_utils;
-use routing::network_graph::NetworkUpdate;
-use routing::router::Route;
-use ln::features::InitFeatures;
+use routing::network_graph::{NetworkUpdate, RoutingFees};
+use routing::router::{get_route, PaymentParameters, Route, RouteHint, RouteHintHop};
+use ln::features::{InitFeatures, InvoiceFeatures};
 use ln::msgs;
 use ln::msgs::{ChannelMessageHandler, ChannelUpdate, OptionalField};
 use util::events::{Event, MessageSendEvent, MessageSendEventsProvider};
 use util::ser::{Writeable, Writer};
+use util::test_utils;
 use util::config::UserConfig;
 
 use bitcoin::hash_types::BlockHash;
 
 use bitcoin::hashes::Hash;
+use bitcoin::hashes::sha256::Hash as Sha256;
 
 use bitcoin::secp256k1;
 use bitcoin::secp256k1::Secp256k1;
-use bitcoin::secp256k1::key::SecretKey;
+use bitcoin::secp256k1::key::{PublicKey, SecretKey};
 
 use io;
 use prelude::*;
@@ -573,3 +576,104 @@ fn test_onion_failure() {
 		nodes[2].node.fail_htlc_backwards(&payment_hash);
 	}, true, Some(23), None, None);
 }
+
+macro_rules! get_phantom_route {
+	($nodes: expr, $amt: expr, $channel: expr) => {{
+		let secp_ctx = Secp256k1::new();
+		let phantom_secret = $nodes[1].keys_manager.get_node_secret(Recipient::PhantomNode).unwrap();
+		let phantom_pubkey = PublicKey::from_secret_key(&secp_ctx, &phantom_secret);
+		let phantom_route_hint = $nodes[1].node.get_phantom_route_hints();
+		let payment_params = PaymentParameters::from_node_id(phantom_pubkey)
+			.with_features(InvoiceFeatures::known())
+			.with_route_hints(vec![RouteHint(vec![
+					RouteHintHop {
+						src_node_id: $nodes[0].node.get_our_node_id(),
+						short_channel_id: $channel.0.contents.short_channel_id,
+						fees: RoutingFees {
+							base_msat: $channel.0.contents.fee_base_msat,
+							proportional_millionths: $channel.0.contents.fee_proportional_millionths,
+						},
+						cltv_expiry_delta: $channel.0.contents.cltv_expiry_delta,
+						htlc_minimum_msat: None,
+						htlc_maximum_msat: None,
+					},
+					RouteHintHop {
+						src_node_id: phantom_route_hint.real_node_pubkey,
+						short_channel_id: phantom_route_hint.phantom_scid,
+						fees: RoutingFees {
+							base_msat: 0,
+							proportional_millionths: 0,
+						},
+						cltv_expiry_delta: MIN_CLTV_EXPIRY_DELTA,
+						htlc_minimum_msat: None,
+						htlc_maximum_msat: None,
+					}
+		])]);
+		let scorer = test_utils::TestScorer::with_penalty(0);
+		(get_route(
+			&$nodes[0].node.get_our_node_id(), &payment_params, $nodes[0].network_graph,
+			Some(&$nodes[0].node.list_usable_channels().iter().collect::<Vec<_>>()),
+			$amt, TEST_FINAL_CLTV, $nodes[0].logger, &scorer
+		).unwrap(), phantom_route_hint.phantom_scid)
+	}
+}}
+
+#[test]
+fn test_phantom_onion_hmac_failure() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let channel = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
+
+	// Get the route.
+	let recv_value_msat = 10_000;
+	let (_, payment_hash, payment_secret) = get_payment_preimage_hash!(nodes[1], Some(recv_value_msat));
+	let (route, phantom_scid) = get_phantom_route!(nodes, recv_value_msat, channel);
+
+	// Route the HTLC through to the destination.
+	nodes[0].node.send_payment(&route, payment_hash.clone(), &Some(payment_secret)).unwrap();
+	check_added_monitors!(nodes[0], 1);
+	let update_0 = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+	let mut update_add = update_0.update_add_htlcs[0].clone();
+
+	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &update_add);
+	commitment_signed_dance!(nodes[1], nodes[0], &update_0.commitment_signed, false, true);
+
+	// Modify the payload so the phantom hop's HMAC is bogus.
+	let sha256_of_onion = {
+		let mut channel_state = nodes[1].node.channel_state.lock().unwrap();
+		let mut pending_forward = channel_state.forward_htlcs.get_mut(&phantom_scid).unwrap();
+		match pending_forward[0] {
+			HTLCForwardInfo::AddHTLC {
+				forward_info: PendingHTLCInfo {
+					routing: PendingHTLCRouting::Forward { ref mut onion_packet, .. },
+					..
+				}, ..
+			} => {
+				onion_packet.hmac[onion_packet.hmac.len() - 1] ^= 1;
+				Sha256::hash(&onion_packet.hop_data).into_inner().to_vec()
+			},
+			_ => panic!("Unexpected forward"),
+		}
+	};
+	expect_pending_htlcs_forwardable_ignore!(nodes[1]);
+	nodes[1].node.process_pending_htlc_forwards();
+	expect_pending_htlcs_forwardable_ignore!(nodes[1]);
+	nodes[1].node.process_pending_htlc_forwards();
+	let update_1 = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+	check_added_monitors!(&nodes[1], 1);
+	assert!(update_1.update_fail_htlcs.len() == 1);
+	let fail_msg = update_1.update_fail_htlcs[0].clone();
+	nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &fail_msg);
+	commitment_signed_dance!(nodes[0], nodes[1], update_1.commitment_signed, false);
+
+	// Ensure the payment fails with the expected error.
+	let mut fail_conditions = PaymentFailedConditions::new()
+		.blamed_scid(phantom_scid)
+		.blamed_chan_closed(true)
+		.expected_htlc_error_data(0x8000 | 0x4000 | 5, &sha256_of_onion);
+	expect_payment_failed_conditions!(nodes[0], payment_hash, false, fail_conditions);
+}
+

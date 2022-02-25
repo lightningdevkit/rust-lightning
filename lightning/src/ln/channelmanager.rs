@@ -358,7 +358,7 @@ mod inbound_payment {
 // our payment, which we can use to decode errors or inform the user that the payment was sent.
 
 #[derive(Clone)] // See Channel::revoke_and_ack for why, tl;dr: Rust bug
-enum PendingHTLCRouting {
+pub(super) enum PendingHTLCRouting {
 	Forward {
 		onion_packet: msgs::OnionPacket,
 		short_channel_id: u64, // This should be NonZero<u64> eventually when we bump MSRV
@@ -376,8 +376,8 @@ enum PendingHTLCRouting {
 
 #[derive(Clone)] // See Channel::revoke_and_ack for why, tl;dr: Rust bug
 pub(super) struct PendingHTLCInfo {
-	routing: PendingHTLCRouting,
-	incoming_shared_secret: [u8; 32],
+	pub(super) routing: PendingHTLCRouting,
+	pub(super) incoming_shared_secret: [u8; 32],
 	payment_hash: PaymentHash,
 	pub(super) amt_to_forward: u64,
 	pub(super) outgoing_cltv_value: u32,
@@ -3043,7 +3043,12 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 													let next_hop = match onion_utils::decode_next_hop(phantom_shared_secret, &onion_packet.hop_data, onion_packet.hmac, payment_hash) {
 														Ok(res) => res,
 														Err(onion_utils::OnionDecodeErr::Malformed { err_msg, err_code }) => {
-															fail_forward!(err_msg, err_code, Vec::new(), None);
+															let sha256_of_onion = Sha256::hash(&onion_packet.hop_data).into_inner();
+															// In this scenario, the phantom would have sent us an
+															// `update_fail_malformed_htlc`, meaning here we encrypt the error as
+															// if it came from us (the second-to-last hop) but contains the sha256
+															// of the onion.
+															fail_forward!(err_msg, err_code, sha256_of_onion.to_vec(), None);
 														},
 														Err(onion_utils::OnionDecodeErr::Relay { err_msg, err_code }) => {
 															fail_forward!(err_msg, err_code, Vec::new(), Some(phantom_shared_secret));
