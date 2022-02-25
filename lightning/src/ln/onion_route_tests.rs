@@ -23,7 +23,7 @@ use ln::msgs;
 use ln::msgs::{ChannelMessageHandler, ChannelUpdate, OptionalField};
 use util::events::{Event, MessageSendEvent, MessageSendEventsProvider};
 use util::ser::{Writeable, Writer};
-use util::test_utils;
+use util::{byte_utils, test_utils};
 use util::config::UserConfig;
 
 use bitcoin::hash_types::BlockHash;
@@ -675,5 +675,278 @@ fn test_phantom_onion_hmac_failure() {
 		.blamed_chan_closed(true)
 		.expected_htlc_error_data(0x8000 | 0x4000 | 5, &sha256_of_onion);
 	expect_payment_failed_conditions!(nodes[0], payment_hash, false, fail_conditions);
+}
+
+#[test]
+fn test_phantom_invalid_onion_payload() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let channel = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
+
+	// Get the route.
+	let recv_value_msat = 10_000;
+	let (_, payment_hash, payment_secret) = get_payment_preimage_hash!(nodes[1], Some(recv_value_msat));
+	let (route, phantom_scid) = get_phantom_route!(nodes, recv_value_msat, channel);
+
+	// We'll use the session priv later when constructing an invalid onion packet.
+	let session_priv = [3; 32];
+	*nodes[0].keys_manager.override_session_priv.lock().unwrap() = Some(session_priv);
+	nodes[0].node.send_payment(&route, payment_hash.clone(), &Some(payment_secret)).unwrap();
+	check_added_monitors!(nodes[0], 1);
+	let update_0 = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+	let mut update_add = update_0.update_add_htlcs[0].clone();
+
+	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &update_add);
+	commitment_signed_dance!(nodes[1], nodes[0], &update_0.commitment_signed, false, true);
+
+	// Modify the onion packet to have an invalid payment amount.
+	for (_, pending_forwards) in nodes[1].node.channel_state.lock().unwrap().forward_htlcs.iter_mut() {
+		for f in pending_forwards.iter_mut() {
+			match f {
+				&mut HTLCForwardInfo::AddHTLC {
+					forward_info: PendingHTLCInfo {
+						routing: PendingHTLCRouting::Forward { ref mut onion_packet, .. },
+						..
+					}, ..
+				} => {
+					// Construct the onion payloads for the entire route and an invalid amount.
+					let height = nodes[0].best_block_info().1;
+					let session_priv = SecretKey::from_slice(&session_priv).unwrap();
+					let mut onion_keys = onion_utils::construct_onion_keys(&Secp256k1::new(), &route.paths[0], &session_priv).unwrap();
+					let (mut onion_payloads, _, _) = onion_utils::build_onion_payloads(&route.paths[0], msgs::MAX_VALUE_MSAT + 1, &Some(payment_secret), height + 1, &None).unwrap();
+					// We only want to construct the onion packet for the last hop, not the entire route, so
+					// remove the first hop's payload and its keys.
+					onion_keys.remove(0);
+					onion_payloads.remove(0);
+
+					let new_onion_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, [0; 32], &payment_hash);
+					onion_packet.hop_data = new_onion_packet.hop_data;
+					onion_packet.hmac = new_onion_packet.hmac;
+				},
+				_ => panic!("Unexpected forward"),
+			}
+		}
+	}
+	expect_pending_htlcs_forwardable_ignore!(nodes[1]);
+	nodes[1].node.process_pending_htlc_forwards();
+	expect_pending_htlcs_forwardable_ignore!(nodes[1]);
+	nodes[1].node.process_pending_htlc_forwards();
+	let update_1 = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+	check_added_monitors!(&nodes[1], 1);
+	assert!(update_1.update_fail_htlcs.len() == 1);
+	let fail_msg = update_1.update_fail_htlcs[0].clone();
+	nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &fail_msg);
+	commitment_signed_dance!(nodes[0], nodes[1], update_1.commitment_signed, false);
+
+	// Ensure the payment fails with the expected error.
+	let error_data = Vec::new();
+	let mut fail_conditions = PaymentFailedConditions::new()
+		.blamed_scid(phantom_scid)
+		.blamed_chan_closed(true)
+		.expected_htlc_error_data(0x4000 | 22, &error_data);
+	expect_payment_failed_conditions!(nodes[0], payment_hash, true, fail_conditions);
+}
+
+#[test]
+fn test_phantom_final_incorrect_cltv_expiry() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let channel = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
+
+	// Get the route.
+	let recv_value_msat = 10_000;
+	let (_, payment_hash, payment_secret) = get_payment_preimage_hash!(nodes[1], Some(recv_value_msat));
+	let (route, phantom_scid) = get_phantom_route!(nodes, recv_value_msat, channel);
+
+	// Route the HTLC through to the destination.
+	nodes[0].node.send_payment(&route, payment_hash.clone(), &Some(payment_secret)).unwrap();
+	check_added_monitors!(nodes[0], 1);
+	let update_0 = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+	let mut update_add = update_0.update_add_htlcs[0].clone();
+
+	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &update_add);
+	commitment_signed_dance!(nodes[1], nodes[0], &update_0.commitment_signed, false, true);
+
+	// Modify the payload so the phantom hop's HMAC is bogus.
+	for (_, pending_forwards) in nodes[1].node.channel_state.lock().unwrap().forward_htlcs.iter_mut() {
+		for f in pending_forwards.iter_mut() {
+			match f {
+				&mut HTLCForwardInfo::AddHTLC {
+					forward_info: PendingHTLCInfo { ref mut outgoing_cltv_value, .. }, ..
+				} => {
+					*outgoing_cltv_value += 1;
+				},
+				_ => panic!("Unexpected forward"),
+			}
+		}
+	}
+	expect_pending_htlcs_forwardable_ignore!(nodes[1]);
+	nodes[1].node.process_pending_htlc_forwards();
+	expect_pending_htlcs_forwardable_ignore!(nodes[1]);
+	nodes[1].node.process_pending_htlc_forwards();
+	let update_1 = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+	check_added_monitors!(&nodes[1], 1);
+	assert!(update_1.update_fail_htlcs.len() == 1);
+	let fail_msg = update_1.update_fail_htlcs[0].clone();
+	nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &fail_msg);
+	commitment_signed_dance!(nodes[0], nodes[1], update_1.commitment_signed, false);
+
+	// Ensure the payment fails with the expected error.
+	let expected_cltv = 82;
+	let error_data = byte_utils::be32_to_array(expected_cltv).to_vec();
+	let mut fail_conditions = PaymentFailedConditions::new()
+		.blamed_scid(phantom_scid)
+		.expected_htlc_error_data(18, &error_data);
+	expect_payment_failed_conditions!(nodes[0], payment_hash, false, fail_conditions);
+}
+
+#[test]
+fn test_phantom_failure_too_low_cltv() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let channel = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
+
+	// Get the route.
+	let recv_value_msat = 10_000;
+	let (_, payment_hash, payment_secret) = get_payment_preimage_hash!(nodes[1], Some(recv_value_msat));
+	let (mut route, phantom_scid) = get_phantom_route!(nodes, recv_value_msat, channel);
+
+	// Modify the route to have a too-low cltv.
+	route.paths[0][1].cltv_expiry_delta = 5;
+
+	// Route the HTLC through to the destination.
+	nodes[0].node.send_payment(&route, payment_hash.clone(), &Some(payment_secret)).unwrap();
+	check_added_monitors!(nodes[0], 1);
+	let update_0 = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+	let mut update_add = update_0.update_add_htlcs[0].clone();
+
+	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &update_add);
+	commitment_signed_dance!(nodes[1], nodes[0], &update_0.commitment_signed, false, true);
+
+	expect_pending_htlcs_forwardable_ignore!(nodes[1]);
+	nodes[1].node.process_pending_htlc_forwards();
+	expect_pending_htlcs_forwardable_ignore!(nodes[1]);
+	nodes[1].node.process_pending_htlc_forwards();
+	let update_1 = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+	check_added_monitors!(&nodes[1], 1);
+	assert!(update_1.update_fail_htlcs.len() == 1);
+	let fail_msg = update_1.update_fail_htlcs[0].clone();
+	nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &fail_msg);
+	commitment_signed_dance!(nodes[0], nodes[1], update_1.commitment_signed, false);
+
+	// Ensure the payment fails with the expected error.
+	let error_data = Vec::new();
+	let mut fail_conditions = PaymentFailedConditions::new()
+		.blamed_scid(phantom_scid)
+		.expected_htlc_error_data(17, &error_data);
+	expect_payment_failed_conditions!(nodes[0], payment_hash, false, fail_conditions);
+}
+
+#[test]
+fn test_phantom_failure_too_low_recv_amt() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let channel = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
+
+	// Get the route with a too-low amount.
+	let recv_amt_msat = 10_000;
+	let bad_recv_amt_msat = recv_amt_msat - 10;
+	let (_, payment_hash, payment_secret) = get_payment_preimage_hash!(nodes[1], Some(recv_amt_msat));
+	let (mut route, phantom_scid) = get_phantom_route!(nodes, bad_recv_amt_msat, channel);
+
+	// Route the HTLC through to the destination.
+	nodes[0].node.send_payment(&route, payment_hash.clone(), &Some(payment_secret)).unwrap();
+	check_added_monitors!(nodes[0], 1);
+	let update_0 = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+	let mut update_add = update_0.update_add_htlcs[0].clone();
+
+	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &update_add);
+	commitment_signed_dance!(nodes[1], nodes[0], &update_0.commitment_signed, false, true);
+
+	expect_pending_htlcs_forwardable_ignore!(nodes[1]);
+	nodes[1].node.process_pending_htlc_forwards();
+	expect_pending_htlcs_forwardable_ignore!(nodes[1]);
+	nodes[1].node.process_pending_htlc_forwards();
+	expect_pending_htlcs_forwardable_ignore!(nodes[1]);
+	nodes[1].node.process_pending_htlc_forwards();
+	let update_1 = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+	check_added_monitors!(&nodes[1], 1);
+	assert!(update_1.update_fail_htlcs.len() == 1);
+	let fail_msg = update_1.update_fail_htlcs[0].clone();
+	nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &fail_msg);
+	commitment_signed_dance!(nodes[0], nodes[1], update_1.commitment_signed, false);
+
+	// Ensure the payment fails with the expected error.
+	let mut error_data = byte_utils::be64_to_array(bad_recv_amt_msat).to_vec();
+	error_data.extend_from_slice(
+		&byte_utils::be32_to_array(nodes[1].node.best_block.read().unwrap().height()),
+	);
+	let mut fail_conditions = PaymentFailedConditions::new()
+		.blamed_scid(phantom_scid)
+		.expected_htlc_error_data(0x4000 | 15, &error_data);
+	expect_payment_failed_conditions!(nodes[0], payment_hash, true, fail_conditions);
+}
+
+#[test]
+fn test_phantom_failure_reject_payment() {
+	// Test that the user can successfully fail back a phantom node payment.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let channel = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
+
+	// Get the route with a too-low amount.
+	let recv_amt_msat = 10_000;
+	let (_, payment_hash, payment_secret) = get_payment_preimage_hash!(nodes[1], Some(recv_amt_msat));
+	let (mut route, phantom_scid) = get_phantom_route!(nodes, recv_amt_msat, channel);
+
+	// Route the HTLC through to the destination.
+	nodes[0].node.send_payment(&route, payment_hash.clone(), &Some(payment_secret)).unwrap();
+	check_added_monitors!(nodes[0], 1);
+	let update_0 = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+	let mut update_add = update_0.update_add_htlcs[0].clone();
+
+	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &update_add);
+	commitment_signed_dance!(nodes[1], nodes[0], &update_0.commitment_signed, false, true);
+
+	expect_pending_htlcs_forwardable_ignore!(nodes[1]);
+	nodes[1].node.process_pending_htlc_forwards();
+	expect_pending_htlcs_forwardable_ignore!(nodes[1]);
+	nodes[1].node.process_pending_htlc_forwards();
+	expect_payment_received!(nodes[1], payment_hash, payment_secret, recv_amt_msat);
+	assert!(nodes[1].node.fail_htlc_backwards(&payment_hash));
+	expect_pending_htlcs_forwardable_ignore!(nodes[1]);
+	nodes[1].node.process_pending_htlc_forwards();
+
+	let update_1 = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+	check_added_monitors!(&nodes[1], 1);
+	assert!(update_1.update_fail_htlcs.len() == 1);
+	let fail_msg = update_1.update_fail_htlcs[0].clone();
+	nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &fail_msg);
+	commitment_signed_dance!(nodes[0], nodes[1], update_1.commitment_signed, false);
+
+	// Ensure the payment fails with the expected error.
+	let mut error_data = byte_utils::be64_to_array(recv_amt_msat).to_vec();
+	error_data.extend_from_slice(
+		&byte_utils::be32_to_array(nodes[1].node.best_block.read().unwrap().height()),
+	);
+	let mut fail_conditions = PaymentFailedConditions::new()
+		.blamed_scid(phantom_scid)
+		.expected_htlc_error_data(0x4000 | 15, &error_data);
+	expect_payment_failed_conditions!(nodes[0], payment_hash, true, fail_conditions);
 }
 

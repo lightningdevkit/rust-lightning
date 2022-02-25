@@ -3075,9 +3075,6 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 										// the channel is now on chain and our counterparty is
 										// trying to broadcast the HTLC-Timeout, but that's their
 										// problem, not ours.
-										//
-										// `fail_htlc_backwards_internal` is never called for
-										// phantom payments, so this is unreachable for them.
 									}
 								}
 							}
@@ -3792,12 +3789,18 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				pending_events.push(path_failure);
 				if let Some(ev) = full_failure_ev { pending_events.push(ev); }
 			},
-			HTLCSource::PreviousHopData(HTLCPreviousHopData { short_channel_id, htlc_id, incoming_packet_shared_secret, .. }) => {
+			HTLCSource::PreviousHopData(HTLCPreviousHopData { short_channel_id, htlc_id, incoming_packet_shared_secret, phantom_shared_secret, .. }) => {
 				let err_packet = match onion_error {
 					HTLCFailReason::Reason { failure_code, data } => {
 						log_trace!(self.logger, "Failing HTLC with payment_hash {} backwards from us with code {}", log_bytes!(payment_hash.0), failure_code);
-						let packet = onion_utils::build_failure_packet(&incoming_packet_shared_secret, failure_code, &data[..]).encode();
-						onion_utils::encrypt_failure_packet(&incoming_packet_shared_secret, &packet)
+						if let Some(phantom_ss) = phantom_shared_secret {
+							let phantom_packet = onion_utils::build_failure_packet(&phantom_ss, failure_code, &data[..]).encode();
+							let encrypted_phantom_packet = onion_utils::encrypt_failure_packet(&phantom_ss, &phantom_packet);
+							onion_utils::encrypt_failure_packet(&incoming_packet_shared_secret, &encrypted_phantom_packet.data[..])
+						} else {
+							let packet = onion_utils::build_failure_packet(&incoming_packet_shared_secret, failure_code, &data[..]).encode();
+							onion_utils::encrypt_failure_packet(&incoming_packet_shared_secret, &packet)
+						}
 					},
 					HTLCFailReason::LightningError { err } => {
 						log_trace!(self.logger, "Failing HTLC with payment_hash {} backwards with pre-built LightningError", log_bytes!(payment_hash.0));
