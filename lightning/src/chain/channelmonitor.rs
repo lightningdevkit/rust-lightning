@@ -473,6 +473,19 @@ pub(crate) enum ChannelMonitorUpdateStep {
 	},
 }
 
+impl ChannelMonitorUpdateStep {
+	fn variant_name(&self) -> &'static str {
+		match self {
+			ChannelMonitorUpdateStep::LatestHolderCommitmentTXInfo { .. } => "LatestHolderCommitmentTXInfo",
+			ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTXInfo { .. } => "LatestCounterpartyCommitmentTXInfo",
+			ChannelMonitorUpdateStep::PaymentPreimage { .. } => "PaymentPreimage",
+			ChannelMonitorUpdateStep::CommitmentSecret { .. } => "CommitmentSecret",
+			ChannelMonitorUpdateStep::ChannelForceClosed { .. } => "ChannelForceClosed",
+			ChannelMonitorUpdateStep::ShutdownScript { .. } => "ShutdownScript",
+		}
+	}
+}
+
 impl_writeable_tlv_based_enum_upgradable!(ChannelMonitorUpdateStep,
 	(0, LatestHolderCommitmentTXInfo) => {
 		(0, commitment_tx, required),
@@ -1871,16 +1884,21 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		    F::Target: FeeEstimator,
 		    L::Target: Logger,
 	{
+		log_info!(logger, "Applying update to monitor {}, bringing update_id from {} to {} with {} changes.",
+			log_funding_info!(self), self.latest_update_id, updates.update_id, updates.updates.len());
 		// ChannelMonitor updates may be applied after force close if we receive a
 		// preimage for a broadcasted commitment transaction HTLC output that we'd
 		// like to claim on-chain. If this is the case, we no longer have guaranteed
 		// access to the monitor's update ID, so we use a sentinel value instead.
 		if updates.update_id == CLOSED_CHANNEL_UPDATE_ID {
+			assert_eq!(updates.updates.len(), 1);
 			match updates.updates[0] {
 				ChannelMonitorUpdateStep::PaymentPreimage { .. } => {},
-				_ => panic!("Attempted to apply post-force-close ChannelMonitorUpdate that wasn't providing a payment preimage"),
+				_ => {
+					log_error!(logger, "Attempted to apply post-force-close ChannelMonitorUpdate of type {}", updates.updates[0].variant_name());
+					panic!("Attempted to apply post-force-close ChannelMonitorUpdate that wasn't providing a payment preimage");
+				},
 			}
-			assert_eq!(updates.updates.len(), 1);
 		} else if self.latest_update_id + 1 != updates.update_id {
 			panic!("Attempted to apply ChannelMonitorUpdates out of order, check the update_id before passing an update to update_monitor!");
 		}
