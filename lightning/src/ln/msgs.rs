@@ -1299,10 +1299,6 @@ impl Readable for FinalOnionHopData {
 
 impl Writeable for OnionHopData {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		// Note that this should never be reachable if Rust-Lightning generated the message, as we
-		// check values are sane long before we get here, though its possible in the future
-		// user-generated messages may hit this.
-		if self.amt_to_forward > MAX_VALUE_MSAT { panic!("We should never be sending infinite/overflow onion payments"); }
 		match self.format {
 			OnionHopDataFormat::Legacy { short_channel_id } => {
 				0u8.write(w)?;
@@ -1319,9 +1315,6 @@ impl Writeable for OnionHopData {
 				});
 			},
 			OnionHopDataFormat::FinalNode { ref payment_data, ref keysend_preimage } => {
-				if let Some(final_data) = payment_data {
-					if final_data.total_msat > MAX_VALUE_MSAT { panic!("We should never be sending infinite/overflow onion payments"); }
-				}
 				encode_varint_length_prefixed_tlv!(w, {
 					(2, HighZeroBytesDroppedVarInt(self.amt_to_forward), required),
 					(4, HighZeroBytesDroppedVarInt(self.outgoing_cltv_value), required),
