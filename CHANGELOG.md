@@ -78,8 +78,19 @@
    0.0.104 or before and then upgrading again will invalidate existing phantom
    SCIDs which may be included in invoices (#1199).
 
-In total, this release features 108 files changed, 6914 insertions, 2095
-deletions in 102 commits from 15 authors, in alphabetical order:
+## Security
+0.0.105 fixes two denial-of-service vulnerabilities which may be reachable from
+untrusted input in certain application designs.
+
+ * Route calculation spuriously panics when a routing decision is made for a
+   path where the second-to-last hop is a private channel, included due to a
+   multi-hop route hint in an invoice.
+ * `ChannelMonitor::get_claimable_balances` spuriously panics in some scenarios
+   when the LDK application's local commitment transaction is confirmed while
+   HTLCs are still pending resolution.
+
+In total, this release features 109 files changed, 7270 insertions, 2131
+deletions in 108 commits from 15 authors, in alphabetical order:
  * Conor Okus
  * Devrandom
  * Elias Rohrer
