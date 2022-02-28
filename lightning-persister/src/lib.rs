@@ -3,6 +3,8 @@
 #![deny(broken_intra_doc_links)]
 #![deny(missing_docs)]
 
+#![cfg_attr(docsrs, feature(doc_auto_cfg))]
+
 #![cfg_attr(all(test, feature = "_bench_unstable"), feature(test))]
 #[cfg(all(test, feature = "_bench_unstable"))] extern crate test;
 

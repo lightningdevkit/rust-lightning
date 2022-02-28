@@ -8,6 +8,10 @@ description = """
 Utilities to manage Rust-Lightning channel data persistence and retrieval.
 """
 
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
 [features]
 _bench_unstable = ["lightning/_bench_unstable"]
 

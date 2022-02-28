@@ -17,6 +17,8 @@
 #![deny(missing_docs)]
 #![deny(unsafe_code)]
 
+#![cfg_attr(docsrs, feature(doc_auto_cfg))]
+
 #[cfg(any(feature = "rest-client", feature = "rpc-client"))]
 pub mod http;
 

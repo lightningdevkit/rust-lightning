@@ -10,6 +10,10 @@ For Rust-Lightning clients which wish to make direct connections to Lightning P2
 """
 edition = "2018"
 
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
 [dependencies]
 bitcoin = "0.27"
 lightning = { version = "0.0.104", path = "../lightning" }

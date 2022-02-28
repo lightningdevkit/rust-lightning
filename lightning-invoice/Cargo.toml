@@ -8,6 +8,10 @@ license = "MIT OR Apache-2.0"
 keywords = [ "lightning", "bitcoin", "invoice", "BOLT11" ]
 readme = "README.md"
 
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
 [features]
 default = ["std"]
 no-std = ["hashbrown", "lightning/no-std", "core2/alloc"]

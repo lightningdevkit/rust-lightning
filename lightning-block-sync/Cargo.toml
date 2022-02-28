@@ -9,6 +9,10 @@ Utilities to fetch the chain data from a block source and feed them into Rust Li
 """
 edition = "2018"
 
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
 [features]
 rest-client = [ "serde", "serde_json", "chunked_transfer" ]
 rpc-client = [ "serde", "serde_json", "chunked_transfer" ]

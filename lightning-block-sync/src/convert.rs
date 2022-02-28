@@ -182,7 +182,7 @@ impl TryInto<Txid> for JsonResponse {
 }
 
 /// Converts a JSON value into a transaction. WATCH OUT! this cannot be used for zero-input transactions
-/// (e.g. createrawtransaction). See https://github.com/rust-bitcoin/rust-bitcoincore-rpc/issues/197
+/// (e.g. createrawtransaction). See <https://github.com/rust-bitcoin/rust-bitcoincore-rpc/issues/197>
 impl TryInto<Transaction> for JsonResponse {
 	type Error = std::io::Error;
 	fn try_into(self) -> std::io::Result<Transaction> {

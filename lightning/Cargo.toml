@@ -10,6 +10,10 @@ Does most of the hard work, without implying a specific runtime, requiring clien
 Still missing tons of error-handling. See GitHub issues for suggested projects if you want to contribute. Don't have to bother telling you not to use this for anything serious, because you'd have to build a client around it to even try.
 """
 
+[package.metadata.docs.rs]
+features = ["std"]
+rustdoc-args = ["--cfg", "docsrs"]
+
 [features]
 # Internal test utilities exposed to other repo crates
 _test_utils = ["hex", "regex", "bitcoin/bitcoinconsensus"]
