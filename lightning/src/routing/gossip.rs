@@ -955,7 +955,7 @@ impl PartialEq for ChannelInfo {
 impl ChannelInfo {
 	/// Returns a [`DirectedChannelInfo`] for the channel directed to the given `target` from a
 	/// returned `source`, or `None` if `target` is not one of the channel's counterparties.
-	pub fn as_directed_to(&self, target: &NodeId) -> Option<(DirectedChannelInfo, &NodeId)> {
+	pub(crate) fn as_directed_to(&self, target: &NodeId) -> Option<(DirectedChannelInfo, &NodeId)> {
 		if self.one_to_two.is_none() || self.two_to_one.is_none() { return None; }
 		let (direction, source, outbound) = {
 			if target == &self.node_one {
