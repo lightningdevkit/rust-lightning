@@ -247,12 +247,10 @@ impl ReadableArgs<u64> for FixedPenaltyScorer {
 	since = "0.0.105",
 	note = "ProbabilisticScorer should be used instead of Scorer.",
 )]
-pub type Scorer = ScorerUsingTime::<ConfiguredTime>;
-
 #[cfg(not(feature = "no-std"))]
-type ConfiguredTime = std::time::Instant;
+pub type Scorer = ScorerUsingTime::<std::time::Instant>;
 #[cfg(feature = "no-std")]
-type ConfiguredTime = time::Eternity;
+pub type Scorer = ScorerUsingTime::<time::Eternity>;
 
 // Note that ideally we'd hide ScorerUsingTime from public view by sealing it as well, but rustdoc
 // doesn't handle this well - instead exposing a `Scorer` which has no trait implementation(s) or
@@ -503,7 +501,10 @@ impl<T: Time> Readable for ChannelFailure<T> {
 /// behavior.
 ///
 /// [1]: https://arxiv.org/abs/2107.05322
-pub type ProbabilisticScorer<G> = ProbabilisticScorerUsingTime::<G, ConfiguredTime>;
+#[cfg(not(feature = "no-std"))]
+pub type ProbabilisticScorer<G> = ProbabilisticScorerUsingTime::<G, std::time::Instant>;
+#[cfg(feature = "no-std")]
+pub type ProbabilisticScorer<G> = ProbabilisticScorerUsingTime::<G, time::Eternity>;
 
 /// Probabilistic [`Score`] implementation.
 ///
