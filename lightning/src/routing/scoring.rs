@@ -317,12 +317,6 @@ impl ReadableArgs<u64> for FixedPenaltyScorer {
 }
 
 #[cfg(not(feature = "no-std"))]
-type ConfiguredTime = std::time::Instant;
-#[cfg(feature = "no-std")]
-use crate::util::time::Eternity;
-#[cfg(feature = "no-std")]
-type ConfiguredTime = Eternity;
-
 /// [`Score`] implementation using channel success probability distributions.
 ///
 /// Channels are tracked with upper and lower liquidity bounds - when an HTLC fails at a channel,
@@ -359,7 +353,45 @@ type ConfiguredTime = Eternity;
 /// [`liquidity_offset_half_life`]: ProbabilisticScoringParameters::liquidity_offset_half_life
 /// [`historical_liquidity_penalty_multiplier_msat`]: ProbabilisticScoringParameters::historical_liquidity_penalty_multiplier_msat
 /// [`historical_liquidity_penalty_amount_multiplier_msat`]: ProbabilisticScoringParameters::historical_liquidity_penalty_amount_multiplier_msat
-pub type ProbabilisticScorer<G, L> = ProbabilisticScorerUsingTime::<G, L, ConfiguredTime>;
+pub type ProbabilisticScorer<G, L> = ProbabilisticScorerUsingTime::<G, L, std::time::Instant>;
+#[cfg(feature = "no-std")]
+/// [`Score`] implementation using channel success probability distributions.
+///
+/// Channels are tracked with upper and lower liquidity bounds - when an HTLC fails at a channel,
+/// we learn that the upper-bound on the available liquidity is lower than the amount of the HTLC.
+/// When a payment is forwarded through a channel (but fails later in the route), we learn the
+/// lower-bound on the channel's available liquidity must be at least the value of the HTLC.
+///
+/// These bounds are then used to determine a success probability using the formula from
+/// *Optimally Reliable & Cheap Payment Flows on the Lightning Network* by Rene Pickhardt
+/// and Stefan Richter [[1]] (i.e. `(upper_bound - payment_amount) / (upper_bound - lower_bound)`).
+///
+/// This probability is combined with the [`liquidity_penalty_multiplier_msat`] and
+/// [`liquidity_penalty_amount_multiplier_msat`] parameters to calculate a concrete penalty in
+/// milli-satoshis. The penalties, when added across all hops, have the property of being linear in
+/// terms of the entire path's success probability. This allows the router to directly compare
+/// penalties for different paths. See the documentation of those parameters for the exact formulas.
+///
+/// The liquidity bounds are decayed by halving them every [`liquidity_offset_half_life`].
+///
+/// Further, we track the history of our upper and lower liquidity bounds for each channel,
+/// allowing us to assign a second penalty (using [`historical_liquidity_penalty_multiplier_msat`]
+/// and [`historical_liquidity_penalty_amount_multiplier_msat`]) based on the same probability
+/// formula, but using the history of a channel rather than our latest estimates for the liquidity
+/// bounds.
+///
+/// # Note
+///
+/// Mixing the `no-std` feature between serialization and deserialization results in undefined
+/// behavior.
+///
+/// [1]: https://arxiv.org/abs/2107.05322
+/// [`liquidity_penalty_multiplier_msat`]: ProbabilisticScoringParameters::liquidity_penalty_multiplier_msat
+/// [`liquidity_penalty_amount_multiplier_msat`]: ProbabilisticScoringParameters::liquidity_penalty_amount_multiplier_msat
+/// [`liquidity_offset_half_life`]: ProbabilisticScoringParameters::liquidity_offset_half_life
+/// [`historical_liquidity_penalty_multiplier_msat`]: ProbabilisticScoringParameters::historical_liquidity_penalty_multiplier_msat
+/// [`historical_liquidity_penalty_amount_multiplier_msat`]: ProbabilisticScoringParameters::historical_liquidity_penalty_amount_multiplier_msat
+pub type ProbabilisticScorer<G, L> = ProbabilisticScorerUsingTime::<G, L, crate::util::time::Eternity>;
 
 /// Probabilistic [`Score`] implementation.
 ///
