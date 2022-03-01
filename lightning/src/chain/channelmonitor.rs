@@ -1392,8 +1392,23 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 			($holder_commitment: expr, $htlc_iter: expr) => {
 				for htlc in $htlc_iter {
 					if let Some(htlc_input_idx) = htlc.transaction_output_index {
-						if us.htlcs_resolved_on_chain.iter().any(|v| v.input_idx == htlc_input_idx) {
-							assert!(us.funding_spend_confirmed.is_some());
+						if let Some(conf_thresh) = us.onchain_events_awaiting_threshold_conf.iter().find_map(|event| {
+							if let OnchainEvent::MaturingOutput { descriptor: SpendableOutputDescriptor::DelayedPaymentOutput(descriptor) } = &event.event {
+								if descriptor.outpoint.index as u32 == htlc_input_idx { Some(event.confirmation_threshold()) } else { None }
+							} else { None }
+						}) {
+							debug_assert!($holder_commitment);
+							res.push(Balance::ClaimableAwaitingConfirmations {
+								claimable_amount_satoshis: htlc.amount_msat / 1000,
+								confirmation_height: conf_thresh,
+							});
+						} else if us.htlcs_resolved_on_chain.iter().any(|v| v.input_idx == htlc_input_idx) {
+							// Funding transaction spends should be fully confirmed by the time any
+							// HTLC transactions are resolved, unless we're talking about a holder
+							// commitment tx, whose resolution is delayed until the CSV timeout is
+							// reached, even though HTLCs may be resolved after only
+							// ANTI_REORG_DELAY confirmations.
+							debug_assert!($holder_commitment || us.funding_spend_confirmed.is_some());
 						} else if htlc.offered == $holder_commitment {
 							// If the payment was outbound, check if there's an HTLCUpdate
 							// indicating we have spent this HTLC with a timeout, claiming it back

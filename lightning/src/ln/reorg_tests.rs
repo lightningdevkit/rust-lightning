@@ -98,7 +98,7 @@ fn do_test_onchain_htlc_reorg(local_commitment: bool, claim: bool) {
 		vec![node_1_commitment_txn[0].clone(), node_2_commitment_txn[0].clone()]
 	} else {
 		// Broadcast node 2 commitment txn
-		let node_2_commitment_txn = get_local_commitment_txn!(nodes[2], chan_2.2);
+		let mut node_2_commitment_txn = get_local_commitment_txn!(nodes[2], chan_2.2);
 		assert_eq!(node_2_commitment_txn.len(), 2); // 1 local commitment tx, 1 Received HTLC-Claim
 		assert_eq!(node_2_commitment_txn[0].output.len(), 2); // to-remote and Received HTLC (to-self is dust)
 		check_spends!(node_2_commitment_txn[0], chan_2.3);
@@ -113,12 +113,10 @@ fn do_test_onchain_htlc_reorg(local_commitment: bool, claim: bool) {
 		check_spends!(node_1_commitment_txn[0], chan_2.3);
 		check_spends!(node_1_commitment_txn[1], node_2_commitment_txn[0]);
 
-		// Confirm node 2's commitment txn (and node 1's HTLC-Timeout) on node 1
-		header.prev_blockhash = nodes[1].best_block_hash();
-		let block = Block { header, txdata: vec![node_2_commitment_txn[0].clone(), node_1_commitment_txn[1].clone()] };
-		connect_block(&nodes[1], &block);
+		// Confirm node 1's HTLC-Timeout on node 1
+		mine_transaction(&nodes[1], &node_1_commitment_txn[1]);
 		// ...but return node 2's commitment tx (and claim) in case claim is set and we're preparing to reorg
-		node_2_commitment_txn
+		vec![node_2_commitment_txn.pop().unwrap()]
 	};
 	check_added_monitors!(nodes[1], 1);
 	check_closed_broadcast!(nodes[1], true); // We should get a BroadcastChannelUpdate (and *only* a BroadcstChannelUpdate)
