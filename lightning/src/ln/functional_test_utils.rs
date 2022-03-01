@@ -123,19 +123,29 @@ pub fn connect_block<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, block: &Block) 
 	do_connect_block(node, block, false);
 }
 
+fn call_claimable_balances<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>) {
+	// Ensure `get_claimable_balances`' self-tests never panic
+	for funding_outpoint in node.chain_monitor.chain_monitor.list_monitors() {
+		node.chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances();
+	}
+}
+
 fn do_connect_block<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, block: &Block, skip_intermediaries: bool) {
+	call_claimable_balances(node);
 	let height = node.best_block_info().1 + 1;
 	if !skip_intermediaries {
 		let txdata: Vec<_> = block.txdata.iter().enumerate().collect();
 		match *node.connect_style.borrow() {
 			ConnectStyle::BestBlockFirst|ConnectStyle::BestBlockFirstSkippingBlocks => {
 				node.chain_monitor.chain_monitor.best_block_updated(&block.header, height);
+				call_claimable_balances(node);
 				node.chain_monitor.chain_monitor.transactions_confirmed(&block.header, &txdata, height);
 				node.node.best_block_updated(&block.header, height);
 				node.node.transactions_confirmed(&block.header, &txdata, height);
 			},
 			ConnectStyle::TransactionsFirst|ConnectStyle::TransactionsFirstSkippingBlocks => {
 				node.chain_monitor.chain_monitor.transactions_confirmed(&block.header, &txdata, height);
+				call_claimable_balances(node);
 				node.chain_monitor.chain_monitor.best_block_updated(&block.header, height);
 				node.node.transactions_confirmed(&block.header, &txdata, height);
 				node.node.best_block_updated(&block.header, height);
@@ -146,11 +156,13 @@ fn do_connect_block<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, block: &Block, s
 			}
 		}
 	}
+	call_claimable_balances(node);
 	node.node.test_process_background_events();
 	node.blocks.lock().unwrap().push((block.header, height));
 }
 
 pub fn disconnect_blocks<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, count: u32) {
+	call_claimable_balances(node);
 	for i in 0..count {
 		let orig_header = node.blocks.lock().unwrap().pop().unwrap();
 		assert!(orig_header.1 > 0); // Cannot disconnect genesis
@@ -172,6 +184,7 @@ pub fn disconnect_blocks<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, count: u32)
 				node.node.best_block_updated(&prev_header.0, prev_header.1);
 			},
 		}
+		call_claimable_balances(node);
 	}
 }
 
