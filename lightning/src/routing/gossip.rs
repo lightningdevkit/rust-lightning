@@ -740,7 +740,7 @@ pub struct ChannelInfo {
 impl ChannelInfo {
 	/// Returns a [`DirectedChannelInfo`] for the channel directed to the given `target` from a
 	/// returned `source`, or `None` if `target` is not one of the channel's counterparties.
-	pub fn as_directed_to(&self, target: &NodeId) -> Option<(DirectedChannelInfo, &NodeId)> {
+	pub(crate) fn as_directed_to(&self, target: &NodeId) -> Option<(DirectedChannelInfo, &NodeId)> {
 		let (direction, source) = {
 			if target == &self.node_one {
 				(self.two_to_one.as_ref(), &self.node_two)
