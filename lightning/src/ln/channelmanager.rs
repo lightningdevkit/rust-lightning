@@ -5144,6 +5144,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// Legacy version of [`create_inbound_payment`]. Use this method if you wish to share
 	/// serialized state with LDK node(s) running 0.0.103 and earlier.
 	///
+	/// May panic if `invoice_expiry_delta_secs` is greater than one year.
+	///
 	/// # Note
 	/// This method is deprecated and will be removed soon.
 	///
@@ -5184,8 +5186,6 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// If you need exact expiry semantics, you should enforce them upon receipt of
 	/// [`PaymentReceived`].
 	///
-	/// May panic if `invoice_expiry_delta_secs` is greater than one year.
-	///
 	/// Note that invoices generated for inbound payments should have their `min_final_cltv_expiry`
 	/// set to at least [`MIN_FINAL_CLTV_EXPIRY`].
 	///
@@ -5207,6 +5207,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 
 	/// Legacy version of [`create_inbound_payment_for_hash`]. Use this method if you wish to share
 	/// serialized state with LDK node(s) running 0.0.103 and earlier.
+	///
+	/// May panic if `invoice_expiry_delta_secs` is greater than one year.
 	///
 	/// # Note
 	/// This method is deprecated and will be removed soon.
