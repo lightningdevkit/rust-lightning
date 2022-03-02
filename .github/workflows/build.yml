@@ -56,7 +56,7 @@ jobs:
     runs-on: ${{ matrix.platform }}
     steps:
       - name: Checkout source code
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3
       - name: Install Rust ${{ matrix.toolchain }} toolchain
         uses: actions-rs/toolchain@v1
         with:
@@ -202,7 +202,7 @@ jobs:
       TOOLCHAIN: nightly
     steps:
       - name: Checkout source code
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3
       - name: Install Rust ${{ env.TOOLCHAIN }} toolchain
         uses: actions-rs/toolchain@v1
         with:
@@ -241,7 +241,7 @@ jobs:
       TOOLCHAIN: 1.52.1
     steps:
       - name: Checkout source code
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3
         with:
           fetch-depth: 0
       - name: Install Rust ${{ env.TOOLCHAIN }} toolchain
@@ -266,7 +266,7 @@ jobs:
       TOOLCHAIN: stable
     steps:
       - name: Checkout source code
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3
       - name: Install Rust 1.58 toolchain
         uses: actions-rs/toolchain@v1
         with:
@@ -290,7 +290,7 @@ jobs:
       TOOLCHAIN: 1.47.0
     steps:
       - name: Checkout source code
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3
       - name: Install Rust ${{ env.TOOLCHAIN }} toolchain
         uses: actions-rs/toolchain@v1
         with:
