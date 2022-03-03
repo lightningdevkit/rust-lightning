@@ -189,6 +189,7 @@ impl<'a, S: Writeable> Writeable for MutexGuard<'a, S> {
 	}
 }
 
+#[derive(Clone)]
 /// [`Score`] implementation that uses a fixed penalty.
 pub struct FixedPenaltyScorer {
 	penalty_msat: u64,
@@ -252,6 +253,7 @@ pub struct ScorerUsingTime<T: Time> {
 	channel_failures: HashMap<u64, ChannelFailure<T>>,
 }
 
+#[derive(Clone)]
 /// Parameters for configuring [`Scorer`].
 pub struct ScoringParameters {
 	/// A fixed penalty in msats to apply to each channel.

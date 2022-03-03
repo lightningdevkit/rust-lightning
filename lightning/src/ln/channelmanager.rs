@@ -1322,6 +1322,7 @@ pub enum PaymentSendFailure {
 /// Route hints used in constructing invoices for [phantom node payents].
 ///
 /// [phantom node payments]: crate::chain::keysinterface::PhantomKeysManager
+#[derive(Clone)]
 pub struct PhantomRouteHints {
 	/// The list of channels to be included in the invoice route hints.
 	pub channels: Vec<ChannelDetails>,
