@@ -93,6 +93,8 @@ use util::crypto::sign;
 pub(super) enum PendingHTLCRouting {
 	Forward {
 		onion_packet: msgs::OnionPacket,
+		/// The SCID from the onion that we should forward to. This could be a "real" SCID, an
+		/// outbound SCID alias, or a phantom node SCID.
 		short_channel_id: u64, // This should be NonZero<u64> eventually when we bump MSRV
 	},
 	Receive {
@@ -136,6 +138,8 @@ pub(super) enum HTLCForwardInfo {
 		// `process_pending_htlc_forwards()` for constructing the
 		// `HTLCSource::PreviousHopData` for failed and forwarded
 		// HTLCs.
+		//
+		// Note that this may be an outbound SCID alias for the associated channel.
 		prev_short_channel_id: u64,
 		prev_htlc_id: u64,
 		prev_funding_outpoint: OutPoint,
@@ -149,6 +153,7 @@ pub(super) enum HTLCForwardInfo {
 /// Tracks the inbound corresponding to an outbound HTLC
 #[derive(Clone, Hash, PartialEq, Eq)]
 pub(crate) struct HTLCPreviousHopData {
+	// Note that this may be an outbound SCID alias for the associated channel.
 	short_channel_id: u64,
 	htlc_id: u64,
 	incoming_packet_shared_secret: [u8; 32],
@@ -1398,7 +1403,7 @@ macro_rules! handle_chan_restoration_locked {
 		let res = loop {
 			let forwards: Vec<(PendingHTLCInfo, u64)> = $pending_forwards; // Force type-checking to resolve
 			if !forwards.is_empty() {
-				htlc_forwards = Some(($channel_entry.get().get_short_channel_id().expect("We can't have pending forwards before funding confirmation"),
+				htlc_forwards = Some(($channel_entry.get().get_short_channel_id().unwrap_or($channel_entry.get().outbound_scid_alias()),
 					$channel_entry.get().get_funding_txo().unwrap(), forwards));
 			}
 
@@ -4676,7 +4681,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					break Ok((raa_updates.accepted_htlcs, raa_updates.failed_htlcs,
 							raa_updates.finalized_claimed_htlcs,
 							chan.get().get_short_channel_id()
-								.expect("RAA should only work on a short-id-available channel"),
+								.unwrap_or(chan.get().outbound_scid_alias()),
 							chan.get().get_funding_txo().unwrap()))
 				},
 				hash_map::Entry::Vacant(_) => break Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))

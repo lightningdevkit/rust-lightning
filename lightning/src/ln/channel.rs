@@ -3565,9 +3565,10 @@ impl<Signer: Sign> Channel<Signer> {
 
 		// We will never broadcast the funding transaction when we're in MonitorUpdateFailed (and
 		// we assume the user never directly broadcasts the funding transaction and waits for us to
-		// do it). Thus, we can only ever hit monitor_pending_funding_locked when we're an inbound
-		// channel which failed to persist the monitor on funding_created, and we got the funding
-		// transaction confirmed before the monitor was persisted.
+		// do it). Thus, we can only ever hit monitor_pending_funding_locked when we're
+		// * an inbound channel that failed to persist the monitor on funding_created and we got
+		//   the funding transaction confirmed before the monitor was persisted, or
+		// * a 0-conf channel and intended to send the funding_locked before any broadcast at all.
 		let funding_locked = if self.monitor_pending_funding_locked {
 			assert!(!self.is_outbound(), "Funding transaction broadcast by the local client before it should have - LDK didn't do it!");
 			self.monitor_pending_funding_locked = false;
