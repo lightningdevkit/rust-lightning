@@ -1,0 +1,11 @@
+[package]
+name = "no-std-check"
+version = "0.1.0"
+edition = "2018"
+
+[features]
+default = ["lightning/no-std", "lightning-invoice/no-std"]
+
+[dependencies]
+lightning = { path = "../lightning", default-features = false }
+lightning-invoice = { path = "../lightning-invoice", default-features = false }
