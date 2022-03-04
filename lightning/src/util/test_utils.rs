@@ -471,8 +471,7 @@ impl Logger for TestLogger {
 
 pub struct TestKeysInterface {
 	pub backing: keysinterface::PhantomKeysManager,
-	pub override_session_priv: Mutex<Option<[u8; 32]>>,
-	pub override_channel_id_priv: Mutex<Option<[u8; 32]>>,
+	pub override_random_bytes: Mutex<Option<[u8; 32]>>,
 	pub disable_revocation_policy_check: bool,
 	enforcement_states: Mutex<HashMap<[u8;32], Arc<Mutex<EnforcementState>>>>,
 	expectations: Mutex<Option<VecDeque<OnGetShutdownScriptpubkey>>>,
@@ -506,16 +505,9 @@ impl keysinterface::KeysInterface for TestKeysInterface {
 	}
 
 	fn get_secure_random_bytes(&self) -> [u8; 32] {
-		let override_channel_id = self.override_channel_id_priv.lock().unwrap();
-		let override_session_key = self.override_session_priv.lock().unwrap();
-		if override_channel_id.is_some() && override_session_key.is_some() {
-			panic!("We don't know which override key to use!");
-		}
-		if let Some(key) = &*override_channel_id {
-			return *key;
-		}
-		if let Some(key) = &*override_session_key {
-			return *key;
+		let override_random_bytes = self.override_random_bytes.lock().unwrap();
+		if let Some(bytes) = &*override_random_bytes {
+			return *bytes;
 		}
 		self.backing.get_secure_random_bytes()
 	}
@@ -543,8 +535,7 @@ impl TestKeysInterface {
 		let now = Duration::from_secs(genesis_block(network).header.time as u64);
 		Self {
 			backing: keysinterface::PhantomKeysManager::new(seed, now.as_secs(), now.subsec_nanos(), seed),
-			override_session_priv: Mutex::new(None),
-			override_channel_id_priv: Mutex::new(None),
+			override_random_bytes: Mutex::new(None),
 			disable_revocation_policy_check: false,
 			enforcement_states: Mutex::new(HashMap::new()),
 			expectations: Mutex::new(None),

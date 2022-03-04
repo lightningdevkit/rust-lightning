@@ -6001,7 +6001,7 @@ fn bolt2_open_channel_sending_node_checks_part1() { //This test needs to be on i
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	//Force duplicate channel ids
 	for node in nodes.iter() {
-		*node.keys_manager.override_channel_id_priv.lock().unwrap() = Some([0; 32]);
+		*node.keys_manager.override_random_bytes.lock().unwrap() = Some([0; 32]);
 	}
 
 	// BOLT #2 spec: Sending node must ensure temporary_channel_id is unique from any other channel ID with the same peer.
