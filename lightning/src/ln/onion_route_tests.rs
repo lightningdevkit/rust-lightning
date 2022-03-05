@@ -320,7 +320,7 @@ fn test_onion_failure() {
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[Some(config), Some(config), Some(node_2_cfg)]);
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 	for node in nodes.iter() {
-		*node.keys_manager.override_session_priv.lock().unwrap() = Some([3; 32]);
+		*node.keys_manager.override_random_bytes.lock().unwrap() = Some([3; 32]);
 	}
 	let channels = [create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known()), create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::known(), InitFeatures::known())];
 	let (route, payment_hash, _, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], 40000);
@@ -693,7 +693,7 @@ fn test_phantom_invalid_onion_payload() {
 
 	// We'll use the session priv later when constructing an invalid onion packet.
 	let session_priv = [3; 32];
-	*nodes[0].keys_manager.override_session_priv.lock().unwrap() = Some(session_priv);
+	*nodes[0].keys_manager.override_random_bytes.lock().unwrap() = Some(session_priv);
 	nodes[0].node.send_payment(&route, payment_hash.clone(), &Some(payment_secret)).unwrap();
 	check_added_monitors!(nodes[0], 1);
 	let update_0 = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
