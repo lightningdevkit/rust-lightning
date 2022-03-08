@@ -748,6 +748,11 @@ pub fn update_nodes_with_chan_announce<'a, 'b, 'c, 'd>(nodes: &'a Vec<Node<'b, '
 		node.net_graph_msg_handler.handle_channel_update(upd_2).unwrap();
 		node.net_graph_msg_handler.handle_node_announcement(&a_node_announcement).unwrap();
 		node.net_graph_msg_handler.handle_node_announcement(&b_node_announcement).unwrap();
+
+		// Note that channel_updates are also delivered to ChannelManagers to ensure we have
+		// forwarding info for local channels even if its not accepted in the network graph.
+		node.node.handle_channel_update(&nodes[a].node.get_our_node_id(), &upd_1);
+		node.node.handle_channel_update(&nodes[b].node.get_our_node_id(), &upd_2);
 	}
 }
 
