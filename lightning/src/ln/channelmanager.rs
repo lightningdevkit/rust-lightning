@@ -2413,7 +2413,6 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					};
 					let (chan_update_opt, forwardee_cltv_expiry_delta) = if let Some(forwarding_id) = forwarding_id_opt {
 						let chan = channel_state.as_mut().unwrap().by_id.get_mut(&forwarding_id).unwrap();
-						let chan_update_opt = self.get_channel_update_for_broadcast(chan).ok();
 						if !chan.should_announce() && !self.default_configuration.accept_forwards_to_priv_channels {
 							// Note that the behavior here should be identical to the above block - we
 							// should NOT reveal the existence or non-existence of a private channel if
@@ -2426,6 +2425,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 							// we don't have the channel here.
 							break Some(("Refusing to forward over real channel SCID as our counterparty requested.", 0x4000 | 10, None));
 						}
+						let chan_update_opt = self.get_channel_update_for_onion(*short_channel_id, chan).ok();
 
 						// Note that we could technically not return an error yet here and just hope
 						// that the connection is reestablished or monitor updated by the time we get
@@ -2525,6 +2525,10 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			Some(id) => id,
 		};
 
+		self.get_channel_update_for_onion(short_channel_id, chan)
+	}
+	fn get_channel_update_for_onion(&self, short_channel_id: u64, chan: &Channel<Signer>) -> Result<msgs::ChannelUpdate, LightningError> {
+		log_trace!(self.logger, "Generating channel update for channel {}", log_bytes!(chan.channel_id()));
 		let were_node_one = PublicKey::from_secret_key(&self.secp_ctx, &self.our_network_key).serialize()[..] < chan.get_counterparty_node_id().serialize()[..];
 
 		let unsigned = msgs::UnsignedChannelUpdate {
@@ -3214,7 +3218,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 											} else {
 												panic!("Stated return value requirements in send_htlc() were not met");
 											}
-											let (failure_code, data) = self.get_htlc_temp_fail_err_and_data(0x1000|7, chan.get());
+											let (failure_code, data) = self.get_htlc_temp_fail_err_and_data(0x1000|7, short_chan_id, chan.get());
 											failed_forwards.push((htlc_source, payment_hash,
 												HTLCFailReason::Reason { failure_code, data }
 											));
@@ -3714,9 +3718,32 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 
 	/// Gets an HTLC onion failure code and error data for an `UPDATE` error, given the error code
 	/// that we want to return and a channel.
-	fn get_htlc_temp_fail_err_and_data(&self, desired_err_code: u16, chan: &Channel<Signer>) -> (u16, Vec<u8>) {
+	///
+	/// This is for failures on the channel on which the HTLC was *received*, not failures
+	/// forwarding
+	fn get_htlc_inbound_temp_fail_err_and_data(&self, desired_err_code: u16, chan: &Channel<Signer>) -> (u16, Vec<u8>) {
+		// We can't be sure what SCID was used when relaying inbound towards us, so we have to
+		// guess somewhat. If its a public channel, we figure best to just use the real SCID (as
+		// we're not leaking that we have a channel with the counterparty), otherwise we try to use
+		// an inbound SCID alias before the real SCID.
+		let scid_pref = if chan.should_announce() {
+			chan.get_short_channel_id().or(chan.latest_inbound_scid_alias())
+		} else {
+			chan.latest_inbound_scid_alias().or(chan.get_short_channel_id())
+		};
+		if let Some(scid) = scid_pref {
+			self.get_htlc_temp_fail_err_and_data(desired_err_code, scid, chan)
+		} else {
+			(0x4000|10, Vec::new())
+		}
+	}
+
+
+	/// Gets an HTLC onion failure code and error data for an `UPDATE` error, given the error code
+	/// that we want to return and a channel.
+	fn get_htlc_temp_fail_err_and_data(&self, desired_err_code: u16, scid: u64, chan: &Channel<Signer>) -> (u16, Vec<u8>) {
 		debug_assert_eq!(desired_err_code & 0x1000, 0x1000);
-		if let Ok(upd) = self.get_channel_update_for_unicast(chan) {
+		if let Ok(upd) = self.get_channel_update_for_onion(scid, chan) {
 			let mut enc = VecWriter(Vec::with_capacity(upd.serialized_length() + 4));
 			if desired_err_code == 0x1000 | 20 {
 				// TODO: underspecified, follow https://github.com/lightning/bolts/issues/791
@@ -3744,7 +3771,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					let (failure_code, onion_failure_data) =
 						match self.channel_state.lock().unwrap().by_id.entry(channel_id) {
 							hash_map::Entry::Occupied(chan_entry) => {
-								self.get_htlc_temp_fail_err_and_data(0x1000|7, &chan_entry.get())
+								self.get_htlc_inbound_temp_fail_err_and_data(0x1000|7, &chan_entry.get())
 							},
 							hash_map::Entry::Vacant(_) => (0x4000|10, Vec::new())
 						};
@@ -4634,7 +4661,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					match pending_forward_info {
 						PendingHTLCStatus::Forward(PendingHTLCInfo { ref incoming_shared_secret, .. }) => {
 							let reason = if (error_code & 0x1000) != 0 {
-								let (real_code, error_data) = self.get_htlc_temp_fail_err_and_data(error_code, chan);
+								let (real_code, error_data) = self.get_htlc_inbound_temp_fail_err_and_data(error_code, chan);
 								onion_utils::build_first_hop_failure_packet(incoming_shared_secret, real_code, &error_data)
 							} else {
 								onion_utils::build_first_hop_failure_packet(incoming_shared_secret, error_code, &[])
@@ -5627,8 +5654,8 @@ where
 				let res = f(channel);
 				if let Ok((funding_locked_opt, mut timed_out_pending_htlcs, announcement_sigs)) = res {
 					for (source, payment_hash) in timed_out_pending_htlcs.drain(..) {
-						let (failure_code, data) = self.get_htlc_temp_fail_err_and_data(0x1000|14 /* expiry_too_soon */, &channel);
-						timed_out_htlcs.push((source, payment_hash,  HTLCFailReason::Reason {
+						let (failure_code, data) = self.get_htlc_inbound_temp_fail_err_and_data(0x1000|14 /* expiry_too_soon */, &channel);
+						timed_out_htlcs.push((source, payment_hash, HTLCFailReason::Reason {
 							failure_code, data,
 						}));
 					}

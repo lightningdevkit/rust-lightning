@@ -13,12 +13,13 @@
 
 use chain::Watch;
 use chain::channelmonitor::ChannelMonitor;
+use chain::keysinterface::{Recipient, KeysInterface};
 use ln::channelmanager::{ChannelManager, ChannelManagerReadArgs, MIN_CLTV_EXPIRY_DELTA};
 use routing::network_graph::RoutingFees;
 use routing::router::{RouteHint, RouteHintHop};
 use ln::features::InitFeatures;
 use ln::msgs;
-use ln::msgs::{ChannelMessageHandler, RoutingMessageHandler};
+use ln::msgs::{ChannelMessageHandler, RoutingMessageHandler, OptionalField};
 use util::enforcing_trait_impls::EnforcingSigner;
 use util::events::{Event, MessageSendEvent, MessageSendEventsProvider};
 use util::config::UserConfig;
@@ -30,7 +31,12 @@ use core::default::Default;
 
 use ln::functional_test_utils::*;
 
+use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::hash_types::BlockHash;
+use bitcoin::hashes::Hash;
+use bitcoin::hashes::sha256d::Hash as Sha256dHash;
+use bitcoin::network::constants::Network;
+use bitcoin::secp256k1::Secp256k1;
 
 #[test]
 fn test_priv_forwarding_rejection() {
@@ -444,4 +450,94 @@ fn test_inbound_scid_privacy() {
 	expect_payment_failed_conditions!(nodes[0], payment_hash_2, false,
 		PaymentFailedConditions::new().blamed_scid(last_hop[0].short_channel_id.unwrap())
 			.blamed_chan_closed(true).expected_htlc_error_data(0x4000|10, &[0; 0]));
+}
+
+#[test]
+fn test_scid_alias_returned() {
+	// Tests that when we fail an HTLC (in this case due to attempting to forward more than the
+	// channel's available balance) we use the correct (in this case the aliased) SCID in the
+	// channel_update which is returned in the onion to the sender.
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let mut accept_forward_cfg = test_default_channel_config();
+	accept_forward_cfg.accept_forwards_to_priv_channels = true;
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, Some(accept_forward_cfg), None]);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 10_000_000, 0, InitFeatures::known(), InitFeatures::known());
+	create_unannounced_chan_between_nodes_with_value(&nodes, 1, 2, 10_000, 0, InitFeatures::known(), InitFeatures::known());
+
+	let last_hop = nodes[2].node.list_usable_channels();
+	let mut hop_hints = vec![RouteHint(vec![RouteHintHop {
+		src_node_id: nodes[1].node.get_our_node_id(),
+		short_channel_id: last_hop[0].inbound_scid_alias.unwrap(),
+		fees: RoutingFees {
+			base_msat: last_hop[0].counterparty.forwarding_info.as_ref().unwrap().fee_base_msat,
+			proportional_millionths: last_hop[0].counterparty.forwarding_info.as_ref().unwrap().fee_proportional_millionths,
+		},
+		cltv_expiry_delta: last_hop[0].counterparty.forwarding_info.as_ref().unwrap().cltv_expiry_delta,
+		htlc_maximum_msat: None,
+		htlc_minimum_msat: None,
+	}])];
+	let (mut route, payment_hash, _, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], hop_hints, 10_000, 42);
+	assert_eq!(route.paths[0][1].short_channel_id, nodes[2].node.list_usable_channels()[0].inbound_scid_alias.unwrap());
+
+	route.paths[0][1].fee_msat = 10_000_000; // Overshoot the last channel's value
+
+	// Route the HTLC through to the destination.
+	nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret)).unwrap();
+	check_added_monitors!(nodes[0], 1);
+	let as_updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &as_updates.update_add_htlcs[0]);
+	commitment_signed_dance!(nodes[1], nodes[0], &as_updates.commitment_signed, false, true);
+
+	expect_pending_htlcs_forwardable!(nodes[1]);
+	expect_pending_htlcs_forwardable!(nodes[1]);
+	check_added_monitors!(nodes[1], 1);
+
+	let bs_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+	nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &bs_updates.update_fail_htlcs[0]);
+	commitment_signed_dance!(nodes[0], nodes[1], bs_updates.commitment_signed, false, true);
+
+	// Build the expected channel update
+	let contents = msgs::UnsignedChannelUpdate {
+		chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+		short_channel_id: last_hop[0].inbound_scid_alias.unwrap(),
+		timestamp: 21,
+		flags: 1,
+		cltv_expiry_delta: accept_forward_cfg.channel_options.cltv_expiry_delta,
+		htlc_minimum_msat: 1_000,
+		htlc_maximum_msat: OptionalField::Present(1_000_000), // Defaults to 10% of the channel value
+		fee_base_msat: last_hop[0].counterparty.forwarding_info.as_ref().unwrap().fee_base_msat,
+		fee_proportional_millionths: last_hop[0].counterparty.forwarding_info.as_ref().unwrap().fee_proportional_millionths,
+		excess_data: Vec::new(),
+	};
+	let msg_hash = Sha256dHash::hash(&contents.encode()[..]);
+	let signature = Secp256k1::new().sign(&hash_to_message!(&msg_hash[..]), &nodes[1].keys_manager.get_node_secret(Recipient::Node).unwrap());
+	let msg = msgs::ChannelUpdate { signature, contents };
+
+	expect_payment_failed_conditions!(nodes[0], payment_hash, false,
+		PaymentFailedConditions::new().blamed_scid(last_hop[0].inbound_scid_alias.unwrap())
+			.blamed_chan_closed(false).expected_htlc_error_data(0x1000|7, &msg.encode_with_len()));
+
+	route.paths[0][1].fee_msat = 10_000; // Reset to the correct payment amount
+	route.paths[0][0].fee_msat = 0; // But set fee paid to the middle hop to 0
+
+	// Route the HTLC through to the destination.
+	nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret)).unwrap();
+	check_added_monitors!(nodes[0], 1);
+	let as_updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &as_updates.update_add_htlcs[0]);
+	commitment_signed_dance!(nodes[1], nodes[0], &as_updates.commitment_signed, false, true);
+
+	let bs_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+	nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &bs_updates.update_fail_htlcs[0]);
+	commitment_signed_dance!(nodes[0], nodes[1], bs_updates.commitment_signed, false, true);
+
+	let mut err_data = Vec::new();
+	err_data.extend_from_slice(&10_000u64.to_be_bytes());
+	err_data.extend_from_slice(&msg.encode_with_len());
+	expect_payment_failed_conditions!(nodes[0], payment_hash, false,
+		PaymentFailedConditions::new().blamed_scid(last_hop[0].inbound_scid_alias.unwrap())
+			.blamed_chan_closed(false).expected_htlc_error_data(0x1000|12, &err_data));
 }

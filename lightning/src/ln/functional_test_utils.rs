@@ -14,7 +14,7 @@ use chain::{BestBlock, Confirm, Listen, Watch, keysinterface::KeysInterface};
 use chain::channelmonitor::ChannelMonitor;
 use chain::transaction::OutPoint;
 use ln::{PaymentPreimage, PaymentHash, PaymentSecret};
-use ln::channelmanager::{ChainParameters, ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, PaymentSendFailure, PaymentId};
+use ln::channelmanager::{ChainParameters, ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, PaymentSendFailure, PaymentId, MIN_CLTV_EXPIRY_DELTA};
 use routing::network_graph::{NetGraphMsgHandler, NetworkGraph};
 use routing::router::{PaymentParameters, Route, get_route};
 use ln::features::{InitFeatures, InvoiceFeatures};
@@ -1848,7 +1848,7 @@ pub fn test_default_channel_config() -> UserConfig {
 	let mut default_config = UserConfig::default();
 	// Set cltv_expiry_delta slightly lower to keep the final CLTV values inside one byte in our
 	// tests so that our script-length checks don't fail (see ACCEPTED_HTLC_SCRIPT_WEIGHT).
-	default_config.channel_options.cltv_expiry_delta = 6*6;
+	default_config.channel_options.cltv_expiry_delta = MIN_CLTV_EXPIRY_DELTA;
 	default_config.channel_options.announced_channel = true;
 	default_config.peer_channel_config_limits.force_announced_channel_preference = false;
 	// When most of our tests were written, the default HTLC minimum was fixed at 1000.

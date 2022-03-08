@@ -993,4 +993,3 @@ fn test_phantom_failure_reject_payment() {
 		.expected_htlc_error_data(0x4000 | 15, &error_data);
 	expect_payment_failed_conditions!(nodes[0], payment_hash, true, fail_conditions);
 }
-
