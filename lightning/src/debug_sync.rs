@@ -43,43 +43,43 @@ impl Condvar {
 }
 
 thread_local! {
-	/// We track the set of locks currently held by a reference to their `MutexMetadata`
-	static MUTEXES_HELD: RefCell<HashSet<Arc<MutexMetadata>>> = RefCell::new(HashSet::new());
+	/// We track the set of locks currently held by a reference to their `LockMetadata`
+	static LOCKS_HELD: RefCell<HashSet<Arc<LockMetadata>>> = RefCell::new(HashSet::new());
 }
-static MUTEX_IDX: AtomicUsize = AtomicUsize::new(0);
+static LOCK_IDX: AtomicUsize = AtomicUsize::new(0);
 
-/// Metadata about a single mutex, by id, the set of things locked-before it, and the backtrace of
+/// Metadata about a single lock, by id, the set of things locked-before it, and the backtrace of
 /// when the Mutex itself was constructed.
-struct MutexMetadata {
-	mutex_idx: u64,
-	locked_before: StdMutex<HashSet<Arc<MutexMetadata>>>,
+struct LockMetadata {
+	lock_idx: u64,
+	locked_before: StdMutex<HashSet<Arc<LockMetadata>>>,
 	#[cfg(feature = "backtrace")]
-	mutex_construction_bt: Backtrace,
+	lock_construction_bt: Backtrace,
 }
-impl PartialEq for MutexMetadata {
-	fn eq(&self, o: &MutexMetadata) -> bool { self.mutex_idx == o.mutex_idx }
+impl PartialEq for LockMetadata {
+	fn eq(&self, o: &LockMetadata) -> bool { self.lock_idx == o.lock_idx }
 }
-impl Eq for MutexMetadata {}
-impl std::hash::Hash for MutexMetadata {
-	fn hash<H: std::hash::Hasher>(&self, hasher: &mut H) { hasher.write_u64(self.mutex_idx); }
+impl Eq for LockMetadata {}
+impl std::hash::Hash for LockMetadata {
+	fn hash<H: std::hash::Hasher>(&self, hasher: &mut H) { hasher.write_u64(self.lock_idx); }
 }
 
-impl MutexMetadata {
-	fn new() -> MutexMetadata {
-		MutexMetadata {
+impl LockMetadata {
+	fn new() -> LockMetadata {
+		LockMetadata {
 			locked_before: StdMutex::new(HashSet::new()),
-			mutex_idx: MUTEX_IDX.fetch_add(1, Ordering::Relaxed) as u64,
+			lock_idx: LOCK_IDX.fetch_add(1, Ordering::Relaxed) as u64,
 			#[cfg(feature = "backtrace")]
-			mutex_construction_bt: Backtrace::new(),
+			lock_construction_bt: Backtrace::new(),
 		}
 	}
 
 	// Returns whether we were a recursive lock (only relevant for read)
-	fn _pre_lock(this: &Arc<MutexMetadata>, read: bool) -> bool {
+	fn _pre_lock(this: &Arc<LockMetadata>, read: bool) -> bool {
 		let mut inserted = false;
-		MUTEXES_HELD.with(|held| {
-			// For each mutex which is currently locked, check that no mutex's locked-before
-			// set includes the mutex we're about to lock, which would imply a lockorder
+		LOCKS_HELD.with(|held| {
+			// For each lock which is currently locked, check that no lock's locked-before
+			// set includes the lock we're about to lock, which would imply a lockorder
 			// inversion.
 			for locked in held.borrow().iter() {
 				if read && *locked == *this {
@@ -89,17 +89,17 @@ impl MutexMetadata {
 			}
 			for locked in held.borrow().iter() {
 				if !read && *locked == *this {
-					panic!("Tried to lock a mutex while it was held!");
+					panic!("Tried to lock a lock while it was held!");
 				}
 				for locked_dep in locked.locked_before.lock().unwrap().iter() {
 					if *locked_dep == *this {
 						#[cfg(feature = "backtrace")]
-						panic!("Tried to violate existing lockorder.\nMutex that should be locked after the current lock was created at the following backtrace.\nNote that to get a backtrace for the lockorder violation, you should set RUST_BACKTRACE=1\n{:?}", locked.mutex_construction_bt);
+						panic!("Tried to violate existing lockorder.\nMutex that should be locked after the current lock was created at the following backtrace.\nNote that to get a backtrace for the lockorder violation, you should set RUST_BACKTRACE=1\n{:?}", locked.lock_construction_bt);
 						#[cfg(not(feature = "backtrace"))]
 						panic!("Tried to violate existing lockorder. Build with the backtrace feature for more info.");
 					}
 				}
-				// Insert any already-held mutexes in our locked-before set.
+				// Insert any already-held locks in our locked-before set.
 				this.locked_before.lock().unwrap().insert(Arc::clone(locked));
 			}
 			held.borrow_mut().insert(Arc::clone(this));
@@ -108,11 +108,11 @@ impl MutexMetadata {
 		inserted
 	}
 
-	fn pre_lock(this: &Arc<MutexMetadata>) { Self::_pre_lock(this, false); }
-	fn pre_read_lock(this: &Arc<MutexMetadata>) -> bool { Self::_pre_lock(this, true) }
+	fn pre_lock(this: &Arc<LockMetadata>) { Self::_pre_lock(this, false); }
+	fn pre_read_lock(this: &Arc<LockMetadata>) -> bool { Self::_pre_lock(this, true) }
 
-	fn try_locked(this: &Arc<MutexMetadata>) {
-		MUTEXES_HELD.with(|held| {
+	fn try_locked(this: &Arc<LockMetadata>) {
+		LOCKS_HELD.with(|held| {
 			// Since a try-lock will simply fail if the lock is held already, we do not
 			// consider try-locks to ever generate lockorder inversions. However, if a try-lock
 			// succeeds, we do consider it to have created lockorder dependencies.
@@ -126,7 +126,7 @@ impl MutexMetadata {
 
 pub struct Mutex<T: Sized> {
 	inner: StdMutex<T>,
-	deps: Arc<MutexMetadata>,
+	deps: Arc<LockMetadata>,
 }
 
 #[must_use = "if unused the Mutex will immediately unlock"]
@@ -148,7 +148,7 @@ impl<'a, T: Sized> MutexGuard<'a, T> {
 
 impl<T: Sized> Drop for MutexGuard<'_, T> {
 	fn drop(&mut self) {
-		MUTEXES_HELD.with(|held| {
+		LOCKS_HELD.with(|held| {
 			held.borrow_mut().remove(&self.mutex.deps);
 		});
 	}
@@ -170,18 +170,18 @@ impl<T: Sized> DerefMut for MutexGuard<'_, T> {
 
 impl<T> Mutex<T> {
 	pub fn new(inner: T) -> Mutex<T> {
-		Mutex { inner: StdMutex::new(inner), deps: Arc::new(MutexMetadata::new()) }
+		Mutex { inner: StdMutex::new(inner), deps: Arc::new(LockMetadata::new()) }
 	}
 
 	pub fn lock<'a>(&'a self) -> LockResult<MutexGuard<'a, T>> {
-		MutexMetadata::pre_lock(&self.deps);
+		LockMetadata::pre_lock(&self.deps);
 		self.inner.lock().map(|lock| MutexGuard { mutex: self, lock }).map_err(|_| ())
 	}
 
 	pub fn try_lock<'a>(&'a self) -> LockResult<MutexGuard<'a, T>> {
 		let res = self.inner.try_lock().map(|lock| MutexGuard { mutex: self, lock }).map_err(|_| ());
 		if res.is_ok() {
-			MutexMetadata::try_locked(&self.deps);
+			LockMetadata::try_locked(&self.deps);
 		}
 		res
 	}
@@ -189,25 +189,25 @@ impl<T> Mutex<T> {
 
 pub struct RwLock<T: Sized> {
 	inner: StdRwLock<T>,
-	deps: Arc<MutexMetadata>,
+	deps: Arc<LockMetadata>,
 }
 
 pub struct RwLockReadGuard<'a, T: Sized + 'a> {
-	mutex: &'a RwLock<T>,
+	lock: &'a RwLock<T>,
 	first_lock: bool,
-	lock: StdRwLockReadGuard<'a, T>,
+	guard: StdRwLockReadGuard<'a, T>,
 }
 
 pub struct RwLockWriteGuard<'a, T: Sized + 'a> {
-	mutex: &'a RwLock<T>,
-	lock: StdRwLockWriteGuard<'a, T>,
+	lock: &'a RwLock<T>,
+	guard: StdRwLockWriteGuard<'a, T>,
 }
 
 impl<T: Sized> Deref for RwLockReadGuard<'_, T> {
 	type Target = T;
 
 	fn deref(&self) -> &T {
-		&self.lock.deref()
+		&self.guard.deref()
 	}
 }
 
@@ -219,8 +219,8 @@ impl<T: Sized> Drop for RwLockReadGuard<'_, T> {
 			// always be true.
 			return;
 		}
-		MUTEXES_HELD.with(|held| {
-			held.borrow_mut().remove(&self.mutex.deps);
+		LOCKS_HELD.with(|held| {
+			held.borrow_mut().remove(&self.lock.deps);
 		});
 	}
 }
@@ -229,43 +229,43 @@ impl<T: Sized> Deref for RwLockWriteGuard<'_, T> {
 	type Target = T;
 
 	fn deref(&self) -> &T {
-		&self.lock.deref()
+		&self.guard.deref()
 	}
 }
 
 impl<T: Sized> Drop for RwLockWriteGuard<'_, T> {
 	fn drop(&mut self) {
-		MUTEXES_HELD.with(|held| {
-			held.borrow_mut().remove(&self.mutex.deps);
+		LOCKS_HELD.with(|held| {
+			held.borrow_mut().remove(&self.lock.deps);
 		});
 	}
 }
 
 impl<T: Sized> DerefMut for RwLockWriteGuard<'_, T> {
 	fn deref_mut(&mut self) -> &mut T {
-		self.lock.deref_mut()
+		self.guard.deref_mut()
 	}
 }
 
 impl<T> RwLock<T> {
 	pub fn new(inner: T) -> RwLock<T> {
-		RwLock { inner: StdRwLock::new(inner), deps: Arc::new(MutexMetadata::new()) }
+		RwLock { inner: StdRwLock::new(inner), deps: Arc::new(LockMetadata::new()) }
 	}
 
 	pub fn read<'a>(&'a self) -> LockResult<RwLockReadGuard<'a, T>> {
-		let first_lock = MutexMetadata::pre_read_lock(&self.deps);
-		self.inner.read().map(|lock| RwLockReadGuard { mutex: self, lock, first_lock }).map_err(|_| ())
+		let first_lock = LockMetadata::pre_read_lock(&self.deps);
+		self.inner.read().map(|guard| RwLockReadGuard { lock: self, guard, first_lock }).map_err(|_| ())
 	}
 
 	pub fn write<'a>(&'a self) -> LockResult<RwLockWriteGuard<'a, T>> {
-		MutexMetadata::pre_lock(&self.deps);
-		self.inner.write().map(|lock| RwLockWriteGuard { mutex: self, lock }).map_err(|_| ())
+		LockMetadata::pre_lock(&self.deps);
+		self.inner.write().map(|guard| RwLockWriteGuard { lock: self, guard }).map_err(|_| ())
 	}
 
 	pub fn try_write<'a>(&'a self) -> LockResult<RwLockWriteGuard<'a, T>> {
-		let res = self.inner.try_write().map(|lock| RwLockWriteGuard { mutex: self, lock }).map_err(|_| ());
+		let res = self.inner.try_write().map(|guard| RwLockWriteGuard { lock: self, guard }).map_err(|_| ());
 		if res.is_ok() {
-			MutexMetadata::try_locked(&self.deps);
+			LockMetadata::try_locked(&self.deps);
 		}
 		res
 	}
