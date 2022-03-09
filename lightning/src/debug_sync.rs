@@ -64,6 +64,50 @@ impl std::hash::Hash for MutexMetadata {
 	fn hash<H: std::hash::Hasher>(&self, hasher: &mut H) { hasher.write_u64(self.mutex_idx); }
 }
 
+impl MutexMetadata {
+	fn new() -> MutexMetadata {
+		MutexMetadata {
+			locked_before: StdMutex::new(HashSet::new()),
+			mutex_idx: MUTEX_IDX.fetch_add(1, Ordering::Relaxed) as u64,
+			#[cfg(feature = "backtrace")]
+			mutex_construction_bt: Backtrace::new(),
+		}
+	}
+
+	fn pre_lock(this: &Arc<MutexMetadata>) {
+		MUTEXES_HELD.with(|held| {
+			// For each mutex which is currently locked, check that no mutex's locked-before
+			// set includes the mutex we're about to lock, which would imply a lockorder
+			// inversion.
+			for locked in held.borrow().iter() {
+				for locked_dep in locked.locked_before.lock().unwrap().iter() {
+					if *locked_dep == *this {
+						#[cfg(feature = "backtrace")]
+						panic!("Tried to violate existing lockorder.\nMutex that should be locked after the current lock was created at the following backtrace.\nNote that to get a backtrace for the lockorder violation, you should set RUST_BACKTRACE=1\n{:?}", locked.mutex_construction_bt);
+						#[cfg(not(feature = "backtrace"))]
+						panic!("Tried to violate existing lockorder. Build with the backtrace feature for more info.");
+					}
+				}
+				// Insert any already-held mutexes in our locked-before set.
+				this.locked_before.lock().unwrap().insert(Arc::clone(locked));
+			}
+			held.borrow_mut().insert(Arc::clone(this));
+		});
+	}
+
+	fn try_locked(this: &Arc<MutexMetadata>) {
+		MUTEXES_HELD.with(|held| {
+			// Since a try-lock will simply fail if the lock is held already, we do not
+			// consider try-locks to ever generate lockorder inversions. However, if a try-lock
+			// succeeds, we do consider it to have created lockorder dependencies.
+			for locked in held.borrow().iter() {
+				this.locked_before.lock().unwrap().insert(Arc::clone(locked));
+			}
+			held.borrow_mut().insert(Arc::clone(this));
+		});
+	}
+}
+
 pub struct Mutex<T: Sized> {
 	inner: StdMutex<T>,
 	deps: Arc<MutexMetadata>,
@@ -110,51 +154,18 @@ impl<T: Sized> DerefMut for MutexGuard<'_, T> {
 
 impl<T> Mutex<T> {
 	pub fn new(inner: T) -> Mutex<T> {
-		Mutex {
-			inner: StdMutex::new(inner),
-			deps: Arc::new(MutexMetadata {
-				locked_before: StdMutex::new(HashSet::new()),
-				mutex_idx: MUTEX_IDX.fetch_add(1, Ordering::Relaxed) as u64,
-				#[cfg(feature = "backtrace")]
-				mutex_construction_bt: Backtrace::new(),
-			}),
-		}
+		Mutex { inner: StdMutex::new(inner), deps: Arc::new(MutexMetadata::new()) }
 	}
 
 	pub fn lock<'a>(&'a self) -> LockResult<MutexGuard<'a, T>> {
-		MUTEXES_HELD.with(|held| {
-			// For each mutex which is currently locked, check that no mutex's locked-before
-			// set includes the mutex we're about to lock, which would imply a lockorder
-			// inversion.
-			for locked in held.borrow().iter() {
-				for locked_dep in locked.locked_before.lock().unwrap().iter() {
-					if *locked_dep == self.deps {
-						#[cfg(feature = "backtrace")]
-						panic!("Tried to violate existing lockorder.\nMutex that should be locked after the current lock was created at the following backtrace.\nNote that to get a backtrace for the lockorder violation, you should set RUST_BACKTRACE=1\n{:?}", locked.mutex_construction_bt);
-						#[cfg(not(feature = "backtrace"))]
-						panic!("Tried to violate existing lockorder. Build with the backtrace feature for more info.");
-					}
-				}
-				// Insert any already-held mutexes in our locked-before set.
-				self.deps.locked_before.lock().unwrap().insert(Arc::clone(locked));
-			}
-			held.borrow_mut().insert(Arc::clone(&self.deps));
-		});
+		MutexMetadata::pre_lock(&self.deps);
 		self.inner.lock().map(|lock| MutexGuard { mutex: self, lock }).map_err(|_| ())
 	}
 
 	pub fn try_lock<'a>(&'a self) -> LockResult<MutexGuard<'a, T>> {
 		let res = self.inner.try_lock().map(|lock| MutexGuard { mutex: self, lock }).map_err(|_| ());
 		if res.is_ok() {
-			MUTEXES_HELD.with(|held| {
-				// Since a try-lock will simply fail if the lock is held already, we do not
-				// consider try-locks to ever generate lockorder inversions. However, if a try-lock
-				// succeeds, we do consider it to have created lockorder dependencies.
-				for locked in held.borrow().iter() {
-					self.deps.locked_before.lock().unwrap().insert(Arc::clone(locked));
-				}
-				held.borrow_mut().insert(Arc::clone(&self.deps));
-			});
+			MutexMetadata::try_locked(&self.deps);
 		}
 		res
 	}
