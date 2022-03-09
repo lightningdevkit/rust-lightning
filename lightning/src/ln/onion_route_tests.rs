@@ -610,10 +610,11 @@ macro_rules! get_phantom_route {
 					}
 		])]);
 		let scorer = test_utils::TestScorer::with_penalty(0);
+		let network_graph = $nodes[0].network_graph.read_only();
 		(get_route(
-			&$nodes[0].node.get_our_node_id(), &payment_params, $nodes[0].network_graph,
+			&$nodes[0].node.get_our_node_id(), &payment_params, &network_graph,
 			Some(&$nodes[0].node.list_usable_channels().iter().collect::<Vec<_>>()),
-			$amt, TEST_FINAL_CLTV, $nodes[0].logger, &scorer
+			$amt, TEST_FINAL_CLTV, $nodes[0].logger, &scorer, &[0u8; 32]
 		).unwrap(), phantom_route_hint.phantom_scid)
 	}
 }}

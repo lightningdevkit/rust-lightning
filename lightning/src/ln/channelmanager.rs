@@ -6844,6 +6844,7 @@ mod tests {
 	use util::errors::APIError;
 	use util::events::{Event, MessageSendEvent, MessageSendEventsProvider};
 	use util::test_utils;
+	use chain::keysinterface::KeysInterface;
 
 	#[cfg(feature = "std")]
 	#[test]
@@ -7097,6 +7098,7 @@ mod tests {
 		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 		create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 		let scorer = test_utils::TestScorer::with_penalty(0);
+		let random_seed_bytes = chanmon_cfgs[1].keys_manager.get_secure_random_bytes();
 
 		// To start (1), send a regular payment but don't claim it.
 		let expected_route = [&nodes[1]];
@@ -7110,7 +7112,7 @@ mod tests {
 		};
 		let route = find_route(
 			&nodes[0].node.get_our_node_id(), &route_params, nodes[0].network_graph, None,
-			nodes[0].logger, &scorer
+			nodes[0].logger, &scorer, &random_seed_bytes
 		).unwrap();
 		nodes[0].node.send_spontaneous_payment(&route, Some(payment_preimage)).unwrap();
 		check_added_monitors!(nodes[0], 1);
@@ -7141,7 +7143,7 @@ mod tests {
 		let payment_preimage = PaymentPreimage([42; 32]);
 		let route = find_route(
 			&nodes[0].node.get_our_node_id(), &route_params, nodes[0].network_graph, None,
-			nodes[0].logger, &scorer
+			nodes[0].logger, &scorer, &random_seed_bytes
 		).unwrap();
 		let (payment_hash, _) = nodes[0].node.send_spontaneous_payment(&route, Some(payment_preimage)).unwrap();
 		check_added_monitors!(nodes[0], 1);
@@ -7202,9 +7204,10 @@ mod tests {
 		let network_graph = nodes[0].network_graph;
 		let first_hops = nodes[0].node.list_usable_channels();
 		let scorer = test_utils::TestScorer::with_penalty(0);
+		let random_seed_bytes = chanmon_cfgs[1].keys_manager.get_secure_random_bytes();
 		let route = find_route(
 			&payer_pubkey, &route_params, network_graph, Some(&first_hops.iter().collect::<Vec<_>>()),
-			nodes[0].logger, &scorer
+			nodes[0].logger, &scorer, &random_seed_bytes
 		).unwrap();
 
 		let test_preimage = PaymentPreimage([42; 32]);
@@ -7245,9 +7248,10 @@ mod tests {
 		let network_graph = nodes[0].network_graph;
 		let first_hops = nodes[0].node.list_usable_channels();
 		let scorer = test_utils::TestScorer::with_penalty(0);
+		let random_seed_bytes = chanmon_cfgs[1].keys_manager.get_secure_random_bytes();
 		let route = find_route(
 			&payer_pubkey, &route_params, network_graph, Some(&first_hops.iter().collect::<Vec<_>>()),
-			nodes[0].logger, &scorer
+			nodes[0].logger, &scorer, &random_seed_bytes
 		).unwrap();
 
 		let test_preimage = PaymentPreimage([42; 32]);
@@ -7331,7 +7335,7 @@ mod tests {
 pub mod bench {
 	use chain::Listen;
 	use chain::chainmonitor::{ChainMonitor, Persist};
-	use chain::keysinterface::{KeysManager, InMemorySigner};
+	use chain::keysinterface::{KeysManager, KeysInterface, InMemorySigner};
 	use ln::channelmanager::{BestBlock, ChainParameters, ChannelManager, PaymentHash, PaymentPreimage};
 	use ln::features::{InitFeatures, InvoiceFeatures};
 	use ln::functional_test_utils::*;
@@ -7340,7 +7344,7 @@ pub mod bench {
 	use routing::router::{PaymentParameters, get_route};
 	use util::test_utils;
 	use util::config::UserConfig;
-	use util::events::{Event, MessageSendEvent, MessageSendEventsProvider, PaymentPurpose};
+	use util::events::{Event, MessageSendEvent, MessageSendEventsProvider};
 
 	use bitcoin::hashes::Hash;
 	use bitcoin::hashes::sha256::Hash as Sha256;
@@ -7448,8 +7452,11 @@ pub mod bench {
 				let payment_params = PaymentParameters::from_node_id($node_b.get_our_node_id())
 					.with_features(InvoiceFeatures::known());
 				let scorer = test_utils::TestScorer::with_penalty(0);
-				let route = get_route(&$node_a.get_our_node_id(), &payment_params, &dummy_graph,
-					Some(&usable_channels.iter().map(|r| r).collect::<Vec<_>>()), 10_000, TEST_FINAL_CLTV, &logger_a, &scorer).unwrap();
+				let seed = [3u8; 32];
+				let keys_manager = KeysManager::new(&seed, 42, 42);
+				let random_seed_bytes = keys_manager.get_secure_random_bytes();
+				let route = get_route(&$node_a.get_our_node_id(), &payment_params, &dummy_graph.read_only(),
+					Some(&usable_channels.iter().map(|r| r).collect::<Vec<_>>()), 10_000, TEST_FINAL_CLTV, &logger_a, &scorer, &random_seed_bytes).unwrap();
 
 				let mut payment_preimage = PaymentPreimage([0; 32]);
 				payment_preimage.0[0..8].copy_from_slice(&payment_count.to_le_bytes());

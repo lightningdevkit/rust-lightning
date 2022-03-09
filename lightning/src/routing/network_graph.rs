@@ -674,6 +674,21 @@ impl ChannelInfo {
 		};
 		Some((DirectedChannelInfo { channel: self, direction }, source))
 	}
+
+	/// Returns a [`DirectedChannelInfo`] for the channel directed from the given `source` to a
+	/// returned `target`, or `None` if `source` is not one of the channel's counterparties.
+	pub fn as_directed_from(&self, source: &NodeId) -> Option<(DirectedChannelInfo, &NodeId)> {
+		let (direction, target) = {
+			if source == &self.node_one {
+				(self.one_to_two.as_ref(), &self.node_two)
+			} else if source == &self.node_two {
+				(self.two_to_one.as_ref(), &self.node_one)
+			} else {
+				return None;
+			}
+		};
+		Some((DirectedChannelInfo { channel: self, direction }, target))
+	}
 }
 
 impl fmt::Display for ChannelInfo {

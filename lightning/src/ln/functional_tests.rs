@@ -16,7 +16,7 @@ use chain::{Confirm, Listen, Watch};
 use chain::channelmonitor;
 use chain::channelmonitor::{ChannelMonitor, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ANTI_REORG_DELAY};
 use chain::transaction::OutPoint;
-use chain::keysinterface::BaseSign;
+use chain::keysinterface::{BaseSign, KeysInterface};
 use ln::{PaymentPreimage, PaymentSecret, PaymentHash};
 use ln::channel::{commitment_tx_base_weight, COMMITMENT_TX_WEIGHT_PER_HTLC, CONCURRENT_INBOUND_HTLC_FEE_BUFFER, FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE, MIN_AFFORDABLE_HTLC_COUNT};
 use ln::channelmanager::{ChannelManager, ChannelManagerReadArgs, PaymentId, RAACommitmentOrder, PaymentSendFailure, BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA, PAYMENT_EXPIRY_BLOCKS };
@@ -7441,8 +7441,9 @@ fn test_check_htlc_underpaying() {
 	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 
 	let scorer = test_utils::TestScorer::with_penalty(0);
+	let random_seed_bytes = chanmon_cfgs[1].keys_manager.get_secure_random_bytes();
 	let payment_params = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id()).with_features(InvoiceFeatures::known());
-	let route = get_route(&nodes[0].node.get_our_node_id(), &payment_params, nodes[0].network_graph, None, 10_000, TEST_FINAL_CLTV, nodes[0].logger, &scorer).unwrap();
+	let route = get_route(&nodes[0].node.get_our_node_id(), &payment_params, &nodes[0].network_graph.read_only(), None, 10_000, TEST_FINAL_CLTV, nodes[0].logger, &scorer, &random_seed_bytes).unwrap();
 	let (_, our_payment_hash, _) = get_payment_preimage_hash!(nodes[0]);
 	let our_payment_secret = nodes[1].node.create_inbound_payment_for_hash(our_payment_hash, Some(100_000), 7200).unwrap();
 	nodes[0].node.send_payment(&route, our_payment_hash, &Some(our_payment_secret)).unwrap();
@@ -7844,12 +7845,13 @@ fn test_bump_penalty_txn_on_revoked_htlcs() {
 	// Lock HTLC in both directions (using a slightly lower CLTV delay to provide timely RBF bumps)
 	let payment_params = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id()).with_features(InvoiceFeatures::known());
 	let scorer = test_utils::TestScorer::with_penalty(0);
-	let route = get_route(&nodes[0].node.get_our_node_id(), &payment_params, &nodes[0].network_graph, None,
-		3_000_000, 50, nodes[0].logger, &scorer).unwrap();
+	let random_seed_bytes = chanmon_cfgs[1].keys_manager.get_secure_random_bytes();
+	let route = get_route(&nodes[0].node.get_our_node_id(), &payment_params, &nodes[0].network_graph.read_only(), None,
+		3_000_000, 50, nodes[0].logger, &scorer, &random_seed_bytes).unwrap();
 	let payment_preimage = send_along_route(&nodes[0], route, &[&nodes[1]], 3_000_000).0;
 	let payment_params = PaymentParameters::from_node_id(nodes[0].node.get_our_node_id()).with_features(InvoiceFeatures::known());
-	let route = get_route(&nodes[1].node.get_our_node_id(), &payment_params, nodes[1].network_graph, None,
-		3_000_000, 50, nodes[0].logger, &scorer).unwrap();
+	let route = get_route(&nodes[1].node.get_our_node_id(), &payment_params, &nodes[1].network_graph.read_only(), None,
+		3_000_000, 50, nodes[0].logger, &scorer, &random_seed_bytes).unwrap();
 	send_along_route(&nodes[1], route, &[&nodes[0]], 3_000_000);
 
 	let revoked_local_txn = get_local_commitment_txn!(nodes[1], chan.2);
@@ -9618,10 +9620,11 @@ fn test_dup_htlc_second_fail_panic() {
 	let payment_params = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id())
 		.with_features(InvoiceFeatures::known());
 	let scorer = test_utils::TestScorer::with_penalty(0);
+	let random_seed_bytes = chanmon_cfgs[1].keys_manager.get_secure_random_bytes();
 	let route = get_route(
-		&nodes[0].node.get_our_node_id(), &payment_params, &nodes[0].network_graph,
+		&nodes[0].node.get_our_node_id(), &payment_params, &nodes[0].network_graph.read_only(),
 		Some(&nodes[0].node.list_usable_channels().iter().collect::<Vec<_>>()),
-		10_000, TEST_FINAL_CLTV, nodes[0].logger, &scorer).unwrap();
+		10_000, TEST_FINAL_CLTV, nodes[0].logger, &scorer, &random_seed_bytes).unwrap();
 
 	let (_, our_payment_hash, our_payment_secret) = get_payment_preimage_hash!(&nodes[1]);
 
@@ -9690,7 +9693,8 @@ fn test_keysend_payments_to_public_node() {
 		final_cltv_expiry_delta: 40,
 	};
 	let scorer = test_utils::TestScorer::with_penalty(0);
-	let route = find_route(&payer_pubkey, &route_params, network_graph, None, nodes[0].logger, &scorer).unwrap();
+	let random_seed_bytes = chanmon_cfgs[1].keys_manager.get_secure_random_bytes();
+	let route = find_route(&payer_pubkey, &route_params, network_graph, None, nodes[0].logger, &scorer, &random_seed_bytes).unwrap();
 
 	let test_preimage = PaymentPreimage([42; 32]);
 	let (payment_hash, _) = nodes[0].node.send_spontaneous_payment(&route, Some(test_preimage)).unwrap();
@@ -9724,9 +9728,10 @@ fn test_keysend_payments_to_private_node() {
 	let network_graph = nodes[0].network_graph;
 	let first_hops = nodes[0].node.list_usable_channels();
 	let scorer = test_utils::TestScorer::with_penalty(0);
+	let random_seed_bytes = chanmon_cfgs[1].keys_manager.get_secure_random_bytes();
 	let route = find_route(
 		&payer_pubkey, &route_params, network_graph, Some(&first_hops.iter().collect::<Vec<_>>()),
-		nodes[0].logger, &scorer
+		nodes[0].logger, &scorer, &random_seed_bytes
 	).unwrap();
 
 	let test_preimage = PaymentPreimage([42; 32]);

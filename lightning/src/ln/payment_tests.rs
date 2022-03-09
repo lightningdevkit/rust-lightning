@@ -14,6 +14,7 @@
 use chain::{ChannelMonitorUpdateErr, Confirm, Listen, Watch};
 use chain::channelmonitor::{ANTI_REORG_DELAY, ChannelMonitor, LATENCY_GRACE_PERIOD_BLOCKS};
 use chain::transaction::OutPoint;
+use chain::keysinterface::KeysInterface;
 use ln::channelmanager::{BREAKDOWN_TIMEOUT, ChannelManager, ChannelManagerReadArgs, PaymentId, PaymentSendFailure};
 use ln::features::{InitFeatures, InvoiceFeatures};
 use ln::msgs;
@@ -27,6 +28,7 @@ use util::ser::{ReadableArgs, Writeable};
 use io;
 
 use bitcoin::{Block, BlockHeader, BlockHash};
+use bitcoin::network::constants::Network;
 
 use prelude::*;
 
@@ -730,10 +732,12 @@ fn get_ldk_payment_preimage() {
 	let payment_params = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id())
 		.with_features(InvoiceFeatures::known());
 	let scorer = test_utils::TestScorer::with_penalty(0);
+	let keys_manager = test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
+	let random_seed_bytes = keys_manager.get_secure_random_bytes();
 	let route = get_route(
-		&nodes[0].node.get_our_node_id(), &payment_params, &nodes[0].network_graph,
+		&nodes[0].node.get_our_node_id(), &payment_params, &nodes[0].network_graph.read_only(),
 		Some(&nodes[0].node.list_usable_channels().iter().collect::<Vec<_>>()),
-		amt_msat, TEST_FINAL_CLTV, nodes[0].logger, &scorer).unwrap();
+		amt_msat, TEST_FINAL_CLTV, nodes[0].logger, &scorer, &random_seed_bytes).unwrap();
 	let _payment_id = nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret)).unwrap();
 	check_added_monitors!(nodes[0], 1);
 
