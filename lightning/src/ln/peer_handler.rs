@@ -307,12 +307,12 @@ const OUTBOUND_BUFFER_LIMIT_DROP_GOSSIP: usize = OUTBOUND_BUFFER_LIMIT_READ_PAUS
 /// Thus, to avoid needlessly disconnecting a peer, we allow a peer to take this many timer ticks
 /// per connected peer to respond to a ping, as long as they send us at least one message during
 /// each tick, ensuring we aren't actually just disconnected.
-/// With a timer tick interval of five seconds, this translates to about 30 seconds per connected
+/// With a timer tick interval of ten seconds, this translates to about 40 seconds per connected
 /// peer.
 ///
 /// When we improve parallelism somewhat we should reduce this to e.g. this many timer ticks per
 /// two connected peers, assuming most LDK-running systems have at least two cores.
-const MAX_BUFFER_DRAIN_TICK_INTERVALS_PER_PEER: i8 = 6;
+const MAX_BUFFER_DRAIN_TICK_INTERVALS_PER_PEER: i8 = 4;
 
 /// This is the minimum number of messages we expect a peer to be able to handle within one timer
 /// tick. Once we have sent this many messages since the last ping, we send a ping right away to
@@ -1572,9 +1572,9 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 	/// Send pings to each peer and disconnect those which did not respond to the last round of
 	/// pings.
 	///
-	/// This may be called on any timescale you want, however, roughly once every five to ten
-	/// seconds is preferred. The call rate determines both how often we send a ping to our peers
-	/// and how much time they have to respond before we disconnect them.
+	/// This may be called on any timescale you want, however, roughly once every ten seconds is
+	/// preferred. The call rate determines both how often we send a ping to our peers and how much
+	/// time they have to respond before we disconnect them.
 	///
 	/// May call [`send_data`] on all [`SocketDescriptor`]s. Thus, be very careful with reentrancy
 	/// issues!
