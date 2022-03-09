@@ -121,11 +121,11 @@ BlockSourceResult<ValidatedBlockHeader> {
 /// [`SpvClient`]: crate::SpvClient
 /// [`ChannelManager`]: lightning::ln::channelmanager::ChannelManager
 /// [`ChannelMonitor`]: lightning::chain::channelmonitor::ChannelMonitor
-pub async fn synchronize_listeners<B: BlockSource, C: Cache>(
+pub async fn synchronize_listeners<'a, B: BlockSource, C: Cache, L: chain::Listen + ?Sized>(
 	block_source: &mut B,
 	network: Network,
 	header_cache: &mut C,
-	mut chain_listeners: Vec<(BlockHash, &dyn chain::Listen)>,
+	mut chain_listeners: Vec<(BlockHash, &'a L)>,
 ) -> BlockSourceResult<ValidatedBlockHeader> {
 	let best_header = validate_best_block_header(block_source).await?;
 
@@ -198,9 +198,9 @@ impl<'a, C: Cache> Cache for ReadOnlyCache<'a, C> {
 }
 
 /// Wrapper for supporting dynamically sized chain listeners.
-struct DynamicChainListener<'a>(&'a dyn chain::Listen);
+struct DynamicChainListener<'a, L: chain::Listen + ?Sized>(&'a L);
 
-impl<'a> chain::Listen for DynamicChainListener<'a> {
+impl<'a, L: chain::Listen + ?Sized> chain::Listen for DynamicChainListener<'a, L> {
 	fn block_connected(&self, _block: &Block, _height: u32) {
 		unreachable!()
 	}
@@ -211,9 +211,9 @@ impl<'a> chain::Listen for DynamicChainListener<'a> {
 }
 
 /// A set of dynamically sized chain listeners, each paired with a starting block height.
-struct ChainListenerSet<'a>(Vec<(u32, &'a dyn chain::Listen)>);
+struct ChainListenerSet<'a, L: chain::Listen + ?Sized>(Vec<(u32, &'a L)>);
 
-impl<'a> chain::Listen for ChainListenerSet<'a> {
+impl<'a, L: chain::Listen + ?Sized> chain::Listen for ChainListenerSet<'a, L> {
 	fn block_connected(&self, block: &Block, height: u32) {
 		for (starting_height, chain_listener) in self.0.iter() {
 			if height > *starting_height {
