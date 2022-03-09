@@ -20,6 +20,7 @@
 //! # use lightning::routing::network_graph::NetworkGraph;
 //! # use lightning::routing::router::{RouteParameters, find_route};
 //! # use lightning::routing::scoring::{ProbabilisticScorer, ProbabilisticScoringParameters, Scorer, ScoringParameters};
+//! # use lightning::chain::keysinterface::{KeysManager, KeysInterface};
 //! # use lightning::util::logger::{Logger, Record};
 //! # use secp256k1::key::PublicKey;
 //! #
@@ -40,8 +41,9 @@
 //!     ..ProbabilisticScoringParameters::default()
 //! };
 //! let scorer = ProbabilisticScorer::new(params, &network_graph);
+//! # let random_seed_bytes = [42u8; 32];
 //!
-//! let route = find_route(&payer, &route_params, &network_graph, None, &logger, &scorer);
+//! let route = find_route(&payer, &route_params, &network_graph, None, &logger, &scorer, &random_seed_bytes);
 //! # }
 //! ```
 //!

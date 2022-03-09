@@ -10,7 +10,7 @@
 //! A bunch of useful utilities for building networks of nodes and exchanging messages between
 //! nodes for functional tests.
 
-use chain::{BestBlock, Confirm, Listen, Watch};
+use chain::{BestBlock, Confirm, Listen, Watch, keysinterface::KeysInterface};
 use chain::channelmonitor::ChannelMonitor;
 use chain::transaction::OutPoint;
 use ln::{PaymentPreimage, PaymentHash, PaymentSecret};
@@ -1094,15 +1094,18 @@ macro_rules! get_route_and_payment_hash {
 		$crate::get_route_and_payment_hash!($send_node, $recv_node, vec![], $recv_value, TEST_FINAL_CLTV)
 	}};
 	($send_node: expr, $recv_node: expr, $last_hops: expr, $recv_value: expr, $cltv: expr) => {{
+		use $crate::chain::keysinterface::KeysInterface;
 		let (payment_preimage, payment_hash, payment_secret) = $crate::get_payment_preimage_hash!($recv_node, Some($recv_value));
 		let payment_params = $crate::routing::router::PaymentParameters::from_node_id($recv_node.node.get_our_node_id())
 			.with_features($crate::ln::features::InvoiceFeatures::known())
 			.with_route_hints($last_hops);
 		let scorer = $crate::util::test_utils::TestScorer::with_penalty(0);
+		let keys_manager = $crate::util::test_utils::TestKeysInterface::new(&[0u8; 32], bitcoin::network::constants::Network::Testnet);
+		let random_seed_bytes = keys_manager.get_secure_random_bytes();
 		let route = $crate::routing::router::get_route(
-			&$send_node.node.get_our_node_id(), &payment_params, $send_node.network_graph,
+			&$send_node.node.get_our_node_id(), &payment_params, &$send_node.network_graph.read_only(),
 			Some(&$send_node.node.list_usable_channels().iter().collect::<Vec<_>>()),
-			$recv_value, $cltv, $send_node.logger, &scorer
+			$recv_value, $cltv, $send_node.logger, &scorer, &random_seed_bytes
 		).unwrap();
 		(route, payment_hash, payment_preimage, payment_secret)
 	}}
@@ -1557,11 +1560,15 @@ pub const TEST_FINAL_CLTV: u32 = 70;
 pub fn route_payment<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route: &[&Node<'a, 'b, 'c>], recv_value: u64) -> (PaymentPreimage, PaymentHash, PaymentSecret) {
 	let payment_params = PaymentParameters::from_node_id(expected_route.last().unwrap().node.get_our_node_id())
 		.with_features(InvoiceFeatures::known());
+	let network_graph = origin_node.network_graph.read_only();
 	let scorer = test_utils::TestScorer::with_penalty(0);
+	let seed = [0u8; 32];
+	let keys_manager = test_utils::TestKeysInterface::new(&seed, Network::Testnet);
+	let random_seed_bytes = keys_manager.get_secure_random_bytes();
 	let route = get_route(
-		&origin_node.node.get_our_node_id(), &payment_params, &origin_node.network_graph,
+		&origin_node.node.get_our_node_id(), &payment_params, &network_graph,
 		Some(&origin_node.node.list_usable_channels().iter().collect::<Vec<_>>()),
-		recv_value, TEST_FINAL_CLTV, origin_node.logger, &scorer).unwrap();
+		recv_value, TEST_FINAL_CLTV, origin_node.logger, &scorer, &random_seed_bytes).unwrap();
 	assert_eq!(route.paths.len(), 1);
 	assert_eq!(route.paths[0].len(), expected_route.len());
 	for (node, hop) in expected_route.iter().zip(route.paths[0].iter()) {
@@ -1575,10 +1582,14 @@ pub fn route_payment<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route:
 pub fn route_over_limit<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route: &[&Node<'a, 'b, 'c>], recv_value: u64)  {
 	let payment_params = PaymentParameters::from_node_id(expected_route.last().unwrap().node.get_our_node_id())
 		.with_features(InvoiceFeatures::known());
+	let network_graph = origin_node.network_graph.read_only();
 	let scorer = test_utils::TestScorer::with_penalty(0);
+	let seed = [0u8; 32];
+	let keys_manager = test_utils::TestKeysInterface::new(&seed, Network::Testnet);
+	let random_seed_bytes = keys_manager.get_secure_random_bytes();
 	let route = get_route(
-		&origin_node.node.get_our_node_id(), &payment_params, origin_node.network_graph,
-		None, recv_value, TEST_FINAL_CLTV, origin_node.logger, &scorer).unwrap();
+		&origin_node.node.get_our_node_id(), &payment_params, &network_graph,
+		None, recv_value, TEST_FINAL_CLTV, origin_node.logger, &scorer, &random_seed_bytes).unwrap();
 	assert_eq!(route.paths.len(), 1);
 	assert_eq!(route.paths[0].len(), expected_route.len());
 	for (node, hop) in expected_route.iter().zip(route.paths[0].iter()) {

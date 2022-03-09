@@ -250,6 +250,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 					}
 				}
 				let scorer = FixedPenaltyScorer::with_penalty(0);
+				let random_seed_bytes: [u8; 32] = [get_slice!(1)[0]; 32];
 				for target in node_pks.iter() {
 					let route_params = RouteParameters {
 						payment_params: PaymentParameters::from_node_id(*target).with_route_hints(last_hops.clone()),
@@ -258,7 +259,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 					};
 					let _ = find_route(&our_pubkey, &route_params, &net_graph,
 						first_hops.map(|c| c.iter().collect::<Vec<_>>()).as_ref().map(|a| a.as_slice()),
-						Arc::clone(&logger), &scorer);
+						Arc::clone(&logger), &scorer, &random_seed_bytes);
 				}
 			},
 		}

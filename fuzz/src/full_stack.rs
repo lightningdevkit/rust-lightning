@@ -459,7 +459,8 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 					final_value_msat,
 					final_cltv_expiry_delta: 42,
 				};
-				let route = match find_route(&our_id, &params, &network_graph, None, Arc::clone(&logger), &scorer) {
+				let random_seed_bytes: [u8; 32] = keys_manager.get_secure_random_bytes();
+				let route = match find_route(&our_id, &params, &network_graph, None, Arc::clone(&logger), &scorer, &random_seed_bytes) {
 					Ok(route) => route,
 					Err(_) => return,
 				};
@@ -482,7 +483,8 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 					final_value_msat,
 					final_cltv_expiry_delta: 42,
 				};
-				let mut route = match find_route(&our_id, &params, &network_graph, None, Arc::clone(&logger), &scorer) {
+				let random_seed_bytes: [u8; 32] = keys_manager.get_secure_random_bytes();
+				let mut route = match find_route(&our_id, &params, &network_graph, None, Arc::clone(&logger), &scorer, &random_seed_bytes) {
 					Ok(route) => route,
 					Err(_) => return,
 				};
