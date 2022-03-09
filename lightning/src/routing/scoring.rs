@@ -648,20 +648,23 @@ impl<T: Time> ChannelLiquidity<T> {
 }
 
 impl<L: Deref<Target = u64>, T: Time, U: Deref<Target = T>> DirectedChannelLiquidity<L, T, U> {
-	/// Returns the success probability of routing the given HTLC `amount_msat` through the channel
-	/// in this direction.
-	fn success_probability(&self, amount_msat: u64) -> f64 {
+	/// Returns a penalty for routing the given HTLC `amount_msat` through the channel in this
+	/// direction.
+	fn penalty_msat(&self, amount_msat: u64, liquidity_penalty_multiplier_msat: u64) -> u64 {
 		let max_liquidity_msat = self.max_liquidity_msat();
 		let min_liquidity_msat = core::cmp::min(self.min_liquidity_msat(), max_liquidity_msat);
 		if amount_msat > max_liquidity_msat {
-			0.0
+			u64::max_value()
 		} else if amount_msat <= min_liquidity_msat {
-			1.0
+			0
 		} else {
 			let numerator = max_liquidity_msat + 1 - amount_msat;
 			let denominator = max_liquidity_msat + 1 - min_liquidity_msat;
-			numerator as f64 / denominator as f64
-		}.max(0.01) // Lower bound the success probability to ensure some channel is selected.
+			approx::negative_log10_times_1024(numerator, denominator)
+				.saturating_mul(liquidity_penalty_multiplier_msat) / 1024
+		}
+		// Upper bound the penalty to ensure some channel is selected.
+		.min(2 * liquidity_penalty_multiplier_msat)
 	}
 
 	/// Returns the lower bound of the channel liquidity balance in this direction.
@@ -735,15 +738,11 @@ impl<G: Deref<Target = NetworkGraph>, T: Time> Score for ProbabilisticScorerUsin
 	) -> u64 {
 		let liquidity_penalty_multiplier_msat = self.params.liquidity_penalty_multiplier_msat;
 		let liquidity_offset_half_life = self.params.liquidity_offset_half_life;
-		let success_probability = self.channel_liquidities
+		self.channel_liquidities
 			.get(&short_channel_id)
 			.unwrap_or(&ChannelLiquidity::new())
 			.as_directed(source, target, capacity_msat, liquidity_offset_half_life)
-			.success_probability(amount_msat);
-		// NOTE: If success_probability is ever changed to return 0.0, log10 is undefined so return
-		// u64::max_value instead.
-		debug_assert!(success_probability > core::f64::EPSILON);
-		(-(success_probability.log10()) * liquidity_penalty_multiplier_msat as f64) as u64
+			.penalty_msat(amount_msat, liquidity_penalty_multiplier_msat)
 	}
 
 	fn payment_path_failed(&mut self, path: &[&RouteHop], short_channel_id: u64) {
@@ -795,6 +794,122 @@ impl<G: Deref<Target = NetworkGraph>, T: Time> Score for ProbabilisticScorerUsin
 					.or_insert_with(ChannelLiquidity::new)
 					.as_directed_mut(source, &target, capacity_msat, liquidity_offset_half_life)
 					.successful(amount_msat);
+			}
+		}
+	}
+}
+
+mod approx {
+	const BITS: u32 = 64;
+	const HIGHEST_BIT: u32 = BITS - 1;
+	const LOWER_BITS: u32 = 4;
+	const LOWER_BITS_BOUND: u64 = 1 << LOWER_BITS;
+	const LOWER_BITMASK: u64 = (1 << LOWER_BITS) - 1;
+
+	/// Look-up table for `log10(x) * 1024` where row `i` is used for each `x` having `i` as the
+	/// most significant bit. The next 4 bits of `x`, if applicable, are used for the second index.
+	const LOG10_TIMES_1024: [[u16; LOWER_BITS_BOUND as usize]; BITS as usize] = [
+		[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+		[308, 308, 308, 308, 308, 308, 308, 308, 489, 489, 489, 489, 489, 489, 489, 489],
+		[617, 617, 617, 617, 716, 716, 716, 716, 797, 797, 797, 797, 865, 865, 865, 865],
+		[925, 925, 977, 977, 1024, 1024, 1066, 1066, 1105, 1105, 1141, 1141, 1174, 1174, 1204, 1204],
+		[1233, 1260, 1285, 1309, 1332, 1354, 1375, 1394, 1413, 1431, 1449, 1466, 1482, 1497, 1513, 1527],
+		[1541, 1568, 1594, 1618, 1641, 1662, 1683, 1703, 1722, 1740, 1757, 1774, 1790, 1806, 1821, 1835],
+		[1850, 1876, 1902, 1926, 1949, 1970, 1991, 2011, 2030, 2048, 2065, 2082, 2098, 2114, 2129, 2144],
+		[2158, 2185, 2210, 2234, 2257, 2279, 2299, 2319, 2338, 2356, 2374, 2390, 2407, 2422, 2437, 2452],
+		[2466, 2493, 2518, 2542, 2565, 2587, 2608, 2627, 2646, 2665, 2682, 2699, 2715, 2731, 2746, 2760],
+		[2774, 2801, 2827, 2851, 2874, 2895, 2916, 2936, 2955, 2973, 2990, 3007, 3023, 3039, 3054, 3068],
+		[3083, 3110, 3135, 3159, 3182, 3203, 3224, 3244, 3263, 3281, 3298, 3315, 3331, 3347, 3362, 3377],
+		[3391, 3418, 3443, 3467, 3490, 3512, 3532, 3552, 3571, 3589, 3607, 3623, 3640, 3655, 3670, 3685],
+		[3699, 3726, 3751, 3775, 3798, 3820, 3841, 3860, 3879, 3898, 3915, 3932, 3948, 3964, 3979, 3993],
+		[4007, 4034, 4060, 4084, 4107, 4128, 4149, 4169, 4188, 4206, 4223, 4240, 4256, 4272, 4287, 4301],
+		[4316, 4343, 4368, 4392, 4415, 4436, 4457, 4477, 4496, 4514, 4531, 4548, 4564, 4580, 4595, 4610],
+		[4624, 4651, 4676, 4700, 4723, 4745, 4765, 4785, 4804, 4822, 4840, 4857, 4873, 4888, 4903, 4918],
+		[4932, 4959, 4984, 5009, 5031, 5053, 5074, 5093, 5112, 5131, 5148, 5165, 5181, 5197, 5212, 5226],
+		[5240, 5267, 5293, 5317, 5340, 5361, 5382, 5402, 5421, 5439, 5456, 5473, 5489, 5505, 5520, 5534],
+		[5549, 5576, 5601, 5625, 5648, 5670, 5690, 5710, 5729, 5747, 5764, 5781, 5797, 5813, 5828, 5843],
+		[5857, 5884, 5909, 5933, 5956, 5978, 5998, 6018, 6037, 6055, 6073, 6090, 6106, 6121, 6136, 6151],
+		[6165, 6192, 6217, 6242, 6264, 6286, 6307, 6326, 6345, 6364, 6381, 6398, 6414, 6430, 6445, 6459],
+		[6473, 6500, 6526, 6550, 6573, 6594, 6615, 6635, 6654, 6672, 6689, 6706, 6722, 6738, 6753, 6767],
+		[6782, 6809, 6834, 6858, 6881, 6903, 6923, 6943, 6962, 6980, 6998, 7014, 7030, 7046, 7061, 7076],
+		[7090, 7117, 7142, 7166, 7189, 7211, 7231, 7251, 7270, 7288, 7306, 7323, 7339, 7354, 7369, 7384],
+		[7398, 7425, 7450, 7475, 7497, 7519, 7540, 7560, 7578, 7597, 7614, 7631, 7647, 7663, 7678, 7692],
+		[7706, 7733, 7759, 7783, 7806, 7827, 7848, 7868, 7887, 7905, 7922, 7939, 7955, 7971, 7986, 8001],
+		[8015, 8042, 8067, 8091, 8114, 8136, 8156, 8176, 8195, 8213, 8231, 8247, 8263, 8279, 8294, 8309],
+		[8323, 8350, 8375, 8399, 8422, 8444, 8464, 8484, 8503, 8521, 8539, 8556, 8572, 8587, 8602, 8617],
+		[8631, 8658, 8684, 8708, 8730, 8752, 8773, 8793, 8811, 8830, 8847, 8864, 8880, 8896, 8911, 8925],
+		[8939, 8966, 8992, 9016, 9039, 9060, 9081, 9101, 9120, 9138, 9155, 9172, 9188, 9204, 9219, 9234],
+		[9248, 9275, 9300, 9324, 9347, 9369, 9389, 9409, 9428, 9446, 9464, 9480, 9497, 9512, 9527, 9542],
+		[9556, 9583, 9608, 9632, 9655, 9677, 9698, 9717, 9736, 9754, 9772, 9789, 9805, 9820, 9835, 9850],
+		[9864, 9891, 9917, 9941, 9963, 9985, 10006, 10026, 10044, 10063, 10080, 10097, 10113, 10129, 10144, 10158],
+		[10172, 10199, 10225, 10249, 10272, 10293, 10314, 10334, 10353, 10371, 10388, 10405, 10421, 10437, 10452, 10467],
+		[10481, 10508, 10533, 10557, 10580, 10602, 10622, 10642, 10661, 10679, 10697, 10713, 10730, 10745, 10760, 10775],
+		[10789, 10816, 10841, 10865, 10888, 10910, 10931, 10950, 10969, 10987, 11005, 11022, 11038, 11053, 11068, 11083],
+		[11097, 11124, 11150, 11174, 11196, 11218, 11239, 11259, 11277, 11296, 11313, 11330, 11346, 11362, 11377, 11391],
+		[11405, 11432, 11458, 11482, 11505, 11526, 11547, 11567, 11586, 11604, 11621, 11638, 11654, 11670, 11685, 11700],
+		[11714, 11741, 11766, 11790, 11813, 11835, 11855, 11875, 11894, 11912, 11930, 11946, 11963, 11978, 11993, 12008],
+		[12022, 12049, 12074, 12098, 12121, 12143, 12164, 12183, 12202, 12220, 12238, 12255, 12271, 12286, 12301, 12316],
+		[12330, 12357, 12383, 12407, 12429, 12451, 12472, 12492, 12511, 12529, 12546, 12563, 12579, 12595, 12610, 12624],
+		[12638, 12665, 12691, 12715, 12738, 12759, 12780, 12800, 12819, 12837, 12854, 12871, 12887, 12903, 12918, 12933],
+		[12947, 12974, 12999, 13023, 13046, 13068, 13088, 13108, 13127, 13145, 13163, 13179, 13196, 13211, 13226, 13241],
+		[13255, 13282, 13307, 13331, 13354, 13376, 13397, 13416, 13435, 13453, 13471, 13488, 13504, 13519, 13535, 13549],
+		[13563, 13590, 13616, 13640, 13662, 13684, 13705, 13725, 13744, 13762, 13779, 13796, 13812, 13828, 13843, 13857],
+		[13871, 13898, 13924, 13948, 13971, 13992, 14013, 14033, 14052, 14070, 14087, 14104, 14120, 14136, 14151, 14166],
+		[14180, 14207, 14232, 14256, 14279, 14301, 14321, 14341, 14360, 14378, 14396, 14412, 14429, 14444, 14459, 14474],
+		[14488, 14515, 14540, 14564, 14587, 14609, 14630, 14649, 14668, 14686, 14704, 14721, 14737, 14752, 14768, 14782],
+		[14796, 14823, 14849, 14873, 14895, 14917, 14938, 14958, 14977, 14995, 15012, 15029, 15045, 15061, 15076, 15090],
+		[15104, 15131, 15157, 15181, 15204, 15225, 15246, 15266, 15285, 15303, 15320, 15337, 15353, 15369, 15384, 15399],
+		[15413, 15440, 15465, 15489, 15512, 15534, 15554, 15574, 15593, 15611, 15629, 15645, 15662, 15677, 15692, 15707],
+		[15721, 15748, 15773, 15797, 15820, 15842, 15863, 15882, 15901, 15919, 15937, 15954, 15970, 15985, 16001, 16015],
+		[16029, 16056, 16082, 16106, 16128, 16150, 16171, 16191, 16210, 16228, 16245, 16262, 16278, 16294, 16309, 16323],
+		[16337, 16364, 16390, 16414, 16437, 16458, 16479, 16499, 16518, 16536, 16553, 16570, 16586, 16602, 16617, 16632],
+		[16646, 16673, 16698, 16722, 16745, 16767, 16787, 16807, 16826, 16844, 16862, 16878, 16895, 16910, 16925, 16940],
+		[16954, 16981, 17006, 17030, 17053, 17075, 17096, 17115, 17134, 17152, 17170, 17187, 17203, 17218, 17234, 17248],
+		[17262, 17289, 17315, 17339, 17361, 17383, 17404, 17424, 17443, 17461, 17478, 17495, 17511, 17527, 17542, 17556],
+		[17571, 17597, 17623, 17647, 17670, 17691, 17712, 17732, 17751, 17769, 17786, 17803, 17819, 17835, 17850, 17865],
+		[17879, 17906, 17931, 17955, 17978, 18000, 18020, 18040, 18059, 18077, 18095, 18111, 18128, 18143, 18158, 18173],
+		[18187, 18214, 18239, 18263, 18286, 18308, 18329, 18348, 18367, 18385, 18403, 18420, 18436, 18452, 18467, 18481],
+		[18495, 18522, 18548, 18572, 18595, 18616, 18637, 18657, 18676, 18694, 18711, 18728, 18744, 18760, 18775, 18789],
+		[18804, 18830, 18856, 18880, 18903, 18924, 18945, 18965, 18984, 19002, 19019, 19036, 19052, 19068, 19083, 19098],
+		[19112, 19139, 19164, 19188, 19211, 19233, 19253, 19273, 19292, 19310, 19328, 19344, 19361, 19376, 19391, 19406],
+		[19420, 19447, 19472, 19496, 19519, 19541, 19562, 19581, 19600, 19619, 19636, 19653, 19669, 19685, 19700, 19714],
+	];
+
+	/// Approximate `log10(numerator / denominator) * 1024` using a look-up table.
+	#[inline]
+	pub fn negative_log10_times_1024(numerator: u64, denominator: u64) -> u64 {
+		// Multiply the -1 through to avoid needing to use signed numbers.
+		(log10_times_1024(denominator) - log10_times_1024(numerator)) as u64
+	}
+
+	#[inline]
+	fn log10_times_1024(x: u64) -> u16 {
+		debug_assert_ne!(x, 0);
+		let most_significant_bit = HIGHEST_BIT - x.leading_zeros();
+		let lower_bits = (x >> most_significant_bit.saturating_sub(LOWER_BITS)) & LOWER_BITMASK;
+		LOG10_TIMES_1024[most_significant_bit as usize][lower_bits as usize]
+	}
+
+	#[cfg(test)]
+	mod tests {
+		use super::*;
+
+		#[test]
+		fn prints_negative_log10_times_1024_lookup_table() {
+			for msb in 0..BITS {
+				for i in 0..LOWER_BITS_BOUND {
+					let x = ((LOWER_BITS_BOUND + i) << (HIGHEST_BIT - LOWER_BITS)) >> (HIGHEST_BIT - msb);
+					let log10_times_1024 = ((x as f64).log10() * 1024.0).round() as u16;
+					assert_eq!(log10_times_1024, LOG10_TIMES_1024[msb as usize][i as usize]);
+
+					if i % LOWER_BITS_BOUND == 0 {
+						print!("\t\t[{}, ", log10_times_1024);
+					} else if i % LOWER_BITS_BOUND == LOWER_BITS_BOUND - 1 {
+						println!("{}],", log10_times_1024);
+					} else {
+						print!("{}, ", log10_times_1024);
+					}
+				}
 			}
 		}
 	}
@@ -1614,18 +1729,18 @@ mod tests {
 		let source = source_node_id();
 		let target = target_node_id();
 
-		assert_eq!(scorer.channel_penalty_msat(42, 100, 100_000, &source, &target), 0);
-		assert_eq!(scorer.channel_penalty_msat(42, 1_000, 100_000, &source, &target), 4);
-		assert_eq!(scorer.channel_penalty_msat(42, 10_000, 100_000, &source, &target), 45);
-		assert_eq!(scorer.channel_penalty_msat(42, 100_000, 100_000, &source, &target), 2_000);
+		assert_eq!(scorer.channel_penalty_msat(42, 1_024, 1_024_000, &source, &target), 0);
+		assert_eq!(scorer.channel_penalty_msat(42, 10_240, 1_024_000, &source, &target), 14);
+		assert_eq!(scorer.channel_penalty_msat(42, 102_400, 1_024_000, &source, &target), 43);
+		assert_eq!(scorer.channel_penalty_msat(42, 1_024_000, 1_024_000, &source, &target), 2_000);
 
-		assert_eq!(scorer.channel_penalty_msat(42, 125, 1_000, &source, &target), 57);
-		assert_eq!(scorer.channel_penalty_msat(42, 250, 1_000, &source, &target), 124);
-		assert_eq!(scorer.channel_penalty_msat(42, 375, 1_000, &source, &target), 203);
-		assert_eq!(scorer.channel_penalty_msat(42, 500, 1_000, &source, &target), 300);
-		assert_eq!(scorer.channel_penalty_msat(42, 625, 1_000, &source, &target), 425);
-		assert_eq!(scorer.channel_penalty_msat(42, 750, 1_000, &source, &target), 600);
-		assert_eq!(scorer.channel_penalty_msat(42, 875, 1_000, &source, &target), 900);
+		assert_eq!(scorer.channel_penalty_msat(42, 128, 1_024, &source, &target), 58);
+		assert_eq!(scorer.channel_penalty_msat(42, 256, 1_024, &source, &target), 125);
+		assert_eq!(scorer.channel_penalty_msat(42, 374, 1_024, &source, &target), 204);
+		assert_eq!(scorer.channel_penalty_msat(42, 512, 1_024, &source, &target), 301);
+		assert_eq!(scorer.channel_penalty_msat(42, 640, 1_024, &source, &target), 426);
+		assert_eq!(scorer.channel_penalty_msat(42, 768, 1_024, &source, &target), 602);
+		assert_eq!(scorer.channel_penalty_msat(42, 896, 1_024, &source, &target), 903);
 	}
 
 	#[test]
@@ -1681,9 +1796,9 @@ mod tests {
 		let target = target_node_id();
 		let path = payment_path_for_amount(500);
 
-		assert_eq!(scorer.channel_penalty_msat(42, 250, 1_000, &source, &target), 124);
+		assert_eq!(scorer.channel_penalty_msat(42, 250, 1_000, &source, &target), 128);
 		assert_eq!(scorer.channel_penalty_msat(42, 500, 1_000, &source, &target), 300);
-		assert_eq!(scorer.channel_penalty_msat(42, 750, 1_000, &source, &target), 600);
+		assert_eq!(scorer.channel_penalty_msat(42, 750, 1_000, &source, &target), 601);
 
 		scorer.payment_path_failed(&path.iter().collect::<Vec<_>>(), 43);
 
@@ -1703,9 +1818,9 @@ mod tests {
 		let target = target_node_id();
 		let path = payment_path_for_amount(500);
 
-		assert_eq!(scorer.channel_penalty_msat(42, 250, 1_000, &source, &target), 124);
+		assert_eq!(scorer.channel_penalty_msat(42, 250, 1_000, &source, &target), 128);
 		assert_eq!(scorer.channel_penalty_msat(42, 500, 1_000, &source, &target), 300);
-		assert_eq!(scorer.channel_penalty_msat(42, 750, 1_000, &source, &target), 600);
+		assert_eq!(scorer.channel_penalty_msat(42, 750, 1_000, &source, &target), 601);
 
 		scorer.payment_path_failed(&path.iter().collect::<Vec<_>>(), 42);
 
@@ -1727,13 +1842,13 @@ mod tests {
 		let recipient = recipient_node_id();
 		let path = payment_path_for_amount(500);
 
-		assert_eq!(scorer.channel_penalty_msat(41, 250, 1_000, &sender, &source), 124);
-		assert_eq!(scorer.channel_penalty_msat(42, 250, 1_000, &source, &target), 124);
-		assert_eq!(scorer.channel_penalty_msat(43, 250, 1_000, &target, &recipient), 124);
+		assert_eq!(scorer.channel_penalty_msat(41, 250, 1_000, &sender, &source), 128);
+		assert_eq!(scorer.channel_penalty_msat(42, 250, 1_000, &source, &target), 128);
+		assert_eq!(scorer.channel_penalty_msat(43, 250, 1_000, &target, &recipient), 128);
 
 		scorer.payment_path_successful(&path.iter().collect::<Vec<_>>());
 
-		assert_eq!(scorer.channel_penalty_msat(41, 250, 1_000, &sender, &source), 124);
+		assert_eq!(scorer.channel_penalty_msat(41, 250, 1_000, &sender, &source), 128);
 		assert_eq!(scorer.channel_penalty_msat(42, 250, 1_000, &source, &target), 300);
 		assert_eq!(scorer.channel_penalty_msat(43, 250, 1_000, &target, &recipient), 300);
 	}
@@ -1756,20 +1871,20 @@ mod tests {
 		scorer.payment_path_failed(&payment_path_for_amount(128).iter().collect::<Vec<_>>(), 43);
 
 		assert_eq!(scorer.channel_penalty_msat(42, 128, 1_024, &source, &target), 0);
-		assert_eq!(scorer.channel_penalty_msat(42, 256, 1_024, &source, &target), 92);
-		assert_eq!(scorer.channel_penalty_msat(42, 768, 1_024, &source, &target), 1_424);
+		assert_eq!(scorer.channel_penalty_msat(42, 256, 1_024, &source, &target), 97);
+		assert_eq!(scorer.channel_penalty_msat(42, 768, 1_024, &source, &target), 1_409);
 		assert_eq!(scorer.channel_penalty_msat(42, 896, 1_024, &source, &target), 2_000);
 
 		SinceEpoch::advance(Duration::from_secs(9));
 		assert_eq!(scorer.channel_penalty_msat(42, 128, 1_024, &source, &target), 0);
-		assert_eq!(scorer.channel_penalty_msat(42, 256, 1_024, &source, &target), 92);
-		assert_eq!(scorer.channel_penalty_msat(42, 768, 1_024, &source, &target), 1_424);
+		assert_eq!(scorer.channel_penalty_msat(42, 256, 1_024, &source, &target), 97);
+		assert_eq!(scorer.channel_penalty_msat(42, 768, 1_024, &source, &target), 1_409);
 		assert_eq!(scorer.channel_penalty_msat(42, 896, 1_024, &source, &target), 2_000);
 
 		SinceEpoch::advance(Duration::from_secs(1));
 		assert_eq!(scorer.channel_penalty_msat(42, 64, 1_024, &source, &target), 0);
 		assert_eq!(scorer.channel_penalty_msat(42, 128, 1_024, &source, &target), 34);
-		assert_eq!(scorer.channel_penalty_msat(42, 896, 1_024, &source, &target), 1_812);
+		assert_eq!(scorer.channel_penalty_msat(42, 896, 1_024, &source, &target), 1_773);
 		assert_eq!(scorer.channel_penalty_msat(42, 960, 1_024, &source, &target), 2_000);
 
 		// Fully decay liquidity lower bound.
@@ -1799,18 +1914,18 @@ mod tests {
 		let mut scorer = ProbabilisticScorer::new(params, &network_graph);
 		let source = source_node_id();
 		let target = target_node_id();
-		assert_eq!(scorer.channel_penalty_msat(42, 256, 1_024, &source, &target), 124);
+		assert_eq!(scorer.channel_penalty_msat(42, 256, 1_024, &source, &target), 125);
 
 		scorer.payment_path_failed(&payment_path_for_amount(512).iter().collect::<Vec<_>>(), 42);
-		assert_eq!(scorer.channel_penalty_msat(42, 256, 1_024, &source, &target), 281);
+		assert_eq!(scorer.channel_penalty_msat(42, 256, 1_024, &source, &target), 274);
 
 		// An unchecked right shift 64 bits or more in DirectedChannelLiquidity::decayed_offset_msat
 		// would cause an overflow.
 		SinceEpoch::advance(Duration::from_secs(10 * 64));
-		assert_eq!(scorer.channel_penalty_msat(42, 256, 1_024, &source, &target), 124);
+		assert_eq!(scorer.channel_penalty_msat(42, 256, 1_024, &source, &target), 125);
 
 		SinceEpoch::advance(Duration::from_secs(10));
-		assert_eq!(scorer.channel_penalty_msat(42, 256, 1_024, &source, &target), 124);
+		assert_eq!(scorer.channel_penalty_msat(42, 256, 1_024, &source, &target), 125);
 	}
 
 	#[test]
@@ -1824,30 +1939,30 @@ mod tests {
 		let source = source_node_id();
 		let target = target_node_id();
 
-		assert_eq!(scorer.channel_penalty_msat(42, 512, 1_024, &source, &target), 300);
+		assert_eq!(scorer.channel_penalty_msat(42, 512, 1_024, &source, &target), 301);
 
 		// More knowledge gives higher confidence (256, 768), meaning a lower penalty.
 		scorer.payment_path_failed(&payment_path_for_amount(768).iter().collect::<Vec<_>>(), 42);
 		scorer.payment_path_failed(&payment_path_for_amount(256).iter().collect::<Vec<_>>(), 43);
-		assert_eq!(scorer.channel_penalty_msat(42, 512, 1_024, &source, &target), 281);
+		assert_eq!(scorer.channel_penalty_msat(42, 512, 1_024, &source, &target), 274);
 
 		// Decaying knowledge gives less confidence (128, 896), meaning a higher penalty.
 		SinceEpoch::advance(Duration::from_secs(10));
-		assert_eq!(scorer.channel_penalty_msat(42, 512, 1_024, &source, &target), 293);
+		assert_eq!(scorer.channel_penalty_msat(42, 512, 1_024, &source, &target), 301);
 
 		// Reducing the upper bound gives more confidence (128, 832) that the payment amount (512)
 		// is closer to the upper bound, meaning a higher penalty.
 		scorer.payment_path_successful(&payment_path_for_amount(64).iter().collect::<Vec<_>>());
-		assert_eq!(scorer.channel_penalty_msat(42, 512, 1_024, &source, &target), 333);
+		assert_eq!(scorer.channel_penalty_msat(42, 512, 1_024, &source, &target), 342);
 
 		// Increasing the lower bound gives more confidence (256, 832) that the payment amount (512)
 		// is closer to the lower bound, meaning a lower penalty.
 		scorer.payment_path_failed(&payment_path_for_amount(256).iter().collect::<Vec<_>>(), 43);
-		assert_eq!(scorer.channel_penalty_msat(42, 512, 1_024, &source, &target), 247);
+		assert_eq!(scorer.channel_penalty_msat(42, 512, 1_024, &source, &target), 255);
 
 		// Further decaying affects the lower bound more than the upper bound (128, 928).
 		SinceEpoch::advance(Duration::from_secs(10));
-		assert_eq!(scorer.channel_penalty_msat(42, 512, 1_024, &source, &target), 280);
+		assert_eq!(scorer.channel_penalty_msat(42, 512, 1_024, &source, &target), 284);
 	}
 
 	#[test]
@@ -1865,7 +1980,7 @@ mod tests {
 		assert_eq!(scorer.channel_penalty_msat(42, 500, 1_000, &source, &target), 2_000);
 
 		SinceEpoch::advance(Duration::from_secs(10));
-		assert_eq!(scorer.channel_penalty_msat(42, 500, 1_000, &source, &target), 475);
+		assert_eq!(scorer.channel_penalty_msat(42, 500, 1_000, &source, &target), 472);
 
 		scorer.payment_path_failed(&payment_path_for_amount(250).iter().collect::<Vec<_>>(), 43);
 		assert_eq!(scorer.channel_penalty_msat(42, 500, 1_000, &source, &target), 300);
@@ -1901,12 +2016,12 @@ mod tests {
 		let mut serialized_scorer = io::Cursor::new(&serialized_scorer);
 		let deserialized_scorer =
 			<ProbabilisticScorer>::read(&mut serialized_scorer, (params, &network_graph)).unwrap();
-		assert_eq!(deserialized_scorer.channel_penalty_msat(42, 500, 1_000, &source, &target), 475);
+		assert_eq!(deserialized_scorer.channel_penalty_msat(42, 500, 1_000, &source, &target), 472);
 
 		scorer.payment_path_failed(&payment_path_for_amount(250).iter().collect::<Vec<_>>(), 43);
 		assert_eq!(scorer.channel_penalty_msat(42, 500, 1_000, &source, &target), 300);
 
 		SinceEpoch::advance(Duration::from_secs(10));
-		assert_eq!(deserialized_scorer.channel_penalty_msat(42, 500, 1_000, &source, &target), 367);
+		assert_eq!(deserialized_scorer.channel_penalty_msat(42, 500, 1_000, &source, &target), 371);
 	}
 }

@@ -1537,9 +1537,9 @@ where L::Target: Logger {
 
 #[cfg(test)]
 mod tests {
-	use routing::scoring::{ProbabilisticScorer, ProbabilisticScoringParameters, Score};
 	use routing::network_graph::{NetworkGraph, NetGraphMsgHandler, NodeId};
 	use routing::router::{get_route, PaymentParameters, Route, RouteHint, RouteHintHop, RouteHop, RoutingFees};
+	use routing::scoring::Score;
 	use chain::transaction::OutPoint;
 	use ln::features::{ChannelFeatures, InitFeatures, InvoiceFeatures, NodeFeatures};
 	use ln::msgs::{ErrorAction, LightningError, OptionalField, UnsignedChannelAnnouncement, ChannelAnnouncement, RoutingMessageHandler,
@@ -4970,6 +4970,8 @@ mod tests {
 	#[test]
 	#[cfg(not(feature = "no-std"))]
 	fn generate_routes() {
+		use routing::scoring::{ProbabilisticScorer, ProbabilisticScoringParameters};
+
 		let mut d = match super::test_utils::get_route_file() {
 			Ok(f) => f,
 			Err(e) => {
@@ -5002,6 +5004,8 @@ mod tests {
 	#[test]
 	#[cfg(not(feature = "no-std"))]
 	fn generate_routes_mpp() {
+		use routing::scoring::{ProbabilisticScorer, ProbabilisticScoringParameters};
+
 		let mut d = match super::test_utils::get_route_file() {
 			Ok(f) => f,
 			Err(e) => {

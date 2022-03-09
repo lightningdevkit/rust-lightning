@@ -411,7 +411,10 @@ impl events::MessageSendEventsProvider for TestRoutingMessageHandler {
 
 pub struct TestLogger {
 	level: Level,
+	#[cfg(feature = "std")]
 	id: String,
+	#[cfg(not(feature = "std"))]
+	_id: String,
 	pub lines: Mutex<HashMap<(String, String), usize>>,
 }
 
@@ -422,7 +425,10 @@ impl TestLogger {
 	pub fn with_id(id: String) -> TestLogger {
 		TestLogger {
 			level: Level::Trace,
+			#[cfg(feature = "std")]
 			id,
+			#[cfg(not(feature = "std"))]
+			_id: id,
 			lines: Mutex::new(HashMap::new())
 		}
 	}

@@ -10,7 +10,9 @@ use lightning::chain;
 use lightning::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use lightning::chain::keysinterface::{Recipient, KeysInterface, Sign};
 use lightning::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
-use lightning::ln::channelmanager::{ChannelDetails, ChannelManager, PaymentId, PaymentSendFailure, PhantomRouteHints, MIN_FINAL_CLTV_EXPIRY, MIN_CLTV_EXPIRY_DELTA};
+use lightning::ln::channelmanager::{ChannelDetails, ChannelManager, PaymentId, PaymentSendFailure, MIN_FINAL_CLTV_EXPIRY};
+#[cfg(feature = "std")]
+use lightning::ln::channelmanager::{PhantomRouteHints, MIN_CLTV_EXPIRY_DELTA};
 use lightning::ln::msgs::LightningError;
 use lightning::routing::scoring::Score;
 use lightning::routing::network_graph::{NetworkGraph, RoutingFees};

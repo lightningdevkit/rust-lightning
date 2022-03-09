@@ -8,3 +8,4 @@ lightning-c-bindings/a.out
 Cargo.lock
 .idea
 lightning/target
+no-std-check/target
