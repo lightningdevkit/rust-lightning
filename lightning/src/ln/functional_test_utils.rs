@@ -693,6 +693,61 @@ pub fn create_announced_chan_between_nodes_with_value<'a, 'b, 'c, 'd>(nodes: &'a
 	(chan_announcement.1, chan_announcement.2, chan_announcement.3, chan_announcement.4)
 }
 
+pub fn create_unannounced_chan_between_nodes_with_value<'a, 'b, 'c, 'd>(nodes: &'a Vec<Node<'b, 'c, 'd>>, a: usize, b: usize, channel_value: u64, push_msat: u64, a_flags: InitFeatures, b_flags: InitFeatures) -> (msgs::FundingLocked, Transaction) {
+	let mut no_announce_cfg = test_default_channel_config();
+	no_announce_cfg.channel_options.announced_channel = false;
+	nodes[a].node.create_channel(nodes[b].node.get_our_node_id(), channel_value, push_msat, 42, Some(no_announce_cfg)).unwrap();
+	let open_channel = get_event_msg!(nodes[a], MessageSendEvent::SendOpenChannel, nodes[b].node.get_our_node_id());
+	nodes[b].node.handle_open_channel(&nodes[a].node.get_our_node_id(), a_flags, &open_channel);
+	let accept_channel = get_event_msg!(nodes[b], MessageSendEvent::SendAcceptChannel, nodes[a].node.get_our_node_id());
+	nodes[a].node.handle_accept_channel(&nodes[b].node.get_our_node_id(), b_flags, &accept_channel);
+
+	let (temporary_channel_id, tx, _) = create_funding_transaction(&nodes[a], channel_value, 42);
+	nodes[a].node.funding_transaction_generated(&temporary_channel_id, tx.clone()).unwrap();
+	nodes[b].node.handle_funding_created(&nodes[a].node.get_our_node_id(), &get_event_msg!(nodes[a], MessageSendEvent::SendFundingCreated, nodes[b].node.get_our_node_id()));
+	check_added_monitors!(nodes[b], 1);
+
+	let cs_funding_signed = get_event_msg!(nodes[b], MessageSendEvent::SendFundingSigned, nodes[a].node.get_our_node_id());
+	nodes[a].node.handle_funding_signed(&nodes[b].node.get_our_node_id(), &cs_funding_signed);
+	check_added_monitors!(nodes[a], 1);
+
+	let conf_height = core::cmp::max(nodes[a].best_block_info().1 + 1, nodes[b].best_block_info().1 + 1);
+	confirm_transaction_at(&nodes[a], &tx, conf_height);
+	connect_blocks(&nodes[a], CHAN_CONFIRM_DEPTH - 1);
+	confirm_transaction_at(&nodes[b], &tx, conf_height);
+	connect_blocks(&nodes[b], CHAN_CONFIRM_DEPTH - 1);
+	let as_funding_locked = get_event_msg!(nodes[a], MessageSendEvent::SendFundingLocked, nodes[b].node.get_our_node_id());
+	nodes[a].node.handle_funding_locked(&nodes[b].node.get_our_node_id(), &get_event_msg!(nodes[b], MessageSendEvent::SendFundingLocked, nodes[a].node.get_our_node_id()));
+	let as_update = get_event_msg!(nodes[a], MessageSendEvent::SendChannelUpdate, nodes[b].node.get_our_node_id());
+	nodes[b].node.handle_funding_locked(&nodes[a].node.get_our_node_id(), &as_funding_locked);
+	let bs_update = get_event_msg!(nodes[b], MessageSendEvent::SendChannelUpdate, nodes[a].node.get_our_node_id());
+
+	nodes[a].node.handle_channel_update(&nodes[b].node.get_our_node_id(), &bs_update);
+	nodes[b].node.handle_channel_update(&nodes[a].node.get_our_node_id(), &as_update);
+
+	let mut found_a = false;
+	for chan in nodes[a].node.list_usable_channels() {
+		if chan.channel_id == as_funding_locked.channel_id {
+			assert!(!found_a);
+			found_a = true;
+			assert!(!chan.is_public);
+		}
+	}
+	assert!(found_a);
+
+	let mut found_b = false;
+	for chan in nodes[b].node.list_usable_channels() {
+		if chan.channel_id == as_funding_locked.channel_id {
+			assert!(!found_b);
+			found_b = true;
+			assert!(!chan.is_public);
+		}
+	}
+	assert!(found_b);
+
+	(as_funding_locked, tx)
+}
+
 pub fn update_nodes_with_chan_announce<'a, 'b, 'c, 'd>(nodes: &'a Vec<Node<'b, 'c, 'd>>, a: usize, b: usize, ann: &msgs::ChannelAnnouncement, upd_1: &msgs::ChannelUpdate, upd_2: &msgs::ChannelUpdate) {
 	nodes[a].node.broadcast_node_announcement([0, 0, 0], [0; 32], Vec::new());
 	let a_events = nodes[a].node.get_and_clear_pending_msg_events();
@@ -748,6 +803,11 @@ pub fn update_nodes_with_chan_announce<'a, 'b, 'c, 'd>(nodes: &'a Vec<Node<'b, '
 		node.net_graph_msg_handler.handle_channel_update(upd_2).unwrap();
 		node.net_graph_msg_handler.handle_node_announcement(&a_node_announcement).unwrap();
 		node.net_graph_msg_handler.handle_node_announcement(&b_node_announcement).unwrap();
+
+		// Note that channel_updates are also delivered to ChannelManagers to ensure we have
+		// forwarding info for local channels even if its not accepted in the network graph.
+		node.node.handle_channel_update(&nodes[a].node.get_our_node_id(), &upd_1);
+		node.node.handle_channel_update(&nodes[b].node.get_our_node_id(), &upd_2);
 	}
 }
 
