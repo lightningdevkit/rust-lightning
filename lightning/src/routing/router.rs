@@ -5433,7 +5433,7 @@ mod benches {
 		let mut routes = Vec::new();
 		let mut route_endpoints = Vec::new();
 		let mut seed: usize = 0xdeadbeef;
-		'load_endpoints: for _ in 0..100 {
+		'load_endpoints: for _ in 0..150 {
 			loop {
 				seed *= 0xdeadbeef;
 				let src = PublicKey::from_slice(nodes.keys().skip(seed % nodes.len()).next().unwrap().as_slice()).unwrap();
@@ -5464,6 +5464,15 @@ mod benches {
 				}
 			}
 		}
+
+		// Because we've changed channel scores, its possible we'll take different routes to the
+		// selected destinations, possibly causing us to fail because, eg, the newly-selected path
+		// requires a too-high CLTV delta.
+		route_endpoints.retain(|(first_hop, params, amt)| {
+			get_route(&payer, params, &graph.read_only(), Some(&[first_hop]), *amt, 42, &DummyLogger{}, &scorer, &random_seed_bytes).is_ok()
+		});
+		route_endpoints.truncate(100);
+		assert_eq!(route_endpoints.len(), 100);
 
 		// ...then benchmark finding paths between the nodes we learned.
 		let mut idx = 0;
