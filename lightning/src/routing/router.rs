@@ -2488,7 +2488,8 @@ mod tests {
 		let random_seed_bytes = keys_manager.get_secure_random_bytes();
 
 		// Disable nodes 1, 2, and 8 by requiring unknown feature bits
-		let unknown_features = NodeFeatures::known().set_unknown_feature_required();
+		let mut unknown_features = NodeFeatures::known();
+		unknown_features.set_unknown_feature_required();
 		add_or_update_node(&net_graph_msg_handler, &secp_ctx, &privkeys[0], unknown_features.clone(), 1);
 		add_or_update_node(&net_graph_msg_handler, &secp_ctx, &privkeys[1], unknown_features.clone(), 1);
 		add_or_update_node(&net_graph_msg_handler, &secp_ctx, &privkeys[7], unknown_features.clone(), 1);
