@@ -75,6 +75,11 @@ pub enum DecodeError {
 pub struct Init {
 	/// The relevant features which the sender supports
 	pub features: InitFeatures,
+	/// The receipient's network address. This adds the option to report a remote IP address 
+	/// back to a connecting peer using the init message. A node can decide to use that information
+	/// to discover a potential update to its public IPv4 address (NAT) and use
+    /// that for a node_announcement update message containg the new address.
+	pub remote_network_address: Option<NetAddress>,
 }
 
 /// An error message to be sent or received from a peer
@@ -1167,7 +1172,11 @@ impl Writeable for Init {
 		// global_features gets the bottom 13 bits of our features, and local_features gets all of
 		// our relevant feature bits. This keeps us compatible with old nodes.
 		self.features.write_up_to_13(w)?;
-		self.features.write(w)
+		self.features.write(w)?;
+		encode_tlv_stream!(w, {
+			(3, self.remote_network_address, option)
+		});
+		Ok(())
 	}
 }
 
@@ -1175,8 +1184,13 @@ impl Readable for Init {
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		let global_features: InitFeatures = Readable::read(r)?;
 		let features: InitFeatures = Readable::read(r)?;
+		let mut remote_network_address: Option<NetAddress> = None;
+		decode_tlv_stream!(r, {
+			(3, remote_network_address, option)
+		});
 		Ok(Init {
 			features: features.or(global_features),
+			remote_network_address,
 		})
 	}
 }
@@ -2447,13 +2461,27 @@ mod tests {
 	fn encoding_init() {
 		assert_eq!(msgs::Init {
 			features: InitFeatures::from_le_bytes(vec![0xFF, 0xFF, 0xFF]),
+			remote_network_address: None,
 		}.encode(), hex::decode("00023fff0003ffffff").unwrap());
 		assert_eq!(msgs::Init {
 			features: InitFeatures::from_le_bytes(vec![0xFF]),
+			remote_network_address: None,
 		}.encode(), hex::decode("0001ff0001ff").unwrap());
 		assert_eq!(msgs::Init {
 			features: InitFeatures::from_le_bytes(vec![]),
+			remote_network_address: None,
 		}.encode(), hex::decode("00000000").unwrap());
+
+		let init_msg = msgs::Init { features: InitFeatures::from_le_bytes(vec![]),
+			remote_network_address: Some(msgs::NetAddress::IPv4 {
+				addr: [127, 0, 0, 1],
+				port: 1000,
+			}),
+		};
+		let encoded_value = init_msg.encode();
+		let target_value = hex::decode("000000000307017f00000103e8").unwrap(); 
+		assert_eq!(encoded_value, target_value);
+		assert_eq!(msgs::Init::read(&mut Cursor::new(&target_value)).unwrap(),init_msg);
 	}
 
 	#[test]

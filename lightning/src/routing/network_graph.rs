@@ -2284,7 +2284,7 @@ mod tests {
 
 		// It should ignore if gossip_queries feature is not enabled
 		{
-			let init_msg = Init { features: InitFeatures::known().clear_gossip_queries() };
+			let init_msg = Init { features: InitFeatures::known().clear_gossip_queries(), remote_network_address: None };
 			net_graph_msg_handler.peer_connected(&node_id_1, &init_msg);
 			let events = net_graph_msg_handler.get_and_clear_pending_msg_events();
 			assert_eq!(events.len(), 0);
@@ -2292,7 +2292,7 @@ mod tests {
 
 		// It should send a query_channel_message with the correct information
 		{
-			let init_msg = Init { features: InitFeatures::known() };
+			let init_msg = Init { features: InitFeatures::known(), remote_network_address: None };
 			net_graph_msg_handler.peer_connected(&node_id_1, &init_msg);
 			let events = net_graph_msg_handler.get_and_clear_pending_msg_events();
 			assert_eq!(events.len(), 2);
@@ -2322,7 +2322,7 @@ mod tests {
 		{
 			let network_graph = create_network_graph();
 			let (secp_ctx, net_graph_msg_handler) = create_net_graph_msg_handler(&network_graph);
-			let init_msg = Init { features: InitFeatures::known() };
+			let init_msg = Init { features: InitFeatures::known(), remote_network_address: None };
 			for n in 1..7 {
 				let node_privkey = &SecretKey::from_slice(&[n; 32]).unwrap();
 				let node_id = PublicKey::from_secret_key(&secp_ctx, node_privkey);

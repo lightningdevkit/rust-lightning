@@ -505,7 +505,7 @@ mod tests {
 		let mut reader = io::Cursor::new(buffer);
 		let decoded_msg = read(&mut reader, &IgnoringMessageHandler{}).unwrap();
 		match decoded_msg {
-			Message::Init(msgs::Init { features }) => {
+			Message::Init(msgs::Init { features, .. }) => {
 				assert!(features.supports_variable_length_onion());
 				assert!(features.supports_upfront_shutdown_script());
 				assert!(features.supports_gossip_queries());

@@ -422,7 +422,7 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 					}
 				}
 				if new_id == 0 { return; }
-				loss_detector.handler.new_outbound_connection(get_pubkey!(), Peer{id: (new_id - 1) as u8, peers_connected: &peers}).unwrap();
+				loss_detector.handler.new_outbound_connection(get_pubkey!(), Peer{id: (new_id - 1) as u8, peers_connected: &peers}, None).unwrap();
 				peers.borrow_mut()[new_id - 1] = true;
 			},
 			1 => {
@@ -434,7 +434,7 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 					}
 				}
 				if new_id == 0 { return; }
-				loss_detector.handler.new_inbound_connection(Peer{id: (new_id - 1) as u8, peers_connected: &peers}).unwrap();
+				loss_detector.handler.new_inbound_connection(Peer{id: (new_id - 1) as u8, peers_connected: &peers}, None).unwrap();
 				peers.borrow_mut()[new_id - 1] = true;
 			},
 			2 => {

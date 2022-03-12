@@ -411,8 +411,8 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 	let mut channel_txn = Vec::new();
 	macro_rules! make_channel {
 		($source: expr, $dest: expr, $chan_id: expr) => { {
-			$source.peer_connected(&$dest.get_our_node_id(), &Init { features: InitFeatures::known() });
-			$dest.peer_connected(&$source.get_our_node_id(), &Init { features: InitFeatures::known() });
+			$source.peer_connected(&$dest.get_our_node_id(), &Init { features: InitFeatures::known(), remote_network_address: None });
+			$dest.peer_connected(&$source.get_our_node_id(), &Init { features: InitFeatures::known(), remote_network_address: None });
 
 			$source.create_channel($dest.get_our_node_id(), 100_000, 42, 0, None).unwrap();
 			let open_channel = {
@@ -921,15 +921,15 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 			},
 			0x0e => {
 				if chan_a_disconnected {
-					nodes[0].peer_connected(&nodes[1].get_our_node_id(), &Init { features: InitFeatures::known() });
-					nodes[1].peer_connected(&nodes[0].get_our_node_id(), &Init { features: InitFeatures::known() });
+					nodes[0].peer_connected(&nodes[1].get_our_node_id(), &Init { features: InitFeatures::known(), remote_network_address: None });
+					nodes[1].peer_connected(&nodes[0].get_our_node_id(), &Init { features: InitFeatures::known(), remote_network_address: None });
 					chan_a_disconnected = false;
 				}
 			},
 			0x0f => {
 				if chan_b_disconnected {
-					nodes[1].peer_connected(&nodes[2].get_our_node_id(), &Init { features: InitFeatures::known() });
-					nodes[2].peer_connected(&nodes[1].get_our_node_id(), &Init { features: InitFeatures::known() });
+					nodes[1].peer_connected(&nodes[2].get_our_node_id(), &Init { features: InitFeatures::known(), remote_network_address: None });
+					nodes[2].peer_connected(&nodes[1].get_our_node_id(), &Init { features: InitFeatures::known(), remote_network_address: None });
 					chan_b_disconnected = false;
 				}
 			},
@@ -1124,13 +1124,13 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 
 				// Next, make sure peers are all connected to each other
 				if chan_a_disconnected {
-					nodes[0].peer_connected(&nodes[1].get_our_node_id(), &Init { features: InitFeatures::known() });
-					nodes[1].peer_connected(&nodes[0].get_our_node_id(), &Init { features: InitFeatures::known() });
+					nodes[0].peer_connected(&nodes[1].get_our_node_id(), &Init { features: InitFeatures::known(), remote_network_address: None });
+					nodes[1].peer_connected(&nodes[0].get_our_node_id(), &Init { features: InitFeatures::known(), remote_network_address: None });
 					chan_a_disconnected = false;
 				}
 				if chan_b_disconnected {
-					nodes[1].peer_connected(&nodes[2].get_our_node_id(), &Init { features: InitFeatures::known() });
-					nodes[2].peer_connected(&nodes[1].get_our_node_id(), &Init { features: InitFeatures::known() });
+					nodes[1].peer_connected(&nodes[2].get_our_node_id(), &Init { features: InitFeatures::known(), remote_network_address: None });
+					nodes[2].peer_connected(&nodes[1].get_our_node_id(), &Init { features: InitFeatures::known(), remote_network_address: None });
 					chan_b_disconnected = false;
 				}
 

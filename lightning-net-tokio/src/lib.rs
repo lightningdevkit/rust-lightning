@@ -226,7 +226,7 @@ pub fn setup_inbound<CMH, RMH, L, UMH>(peer_manager: Arc<peer_handler::PeerManag
 	#[cfg(debug_assertions)]
 	let last_us = Arc::clone(&us);
 
-	let handle_opt = if let Ok(_) = peer_manager.new_inbound_connection(SocketDescriptor::new(us.clone())) {
+	let handle_opt = if let Ok(_) = peer_manager.new_inbound_connection(SocketDescriptor::new(us.clone()), None) {
 		Some(tokio::spawn(Connection::schedule_read(peer_manager, us, reader, read_receiver, write_receiver)))
 	} else {
 		// Note that we will skip socket_disconnected here, in accordance with the PeerManager
@@ -267,7 +267,7 @@ pub fn setup_outbound<CMH, RMH, L, UMH>(peer_manager: Arc<peer_handler::PeerMana
 	#[cfg(debug_assertions)]
 	let last_us = Arc::clone(&us);
 
-	let handle_opt = if let Ok(initial_send) = peer_manager.new_outbound_connection(their_node_id, SocketDescriptor::new(us.clone())) {
+	let handle_opt = if let Ok(initial_send) = peer_manager.new_outbound_connection(their_node_id, SocketDescriptor::new(us.clone()), None) {
 		Some(tokio::spawn(async move {
 			// We should essentially always have enough room in a TCP socket buffer to send the
 			// initial 10s of bytes. However, tokio running in single-threaded mode will always
