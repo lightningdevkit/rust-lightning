@@ -12,7 +12,7 @@
 //! returned errors decode to the correct thing.
 
 use chain::channelmonitor::{CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS};
-use chain::keysinterface::{KeysInterface, Recipient};
+use chain::keysinterface::{Recipient, KeysInterface};
 use ln::{PaymentHash, PaymentSecret};
 use ln::channelmanager::{HTLCForwardInfo, CLTV_FAR_FAR_AWAY, MIN_CLTV_EXPIRY_DELTA, PendingHTLCInfo, PendingHTLCRouting};
 use ln::onion_utils;
@@ -33,7 +33,7 @@ use bitcoin::hashes::sha256::Hash as Sha256;
 
 use bitcoin::secp256k1;
 use bitcoin::secp256k1::Secp256k1;
-use bitcoin::secp256k1::key::{PublicKey, SecretKey};
+use bitcoin::secp256k1::key::SecretKey;
 
 use io;
 use prelude::*;
@@ -580,8 +580,7 @@ fn test_onion_failure() {
 macro_rules! get_phantom_route {
 	($nodes: expr, $amt: expr, $channel: expr) => {{
 		let secp_ctx = Secp256k1::new();
-		let phantom_secret = $nodes[1].keys_manager.get_node_secret(Recipient::PhantomNode).unwrap();
-		let phantom_pubkey = PublicKey::from_secret_key(&secp_ctx, &phantom_secret);
+		let phantom_pubkey = $nodes[1].keys_manager.get_node_key(Recipient::PhantomNode, &secp_ctx).unwrap();
 		let phantom_route_hint = $nodes[1].node.get_phantom_route_hints();
 		let payment_params = PaymentParameters::from_node_id(phantom_pubkey)
 			.with_features(InvoiceFeatures::known())

@@ -25,8 +25,9 @@ use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::hash_types::WPubkeyHash;
 
+use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1::key::{SecretKey, PublicKey};
-use bitcoin::secp256k1::{Secp256k1, Signature, Signing};
+use bitcoin::secp256k1::{Secp256k1, Signature, Signing, All, SignOnly};
 use bitcoin::secp256k1::recovery::RecoverableSignature;
 use bitcoin::secp256k1;
 
@@ -37,7 +38,7 @@ use util::ser::{Writeable, Writer, Readable, ReadableArgs};
 use chain::transaction::OutPoint;
 use ln::{chan_utils, PaymentPreimage};
 use ln::chan_utils::{HTLCOutputInCommitment, make_funding_redeemscript, ChannelPublicKeys, HolderCommitmentTransaction, ChannelTransactionParameters, CommitmentTransaction, ClosingTransaction};
-use ln::msgs::UnsignedChannelAnnouncement;
+use ln::msgs::{UnsignedChannelAnnouncement, UnsignedChannelUpdate, UnsignedNodeAnnouncement};
 use ln::script::ShutdownScript;
 
 use prelude::*;
@@ -392,16 +393,60 @@ pub enum Recipient {
 	PhantomNode,
 }
 
+///
+pub trait SharedSecretProduce: Send + Sync {
+	///
+	fn public_key(&self, secp_ctx: &secp256k1::Secp256k1<SignOnly>) -> PublicKey;
+	///
+	fn shared_secret(&self, other: &PublicKey) -> SharedSecret;
+	///
+	fn do_clone(&self) -> Box<dyn SharedSecretProduce>;
+}
+
+///
+pub struct EphemeralSharedSecretProducer {
+	///
+	pub secret_key: SecretKey
+}
+
+impl SharedSecretProduce for EphemeralSharedSecretProducer {
+	fn public_key(&self, secp_ctx: &Secp256k1<SignOnly>) -> PublicKey {
+		PublicKey::from_secret_key(&secp_ctx, &self.secret_key)
+	}
+
+	fn shared_secret(&self, other: &PublicKey) -> SharedSecret {
+		SharedSecret::new(other, &self.secret_key)
+	}
+
+	fn do_clone(&self) -> Box<dyn SharedSecretProduce> {
+		Box::new(Self { secret_key: self.secret_key })
+	}
+}
+
+impl EphemeralSharedSecretProducer {
+	///
+	pub fn new(secret_key: SecretKey) -> Box<dyn SharedSecretProduce> {
+		Box::new( Self { secret_key })
+	}
+}
+
 /// A trait to describe an object which can get user secrets and key material.
 pub trait KeysInterface {
 	/// A type which implements Sign which will be returned by get_channel_signer.
 	type Signer : Sign;
 
-	/// Get node secret key (aka node_id or network_key) based on the provided [`Recipient`].
+	/// A shared secret producer using the node key
+	fn get_shared_secret_producer(&self) -> Box<dyn SharedSecretProduce>;
+
+	/// ECDH
+	fn shared_secret(&self, recipient: Recipient, other: &PublicKey) -> Result<SharedSecret, ()>;
+
+	/// Get node public key (AKA node ID)
 	///
 	/// This method must return the same value each time it is called with a given `Recipient`
 	/// parameter.
-	fn get_node_secret(&self, recipient: Recipient) -> Result<SecretKey, ()>;
+	fn get_node_key(&self, recipient: Recipient, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<PublicKey, ()>;
+
 	/// Get a script pubkey which we send funds to when claiming on-chain contestable outputs.
 	///
 	/// This method should return a different value each time it is called, to avoid linking
@@ -440,6 +485,12 @@ pub trait KeysInterface {
 	///
 	/// The secret key used to sign the invoice is dependent on the [`Recipient`].
 	fn sign_invoice(&self, hrp_bytes: &[u8], invoice_data: &[u5], receipient: Recipient) -> Result<RecoverableSignature, ()>;
+
+	/// Sign a node announcement
+	fn sign_node_announcement(&self, msg: &UnsignedNodeAnnouncement, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()>;
+
+	/// Sign a channel update
+	fn sign_channel_update(&self, msg: &UnsignedChannelUpdate, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()>;
 
 	/// Get secret key material as bytes for use in encrypting and decrypting inbound payment data.
 	///
@@ -1118,16 +1169,20 @@ impl KeysManager {
 
 		Ok(spend_tx)
 	}
-}
-
-impl KeysInterface for KeysManager {
-	type Signer = InMemorySigner;
 
 	fn get_node_secret(&self, recipient: Recipient) -> Result<SecretKey, ()> {
 		match recipient {
 			Recipient::Node => Ok(self.node_secret.clone()),
 			Recipient::PhantomNode => Err(())
 		}
+	}
+}
+
+impl KeysInterface for KeysManager {
+	type Signer = InMemorySigner;
+
+	fn get_shared_secret_producer(&self) -> Box<dyn SharedSecretProduce> {
+		EphemeralSharedSecretProducer::new(self.node_secret)
 	}
 
 	fn get_inbound_payment_key_material(&self) -> KeyMaterial {
@@ -1169,11 +1224,29 @@ impl KeysInterface for KeysManager {
 
 	fn sign_invoice(&self, hrp_bytes: &[u8], invoice_data: &[u5], recipient: Recipient) -> Result<RecoverableSignature, ()> {
 		let preimage = construct_invoice_preimage(&hrp_bytes, &invoice_data);
-		let secret = match recipient {
-			Recipient::Node => self.get_node_secret(Recipient::Node)?,
-			Recipient::PhantomNode => return Err(()),
-		};
+		let secret = self.get_node_secret(recipient)?;
 		Ok(self.secp_ctx.sign_recoverable(&hash_to_message!(&Sha256::hash(&preimage)), &secret))
+	}
+
+	fn sign_node_announcement(&self, msg: &UnsignedNodeAnnouncement, secp_ctx: &Secp256k1<All>) -> Result<Signature, ()> {
+		let msghash = hash_to_message!(&Sha256dHash::hash(&msg.encode()[..])[..]);
+		Ok(secp_ctx.sign(&msghash, &self.node_secret))
+
+	}
+
+	fn sign_channel_update(&self, msg: &UnsignedChannelUpdate, secp_ctx: &Secp256k1<All>) -> Result<Signature, ()> {
+		let msghash = hash_to_message!(&Sha256dHash::hash(&msg.encode()[..])[..]);
+		Ok(secp_ctx.sign(&msghash, &self.node_secret))
+	}
+
+	fn shared_secret(&self, recipient: Recipient, other: &PublicKey) -> Result<SharedSecret, ()> {
+		let secret = self.get_node_secret(recipient)?;
+		Ok(SharedSecret::new(other, &secret))
+	}
+
+	fn get_node_key(&self, recipient: Recipient, secp_ctx: &Secp256k1<All>) -> Result<PublicKey, ()> {
+		let secret = self.get_node_secret(recipient)?;
+		Ok(PublicKey::from_secret_key(&secp_ctx, &secret))
 	}
 }
 
@@ -1207,11 +1280,8 @@ pub struct PhantomKeysManager {
 impl KeysInterface for PhantomKeysManager {
 	type Signer = InMemorySigner;
 
-	fn get_node_secret(&self, recipient: Recipient) -> Result<SecretKey, ()> {
-		match recipient {
-			Recipient::Node => self.inner.get_node_secret(Recipient::Node),
-			Recipient::PhantomNode => Ok(self.phantom_secret.clone()),
-		}
+	fn get_shared_secret_producer(&self) -> Box<dyn SharedSecretProduce> {
+		EphemeralSharedSecretProducer::new(self.inner.node_secret)
 	}
 
 	fn get_inbound_payment_key_material(&self) -> KeyMaterial {
@@ -1242,6 +1312,23 @@ impl KeysInterface for PhantomKeysManager {
 		let preimage = construct_invoice_preimage(&hrp_bytes, &invoice_data);
 		let secret = self.get_node_secret(recipient)?;
 		Ok(self.inner.secp_ctx.sign_recoverable(&hash_to_message!(&Sha256::hash(&preimage)), &secret))
+	}
+
+	fn sign_node_announcement(&self, msg: &UnsignedNodeAnnouncement, secp_ctx: &Secp256k1<All>) -> Result<Signature, ()> {
+		self.inner.sign_node_announcement(msg, secp_ctx)
+	}
+
+	fn sign_channel_update(&self, msg: &UnsignedChannelUpdate, secp_ctx: &Secp256k1<All>) -> Result<Signature, ()> {
+		self.inner.sign_channel_update(msg, secp_ctx)
+	}
+
+	fn shared_secret(&self, recipient: Recipient, other: &PublicKey) -> Result<SharedSecret, ()> {
+		let secret = self.get_node_secret(recipient)?;
+		Ok(SharedSecret::new(other, &secret))
+	}
+
+	fn get_node_key(&self, recipient: Recipient, secp_ctx: &Secp256k1<All>) -> Result<PublicKey, ()> {
+		Ok(PublicKey::from_secret_key(&secp_ctx, &self.get_node_secret(recipient)?))
 	}
 }
 
@@ -1274,6 +1361,13 @@ impl PhantomKeysManager {
 	/// See [`KeysManager::derive_channel_keys`] for documentation on this method.
 	pub fn derive_channel_keys(&self, channel_value_satoshis: u64, params: &[u8; 32]) -> InMemorySigner {
 		self.inner.derive_channel_keys(channel_value_satoshis, params)
+	}
+
+	pub(crate) fn get_node_secret(&self, recipient: Recipient) -> Result<SecretKey, ()> {
+		match recipient {
+			Recipient::Node => Ok(self.inner.node_secret.clone()),
+			Recipient::PhantomNode => Ok(self.phantom_secret.clone())
+		}
 	}
 }
 

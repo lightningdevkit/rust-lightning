@@ -42,6 +42,7 @@ use core::convert::Infallible;
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::sha256::HashEngine as Sha256Engine;
 use bitcoin::hashes::{HashEngine, Hash};
+use chain::keysinterface::{EphemeralSharedSecretProducer, SharedSecretProduce};
 
 /// Handler for BOLT1-compliant messages.
 pub trait CustomMessageHandler: wire::CustomMessageReader {
@@ -412,7 +413,7 @@ pub struct PeerManager<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: De
 		CMH::Target: CustomMessageHandler {
 	message_handler: MessageHandler<CM, RM>,
 	peers: Mutex<PeerHolder<Descriptor>>,
-	our_node_secret: SecretKey,
+	shared_secret_producer: Box<dyn SharedSecretProduce>,
 	ephemeral_key_midstate: Sha256Engine,
 	custom_message_handler: CMH,
 
@@ -456,11 +457,11 @@ impl<Descriptor: SocketDescriptor, CM: Deref, L: Deref> PeerManager<Descriptor, 
 	/// cryptographically secure random bytes.
 	///
 	/// (C-not exported) as we can't export a PeerManager with a dummy route handler
-	pub fn new_channel_only(channel_message_handler: CM, our_node_secret: SecretKey, ephemeral_random_data: &[u8; 32], logger: L) -> Self {
+	pub fn new_channel_only(channel_message_handler: CM, protocol_encrypt: Box<dyn SharedSecretProduce>, ephemeral_random_data: &[u8; 32], logger: L) -> Self {
 		Self::new(MessageHandler {
 			chan_handler: channel_message_handler,
 			route_handler: IgnoringMessageHandler{},
-		}, our_node_secret, ephemeral_random_data, logger, IgnoringMessageHandler{})
+		}, protocol_encrypt, ephemeral_random_data, logger, IgnoringMessageHandler{})
 	}
 }
 
@@ -476,11 +477,11 @@ impl<Descriptor: SocketDescriptor, RM: Deref, L: Deref> PeerManager<Descriptor, 
 	/// cryptographically secure random bytes.
 	///
 	/// (C-not exported) as we can't export a PeerManager with a dummy channel handler
-	pub fn new_routing_only(routing_message_handler: RM, our_node_secret: SecretKey, ephemeral_random_data: &[u8; 32], logger: L) -> Self {
+	pub fn new_routing_only(routing_message_handler: RM, protocol_encrypt: Box<dyn SharedSecretProduce>, ephemeral_random_data: &[u8; 32], logger: L) -> Self {
 		Self::new(MessageHandler {
 			chan_handler: ErroringMessageHandler::new(),
 			route_handler: routing_message_handler,
-		}, our_node_secret, ephemeral_random_data, logger, IgnoringMessageHandler{})
+		}, protocol_encrypt, ephemeral_random_data, logger, IgnoringMessageHandler{})
 	}
 }
 
@@ -503,7 +504,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 	/// Constructs a new PeerManager with the given message handlers and node_id secret key
 	/// ephemeral_random_data is used to derive per-connection ephemeral keys and must be
 	/// cryptographically secure random bytes.
-	pub fn new(message_handler: MessageHandler<CM, RM>, our_node_secret: SecretKey, ephemeral_random_data: &[u8; 32], logger: L, custom_message_handler: CMH) -> Self {
+	pub fn new(message_handler: MessageHandler<CM, RM>, protocol_encrypt: Box<dyn SharedSecretProduce>, ephemeral_random_data: &[u8; 32], logger: L, custom_message_handler: CMH) -> Self {
 		let mut ephemeral_key_midstate = Sha256::engine();
 		ephemeral_key_midstate.input(ephemeral_random_data);
 
@@ -513,7 +514,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 				peers: HashMap::new(),
 				node_id_to_descriptor: HashMap::new()
 			}),
-			our_node_secret,
+			shared_secret_producer: protocol_encrypt,
 			ephemeral_key_midstate,
 			peer_counter: AtomicCounter::new(),
 			logger,
@@ -554,7 +555,8 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 	///
 	/// [`socket_disconnected()`]: PeerManager::socket_disconnected
 	pub fn new_outbound_connection(&self, their_node_id: PublicKey, descriptor: Descriptor) -> Result<Vec<u8>, PeerHandleError> {
-		let mut peer_encryptor = PeerChannelEncryptor::new_outbound(their_node_id.clone(), self.get_ephemeral_key());
+		let ephemeral_producer = EphemeralSharedSecretProducer::new(self.get_ephemeral_key());
+		let mut peer_encryptor = PeerChannelEncryptor::new_outbound(their_node_id.clone(), ephemeral_producer);
 		let res = peer_encryptor.get_act_one().to_vec();
 		let pending_read_buffer = [0; 50].to_vec(); // Noise act two is 50 bytes
 
@@ -595,7 +597,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 	///
 	/// [`socket_disconnected()`]: PeerManager::socket_disconnected
 	pub fn new_inbound_connection(&self, descriptor: Descriptor) -> Result<(), PeerHandleError> {
-		let peer_encryptor = PeerChannelEncryptor::new_inbound(&self.our_node_secret);
+		let peer_encryptor = PeerChannelEncryptor::new_inbound(self.shared_secret_producer.do_clone());
 		let pending_read_buffer = [0; 50].to_vec(); // Noise act one is 50 bytes
 
 		let mut peers = self.peers.lock().unwrap();
@@ -851,12 +853,13 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 							let next_step = peer.channel_encryptor.get_noise_step();
 							match next_step {
 								NextNoiseStep::ActOne => {
-									let act_two = try_potential_handleerror!(peer.channel_encryptor.process_act_one_with_keys(&peer.pending_read_buffer[..], &self.our_node_secret, self.get_ephemeral_key())).to_vec();
+									let ephemeral_producer = EphemeralSharedSecretProducer::new(self.get_ephemeral_key());
+									let act_two = try_potential_handleerror!(peer.channel_encryptor.process_act_one_with_keys(&peer.pending_read_buffer[..], self.shared_secret_producer.do_clone(), ephemeral_producer)).to_vec();
 									peer.pending_outbound_buffer.push_back(act_two);
 									peer.pending_read_buffer = [0; 66].to_vec(); // act three is 66 bytes long
 								},
 								NextNoiseStep::ActTwo => {
-									let (act_three, their_node_id) = try_potential_handleerror!(peer.channel_encryptor.process_act_two(&peer.pending_read_buffer[..], &self.our_node_secret));
+									let (act_three, their_node_id) = try_potential_handleerror!(peer.channel_encryptor.process_act_two(&peer.pending_read_buffer[..], self.shared_secret_producer.do_clone()));
 									peer.pending_outbound_buffer.push_back(act_three.to_vec());
 									peer.pending_read_buffer = [0; 18].to_vec(); // Message length header is 18 bytes
 									peer.pending_read_is_header = true;
@@ -1669,11 +1672,12 @@ mod tests {
 	use util::test_utils;
 
 	use bitcoin::secp256k1::Secp256k1;
-	use bitcoin::secp256k1::key::{SecretKey, PublicKey};
+	use bitcoin::secp256k1::key::SecretKey;
 
 	use prelude::*;
 	use sync::{Arc, Mutex};
 	use core::sync::atomic::Ordering;
+	use chain::keysinterface::EphemeralSharedSecretProducer;
 
 	#[derive(Clone)]
 	struct FileDescriptor {
@@ -1726,18 +1730,19 @@ mod tests {
 		let mut peers = Vec::new();
 		for i in 0..peer_count {
 			let node_secret = SecretKey::from_slice(&[42 + i as u8; 32]).unwrap();
+			let producer = EphemeralSharedSecretProducer::new(node_secret);
 			let ephemeral_bytes = [i as u8; 32];
 			let msg_handler = MessageHandler { chan_handler: &cfgs[i].chan_handler, route_handler: &cfgs[i].routing_handler };
-			let peer = PeerManager::new(msg_handler, node_secret, &ephemeral_bytes, &cfgs[i].logger, IgnoringMessageHandler {});
+			let peer = PeerManager::new(msg_handler, producer, &ephemeral_bytes, &cfgs[i].logger, IgnoringMessageHandler {});
 			peers.push(peer);
 		}
 
 		peers
 	}
 
-	fn establish_connection<'a>(peer_a: &PeerManager<FileDescriptor, &'a test_utils::TestChannelMessageHandler, &'a test_utils::TestRoutingMessageHandler, &'a test_utils::TestLogger, IgnoringMessageHandler>, peer_b: &PeerManager<FileDescriptor, &'a test_utils::TestChannelMessageHandler, &'a test_utils::TestRoutingMessageHandler, &'a test_utils::TestLogger, IgnoringMessageHandler>) -> (FileDescriptor, FileDescriptor) {
-		let secp_ctx = Secp256k1::new();
-		let a_id = PublicKey::from_secret_key(&secp_ctx, &peer_a.our_node_secret);
+	fn establish_connection<'a>(peer_a: &PeerManager<FileDescriptor, &'a test_utils::TestChannelMessageHandler, &'a test_utils::TestRoutingMessageHandler, &'a test_utils::TestLogger, IgnoringMessageHandler>, peer_b: &PeerManager<FileDescriptor, &'a test_utils::TestChannelMessageHandler, &'a test_utils::TestRoutingMessageHandler, &'a test_utils::TestLogger,IgnoringMessageHandler>) -> (FileDescriptor, FileDescriptor) {
+		let secp_ctx = Secp256k1::signing_only();
+		let a_id = peer_a.shared_secret_producer.public_key(&secp_ctx);
 		let mut fd_a = FileDescriptor { fd: 1, outbound_data: Arc::new(Mutex::new(Vec::new())) };
 		let mut fd_b = FileDescriptor { fd: 1, outbound_data: Arc::new(Mutex::new(Vec::new())) };
 		let initial_data = peer_b.new_outbound_connection(a_id, fd_b.clone()).unwrap();
@@ -1760,8 +1765,8 @@ mod tests {
 		establish_connection(&peers[0], &peers[1]);
 		assert_eq!(peers[0].peers.lock().unwrap().peers.len(), 1);
 
-		let secp_ctx = Secp256k1::new();
-		let their_id = PublicKey::from_secret_key(&secp_ctx, &peers[1].our_node_secret);
+		let secp_ctx = Secp256k1::signing_only();
+		let their_id = peers[1].shared_secret_producer.public_key(&secp_ctx);
 
 		chan_handler.pending_events.lock().unwrap().push(events::MessageSendEvent::HandleError {
 			node_id: their_id,
@@ -1844,8 +1849,9 @@ mod tests {
 		cfgs[1].routing_handler.request_full_sync.store(true, Ordering::Release);
 		let peers = create_network(2, &cfgs);
 
-		let secp_ctx = Secp256k1::new();
-		let a_id = PublicKey::from_secret_key(&secp_ctx, &peers[0].our_node_secret);
+		let secp_ctx = Secp256k1::signing_only();
+		let a_id = peers[0].shared_secret_producer.public_key(&secp_ctx);
+
 		let mut fd_a = FileDescriptor { fd: 1, outbound_data: Arc::new(Mutex::new(Vec::new())) };
 		let mut fd_b = FileDescriptor { fd: 1, outbound_data: Arc::new(Mutex::new(Vec::new())) };
 		let initial_data = peers[1].new_outbound_connection(a_id, fd_b.clone()).unwrap();

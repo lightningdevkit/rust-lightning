@@ -25,12 +25,10 @@ use bitcoin::network::constants::Network;
 
 use bitcoin::hashes::{Hash, HashEngine};
 use bitcoin::hashes::sha256::Hash as Sha256;
-use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::hash_types::{BlockHash, Txid};
 
 use bitcoin::secp256k1::key::{SecretKey,PublicKey};
 use bitcoin::secp256k1::Secp256k1;
-use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1;
 
 use chain;
@@ -985,7 +983,6 @@ pub struct ChannelManager<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, 
 	/// active channel list on load.
 	outbound_scid_aliases: Mutex<HashSet<u64>>,
 
-	our_network_key: SecretKey,
 	our_network_pubkey: PublicKey,
 
 	inbound_payment_key: inbound_payment::ExpandedKey,
@@ -1778,8 +1775,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			pending_inbound_payments: Mutex::new(HashMap::new()),
 			pending_outbound_payments: Mutex::new(HashMap::new()),
 
-			our_network_key: keys_manager.get_node_secret(Recipient::Node).unwrap(),
-			our_network_pubkey: PublicKey::from_secret_key(&secp_ctx, &keys_manager.get_node_secret(Recipient::Node).unwrap()),
+			our_network_pubkey: keys_manager.get_node_key(Recipient::Node, &secp_ctx).unwrap(),
 			secp_ctx,
 
 			inbound_payment_key: expanded_inbound_key,
@@ -2287,7 +2283,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 
 		let shared_secret = {
 			let mut arr = [0; 32];
-			arr.copy_from_slice(&SharedSecret::new(&msg.onion_routing_packet.public_key.unwrap(), &self.our_network_key)[..]);
+			let secret = self.keys_manager.shared_secret(Recipient::Node, &msg.onion_routing_packet.public_key.unwrap()).unwrap();
+			arr.copy_from_slice(&secret[..]);
 			arr
 		};
 
@@ -2514,7 +2511,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			Some(id) => id,
 		};
 
-		let were_node_one = PublicKey::from_secret_key(&self.secp_ctx, &self.our_network_key).serialize()[..] < chan.get_counterparty_node_id().serialize()[..];
+		let were_node_one = self.keys_manager.get_node_key(Recipient::Node, &self.secp_ctx).unwrap().serialize()[..] < chan.get_counterparty_node_id().serialize()[..];
 
 		let unsigned = msgs::UnsignedChannelUpdate {
 			chain_hash: self.genesis_hash,
@@ -2529,8 +2526,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			excess_data: Vec::new(),
 		};
 
-		let msg_hash = Sha256dHash::hash(&unsigned.encode()[..]);
-		let sig = self.secp_ctx.sign(&hash_to_message!(&msg_hash[..]), &self.our_network_key);
+		let sig = self.keys_manager.sign_channel_update(&unsigned, &self.secp_ctx).unwrap();
 
 		Ok(msgs::ChannelUpdate {
 			signature: sig,
@@ -3051,8 +3047,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			excess_address_data: Vec::new(),
 			excess_data: Vec::new(),
 		};
-		let msghash = hash_to_message!(&Sha256dHash::hash(&announcement.encode()[..])[..]);
-		let node_announce_sig = self.secp_ctx.sign(&msghash, &self.our_network_key);
+		let node_announce_sig = self.keys_manager.sign_node_announcement(&announcement, &self.secp_ctx).unwrap();
 
 		let mut channel_state_lock = self.channel_state.lock().unwrap();
 		let channel_state = &mut *channel_state_lock;
@@ -3129,11 +3124,11 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 												}
 											}
 											if let PendingHTLCRouting::Forward { onion_packet, .. } = routing {
-												let phantom_secret_res = self.keys_manager.get_node_secret(Recipient::PhantomNode);
-												if phantom_secret_res.is_ok() && fake_scid::is_valid_phantom(&self.fake_scid_rand_bytes, short_chan_id) {
+												let phantom_shared_secret_res = self.keys_manager.shared_secret(Recipient::PhantomNode, &onion_packet.public_key.unwrap());
+												if phantom_shared_secret_res.is_ok() && fake_scid::is_valid_phantom(&self.fake_scid_rand_bytes, short_chan_id) {
 													let phantom_shared_secret = {
 														let mut arr = [0; 32];
-														arr.copy_from_slice(&SharedSecret::new(&onion_packet.public_key.unwrap(), &phantom_secret_res.unwrap())[..]);
+														arr.copy_from_slice(&phantom_shared_secret_res.unwrap()[..]);
 														arr
 													};
 													let next_hop = match onion_utils::decode_next_hop(phantom_shared_secret, &onion_packet.hop_data, onion_packet.hmac, payment_hash) {
@@ -6850,11 +6845,10 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 			pending_events_read.append(&mut channel_closures);
 		}
 
-		let our_network_key = match args.keys_manager.get_node_secret(Recipient::Node) {
+		let our_network_pubkey = match args.keys_manager.get_node_key(Recipient::Node, &secp_ctx) {
 			Ok(key) => key,
 			Err(()) => return Err(DecodeError::InvalidValue)
 		};
-		let our_network_pubkey = PublicKey::from_secret_key(&secp_ctx, &our_network_key);
 		if let Some(network_pubkey) = received_network_pubkey {
 			if network_pubkey != our_network_pubkey {
 				log_error!(args.logger, "Key that was generated does not match the existing key.");
@@ -6912,7 +6906,6 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 			outbound_scid_aliases: Mutex::new(outbound_scid_aliases),
 			fake_scid_rand_bytes: fake_scid_rand_bytes.unwrap(),
 
-			our_network_key,
 			our_network_pubkey,
 			secp_ctx,
 

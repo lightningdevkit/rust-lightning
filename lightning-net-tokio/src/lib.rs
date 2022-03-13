@@ -475,6 +475,7 @@ mod tests {
 	use std::sync::atomic::{AtomicBool, Ordering};
 	use std::sync::{Arc, Mutex};
 	use std::time::Duration;
+	use lightning::chain::keysinterface::EphemeralSharedSecretProducer;
 
 	pub struct TestLogger();
 	impl lightning::util::logger::Logger for TestLogger {
@@ -560,7 +561,7 @@ mod tests {
 		let a_manager = Arc::new(PeerManager::new(MessageHandler {
 			chan_handler: Arc::clone(&a_handler),
 			route_handler: Arc::clone(&a_handler),
-		}, a_key.clone(), &[1; 32], Arc::new(TestLogger()), Arc::new(lightning::ln::peer_handler::IgnoringMessageHandler{})));
+		}, EphemeralSharedSecretProducer::new(a_key.clone()), &[1; 32], Arc::new(TestLogger()), Arc::new(lightning::ln::peer_handler::IgnoringMessageHandler{})));
 
 		let (b_connected_sender, mut b_connected) = mpsc::channel(1);
 		let (b_disconnected_sender, mut b_disconnected) = mpsc::channel(1);
@@ -574,7 +575,7 @@ mod tests {
 		let b_manager = Arc::new(PeerManager::new(MessageHandler {
 			chan_handler: Arc::clone(&b_handler),
 			route_handler: Arc::clone(&b_handler),
-		}, b_key.clone(), &[2; 32], Arc::new(TestLogger()), Arc::new(lightning::ln::peer_handler::IgnoringMessageHandler{})));
+		}, EphemeralSharedSecretProducer::new(b_key.clone()), &[2; 32], Arc::new(TestLogger()), Arc::new(lightning::ln::peer_handler::IgnoringMessageHandler{})));
 
 		// We bind on localhost, hoping the environment is properly configured with a local
 		// address. This may not always be the case in containers and the like, so if this test is

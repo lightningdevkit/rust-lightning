@@ -19,7 +19,7 @@ use chain::transaction::OutPoint;
 use chain::keysinterface;
 use ln::features::{ChannelFeatures, InitFeatures};
 use ln::msgs;
-use ln::msgs::OptionalField;
+use ln::msgs::{OptionalField, UnsignedChannelUpdate, UnsignedNodeAnnouncement};
 use ln::script::ShutdownScript;
 use routing::scoring::FixedPenaltyScorer;
 use util::enforcing_trait_impls::{EnforcingSigner, EnforcementState};
@@ -35,7 +35,8 @@ use bitcoin::blockdata::block::BlockHeader;
 use bitcoin::network::constants::Network;
 use bitcoin::hash_types::{BlockHash, Txid};
 
-use bitcoin::secp256k1::{SecretKey, PublicKey, Secp256k1, Signature};
+use bitcoin::secp256k1::ecdh::SharedSecret;
+use bitcoin::secp256k1::{SecretKey, PublicKey, Secp256k1, Signature, All};
 use bitcoin::secp256k1::recovery::RecoverableSignature;
 
 use regex;
@@ -47,7 +48,7 @@ use sync::{Mutex, Arc};
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use core::{cmp, mem};
 use bitcoin::bech32::u5;
-use chain::keysinterface::{InMemorySigner, Recipient, KeyMaterial};
+use chain::keysinterface::{InMemorySigner, Recipient, KeyMaterial, SharedSecretProduce};
 
 pub struct TestVecWriter(pub Vec<u8>);
 impl Writer for TestVecWriter {
@@ -70,7 +71,7 @@ pub struct OnlyReadsKeysInterface {}
 impl keysinterface::KeysInterface for OnlyReadsKeysInterface {
 	type Signer = EnforcingSigner;
 
-	fn get_node_secret(&self, _recipient: Recipient) -> Result<SecretKey, ()> { unreachable!(); }
+	fn get_shared_secret_producer(&self) -> Box<dyn SharedSecretProduce> { unreachable!(); }
 	fn get_inbound_payment_key_material(&self) -> KeyMaterial { unreachable!(); }
 	fn get_destination_script(&self) -> Script { unreachable!(); }
 	fn get_shutdown_scriptpubkey(&self) -> ShutdownScript { unreachable!(); }
@@ -89,6 +90,14 @@ impl keysinterface::KeysInterface for OnlyReadsKeysInterface {
 		))
 	}
 	fn sign_invoice(&self, _hrp_bytes: &[u8], _invoice_data: &[u5], _recipient: Recipient) -> Result<RecoverableSignature, ()> { unreachable!(); }
+
+	fn sign_node_announcement(&self, _msg: &UnsignedNodeAnnouncement, _secp_ctx: &Secp256k1<All>) -> Result<Signature, ()> { unreachable!() }
+
+	fn sign_channel_update(&self, _msg: &UnsignedChannelUpdate, _secp_ctx: &Secp256k1<All>) -> Result<Signature, ()> { unreachable!() }
+
+	fn shared_secret(&self, _recipient: Recipient, _other: &PublicKey) -> Result<SharedSecret, ()> { unreachable!() }
+
+	fn get_node_key(&self, _recipient: Recipient, _secp_ctx: &Secp256k1<All>) -> Result<PublicKey, ()> { unreachable!() }
 }
 
 pub struct TestChainMonitor<'a> {
@@ -486,9 +495,10 @@ pub struct TestKeysInterface {
 impl keysinterface::KeysInterface for TestKeysInterface {
 	type Signer = EnforcingSigner;
 
-	fn get_node_secret(&self, recipient: Recipient) -> Result<SecretKey, ()> {
-		self.backing.get_node_secret(recipient)
+	fn get_shared_secret_producer(&self) -> Box<dyn SharedSecretProduce> {
+		self.backing.get_shared_secret_producer()
 	}
+
 	fn get_inbound_payment_key_material(&self) -> keysinterface::KeyMaterial {
 		self.backing.get_inbound_payment_key_material()
 	}
@@ -521,7 +531,8 @@ impl keysinterface::KeysInterface for TestKeysInterface {
 	fn read_chan_signer(&self, buffer: &[u8]) -> Result<Self::Signer, msgs::DecodeError> {
 		let mut reader = io::Cursor::new(buffer);
 
-		let inner: InMemorySigner = ReadableArgs::read(&mut reader, self.get_node_secret(Recipient::Node).unwrap())?;
+		let node_secret = self.backing.get_node_secret(Recipient::Node).unwrap();
+		let inner: InMemorySigner = ReadableArgs::read(&mut reader, node_secret)?;
 		let state = self.make_enforcement_state_cell(inner.commitment_seed);
 
 		Ok(EnforcingSigner::new_with_revoked(
@@ -533,6 +544,22 @@ impl keysinterface::KeysInterface for TestKeysInterface {
 
 	fn sign_invoice(&self, hrp_bytes: &[u8], invoice_data: &[u5], recipient: Recipient) -> Result<RecoverableSignature, ()> {
 		self.backing.sign_invoice(hrp_bytes, invoice_data, recipient)
+	}
+
+	fn sign_node_announcement(&self, msg: &UnsignedNodeAnnouncement, secp_ctx: &Secp256k1<All>) -> Result<Signature, ()> {
+		self.backing.sign_node_announcement(msg, secp_ctx)
+	}
+
+	fn sign_channel_update(&self, msg: &UnsignedChannelUpdate, secp_ctx: &Secp256k1<All>) -> Result<Signature, ()> {
+		self.backing.sign_channel_update(msg, secp_ctx)
+	}
+
+	fn shared_secret(&self, recipient: Recipient, other: &PublicKey) -> Result<SharedSecret, ()> {
+		self.backing.shared_secret(recipient, other)
+	}
+
+	fn get_node_key(&self, recipient: Recipient, secp_ctx: &Secp256k1<All>) -> Result<PublicKey, ()> {
+		self.backing.get_node_key(recipient, secp_ctx)
 	}
 }
 
