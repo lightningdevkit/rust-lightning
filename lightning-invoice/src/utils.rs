@@ -3,9 +3,9 @@
 use {CreationError, Currency, DEFAULT_EXPIRY_TIME, Invoice, InvoiceBuilder, SignOrCreationError};
 use payment::{Payer, Router};
 
+use crate::{prelude::*, Description, InvoiceDescription, Sha256};
 use bech32::ToBase32;
 use bitcoin_hashes::{Hash, sha256};
-use crate::prelude::*;
 use lightning::chain;
 use lightning::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use lightning::chain::keysinterface::{Recipient, KeysInterface, Sign};
@@ -50,14 +50,77 @@ use sync::Mutex;
 /// [`ChannelManager::get_phantom_route_hints`]: lightning::ln::channelmanager::ChannelManager::get_phantom_route_hints
 /// [`PhantomRouteHints::channels`]: lightning::ln::channelmanager::PhantomRouteHints::channels
 pub fn create_phantom_invoice<Signer: Sign, K: Deref>(
-	amt_msat: Option<u64>, description: String, payment_hash: PaymentHash, payment_secret:
-	PaymentSecret, phantom_route_hints: Vec<PhantomRouteHints>, keys_manager: K, network: Currency
+	amt_msat: Option<u64>, description: String, payment_hash: PaymentHash, payment_secret: PaymentSecret,
+	phantom_route_hints: Vec<PhantomRouteHints>, keys_manager: K, network: Currency,
 ) -> Result<Invoice, SignOrCreationError<()>> where K::Target: KeysInterface {
+	let description = Description::new(description).map_err(SignOrCreationError::CreationError)?;
+	let description = InvoiceDescription::Direct(&description,);
+	_create_phantom_invoice::<Signer, K>(
+		amt_msat, description, payment_hash, payment_secret, phantom_route_hints, keys_manager, network,
+	)
+}
+
+#[cfg(feature = "std")]
+/// Utility to create an invoice that can be paid to one of multiple nodes, or a "phantom invoice."
+/// See [`PhantomKeysManager`] for more information on phantom node payments.
+///
+/// `phantom_route_hints` parameter:
+/// * Contains channel info for all nodes participating in the phantom invoice
+/// * Entries are retrieved from a call to [`ChannelManager::get_phantom_route_hints`] on each
+///   participating node
+/// * It is fine to cache `phantom_route_hints` and reuse it across invoices, as long as the data is
+///   updated when a channel becomes disabled or closes
+/// * Note that if too many channels are included in [`PhantomRouteHints::channels`], the invoice
+///   may be too long for QR code scanning. To fix this, `PhantomRouteHints::channels` may be pared
+///   down
+///
+/// `description_hash` is a SHA-256 hash of the description text
+///
+/// `payment_hash` and `payment_secret` come from [`ChannelManager::create_inbound_payment`] or
+/// [`ChannelManager::create_inbound_payment_for_hash`]. These values can be retrieved from any
+/// participating node.
+///
+/// Note that the provided `keys_manager`'s `KeysInterface` implementation must support phantom
+/// invoices in its `sign_invoice` implementation ([`PhantomKeysManager`] satisfies this
+/// requirement).
+///
+/// [`PhantomKeysManager`]: lightning::chain::keysinterface::PhantomKeysManager
+/// [`ChannelManager::get_phantom_route_hints`]: lightning::ln::channelmanager::ChannelManager::get_phantom_route_hints
+/// [`PhantomRouteHints::channels`]: lightning::ln::channelmanager::PhantomRouteHints::channels
+pub fn create_phantom_invoice_with_description_hash<Signer: Sign, K: Deref>(
+	amt_msat: Option<u64>, description_hash: Sha256, payment_hash: PaymentHash,
+	payment_secret: PaymentSecret, phantom_route_hints: Vec<PhantomRouteHints>,
+	keys_manager: K, network: Currency,
+) -> Result<Invoice, SignOrCreationError<()>> where K::Target: KeysInterface
+{
+
+	_create_phantom_invoice::<Signer, K>(
+		amt_msat,
+		InvoiceDescription::Hash(&description_hash),
+		payment_hash, payment_secret, phantom_route_hints, keys_manager, network,
+	)
+}
+
+#[cfg(feature = "std")]
+fn _create_phantom_invoice<Signer: Sign, K: Deref>(
+	amt_msat: Option<u64>, description: InvoiceDescription, payment_hash: PaymentHash,
+	payment_secret: PaymentSecret, phantom_route_hints: Vec<PhantomRouteHints>,
+	keys_manager: K, network: Currency,
+) -> Result<Invoice, SignOrCreationError<()>> where K::Target: KeysInterface
+{
 	if phantom_route_hints.len() == 0 {
-		return Err(SignOrCreationError::CreationError(CreationError::MissingRouteHints))
+		return Err(SignOrCreationError::CreationError(
+			CreationError::MissingRouteHints,
+		));
 	}
-	let mut invoice = InvoiceBuilder::new(network)
-		.description(description)
+	let invoice = match description {
+		InvoiceDescription::Direct(description) => {
+			InvoiceBuilder::new(network).description(description.0.clone())
+		}
+		InvoiceDescription::Hash(hash) => InvoiceBuilder::new(network).description_hash(hash.0),
+	};
+
+	let mut invoice = invoice
 		.current_timestamp()
 		.payment_hash(Hash::from_slice(&payment_hash.0).unwrap())
 		.payment_secret(payment_secret)
@@ -126,12 +189,57 @@ where
 	let duration = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)
 		.expect("for the foreseeable future this shouldn't happen");
 	create_invoice_from_channelmanager_and_duration_since_epoch(
-		channelmanager,
-		keys_manager,
-		network,
-		amt_msat,
-		description,
-		duration
+		channelmanager, keys_manager, network, amt_msat, description, duration
+	)
+}
+
+#[cfg(feature = "std")]
+/// Utility to construct an invoice. Generally, unless you want to do something like a custom
+/// cltv_expiry, this is what you should be using to create an invoice. The reason being, this
+/// method stores the invoice's payment secret and preimage in `ChannelManager`, so (a) the user
+/// doesn't have to store preimage/payment secret information and (b) `ChannelManager` can verify
+/// that the payment secret is valid when the invoice is paid.
+/// Use this variant if you want to pass the `description_hash` to the invoice.
+pub fn create_invoice_from_channelmanager_with_description_hash<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>(
+	channelmanager: &ChannelManager<Signer, M, T, K, F, L>, keys_manager: K, network: Currency,
+	amt_msat: Option<u64>, description_hash: Sha256,
+) -> Result<Invoice, SignOrCreationError<()>>
+where
+	M::Target: chain::Watch<Signer>,
+	T::Target: BroadcasterInterface,
+	K::Target: KeysInterface<Signer = Signer>,
+	F::Target: FeeEstimator,
+	L::Target: Logger,
+{
+	use std::time::SystemTime;
+
+	let duration = SystemTime::now()
+		.duration_since(SystemTime::UNIX_EPOCH)
+		.expect("for the foreseeable future this shouldn't happen");
+
+	create_invoice_from_channelmanager_with_description_hash_and_duration_since_epoch(
+		channelmanager, keys_manager, network, amt_msat, description_hash, duration,
+	)
+}
+
+/// See [`create_invoice_from_channelmanager_with_description_hash`]
+/// This version can be used in a `no_std` environment, where [`std::time::SystemTime`] is not
+/// available and the current time is supplied by the caller.
+pub fn create_invoice_from_channelmanager_with_description_hash_and_duration_since_epoch<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>(
+	channelmanager: &ChannelManager<Signer, M, T, K, F, L>, keys_manager: K, network: Currency,
+	amt_msat: Option<u64>, description_hash: Sha256, duration_since_epoch: Duration,
+) -> Result<Invoice, SignOrCreationError<()>>
+where
+	M::Target: chain::Watch<Signer>,
+	T::Target: BroadcasterInterface,
+	K::Target: KeysInterface<Signer = Signer>,
+	F::Target: FeeEstimator,
+	L::Target: Logger,
+{
+	_create_invoice_from_channelmanager_and_duration_since_epoch(
+		channelmanager, keys_manager, network, amt_msat,
+		InvoiceDescription::Hash(&description_hash),
+		duration_since_epoch,
 	)
 }
 
@@ -149,16 +257,43 @@ where
 	F::Target: FeeEstimator,
 	L::Target: Logger,
 {
+	_create_invoice_from_channelmanager_and_duration_since_epoch(
+		channelmanager, keys_manager, network, amt_msat,
+		InvoiceDescription::Direct(
+			&Description::new(description).map_err(SignOrCreationError::CreationError)?,
+		),
+		duration_since_epoch,
+	)
+}
+
+fn _create_invoice_from_channelmanager_and_duration_since_epoch<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>(
+	channelmanager: &ChannelManager<Signer, M, T, K, F, L>, keys_manager: K, network: Currency,
+	amt_msat: Option<u64>, description: InvoiceDescription, duration_since_epoch: Duration,
+) -> Result<Invoice, SignOrCreationError<()>>
+where
+	M::Target: chain::Watch<Signer>,
+	T::Target: BroadcasterInterface,
+	K::Target: KeysInterface<Signer = Signer>,
+	F::Target: FeeEstimator,
+	L::Target: Logger,
+{
 	let route_hints = filter_channels(channelmanager.list_usable_channels(), amt_msat);
 
 	// `create_inbound_payment` only returns an error if the amount is greater than the total bitcoin
 	// supply.
-	let (payment_hash, payment_secret) = channelmanager.create_inbound_payment(
-		amt_msat, DEFAULT_EXPIRY_TIME.try_into().unwrap())
+	let (payment_hash, payment_secret) = channelmanager
+		.create_inbound_payment(amt_msat, DEFAULT_EXPIRY_TIME.try_into().unwrap())
 		.map_err(|()| SignOrCreationError::CreationError(CreationError::InvalidAmount))?;
 	let our_node_pubkey = channelmanager.get_our_node_id();
-	let mut invoice = InvoiceBuilder::new(network)
-		.description(description)
+
+	let invoice = match description {
+		InvoiceDescription::Direct(description) => {
+			InvoiceBuilder::new(network).description(description.0.clone())
+		}
+		InvoiceDescription::Hash(hash) => InvoiceBuilder::new(network).description_hash(hash.0),
+	};
+
+	let mut invoice = invoice
 		.duration_since_epoch(duration_since_epoch)
 		.payee_pub_key(our_node_pubkey)
 		.payment_hash(Hash::from_slice(&payment_hash.0).unwrap())
@@ -405,6 +540,22 @@ mod test {
 		added_monitors.clear();
 		let events = nodes[1].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 2);
+	}
+
+	#[test]
+	fn test_create_invoice_with_description_hash() {
+		let chanmon_cfgs = create_chanmon_cfgs(2);
+		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+		let description_hash = crate::Sha256(Hash::hash("Testing description_hash".as_bytes()));
+		let invoice = ::utils::create_invoice_from_channelmanager_with_description_hash_and_duration_since_epoch(
+			&nodes[1].node, nodes[1].keys_manager, Currency::BitcoinTestnet, Some(10_000),
+			description_hash, Duration::from_secs(1234567),
+		).unwrap();
+		assert_eq!(invoice.amount_pico_btc(), Some(100_000));
+		assert_eq!(invoice.min_final_cltv_expiry(), MIN_FINAL_CLTV_EXPIRY as u64);
+		assert_eq!(invoice.description(), InvoiceDescription::Hash(&crate::Sha256(Sha256::hash("Testing description_hash".as_bytes()))));
 	}
 
 	#[test]
@@ -686,6 +837,29 @@ mod test {
 			},
 			_ => panic!("Unexpected event")
 		}
+	}
+
+	#[test]
+	#[cfg(feature = "std")]
+	fn create_phantom_invoice_with_description_hash() {
+		let chanmon_cfgs = create_chanmon_cfgs(3);
+		let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+		let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+		let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+		let payment_amt = 20_000;
+		let (payment_hash, payment_secret) = nodes[1].node.create_inbound_payment(Some(payment_amt), 3600).unwrap();
+		let route_hints = vec![
+			nodes[1].node.get_phantom_route_hints(),
+			nodes[2].node.get_phantom_route_hints(),
+		];
+
+		let description_hash = crate::Sha256(Hash::hash("Description hash phantom invoice".as_bytes()));
+		let invoice = ::utils::create_phantom_invoice_with_description_hash::<EnforcingSigner,&test_utils::TestKeysInterface>(Some(payment_amt), description_hash, payment_hash, payment_secret, route_hints, &nodes[1].keys_manager, Currency::BitcoinTestnet).unwrap();
+
+		assert_eq!(invoice.amount_pico_btc(), Some(200_000));
+		assert_eq!(invoice.min_final_cltv_expiry(), MIN_FINAL_CLTV_EXPIRY as u64);
+		assert_eq!(invoice.description(), InvoiceDescription::Hash(&crate::Sha256(Sha256::hash("Description hash phantom invoice".as_bytes()))));
 	}
 
 	#[test]
