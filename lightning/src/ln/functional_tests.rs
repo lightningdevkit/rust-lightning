@@ -3941,6 +3941,32 @@ fn test_funding_peer_disconnect() {
 }
 
 #[test]
+fn test_funding_locked_without_best_block_updated() {
+	// Previously, if we were offline when a funding transaction was locked in, and then we came
+	// back online, calling best_block_updated once followed by transactions_confirmed, we'd not
+	// generate a funding_locked until a later best_block_updated. This tests that we generate the
+	// funding_locked immediately instead.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	*nodes[0].connect_style.borrow_mut() = ConnectStyle::BestBlockFirstSkippingBlocks;
+
+	let funding_tx = create_chan_between_nodes_with_value_init(&nodes[0], &nodes[1], 1_000_000, 0, InitFeatures::known(), InitFeatures::known());
+
+	let conf_height = nodes[0].best_block_info().1 + 1;
+	connect_blocks(&nodes[0], CHAN_CONFIRM_DEPTH);
+	let block_txn = [funding_tx];
+	let conf_txn: Vec<_> = block_txn.iter().enumerate().collect();
+	let conf_block_header = nodes[0].get_block_header(conf_height);
+	nodes[0].node.transactions_confirmed(&conf_block_header, &conf_txn[..], conf_height);
+
+	// Ensure nodes[0] generates a funding_locked after the transactions_confirmed
+	let as_funding_locked = get_event_msg!(nodes[0], MessageSendEvent::SendFundingLocked, nodes[1].node.get_our_node_id());
+	nodes[1].node.handle_funding_locked(&nodes[0].node.get_our_node_id(), &as_funding_locked);
+}
+
+#[test]
 fn test_drop_messages_peer_disconnect_dual_htlc() {
 	// Test that we can handle reconnecting when both sides of a channel have pending
 	// commitment_updates when we disconnect.
