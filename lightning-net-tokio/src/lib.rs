@@ -81,10 +81,11 @@ use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use lightning::ln::peer_handler;
 use lightning::ln::peer_handler::SocketDescriptor as LnSocketTrait;
 use lightning::ln::peer_handler::CustomMessageHandler;
-use lightning::ln::msgs::{ChannelMessageHandler, RoutingMessageHandler};
+use lightning::ln::msgs::{ChannelMessageHandler, RoutingMessageHandler, NetAddress};
 use lightning::util::logger::Logger;
 
 use std::task;
+use std::net::IpAddr;
 use std::net::SocketAddr;
 use std::net::TcpStream as StdTcpStream;
 use std::sync::{Arc, Mutex};
@@ -222,11 +223,21 @@ pub fn setup_inbound<CMH, RMH, L, UMH>(peer_manager: Arc<peer_handler::PeerManag
 		RMH: RoutingMessageHandler + 'static + Send + Sync,
 		L: Logger + 'static + ?Sized + Send + Sync,
 		UMH: CustomMessageHandler + 'static + Send + Sync {
+	let ip_addr = stream.peer_addr().unwrap();
 	let (reader, write_receiver, read_receiver, us) = Connection::new(stream);
 	#[cfg(debug_assertions)]
 	let last_us = Arc::clone(&us);
 
-	let handle_opt = if let Ok(_) = peer_manager.new_inbound_connection(SocketDescriptor::new(us.clone()), None) {
+	let handle_opt = if let Ok(_) = peer_manager.new_inbound_connection(SocketDescriptor::new(us.clone()), match ip_addr.ip() {
+		IpAddr::V4(ip) => Some(NetAddress::IPv4 {
+			addr: ip.octets(),
+			port: ip_addr.port(),
+		}),
+		IpAddr::V6(ip) => Some(NetAddress::IPv6 {
+			addr: ip.octets(),
+			port: ip_addr.port(),
+		}),
+	}) {
 		Some(tokio::spawn(Connection::schedule_read(peer_manager, us, reader, read_receiver, write_receiver)))
 	} else {
 		// Note that we will skip socket_disconnected here, in accordance with the PeerManager
@@ -263,11 +274,20 @@ pub fn setup_outbound<CMH, RMH, L, UMH>(peer_manager: Arc<peer_handler::PeerMana
 		RMH: RoutingMessageHandler + 'static + Send + Sync,
 		L: Logger + 'static + ?Sized + Send + Sync,
 		UMH: CustomMessageHandler + 'static + Send + Sync {
+	let ip_addr = stream.peer_addr().unwrap();
 	let (reader, mut write_receiver, read_receiver, us) = Connection::new(stream);
 	#[cfg(debug_assertions)]
 	let last_us = Arc::clone(&us);
-
-	let handle_opt = if let Ok(initial_send) = peer_manager.new_outbound_connection(their_node_id, SocketDescriptor::new(us.clone()), None) {
+	let handle_opt = if let Ok(initial_send) = peer_manager.new_outbound_connection(their_node_id, SocketDescriptor::new(us.clone()), match ip_addr.ip() {
+		IpAddr::V4(ip) => Some(NetAddress::IPv4 {
+			addr: ip.octets(),
+			port: ip_addr.port(),
+		}),
+		IpAddr::V6(ip) => Some(NetAddress::IPv6 {
+			addr: ip.octets(),
+			port: ip_addr.port(),
+		}),
+	}) {
 		Some(tokio::spawn(async move {
 			// We should essentially always have enough room in a TCP socket buffer to send the
 			// initial 10s of bytes. However, tokio running in single-threaded mode will always

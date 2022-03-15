@@ -502,21 +502,21 @@ impl core::fmt::Display for OptionalFromDebugger<'_> {
 fn filter_addresses(ip_address: Option<NetAddress>) -> Option<NetAddress> {
 	match ip_address{
 		// For IPv4 range 10.0.0.0 - 10.255.255.255 (10/8)
-		Some(NetAddress::IPv4{addr: [0xA, 0x00..=0xFF, _, _], port: _}) => None,
+		Some(NetAddress::IPv4{addr: [10, _, _, _], port: _}) => None,
 		// For IPv4 range 0.0.0.0 - 0.255.255.255 (0/8)
-		Some(NetAddress::IPv4{addr: [0x0, 0x0..=0xFF, _, _], port: _}) => None,
+		Some(NetAddress::IPv4{addr: [0, _, _, _], port: _}) => None,
 		// For IPv4 range 100.64.0.0 - 100.127.255.255 (100.64/10)
-		Some(NetAddress::IPv4{addr: [0x64, 0x40..=0x7F, _, _], port: _}) => None,
+		Some(NetAddress::IPv4{addr: [100, 64..=127, _, _], port: _}) => None,
 		// For IPv4 range  	127.0.0.0 - 127.255.255.255 (127/8)
-		Some(NetAddress::IPv4{addr: [0x7F, 0x0..=0xFF, _, _], port: _}) => None,
+		Some(NetAddress::IPv4{addr: [127, _, _, _], port: _}) => None,
 		// For IPv4 range  	169.254.0.0 - 169.254.255.255 (169.254/16)
-		Some(NetAddress::IPv4{addr: [0xA9, 0xFE, _, _], port: _}) => None,
+		Some(NetAddress::IPv4{addr: [169, 254, _, _], port: _}) => None,
 		// For IPv4 range 172.16.0.0 - 172.31.255.255 (172.16/12)
-		Some(NetAddress::IPv4{addr: [0xAC, 0x10..=0x1F, _, _], port: _}) => None,
+		Some(NetAddress::IPv4{addr: [172, 16..=31, _, _], port: _}) => None,
 		// For IPv4 range 192.168.0.0 - 192.168.255.255 (192.168/16)
-		Some(NetAddress::IPv4{addr: [0xC0, 0xA8, _, _], port: _}) => None,
+		Some(NetAddress::IPv4{addr: [192, 168, _, _], port: _}) => None,
 		// For IPv4 range 192.88.99.0 - 192.88.99.255  (192.88.99/24)
-		Some(NetAddress::IPv4{addr: [0xC0, 0x58, 0x63, _], port: _}) => None,
+		Some(NetAddress::IPv4{addr: [192, 88, 99, _], port: _}) => None,
 		// For IPv6 range 2000:0000:0000:0000:0000:0000:0000:0000 - 3fff:ffff:ffff:ffff:ffff:ffff:ffff:ffff (2000::/3)
 		Some(NetAddress::IPv6{addr: [0x20..=0x3F, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _], port: _}) => ip_address,
 		// For remaining addresses
@@ -576,9 +576,10 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 
 	/// Indicates a new outbound connection has been established to a node with the given node_id
 	/// and an optional remote network address.
+	///
 	/// The remote network address adds the option to report a remote IP address back to a connecting
-	/// peer using the init message. 
-	/// The user should pass the remote network address to whatever host they are connected to.
+	/// peer using the init message.
+	/// The user should pass the remote network address of the host they are connected to.
 	///
 	/// Note that if an Err is returned here you MUST NOT call socket_disconnected for the new
 	/// descriptor but must disconnect the connection immediately.
@@ -622,6 +623,10 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 
 	/// Indicates a new inbound connection has been established to a node with an optional remote
 	/// network address.
+	///
+	/// The remote network address adds the option to report a remote IP address back to a connecting
+	/// peer using the init message.
+	/// The user should pass the remote network address of the host they are connected to.
 	///
 	/// May refuse the connection by returning an Err, but will never write bytes to the remote end
 	/// (outbound connector always speaks first). Note that if an Err is returned here you MUST NOT
@@ -903,7 +908,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 									peer.their_node_id = Some(their_node_id);
 									insert_node_id!();
 									let features = InitFeatures::known();
-									let resp = msgs::Init { features, remote_network_address:  filter_addresses(peer.their_net_address.clone())};
+									let resp = msgs::Init { features, remote_network_address: filter_addresses(peer.their_net_address.clone())};
 									self.enqueue_message(peer, &resp);
 									peer.awaiting_pong_timer_tick_intervals = 0;
 								},
@@ -914,7 +919,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 									peer.their_node_id = Some(their_node_id);
 									insert_node_id!();
 									let features = InitFeatures::known();
-									let resp = msgs::Init { features, remote_network_address:  filter_addresses(peer.their_net_address.clone())};
+									let resp = msgs::Init { features, remote_network_address: filter_addresses(peer.their_net_address.clone())};
 									self.enqueue_message(peer, &resp);
 									peer.awaiting_pong_timer_tick_intervals = 0;
 								},

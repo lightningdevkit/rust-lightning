@@ -75,10 +75,10 @@ pub enum DecodeError {
 pub struct Init {
 	/// The relevant features which the sender supports
 	pub features: InitFeatures,
-	/// The receipient's network address. This adds the option to report a remote IP address 
+	/// The receipient's network address. This adds the option to report a remote IP address
 	/// back to a connecting peer using the init message. A node can decide to use that information
 	/// to discover a potential update to its public IPv4 address (NAT) and use
-    /// that for a node_announcement update message containg the new address.
+	/// that for a node_announcement update message containing the new address.
 	pub remote_network_address: Option<NetAddress>,
 }
 
@@ -2479,9 +2479,9 @@ mod tests {
 			}),
 		};
 		let encoded_value = init_msg.encode();
-		let target_value = hex::decode("000000000307017f00000103e8").unwrap(); 
+		let target_value = hex::decode("000000000307017f00000103e8").unwrap();
 		assert_eq!(encoded_value, target_value);
-		assert_eq!(msgs::Init::read(&mut Cursor::new(&target_value)).unwrap(),init_msg);
+		assert_eq!(msgs::Init::read(&mut Cursor::new(&target_value)).unwrap(), init_msg);
 	}
 
 	#[test]
