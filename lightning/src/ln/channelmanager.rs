@@ -2475,21 +2475,22 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					break None;
 				}
 				{
-					let mut res = Vec::with_capacity(8 + 128);
+					let mut res = VecWriter(Vec::with_capacity(chan_update.serialized_length() + 8 + 2));
 					if let Some(chan_update) = chan_update {
 						if code == 0x1000 | 11 || code == 0x1000 | 12 {
-							res.extend_from_slice(&byte_utils::be64_to_array(msg.amount_msat));
+							msg.amount_msat.write(&mut res).expect("Writes cannot fail");
 						}
 						else if code == 0x1000 | 13 {
-							res.extend_from_slice(&byte_utils::be32_to_array(msg.cltv_expiry));
+							msg.cltv_expiry.write(&mut res).expect("Writes cannot fail");
 						}
 						else if code == 0x1000 | 20 {
 							// TODO: underspecified, follow https://github.com/lightningnetwork/lightning-rfc/issues/791
-							res.extend_from_slice(&byte_utils::be16_to_array(0));
+							0u16.write(&mut res).expect("Writes cannot fail");
 						}
-						res.extend_from_slice(&chan_update.encode_with_len()[..]);
+						(chan_update.serialized_length() as u16).write(&mut res).expect("Writes cannot fail");
+						chan_update.write(&mut res).expect("Writes cannot fail");
 					}
-					return_err!(err, code, &res[..]);
+					return_err!(err, code, &res.0[..]);
 				}
 			}
 		}
