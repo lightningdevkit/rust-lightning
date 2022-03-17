@@ -909,7 +909,15 @@ pub enum MessageSendEvent {
 		node_id: PublicKey,
 		/// The reply_channel_range which should be sent.
 		msg: msgs::ReplyChannelRange,
-	}
+	},
+	/// Sends a timestamp filter for inbound gossip. This should be sent on each new connection to
+	/// enable receiving gossip messages from the peer.
+	SendGossipTimestampFilter {
+		/// The node_id of this message recipient
+		node_id: PublicKey,
+		/// The gossip_timestamp_filter which should be sent.
+		msg: msgs::GossipTimestampFilter,
+	},
 }
 
 /// A trait indicating an object may generate message send events

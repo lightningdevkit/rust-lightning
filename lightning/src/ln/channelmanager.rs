@@ -5893,6 +5893,7 @@ impl<Signer: Sign, M: Deref , T: Deref , K: Deref , F: Deref , L: Deref >
 					&events::MessageSendEvent::SendChannelRangeQuery { .. } => false,
 					&events::MessageSendEvent::SendShortIdsQuery { .. } => false,
 					&events::MessageSendEvent::SendReplyChannelRange { .. } => false,
+					&events::MessageSendEvent::SendGossipTimestampFilter { .. } => false,
 				}
 			});
 		}

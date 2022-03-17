@@ -1477,6 +1477,9 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 							msg.sync_complete);
 						self.enqueue_message(get_peer_for_forwarding!(node_id), msg);
 					}
+					MessageSendEvent::SendGossipTimestampFilter { ref node_id, ref msg } => {
+						self.enqueue_message(get_peer_for_forwarding!(node_id), msg);
+					}
 				}
 			}
 
