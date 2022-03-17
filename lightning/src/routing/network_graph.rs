@@ -395,8 +395,7 @@ where C::Target: chain::Access, L::Target: Logger
 	/// to request gossip messages for each channel. The sync is considered complete
 	/// when the final reply_scids_end message is received, though we are not
 	/// tracking this directly.
-	fn sync_routing_table(&self, their_node_id: &PublicKey, init_msg: &Init) {
-
+	fn peer_connected(&self, their_node_id: &PublicKey, init_msg: &Init) {
 		// We will only perform a sync with peers that support gossip_queries.
 		if !init_msg.features.supports_gossip_queries() {
 			return ();
@@ -2271,7 +2270,7 @@ mod tests {
 		// It should ignore if gossip_queries feature is not enabled
 		{
 			let init_msg = Init { features: InitFeatures::known().clear_gossip_queries() };
-			net_graph_msg_handler.sync_routing_table(&node_id_1, &init_msg);
+			net_graph_msg_handler.peer_connected(&node_id_1, &init_msg);
 			let events = net_graph_msg_handler.get_and_clear_pending_msg_events();
 			assert_eq!(events.len(), 0);
 		}
@@ -2279,7 +2278,7 @@ mod tests {
 		// It should send a query_channel_message with the correct information
 		{
 			let init_msg = Init { features: InitFeatures::known() };
-			net_graph_msg_handler.sync_routing_table(&node_id_1, &init_msg);
+			net_graph_msg_handler.peer_connected(&node_id_1, &init_msg);
 			let events = net_graph_msg_handler.get_and_clear_pending_msg_events();
 			assert_eq!(events.len(), 1);
 			match &events[0] {
@@ -2303,7 +2302,7 @@ mod tests {
 			for n in 1..7 {
 				let node_privkey = &SecretKey::from_slice(&[n; 32]).unwrap();
 				let node_id = PublicKey::from_secret_key(&secp_ctx, node_privkey);
-				net_graph_msg_handler.sync_routing_table(&node_id, &init_msg);
+				net_graph_msg_handler.peer_connected(&node_id, &init_msg);
 				let events = net_graph_msg_handler.get_and_clear_pending_msg_events();
 				if n <= 5 {
 					assert_eq!(events.len(), 1);

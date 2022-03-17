@@ -886,7 +886,7 @@ pub trait RoutingMessageHandler : MessageSendEventsProvider {
 	/// Called when a connection is established with a peer. This can be used to
 	/// perform routing table synchronization using a strategy defined by the
 	/// implementor.
-	fn sync_routing_table(&self, their_node_id: &PublicKey, init: &Init);
+	fn peer_connected(&self, their_node_id: &PublicKey, init: &Init);
 	/// Handles the reply of a query we initiated to learn about channels
 	/// for a given range of blocks. We can expect to receive one or more
 	/// replies to a single query.
