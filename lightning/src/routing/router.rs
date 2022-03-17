@@ -670,6 +670,9 @@ where L::Target: Logger {
 			}
 		}
 	}
+	if payment_params.max_total_cltv_expiry_delta <= final_cltv_expiry_delta {
+		return Err(LightningError{err: "Can't find a route where the maximum total CLTV expiry delta is below the final CLTV expiry.".to_owned(), action: ErrorAction::IgnoreError});
+	}
 
 	// The general routing idea is the following:
 	// 1. Fill first/last hops communicated by the caller.
@@ -866,9 +869,9 @@ where L::Target: Logger {
 					// In order to already account for some of the privacy enhancing random CLTV
 					// expiry delta offset we add on top later, we subtract a rough estimate
 					// (2*MEDIAN_HOP_CLTV_EXPIRY_DELTA) here.
-					let max_total_cltv_expiry_delta = payment_params.max_total_cltv_expiry_delta
+					let max_total_cltv_expiry_delta = (payment_params.max_total_cltv_expiry_delta - final_cltv_expiry_delta)
 						.checked_sub(2*MEDIAN_HOP_CLTV_EXPIRY_DELTA)
-						.unwrap_or(payment_params.max_total_cltv_expiry_delta);
+						.unwrap_or(payment_params.max_total_cltv_expiry_delta - final_cltv_expiry_delta);
 					let hop_total_cltv_delta = ($next_hops_cltv_delta as u32)
 						.checked_add($candidate.cltv_expiry_delta())
 						.unwrap_or(u32::max_value());
@@ -5093,7 +5096,7 @@ mod tests {
 			.with_max_total_cltv_expiry_delta(feasible_max_total_cltv_delta);
 		let keys_manager = test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
 		let random_seed_bytes = keys_manager.get_secure_random_bytes();
-		let route = get_route(&our_id, &feasible_payment_params, &network_graph, None, 100, 42, Arc::clone(&logger), &scorer, &random_seed_bytes).unwrap();
+		let route = get_route(&our_id, &feasible_payment_params, &network_graph, None, 100, 0, Arc::clone(&logger), &scorer, &random_seed_bytes).unwrap();
 		let path = route.paths[0].iter().map(|hop| hop.short_channel_id).collect::<Vec<_>>();
 		assert_ne!(path.len(), 0);
 
@@ -5101,7 +5104,7 @@ mod tests {
 		let fail_max_total_cltv_delta = 23;
 		let fail_payment_params = PaymentParameters::from_node_id(nodes[6]).with_route_hints(last_hops(&nodes))
 			.with_max_total_cltv_expiry_delta(fail_max_total_cltv_delta);
-		match get_route(&our_id, &fail_payment_params, &network_graph, None, 100, 42, Arc::clone(&logger), &scorer, &random_seed_bytes)
+		match get_route(&our_id, &fail_payment_params, &network_graph, None, 100, 0, Arc::clone(&logger), &scorer, &random_seed_bytes)
 		{
 			Err(LightningError { err, .. } ) => {
 				assert_eq!(err, "Failed to find a path to the given destination");
@@ -5436,7 +5439,7 @@ mod benches {
 		let mut routes = Vec::new();
 		let mut route_endpoints = Vec::new();
 		let mut seed: usize = 0xdeadbeef;
-		'load_endpoints: for _ in 0..100 {
+		'load_endpoints: for _ in 0..150 {
 			loop {
 				seed *= 0xdeadbeef;
 				let src = PublicKey::from_slice(nodes.keys().skip(seed % nodes.len()).next().unwrap().as_slice()).unwrap();
@@ -5467,6 +5470,15 @@ mod benches {
 				}
 			}
 		}
+
+		// Because we've changed channel scores, its possible we'll take different routes to the
+		// selected destinations, possibly causing us to fail because, eg, the newly-selected path
+		// requires a too-high CLTV delta.
+		route_endpoints.retain(|(first_hop, params, amt)| {
+			get_route(&payer, params, &graph.read_only(), Some(&[first_hop]), *amt, 42, &DummyLogger{}, &scorer, &random_seed_bytes).is_ok()
+		});
+		route_endpoints.truncate(100);
+		assert_eq!(route_endpoints.len(), 100);
 
 		// ...then benchmark finding paths between the nodes we learned.
 		let mut idx = 0;
