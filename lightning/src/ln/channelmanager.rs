@@ -5505,6 +5505,12 @@ where
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 		self.do_chain_event(Some(height), |channel| channel.transactions_confirmed(&block_hash, height, txdata, self.genesis_hash.clone(), self.get_our_node_id(), &self.logger)
 			.map(|(a, b)| (a, Vec::new(), b)));
+
+		let last_best_block_height = self.best_block.read().unwrap().height();
+		if height < last_best_block_height {
+			let timestamp = self.highest_seen_timestamp.load(Ordering::Acquire);
+			self.do_chain_event(Some(last_best_block_height), |channel| channel.best_block_updated(last_best_block_height, timestamp as u32, self.genesis_hash.clone(), self.get_our_node_id(), &self.logger));
+		}
 	}
 
 	fn best_block_updated(&self, header: &BlockHeader, height: u32) {
