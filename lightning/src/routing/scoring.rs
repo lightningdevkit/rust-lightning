@@ -197,10 +197,6 @@ pub struct FixedPenaltyScorer {
 	penalty_msat: u64,
 }
 
-impl_writeable_tlv_based!(FixedPenaltyScorer, {
-	(0, penalty_msat, required),
-});
-
 impl FixedPenaltyScorer {
 	/// Creates a new scorer using `penalty_msat`.
 	pub fn with_penalty(penalty_msat: u64) -> Self {
@@ -216,6 +212,22 @@ impl Score for FixedPenaltyScorer {
 	fn payment_path_failed(&mut self, _path: &[&RouteHop], _short_channel_id: u64) {}
 
 	fn payment_path_successful(&mut self, _path: &[&RouteHop]) {}
+}
+
+impl Writeable for FixedPenaltyScorer {
+	#[inline]
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		write_tlv_fields!(w, {});
+		Ok(())
+	}
+}
+
+impl ReadableArgs<u64> for FixedPenaltyScorer {
+	#[inline]
+	fn read<R: Read>(r: &mut R, penalty_msat: u64) -> Result<Self, DecodeError> {
+		read_tlv_fields!(r, {});
+		Ok(Self { penalty_msat })
+	}
 }
 
 /// [`Score`] implementation that provides reasonable default behavior.
