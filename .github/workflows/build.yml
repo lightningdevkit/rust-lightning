@@ -211,7 +211,7 @@ jobs:
           profile: minimal
       - name: Cache routing graph snapshot
         id: cache-graph
-        uses: actions/cache@v2
+        uses: actions/cache@v3
         with:
           path: lightning/net_graph-2021-05-31.bin
           key: ldk-net_graph-v0.0.15-2021-05-31.bin
