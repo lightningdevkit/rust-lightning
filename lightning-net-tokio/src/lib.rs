@@ -194,6 +194,13 @@ impl Connection {
 				},
 			}
 			let _ = event_waker.try_send(());
+
+			// At this point we've processed a message or two, and reset the ping timer for this
+			// peer, at least in the "are we still receiving messages" context, if we don't give up
+			// our timeslice to another task we may just spin on this peer, starving other peers
+			// and eventually disconnecting them for ping timeouts. Instead, we explicitly yield
+			// here.
+			tokio::task::yield_now().await;
 		};
 		let writer_option = us.lock().unwrap().writer.take();
 		if let Some(mut writer) = writer_option {
