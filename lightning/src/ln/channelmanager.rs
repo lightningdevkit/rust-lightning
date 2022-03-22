@@ -441,6 +441,7 @@ struct ClaimableHTLC {
 	cltv_expiry: u32,
 	value: u64,
 	onion_payload: OnionPayload,
+	timer_ticks: u8,
 }
 
 /// A payment identifier used to uniquely identify a payment to LDK.
@@ -1147,6 +1148,9 @@ const CHECK_CLTV_EXPIRY_SANITY_2: u32 = MIN_CLTV_EXPIRY_DELTA as u32 - LATENCY_G
 /// The number of blocks before we consider an outbound payment for expiry if it doesn't have any
 /// pending HTLCs in flight.
 pub(crate) const PAYMENT_EXPIRY_BLOCKS: u32 = 3;
+
+/// The number of ticks of [`ChannelManager::timer_tick_occurred`] until expiry of incomplete MPPs
+pub(crate) const MPP_TIMEOUT_TICKS: u8 = 3;
 
 /// Information needed for constructing an invoice route hint for this channel.
 #[derive(Clone, Debug, PartialEq)]
@@ -3326,6 +3330,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 										phantom_shared_secret,
 									},
 									value: amt_to_forward,
+									timer_ticks: 0,
 									cltv_expiry,
 									onion_payload,
 								};
@@ -3620,6 +3625,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			let new_feerate = self.fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Normal);
 
 			let mut handle_errors = Vec::new();
+			let mut timed_out_mpp_htlcs = Vec::new();
 			{
 				let mut channel_state_lock = self.channel_state.lock().unwrap();
 				let channel_state = &mut *channel_state_lock;
@@ -3668,6 +3674,32 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 
 					true
 				});
+
+				channel_state.claimable_htlcs.retain(|payment_hash, htlcs| {
+					if htlcs.is_empty() {
+						// This should be unreachable
+						debug_assert!(false);
+						return false;
+					}
+					if let OnionPayload::Invoice(ref final_hop_data) = htlcs[0].onion_payload {
+						// Check if we've received all the parts we need for an MPP (the value of the parts adds to total_msat).
+						// In this case we're not going to handle any timeouts of the parts here.
+						if final_hop_data.total_msat == htlcs.iter().fold(0, |total, htlc| total + htlc.value) {
+							return true;
+						} else if htlcs.into_iter().any(|htlc| {
+							htlc.timer_ticks += 1;
+							return htlc.timer_ticks >= MPP_TIMEOUT_TICKS
+						}) {
+							timed_out_mpp_htlcs.extend(htlcs.into_iter().map(|htlc| (htlc.prev_hop.clone(), payment_hash.clone())));
+							return false;
+						}
+					}
+					true
+				});
+			}
+
+			for htlc_source in timed_out_mpp_htlcs.drain(..) {
+				self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), HTLCSource::PreviousHopData(htlc_source.0), &htlc_source.1, HTLCFailReason::Reason { failure_code: 23, data: Vec::new() });
 			}
 
 			for (err, counterparty_node_id) in handle_errors.drain(..) {
@@ -6240,6 +6272,7 @@ impl Readable for ClaimableHTLC {
 		};
 		Ok(Self {
 			prev_hop: prev_hop.0.unwrap(),
+			timer_ticks: 0,
 			value,
 			onion_payload,
 			cltv_expiry,
