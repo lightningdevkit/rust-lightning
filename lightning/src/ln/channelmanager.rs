@@ -1046,6 +1046,11 @@ pub struct ChannelDetails {
 	pub is_usable: bool,
 	/// True if this channel is (or will be) publicly-announced.
 	pub is_public: bool,
+	/// The smallest value HTLC (in msat) we will accept, for this channel. This field
+	/// is only `None` for `ChannelDetails` objects serialized prior to LDK 0.0.107
+	pub inbound_htlc_minimum_msat: Option<u64>,
+	/// The largest value HTLC (in msat) we currently will accept, for this channel.
+	pub inbound_htlc_maximum_msat: Option<u64>,
 }
 
 impl ChannelDetails {
@@ -1689,6 +1694,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					is_funding_locked: channel.is_usable(),
 					is_usable: channel.is_live(),
 					is_public: channel.should_announce(),
+					inbound_htlc_minimum_msat: Some(channel.get_holder_htlc_minimum_msat()),
+					inbound_htlc_maximum_msat: channel.get_holder_htlc_maximum_msat()
 				});
 			}
 		}
@@ -5918,6 +5925,8 @@ impl_writeable_tlv_based!(ChannelDetails, {
 	(28, is_funding_locked, required),
 	(30, is_usable, required),
 	(32, is_public, required),
+	(33, inbound_htlc_minimum_msat, option),
+	(35, inbound_htlc_maximum_msat, option),
 });
 
 impl_writeable_tlv_based!(PhantomRouteHints, {

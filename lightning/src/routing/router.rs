@@ -1750,6 +1750,8 @@ mod tests {
 			force_close_spend_delay: None,
 			is_outbound: true, is_funding_locked: true,
 			is_usable: true, is_public: true,
+			inbound_htlc_minimum_msat: None,
+			inbound_htlc_maximum_msat: None,
 		}
 	}
 
@@ -5475,6 +5477,8 @@ mod benches {
 			is_funding_locked: true,
 			is_usable: true,
 			is_public: true,
+			inbound_htlc_minimum_msat: None,
+			inbound_htlc_maximum_msat: None,
 		}
 	}
 

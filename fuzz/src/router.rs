@@ -227,6 +227,8 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 								is_usable: true, is_public: true,
 								balance_msat: 0,
 								outbound_capacity_msat: 0,
+								inbound_htlc_minimum_msat: None,
+								inbound_htlc_maximum_msat: None,
 							});
 						}
 						Some(&first_hops_vec[..])

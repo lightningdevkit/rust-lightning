@@ -4321,9 +4321,13 @@ impl<Signer: Sign> Channel<Signer> {
 	}
 
 	/// Allowed in any state (including after shutdown)
-	#[cfg(test)]
 	pub fn get_holder_htlc_minimum_msat(&self) -> u64 {
 		self.holder_htlc_minimum_msat
+	}
+
+	/// Allowed in any state (including after shutdown), but will return none before TheirInitSent
+	pub fn get_holder_htlc_maximum_msat(&self) -> Option<u64> {
+		self.get_htlc_maximum_msat(self.holder_max_htlc_value_in_flight_msat)
 	}
 
 	/// Allowed in any state (including after shutdown)
@@ -4341,6 +4345,16 @@ impl<Signer: Sign> Channel<Signer> {
 	/// Allowed in any state (including after shutdown)
 	pub fn get_counterparty_htlc_minimum_msat(&self) -> u64 {
 		self.counterparty_htlc_minimum_msat
+	}
+
+	fn get_htlc_maximum_msat(&self, party_max_htlc_value_in_flight_msat: u64) -> Option<u64> {
+		self.counterparty_selected_channel_reserve_satoshis.map(|counterparty_reserve| {
+			let holder_reserve = self.holder_selected_channel_reserve_satoshis;
+			cmp::min(
+				(self.channel_value_satoshis - counterparty_reserve - holder_reserve) * 1000,
+				party_max_htlc_value_in_flight_msat
+			)
+		})
 	}
 
 	pub fn get_value_satoshis(&self) -> u64 {
