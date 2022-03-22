@@ -16,6 +16,7 @@ extern crate libc;
 
 use bitcoin::hash_types::{BlockHash, Txid};
 use bitcoin::hashes::hex::{FromHex, ToHex};
+use lightning::routing::network_graph::NetworkGraph;
 use crate::util::DiskWriteable;
 use lightning::chain;
 use lightning::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
@@ -66,6 +67,12 @@ where
 	}
 }
 
+impl DiskWriteable for NetworkGraph {
+	fn write_to_file(&self, writer: &mut fs::File) -> Result<(), std::io::Error> {
+		self.write(writer)
+	}
+}
+
 impl FilesystemPersister {
 	/// Initialize a new FilesystemPersister and set the path to the individual channels'
 	/// files.
@@ -101,6 +108,13 @@ impl FilesystemPersister {
 	{
 		let path = PathBuf::from(data_dir);
 		util::write_to_file(path, "manager".to_string(), manager)
+	}
+
+	/// Write the provided `NetworkGraph` to the path provided at `FilesystemPersister`
+	/// initialization, within a file called "network_graph"
+	pub fn persist_network_graph(data_dir: String, network_graph: &NetworkGraph) -> Result<(), std::io::Error> {
+		let path = PathBuf::from(data_dir);
+		util::write_to_file(path, "network_graph".to_string(), network_graph)
 	}
 
 	/// Read `ChannelMonitor`s from disk.
