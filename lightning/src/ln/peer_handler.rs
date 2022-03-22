@@ -69,7 +69,7 @@ impl RoutingMessageHandler for IgnoringMessageHandler {
 	fn get_next_channel_announcements(&self, _starting_point: u64, _batch_amount: u8) ->
 		Vec<(msgs::ChannelAnnouncement, Option<msgs::ChannelUpdate>, Option<msgs::ChannelUpdate>)> { Vec::new() }
 	fn get_next_node_announcements(&self, _starting_point: Option<&PublicKey>, _batch_amount: u8) -> Vec<msgs::NodeAnnouncement> { Vec::new() }
-	fn sync_routing_table(&self, _their_node_id: &PublicKey, _init: &msgs::Init) {}
+	fn peer_connected(&self, _their_node_id: &PublicKey, _init: &msgs::Init) {}
 	fn handle_reply_channel_range(&self, _their_node_id: &PublicKey, _msg: msgs::ReplyChannelRange) -> Result<(), LightningError> { Ok(()) }
 	fn handle_reply_short_channel_ids_end(&self, _their_node_id: &PublicKey, _msg: msgs::ReplyShortChannelIdsEnd) -> Result<(), LightningError> { Ok(()) }
 	fn handle_query_channel_range(&self, _their_node_id: &PublicKey, _msg: msgs::QueryChannelRange) -> Result<(), LightningError> { Ok(()) }
@@ -1018,7 +1018,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 					return Err(PeerHandleError{ no_connection_possible: true }.into());
 				}
 
-				self.message_handler.route_handler.sync_routing_table(&peer.their_node_id.unwrap(), &msg);
+				self.message_handler.route_handler.peer_connected(&peer.their_node_id.unwrap(), &msg);
 
 				self.message_handler.chan_handler.peer_connected(&peer.their_node_id.unwrap(), &msg);
 				peer.their_features = Some(msg.features);
@@ -1475,6 +1475,9 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 							msg.first_blocknum,
 							msg.number_of_blocks,
 							msg.sync_complete);
+						self.enqueue_message(get_peer_for_forwarding!(node_id), msg);
+					}
+					MessageSendEvent::SendGossipTimestampFilter { ref node_id, ref msg } => {
 						self.enqueue_message(get_peer_for_forwarding!(node_id), msg);
 					}
 				}
