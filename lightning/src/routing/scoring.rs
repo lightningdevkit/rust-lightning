@@ -927,11 +927,8 @@ impl<G: Deref<Target = NetworkGraph>, T: Time> Writeable for ProbabilisticScorer
 	}
 }
 
-impl<G, T> ReadableArgs<(ProbabilisticScoringParameters, G)> for ProbabilisticScorerUsingTime<G, T>
-where
-	G: Deref<Target = NetworkGraph>,
-	T: Time,
-{
+impl<G: Deref<Target = NetworkGraph>, T: Time>
+ReadableArgs<(ProbabilisticScoringParameters, G)> for ProbabilisticScorerUsingTime<G, T> {
 	#[inline]
 	fn read<R: Read>(
 		r: &mut R, args: (ProbabilisticScoringParameters, G)

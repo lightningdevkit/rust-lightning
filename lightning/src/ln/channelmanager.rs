@@ -887,6 +887,8 @@ impl PendingOutboundPayment {
 /// issues such as overly long function definitions. Note that the ChannelManager can take any
 /// type that implements KeysInterface for its keys manager, but this type alias chooses the
 /// concrete type of the KeysManager.
+///
+/// (C-not exported) as Arcs don't make sense in bindings
 pub type SimpleArcChannelManager<M, T, F, L> = ChannelManager<InMemorySigner, Arc<M>, Arc<T>, Arc<KeysManager>, Arc<F>, Arc<L>>;
 
 /// SimpleRefChannelManager is a type alias for a ChannelManager reference, and is the reference
@@ -897,6 +899,8 @@ pub type SimpleArcChannelManager<M, T, F, L> = ChannelManager<InMemorySigner, Ar
 /// helps with issues such as long function definitions. Note that the ChannelManager can take any
 /// type that implements KeysInterface for its keys manager, but this type alias chooses the
 /// concrete type of the KeysManager.
+///
+/// (C-not exported) as Arcs don't make sense in bindings
 pub type SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, M, T, F, L> = ChannelManager<InMemorySigner, &'a M, &'b T, &'c KeysManager, &'d F, &'e L>;
 
 /// Manager which keeps track of a number of channels and sends messages to the appropriate
