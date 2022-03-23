@@ -811,6 +811,29 @@ where L::Target: Logger {
 	// - when we want to stop looking for new paths.
 	let mut already_collected_value_msat = 0;
 
+	for (_, channels) in first_hop_targets.iter_mut() {
+		// Sort the first_hops channels to the same node(s) in priority order of which channel we'd
+		// most like to use.
+		//
+		// First, if channels are below `recommended_value_msat`, sort them in descending order,
+		// preferring larger channels to avoid splitting the payment into more MPP parts than is
+		// required.
+		//
+		// Second, because simply always sorting in descending order would always use our largest
+		// available outbound capacity, needlessly fragmenting our available channel capacities,
+		// sort channels above `recommended_value_msat` in ascending order, preferring channels
+		// which have enough, but not too much, capacity for the payment.
+		channels.sort_unstable_by(|chan_a, chan_b| {
+			if chan_b.outbound_capacity_msat < recommended_value_msat || chan_a.outbound_capacity_msat < recommended_value_msat {
+				// Sort in descending order
+				chan_b.outbound_capacity_msat.cmp(&chan_a.outbound_capacity_msat)
+			} else {
+				// Sort in ascending order
+				chan_a.outbound_capacity_msat.cmp(&chan_b.outbound_capacity_msat)
+			}
+		});
+	}
+
 	log_trace!(logger, "Building path from {} (payee) to {} (us/payer) for value {} msat.", payment_params.payee_pubkey, our_node_pubkey, final_value_msat);
 
 	macro_rules! add_entry {
@@ -4906,6 +4929,32 @@ mod tests {
 			assert_eq!(route.paths[1][0].pubkey, nodes[0]);
 			assert_eq!(route.paths[1][0].short_channel_id, 2);
 			assert_eq!(route.paths[1][0].fee_msat, 50_000);
+		}
+
+		{
+			// If we have a bunch of outbound channels to the same node, where most are not
+			// sufficient to pay the full payment, but one is, we should default to just using the
+			// one single channel that has sufficient balance, avoiding MPP.
+			//
+			// If we have several options above the 3xpayment value threshold, we should pick the
+			// smallest of them, avoiding further fragmenting our available outbound balance to
+			// this node.
+			let route = get_route(&our_id, &payment_params, &network_graph.read_only(), Some(&[
+				&get_channel_details(Some(2), nodes[0], InitFeatures::known(), 50_000),
+				&get_channel_details(Some(3), nodes[0], InitFeatures::known(), 50_000),
+				&get_channel_details(Some(5), nodes[0], InitFeatures::known(), 50_000),
+				&get_channel_details(Some(6), nodes[0], InitFeatures::known(), 300_000),
+				&get_channel_details(Some(7), nodes[0], InitFeatures::known(), 50_000),
+				&get_channel_details(Some(8), nodes[0], InitFeatures::known(), 50_000),
+				&get_channel_details(Some(9), nodes[0], InitFeatures::known(), 50_000),
+				&get_channel_details(Some(4), nodes[0], InitFeatures::known(), 1_000_000),
+			]), 100_000, 42, Arc::clone(&logger), &scorer, &random_seed_bytes).unwrap();
+			assert_eq!(route.paths.len(), 1);
+			assert_eq!(route.paths[0].len(), 1);
+
+			assert_eq!(route.paths[0][0].pubkey, nodes[0]);
+			assert_eq!(route.paths[0][0].short_channel_id, 6);
+			assert_eq!(route.paths[0][0].fee_msat, 100_000);
 		}
 	}
 
