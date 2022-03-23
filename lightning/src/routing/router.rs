@@ -1564,45 +1564,58 @@ fn add_random_cltv_offset(route: &mut Route, payment_params: &PaymentParameters,
 	for path in route.paths.iter_mut() {
 		let mut shadow_ctlv_expiry_delta_offset: u32 = 0;
 
-		// Choose the last publicly known node as the starting point for the random walk
-		if let Some(starting_hop) = path.iter().rev().find(|h| network_nodes.contains_key(&NodeId::from_pubkey(&h.pubkey))) {
-			let mut cur_node_id = NodeId::from_pubkey(&starting_hop.pubkey);
+		// Remember the last three nodes of the random walk and avoid looping back on them.
+		// Init with the last three nodes from the actual path, if possible.
+		let mut nodes_to_avoid: [NodeId; 3] = [NodeId::from_pubkey(&path.last().unwrap().pubkey),
+			NodeId::from_pubkey(&path.get(path.len().saturating_sub(2)).unwrap().pubkey),
+			NodeId::from_pubkey(&path.get(path.len().saturating_sub(3)).unwrap().pubkey)];
 
-			// Init PRNG with path nonce
-			let mut path_nonce = [0u8; 12];
-			path_nonce.copy_from_slice(&cur_node_id.as_slice()[..12]);
-			let mut prng = ChaCha20::new(random_seed_bytes, &path_nonce);
-			let mut random_path_bytes = [0u8; ::core::mem::size_of::<usize>()];
+		// Choose the last publicly known node as the starting point for the random walk.
+		let mut cur_hop: Option<NodeId> = None;
+		let mut path_nonce = [0u8; 12];
+		if let Some(starting_hop) = path.iter().rev()
+			.find(|h| network_nodes.contains_key(&NodeId::from_pubkey(&h.pubkey))) {
+				cur_hop = Some(NodeId::from_pubkey(&starting_hop.pubkey));
+				path_nonce.copy_from_slice(&cur_hop.unwrap().as_slice()[..12]);
+		}
 
-			// Pick a random path length in [1 .. 3]
-			prng.process_in_place(&mut random_path_bytes);
-			let random_walk_length = usize::from_be_bytes(random_path_bytes).wrapping_rem(3).wrapping_add(1);
+		// Init PRNG with the path-dependant nonce, which is static for private paths.
+		let mut prng = ChaCha20::new(random_seed_bytes, &path_nonce);
+		let mut random_path_bytes = [0u8; ::core::mem::size_of::<usize>()];
 
-			for _random_hop in 0..random_walk_length {
+		// Pick a random path length in [1 .. 3]
+		prng.process_in_place(&mut random_path_bytes);
+		let random_walk_length = usize::from_be_bytes(random_path_bytes).wrapping_rem(3).wrapping_add(1);
+
+		for random_hop in 0..random_walk_length {
+			// If we don't find a suitable offset in the public network graph, we default to
+			// MEDIAN_HOP_CLTV_EXPIRY_DELTA.
+			let mut random_hop_offset = MEDIAN_HOP_CLTV_EXPIRY_DELTA;
+
+			if let Some(cur_node_id) = cur_hop {
 				if let Some(cur_node) = network_nodes.get(&cur_node_id) {
-					// Randomly choose the next hop
+					// Randomly choose the next unvisited hop.
 					prng.process_in_place(&mut random_path_bytes);
-					if let Some(random_channel) = usize::from_be_bytes(random_path_bytes).checked_rem(cur_node.channels.len())
+					if let Some(random_channel) = usize::from_be_bytes(random_path_bytes)
+						.checked_rem(cur_node.channels.len())
 						.and_then(|index| cur_node.channels.get(index))
 						.and_then(|id| network_channels.get(id)) {
 							random_channel.as_directed_from(&cur_node_id).map(|(dir_info, next_id)| {
-								dir_info.direction().map(|channel_update_info|
-									shadow_ctlv_expiry_delta_offset = shadow_ctlv_expiry_delta_offset
-										.checked_add(channel_update_info.cltv_expiry_delta.into())
-										.unwrap_or(shadow_ctlv_expiry_delta_offset));
-								cur_node_id = *next_id;
+								if !nodes_to_avoid.iter().any(|x| x == next_id) {
+									nodes_to_avoid[random_hop] = *next_id;
+									dir_info.direction().map(|channel_update_info| {
+										random_hop_offset = channel_update_info.cltv_expiry_delta.into();
+										cur_hop = Some(*next_id);
+									});
+								}
 							});
 						}
 				}
 			}
-		} else {
-			// If the entire path is private, choose a random offset from multiples of
-			// MEDIAN_HOP_CLTV_EXPIRY_DELTA
-			let mut prng = ChaCha20::new(random_seed_bytes, &[0u8; 8]);
-			let mut random_bytes = [0u8; 4];
-			prng.process_in_place(&mut random_bytes);
-			let random_walk_length = u32::from_be_bytes(random_bytes).wrapping_rem(3).wrapping_add(1);
-			shadow_ctlv_expiry_delta_offset = random_walk_length * MEDIAN_HOP_CLTV_EXPIRY_DELTA;
+
+			shadow_ctlv_expiry_delta_offset = shadow_ctlv_expiry_delta_offset
+				.checked_add(random_hop_offset)
+				.unwrap_or(shadow_ctlv_expiry_delta_offset);
 		}
 
 		// Limit the total offset to reduce the worst-case locked liquidity timevalue
