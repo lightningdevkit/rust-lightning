@@ -365,11 +365,15 @@ pub enum Event {
 		/// The channel_id of the channel which has been closed. Note that on-chain transactions
 		/// resolving the channel are likely still awaiting confirmation.
 		channel_id: [u8; 32],
-		/// The `user_channel_id` value passed in to [`ChannelManager::create_channel`], or 0 for
-		/// an inbound channel. This will always be zero for objects serialized with LDK versions
-		/// prior to 0.0.102.
+		/// The `user_channel_id` value passed in to [`ChannelManager::create_channel`] for outbound
+		/// channels, or to [`ChannelManager::accept_inbound_channel`] for inbound channels if
+		/// [`UserConfig::manually_accept_inbound_channels`] config flag is set to true. Otherwise
+		/// `user_channel_id` will be 0 for an inbound channel.
+		/// This will always be zero for objects serialized with LDK versions prior to 0.0.102.
 		///
 		/// [`ChannelManager::create_channel`]: crate::ln::channelmanager::ChannelManager::create_channel
+		/// [`ChannelManager::accept_inbound_channel`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel
+		/// [`UserConfig::manually_accept_inbound_channels`]: crate::util::config::UserConfig::manually_accept_inbound_channels
 		user_channel_id: u64,
 		/// The reason the channel was closed.
 		reason: ClosureReason

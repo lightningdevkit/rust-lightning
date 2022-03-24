@@ -4745,7 +4745,7 @@ impl<Signer: Sign> Channel<Signer> {
 	/// should be sent back to the counterparty node.
 	///
 	/// [`msgs::AcceptChannel`]: crate::ln::msgs::AcceptChannel
-	pub fn accept_inbound_channel(&mut self) -> msgs::AcceptChannel {
+	pub fn accept_inbound_channel(&mut self, user_id: u64) -> msgs::AcceptChannel {
 		if self.is_outbound() {
 			panic!("Tried to send accept_channel for an outbound channel?");
 		}
@@ -4759,6 +4759,7 @@ impl<Signer: Sign> Channel<Signer> {
 			panic!("The inbound channel has already been accepted");
 		}
 
+		self.user_id = user_id;
 		self.inbound_awaiting_accept = false;
 
 		self.generate_accept_channel_message()
@@ -6420,7 +6421,7 @@ mod tests {
 		let mut node_b_chan = Channel::<EnforcingSigner>::new_from_req(&&feeest, &&keys_provider, node_b_node_id, &InitFeatures::known(), &open_channel_msg, 7, &config, 0, &&logger, 42).unwrap();
 
 		// Node B --> Node A: accept channel, explicitly setting B's dust limit.
-		let mut accept_channel_msg = node_b_chan.accept_inbound_channel();
+		let mut accept_channel_msg = node_b_chan.accept_inbound_channel(0);
 		accept_channel_msg.dust_limit_satoshis = 546;
 		node_a_chan.accept_channel(&accept_channel_msg, &config.peer_channel_config_limits, &InitFeatures::known()).unwrap();
 		node_a_chan.holder_dust_limit_satoshis = 1560;
@@ -6538,7 +6539,7 @@ mod tests {
 		let mut node_b_chan = Channel::<EnforcingSigner>::new_from_req(&&feeest, &&keys_provider, node_b_node_id, &InitFeatures::known(), &open_channel_msg, 7, &config, 0, &&logger, 42).unwrap();
 
 		// Node B --> Node A: accept channel
-		let accept_channel_msg = node_b_chan.accept_inbound_channel();
+		let accept_channel_msg = node_b_chan.accept_inbound_channel(0);
 		node_a_chan.accept_channel(&accept_channel_msg, &config.peer_channel_config_limits, &InitFeatures::known()).unwrap();
 
 		// Node A --> Node B: funding created

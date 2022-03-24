@@ -8110,7 +8110,7 @@ fn test_manually_accept_inbound_channel_request() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(manually_accept_conf.clone())]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
-	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100000, 10001, 42, Some(manually_accept_conf)).unwrap();
+	let temp_channel_id = nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100000, 10001, 42, Some(manually_accept_conf)).unwrap();
 	let res = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
 
 	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), InitFeatures::known(), &res);
@@ -8122,7 +8122,7 @@ fn test_manually_accept_inbound_channel_request() {
 	let events = nodes[1].node.get_and_clear_pending_events();
 	match events[0] {
 		Event::OpenChannelRequest { temporary_channel_id, .. } => {
-			nodes[1].node.accept_inbound_channel(&temporary_channel_id).unwrap();
+			nodes[1].node.accept_inbound_channel(&temporary_channel_id, 23).unwrap();
 		}
 		_ => panic!("Unexpected event"),
 	}
@@ -8133,6 +8133,19 @@ fn test_manually_accept_inbound_channel_request() {
 	match accept_msg_ev[0] {
 		MessageSendEvent::SendAcceptChannel { ref node_id, .. } => {
 			assert_eq!(*node_id, nodes[0].node.get_our_node_id());
+		}
+		_ => panic!("Unexpected event"),
+	}
+
+	nodes[1].node.force_close_channel(&temp_channel_id).unwrap();
+
+	let close_msg_ev = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(close_msg_ev.len(), 1);
+
+	let events = nodes[1].node.get_and_clear_pending_events();
+	match events[0] {
+		Event::ChannelClosed { user_channel_id, .. } => {
+			assert_eq!(user_channel_id, 23);
 		}
 		_ => panic!("Unexpected event"),
 	}
@@ -8259,8 +8272,8 @@ fn test_can_not_accept_inbound_channel_twice() {
 	let events = nodes[1].node.get_and_clear_pending_events();
 	match events[0] {
 		Event::OpenChannelRequest { temporary_channel_id, .. } => {
-			nodes[1].node.accept_inbound_channel(&temporary_channel_id).unwrap();
-			let api_res = nodes[1].node.accept_inbound_channel(&temporary_channel_id);
+			nodes[1].node.accept_inbound_channel(&temporary_channel_id, 0).unwrap();
+			let api_res = nodes[1].node.accept_inbound_channel(&temporary_channel_id, 0);
 			match api_res {
 				Err(APIError::APIMisuseError { err }) => {
 					assert_eq!(err, "The channel isn't currently awaiting to be accepted.");
@@ -8292,7 +8305,7 @@ fn test_can_not_accept_unknown_inbound_channel() {
 	let node = create_network(1, &node_cfg, &node_chanmgr)[0].node;
 
 	let unknown_channel_id = [0; 32];
-	let api_res = node.accept_inbound_channel(&unknown_channel_id);
+	let api_res = node.accept_inbound_channel(&unknown_channel_id, 0);
 	match api_res {
 		Err(APIError::ChannelUnavailable { err }) => {
 			assert_eq!(err, "Can't accept a channel that doesn't exist");
