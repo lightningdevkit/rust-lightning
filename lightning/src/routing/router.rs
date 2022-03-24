@@ -916,14 +916,20 @@ where L::Target: Logger {
 					let over_path_minimum_msat = amount_to_transfer_over_msat >= $candidate.htlc_minimum_msat() &&
 						amount_to_transfer_over_msat >= $next_hops_path_htlc_minimum_msat;
 
+					#[allow(unused_comparisons)] // $next_hops_path_htlc_minimum_msat is 0 in some calls so rustc complains
+					let may_overpay_to_meet_path_minimum_msat =
+						((amount_to_transfer_over_msat < $candidate.htlc_minimum_msat() &&
+						  recommended_value_msat > $candidate.htlc_minimum_msat()) ||
+						 (amount_to_transfer_over_msat < $next_hops_path_htlc_minimum_msat &&
+						  recommended_value_msat > $next_hops_path_htlc_minimum_msat));
+
 					// If HTLC minimum is larger than the amount we're going to transfer, we shouldn't
-					// bother considering this channel.
-					// Since we're choosing amount_to_transfer_over_msat as maximum possible, it can
-					// be only reduced later (not increased), so this channel should just be skipped
-					// as not sufficient.
-					if !over_path_minimum_msat && doesnt_exceed_cltv_delta_limit {
+					// bother considering this channel. If retrying with recommended_value_msat may
+					// allow us to hit the HTLC minimum limit, set htlc_minimum_limit so that we go
+					// around again with a higher amount.
+					if contributes_sufficient_value && doesnt_exceed_cltv_delta_limit && may_overpay_to_meet_path_minimum_msat {
 						hit_minimum_limit = true;
-					} else if contributes_sufficient_value && doesnt_exceed_cltv_delta_limit {
+					} else if contributes_sufficient_value && doesnt_exceed_cltv_delta_limit && over_path_minimum_msat {
 						// Note that low contribution here (limited by available_liquidity_msat)
 						// might violate htlc_minimum_msat on the hops which are next along the
 						// payment path (upstream to the payee). To avoid that, we recompute
