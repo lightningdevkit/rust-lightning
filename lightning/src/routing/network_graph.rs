@@ -401,82 +401,91 @@ where C::Target: chain::Access, L::Target: Logger
 			return ();
 		}
 
-		// Send a gossip_timestamp_filter to enable gossip message receipt. Note that we have to
-		// use a "all timestamps" filter as sending the current timestamp would result in missing
-		// gossip messages that are simply sent late. We could calculate the intended filter time
-		// by looking at the current time and subtracting two weeks (before which we'll reject
-		// messages), but there's not a lot of reason to bother - our peers should be discarding
-		// the same messages.
+		// The lightning network's gossip sync system is completely broken in numerous ways.
+		//
+		// Given no broadly-available set-reconciliation protocol, the only reasonable approach is
+		// to do a full sync from the first few peers we connect to, and then receive gossip
+		// updates from all our peers normally.
+		//
+		// Originally, we could simply tell a peer to dump us the entire gossip table on startup,
+		// wasting lots of bandwidth but ensuring we have the full network graph. After the initial
+		// dump peers would always send gossip and we'd stay up-to-date with whatever our peer has
+		// seen.
+		//
+		// In order to reduce the bandwidth waste, "gossip queries" were introduced, allowing you
+		// to ask for the SCIDs of all channels in your peer's routing graph, and then only request
+		// channel data which you are missing. Except there was no way at all to identify which
+		// `channel_update`s you were missing, so you still had to request everything, just in a
+		// very complicated way with some queries instead of just getting the dump.
+		//
+		// Later, an option was added to fetch the latest timestamps of the `channel_update`s to
+		// make efficient sync possible, however it has yet to be implemented in lnd, which makes
+		// relying on it useless.
+		//
+		// After gossip queries were introduced, support for receiving a full gossip table dump on
+		// connection was removed from several nodes, making it impossible to get a full sync
+		// without using the "gossip queries" messages.
+		//
+		// Once you opt into "gossip queries" the only way to receive any gossip updates that a
+		// peer receives after you connect, you must send a `gossip_timestamp_filter` message. This
+		// message, as the name implies, tells the peer to not forward any gossip messages with a
+		// timestamp older than a given value (not the time the peer received the filter, but the
+		// timestamp in the update message, which is often hours behind when the peer received the
+		// message).
+		//
+		// Obnoxiously, `gossip_timestamp_filter` isn't *just* a filter, but its also a request for
+		// your peer to send you the full routing graph (subject to the filter). Thus, in order to
+		// tell a peer to send you any updates as it sees them, you have to also ask for the full
+		// routing graph to be synced. If you set a timestamp filter near the current time, peers
+		// will simply not forward any new updates they see to you which were generated some time
+		// ago (which is not uncommon). If you instead set a timestamp filter near 0 (or two weeks
+		// ago), you will always get the full routing graph from all your peers.
+		//
+		// Most lightning nodes today opt to simply turn off receiving gossip data which only
+		// propagated some time after it was generated, and, worse, often disable gossiping with
+		// several peers after their first connection. The second behavior can cause gossip to not
+		// propagate fully if there are cuts in the gossiping subgraph.
+		//
+		// In an attempt to cut a middle ground between always fetching the full graph from all of
+		// our peers and never receiving gossip from peers at all, we send all of our peers a
+		// `gossip_timestamp_filter`, with the filter time set either two weeks ago or an hour ago.
+		//
+		// For no-std builds, we bury our head in the sand and do a full sync on each connection.
+		let should_request_full_sync = self.should_request_full_sync(&their_node_id);
+		#[allow(unused_mut, unused_assignments)]
+		let mut gossip_start_time = 0;
+		#[cfg(feature = "std")]
+		{
+			gossip_start_time = SystemTime::now().duration_since(UNIX_EPOCH).expect("Time must be > 1970").as_secs();
+			if should_request_full_sync {
+				gossip_start_time -= 60 * 60 * 24 * 7 * 2; // 2 weeks ago
+			} else {
+				gossip_start_time -= 60 * 60; // an hour ago
+			}
+		}
+
 		let mut pending_events = self.pending_events.lock().unwrap();
 		pending_events.push(MessageSendEvent::SendGossipTimestampFilter {
 			node_id: their_node_id.clone(),
 			msg: GossipTimestampFilter {
 				chain_hash: self.network_graph.genesis_hash,
-				first_timestamp: 0,
+				first_timestamp: gossip_start_time as u32, // 2106 issue!
 				timestamp_range: u32::max_value(),
 			},
 		});
-
-		// Check if we need to perform a full synchronization with this peer
-		if !self.should_request_full_sync(&their_node_id) {
-			return ();
-		}
-
-		let first_blocknum = 0;
-		let number_of_blocks = 0xffffffff;
-		log_debug!(self.logger, "Sending query_channel_range peer={}, first_blocknum={}, number_of_blocks={}", log_pubkey!(their_node_id), first_blocknum, number_of_blocks);
-		pending_events.push(MessageSendEvent::SendChannelRangeQuery {
-			node_id: their_node_id.clone(),
-			msg: QueryChannelRange {
-				chain_hash: self.network_graph.genesis_hash,
-				first_blocknum,
-				number_of_blocks,
-			},
-		});
 	}
 
-	/// Statelessly processes a reply to a channel range query by immediately
-	/// sending an SCID query with SCIDs in the reply. To keep this handler
-	/// stateless, it does not validate the sequencing of replies for multi-
-	/// reply ranges. It does not validate whether the reply(ies) cover the
-	/// queried range. It also does not filter SCIDs to only those in the
-	/// original query range. We also do not validate that the chain_hash
-	/// matches the chain_hash of the NetworkGraph. Any chan_ann message that
-	/// does not match our chain_hash will be rejected when the announcement is
-	/// processed.
-	fn handle_reply_channel_range(&self, their_node_id: &PublicKey, msg: ReplyChannelRange) -> Result<(), LightningError> {
-		log_debug!(self.logger, "Handling reply_channel_range peer={}, first_blocknum={}, number_of_blocks={}, sync_complete={}, scids={}", log_pubkey!(their_node_id), msg.first_blocknum, msg.number_of_blocks, msg.sync_complete, msg.short_channel_ids.len(),);
-
-		log_debug!(self.logger, "Sending query_short_channel_ids peer={}, batch_size={}", log_pubkey!(their_node_id), msg.short_channel_ids.len());
-		let mut pending_events = self.pending_events.lock().unwrap();
-		pending_events.push(MessageSendEvent::SendShortIdsQuery {
-			node_id: their_node_id.clone(),
-			msg: QueryShortChannelIds {
-				chain_hash: msg.chain_hash,
-				short_channel_ids: msg.short_channel_ids,
-			}
-		});
-
+	fn handle_reply_channel_range(&self, _their_node_id: &PublicKey, _msg: ReplyChannelRange) -> Result<(), LightningError> {
+		// We don't make queries, so should never receive replies. If, in the future, the set
+		// reconciliation extensions to gossip queries become broadly supported, we should revert
+		// this code to its state pre-0.0.106.
 		Ok(())
 	}
 
-	/// When an SCID query is initiated the remote peer will begin streaming
-	/// gossip messages. In the event of a failure, we may have received
-	/// some channel information. Before trying with another peer, the
-	/// caller should update its set of SCIDs that need to be queried.
-	fn handle_reply_short_channel_ids_end(&self, their_node_id: &PublicKey, msg: ReplyShortChannelIdsEnd) -> Result<(), LightningError> {
-		log_debug!(self.logger, "Handling reply_short_channel_ids_end peer={}, full_information={}", log_pubkey!(their_node_id), msg.full_information);
-
-		// If the remote node does not have up-to-date information for the
-		// chain_hash they will set full_information=false. We can fail
-		// the result and try again with a different peer.
-		if !msg.full_information {
-			return Err(LightningError {
-				err: String::from("Received reply_short_channel_ids_end with no information"),
-				action: ErrorAction::IgnoreError
-			});
-		}
-
+	fn handle_reply_short_channel_ids_end(&self, _their_node_id: &PublicKey, _msg: ReplyShortChannelIdsEnd) -> Result<(), LightningError> {
+		// We don't make queries, so should never receive replies. If, in the future, the set
+		// reconciliation extensions to gossip queries become broadly supported, we should revert
+		// this code to its state pre-0.0.106.
 		Ok(())
 	}
 
@@ -1535,7 +1544,7 @@ mod tests {
 	use routing::network_graph::{NetGraphMsgHandler, NetworkGraph, NetworkUpdate, MAX_EXCESS_BYTES_FOR_RELAY};
 	use ln::msgs::{Init, OptionalField, RoutingMessageHandler, UnsignedNodeAnnouncement, NodeAnnouncement,
 		UnsignedChannelAnnouncement, ChannelAnnouncement, UnsignedChannelUpdate, ChannelUpdate, 
-		ReplyChannelRange, ReplyShortChannelIdsEnd, QueryChannelRange, QueryShortChannelIds, MAX_VALUE_MSAT};
+		ReplyChannelRange, QueryChannelRange, QueryShortChannelIds, MAX_VALUE_MSAT};
 	use util::test_utils;
 	use util::logger::Logger;
 	use util::ser::{Readable, Writeable};
@@ -2272,15 +2281,16 @@ mod tests {
 	}
 
 	#[test]
+	#[cfg(feature = "std")]
 	fn calling_sync_routing_table() {
+		use std::time::{SystemTime, UNIX_EPOCH};
+
 		let network_graph = create_network_graph();
 		let (secp_ctx, net_graph_msg_handler) = create_net_graph_msg_handler(&network_graph);
 		let node_privkey_1 = &SecretKey::from_slice(&[42; 32]).unwrap();
 		let node_id_1 = PublicKey::from_secret_key(&secp_ctx, node_privkey_1);
 
 		let chain_hash = genesis_block(Network::Testnet).header.block_hash();
-		let first_blocknum = 0;
-		let number_of_blocks = 0xffff_ffff;
 
 		// It should ignore if gossip_queries feature is not enabled
 		{
@@ -2290,132 +2300,23 @@ mod tests {
 			assert_eq!(events.len(), 0);
 		}
 
-		// It should send a query_channel_message with the correct information
+		// It should send a gossip_timestamp_filter with the correct information
 		{
 			let init_msg = Init { features: InitFeatures::known(), remote_network_address: None };
 			net_graph_msg_handler.peer_connected(&node_id_1, &init_msg);
 			let events = net_graph_msg_handler.get_and_clear_pending_msg_events();
-			assert_eq!(events.len(), 2);
+			assert_eq!(events.len(), 1);
 			match &events[0] {
 				MessageSendEvent::SendGossipTimestampFilter{ node_id, msg } => {
 					assert_eq!(node_id, &node_id_1);
 					assert_eq!(msg.chain_hash, chain_hash);
-					assert_eq!(msg.first_timestamp, 0);
+					let expected_timestamp = SystemTime::now().duration_since(UNIX_EPOCH).expect("Time must be > 1970").as_secs();
+					assert!((msg.first_timestamp as u64) >= expected_timestamp - 60*60*24*7*2);
+					assert!((msg.first_timestamp as u64) < expected_timestamp - 60*60*24*7*2 + 10);
 					assert_eq!(msg.timestamp_range, u32::max_value());
 				},
 				_ => panic!("Expected MessageSendEvent::SendChannelRangeQuery")
 			};
-			match &events[1] {
-				MessageSendEvent::SendChannelRangeQuery{ node_id, msg } => {
-					assert_eq!(node_id, &node_id_1);
-					assert_eq!(msg.chain_hash, chain_hash);
-					assert_eq!(msg.first_blocknum, first_blocknum);
-					assert_eq!(msg.number_of_blocks, number_of_blocks);
-				},
-				_ => panic!("Expected MessageSendEvent::SendChannelRangeQuery")
-			};
-		}
-
-		// It should not enqueue a query when should_request_full_sync return false.
-		// The initial implementation allows syncing with the first 5 peers after
-		// which should_request_full_sync will return false
-		{
-			let network_graph = create_network_graph();
-			let (secp_ctx, net_graph_msg_handler) = create_net_graph_msg_handler(&network_graph);
-			let init_msg = Init { features: InitFeatures::known(), remote_network_address: None };
-			for n in 1..7 {
-				let node_privkey = &SecretKey::from_slice(&[n; 32]).unwrap();
-				let node_id = PublicKey::from_secret_key(&secp_ctx, node_privkey);
-				net_graph_msg_handler.peer_connected(&node_id, &init_msg);
-				let events = net_graph_msg_handler.get_and_clear_pending_msg_events();
-				if n <= 5 {
-					assert_eq!(events.len(), 2);
-				} else {
-					// Even after the we stop sending the explicit query, we should still send a
-					// gossip_timestamp_filter on each new connection.
-					assert_eq!(events.len(), 1);
-				}
-
-			}
-		}
-	}
-
-	#[test]
-	fn handling_reply_channel_range() {
-		let network_graph = create_network_graph();
-		let (secp_ctx, net_graph_msg_handler) = create_net_graph_msg_handler(&network_graph);
-		let node_privkey_1 = &SecretKey::from_slice(&[42; 32]).unwrap();
-		let node_id_1 = PublicKey::from_secret_key(&secp_ctx, node_privkey_1);
-
-		let chain_hash = genesis_block(Network::Testnet).header.block_hash();
-
-		// Test receipt of a single reply that should enqueue an SCID query
-		// matching the SCIDs in the reply
-		{
-			let result = net_graph_msg_handler.handle_reply_channel_range(&node_id_1, ReplyChannelRange {
-				chain_hash,
-				sync_complete: true,
-				first_blocknum: 0,
-				number_of_blocks: 2000,
-				short_channel_ids: vec![
-					0x0003e0_000000_0000, // 992x0x0
-					0x0003e8_000000_0000, // 1000x0x0
-					0x0003e9_000000_0000, // 1001x0x0
-					0x0003f0_000000_0000, // 1008x0x0
-					0x00044c_000000_0000, // 1100x0x0
-					0x0006e0_000000_0000, // 1760x0x0
-				],
-			});
-			assert!(result.is_ok());
-
-			// We expect to emit a query_short_channel_ids message with the received scids
-			let events = net_graph_msg_handler.get_and_clear_pending_msg_events();
-			assert_eq!(events.len(), 1);
-			match &events[0] {
-				MessageSendEvent::SendShortIdsQuery { node_id, msg } => {
-					assert_eq!(node_id, &node_id_1);
-					assert_eq!(msg.chain_hash, chain_hash);
-					assert_eq!(msg.short_channel_ids, vec![
-						0x0003e0_000000_0000, // 992x0x0
-						0x0003e8_000000_0000, // 1000x0x0
-						0x0003e9_000000_0000, // 1001x0x0
-						0x0003f0_000000_0000, // 1008x0x0
-						0x00044c_000000_0000, // 1100x0x0
-						0x0006e0_000000_0000, // 1760x0x0
-					]);
-				},
-				_ => panic!("expected MessageSendEvent::SendShortIdsQuery"),
-			}
-		}
-	}
-
-	#[test]
-	fn handling_reply_short_channel_ids() {
-		let network_graph = create_network_graph();
-		let (secp_ctx, net_graph_msg_handler) = create_net_graph_msg_handler(&network_graph);
-		let node_privkey = &SecretKey::from_slice(&[41; 32]).unwrap();
-		let node_id = PublicKey::from_secret_key(&secp_ctx, node_privkey);
-
-		let chain_hash = genesis_block(Network::Testnet).header.block_hash();
-
-		// Test receipt of a successful reply
-		{
-			let result = net_graph_msg_handler.handle_reply_short_channel_ids_end(&node_id, ReplyShortChannelIdsEnd {
-				chain_hash,
-				full_information: true,
-			});
-			assert!(result.is_ok());
-		}
-
-		// Test receipt of a reply that indicates the peer does not maintain up-to-date information
-		// for the chain_hash requested in the query.
-		{
-			let result = net_graph_msg_handler.handle_reply_short_channel_ids_end(&node_id, ReplyShortChannelIdsEnd {
-				chain_hash,
-				full_information: false,
-			});
-			assert!(result.is_err());
-			assert_eq!(result.err().unwrap().err, "Received reply_short_channel_ids_end with no information");
 		}
 	}
 
