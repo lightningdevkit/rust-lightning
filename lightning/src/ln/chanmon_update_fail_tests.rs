@@ -16,7 +16,7 @@ use bitcoin::blockdata::block::{Block, BlockHeader};
 use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::hash_types::BlockHash;
 use bitcoin::network::constants::Network;
-use chain::channelmonitor::ChannelMonitor;
+use chain::channelmonitor::{ANTI_REORG_DELAY, ChannelMonitor};
 use chain::transaction::OutPoint;
 use chain::{ChannelMonitorUpdateErr, Listen, Watch};
 use ln::channelmanager::{ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, PaymentSendFailure};
@@ -2056,6 +2056,50 @@ fn test_pending_update_fee_ack_on_reconnect() {
 	expect_payment_received!(nodes[0], payment_hash, payment_secret, 1_000_000);
 
 	claim_payment(&nodes[1], &[&nodes[0]], payment_preimage);
+}
+
+#[test]
+fn test_fail_htlc_on_broadcast_after_claim() {
+	// In an earlier version of 7e78fa660cec8a73286c94c1073ee588140e7a01 we'd also fail the inbound
+	// channel backwards if we received an HTLC failure after a HTLC fulfillment. Here we test a
+	// specific case of that by having the HTLC failure come from the ChannelMonitor after a dust
+	// HTLC was not included in a confirmed commitment transaction.
+	//
+	// We first forward a payment, then claim it with an update_fulfill_htlc message, closing the
+	// channel immediately before commitment occurs. After the commitment transaction reaches
+	// ANTI_REORG_DELAY confirmations, will will try to fail the HTLC which was already fulfilled.
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
+	let chan_id_2 = create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::known(), InitFeatures::known()).2;
+
+	let payment_preimage = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 2000).0;
+
+	let bs_txn = get_local_commitment_txn!(nodes[2], chan_id_2);
+	assert_eq!(bs_txn.len(), 1);
+
+	nodes[2].node.claim_funds(payment_preimage);
+	check_added_monitors!(nodes[2], 1);
+	let cs_updates = get_htlc_update_msgs!(nodes[2], nodes[1].node.get_our_node_id());
+	nodes[1].node.handle_update_fulfill_htlc(&nodes[2].node.get_our_node_id(), &cs_updates.update_fulfill_htlcs[0]);
+	let bs_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+	check_added_monitors!(nodes[1], 1);
+	expect_payment_forwarded!(nodes[1], Some(1000), false);
+
+	mine_transaction(&nodes[1], &bs_txn[0]);
+	check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed);
+	check_closed_broadcast!(nodes[1], true);
+	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
+	check_added_monitors!(nodes[1], 1);
+	expect_pending_htlcs_forwardable!(nodes[1]);
+
+	nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &bs_updates.update_fulfill_htlcs[0]);
+	expect_payment_sent_without_paths!(nodes[0], payment_preimage);
+	commitment_signed_dance!(nodes[0], nodes[1], bs_updates.commitment_signed, true, true);
+	expect_payment_path_successful!(nodes[0]);
 }
 
 fn do_update_fee_resend_test(deliver_update: bool, parallel_updates: bool) {
