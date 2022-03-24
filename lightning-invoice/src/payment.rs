@@ -39,7 +39,7 @@
 //! # use lightning::ln::channelmanager::{ChannelDetails, PaymentId, PaymentSendFailure};
 //! # use lightning::ln::msgs::LightningError;
 //! # use lightning::routing::scoring::Score;
-//! # use lightning::routing::network_graph::NodeId;
+//! # use lightning::routing::network_graph::{EffectiveCapacity, NodeId};
 //! # use lightning::routing::router::{Route, RouteHop, RouteParameters};
 //! # use lightning::util::events::{Event, EventHandler, EventsProvider};
 //! # use lightning::util::logger::{Logger, Record};
@@ -90,7 +90,7 @@
 //! # }
 //! # impl Score for FakeScorer {
 //! #     fn channel_penalty_msat(
-//! #         &self, _short_channel_id: u64, _send_amt: u64, _chan_amt: u64, _source: &NodeId, _target: &NodeId
+//! #         &self, _short_channel_id: u64, _send_amt: u64, _cap: EffectiveCapacity, _source: &NodeId, _target: &NodeId
 //! #     ) -> u64 { 0 }
 //! #     fn payment_path_failed(&mut self, _path: &[&RouteHop], _short_channel_id: u64) {}
 //! #     fn payment_path_successful(&mut self, _path: &[&RouteHop]) {}
@@ -532,7 +532,7 @@ mod tests {
 	use lightning::ln::features::{ChannelFeatures, NodeFeatures, InitFeatures};
 	use lightning::ln::functional_test_utils::*;
 	use lightning::ln::msgs::{ChannelMessageHandler, ErrorAction, LightningError};
-	use lightning::routing::network_graph::NodeId;
+	use lightning::routing::network_graph::{EffectiveCapacity, NodeId};
 	use lightning::routing::router::{PaymentParameters, Route, RouteHop};
 	use lightning::util::test_utils::TestLogger;
 	use lightning::util::errors::APIError;
@@ -1327,7 +1327,7 @@ mod tests {
 
 	impl Score for TestScorer {
 		fn channel_penalty_msat(
-			&self, _short_channel_id: u64, _send_amt: u64, _chan_amt: u64, _source: &NodeId, _target: &NodeId
+			&self, _short_channel_id: u64, _send_amt: u64, _capacity: EffectiveCapacity, _source: &NodeId, _target: &NodeId
 		) -> u64 { 0 }
 
 		fn payment_path_failed(&mut self, actual_path: &[&RouteHop], actual_short_channel_id: u64) {

@@ -55,7 +55,7 @@
 //! [`find_route`]: crate::routing::router::find_route
 
 use ln::msgs::DecodeError;
-use routing::network_graph::{NetworkGraph, NodeId};
+use routing::network_graph::{EffectiveCapacity, NetworkGraph, NodeId};
 use routing::router::RouteHop;
 use util::ser::{Readable, ReadableArgs, Writeable, Writer};
 
@@ -86,11 +86,11 @@ pub trait Score $(: $supertrait)* {
 	/// given channel in the direction from `source` to `target`.
 	///
 	/// The channel's capacity (less any other MPP parts that are also being considered for use in
-	/// the same payment) is given by `capacity_msat`. It may be determined from various sources
+	/// the same payment) is given by `capacity`. It may be determined from various sources
 	/// such as a chain data, network gossip, or invoice hints. For invoice hints, a capacity near
 	/// [`u64::max_value`] is given to indicate sufficient capacity for the invoice's full amount.
 	/// Thus, implementations should be overflow-safe.
-	fn channel_penalty_msat(&self, short_channel_id: u64, send_amt_msat: u64, capacity_msat: u64, source: &NodeId, target: &NodeId) -> u64;
+	fn channel_penalty_msat(&self, short_channel_id: u64, send_amt_msat: u64, capacity: EffectiveCapacity, source: &NodeId, target: &NodeId) -> u64;
 
 	/// Handles updating channel penalties after failing to route through a channel.
 	fn payment_path_failed(&mut self, path: &[&RouteHop], short_channel_id: u64);
@@ -100,8 +100,8 @@ pub trait Score $(: $supertrait)* {
 }
 
 impl<S: Score, T: DerefMut<Target=S> $(+ $supertrait)*> Score for T {
-	fn channel_penalty_msat(&self, short_channel_id: u64, send_amt_msat: u64, capacity_msat: u64, source: &NodeId, target: &NodeId) -> u64 {
-		self.deref().channel_penalty_msat(short_channel_id, send_amt_msat, capacity_msat, source, target)
+	fn channel_penalty_msat(&self, short_channel_id: u64, send_amt_msat: u64, capacity: EffectiveCapacity, source: &NodeId, target: &NodeId) -> u64 {
+		self.deref().channel_penalty_msat(short_channel_id, send_amt_msat, capacity, source, target)
 	}
 
 	fn payment_path_failed(&mut self, path: &[&RouteHop], short_channel_id: u64) {
@@ -209,7 +209,7 @@ impl FixedPenaltyScorer {
 }
 
 impl Score for FixedPenaltyScorer {
-	fn channel_penalty_msat(&self, _: u64, _: u64, _: u64, _: &NodeId, _: &NodeId) -> u64 {
+	fn channel_penalty_msat(&self, _: u64, _: u64, _: EffectiveCapacity, _: &NodeId, _: &NodeId) -> u64 {
 		self.penalty_msat
 	}
 
@@ -382,19 +382,21 @@ impl Default for ScoringParameters {
 
 impl<T: Time> Score for ScorerUsingTime<T> {
 	fn channel_penalty_msat(
-		&self, short_channel_id: u64, send_amt_msat: u64, capacity_msat: u64, _source: &NodeId, _target: &NodeId
+		&self, short_channel_id: u64, send_amt_msat: u64, capacity: EffectiveCapacity, _source: &NodeId, _target: &NodeId
 	) -> u64 {
 		let failure_penalty_msat = self.channel_failures
 			.get(&short_channel_id)
 			.map_or(0, |value| value.decayed_penalty_msat(self.params.failure_penalty_half_life));
 
 		let mut penalty_msat = self.params.base_penalty_msat + failure_penalty_msat;
-		let send_1024ths = send_amt_msat.checked_mul(1024).unwrap_or(u64::max_value()) / capacity_msat;
-		if send_1024ths > self.params.overuse_penalty_start_1024th as u64 {
-			penalty_msat = penalty_msat.checked_add(
-					(send_1024ths - self.params.overuse_penalty_start_1024th as u64)
-					.checked_mul(self.params.overuse_penalty_msat_per_1024th).unwrap_or(u64::max_value()))
-				.unwrap_or(u64::max_value());
+		if let Some(capacity_msat) = capacity.as_msat_with_default() {
+			let send_1024ths = send_amt_msat.checked_mul(1024).unwrap_or(u64::max_value()) / capacity_msat;
+			if send_1024ths > self.params.overuse_penalty_start_1024th as u64 {
+				penalty_msat = penalty_msat.checked_add(
+						(send_1024ths - self.params.overuse_penalty_start_1024th as u64)
+						.checked_mul(self.params.overuse_penalty_msat_per_1024th).unwrap_or(u64::max_value()))
+					.unwrap_or(u64::max_value());
+			}
 		}
 
 		penalty_msat
@@ -734,17 +736,20 @@ impl<L: DerefMut<Target = u64>, T: Time, U: DerefMut<Target = T>> DirectedChanne
 }
 
 impl<G: Deref<Target = NetworkGraph>, T: Time> Score for ProbabilisticScorerUsingTime<G, T> {
+	#[inline]
 	fn channel_penalty_msat(
-		&self, short_channel_id: u64, amount_msat: u64, capacity_msat: u64, source: &NodeId,
-		target: &NodeId
+		&self, short_channel_id: u64, amount_msat: u64, capacity: EffectiveCapacity,
+		source: &NodeId, target: &NodeId
 	) -> u64 {
 		let liquidity_penalty_multiplier_msat = self.params.liquidity_penalty_multiplier_msat;
 		let liquidity_offset_half_life = self.params.liquidity_offset_half_life;
-		self.channel_liquidities
-			.get(&short_channel_id)
-			.unwrap_or(&ChannelLiquidity::new())
-			.as_directed(source, target, capacity_msat, liquidity_offset_half_life)
-			.penalty_msat(amount_msat, liquidity_penalty_multiplier_msat)
+		if let Some(capacity_msat) = capacity.as_msat_with_default() {
+			self.channel_liquidities
+				.get(&short_channel_id)
+				.unwrap_or(&ChannelLiquidity::new())
+				.as_directed(source, target, capacity_msat, liquidity_offset_half_life)
+				.penalty_msat(amount_msat, liquidity_penalty_multiplier_msat)
+		} else { 0 }
 	}
 
 	fn payment_path_failed(&mut self, path: &[&RouteHop], short_channel_id: u64) {
@@ -759,21 +764,22 @@ impl<G: Deref<Target = NetworkGraph>, T: Time> Score for ProbabilisticScorerUsin
 
 			// Only score announced channels.
 			if let Some((channel, source)) = channel_directed_from_source {
-				let capacity_msat = channel.effective_capacity().as_msat();
-				if hop.short_channel_id == short_channel_id {
+				if let Some(capacity_msat) = channel.effective_capacity().as_msat_with_default() {
+					if hop.short_channel_id == short_channel_id {
+						self.channel_liquidities
+							.entry(hop.short_channel_id)
+							.or_insert_with(ChannelLiquidity::new)
+							.as_directed_mut(source, &target, capacity_msat, liquidity_offset_half_life)
+							.failed_at_channel(amount_msat);
+						break;
+					}
+
 					self.channel_liquidities
 						.entry(hop.short_channel_id)
 						.or_insert_with(ChannelLiquidity::new)
 						.as_directed_mut(source, &target, capacity_msat, liquidity_offset_half_life)
-						.failed_at_channel(amount_msat);
-					break;
+						.failed_downstream(amount_msat);
 				}
-
-				self.channel_liquidities
-					.entry(hop.short_channel_id)
-					.or_insert_with(ChannelLiquidity::new)
-					.as_directed_mut(source, &target, capacity_msat, liquidity_offset_half_life)
-					.failed_downstream(amount_msat);
 			}
 		}
 	}
@@ -790,12 +796,13 @@ impl<G: Deref<Target = NetworkGraph>, T: Time> Score for ProbabilisticScorerUsin
 
 			// Only score announced channels.
 			if let Some((channel, source)) = channel_directed_from_source {
-				let capacity_msat = channel.effective_capacity().as_msat();
-				self.channel_liquidities
-					.entry(hop.short_channel_id)
-					.or_insert_with(ChannelLiquidity::new)
-					.as_directed_mut(source, &target, capacity_msat, liquidity_offset_half_life)
-					.successful(amount_msat);
+				if let Some(capacity_msat) = channel.effective_capacity().as_msat_with_default() {
+					self.channel_liquidities
+						.entry(hop.short_channel_id)
+						.or_insert_with(ChannelLiquidity::new)
+						.as_directed_mut(source, &target, capacity_msat, liquidity_offset_half_life)
+						.successful(amount_msat);
+				}
 			}
 		}
 	}
@@ -1059,7 +1066,7 @@ mod tests {
 	use ln::features::{ChannelFeatures, NodeFeatures};
 	use ln::msgs::{ChannelAnnouncement, ChannelUpdate, OptionalField, UnsignedChannelAnnouncement, UnsignedChannelUpdate};
 	use routing::scoring::Score;
-	use routing::network_graph::{NetworkGraph, NodeId};
+	use routing::network_graph::{EffectiveCapacity, NetworkGraph, NodeId};
 	use routing::router::RouteHop;
 	use util::ser::{Readable, ReadableArgs, Writeable};
 
@@ -1182,10 +1189,10 @@ mod tests {
 		});
 		let source = source_node_id();
 		let target = target_node_id();
-		assert_eq!(scorer.channel_penalty_msat(42, 1, 1, &source, &target), 1_000);
+		assert_eq!(scorer.channel_penalty_msat(42, 1, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1 }, &source, &target), 1_000);
 
 		SinceEpoch::advance(Duration::from_secs(1));
-		assert_eq!(scorer.channel_penalty_msat(42, 1, 1, &source, &target), 1_000);
+		assert_eq!(scorer.channel_penalty_msat(42, 1, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1 }, &source, &target), 1_000);
 	}
 
 	#[test]
@@ -1199,16 +1206,16 @@ mod tests {
 		});
 		let source = source_node_id();
 		let target = target_node_id();
-		assert_eq!(scorer.channel_penalty_msat(42, 1, 1, &source, &target), 1_000);
+		assert_eq!(scorer.channel_penalty_msat(42, 1, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1 }, &source, &target), 1_000);
 
 		scorer.payment_path_failed(&[], 42);
-		assert_eq!(scorer.channel_penalty_msat(42, 1, 1, &source, &target), 1_064);
+		assert_eq!(scorer.channel_penalty_msat(42, 1, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1 }, &source, &target), 1_064);
 
 		scorer.payment_path_failed(&[], 42);
-		assert_eq!(scorer.channel_penalty_msat(42, 1, 1, &source, &target), 1_128);
+		assert_eq!(scorer.channel_penalty_msat(42, 1, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1 }, &source, &target), 1_128);
 
 		scorer.payment_path_failed(&[], 42);
-		assert_eq!(scorer.channel_penalty_msat(42, 1, 1, &source, &target), 1_192);
+		assert_eq!(scorer.channel_penalty_msat(42, 1, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1 }, &source, &target), 1_192);
 	}
 
 	#[test]
@@ -1222,25 +1229,25 @@ mod tests {
 		});
 		let source = source_node_id();
 		let target = target_node_id();
-		assert_eq!(scorer.channel_penalty_msat(42, 1, 1, &source, &target), 1_000);
+		assert_eq!(scorer.channel_penalty_msat(42, 1, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1 }, &source, &target), 1_000);
 
 		scorer.payment_path_failed(&[], 42);
-		assert_eq!(scorer.channel_penalty_msat(42, 1, 1, &source, &target), 1_512);
+		assert_eq!(scorer.channel_penalty_msat(42, 1, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1 }, &source, &target), 1_512);
 
 		SinceEpoch::advance(Duration::from_secs(9));
-		assert_eq!(scorer.channel_penalty_msat(42, 1, 1, &source, &target), 1_512);
+		assert_eq!(scorer.channel_penalty_msat(42, 1, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1 }, &source, &target), 1_512);
 
 		SinceEpoch::advance(Duration::from_secs(1));
-		assert_eq!(scorer.channel_penalty_msat(42, 1, 1, &source, &target), 1_256);
+		assert_eq!(scorer.channel_penalty_msat(42, 1, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1 }, &source, &target), 1_256);
 
 		SinceEpoch::advance(Duration::from_secs(10 * 8));
-		assert_eq!(scorer.channel_penalty_msat(42, 1, 1, &source, &target), 1_001);
+		assert_eq!(scorer.channel_penalty_msat(42, 1, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1 }, &source, &target), 1_001);
 
 		SinceEpoch::advance(Duration::from_secs(10));
-		assert_eq!(scorer.channel_penalty_msat(42, 1, 1, &source, &target), 1_000);
+		assert_eq!(scorer.channel_penalty_msat(42, 1, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1 }, &source, &target), 1_000);
 
 		SinceEpoch::advance(Duration::from_secs(10));
-		assert_eq!(scorer.channel_penalty_msat(42, 1, 1, &source, &target), 1_000);
+		assert_eq!(scorer.channel_penalty_msat(42, 1, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1 }, &source, &target), 1_000);
 	}
 
 	#[test]
@@ -1254,18 +1261,18 @@ mod tests {
 		});
 		let source = source_node_id();
 		let target = target_node_id();
-		assert_eq!(scorer.channel_penalty_msat(42, 1, 1, &source, &target), 1_000);
+		assert_eq!(scorer.channel_penalty_msat(42, 1, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1 }, &source, &target), 1_000);
 
 		scorer.payment_path_failed(&[], 42);
-		assert_eq!(scorer.channel_penalty_msat(42, 1, 1, &source, &target), 1_512);
+		assert_eq!(scorer.channel_penalty_msat(42, 1, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1 }, &source, &target), 1_512);
 
 		// An unchecked right shift 64 bits or more in ChannelFailure::decayed_penalty_msat would
 		// cause an overflow.
 		SinceEpoch::advance(Duration::from_secs(10 * 64));
-		assert_eq!(scorer.channel_penalty_msat(42, 1, 1, &source, &target), 1_000);
+		assert_eq!(scorer.channel_penalty_msat(42, 1, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1 }, &source, &target), 1_000);
 
 		SinceEpoch::advance(Duration::from_secs(10));
-		assert_eq!(scorer.channel_penalty_msat(42, 1, 1, &source, &target), 1_000);
+		assert_eq!(scorer.channel_penalty_msat(42, 1, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1 }, &source, &target), 1_000);
 	}
 
 	#[test]
@@ -1279,19 +1286,19 @@ mod tests {
 		});
 		let source = source_node_id();
 		let target = target_node_id();
-		assert_eq!(scorer.channel_penalty_msat(42, 1, 1, &source, &target), 1_000);
+		assert_eq!(scorer.channel_penalty_msat(42, 1, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1 }, &source, &target), 1_000);
 
 		scorer.payment_path_failed(&[], 42);
-		assert_eq!(scorer.channel_penalty_msat(42, 1, 1, &source, &target), 1_512);
+		assert_eq!(scorer.channel_penalty_msat(42, 1, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1 }, &source, &target), 1_512);
 
 		SinceEpoch::advance(Duration::from_secs(10));
-		assert_eq!(scorer.channel_penalty_msat(42, 1, 1, &source, &target), 1_256);
+		assert_eq!(scorer.channel_penalty_msat(42, 1, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1 }, &source, &target), 1_256);
 
 		scorer.payment_path_failed(&[], 42);
-		assert_eq!(scorer.channel_penalty_msat(42, 1, 1, &source, &target), 1_768);
+		assert_eq!(scorer.channel_penalty_msat(42, 1, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1 }, &source, &target), 1_768);
 
 		SinceEpoch::advance(Duration::from_secs(10));
-		assert_eq!(scorer.channel_penalty_msat(42, 1, 1, &source, &target), 1_384);
+		assert_eq!(scorer.channel_penalty_msat(42, 1, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1 }, &source, &target), 1_384);
 	}
 
 	#[test]
@@ -1305,13 +1312,13 @@ mod tests {
 		});
 		let source = source_node_id();
 		let target = target_node_id();
-		assert_eq!(scorer.channel_penalty_msat(42, 1, 1, &source, &target), 1_000);
+		assert_eq!(scorer.channel_penalty_msat(42, 1, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1 }, &source, &target), 1_000);
 
 		scorer.payment_path_failed(&[], 42);
-		assert_eq!(scorer.channel_penalty_msat(42, 1, 1, &source, &target), 1_512);
+		assert_eq!(scorer.channel_penalty_msat(42, 1, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1 }, &source, &target), 1_512);
 
 		SinceEpoch::advance(Duration::from_secs(10));
-		assert_eq!(scorer.channel_penalty_msat(42, 1, 1, &source, &target), 1_256);
+		assert_eq!(scorer.channel_penalty_msat(42, 1, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1 }, &source, &target), 1_256);
 
 		let hop = RouteHop {
 			pubkey: PublicKey::from_slice(target.as_slice()).unwrap(),
@@ -1322,10 +1329,10 @@ mod tests {
 			cltv_expiry_delta: 18,
 		};
 		scorer.payment_path_successful(&[&hop]);
-		assert_eq!(scorer.channel_penalty_msat(42, 1, 1, &source, &target), 1_128);
+		assert_eq!(scorer.channel_penalty_msat(42, 1, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1 }, &source, &target), 1_128);
 
 		SinceEpoch::advance(Duration::from_secs(10));
-		assert_eq!(scorer.channel_penalty_msat(42, 1, 1, &source, &target), 1_064);
+		assert_eq!(scorer.channel_penalty_msat(42, 1, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1 }, &source, &target), 1_064);
 	}
 
 	#[test]
@@ -1341,20 +1348,20 @@ mod tests {
 		let target = target_node_id();
 
 		scorer.payment_path_failed(&[], 42);
-		assert_eq!(scorer.channel_penalty_msat(42, 1, 1, &source, &target), 1_512);
+		assert_eq!(scorer.channel_penalty_msat(42, 1, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1 }, &source, &target), 1_512);
 
 		SinceEpoch::advance(Duration::from_secs(10));
-		assert_eq!(scorer.channel_penalty_msat(42, 1, 1, &source, &target), 1_256);
+		assert_eq!(scorer.channel_penalty_msat(42, 1, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1 }, &source, &target), 1_256);
 
 		scorer.payment_path_failed(&[], 43);
-		assert_eq!(scorer.channel_penalty_msat(43, 1, 1, &source, &target), 1_512);
+		assert_eq!(scorer.channel_penalty_msat(43, 1, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1 }, &source, &target), 1_512);
 
 		let mut serialized_scorer = Vec::new();
 		scorer.write(&mut serialized_scorer).unwrap();
 
 		let deserialized_scorer = <Scorer>::read(&mut io::Cursor::new(&serialized_scorer)).unwrap();
-		assert_eq!(deserialized_scorer.channel_penalty_msat(42, 1, 1, &source, &target), 1_256);
-		assert_eq!(deserialized_scorer.channel_penalty_msat(43, 1, 1, &source, &target), 1_512);
+		assert_eq!(deserialized_scorer.channel_penalty_msat(42, 1, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1 }, &source, &target), 1_256);
+		assert_eq!(deserialized_scorer.channel_penalty_msat(43, 1, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1 }, &source, &target), 1_512);
 	}
 
 	#[test]
@@ -1370,7 +1377,7 @@ mod tests {
 		let target = target_node_id();
 
 		scorer.payment_path_failed(&[], 42);
-		assert_eq!(scorer.channel_penalty_msat(42, 1, 1, &source, &target), 1_512);
+		assert_eq!(scorer.channel_penalty_msat(42, 1, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1 }, &source, &target), 1_512);
 
 		let mut serialized_scorer = Vec::new();
 		scorer.write(&mut serialized_scorer).unwrap();
@@ -1378,10 +1385,10 @@ mod tests {
 		SinceEpoch::advance(Duration::from_secs(10));
 
 		let deserialized_scorer = <Scorer>::read(&mut io::Cursor::new(&serialized_scorer)).unwrap();
-		assert_eq!(deserialized_scorer.channel_penalty_msat(42, 1, 1, &source, &target), 1_256);
+		assert_eq!(deserialized_scorer.channel_penalty_msat(42, 1, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1 }, &source, &target), 1_256);
 
 		SinceEpoch::advance(Duration::from_secs(10));
-		assert_eq!(deserialized_scorer.channel_penalty_msat(42, 1, 1, &source, &target), 1_128);
+		assert_eq!(deserialized_scorer.channel_penalty_msat(42, 1, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1 }, &source, &target), 1_128);
 	}
 
 	#[test]
@@ -1396,11 +1403,11 @@ mod tests {
 		let source = source_node_id();
 		let target = target_node_id();
 
-		assert_eq!(scorer.channel_penalty_msat(42, 1_000, 1_024_000, &source, &target), 0);
-		assert_eq!(scorer.channel_penalty_msat(42, 256_999, 1_024_000, &source, &target), 0);
-		assert_eq!(scorer.channel_penalty_msat(42, 257_000, 1_024_000, &source, &target), 100);
-		assert_eq!(scorer.channel_penalty_msat(42, 258_000, 1_024_000, &source, &target), 200);
-		assert_eq!(scorer.channel_penalty_msat(42, 512_000, 1_024_000, &source, &target), 256 * 100);
+		assert_eq!(scorer.channel_penalty_msat(42, 1_000, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1_024_000 }, &source, &target), 0);
+		assert_eq!(scorer.channel_penalty_msat(42, 256_999, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1_024_000 }, &source, &target), 0);
+		assert_eq!(scorer.channel_penalty_msat(42, 257_000, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1_024_000 }, &source, &target), 100);
+		assert_eq!(scorer.channel_penalty_msat(42, 258_000, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1_024_000 }, &source, &target), 200);
+		assert_eq!(scorer.channel_penalty_msat(42, 512_000, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1_024_000 }, &source, &target), 256 * 100);
 	}
 
 	// `ProbabilisticScorer` tests
@@ -1728,18 +1735,18 @@ mod tests {
 		let source = source_node_id();
 		let target = target_node_id();
 
-		assert_eq!(scorer.channel_penalty_msat(42, 1_024, 1_024_000, &source, &target), 0);
-		assert_eq!(scorer.channel_penalty_msat(42, 10_240, 1_024_000, &source, &target), 14);
-		assert_eq!(scorer.channel_penalty_msat(42, 102_400, 1_024_000, &source, &target), 43);
-		assert_eq!(scorer.channel_penalty_msat(42, 1_024_000, 1_024_000, &source, &target), 2_000);
+		assert_eq!(scorer.channel_penalty_msat(42, 1_024, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1_024_000 }, &source, &target), 0);
+		assert_eq!(scorer.channel_penalty_msat(42, 10_240, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1_024_000 }, &source, &target), 14);
+		assert_eq!(scorer.channel_penalty_msat(42, 102_400, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1_024_000 }, &source, &target), 43);
+		assert_eq!(scorer.channel_penalty_msat(42, 1_024_000, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1_024_000 }, &source, &target), 2_000);
 
-		assert_eq!(scorer.channel_penalty_msat(42, 128, 1_024, &source, &target), 58);
-		assert_eq!(scorer.channel_penalty_msat(42, 256, 1_024, &source, &target), 125);
-		assert_eq!(scorer.channel_penalty_msat(42, 374, 1_024, &source, &target), 204);
-		assert_eq!(scorer.channel_penalty_msat(42, 512, 1_024, &source, &target), 301);
-		assert_eq!(scorer.channel_penalty_msat(42, 640, 1_024, &source, &target), 426);
-		assert_eq!(scorer.channel_penalty_msat(42, 768, 1_024, &source, &target), 602);
-		assert_eq!(scorer.channel_penalty_msat(42, 896, 1_024, &source, &target), 903);
+		assert_eq!(scorer.channel_penalty_msat(42, 128, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1_024 }, &source, &target), 58);
+		assert_eq!(scorer.channel_penalty_msat(42, 256, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1_024 }, &source, &target), 125);
+		assert_eq!(scorer.channel_penalty_msat(42, 374, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1_024 }, &source, &target), 204);
+		assert_eq!(scorer.channel_penalty_msat(42, 512, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1_024 }, &source, &target), 301);
+		assert_eq!(scorer.channel_penalty_msat(42, 640, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1_024 }, &source, &target), 426);
+		assert_eq!(scorer.channel_penalty_msat(42, 768, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1_024 }, &source, &target), 602);
+		assert_eq!(scorer.channel_penalty_msat(42, 896, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1_024 }, &source, &target), 903);
 	}
 
 	#[test]
@@ -1757,10 +1764,10 @@ mod tests {
 		let source = source_node_id();
 		let target = target_node_id();
 
-		assert_eq!(scorer.channel_penalty_msat(42, 39, 100, &source, &target), 0);
-		assert_ne!(scorer.channel_penalty_msat(42, 50, 100, &source, &target), 0);
-		assert_ne!(scorer.channel_penalty_msat(42, 50, 100, &source, &target), 2_000);
-		assert_eq!(scorer.channel_penalty_msat(42, 61, 100, &source, &target), 2_000);
+		assert_eq!(scorer.channel_penalty_msat(42, 39, EffectiveCapacity::ExactLiquidity { liquidity_msat: 100 }, &source, &target), 0);
+		assert_ne!(scorer.channel_penalty_msat(42, 50, EffectiveCapacity::ExactLiquidity { liquidity_msat: 100 }, &source, &target), 0);
+		assert_ne!(scorer.channel_penalty_msat(42, 50, EffectiveCapacity::ExactLiquidity { liquidity_msat: 100 }, &source, &target), 2_000);
+		assert_eq!(scorer.channel_penalty_msat(42, 61, EffectiveCapacity::ExactLiquidity { liquidity_msat: 100 }, &source, &target), 2_000);
 	}
 
 	#[test]
@@ -1775,13 +1782,13 @@ mod tests {
 		let failed_path = payment_path_for_amount(500);
 		let successful_path = payment_path_for_amount(200);
 
-		assert_eq!(scorer.channel_penalty_msat(41, 500, 1_000, &sender, &source), 300);
+		assert_eq!(scorer.channel_penalty_msat(41, 500, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1_000 }, &sender, &source), 300);
 
 		scorer.payment_path_failed(&failed_path.iter().collect::<Vec<_>>(), 41);
-		assert_eq!(scorer.channel_penalty_msat(41, 500, 1_000, &sender, &source), 300);
+		assert_eq!(scorer.channel_penalty_msat(41, 500, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1_000 }, &sender, &source), 300);
 
 		scorer.payment_path_successful(&successful_path.iter().collect::<Vec<_>>());
-		assert_eq!(scorer.channel_penalty_msat(41, 500, 1_000, &sender, &source), 300);
+		assert_eq!(scorer.channel_penalty_msat(41, 500, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1_000 }, &sender, &source), 300);
 	}
 
 	#[test]
@@ -1795,15 +1802,15 @@ mod tests {
 		let target = target_node_id();
 		let path = payment_path_for_amount(500);
 
-		assert_eq!(scorer.channel_penalty_msat(42, 250, 1_000, &source, &target), 128);
-		assert_eq!(scorer.channel_penalty_msat(42, 500, 1_000, &source, &target), 300);
-		assert_eq!(scorer.channel_penalty_msat(42, 750, 1_000, &source, &target), 601);
+		assert_eq!(scorer.channel_penalty_msat(42, 250, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1_000 }, &source, &target), 128);
+		assert_eq!(scorer.channel_penalty_msat(42, 500, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1_000 }, &source, &target), 300);
+		assert_eq!(scorer.channel_penalty_msat(42, 750, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1_000 }, &source, &target), 601);
 
 		scorer.payment_path_failed(&path.iter().collect::<Vec<_>>(), 43);
 
-		assert_eq!(scorer.channel_penalty_msat(42, 250, 1_000, &source, &target), 0);
-		assert_eq!(scorer.channel_penalty_msat(42, 500, 1_000, &source, &target), 0);
-		assert_eq!(scorer.channel_penalty_msat(42, 750, 1_000, &source, &target), 300);
+		assert_eq!(scorer.channel_penalty_msat(42, 250, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1_000 }, &source, &target), 0);
+		assert_eq!(scorer.channel_penalty_msat(42, 500, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1_000 }, &source, &target), 0);
+		assert_eq!(scorer.channel_penalty_msat(42, 750, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1_000 }, &source, &target), 300);
 	}
 
 	#[test]
@@ -1817,15 +1824,15 @@ mod tests {
 		let target = target_node_id();
 		let path = payment_path_for_amount(500);
 
-		assert_eq!(scorer.channel_penalty_msat(42, 250, 1_000, &source, &target), 128);
-		assert_eq!(scorer.channel_penalty_msat(42, 500, 1_000, &source, &target), 300);
-		assert_eq!(scorer.channel_penalty_msat(42, 750, 1_000, &source, &target), 601);
+		assert_eq!(scorer.channel_penalty_msat(42, 250, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1_000 }, &source, &target), 128);
+		assert_eq!(scorer.channel_penalty_msat(42, 500, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1_000 }, &source, &target), 300);
+		assert_eq!(scorer.channel_penalty_msat(42, 750, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1_000 }, &source, &target), 601);
 
 		scorer.payment_path_failed(&path.iter().collect::<Vec<_>>(), 42);
 
-		assert_eq!(scorer.channel_penalty_msat(42, 250, 1_000, &source, &target), 300);
-		assert_eq!(scorer.channel_penalty_msat(42, 500, 1_000, &source, &target), 2_000);
-		assert_eq!(scorer.channel_penalty_msat(42, 750, 1_000, &source, &target), 2_000);
+		assert_eq!(scorer.channel_penalty_msat(42, 250, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1_000 }, &source, &target), 300);
+		assert_eq!(scorer.channel_penalty_msat(42, 500, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1_000 }, &source, &target), 2_000);
+		assert_eq!(scorer.channel_penalty_msat(42, 750, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1_000 }, &source, &target), 2_000);
 	}
 
 	#[test]
@@ -1841,15 +1848,15 @@ mod tests {
 		let recipient = recipient_node_id();
 		let path = payment_path_for_amount(500);
 
-		assert_eq!(scorer.channel_penalty_msat(41, 250, 1_000, &sender, &source), 128);
-		assert_eq!(scorer.channel_penalty_msat(42, 250, 1_000, &source, &target), 128);
-		assert_eq!(scorer.channel_penalty_msat(43, 250, 1_000, &target, &recipient), 128);
+		assert_eq!(scorer.channel_penalty_msat(41, 250, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1_000 }, &sender, &source), 128);
+		assert_eq!(scorer.channel_penalty_msat(42, 250, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1_000 }, &source, &target), 128);
+		assert_eq!(scorer.channel_penalty_msat(43, 250, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1_000 }, &target, &recipient), 128);
 
 		scorer.payment_path_successful(&path.iter().collect::<Vec<_>>());
 
-		assert_eq!(scorer.channel_penalty_msat(41, 250, 1_000, &sender, &source), 128);
-		assert_eq!(scorer.channel_penalty_msat(42, 250, 1_000, &source, &target), 300);
-		assert_eq!(scorer.channel_penalty_msat(43, 250, 1_000, &target, &recipient), 300);
+		assert_eq!(scorer.channel_penalty_msat(41, 250, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1_000 }, &sender, &source), 128);
+		assert_eq!(scorer.channel_penalty_msat(42, 250, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1_000 }, &source, &target), 300);
+		assert_eq!(scorer.channel_penalty_msat(43, 250, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1_000 }, &target, &recipient), 300);
 	}
 
 	#[test]
@@ -1863,44 +1870,44 @@ mod tests {
 		let source = source_node_id();
 		let target = target_node_id();
 
-		assert_eq!(scorer.channel_penalty_msat(42, 0, 1_024, &source, &target), 0);
-		assert_eq!(scorer.channel_penalty_msat(42, 1_024, 1_024, &source, &target), 2_000);
+		assert_eq!(scorer.channel_penalty_msat(42, 0, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1_024 }, &source, &target), 0);
+		assert_eq!(scorer.channel_penalty_msat(42, 1_024, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1_024 }, &source, &target), 2_000);
 
 		scorer.payment_path_failed(&payment_path_for_amount(768).iter().collect::<Vec<_>>(), 42);
 		scorer.payment_path_failed(&payment_path_for_amount(128).iter().collect::<Vec<_>>(), 43);
 
-		assert_eq!(scorer.channel_penalty_msat(42, 128, 1_024, &source, &target), 0);
-		assert_eq!(scorer.channel_penalty_msat(42, 256, 1_024, &source, &target), 97);
-		assert_eq!(scorer.channel_penalty_msat(42, 768, 1_024, &source, &target), 1_409);
-		assert_eq!(scorer.channel_penalty_msat(42, 896, 1_024, &source, &target), 2_000);
+		assert_eq!(scorer.channel_penalty_msat(42, 128, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1_024 }, &source, &target), 0);
+		assert_eq!(scorer.channel_penalty_msat(42, 256, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1_024 }, &source, &target), 97);
+		assert_eq!(scorer.channel_penalty_msat(42, 768, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1_024 }, &source, &target), 1_409);
+		assert_eq!(scorer.channel_penalty_msat(42, 896, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1_024 }, &source, &target), 2_000);
 
 		SinceEpoch::advance(Duration::from_secs(9));
-		assert_eq!(scorer.channel_penalty_msat(42, 128, 1_024, &source, &target), 0);
-		assert_eq!(scorer.channel_penalty_msat(42, 256, 1_024, &source, &target), 97);
-		assert_eq!(scorer.channel_penalty_msat(42, 768, 1_024, &source, &target), 1_409);
-		assert_eq!(scorer.channel_penalty_msat(42, 896, 1_024, &source, &target), 2_000);
+		assert_eq!(scorer.channel_penalty_msat(42, 128, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1_024 }, &source, &target), 0);
+		assert_eq!(scorer.channel_penalty_msat(42, 256, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1_024 }, &source, &target), 97);
+		assert_eq!(scorer.channel_penalty_msat(42, 768, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1_024 }, &source, &target), 1_409);
+		assert_eq!(scorer.channel_penalty_msat(42, 896, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1_024 }, &source, &target), 2_000);
 
 		SinceEpoch::advance(Duration::from_secs(1));
-		assert_eq!(scorer.channel_penalty_msat(42, 64, 1_024, &source, &target), 0);
-		assert_eq!(scorer.channel_penalty_msat(42, 128, 1_024, &source, &target), 34);
-		assert_eq!(scorer.channel_penalty_msat(42, 896, 1_024, &source, &target), 1_773);
-		assert_eq!(scorer.channel_penalty_msat(42, 960, 1_024, &source, &target), 2_000);
+		assert_eq!(scorer.channel_penalty_msat(42, 64, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1_024 }, &source, &target), 0);
+		assert_eq!(scorer.channel_penalty_msat(42, 128, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1_024 }, &source, &target), 34);
+		assert_eq!(scorer.channel_penalty_msat(42, 896, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1_024 }, &source, &target), 1_773);
+		assert_eq!(scorer.channel_penalty_msat(42, 960, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1_024 }, &source, &target), 2_000);
 
 		// Fully decay liquidity lower bound.
 		SinceEpoch::advance(Duration::from_secs(10 * 7));
-		assert_eq!(scorer.channel_penalty_msat(42, 0, 1_024, &source, &target), 0);
-		assert_eq!(scorer.channel_penalty_msat(42, 1, 1_024, &source, &target), 0);
-		assert_eq!(scorer.channel_penalty_msat(42, 1_023, 1_024, &source, &target), 2_000);
-		assert_eq!(scorer.channel_penalty_msat(42, 1_024, 1_024, &source, &target), 2_000);
+		assert_eq!(scorer.channel_penalty_msat(42, 0, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1_024 }, &source, &target), 0);
+		assert_eq!(scorer.channel_penalty_msat(42, 1, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1_024 }, &source, &target), 0);
+		assert_eq!(scorer.channel_penalty_msat(42, 1_023, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1_024 }, &source, &target), 2_000);
+		assert_eq!(scorer.channel_penalty_msat(42, 1_024, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1_024 }, &source, &target), 2_000);
 
 		// Fully decay liquidity upper bound.
 		SinceEpoch::advance(Duration::from_secs(10));
-		assert_eq!(scorer.channel_penalty_msat(42, 0, 1_024, &source, &target), 0);
-		assert_eq!(scorer.channel_penalty_msat(42, 1_024, 1_024, &source, &target), 2_000);
+		assert_eq!(scorer.channel_penalty_msat(42, 0, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1_024 }, &source, &target), 0);
+		assert_eq!(scorer.channel_penalty_msat(42, 1_024, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1_024 }, &source, &target), 2_000);
 
 		SinceEpoch::advance(Duration::from_secs(10));
-		assert_eq!(scorer.channel_penalty_msat(42, 0, 1_024, &source, &target), 0);
-		assert_eq!(scorer.channel_penalty_msat(42, 1_024, 1_024, &source, &target), 2_000);
+		assert_eq!(scorer.channel_penalty_msat(42, 0, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1_024 }, &source, &target), 0);
+		assert_eq!(scorer.channel_penalty_msat(42, 1_024, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1_024 }, &source, &target), 2_000);
 	}
 
 	#[test]
@@ -1913,18 +1920,18 @@ mod tests {
 		let mut scorer = ProbabilisticScorer::new(params, &network_graph);
 		let source = source_node_id();
 		let target = target_node_id();
-		assert_eq!(scorer.channel_penalty_msat(42, 256, 1_024, &source, &target), 125);
+		assert_eq!(scorer.channel_penalty_msat(42, 256, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1_024 }, &source, &target), 125);
 
 		scorer.payment_path_failed(&payment_path_for_amount(512).iter().collect::<Vec<_>>(), 42);
-		assert_eq!(scorer.channel_penalty_msat(42, 256, 1_024, &source, &target), 274);
+		assert_eq!(scorer.channel_penalty_msat(42, 256, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1_024 }, &source, &target), 274);
 
 		// An unchecked right shift 64 bits or more in DirectedChannelLiquidity::decayed_offset_msat
 		// would cause an overflow.
 		SinceEpoch::advance(Duration::from_secs(10 * 64));
-		assert_eq!(scorer.channel_penalty_msat(42, 256, 1_024, &source, &target), 125);
+		assert_eq!(scorer.channel_penalty_msat(42, 256, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1_024 }, &source, &target), 125);
 
 		SinceEpoch::advance(Duration::from_secs(10));
-		assert_eq!(scorer.channel_penalty_msat(42, 256, 1_024, &source, &target), 125);
+		assert_eq!(scorer.channel_penalty_msat(42, 256, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1_024 }, &source, &target), 125);
 	}
 
 	#[test]
@@ -1938,30 +1945,30 @@ mod tests {
 		let source = source_node_id();
 		let target = target_node_id();
 
-		assert_eq!(scorer.channel_penalty_msat(42, 512, 1_024, &source, &target), 301);
+		assert_eq!(scorer.channel_penalty_msat(42, 512, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1_024 }, &source, &target), 301);
 
 		// More knowledge gives higher confidence (256, 768), meaning a lower penalty.
 		scorer.payment_path_failed(&payment_path_for_amount(768).iter().collect::<Vec<_>>(), 42);
 		scorer.payment_path_failed(&payment_path_for_amount(256).iter().collect::<Vec<_>>(), 43);
-		assert_eq!(scorer.channel_penalty_msat(42, 512, 1_024, &source, &target), 274);
+		assert_eq!(scorer.channel_penalty_msat(42, 512, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1_024 }, &source, &target), 274);
 
 		// Decaying knowledge gives less confidence (128, 896), meaning a higher penalty.
 		SinceEpoch::advance(Duration::from_secs(10));
-		assert_eq!(scorer.channel_penalty_msat(42, 512, 1_024, &source, &target), 301);
+		assert_eq!(scorer.channel_penalty_msat(42, 512, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1_024 }, &source, &target), 301);
 
 		// Reducing the upper bound gives more confidence (128, 832) that the payment amount (512)
 		// is closer to the upper bound, meaning a higher penalty.
 		scorer.payment_path_successful(&payment_path_for_amount(64).iter().collect::<Vec<_>>());
-		assert_eq!(scorer.channel_penalty_msat(42, 512, 1_024, &source, &target), 342);
+		assert_eq!(scorer.channel_penalty_msat(42, 512, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1_024 }, &source, &target), 342);
 
 		// Increasing the lower bound gives more confidence (256, 832) that the payment amount (512)
 		// is closer to the lower bound, meaning a lower penalty.
 		scorer.payment_path_failed(&payment_path_for_amount(256).iter().collect::<Vec<_>>(), 43);
-		assert_eq!(scorer.channel_penalty_msat(42, 512, 1_024, &source, &target), 255);
+		assert_eq!(scorer.channel_penalty_msat(42, 512, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1_024 }, &source, &target), 255);
 
 		// Further decaying affects the lower bound more than the upper bound (128, 928).
 		SinceEpoch::advance(Duration::from_secs(10));
-		assert_eq!(scorer.channel_penalty_msat(42, 512, 1_024, &source, &target), 284);
+		assert_eq!(scorer.channel_penalty_msat(42, 512, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1_024 }, &source, &target), 284);
 	}
 
 	#[test]
@@ -1976,13 +1983,13 @@ mod tests {
 		let target = target_node_id();
 
 		scorer.payment_path_failed(&payment_path_for_amount(500).iter().collect::<Vec<_>>(), 42);
-		assert_eq!(scorer.channel_penalty_msat(42, 500, 1_000, &source, &target), 2_000);
+		assert_eq!(scorer.channel_penalty_msat(42, 500, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1_000 }, &source, &target), 2_000);
 
 		SinceEpoch::advance(Duration::from_secs(10));
-		assert_eq!(scorer.channel_penalty_msat(42, 500, 1_000, &source, &target), 472);
+		assert_eq!(scorer.channel_penalty_msat(42, 500, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1_000 }, &source, &target), 472);
 
 		scorer.payment_path_failed(&payment_path_for_amount(250).iter().collect::<Vec<_>>(), 43);
-		assert_eq!(scorer.channel_penalty_msat(42, 500, 1_000, &source, &target), 300);
+		assert_eq!(scorer.channel_penalty_msat(42, 500, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1_000 }, &source, &target), 300);
 
 		let mut serialized_scorer = Vec::new();
 		scorer.write(&mut serialized_scorer).unwrap();
@@ -1990,7 +1997,7 @@ mod tests {
 		let mut serialized_scorer = io::Cursor::new(&serialized_scorer);
 		let deserialized_scorer =
 			<ProbabilisticScorer>::read(&mut serialized_scorer, (params, &network_graph)).unwrap();
-		assert_eq!(deserialized_scorer.channel_penalty_msat(42, 500, 1_000, &source, &target), 300);
+		assert_eq!(deserialized_scorer.channel_penalty_msat(42, 500, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1_000 }, &source, &target), 300);
 	}
 
 	#[test]
@@ -2005,7 +2012,7 @@ mod tests {
 		let target = target_node_id();
 
 		scorer.payment_path_failed(&payment_path_for_amount(500).iter().collect::<Vec<_>>(), 42);
-		assert_eq!(scorer.channel_penalty_msat(42, 500, 1_000, &source, &target), 2_000);
+		assert_eq!(scorer.channel_penalty_msat(42, 500, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1_000 }, &source, &target), 2_000);
 
 		let mut serialized_scorer = Vec::new();
 		scorer.write(&mut serialized_scorer).unwrap();
@@ -2015,12 +2022,12 @@ mod tests {
 		let mut serialized_scorer = io::Cursor::new(&serialized_scorer);
 		let deserialized_scorer =
 			<ProbabilisticScorer>::read(&mut serialized_scorer, (params, &network_graph)).unwrap();
-		assert_eq!(deserialized_scorer.channel_penalty_msat(42, 500, 1_000, &source, &target), 472);
+		assert_eq!(deserialized_scorer.channel_penalty_msat(42, 500, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1_000 }, &source, &target), 472);
 
 		scorer.payment_path_failed(&payment_path_for_amount(250).iter().collect::<Vec<_>>(), 43);
-		assert_eq!(scorer.channel_penalty_msat(42, 500, 1_000, &source, &target), 300);
+		assert_eq!(scorer.channel_penalty_msat(42, 500, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1_000 }, &source, &target), 300);
 
 		SinceEpoch::advance(Duration::from_secs(10));
-		assert_eq!(deserialized_scorer.channel_penalty_msat(42, 500, 1_000, &source, &target), 371);
+		assert_eq!(deserialized_scorer.channel_penalty_msat(42, 500, EffectiveCapacity::ExactLiquidity { liquidity_msat: 1_000 }, &source, &target), 371);
 	}
 }

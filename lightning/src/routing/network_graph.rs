@@ -758,7 +758,7 @@ impl<'a> DirectedChannelInfo<'a> {
 			})
 			.or_else(|| capacity_msat.map(|capacity_msat|
 					EffectiveCapacity::Total { capacity_msat }))
-			.unwrap_or(EffectiveCapacity::Unknown)
+			.unwrap_or(EffectiveCapacity::Unknown { previously_used_msat: 0 })
 	}
 
 	/// Returns `Some` if [`ChannelUpdateInfo`] is available in the direction.
@@ -807,7 +807,8 @@ impl<'a> fmt::Debug for DirectedChannelInfoWithUpdate<'a> {
 /// The effective capacity of a channel for routing purposes.
 ///
 /// While this may be smaller than the actual channel capacity, amounts greater than
-/// [`Self::as_msat`] should not be routed through the channel.
+/// [`Self::as_msat_with_default`] should not be routed through the channel.
+#[derive(Copy, Clone, PartialEq)]
 pub enum EffectiveCapacity {
 	/// The available liquidity in the channel known from being a channel counterparty, and thus a
 	/// direct hop.
@@ -831,7 +832,11 @@ pub enum EffectiveCapacity {
 	Infinite,
 	/// A capacity that is unknown possibly because either the chain state is unavailable to know
 	/// the total capacity or the `htlc_maximum_msat` was not advertised on the gossip network.
-	Unknown,
+	Unknown {
+		/// An amount which should be considered "already used". Used during routing to keep track
+		/// of how much we're already considering routing through this channel.
+		previously_used_msat: u64,
+	},
 }
 
 /// The presumed channel capacity denominated in millisatoshi for [`EffectiveCapacity::Unknown`] to
@@ -839,14 +844,53 @@ pub enum EffectiveCapacity {
 pub const UNKNOWN_CHANNEL_CAPACITY_MSAT: u64 = 250_000 * 1000;
 
 impl EffectiveCapacity {
-	/// Returns the effective capacity denominated in millisatoshi.
-	pub fn as_msat(&self) -> u64 {
+	#[inline]
+	pub(crate) fn as_msat_without_bounds(&self) -> u64 {
 		match self {
 			EffectiveCapacity::ExactLiquidity { liquidity_msat } => *liquidity_msat,
 			EffectiveCapacity::MaximumHTLC { amount_msat } => *amount_msat,
 			EffectiveCapacity::Total { capacity_msat } => *capacity_msat,
 			EffectiveCapacity::Infinite => u64::max_value(),
-			EffectiveCapacity::Unknown => UNKNOWN_CHANNEL_CAPACITY_MSAT,
+			EffectiveCapacity::Unknown { previously_used_msat } => UNKNOWN_CHANNEL_CAPACITY_MSAT.saturating_sub(*previously_used_msat),
+		}
+	}
+
+	/// Returns the effective capacity denominated in millisatoshi.
+	///
+	/// Returns [`UNKNOWN_CHANNEL_CAPACITY_MSAT`] minus the `previously_used_msat` for
+	/// [`EffectiveCapacity::Unknown`].
+	#[inline]
+	pub fn as_msat_with_default(&self) -> Option<u64> {
+		match self {
+			EffectiveCapacity::ExactLiquidity { liquidity_msat } => Some(*liquidity_msat),
+			EffectiveCapacity::MaximumHTLC { amount_msat } => Some(*amount_msat),
+			EffectiveCapacity::Total { capacity_msat } => Some(*capacity_msat),
+			EffectiveCapacity::Infinite => None,
+			EffectiveCapacity::Unknown { previously_used_msat } => Some(UNKNOWN_CHANNEL_CAPACITY_MSAT.saturating_sub(*previously_used_msat)),
+		}
+	}
+
+	/// Returns a new [`EffectiveCapacity`] which is reduced by the given number of millisatoshis
+	#[inline]
+	pub fn checked_sub(&self, msats: u64) -> Option<EffectiveCapacity> {
+		match self {
+			Self::ExactLiquidity { liquidity_msat } => match liquidity_msat.checked_sub(msats) {
+				Some(liquidity_msat) => Some(Self::ExactLiquidity { liquidity_msat }),
+				None => None,
+			},
+			Self::MaximumHTLC { amount_msat } => match amount_msat.checked_sub(msats) {
+				Some(amount_msat) => Some(Self::MaximumHTLC { amount_msat }),
+				None => None,
+			},
+			Self::Total { capacity_msat } => match capacity_msat.checked_sub(msats) {
+				Some(capacity_msat) => Some(Self::Total { capacity_msat }),
+				None => None,
+			},
+			Self::Infinite => Some(Self::Infinite),
+			Self::Unknown { previously_used_msat } => match previously_used_msat.checked_add(msats) {
+				Some(previously_used_msat) => Some(Self::Unknown { previously_used_msat }),
+				None => None,
+			},
 		}
 	}
 }
