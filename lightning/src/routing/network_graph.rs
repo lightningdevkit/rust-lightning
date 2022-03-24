@@ -1376,8 +1376,8 @@ impl NetworkGraph {
 						}
 					}
 				}
-				macro_rules! maybe_update_channel_info {
-					( $target: expr, $src_node: expr) => {
+				macro_rules! check_update_latest {
+					($target: expr) => {
 						if let Some(existing_chan_info) = $target.as_ref() {
 							// The timestamp field is somewhat of a misnomer - the BOLTs use it to
 							// order updates to ensure you always have the latest one, only
@@ -1394,7 +1394,11 @@ impl NetworkGraph {
 						} else {
 							chan_was_enabled = false;
 						}
+					}
+				}
 
+				macro_rules! get_new_channel_info {
+					() => { {
 						let last_update_message = if msg.excess_data.len() <= MAX_EXCESS_BYTES_FOR_RELAY
 							{ full_msg.cloned() } else { None };
 
@@ -1410,29 +1414,31 @@ impl NetworkGraph {
 							},
 							last_update_message
 						};
-						$target = Some(updated_channel_update_info);
-					}
+						Some(updated_channel_update_info)
+					} }
 				}
 
 				let msg_hash = hash_to_message!(&Sha256dHash::hash(&msg.encode()[..])[..]);
 				if msg.flags & 1 == 1 {
 					dest_node_id = channel.node_one.clone();
+					check_update_latest!(channel.two_to_one);
 					if let Some((sig, ctx)) = sig_info {
 						secp_verify_sig!(ctx, &msg_hash, &sig, &PublicKey::from_slice(channel.node_two.as_slice()).map_err(|_| LightningError{
 							err: "Couldn't parse source node pubkey".to_owned(),
 							action: ErrorAction::IgnoreAndLog(Level::Debug)
 						})?, "channel_update");
 					}
-					maybe_update_channel_info!(channel.two_to_one, channel.node_two);
+					channel.two_to_one = get_new_channel_info!();
 				} else {
 					dest_node_id = channel.node_two.clone();
+					check_update_latest!(channel.one_to_two);
 					if let Some((sig, ctx)) = sig_info {
 						secp_verify_sig!(ctx, &msg_hash, &sig, &PublicKey::from_slice(channel.node_one.as_slice()).map_err(|_| LightningError{
 							err: "Couldn't parse destination node pubkey".to_owned(),
 							action: ErrorAction::IgnoreAndLog(Level::Debug)
 						})?, "channel_update");
 					}
-					maybe_update_channel_info!(channel.one_to_two, channel.node_one);
+					channel.one_to_two = get_new_channel_info!();
 				}
 			}
 		}
