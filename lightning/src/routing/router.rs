@@ -332,11 +332,9 @@ struct RouteGraphNode {
 impl cmp::Ord for RouteGraphNode {
 	fn cmp(&self, other: &RouteGraphNode) -> cmp::Ordering {
 		let other_score = cmp::max(other.lowest_fee_to_peer_through_node, other.path_htlc_minimum_msat)
-			.checked_add(other.path_penalty_msat)
-			.unwrap_or_else(|| u64::max_value());
+			.saturating_add(other.path_penalty_msat);
 		let self_score = cmp::max(self.lowest_fee_to_peer_through_node, self.path_htlc_minimum_msat)
-			.checked_add(self.path_penalty_msat)
-			.unwrap_or_else(|| u64::max_value());
+			.saturating_add(self.path_penalty_msat);
 		other_score.cmp(&self_score).then_with(|| other.node_id.cmp(&self.node_id))
 	}
 }
@@ -837,7 +835,7 @@ where L::Target: Logger {
 					.entry(short_channel_id)
 					.or_insert_with(|| $candidate.effective_capacity().as_msat());
 
-				// It is tricky to substract $next_hops_fee_msat from available liquidity here.
+				// It is tricky to subtract $next_hops_fee_msat from available liquidity here.
 				// It may be misleading because we might later choose to reduce the value transferred
 				// over these channels, and the channel which was insufficient might become sufficient.
 				// Worst case: we drop a good channel here because it can't cover the high following
@@ -877,8 +875,7 @@ where L::Target: Logger {
 						.checked_sub(2*MEDIAN_HOP_CLTV_EXPIRY_DELTA)
 						.unwrap_or(payment_params.max_total_cltv_expiry_delta - final_cltv_expiry_delta);
 					let hop_total_cltv_delta = ($next_hops_cltv_delta as u32)
-						.checked_add($candidate.cltv_expiry_delta())
-						.unwrap_or(u32::max_value());
+						.saturating_add($candidate.cltv_expiry_delta());
 					let doesnt_exceed_cltv_delta_limit = hop_total_cltv_delta <= max_total_cltv_expiry_delta;
 
 					let value_contribution_msat = cmp::min(available_value_contribution_msat, $next_hops_value_contribution);
@@ -985,9 +982,9 @@ where L::Target: Logger {
 								}
 							}
 
-							let path_penalty_msat = $next_hops_path_penalty_msat.checked_add(
-								scorer.channel_penalty_msat(short_channel_id, amount_to_transfer_over_msat, *available_liquidity_msat,
-									&$src_node_id, &$dest_node_id)).unwrap_or_else(|| u64::max_value());
+							let path_penalty_msat = $next_hops_path_penalty_msat.saturating_add(
+								scorer.channel_penalty_msat(short_channel_id, amount_to_transfer_over_msat,
+									*available_liquidity_msat, &$src_node_id, &$dest_node_id));
 							let new_graph_node = RouteGraphNode {
 								node_id: $src_node_id,
 								lowest_fee_to_peer_through_node: total_fee_msat,
@@ -1015,11 +1012,9 @@ where L::Target: Logger {
 							// the fees included in $next_hops_path_htlc_minimum_msat, but also
 							// can't use something that may decrease on future hops.
 							let old_cost = cmp::max(old_entry.total_fee_msat, old_entry.path_htlc_minimum_msat)
-								.checked_add(old_entry.path_penalty_msat)
-								.unwrap_or_else(|| u64::max_value());
+								.saturating_add(old_entry.path_penalty_msat);
 							let new_cost = cmp::max(total_fee_msat, path_htlc_minimum_msat)
-								.checked_add(path_penalty_msat)
-								.unwrap_or_else(|| u64::max_value());
+								.saturating_add(path_penalty_msat);
 
 							if !old_entry.was_processed && new_cost < old_cost {
 								targets.push(new_graph_node);
@@ -1203,12 +1198,10 @@ where L::Target: Logger {
 						.unwrap_or_else(|| CandidateRouteHop::PrivateHop { hint: hop });
 					let capacity_msat = candidate.effective_capacity().as_msat();
 					aggregate_next_hops_path_penalty_msat = aggregate_next_hops_path_penalty_msat
-						.checked_add(scorer.channel_penalty_msat(hop.short_channel_id, final_value_msat, capacity_msat, &source, &target))
-						.unwrap_or_else(|| u64::max_value());
+						.saturating_add(scorer.channel_penalty_msat(hop.short_channel_id, final_value_msat, capacity_msat, &source, &target));
 
 					aggregate_next_hops_cltv_delta = aggregate_next_hops_cltv_delta
-						.checked_add(hop.cltv_expiry_delta as u32)
-						.unwrap_or_else(|| u32::max_value());
+						.saturating_add(hop.cltv_expiry_delta as u32);
 
 					if !add_entry!(candidate, source, target, aggregate_next_hops_fee_msat, path_value_msat, aggregate_next_hops_path_htlc_minimum_msat, aggregate_next_hops_path_penalty_msat, aggregate_next_hops_cltv_delta) {
 						// If this hop was not used then there is no use checking the preceding hops
@@ -1446,7 +1439,7 @@ where L::Target: Logger {
 	}
 
 	// Sort by total fees and take the best paths.
-	payment_paths.sort_by_key(|path| path.get_total_fee_paid_msat());
+	payment_paths.sort_unstable_by_key(|path| path.get_total_fee_paid_msat());
 	if payment_paths.len() > 50 {
 		payment_paths.truncate(50);
 	}
@@ -1514,13 +1507,14 @@ where L::Target: Logger {
 				assert!(cur_route.len() > 0);
 
 				// Step (8).
-				// Now, substract the overpaid value from the most-expensive path.
+				// Now, subtract the overpaid value from the most-expensive path.
 				// TODO: this could also be optimized by also sorting by feerate_per_sat_routed,
 				// so that the sender pays less fees overall. And also htlc_minimum_msat.
-				cur_route.sort_by_key(|path| { path.hops.iter().map(|hop| hop.0.candidate.fees().proportional_millionths as u64).sum::<u64>() });
+				cur_route.sort_unstable_by_key(|path| { path.hops.iter().map(|hop| hop.0.candidate.fees().proportional_millionths as u64).sum::<u64>() });
 				let expensive_payment_path = cur_route.first_mut().unwrap();
-				// We already dropped all the small channels above, meaning all the
-				// remaining channels are larger than remaining overpaid_value_msat.
+
+				// We already dropped all the small value paths above, meaning all the
+				// remaining paths are larger than remaining overpaid_value_msat.
 				// Thus, this can't be negative.
 				let expensive_path_new_value_msat = expensive_payment_path.get_value_msat() - overpaid_value_msat;
 				expensive_payment_path.update_value_and_recompute_fees(expensive_path_new_value_msat);
@@ -1532,7 +1526,7 @@ where L::Target: Logger {
 
 	// Step (9).
 	// Select the best route by lowest total fee.
-	drawn_routes.sort_by_key(|paths| paths.iter().map(|path| path.get_total_fee_paid_msat()).sum::<u64>());
+	drawn_routes.sort_unstable_by_key(|paths| paths.iter().map(|path| path.get_total_fee_paid_msat()).sum::<u64>());
 	let mut selected_paths = Vec::<Vec<Result<RouteHop, LightningError>>>::new();
 	for payment_path in drawn_routes.first().unwrap() {
 		let mut path = payment_path.hops.iter().map(|(payment_hop, node_features)| {
