@@ -197,10 +197,6 @@ pub struct FixedPenaltyScorer {
 	penalty_msat: u64,
 }
 
-impl_writeable_tlv_based!(FixedPenaltyScorer, {
-	(0, penalty_msat, required),
-});
-
 impl FixedPenaltyScorer {
 	/// Creates a new scorer using `penalty_msat`.
 	pub fn with_penalty(penalty_msat: u64) -> Self {
@@ -216,6 +212,22 @@ impl Score for FixedPenaltyScorer {
 	fn payment_path_failed(&mut self, _path: &[&RouteHop], _short_channel_id: u64) {}
 
 	fn payment_path_successful(&mut self, _path: &[&RouteHop]) {}
+}
+
+impl Writeable for FixedPenaltyScorer {
+	#[inline]
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		write_tlv_fields!(w, {});
+		Ok(())
+	}
+}
+
+impl ReadableArgs<u64> for FixedPenaltyScorer {
+	#[inline]
+	fn read<R: Read>(r: &mut R, penalty_msat: u64) -> Result<Self, DecodeError> {
+		read_tlv_fields!(r, {});
+		Ok(Self { penalty_msat })
+	}
 }
 
 /// [`Score`] implementation that provides reasonable default behavior.
@@ -504,19 +516,24 @@ pub struct ProbabilisticScorerUsingTime<G: Deref<Target = NetworkGraph>, T: Time
 }
 
 /// Parameters for configuring [`ProbabilisticScorer`].
+///
+/// Used to configure a base penalty and a liquidity penalty, the sum of which is the channel
+/// penalty (i.e., the amount in msats willing to be paid to avoid routing through the channel).
 #[derive(Clone, Copy)]
 pub struct ProbabilisticScoringParameters {
-	/// A multiplier used to determine the amount in msats willing to be paid to avoid routing
-	/// through a channel, as per multiplying by the negative `log10` of the channel's success
-	/// probability for a payment.
+	/// A fixed penalty in msats to apply to each channel.
 	///
-	/// The success probability is determined by the effective channel capacity, the payment amount,
-	/// and knowledge learned from prior successful and unsuccessful payments. The lower bound of
-	/// the success probability is 0.01, effectively limiting the penalty to the range
-	/// `0..=2*liquidity_penalty_multiplier_msat`. The knowledge learned is decayed over time based
-	/// on [`liquidity_offset_half_life`].
+	/// Default value: 500 msat
+	pub base_penalty_msat: u64,
+
+	/// A multiplier used in conjunction with the negative `log10` of the channel's success
+	/// probability for a payment to determine the liquidity penalty.
 	///
-	/// Default value: 10,000 msat
+	/// The penalty is based in part by the knowledge learned from prior successful and unsuccessful
+	/// payments. This knowledge is decayed over time based on [`liquidity_offset_half_life`]. The
+	/// penalty is effectively limited to `2 * liquidity_penalty_multiplier_msat`.
+	///
+	/// Default value: 40,000 msat
 	///
 	/// [`liquidity_offset_half_life`]: Self::liquidity_offset_half_life
 	pub liquidity_penalty_multiplier_msat: u64,
@@ -536,11 +553,6 @@ pub struct ProbabilisticScoringParameters {
 	/// liquidity knowledge will never decay except when the bounds cross.
 	pub liquidity_offset_half_life: Duration,
 }
-
-impl_writeable_tlv_based!(ProbabilisticScoringParameters, {
-	(0, liquidity_penalty_multiplier_msat, required),
-	(2, liquidity_offset_half_life, required),
-});
 
 /// Accounting for channel liquidity balance uncertainty.
 ///
@@ -590,7 +602,8 @@ impl<G: Deref<Target = NetworkGraph>, T: Time> ProbabilisticScorerUsingTime<G, T
 impl Default for ProbabilisticScoringParameters {
 	fn default() -> Self {
 		Self {
-			liquidity_penalty_multiplier_msat: 10_000,
+			base_penalty_msat: 500,
+			liquidity_penalty_multiplier_msat: 40_000,
 			liquidity_offset_half_life: Duration::from_secs(3600),
 		}
 	}
@@ -653,20 +666,21 @@ impl<L: Deref<Target = u64>, T: Time, U: Deref<Target = T>> DirectedChannelLiqui
 	/// Returns a penalty for routing the given HTLC `amount_msat` through the channel in this
 	/// direction.
 	fn penalty_msat(&self, amount_msat: u64, liquidity_penalty_multiplier_msat: u64) -> u64 {
+		let max_penalty_msat = liquidity_penalty_multiplier_msat.saturating_mul(2);
 		let max_liquidity_msat = self.max_liquidity_msat();
 		let min_liquidity_msat = core::cmp::min(self.min_liquidity_msat(), max_liquidity_msat);
 		if amount_msat > max_liquidity_msat {
-			u64::max_value()
+			max_penalty_msat
 		} else if amount_msat <= min_liquidity_msat {
 			0
 		} else {
-			let numerator = max_liquidity_msat + 1 - amount_msat;
-			let denominator = max_liquidity_msat + 1 - min_liquidity_msat;
-			approx::negative_log10_times_1024(numerator, denominator)
-				.saturating_mul(liquidity_penalty_multiplier_msat) / 1024
+			let numerator = (max_liquidity_msat - amount_msat).saturating_add(1);
+			let denominator = (max_liquidity_msat - min_liquidity_msat).saturating_add(1);
+			let penalty_msat = approx::negative_log10_times_1024(numerator, denominator)
+				.saturating_mul(liquidity_penalty_multiplier_msat) / 1024;
+			// Upper bound the penalty to ensure some channel is selected.
+			penalty_msat.min(max_penalty_msat)
 		}
-		// Upper bound the penalty to ensure some channel is selected.
-		.min(2 * liquidity_penalty_multiplier_msat)
 	}
 
 	/// Returns the lower bound of the channel liquidity balance in this direction.
@@ -745,6 +759,7 @@ impl<G: Deref<Target = NetworkGraph>, T: Time> Score for ProbabilisticScorerUsin
 			.unwrap_or(&ChannelLiquidity::new())
 			.as_directed(source, target, capacity_msat, liquidity_offset_half_life)
 			.penalty_msat(amount_msat, liquidity_penalty_multiplier_msat)
+			.saturating_add(self.params.base_penalty_msat)
 	}
 
 	fn payment_path_failed(&mut self, path: &[&RouteHop], short_channel_id: u64) {
@@ -1722,7 +1737,7 @@ mod tests {
 	fn increased_penalty_nearing_liquidity_upper_bound() {
 		let network_graph = network_graph();
 		let params = ProbabilisticScoringParameters {
-			liquidity_penalty_multiplier_msat: 1_000, ..Default::default()
+			base_penalty_msat: 0, liquidity_penalty_multiplier_msat: 1_000, ..Default::default()
 		};
 		let scorer = ProbabilisticScorer::new(params, &network_graph);
 		let source = source_node_id();
@@ -1747,7 +1762,7 @@ mod tests {
 		let last_updated = SinceEpoch::now();
 		let network_graph = network_graph();
 		let params = ProbabilisticScoringParameters {
-			liquidity_penalty_multiplier_msat: 1_000, ..Default::default()
+			base_penalty_msat: 0, liquidity_penalty_multiplier_msat: 1_000, ..Default::default()
 		};
 		let scorer = ProbabilisticScorer::new(params, &network_graph)
 			.with_channel(42,
@@ -1767,7 +1782,7 @@ mod tests {
 	fn does_not_further_penalize_own_channel() {
 		let network_graph = network_graph();
 		let params = ProbabilisticScoringParameters {
-			liquidity_penalty_multiplier_msat: 1_000, ..Default::default()
+			base_penalty_msat: 0, liquidity_penalty_multiplier_msat: 1_000, ..Default::default()
 		};
 		let mut scorer = ProbabilisticScorer::new(params, &network_graph);
 		let sender = sender_node_id();
@@ -1788,7 +1803,7 @@ mod tests {
 	fn sets_liquidity_lower_bound_on_downstream_failure() {
 		let network_graph = network_graph();
 		let params = ProbabilisticScoringParameters {
-			liquidity_penalty_multiplier_msat: 1_000, ..Default::default()
+			base_penalty_msat: 0, liquidity_penalty_multiplier_msat: 1_000, ..Default::default()
 		};
 		let mut scorer = ProbabilisticScorer::new(params, &network_graph);
 		let source = source_node_id();
@@ -1810,7 +1825,7 @@ mod tests {
 	fn sets_liquidity_upper_bound_on_failure() {
 		let network_graph = network_graph();
 		let params = ProbabilisticScoringParameters {
-			liquidity_penalty_multiplier_msat: 1_000, ..Default::default()
+			base_penalty_msat: 0, liquidity_penalty_multiplier_msat: 1_000, ..Default::default()
 		};
 		let mut scorer = ProbabilisticScorer::new(params, &network_graph);
 		let source = source_node_id();
@@ -1832,7 +1847,7 @@ mod tests {
 	fn reduces_liquidity_upper_bound_along_path_on_success() {
 		let network_graph = network_graph();
 		let params = ProbabilisticScoringParameters {
-			liquidity_penalty_multiplier_msat: 1_000, ..Default::default()
+			base_penalty_msat: 0, liquidity_penalty_multiplier_msat: 1_000, ..Default::default()
 		};
 		let mut scorer = ProbabilisticScorer::new(params, &network_graph);
 		let sender = sender_node_id();
@@ -1856,6 +1871,7 @@ mod tests {
 	fn decays_liquidity_bounds_over_time() {
 		let network_graph = network_graph();
 		let params = ProbabilisticScoringParameters {
+			base_penalty_msat: 0,
 			liquidity_penalty_multiplier_msat: 1_000,
 			liquidity_offset_half_life: Duration::from_secs(10),
 		};
@@ -1907,6 +1923,7 @@ mod tests {
 	fn decays_liquidity_bounds_without_shift_overflow() {
 		let network_graph = network_graph();
 		let params = ProbabilisticScoringParameters {
+			base_penalty_msat: 0,
 			liquidity_penalty_multiplier_msat: 1_000,
 			liquidity_offset_half_life: Duration::from_secs(10),
 		};
@@ -1931,6 +1948,7 @@ mod tests {
 	fn restricts_liquidity_bounds_after_decay() {
 		let network_graph = network_graph();
 		let params = ProbabilisticScoringParameters {
+			base_penalty_msat: 0,
 			liquidity_penalty_multiplier_msat: 1_000,
 			liquidity_offset_half_life: Duration::from_secs(10),
 		};
@@ -1968,6 +1986,7 @@ mod tests {
 	fn restores_persisted_liquidity_bounds() {
 		let network_graph = network_graph();
 		let params = ProbabilisticScoringParameters {
+			base_penalty_msat: 0,
 			liquidity_penalty_multiplier_msat: 1_000,
 			liquidity_offset_half_life: Duration::from_secs(10),
 		};
@@ -1997,6 +2016,7 @@ mod tests {
 	fn decays_persisted_liquidity_bounds() {
 		let network_graph = network_graph();
 		let params = ProbabilisticScoringParameters {
+			base_penalty_msat: 0,
 			liquidity_penalty_multiplier_msat: 1_000,
 			liquidity_offset_half_life: Duration::from_secs(10),
 		};
@@ -2022,5 +2042,40 @@ mod tests {
 
 		SinceEpoch::advance(Duration::from_secs(10));
 		assert_eq!(deserialized_scorer.channel_penalty_msat(42, 500, 1_000, &source, &target), 371);
+	}
+
+	#[test]
+	fn adds_base_penalty_to_liquidity_penalty() {
+		let network_graph = network_graph();
+		let source = source_node_id();
+		let target = target_node_id();
+
+		let params = ProbabilisticScoringParameters {
+			base_penalty_msat: 0, liquidity_penalty_multiplier_msat: 1_000, ..Default::default()
+		};
+		let scorer = ProbabilisticScorer::new(params, &network_graph);
+		assert_eq!(scorer.channel_penalty_msat(42, 128, 1_024, &source, &target), 58);
+
+		let params = ProbabilisticScoringParameters {
+			base_penalty_msat: 500, liquidity_penalty_multiplier_msat: 1_000, ..Default::default()
+		};
+		let scorer = ProbabilisticScorer::new(params, &network_graph);
+		assert_eq!(scorer.channel_penalty_msat(42, 128, 1_024, &source, &target), 558);
+	}
+
+	#[test]
+	fn calculates_log10_without_overflowing_u64_max_value() {
+		let network_graph = network_graph();
+		let source = source_node_id();
+		let target = target_node_id();
+
+		let params = ProbabilisticScoringParameters {
+			base_penalty_msat: 0, ..Default::default()
+		};
+		let scorer = ProbabilisticScorer::new(params, &network_graph);
+		assert_eq!(
+			scorer.channel_penalty_msat(42, u64::max_value(), u64::max_value(), &source, &target),
+			80_000,
+		);
 	}
 }
