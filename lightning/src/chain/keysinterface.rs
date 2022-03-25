@@ -31,7 +31,7 @@ use bitcoin::secp256k1::recovery::RecoverableSignature;
 use bitcoin::secp256k1;
 
 use util::{byte_utils, transaction_utils};
-use util::crypto::hkdf_extract_expand_twice;
+use util::crypto::{hkdf_extract_expand_twice, sign};
 use util::ser::{Writeable, Writer, Readable, ReadableArgs};
 
 use chain::transaction::OutPoint;
@@ -590,7 +590,7 @@ impl InMemorySigner {
 		let remotepubkey = self.pubkeys().payment_point;
 		let witness_script = bitcoin::Address::p2pkh(&::bitcoin::PublicKey{compressed: true, key: remotepubkey}, Network::Testnet).script_pubkey();
 		let sighash = hash_to_message!(&bip143::SigHashCache::new(spend_tx).signature_hash(input_idx, &witness_script, descriptor.output.value, SigHashType::All)[..]);
-		let remotesig = secp_ctx.sign(&sighash, &self.payment_key);
+		let remotesig = sign(secp_ctx, &sighash, &self.payment_key);
 		let payment_script = bitcoin::Address::p2wpkh(&::bitcoin::PublicKey{compressed: true, key: remotepubkey}, Network::Bitcoin).unwrap().script_pubkey();
 
 		if payment_script != descriptor.output.script_pubkey  { return Err(()); }
@@ -624,7 +624,7 @@ impl InMemorySigner {
 		let delayed_payment_pubkey = PublicKey::from_secret_key(&secp_ctx, &delayed_payment_key);
 		let witness_script = chan_utils::get_revokeable_redeemscript(&descriptor.revocation_pubkey, descriptor.to_self_delay, &delayed_payment_pubkey);
 		let sighash = hash_to_message!(&bip143::SigHashCache::new(spend_tx).signature_hash(input_idx, &witness_script, descriptor.output.value, SigHashType::All)[..]);
-		let local_delayedsig = secp_ctx.sign(&sighash, &delayed_payment_key);
+		let local_delayedsig = sign(secp_ctx, &sighash, &delayed_payment_key);
 		let payment_script = bitcoin::Address::p2wsh(&witness_script, Network::Bitcoin).script_pubkey();
 
 		if descriptor.output.script_pubkey != payment_script { return Err(()); }
@@ -673,7 +673,7 @@ impl BaseSign for InMemorySigner {
 			let htlc_sighashtype = if self.opt_anchors() { SigHashType::SinglePlusAnyoneCanPay } else { SigHashType::All };
 			let htlc_sighash = hash_to_message!(&bip143::SigHashCache::new(&htlc_tx).signature_hash(0, &htlc_redeemscript, htlc.amount_msat / 1000, htlc_sighashtype)[..]);
 			let holder_htlc_key = chan_utils::derive_private_key(&secp_ctx, &keys.per_commitment_point, &self.htlc_base_key).map_err(|_| ())?;
-			htlc_sigs.push(secp_ctx.sign(&htlc_sighash, &holder_htlc_key));
+			htlc_sigs.push(sign(secp_ctx, &htlc_sighash, &holder_htlc_key));
 		}
 
 		Ok((commitment_sig, htlc_sigs))
@@ -714,7 +714,7 @@ impl BaseSign for InMemorySigner {
 		};
 		let mut sighash_parts = bip143::SigHashCache::new(justice_tx);
 		let sighash = hash_to_message!(&sighash_parts.signature_hash(input, &witness_script, amount, SigHashType::All)[..]);
-		return Ok(secp_ctx.sign(&sighash, &revocation_key))
+		return Ok(sign(secp_ctx, &sighash, &revocation_key))
 	}
 
 	fn sign_justice_revoked_htlc(&self, justice_tx: &Transaction, input: usize, amount: u64, per_commitment_key: &SecretKey, htlc: &HTLCOutputInCommitment, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()> {
@@ -728,7 +728,7 @@ impl BaseSign for InMemorySigner {
 		};
 		let mut sighash_parts = bip143::SigHashCache::new(justice_tx);
 		let sighash = hash_to_message!(&sighash_parts.signature_hash(input, &witness_script, amount, SigHashType::All)[..]);
-		return Ok(secp_ctx.sign(&sighash, &revocation_key))
+		return Ok(sign(secp_ctx, &sighash, &revocation_key))
 	}
 
 	fn sign_counterparty_htlc_transaction(&self, htlc_tx: &Transaction, input: usize, amount: u64, per_commitment_point: &PublicKey, htlc: &HTLCOutputInCommitment, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()> {
@@ -742,7 +742,7 @@ impl BaseSign for InMemorySigner {
 			} else { return Err(()) };
 			let mut sighash_parts = bip143::SigHashCache::new(htlc_tx);
 			let sighash = hash_to_message!(&sighash_parts.signature_hash(input, &witness_script, amount, SigHashType::All)[..]);
-			return Ok(secp_ctx.sign(&sighash, &htlc_key))
+			return Ok(sign(secp_ctx, &sighash, &htlc_key))
 		}
 		Err(())
 	}
@@ -756,7 +756,7 @@ impl BaseSign for InMemorySigner {
 	fn sign_channel_announcement(&self, msg: &UnsignedChannelAnnouncement, secp_ctx: &Secp256k1<secp256k1::All>)
 	-> Result<(Signature, Signature), ()> {
 		let msghash = hash_to_message!(&Sha256dHash::hash(&msg.encode()[..])[..]);
-		Ok((secp_ctx.sign(&msghash, &self.node_secret), secp_ctx.sign(&msghash, &self.funding_key)))
+		Ok((sign(secp_ctx, &msghash, &self.node_secret), sign(secp_ctx, &msghash, &self.funding_key)))
 	}
 
 	fn ready_channel(&mut self, channel_parameters: &ChannelTransactionParameters) {
@@ -1102,7 +1102,7 @@ impl KeysManager {
 					if payment_script != output.script_pubkey { return Err(()); };
 
 					let sighash = hash_to_message!(&bip143::SigHashCache::new(&spend_tx).signature_hash(input_idx, &witness_script, output.value, SigHashType::All)[..]);
-					let sig = secp_ctx.sign(&sighash, &secret.private_key.key);
+					let sig = sign(secp_ctx, &sighash, &secret.private_key.key);
 					spend_tx.input[input_idx].witness.push(sig.serialize_der().to_vec());
 					spend_tx.input[input_idx].witness[0].push(SigHashType::All as u8);
 					spend_tx.input[input_idx].witness.push(pubkey.key.serialize().to_vec());

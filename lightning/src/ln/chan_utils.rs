@@ -39,6 +39,7 @@ use util::transaction_utils::sort_outputs;
 use ln::channel::{INITIAL_COMMITMENT_NUMBER, ANCHOR_OUTPUT_VALUE_SATOSHI};
 use core::ops::Deref;
 use chain;
+use util::crypto::sign;
 
 pub(crate) const MAX_HTLCS: u16 = 483;
 
@@ -841,7 +842,7 @@ impl HolderCommitmentTransaction {
 	pub fn dummy() -> Self {
 		let secp_ctx = Secp256k1::new();
 		let dummy_key = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
-		let dummy_sig = secp_ctx.sign(&secp256k1::Message::from_slice(&[42; 32]).unwrap(), &SecretKey::from_slice(&[42; 32]).unwrap());
+		let dummy_sig = sign(&secp_ctx, &secp256k1::Message::from_slice(&[42; 32]).unwrap(), &SecretKey::from_slice(&[42; 32]).unwrap());
 
 		let keys = TxCreationKeys {
 			per_commitment_point: dummy_key.clone(),
@@ -936,7 +937,7 @@ impl BuiltCommitmentTransaction {
 	/// because we are about to broadcast a holder transaction.
 	pub fn sign<T: secp256k1::Signing>(&self, funding_key: &SecretKey, funding_redeemscript: &Script, channel_value_satoshis: u64, secp_ctx: &Secp256k1<T>) -> Signature {
 		let sighash = self.get_sighash_all(funding_redeemscript, channel_value_satoshis);
-		secp_ctx.sign(&sighash, funding_key)
+		sign(secp_ctx, &sighash, funding_key)
 	}
 }
 
@@ -1060,7 +1061,7 @@ impl<'a> TrustedClosingTransaction<'a> {
 	/// because we are about to broadcast a holder transaction.
 	pub fn sign<T: secp256k1::Signing>(&self, funding_key: &SecretKey, funding_redeemscript: &Script, channel_value_satoshis: u64, secp_ctx: &Secp256k1<T>) -> Signature {
 		let sighash = self.get_sighash_all(funding_redeemscript, channel_value_satoshis);
-		secp_ctx.sign(&sighash, funding_key)
+		sign(secp_ctx, &sighash, funding_key)
 	}
 }
 
@@ -1415,7 +1416,7 @@ impl<'a> TrustedCommitmentTransaction<'a> {
 			let htlc_redeemscript = get_htlc_redeemscript_with_explicit_keys(&this_htlc, self.opt_anchors(), &keys.broadcaster_htlc_key, &keys.countersignatory_htlc_key, &keys.revocation_key);
 
 			let sighash = hash_to_message!(&bip143::SigHashCache::new(&htlc_tx).signature_hash(0, &htlc_redeemscript, this_htlc.amount_msat / 1000, SigHashType::All)[..]);
-			ret.push(secp_ctx.sign(&sighash, &holder_htlc_key));
+			ret.push(sign(secp_ctx, &sighash, &holder_htlc_key));
 		}
 		Ok(ret)
 	}
