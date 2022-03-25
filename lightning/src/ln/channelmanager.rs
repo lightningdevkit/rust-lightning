@@ -4287,8 +4287,13 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	///
 	/// The `temporary_channel_id` parameter indicates which inbound channel should be accepted.
 	///
-	/// [`Event::OpenChannelRequest`]: crate::util::events::Event::OpenChannelRequest
-	pub fn accept_inbound_channel(&self, temporary_channel_id: &[u8; 32]) -> Result<(), APIError> {
+	/// For inbound channels, the `user_channel_id` parameter will be provided back in
+	/// [`Event::ChannelClosed::user_channel_id`] to allow tracking of which events correspond
+	/// with which `accept_inbound_channel` call.
+	///
+	/// [`Event::OpenChannelRequest`]: events::Event::OpenChannelRequest
+	/// [`Event::ChannelClosed::user_channel_id`]: events::Event::ChannelClosed::user_channel_id
+	pub fn accept_inbound_channel(&self, temporary_channel_id: &[u8; 32], user_channel_id: u64) -> Result<(), APIError> {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 
 		let mut channel_state_lock = self.channel_state.lock().unwrap();
@@ -4300,7 +4305,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				}
 				channel_state.pending_msg_events.push(events::MessageSendEvent::SendAcceptChannel {
 					node_id: channel.get().get_counterparty_node_id(),
-					msg: channel.get_mut().accept_inbound_channel(),
+					msg: channel.get_mut().accept_inbound_channel(user_channel_id),
 				});
 			}
 			hash_map::Entry::Vacant(_) => {
@@ -4341,7 +4346,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				if !self.default_configuration.manually_accept_inbound_channels {
 					channel_state.pending_msg_events.push(events::MessageSendEvent::SendAcceptChannel {
 						node_id: counterparty_node_id.clone(),
-						msg: channel.accept_inbound_channel(),
+						msg: channel.accept_inbound_channel(0),
 					});
 				} else {
 					let mut pending_events = self.pending_events.lock().unwrap();
