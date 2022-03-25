@@ -32,7 +32,10 @@ _bench_unstable = []
 no-std = ["hashbrown", "bitcoin/no-std", "core2/alloc"]
 std = ["bitcoin/std"]
 
-default = ["std"]
+# Generates low-r bitcoin signatures, which saves 1 byte in 50% of the cases
+grind_signatures = []
+
+default = ["std", "grind_signatures"]
 
 [dependencies]
 bitcoin = { version = "0.27", default-features = false, features = ["secp-recovery"] }

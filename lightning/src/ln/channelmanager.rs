@@ -69,6 +69,7 @@ use core::ops::Deref;
 
 #[cfg(any(test, feature = "std"))]
 use std::time::Instant;
+use util::crypto::sign;
 
 mod inbound_payment {
 	use alloc::string::ToString;
@@ -3060,7 +3061,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			excess_data: Vec::new(),
 		};
 		let msghash = hash_to_message!(&Sha256dHash::hash(&announcement.encode()[..])[..]);
-		let node_announce_sig = self.secp_ctx.sign(&msghash, &self.our_network_key);
+		let node_announce_sig = sign(&self.secp_ctx, &msghash, &self.our_network_key);
 
 		let mut channel_state_lock = self.channel_state.lock().unwrap();
 		let channel_state = &mut *channel_state_lock;

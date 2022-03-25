@@ -6628,6 +6628,7 @@ mod tests {
 		}
 	}
 
+	#[cfg(not(feature = "grind_signatures"))]
 	#[test]
 	fn outbound_commitment_test() {
 		// Test vectors from BOLT 3 Appendices C and F (anchors):
