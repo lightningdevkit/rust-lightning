@@ -666,20 +666,21 @@ impl<L: Deref<Target = u64>, T: Time, U: Deref<Target = T>> DirectedChannelLiqui
 	/// Returns a penalty for routing the given HTLC `amount_msat` through the channel in this
 	/// direction.
 	fn penalty_msat(&self, amount_msat: u64, liquidity_penalty_multiplier_msat: u64) -> u64 {
+		let max_penalty_msat = liquidity_penalty_multiplier_msat.saturating_mul(2);
 		let max_liquidity_msat = self.max_liquidity_msat();
 		let min_liquidity_msat = core::cmp::min(self.min_liquidity_msat(), max_liquidity_msat);
 		if amount_msat > max_liquidity_msat {
-			u64::max_value()
+			max_penalty_msat
 		} else if amount_msat <= min_liquidity_msat {
 			0
 		} else {
 			let numerator = (max_liquidity_msat - amount_msat).saturating_add(1);
 			let denominator = (max_liquidity_msat - min_liquidity_msat).saturating_add(1);
-			approx::negative_log10_times_1024(numerator, denominator)
-				.saturating_mul(liquidity_penalty_multiplier_msat) / 1024
+			let penalty_msat = approx::negative_log10_times_1024(numerator, denominator)
+				.saturating_mul(liquidity_penalty_multiplier_msat) / 1024;
+			// Upper bound the penalty to ensure some channel is selected.
+			penalty_msat.min(max_penalty_msat)
 		}
-		// Upper bound the penalty to ensure some channel is selected.
-		.min(2 * liquidity_penalty_multiplier_msat)
 	}
 
 	/// Returns the lower bound of the channel liquidity balance in this direction.
