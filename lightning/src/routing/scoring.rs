@@ -533,7 +533,7 @@ pub struct ProbabilisticScoringParameters {
 	/// payments. This knowledge is decayed over time based on [`liquidity_offset_half_life`]. The
 	/// penalty is effectively limited to `2 * liquidity_penalty_multiplier_msat`.
 	///
-	/// Default value: 10,000 msat
+	/// Default value: 40,000 msat
 	///
 	/// [`liquidity_offset_half_life`]: Self::liquidity_offset_half_life
 	pub liquidity_penalty_multiplier_msat: u64,
@@ -603,7 +603,7 @@ impl Default for ProbabilisticScoringParameters {
 	fn default() -> Self {
 		Self {
 			base_penalty_msat: 500,
-			liquidity_penalty_multiplier_msat: 10_000,
+			liquidity_penalty_multiplier_msat: 40_000,
 			liquidity_offset_half_life: Duration::from_secs(3600),
 		}
 	}
@@ -2051,16 +2051,16 @@ mod tests {
 		let target = target_node_id();
 
 		let params = ProbabilisticScoringParameters {
-			base_penalty_msat: 0, ..Default::default()
+			base_penalty_msat: 0, liquidity_penalty_multiplier_msat: 1_000, ..Default::default()
 		};
 		let scorer = ProbabilisticScorer::new(params, &network_graph);
-		assert_eq!(scorer.channel_penalty_msat(42, 128, 1_024, &source, &target), 585);
+		assert_eq!(scorer.channel_penalty_msat(42, 128, 1_024, &source, &target), 58);
 
 		let params = ProbabilisticScoringParameters {
-			base_penalty_msat: 500, ..Default::default()
+			base_penalty_msat: 500, liquidity_penalty_multiplier_msat: 1_000, ..Default::default()
 		};
 		let scorer = ProbabilisticScorer::new(params, &network_graph);
-		assert_eq!(scorer.channel_penalty_msat(42, 128, 1_024, &source, &target), 1085);
+		assert_eq!(scorer.channel_penalty_msat(42, 128, 1_024, &source, &target), 558);
 	}
 
 	#[test]
@@ -2075,7 +2075,7 @@ mod tests {
 		let scorer = ProbabilisticScorer::new(params, &network_graph);
 		assert_eq!(
 			scorer.channel_penalty_msat(42, u64::max_value(), u64::max_value(), &source, &target),
-			20_000,
+			80_000,
 		);
 	}
 }
