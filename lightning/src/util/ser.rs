@@ -174,6 +174,7 @@ pub trait Writeable {
 	}
 
 	/// Writes self out to a Vec<u8>
+	#[cfg(test)]
 	fn encode_with_len(&self) -> Vec<u8> {
 		let mut msg = VecWriter(Vec::new());
 		0u16.write(&mut msg).unwrap();

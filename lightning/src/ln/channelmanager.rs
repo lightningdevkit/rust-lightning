@@ -42,7 +42,7 @@ use chain::transaction::{OutPoint, TransactionData};
 // construct one themselves.
 use ln::{PaymentHash, PaymentPreimage, PaymentSecret};
 use ln::channel::{Channel, ChannelError, ChannelUpdateStatus, UpdateFulfillCommitFetch};
-use ln::features::{InitFeatures, NodeFeatures};
+use ln::features::{ChannelTypeFeatures, InitFeatures, NodeFeatures};
 use routing::router::{PaymentParameters, Route, RouteHop, RoutePath, RouteParameters};
 use ln::msgs;
 use ln::msgs::NetAddress;
@@ -53,7 +53,7 @@ use util::config::UserConfig;
 use util::events::{EventHandler, EventsProvider, MessageSendEvent, MessageSendEventsProvider, ClosureReason};
 use util::{byte_utils, events};
 use util::scid_utils::fake_scid;
-use util::ser::{BigSize, FixedLengthReader, Readable, ReadableArgs, MaybeReadable, Writeable, Writer};
+use util::ser::{BigSize, FixedLengthReader, Readable, ReadableArgs, MaybeReadable, Writeable, Writer, VecWriter};
 use util::logger::{Level, Logger};
 use util::errors::APIError;
 
@@ -1209,6 +1209,10 @@ pub struct ChannelDetails {
 	/// Note that, if this has been set, `channel_id` will be equivalent to
 	/// `funding_txo.unwrap().to_channel_id()`.
 	pub funding_txo: Option<OutPoint>,
+	/// The features which this channel operates with. See individual features for more info.
+	///
+	/// `None` until negotiation completes and the channel type is finalized.
+	pub channel_type: Option<ChannelTypeFeatures>,
 	/// The position of the funding transaction in the chain. None if the funding transaction has
 	/// not yet been confirmed and the channel fully opened.
 	///
@@ -1222,6 +1226,9 @@ pub struct ChannelDetails {
 	/// counterparty and usable in place of [`short_channel_id`] in invoice route hints. Our
 	/// counterparty will recognize the alias provided here in place of the [`short_channel_id`]
 	/// when they see a payment to be routed to us.
+	///
+	/// Our counterparty may choose to rotate this value at any time, though will always recognize
+	/// previous values for inbound payment forwarding.
 	///
 	/// [`short_channel_id`]: Self::short_channel_id
 	pub inbound_scid_alias: Option<u64>,
@@ -1311,9 +1318,12 @@ pub struct ChannelDetails {
 }
 
 impl ChannelDetails {
-	/// Gets the SCID which should be used to identify this channel for inbound payments. This
-	/// should be used for providing invoice hints or in any other context where our counterparty
-	/// will forward a payment to us.
+	/// Gets the current SCID which should be used to identify this channel for inbound payments.
+	/// This should be used for providing invoice hints or in any other context where our
+	/// counterparty will forward a payment to us.
+	///
+	/// This is either the [`ChannelDetails::inbound_scid_alias`], if set, or the
+	/// [`ChannelDetails::short_channel_id`]. See those for more information.
 	pub fn get_inbound_payment_scid(&self) -> Option<u64> {
 		self.inbound_scid_alias.or(self.short_channel_id)
 	}
@@ -1931,6 +1941,9 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 						forwarding_info: channel.counterparty_forwarding_info(),
 					},
 					funding_txo: channel.get_funding_txo(),
+					// Note that accept_channel (or open_channel) is always the first message, so
+					// `have_received_message` indicates that type negotiation has completed.
+					channel_type: if channel.have_received_message() { Some(channel.get_channel_type().clone()) } else { None },
 					short_channel_id: channel.get_short_channel_id(),
 					inbound_scid_alias: channel.latest_inbound_scid_alias(),
 					channel_value_satoshis: channel.get_value_satoshis(),
@@ -2415,15 +2428,19 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					};
 					let (chan_update_opt, forwardee_cltv_expiry_delta) = if let Some(forwarding_id) = forwarding_id_opt {
 						let chan = channel_state.as_mut().unwrap().by_id.get_mut(&forwarding_id).unwrap();
-						// Leave channel updates as None for private channels.
-						let chan_update_opt = if chan.should_announce() {
-							Some(self.get_channel_update_for_unicast(chan).unwrap()) } else { None };
 						if !chan.should_announce() && !self.default_configuration.accept_forwards_to_priv_channels {
 							// Note that the behavior here should be identical to the above block - we
 							// should NOT reveal the existence or non-existence of a private channel if
 							// we don't allow forwards outbound over them.
-							break Some(("Don't have available channel for forwarding as requested.", 0x4000 | 10, None));
+							break Some(("Refusing to forward to a private channel based on our config.", 0x4000 | 10, None));
 						}
+						if chan.get_channel_type().supports_scid_privacy() && *short_channel_id != chan.outbound_scid_alias() {
+							// `option_scid_alias` (referred to in LDK as `scid_privacy`) means
+							// "refuse to forward unless the SCID alias was used", so we pretend
+							// we don't have the channel here.
+							break Some(("Refusing to forward over real channel SCID as our counterparty requested.", 0x4000 | 10, None));
+						}
+						let chan_update_opt = self.get_channel_update_for_onion(*short_channel_id, chan).ok();
 
 						// Note that we could technically not return an error yet here and just hope
 						// that the connection is reestablished or monitor updated by the time we get
@@ -2473,21 +2490,22 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					break None;
 				}
 				{
-					let mut res = Vec::with_capacity(8 + 128);
+					let mut res = VecWriter(Vec::with_capacity(chan_update.serialized_length() + 8 + 2));
 					if let Some(chan_update) = chan_update {
 						if code == 0x1000 | 11 || code == 0x1000 | 12 {
-							res.extend_from_slice(&byte_utils::be64_to_array(msg.amount_msat));
+							msg.amount_msat.write(&mut res).expect("Writes cannot fail");
 						}
 						else if code == 0x1000 | 13 {
-							res.extend_from_slice(&byte_utils::be32_to_array(msg.cltv_expiry));
+							msg.cltv_expiry.write(&mut res).expect("Writes cannot fail");
 						}
 						else if code == 0x1000 | 20 {
 							// TODO: underspecified, follow https://github.com/lightningnetwork/lightning-rfc/issues/791
-							res.extend_from_slice(&byte_utils::be16_to_array(0));
+							0u16.write(&mut res).expect("Writes cannot fail");
 						}
-						res.extend_from_slice(&chan_update.encode_with_len()[..]);
+						(chan_update.serialized_length() as u16).write(&mut res).expect("Writes cannot fail");
+						chan_update.write(&mut res).expect("Writes cannot fail");
 					}
-					return_err!(err, code, &res[..]);
+					return_err!(err, code, &res.0[..]);
 				}
 			}
 		}
@@ -2523,6 +2541,10 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			Some(id) => id,
 		};
 
+		self.get_channel_update_for_onion(short_channel_id, chan)
+	}
+	fn get_channel_update_for_onion(&self, short_channel_id: u64, chan: &Channel<Signer>) -> Result<msgs::ChannelUpdate, LightningError> {
+		log_trace!(self.logger, "Generating channel update for channel {}", log_bytes!(chan.channel_id()));
 		let were_node_one = PublicKey::from_secret_key(&self.secp_ctx, &self.our_network_key).serialize()[..] < chan.get_counterparty_node_id().serialize()[..];
 
 		let unsigned = msgs::UnsignedChannelUpdate {
@@ -3212,9 +3234,9 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 											} else {
 												panic!("Stated return value requirements in send_htlc() were not met");
 											}
-											let chan_update = self.get_channel_update_for_unicast(chan.get()).unwrap();
+											let (failure_code, data) = self.get_htlc_temp_fail_err_and_data(0x1000|7, short_chan_id, chan.get());
 											failed_forwards.push((htlc_source, payment_hash,
-												HTLCFailReason::Reason { failure_code: 0x1000 | 7, data: chan_update.encode_with_len() }
+												HTLCFailReason::Reason { failure_code, data }
 											));
 											continue;
 										},
@@ -3738,6 +3760,51 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		} else { false }
 	}
 
+	/// Gets an HTLC onion failure code and error data for an `UPDATE` error, given the error code
+	/// that we want to return and a channel.
+	///
+	/// This is for failures on the channel on which the HTLC was *received*, not failures
+	/// forwarding
+	fn get_htlc_inbound_temp_fail_err_and_data(&self, desired_err_code: u16, chan: &Channel<Signer>) -> (u16, Vec<u8>) {
+		// We can't be sure what SCID was used when relaying inbound towards us, so we have to
+		// guess somewhat. If its a public channel, we figure best to just use the real SCID (as
+		// we're not leaking that we have a channel with the counterparty), otherwise we try to use
+		// an inbound SCID alias before the real SCID.
+		let scid_pref = if chan.should_announce() {
+			chan.get_short_channel_id().or(chan.latest_inbound_scid_alias())
+		} else {
+			chan.latest_inbound_scid_alias().or(chan.get_short_channel_id())
+		};
+		if let Some(scid) = scid_pref {
+			self.get_htlc_temp_fail_err_and_data(desired_err_code, scid, chan)
+		} else {
+			(0x4000|10, Vec::new())
+		}
+	}
+
+
+	/// Gets an HTLC onion failure code and error data for an `UPDATE` error, given the error code
+	/// that we want to return and a channel.
+	fn get_htlc_temp_fail_err_and_data(&self, desired_err_code: u16, scid: u64, chan: &Channel<Signer>) -> (u16, Vec<u8>) {
+		debug_assert_eq!(desired_err_code & 0x1000, 0x1000);
+		if let Ok(upd) = self.get_channel_update_for_onion(scid, chan) {
+			let mut enc = VecWriter(Vec::with_capacity(upd.serialized_length() + 4));
+			if desired_err_code == 0x1000 | 20 {
+				// TODO: underspecified, follow https://github.com/lightning/bolts/issues/791
+				0u16.write(&mut enc).expect("Writes cannot fail");
+			}
+			(upd.serialized_length() as u16).write(&mut enc).expect("Writes cannot fail");
+			upd.write(&mut enc).expect("Writes cannot fail");
+			(desired_err_code, enc.0)
+		} else {
+			// If we fail to get a unicast channel_update, it implies we don't yet have an SCID,
+			// which means we really shouldn't have gotten a payment to be forwarded over this
+			// channel yet, or if we did it's from a route hint. Either way, returning an error of
+			// PERM|no_such_channel should be fine.
+			(0x4000|10, Vec::new())
+		}
+	}
+
 	// Fail a list of HTLCs that were just freed from the holding cell. The HTLCs need to be
 	// failed backwards or, if they were one of our outgoing HTLCs, then their failure needs to
 	// be surfaced to the user.
@@ -3748,11 +3815,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					let (failure_code, onion_failure_data) =
 						match self.channel_state.lock().unwrap().by_id.entry(channel_id) {
 							hash_map::Entry::Occupied(chan_entry) => {
-								if let Ok(upd) = self.get_channel_update_for_unicast(&chan_entry.get()) {
-									(0x1000|7, upd.encode_with_len())
-								} else {
-									(0x4000|10, Vec::new())
-								}
+								self.get_htlc_inbound_temp_fail_err_and_data(0x1000|7, &chan_entry.get())
 							},
 							hash_map::Entry::Vacant(_) => (0x4000|10, Vec::new())
 						};
@@ -4265,10 +4328,12 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				// channel_update later through the announcement_signatures process for public
 				// channels, but there's no reason not to just inform our counterparty of our fees
 				// now.
-				Some(events::MessageSendEvent::SendChannelUpdate {
-					node_id: channel.get().get_counterparty_node_id(),
-					msg: self.get_channel_update_for_unicast(channel.get()).unwrap(),
-				})
+				if let Ok(msg) = self.get_channel_update_for_unicast(channel.get()) {
+					Some(events::MessageSendEvent::SendChannelUpdate {
+						node_id: channel.get().get_counterparty_node_id(),
+						msg,
+					})
+				} else { None }
 			} else { None };
 			chan_restoration_res = handle_chan_restoration_locked!(self, channel_lock, channel_state, channel, updates.raa, updates.commitment_update, updates.order, None, updates.accepted_htlcs, updates.funding_broadcastable, updates.funding_locked, updates.announcement_sigs);
 			if let Some(upd) = channel_update {
@@ -4357,6 +4422,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 							counterparty_node_id: counterparty_node_id.clone(),
 							funding_satoshis: msg.funding_satoshis,
 							push_msat: msg.push_msat,
+							channel_type: channel.get_channel_type().clone(),
 						}
 					);
 				}
@@ -4508,10 +4574,12 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					// channel_update here if the channel is not public, i.e. we're not sending an
 					// announcement_signatures.
 					log_trace!(self.logger, "Sending private initial channel_update for our counterparty on channel {}", log_bytes!(chan.get().channel_id()));
-					channel_state.pending_msg_events.push(events::MessageSendEvent::SendChannelUpdate {
-						node_id: counterparty_node_id.clone(),
-						msg: self.get_channel_update_for_unicast(chan.get()).unwrap(),
-					});
+					if let Ok(msg) = self.get_channel_update_for_unicast(chan.get()) {
+						channel_state.pending_msg_events.push(events::MessageSendEvent::SendChannelUpdate {
+							node_id: counterparty_node_id.clone(),
+							msg,
+						});
+					}
 				}
 				Ok(())
 			},
@@ -4642,28 +4710,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					match pending_forward_info {
 						PendingHTLCStatus::Forward(PendingHTLCInfo { ref incoming_shared_secret, .. }) => {
 							let reason = if (error_code & 0x1000) != 0 {
-								if let Ok(upd) = self.get_channel_update_for_unicast(chan) {
-									onion_utils::build_first_hop_failure_packet(incoming_shared_secret, error_code, &{
-										let mut res = Vec::with_capacity(8 + 128);
-										// TODO: underspecified, follow https://github.com/lightningnetwork/lightning-rfc/issues/791
-										if error_code == 0x1000 | 20 {
-											res.extend_from_slice(&byte_utils::be16_to_array(0));
-										}
-										res.extend_from_slice(&upd.encode_with_len()[..]);
-										res
-									}[..])
-								} else {
-									// The only case where we'd be unable to
-									// successfully get a channel update is if the
-									// channel isn't in the fully-funded state yet,
-									// implying our counterparty is trying to route
-									// payments over the channel back to themselves
-									// (because no one else should know the short_id
-									// is a lightning channel yet). We should have
-									// no problem just calling this
-									// unknown_next_peer (0x4000|10).
-									onion_utils::build_first_hop_failure_packet(incoming_shared_secret, 0x4000|10, &[])
-								}
+								let (real_code, error_data) = self.get_htlc_inbound_temp_fail_err_and_data(error_code, chan);
+								onion_utils::build_first_hop_failure_packet(incoming_shared_secret, real_code, &error_data)
 							} else {
 								onion_utils::build_first_hop_failure_packet(incoming_shared_secret, error_code, &[])
 							};
@@ -4985,10 +5033,12 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 						// If the channel is in a usable state (ie the channel is not being shut
 						// down), send a unicast channel_update to our counterparty to make sure
 						// they have the latest channel parameters.
-						channel_update = Some(events::MessageSendEvent::SendChannelUpdate {
-							node_id: chan.get().get_counterparty_node_id(),
-							msg: self.get_channel_update_for_unicast(chan.get()).unwrap(),
-						});
+						if let Ok(msg) = self.get_channel_update_for_unicast(chan.get()) {
+							channel_update = Some(events::MessageSendEvent::SendChannelUpdate {
+								node_id: chan.get().get_counterparty_node_id(),
+								msg,
+							});
+						}
 					}
 					let need_lnd_workaround = chan.get_mut().workaround_lnd_bug_4006.take();
 					chan_restoration_res = handle_chan_restoration_locked!(
@@ -5659,20 +5709,21 @@ where
 				let res = f(channel);
 				if let Ok((funding_locked_opt, mut timed_out_pending_htlcs, announcement_sigs)) = res {
 					for (source, payment_hash) in timed_out_pending_htlcs.drain(..) {
-						let chan_update = self.get_channel_update_for_unicast(&channel).map(|u| u.encode_with_len()).unwrap(); // Cannot add/recv HTLCs before we have a short_id so unwrap is safe
-						timed_out_htlcs.push((source, payment_hash,  HTLCFailReason::Reason {
-							failure_code: 0x1000 | 14, // expiry_too_soon, or at least it is now
-							data: chan_update,
+						let (failure_code, data) = self.get_htlc_inbound_temp_fail_err_and_data(0x1000|14 /* expiry_too_soon */, &channel);
+						timed_out_htlcs.push((source, payment_hash, HTLCFailReason::Reason {
+							failure_code, data,
 						}));
 					}
 					if let Some(funding_locked) = funding_locked_opt {
 						send_funding_locked!(short_to_id, pending_msg_events, channel, funding_locked);
 						if channel.is_usable() {
 							log_trace!(self.logger, "Sending funding_locked with private initial channel_update for our counterparty on channel {}", log_bytes!(channel.channel_id()));
-							pending_msg_events.push(events::MessageSendEvent::SendChannelUpdate {
-								node_id: channel.get_counterparty_node_id(),
-								msg: self.get_channel_update_for_unicast(channel).unwrap(),
-							});
+							if let Ok(msg) = self.get_channel_update_for_unicast(channel) {
+								pending_msg_events.push(events::MessageSendEvent::SendChannelUpdate {
+									node_id: channel.get_counterparty_node_id(),
+									msg,
+								});
+							}
 						} else {
 							log_trace!(self.logger, "Sending funding_locked WITHOUT channel_update for {}", log_bytes!(channel.channel_id()));
 						}
@@ -6007,6 +6058,23 @@ impl<Signer: Sign, M: Deref , T: Deref , K: Deref , F: Deref , L: Deref >
 				}
 			}
 		} else {
+			{
+				// First check if we can advance the channel type and try again.
+				let mut channel_state = self.channel_state.lock().unwrap();
+				if let Some(chan) = channel_state.by_id.get_mut(&msg.channel_id) {
+					if chan.get_counterparty_node_id() != *counterparty_node_id {
+						return;
+					}
+					if let Ok(msg) = chan.maybe_handle_error_without_close(self.genesis_hash) {
+						channel_state.pending_msg_events.push(events::MessageSendEvent::SendOpenChannel {
+							node_id: *counterparty_node_id,
+							msg,
+						});
+						return;
+					}
+				}
+			}
+
 			// Untrusted messages from peer, we throw away the error if id points to a non-existent channel
 			let _ = self.force_close_channel_with_peer(&msg.channel_id, Some(counterparty_node_id), Some(&msg.data));
 		}
@@ -6103,6 +6171,7 @@ impl_writeable_tlv_based!(ChannelCounterparty, {
 impl_writeable_tlv_based!(ChannelDetails, {
 	(1, inbound_scid_alias, option),
 	(2, channel_id, required),
+	(3, channel_type, option),
 	(4, counterparty, required),
 	(6, funding_txo, option),
 	(8, short_channel_id, option),

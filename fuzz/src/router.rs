@@ -215,6 +215,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 									forwarding_info: None,
 								},
 								funding_txo: Some(OutPoint { txid: bitcoin::Txid::from_slice(&[0; 32]).unwrap(), index: 0 }),
+								channel_type: None,
 								short_channel_id: Some(scid),
 								inbound_scid_alias: None,
 								channel_value_satoshis: slice_to_be64(get_slice!(8)),

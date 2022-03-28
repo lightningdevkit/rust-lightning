@@ -810,6 +810,31 @@ impl<Signer: Sign> Channel<Signer> {
 		self.channel_transaction_parameters.opt_anchors.is_some()
 	}
 
+	fn get_initial_channel_type(config: &UserConfig) -> ChannelTypeFeatures {
+		// The default channel type (ie the first one we try) depends on whether the channel is
+		// public - if it is, we just go with `only_static_remotekey` as it's the only option
+		// available. If it's private, we first try `scid_privacy` as it provides better privacy
+		// with no other changes, and fall back to `only_static_remotekey`
+		let mut ret = ChannelTypeFeatures::only_static_remote_key();
+		if !config.channel_options.announced_channel && config.own_channel_config.negotiate_scid_privacy {
+			ret.set_scid_privacy_required();
+		}
+		ret
+	}
+
+	/// If we receive an error message, it may only be a rejection of the channel type we tried,
+	/// not of our ability to open any channel at all. Thus, on error, we should first call this
+	/// and see if we get a new `OpenChannel` message, otherwise the channel is failed.
+	pub(crate) fn maybe_handle_error_without_close(&mut self, chain_hash: BlockHash) -> Result<msgs::OpenChannel, ()> {
+		if !self.is_outbound() || self.channel_state != ChannelState::OurInitSent as u32 { return Err(()); }
+		if self.channel_type == ChannelTypeFeatures::only_static_remote_key() {
+			// We've exhausted our options
+			return Err(());
+		}
+		self.channel_type = ChannelTypeFeatures::only_static_remote_key(); // We only currently support two types
+		Ok(self.get_open_channel(chain_hash))
+	}
+
 	// Constructors:
 	pub fn new_outbound<K: Deref, F: Deref>(
 		fee_estimator: &F, keys_provider: &K, counterparty_node_id: PublicKey, their_features: &InitFeatures,
@@ -967,10 +992,7 @@ impl<Signer: Sign> Channel<Signer> {
 			#[cfg(any(test, fuzzing))]
 			historical_inbound_htlc_fulfills: HashSet::new(),
 
-			// We currently only actually support one channel type, so don't retry with new types
-			// on error messages. When we support more we'll need fallback support (assuming we
-			// want to support old types).
-			channel_type: ChannelTypeFeatures::only_static_remote_key(),
+			channel_type: Self::get_initial_channel_type(&config),
 		})
 	}
 
@@ -1009,6 +1031,7 @@ impl<Signer: Sign> Channel<Signer> {
 		      L::Target: Logger,
 	{
 		let opt_anchors = false; // TODO - should be based on features
+		let announced_channel = if (msg.channel_flags & 1) == 1 { true } else { false };
 
 		// First check the channel type is known, failing before we do anything else if we don't
 		// support this channel type.
@@ -1016,8 +1039,18 @@ impl<Signer: Sign> Channel<Signer> {
 			if channel_type.supports_any_optional_bits() {
 				return Err(ChannelError::Close("Channel Type field contained optional bits - this is not allowed".to_owned()));
 			}
-			if *channel_type != ChannelTypeFeatures::only_static_remote_key() {
-				return Err(ChannelError::Close("Channel Type was not understood".to_owned()));
+			// We currently only allow two channel types, so write it all out here - we allow
+			// `only_static_remote_key` in all contexts, and further allow
+			// `static_remote_key|scid_privacy` if the channel is not publicly announced.
+			let mut allowed_type = ChannelTypeFeatures::only_static_remote_key();
+			if *channel_type != allowed_type {
+				allowed_type.set_scid_privacy_required();
+				if *channel_type != allowed_type {
+					return Err(ChannelError::Close("Channel Type was not understood".to_owned()));
+				}
+				if announced_channel {
+					return Err(ChannelError::Close("SCID Alias/Privacy Channel Type cannot be set on a public channel".to_owned()));
+				}
 			}
 			channel_type.clone()
 		} else {
@@ -1098,14 +1131,13 @@ impl<Signer: Sign> Channel<Signer> {
 
 		// Convert things into internal flags and prep our state:
 
-		let announce = if (msg.channel_flags & 1) == 1 { true } else { false };
 		if config.peer_channel_config_limits.force_announced_channel_preference {
-			if local_config.announced_channel != announce {
+			if local_config.announced_channel != announced_channel {
 				return Err(ChannelError::Close("Peer tried to open channel but their announcement preference is different from ours".to_owned()));
 			}
 		}
 		// we either accept their preference or the preferences match
-		local_config.announced_channel = announce;
+		local_config.announced_channel = announced_channel;
 
 		let holder_selected_channel_reserve_satoshis = Channel::<Signer>::get_holder_selected_channel_reserve_satoshis(msg.funding_satoshis);
 		if holder_selected_channel_reserve_satoshis < MIN_CHAN_DUST_LIMIT_SATOSHIS {
@@ -4230,6 +4262,11 @@ impl<Signer: Sign> Channel<Signer> {
 	/// meaning and exists only to allow users to have a persistent identifier of a channel.
 	pub fn get_user_id(&self) -> u64 {
 		self.user_id
+	}
+
+	/// Gets the channel's type
+	pub fn get_channel_type(&self) -> &ChannelTypeFeatures {
+		&self.channel_type
 	}
 
 	/// Guaranteed to be Some after both FundingLocked messages have been exchanged (and, thus,
