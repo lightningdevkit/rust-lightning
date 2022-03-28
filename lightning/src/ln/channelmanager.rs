@@ -1218,6 +1218,9 @@ pub struct ChannelDetails {
 	/// counterparty will recognize the alias provided here in place of the [`short_channel_id`]
 	/// when they see a payment to be routed to us.
 	///
+	/// Our counterparty may choose to rotate this value at any time, though will always recognize
+	/// previous values for inbound payment forwarding.
+	///
 	/// [`short_channel_id`]: Self::short_channel_id
 	pub inbound_scid_alias: Option<u64>,
 	/// The value, in satoshis, of this channel as appears in the funding output
@@ -1306,9 +1309,12 @@ pub struct ChannelDetails {
 }
 
 impl ChannelDetails {
-	/// Gets the SCID which should be used to identify this channel for inbound payments. This
-	/// should be used for providing invoice hints or in any other context where our counterparty
-	/// will forward a payment to us.
+	/// Gets the current SCID which should be used to identify this channel for inbound payments.
+	/// This should be used for providing invoice hints or in any other context where our
+	/// counterparty will forward a payment to us.
+	///
+	/// This is either the [`ChannelDetails::inbound_scid_alias`], if set, or the
+	/// [`ChannelDetails::short_channel_id`]. See those for more information.
 	pub fn get_inbound_payment_scid(&self) -> Option<u64> {
 		self.inbound_scid_alias.or(self.short_channel_id)
 	}
