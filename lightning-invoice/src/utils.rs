@@ -412,8 +412,8 @@ fn filter_channels(channels: Vec<ChannelDetails>, min_inbound_capacity_msat: Opt
 				proportional_millionths: forwarding_info.fee_proportional_millionths,
 			},
 			cltv_expiry_delta: forwarding_info.cltv_expiry_delta,
-			htlc_minimum_msat: None,
-			htlc_maximum_msat: None,}])
+			htlc_minimum_msat: channel.inbound_htlc_minimum_msat,
+			htlc_maximum_msat: channel.inbound_htlc_maximum_msat,}])
 	};
 	// If all channels are private, return the route hint for the highest inbound capacity channel
 	// per counterparty node. If channels with an higher inbound capacity than the
@@ -535,10 +535,13 @@ mod test {
 
 		// Invoice SCIDs should always use inbound SCID aliases over the real channel ID, if one is
 		// available.
+		let chan = &nodes[1].node.list_usable_channels()[0];
 		assert_eq!(invoice.route_hints().len(), 1);
 		assert_eq!(invoice.route_hints()[0].0.len(), 1);
-		assert_eq!(invoice.route_hints()[0].0[0].short_channel_id,
-			nodes[1].node.list_usable_channels()[0].inbound_scid_alias.unwrap());
+		assert_eq!(invoice.route_hints()[0].0[0].short_channel_id, chan.inbound_scid_alias.unwrap());
+
+		assert_eq!(invoice.route_hints()[0].0[0].htlc_minimum_msat, chan.inbound_htlc_minimum_msat);
+		assert_eq!(invoice.route_hints()[0].0[0].htlc_maximum_msat, chan.inbound_htlc_maximum_msat);
 
 		let payment_params = PaymentParameters::from_node_id(invoice.recover_payee_pub_key())
 			.with_features(invoice.features().unwrap().clone())
@@ -877,6 +880,40 @@ mod test {
 			},
 			_ => panic!("Unexpected event")
 		}
+	}
+
+	#[test]
+	#[cfg(feature = "std")]
+	fn test_multi_node_hints_has_htlc_min_max_values() {
+		let mut chanmon_cfgs = create_chanmon_cfgs(3);
+		let seed_1 = [42 as u8; 32];
+		let seed_2 = [43 as u8; 32];
+		let cross_node_seed = [44 as u8; 32];
+		chanmon_cfgs[1].keys_manager.backing = PhantomKeysManager::new(&seed_1, 43, 44, &cross_node_seed);
+		chanmon_cfgs[2].keys_manager.backing = PhantomKeysManager::new(&seed_2, 43, 44, &cross_node_seed);
+		let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+		let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+		let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+		create_unannounced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 10001, InitFeatures::known(), InitFeatures::known());
+		create_unannounced_chan_between_nodes_with_value(&nodes, 0, 2, 100000, 10001, InitFeatures::known(), InitFeatures::known());
+
+		let payment_amt = 20_000;
+		let (payment_hash, _payment_secret) = nodes[1].node.create_inbound_payment(Some(payment_amt), 3600).unwrap();
+		let route_hints = vec![
+			nodes[1].node.get_phantom_route_hints(),
+			nodes[2].node.get_phantom_route_hints(),
+		];
+
+		let invoice = ::utils::create_phantom_invoice::<EnforcingSigner, &test_utils::TestKeysInterface>(Some(payment_amt), Some(payment_hash), "test".to_string(), 3600, route_hints, &nodes[1].keys_manager, Currency::BitcoinTestnet).unwrap();
+
+		let chan_0_1 = &nodes[1].node.list_usable_channels()[0];
+		assert_eq!(invoice.route_hints()[0].0[0].htlc_minimum_msat, chan_0_1.inbound_htlc_minimum_msat);
+		assert_eq!(invoice.route_hints()[0].0[0].htlc_maximum_msat, chan_0_1.inbound_htlc_maximum_msat);
+
+		let chan_0_2 = &nodes[2].node.list_usable_channels()[0];
+		assert_eq!(invoice.route_hints()[1].0[0].htlc_minimum_msat, chan_0_2.inbound_htlc_minimum_msat);
+		assert_eq!(invoice.route_hints()[1].0[0].htlc_maximum_msat, chan_0_2.inbound_htlc_maximum_msat);
 	}
 
 	#[test]
