@@ -559,14 +559,15 @@ mod tests {
 		let bg_processor = BackgroundProcessor::start(persister, event_handler, nodes[0].chain_monitor.clone(), nodes[0].node.clone(), nodes[0].net_graph_msg_handler.clone(), nodes[0].peer_manager.clone(), nodes[0].logger.clone());
 
 		macro_rules! check_persisted_data {
-			($node: expr, $filepath: expr, $expected_bytes: expr) => {
+			($node: expr, $filepath: expr) => {
+				let mut expected_bytes = Vec::new();
 				loop {
-					$expected_bytes.clear();
-					match $node.write(&mut $expected_bytes) {
+					expected_bytes.clear();
+					match $node.write(&mut expected_bytes) {
 						Ok(()) => {
 							match std::fs::read($filepath) {
 								Ok(bytes) => {
-									if bytes == $expected_bytes {
+									if bytes == expected_bytes {
 										break
 									} else {
 										continue
@@ -583,8 +584,7 @@ mod tests {
 
 		// Check that the initial channel manager data is persisted as expected.
 		let filepath = get_full_filepath("test_background_processor_persister_0".to_string(), "manager".to_string());
-		let mut expected_bytes = Vec::new();
-		check_persisted_data!(nodes[0].node, filepath.clone(), expected_bytes);
+		check_persisted_data!(nodes[0].node, filepath.clone());
 
 		loop {
 			if !nodes[0].node.get_persistence_condvar_value() { break }
@@ -594,18 +594,16 @@ mod tests {
 		nodes[0].node.force_close_channel(&OutPoint { txid: tx.txid(), index: 0 }.to_channel_id()).unwrap();
 
 		// Check that the force-close updates are persisted.
-		let mut expected_bytes = Vec::new();
-		check_persisted_data!(nodes[0].node, filepath.clone(), expected_bytes);
+		check_persisted_data!(nodes[0].node, filepath.clone());
 		loop {
 			if !nodes[0].node.get_persistence_condvar_value() { break }
 		}
 
 		// Check network graph is persisted
 		let filepath = get_full_filepath("test_background_processor_persister_0".to_string(), "network_graph".to_string());
-		let mut expected_bytes = Vec::new();
 		if let Some(ref handler) = nodes[0].net_graph_msg_handler {
 			let network_graph = handler.network_graph();
-			check_persisted_data!(network_graph, filepath.clone(), expected_bytes);
+			check_persisted_data!(network_graph, filepath.clone());
 		}
 
 		assert!(bg_processor.stop().is_ok());
