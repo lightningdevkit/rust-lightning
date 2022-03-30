@@ -2684,10 +2684,23 @@ fn test_htlc_on_chain_success() {
 		Event::ChannelClosed { reason: ClosureReason::CommitmentTxConfirmed, .. } => {}
 		_ => panic!("Unexpected event"),
 	}
-	if let Event::PaymentForwarded { fee_earned_msat: Some(1000), claim_from_onchain_tx: true } = forwarded_events[1] {
-		} else { panic!(); }
-	if let Event::PaymentForwarded { fee_earned_msat: Some(1000), claim_from_onchain_tx: true } = forwarded_events[2] {
-		} else { panic!(); }
+	let chan_id = Some(chan_1.2);
+	match forwarded_events[1] {
+		Event::PaymentForwarded { fee_earned_msat, source_channel_id, claim_from_onchain_tx } => {
+			assert_eq!(fee_earned_msat, Some(1000));
+			assert_eq!(source_channel_id, chan_id);
+			assert_eq!(claim_from_onchain_tx, true);
+		},
+		_ => panic!()
+	}
+	match forwarded_events[2] {
+		Event::PaymentForwarded { fee_earned_msat, source_channel_id, claim_from_onchain_tx } => {
+			assert_eq!(fee_earned_msat, Some(1000));
+			assert_eq!(source_channel_id, chan_id);
+			assert_eq!(claim_from_onchain_tx, true);
+		},
+		_ => panic!()
+	}
 	let events = nodes[1].node.get_and_clear_pending_msg_events();
 	{
 		let mut added_monitors = nodes[1].chain_monitor.added_monitors.lock().unwrap();
@@ -5104,8 +5117,9 @@ fn test_onchain_to_onchain_claim() {
 		_ => panic!("Unexpected event"),
 	}
 	match events[1] {
-		Event::PaymentForwarded { fee_earned_msat, claim_from_onchain_tx } => {
+		Event::PaymentForwarded { fee_earned_msat, source_channel_id, claim_from_onchain_tx } => {
 			assert_eq!(fee_earned_msat, Some(1000));
+			assert_eq!(source_channel_id, Some(chan_1.2));
 			assert_eq!(claim_from_onchain_tx, true);
 		},
 		_ => panic!("Unexpected event"),
@@ -5271,7 +5285,7 @@ fn test_duplicate_payment_hash_one_failure_one_success() {
 	// Note that the fee paid is effectively double as the HTLC value (including the nodes[1] fee
 	// and nodes[2] fee) is rounded down and then claimed in full.
 	mine_transaction(&nodes[1], &htlc_success_txn[0]);
-	expect_payment_forwarded!(nodes[1], Some(196*2), true);
+	expect_payment_forwarded!(nodes[1], nodes[0], Some(196*2), true);
 	let updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 	assert!(updates.update_add_htlcs.is_empty());
 	assert!(updates.update_fail_htlcs.is_empty());
@@ -8849,7 +8863,7 @@ fn do_test_onchain_htlc_settlement_after_close(broadcast_alice: bool, go_onchain
 	assert_eq!(carol_updates.update_fulfill_htlcs.len(), 1);
 
 	nodes[1].node.handle_update_fulfill_htlc(&nodes[2].node.get_our_node_id(), &carol_updates.update_fulfill_htlcs[0]);
-	expect_payment_forwarded!(nodes[1], if go_onchain_before_fulfill || force_closing_node == 1 { None } else { Some(1000) }, false);
+	expect_payment_forwarded!(nodes[1], nodes[0], if go_onchain_before_fulfill || force_closing_node == 1 { None } else { Some(1000) }, false);
 	// If Alice broadcasted but Bob doesn't know yet, here he prepares to tell her about the preimage.
 	if !go_onchain_before_fulfill && broadcast_alice {
 		let events = nodes[1].node.get_and_clear_pending_msg_events();

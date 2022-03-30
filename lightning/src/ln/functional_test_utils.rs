@@ -1328,12 +1328,16 @@ macro_rules! expect_payment_path_successful {
 }
 
 macro_rules! expect_payment_forwarded {
-	($node: expr, $expected_fee: expr, $upstream_force_closed: expr) => {
+	($node: expr, $source_node: expr, $expected_fee: expr, $upstream_force_closed: expr) => {
 		let events = $node.node.get_and_clear_pending_events();
 		assert_eq!(events.len(), 1);
 		match events[0] {
-			Event::PaymentForwarded { fee_earned_msat, claim_from_onchain_tx } => {
+			Event::PaymentForwarded { fee_earned_msat, source_channel_id, claim_from_onchain_tx } => {
 				assert_eq!(fee_earned_msat, $expected_fee);
+				if fee_earned_msat.is_some() {
+					// Is the event channel_id in one of the channels between the two nodes?
+					assert!($node.node.list_channels().iter().any(|x| x.counterparty.node_id == $source_node.node.get_our_node_id() && x.channel_id == source_channel_id.unwrap()));
+				}
 				assert_eq!(claim_from_onchain_tx, $upstream_force_closed);
 			},
 			_ => panic!("Unexpected event"),
@@ -1572,11 +1576,11 @@ pub fn do_claim_payment_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, 
 			}
 		}
 		macro_rules! mid_update_fulfill_dance {
-			($node: expr, $prev_node: expr, $new_msgs: expr) => {
+			($node: expr, $prev_node: expr, $next_node: expr, $new_msgs: expr) => {
 				{
 					$node.node.handle_update_fulfill_htlc(&$prev_node.node.get_our_node_id(), &next_msgs.as_ref().unwrap().0);
 					let fee = $node.node.channel_state.lock().unwrap().by_id.get(&next_msgs.as_ref().unwrap().0.channel_id).unwrap().config.forwarding_fee_base_msat;
-					expect_payment_forwarded!($node, Some(fee as u64), false);
+					expect_payment_forwarded!($node, $next_node, Some(fee as u64), false);
 					expected_total_fee_msat += fee as u64;
 					check_added_monitors!($node, 1);
 					let new_next_msgs = if $new_msgs {
@@ -1600,7 +1604,14 @@ pub fn do_claim_payment_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, 
 			assert_eq!(expected_next_node, node.node.get_our_node_id());
 			let update_next_msgs = !skip_last || idx != expected_route.len() - 1;
 			if next_msgs.is_some() {
-				mid_update_fulfill_dance!(node, prev_node, update_next_msgs);
+				// Since we are traversing in reverse, next_node is actually the previous node
+				let next_node: &Node;
+				if idx == expected_route.len() - 1 {
+					next_node = origin_node;
+				} else {
+					next_node = expected_route[expected_route.len() - 1 - idx - 1];
+				}
+				mid_update_fulfill_dance!(node, prev_node, next_node, update_next_msgs);
 			} else {
 				assert!(!update_next_msgs);
 				assert!(node.node.get_and_clear_pending_msg_events().is_empty());
