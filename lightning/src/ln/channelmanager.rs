@@ -498,6 +498,7 @@ impl core::hash::Hash for HTLCSource {
 		}
 	}
 }
+#[cfg(not(feature = "grind_signatures"))]
 #[cfg(test)]
 impl HTLCSource {
 	pub fn dummy() -> Self {
