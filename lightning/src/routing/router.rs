@@ -511,6 +511,10 @@ impl<'a> PaymentPath<'a> {
 		return result;
 	}
 
+	fn get_cost_msat(&self) -> u64 {
+		self.get_total_fee_paid_msat().saturating_add(self.get_path_penalty_msat())
+	}
+
 	// If the amount transferred by the path is updated, the fees should be adjusted. Any other way
 	// to change fees may result in an inconsistency.
 	//
@@ -1502,9 +1506,8 @@ where L::Target: Logger {
 				// prefer lower cost paths.
 				cur_route.sort_unstable_by(|a, b| {
 					a.get_value_msat().cmp(&b.get_value_msat())
-						// Reverse ordering for fees, so we drop higher-fee paths first
-						.then_with(|| b.get_total_fee_paid_msat().saturating_add(b.get_path_penalty_msat())
-							.cmp(&a.get_total_fee_paid_msat().saturating_add(a.get_path_penalty_msat())))
+						// Reverse ordering for cost, so we drop higher-cost paths first
+						.then_with(|| b.get_cost_msat().cmp(&a.get_cost_msat()))
 				});
 
 				// We should make sure that at least 1 path left.
@@ -1548,8 +1551,8 @@ where L::Target: Logger {
 	}
 
 	// Step (9).
-	// Select the best route by lowest total fee.
-	drawn_routes.sort_unstable_by_key(|paths| paths.iter().map(|path| path.get_total_fee_paid_msat()).sum::<u64>());
+	// Select the best route by lowest total cost.
+	drawn_routes.sort_unstable_by_key(|paths| paths.iter().map(|path| path.get_cost_msat()).sum::<u64>());
 	let mut selected_paths = Vec::<Vec<Result<RouteHop, LightningError>>>::new();
 	for payment_path in drawn_routes.first().unwrap() {
 		let mut path = payment_path.hops.iter().map(|(payment_hop, node_features)| {
