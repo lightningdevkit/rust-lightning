@@ -315,11 +315,12 @@ pub trait Watch<ChannelSigner: Sign> {
 /// [BIP 157]: https://github.com/bitcoin/bips/blob/master/bip-0157.mediawiki
 /// [BIP 158]: https://github.com/bitcoin/bips/blob/master/bip-0158.mediawiki
 pub trait Filter {
-	/// Registers interest in a transaction with `txid` and having an output with `script_pubkey` as
+	/// Registers interest in funding transactions to inform LDK that a channel
+	/// Funding transaction is transaction with `txid` and having an output with `script_pubkey` as
 	/// a spending condition.
 	fn register_tx(&self, txid: &Txid, script_pubkey: &Script);
 
-	/// Registers interest in spends of a transaction output.
+	/// Registers interest in spends of a  force close transaction.
 	///
 	/// Optionally, when `output.block_hash` is set, should return any transaction spending the
 	/// output that is found in the corresponding block along with its index.
