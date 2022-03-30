@@ -1390,7 +1390,7 @@ where L::Target: Logger {
 					// If we weren't capped by hitting a liquidity limit on a channel in the path,
 					// we'll probably end up picking the same path again on the next iteration.
 					// Decrease the available liquidity of a hop in the middle of the path.
-					let victim_scid = payment_path.hops[(payment_path.hops.len() - 1) / 2].0.candidate.short_channel_id();
+					let victim_scid = payment_path.hops[(payment_path.hops.len()) / 2].0.candidate.short_channel_id();
 					log_trace!(logger, "Disabling channel {} for future path building iterations to avoid duplicates.", victim_scid);
 					let victim_liquidity = bookkept_channels_liquidity_available_msat.get_mut(&victim_scid).unwrap();
 					*victim_liquidity = 0;
