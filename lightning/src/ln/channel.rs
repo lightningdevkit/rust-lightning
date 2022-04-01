@@ -4657,12 +4657,11 @@ impl<Signer: Sign> Channel<Signer> {
 	pub fn transactions_confirmed<L: Deref>(&mut self, block_hash: &BlockHash, height: u32,
 		txdata: &TransactionData, genesis_block_hash: BlockHash, node_pk: PublicKey, logger: &L)
 	-> Result<(Option<msgs::FundingLocked>, Option<msgs::AnnouncementSignatures>), ClosureReason> where L::Target: Logger {
-		let non_shutdown_state = self.channel_state & (!MULTI_STATE_FLAGS);
 		if let Some(funding_txo) = self.get_funding_txo() {
 			for &(index_in_block, tx) in txdata.iter() {
-				// If we haven't yet sent a funding_locked, but are in FundingSent (ignoring
-				// whether they've sent a funding_locked or not), check if we should send one.
-				if non_shutdown_state & !(ChannelState::TheirFundingLocked as u32) == ChannelState::FundingSent as u32 {
+				// Check if the transaction is the expected funding transaction, and if it is,
+				// check that it pays the right amount to the right script.
+				if self.funding_tx_confirmation_height == 0 {
 					if tx.txid() == funding_txo.txid {
 						let txo_idx = funding_txo.index as usize;
 						if txo_idx >= tx.output.len() || tx.output[txo_idx].script_pubkey != self.get_funding_redeemscript().to_v0_p2wsh() ||

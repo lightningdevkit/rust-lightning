@@ -9222,7 +9222,11 @@ fn test_duplicate_chan_id() {
 
 	let funding_created = {
 		let mut a_channel_lock = nodes[0].node.channel_state.lock().unwrap();
-		let mut as_chan = a_channel_lock.by_id.get_mut(&open_chan_2_msg.temporary_channel_id).unwrap();
+		// Once we call `get_outbound_funding_created` the channel has a duplicate channel_id as
+		// another channel in the ChannelManager - an invalid state. Thus, we'd panic later when we
+		// try to create another channel. Instead, we drop the channel entirely here (leaving the
+		// channelmanager in a possibly nonsense state instead).
+		let mut as_chan = a_channel_lock.by_id.remove(&open_chan_2_msg.temporary_channel_id).unwrap();
 		let logger = test_utils::TestLogger::new();
 		as_chan.get_outbound_funding_created(tx.clone(), funding_outpoint, &&logger).unwrap()
 	};
@@ -9260,7 +9264,7 @@ fn test_duplicate_chan_id() {
 	let events_4 = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events_4.len(), 0);
 	assert_eq!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 1);
-	assert_eq!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap()[0].txid(), funding_output.txid);
+	assert_eq!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap()[0], tx);
 
 	let (funding_locked, _) = create_chan_between_nodes_with_value_confirm(&nodes[0], &nodes[1], &tx);
 	let (announcement, as_update, bs_update) = create_chan_between_nodes_with_value_b(&nodes[0], &nodes[1], &funding_locked);

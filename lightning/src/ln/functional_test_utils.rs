@@ -21,6 +21,7 @@ use ln::features::{InitFeatures, InvoiceFeatures};
 use ln::msgs;
 use ln::msgs::{ChannelMessageHandler,RoutingMessageHandler};
 use util::enforcing_trait_impls::EnforcingSigner;
+use util::scid_utils;
 use util::test_utils;
 use util::test_utils::{panicking, TestChainMonitor};
 use util::events::{Event, MessageSendEvent, MessageSendEventsProvider, PaymentPurpose};
@@ -48,9 +49,13 @@ pub const CHAN_CONFIRM_DEPTH: u32 = 10;
 
 /// Mine the given transaction in the next block and then mine CHAN_CONFIRM_DEPTH - 1 blocks on
 /// top, giving the given transaction CHAN_CONFIRM_DEPTH confirmations.
-pub fn confirm_transaction<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, tx: &Transaction) {
-	confirm_transaction_at(node, tx, node.best_block_info().1 + 1);
+///
+/// Returns the SCID a channel confirmed in the given transaction will have, assuming the funding
+/// output is the 1st output in the transaction.
+pub fn confirm_transaction<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, tx: &Transaction) -> u64 {
+	let scid = confirm_transaction_at(node, tx, node.best_block_info().1 + 1);
 	connect_blocks(node, CHAN_CONFIRM_DEPTH - 1);
+	scid
 }
 /// Mine a signle block containing the given transaction
 pub fn mine_transaction<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, tx: &Transaction) {
@@ -59,7 +64,10 @@ pub fn mine_transaction<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, tx: &Transac
 }
 /// Mine the given transaction at the given height, mining blocks as required to build to that
 /// height
-pub fn confirm_transaction_at<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, tx: &Transaction, conf_height: u32) {
+///
+/// Returns the SCID a channel confirmed in the given transaction will have, assuming the funding
+/// output is the 1st output in the transaction.
+pub fn confirm_transaction_at<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, tx: &Transaction, conf_height: u32) -> u64 {
 	let first_connect_height = node.best_block_info().1 + 1;
 	assert!(first_connect_height <= conf_height);
 	if conf_height > first_connect_height {
@@ -74,6 +82,7 @@ pub fn confirm_transaction_at<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, tx: &T
 	}
 	block.txdata.push(tx.clone());
 	connect_block(node, &block);
+	scid_utils::scid_from_parts(conf_height as u64, block.txdata.len() as u64 - 1, 0).unwrap()
 }
 
 /// The possible ways we may notify a ChannelManager of a new block

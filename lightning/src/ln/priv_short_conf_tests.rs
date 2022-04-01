@@ -565,6 +565,69 @@ fn test_scid_alias_returned() {
 			.blamed_chan_closed(false).expected_htlc_error_data(0x1000|12, &err_data));
 }
 
+// Receiver must have been initialized with manually_accept_inbound_channels set to true.
+fn open_zero_conf_channel<'a, 'b, 'c, 'd>(initiator: &'a Node<'b, 'c, 'd>, receiver: &'a Node<'b, 'c, 'd>, initiator_config: Option<UserConfig>) -> bitcoin::Transaction {
+	initiator.node.create_channel(receiver.node.get_our_node_id(), 100_000, 10_001, 42, initiator_config).unwrap();
+	let open_channel = get_event_msg!(initiator, MessageSendEvent::SendOpenChannel, receiver.node.get_our_node_id());
+
+	receiver.node.handle_open_channel(&initiator.node.get_our_node_id(), InitFeatures::known(), &open_channel);
+	let events = receiver.node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	match events[0] {
+		Event::OpenChannelRequest { temporary_channel_id, .. } => {
+			receiver.node.accept_inbound_channel_from_trusted_peer_0conf(&temporary_channel_id, &initiator.node.get_our_node_id(), 0).unwrap();
+		},
+		_ => panic!("Unexpected event"),
+	};
+
+	let mut accept_channel = get_event_msg!(receiver, MessageSendEvent::SendAcceptChannel, initiator.node.get_our_node_id());
+	assert_eq!(accept_channel.minimum_depth, 0);
+	initiator.node.handle_accept_channel(&receiver.node.get_our_node_id(), InitFeatures::known(), &accept_channel);
+
+	let (temporary_channel_id, tx, _) = create_funding_transaction(&initiator, &receiver.node.get_our_node_id(), 100_000, 42);
+	initiator.node.funding_transaction_generated(&temporary_channel_id, &receiver.node.get_our_node_id(), tx.clone()).unwrap();
+	let funding_created = get_event_msg!(initiator, MessageSendEvent::SendFundingCreated, receiver.node.get_our_node_id());
+
+	receiver.node.handle_funding_created(&initiator.node.get_our_node_id(), &funding_created);
+	check_added_monitors!(receiver, 1);
+	let bs_signed_locked = receiver.node.get_and_clear_pending_msg_events();
+	assert_eq!(bs_signed_locked.len(), 2);
+	let as_funding_locked;
+	match &bs_signed_locked[0] {
+		MessageSendEvent::SendFundingSigned { node_id, msg } => {
+			assert_eq!(*node_id, initiator.node.get_our_node_id());
+			initiator.node.handle_funding_signed(&receiver.node.get_our_node_id(), &msg);
+			check_added_monitors!(initiator, 1);
+
+			assert_eq!(initiator.tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 1);
+			assert_eq!(initiator.tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0)[0], tx);
+
+			as_funding_locked = get_event_msg!(initiator, MessageSendEvent::SendFundingLocked, receiver.node.get_our_node_id());
+		}
+		_ => panic!("Unexpected event"),
+	}
+	match &bs_signed_locked[1] {
+		MessageSendEvent::SendFundingLocked { node_id, msg } => {
+			assert_eq!(*node_id, initiator.node.get_our_node_id());
+			initiator.node.handle_funding_locked(&receiver.node.get_our_node_id(), &msg);
+		}
+		_ => panic!("Unexpected event"),
+	}
+
+	receiver.node.handle_funding_locked(&initiator.node.get_our_node_id(), &as_funding_locked);
+
+	let as_channel_update = get_event_msg!(initiator, MessageSendEvent::SendChannelUpdate, receiver.node.get_our_node_id());
+	let bs_channel_update = get_event_msg!(receiver, MessageSendEvent::SendChannelUpdate, initiator.node.get_our_node_id());
+
+	initiator.node.handle_channel_update(&receiver.node.get_our_node_id(), &bs_channel_update);
+	receiver.node.handle_channel_update(&initiator.node.get_our_node_id(), &as_channel_update);
+
+	assert_eq!(initiator.node.list_usable_channels().len(), 1);
+	assert_eq!(receiver.node.list_usable_channels().len(), 1);
+
+	tx
+}
+
 #[test]
 fn test_simple_0conf_channel() {
 	// If our peer tells us they will accept our channel with 0 confs, and we funded the channel,
@@ -582,63 +645,7 @@ fn test_simple_0conf_channel() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(chan_config)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
-	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100000, 10001, 42, None).unwrap();
-	let open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
-
-	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), InitFeatures::known(), &open_channel);
-	let events = nodes[1].node.get_and_clear_pending_events();
-	assert_eq!(events.len(), 1);
-	match events[0] {
-		Event::OpenChannelRequest { temporary_channel_id, .. } => {
-			nodes[1].node.accept_inbound_channel_from_trusted_peer_0conf(&temporary_channel_id, &nodes[0].node.get_our_node_id(), 0).unwrap();
-		},
-		_ => panic!("Unexpected event"),
-	};
-
-	let mut accept_channel = get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id());
-	assert_eq!(accept_channel.minimum_depth, 0);
-	nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), InitFeatures::known(), &accept_channel);
-
-	let (temporary_channel_id, tx, _) = create_funding_transaction(&nodes[0], &nodes[1].node.get_our_node_id(), 100000, 42);
-	nodes[0].node.funding_transaction_generated(&temporary_channel_id, &nodes[1].node.get_our_node_id(), tx.clone()).unwrap();
-	let funding_created = get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, nodes[1].node.get_our_node_id());
-
-	nodes[1].node.handle_funding_created(&nodes[0].node.get_our_node_id(), &funding_created);
-	check_added_monitors!(nodes[1], 1);
-	let bs_signed_locked = nodes[1].node.get_and_clear_pending_msg_events();
-	assert_eq!(bs_signed_locked.len(), 2);
-	let as_funding_locked;
-	match &bs_signed_locked[0] {
-		MessageSendEvent::SendFundingSigned { node_id, msg } => {
-			assert_eq!(*node_id, nodes[0].node.get_our_node_id());
-			nodes[0].node.handle_funding_signed(&nodes[1].node.get_our_node_id(), &msg);
-			check_added_monitors!(nodes[0], 1);
-
-			assert_eq!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 1);
-			assert_eq!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0)[0], tx);
-
-			as_funding_locked = get_event_msg!(nodes[0], MessageSendEvent::SendFundingLocked, nodes[1].node.get_our_node_id());
-		}
-		_ => panic!("Unexpected event"),
-	}
-	match &bs_signed_locked[1] {
-		MessageSendEvent::SendFundingLocked { node_id, msg } => {
-			assert_eq!(*node_id, nodes[0].node.get_our_node_id());
-			nodes[0].node.handle_funding_locked(&nodes[1].node.get_our_node_id(), &msg);
-		}
-		_ => panic!("Unexpected event"),
-	}
-
-	nodes[1].node.handle_funding_locked(&nodes[0].node.get_our_node_id(), &as_funding_locked);
-
-	let as_channel_update = get_event_msg!(nodes[0], MessageSendEvent::SendChannelUpdate, nodes[1].node.get_our_node_id());
-	let bs_channel_update = get_event_msg!(nodes[1], MessageSendEvent::SendChannelUpdate, nodes[0].node.get_our_node_id());
-
-	nodes[0].node.handle_channel_update(&nodes[1].node.get_our_node_id(), &bs_channel_update);
-	nodes[1].node.handle_channel_update(&nodes[0].node.get_our_node_id(), &as_channel_update);
-
-	assert_eq!(nodes[0].node.list_usable_channels().len(), 1);
-	assert_eq!(nodes[1].node.list_usable_channels().len(), 1);
+	open_zero_conf_channel(&nodes[0], &nodes[1], None);
 
 	send_payment(&nodes[0], &[&nodes[1]], 100_000);
 }
@@ -789,4 +796,80 @@ fn test_0conf_channel_with_async_monitor() {
 	confirm_transaction(&nodes[1], &tx);
 
 	send_payment(&nodes[0], &[&nodes[1]], 100_000);
+}
+
+#[test]
+fn test_0conf_close_no_early_chan_update() {
+	// Tests that even with a public channel 0conf channel, we don't generate a channel_update on
+	// closing.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let mut chan_config = test_default_channel_config();
+	chan_config.manually_accept_inbound_channels = true;
+
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(chan_config)]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	// This is the default but we force it on anyway
+	chan_config.channel_options.announced_channel = true;
+	open_zero_conf_channel(&nodes[0], &nodes[1], Some(chan_config));
+
+	// We can use the channel immediately, but won't generate a channel_update until we get confs
+	send_payment(&nodes[0], &[&nodes[1]], 100_000);
+
+	nodes[0].node.force_close_all_channels();
+	check_added_monitors!(nodes[0], 1);
+	check_closed_event!(&nodes[0], 1, ClosureReason::HolderForceClosed);
+	let _ = get_err_msg!(nodes[0], nodes[1].node.get_our_node_id());
+}
+
+#[test]
+fn test_public_0conf_channel() {
+	// Tests that we will announce a public channel (after confirmation) even if its 0conf.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let mut chan_config = test_default_channel_config();
+	chan_config.manually_accept_inbound_channels = true;
+
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(chan_config)]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	// This is the default but we force it on anyway
+	chan_config.channel_options.announced_channel = true;
+	let tx = open_zero_conf_channel(&nodes[0], &nodes[1], Some(chan_config));
+
+	// We can use the channel immediately, but we can't announce it until we get 6+ confirmations
+	send_payment(&nodes[0], &[&nodes[1]], 100_000);
+
+	let scid = confirm_transaction(&nodes[0], &tx);
+	let as_announcement_sigs = get_event_msg!(nodes[0], MessageSendEvent::SendAnnouncementSignatures, nodes[1].node.get_our_node_id());
+	assert_eq!(confirm_transaction(&nodes[1], &tx), scid);
+	let bs_announcement_sigs = get_event_msg!(nodes[1], MessageSendEvent::SendAnnouncementSignatures, nodes[0].node.get_our_node_id());
+
+	nodes[1].node.handle_announcement_signatures(&nodes[0].node.get_our_node_id(), &as_announcement_sigs);
+	nodes[0].node.handle_announcement_signatures(&nodes[1].node.get_our_node_id(), &bs_announcement_sigs);
+
+	let bs_announcement = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(bs_announcement.len(), 1);
+	let announcement;
+	let bs_update;
+	match bs_announcement[0] {
+		MessageSendEvent::BroadcastChannelAnnouncement { ref msg, ref update_msg } => {
+			announcement = msg.clone();
+			bs_update = update_msg.clone();
+		},
+		_ => panic!("Unexpected event"),
+	};
+
+	let as_announcement = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(as_announcement.len(), 1);
+	match as_announcement[0] {
+		MessageSendEvent::BroadcastChannelAnnouncement { ref msg, ref update_msg } => {
+			assert!(announcement == *msg);
+			assert_eq!(update_msg.contents.short_channel_id, scid);
+			assert_eq!(update_msg.contents.short_channel_id, announcement.contents.short_channel_id);
+			assert_eq!(update_msg.contents.short_channel_id, bs_update.contents.short_channel_id);
+		},
+		_ => panic!("Unexpected event"),
+	};
 }
