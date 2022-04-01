@@ -511,6 +511,10 @@ impl<'a> PaymentPath<'a> {
 		return result;
 	}
 
+	fn get_cost_msat(&self) -> u64 {
+		self.get_total_fee_paid_msat().saturating_add(self.get_path_penalty_msat())
+	}
+
 	// If the amount transferred by the path is updated, the fees should be adjusted. Any other way
 	// to change fees may result in an inconsistency.
 	//
@@ -912,14 +916,20 @@ where L::Target: Logger {
 					let over_path_minimum_msat = amount_to_transfer_over_msat >= $candidate.htlc_minimum_msat() &&
 						amount_to_transfer_over_msat >= $next_hops_path_htlc_minimum_msat;
 
+					#[allow(unused_comparisons)] // $next_hops_path_htlc_minimum_msat is 0 in some calls so rustc complains
+					let may_overpay_to_meet_path_minimum_msat =
+						((amount_to_transfer_over_msat < $candidate.htlc_minimum_msat() &&
+						  recommended_value_msat > $candidate.htlc_minimum_msat()) ||
+						 (amount_to_transfer_over_msat < $next_hops_path_htlc_minimum_msat &&
+						  recommended_value_msat > $next_hops_path_htlc_minimum_msat));
+
 					// If HTLC minimum is larger than the amount we're going to transfer, we shouldn't
-					// bother considering this channel.
-					// Since we're choosing amount_to_transfer_over_msat as maximum possible, it can
-					// be only reduced later (not increased), so this channel should just be skipped
-					// as not sufficient.
-					if !over_path_minimum_msat && doesnt_exceed_cltv_delta_limit {
+					// bother considering this channel. If retrying with recommended_value_msat may
+					// allow us to hit the HTLC minimum limit, set htlc_minimum_limit so that we go
+					// around again with a higher amount.
+					if contributes_sufficient_value && doesnt_exceed_cltv_delta_limit && may_overpay_to_meet_path_minimum_msat {
 						hit_minimum_limit = true;
-					} else if contributes_sufficient_value && doesnt_exceed_cltv_delta_limit {
+					} else if contributes_sufficient_value && doesnt_exceed_cltv_delta_limit && over_path_minimum_msat {
 						// Note that low contribution here (limited by available_liquidity_msat)
 						// might violate htlc_minimum_msat on the hops which are next along the
 						// payment path (upstream to the payee). To avoid that, we recompute
@@ -1390,7 +1400,7 @@ where L::Target: Logger {
 					// If we weren't capped by hitting a liquidity limit on a channel in the path,
 					// we'll probably end up picking the same path again on the next iteration.
 					// Decrease the available liquidity of a hop in the middle of the path.
-					let victim_scid = payment_path.hops[(payment_path.hops.len() - 1) / 2].0.candidate.short_channel_id();
+					let victim_scid = payment_path.hops[(payment_path.hops.len()) / 2].0.candidate.short_channel_id();
 					log_trace!(logger, "Disabling channel {} for future path building iterations to avoid duplicates.", victim_scid);
 					let victim_liquidity = bookkept_channels_liquidity_available_msat.get_mut(&victim_scid).unwrap();
 					*victim_liquidity = 0;
@@ -1502,9 +1512,8 @@ where L::Target: Logger {
 				// prefer lower cost paths.
 				cur_route.sort_unstable_by(|a, b| {
 					a.get_value_msat().cmp(&b.get_value_msat())
-						// Reverse ordering for fees, so we drop higher-fee paths first
-						.then_with(|| b.get_total_fee_paid_msat().saturating_add(b.get_path_penalty_msat())
-							.cmp(&a.get_total_fee_paid_msat().saturating_add(a.get_path_penalty_msat())))
+						// Reverse ordering for cost, so we drop higher-cost paths first
+						.then_with(|| b.get_cost_msat().cmp(&a.get_cost_msat()))
 				});
 
 				// We should make sure that at least 1 path left.
@@ -1548,8 +1557,8 @@ where L::Target: Logger {
 	}
 
 	// Step (9).
-	// Select the best route by lowest total fee.
-	drawn_routes.sort_unstable_by_key(|paths| paths.iter().map(|path| path.get_total_fee_paid_msat()).sum::<u64>());
+	// Select the best route by lowest total cost.
+	drawn_routes.sort_unstable_by_key(|paths| paths.iter().map(|path| path.get_cost_msat()).sum::<u64>());
 	let mut selected_paths = Vec::<Vec<Result<RouteHop, LightningError>>>::new();
 	for payment_path in drawn_routes.first().unwrap() {
 		let mut path = payment_path.hops.iter().map(|(payment_hop, node_features)| {

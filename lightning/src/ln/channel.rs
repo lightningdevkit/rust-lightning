@@ -6289,44 +6289,39 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<(&'a K, u32)> for Channel<Signer>
 
 #[cfg(test)]
 mod tests {
-	use bitcoin::util::bip143;
-	use bitcoin::consensus::encode::serialize;
 	use bitcoin::blockdata::script::{Script, Builder};
-	use bitcoin::blockdata::transaction::{Transaction, TxOut, SigHashType};
+	use bitcoin::blockdata::transaction::{Transaction, TxOut};
 	use bitcoin::blockdata::constants::genesis_block;
 	use bitcoin::blockdata::opcodes;
 	use bitcoin::network::constants::Network;
-	use bitcoin::hashes::hex::FromHex;
 	use hex;
-	use ln::{PaymentPreimage, PaymentHash};
+	use ln::PaymentHash;
 	use ln::channelmanager::{HTLCSource, PaymentId};
-	use ln::channel::{Channel,InboundHTLCOutput,OutboundHTLCOutput,InboundHTLCState,OutboundHTLCState,HTLCOutputInCommitment,HTLCCandidate,HTLCInitiator,TxCreationKeys};
+	use ln::channel::{Channel, InboundHTLCOutput, OutboundHTLCOutput, InboundHTLCState, OutboundHTLCState, HTLCCandidate, HTLCInitiator};
 	use ln::channel::MAX_FUNDING_SATOSHIS;
 	use ln::features::InitFeatures;
 	use ln::msgs::{ChannelUpdate, DataLossProtect, DecodeError, OptionalField, UnsignedChannelUpdate};
 	use ln::script::ShutdownScript;
 	use ln::chan_utils;
-	use ln::chan_utils::{ChannelPublicKeys, HolderCommitmentTransaction, CounterpartyChannelTransactionParameters, htlc_success_tx_weight, htlc_timeout_tx_weight};
+	use ln::chan_utils::{htlc_success_tx_weight, htlc_timeout_tx_weight};
 	use chain::BestBlock;
 	use chain::chaininterface::{FeeEstimator,ConfirmationTarget};
-	use chain::keysinterface::{InMemorySigner, Recipient, KeyMaterial, KeysInterface, BaseSign};
+	use chain::keysinterface::{InMemorySigner, Recipient, KeyMaterial, KeysInterface};
 	use chain::transaction::OutPoint;
 	use util::config::UserConfig;
 	use util::enforcing_trait_impls::EnforcingSigner;
 	use util::errors::APIError;
 	use util::test_utils;
 	use util::test_utils::OnGetShutdownScriptpubkey;
-	use util::logger::Logger;
-	use bitcoin::secp256k1::{Secp256k1, Message, Signature, All};
+	use bitcoin::secp256k1::{Secp256k1, Signature};
 	use bitcoin::secp256k1::ffi::Signature as FFISignature;
 	use bitcoin::secp256k1::key::{SecretKey,PublicKey};
 	use bitcoin::secp256k1::recovery::RecoverableSignature;
 	use bitcoin::hashes::sha256::Hash as Sha256;
 	use bitcoin::hashes::Hash;
-	use bitcoin::hash_types::{Txid, WPubkeyHash};
+	use bitcoin::hash_types::WPubkeyHash;
 	use core::num::NonZeroU8;
 	use bitcoin::bech32::u5;
-	use sync::Arc;
 	use prelude::*;
 
 	struct TestFeeEstimator {
@@ -6380,7 +6375,8 @@ mod tests {
 		fn sign_invoice(&self, _hrp_bytes: &[u8], _invoice_data: &[u5], _recipient: Recipient) -> Result<RecoverableSignature, ()> { panic!(); }
 	}
 
-	fn public_from_secret_hex(secp_ctx: &Secp256k1<All>, hex: &str) -> PublicKey {
+	#[cfg(not(feature = "grind_signatures"))]
+	fn public_from_secret_hex(secp_ctx: &Secp256k1<bitcoin::secp256k1::All>, hex: &str) -> PublicKey {
 		PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&hex::decode(hex).unwrap()[..]).unwrap())
 	}
 
@@ -6669,6 +6665,19 @@ mod tests {
 	#[cfg(not(feature = "grind_signatures"))]
 	#[test]
 	fn outbound_commitment_test() {
+		use bitcoin::util::bip143;
+		use bitcoin::consensus::encode::serialize;
+		use bitcoin::blockdata::transaction::SigHashType;
+		use bitcoin::hashes::hex::FromHex;
+		use bitcoin::hash_types::Txid;
+		use bitcoin::secp256k1::Message;
+		use chain::keysinterface::BaseSign;
+		use ln::PaymentPreimage;
+		use ln::channel::{HTLCOutputInCommitment ,TxCreationKeys};
+		use ln::chan_utils::{ChannelPublicKeys, HolderCommitmentTransaction, CounterpartyChannelTransactionParameters};
+		use util::logger::Logger;
+		use sync::Arc;
+
 		// Test vectors from BOLT 3 Appendices C and F (anchors):
 		let feeest = TestFeeEstimator{fee_est: 15000};
 		let logger : Arc<Logger> = Arc::new(test_utils::TestLogger::new());
