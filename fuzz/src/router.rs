@@ -222,6 +222,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 								channel_type: None,
 								short_channel_id: Some(scid),
 								inbound_scid_alias: None,
+								outbound_scid_alias: None,
 								channel_value_satoshis: capacity,
 								user_channel_id: 0, inbound_capacity_msat: 0,
 								unspendable_punishment_reserve: None,

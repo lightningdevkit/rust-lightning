@@ -639,4 +639,6 @@ fn test_simple_0conf_channel() {
 
 	assert_eq!(nodes[0].node.list_usable_channels().len(), 1);
 	assert_eq!(nodes[1].node.list_usable_channels().len(), 1);
+
+	send_payment(&nodes[0], &[&nodes[1]], 100_000);
 }
