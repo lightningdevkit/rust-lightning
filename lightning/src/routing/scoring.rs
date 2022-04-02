@@ -61,6 +61,7 @@ use util::ser::{Readable, ReadableArgs, Writeable, Writer};
 use util::logger::Logger;
 
 use prelude::*;
+use core::fmt;
 use core::cell::{RefCell, RefMut};
 use core::ops::{Deref, DerefMut};
 use core::time::Duration;
@@ -790,22 +791,29 @@ impl<L: Deref<Target = u64>, T: Time, U: Deref<Target = T>> DirectedChannelLiqui
 
 impl<L: DerefMut<Target = u64>, T: Time, U: DerefMut<Target = T>> DirectedChannelLiquidity<L, T, U> {
 	/// Adjusts the channel liquidity balance bounds when failing to route `amount_msat`.
-	fn failed_at_channel(&mut self, amount_msat: u64) {
+	fn failed_at_channel<Log: Deref>(&mut self, amount_msat: u64, chan_descr: fmt::Arguments, logger: &Log) where Log::Target: Logger {
 		if amount_msat < self.max_liquidity_msat() {
+			log_debug!(logger, "Setting max liquidity of {} to {}", chan_descr, amount_msat);
 			self.set_max_liquidity_msat(amount_msat);
+		} else {
+			log_trace!(logger, "Max liquidity of {} already more than {}", chan_descr, amount_msat);
 		}
 	}
 
 	/// Adjusts the channel liquidity balance bounds when failing to route `amount_msat` downstream.
-	fn failed_downstream(&mut self, amount_msat: u64) {
+	fn failed_downstream<Log: Deref>(&mut self, amount_msat: u64, chan_descr: fmt::Arguments, logger: &Log) where Log::Target: Logger {
 		if amount_msat > self.min_liquidity_msat() {
+			log_debug!(logger, "Setting min liquidity of {} to {}", chan_descr, amount_msat);
 			self.set_min_liquidity_msat(amount_msat);
+		} else {
+			log_trace!(logger, "Min liquidity of {} already less than {}", chan_descr, amount_msat);
 		}
 	}
 
 	/// Adjusts the channel liquidity balance bounds when successfully routing `amount_msat`.
-	fn successful(&mut self, amount_msat: u64) {
+	fn successful<Log: Deref>(&mut self, amount_msat: u64, chan_descr: fmt::Arguments, logger: &Log) where Log::Target: Logger {
 		let max_liquidity_msat = self.max_liquidity_msat().checked_sub(amount_msat).unwrap_or(0);
+		log_debug!(logger, "Subtracting {} from max liquidity of {} (setting it to {})", amount_msat, chan_descr, max_liquidity_msat);
 		self.set_max_liquidity_msat(max_liquidity_msat);
 	}
 
@@ -848,6 +856,7 @@ impl<G: Deref<Target = NetworkGraph>, L: Deref, T: Time> Score for Probabilistic
 	fn payment_path_failed(&mut self, path: &[&RouteHop], short_channel_id: u64) {
 		let amount_msat = path.split_last().map(|(hop, _)| hop.fee_msat).unwrap_or(0);
 		let liquidity_offset_half_life = self.params.liquidity_offset_half_life;
+		log_trace!(self.logger, "Scoring path through to SCID {} as having failed at {} msat", short_channel_id, amount_msat);
 		let network_graph = self.network_graph.read_only();
 		for hop in path {
 			let target = NodeId::from_pubkey(&hop.pubkey);
@@ -863,7 +872,7 @@ impl<G: Deref<Target = NetworkGraph>, L: Deref, T: Time> Score for Probabilistic
 						.entry(hop.short_channel_id)
 						.or_insert_with(ChannelLiquidity::new)
 						.as_directed_mut(source, &target, capacity_msat, liquidity_offset_half_life)
-						.failed_at_channel(amount_msat);
+						.failed_at_channel(amount_msat, format_args!("SCID {}, towards {:?}", hop.short_channel_id, target), &self.logger);
 					break;
 				}
 
@@ -871,7 +880,10 @@ impl<G: Deref<Target = NetworkGraph>, L: Deref, T: Time> Score for Probabilistic
 					.entry(hop.short_channel_id)
 					.or_insert_with(ChannelLiquidity::new)
 					.as_directed_mut(source, &target, capacity_msat, liquidity_offset_half_life)
-					.failed_downstream(amount_msat);
+					.failed_downstream(amount_msat, format_args!("SCID {}, towards {:?}", hop.short_channel_id, target), &self.logger);
+			} else {
+				log_debug!(self.logger, "Not able to penalize channel with SCID {} as we do not have graph info for it (likely a route-hint last-hop).",
+					hop.short_channel_id);
 			}
 		}
 	}
@@ -879,6 +891,8 @@ impl<G: Deref<Target = NetworkGraph>, L: Deref, T: Time> Score for Probabilistic
 	fn payment_path_successful(&mut self, path: &[&RouteHop]) {
 		let amount_msat = path.split_last().map(|(hop, _)| hop.fee_msat).unwrap_or(0);
 		let liquidity_offset_half_life = self.params.liquidity_offset_half_life;
+		log_trace!(self.logger, "Scoring path through SCID {} as having succeeded at {} msat.",
+			path.split_last().map(|(hop, _)| hop.short_channel_id).unwrap_or(0), amount_msat);
 		let network_graph = self.network_graph.read_only();
 		for hop in path {
 			let target = NodeId::from_pubkey(&hop.pubkey);
@@ -893,7 +907,10 @@ impl<G: Deref<Target = NetworkGraph>, L: Deref, T: Time> Score for Probabilistic
 					.entry(hop.short_channel_id)
 					.or_insert_with(ChannelLiquidity::new)
 					.as_directed_mut(source, &target, capacity_msat, liquidity_offset_half_life)
-					.successful(amount_msat);
+					.successful(amount_msat, format_args!("SCID {}, towards {:?}", hop.short_channel_id, target), &self.logger);
+			} else {
+				log_debug!(self.logger, "Not able to learn for channel with SCID {} as we do not have graph info for it (likely a route-hint last-hop).",
+					hop.short_channel_id);
 			}
 		}
 	}
