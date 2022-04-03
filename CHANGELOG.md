@@ -1,3 +1,113 @@
+# 0.0.106 - 2022-04-03
+
+## API Updates
+ * Minimum supported rust version (MSRV) is now 1.41.1 (#1310).
+ * Lightning feature `option_scid_alias` is now supported and may be negotiated
+   when opening a channel with a peer. It can be configured via
+   `ChannelHandshakeConfig::negotiate_scid_privacy` and is off by default but
+   will be on by default in the future (#1351).
+ * `OpenChannelRequest` now has a `channel_type` field indicating the features
+   the channel will operate with and should be used to filter channels with
+   undesirable features (#1351). See the Serialization Compatibility section.
+ * `ChannelManager` supports sending and receiving short channel id aliases in
+   the `funding_locked` message. These are used when forwarding payments and
+   constructing invoice route hints for improved privacy. `ChannelDetails` has a
+   `inbound_scid_alias` field and a `get_inbound_payment_scid` method to support
+   the latter (#1311).
+ * `DefaultRouter` and `find_route` take an additional random seed to improve
+   privacy by adding a random CLTV expiry offset to each path's final hop. This
+   helps obscure the intended recipient from adversarial intermediate hops
+   (#1286). The seed is  also used to randomize candidate paths during route
+   selection (#1359).
+ * The `lightning-block-sync` crate's `init::synchronize_listeners` method
+   interface has been relaxed to support multithreaded environments (#1349).
+ * `ChannelManager::create_inbound_payment_for_hash`'s documentation has been
+   corrected to remove the one-year restriction on `invoice_expiry_delta_secs`,
+   which is only applicable to the deprecated `create_inbound_payment_legacy`
+   and `create_inbound_payment_for_hash_legacy` methods (#1341).
+ * `Features` mutator methods now take `self` by reference instead of by value
+   (#1331).
+ * The CLTV of the last hop in a path is now included when comparing against
+   `RouteParameters::max_total_cltv_expiry_delta` (#1358).
+ * Invoice creation functions in `lightning-invoice` crate's `utils` module
+   include versions that accept a description hash instead of only a description
+   (#1361).
+ * `RoutingMessageHandler::sync_routing_table` has been renamed `peer_connected`
+   (#1368).
+ * `MessageSendEvent::SendGossipTimestampFilter` has been added to indicate that
+   a `gossip_timestamp_filter` should be sent (#1368).
+ * `PeerManager` takes an optional `NetAddress` in `new_outbound_connection` and
+   `new_inbound_connection`, which is used to report back the remote address to
+   the connecting peer in the `init` message (#1326).
+ * `ChannelManager::accept_inbound_channel` now takes a `user_channel_id`, which
+   is used in a similar manner as in outbound channels. (#1381).
+ * `BackgroundProcessor` now persists `NetworkGraph` on a timer and upon
+   shutdown as part of a new `Persister` trait, which also includes
+   `ChannelManager` persistence (#1376).
+ * `ProbabilisticScoringParameters` now has a `base_penalty_msat` option, which
+   default to 500 msats. It is applied at each hop to help avoid longer paths
+   (#1375).
+ * `ProbabilisticScoringParameters::liquidity_penalty_multiplier_msat`'s default
+   value is now 40,000 msats instead of 10,000 msats (#1375).
+ * The `lightning` crate has a `grind_signatures` feature used to produce
+   signatures with low r-values for more predictable transaction weight. This
+   feature is on by default (#1388).
+ * `ProbabilisticScoringParameters` now has a `amount_penalty_multiplier_msat`
+   option, which is used to further penalize large amounts (#1399).
+ * `PhantomRouteHints`, `FixedPenaltyScorer`, and `ScoringParameters` now
+   implement `Clone` (#1346).
+
+## Bug Fixes
+ * Fixed a compilation error in `ProbabilisticScorer` under `--feature=no-std`
+   (#1347).
+ * Invoice creation functions in `lightning-invoice` crate's `utils` module
+   filter invoice hints in order to limit the invoice size (#1325).
+ * Fixed a bug where a `funding_locked` message was delayed by a block if the
+   funding transaction was confirmed while offline, depending on the ordering
+   of `Confirm::transactions_confirmed` calls when brought back online (#1363).
+ * Fixed a bug in `NetGraphMsgHandler` where it didn't continue to receive
+   gossip messages from peers after initial connection (#1368, #1382).
+ * `ChannelManager::timer_tick_occurred` will now timeout a received multi-path
+   payment (MPP) after three ticks if not received in full instead of waiting
+   until near the HTLC timeout block(#1353).
+ * Fixed an issue with `find_route` causing it to be overly aggressive in using
+   MPP over channels to the same first hop (#1370).
+ * Reduced time spent processing `channel_update` messages by checking
+   signatures after checking if no newer messages have already been processed
+   (#1380).
+ * Fixed a few issues in `find_route` which caused preferring paths with a
+   higher cost (#1398).
+ * Fixed an issue in `ProbabilisticScorer` where a channel with not enough
+   liquidity could still be used when retrying a failed payment if it was on a
+   path with an overall lower cost (#1399).
+
+## Serialization Compatibility
+ * Channels open with `option_scid_alias` negotiated will be incompatible with
+   prior releases (#1351). This may occur in the following cases:
+   * Outbound channels when `ChannelHandshakeConfig::negotiate_scid_privacy` is
+     enabled.
+   * Inbound channels when automatically accepted from an `OpenChannel` message
+     with a `channel_type` that has `ChannelTypeFeatures::supports_scid_privacy`
+     return true. See `UserConfig::accept_inbound_channels`.
+   * Inbound channels when manually accepted from an `OpenChannelRequest` with a
+     `channel_type` that has `ChannelTypeFeatures::supports_scid_privacy` return
+     true. See `UserConfig::manually_accept_inbound_channels`.
+
+In total, this release features 43 files changed, 4052 insertions, 1274
+deletions in 75 commits from 11 authors, in alphabetical order:
+ * Devrandom
+ * Duncan Dean
+ * Elias Rohrer
+ * Jeffrey Czyz
+ * Jurvis Tan
+ * Luiz Parreira
+ * Matt Corallo
+ * Omar Shamardy
+ * Viktor Tigerström
+ * dependabot[bot]
+ * psycho-pirate
+
+
 # 0.0.105 - 2022-02-28
 
 ## API Updates
