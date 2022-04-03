@@ -858,11 +858,15 @@ impl<G: Deref<Target = NetworkGraph>, L: Deref, T: Time> Score for Probabilistic
 		let liquidity_offset_half_life = self.params.liquidity_offset_half_life;
 		log_trace!(self.logger, "Scoring path through to SCID {} as having failed at {} msat", short_channel_id, amount_msat);
 		let network_graph = self.network_graph.read_only();
-		for hop in path {
+		for (hop_idx, hop) in path.iter().enumerate() {
 			let target = NodeId::from_pubkey(&hop.pubkey);
 			let channel_directed_from_source = network_graph.channels()
 				.get(&hop.short_channel_id)
 				.and_then(|channel| channel.as_directed_to(&target));
+
+			if hop.short_channel_id == short_channel_id && hop_idx == 0 {
+				log_warn!(self.logger, "Payment failed at the first hop - we do not attempt to learn channel info in such cases as we can directly observe local state.\n\tBecause we know the local state, we should generally not see failures here - this may be an indication that your channel peer on channel {} is broken and you may wish to close the channel.", hop.short_channel_id);
+			}
 
 			// Only score announced channels.
 			if let Some((channel, source)) = channel_directed_from_source {
