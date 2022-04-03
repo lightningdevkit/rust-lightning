@@ -701,6 +701,10 @@ impl<T: Time> ChannelLiquidity<T> {
 /// probabilities.
 const NEGATIVE_LOG10_UPPER_BOUND: u64 = 2;
 
+/// The rough cutoff at which our precision falls off and we should stop bothering to try to log a
+/// ratio, as X in 1/X.
+const PRECISION_LOWER_BOUND_DENOMINATOR: u64 = approx::LOWER_BITS_BOUND;
+
 /// The divisor used when computing the amount penalty.
 const AMOUNT_PENALTY_DIVISOR: u64 = 1 << 20;
 
@@ -727,9 +731,16 @@ impl<L: Deref<Target = u64>, T: Time, U: Deref<Target = T>> DirectedChannelLiqui
 		} else {
 			let numerator = (max_liquidity_msat - amount_msat).saturating_add(1);
 			let denominator = (max_liquidity_msat - min_liquidity_msat).saturating_add(1);
-			let negative_log10_times_2048 =
-				approx::negative_log10_times_2048(numerator, denominator);
-			self.combined_penalty_msat(amount_msat, negative_log10_times_2048, params)
+			if amount_msat - min_liquidity_msat < denominator / PRECISION_LOWER_BOUND_DENOMINATOR {
+				// If the failure probability is < 1.5625% (as 1 - numerator/denominator < 1/64),
+				// don't bother trying to use the log approximation as it gets too noisy to be
+				// particularly helpful, instead just round down to 0 and return the base penalty.
+				params.base_penalty_msat
+			} else {
+				let negative_log10_times_2048 =
+					approx::negative_log10_times_2048(numerator, denominator);
+				self.combined_penalty_msat(amount_msat, negative_log10_times_2048, params)
+			}
 		}
 	}
 
@@ -889,7 +900,7 @@ mod approx {
 	const BITS: u32 = 64;
 	const HIGHEST_BIT: u32 = BITS - 1;
 	const LOWER_BITS: u32 = 6;
-	const LOWER_BITS_BOUND: u64 = 1 << LOWER_BITS;
+	pub(super) const LOWER_BITS_BOUND: u64 = 1 << LOWER_BITS;
 	const LOWER_BITMASK: u64 = (1 << LOWER_BITS) - 1;
 
 	/// Look-up table for `log10(x) * 2048` where row `i` is used for each `x` having `i` as the
@@ -2007,8 +2018,8 @@ mod tests {
 		let source = source_node_id();
 		let target = target_node_id();
 
-		assert_eq!(scorer.channel_penalty_msat(42, 1_024, 1_024_000, &source, &target), 3);
-		assert_eq!(scorer.channel_penalty_msat(42, 10_240, 1_024_000, &source, &target), 6);
+		assert_eq!(scorer.channel_penalty_msat(42, 1_024, 1_024_000, &source, &target), 0);
+		assert_eq!(scorer.channel_penalty_msat(42, 10_240, 1_024_000, &source, &target), 0);
 		assert_eq!(scorer.channel_penalty_msat(42, 102_400, 1_024_000, &source, &target), 47);
 		assert_eq!(scorer.channel_penalty_msat(42, 1_024_000, 1_024_000, &source, &target), 2_000);
 
@@ -2329,11 +2340,11 @@ mod tests {
 		assert_eq!(scorer.channel_penalty_msat(42, 100_000_000, 3_950_000_000, &source, &target), 1223);
 		assert_eq!(scorer.channel_penalty_msat(42, 100_000_000, 4_950_000_000, &source, &target), 877);
 		assert_eq!(scorer.channel_penalty_msat(42, 100_000_000, 5_950_000_000, &source, &target), 845);
-		assert_eq!(scorer.channel_penalty_msat(42, 100_000_000, 6_950_000_000, &source, &target), 782);
-		assert_eq!(scorer.channel_penalty_msat(42, 100_000_000, 7_450_000_000, &source, &target), 1002);
-		assert_eq!(scorer.channel_penalty_msat(42, 100_000_000, 7_950_000_000, &source, &target), 970);
-		assert_eq!(scorer.channel_penalty_msat(42, 100_000_000, 8_950_000_000, &source, &target), 907);
-		assert_eq!(scorer.channel_penalty_msat(42, 100_000_000, 9_950_000_000, &source, &target), 877);
+		assert_eq!(scorer.channel_penalty_msat(42, 100_000_000, 6_950_000_000, &source, &target), 500);
+		assert_eq!(scorer.channel_penalty_msat(42, 100_000_000, 7_450_000_000, &source, &target), 500);
+		assert_eq!(scorer.channel_penalty_msat(42, 100_000_000, 7_950_000_000, &source, &target), 500);
+		assert_eq!(scorer.channel_penalty_msat(42, 100_000_000, 8_950_000_000, &source, &target), 500);
+		assert_eq!(scorer.channel_penalty_msat(42, 100_000_000, 9_950_000_000, &source, &target), 500);
 	}
 
 	#[test]
