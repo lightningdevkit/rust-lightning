@@ -2120,6 +2120,29 @@ mod tests {
 	}
 
 	#[test]
+	fn scores_realistic_payments() {
+		// Shows the scores of "realistic" sends of 100k sats over channels of 1-10m sats (with a
+		// 50k sat reserve).
+		let network_graph = network_graph();
+		let params = ProbabilisticScoringParameters::default();
+		let scorer = ProbabilisticScorer::new(params, &network_graph);
+		let source = source_node_id();
+		let target = target_node_id();
+
+		assert_eq!(scorer.channel_penalty_msat(42, 100_000_000, 950_000_000, &source, &target), 3645);
+		assert_eq!(scorer.channel_penalty_msat(42, 100_000_000, 1_950_000_000, &source, &target), 2512);
+		assert_eq!(scorer.channel_penalty_msat(42, 100_000_000, 2_950_000_000, &source, &target), 500);
+		assert_eq!(scorer.channel_penalty_msat(42, 100_000_000, 3_950_000_000, &source, &target), 1442);
+		assert_eq!(scorer.channel_penalty_msat(42, 100_000_000, 4_950_000_000, &source, &target), 500);
+		assert_eq!(scorer.channel_penalty_msat(42, 100_000_000, 5_950_000_000, &source, &target), 1820);
+		assert_eq!(scorer.channel_penalty_msat(42, 100_000_000, 6_950_000_000, &source, &target), 500);
+		assert_eq!(scorer.channel_penalty_msat(42, 100_000_000, 7_450_000_000, &source, &target), 500);
+		assert_eq!(scorer.channel_penalty_msat(42, 100_000_000, 7_950_000_000, &source, &target), 500);
+		assert_eq!(scorer.channel_penalty_msat(42, 100_000_000, 8_950_000_000, &source, &target), 500);
+		assert_eq!(scorer.channel_penalty_msat(42, 100_000_000, 9_950_000_000, &source, &target), 500);
+	}
+
+	#[test]
 	fn adds_base_penalty_to_liquidity_penalty() {
 		let network_graph = network_graph();
 		let source = source_node_id();
