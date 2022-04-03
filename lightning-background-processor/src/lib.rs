@@ -18,6 +18,7 @@ use lightning::ln::channelmanager::ChannelManager;
 use lightning::ln::msgs::{ChannelMessageHandler, RoutingMessageHandler};
 use lightning::ln::peer_handler::{CustomMessageHandler, PeerManager, SocketDescriptor};
 use lightning::routing::network_graph::{NetworkGraph, NetGraphMsgHandler};
+use lightning::routing::scoring::WriteableScore;
 use lightning::util::events::{Event, EventHandler, EventsProvider};
 use lightning::util::logger::Logger;
 use std::sync::Arc;
@@ -81,13 +82,14 @@ const FIRST_NETWORK_PRUNE_TIMER: u64 = 60;
 const FIRST_NETWORK_PRUNE_TIMER: u64 = 1;
 
 /// Trait that handles persisting a [`ChannelManager`] and [`NetworkGraph`] to disk.
-pub trait Persister<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
+pub trait Persister<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref, S: Deref>
 where
 	M::Target: 'static + chain::Watch<Signer>,
 	T::Target: 'static + BroadcasterInterface,
 	K::Target: 'static + KeysInterface<Signer = Signer>,
 	F::Target: 'static + FeeEstimator,
 	L::Target: 'static + Logger,
+	S::Target: 'static + WriteableScore<'a>,
 {
 	/// Persist the given [`ChannelManager`] to disk, returning an error if persistence failed
 	/// (which will cause the [`BackgroundProcessor`] which called this method to exit).
@@ -95,6 +97,9 @@ where
 
 	/// Persist the given [`NetworkGraph`] to disk, returning an error if persistence failed.
 	fn persist_graph(&self, network_graph: &NetworkGraph) -> Result<(), std::io::Error>;
+
+	/// Persist the given scorer to disk, returning an error if persistence failed.
+	fn persist_scorer(&self, scorer: &'a S) -> Result<(), std::io::Error>;
 }
 
 /// Decorates an [`EventHandler`] with common functionality provided by standard [`EventHandler`]s.
@@ -180,15 +185,16 @@ impl BackgroundProcessor {
 		CMH: 'static + Deref + Send + Sync,
 		RMH: 'static + Deref + Send + Sync,
 		EH: 'static + EventHandler + Send,
-		PS: 'static + Send + Persister<Signer, CW, T, K, F, L>,
+		PS: 'static + Send + for<'a> Persister<'a, Signer, CW, T, K, F, L, S>,
 		M: 'static + Deref<Target = ChainMonitor<Signer, CF, T, F, L, P>> + Send + Sync,
 		CM: 'static + Deref<Target = ChannelManager<Signer, CW, T, K, F, L>> + Send + Sync,
 		NG: 'static + Deref<Target = NetGraphMsgHandler<G, CA, L>> + Send + Sync,
 		UMH: 'static + Deref + Send + Sync,
 		PM: 'static + Deref<Target = PeerManager<Descriptor, CMH, RMH, L, UMH>> + Send + Sync,
+		S: 'static + Deref + Send + Sync,
 	>(
 		persister: PS, event_handler: EH, chain_monitor: M, channel_manager: CM,
-		net_graph_msg_handler: Option<NG>, peer_manager: PM, logger: L
+		net_graph_msg_handler: Option<NG>, peer_manager: PM, logger: L, scorer: S
 	) -> Self
 	where
 		CA::Target: 'static + chain::Access,
@@ -202,6 +208,7 @@ impl BackgroundProcessor {
 		CMH::Target: 'static + ChannelMessageHandler,
 		RMH::Target: 'static + RoutingMessageHandler,
 		UMH::Target: 'static + CustomMessageHandler,
+		S::Target: for<'a> WriteableScore<'a>,
 	{
 		let stop_thread = Arc::new(AtomicBool::new(false));
 		let stop_thread_clone = stop_thread.clone();
@@ -275,6 +282,9 @@ impl BackgroundProcessor {
 						handler.network_graph().remove_stale_channels();
 						if let Err(e) = persister.persist_graph(handler.network_graph()) {
 							log_error!(logger, "Error: Failed to persist network graph, check your disk and permissions {}", e)
+						}
+						if let Err(e) = persister.persist_scorer(&scorer) {
+							log_error!(logger, "Error: Failed to persist scorer, check your disk and permissions {}", e)
 						}
 						last_prune_call = Instant::now();
 						have_pruned = true;
@@ -360,6 +370,7 @@ mod tests {
 	use lightning::ln::msgs::{ChannelMessageHandler, Init};
 	use lightning::ln::peer_handler::{PeerManager, MessageHandler, SocketDescriptor, IgnoringMessageHandler};
 	use lightning::routing::network_graph::{NetworkGraph, NetGraphMsgHandler};
+	use lightning::routing::scoring::{WriteableScore};
 	use lightning::util::config::UserConfig;
 	use lightning::util::events::{Event, MessageSendEventsProvider, MessageSendEvent};
 	use lightning::util::logger::Logger;
@@ -414,12 +425,13 @@ mod tests {
 	struct Persister {
 		data_dir: String,
 		graph_error: Option<(std::io::ErrorKind, &'static str)>,
-		manager_error: Option<(std::io::ErrorKind, &'static str)>
+		manager_error: Option<(std::io::ErrorKind, &'static str)>,
+		scorer_error: Option<(std::io::ErrorKind, &'static str)>
 	}
 
 	impl Persister {
 		fn new(data_dir: String) -> Self {
-			Self { data_dir, graph_error: None, manager_error: None }
+			Self { data_dir, graph_error: None, manager_error: None, scorer_error: None }
 		}
 
 		fn with_graph_error(self, error: std::io::ErrorKind, message: &'static str) -> Self {
@@ -431,12 +443,13 @@ mod tests {
 		}
 	}
 
-	impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L:Deref> super::Persister<Signer, M, T, K, F, L> for Persister where
+	impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L:Deref, S:Deref> super::Persister<'a, Signer, M, T, K, F, L, S> for Persister where
 		M::Target: 'static + chain::Watch<Signer>,
 		T::Target: 'static + BroadcasterInterface,
 		K::Target: 'static + KeysInterface<Signer = Signer>,
 		F::Target: 'static + FeeEstimator,
 		L::Target: 'static + Logger,
+		S::Target: 'static + WriteableScore<'a>,
 	{
 		fn persist_manager(&self, channel_manager: &ChannelManager<Signer, M, T, K, F, L>) -> Result<(), std::io::Error> {
 			match self.manager_error {
@@ -448,6 +461,13 @@ mod tests {
 		fn persist_graph(&self, network_graph: &NetworkGraph) -> Result<(), std::io::Error> {
 			match self.graph_error {
 				None => FilesystemPersister::persist_network_graph(self.data_dir.clone(), network_graph),
+				Some((error, message)) => Err(std::io::Error::new(error, message)),
+			}
+		}
+
+		fn persist_scorer(&self, scorer: &'a S) -> Result<(), std::io::Error> {
+			match self.scorer_error {
+				None => FilesystemPersister::persist_scorer(self.data_dir.clone(), scorer),
 				Some((error, message)) => Err(std::io::Error::new(error, message)),
 			}
 		}
@@ -578,7 +598,8 @@ mod tests {
 		let data_dir = nodes[0].persister.get_data_dir();
 		let persister = Persister::new(data_dir);
 		let event_handler = |_: &_| {};
-		let bg_processor = BackgroundProcessor::start(persister, event_handler, nodes[0].chain_monitor.clone(), nodes[0].node.clone(), nodes[0].net_graph_msg_handler.clone(), nodes[0].peer_manager.clone(), nodes[0].logger.clone());
+		let scorer = Arc::new(Mutex::new(test_utils::TestScorer::with_penalty(0)));
+		let bg_processor = BackgroundProcessor::start(persister, event_handler, nodes[0].chain_monitor.clone(), nodes[0].node.clone(), nodes[0].net_graph_msg_handler.clone(), nodes[0].peer_manager.clone(), nodes[0].logger.clone(), scorer);
 
 		macro_rules! check_persisted_data {
 			($node: expr, $filepath: expr) => {
@@ -639,7 +660,8 @@ mod tests {
 		let data_dir = nodes[0].persister.get_data_dir();
 		let persister = Persister::new(data_dir);
 		let event_handler = |_: &_| {};
-		let bg_processor = BackgroundProcessor::start(persister, event_handler, nodes[0].chain_monitor.clone(), nodes[0].node.clone(), nodes[0].net_graph_msg_handler.clone(), nodes[0].peer_manager.clone(), nodes[0].logger.clone());
+		let scorer = Arc::new(Mutex::new(test_utils::TestScorer::with_penalty(0)));
+		let bg_processor = BackgroundProcessor::start(persister, event_handler, nodes[0].chain_monitor.clone(), nodes[0].node.clone(), nodes[0].net_graph_msg_handler.clone(), nodes[0].peer_manager.clone(), nodes[0].logger.clone(), scorer);
 		loop {
 			let log_entries = nodes[0].logger.lines.lock().unwrap();
 			let desired_log = "Calling ChannelManager's timer_tick_occurred".to_string();
@@ -662,7 +684,8 @@ mod tests {
 		let data_dir = nodes[0].persister.get_data_dir();
 		let persister = Persister::new(data_dir).with_manager_error(std::io::ErrorKind::Other, "test");
 		let event_handler = |_: &_| {};
-		let bg_processor = BackgroundProcessor::start(persister, event_handler, nodes[0].chain_monitor.clone(), nodes[0].node.clone(), nodes[0].net_graph_msg_handler.clone(), nodes[0].peer_manager.clone(), nodes[0].logger.clone());
+		let scorer = Arc::new(Mutex::new(test_utils::TestScorer::with_penalty(0)));
+		let bg_processor = BackgroundProcessor::start(persister, event_handler, nodes[0].chain_monitor.clone(), nodes[0].node.clone(), nodes[0].net_graph_msg_handler.clone(), nodes[0].peer_manager.clone(), nodes[0].logger.clone(), scorer);
 		match bg_processor.join() {
 			Ok(_) => panic!("Expected error persisting manager"),
 			Err(e) => {
@@ -679,7 +702,8 @@ mod tests {
 		let data_dir = nodes[0].persister.get_data_dir();
 		let persister = Persister::new(data_dir).with_graph_error(std::io::ErrorKind::Other, "test");
 		let event_handler = |_: &_| {};
-		let bg_processor = BackgroundProcessor::start(persister, event_handler, nodes[0].chain_monitor.clone(), nodes[0].node.clone(), nodes[0].net_graph_msg_handler.clone(), nodes[0].peer_manager.clone(), nodes[0].logger.clone());
+		let scorer = Arc::new(Mutex::new(test_utils::TestScorer::with_penalty(0)));
+		let bg_processor = BackgroundProcessor::start(persister, event_handler, nodes[0].chain_monitor.clone(), nodes[0].node.clone(), nodes[0].net_graph_msg_handler.clone(), nodes[0].peer_manager.clone(), nodes[0].logger.clone(), scorer);
 
 		match bg_processor.stop() {
 			Ok(_) => panic!("Expected error persisting network graph"),
@@ -702,7 +726,8 @@ mod tests {
 		let event_handler = move |event: &Event| {
 			sender.send(handle_funding_generation_ready!(event, channel_value)).unwrap();
 		};
-		let bg_processor = BackgroundProcessor::start(persister, event_handler, nodes[0].chain_monitor.clone(), nodes[0].node.clone(), nodes[0].net_graph_msg_handler.clone(), nodes[0].peer_manager.clone(), nodes[0].logger.clone());
+		let scorer = Arc::new(Mutex::new(test_utils::TestScorer::with_penalty(0)));
+		let bg_processor = BackgroundProcessor::start(persister, event_handler, nodes[0].chain_monitor.clone(), nodes[0].node.clone(), nodes[0].net_graph_msg_handler.clone(), nodes[0].peer_manager.clone(), nodes[0].logger.clone(), scorer);
 
 		// Open a channel and check that the FundingGenerationReady event was handled.
 		begin_open_channel!(nodes[0], nodes[1], channel_value);
@@ -726,7 +751,8 @@ mod tests {
 		// Set up a background event handler for SpendableOutputs events.
 		let (sender, receiver) = std::sync::mpsc::sync_channel(1);
 		let event_handler = move |event: &Event| sender.send(event.clone()).unwrap();
-		let bg_processor = BackgroundProcessor::start(Persister::new(data_dir), event_handler, nodes[0].chain_monitor.clone(), nodes[0].node.clone(), nodes[0].net_graph_msg_handler.clone(), nodes[0].peer_manager.clone(), nodes[0].logger.clone());
+		let scorer = Arc::new(Mutex::new(test_utils::TestScorer::with_penalty(0)));
+		let bg_processor = BackgroundProcessor::start(Persister::new(data_dir), event_handler, nodes[0].chain_monitor.clone(), nodes[0].node.clone(), nodes[0].net_graph_msg_handler.clone(), nodes[0].peer_manager.clone(), nodes[0].logger.clone(), scorer);
 
 		// Force close the channel and check that the SpendableOutputs event was handled.
 		nodes[0].node.force_close_channel(&nodes[0].node.list_channels()[0].channel_id).unwrap();
@@ -757,7 +783,8 @@ mod tests {
 		let router = DefaultRouter::new(Arc::clone(&nodes[0].network_graph), Arc::clone(&nodes[0].logger), random_seed_bytes);
 		let invoice_payer = Arc::new(InvoicePayer::new(Arc::clone(&nodes[0].node), router, scorer, Arc::clone(&nodes[0].logger), |_: &_| {}, RetryAttempts(2)));
 		let event_handler = Arc::clone(&invoice_payer);
-		let bg_processor = BackgroundProcessor::start(persister, event_handler, nodes[0].chain_monitor.clone(), nodes[0].node.clone(), nodes[0].net_graph_msg_handler.clone(), nodes[0].peer_manager.clone(), nodes[0].logger.clone());
+		let scorer = Arc::new(Mutex::new(test_utils::TestScorer::with_penalty(0)));
+		let bg_processor = BackgroundProcessor::start(persister, event_handler, nodes[0].chain_monitor.clone(), nodes[0].node.clone(), nodes[0].net_graph_msg_handler.clone(), nodes[0].peer_manager.clone(), nodes[0].logger.clone(), scorer);
 		assert!(bg_processor.stop().is_ok());
 	}
 }

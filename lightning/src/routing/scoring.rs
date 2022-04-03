@@ -135,6 +135,18 @@ pub trait LockableScore<'a> {
 	fn lock(&'a self) -> Self::Locked;
 }
 
+pub trait WriteableScore<'a>: LockableScore<'a> {
+	fn write<W: Writer>(&'a self, writer: &mut W) -> Result<(), io::Error>;
+}
+
+impl<'a, U: Writeable, T: LockableScore<'a>> WriteableScore<'a> for T
+	where T::Locked: DerefMut<Target=U>
+{
+    fn write<W: Writer>(&'a self, writer: &mut W) -> Result<(), io::Error> {
+        self.lock().write(writer)
+    }
+}
+
 /// (C-not exported)
 impl<'a, T: 'a + Score> LockableScore<'a> for Mutex<T> {
 	type Locked = MutexGuard<'a, T>;

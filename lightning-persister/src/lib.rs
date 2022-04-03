@@ -17,6 +17,7 @@ extern crate libc;
 use bitcoin::hash_types::{BlockHash, Txid};
 use bitcoin::hashes::hex::{FromHex, ToHex};
 use lightning::routing::network_graph::NetworkGraph;
+use lightning::routing::scoring::WriteableScore;
 use crate::util::DiskWriteable;
 use lightning::chain;
 use lightning::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
@@ -28,7 +29,7 @@ use lightning::ln::channelmanager::ChannelManager;
 use lightning::util::logger::Logger;
 use lightning::util::ser::{ReadableArgs, Writeable};
 use std::fs;
-use std::io::{Cursor, Error};
+use std::io::{Cursor, Error, BufWriter};
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 
@@ -115,6 +116,26 @@ impl FilesystemPersister {
 	pub fn persist_network_graph(data_dir: String, network_graph: &NetworkGraph) -> Result<(), std::io::Error> {
 		let path = PathBuf::from(data_dir);
 		util::write_to_file(path, "network_graph".to_string(), network_graph)
+	}
+
+	/// Write the provided scorer to the path provided at `FilesystemPersister`
+	/// initialization, within a file called "scorer"
+	pub fn persist_scorer<'a, S: Deref>(data_dir: String, scorer: &'a S) -> Result<(), std::io::Error>
+	where
+		S::Target: WriteableScore<'a>
+	{
+		let path = PathBuf::from(data_dir);
+
+		let mut tmp_path = path.to_path_buf().into_os_string();
+		tmp_path.push(".tmp");
+		let file = fs::OpenOptions::new().write(true).create(true).open(&tmp_path)?;
+		let write_res = scorer.write(&mut BufWriter::new(file));
+		if let Err(e) = write_res.and_then(|_| fs::rename(&tmp_path, path)) {
+			let _ = fs::remove_file(&tmp_path);
+			Err(e)
+		} else {
+			Ok(())
+		}
 	}
 
 	/// Read `ChannelMonitor`s from disk.
