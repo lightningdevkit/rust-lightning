@@ -3,6 +3,7 @@ extern crate winapi;
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::io::{BufWriter, Write};
 
 #[cfg(not(target_os = "windows"))]
 use std::os::unix::io::AsRawFd;
@@ -14,7 +15,7 @@ use {
 };
 
 pub(crate) trait DiskWriteable {
-	fn write_to_file(&self, writer: &mut fs::File) -> Result<(), std::io::Error>;
+	fn write_to_file<W: Write>(&self, writer: &mut W) -> Result<(), std::io::Error>;
 }
 
 pub(crate) fn get_full_filepath(mut filepath: PathBuf, filename: String) -> String {
@@ -52,9 +53,9 @@ pub(crate) fn write_to_file<D: DiskWriteable>(path: PathBuf, filename: String, d
 	{
 		// Note that going by rust-lang/rust@d602a6b, on MacOS it is only safe to use
 		// rust stdlib 1.36 or higher.
-		let mut f = fs::File::create(&tmp_filename)?;
-		data.write_to_file(&mut f)?;
-		f.sync_all()?;
+		let mut buf = BufWriter::new(fs::File::create(&tmp_filename)?);
+		data.write_to_file(&mut buf)?;
+		buf.into_inner()?.sync_all()?;
 	}
 	// Fsync the parent directory on Unix.
 	#[cfg(not(target_os = "windows"))]
@@ -95,7 +96,7 @@ mod tests {
 
 	struct TestWriteable{}
 	impl DiskWriteable for TestWriteable {
-		fn write_to_file(&self, writer: &mut fs::File) -> Result<(), io::Error> {
+		fn write_to_file<W: Write>(&self, writer: &mut W) -> Result<(), io::Error> {
 			writer.write_all(&[42; 1])
 		}
 	}
@@ -145,7 +146,7 @@ mod tests {
 	fn test_diskwriteable_failure() {
 		struct FailingWriteable {}
 		impl DiskWriteable for FailingWriteable {
-			fn write_to_file(&self, _writer: &mut fs::File) -> Result<(), std::io::Error> {
+			fn write_to_file<W: Write>(&self, _writer: &mut W) -> Result<(), std::io::Error> {
 				Err(std::io::Error::new(std::io::ErrorKind::Other, "expected failure"))
 			}
 		}
