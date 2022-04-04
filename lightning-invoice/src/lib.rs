@@ -53,9 +53,11 @@ use secp256k1::recovery::RecoverableSignature;
 
 use core::fmt::{Display, Formatter, self};
 use core::iter::FilterMap;
+use core::num::ParseIntError;
 use core::ops::Deref;
 use core::slice::Iter;
 use core::time::Duration;
+use core::str;
 
 mod de;
 mod ser;
@@ -86,7 +88,45 @@ mod sync {
 #[cfg(not(feature = "std"))]
 mod sync;
 
-pub use de::{ParseError, ParseOrSemanticError};
+/// Errors that indicate what is wrong with the invoice. They have some granularity for debug
+/// reasons, but should generally result in an "invalid BOLT11 invoice" message for the user.
+#[allow(missing_docs)]
+#[derive(PartialEq, Debug, Clone)]
+pub enum ParseError {
+	Bech32Error(bech32::Error),
+	ParseAmountError(ParseIntError),
+	MalformedSignature(secp256k1::Error),
+	BadPrefix,
+	UnknownCurrency,
+	UnknownSiPrefix,
+	MalformedHRP,
+	TooShortDataPart,
+	UnexpectedEndOfTaggedFields,
+	DescriptionDecodeError(str::Utf8Error),
+	PaddingError,
+	IntegerOverflowError,
+	InvalidSegWitProgramLength,
+	InvalidPubKeyHashLength,
+	InvalidScriptHashLength,
+	InvalidRecoveryId,
+	InvalidSliceLength(String),
+
+	/// Not an error, but used internally to signal that a part of the invoice should be ignored
+	/// according to BOLT11
+	Skip,
+}
+
+/// Indicates that something went wrong while parsing or validating the invoice. Parsing errors
+/// should be mostly seen as opaque and are only there for debugging reasons. Semantic errors
+/// like wrong signatures, missing fields etc. could mean that someone tampered with the invoice.
+#[derive(PartialEq, Debug, Clone)]
+pub enum ParseOrSemanticError {
+	/// The invoice couldn't be decoded
+	ParseError(ParseError),
+
+	/// The invoice could be decoded but violates the BOLT11 standard
+	SemanticError(::SemanticError),
+}
 
 /// The number of bits used to represent timestamps as defined in BOLT 11.
 const TIMESTAMP_BITS: usize = 35;
