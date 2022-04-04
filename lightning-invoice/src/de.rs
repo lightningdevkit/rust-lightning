@@ -23,8 +23,8 @@ use secp256k1::recovery::{RecoveryId, RecoverableSignature};
 use secp256k1::key::PublicKey;
 
 use super::{Invoice, Sha256, TaggedField, ExpiryTime, MinFinalCltvExpiry, Fallback, PayeePubKey, InvoiceSignature, PositiveTimestamp,
-	SemanticError, PrivateRoute, Description, RawTaggedField, Currency, RawHrp, SiPrefix, RawInvoice, constants, SignedRawInvoice,
-	RawDataPart, InvoiceFeatures};
+	SemanticError, PrivateRoute, ParseError, ParseOrSemanticError, Description, RawTaggedField, Currency, RawHrp, SiPrefix, RawInvoice,
+	constants, SignedRawInvoice, RawDataPart, InvoiceFeatures};
 
 use self::hrp_sm::parse_hrp;
 
@@ -617,46 +617,6 @@ impl FromBase32 for PrivateRoute {
 
 		Ok(PrivateRoute(RouteHint(route_hops)))
 	}
-}
-
-/// Errors that indicate what is wrong with the invoice. They have some granularity for debug
-/// reasons, but should generally result in an "invalid BOLT11 invoice" message for the user.
-#[allow(missing_docs)]
-#[derive(PartialEq, Debug, Clone)]
-pub enum ParseError {
-	Bech32Error(bech32::Error),
-	ParseAmountError(ParseIntError),
-	MalformedSignature(secp256k1::Error),
-	BadPrefix,
-	UnknownCurrency,
-	UnknownSiPrefix,
-	MalformedHRP,
-	TooShortDataPart,
-	UnexpectedEndOfTaggedFields,
-	DescriptionDecodeError(str::Utf8Error),
-	PaddingError,
-	IntegerOverflowError,
-	InvalidSegWitProgramLength,
-	InvalidPubKeyHashLength,
-	InvalidScriptHashLength,
-	InvalidRecoveryId,
-	InvalidSliceLength(String),
-
-	/// Not an error, but used internally to signal that a part of the invoice should be ignored
-	/// according to BOLT11
-	Skip,
-}
-
-/// Indicates that something went wrong while parsing or validating the invoice. Parsing errors
-/// should be mostly seen as opaque and are only there for debugging reasons. Semantic errors
-/// like wrong signatures, missing fields etc. could mean that someone tampered with the invoice.
-#[derive(PartialEq, Debug, Clone)]
-pub enum ParseOrSemanticError {
-	/// The invoice couldn't be decoded
-	ParseError(ParseError),
-
-	/// The invoice could be decoded but violates the BOLT11 standard
-	SemanticError(::SemanticError),
 }
 
 impl Display for ParseError {
