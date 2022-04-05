@@ -191,7 +191,7 @@ jobs:
           done
       - name: Upload coverage
         if: matrix.coverage
-        uses: codecov/codecov-action@v2
+        uses: codecov/codecov-action@v3
         with:
           # Could you use this to fake the coverage report for your PR? Sure.
           # Will anyone be impressed by your amazing coverage? No
