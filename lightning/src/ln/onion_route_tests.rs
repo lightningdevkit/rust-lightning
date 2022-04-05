@@ -19,7 +19,7 @@ use crate::ln::channelmanager::{self, ChannelManager, ChannelManagerReadArgs, HT
 use crate::ln::onion_utils;
 use crate::routing::gossip::{NetworkUpdate, RoutingFees};
 use crate::routing::router::{get_route, PaymentParameters, Route, RouteHint, RouteHintHop};
-use crate::ln::features::InitFeatures;
+use crate::ln::features::{InitFeatures, InvoiceFeatures};
 use crate::ln::msgs;
 use crate::ln::msgs::{ChannelMessageHandler, ChannelUpdate};
 use crate::ln::wire::Encode;
@@ -788,6 +788,56 @@ fn do_test_onion_failure_stale_channel_update(announced_channel: bool) {
 fn test_onion_failure_stale_channel_update() {
 	do_test_onion_failure_stale_channel_update(false);
 	do_test_onion_failure_stale_channel_update(true);
+}
+
+#[test]
+fn test_always_create_tlv_format_onion_payloads() {
+	// Verify that we always generate tlv onion format payloads, even if the features specifically
+	// specifies no support for variable length onions, as the legacy payload format has been
+	// deprecated in BOLT4.
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let mut node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+
+	// Set `node[1]`'s config features to features which return `false` for
+	// `supports_variable_length_onion()`
+	let mut no_variable_length_onion_features = InitFeatures::empty();
+	no_variable_length_onion_features.set_static_remote_key_required();
+	let mut node_1_cfg = &mut node_cfgs[1];
+	node_1_cfg.features = no_variable_length_onion_features;
+
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::empty(), InitFeatures::empty());
+	create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::empty(), InitFeatures::empty());
+
+	let payment_params = PaymentParameters::from_node_id(nodes[2].node.get_our_node_id())
+		.with_features(InvoiceFeatures::empty());
+	let (route, _payment_hash, _payment_preimage, _payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], payment_params, 40000, TEST_FINAL_CLTV);
+
+	let hops = &route.paths[0];
+	// Asserts that the first hop to `node[1]` signals no support for variable length onions.
+	assert!(!hops[0].node_features.supports_variable_length_onion());
+	// Asserts that the first hop to `node[1]` signals no support for variable length onions.
+	assert!(!hops[1].node_features.supports_variable_length_onion());
+
+	let cur_height = nodes[0].best_block_info().1 + 1;
+	let (onion_payloads, _htlc_msat, _htlc_cltv) = onion_utils::build_onion_payloads(&route.paths[0], 40000, &None, cur_height, &None).unwrap();
+
+	match onion_payloads[0].format {
+		msgs::OnionHopDataFormat::NonFinalNode {..} => {},
+		_ => { panic!(
+			"Should have generated a `msgs::OnionHopDataFormat::NonFinalNode` payload for `hops[0]`,
+			despite that the features signals no support for variable length onions"
+		)}
+	}
+	match onion_payloads[1].format {
+		msgs::OnionHopDataFormat::FinalNode {..} => {},
+		_ => {panic!(
+			"Should have generated a `msgs::OnionHopDataFormat::FinalNode` payload for `hops[1]`,
+			despite that the features signals no support for variable length onions"
+		)}
+	}
 }
 
 macro_rules! get_phantom_route {
