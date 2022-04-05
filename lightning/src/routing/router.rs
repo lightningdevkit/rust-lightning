@@ -185,8 +185,7 @@ pub const DEFAULT_MAX_PATH_COUNT: u8 = 10;
 const MEDIAN_HOP_CLTV_EXPIRY_DELTA: u32 = 40;
 
 // During routing, we only consider paths shorter than our maximum length estimate.
-// In the legacy onion format, the maximum number of hops used to be a fixed value of 20.
-// However, in the TLV onion format, there is no fixed maximum length, but the `hop_payloads`
+// In the TLV onion format, there is no fixed maximum length, but the `hop_payloads`
 // field is always 1300 bytes. As the `tlv_payload` for each hop may vary in length, we have to
 // estimate how many hops the route may have so that it actually fits the `hop_payloads` field.
 //

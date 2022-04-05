@@ -153,24 +153,18 @@ pub(super) fn build_onion_payloads(path: &Vec<RouteHop>, total_msat: u64, paymen
 		let value_msat = if cur_value_msat == 0 { hop.fee_msat } else { cur_value_msat };
 		let cltv = if cur_cltv == starting_htlc_offset { hop.cltv_expiry_delta + starting_htlc_offset } else { cur_cltv };
 		res.insert(0, msgs::OnionHopData {
-			format: if hop.node_features.supports_variable_length_onion() {
-				if idx == 0 {
-					msgs::OnionHopDataFormat::FinalNode {
-						payment_data: if let &Some(ref payment_secret) = payment_secret_option {
-							Some(msgs::FinalOnionHopData {
-								payment_secret: payment_secret.clone(),
-								total_msat,
-							})
-						} else { None },
-						keysend_preimage: *keysend_preimage,
-					}
-				} else {
-					msgs::OnionHopDataFormat::NonFinalNode {
-						short_channel_id: last_short_channel_id,
-					}
+			format: if idx == 0 {
+				msgs::OnionHopDataFormat::FinalNode {
+					payment_data: if let &Some(ref payment_secret) = payment_secret_option {
+						Some(msgs::FinalOnionHopData {
+							payment_secret: payment_secret.clone(),
+							total_msat,
+						})
+					} else { None },
+					keysend_preimage: *keysend_preimage,
 				}
 			} else {
-				msgs::OnionHopDataFormat::Legacy {
+				msgs::OnionHopDataFormat::NonFinalNode {
 					short_channel_id: last_short_channel_id,
 				}
 			},
