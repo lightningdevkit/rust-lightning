@@ -8,13 +8,15 @@ use bitcoin::blockdata::block::Block;
 use bitcoin::hash_types::BlockHash;
 use bitcoin::hashes::hex::ToHex;
 
+use futures::lock::Mutex;
+
 use std::convert::TryFrom;
 use std::convert::TryInto;
 
 /// A simple REST client for requesting resources using HTTP `GET`.
 pub struct RestClient {
 	endpoint: HttpEndpoint,
-	client: HttpClient,
+	client: Mutex<HttpClient>,
 }
 
 impl RestClient {
@@ -22,35 +24,35 @@ impl RestClient {
 	///
 	/// The endpoint should contain the REST path component (e.g., http://127.0.0.1:8332/rest).
 	pub fn new(endpoint: HttpEndpoint) -> std::io::Result<Self> {
-		let client = HttpClient::connect(&endpoint)?;
+		let client = Mutex::new(HttpClient::connect(&endpoint)?);
 		Ok(Self { endpoint, client })
 	}
 
 	/// Requests a resource encoded in `F` format and interpreted as type `T`.
-	pub async fn request_resource<F, T>(&mut self, resource_path: &str) -> std::io::Result<T>
+	pub async fn request_resource<F, T>(&self, resource_path: &str) -> std::io::Result<T>
 	where F: TryFrom<Vec<u8>, Error = std::io::Error> + TryInto<T, Error = std::io::Error> {
 		let host = format!("{}:{}", self.endpoint.host(), self.endpoint.port());
 		let uri = format!("{}/{}", self.endpoint.path().trim_end_matches("/"), resource_path);
-		self.client.get::<F>(&uri, &host).await?.try_into()
+		self.client.lock().await.get::<F>(&uri, &host).await?.try_into()
 	}
 }
 
 impl BlockSource for RestClient {
-	fn get_header<'a>(&'a mut self, header_hash: &'a BlockHash, _height: Option<u32>) -> AsyncBlockSourceResult<'a, BlockHeaderData> {
+	fn get_header<'a>(&'a self, header_hash: &'a BlockHash, _height: Option<u32>) -> AsyncBlockSourceResult<'a, BlockHeaderData> {
 		Box::pin(async move {
 			let resource_path = format!("headers/1/{}.json", header_hash.to_hex());
 			Ok(self.request_resource::<JsonResponse, _>(&resource_path).await?)
 		})
 	}
 
-	fn get_block<'a>(&'a mut self, header_hash: &'a BlockHash) -> AsyncBlockSourceResult<'a, Block> {
+	fn get_block<'a>(&'a self, header_hash: &'a BlockHash) -> AsyncBlockSourceResult<'a, Block> {
 		Box::pin(async move {
 			let resource_path = format!("block/{}.bin", header_hash.to_hex());
 			Ok(self.request_resource::<BinaryResponse, _>(&resource_path).await?)
 		})
 	}
 
-	fn get_best_block<'a>(&'a mut self) -> AsyncBlockSourceResult<'a, (BlockHash, Option<u32>)> {
+	fn get_best_block<'a>(&'a self) -> AsyncBlockSourceResult<'a, (BlockHash, Option<u32>)> {
 		Box::pin(async move {
 			Ok(self.request_resource::<JsonResponse, _>("chaininfo.json").await?)
 		})
@@ -81,7 +83,7 @@ mod tests {
 	#[tokio::test]
 	async fn request_unknown_resource() {
 		let server = HttpServer::responding_with_not_found();
-		let mut client = RestClient::new(server.endpoint()).unwrap();
+		let client = RestClient::new(server.endpoint()).unwrap();
 
 		match client.request_resource::<BinaryResponse, u32>("/").await {
 			Err(e) => assert_eq!(e.kind(), std::io::ErrorKind::Other),
@@ -92,7 +94,7 @@ mod tests {
 	#[tokio::test]
 	async fn request_malformed_resource() {
 		let server = HttpServer::responding_with_ok(MessageBody::Content("foo"));
-		let mut client = RestClient::new(server.endpoint()).unwrap();
+		let client = RestClient::new(server.endpoint()).unwrap();
 
 		match client.request_resource::<BinaryResponse, u32>("/").await {
 			Err(e) => assert_eq!(e.kind(), std::io::ErrorKind::InvalidData),
@@ -103,7 +105,7 @@ mod tests {
 	#[tokio::test]
 	async fn request_valid_resource() {
 		let server = HttpServer::responding_with_ok(MessageBody::Content(42));
-		let mut client = RestClient::new(server.endpoint()).unwrap();
+		let client = RestClient::new(server.endpoint()).unwrap();
 
 		match client.request_resource::<BinaryResponse, u32>("/").await {
 			Err(e) => panic!("Unexpected error: {:?}", e),
