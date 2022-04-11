@@ -1674,15 +1674,12 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 			},
 			Some(peer_lock) => {
 				let peer = peer_lock.lock().unwrap();
-				match peer.their_node_id {
-					Some(node_id) => {
-						log_trace!(self.logger,
-							"Handling disconnection of peer {}, with {}future connection to the peer possible.",
-							log_pubkey!(node_id), if no_connection_possible { "no " } else { "" });
-						self.node_id_to_descriptor.lock().unwrap().remove(&node_id);
-						self.message_handler.chan_handler.peer_disconnected(&node_id, no_connection_possible);
-					},
-					None => {}
+				if let Some(node_id) = peer.their_node_id {
+					log_trace!(self.logger,
+						"Handling disconnection of peer {}, with {}future connection to the peer possible.",
+						log_pubkey!(node_id), if no_connection_possible { "no " } else { "" });
+					self.node_id_to_descriptor.lock().unwrap().remove(&node_id);
+					self.message_handler.chan_handler.peer_disconnected(&node_id, no_connection_possible);
 				}
 			}
 		};
