@@ -15,20 +15,13 @@ extern crate bitcoin;
 extern crate libc;
 
 use bitcoin::hash_types::{BlockHash, Txid};
-use bitcoin::hashes::hex::{FromHex, ToHex};
-use lightning::routing::network_graph::NetworkGraph;
-use crate::util::DiskWriteable;
-use lightning::chain;
-use lightning::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
-use lightning::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate};
-use lightning::chain::chainmonitor;
+use bitcoin::hashes::hex::FromHex;
+use lightning::chain::channelmonitor::ChannelMonitor;
 use lightning::chain::keysinterface::{Sign, KeysInterface};
-use lightning::chain::transaction::OutPoint;
-use lightning::ln::channelmanager::ChannelManager;
-use lightning::util::logger::Logger;
 use lightning::util::ser::{ReadableArgs, Writeable};
+use lightning::util::persist::KVStorePersister;
 use std::fs;
-use std::io::{Cursor, Error, Write};
+use std::io::Cursor;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 
@@ -48,31 +41,6 @@ pub struct FilesystemPersister {
 	path_to_channel_data: String,
 }
 
-impl<Signer: Sign> DiskWriteable for ChannelMonitor<Signer> {
-	fn write_to_file<W: Write>(&self, writer: &mut W) -> Result<(), Error> {
-		self.write(writer)
-	}
-}
-
-impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> DiskWriteable for ChannelManager<Signer, M, T, K, F, L>
-where
-	M::Target: chain::Watch<Signer>,
-	T::Target: BroadcasterInterface,
-	K::Target: KeysInterface<Signer=Signer>,
-	F::Target: FeeEstimator,
-	L::Target: Logger,
-{
-	fn write_to_file<W: Write>(&self, writer: &mut W) -> Result<(), std::io::Error> {
-		self.write(writer)
-	}
-}
-
-impl DiskWriteable for NetworkGraph {
-	fn write_to_file<W: Write>(&self, writer: &mut W) -> Result<(), std::io::Error> {
-		self.write(writer)
-	}
-}
-
 impl FilesystemPersister {
 	/// Initialize a new FilesystemPersister and set the path to the individual channels'
 	/// files.
@@ -87,43 +55,14 @@ impl FilesystemPersister {
 		self.path_to_channel_data.clone()
 	}
 
-	pub(crate) fn path_to_monitor_data(&self) -> PathBuf {
-		let mut path = PathBuf::from(self.path_to_channel_data.clone());
-		path.push("monitors");
-		path
-	}
-
-	/// Writes the provided `ChannelManager` to the path provided at `FilesystemPersister`
-	/// initialization, within a file called "manager".
-	pub fn persist_manager<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>(
-		data_dir: String,
-		manager: &ChannelManager<Signer, M, T, K, F, L>
-	) -> Result<(), std::io::Error>
-	where
-		M::Target: chain::Watch<Signer>,
-		T::Target: BroadcasterInterface,
-		K::Target: KeysInterface<Signer=Signer>,
-		F::Target: FeeEstimator,
-		L::Target: Logger,
-	{
-		let path = PathBuf::from(data_dir);
-		util::write_to_file(path, "manager".to_string(), manager)
-	}
-
-	/// Write the provided `NetworkGraph` to the path provided at `FilesystemPersister`
-	/// initialization, within a file called "network_graph"
-	pub fn persist_network_graph(data_dir: String, network_graph: &NetworkGraph) -> Result<(), std::io::Error> {
-		let path = PathBuf::from(data_dir);
-		util::write_to_file(path, "network_graph".to_string(), network_graph)
-	}
-
 	/// Read `ChannelMonitor`s from disk.
 	pub fn read_channelmonitors<Signer: Sign, K: Deref> (
 		&self, keys_manager: K
 	) -> Result<Vec<(BlockHash, ChannelMonitor<Signer>)>, std::io::Error>
 		where K::Target: KeysInterface<Signer=Signer> + Sized,
 	{
-		let path = self.path_to_monitor_data();
+		let mut path = PathBuf::from(&self.path_to_channel_data);
+		path.push("monitors");
 		if !Path::new(&path).exists() {
 			return Ok(Vec::new());
 		}
@@ -180,22 +119,11 @@ impl FilesystemPersister {
 	}
 }
 
-impl<ChannelSigner: Sign> chainmonitor::Persist<ChannelSigner> for FilesystemPersister {
-	// TODO: We really need a way for the persister to inform the user that its time to crash/shut
-	// down once these start returning failure.
-	// A PermanentFailure implies we need to shut down since we're force-closing channels without
-	// even broadcasting!
-
-	fn persist_new_channel(&self, funding_txo: OutPoint, monitor: &ChannelMonitor<ChannelSigner>, _update_id: chainmonitor::MonitorUpdateId) -> Result<(), chain::ChannelMonitorUpdateErr> {
-		let filename = format!("{}_{}", funding_txo.txid.to_hex(), funding_txo.index);
-		util::write_to_file(self.path_to_monitor_data(), filename, monitor)
-			.map_err(|_| chain::ChannelMonitorUpdateErr::PermanentFailure)
-	}
-
-	fn update_persisted_channel(&self, funding_txo: OutPoint, _update: &Option<ChannelMonitorUpdate>, monitor: &ChannelMonitor<ChannelSigner>, _update_id: chainmonitor::MonitorUpdateId) -> Result<(), chain::ChannelMonitorUpdateErr> {
-		let filename = format!("{}_{}", funding_txo.txid.to_hex(), funding_txo.index);
-		util::write_to_file(self.path_to_monitor_data(), filename, monitor)
-			.map_err(|_| chain::ChannelMonitorUpdateErr::PermanentFailure)
+impl KVStorePersister for FilesystemPersister {
+	fn persist<W: Writeable>(&self, key: &str, object: &W) -> std::io::Result<()> {
+		let mut dest_file = PathBuf::from(self.path_to_channel_data.clone());
+		dest_file.push(key);
+		util::write_to_file(dest_file, object)
 	}
 }
 
