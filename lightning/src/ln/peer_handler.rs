@@ -1926,11 +1926,18 @@ mod tests {
 		peer_a.new_inbound_connection(fd_a.clone(), None).unwrap();
 		assert_eq!(peer_a.read_event(&mut fd_a, &initial_data).unwrap(), false);
 		peer_a.process_events();
-		assert_eq!(peer_b.read_event(&mut fd_b, &fd_a.outbound_data.lock().unwrap().split_off(0)).unwrap(), false);
+
+		let a_data = fd_a.outbound_data.lock().unwrap().split_off(0);
+		assert_eq!(peer_b.read_event(&mut fd_b, &a_data).unwrap(), false);
+
 		peer_b.process_events();
-		assert_eq!(peer_a.read_event(&mut fd_a, &fd_b.outbound_data.lock().unwrap().split_off(0)).unwrap(), false);
+		let b_data = fd_b.outbound_data.lock().unwrap().split_off(0);
+		assert_eq!(peer_a.read_event(&mut fd_a, &b_data).unwrap(), false);
+
 		peer_a.process_events();
-		assert_eq!(peer_b.read_event(&mut fd_b, &fd_a.outbound_data.lock().unwrap().split_off(0)).unwrap(), false);
+		let a_data = fd_a.outbound_data.lock().unwrap().split_off(0);
+		assert_eq!(peer_b.read_event(&mut fd_b, &a_data).unwrap(), false);
+
 		(fd_a.clone(), fd_b.clone())
 	}
 
@@ -2084,14 +2091,16 @@ mod tests {
 
 		assert_eq!(peers[0].read_event(&mut fd_a, &initial_data).unwrap(), false);
 		peers[0].process_events();
-		assert_eq!(peers[1].read_event(&mut fd_b, &fd_a.outbound_data.lock().unwrap().split_off(0)).unwrap(), false);
+		let a_data = fd_a.outbound_data.lock().unwrap().split_off(0);
+		assert_eq!(peers[1].read_event(&mut fd_b, &a_data).unwrap(), false);
 		peers[1].process_events();
 
 		// ...but if we get a second timer tick, we should disconnect the peer
 		peers[0].timer_tick_occurred();
 		assert_eq!(peers[0].peers.read().unwrap().len(), 0);
 
-		assert!(peers[0].read_event(&mut fd_a, &fd_b.outbound_data.lock().unwrap().split_off(0)).is_err());
+		let b_data = fd_b.outbound_data.lock().unwrap().split_off(0);
+		assert!(peers[0].read_event(&mut fd_a, &b_data).is_err());
 	}
 
 	#[test]
