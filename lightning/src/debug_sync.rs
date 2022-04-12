@@ -6,7 +6,6 @@ use std::collections::HashSet;
 use std::cell::RefCell;
 
 use std::sync::atomic::{AtomicUsize, Ordering};
-
 use std::sync::Mutex as StdMutex;
 use std::sync::MutexGuard as StdMutexGuard;
 use std::sync::RwLock as StdRwLock;
@@ -15,7 +14,12 @@ use std::sync::RwLockWriteGuard as StdRwLockWriteGuard;
 use std::sync::Condvar as StdCondvar;
 
 #[cfg(feature = "backtrace")]
-use backtrace::Backtrace;
+use {prelude::{HashMap, hash_map}, backtrace::Backtrace, std::sync::Once};
+
+#[cfg(not(feature = "backtrace"))]
+struct Backtrace{}
+#[cfg(not(feature = "backtrace"))]
+impl Backtrace { fn new() -> Backtrace { Backtrace {} } }
 
 pub type LockResult<Guard> = Result<Guard, ()>;
 
@@ -48,13 +52,17 @@ thread_local! {
 }
 static LOCK_IDX: AtomicUsize = AtomicUsize::new(0);
 
+#[cfg(feature = "backtrace")]
+static mut LOCKS: Option<StdMutex<HashMap<String, Arc<LockMetadata>>>> = None;
+#[cfg(feature = "backtrace")]
+static LOCKS_INIT: Once = Once::new();
+
 /// Metadata about a single lock, by id, the set of things locked-before it, and the backtrace of
 /// when the Mutex itself was constructed.
 struct LockMetadata {
 	lock_idx: u64,
-	locked_before: StdMutex<HashSet<Arc<LockMetadata>>>,
-	#[cfg(feature = "backtrace")]
-	lock_construction_bt: Backtrace,
+	locked_before: StdMutex<HashSet<LockDep>>,
+	_lock_construction_bt: Backtrace,
 }
 impl PartialEq for LockMetadata {
 	fn eq(&self, o: &LockMetadata) -> bool { self.lock_idx == o.lock_idx }
@@ -64,14 +72,73 @@ impl std::hash::Hash for LockMetadata {
 	fn hash<H: std::hash::Hasher>(&self, hasher: &mut H) { hasher.write_u64(self.lock_idx); }
 }
 
-impl LockMetadata {
-	fn new() -> LockMetadata {
-		LockMetadata {
-			locked_before: StdMutex::new(HashSet::new()),
-			lock_idx: LOCK_IDX.fetch_add(1, Ordering::Relaxed) as u64,
-			#[cfg(feature = "backtrace")]
-			lock_construction_bt: Backtrace::new(),
+struct LockDep {
+	lock: Arc<LockMetadata>,
+	lockdep_trace: Option<Backtrace>,
+}
+impl LockDep {
+	/// Note that `Backtrace::new()` is rather expensive so we rely on the caller to fill in the
+	/// `lockdep_backtrace` field after ensuring we need it.
+	fn new_without_bt(lock: &Arc<LockMetadata>) -> Self {
+		Self { lock: Arc::clone(lock), lockdep_trace: None }
+	}
+}
+impl PartialEq for LockDep {
+	fn eq(&self, o: &LockDep) -> bool { self.lock.lock_idx == o.lock.lock_idx }
+}
+impl Eq for LockDep {}
+impl std::hash::Hash for LockDep {
+	fn hash<H: std::hash::Hasher>(&self, hasher: &mut H) { hasher.write_u64(self.lock.lock_idx); }
+}
+
+#[cfg(feature = "backtrace")]
+fn get_construction_location(backtrace: &Backtrace) -> String {
+	// Find the first frame that is after `debug_sync` (or that is in our tests) and use
+	// that as the mutex construction site. Note that the first few frames may be in
+	// the `backtrace` crate, so we have to ignore those.
+	let sync_mutex_constr_regex = regex::Regex::new(r"lightning.*debug_sync.*new").unwrap();
+	let mut found_debug_sync = false;
+	for frame in backtrace.frames() {
+		for symbol in frame.symbols() {
+			let symbol_name = symbol.name().unwrap().as_str().unwrap();
+			if !sync_mutex_constr_regex.is_match(symbol_name) {
+				if found_debug_sync {
+					if let Some(col) = symbol.colno() {
+						return format!("{}:{}:{}", symbol.filename().unwrap().display(), symbol.lineno().unwrap(), col);
+					} else {
+						// Windows debug symbols don't support column numbers, so fall back to
+						// line numbers only if no `colno` is available
+						return format!("{}:{}", symbol.filename().unwrap().display(), symbol.lineno().unwrap());
+					}
+				}
+			} else { found_debug_sync = true; }
 		}
+	}
+	panic!("Couldn't find mutex construction callsite");
+}
+
+impl LockMetadata {
+	fn new() -> Arc<LockMetadata> {
+		let backtrace = Backtrace::new();
+		let lock_idx = LOCK_IDX.fetch_add(1, Ordering::Relaxed) as u64;
+
+		let res = Arc::new(LockMetadata {
+			locked_before: StdMutex::new(HashSet::new()),
+			lock_idx,
+			_lock_construction_bt: backtrace,
+		});
+
+		#[cfg(feature = "backtrace")]
+		{
+			let lock_constr_location = get_construction_location(&res._lock_construction_bt);
+			LOCKS_INIT.call_once(|| { unsafe { LOCKS = Some(StdMutex::new(HashMap::new())); } });
+			let mut locks = unsafe { LOCKS.as_ref() }.unwrap().lock().unwrap();
+			match locks.entry(lock_constr_location) {
+				hash_map::Entry::Occupied(e) => return Arc::clone(e.get()),
+				hash_map::Entry::Vacant(e) => { e.insert(Arc::clone(&res)); },
+			}
+		}
+		res
 	}
 
 	// Returns whether we were a recursive lock (only relevant for read)
@@ -89,18 +156,28 @@ impl LockMetadata {
 			}
 			for locked in held.borrow().iter() {
 				if !read && *locked == *this {
-					panic!("Tried to lock a lock while it was held!");
+					// With `feature = "backtrace"` set, we may be looking at different instances
+					// of the same lock.
+					debug_assert!(cfg!(feature = "backtrace"), "Tried to acquire a lock while it was held!");
 				}
 				for locked_dep in locked.locked_before.lock().unwrap().iter() {
-					if *locked_dep == *this {
+					if locked_dep.lock == *this && locked_dep.lock != *locked {
 						#[cfg(feature = "backtrace")]
-						panic!("Tried to violate existing lockorder.\nMutex that should be locked after the current lock was created at the following backtrace.\nNote that to get a backtrace for the lockorder violation, you should set RUST_BACKTRACE=1\n{:?}", locked.lock_construction_bt);
+						panic!("Tried to violate existing lockorder.\nMutex that should be locked after the current lock was created at the following backtrace.\nNote that to get a backtrace for the lockorder violation, you should set RUST_BACKTRACE=1\nLock being taken constructed at: {} ({}):\n{:?}\nLock constructed at: {} ({})\n{:?}\n\nLock dep created at:\n{:?}\n\n",
+							get_construction_location(&this._lock_construction_bt), this.lock_idx, this._lock_construction_bt,
+							get_construction_location(&locked._lock_construction_bt), locked.lock_idx, locked._lock_construction_bt,
+							locked_dep.lockdep_trace);
 						#[cfg(not(feature = "backtrace"))]
 						panic!("Tried to violate existing lockorder. Build with the backtrace feature for more info.");
 					}
 				}
 				// Insert any already-held locks in our locked-before set.
-				this.locked_before.lock().unwrap().insert(Arc::clone(locked));
+				let mut locked_before = this.locked_before.lock().unwrap();
+				let mut lockdep = LockDep::new_without_bt(locked);
+				if !locked_before.contains(&lockdep) {
+					lockdep.lockdep_trace = Some(Backtrace::new());
+					locked_before.insert(lockdep);
+				}
 			}
 			held.borrow_mut().insert(Arc::clone(this));
 			inserted = true;
@@ -116,8 +193,13 @@ impl LockMetadata {
 			// Since a try-lock will simply fail if the lock is held already, we do not
 			// consider try-locks to ever generate lockorder inversions. However, if a try-lock
 			// succeeds, we do consider it to have created lockorder dependencies.
+			let mut locked_before = this.locked_before.lock().unwrap();
 			for locked in held.borrow().iter() {
-				this.locked_before.lock().unwrap().insert(Arc::clone(locked));
+				let mut lockdep = LockDep::new_without_bt(locked);
+				if !locked_before.contains(&lockdep) {
+					lockdep.lockdep_trace = Some(Backtrace::new());
+					locked_before.insert(lockdep);
+				}
 			}
 			held.borrow_mut().insert(Arc::clone(this));
 		});
@@ -170,7 +252,7 @@ impl<T: Sized> DerefMut for MutexGuard<'_, T> {
 
 impl<T> Mutex<T> {
 	pub fn new(inner: T) -> Mutex<T> {
-		Mutex { inner: StdMutex::new(inner), deps: Arc::new(LockMetadata::new()) }
+		Mutex { inner: StdMutex::new(inner), deps: LockMetadata::new() }
 	}
 
 	pub fn lock<'a>(&'a self) -> LockResult<MutexGuard<'a, T>> {
@@ -249,7 +331,7 @@ impl<T: Sized> DerefMut for RwLockWriteGuard<'_, T> {
 
 impl<T> RwLock<T> {
 	pub fn new(inner: T) -> RwLock<T> {
-		RwLock { inner: StdRwLock::new(inner), deps: Arc::new(LockMetadata::new()) }
+		RwLock { inner: StdRwLock::new(inner), deps: LockMetadata::new() }
 	}
 
 	pub fn read<'a>(&'a self) -> LockResult<RwLockReadGuard<'a, T>> {
@@ -271,96 +353,101 @@ impl<T> RwLock<T> {
 	}
 }
 
-#[test]
-#[should_panic]
-fn recursive_lock_fail() {
-	let mutex = Mutex::new(());
-	let _a = mutex.lock().unwrap();
-	let _b = mutex.lock().unwrap();
-}
-
-#[test]
-fn recursive_read() {
-	let lock = RwLock::new(());
-	let _a = lock.read().unwrap();
-	let _b = lock.read().unwrap();
-}
-
-#[test]
-#[should_panic]
-fn lockorder_fail() {
-	let a = Mutex::new(());
-	let b = Mutex::new(());
-	{
-		let _a = a.lock().unwrap();
-		let _b = b.lock().unwrap();
-	}
-	{
-		let _b = b.lock().unwrap();
-		let _a = a.lock().unwrap();
-	}
-}
-
-#[test]
-#[should_panic]
-fn write_lockorder_fail() {
-	let a = RwLock::new(());
-	let b = RwLock::new(());
-	{
-		let _a = a.write().unwrap();
-		let _b = b.write().unwrap();
-	}
-	{
-		let _b = b.write().unwrap();
-		let _a = a.write().unwrap();
-	}
-}
-
-#[test]
-#[should_panic]
-fn read_lockorder_fail() {
-	let a = RwLock::new(());
-	let b = RwLock::new(());
-	{
-		let _a = a.read().unwrap();
-		let _b = b.read().unwrap();
-	}
-	{
-		let _b = b.read().unwrap();
-		let _a = a.read().unwrap();
-	}
-}
-
-#[test]
-fn read_recurisve_no_lockorder() {
-	// Like the above, but note that no lockorder is implied when we recursively read-lock a
-	// RwLock, causing this to pass just fine.
-	let a = RwLock::new(());
-	let b = RwLock::new(());
-	let _outer = a.read().unwrap();
-	{
-		let _a = a.read().unwrap();
-		let _b = b.read().unwrap();
-	}
-	{
-		let _b = b.read().unwrap();
-		let _a = a.read().unwrap();
-	}
-}
-
-#[test]
-#[should_panic]
-fn read_write_lockorder_fail() {
-	let a = RwLock::new(());
-	let b = RwLock::new(());
-	{
-		let _a = a.write().unwrap();
-		let _b = b.read().unwrap();
-	}
-	{
-		let _b = b.read().unwrap();
-		let _a = a.write().unwrap();
-	}
-}
-
 pub type FairRwLock<T> = RwLock<T>;
+
+mod tests {
+	use super::{RwLock, Mutex};
+
+	#[test]
+	#[should_panic]
+	#[cfg(not(feature = "backtrace"))]
+	fn recursive_lock_fail() {
+		let mutex = Mutex::new(());
+		let _a = mutex.lock().unwrap();
+		let _b = mutex.lock().unwrap();
+	}
+
+	#[test]
+	fn recursive_read() {
+		let lock = RwLock::new(());
+		let _a = lock.read().unwrap();
+		let _b = lock.read().unwrap();
+	}
+
+	#[test]
+	#[should_panic]
+	fn lockorder_fail() {
+		let a = Mutex::new(());
+		let b = Mutex::new(());
+		{
+			let _a = a.lock().unwrap();
+			let _b = b.lock().unwrap();
+		}
+		{
+			let _b = b.lock().unwrap();
+			let _a = a.lock().unwrap();
+		}
+	}
+
+	#[test]
+	#[should_panic]
+	fn write_lockorder_fail() {
+		let a = RwLock::new(());
+		let b = RwLock::new(());
+		{
+			let _a = a.write().unwrap();
+			let _b = b.write().unwrap();
+		}
+		{
+			let _b = b.write().unwrap();
+			let _a = a.write().unwrap();
+		}
+	}
+
+	#[test]
+	#[should_panic]
+	fn read_lockorder_fail() {
+		let a = RwLock::new(());
+		let b = RwLock::new(());
+		{
+			let _a = a.read().unwrap();
+			let _b = b.read().unwrap();
+		}
+		{
+			let _b = b.read().unwrap();
+			let _a = a.read().unwrap();
+		}
+	}
+
+	#[test]
+	fn read_recursive_no_lockorder() {
+		// Like the above, but note that no lockorder is implied when we recursively read-lock a
+		// RwLock, causing this to pass just fine.
+		let a = RwLock::new(());
+		let b = RwLock::new(());
+		let _outer = a.read().unwrap();
+		{
+			let _a = a.read().unwrap();
+			let _b = b.read().unwrap();
+		}
+		{
+			let _b = b.read().unwrap();
+			let _a = a.read().unwrap();
+		}
+	}
+
+	#[test]
+	#[should_panic]
+	fn read_write_lockorder_fail() {
+		let a = RwLock::new(());
+		let b = RwLock::new(());
+		{
+			let _a = a.write().unwrap();
+			let _b = b.read().unwrap();
+		}
+		{
+			let _b = b.read().unwrap();
+			let _a = a.write().unwrap();
+		}
+	}
+}
