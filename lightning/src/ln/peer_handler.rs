@@ -1833,7 +1833,7 @@ fn is_gossip_msg(type_id: u16) -> bool {
 #[cfg(test)]
 mod tests {
 	use ln::peer_handler::{PeerManager, MessageHandler, SocketDescriptor, IgnoringMessageHandler, filter_addresses};
-	use ln::msgs;
+	use ln::{msgs, wire};
 	use ln::msgs::NetAddress;
 	use util::events;
 	use util::test_utils;
@@ -1943,6 +1943,48 @@ mod tests {
 		peers[0].message_handler.chan_handler = &chan_handler;
 
 		peers[0].process_events();
+		assert_eq!(peers[0].peers.read().unwrap().len(), 0);
+	}
+
+	#[test]
+	fn test_send_simple_msg() {
+		// Simple test which builds a network of PeerManager, connects and brings them to NoiseState::Finished and
+		// push a message from one peer to another.
+		let cfgs = create_peermgr_cfgs(2);
+		let a_chan_handler = test_utils::TestChannelMessageHandler::new();
+		let b_chan_handler = test_utils::TestChannelMessageHandler::new();
+		let mut peers = create_network(2, &cfgs);
+		let (fd_a, mut fd_b) = establish_connection(&peers[0], &peers[1]);
+		assert_eq!(peers[0].peers.read().unwrap().len(), 1);
+
+		let secp_ctx = Secp256k1::new();
+		let their_id = PublicKey::from_secret_key(&secp_ctx, &peers[1].our_node_secret);
+
+		let msg = msgs::Shutdown { channel_id: [42; 32], scriptpubkey: bitcoin::Script::new() };
+		a_chan_handler.pending_events.lock().unwrap().push(events::MessageSendEvent::SendShutdown {
+			node_id: their_id, msg: msg.clone()
+		});
+		peers[0].message_handler.chan_handler = &a_chan_handler;
+
+		b_chan_handler.expect_receive_msg(wire::Message::Shutdown(msg));
+		peers[1].message_handler.chan_handler = &b_chan_handler;
+
+		peers[0].process_events();
+
+		let a_data = fd_a.outbound_data.lock().unwrap().split_off(0);
+		assert_eq!(peers[1].read_event(&mut fd_b, &a_data).unwrap(), false);
+	}
+
+	#[test]
+	fn test_disconnect_all_peer() {
+		// Simple test which builds a network of PeerManager, connects and brings them to NoiseState::Finished and
+		// then calls disconnect_all_peers
+		let cfgs = create_peermgr_cfgs(2);
+		let peers = create_network(2, &cfgs);
+		establish_connection(&peers[0], &peers[1]);
+		assert_eq!(peers[0].peers.read().unwrap().len(), 1);
+
+		peers[0].disconnect_all_peers();
 		assert_eq!(peers[0].peers.read().unwrap().len(), 0);
 	}
 
