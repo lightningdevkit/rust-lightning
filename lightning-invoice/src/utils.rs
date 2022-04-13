@@ -38,9 +38,11 @@ use sync::Mutex;
 ///   may be too long for QR code scanning. To fix this, `PhantomRouteHints::channels` may be pared
 ///   down
 ///
-/// `payment_hash` and `payment_secret` come from [`ChannelManager::create_inbound_payment`] or
+/// `payment_hash` and `payment_secret` can come from [`ChannelManager::create_inbound_payment`] or
 /// [`ChannelManager::create_inbound_payment_for_hash`]. These values can be retrieved from any
-/// participating node.
+/// participating node. Alternatively, [`inbound_payment::create`] or
+/// [`inbound_payment::create_from_hash`] may be used to retrieve these values without a
+/// `ChannelManager`.
 ///
 /// Note that the provided `keys_manager`'s `KeysInterface` implementation must support phantom
 /// invoices in its `sign_invoice` implementation ([`PhantomKeysManager`] satisfies this
@@ -48,6 +50,8 @@ use sync::Mutex;
 ///
 /// [`PhantomKeysManager`]: lightning::chain::keysinterface::PhantomKeysManager
 /// [`ChannelManager::get_phantom_route_hints`]: lightning::ln::channelmanager::ChannelManager::get_phantom_route_hints
+/// [`inbound_payment::create`]: lightning::ln::inbound_payment::create
+/// [`inbound_payment::create_from_hash`]: lightning::ln::inbound_payment::create_from_hash
 /// [`PhantomRouteHints::channels`]: lightning::ln::channelmanager::PhantomRouteHints::channels
 pub fn create_phantom_invoice<Signer: Sign, K: Deref>(
 	amt_msat: Option<u64>, description: String, payment_hash: PaymentHash, payment_secret: PaymentSecret,
@@ -76,9 +80,11 @@ pub fn create_phantom_invoice<Signer: Sign, K: Deref>(
 ///
 /// `description_hash` is a SHA-256 hash of the description text
 ///
-/// `payment_hash` and `payment_secret` come from [`ChannelManager::create_inbound_payment`] or
+/// `payment_hash` and `payment_secret` can come from [`ChannelManager::create_inbound_payment`] or
 /// [`ChannelManager::create_inbound_payment_for_hash`]. These values can be retrieved from any
-/// participating node.
+/// participating node. Alternatively, [`inbound_payment::create`] or
+/// [`inbound_payment::create_from_hash`] may be used to retrieve these values without a
+/// `ChannelManager`.
 ///
 /// Note that the provided `keys_manager`'s `KeysInterface` implementation must support phantom
 /// invoices in its `sign_invoice` implementation ([`PhantomKeysManager`] satisfies this
@@ -86,6 +92,8 @@ pub fn create_phantom_invoice<Signer: Sign, K: Deref>(
 ///
 /// [`PhantomKeysManager`]: lightning::chain::keysinterface::PhantomKeysManager
 /// [`ChannelManager::get_phantom_route_hints`]: lightning::ln::channelmanager::ChannelManager::get_phantom_route_hints
+/// [`inbound_payment::create`]: lightning::ln::inbound_payment::create
+/// [`inbound_payment::create_from_hash`]: lightning::ln::inbound_payment::create_from_hash
 /// [`PhantomRouteHints::channels`]: lightning::ln::channelmanager::PhantomRouteHints::channels
 pub fn create_phantom_invoice_with_description_hash<Signer: Sign, K: Deref>(
 	amt_msat: Option<u64>, description_hash: Sha256, payment_hash: PaymentHash,
