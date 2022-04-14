@@ -1707,7 +1707,11 @@ fn is_gossip_msg(type_id: u16) -> bool {
 	match type_id {
 		msgs::ChannelAnnouncement::TYPE |
 		msgs::ChannelUpdate::TYPE |
-		msgs::NodeAnnouncement::TYPE => true,
+		msgs::NodeAnnouncement::TYPE |
+		msgs::QueryChannelRange::TYPE |
+		msgs::ReplyChannelRange::TYPE |
+		msgs::QueryShortChannelIds::TYPE |
+		msgs::ReplyShortChannelIdsEnd::TYPE => true,
 		_ => false
 	}
 }
