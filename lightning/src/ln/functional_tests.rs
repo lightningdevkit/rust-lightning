@@ -5188,7 +5188,9 @@ fn test_duplicate_payment_hash_one_failure_one_success() {
 	// We reduce the final CLTV here by a somewhat arbitrary constant to keep it under the one-byte
 	// script push size limit so that the below script length checks match
 	// ACCEPTED_HTLC_SCRIPT_WEIGHT.
-	let (route, _, _, _) = get_route_and_payment_hash!(nodes[0], nodes[3], vec![], 900000, TEST_FINAL_CLTV - 40);
+	let payment_params = PaymentParameters::from_node_id(nodes[3].node.get_our_node_id())
+		.with_features(InvoiceFeatures::known());
+	let (route, _, _, _) = get_route_and_payment_hash!(nodes[0], nodes[3], payment_params, 900000, TEST_FINAL_CLTV - 40);
 	send_along_route_with_secret(&nodes[0], route, &[&[&nodes[1], &nodes[2], &nodes[3]]], 900000, duplicate_payment_hash, payment_secret);
 
 	let commitment_txn = get_local_commitment_txn!(nodes[2], chan_2.2);
@@ -6437,7 +6439,9 @@ fn test_update_add_htlc_bolt2_sender_cltv_expiry_too_high() {
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let _chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1000000, 0, InitFeatures::known(), InitFeatures::known());
 
-	let (mut route, our_payment_hash, _, our_payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], vec![], 100000000, 0);
+	let payment_params = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id())
+		.with_features(InvoiceFeatures::known());
+	let (mut route, our_payment_hash, _, our_payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], payment_params, 100000000, 0);
 	route.paths[0].last_mut().unwrap().cltv_expiry_delta = 500000001;
 	unwrap_send_err!(nodes[0].node.send_payment(&route, our_payment_hash, &Some(our_payment_secret)), true, APIError::RouteError { ref err },
 		assert_eq!(err, &"Channel CLTV overflowed?"));
@@ -7537,7 +7541,9 @@ fn test_bump_penalty_txn_on_revoked_commitment() {
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1000000, 59000000, InitFeatures::known(), InitFeatures::known());
 
 	let payment_preimage = route_payment(&nodes[0], &vec!(&nodes[1])[..], 3000000).0;
-	let (route,_, _, _) = get_route_and_payment_hash!(nodes[1], nodes[0], vec![], 3000000, 30);
+	let payment_params = PaymentParameters::from_node_id(nodes[0].node.get_our_node_id())
+		.with_features(InvoiceFeatures::known());
+	let (route,_, _, _) = get_route_and_payment_hash!(nodes[1], nodes[0], payment_params, 3000000, 30);
 	send_along_route(&nodes[1], route, &vec!(&nodes[0])[..], 3000000);
 
 	let revoked_txn = get_local_commitment_txn!(nodes[0], chan.2);
