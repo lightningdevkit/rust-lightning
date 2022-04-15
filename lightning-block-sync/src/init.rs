@@ -238,7 +238,7 @@ mod tests {
 
 	#[tokio::test]
 	async fn sync_from_same_chain() {
-		let mut chain = Blockchain::default().with_height(4);
+		let chain = Blockchain::default().with_height(4);
 
 		let listener_1 = MockChainListener::new()
 			.expect_block_connected(*chain.at_height(2))
@@ -256,7 +256,7 @@ mod tests {
 			(chain.at_height(3).block_hash, &listener_3 as &dyn chain::Listen),
 		];
 		let mut cache = chain.header_cache(0..=4);
-		match synchronize_listeners(&mut chain, Network::Bitcoin, &mut cache, listeners).await {
+		match synchronize_listeners(&chain, Network::Bitcoin, &mut cache, listeners).await {
 			Ok(header) => assert_eq!(header, chain.tip()),
 			Err(e) => panic!("Unexpected error: {:?}", e),
 		}
@@ -264,7 +264,7 @@ mod tests {
 
 	#[tokio::test]
 	async fn sync_from_different_chains() {
-		let mut main_chain = Blockchain::default().with_height(4);
+		let main_chain = Blockchain::default().with_height(4);
 		let fork_chain_1 = main_chain.fork_at_height(1);
 		let fork_chain_2 = main_chain.fork_at_height(2);
 		let fork_chain_3 = main_chain.fork_at_height(3);
@@ -293,7 +293,7 @@ mod tests {
 		let mut cache = fork_chain_1.header_cache(2..=4);
 		cache.extend(fork_chain_2.header_cache(3..=4));
 		cache.extend(fork_chain_3.header_cache(4..=4));
-		match synchronize_listeners(&mut main_chain, Network::Bitcoin, &mut cache, listeners).await {
+		match synchronize_listeners(&main_chain, Network::Bitcoin, &mut cache, listeners).await {
 			Ok(header) => assert_eq!(header, main_chain.tip()),
 			Err(e) => panic!("Unexpected error: {:?}", e),
 		}
@@ -301,7 +301,7 @@ mod tests {
 
 	#[tokio::test]
 	async fn sync_from_overlapping_chains() {
-		let mut main_chain = Blockchain::default().with_height(4);
+		let main_chain = Blockchain::default().with_height(4);
 		let fork_chain_1 = main_chain.fork_at_height(1);
 		let fork_chain_2 = fork_chain_1.fork_at_height(2);
 		let fork_chain_3 = fork_chain_2.fork_at_height(3);
@@ -336,7 +336,7 @@ mod tests {
 		let mut cache = fork_chain_1.header_cache(2..=4);
 		cache.extend(fork_chain_2.header_cache(3..=4));
 		cache.extend(fork_chain_3.header_cache(4..=4));
-		match synchronize_listeners(&mut main_chain, Network::Bitcoin, &mut cache, listeners).await {
+		match synchronize_listeners(&main_chain, Network::Bitcoin, &mut cache, listeners).await {
 			Ok(header) => assert_eq!(header, main_chain.tip()),
 			Err(e) => panic!("Unexpected error: {:?}", e),
 		}
@@ -344,7 +344,7 @@ mod tests {
 
 	#[tokio::test]
 	async fn cache_connected_and_keep_disconnected_blocks() {
-		let mut main_chain = Blockchain::default().with_height(2);
+		let main_chain = Blockchain::default().with_height(2);
 		let fork_chain = main_chain.fork_at_height(1);
 		let new_tip = main_chain.tip();
 		let old_tip = fork_chain.tip();
@@ -355,7 +355,7 @@ mod tests {
 
 		let listeners = vec![(old_tip.block_hash, &listener as &dyn chain::Listen)];
 		let mut cache = fork_chain.header_cache(2..=2);
-		match synchronize_listeners(&mut main_chain, Network::Bitcoin, &mut cache, listeners).await {
+		match synchronize_listeners(&main_chain, Network::Bitcoin, &mut cache, listeners).await {
 			Ok(_) => {
 				assert!(cache.contains_key(&new_tip.block_hash));
 				assert!(cache.contains_key(&old_tip.block_hash));
