@@ -170,12 +170,12 @@ mod sealed {
 ///
 /// Other `Poll` implementations should be built using `ChainPoller` as it provides the simplest way
 /// of validating chain data and checking consistency.
-pub struct ChainPoller<B: Deref<Target=T> + Sized, T: BlockSource> {
+pub struct ChainPoller<B: Deref<Target=T> + Sized + Send + Sync, T: BlockSource + ?Sized> {
 	block_source: B,
 	network: Network,
 }
 
-impl<B: Deref<Target=T> + Sized, T: BlockSource> ChainPoller<B, T> {
+impl<B: Deref<Target=T> + Sized + Send + Sync, T: BlockSource + ?Sized> ChainPoller<B, T> {
 	/// Creates a new poller for the given block source.
 	///
 	/// If the `network` parameter is mainnet, then the difficulty between blocks is checked for
@@ -185,7 +185,7 @@ impl<B: Deref<Target=T> + Sized, T: BlockSource> ChainPoller<B, T> {
 	}
 }
 
-impl<B: Deref<Target=T> + Sized + Send + Sync, T: BlockSource> Poll for ChainPoller<B, T> {
+impl<B: Deref<Target=T> + Sized + Send + Sync, T: BlockSource + ?Sized> Poll for ChainPoller<B, T> {
 	fn poll_chain_tip<'a>(&'a self, best_known_chain_tip: ValidatedBlockHeader) ->
 		AsyncBlockSourceResult<'a, ChainTip>
 	{

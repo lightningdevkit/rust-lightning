@@ -10,14 +10,16 @@ use bitcoin::network::constants::Network;
 
 use lightning::chain;
 
+use std::ops::Deref;
+
 /// Returns a validated block header of the source's best chain tip.
 ///
 /// Upon success, the returned header can be used to initialize [`SpvClient`]. Useful during a fresh
 /// start when there are no chain listeners to sync yet.
 ///
 /// [`SpvClient`]: crate::SpvClient
-pub async fn validate_best_block_header<B: BlockSource>(block_source: &B) ->
-BlockSourceResult<ValidatedBlockHeader> {
+pub async fn validate_best_block_header<B: Deref>(block_source: B) ->
+BlockSourceResult<ValidatedBlockHeader> where B::Target: BlockSource {
 	let (best_block_hash, best_block_height) = block_source.get_best_block().await?;
 	block_source
 		.get_header(&best_block_hash, best_block_height).await?
@@ -121,13 +123,13 @@ BlockSourceResult<ValidatedBlockHeader> {
 /// [`SpvClient`]: crate::SpvClient
 /// [`ChannelManager`]: lightning::ln::channelmanager::ChannelManager
 /// [`ChannelMonitor`]: lightning::chain::channelmonitor::ChannelMonitor
-pub async fn synchronize_listeners<'a, B: BlockSource, C: Cache, L: chain::Listen + ?Sized>(
-	block_source: &B,
+pub async fn synchronize_listeners<'a, B: Deref + Sized + Send + Sync, C: Cache, L: chain::Listen + ?Sized>(
+	block_source: B,
 	network: Network,
 	header_cache: &mut C,
 	mut chain_listeners: Vec<(BlockHash, &'a L)>,
-) -> BlockSourceResult<ValidatedBlockHeader> {
-	let best_header = validate_best_block_header(block_source).await?;
+) -> BlockSourceResult<ValidatedBlockHeader> where B::Target: BlockSource {
+	let best_header = validate_best_block_header(&*block_source).await?;
 
 	// Fetch the header for the block hash paired with each listener.
 	let mut chain_listeners_with_old_headers = Vec::new();
