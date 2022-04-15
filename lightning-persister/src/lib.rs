@@ -28,7 +28,7 @@ use lightning::ln::channelmanager::ChannelManager;
 use lightning::util::logger::Logger;
 use lightning::util::ser::{ReadableArgs, Writeable};
 use std::fs;
-use std::io::{Cursor, Error};
+use std::io::{Cursor, Error, Write};
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 
@@ -49,7 +49,7 @@ pub struct FilesystemPersister {
 }
 
 impl<Signer: Sign> DiskWriteable for ChannelMonitor<Signer> {
-	fn write_to_file(&self, writer: &mut fs::File) -> Result<(), Error> {
+	fn write_to_file<W: Write>(&self, writer: &mut W) -> Result<(), Error> {
 		self.write(writer)
 	}
 }
@@ -62,13 +62,13 @@ where
 	F::Target: FeeEstimator,
 	L::Target: Logger,
 {
-	fn write_to_file(&self, writer: &mut fs::File) -> Result<(), std::io::Error> {
+	fn write_to_file<W: Write>(&self, writer: &mut W) -> Result<(), std::io::Error> {
 		self.write(writer)
 	}
 }
 
 impl DiskWriteable for NetworkGraph {
-	fn write_to_file(&self, writer: &mut fs::File) -> Result<(), std::io::Error> {
+	fn write_to_file<W: Write>(&self, writer: &mut W) -> Result<(), std::io::Error> {
 		self.write(writer)
 	}
 }
