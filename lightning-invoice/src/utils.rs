@@ -13,6 +13,7 @@ use lightning::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
 use lightning::ln::channelmanager::{ChannelDetails, ChannelManager, PaymentId, PaymentSendFailure, MIN_FINAL_CLTV_EXPIRY};
 #[cfg(feature = "std")]
 use lightning::ln::channelmanager::{PhantomRouteHints, MIN_CLTV_EXPIRY_DELTA};
+use lightning::ln::inbound_payment::{create, create_from_hash, ExpandedKey};
 use lightning::ln::msgs::LightningError;
 use lightning::routing::scoring::Score;
 use lightning::routing::network_graph::{NetworkGraph, RoutingFees};
@@ -38,11 +39,12 @@ use sync::Mutex;
 ///   may be too long for QR code scanning. To fix this, `PhantomRouteHints::channels` may be pared
 ///   down
 ///
-/// `payment_hash` and `payment_secret` can come from [`ChannelManager::create_inbound_payment`] or
-/// [`ChannelManager::create_inbound_payment_for_hash`]. These values can be retrieved from any
-/// participating node. Alternatively, [`inbound_payment::create`] or
-/// [`inbound_payment::create_from_hash`] may be used to retrieve these values without a
-/// `ChannelManager`.
+/// `payment_hash` can be specified if you have a specific need for a custom payment hash (see the difference
+/// between [`ChannelManager::create_inbound_payment`] and [`ChannelManager::create_inbound_payment_for_hash`]).
+/// If `None` is provided for `payment_hash`, then one will be created.
+///
+/// `invoice_expiry_delta_secs` describes the number of seconds that the invoice is valid for
+/// in excess of the current time.
 ///
 /// Note that the provided `keys_manager`'s `KeysInterface` implementation must support phantom
 /// invoices in its `sign_invoice` implementation ([`PhantomKeysManager`] satisfies this
@@ -50,17 +52,17 @@ use sync::Mutex;
 ///
 /// [`PhantomKeysManager`]: lightning::chain::keysinterface::PhantomKeysManager
 /// [`ChannelManager::get_phantom_route_hints`]: lightning::ln::channelmanager::ChannelManager::get_phantom_route_hints
-/// [`inbound_payment::create`]: lightning::ln::inbound_payment::create
-/// [`inbound_payment::create_from_hash`]: lightning::ln::inbound_payment::create_from_hash
+/// [`ChannelManager::create_inbound_payment`]: lightning::ln::channelmanager::ChannelManager::create_inbound_payment
+/// [`ChannelManager::create_inbound_payment_for_hash`]: lightning::ln::channelmanager::ChannelManager::create_inbound_payment_for_hash
 /// [`PhantomRouteHints::channels`]: lightning::ln::channelmanager::PhantomRouteHints::channels
 pub fn create_phantom_invoice<Signer: Sign, K: Deref>(
-	amt_msat: Option<u64>, description: String, payment_hash: PaymentHash, payment_secret: PaymentSecret,
+	amt_msat: Option<u64>, payment_hash: Option<PaymentHash>, description: String, invoice_expiry_delta_secs: u32,
 	phantom_route_hints: Vec<PhantomRouteHints>, keys_manager: K, network: Currency,
 ) -> Result<Invoice, SignOrCreationError<()>> where K::Target: KeysInterface {
 	let description = Description::new(description).map_err(SignOrCreationError::CreationError)?;
 	let description = InvoiceDescription::Direct(&description,);
 	_create_phantom_invoice::<Signer, K>(
-		amt_msat, description, payment_hash, payment_secret, phantom_route_hints, keys_manager, network,
+		amt_msat, payment_hash, description, invoice_expiry_delta_secs, phantom_route_hints, keys_manager, network,
 	)
 }
 
@@ -80,11 +82,12 @@ pub fn create_phantom_invoice<Signer: Sign, K: Deref>(
 ///
 /// `description_hash` is a SHA-256 hash of the description text
 ///
-/// `payment_hash` and `payment_secret` can come from [`ChannelManager::create_inbound_payment`] or
-/// [`ChannelManager::create_inbound_payment_for_hash`]. These values can be retrieved from any
-/// participating node. Alternatively, [`inbound_payment::create`] or
-/// [`inbound_payment::create_from_hash`] may be used to retrieve these values without a
-/// `ChannelManager`.
+/// `payment_hash` can be specified if you have a specific need for a custom payment hash (see the difference
+/// between [`ChannelManager::create_inbound_payment`] and [`ChannelManager::create_inbound_payment_for_hash`]).
+/// If `None` is provided for `payment_hash`, then one will be created.
+///
+/// `invoice_expiry_delta_secs` describes the number of seconds that the invoice is valid for
+/// in excess of the current time.
 ///
 /// Note that the provided `keys_manager`'s `KeysInterface` implementation must support phantom
 /// invoices in its `sign_invoice` implementation ([`PhantomKeysManager`] satisfies this
@@ -92,30 +95,28 @@ pub fn create_phantom_invoice<Signer: Sign, K: Deref>(
 ///
 /// [`PhantomKeysManager`]: lightning::chain::keysinterface::PhantomKeysManager
 /// [`ChannelManager::get_phantom_route_hints`]: lightning::ln::channelmanager::ChannelManager::get_phantom_route_hints
-/// [`inbound_payment::create`]: lightning::ln::inbound_payment::create
-/// [`inbound_payment::create_from_hash`]: lightning::ln::inbound_payment::create_from_hash
+/// [`ChannelManager::create_inbound_payment`]: lightning::ln::channelmanager::ChannelManager::create_inbound_payment
+/// [`ChannelManager::create_inbound_payment_for_hash`]: lightning::ln::channelmanager::ChannelManager::create_inbound_payment_for_hash
 /// [`PhantomRouteHints::channels`]: lightning::ln::channelmanager::PhantomRouteHints::channels
 pub fn create_phantom_invoice_with_description_hash<Signer: Sign, K: Deref>(
-	amt_msat: Option<u64>, description_hash: Sha256, payment_hash: PaymentHash,
-	payment_secret: PaymentSecret, phantom_route_hints: Vec<PhantomRouteHints>,
-	keys_manager: K, network: Currency,
+	amt_msat: Option<u64>, payment_hash: Option<PaymentHash>, invoice_expiry_delta_secs: u32,
+	description_hash: Sha256, phantom_route_hints: Vec<PhantomRouteHints>, keys_manager: K, network: Currency,
 ) -> Result<Invoice, SignOrCreationError<()>> where K::Target: KeysInterface
 {
-
 	_create_phantom_invoice::<Signer, K>(
-		amt_msat,
-		InvoiceDescription::Hash(&description_hash),
-		payment_hash, payment_secret, phantom_route_hints, keys_manager, network,
+		amt_msat, payment_hash, InvoiceDescription::Hash(&description_hash),
+		invoice_expiry_delta_secs, phantom_route_hints, keys_manager, network,
 	)
 }
 
 #[cfg(feature = "std")]
 fn _create_phantom_invoice<Signer: Sign, K: Deref>(
-	amt_msat: Option<u64>, description: InvoiceDescription, payment_hash: PaymentHash,
-	payment_secret: PaymentSecret, phantom_route_hints: Vec<PhantomRouteHints>,
-	keys_manager: K, network: Currency,
+	amt_msat: Option<u64>, payment_hash: Option<PaymentHash>, description: InvoiceDescription,
+	invoice_expiry_delta_secs: u32, phantom_route_hints: Vec<PhantomRouteHints>, keys_manager: K, network: Currency,
 ) -> Result<Invoice, SignOrCreationError<()>> where K::Target: KeysInterface
 {
+	use std::time::{SystemTime, UNIX_EPOCH};
+
 	if phantom_route_hints.len() == 0 {
 		return Err(SignOrCreationError::CreationError(
 			CreationError::MissingRouteHints,
@@ -126,6 +127,35 @@ fn _create_phantom_invoice<Signer: Sign, K: Deref>(
 			InvoiceBuilder::new(network).description(description.0.clone())
 		}
 		InvoiceDescription::Hash(hash) => InvoiceBuilder::new(network).description_hash(hash.0),
+	};
+
+	// If we ever see performance here being too slow then we should probably take this ExpandedKey as a parameter instead.
+	let keys = ExpandedKey::new(&keys_manager.get_inbound_payment_key_material());
+	let (payment_hash, payment_secret) = if let Some(payment_hash) = payment_hash {
+		let payment_secret = create_from_hash(
+			&keys,
+			amt_msat,
+			payment_hash,
+			invoice_expiry_delta_secs,
+			SystemTime::now()
+				.duration_since(UNIX_EPOCH)
+				.expect("Time must be > 1970")
+				.as_secs(),
+		)
+		.map_err(|_| SignOrCreationError::CreationError(CreationError::InvalidAmount))?;
+		(payment_hash, payment_secret)
+	} else {
+		create(
+			&keys,
+			amt_msat,
+			invoice_expiry_delta_secs,
+			&keys_manager,
+			SystemTime::now()
+				.duration_since(UNIX_EPOCH)
+				.expect("Time must be > 1970")
+				.as_secs(),
+		)
+		.map_err(|_| SignOrCreationError::CreationError(CreationError::InvalidAmount))?
 	};
 
 	let mut invoice = invoice
@@ -755,23 +785,25 @@ mod test {
 		nodes[2].node.handle_channel_update(&nodes[0].node.get_our_node_id(), &chan_0_2.0);
 
 		let payment_amt = 10_000;
-		let (payment_preimage, payment_hash, payment_secret) = {
-			if user_generated_pmt_hash {
-				let payment_preimage = PaymentPreimage([1; 32]);
-				let payment_hash = PaymentHash(Sha256::hash(&payment_preimage.0[..]).into_inner());
-				let payment_secret = nodes[1].node.create_inbound_payment_for_hash(payment_hash, Some(payment_amt), 3600).unwrap();
-				(payment_preimage, payment_hash, payment_secret)
-			} else {
-				let (payment_hash, payment_secret) = nodes[1].node.create_inbound_payment(Some(payment_amt), 3600).unwrap();
-				let payment_preimage = nodes[1].node.get_payment_preimage(payment_hash, payment_secret).unwrap();
-				(payment_preimage, payment_hash, payment_secret)
-			}
-		};
 		let route_hints = vec![
 			nodes[1].node.get_phantom_route_hints(),
 			nodes[2].node.get_phantom_route_hints(),
 		];
-		let invoice = ::utils::create_phantom_invoice::<EnforcingSigner, &test_utils::TestKeysInterface>(Some(payment_amt), "test".to_string(), payment_hash, payment_secret, route_hints, &nodes[1].keys_manager, Currency::BitcoinTestnet).unwrap();
+
+		let user_payment_preimage = PaymentPreimage([1; 32]);
+		let payment_hash = if user_generated_pmt_hash {
+			Some(PaymentHash(Sha256::hash(&user_payment_preimage.0[..]).into_inner()))
+		} else {
+			None
+		};
+
+		let invoice = ::utils::create_phantom_invoice::<EnforcingSigner, &test_utils::TestKeysInterface>(Some(payment_amt), payment_hash, "test".to_string(), 3600, route_hints, &nodes[1].keys_manager, Currency::BitcoinTestnet).unwrap();
+		let (payment_hash, payment_secret) = (PaymentHash(invoice.payment_hash().into_inner()), *invoice.payment_secret());
+		let payment_preimage = if user_generated_pmt_hash {
+			user_payment_preimage
+		} else {
+			nodes[1].node.get_payment_preimage(payment_hash, payment_secret).unwrap()
+		};
 
 		assert_eq!(invoice.min_final_cltv_expiry(), MIN_FINAL_CLTV_EXPIRY as u64);
 		assert_eq!(invoice.description(), InvoiceDescription::Direct(&Description("test".to_string())));
@@ -856,14 +888,13 @@ mod test {
 		let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
 		let payment_amt = 20_000;
-		let (payment_hash, payment_secret) = nodes[1].node.create_inbound_payment(Some(payment_amt), 3600).unwrap();
 		let route_hints = vec![
 			nodes[1].node.get_phantom_route_hints(),
 			nodes[2].node.get_phantom_route_hints(),
 		];
 
 		let description_hash = crate::Sha256(Hash::hash("Description hash phantom invoice".as_bytes()));
-		let invoice = ::utils::create_phantom_invoice_with_description_hash::<EnforcingSigner,&test_utils::TestKeysInterface>(Some(payment_amt), description_hash, payment_hash, payment_secret, route_hints, &nodes[1].keys_manager, Currency::BitcoinTestnet).unwrap();
+		let invoice = ::utils::create_phantom_invoice_with_description_hash::<EnforcingSigner,&test_utils::TestKeysInterface>(Some(payment_amt), None, 3600, description_hash, route_hints, &nodes[1].keys_manager, Currency::BitcoinTestnet).unwrap();
 
 		assert_eq!(invoice.amount_pico_btc(), Some(200_000));
 		assert_eq!(invoice.min_final_cltv_expiry(), MIN_FINAL_CLTV_EXPIRY as u64);
@@ -1166,7 +1197,6 @@ mod test {
 		mut chan_ids_to_match: HashSet<u64>,
 		nodes_contains_public_channels: bool
 	){
-		let (payment_hash, payment_secret) = invoice_node.node.create_inbound_payment(invoice_amt, 3600).unwrap();
 		let phantom_route_hints = network_multi_nodes.iter()
 			.map(|node| node.node.get_phantom_route_hints())
 			.collect::<Vec<PhantomRouteHints>>();
@@ -1174,7 +1204,7 @@ mod test {
 			.map(|route_hint| route_hint.phantom_scid)
 			.collect::<HashSet<u64>>();
 
-		let invoice = ::utils::create_phantom_invoice::<EnforcingSigner, &test_utils::TestKeysInterface>(invoice_amt, "test".to_string(), payment_hash, payment_secret, phantom_route_hints, &invoice_node.keys_manager, Currency::BitcoinTestnet).unwrap();
+		let invoice = ::utils::create_phantom_invoice::<EnforcingSigner, &test_utils::TestKeysInterface>(invoice_amt, None, "test".to_string(), 3600, phantom_route_hints, &invoice_node.keys_manager, Currency::BitcoinTestnet).unwrap();
 
 		let invoice_hints = invoice.private_routes();
 
