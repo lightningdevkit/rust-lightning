@@ -58,9 +58,12 @@ use ln::chan_utils::CommitmentTransaction;
 #[test]
 fn test_insane_channel_opens() {
 	// Stand up a network of 2 nodes
+	use ln::channel::TOTAL_BITCOIN_SUPPLY_SATOSHIS;
+	let mut cfg = UserConfig::default();
+	cfg.peer_channel_config_limits.max_funding_satoshis = TOTAL_BITCOIN_SUPPLY_SATOSHIS + 1;
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(cfg)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	// Instantiate channel parameters where we push the maximum msats given our
@@ -92,11 +95,11 @@ fn test_insane_channel_opens() {
 		} else { assert!(false); }
 	};
 
-	use ln::channel::MAX_FUNDING_SATOSHIS_NO_WUMBO;
 	use ln::channelmanager::MAX_LOCAL_BREAKDOWN_TIMEOUT;
 
 	// Test all mutations that would make the channel open message insane
-	insane_open_helper(format!("Funding must be smaller than {}. It was {}", MAX_FUNDING_SATOSHIS_NO_WUMBO, MAX_FUNDING_SATOSHIS_NO_WUMBO).as_str(), |mut msg| { msg.funding_satoshis = MAX_FUNDING_SATOSHIS_NO_WUMBO; msg });
+	insane_open_helper(format!("Per our config, funding must be at most {}. It was {}", TOTAL_BITCOIN_SUPPLY_SATOSHIS + 1, TOTAL_BITCOIN_SUPPLY_SATOSHIS + 2).as_str(), |mut msg| { msg.funding_satoshis = TOTAL_BITCOIN_SUPPLY_SATOSHIS + 2; msg });
+	insane_open_helper(format!("Funding must be smaller than the total bitcoin supply. It was {}", TOTAL_BITCOIN_SUPPLY_SATOSHIS).as_str(), |mut msg| { msg.funding_satoshis = TOTAL_BITCOIN_SUPPLY_SATOSHIS; msg });
 
 	insane_open_helper("Bogus channel_reserve_satoshis", |mut msg| { msg.channel_reserve_satoshis = msg.funding_satoshis + 1; msg });
 
@@ -111,6 +114,25 @@ fn test_insane_channel_opens() {
 	insane_open_helper("0 max_accepted_htlcs makes for a useless channel", |mut msg| { msg.max_accepted_htlcs = 0; msg });
 
 	insane_open_helper("max_accepted_htlcs was 484. It must not be larger than 483", |mut msg| { msg.max_accepted_htlcs = 484; msg });
+}
+
+#[test]
+fn test_funding_exceeds_no_wumbo_limit() {
+	// Test that if a peer does not support wumbo channels, we'll refuse to open a wumbo channel to
+	// them.
+	use ln::channel::MAX_FUNDING_SATOSHIS_NO_WUMBO;
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let mut node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	node_cfgs[1].features = InitFeatures::known().clear_wumbo();
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	match nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), MAX_FUNDING_SATOSHIS_NO_WUMBO + 1, 0, 42, None) {
+		Err(APIError::APIMisuseError { err }) => {
+			assert_eq!(format!("funding_value must not exceed {}, it was {}", MAX_FUNDING_SATOSHIS_NO_WUMBO, MAX_FUNDING_SATOSHIS_NO_WUMBO + 1), err);
+		},
+		_ => panic!()
+	}
 }
 
 fn do_test_counterparty_no_reserve(send_from_initiator: bool) {

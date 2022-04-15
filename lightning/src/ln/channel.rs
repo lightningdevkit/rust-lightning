@@ -736,8 +736,8 @@ pub const ANCHOR_OUTPUT_VALUE_SATOSHI: u64 = 330;
 
 /// Maximum `funding_satoshis` value according to the BOLT #2 specification, if
 /// `option_support_large_channel` (aka wumbo channels) is not supported.
-/// It's 2^24.
-pub const MAX_FUNDING_SATOSHIS_NO_WUMBO: u64 = 1 << 24;
+/// It's 2^24 - 1.
+pub const MAX_FUNDING_SATOSHIS_NO_WUMBO: u64 = (1 << 24) - 1;
 
 /// Total bitcoin supply in satoshis.
 pub const TOTAL_BITCOIN_SUPPLY_SATOSHIS: u64 = 21_000_000 * 1_0000_0000;
@@ -854,8 +854,11 @@ impl<Signer: Sign> Channel<Signer> {
 		let holder_signer = keys_provider.get_channel_signer(false, channel_value_satoshis);
 		let pubkeys = holder_signer.pubkeys().clone();
 
-		if channel_value_satoshis >= MAX_FUNDING_SATOSHIS_NO_WUMBO {
-			return Err(APIError::APIMisuseError{err: format!("funding_value must be smaller than {}, it was {}", MAX_FUNDING_SATOSHIS_NO_WUMBO, channel_value_satoshis)});
+		if !their_features.supports_wumbo() && channel_value_satoshis > MAX_FUNDING_SATOSHIS_NO_WUMBO {
+			return Err(APIError::APIMisuseError{err: format!("funding_value must not exceed {}, it was {}", MAX_FUNDING_SATOSHIS_NO_WUMBO, channel_value_satoshis)});
+		}
+		if channel_value_satoshis >= TOTAL_BITCOIN_SUPPLY_SATOSHIS {
+			return Err(APIError::APIMisuseError{err: format!("funding_value must be smaller than the total bitcoin supply, it was {}", channel_value_satoshis)});
 		}
 		let channel_value_msat = channel_value_satoshis * 1000;
 		if push_msat > channel_value_msat {
@@ -1080,8 +1083,11 @@ impl<Signer: Sign> Channel<Signer> {
 		}
 
 		// Check sanity of message fields:
-		if msg.funding_satoshis >= MAX_FUNDING_SATOSHIS_NO_WUMBO {
-			return Err(ChannelError::Close(format!("Funding must be smaller than {}. It was {}", MAX_FUNDING_SATOSHIS_NO_WUMBO, msg.funding_satoshis)));
+		if msg.funding_satoshis > config.peer_channel_config_limits.max_funding_satoshis {
+			return Err(ChannelError::Close(format!("Per our config, funding must be at most {}. It was {}", config.peer_channel_config_limits.max_funding_satoshis, msg.funding_satoshis)));
+		}
+		if msg.funding_satoshis >= TOTAL_BITCOIN_SUPPLY_SATOSHIS {
+			return Err(ChannelError::Close(format!("Funding must be smaller than the total bitcoin supply. It was {}", msg.funding_satoshis)));
 		}
 		if msg.channel_reserve_satoshis > msg.funding_satoshis {
 			return Err(ChannelError::Close(format!("Bogus channel_reserve_satoshis ({}). Must be not greater than funding_satoshis: {}", msg.channel_reserve_satoshis, msg.funding_satoshis)));

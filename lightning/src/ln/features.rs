@@ -743,6 +743,15 @@ impl<T: sealed::ShutdownAnySegwit> Features<T> {
 		self
 	}
 }
+
+impl<T: sealed::Wumbo> Features<T> {
+	#[cfg(test)]
+	pub(crate) fn clear_wumbo(mut self) -> Self {
+		<T as sealed::Wumbo>::clear_bits(&mut self.flags);
+		self
+	}
+}
+
 macro_rules! impl_feature_len_prefixed_write {
 	($features: ident) => {
 		impl Writeable for $features {
