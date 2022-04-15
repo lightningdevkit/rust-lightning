@@ -10,6 +10,7 @@
 //! Various user-configurable channel limits and settings which ChannelManager
 //! applies for you.
 
+use ln::channel::MAX_FUNDING_SATOSHIS_NO_WUMBO;
 use ln::channelmanager::{BREAKDOWN_TIMEOUT, MAX_LOCAL_BREAKDOWN_TIMEOUT};
 
 /// Configuration we set when applicable.
@@ -95,11 +96,16 @@ impl Default for ChannelHandshakeConfig {
 /// are applied mostly only to incoming channels that's not much of a problem.
 #[derive(Copy, Clone, Debug)]
 pub struct ChannelHandshakeLimits {
-	/// Minimum allowed satoshis when a channel is funded, this is supplied by the sender and so
+	/// Minimum allowed satoshis when a channel is funded. This is supplied by the sender and so
 	/// only applies to inbound channels.
 	///
 	/// Default value: 0.
 	pub min_funding_satoshis: u64,
+	/// Maximum allowed satoshis when a channel is funded. This is supplied by the sender and so
+	/// only applies to inbound channels.
+	///
+	/// Default value: 2^24 - 1.
+	pub max_funding_satoshis: u64,
 	/// The remote node sets a limit on the minimum size of HTLCs we can send to them. This allows
 	/// you to limit the maximum minimum-size they can require.
 	///
@@ -151,6 +157,7 @@ impl Default for ChannelHandshakeLimits {
 	fn default() -> Self {
 		ChannelHandshakeLimits {
 			min_funding_satoshis: 0,
+			max_funding_satoshis: MAX_FUNDING_SATOSHIS_NO_WUMBO,
 			max_htlc_minimum_msat: <u64>::max_value(),
 			min_max_htlc_value_in_flight_msat: 0,
 			max_channel_reserve_satoshis: <u64>::max_value(),
