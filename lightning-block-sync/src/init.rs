@@ -123,11 +123,11 @@ BlockSourceResult<ValidatedBlockHeader> where B::Target: BlockSource {
 /// [`SpvClient`]: crate::SpvClient
 /// [`ChannelManager`]: lightning::ln::channelmanager::ChannelManager
 /// [`ChannelMonitor`]: lightning::chain::channelmonitor::ChannelMonitor
-pub async fn synchronize_listeners<'a, B: Deref + Sized + Send + Sync, C: Cache, L: chain::Listen + ?Sized>(
+pub async fn synchronize_listeners<B: Deref + Sized + Send + Sync, C: Cache, L: chain::Listen + ?Sized>(
 	block_source: B,
 	network: Network,
 	header_cache: &mut C,
-	mut chain_listeners: Vec<(BlockHash, &'a L)>,
+	mut chain_listeners: Vec<(BlockHash, &L)>,
 ) -> BlockSourceResult<ValidatedBlockHeader> where B::Target: BlockSource {
 	let best_header = validate_best_block_header(&*block_source).await?;
 
