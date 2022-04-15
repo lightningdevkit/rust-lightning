@@ -734,9 +734,13 @@ pub const COMMITMENT_TX_WEIGHT_PER_HTLC: u64 = 172;
 
 pub const ANCHOR_OUTPUT_VALUE_SATOSHI: u64 = 330;
 
-/// Maximum `funding_satoshis` value, according to the BOLT #2 specification
-/// it's 2^24.
-pub const MAX_FUNDING_SATOSHIS: u64 = 1 << 24;
+/// Maximum `funding_satoshis` value according to the BOLT #2 specification, if
+/// `option_support_large_channel` (aka wumbo channels) is not supported.
+/// It's 2^24.
+pub const MAX_FUNDING_SATOSHIS_NO_WUMBO: u64 = 1 << 24;
+
+/// Total bitcoin supply in satoshis.
+pub const TOTAL_BITCOIN_SUPPLY_SATOSHIS: u64 = 21_000_000 * 1_0000_0000;
 
 /// The maximum network dust limit for standard script formats. This currently represents the
 /// minimum output value for a P2SH output before Bitcoin Core 22 considers the entire
@@ -850,8 +854,8 @@ impl<Signer: Sign> Channel<Signer> {
 		let holder_signer = keys_provider.get_channel_signer(false, channel_value_satoshis);
 		let pubkeys = holder_signer.pubkeys().clone();
 
-		if channel_value_satoshis >= MAX_FUNDING_SATOSHIS {
-			return Err(APIError::APIMisuseError{err: format!("funding_value must be smaller than {}, it was {}", MAX_FUNDING_SATOSHIS, channel_value_satoshis)});
+		if channel_value_satoshis >= MAX_FUNDING_SATOSHIS_NO_WUMBO {
+			return Err(APIError::APIMisuseError{err: format!("funding_value must be smaller than {}, it was {}", MAX_FUNDING_SATOSHIS_NO_WUMBO, channel_value_satoshis)});
 		}
 		let channel_value_msat = channel_value_satoshis * 1000;
 		if push_msat > channel_value_msat {
@@ -1076,8 +1080,8 @@ impl<Signer: Sign> Channel<Signer> {
 		}
 
 		// Check sanity of message fields:
-		if msg.funding_satoshis >= MAX_FUNDING_SATOSHIS {
-			return Err(ChannelError::Close(format!("Funding must be smaller than {}. It was {}", MAX_FUNDING_SATOSHIS, msg.funding_satoshis)));
+		if msg.funding_satoshis >= MAX_FUNDING_SATOSHIS_NO_WUMBO {
+			return Err(ChannelError::Close(format!("Funding must be smaller than {}. It was {}", MAX_FUNDING_SATOSHIS_NO_WUMBO, msg.funding_satoshis)));
 		}
 		if msg.channel_reserve_satoshis > msg.funding_satoshis {
 			return Err(ChannelError::Close(format!("Bogus channel_reserve_satoshis ({}). Must be not greater than funding_satoshis: {}", msg.channel_reserve_satoshis, msg.funding_satoshis)));
@@ -4110,7 +4114,7 @@ impl<Signer: Sign> Channel<Signer> {
 		if !self.pending_inbound_htlcs.is_empty() || !self.pending_outbound_htlcs.is_empty() {
 			return Err(ChannelError::Close("Remote end sent us a closing_signed while there were still pending HTLCs".to_owned()));
 		}
-		if msg.fee_satoshis > 21_000_000 * 1_0000_0000 { //this is required to stop potential overflow in build_closing_transaction
+		if msg.fee_satoshis > TOTAL_BITCOIN_SUPPLY_SATOSHIS { // this is required to stop potential overflow in build_closing_transaction
 			return Err(ChannelError::Close("Remote tried to send us a closing tx with > 21 million BTC fee".to_owned()));
 		}
 
@@ -6298,7 +6302,7 @@ mod tests {
 	use ln::PaymentHash;
 	use ln::channelmanager::{HTLCSource, PaymentId};
 	use ln::channel::{Channel, InboundHTLCOutput, OutboundHTLCOutput, InboundHTLCState, OutboundHTLCState, HTLCCandidate, HTLCInitiator};
-	use ln::channel::MAX_FUNDING_SATOSHIS;
+	use ln::channel::{MAX_FUNDING_SATOSHIS_NO_WUMBO, TOTAL_BITCOIN_SUPPLY_SATOSHIS};
 	use ln::features::InitFeatures;
 	use ln::msgs::{ChannelUpdate, DataLossProtect, DecodeError, OptionalField, UnsignedChannelUpdate};
 	use ln::script::ShutdownScript;
@@ -6334,9 +6338,10 @@ mod tests {
 	}
 
 	#[test]
-	fn test_max_funding_satoshis() {
-		assert!(MAX_FUNDING_SATOSHIS <= 21_000_000 * 100_000_000,
-		        "MAX_FUNDING_SATOSHIS is greater than all satoshis in existence");
+	fn test_max_funding_satoshis_no_wumbo() {
+		assert_eq!(TOTAL_BITCOIN_SUPPLY_SATOSHIS, 21_000_000 * 100_000_000);
+		assert!(MAX_FUNDING_SATOSHIS_NO_WUMBO <= TOTAL_BITCOIN_SUPPLY_SATOSHIS,
+		        "MAX_FUNDING_SATOSHIS_NO_WUMBO is greater than all satoshis in existence");
 	}
 
 	#[test]

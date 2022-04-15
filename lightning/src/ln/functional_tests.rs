@@ -92,11 +92,11 @@ fn test_insane_channel_opens() {
 		} else { assert!(false); }
 	};
 
-	use ln::channel::MAX_FUNDING_SATOSHIS;
+	use ln::channel::MAX_FUNDING_SATOSHIS_NO_WUMBO;
 	use ln::channelmanager::MAX_LOCAL_BREAKDOWN_TIMEOUT;
 
 	// Test all mutations that would make the channel open message insane
-	insane_open_helper(format!("Funding must be smaller than {}. It was {}", MAX_FUNDING_SATOSHIS, MAX_FUNDING_SATOSHIS).as_str(), |mut msg| { msg.funding_satoshis = MAX_FUNDING_SATOSHIS; msg });
+	insane_open_helper(format!("Funding must be smaller than {}. It was {}", MAX_FUNDING_SATOSHIS_NO_WUMBO, MAX_FUNDING_SATOSHIS_NO_WUMBO).as_str(), |mut msg| { msg.funding_satoshis = MAX_FUNDING_SATOSHIS_NO_WUMBO; msg });
 
 	insane_open_helper("Bogus channel_reserve_satoshis", |mut msg| { msg.channel_reserve_satoshis = msg.funding_satoshis + 1; msg });
 
