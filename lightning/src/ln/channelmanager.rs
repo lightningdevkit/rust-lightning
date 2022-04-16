@@ -4761,6 +4761,17 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 							msg,
 						});
 					} else if chan.get().is_usable() {
+						// the channel should be in a usable condition, but the counterparty
+						// is stuck in the past, so we send the updated data with a
+						// `channel_reestablish` msg.
+						if let Some(reestablish_msg) = responses.channel_reestablish_msg {
+							channel_state.pending_msg_events.push(events::MessageSendEvent::SendChannelReestablish {
+								node_id: counterparty_node_id.clone(),
+								msg: reestablish_msg,
+							});
+							return Ok(());
+						}
+
 						// If the channel is in a usable state (ie the channel is not being shut
 						// down), send a unicast channel_update to our counterparty to make sure
 						// they have the latest channel parameters.

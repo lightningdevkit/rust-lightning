@@ -432,6 +432,7 @@ pub(super) struct ReestablishResponses {
 	pub holding_cell_failed_htlcs: Vec<(HTLCSource, PaymentHash)>,
 	pub announcement_sigs: Option<msgs::AnnouncementSignatures>,
 	pub shutdown_msg: Option<msgs::Shutdown>,
+	pub channel_reestablish_msg: Option<msgs::ChannelReestablish>,
 }
 
 /// If the majority of the channels funds are to the fundee and the initiator holds only just
@@ -3743,6 +3744,7 @@ impl<Signer: Sign> Channel<Signer> {
 					order: RAACommitmentOrder::CommitmentFirst,
 					holding_cell_failed_htlcs: Vec::new(),
 					shutdown_msg, announcement_sigs,
+					channel_reestablish_msg: None,
 				});
 			}
 
@@ -3758,6 +3760,7 @@ impl<Signer: Sign> Channel<Signer> {
 				order: RAACommitmentOrder::CommitmentFirst,
 				holding_cell_failed_htlcs: Vec::new(),
 				shutdown_msg, announcement_sigs,
+				channel_reestablish_msg: None,
 			});
 		}
 
@@ -3816,6 +3819,7 @@ impl<Signer: Sign> Channel<Signer> {
 							order: self.resend_order.clone(),
 							mon_update: Some(monitor_update),
 							holding_cell_failed_htlcs,
+							channel_reestablish_msg: None,
 						})
 					},
 					Ok((None, holding_cell_failed_htlcs)) => {
@@ -3826,6 +3830,7 @@ impl<Signer: Sign> Channel<Signer> {
 							order: self.resend_order.clone(),
 							mon_update: None,
 							holding_cell_failed_htlcs,
+							channel_reestablish_msg: None,
 						})
 					},
 				}
@@ -3837,6 +3842,7 @@ impl<Signer: Sign> Channel<Signer> {
 					order: self.resend_order.clone(),
 					mon_update: None,
 					holding_cell_failed_htlcs: Vec::new(),
+					channel_reestablish_msg: None,
 				})
 			}
 		} else if msg.next_local_commitment_number == next_counterparty_commitment_number - 1 {
@@ -3853,6 +3859,7 @@ impl<Signer: Sign> Channel<Signer> {
 					commitment_update: None, raa: None, mon_update: None,
 					order: self.resend_order.clone(),
 					holding_cell_failed_htlcs: Vec::new(),
+					channel_reestablish_msg: None,
 				})
 			} else {
 				Ok(ReestablishResponses {
@@ -3862,10 +3869,31 @@ impl<Signer: Sign> Channel<Signer> {
 					order: self.resend_order.clone(),
 					mon_update: None,
 					holding_cell_failed_htlcs: Vec::new(),
+					channel_reestablish_msg: None,
 				})
 			}
 		} else {
-			Err(ChannelError::Close("Peer attempted to reestablish channel with a very old remote commitment transaction".to_owned()))
+			// BOLT 2 allow the sender to be outdate, and to avoid
+			// to close channel due the very old remote commitment
+			// a channel_reestablish message form us is sent, to
+			// give the possibility to try to resolver from some problem.
+			let channel_state_updated = msgs::ChannelReestablish{
+				channel_id: self.channel_id,
+				next_local_commitment_number: self.cur_holder_commitment_transaction_number,
+				next_remote_commitment_number: self.cur_holder_commitment_transaction_number,
+				data_loss_protect: OptionalField::Absent,
+			};
+			Ok(ReestablishResponses{
+				funding_locked,
+				raa: None,
+				commitment_update: None,
+				order: self.resend_order.clone(),
+				mon_update: None,
+				holding_cell_failed_htlcs: Vec::new(),
+				announcement_sigs,
+				shutdown_msg,
+				channel_reestablish_msg: Some(channel_state_updated)
+			})
 		}
 	}
 
