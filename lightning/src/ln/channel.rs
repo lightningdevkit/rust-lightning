@@ -2330,23 +2330,30 @@ impl<Signer: Sign> Channel<Signer> {
 		stats
 	}
 
-	/// Get the available (ie not including pending HTLCs) inbound and outbound balance in msat.
+	/// Get the available (ie not including pending HTLCs) inbound and outbound balance, plus the
+	/// amount available for a single HTLC send, all in msat.
 	/// Doesn't bother handling the
 	/// if-we-removed-it-already-but-haven't-fully-resolved-they-can-still-send-an-inbound-HTLC
 	/// corner case properly.
 	/// The channel reserve is subtracted from each balance.
 	/// See also [`Channel::get_balance_msat`]
-	pub fn get_inbound_outbound_available_balance_msat(&self) -> (u64, u64) {
+	pub fn get_inbound_outbound_available_balance_msat(&self) -> (u64, u64, u64) {
 		// Note that we have to handle overflow due to the above case.
+		let outbound_stats = self.get_outbound_pending_htlc_stats(None);
+		let outbound_capacity_msat = cmp::max(self.value_to_self_msat as i64
+				- outbound_stats.pending_htlcs_value_msat as i64
+				- self.counterparty_selected_channel_reserve_satoshis.unwrap_or(0) as i64 * 1000,
+			0) as u64;
 		(
 			cmp::max(self.channel_value_satoshis as i64 * 1000
 				- self.value_to_self_msat as i64
 				- self.get_inbound_pending_htlc_stats(None).pending_htlcs_value_msat as i64
 				- self.holder_selected_channel_reserve_satoshis as i64 * 1000,
 			0) as u64,
-			cmp::max(self.value_to_self_msat as i64
-				- self.get_outbound_pending_htlc_stats(None).pending_htlcs_value_msat as i64
-				- self.counterparty_selected_channel_reserve_satoshis.unwrap_or(0) as i64 * 1000,
+			outbound_capacity_msat,
+			cmp::max(cmp::min(outbound_capacity_msat as i64,
+				self.counterparty_max_htlc_value_in_flight_msat as i64
+					- outbound_stats.pending_htlcs_value_msat as i64),
 			0) as u64
 		)
 	}
