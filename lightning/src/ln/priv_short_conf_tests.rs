@@ -16,8 +16,8 @@ use chain::channelmonitor::ChannelMonitor;
 use chain::keysinterface::{Recipient, KeysInterface};
 use ln::channelmanager::{ChannelManager, ChannelManagerReadArgs, MIN_CLTV_EXPIRY_DELTA};
 use routing::network_graph::RoutingFees;
-use routing::router::{RouteHint, RouteHintHop};
-use ln::features::InitFeatures;
+use routing::router::{PaymentParameters, RouteHint, RouteHintHop};
+use ln::features::{InitFeatures, InvoiceFeatures};
 use ln::msgs;
 use ln::msgs::{ChannelMessageHandler, RoutingMessageHandler, OptionalField};
 use util::enforcing_trait_impls::EnforcingSigner;
@@ -71,7 +71,10 @@ fn test_priv_forwarding_rejection() {
 		htlc_maximum_msat: None,
 	}]);
 	let last_hops = vec![route_hint];
-	let (route, our_payment_hash, our_payment_preimage, our_payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], last_hops, 10_000, TEST_FINAL_CLTV);
+	let payment_params = PaymentParameters::from_node_id(nodes[2].node.get_our_node_id())
+		.with_features(InvoiceFeatures::known())
+		.with_route_hints(last_hops);
+	let (route, our_payment_hash, our_payment_preimage, our_payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], payment_params, 10_000, TEST_FINAL_CLTV);
 
 	nodes[0].node.send_payment(&route, our_payment_hash, &Some(our_payment_secret)).unwrap();
 	check_added_monitors!(nodes[0], 1);
@@ -269,7 +272,10 @@ fn test_routed_scid_alias() {
 		htlc_maximum_msat: None,
 		htlc_minimum_msat: None,
 	}])];
-	let (route, payment_hash, payment_preimage, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], hop_hints, 100_000, 42);
+	let payment_params = PaymentParameters::from_node_id(nodes[2].node.get_our_node_id())
+		.with_features(InvoiceFeatures::known())
+		.with_route_hints(hop_hints);
+	let (route, payment_hash, payment_preimage, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], payment_params, 100_000, 42);
 	assert_eq!(route.paths[0][1].short_channel_id, last_hop[0].inbound_scid_alias.unwrap());
 	nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret)).unwrap();
 	check_added_monitors!(nodes[0], 1);
@@ -419,7 +425,10 @@ fn test_inbound_scid_privacy() {
 		htlc_maximum_msat: None,
 		htlc_minimum_msat: None,
 	}])];
-	let (route, payment_hash, payment_preimage, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], hop_hints.clone(), 100_000, 42);
+	let payment_params = PaymentParameters::from_node_id(nodes[2].node.get_our_node_id())
+		.with_features(InvoiceFeatures::known())
+		.with_route_hints(hop_hints.clone());
+	let (route, payment_hash, payment_preimage, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], payment_params, 100_000, 42);
 	assert_eq!(route.paths[0][1].short_channel_id, last_hop[0].inbound_scid_alias.unwrap());
 	nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret)).unwrap();
 	check_added_monitors!(nodes[0], 1);
@@ -431,7 +440,10 @@ fn test_inbound_scid_privacy() {
 	// what channel we're talking about.
 	hop_hints[0].0[0].short_channel_id = last_hop[0].short_channel_id.unwrap();
 
-	let (route_2, payment_hash_2, _, payment_secret_2) = get_route_and_payment_hash!(nodes[0], nodes[2], hop_hints, 100_000, 42);
+	let payment_params_2 = PaymentParameters::from_node_id(nodes[2].node.get_our_node_id())
+		.with_features(InvoiceFeatures::known())
+		.with_route_hints(hop_hints);
+	let (route_2, payment_hash_2, _, payment_secret_2) = get_route_and_payment_hash!(nodes[0], nodes[2], payment_params_2, 100_000, 42);
 	assert_eq!(route_2.paths[0][1].short_channel_id, last_hop[0].short_channel_id.unwrap());
 	nodes[0].node.send_payment(&route_2, payment_hash_2, &Some(payment_secret_2)).unwrap();
 	check_added_monitors!(nodes[0], 1);
@@ -479,7 +491,10 @@ fn test_scid_alias_returned() {
 		htlc_maximum_msat: None,
 		htlc_minimum_msat: None,
 	}])];
-	let (mut route, payment_hash, _, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], hop_hints, 10_000, 42);
+	let payment_params = PaymentParameters::from_node_id(nodes[2].node.get_our_node_id())
+		.with_features(InvoiceFeatures::known())
+		.with_route_hints(hop_hints);
+	let (mut route, payment_hash, _, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], payment_params, 10_000, 42);
 	assert_eq!(route.paths[0][1].short_channel_id, nodes[2].node.list_usable_channels()[0].inbound_scid_alias.unwrap());
 
 	route.paths[0][1].fee_msat = 10_000_000; // Overshoot the last channel's value

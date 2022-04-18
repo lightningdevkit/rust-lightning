@@ -602,6 +602,17 @@ fn compute_fees(amount_msat: u64, channel_fees: RoutingFees) -> Option<u64> {
 	}
 }
 
+/// The default `features` we assume for a node in a route, when no `features` are known about that
+/// specific node.
+///
+/// Default features are:
+/// * variable_length_onion_optional
+fn default_node_features() -> NodeFeatures {
+	let mut features = NodeFeatures::empty();
+	features.set_variable_length_onion_optional();
+	features
+}
+
 /// Finds a route from us (payer) to the given target node (payee).
 ///
 /// If the payee provided features in their invoice, they should be provided via `params.payee`.
@@ -1101,7 +1112,8 @@ where L::Target: Logger {
 		} }
 	}
 
-	let empty_node_features = NodeFeatures::empty();
+	let default_node_features = default_node_features();
+
 	// Find ways (channels with destination) to reach a given node and store them
 	// in the corresponding data structures (routing graph etc).
 	// $fee_to_target_msat represents how much it costs to reach to this node from the payee,
@@ -1132,7 +1144,7 @@ where L::Target: Logger {
 				let features = if let Some(node_info) = $node.announcement_info.as_ref() {
 					&node_info.features
 				} else {
-					&empty_node_features
+					&default_node_features
 				};
 
 				if !features.requires_unknown_bits() {
@@ -1312,7 +1324,7 @@ where L::Target: Logger {
 			// traversing the graph and arrange the path out of what we found.
 			if node_id == our_node_id {
 				let mut new_entry = dist.remove(&our_node_id).unwrap();
-				let mut ordered_hops = vec!((new_entry.clone(), NodeFeatures::empty()));
+				let mut ordered_hops = vec!((new_entry.clone(), default_node_features.clone()));
 
 				'path_walk: loop {
 					let mut features_set = false;
@@ -1330,7 +1342,7 @@ where L::Target: Logger {
 							if let Some(node_info) = node.announcement_info.as_ref() {
 								ordered_hops.last_mut().unwrap().1 = node_info.features.clone();
 							} else {
-								ordered_hops.last_mut().unwrap().1 = NodeFeatures::empty();
+								ordered_hops.last_mut().unwrap().1 = default_node_features.clone();
 							}
 						} else {
 							// We can fill in features for everything except hops which were
@@ -1357,7 +1369,7 @@ where L::Target: Logger {
 					// so that fees paid for a HTLC forwarding on the current channel are
 					// associated with the previous channel (where they will be subtracted).
 					ordered_hops.last_mut().unwrap().0.fee_msat = new_entry.hop_use_fee_msat;
-					ordered_hops.push((new_entry.clone(), NodeFeatures::empty()));
+					ordered_hops.push((new_entry.clone(), default_node_features.clone()));
 				}
 				ordered_hops.last_mut().unwrap().0.fee_msat = value_contribution_msat;
 				ordered_hops.last_mut().unwrap().0.hop_use_fee_msat = 0;
@@ -1684,7 +1696,7 @@ fn add_random_cltv_offset(route: &mut Route, payment_params: &PaymentParameters,
 #[cfg(test)]
 mod tests {
 	use routing::network_graph::{NetworkGraph, NetGraphMsgHandler, NodeId};
-	use routing::router::{get_route, add_random_cltv_offset, PaymentParameters, Route, RouteHint, RouteHintHop, RouteHop, RoutingFees, DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA};
+	use routing::router::{get_route, add_random_cltv_offset, default_node_features, PaymentParameters, Route, RouteHint, RouteHintHop, RouteHop, RoutingFees, DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA};
 	use routing::scoring::Score;
 	use chain::transaction::OutPoint;
 	use chain::keysinterface::KeysInterface;
@@ -2785,7 +2797,7 @@ mod tests {
 		assert_eq!(route.paths[0][4].short_channel_id, 8);
 		assert_eq!(route.paths[0][4].fee_msat, 100);
 		assert_eq!(route.paths[0][4].cltv_expiry_delta, 42);
-		assert_eq!(route.paths[0][4].node_features.le_flags(), &Vec::<u8>::new()); // We dont pass flags in from invoices yet
+		assert_eq!(route.paths[0][4].node_features.le_flags(), default_node_features().le_flags()); // We dont pass flags in from invoices yet
 		assert_eq!(route.paths[0][4].channel_features.le_flags(), &Vec::<u8>::new()); // We can't learn any flags from invoices, sadly
 	}
 
@@ -2861,7 +2873,7 @@ mod tests {
 		assert_eq!(route.paths[0][4].short_channel_id, 8);
 		assert_eq!(route.paths[0][4].fee_msat, 100);
 		assert_eq!(route.paths[0][4].cltv_expiry_delta, 42);
-		assert_eq!(route.paths[0][4].node_features.le_flags(), &Vec::<u8>::new()); // We dont pass flags in from invoices yet
+		assert_eq!(route.paths[0][4].node_features.le_flags(), default_node_features().le_flags()); // We dont pass flags in from invoices yet
 		assert_eq!(route.paths[0][4].channel_features.le_flags(), &Vec::<u8>::new()); // We can't learn any flags from invoices, sadly
 	}
 
@@ -2958,7 +2970,7 @@ mod tests {
 		assert_eq!(route.paths[0][3].short_channel_id, last_hops[0].0[1].short_channel_id);
 		assert_eq!(route.paths[0][3].fee_msat, 100);
 		assert_eq!(route.paths[0][3].cltv_expiry_delta, 42);
-		assert_eq!(route.paths[0][3].node_features.le_flags(), &Vec::<u8>::new()); // We dont pass flags in from invoices yet
+		assert_eq!(route.paths[0][3].node_features.le_flags(), default_node_features().le_flags()); // We dont pass flags in from invoices yet
 		assert_eq!(route.paths[0][3].channel_features.le_flags(), &Vec::<u8>::new()); // We can't learn any flags from invoices, sadly
 	}
 
@@ -3023,14 +3035,14 @@ mod tests {
 		assert_eq!(route.paths[0][2].short_channel_id, last_hops[0].0[0].short_channel_id);
 		assert_eq!(route.paths[0][2].fee_msat, 0);
 		assert_eq!(route.paths[0][2].cltv_expiry_delta, 129);
-		assert_eq!(route.paths[0][2].node_features.le_flags(), &Vec::<u8>::new()); // We dont pass flags in from invoices yet
+		assert_eq!(route.paths[0][2].node_features.le_flags(), default_node_features().le_flags()); // We dont pass flags in from invoices yet
 		assert_eq!(route.paths[0][2].channel_features.le_flags(), &Vec::<u8>::new()); // We can't learn any flags from invoices, sadly
 
 		assert_eq!(route.paths[0][3].pubkey, nodes[6]);
 		assert_eq!(route.paths[0][3].short_channel_id, last_hops[0].0[1].short_channel_id);
 		assert_eq!(route.paths[0][3].fee_msat, 100);
 		assert_eq!(route.paths[0][3].cltv_expiry_delta, 42);
-		assert_eq!(route.paths[0][3].node_features.le_flags(), &Vec::<u8>::new()); // We dont pass flags in from invoices yet
+		assert_eq!(route.paths[0][3].node_features.le_flags(), default_node_features().le_flags()); // We dont pass flags in from invoices yet
 		assert_eq!(route.paths[0][3].channel_features.le_flags(), &Vec::<u8>::new()); // We can't learn any flags from invoices, sadly
 	}
 
@@ -3121,7 +3133,7 @@ mod tests {
 		assert_eq!(route.paths[0][4].short_channel_id, 8);
 		assert_eq!(route.paths[0][4].fee_msat, 100);
 		assert_eq!(route.paths[0][4].cltv_expiry_delta, 42);
-		assert_eq!(route.paths[0][4].node_features.le_flags(), &Vec::<u8>::new()); // We dont pass flags in from invoices yet
+		assert_eq!(route.paths[0][4].node_features.le_flags(), default_node_features().le_flags()); // We dont pass flags in from invoices yet
 		assert_eq!(route.paths[0][4].channel_features.le_flags(), &Vec::<u8>::new()); // We can't learn any flags from invoices, sadly
 	}
 
@@ -3151,7 +3163,7 @@ mod tests {
 		assert_eq!(route.paths[0][1].short_channel_id, 8);
 		assert_eq!(route.paths[0][1].fee_msat, 100);
 		assert_eq!(route.paths[0][1].cltv_expiry_delta, 42);
-		assert_eq!(route.paths[0][1].node_features.le_flags(), &Vec::<u8>::new()); // We dont pass flags in from invoices yet
+		assert_eq!(route.paths[0][1].node_features.le_flags(), default_node_features().le_flags()); // We dont pass flags in from invoices yet
 		assert_eq!(route.paths[0][1].channel_features.le_flags(), &Vec::<u8>::new()); // We can't learn any flags from invoices, sadly
 
 		last_hops[0].0[0].fees.base_msat = 1000;
@@ -3188,7 +3200,7 @@ mod tests {
 		assert_eq!(route.paths[0][3].short_channel_id, 10);
 		assert_eq!(route.paths[0][3].fee_msat, 100);
 		assert_eq!(route.paths[0][3].cltv_expiry_delta, 42);
-		assert_eq!(route.paths[0][3].node_features.le_flags(), &Vec::<u8>::new()); // We dont pass flags in from invoices yet
+		assert_eq!(route.paths[0][3].node_features.le_flags(), default_node_features().le_flags()); // We dont pass flags in from invoices yet
 		assert_eq!(route.paths[0][3].channel_features.le_flags(), &Vec::<u8>::new()); // We can't learn any flags from invoices, sadly
 
 		// ...but still use 8 for larger payments as 6 has a variable feerate
@@ -3229,7 +3241,7 @@ mod tests {
 		assert_eq!(route.paths[0][4].short_channel_id, 8);
 		assert_eq!(route.paths[0][4].fee_msat, 2000);
 		assert_eq!(route.paths[0][4].cltv_expiry_delta, 42);
-		assert_eq!(route.paths[0][4].node_features.le_flags(), &Vec::<u8>::new()); // We dont pass flags in from invoices yet
+		assert_eq!(route.paths[0][4].node_features.le_flags(), default_node_features().le_flags()); // We dont pass flags in from invoices yet
 		assert_eq!(route.paths[0][4].channel_features.le_flags(), &Vec::<u8>::new()); // We can't learn any flags from invoices, sadly
 	}
 
@@ -3281,7 +3293,7 @@ mod tests {
 		assert_eq!(route.paths[0][1].short_channel_id, 8);
 		assert_eq!(route.paths[0][1].fee_msat, 1000000);
 		assert_eq!(route.paths[0][1].cltv_expiry_delta, 42);
-		assert_eq!(route.paths[0][1].node_features.le_flags(), &[0; 0]); // We dont pass flags in from invoices yet
+		assert_eq!(route.paths[0][1].node_features.le_flags(), default_node_features().le_flags()); // We dont pass flags in from invoices yet
 		assert_eq!(route.paths[0][1].channel_features.le_flags(), &[0; 0]); // We can't learn any flags from invoices, sadly
 	}
 

@@ -1171,19 +1171,18 @@ macro_rules! get_payment_preimage_hash {
 #[macro_export]
 macro_rules! get_route_and_payment_hash {
 	($send_node: expr, $recv_node: expr, $recv_value: expr) => {{
-		$crate::get_route_and_payment_hash!($send_node, $recv_node, vec![], $recv_value, TEST_FINAL_CLTV)
+		let payment_params = $crate::routing::router::PaymentParameters::from_node_id($recv_node.node.get_our_node_id())
+			.with_features($crate::ln::features::InvoiceFeatures::known());
+		$crate::get_route_and_payment_hash!($send_node, $recv_node, payment_params, $recv_value, TEST_FINAL_CLTV)
 	}};
-	($send_node: expr, $recv_node: expr, $last_hops: expr, $recv_value: expr, $cltv: expr) => {{
+	($send_node: expr, $recv_node: expr, $payment_params: expr, $recv_value: expr, $cltv: expr) => {{
 		use $crate::chain::keysinterface::KeysInterface;
 		let (payment_preimage, payment_hash, payment_secret) = $crate::get_payment_preimage_hash!($recv_node, Some($recv_value));
-		let payment_params = $crate::routing::router::PaymentParameters::from_node_id($recv_node.node.get_our_node_id())
-			.with_features($crate::ln::features::InvoiceFeatures::known())
-			.with_route_hints($last_hops);
 		let scorer = $crate::util::test_utils::TestScorer::with_penalty(0);
 		let keys_manager = $crate::util::test_utils::TestKeysInterface::new(&[0u8; 32], bitcoin::network::constants::Network::Testnet);
 		let random_seed_bytes = keys_manager.get_secure_random_bytes();
 		let route = $crate::routing::router::get_route(
-			&$send_node.node.get_our_node_id(), &payment_params, &$send_node.network_graph.read_only(),
+			&$send_node.node.get_our_node_id(), &$payment_params, &$send_node.network_graph.read_only(),
 			Some(&$send_node.node.list_usable_channels().iter().collect::<Vec<_>>()),
 			$recv_value, $cltv, $send_node.logger, &scorer, &random_seed_bytes
 		).unwrap();

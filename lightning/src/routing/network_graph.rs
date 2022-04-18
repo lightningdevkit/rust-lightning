@@ -1033,6 +1033,15 @@ impl NetworkGraph {
 		}
 	}
 
+	/// Clears the `NodeAnnouncementInfo` field for all nodes in the `NetworkGraph` for testing
+	/// purposes.
+	#[cfg(test)]
+	pub fn clear_nodes_announcement_info(&self) {
+		for node in self.nodes.write().unwrap().iter_mut() {
+			node.1.announcement_info = None;
+		}
+	}
+
 	/// For an already known node (from channel announcements), update its stored properties from a
 	/// given node announcement.
 	///
