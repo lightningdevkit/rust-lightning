@@ -100,12 +100,11 @@ pub enum ClosureReason {
 		/// A developer-readable error message which we generated.
 		err: String,
 	},
-	/// The `PeerManager` informed us that we've disconnected from the peer. We close channels
-	/// if the `PeerManager` informed us that it is unlikely we'll be able to connect to the
-	/// peer again in the future or if the peer disconnected before we finished negotiating
-	/// the channel open. The first case may be caused by incompatible features which our
-	/// counterparty, or we, require.
-	//TODO: split between PeerUnconnectable/PeerDisconnected ?
+	/// The peer disconnected prior to funding completing. In this case the spec mandates that we
+	/// forget the channel entirely - we can attempt again if the peer reconnects.
+	///
+	/// In LDK versions prior to 0.0.107 this could also occur if we were unable to connect to the
+	/// peer because of mutual incompatibility between us and our channel counterparty.
 	DisconnectedPeer,
 	/// Closure generated from `ChannelManager::read` if the ChannelMonitor is newer than
 	/// the ChannelManager deserialized.

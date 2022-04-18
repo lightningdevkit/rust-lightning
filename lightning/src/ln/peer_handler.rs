@@ -257,8 +257,13 @@ pub trait SocketDescriptor : cmp::Eq + hash::Hash + Clone {
 /// descriptor.
 #[derive(Clone)]
 pub struct PeerHandleError {
-	/// Used to indicate that we probably can't make any future connections to this peer, implying
-	/// we should go ahead and force-close any channels we have with it.
+	/// Used to indicate that we probably can't make any future connections to this peer (e.g.
+	/// because we required features that our peer was missing, or vice versa).
+	///
+	/// While LDK's [`ChannelManager`] will not do it automatically, you likely wish to force-close
+	/// any channels with this peer or check for new versions of LDK.
+	///
+	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 	pub no_connection_possible: bool,
 }
 impl fmt::Debug for PeerHandleError {
