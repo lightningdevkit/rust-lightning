@@ -59,6 +59,7 @@ use routing::network_graph::{NetworkGraph, NodeId};
 use routing::router::RouteHop;
 use util::ser::{Readable, ReadableArgs, Writeable, Writer};
 use util::logger::Logger;
+use util::time::Time;
 
 use prelude::*;
 use core::fmt;
@@ -262,7 +263,9 @@ pub type Scorer = ScorerUsingTime::<ConfiguredTime>;
 #[cfg(not(feature = "no-std"))]
 type ConfiguredTime = std::time::Instant;
 #[cfg(feature = "no-std")]
-type ConfiguredTime = time::Eternity;
+use util::time::Eternity;
+#[cfg(feature = "no-std")]
+type ConfiguredTime = Eternity;
 
 // Note that ideally we'd hide ScorerUsingTime from public view by sealing it as well, but rustdoc
 // doesn't handle this well - instead exposing a `Scorer` which has no trait implementation(s) or
@@ -1327,83 +1330,11 @@ impl<T: Time> Readable for ChannelLiquidity<T> {
 	}
 }
 
-pub(crate) mod time {
-	use core::ops::Sub;
-	use core::time::Duration;
-	/// A measurement of time.
-	pub trait Time: Copy + Sub<Duration, Output = Self> where Self: Sized {
-		/// Returns an instance corresponding to the current moment.
-		fn now() -> Self;
-
-		/// Returns the amount of time elapsed since `self` was created.
-		fn elapsed(&self) -> Duration;
-
-		/// Returns the amount of time passed between `earlier` and `self`.
-		fn duration_since(&self, earlier: Self) -> Duration;
-
-		/// Returns the amount of time passed since the beginning of [`Time`].
-		///
-		/// Used during (de-)serialization.
-		fn duration_since_epoch() -> Duration;
-	}
-
-	/// A state in which time has no meaning.
-	#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-	pub struct Eternity;
-
-	#[cfg(not(feature = "no-std"))]
-	impl Time for std::time::Instant {
-		fn now() -> Self {
-			std::time::Instant::now()
-		}
-
-		fn duration_since(&self, earlier: Self) -> Duration {
-			self.duration_since(earlier)
-		}
-
-		fn duration_since_epoch() -> Duration {
-			use std::time::SystemTime;
-			SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap()
-		}
-
-		fn elapsed(&self) -> Duration {
-			std::time::Instant::elapsed(self)
-		}
-	}
-
-	impl Time for Eternity {
-		fn now() -> Self {
-			Self
-		}
-
-		fn duration_since(&self, _earlier: Self) -> Duration {
-			Duration::from_secs(0)
-		}
-
-		fn duration_since_epoch() -> Duration {
-			Duration::from_secs(0)
-		}
-
-		fn elapsed(&self) -> Duration {
-			Duration::from_secs(0)
-		}
-	}
-
-	impl Sub<Duration> for Eternity {
-		type Output = Self;
-
-		fn sub(self, _other: Duration) -> Self {
-			self
-		}
-	}
-}
-
-pub(crate) use self::time::Time;
-
 #[cfg(test)]
 mod tests {
-	use super::{ChannelLiquidity, ProbabilisticScoringParameters, ProbabilisticScorerUsingTime, ScoringParameters, ScorerUsingTime, Time};
-	use super::time::Eternity;
+	use super::{ChannelLiquidity, ProbabilisticScoringParameters, ProbabilisticScorerUsingTime, ScoringParameters, ScorerUsingTime};
+	use util::time::Time;
+	use util::time::tests::SinceEpoch;
 
 	use ln::features::{ChannelFeatures, NodeFeatures};
 	use ln::msgs::{ChannelAnnouncement, ChannelUpdate, OptionalField, UnsignedChannelAnnouncement, UnsignedChannelUpdate};
@@ -1418,79 +1349,8 @@ mod tests {
 	use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 	use bitcoin::network::constants::Network;
 	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
-	use core::cell::Cell;
-	use core::ops::Sub;
 	use core::time::Duration;
 	use io;
-
-	// `Time` tests
-
-	/// Time that can be advanced manually in tests.
-	#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-	struct SinceEpoch(Duration);
-
-	impl SinceEpoch {
-		thread_local! {
-			static ELAPSED: Cell<Duration> = core::cell::Cell::new(Duration::from_secs(0));
-		}
-
-		fn advance(duration: Duration) {
-			Self::ELAPSED.with(|elapsed| elapsed.set(elapsed.get() + duration))
-		}
-	}
-
-	impl Time for SinceEpoch {
-		fn now() -> Self {
-			Self(Self::duration_since_epoch())
-		}
-
-		fn duration_since(&self, earlier: Self) -> Duration {
-			self.0 - earlier.0
-		}
-
-		fn duration_since_epoch() -> Duration {
-			Self::ELAPSED.with(|elapsed| elapsed.get())
-		}
-
-		fn elapsed(&self) -> Duration {
-			Self::duration_since_epoch() - self.0
-		}
-	}
-
-	impl Sub<Duration> for SinceEpoch {
-		type Output = Self;
-
-		fn sub(self, other: Duration) -> Self {
-			Self(self.0 - other)
-		}
-	}
-
-	#[test]
-	fn time_passes_when_advanced() {
-		let now = SinceEpoch::now();
-		assert_eq!(now.elapsed(), Duration::from_secs(0));
-
-		SinceEpoch::advance(Duration::from_secs(1));
-		SinceEpoch::advance(Duration::from_secs(1));
-
-		let elapsed = now.elapsed();
-		let later = SinceEpoch::now();
-
-		assert_eq!(elapsed, Duration::from_secs(2));
-		assert_eq!(later - elapsed, now);
-	}
-
-	#[test]
-	fn time_never_passes_in_an_eternity() {
-		let now = Eternity::now();
-		let elapsed = now.elapsed();
-		let later = Eternity::now();
-
-		assert_eq!(now.elapsed(), Duration::from_secs(0));
-		assert_eq!(later - elapsed, now);
-	}
-
-	// `Scorer` tests
 
 	/// A scorer for testing with time that can be manually advanced.
 	type Scorer = ScorerUsingTime::<SinceEpoch>;
