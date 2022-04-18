@@ -230,6 +230,47 @@ pub enum Event {
 		/// [`Route::get_total_fees`]: crate::routing::router::Route::get_total_fees
 		fee_paid_msat: Option<u64>,
 	},
+	/// Indicates an outbound payment failed. Individual [`Event::PaymentPathFailed`] events
+	/// provide failure information for each MPP part in the payment.
+	///
+	/// This event is provided once there are no further pending HTLCs for the payment and the
+	/// payment is no longer retryable, either due to a several-block timeout or because
+	/// [`ChannelManager::abandon_payment`] was previously called for the corresponding payment.
+	///
+	/// [`ChannelManager::abandon_payment`]: crate::ln::channelmanager::ChannelManager::abandon_payment
+	PaymentFailed {
+		/// The id returned by [`ChannelManager::send_payment`] and used with
+		/// [`ChannelManager::retry_payment`] and [`ChannelManager::abandon_payment`].
+		///
+		/// [`ChannelManager::send_payment`]: crate::ln::channelmanager::ChannelManager::send_payment
+		/// [`ChannelManager::retry_payment`]: crate::ln::channelmanager::ChannelManager::retry_payment
+		/// [`ChannelManager::abandon_payment`]: crate::ln::channelmanager::ChannelManager::abandon_payment
+		payment_id: PaymentId,
+		/// The hash that was given to [`ChannelManager::send_payment`].
+		///
+		/// [`ChannelManager::send_payment`]: crate::ln::channelmanager::ChannelManager::send_payment
+		payment_hash: PaymentHash,
+	},
+	/// Indicates that a path for an outbound payment was successful.
+	///
+	/// Always generated after [`Event::PaymentSent`] and thus useful for scoring channels. See
+	/// [`Event::PaymentSent`] for obtaining the payment preimage.
+	PaymentPathSuccessful {
+		/// The id returned by [`ChannelManager::send_payment`] and used with
+		/// [`ChannelManager::retry_payment`].
+		///
+		/// [`ChannelManager::send_payment`]: crate::ln::channelmanager::ChannelManager::send_payment
+		/// [`ChannelManager::retry_payment`]: crate::ln::channelmanager::ChannelManager::retry_payment
+		payment_id: PaymentId,
+		/// The hash that was given to [`ChannelManager::send_payment`].
+		///
+		/// [`ChannelManager::send_payment`]: crate::ln::channelmanager::ChannelManager::send_payment
+		payment_hash: Option<PaymentHash>,
+		/// The payment path that was successful.
+		///
+		/// May contain a closed channel if the HTLC sent along the path was fulfilled on chain.
+		path: Vec<RouteHop>,
+	},
 	/// Indicates an outbound HTLC we sent failed. Probably some intermediary node dropped
 	/// something. You may wish to retry with a different route.
 	///
@@ -298,27 +339,6 @@ pub enum Event {
 		error_code: Option<u16>,
 #[cfg(test)]
 		error_data: Option<Vec<u8>>,
-	},
-	/// Indicates an outbound payment failed. Individual [`Event::PaymentPathFailed`] events
-	/// provide failure information for each MPP part in the payment.
-	///
-	/// This event is provided once there are no further pending HTLCs for the payment and the
-	/// payment is no longer retryable, either due to a several-block timeout or because
-	/// [`ChannelManager::abandon_payment`] was previously called for the corresponding payment.
-	///
-	/// [`ChannelManager::abandon_payment`]: crate::ln::channelmanager::ChannelManager::abandon_payment
-	PaymentFailed {
-		/// The id returned by [`ChannelManager::send_payment`] and used with
-		/// [`ChannelManager::retry_payment`] and [`ChannelManager::abandon_payment`].
-		///
-		/// [`ChannelManager::send_payment`]: crate::ln::channelmanager::ChannelManager::send_payment
-		/// [`ChannelManager::retry_payment`]: crate::ln::channelmanager::ChannelManager::retry_payment
-		/// [`ChannelManager::abandon_payment`]: crate::ln::channelmanager::ChannelManager::abandon_payment
-		payment_id: PaymentId,
-		/// The hash that was given to [`ChannelManager::send_payment`].
-		///
-		/// [`ChannelManager::send_payment`]: crate::ln::channelmanager::ChannelManager::send_payment
-		payment_hash: PaymentHash,
 	},
 	/// Used to indicate that [`ChannelManager::process_pending_htlc_forwards`] should be called at
 	/// a time in the future.
@@ -389,26 +409,6 @@ pub enum Event {
 		channel_id: [u8; 32],
 		/// The full transaction received from the user
 		transaction: Transaction
-	},
-	/// Indicates that a path for an outbound payment was successful.
-	///
-	/// Always generated after [`Event::PaymentSent`] and thus useful for scoring channels. See
-	/// [`Event::PaymentSent`] for obtaining the payment preimage.
-	PaymentPathSuccessful {
-		/// The id returned by [`ChannelManager::send_payment`] and used with
-		/// [`ChannelManager::retry_payment`].
-		///
-		/// [`ChannelManager::send_payment`]: crate::ln::channelmanager::ChannelManager::send_payment
-		/// [`ChannelManager::retry_payment`]: crate::ln::channelmanager::ChannelManager::retry_payment
-		payment_id: PaymentId,
-		/// The hash that was given to [`ChannelManager::send_payment`].
-		///
-		/// [`ChannelManager::send_payment`]: crate::ln::channelmanager::ChannelManager::send_payment
-		payment_hash: Option<PaymentHash>,
-		/// The payment path that was successful.
-		///
-		/// May contain a closed channel if the HTLC sent along the path was fulfilled on chain.
-		path: Vec<RouteHop>,
 	},
 	/// Indicates a request to open a new channel by a peer.
 	///
