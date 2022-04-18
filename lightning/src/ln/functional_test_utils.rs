@@ -34,6 +34,8 @@ use bitcoin::blockdata::transaction::{Transaction, TxOut};
 use bitcoin::network::constants::Network;
 
 use bitcoin::hash_types::BlockHash;
+use bitcoin::hashes::sha256::Hash as Sha256;
+use bitcoin::hashes::Hash as _;
 
 use bitcoin::secp256k1::PublicKey;
 
@@ -1266,6 +1268,22 @@ macro_rules! expect_payment_received {
 	}
 }
 
+#[macro_export]
+#[cfg(any(test, feature = "_bench_unstable", feature = "_test_utils"))]
+macro_rules! expect_payment_claimed {
+	($node: expr, $expected_payment_hash: expr, $expected_recv_value: expr) => {
+		let events = $node.node.get_and_clear_pending_events();
+		assert_eq!(events.len(), 1);
+		match events[0] {
+			$crate::util::events::Event::PaymentClaimed { ref payment_hash, amt, .. } => {
+				assert_eq!($expected_payment_hash, *payment_hash);
+				assert_eq!($expected_recv_value, amt);
+			},
+			_ => panic!("Unexpected event"),
+		}
+	}
+}
+
 #[cfg(test)]
 #[macro_export]
 macro_rules! expect_payment_sent_without_paths {
@@ -1550,7 +1568,19 @@ pub fn do_claim_payment_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, 
 	for path in expected_paths.iter() {
 		assert_eq!(path.last().unwrap().node.get_our_node_id(), expected_paths[0].last().unwrap().node.get_our_node_id());
 	}
-	assert!(expected_paths[0].last().unwrap().node.claim_funds(our_payment_preimage));
+	expected_paths[0].last().unwrap().node.claim_funds(our_payment_preimage);
+
+	let claim_event = expected_paths[0].last().unwrap().node.get_and_clear_pending_events();
+	assert_eq!(claim_event.len(), 1);
+	match claim_event[0] {
+		Event::PaymentClaimed { purpose: PaymentPurpose::SpontaneousPayment(preimage), .. }|
+		Event::PaymentClaimed { purpose: PaymentPurpose::InvoicePayment { payment_preimage: Some(preimage), ..}, .. } =>
+			assert_eq!(preimage, our_payment_preimage),
+		Event::PaymentClaimed { purpose: PaymentPurpose::InvoicePayment { .. }, payment_hash, .. } =>
+			assert_eq!(&payment_hash.0, &Sha256::hash(&our_payment_preimage.0)[..]),
+		_ => panic!(),
+	}
+
 	check_added_monitors!(expected_paths[0].last().unwrap(), expected_paths.len());
 
 	let mut expected_total_fee_msat = 0;
@@ -1645,7 +1675,7 @@ pub fn do_claim_payment_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, 
 	}
 
 	// Ensure that claim_funds is idempotent.
-	assert!(!expected_paths[0].last().unwrap().node.claim_funds(our_payment_preimage));
+	expected_paths[0].last().unwrap().node.claim_funds(our_payment_preimage);
 	assert!(expected_paths[0].last().unwrap().node.get_and_clear_pending_msg_events().is_empty());
 	check_added_monitors!(expected_paths[0].last().unwrap(), 0);
 

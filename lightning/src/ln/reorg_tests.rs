@@ -60,10 +60,11 @@ fn do_test_onchain_htlc_reorg(local_commitment: bool, claim: bool) {
 	connect_blocks(&nodes[1], 2*CHAN_CONFIRM_DEPTH + 1 - nodes[1].best_block_info().1);
 	connect_blocks(&nodes[2], 2*CHAN_CONFIRM_DEPTH + 1 - nodes[2].best_block_info().1);
 
-	let (our_payment_preimage, our_payment_hash, _) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 1000000);
+	let (our_payment_preimage, our_payment_hash, _) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 1_000_000);
 
 	// Provide preimage to node 2 by claiming payment
 	nodes[2].node.claim_funds(our_payment_preimage);
+	expect_payment_claimed!(nodes[2], our_payment_hash, 1_000_000);
 	check_added_monitors!(nodes[2], 1);
 	get_htlc_update_msgs!(nodes[2], nodes[1].node.get_our_node_id());
 
@@ -348,8 +349,8 @@ fn test_set_outpoints_partial_claiming() {
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1000000, 59000000, InitFeatures::known(), InitFeatures::known());
-	let payment_preimage_1 = route_payment(&nodes[1], &vec!(&nodes[0])[..], 3_000_000).0;
-	let payment_preimage_2 = route_payment(&nodes[1], &vec!(&nodes[0])[..], 3_000_000).0;
+	let (payment_preimage_1, payment_hash_1, _) = route_payment(&nodes[1], &[&nodes[0]], 3_000_000);
+	let (payment_preimage_2, payment_hash_2, _) = route_payment(&nodes[1], &[&nodes[0]], 3_000_000);
 
 	// Remote commitment txn with 4 outputs: to_local, to_remote, 2 outgoing HTLC
 	let remote_txn = get_local_commitment_txn!(nodes[1], chan.2);
@@ -363,9 +364,10 @@ fn test_set_outpoints_partial_claiming() {
 	// Connect blocks on node A to advance height towards TEST_FINAL_CLTV
 	// Provide node A with both preimage
 	nodes[0].node.claim_funds(payment_preimage_1);
+	expect_payment_claimed!(nodes[0], payment_hash_1, 3_000_000);
 	nodes[0].node.claim_funds(payment_preimage_2);
+	expect_payment_claimed!(nodes[0], payment_hash_2, 3_000_000);
 	check_added_monitors!(nodes[0], 2);
-	nodes[0].node.get_and_clear_pending_events();
 	nodes[0].node.get_and_clear_pending_msg_events();
 
 	// Connect blocks on node A commitment transaction

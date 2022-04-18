@@ -3788,26 +3788,29 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// Provides a payment preimage in response to [`Event::PaymentReceived`], generating any
 	/// [`MessageSendEvent`]s needed to claim the payment.
 	///
+	/// Note that calling this method does *not* guarantee that the payment has been claimed. You
+	/// *must* wait for an [`Event::PaymentClaimed`] event which upon a successful claim will be
+	/// provided to your [`EventHandler`] when [`process_pending_events`] is next called.
+	///
 	/// Note that if you did not set an `amount_msat` when calling [`create_inbound_payment`] or
 	/// [`create_inbound_payment_for_hash`] you must check that the amount in the `PaymentReceived`
 	/// event matches your expectation. If you fail to do so and call this method, you may provide
 	/// the sender "proof-of-payment" when they did not fulfill the full expected payment.
 	///
-	/// Returns whether any HTLCs were claimed, and thus if any new [`MessageSendEvent`]s are now
-	/// pending for processing via [`get_and_clear_pending_msg_events`].
-	///
 	/// [`Event::PaymentReceived`]: crate::util::events::Event::PaymentReceived
+	/// [`Event::PaymentClaimed`]: crate::util::events::Event::PaymentClaimed
+	/// [`process_pending_events`]: EventsProvider::process_pending_events
 	/// [`create_inbound_payment`]: Self::create_inbound_payment
 	/// [`create_inbound_payment_for_hash`]: Self::create_inbound_payment_for_hash
 	/// [`get_and_clear_pending_msg_events`]: MessageSendEventsProvider::get_and_clear_pending_msg_events
-	pub fn claim_funds(&self, payment_preimage: PaymentPreimage) -> bool {
+	pub fn claim_funds(&self, payment_preimage: PaymentPreimage) {
 		let payment_hash = PaymentHash(Sha256::hash(&payment_preimage.0).into_inner());
 
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 
 		let mut channel_state = Some(self.channel_state.lock().unwrap());
 		let removed_source = channel_state.as_mut().unwrap().claimable_htlcs.remove(&payment_hash);
-		if let Some((_, mut sources)) = removed_source {
+		if let Some((payment_purpose, mut sources)) = removed_source {
 			assert!(!sources.is_empty());
 
 			// If we are claiming an MPP payment, we have to take special care to ensure that each
@@ -3821,12 +3824,14 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			// we got all the HTLCs and then a channel closed while we were waiting for the user to
 			// provide the preimage, so worrying too much about the optimal handling isn't worth
 			// it.
+			let mut claimable_amt_msat = 0;
 			let mut valid_mpp = true;
 			for htlc in sources.iter() {
 				if let None = channel_state.as_ref().unwrap().short_to_id.get(&htlc.prev_hop.short_channel_id) {
 					valid_mpp = false;
 					break;
 				}
+				claimable_amt_msat += htlc.value;
 			}
 
 			let mut errs = Vec::new();
@@ -3862,6 +3867,14 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				}
 			}
 
+			if claimed_any_htlcs {
+				self.pending_events.lock().unwrap().push(events::Event::PaymentClaimed {
+					payment_hash,
+					purpose: payment_purpose,
+					amt: claimable_amt_msat,
+				});
+			}
+
 			// Now that we've done the entire above loop in one lock, we can handle any errors
 			// which were generated.
 			channel_state.take();
@@ -3870,9 +3883,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				let res: Result<(), _> = Err(err);
 				let _ = handle_error!(self, res, counterparty_node_id);
 			}
-
-			claimed_any_htlcs
-		} else { false }
+		}
 	}
 
 	fn claim_funds_from_hop(&self, channel_state_lock: &mut MutexGuard<ChannelHolder<Signer>>, prev_hop: HTLCPreviousHopData, payment_preimage: PaymentPreimage) -> ClaimFundsFromHop {
@@ -6827,7 +6838,7 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 		for (_, monitor) in args.channel_monitors.iter() {
 			for (payment_hash, payment_preimage) in monitor.get_stored_preimages() {
 				if let Some(claimable_htlcs) = claimable_htlcs.remove(&payment_hash) {
-					log_info!(args.logger, "Re-claimaing HTLCs with payment hash {} due to partial-claim.", log_bytes!(payment_hash.0));
+					log_info!(args.logger, "Re-claiming HTLCs with payment hash {} as we've released the preimage to a ChannelMonitor!", log_bytes!(payment_hash.0));
 					for claimable_htlc in claimable_htlcs.1 {
 						// Add a holding-cell claim of the payment to the Channel, which should be
 						// applied ~immediately on peer reconnection. Because it won't generate a
@@ -7109,8 +7120,10 @@ mod tests {
 		// claim_funds_along_route because the ordering of the messages causes the second half of the
 		// payment to be put in the holding cell, which confuses the test utilities. So we exchange the
 		// lightning messages manually.
-		assert!(nodes[1].node.claim_funds(payment_preimage));
+		nodes[1].node.claim_funds(payment_preimage);
+		expect_payment_claimed!(nodes[1], our_payment_hash, 200_000);
 		check_added_monitors!(nodes[1], 2);
+
 		let bs_first_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 		nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &bs_first_updates.update_fulfill_htlcs[0]);
 		nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &bs_first_updates.commitment_signed);
@@ -7556,7 +7569,8 @@ pub mod bench {
 
 				expect_pending_htlcs_forwardable!(NodeHolder { node: &$node_b });
 				expect_payment_received!(NodeHolder { node: &$node_b }, payment_hash, payment_secret, 10_000);
-				assert!($node_b.claim_funds(payment_preimage));
+				$node_b.claim_funds(payment_preimage);
+				expect_payment_claimed!(NodeHolder { node: &$node_b }, payment_hash, 10_000);
 
 				match $node_b.get_and_clear_pending_msg_events().pop().unwrap() {
 					MessageSendEvent::UpdateHTLCs { node_id, updates } => {

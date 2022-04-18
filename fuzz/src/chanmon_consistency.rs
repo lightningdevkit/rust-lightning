@@ -842,11 +842,12 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 								if $fail {
 									assert!(nodes[$node].fail_htlc_backwards(&payment_hash));
 								} else {
-									assert!(nodes[$node].claim_funds(PaymentPreimage(payment_hash.0)));
+									nodes[$node].claim_funds(PaymentPreimage(payment_hash.0));
 								}
 							}
 						},
 						events::Event::PaymentSent { .. } => {},
+						events::Event::PaymentClaimed { .. } => {},
 						events::Event::PaymentPathSuccessful { .. } => {},
 						events::Event::PaymentPathFailed { .. } => {},
 						events::Event::PaymentForwarded { .. } if $node == 1 => {},
