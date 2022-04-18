@@ -1476,7 +1476,7 @@ pub fn send_along_route_with_secret<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, 
 	payment_id
 }
 
-pub fn pass_along_path<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_path: &[&Node<'a, 'b, 'c>], recv_value: u64, our_payment_hash: PaymentHash, our_payment_secret: Option<PaymentSecret>, ev: MessageSendEvent, payment_received_expected: bool, expected_preimage: Option<PaymentPreimage>) {
+pub fn do_pass_along_path<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_path: &[&Node<'a, 'b, 'c>], recv_value: u64, our_payment_hash: PaymentHash, our_payment_secret: Option<PaymentSecret>, ev: MessageSendEvent, payment_received_expected: bool, clear_recipient_events: bool, expected_preimage: Option<PaymentPreimage>) {
 	let mut payment_event = SendEvent::from_event(ev);
 	let mut prev_node = origin_node;
 
@@ -1489,7 +1489,7 @@ pub fn pass_along_path<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_path
 
 		expect_pending_htlcs_forwardable!(node);
 
-		if idx == expected_path.len() - 1 {
+		if idx == expected_path.len() - 1 && clear_recipient_events {
 			let events_2 = node.node.get_and_clear_pending_events();
 			if payment_received_expected {
 				assert_eq!(events_2.len(), 1);
@@ -1513,7 +1513,7 @@ pub fn pass_along_path<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_path
 			} else {
 				assert!(events_2.is_empty());
 			}
-		} else {
+		} else if idx != expected_path.len() - 1 {
 			let mut events_2 = node.node.get_and_clear_pending_msg_events();
 			assert_eq!(events_2.len(), 1);
 			check_added_monitors!(node, 1);
@@ -1523,6 +1523,10 @@ pub fn pass_along_path<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_path
 
 		prev_node = node;
 	}
+}
+
+pub fn pass_along_path<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_path: &[&Node<'a, 'b, 'c>], recv_value: u64, our_payment_hash: PaymentHash, our_payment_secret: Option<PaymentSecret>, ev: MessageSendEvent, payment_received_expected: bool, expected_preimage: Option<PaymentPreimage>) {
+	do_pass_along_path(origin_node, expected_path, recv_value, our_payment_hash, our_payment_secret, ev, payment_received_expected, true, expected_preimage);
 }
 
 pub fn pass_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route: &[&[&Node<'a, 'b, 'c>]], recv_value: u64, our_payment_hash: PaymentHash, our_payment_secret: PaymentSecret) {

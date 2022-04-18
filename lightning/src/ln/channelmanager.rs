@@ -6698,7 +6698,7 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 			// payments which are still in-flight via their on-chain state.
 			// We only rebuild the pending payments map if we were most recently serialized by
 			// 0.0.102+
-			for (_, monitor) in args.channel_monitors {
+			for (_, monitor) in args.channel_monitors.iter() {
 				if by_id.get(&monitor.get_funding_txo().0.to_channel_id()).is_none() {
 					for (htlc_source, htlc) in monitor.get_pending_outbound_htlcs() {
 						if let HTLCSource::OutboundRoute { payment_id, session_priv, path, payment_secret, .. } = htlc_source {
@@ -6820,6 +6820,38 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 					// channel if we just happened to pick a colliding outbound alias above.
 					log_error!(args.logger, "Got duplicate outbound SCID alias; {}", chan.outbound_scid_alias());
 					return Err(DecodeError::InvalidValue);
+				}
+			}
+		}
+
+		for (_, monitor) in args.channel_monitors.iter() {
+			for (payment_hash, payment_preimage) in monitor.get_stored_preimages() {
+				if let Some(claimable_htlcs) = claimable_htlcs.remove(&payment_hash) {
+					log_info!(args.logger, "Re-claimaing HTLCs with payment hash {} due to partial-claim.", log_bytes!(payment_hash.0));
+					for claimable_htlc in claimable_htlcs.1 {
+						// Add a holding-cell claim of the payment to the Channel, which should be
+						// applied ~immediately on peer reconnection. Because it won't generate a
+						// new commitment transaction we can just provide the payment preimage to
+						// the corresponding ChannelMonitor and nothing else.
+						//
+						// We do so directly instead of via the normal ChannelMonitor update
+						// procedure as the ChainMonitor hasn't yet been initialized, implying
+						// we're not allowed to call it directly yet. Further, we do the update
+						// without incrementing the ChannelMonitor update ID as there isn't any
+						// reason to.
+						// If we were to generate a new ChannelMonitor update ID here and then
+						// crash before the user finishes block connect we'd end up force-closing
+						// this channel as well. On the flip side, there's no harm in restarting
+						// without the new monitor persisted - we'll end up right back here on
+						// restart.
+						let previous_channel_id = claimable_htlc.prev_hop.outpoint.to_channel_id();
+						if let Some(channel) = by_id.get_mut(&previous_channel_id) {
+							channel.claim_htlc_while_disconnected_dropping_mon_update(claimable_htlc.prev_hop.htlc_id, payment_preimage, &args.logger);
+						}
+						if let Some(previous_hop_monitor) = args.channel_monitors.get(&claimable_htlc.prev_hop.outpoint) {
+							previous_hop_monitor.provide_payment_preimage(&payment_hash, &payment_preimage, &args.tx_broadcaster, &args.fee_estimator, &args.logger);
+						}
+					}
 				}
 			}
 		}

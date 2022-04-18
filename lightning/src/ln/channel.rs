@@ -1703,6 +1703,28 @@ impl<Signer: Sign> Channel<Signer> {
 		make_funding_redeemscript(&self.get_holder_pubkeys().funding_pubkey, self.counterparty_funding_pubkey())
 	}
 
+	/// Claims an HTLC while we're disconnected from a peer, dropping the ChannelMonitorUpdate
+	/// entirely.
+	///
+	/// The ChannelMonitor for this channel MUST be updated out-of-band with the preimage provided
+	/// (i.e. without calling [`crate::chain::Watch::update_channel`]).
+	///
+	/// The HTLC claim will end up in the holding cell (because the caller must ensure the peer is
+	/// disconnected).
+	pub fn claim_htlc_while_disconnected_dropping_mon_update<L: Deref>
+		(&mut self, htlc_id_arg: u64, payment_preimage_arg: PaymentPreimage, logger: &L)
+	where L::Target: Logger {
+		// Assert that we'll add the HTLC claim to the holding cell in `get_update_fulfill_htlc`
+		// (see equivalent if condition there).
+		assert!(self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32 | ChannelState::PeerDisconnected as u32 | ChannelState::MonitorUpdateFailed as u32) != 0);
+		let mon_update_id = self.latest_monitor_update_id; // Forget the ChannelMonitor update
+		let fulfill_resp = self.get_update_fulfill_htlc(htlc_id_arg, payment_preimage_arg, logger);
+		self.latest_monitor_update_id = mon_update_id;
+		if let UpdateFulfillFetch::NewClaim { msg, .. } = fulfill_resp {
+			assert!(msg.is_none()); // The HTLC must have ended up in the holding cell.
+		}
+	}
+
 	fn get_update_fulfill_htlc<L: Deref>(&mut self, htlc_id_arg: u64, payment_preimage_arg: PaymentPreimage, logger: &L) -> UpdateFulfillFetch where L::Target: Logger {
 		// Either ChannelFunded got set (which means it won't be unset) or there is no way any
 		// caller thought we could have something claimed (cause we wouldn't have accepted in an
@@ -1765,6 +1787,10 @@ impl<Signer: Sign> Channel<Signer> {
 		};
 
 		if (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32 | ChannelState::PeerDisconnected as u32 | ChannelState::MonitorUpdateFailed as u32)) != 0 {
+			// Note that this condition is the same as the assertion in
+			// `claim_htlc_while_disconnected_dropping_mon_update` and must match exactly -
+			// `claim_htlc_while_disconnected_dropping_mon_update` would not work correctly if we
+			// do not not get into this branch.
 			for pending_update in self.holding_cell_htlc_updates.iter() {
 				match pending_update {
 					&HTLCUpdateAwaitingACK::ClaimHTLC { htlc_id, .. } => {
