@@ -1739,7 +1739,7 @@ pub fn fail_payment_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expe
 	for path in expected_paths.iter() {
 		assert_eq!(path.last().unwrap().node.get_our_node_id(), expected_paths[0].last().unwrap().node.get_our_node_id());
 	}
-	assert!(expected_paths[0].last().unwrap().node.fail_htlc_backwards(&our_payment_hash));
+	expected_paths[0].last().unwrap().node.fail_htlc_backwards(&our_payment_hash);
 	expect_pending_htlcs_forwardable!(expected_paths[0].last().unwrap());
 
 	pass_failed_payment_back(origin_node, expected_paths, skip_last, our_payment_hash);
@@ -1845,7 +1845,7 @@ pub fn pass_failed_payment_back<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expe
 	}
 
 	// Ensure that fail_htlc_backwards is idempotent.
-	assert!(!expected_paths[0].last().unwrap().node.fail_htlc_backwards(&our_payment_hash));
+	expected_paths[0].last().unwrap().node.fail_htlc_backwards(&our_payment_hash);
 	assert!(expected_paths[0].last().unwrap().node.get_and_clear_pending_events().is_empty());
 	assert!(expected_paths[0].last().unwrap().node.get_and_clear_pending_msg_events().is_empty());
 	check_added_monitors!(expected_paths[0].last().unwrap(), 0);

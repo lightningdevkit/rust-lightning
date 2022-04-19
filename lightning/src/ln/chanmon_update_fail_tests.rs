@@ -831,7 +831,7 @@ fn do_test_monitor_update_fail_raa(test_ignore_second_cs: bool) {
 	let (_, payment_hash_1, _) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 1000000);
 
 	// Fail the payment backwards, failing the monitor update on nodes[1]'s receipt of the RAA
-	assert!(nodes[2].node.fail_htlc_backwards(&payment_hash_1));
+	nodes[2].node.fail_htlc_backwards(&payment_hash_1);
 	expect_pending_htlcs_forwardable!(nodes[2]);
 	check_added_monitors!(nodes[2], 1);
 
@@ -1696,7 +1696,7 @@ fn test_monitor_update_on_pending_forwards() {
 	send_payment(&nodes[0], &[&nodes[1], &nodes[2]], 5000000);
 
 	let (_, payment_hash_1, _) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 1000000);
-	assert!(nodes[2].node.fail_htlc_backwards(&payment_hash_1));
+	nodes[2].node.fail_htlc_backwards(&payment_hash_1);
 	expect_pending_htlcs_forwardable!(nodes[2]);
 	check_added_monitors!(nodes[2], 1);
 
@@ -2468,7 +2468,7 @@ fn do_test_reconnect_dup_htlc_claims(htlc_status: HTLCStatusAtDupClaim, second_f
 		payment_preimage,
 	};
 	if second_fails {
-		assert!(nodes[2].node.fail_htlc_backwards(&payment_hash));
+		nodes[2].node.fail_htlc_backwards(&payment_hash);
 		expect_pending_htlcs_forwardable!(nodes[2]);
 		check_added_monitors!(nodes[2], 1);
 		get_htlc_update_msgs!(nodes[2], nodes[1].node.get_our_node_id());

@@ -3500,9 +3500,17 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// Indicates that the preimage for payment_hash is unknown or the received amount is incorrect
 	/// after a PaymentReceived event, failing the HTLC back to its origin and freeing resources
 	/// along the path (including in our own channel on which we received it).
-	/// Returns false if no payment was found to fail backwards, true if the process of failing the
-	/// HTLC backwards has been started.
-	pub fn fail_htlc_backwards(&self, payment_hash: &PaymentHash) -> bool {
+	///
+	/// Note that in some cases around unclean shutdown, it is possible the payment may have
+	/// already been claimed by you via [`ChannelManager::claim_funds`] prior to you seeing (a
+	/// second copy of) the [`events::Event::PaymentReceived`] event. Alternatively, the payment
+	/// may have already been failed automatically by LDK if it was nearing its expiration time.
+	///
+	/// While LDK will never claim a payment automatically on your behalf (i.e. without you calling
+	/// [`ChannelManager::claim_funds`]), you should still monitor for
+	/// [`events::Event::PaymentClaimed`] events even for payments you intend to fail, especially on
+	/// startup during which time claims that were in-progress at shutdown may be replayed.
+	pub fn fail_htlc_backwards(&self, payment_hash: &PaymentHash) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 
 		let mut channel_state = Some(self.channel_state.lock().unwrap());
@@ -3517,8 +3525,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 						HTLCSource::PreviousHopData(htlc.prev_hop), payment_hash,
 						HTLCFailReason::Reason { failure_code: 0x4000 | 15, data: htlc_msat_height_data });
 			}
-			true
-		} else { false }
+		}
 	}
 
 	/// Gets an HTLC onion failure code and error data for an `UPDATE` error, given the error code
