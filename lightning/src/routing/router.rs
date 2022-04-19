@@ -1735,6 +1735,8 @@ mod tests {
 				node_id,
 				unspendable_punishment_reserve: 0,
 				forwarding_info: None,
+				outbound_htlc_minimum_msat: None,
+				outbound_htlc_maximum_msat: None,
 			},
 			funding_txo: Some(OutPoint { txid: bitcoin::Txid::from_slice(&[0; 32]).unwrap(), index: 0 }),
 			channel_type: None,
@@ -5458,6 +5460,8 @@ mod benches {
 				node_id,
 				unspendable_punishment_reserve: 0,
 				forwarding_info: None,
+				outbound_htlc_minimum_msat: None,
+				outbound_htlc_maximum_msat: None,
 			},
 			funding_txo: Some(OutPoint {
 				txid: bitcoin::Txid::from_slice(&[0; 32]).unwrap(), index: 0

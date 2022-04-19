@@ -4347,6 +4347,11 @@ impl<Signer: Sign> Channel<Signer> {
 		self.counterparty_htlc_minimum_msat
 	}
 
+	/// Allowed in any state (including after shutdown), but will return none before TheirInitSent
+	pub fn get_counterparty_htlc_maximum_msat(&self) -> Option<u64> {
+		self.get_htlc_maximum_msat(self.counterparty_max_htlc_value_in_flight_msat)
+	}
+
 	fn get_htlc_maximum_msat(&self, party_max_htlc_value_in_flight_msat: u64) -> Option<u64> {
 		self.counterparty_selected_channel_reserve_satoshis.map(|counterparty_reserve| {
 			let holder_reserve = self.holder_selected_channel_reserve_satoshis;
