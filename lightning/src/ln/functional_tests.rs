@@ -9870,6 +9870,57 @@ fn test_keysend_payments_to_private_node() {
 	claim_payment(&nodes[0], &path, test_preimage);
 }
 
+#[test]
+fn test_double_partial_claim() {
+	// Test what happens if a node receives a payment, generates a PaymentReceived event, the HTLCs
+	// time out, the sender resends only some of the MPP parts, then the user processes the
+	// PaymentReceived event, ensuring they don't inadvertently claim only part of the full payment
+	// amount.
+	let chanmon_cfgs = create_chanmon_cfgs(4);
+	let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, None, None, None]);
+	let nodes = create_network(4, &node_cfgs, &node_chanmgrs);
+
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100_000, 0, InitFeatures::known(), InitFeatures::known());
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 2, 100_000, 0, InitFeatures::known(), InitFeatures::known());
+	create_announced_chan_between_nodes_with_value(&nodes, 1, 3, 100_000, 0, InitFeatures::known(), InitFeatures::known());
+	create_announced_chan_between_nodes_with_value(&nodes, 2, 3, 100_000, 0, InitFeatures::known(), InitFeatures::known());
+
+	let (mut route, payment_hash, payment_preimage, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[3], 15_000_000);
+	assert_eq!(route.paths.len(), 2);
+	route.paths.sort_by(|path_a, _| {
+		// Sort the path so that the path through nodes[1] comes first
+		if path_a[0].pubkey == nodes[1].node.get_our_node_id() {
+			core::cmp::Ordering::Less } else { core::cmp::Ordering::Greater }
+	});
+
+	send_along_route_with_secret(&nodes[0], route.clone(), &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]], 15_000_000, payment_hash, payment_secret);
+	// nodes[3] has now received a PaymentReceived event...which it will take some (exorbitant)
+	// amount of time to respond to.
+
+	// Connect some blocks to time out the payment
+	connect_blocks(&nodes[3], TEST_FINAL_CLTV);
+	connect_blocks(&nodes[0], TEST_FINAL_CLTV); // To get the same height for sending later
+
+	expect_pending_htlcs_forwardable!(nodes[3]);
+
+	pass_failed_payment_back(&nodes[0], &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]], false, payment_hash);
+
+	// nodes[1] now retries one of the two paths...
+	nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret)).unwrap();
+	check_added_monitors!(nodes[0], 2);
+
+	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 2);
+	pass_along_path(&nodes[0], &[&nodes[1], &nodes[3]], 15_000_000, payment_hash, Some(payment_secret), events.drain(..).next().unwrap(), false, None);
+
+	// At this point nodes[3] has received one half of the payment, and the user goes to handle
+	// that PaymentReceived event they got hours ago and never handled...we should refuse to claim.
+	nodes[3].node.claim_funds(payment_preimage);
+	check_added_monitors!(nodes[3], 0);
+	assert!(nodes[3].node.get_and_clear_pending_msg_events().is_empty());
+}
+
 fn do_test_partial_claim_before_restart(persist_both_monitors: bool) {
 	// Test what happens if a node receives an MPP payment, claims it, but crashes before
 	// persisting the ChannelManager. If `persist_both_monitors` is false, also crash after only

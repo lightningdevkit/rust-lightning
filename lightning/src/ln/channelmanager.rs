@@ -3825,13 +3825,41 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			// provide the preimage, so worrying too much about the optimal handling isn't worth
 			// it.
 			let mut claimable_amt_msat = 0;
+			let mut expected_amt_msat = None;
 			let mut valid_mpp = true;
 			for htlc in sources.iter() {
 				if let None = channel_state.as_ref().unwrap().short_to_id.get(&htlc.prev_hop.short_channel_id) {
 					valid_mpp = false;
 					break;
 				}
+				if expected_amt_msat.is_some() && expected_amt_msat != Some(htlc.total_msat) {
+					log_error!(self.logger, "Somehow ended up with an MPP payment with different total amounts - this should not be reachable!");
+					debug_assert!(false);
+					valid_mpp = false;
+					break;
+				}
+				expected_amt_msat = Some(htlc.total_msat);
+				if let OnionPayload::Spontaneous(_) = &htlc.onion_payload {
+					// We don't currently support MPP for spontaneous payments, so just check
+					// that there's one payment here and move on.
+					if sources.len() != 1 {
+						log_error!(self.logger, "Somehow ended up with an MPP spontaneous payment - this should not be reachable!");
+						debug_assert!(false);
+						valid_mpp = false;
+						break;
+					}
+				}
+
 				claimable_amt_msat += htlc.value;
+			}
+			if sources.is_empty() || expected_amt_msat.is_none() {
+				log_info!(self.logger, "Attempted to claim an incomplete payment which no longer had any available HTLCs!");
+				return;
+			}
+			if claimable_amt_msat != expected_amt_msat.unwrap() {
+				log_info!(self.logger, "Attempted to claim an incomplete payment, expected {} msat, had {} available to claim.",
+					expected_amt_msat.unwrap(), claimable_amt_msat);
+				return;
 			}
 
 			let mut errs = Vec::new();
