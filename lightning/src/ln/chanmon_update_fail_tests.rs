@@ -1102,7 +1102,7 @@ fn test_monitor_update_fail_reestablish() {
 	assert!(updates.update_fee.is_none());
 	assert_eq!(updates.update_fulfill_htlcs.len(), 1);
 	nodes[1].node.handle_update_fulfill_htlc(&nodes[2].node.get_our_node_id(), &updates.update_fulfill_htlcs[0]);
-	expect_payment_forwarded!(nodes[1], Some(1000), false);
+	expect_payment_forwarded!(nodes[1], nodes[0], Some(1000), false);
 	check_added_monitors!(nodes[1], 1);
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 	commitment_signed_dance!(nodes[1], nodes[2], updates.commitment_signed, false);
@@ -2087,7 +2087,7 @@ fn test_fail_htlc_on_broadcast_after_claim() {
 	nodes[1].node.handle_update_fulfill_htlc(&nodes[2].node.get_our_node_id(), &cs_updates.update_fulfill_htlcs[0]);
 	let bs_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 	check_added_monitors!(nodes[1], 1);
-	expect_payment_forwarded!(nodes[1], Some(1000), false);
+	expect_payment_forwarded!(nodes[1], nodes[0], Some(1000), false);
 
 	mine_transaction(&nodes[1], &bs_txn[0]);
 	check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed);
@@ -2423,7 +2423,7 @@ fn do_test_reconnect_dup_htlc_claims(htlc_status: HTLCStatusAtDupClaim, second_f
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
 	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
-	let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::known(), InitFeatures::known()).2;
+	let chan_id_2 = create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::known(), InitFeatures::known()).2;
 
 	let (payment_preimage, payment_hash, _) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 100_000);
 
@@ -2450,7 +2450,7 @@ fn do_test_reconnect_dup_htlc_claims(htlc_status: HTLCStatusAtDupClaim, second_f
 	}
 
 	let fulfill_msg = msgs::UpdateFulfillHTLC {
-		channel_id: chan_2,
+		channel_id: chan_id_2,
 		htlc_id: 0,
 		payment_preimage,
 	};
@@ -2468,7 +2468,7 @@ fn do_test_reconnect_dup_htlc_claims(htlc_status: HTLCStatusAtDupClaim, second_f
 		assert_eq!(fulfill_msg, cs_updates.update_fulfill_htlcs[0]);
 	}
 	nodes[1].node.handle_update_fulfill_htlc(&nodes[2].node.get_our_node_id(), &fulfill_msg);
-	expect_payment_forwarded!(nodes[1], Some(1000), false);
+	expect_payment_forwarded!(nodes[1], nodes[0], Some(1000), false);
 	check_added_monitors!(nodes[1], 1);
 
 	let mut bs_updates = None;

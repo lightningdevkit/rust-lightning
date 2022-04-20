@@ -4022,7 +4022,10 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 						} else { None };
 
 						let mut pending_events = self.pending_events.lock().unwrap();
+
+						let source_channel_id = Some(prev_outpoint.to_channel_id());
 						pending_events.push(events::Event::PaymentForwarded {
+							source_channel_id,
 							fee_earned_msat,
 							claim_from_onchain_tx: from_onchain,
 						});
