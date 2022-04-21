@@ -16,7 +16,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 _bench_unstable = ["lightning/_bench_unstable"]
 
 [dependencies]
-bitcoin = "0.27"
+bitcoin = "0.28"
 lightning = { version = "0.0.106", path = "../lightning" }
 libc = "0.2"
 
