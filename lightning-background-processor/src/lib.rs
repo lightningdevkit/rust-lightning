@@ -203,9 +203,21 @@ impl BackgroundProcessor {
 			let mut have_pruned = false;
 
 			loop {
-				peer_manager.process_events(); // Note that this may block on ChannelManager's locking
 				channel_manager.process_pending_events(&event_handler);
 				chain_monitor.process_pending_events(&event_handler);
+
+				// Note that the PeerManager::process_events may block on ChannelManager's locks,
+				// hence it comes last here. When the ChannelManager finishes whatever it's doing,
+				// we want to ensure we get into `persist_manager` as quickly as we can, especially
+				// without running the normal event processing above and handing events to users.
+				//
+				// Specifically, on an *extremely* slow machine, we may see ChannelManager start
+				// processing a message effectively at any point during this loop. In order to
+				// minimize the time between such processing completing and persisting the updated
+				// ChannelManager, we want to minimize methods blocking on a ChannelManager
+				// generally, and as a fallback place such blocking only immediately before
+				// persistence.
+				peer_manager.process_events();
 
 				// We wait up to 100ms, but track how long it takes to detect being put to sleep,
 				// see `await_start`'s use below.
