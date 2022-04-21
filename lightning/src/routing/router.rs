@@ -1735,6 +1735,8 @@ mod tests {
 				node_id,
 				unspendable_punishment_reserve: 0,
 				forwarding_info: None,
+				outbound_htlc_minimum_msat: None,
+				outbound_htlc_maximum_msat: None,
 			},
 			funding_txo: Some(OutPoint { txid: bitcoin::Txid::from_slice(&[0; 32]).unwrap(), index: 0 }),
 			channel_type: None,
@@ -1750,6 +1752,8 @@ mod tests {
 			force_close_spend_delay: None,
 			is_outbound: true, is_funding_locked: true,
 			is_usable: true, is_public: true,
+			inbound_htlc_minimum_msat: None,
+			inbound_htlc_maximum_msat: None,
 		}
 	}
 
@@ -5456,6 +5460,8 @@ mod benches {
 				node_id,
 				unspendable_punishment_reserve: 0,
 				forwarding_info: None,
+				outbound_htlc_minimum_msat: None,
+				outbound_htlc_maximum_msat: None,
 			},
 			funding_txo: Some(OutPoint {
 				txid: bitcoin::Txid::from_slice(&[0; 32]).unwrap(), index: 0
@@ -5475,6 +5481,8 @@ mod benches {
 			is_funding_locked: true,
 			is_usable: true,
 			is_public: true,
+			inbound_htlc_minimum_msat: None,
+			inbound_htlc_maximum_msat: None,
 		}
 	}
 

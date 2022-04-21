@@ -922,6 +922,12 @@ pub struct ChannelCounterparty {
 	/// Information on the fees and requirements that the counterparty requires when forwarding
 	/// payments to us through this channel.
 	pub forwarding_info: Option<CounterpartyForwardingInfo>,
+	/// The smallest value HTLC (in msat) the remote peer will accept, for this channel. This field
+	/// is only `None` before we have received either the `OpenChannel` or `AcceptChannel` message
+	/// from the remote peer, or for `ChannelCounterparty` objects serialized prior to LDK 0.0.107.
+	pub outbound_htlc_minimum_msat: Option<u64>,
+	/// The largest value HTLC (in msat) the remote peer currently will accept, for this channel.
+	pub outbound_htlc_maximum_msat: Option<u64>,
 }
 
 /// Details of a channel, as returned by ChannelManager::list_channels and ChannelManager::list_usable_channels
@@ -1046,6 +1052,11 @@ pub struct ChannelDetails {
 	pub is_usable: bool,
 	/// True if this channel is (or will be) publicly-announced.
 	pub is_public: bool,
+	/// The smallest value HTLC (in msat) we will accept, for this channel. This field
+	/// is only `None` for `ChannelDetails` objects serialized prior to LDK 0.0.107
+	pub inbound_htlc_minimum_msat: Option<u64>,
+	/// The largest value HTLC (in msat) we currently will accept, for this channel.
+	pub inbound_htlc_maximum_msat: Option<u64>,
 }
 
 impl ChannelDetails {
@@ -1670,6 +1681,14 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 						features: InitFeatures::empty(),
 						unspendable_punishment_reserve: to_remote_reserve_satoshis,
 						forwarding_info: channel.counterparty_forwarding_info(),
+						// Ensures that we have actually received the `htlc_minimum_msat` value
+						// from the counterparty through the `OpenChannel` or `AcceptChannel`
+						// message (as they are always the first message from the counterparty).
+						// Else `Channel::get_counterparty_htlc_minimum_msat` could return the
+						// default `0` value set by `Channel::new_outbound`.
+						outbound_htlc_minimum_msat: if channel.have_received_message() {
+							Some(channel.get_counterparty_htlc_minimum_msat()) } else { None },
+						outbound_htlc_maximum_msat: channel.get_counterparty_htlc_maximum_msat(),
 					},
 					funding_txo: channel.get_funding_txo(),
 					// Note that accept_channel (or open_channel) is always the first message, so
@@ -1689,6 +1708,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					is_funding_locked: channel.is_usable(),
 					is_usable: channel.is_live(),
 					is_public: channel.should_announce(),
+					inbound_htlc_minimum_msat: Some(channel.get_holder_htlc_minimum_msat()),
+					inbound_htlc_maximum_msat: channel.get_holder_htlc_maximum_msat()
 				});
 			}
 		}
@@ -5900,6 +5921,8 @@ impl_writeable_tlv_based!(ChannelCounterparty, {
 	(4, features, required),
 	(6, unspendable_punishment_reserve, required),
 	(8, forwarding_info, option),
+	(9, outbound_htlc_minimum_msat, option),
+	(11, outbound_htlc_maximum_msat, option),
 });
 
 impl_writeable_tlv_based!(ChannelDetails, {
@@ -5921,6 +5944,8 @@ impl_writeable_tlv_based!(ChannelDetails, {
 	(28, is_funding_locked, required),
 	(30, is_usable, required),
 	(32, is_public, required),
+	(33, inbound_htlc_minimum_msat, option),
+	(35, inbound_htlc_maximum_msat, option),
 });
 
 impl_writeable_tlv_based!(PhantomRouteHints, {

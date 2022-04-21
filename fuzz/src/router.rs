@@ -213,6 +213,8 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 									features: InitFeatures::known(),
 									unspendable_punishment_reserve: 0,
 									forwarding_info: None,
+									outbound_htlc_minimum_msat: None,
+									outbound_htlc_maximum_msat: None,
 								},
 								funding_txo: Some(OutPoint { txid: bitcoin::Txid::from_slice(&[0; 32]).unwrap(), index: 0 }),
 								channel_type: None,
@@ -227,6 +229,8 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 								is_usable: true, is_public: true,
 								balance_msat: 0,
 								outbound_capacity_msat: 0,
+								inbound_htlc_minimum_msat: None,
+								inbound_htlc_maximum_msat: None,
 							});
 						}
 						Some(&first_hops_vec[..])
