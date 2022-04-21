@@ -4379,7 +4379,7 @@ impl<Signer: Sign> Channel<Signer> {
 			// channel might have been used to route very small values (either by honest users or as DoS).
 			self.channel_value_satoshis * 1000 * 9 / 10,
 
-			self.holder_max_htlc_value_in_flight_msat
+			self.counterparty_max_htlc_value_in_flight_msat
 		);
 	}
 
