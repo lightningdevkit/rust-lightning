@@ -17,7 +17,7 @@ use bitcoin::secp256k1::PublicKey;
 use ln::channelmanager::ChannelDetails;
 use ln::features::{ChannelFeatures, InvoiceFeatures, NodeFeatures};
 use ln::msgs::{DecodeError, ErrorAction, LightningError, MAX_VALUE_MSAT};
-use routing::scoring::Score;
+use routing::scoring::{ChannelUsage, Score};
 use routing::network_graph::{DirectedChannelInfoWithUpdate, EffectiveCapacity, NetworkGraph, ReadOnlyNetworkGraph, NodeId, RoutingFees};
 use util::ser::{Writeable, Readable};
 use util::logger::{Level, Logger};
@@ -1066,10 +1066,16 @@ where L::Target: Logger {
 								}
 							}
 
-							let available_liquidity_msat = htlc_maximum_msat - used_liquidity_msat;
-							let path_penalty_msat = $next_hops_path_penalty_msat.saturating_add(
-								scorer.channel_penalty_msat(short_channel_id, amount_to_transfer_over_msat,
-									available_liquidity_msat, &$src_node_id, &$dest_node_id));
+							let channel_usage = ChannelUsage {
+								amount_msat: amount_to_transfer_over_msat,
+								inflight_htlc_msat: used_liquidity_msat,
+								effective_capacity: $candidate.effective_capacity(),
+							};
+							let channel_penalty_msat = scorer.channel_penalty_msat(
+								short_channel_id, &$src_node_id, &$dest_node_id, channel_usage
+							);
+							let path_penalty_msat = $next_hops_path_penalty_msat
+								.saturating_add(channel_penalty_msat);
 							let new_graph_node = RouteGraphNode {
 								node_id: $src_node_id,
 								lowest_fee_to_peer_through_node: total_fee_msat,
@@ -1306,10 +1312,18 @@ where L::Target: Logger {
 						hop_used = false;
 					}
 
-					let amount_to_transfer_msat = final_value_msat + aggregate_next_hops_fee_msat;
-					let capacity_msat = candidate.effective_capacity().as_msat();
+					let used_liquidity_msat = used_channel_liquidities
+						.get(&(hop.short_channel_id, source < target)).copied().unwrap_or(0);
+					let channel_usage = ChannelUsage {
+						amount_msat: final_value_msat + aggregate_next_hops_fee_msat,
+						inflight_htlc_msat: used_liquidity_msat,
+						effective_capacity: candidate.effective_capacity(),
+					};
+					let channel_penalty_msat = scorer.channel_penalty_msat(
+						hop.short_channel_id, &source, &target, channel_usage
+					);
 					aggregate_next_hops_path_penalty_msat = aggregate_next_hops_path_penalty_msat
-						.saturating_add(scorer.channel_penalty_msat(hop.short_channel_id, amount_to_transfer_msat, capacity_msat, &source, &target));
+						.saturating_add(channel_penalty_msat);
 
 					aggregate_next_hops_cltv_delta = aggregate_next_hops_cltv_delta
 						.saturating_add(hop.cltv_expiry_delta as u32);
@@ -1777,7 +1791,7 @@ mod tests {
 	use routing::router::{get_route, add_random_cltv_offset, default_node_features,
 		PaymentParameters, Route, RouteHint, RouteHintHop, RouteHop, RoutingFees,
 		DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA, MAX_PATH_LENGTH_ESTIMATE};
-	use routing::scoring::Score;
+	use routing::scoring::{ChannelUsage, Score};
 	use chain::transaction::OutPoint;
 	use chain::keysinterface::KeysInterface;
 	use ln::features::{ChannelFeatures, InitFeatures, InvoiceFeatures, NodeFeatures};
@@ -5169,7 +5183,7 @@ mod tests {
 		fn write<W: Writer>(&self, _w: &mut W) -> Result<(), ::io::Error> { unimplemented!() }
 	}
 	impl Score for BadChannelScorer {
-		fn channel_penalty_msat(&self, short_channel_id: u64, _send_amt: u64, _capacity_msat: u64, _source: &NodeId, _target: &NodeId) -> u64 {
+		fn channel_penalty_msat(&self, short_channel_id: u64, _: &NodeId, _: &NodeId, _: ChannelUsage) -> u64 {
 			if short_channel_id == self.short_channel_id { u64::max_value() } else { 0 }
 		}
 
@@ -5187,7 +5201,7 @@ mod tests {
 	}
 
 	impl Score for BadNodeScorer {
-		fn channel_penalty_msat(&self, _short_channel_id: u64, _send_amt: u64, _capacity_msat: u64, _source: &NodeId, target: &NodeId) -> u64 {
+		fn channel_penalty_msat(&self, _: u64, _: &NodeId, target: &NodeId, _: ChannelUsage) -> u64 {
 			if *target == self.node_id { u64::max_value() } else { 0 }
 		}
 
