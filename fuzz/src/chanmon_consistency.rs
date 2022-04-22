@@ -35,7 +35,7 @@ use lightning::chain::channelmonitor::{ChannelMonitor, MonitorEvent};
 use lightning::chain::transaction::OutPoint;
 use lightning::chain::chaininterface::{BroadcasterInterface, ConfirmationTarget, FeeEstimator};
 use lightning::chain::keysinterface::{KeyMaterial, KeysInterface, InMemorySigner, Recipient};
-use lightning::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
+use lightning::ln::{PaymentHash, PaymentPreimage, PaymentSecret, RecipientInfo};
 use lightning::ln::channelmanager::{ChainParameters, ChannelManager, PaymentSendFailure, ChannelManagerReadArgs};
 use lightning::ln::channel::FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE;
 use lightning::ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
@@ -301,6 +301,7 @@ fn get_payment_secret_hash(dest: &ChanMan, payment_id: &mut u8) -> Option<(Payme
 fn send_payment(source: &ChanMan, dest: &ChanMan, dest_chan_id: u64, amt: u64, payment_id: &mut u8) -> bool {
 	let (payment_secret, payment_hash) =
 		if let Some((secret, hash)) = get_payment_secret_hash(dest, payment_id) { (secret, hash) } else { return true; };
+	let recipient_info = RecipientInfo { payment_secret: Some(payment_secret), payment_metadata: None };
 	if let Err(err) = source.send_payment(&Route {
 		paths: vec![vec![RouteHop {
 			pubkey: dest.get_our_node_id(),
@@ -311,7 +312,7 @@ fn send_payment(source: &ChanMan, dest: &ChanMan, dest_chan_id: u64, amt: u64, p
 			cltv_expiry_delta: 200,
 		}]],
 		payment_params: None,
-	}, payment_hash, &Some(payment_secret), None) {
+	}, payment_hash, &recipient_info) {
 		check_payment_err(err);
 		false
 	} else { true }
@@ -320,6 +321,7 @@ fn send_payment(source: &ChanMan, dest: &ChanMan, dest_chan_id: u64, amt: u64, p
 fn send_hop_payment(source: &ChanMan, middle: &ChanMan, middle_chan_id: u64, dest: &ChanMan, dest_chan_id: u64, amt: u64, payment_id: &mut u8) -> bool {
 	let (payment_secret, payment_hash) =
 		if let Some((secret, hash)) = get_payment_secret_hash(dest, payment_id) { (secret, hash) } else { return true; };
+	let recipient_info = RecipientInfo { payment_secret: Some(payment_secret), payment_metadata: None };
 	if let Err(err) = source.send_payment(&Route {
 		paths: vec![vec![RouteHop {
 			pubkey: middle.get_our_node_id(),
@@ -337,7 +339,7 @@ fn send_hop_payment(source: &ChanMan, middle: &ChanMan, middle_chan_id: u64, des
 			cltv_expiry_delta: 200,
 		}]],
 		payment_params: None,
-	}, payment_hash, &Some(payment_secret), None) {
+	}, payment_hash, &recipient_info) {
 		check_payment_err(err);
 		false
 	} else { true }

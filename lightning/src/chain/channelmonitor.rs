@@ -3345,7 +3345,7 @@ mod tests {
 	use chain::package::{weight_offered_htlc, weight_received_htlc, weight_revoked_offered_htlc, weight_revoked_received_htlc, WEIGHT_REVOKED_OUTPUT};
 	use chain::transaction::OutPoint;
 	use chain::keysinterface::InMemorySigner;
-	use ln::{PaymentPreimage, PaymentHash};
+	use ln::{PaymentPreimage, PaymentHash, RecipientInfo};
 	use ln::chan_utils;
 	use ln::chan_utils::{HTLCOutputInCommitment, ChannelPublicKeys, ChannelTransactionParameters, HolderCommitmentTransaction, CounterpartyChannelTransactionParameters};
 	use ln::channelmanager::PaymentSendFailure;
@@ -3414,7 +3414,8 @@ mod tests {
 		// If the ChannelManager tries to update the channel, however, the ChainMonitor will pass
 		// the update through to the ChannelMonitor which will refuse it (as the channel is closed).
 		let (route, payment_hash, _, payment_secret) = get_route_and_payment_hash!(nodes[1], nodes[0], 100_000);
-		unwrap_send_err!(nodes[1].node.send_payment(&route, payment_hash, &Some(payment_secret), None),
+		let recipient_info = RecipientInfo { payment_secret: Some(payment_secret), payment_metadata: None };
+		unwrap_send_err!(nodes[1].node.send_payment(&route, payment_hash, &recipient_info),
 			true, APIError::ChannelUnavailable { ref err },
 			assert!(err.contains("ChannelMonitor storage failure")));
 		check_added_monitors!(nodes[1], 2); // After the failure we generate a close-channel monitor update

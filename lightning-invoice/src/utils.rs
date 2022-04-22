@@ -9,7 +9,7 @@ use bitcoin_hashes::{Hash, sha256};
 use lightning::chain;
 use lightning::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use lightning::chain::keysinterface::{Recipient, KeysInterface, Sign};
-use lightning::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
+use lightning::ln::{PaymentHash, PaymentPreimage, RecipientInfo};
 use lightning::ln::channelmanager::{ChannelDetails, ChannelManager, PaymentId, PaymentSendFailure, MIN_FINAL_CLTV_EXPIRY};
 #[cfg(feature = "std")]
 use lightning::ln::channelmanager::{PhantomRouteHints, MIN_CLTV_EXPIRY_DELTA};
@@ -486,10 +486,10 @@ where
 		self.list_usable_channels()
 	}
 
-	fn send_payment(&self, route: &Route, payment_hash: PaymentHash,
-		payment_secret: &Option<PaymentSecret>, payment_metadata: Option<Vec<u8>>
+	fn send_payment(
+		&self, route: &Route, payment_hash: PaymentHash, recipient_info: &RecipientInfo
 	) -> Result<PaymentId, PaymentSendFailure> {
-		self.send_payment(route, payment_hash, payment_secret, payment_metadata)
+		self.send_payment(route, payment_hash, recipient_info)
 	}
 
 	fn send_spontaneous_payment(
@@ -517,7 +517,7 @@ mod test {
 	use bitcoin_hashes::Hash;
 	use bitcoin_hashes::sha256::Hash as Sha256;
 	use lightning::chain::keysinterface::PhantomKeysManager;
-	use lightning::ln::{PaymentPreimage, PaymentHash};
+	use lightning::ln::{PaymentPreimage, PaymentHash, RecipientInfo};
 	use lightning::ln::channelmanager::{PhantomRouteHints, MIN_FINAL_CLTV_EXPIRY};
 	use lightning::ln::functional_test_utils::*;
 	use lightning::ln::features::InitFeatures;
@@ -578,7 +578,11 @@ mod test {
 		let payment_event = {
 			let mut payment_hash = PaymentHash([0; 32]);
 			payment_hash.0.copy_from_slice(&invoice.payment_hash().as_ref()[0..32]);
-			nodes[0].node.send_payment(&route, payment_hash, &Some(invoice.payment_secret().clone()), None).unwrap();
+			let recipient_info = RecipientInfo {
+				payment_secret: Some(invoice.payment_secret().clone()),
+				payment_metadata: None
+			};
+			nodes[0].node.send_payment(&route, payment_hash, &recipient_info).unwrap();
 			let mut added_monitors = nodes[0].chain_monitor.added_monitors.lock().unwrap();
 			assert_eq!(added_monitors.len(), 1);
 			added_monitors.clear();
@@ -853,7 +857,11 @@ mod test {
 		let (payment_event, fwd_idx) = {
 			let mut payment_hash = PaymentHash([0; 32]);
 			payment_hash.0.copy_from_slice(&invoice.payment_hash().as_ref()[0..32]);
-			nodes[0].node.send_payment(&route, payment_hash, &Some(invoice.payment_secret().clone()), None).unwrap();
+			let recipient_info = RecipientInfo {
+				payment_secret: Some(invoice.payment_secret().clone()),
+				payment_metadata: None
+			};
+			nodes[0].node.send_payment(&route, payment_hash, &recipient_info).unwrap();
 			let mut added_monitors = nodes[0].chain_monitor.added_monitors.lock().unwrap();
 			assert_eq!(added_monitors.len(), 1);
 			added_monitors.clear();

@@ -735,6 +735,7 @@ mod tests {
 	use ln::features::InitFeatures;
 	use ln::functional_test_utils::*;
 	use ln::msgs::ChannelMessageHandler;
+	use ln::RecipientInfo;
 	use util::errors::APIError;
 	use util::events::{ClosureReason, MessageSendEvent, MessageSendEventsProvider};
 	use util::test_utils::{OnRegisterOutput, TxOutReference};
@@ -899,7 +900,11 @@ mod tests {
 		// If the ChannelManager tries to update the channel, however, the ChainMonitor will pass
 		// the update through to the ChannelMonitor which will refuse it (as the channel is closed).
 		chanmon_cfgs[0].persister.set_update_ret(Ok(()));
-		unwrap_send_err!(nodes[0].node.send_payment(&route, second_payment_hash, &Some(second_payment_secret), None),
+		let recipient_info = RecipientInfo {
+			payment_secret: Some(second_payment_secret),
+			payment_metadata: None,
+		};
+		unwrap_send_err!(nodes[0].node.send_payment(&route, second_payment_hash, &recipient_info),
 			true, APIError::ChannelUnavailable { ref err },
 			assert!(err.contains("ChannelMonitor storage failure")));
 		check_added_monitors!(nodes[0], 2); // After the failure we generate a close-channel monitor update

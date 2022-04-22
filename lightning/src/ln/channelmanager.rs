@@ -40,7 +40,7 @@ use chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitor
 use chain::transaction::{OutPoint, TransactionData};
 // Since this struct is returned in `list_channels` methods, expose it here in case users want to
 // construct one themselves.
-use ln::{inbound_payment, PaymentHash, PaymentPreimage, PaymentSecret};
+use ln::{inbound_payment, PaymentHash, PaymentPreimage, PaymentSecret, RecipientInfo};
 use ln::channel::{Channel, ChannelError, ChannelUpdateStatus, UpdateFulfillCommitFetch};
 use ln::features::{ChannelTypeFeatures, InitFeatures, NodeFeatures};
 use routing::router::{PaymentParameters, Route, RouteHop, RoutePath, RouteParameters};
@@ -2477,6 +2477,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// irrevocably committed to on our end. In such a case, do NOT retry the payment with a
 	/// different route unless you intend to pay twice!
 	///
+	/// Provide recipient_info to include payment_secret or payment_metadata), note that the 
 	/// payment_secret is unrelated to payment_hash (or PaymentPreimage) and exists to authenticate
 	/// the sender to the recipient and prevent payment-probing (deanonymization) attacks. For
 	/// newer nodes, it will be provided to you in the invoice. If you do not have one, the Route
@@ -2485,11 +2486,11 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// If a payment_secret *is* provided, we assume that the invoice had the payment_secret feature
 	/// bit set (either as required or as available). If multiple paths are present in the Route,
 	/// we assume the invoice had the basic_mpp feature set.
-	pub fn send_payment(&self, route: &Route, payment_hash: PaymentHash, payment_secret: &Option<PaymentSecret>, payment_metadata: Option<Vec<u8>>) -> Result<PaymentId, PaymentSendFailure> {
-		self.send_payment_internal(route, payment_hash, payment_secret, payment_metadata, None, None, None)
+	pub fn send_payment(&self, route: &Route, payment_hash: PaymentHash, recipient_info: &RecipientInfo) -> Result<PaymentId, PaymentSendFailure> {
+		self.send_payment_internal(route, payment_hash, &recipient_info.payment_secret, &recipient_info.payment_metadata, None, None, None)
 	}
 
-	fn send_payment_internal(&self, route: &Route, payment_hash: PaymentHash, payment_secret: &Option<PaymentSecret>, payment_metadata: Option<Vec<u8>>, keysend_preimage: Option<PaymentPreimage>, payment_id: Option<PaymentId>, recv_value_msat: Option<u64>) -> Result<PaymentId, PaymentSendFailure> {
+	fn send_payment_internal(&self, route: &Route, payment_hash: PaymentHash, payment_secret: &Option<PaymentSecret>, payment_metadata: &Option<Vec<u8>>, keysend_preimage: Option<PaymentPreimage>, payment_id: Option<PaymentId>, recv_value_msat: Option<u64>) -> Result<PaymentId, PaymentSendFailure> {
 		if route.paths.len() < 1 {
 			return Err(PaymentSendFailure::ParameterError(APIError::RouteError{err: "There must be at least one path to send over"}));
 		}
@@ -2631,7 +2632,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				}))
 			}
 		};
-		return self.send_payment_internal(route, payment_hash, &payment_secret, payment_metadata, None, Some(payment_id), Some(total_msat)).map(|_| ())
+		return self.send_payment_internal(route, payment_hash, &payment_secret, &payment_metadata, None, Some(payment_id), Some(total_msat)).map(|_| ())
 	}
 
 	/// Signals that no further retries for the given payment will occur.
@@ -2685,7 +2686,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			None => PaymentPreimage(self.keys_manager.get_secure_random_bytes()),
 		};
 		let payment_hash = PaymentHash(Sha256::hash(&preimage.0).into_inner());
-		match self.send_payment_internal(route, payment_hash, &None, None, Some(preimage), None, None) {
+		match self.send_payment_internal(route, payment_hash, &None, &None, Some(preimage), None, None) {
 			Ok(payment_id) => Ok((payment_hash, payment_id)),
 			Err(e) => Err(e)
 		}
@@ -6861,7 +6862,7 @@ mod tests {
 	use bitcoin::hashes::sha256::Hash as Sha256;
 	use core::time::Duration;
 	use core::sync::atomic::Ordering;
-	use ln::{PaymentPreimage, PaymentHash, PaymentSecret};
+	use ln::{PaymentPreimage, PaymentHash, PaymentSecret, RecipientInfo};
 	use ln::channelmanager::{PaymentId, PaymentSendFailure};
 	use ln::channelmanager::inbound_payment;
 	use ln::features::InitFeatures;
@@ -7183,7 +7184,8 @@ mod tests {
 
 		// Next, attempt a regular payment and make sure it fails.
 		let payment_secret = PaymentSecret([43; 32]);
-		nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret), None).unwrap();
+		let recipient_info = RecipientInfo { payment_secret: Some(payment_secret), payment_metadata: None };
+		nodes[0].node.send_payment(&route, payment_hash, &recipient_info).unwrap();
 		check_added_monitors!(nodes[0], 1);
 		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1);
@@ -7240,7 +7242,7 @@ mod tests {
 
 		let test_preimage = PaymentPreimage([42; 32]);
 		let mismatch_payment_hash = PaymentHash([43; 32]);
-		let _ = nodes[0].node.send_payment_internal(&route, mismatch_payment_hash, &None, None, Some(test_preimage), None, None).unwrap();
+		let _ = nodes[0].node.send_payment_internal(&route, mismatch_payment_hash, &None, &None, Some(test_preimage), None, None).unwrap();
 		check_added_monitors!(nodes[0], 1);
 
 		let updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
@@ -7285,7 +7287,7 @@ mod tests {
 		let test_preimage = PaymentPreimage([42; 32]);
 		let test_secret = PaymentSecret([43; 32]);
 		let payment_hash = PaymentHash(Sha256::hash(&test_preimage.0).into_inner());
-		let _ = nodes[0].node.send_payment_internal(&route, payment_hash, &Some(test_secret), None, Some(test_preimage), None, None).unwrap();
+		let _ = nodes[0].node.send_payment_internal(&route, payment_hash, &Some(test_secret), &None, Some(test_preimage), None, None).unwrap();
 		check_added_monitors!(nodes[0], 1);
 
 		let updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
@@ -7322,7 +7324,8 @@ mod tests {
 		route.paths[1][0].short_channel_id = chan_2_id;
 		route.paths[1][1].short_channel_id = chan_4_id;
 
-		match nodes[0].node.send_payment(&route, payment_hash, &None, None).unwrap_err() {
+		let recipient_info = RecipientInfo { payment_secret: None, payment_metadata: None };
+		match nodes[0].node.send_payment(&route, payment_hash, &recipient_info).unwrap_err() {
 			PaymentSendFailure::ParameterError(APIError::APIMisuseError { ref err }) => {
 				assert!(regex::Regex::new(r"Payment secret is required for multi-path payments").unwrap().is_match(err))			},
 			_ => panic!("unexpected error")

@@ -13,7 +13,7 @@
 use chain::{BestBlock, Confirm, Listen, Watch, keysinterface::KeysInterface};
 use chain::channelmonitor::ChannelMonitor;
 use chain::transaction::OutPoint;
-use ln::{PaymentPreimage, PaymentHash, PaymentSecret};
+use ln::{PaymentPreimage, PaymentHash, PaymentSecret, RecipientInfo};
 use ln::channelmanager::{ChainParameters, ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, PaymentSendFailure, PaymentId, MIN_CLTV_EXPIRY_DELTA};
 use routing::network_graph::{NetGraphMsgHandler, NetworkGraph};
 use routing::router::{PaymentParameters, Route, get_route};
@@ -1464,7 +1464,8 @@ macro_rules! expect_payment_failed_conditions {
 }
 
 pub fn send_along_route_with_secret<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, route: Route, expected_paths: &[&[&Node<'a, 'b, 'c>]], recv_value: u64, our_payment_hash: PaymentHash, our_payment_secret: PaymentSecret) -> PaymentId {
-	let payment_id = origin_node.node.send_payment(&route, our_payment_hash, &Some(our_payment_secret), None).unwrap();
+	let recipient_info = RecipientInfo { payment_secret: Some(our_payment_secret), payment_metadata: None };
+	let payment_id = origin_node.node.send_payment(&route, our_payment_hash, &recipient_info).unwrap();
 	check_added_monitors!(origin_node, expected_paths.len());
 	pass_along_route(origin_node, expected_paths, recv_value, our_payment_hash, our_payment_secret);
 	payment_id
@@ -1686,7 +1687,8 @@ pub fn route_over_limit<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_rou
 	}
 
 	let (_, our_payment_hash, our_payment_preimage) = get_payment_preimage_hash!(expected_route.last().unwrap());
-	unwrap_send_err!(origin_node.node.send_payment(&route, our_payment_hash, &Some(our_payment_preimage), None), true, APIError::ChannelUnavailable { ref err },
+	let recipient_info = RecipientInfo { payment_secret: Some(our_payment_preimage), payment_metadata: None };
+	unwrap_send_err!(origin_node.node.send_payment(&route, our_payment_hash, &recipient_info), true, APIError::ChannelUnavailable { ref err },
 		assert!(err.contains("Cannot send value that would put us over the max HTLC value in flight our peer will accept")));
 }
 

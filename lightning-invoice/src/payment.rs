@@ -35,7 +35,7 @@
 //! # #[cfg(feature = "no-std")]
 //! # extern crate core2;
 //! #
-//! # use lightning::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
+//! # use lightning::ln::{PaymentHash, PaymentPreimage, PaymentSecret, RecipientInfo};
 //! # use lightning::ln::channelmanager::{ChannelDetails, PaymentId, PaymentSendFailure};
 //! # use lightning::ln::msgs::LightningError;
 //! # use lightning::routing::scoring::Score;
@@ -64,8 +64,7 @@
 //! # impl Payer for FakePayer {
 //! #     fn node_id(&self) -> PublicKey { unimplemented!() }
 //! #     fn first_hops(&self) -> Vec<ChannelDetails> { unimplemented!() }
-//! #     fn send_payment(&self, route: &Route, payment_hash: PaymentHash,
-//! #         payment_secret: &Option<PaymentSecret>, payment_metadata: Option<Vec<u8>>
+//! #     fn send_payment(&self, route: &Route, payment_hash: PaymentHash, recipient_info: &RecipientInfo
 //! #     ) -> Result<PaymentId, PaymentSendFailure> { unimplemented!() }
 //! #     fn send_spontaneous_payment(
 //! #         &self, route: &Route, payment_preimage: PaymentPreimage
@@ -139,7 +138,7 @@ use bitcoin_hashes::Hash;
 use bitcoin_hashes::sha256::Hash as Sha256;
 
 use crate::prelude::*;
-use lightning::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
+use lightning::ln::{PaymentHash, PaymentPreimage, RecipientInfo};
 use lightning::ln::channelmanager::{ChannelDetails, PaymentId, PaymentSendFailure};
 use lightning::ln::msgs::LightningError;
 use lightning::routing::scoring::{LockableScore, Score};
@@ -186,8 +185,8 @@ pub trait Payer {
 	fn first_hops(&self) -> Vec<ChannelDetails>;
 
 	/// Sends a payment over the Lightning Network using the given [`Route`].
-	fn send_payment(&self, route: &Route, payment_hash: PaymentHash,
-		payment_secret: &Option<PaymentSecret>, payment_metadata: Option<Vec<u8>>
+	fn send_payment(
+		&self, route: &Route, payment_hash: PaymentHash, recipient_info: &RecipientInfo
 	) -> Result<PaymentId, PaymentSendFailure>;
 
 	/// Sends a spontaneous payment over the Lightning Network using the given [`Route`].
@@ -309,7 +308,8 @@ where
 		};
 
 		let send_payment = |route: &Route| {
-			self.payer.send_payment(route, payment_hash, &payment_secret, invoice.payment_metadata().cloned())
+			let recipient_info = RecipientInfo { payment_secret, payment_metadata: invoice.payment_metadata().cloned() };
+			self.payer.send_payment(route, payment_hash, &recipient_info)
 		};
 		self.pay_internal(&route_params, payment_hash, send_payment)
 			.map_err(|e| { self.payment_cache.lock().unwrap().remove(&payment_hash); e })
@@ -528,7 +528,7 @@ mod tests {
 	use crate::{InvoiceBuilder, Currency};
 	use utils::create_invoice_from_channelmanager_and_duration_since_epoch;
 	use bitcoin_hashes::sha256::Hash as Sha256;
-	use lightning::ln::PaymentPreimage;
+	use lightning::ln::{PaymentPreimage, PaymentSecret};
 	use lightning::ln::features::{ChannelFeatures, NodeFeatures, InitFeatures};
 	use lightning::ln::functional_test_utils::*;
 	use lightning::ln::msgs::{ChannelMessageHandler, ErrorAction, LightningError};
@@ -1463,8 +1463,8 @@ mod tests {
 			Vec::new()
 		}
 
-		fn send_payment(&self, route: &Route, _payment_hash: PaymentHash,
-			_payment_secret: &Option<PaymentSecret>, _payment_metadata: Option<Vec<u8>>
+		fn send_payment(
+			&self, route: &Route, _payment_hash: PaymentHash, _recipient_info: &RecipientInfo
 		) -> Result<PaymentId, PaymentSendFailure> {
 			self.check_value_msats(Amount::ForInvoice(route.get_total_amount()));
 			self.check_attempts()

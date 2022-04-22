@@ -15,6 +15,7 @@ use chain::{ChannelMonitorUpdateErr, Confirm, Listen, Watch};
 use chain::channelmonitor::{ANTI_REORG_DELAY, ChannelMonitor, LATENCY_GRACE_PERIOD_BLOCKS};
 use chain::transaction::OutPoint;
 use chain::keysinterface::KeysInterface;
+use ln::RecipientInfo;
 use ln::channelmanager::{BREAKDOWN_TIMEOUT, ChannelManager, ChannelManagerReadArgs, MPP_TIMEOUT_TICKS, PaymentId, PaymentSendFailure};
 use ln::features::{InitFeatures, InvoiceFeatures};
 use ln::msgs;
@@ -52,7 +53,8 @@ fn retry_single_path_payment() {
 	send_payment(&nodes[1], &vec!(&nodes[2])[..], 2_000_000);
 
 	// Make sure the payment fails on the first hop.
-	let payment_id = nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret), None).unwrap();
+	let recipient_info = RecipientInfo { payment_secret: Some(payment_secret), payment_metadata: None };
+	let payment_id = nodes[0].node.send_payment(&route, payment_hash, &recipient_info).unwrap();
 	check_added_monitors!(nodes[0], 1);
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
@@ -137,7 +139,8 @@ fn mpp_retry() {
 	route.paths[1][1].short_channel_id = chan_4_id;
 
 	// Initiate the MPP payment.
-	let payment_id = nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret), None).unwrap();
+	let recipient_info = RecipientInfo { payment_secret: Some(payment_secret), payment_metadata: None };
+	let payment_id = nodes[0].node.send_payment(&route, payment_hash, &recipient_info).unwrap();
 	check_added_monitors!(nodes[0], 2); // one monitor per path
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 2);
@@ -221,7 +224,8 @@ fn do_mpp_receive_timeout(send_partial_mpp: bool) {
 	route.paths[1][1].short_channel_id = chan_4_id;
 
 	// Initiate the MPP payment.
-	let _ = nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret), None).unwrap();
+	let recipient_info = RecipientInfo { payment_secret: Some(payment_secret), payment_metadata: None };
+	let _ = nodes[0].node.send_payment(&route, payment_hash, &recipient_info).unwrap();
 	check_added_monitors!(nodes[0], 2); // one monitor per path
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 2);
@@ -289,7 +293,8 @@ fn retry_expired_payment() {
 	send_payment(&nodes[1], &vec!(&nodes[2])[..], 2_000_000);
 
 	// Make sure the payment fails on the first hop.
-	let payment_id = nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret), None).unwrap();
+	let recipient_info = RecipientInfo { payment_secret: Some(payment_secret), payment_metadata: None };
+	let payment_id = nodes[0].node.send_payment(&route, payment_hash, &recipient_info).unwrap();
 	check_added_monitors!(nodes[0], 1);
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
@@ -340,7 +345,8 @@ fn no_pending_leak_on_initial_send_failure() {
 	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
 	nodes[1].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
 
-	unwrap_send_err!(nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret), None),
+	let recipient_info = RecipientInfo { payment_secret: Some(payment_secret), payment_metadata: None };
+	unwrap_send_err!(nodes[0].node.send_payment(&route, payment_hash, &recipient_info),
 		true, APIError::ChannelUnavailable { ref err },
 		assert_eq!(err, "Peer for first hop currently disconnected/pending monitor update!"));
 
@@ -377,7 +383,8 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 	// out and retry.
 	let (route, payment_hash, payment_preimage, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], 1_000_000);
 	let (payment_preimage_1, _, _, payment_id_1) = send_along_route(&nodes[0], route.clone(), &[&nodes[1], &nodes[2]], 1_000_000);
-	let payment_id = nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret), None).unwrap();
+	let recipient_info = RecipientInfo { payment_secret: Some(payment_secret), payment_metadata: None };
+	let payment_id = nodes[0].node.send_payment(&route, payment_hash, &recipient_info).unwrap();
 	check_added_monitors!(nodes[0], 1);
 
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
@@ -810,7 +817,8 @@ fn get_ldk_payment_preimage() {
 		&nodes[0].node.get_our_node_id(), &payment_params, &nodes[0].network_graph.read_only(),
 		Some(&nodes[0].node.list_usable_channels().iter().collect::<Vec<_>>()),
 		amt_msat, TEST_FINAL_CLTV, nodes[0].logger, &scorer, &random_seed_bytes).unwrap();
-	let _payment_id = nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret), None).unwrap();
+	let recipient_info = RecipientInfo { payment_secret: Some(payment_secret), payment_metadata: None };
+	let _payment_id = nodes[0].node.send_payment(&route, payment_hash, &recipient_info).unwrap();
 	check_added_monitors!(nodes[0], 1);
 
 	// Make sure to use `get_payment_preimage`
