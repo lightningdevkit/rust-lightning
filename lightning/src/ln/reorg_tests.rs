@@ -138,7 +138,7 @@ fn do_test_onchain_htlc_reorg(local_commitment: bool, claim: bool) {
 		// ChannelManager only polls chain::Watch::release_pending_monitor_events when we
 		// probe it for events, so we probe non-message events here (which should just be the
 		// PaymentForwarded event).
-		expect_payment_forwarded!(nodes[1], nodes[0], Some(1000), true);
+		expect_payment_forwarded!(nodes[1], nodes[0], nodes[2], Some(1000), true, true);
 	} else {
 		// Confirm the timeout tx and check that we fail the HTLC backwards
 		let block = Block {

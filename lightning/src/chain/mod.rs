@@ -291,7 +291,7 @@ pub trait Watch<ChannelSigner: Sign> {
 	///
 	/// For details on asynchronous [`ChannelMonitor`] updating and returning
 	/// [`MonitorEvent::UpdateCompleted`] here, see [`ChannelMonitorUpdateErr::TemporaryFailure`].
-	fn release_pending_monitor_events(&self) -> Vec<MonitorEvent>;
+	fn release_pending_monitor_events(&self) -> Vec<(OutPoint, Vec<MonitorEvent>)>;
 }
 
 /// The `Filter` trait defines behavior for indicating chain activity of interest pertaining to

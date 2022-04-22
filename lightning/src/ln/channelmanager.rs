@@ -3952,7 +3952,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		}
 	}
 
-	fn claim_funds_internal(&self, mut channel_state_lock: MutexGuard<ChannelHolder<Signer>>, source: HTLCSource, payment_preimage: PaymentPreimage, forwarded_htlc_value_msat: Option<u64>, from_onchain: bool) {
+	fn claim_funds_internal(&self, mut channel_state_lock: MutexGuard<ChannelHolder<Signer>>, source: HTLCSource, payment_preimage: PaymentPreimage, forwarded_htlc_value_msat: Option<u64>, from_onchain: bool, next_channel_id: [u8; 32]) {
 		match source {
 			HTLCSource::OutboundRoute { session_priv, payment_id, path, .. } => {
 				mem::drop(channel_state_lock);
@@ -4043,12 +4043,14 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 						} else { None };
 
 						let mut pending_events = self.pending_events.lock().unwrap();
+						let prev_channel_id = Some(prev_outpoint.to_channel_id());
+						let next_channel_id = Some(next_channel_id);
 
-						let source_channel_id = Some(prev_outpoint.to_channel_id());
 						pending_events.push(events::Event::PaymentForwarded {
-							source_channel_id,
 							fee_earned_msat,
 							claim_from_onchain_tx: from_onchain,
+							prev_channel_id,
+							next_channel_id,
 						});
 					}
 				}
@@ -4501,7 +4503,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))
 			}
 		};
-		self.claim_funds_internal(channel_lock, htlc_source, msg.payment_preimage.clone(), Some(forwarded_htlc_value), false);
+		self.claim_funds_internal(channel_lock, htlc_source, msg.payment_preimage.clone(), Some(forwarded_htlc_value), false, msg.channel_id);
 		Ok(())
 	}
 
@@ -4821,48 +4823,50 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		let mut failed_channels = Vec::new();
 		let mut pending_monitor_events = self.chain_monitor.release_pending_monitor_events();
 		let has_pending_monitor_events = !pending_monitor_events.is_empty();
-		for monitor_event in pending_monitor_events.drain(..) {
-			match monitor_event {
-				MonitorEvent::HTLCEvent(htlc_update) => {
-					if let Some(preimage) = htlc_update.payment_preimage {
-						log_trace!(self.logger, "Claiming HTLC with preimage {} from our monitor", log_bytes!(preimage.0));
-						self.claim_funds_internal(self.channel_state.lock().unwrap(), htlc_update.source, preimage, htlc_update.onchain_value_satoshis.map(|v| v * 1000), true);
-					} else {
-						log_trace!(self.logger, "Failing HTLC with hash {} from our monitor", log_bytes!(htlc_update.payment_hash.0));
-						self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), htlc_update.source, &htlc_update.payment_hash, HTLCFailReason::Reason { failure_code: 0x4000 | 8, data: Vec::new() });
-					}
-				},
-				MonitorEvent::CommitmentTxConfirmed(funding_outpoint) |
-				MonitorEvent::UpdateFailed(funding_outpoint) => {
-					let mut channel_lock = self.channel_state.lock().unwrap();
-					let channel_state = &mut *channel_lock;
-					let by_id = &mut channel_state.by_id;
-					let pending_msg_events = &mut channel_state.pending_msg_events;
-					if let hash_map::Entry::Occupied(chan_entry) = by_id.entry(funding_outpoint.to_channel_id()) {
-						let mut chan = remove_channel!(self, channel_state, chan_entry);
-						failed_channels.push(chan.force_shutdown(false));
-						if let Ok(update) = self.get_channel_update_for_broadcast(&chan) {
-							pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
-								msg: update
+		for (funding_outpoint, mut monitor_events) in pending_monitor_events.drain(..) {
+			for monitor_event in monitor_events.drain(..) {
+				match monitor_event {
+					MonitorEvent::HTLCEvent(htlc_update) => {
+						if let Some(preimage) = htlc_update.payment_preimage {
+							log_trace!(self.logger, "Claiming HTLC with preimage {} from our monitor", log_bytes!(preimage.0));
+							self.claim_funds_internal(self.channel_state.lock().unwrap(), htlc_update.source, preimage, htlc_update.onchain_value_satoshis.map(|v| v * 1000), true, funding_outpoint.to_channel_id());
+						} else {
+							log_trace!(self.logger, "Failing HTLC with hash {} from our monitor", log_bytes!(htlc_update.payment_hash.0));
+							self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), htlc_update.source, &htlc_update.payment_hash, HTLCFailReason::Reason { failure_code: 0x4000 | 8, data: Vec::new() });
+						}
+					},
+					MonitorEvent::CommitmentTxConfirmed(funding_outpoint) |
+					MonitorEvent::UpdateFailed(funding_outpoint) => {
+						let mut channel_lock = self.channel_state.lock().unwrap();
+						let channel_state = &mut *channel_lock;
+						let by_id = &mut channel_state.by_id;
+						let pending_msg_events = &mut channel_state.pending_msg_events;
+						if let hash_map::Entry::Occupied(chan_entry) = by_id.entry(funding_outpoint.to_channel_id()) {
+							let mut chan = remove_channel!(self, channel_state, chan_entry);
+							failed_channels.push(chan.force_shutdown(false));
+							if let Ok(update) = self.get_channel_update_for_broadcast(&chan) {
+								pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
+									msg: update
+								});
+							}
+							let reason = if let MonitorEvent::UpdateFailed(_) = monitor_event {
+								ClosureReason::ProcessingError { err: "Failed to persist ChannelMonitor update during chain sync".to_string() }
+							} else {
+								ClosureReason::CommitmentTxConfirmed
+							};
+							self.issue_channel_close_events(&chan, reason);
+							pending_msg_events.push(events::MessageSendEvent::HandleError {
+								node_id: chan.get_counterparty_node_id(),
+								action: msgs::ErrorAction::SendErrorMessage {
+									msg: msgs::ErrorMessage { channel_id: chan.channel_id(), data: "Channel force-closed".to_owned() }
+								},
 							});
 						}
-						let reason = if let MonitorEvent::UpdateFailed(_) = monitor_event {
-							ClosureReason::ProcessingError { err: "Failed to persist ChannelMonitor update during chain sync".to_string() }
-						} else {
-							ClosureReason::CommitmentTxConfirmed
-						};
-						self.issue_channel_close_events(&chan, reason);
-						pending_msg_events.push(events::MessageSendEvent::HandleError {
-							node_id: chan.get_counterparty_node_id(),
-							action: msgs::ErrorAction::SendErrorMessage {
-								msg: msgs::ErrorMessage { channel_id: chan.channel_id(), data: "Channel force-closed".to_owned() }
-							},
-						});
-					}
-				},
-				MonitorEvent::UpdateCompleted { funding_txo, monitor_update_id } => {
-					self.channel_monitor_updated(&funding_txo, monitor_update_id);
-				},
+					},
+					MonitorEvent::UpdateCompleted { funding_txo, monitor_update_id } => {
+						self.channel_monitor_updated(&funding_txo, monitor_update_id);
+					},
+				}
 			}
 		}
 

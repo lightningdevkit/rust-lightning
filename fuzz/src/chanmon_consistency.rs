@@ -148,7 +148,7 @@ impl chain::Watch<EnforcingSigner> for TestChainMonitor {
 		self.chain_monitor.update_channel(funding_txo, update)
 	}
 
-	fn release_pending_monitor_events(&self) -> Vec<MonitorEvent> {
+	fn release_pending_monitor_events(&self) -> Vec<(OutPoint, Vec<MonitorEvent>)> {
 		return self.chain_monitor.release_pending_monitor_events();
 	}
 }

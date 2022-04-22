@@ -343,9 +343,12 @@ pub enum Event {
 	/// This event is generated when a payment has been successfully forwarded through us and a
 	/// forwarding fee earned.
 	PaymentForwarded {
-		/// The channel between the source node and us. Optional because versions prior to 0.0.107
-		/// do not serialize this field.
-		source_channel_id: Option<[u8; 32]>,
+		/// The incoming channel between the previous node and us. This is only `None` for events
+		/// generated or serialized by versions prior to 0.0.107.
+		prev_channel_id: Option<[u8; 32]>,
+		/// The outgoing channel between the next node and us. This is only `None` for events
+		/// generated or serialized by versions prior to 0.0.107.
+		next_channel_id: Option<[u8; 32]>,
 		/// The fee, in milli-satoshis, which was earned as a result of the payment.
 		///
 		/// Note that if we force-closed the channel over which we forwarded an HTLC while the HTLC
@@ -523,12 +526,13 @@ impl Writeable for Event {
 					(0, VecWriteWrapper(outputs), required),
 				});
 			},
-			&Event::PaymentForwarded { fee_earned_msat, source_channel_id, claim_from_onchain_tx } => {
+			&Event::PaymentForwarded { fee_earned_msat, prev_channel_id, claim_from_onchain_tx, next_channel_id } => {
 				7u8.write(writer)?;
 				write_tlv_fields!(writer, {
 					(0, fee_earned_msat, option),
-					(1, source_channel_id, option),
+					(1, prev_channel_id, option),
 					(2, claim_from_onchain_tx, required),
+					(3, next_channel_id, option),
 				});
 			},
 			&Event::ChannelClosed { ref channel_id, ref user_channel_id, ref reason } => {
@@ -688,14 +692,16 @@ impl MaybeReadable for Event {
 			7u8 => {
 				let f = || {
 					let mut fee_earned_msat = None;
-					let mut source_channel_id = None;
+					let mut prev_channel_id = None;
 					let mut claim_from_onchain_tx = false;
+					let mut next_channel_id = None;
 					read_tlv_fields!(reader, {
 						(0, fee_earned_msat, option),
-						(1, source_channel_id, option),
+						(1, prev_channel_id, option),
 						(2, claim_from_onchain_tx, required),
+						(3, next_channel_id, option),
 					});
-					Ok(Some(Event::PaymentForwarded { fee_earned_msat, source_channel_id, claim_from_onchain_tx }))
+					Ok(Some(Event::PaymentForwarded { fee_earned_msat, prev_channel_id, claim_from_onchain_tx, next_channel_id }))
 				};
 				f()
 			},

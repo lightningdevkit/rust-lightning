@@ -1327,15 +1327,20 @@ macro_rules! expect_payment_path_successful {
 }
 
 macro_rules! expect_payment_forwarded {
-	($node: expr, $source_node: expr, $expected_fee: expr, $upstream_force_closed: expr) => {
+	($node: expr, $prev_node: expr, $next_node: expr, $expected_fee: expr, $upstream_force_closed: expr, $downstream_force_closed: expr) => {
 		let events = $node.node.get_and_clear_pending_events();
 		assert_eq!(events.len(), 1);
 		match events[0] {
-			Event::PaymentForwarded { fee_earned_msat, source_channel_id, claim_from_onchain_tx } => {
+			Event::PaymentForwarded { fee_earned_msat, prev_channel_id, claim_from_onchain_tx, next_channel_id } => {
 				assert_eq!(fee_earned_msat, $expected_fee);
 				if fee_earned_msat.is_some() {
-					// Is the event channel_id in one of the channels between the two nodes?
-					assert!($node.node.list_channels().iter().any(|x| x.counterparty.node_id == $source_node.node.get_our_node_id() && x.channel_id == source_channel_id.unwrap()));
+					// Is the event prev_channel_id in one of the channels between the two nodes?
+					assert!($node.node.list_channels().iter().any(|x| x.counterparty.node_id == $prev_node.node.get_our_node_id() && x.channel_id == prev_channel_id.unwrap()));
+				}
+				// We check for force closures since a force closed channel is removed from the
+				// node's channel list
+				if !$downstream_force_closed {
+					assert!($node.node.list_channels().iter().any(|x| x.counterparty.node_id == $next_node.node.get_our_node_id() && x.channel_id == next_channel_id.unwrap()));
 				}
 				assert_eq!(claim_from_onchain_tx, $upstream_force_closed);
 			},
@@ -1579,7 +1584,7 @@ pub fn do_claim_payment_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, 
 				{
 					$node.node.handle_update_fulfill_htlc(&$prev_node.node.get_our_node_id(), &next_msgs.as_ref().unwrap().0);
 					let fee = $node.node.channel_state.lock().unwrap().by_id.get(&next_msgs.as_ref().unwrap().0.channel_id).unwrap().config.forwarding_fee_base_msat;
-					expect_payment_forwarded!($node, $next_node, Some(fee as u64), false);
+					expect_payment_forwarded!($node, $next_node, $prev_node, Some(fee as u64), false, false);
 					expected_total_fee_msat += fee as u64;
 					check_added_monitors!($node, 1);
 					let new_next_msgs = if $new_msgs {
