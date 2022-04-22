@@ -19,6 +19,10 @@ updates:
     schedule:
       interval: "daily"
   - package-ecosystem: "cargo" 
+    directory: "/lightning-net"
+    schedule:
+      interval: "daily"
+  - package-ecosystem: "cargo" 
     directory: "/lightning-net-tokio"
     schedule:
       interval: "daily"

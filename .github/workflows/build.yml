@@ -10,7 +10,7 @@ jobs:
         platform: [ ubuntu-latest ]
         toolchain: [ stable,
                      beta,
-                     # 1.41.1 is MSRV for Rust-Lightning, lightning-invoice, and lightning-persister
+                     # 1.41.1 is MSRV for Rust-Lightning, lightning-invoice, lightning-persister, lightning-net, and lightning-background-processor
                      1.41.1,
                      # 1.45.2 is MSRV for lightning-net-tokio, lightning-block-sync, and coverage generation
                      1.45.2,
@@ -74,6 +74,7 @@ jobs:
           cargo build --verbose  --color always -p lightning
           cargo build --verbose  --color always -p lightning-invoice
           cargo build --verbose  --color always -p lightning-persister
+          cargo build --verbose  --color always -p lightning-net
       - name: Build on Rust ${{ matrix.toolchain }} with all Log-Limiting features
         if: matrix.test-log-variants
         run: |
@@ -142,6 +143,7 @@ jobs:
           cargo test --verbose --color always  -p lightning
           cargo test --verbose --color always  -p lightning-invoice
           cargo build --verbose  --color always -p lightning-persister
+          cargo build --verbose  --color always -p lightning-net
           cargo build --verbose  --color always -p lightning-background-processor
       - name: Test C Bindings Modifications on Rust ${{ matrix.toolchain }}
         if: "! matrix.build-net-tokio"
@@ -149,6 +151,7 @@ jobs:
           RUSTFLAGS="--cfg=c_bindings" cargo test --verbose --color always  -p lightning
           RUSTFLAGS="--cfg=c_bindings" cargo test --verbose --color always  -p lightning-invoice
           RUSTFLAGS="--cfg=c_bindings" cargo build --verbose  --color always -p lightning-persister
+          RUSTFLAGS="--cfg=c_bindings" cargo build --verbose  --color always -p lightning-net
           RUSTFLAGS="--cfg=c_bindings" cargo build --verbose  --color always -p lightning-background-processor
       - name: Test Block Sync Clients on Rust ${{ matrix.toolchain }} with features
         if: "matrix.build-net-tokio && !matrix.coverage"
