@@ -4,6 +4,7 @@ members = [
     "lightning",
     "lightning-block-sync",
     "lightning-invoice",
+    "lightning-net",
     "lightning-net-tokio",
     "lightning-persister",
     "lightning-background-processor",
