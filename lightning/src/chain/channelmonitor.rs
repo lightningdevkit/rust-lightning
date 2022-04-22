@@ -655,6 +655,10 @@ pub(crate) struct ChannelMonitorImpl<Signer: Sign> {
 	// deserialization
 	current_holder_commitment_number: u64,
 
+	/// The set of payment hashes from inbound payments for which we know the preimage. Payment
+	/// preimages that are not included in any unrevoked local commitment transaction or unrevoked
+	/// remote commitment transactions are automatically removed when commitment transactions are
+	/// revoked.
 	payment_preimages: HashMap<PaymentHash, PaymentPreimage>,
 
 	// Note that `MonitorEvent`s MUST NOT be generated during update processing, only generated

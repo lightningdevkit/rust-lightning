@@ -1703,11 +1703,11 @@ impl<Signer: Sign> Channel<Signer> {
 		make_funding_redeemscript(&self.get_holder_pubkeys().funding_pubkey, self.counterparty_funding_pubkey())
 	}
 
-	/// Claims an HTLC while we're disconnected from a peer, dropping the ChannelMonitorUpdate
+	/// Claims an HTLC while we're disconnected from a peer, dropping the [`ChannelMonitorUpdate`]
 	/// entirely.
 	///
-	/// The ChannelMonitor for this channel MUST be updated out-of-band with the preimage provided
-	/// (i.e. without calling [`crate::chain::Watch::update_channel`]).
+	/// The [`ChannelMonitor`] for this channel MUST be updated out-of-band with the preimage
+	/// provided (i.e. without calling [`crate::chain::Watch::update_channel`]).
 	///
 	/// The HTLC claim will end up in the holding cell (because the caller must ensure the peer is
 	/// disconnected).
