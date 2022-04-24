@@ -360,7 +360,7 @@ enum OnchainEvent {
 		onchain_value_satoshis: Option<u64>,
 		/// None in the second case, above, ie when there is no relevant output in the commitment
 		/// transaction which appeared on chain.
-		input_idx: Option<u32>,
+		commitment_tx_output_idx: Option<u32>,
 	},
 	MaturingOutput {
 		descriptor: SpendableOutputDescriptor,
@@ -381,7 +381,7 @@ enum OnchainEvent {
 	///  * a revoked-state HTLC transaction was broadcasted, which was claimed by the revocation
 	///    signature.
 	HTLCSpendConfirmation {
-		input_idx: u32,
+		commitment_tx_output_idx: u32,
 		/// If the claim was made by either party with a preimage, this is filled in
 		preimage: Option<PaymentPreimage>,
 		/// If the claim was made by us on an inbound HTLC against a local commitment transaction,
@@ -425,7 +425,7 @@ impl_writeable_tlv_based_enum_upgradable!(OnchainEvent,
 		(0, source, required),
 		(1, onchain_value_satoshis, option),
 		(2, payment_hash, required),
-		(3, input_idx, option),
+		(3, commitment_tx_output_idx, option),
 	},
 	(1, MaturingOutput) => {
 		(0, descriptor, required),
@@ -434,7 +434,7 @@ impl_writeable_tlv_based_enum_upgradable!(OnchainEvent,
 		(0, on_local_output_csv, option),
 	},
 	(5, HTLCSpendConfirmation) => {
-		(0, input_idx, required),
+		(0, commitment_tx_output_idx, required),
 		(2, preimage, option),
 		(4, on_to_local_output_csv, option),
 	},
@@ -568,13 +568,13 @@ pub enum Balance {
 /// An HTLC which has been irrevocably resolved on-chain, and has reached ANTI_REORG_DELAY.
 #[derive(PartialEq)]
 struct IrrevocablyResolvedHTLC {
-	input_idx: u32,
+	commitment_tx_output_idx: u32,
 	/// Only set if the HTLC claim was ours using a payment preimage
 	payment_preimage: Option<PaymentPreimage>,
 }
 
 impl_writeable_tlv_based!(IrrevocablyResolvedHTLC, {
-	(0, input_idx, required),
+	(0, commitment_tx_output_idx, required),
 	(2, payment_preimage, option),
 });
 
@@ -1391,10 +1391,10 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 		macro_rules! walk_htlcs {
 			($holder_commitment: expr, $htlc_iter: expr) => {
 				for htlc in $htlc_iter {
-					if let Some(htlc_input_idx) = htlc.transaction_output_index {
+					if let Some(htlc_commitment_tx_output_idx) = htlc.transaction_output_index {
 						if let Some(conf_thresh) = us.onchain_events_awaiting_threshold_conf.iter().find_map(|event| {
 							if let OnchainEvent::MaturingOutput { descriptor: SpendableOutputDescriptor::DelayedPaymentOutput(descriptor) } = &event.event {
-								if descriptor.outpoint.index as u32 == htlc_input_idx { Some(event.confirmation_threshold()) } else { None }
+								if descriptor.outpoint.index as u32 == htlc_commitment_tx_output_idx { Some(event.confirmation_threshold()) } else { None }
 							} else { None }
 						}) {
 							debug_assert!($holder_commitment);
@@ -1402,7 +1402,7 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 								claimable_amount_satoshis: htlc.amount_msat / 1000,
 								confirmation_height: conf_thresh,
 							});
-						} else if us.htlcs_resolved_on_chain.iter().any(|v| v.input_idx == htlc_input_idx) {
+						} else if us.htlcs_resolved_on_chain.iter().any(|v| v.commitment_tx_output_idx == htlc_commitment_tx_output_idx) {
 							// Funding transaction spends should be fully confirmed by the time any
 							// HTLC transactions are resolved, unless we're talking about a holder
 							// commitment tx, whose resolution is delayed until the CSV timeout is
@@ -1414,8 +1414,9 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 							// indicating we have spent this HTLC with a timeout, claiming it back
 							// and awaiting confirmations on it.
 							let htlc_update_pending = us.onchain_events_awaiting_threshold_conf.iter().find_map(|event| {
-								if let OnchainEvent::HTLCUpdate { input_idx: Some(input_idx), .. } = event.event {
-									if input_idx == htlc_input_idx { Some(event.confirmation_threshold()) } else { None }
+								if let OnchainEvent::HTLCUpdate { commitment_tx_output_idx: Some(commitment_tx_output_idx), .. } = event.event {
+									if commitment_tx_output_idx == htlc_commitment_tx_output_idx {
+										Some(event.confirmation_threshold()) } else { None }
 								} else { None }
 							});
 							if let Some(conf_thresh) = htlc_update_pending {
@@ -1436,8 +1437,8 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 							// preimage, we lost funds to our counterparty! We will then continue
 							// to show it as ContentiousClaimable until ANTI_REORG_DELAY.
 							let htlc_spend_pending = us.onchain_events_awaiting_threshold_conf.iter().find_map(|event| {
-								if let OnchainEvent::HTLCSpendConfirmation { input_idx, preimage, .. } = event.event {
-									if input_idx == htlc_input_idx {
+								if let OnchainEvent::HTLCSpendConfirmation { commitment_tx_output_idx, preimage, .. } = event.event {
+									if commitment_tx_output_idx == htlc_commitment_tx_output_idx {
 										Some((event.confirmation_threshold(), preimage.is_some()))
 									} else { None }
 								} else { None }
@@ -1546,7 +1547,7 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 		macro_rules! walk_htlcs {
 			($holder_commitment: expr, $htlc_iter: expr) => {
 				for (htlc, source) in $htlc_iter {
-					if us.htlcs_resolved_on_chain.iter().any(|v| Some(v.input_idx) == htlc.transaction_output_index) {
+					if us.htlcs_resolved_on_chain.iter().any(|v| Some(v.commitment_tx_output_idx) == htlc.transaction_output_index) {
 						// We should assert that funding_spend_confirmed is_some() here, but we
 						// have some unit tests which violate HTLC transaction CSVs entirely and
 						// would fail.
@@ -1557,17 +1558,17 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 						// indicating we have spent this HTLC with a timeout, claiming it back
 						// and awaiting confirmations on it.
 						let htlc_update_confd = us.onchain_events_awaiting_threshold_conf.iter().any(|event| {
-							if let OnchainEvent::HTLCUpdate { input_idx: Some(input_idx), .. } = event.event {
+							if let OnchainEvent::HTLCUpdate { commitment_tx_output_idx: Some(commitment_tx_output_idx), .. } = event.event {
 								// If the HTLC was timed out, we wait for ANTI_REORG_DELAY blocks
 								// before considering it "no longer pending" - this matches when we
 								// provide the ChannelManager an HTLC failure event.
-								Some(input_idx) == htlc.transaction_output_index &&
+								Some(commitment_tx_output_idx) == htlc.transaction_output_index &&
 									us.best_block.height() >= event.height + ANTI_REORG_DELAY - 1
-							} else if let OnchainEvent::HTLCSpendConfirmation { input_idx, .. } = event.event {
+							} else if let OnchainEvent::HTLCSpendConfirmation { commitment_tx_output_idx, .. } = event.event {
 								// If the HTLC was fulfilled with a preimage, we consider the HTLC
 								// immediately non-pending, matching when we provide ChannelManager
 								// the preimage.
-								Some(input_idx) == htlc.transaction_output_index
+								Some(commitment_tx_output_idx) == htlc.transaction_output_index
 							} else { false }
 						});
 						if !htlc_update_confd {
@@ -1689,7 +1690,7 @@ macro_rules! fail_unbroadcast_htlcs {
 									source: (**source).clone(),
 									payment_hash: htlc.payment_hash.clone(),
 									onchain_value_satoshis: Some(htlc.amount_msat / 1000),
-									input_idx: None,
+									commitment_tx_output_idx: None,
 								},
 							};
 							log_trace!($logger, "Failing HTLC with payment_hash {} from {} counterparty commitment tx due to broadcast of {} commitment transaction, waiting for confirmation (at height {})",
@@ -2522,7 +2523,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		// Produce actionable events from on-chain events having reached their threshold.
 		for entry in onchain_events_reaching_threshold_conf.drain(..) {
 			match entry.event {
-				OnchainEvent::HTLCUpdate { ref source, payment_hash, onchain_value_satoshis, input_idx } => {
+				OnchainEvent::HTLCUpdate { ref source, payment_hash, onchain_value_satoshis, commitment_tx_output_idx } => {
 					// Check for duplicate HTLC resolutions.
 					#[cfg(debug_assertions)]
 					{
@@ -2546,8 +2547,8 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 						source: source.clone(),
 						onchain_value_satoshis,
 					}));
-					if let Some(idx) = input_idx {
-						self.htlcs_resolved_on_chain.push(IrrevocablyResolvedHTLC { input_idx: idx, payment_preimage: None });
+					if let Some(idx) = commitment_tx_output_idx {
+						self.htlcs_resolved_on_chain.push(IrrevocablyResolvedHTLC { commitment_tx_output_idx: idx, payment_preimage: None });
 					}
 				},
 				OnchainEvent::MaturingOutput { descriptor } => {
@@ -2556,8 +2557,8 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 						outputs: vec![descriptor]
 					});
 				},
-				OnchainEvent::HTLCSpendConfirmation { input_idx, preimage, .. } => {
-					self.htlcs_resolved_on_chain.push(IrrevocablyResolvedHTLC { input_idx, payment_preimage: preimage });
+				OnchainEvent::HTLCSpendConfirmation { commitment_tx_output_idx, preimage, .. } => {
+					self.htlcs_resolved_on_chain.push(IrrevocablyResolvedHTLC { commitment_tx_output_idx, payment_preimage: preimage });
 				},
 				OnchainEvent::FundingSpendConfirmation { .. } => {
 					self.funding_spend_confirmed = Some(entry.txid);
@@ -2826,7 +2827,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 									self.onchain_events_awaiting_threshold_conf.push(OnchainEventEntry {
 										txid: tx.txid(), height,
 										event: OnchainEvent::HTLCSpendConfirmation {
-											input_idx: input.previous_output.vout,
+											commitment_tx_output_idx: input.previous_output.vout,
 											preimage: if accepted_preimage_claim || offered_preimage_claim {
 												Some(payment_preimage) } else { None },
 											// If this is a payment to us (!outbound_htlc, above),
@@ -2877,7 +2878,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 							txid: tx.txid(),
 							height,
 							event: OnchainEvent::HTLCSpendConfirmation {
-								input_idx: input.previous_output.vout,
+								commitment_tx_output_idx: input.previous_output.vout,
 								preimage: Some(payment_preimage),
 								on_to_local_output_csv: None,
 							},
@@ -2898,7 +2899,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 							txid: tx.txid(),
 							height,
 							event: OnchainEvent::HTLCSpendConfirmation {
-								input_idx: input.previous_output.vout,
+								commitment_tx_output_idx: input.previous_output.vout,
 								preimage: Some(payment_preimage),
 								on_to_local_output_csv: None,
 							},
@@ -2926,7 +2927,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 						event: OnchainEvent::HTLCUpdate {
 							source, payment_hash,
 							onchain_value_satoshis: Some(amount_msat / 1000),
-							input_idx: Some(input.previous_output.vout),
+							commitment_tx_output_idx: Some(input.previous_output.vout),
 						},
 					};
 					log_info!(logger, "Failing HTLC with payment_hash {} timeout by a spend tx, waiting for confirmation (at height {})", log_bytes!(payment_hash.0), entry.confirmation_threshold());
