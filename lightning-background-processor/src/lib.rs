@@ -335,10 +335,9 @@ mod tests {
 	use bitcoin::blockdata::constants::genesis_block;
 	use bitcoin::blockdata::transaction::{Transaction, TxOut};
 	use bitcoin::network::constants::Network;
-	use lightning::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
-	use lightning::chain::{BestBlock, Confirm, chainmonitor, self};
+	use lightning::chain::{BestBlock, Confirm, chainmonitor};
 	use lightning::chain::channelmonitor::ANTI_REORG_DELAY;
-	use lightning::chain::keysinterface::{InMemorySigner, Recipient, KeysInterface, KeysManager, Sign};
+	use lightning::chain::keysinterface::{InMemorySigner, Recipient, KeysInterface, KeysManager};
 	use lightning::chain::transaction::OutPoint;
 	use lightning::get_event_msg;
 	use lightning::ln::channelmanager::{BREAKDOWN_TIMEOUT, ChainParameters, ChannelManager, SimpleArcChannelManager};
@@ -348,15 +347,13 @@ mod tests {
 	use lightning::routing::network_graph::{NetworkGraph, NetGraphMsgHandler};
 	use lightning::util::config::UserConfig;
 	use lightning::util::events::{Event, MessageSendEventsProvider, MessageSendEvent};
-	use lightning::util::logger::Logger;
 	use lightning::util::ser::Writeable;
 	use lightning::util::test_utils;
 	use lightning::util::persist::KVStorePersister;
 	use lightning_invoice::payment::{InvoicePayer, RetryAttempts};
 	use lightning_invoice::utils::DefaultRouter;
 	use lightning_persister::FilesystemPersister;
-	use std::fs::{self, File};
-	use std::ops::Deref;
+	use std::fs;
 	use std::path::PathBuf;
 	use std::sync::{Arc, Mutex};
 	use std::time::Duration;
@@ -399,7 +396,6 @@ mod tests {
 	}
 
 	struct Persister {
-		data_dir: String,
 		graph_error: Option<(std::io::ErrorKind, &'static str)>,
 		manager_error: Option<(std::io::ErrorKind, &'static str)>,
 		filesystem_persister: FilesystemPersister,
@@ -408,7 +404,7 @@ mod tests {
 	impl Persister {
 		fn new(data_dir: String) -> Self {
 			let filesystem_persister = FilesystemPersister::new(data_dir.clone());
-			Self { data_dir, graph_error: None, manager_error: None, filesystem_persister }
+			Self { graph_error: None, manager_error: None, filesystem_persister }
 		}
 
 		fn with_graph_error(self, error: std::io::ErrorKind, message: &'static str) -> Self {

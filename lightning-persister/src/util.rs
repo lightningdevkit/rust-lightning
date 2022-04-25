@@ -84,7 +84,6 @@ mod tests {
 	use super::{write_to_file};
 	use std::fs;
 	use std::io;
-	use std::io::Write;
 	use std::path::PathBuf;
 
 	struct TestWriteable{}
