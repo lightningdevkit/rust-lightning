@@ -556,6 +556,22 @@ mod tests {
 		}
 	}
 
+	fn make_tcp_connection() -> (std::net::TcpStream, std::net::TcpStream) {
+		if let Ok(listener) = std::net::TcpListener::bind("127.0.0.1:9735") {
+			(std::net::TcpStream::connect("127.0.0.1:9735").unwrap(), listener.accept().unwrap().0)
+		} else if let Ok(listener) = std::net::TcpListener::bind("127.0.0.1:19735") {
+			(std::net::TcpStream::connect("127.0.0.1:19735").unwrap(), listener.accept().unwrap().0)
+		} else if let Ok(listener) = std::net::TcpListener::bind("127.0.0.1:9997") {
+			(std::net::TcpStream::connect("127.0.0.1:9997").unwrap(), listener.accept().unwrap().0)
+		} else if let Ok(listener) = std::net::TcpListener::bind("127.0.0.1:9998") {
+			(std::net::TcpStream::connect("127.0.0.1:9998").unwrap(), listener.accept().unwrap().0)
+		} else if let Ok(listener) = std::net::TcpListener::bind("127.0.0.1:9999") {
+			(std::net::TcpStream::connect("127.0.0.1:9999").unwrap(), listener.accept().unwrap().0)
+		} else if let Ok(listener) = std::net::TcpListener::bind("127.0.0.1:46926") {
+			(std::net::TcpStream::connect("127.0.0.1:46926").unwrap(), listener.accept().unwrap().0)
+		} else { panic!("Failed to bind to v4 localhost on common ports"); }
+	}
+
 	async fn do_basic_connection_test() {
 		let secp_ctx = Secp256k1::new();
 		let a_key = SecretKey::from_slice(&[1; 32]).unwrap();
@@ -595,13 +611,7 @@ mod tests {
 		// address. This may not always be the case in containers and the like, so if this test is
 		// failing for you check that you have a loopback interface and it is configured with
 		// 127.0.0.1.
-		let (conn_a, conn_b) = if let Ok(listener) = std::net::TcpListener::bind("127.0.0.1:9735") {
-			(std::net::TcpStream::connect("127.0.0.1:9735").unwrap(), listener.accept().unwrap().0)
-		} else if let Ok(listener) = std::net::TcpListener::bind("127.0.0.1:9999") {
-			(std::net::TcpStream::connect("127.0.0.1:9999").unwrap(), listener.accept().unwrap().0)
-		} else if let Ok(listener) = std::net::TcpListener::bind("127.0.0.1:46926") {
-			(std::net::TcpStream::connect("127.0.0.1:46926").unwrap(), listener.accept().unwrap().0)
-		} else { panic!("Failed to bind to v4 localhost on common ports"); };
+		let (conn_a, conn_b) = make_tcp_connection();
 
 		let fut_a = super::setup_outbound(Arc::clone(&a_manager), b_pub, conn_a);
 		let fut_b = super::setup_inbound(b_manager, conn_b);
@@ -629,8 +639,53 @@ mod tests {
 	async fn basic_threaded_connection_test() {
 		do_basic_connection_test().await;
 	}
+
 	#[tokio::test]
 	async fn basic_unthreaded_connection_test() {
 		do_basic_connection_test().await;
+	}
+
+	async fn race_disconnect_accept() {
+		// Previously, if we handed an already-disconnected socket to `setup_inbound` we'd panic.
+		// This attempts to find other similar races by opening connections and shutting them down
+		// while connecting. Sadly in testing this did *not* reproduce the previous issue.
+		let secp_ctx = Secp256k1::new();
+		let a_key = SecretKey::from_slice(&[1; 32]).unwrap();
+		let b_key = SecretKey::from_slice(&[2; 32]).unwrap();
+		let b_pub = PublicKey::from_secret_key(&secp_ctx, &b_key);
+
+		let a_manager = Arc::new(PeerManager::new(MessageHandler {
+			chan_handler: Arc::new(lightning::ln::peer_handler::ErroringMessageHandler::new()),
+			route_handler: Arc::new(lightning::ln::peer_handler::IgnoringMessageHandler{}),
+		}, a_key, &[1; 32], Arc::new(TestLogger()), Arc::new(lightning::ln::peer_handler::IgnoringMessageHandler{})));
+
+		// Make two connections, one for an inbound and one for an outbound connection
+		let conn_a = {
+			let (conn_a, _) = make_tcp_connection();
+			conn_a
+		};
+		let conn_b = {
+			let (_, conn_b) = make_tcp_connection();
+			conn_b
+		};
+
+		// Call connection setup inside new tokio tasks.
+		let manager_reference = Arc::clone(&a_manager);
+		tokio::spawn(async move {
+			super::setup_inbound(manager_reference, conn_a).await
+		});
+		tokio::spawn(async move {
+			super::setup_outbound(a_manager, b_pub, conn_b).await
+		});
+	}
+
+	#[tokio::test(flavor = "multi_thread")]
+	async fn threaded_race_disconnect_accept() {
+		race_disconnect_accept().await;
+	}
+
+	#[tokio::test]
+	async fn unthreaded_race_disconnect_accept() {
+		race_disconnect_accept().await;
 	}
 }
