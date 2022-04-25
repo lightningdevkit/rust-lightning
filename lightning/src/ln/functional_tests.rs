@@ -9450,12 +9450,7 @@ fn test_dup_htlc_second_fail_panic() {
 
 	let payment_params = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id())
 		.with_features(InvoiceFeatures::known());
-	let scorer = test_utils::TestScorer::with_penalty(0);
-	let random_seed_bytes = chanmon_cfgs[1].keys_manager.get_secure_random_bytes();
-	let route = get_route(
-		&nodes[0].node.get_our_node_id(), &payment_params, &nodes[0].network_graph.read_only(),
-		Some(&nodes[0].node.list_usable_channels().iter().collect::<Vec<_>>()),
-		10_000, TEST_FINAL_CLTV, nodes[0].logger, &scorer, &random_seed_bytes).unwrap();
+	let route = get_route!(nodes[0], payment_params, 10_000, TEST_FINAL_CLTV).unwrap();
 
 	let (_, our_payment_hash, our_payment_secret) = get_payment_preimage_hash!(&nodes[1]);
 
