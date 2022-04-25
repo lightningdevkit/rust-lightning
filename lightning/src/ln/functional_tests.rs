@@ -9435,12 +9435,7 @@ fn test_forwardable_regen() {
 	claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_preimage_2);
 }
 
-#[test]
-fn test_dup_htlc_second_fail_panic() {
-	// Previously, if we received two HTLCs back-to-back, where the second overran the expected
-	// value for the payment, we'd fail back both HTLCs after generating a `PaymentReceived` event.
-	// Then, if the user failed the second payment, they'd hit a "tried to fail an already failed
-	// HTLC" debug panic. This tests for this behavior, checking that only one HTLC is auto-failed.
+fn do_test_dup_htlc_second_rejected(test_for_second_fail_panic: bool) {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
@@ -9452,7 +9447,7 @@ fn test_dup_htlc_second_fail_panic() {
 		.with_features(InvoiceFeatures::known());
 	let route = get_route!(nodes[0], payment_params, 10_000, TEST_FINAL_CLTV).unwrap();
 
-	let (_, our_payment_hash, our_payment_secret) = get_payment_preimage_hash!(&nodes[1]);
+	let (our_payment_preimage, our_payment_hash, our_payment_secret) = get_payment_preimage_hash!(&nodes[1]);
 
 	{
 		nodes[0].node.send_payment(&route, our_payment_hash, &Some(our_payment_secret)).unwrap();
@@ -9480,26 +9475,153 @@ fn test_dup_htlc_second_fail_panic() {
 		// the first HTLC delivered above.
 	}
 
-	// Now we go fail back the first HTLC from the user end.
-	expect_pending_htlcs_forwardable_ignore!(nodes[1]);
-	nodes[1].node.process_pending_htlc_forwards();
-	nodes[1].node.fail_htlc_backwards(&our_payment_hash);
-
 	expect_pending_htlcs_forwardable_ignore!(nodes[1]);
 	nodes[1].node.process_pending_htlc_forwards();
 
-	check_added_monitors!(nodes[1], 1);
-	let fail_updates_1 = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
-	assert_eq!(fail_updates_1.update_fail_htlcs.len(), 2);
+	if test_for_second_fail_panic {
+		// Now we go fail back the first HTLC from the user end.
+		nodes[1].node.fail_htlc_backwards(&our_payment_hash);
 
-	nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &fail_updates_1.update_fail_htlcs[0]);
-	nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &fail_updates_1.update_fail_htlcs[1]);
-	commitment_signed_dance!(nodes[0], nodes[1], fail_updates_1.commitment_signed, false);
+		expect_pending_htlcs_forwardable_ignore!(nodes[1]);
+		nodes[1].node.process_pending_htlc_forwards();
 
-	let failure_events = nodes[0].node.get_and_clear_pending_events();
-	assert_eq!(failure_events.len(), 2);
-	if let Event::PaymentPathFailed { .. } = failure_events[0] {} else { panic!(); }
-	if let Event::PaymentPathFailed { .. } = failure_events[1] {} else { panic!(); }
+		check_added_monitors!(nodes[1], 1);
+		let fail_updates_1 = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+		assert_eq!(fail_updates_1.update_fail_htlcs.len(), 2);
+
+		nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &fail_updates_1.update_fail_htlcs[0]);
+		nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &fail_updates_1.update_fail_htlcs[1]);
+		commitment_signed_dance!(nodes[0], nodes[1], fail_updates_1.commitment_signed, false);
+
+		let failure_events = nodes[0].node.get_and_clear_pending_events();
+		assert_eq!(failure_events.len(), 2);
+		if let Event::PaymentPathFailed { .. } = failure_events[0] {} else { panic!(); }
+		if let Event::PaymentPathFailed { .. } = failure_events[1] {} else { panic!(); }
+	} else {
+		// Let the second HTLC fail and claim the first
+		expect_pending_htlcs_forwardable_ignore!(nodes[1]);
+		nodes[1].node.process_pending_htlc_forwards();
+
+		check_added_monitors!(nodes[1], 1);
+		let fail_updates_1 = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+		nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &fail_updates_1.update_fail_htlcs[0]);
+		commitment_signed_dance!(nodes[0], nodes[1], fail_updates_1.commitment_signed, false);
+
+		expect_payment_failed_conditions!(nodes[0], our_payment_hash, true, PaymentFailedConditions::new().mpp_parts_remain());
+
+		claim_payment(&nodes[0], &[&nodes[1]], our_payment_preimage);
+	}
+}
+
+#[test]
+fn test_dup_htlc_second_fail_panic() {
+	// Previously, if we received two HTLCs back-to-back, where the second overran the expected
+	// value for the payment, we'd fail back both HTLCs after generating a `PaymentReceived` event.
+	// Then, if the user failed the second payment, they'd hit a "tried to fail an already failed
+	// HTLC" debug panic. This tests for this behavior, checking that only one HTLC is auto-failed.
+	do_test_dup_htlc_second_rejected(true);
+}
+
+#[test]
+fn test_dup_htlc_second_rejected() {
+	// Test that if we receive a second HTLC for an MPP payment that overruns the payment amount we
+	// simply reject the second HTLC but are still able to claim the first HTLC.
+	do_test_dup_htlc_second_rejected(false);
+}
+
+#[test]
+fn test_inconsistent_mpp_params() {
+	// Test that if we recieve two HTLCs with different payment parameters we fail back the first
+	// such HTLC and allow the second to stay.
+	let chanmon_cfgs = create_chanmon_cfgs(4);
+	let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, None, None, None]);
+	let nodes = create_network(4, &node_cfgs, &node_chanmgrs);
+
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100_000, 0, InitFeatures::known(), InitFeatures::known());
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 2, 100_000, 0, InitFeatures::known(), InitFeatures::known());
+	create_announced_chan_between_nodes_with_value(&nodes, 1, 3, 100_000, 0, InitFeatures::known(), InitFeatures::known());
+	create_announced_chan_between_nodes_with_value(&nodes, 2, 3, 100_000, 0, InitFeatures::known(), InitFeatures::known());
+
+	let payment_params = PaymentParameters::from_node_id(nodes[3].node.get_our_node_id())
+		.with_features(InvoiceFeatures::known());
+	let mut route = get_route!(nodes[0], payment_params, 15_000_000, TEST_FINAL_CLTV).unwrap();
+	assert_eq!(route.paths.len(), 2);
+	route.paths.sort_by(|path_a, _| {
+		// Sort the path so that the path through nodes[1] comes first
+		if path_a[0].pubkey == nodes[1].node.get_our_node_id() {
+			core::cmp::Ordering::Less } else { core::cmp::Ordering::Greater }
+	});
+	let payment_params_opt = Some(payment_params);
+
+	let (our_payment_preimage, our_payment_hash, our_payment_secret) = get_payment_preimage_hash!(&nodes[3]);
+
+	let cur_height = nodes[0].best_block_info().1;
+	let payment_id = PaymentId([42; 32]);
+	{
+		nodes[0].node.send_payment_along_path(&route.paths[0], &payment_params_opt, &our_payment_hash, &Some(our_payment_secret), 15_000_000, cur_height, payment_id, &None).unwrap();
+		check_added_monitors!(nodes[0], 1);
+
+		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+		pass_along_path(&nodes[0], &[&nodes[1], &nodes[3]], 15_000_000, our_payment_hash, Some(our_payment_secret), events.pop().unwrap(), false, None);
+	}
+	assert!(nodes[3].node.get_and_clear_pending_events().is_empty());
+
+	{
+		nodes[0].node.send_payment_along_path(&route.paths[1], &payment_params_opt, &our_payment_hash, &Some(our_payment_secret), 14_000_000, cur_height, payment_id, &None).unwrap();
+		check_added_monitors!(nodes[0], 1);
+
+		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+		let payment_event = SendEvent::from_event(events.pop().unwrap());
+
+		nodes[2].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
+		commitment_signed_dance!(nodes[2], nodes[0], payment_event.commitment_msg, false);
+
+		expect_pending_htlcs_forwardable!(nodes[2]);
+		check_added_monitors!(nodes[2], 1);
+
+		let mut events = nodes[2].node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+		let payment_event = SendEvent::from_event(events.pop().unwrap());
+
+		nodes[3].node.handle_update_add_htlc(&nodes[2].node.get_our_node_id(), &payment_event.msgs[0]);
+		check_added_monitors!(nodes[3], 0);
+		commitment_signed_dance!(nodes[3], nodes[2], payment_event.commitment_msg, true, true);
+
+		// At this point, nodes[3] should notice the two HTLCs don't contain the same total payment
+		// amount. It will assume the second is a privacy attack (no longer particularly relevant
+		// post-payment_secrets) and fail back the new HTLC.
+	}
+	expect_pending_htlcs_forwardable_ignore!(nodes[3]);
+	nodes[3].node.process_pending_htlc_forwards();
+	expect_pending_htlcs_forwardable_ignore!(nodes[3]);
+	nodes[3].node.process_pending_htlc_forwards();
+
+	check_added_monitors!(nodes[3], 1);
+
+	let fail_updates_1 = get_htlc_update_msgs!(nodes[3], nodes[2].node.get_our_node_id());
+	nodes[2].node.handle_update_fail_htlc(&nodes[3].node.get_our_node_id(), &fail_updates_1.update_fail_htlcs[0]);
+	commitment_signed_dance!(nodes[2], nodes[3], fail_updates_1.commitment_signed, false);
+
+	expect_pending_htlcs_forwardable!(nodes[2]);
+	check_added_monitors!(nodes[2], 1);
+
+	let fail_updates_2 = get_htlc_update_msgs!(nodes[2], nodes[0].node.get_our_node_id());
+	nodes[0].node.handle_update_fail_htlc(&nodes[2].node.get_our_node_id(), &fail_updates_2.update_fail_htlcs[0]);
+	commitment_signed_dance!(nodes[0], nodes[2], fail_updates_2.commitment_signed, false);
+
+	expect_payment_failed_conditions!(nodes[0], our_payment_hash, true, PaymentFailedConditions::new().mpp_parts_remain());
+
+	nodes[0].node.send_payment_along_path(&route.paths[1], &payment_params_opt, &our_payment_hash, &Some(our_payment_secret), 15_000_000, cur_height, payment_id, &None).unwrap();
+	check_added_monitors!(nodes[0], 1);
+
+	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	pass_along_path(&nodes[0], &[&nodes[2], &nodes[3]], 15_000_000, our_payment_hash, Some(our_payment_secret), events.pop().unwrap(), true, None);
+
+	claim_payment_along_route(&nodes[0], &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]], false, our_payment_preimage);
 }
 
 #[test]
