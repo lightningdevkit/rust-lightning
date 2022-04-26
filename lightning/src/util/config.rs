@@ -48,6 +48,30 @@ pub struct ChannelHandshakeConfig {
 	/// Default value: 1. If the value is less than 1, it is ignored and set to 1, as is required
 	/// by the protocol.
 	pub our_htlc_minimum_msat: u64,
+	/// Sets the percentage of the channel value we will cap the total value of outstanding inbound
+	/// HTLCs to.
+	///
+	/// This can be set to a value between 1-100, where the value corresponds to the percent of the
+	/// channel value in whole percentages.
+	///
+	/// Note that:
+	/// * If configured to another value than the default value 10, any new channels created with
+	/// the non default value will cause versions of LDK prior to 0.0.104 to refuse to read the
+	/// `ChannelManager`.
+	///
+	/// * This caps the total value for inbound HTLCs in-flight only, and there's currently
+	/// no way to configure the cap for the total value of outbound HTLCs in-flight.
+	///
+	/// * The requirements for your node being online to ensure the safety of HTLC-encumbered funds
+	/// are different from the non-HTLC-encumbered funds. This makes this an important knob to
+	/// restrict exposure to loss due to being offline for too long.
+	/// See [`ChannelHandshakeConfig::our_to_self_delay`] and [`ChannelConfig::cltv_expiry_delta`]
+	/// for more information.
+	///
+	/// Default value: 10.
+	/// Minimum value: 1, any values less than 1 will be treated as 1 instead.
+	/// Maximum value: 100, any values larger than 100 will be treated as 100 instead.
+	pub max_inbound_htlc_value_in_flight_percent_of_channel: u8,
 	/// If set, we attempt to negotiate the `scid_privacy` (referred to as `scid_alias` in the
 	/// BOLTs) option for outbound private channels. This provides better privacy by not including
 	/// our real on-chain channel UTXO in each invoice and requiring that our counterparty only
@@ -78,6 +102,7 @@ impl Default for ChannelHandshakeConfig {
 			minimum_depth: 6,
 			our_to_self_delay: BREAKDOWN_TIMEOUT,
 			our_htlc_minimum_msat: 1,
+			max_inbound_htlc_value_in_flight_percent_of_channel: 10,
 			negotiate_scid_privacy: false,
 		}
 	}

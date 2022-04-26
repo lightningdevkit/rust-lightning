@@ -39,7 +39,7 @@ use util::events::ClosureReason;
 use util::ser::{Readable, ReadableArgs, Writeable, Writer, VecWriter};
 use util::logger::Logger;
 use util::errors::APIError;
-use util::config::{UserConfig, ChannelConfig, ChannelHandshakeLimits};
+use util::config::{UserConfig, ChannelConfig, ChannelHandshakeConfig, ChannelHandshakeLimits};
 use util::scid_utils::scid_from_parts;
 
 use io;
@@ -745,6 +745,12 @@ pub const COMMITMENT_TX_WEIGHT_PER_HTLC: u64 = 172;
 
 pub const ANCHOR_OUTPUT_VALUE_SATOSHI: u64 = 330;
 
+/// The percentage of the channel value `holder_max_htlc_value_in_flight_msat` used to be set to,
+/// before this was made configurable. The percentage was made configurable in LDK 0.0.107,
+/// although LDK 0.0.104+ enabled serialization of channels with a different value set for
+/// `holder_max_htlc_value_in_flight_msat`.
+pub const MAX_IN_FLIGHT_PERCENT_LEGACY: u8 = 10;
+
 /// Maximum `funding_satoshis` value according to the BOLT #2 specification, if
 /// `option_support_large_channel` (aka wumbo channels) is not supported.
 /// It's 2^24 - 1.
@@ -803,9 +809,22 @@ macro_rules! secp_check {
 }
 
 impl<Signer: Sign> Channel<Signer> {
-	// Convert constants + channel value to limits:
-	fn get_holder_max_htlc_value_in_flight_msat(channel_value_satoshis: u64) -> u64 {
-		channel_value_satoshis * 1000 / 10 //TODO
+	/// Returns the value to use for `holder_max_htlc_value_in_flight_msat` as a percentage of the
+	/// `channel_value_satoshis` in msat, set through
+	/// [`ChannelHandshakeConfig::max_inbound_htlc_value_in_flight_percent_of_channel`]
+	///
+	/// The effective percentage is lower bounded by 1% and upper bounded by 100%.
+	///
+	/// [`ChannelHandshakeConfig::max_inbound_htlc_value_in_flight_percent_of_channel`]: crate::util::config::ChannelHandshakeConfig::max_inbound_htlc_value_in_flight_percent_of_channel
+	fn get_holder_max_htlc_value_in_flight_msat(channel_value_satoshis: u64, config: &ChannelHandshakeConfig) -> u64 {
+		let configured_percent = if config.max_inbound_htlc_value_in_flight_percent_of_channel < 1 {
+			1
+		} else if config.max_inbound_htlc_value_in_flight_percent_of_channel > 100 {
+			100
+		} else {
+			config.max_inbound_htlc_value_in_flight_percent_of_channel as u64
+		};
+		channel_value_satoshis * 10 * configured_percent
 	}
 
 	/// Returns a minimum channel reserve value the remote needs to maintain,
@@ -964,7 +983,7 @@ impl<Signer: Sign> Channel<Signer> {
 			counterparty_dust_limit_satoshis: 0,
 			holder_dust_limit_satoshis: MIN_CHAN_DUST_LIMIT_SATOSHIS,
 			counterparty_max_htlc_value_in_flight_msat: 0,
-			holder_max_htlc_value_in_flight_msat: Self::get_holder_max_htlc_value_in_flight_msat(channel_value_satoshis),
+			holder_max_htlc_value_in_flight_msat: Self::get_holder_max_htlc_value_in_flight_msat(channel_value_satoshis, &config.own_channel_config),
 			counterparty_selected_channel_reserve_satoshis: None, // Filled in in accept_channel
 			holder_selected_channel_reserve_satoshis,
 			counterparty_htlc_minimum_msat: 0,
@@ -1282,7 +1301,7 @@ impl<Signer: Sign> Channel<Signer> {
 			counterparty_dust_limit_satoshis: msg.dust_limit_satoshis,
 			holder_dust_limit_satoshis: MIN_CHAN_DUST_LIMIT_SATOSHIS,
 			counterparty_max_htlc_value_in_flight_msat: cmp::min(msg.max_htlc_value_in_flight_msat, msg.funding_satoshis * 1000),
-			holder_max_htlc_value_in_flight_msat: Self::get_holder_max_htlc_value_in_flight_msat(msg.funding_satoshis),
+			holder_max_htlc_value_in_flight_msat: Self::get_holder_max_htlc_value_in_flight_msat(msg.funding_satoshis, &config.own_channel_config),
 			counterparty_selected_channel_reserve_satoshis: Some(msg.channel_reserve_satoshis),
 			holder_selected_channel_reserve_satoshis,
 			counterparty_htlc_minimum_msat: msg.htlc_minimum_msat,
@@ -5877,13 +5896,18 @@ impl<Signer: Sign> Writeable for Channel<Signer> {
 		let chan_type = if self.channel_type != ChannelTypeFeatures::only_static_remote_key() {
 			Some(&self.channel_type) } else { None };
 
-		// The same logic applies for `holder_selected_channel_reserve_satoshis` and
-		// `holder_max_htlc_value_in_flight_msat` values other than the defaults.
+		// The same logic applies for `holder_selected_channel_reserve_satoshis` values other than
+		// the default, and when `holder_max_htlc_value_in_flight_msat` is configured to be set to
+		// a different percentage of the channel value then 10%, which older versions of LDK used
+		// to set it to before the percentage was made configurable.
 		let serialized_holder_selected_reserve =
 			if self.holder_selected_channel_reserve_satoshis != Self::get_holder_selected_channel_reserve_satoshis(self.channel_value_satoshis)
 			{ Some(self.holder_selected_channel_reserve_satoshis) } else { None };
+
+		let mut old_max_in_flight_percent_config = UserConfig::default().own_channel_config;
+		old_max_in_flight_percent_config.max_inbound_htlc_value_in_flight_percent_of_channel = MAX_IN_FLIGHT_PERCENT_LEGACY;
 		let serialized_holder_htlc_max_in_flight =
-			if self.holder_max_htlc_value_in_flight_msat != Self::get_holder_max_htlc_value_in_flight_msat(self.channel_value_satoshis)
+			if self.holder_max_htlc_value_in_flight_msat != Self::get_holder_max_htlc_value_in_flight_msat(self.channel_value_satoshis, &old_max_in_flight_percent_config)
 			{ Some(self.holder_max_htlc_value_in_flight_msat) } else { None };
 
 		write_tlv_fields!(writer, {
@@ -6153,7 +6177,7 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<(&'a K, u32)> for Channel<Signer>
 		let mut target_closing_feerate_sats_per_kw = None;
 		let mut monitor_pending_finalized_fulfills = Some(Vec::new());
 		let mut holder_selected_channel_reserve_satoshis = Some(Self::get_holder_selected_channel_reserve_satoshis(channel_value_satoshis));
-		let mut holder_max_htlc_value_in_flight_msat = Some(Self::get_holder_max_htlc_value_in_flight_msat(channel_value_satoshis));
+		let mut holder_max_htlc_value_in_flight_msat = Some(Self::get_holder_max_htlc_value_in_flight_msat(channel_value_satoshis, &UserConfig::default().own_channel_config));
 		// Prior to supporting channel type negotiation, all of our channels were static_remotekey
 		// only, so we default to that if none was written.
 		let mut channel_type = Some(ChannelTypeFeatures::only_static_remote_key());
