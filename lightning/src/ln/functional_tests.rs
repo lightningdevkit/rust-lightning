@@ -26,7 +26,7 @@ use ln::chan_utils::{htlc_success_tx_weight, htlc_timeout_tx_weight, HTLCOutputI
 use routing::router::{PaymentParameters, Route, RouteHop, RouteParameters, find_route, get_route};
 use ln::features::{ChannelFeatures, InitFeatures, InvoiceFeatures, NodeFeatures};
 use ln::msgs;
-use ln::msgs::{ChannelMessageHandler, RoutingMessageHandler, ErrorAction};
+use ln::msgs::{ChannelMessageHandler, RoutingMessageHandler, OptionalField, ErrorAction};
 use util::enforcing_trait_impls::EnforcingSigner;
 use util::{byte_utils, test_utils};
 use util::events::{Event, MessageSendEvent, MessageSendEventsProvider, PaymentPurpose, ClosureReason};
@@ -8141,6 +8141,58 @@ fn test_override_0msat_htlc_minimum() {
 	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), InitFeatures::known(), &res);
 	let res = get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id());
 	assert_eq!(res.htlc_minimum_msat, 1);
+}
+
+#[test]
+fn test_channel_update_has_correct_htlc_maximum_msat() {
+	// Tests that the `ChannelUpdate` message has the correct values for `htlc_maximum_msat` set.
+	// Bolt 7 specifies that if present `htlc_maximum_msat`:
+	// 1. MUST be set to less than or equal to the channel capacity. In LDK, this is capped to
+	// 90% of the `channel_value`.
+	// 2. MUST be set to less than or equal to the `max_htlc_value_in_flight_msat` received from the peer.
+
+	let mut config_30_percent = UserConfig::default();
+	config_30_percent.channel_options.announced_channel = true;
+	config_30_percent.own_channel_config.max_inbound_htlc_value_in_flight_percent_of_channel = 30;
+	let mut config_50_percent = UserConfig::default();
+	config_50_percent.channel_options.announced_channel = true;
+	config_50_percent.own_channel_config.max_inbound_htlc_value_in_flight_percent_of_channel = 50;
+	let mut config_95_percent = UserConfig::default();
+	config_95_percent.channel_options.announced_channel = true;
+	config_95_percent.own_channel_config.max_inbound_htlc_value_in_flight_percent_of_channel = 95;
+	let mut config_100_percent = UserConfig::default();
+	config_100_percent.channel_options.announced_channel = true;
+	config_100_percent.own_channel_config.max_inbound_htlc_value_in_flight_percent_of_channel = 100;
+
+	let chanmon_cfgs = create_chanmon_cfgs(4);
+	let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[Some(config_30_percent), Some(config_50_percent), Some(config_95_percent), Some(config_100_percent)]);
+	let nodes = create_network(4, &node_cfgs, &node_chanmgrs);
+
+	let channel_value_satoshis = 100000;
+	let channel_value_msat = channel_value_satoshis * 1000;
+	let channel_value_30_percent_msat = (channel_value_msat as f64 * 0.3) as u64;
+	let channel_value_50_percent_msat = (channel_value_msat as f64 * 0.5) as u64;
+	let channel_value_90_percent_msat = (channel_value_msat as f64 * 0.9) as u64;
+
+	let (node_0_chan_update, node_1_chan_update, _, _)  = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, channel_value_satoshis, 10001, InitFeatures::known(), InitFeatures::known());
+	let (node_2_chan_update, node_3_chan_update, _, _)  = create_announced_chan_between_nodes_with_value(&nodes, 2, 3, channel_value_satoshis, 10001, InitFeatures::known(), InitFeatures::known());
+
+	// Assert that `node[0]`'s `ChannelUpdate` is capped at 50 percent of the `channel_value`, as
+	// that's the value of `node[1]`'s `holder_max_htlc_value_in_flight_msat`.
+	assert_eq!(node_0_chan_update.contents.htlc_maximum_msat, OptionalField::Present(channel_value_50_percent_msat));
+	// Assert that `node[1]`'s `ChannelUpdate` is capped at 30 percent of the `channel_value`, as
+	// that's the value of `node[0]`'s `holder_max_htlc_value_in_flight_msat`.
+	assert_eq!(node_1_chan_update.contents.htlc_maximum_msat, OptionalField::Present(channel_value_30_percent_msat));
+
+	// Assert that `node[2]`'s `ChannelUpdate` is capped at 90 percent of the `channel_value`, as
+	// the value of `node[3]`'s `holder_max_htlc_value_in_flight_msat` (100%), exceeds 90% of the
+	// `channel_value`.
+	assert_eq!(node_2_chan_update.contents.htlc_maximum_msat, OptionalField::Present(channel_value_90_percent_msat));
+	// Assert that `node[3]`'s `ChannelUpdate` is capped at 90 percent of the `channel_value`, as
+	// the value of `node[2]`'s `holder_max_htlc_value_in_flight_msat` (95%), exceeds 90% of the
+	// `channel_value`.
+	assert_eq!(node_3_chan_update.contents.htlc_maximum_msat, OptionalField::Present(channel_value_90_percent_msat));
 }
 
 #[test]
