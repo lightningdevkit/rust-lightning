@@ -23,7 +23,7 @@
 //! events. The remote server would make use of [`ChainMonitor`] for block processing and for
 //! servicing [`ChannelMonitor`] updates from the client.
 
-use bitcoin::blockdata::block::{Block, BlockHeader};
+use bitcoin::blockdata::block::BlockHeader;
 use bitcoin::hash_types::Txid;
 
 use chain;
@@ -501,9 +501,7 @@ where
 	L::Target: Logger,
 	P::Target: Persist<ChannelSigner>,
 {
-	fn block_connected(&self, block: &Block, height: u32) {
-		let header = &block.header;
-		let txdata: Vec<_> = block.txdata.iter().enumerate().collect();
+	fn filtered_block_connected(&self, header: &BlockHeader, txdata: &TransactionData, height: u32) {
 		log_debug!(self.logger, "New best block {} at height {} provided via block_connected", header.block_hash(), height);
 		self.process_chain_data(header, Some(height), &txdata, |monitor, txdata| {
 			monitor.block_connected(

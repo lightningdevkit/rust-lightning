@@ -20,7 +20,7 @@
 //! security-domain-separated system design, you should consider having multiple paths for
 //! ChannelMonitors to get out of the HSM and onto monitoring devices.
 
-use bitcoin::blockdata::block::{Block, BlockHeader};
+use bitcoin::blockdata::block::BlockHeader;
 use bitcoin::blockdata::transaction::{TxOut,Transaction};
 use bitcoin::blockdata::script::{Script, Builder};
 use bitcoin::blockdata::opcodes;
@@ -3007,9 +3007,8 @@ where
 	F::Target: FeeEstimator,
 	L::Target: Logger,
 {
-	fn block_connected(&self, block: &Block, height: u32) {
-		let txdata: Vec<_> = block.txdata.iter().enumerate().collect();
-		self.0.block_connected(&block.header, &txdata, height, &*self.1, &*self.2, &*self.3);
+	fn filtered_block_connected(&self, header: &BlockHeader, txdata: &TransactionData, height: u32) {
+		self.0.block_connected(header, txdata, height, &*self.1, &*self.2, &*self.3);
 	}
 
 	fn block_disconnected(&self, header: &BlockHeader, height: u32) {

@@ -18,7 +18,7 @@
 //! imply it needs to fail HTLCs/payments/channels it manages).
 //!
 
-use bitcoin::blockdata::block::{Block, BlockHeader};
+use bitcoin::blockdata::block::BlockHeader;
 use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::network::constants::Network;
@@ -5303,18 +5303,17 @@ where
 	F::Target: FeeEstimator,
 	L::Target: Logger,
 {
-	fn block_connected(&self, block: &Block, height: u32) {
+	fn filtered_block_connected(&self, header: &BlockHeader, txdata: &TransactionData, height: u32) {
 		{
 			let best_block = self.best_block.read().unwrap();
-			assert_eq!(best_block.block_hash(), block.header.prev_blockhash,
+			assert_eq!(best_block.block_hash(), header.prev_blockhash,
 				"Blocks must be connected in chain-order - the connected header must build on the last connected header");
 			assert_eq!(best_block.height(), height - 1,
 				"Blocks must be connected in chain-order - the connected block height must be one greater than the previous height");
 		}
 
-		let txdata: Vec<_> = block.txdata.iter().enumerate().collect();
-		self.transactions_confirmed(&block.header, &txdata, height);
-		self.best_block_updated(&block.header, height);
+		self.transactions_confirmed(header, txdata, height);
+		self.best_block_updated(header, height);
 	}
 
 	fn block_disconnected(&self, header: &BlockHeader, height: u32) {

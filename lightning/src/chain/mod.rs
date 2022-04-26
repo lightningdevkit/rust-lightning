@@ -87,9 +87,20 @@ pub trait Access {
 /// sourcing chain data using a block-oriented API should prefer this interface over [`Confirm`].
 /// Such clients fetch the entire header chain whereas clients using [`Confirm`] only fetch headers
 /// when needed.
+///
+/// By using [`Listen::filtered_block_connected`] this interface supports clients fetching the
+/// entire header chain and only blocks with matching transaction data using BIP 157 filters or
+/// other similar filtering.
 pub trait Listen {
+	/// Notifies the listener that a block was added at the given height, with the transaction data
+	/// possibly filtered.
+	fn filtered_block_connected(&self, header: &BlockHeader, txdata: &TransactionData, height: u32);
+
 	/// Notifies the listener that a block was added at the given height.
-	fn block_connected(&self, block: &Block, height: u32);
+	fn block_connected(&self, block: &Block, height: u32) {
+		let txdata: Vec<_> = block.txdata.iter().enumerate().collect();
+		self.filtered_block_connected(&block.header, &txdata, height);
+	}
 
 	/// Notifies the listener that a block was removed at the given height.
 	fn block_disconnected(&self, header: &BlockHeader, height: u32);
@@ -355,8 +366,8 @@ pub struct WatchedOutput {
 }
 
 impl<T: Listen> Listen for core::ops::Deref<Target = T> {
-	fn block_connected(&self, block: &Block, height: u32) {
-		(**self).block_connected(block, height);
+	fn filtered_block_connected(&self, header: &BlockHeader, txdata: &TransactionData, height: u32) {
+		(**self).filtered_block_connected(header, txdata, height);
 	}
 
 	fn block_disconnected(&self, header: &BlockHeader, height: u32) {
@@ -369,9 +380,9 @@ where
 	T::Target: Listen,
 	U::Target: Listen,
 {
-	fn block_connected(&self, block: &Block, height: u32) {
-		self.0.block_connected(block, height);
-		self.1.block_connected(block, height);
+	fn filtered_block_connected(&self, header: &BlockHeader, txdata: &TransactionData, height: u32) {
+		self.0.filtered_block_connected(header, txdata, height);
+		self.1.filtered_block_connected(header, txdata, height);
 	}
 
 	fn block_disconnected(&self, header: &BlockHeader, height: u32) {

@@ -4,7 +4,7 @@
 use crate::{BlockSource, BlockSourceResult, Cache, ChainNotifier};
 use crate::poll::{ChainPoller, Validate, ValidatedBlockHeader};
 
-use bitcoin::blockdata::block::{Block, BlockHeader};
+use bitcoin::blockdata::block::BlockHeader;
 use bitcoin::hash_types::BlockHash;
 use bitcoin::network::constants::Network;
 
@@ -203,7 +203,7 @@ impl<'a, C: Cache> Cache for ReadOnlyCache<'a, C> {
 struct DynamicChainListener<'a, L: chain::Listen + ?Sized>(&'a L);
 
 impl<'a, L: chain::Listen + ?Sized> chain::Listen for DynamicChainListener<'a, L> {
-	fn block_connected(&self, _block: &Block, _height: u32) {
+	fn filtered_block_connected(&self, _header: &BlockHeader, _txdata: &chain::transaction::TransactionData, _height: u32) {
 		unreachable!()
 	}
 
@@ -216,10 +216,10 @@ impl<'a, L: chain::Listen + ?Sized> chain::Listen for DynamicChainListener<'a, L
 struct ChainListenerSet<'a, L: chain::Listen + ?Sized>(Vec<(u32, &'a L)>);
 
 impl<'a, L: chain::Listen + ?Sized> chain::Listen for ChainListenerSet<'a, L> {
-	fn block_connected(&self, block: &Block, height: u32) {
+	fn filtered_block_connected(&self, header: &BlockHeader, txdata: &chain::transaction::TransactionData, height: u32) {
 		for (starting_height, chain_listener) in self.0.iter() {
 			if height > *starting_height {
-				chain_listener.block_connected(block, height);
+				chain_listener.filtered_block_connected(header, txdata, height);
 			}
 		}
 	}
