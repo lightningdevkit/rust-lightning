@@ -5350,8 +5350,9 @@ mod tests {
 				let payment_params = PaymentParameters::from_node_id(dst);
 				let amt = seed as u64 % 200_000_000;
 				let params = ProbabilisticScoringParameters::default();
-				let scorer = ProbabilisticScorer::new(params, &graph);
-				if get_route(src, &payment_params, &graph.read_only(), None, amt, 42, &test_utils::TestLogger::new(), &scorer, &random_seed_bytes).is_ok() {
+				let logger = test_utils::TestLogger::new();
+				let scorer = ProbabilisticScorer::new(params, &graph, &logger);
+				if get_route(src, &payment_params, &graph.read_only(), None, amt, 42, &logger, &scorer, &random_seed_bytes).is_ok() {
 					continue 'load_endpoints;
 				}
 			}
@@ -5386,8 +5387,9 @@ mod tests {
 				let payment_params = PaymentParameters::from_node_id(dst).with_features(InvoiceFeatures::known());
 				let amt = seed as u64 % 200_000_000;
 				let params = ProbabilisticScoringParameters::default();
-				let scorer = ProbabilisticScorer::new(params, &graph);
-				if get_route(src, &payment_params, &graph.read_only(), None, amt, 42, &test_utils::TestLogger::new(), &scorer, &random_seed_bytes).is_ok() {
+				let logger = test_utils::TestLogger::new();
+				let scorer = ProbabilisticScorer::new(params, &graph, &logger);
+				if get_route(src, &payment_params, &graph.read_only(), None, amt, 42, &logger, &scorer, &random_seed_bytes).is_ok() {
 					continue 'load_endpoints;
 				}
 			}
@@ -5433,6 +5435,7 @@ mod benches {
 	use ln::features::{InitFeatures, InvoiceFeatures};
 	use routing::scoring::{FixedPenaltyScorer, ProbabilisticScorer, ProbabilisticScoringParameters, Scorer};
 	use util::logger::{Logger, Record};
+	use util::test_utils::TestLogger;
 
 	use test::Bencher;
 
@@ -5516,17 +5519,19 @@ mod benches {
 
 	#[bench]
 	fn generate_routes_with_probabilistic_scorer(bench: &mut Bencher) {
+		let logger = TestLogger::new();
 		let network_graph = read_network_graph();
 		let params = ProbabilisticScoringParameters::default();
-		let scorer = ProbabilisticScorer::new(params, &network_graph);
+		let scorer = ProbabilisticScorer::new(params, &network_graph, &logger);
 		generate_routes(bench, &network_graph, scorer, InvoiceFeatures::empty());
 	}
 
 	#[bench]
 	fn generate_mpp_routes_with_probabilistic_scorer(bench: &mut Bencher) {
+		let logger = TestLogger::new();
 		let network_graph = read_network_graph();
 		let params = ProbabilisticScoringParameters::default();
-		let scorer = ProbabilisticScorer::new(params, &network_graph);
+		let scorer = ProbabilisticScorer::new(params, &network_graph, &logger);
 		generate_routes(bench, &network_graph, scorer, InvoiceFeatures::known());
 	}
 
