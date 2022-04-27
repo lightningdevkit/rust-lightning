@@ -903,6 +903,14 @@ impl<G: Deref<Target = NetworkGraph>, L: Deref, T: Time> Score for Probabilistic
 	fn channel_penalty_msat(
 		&self, short_channel_id: u64, source: &NodeId, target: &NodeId, usage: ChannelUsage
 	) -> u64 {
+		if let EffectiveCapacity::ExactLiquidity { liquidity_msat } = usage.effective_capacity {
+			if usage.amount_msat > liquidity_msat {
+				return u64::max_value();
+			} else {
+				return self.params.base_penalty_msat;
+			};
+		}
+
 		let liquidity_offset_half_life = self.params.liquidity_offset_half_life;
 		let amount_msat = usage.amount_msat;
 		let capacity_msat = usage.effective_capacity.as_msat()
@@ -2572,6 +2580,30 @@ mod tests {
 		assert_ne!(scorer.channel_penalty_msat(42, &source, &target, usage), u64::max_value());
 
 		let usage = ChannelUsage { inflight_htlc_msat: 251, ..usage };
+		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), u64::max_value());
+	}
+
+	#[test]
+	fn removes_uncertainity_when_exact_liquidity_known() {
+		let network_graph = network_graph();
+		let logger = TestLogger::new();
+		let params = ProbabilisticScoringParameters::default();
+		let scorer = ProbabilisticScorer::new(params, &network_graph, &logger);
+		let source = source_node_id();
+		let target = target_node_id();
+
+		let base_penalty_msat = params.base_penalty_msat;
+		let usage = ChannelUsage {
+			amount_msat: 750,
+			inflight_htlc_msat: 0,
+			effective_capacity: EffectiveCapacity::ExactLiquidity { liquidity_msat: 1_000 },
+		};
+		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), base_penalty_msat);
+
+		let usage = ChannelUsage { amount_msat: 1_000, ..usage };
+		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), base_penalty_msat);
+
+		let usage = ChannelUsage { amount_msat: 1_001, ..usage };
 		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), u64::max_value());
 	}
 }
