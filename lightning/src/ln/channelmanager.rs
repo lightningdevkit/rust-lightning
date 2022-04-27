@@ -1677,9 +1677,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			let channel_state = self.channel_state.lock().unwrap();
 			res.reserve(channel_state.by_id.len());
 			for (channel_id, channel) in channel_state.by_id.iter().filter(f) {
-				let (inbound_capacity_msat, outbound_capacity_msat, next_outbound_htlc_limit_msat) =
-					channel.get_inbound_outbound_available_balance_msat();
-				let balance_msat = channel.get_balance_msat();
+				let balance = channel.get_available_balances();
 				let (to_remote_reserve_satoshis, to_self_reserve_satoshis) =
 					channel.get_holder_counterparty_selected_channel_reserve_satoshis();
 				res.push(ChannelDetails {
@@ -1706,10 +1704,10 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					inbound_scid_alias: channel.latest_inbound_scid_alias(),
 					channel_value_satoshis: channel.get_value_satoshis(),
 					unspendable_punishment_reserve: to_self_reserve_satoshis,
-					balance_msat,
-					inbound_capacity_msat,
-					outbound_capacity_msat,
-					next_outbound_htlc_limit_msat,
+					balance_msat: balance.balance_msat,
+					inbound_capacity_msat: balance.inbound_capacity_msat,
+					outbound_capacity_msat: balance.outbound_capacity_msat,
+					next_outbound_htlc_limit_msat: balance.next_outbound_htlc_limit_msat,
 					user_channel_id: channel.get_user_id(),
 					confirmations_required: channel.minimum_depth(),
 					force_close_spend_delay: channel.get_counterparty_selected_contest_delay(),

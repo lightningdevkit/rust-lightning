@@ -62,6 +62,17 @@ pub struct ChannelValueStat {
 	pub counterparty_dust_limit_msat: u64,
 }
 
+pub struct AvailableBalances {
+	/// The amount that would go to us if we close the channel, ignoring any on-chain fees.
+	pub balance_msat: u64,
+	/// Total amount available for our counterparty to send to us.
+	pub inbound_capacity_msat: u64,
+	/// Total amount available for us to send to our counterparty.
+	pub outbound_capacity_msat: u64,
+	/// The maximum value we can assign to the next outbound HTLC
+	pub next_outbound_htlc_limit_msat: u64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum FeeUpdateState {
 	// Inbound states mirroring InboundHTLCState
@@ -2330,47 +2341,39 @@ impl<Signer: Sign> Channel<Signer> {
 		stats
 	}
 
-	/// Get the available (ie not including pending HTLCs) inbound and outbound balance, plus the
-	/// amount available for a single HTLC send, all in msat.
+	/// Get the available balances, see [`AvailableBalances`]'s fields for more info.
 	/// Doesn't bother handling the
 	/// if-we-removed-it-already-but-haven't-fully-resolved-they-can-still-send-an-inbound-HTLC
 	/// corner case properly.
-	/// The channel reserve is subtracted from each balance.
-	/// See also [`Channel::get_balance_msat`]
-	pub fn get_inbound_outbound_available_balance_msat(&self) -> (u64, u64, u64) {
+	pub fn get_available_balances(&self) -> AvailableBalances {
 		// Note that we have to handle overflow due to the above case.
 		let outbound_stats = self.get_outbound_pending_htlc_stats(None);
-		let outbound_capacity_msat = cmp::max(self.value_to_self_msat as i64
-				- outbound_stats.pending_htlcs_value_msat as i64
-				- self.counterparty_selected_channel_reserve_satoshis.unwrap_or(0) as i64 * 1000,
-			0) as u64;
-		(
-			cmp::max(self.channel_value_satoshis as i64 * 1000
-				- self.value_to_self_msat as i64
-				- self.get_inbound_pending_htlc_stats(None).pending_htlcs_value_msat as i64
-				- self.holder_selected_channel_reserve_satoshis as i64 * 1000,
-			0) as u64,
-			outbound_capacity_msat,
-			cmp::max(cmp::min(outbound_capacity_msat as i64,
-				self.counterparty_max_htlc_value_in_flight_msat as i64
-					- outbound_stats.pending_htlcs_value_msat as i64),
-			0) as u64
-		)
-	}
 
-	/// Get our total balance in msat.
-	/// This is the amount that would go to us if we close the channel, ignoring any on-chain fees.
-	/// See also [`Channel::get_inbound_outbound_available_balance_msat`]
-	pub fn get_balance_msat(&self) -> u64 {
-		// Include our local balance, plus any inbound HTLCs we know the preimage for, minus any
-		// HTLCs sent or which will be sent after commitment signed's are exchanged.
 		let mut balance_msat = self.value_to_self_msat;
 		for ref htlc in self.pending_inbound_htlcs.iter() {
 			if let InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::Fulfill(_)) = htlc.state {
 				balance_msat += htlc.amount_msat;
 			}
 		}
-		balance_msat - self.get_outbound_pending_htlc_stats(None).pending_htlcs_value_msat
+		balance_msat -= outbound_stats.pending_htlcs_value_msat;
+
+		let outbound_capacity_msat = cmp::max(self.value_to_self_msat as i64
+				- outbound_stats.pending_htlcs_value_msat as i64
+				- self.counterparty_selected_channel_reserve_satoshis.unwrap_or(0) as i64 * 1000,
+			0) as u64;
+		AvailableBalances {
+			inbound_capacity_msat: cmp::max(self.channel_value_satoshis as i64 * 1000
+					- self.value_to_self_msat as i64
+					- self.get_inbound_pending_htlc_stats(None).pending_htlcs_value_msat as i64
+					- self.holder_selected_channel_reserve_satoshis as i64 * 1000,
+				0) as u64,
+			outbound_capacity_msat,
+			next_outbound_htlc_limit_msat: cmp::max(cmp::min(outbound_capacity_msat as i64,
+					self.counterparty_max_htlc_value_in_flight_msat as i64
+						- outbound_stats.pending_htlcs_value_msat as i64),
+				0) as u64,
+			balance_msat,
+		}
 	}
 
 	pub fn get_holder_counterparty_selected_channel_reserve_satoshis(&self) -> (u64, Option<u64>) {
