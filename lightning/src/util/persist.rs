@@ -11,6 +11,7 @@
 use core::ops::Deref;
 use bitcoin::hashes::hex::ToHex;
 use io::{self};
+use routing::scoring::WriteableScore;
 
 use crate::{chain::{keysinterface::{Sign, KeysInterface}, self, transaction::{OutPoint}, chaininterface::{BroadcasterInterface, FeeEstimator}, chainmonitor::{Persist, MonitorUpdateId}, channelmonitor::{ChannelMonitor, ChannelMonitorUpdate}}, ln::channelmanager::ChannelManager, routing::network_graph::NetworkGraph};
 use super::{logger::Logger, ser::Writeable};
@@ -24,36 +25,46 @@ pub trait KVStorePersister {
 	fn persist<W: Writeable>(&self, key: &str, object: &W) -> io::Result<()>;
 }
 
-/// Trait that handles persisting a [`ChannelManager`] and [`NetworkGraph`] to disk.
-pub trait Persister<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
+/// Trait that handles persisting a [`ChannelManager`], [`NetworkGraph`], and [`WriteableScore`] to disk.
+pub trait Persister<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref, S>
 	where M::Target: 'static + chain::Watch<Signer>,
 		T::Target: 'static + BroadcasterInterface,
 		K::Target: 'static + KeysInterface<Signer = Signer>,
 		F::Target: 'static + FeeEstimator,
 		L::Target: 'static + Logger,
+		S: WriteableScore<'a>,
 {
 	/// Persist the given ['ChannelManager'] to disk, returning an error if persistence failed.
 	fn persist_manager(&self, channel_manager: &ChannelManager<Signer, M, T, K, F, L>) -> Result<(), io::Error>;
 
 	/// Persist the given [`NetworkGraph`] to disk, returning an error if persistence failed.
 	fn persist_graph(&self, network_graph: &NetworkGraph) -> Result<(), io::Error>;
+
+	/// Persist the given [`WriteableScore`] to disk, returning an error if persistence failed.
+	fn persist_scorer(&self, scorer: &S) -> Result<(), io::Error>;
 }
 
-impl<A: KVStorePersister, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Persister<Signer, M, T, K, F, L> for A
+impl<'a, A: KVStorePersister, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref, S> Persister<'a, Signer, M, T, K, F, L, S> for A
 	where M::Target: 'static + chain::Watch<Signer>,
 		T::Target: 'static + BroadcasterInterface,
 		K::Target: 'static + KeysInterface<Signer = Signer>,
 		F::Target: 'static + FeeEstimator,
 		L::Target: 'static + Logger,
+		S: WriteableScore<'a>,
 {
-	/// Persist the given ['ChannelManager'] to disk, returning an error if persistence failed.
+	/// Persist the given ['ChannelManager'] to disk with the name "manager", returning an error if persistence failed.
 	fn persist_manager(&self, channel_manager: &ChannelManager<Signer, M, T, K, F, L>) -> Result<(), io::Error> {
 		self.persist("manager", channel_manager)
 	}
 
-	/// Persist the given [`NetworkGraph`] to disk, returning an error if persistence failed.
+	/// Persist the given [`NetworkGraph`] to disk with the name "network_graph", returning an error if persistence failed.
 	fn persist_graph(&self, network_graph: &NetworkGraph) -> Result<(), io::Error> {
 		self.persist("network_graph", network_graph)
+	}
+
+	/// Persist the given [`WriteableScore`] to disk with name "scorer", returning an error if persistence failed.
+	fn persist_scorer(&self, scorer: &S) -> Result<(), io::Error> {
+		self.persist("scorer", &scorer)
 	}
 }
 
