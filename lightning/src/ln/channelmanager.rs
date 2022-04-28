@@ -1005,6 +1005,13 @@ pub struct ChannelDetails {
 	/// conflict-avoidance policy, exactly this amount is not likely to be spendable. However, we
 	/// should be able to spend nearly this amount.
 	pub outbound_capacity_msat: u64,
+	/// The available outbound capacity for sending a single HTLC to the remote peer. This is
+	/// similar to [`ChannelDetails::outbound_capacity_msat`] but it may be further restricted by
+	/// the current state and per-HTLC limit(s). This is intended for use when routing, allowing us
+	/// to use a limit as close as possible to the HTLC limit we can currently send.
+	///
+	/// See also [`ChannelDetails::balance_msat`] and [`ChannelDetails::outbound_capacity_msat`].
+	pub next_outbound_htlc_limit_msat: u64,
 	/// The available inbound capacity for the remote peer to send HTLCs to us. This does not
 	/// include any pending HTLCs which are not yet fully resolved (and, thus, whose balance is not
 	/// available for inclusion in new inbound HTLCs).
@@ -1670,8 +1677,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			let channel_state = self.channel_state.lock().unwrap();
 			res.reserve(channel_state.by_id.len());
 			for (channel_id, channel) in channel_state.by_id.iter().filter(f) {
-				let (inbound_capacity_msat, outbound_capacity_msat) = channel.get_inbound_outbound_available_balance_msat();
-				let balance_msat = channel.get_balance_msat();
+				let balance = channel.get_available_balances();
 				let (to_remote_reserve_satoshis, to_self_reserve_satoshis) =
 					channel.get_holder_counterparty_selected_channel_reserve_satoshis();
 				res.push(ChannelDetails {
@@ -1698,9 +1704,10 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					inbound_scid_alias: channel.latest_inbound_scid_alias(),
 					channel_value_satoshis: channel.get_value_satoshis(),
 					unspendable_punishment_reserve: to_self_reserve_satoshis,
-					balance_msat,
-					inbound_capacity_msat,
-					outbound_capacity_msat,
+					balance_msat: balance.balance_msat,
+					inbound_capacity_msat: balance.inbound_capacity_msat,
+					outbound_capacity_msat: balance.outbound_capacity_msat,
+					next_outbound_htlc_limit_msat: balance.next_outbound_htlc_limit_msat,
 					user_channel_id: channel.get_user_id(),
 					confirmations_required: channel.minimum_depth(),
 					force_close_spend_delay: channel.get_counterparty_selected_contest_delay(),
@@ -5936,6 +5943,9 @@ impl_writeable_tlv_based!(ChannelDetails, {
 	(14, user_channel_id, required),
 	(16, balance_msat, required),
 	(18, outbound_capacity_msat, required),
+	// Note that by the time we get past the required read above, outbound_capacity_msat will be
+	// filled in, so we can safely unwrap it here.
+	(19, next_outbound_htlc_limit_msat, (default_value, outbound_capacity_msat.0.unwrap())),
 	(20, inbound_capacity_msat, required),
 	(22, confirmations_required, option),
 	(24, force_close_spend_delay, option),

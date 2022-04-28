@@ -29,6 +29,7 @@ use bitcoin::blockdata::constants::genesis_block;
 
 use utils::test_logger;
 
+use std::convert::TryInto;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -205,7 +206,8 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 					count => {
 						for _ in 0..count {
 							scid += 1;
-							let rnid = node_pks.iter().skip(slice_to_be16(get_slice!(2))as usize % node_pks.len()).next().unwrap();
+							let rnid = node_pks.iter().skip(u16::from_be_bytes(get_slice!(2).try_into().unwrap()) as usize % node_pks.len()).next().unwrap();
+							let capacity = u64::from_be_bytes(get_slice!(8).try_into().unwrap());
 							first_hops_vec.push(ChannelDetails {
 								channel_id: [0; 32],
 								counterparty: ChannelCounterparty {
@@ -220,7 +222,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 								channel_type: None,
 								short_channel_id: Some(scid),
 								inbound_scid_alias: None,
-								channel_value_satoshis: slice_to_be64(get_slice!(8)),
+								channel_value_satoshis: capacity,
 								user_channel_id: 0, inbound_capacity_msat: 0,
 								unspendable_punishment_reserve: None,
 								confirmations_required: None,
@@ -228,7 +230,8 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 								is_outbound: true, is_funding_locked: true,
 								is_usable: true, is_public: true,
 								balance_msat: 0,
-								outbound_capacity_msat: 0,
+								outbound_capacity_msat: capacity.saturating_mul(1000),
+								next_outbound_htlc_limit_msat: capacity.saturating_mul(1000),
 								inbound_htlc_minimum_msat: None,
 								inbound_htlc_maximum_msat: None,
 							});

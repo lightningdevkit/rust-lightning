@@ -412,7 +412,7 @@ impl<'a> CandidateRouteHop<'a> {
 	fn effective_capacity(&self) -> EffectiveCapacity {
 		match self {
 			CandidateRouteHop::FirstHop { details } => EffectiveCapacity::ExactLiquidity {
-				liquidity_msat: details.outbound_capacity_msat,
+				liquidity_msat: details.next_outbound_htlc_limit_msat,
 			},
 			CandidateRouteHop::PublicHop { info, .. } => info.effective_capacity(),
 			CandidateRouteHop::PrivateHop { .. } => EffectiveCapacity::Infinite,
@@ -818,7 +818,8 @@ where L::Target: Logger {
 	// We don't want multiple paths (as per MPP) share liquidity of the same channels.
 	// This map allows paths to be aware of the channel use by other paths in the same call.
 	// This would help to make a better path finding decisions and not "overbook" channels.
-	// It is unaware of the directions (except for `outbound_capacity_msat` in `first_hops`).
+	// It is unaware of the directions (except for `next_outbound_htlc_limit_msat` in
+	// `first_hops`).
 	let mut bookkept_channels_liquidity_available_msat = HashMap::with_capacity(network_nodes.len());
 
 	// Keeping track of how much value we already collected across other paths. Helps to decide:
@@ -841,12 +842,12 @@ where L::Target: Logger {
 		// sort channels above `recommended_value_msat` in ascending order, preferring channels
 		// which have enough, but not too much, capacity for the payment.
 		channels.sort_unstable_by(|chan_a, chan_b| {
-			if chan_b.outbound_capacity_msat < recommended_value_msat || chan_a.outbound_capacity_msat < recommended_value_msat {
+			if chan_b.next_outbound_htlc_limit_msat < recommended_value_msat || chan_a.next_outbound_htlc_limit_msat < recommended_value_msat {
 				// Sort in descending order
-				chan_b.outbound_capacity_msat.cmp(&chan_a.outbound_capacity_msat)
+				chan_b.next_outbound_htlc_limit_msat.cmp(&chan_a.next_outbound_htlc_limit_msat)
 			} else {
 				// Sort in ascending order
-				chan_a.outbound_capacity_msat.cmp(&chan_b.outbound_capacity_msat)
+				chan_a.next_outbound_htlc_limit_msat.cmp(&chan_b.next_outbound_htlc_limit_msat)
 			}
 		});
 	}
@@ -1746,6 +1747,7 @@ mod tests {
 			user_channel_id: 0,
 			balance_msat: 0,
 			outbound_capacity_msat,
+			next_outbound_htlc_limit_msat: outbound_capacity_msat,
 			inbound_capacity_msat: 42,
 			unspendable_punishment_reserve: None,
 			confirmations_required: None,
@@ -3407,7 +3409,7 @@ mod tests {
 			assert_eq!(path.last().unwrap().fee_msat, 250_000_000);
 		}
 
-		// Check that setting outbound_capacity_msat in first_hops limits the channels.
+		// Check that setting next_outbound_htlc_limit_msat in first_hops limits the channels.
 		// Disable channel #1 and use another first hop.
 		update_channel(&net_graph_msg_handler, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
 			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
@@ -3422,7 +3424,7 @@ mod tests {
 			excess_data: Vec::new()
 		});
 
-		// Now, limit the first_hop by the outbound_capacity_msat of 200_000 sats.
+		// Now, limit the first_hop by the next_outbound_htlc_limit_msat of 200_000 sats.
 		let our_chans = vec![get_channel_details(Some(42), nodes[0].clone(), InitFeatures::from_le_bytes(vec![0b11]), 200_000_000)];
 
 		{
@@ -5476,6 +5478,7 @@ mod benches {
 			user_channel_id: 0,
 			balance_msat: 10_000_000,
 			outbound_capacity_msat: 10_000_000,
+			next_outbound_htlc_limit_msat: 10_000_000,
 			inbound_capacity_msat: 0,
 			unspendable_punishment_reserve: None,
 			confirmations_required: None,
