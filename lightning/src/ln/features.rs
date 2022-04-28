@@ -137,7 +137,7 @@ mod sealed {
 			// Byte 1
 			,
 			// Byte 2
-			BasicMPP,
+			BasicMPP | Wumbo,
 			// Byte 3
 			ShutdownAnySegwit,
 			// Byte 4
@@ -169,7 +169,7 @@ mod sealed {
 			// Byte 1
 			,
 			// Byte 2
-			BasicMPP,
+			BasicMPP | Wumbo,
 			// Byte 3
 			ShutdownAnySegwit,
 			// Byte 4
@@ -390,6 +390,9 @@ mod sealed {
 	define_feature!(17, BasicMPP, [InitContext, NodeContext, InvoiceContext],
 		"Feature flags for `basic_mpp`.", set_basic_mpp_optional, set_basic_mpp_required,
 		supports_basic_mpp, requires_basic_mpp);
+	define_feature!(19, Wumbo, [InitContext, NodeContext],
+		"Feature flags for `option_support_large_channel` (aka wumbo channels).", set_wumbo_optional, set_wumbo_required,
+		supports_wumbo, requires_wumbo);
 	define_feature!(27, ShutdownAnySegwit, [InitContext, NodeContext],
 		"Feature flags for `opt_shutdown_anysegwit`.", set_shutdown_any_segwit_optional,
 		set_shutdown_any_segwit_required, supports_shutdown_anysegwit, requires_shutdown_anysegwit);
@@ -740,6 +743,15 @@ impl<T: sealed::ShutdownAnySegwit> Features<T> {
 		self
 	}
 }
+
+impl<T: sealed::Wumbo> Features<T> {
+	#[cfg(test)]
+	pub(crate) fn clear_wumbo(mut self) -> Self {
+		<T as sealed::Wumbo>::clear_bits(&mut self.flags);
+		self
+	}
+}
+
 macro_rules! impl_feature_len_prefixed_write {
 	($features: ident) => {
 		impl Writeable for $features {
@@ -843,6 +855,11 @@ mod tests {
 		assert!(!InitFeatures::known().requires_scid_privacy());
 		assert!(!NodeFeatures::known().requires_scid_privacy());
 
+		assert!(InitFeatures::known().supports_wumbo());
+		assert!(NodeFeatures::known().supports_wumbo());
+		assert!(!InitFeatures::known().requires_wumbo());
+		assert!(!NodeFeatures::known().requires_wumbo());
+
 		let mut init_features = InitFeatures::known();
 		assert!(init_features.initial_routing_sync());
 		init_features.clear_initial_routing_sync();
@@ -878,14 +895,14 @@ mod tests {
 			// Check that the flags are as expected:
 			// - option_data_loss_protect
 			// - var_onion_optin (req) | static_remote_key (req) | payment_secret(req)
-			// - basic_mpp
+			// - basic_mpp | wumbo
 			// - opt_shutdown_anysegwit
 			// -
 			// - option_channel_type | option_scid_alias
 			assert_eq!(node_features.flags.len(), 6);
 			assert_eq!(node_features.flags[0], 0b00000010);
 			assert_eq!(node_features.flags[1], 0b01010001);
-			assert_eq!(node_features.flags[2], 0b00000010);
+			assert_eq!(node_features.flags[2], 0b00001010);
 			assert_eq!(node_features.flags[3], 0b00001000);
 			assert_eq!(node_features.flags[4], 0b00000000);
 			assert_eq!(node_features.flags[5], 0b10100000);

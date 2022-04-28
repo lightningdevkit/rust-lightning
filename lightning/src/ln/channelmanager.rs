@@ -1516,8 +1516,6 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	///
 	/// Non-proportional fees are fixed according to our risk using the provided fee estimator.
 	///
-	/// panics if channel_value_satoshis is >= `MAX_FUNDING_SATOSHIS`!
-	///
 	/// Users need to notify the new ChannelManager when a new block is connected or
 	/// disconnected using its `block_connected` and `block_disconnected` methods, starting
 	/// from after `params.latest_hash`.
