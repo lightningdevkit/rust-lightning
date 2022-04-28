@@ -623,6 +623,33 @@ impl<G: Deref<Target = NetworkGraph>, L: Deref, T: Time> ProbabilisticScorerUsin
 		assert!(self.channel_liquidities.insert(short_channel_id, liquidity).is_none());
 		self
 	}
+
+	/// Dump the contents of this scorer into the configured logger.
+	///
+	/// Note that this writes roughly one line per channel for which we have a liquidity estimate,
+	/// which may be a substantial amount of log output.
+	pub fn debug_log_liquidity_stats(&self) {
+		let graph = self.network_graph.read_only();
+		for (scid, liq) in self.channel_liquidities.iter() {
+			if let Some(chan_debug) = graph.channels().get(scid) {
+				let log_direction = |source, target| {
+					if let Some((directed_info, _)) = chan_debug.as_directed_to(target) {
+						let amt = directed_info.effective_capacity().as_msat();
+						let dir_liq = liq.as_directed(source, target, amt, self.params.liquidity_offset_half_life);
+						log_debug!(self.logger, "Liquidity from {:?} to {:?} via {} is in the range ({}, {})",
+							source, target, scid, dir_liq.min_liquidity_msat(), dir_liq.max_liquidity_msat());
+					} else {
+						log_debug!(self.logger, "No amount known for SCID {} from {:?} to {:?}", scid, source, target);
+					}
+				};
+
+				log_direction(&chan_debug.node_one, &chan_debug.node_two);
+				log_direction(&chan_debug.node_two, &chan_debug.node_one);
+			} else {
+				log_debug!(self.logger, "No network graph entry for SCID {}", scid);
+			}
+		}
+	}
 }
 
 impl ProbabilisticScoringParameters {
