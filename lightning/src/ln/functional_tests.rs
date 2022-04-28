@@ -100,7 +100,7 @@ fn test_insane_channel_opens() {
 
 	insane_open_helper("Bogus channel_reserve_satoshis", |mut msg| { msg.channel_reserve_satoshis = msg.funding_satoshis + 1; msg });
 
-	insane_open_helper(r"push_msat \d+ was larger than funding value \d+", |mut msg| { msg.push_msat = (msg.funding_satoshis - msg.channel_reserve_satoshis) * 1000 + 1; msg });
+	insane_open_helper(r"push_msat \d+ was larger than channel amount minus reserve \(\d+\)", |mut msg| { msg.push_msat = (msg.funding_satoshis - msg.channel_reserve_satoshis) * 1000 + 1; msg });
 
 	insane_open_helper("Peer never wants payout outputs?", |mut msg| { msg.dust_limit_satoshis = msg.funding_satoshis + 1 ; msg });
 

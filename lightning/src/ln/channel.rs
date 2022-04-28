@@ -1084,7 +1084,7 @@ impl<Signer: Sign> Channel<Signer> {
 		}
 		let full_channel_value_msat = (msg.funding_satoshis - msg.channel_reserve_satoshis) * 1000;
 		if msg.push_msat > full_channel_value_msat {
-			return Err(ChannelError::Close(format!("push_msat {} was larger than funding value {}", msg.push_msat, full_channel_value_msat)));
+			return Err(ChannelError::Close(format!("push_msat {} was larger than channel amount minus reserve ({})", msg.push_msat, full_channel_value_msat)));
 		}
 		if msg.dust_limit_satoshis > msg.funding_satoshis {
 			return Err(ChannelError::Close(format!("dust_limit_satoshis {} was larger than funding_satoshis {}. Peer never wants payout outputs?", msg.dust_limit_satoshis, msg.funding_satoshis)));
