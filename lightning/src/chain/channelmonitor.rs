@@ -869,6 +869,9 @@ impl<Signer: Sign> Writeable for ChannelMonitorImpl<Signer> {
 			writer.write_all(&txid[..])?;
 			writer.write_all(&byte_utils::be64_to_array(htlc_infos.len() as u64))?;
 			for &(ref htlc_output, ref htlc_source) in htlc_infos.iter() {
+				debug_assert!(htlc_source.is_none() || Some(**txid) == self.current_counterparty_commitment_txid
+						|| Some(**txid) == self.prev_counterparty_commitment_txid,
+					"HTLC Sources for all revoked commitment transactions should be none!");
 				serialize_htlc_in_commitment!(htlc_output);
 				htlc_source.as_ref().map(|b| b.as_ref()).write(writer)?;
 			}
@@ -1676,9 +1679,14 @@ macro_rules! fail_unbroadcast_htlcs {
 							// cannot currently change after channel initialization, so we don't
 							// need to here.
 							let confirmed_htlcs_iter: &mut Iterator<Item = (&HTLCOutputInCommitment, Option<&HTLCSource>)> = &mut $confirmed_htlcs_list;
+
 							let mut matched_htlc = false;
 							for (ref broadcast_htlc, ref broadcast_source) in confirmed_htlcs_iter {
-								if broadcast_htlc.transaction_output_index.is_some() && Some(&**source) == *broadcast_source {
+								if broadcast_htlc.transaction_output_index.is_some() &&
+									(Some(&**source) == *broadcast_source ||
+									 (broadcast_source.is_none() &&
+									  broadcast_htlc.payment_hash == htlc.payment_hash &&
+									  broadcast_htlc.amount_msat == htlc.amount_msat)) {
 									matched_htlc = true;
 									break;
 								}
@@ -2102,8 +2110,16 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 				}
 				self.counterparty_commitment_txn_on_chain.insert(commitment_txid, commitment_number);
 
-				fail_unbroadcast_htlcs!(self, "revoked counterparty", commitment_txid, height,
-					[].iter().map(|a| *a), logger);
+				if let Some(per_commitment_data) = per_commitment_option {
+					fail_unbroadcast_htlcs!(self, "revoked_counterparty", commitment_txid, height,
+						per_commitment_data.iter().map(|(htlc, htlc_source)|
+							(htlc, htlc_source.as_ref().map(|htlc_source| htlc_source.as_ref()))
+						), logger);
+				} else {
+					debug_assert!(false, "We should have per-commitment option for any recognized old commitment txn");
+					fail_unbroadcast_htlcs!(self, "revoked counterparty", commitment_txid, height,
+						[].iter().map(|reference| *reference), logger);
+				}
 			}
 		} else if let Some(per_commitment_data) = per_commitment_option {
 			// While this isn't useful yet, there is a potential race where if a counterparty

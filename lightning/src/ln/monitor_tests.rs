@@ -95,6 +95,55 @@ fn test_spendable_output<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, spendable_t
 }
 
 #[test]
+fn revoked_output_htlc_resolution_timing() {
+	// Tests that HTLCs which were present in a broadcasted remote revoked commitment transaction
+	// are resolved only after a spend of the HTLC output reaches six confirmations. Preivously
+	// they would resolve after the revoked commitment transaction itself reaches six
+	// confirmations.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 500_000_000, InitFeatures::known(), InitFeatures::known());
+
+	let payment_hash_1 = route_payment(&nodes[1], &[&nodes[0]], 1_000_000).1;
+
+	// Get a commitment transaction which contains the HTLC we care about, but which we'll revoke
+	// before forwarding.
+	let revoked_local_txn = get_local_commitment_txn!(nodes[0], chan.2);
+	assert_eq!(revoked_local_txn.len(), 1);
+
+	// Route a dust payment to revoke the above commitment transaction
+	route_payment(&nodes[0], &[&nodes[1]], 1_000);
+
+	// Confirm the revoked commitment transaction, closing the channel.
+	mine_transaction(&nodes[1], &revoked_local_txn[0]);
+	check_added_monitors!(nodes[1], 1);
+	check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed);
+	check_closed_broadcast!(nodes[1], true);
+
+	let bs_spend_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
+	assert_eq!(bs_spend_txn.len(), 2);
+	check_spends!(bs_spend_txn[0], revoked_local_txn[0]);
+	check_spends!(bs_spend_txn[1], chan.3);
+
+	// After the commitment transaction confirms, we should still wait on the HTLC spend
+	// transaction to confirm before resolving the HTLC.
+	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+	assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
+
+	// Spend the HTLC output, generating a HTLC failure event after ANTI_REORG_DELAY confirmations.
+	mine_transaction(&nodes[1], &bs_spend_txn[0]);
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+	assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
+
+	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
+	expect_payment_failed!(nodes[1], payment_hash_1, true);
+}
+
+#[test]
 fn chanmon_claim_value_coop_close() {
 	// Tests `get_claimable_balances` returns the correct values across a simple cooperative claim.
 	// Specifically, this tests that the channel non-HTLC balances show up in
