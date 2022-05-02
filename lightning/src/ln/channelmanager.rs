@@ -159,20 +159,26 @@ pub(crate) struct HTLCPreviousHopData {
 }
 
 enum OnionPayload {
-	/// Contains a total_msat (which may differ from value if this is a Multi-Path Payment) and a
-	/// payment_secret which prevents path-probing attacks and can associate different HTLCs which
-	/// are part of the same payment.
-	Invoice(msgs::FinalOnionHopData),
+	/// Indicates this incoming onion payload is for the purpose of paying an invoice.
+	Invoice {
+		/// This is only here for backwards-compatibility in serialization, in the future it can be
+		/// removed, breaking clients running 0.0.106 and earlier.
+		_legacy_hop_data: msgs::FinalOnionHopData,
+	},
 	/// Contains the payer-provided preimage.
 	Spontaneous(PaymentPreimage),
 }
 
+/// HTLCs that are to us and can be failed/claimed by the user
 struct ClaimableHTLC {
 	prev_hop: HTLCPreviousHopData,
 	cltv_expiry: u32,
+	/// The amount (in msats) of this MPP part
 	value: u64,
 	onion_payload: OnionPayload,
 	timer_ticks: u8,
+	/// The sum total of all MPP parts
+	total_msat: u64,
 }
 
 /// A payment identifier used to uniquely identify a payment to LDK.
@@ -3096,11 +3102,13 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 							HTLCForwardInfo::AddHTLC { prev_short_channel_id, prev_htlc_id, forward_info: PendingHTLCInfo {
 									routing, incoming_shared_secret, payment_hash, amt_to_forward, .. },
 									prev_funding_outpoint } => {
-								let (cltv_expiry, onion_payload, phantom_shared_secret) = match routing {
-									PendingHTLCRouting::Receive { payment_data, incoming_cltv_expiry, phantom_shared_secret } =>
-										(incoming_cltv_expiry, OnionPayload::Invoice(payment_data), phantom_shared_secret),
+								let (cltv_expiry, onion_payload, payment_data, phantom_shared_secret) = match routing {
+									PendingHTLCRouting::Receive { payment_data, incoming_cltv_expiry, phantom_shared_secret } => {
+										let _legacy_hop_data = payment_data.clone();
+										(incoming_cltv_expiry, OnionPayload::Invoice { _legacy_hop_data }, Some(payment_data), phantom_shared_secret)
+									},
 									PendingHTLCRouting::ReceiveKeysend { payment_preimage, incoming_cltv_expiry } =>
-										(incoming_cltv_expiry, OnionPayload::Spontaneous(payment_preimage), None),
+										(incoming_cltv_expiry, OnionPayload::Spontaneous(payment_preimage), None, None),
 									_ => {
 										panic!("short_channel_id == 0 should imply any pending_forward entries are of type Receive");
 									}
@@ -3115,6 +3123,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 									},
 									value: amt_to_forward,
 									timer_ticks: 0,
+									total_msat: if let Some(data) = &payment_data { data.total_msat } else { amt_to_forward },
 									cltv_expiry,
 									onion_payload,
 								};
@@ -3138,7 +3147,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 								}
 
 								macro_rules! check_total_value {
-									($payment_data_total_msat: expr, $payment_secret: expr, $payment_preimage: expr) => {{
+									($payment_data: expr, $payment_preimage: expr) => {{
 										let mut payment_received_generated = false;
 										let htlcs = channel_state.claimable_htlcs.entry(payment_hash)
 											.or_insert(Vec::new());
@@ -3153,10 +3162,10 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 										for htlc in htlcs.iter() {
 											total_value += htlc.value;
 											match &htlc.onion_payload {
-												OnionPayload::Invoice(htlc_payment_data) => {
-													if htlc_payment_data.total_msat != $payment_data_total_msat {
+												OnionPayload::Invoice { .. } => {
+													if htlc.total_msat != $payment_data.total_msat {
 														log_trace!(self.logger, "Failing HTLCs with payment_hash {} as the HTLCs had inconsistent total values (eg {} and {})",
-															log_bytes!(payment_hash.0), $payment_data_total_msat, htlc_payment_data.total_msat);
+															log_bytes!(payment_hash.0), $payment_data.total_msat, htlc.total_msat);
 														total_value = msgs::MAX_VALUE_MSAT;
 													}
 													if total_value >= msgs::MAX_VALUE_MSAT { break; }
@@ -3164,17 +3173,17 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 												_ => unreachable!(),
 											}
 										}
-										if total_value >= msgs::MAX_VALUE_MSAT || total_value > $payment_data_total_msat {
+										if total_value >= msgs::MAX_VALUE_MSAT || total_value > $payment_data.total_msat {
 											log_trace!(self.logger, "Failing HTLCs with payment_hash {} as the total value {} ran over expected value {} (or HTLCs were inconsistent)",
-												log_bytes!(payment_hash.0), total_value, $payment_data_total_msat);
+												log_bytes!(payment_hash.0), total_value, $payment_data.total_msat);
 											fail_htlc!(claimable_htlc);
-										} else if total_value == $payment_data_total_msat {
+										} else if total_value == $payment_data.total_msat {
 											htlcs.push(claimable_htlc);
 											new_events.push(events::Event::PaymentReceived {
 												payment_hash,
 												purpose: events::PaymentPurpose::InvoicePayment {
 													payment_preimage: $payment_preimage,
-													payment_secret: $payment_secret,
+													payment_secret: $payment_data.payment_secret,
 												},
 												amt: total_value,
 											});
@@ -3199,17 +3208,16 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 								match payment_secrets.entry(payment_hash) {
 									hash_map::Entry::Vacant(_) => {
 										match claimable_htlc.onion_payload {
-											OnionPayload::Invoice(ref payment_data) => {
-												let payment_preimage = match inbound_payment::verify(payment_hash, payment_data.clone(), self.highest_seen_timestamp.load(Ordering::Acquire) as u64, &self.inbound_payment_key, &self.logger) {
+											OnionPayload::Invoice { .. } => {
+												let payment_data = payment_data.unwrap();
+												let payment_preimage = match inbound_payment::verify(payment_hash, &payment_data, self.highest_seen_timestamp.load(Ordering::Acquire) as u64, &self.inbound_payment_key, &self.logger) {
 													Ok(payment_preimage) => payment_preimage,
 													Err(()) => {
 														fail_htlc!(claimable_htlc);
 														continue
 													}
 												};
-												let payment_data_total_msat = payment_data.total_msat;
-												let payment_secret = payment_data.payment_secret.clone();
-												check_total_value!(payment_data_total_msat, payment_secret, payment_preimage);
+												check_total_value!(payment_data, payment_preimage);
 											},
 											OnionPayload::Spontaneous(preimage) => {
 												match channel_state.claimable_htlcs.entry(payment_hash) {
@@ -3230,14 +3238,12 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 										}
 									},
 									hash_map::Entry::Occupied(inbound_payment) => {
-										let payment_data =
-											if let OnionPayload::Invoice(ref data) = claimable_htlc.onion_payload {
-												data.clone()
-											} else {
-												log_trace!(self.logger, "Failing new keysend HTLC with payment_hash {} because we already have an inbound payment with the same payment hash", log_bytes!(payment_hash.0));
-												fail_htlc!(claimable_htlc);
-												continue
-											};
+										if payment_data.is_none() {
+											log_trace!(self.logger, "Failing new keysend HTLC with payment_hash {} because we already have an inbound payment with the same payment hash", log_bytes!(payment_hash.0));
+											fail_htlc!(claimable_htlc);
+											continue
+										};
+										let payment_data = payment_data.unwrap();
 										if inbound_payment.get().payment_secret != payment_data.payment_secret {
 											log_trace!(self.logger, "Failing new HTLC with payment_hash {} as it didn't match our expected payment secret.", log_bytes!(payment_hash.0));
 											fail_htlc!(claimable_htlc);
@@ -3246,7 +3252,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 												log_bytes!(payment_hash.0), payment_data.total_msat, inbound_payment.get().min_value_msat.unwrap());
 											fail_htlc!(claimable_htlc);
 										} else {
-											let payment_received_generated = check_total_value!(payment_data.total_msat, payment_data.payment_secret, inbound_payment.get().payment_preimage);
+											let payment_received_generated = check_total_value!(payment_data, inbound_payment.get().payment_preimage);
 											if payment_received_generated {
 												inbound_payment.remove_entry();
 											}
@@ -3465,10 +3471,10 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 						debug_assert!(false);
 						return false;
 					}
-					if let OnionPayload::Invoice(ref final_hop_data) = htlcs[0].onion_payload {
+					if let OnionPayload::Invoice { .. } = htlcs[0].onion_payload {
 						// Check if we've received all the parts we need for an MPP (the value of the parts adds to total_msat).
 						// In this case we're not going to handle any timeouts of the parts here.
-						if final_hop_data.total_msat == htlcs.iter().fold(0, |total, htlc| total + htlc.value) {
+						if htlcs[0].total_msat == htlcs.iter().fold(0, |total, htlc| total + htlc.value) {
 							return true;
 						} else if htlcs.into_iter().any(|htlc| {
 							htlc.timer_ticks += 1;
@@ -6069,20 +6075,21 @@ impl_writeable_tlv_based!(HTLCPreviousHopData, {
 impl Writeable for ClaimableHTLC {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		let payment_data = match &self.onion_payload {
-			OnionPayload::Invoice(data) => Some(data.clone()),
+			OnionPayload::Invoice { _legacy_hop_data } => Some(_legacy_hop_data),
 			_ => None,
 		};
 		let keysend_preimage = match self.onion_payload {
-			OnionPayload::Invoice(_) => None,
+			OnionPayload::Invoice { .. } => None,
 			OnionPayload::Spontaneous(preimage) => Some(preimage.clone()),
 		};
-		write_tlv_fields!
-		(writer,
-		 {
-		   (0, self.prev_hop, required), (2, self.value, required),
-		   (4, payment_data, option), (6, self.cltv_expiry, required),
-			 (8, keysend_preimage, option),
-		 });
+		write_tlv_fields!(writer, {
+			(0, self.prev_hop, required),
+			(1, self.total_msat, required),
+			(2, self.value, required),
+			(4, payment_data, option),
+			(6, self.cltv_expiry, required),
+			(8, keysend_preimage, option),
+		});
 		Ok(())
 	}
 }
@@ -6093,18 +6100,23 @@ impl Readable for ClaimableHTLC {
 		let mut value = 0;
 		let mut payment_data: Option<msgs::FinalOnionHopData> = None;
 		let mut cltv_expiry = 0;
+		let mut total_msat = None;
 		let mut keysend_preimage: Option<PaymentPreimage> = None;
-		read_tlv_fields!
-		(reader,
-		 {
-		   (0, prev_hop, required), (2, value, required),
-		   (4, payment_data, option), (6, cltv_expiry, required),
-			 (8, keysend_preimage, option)
-		 });
+		read_tlv_fields!(reader, {
+			(0, prev_hop, required),
+			(1, total_msat, option),
+			(2, value, required),
+			(4, payment_data, option),
+			(6, cltv_expiry, required),
+			(8, keysend_preimage, option)
+		});
 		let onion_payload = match keysend_preimage {
 			Some(p) => {
 				if payment_data.is_some() {
 					return Err(DecodeError::InvalidValue)
+				}
+				if total_msat.is_none() {
+					total_msat = Some(value);
 				}
 				OnionPayload::Spontaneous(p)
 			},
@@ -6112,13 +6124,17 @@ impl Readable for ClaimableHTLC {
 				if payment_data.is_none() {
 					return Err(DecodeError::InvalidValue)
 				}
-				OnionPayload::Invoice(payment_data.unwrap())
+				if total_msat.is_none() {
+					total_msat = Some(payment_data.as_ref().unwrap().total_msat);
+				}
+				OnionPayload::Invoice { _legacy_hop_data: payment_data.unwrap() }
 			},
 		};
 		Ok(Self {
 			prev_hop: prev_hop.0.unwrap(),
 			timer_ticks: 0,
 			value,
+			total_msat: total_msat.unwrap(),
 			onion_payload,
 			cltv_expiry,
 		})
@@ -7319,7 +7335,7 @@ mod tests {
 		// payment verification fails as expected.
 		let mut bad_payment_hash = payment_hash.clone();
 		bad_payment_hash.0[0] += 1;
-		match inbound_payment::verify(bad_payment_hash, payment_data.clone(), nodes[0].node.highest_seen_timestamp.load(Ordering::Acquire) as u64, &nodes[0].node.inbound_payment_key, &nodes[0].logger) {
+		match inbound_payment::verify(bad_payment_hash, &payment_data, nodes[0].node.highest_seen_timestamp.load(Ordering::Acquire) as u64, &nodes[0].node.inbound_payment_key, &nodes[0].logger) {
 			Ok(_) => panic!("Unexpected ok"),
 			Err(()) => {
 				nodes[0].logger.assert_log_contains("lightning::ln::inbound_payment".to_string(), "Failing HTLC with user-generated payment_hash".to_string(), 1);
@@ -7327,7 +7343,7 @@ mod tests {
 		}
 
 		// Check that using the original payment hash succeeds.
-		assert!(inbound_payment::verify(payment_hash, payment_data, nodes[0].node.highest_seen_timestamp.load(Ordering::Acquire) as u64, &nodes[0].node.inbound_payment_key, &nodes[0].logger).is_ok());
+		assert!(inbound_payment::verify(payment_hash, &payment_data, nodes[0].node.highest_seen_timestamp.load(Ordering::Acquire) as u64, &nodes[0].node.inbound_payment_key, &nodes[0].logger).is_ok());
 	}
 }
 
