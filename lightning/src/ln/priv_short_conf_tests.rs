@@ -22,7 +22,7 @@ use ln::msgs;
 use ln::msgs::{ChannelMessageHandler, RoutingMessageHandler, OptionalField, ChannelUpdate};
 use ln::wire::Encode;
 use util::enforcing_trait_impls::EnforcingSigner;
-use util::events::{Event, MessageSendEvent, MessageSendEventsProvider};
+use util::events::{ClosureReason, Event, MessageSendEvent, MessageSendEventsProvider};
 use util::config::UserConfig;
 use util::ser::{Writeable, ReadableArgs};
 use util::test_utils;
@@ -872,4 +872,53 @@ fn test_public_0conf_channel() {
 		},
 		_ => panic!("Unexpected event"),
 	};
+}
+
+#[test]
+fn test_0conf_channel_reorg() {
+	// If we accept a 0conf channel, which is then confirmed, but then changes SCID in a reorg, we
+	// have to make sure we handle this correctly (or, currently, just force-close the channel).
+
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let mut chan_config = test_default_channel_config();
+	chan_config.manually_accept_inbound_channels = true;
+
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(chan_config)]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	// This is the default but we force it on anyway
+	chan_config.channel_options.announced_channel = true;
+	let tx = open_zero_conf_channel(&nodes[0], &nodes[1], Some(chan_config));
+
+	// We can use the channel immediately, but we can't announce it until we get 6+ confirmations
+	send_payment(&nodes[0], &[&nodes[1]], 100_000);
+
+	mine_transaction(&nodes[0], &tx);
+	mine_transaction(&nodes[1], &tx);
+
+	// Send a payment using the channel's real SCID, which will be public in a few blocks once we
+	// can generate a channel_announcement.
+	let real_scid = nodes[0].node.list_usable_channels()[0].short_channel_id.unwrap();
+	assert_eq!(nodes[1].node.list_usable_channels()[0].short_channel_id.unwrap(), real_scid);
+
+	let (mut route, payment_hash, payment_preimage, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], 10_000);
+	assert_eq!(route.paths[0][0].short_channel_id, real_scid);
+	send_along_route_with_secret(&nodes[0], route, &[&[&nodes[1]]], 10_000, payment_hash, payment_secret);
+	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage);
+
+	disconnect_blocks(&nodes[0], 1);
+	disconnect_blocks(&nodes[1], 1);
+
+	// At this point the channel no longer has an SCID again. In the future we should likely
+	// support simply un-setting the SCID and waiting until the channel gets re-confirmed, but for
+	// now we force-close the channel here.
+	check_closed_event!(&nodes[0], 1, ClosureReason::ProcessingError {
+		err: "Funding transaction was un-confirmed. Locked at 0 confs, now have 0 confs.".to_owned()
+	});
+	check_closed_broadcast!(nodes[0], true);
+	check_closed_event!(&nodes[1], 1, ClosureReason::ProcessingError {
+		err: "Funding transaction was un-confirmed. Locked at 0 confs, now have 0 confs.".to_owned()
+	});
+	check_closed_broadcast!(nodes[1], true);
 }
