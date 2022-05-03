@@ -66,7 +66,7 @@
 //! }
 //! ```
 
-#![deny(broken_intra_doc_links)]
+#![deny(rustdoc::broken_intra_doc_links)]
 #![deny(missing_docs)]
 
 #![cfg_attr(docsrs, feature(doc_auto_cfg))]

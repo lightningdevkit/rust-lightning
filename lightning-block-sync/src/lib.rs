@@ -13,7 +13,7 @@
 //! Both features support either blocking I/O using `std::net::TcpStream` or, with feature `tokio`,
 //! non-blocking I/O using `tokio::net::TcpStream` from inside a Tokio runtime.
 
-#![deny(broken_intra_doc_links)]
+#![deny(rustdoc::broken_intra_doc_links)]
 #![deny(missing_docs)]
 #![deny(unsafe_code)]
 
