@@ -278,8 +278,6 @@ impl BackgroundProcessor {
 						if let Err(e) = persister.persist_graph(handler.network_graph()) {
 							log_error!(logger, "Error: Failed to persist network graph, check your disk and permissions {}", e)
 						}
-						last_prune_call = Instant::now();
-						have_pruned = true;
 					}
 					if let Some(ref scorer) = scorer {
 						log_trace!(logger, "Persisting scorer");
@@ -287,6 +285,9 @@ impl BackgroundProcessor {
 							log_error!(logger, "Error: Failed to persist scorer, check your disk and permissions {}", e)
 						}
 					}
+
+					last_prune_call = Instant::now();
+					have_pruned = true;
 				}
 			}
 
