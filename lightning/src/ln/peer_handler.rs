@@ -339,6 +339,7 @@ struct Peer {
 	msgs_sent_since_pong: usize,
 	awaiting_pong_timer_tick_intervals: i8,
 	received_message_since_timer_tick: bool,
+	sent_gossip_timestamp_filter: bool,
 }
 
 impl Peer {
@@ -348,7 +349,11 @@ impl Peer {
 	/// announcements/updates for the given channel_id then we will send it when we get to that
 	/// point and we shouldn't send it yet to avoid sending duplicate updates. If we've already
 	/// sent the old versions, we should send the update, and so return true here.
-	fn should_forward_channel_announcement(&self, channel_id: u64)->bool{
+	fn should_forward_channel_announcement(&self, channel_id: u64) -> bool {
+		if self.their_features.as_ref().unwrap().supports_gossip_queries() &&
+			!self.sent_gossip_timestamp_filter {
+				return false;
+			}
 		match self.sync_status {
 			InitSyncTracker::NoSyncRequested => true,
 			InitSyncTracker::ChannelsSyncing(i) => i < channel_id,
@@ -358,6 +363,10 @@ impl Peer {
 
 	/// Similar to the above, but for node announcements indexed by node_id.
 	fn should_forward_node_announcement(&self, node_id: PublicKey) -> bool {
+		if self.their_features.as_ref().unwrap().supports_gossip_queries() &&
+			!self.sent_gossip_timestamp_filter {
+				return false;
+			}
 		match self.sync_status {
 			InitSyncTracker::NoSyncRequested => true,
 			InitSyncTracker::ChannelsSyncing(_) => false,
@@ -619,6 +628,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 			msgs_sent_since_pong: 0,
 			awaiting_pong_timer_tick_intervals: 0,
 			received_message_since_timer_tick: false,
+			sent_gossip_timestamp_filter: false,
 		}).is_some() {
 			panic!("PeerManager driver duplicated descriptors!");
 		};
@@ -665,6 +675,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 			msgs_sent_since_pong: 0,
 			awaiting_pong_timer_tick_intervals: 0,
 			received_message_since_timer_tick: false,
+			sent_gossip_timestamp_filter: false,
 		}).is_some() {
 			panic!("PeerManager driver duplicated descriptors!");
 		};
@@ -1058,7 +1069,8 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 
 				log_info!(self.logger, "Received peer Init message from {}: {}", log_pubkey!(peer.their_node_id.unwrap()), msg.features);
 
-				if msg.features.initial_routing_sync() {
+				// For peers not supporting gossip queries start sync now, otherwise wait until we receive a filter.
+				if msg.features.initial_routing_sync() && !msg.features.supports_gossip_queries() {
 					peer.sync_status = InitSyncTracker::ChannelsSyncing(0);
 				}
 				if !msg.features.supports_static_remote_key() {
@@ -1205,7 +1217,13 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 				self.message_handler.route_handler.handle_reply_channel_range(&peer.their_node_id.unwrap(), msg)?;
 			},
 			wire::Message::GossipTimestampFilter(_msg) => {
-				// TODO: handle message
+				// When supporting gossip messages, start inital gossip sync only after we receive
+				// a GossipTimestampFilter
+				if peer.their_features.as_ref().unwrap().supports_gossip_queries() &&
+					!peer.sent_gossip_timestamp_filter {
+					peer.sent_gossip_timestamp_filter = true;
+					peer.sync_status = InitSyncTracker::ChannelsSyncing(0);
+				}
 			},
 
 			// Unknown messages:
@@ -1799,6 +1817,8 @@ mod tests {
 		assert_eq!(peer_b.read_event(&mut fd_b, &fd_a.outbound_data.lock().unwrap().split_off(0)).unwrap(), false);
 		peer_b.process_events();
 		assert_eq!(peer_a.read_event(&mut fd_a, &fd_b.outbound_data.lock().unwrap().split_off(0)).unwrap(), false);
+		peer_a.process_events();
+		assert_eq!(peer_b.read_event(&mut fd_b, &fd_a.outbound_data.lock().unwrap().split_off(0)).unwrap(), false);
 		(fd_a.clone(), fd_b.clone())
 	}
 
@@ -1862,21 +1882,21 @@ mod tests {
 		let (mut fd_a, mut fd_b) = establish_connection(&peers[0], &peers[1]);
 
 		// Make each peer to read the messages that the other peer just wrote to them. Note that
-		// due to the max-messagse-before-ping limits this may take a few iterations to complete.
+		// due to the max-message-before-ping limits this may take a few iterations to complete.
 		for _ in 0..150/super::BUFFER_DRAIN_MSGS_PER_TICK + 1 {
-			peers[0].process_events();
-			let b_read_data = fd_a.outbound_data.lock().unwrap().split_off(0);
-			assert!(!b_read_data.is_empty());
-
-			peers[1].read_event(&mut fd_b, &b_read_data).unwrap();
 			peers[1].process_events();
-
 			let a_read_data = fd_b.outbound_data.lock().unwrap().split_off(0);
 			assert!(!a_read_data.is_empty());
-			peers[0].read_event(&mut fd_a, &a_read_data).unwrap();
 
-			peers[1].process_events();
-			assert_eq!(fd_b.outbound_data.lock().unwrap().len(), 0, "Until B receives data, it shouldn't send more messages");
+			peers[0].read_event(&mut fd_a, &a_read_data).unwrap();
+			peers[0].process_events();
+
+			let b_read_data = fd_a.outbound_data.lock().unwrap().split_off(0);
+			assert!(!b_read_data.is_empty());
+			peers[1].read_event(&mut fd_b, &b_read_data).unwrap();
+
+			peers[0].process_events();
+			assert_eq!(fd_a.outbound_data.lock().unwrap().len(), 0, "Until A receives data, it shouldn't send more messages");
 		}
 
 		// Check that each peer has received the expected number of channel updates and channel
