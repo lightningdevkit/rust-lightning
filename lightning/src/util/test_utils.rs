@@ -49,6 +49,9 @@ use core::{cmp, mem};
 use bitcoin::bech32::u5;
 use chain::keysinterface::{InMemorySigner, Recipient, KeyMaterial};
 
+#[cfg(feature = "std")]
+use std::time::{SystemTime, UNIX_EPOCH};
+
 pub struct TestVecWriter(pub Vec<u8>);
 impl Writer for TestVecWriter {
 	fn write_all(&mut self, buf: &[u8]) -> Result<(), io::Error> {
@@ -341,6 +344,7 @@ fn get_dummy_channel_update(short_chan_id: u64) -> msgs::ChannelUpdate {
 pub struct TestRoutingMessageHandler {
 	pub chan_upds_recvd: AtomicUsize,
 	pub chan_anns_recvd: AtomicUsize,
+	pub pending_events: Mutex<Vec<events::MessageSendEvent>>,
 	pub request_full_sync: AtomicBool,
 }
 
@@ -349,6 +353,7 @@ impl TestRoutingMessageHandler {
 		TestRoutingMessageHandler {
 			chan_upds_recvd: AtomicUsize::new(0),
 			chan_anns_recvd: AtomicUsize::new(0),
+			pending_events: Mutex::new(vec![]),
 			request_full_sync: AtomicBool::new(false),
 		}
 	}
@@ -384,7 +389,35 @@ impl msgs::RoutingMessageHandler for TestRoutingMessageHandler {
 		Vec::new()
 	}
 
-	fn peer_connected(&self, _their_node_id: &PublicKey, _init_msg: &msgs::Init) {}
+	fn peer_connected(&self, their_node_id: &PublicKey, init_msg: &msgs::Init) {
+		if !init_msg.features.supports_gossip_queries() {
+			return ();
+		}
+
+		let should_request_full_sync = self.request_full_sync.load(Ordering::Acquire);
+
+		#[allow(unused_mut, unused_assignments)]
+		let mut gossip_start_time = 0;
+		#[cfg(feature = "std")]
+		{
+			gossip_start_time = SystemTime::now().duration_since(UNIX_EPOCH).expect("Time must be > 1970").as_secs();
+			if should_request_full_sync {
+				gossip_start_time -= 60 * 60 * 24 * 7 * 2; // 2 weeks ago
+			} else {
+				gossip_start_time -= 60 * 60; // an hour ago
+			}
+		}
+
+		let mut pending_events = self.pending_events.lock().unwrap();
+		pending_events.push(events::MessageSendEvent::SendGossipTimestampFilter {
+			node_id: their_node_id.clone(),
+			msg: msgs::GossipTimestampFilter {
+				chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+				first_timestamp: gossip_start_time as u32,
+				timestamp_range: u32::max_value(),
+			},
+		});
+	}
 
 	fn handle_reply_channel_range(&self, _their_node_id: &PublicKey, _msg: msgs::ReplyChannelRange) -> Result<(), msgs::LightningError> {
 		Ok(())
@@ -405,7 +438,10 @@ impl msgs::RoutingMessageHandler for TestRoutingMessageHandler {
 
 impl events::MessageSendEventsProvider for TestRoutingMessageHandler {
 	fn get_and_clear_pending_msg_events(&self) -> Vec<events::MessageSendEvent> {
-		vec![]
+		let mut ret = Vec::new();
+		let mut pending_events = self.pending_events.lock().unwrap();
+		core::mem::swap(&mut ret, &mut pending_events);
+		ret
 	}
 }
 
