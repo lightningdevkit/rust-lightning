@@ -4739,10 +4739,14 @@ impl<Signer: Sign> Channel<Signer> {
 			}
 
 			// If we've sent funding_locked (or have both sent and received funding_locked), and
-			// the funding transaction's confirmation count has dipped below minimum_depth / 2,
+			// the funding transaction has become unconfirmed,
 			// close the channel and hope we can get the latest state on chain (because presumably
 			// the funding transaction is at least still in the mempool of most nodes).
-			if funding_tx_confirmations < self.minimum_depth.unwrap() as i64 / 2 {
+			//
+			// Note that ideally we wouldn't force-close if we see *any* reorg on a 1-conf channel,
+			// but not doing so may lead to the `ChannelManager::short_to_id` map being
+			// inconsistent, so we currently have to.
+			if funding_tx_confirmations == 0 && self.funding_tx_confirmed_in.is_some() {
 				let err_reason = format!("Funding transaction was un-confirmed. Locked at {} confs, now have {} confs.",
 					self.minimum_depth.unwrap(), funding_tx_confirmations);
 				return Err(ClosureReason::ProcessingError { err: err_reason });
