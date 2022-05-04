@@ -418,7 +418,7 @@ pub(super) struct ChannelHolder<Signer: Sign> {
 	/// Note that while this is held in the same mutex as the channels themselves, no consistency
 	/// guarantees are made about the channels given here actually existing anymore by the time you
 	/// go to read them!
-	claimable_htlcs: HashMap<PaymentHash, Vec<ClaimableHTLC>>,
+	claimable_htlcs: HashMap<PaymentHash, (events::PaymentPurpose, Vec<ClaimableHTLC>)>,
 	/// Messages to send to peers - pushed to in the same lock that they are generated in (except
 	/// for broadcast messages, where ordering isn't as strict).
 	pub(super) pending_msg_events: Vec<MessageSendEvent>,
@@ -3143,8 +3143,14 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 								macro_rules! check_total_value {
 									($payment_data: expr, $payment_preimage: expr) => {{
 										let mut payment_received_generated = false;
-										let htlcs = channel_state.claimable_htlcs.entry(payment_hash)
-											.or_insert(Vec::new());
+										let purpose = || {
+											events::PaymentPurpose::InvoicePayment {
+												payment_preimage: $payment_preimage,
+												payment_secret: $payment_data.payment_secret,
+											}
+										};
+										let (_, htlcs) = channel_state.claimable_htlcs.entry(payment_hash)
+											.or_insert_with(|| (purpose(), Vec::new()));
 										if htlcs.len() == 1 {
 											if let OnionPayload::Spontaneous(_) = htlcs[0].onion_payload {
 												log_trace!(self.logger, "Failing new HTLC with payment_hash {} as we already had an existing keysend HTLC with the same payment hash", log_bytes!(payment_hash.0));
@@ -3175,10 +3181,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 											htlcs.push(claimable_htlc);
 											new_events.push(events::Event::PaymentReceived {
 												payment_hash,
-												purpose: events::PaymentPurpose::InvoicePayment {
-													payment_preimage: $payment_preimage,
-													payment_secret: $payment_data.payment_secret,
-												},
+												purpose: purpose(),
 												amt: total_value,
 											});
 											payment_received_generated = true;
@@ -3216,11 +3219,12 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 											OnionPayload::Spontaneous(preimage) => {
 												match channel_state.claimable_htlcs.entry(payment_hash) {
 													hash_map::Entry::Vacant(e) => {
-														e.insert(vec![claimable_htlc]);
+														let purpose = events::PaymentPurpose::SpontaneousPayment(preimage);
+														e.insert((purpose.clone(), vec![claimable_htlc]));
 														new_events.push(events::Event::PaymentReceived {
 															payment_hash,
 															amt: amt_to_forward,
-															purpose: events::PaymentPurpose::SpontaneousPayment(preimage),
+															purpose,
 														});
 													},
 													hash_map::Entry::Occupied(_) => {
@@ -3459,7 +3463,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					true
 				});
 
-				channel_state.claimable_htlcs.retain(|payment_hash, htlcs| {
+				channel_state.claimable_htlcs.retain(|payment_hash, (_, htlcs)| {
 					if htlcs.is_empty() {
 						// This should be unreachable
 						debug_assert!(false);
@@ -3503,7 +3507,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 
 		let mut channel_state = Some(self.channel_state.lock().unwrap());
 		let removed_source = channel_state.as_mut().unwrap().claimable_htlcs.remove(payment_hash);
-		if let Some(mut sources) = removed_source {
+		if let Some((_, mut sources)) = removed_source {
 			for htlc in sources.drain(..) {
 				if channel_state.is_none() { channel_state = Some(self.channel_state.lock().unwrap()); }
 				let mut htlc_msat_height_data = byte_utils::be64_to_array(htlc.value).to_vec();
@@ -3803,7 +3807,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 
 		let mut channel_state = Some(self.channel_state.lock().unwrap());
 		let removed_source = channel_state.as_mut().unwrap().claimable_htlcs.remove(&payment_hash);
-		if let Some(mut sources) = removed_source {
+		if let Some((_, mut sources)) = removed_source {
 			assert!(!sources.is_empty());
 
 			// If we are claiming an MPP payment, we have to take special care to ensure that each
@@ -5540,7 +5544,7 @@ where
 			});
 
 			if let Some(height) = height_opt {
-				channel_state.claimable_htlcs.retain(|payment_hash, htlcs| {
+				channel_state.claimable_htlcs.retain(|payment_hash, (_, htlcs)| {
 					htlcs.retain(|htlc| {
 						// If height is approaching the number of blocks we think it takes us to get
 						// our commitment transaction confirmed before the HTLC expires, plus the
@@ -6283,13 +6287,15 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Writeable f
 			}
 		}
 
+		let mut htlc_purposes: Vec<&events::PaymentPurpose> = Vec::new();
 		(channel_state.claimable_htlcs.len() as u64).write(writer)?;
-		for (payment_hash, previous_hops) in channel_state.claimable_htlcs.iter() {
+		for (payment_hash, (purpose, previous_hops)) in channel_state.claimable_htlcs.iter() {
 			payment_hash.write(writer)?;
 			(previous_hops.len() as u64).write(writer)?;
 			for htlc in previous_hops.iter() {
 				htlc.write(writer)?;
 			}
+			htlc_purposes.push(purpose);
 		}
 
 		let per_peer_state = self.per_peer_state.write().unwrap();
@@ -6366,6 +6372,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Writeable f
 			(3, pending_outbound_payments, required),
 			(5, self.our_network_pubkey, required),
 			(7, self.fake_scid_rand_bytes, required),
+			(9, htlc_purposes, vec_type),
 		});
 
 		Ok(())
@@ -6584,15 +6591,15 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 		}
 
 		let claimable_htlcs_count: u64 = Readable::read(reader)?;
-		let mut claimable_htlcs = HashMap::with_capacity(cmp::min(claimable_htlcs_count as usize, 128));
+		let mut claimable_htlcs_list = Vec::with_capacity(cmp::min(claimable_htlcs_count as usize, 128));
 		for _ in 0..claimable_htlcs_count {
 			let payment_hash = Readable::read(reader)?;
 			let previous_hops_len: u64 = Readable::read(reader)?;
 			let mut previous_hops = Vec::with_capacity(cmp::min(previous_hops_len as usize, MAX_ALLOC_SIZE/mem::size_of::<ClaimableHTLC>()));
 			for _ in 0..previous_hops_len {
-				previous_hops.push(Readable::read(reader)?);
+				previous_hops.push(<ClaimableHTLC as Readable>::read(reader)?);
 			}
-			claimable_htlcs.insert(payment_hash, previous_hops);
+			claimable_htlcs_list.push((payment_hash, previous_hops));
 		}
 
 		let peer_count: u64 = Readable::read(reader)?;
@@ -6662,11 +6669,13 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 		let mut pending_outbound_payments = None;
 		let mut received_network_pubkey: Option<PublicKey> = None;
 		let mut fake_scid_rand_bytes: Option<[u8; 32]> = None;
+		let mut claimable_htlc_purposes = None;
 		read_tlv_fields!(reader, {
 			(1, pending_outbound_payments_no_retry, option),
 			(3, pending_outbound_payments, option),
 			(5, received_network_pubkey, option),
 			(7, fake_scid_rand_bytes, option),
+			(9, claimable_htlc_purposes, vec_type),
 		});
 		if fake_scid_rand_bytes.is_none() {
 			fake_scid_rand_bytes = Some(args.keys_manager.get_secure_random_bytes());
@@ -6727,6 +6736,49 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 			}
 		}
 
+		let inbound_pmt_key_material = args.keys_manager.get_inbound_payment_key_material();
+		let expanded_inbound_key = inbound_payment::ExpandedKey::new(&inbound_pmt_key_material);
+
+		let mut claimable_htlcs = HashMap::with_capacity(claimable_htlcs_list.len());
+		if let Some(mut purposes) = claimable_htlc_purposes {
+			if purposes.len() != claimable_htlcs_list.len() {
+				return Err(DecodeError::InvalidValue);
+			}
+			for (purpose, (payment_hash, previous_hops)) in purposes.drain(..).zip(claimable_htlcs_list.drain(..)) {
+				claimable_htlcs.insert(payment_hash, (purpose, previous_hops));
+			}
+		} else {
+			// LDK versions prior to 0.0.107 did not write a `pending_htlc_purposes`, but do
+			// include a `_legacy_hop_data` in the `OnionPayload`.
+			for (payment_hash, previous_hops) in claimable_htlcs_list.drain(..) {
+				if previous_hops.is_empty() {
+					return Err(DecodeError::InvalidValue);
+				}
+				let purpose = match &previous_hops[0].onion_payload {
+					OnionPayload::Invoice { _legacy_hop_data } => {
+						if let Some(hop_data) = _legacy_hop_data {
+							events::PaymentPurpose::InvoicePayment {
+								payment_preimage: match pending_inbound_payments.get(&payment_hash) {
+									Some(inbound_payment) => inbound_payment.payment_preimage,
+									None => match inbound_payment::verify(payment_hash, &hop_data, 0, &expanded_inbound_key, &args.logger) {
+										Ok(payment_preimage) => payment_preimage,
+										Err(()) => {
+											log_error!(args.logger, "Failed to read claimable payment data for HTLC with payment hash {} - was not a pending inbound payment and didn't match our payment key", log_bytes!(payment_hash.0));
+											return Err(DecodeError::InvalidValue);
+										}
+									}
+								},
+								payment_secret: hop_data.payment_secret,
+							}
+						} else { return Err(DecodeError::InvalidValue); }
+					},
+					OnionPayload::Spontaneous(payment_preimage) =>
+						events::PaymentPurpose::SpontaneousPayment(*payment_preimage),
+				};
+				claimable_htlcs.insert(payment_hash, (purpose, previous_hops));
+			}
+		}
+
 		let mut secp_ctx = Secp256k1::new();
 		secp_ctx.seeded_randomize(&args.keys_manager.get_secure_random_bytes());
 
@@ -6772,8 +6824,6 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 			}
 		}
 
-		let inbound_pmt_key_material = args.keys_manager.get_inbound_payment_key_material();
-		let expanded_inbound_key = inbound_payment::ExpandedKey::new(&inbound_pmt_key_material);
 		let channel_manager = ChannelManager {
 			genesis_hash,
 			fee_estimator: args.fee_estimator,

@@ -66,6 +66,14 @@ pub enum PaymentPurpose {
 	SpontaneousPayment(PaymentPreimage),
 }
 
+impl_writeable_tlv_based_enum!(PaymentPurpose,
+	(0, InvoicePayment) => {
+		(0, payment_preimage, option),
+		(2, payment_secret, required),
+	};
+	(2, SpontaneousPayment)
+);
+
 #[derive(Clone, Debug, PartialEq)]
 /// The reason the channel was closed. See individual variants more details.
 pub enum ClosureReason {
