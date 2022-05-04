@@ -164,7 +164,7 @@ enum OnionPayload {
 	Invoice {
 		/// This is only here for backwards-compatibility in serialization, in the future it can be
 		/// removed, breaking clients running 0.0.106 and earlier.
-		_legacy_hop_data: msgs::FinalOnionHopData,
+		_legacy_hop_data: Option<msgs::FinalOnionHopData>,
 	},
 	/// Contains the payer-provided preimage.
 	Spontaneous(PaymentPreimage),
@@ -3098,7 +3098,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 									prev_funding_outpoint } => {
 								let (cltv_expiry, onion_payload, payment_data, phantom_shared_secret) = match routing {
 									PendingHTLCRouting::Receive { payment_data, incoming_cltv_expiry, phantom_shared_secret } => {
-										let _legacy_hop_data = payment_data.clone();
+										let _legacy_hop_data = Some(payment_data.clone());
 										(incoming_cltv_expiry, OnionPayload::Invoice { _legacy_hop_data }, Some(payment_data), phantom_shared_secret)
 									},
 									PendingHTLCRouting::ReceiveKeysend { payment_preimage, incoming_cltv_expiry } =>
@@ -6061,13 +6061,9 @@ impl_writeable_tlv_based!(HTLCPreviousHopData, {
 
 impl Writeable for ClaimableHTLC {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
-		let payment_data = match &self.onion_payload {
-			OnionPayload::Invoice { _legacy_hop_data } => Some(_legacy_hop_data),
-			_ => None,
-		};
-		let keysend_preimage = match self.onion_payload {
-			OnionPayload::Invoice { .. } => None,
-			OnionPayload::Spontaneous(preimage) => Some(preimage.clone()),
+		let (payment_data, keysend_preimage) = match &self.onion_payload {
+			OnionPayload::Invoice { _legacy_hop_data } => (_legacy_hop_data.as_ref(), None),
+			OnionPayload::Spontaneous(preimage) => (None, Some(preimage)),
 		};
 		write_tlv_fields!(writer, {
 			(0, self.prev_hop, required),
@@ -6108,13 +6104,13 @@ impl Readable for ClaimableHTLC {
 				OnionPayload::Spontaneous(p)
 			},
 			None => {
-				if payment_data.is_none() {
-					return Err(DecodeError::InvalidValue)
-				}
 				if total_msat.is_none() {
+					if payment_data.is_none() {
+						return Err(DecodeError::InvalidValue)
+					}
 					total_msat = Some(payment_data.as_ref().unwrap().total_msat);
 				}
-				OnionPayload::Invoice { _legacy_hop_data: payment_data.unwrap() }
+				OnionPayload::Invoice { _legacy_hop_data: payment_data }
 			},
 		};
 		Ok(Self {
