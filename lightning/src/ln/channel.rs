@@ -3737,6 +3737,15 @@ impl<Signer: Sign> Channel<Signer> {
 			}
 		}
 
+		// Before we change the state of the channel, we check if the peer is sending a very old
+		// commitment transaction number, if yes we send a warning message.
+		let our_commitment_transaction = INITIAL_COMMITMENT_NUMBER - self.cur_holder_commitment_transaction_number - 1;
+		if  msg.next_remote_commitment_number + 1 < our_commitment_transaction {
+			return Err(
+				ChannelError::Warn(format!("Peer attempted to reestablish channel with a very old local commitment transaction: {} (received) vs {} (expected)", msg.next_remote_commitment_number, our_commitment_transaction))
+			);
+		}
+
 		// Go ahead and unmark PeerDisconnected as various calls we may make check for it (and all
 		// remaining cases either succeed or ErrorMessage-fail).
 		self.channel_state &= !(ChannelState::PeerDisconnected as u32);
