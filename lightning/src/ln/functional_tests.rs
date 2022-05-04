@@ -7345,7 +7345,7 @@ fn test_data_loss_protect() {
 	logger = test_utils::TestLogger::with_id(format!("node {}", 0));
 	let mut chain_monitor = <(BlockHash, ChannelMonitor<EnforcingSigner>)>::read(&mut io::Cursor::new(previous_chain_monitor_state.0), keys_manager).unwrap().1;
 	chain_source = test_utils::TestChainSource::new(Network::Testnet);
-	tx_broadcaster = test_utils::TestBroadcaster{txn_broadcasted: Mutex::new(Vec::new()), blocks: Arc::new(Mutex::new(Vec::new()))};
+	tx_broadcaster = test_utils::TestBroadcaster { txn_broadcasted: Mutex::new(Vec::new()), blocks: Arc::new(Mutex::new(Vec::new())) };
 	fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) };
 	persister = test_utils::TestPersister::new();
 	monitor = test_utils::TestChainMonitor::new(Some(&chain_source), &tx_broadcaster, &logger, &fee_estimator, &persister, keys_manager);
@@ -7402,22 +7402,48 @@ fn test_data_loss_protect() {
 	}
 
 	// Check we close channel detecting A is fallen-behind
+	// Check that we sent the warning message when we detected that A has fallen behind,
+	// and give the possibility for A to recover from the warning.
 	nodes[1].node.handle_channel_reestablish(&nodes[0].node.get_our_node_id(), &reestablish_1[0]);
-	check_closed_event!(nodes[1], 1, ClosureReason::ProcessingError { err: "Peer attempted to reestablish channel with a very old local commitment transaction".to_string() });
-	assert_eq!(check_closed_broadcast!(nodes[1], true).unwrap().data, "Peer attempted to reestablish channel with a very old local commitment transaction");
-	check_added_monitors!(nodes[1], 1);
+	let warn_msg = "Peer attempted to reestablish channel with a very old local commitment transaction".to_owned();
+	assert!(check_warn_msg!(nodes[1], nodes[0].node.get_our_node_id(), chan.2).contains(&warn_msg));
 
 	// Check A is able to claim to_remote output
-	let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().clone();
-	assert_eq!(node_txn.len(), 1);
-	check_spends!(node_txn[0], chan.3);
-	assert_eq!(node_txn[0].output.len(), 2);
-	mine_transaction(&nodes[0], &node_txn[0]);
-	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
-	check_closed_event!(nodes[0], 1, ClosureReason::ProcessingError { err: "We have fallen behind - we have received proof that if we broadcast remote is going to claim our funds - we can\'t do any automated broadcasting".to_string() });
-	let spend_txn = check_spendable_outputs!(nodes[0], node_cfgs[0].keys_manager);
-	assert_eq!(spend_txn.len(), 1);
-	check_spends!(spend_txn[0], node_txn[0]);
+	let mut node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().clone();
+	// The node B should not broadcast the transaction to force close the channel!
+	assert!(node_txn.is_empty());
+	// B should now detect that there is something wrong and should force close the channel.
+	let exp_err = "We have fallen behind - we have received proof that if we broadcast remote is going to claim our funds - we can\'t do any automated broadcasting";
+	check_closed_event!(nodes[0], 1, ClosureReason::ProcessingError { err: exp_err.to_string() });
+
+	// after the warning message sent by B, we should not able to
+	// use the channel, or reconnect with success to the channel.
+	assert!(nodes[0].node.list_usable_channels().is_empty());
+	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init { features: InitFeatures::empty(), remote_network_address: None });
+	nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id(), &msgs::Init { features: InitFeatures::empty(), remote_network_address: None });
+	let retry_reestablish = get_chan_reestablish_msgs!(nodes[1], nodes[0]);
+
+	nodes[0].node.handle_channel_reestablish(&nodes[1].node.get_our_node_id(), &retry_reestablish[0]);
+	let mut err_msgs_0 = Vec::with_capacity(1);
+	for msg in nodes[0].node.get_and_clear_pending_msg_events() {
+		if let MessageSendEvent::HandleError { ref action, .. } = msg {
+			match action {
+				&ErrorAction::SendErrorMessage { ref msg } => {
+					assert_eq!(msg.data, "Failed to find corresponding channel");
+					err_msgs_0.push(msg.clone());
+				},
+				_ => panic!("Unexpected event!"),
+			}
+		} else {
+			panic!("Unexpected event!");
+		}
+	}
+	assert_eq!(err_msgs_0.len(), 1);
+	nodes[1].node.handle_error(&nodes[0].node.get_our_node_id(), &err_msgs_0[0]);
+	assert!(nodes[1].node.list_usable_channels().is_empty());
+	check_added_monitors!(nodes[1], 1);
+	check_closed_event!(nodes[1], 1, ClosureReason::CounterpartyForceClosed { peer_msg: "Failed to find corresponding channel".to_owned() });
+	check_closed_broadcast!(nodes[1], false);
 }
 
 #[test]
