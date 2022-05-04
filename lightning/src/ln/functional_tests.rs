@@ -9881,6 +9881,9 @@ fn do_test_partial_claim_before_restart(persist_both_monitors: bool) {
 	// To get to the correct state, on startup we should propagate the preimage to the
 	// still-off-chain channel, claiming the HTLC as soon as the peer connects, with the monitor
 	// receiving the preimage without a state update.
+	//
+	// Further, we should generate a `PaymentClaimed` event to inform the user that the payment was
+	// definitely claimed.
 	let chanmon_cfgs = create_chanmon_cfgs(4);
 	let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, None, None, None]);
@@ -9998,12 +10001,18 @@ fn do_test_partial_claim_before_restart(persist_both_monitors: bool) {
 	// commitment transaction. We should also still have the original PaymentReceived event we
 	// never finished processing.
 	let events = nodes[3].node.get_and_clear_pending_events();
-	assert_eq!(events.len(), if persist_both_monitors { 3 } else { 2 });
+	assert_eq!(events.len(), if persist_both_monitors { 4 } else { 3 });
 	if let Event::PaymentReceived { amt: 15_000_000, .. } = events[0] { } else { panic!(); }
 	if let Event::ChannelClosed { reason: ClosureReason::OutdatedChannelManager, .. } = events[1] { } else { panic!(); }
 	if persist_both_monitors {
 		if let Event::ChannelClosed { reason: ClosureReason::OutdatedChannelManager, .. } = events[2] { } else { panic!(); }
 	}
+
+	// On restart, we should also get a duplicate PaymentClaimed event as we persisted the
+	// ChannelManager prior to handling the original one.
+	if let Event::PaymentClaimed { payment_hash: our_payment_hash, amt: 15_000_000, .. } = events[if persist_both_monitors { 3 } else { 2 }] {
+		assert_eq!(payment_hash, our_payment_hash);
+	} else { panic!(); }
 
 	assert_eq!(nodes[3].node.list_channels().len(), if persist_both_monitors { 0 } else { 1 });
 	if !persist_both_monitors {

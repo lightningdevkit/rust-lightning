@@ -6837,9 +6837,12 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 
 		for (_, monitor) in args.channel_monitors.iter() {
 			for (payment_hash, payment_preimage) in monitor.get_stored_preimages() {
-				if let Some(claimable_htlcs) = claimable_htlcs.remove(&payment_hash) {
+				if let Some((payment_purpose, claimable_htlcs)) = claimable_htlcs.remove(&payment_hash) {
 					log_info!(args.logger, "Re-claiming HTLCs with payment hash {} as we've released the preimage to a ChannelMonitor!", log_bytes!(payment_hash.0));
-					for claimable_htlc in claimable_htlcs.1 {
+					let mut claimable_amt_msat = 0;
+					for claimable_htlc in claimable_htlcs {
+						claimable_amt_msat += claimable_htlc.value;
+
 						// Add a holding-cell claim of the payment to the Channel, which should be
 						// applied ~immediately on peer reconnection. Because it won't generate a
 						// new commitment transaction we can just provide the payment preimage to
@@ -6863,6 +6866,11 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 							previous_hop_monitor.provide_payment_preimage(&payment_hash, &payment_preimage, &args.tx_broadcaster, &args.fee_estimator, &args.logger);
 						}
 					}
+					pending_events_read.push(events::Event::PaymentClaimed {
+						payment_hash,
+						purpose: payment_purpose,
+						amt: claimable_amt_msat,
+					});
 				}
 			}
 		}
