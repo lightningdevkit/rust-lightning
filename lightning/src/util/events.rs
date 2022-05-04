@@ -331,6 +331,10 @@ pub enum Event {
 		path: Vec<RouteHop>,
 		/// The channel responsible for the failed payment path.
 		///
+		/// Note that for route hints or for the first hop in a path this may be an SCID alias and
+		/// may not refer to a channel in the public network graph. These aliases may also collide
+		/// with channels in the public network graph.
+		///
 		/// If this is `Some`, then the corresponding channel should be avoided when the payment is
 		/// retried. May be `None` for older [`Event`] serializations.
 		short_channel_id: Option<u64>,
