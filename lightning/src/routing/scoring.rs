@@ -137,6 +137,14 @@ pub trait LockableScore<'a> {
 	fn lock(&'a self) -> Self::Locked;
 }
 
+/// Refers to a scorer that is accessible under lock and also writeable to disk
+///
+/// We need this trait to be able to pass in a scorer to `lightning-background-processor` that will enable us to
+/// use the Persister to persist it.
+pub trait WriteableScore<'a>: LockableScore<'a> + Writeable {}
+
+impl<'a, T> WriteableScore<'a> for T where T: LockableScore<'a> + Writeable {}
+
 /// (C-not exported)
 impl<'a, T: 'a + Score> LockableScore<'a> for Mutex<T> {
 	type Locked = MutexGuard<'a, T>;
