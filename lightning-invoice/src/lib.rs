@@ -47,9 +47,9 @@ use lightning::routing::network_graph::RoutingFees;
 use lightning::routing::router::RouteHint;
 use lightning::util::invoice::construct_invoice_preimage;
 
-use secp256k1::key::PublicKey;
+use secp256k1::PublicKey;
 use secp256k1::{Message, Secp256k1};
-use secp256k1::recovery::RecoverableSignature;
+use secp256k1::ecdsa::RecoverableSignature;
 
 use core::fmt::{Display, Formatter, self};
 use core::iter::FilterMap;
@@ -163,7 +163,7 @@ pub const DEFAULT_MIN_FINAL_CLTV_EXPIRY: u64 = 18;
 /// use bitcoin_hashes::sha256;
 ///
 /// use secp256k1::Secp256k1;
-/// use secp256k1::key::SecretKey;
+/// use secp256k1::SecretKey;
 ///
 /// use lightning::ln::PaymentSecret;
 ///
@@ -191,7 +191,7 @@ pub const DEFAULT_MIN_FINAL_CLTV_EXPIRY: u64 = 18;
 /// 	.current_timestamp()
 /// 	.min_final_cltv_expiry(144)
 /// 	.build_signed(|hash| {
-/// 		Secp256k1::new().sign_recoverable(hash, &private_key)
+/// 		Secp256k1::new().sign_ecdsa_recoverable(hash, &private_key)
 /// 	})
 /// 	.unwrap();
 ///
@@ -749,7 +749,7 @@ impl SignedRawInvoice {
 		let hash = Message::from_slice(&self.hash[..])
 			.expect("Hash is 32 bytes long, same as MESSAGE_SIZE");
 
-		Ok(PayeePubKey(Secp256k1::new().recover(
+		Ok(PayeePubKey(Secp256k1::new().recover_ecdsa(
 			&hash,
 			&self.signature
 		)?))
@@ -776,7 +776,7 @@ impl SignedRawInvoice {
 			.expect("Hash is 32 bytes long, same as MESSAGE_SIZE");
 
 		let secp_context = Secp256k1::new();
-		let verification_result = secp_context.verify(
+		let verification_result = secp_context.verify_ecdsa(
 			&hash,
 			&self.signature.to_standard(),
 			pub_key
@@ -1576,8 +1576,8 @@ mod test {
 	fn test_check_signature() {
 		use TaggedField::*;
 		use secp256k1::Secp256k1;
-		use secp256k1::recovery::{RecoveryId, RecoverableSignature};
-		use secp256k1::key::{SecretKey, PublicKey};
+		use secp256k1::ecdsa::{RecoveryId, RecoverableSignature};
+		use secp256k1::{SecretKey, PublicKey};
 		use {SignedRawInvoice, InvoiceSignature, RawInvoice, RawHrp, RawDataPart, Currency, Sha256,
 			 PositiveTimestamp};
 
@@ -1635,7 +1635,7 @@ mod test {
 
 		let (raw_invoice, _, _) = invoice.into_parts();
 		let new_signed = raw_invoice.sign::<_, ()>(|hash| {
-			Ok(Secp256k1::new().sign_recoverable(hash, &private_key))
+			Ok(Secp256k1::new().sign_ecdsa_recoverable(hash, &private_key))
 		}).unwrap();
 
 		assert!(new_signed.check_signature());
@@ -1646,7 +1646,7 @@ mod test {
 		use TaggedField::*;
 		use lightning::ln::features::InvoiceFeatures;
 		use secp256k1::Secp256k1;
-		use secp256k1::key::SecretKey;
+		use secp256k1::SecretKey;
 		use {RawInvoice, RawHrp, RawDataPart, Currency, Sha256, PositiveTimestamp, Invoice,
 			 SemanticError};
 
@@ -1677,7 +1677,7 @@ mod test {
 		let invoice = {
 			let mut invoice = invoice_template.clone();
 			invoice.data.tagged_fields.push(PaymentSecret(payment_secret).into());
-			invoice.sign::<_, ()>(|hash| Ok(Secp256k1::new().sign_recoverable(hash, &private_key)))
+			invoice.sign::<_, ()>(|hash| Ok(Secp256k1::new().sign_ecdsa_recoverable(hash, &private_key)))
 		}.unwrap();
 		assert_eq!(Invoice::from_signed(invoice), Err(SemanticError::InvalidFeatures));
 
@@ -1686,7 +1686,7 @@ mod test {
 			let mut invoice = invoice_template.clone();
 			invoice.data.tagged_fields.push(PaymentSecret(payment_secret).into());
 			invoice.data.tagged_fields.push(Features(InvoiceFeatures::empty()).into());
-			invoice.sign::<_, ()>(|hash| Ok(Secp256k1::new().sign_recoverable(hash, &private_key)))
+			invoice.sign::<_, ()>(|hash| Ok(Secp256k1::new().sign_ecdsa_recoverable(hash, &private_key)))
 		}.unwrap();
 		assert_eq!(Invoice::from_signed(invoice), Err(SemanticError::InvalidFeatures));
 
@@ -1695,14 +1695,14 @@ mod test {
 			let mut invoice = invoice_template.clone();
 			invoice.data.tagged_fields.push(PaymentSecret(payment_secret).into());
 			invoice.data.tagged_fields.push(Features(InvoiceFeatures::known()).into());
-			invoice.sign::<_, ()>(|hash| Ok(Secp256k1::new().sign_recoverable(hash, &private_key)))
+			invoice.sign::<_, ()>(|hash| Ok(Secp256k1::new().sign_ecdsa_recoverable(hash, &private_key)))
 		}.unwrap();
 		assert!(Invoice::from_signed(invoice).is_ok());
 
 		// No payment secret or features
 		let invoice = {
 			let invoice = invoice_template.clone();
-			invoice.sign::<_, ()>(|hash| Ok(Secp256k1::new().sign_recoverable(hash, &private_key)))
+			invoice.sign::<_, ()>(|hash| Ok(Secp256k1::new().sign_ecdsa_recoverable(hash, &private_key)))
 		}.unwrap();
 		assert_eq!(Invoice::from_signed(invoice), Err(SemanticError::NoPaymentSecret));
 
@@ -1710,7 +1710,7 @@ mod test {
 		let invoice = {
 			let mut invoice = invoice_template.clone();
 			invoice.data.tagged_fields.push(Features(InvoiceFeatures::empty()).into());
-			invoice.sign::<_, ()>(|hash| Ok(Secp256k1::new().sign_recoverable(hash, &private_key)))
+			invoice.sign::<_, ()>(|hash| Ok(Secp256k1::new().sign_ecdsa_recoverable(hash, &private_key)))
 		}.unwrap();
 		assert_eq!(Invoice::from_signed(invoice), Err(SemanticError::NoPaymentSecret));
 
@@ -1718,7 +1718,7 @@ mod test {
 		let invoice = {
 			let mut invoice = invoice_template.clone();
 			invoice.data.tagged_fields.push(Features(InvoiceFeatures::known()).into());
-			invoice.sign::<_, ()>(|hash| Ok(Secp256k1::new().sign_recoverable(hash, &private_key)))
+			invoice.sign::<_, ()>(|hash| Ok(Secp256k1::new().sign_ecdsa_recoverable(hash, &private_key)))
 		}.unwrap();
 		assert_eq!(Invoice::from_signed(invoice), Err(SemanticError::NoPaymentSecret));
 
@@ -1727,7 +1727,7 @@ mod test {
 			let mut invoice = invoice_template.clone();
 			invoice.data.tagged_fields.push(PaymentSecret(payment_secret).into());
 			invoice.data.tagged_fields.push(PaymentSecret(payment_secret).into());
-			invoice.sign::<_, ()>(|hash| Ok(Secp256k1::new().sign_recoverable(hash, &private_key)))
+			invoice.sign::<_, ()>(|hash| Ok(Secp256k1::new().sign_ecdsa_recoverable(hash, &private_key)))
 		}.unwrap();
 		assert_eq!(Invoice::from_signed(invoice), Err(SemanticError::MultiplePaymentSecrets));
 	}
@@ -1764,7 +1764,7 @@ mod test {
 		use ::*;
 		use lightning::routing::router::RouteHintHop;
 		use std::iter::FromIterator;
-		use secp256k1::key::PublicKey;
+		use secp256k1::PublicKey;
 
 		let builder = InvoiceBuilder::new(Currency::Bitcoin)
 			.payment_hash(sha256::Hash::from_slice(&[0;32][..]).unwrap())
@@ -1818,7 +1818,7 @@ mod test {
 		use ::*;
 		use lightning::routing::router::RouteHintHop;
 		use secp256k1::Secp256k1;
-		use secp256k1::key::{SecretKey, PublicKey};
+		use secp256k1::{SecretKey, PublicKey};
 		use std::time::{UNIX_EPOCH, Duration};
 
 		let secp_ctx = Secp256k1::new();
@@ -1897,7 +1897,7 @@ mod test {
 			.basic_mpp();
 
 		let invoice = builder.clone().build_signed(|hash| {
-			secp_ctx.sign_recoverable(hash, &private_key)
+			secp_ctx.sign_ecdsa_recoverable(hash, &private_key)
 		}).unwrap();
 
 		assert!(invoice.check_signature().is_ok());
@@ -1932,7 +1932,7 @@ mod test {
 	fn test_default_values() {
 		use ::*;
 		use secp256k1::Secp256k1;
-		use secp256k1::key::SecretKey;
+		use secp256k1::SecretKey;
 
 		let signed_invoice = InvoiceBuilder::new(Currency::Bitcoin)
 			.description("Test".into())
@@ -1944,7 +1944,7 @@ mod test {
 			.sign::<_, ()>(|hash| {
 				let privkey = SecretKey::from_slice(&[41; 32]).unwrap();
 				let secp_ctx = Secp256k1::new();
-				Ok(secp_ctx.sign_recoverable(hash, &privkey))
+				Ok(secp_ctx.sign_ecdsa_recoverable(hash, &privkey))
 			})
 			.unwrap();
 		let invoice = Invoice::from_signed(signed_invoice).unwrap();
@@ -1958,7 +1958,7 @@ mod test {
 	fn test_expiration() {
 		use ::*;
 		use secp256k1::Secp256k1;
-		use secp256k1::key::SecretKey;
+		use secp256k1::SecretKey;
 
 		let signed_invoice = InvoiceBuilder::new(Currency::Bitcoin)
 			.description("Test".into())
@@ -1970,7 +1970,7 @@ mod test {
 			.sign::<_, ()>(|hash| {
 				let privkey = SecretKey::from_slice(&[41; 32]).unwrap();
 				let secp_ctx = Secp256k1::new();
-				Ok(secp_ctx.sign_recoverable(hash, &privkey))
+				Ok(secp_ctx.sign_ecdsa_recoverable(hash, &privkey))
 			})
 			.unwrap();
 		let invoice = Invoice::from_signed(signed_invoice).unwrap();

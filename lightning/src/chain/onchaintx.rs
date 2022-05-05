@@ -18,7 +18,7 @@ use bitcoin::blockdata::script::Script;
 
 use bitcoin::hash_types::Txid;
 
-use bitcoin::secp256k1::{Secp256k1, Signature};
+use bitcoin::secp256k1::{Secp256k1, ecdsa::Signature};
 use bitcoin::secp256k1;
 
 use ln::msgs::DecodeError;
@@ -394,7 +394,7 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 
 				let transaction = cached_request.finalize_package(self, output_value, self.destination_script.clone(), logger).unwrap();
 				log_trace!(logger, "...with timer {} and feerate {}", new_timer.unwrap(), new_feerate);
-				assert!(predicted_weight >= transaction.get_weight());
+				assert!(predicted_weight >= transaction.weight());
 				return Some((new_timer, new_feerate, transaction))
 			}
 		} else {

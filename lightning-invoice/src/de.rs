@@ -19,8 +19,8 @@ use lightning::routing::router::{RouteHint, RouteHintHop};
 use num_traits::{CheckedAdd, CheckedMul};
 
 use secp256k1;
-use secp256k1::recovery::{RecoveryId, RecoverableSignature};
-use secp256k1::key::PublicKey;
+use secp256k1::ecdsa::{RecoveryId, RecoverableSignature};
+use secp256k1::PublicKey;
 
 use super::{Invoice, Sha256, TaggedField, ExpiryTime, MinFinalCltvExpiry, Fallback, PayeePubKey, InvoiceSignature, PositiveTimestamp,
 	SemanticError, PrivateRoute, ParseError, ParseOrSemanticError, Description, RawTaggedField, Currency, RawHrp, SiPrefix, RawInvoice,
@@ -967,7 +967,7 @@ mod test {
 	#[test]
 	fn test_payment_secret_and_features_de_and_ser() {
 		use lightning::ln::features::InvoiceFeatures;
-		use secp256k1::recovery::{RecoveryId, RecoverableSignature};
+		use secp256k1::ecdsa::{RecoveryId, RecoverableSignature};
 		use TaggedField::*;
 		use {SiPrefix, SignedRawInvoice, InvoiceSignature, RawInvoice, RawHrp, RawDataPart,
 				 Currency, Sha256, PositiveTimestamp};
@@ -1014,7 +1014,7 @@ mod test {
 	#[test]
 	fn test_raw_signed_invoice_deserialization() {
 		use TaggedField::*;
-		use secp256k1::recovery::{RecoveryId, RecoverableSignature};
+		use secp256k1::ecdsa::{RecoveryId, RecoverableSignature};
 		use {SignedRawInvoice, InvoiceSignature, RawInvoice, RawHrp, RawDataPart, Currency, Sha256,
 			 PositiveTimestamp};
 

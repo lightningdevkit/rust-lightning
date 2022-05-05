@@ -24,8 +24,8 @@
 //! raw socket events into your non-internet-facing system and then send routing events back to
 //! track the network on the less-secure system.
 
-use bitcoin::secp256k1::key::PublicKey;
-use bitcoin::secp256k1::Signature;
+use bitcoin::secp256k1::PublicKey;
+use bitcoin::secp256k1::ecdsa::Signature;
 use bitcoin::secp256k1;
 use bitcoin::blockdata::script::Script;
 use bitcoin::hash_types::{Txid, BlockHash};
@@ -1835,7 +1835,7 @@ mod tests {
 	use bitcoin::blockdata::opcodes;
 	use bitcoin::hash_types::{Txid, BlockHash};
 
-	use bitcoin::secp256k1::key::{PublicKey,SecretKey};
+	use bitcoin::secp256k1::{PublicKey,SecretKey};
 	use bitcoin::secp256k1::{Secp256k1, Message};
 
 	use io::Cursor;
@@ -1892,7 +1892,7 @@ mod tests {
 		($privkey: expr, $ctx: expr, $string: expr) => {
 			{
 				let sighash = Message::from_slice(&$string.into_bytes()[..]).unwrap();
-				$ctx.sign(&sighash, &$privkey)
+				$ctx.sign_ecdsa(&sighash, &$privkey)
 			}
 		}
 	}
@@ -2155,7 +2155,7 @@ mod tests {
 			htlc_basepoint: pubkey_5,
 			first_per_commitment_point: pubkey_6,
 			channel_flags: if random_bit { 1 << 5 } else { 0 },
-			shutdown_scriptpubkey: if shutdown { OptionalField::Present(Address::p2pkh(&::bitcoin::PublicKey{compressed: true, key: pubkey_1}, Network::Testnet).script_pubkey()) } else { OptionalField::Absent },
+			shutdown_scriptpubkey: if shutdown { OptionalField::Present(Address::p2pkh(&::bitcoin::PublicKey{compressed: true, inner: pubkey_1}, Network::Testnet).script_pubkey()) } else { OptionalField::Absent },
 			channel_type: if incl_chan_type { Some(ChannelTypeFeatures::empty()) } else { None },
 		};
 		let encoded_value = open_channel.encode();
@@ -2211,7 +2211,7 @@ mod tests {
 			delayed_payment_basepoint: pubkey_4,
 			htlc_basepoint: pubkey_5,
 			first_per_commitment_point: pubkey_6,
-			shutdown_scriptpubkey: if shutdown { OptionalField::Present(Address::p2pkh(&::bitcoin::PublicKey{compressed: true, key: pubkey_1}, Network::Testnet).script_pubkey()) } else { OptionalField::Absent },
+			shutdown_scriptpubkey: if shutdown { OptionalField::Present(Address::p2pkh(&::bitcoin::PublicKey{compressed: true, inner: pubkey_1}, Network::Testnet).script_pubkey()) } else { OptionalField::Absent },
 			channel_type: None,
 		};
 		let encoded_value = accept_channel.encode();
@@ -2279,9 +2279,9 @@ mod tests {
 		let shutdown = msgs::Shutdown {
 			channel_id: [2; 32],
 			scriptpubkey:
-				     if script_type == 1 { Address::p2pkh(&::bitcoin::PublicKey{compressed: true, key: pubkey_1}, Network::Testnet).script_pubkey() }
-				else if script_type == 2 { Address::p2sh(&script, Network::Testnet).script_pubkey() }
-				else if script_type == 3 { Address::p2wpkh(&::bitcoin::PublicKey{compressed: true, key: pubkey_1}, Network::Testnet).unwrap().script_pubkey() }
+				     if script_type == 1 { Address::p2pkh(&::bitcoin::PublicKey{compressed: true, inner: pubkey_1}, Network::Testnet).script_pubkey() }
+				else if script_type == 2 { Address::p2sh(&script, Network::Testnet).unwrap().script_pubkey() }
+				else if script_type == 3 { Address::p2wpkh(&::bitcoin::PublicKey{compressed: true, inner: pubkey_1}, Network::Testnet).unwrap().script_pubkey() }
 				else                     { Address::p2wsh(&script, Network::Testnet).script_pubkey() },
 		};
 		let encoded_value = shutdown.encode();

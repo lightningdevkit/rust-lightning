@@ -6,6 +6,8 @@ use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::hash_types::BlockHash;
 use bitcoin::network::constants::Network;
 use bitcoin::util::uint::Uint256;
+use bitcoin::util::hash::bitcoin_merkle_root;
+use bitcoin::Transaction;
 
 use lightning::chain;
 
@@ -37,16 +39,27 @@ impl Blockchain {
 			let prev_block = &self.blocks[i - 1];
 			let prev_blockhash = prev_block.block_hash();
 			let time = prev_block.header.time + height as u32;
+			// Must have at least one transaction, because the merkle root is not defined for an empty block
+			// and we would fail when we later checked, as of bitcoin crate 0.28.0.
+			// Note that elsewhere in tests we assume that the merkle root of an empty block is all zeros,
+			// but that's OK because those tests don't trigger the check.
+			let coinbase = Transaction {
+				version: 0,
+				lock_time: 0,
+				input: vec![],
+				output: vec![]
+			};
+			let merkle_root = bitcoin_merkle_root(vec![coinbase.txid().as_hash()].into_iter()).unwrap();
 			self.blocks.push(Block {
 				header: BlockHeader {
 					version: 0,
 					prev_blockhash,
-					merkle_root: Default::default(),
+					merkle_root: merkle_root.into(),
 					time,
 					bits,
 					nonce: 0,
 				},
-				txdata: vec![],
+				txdata: vec![coinbase],
 			});
 		}
 		self

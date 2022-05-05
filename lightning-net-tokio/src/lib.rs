@@ -23,7 +23,7 @@
 //! # Example
 //! ```
 //! use std::net::TcpStream;
-//! use bitcoin::secp256k1::key::PublicKey;
+//! use bitcoin::secp256k1::PublicKey;
 //! use lightning::util::events::{Event, EventHandler, EventsProvider};
 //! use std::net::SocketAddr;
 //! use std::sync::Arc;
@@ -71,7 +71,7 @@
 
 #![cfg_attr(docsrs, feature(doc_auto_cfg))]
 
-use bitcoin::secp256k1::key::PublicKey;
+use bitcoin::secp256k1::PublicKey;
 
 use tokio::net::TcpStream;
 use tokio::{io, time};

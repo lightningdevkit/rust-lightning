@@ -23,7 +23,7 @@ use lightning::util::ser::Readable;
 use lightning::routing::network_graph::{NetworkGraph, RoutingFees};
 
 use bitcoin::hashes::Hash;
-use bitcoin::secp256k1::key::PublicKey;
+use bitcoin::secp256k1::PublicKey;
 use bitcoin::network::constants::Network;
 use bitcoin::blockdata::constants::genesis_block;
 

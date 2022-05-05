@@ -50,8 +50,8 @@ use lightning::util::ser::ReadableArgs;
 use utils::test_logger;
 use utils::test_persister::TestPersister;
 
-use bitcoin::secp256k1::key::{PublicKey,SecretKey};
-use bitcoin::secp256k1::recovery::RecoverableSignature;
+use bitcoin::secp256k1::{PublicKey,SecretKey};
+use bitcoin::secp256k1::ecdsa::RecoverableSignature;
 use bitcoin::secp256k1::Secp256k1;
 
 use std::cell::RefCell;

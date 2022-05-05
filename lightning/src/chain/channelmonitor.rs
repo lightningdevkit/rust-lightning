@@ -29,8 +29,8 @@ use bitcoin::hashes::Hash;
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hash_types::{Txid, BlockHash, WPubkeyHash};
 
-use bitcoin::secp256k1::{Secp256k1,Signature};
-use bitcoin::secp256k1::key::{SecretKey,PublicKey};
+use bitcoin::secp256k1::{Secp256k1, ecdsa::Signature};
+use bitcoin::secp256k1::{SecretKey, PublicKey};
 use bitcoin::secp256k1;
 
 use ln::{PaymentHash, PaymentPreimage};
@@ -2653,7 +2653,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 						        // appears to be spending the correct type (ie that the match would
 						        // actually succeed in BIP 158/159-style filters).
 						        if _script_pubkey.is_v0_p2wsh() {
-						                assert_eq!(&bitcoin::Address::p2wsh(&Script::from(input.witness.last().unwrap().clone()), bitcoin::Network::Bitcoin).script_pubkey(), _script_pubkey);
+						                assert_eq!(&bitcoin::Address::p2wsh(&Script::from(input.witness.last().unwrap().to_vec()), bitcoin::Network::Bitcoin).script_pubkey(), _script_pubkey);
 						        } else if _script_pubkey.is_v0_p2wpkh() {
 						                assert_eq!(&bitcoin::Address::p2wpkh(&bitcoin::PublicKey::from_slice(&input.witness.last().unwrap()).unwrap(), bitcoin::Network::Bitcoin).unwrap().script_pubkey(), _script_pubkey);
 						        } else { panic!(); }
@@ -2736,20 +2736,23 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 	fn is_resolving_htlc_output<L: Deref>(&mut self, tx: &Transaction, height: u32, logger: &L) where L::Target: Logger {
 		'outer_loop: for input in &tx.input {
 			let mut payment_data = None;
-			let revocation_sig_claim = (input.witness.len() == 3 && HTLCType::scriptlen_to_htlctype(input.witness[2].len()) == Some(HTLCType::OfferedHTLC) && input.witness[1].len() == 33)
-				|| (input.witness.len() == 3 && HTLCType::scriptlen_to_htlctype(input.witness[2].len()) == Some(HTLCType::AcceptedHTLC) && input.witness[1].len() == 33);
-			let accepted_preimage_claim = input.witness.len() == 5 && HTLCType::scriptlen_to_htlctype(input.witness[4].len()) == Some(HTLCType::AcceptedHTLC);
+			let witness_items = input.witness.len();
+			let htlctype = input.witness.last().map(|w| w.len()).and_then(HTLCType::scriptlen_to_htlctype);
+			let prev_last_witness_len = input.witness.second_to_last().map(|w| w.len()).unwrap_or(0);
+			let revocation_sig_claim = (witness_items == 3 && htlctype == Some(HTLCType::OfferedHTLC) && prev_last_witness_len == 33)
+				|| (witness_items == 3 && htlctype == Some(HTLCType::AcceptedHTLC) && prev_last_witness_len == 33);
+			let accepted_preimage_claim = witness_items == 5 && htlctype == Some(HTLCType::AcceptedHTLC);
 			#[cfg(not(fuzzing))]
-			let accepted_timeout_claim = input.witness.len() == 3 && HTLCType::scriptlen_to_htlctype(input.witness[2].len()) == Some(HTLCType::AcceptedHTLC) && !revocation_sig_claim;
-			let offered_preimage_claim = input.witness.len() == 3 && HTLCType::scriptlen_to_htlctype(input.witness[2].len()) == Some(HTLCType::OfferedHTLC) && !revocation_sig_claim;
+			let accepted_timeout_claim = witness_items == 3 && htlctype == Some(HTLCType::AcceptedHTLC) && !revocation_sig_claim;
+			let offered_preimage_claim = witness_items == 3 && htlctype == Some(HTLCType::OfferedHTLC) && !revocation_sig_claim;
 			#[cfg(not(fuzzing))]
-			let offered_timeout_claim = input.witness.len() == 5 && HTLCType::scriptlen_to_htlctype(input.witness[4].len()) == Some(HTLCType::OfferedHTLC);
+			let offered_timeout_claim = witness_items == 5 && htlctype == Some(HTLCType::OfferedHTLC);
 
 			let mut payment_preimage = PaymentPreimage([0; 32]);
 			if accepted_preimage_claim {
-				payment_preimage.0.copy_from_slice(&input.witness[3]);
+				payment_preimage.0.copy_from_slice(input.witness.second_to_last().unwrap());
 			} else if offered_preimage_claim {
-				payment_preimage.0.copy_from_slice(&input.witness[1]);
+				payment_preimage.0.copy_from_slice(input.witness.second_to_last().unwrap());
 			}
 
 			macro_rules! log_claim {
@@ -3322,15 +3325,15 @@ mod tests {
 	use bitcoin::blockdata::block::BlockHeader;
 	use bitcoin::blockdata::script::{Script, Builder};
 	use bitcoin::blockdata::opcodes;
-	use bitcoin::blockdata::transaction::{Transaction, TxIn, TxOut, SigHashType};
+	use bitcoin::blockdata::transaction::{Transaction, TxIn, TxOut, EcdsaSighashType};
 	use bitcoin::blockdata::transaction::OutPoint as BitcoinOutPoint;
-	use bitcoin::util::bip143;
+	use bitcoin::util::sighash;
 	use bitcoin::hashes::Hash;
 	use bitcoin::hashes::sha256::Hash as Sha256;
 	use bitcoin::hashes::hex::FromHex;
 	use bitcoin::hash_types::{BlockHash, Txid};
 	use bitcoin::network::constants::Network;
-	use bitcoin::secp256k1::key::{SecretKey,PublicKey};
+	use bitcoin::secp256k1::{SecretKey,PublicKey};
 	use bitcoin::secp256k1::Secp256k1;
 
 	use hex;
@@ -3355,6 +3358,7 @@ mod tests {
 	use util::ser::{ReadableArgs, Writeable};
 	use sync::{Arc, Mutex};
 	use io;
+	use bitcoin::Witness;
 	use prelude::*;
 
 	fn do_test_funding_spend_refuses_updates(use_local_txn: bool) {
@@ -3608,24 +3612,27 @@ mod tests {
 					transaction_output_index: Some($idx as u32),
 				};
 				let redeem_script = if *$weight == WEIGHT_REVOKED_OUTPUT { chan_utils::get_revokeable_redeemscript(&pubkey, 256, &pubkey) } else { chan_utils::get_htlc_redeemscript_with_explicit_keys(&htlc, $opt_anchors, &pubkey, &pubkey, &pubkey) };
-				let sighash = hash_to_message!(&$sighash_parts.signature_hash($idx, &redeem_script, $amount, SigHashType::All)[..]);
-				let sig = secp_ctx.sign(&sighash, &privkey);
-				$sighash_parts.access_witness($idx).push(sig.serialize_der().to_vec());
-				$sighash_parts.access_witness($idx)[0].push(SigHashType::All as u8);
-				$sum_actual_sigs += $sighash_parts.access_witness($idx)[0].len();
+				let sighash = hash_to_message!(&$sighash_parts.segwit_signature_hash($idx, &redeem_script, $amount, EcdsaSighashType::All).unwrap()[..]);
+				let sig = secp_ctx.sign_ecdsa(&sighash, &privkey);
+				let mut ser_sig = sig.serialize_der().to_vec();
+				ser_sig.push(EcdsaSighashType::All as u8);
+				$sum_actual_sigs += ser_sig.len();
+				let witness = $sighash_parts.witness_mut($idx).unwrap();
+				witness.push(ser_sig);
 				if *$weight == WEIGHT_REVOKED_OUTPUT {
-					$sighash_parts.access_witness($idx).push(vec!(1));
+					witness.push(vec!(1));
 				} else if *$weight == weight_revoked_offered_htlc($opt_anchors) || *$weight == weight_revoked_received_htlc($opt_anchors) {
-					$sighash_parts.access_witness($idx).push(pubkey.clone().serialize().to_vec());
+					witness.push(pubkey.clone().serialize().to_vec());
 				} else if *$weight == weight_received_htlc($opt_anchors) {
-					$sighash_parts.access_witness($idx).push(vec![0]);
+					witness.push(vec![0]);
 				} else {
-					$sighash_parts.access_witness($idx).push(PaymentPreimage([1; 32]).0.to_vec());
+					witness.push(PaymentPreimage([1; 32]).0.to_vec());
 				}
-				$sighash_parts.access_witness($idx).push(redeem_script.into_bytes());
-				println!("witness[0] {}", $sighash_parts.access_witness($idx)[0].len());
-				println!("witness[1] {}", $sighash_parts.access_witness($idx)[1].len());
-				println!("witness[2] {}", $sighash_parts.access_witness($idx)[2].len());
+				witness.push(redeem_script.into_bytes());
+				let witness = witness.to_vec();
+				println!("witness[0] {}", witness[0].len());
+				println!("witness[1] {}", witness[1].len());
+				println!("witness[2] {}", witness[2].len());
 			}
 		}
 
@@ -3644,24 +3651,24 @@ mod tests {
 					},
 					script_sig: Script::new(),
 					sequence: 0xfffffffd,
-					witness: Vec::new(),
+					witness: Witness::new(),
 				});
 			}
 			claim_tx.output.push(TxOut {
 				script_pubkey: script_pubkey.clone(),
 				value: 0,
 			});
-			let base_weight = claim_tx.get_weight();
+			let base_weight = claim_tx.weight();
 			let inputs_weight = vec![WEIGHT_REVOKED_OUTPUT, weight_revoked_offered_htlc(opt_anchors), weight_revoked_offered_htlc(opt_anchors), weight_revoked_received_htlc(opt_anchors)];
 			let mut inputs_total_weight = 2; // count segwit flags
 			{
-				let mut sighash_parts = bip143::SigHashCache::new(&mut claim_tx);
+				let mut sighash_parts = sighash::SighashCache::new(&mut claim_tx);
 				for (idx, inp) in inputs_weight.iter().enumerate() {
 					sign_input!(sighash_parts, idx, 0, inp, sum_actual_sigs, opt_anchors);
 					inputs_total_weight += inp;
 				}
 			}
-			assert_eq!(base_weight + inputs_total_weight as usize,  claim_tx.get_weight() + /* max_length_sig */ (73 * inputs_weight.len() - sum_actual_sigs));
+			assert_eq!(base_weight + inputs_total_weight as usize,  claim_tx.weight() + /* max_length_sig */ (73 * inputs_weight.len() - sum_actual_sigs));
 		}
 
 		// Claim tx with 1 offered HTLCs, 3 received HTLCs
@@ -3676,24 +3683,24 @@ mod tests {
 					},
 					script_sig: Script::new(),
 					sequence: 0xfffffffd,
-					witness: Vec::new(),
+					witness: Witness::new(),
 				});
 			}
 			claim_tx.output.push(TxOut {
 				script_pubkey: script_pubkey.clone(),
 				value: 0,
 			});
-			let base_weight = claim_tx.get_weight();
+			let base_weight = claim_tx.weight();
 			let inputs_weight = vec![weight_offered_htlc(opt_anchors), weight_received_htlc(opt_anchors), weight_received_htlc(opt_anchors), weight_received_htlc(opt_anchors)];
 			let mut inputs_total_weight = 2; // count segwit flags
 			{
-				let mut sighash_parts = bip143::SigHashCache::new(&mut claim_tx);
+				let mut sighash_parts = sighash::SighashCache::new(&mut claim_tx);
 				for (idx, inp) in inputs_weight.iter().enumerate() {
 					sign_input!(sighash_parts, idx, 0, inp, sum_actual_sigs, opt_anchors);
 					inputs_total_weight += inp;
 				}
 			}
-			assert_eq!(base_weight + inputs_total_weight as usize,  claim_tx.get_weight() + /* max_length_sig */ (73 * inputs_weight.len() - sum_actual_sigs));
+			assert_eq!(base_weight + inputs_total_weight as usize,  claim_tx.weight() + /* max_length_sig */ (73 * inputs_weight.len() - sum_actual_sigs));
 		}
 
 		// Justice tx with 1 revoked HTLC-Success tx output
@@ -3707,23 +3714,23 @@ mod tests {
 				},
 				script_sig: Script::new(),
 				sequence: 0xfffffffd,
-				witness: Vec::new(),
+				witness: Witness::new(),
 			});
 			claim_tx.output.push(TxOut {
 				script_pubkey: script_pubkey.clone(),
 				value: 0,
 			});
-			let base_weight = claim_tx.get_weight();
+			let base_weight = claim_tx.weight();
 			let inputs_weight = vec![WEIGHT_REVOKED_OUTPUT];
 			let mut inputs_total_weight = 2; // count segwit flags
 			{
-				let mut sighash_parts = bip143::SigHashCache::new(&mut claim_tx);
+				let mut sighash_parts = sighash::SighashCache::new(&mut claim_tx);
 				for (idx, inp) in inputs_weight.iter().enumerate() {
 					sign_input!(sighash_parts, idx, 0, inp, sum_actual_sigs, opt_anchors);
 					inputs_total_weight += inp;
 				}
 			}
-			assert_eq!(base_weight + inputs_total_weight as usize, claim_tx.get_weight() + /* max_length_isg */ (73 * inputs_weight.len() - sum_actual_sigs));
+			assert_eq!(base_weight + inputs_total_weight as usize, claim_tx.weight() + /* max_length_isg */ (73 * inputs_weight.len() - sum_actual_sigs));
 		}
 	}
 

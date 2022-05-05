@@ -16,12 +16,12 @@ use core::cmp;
 use sync::{Mutex, Arc};
 #[cfg(test)] use sync::MutexGuard;
 
-use bitcoin::blockdata::transaction::{Transaction, SigHashType};
-use bitcoin::util::bip143;
+use bitcoin::blockdata::transaction::{Transaction, EcdsaSighashType};
+use bitcoin::util::sighash;
 
 use bitcoin::secp256k1;
-use bitcoin::secp256k1::key::{SecretKey, PublicKey};
-use bitcoin::secp256k1::{Secp256k1, Signature};
+use bitcoin::secp256k1::{SecretKey, PublicKey};
+use bitcoin::secp256k1::{Secp256k1, ecdsa::Signature};
 use util::ser::{Writeable, Writer};
 use io::Error;
 
@@ -160,8 +160,8 @@ impl BaseSign for EnforcingSigner {
 
 			let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&this_htlc, self.opt_anchors(), &keys);
 
-			let sighash = hash_to_message!(&bip143::SigHashCache::new(&htlc_tx).signature_hash(0, &htlc_redeemscript, this_htlc.amount_msat / 1000, SigHashType::All)[..]);
-			secp_ctx.verify(&sighash, sig, &keys.countersignatory_htlc_key).unwrap();
+			let sighash = hash_to_message!(&sighash::SighashCache::new(&htlc_tx).segwit_signature_hash(0, &htlc_redeemscript, this_htlc.amount_msat / 1000, EcdsaSighashType::All).unwrap()[..]);
+			secp_ctx.verify_ecdsa(&sighash, sig, &keys.countersignatory_htlc_key).unwrap();
 		}
 
 		Ok(self.inner.sign_holder_commitment_and_htlcs(commitment_tx, secp_ctx).unwrap())

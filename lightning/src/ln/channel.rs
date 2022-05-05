@@ -8,8 +8,8 @@
 // licenses.
 
 use bitcoin::blockdata::script::{Script,Builder};
-use bitcoin::blockdata::transaction::{Transaction, SigHashType};
-use bitcoin::util::bip143;
+use bitcoin::blockdata::transaction::{Transaction, EcdsaSighashType};
+use bitcoin::util::sighash;
 use bitcoin::consensus::encode;
 
 use bitcoin::hashes::Hash;
@@ -18,8 +18,8 @@ use bitcoin::hashes::sha256d::Hash as Sha256d;
 use bitcoin::hash_types::{Txid, BlockHash};
 
 use bitcoin::secp256k1::constants::PUBLIC_KEY_SIZE;
-use bitcoin::secp256k1::key::{PublicKey,SecretKey};
-use bitcoin::secp256k1::{Secp256k1,Signature};
+use bitcoin::secp256k1::{PublicKey,SecretKey};
+use bitcoin::secp256k1::{Secp256k1,ecdsa::Signature};
 use bitcoin::secp256k1;
 
 use ln::{PaymentPreimage, PaymentHash};
@@ -2067,7 +2067,7 @@ impl<Signer: Sign> Channel<Signer> {
 				log_bytes!(sig.serialize_compact()[..]), log_bytes!(self.counterparty_funding_pubkey().serialize()),
 				encode::serialize_hex(&initial_commitment_bitcoin_tx.transaction), log_bytes!(sighash[..]),
 				encode::serialize_hex(&funding_script), log_bytes!(self.channel_id()));
-			secp_check!(self.secp_ctx.verify(&sighash, &sig, self.counterparty_funding_pubkey()), "Invalid funding_created signature from peer".to_owned());
+			secp_check!(self.secp_ctx.verify_ecdsa(&sighash, &sig, self.counterparty_funding_pubkey()), "Invalid funding_created signature from peer".to_owned());
 		}
 
 		let counterparty_keys = self.build_remote_transaction_keys()?;
@@ -2199,7 +2199,7 @@ impl<Signer: Sign> Channel<Signer> {
 			let initial_commitment_bitcoin_tx = trusted_tx.built_transaction();
 			let sighash = initial_commitment_bitcoin_tx.get_sighash_all(&funding_script, self.channel_value_satoshis);
 			// They sign our commitment transaction, allowing us to broadcast the tx if we wish.
-			if let Err(_) = self.secp_ctx.verify(&sighash, &msg.signature, &self.get_counterparty_pubkeys().funding_pubkey) {
+			if let Err(_) = self.secp_ctx.verify_ecdsa(&sighash, &msg.signature, &self.get_counterparty_pubkeys().funding_pubkey) {
 				return Err(ChannelError::Close("Invalid funding_signed signature from peer".to_owned()));
 			}
 		}
@@ -2837,7 +2837,7 @@ impl<Signer: Sign> Channel<Signer> {
 				log_bytes!(msg.signature.serialize_compact()[..]),
 				log_bytes!(self.counterparty_funding_pubkey().serialize()), encode::serialize_hex(&bitcoin_tx.transaction),
 				log_bytes!(sighash[..]), encode::serialize_hex(&funding_script), log_bytes!(self.channel_id()));
-			if let Err(_) = self.secp_ctx.verify(&sighash, &msg.signature, &self.counterparty_funding_pubkey()) {
+			if let Err(_) = self.secp_ctx.verify_ecdsa(&sighash, &msg.signature, &self.counterparty_funding_pubkey()) {
 				return Err((None, ChannelError::Close("Invalid commitment tx signature from peer".to_owned())));
 			}
 			bitcoin_tx.txid
@@ -2887,12 +2887,12 @@ impl<Signer: Sign> Channel<Signer> {
 					&keys.broadcaster_delayed_payment_key, &keys.revocation_key);
 
 				let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, self.opt_anchors(), &keys);
-				let htlc_sighashtype = if self.opt_anchors() { SigHashType::SinglePlusAnyoneCanPay } else { SigHashType::All };
-				let htlc_sighash = hash_to_message!(&bip143::SigHashCache::new(&htlc_tx).signature_hash(0, &htlc_redeemscript, htlc.amount_msat / 1000, htlc_sighashtype)[..]);
+				let htlc_sighashtype = if self.opt_anchors() { EcdsaSighashType::SinglePlusAnyoneCanPay } else { EcdsaSighashType::All };
+				let htlc_sighash = hash_to_message!(&sighash::SighashCache::new(&htlc_tx).segwit_signature_hash(0, &htlc_redeemscript, htlc.amount_msat / 1000, htlc_sighashtype).unwrap()[..]);
 				log_trace!(logger, "Checking HTLC tx signature {} by key {} against tx {} (sighash {}) with redeemscript {} in channel {}.",
 					log_bytes!(msg.htlc_signatures[idx].serialize_compact()[..]), log_bytes!(keys.countersignatory_htlc_key.serialize()),
 					encode::serialize_hex(&htlc_tx), log_bytes!(htlc_sighash[..]), encode::serialize_hex(&htlc_redeemscript), log_bytes!(self.channel_id()));
-				if let Err(_) = self.secp_ctx.verify(&htlc_sighash, &msg.htlc_signatures[idx], &keys.countersignatory_htlc_key) {
+				if let Err(_) = self.secp_ctx.verify_ecdsa(&htlc_sighash, &msg.htlc_signatures[idx], &keys.countersignatory_htlc_key) {
 					return Err((None, ChannelError::Close("Invalid HTLC tx signature from peer".to_owned())));
 				}
 				htlcs_and_sigs.push((htlc, Some(msg.htlc_signatures[idx]), source));
@@ -4138,15 +4138,17 @@ impl<Signer: Sign> Channel<Signer> {
 
 		let funding_key = self.get_holder_pubkeys().funding_pubkey.serialize();
 		let counterparty_funding_key = self.counterparty_funding_pubkey().serialize();
+		let mut holder_sig = sig.serialize_der().to_vec();
+		holder_sig.push(EcdsaSighashType::All as u8);
+		let mut cp_sig = counterparty_sig.serialize_der().to_vec();
+		cp_sig.push(EcdsaSighashType::All as u8);
 		if funding_key[..] < counterparty_funding_key[..] {
-			tx.input[0].witness.push(sig.serialize_der().to_vec());
-			tx.input[0].witness.push(counterparty_sig.serialize_der().to_vec());
+			tx.input[0].witness.push(holder_sig);
+			tx.input[0].witness.push(cp_sig);
 		} else {
-			tx.input[0].witness.push(counterparty_sig.serialize_der().to_vec());
-			tx.input[0].witness.push(sig.serialize_der().to_vec());
+			tx.input[0].witness.push(cp_sig);
+			tx.input[0].witness.push(holder_sig);
 		}
-		tx.input[0].witness[1].push(SigHashType::All as u8);
-		tx.input[0].witness[2].push(SigHashType::All as u8);
 
 		tx.input[0].witness.push(self.get_funding_redeemscript().into_bytes());
 		tx
@@ -4184,14 +4186,14 @@ impl<Signer: Sign> Channel<Signer> {
 		}
 		let sighash = closing_tx.trust().get_sighash_all(&funding_redeemscript, self.channel_value_satoshis);
 
-		match self.secp_ctx.verify(&sighash, &msg.signature, &self.get_counterparty_pubkeys().funding_pubkey) {
+		match self.secp_ctx.verify_ecdsa(&sighash, &msg.signature, &self.get_counterparty_pubkeys().funding_pubkey) {
 			Ok(_) => {},
 			Err(_e) => {
 				// The remote end may have decided to revoke their output due to inconsistent dust
 				// limits, so check for that case by re-checking the signature here.
 				closing_tx = self.build_closing_transaction(msg.fee_satoshis, true).0;
 				let sighash = closing_tx.trust().get_sighash_all(&funding_redeemscript, self.channel_value_satoshis);
-				secp_check!(self.secp_ctx.verify(&sighash, &msg.signature, self.counterparty_funding_pubkey()), "Invalid closing tx signature from peer".to_owned());
+				secp_check!(self.secp_ctx.verify_ecdsa(&sighash, &msg.signature, self.counterparty_funding_pubkey()), "Invalid closing tx signature from peer".to_owned());
 			},
 		};
 
@@ -5081,12 +5083,12 @@ impl<Signer: Sign> Channel<Signer> {
 
 		let msghash = hash_to_message!(&Sha256d::hash(&announcement.encode()[..])[..]);
 
-		if self.secp_ctx.verify(&msghash, &msg.node_signature, &self.get_counterparty_node_id()).is_err() {
+		if self.secp_ctx.verify_ecdsa(&msghash, &msg.node_signature, &self.get_counterparty_node_id()).is_err() {
 			return Err(ChannelError::Close(format!(
 				"Bad announcement_signatures. Failed to verify node_signature. UnsignedChannelAnnouncement used for verification is {:?}. their_node_key is {:?}",
 				 &announcement, self.get_counterparty_node_id())));
 		}
-		if self.secp_ctx.verify(&msghash, &msg.bitcoin_signature, self.counterparty_funding_pubkey()).is_err() {
+		if self.secp_ctx.verify_ecdsa(&msghash, &msg.bitcoin_signature, self.counterparty_funding_pubkey()).is_err() {
 			return Err(ChannelError::Close(format!(
 				"Bad announcement_signatures. Failed to verify bitcoin_signature. UnsignedChannelAnnouncement used for verification is {:?}. their_bitcoin_key is ({:?})",
 				&announcement, self.counterparty_funding_pubkey())));
@@ -6395,15 +6397,15 @@ mod tests {
 	use util::errors::APIError;
 	use util::test_utils;
 	use util::test_utils::OnGetShutdownScriptpubkey;
-	use bitcoin::secp256k1::{Secp256k1, Signature};
+	use bitcoin::secp256k1::{Secp256k1, ecdsa::Signature};
 	use bitcoin::secp256k1::ffi::Signature as FFISignature;
-	use bitcoin::secp256k1::key::{SecretKey,PublicKey};
-	use bitcoin::secp256k1::recovery::RecoverableSignature;
+	use bitcoin::secp256k1::{SecretKey,PublicKey};
+	use bitcoin::secp256k1::ecdsa::RecoverableSignature;
 	use bitcoin::hashes::sha256::Hash as Sha256;
 	use bitcoin::hashes::Hash;
 	use bitcoin::hash_types::WPubkeyHash;
-	use core::num::NonZeroU8;
 	use bitcoin::bech32::u5;
+	use bitcoin::util::address::WitnessVersion;
 	use prelude::*;
 
 	struct TestFeeEstimator {
@@ -6467,7 +6469,7 @@ mod tests {
 	fn upfront_shutdown_script_incompatibility() {
 		let features = InitFeatures::known().clear_shutdown_anysegwit();
 		let non_v0_segwit_shutdown_script =
-			ShutdownScript::new_witness_program(NonZeroU8::new(16).unwrap(), &[0, 40]).unwrap();
+			ShutdownScript::new_witness_program(WitnessVersion::V16, &[0, 40]).unwrap();
 
 		let seed = [42; 32];
 		let network = Network::Testnet;
@@ -6821,9 +6823,9 @@ mod tests {
 	#[cfg(not(feature = "grind_signatures"))]
 	#[test]
 	fn outbound_commitment_test() {
-		use bitcoin::util::bip143;
+		use bitcoin::util::sighash;
 		use bitcoin::consensus::encode::serialize;
-		use bitcoin::blockdata::transaction::SigHashType;
+		use bitcoin::blockdata::transaction::EcdsaSighashType;
 		use bitcoin::hashes::hex::FromHex;
 		use bitcoin::hash_types::Txid;
 		use bitcoin::secp256k1::Message;
@@ -6932,7 +6934,7 @@ mod tests {
 				let counterparty_signature = Signature::from_der(&hex::decode($counterparty_sig_hex).unwrap()[..]).unwrap();
 				let sighash = unsigned_tx.get_sighash_all(&redeemscript, chan.channel_value_satoshis);
 				log_trace!(logger, "unsigned_tx = {}", hex::encode(serialize(&unsigned_tx.transaction)));
-				assert!(secp_ctx.verify(&sighash, &counterparty_signature, chan.counterparty_funding_pubkey()).is_ok(), "verify counterparty commitment sig");
+				assert!(secp_ctx.verify_ecdsa(&sighash, &counterparty_signature, chan.counterparty_funding_pubkey()).is_ok(), "verify counterparty commitment sig");
 
 				let mut per_htlc: Vec<(HTLCOutputInCommitment, Option<Signature>)> = Vec::new();
 				per_htlc.clear(); // Don't warn about excess mut for no-HTLC calls
@@ -6971,9 +6973,9 @@ mod tests {
 						chan.get_counterparty_selected_contest_delay().unwrap(),
 						&htlc, $opt_anchors, &keys.broadcaster_delayed_payment_key, &keys.revocation_key);
 					let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, $opt_anchors, &keys);
-					let htlc_sighashtype = if $opt_anchors { SigHashType::SinglePlusAnyoneCanPay } else { SigHashType::All };
-					let htlc_sighash = Message::from_slice(&bip143::SigHashCache::new(&htlc_tx).signature_hash(0, &htlc_redeemscript, htlc.amount_msat / 1000, htlc_sighashtype)[..]).unwrap();
-					assert!(secp_ctx.verify(&htlc_sighash, &remote_signature, &keys.countersignatory_htlc_key).is_ok(), "verify counterparty htlc sig");
+					let htlc_sighashtype = if $opt_anchors { EcdsaSighashType::SinglePlusAnyoneCanPay } else { EcdsaSighashType::All };
+					let htlc_sighash = Message::from_slice(&sighash::SighashCache::new(&htlc_tx).segwit_signature_hash(0, &htlc_redeemscript, htlc.amount_msat / 1000, htlc_sighashtype).unwrap()[..]).unwrap();
+					assert!(secp_ctx.verify_ecdsa(&htlc_sighash, &remote_signature, &keys.countersignatory_htlc_key).is_ok(), "verify counterparty htlc sig");
 
 					let mut preimage: Option<PaymentPreimage> = None;
 					if !htlc.offered {

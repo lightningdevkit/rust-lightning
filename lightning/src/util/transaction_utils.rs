@@ -50,7 +50,7 @@ pub(crate) fn maybe_add_change_output(tx: &mut Transaction, input_value: u64, wi
 		value: 0,
 	};
 	let change_len = change_output.consensus_encode(&mut sink()).unwrap();
-	let starting_weight = tx.get_weight() + WITNESS_FLAG_BYTES as usize + witness_max_weight;
+	let starting_weight = tx.weight() + WITNESS_FLAG_BYTES as usize + witness_max_weight;
 	let mut weight_with_change: i64 = starting_weight as i64 + change_len as i64 * 4;
 	// Include any extra bytes required to push an extra output.
 	weight_with_change += (VarInt(tx.output.len() as u64 + 1).len() - VarInt(tx.output.len() as u64).len()) as i64 * 4;
@@ -77,6 +77,7 @@ mod tests {
 
 	use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 	use bitcoin::hashes::Hash;
+	use bitcoin::Witness;
 
 	use hex::decode;
 
@@ -230,7 +231,7 @@ mod tests {
 		let output_spk = Script::new_p2pkh(&PubkeyHash::hash(&[0; 0]));
 		assert_eq!(output_spk.dust_value().as_sat(), 546);
 		// 9 sats isn't enough to pay fee on a dummy transaction...
-		assert_eq!(tx.get_weight() as u64, 40); // ie 10 vbytes
+		assert_eq!(tx.weight() as u64, 40); // ie 10 vbytes
 		assert!(maybe_add_change_output(&mut tx, 9, 0, 250, output_spk.clone()).is_err());
 		assert_eq!(tx.wtxid(), orig_wtxid); // Failure doesn't change the transaction
 		// but 10-564 is, just not enough to add a change output...
@@ -250,7 +251,7 @@ mod tests {
 		assert_eq!(tx.output.len(), 1);
 		assert_eq!(tx.output[0].value, 546);
 		assert_eq!(tx.output[0].script_pubkey, output_spk);
-		assert_eq!(tx.get_weight() / 4, 590-546); // New weight is exactly the fee we wanted.
+		assert_eq!(tx.weight() / 4, 590-546); // New weight is exactly the fee we wanted.
 
 		tx.output.pop();
 		assert_eq!(tx.wtxid(), orig_wtxid); // The only change is the addition of one output.
@@ -260,12 +261,12 @@ mod tests {
 	fn test_tx_extra_outputs() {
 		// Check that we correctly handle existing outputs
 		let mut tx = Transaction { version: 2, lock_time: 0, input: vec![TxIn {
-			previous_output: OutPoint::new(Txid::from_hash(Sha256dHash::default()), 0), script_sig: Script::new(), witness: Vec::new(), sequence: 0,
+			previous_output: OutPoint::new(Txid::from_hash(Sha256dHash::default()), 0), script_sig: Script::new(), witness: Witness::new(), sequence: 0,
 		}], output: vec![TxOut {
 			script_pubkey: Builder::new().push_int(1).into_script(), value: 1000
 		}] };
 		let orig_wtxid = tx.wtxid();
-		let orig_weight = tx.get_weight();
+		let orig_weight = tx.weight();
 		assert_eq!(orig_weight / 4, 61);
 
 		assert_eq!(Builder::new().push_int(2).into_script().dust_value().as_sat(), 474);
@@ -284,7 +285,7 @@ mod tests {
 		assert_eq!(tx.output.len(), 2);
 		assert_eq!(tx.output[1].value, 474);
 		assert_eq!(tx.output[1].script_pubkey, Builder::new().push_int(2).into_script());
-		assert_eq!(tx.get_weight() - orig_weight, 40); // Weight difference matches what we had to add above
+		assert_eq!(tx.weight() - orig_weight, 40); // Weight difference matches what we had to add above
 		tx.output.pop();
 		assert_eq!(tx.wtxid(), orig_wtxid); // The only change is the addition of one output.
 	}

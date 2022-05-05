@@ -15,7 +15,7 @@
 //! call into the provided message handlers (probably a ChannelManager and NetGraphmsgHandler) with messages
 //! they should handle, and encoding/sending response messages.
 
-use bitcoin::secp256k1::key::{SecretKey,PublicKey};
+use bitcoin::secp256k1::{SecretKey,PublicKey};
 
 use ln::features::InitFeatures;
 use ln::msgs;
@@ -1743,7 +1743,7 @@ mod tests {
 	use util::test_utils;
 
 	use bitcoin::secp256k1::Secp256k1;
-	use bitcoin::secp256k1::key::{SecretKey, PublicKey};
+	use bitcoin::secp256k1::{SecretKey, PublicKey};
 
 	use prelude::*;
 	use sync::{Arc, Mutex};

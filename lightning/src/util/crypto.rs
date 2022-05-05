@@ -1,7 +1,7 @@
 use bitcoin::hashes::{Hash, HashEngine};
 use bitcoin::hashes::hmac::{Hmac, HmacEngine};
 use bitcoin::hashes::sha256::Hash as Sha256;
-use bitcoin::secp256k1::{Message, Secp256k1, SecretKey, Signature, Signing};
+use bitcoin::secp256k1::{Message, Secp256k1, SecretKey, ecdsa::Signature, Signing};
 
 macro_rules! hkdf_extract_expand {
 	($salt: expr, $ikm: expr) => {{
@@ -41,8 +41,8 @@ pub fn hkdf_extract_expand_thrice(salt: &[u8], ikm: &[u8]) -> ([u8; 32], [u8; 32
 #[inline]
 pub fn sign<C: Signing>(ctx: &Secp256k1<C>, msg: &Message, sk: &SecretKey) -> Signature {
 	#[cfg(feature = "grind_signatures")]
-	let sig = ctx.sign_low_r(msg, sk);
+	let sig = ctx.sign_ecdsa_low_r(msg, sk);
 	#[cfg(not(feature = "grind_signatures"))]
-	let sig = ctx.sign(msg, sk);
+	let sig = ctx.sign_ecdsa(msg, sk);
 	sig
 }

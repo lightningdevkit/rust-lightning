@@ -528,7 +528,7 @@ fn test_scid_alias_returned() {
 		excess_data: Vec::new(),
 	};
 	let msg_hash = Sha256dHash::hash(&contents.encode()[..]);
-	let signature = Secp256k1::new().sign(&hash_to_message!(&msg_hash[..]), &nodes[1].keys_manager.get_node_secret(Recipient::Node).unwrap());
+	let signature = Secp256k1::new().sign_ecdsa(&hash_to_message!(&msg_hash[..]), &nodes[1].keys_manager.get_node_secret(Recipient::Node).unwrap());
 	let msg = msgs::ChannelUpdate { signature, contents };
 
 	expect_payment_failed_conditions!(nodes[0], payment_hash, false,

@@ -9,7 +9,7 @@
 
 use lightning::ln::peer_channel_encryptor::PeerChannelEncryptor;
 
-use bitcoin::secp256k1::key::{PublicKey,SecretKey};
+use bitcoin::secp256k1::{PublicKey,SecretKey};
 
 use utils::test_logger;
 

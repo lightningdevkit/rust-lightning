@@ -19,7 +19,7 @@ use lightning::routing::scoring::Score;
 use lightning::routing::network_graph::{NetworkGraph, RoutingFees};
 use lightning::routing::router::{Route, RouteHint, RouteHintHop, RouteParameters, find_route};
 use lightning::util::logger::Logger;
-use secp256k1::key::PublicKey;
+use secp256k1::PublicKey;
 use core::convert::TryInto;
 use core::ops::Deref;
 use core::time::Duration;

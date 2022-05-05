@@ -16,7 +16,7 @@ use bitcoin::hashes::{Hash, HashEngine};
 use bitcoin::hashes::sha256::Hash as Sha256;
 
 use bitcoin::secp256k1::Secp256k1;
-use bitcoin::secp256k1::key::{PublicKey,SecretKey};
+use bitcoin::secp256k1::{PublicKey,SecretKey};
 use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1;
 
@@ -163,7 +163,7 @@ impl PeerChannelEncryptor {
 
 	#[inline]
 	fn hkdf(state: &mut BidirectionalNoiseState, ss: SharedSecret) -> [u8; 32] {
-		let (t1, t2) = hkdf_extract_expand_twice(&state.ck, &ss[..]);
+		let (t1, t2) = hkdf_extract_expand_twice(&state.ck, ss.as_ref());
 		state.ck = t1;
 		t2
 	}
@@ -473,7 +473,7 @@ impl PeerChannelEncryptor {
 mod tests {
 	use super::LN_MAX_MSG_LEN;
 
-	use bitcoin::secp256k1::key::{PublicKey,SecretKey};
+	use bitcoin::secp256k1::{PublicKey,SecretKey};
 
 	use hex;
 

@@ -20,7 +20,7 @@ std = ["bitcoin_hashes/std", "num-traits/std", "lightning/std", "bech32/std"]
 [dependencies]
 bech32 = { version = "0.8", default-features = false }
 lightning = { version = "0.0.106", path = "../lightning", default-features = false }
-secp256k1 = { version = "0.20", default-features = false, features = ["recovery", "alloc"] }
+secp256k1 = { version = "0.22", default-features = false, features = ["recovery", "alloc"] }
 num-traits = { version = "0.2.8", default-features = false }
 bitcoin_hashes = { version = "0.10", default-features = false }
 hashbrown = { version = "0.11", optional = true }
