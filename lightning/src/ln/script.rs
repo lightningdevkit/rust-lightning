@@ -5,13 +5,13 @@ use bitcoin::blockdata::script::{Builder, Script};
 use bitcoin::hashes::Hash;
 use bitcoin::hash_types::{WPubkeyHash, WScriptHash};
 use bitcoin::secp256k1::PublicKey;
+use bitcoin::util::address::WitnessVersion;
 
 use ln::features::InitFeatures;
 use ln::msgs::DecodeError;
 use util::ser::{Readable, Writeable, Writer};
 
 use core::convert::TryFrom;
-use core::num::NonZeroU8;
 use io;
 
 /// A script pubkey for shutting down a channel as defined by [BOLT #2].
@@ -84,9 +84,9 @@ impl ShutdownScript {
 	/// # Errors
 	///
 	/// This function may return an error if `program` is invalid for the segwit `version`.
-	pub fn new_witness_program(version: NonZeroU8, program: &[u8]) -> Result<Self, InvalidShutdownScript> {
+	pub fn new_witness_program(version: WitnessVersion, program: &[u8]) -> Result<Self, InvalidShutdownScript> {
 		let script = Builder::new()
-			.push_int(version.get().into())
+			.push_int(version as i64)
 			.push_slice(&program)
 			.into_script();
 		Self::try_from(script)
@@ -180,7 +180,6 @@ mod shutdown_script_tests {
 	use bitcoin::secp256k1::{PublicKey, SecretKey};
 	use ln::features::InitFeatures;
 	use core::convert::TryFrom;
-	use core::num::NonZeroU8;
 	use bitcoin::util::address::WitnessVersion;
 
 	fn pubkey() -> bitcoin::util::key::PublicKey {
@@ -239,9 +238,7 @@ mod shutdown_script_tests {
 	#[test]
 	fn generates_segwit_from_non_v0_witness_program() {
 		let witness_program = Script::new_witness_program(WitnessVersion::V16, &[0; 40]);
-
-		let version = NonZeroU8::new(WitnessVersion::V16 as u8).unwrap();
-		let shutdown_script = ShutdownScript::new_witness_program(version, &[0; 40]).unwrap();
+		let shutdown_script = ShutdownScript::new_witness_program(WitnessVersion::V16, &[0; 40]).unwrap();
 		assert!(shutdown_script.is_compatible(&InitFeatures::known()));
 		assert!(!shutdown_script.is_compatible(&InitFeatures::known().clear_shutdown_anysegwit()));
 		assert_eq!(shutdown_script.into_inner(), witness_program);
@@ -251,12 +248,6 @@ mod shutdown_script_tests {
 	fn fails_from_unsupported_script() {
 		let op_return = Script::new_op_return(&[0; 42]);
 		assert!(ShutdownScript::try_from(op_return).is_err());
-	}
-
-	#[test]
-	fn fails_from_invalid_segwit_version() {
-		let version = NonZeroU8::new(17).unwrap();
-		assert!(ShutdownScript::new_witness_program(version, &[0; 40]).is_err());
 	}
 
 	#[test]
@@ -270,7 +261,6 @@ mod shutdown_script_tests {
 		let witness_program = Script::new_witness_program(WitnessVersion::V16, &[0; 42]);
 		assert!(ShutdownScript::try_from(witness_program).is_err());
 
-		let version = NonZeroU8::new(WitnessVersion::V16 as u8).unwrap();
-		assert!(ShutdownScript::new_witness_program(version, &[0; 42]).is_err());
+		assert!(ShutdownScript::new_witness_program(WitnessVersion::V16, &[0; 42]).is_err());
 	}
 }

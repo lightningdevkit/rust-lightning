@@ -6363,8 +6363,8 @@ mod tests {
 	use bitcoin::hashes::sha256::Hash as Sha256;
 	use bitcoin::hashes::Hash;
 	use bitcoin::hash_types::WPubkeyHash;
-	use core::num::NonZeroU8;
 	use bitcoin::bech32::u5;
+	use bitcoin::util::address::WitnessVersion;
 	use prelude::*;
 
 	struct TestFeeEstimator {
@@ -6428,7 +6428,7 @@ mod tests {
 	fn upfront_shutdown_script_incompatibility() {
 		let features = InitFeatures::known().clear_shutdown_anysegwit();
 		let non_v0_segwit_shutdown_script =
-			ShutdownScript::new_witness_program(NonZeroU8::new(16).unwrap(), &[0, 40]).unwrap();
+			ShutdownScript::new_witness_program(WitnessVersion::V16, &[0, 40]).unwrap();
 
 		let seed = [42; 32];
 		let network = Network::Testnet;

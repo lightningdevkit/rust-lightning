@@ -26,11 +26,11 @@ use util::config::UserConfig;
 use bitcoin::blockdata::script::Builder;
 use bitcoin::blockdata::opcodes;
 use bitcoin::network::constants::Network;
+use bitcoin::util::address::WitnessVersion;
 
 use regex;
 
 use core::default::Default;
-use core::num::NonZeroU8;
 
 use ln::functional_test_utils::*;
 use ln::msgs::OptionalField::Present;
@@ -654,7 +654,7 @@ fn test_unsupported_anysegwit_shutdown_script() {
 	// Check that using an unsupported shutdown script fails and a supported one succeeds.
 	let supported_shutdown_script = chanmon_cfgs[1].keys_manager.get_shutdown_scriptpubkey();
 	let unsupported_shutdown_script =
-		ShutdownScript::new_witness_program(NonZeroU8::new(16).unwrap(), &[0, 40]).unwrap();
+		ShutdownScript::new_witness_program(WitnessVersion::V16, &[0, 40]).unwrap();
 	chanmon_cfgs[1].keys_manager
 		.expect(OnGetShutdownScriptpubkey { returns: unsupported_shutdown_script.clone() })
 		.expect(OnGetShutdownScriptpubkey { returns: supported_shutdown_script });
