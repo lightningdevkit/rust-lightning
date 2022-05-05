@@ -56,7 +56,7 @@ The codebase is maintained using the "contributor workflow" where everyone
 without exception contributes patch proposals using "pull requests". This
 facilitates social contribution, easy testing and peer review.
 
-To contribute a patch, the worflow is a as follows:
+To contribute a patch, the workflow is as follows:
 
   1. Fork Repository
   2. Create topic branch
@@ -73,7 +73,7 @@ must be given to the long term technical debt. Every new features should
 be covered by functional tests.
 
 When refactoring, structure your PR to make it easy to review and don't
-hestitate to split it into multiple small, focused PRs.
+hesitate to split it into multiple small, focused PRs.
 
 The Minimum Supported Rust Version is 1.41.1 (enforced by our GitHub Actions).
 
