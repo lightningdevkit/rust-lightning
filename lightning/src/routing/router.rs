@@ -481,7 +481,8 @@ struct PathBuildingHop<'a> {
 
 impl<'a> core::fmt::Debug for PathBuildingHop<'a> {
 	fn fmt(&self, f: &mut core::fmt::Formatter) -> Result<(), core::fmt::Error> {
-		f.debug_struct("PathBuildingHop")
+		let mut debug_struct = f.debug_struct("PathBuildingHop");
+		debug_struct
 			.field("node_id", &self.node_id)
 			.field("short_channel_id", &self.candidate.short_channel_id())
 			.field("total_fee_msat", &self.total_fee_msat)
@@ -490,8 +491,11 @@ impl<'a> core::fmt::Debug for PathBuildingHop<'a> {
 			.field("total_fee_msat - (next_hops_fee_msat + hop_use_fee_msat)", &(&self.total_fee_msat - (&self.next_hops_fee_msat + &self.hop_use_fee_msat)))
 			.field("path_penalty_msat", &self.path_penalty_msat)
 			.field("path_htlc_minimum_msat", &self.path_htlc_minimum_msat)
-			.field("cltv_expiry_delta", &self.candidate.cltv_expiry_delta())
-			.finish()
+			.field("cltv_expiry_delta", &self.candidate.cltv_expiry_delta());
+		#[cfg(all(not(feature = "_bench_unstable"), any(test, fuzzing)))]
+		let debug_struct = debug_struct
+			.field("value_contribution_msat", &self.value_contribution_msat);
+		debug_struct.finish()
 	}
 }
 
