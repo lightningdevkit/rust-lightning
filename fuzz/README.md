@@ -24,6 +24,13 @@ cargo update
 cargo install --force honggfuzz
 ```
 
+In some environments, you may want to pin the honggfuzz version to `0.5.52`:
+
+```shell
+cargo update -p honggfuzz --precise "0.5.52"
+cargo install --force honggfuzz --version "0.5.52"
+```
+
 ### Execution
 
 To run the Hongg fuzzer, do
@@ -34,8 +41,10 @@ export HFUZZ_BUILD_ARGS="--features honggfuzz_fuzz"
 export HFUZZ_RUN_ARGS="-n $CPU_COUNT --exit_upon_crash"
 
 export TARGET="msg_ping_target" # replace with the target to be fuzzed
-cargo hfuzz run $TARGET 
+cargo hfuzz run $TARGET
 ```
+
+(Or, for a prettier output, replace the last line with `cargo --color always hfuzz run $TARGET`.)
 
 To see a list of available fuzzing targets, run:
 
@@ -84,4 +93,38 @@ export RUSTFLAGS="--cfg=fuzzing"
 cargo test
 ```
 
+Note that if the fuzz test failed locally, moving the offending run's trace 
+to the `test_cases` folder should also do the trick; simply replace the `echo $HEX |` line above
+with (the trace file name is of course a bit longer than in the example):
+
+```shell
+mv hfuzz_workspace/fuzz_target/SIGABRT.PC.7ffff7e21ce1.STACK.[…].fuzz ./test_cases/$TARGET/
+```
+
 This will reproduce the failing fuzz input and yield a usable stack trace.
+
+
+## How do I add a new fuzz test?
+
+1. The easiest approach is to take one of the files in `fuzz/src/`, such as 
+`process_network_graph.rs`, and duplicate it, renaming the new file to something more 
+suitable. For the sake of example, let's call the new fuzz target we're creating 
+`my_fuzzy_experiment`.
+
+2. In the newly created file `fuzz/src/my_fuzzy_experiment.rs`, run a string substitution
+of `process_network_graph` to `my_fuzzy_experiment`, such that the three methods in the
+file are `do_test`, `my_fuzzy_experiment_test`, and `my_fuzzy_experiment_run`.
+
+3. Adjust the body (not the signature!) of `do_test` as necessary for the new fuzz test.
+
+4. In `fuzz/src/bin/gen_target.sh`, add a line reading `GEN_TEST my_fuzzy_experiment` to the 
+first group of `GEN_TEST` lines (starting in line 9).
+
+5. If your test relies on a new local crate, add that crate as a dependency to `fuzz/Cargo.toml`.
+
+6. In `fuzz/src/lib.rs`, add the line `pub mod my_fuzzy_experiment`. Additionally, if 
+you added a new crate dependency, add the `extern crate […]` import line.
+
+7. Run `fuzz/src/bin/gen_target.sh`.
+
+8. There is no step eight: happy fuzzing!
