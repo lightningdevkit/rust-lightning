@@ -12,7 +12,7 @@
 //! You probably want to create a NetGraphMsgHandler and use that as your RoutingMessageHandler and then
 //! interrogate it to get routes for your own payments.
 
-use bitcoin::secp256k1::key::PublicKey;
+use bitcoin::secp256k1::PublicKey;
 
 use ln::channelmanager::ChannelDetails;
 use ln::features::{ChannelFeatures, InvoiceFeatures, NodeFeatures};
@@ -1721,7 +1721,7 @@ mod tests {
 
 	use hex;
 
-	use bitcoin::secp256k1::key::{PublicKey,SecretKey};
+	use bitcoin::secp256k1::{PublicKey,SecretKey};
 	use bitcoin::secp256k1::{Secp256k1, All};
 
 	use prelude::*;
@@ -1780,10 +1780,10 @@ mod tests {
 
 		let msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_announcement.encode()[..])[..]);
 		let valid_announcement = ChannelAnnouncement {
-			node_signature_1: secp_ctx.sign(&msghash, node_1_privkey),
-			node_signature_2: secp_ctx.sign(&msghash, node_2_privkey),
-			bitcoin_signature_1: secp_ctx.sign(&msghash, node_1_privkey),
-			bitcoin_signature_2: secp_ctx.sign(&msghash, node_2_privkey),
+			node_signature_1: secp_ctx.sign_ecdsa(&msghash, node_1_privkey),
+			node_signature_2: secp_ctx.sign_ecdsa(&msghash, node_2_privkey),
+			bitcoin_signature_1: secp_ctx.sign_ecdsa(&msghash, node_1_privkey),
+			bitcoin_signature_2: secp_ctx.sign_ecdsa(&msghash, node_2_privkey),
 			contents: unsigned_announcement.clone(),
 		};
 		match net_graph_msg_handler.handle_channel_announcement(&valid_announcement) {
@@ -1798,7 +1798,7 @@ mod tests {
 	) {
 		let msghash = hash_to_message!(&Sha256dHash::hash(&update.encode()[..])[..]);
 		let valid_channel_update = ChannelUpdate {
-			signature: secp_ctx.sign(&msghash, node_privkey),
+			signature: secp_ctx.sign_ecdsa(&msghash, node_privkey),
 			contents: update.clone()
 		};
 
@@ -1825,7 +1825,7 @@ mod tests {
 		};
 		let msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_announcement.encode()[..])[..]);
 		let valid_announcement = NodeAnnouncement {
-			signature: secp_ctx.sign(&msghash, node_privkey),
+			signature: secp_ctx.sign_ecdsa(&msghash, node_privkey),
 			contents: unsigned_announcement.clone()
 		};
 

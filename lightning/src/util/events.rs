@@ -29,7 +29,7 @@ use bitcoin::Transaction;
 use bitcoin::blockdata::script::Script;
 use bitcoin::hashes::Hash;
 use bitcoin::hashes::sha256::Hash as Sha256;
-use bitcoin::secp256k1::key::PublicKey;
+use bitcoin::secp256k1::PublicKey;
 use io;
 use prelude::*;
 use core::time::Duration;

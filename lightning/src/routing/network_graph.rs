@@ -10,7 +10,7 @@
 //! The top-level network map tracking logic lives here.
 
 use bitcoin::secp256k1::constants::PUBLIC_KEY_SIZE;
-use bitcoin::secp256k1::key::PublicKey;
+use bitcoin::secp256k1::PublicKey;
 use bitcoin::secp256k1::Secp256k1;
 use bitcoin::secp256k1;
 
@@ -295,7 +295,7 @@ where C::Target: chain::Access, L::Target: Logger
 
 macro_rules! secp_verify_sig {
 	( $secp_ctx: expr, $msg: expr, $sig: expr, $pubkey: expr, $msg_type: expr ) => {
-		match $secp_ctx.verify($msg, $sig, $pubkey) {
+		match $secp_ctx.verify_ecdsa($msg, $sig, $pubkey) {
 			Ok(_) => {},
 			Err(_) => {
 				return Err(LightningError {
@@ -1356,10 +1356,10 @@ impl NetworkGraph {
 	/// If built with `no-std`, any updates with a timestamp more than two weeks in the past or
 	/// materially in the future will be rejected.
 	pub fn update_channel_unsigned(&self, msg: &msgs::UnsignedChannelUpdate) -> Result<(), LightningError> {
-		self.update_channel_intern(msg, None, None::<(&secp256k1::Signature, &Secp256k1<secp256k1::VerifyOnly>)>)
+		self.update_channel_intern(msg, None, None::<(&secp256k1::ecdsa::Signature, &Secp256k1<secp256k1::VerifyOnly>)>)
 	}
 
-	fn update_channel_intern<T: secp256k1::Verification>(&self, msg: &msgs::UnsignedChannelUpdate, full_msg: Option<&msgs::ChannelUpdate>, sig_info: Option<(&secp256k1::Signature, &Secp256k1<T>)>) -> Result<(), LightningError> {
+	fn update_channel_intern<T: secp256k1::Verification>(&self, msg: &msgs::UnsignedChannelUpdate, full_msg: Option<&msgs::ChannelUpdate>, sig_info: Option<(&secp256k1::ecdsa::Signature, &Secp256k1<T>)>) -> Result<(), LightningError> {
 		let dest_node_id;
 		let chan_enabled = msg.flags & (1 << 1) != (1 << 1);
 		let chan_was_enabled;
@@ -1578,10 +1578,11 @@ mod tests {
 
 	use hex;
 
-	use bitcoin::secp256k1::key::{PublicKey, SecretKey};
+	use bitcoin::secp256k1::{PublicKey, SecretKey};
 	use bitcoin::secp256k1::{All, Secp256k1};
 
 	use io;
+	use bitcoin::secp256k1;
 	use prelude::*;
 	use sync::Arc;
 
@@ -1628,7 +1629,7 @@ mod tests {
 		f(&mut unsigned_announcement);
 		let msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_announcement.encode()[..])[..]);
 		NodeAnnouncement {
-			signature: secp_ctx.sign(&msghash, node_key),
+			signature: secp_ctx.sign_ecdsa(&msghash, node_key),
 			contents: unsigned_announcement
 		}
 	}
@@ -1652,10 +1653,10 @@ mod tests {
 		f(&mut unsigned_announcement);
 		let msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_announcement.encode()[..])[..]);
 		ChannelAnnouncement {
-			node_signature_1: secp_ctx.sign(&msghash, node_1_key),
-			node_signature_2: secp_ctx.sign(&msghash, node_2_key),
-			bitcoin_signature_1: secp_ctx.sign(&msghash, node_1_btckey),
-			bitcoin_signature_2: secp_ctx.sign(&msghash, node_2_btckey),
+			node_signature_1: secp_ctx.sign_ecdsa(&msghash, node_1_key),
+			node_signature_2: secp_ctx.sign_ecdsa(&msghash, node_2_key),
+			bitcoin_signature_1: secp_ctx.sign_ecdsa(&msghash, node_1_btckey),
+			bitcoin_signature_2: secp_ctx.sign_ecdsa(&msghash, node_2_btckey),
 			contents: unsigned_announcement,
 		}
 	}
@@ -1687,7 +1688,7 @@ mod tests {
 		f(&mut unsigned_channel_update);
 		let msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_channel_update.encode()[..])[..]);
 		ChannelUpdate {
-			signature: secp_ctx.sign(&msghash, node_key),
+			signature: secp_ctx.sign_ecdsa(&msghash, node_key),
 			contents: unsigned_channel_update
 		}
 	}
@@ -1724,7 +1725,7 @@ mod tests {
 		let fake_msghash = hash_to_message!(&zero_hash);
 		match net_graph_msg_handler.handle_node_announcement(
 			&NodeAnnouncement {
-				signature: secp_ctx.sign(&fake_msghash, node_1_privkey),
+				signature: secp_ctx.sign_ecdsa(&fake_msghash, node_1_privkey),
 				contents: valid_announcement.contents.clone()
 		}) {
 			Ok(_) => panic!(),
@@ -1963,7 +1964,7 @@ mod tests {
 		}, node_1_privkey, &secp_ctx);
 		let zero_hash = Sha256dHash::hash(&[0; 32]);
 		let fake_msghash = hash_to_message!(&zero_hash);
-		invalid_sig_channel_update.signature = secp_ctx.sign(&fake_msghash, node_1_privkey);
+		invalid_sig_channel_update.signature = secp_ctx.sign_ecdsa(&fake_msghash, node_1_privkey);
 		match net_graph_msg_handler.handle_channel_update(&invalid_sig_channel_update) {
 			Ok(_) => panic!(),
 			Err(e) => assert_eq!(e.err, "Invalid signature on channel_update message")

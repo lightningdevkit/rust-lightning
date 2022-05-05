@@ -12,7 +12,7 @@ use chain::keysinterface::SpendableOutputDescriptor;
 
 use bitcoin::hash_types::Txid;
 use bitcoin::blockdata::transaction::Transaction;
-use bitcoin::secp256k1::key::PublicKey;
+use bitcoin::secp256k1::PublicKey;
 
 use routing::router::Route;
 use ln::chan_utils::HTLCType;

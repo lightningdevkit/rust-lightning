@@ -15,14 +15,14 @@
 //! # Example
 //!
 //! ```
-//! # extern crate secp256k1;
+//! # extern crate bitcoin;
 //! #
 //! # use lightning::routing::network_graph::NetworkGraph;
 //! # use lightning::routing::router::{RouteParameters, find_route};
 //! # use lightning::routing::scoring::{ProbabilisticScorer, ProbabilisticScoringParameters, Scorer, ScoringParameters};
 //! # use lightning::chain::keysinterface::{KeysManager, KeysInterface};
 //! # use lightning::util::logger::{Logger, Record};
-//! # use secp256k1::key::PublicKey;
+//! # use bitcoin::secp256k1::PublicKey;
 //! #
 //! # struct FakeLogger {};
 //! # impl Logger for FakeLogger {
@@ -1778,10 +1778,10 @@ mod tests {
 		};
 		let msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_announcement.encode()[..])[..]);
 		let signed_announcement = ChannelAnnouncement {
-			node_signature_1: secp_ctx.sign(&msghash, &node_1_key),
-			node_signature_2: secp_ctx.sign(&msghash, &node_2_key),
-			bitcoin_signature_1: secp_ctx.sign(&msghash, &node_1_secret),
-			bitcoin_signature_2: secp_ctx.sign(&msghash, &node_2_secret),
+			node_signature_1: secp_ctx.sign_ecdsa(&msghash, &node_1_key),
+			node_signature_2: secp_ctx.sign_ecdsa(&msghash, &node_2_key),
+			bitcoin_signature_1: secp_ctx.sign_ecdsa(&msghash, &node_1_secret),
+			bitcoin_signature_2: secp_ctx.sign_ecdsa(&msghash, &node_2_secret),
 			contents: unsigned_announcement,
 		};
 		let chain_source: Option<&::util::test_utils::TestChainSource> = None;
@@ -1810,7 +1810,7 @@ mod tests {
 		};
 		let msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_update.encode()[..])[..]);
 		let signed_update = ChannelUpdate {
-			signature: secp_ctx.sign(&msghash, &node_key),
+			signature: secp_ctx.sign_ecdsa(&msghash, &node_key),
 			contents: unsigned_update,
 		};
 		network_graph.update_channel(&signed_update, &secp_ctx).unwrap();

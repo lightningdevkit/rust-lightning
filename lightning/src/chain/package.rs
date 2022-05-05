@@ -12,13 +12,13 @@
 //! also includes witness weight computation and fee computation methods.
 
 use bitcoin::blockdata::constants::WITNESS_SCALE_FACTOR;
-use bitcoin::blockdata::transaction::{TxOut,TxIn, Transaction, SigHashType};
+use bitcoin::blockdata::transaction::{TxOut,TxIn, Transaction, EcdsaSighashType};
 use bitcoin::blockdata::transaction::OutPoint as BitcoinOutPoint;
 use bitcoin::blockdata::script::Script;
 
 use bitcoin::hash_types::Txid;
 
-use bitcoin::secp256k1::key::{SecretKey,PublicKey};
+use bitcoin::secp256k1::{SecretKey,PublicKey};
 
 use ln::PaymentPreimage;
 use ln::chan_utils::{TxCreationKeys, HTLCOutputInCommitment};
@@ -36,6 +36,7 @@ use prelude::*;
 use core::cmp;
 use core::mem;
 use core::ops::Deref;
+use bitcoin::Witness;
 
 const MAX_ALLOC_SIZE: usize = 64*1024;
 
@@ -352,8 +353,9 @@ impl PackageSolvingData {
 					let witness_script = chan_utils::get_revokeable_redeemscript(&chan_keys.revocation_key, outp.on_counterparty_tx_csv, &chan_keys.broadcaster_delayed_payment_key);
 					//TODO: should we panic on signer failure ?
 					if let Ok(sig) = onchain_handler.signer.sign_justice_revoked_output(&bumped_tx, i, outp.amount, &outp.per_commitment_key, &onchain_handler.secp_ctx) {
-						bumped_tx.input[i].witness.push(sig.serialize_der().to_vec());
-						bumped_tx.input[i].witness[0].push(SigHashType::All as u8);
+						let mut ser_sig = sig.serialize_der().to_vec();
+						ser_sig.push(EcdsaSighashType::All as u8);
+						bumped_tx.input[i].witness.push(ser_sig);
 						bumped_tx.input[i].witness.push(vec!(1));
 						bumped_tx.input[i].witness.push(witness_script.clone().into_bytes());
 					} else { return false; }
@@ -364,8 +366,9 @@ impl PackageSolvingData {
 					let witness_script = chan_utils::get_htlc_redeemscript_with_explicit_keys(&outp.htlc, onchain_handler.opt_anchors(), &chan_keys.broadcaster_htlc_key, &chan_keys.countersignatory_htlc_key, &chan_keys.revocation_key);
 					//TODO: should we panic on signer failure ?
 					if let Ok(sig) = onchain_handler.signer.sign_justice_revoked_htlc(&bumped_tx, i, outp.amount, &outp.per_commitment_key, &outp.htlc, &onchain_handler.secp_ctx) {
-						bumped_tx.input[i].witness.push(sig.serialize_der().to_vec());
-						bumped_tx.input[i].witness[0].push(SigHashType::All as u8);
+						let mut ser_sig = sig.serialize_der().to_vec();
+						ser_sig.push(EcdsaSighashType::All as u8);
+						bumped_tx.input[i].witness.push(ser_sig);
 						bumped_tx.input[i].witness.push(chan_keys.revocation_key.clone().serialize().to_vec());
 						bumped_tx.input[i].witness.push(witness_script.clone().into_bytes());
 					} else { return false; }
@@ -376,8 +379,9 @@ impl PackageSolvingData {
 					let witness_script = chan_utils::get_htlc_redeemscript_with_explicit_keys(&outp.htlc, onchain_handler.opt_anchors(), &chan_keys.broadcaster_htlc_key, &chan_keys.countersignatory_htlc_key, &chan_keys.revocation_key);
 
 					if let Ok(sig) = onchain_handler.signer.sign_counterparty_htlc_transaction(&bumped_tx, i, &outp.htlc.amount_msat / 1000, &outp.per_commitment_point, &outp.htlc, &onchain_handler.secp_ctx) {
-						bumped_tx.input[i].witness.push(sig.serialize_der().to_vec());
-						bumped_tx.input[i].witness[0].push(SigHashType::All as u8);
+						let mut ser_sig = sig.serialize_der().to_vec();
+						ser_sig.push(EcdsaSighashType::All as u8);
+						bumped_tx.input[i].witness.push(ser_sig);
 						bumped_tx.input[i].witness.push(outp.preimage.0.to_vec());
 						bumped_tx.input[i].witness.push(witness_script.clone().into_bytes());
 					}
@@ -389,8 +393,9 @@ impl PackageSolvingData {
 
 					bumped_tx.lock_time = outp.htlc.cltv_expiry; // Right now we don't aggregate time-locked transaction, if we do we should set lock_time before to avoid breaking hash computation
 					if let Ok(sig) = onchain_handler.signer.sign_counterparty_htlc_transaction(&bumped_tx, i, &outp.htlc.amount_msat / 1000, &outp.per_commitment_point, &outp.htlc, &onchain_handler.secp_ctx) {
-						bumped_tx.input[i].witness.push(sig.serialize_der().to_vec());
-						bumped_tx.input[i].witness[0].push(SigHashType::All as u8);
+						let mut ser_sig = sig.serialize_der().to_vec();
+						ser_sig.push(EcdsaSighashType::All as u8);
+						bumped_tx.input[i].witness.push(ser_sig);
 						// Due to BIP146 (MINIMALIF) this must be a zero-length element to relay.
 						bumped_tx.input[i].witness.push(vec![]);
 						bumped_tx.input[i].witness.push(witness_script.clone().into_bytes());
@@ -620,7 +625,7 @@ impl PackageTemplate {
 						previous_output: *outpoint,
 						script_sig: Script::new(),
 						sequence: 0xfffffffd,
-						witness: Vec::new(),
+						witness: Witness::new(),
 					});
 				}
 				for (i, (outpoint, out)) in self.inputs.iter().enumerate() {
@@ -852,7 +857,7 @@ mod tests {
 
 	use bitcoin::hashes::hex::FromHex;
 
-	use bitcoin::secp256k1::key::{PublicKey,SecretKey};
+	use bitcoin::secp256k1::{PublicKey,SecretKey};
 	use bitcoin::secp256k1::Secp256k1;
 
 	macro_rules! dumb_revk_output {

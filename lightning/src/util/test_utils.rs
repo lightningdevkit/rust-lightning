@@ -35,8 +35,8 @@ use bitcoin::blockdata::block::BlockHeader;
 use bitcoin::network::constants::Network;
 use bitcoin::hash_types::{BlockHash, Txid};
 
-use bitcoin::secp256k1::{SecretKey, PublicKey, Secp256k1, Signature};
-use bitcoin::secp256k1::recovery::RecoverableSignature;
+use bitcoin::secp256k1::{SecretKey, PublicKey, Secp256k1, ecdsa::Signature};
+use bitcoin::secp256k1::ecdsa::RecoverableSignature;
 
 use regex;
 

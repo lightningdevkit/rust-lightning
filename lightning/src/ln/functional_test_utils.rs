@@ -35,7 +35,7 @@ use bitcoin::network::constants::Network;
 
 use bitcoin::hash_types::BlockHash;
 
-use bitcoin::secp256k1::key::PublicKey;
+use bitcoin::secp256k1::PublicKey;
 
 use io;
 use prelude::*;
@@ -859,7 +859,7 @@ macro_rules! check_spends {
 			for output in $tx.output.iter() {
 				total_value_out += output.value;
 			}
-			let min_fee = ($tx.get_weight() as u64 + 3) / 4; // One sat per vbyte (ie per weight/4, rounded up)
+			let min_fee = ($tx.weight() as u64 + 3) / 4; // One sat per vbyte (ie per weight/4, rounded up)
 			// Input amount - output amount = fee, so check that out + min_fee is smaller than input
 			assert!(total_value_out + min_fee <= total_value_in);
 			$tx.verify(get_output).unwrap();
@@ -2004,7 +2004,10 @@ pub fn check_preimage_claim<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, prev_txn: &Vec<
 	for tx in prev_txn {
 		if node_txn[0].input[0].previous_output.txid == tx.txid() {
 			check_spends!(node_txn[0], tx);
-			assert!(node_txn[0].input[0].witness[2].len() > 106); // must spend an htlc output
+			let mut iter = node_txn[0].input[0].witness.iter();
+			iter.next().expect("expected 3 witness items");
+			iter.next().expect("expected 3 witness items");
+			assert!(iter.next().expect("expected 3 witness items").len() > 106); // must spend an htlc output
 			assert_eq!(tx.input.len(), 1); // must spend a commitment tx
 
 			found_prev = true;

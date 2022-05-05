@@ -13,7 +13,7 @@ use lightning::routing::router::{RouteHint, RouteHintHop};
 use lightning::routing::network_graph::RoutingFees;
 use lightning_invoice::*;
 use secp256k1::PublicKey;
-use secp256k1::recovery::{RecoverableSignature, RecoveryId};
+use secp256k1::ecdsa::{RecoverableSignature, RecoveryId};
 use std::collections::HashSet;
 use std::time::Duration;
 use std::str::FromStr;

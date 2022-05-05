@@ -42,7 +42,7 @@ use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::network::constants::Network;
 
 use bitcoin::secp256k1::Secp256k1;
-use bitcoin::secp256k1::key::{PublicKey,SecretKey};
+use bitcoin::secp256k1::{PublicKey,SecretKey};
 
 use regex;
 
@@ -5746,8 +5746,8 @@ fn test_key_derivation_params() {
 	check_spends!(local_txn_1[0], chan_1.3);
 
 	// We check funding pubkey are unique
-	let (from_0_funding_key_0, from_0_funding_key_1) = (PublicKey::from_slice(&local_txn_0[0].input[0].witness[3][2..35]), PublicKey::from_slice(&local_txn_0[0].input[0].witness[3][36..69]));
-	let (from_1_funding_key_0, from_1_funding_key_1) = (PublicKey::from_slice(&local_txn_1[0].input[0].witness[3][2..35]), PublicKey::from_slice(&local_txn_1[0].input[0].witness[3][36..69]));
+	let (from_0_funding_key_0, from_0_funding_key_1) = (PublicKey::from_slice(&local_txn_0[0].input[0].witness.to_vec()[3][2..35]), PublicKey::from_slice(&local_txn_0[0].input[0].witness.to_vec()[3][36..69]));
+	let (from_1_funding_key_0, from_1_funding_key_1) = (PublicKey::from_slice(&local_txn_1[0].input[0].witness.to_vec()[3][2..35]), PublicKey::from_slice(&local_txn_1[0].input[0].witness.to_vec()[3][36..69]));
 	if from_0_funding_key_0 == from_1_funding_key_0
 	    || from_0_funding_key_0 == from_1_funding_key_1
 	    || from_0_funding_key_1 == from_1_funding_key_0
@@ -7615,7 +7615,7 @@ fn test_bump_penalty_txn_on_revoked_commitment() {
 		assert_eq!(node_txn[0].output.len(), 1);
 		check_spends!(node_txn[0], revoked_txn[0]);
 		let fee_1 = penalty_sum - node_txn[0].output[0].value;
-		feerate_1 = fee_1 * 1000 / node_txn[0].get_weight() as u64;
+		feerate_1 = fee_1 * 1000 / node_txn[0].weight() as u64;
 		penalty_1 = node_txn[0].txid();
 		node_txn.clear();
 	};
@@ -7635,7 +7635,7 @@ fn test_bump_penalty_txn_on_revoked_commitment() {
 			// Verify new bumped tx is different from last claiming transaction, we don't want spurrious rebroadcast
 			assert_ne!(penalty_2, penalty_1);
 			let fee_2 = penalty_sum - node_txn[0].output[0].value;
-			feerate_2 = fee_2 * 1000 / node_txn[0].get_weight() as u64;
+			feerate_2 = fee_2 * 1000 / node_txn[0].weight() as u64;
 			// Verify 25% bump heuristic
 			assert!(feerate_2 * 100 >= feerate_1 * 125);
 			node_txn.clear();
@@ -7658,7 +7658,7 @@ fn test_bump_penalty_txn_on_revoked_commitment() {
 			// Verify new bumped tx is different from last claiming transaction, we don't want spurrious rebroadcast
 			assert_ne!(penalty_3, penalty_2);
 			let fee_3 = penalty_sum - node_txn[0].output[0].value;
-			feerate_3 = fee_3 * 1000 / node_txn[0].get_weight() as u64;
+			feerate_3 = fee_3 * 1000 / node_txn[0].weight() as u64;
 			// Verify 25% bump heuristic
 			assert!(feerate_3 * 100 >= feerate_2 * 125);
 			node_txn.clear();
@@ -7777,7 +7777,7 @@ fn test_bump_penalty_txn_on_revoked_htlcs() {
 		first = node_txn[4].txid();
 		// Store both feerates for later comparison
 		let fee_1 = revoked_htlc_txn[0].output[0].value + revoked_htlc_txn[2].output[0].value - node_txn[4].output[0].value;
-		feerate_1 = fee_1 * 1000 / node_txn[4].get_weight() as u64;
+		feerate_1 = fee_1 * 1000 / node_txn[4].weight() as u64;
 		penalty_txn = vec![node_txn[2].clone()];
 		node_txn.clear();
 	}
@@ -7817,7 +7817,7 @@ fn test_bump_penalty_txn_on_revoked_htlcs() {
 		// Verify bumped tx is different and 25% bump heuristic
 		assert_ne!(first, node_txn[0].txid());
 		let fee_2 = revoked_htlc_txn[0].output[0].value + revoked_htlc_txn[2].output[0].value - node_txn[0].output[0].value;
-		let feerate_2 = fee_2 * 1000 / node_txn[0].get_weight() as u64;
+		let feerate_2 = fee_2 * 1000 / node_txn[0].weight() as u64;
 		assert!(feerate_2 * 100 > feerate_1 * 125);
 		let txn = vec![node_txn[0].clone()];
 		node_txn.clear();
@@ -7901,12 +7901,12 @@ fn test_bump_penalty_txn_on_remote_commitment() {
 		timeout = node_txn[6].txid();
 		let index = node_txn[6].input[0].previous_output.vout;
 		let fee = remote_txn[0].output[index as usize].value - node_txn[6].output[0].value;
-		feerate_timeout = fee * 1000 / node_txn[6].get_weight() as u64;
+		feerate_timeout = fee * 1000 / node_txn[6].weight() as u64;
 
 		preimage = node_txn[0].txid();
 		let index = node_txn[0].input[0].previous_output.vout;
 		let fee = remote_txn[0].output[index as usize].value - node_txn[0].output[0].value;
-		feerate_preimage = fee * 1000 / node_txn[0].get_weight() as u64;
+		feerate_preimage = fee * 1000 / node_txn[0].weight() as u64;
 
 		node_txn.clear();
 	};
@@ -7925,13 +7925,13 @@ fn test_bump_penalty_txn_on_remote_commitment() {
 
 		let index = preimage_bump.input[0].previous_output.vout;
 		let fee = remote_txn[0].output[index as usize].value - preimage_bump.output[0].value;
-		let new_feerate = fee * 1000 / preimage_bump.get_weight() as u64;
+		let new_feerate = fee * 1000 / preimage_bump.weight() as u64;
 		assert!(new_feerate * 100 > feerate_timeout * 125);
 		assert_ne!(timeout, preimage_bump.txid());
 
 		let index = node_txn[0].input[0].previous_output.vout;
 		let fee = remote_txn[0].output[index as usize].value - node_txn[0].output[0].value;
-		let new_feerate = fee * 1000 / node_txn[0].get_weight() as u64;
+		let new_feerate = fee * 1000 / node_txn[0].weight() as u64;
 		assert!(new_feerate * 100 > feerate_preimage * 125);
 		assert_ne!(preimage, node_txn[0].txid());
 

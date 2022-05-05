@@ -38,9 +38,7 @@ grind_signatures = []
 default = ["std", "grind_signatures"]
 
 [dependencies]
-bitcoin = { version = "0.27", default-features = false, features = ["secp-recovery"] }
-# TODO remove this once rust-bitcoin PR #637 is released
-secp256k1 = { version = "0.20.2", default-features = false, features = ["alloc"] }
+bitcoin = { version = "0.28.1", default-features = false, features = ["secp-recovery"] }
 
 hashbrown = { version = "0.11", optional = true }
 hex = { version = "0.4", optional = true }
@@ -52,10 +50,8 @@ core2 = { version = "0.3.0", optional = true, default-features = false }
 [dev-dependencies]
 hex = "0.4"
 regex = "0.2.11"
-# TODO remove this once rust-bitcoin PR #637 is released
-secp256k1 = { version = "0.20.2", default-features = false, features = ["alloc"] }
 
 [dev-dependencies.bitcoin]
-version = "0.27"
+version = "0.28.1"
 default-features = false
 features = ["bitcoinconsensus", "secp-recovery"]

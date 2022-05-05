@@ -4,7 +4,7 @@ use bitcoin::blockdata::opcodes::all::OP_PUSHBYTES_0 as SEGWIT_V0;
 use bitcoin::blockdata::script::{Builder, Script};
 use bitcoin::hashes::Hash;
 use bitcoin::hash_types::{WPubkeyHash, WScriptHash};
-use bitcoin::secp256k1::key::PublicKey;
+use bitcoin::secp256k1::PublicKey;
 
 use ln::features::InitFeatures;
 use ln::msgs::DecodeError;
@@ -68,12 +68,12 @@ impl ShutdownScript {
 
 	/// Generates a P2WPKH script pubkey from the given [`WPubkeyHash`].
 	pub fn new_p2wpkh(pubkey_hash: &WPubkeyHash) -> Self {
-		Self(ShutdownScriptImpl::Bolt2(Script::new_v0_wpkh(pubkey_hash)))
+		Self(ShutdownScriptImpl::Bolt2(Script::new_v0_p2wpkh(pubkey_hash)))
 	}
 
 	/// Generates a P2WSH script pubkey from the given [`WScriptHash`].
 	pub fn new_p2wsh(script_hash: &WScriptHash) -> Self {
-		Self(ShutdownScriptImpl::Bolt2(Script::new_v0_wsh(script_hash)))
+		Self(ShutdownScriptImpl::Bolt2(Script::new_v0_p2wsh(script_hash)))
 	}
 
 	/// Generates a witness script pubkey from the given segwit version and program.
@@ -156,7 +156,7 @@ impl Into<Script> for ShutdownScript {
 	fn into(self) -> Script {
 		match self.0 {
 			ShutdownScriptImpl::Legacy(pubkey) =>
-				Script::new_v0_wpkh(&WPubkeyHash::hash(&pubkey.serialize())),
+				Script::new_v0_p2wpkh(&WPubkeyHash::hash(&pubkey.serialize())),
 			ShutdownScriptImpl::Bolt2(script_pubkey) => script_pubkey,
 		}
 	}
@@ -174,19 +174,19 @@ impl core::fmt::Display for ShutdownScript{
 #[cfg(test)]
 mod shutdown_script_tests {
 	use super::ShutdownScript;
-	use bitcoin::bech32::u5;
 	use bitcoin::blockdata::opcodes;
 	use bitcoin::blockdata::script::{Builder, Script};
 	use bitcoin::secp256k1::Secp256k1;
-	use bitcoin::secp256k1::key::{PublicKey, SecretKey};
+	use bitcoin::secp256k1::{PublicKey, SecretKey};
 	use ln::features::InitFeatures;
 	use core::convert::TryFrom;
 	use core::num::NonZeroU8;
+	use bitcoin::util::address::WitnessVersion;
 
-	fn pubkey() -> bitcoin::util::ecdsa::PublicKey {
+	fn pubkey() -> bitcoin::util::key::PublicKey {
 		let secp_ctx = Secp256k1::signing_only();
 		let secret_key = SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]).unwrap();
-		bitcoin::util::ecdsa::PublicKey::new(PublicKey::from_secret_key(&secp_ctx, &secret_key))
+		bitcoin::util::key::PublicKey::new(PublicKey::from_secret_key(&secp_ctx, &secret_key))
 	}
 
 	fn redeem_script() -> Script {
@@ -204,9 +204,9 @@ mod shutdown_script_tests {
 	fn generates_p2wpkh_from_pubkey() {
 		let pubkey = pubkey();
 		let pubkey_hash = pubkey.wpubkey_hash().unwrap();
-		let p2wpkh_script = Script::new_v0_wpkh(&pubkey_hash);
+		let p2wpkh_script = Script::new_v0_p2wpkh(&pubkey_hash);
 
-		let shutdown_script = ShutdownScript::new_p2wpkh_from_pubkey(pubkey.key);
+		let shutdown_script = ShutdownScript::new_p2wpkh_from_pubkey(pubkey.inner);
 		assert!(shutdown_script.is_compatible(&InitFeatures::known()));
 		assert!(shutdown_script.is_compatible(&InitFeatures::known().clear_shutdown_anysegwit()));
 		assert_eq!(shutdown_script.into_inner(), p2wpkh_script);
@@ -215,7 +215,7 @@ mod shutdown_script_tests {
 	#[test]
 	fn generates_p2wpkh_from_pubkey_hash() {
 		let pubkey_hash = pubkey().wpubkey_hash().unwrap();
-		let p2wpkh_script = Script::new_v0_wpkh(&pubkey_hash);
+		let p2wpkh_script = Script::new_v0_p2wpkh(&pubkey_hash);
 
 		let shutdown_script = ShutdownScript::new_p2wpkh(&pubkey_hash);
 		assert!(shutdown_script.is_compatible(&InitFeatures::known()));
@@ -227,7 +227,7 @@ mod shutdown_script_tests {
 	#[test]
 	fn generates_p2wsh_from_script_hash() {
 		let script_hash = redeem_script().wscript_hash();
-		let p2wsh_script = Script::new_v0_wsh(&script_hash);
+		let p2wsh_script = Script::new_v0_p2wsh(&script_hash);
 
 		let shutdown_script = ShutdownScript::new_p2wsh(&script_hash);
 		assert!(shutdown_script.is_compatible(&InitFeatures::known()));
@@ -238,10 +238,9 @@ mod shutdown_script_tests {
 
 	#[test]
 	fn generates_segwit_from_non_v0_witness_program() {
-		let version = u5::try_from_u8(16).unwrap();
-		let witness_program = Script::new_witness_program(version, &[0; 40]);
+		let witness_program = Script::new_witness_program(WitnessVersion::V16, &[0; 40]);
 
-		let version = NonZeroU8::new(version.to_u8()).unwrap();
+		let version = NonZeroU8::new(WitnessVersion::V16 as u8).unwrap();
 		let shutdown_script = ShutdownScript::new_witness_program(version, &[0; 40]).unwrap();
 		assert!(shutdown_script.is_compatible(&InitFeatures::known()));
 		assert!(!shutdown_script.is_compatible(&InitFeatures::known().clear_shutdown_anysegwit()));
@@ -262,17 +261,16 @@ mod shutdown_script_tests {
 
 	#[test]
 	fn fails_from_invalid_segwit_v0_witness_program() {
-		let witness_program = Script::new_witness_program(u5::try_from_u8(0).unwrap(), &[0; 2]);
+		let witness_program = Script::new_witness_program(WitnessVersion::V0, &[0; 2]);
 		assert!(ShutdownScript::try_from(witness_program).is_err());
 	}
 
 	#[test]
 	fn fails_from_invalid_segwit_non_v0_witness_program() {
-		let version = u5::try_from_u8(16).unwrap();
-		let witness_program = Script::new_witness_program(version, &[0; 42]);
+		let witness_program = Script::new_witness_program(WitnessVersion::V16, &[0; 42]);
 		assert!(ShutdownScript::try_from(witness_program).is_err());
 
-		let version = NonZeroU8::new(version.to_u8()).unwrap();
+		let version = NonZeroU8::new(WitnessVersion::V16 as u8).unwrap();
 		assert!(ShutdownScript::new_witness_program(version, &[0; 42]).is_err());
 	}
 }

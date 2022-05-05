@@ -46,7 +46,7 @@
 //! # use lightning::util::ser::{Writeable, Writer};
 //! # use lightning_invoice::Invoice;
 //! # use lightning_invoice::payment::{InvoicePayer, Payer, RetryAttempts, Router};
-//! # use secp256k1::key::PublicKey;
+//! # use secp256k1::PublicKey;
 //! # use std::cell::RefCell;
 //! # use std::ops::Deref;
 //! #
@@ -148,7 +148,7 @@ use lightning::util::events::{Event, EventHandler};
 use lightning::util::logger::Logger;
 use crate::sync::Mutex;
 
-use secp256k1::key::PublicKey;
+use secp256k1::PublicKey;
 
 use core::ops::Deref;
 use core::time::Duration;
@@ -555,7 +555,7 @@ mod tests {
 			.min_final_cltv_expiry(144)
 			.amount_milli_satoshis(128)
 			.build_signed(|hash| {
-				Secp256k1::new().sign_recoverable(hash, &private_key)
+				Secp256k1::new().sign_ecdsa_recoverable(hash, &private_key)
 			})
 			.unwrap()
 	}
@@ -580,7 +580,7 @@ mod tests {
 			.duration_since_epoch(duration_since_epoch())
 			.min_final_cltv_expiry(144)
 			.build_signed(|hash| {
-				Secp256k1::new().sign_recoverable(hash, &private_key)
+				Secp256k1::new().sign_ecdsa_recoverable(hash, &private_key)
 			})
 			.unwrap()
 	}
@@ -600,7 +600,7 @@ mod tests {
 			.min_final_cltv_expiry(144)
 			.amount_milli_satoshis(128)
 			.build_signed(|hash| {
-				Secp256k1::new().sign_recoverable(hash, &private_key)
+				Secp256k1::new().sign_ecdsa_recoverable(hash, &private_key)
 			})
 			.unwrap()
 	}

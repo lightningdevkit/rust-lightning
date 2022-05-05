@@ -23,7 +23,7 @@
 use prelude::*;
 use crate::util::zbase32;
 use bitcoin::hashes::{sha256d, Hash};
-use bitcoin::secp256k1::recovery::{RecoverableSignature, RecoveryId};
+use bitcoin::secp256k1::ecdsa::{RecoverableSignature, RecoveryId};
 use bitcoin::secp256k1::{Error, Message, PublicKey, Secp256k1, SecretKey};
 
 static LN_MESSAGE_PREFIX: &[u8] = b"Lightning Signed Message:";
@@ -57,7 +57,7 @@ pub fn sign(msg: &[u8], sk: &SecretKey) -> Result<String, Error> {
     let secp_ctx = Secp256k1::signing_only();
     let msg_hash = sha256d::Hash::hash(&[LN_MESSAGE_PREFIX, msg].concat());
 
-    let sig = secp_ctx.sign_recoverable(&Message::from_slice(&msg_hash)?, sk);
+    let sig = secp_ctx.sign_ecdsa_recoverable(&Message::from_slice(&msg_hash)?, sk);
     Ok(zbase32::encode(&sigrec_encode(sig)))
 }
 
@@ -69,7 +69,7 @@ pub fn recover_pk(msg: &[u8], sig: &str) ->  Result<PublicKey, Error> {
     match zbase32::decode(&sig) {
         Ok(sig_rec) => {
             match sigrec_decode(sig_rec) {
-                Ok(sig) => secp_ctx.recover(&Message::from_slice(&msg_hash)?, &sig),
+                Ok(sig) => secp_ctx.recover_ecdsa(&Message::from_slice(&msg_hash)?, &sig),
                 Err(e) => Err(e)
             }
         },
@@ -90,7 +90,7 @@ pub fn verify(msg: &[u8], sig: &str, pk: &PublicKey) -> bool {
 mod test {
     use core::str::FromStr;
     use util::message_signing::{sign, recover_pk, verify};
-    use bitcoin::secp256k1::key::ONE_KEY;
+    use bitcoin::secp256k1::ONE_KEY;
     use bitcoin::secp256k1::{PublicKey, Secp256k1};
 
     #[test]
