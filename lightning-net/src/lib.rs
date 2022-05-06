@@ -46,7 +46,7 @@
 
 use core::hash;
 use std::io::{Read, Write};
-use std::net::{IpAddr, Shutdown, SocketAddr, TcpStream};
+use std::net::{Shutdown, SocketAddr, TcpStream};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
@@ -54,7 +54,7 @@ use std::thread::{self, JoinHandle};
 use crossbeam_channel::{select, Receiver, Sender, TryRecvError, TrySendError};
 
 use bitcoin::secp256k1::PublicKey;
-use lightning::ln::msgs::{ChannelMessageHandler, NetAddress, RoutingMessageHandler};
+use lightning::ln::msgs::{ChannelMessageHandler, RoutingMessageHandler};
 use lightning::ln::peer_handler::{
     CustomMessageHandler, PeerHandleError, PeerManager, SocketDescriptor,
 };
@@ -132,7 +132,7 @@ where
 
     // Generate a new ID that represents this connection
     let conn_id = next_connection_id();
-    let socket_addr = stream.peer_addr().unwrap();
+    let remote_addr = stream.peer_addr().ok().map(|sock_addr| sock_addr.into());
 
     // Init TcpReader, TcpWriter, TcpDisconnectooor
     let writer_stream = stream.try_clone().unwrap();
@@ -174,10 +174,10 @@ where
     // In all cases, return the result of the call into the PeerManager.
     match conn_type {
         ConnectionType::Inbound => {
-            peer_manager.new_inbound_connection(descriptor.clone(), Some(to_net(socket_addr)))
+            peer_manager.new_inbound_connection(descriptor.clone(), remote_addr)
         }
         ConnectionType::Outbound(their_node_id) => peer_manager
-            .new_outbound_connection(their_node_id, descriptor.clone(), Some(to_net(socket_addr)))
+            .new_outbound_connection(their_node_id, descriptor.clone(), remote_addr)
             .map(|initial_data| {
                 // PeerManager accepted the outbound connection; queue up the
                 // initial WriteData WriterCommand.
@@ -207,21 +207,6 @@ where
         // new_outbound_connection(), we do NOT call socket_disconnected() here.
         e
     })
-}
-
-// NOTE: It would be nice to have a `impl From<SocketAddr> for NetAddress` in
-//       the `lightning` crate
-fn to_net(socket_addr: SocketAddr) -> NetAddress {
-    match socket_addr.ip() {
-        IpAddr::V4(ip) => NetAddress::IPv4 {
-            addr: ip.octets(),
-            port: socket_addr.port(),
-        },
-        IpAddr::V6(ip) => NetAddress::IPv6 {
-            addr: ip.octets(),
-            port: socket_addr.port(),
-        },
-    }
 }
 
 /// Commands that can be sent to the Reader.

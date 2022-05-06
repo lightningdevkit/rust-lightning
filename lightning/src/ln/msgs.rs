@@ -469,6 +469,22 @@ impl NetAddress {
 	pub(crate) const MAX_LEN: u16 = 37;
 }
 
+#[cfg(not(feature = "no-std"))]
+impl From<std::net::SocketAddr> for NetAddress {
+    fn from(socket_addr: std::net::SocketAddr) -> NetAddress {
+        match socket_addr.ip() {
+            std::net::IpAddr::V4(ip) => NetAddress::IPv4 {
+                addr: ip.octets(),
+                port: socket_addr.port(),
+            },
+            std::net::IpAddr::V6(ip) => NetAddress::IPv6 {
+                addr: ip.octets(),
+                port: socket_addr.port(),
+            },
+        }
+    }
+}
+
 impl Writeable for NetAddress {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		match self {
