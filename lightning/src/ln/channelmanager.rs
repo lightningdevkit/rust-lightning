@@ -48,6 +48,7 @@ use ln::msgs;
 use ln::msgs::NetAddress;
 use ln::onion_utils;
 use ln::msgs::{ChannelMessageHandler, DecodeError, LightningError, MAX_VALUE_MSAT, OptionalField};
+use ln::wire::Encode;
 use chain::keysinterface::{Sign, KeysInterface, KeysManager, InMemorySigner, Recipient};
 use util::config::UserConfig;
 use util::events::{EventHandler, EventsProvider, MessageSendEvent, MessageSendEventsProvider, ClosureReason};
@@ -2249,7 +2250,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					break None;
 				}
 				{
-					let mut res = VecWriter(Vec::with_capacity(chan_update.serialized_length() + 8 + 2));
+					let mut res = VecWriter(Vec::with_capacity(chan_update.serialized_length() + 2 + 8 + 2));
 					if let Some(chan_update) = chan_update {
 						if code == 0x1000 | 11 || code == 0x1000 | 12 {
 							msg.amount_msat.write(&mut res).expect("Writes cannot fail");
@@ -2261,7 +2262,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 							// TODO: underspecified, follow https://github.com/lightningnetwork/lightning-rfc/issues/791
 							0u16.write(&mut res).expect("Writes cannot fail");
 						}
-						(chan_update.serialized_length() as u16).write(&mut res).expect("Writes cannot fail");
+						(chan_update.serialized_length() as u16 + 2).write(&mut res).expect("Writes cannot fail");
+						msgs::ChannelUpdate::TYPE.write(&mut res).expect("Writes cannot fail");
 						chan_update.write(&mut res).expect("Writes cannot fail");
 					}
 					return_err!(err, code, &res.0[..]);
@@ -3543,12 +3545,13 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	fn get_htlc_temp_fail_err_and_data(&self, desired_err_code: u16, scid: u64, chan: &Channel<Signer>) -> (u16, Vec<u8>) {
 		debug_assert_eq!(desired_err_code & 0x1000, 0x1000);
 		if let Ok(upd) = self.get_channel_update_for_onion(scid, chan) {
-			let mut enc = VecWriter(Vec::with_capacity(upd.serialized_length() + 4));
+			let mut enc = VecWriter(Vec::with_capacity(upd.serialized_length() + 6));
 			if desired_err_code == 0x1000 | 20 {
 				// TODO: underspecified, follow https://github.com/lightning/bolts/issues/791
 				0u16.write(&mut enc).expect("Writes cannot fail");
 			}
-			(upd.serialized_length() as u16).write(&mut enc).expect("Writes cannot fail");
+			(upd.serialized_length() as u16 + 2).write(&mut enc).expect("Writes cannot fail");
+			msgs::ChannelUpdate::TYPE.write(&mut enc).expect("Writes cannot fail");
 			upd.write(&mut enc).expect("Writes cannot fail");
 			(desired_err_code, enc.0)
 		} else {
