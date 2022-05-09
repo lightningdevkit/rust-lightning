@@ -86,12 +86,13 @@ pub struct PaymentPreimage(pub [u8;32]);
 /// (C-not exported) as we just use [u8; 32] directly
 #[derive(Hash, Copy, Clone, PartialEq, Eq, Debug)]
 pub struct PaymentSecret(pub [u8;32]);
-/// recipient-info type, use to provide payment_secret or bolt11 payment_metadata
+/// Additional BOLT 11 data to attach to the payment, useful for applications where the recipient
+/// doesn't keep any context for the payment.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RecipientInfo {
-	/// optional payment_secret
+	/// Optional payment secret provided by the recipient as part of a BOLT 11 invoice.
 	pub payment_secret: Option<PaymentSecret>,
-	/// optional bolt11 payment_metadata
+	/// Optional arbitrary data provided by the recipient as part of a BOLT 11 invoice.
 	pub payment_metadata: Option<Vec<u8>>,
 }
 

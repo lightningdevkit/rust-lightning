@@ -60,7 +60,8 @@ pub enum PaymentPurpose {
 		/// [`ChannelManager::create_inbound_payment`]: crate::ln::channelmanager::ChannelManager::create_inbound_payment
 		/// [`ChannelManager::create_inbound_payment_for_hash`]: crate::ln::channelmanager::ChannelManager::create_inbound_payment_for_hash
 		payment_secret: PaymentSecret,
-		///XXX
+		/// Additional metadata to attach to the payment. This supports applications where the recipient doesn't keep any context for the payment.
+		/// Note that the size of this field is limited by the maximum hop payload size. Long metadata fields reduce the maximum route length.
 		payment_metadata: Option<Vec<u8>>,
 	},
 	/// Because this is a spontaneous payment, the payer generated their own preimage rather than us

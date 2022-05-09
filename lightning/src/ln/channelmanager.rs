@@ -2477,7 +2477,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// irrevocably committed to on our end. In such a case, do NOT retry the payment with a
 	/// different route unless you intend to pay twice!
 	///
-	/// Provide recipient_info to include payment_secret or payment_metadata), note that the 
+	/// Provide recipient_info to include payment_secret or payment_metadata, note that the
 	/// payment_secret is unrelated to payment_hash (or PaymentPreimage) and exists to authenticate
 	/// the sender to the recipient and prevent payment-probing (deanonymization) attacks. For
 	/// newer nodes, it will be provided to you in the invoice. If you do not have one, the Route
