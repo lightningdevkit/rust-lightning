@@ -3490,6 +3490,47 @@ fn test_dup_events_on_peer_disconnect() {
 }
 
 #[test]
+fn test_peer_disconnected_before_funding_broadcasted() {
+	// Test that channels are closed with `ClosureReason::DisconnectedPeer` if the peer disconnects
+	// before the funding transaction has been broadcasted.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	// Open a channel between `nodes[0]` and `nodes[1]`, for which the funding transaction is never
+	// broadcasted, even though it's created by `nodes[0]`.
+	let expected_temporary_channel_id = nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 1_000_000, 500_000_000, 42, None).unwrap();
+	let open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
+	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), InitFeatures::known(), &open_channel);
+	let accept_channel = get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id());
+	nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), InitFeatures::known(), &accept_channel);
+
+	let (temporary_channel_id, tx, _funding_output) = create_funding_transaction(&nodes[0], 1_000_000, 42);
+	assert_eq!(temporary_channel_id, expected_temporary_channel_id);
+
+	assert!(nodes[0].node.funding_transaction_generated(&temporary_channel_id, tx.clone()).is_ok());
+
+	let funding_created_msg = get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, nodes[1].node.get_our_node_id());
+	assert_eq!(funding_created_msg.temporary_channel_id, expected_temporary_channel_id);
+
+	// Even though the funding transaction is created by `nodes[0]`, the `FundingCreated` msg is
+	// never sent to `nodes[1]`, and therefore the tx is never signed by either party nor
+	// broadcasted.
+	{
+		assert_eq!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 0);
+	}
+
+	// Ensure that the channel is closed with `ClosureReason::DisconnectedPeer` when the peers are
+	// disconnected before the funding transaction was broadcasted.
+	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
+	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+
+	check_closed_event!(nodes[0], 1, ClosureReason::DisconnectedPeer);
+	check_closed_event!(nodes[1], 1, ClosureReason::DisconnectedPeer);
+}
+
+#[test]
 fn test_simple_peer_disconnect() {
 	// Test that we can reconnect when there are no lost messages
 	let chanmon_cfgs = create_chanmon_cfgs(3);
