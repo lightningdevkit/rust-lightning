@@ -19,7 +19,8 @@ use routing::network_graph::RoutingFees;
 use routing::router::{PaymentParameters, RouteHint, RouteHintHop};
 use ln::features::{InitFeatures, InvoiceFeatures};
 use ln::msgs;
-use ln::msgs::{ChannelMessageHandler, RoutingMessageHandler, OptionalField};
+use ln::msgs::{ChannelMessageHandler, RoutingMessageHandler, OptionalField, ChannelUpdate};
+use ln::wire::Encode;
 use util::enforcing_trait_impls::EnforcingSigner;
 use util::events::{Event, MessageSendEvent, MessageSendEventsProvider};
 use util::config::UserConfig;
@@ -531,9 +532,14 @@ fn test_scid_alias_returned() {
 	let signature = Secp256k1::new().sign_ecdsa(&hash_to_message!(&msg_hash[..]), &nodes[1].keys_manager.get_node_secret(Recipient::Node).unwrap());
 	let msg = msgs::ChannelUpdate { signature, contents };
 
+	let mut err_data = Vec::new();
+	err_data.extend_from_slice(&(msg.serialized_length() as u16 + 2).to_be_bytes());
+	err_data.extend_from_slice(&ChannelUpdate::TYPE.to_be_bytes());
+	err_data.extend_from_slice(&msg.encode());
+
 	expect_payment_failed_conditions!(nodes[0], payment_hash, false,
 		PaymentFailedConditions::new().blamed_scid(last_hop[0].inbound_scid_alias.unwrap())
-			.blamed_chan_closed(false).expected_htlc_error_data(0x1000|7, &msg.encode_with_len()));
+			.blamed_chan_closed(false).expected_htlc_error_data(0x1000|7, &err_data));
 
 	route.paths[0][1].fee_msat = 10_000; // Reset to the correct payment amount
 	route.paths[0][0].fee_msat = 0; // But set fee paid to the middle hop to 0
@@ -551,7 +557,9 @@ fn test_scid_alias_returned() {
 
 	let mut err_data = Vec::new();
 	err_data.extend_from_slice(&10_000u64.to_be_bytes());
-	err_data.extend_from_slice(&msg.encode_with_len());
+	err_data.extend_from_slice(&(msg.serialized_length() as u16 + 2).to_be_bytes());
+	err_data.extend_from_slice(&ChannelUpdate::TYPE.to_be_bytes());
+	err_data.extend_from_slice(&msg.encode());
 	expect_payment_failed_conditions!(nodes[0], payment_hash, false,
 		PaymentFailedConditions::new().blamed_scid(last_hop[0].inbound_scid_alias.unwrap())
 			.blamed_chan_closed(false).expected_htlc_error_data(0x1000|12, &err_data));

@@ -10,6 +10,7 @@
 use ln::{PaymentHash, PaymentPreimage, PaymentSecret};
 use ln::channelmanager::HTLCSource;
 use ln::msgs;
+use ln::wire::Encode;
 use routing::network_graph::NetworkUpdate;
 use routing::router::RouteHop;
 use util::chacha20::{ChaCha20, ChaChaReader};
@@ -404,7 +405,21 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(secp_ctx: &
 						else if error_code & UPDATE == UPDATE {
 							if let Some(update_len_slice) = err_packet.failuremsg.get(debug_field_size+2..debug_field_size+4) {
 								let update_len = u16::from_be_bytes(update_len_slice.try_into().expect("len is 2")) as usize;
-								if let Some(update_slice) = err_packet.failuremsg.get(debug_field_size + 4..debug_field_size + 4 + update_len) {
+								if let Some(mut update_slice) = err_packet.failuremsg.get(debug_field_size + 4..debug_field_size + 4 + update_len) {
+									// Historically, the BOLTs were unclear if the message type
+									// bytes should be included here or not. The BOLTs have now
+									// been updated to indicate that they *are* included, but many
+									// nodes still send messages without the type bytes, so we
+									// support both here.
+									// TODO: Switch to hard require the type prefix, as the current
+									// permissiveness introduces the (although small) possibility
+									// that we fail to decode legitimate channel updates that
+									// happen to start with ChannelUpdate::TYPE, i.e., [0x01, 0x02].
+									if update_slice.len() > 2 && update_slice[0..2] == msgs::ChannelUpdate::TYPE.to_be_bytes() {
+										update_slice = &update_slice[2..];
+									} else {
+										log_trace!(logger, "Failure provided features a channel update without type prefix. Deprecated, but allowing for now.");
+									}
 									if let Ok(chan_update) = msgs::ChannelUpdate::read(&mut Cursor::new(&update_slice)) {
 										// if channel_update should NOT have caused the failure:
 										// MAY treat the channel_update as invalid.
@@ -434,6 +449,8 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(secp_ctx: &
 											// short channel id.
 											if failing_route_hop.short_channel_id == chan_update.contents.short_channel_id {
 												short_channel_id = Some(failing_route_hop.short_channel_id);
+											} else {
+												log_info!(logger, "Node provided a channel_update for which it was not authoritative, ignoring.");
 											}
 											network_update = Some(NetworkUpdate::ChannelUpdateMessage {
 												msg: chan_update,
@@ -478,10 +495,10 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(secp_ctx: &
 
 						let (description, title) = errors::get_onion_error_description(error_code);
 						if debug_field_size > 0 && err_packet.failuremsg.len() >= 4 + debug_field_size {
-							log_warn!(logger, "Onion Error[from {}: {}({:#x}) {}({})] {}", route_hop.pubkey, title, error_code, debug_field, log_bytes!(&err_packet.failuremsg[4..4+debug_field_size]), description);
+							log_info!(logger, "Onion Error[from {}: {}({:#x}) {}({})] {}", route_hop.pubkey, title, error_code, debug_field, log_bytes!(&err_packet.failuremsg[4..4+debug_field_size]), description);
 						}
 						else {
-							log_warn!(logger, "Onion Error[from {}: {}({:#x})] {}", route_hop.pubkey, title, error_code, description);
+							log_info!(logger, "Onion Error[from {}: {}({:#x})] {}", route_hop.pubkey, title, error_code, description);
 						}
 					} else {
 						// Useless packet that we can't use but it passed HMAC, so it

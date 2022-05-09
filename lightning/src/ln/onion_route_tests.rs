@@ -21,6 +21,7 @@ use routing::router::{get_route, PaymentParameters, Route, RouteHint, RouteHintH
 use ln::features::{InitFeatures, InvoiceFeatures, NodeFeatures};
 use ln::msgs;
 use ln::msgs::{ChannelMessageHandler, ChannelUpdate, OptionalField};
+use ln::wire::Encode;
 use util::events::{Event, MessageSendEvent, MessageSendEventsProvider};
 use util::ser::{Writeable, Writer};
 use util::{byte_utils, test_utils};
@@ -438,13 +439,29 @@ fn test_onion_failure() {
 		Some(BADONION|PERM|6), None, Some(short_channel_id));
 
 	let short_channel_id = channels[1].0.contents.short_channel_id;
+	let chan_update = ChannelUpdate::dummy(short_channel_id);
+
+	let mut err_data = Vec::new();
+	err_data.extend_from_slice(&(chan_update.serialized_length() as u16 + 2).to_be_bytes());
+	err_data.extend_from_slice(&ChannelUpdate::TYPE.to_be_bytes());
+	err_data.extend_from_slice(&chan_update.encode());
 	run_onion_failure_test_with_fail_intercept("temporary_channel_failure", 100, &nodes, &route, &payment_hash, &payment_secret, |msg| {
 		msg.amount_msat -= 1;
 	}, |msg| {
 		let session_priv = SecretKey::from_slice(&[3; 32]).unwrap();
 		let onion_keys = onion_utils::construct_onion_keys(&Secp256k1::new(), &route.paths[0], &session_priv).unwrap();
-		msg.reason = onion_utils::build_first_hop_failure_packet(onion_keys[0].shared_secret.as_ref(), UPDATE|7, &ChannelUpdate::dummy(short_channel_id).encode_with_len()[..]);
-	}, ||{}, true, Some(UPDATE|7), Some(NetworkUpdate::ChannelUpdateMessage{msg: ChannelUpdate::dummy(short_channel_id)}), Some(short_channel_id));
+		msg.reason = onion_utils::build_first_hop_failure_packet(onion_keys[0].shared_secret.as_ref(), UPDATE|7, &err_data);
+	}, ||{}, true, Some(UPDATE|7), Some(NetworkUpdate::ChannelUpdateMessage{msg: chan_update.clone()}), Some(short_channel_id));
+
+	// Check we can still handle onion failures that include channel updates without a type prefix
+	let err_data_without_type = chan_update.encode_with_len();
+	run_onion_failure_test_with_fail_intercept("temporary_channel_failure", 100, &nodes, &route, &payment_hash, &payment_secret, |msg| {
+		msg.amount_msat -= 1;
+	}, |msg| {
+		let session_priv = SecretKey::from_slice(&[3; 32]).unwrap();
+		let onion_keys = onion_utils::construct_onion_keys(&Secp256k1::new(), &route.paths[0], &session_priv).unwrap();
+		msg.reason = onion_utils::build_first_hop_failure_packet(onion_keys[0].shared_secret.as_ref(), UPDATE|7, &err_data_without_type);
+	}, ||{}, true, Some(UPDATE|7), Some(NetworkUpdate::ChannelUpdateMessage{msg: chan_update}), Some(short_channel_id));
 
 	let short_channel_id = channels[1].0.contents.short_channel_id;
 	run_onion_failure_test_with_fail_intercept("permanent_channel_failure", 100, &nodes, &route, &payment_hash, &payment_secret, |msg| {
@@ -1097,11 +1114,15 @@ fn test_phantom_dust_exposure_failure() {
 	commitment_signed_dance!(nodes[0], nodes[1], update_1.commitment_signed, false);
 
 	// Ensure the payment fails with the expected error.
-	let mut error_data = channel.1.encode_with_len();
+	let mut err_data = Vec::new();
+	err_data.extend_from_slice(&(channel.1.serialized_length() as u16 + 2).to_be_bytes());
+	err_data.extend_from_slice(&ChannelUpdate::TYPE.to_be_bytes());
+	err_data.extend_from_slice(&channel.1.encode());
+
 	let mut fail_conditions = PaymentFailedConditions::new()
 		.blamed_scid(channel.0.contents.short_channel_id)
 		.blamed_chan_closed(false)
-		.expected_htlc_error_data(0x1000 | 7, &error_data);
+		.expected_htlc_error_data(0x1000 | 7, &err_data);
 		expect_payment_failed_conditions!(nodes[0], payment_hash, false, fail_conditions);
 }
 
