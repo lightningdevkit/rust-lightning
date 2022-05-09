@@ -9,7 +9,7 @@
 
 use lightning::ln::peer_channel_encryptor::PeerChannelEncryptor;
 
-use bitcoin::secp256k1::{PublicKey,SecretKey};
+use bitcoin::secp256k1::{Secp256k1, PublicKey, SecretKey};
 
 use utils::test_logger;
 
@@ -35,6 +35,8 @@ pub fn do_test(data: &[u8]) {
 		}
 	}
 
+	let secp_ctx = Secp256k1::signing_only();
+
 	let our_network_key = match SecretKey::from_slice(get_slice!(32)) {
 		Ok(key) => key,
 		Err(_) => return,
@@ -50,16 +52,16 @@ pub fn do_test(data: &[u8]) {
 			Err(_) => return,
 		};
 		let mut crypter = PeerChannelEncryptor::new_outbound(their_pubkey, ephemeral_key);
-		crypter.get_act_one();
-		match crypter.process_act_two(get_slice!(50), &our_network_key) {
+		crypter.get_act_one(&secp_ctx);
+		match crypter.process_act_two(get_slice!(50), &our_network_key, &secp_ctx) {
 			Ok(_) => {},
 			Err(_) => return,
 		}
 		assert!(crypter.is_ready_for_encryption());
 		crypter
 	} else {
-		let mut crypter = PeerChannelEncryptor::new_inbound(&our_network_key);
-		match crypter.process_act_one_with_keys(get_slice!(50), &our_network_key, ephemeral_key) {
+		let mut crypter = PeerChannelEncryptor::new_inbound(&our_network_key, &secp_ctx);
+		match crypter.process_act_one_with_keys(get_slice!(50), &our_network_key, ephemeral_key, &secp_ctx) {
 			Ok(_) => {},
 			Err(_) => return,
 		}
