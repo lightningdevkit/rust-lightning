@@ -162,7 +162,8 @@ fn _create_phantom_invoice<Signer: Sign, K: Deref>(
 		.current_timestamp()
 		.payment_hash(Hash::from_slice(&payment_hash.0).unwrap())
 		.payment_secret(payment_secret)
-		.min_final_cltv_expiry(MIN_FINAL_CLTV_EXPIRY.into());
+		.min_final_cltv_expiry(MIN_FINAL_CLTV_EXPIRY.into())
+		.expiry_time(Duration::from_secs(invoice_expiry_delta_secs.into()));
 	if let Some(amt) = amt_msat {
 		invoice = invoice.amount_milli_satoshis(amt);
 	}
@@ -799,8 +800,14 @@ mod test {
 		} else {
 			None
 		};
+		let non_default_invoice_expiry_secs = 4200;
 
-		let invoice = ::utils::create_phantom_invoice::<EnforcingSigner, &test_utils::TestKeysInterface>(Some(payment_amt), payment_hash, "test".to_string(), 3600, route_hints, &nodes[1].keys_manager, Currency::BitcoinTestnet).unwrap();
+		let invoice = ::utils::create_phantom_invoice::<
+			EnforcingSigner, &test_utils::TestKeysInterface
+		>(
+			Some(payment_amt), payment_hash, "test".to_string(), non_default_invoice_expiry_secs,
+			route_hints, &nodes[1].keys_manager, Currency::BitcoinTestnet
+		).unwrap();
 		let (payment_hash, payment_secret) = (PaymentHash(invoice.payment_hash().into_inner()), *invoice.payment_secret());
 		let payment_preimage = if user_generated_pmt_hash {
 			user_payment_preimage
@@ -811,6 +818,7 @@ mod test {
 		assert_eq!(invoice.min_final_cltv_expiry(), MIN_FINAL_CLTV_EXPIRY as u64);
 		assert_eq!(invoice.description(), InvoiceDescription::Direct(&Description("test".to_string())));
 		assert_eq!(invoice.route_hints().len(), 2);
+		assert_eq!(invoice.expiry_time(), Duration::from_secs(non_default_invoice_expiry_secs.into()));
 		assert!(!invoice.features().unwrap().supports_basic_mpp());
 
 		let payment_params = PaymentParameters::from_node_id(invoice.recover_payee_pub_key())
@@ -931,10 +939,17 @@ mod test {
 		];
 
 		let description_hash = crate::Sha256(Hash::hash("Description hash phantom invoice".as_bytes()));
-		let invoice = ::utils::create_phantom_invoice_with_description_hash::<EnforcingSigner,&test_utils::TestKeysInterface>(Some(payment_amt), None, 3600, description_hash, route_hints, &nodes[1].keys_manager, Currency::BitcoinTestnet).unwrap();
-
+		let non_default_invoice_expiry_secs = 4200;
+		let invoice = ::utils::create_phantom_invoice_with_description_hash::<
+			EnforcingSigner, &test_utils::TestKeysInterface,
+		>(
+			Some(payment_amt), None, non_default_invoice_expiry_secs, description_hash,
+			route_hints, &nodes[1].keys_manager, Currency::BitcoinTestnet
+		)
+		.unwrap();
 		assert_eq!(invoice.amount_pico_btc(), Some(200_000));
 		assert_eq!(invoice.min_final_cltv_expiry(), MIN_FINAL_CLTV_EXPIRY as u64);
+		assert_eq!(invoice.expiry_time(), Duration::from_secs(non_default_invoice_expiry_secs.into()));
 		assert_eq!(invoice.description(), InvoiceDescription::Hash(&crate::Sha256(Sha256::hash("Description hash phantom invoice".as_bytes()))));
 	}
 
