@@ -1,6 +1,6 @@
 //! Convenient utilities to create an invoice.
 
-use {CreationError, Currency, DEFAULT_EXPIRY_TIME, Invoice, InvoiceBuilder, SignOrCreationError};
+use {CreationError, Currency, Invoice, InvoiceBuilder, SignOrCreationError};
 use payment::{Payer, Router};
 
 use crate::{prelude::*, Description, InvoiceDescription, Sha256};
@@ -20,7 +20,6 @@ use lightning::routing::network_graph::{NetworkGraph, RoutingFees};
 use lightning::routing::router::{Route, RouteHint, RouteHintHop, RouteParameters, find_route};
 use lightning::util::logger::Logger;
 use secp256k1::PublicKey;
-use core::convert::TryInto;
 use core::ops::Deref;
 use core::time::Duration;
 use sync::Mutex;
@@ -213,9 +212,12 @@ fn _create_phantom_invoice<Signer: Sign, K: Deref>(
 /// method stores the invoice's payment secret and preimage in `ChannelManager`, so (a) the user
 /// doesn't have to store preimage/payment secret information and (b) `ChannelManager` can verify
 /// that the payment secret is valid when the invoice is paid.
+///
+/// `invoice_expiry_delta_secs` describes the number of seconds that the invoice is valid for
+/// in excess of the current time.
 pub fn create_invoice_from_channelmanager<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>(
 	channelmanager: &ChannelManager<Signer, M, T, K, F, L>, keys_manager: K, network: Currency,
-	amt_msat: Option<u64>, description: String
+	amt_msat: Option<u64>, description: String, invoice_expiry_delta_secs: u32
 ) -> Result<Invoice, SignOrCreationError<()>>
 where
 	M::Target: chain::Watch<Signer>,
@@ -228,7 +230,8 @@ where
 	let duration = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)
 		.expect("for the foreseeable future this shouldn't happen");
 	create_invoice_from_channelmanager_and_duration_since_epoch(
-		channelmanager, keys_manager, network, amt_msat, description, duration
+		channelmanager, keys_manager, network, amt_msat,
+		description, duration, invoice_expiry_delta_secs
 	)
 }
 
@@ -239,9 +242,12 @@ where
 /// doesn't have to store preimage/payment secret information and (b) `ChannelManager` can verify
 /// that the payment secret is valid when the invoice is paid.
 /// Use this variant if you want to pass the `description_hash` to the invoice.
+///
+/// `invoice_expiry_delta_secs` describes the number of seconds that the invoice is valid for
+/// in excess of the current time.
 pub fn create_invoice_from_channelmanager_with_description_hash<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>(
 	channelmanager: &ChannelManager<Signer, M, T, K, F, L>, keys_manager: K, network: Currency,
-	amt_msat: Option<u64>, description_hash: Sha256,
+	amt_msat: Option<u64>, description_hash: Sha256, invoice_expiry_delta_secs: u32
 ) -> Result<Invoice, SignOrCreationError<()>>
 where
 	M::Target: chain::Watch<Signer>,
@@ -257,7 +263,8 @@ where
 		.expect("for the foreseeable future this shouldn't happen");
 
 	create_invoice_from_channelmanager_with_description_hash_and_duration_since_epoch(
-		channelmanager, keys_manager, network, amt_msat, description_hash, duration,
+		channelmanager, keys_manager, network, amt_msat,
+		description_hash, duration, invoice_expiry_delta_secs
 	)
 }
 
@@ -267,6 +274,7 @@ where
 pub fn create_invoice_from_channelmanager_with_description_hash_and_duration_since_epoch<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>(
 	channelmanager: &ChannelManager<Signer, M, T, K, F, L>, keys_manager: K, network: Currency,
 	amt_msat: Option<u64>, description_hash: Sha256, duration_since_epoch: Duration,
+	invoice_expiry_delta_secs: u32
 ) -> Result<Invoice, SignOrCreationError<()>>
 where
 	M::Target: chain::Watch<Signer>,
@@ -278,7 +286,7 @@ where
 	_create_invoice_from_channelmanager_and_duration_since_epoch(
 		channelmanager, keys_manager, network, amt_msat,
 		InvoiceDescription::Hash(&description_hash),
-		duration_since_epoch,
+		duration_since_epoch, invoice_expiry_delta_secs
 	)
 }
 
@@ -288,6 +296,7 @@ where
 pub fn create_invoice_from_channelmanager_and_duration_since_epoch<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>(
 	channelmanager: &ChannelManager<Signer, M, T, K, F, L>, keys_manager: K, network: Currency,
 	amt_msat: Option<u64>, description: String, duration_since_epoch: Duration,
+	invoice_expiry_delta_secs: u32
 ) -> Result<Invoice, SignOrCreationError<()>>
 where
 	M::Target: chain::Watch<Signer>,
@@ -301,13 +310,14 @@ where
 		InvoiceDescription::Direct(
 			&Description::new(description).map_err(SignOrCreationError::CreationError)?,
 		),
-		duration_since_epoch,
+		duration_since_epoch, invoice_expiry_delta_secs
 	)
 }
 
 fn _create_invoice_from_channelmanager_and_duration_since_epoch<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>(
 	channelmanager: &ChannelManager<Signer, M, T, K, F, L>, keys_manager: K, network: Currency,
 	amt_msat: Option<u64>, description: InvoiceDescription, duration_since_epoch: Duration,
+	invoice_expiry_delta_secs: u32
 ) -> Result<Invoice, SignOrCreationError<()>>
 where
 	M::Target: chain::Watch<Signer>,
@@ -321,7 +331,7 @@ where
 	// `create_inbound_payment` only returns an error if the amount is greater than the total bitcoin
 	// supply.
 	let (payment_hash, payment_secret) = channelmanager
-		.create_inbound_payment(amt_msat, DEFAULT_EXPIRY_TIME.try_into().unwrap())
+		.create_inbound_payment(amt_msat, invoice_expiry_delta_secs)
 		.map_err(|()| SignOrCreationError::CreationError(CreationError::InvalidAmount))?;
 	let our_node_pubkey = channelmanager.get_our_node_id();
 
@@ -338,7 +348,8 @@ where
 		.payment_hash(Hash::from_slice(&payment_hash.0).unwrap())
 		.payment_secret(payment_secret)
 		.basic_mpp()
-		.min_final_cltv_expiry(MIN_FINAL_CLTV_EXPIRY.into());
+		.min_final_cltv_expiry(MIN_FINAL_CLTV_EXPIRY.into())
+		.expiry_time(Duration::from_secs(invoice_expiry_delta_secs.into()));
 	if let Some(amt) = amt_msat {
 		invoice = invoice.amount_milli_satoshis(amt);
 	}
@@ -527,12 +538,14 @@ mod test {
 		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 		create_unannounced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 10001, InitFeatures::known(), InitFeatures::known());
+		let non_default_invoice_expiry_secs = 4200;
 		let invoice = create_invoice_from_channelmanager_and_duration_since_epoch(
 			&nodes[1].node, nodes[1].keys_manager, Currency::BitcoinTestnet, Some(10_000), "test".to_string(),
-			Duration::from_secs(1234567)).unwrap();
+			Duration::from_secs(1234567), non_default_invoice_expiry_secs).unwrap();
 		assert_eq!(invoice.amount_pico_btc(), Some(100_000));
 		assert_eq!(invoice.min_final_cltv_expiry(), MIN_FINAL_CLTV_EXPIRY as u64);
 		assert_eq!(invoice.description(), InvoiceDescription::Direct(&Description("test".to_string())));
+		assert_eq!(invoice.expiry_time(), Duration::from_secs(non_default_invoice_expiry_secs.into()));
 
 		// Invoice SCIDs should always use inbound SCID aliases over the real channel ID, if one is
 		// available.
@@ -593,7 +606,7 @@ mod test {
 		let description_hash = crate::Sha256(Hash::hash("Testing description_hash".as_bytes()));
 		let invoice = ::utils::create_invoice_from_channelmanager_with_description_hash_and_duration_since_epoch(
 			&nodes[1].node, nodes[1].keys_manager, Currency::BitcoinTestnet, Some(10_000),
-			description_hash, Duration::from_secs(1234567),
+			description_hash, Duration::from_secs(1234567), 3600
 		).unwrap();
 		assert_eq!(invoice.amount_pico_btc(), Some(100_000));
 		assert_eq!(invoice.min_final_cltv_expiry(), MIN_FINAL_CLTV_EXPIRY as u64);
@@ -753,7 +766,7 @@ mod test {
 	) {
 		let invoice = create_invoice_from_channelmanager_and_duration_since_epoch(
 			&invoice_node.node, invoice_node.keys_manager, Currency::BitcoinTestnet, invoice_amt, "test".to_string(),
-			Duration::from_secs(1234567)).unwrap();
+			Duration::from_secs(1234567), 3600).unwrap();
 		let hints = invoice.private_routes();
 
 		for hint in hints {
