@@ -113,3 +113,5 @@ impl<T> RwLock<T> {
 		Err(())
 	}
 }
+
+pub type FairRwLock<T> = RwLock<T>;

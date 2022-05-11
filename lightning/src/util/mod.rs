@@ -25,6 +25,8 @@ pub mod persist;
 pub(crate) mod atomic_counter;
 pub(crate) mod byte_utils;
 pub(crate) mod chacha20;
+#[cfg(feature = "std")]
+pub(crate) mod fairrwlock;
 #[cfg(fuzzing)]
 pub mod zbase32;
 #[cfg(not(fuzzing))]

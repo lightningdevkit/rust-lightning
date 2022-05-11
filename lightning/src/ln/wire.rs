@@ -28,11 +28,26 @@ pub trait CustomMessageReader {
 	fn read<R: io::Read>(&self, message_type: u16, buffer: &mut R) -> Result<Option<Self::CustomMessage>, msgs::DecodeError>;
 }
 
+// TestEq is a dummy trait which requires PartialEq when built in testing, and otherwise is
+// blanket-implemented for all types.
+
+#[cfg(test)]
+pub trait TestEq : PartialEq {}
+#[cfg(test)]
+impl<T: PartialEq> TestEq for T {}
+
+#[cfg(not(test))]
+pub(crate) trait TestEq {}
+#[cfg(not(test))]
+impl<T> TestEq for T {}
+
+
 /// A Lightning message returned by [`read()`] when decoding bytes received over the wire. Each
 /// variant contains a message from [`msgs`] or otherwise the message type if unknown.
 #[allow(missing_docs)]
 #[derive(Debug)]
-pub(crate) enum Message<T> where T: core::fmt::Debug + Type {
+#[cfg_attr(test, derive(PartialEq))]
+pub(crate) enum Message<T> where T: core::fmt::Debug + Type + TestEq {
 	Init(msgs::Init),
 	Error(msgs::ErrorMessage),
 	Warning(msgs::WarningMessage),
@@ -69,7 +84,7 @@ pub(crate) enum Message<T> where T: core::fmt::Debug + Type {
 	Custom(T),
 }
 
-impl<T> Message<T> where T: core::fmt::Debug + Type {
+impl<T> Message<T> where T: core::fmt::Debug + Type + TestEq {
 	/// Returns the type that was used to decode the message payload.
 	pub fn type_id(&self) -> u16 {
 		match self {
@@ -252,6 +267,7 @@ mod encode {
 
 pub(crate) use self::encode::Encode;
 
+#[cfg(not(test))]
 /// Defines a type identifier for sending messages over the wire.
 ///
 /// Messages implementing this trait specify a type and must be [`Writeable`].
@@ -260,10 +276,24 @@ pub trait Type: core::fmt::Debug + Writeable {
 	fn type_id(&self) -> u16;
 }
 
+#[cfg(test)]
+pub trait Type: core::fmt::Debug + Writeable + PartialEq {
+	fn type_id(&self) -> u16;
+}
+
+#[cfg(any(feature = "_test_utils", fuzzing, test))]
+impl Type for () {
+	fn type_id(&self) -> u16 { unreachable!(); }
+}
+
+#[cfg(test)]
+impl<T: core::fmt::Debug + Writeable + PartialEq> Type for T where T: Encode {
+	fn type_id(&self) -> u16 { T::TYPE }
+}
+
+#[cfg(not(test))]
 impl<T: core::fmt::Debug + Writeable> Type for T where T: Encode {
-	fn type_id(&self) -> u16 {
-		T::TYPE
-	}
+	fn type_id(&self) -> u16 { T::TYPE }
 }
 
 impl Encode for msgs::Init {
@@ -469,10 +499,6 @@ mod tests {
 			},
 			_ => panic!("Expected pong message; found message type: {}", decoded_message.type_id()),
 		}
-	}
-
-	impl Type for () {
-		fn type_id(&self) -> u16 { unreachable!(); }
 	}
 
 	#[test]
