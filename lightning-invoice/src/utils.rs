@@ -230,8 +230,8 @@ where
 	let duration = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)
 		.expect("for the foreseeable future this shouldn't happen");
 	create_invoice_from_channelmanager_and_duration_since_epoch(
-		channelmanager, keys_manager, network, amt_msat,
-		description, duration, invoice_expiry_delta_secs
+		channelmanager, keys_manager, network, amt_msat, description, duration,
+		invoice_expiry_delta_secs
 	)
 }
 
@@ -815,12 +815,11 @@ mod test {
 		};
 		let non_default_invoice_expiry_secs = 4200;
 
-		let invoice = ::utils::create_phantom_invoice::<
-			EnforcingSigner, &test_utils::TestKeysInterface
-		>(
-			Some(payment_amt), payment_hash, "test".to_string(), non_default_invoice_expiry_secs,
-			route_hints, &nodes[1].keys_manager, Currency::BitcoinTestnet
-		).unwrap();
+		let invoice =
+			::utils::create_phantom_invoice::<EnforcingSigner, &test_utils::TestKeysInterface>(
+				Some(payment_amt), payment_hash, "test".to_string(), non_default_invoice_expiry_secs,
+				route_hints, &nodes[1].keys_manager, Currency::BitcoinTestnet
+			).unwrap();
 		let (payment_hash, payment_secret) = (PaymentHash(invoice.payment_hash().into_inner()), *invoice.payment_secret());
 		let payment_preimage = if user_generated_pmt_hash {
 			user_payment_preimage
