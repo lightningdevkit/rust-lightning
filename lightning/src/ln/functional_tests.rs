@@ -8283,7 +8283,7 @@ fn test_manually_accept_inbound_channel_request() {
 	let events = nodes[1].node.get_and_clear_pending_events();
 	match events[0] {
 		Event::OpenChannelRequest { temporary_channel_id, .. } => {
-			nodes[1].node.accept_inbound_channel(&temporary_channel_id, 23).unwrap();
+			nodes[1].node.accept_inbound_channel(&temporary_channel_id, &nodes[0].node.get_our_node_id(), 23).unwrap();
 		}
 		_ => panic!("Unexpected event"),
 	}
@@ -8433,8 +8433,8 @@ fn test_can_not_accept_inbound_channel_twice() {
 	let events = nodes[1].node.get_and_clear_pending_events();
 	match events[0] {
 		Event::OpenChannelRequest { temporary_channel_id, .. } => {
-			nodes[1].node.accept_inbound_channel(&temporary_channel_id, 0).unwrap();
-			let api_res = nodes[1].node.accept_inbound_channel(&temporary_channel_id, 0);
+			nodes[1].node.accept_inbound_channel(&temporary_channel_id, &nodes[0].node.get_our_node_id(), 0).unwrap();
+			let api_res = nodes[1].node.accept_inbound_channel(&temporary_channel_id, &nodes[0].node.get_our_node_id(), 0);
 			match api_res {
 				Err(APIError::APIMisuseError { err }) => {
 					assert_eq!(err, "The channel isn't currently awaiting to be accepted.");
@@ -8460,13 +8460,13 @@ fn test_can_not_accept_inbound_channel_twice() {
 
 #[test]
 fn test_can_not_accept_unknown_inbound_channel() {
-	let chanmon_cfg = create_chanmon_cfgs(1);
-	let node_cfg = create_node_cfgs(1, &chanmon_cfg);
-	let node_chanmgr = create_node_chanmgrs(1, &node_cfg, &[None]);
-	let node = create_network(1, &node_cfg, &node_chanmgr)[0].node;
+	let chanmon_cfg = create_chanmon_cfgs(2);
+	let node_cfg = create_node_cfgs(2, &chanmon_cfg);
+	let node_chanmgr = create_node_chanmgrs(2, &node_cfg, &[None, None]);
+	let nodes = create_network(2, &node_cfg, &node_chanmgr);
 
 	let unknown_channel_id = [0; 32];
-	let api_res = node.accept_inbound_channel(&unknown_channel_id, 0);
+	let api_res = nodes[0].node.accept_inbound_channel(&unknown_channel_id, &nodes[1].node.get_our_node_id(), 0);
 	match api_res {
 		Err(APIError::ChannelUnavailable { err }) => {
 			assert_eq!(err, "Can't accept a channel that doesn't exist");
