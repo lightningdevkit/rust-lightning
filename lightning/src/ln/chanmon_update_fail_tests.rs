@@ -224,7 +224,7 @@ fn do_test_simple_monitor_temporary_update_fail(disconnect: bool) {
 	}
 
 	// ...and make sure we can force-close a frozen channel
-	nodes[0].node.force_close_channel(&channel_id).unwrap();
+	nodes[0].node.force_close_channel(&channel_id, &nodes[1].node.get_our_node_id()).unwrap();
 	check_added_monitors!(nodes[0], 1);
 	check_closed_broadcast!(nodes[0], true);
 

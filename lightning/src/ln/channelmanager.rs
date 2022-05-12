@@ -1892,22 +1892,18 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		}
 	}
 
-	/// `peer_node_id` should be set when we receive a message from a peer, but not set when the
+	/// `peer_msg` should be set when we receive a message from a peer, but not set when the
 	/// user closes, which will be re-exposed as the `ChannelClosed` reason.
-	fn force_close_channel_with_peer(&self, channel_id: &[u8; 32], peer_node_id: Option<&PublicKey>, peer_msg: Option<&String>) -> Result<PublicKey, APIError> {
+	fn force_close_channel_with_peer(&self, channel_id: &[u8; 32], peer_node_id: &PublicKey, peer_msg: Option<&String>) -> Result<PublicKey, APIError> {
 		let mut chan = {
 			let mut channel_state_lock = self.channel_state.lock().unwrap();
 			let channel_state = &mut *channel_state_lock;
 			if let hash_map::Entry::Occupied(chan) = channel_state.by_id.entry(channel_id.clone()) {
-				if let Some(node_id) = peer_node_id {
-					if chan.get().get_counterparty_node_id() != *node_id {
-						return Err(APIError::ChannelUnavailable{err: "No such channel".to_owned()});
-					}
+				if chan.get().get_counterparty_node_id() != *peer_node_id {
+					return Err(APIError::ChannelUnavailable{err: "No such channel".to_owned()});
 				}
-				if peer_node_id.is_some() {
-					if let Some(peer_msg) = peer_msg {
-						self.issue_channel_close_events(chan.get(),ClosureReason::CounterpartyForceClosed { peer_msg: peer_msg.to_string() });
-					}
+				if let Some(peer_msg) = peer_msg {
+					self.issue_channel_close_events(chan.get(),ClosureReason::CounterpartyForceClosed { peer_msg: peer_msg.to_string() });
 				} else {
 					self.issue_channel_close_events(chan.get(),ClosureReason::HolderForceClosed);
 				}
@@ -1929,10 +1925,12 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	}
 
 	/// Force closes a channel, immediately broadcasting the latest local commitment transaction to
-	/// the chain and rejecting new HTLCs on the given channel. Fails if channel_id is unknown to the manager.
-	pub fn force_close_channel(&self, channel_id: &[u8; 32]) -> Result<(), APIError> {
+	/// the chain and rejecting new HTLCs on the given channel. Fails if `channel_id` is unknown to
+	/// the manager, or if the `counterparty_node_id` isn't the counterparty of the corresponding
+	/// channel.
+	pub fn force_close_channel(&self, channel_id: &[u8; 32], counterparty_node_id: &PublicKey) -> Result<(), APIError> {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
-		match self.force_close_channel_with_peer(channel_id, None, None) {
+		match self.force_close_channel_with_peer(channel_id, counterparty_node_id, None) {
 			Ok(counterparty_node_id) => {
 				self.channel_state.lock().unwrap().pending_msg_events.push(
 					events::MessageSendEvent::HandleError {
@@ -1952,7 +1950,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// for each to the chain and rejecting new HTLCs on each.
 	pub fn force_close_all_channels(&self) {
 		for chan in self.list_channels() {
-			let _ = self.force_close_channel(&chan.channel_id);
+			let _ = self.force_close_channel(&chan.channel_id, &chan.counterparty.node_id);
 		}
 	}
 
@@ -5816,7 +5814,7 @@ impl<Signer: Sign, M: Deref , T: Deref , K: Deref , F: Deref , L: Deref >
 			for chan in self.list_channels() {
 				if chan.counterparty.node_id == *counterparty_node_id {
 					// Untrusted messages from peer, we throw away the error if id points to a non-existent channel
-					let _ = self.force_close_channel_with_peer(&chan.channel_id, Some(counterparty_node_id), Some(&msg.data));
+					let _ = self.force_close_channel_with_peer(&chan.channel_id, counterparty_node_id, Some(&msg.data));
 				}
 			}
 		} else {
@@ -5838,7 +5836,7 @@ impl<Signer: Sign, M: Deref , T: Deref , K: Deref , F: Deref , L: Deref >
 			}
 
 			// Untrusted messages from peer, we throw away the error if id points to a non-existent channel
-			let _ = self.force_close_channel_with_peer(&msg.channel_id, Some(counterparty_node_id), Some(&msg.data));
+			let _ = self.force_close_channel_with_peer(&msg.channel_id, counterparty_node_id, Some(&msg.data));
 		}
 	}
 }
