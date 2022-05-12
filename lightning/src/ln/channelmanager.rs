@@ -2686,8 +2686,9 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 
 	/// Handles the generation of a funding transaction, optionally (for tests) with a function
 	/// which checks the correctness of the funding transaction given the associated channel.
-	fn funding_transaction_generated_intern<FundingOutput: Fn(&Channel<Signer>, &Transaction) -> Result<OutPoint, APIError>>
-			(&self, temporary_channel_id: &[u8; 32], funding_transaction: Transaction, find_funding_output: FundingOutput) -> Result<(), APIError> {
+	fn funding_transaction_generated_intern<FundingOutput: Fn(&Channel<Signer>, &Transaction) -> Result<OutPoint, APIError>>(
+		&self, temporary_channel_id: &[u8; 32], _counterparty_node_id: &PublicKey, funding_transaction: Transaction, find_funding_output: FundingOutput
+	) -> Result<(), APIError> {
 		let (chan, msg) = {
 			let (res, chan) = match self.channel_state.lock().unwrap().by_id.remove(temporary_channel_id) {
 				Some(mut chan) => {
@@ -2728,8 +2729,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	}
 
 	#[cfg(test)]
-	pub(crate) fn funding_transaction_generated_unchecked(&self, temporary_channel_id: &[u8; 32], funding_transaction: Transaction, output_index: u16) -> Result<(), APIError> {
-		self.funding_transaction_generated_intern(temporary_channel_id, funding_transaction, |_, tx| {
+	pub(crate) fn funding_transaction_generated_unchecked(&self, temporary_channel_id: &[u8; 32], counterparty_node_id: &PublicKey, funding_transaction: Transaction, output_index: u16) -> Result<(), APIError> {
+		self.funding_transaction_generated_intern(temporary_channel_id, counterparty_node_id, funding_transaction, |_, tx| {
 			Ok(OutPoint { txid: tx.txid(), index: output_index })
 		})
 	}
@@ -2756,7 +2757,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	///
 	/// [`Event::FundingGenerationReady`]: crate::util::events::Event::FundingGenerationReady
 	/// [`Event::ChannelClosed`]: crate::util::events::Event::ChannelClosed
-	pub fn funding_transaction_generated(&self, temporary_channel_id: &[u8; 32], funding_transaction: Transaction) -> Result<(), APIError> {
+	pub fn funding_transaction_generated(&self, temporary_channel_id: &[u8; 32], counterparty_node_id: &PublicKey, funding_transaction: Transaction) -> Result<(), APIError> {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 
 		for inp in funding_transaction.input.iter() {
@@ -2766,7 +2767,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				});
 			}
 		}
-		self.funding_transaction_generated_intern(temporary_channel_id, funding_transaction, |chan, tx| {
+		self.funding_transaction_generated_intern(temporary_channel_id, counterparty_node_id, funding_transaction, |chan, tx| {
 			let mut output_index = None;
 			let expected_spk = chan.get_funding_redeemscript().to_v0_p2wsh();
 			for (idx, outp) in tx.output.iter().enumerate() {
@@ -7424,7 +7425,7 @@ pub mod bench {
 			tx = Transaction { version: 2, lock_time: 0, input: Vec::new(), output: vec![TxOut {
 				value: 8_000_000, script_pubkey: output_script,
 			}]};
-			node_a.funding_transaction_generated(&temporary_channel_id, tx.clone()).unwrap();
+			node_a.funding_transaction_generated(&temporary_channel_id, &node_b.get_our_node_id(), tx.clone()).unwrap();
 		} else { panic!(); }
 
 		node_b.handle_funding_created(&node_a.get_our_node_id(), &get_event_msg!(node_a_holder, MessageSendEvent::SendFundingCreated, node_b.get_our_node_id()));

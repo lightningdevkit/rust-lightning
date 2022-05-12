@@ -390,7 +390,7 @@ fn test_inbound_scid_privacy() {
 	nodes[1].node.handle_accept_channel(&nodes[2].node.get_our_node_id(), InitFeatures::known(), &accept_channel);
 
 	let (temporary_channel_id, tx, _) = create_funding_transaction(&nodes[1], &nodes[2].node.get_our_node_id(), 100_000, 42);
-	nodes[1].node.funding_transaction_generated(&temporary_channel_id, tx.clone()).unwrap();
+	nodes[1].node.funding_transaction_generated(&temporary_channel_id, &nodes[2].node.get_our_node_id(), tx.clone()).unwrap();
 	nodes[2].node.handle_funding_created(&nodes[1].node.get_our_node_id(), &get_event_msg!(nodes[1], MessageSendEvent::SendFundingCreated, nodes[2].node.get_our_node_id()));
 	check_added_monitors!(nodes[2], 1);
 

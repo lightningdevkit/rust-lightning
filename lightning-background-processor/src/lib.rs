@@ -556,7 +556,7 @@ mod tests {
 
 	macro_rules! end_open_channel {
 		($node_a: expr, $node_b: expr, $temporary_channel_id: expr, $tx: expr) => {{
-			$node_a.node.funding_transaction_generated(&$temporary_channel_id, $tx.clone()).unwrap();
+			$node_a.node.funding_transaction_generated(&$temporary_channel_id, &$node_b.node.get_our_node_id(), $tx.clone()).unwrap();
 			$node_b.node.handle_funding_created(&$node_a.node.get_our_node_id(), &get_event_msg!($node_a, MessageSendEvent::SendFundingCreated, $node_b.node.get_our_node_id()));
 			$node_a.node.handle_funding_signed(&$node_b.node.get_our_node_id(), &get_event_msg!($node_b, MessageSendEvent::SendFundingSigned, $node_a.node.get_our_node_id()));
 		}}

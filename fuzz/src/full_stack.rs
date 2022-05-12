@@ -575,7 +575,7 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 							continue 'outer_loop;
 						}
 					};
-					if let Err(e) = channelmanager.funding_transaction_generated(&funding_generation.0, tx.clone()) {
+					if let Err(e) = channelmanager.funding_transaction_generated(&funding_generation.0, &funding_generation.1, tx.clone()) {
 						// It's possible the channel has been closed in the mean time, but any other
 						// failure may be a bug.
 						if let APIError::ChannelUnavailable { err } = e {
