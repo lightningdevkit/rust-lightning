@@ -516,7 +516,7 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 				let channel_id = get_slice!(1)[0] as usize;
 				if channel_id >= channels.len() { return; }
 				channels.sort_by(|a, b| { a.channel_id.cmp(&b.channel_id) });
-				if channelmanager.close_channel(&channels[channel_id].channel_id).is_err() { return; }
+				if channelmanager.close_channel(&channels[channel_id].channel_id, &channels[channel_id].counterparty.node_id).is_err() { return; }
 			},
 			7 => {
 				if should_forward {

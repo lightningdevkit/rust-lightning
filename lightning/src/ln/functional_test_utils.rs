@@ -969,7 +969,7 @@ pub fn close_channel<'a, 'b, 'c>(outbound_node: &Node<'a, 'b, 'c>, inbound_node:
 	let (node_b, broadcaster_b, struct_b) = if close_inbound_first { (&outbound_node.node, &outbound_node.tx_broadcaster, outbound_node) } else { (&inbound_node.node, &inbound_node.tx_broadcaster, inbound_node) };
 	let (tx_a, tx_b);
 
-	node_a.close_channel(channel_id).unwrap();
+	node_a.close_channel(channel_id, &node_b.get_our_node_id()).unwrap();
 	node_b.handle_shutdown(&node_a.get_our_node_id(), &InitFeatures::known(), &get_event_msg!(struct_a, MessageSendEvent::SendShutdown, node_b.get_our_node_id()));
 
 	let events_1 = node_b.get_and_clear_pending_msg_events();

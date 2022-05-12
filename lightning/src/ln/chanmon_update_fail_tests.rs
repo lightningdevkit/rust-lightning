@@ -2538,7 +2538,7 @@ fn test_temporary_error_during_shutdown() {
 	chanmon_cfgs[0].persister.set_update_ret(Err(ChannelMonitorUpdateErr::TemporaryFailure));
 	chanmon_cfgs[1].persister.set_update_ret(Err(ChannelMonitorUpdateErr::TemporaryFailure));
 
-	nodes[0].node.close_channel(&channel_id).unwrap();
+	nodes[0].node.close_channel(&channel_id, &nodes[1].node.get_our_node_id()).unwrap();
 	nodes[1].node.handle_shutdown(&nodes[0].node.get_our_node_id(), &InitFeatures::known(), &get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[1].node.get_our_node_id()));
 	check_added_monitors!(nodes[1], 1);
 
@@ -2591,7 +2591,7 @@ fn test_permanent_error_during_sending_shutdown() {
 	let channel_id = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known()).2;
 	chanmon_cfgs[0].persister.set_update_ret(Err(ChannelMonitorUpdateErr::PermanentFailure));
 
-	assert!(nodes[0].node.close_channel(&channel_id).is_ok());
+	assert!(nodes[0].node.close_channel(&channel_id, &nodes[1].node.get_our_node_id()).is_ok());
 	check_closed_broadcast!(nodes[0], true);
 	check_added_monitors!(nodes[0], 2);
 	check_closed_event!(nodes[0], 1, ClosureReason::ProcessingError { err: "ChannelMonitor storage failure".to_string() });
@@ -2612,7 +2612,7 @@ fn test_permanent_error_during_handling_shutdown() {
 	let channel_id = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known()).2;
 	chanmon_cfgs[1].persister.set_update_ret(Err(ChannelMonitorUpdateErr::PermanentFailure));
 
-	assert!(nodes[0].node.close_channel(&channel_id).is_ok());
+	assert!(nodes[0].node.close_channel(&channel_id, &nodes[1].node.get_our_node_id()).is_ok());
 	let shutdown = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[1].node.get_our_node_id());
 	nodes[1].node.handle_shutdown(&nodes[0].node.get_our_node_id(), &InitFeatures::known(), &shutdown);
 	check_closed_broadcast!(nodes[1], true);

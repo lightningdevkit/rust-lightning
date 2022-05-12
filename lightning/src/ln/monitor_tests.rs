@@ -108,7 +108,7 @@ fn chanmon_claim_value_coop_close() {
 	assert_eq!(vec![Balance::ClaimableOnChannelClose { claimable_amount_satoshis: 1_000, }],
 		nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances());
 
-	nodes[0].node.close_channel(&chan_id).unwrap();
+	nodes[0].node.close_channel(&chan_id, &nodes[1].node.get_our_node_id()).unwrap();
 	let node_0_shutdown = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[1].node.get_our_node_id());
 	nodes[1].node.handle_shutdown(&nodes[0].node.get_our_node_id(), &InitFeatures::known(), &node_0_shutdown);
 	let node_1_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, nodes[0].node.get_our_node_id());

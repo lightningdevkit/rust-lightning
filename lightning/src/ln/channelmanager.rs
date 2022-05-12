@@ -1769,17 +1769,18 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		});
 	}
 
-	fn close_channel_internal(&self, channel_id: &[u8; 32], target_feerate_sats_per_1000_weight: Option<u32>) -> Result<(), APIError> {
+	fn close_channel_internal(&self, channel_id: &[u8; 32], counterparty_node_id: &PublicKey, target_feerate_sats_per_1000_weight: Option<u32>) -> Result<(), APIError> {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 
-		let counterparty_node_id;
 		let mut failed_htlcs: Vec<(HTLCSource, PaymentHash)>;
 		let result: Result<(), _> = loop {
 			let mut channel_state_lock = self.channel_state.lock().unwrap();
 			let channel_state = &mut *channel_state_lock;
 			match channel_state.by_id.entry(channel_id.clone()) {
 				hash_map::Entry::Occupied(mut chan_entry) => {
-					counterparty_node_id = chan_entry.get().get_counterparty_node_id();
+					if *counterparty_node_id != chan_entry.get().get_counterparty_node_id(){
+						return Err(APIError::APIMisuseError { err: "The passed counterparty_node_id doesn't match the channel's counterparty node_id".to_owned() });
+					}
 					let per_peer_state = self.per_peer_state.read().unwrap();
 					let (shutdown_msg, monitor_update, htlcs) = match per_peer_state.get(&counterparty_node_id) {
 						Some(peer_state) => {
@@ -1804,7 +1805,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					}
 
 					channel_state.pending_msg_events.push(events::MessageSendEvent::SendShutdown {
-						node_id: counterparty_node_id,
+						node_id: *counterparty_node_id,
 						msg: shutdown_msg
 					});
 
@@ -1827,7 +1828,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), htlc_source.0, &htlc_source.1, HTLCFailReason::Reason { failure_code: 0x4000 | 8, data: Vec::new() });
 		}
 
-		let _ = handle_error!(self, result, counterparty_node_id);
+		let _ = handle_error!(self, result, *counterparty_node_id);
 		Ok(())
 	}
 
@@ -1848,8 +1849,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// [`ChannelConfig::force_close_avoidance_max_fee_satoshis`]: crate::util::config::ChannelConfig::force_close_avoidance_max_fee_satoshis
 	/// [`Background`]: crate::chain::chaininterface::ConfirmationTarget::Background
 	/// [`Normal`]: crate::chain::chaininterface::ConfirmationTarget::Normal
-	pub fn close_channel(&self, channel_id: &[u8; 32]) -> Result<(), APIError> {
-		self.close_channel_internal(channel_id, None)
+	pub fn close_channel(&self, channel_id: &[u8; 32], counterparty_node_id: &PublicKey) -> Result<(), APIError> {
+		self.close_channel_internal(channel_id, counterparty_node_id, None)
 	}
 
 	/// Begins the process of closing a channel. After this call (plus some timeout), no new HTLCs
@@ -1871,8 +1872,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// [`ChannelConfig::force_close_avoidance_max_fee_satoshis`]: crate::util::config::ChannelConfig::force_close_avoidance_max_fee_satoshis
 	/// [`Background`]: crate::chain::chaininterface::ConfirmationTarget::Background
 	/// [`Normal`]: crate::chain::chaininterface::ConfirmationTarget::Normal
-	pub fn close_channel_with_target_feerate(&self, channel_id: &[u8; 32], target_feerate_sats_per_1000_weight: u32) -> Result<(), APIError> {
-		self.close_channel_internal(channel_id, Some(target_feerate_sats_per_1000_weight))
+	pub fn close_channel_with_target_feerate(&self, channel_id: &[u8; 32], counterparty_node_id: &PublicKey, target_feerate_sats_per_1000_weight: u32) -> Result<(), APIError> {
+		self.close_channel_internal(channel_id, counterparty_node_id, Some(target_feerate_sats_per_1000_weight))
 	}
 
 	#[inline]
