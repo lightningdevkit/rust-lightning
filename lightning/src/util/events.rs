@@ -162,8 +162,15 @@ pub enum Event {
 	/// [`ChannelManager::funding_transaction_generated`]: crate::ln::channelmanager::ChannelManager::funding_transaction_generated
 	FundingGenerationReady {
 		/// The random channel_id we picked which you'll need to pass into
-		/// ChannelManager::funding_transaction_generated.
+		/// [`ChannelManager::funding_transaction_generated`].
+		///
+		/// [`ChannelManager::funding_transaction_generated`]: crate::ln::channelmanager::ChannelManager::funding_transaction_generated
 		temporary_channel_id: [u8; 32],
+		/// The counterparty's node_id, which you'll need to pass back into
+		/// [`ChannelManager::funding_transaction_generated`].
+		///
+		/// [`ChannelManager::funding_transaction_generated`]: crate::ln::channelmanager::ChannelManager::funding_transaction_generated
+		counterparty_node_id: PublicKey,
 		/// The value, in satoshis, that the output should have.
 		channel_value_satoshis: u64,
 		/// The script which should be used in the transaction output.

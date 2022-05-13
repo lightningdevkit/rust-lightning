@@ -540,7 +540,7 @@ mod tests {
 	macro_rules! handle_funding_generation_ready {
 		($event: expr, $channel_value: expr) => {{
 			match $event {
-				&Event::FundingGenerationReady { temporary_channel_id, channel_value_satoshis, ref output_script, user_channel_id } => {
+				&Event::FundingGenerationReady { temporary_channel_id, channel_value_satoshis, ref output_script, user_channel_id, .. } => {
 					assert_eq!(channel_value_satoshis, $channel_value);
 					assert_eq!(user_channel_id, 42);
 

@@ -408,7 +408,7 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 	let mut should_forward = false;
 	let mut payments_received: Vec<PaymentHash> = Vec::new();
 	let mut payments_sent = 0;
-	let mut pending_funding_generation: Vec<([u8; 32], u64, Script)> = Vec::new();
+	let mut pending_funding_generation: Vec<([u8; 32], PublicKey, u64, Script)> = Vec::new();
 	let mut pending_funding_signatures = HashMap::new();
 
 	loop {
@@ -556,7 +556,7 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 			10 => {
 				'outer_loop: for funding_generation in pending_funding_generation.drain(..) {
 					let mut tx = Transaction { version: 0, lock_time: 0, input: Vec::new(), output: vec![TxOut {
-							value: funding_generation.1, script_pubkey: funding_generation.2,
+							value: funding_generation.2, script_pubkey: funding_generation.3,
 						}] };
 					let funding_output = 'search_loop: loop {
 						let funding_txid = tx.txid();
@@ -632,8 +632,8 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 		loss_detector.handler.process_events();
 		for event in loss_detector.manager.get_and_clear_pending_events() {
 			match event {
-				Event::FundingGenerationReady { temporary_channel_id, channel_value_satoshis, output_script, .. } => {
-					pending_funding_generation.push((temporary_channel_id, channel_value_satoshis, output_script));
+				Event::FundingGenerationReady { temporary_channel_id, counterparty_node_id, channel_value_satoshis, output_script, .. } => {
+					pending_funding_generation.push((temporary_channel_id, counterparty_node_id, channel_value_satoshis, output_script));
 				},
 				Event::PaymentReceived { payment_hash, .. } => {
 					//TODO: enhance by fetching random amounts from fuzz input?

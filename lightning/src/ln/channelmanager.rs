@@ -4212,6 +4212,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		let mut pending_events = self.pending_events.lock().unwrap();
 		pending_events.push(events::Event::FundingGenerationReady {
 			temporary_channel_id: msg.temporary_channel_id,
+			counterparty_node_id: *counterparty_node_id,
 			channel_value_satoshis: value,
 			output_script,
 			user_channel_id: user_id,

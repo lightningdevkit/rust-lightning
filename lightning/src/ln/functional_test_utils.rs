@@ -553,13 +553,14 @@ macro_rules! check_added_monitors {
 	}
 }
 
-pub fn create_funding_transaction<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, expected_chan_value: u64, expected_user_chan_id: u64) -> ([u8; 32], Transaction, OutPoint) {
+pub fn create_funding_transaction<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, expected_counterparty_node_id: &PublicKey, expected_chan_value: u64, expected_user_chan_id: u64) -> ([u8; 32], Transaction, OutPoint) {
 	let chan_id = *node.network_chan_count.borrow();
 
 	let events = node.node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match events[0] {
-		Event::FundingGenerationReady { ref temporary_channel_id, ref channel_value_satoshis, ref output_script, user_channel_id } => {
+		Event::FundingGenerationReady { ref temporary_channel_id, ref counterparty_node_id, ref channel_value_satoshis, ref output_script, user_channel_id } => {
+			assert_eq!(counterparty_node_id, expected_counterparty_node_id);
 			assert_eq!(*channel_value_satoshis, expected_chan_value);
 			assert_eq!(user_channel_id, expected_user_chan_id);
 
@@ -573,7 +574,7 @@ pub fn create_funding_transaction<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, expected_
 	}
 }
 pub fn sign_funding_transaction<'a, 'b, 'c>(node_a: &Node<'a, 'b, 'c>, node_b: &Node<'a, 'b, 'c>, channel_value: u64, expected_temporary_channel_id: [u8; 32]) -> Transaction {
-	let (temporary_channel_id, tx, funding_output) = create_funding_transaction(node_a, channel_value, 42);
+	let (temporary_channel_id, tx, funding_output) = create_funding_transaction(node_a, &node_b.node.get_our_node_id(), channel_value, 42);
 	assert_eq!(temporary_channel_id, expected_temporary_channel_id);
 
 	assert!(node_a.node.funding_transaction_generated(&temporary_channel_id, tx.clone()).is_ok());
@@ -722,7 +723,7 @@ pub fn create_unannounced_chan_between_nodes_with_value<'a, 'b, 'c, 'd>(nodes: &
 	let accept_channel = get_event_msg!(nodes[b], MessageSendEvent::SendAcceptChannel, nodes[a].node.get_our_node_id());
 	nodes[a].node.handle_accept_channel(&nodes[b].node.get_our_node_id(), b_flags, &accept_channel);
 
-	let (temporary_channel_id, tx, _) = create_funding_transaction(&nodes[a], channel_value, 42);
+	let (temporary_channel_id, tx, _) = create_funding_transaction(&nodes[a], &nodes[b].node.get_our_node_id(), channel_value, 42);
 	nodes[a].node.funding_transaction_generated(&temporary_channel_id, tx.clone()).unwrap();
 	nodes[b].node.handle_funding_created(&nodes[a].node.get_our_node_id(), &get_event_msg!(nodes[a], MessageSendEvent::SendFundingCreated, nodes[b].node.get_our_node_id()));
 	check_added_monitors!(nodes[b], 1);
