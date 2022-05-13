@@ -267,12 +267,12 @@ impl TestChannelMessageHandler {
 		expected_msgs.as_mut().unwrap().push(ev);
 	}
 
-	fn received_msg(&self, ev: wire::Message<()>) {
+	fn received_msg(&self, _ev: wire::Message<()>) {
 		let mut msgs = self.expected_recv_msgs.lock().unwrap();
 		if msgs.is_none() { return; }
 		assert!(!msgs.as_ref().unwrap().is_empty(), "Received message when we weren't expecting one");
 		#[cfg(test)]
-		assert_eq!(msgs.as_ref().unwrap()[0], ev);
+		assert_eq!(msgs.as_ref().unwrap()[0], _ev);
 		msgs.as_mut().unwrap().remove(0);
 	}
 }
