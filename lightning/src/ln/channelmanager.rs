@@ -5698,39 +5698,21 @@ impl<Signer: Sign, M: Deref , T: Deref , K: Deref , F: Deref , L: Deref >
 			let channel_state = &mut *channel_state_lock;
 			let pending_msg_events = &mut channel_state.pending_msg_events;
 			let short_to_id = &mut channel_state.short_to_id;
-			if no_connection_possible {
-				log_debug!(self.logger, "Failing all channels with {} due to no_connection_possible", log_pubkey!(counterparty_node_id));
-				channel_state.by_id.retain(|_, chan| {
-					if chan.get_counterparty_node_id() == *counterparty_node_id {
+			log_debug!(self.logger, "Marking channels with {} disconnected and generating channel_updates. We believe we {} make future connections to this peer.",
+				log_pubkey!(counterparty_node_id), if no_connection_possible { "cannot" } else { "can" });
+			channel_state.by_id.retain(|_, chan| {
+				if chan.get_counterparty_node_id() == *counterparty_node_id {
+					chan.remove_uncommitted_htlcs_and_mark_paused(&self.logger);
+					if chan.is_shutdown() {
 						update_maps_on_chan_removal!(self, short_to_id, chan);
-						failed_channels.push(chan.force_shutdown(true));
-						if let Ok(update) = self.get_channel_update_for_broadcast(&chan) {
-							pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
-								msg: update
-							});
-						}
 						self.issue_channel_close_events(chan, ClosureReason::DisconnectedPeer);
-						false
+						return false;
 					} else {
-						true
+						no_channels_remain = false;
 					}
-				});
-			} else {
-				log_debug!(self.logger, "Marking channels with {} disconnected and generating channel_updates", log_pubkey!(counterparty_node_id));
-				channel_state.by_id.retain(|_, chan| {
-					if chan.get_counterparty_node_id() == *counterparty_node_id {
-						chan.remove_uncommitted_htlcs_and_mark_paused(&self.logger);
-						if chan.is_shutdown() {
-							update_maps_on_chan_removal!(self, short_to_id, chan);
-							self.issue_channel_close_events(chan, ClosureReason::DisconnectedPeer);
-							return false;
-						} else {
-							no_channels_remain = false;
-						}
-					}
-					true
-				})
-			}
+				}
+				true
+			});
 			pending_msg_events.retain(|msg| {
 				match msg {
 					&events::MessageSendEvent::SendAcceptChannel { ref node_id, .. } => node_id != counterparty_node_id,

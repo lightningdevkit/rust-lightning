@@ -2178,9 +2178,9 @@ fn channel_monitor_network_test() {
 	send_payment(&nodes[0], &vec!(&nodes[1], &nodes[2], &nodes[3], &nodes[4])[..], 8000000);
 
 	// Simple case with no pending HTLCs:
-	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), true);
+	nodes[1].node.force_close_channel(&chan_1.2).unwrap();
 	check_added_monitors!(nodes[1], 1);
-	check_closed_broadcast!(nodes[1], false);
+	check_closed_broadcast!(nodes[1], true);
 	{
 		let mut node_txn = test_txn_broadcast(&nodes[1], &chan_1, None, HTLCType::NONE);
 		assert_eq!(node_txn.len(), 1);
@@ -2192,15 +2192,15 @@ fn channel_monitor_network_test() {
 	assert_eq!(nodes[0].node.list_channels().len(), 0);
 	assert_eq!(nodes[1].node.list_channels().len(), 1);
 	check_closed_event!(nodes[0], 1, ClosureReason::CommitmentTxConfirmed);
-	check_closed_event!(nodes[1], 1, ClosureReason::DisconnectedPeer);
+	check_closed_event!(nodes[1], 1, ClosureReason::HolderForceClosed);
 
 	// One pending HTLC is discarded by the force-close:
 	let payment_preimage_1 = route_payment(&nodes[1], &vec!(&nodes[2], &nodes[3])[..], 3000000).0;
 
 	// Simple case of one pending HTLC to HTLC-Timeout (note that the HTLC-Timeout is not
 	// broadcasted until we reach the timelock time).
-	nodes[1].node.peer_disconnected(&nodes[2].node.get_our_node_id(), true);
-	check_closed_broadcast!(nodes[1], false);
+	nodes[1].node.force_close_channel(&chan_2.2).unwrap();
+	check_closed_broadcast!(nodes[1], true);
 	check_added_monitors!(nodes[1], 1);
 	{
 		let mut node_txn = test_txn_broadcast(&nodes[1], &chan_2, None, HTLCType::NONE);
@@ -2213,7 +2213,7 @@ fn channel_monitor_network_test() {
 	check_closed_broadcast!(nodes[2], true);
 	assert_eq!(nodes[1].node.list_channels().len(), 0);
 	assert_eq!(nodes[2].node.list_channels().len(), 1);
-	check_closed_event!(nodes[1], 1, ClosureReason::DisconnectedPeer);
+	check_closed_event!(nodes[1], 1, ClosureReason::HolderForceClosed);
 	check_closed_event!(nodes[2], 1, ClosureReason::CommitmentTxConfirmed);
 
 	macro_rules! claim_funds {
@@ -2238,9 +2238,9 @@ fn channel_monitor_network_test() {
 
 	// nodes[3] gets the preimage, but nodes[2] already disconnected, resulting in a nodes[2]
 	// HTLC-Timeout and a nodes[3] claim against it (+ its own announces)
-	nodes[2].node.peer_disconnected(&nodes[3].node.get_our_node_id(), true);
+	nodes[2].node.force_close_channel(&chan_3.2).unwrap();
 	check_added_monitors!(nodes[2], 1);
-	check_closed_broadcast!(nodes[2], false);
+	check_closed_broadcast!(nodes[2], true);
 	let node2_commitment_txid;
 	{
 		let node_txn = test_txn_broadcast(&nodes[2], &chan_3, None, HTLCType::NONE);
@@ -2257,7 +2257,7 @@ fn channel_monitor_network_test() {
 	check_closed_broadcast!(nodes[3], true);
 	assert_eq!(nodes[2].node.list_channels().len(), 0);
 	assert_eq!(nodes[3].node.list_channels().len(), 1);
-	check_closed_event!(nodes[2], 1, ClosureReason::DisconnectedPeer);
+	check_closed_event!(nodes[2], 1, ClosureReason::HolderForceClosed);
 	check_closed_event!(nodes[3], 1, ClosureReason::CommitmentTxConfirmed);
 
 	// Drop the ChannelMonitor for the previous channel to avoid it broadcasting transactions and
