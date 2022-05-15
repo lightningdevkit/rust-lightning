@@ -314,6 +314,11 @@ fn test_unconf_chan() {
 	do_test_unconf_chan(false, true, false, ConnectStyle::BestBlockFirstSkippingBlocks);
 	do_test_unconf_chan(true, false, false, ConnectStyle::BestBlockFirstSkippingBlocks);
 	do_test_unconf_chan(false, false, false, ConnectStyle::BestBlockFirstSkippingBlocks);
+
+	do_test_unconf_chan(true, true, false, ConnectStyle::BestBlockFirstReorgsOnlyTip);
+	do_test_unconf_chan(false, true, false, ConnectStyle::BestBlockFirstReorgsOnlyTip);
+	do_test_unconf_chan(true, false, false, ConnectStyle::BestBlockFirstReorgsOnlyTip);
+	do_test_unconf_chan(false, false, false, ConnectStyle::BestBlockFirstReorgsOnlyTip);
 }
 
 #[test]
@@ -330,6 +335,11 @@ fn test_unconf_chan_via_funding_unconfirmed() {
 	do_test_unconf_chan(false, true, true, ConnectStyle::BestBlockFirstSkippingBlocks);
 	do_test_unconf_chan(true, false, true, ConnectStyle::BestBlockFirstSkippingBlocks);
 	do_test_unconf_chan(false, false, true, ConnectStyle::BestBlockFirstSkippingBlocks);
+
+	do_test_unconf_chan(true, true, true, ConnectStyle::BestBlockFirstReorgsOnlyTip);
+	do_test_unconf_chan(false, true, true, ConnectStyle::BestBlockFirstReorgsOnlyTip);
+	do_test_unconf_chan(true, false, true, ConnectStyle::BestBlockFirstReorgsOnlyTip);
+	do_test_unconf_chan(false, false, true, ConnectStyle::BestBlockFirstReorgsOnlyTip);
 
 	do_test_unconf_chan(true, true, true, ConnectStyle::FullBlockViaListen);
 	do_test_unconf_chan(false, true, true, ConnectStyle::FullBlockViaListen);
@@ -539,7 +549,9 @@ fn do_test_to_remote_after_local_detection(style: ConnectStyle) {
 fn test_to_remote_after_local_detection() {
 	do_test_to_remote_after_local_detection(ConnectStyle::BestBlockFirst);
 	do_test_to_remote_after_local_detection(ConnectStyle::BestBlockFirstSkippingBlocks);
+	do_test_to_remote_after_local_detection(ConnectStyle::BestBlockFirstReorgsOnlyTip);
 	do_test_to_remote_after_local_detection(ConnectStyle::TransactionsFirst);
 	do_test_to_remote_after_local_detection(ConnectStyle::TransactionsFirstSkippingBlocks);
+	do_test_to_remote_after_local_detection(ConnectStyle::TransactionsFirstReorgsOnlyTip);
 	do_test_to_remote_after_local_detection(ConnectStyle::FullBlockViaListen);
 }

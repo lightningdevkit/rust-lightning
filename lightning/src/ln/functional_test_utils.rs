@@ -79,26 +79,33 @@ pub fn confirm_transaction_at<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, tx: &T
 /// The possible ways we may notify a ChannelManager of a new block
 #[derive(Clone, Copy, PartialEq)]
 pub enum ConnectStyle {
-	/// Calls best_block_updated first, detecting transactions in the block only after receiving the
-	/// header and height information.
+	/// Calls `best_block_updated` first, detecting transactions in the block only after receiving
+	/// the header and height information.
 	BestBlockFirst,
-	/// The same as BestBlockFirst, however when we have multiple blocks to connect, we only
-	/// make a single best_block_updated call.
+	/// The same as `BestBlockFirst`, however when we have multiple blocks to connect, we only
+	/// make a single `best_block_updated` call.
 	BestBlockFirstSkippingBlocks,
-	/// Calls transactions_confirmed first, detecting transactions in the block before updating the
-	/// header and height information.
+	/// The same as `BestBlockFirst` when connecting blocks. During disconnection only
+	/// `transaction_unconfirmed` is called.
+	BestBlockFirstReorgsOnlyTip,
+	/// Calls `transactions_confirmed` first, detecting transactions in the block before updating
+	/// the header and height information.
 	TransactionsFirst,
-	/// The same as TransactionsFirst, however when we have multiple blocks to connect, we only
-	/// make a single best_block_updated call.
+	/// The same as `TransactionsFirst`, however when we have multiple blocks to connect, we only
+	/// make a single `best_block_updated` call.
 	TransactionsFirstSkippingBlocks,
-	/// Provides the full block via the chain::Listen interface. In the current code this is
-	/// equivalent to TransactionsFirst with some additional assertions.
+	/// The same as `TransactionsFirst` when connecting blocks. During disconnection only
+	/// `transaction_unconfirmed` is called.
+	TransactionsFirstReorgsOnlyTip,
+	/// Provides the full block via the `chain::Listen` interface. In the current code this is
+	/// equivalent to `TransactionsFirst` with some additional assertions.
 	FullBlockViaListen,
 }
 
 pub fn connect_blocks<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, depth: u32) -> BlockHash {
 	let skip_intermediaries = match *node.connect_style.borrow() {
-		ConnectStyle::BestBlockFirstSkippingBlocks|ConnectStyle::TransactionsFirstSkippingBlocks => true,
+		ConnectStyle::BestBlockFirstSkippingBlocks|ConnectStyle::TransactionsFirstSkippingBlocks|
+			ConnectStyle::BestBlockFirstReorgsOnlyTip|ConnectStyle::TransactionsFirstReorgsOnlyTip => true,
 		_ => false,
 	};
 
@@ -138,14 +145,14 @@ fn do_connect_block<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, block: Block, sk
 	if !skip_intermediaries {
 		let txdata: Vec<_> = block.txdata.iter().enumerate().collect();
 		match *node.connect_style.borrow() {
-			ConnectStyle::BestBlockFirst|ConnectStyle::BestBlockFirstSkippingBlocks => {
+			ConnectStyle::BestBlockFirst|ConnectStyle::BestBlockFirstSkippingBlocks|ConnectStyle::BestBlockFirstReorgsOnlyTip => {
 				node.chain_monitor.chain_monitor.best_block_updated(&block.header, height);
 				call_claimable_balances(node);
 				node.chain_monitor.chain_monitor.transactions_confirmed(&block.header, &txdata, height);
 				node.node.best_block_updated(&block.header, height);
 				node.node.transactions_confirmed(&block.header, &txdata, height);
 			},
-			ConnectStyle::TransactionsFirst|ConnectStyle::TransactionsFirstSkippingBlocks => {
+			ConnectStyle::TransactionsFirst|ConnectStyle::TransactionsFirstSkippingBlocks|ConnectStyle::TransactionsFirstReorgsOnlyTip => {
 				node.chain_monitor.chain_monitor.transactions_confirmed(&block.header, &txdata, height);
 				call_claimable_balances(node);
 				node.chain_monitor.chain_monitor.best_block_updated(&block.header, height);
@@ -179,6 +186,12 @@ pub fn disconnect_blocks<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, count: u32)
 				if i == count - 1 {
 					node.chain_monitor.chain_monitor.best_block_updated(&prev.0.header, prev.1);
 					node.node.best_block_updated(&prev.0.header, prev.1);
+				}
+			},
+			ConnectStyle::BestBlockFirstReorgsOnlyTip|ConnectStyle::TransactionsFirstReorgsOnlyTip => {
+				for tx in orig.0.txdata {
+					node.chain_monitor.chain_monitor.transaction_unconfirmed(&tx.txid());
+					node.node.transaction_unconfirmed(&tx.txid());
 				}
 			},
 			_ => {
