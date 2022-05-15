@@ -482,7 +482,7 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 
 	if confirm_before_reload {
 		let best_block = nodes[0].blocks.lock().unwrap().last().unwrap().clone();
-		nodes[0].node.best_block_updated(&best_block.0, best_block.1);
+		nodes[0].node.best_block_updated(&best_block.0.header, best_block.1);
 	}
 
 	// Create a new channel on which to retry the payment before we fail the payment via the

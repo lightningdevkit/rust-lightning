@@ -103,7 +103,7 @@ fn test_monitor_and_persister_update_fail() {
 		// Because we will connect a block at height 200 below, we need the TestBroadcaster to know
 		// that we are at height 200 so that it doesn't think we're violating the time lock
 		// requirements of transactions broadcasted at that point.
-		blocks: Arc::new(Mutex::new(vec![(genesis_block(Network::Testnet).header, 200); 200])),
+		blocks: Arc::new(Mutex::new(vec![(genesis_block(Network::Testnet), 200); 200])),
 	};
 	let chain_mon = {
 		let monitor = nodes[0].chain_monitor.chain_monitor.get_monitor(outpoint).unwrap();

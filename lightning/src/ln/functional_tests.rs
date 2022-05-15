@@ -8711,10 +8711,11 @@ fn test_update_err_monitor_lockdown() {
 		watchtower
 	};
 	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+	let block = Block { header, txdata: vec![] };
 	// Make the tx_broadcaster aware of enough blocks that it doesn't think we're violating
 	// transaction lock time requirements here.
-	chanmon_cfgs[0].tx_broadcaster.blocks.lock().unwrap().resize(200, (header, 0));
-	watchtower.chain_monitor.block_connected(&Block { header, txdata: vec![] }, 200);
+	chanmon_cfgs[0].tx_broadcaster.blocks.lock().unwrap().resize(200, (block.clone(), 0));
+	watchtower.chain_monitor.block_connected(&block, 200);
 
 	// Try to update ChannelMonitor
 	assert!(nodes[1].node.claim_funds(preimage));
@@ -8772,10 +8773,11 @@ fn test_concurrent_monitor_claim() {
 		watchtower
 	};
 	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+	let block = Block { header, txdata: vec![] };
 	// Make the tx_broadcaster aware of enough blocks that it doesn't think we're violating
 	// transaction lock time requirements here.
-	chanmon_cfgs[0].tx_broadcaster.blocks.lock().unwrap().resize((CHAN_CONFIRM_DEPTH + 1 + TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS) as usize, (header, 0));
-	watchtower_alice.chain_monitor.block_connected(&Block { header, txdata: vec![] }, CHAN_CONFIRM_DEPTH + 1 + TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS);
+	chanmon_cfgs[0].tx_broadcaster.blocks.lock().unwrap().resize((CHAN_CONFIRM_DEPTH + 1 + TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS) as usize, (block.clone(), 0));
+	watchtower_alice.chain_monitor.block_connected(&block, CHAN_CONFIRM_DEPTH + 1 + TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS);
 
 	// Watchtower Alice should have broadcast a commitment/HTLC-timeout
 	{

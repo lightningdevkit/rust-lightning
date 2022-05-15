@@ -109,18 +109,20 @@ pub fn connect_blocks<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, depth: u32) ->
 	};
 	assert!(depth >= 1);
 	for i in 1..depth {
-		do_connect_block(node, &block, skip_intermediaries);
+		let prev_blockhash = block.header.block_hash();
+		do_connect_block(node, block, skip_intermediaries);
 		block = Block {
-			header: BlockHeader { version: 0x20000000, prev_blockhash: block.header.block_hash(), merkle_root: Default::default(), time: height + i, bits: 42, nonce: 42 },
+			header: BlockHeader { version: 0x20000000, prev_blockhash, merkle_root: Default::default(), time: height + i, bits: 42, nonce: 42 },
 			txdata: vec![],
 		};
 	}
-	connect_block(node, &block);
-	block.header.block_hash()
+	let hash = block.header.block_hash();
+	do_connect_block(node, block, false);
+	hash
 }
 
 pub fn connect_block<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, block: &Block) {
-	do_connect_block(node, block, false);
+	do_connect_block(node, block.clone(), false);
 }
 
 fn call_claimable_balances<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>) {
@@ -130,7 +132,7 @@ fn call_claimable_balances<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>) {
 	}
 }
 
-fn do_connect_block<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, block: &Block, skip_intermediaries: bool) {
+fn do_connect_block<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, block: Block, skip_intermediaries: bool) {
 	call_claimable_balances(node);
 	let height = node.best_block_info().1 + 1;
 	if !skip_intermediaries {
@@ -158,30 +160,30 @@ fn do_connect_block<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, block: &Block, s
 	}
 	call_claimable_balances(node);
 	node.node.test_process_background_events();
-	node.blocks.lock().unwrap().push((block.header, height));
+	node.blocks.lock().unwrap().push((block, height));
 }
 
 pub fn disconnect_blocks<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, count: u32) {
 	call_claimable_balances(node);
 	for i in 0..count {
-		let orig_header = node.blocks.lock().unwrap().pop().unwrap();
-		assert!(orig_header.1 > 0); // Cannot disconnect genesis
-		let prev_header = node.blocks.lock().unwrap().last().unwrap().clone();
+		let orig = node.blocks.lock().unwrap().pop().unwrap();
+		assert!(orig.1 > 0); // Cannot disconnect genesis
+		let prev = node.blocks.lock().unwrap().last().unwrap().clone();
 
 		match *node.connect_style.borrow() {
 			ConnectStyle::FullBlockViaListen => {
-				node.chain_monitor.chain_monitor.block_disconnected(&orig_header.0, orig_header.1);
-				Listen::block_disconnected(node.node, &orig_header.0, orig_header.1);
+				node.chain_monitor.chain_monitor.block_disconnected(&orig.0.header, orig.1);
+				Listen::block_disconnected(node.node, &orig.0.header, orig.1);
 			},
 			ConnectStyle::BestBlockFirstSkippingBlocks|ConnectStyle::TransactionsFirstSkippingBlocks => {
 				if i == count - 1 {
-					node.chain_monitor.chain_monitor.best_block_updated(&prev_header.0, prev_header.1);
-					node.node.best_block_updated(&prev_header.0, prev_header.1);
+					node.chain_monitor.chain_monitor.best_block_updated(&prev.0.header, prev.1);
+					node.node.best_block_updated(&prev.0.header, prev.1);
 				}
 			},
 			_ => {
-				node.chain_monitor.chain_monitor.best_block_updated(&prev_header.0, prev_header.1);
-				node.node.best_block_updated(&prev_header.0, prev_header.1);
+				node.chain_monitor.chain_monitor.best_block_updated(&prev.0.header, prev.1);
+				node.node.best_block_updated(&prev.0.header, prev.1);
 			},
 		}
 		call_claimable_balances(node);
@@ -227,7 +229,7 @@ pub struct Node<'a, 'b: 'a, 'c: 'b> {
 	pub network_payment_count: Rc<RefCell<u8>>,
 	pub network_chan_count: Rc<RefCell<u32>>,
 	pub logger: &'c test_utils::TestLogger,
-	pub blocks: Arc<Mutex<Vec<(BlockHeader, u32)>>>,
+	pub blocks: Arc<Mutex<Vec<(Block, u32)>>>,
 	pub connect_style: Rc<RefCell<ConnectStyle>>,
 }
 impl<'a, 'b, 'c> Node<'a, 'b, 'c> {
@@ -238,7 +240,7 @@ impl<'a, 'b, 'c> Node<'a, 'b, 'c> {
 		self.blocks.lock().unwrap().last().map(|(a, b)| (a.block_hash(), *b)).unwrap()
 	}
 	pub fn get_block_header(&self, height: u32) -> BlockHeader {
-		self.blocks.lock().unwrap()[height as usize].0
+		self.blocks.lock().unwrap()[height as usize].0.header
 	}
 }
 
@@ -1815,7 +1817,7 @@ pub fn create_chanmon_cfgs(node_count: usize) -> Vec<TestChanMonCfg> {
 	for i in 0..node_count {
 		let tx_broadcaster = test_utils::TestBroadcaster {
 			txn_broadcasted: Mutex::new(Vec::new()),
-			blocks: Arc::new(Mutex::new(vec![(genesis_block(Network::Testnet).header, 0)])),
+			blocks: Arc::new(Mutex::new(vec![(genesis_block(Network::Testnet), 0)])),
 		};
 		let fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) };
 		let chain_source = test_utils::TestChainSource::new(Network::Testnet);
