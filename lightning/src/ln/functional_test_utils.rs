@@ -77,7 +77,7 @@ pub fn confirm_transaction_at<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, tx: &T
 }
 
 /// The possible ways we may notify a ChannelManager of a new block
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ConnectStyle {
 	/// Calls `best_block_updated` first, detecting transactions in the block only after receiving
 	/// the header and height information.
@@ -100,6 +100,31 @@ pub enum ConnectStyle {
 	/// Provides the full block via the `chain::Listen` interface. In the current code this is
 	/// equivalent to `TransactionsFirst` with some additional assertions.
 	FullBlockViaListen,
+}
+
+impl ConnectStyle {
+	fn random_style() -> ConnectStyle {
+		#[cfg(feature = "std")] {
+			use core::hash::{BuildHasher, Hasher};
+			// Get a random value using the only std API to do so - the DefaultHasher
+			let rand_val = std::collections::hash_map::RandomState::new().build_hasher().finish();
+			let res = match rand_val % 7 {
+				0 => ConnectStyle::BestBlockFirst,
+				1 => ConnectStyle::BestBlockFirstSkippingBlocks,
+				2 => ConnectStyle::BestBlockFirstReorgsOnlyTip,
+				3 => ConnectStyle::TransactionsFirst,
+				4 => ConnectStyle::TransactionsFirstSkippingBlocks,
+				5 => ConnectStyle::TransactionsFirstReorgsOnlyTip,
+				6 => ConnectStyle::FullBlockViaListen,
+				_ => unreachable!(),
+			};
+			eprintln!("Using Block Connection Style: {:?}", res);
+			res
+		}
+		#[cfg(not(feature = "std"))] {
+			ConnectStyle::FullBlockViaListen
+		}
+	}
 }
 
 pub fn connect_blocks<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, depth: u32) -> BlockHash {
@@ -142,6 +167,9 @@ fn call_claimable_balances<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>) {
 fn do_connect_block<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, block: Block, skip_intermediaries: bool) {
 	call_claimable_balances(node);
 	let height = node.best_block_info().1 + 1;
+	#[cfg(feature = "std")] {
+		eprintln!("Connecting block using Block Connection Style: {:?}", *node.connect_style.borrow());
+	}
 	if !skip_intermediaries {
 		let txdata: Vec<_> = block.txdata.iter().enumerate().collect();
 		match *node.connect_style.borrow() {
@@ -172,6 +200,9 @@ fn do_connect_block<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, block: Block, sk
 
 pub fn disconnect_blocks<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, count: u32) {
 	call_claimable_balances(node);
+	#[cfg(feature = "std")] {
+		eprintln!("Disconnecting {} blocks using Block Connection Style: {:?}", count, *node.connect_style.borrow());
+	}
 	for i in 0..count {
 		let orig = node.blocks.lock().unwrap().pop().unwrap();
 		assert!(orig.1 > 0); // Cannot disconnect genesis
@@ -1904,7 +1935,7 @@ pub fn create_network<'a, 'b: 'a, 'c: 'b>(node_count: usize, cfgs: &'b Vec<NodeC
 	let mut nodes = Vec::new();
 	let chan_count = Rc::new(RefCell::new(0));
 	let payment_count = Rc::new(RefCell::new(0));
-	let connect_style = Rc::new(RefCell::new(ConnectStyle::FullBlockViaListen));
+	let connect_style = Rc::new(RefCell::new(ConnectStyle::random_style()));
 
 	for i in 0..node_count {
 		let net_graph_msg_handler = NetGraphMsgHandler::new(cfgs[i].network_graph, None, cfgs[i].logger);
