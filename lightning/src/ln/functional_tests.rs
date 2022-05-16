@@ -515,10 +515,10 @@ fn do_test_sanity_on_in_flight_opens(steps: u8) {
 	if steps & 0x0f == 2 { return; }
 	nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), InitFeatures::known(), &accept_channel);
 
-	let (temporary_channel_id, tx, funding_output) = create_funding_transaction(&nodes[0], 100000, 42);
+	let (temporary_channel_id, tx, funding_output) = create_funding_transaction(&nodes[0], &nodes[1].node.get_our_node_id(), 100000, 42);
 
 	if steps & 0x0f == 3 { return; }
-	nodes[0].node.funding_transaction_generated(&temporary_channel_id, tx.clone()).unwrap();
+	nodes[0].node.funding_transaction_generated(&temporary_channel_id, &nodes[1].node.get_our_node_id(), tx.clone()).unwrap();
 	check_added_monitors!(nodes[0], 0);
 	let funding_created = get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, nodes[1].node.get_our_node_id());
 
@@ -3364,7 +3364,7 @@ fn test_htlc_ignore_latest_remote_commitment() {
 	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 
 	route_payment(&nodes[0], &[&nodes[1]], 10000000);
-	nodes[0].node.force_close_channel(&nodes[0].node.list_channels()[0].channel_id).unwrap();
+	nodes[0].node.force_close_channel(&nodes[0].node.list_channels()[0].channel_id, &nodes[1].node.get_our_node_id()).unwrap();
 	connect_blocks(&nodes[0], TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS + 1);
 	check_closed_broadcast!(nodes[0], true);
 	check_added_monitors!(nodes[0], 1);
@@ -3427,7 +3427,7 @@ fn test_force_close_fail_back() {
 	// state or updated nodes[1]' state. Now force-close and broadcast that commitment/HTLC
 	// transaction and ensure nodes[1] doesn't fail-backwards (this was originally a bug!).
 
-	nodes[2].node.force_close_channel(&payment_event.commitment_msg.channel_id).unwrap();
+	nodes[2].node.force_close_channel(&payment_event.commitment_msg.channel_id, &nodes[1].node.get_our_node_id()).unwrap();
 	check_closed_broadcast!(nodes[2], true);
 	check_added_monitors!(nodes[2], 1);
 	check_closed_event!(nodes[2], 1, ClosureReason::HolderForceClosed);
@@ -3508,10 +3508,10 @@ fn test_peer_disconnected_before_funding_broadcasted() {
 	let accept_channel = get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id());
 	nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), InitFeatures::known(), &accept_channel);
 
-	let (temporary_channel_id, tx, _funding_output) = create_funding_transaction(&nodes[0], 1_000_000, 42);
+	let (temporary_channel_id, tx, _funding_output) = create_funding_transaction(&nodes[0], &nodes[1].node.get_our_node_id(), 1_000_000, 42);
 	assert_eq!(temporary_channel_id, expected_temporary_channel_id);
 
-	assert!(nodes[0].node.funding_transaction_generated(&temporary_channel_id, tx.clone()).is_ok());
+	assert!(nodes[0].node.funding_transaction_generated(&temporary_channel_id, &nodes[1].node.get_our_node_id(), tx.clone()).is_ok());
 
 	let funding_created_msg = get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, nodes[1].node.get_our_node_id());
 	assert_eq!(funding_created_msg.temporary_channel_id, expected_temporary_channel_id);
@@ -4428,9 +4428,9 @@ fn test_manager_serialize_deserialize_events() {
 	node_b.node.handle_open_channel(&node_a.node.get_our_node_id(), a_flags, &get_event_msg!(node_a, MessageSendEvent::SendOpenChannel, node_b.node.get_our_node_id()));
 	node_a.node.handle_accept_channel(&node_b.node.get_our_node_id(), b_flags, &get_event_msg!(node_b, MessageSendEvent::SendAcceptChannel, node_a.node.get_our_node_id()));
 
-	let (temporary_channel_id, tx, funding_output) = create_funding_transaction(&node_a, channel_value, 42);
+	let (temporary_channel_id, tx, funding_output) = create_funding_transaction(&node_a, &node_b.node.get_our_node_id(), channel_value, 42);
 
-	node_a.node.funding_transaction_generated(&temporary_channel_id, tx.clone()).unwrap();
+	node_a.node.funding_transaction_generated(&temporary_channel_id, &node_b.node.get_our_node_id(), tx.clone()).unwrap();
 	check_added_monitors!(node_a, 0);
 
 	node_b.node.handle_funding_created(&node_a.node.get_our_node_id(), &get_event_msg!(node_a, MessageSendEvent::SendFundingCreated, node_b.node.get_our_node_id()));
@@ -4751,7 +4751,7 @@ fn test_claim_sizeable_push_msat() {
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100_000, 98_000_000, InitFeatures::known(), InitFeatures::known());
-	nodes[1].node.force_close_channel(&chan.2).unwrap();
+	nodes[1].node.force_close_channel(&chan.2, &nodes[0].node.get_our_node_id()).unwrap();
 	check_closed_broadcast!(nodes[1], true);
 	check_added_monitors!(nodes[1], 1);
 	check_closed_event!(nodes[1], 1, ClosureReason::HolderForceClosed);
@@ -4780,7 +4780,7 @@ fn test_claim_on_remote_sizeable_push_msat() {
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100_000, 98_000_000, InitFeatures::known(), InitFeatures::known());
-	nodes[0].node.force_close_channel(&chan.2).unwrap();
+	nodes[0].node.force_close_channel(&chan.2, &nodes[1].node.get_our_node_id()).unwrap();
 	check_closed_broadcast!(nodes[0], true);
 	check_added_monitors!(nodes[0], 1);
 	check_closed_event!(nodes[0], 1, ClosureReason::HolderForceClosed);
@@ -8286,7 +8286,7 @@ fn test_manually_accept_inbound_channel_request() {
 	let events = nodes[1].node.get_and_clear_pending_events();
 	match events[0] {
 		Event::OpenChannelRequest { temporary_channel_id, .. } => {
-			nodes[1].node.accept_inbound_channel(&temporary_channel_id, 23).unwrap();
+			nodes[1].node.accept_inbound_channel(&temporary_channel_id, &nodes[0].node.get_our_node_id(), 23).unwrap();
 		}
 		_ => panic!("Unexpected event"),
 	}
@@ -8301,7 +8301,7 @@ fn test_manually_accept_inbound_channel_request() {
 		_ => panic!("Unexpected event"),
 	}
 
-	nodes[1].node.force_close_channel(&temp_channel_id).unwrap();
+	nodes[1].node.force_close_channel(&temp_channel_id, &nodes[0].node.get_our_node_id()).unwrap();
 
 	let close_msg_ev = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(close_msg_ev.len(), 1);
@@ -8336,7 +8336,7 @@ fn test_manually_reject_inbound_channel_request() {
 	let events = nodes[1].node.get_and_clear_pending_events();
 	match events[0] {
 		Event::OpenChannelRequest { temporary_channel_id, .. } => {
-			nodes[1].node.force_close_channel(&temporary_channel_id).unwrap();
+			nodes[1].node.force_close_channel(&temporary_channel_id, &nodes[0].node.get_our_node_id()).unwrap();
 		}
 		_ => panic!("Unexpected event"),
 	}
@@ -8391,9 +8391,9 @@ fn test_reject_funding_before_inbound_channel_accepted() {
 		nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), InitFeatures::known(), &accept_chan_msg);
 	}
 
-	let (temporary_channel_id, tx, _) = create_funding_transaction(&nodes[0], 100000, 42);
+	let (temporary_channel_id, tx, _) = create_funding_transaction(&nodes[0], &nodes[1].node.get_our_node_id(), 100000, 42);
 
-	nodes[0].node.funding_transaction_generated(&temporary_channel_id, tx.clone()).unwrap();
+	nodes[0].node.funding_transaction_generated(&temporary_channel_id, &nodes[1].node.get_our_node_id(), tx.clone()).unwrap();
 	let funding_created_msg = get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, nodes[1].node.get_our_node_id());
 
 	// The `funding_created_msg` should be rejected by `nodes[1]` as it hasn't accepted the channel
@@ -8436,8 +8436,8 @@ fn test_can_not_accept_inbound_channel_twice() {
 	let events = nodes[1].node.get_and_clear_pending_events();
 	match events[0] {
 		Event::OpenChannelRequest { temporary_channel_id, .. } => {
-			nodes[1].node.accept_inbound_channel(&temporary_channel_id, 0).unwrap();
-			let api_res = nodes[1].node.accept_inbound_channel(&temporary_channel_id, 0);
+			nodes[1].node.accept_inbound_channel(&temporary_channel_id, &nodes[0].node.get_our_node_id(), 0).unwrap();
+			let api_res = nodes[1].node.accept_inbound_channel(&temporary_channel_id, &nodes[0].node.get_our_node_id(), 0);
 			match api_res {
 				Err(APIError::APIMisuseError { err }) => {
 					assert_eq!(err, "The channel isn't currently awaiting to be accepted.");
@@ -8463,13 +8463,13 @@ fn test_can_not_accept_inbound_channel_twice() {
 
 #[test]
 fn test_can_not_accept_unknown_inbound_channel() {
-	let chanmon_cfg = create_chanmon_cfgs(1);
-	let node_cfg = create_node_cfgs(1, &chanmon_cfg);
-	let node_chanmgr = create_node_chanmgrs(1, &node_cfg, &[None]);
-	let node = create_network(1, &node_cfg, &node_chanmgr)[0].node;
+	let chanmon_cfg = create_chanmon_cfgs(2);
+	let node_cfg = create_node_cfgs(2, &chanmon_cfg);
+	let node_chanmgr = create_node_chanmgrs(2, &node_cfg, &[None, None]);
+	let nodes = create_network(2, &node_cfg, &node_chanmgr);
 
 	let unknown_channel_id = [0; 32];
-	let api_res = node.accept_inbound_channel(&unknown_channel_id, 0);
+	let api_res = nodes[0].node.accept_inbound_channel(&unknown_channel_id, &nodes[1].node.get_our_node_id(), 0);
 	match api_res {
 		Err(APIError::ChannelUnavailable { err }) => {
 			assert_eq!(err, "Can't accept a channel that doesn't exist");
@@ -8878,9 +8878,9 @@ fn test_pre_lockin_no_chan_closed_update() {
 	nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), InitFeatures::known(), &accept_chan_msg);
 
 	// Move the first channel through the funding flow...
-	let (temporary_channel_id, tx, _) = create_funding_transaction(&nodes[0], 100000, 42);
+	let (temporary_channel_id, tx, _) = create_funding_transaction(&nodes[0], &nodes[1].node.get_our_node_id(), 100000, 42);
 
-	nodes[0].node.funding_transaction_generated(&temporary_channel_id, tx.clone()).unwrap();
+	nodes[0].node.funding_transaction_generated(&temporary_channel_id, &nodes[1].node.get_our_node_id(), tx.clone()).unwrap();
 	check_added_monitors!(nodes[0], 0);
 
 	let funding_created_msg = get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, nodes[1].node.get_our_node_id());
@@ -8978,8 +8978,14 @@ fn do_test_onchain_htlc_settlement_after_close(broadcast_alice: bool, go_onchain
 	// If `go_onchain_before_fufill`, broadcast the relevant commitment transaction and check that Bob
 	// responds by (1) broadcasting a channel update and (2) adding a new ChannelMonitor.
 	let mut force_closing_node = 0; // Alice force-closes
-	if !broadcast_alice { force_closing_node = 1; } // Bob force-closes
-	nodes[force_closing_node].node.force_close_channel(&chan_ab.2).unwrap();
+	let mut counterparty_node = 1; // Bob if Alice force-closes
+
+	// Bob force-closes
+	if !broadcast_alice {
+		force_closing_node = 1;
+		counterparty_node = 0;
+	}
+	nodes[force_closing_node].node.force_close_channel(&chan_ab.2, &nodes[counterparty_node].node.get_our_node_id()).unwrap();
 	check_closed_broadcast!(nodes[force_closing_node], true);
 	check_added_monitors!(nodes[force_closing_node], 1);
 	check_closed_event!(nodes[force_closing_node], 1, ClosureReason::HolderForceClosed);
@@ -9167,9 +9173,9 @@ fn test_duplicate_chan_id() {
 	}
 
 	// Move the first channel through the funding flow...
-	let (temporary_channel_id, tx, funding_output) = create_funding_transaction(&nodes[0], 100000, 42);
+	let (temporary_channel_id, tx, funding_output) = create_funding_transaction(&nodes[0], &nodes[1].node.get_our_node_id(), 100000, 42);
 
-	nodes[0].node.funding_transaction_generated(&temporary_channel_id, tx.clone()).unwrap();
+	nodes[0].node.funding_transaction_generated(&temporary_channel_id, &nodes[1].node.get_our_node_id(), tx.clone()).unwrap();
 	check_added_monitors!(nodes[0], 0);
 
 	let mut funding_created_msg = get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, nodes[1].node.get_our_node_id());
@@ -9212,7 +9218,7 @@ fn test_duplicate_chan_id() {
 	let open_chan_2_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
 	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), InitFeatures::known(), &open_chan_2_msg);
 	nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), InitFeatures::known(), &get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id()));
-	create_funding_transaction(&nodes[0], 100000, 42); // Get and check the FundingGenerationReady event
+	create_funding_transaction(&nodes[0], &nodes[1].node.get_our_node_id(), 100000, 42); // Get and check the FundingGenerationReady event
 
 	let funding_created = {
 		let mut a_channel_lock = nodes[0].node.channel_state.lock().unwrap();
@@ -9345,13 +9351,13 @@ fn test_invalid_funding_tx() {
 	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), InitFeatures::known(), &get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id()));
 	nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), InitFeatures::known(), &get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id()));
 
-	let (temporary_channel_id, mut tx, _) = create_funding_transaction(&nodes[0], 100_000, 42);
+	let (temporary_channel_id, mut tx, _) = create_funding_transaction(&nodes[0], &nodes[1].node.get_our_node_id(), 100_000, 42);
 	for output in tx.output.iter_mut() {
 		// Make the confirmed funding transaction have a bogus script_pubkey
 		output.script_pubkey = bitcoin::Script::new();
 	}
 
-	nodes[0].node.funding_transaction_generated_unchecked(&temporary_channel_id, tx.clone(), 0).unwrap();
+	nodes[0].node.funding_transaction_generated_unchecked(&temporary_channel_id, &nodes[1].node.get_our_node_id(), tx.clone(), 0).unwrap();
 	nodes[1].node.handle_funding_created(&nodes[0].node.get_our_node_id(), &get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, nodes[1].node.get_our_node_id()));
 	check_added_monitors!(nodes[1], 1);
 
@@ -9409,7 +9415,7 @@ fn do_test_tx_confirmed_skipping_blocks_immediate_broadcast(test_height_before_t
 	nodes[1].node.peer_disconnected(&nodes[2].node.get_our_node_id(), false);
 	nodes[2].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
 
-	nodes[1].node.force_close_channel(&channel_id).unwrap();
+	nodes[1].node.force_close_channel(&channel_id, &nodes[2].node.get_our_node_id()).unwrap();
 	check_closed_broadcast!(nodes[1], true);
 	check_closed_event!(nodes[1], 1, ClosureReason::HolderForceClosed);
 	check_added_monitors!(nodes[1], 1);
@@ -9881,7 +9887,7 @@ fn do_test_max_dust_htlc_exposure(dust_outbound_balance: bool, exposure_breach_e
 
 	let opt_anchors = false;
 
-	let (temporary_channel_id, tx, _) = create_funding_transaction(&nodes[0], 1_000_000, 42);
+	let (temporary_channel_id, tx, _) = create_funding_transaction(&nodes[0], &nodes[1].node.get_our_node_id(), 1_000_000, 42);
 
 	if on_holder_tx {
 		if let Some(mut chan) = nodes[0].node.channel_state.lock().unwrap().by_id.get_mut(&temporary_channel_id) {
@@ -9889,7 +9895,7 @@ fn do_test_max_dust_htlc_exposure(dust_outbound_balance: bool, exposure_breach_e
 		}
 	}
 
-	nodes[0].node.funding_transaction_generated(&temporary_channel_id, tx.clone()).unwrap();
+	nodes[0].node.funding_transaction_generated(&temporary_channel_id, &nodes[1].node.get_our_node_id(), tx.clone()).unwrap();
 	nodes[1].node.handle_funding_created(&nodes[0].node.get_our_node_id(), &get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, nodes[1].node.get_our_node_id()));
 	check_added_monitors!(nodes[1], 1);
 

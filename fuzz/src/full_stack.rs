@@ -408,7 +408,7 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 	let mut should_forward = false;
 	let mut payments_received: Vec<PaymentHash> = Vec::new();
 	let mut payments_sent = 0;
-	let mut pending_funding_generation: Vec<([u8; 32], u64, Script)> = Vec::new();
+	let mut pending_funding_generation: Vec<([u8; 32], PublicKey, u64, Script)> = Vec::new();
 	let mut pending_funding_signatures = HashMap::new();
 
 	loop {
@@ -516,7 +516,7 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 				let channel_id = get_slice!(1)[0] as usize;
 				if channel_id >= channels.len() { return; }
 				channels.sort_by(|a, b| { a.channel_id.cmp(&b.channel_id) });
-				if channelmanager.close_channel(&channels[channel_id].channel_id).is_err() { return; }
+				if channelmanager.close_channel(&channels[channel_id].channel_id, &channels[channel_id].counterparty.node_id).is_err() { return; }
 			},
 			7 => {
 				if should_forward {
@@ -556,7 +556,7 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 			10 => {
 				'outer_loop: for funding_generation in pending_funding_generation.drain(..) {
 					let mut tx = Transaction { version: 0, lock_time: 0, input: Vec::new(), output: vec![TxOut {
-							value: funding_generation.1, script_pubkey: funding_generation.2,
+							value: funding_generation.2, script_pubkey: funding_generation.3,
 						}] };
 					let funding_output = 'search_loop: loop {
 						let funding_txid = tx.txid();
@@ -575,7 +575,7 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 							continue 'outer_loop;
 						}
 					};
-					if let Err(e) = channelmanager.funding_transaction_generated(&funding_generation.0, tx.clone()) {
+					if let Err(e) = channelmanager.funding_transaction_generated(&funding_generation.0, &funding_generation.1, tx.clone()) {
 						// It's possible the channel has been closed in the mean time, but any other
 						// failure may be a bug.
 						if let APIError::ChannelUnavailable { err } = e {
@@ -624,7 +624,7 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 				let channel_id = get_slice!(1)[0] as usize;
 				if channel_id >= channels.len() { return; }
 				channels.sort_by(|a, b| { a.channel_id.cmp(&b.channel_id) });
-				channelmanager.force_close_channel(&channels[channel_id].channel_id).unwrap();
+				channelmanager.force_close_channel(&channels[channel_id].channel_id, &channels[channel_id].counterparty.node_id).unwrap();
 			},
 			// 15 is above
 			_ => return,
@@ -632,8 +632,8 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 		loss_detector.handler.process_events();
 		for event in loss_detector.manager.get_and_clear_pending_events() {
 			match event {
-				Event::FundingGenerationReady { temporary_channel_id, channel_value_satoshis, output_script, .. } => {
-					pending_funding_generation.push((temporary_channel_id, channel_value_satoshis, output_script));
+				Event::FundingGenerationReady { temporary_channel_id, counterparty_node_id, channel_value_satoshis, output_script, .. } => {
+					pending_funding_generation.push((temporary_channel_id, counterparty_node_id, channel_value_satoshis, output_script));
 				},
 				Event::PaymentReceived { payment_hash, .. } => {
 					//TODO: enhance by fetching random amounts from fuzz input?

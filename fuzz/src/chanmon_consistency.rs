@@ -442,7 +442,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 						value: *channel_value_satoshis, script_pubkey: output_script.clone(),
 					}]};
 					funding_output = OutPoint { txid: tx.txid(), index: 0 };
-					$source.funding_transaction_generated(&temporary_channel_id, tx.clone()).unwrap();
+					$source.funding_transaction_generated(&temporary_channel_id, &$dest.get_our_node_id(), tx.clone()).unwrap();
 					channel_txn.push(tx);
 				} else { panic!("Wrong event type"); }
 			}

@@ -161,8 +161,15 @@ pub enum Event {
 	/// [`ChannelManager::funding_transaction_generated`]: crate::ln::channelmanager::ChannelManager::funding_transaction_generated
 	FundingGenerationReady {
 		/// The random channel_id we picked which you'll need to pass into
-		/// ChannelManager::funding_transaction_generated.
+		/// [`ChannelManager::funding_transaction_generated`].
+		///
+		/// [`ChannelManager::funding_transaction_generated`]: crate::ln::channelmanager::ChannelManager::funding_transaction_generated
 		temporary_channel_id: [u8; 32],
+		/// The counterparty's node_id, which you'll need to pass back into
+		/// [`ChannelManager::funding_transaction_generated`].
+		///
+		/// [`ChannelManager::funding_transaction_generated`]: crate::ln::channelmanager::ChannelManager::funding_transaction_generated
+		counterparty_node_id: PublicKey,
 		/// The value, in satoshis, that the output should have.
 		channel_value_satoshis: u64,
 		/// The script which should be used in the transaction output.
@@ -427,13 +434,21 @@ pub enum Event {
 		/// The temporary channel ID of the channel requested to be opened.
 		///
 		/// When responding to the request, the `temporary_channel_id` should be passed
-		/// back to the ChannelManager with [`ChannelManager::accept_inbound_channel`] to accept,
-		/// or to [`ChannelManager::force_close_channel`] to reject.
+		/// back to the ChannelManager through [`ChannelManager::accept_inbound_channel`] to accept,
+		/// or through [`ChannelManager::force_close_channel`] to reject.
 		///
 		/// [`ChannelManager::accept_inbound_channel`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel
 		/// [`ChannelManager::force_close_channel`]: crate::ln::channelmanager::ChannelManager::force_close_channel
 		temporary_channel_id: [u8; 32],
 		/// The node_id of the counterparty requesting to open the channel.
+		///
+		/// When responding to the request, the `counterparty_node_id` should be passed
+		/// back to the `ChannelManager` through [`ChannelManager::accept_inbound_channel`] to
+		/// accept the request, or through [`ChannelManager::force_close_channel`] to reject the
+		/// request.
+		///
+		/// [`ChannelManager::accept_inbound_channel`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel
+		/// [`ChannelManager::force_close_channel`]: crate::ln::channelmanager::ChannelManager::force_close_channel
 		counterparty_node_id: PublicKey,
 		/// The channel value of the requested channel.
 		funding_satoshis: u64,
