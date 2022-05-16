@@ -18,7 +18,7 @@ no-std = ["hashbrown", "lightning/no-std", "core2/alloc"]
 std = ["bitcoin_hashes/std", "num-traits/std", "lightning/std", "bech32/std"]
 
 [dependencies]
-bech32 = { version = "0.8", default-features = false }
+bech32 = { version = "0.9", default-features = false }
 lightning = { version = "0.0.106", path = "../lightning", default-features = false }
 secp256k1 = { version = "0.22", default-features = false, features = ["recovery", "alloc"] }
 num-traits = { version = "0.2.8", default-features = false }
