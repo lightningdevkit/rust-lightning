@@ -110,7 +110,7 @@ fn updates_shutdown_wait() {
 	assert!(updates.update_fee.is_none());
 	assert_eq!(updates.update_fulfill_htlcs.len(), 1);
 	nodes[1].node.handle_update_fulfill_htlc(&nodes[2].node.get_our_node_id(), &updates.update_fulfill_htlcs[0]);
-	expect_payment_forwarded!(nodes[1], nodes[0], Some(1000), false);
+	expect_payment_forwarded!(nodes[1], nodes[0], nodes[2], Some(1000), false, false);
 	check_added_monitors!(nodes[1], 1);
 	let updates_2 = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 	commitment_signed_dance!(nodes[1], nodes[2], updates.commitment_signed, false);
@@ -279,7 +279,7 @@ fn do_test_shutdown_rebroadcast(recv_count: u8) {
 	assert!(updates.update_fee.is_none());
 	assert_eq!(updates.update_fulfill_htlcs.len(), 1);
 	nodes[1].node.handle_update_fulfill_htlc(&nodes[2].node.get_our_node_id(), &updates.update_fulfill_htlcs[0]);
-	expect_payment_forwarded!(nodes[1], nodes[0], Some(1000), false);
+	expect_payment_forwarded!(nodes[1], nodes[0], nodes[2], Some(1000), false, false);
 	check_added_monitors!(nodes[1], 1);
 	let updates_2 = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 	commitment_signed_dance!(nodes[1], nodes[2], updates.commitment_signed, false);

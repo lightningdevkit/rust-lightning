@@ -235,7 +235,7 @@ pub struct ChainMonitor<ChannelSigner: Sign, C: Deref, T: Deref, F: Deref, L: De
 	persister: P,
 	/// "User-provided" (ie persistence-completion/-failed) [`MonitorEvent`]s. These came directly
 	/// from the user and not from a [`ChannelMonitor`].
-	pending_monitor_events: Mutex<Vec<MonitorEvent>>,
+	pending_monitor_events: Mutex<Vec<(OutPoint, Vec<MonitorEvent>)>>,
 	/// The best block height seen, used as a proxy for the passage of time.
 	highest_chain_height: AtomicUsize,
 }
@@ -299,7 +299,7 @@ where C::Target: chain::Filter,
 							log_trace!(self.logger, "Finished syncing Channel Monitor for channel {}", log_funding_info!(monitor)),
 						Err(ChannelMonitorUpdateErr::PermanentFailure) => {
 							monitor_state.channel_perm_failed.store(true, Ordering::Release);
-							self.pending_monitor_events.lock().unwrap().push(MonitorEvent::UpdateFailed(*funding_outpoint));
+							self.pending_monitor_events.lock().unwrap().push((*funding_outpoint, vec![MonitorEvent::UpdateFailed(*funding_outpoint)]));
 						},
 						Err(ChannelMonitorUpdateErr::TemporaryFailure) => {
 							log_debug!(self.logger, "Channel Monitor sync for channel {} in progress, holding events until completion!", log_funding_info!(monitor));
@@ -455,10 +455,10 @@ where C::Target: chain::Filter,
 					// UpdateCompleted event.
 					return Ok(());
 				}
-				self.pending_monitor_events.lock().unwrap().push(MonitorEvent::UpdateCompleted {
+				self.pending_monitor_events.lock().unwrap().push((funding_txo, vec![MonitorEvent::UpdateCompleted {
 					funding_txo,
 					monitor_update_id: monitor_data.monitor.get_latest_update_id(),
-				});
+				}]));
 			},
 			MonitorUpdateId { contents: UpdateOrigin::ChainSync(_) } => {
 				if !monitor_data.has_pending_chainsync_updates(&pending_monitor_updates) {
@@ -476,10 +476,10 @@ where C::Target: chain::Filter,
 	/// channel_monitor_updated once with the highest ID.
 	#[cfg(any(test, fuzzing))]
 	pub fn force_channel_monitor_updated(&self, funding_txo: OutPoint, monitor_update_id: u64) {
-		self.pending_monitor_events.lock().unwrap().push(MonitorEvent::UpdateCompleted {
+		self.pending_monitor_events.lock().unwrap().push((funding_txo, vec![MonitorEvent::UpdateCompleted {
 			funding_txo,
 			monitor_update_id,
-		});
+		}]));
 	}
 
 	#[cfg(any(test, fuzzing, feature = "_test_utils"))]
@@ -666,7 +666,7 @@ where C::Target: chain::Filter,
 		}
 	}
 
-	fn release_pending_monitor_events(&self) -> Vec<MonitorEvent> {
+	fn release_pending_monitor_events(&self) -> Vec<(OutPoint, Vec<MonitorEvent>)> {
 		let mut pending_monitor_events = self.pending_monitor_events.lock().unwrap().split_off(0);
 		for monitor_state in self.monitors.read().unwrap().values() {
 			let is_pending_monitor_update = monitor_state.has_pending_chainsync_updates(&monitor_state.pending_monitor_updates.lock().unwrap());
@@ -692,7 +692,11 @@ where C::Target: chain::Filter,
 					log_error!(self.logger, "   To avoid funds-loss, we are allowing monitor updates to be released.");
 					log_error!(self.logger, "   This may cause duplicate payment events to be generated.");
 				}
-				pending_monitor_events.append(&mut monitor_state.monitor.get_and_clear_pending_monitor_events());
+				let monitor_events = monitor_state.monitor.get_and_clear_pending_monitor_events();
+				if monitor_events.len() > 0 {
+					let monitor_outpoint = monitor_state.monitor.get_funding_txo().0;
+					pending_monitor_events.push((monitor_outpoint, monitor_events));
+				}
 			}
 		}
 		pending_monitor_events

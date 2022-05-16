@@ -495,7 +495,7 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 	let bs_htlc_claim_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 	assert_eq!(bs_htlc_claim_txn.len(), 1);
 	check_spends!(bs_htlc_claim_txn[0], as_commitment_tx);
-	expect_payment_forwarded!(nodes[1], nodes[0], None, false);
+	expect_payment_forwarded!(nodes[1], nodes[0], nodes[2], None, false, false);
 
 	if !confirm_before_reload {
 		mine_transaction(&nodes[0], &as_commitment_tx);
