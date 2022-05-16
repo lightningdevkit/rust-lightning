@@ -2178,7 +2178,7 @@ fn channel_monitor_network_test() {
 	send_payment(&nodes[0], &vec!(&nodes[1], &nodes[2], &nodes[3], &nodes[4])[..], 8000000);
 
 	// Simple case with no pending HTLCs:
-	nodes[1].node.force_close_channel(&chan_1.2).unwrap();
+	nodes[1].node.force_close_channel(&chan_1.2, &nodes[0].node.get_our_node_id()).unwrap();
 	check_added_monitors!(nodes[1], 1);
 	check_closed_broadcast!(nodes[1], true);
 	{
@@ -2199,7 +2199,7 @@ fn channel_monitor_network_test() {
 
 	// Simple case of one pending HTLC to HTLC-Timeout (note that the HTLC-Timeout is not
 	// broadcasted until we reach the timelock time).
-	nodes[1].node.force_close_channel(&chan_2.2).unwrap();
+	nodes[1].node.force_close_channel(&chan_2.2, &nodes[2].node.get_our_node_id()).unwrap();
 	check_closed_broadcast!(nodes[1], true);
 	check_added_monitors!(nodes[1], 1);
 	{
@@ -2238,7 +2238,7 @@ fn channel_monitor_network_test() {
 
 	// nodes[3] gets the preimage, but nodes[2] already disconnected, resulting in a nodes[2]
 	// HTLC-Timeout and a nodes[3] claim against it (+ its own announces)
-	nodes[2].node.force_close_channel(&chan_3.2).unwrap();
+	nodes[2].node.force_close_channel(&chan_3.2, &nodes[3].node.get_our_node_id()).unwrap();
 	check_added_monitors!(nodes[2], 1);
 	check_closed_broadcast!(nodes[2], true);
 	let node2_commitment_txid;
