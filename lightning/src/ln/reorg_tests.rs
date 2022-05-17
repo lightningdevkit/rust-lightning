@@ -185,6 +185,77 @@ fn test_onchain_htlc_timeout_delay_remote_commitment() {
 	do_test_onchain_htlc_reorg(false, false);
 }
 
+#[test]
+fn test_counterparty_revoked_reorg() {
+	// Test what happens when a revoked counterparty transaction is broadcast but then reorg'd out
+	// of the main chain. Specifically, HTLCs in the latest commitment transaction which are not
+	// included in the revoked commitment transaction should not be considered failed, and should
+	// still be claim-from-able after the reorg.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 500_000_000, InitFeatures::known(), InitFeatures::known());
+
+	// Get the initial commitment transaction for broadcast, before any HTLCs are added at all.
+	let revoked_local_txn = get_local_commitment_txn!(nodes[0], chan.2);
+	assert_eq!(revoked_local_txn.len(), 1);
+
+	// Now add two HTLCs in each direction, one dust and one not.
+	route_payment(&nodes[0], &[&nodes[1]], 5_000_000);
+	route_payment(&nodes[0], &[&nodes[1]], 5_000);
+	let (payment_preimage_3, payment_hash_3, ..) = route_payment(&nodes[1], &[&nodes[0]], 4_000_000);
+	let payment_hash_4 = route_payment(&nodes[1], &[&nodes[0]], 4_000).1;
+
+	nodes[0].node.claim_funds(payment_preimage_3);
+	let _ = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+	check_added_monitors!(nodes[0], 1);
+	expect_payment_claimed!(nodes[0], payment_hash_3, 4_000_000);
+
+	let mut unrevoked_local_txn = get_local_commitment_txn!(nodes[0], chan.2);
+	assert_eq!(unrevoked_local_txn.len(), 3); // commitment + 2 HTLC txn
+	// Sort the unrevoked transactions in reverse order, ie commitment tx, then HTLC 1 then HTLC 3
+	unrevoked_local_txn.sort_unstable_by_key(|tx| 1_000_000 - tx.output.iter().map(|outp| outp.value).sum::<u64>());
+
+	// Now mine A's old commitment transaction, which should close the channel, but take no action
+	// on any of the HTLCs, at least until we get six confirmations (which we won't get).
+	mine_transaction(&nodes[1], &revoked_local_txn[0]);
+	check_added_monitors!(nodes[1], 1);
+	check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed);
+	check_closed_broadcast!(nodes[1], true);
+
+	// Connect up to one block before the revoked transaction would be considered final, then do a
+	// reorg that disconnects the full chain and goes up to the height at which the revoked
+	// transaction would be final.
+	let theoretical_conf_height = nodes[1].best_block_info().1 + ANTI_REORG_DELAY - 1;
+	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 2);
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+	assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
+
+	disconnect_all_blocks(&nodes[1]);
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+	assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
+
+	connect_blocks(&nodes[1], theoretical_conf_height);
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+	assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
+
+	// Now connect A's latest commitment transaction instead and resolve the HTLCs
+	mine_transaction(&nodes[1], &unrevoked_local_txn[0]);
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+	assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
+
+	// Connect the HTLC claim transaction for HTLC 3
+	mine_transaction(&nodes[1], &unrevoked_local_txn[2]);
+	expect_payment_sent!(nodes[1], payment_preimage_3);
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+
+	// Connect blocks to confirm the unrevoked commitment transaction
+	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 2);
+	expect_payment_failed!(nodes[1], payment_hash_4, true);
+}
+
 fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool, use_funding_unconfirmed: bool, connect_style: ConnectStyle) {
 	// After creating a chan between nodes, we disconnect all blocks previously seen to force a
 	// channel close on nodes[0] side. We also use this to provide very basic testing of logic
