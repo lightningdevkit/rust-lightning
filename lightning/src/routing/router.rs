@@ -1295,10 +1295,10 @@ where L::Target: Logger {
 							short_channel_id: hop.short_channel_id,
 						})
 						.unwrap_or_else(|| CandidateRouteHop::PrivateHop { hint: hop });
+					let amount_to_transfer_msat = final_value_msat + aggregate_next_hops_fee_msat;
 					let capacity_msat = candidate.effective_capacity().as_msat();
 					aggregate_next_hops_path_penalty_msat = aggregate_next_hops_path_penalty_msat
-						.saturating_add(scorer.channel_penalty_msat(hop.short_channel_id,
-							final_value_msat, capacity_msat, &source, &target));
+						.saturating_add(scorer.channel_penalty_msat(hop.short_channel_id, amount_to_transfer_msat, capacity_msat, &source, &target));
 
 					aggregate_next_hops_cltv_delta = aggregate_next_hops_cltv_delta
 						.saturating_add(hop.cltv_expiry_delta as u32);
