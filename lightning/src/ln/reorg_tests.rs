@@ -130,7 +130,8 @@ fn do_test_onchain_htlc_reorg(local_commitment: bool, claim: bool) {
 	assert_eq!(nodes[1].node.get_and_clear_pending_events().len(), 0);
 
 	if claim {
-		disconnect_blocks(&nodes[1], ANTI_REORG_DELAY - 2);
+		// Disconnect Node 1's HTLC-Timeout which was connected above
+		disconnect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
 
 		let block = Block {
 			header: BlockHeader { version: 0x20000000, prev_blockhash: nodes[1].best_block_hash(), merkle_root: TxMerkleNode::all_zeros(), time: 42, bits: 42, nonce: 42 },
