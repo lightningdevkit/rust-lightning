@@ -15,7 +15,7 @@
 //! call into the provided message handlers (probably a ChannelManager and NetGraphmsgHandler) with messages
 //! they should handle, and encoding/sending response messages.
 
-use bitcoin::secp256k1::{SecretKey,PublicKey};
+use bitcoin::secp256k1::{self, Secp256k1, SecretKey, PublicKey};
 
 use ln::features::InitFeatures;
 use ln::msgs;
@@ -455,6 +455,7 @@ pub struct PeerManager<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: De
 	peer_counter: AtomicCounter,
 
 	logger: L,
+	secp_ctx: Secp256k1<secp256k1::SignOnly>
 }
 
 enum MessageHandlingError {
@@ -573,6 +574,10 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 		let mut ephemeral_key_midstate = Sha256::engine();
 		ephemeral_key_midstate.input(ephemeral_random_data);
 
+		let mut secp_ctx = Secp256k1::signing_only();
+		let ephemeral_hash = Sha256::from_engine(ephemeral_key_midstate.clone()).into_inner();
+		secp_ctx.seeded_randomize(&ephemeral_hash);
+
 		PeerManager {
 			message_handler,
 			peers: FairRwLock::new(HashMap::new()),
@@ -584,6 +589,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 			peer_counter: AtomicCounter::new(),
 			logger,
 			custom_message_handler,
+			secp_ctx,
 		}
 	}
 
@@ -628,7 +634,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 	/// [`socket_disconnected()`]: PeerManager::socket_disconnected
 	pub fn new_outbound_connection(&self, their_node_id: PublicKey, descriptor: Descriptor, remote_network_address: Option<NetAddress>) -> Result<Vec<u8>, PeerHandleError> {
 		let mut peer_encryptor = PeerChannelEncryptor::new_outbound(their_node_id.clone(), self.get_ephemeral_key());
-		let res = peer_encryptor.get_act_one().to_vec();
+		let res = peer_encryptor.get_act_one(&self.secp_ctx).to_vec();
 		let pending_read_buffer = [0; 50].to_vec(); // Noise act two is 50 bytes
 
 		let mut peers = self.peers.write().unwrap();
@@ -675,7 +681,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 	///
 	/// [`socket_disconnected()`]: PeerManager::socket_disconnected
 	pub fn new_inbound_connection(&self, descriptor: Descriptor, remote_network_address: Option<NetAddress>) -> Result<(), PeerHandleError> {
-		let peer_encryptor = PeerChannelEncryptor::new_inbound(&self.our_node_secret);
+		let peer_encryptor = PeerChannelEncryptor::new_inbound(&self.our_node_secret, &self.secp_ctx);
 		let pending_read_buffer = [0; 50].to_vec(); // Noise act one is 50 bytes
 
 		let mut peers = self.peers.write().unwrap();
@@ -940,14 +946,16 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 						let next_step = peer.channel_encryptor.get_noise_step();
 						match next_step {
 							NextNoiseStep::ActOne => {
-								let act_two = try_potential_handleerror!(peer,
-									peer.channel_encryptor.process_act_one_with_keys(&peer.pending_read_buffer[..], &self.our_node_secret, self.get_ephemeral_key())).to_vec();
+								let act_two = try_potential_handleerror!(peer, peer.channel_encryptor
+									.process_act_one_with_keys(&peer.pending_read_buffer[..],
+										&self.our_node_secret, self.get_ephemeral_key(), &self.secp_ctx)).to_vec();
 								peer.pending_outbound_buffer.push_back(act_two);
 								peer.pending_read_buffer = [0; 66].to_vec(); // act three is 66 bytes long
 							},
 							NextNoiseStep::ActTwo => {
 								let (act_three, their_node_id) = try_potential_handleerror!(peer,
-									peer.channel_encryptor.process_act_two(&peer.pending_read_buffer[..], &self.our_node_secret));
+									peer.channel_encryptor.process_act_two(&peer.pending_read_buffer[..],
+										&self.our_node_secret, &self.secp_ctx));
 								peer.pending_outbound_buffer.push_back(act_three.to_vec());
 								peer.pending_read_buffer = [0; 18].to_vec(); // Message length header is 18 bytes
 								peer.pending_read_is_header = true;
