@@ -65,11 +65,10 @@ impl_writeable_tlv_based!(RouteHop, {
 #[derive(Clone, Hash, PartialEq, Eq)]
 pub struct Route {
 	/// The list of routes taken for a single (potentially-)multi-part payment. The pubkey of the
-	/// last RouteHop in each path must be the same.
-	/// Each entry represents a list of hops, NOT INCLUDING our own, where the last hop is the
-	/// destination. Thus, this must always be at least length one. While the maximum length of any
-	/// given path is variable, keeping the length of any path to less than 20 should currently
-	/// ensure it is viable.
+	/// last RouteHop in each path must be the same. Each entry represents a list of hops, NOT
+	/// INCLUDING our own, where the last hop is the destination. Thus, this must always be at
+	/// least length one. While the maximum length of any given path is variable, keeping the length
+	/// of any path less or equal to 19 should currently ensure it is viable.
 	pub paths: Vec<Vec<RouteHop>>,
 	/// The `payment_params` parameter passed to [`find_route`].
 	/// This is used by `ChannelManager` to track information which may be required for retries,
@@ -177,8 +176,22 @@ impl_writeable_tlv_based!(RouteParameters, {
 /// Maximum total CTLV difference we allow for a full payment path.
 pub const DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA: u32 = 1008;
 
-/// The median hop CLTV expiry delta currently seen in the network.
+// The median hop CLTV expiry delta currently seen in the network.
 const MEDIAN_HOP_CLTV_EXPIRY_DELTA: u32 = 40;
+
+// During routing, we only consider paths shorter than our maximum length estimate.
+// In the legacy onion format, the maximum number of hops used to be a fixed value of 20.
+// However, in the TLV onion format, there is no fixed maximum length, but the `hop_payloads`
+// field is always 1300 bytes. As the `tlv_payload` for each hop may vary in length, we have to
+// estimate how many hops the route may have so that it actually fits the `hop_payloads` field.
+//
+// We estimate 3+32 (payload length and HMAC) + 2+8 (amt_to_forward) + 2+4 (outgoing_cltv_value) +
+// 2+8 (short_channel_id) = 61 bytes for each intermediate hop and 3+32
+// (payload length and HMAC) + 2+8 (amt_to_forward) + 2+4 (outgoing_cltv_value) + 2+32+8
+// (payment_secret and total_msat) = 93 bytes for the final hop.
+// Since the length of the potentially included `payment_metadata` is unknown to us, we round
+// down from (1300-93) / 61 = 19.78... to arrive at a conservative estimate of 19.
+const MAX_PATH_LENGTH_ESTIMATE: u8 = 19;
 
 /// The recipient of a payment.
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
@@ -327,6 +340,8 @@ struct RouteGraphNode {
 	/// All penalties incurred from this hop on the way to the destination, as calculated using
 	/// channel scoring.
 	path_penalty_msat: u64,
+	/// The number of hops walked up to this node.
+	path_length_to_node: u8,
 }
 
 impl cmp::Ord for RouteGraphNode {
@@ -796,11 +811,11 @@ where L::Target: Logger {
 	// The main heap containing all candidate next-hops sorted by their score (max(A* fee,
 	// htlc_minimum)). Ideally this would be a heap which allowed cheap score reduction instead of
 	// adding duplicate entries when we find a better path to a given node.
-	let mut targets = BinaryHeap::new();
+	let mut targets: BinaryHeap<RouteGraphNode> = BinaryHeap::new();
 
 	// Map from node_id to information about the best current path to that node, including feerate
 	// information.
-	let mut dist = HashMap::with_capacity(network_nodes.len());
+	let mut dist: HashMap<NodeId, PathBuildingHop> = HashMap::with_capacity(network_nodes.len());
 
 	// During routing, if we ignore a path due to an htlc_minimum_msat limit, we set this,
 	// indicating that we may wish to try again with a higher value, potentially paying to meet an
@@ -860,8 +875,8 @@ where L::Target: Logger {
 		// since that value has to be transferred over this channel.
 		// Returns whether this channel caused an update to `targets`.
 		( $candidate: expr, $src_node_id: expr, $dest_node_id: expr, $next_hops_fee_msat: expr,
-		   $next_hops_value_contribution: expr, $next_hops_path_htlc_minimum_msat: expr,
-		   $next_hops_path_penalty_msat: expr, $next_hops_cltv_delta: expr ) => { {
+			$next_hops_value_contribution: expr, $next_hops_path_htlc_minimum_msat: expr,
+			$next_hops_path_penalty_msat: expr, $next_hops_cltv_delta: expr, $next_hops_path_length: expr ) => { {
 			// We "return" whether we updated the path at the end, via this:
 			let mut did_add_update_path_to_src_node = false;
 			// Channels to self should not be used. This is more of belt-and-suspenders, because in
@@ -905,6 +920,9 @@ where L::Target: Logger {
 					};
 					// Verify the liquidity offered by this channel complies to the minimal contribution.
 					let contributes_sufficient_value = available_value_contribution_msat >= minimal_value_contribution_msat;
+					// Do not consider candidate hops that would exceed the maximum path length.
+					let path_length_to_node = $next_hops_path_length + 1;
+					let doesnt_exceed_max_path_length = path_length_to_node <= MAX_PATH_LENGTH_ESTIMATE;
 
 					// Do not consider candidates that exceed the maximum total cltv expiry limit.
 					// In order to already account for some of the privacy enhancing random CLTV
@@ -939,9 +957,11 @@ where L::Target: Logger {
 					// bother considering this channel. If retrying with recommended_value_msat may
 					// allow us to hit the HTLC minimum limit, set htlc_minimum_limit so that we go
 					// around again with a higher amount.
-					if contributes_sufficient_value && doesnt_exceed_cltv_delta_limit && may_overpay_to_meet_path_minimum_msat {
+					if contributes_sufficient_value && doesnt_exceed_max_path_length &&
+						doesnt_exceed_cltv_delta_limit && may_overpay_to_meet_path_minimum_msat {
 						hit_minimum_limit = true;
-					} else if contributes_sufficient_value && doesnt_exceed_cltv_delta_limit && over_path_minimum_msat {
+					} else if contributes_sufficient_value && doesnt_exceed_max_path_length &&
+						doesnt_exceed_cltv_delta_limit && over_path_minimum_msat {
 						// Note that low contribution here (limited by available_liquidity_msat)
 						// might violate htlc_minimum_msat on the hops which are next along the
 						// payment path (upstream to the payee). To avoid that, we recompute
@@ -1038,6 +1058,7 @@ where L::Target: Logger {
 								value_contribution_msat: value_contribution_msat,
 								path_htlc_minimum_msat,
 								path_penalty_msat,
+								path_length_to_node,
 							};
 
 							// Update the way of reaching $src_node_id with the given short_channel_id (from $dest_node_id),
@@ -1121,7 +1142,9 @@ where L::Target: Logger {
 	// meaning how much will be paid in fees after this node (to the best of our knowledge).
 	// This data can later be helpful to optimize routing (pay lower fees).
 	macro_rules! add_entries_to_cheapest_to_target_node {
-		( $node: expr, $node_id: expr, $fee_to_target_msat: expr, $next_hops_value_contribution: expr, $next_hops_path_htlc_minimum_msat: expr, $next_hops_path_penalty_msat: expr, $next_hops_cltv_delta: expr ) => {
+		( $node: expr, $node_id: expr, $fee_to_target_msat: expr, $next_hops_value_contribution: expr,
+		  $next_hops_path_htlc_minimum_msat: expr, $next_hops_path_penalty_msat: expr,
+		  $next_hops_cltv_delta: expr, $next_hops_path_length: expr ) => {
 			let skip_node = if let Some(elem) = dist.get_mut(&$node_id) {
 				let was_processed = elem.was_processed;
 				elem.was_processed = true;
@@ -1138,7 +1161,10 @@ where L::Target: Logger {
 				if let Some(first_channels) = first_hop_targets.get(&$node_id) {
 					for details in first_channels {
 						let candidate = CandidateRouteHop::FirstHop { details };
-						add_entry!(candidate, our_node_id, $node_id, $fee_to_target_msat, $next_hops_value_contribution, $next_hops_path_htlc_minimum_msat, $next_hops_path_penalty_msat, $next_hops_cltv_delta);
+						add_entry!(candidate, our_node_id, $node_id, $fee_to_target_msat,
+							$next_hops_value_contribution,
+							$next_hops_path_htlc_minimum_msat, $next_hops_path_penalty_msat,
+							$next_hops_cltv_delta, $next_hops_path_length);
 					}
 				}
 
@@ -1161,7 +1187,12 @@ where L::Target: Logger {
 											info: directed_channel.with_update().unwrap(),
 											short_channel_id: *chan_id,
 										};
-										add_entry!(candidate, *source, $node_id, $fee_to_target_msat, $next_hops_value_contribution, $next_hops_path_htlc_minimum_msat, $next_hops_path_penalty_msat, $next_hops_cltv_delta);
+										add_entry!(candidate, *source, $node_id,
+											$fee_to_target_msat,
+											$next_hops_value_contribution,
+											$next_hops_path_htlc_minimum_msat,
+											$next_hops_path_penalty_msat,
+											$next_hops_cltv_delta, $next_hops_path_length);
 									}
 								}
 							}
@@ -1188,8 +1219,10 @@ where L::Target: Logger {
 		if let Some(first_channels) = first_hop_targets.get(&payee_node_id) {
 			for details in first_channels {
 				let candidate = CandidateRouteHop::FirstHop { details };
-				let added = add_entry!(candidate, our_node_id, payee_node_id, 0, path_value_msat, 0, 0u64, 0);
-				log_trace!(logger, "{} direct route to payee via SCID {}", if added { "Added" } else { "Skipped" }, candidate.short_channel_id());
+				let added = add_entry!(candidate, our_node_id, payee_node_id, 0, path_value_msat,
+									0, 0u64, 0, 0);
+				log_trace!(logger, "{} direct route to payee via SCID {}",
+						if added { "Added" } else { "Skipped" }, candidate.short_channel_id());
 			}
 		}
 
@@ -1202,7 +1235,7 @@ where L::Target: Logger {
 			// If not, targets.pop() will not even let us enter the loop in step 2.
 			None => {},
 			Some(node) => {
-				add_entries_to_cheapest_to_target_node!(node, payee_node_id, 0, path_value_msat, 0, 0u64, 0);
+				add_entries_to_cheapest_to_target_node!(node, payee_node_id, 0, path_value_msat, 0, 0u64, 0, 0);
 			},
 		}
 
@@ -1229,6 +1262,7 @@ where L::Target: Logger {
 				let mut aggregate_next_hops_path_htlc_minimum_msat: u64 = 0;
 				let mut aggregate_next_hops_path_penalty_msat: u64 = 0;
 				let mut aggregate_next_hops_cltv_delta: u32 = 0;
+				let mut aggregate_next_hops_path_length: u8 = 0;
 
 				for (idx, (hop, prev_hop_id)) in hop_iter.zip(prev_hop_iter).enumerate() {
 					let source = NodeId::from_pubkey(&hop.src_node_id);
@@ -1244,15 +1278,22 @@ where L::Target: Logger {
 						.unwrap_or_else(|| CandidateRouteHop::PrivateHop { hint: hop });
 					let capacity_msat = candidate.effective_capacity().as_msat();
 					aggregate_next_hops_path_penalty_msat = aggregate_next_hops_path_penalty_msat
-						.saturating_add(scorer.channel_penalty_msat(hop.short_channel_id, final_value_msat, capacity_msat, &source, &target));
+						.saturating_add(scorer.channel_penalty_msat(hop.short_channel_id,
+							final_value_msat, capacity_msat, &source, &target));
 
 					aggregate_next_hops_cltv_delta = aggregate_next_hops_cltv_delta
 						.saturating_add(hop.cltv_expiry_delta as u32);
 
-					if !add_entry!(candidate, source, target, aggregate_next_hops_fee_msat, path_value_msat, aggregate_next_hops_path_htlc_minimum_msat, aggregate_next_hops_path_penalty_msat, aggregate_next_hops_cltv_delta) {
-						// If this hop was not used then there is no use checking the preceding hops
-						// in the RouteHint. We can break by just searching for a direct channel between
-						// last checked hop and first_hop_targets
+					aggregate_next_hops_path_length = aggregate_next_hops_path_length
+						.saturating_add(1);
+
+					if !add_entry!(candidate, source, target, aggregate_next_hops_fee_msat,
+								path_value_msat, aggregate_next_hops_path_htlc_minimum_msat,
+								aggregate_next_hops_path_penalty_msat,
+								aggregate_next_hops_cltv_delta, aggregate_next_hops_path_length) {
+						// If this hop was not used then there is no use checking the preceding
+						// hops in the RouteHint. We can break by just searching for a direct
+						// channel between last checked hop and first_hop_targets.
 						hop_used = false;
 					}
 
@@ -1260,7 +1301,11 @@ where L::Target: Logger {
 					if let Some(first_channels) = first_hop_targets.get(&NodeId::from_pubkey(&prev_hop_id)) {
 						for details in first_channels {
 							let candidate = CandidateRouteHop::FirstHop { details };
-							add_entry!(candidate, our_node_id, NodeId::from_pubkey(&prev_hop_id), aggregate_next_hops_fee_msat, path_value_msat, aggregate_next_hops_path_htlc_minimum_msat, aggregate_next_hops_path_penalty_msat, aggregate_next_hops_cltv_delta);
+							add_entry!(candidate, our_node_id, NodeId::from_pubkey(&prev_hop_id),
+								aggregate_next_hops_fee_msat, path_value_msat,
+								aggregate_next_hops_path_htlc_minimum_msat,
+								aggregate_next_hops_path_penalty_msat, aggregate_next_hops_cltv_delta,
+								aggregate_next_hops_path_length);
 						}
 					}
 
@@ -1271,7 +1316,7 @@ where L::Target: Logger {
 					// In the next values of the iterator, the aggregate fees already reflects
 					// the sum of value sent from payer (final_value_msat) and routing fees
 					// for the last node in the RouteHint. We need to just add the fees to
-					// route through the current node so that the preceeding node (next iteration)
+					// route through the current node so that the preceding node (next iteration)
 					// can use it.
 					let hops_fee = compute_fees(aggregate_next_hops_fee_msat + final_value_msat, hop.fees)
 						.map_or(None, |inc| inc.checked_add(aggregate_next_hops_fee_msat));
@@ -1296,7 +1341,13 @@ where L::Target: Logger {
 						if let Some(first_channels) = first_hop_targets.get(&NodeId::from_pubkey(&hop.src_node_id)) {
 							for details in first_channels {
 								let candidate = CandidateRouteHop::FirstHop { details };
-								add_entry!(candidate, our_node_id, NodeId::from_pubkey(&hop.src_node_id), aggregate_next_hops_fee_msat, path_value_msat, aggregate_next_hops_path_htlc_minimum_msat, aggregate_next_hops_path_penalty_msat, aggregate_next_hops_cltv_delta);
+								add_entry!(candidate, our_node_id,
+									NodeId::from_pubkey(&hop.src_node_id),
+									aggregate_next_hops_fee_msat, path_value_msat,
+									aggregate_next_hops_path_htlc_minimum_msat,
+									aggregate_next_hops_path_penalty_msat,
+									aggregate_next_hops_cltv_delta,
+									aggregate_next_hops_path_length);
 							}
 						}
 					}
@@ -1319,13 +1370,13 @@ where L::Target: Logger {
 		// Both these cases (and other cases except reaching recommended_value_msat) mean that
 		// paths_collection will be stopped because found_new_path==false.
 		// This is not necessarily a routing failure.
-		'path_construction: while let Some(RouteGraphNode { node_id, lowest_fee_to_node, total_cltv_delta, value_contribution_msat, path_htlc_minimum_msat, path_penalty_msat, .. }) = targets.pop() {
+		'path_construction: while let Some(RouteGraphNode { node_id, lowest_fee_to_node, total_cltv_delta, value_contribution_msat, path_htlc_minimum_msat, path_penalty_msat, path_length_to_node, .. }) = targets.pop() {
 
 			// Since we're going payee-to-payer, hitting our node as a target means we should stop
 			// traversing the graph and arrange the path out of what we found.
 			if node_id == our_node_id {
 				let mut new_entry = dist.remove(&our_node_id).unwrap();
-				let mut ordered_hops = vec!((new_entry.clone(), default_node_features.clone()));
+				let mut ordered_hops: Vec<(PathBuildingHop, NodeFeatures)> = vec!((new_entry.clone(), default_node_features.clone()));
 
 				'path_walk: loop {
 					let mut features_set = false;
@@ -1441,7 +1492,9 @@ where L::Target: Logger {
 			match network_nodes.get(&node_id) {
 				None => {},
 				Some(node) => {
-					add_entries_to_cheapest_to_target_node!(node, node_id, lowest_fee_to_node, value_contribution_msat, path_htlc_minimum_msat, path_penalty_msat, total_cltv_delta);
+					add_entries_to_cheapest_to_target_node!(node, node_id, lowest_fee_to_node,
+						value_contribution_msat, path_htlc_minimum_msat, path_penalty_msat,
+						total_cltv_delta, path_length_to_node);
 				},
 			}
 		}
@@ -1697,13 +1750,15 @@ fn add_random_cltv_offset(route: &mut Route, payment_params: &PaymentParameters,
 #[cfg(test)]
 mod tests {
 	use routing::network_graph::{NetworkGraph, NetGraphMsgHandler, NodeId};
-	use routing::router::{get_route, add_random_cltv_offset, default_node_features, PaymentParameters, Route, RouteHint, RouteHintHop, RouteHop, RoutingFees, DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA};
+	use routing::router::{get_route, add_random_cltv_offset, default_node_features,
+		PaymentParameters, Route, RouteHint, RouteHintHop, RouteHop, RoutingFees,
+		DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA, MAX_PATH_LENGTH_ESTIMATE};
 	use routing::scoring::Score;
 	use chain::transaction::OutPoint;
 	use chain::keysinterface::KeysInterface;
 	use ln::features::{ChannelFeatures, InitFeatures, InvoiceFeatures, NodeFeatures};
 	use ln::msgs::{ErrorAction, LightningError, OptionalField, UnsignedChannelAnnouncement, ChannelAnnouncement, RoutingMessageHandler,
-	   NodeAnnouncement, UnsignedNodeAnnouncement, ChannelUpdate, UnsignedChannelUpdate};
+		NodeAnnouncement, UnsignedNodeAnnouncement, ChannelUpdate, UnsignedChannelUpdate};
 	use ln::channelmanager;
 	use util::test_utils;
 	use util::chacha20::ChaCha20;
@@ -1836,7 +1891,7 @@ mod tests {
 	}
 
 	fn get_nodes(secp_ctx: &Secp256k1<All>) -> (SecretKey, PublicKey, Vec<SecretKey>, Vec<PublicKey>) {
-		let privkeys: Vec<SecretKey> = (2..10).map(|i| {
+		let privkeys: Vec<SecretKey> = (2..22).map(|i| {
 			SecretKey::from_slice(&hex::decode(format!("{:02x}", i).repeat(32)).unwrap()[..]).unwrap()
 		}).collect();
 
@@ -1861,6 +1916,57 @@ mod tests {
 		} else {
 			vec![1 << idx]
 		}
+	}
+
+	fn build_line_graph() -> (
+		Secp256k1<All>, sync::Arc<NetworkGraph>, NetGraphMsgHandler<sync::Arc<NetworkGraph>,
+		sync::Arc<test_utils::TestChainSource>, sync::Arc<crate::util::test_utils::TestLogger>>,
+		sync::Arc<test_utils::TestChainSource>, sync::Arc<test_utils::TestLogger>,
+	) {
+		let secp_ctx = Secp256k1::new();
+		let logger = Arc::new(test_utils::TestLogger::new());
+		let chain_monitor = Arc::new(test_utils::TestChainSource::new(Network::Testnet));
+		let network_graph = Arc::new(NetworkGraph::new(genesis_block(Network::Testnet).header.block_hash()));
+		let net_graph_msg_handler = NetGraphMsgHandler::new(Arc::clone(&network_graph), None, Arc::clone(&logger));
+
+		// Build network from our_id to node 19:
+		// our_id -1(1)2- node0 -1(2)2- node1 - ... - node19
+		let (our_privkey, _, privkeys, _) = get_nodes(&secp_ctx);
+
+		for (idx, (cur_privkey, next_privkey)) in core::iter::once(&our_privkey)
+			.chain(privkeys.iter()).zip(privkeys.iter()).enumerate() {
+			let cur_short_channel_id = (idx as u64) + 1;
+			add_channel(&net_graph_msg_handler, &secp_ctx, &cur_privkey, &next_privkey,
+				ChannelFeatures::from_le_bytes(id_to_feature_flags(1)), cur_short_channel_id);
+			update_channel(&net_graph_msg_handler, &secp_ctx, &cur_privkey, UnsignedChannelUpdate {
+				chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+				short_channel_id: cur_short_channel_id,
+				timestamp: idx as u32,
+				flags: 0,
+				cltv_expiry_delta: 0,
+				htlc_minimum_msat: 0,
+				htlc_maximum_msat: OptionalField::Absent,
+				fee_base_msat: 0,
+				fee_proportional_millionths: 0,
+				excess_data: Vec::new()
+			});
+			update_channel(&net_graph_msg_handler, &secp_ctx, &next_privkey, UnsignedChannelUpdate {
+				chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+				short_channel_id: cur_short_channel_id,
+				timestamp: (idx as u32)+1,
+				flags: 1,
+				cltv_expiry_delta: 0,
+				htlc_minimum_msat: 0,
+				htlc_maximum_msat: OptionalField::Absent,
+				fee_base_msat: 0,
+				fee_proportional_millionths: 0,
+				excess_data: Vec::new()
+			});
+			add_or_update_node(&net_graph_msg_handler, &secp_ctx, next_privkey,
+				NodeFeatures::from_le_bytes(id_to_feature_flags(1)), 0);
+		}
+
+		(secp_ctx, network_graph, net_graph_msg_handler, chain_monitor, logger)
 	}
 
 	fn build_graph() -> (
@@ -5205,6 +5311,35 @@ mod tests {
 		let fail_payment_params = PaymentParameters::from_node_id(nodes[6]).with_route_hints(last_hops(&nodes))
 			.with_max_total_cltv_expiry_delta(fail_max_total_cltv_delta);
 		match get_route(&our_id, &fail_payment_params, &network_graph, None, 100, 0, Arc::clone(&logger), &scorer, &random_seed_bytes)
+		{
+			Err(LightningError { err, .. } ) => {
+				assert_eq!(err, "Failed to find a path to the given destination");
+			},
+			Ok(_) => panic!("Expected error"),
+		}
+	}
+
+	#[test]
+	fn limits_path_length() {
+		let (secp_ctx, network, _, _, logger) = build_line_graph();
+		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
+		let network_graph = network.read_only();
+
+		let scorer = test_utils::TestScorer::with_penalty(0);
+		let keys_manager = test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
+		let random_seed_bytes = keys_manager.get_secure_random_bytes();
+
+		// First check we can actually create a long route on this graph.
+		let feasible_payment_params = PaymentParameters::from_node_id(nodes[18]);
+		let route = get_route(&our_id, &feasible_payment_params, &network_graph, None, 100, 0,
+			Arc::clone(&logger), &scorer, &random_seed_bytes).unwrap();
+		let path = route.paths[0].iter().map(|hop| hop.short_channel_id).collect::<Vec<_>>();
+		assert!(path.len() == MAX_PATH_LENGTH_ESTIMATE.into());
+
+		// But we can't create a path surpassing the MAX_PATH_LENGTH_ESTIMATE limit.
+		let fail_payment_params = PaymentParameters::from_node_id(nodes[19]);
+		match get_route(&our_id, &fail_payment_params, &network_graph, None, 100, 0,
+			Arc::clone(&logger), &scorer, &random_seed_bytes)
 		{
 			Err(LightningError { err, .. } ) => {
 				assert_eq!(err, "Failed to find a path to the given destination");
