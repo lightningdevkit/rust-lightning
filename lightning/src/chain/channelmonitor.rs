@@ -166,11 +166,11 @@ pub struct HTLCUpdate {
 	pub(crate) payment_hash: PaymentHash,
 	pub(crate) payment_preimage: Option<PaymentPreimage>,
 	pub(crate) source: HTLCSource,
-	pub(crate) onchain_value_satoshis: Option<u64>,
+	pub(crate) htlc_value_satoshis: Option<u64>,
 }
 impl_writeable_tlv_based!(HTLCUpdate, {
 	(0, payment_hash, required),
-	(1, onchain_value_satoshis, option),
+	(1, htlc_value_satoshis, option),
 	(2, source, required),
 	(4, payment_preimage, option),
 });
@@ -357,7 +357,7 @@ enum OnchainEvent {
 	HTLCUpdate {
 		source: HTLCSource,
 		payment_hash: PaymentHash,
-		onchain_value_satoshis: Option<u64>,
+		htlc_value_satoshis: Option<u64>,
 		/// None in the second case, above, ie when there is no relevant output in the commitment
 		/// transaction which appeared on chain.
 		commitment_tx_output_idx: Option<u32>,
@@ -423,7 +423,7 @@ impl MaybeReadable for OnchainEventEntry {
 impl_writeable_tlv_based_enum_upgradable!(OnchainEvent,
 	(0, HTLCUpdate) => {
 		(0, source, required),
-		(1, onchain_value_satoshis, option),
+		(1, htlc_value_satoshis, option),
 		(2, payment_hash, required),
 		(3, commitment_tx_output_idx, option),
 	},
@@ -1689,7 +1689,7 @@ macro_rules! fail_unbroadcast_htlcs {
 								event: OnchainEvent::HTLCUpdate {
 									source: (**source).clone(),
 									payment_hash: htlc.payment_hash.clone(),
-									onchain_value_satoshis: Some(htlc.amount_msat / 1000),
+									htlc_value_satoshis: Some(htlc.amount_msat / 1000),
 									commitment_tx_output_idx: None,
 								},
 							};
@@ -2523,7 +2523,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		// Produce actionable events from on-chain events having reached their threshold.
 		for entry in onchain_events_reaching_threshold_conf.drain(..) {
 			match entry.event {
-				OnchainEvent::HTLCUpdate { ref source, payment_hash, onchain_value_satoshis, commitment_tx_output_idx } => {
+				OnchainEvent::HTLCUpdate { ref source, payment_hash, htlc_value_satoshis, commitment_tx_output_idx } => {
 					// Check for duplicate HTLC resolutions.
 					#[cfg(debug_assertions)]
 					{
@@ -2545,7 +2545,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 						payment_hash,
 						payment_preimage: None,
 						source: source.clone(),
-						onchain_value_satoshis,
+						htlc_value_satoshis,
 					}));
 					if let Some(idx) = commitment_tx_output_idx {
 						self.htlcs_resolved_on_chain.push(IrrevocablyResolvedHTLC { commitment_tx_output_idx: idx, payment_preimage: None });
@@ -2887,7 +2887,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 							source,
 							payment_preimage: Some(payment_preimage),
 							payment_hash,
-							onchain_value_satoshis: Some(amount_msat / 1000),
+							htlc_value_satoshis: Some(amount_msat / 1000),
 						}));
 					}
 				} else if offered_preimage_claim {
@@ -2908,7 +2908,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 							source,
 							payment_preimage: Some(payment_preimage),
 							payment_hash,
-							onchain_value_satoshis: Some(amount_msat / 1000),
+							htlc_value_satoshis: Some(amount_msat / 1000),
 						}));
 					}
 				} else {
@@ -2926,7 +2926,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 						height,
 						event: OnchainEvent::HTLCUpdate {
 							source, payment_hash,
-							onchain_value_satoshis: Some(amount_msat / 1000),
+							htlc_value_satoshis: Some(amount_msat / 1000),
 							commitment_tx_output_idx: Some(input.previous_output.vout),
 						},
 					};
