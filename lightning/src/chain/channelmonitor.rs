@@ -369,6 +369,8 @@ enum OnchainEvent {
 		/// transaction which appeared on chain.
 		commitment_tx_output_idx: Option<u32>,
 	},
+	/// An output waiting on [`ANTI_REORG_DELAY`] confirmations before we hand the user the
+	/// [`SpendableOutputDescriptor`].
 	MaturingOutput {
 		descriptor: SpendableOutputDescriptor,
 	},
@@ -390,6 +392,9 @@ enum OnchainEvent {
 	///  * an inbound HTLC is claimed by us (with a preimage).
 	///  * a revoked-state HTLC transaction was broadcasted, which was claimed by the revocation
 	///    signature.
+	///  * a revoked-state HTLC transaction was broadcasted, which was claimed by an
+	///    HTLC-Success/HTLC-Failure transaction (and is still claimable with a revocation
+	///    signature).
 	HTLCSpendConfirmation {
 		commitment_tx_output_idx: u32,
 		/// If the claim was made by either party with a preimage, this is filled in
@@ -2965,7 +2970,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 						log_error!(logger, "Input spending {} ({}:{}) in {} resolves {} HTLC with payment hash {} with {}!",
 							$tx_info, input.previous_output.txid, input.previous_output.vout, tx.txid(),
 							if outbound_htlc { "outbound" } else { "inbound" }, log_bytes!($htlc.payment_hash.0),
-							if revocation_sig_claim { "revocation sig" } else { "preimage claim after we'd passed the HTLC resolution back" });
+							if revocation_sig_claim { "revocation sig" } else { "preimage claim after we'd passed the HTLC resolution back. We can likely claim the HTLC output with a revocation claim" });
 					} else {
 						log_info!(logger, "Input spending {} ({}:{}) in {} resolves {} HTLC with payment hash {} with {}",
 							$tx_info, input.previous_output.txid, input.previous_output.vout, tx.txid(),
@@ -3012,29 +3017,20 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 							if payment_data.is_none() {
 								log_claim!($tx_info, $holder_tx, htlc_output, false);
 								let outbound_htlc = $holder_tx == htlc_output.offered;
-								if !outbound_htlc || revocation_sig_claim {
-									self.onchain_events_awaiting_threshold_conf.push(OnchainEventEntry {
-										txid: tx.txid(), height, transaction: Some(tx.clone()),
-										event: OnchainEvent::HTLCSpendConfirmation {
-											commitment_tx_output_idx: input.previous_output.vout,
-											preimage: if accepted_preimage_claim || offered_preimage_claim {
-												Some(payment_preimage) } else { None },
-											// If this is a payment to us (!outbound_htlc, above),
-											// wait for the CSV delay before dropping the HTLC from
-											// claimable balance if the claim was an HTLC-Success
-											// transaction.
-											on_to_local_output_csv: if accepted_preimage_claim {
-												Some(self.on_holder_tx_csv) } else { None },
-										},
-									});
-								} else {
-									// Outbound claims should always have payment_data, unless
-									// we've already failed the HTLC as the commitment transaction
-									// which was broadcasted was revoked. In that case, we should
-									// spend the HTLC output here immediately, and expose that fact
-									// as a Balance, something which we do not yet do.
-									// TODO: Track the above as claimable!
-								}
+								self.onchain_events_awaiting_threshold_conf.push(OnchainEventEntry {
+									txid: tx.txid(), height, transaction: Some(tx.clone()),
+									event: OnchainEvent::HTLCSpendConfirmation {
+										commitment_tx_output_idx: input.previous_output.vout,
+										preimage: if accepted_preimage_claim || offered_preimage_claim {
+											Some(payment_preimage) } else { None },
+										// If this is a payment to us (ie !outbound_htlc), wait for
+										// the CSV delay before dropping the HTLC from claimable
+										// balance if the claim was an HTLC-Success transaction (ie
+										// accepted_preimage_claim).
+										on_to_local_output_csv: if accepted_preimage_claim && !outbound_htlc {
+											Some(self.on_holder_tx_csv) } else { None },
+									},
+								});
 								continue 'outer_loop;
 							}
 						}
