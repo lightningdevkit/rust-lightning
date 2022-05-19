@@ -48,10 +48,8 @@ use core::hash;
 use std::io::{Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpStream};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
-
-use crossbeam_channel::{select, Receiver, Sender, TryRecvError, TrySendError};
 
 use bitcoin::secp256k1::PublicKey;
 use lightning::ln::msgs::{ChannelMessageHandler, RoutingMessageHandler};
@@ -126,10 +124,6 @@ where
     L: Logger + 'static + ?Sized + Send + Sync,
     UMH: CustomMessageHandler + 'static + Send + Sync,
 {
-    // Init channels
-    let (reader_cmd_tx, reader_cmd_rx, writer_cmd_tx, writer_cmd_rx, write_data_tx, write_data_rx) =
-        init_channels();
-
     // Generate a new ID that represents this connection
     let conn_id = next_connection_id();
     let remote_addr = stream.peer_addr().ok().map(|sock_addr| sock_addr.into());
@@ -142,28 +136,13 @@ where
     let tcp_disconnector = TcpDisconnectooor(disconnector_stream);
 
     // Init SyncSocketDescriptor
-    let mut descriptor = SyncSocketDescriptor::new(
-        conn_id,
-        tcp_disconnector,
-        reader_cmd_tx,
-        writer_cmd_tx,
-        write_data_tx,
-    );
+    let mut descriptor = SyncSocketDescriptor::new(conn_id, tcp_disconnector);
 
     // Init Reader and Writer
-    let mut reader: Reader<CMH, RMH, L, UMH> = Reader::new(
-        tcp_reader,
-        peer_manager.clone(),
-        descriptor.clone(),
-        reader_cmd_rx,
-    );
-    let mut writer: Writer<CMH, RMH, L, UMH> = Writer::new(
-        tcp_writer,
-        peer_manager.clone(),
-        descriptor.clone(),
-        writer_cmd_rx,
-        write_data_rx,
-    );
+    let mut reader: Reader<CMH, RMH, L, UMH> =
+        Reader::new(tcp_reader, peer_manager.clone(), descriptor.clone());
+    let mut writer: Writer<CMH, RMH, L, UMH> =
+        Writer::new(tcp_writer, peer_manager.clone(), descriptor.clone());
 
     // Notify the PeerManager of the new connection depending on its ConnectionType.
     //
@@ -179,29 +158,21 @@ where
         ConnectionType::Outbound(their_node_id) => peer_manager
             .new_outbound_connection(their_node_id, descriptor.clone(), remote_addr)
             .map(|initial_data| {
-                // PeerManager accepted the outbound connection; queue up the
-                // initial WriteData WriterCommand.
                 let bytes_pushed = descriptor.send_data(&initial_data, true);
-                // This should always succeed since send_data just pushes data
-                // into the write_data channel, which always starts out
-                // completely empty. If pushing the initial 10s of bytes into
-                // the channel fails, something is very wrong; probably a
-                // programmer error.
+                // This should always succeed since WriterState.data always
+                // starts out empty. If pushing the initial 10s of bytes fails,
+                // something is very wrong; probably a programmer error.
                 if bytes_pushed != initial_data.len() {
                     panic!("The initial write should always succeed");
                 }
             }),
     }
     .map(|()| {
-        // PeerManager accepted the connection; kick off processing by spawning
-        // the Reader / Writer threads.
         let reader_handle = thread::spawn(move || reader.run());
         let writer_handle = thread::spawn(move || writer.run());
         (reader_handle, writer_handle)
     })
     .map_err(|e| {
-        // PeerManager rejected this connection; disconnect the TcpStream and
-        // don't even start the Reader and Writer.
         descriptor.disconnect_socket();
         // In line with the requirements of new_inbound_connection() and
         // new_outbound_connection(), we do NOT call socket_disconnected() here.
@@ -209,68 +180,53 @@ where
     })
 }
 
-/// Commands that can be sent to the Reader.
-enum ReaderCommand {
-    ResumeRead,
-    PauseRead,
-    Shutdown,
+/// Shared state for the Reader
+struct ReaderState {
+    /// Whether reading is paused
+    pause: bool,
+    /// Whether the Reader should shut down
+    shutdown: bool,
+}
+impl ReaderState {
+    fn new() -> Self {
+        Self {
+            pause: false,
+            shutdown: false,
+        }
+    }
 }
 
-/// Commands that can be sent to the Writer.
-enum WriterCommand {
-    Shutdown,
+/// Shared state for the Writer
+struct WriterState {
+    /// The data that the Writer is requested to write
+    data: Option<Vec<u8>>,
+    /// Whether the Writer should shut down
+    shutdown: bool,
+}
+impl WriterState {
+    fn new() -> Self {
+        Self {
+            data: None,
+            shutdown: false,
+        }
+    }
 }
 
-/// Initializes the crossbeam channels required for a connection.
-///
-/// - The `reader_cmd` channel is unbounded, and can be used to tell the
-///   `Reader` to resume reads, pause reads, or shut down.
-/// - The `writer_cmd` channel is unbounded, and can be used to tell the
-///   `Writer` to shut down.
-/// - The `write_data` channel has a capacity of 1, and can be used to request a
-///   write of a Vec<u8> of data.
-///
-/// Finally:
-///
-/// - A `SyncSocketDescriptor` holds a `Sender` for both the `ReaderCommand` and
-///   `WriterCommand` channels.
-/// - The `Reader` can send commands to the `Writer` and vice versa because the
-///   `Reader` and `Writer` both hold a `SyncSocketDescriptor` clone.
-fn init_channels() -> (
-    Sender<ReaderCommand>,
-    Receiver<ReaderCommand>,
-    Sender<WriterCommand>,
-    Receiver<WriterCommand>,
-    Sender<Vec<u8>>,
-    Receiver<Vec<u8>>,
-) {
-    let (reader_cmd_tx, reader_cmd_rx) = crossbeam_channel::unbounded();
-    let (writer_cmd_tx, writer_cmd_rx) = crossbeam_channel::unbounded();
-    let (write_data_tx, write_data_rx) = crossbeam_channel::bounded(1);
-
-    (
-        reader_cmd_tx,
-        reader_cmd_rx,
-        writer_cmd_tx,
-        writer_cmd_rx,
-        write_data_tx,
-        write_data_rx,
-    )
-}
-
-/// A concrete implementation of the SocketDescriptor trait.
+/// A concrete impl of the SocketDescriptor trait for a synchronous runtime.
 ///
 /// A SyncSocketDescriptor is essentially a `clone()`able handle to an
 /// underlying connection as well as an identifier for that connection.
+///
+/// Because it is cloned everywhere, it is also a convenient place to store the
+/// `Reader` and `Writer`'s shared state (i.e. the condition variable pairs).
 ///
 /// This type is public only because handle_connection() requires it to be.
 #[derive(Clone)]
 pub struct SyncSocketDescriptor {
     id: u64,
+    reader_pair: Arc<(Mutex<ReaderState>, Condvar)>,
+    writer_pair: Arc<(Mutex<WriterState>, Condvar)>,
     tcp_disconnector: TcpDisconnectooor,
-    reader_cmd_tx: Sender<ReaderCommand>,
-    writer_cmd_tx: Sender<WriterCommand>,
-    write_data_tx: Sender<Vec<u8>>,
 }
 impl PartialEq for SyncSocketDescriptor {
     fn eq(&self, other: &Self) -> bool {
@@ -284,57 +240,82 @@ impl hash::Hash for SyncSocketDescriptor {
     }
 }
 impl SyncSocketDescriptor {
-    fn new(
-        connection_id: u64,
-        tcp_disconnector: TcpDisconnectooor,
-        reader_cmd_tx: Sender<ReaderCommand>,
-        writer_cmd_tx: Sender<WriterCommand>,
-        write_data_tx: Sender<Vec<u8>>,
-    ) -> Self {
+    fn new(connection_id: u64, tcp_disconnector: TcpDisconnectooor) -> Self {
+        let reader_pair = Arc::new((Mutex::new(ReaderState::new()), Condvar::new()));
+        let writer_pair = Arc::new((Mutex::new(WriterState::new()), Condvar::new()));
         Self {
             id: connection_id,
+            reader_pair,
+            writer_pair,
             tcp_disconnector,
-            reader_cmd_tx,
-            writer_cmd_tx,
-            write_data_tx,
         }
+    }
+
+    /// Signal the Reader to pause reads.
+    fn pause_read(&self) {
+        let (mutex, condvar) = &*self.reader_pair;
+        let mut state = mutex.lock().unwrap();
+        state.pause = true;
+        condvar.notify_one();
+    }
+
+    /// Signal the Reader to resume reads.
+    fn resume_read(&self) {
+        let (mutex, condvar) = &*self.reader_pair;
+        let mut state = mutex.lock().unwrap();
+        state.pause = false;
+        condvar.notify_one();
+    }
+
+    /// Signal the Reader to shut down.
+    fn shutdown_reader(&self) {
+        let (mutex, condvar) = &*self.reader_pair;
+        let mut state = mutex.lock().unwrap();
+        state.shutdown = true;
+        condvar.notify_one();
+    }
+
+    /// Attempts to queue a write request for the Writer to process.
+    ///
+    /// Returns a Result indicating whether there was space for the request.
+    fn try_request_write(&self, data: &[u8]) -> Result<(), ()> {
+        let (mutex, condvar) = &*self.writer_pair;
+        let mut state = mutex.lock().unwrap();
+        if state.data.is_none() {
+            state.data = Some(data.to_vec());
+            condvar.notify_one();
+            Ok(())
+        } else {
+            Err(())
+        }
+    }
+
+    /// Signal the Writer to shut down.
+    fn shutdown_writer(&self) {
+        let (mutex, condvar) = &*self.writer_pair;
+        let mut state = mutex.lock().unwrap();
+        state.shutdown = true;
+        condvar.notify_one();
     }
 }
 impl SocketDescriptor for SyncSocketDescriptor {
     /// Attempts to queue up some data from the given slice for the `Writer` to
-    /// send. Returns the number of bytes that were successfully pushed to the
-    /// `write_data` channel.
-    ///
-    /// This implementation never calls back into the PeerManager directly,
-    /// thereby preventing reentrancy / deadlock issues. Instead, any commands
-    /// to be processed and data to be sent are dispatched to the Reader or
-    /// Writer via crossbeam channels.
-    ///
-    /// Additionally, sending across the crossbeam channels is done exclusively
-    /// with non-blocking try_send()s rather than blocking send()s, to ensure
-    /// that this function always returns immediately, thereby also reducing the
-    /// amount of time that the PeerManager's internal locks are held.
+    /// send. Returns the number of bytes that were saved to `WriterState.data`,
+    /// which is always either `data.len()` (success) or `0` (failure).
     fn send_data(&mut self, data: &[u8], resume_read: bool) -> usize {
         if resume_read {
-            let _ = self.reader_cmd_tx.try_send(ReaderCommand::ResumeRead);
+            self.resume_read();
         }
 
         if data.is_empty() {
             return 0;
         }
 
-        // The data must be copied into the channel since a &[u8] reference
-        // cannot be sent across threads. This incurs a small amount of overhead.
-        match self.write_data_tx.try_send(data.to_vec()) {
+        match self.try_request_write(data) {
             Ok(()) => data.len(),
-            Err(TrySendError::Full(_)) => {
+            Err(()) => {
                 // Writes are processing; pause reads.
-                let _ = self.reader_cmd_tx.try_send(ReaderCommand::PauseRead);
-                0
-            }
-            Err(TrySendError::Disconnected(_)) => {
-                // This might happen if the Writer detected a disconnect and
-                // shut down on its own. Return 0.
+                self.pause_read();
                 0
             }
         }
@@ -342,7 +323,7 @@ impl SocketDescriptor for SyncSocketDescriptor {
 
     /// Shuts down the Reader, Writer, and the underlying TcpStream.
     ///
-    /// There are several ways that a disconnect might be triggered:
+    /// A disconnect might be triggered in any of the following ways:
     /// 1) The Reader receives Ok(0) from TcpStream::read() (i.e. the
     ///    peer disconnected), or an Err(io::Error) that shouldn't be retried.
     /// 2) The Reader receives Err from PeerManager::read_event(); i.e.
@@ -353,58 +334,23 @@ impl SocketDescriptor for SyncSocketDescriptor {
     ///    Rust-Lightning told us to disconnect from the peer.
     /// 5) This function is called.
     ///
-    /// The disconnect will be handled differently depending on the source of
-    /// the trigger:
-    /// - (1) and (2): If the Reader received the trigger, it will shut down
-    ///   BOTH halves of the shared TcpStream AND send a Shutdown command to the
-    ///   Writer.
+    /// In all cases, `ReaderState.shutdown` and `WriterState.shutdown` are set
+    /// to true, AND both halves of the TcpStream are shut down.
     ///
-    ///   - The explicit Shutdown command from the Reader is necessary because
-    ///     if the Reader is blocked on `writer_cmd_rx.recv()` due to its
-    ///     internal buffer being empty, the only way it can be unblocked is by
-    ///     receiving a command, in this case the Shutdown command.
-    ///   - The Reader closing both halves of the TCP stream is necessary
-    ///     because while the writer is blocked on write(), the only way it can
-    ///     unblock is by detecting the TCP disconnect.
-    ///
-    /// - (3) and (4): If the Writer received the trigger, it will shut down
-    ///   BOTH halves of the shared TcpStream AND send a Shutdown command to the
-    ///   Reader.
-    ///
-    ///   - The explicit Shutdown command from the Writer is necessary because
-    ///     if the Reader is blocked on `reader_cmd_rx.recv()` due to
-    ///     `read_paused == true`, the only way it can be unblocked is by
-    ///     receiving a command, in this case the Shutdown command.
-    ///   - The Writer closing both halves of the TCP stream is necessary
-    ///     because while the reader is blocked on read(), the only way it can
-    ///     unblock is by detecting the TCP disconnect.
-    ///
-    /// - (5): If the disconnect was initiated here, a Shutdown command will be
-    ///   sent to both the Reader and the Writer, AND the TcpDisconnectooor will
-    ///   shutdown both halves of the shared TCP stream. The Shutdown command
-    ///   ensures that the Reader / Writer will unblock if they are currently
-    ///   blocked on `recv()`. The TCP stream shutdown ensures that they will
-    ///   unblock if they are currently blocked on `read()` or `write()`
-    ///   respectively.
+    /// - `ReaderState.shutdown` wakes the Reader if it was paused.
+    /// - The TcpStream shutdown wakes the Reader if it was blocked on read().
+    /// - `WriterState.shutdown` wakes the Writer if it was blocked waiting for
+    ///   the next write request.
+    /// - The TcpStream shutdown wakes the Writer if it was blocked on write().
     ///
     /// In cases (1) and (3), the disconnect was NOT initiated by
     /// Rust-Lightning, so the Reader / Writer notify the PeerManager using
     /// `socket_disconnected()`.
     fn disconnect_socket(&mut self) {
-        let _ = self.reader_cmd_tx.try_send(ReaderCommand::Shutdown);
-        let _ = self.writer_cmd_tx.try_send(WriterCommand::Shutdown);
+        self.shutdown_reader();
+        self.shutdown_writer();
         let _ = self.tcp_disconnector.shutdown();
     }
-}
-
-/// The states that the Reader can be in.
-enum ReaderState {
-    /// Ready state; Reader is blocked on read().
-    Reading,
-    /// Reading is paused; Reader is blocked on recv().
-    Paused,
-    /// Reader will shut down in the next iteration of the run() event loop.
-    ShuttingDown,
 }
 
 /// An actor that synchronously handles the read() events emitted by the socket.
@@ -418,8 +364,6 @@ where
     inner: TcpReader,
     peer_manager: Arc<PeerManager<SyncSocketDescriptor, Arc<CMH>, Arc<RMH>, Arc<L>, Arc<UMH>>>,
     descriptor: SyncSocketDescriptor,
-    reader_cmd_rx: Receiver<ReaderCommand>,
-    state: ReaderState,
 }
 impl<CMH, RMH, L, UMH> Reader<CMH, RMH, L, UMH>
 where
@@ -432,91 +376,64 @@ where
         reader: TcpReader,
         peer_manager: Arc<PeerManager<SyncSocketDescriptor, Arc<CMH>, Arc<RMH>, Arc<L>, Arc<UMH>>>,
         descriptor: SyncSocketDescriptor,
-        reader_cmd_rx: Receiver<ReaderCommand>,
     ) -> Self {
         Self {
             inner: reader,
             peer_manager,
             descriptor,
-            reader_cmd_rx,
-            state: ReaderState::Reading,
         }
     }
 
-    /// Handle read events, or wait for the next `ReaderCommand` if reads are
-    /// paused. This implementation avoids busy loops and lets the thread go to
-    /// sleep whenever reads or channel commands are pending.
+    /// Handle read events or (if reading is paused) wait to be unpaused or for
+    /// a shutdown signal.
     fn run(&mut self) {
-        use ReaderState::*;
-
         // 8KB is nice and big but also should never cause any issues with stack
         // overflowing.
         let mut buf = [0; 8192];
 
         loop {
-            self.do_try_recv();
+            // This extra scope ensures the lock is released prior to read(),
+            // and also returns the immutable borrow on self.descriptor
+            {
+                let (mutex, condvar) = &*self.descriptor.reader_pair;
+                let mut state_lock = mutex.lock().unwrap();
+                if state_lock.shutdown {
+                    break;
+                } else if state_lock.pause {
+                    // Block until reads are unpaused or we are told to shutdown
+                    // The loop is required due to possible spurious wakes.
+                    while state_lock.pause && !state_lock.shutdown {
+                        // FIXME: Use the safer wait_while() once MSRV >= 1.42
+                        state_lock = condvar.wait(state_lock).unwrap();
+                    }
+                }
+            }
 
-            match self.state {
-                Reading => self.do_read(&mut buf),
-                Paused => self.do_recv(),
-                ShuttingDown => break,
-            };
+            let shutdown = self.do_read(&mut buf);
+            if shutdown {
+                break;
+            }
         }
 
         // Shut down the underlying stream. It's fine if it was already closed.
         let _ = self.inner.shutdown();
         // Send a signal to the Writer to do the same.
-        let _ = self
-            .descriptor
-            .writer_cmd_tx
-            .try_send(WriterCommand::Shutdown);
-    }
-
-    /// Checks for a command in a non-blocking manner, handling the command
-    /// if there was one.
-    fn do_try_recv(&mut self) {
-        match self.reader_cmd_rx.try_recv() {
-            Ok(cmd) => self.handle_command(cmd),
-            Err(e) => match e {
-                TryRecvError::Empty => {}
-                TryRecvError::Disconnected => self.state = ReaderState::ShuttingDown,
-            },
-        };
-    }
-
-    /// Blocks on the command channel and handles the command.
-    fn do_recv(&mut self) {
-        match self.reader_cmd_rx.recv() {
-            Ok(cmd) => self.handle_command(cmd),
-            Err(_) => self.state = ReaderState::ShuttingDown,
-        };
-    }
-
-    /// Handles a `ReaderCommand`.
-    fn handle_command(&mut self, cmd: ReaderCommand) {
-        use ReaderCommand::*;
-        use ReaderState::*;
-
-        match (cmd, &self.state) {
-            (_, &ShuttingDown) => {}
-            (PauseRead, _) => self.state = Paused,
-            (ResumeRead, _) => self.state = Reading,
-            (Shutdown, _) => self.state = ShuttingDown,
-        }
+        self.descriptor.shutdown_writer();
     }
 
     /// Blocks on read() and handles the response accordingly.
-    fn do_read(&mut self, buf: &mut [u8; 8192]) {
+    ///
+    /// Returns whether the Reader should shut down.
+    fn do_read(&mut self, buf: &mut [u8; 8192]) -> bool {
         use std::io::ErrorKind::*;
-        use ReaderState::*;
 
         match self.inner.read(buf) {
             Ok(0) => {
                 // Peer disconnected or TcpStream::shutdown was called.
-                // Notify the PeerManager then shutdown
+                // Notify the PeerManager then shutdown.
                 self.peer_manager.socket_disconnected(&self.descriptor);
                 self.peer_manager.process_events();
-                self.state = ShuttingDown;
+                return true;
             }
             Ok(bytes_read) => {
                 match self
@@ -525,13 +442,13 @@ where
                 {
                     Ok(pause_read) => {
                         if pause_read {
-                            self.state = Paused;
+                            self.descriptor.pause_read();
                         }
                     }
                     Err(_) => {
                         // Rust-Lightning told us to disconnect;
                         // no need to notify PeerManager in this case
-                        self.state = ShuttingDown;
+                        return true;
                     }
                 }
 
@@ -545,10 +462,12 @@ where
                     // For all other errors, notify PeerManager and shut down
                     self.peer_manager.socket_disconnected(&self.descriptor);
                     self.peer_manager.process_events();
-                    self.state = ShuttingDown;
+                    return true;
                 }
             },
         }
+
+        false
     }
 }
 
@@ -564,8 +483,6 @@ where
     inner: TcpWriter,
     peer_manager: Arc<PeerManager<SyncSocketDescriptor, Arc<CMH>, Arc<RMH>, Arc<L>, Arc<UMH>>>,
     descriptor: SyncSocketDescriptor,
-    writer_cmd_rx: Receiver<WriterCommand>,
-    write_data_rx: Receiver<Vec<u8>>,
     /// An internal buffer which stores the data that the Writer is
     /// currently attempting to write.
     ///
@@ -579,9 +496,9 @@ where
     /// number of bytes written, while full writes reset `buf` back to None and
     /// the start index back to 0.
     ///
-    /// Using this start index avoids the need to call Vec::split_off() or
-    /// drain() which respectively incur the cost of an additional Vec
-    /// allocation or data move.
+    /// The use of the internal buffer + start index avoids the need to call
+    /// `Vec::split_off()` or `drain()` which respectively incur the cost of an
+    /// additional Vec allocation or data move.
     ///
     /// Writer code must maintain the invariant that `start < buf.len()`.
     /// If `start == buf.len()`, `buf` should be `None` and `start` should be 0.
@@ -598,43 +515,26 @@ where
         writer: TcpWriter,
         peer_manager: Arc<PeerManager<SyncSocketDescriptor, Arc<CMH>, Arc<RMH>, Arc<L>, Arc<UMH>>>,
         descriptor: SyncSocketDescriptor,
-        writer_cmd_rx: Receiver<WriterCommand>,
-        write_data_rx: Receiver<Vec<u8>>,
     ) -> Self {
         Self {
             inner: writer,
             peer_manager,
             descriptor,
-            writer_cmd_rx,
-            write_data_rx,
             buf: None,
             start: 0,
         }
     }
 
-    /// Process `write_data` requests, or block on the `writer_cmd` and
-    /// `write_data` channels if the internal buffer is empty. This
-    /// implementation avoids busy loops and lets the thread go to sleep
-    /// whenever writes or channel messages are pending.
-    ///
-    /// - If `self.buf == None`, block on `self.reader_cmd_rx.recv()` and handle
-    ///   any commands accordingly.
-    /// - If `self.buf == Some(Vec<u8>)`, block on `self.inner.write()` and
-    ///   handle the response accordingly.
-    /// - In between each event, do a non-blocking check for Shutdown commands.
+    /// Process write requests or (if there is no data to write) wait for the
+    /// next write request or for a shutdown signal.
     #[allow(clippy::single_match)]
     #[allow(clippy::comparison_chain)]
     fn run(&mut self) {
         use std::io::ErrorKind::*;
 
         loop {
-            // Do a non-blocking check to see if we've been told to shut down
-            match self.writer_cmd_rx.try_recv() {
-                Ok(WriterCommand::Shutdown) => break,
-                Err(e) => match e {
-                    TryRecvError::Empty => {}
-                    TryRecvError::Disconnected => break,
-                },
+            if self.descriptor.writer_pair.0.lock().unwrap().shutdown {
+                break;
             }
 
             match &self.buf {
@@ -687,39 +587,46 @@ where
                         },
                     }
                 }
-                None => select! {
-                    recv(self.writer_cmd_rx) -> _ => break,
-                    recv(self.write_data_rx) -> res => match res {
-                        Ok(data) => {
-                            if !data.is_empty() {
-                                self.buf = Some(data);
-                                self.start = 0;
-                            }
+                None => {
+                    let data = self.descriptor.writer_pair.0.lock().unwrap().data.take();
 
-                            // There is space for the next send_data()
-                            // request; notify the PeerManager
-                            if self
-                                .peer_manager
-                                .write_buffer_space_avail(&mut self.descriptor)
-                                .is_err()
-                            {
-                                // PeerManager wants us to disconnect
-                                break;
-                            }
+                    if let Some(data) = data {
+                        if !data.is_empty() {
+                            self.buf = Some(data);
+                            self.start = 0;
                         }
-                        Err(_) => break,
+
+                        // There is space for the next send_data() request
+                        if self
+                            .peer_manager
+                            .write_buffer_space_avail(&mut self.descriptor)
+                            .is_err()
+                        {
+                            // PeerManager wants us to disconnect
+                            break;
+                        }
+                    } else {
+                        // The lock must be reacquired here because it cannot be
+                        // held during the call to write_buffer_space_avail.
+                        let (mutex, condvar) = &*self.descriptor.writer_pair;
+                        let mut state_lock = mutex.lock().unwrap();
+                        // Block until we receive a new write request or we are
+                        // told to shutdown.
+                        // The loop is required due to possible spurious wakes.
+                        while state_lock.data.is_none() && !state_lock.shutdown {
+                            // FIXME: Use the safer wait_while() once MSRV >= 1.42
+                            state_lock = condvar.wait(state_lock).unwrap();
+                        }
+                        // Lock released here
                     }
-                },
+                }
             }
         }
 
         // Shut down the underlying stream. It's fine if it was already closed.
         let _ = self.inner.shutdown();
         // Send a signal to the Reader to do the same.
-        let _ = self
-            .descriptor
-            .reader_cmd_tx
-            .try_send(ReaderCommand::Shutdown);
+        self.descriptor.shutdown_reader();
     }
 }
 
