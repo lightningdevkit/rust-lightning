@@ -524,67 +524,19 @@ where
             start: 0,
         }
     }
-
     /// Process write requests or (if there is no data to write) wait for the
     /// next write request or for a shutdown signal.
-    #[allow(clippy::single_match)]
-    #[allow(clippy::comparison_chain)]
     fn run(&mut self) {
-        use std::io::ErrorKind::*;
-
         loop {
             if self.descriptor.writer_pair.0.lock().unwrap().shutdown {
                 break;
             }
 
             match &self.buf {
-                Some(buf) => {
-                    // We have data in our internal buffer; attempt to write it
-                    match self.inner.write(&buf[self.start..]) {
-                        Ok(0) => {
-                            // We received Ok, but nothing was written. The
-                            // behavior that produces this result is not clearly
-                            // defined in the docs, but it's probably safe to
-                            // assume that the correct response is to notify the
-                            // PeerManager of a disconnected peer, break the
-                            // loop, and shut down the TcpStream.
-                            self.peer_manager.socket_disconnected(&self.descriptor);
-                            self.peer_manager.process_events();
-                            break;
-                        }
-                        Ok(bytes_written) => {
-                            // Define end s.t. the data written was buf[start..end]
-                            let end = self.start + bytes_written;
-
-                            if end == buf.len() {
-                                // Everything was written, clear the buf and reset the start index
-                                self.buf = None;
-                                self.start = 0;
-                            } else if end < buf.len() {
-                                // Partial write; the new start index is exactly where the current
-                                // write ended.
-                                self.start = end;
-                            } else {
-                                panic!("More bytes were written than were given");
-                            }
-                        }
-                        Err(e) => match e.kind() {
-                            TimedOut | Interrupted => {
-                                // Retry the write in the next loop
-                                // iteration if we received any of the above
-                                // errors. It would be nice to additionally
-                                // match HostUnreachable | NetworkDown |
-                                // ResourceBusy, but these require nightly
-                                // Rust.
-                            }
-                            _ => {
-                                // For all other errors, notify the
-                                // PeerManager, break, and shut down
-                                self.peer_manager.socket_disconnected(&self.descriptor);
-                                self.peer_manager.process_events();
-                                break;
-                            }
-                        },
+                Some(_buf) => {
+                    let shutdown = self.do_write();
+                    if shutdown {
+                        break;
                     }
                 }
                 None => {
@@ -627,6 +579,65 @@ where
         let _ = self.inner.shutdown();
         // Send a signal to the Reader to do the same.
         self.descriptor.shutdown_reader();
+    }
+
+    /// Blocks on write() and handles the response accordingly.
+    ///
+    /// Returns whether the Writer should shut down.
+    #[allow(clippy::comparison_chain)]
+    fn do_write(&mut self) -> bool {
+        use std::io::ErrorKind::*;
+
+        if let Some(buf) = &self.buf {
+            match self.inner.write(&buf[self.start..]) {
+                Ok(0) => {
+                    // We received Ok, but nothing was written. The
+                    // behavior that produces this result is not clearly
+                    // defined in the docs, but it's probably safe to
+                    // assume that the correct response is to notify the
+                    // PeerManager of a disconnected peer, break the
+                    // loop, and shut down the TcpStream.
+                    self.peer_manager.socket_disconnected(&self.descriptor);
+                    self.peer_manager.process_events();
+                    return true;
+                }
+                Ok(bytes_written) => {
+                    // Define end s.t. the data written was buf[start..end]
+                    let end = self.start + bytes_written;
+
+                    if end == buf.len() {
+                        // Everything was written, clear the buf and reset the start index
+                        self.buf = None;
+                        self.start = 0;
+                    } else if end < buf.len() {
+                        // Partial write; the new start index is exactly where the current
+                        // write ended.
+                        self.start = end;
+                    } else {
+                        panic!("More bytes were written than were given");
+                    }
+                }
+                Err(e) => match e.kind() {
+                    TimedOut | Interrupted => {
+                        // Retry the write in the next loop
+                        // iteration if we received any of the above
+                        // errors. It would be nice to additionally
+                        // match HostUnreachable | NetworkDown |
+                        // ResourceBusy, but these require nightly
+                        // Rust.
+                    }
+                    _ => {
+                        // For all other errors, notify the
+                        // PeerManager, break, and shut down
+                        self.peer_manager.socket_disconnected(&self.descriptor);
+                        self.peer_manager.process_events();
+                        return true;
+                    }
+                },
+            }
+        }
+
+        false
     }
 }
 
