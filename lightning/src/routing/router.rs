@@ -17,7 +17,7 @@ use bitcoin::secp256k1::PublicKey;
 use ln::channelmanager::ChannelDetails;
 use ln::features::{ChannelFeatures, InvoiceFeatures, NodeFeatures};
 use ln::msgs::{DecodeError, ErrorAction, LightningError, MAX_VALUE_MSAT};
-use routing::scoring::Score;
+use routing::scoring::{ChannelUsage, Score};
 use routing::network_graph::{DirectedChannelInfoWithUpdate, EffectiveCapacity, NetworkGraph, ReadOnlyNetworkGraph, NodeId, RoutingFees};
 use util::ser::{Writeable, Readable};
 use util::logger::{Level, Logger};
@@ -414,6 +414,16 @@ impl<'a> CandidateRouteHop<'a> {
 		}
 	}
 
+	fn htlc_maximum_msat(&self) -> u64 {
+		match self {
+			CandidateRouteHop::FirstHop { details } => details.next_outbound_htlc_limit_msat,
+			CandidateRouteHop::PublicHop { info, .. } => info.htlc_maximum_msat(),
+			CandidateRouteHop::PrivateHop { hint } => {
+				hint.htlc_maximum_msat.unwrap_or(u64::max_value())
+			},
+		}
+	}
+
 	fn fees(&self) -> RoutingFees {
 		match self {
 			CandidateRouteHop::FirstHop { .. } => RoutingFees {
@@ -481,7 +491,8 @@ struct PathBuildingHop<'a> {
 
 impl<'a> core::fmt::Debug for PathBuildingHop<'a> {
 	fn fmt(&self, f: &mut core::fmt::Formatter) -> Result<(), core::fmt::Error> {
-		f.debug_struct("PathBuildingHop")
+		let mut debug_struct = f.debug_struct("PathBuildingHop");
+		debug_struct
 			.field("node_id", &self.node_id)
 			.field("short_channel_id", &self.candidate.short_channel_id())
 			.field("total_fee_msat", &self.total_fee_msat)
@@ -490,8 +501,11 @@ impl<'a> core::fmt::Debug for PathBuildingHop<'a> {
 			.field("total_fee_msat - (next_hops_fee_msat + hop_use_fee_msat)", &(&self.total_fee_msat - (&self.next_hops_fee_msat + &self.hop_use_fee_msat)))
 			.field("path_penalty_msat", &self.path_penalty_msat)
 			.field("path_htlc_minimum_msat", &self.path_htlc_minimum_msat)
-			.field("cltv_expiry_delta", &self.candidate.cltv_expiry_delta())
-			.finish()
+			.field("cltv_expiry_delta", &self.candidate.cltv_expiry_delta());
+		#[cfg(all(not(feature = "_bench_unstable"), any(test, fuzzing)))]
+		let debug_struct = debug_struct
+			.field("value_contribution_msat", &self.value_contribution_msat);
+		debug_struct.finish()
 	}
 }
 
@@ -830,12 +844,12 @@ where L::Target: Logger {
 	let recommended_value_msat = final_value_msat * ROUTE_CAPACITY_PROVISION_FACTOR as u64;
 	let mut path_value_msat = final_value_msat;
 
-	// We don't want multiple paths (as per MPP) share liquidity of the same channels.
-	// This map allows paths to be aware of the channel use by other paths in the same call.
-	// This would help to make a better path finding decisions and not "overbook" channels.
-	// It is unaware of the directions (except for `next_outbound_htlc_limit_msat` in
-	// `first_hops`).
-	let mut bookkept_channels_liquidity_available_msat = HashMap::with_capacity(network_nodes.len());
+	// Keep track of how much liquidity has been used in selected channels. Used to determine
+	// if the channel can be used by additional MPP paths or to inform path finding decisions. It is
+	// aware of direction *only* to ensure that the correct htlc_maximum_msat value is used. Hence,
+	// liquidity used in one direction will not offset any used in the opposite direction.
+	let mut used_channel_liquidities: HashMap<(u64, bool), u64> =
+		HashMap::with_capacity(network_nodes.len());
 
 	// Keeping track of how much value we already collected across other paths. Helps to decide:
 	// - how much a new path should be transferring (upper bound);
@@ -885,9 +899,7 @@ where L::Target: Logger {
 			// - for first and last hops early in get_route
 			if $src_node_id != $dest_node_id {
 				let short_channel_id = $candidate.short_channel_id();
-				let available_liquidity_msat = bookkept_channels_liquidity_available_msat
-					.entry(short_channel_id)
-					.or_insert_with(|| $candidate.effective_capacity().as_msat());
+				let htlc_maximum_msat = $candidate.htlc_maximum_msat();
 
 				// It is tricky to subtract $next_hops_fee_msat from available liquidity here.
 				// It may be misleading because we might later choose to reduce the value transferred
@@ -896,7 +908,14 @@ where L::Target: Logger {
 				// fees caused by one expensive channel, but then this channel could have been used
 				// if the amount being transferred over this path is lower.
 				// We do this for now, but this is a subject for removal.
-				if let Some(available_value_contribution_msat) = available_liquidity_msat.checked_sub($next_hops_fee_msat) {
+				if let Some(mut available_value_contribution_msat) = htlc_maximum_msat.checked_sub($next_hops_fee_msat) {
+					let used_liquidity_msat = used_channel_liquidities
+						.get(&(short_channel_id, $src_node_id < $dest_node_id))
+						.map_or(0, |used_liquidity_msat| {
+							available_value_contribution_msat = available_value_contribution_msat
+								.saturating_sub(*used_liquidity_msat);
+							*used_liquidity_msat
+						});
 
 					// Routing Fragmentation Mitigation heuristic:
 					//
@@ -1047,9 +1066,16 @@ where L::Target: Logger {
 								}
 							}
 
-							let path_penalty_msat = $next_hops_path_penalty_msat.saturating_add(
-								scorer.channel_penalty_msat(short_channel_id, amount_to_transfer_over_msat,
-									*available_liquidity_msat, &$src_node_id, &$dest_node_id));
+							let channel_usage = ChannelUsage {
+								amount_msat: amount_to_transfer_over_msat,
+								inflight_htlc_msat: used_liquidity_msat,
+								effective_capacity: $candidate.effective_capacity(),
+							};
+							let channel_penalty_msat = scorer.channel_penalty_msat(
+								short_channel_id, &$src_node_id, &$dest_node_id, channel_usage
+							);
+							let path_penalty_msat = $next_hops_path_penalty_msat
+								.saturating_add(channel_penalty_msat);
 							let new_graph_node = RouteGraphNode {
 								node_id: $src_node_id,
 								lowest_fee_to_peer_through_node: total_fee_msat,
@@ -1207,9 +1233,8 @@ where L::Target: Logger {
 
 	// TODO: diversify by nodes (so that all paths aren't doomed if one node is offline).
 	'paths_collection: loop {
-		// For every new path, start from scratch, except
-		// bookkept_channels_liquidity_available_msat, which will improve
-		// the further iterations of path finding. Also don't erase first_hop_targets.
+		// For every new path, start from scratch, except for used_channel_liquidities, which
+		// helps to avoid reusing previously selected paths in future iterations.
 		targets.clear();
 		dist.clear();
 		hit_minimum_limit = false;
@@ -1276,16 +1301,6 @@ where L::Target: Logger {
 							short_channel_id: hop.short_channel_id,
 						})
 						.unwrap_or_else(|| CandidateRouteHop::PrivateHop { hint: hop });
-					let capacity_msat = candidate.effective_capacity().as_msat();
-					aggregate_next_hops_path_penalty_msat = aggregate_next_hops_path_penalty_msat
-						.saturating_add(scorer.channel_penalty_msat(hop.short_channel_id,
-							final_value_msat, capacity_msat, &source, &target));
-
-					aggregate_next_hops_cltv_delta = aggregate_next_hops_cltv_delta
-						.saturating_add(hop.cltv_expiry_delta as u32);
-
-					aggregate_next_hops_path_length = aggregate_next_hops_path_length
-						.saturating_add(1);
 
 					if !add_entry!(candidate, source, target, aggregate_next_hops_fee_msat,
 								path_value_msat, aggregate_next_hops_path_htlc_minimum_msat,
@@ -1296,6 +1311,25 @@ where L::Target: Logger {
 						// channel between last checked hop and first_hop_targets.
 						hop_used = false;
 					}
+
+					let used_liquidity_msat = used_channel_liquidities
+						.get(&(hop.short_channel_id, source < target)).copied().unwrap_or(0);
+					let channel_usage = ChannelUsage {
+						amount_msat: final_value_msat + aggregate_next_hops_fee_msat,
+						inflight_htlc_msat: used_liquidity_msat,
+						effective_capacity: candidate.effective_capacity(),
+					};
+					let channel_penalty_msat = scorer.channel_penalty_msat(
+						hop.short_channel_id, &source, &target, channel_usage
+					);
+					aggregate_next_hops_path_penalty_msat = aggregate_next_hops_path_penalty_msat
+						.saturating_add(channel_penalty_msat);
+
+					aggregate_next_hops_cltv_delta = aggregate_next_hops_cltv_delta
+						.saturating_add(hop.cltv_expiry_delta as u32);
+
+					aggregate_next_hops_path_length = aggregate_next_hops_path_length
+						.saturating_add(1);
 
 					// Searching for a direct channel between last checked hop and first_hop_targets
 					if let Some(first_channels) = first_hop_targets.get(&NodeId::from_pubkey(&prev_hop_id)) {
@@ -1448,26 +1482,30 @@ where L::Target: Logger {
 				// Remember that we used these channels so that we don't rely
 				// on the same liquidity in future paths.
 				let mut prevented_redundant_path_selection = false;
-				for (payment_hop, _) in payment_path.hops.iter() {
-					let channel_liquidity_available_msat = bookkept_channels_liquidity_available_msat.get_mut(&payment_hop.candidate.short_channel_id()).unwrap();
-					let mut spent_on_hop_msat = value_contribution_msat;
-					let next_hops_fee_msat = payment_hop.next_hops_fee_msat;
-					spent_on_hop_msat += next_hops_fee_msat;
-					if spent_on_hop_msat == *channel_liquidity_available_msat {
+				let prev_hop_iter = core::iter::once(&our_node_id)
+					.chain(payment_path.hops.iter().map(|(hop, _)| &hop.node_id));
+				for (prev_hop, (hop, _)) in prev_hop_iter.zip(payment_path.hops.iter()) {
+					let spent_on_hop_msat = value_contribution_msat + hop.next_hops_fee_msat;
+					let used_liquidity_msat = used_channel_liquidities
+						.entry((hop.candidate.short_channel_id(), *prev_hop < hop.node_id))
+						.and_modify(|used_liquidity_msat| *used_liquidity_msat += spent_on_hop_msat)
+						.or_insert(spent_on_hop_msat);
+					if *used_liquidity_msat == hop.candidate.htlc_maximum_msat() {
 						// If this path used all of this channel's available liquidity, we know
 						// this path will not be selected again in the next loop iteration.
 						prevented_redundant_path_selection = true;
 					}
-					*channel_liquidity_available_msat -= spent_on_hop_msat;
+					debug_assert!(*used_liquidity_msat <= hop.candidate.htlc_maximum_msat());
 				}
 				if !prevented_redundant_path_selection {
 					// If we weren't capped by hitting a liquidity limit on a channel in the path,
 					// we'll probably end up picking the same path again on the next iteration.
 					// Decrease the available liquidity of a hop in the middle of the path.
 					let victim_scid = payment_path.hops[(payment_path.hops.len()) / 2].0.candidate.short_channel_id();
+					let exhausted = u64::max_value();
 					log_trace!(logger, "Disabling channel {} for future path building iterations to avoid duplicates.", victim_scid);
-					let victim_liquidity = bookkept_channels_liquidity_available_msat.get_mut(&victim_scid).unwrap();
-					*victim_liquidity = 0;
+					*used_channel_liquidities.entry((victim_scid, false)).or_default() = exhausted;
+					*used_channel_liquidities.entry((victim_scid, true)).or_default() = exhausted;
 				}
 
 				// Track the total amount all our collected paths allow to send so that we:
@@ -1753,7 +1791,7 @@ mod tests {
 	use routing::router::{get_route, add_random_cltv_offset, default_node_features,
 		PaymentParameters, Route, RouteHint, RouteHintHop, RouteHop, RoutingFees,
 		DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA, MAX_PATH_LENGTH_ESTIMATE};
-	use routing::scoring::Score;
+	use routing::scoring::{ChannelUsage, Score};
 	use chain::transaction::OutPoint;
 	use chain::keysinterface::KeysInterface;
 	use ln::features::{ChannelFeatures, InitFeatures, InvoiceFeatures, NodeFeatures};
@@ -5145,7 +5183,7 @@ mod tests {
 		fn write<W: Writer>(&self, _w: &mut W) -> Result<(), ::io::Error> { unimplemented!() }
 	}
 	impl Score for BadChannelScorer {
-		fn channel_penalty_msat(&self, short_channel_id: u64, _send_amt: u64, _capacity_msat: u64, _source: &NodeId, _target: &NodeId) -> u64 {
+		fn channel_penalty_msat(&self, short_channel_id: u64, _: &NodeId, _: &NodeId, _: ChannelUsage) -> u64 {
 			if short_channel_id == self.short_channel_id { u64::max_value() } else { 0 }
 		}
 
@@ -5163,7 +5201,7 @@ mod tests {
 	}
 
 	impl Score for BadNodeScorer {
-		fn channel_penalty_msat(&self, _short_channel_id: u64, _send_amt: u64, _capacity_msat: u64, _source: &NodeId, target: &NodeId) -> u64 {
+		fn channel_penalty_msat(&self, _: u64, _: &NodeId, target: &NodeId, _: ChannelUsage) -> u64 {
 			if *target == self.node_id { u64::max_value() } else { 0 }
 		}
 
