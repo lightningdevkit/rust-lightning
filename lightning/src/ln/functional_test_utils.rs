@@ -15,7 +15,7 @@ use chain::channelmonitor::ChannelMonitor;
 use chain::transaction::OutPoint;
 use ln::{PaymentPreimage, PaymentHash, PaymentSecret};
 use ln::channelmanager::{ChainParameters, ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, PaymentSendFailure, PaymentId, MIN_CLTV_EXPIRY_DELTA};
-use routing::gossip::{P2PGossipSync, NetworkGraph};
+use routing::gossip::{P2PGossipSync, NetworkGraph, NetworkUpdate};
 use routing::router::{PaymentParameters, Route, get_route};
 use ln::features::{InitFeatures, InvoiceFeatures};
 use ln::msgs;
@@ -1467,8 +1467,10 @@ impl<'a> PaymentFailedConditions<'a> {
 #[cfg(test)]
 macro_rules! expect_payment_failed_with_update {
 	($node: expr, $expected_payment_hash: expr, $rejected_by_dest: expr, $scid: expr, $chan_closed: expr) => {
-		expect_payment_failed_conditions!($node, $expected_payment_hash, $rejected_by_dest,
-			$crate::ln::functional_test_utils::PaymentFailedConditions::new().blamed_scid($scid).blamed_chan_closed($chan_closed));
+		$crate::ln::functional_test_utils::expect_payment_failed_conditions(
+			&$node, $expected_payment_hash, $rejected_by_dest,
+			$crate::ln::functional_test_utils::PaymentFailedConditions::new()
+				.blamed_scid($scid).blamed_chan_closed($chan_closed));
 	}
 }
 
@@ -1480,64 +1482,72 @@ macro_rules! expect_payment_failed {
 		$(
 			conditions = conditions.expected_htlc_error_data($expected_error_code, &$expected_error_data);
 		)*
-		expect_payment_failed_conditions!($node, $expected_payment_hash, $rejected_by_dest, conditions);
+		$crate::ln::functional_test_utils::expect_payment_failed_conditions(&$node, $expected_payment_hash, $rejected_by_dest, conditions);
 	};
 }
 
-#[cfg(test)]
-macro_rules! expect_payment_failed_conditions {
-	($node: expr, $expected_payment_hash: expr, $rejected_by_dest: expr, $conditions: expr) => {
-		let events = $node.node.get_and_clear_pending_events();
-		assert_eq!(events.len(), 1);
-		let expected_payment_id = match events[0] {
-			Event::PaymentPathFailed { ref payment_hash, rejected_by_dest, ref error_code, ref error_data, ref path, ref retry, ref payment_id, ref network_update, .. } => {
-				assert_eq!(*payment_hash, $expected_payment_hash, "unexpected payment_hash");
-				assert_eq!(rejected_by_dest, $rejected_by_dest, "unexpected rejected_by_dest value");
-				assert!(retry.is_some(), "expected retry.is_some()");
-				assert_eq!(retry.as_ref().unwrap().final_value_msat, path.last().unwrap().fee_msat, "Retry amount should match last hop in path");
-				assert_eq!(retry.as_ref().unwrap().payment_params.payee_pubkey, path.last().unwrap().pubkey, "Retry payee node_id should match last hop in path");
+pub fn expect_payment_failed_conditions<'a, 'b, 'c, 'd, 'e>(
+	node: &'a Node<'b, 'c, 'd>, expected_payment_hash: PaymentHash, expected_rejected_by_dest: bool,
+	conditions: PaymentFailedConditions<'e>
+) {
+	let mut events = node.node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	let expected_payment_id = match events.pop().unwrap() {
+		Event::PaymentPathFailed { payment_hash, rejected_by_dest, path, retry, payment_id, network_update,
+			#[cfg(test)]
+			error_code,
+			#[cfg(test)]
+			error_data, .. } => {
+			assert_eq!(payment_hash, expected_payment_hash, "unexpected payment_hash");
+			assert_eq!(rejected_by_dest, expected_rejected_by_dest, "unexpected rejected_by_dest value");
+			assert!(retry.is_some(), "expected retry.is_some()");
+			assert_eq!(retry.as_ref().unwrap().final_value_msat, path.last().unwrap().fee_msat, "Retry amount should match last hop in path");
+			assert_eq!(retry.as_ref().unwrap().payment_params.payee_pubkey, path.last().unwrap().pubkey, "Retry payee node_id should match last hop in path");
 
+			#[cfg(test)]
+			{
 				assert!(error_code.is_some(), "expected error_code.is_some() = true");
 				assert!(error_data.is_some(), "expected error_data.is_some() = true");
-				if let Some((code, data)) = $conditions.expected_htlc_error_data {
+				if let Some((code, data)) = conditions.expected_htlc_error_data {
 					assert_eq!(error_code.unwrap(), code, "unexpected error code");
 					assert_eq!(&error_data.as_ref().unwrap()[..], data, "unexpected error data");
 				}
-
-				if let Some(chan_closed) = $conditions.expected_blamed_chan_closed {
-					match network_update {
-						&Some($crate::routing::gossip::NetworkUpdate::ChannelUpdateMessage { ref msg }) if !chan_closed => {
-							if let Some(scid) = $conditions.expected_blamed_scid {
-								assert_eq!(msg.contents.short_channel_id, scid);
-							}
-							assert_eq!(msg.contents.flags & 2, 0);
-						},
-						&Some($crate::routing::gossip::NetworkUpdate::ChannelFailure { short_channel_id, is_permanent }) if chan_closed => {
-							if let Some(scid) = $conditions.expected_blamed_scid {
-								assert_eq!(short_channel_id, scid);
-							}
-							assert!(is_permanent);
-						},
-						Some(_) => panic!("Unexpected update type"),
-						None => panic!("Expected update"),
-					}
-				}
-
-				payment_id.unwrap()
-			},
-			_ => panic!("Unexpected event"),
-		};
-		if !$conditions.expected_mpp_parts_remain {
-			$node.node.abandon_payment(expected_payment_id);
-			let events = $node.node.get_and_clear_pending_events();
-			assert_eq!(events.len(), 1);
-			match events[0] {
-				Event::PaymentFailed { ref payment_hash, ref payment_id } => {
-					assert_eq!(*payment_hash, $expected_payment_hash, "unexpected second payment_hash");
-					assert_eq!(*payment_id, expected_payment_id);
-				}
-				_ => panic!("Unexpected second event"),
 			}
+
+			if let Some(chan_closed) = conditions.expected_blamed_chan_closed {
+				match network_update {
+					Some(NetworkUpdate::ChannelUpdateMessage { ref msg }) if !chan_closed => {
+						if let Some(scid) = conditions.expected_blamed_scid {
+							assert_eq!(msg.contents.short_channel_id, scid);
+						}
+						const CHAN_DISABLED_FLAG: u8 = 2;
+						assert_eq!(msg.contents.flags & CHAN_DISABLED_FLAG, 0);
+					},
+					Some(NetworkUpdate::ChannelFailure { short_channel_id, is_permanent }) if chan_closed => {
+						if let Some(scid) = conditions.expected_blamed_scid {
+							assert_eq!(short_channel_id, scid);
+						}
+						assert!(is_permanent);
+					},
+					Some(_) => panic!("Unexpected update type"),
+					None => panic!("Expected update"),
+				}
+			}
+
+			payment_id.unwrap()
+		},
+		_ => panic!("Unexpected event"),
+	};
+	if !conditions.expected_mpp_parts_remain {
+		node.node.abandon_payment(expected_payment_id);
+		let events = node.node.get_and_clear_pending_events();
+		assert_eq!(events.len(), 1);
+		match events[0] {
+			Event::PaymentFailed { ref payment_hash, ref payment_id } => {
+				assert_eq!(*payment_hash, expected_payment_hash, "unexpected second payment_hash");
+				assert_eq!(*payment_id, expected_payment_id);
+			}
+			_ => panic!("Unexpected second event"),
 		}
 	}
 }

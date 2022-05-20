@@ -70,7 +70,7 @@ fn retry_single_path_payment() {
 	check_added_monitors!(nodes[1], 1);
 	nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &htlc_updates.update_fail_htlcs[0]);
 	commitment_signed_dance!(nodes[0], nodes[1], htlc_updates.commitment_signed, false);
-	expect_payment_failed_conditions!(nodes[0], payment_hash, false, PaymentFailedConditions::new().mpp_parts_remain());
+	expect_payment_failed_conditions(&nodes[0], payment_hash, false, PaymentFailedConditions::new().mpp_parts_remain());
 
 	// Rebalance the channel so the retry succeeds.
 	send_payment(&nodes[2], &vec!(&nodes[1])[..], 3_000_000);
@@ -173,7 +173,7 @@ fn mpp_retry() {
 	check_added_monitors!(nodes[2], 1);
 	nodes[0].node.handle_update_fail_htlc(&nodes[2].node.get_our_node_id(), &htlc_updates.update_fail_htlcs[0]);
 	commitment_signed_dance!(nodes[0], nodes[2], htlc_updates.commitment_signed, false);
-	expect_payment_failed_conditions!(nodes[0], payment_hash, false, PaymentFailedConditions::new().mpp_parts_remain());
+	expect_payment_failed_conditions(&nodes[0], payment_hash, false, PaymentFailedConditions::new().mpp_parts_remain());
 
 	// Rebalance the channel so the second half of the payment can succeed.
 	send_payment(&nodes[3], &vec!(&nodes[2])[..], 1_500_000);
@@ -251,7 +251,7 @@ fn do_mpp_receive_timeout(send_partial_mpp: bool) {
 		check_added_monitors!(nodes[1], 1);
 		commitment_signed_dance!(nodes[0], nodes[1], htlc_fail_updates_1_0.commitment_signed, false);
 
-		expect_payment_failed_conditions!(nodes[0], payment_hash, false, PaymentFailedConditions::new().mpp_parts_remain().expected_htlc_error_data(23, &[][..]));
+		expect_payment_failed_conditions(&nodes[0], payment_hash, false, PaymentFailedConditions::new().mpp_parts_remain().expected_htlc_error_data(23, &[][..]));
 	} else {
 		// Pass half of the payment along the second path.
 		pass_along_path(&nodes[0], &[&nodes[2], &nodes[3]], 200_000, payment_hash, Some(payment_secret), events.remove(0), true, None);
@@ -521,7 +521,7 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 		confirm_transaction(&nodes[0], &first_htlc_timeout_tx);
 	}
 	nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().clear();
-	expect_payment_failed_conditions!(nodes[0], payment_hash, false, PaymentFailedConditions::new().mpp_parts_remain());
+	expect_payment_failed_conditions(&nodes[0], payment_hash, false, PaymentFailedConditions::new().mpp_parts_remain());
 
 	// Finally, retry the payment (which was reloaded from the ChannelMonitor when nodes[0] was
 	// reloaded) via a route over the new channel, which work without issue and eventually be
