@@ -16,7 +16,7 @@ use io;
 
 /// A script pubkey for shutting down a channel as defined by [BOLT #2].
 ///
-/// [BOLT #2]: https://github.com/lightningnetwork/lightning-rfc/blob/master/02-peer-protocol.md
+/// [BOLT #2]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md
 #[derive(Clone, PartialEq)]
 pub struct ShutdownScript(ShutdownScriptImpl);
 
@@ -25,7 +25,7 @@ pub struct ShutdownScript(ShutdownScriptImpl);
 pub struct InvalidShutdownScript {
 	/// The script that did not meet the requirements from [BOLT #2].
 	///
-	/// [BOLT #2]: https://github.com/lightningnetwork/lightning-rfc/blob/master/02-peer-protocol.md
+	/// [BOLT #2]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md
 	pub script: Script
 }
 

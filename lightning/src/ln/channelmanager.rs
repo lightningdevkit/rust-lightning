@@ -2258,7 +2258,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 							msg.cltv_expiry.write(&mut res).expect("Writes cannot fail");
 						}
 						else if code == 0x1000 | 20 {
-							// TODO: underspecified, follow https://github.com/lightningnetwork/lightning-rfc/issues/791
+							// TODO: underspecified, follow https://github.com/lightning/bolts/issues/791
 							0u16.write(&mut res).expect("Writes cannot fail");
 						}
 						(chan_update.serialized_length() as u16 + 2).write(&mut res).expect("Writes cannot fail");

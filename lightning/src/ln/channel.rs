@@ -126,7 +126,7 @@ enum InboundHTLCState {
 	/// signatures in a commitment_signed message.
 	/// Implies AwaitingRemoteRevoke.
 	///
-	/// [BOLT #2]: https://github.com/lightningnetwork/lightning-rfc/blob/master/02-peer-protocol.md
+	/// [BOLT #2]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md
 	AwaitingRemoteRevokeToAnnounce(PendingHTLCStatus),
 	/// Included in a received commitment_signed message (implying we've revoke_and_ack'd it).
 	/// We have also included this HTLC in our latest commitment_signed and are now just waiting
@@ -775,7 +775,7 @@ pub const MAX_CHAN_DUST_LIMIT_SATOSHIS: u64 = MAX_STD_OUTPUT_DUST_LIMIT_SATOSHIS
 /// In order to avoid having to concern ourselves with standardness during the closing process, we
 /// simply require our counterparty to use a dust limit which will leave any segwit output
 /// standard.
-/// See https://github.com/lightningnetwork/lightning-rfc/issues/905 for more details.
+/// See https://github.com/lightning/bolts/issues/905 for more details.
 pub const MIN_CHAN_DUST_LIMIT_SATOSHIS: u64 = 354;
 
 /// Used to return a simple Error back to ChannelManager. Will get converted to a
