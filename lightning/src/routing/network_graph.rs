@@ -150,7 +150,7 @@ pub struct ReadOnlyNetworkGraph<'a> {
 /// Update to the [`NetworkGraph`] based on payment failure information conveyed via the Onion
 /// return packet by a node along the route. See [BOLT #4] for details.
 ///
-/// [BOLT #4]: https://github.com/lightningnetwork/lightning-rfc/blob/master/04-onion-routing.md
+/// [BOLT #4]: https://github.com/lightning/bolts/blob/master/04-onion-routing.md
 #[derive(Clone, Debug, PartialEq)]
 pub enum NetworkUpdate {
 	/// An error indicating a `channel_update` messages should be applied via

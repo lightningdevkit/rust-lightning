@@ -19,7 +19,7 @@
 //! supports a feature if it advertises the feature (as either required or optional) to its peers.
 //! And the implementation can interpret a feature if the feature is known to it.
 //!
-//! [BOLT #9]: https://github.com/lightningnetwork/lightning-rfc/blob/master/09-features.md
+//! [BOLT #9]: https://github.com/lightning/bolts/blob/master/09-features.md
 //! [messages]: crate::ln::msgs
 
 use {io, io_extras};
@@ -244,7 +244,7 @@ mod sealed {
 			///
 			/// See [BOLT #9] for details.
 			///
-			/// [BOLT #9]: https://github.com/lightningnetwork/lightning-rfc/blob/master/09-features.md
+			/// [BOLT #9]: https://github.com/lightning/bolts/blob/master/09-features.md
 			pub trait $feature: Context {
 				/// The bit used to signify that the feature is required.
 				const EVEN_BIT: usize = $odd_bit - 1;
