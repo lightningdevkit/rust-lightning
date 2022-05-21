@@ -588,12 +588,17 @@ pub enum Balance {
 #[derive(PartialEq)]
 struct IrrevocablyResolvedHTLC {
 	commitment_tx_output_idx: u32,
+	/// The txid of the transaction which resolved the HTLC, this may be a commitment (if the HTLC
+	/// was not present in the confirmed commitment transaction), HTLC-Success, or HTLC-Timeout
+	/// transaction.
+	resolving_txid: Option<Txid>, // Added as optional, but always filled in, in 0.0.110
 	/// Only set if the HTLC claim was ours using a payment preimage
 	payment_preimage: Option<PaymentPreimage>,
 }
 
 impl_writeable_tlv_based!(IrrevocablyResolvedHTLC, {
 	(0, commitment_tx_output_idx, required),
+	(1, resolving_txid, option),
 	(2, payment_preimage, option),
 });
 
@@ -2727,7 +2732,10 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 						htlc_value_satoshis,
 					}));
 					if let Some(idx) = commitment_tx_output_idx {
-						self.htlcs_resolved_on_chain.push(IrrevocablyResolvedHTLC { commitment_tx_output_idx: idx, payment_preimage: None });
+						self.htlcs_resolved_on_chain.push(IrrevocablyResolvedHTLC {
+							commitment_tx_output_idx: idx, resolving_txid: Some(entry.txid),
+							payment_preimage: None,
+						});
 					}
 				},
 				OnchainEvent::MaturingOutput { descriptor } => {
@@ -2737,7 +2745,10 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 					});
 				},
 				OnchainEvent::HTLCSpendConfirmation { commitment_tx_output_idx, preimage, .. } => {
-					self.htlcs_resolved_on_chain.push(IrrevocablyResolvedHTLC { commitment_tx_output_idx, payment_preimage: preimage });
+					self.htlcs_resolved_on_chain.push(IrrevocablyResolvedHTLC {
+						commitment_tx_output_idx, resolving_txid: Some(entry.txid),
+						payment_preimage: preimage,
+					});
 				},
 				OnchainEvent::FundingSpendConfirmation { commitment_tx_to_counterparty_output, .. } => {
 					self.funding_spend_confirmed = Some(entry.txid);
