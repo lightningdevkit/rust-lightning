@@ -795,18 +795,15 @@ impl SignedRawInvoice {
 /// variant. If no element was found `None` gets returned.
 ///
 /// The following example would extract the first B.
-/// ```
-/// use Enum::*
 ///
 /// enum Enum {
 /// 	A(u8),
 /// 	B(u16)
 /// }
 ///
-/// let elements = vec![A(1), A(2), B(3), A(4)]
+/// let elements = vec![Enum::A(1), Enum::A(2), Enum::B(3), Enum::A(4)];
 ///
-/// assert_eq!(find_extract!(elements.iter(), Enum::B(ref x), x), Some(3u16))
-/// ```
+/// assert_eq!(find_extract!(elements.iter(), Enum::B(x), x), Some(3u16));
 macro_rules! find_extract {
 	($iter:expr, $enm:pat, $enm_var:ident) => {
 		find_all_extract!($iter, $enm, $enm_var).next()
@@ -817,20 +814,18 @@ macro_rules! find_extract {
 /// variant through an iterator.
 ///
 /// The following example would extract all A.
-/// ```
-/// use Enum::*
 ///
 /// enum Enum {
 /// 	A(u8),
 /// 	B(u16)
 /// }
 ///
-/// let elements = vec![A(1), A(2), B(3), A(4)]
+/// let elements = vec![Enum::A(1), Enum::A(2), Enum::B(3), Enum::A(4)];
 ///
 /// assert_eq!(
-/// 	find_all_extract!(elements.iter(), Enum::A(ref x), x).collect::<Vec<u8>>(),
-/// 	vec![1u8, 2u8, 4u8])
-/// ```
+/// 	find_all_extract!(elements.iter(), Enum::A(x), x).collect::<Vec<u8>>(),
+/// 	vec![1u8, 2u8, 4u8]
+/// );
 macro_rules! find_all_extract {
 	($iter:expr, $enm:pat, $enm_var:ident) => {
 		$iter.filter_map(|tf| match *tf {
