@@ -452,7 +452,7 @@ pub(crate) enum ChannelMonitorUpdateStep {
 		commitment_txid: Txid,
 		htlc_outputs: Vec<(HTLCOutputInCommitment, Option<Box<HTLCSource>>)>,
 		commitment_number: u64,
-		their_revocation_point: PublicKey,
+		their_per_commitment_point: PublicKey,
 	},
 	PaymentPreimage {
 		payment_preimage: PaymentPreimage,
@@ -494,7 +494,7 @@ impl_writeable_tlv_based_enum_upgradable!(ChannelMonitorUpdateStep,
 	(1, LatestCounterpartyCommitmentTXInfo) => {
 		(0, commitment_txid, required),
 		(2, commitment_number, required),
-		(4, their_revocation_point, required),
+		(4, their_per_commitment_point, required),
 		(6, htlc_outputs, vec_type),
 	},
 	(2, PaymentPreimage) => {
@@ -619,8 +619,8 @@ pub(crate) struct ChannelMonitorImpl<Signer: Sign> {
 	counterparty_commitment_params: CounterpartyCommitmentParameters,
 	funding_redeemscript: Script,
 	channel_value_satoshis: u64,
-	// first is the idx of the first of the two revocation points
-	their_cur_revocation_points: Option<(u64, PublicKey, Option<PublicKey>)>,
+	// first is the idx of the first of the two per-commitment points
+	their_cur_per_commitment_points: Option<(u64, PublicKey, Option<PublicKey>)>,
 
 	on_holder_tx_csv: u16,
 
@@ -753,7 +753,7 @@ impl<Signer: Sign> PartialEq for ChannelMonitorImpl<Signer> {
 			self.counterparty_commitment_params != other.counterparty_commitment_params ||
 			self.funding_redeemscript != other.funding_redeemscript ||
 			self.channel_value_satoshis != other.channel_value_satoshis ||
-			self.their_cur_revocation_points != other.their_cur_revocation_points ||
+			self.their_cur_per_commitment_points != other.their_cur_per_commitment_points ||
 			self.on_holder_tx_csv != other.on_holder_tx_csv ||
 			self.commitment_secrets != other.commitment_secrets ||
 			self.counterparty_claimable_outpoints != other.counterparty_claimable_outpoints ||
@@ -828,7 +828,7 @@ impl<Signer: Sign> Writeable for ChannelMonitorImpl<Signer> {
 		self.funding_redeemscript.write(writer)?;
 		self.channel_value_satoshis.write(writer)?;
 
-		match self.their_cur_revocation_points {
+		match self.their_cur_per_commitment_points {
 			Some((idx, pubkey, second_option)) => {
 				writer.write_all(&byte_utils::be48_to_array(idx))?;
 				writer.write_all(&pubkey.serialize())?;
@@ -1020,7 +1020,7 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 				counterparty_commitment_params,
 				funding_redeemscript,
 				channel_value_satoshis,
-				their_cur_revocation_points: None,
+				their_cur_per_commitment_points: None,
 
 				on_holder_tx_csv: counterparty_channel_parameters.selected_contest_delay,
 
@@ -1070,11 +1070,11 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 		txid: Txid,
 		htlc_outputs: Vec<(HTLCOutputInCommitment, Option<Box<HTLCSource>>)>,
 		commitment_number: u64,
-		their_revocation_point: PublicKey,
+		their_per_commitment_point: PublicKey,
 		logger: &L,
 	) where L::Target: Logger {
 		self.inner.lock().unwrap().provide_latest_counterparty_commitment_tx(
-			txid, htlc_outputs, commitment_number, their_revocation_point, logger)
+			txid, htlc_outputs, commitment_number, their_per_commitment_point, logger)
 	}
 
 	#[cfg(test)]
@@ -1762,7 +1762,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		Ok(())
 	}
 
-	pub(crate) fn provide_latest_counterparty_commitment_tx<L: Deref>(&mut self, txid: Txid, htlc_outputs: Vec<(HTLCOutputInCommitment, Option<Box<HTLCSource>>)>, commitment_number: u64, their_revocation_point: PublicKey, logger: &L) where L::Target: Logger {
+	pub(crate) fn provide_latest_counterparty_commitment_tx<L: Deref>(&mut self, txid: Txid, htlc_outputs: Vec<(HTLCOutputInCommitment, Option<Box<HTLCSource>>)>, commitment_number: u64, their_per_commitment_point: PublicKey, logger: &L) where L::Target: Logger {
 		// TODO: Encrypt the htlc_outputs data with the single-hash of the commitment transaction
 		// so that a remote monitor doesn't learn anything unless there is a malicious close.
 		// (only maybe, sadly we cant do the same for local info, as we need to be aware of
@@ -1777,22 +1777,22 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		self.counterparty_claimable_outpoints.insert(txid, htlc_outputs.clone());
 		self.current_counterparty_commitment_number = commitment_number;
 		//TODO: Merge this into the other per-counterparty-transaction output storage stuff
-		match self.their_cur_revocation_points {
+		match self.their_cur_per_commitment_points {
 			Some(old_points) => {
 				if old_points.0 == commitment_number + 1 {
-					self.their_cur_revocation_points = Some((old_points.0, old_points.1, Some(their_revocation_point)));
+					self.their_cur_per_commitment_points = Some((old_points.0, old_points.1, Some(their_per_commitment_point)));
 				} else if old_points.0 == commitment_number + 2 {
 					if let Some(old_second_point) = old_points.2 {
-						self.their_cur_revocation_points = Some((old_points.0 - 1, old_second_point, Some(their_revocation_point)));
+						self.their_cur_per_commitment_points = Some((old_points.0 - 1, old_second_point, Some(their_per_commitment_point)));
 					} else {
-						self.their_cur_revocation_points = Some((commitment_number, their_revocation_point, None));
+						self.their_cur_per_commitment_points = Some((commitment_number, their_per_commitment_point, None));
 					}
 				} else {
-					self.their_cur_revocation_points = Some((commitment_number, their_revocation_point, None));
+					self.their_cur_per_commitment_points = Some((commitment_number, their_per_commitment_point, None));
 				}
 			},
 			None => {
-				self.their_cur_revocation_points = Some((commitment_number, their_revocation_point, None));
+				self.their_cur_per_commitment_points = Some((commitment_number, their_per_commitment_point, None));
 			}
 		}
 		let mut htlcs = Vec::with_capacity(htlc_outputs.len());
@@ -1930,9 +1930,9 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 						ret = Err(());
 					}
 				}
-				ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTXInfo { commitment_txid, htlc_outputs, commitment_number, their_revocation_point } => {
+				ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTXInfo { commitment_txid, htlc_outputs, commitment_number, their_per_commitment_point } => {
 					log_trace!(logger, "Updating ChannelMonitor with latest counterparty commitment transaction info");
-					self.provide_latest_counterparty_commitment_tx(*commitment_txid, htlc_outputs.clone(), *commitment_number, *their_revocation_point, logger)
+					self.provide_latest_counterparty_commitment_tx(*commitment_txid, htlc_outputs.clone(), *commitment_number, *their_per_commitment_point, logger)
 				},
 				ChannelMonitorUpdateStep::PaymentPreimage { payment_preimage } => {
 					log_trace!(logger, "Updating ChannelMonitor with payment preimage");
@@ -2121,18 +2121,18 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 	fn get_counterparty_htlc_output_claim_reqs(&self, commitment_number: u64, commitment_txid: Txid, tx: Option<&Transaction>) -> Vec<PackageTemplate> {
 		let mut claimable_outpoints = Vec::new();
 		if let Some(htlc_outputs) = self.counterparty_claimable_outpoints.get(&commitment_txid) {
-			if let Some(revocation_points) = self.their_cur_revocation_points {
-				let revocation_point_option =
+			if let Some(per_commitment_points) = self.their_cur_per_commitment_points {
+				let per_commitment_point_option =
 					// If the counterparty commitment tx is the latest valid state, use their latest
 					// per-commitment point
-					if revocation_points.0 == commitment_number { Some(&revocation_points.1) }
-					else if let Some(point) = revocation_points.2.as_ref() {
+					if per_commitment_points.0 == commitment_number { Some(&per_commitment_points.1) }
+					else if let Some(point) = per_commitment_points.2.as_ref() {
 						// If counterparty commitment tx is the state previous to the latest valid state, use
 						// their previous per-commitment point (non-atomicity of revocation means it's valid for
 						// them to temporarily have two valid commitment txns from our viewpoint)
-						if revocation_points.0 == commitment_number + 1 { Some(point) } else { None }
+						if per_commitment_points.0 == commitment_number + 1 { Some(point) } else { None }
 					} else { None };
-				if let Some(revocation_point) = revocation_point_option {
+				if let Some(per_commitment_point) = per_commitment_point_option {
 					for (_, &(ref htlc, _)) in htlc_outputs.iter().enumerate() {
 						if let Some(transaction_output_index) = htlc.transaction_output_index {
 							if let Some(transaction) = tx {
@@ -2143,7 +2143,19 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 							}
 							let preimage = if htlc.offered { if let Some(p) = self.payment_preimages.get(&htlc.payment_hash) { Some(*p) } else { None } } else { None };
 							if preimage.is_some() || !htlc.offered {
-								let counterparty_htlc_outp = if htlc.offered { PackageSolvingData::CounterpartyOfferedHTLCOutput(CounterpartyOfferedHTLCOutput::build(*revocation_point, self.counterparty_commitment_params.counterparty_delayed_payment_base_key, self.counterparty_commitment_params.counterparty_htlc_base_key, preimage.unwrap(), htlc.clone())) } else { PackageSolvingData::CounterpartyReceivedHTLCOutput(CounterpartyReceivedHTLCOutput::build(*revocation_point, self.counterparty_commitment_params.counterparty_delayed_payment_base_key, self.counterparty_commitment_params.counterparty_htlc_base_key, htlc.clone())) };
+								let counterparty_htlc_outp = if htlc.offered {
+									PackageSolvingData::CounterpartyOfferedHTLCOutput(
+										CounterpartyOfferedHTLCOutput::build(*per_commitment_point,
+											self.counterparty_commitment_params.counterparty_delayed_payment_base_key,
+											self.counterparty_commitment_params.counterparty_htlc_base_key,
+											preimage.unwrap(), htlc.clone()))
+								} else {
+									PackageSolvingData::CounterpartyReceivedHTLCOutput(
+										CounterpartyReceivedHTLCOutput::build(*per_commitment_point,
+											self.counterparty_commitment_params.counterparty_delayed_payment_base_key,
+											self.counterparty_commitment_params.counterparty_htlc_base_key,
+											htlc.clone()))
+								};
 								let aggregation = if !htlc.offered { false } else { true };
 								let counterparty_package = PackageTemplate::build_package(commitment_txid, transaction_output_index, counterparty_htlc_outp, htlc.cltv_expiry,aggregation, 0);
 								claimable_outpoints.push(counterparty_package);
@@ -3095,7 +3107,7 @@ impl<'a, Signer: Sign, K: KeysInterface<Signer = Signer>> ReadableArgs<&'a K>
 		let funding_redeemscript = Readable::read(reader)?;
 		let channel_value_satoshis = Readable::read(reader)?;
 
-		let their_cur_revocation_points = {
+		let their_cur_per_commitment_points = {
 			let first_idx = <U48 as Readable>::read(reader)?.0;
 			if first_idx == 0 {
 				None
@@ -3284,7 +3296,7 @@ impl<'a, Signer: Sign, K: KeysInterface<Signer = Signer>> ReadableArgs<&'a K>
 				counterparty_commitment_params,
 				funding_redeemscript,
 				channel_value_satoshis,
-				their_cur_revocation_points,
+				their_cur_per_commitment_points,
 
 				on_holder_tx_csv,
 
