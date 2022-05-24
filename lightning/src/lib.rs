@@ -17,6 +17,25 @@
 //! figure out how best to make networking happen/timers fire/things get written to disk/keys get
 //! generated/etc. This makes it a good candidate for tight integration into an existing wallet
 //! instead of having a rather-separate lightning appendage to a wallet.
+//! 
+//! `default` features are:
+//!
+//! * `std` - enables functionalities which require `std`, including `std::io` trait implementations and things which utilize time
+//! * `grind_signatures` - enables generation of [low-r bitcoin signatures](https://bitcoin.stackexchange.com/questions/111660/what-is-signature-grinding),
+//! which saves 1 byte per signature in 50% of the cases (see [bitcoin PR #13666](https://github.com/bitcoin/bitcoin/pull/13666))
+//!
+//! Available features are:
+//!
+//! * `std`
+//! * `grind_signatures`
+//! * `no-std ` - exposes write trait implementations from the `core2` crate (at least one of `no-std` or `std` are required)
+//! * Skip logging of messages at levels below the given log level:
+//!     * `max_level_off`
+//!     * `max_level_error`
+//!     * `max_level_warn`
+//!     * `max_level_info`
+//!     * `max_level_debug`
+//!     * `max_level_trace`
 
 #![cfg_attr(not(any(test, fuzzing, feature = "_test_utils")), deny(missing_docs))]
 #![cfg_attr(not(any(test, fuzzing, feature = "_test_utils")), forbid(unsafe_code))]
