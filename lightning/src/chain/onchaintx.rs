@@ -691,6 +691,10 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 		}
 	}
 
+	pub(crate) fn is_output_spend_pending(&self, outpoint: &BitcoinOutPoint) -> bool {
+		self.claimable_outpoints.get(outpoint).is_some()
+	}
+
 	pub(crate) fn get_relevant_txids(&self) -> Vec<Txid> {
 		let mut txids: Vec<Txid> = self.onchain_events_awaiting_threshold_conf
 			.iter()
