@@ -27,7 +27,6 @@ use bitcoin::hash_types::BlockHash;
 use bitcoin::secp256k1::Secp256k1;
 
 use prelude::*;
-use core::mem;
 
 use ln::functional_test_utils::*;
 
@@ -200,10 +199,13 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool, use_funding_
 
 	let chan = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 
-	let channel_state = nodes[0].node.channel_state.lock().unwrap();
-	assert_eq!(channel_state.by_id.len(), 1);
-	assert_eq!(channel_state.short_to_chan_info.len(), 2);
-	mem::drop(channel_state);
+	{
+		let channel_state = nodes[0].node.channel_state.lock().unwrap();
+		let per_peer_state = nodes[0].node.per_peer_state.read().unwrap();
+		let peer_state = per_peer_state.get(&nodes[1].node.get_our_node_id()).unwrap().lock().unwrap();
+		assert_eq!(peer_state.channel_by_id.len(), 1);
+		assert_eq!(channel_state.short_to_chan_info.len(), 2);
+	}
 
 	if !reorg_after_reload {
 		if use_funding_unconfirmed {
@@ -221,7 +223,9 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool, use_funding_
 		check_added_monitors!(nodes[1], 1);
 		{
 			let channel_state = nodes[0].node.channel_state.lock().unwrap();
-			assert_eq!(channel_state.by_id.len(), 0);
+			let per_peer_state = nodes[0].node.per_peer_state.read().unwrap();
+			let peer_state = per_peer_state.get(&nodes[1].node.get_our_node_id()).unwrap().lock().unwrap();
+			assert_eq!(peer_state.channel_by_id.len(), 0);
 			assert_eq!(channel_state.short_to_chan_info.len(), 0);
 		}
 	}
@@ -289,7 +293,9 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool, use_funding_
 		check_added_monitors!(nodes[1], 1);
 		{
 			let channel_state = nodes[0].node.channel_state.lock().unwrap();
-			assert_eq!(channel_state.by_id.len(), 0);
+			let per_peer_state = nodes[0].node.per_peer_state.read().unwrap();
+			let peer_state = per_peer_state.get(&nodes[1].node.get_our_node_id()).unwrap().lock().unwrap();
+			assert_eq!(peer_state.channel_by_id.len(), 0);
 			assert_eq!(channel_state.short_to_chan_info.len(), 0);
 		}
 	}

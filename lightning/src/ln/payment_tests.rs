@@ -531,7 +531,8 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 	// Update the fee on the middle hop to ensure PaymentSent events have the correct (retried) fee
 	// and not the original fee. We also update node[1]'s relevant config as
 	// do_claim_payment_along_route expects us to never overpay.
-	nodes[1].node.channel_state.lock().unwrap().by_id.get_mut(&chan_id_2).unwrap()
+	nodes[1].node.per_peer_state.write().unwrap().get_mut(&nodes[2].node.get_our_node_id())
+		.unwrap().lock().unwrap().channel_by_id.get_mut(&chan_id_2).unwrap()
 		.config.options.forwarding_fee_base_msat += 100_000;
 	new_route.paths[0][0].fee_msat += 100_000;
 
