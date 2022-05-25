@@ -141,6 +141,7 @@ jobs:
         run: |
           cargo test --verbose --color always  -p lightning
           cargo test --verbose --color always  -p lightning-invoice
+          cargo test --verbose --color always  -p lightning-rapid-gossip-sync
           cargo build --verbose  --color always -p lightning-persister
           cargo build --verbose  --color always -p lightning-background-processor
       - name: Test C Bindings Modifications on Rust ${{ matrix.toolchain }}
@@ -221,11 +222,24 @@ jobs:
       - name: Fetch routing graph snapshot
         if: steps.cache-graph.outputs.cache-hit != 'true'
         run: |
-          wget -O lightning/net_graph-2021-05-31.bin https://bitcoin.ninja/ldk-net_graph-v0.0.15-2021-05-31.bin
-          if [ "$(sha256sum lightning/net_graph-2021-05-31.bin | awk '{ print $1 }')" != "05a5361278f68ee2afd086cc04a1f927a63924be451f3221d380533acfacc303" ]; then
+          curl --verbose -L -o lightning/net_graph-2021-05-31.bin https://bitcoin.ninja/ldk-net_graph-v0.0.15-2021-05-31.bin
+          echo "Sha sum: $(sha256sum lightning/net_graph-2021-05-31.bin | awk '{ print $1 }')"
+          if [ "$(sha256sum lightning/net_graph-2021-05-31.bin | awk '{ print $1 }')" != "${EXPECTED_ROUTING_GRAPH_SNAPSHOT_SHASUM}" ]; then
             echo "Bad hash"
             exit 1
           fi
+        env:
+          EXPECTED_ROUTING_GRAPH_SNAPSHOT_SHASUM: 05a5361278f68ee2afd086cc04a1f927a63924be451f3221d380533acfacc303
+      - name: Fetch rapid graph sync reference input
+        run: |
+          curl --verbose -L -o lightning-rapid-gossip-sync/res/full_graph.lngossip https://bitcoin.ninja/ldk-compressed_graph-bc08df7542-2022-05-05.bin
+          echo "Sha sum: $(sha256sum lightning-rapid-gossip-sync/res/full_graph.lngossip | awk '{ print $1 }')"
+          if [ "$(sha256sum lightning-rapid-gossip-sync/res/full_graph.lngossip | awk '{ print $1 }')" != "${EXPECTED_RAPID_GOSSIP_SHASUM}" ]; then
+            echo "Bad hash"
+            exit 1
+          fi
+        env:
+          EXPECTED_RAPID_GOSSIP_SHASUM: 9637b91cea9d64320cf48fc0787c70fe69fc062f90d3512e207044110cadfd7b
       - name: Test with Network Graph on Rust ${{ matrix.toolchain }}
         run: |
           cd lightning

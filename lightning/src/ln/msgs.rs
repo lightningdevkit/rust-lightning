@@ -630,7 +630,10 @@ pub struct UnsignedChannelUpdate {
 	pub fee_base_msat: u32,
 	/// The amount to fee multiplier, in micro-satoshi
 	pub fee_proportional_millionths: u32,
-	pub(crate) excess_data: Vec<u8>,
+	/// Excess data which was signed as a part of the message which we do not (yet) understand how
+	/// to decode. This is stored to ensure forward-compatibility as new fields are added to the
+	/// lightning gossip
+	pub excess_data: Vec<u8>,
 }
 /// A channel_update message to be sent or received from a peer
 #[derive(Clone, Debug, PartialEq)]

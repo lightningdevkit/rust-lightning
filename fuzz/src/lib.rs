@@ -9,6 +9,7 @@
 
 extern crate bitcoin;
 extern crate lightning;
+extern crate lightning_rapid_gossip_sync;
 extern crate hex;
 
 pub mod utils;
@@ -17,6 +18,7 @@ pub mod chanmon_deser;
 pub mod chanmon_consistency;
 pub mod full_stack;
 pub mod peer_crypt;
+pub mod process_network_graph;
 pub mod router;
 pub mod zbase32;
 
