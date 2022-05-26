@@ -20,6 +20,7 @@ use util::events::{Event, MessageSendEvent, MessageSendEventsProvider, ClosureRe
 use bitcoin::blockdata::script::Builder;
 use bitcoin::blockdata::opcodes;
 use bitcoin::secp256k1::Secp256k1;
+use bitcoin::Transaction;
 
 use prelude::*;
 
@@ -80,6 +81,17 @@ fn chanmon_fail_from_stale_commitment() {
 	nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &fail_updates.update_fail_htlcs[0]);
 	commitment_signed_dance!(nodes[0], nodes[1], fail_updates.commitment_signed, true, true);
 	expect_payment_failed_with_update!(nodes[0], payment_hash, false, update_a.contents.short_channel_id, true);
+}
+
+fn test_spendable_output<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, spendable_tx: &Transaction) {
+	let mut spendable = node.chain_monitor.chain_monitor.get_and_clear_pending_events();
+	assert_eq!(spendable.len(), 1);
+	if let Event::SpendableOutputs { outputs } = spendable.pop().unwrap() {
+		assert_eq!(outputs.len(), 1);
+		let spend_tx = node.keys_manager.backing.spend_spendable_outputs(&[&outputs[0]], Vec::new(),
+			Builder::new().push_opcode(opcodes::all::OP_RETURN).into_script(), 253, &Secp256k1::new()).unwrap();
+		check_spends!(spend_tx, spendable_tx);
+	} else { panic!(); }
 }
 
 #[test]
@@ -155,23 +167,9 @@ fn chanmon_claim_value_coop_close() {
 	assert_eq!(Vec::<Balance>::new(),
 		nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances());
 
-	let mut node_a_spendable = nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events();
-	assert_eq!(node_a_spendable.len(), 1);
-	if let Event::SpendableOutputs { outputs } = node_a_spendable.pop().unwrap() {
-		assert_eq!(outputs.len(), 1);
-		let spend_tx = nodes[0].keys_manager.backing.spend_spendable_outputs(&[&outputs[0]], Vec::new(),
-			Builder::new().push_opcode(opcodes::all::OP_RETURN).into_script(), 253, &Secp256k1::new()).unwrap();
-		check_spends!(spend_tx, shutdown_tx[0]);
-	}
+	test_spendable_output(&nodes[0], &shutdown_tx[0]);
+	test_spendable_output(&nodes[1], &shutdown_tx[0]);
 
-	let mut node_b_spendable = nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_events();
-	assert_eq!(node_b_spendable.len(), 1);
-	if let Event::SpendableOutputs { outputs } = node_b_spendable.pop().unwrap() {
-		assert_eq!(outputs.len(), 1);
-		let spend_tx = nodes[1].keys_manager.backing.spend_spendable_outputs(&[&outputs[0]], Vec::new(),
-			Builder::new().push_opcode(opcodes::all::OP_RETURN).into_script(), 253, &Secp256k1::new()).unwrap();
-		check_spends!(spend_tx, shutdown_tx[0]);
-	}
 	check_closed_event!(nodes[0], 1, ClosureReason::CooperativeClosure);
 	check_closed_event!(nodes[1], 1, ClosureReason::CooperativeClosure);
 }
@@ -384,15 +382,7 @@ fn do_test_claim_value_force_close(prev_commitment_tx: bool) {
 		}]),
 		sorted_vec(nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
 
-	let mut node_a_spendable = nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events();
-	assert_eq!(node_a_spendable.len(), 1);
-	if let Event::SpendableOutputs { outputs } = node_a_spendable.pop().unwrap() {
-		assert_eq!(outputs.len(), 1);
-		let spend_tx = nodes[0].keys_manager.backing.spend_spendable_outputs(&[&outputs[0]], Vec::new(),
-			Builder::new().push_opcode(opcodes::all::OP_RETURN).into_script(), 253, &Secp256k1::new()).unwrap();
-		check_spends!(spend_tx, remote_txn[0]);
-	}
-
+	test_spendable_output(&nodes[0], &remote_txn[0]);
 	assert!(nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());
 
 	// After broadcasting the HTLC claim transaction, node A will still consider the HTLC
@@ -449,14 +439,7 @@ fn do_test_claim_value_force_close(prev_commitment_tx: bool) {
 		nodes[0].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances());
 	expect_payment_failed!(nodes[0], timeout_payment_hash, true);
 
-	let mut node_a_spendable = nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events();
-	assert_eq!(node_a_spendable.len(), 1);
-	if let Event::SpendableOutputs { outputs } = node_a_spendable.pop().unwrap() {
-		assert_eq!(outputs.len(), 1);
-		let spend_tx = nodes[0].keys_manager.backing.spend_spendable_outputs(&[&outputs[0]], Vec::new(),
-			Builder::new().push_opcode(opcodes::all::OP_RETURN).into_script(), 253, &Secp256k1::new()).unwrap();
-		check_spends!(spend_tx, a_broadcast_txn[2]);
-	} else { panic!(); }
+	test_spendable_output(&nodes[0], &a_broadcast_txn[2]);
 
 	// Node B will no longer consider the HTLC "contentious" after the HTLC claim transaction
 	// confirms, and consider it simply "awaiting confirmations". Note that it has to wait for the
@@ -479,15 +462,7 @@ fn do_test_claim_value_force_close(prev_commitment_tx: bool) {
 	// After reaching the commitment output CSV, we'll get a SpendableOutputs event for it and have
 	// only the HTLCs claimable on node B.
 	connect_blocks(&nodes[1], node_b_commitment_claimable - nodes[1].best_block_info().1);
-
-	let mut node_b_spendable = nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_events();
-	assert_eq!(node_b_spendable.len(), 1);
-	if let Event::SpendableOutputs { outputs } = node_b_spendable.pop().unwrap() {
-		assert_eq!(outputs.len(), 1);
-		let spend_tx = nodes[1].keys_manager.backing.spend_spendable_outputs(&[&outputs[0]], Vec::new(),
-			Builder::new().push_opcode(opcodes::all::OP_RETURN).into_script(), 253, &Secp256k1::new()).unwrap();
-		check_spends!(spend_tx, remote_txn[0]);
-	}
+	test_spendable_output(&nodes[1], &remote_txn[0]);
 
 	assert_eq!(sorted_vec(vec![Balance::ClaimableAwaitingConfirmations {
 			claimable_amount_satoshis: 3_000,
@@ -501,15 +476,7 @@ fn do_test_claim_value_force_close(prev_commitment_tx: bool) {
 	// After reaching the claimed HTLC output CSV, we'll get a SpendableOutptus event for it and
 	// have only one HTLC output left spendable.
 	connect_blocks(&nodes[1], node_b_htlc_claimable - nodes[1].best_block_info().1);
-
-	let mut node_b_spendable = nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_events();
-	assert_eq!(node_b_spendable.len(), 1);
-	if let Event::SpendableOutputs { outputs } = node_b_spendable.pop().unwrap() {
-		assert_eq!(outputs.len(), 1);
-		let spend_tx = nodes[1].keys_manager.backing.spend_spendable_outputs(&[&outputs[0]], Vec::new(),
-			Builder::new().push_opcode(opcodes::all::OP_RETURN).into_script(), 253, &Secp256k1::new()).unwrap();
-		check_spends!(spend_tx, b_broadcast_txn[0]);
-	} else { panic!(); }
+	test_spendable_output(&nodes[1], &b_broadcast_txn[0]);
 
 	assert_eq!(vec![Balance::ContentiousClaimable {
 			claimable_amount_satoshis: 4_000,
@@ -704,25 +671,11 @@ fn test_balances_on_local_commitment_htlcs() {
 			confirmation_height: node_a_htlc_claimable,
 		}],
 		nodes[0].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances());
-	let mut node_a_spendable = nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events();
-	assert_eq!(node_a_spendable.len(), 1);
-	if let Event::SpendableOutputs { outputs } = node_a_spendable.pop().unwrap() {
-		assert_eq!(outputs.len(), 1);
-		let spend_tx = nodes[0].keys_manager.backing.spend_spendable_outputs(&[&outputs[0]], Vec::new(),
-			Builder::new().push_opcode(opcodes::all::OP_RETURN).into_script(), 253, &Secp256k1::new()).unwrap();
-		check_spends!(spend_tx, as_txn[0]);
-	}
+	test_spendable_output(&nodes[0], &as_txn[0]);
 
 	// Connect blocks until the HTLC-Timeout's CSV expires, providing us the relevant
 	// `SpendableOutputs` event and removing the claimable balance entry.
 	connect_blocks(&nodes[0], node_a_htlc_claimable - nodes[0].best_block_info().1);
 	assert!(nodes[0].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances().is_empty());
-	let mut node_a_spendable = nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events();
-	assert_eq!(node_a_spendable.len(), 1);
-	if let Event::SpendableOutputs { outputs } = node_a_spendable.pop().unwrap() {
-		assert_eq!(outputs.len(), 1);
-		let spend_tx = nodes[0].keys_manager.backing.spend_spendable_outputs(&[&outputs[0]], Vec::new(),
-			Builder::new().push_opcode(opcodes::all::OP_RETURN).into_script(), 253, &Secp256k1::new()).unwrap();
-		check_spends!(spend_tx, as_txn[1]);
-	}
+	test_spendable_output(&nodes[0], &as_txn[1]);
 }
