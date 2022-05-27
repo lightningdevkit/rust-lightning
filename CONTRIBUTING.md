@@ -75,7 +75,10 @@ be covered by functional tests.
 When refactoring, structure your PR to make it easy to review and don't
 hesitate to split it into multiple small, focused PRs.
 
-The Minimum Supported Rust Version is 1.41.1 (enforced by our GitHub Actions).
+The Minimum Supported Rust Version (MSRV) currently is 1.41.1 (enforced by
+our GitHub Actions). Also, the compatibility for LDK object serialization is
+currently ensured back to and including crate version 0.0.99 (see the
+[changelog](CHANGELOG.md)).
 
 Commits should cover both the issue fixed and the solution's rationale.
 These [guidelines](https://chris.beams.io/posts/git-commit/) should be kept in mind.
