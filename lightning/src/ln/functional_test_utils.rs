@@ -77,28 +77,60 @@ pub fn confirm_transaction_at<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, tx: &T
 }
 
 /// The possible ways we may notify a ChannelManager of a new block
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ConnectStyle {
-	/// Calls best_block_updated first, detecting transactions in the block only after receiving the
-	/// header and height information.
+	/// Calls `best_block_updated` first, detecting transactions in the block only after receiving
+	/// the header and height information.
 	BestBlockFirst,
-	/// The same as BestBlockFirst, however when we have multiple blocks to connect, we only
-	/// make a single best_block_updated call.
+	/// The same as `BestBlockFirst`, however when we have multiple blocks to connect, we only
+	/// make a single `best_block_updated` call.
 	BestBlockFirstSkippingBlocks,
-	/// Calls transactions_confirmed first, detecting transactions in the block before updating the
-	/// header and height information.
+	/// The same as `BestBlockFirst` when connecting blocks. During disconnection only
+	/// `transaction_unconfirmed` is called.
+	BestBlockFirstReorgsOnlyTip,
+	/// Calls `transactions_confirmed` first, detecting transactions in the block before updating
+	/// the header and height information.
 	TransactionsFirst,
-	/// The same as TransactionsFirst, however when we have multiple blocks to connect, we only
-	/// make a single best_block_updated call.
+	/// The same as `TransactionsFirst`, however when we have multiple blocks to connect, we only
+	/// make a single `best_block_updated` call.
 	TransactionsFirstSkippingBlocks,
-	/// Provides the full block via the chain::Listen interface. In the current code this is
-	/// equivalent to TransactionsFirst with some additional assertions.
+	/// The same as `TransactionsFirst` when connecting blocks. During disconnection only
+	/// `transaction_unconfirmed` is called.
+	TransactionsFirstReorgsOnlyTip,
+	/// Provides the full block via the `chain::Listen` interface. In the current code this is
+	/// equivalent to `TransactionsFirst` with some additional assertions.
 	FullBlockViaListen,
+}
+
+impl ConnectStyle {
+	fn random_style() -> ConnectStyle {
+		#[cfg(feature = "std")] {
+			use core::hash::{BuildHasher, Hasher};
+			// Get a random value using the only std API to do so - the DefaultHasher
+			let rand_val = std::collections::hash_map::RandomState::new().build_hasher().finish();
+			let res = match rand_val % 7 {
+				0 => ConnectStyle::BestBlockFirst,
+				1 => ConnectStyle::BestBlockFirstSkippingBlocks,
+				2 => ConnectStyle::BestBlockFirstReorgsOnlyTip,
+				3 => ConnectStyle::TransactionsFirst,
+				4 => ConnectStyle::TransactionsFirstSkippingBlocks,
+				5 => ConnectStyle::TransactionsFirstReorgsOnlyTip,
+				6 => ConnectStyle::FullBlockViaListen,
+				_ => unreachable!(),
+			};
+			eprintln!("Using Block Connection Style: {:?}", res);
+			res
+		}
+		#[cfg(not(feature = "std"))] {
+			ConnectStyle::FullBlockViaListen
+		}
+	}
 }
 
 pub fn connect_blocks<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, depth: u32) -> BlockHash {
 	let skip_intermediaries = match *node.connect_style.borrow() {
-		ConnectStyle::BestBlockFirstSkippingBlocks|ConnectStyle::TransactionsFirstSkippingBlocks => true,
+		ConnectStyle::BestBlockFirstSkippingBlocks|ConnectStyle::TransactionsFirstSkippingBlocks|
+			ConnectStyle::BestBlockFirstReorgsOnlyTip|ConnectStyle::TransactionsFirstReorgsOnlyTip => true,
 		_ => false,
 	};
 
@@ -109,18 +141,20 @@ pub fn connect_blocks<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, depth: u32) ->
 	};
 	assert!(depth >= 1);
 	for i in 1..depth {
-		do_connect_block(node, &block, skip_intermediaries);
+		let prev_blockhash = block.header.block_hash();
+		do_connect_block(node, block, skip_intermediaries);
 		block = Block {
-			header: BlockHeader { version: 0x20000000, prev_blockhash: block.header.block_hash(), merkle_root: Default::default(), time: height + i, bits: 42, nonce: 42 },
+			header: BlockHeader { version: 0x20000000, prev_blockhash, merkle_root: Default::default(), time: height + i, bits: 42, nonce: 42 },
 			txdata: vec![],
 		};
 	}
-	connect_block(node, &block);
-	block.header.block_hash()
+	let hash = block.header.block_hash();
+	do_connect_block(node, block, false);
+	hash
 }
 
 pub fn connect_block<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, block: &Block) {
-	do_connect_block(node, block, false);
+	do_connect_block(node, block.clone(), false);
 }
 
 fn call_claimable_balances<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>) {
@@ -130,20 +164,23 @@ fn call_claimable_balances<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>) {
 	}
 }
 
-fn do_connect_block<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, block: &Block, skip_intermediaries: bool) {
+fn do_connect_block<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, block: Block, skip_intermediaries: bool) {
 	call_claimable_balances(node);
 	let height = node.best_block_info().1 + 1;
+	#[cfg(feature = "std")] {
+		eprintln!("Connecting block using Block Connection Style: {:?}", *node.connect_style.borrow());
+	}
 	if !skip_intermediaries {
 		let txdata: Vec<_> = block.txdata.iter().enumerate().collect();
 		match *node.connect_style.borrow() {
-			ConnectStyle::BestBlockFirst|ConnectStyle::BestBlockFirstSkippingBlocks => {
+			ConnectStyle::BestBlockFirst|ConnectStyle::BestBlockFirstSkippingBlocks|ConnectStyle::BestBlockFirstReorgsOnlyTip => {
 				node.chain_monitor.chain_monitor.best_block_updated(&block.header, height);
 				call_claimable_balances(node);
 				node.chain_monitor.chain_monitor.transactions_confirmed(&block.header, &txdata, height);
 				node.node.best_block_updated(&block.header, height);
 				node.node.transactions_confirmed(&block.header, &txdata, height);
 			},
-			ConnectStyle::TransactionsFirst|ConnectStyle::TransactionsFirstSkippingBlocks => {
+			ConnectStyle::TransactionsFirst|ConnectStyle::TransactionsFirstSkippingBlocks|ConnectStyle::TransactionsFirstReorgsOnlyTip => {
 				node.chain_monitor.chain_monitor.transactions_confirmed(&block.header, &txdata, height);
 				call_claimable_balances(node);
 				node.chain_monitor.chain_monitor.best_block_updated(&block.header, height);
@@ -158,30 +195,39 @@ fn do_connect_block<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, block: &Block, s
 	}
 	call_claimable_balances(node);
 	node.node.test_process_background_events();
-	node.blocks.lock().unwrap().push((block.header, height));
+	node.blocks.lock().unwrap().push((block, height));
 }
 
 pub fn disconnect_blocks<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, count: u32) {
 	call_claimable_balances(node);
+	#[cfg(feature = "std")] {
+		eprintln!("Disconnecting {} blocks using Block Connection Style: {:?}", count, *node.connect_style.borrow());
+	}
 	for i in 0..count {
-		let orig_header = node.blocks.lock().unwrap().pop().unwrap();
-		assert!(orig_header.1 > 0); // Cannot disconnect genesis
-		let prev_header = node.blocks.lock().unwrap().last().unwrap().clone();
+		let orig = node.blocks.lock().unwrap().pop().unwrap();
+		assert!(orig.1 > 0); // Cannot disconnect genesis
+		let prev = node.blocks.lock().unwrap().last().unwrap().clone();
 
 		match *node.connect_style.borrow() {
 			ConnectStyle::FullBlockViaListen => {
-				node.chain_monitor.chain_monitor.block_disconnected(&orig_header.0, orig_header.1);
-				Listen::block_disconnected(node.node, &orig_header.0, orig_header.1);
+				node.chain_monitor.chain_monitor.block_disconnected(&orig.0.header, orig.1);
+				Listen::block_disconnected(node.node, &orig.0.header, orig.1);
 			},
 			ConnectStyle::BestBlockFirstSkippingBlocks|ConnectStyle::TransactionsFirstSkippingBlocks => {
 				if i == count - 1 {
-					node.chain_monitor.chain_monitor.best_block_updated(&prev_header.0, prev_header.1);
-					node.node.best_block_updated(&prev_header.0, prev_header.1);
+					node.chain_monitor.chain_monitor.best_block_updated(&prev.0.header, prev.1);
+					node.node.best_block_updated(&prev.0.header, prev.1);
+				}
+			},
+			ConnectStyle::BestBlockFirstReorgsOnlyTip|ConnectStyle::TransactionsFirstReorgsOnlyTip => {
+				for tx in orig.0.txdata {
+					node.chain_monitor.chain_monitor.transaction_unconfirmed(&tx.txid());
+					node.node.transaction_unconfirmed(&tx.txid());
 				}
 			},
 			_ => {
-				node.chain_monitor.chain_monitor.best_block_updated(&prev_header.0, prev_header.1);
-				node.node.best_block_updated(&prev_header.0, prev_header.1);
+				node.chain_monitor.chain_monitor.best_block_updated(&prev.0.header, prev.1);
+				node.node.best_block_updated(&prev.0.header, prev.1);
 			},
 		}
 		call_claimable_balances(node);
@@ -227,7 +273,7 @@ pub struct Node<'a, 'b: 'a, 'c: 'b> {
 	pub network_payment_count: Rc<RefCell<u8>>,
 	pub network_chan_count: Rc<RefCell<u32>>,
 	pub logger: &'c test_utils::TestLogger,
-	pub blocks: Arc<Mutex<Vec<(BlockHeader, u32)>>>,
+	pub blocks: Arc<Mutex<Vec<(Block, u32)>>>,
 	pub connect_style: Rc<RefCell<ConnectStyle>>,
 }
 impl<'a, 'b, 'c> Node<'a, 'b, 'c> {
@@ -238,7 +284,7 @@ impl<'a, 'b, 'c> Node<'a, 'b, 'c> {
 		self.blocks.lock().unwrap().last().map(|(a, b)| (a.block_hash(), *b)).unwrap()
 	}
 	pub fn get_block_header(&self, height: u32) -> BlockHeader {
-		self.blocks.lock().unwrap()[height as usize].0
+		self.blocks.lock().unwrap()[height as usize].0.header
 	}
 }
 
@@ -1821,7 +1867,7 @@ pub fn create_chanmon_cfgs(node_count: usize) -> Vec<TestChanMonCfg> {
 	for i in 0..node_count {
 		let tx_broadcaster = test_utils::TestBroadcaster {
 			txn_broadcasted: Mutex::new(Vec::new()),
-			blocks: Arc::new(Mutex::new(vec![(genesis_block(Network::Testnet).header, 0)])),
+			blocks: Arc::new(Mutex::new(vec![(genesis_block(Network::Testnet), 0)])),
 		};
 		let fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) };
 		let chain_source = test_utils::TestChainSource::new(Network::Testnet);
@@ -1895,7 +1941,7 @@ pub fn create_network<'a, 'b: 'a, 'c: 'b>(node_count: usize, cfgs: &'b Vec<NodeC
 	let mut nodes = Vec::new();
 	let chan_count = Rc::new(RefCell::new(0));
 	let payment_count = Rc::new(RefCell::new(0));
-	let connect_style = Rc::new(RefCell::new(ConnectStyle::FullBlockViaListen));
+	let connect_style = Rc::new(RefCell::new(ConnectStyle::random_style()));
 
 	for i in 0..node_count {
 		let net_graph_msg_handler = NetGraphMsgHandler::new(cfgs[i].network_graph, None, cfgs[i].logger);

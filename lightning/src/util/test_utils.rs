@@ -31,7 +31,7 @@ use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::blockdata::transaction::{Transaction, TxOut};
 use bitcoin::blockdata::script::{Builder, Script};
 use bitcoin::blockdata::opcodes;
-use bitcoin::blockdata::block::BlockHeader;
+use bitcoin::blockdata::block::Block;
 use bitcoin::network::constants::Network;
 use bitcoin::hash_types::{BlockHash, Txid};
 
@@ -224,11 +224,11 @@ impl<Signer: keysinterface::Sign> chainmonitor::Persist<Signer> for TestPersiste
 
 pub struct TestBroadcaster {
 	pub txn_broadcasted: Mutex<Vec<Transaction>>,
-	pub blocks: Arc<Mutex<Vec<(BlockHeader, u32)>>>,
+	pub blocks: Arc<Mutex<Vec<(Block, u32)>>>,
 }
 
 impl TestBroadcaster {
-	pub fn new(blocks: Arc<Mutex<Vec<(BlockHeader, u32)>>>) -> TestBroadcaster {
+	pub fn new(blocks: Arc<Mutex<Vec<(Block, u32)>>>) -> TestBroadcaster {
 		TestBroadcaster { txn_broadcasted: Mutex::new(Vec::new()), blocks }
 	}
 }
