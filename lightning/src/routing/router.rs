@@ -383,7 +383,7 @@ enum CandidateRouteHop<'a> {
 impl<'a> CandidateRouteHop<'a> {
 	fn short_channel_id(&self) -> u64 {
 		match self {
-			CandidateRouteHop::FirstHop { details } => details.short_channel_id.unwrap(),
+			CandidateRouteHop::FirstHop { details } => details.get_outbound_payment_scid().unwrap(),
 			CandidateRouteHop::PublicHop { short_channel_id, .. } => *short_channel_id,
 			CandidateRouteHop::PrivateHop { hint } => hint.short_channel_id,
 		}
@@ -801,7 +801,7 @@ where L::Target: Logger {
 		HashMap::with_capacity(if first_hops.is_some() { first_hops.as_ref().unwrap().len() } else { 0 });
 	if let Some(hops) = first_hops {
 		for chan in hops {
-			if chan.short_channel_id.is_none() {
+			if chan.get_outbound_payment_scid().is_none() {
 				panic!("first_hops should be filled in with usable channels, not pending ones");
 			}
 			if chan.counterparty.node_id == *our_node_pubkey {
@@ -1411,7 +1411,7 @@ where L::Target: Logger {
 					let mut features_set = false;
 					if let Some(first_channels) = first_hop_targets.get(&ordered_hops.last().unwrap().0.node_id) {
 						for details in first_channels {
-							if details.short_channel_id.unwrap() == ordered_hops.last().unwrap().0.candidate.short_channel_id() {
+							if details.get_outbound_payment_scid().unwrap() == ordered_hops.last().unwrap().0.candidate.short_channel_id() {
 								ordered_hops.last_mut().unwrap().1 = details.counterparty.features.to_context();
 								features_set = true;
 								break;
@@ -1906,6 +1906,7 @@ mod tests {
 			funding_txo: Some(OutPoint { txid: bitcoin::Txid::from_slice(&[0; 32]).unwrap(), index: 0 }),
 			channel_type: None,
 			short_channel_id,
+			outbound_scid_alias: None,
 			inbound_scid_alias: None,
 			channel_value_satoshis: 0,
 			user_channel_id: 0,
@@ -5738,6 +5739,7 @@ mod benches {
 			channel_type: None,
 			short_channel_id: Some(1),
 			inbound_scid_alias: None,
+			outbound_scid_alias: None,
 			channel_value_satoshis: 10_000_000,
 			user_channel_id: 0,
 			balance_msat: 10_000_000,

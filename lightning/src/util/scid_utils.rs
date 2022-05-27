@@ -79,6 +79,10 @@ pub(crate) mod fake_scid {
 	const MAX_NAMESPACES: u8 = 8; // We allocate 3 bits for the namespace identifier.
 	const NAMESPACE_ID_BITMASK: u8 = 0b111;
 
+	const BLOCKS_PER_MONTH: u32 = 144 /* blocks per day */ * 30 /* days per month */;
+	pub(crate) const MAX_SCID_BLOCKS_FROM_NOW: u32 = BLOCKS_PER_MONTH;
+
+
 	/// Fake scids are divided into namespaces, with each namespace having its own identifier between
 	/// [0..7]. This allows us to identify what namespace a fake scid corresponds to upon HTLC
 	/// receipt, and handle the HTLC accordingly. The namespace identifier is encrypted when encoded
@@ -100,7 +104,6 @@ pub(crate) mod fake_scid {
 			// Ensure we haven't created a namespace that doesn't fit into the 3 bits we've allocated for
 			// namespaces.
 			assert!((*self as u8) < MAX_NAMESPACES);
-			const BLOCKS_PER_MONTH: u32 = 144 /* blocks per day */ * 30 /* days per month */;
 			let rand_bytes = keys_manager.get_secure_random_bytes();
 
 			let segwit_activation_height = segwit_activation_height(genesis_hash);
@@ -109,7 +112,7 @@ pub(crate) mod fake_scid {
 			// We want to ensure that this fake channel won't conflict with any transactions we haven't
 			// seen yet, in case `highest_seen_blockheight` is updated before we get full information
 			// about transactions confirmed in the given block.
-			blocks_since_segwit_activation = blocks_since_segwit_activation.saturating_sub(BLOCKS_PER_MONTH);
+			blocks_since_segwit_activation = blocks_since_segwit_activation.saturating_sub(MAX_SCID_BLOCKS_FROM_NOW);
 
 			let rand_for_height = u32::from_be_bytes(rand_bytes[..4].try_into().unwrap());
 			let fake_scid_height = segwit_activation_height + rand_for_height % (blocks_since_segwit_activation + 1);

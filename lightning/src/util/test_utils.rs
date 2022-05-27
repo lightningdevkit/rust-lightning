@@ -116,6 +116,11 @@ impl<'a> TestChainMonitor<'a> {
 			expect_channel_force_closed: Mutex::new(None),
 		}
 	}
+
+	pub fn complete_sole_pending_chan_update(&self, channel_id: &[u8; 32]) {
+		let (outpoint, _, latest_update) = self.latest_monitor_update_id.lock().unwrap().get(channel_id).unwrap().clone();
+		self.chain_monitor.channel_monitor_updated(outpoint, latest_update).unwrap();
+	}
 }
 impl<'a> chain::Watch<EnforcingSigner> for TestChainMonitor<'a> {
 	fn watch_channel(&self, funding_txo: OutPoint, monitor: channelmonitor::ChannelMonitor<EnforcingSigner>) -> Result<(), chain::ChannelMonitorUpdateErr> {
