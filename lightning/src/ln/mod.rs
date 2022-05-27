@@ -43,7 +43,7 @@ pub mod channel;
 #[cfg(not(fuzzing))]
 pub(crate) mod channel;
 
-mod onion_utils;
+pub(crate) mod onion_utils;
 pub mod wire;
 
 // Older rustc (which we support) refuses to let us call the get_payment_preimage_hash!() macro
