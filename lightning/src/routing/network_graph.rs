@@ -123,6 +123,9 @@ impl Readable for NodeId {
 
 /// Represents the network as nodes and channels between them
 pub struct NetworkGraph {
+	/// The unix timestamp in UTC provided by the most recent rapid gossip sync
+	/// It will be set by the rapid sync process after every sync completion
+	pub last_rapid_gossip_sync_timestamp: Option<u32>,
 	genesis_hash: BlockHash,
 	// Lock order: channels -> nodes
 	channels: RwLock<BTreeMap<u64, ChannelInfo>>,
@@ -137,6 +140,7 @@ impl Clone for NetworkGraph {
 			genesis_hash: self.genesis_hash.clone(),
 			channels: RwLock::new(channels.clone()),
 			nodes: RwLock::new(nodes.clone()),
+			last_rapid_gossip_sync_timestamp: self.last_rapid_gossip_sync_timestamp.clone(),
 		}
 	}
 }
@@ -990,7 +994,9 @@ impl Writeable for NetworkGraph {
 			node_info.write(writer)?;
 		}
 
-		write_tlv_fields!(writer, {});
+		write_tlv_fields!(writer, {
+			(1, self.last_rapid_gossip_sync_timestamp, option),
+		});
 		Ok(())
 	}
 }
@@ -1014,12 +1020,17 @@ impl Readable for NetworkGraph {
 			let node_info = Readable::read(reader)?;
 			nodes.insert(node_id, node_info);
 		}
-		read_tlv_fields!(reader, {});
+
+		let mut last_rapid_gossip_sync_timestamp: Option<u32> = None;
+		read_tlv_fields!(reader, {
+			(1, last_rapid_gossip_sync_timestamp, option),
+		});
 
 		Ok(NetworkGraph {
 			genesis_hash,
 			channels: RwLock::new(channels),
 			nodes: RwLock::new(nodes),
+			last_rapid_gossip_sync_timestamp,
 		})
 	}
 }
@@ -1053,6 +1064,7 @@ impl NetworkGraph {
 			genesis_hash,
 			channels: RwLock::new(BTreeMap::new()),
 			nodes: RwLock::new(BTreeMap::new()),
+			last_rapid_gossip_sync_timestamp: None,
 		}
 	}
 
@@ -2357,6 +2369,18 @@ mod tests {
 		assert!(!network_graph.read_only().channels().is_empty());
 		network_graph.write(&mut w).unwrap();
 		assert!(<NetworkGraph>::read(&mut io::Cursor::new(&w.0)).unwrap() == network_graph);
+	}
+
+	#[test]
+	fn network_graph_tlv_serialization() {
+		let mut network_graph = create_network_graph();
+		network_graph.last_rapid_gossip_sync_timestamp.replace(42);
+
+		let mut w = test_utils::TestVecWriter(Vec::new());
+		network_graph.write(&mut w).unwrap();
+		let reassembled_network_graph: NetworkGraph = Readable::read(&mut io::Cursor::new(&w.0)).unwrap();
+		assert!(reassembled_network_graph == network_graph);
+		assert_eq!(reassembled_network_graph.last_rapid_gossip_sync_timestamp.unwrap(), 42);
 	}
 
 	#[test]
