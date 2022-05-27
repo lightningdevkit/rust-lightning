@@ -954,8 +954,8 @@ fn test_update_fee() {
 	check_added_monitors!(nodes[1], 1);
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 
-	assert_eq!(get_feerate!(nodes[0], channel_id), feerate + 30);
-	assert_eq!(get_feerate!(nodes[1], channel_id), feerate + 30);
+	assert_eq!(get_feerate!(nodes[0], nodes[1], channel_id), feerate + 30);
+	assert_eq!(get_feerate!(nodes[1], nodes[0], channel_id), feerate + 30);
 	close_channel(&nodes[0], &nodes[1], &chan.2, chan.3, true);
 	check_closed_event!(nodes[0], 1, ClosureReason::CooperativeClosure);
 	check_closed_event!(nodes[1], 1, ClosureReason::CooperativeClosure);
@@ -1321,11 +1321,11 @@ fn test_basic_channel_reserve() {
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 95000000, channelmanager::provided_init_features(), channelmanager::provided_init_features());
 
-	let chan_stat = get_channel_value_stat!(nodes[0], chan.2);
+	let chan_stat = get_channel_value_stat!(nodes[0], nodes[1], chan.2);
 	let channel_reserve = chan_stat.channel_reserve_msat;
 
 	// The 2* and +1 are for the fee spike reserve.
-	let commit_tx_fee = 2 * commit_tx_fee_msat(get_feerate!(nodes[0], chan.2), 1 + 1, get_opt_anchors!(nodes[0], chan.2));
+	let commit_tx_fee = 2 * commit_tx_fee_msat(get_feerate!(nodes[0], nodes[1], chan.2), 1 + 1, get_opt_anchors!(nodes[0], nodes[1], chan.2));
 	let max_can_send = 5000000 - channel_reserve - commit_tx_fee;
 	let (route, our_payment_hash, _, our_payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], max_can_send + 1);
 	let err = nodes[0].node.send_payment(&route, our_payment_hash, &Some(our_payment_secret), PaymentId(our_payment_hash.0)).err().unwrap();
@@ -1378,7 +1378,7 @@ fn test_fee_spike_violation_fails_htlc() {
 	// nodes[0] just sent. In the code for construction of this message, "local" refers
 	// to the sender of the message, and "remote" refers to the receiver.
 
-	let feerate_per_kw = get_feerate!(nodes[0], chan.2);
+	let feerate_per_kw = get_feerate!(nodes[0], nodes[1], chan.2);
 
 	const INITIAL_COMMITMENT_NUMBER: u64 = (1 << 48) - 1;
 
@@ -1677,9 +1677,9 @@ fn test_chan_reserve_violation_inbound_htlc_inbound_chan() {
 
 	let feemsat = 239;
 	let total_routing_fee_msat = (nodes.len() - 2) as u64 * feemsat;
-	let chan_stat = get_channel_value_stat!(nodes[0], chan.2);
-	let feerate = get_feerate!(nodes[0], chan.2);
-	let opt_anchors = get_opt_anchors!(nodes[0], chan.2);
+	let chan_stat = get_channel_value_stat!(nodes[0], nodes[1], chan.2);
+	let feerate = get_feerate!(nodes[0], nodes[1], chan.2);
+	let opt_anchors = get_opt_anchors!(nodes[0], nodes[1], chan.2);
 
 	// Add a 2* and +1 for the fee spike reserve.
 	let commit_tx_fee_2_htlc = 2*commit_tx_fee_msat(feerate, 2 + 1, opt_anchors);
@@ -1768,11 +1768,11 @@ fn test_channel_reserve_holding_cell_htlcs() {
 	let chan_1 = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 190000, 1001, channelmanager::provided_init_features(), channelmanager::provided_init_features());
 	let chan_2 = create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 190000, 1001, channelmanager::provided_init_features(), channelmanager::provided_init_features());
 
-	let mut stat01 = get_channel_value_stat!(nodes[0], chan_1.2);
-	let mut stat11 = get_channel_value_stat!(nodes[1], chan_1.2);
+	let mut stat01 = get_channel_value_stat!(nodes[0], nodes[1], chan_1.2);
+	let mut stat11 = get_channel_value_stat!(nodes[1], nodes[0], chan_1.2);
 
-	let mut stat12 = get_channel_value_stat!(nodes[1], chan_2.2);
-	let mut stat22 = get_channel_value_stat!(nodes[2], chan_2.2);
+	let mut stat12 = get_channel_value_stat!(nodes[1], nodes[2], chan_2.2);
+	let mut stat22 = get_channel_value_stat!(nodes[2], nodes[1], chan_2.2);
 
 	macro_rules! expect_forward {
 		($node: expr) => {{
@@ -1786,8 +1786,8 @@ fn test_channel_reserve_holding_cell_htlcs() {
 
 	let feemsat = 239; // set above
 	let total_fee_msat = (nodes.len() - 2) as u64 * feemsat;
-	let feerate = get_feerate!(nodes[0], chan_1.2);
-	let opt_anchors = get_opt_anchors!(nodes[0], chan_1.2);
+	let feerate = get_feerate!(nodes[0], nodes[1], chan_1.2);
+	let opt_anchors = get_opt_anchors!(nodes[0], nodes[1], chan_1.2);
 
 	let recv_value_0 = stat01.counterparty_max_htlc_value_in_flight_msat - total_fee_msat;
 
@@ -1825,10 +1825,10 @@ fn test_channel_reserve_holding_cell_htlcs() {
 		claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_preimage);
 
 		let (stat01_, stat11_, stat12_, stat22_) = (
-			get_channel_value_stat!(nodes[0], chan_1.2),
-			get_channel_value_stat!(nodes[1], chan_1.2),
-			get_channel_value_stat!(nodes[1], chan_2.2),
-			get_channel_value_stat!(nodes[2], chan_2.2),
+			get_channel_value_stat!(nodes[0], nodes[1], chan_1.2),
+			get_channel_value_stat!(nodes[1], nodes[0], chan_1.2),
+			get_channel_value_stat!(nodes[1], nodes[2], chan_2.2),
+			get_channel_value_stat!(nodes[2], nodes[1], chan_2.2),
 		);
 
 		assert_eq!(stat01_.value_to_self_msat, stat01.value_to_self_msat - amt_msat);
@@ -1879,7 +1879,7 @@ fn test_channel_reserve_holding_cell_htlcs() {
 	let recv_value_21 = recv_value_2/2 - additional_htlc_cost_msat/2;
 	let recv_value_22 = recv_value_2 - recv_value_21 - total_fee_msat - additional_htlc_cost_msat;
 	{
-		let stat = get_channel_value_stat!(nodes[0], chan_1.2);
+		let stat = get_channel_value_stat!(nodes[0], nodes[1], chan_1.2);
 		assert_eq!(stat.value_to_self_msat - (stat.pending_outbound_htlcs_amount_msat + recv_value_21 + recv_value_22 + total_fee_msat + total_fee_msat + commit_tx_fee_3_htlcs), stat.channel_reserve_msat);
 	}
 
@@ -1995,11 +1995,11 @@ fn test_channel_reserve_holding_cell_htlcs() {
 
 	let commit_tx_fee_1_htlc = 2*commit_tx_fee_msat(feerate, 1 + 1, opt_anchors);
 	let expected_value_to_self = stat01.value_to_self_msat - (recv_value_1 + total_fee_msat) - (recv_value_21 + total_fee_msat) - (recv_value_22 + total_fee_msat) - (recv_value_3 + total_fee_msat);
-	let stat0 = get_channel_value_stat!(nodes[0], chan_1.2);
+	let stat0 = get_channel_value_stat!(nodes[0], nodes[1], chan_1.2);
 	assert_eq!(stat0.value_to_self_msat, expected_value_to_self);
 	assert_eq!(stat0.value_to_self_msat, stat0.channel_reserve_msat + commit_tx_fee_1_htlc);
 
-	let stat2 = get_channel_value_stat!(nodes[2], chan_2.2);
+	let stat2 = get_channel_value_stat!(nodes[2], nodes[1], chan_2.2);
 	assert_eq!(stat2.value_to_self_msat, stat22.value_to_self_msat + recv_value_1 + recv_value_21 + recv_value_22 + recv_value_3);
 }
 
@@ -2033,7 +2033,7 @@ fn channel_reserve_in_flight_removes() {
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, channelmanager::provided_init_features(), channelmanager::provided_init_features());
 
-	let b_chan_values = get_channel_value_stat!(nodes[1], chan_1.2);
+	let b_chan_values = get_channel_value_stat!(nodes[1], nodes[0], chan_1.2);
 	// Route the first two HTLCs.
 	let payment_value_1 = b_chan_values.channel_reserve_msat - b_chan_values.value_to_self_msat - 10000;
 	let (payment_preimage_1, payment_hash_1, _) = route_payment(&nodes[0], &[&nodes[1]], payment_value_1);
@@ -5593,10 +5593,10 @@ fn test_fail_holding_cell_htlc_upon_free() {
 
 	nodes[1].node.handle_update_fee(&nodes[0].node.get_our_node_id(), update_msg.unwrap());
 
-	let mut chan_stat = get_channel_value_stat!(nodes[0], chan.2);
+	let mut chan_stat = get_channel_value_stat!(nodes[0], nodes[1], chan.2);
 	let channel_reserve = chan_stat.channel_reserve_msat;
-	let feerate = get_feerate!(nodes[0], chan.2);
-	let opt_anchors = get_opt_anchors!(nodes[0], chan.2);
+	let feerate = get_feerate!(nodes[0], nodes[1], chan.2);
+	let opt_anchors = get_opt_anchors!(nodes[0], nodes[1], chan.2);
 
 	// 2* and +1 HTLCs on the commit tx fee calculation for the fee spike reserve.
 	let max_can_send = 5000000 - channel_reserve - 2*commit_tx_fee_msat(feerate, 1 + 1, opt_anchors);
@@ -5604,7 +5604,7 @@ fn test_fail_holding_cell_htlc_upon_free() {
 
 	// Send a payment which passes reserve checks but gets stuck in the holding cell.
 	nodes[0].node.send_payment(&route, our_payment_hash, &Some(our_payment_secret), PaymentId(our_payment_hash.0)).unwrap();
-	chan_stat = get_channel_value_stat!(nodes[0], chan.2);
+	chan_stat = get_channel_value_stat!(nodes[0], nodes[1], chan.2);
 	assert_eq!(chan_stat.holding_cell_outbound_amount_msat, max_can_send);
 
 	// Flush the pending fee update.
@@ -5617,7 +5617,7 @@ fn test_fail_holding_cell_htlc_upon_free() {
 	// Upon receipt of the RAA, there will be an attempt to resend the holding cell
 	// HTLC, but now that the fee has been raised the payment will now fail, causing
 	// us to surface its failure to the user.
-	chan_stat = get_channel_value_stat!(nodes[0], chan.2);
+	chan_stat = get_channel_value_stat!(nodes[0], nodes[1], chan.2);
 	assert_eq!(chan_stat.holding_cell_outbound_amount_msat, 0);
 	nodes[0].logger.assert_log("lightning::ln::channel".to_string(), format!("Freeing holding cell with 1 HTLC updates in channel {}", hex::encode(chan.2)), 1);
 	let failure_log = format!("Failed to send HTLC with payment_hash {} due to Cannot send value that would put our balance under counterparty-announced channel reserve value ({}) in channel {}",
@@ -5671,10 +5671,10 @@ fn test_free_and_fail_holding_cell_htlcs() {
 
 	nodes[1].node.handle_update_fee(&nodes[0].node.get_our_node_id(), update_msg.unwrap());
 
-	let mut chan_stat = get_channel_value_stat!(nodes[0], chan.2);
+	let mut chan_stat = get_channel_value_stat!(nodes[0], nodes[1], chan.2);
 	let channel_reserve = chan_stat.channel_reserve_msat;
-	let feerate = get_feerate!(nodes[0], chan.2);
-	let opt_anchors = get_opt_anchors!(nodes[0], chan.2);
+	let feerate = get_feerate!(nodes[0], nodes[1], chan.2);
+	let opt_anchors = get_opt_anchors!(nodes[0], nodes[1], chan.2);
 
 	// 2* and +1 HTLCs on the commit tx fee calculation for the fee spike reserve.
 	let amt_1 = 20000;
@@ -5684,11 +5684,11 @@ fn test_free_and_fail_holding_cell_htlcs() {
 
 	// Send 2 payments which pass reserve checks but get stuck in the holding cell.
 	nodes[0].node.send_payment(&route_1, payment_hash_1, &Some(payment_secret_1), PaymentId(payment_hash_1.0)).unwrap();
-	chan_stat = get_channel_value_stat!(nodes[0], chan.2);
+	chan_stat = get_channel_value_stat!(nodes[0], nodes[1], chan.2);
 	assert_eq!(chan_stat.holding_cell_outbound_amount_msat, amt_1);
 	let payment_id_2 = PaymentId(nodes[0].keys_manager.get_secure_random_bytes());
 	nodes[0].node.send_payment(&route_2, payment_hash_2, &Some(payment_secret_2), payment_id_2).unwrap();
-	chan_stat = get_channel_value_stat!(nodes[0], chan.2);
+	chan_stat = get_channel_value_stat!(nodes[0], nodes[1], chan.2);
 	assert_eq!(chan_stat.holding_cell_outbound_amount_msat, amt_1 + amt_2);
 
 	// Flush the pending fee update.
@@ -5702,7 +5702,7 @@ fn test_free_and_fail_holding_cell_htlcs() {
 	// Upon receipt of the RAA, there will be an attempt to resend the holding cell HTLCs,
 	// but now that the fee has been raised the second payment will now fail, causing us
 	// to surface its failure to the user. The first payment should succeed.
-	chan_stat = get_channel_value_stat!(nodes[0], chan.2);
+	chan_stat = get_channel_value_stat!(nodes[0], nodes[1], chan.2);
 	assert_eq!(chan_stat.holding_cell_outbound_amount_msat, 0);
 	nodes[0].logger.assert_log("lightning::ln::channel".to_string(), format!("Freeing holding cell with 2 HTLC updates in channel {}", hex::encode(chan.2)), 1);
 	let failure_log = format!("Failed to send HTLC with payment_hash {} due to Cannot send value that would put our balance under counterparty-announced channel reserve value ({}) in channel {}",
@@ -5798,10 +5798,10 @@ fn test_fail_holding_cell_htlc_upon_free_multihop() {
 
 	nodes[2].node.handle_update_fee(&nodes[1].node.get_our_node_id(), update_msg.unwrap());
 
-	let mut chan_stat = get_channel_value_stat!(nodes[0], chan_0_1.2);
+	let mut chan_stat = get_channel_value_stat!(nodes[0], nodes[1], chan_0_1.2);
 	let channel_reserve = chan_stat.channel_reserve_msat;
-	let feerate = get_feerate!(nodes[0], chan_0_1.2);
-	let opt_anchors = get_opt_anchors!(nodes[0], chan_0_1.2);
+	let feerate = get_feerate!(nodes[0], nodes[1], chan_0_1.2);
+	let opt_anchors = get_opt_anchors!(nodes[0], nodes[1], chan_0_1.2);
 
 	// Send a payment which passes reserve checks but gets stuck in the holding cell.
 	let feemsat = 239;
@@ -5822,7 +5822,7 @@ fn test_fail_holding_cell_htlc_upon_free_multihop() {
 	commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, false);
 	expect_pending_htlcs_forwardable!(nodes[1]);
 
-	chan_stat = get_channel_value_stat!(nodes[1], chan_1_2.2);
+	chan_stat = get_channel_value_stat!(nodes[1], nodes[2], chan_1_2.2);
 	assert_eq!(chan_stat.holding_cell_outbound_amount_msat, max_can_send);
 
 	// Flush the pending fee update.
@@ -6026,7 +6026,7 @@ fn test_update_add_htlc_bolt2_sender_exceed_max_htlc_value_in_flight() {
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let channel_value = 100000;
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, channel_value, 0, channelmanager::provided_init_features(), channelmanager::provided_init_features());
-	let max_in_flight = get_channel_value_stat!(nodes[0], chan.2).counterparty_max_htlc_value_in_flight_msat;
+	let max_in_flight = get_channel_value_stat!(nodes[0], nodes[1], chan.2).counterparty_max_htlc_value_in_flight_msat;
 
 	send_payment(&nodes[0], &vec!(&nodes[1])[..], max_in_flight);
 
@@ -6081,10 +6081,10 @@ fn test_update_add_htlc_bolt2_receiver_sender_can_afford_amount_sent() {
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 95000000, channelmanager::provided_init_features(), channelmanager::provided_init_features());
 
-	let chan_stat = get_channel_value_stat!(nodes[0], chan.2);
+	let chan_stat = get_channel_value_stat!(nodes[0], nodes[1], chan.2);
 	let channel_reserve = chan_stat.channel_reserve_msat;
-	let feerate = get_feerate!(nodes[0], chan.2);
-	let opt_anchors = get_opt_anchors!(nodes[0], chan.2);
+	let feerate = get_feerate!(nodes[0], nodes[1], chan.2);
+	let opt_anchors = get_opt_anchors!(nodes[0], nodes[1], chan.2);
 	// The 2* and +1 are for the fee spike reserve.
 	let commit_tx_fee_outbound = 2 * commit_tx_fee_msat(feerate, 1 + 1, opt_anchors);
 
@@ -6160,7 +6160,7 @@ fn test_update_add_htlc_bolt2_receiver_check_max_in_flight_msat() {
 	nodes[0].node.send_payment(&route, our_payment_hash, &Some(our_payment_secret), PaymentId(our_payment_hash.0)).unwrap();
 	check_added_monitors!(nodes[0], 1);
 	let mut updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
-	updates.update_add_htlcs[0].amount_msat = get_channel_value_stat!(nodes[1], chan.2).counterparty_max_htlc_value_in_flight_msat + 1;
+	updates.update_add_htlcs[0].amount_msat = get_channel_value_stat!(nodes[1], nodes[0], chan.2).counterparty_max_htlc_value_in_flight_msat + 1;
 	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &updates.update_add_htlcs[0]);
 
 	assert!(nodes[1].node.list_channels().is_empty());

@@ -570,7 +570,7 @@ macro_rules! get_channel_ref {
 
 #[cfg(test)]
 macro_rules! get_feerate {
-	($node: expr, $channel_id: expr) => {
+	($node: expr, $counterparty_node: expr, $channel_id: expr) => {
 		{
 			let mut lock;
 			let chan = get_channel_ref!($node, lock, $channel_id);
@@ -581,7 +581,7 @@ macro_rules! get_feerate {
 
 #[cfg(test)]
 macro_rules! get_opt_anchors {
-	($node: expr, $channel_id: expr) => {
+	($node: expr, $counterparty_node: expr, $channel_id: expr) => {
 		{
 			let mut lock;
 			let chan = get_channel_ref!($node, lock, $channel_id);
@@ -2405,7 +2405,7 @@ pub fn get_announce_close_broadcast_events<'a, 'b, 'c>(nodes: &Vec<Node<'a, 'b, 
 
 #[cfg(test)]
 macro_rules! get_channel_value_stat {
-	($node: expr, $channel_id: expr) => {{
+	($node: expr, $counterparty_node: expr, $channel_id: expr) => {{
 		let chan_lock = $node.node.channel_state.lock().unwrap();
 		let chan = chan_lock.by_id.get(&$channel_id).unwrap();
 		chan.get_value_stat()
