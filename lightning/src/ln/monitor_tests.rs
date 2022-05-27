@@ -110,8 +110,8 @@ fn chanmon_claim_value_coop_close() {
 	let funding_outpoint = OutPoint { txid: funding_tx.txid(), index: 0 };
 	assert_eq!(funding_outpoint.to_channel_id(), chan_id);
 
-	let chan_feerate = get_feerate!(nodes[0], chan_id) as u64;
-	let opt_anchors = get_opt_anchors!(nodes[0], chan_id);
+	let chan_feerate = get_feerate!(nodes[0], nodes[1], chan_id) as u64;
+	let opt_anchors = get_opt_anchors!(nodes[0], nodes[1], chan_id);
 
 	assert_eq!(vec![Balance::ClaimableOnChannelClose {
 			claimable_amount_satoshis: 1_000_000 - 1_000 - chan_feerate * channel::commitment_tx_base_weight(opt_anchors) / 1000
@@ -210,8 +210,8 @@ fn do_test_claim_value_force_close(prev_commitment_tx: bool) {
 
 	let htlc_cltv_timeout = nodes[0].best_block_info().1 + TEST_FINAL_CLTV + 1; // Note ChannelManager adds one to CLTV timeouts for safety
 
-	let chan_feerate = get_feerate!(nodes[0], chan_id) as u64;
-	let opt_anchors = get_opt_anchors!(nodes[0], chan_id);
+	let chan_feerate = get_feerate!(nodes[0], nodes[1], chan_id) as u64;
+	let opt_anchors = get_opt_anchors!(nodes[0], nodes[1], chan_id);
 
 	let remote_txn = get_local_commitment_txn!(nodes[1], chan_id);
 	// Before B receives the payment preimage, it only suggests the push_msat value of 1_000 sats
@@ -557,8 +557,8 @@ fn test_balances_on_local_commitment_htlcs() {
 	check_added_monitors!(nodes[1], 1);
 	expect_payment_claimed!(nodes[1], payment_hash_2, 20_000_000);
 
-	let chan_feerate = get_feerate!(nodes[0], chan_id) as u64;
-	let opt_anchors = get_opt_anchors!(nodes[0], chan_id);
+	let chan_feerate = get_feerate!(nodes[0], nodes[1], chan_id) as u64;
+	let opt_anchors = get_opt_anchors!(nodes[0], nodes[1], chan_id);
 
 	// Get nodes[0]'s commitment transaction and HTLC-Timeout transactions
 	let as_txn = get_local_commitment_txn!(nodes[0], chan_id);
