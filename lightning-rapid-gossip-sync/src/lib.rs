@@ -197,6 +197,7 @@ mod tests {
 				println!("{}", error_string);
 				return;
 			}
+			#[cfg(require_route_graph_test)]
 			panic!("{}", error_string);
 		}
 		let elapsed = start.elapsed();

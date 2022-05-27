@@ -1,6 +1,6 @@
 [package]
 name = "lightning-rapid-gossip-sync"
-version = "0.0.104"
+version = "0.0.106"
 authors = ["Arik Sosman <git@arik.io>"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/lightningdevkit/rust-lightning"
