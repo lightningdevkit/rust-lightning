@@ -19,7 +19,7 @@ use ln::features::{ChannelFeatures, InvoiceFeatures, NodeFeatures};
 use ln::msgs::{DecodeError, ErrorAction, LightningError, MAX_VALUE_MSAT};
 use routing::scoring::{ChannelUsage, Score};
 use routing::network_graph::{DirectedChannelInfoWithUpdate, EffectiveCapacity, NetworkGraph, ReadOnlyNetworkGraph, NodeId, RoutingFees};
-use util::ser::{Writeable, Readable};
+use util::ser::{Writeable, Readable, Writer};
 use util::logger::{Level, Logger};
 use util::chacha20::ChaCha20;
 
@@ -151,8 +151,8 @@ impl Readable for Route {
 
 /// Parameters needed to find a [`Route`].
 ///
-/// Passed to [`find_route`] and also provided in [`Event::PaymentPathFailed`] for retrying a failed
-/// payment path.
+/// Passed to [`find_route`] and [`build_route_from_hops`], but also provided in
+/// [`Event::PaymentPathFailed`] for retrying a failed payment path.
 ///
 /// [`Event::PaymentPathFailed`]: crate::util::events::Event::PaymentPathFailed
 #[derive(Clone, Debug)]
@@ -676,16 +676,11 @@ pub fn find_route<L: Deref, S: Score>(
 ) -> Result<Route, LightningError>
 where L::Target: Logger {
 	let network_graph = network.read_only();
-	match get_route(
-		our_node_pubkey, &route_params.payment_params, &network_graph, first_hops, route_params.final_value_msat,
-		route_params.final_cltv_expiry_delta, logger, scorer, random_seed_bytes
-	) {
-		Ok(mut route) => {
-			add_random_cltv_offset(&mut route, &route_params.payment_params, &network_graph, random_seed_bytes);
-			Ok(route)
-		},
-		Err(err) => Err(err),
-	}
+	let mut route = get_route(our_node_pubkey, &route_params.payment_params, &network_graph, first_hops,
+		route_params.final_value_msat, route_params.final_cltv_expiry_delta, logger, scorer,
+		random_seed_bytes)?;
+	add_random_cltv_offset(&mut route, &route_params.payment_params, &network_graph, random_seed_bytes);
+	Ok(route)
 }
 
 pub(crate) fn get_route<L: Deref, S: Score>(
@@ -1703,7 +1698,9 @@ where L::Target: Logger {
 // destination, if the remaining CLTV expiry delta exactly matches a feasible path in the network
 // graph. In order to improve privacy, this method obfuscates the CLTV expiry deltas along the
 // payment path by adding a randomized 'shadow route' offset to the final hop.
-fn add_random_cltv_offset(route: &mut Route, payment_params: &PaymentParameters, network_graph: &ReadOnlyNetworkGraph, random_seed_bytes: &[u8; 32]) {
+fn add_random_cltv_offset(route: &mut Route, payment_params: &PaymentParameters,
+	network_graph: &ReadOnlyNetworkGraph, random_seed_bytes: &[u8; 32]
+) {
 	let network_channels = network_graph.channels();
 	let network_nodes = network_graph.nodes();
 
@@ -1785,10 +1782,84 @@ fn add_random_cltv_offset(route: &mut Route, payment_params: &PaymentParameters,
 	}
 }
 
+/// Construct a route from us (payer) to the target node (payee) via the given hops (which should
+/// exclude the payer, but include the payee). This may be useful, e.g., for probing the chosen path.
+///
+/// Re-uses logic from `find_route`, so the restrictions described there also apply here.
+pub fn build_route_from_hops<L: Deref>(
+	our_node_pubkey: &PublicKey, hops: &[PublicKey], route_params: &RouteParameters, network: &NetworkGraph,
+	logger: L, random_seed_bytes: &[u8; 32]
+) -> Result<Route, LightningError>
+where L::Target: Logger {
+	let network_graph = network.read_only();
+	let mut route = build_route_from_hops_internal(
+		our_node_pubkey, hops, &route_params.payment_params, &network_graph,
+		route_params.final_value_msat, route_params.final_cltv_expiry_delta, logger, random_seed_bytes)?;
+	add_random_cltv_offset(&mut route, &route_params.payment_params, &network_graph, random_seed_bytes);
+	Ok(route)
+}
+
+fn build_route_from_hops_internal<L: Deref>(
+	our_node_pubkey: &PublicKey, hops: &[PublicKey], payment_params: &PaymentParameters,
+	network_graph: &ReadOnlyNetworkGraph, final_value_msat: u64, final_cltv_expiry_delta: u32,
+	logger: L, random_seed_bytes: &[u8; 32]
+) -> Result<Route, LightningError> where L::Target: Logger {
+
+	struct HopScorer {
+		our_node_id: NodeId,
+		hop_ids: [Option<NodeId>; MAX_PATH_LENGTH_ESTIMATE as usize],
+	}
+
+	impl Score for HopScorer {
+		fn channel_penalty_msat(&self, _short_channel_id: u64, source: &NodeId, target: &NodeId,
+			_usage: ChannelUsage) -> u64
+		{
+			let mut cur_id = self.our_node_id;
+			for i in 0..self.hop_ids.len() {
+				if let Some(next_id) = self.hop_ids[i] {
+					if cur_id == *source && next_id == *target {
+						return 0;
+					}
+					cur_id = next_id;
+				} else {
+					break;
+				}
+			}
+			u64::max_value()
+		}
+
+		fn payment_path_failed(&mut self, _path: &[&RouteHop], _short_channel_id: u64) {}
+
+		fn payment_path_successful(&mut self, _path: &[&RouteHop]) {}
+	}
+
+	impl<'a> Writeable for HopScorer {
+		#[inline]
+		fn write<W: Writer>(&self, _w: &mut W) -> Result<(), io::Error> {
+			unreachable!();
+		}
+	}
+
+	if hops.len() > MAX_PATH_LENGTH_ESTIMATE.into() {
+		return Err(LightningError{err: "Cannot build a route exceeding the maximum path length.".to_owned(), action: ErrorAction::IgnoreError});
+	}
+
+	let our_node_id = NodeId::from_pubkey(our_node_pubkey);
+	let mut hop_ids = [None; MAX_PATH_LENGTH_ESTIMATE as usize];
+	for i in 0..hops.len() {
+		hop_ids[i] = Some(NodeId::from_pubkey(&hops[i]));
+	}
+
+	let scorer = HopScorer { our_node_id, hop_ids };
+
+	get_route(our_node_pubkey, payment_params, network_graph, None, final_value_msat,
+		final_cltv_expiry_delta, logger, &scorer, random_seed_bytes)
+}
+
 #[cfg(test)]
 mod tests {
 	use routing::network_graph::{NetworkGraph, NetGraphMsgHandler, NodeId};
-	use routing::router::{get_route, add_random_cltv_offset, default_node_features,
+	use routing::router::{get_route, build_route_from_hops_internal, add_random_cltv_offset, default_node_features,
 		PaymentParameters, Route, RouteHint, RouteHintHop, RouteHop, RoutingFees,
 		DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA, MAX_PATH_LENGTH_ESTIMATE};
 	use routing::scoring::{ChannelUsage, Score};
@@ -5484,6 +5555,26 @@ mod tests {
 			path_plausibility.push(found_plausible_candidate);
 		}
 		assert!(path_plausibility.iter().all(|x| *x));
+	}
+
+	#[test]
+	fn builds_correct_path_from_hops() {
+		let (secp_ctx, network, _, _, logger) = build_graph();
+		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
+		let network_graph = network.read_only();
+
+		let keys_manager = test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
+		let random_seed_bytes = keys_manager.get_secure_random_bytes();
+
+		let payment_params = PaymentParameters::from_node_id(nodes[3]);
+		let hops = [nodes[1], nodes[2], nodes[4], nodes[3]];
+		let route = build_route_from_hops_internal(&our_id, &hops, &payment_params,
+			 &network_graph, 100, 0, Arc::clone(&logger), &random_seed_bytes).unwrap();
+		let route_hop_pubkeys = route.paths[0].iter().map(|hop| hop.pubkey).collect::<Vec<_>>();
+		assert_eq!(hops.len(), route.paths[0].len());
+		for (idx, hop_pubkey) in hops.iter().enumerate() {
+			assert!(*hop_pubkey == route_hop_pubkeys[idx]);
+		}
 	}
 
 	#[cfg(not(feature = "no-std"))]
