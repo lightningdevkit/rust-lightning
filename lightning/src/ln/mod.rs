@@ -28,6 +28,7 @@ pub mod functional_test_utils;
 pub mod channelmanager;
 pub mod inbound_payment;
 pub mod msgs;
+pub mod onion_message;
 pub mod peer_handler;
 pub mod chan_utils;
 pub mod features;
