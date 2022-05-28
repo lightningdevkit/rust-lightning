@@ -1252,9 +1252,9 @@ macro_rules! expect_payment_received {
 		let events = $node.node.get_and_clear_pending_events();
 		assert_eq!(events.len(), 1);
 		match events[0] {
-			$crate::util::events::Event::PaymentReceived { ref payment_hash, ref purpose, amt } => {
+			$crate::util::events::Event::PaymentReceived { ref payment_hash, ref purpose, amount_msat } => {
 				assert_eq!($expected_payment_hash, *payment_hash);
-				assert_eq!($expected_recv_value, amt);
+				assert_eq!($expected_recv_value, amount_msat);
 				match purpose {
 					$crate::util::events::PaymentPurpose::InvoicePayment { payment_preimage, payment_secret, .. } => {
 						assert_eq!(&$expected_payment_preimage, payment_preimage);
@@ -1275,9 +1275,9 @@ macro_rules! expect_payment_claimed {
 		let events = $node.node.get_and_clear_pending_events();
 		assert_eq!(events.len(), 1);
 		match events[0] {
-			$crate::util::events::Event::PaymentClaimed { ref payment_hash, amt, .. } => {
+			$crate::util::events::Event::PaymentClaimed { ref payment_hash, amount_msat, .. } => {
 				assert_eq!($expected_payment_hash, *payment_hash);
-				assert_eq!($expected_recv_value, amt);
+				assert_eq!($expected_recv_value, amount_msat);
 			},
 			_ => panic!("Unexpected event"),
 		}
@@ -1512,7 +1512,7 @@ pub fn do_pass_along_path<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_p
 			if payment_received_expected {
 				assert_eq!(events_2.len(), 1);
 				match events_2[0] {
-					Event::PaymentReceived { ref payment_hash, ref purpose, amt} => {
+					Event::PaymentReceived { ref payment_hash, ref purpose, amount_msat } => {
 						assert_eq!(our_payment_hash, *payment_hash);
 						match &purpose {
 							PaymentPurpose::InvoicePayment { payment_preimage, payment_secret, .. } => {
@@ -1524,7 +1524,7 @@ pub fn do_pass_along_path<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_p
 								assert!(our_payment_secret.is_none());
 							},
 						}
-						assert_eq!(amt, recv_value);
+						assert_eq!(amount_msat, recv_value);
 					},
 					_ => panic!("Unexpected event"),
 				}

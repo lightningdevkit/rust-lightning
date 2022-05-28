@@ -1954,9 +1954,9 @@ fn test_channel_reserve_holding_cell_htlcs() {
 	let events = nodes[2].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 2);
 	match events[0] {
-		Event::PaymentReceived { ref payment_hash, ref purpose, amt } => {
+		Event::PaymentReceived { ref payment_hash, ref purpose, amount_msat } => {
 			assert_eq!(our_payment_hash_21, *payment_hash);
-			assert_eq!(recv_value_21, amt);
+			assert_eq!(recv_value_21, amount_msat);
 			match &purpose {
 				PaymentPurpose::InvoicePayment { payment_preimage, payment_secret, .. } => {
 					assert!(payment_preimage.is_none());
@@ -1968,9 +1968,9 @@ fn test_channel_reserve_holding_cell_htlcs() {
 		_ => panic!("Unexpected event"),
 	}
 	match events[1] {
-		Event::PaymentReceived { ref payment_hash, ref purpose, amt } => {
+		Event::PaymentReceived { ref payment_hash, ref purpose, amount_msat } => {
 			assert_eq!(our_payment_hash_22, *payment_hash);
-			assert_eq!(recv_value_22, amt);
+			assert_eq!(recv_value_22, amount_msat);
 			match &purpose {
 				PaymentPurpose::InvoicePayment { payment_preimage, payment_secret, .. } => {
 					assert!(payment_preimage.is_none());
@@ -3709,9 +3709,9 @@ fn do_test_drop_messages_peer_disconnect(messages_delivered: u8, simulate_broken
 	let events_2 = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(events_2.len(), 1);
 	match events_2[0] {
-		Event::PaymentReceived { ref payment_hash, ref purpose, amt } => {
+		Event::PaymentReceived { ref payment_hash, ref purpose, amount_msat } => {
 			assert_eq!(payment_hash_1, *payment_hash);
-			assert_eq!(amt, 1000000);
+			assert_eq!(amount_msat, 1_000_000);
 			match &purpose {
 				PaymentPurpose::InvoicePayment { payment_preimage, payment_secret, .. } => {
 					assert!(payment_preimage.is_none());
@@ -10053,7 +10053,7 @@ fn do_test_partial_claim_before_restart(persist_both_monitors: bool) {
 	// never finished processing.
 	let events = nodes[3].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), if persist_both_monitors { 4 } else { 3 });
-	if let Event::PaymentReceived { amt: 15_000_000, .. } = events[0] { } else { panic!(); }
+	if let Event::PaymentReceived { amount_msat: 15_000_000, .. } = events[0] { } else { panic!(); }
 	if let Event::ChannelClosed { reason: ClosureReason::OutdatedChannelManager, .. } = events[1] { } else { panic!(); }
 	if persist_both_monitors {
 		if let Event::ChannelClosed { reason: ClosureReason::OutdatedChannelManager, .. } = events[2] { } else { panic!(); }
@@ -10061,7 +10061,9 @@ fn do_test_partial_claim_before_restart(persist_both_monitors: bool) {
 
 	// On restart, we should also get a duplicate PaymentClaimed event as we persisted the
 	// ChannelManager prior to handling the original one.
-	if let Event::PaymentClaimed { payment_hash: our_payment_hash, amt: 15_000_000, .. } = events[if persist_both_monitors { 3 } else { 2 }] {
+	if let Event::PaymentClaimed { payment_hash: our_payment_hash, amount_msat: 15_000_000, .. } =
+		events[if persist_both_monitors { 3 } else { 2 }]
+	{
 		assert_eq!(payment_hash, our_payment_hash);
 	} else { panic!(); }
 

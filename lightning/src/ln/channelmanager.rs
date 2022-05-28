@@ -3184,7 +3184,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 											new_events.push(events::Event::PaymentReceived {
 												payment_hash,
 												purpose: purpose(),
-												amt: total_value,
+												amount_msat: total_value,
 											});
 											payment_received_generated = true;
 										} else {
@@ -3225,7 +3225,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 														e.insert((purpose.clone(), vec![claimable_htlc]));
 														new_events.push(events::Event::PaymentReceived {
 															payment_hash,
-															amt: amt_to_forward,
+															amount_msat: amt_to_forward,
 															purpose,
 														});
 													},
@@ -3908,7 +3908,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				self.pending_events.lock().unwrap().push(events::Event::PaymentClaimed {
 					payment_hash,
 					purpose: payment_purpose,
-					amt: claimable_amt_msat,
+					amount_msat: claimable_amt_msat,
 				});
 			}
 
@@ -6906,7 +6906,7 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 					pending_events_read.push(events::Event::PaymentClaimed {
 						payment_hash,
 						purpose: payment_purpose,
-						amt: claimable_amt_msat,
+						amount_msat: claimable_amt_msat,
 					});
 				}
 			}

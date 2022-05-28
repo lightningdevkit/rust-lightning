@@ -209,7 +209,7 @@ pub enum Event {
 		/// not stop you from registering duplicate payment hashes for inbound payments.
 		payment_hash: PaymentHash,
 		/// The value, in thousandths of a satoshi, that this payment is for.
-		amt: u64,
+		amount_msat: u64,
 		/// Information for claiming this received payment, based on whether the purpose of the
 		/// payment is to pay an invoice or to send a spontaneous payment.
 		purpose: PaymentPurpose,
@@ -233,7 +233,7 @@ pub enum Event {
 		/// registering duplicate payment hashes for inbound payments.
 		payment_hash: PaymentHash,
 		/// The value, in thousandths of a satoshi, that this payment is for.
-		amt: u64,
+		amount_msat: u64,
 		/// The purpose of this claimed payment, i.e. whether the payment was for an invoice or a
 		/// spontaneous payment.
 		purpose: PaymentPurpose,
@@ -508,7 +508,7 @@ impl Writeable for Event {
 				// We never write out FundingGenerationReady events as, upon disconnection, peers
 				// drop any channels which have not yet exchanged funding_signed.
 			},
-			&Event::PaymentReceived { ref payment_hash, ref amt, ref purpose } => {
+			&Event::PaymentReceived { ref payment_hash, ref amount_msat, ref purpose } => {
 				1u8.write(writer)?;
 				let mut payment_secret = None;
 				let payment_preimage;
@@ -524,7 +524,7 @@ impl Writeable for Event {
 				write_tlv_fields!(writer, {
 					(0, payment_hash, required),
 					(2, payment_secret, option),
-					(4, amt, required),
+					(4, amount_msat, required),
 					(6, 0u64, required), // user_payment_id required for compatibility with 0.0.103 and earlier
 					(8, payment_preimage, option),
 				});
@@ -617,12 +617,12 @@ impl Writeable for Event {
 				// We never write the OpenChannelRequest events as, upon disconnection, peers
 				// drop any channels which have not yet exchanged funding_signed.
 			},
-			&Event::PaymentClaimed { ref payment_hash, ref amt, ref purpose } => {
+			&Event::PaymentClaimed { ref payment_hash, ref amount_msat, ref purpose } => {
 				19u8.write(writer)?;
 				write_tlv_fields!(writer, {
 					(0, payment_hash, required),
 					(2, purpose, required),
-					(4, amt, required),
+					(4, amount_msat, required),
 				});
 			},
 			// Note that, going forward, all new events must only write data inside of
@@ -643,12 +643,12 @@ impl MaybeReadable for Event {
 					let mut payment_hash = PaymentHash([0; 32]);
 					let mut payment_preimage = None;
 					let mut payment_secret = None;
-					let mut amt = 0;
+					let mut amount_msat = 0;
 					let mut _user_payment_id = None::<u64>; // For compatibility with 0.0.103 and earlier
 					read_tlv_fields!(reader, {
 						(0, payment_hash, required),
 						(2, payment_secret, option),
-						(4, amt, required),
+						(4, amount_msat, required),
 						(6, _user_payment_id, option),
 						(8, payment_preimage, option),
 					});
@@ -662,7 +662,7 @@ impl MaybeReadable for Event {
 					};
 					Ok(Some(Event::PaymentReceived {
 						payment_hash,
-						amt,
+						amount_msat,
 						purpose,
 					}))
 				};
@@ -829,17 +829,17 @@ impl MaybeReadable for Event {
 				let f = || {
 					let mut payment_hash = PaymentHash([0; 32]);
 					let mut purpose = None;
-					let mut amt = 0;
+					let mut amount_msat = 0;
 					read_tlv_fields!(reader, {
 						(0, payment_hash, required),
 						(2, purpose, ignorable),
-						(4, amt, required),
+						(4, amount_msat, required),
 					});
 					if purpose.is_none() { return Ok(None); }
 					Ok(Some(Event::PaymentClaimed {
 						payment_hash,
 						purpose: purpose.unwrap(),
-						amt,
+						amount_msat,
 					}))
 				};
 				f()
