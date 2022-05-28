@@ -244,6 +244,14 @@ pub(crate) trait LengthReadableArgs<P> where Self: Sized
 	fn read<R: LengthRead>(reader: &mut R, params: P) -> Result<Self, DecodeError>;
 }
 
+/// A trait that various higher-level rust-lightning types implement allowing them to be read in
+/// from a Read, requiring the implementer to provide the total length of the read.
+pub(crate) trait LengthReadable where Self: Sized
+{
+	/// Reads a Self in from the given LengthRead
+	fn read<R: LengthRead>(reader: &mut R) -> Result<Self, DecodeError>;
+}
+
 /// A trait that various rust-lightning types implement allowing them to (maybe) be read in from a Read
 ///
 /// (C-not exported) as we only export serialization to/from byte arrays instead

@@ -10,6 +10,7 @@
 //! Onion Messages: sending, receiving, forwarding, and ancillary utilities live here
 
 mod blinded_route;
+mod packet;
 mod utils;
 
 // Re-export structs so they can be imported with just the `onion_message::` module prefix.

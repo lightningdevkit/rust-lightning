@@ -30,7 +30,7 @@ use bitcoin::secp256k1;
 
 use prelude::*;
 use io::{Cursor, Read};
-use core::convert::TryInto;
+use core::convert::{AsMut, TryInto};
 use core::ops::Deref;
 
 pub(super) struct OnionKeys {
@@ -195,8 +195,8 @@ pub(super) fn build_onion_payloads(path: &Vec<RouteHop>, total_msat: u64, paymen
 pub(crate) const ONION_DATA_LEN: usize = 20*65;
 
 #[inline]
-fn shift_arr_right(arr: &mut [u8; ONION_DATA_LEN], amt: usize) {
-	for i in (amt..ONION_DATA_LEN).rev() {
+fn shift_slice_right(arr: &mut [u8], amt: usize) {
+	for i in (amt..arr.len()).rev() {
 		arr[i] = arr[i-amt];
 	}
 	for i in 0..amt {
@@ -218,14 +218,15 @@ pub(super) fn route_size_insane(payloads: &Vec<msgs::OnionHopData>) -> bool {
 	false
 }
 
-/// panics if route_size_insane(paylods)
+/// panics if route_size_insane(payloads)
 pub(super) fn construct_onion_packet(payloads: Vec<msgs::OnionHopData>, onion_keys: Vec<OnionKeys>, prng_seed: [u8; 32], associated_data: &PaymentHash) -> msgs::OnionPacket {
 	let mut packet_data = [0; ONION_DATA_LEN];
 
 	let mut chacha = ChaCha20::new(&prng_seed, &[0; 8]);
 	chacha.process(&[0; ONION_DATA_LEN], &mut packet_data);
 
-	construct_onion_packet_with_init_noise(payloads, onion_keys, packet_data, associated_data)
+	construct_onion_packet_with_init_noise::<_, _>(
+		payloads, onion_keys, FixedSizeOnionPacket(packet_data), Some(associated_data))
 }
 
 #[cfg(test)]
@@ -237,12 +238,34 @@ pub(super) fn construct_onion_packet_bogus_hopdata<HD: Writeable>(payloads: Vec<
 	let mut chacha = ChaCha20::new(&prng_seed, &[0; 8]);
 	chacha.process(&[0; ONION_DATA_LEN], &mut packet_data);
 
-	construct_onion_packet_with_init_noise(payloads, onion_keys, packet_data, associated_data)
+	construct_onion_packet_with_init_noise::<_, _>(
+		payloads, onion_keys, FixedSizeOnionPacket(packet_data), Some(associated_data))
 }
 
-/// panics if route_size_insane(paylods)
-fn construct_onion_packet_with_init_noise<HD: Writeable>(mut payloads: Vec<HD>, onion_keys: Vec<OnionKeys>, mut packet_data: [u8; ONION_DATA_LEN], associated_data: &PaymentHash) -> msgs::OnionPacket {
+/// Since onion message packets and onion payment packets have different lengths but are otherwise
+/// identical, we use this trait to allow `construct_onion_packet_with_init_noise` to return either
+/// type.
+pub(crate) trait Packet {
+	type Data: AsMut<[u8]>;
+	fn new(pubkey: PublicKey, hop_data: Self::Data, hmac: [u8; 32]) -> Self;
+}
+
+// Needed for rustc versions older than 1.47 to avoid E0277: "arrays only have std trait
+// implementations for lengths 0..=32".
+pub(crate) struct FixedSizeOnionPacket(pub(crate) [u8; ONION_DATA_LEN]);
+
+impl AsMut<[u8]> for FixedSizeOnionPacket {
+	fn as_mut(&mut self) -> &mut [u8] {
+		&mut self.0
+	}
+}
+
+/// panics if route_size_insane(payloads)
+fn construct_onion_packet_with_init_noise<HD: Writeable, P: Packet>(
+	mut payloads: Vec<HD>, onion_keys: Vec<OnionKeys>, mut packet_data: P::Data, associated_data: Option<&PaymentHash>) -> P
+{
 	let filler = {
+		let packet_data = packet_data.as_mut();
 		const ONION_HOP_DATA_LEN: usize = 65; // We may decrease this eventually after TLV is common
 		let mut res = Vec::with_capacity(ONION_HOP_DATA_LEN * (payloads.len() - 1));
 
@@ -251,7 +274,7 @@ fn construct_onion_packet_with_init_noise<HD: Writeable>(mut payloads: Vec<HD>, 
 			if i == payloads.len() - 1 { break; }
 
 			let mut chacha = ChaCha20::new(&keys.rho, &[0u8; 8]);
-			for _ in 0..(ONION_DATA_LEN - pos) { // TODO: Batch this.
+			for _ in 0..(packet_data.len() - pos) { // TODO: Batch this.
 				let mut dummy = [0; 1];
 				chacha.process_in_place(&mut dummy); // We don't have a seek function :(
 			}
@@ -259,7 +282,7 @@ fn construct_onion_packet_with_init_noise<HD: Writeable>(mut payloads: Vec<HD>, 
 			let mut payload_len = LengthCalculatingWriter(0);
 			payload.write(&mut payload_len).expect("Failed to calculate length");
 			pos += payload_len.0 + 32;
-			assert!(pos <= ONION_DATA_LEN);
+			assert!(pos <= packet_data.len());
 
 			res.resize(pos, 0u8);
 			chacha.process_in_place(&mut res);
@@ -271,29 +294,28 @@ fn construct_onion_packet_with_init_noise<HD: Writeable>(mut payloads: Vec<HD>, 
 	for (i, (payload, keys)) in payloads.iter_mut().zip(onion_keys.iter()).rev().enumerate() {
 		let mut payload_len = LengthCalculatingWriter(0);
 		payload.write(&mut payload_len).expect("Failed to calculate length");
-		shift_arr_right(&mut packet_data, payload_len.0 + 32);
+
+		let packet_data = packet_data.as_mut();
+		shift_slice_right(packet_data, payload_len.0 + 32);
 		packet_data[0..payload_len.0].copy_from_slice(&payload.encode()[..]);
 		packet_data[payload_len.0..(payload_len.0 + 32)].copy_from_slice(&hmac_res);
 
 		let mut chacha = ChaCha20::new(&keys.rho, &[0u8; 8]);
-		chacha.process_in_place(&mut packet_data);
+		chacha.process_in_place(packet_data);
 
 		if i == 0 {
 			packet_data[ONION_DATA_LEN - filler.len()..ONION_DATA_LEN].copy_from_slice(&filler[..]);
 		}
 
 		let mut hmac = HmacEngine::<Sha256>::new(&keys.mu);
-		hmac.input(&packet_data);
-		hmac.input(&associated_data.0[..]);
+		hmac.input(packet_data);
+		if let Some(associated_data) = associated_data {
+			hmac.input(&associated_data.0[..]);
+		}
 		hmac_res = Hmac::from_engine(hmac).into_inner();
 	}
 
-	msgs::OnionPacket {
-		version: 0,
-		public_key: Ok(onion_keys.first().unwrap().ephemeral_pubkey),
-		hop_data: packet_data,
-		hmac: hmac_res,
-	}
+	P::new(onion_keys.first().unwrap().ephemeral_pubkey, packet_data, hmac_res)
 }
 
 /// Encrypts a failure packet. raw_packet can either be a
@@ -783,7 +805,7 @@ mod tests {
 			},
 		);
 
-		let packet = super::construct_onion_packet_with_init_noise(payloads, onion_keys, [0; super::ONION_DATA_LEN], &PaymentHash([0x42; 32]));
+		let packet: msgs::OnionPacket = super::construct_onion_packet_with_init_noise::<_, _>(payloads, onion_keys, super::FixedSizeOnionPacket([0; super::ONION_DATA_LEN]), Some(&PaymentHash([0x42; 32])));
 		// Just check the final packet encoding, as it includes all the per-hop vectors in it
 		// anyway...
 		assert_eq!(packet.encode(), hex::decode("0002eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619e5f14350c2a76fc232b5e46d421e9615471ab9e0bc887beff8c95fdb878f7b3a716a996c7845c93d90e4ecbb9bde4ece2f69425c99e4bc820e44485455f135edc0d10f7d61ab590531cf08000179a333a347f8b4072f216400406bdf3bf038659793d4a1fd7b246979e3150a0a4cb052c9ec69acf0f48c3d39cd55675fe717cb7d80ce721caad69320c3a469a202f1e468c67eaf7a7cd8226d0fd32f7b48084dca885d56047694762b67021713ca673929c163ec36e04e40ca8e1c6d17569419d3039d9a1ec866abe044a9ad635778b961fc0776dc832b3a451bd5d35072d2269cf9b040f6b7a7dad84fb114ed413b1426cb96ceaf83825665ed5a1d002c1687f92465b49ed4c7f0218ff8c6c7dd7221d589c65b3b9aaa71a41484b122846c7c7b57e02e679ea8469b70e14fe4f70fee4d87b910cf144be6fe48eef24da475c0b0bcc6565ae82cd3f4e3b24c76eaa5616c6111343306ab35c1fe5ca4a77c0e314ed7dba39d6f1e0de791719c241a939cc493bea2bae1c1e932679ea94d29084278513c77b899cc98059d06a27d171b0dbdf6bee13ddc4fc17a0c4d2827d488436b57baa167544138ca2e64a11b43ac8a06cd0c2fba2d4d900ed2d9205305e2d7383cc98dacb078133de5f6fb6bed2ef26ba92cea28aafc3b9948dd9ae5559e8bd6920b8cea462aa445ca6a95e0e7ba52961b181c79e73bd581821df2b10173727a810c92b83b5ba4a0403eb710d2ca10689a35bec6c3a708e9e92f7d78ff3c5d9989574b00c6736f84c199256e76e19e78f0c98a9d580b4a658c84fc8f2096c2fbea8f5f8c59d0fdacb3be2802ef802abbecb3aba4acaac69a0e965abd8981e9896b1f6ef9d60f7a164b371af869fd0e48073742825e9434fc54da837e120266d53302954843538ea7c6c3dbfb4ff3b2fdbe244437f2a153ccf7bdb4c92aa08102d4f3cff2ae5ef86fab4653595e6a5837fa2f3e29f27a9cde5966843fb847a4a61f1e76c281fe8bb2b0a181d096100db5a1a5ce7a910238251a43ca556712eaadea167fb4d7d75825e440f3ecd782036d7574df8bceacb397abefc5f5254d2722215c53ff54af8299aaaad642c6d72a14d27882d9bbd539e1cc7a527526ba89b8c037ad09120e98ab042d3e8652b31ae0e478516bfaf88efca9f3676ffe99d2819dcaeb7610a626695f53117665d267d3f7abebd6bbd6733f645c72c389f03855bdf1e4b8075b516569b118233a0f0971d24b83113c0b096f5216a207ca99a7cddc81c130923fe3d91e7508c9ac5f2e914ff5dccab9e558566fa14efb34ac98d878580814b94b73acbfde9072f30b881f7f0fff42d4045d1ace6322d86a97d164aa84d93a60498065cc7c20e636f5862dc81531a88c60305a2e59a985be327a6902e4bed986dbf4a0b50c217af0ea7fdf9ab37f9ea1a1aaa72f54cf40154ea9b269f1a7c09f9f43245109431a175d50e2db0132337baa0ef97eed0fcf20489da36b79a1172faccc2f7ded7c60e00694282d93359c4682135642bc81f433574aa8ef0c97b4ade7ca372c5ffc23c7eddd839bab4e0f14d6df15c9dbeab176bec8b5701cf054eb3072f6dadc98f88819042bf10c407516ee58bce33fbe3b3d86a54255e577db4598e30a135361528c101683a5fcde7e8ba53f3456254be8f45fe3a56120ae96ea3773631fcb3873aa3abd91bcff00bd38bd43697a2e789e00da6077482e7b1b1a677b5afae4c54e6cbdf7377b694eb7d7a5b913476a5be923322d3de06060fd5e819635232a2cf4f0731da13b8546d1d6d4f8d75b9fce6c2341a71b0ea6f780df54bfdb0dd5cd9855179f602f9172307c7268724c3618e6817abd793adc214a0dc0bc616816632f27ea336fb56dfd").unwrap());
@@ -862,7 +884,7 @@ mod tests {
 			}),
 		);
 
-		let packet = super::construct_onion_packet_with_init_noise(payloads, onion_keys, [0; super::ONION_DATA_LEN], &PaymentHash([0x42; 32]));
+		let packet: msgs::OnionPacket = super::construct_onion_packet_with_init_noise::<_, _>(payloads, onion_keys, super::FixedSizeOnionPacket([0; super::ONION_DATA_LEN]), Some(&PaymentHash([0x42; 32])));
 		// Just check the final packet encoding, as it includes all the per-hop vectors in it
 		// anyway...
 		assert_eq!(packet.encode(), hex::decode("0002eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619e5f14350c2a76fc232b5e46d421e9615471ab9e0bc887beff8c95fdb878f7b3a71a060daf367132b378b3a3883c0e2c0e026b8900b2b5cdbc784e1a3bb913f88a9c50f7d61ab590531cf08000178a333a347f8b4072ed056f820f77774345e183a342ec4729f3d84accf515e88adddb85ecc08daba68404bae9a8e8d7178977d7094a1ae549f89338c0777551f874159eb42d3a59fb9285ad4e24883f27de23942ec966611e99bee1cee503455be9e8e642cef6cef7b9864130f692283f8a973d47a8f1c1726b6e59969385975c766e35737c8d76388b64f748ee7943ffb0e2ee45c57a1abc40762ae598723d21bd184e2b338f68ebff47219357bd19cd7e01e2337b806ef4d717888e129e59cd3dc31e6201ccb2fd6d7499836f37a993262468bcb3a4dcd03a22818aca49c6b7b9b8e9e870045631d8e039b066ff86e0d1b7291f71cefa7264c70404a8e538b566c17ccc5feab231401e6c08a01bd5edfc1aa8e3e533b96e82d1f91118d508924b923531929aea889fcdf050597c681185f336b1da63b0939aa2b7c50b21b5eb7b6ad66c81fab98a3cdf73f658149e7e9ced4edde5d38c9b8f92e16f6b4ab13d7fca6a0e4ecc9f9de611a90da6e99c39551094c56e3196f282c5dffd9fc4b2fc12f3bca8e6fe47eb45fbdd3be21a8a8d200797eae3c9a0497132f92410d804977408494dff49dd3d8bce248e0b74fd9e6f0f7102c25ddfa02bd9ad9f746abbfa337ef811d5345a9e16b60de1767b209645ba40bd1f9a5f75bc04feca9b27c5554be4fe83fac2cb83aa447a817bb85ae966c68b420063833fada375e2f515965e687a45699632902672c654d1d18d7bcbf55e8fa57f63f2da449f8e1e606e8722df081e5f193fc4179feb99ad22819afdeef211f7c54afdba92aeef0c00b7bc2b65a4813c01f907a8377585708f2d4c940a25328e585714c8ded0a9a4d7a6de1027c1cb7a0198cd3db68b58c0704dfd0cfbe624e9cd18cc0ae5d96697bb476708b9ee0403d211e64e0d5a7683a7a9a140c02f0ff1c6e67a302941b4052bdea8a63e70a3ad62c5b89c698f1fd3c7685cb49705096cad702d02d93bcb1c27a409f4c9bddec001205ca4a2740f19b50900be81c7e847f1a863deea8d35701f1355cad8db57b1d4eb2ab4e29587734785abfb46ddede71928213d7d089dfdeda052827f459f1688cc0935bd47e7bcec27427c8376dcce7e22699567c0d145f8a7db33f6758815f1f15f9f7a9760dec4f34ae095edda4c64e9735bdd029c4e32c2ee31ba47ec5e6bdb97813d52dbd15b4e0b7a2c7f790ae64104d99f38c127f0a093288fa34144adb16b8968d4fa7656fcec99de8503dd46d3b03620a71c7cd085364abd30dccf7fbda25a1cdc102600149c9af1c97aa0372cd2e1909f28ac5c686f432b310e79528c9b8b9e8f314c1e74621ce6308ad2278b81d460892e0d9dd38b7c76d58be6dfd10ae7583ee1e7ef5b3f6f78dc60af0950df1b00cc55b6d178ba2e476bea0eaeef49323b83f05804159e7aef4eed4cc60dd07be76f067dfd0bcfb0b806b69ba921336a20c43c832d0cab8fa3ddeb29e3bf07b0d98a112eb07802756235a49d44a8b82a950d84e95e01971f0e106ccb337f07384e21620e0ad39e16ed9edca123226cf55ac44f449eeb53e38a7f27d101806e4823e4efcc887414240ee6826c4a5cb1c6443ad36ebf905a435c1d9054e54173911b17b5b40f60b3d9fd5f12eac54ca1e20191f5f18544d5fd3d665e9bcef96fb44b76110aa64d9db4c86c9513cbdad546538e8aec521fbe83ceac5e74a15629f1ed0b870a1d0d1e5680b6d6100d1bd3f3b9043bd35b8919c4088f1949b8be89e4701eb870f8ed64fafa446c78df3ea").unwrap());
