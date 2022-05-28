@@ -10,9 +10,12 @@
 //! LDK sends, receives, and forwards onion messages via the [`OnionMessenger`]. See its docs for
 //! more information.
 
+use bitcoin::hashes::{Hash, HashEngine};
+use bitcoin::hashes::hmac::{Hmac, HmacEngine};
+use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::secp256k1::{self, PublicKey, Secp256k1, SecretKey};
 
-use chain::keysinterface::{InMemorySigner, KeysInterface, KeysManager, Sign};
+use chain::keysinterface::{InMemorySigner, KeysInterface, KeysManager, Recipient, Sign};
 use ln::msgs;
 use ln::onion_utils;
 use super::blinded_route::{BlindedRoute, ForwardTlvs, ReceiveTlvs};
@@ -103,6 +106,97 @@ impl<Signer: Sign, K: Deref, L: Deref> OnionMessenger<Signer, K, L>
 			}
 		);
 		Ok(())
+	}
+
+	/// Handle an incoming onion message. Currently, if a message was destined for us we will log, but
+	/// soon we'll delegate the onion message to a handler that can generate invoices or send
+	/// payments.
+	pub fn handle_onion_message(&self, _peer_node_id: &PublicKey, msg: &msgs::OnionMessage) {
+		let control_tlvs_ss = match self.keys_manager.ecdh(Recipient::Node, &msg.blinding_point, None) {
+			Ok(ss) => ss,
+			Err(e) =>  {
+				log_error!(self.logger, "Failed to retrieve node secret: {:?}", e);
+				return
+			}
+		};
+		let onion_decode_ss = {
+			let blinding_factor = {
+				let mut hmac = HmacEngine::<Sha256>::new(b"blinded_node_id");
+				hmac.input(control_tlvs_ss.as_ref());
+				Hmac::from_engine(hmac).into_inner()
+			};
+			match self.keys_manager.ecdh(Recipient::Node, &msg.onion_routing_packet.public_key,
+				Some(&blinding_factor))
+			{
+				Ok(ss) => ss.secret_bytes(),
+				Err(()) => {
+					log_trace!(self.logger, "Failed to compute onion packet shared secret");
+					return
+				}
+			}
+		};
+		match onion_utils::decode_next_hop(onion_decode_ss, &msg.onion_routing_packet.hop_data[..],
+			msg.onion_routing_packet.hmac, control_tlvs_ss)
+		{
+			Ok((Payload::Receive {
+				control_tlvs: ReceiveControlTlvs::Unblinded(ReceiveTlvs { path_id })
+			}, None)) => {
+				log_info!(self.logger, "Received an onion message with path_id: {:02x?}", path_id);
+			},
+			Ok((Payload::Forward(ForwardControlTlvs::Unblinded(ForwardTlvs {
+				next_node_id, next_blinding_override
+			})), Some((next_hop_hmac, new_packet_bytes)))) => {
+				// TODO: we need to check whether `next_node_id` is our node, in which case this is a dummy
+				// blinded hop and this onion message is destined for us. In this situation, we should keep
+				// unwrapping the onion layers to get to the final payload. Since we don't have the option
+				// of creating blinded routes with dummy hops currently, we should be ok to not handle this
+				// for now.
+				let new_pubkey = match onion_utils::next_hop_packet_pubkey(&self.secp_ctx, msg.onion_routing_packet.public_key, &onion_decode_ss) {
+					Ok(pk) => pk,
+					Err(e) => {
+						log_trace!(self.logger, "Failed to compute next hop packet pubkey: {}", e);
+						return
+					}
+				};
+				let outgoing_packet = Packet {
+					version: 0,
+					public_key: new_pubkey,
+					hop_data: new_packet_bytes,
+					hmac: next_hop_hmac,
+				};
+
+				let mut pending_per_peer_msgs = self.pending_messages.lock().unwrap();
+				let pending_msgs = pending_per_peer_msgs.entry(next_node_id).or_insert(Vec::new());
+				pending_msgs.push(
+					msgs::OnionMessage {
+						blinding_point: match next_blinding_override {
+							Some(blinding_point) => blinding_point,
+							None => {
+								let blinding_factor = {
+									let mut sha = Sha256::engine();
+									sha.input(&msg.blinding_point.serialize()[..]);
+									sha.input(control_tlvs_ss.as_ref());
+									Sha256::from_engine(sha).into_inner()
+								};
+								let mut next_blinding_point = msg.blinding_point;
+								if let Err(e) = next_blinding_point.mul_assign(&self.secp_ctx, &blinding_factor[..]) {
+									log_trace!(self.logger, "Failed to compute next blinding point: {}", e);
+									return
+								}
+								next_blinding_point
+							},
+						},
+						onion_routing_packet: outgoing_packet,
+					},
+				);
+			},
+			Err(e) => {
+				log_trace!(self.logger, "Errored decoding onion message packet: {:?}", e);
+			},
+			_ => {
+				log_trace!(self.logger, "Received bogus onion message packet, either the sender encoded a final hop as a forwarding hop or vice versa");
+			},
+		};
 	}
 }
 

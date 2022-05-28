@@ -42,7 +42,7 @@ use io_extras::read_to_end;
 
 use util::events::MessageSendEventsProvider;
 use util::logger;
-use util::ser::{LengthReadable, Readable, Writeable, Writer, FixedLengthReader, HighZeroBytesDroppedVarInt, Hostname};
+use util::ser::{LengthReadable, Readable, ReadableArgs, Writeable, Writer, FixedLengthReader, HighZeroBytesDroppedVarInt, Hostname};
 
 use ln::{PaymentPreimage, PaymentHash, PaymentSecret};
 
@@ -1414,6 +1414,14 @@ impl Writeable for OnionHopData {
 			},
 		}
 		Ok(())
+	}
+}
+
+// ReadableArgs because we need onion_utils::decode_next_hop to accommodate payment packets and
+// onion message packets.
+impl ReadableArgs<()> for OnionHopData {
+	fn read<R: Read>(r: &mut R, _arg: ()) -> Result<Self, DecodeError> {
+		<Self as Readable>::read(r)
 	}
 }
 

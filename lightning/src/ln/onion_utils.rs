@@ -15,7 +15,7 @@ use routing::gossip::NetworkUpdate;
 use routing::router::RouteHop;
 use util::chacha20::{ChaCha20, ChaChaReader};
 use util::errors::{self, APIError};
-use util::ser::{Readable, Writeable, LengthCalculatingWriter};
+use util::ser::{Readable, ReadableArgs, Writeable, LengthCalculatingWriter};
 use util::logger::Logger;
 
 use bitcoin::hashes::{Hash, HashEngine};
@@ -82,7 +82,7 @@ pub(super) fn gen_ammag_from_shared_secret(shared_secret: &[u8]) -> [u8; 32] {
 	Hmac::from_engine(hmac).into_inner()
 }
 
-pub(super) fn next_hop_packet_pubkey<T: secp256k1::Signing + secp256k1::Verification>(secp_ctx: &Secp256k1<T>, mut packet_pubkey: PublicKey, packet_shared_secret: &[u8; 32]) -> Result<PublicKey, secp256k1::Error> {
+pub(crate) fn next_hop_packet_pubkey<T: secp256k1::Signing + secp256k1::Verification>(secp_ctx: &Secp256k1<T>, mut packet_pubkey: PublicKey, packet_shared_secret: &[u8; 32]) -> Result<PublicKey, secp256k1::Error> {
 	let blinding_factor = {
 		let mut sha = Sha256::engine();
 		sha.input(&packet_pubkey.serialize()[..]);
@@ -580,7 +580,50 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(secp_ctx: &
 	} else { unreachable!(); }
 }
 
-/// Data decrypted from the onion payload.
+/// An input used when decoding an onion packet.
+pub(crate) trait DecodeInput {
+	type Arg;
+	/// If Some, this is the input when checking the hmac of the onion packet.
+	fn payment_hash(&self) -> Option<&PaymentHash>;
+	/// Read argument when decrypting our hop payload.
+	fn read_arg(self) -> Self::Arg;
+}
+
+impl DecodeInput for PaymentHash {
+	type Arg = ();
+	fn payment_hash(&self) -> Option<&PaymentHash> {
+		Some(self)
+	}
+	fn read_arg(self) -> Self::Arg { () }
+}
+
+impl DecodeInput for SharedSecret {
+	type Arg = SharedSecret;
+	fn payment_hash(&self) -> Option<&PaymentHash> {
+		None
+	}
+	fn read_arg(self) -> Self::Arg { self }
+}
+
+/// Allows `decode_next_hop` to return the next hop packet bytes for either payments or onion
+/// message forwards.
+pub(crate) trait NextPacketBytes: AsMut<[u8]> {
+	fn new(len: usize) -> Self;
+}
+
+impl NextPacketBytes for FixedSizeOnionPacket {
+	fn new(_len: usize) -> Self  {
+		Self([0 as u8; ONION_DATA_LEN])
+	}
+}
+
+impl NextPacketBytes for Vec<u8> {
+	fn new(len: usize) -> Self {
+		vec![0 as u8; len]
+	}
+}
+
+/// Data decrypted from a payment's onion payload.
 pub(crate) enum Hop {
 	/// This onion payload was for us, not for forwarding to a next-hop. Contains information for
 	/// verifying the incoming payment.
@@ -592,11 +635,12 @@ pub(crate) enum Hop {
 		/// HMAC of the next hop's onion packet.
 		next_hop_hmac: [u8; 32],
 		/// Bytes of the onion packet we're forwarding.
-		new_packet_bytes: [u8; 20*65],
+		new_packet_bytes: [u8; ONION_DATA_LEN],
 	},
 }
 
 /// Error returned when we fail to decode the onion packet.
+#[derive(Debug)]
 pub(crate) enum OnionDecodeErr {
 	/// The HMAC of the onion packet did not match the hop data.
 	Malformed {
@@ -610,11 +654,27 @@ pub(crate) enum OnionDecodeErr {
 	},
 }
 
-pub(crate) fn decode_next_hop(shared_secret: [u8; 32], hop_data: &[u8], hmac_bytes: [u8; 32], payment_hash: PaymentHash) -> Result<Hop, OnionDecodeErr> {
+pub(crate) fn decode_next_payment_hop(shared_secret: [u8; 32], hop_data: &[u8], hmac_bytes: [u8; 32], payment_hash: PaymentHash) -> Result<Hop, OnionDecodeErr> {
+	match decode_next_hop(shared_secret, hop_data, hmac_bytes, payment_hash) {
+		Ok((next_hop_data, None)) => Ok(Hop::Receive(next_hop_data)),
+		Ok((next_hop_data, Some((next_hop_hmac, FixedSizeOnionPacket(new_packet_bytes))))) => {
+			Ok(Hop::Forward {
+				next_hop_data,
+				next_hop_hmac,
+				new_packet_bytes
+			})
+		},
+		Err(e) => Err(e),
+	}
+}
+
+pub(crate) fn decode_next_hop<D: DecodeInput, R: ReadableArgs<D::Arg>, N: NextPacketBytes>(shared_secret: [u8; 32], hop_data: &[u8], hmac_bytes: [u8; 32], decode_input: D) -> Result<(R, Option<([u8; 32], N)>), OnionDecodeErr> {
 	let (rho, mu) = gen_rho_mu_from_shared_secret(&shared_secret);
 	let mut hmac = HmacEngine::<Sha256>::new(&mu);
 	hmac.input(hop_data);
-	hmac.input(&payment_hash.0[..]);
+	if let Some(payment_hash) = decode_input.payment_hash() {
+		hmac.input(&payment_hash.0[..]);
+	}
 	if !fixed_time_eq(&Hmac::from_engine(hmac).into_inner(), &hmac_bytes) {
 		return Err(OnionDecodeErr::Malformed {
 			err_msg: "HMAC Check failed",
@@ -624,7 +684,7 @@ pub(crate) fn decode_next_hop(shared_secret: [u8; 32], hop_data: &[u8], hmac_byt
 
 	let mut chacha = ChaCha20::new(&rho, &[0u8; 8]);
 	let mut chacha_stream = ChaChaReader { chacha: &mut chacha, read: Cursor::new(&hop_data[..]) };
-	match <msgs::OnionHopData as Readable>::read(&mut chacha_stream) {
+	match R::read(&mut chacha_stream, decode_input.read_arg()) {
 		Err(err) => {
 			let error_code = match err {
 				msgs::DecodeError::UnknownVersion => 0x4000 | 1, // unknown realm byte
@@ -662,10 +722,10 @@ pub(crate) fn decode_next_hop(shared_secret: [u8; 32], hop_data: &[u8], hmac_byt
 					chacha_stream.read_exact(&mut next_bytes).unwrap();
 					assert_ne!(next_bytes[..], [0; 32][..]);
 				}
-				return Ok(Hop::Receive(msg));
+				return Ok((msg, None)); // We are the final destination for this packet
 			} else {
-				let mut new_packet_bytes = [0; 20*65];
-				let read_pos = chacha_stream.read(&mut new_packet_bytes).unwrap();
+				let mut new_packet_bytes = N::new(hop_data.len());
+				let read_pos = chacha_stream.read(new_packet_bytes.as_mut()).unwrap();
 				#[cfg(debug_assertions)]
 				{
 					// Check two things:
@@ -677,12 +737,8 @@ pub(crate) fn decode_next_hop(shared_secret: [u8; 32], hop_data: &[u8], hmac_byt
 				}
 				// Once we've emptied the set of bytes our peer gave us, encrypt 0 bytes until we
 				// fill the onion hop data we'll forward to our next-hop peer.
-				chacha_stream.chacha.process_in_place(&mut new_packet_bytes[read_pos..]);
-				return Ok(Hop::Forward {
-					next_hop_data: msg,
-					next_hop_hmac: hmac,
-					new_packet_bytes,
-				})
+				chacha_stream.chacha.process_in_place(&mut new_packet_bytes.as_mut()[read_pos..]);
+				return Ok((msg, Some((hmac, new_packet_bytes)))) // This packet needs forwarding
 			}
 		},
 	}

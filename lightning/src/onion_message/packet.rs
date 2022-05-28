@@ -10,15 +10,16 @@
 //! Structs and enums useful for constructing and reading an onion message packet.
 
 use bitcoin::secp256k1::PublicKey;
+use bitcoin::secp256k1::ecdh::SharedSecret;
 
 use ln::msgs::DecodeError;
 use ln::onion_utils;
 use super::blinded_route::{ForwardTlvs, ReceiveTlvs};
-use util::chacha20poly1305rfc::ChaChaPolyWriteAdapter;
-use util::ser::{LengthRead, LengthReadable, Readable, Writeable, Writer};
+use util::chacha20poly1305rfc::{ChaChaPolyReadAdapter, ChaChaPolyWriteAdapter};
+use util::ser::{FixedLengthReader, LengthRead, LengthReadable, LengthReadableArgs, Readable, ReadableArgs, Writeable, Writer};
 
 use core::cmp;
-use io;
+use io::{self, Read};
 use prelude::*;
 
 // Per the spec, an onion message packet's `hop_data` field length should be
@@ -28,14 +29,14 @@ pub(super) const BIG_PACKET_HOP_DATA_LEN: usize = 32768;
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Packet {
-	version: u8,
-	public_key: PublicKey,
+	pub(super) version: u8,
+	pub(super) public_key: PublicKey,
 	// Unlike the onion packets used for payments, onion message packets can have payloads greater
 	// than 1300 bytes.
 	// TODO: if 1300 ends up being the most common size, optimize this to be:
 	// enum { ThirteenHundred([u8; 1300]), VarLen(Vec<u8>) }
-	hop_data: Vec<u8>,
-	hmac: [u8; 32],
+	pub(super) hop_data: Vec<u8>,
+	pub(super) hmac: [u8; 32],
 }
 
 impl onion_utils::Packet for Packet {
@@ -154,5 +155,96 @@ impl Writeable for (Payload, [u8; 32]) {
 			},
 		}
 		Ok(())
+	}
+}
+
+// Uses the provided secret to simultaneously decode and decrypt the control TLVs.
+impl ReadableArgs<SharedSecret> for Payload {
+	fn read<R: Read>(mut r: &mut R, encrypted_tlvs_ss: SharedSecret) -> Result<Self, DecodeError> {
+		use bitcoin::consensus::encode::{Decodable, Error, VarInt};
+		let v: VarInt = Decodable::consensus_decode(&mut r)
+			.map_err(|e| match e {
+				Error::Io(ioe) => DecodeError::from(ioe),
+				_ => DecodeError::InvalidValue
+			})?;
+
+		let mut rd = FixedLengthReader::new(r, v.0);
+		// TODO: support reply paths
+		let mut _reply_path_bytes: Option<Vec<u8>> = Some(Vec::new());
+		let mut read_adapter: Option<ChaChaPolyReadAdapter<ControlTlvs>> = None;
+		let rho = onion_utils::gen_rho_from_shared_secret(&encrypted_tlvs_ss.secret_bytes());
+		decode_tlv_stream!(&mut rd, {
+			(2, _reply_path_bytes, vec_type),
+			(4, read_adapter, (option: LengthReadableArgs, rho))
+		});
+		rd.eat_remaining().map_err(|_| DecodeError::ShortRead)?;
+
+		match read_adapter {
+			None => return Err(DecodeError::InvalidValue),
+			Some(ChaChaPolyReadAdapter { readable: ControlTlvs::Forward(tlvs)}) => {
+				Ok(Payload::Forward(ForwardControlTlvs::Unblinded(tlvs)))
+			},
+			Some(ChaChaPolyReadAdapter { readable: ControlTlvs::Receive(tlvs)}) => {
+				Ok(Payload::Receive { control_tlvs: ReceiveControlTlvs::Unblinded(tlvs)})
+			},
+		}
+	}
+}
+
+/// When reading a packet off the wire, we don't know a priori whether the packet is to be forwarded
+/// or received. Thus we read a ControlTlvs rather than reading a ForwardControlTlvs or
+/// ReceiveControlTlvs directly.
+pub(super) enum ControlTlvs {
+	/// This onion message is intended to be forwarded.
+	Forward(ForwardTlvs),
+	/// This onion message is intended to be received.
+	Receive(ReceiveTlvs),
+}
+
+impl Readable for ControlTlvs {
+	fn read<R: Read>(mut r: &mut R) -> Result<Self, DecodeError> {
+		let mut _padding: Option<Padding> = None;
+		let mut _short_channel_id: Option<u64> = None;
+		let mut next_node_id: Option<PublicKey> = None;
+		let mut path_id: Option<[u8; 32]> = None;
+		let mut next_blinding_override: Option<PublicKey> = None;
+		decode_tlv_stream!(&mut r, {
+			(1, _padding, option),
+			(2, _short_channel_id, option),
+			(4, next_node_id, option),
+			(6, path_id, option),
+			(8, next_blinding_override, option),
+		});
+
+		let valid_fwd_fmt  = next_node_id.is_some() && path_id.is_none();
+		let valid_recv_fmt = next_node_id.is_none() && next_blinding_override.is_none();
+
+		let payload_fmt = if valid_fwd_fmt {
+			ControlTlvs::Forward(ForwardTlvs {
+				next_node_id: next_node_id.unwrap(),
+				next_blinding_override,
+			})
+		} else if valid_recv_fmt {
+			ControlTlvs::Receive(ReceiveTlvs {
+				path_id,
+			})
+		} else {
+			return Err(DecodeError::InvalidValue)
+		};
+
+		Ok(payload_fmt)
+	}
+}
+
+/// Reads padding to the end, ignoring what's read.
+pub(crate) struct Padding {}
+impl Readable for Padding {
+	#[inline]
+	fn read<R: Read>(reader: &mut R) -> Result<Self, DecodeError> {
+		loop {
+			let mut buf = [0; 8192];
+			if reader.read(&mut buf[..])? == 0 { break; }
+		}
+		Ok(Self {})
 	}
 }
