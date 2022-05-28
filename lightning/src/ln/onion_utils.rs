@@ -33,14 +33,14 @@ use io::{Cursor, Read};
 use core::convert::{AsMut, TryInto};
 use core::ops::Deref;
 
-pub(super) struct OnionKeys {
+pub(crate) struct OnionKeys {
 	#[cfg(test)]
-	pub(super) shared_secret: SharedSecret,
+	pub(crate) shared_secret: SharedSecret,
 	#[cfg(test)]
-	pub(super) blinding_factor: [u8; 32],
-	pub(super) ephemeral_pubkey: PublicKey,
-	pub(super) rho: [u8; 32],
-	pub(super) mu: [u8; 32],
+	pub(crate) blinding_factor: [u8; 32],
+	pub(crate) ephemeral_pubkey: PublicKey,
+	pub(crate) rho: [u8; 32],
+	pub(crate) mu: [u8; 32],
 }
 
 #[inline]
@@ -52,7 +52,7 @@ pub(crate) fn gen_rho_from_shared_secret(shared_secret: &[u8]) -> [u8; 32] {
 }
 
 #[inline]
-pub(super) fn gen_rho_mu_from_shared_secret(shared_secret: &[u8]) -> ([u8; 32], [u8; 32]) {
+pub(crate) fn gen_rho_mu_from_shared_secret(shared_secret: &[u8]) -> ([u8; 32], [u8; 32]) {
 	assert_eq!(shared_secret.len(), 32);
 	({
 		let mut hmac = HmacEngine::<Sha256>::new(&[0x72, 0x68, 0x6f]); // rho
@@ -260,7 +260,23 @@ impl AsMut<[u8]> for FixedSizeOnionPacket {
 	}
 }
 
-/// panics if route_size_insane(payloads)
+pub(crate) fn payloads_serialized_length<HD: Writeable>(payloads: &Vec<HD>) -> usize {
+	payloads.iter().map(|p| p.serialized_length() + 32 /* HMAC */).sum()
+}
+
+/// panics if payloads_serialized_length(payloads) > packet_data_len
+pub(crate) fn construct_onion_message_packet<HD: Writeable, P: Packet<Data = Vec<u8>>>(
+	payloads: Vec<HD>, onion_keys: Vec<OnionKeys>, prng_seed: [u8; 32], packet_data_len: usize) -> P
+{
+	let mut packet_data = vec![0; packet_data_len];
+
+	let mut chacha = ChaCha20::new(&prng_seed, &[0; 8]);
+	chacha.process_in_place(&mut packet_data);
+
+	construct_onion_packet_with_init_noise::<_, _>(payloads, onion_keys, packet_data, None)
+}
+
+/// panics if payloads_serialized_length(payloads) > packet_data.len()
 fn construct_onion_packet_with_init_noise<HD: Writeable, P: Packet>(
 	mut payloads: Vec<HD>, onion_keys: Vec<OnionKeys>, mut packet_data: P::Data, associated_data: Option<&PaymentHash>) -> P
 {

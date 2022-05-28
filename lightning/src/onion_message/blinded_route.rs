@@ -28,25 +28,25 @@ pub struct BlindedRoute {
 	/// message's next hop and forward it along.
 	///
 	/// [`encrypted_payload`]: BlindedHop::encrypted_payload
-	introduction_node_id: PublicKey,
+	pub(super) introduction_node_id: PublicKey,
 	/// Used by the introduction node to decrypt its [`encrypted_payload`] to forward the onion
 	/// message.
 	///
 	/// [`encrypted_payload`]: BlindedHop::encrypted_payload
-	blinding_point: PublicKey,
+	pub(super) blinding_point: PublicKey,
 	/// The hops composing the blinded route.
-	blinded_hops: Vec<BlindedHop>,
+	pub(super) blinded_hops: Vec<BlindedHop>,
 }
 
 /// Used to construct the blinded hops portion of a blinded route. These hops cannot be identified
 /// by outside observers and thus can be used to hide the identity of the recipient.
 pub struct BlindedHop {
 	/// The blinded node id of this hop in a blinded route.
-	blinded_node_id: PublicKey,
+	pub(super) blinded_node_id: PublicKey,
 	/// The encrypted payload intended for this hop in a blinded route.
 	// The node sending to this blinded route will later encode this payload into the onion packet for
 	// this hop.
-	encrypted_payload: Vec<u8>,
+	pub(super) encrypted_payload: Vec<u8>,
 }
 
 impl BlindedRoute {
@@ -78,7 +78,7 @@ fn blinded_hops<T: secp256k1::Signing + secp256k1::Verification>(
 	let mut blinded_hops = Vec::with_capacity(unblinded_path.len());
 
 	let mut prev_ss_and_blinded_node_id = None;
-	utils::construct_keys_callback(secp_ctx, unblinded_path, session_priv, |blinded_node_id, _, _, encrypted_payload_ss, unblinded_pk| {
+	utils::construct_keys_callback(secp_ctx, unblinded_path, None, session_priv, |blinded_node_id, _, _, encrypted_payload_ss, unblinded_pk, _| {
 		if let Some((prev_ss, prev_blinded_node_id)) = prev_ss_and_blinded_node_id {
 			if let Some(pk) = unblinded_pk {
 				let payload = ForwardTlvs {
@@ -117,10 +117,10 @@ fn encrypt_payload<P: Writeable>(payload: P, encrypted_tlvs_ss: [u8; 32]) -> Vec
 /// route, they are encoded into [`BlindedHop::encrypted_payload`].
 pub(crate) struct ForwardTlvs {
 	/// The node id of the next hop in the onion message's path.
-	next_node_id: PublicKey,
+	pub(super) next_node_id: PublicKey,
 	/// Senders to a blinded route use this value to concatenate the route they find to the
 	/// introduction node with the blinded route.
-	next_blinding_override: Option<PublicKey>,
+	pub(super) next_blinding_override: Option<PublicKey>,
 }
 
 /// Similar to [`ForwardTlvs`], but these TLVs are for the final node.
@@ -128,7 +128,7 @@ pub(crate) struct ReceiveTlvs {
 	/// If `path_id` is `Some`, it is used to identify the blinded route that this onion message is
 	/// sending to. This is useful for receivers to check that said blinded route is being used in
 	/// the right context.
-	path_id: Option<[u8; 32]>,
+	pub(super) path_id: Option<[u8; 32]>,
 }
 
 impl Writeable for ForwardTlvs {
