@@ -81,7 +81,7 @@ fn updates_shutdown_wait() {
 	let keys_manager = test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
 	let random_seed_bytes = keys_manager.get_secure_random_bytes();
 
-	let (payment_preimage, _, _) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 100000);
+	let (payment_preimage_0, payment_hash_0, _) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 100_000);
 
 	nodes[0].node.close_channel(&chan_1.2, &nodes[1].node.get_our_node_id()).unwrap();
 	let node_0_shutdown = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[1].node.get_our_node_id());
@@ -101,8 +101,10 @@ fn updates_shutdown_wait() {
 	unwrap_send_err!(nodes[0].node.send_payment(&route_1, payment_hash, &Some(payment_secret)), true, APIError::ChannelUnavailable {..}, {});
 	unwrap_send_err!(nodes[1].node.send_payment(&route_2, payment_hash, &Some(payment_secret)), true, APIError::ChannelUnavailable {..}, {});
 
-	assert!(nodes[2].node.claim_funds(payment_preimage));
+	nodes[2].node.claim_funds(payment_preimage_0);
 	check_added_monitors!(nodes[2], 1);
+	expect_payment_claimed!(nodes[2], payment_hash_0, 100_000);
+
 	let updates = get_htlc_update_msgs!(nodes[2], nodes[1].node.get_our_node_id());
 	assert!(updates.update_add_htlcs.is_empty());
 	assert!(updates.update_fail_htlcs.is_empty());
@@ -122,7 +124,7 @@ fn updates_shutdown_wait() {
 	assert_eq!(updates_2.update_fulfill_htlcs.len(), 1);
 	nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &updates_2.update_fulfill_htlcs[0]);
 	commitment_signed_dance!(nodes[0], nodes[1], updates_2.commitment_signed, false, true);
-	expect_payment_sent!(nodes[0], payment_preimage);
+	expect_payment_sent!(nodes[0], payment_preimage_0);
 
 	let node_0_closing_signed = get_event_msg!(nodes[0], MessageSendEvent::SendClosingSigned, nodes[1].node.get_our_node_id());
 	nodes[1].node.handle_closing_signed(&nodes[0].node.get_our_node_id(), &node_0_closing_signed);
@@ -230,7 +232,7 @@ fn do_test_shutdown_rebroadcast(recv_count: u8) {
 	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 	let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::known(), InitFeatures::known());
 
-	let (payment_preimage, _, _) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 100000);
+	let (payment_preimage, payment_hash, _) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 100_000);
 
 	nodes[1].node.close_channel(&chan_1.2, &nodes[0].node.get_our_node_id()).unwrap();
 	let node_1_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, nodes[0].node.get_our_node_id());
@@ -270,8 +272,10 @@ fn do_test_shutdown_rebroadcast(recv_count: u8) {
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 
-	assert!(nodes[2].node.claim_funds(payment_preimage));
+	nodes[2].node.claim_funds(payment_preimage);
 	check_added_monitors!(nodes[2], 1);
+	expect_payment_claimed!(nodes[2], payment_hash, 100_000);
+
 	let updates = get_htlc_update_msgs!(nodes[2], nodes[1].node.get_our_node_id());
 	assert!(updates.update_add_htlcs.is_empty());
 	assert!(updates.update_fail_htlcs.is_empty());

@@ -840,13 +840,14 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 						events::Event::PaymentReceived { payment_hash, .. } => {
 							if claim_set.insert(payment_hash.0) {
 								if $fail {
-									assert!(nodes[$node].fail_htlc_backwards(&payment_hash));
+									nodes[$node].fail_htlc_backwards(&payment_hash);
 								} else {
-									assert!(nodes[$node].claim_funds(PaymentPreimage(payment_hash.0)));
+									nodes[$node].claim_funds(PaymentPreimage(payment_hash.0));
 								}
 							}
 						},
 						events::Event::PaymentSent { .. } => {},
+						events::Event::PaymentClaimed { .. } => {},
 						events::Event::PaymentPathSuccessful { .. } => {},
 						events::Event::PaymentPathFailed { .. } => {},
 						events::Event::PaymentForwarded { .. } if $node == 1 => {},

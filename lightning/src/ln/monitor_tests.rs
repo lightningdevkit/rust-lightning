@@ -201,7 +201,7 @@ fn do_test_claim_value_force_close(prev_commitment_tx: bool) {
 	assert_eq!(funding_outpoint.to_channel_id(), chan_id);
 
 	// This HTLC is immediately claimed, giving node B the preimage
-	let payment_preimage = route_payment(&nodes[0], &[&nodes[1]], 3_000_000).0;
+	let (payment_preimage, payment_hash, _) = route_payment(&nodes[0], &[&nodes[1]], 3_000_000);
 	// This HTLC is allowed to time out, letting A claim it. However, in order to test claimable
 	// balances more fully we also give B the preimage for this HTLC.
 	let (timeout_payment_preimage, timeout_payment_hash, _) = route_payment(&nodes[0], &[&nodes[1]], 4_000_000);
@@ -234,13 +234,18 @@ fn do_test_claim_value_force_close(prev_commitment_tx: bool) {
 
 	nodes[1].node.claim_funds(payment_preimage);
 	check_added_monitors!(nodes[1], 1);
+	expect_payment_claimed!(nodes[1], payment_hash, 3_000_000);
+
 	let b_htlc_msgs = get_htlc_update_msgs!(&nodes[1], nodes[0].node.get_our_node_id());
 	// We claim the dust payment here as well, but it won't impact our claimable balances as its
 	// dust and thus doesn't appear on chain at all.
 	nodes[1].node.claim_funds(dust_payment_preimage);
 	check_added_monitors!(nodes[1], 1);
+	expect_payment_claimed!(nodes[1], dust_payment_hash, 3_000);
+
 	nodes[1].node.claim_funds(timeout_payment_preimage);
 	check_added_monitors!(nodes[1], 1);
+	expect_payment_claimed!(nodes[1], timeout_payment_hash, 4_000_000);
 
 	if prev_commitment_tx {
 		// To build a previous commitment transaction, deliver one round of commitment messages.
@@ -547,9 +552,10 @@ fn test_balances_on_local_commitment_htlcs() {
 
 	expect_pending_htlcs_forwardable!(nodes[1]);
 	expect_payment_received!(nodes[1], payment_hash_2, payment_secret_2, 20_000_000);
-	assert!(nodes[1].node.claim_funds(payment_preimage_2));
+	nodes[1].node.claim_funds(payment_preimage_2);
 	get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 	check_added_monitors!(nodes[1], 1);
+	expect_payment_claimed!(nodes[1], payment_hash_2, 20_000_000);
 
 	let chan_feerate = get_feerate!(nodes[0], chan_id) as u64;
 	let opt_anchors = get_opt_anchors!(nodes[0], chan_id);

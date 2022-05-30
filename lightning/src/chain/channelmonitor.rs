@@ -655,6 +655,10 @@ pub(crate) struct ChannelMonitorImpl<Signer: Sign> {
 	// deserialization
 	current_holder_commitment_number: u64,
 
+	/// The set of payment hashes from inbound payments for which we know the preimage. Payment
+	/// preimages that are not included in any unrevoked local commitment transaction or unrevoked
+	/// remote commitment transactions are automatically removed when commitment transactions are
+	/// revoked.
 	payment_preimages: HashMap<PaymentHash, PaymentPreimage>,
 
 	// Note that `MonitorEvent`s MUST NOT be generated during update processing, only generated
@@ -1085,7 +1089,8 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 		self.inner.lock().unwrap().provide_latest_holder_commitment_tx(holder_commitment_tx, htlc_outputs).map_err(|_| ())
 	}
 
-	#[cfg(test)]
+	/// This is used to provide payment preimage(s) out-of-band during startup without updating the
+	/// off-chain state with a new commitment transaction.
 	pub(crate) fn provide_payment_preimage<B: Deref, F: Deref, L: Deref>(
 		&self,
 		payment_hash: &PaymentHash,
@@ -1631,6 +1636,10 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 		}
 
 		res
+	}
+
+	pub(crate) fn get_stored_preimages(&self) -> HashMap<PaymentHash, PaymentPreimage> {
+		self.inner.lock().unwrap().payment_preimages.clone()
 	}
 }
 

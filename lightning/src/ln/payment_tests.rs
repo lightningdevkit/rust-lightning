@@ -376,7 +376,7 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 	// Send two payments - one which will get to nodes[2] and will be claimed, one which we'll time
 	// out and retry.
 	let (route, payment_hash, payment_preimage, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], 1_000_000);
-	let (payment_preimage_1, _, _, payment_id_1) = send_along_route(&nodes[0], route.clone(), &[&nodes[1], &nodes[2]], 1_000_000);
+	let (payment_preimage_1, payment_hash_1, _, payment_id_1) = send_along_route(&nodes[0], route.clone(), &[&nodes[1], &nodes[2]], 1_000_000);
 	let payment_id = nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret)).unwrap();
 	check_added_monitors!(nodes[0], 1);
 
@@ -475,6 +475,8 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 	// we close in a moment.
 	nodes[2].node.claim_funds(payment_preimage_1);
 	check_added_monitors!(nodes[2], 1);
+	expect_payment_claimed!(nodes[2], payment_hash_1, 1_000_000);
+
 	let htlc_fulfill_updates = get_htlc_update_msgs!(nodes[2], nodes[1].node.get_our_node_id());
 	nodes[1].node.handle_update_fulfill_htlc(&nodes[2].node.get_our_node_id(), &htlc_fulfill_updates.update_fulfill_htlcs[0]);
 	check_added_monitors!(nodes[1], 1);
@@ -569,7 +571,7 @@ fn do_test_dup_htlc_onchain_fails_on_reload(persist_manager_post_event: bool, co
 
 	// Route a payment, but force-close the channel before the HTLC fulfill message arrives at
 	// nodes[0].
-	let (payment_preimage, payment_hash, _) = route_payment(&nodes[0], &[&nodes[1]], 10000000);
+	let (payment_preimage, payment_hash, _) = route_payment(&nodes[0], &[&nodes[1]], 10_000_000);
 	nodes[0].node.force_close_channel(&nodes[0].node.list_channels()[0].channel_id, &nodes[1].node.get_our_node_id()).unwrap();
 	check_closed_broadcast!(nodes[0], true);
 	check_added_monitors!(nodes[0], 1);
@@ -587,8 +589,9 @@ fn do_test_dup_htlc_onchain_fails_on_reload(persist_manager_post_event: bool, co
 	check_spends!(node_txn[2], node_txn[1]);
 	let timeout_txn = vec![node_txn[2].clone()];
 
-	assert!(nodes[1].node.claim_funds(payment_preimage));
+	nodes[1].node.claim_funds(payment_preimage);
 	check_added_monitors!(nodes[1], 1);
+	expect_payment_claimed!(nodes[1], payment_hash, 10_000_000);
 
 	let mut header = BlockHeader { version: 0x20000000, prev_blockhash: nodes[1].best_block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
 	connect_block(&nodes[1], &Block { header, txdata: vec![node_txn[1].clone()]});
@@ -748,6 +751,8 @@ fn test_fulfill_restart_failure() {
 
 	nodes[1].node.claim_funds(payment_preimage);
 	check_added_monitors!(nodes[1], 1);
+	expect_payment_claimed!(nodes[1], payment_hash, 100_000);
+
 	let htlc_fulfill_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 	nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &htlc_fulfill_updates.update_fulfill_htlcs[0]);
 	expect_payment_sent_without_paths!(nodes[0], payment_preimage);

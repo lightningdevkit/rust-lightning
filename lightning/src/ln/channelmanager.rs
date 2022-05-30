@@ -169,7 +169,7 @@ enum OnionPayload {
 	Invoice {
 		/// This is only here for backwards-compatibility in serialization, in the future it can be
 		/// removed, breaking clients running 0.0.106 and earlier.
-		_legacy_hop_data: msgs::FinalOnionHopData,
+		_legacy_hop_data: Option<msgs::FinalOnionHopData>,
 	},
 	/// Contains the payer-provided preimage.
 	Spontaneous(PaymentPreimage),
@@ -419,11 +419,13 @@ pub(super) struct ChannelHolder<Signer: Sign> {
 	/// guarantees are made about the existence of a channel with the short id here, nor the short
 	/// ids in the PendingHTLCInfo!
 	pub(super) forward_htlcs: HashMap<u64, Vec<HTLCForwardInfo>>,
-	/// Map from payment hash to any HTLCs which are to us and can be failed/claimed by the user.
+	/// Map from payment hash to the payment data and any HTLCs which are to us and can be
+	/// failed/claimed by the user.
+	///
 	/// Note that while this is held in the same mutex as the channels themselves, no consistency
 	/// guarantees are made about the channels given here actually existing anymore by the time you
 	/// go to read them!
-	claimable_htlcs: HashMap<PaymentHash, Vec<ClaimableHTLC>>,
+	claimable_htlcs: HashMap<PaymentHash, (events::PaymentPurpose, Vec<ClaimableHTLC>)>,
 	/// Messages to send to peers - pushed to in the same lock that they are generated in (except
 	/// for broadcast messages, where ordering isn't as strict).
 	pub(super) pending_msg_events: Vec<MessageSendEvent>,
@@ -3136,7 +3138,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 									prev_funding_outpoint } => {
 								let (cltv_expiry, onion_payload, payment_data, phantom_shared_secret) = match routing {
 									PendingHTLCRouting::Receive { payment_data, incoming_cltv_expiry, phantom_shared_secret } => {
-										let _legacy_hop_data = payment_data.clone();
+										let _legacy_hop_data = Some(payment_data.clone());
 										(incoming_cltv_expiry, OnionPayload::Invoice { _legacy_hop_data }, Some(payment_data), phantom_shared_secret)
 									},
 									PendingHTLCRouting::ReceiveKeysend { payment_preimage, incoming_cltv_expiry } =>
@@ -3181,8 +3183,14 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 								macro_rules! check_total_value {
 									($payment_data: expr, $payment_preimage: expr) => {{
 										let mut payment_received_generated = false;
-										let htlcs = channel_state.claimable_htlcs.entry(payment_hash)
-											.or_insert(Vec::new());
+										let purpose = || {
+											events::PaymentPurpose::InvoicePayment {
+												payment_preimage: $payment_preimage,
+												payment_secret: $payment_data.payment_secret,
+											}
+										};
+										let (_, htlcs) = channel_state.claimable_htlcs.entry(payment_hash)
+											.or_insert_with(|| (purpose(), Vec::new()));
 										if htlcs.len() == 1 {
 											if let OnionPayload::Spontaneous(_) = htlcs[0].onion_payload {
 												log_trace!(self.logger, "Failing new HTLC with payment_hash {} as we already had an existing keysend HTLC with the same payment hash", log_bytes!(payment_hash.0));
@@ -3213,11 +3221,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 											htlcs.push(claimable_htlc);
 											new_events.push(events::Event::PaymentReceived {
 												payment_hash,
-												purpose: events::PaymentPurpose::InvoicePayment {
-													payment_preimage: $payment_preimage,
-													payment_secret: $payment_data.payment_secret,
-												},
-												amt: total_value,
+												purpose: purpose(),
+												amount_msat: total_value,
 											});
 											payment_received_generated = true;
 										} else {
@@ -3254,11 +3259,12 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 											OnionPayload::Spontaneous(preimage) => {
 												match channel_state.claimable_htlcs.entry(payment_hash) {
 													hash_map::Entry::Vacant(e) => {
-														e.insert(vec![claimable_htlc]);
+														let purpose = events::PaymentPurpose::SpontaneousPayment(preimage);
+														e.insert((purpose.clone(), vec![claimable_htlc]));
 														new_events.push(events::Event::PaymentReceived {
 															payment_hash,
-															amt: amt_to_forward,
-															purpose: events::PaymentPurpose::SpontaneousPayment(preimage),
+															amount_msat: amt_to_forward,
+															purpose,
 														});
 													},
 													hash_map::Entry::Occupied(_) => {
@@ -3497,7 +3503,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					true
 				});
 
-				channel_state.claimable_htlcs.retain(|payment_hash, htlcs| {
+				channel_state.claimable_htlcs.retain(|payment_hash, (_, htlcs)| {
 					if htlcs.is_empty() {
 						// This should be unreachable
 						debug_assert!(false);
@@ -3534,14 +3540,22 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// Indicates that the preimage for payment_hash is unknown or the received amount is incorrect
 	/// after a PaymentReceived event, failing the HTLC back to its origin and freeing resources
 	/// along the path (including in our own channel on which we received it).
-	/// Returns false if no payment was found to fail backwards, true if the process of failing the
-	/// HTLC backwards has been started.
-	pub fn fail_htlc_backwards(&self, payment_hash: &PaymentHash) -> bool {
+	///
+	/// Note that in some cases around unclean shutdown, it is possible the payment may have
+	/// already been claimed by you via [`ChannelManager::claim_funds`] prior to you seeing (a
+	/// second copy of) the [`events::Event::PaymentReceived`] event. Alternatively, the payment
+	/// may have already been failed automatically by LDK if it was nearing its expiration time.
+	///
+	/// While LDK will never claim a payment automatically on your behalf (i.e. without you calling
+	/// [`ChannelManager::claim_funds`]), you should still monitor for
+	/// [`events::Event::PaymentClaimed`] events even for payments you intend to fail, especially on
+	/// startup during which time claims that were in-progress at shutdown may be replayed.
+	pub fn fail_htlc_backwards(&self, payment_hash: &PaymentHash) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 
 		let mut channel_state = Some(self.channel_state.lock().unwrap());
 		let removed_source = channel_state.as_mut().unwrap().claimable_htlcs.remove(payment_hash);
-		if let Some(mut sources) = removed_source {
+		if let Some((_, mut sources)) = removed_source {
 			for htlc in sources.drain(..) {
 				if channel_state.is_none() { channel_state = Some(self.channel_state.lock().unwrap()); }
 				let mut htlc_msat_height_data = byte_utils::be64_to_array(htlc.value).to_vec();
@@ -3551,8 +3565,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 						HTLCSource::PreviousHopData(htlc.prev_hop), payment_hash,
 						HTLCFailReason::Reason { failure_code: 0x4000 | 15, data: htlc_msat_height_data });
 			}
-			true
-		} else { false }
+		}
 	}
 
 	/// Gets an HTLC onion failure code and error data for an `UPDATE` error, given the error code
@@ -3822,26 +3835,29 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// Provides a payment preimage in response to [`Event::PaymentReceived`], generating any
 	/// [`MessageSendEvent`]s needed to claim the payment.
 	///
+	/// Note that calling this method does *not* guarantee that the payment has been claimed. You
+	/// *must* wait for an [`Event::PaymentClaimed`] event which upon a successful claim will be
+	/// provided to your [`EventHandler`] when [`process_pending_events`] is next called.
+	///
 	/// Note that if you did not set an `amount_msat` when calling [`create_inbound_payment`] or
 	/// [`create_inbound_payment_for_hash`] you must check that the amount in the `PaymentReceived`
 	/// event matches your expectation. If you fail to do so and call this method, you may provide
 	/// the sender "proof-of-payment" when they did not fulfill the full expected payment.
 	///
-	/// Returns whether any HTLCs were claimed, and thus if any new [`MessageSendEvent`]s are now
-	/// pending for processing via [`get_and_clear_pending_msg_events`].
-	///
 	/// [`Event::PaymentReceived`]: crate::util::events::Event::PaymentReceived
+	/// [`Event::PaymentClaimed`]: crate::util::events::Event::PaymentClaimed
+	/// [`process_pending_events`]: EventsProvider::process_pending_events
 	/// [`create_inbound_payment`]: Self::create_inbound_payment
 	/// [`create_inbound_payment_for_hash`]: Self::create_inbound_payment_for_hash
 	/// [`get_and_clear_pending_msg_events`]: MessageSendEventsProvider::get_and_clear_pending_msg_events
-	pub fn claim_funds(&self, payment_preimage: PaymentPreimage) -> bool {
+	pub fn claim_funds(&self, payment_preimage: PaymentPreimage) {
 		let payment_hash = PaymentHash(Sha256::hash(&payment_preimage.0).into_inner());
 
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 
 		let mut channel_state = Some(self.channel_state.lock().unwrap());
 		let removed_source = channel_state.as_mut().unwrap().claimable_htlcs.remove(&payment_hash);
-		if let Some(mut sources) = removed_source {
+		if let Some((payment_purpose, mut sources)) = removed_source {
 			assert!(!sources.is_empty());
 
 			// If we are claiming an MPP payment, we have to take special care to ensure that each
@@ -3855,12 +3871,42 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			// we got all the HTLCs and then a channel closed while we were waiting for the user to
 			// provide the preimage, so worrying too much about the optimal handling isn't worth
 			// it.
+			let mut claimable_amt_msat = 0;
+			let mut expected_amt_msat = None;
 			let mut valid_mpp = true;
 			for htlc in sources.iter() {
 				if let None = channel_state.as_ref().unwrap().short_to_id.get(&htlc.prev_hop.short_channel_id) {
 					valid_mpp = false;
 					break;
 				}
+				if expected_amt_msat.is_some() && expected_amt_msat != Some(htlc.total_msat) {
+					log_error!(self.logger, "Somehow ended up with an MPP payment with different total amounts - this should not be reachable!");
+					debug_assert!(false);
+					valid_mpp = false;
+					break;
+				}
+				expected_amt_msat = Some(htlc.total_msat);
+				if let OnionPayload::Spontaneous(_) = &htlc.onion_payload {
+					// We don't currently support MPP for spontaneous payments, so just check
+					// that there's one payment here and move on.
+					if sources.len() != 1 {
+						log_error!(self.logger, "Somehow ended up with an MPP spontaneous payment - this should not be reachable!");
+						debug_assert!(false);
+						valid_mpp = false;
+						break;
+					}
+				}
+
+				claimable_amt_msat += htlc.value;
+			}
+			if sources.is_empty() || expected_amt_msat.is_none() {
+				log_info!(self.logger, "Attempted to claim an incomplete payment which no longer had any available HTLCs!");
+				return;
+			}
+			if claimable_amt_msat != expected_amt_msat.unwrap() {
+				log_info!(self.logger, "Attempted to claim an incomplete payment, expected {} msat, had {} available to claim.",
+					expected_amt_msat.unwrap(), claimable_amt_msat);
+				return;
 			}
 
 			let mut errs = Vec::new();
@@ -3896,6 +3942,14 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				}
 			}
 
+			if claimed_any_htlcs {
+				self.pending_events.lock().unwrap().push(events::Event::PaymentClaimed {
+					payment_hash,
+					purpose: payment_purpose,
+					amount_msat: claimable_amt_msat,
+				});
+			}
+
 			// Now that we've done the entire above loop in one lock, we can handle any errors
 			// which were generated.
 			channel_state.take();
@@ -3904,9 +3958,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				let res: Result<(), _> = Err(err);
 				let _ = handle_error!(self, res, counterparty_node_id);
 			}
-
-			claimed_any_htlcs
-		} else { false }
+		}
 	}
 
 	fn claim_funds_from_hop(&self, channel_state_lock: &mut MutexGuard<ChannelHolder<Signer>>, prev_hop: HTLCPreviousHopData, payment_preimage: PaymentPreimage) -> ClaimFundsFromHop {
@@ -5624,7 +5676,7 @@ where
 			});
 
 			if let Some(height) = height_opt {
-				channel_state.claimable_htlcs.retain(|payment_hash, htlcs| {
+				channel_state.claimable_htlcs.retain(|payment_hash, (_, htlcs)| {
 					htlcs.retain(|htlc| {
 						// If height is approaching the number of blocks we think it takes us to get
 						// our commitment transaction confirmed before the HTLC expires, plus the
@@ -6146,13 +6198,9 @@ impl_writeable_tlv_based!(HTLCPreviousHopData, {
 
 impl Writeable for ClaimableHTLC {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
-		let payment_data = match &self.onion_payload {
-			OnionPayload::Invoice { _legacy_hop_data } => Some(_legacy_hop_data),
-			_ => None,
-		};
-		let keysend_preimage = match self.onion_payload {
-			OnionPayload::Invoice { .. } => None,
-			OnionPayload::Spontaneous(preimage) => Some(preimage.clone()),
+		let (payment_data, keysend_preimage) = match &self.onion_payload {
+			OnionPayload::Invoice { _legacy_hop_data } => (_legacy_hop_data.as_ref(), None),
+			OnionPayload::Spontaneous(preimage) => (None, Some(preimage)),
 		};
 		write_tlv_fields!(writer, {
 			(0, self.prev_hop, required),
@@ -6193,13 +6241,13 @@ impl Readable for ClaimableHTLC {
 				OnionPayload::Spontaneous(p)
 			},
 			None => {
-				if payment_data.is_none() {
-					return Err(DecodeError::InvalidValue)
-				}
 				if total_msat.is_none() {
+					if payment_data.is_none() {
+						return Err(DecodeError::InvalidValue)
+					}
 					total_msat = Some(payment_data.as_ref().unwrap().total_msat);
 				}
-				OnionPayload::Invoice { _legacy_hop_data: payment_data.unwrap() }
+				OnionPayload::Invoice { _legacy_hop_data: payment_data }
 			},
 		};
 		Ok(Self {
@@ -6372,13 +6420,15 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Writeable f
 			}
 		}
 
+		let mut htlc_purposes: Vec<&events::PaymentPurpose> = Vec::new();
 		(channel_state.claimable_htlcs.len() as u64).write(writer)?;
-		for (payment_hash, previous_hops) in channel_state.claimable_htlcs.iter() {
+		for (payment_hash, (purpose, previous_hops)) in channel_state.claimable_htlcs.iter() {
 			payment_hash.write(writer)?;
 			(previous_hops.len() as u64).write(writer)?;
 			for htlc in previous_hops.iter() {
 				htlc.write(writer)?;
 			}
+			htlc_purposes.push(purpose);
 		}
 
 		let per_peer_state = self.per_peer_state.write().unwrap();
@@ -6455,6 +6505,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Writeable f
 			(3, pending_outbound_payments, required),
 			(5, self.our_network_pubkey, required),
 			(7, self.fake_scid_rand_bytes, required),
+			(9, htlc_purposes, vec_type),
 		});
 
 		Ok(())
@@ -6673,15 +6724,15 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 		}
 
 		let claimable_htlcs_count: u64 = Readable::read(reader)?;
-		let mut claimable_htlcs = HashMap::with_capacity(cmp::min(claimable_htlcs_count as usize, 128));
+		let mut claimable_htlcs_list = Vec::with_capacity(cmp::min(claimable_htlcs_count as usize, 128));
 		for _ in 0..claimable_htlcs_count {
 			let payment_hash = Readable::read(reader)?;
 			let previous_hops_len: u64 = Readable::read(reader)?;
 			let mut previous_hops = Vec::with_capacity(cmp::min(previous_hops_len as usize, MAX_ALLOC_SIZE/mem::size_of::<ClaimableHTLC>()));
 			for _ in 0..previous_hops_len {
-				previous_hops.push(Readable::read(reader)?);
+				previous_hops.push(<ClaimableHTLC as Readable>::read(reader)?);
 			}
-			claimable_htlcs.insert(payment_hash, previous_hops);
+			claimable_htlcs_list.push((payment_hash, previous_hops));
 		}
 
 		let peer_count: u64 = Readable::read(reader)?;
@@ -6751,11 +6802,13 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 		let mut pending_outbound_payments = None;
 		let mut received_network_pubkey: Option<PublicKey> = None;
 		let mut fake_scid_rand_bytes: Option<[u8; 32]> = None;
+		let mut claimable_htlc_purposes = None;
 		read_tlv_fields!(reader, {
 			(1, pending_outbound_payments_no_retry, option),
 			(3, pending_outbound_payments, option),
 			(5, received_network_pubkey, option),
 			(7, fake_scid_rand_bytes, option),
+			(9, claimable_htlc_purposes, vec_type),
 		});
 		if fake_scid_rand_bytes.is_none() {
 			fake_scid_rand_bytes = Some(args.keys_manager.get_secure_random_bytes());
@@ -6778,7 +6831,7 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 			// payments which are still in-flight via their on-chain state.
 			// We only rebuild the pending payments map if we were most recently serialized by
 			// 0.0.102+
-			for (_, monitor) in args.channel_monitors {
+			for (_, monitor) in args.channel_monitors.iter() {
 				if by_id.get(&monitor.get_funding_txo().0.to_channel_id()).is_none() {
 					for (htlc_source, htlc) in monitor.get_pending_outbound_htlcs() {
 						if let HTLCSource::OutboundRoute { payment_id, session_priv, path, payment_secret, .. } = htlc_source {
@@ -6813,6 +6866,49 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 						}
 					}
 				}
+			}
+		}
+
+		let inbound_pmt_key_material = args.keys_manager.get_inbound_payment_key_material();
+		let expanded_inbound_key = inbound_payment::ExpandedKey::new(&inbound_pmt_key_material);
+
+		let mut claimable_htlcs = HashMap::with_capacity(claimable_htlcs_list.len());
+		if let Some(mut purposes) = claimable_htlc_purposes {
+			if purposes.len() != claimable_htlcs_list.len() {
+				return Err(DecodeError::InvalidValue);
+			}
+			for (purpose, (payment_hash, previous_hops)) in purposes.drain(..).zip(claimable_htlcs_list.drain(..)) {
+				claimable_htlcs.insert(payment_hash, (purpose, previous_hops));
+			}
+		} else {
+			// LDK versions prior to 0.0.107 did not write a `pending_htlc_purposes`, but do
+			// include a `_legacy_hop_data` in the `OnionPayload`.
+			for (payment_hash, previous_hops) in claimable_htlcs_list.drain(..) {
+				if previous_hops.is_empty() {
+					return Err(DecodeError::InvalidValue);
+				}
+				let purpose = match &previous_hops[0].onion_payload {
+					OnionPayload::Invoice { _legacy_hop_data } => {
+						if let Some(hop_data) = _legacy_hop_data {
+							events::PaymentPurpose::InvoicePayment {
+								payment_preimage: match pending_inbound_payments.get(&payment_hash) {
+									Some(inbound_payment) => inbound_payment.payment_preimage,
+									None => match inbound_payment::verify(payment_hash, &hop_data, 0, &expanded_inbound_key, &args.logger) {
+										Ok(payment_preimage) => payment_preimage,
+										Err(()) => {
+											log_error!(args.logger, "Failed to read claimable payment data for HTLC with payment hash {} - was not a pending inbound payment and didn't match our payment key", log_bytes!(payment_hash.0));
+											return Err(DecodeError::InvalidValue);
+										}
+									}
+								},
+								payment_secret: hop_data.payment_secret,
+							}
+						} else { return Err(DecodeError::InvalidValue); }
+					},
+					OnionPayload::Spontaneous(payment_preimage) =>
+						events::PaymentPurpose::SpontaneousPayment(*payment_preimage),
+				};
+				claimable_htlcs.insert(payment_hash, (purpose, previous_hops));
 			}
 		}
 
@@ -6861,8 +6957,46 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 			}
 		}
 
-		let inbound_pmt_key_material = args.keys_manager.get_inbound_payment_key_material();
-		let expanded_inbound_key = inbound_payment::ExpandedKey::new(&inbound_pmt_key_material);
+		for (_, monitor) in args.channel_monitors.iter() {
+			for (payment_hash, payment_preimage) in monitor.get_stored_preimages() {
+				if let Some((payment_purpose, claimable_htlcs)) = claimable_htlcs.remove(&payment_hash) {
+					log_info!(args.logger, "Re-claiming HTLCs with payment hash {} as we've released the preimage to a ChannelMonitor!", log_bytes!(payment_hash.0));
+					let mut claimable_amt_msat = 0;
+					for claimable_htlc in claimable_htlcs {
+						claimable_amt_msat += claimable_htlc.value;
+
+						// Add a holding-cell claim of the payment to the Channel, which should be
+						// applied ~immediately on peer reconnection. Because it won't generate a
+						// new commitment transaction we can just provide the payment preimage to
+						// the corresponding ChannelMonitor and nothing else.
+						//
+						// We do so directly instead of via the normal ChannelMonitor update
+						// procedure as the ChainMonitor hasn't yet been initialized, implying
+						// we're not allowed to call it directly yet. Further, we do the update
+						// without incrementing the ChannelMonitor update ID as there isn't any
+						// reason to.
+						// If we were to generate a new ChannelMonitor update ID here and then
+						// crash before the user finishes block connect we'd end up force-closing
+						// this channel as well. On the flip side, there's no harm in restarting
+						// without the new monitor persisted - we'll end up right back here on
+						// restart.
+						let previous_channel_id = claimable_htlc.prev_hop.outpoint.to_channel_id();
+						if let Some(channel) = by_id.get_mut(&previous_channel_id) {
+							channel.claim_htlc_while_disconnected_dropping_mon_update(claimable_htlc.prev_hop.htlc_id, payment_preimage, &args.logger);
+						}
+						if let Some(previous_hop_monitor) = args.channel_monitors.get(&claimable_htlc.prev_hop.outpoint) {
+							previous_hop_monitor.provide_payment_preimage(&payment_hash, &payment_preimage, &args.tx_broadcaster, &args.fee_estimator, &args.logger);
+						}
+					}
+					pending_events_read.push(events::Event::PaymentClaimed {
+						payment_hash,
+						purpose: payment_purpose,
+						amount_msat: claimable_amt_msat,
+					});
+				}
+			}
+		}
+
 		let channel_manager = ChannelManager {
 			genesis_hash,
 			fee_estimator: args.fee_estimator,
@@ -7116,8 +7250,10 @@ mod tests {
 		// claim_funds_along_route because the ordering of the messages causes the second half of the
 		// payment to be put in the holding cell, which confuses the test utilities. So we exchange the
 		// lightning messages manually.
-		assert!(nodes[1].node.claim_funds(payment_preimage));
+		nodes[1].node.claim_funds(payment_preimage);
+		expect_payment_claimed!(nodes[1], our_payment_hash, 200_000);
 		check_added_monitors!(nodes[1], 2);
+
 		let bs_first_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 		nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &bs_first_updates.update_fulfill_htlcs[0]);
 		nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &bs_first_updates.commitment_signed);
@@ -7563,7 +7699,8 @@ pub mod bench {
 
 				expect_pending_htlcs_forwardable!(NodeHolder { node: &$node_b });
 				expect_payment_received!(NodeHolder { node: &$node_b }, payment_hash, payment_secret, 10_000);
-				assert!($node_b.claim_funds(payment_preimage));
+				$node_b.claim_funds(payment_preimage);
+				expect_payment_claimed!(NodeHolder { node: &$node_b }, payment_hash, 10_000);
 
 				match $node_b.get_and_clear_pending_msg_events().pop().unwrap() {
 					MessageSendEvent::UpdateHTLCs { node_id, updates } => {

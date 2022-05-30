@@ -731,7 +731,7 @@ impl<ChannelSigner: Sign, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref> even
 mod tests {
 	use bitcoin::BlockHeader;
 	use ::{check_added_monitors, check_closed_broadcast, check_closed_event};
-	use ::{expect_payment_sent, expect_payment_sent_without_paths, expect_payment_path_successful, get_event_msg};
+	use ::{expect_payment_sent, expect_payment_claimed, expect_payment_sent_without_paths, expect_payment_path_successful, get_event_msg};
 	use ::{get_htlc_update_msgs, get_local_commitment_txn, get_revoke_commit_msgs, get_route_and_payment_hash, unwrap_send_err};
 	use chain::{ChannelMonitorUpdateErr, Confirm, Watch};
 	use chain::channelmonitor::LATENCY_GRACE_PERIOD_BLOCKS;
@@ -798,16 +798,18 @@ mod tests {
 		create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 
 		// Route two payments to be claimed at the same time.
-		let payment_preimage_1 = route_payment(&nodes[0], &[&nodes[1]], 1_000_000).0;
-		let payment_preimage_2 = route_payment(&nodes[0], &[&nodes[1]], 1_000_000).0;
+		let (payment_preimage_1, payment_hash_1, _) = route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
+		let (payment_preimage_2, payment_hash_2, _) = route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
 
 		chanmon_cfgs[1].persister.offchain_monitor_updates.lock().unwrap().clear();
 		chanmon_cfgs[1].persister.set_update_ret(Err(ChannelMonitorUpdateErr::TemporaryFailure));
 
 		nodes[1].node.claim_funds(payment_preimage_1);
 		check_added_monitors!(nodes[1], 1);
+		expect_payment_claimed!(nodes[1], payment_hash_1, 1_000_000);
 		nodes[1].node.claim_funds(payment_preimage_2);
 		check_added_monitors!(nodes[1], 1);
+		expect_payment_claimed!(nodes[1], payment_hash_2, 1_000_000);
 
 		chanmon_cfgs[1].persister.set_update_ret(Ok(()));
 
@@ -877,8 +879,9 @@ mod tests {
 		let (route, second_payment_hash, _, second_payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], 100_000);
 
 		// First route a payment that we will claim on chain and give the recipient the preimage.
-		let payment_preimage = route_payment(&nodes[0], &[&nodes[1]], 1_000_000).0;
+		let (payment_preimage, payment_hash, _) = route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
 		nodes[1].node.claim_funds(payment_preimage);
+		expect_payment_claimed!(nodes[1], payment_hash, 1_000_000);
 		nodes[1].node.get_and_clear_pending_msg_events();
 		check_added_monitors!(nodes[1], 1);
 		let remote_txn = get_local_commitment_txn!(nodes[1], channel.2);

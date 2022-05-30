@@ -1155,7 +1155,7 @@ fn test_phantom_failure_reject_payment() {
 	expect_pending_htlcs_forwardable_ignore!(nodes[1]);
 	nodes[1].node.process_pending_htlc_forwards();
 	expect_payment_received!(nodes[1], payment_hash, payment_secret, recv_amt_msat);
-	assert!(nodes[1].node.fail_htlc_backwards(&payment_hash));
+	nodes[1].node.fail_htlc_backwards(&payment_hash);
 	expect_pending_htlcs_forwardable_ignore!(nodes[1]);
 	nodes[1].node.process_pending_htlc_forwards();
 
