@@ -759,12 +759,12 @@ mod tests {
 
 		// Confirm the funding transaction.
 		confirm_transaction(&mut nodes[0], &funding_tx);
-		let as_funding = get_event_msg!(nodes[0], MessageSendEvent::SendFundingLocked, nodes[1].node.get_our_node_id());
+		let as_funding = get_event_msg!(nodes[0], MessageSendEvent::SendChannelReady, nodes[1].node.get_our_node_id());
 		confirm_transaction(&mut nodes[1], &funding_tx);
-		let bs_funding = get_event_msg!(nodes[1], MessageSendEvent::SendFundingLocked, nodes[0].node.get_our_node_id());
-		nodes[0].node.handle_funding_locked(&nodes[1].node.get_our_node_id(), &bs_funding);
+		let bs_funding = get_event_msg!(nodes[1], MessageSendEvent::SendChannelReady, nodes[0].node.get_our_node_id());
+		nodes[0].node.handle_channel_ready(&nodes[1].node.get_our_node_id(), &bs_funding);
 		let _as_channel_update = get_event_msg!(nodes[0], MessageSendEvent::SendChannelUpdate, nodes[1].node.get_our_node_id());
-		nodes[1].node.handle_funding_locked(&nodes[0].node.get_our_node_id(), &as_funding);
+		nodes[1].node.handle_channel_ready(&nodes[0].node.get_our_node_id(), &as_funding);
 		let _bs_channel_update = get_event_msg!(nodes[1], MessageSendEvent::SendChannelUpdate, nodes[0].node.get_our_node_id());
 
 		assert!(bg_processor.stop().is_ok());

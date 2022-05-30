@@ -307,8 +307,8 @@ impl msgs::ChannelMessageHandler for TestChannelMessageHandler {
 	fn handle_funding_signed(&self, _their_node_id: &PublicKey, msg: &msgs::FundingSigned) {
 		self.received_msg(wire::Message::FundingSigned(msg.clone()));
 	}
-	fn handle_funding_locked(&self, _their_node_id: &PublicKey, msg: &msgs::FundingLocked) {
-		self.received_msg(wire::Message::FundingLocked(msg.clone()));
+	fn handle_channel_ready(&self, _their_node_id: &PublicKey, msg: &msgs::ChannelReady) {
+		self.received_msg(wire::Message::ChannelReady(msg.clone()));
 	}
 	fn handle_shutdown(&self, _their_node_id: &PublicKey, _their_features: &InitFeatures, msg: &msgs::Shutdown) {
 		self.received_msg(wire::Message::Shutdown(msg.clone()));

@@ -167,7 +167,7 @@ fn test_priv_forwarding_rejection() {
 }
 
 fn do_test_1_conf_open(connect_style: ConnectStyle) {
-	// Previously, if the minium_depth config was set to 1, we'd never send a funding_locked. This
+	// Previously, if the minium_depth config was set to 1, we'd never send a channel_ready. This
 	// tests that we properly send one in that case.
 	let mut alice_config = UserConfig::default();
 	alice_config.own_channel_config.minimum_depth = 1;
@@ -185,13 +185,13 @@ fn do_test_1_conf_open(connect_style: ConnectStyle) {
 
 	let tx = create_chan_between_nodes_with_value_init(&nodes[0], &nodes[1], 100000, 10001, InitFeatures::known(), InitFeatures::known());
 	mine_transaction(&nodes[1], &tx);
-	nodes[0].node.handle_funding_locked(&nodes[1].node.get_our_node_id(), &get_event_msg!(nodes[1], MessageSendEvent::SendFundingLocked, nodes[0].node.get_our_node_id()));
+	nodes[0].node.handle_channel_ready(&nodes[1].node.get_our_node_id(), &get_event_msg!(nodes[1], MessageSendEvent::SendChannelReady, nodes[0].node.get_our_node_id()));
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 
 	mine_transaction(&nodes[0], &tx);
 	let as_msg_events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(as_msg_events.len(), 2);
-	let as_funding_locked = if let MessageSendEvent::SendFundingLocked { ref node_id, ref msg } = as_msg_events[0] {
+	let as_channel_ready = if let MessageSendEvent::SendChannelReady { ref node_id, ref msg } = as_msg_events[0] {
 		assert_eq!(*node_id, nodes[1].node.get_our_node_id());
 		msg.clone()
 	} else { panic!("Unexpected event"); };
@@ -199,7 +199,7 @@ fn do_test_1_conf_open(connect_style: ConnectStyle) {
 		assert_eq!(*node_id, nodes[1].node.get_our_node_id());
 	} else { panic!("Unexpected event"); }
 
-	nodes[1].node.handle_funding_locked(&nodes[0].node.get_our_node_id(), &as_funding_locked);
+	nodes[1].node.handle_channel_ready(&nodes[0].node.get_our_node_id(), &as_channel_ready);
 	let bs_msg_events = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(bs_msg_events.len(), 1);
 	if let MessageSendEvent::SendChannelUpdate { ref node_id, msg: _ } = bs_msg_events[0] {
@@ -259,7 +259,7 @@ fn test_routed_scid_alias() {
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
 	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 500_000_000, InitFeatures::known(), InitFeatures::known()).2;
-	let mut as_funding_locked = create_unannounced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 500_000_000, InitFeatures::known(), InitFeatures::known()).0;
+	let mut as_channel_ready = create_unannounced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 500_000_000, InitFeatures::known(), InitFeatures::known()).0;
 
 	let last_hop = nodes[2].node.list_usable_channels();
 	let hop_hints = vec![RouteHint(vec![RouteHintHop {
@@ -284,17 +284,17 @@ fn test_routed_scid_alias() {
 	pass_along_route(&nodes[0], &[&[&nodes[1], &nodes[2]]], 100_000, payment_hash, payment_secret);
 	claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_preimage);
 
-	// Now test that if a peer sends us a second funding_locked after the channel is operational we
+	// Now test that if a peer sends us a second channel_ready after the channel is operational we
 	// will use the new alias.
-	as_funding_locked.short_channel_id_alias = Some(0xdeadbeef);
-	nodes[2].node.handle_funding_locked(&nodes[1].node.get_our_node_id(), &as_funding_locked);
-	// Note that we always respond to a funding_locked with a channel_update. Not a lot of reason
+	as_channel_ready.short_channel_id_alias = Some(0xdeadbeef);
+	nodes[2].node.handle_channel_ready(&nodes[1].node.get_our_node_id(), &as_channel_ready);
+	// Note that we always respond to a channel_ready with a channel_update. Not a lot of reason
 	// to bother updating that code, so just drop the message here.
 	get_event_msg!(nodes[2], MessageSendEvent::SendChannelUpdate, nodes[1].node.get_our_node_id());
 	let updated_channel_info = nodes[2].node.list_usable_channels();
 	assert_eq!(updated_channel_info.len(), 1);
 	assert_eq!(updated_channel_info[0].inbound_scid_alias.unwrap(), 0xdeadbeef);
-	// Note that because we never send a duplicate funding_locked we can't send a payment through
+	// Note that because we never send a duplicate channel_ready we can't send a payment through
 	// the 0xdeadbeef SCID alias.
 }
 
@@ -403,10 +403,10 @@ fn test_inbound_scid_privacy() {
 	connect_blocks(&nodes[1], CHAN_CONFIRM_DEPTH - 1);
 	confirm_transaction_at(&nodes[2], &tx, conf_height);
 	connect_blocks(&nodes[2], CHAN_CONFIRM_DEPTH - 1);
-	let bs_funding_locked = get_event_msg!(nodes[1], MessageSendEvent::SendFundingLocked, nodes[2].node.get_our_node_id());
-	nodes[1].node.handle_funding_locked(&nodes[2].node.get_our_node_id(), &get_event_msg!(nodes[2], MessageSendEvent::SendFundingLocked, nodes[1].node.get_our_node_id()));
+	let bs_channel_ready = get_event_msg!(nodes[1], MessageSendEvent::SendChannelReady, nodes[2].node.get_our_node_id());
+	nodes[1].node.handle_channel_ready(&nodes[2].node.get_our_node_id(), &get_event_msg!(nodes[2], MessageSendEvent::SendChannelReady, nodes[1].node.get_our_node_id()));
 	let bs_update = get_event_msg!(nodes[1], MessageSendEvent::SendChannelUpdate, nodes[2].node.get_our_node_id());
-	nodes[2].node.handle_funding_locked(&nodes[1].node.get_our_node_id(), &bs_funding_locked);
+	nodes[2].node.handle_channel_ready(&nodes[1].node.get_our_node_id(), &bs_channel_ready);
 	let cs_update = get_event_msg!(nodes[2], MessageSendEvent::SendChannelUpdate, nodes[1].node.get_our_node_id());
 
 	nodes[1].node.handle_channel_update(&nodes[2].node.get_our_node_id(), &cs_update);
@@ -592,7 +592,7 @@ fn open_zero_conf_channel<'a, 'b, 'c, 'd>(initiator: &'a Node<'b, 'c, 'd>, recei
 	check_added_monitors!(receiver, 1);
 	let bs_signed_locked = receiver.node.get_and_clear_pending_msg_events();
 	assert_eq!(bs_signed_locked.len(), 2);
-	let as_funding_locked;
+	let as_channel_ready;
 	match &bs_signed_locked[0] {
 		MessageSendEvent::SendFundingSigned { node_id, msg } => {
 			assert_eq!(*node_id, initiator.node.get_our_node_id());
@@ -602,19 +602,19 @@ fn open_zero_conf_channel<'a, 'b, 'c, 'd>(initiator: &'a Node<'b, 'c, 'd>, recei
 			assert_eq!(initiator.tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 1);
 			assert_eq!(initiator.tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0)[0], tx);
 
-			as_funding_locked = get_event_msg!(initiator, MessageSendEvent::SendFundingLocked, receiver.node.get_our_node_id());
+			as_channel_ready = get_event_msg!(initiator, MessageSendEvent::SendChannelReady, receiver.node.get_our_node_id());
 		}
 		_ => panic!("Unexpected event"),
 	}
 	match &bs_signed_locked[1] {
-		MessageSendEvent::SendFundingLocked { node_id, msg } => {
+		MessageSendEvent::SendChannelReady { node_id, msg } => {
 			assert_eq!(*node_id, initiator.node.get_our_node_id());
-			initiator.node.handle_funding_locked(&receiver.node.get_our_node_id(), &msg);
+			initiator.node.handle_channel_ready(&receiver.node.get_our_node_id(), &msg);
 		}
 		_ => panic!("Unexpected event"),
 	}
 
-	receiver.node.handle_funding_locked(&initiator.node.get_our_node_id(), &as_funding_locked);
+	receiver.node.handle_channel_ready(&initiator.node.get_our_node_id(), &as_channel_ready);
 
 	let as_channel_update = get_event_msg!(initiator, MessageSendEvent::SendChannelUpdate, receiver.node.get_our_node_id());
 	let bs_channel_update = get_event_msg!(receiver, MessageSendEvent::SendChannelUpdate, initiator.node.get_our_node_id());
@@ -633,7 +633,7 @@ fn test_simple_0conf_channel() {
 	// If our peer tells us they will accept our channel with 0 confs, and we funded the channel,
 	// we should trust the funding won't be double-spent (assuming `trust_own_funding_0conf` is
 	// set)!
-	// Further, if we `accept_inbound_channel_from_trusted_peer_0conf`, funding locked messages
+	// Further, if we `accept_inbound_channel_from_trusted_peer_0conf`, `channel_ready` messages
 	// should fly immediately and the channel should be available for use as soon as they are
 	// received.
 
@@ -652,7 +652,7 @@ fn test_simple_0conf_channel() {
 
 #[test]
 fn test_0conf_channel_with_async_monitor() {
-	// Test that we properly send out funding_locked in (both inbound- and outbound-) zero-conf
+	// Test that we properly send out channel_ready in (both inbound- and outbound-) zero-conf
 	// channels if ChannelMonitor updates return a `TemporaryFailure` during the initial channel
 	// negotiation.
 
@@ -708,9 +708,9 @@ fn test_0conf_channel_with_async_monitor() {
 		_ => panic!("Unexpected event"),
 	}
 	match &bs_signed_locked[1] {
-		MessageSendEvent::SendFundingLocked { node_id, msg } => {
+		MessageSendEvent::SendChannelReady { node_id, msg } => {
 			assert_eq!(*node_id, nodes[0].node.get_our_node_id());
-			nodes[0].node.handle_funding_locked(&nodes[1].node.get_our_node_id(), &msg);
+			nodes[0].node.handle_channel_ready(&nodes[1].node.get_our_node_id(), &msg);
 		}
 		_ => panic!("Unexpected event"),
 	}
@@ -727,9 +727,9 @@ fn test_0conf_channel_with_async_monitor() {
 	assert_eq!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0)[0], tx);
 
 	match &as_locked_update[0] {
-		MessageSendEvent::SendFundingLocked { node_id, msg } => {
+		MessageSendEvent::SendChannelReady { node_id, msg } => {
 			assert_eq!(*node_id, nodes[1].node.get_our_node_id());
-			nodes[1].node.handle_funding_locked(&nodes[0].node.get_our_node_id(), &msg);
+			nodes[1].node.handle_channel_ready(&nodes[0].node.get_our_node_id(), &msg);
 		}
 		_ => panic!("Unexpected event"),
 	}

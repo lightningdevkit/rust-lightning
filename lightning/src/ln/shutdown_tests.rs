@@ -37,7 +37,7 @@ use ln::msgs::OptionalField::Present;
 
 #[test]
 fn pre_funding_lock_shutdown_test() {
-	// Test sending a shutdown prior to funding_locked after funding generation
+	// Test sending a shutdown prior to channel_ready after funding generation
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);

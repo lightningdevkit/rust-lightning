@@ -57,7 +57,7 @@ pub(crate) enum Message<T> where T: core::fmt::Debug + Type + TestEq {
 	AcceptChannel(msgs::AcceptChannel),
 	FundingCreated(msgs::FundingCreated),
 	FundingSigned(msgs::FundingSigned),
-	FundingLocked(msgs::FundingLocked),
+	ChannelReady(msgs::ChannelReady),
 	Shutdown(msgs::Shutdown),
 	ClosingSigned(msgs::ClosingSigned),
 	UpdateAddHTLC(msgs::UpdateAddHTLC),
@@ -97,7 +97,7 @@ impl<T> Message<T> where T: core::fmt::Debug + Type + TestEq {
 			&Message::AcceptChannel(ref msg) => msg.type_id(),
 			&Message::FundingCreated(ref msg) => msg.type_id(),
 			&Message::FundingSigned(ref msg) => msg.type_id(),
-			&Message::FundingLocked(ref msg) => msg.type_id(),
+			&Message::ChannelReady(ref msg) => msg.type_id(),
 			&Message::Shutdown(ref msg) => msg.type_id(),
 			&Message::ClosingSigned(ref msg) => msg.type_id(),
 			&Message::UpdateAddHTLC(ref msg) => msg.type_id(),
@@ -176,8 +176,8 @@ fn do_read<R: io::Read, T, H: core::ops::Deref>(buffer: &mut R, message_type: u1
 		msgs::FundingSigned::TYPE => {
 			Ok(Message::FundingSigned(Readable::read(buffer)?))
 		},
-		msgs::FundingLocked::TYPE => {
-			Ok(Message::FundingLocked(Readable::read(buffer)?))
+		msgs::ChannelReady::TYPE => {
+			Ok(Message::ChannelReady(Readable::read(buffer)?))
 		},
 		msgs::Shutdown::TYPE => {
 			Ok(Message::Shutdown(Readable::read(buffer)?))
@@ -332,7 +332,7 @@ impl Encode for msgs::FundingSigned {
 	const TYPE: u16 = 35;
 }
 
-impl Encode for msgs::FundingLocked {
+impl Encode for msgs::ChannelReady {
 	const TYPE: u16 = 36;
 }
 

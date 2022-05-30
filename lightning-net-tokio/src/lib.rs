@@ -549,7 +549,7 @@ mod tests {
 		fn handle_accept_channel(&self, _their_node_id: &PublicKey, _their_features: InitFeatures, _msg: &AcceptChannel) {}
 		fn handle_funding_created(&self, _their_node_id: &PublicKey, _msg: &FundingCreated) {}
 		fn handle_funding_signed(&self, _their_node_id: &PublicKey, _msg: &FundingSigned) {}
-		fn handle_funding_locked(&self, _their_node_id: &PublicKey, _msg: &FundingLocked) {}
+		fn handle_channel_ready(&self, _their_node_id: &PublicKey, _msg: &ChannelReady) {}
 		fn handle_shutdown(&self, _their_node_id: &PublicKey, _their_features: &InitFeatures, _msg: &Shutdown) {}
 		fn handle_closing_signed(&self, _their_node_id: &PublicKey, _msg: &ClosingSigned) {}
 		fn handle_update_add_htlc(&self, _their_node_id: &PublicKey, _msg: &UpdateAddHTLC) {}

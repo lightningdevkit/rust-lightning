@@ -228,7 +228,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 								unspendable_punishment_reserve: None,
 								confirmations_required: None,
 								force_close_spend_delay: None,
-								is_outbound: true, is_funding_locked: true,
+								is_outbound: true, is_channel_ready: true,
 								is_usable: true, is_public: true,
 								balance_msat: 0,
 								outbound_capacity_msat: capacity.saturating_mul(1000),

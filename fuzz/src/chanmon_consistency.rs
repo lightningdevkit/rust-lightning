@@ -490,10 +490,10 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 			}
 			for (idx, node_event) in node_events.iter().enumerate() {
 				for event in node_event {
-					if let events::MessageSendEvent::SendFundingLocked { ref node_id, ref msg } = event {
+					if let events::MessageSendEvent::SendChannelReady { ref node_id, ref msg } = event {
 						for node in $nodes.iter() {
 							if node.get_our_node_id() == *node_id {
-								node.handle_funding_locked(&$nodes[idx].get_our_node_id(), msg);
+								node.handle_channel_ready(&$nodes[idx].get_our_node_id(), msg);
 							}
 						}
 					} else { panic!("Wrong event type"); }
@@ -597,7 +597,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 							if Some(*node_id) == expect_drop_id { panic!("peer_disconnected should drop msgs bound for the disconnected peer"); }
 							*node_id == a_id
 						},
-						events::MessageSendEvent::SendFundingLocked { .. } => continue,
+						events::MessageSendEvent::SendChannelReady { .. } => continue,
 						events::MessageSendEvent::SendAnnouncementSignatures { .. } => continue,
 						events::MessageSendEvent::SendChannelUpdate { ref node_id, ref msg } => {
 							assert_eq!(msg.contents.flags & 2, 0); // The disable bit must never be set!
@@ -725,7 +725,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 								}
 							}
 						},
-						events::MessageSendEvent::SendFundingLocked { .. } => {
+						events::MessageSendEvent::SendChannelReady { .. } => {
 							// Can be generated as a reestablish response
 						},
 						events::MessageSendEvent::SendAnnouncementSignatures { .. } => {
@@ -771,7 +771,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 							events::MessageSendEvent::UpdateHTLCs { .. } => {},
 							events::MessageSendEvent::SendRevokeAndACK { .. } => {},
 							events::MessageSendEvent::SendChannelReestablish { .. } => {},
-							events::MessageSendEvent::SendFundingLocked { .. } => {},
+							events::MessageSendEvent::SendChannelReady { .. } => {},
 							events::MessageSendEvent::SendAnnouncementSignatures { .. } => {},
 							events::MessageSendEvent::SendChannelUpdate { ref msg, .. } => {
 								assert_eq!(msg.contents.flags & 2, 0); // The disable bit must never be set!
@@ -792,7 +792,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 							events::MessageSendEvent::UpdateHTLCs { .. } => {},
 							events::MessageSendEvent::SendRevokeAndACK { .. } => {},
 							events::MessageSendEvent::SendChannelReestablish { .. } => {},
-							events::MessageSendEvent::SendFundingLocked { .. } => {},
+							events::MessageSendEvent::SendChannelReady { .. } => {},
 							events::MessageSendEvent::SendAnnouncementSignatures { .. } => {},
 							events::MessageSendEvent::SendChannelUpdate { ref msg, .. } => {
 								assert_eq!(msg.contents.flags & 2, 0); // The disable bit must never be set!

@@ -1074,18 +1074,18 @@ pub struct ChannelDetails {
 	pub force_close_spend_delay: Option<u16>,
 	/// True if the channel was initiated (and thus funded) by us.
 	pub is_outbound: bool,
-	/// True if the channel is confirmed, funding_locked messages have been exchanged, and the
-	/// channel is not currently being shut down. `funding_locked` message exchange implies the
+	/// True if the channel is confirmed, channel_ready messages have been exchanged, and the
+	/// channel is not currently being shut down. `channel_ready` message exchange implies the
 	/// required confirmation count has been reached (and we were connected to the peer at some
 	/// point after the funding transaction received enough confirmations). The required
 	/// confirmation count is provided in [`confirmations_required`].
 	///
 	/// [`confirmations_required`]: ChannelDetails::confirmations_required
-	pub is_funding_locked: bool,
-	/// True if the channel is (a) confirmed and funding_locked messages have been exchanged, (b)
+	pub is_channel_ready: bool,
+	/// True if the channel is (a) confirmed and channel_ready messages have been exchanged, (b)
 	/// the peer is connected, and (c) the channel is not currently negotiating a shutdown.
 	///
-	/// This is a strict superset of `is_funding_locked`.
+	/// This is a strict superset of `is_channel_ready`.
 	pub is_usable: bool,
 	/// True if this channel is (or will be) publicly-announced.
 	pub is_public: bool,
@@ -1314,7 +1314,7 @@ macro_rules! remove_channel {
 }
 
 macro_rules! handle_monitor_err {
-	($self: ident, $err: expr, $short_to_id: expr, $chan: expr, $action_type: path, $resend_raa: expr, $resend_commitment: expr, $resend_funding_locked: expr, $failed_forwards: expr, $failed_fails: expr, $failed_finalized_fulfills: expr, $chan_id: expr) => {
+	($self: ident, $err: expr, $short_to_id: expr, $chan: expr, $action_type: path, $resend_raa: expr, $resend_commitment: expr, $resend_channel_ready: expr, $failed_forwards: expr, $failed_fails: expr, $failed_finalized_fulfills: expr, $chan_id: expr) => {
 		match $err {
 			ChannelMonitorUpdateErr::PermanentFailure => {
 				log_error!($self.logger, "Closing channel {} due to monitor update ChannelMonitorUpdateErr::PermanentFailure", log_bytes!($chan_id[..]));
@@ -1352,13 +1352,13 @@ macro_rules! handle_monitor_err {
 				if !$resend_raa {
 					debug_assert!($action_type == RAACommitmentOrder::CommitmentFirst || !$resend_commitment);
 				}
-				$chan.monitor_update_failed($resend_raa, $resend_commitment, $resend_funding_locked, $failed_forwards, $failed_fails, $failed_finalized_fulfills);
+				$chan.monitor_update_failed($resend_raa, $resend_commitment, $resend_channel_ready, $failed_forwards, $failed_fails, $failed_finalized_fulfills);
 				(Err(MsgHandleErrInternal::from_chan_no_close(ChannelError::Ignore("Failed to update ChannelMonitor".to_owned()), *$chan_id)), false)
 			},
 		}
 	};
-	($self: ident, $err: expr, $channel_state: expr, $entry: expr, $action_type: path, $resend_raa: expr, $resend_commitment: expr, $resend_funding_locked: expr, $failed_forwards: expr, $failed_fails: expr, $failed_finalized_fulfills: expr) => { {
-		let (res, drop) = handle_monitor_err!($self, $err, $channel_state.short_to_id, $entry.get_mut(), $action_type, $resend_raa, $resend_commitment, $resend_funding_locked, $failed_forwards, $failed_fails, $failed_finalized_fulfills, $entry.key());
+	($self: ident, $err: expr, $channel_state: expr, $entry: expr, $action_type: path, $resend_raa: expr, $resend_commitment: expr, $resend_channel_ready: expr, $failed_forwards: expr, $failed_fails: expr, $failed_finalized_fulfills: expr) => { {
+		let (res, drop) = handle_monitor_err!($self, $err, $channel_state.short_to_id, $entry.get_mut(), $action_type, $resend_raa, $resend_commitment, $resend_channel_ready, $failed_forwards, $failed_fails, $failed_finalized_fulfills, $entry.key());
 		if drop {
 			$entry.remove_entry();
 		}
@@ -1371,8 +1371,8 @@ macro_rules! handle_monitor_err {
 	($self: ident, $err: expr, $channel_state: expr, $entry: expr, $action_type: path, $chan_id: expr, NO_UPDATE) => {
 		handle_monitor_err!($self, $err, $channel_state, $entry, $action_type, false, false, false, Vec::new(), Vec::new(), Vec::new(), $chan_id)
 	};
-	($self: ident, $err: expr, $channel_state: expr, $entry: expr, $action_type: path, $resend_funding_locked: expr, OPTIONALLY_RESEND_FUNDING_LOCKED) => {
-		handle_monitor_err!($self, $err, $channel_state, $entry, $action_type, false, false, $resend_funding_locked, Vec::new(), Vec::new(), Vec::new())
+	($self: ident, $err: expr, $channel_state: expr, $entry: expr, $action_type: path, $resend_channel_ready: expr, OPTIONALLY_RESEND_FUNDING_LOCKED) => {
+		handle_monitor_err!($self, $err, $channel_state, $entry, $action_type, false, false, $resend_channel_ready, Vec::new(), Vec::new(), Vec::new())
 	};
 	($self: ident, $err: expr, $channel_state: expr, $entry: expr, $action_type: path, $resend_raa: expr, $resend_commitment: expr) => {
 		handle_monitor_err!($self, $err, $channel_state, $entry, $action_type, $resend_raa, $resend_commitment, false, Vec::new(), Vec::new(), Vec::new())
@@ -1403,13 +1403,13 @@ macro_rules! maybe_break_monitor_err {
 	}
 }
 
-macro_rules! send_funding_locked {
-	($short_to_id: expr, $pending_msg_events: expr, $channel: expr, $funding_locked_msg: expr) => {
-		$pending_msg_events.push(events::MessageSendEvent::SendFundingLocked {
+macro_rules! send_channel_ready {
+	($short_to_id: expr, $pending_msg_events: expr, $channel: expr, $channel_ready_msg: expr) => {
+		$pending_msg_events.push(events::MessageSendEvent::SendChannelReady {
 			node_id: $channel.get_counterparty_node_id(),
-			msg: $funding_locked_msg,
+			msg: $channel_ready_msg,
 		});
-		// Note that we may send a funding locked multiple times for a channel if we reconnect, so
+		// Note that we may send a `channel_ready` multiple times for a channel if we reconnect, so
 		// we allow collisions, but we shouldn't ever be updating the channel ID pointed to.
 		let outbound_alias_insert = $short_to_id.insert($channel.outbound_scid_alias(), $channel.channel_id());
 		assert!(outbound_alias_insert.is_none() || outbound_alias_insert.unwrap() == $channel.channel_id(),
@@ -1425,7 +1425,7 @@ macro_rules! send_funding_locked {
 macro_rules! handle_chan_restoration_locked {
 	($self: ident, $channel_lock: expr, $channel_state: expr, $channel_entry: expr,
 	 $raa: expr, $commitment_update: expr, $order: expr, $chanmon_update: expr,
-	 $pending_forwards: expr, $funding_broadcastable: expr, $funding_locked: expr, $announcement_sigs: expr) => { {
+	 $pending_forwards: expr, $funding_broadcastable: expr, $channel_ready: expr, $announcement_sigs: expr) => { {
 		let mut htlc_forwards = None;
 
 		let chanmon_update: Option<ChannelMonitorUpdate> = $chanmon_update; // Force type-checking to resolve
@@ -1439,24 +1439,24 @@ macro_rules! handle_chan_restoration_locked {
 			}
 
 			if chanmon_update.is_some() {
-				// On reconnect, we, by definition, only resend a funding_locked if there have been
+				// On reconnect, we, by definition, only resend a channel_ready if there have been
 				// no commitment updates, so the only channel monitor update which could also be
-				// associated with a funding_locked would be the funding_created/funding_signed
+				// associated with a channel_ready would be the funding_created/funding_signed
 				// monitor update. That monitor update failing implies that we won't send
-				// funding_locked until it's been updated, so we can't have a funding_locked and a
+				// channel_ready until it's been updated, so we can't have a channel_ready and a
 				// monitor update here (so we don't bother to handle it correctly below).
-				assert!($funding_locked.is_none());
-				// A channel monitor update makes no sense without either a funding_locked or a
-				// commitment update to process after it. Since we can't have a funding_locked, we
+				assert!($channel_ready.is_none());
+				// A channel monitor update makes no sense without either a channel_ready or a
+				// commitment update to process after it. Since we can't have a channel_ready, we
 				// only bother to handle the monitor-update + commitment_update case below.
 				assert!($commitment_update.is_some());
 			}
 
-			if let Some(msg) = $funding_locked {
-				// Similar to the above, this implies that we're letting the funding_locked fly
+			if let Some(msg) = $channel_ready {
+				// Similar to the above, this implies that we're letting the channel_ready fly
 				// before it should be allowed to.
 				assert!(chanmon_update.is_none());
-				send_funding_locked!($channel_state.short_to_id, $channel_state.pending_msg_events, $channel_entry.get(), msg);
+				send_channel_ready!($channel_state.short_to_id, $channel_state.pending_msg_events, $channel_entry.get(), msg);
 			}
 			if let Some(msg) = $announcement_sigs {
 				$channel_state.pending_msg_events.push(events::MessageSendEvent::SendAnnouncementSignatures {
@@ -1754,7 +1754,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					confirmations_required: channel.minimum_depth(),
 					force_close_spend_delay: channel.get_counterparty_selected_contest_delay(),
 					is_outbound: channel.is_outbound(),
-					is_funding_locked: channel.is_usable(),
+					is_channel_ready: channel.is_usable(),
 					is_usable: channel.is_live(),
 					is_public: channel.should_announce(),
 					inbound_htlc_minimum_msat: Some(channel.get_holder_htlc_minimum_msat()),
@@ -2901,7 +2901,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				});
 				announced_chans = true;
 			} else {
-				// If the channel is not public or has not yet reached funding_locked, check the
+				// If the channel is not public or has not yet reached channel_ready, check the
 				// next channel. If we don't yet have any public channels, we'll skip the broadcast
 				// below as peers may not accept it without channels on chain first.
 			}
@@ -4175,9 +4175,9 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			}
 
 			let updates = channel.get_mut().monitor_updating_restored(&self.logger, self.get_our_node_id(), self.genesis_hash, self.best_block.read().unwrap().height());
-			let channel_update = if updates.funding_locked.is_some() && channel.get().is_usable() {
+			let channel_update = if updates.channel_ready.is_some() && channel.get().is_usable() {
 				// We only send a channel_update in the case where we are just now sending a
-				// funding_locked and the channel is in a usable state. We may re-send a
+				// channel_ready and the channel is in a usable state. We may re-send a
 				// channel_update later through the announcement_signatures process for public
 				// channels, but there's no reason not to just inform our counterparty of our fees
 				// now.
@@ -4188,7 +4188,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					})
 				} else { None }
 			} else { None };
-			chan_restoration_res = handle_chan_restoration_locked!(self, channel_lock, channel_state, channel, updates.raa, updates.commitment_update, updates.order, None, updates.accepted_htlcs, updates.funding_broadcastable, updates.funding_locked, updates.announcement_sigs);
+			chan_restoration_res = handle_chan_restoration_locked!(self, channel_lock, channel_state, channel, updates.raa, updates.commitment_update, updates.order, None, updates.accepted_htlcs, updates.funding_broadcastable, updates.channel_ready, updates.announcement_sigs);
 			if let Some(upd) = channel_update {
 				channel_state.pending_msg_events.push(upd);
 			}
@@ -4344,7 +4344,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	}
 
 	fn internal_funding_created(&self, counterparty_node_id: &PublicKey, msg: &msgs::FundingCreated) -> Result<(), MsgHandleErrInternal> {
-		let ((funding_msg, monitor, mut funding_locked), mut chan) = {
+		let ((funding_msg, monitor, mut channel_ready), mut chan) = {
 			let best_block = *self.best_block.read().unwrap();
 			let mut channel_lock = self.channel_state.lock().unwrap();
 			let channel_state = &mut *channel_lock;
@@ -4377,10 +4377,10 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				ChannelMonitorUpdateErr::TemporaryFailure => {
 					// There's no problem signing a counterparty's funding transaction if our monitor
 					// hasn't persisted to disk yet - we can't lose money on a transaction that we haven't
-					// accepted payment from yet. We do, however, need to wait to send our funding_locked
+					// accepted payment from yet. We do, however, need to wait to send our channel_ready
 					// until we have persisted our monitor.
-					chan.monitor_update_failed(false, false, funding_locked.is_some(), Vec::new(), Vec::new(), Vec::new());
-					funding_locked = None; // Don't send the funding_locked now
+					chan.monitor_update_failed(false, false, channel_ready.is_some(), Vec::new(), Vec::new(), Vec::new());
+					channel_ready = None; // Don't send the channel_ready now
 				},
 			}
 		}
@@ -4395,8 +4395,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					node_id: counterparty_node_id.clone(),
 					msg: funding_msg,
 				});
-				if let Some(msg) = funding_locked {
-					send_funding_locked!(channel_state.short_to_id, channel_state.pending_msg_events, chan, msg);
+				if let Some(msg) = channel_ready {
+					send_channel_ready!(channel_state.short_to_id, channel_state.pending_msg_events, chan, msg);
 				}
 				e.insert(chan);
 			}
@@ -4414,12 +4414,12 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					if chan.get().get_counterparty_node_id() != *counterparty_node_id {
 						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
 					}
-					let (monitor, funding_tx, funding_locked) = match chan.get_mut().funding_signed(&msg, best_block, &self.logger) {
+					let (monitor, funding_tx, channel_ready) = match chan.get_mut().funding_signed(&msg, best_block, &self.logger) {
 						Ok(update) => update,
 						Err(e) => try_chan_entry!(self, Err(e), channel_state, chan),
 					};
 					if let Err(e) = self.chain_monitor.watch_channel(chan.get().get_funding_txo().unwrap(), monitor) {
-						let mut res = handle_monitor_err!(self, e, channel_state, chan, RAACommitmentOrder::RevokeAndACKFirst, funding_locked.is_some(), OPTIONALLY_RESEND_FUNDING_LOCKED);
+						let mut res = handle_monitor_err!(self, e, channel_state, chan, RAACommitmentOrder::RevokeAndACKFirst, channel_ready.is_some(), OPTIONALLY_RESEND_FUNDING_LOCKED);
 						if let Err(MsgHandleErrInternal { ref mut shutdown_finish, .. }) = res {
 							// We weren't able to watch the channel to begin with, so no updates should be made on
 							// it. Previously, full_stack_target found an (unreachable) panic when the
@@ -4430,8 +4430,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 						}
 						return res
 					}
-					if let Some(msg) = funding_locked {
-						send_funding_locked!(channel_state.short_to_id, channel_state.pending_msg_events, chan.get(), msg);
+					if let Some(msg) = channel_ready {
+						send_channel_ready!(channel_state.short_to_id, channel_state.pending_msg_events, chan.get(), msg);
 					}
 					funding_tx
 				},
@@ -4443,7 +4443,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		Ok(())
 	}
 
-	fn internal_funding_locked(&self, counterparty_node_id: &PublicKey, msg: &msgs::FundingLocked) -> Result<(), MsgHandleErrInternal> {
+	fn internal_channel_ready(&self, counterparty_node_id: &PublicKey, msg: &msgs::ChannelReady) -> Result<(), MsgHandleErrInternal> {
 		let mut channel_state_lock = self.channel_state.lock().unwrap();
 		let channel_state = &mut *channel_state_lock;
 		match channel_state.by_id.entry(msg.channel_id) {
@@ -4451,7 +4451,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				if chan.get().get_counterparty_node_id() != *counterparty_node_id {
 					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
 				}
-				let announcement_sigs_opt = try_chan_entry!(self, chan.get_mut().funding_locked(&msg, self.get_our_node_id(),
+				let announcement_sigs_opt = try_chan_entry!(self, chan.get_mut().channel_ready(&msg, self.get_our_node_id(),
 					self.genesis_hash.clone(), &self.best_block.read().unwrap(), &self.logger), channel_state, chan);
 				if let Some(announcement_sigs) = announcement_sigs_opt {
 					log_trace!(self.logger, "Sending announcement_signatures for channel {}", log_bytes!(chan.get().channel_id()));
@@ -4935,7 +4935,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					let need_lnd_workaround = chan.get_mut().workaround_lnd_bug_4006.take();
 					chan_restoration_res = handle_chan_restoration_locked!(
 						self, channel_state_lock, channel_state, chan, responses.raa, responses.commitment_update, responses.order,
-						responses.mon_update, Vec::new(), None, responses.funding_locked, responses.announcement_sigs);
+						responses.mon_update, Vec::new(), None, responses.channel_ready, responses.announcement_sigs);
 					if let Some(upd) = channel_update {
 						channel_state.pending_msg_events.push(upd);
 					}
@@ -4947,8 +4947,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		post_handle_chan_restoration!(self, chan_restoration_res);
 		self.fail_holding_cell_htlcs(htlcs_failed_forward, msg.channel_id);
 
-		if let Some(funding_locked_msg) = need_lnd_workaround {
-			self.internal_funding_locked(counterparty_node_id, &funding_locked_msg)?;
+		if let Some(channel_ready_msg) = need_lnd_workaround {
+			self.internal_channel_ready(counterparty_node_id, &channel_ready_msg)?;
 		}
 		Ok(())
 	}
@@ -5585,7 +5585,7 @@ where
 	/// Calls a function which handles an on-chain event (blocks dis/connected, transactions
 	/// un/confirmed, etc) on each channel, handling any resulting errors or messages generated by
 	/// the function.
-	fn do_chain_event<FN: Fn(&mut Channel<Signer>) -> Result<(Option<msgs::FundingLocked>, Vec<(HTLCSource, PaymentHash)>, Option<msgs::AnnouncementSignatures>), ClosureReason>>
+	fn do_chain_event<FN: Fn(&mut Channel<Signer>) -> Result<(Option<msgs::ChannelReady>, Vec<(HTLCSource, PaymentHash)>, Option<msgs::AnnouncementSignatures>), ClosureReason>>
 			(&self, height_opt: Option<u32>, f: FN) {
 		// Note that we MUST NOT end up calling methods on self.chain_monitor here - we're called
 		// during initialization prior to the chain_monitor being fully configured in some cases.
@@ -5600,17 +5600,17 @@ where
 			let pending_msg_events = &mut channel_state.pending_msg_events;
 			channel_state.by_id.retain(|_, channel| {
 				let res = f(channel);
-				if let Ok((funding_locked_opt, mut timed_out_pending_htlcs, announcement_sigs)) = res {
+				if let Ok((channel_ready_opt, mut timed_out_pending_htlcs, announcement_sigs)) = res {
 					for (source, payment_hash) in timed_out_pending_htlcs.drain(..) {
 						let (failure_code, data) = self.get_htlc_inbound_temp_fail_err_and_data(0x1000|14 /* expiry_too_soon */, &channel);
 						timed_out_htlcs.push((source, payment_hash, HTLCFailReason::Reason {
 							failure_code, data,
 						}));
 					}
-					if let Some(funding_locked) = funding_locked_opt {
-						send_funding_locked!(short_to_id, pending_msg_events, channel, funding_locked);
+					if let Some(channel_ready) = channel_ready_opt {
+						send_channel_ready!(short_to_id, pending_msg_events, channel, channel_ready);
 						if channel.is_usable() {
-							log_trace!(self.logger, "Sending funding_locked with private initial channel_update for our counterparty on channel {}", log_bytes!(channel.channel_id()));
+							log_trace!(self.logger, "Sending channel_ready with private initial channel_update for our counterparty on channel {}", log_bytes!(channel.channel_id()));
 							if let Ok(msg) = self.get_channel_update_for_unicast(channel) {
 								pending_msg_events.push(events::MessageSendEvent::SendChannelUpdate {
 									node_id: channel.get_counterparty_node_id(),
@@ -5618,7 +5618,7 @@ where
 								});
 							}
 						} else {
-							log_trace!(self.logger, "Sending funding_locked WITHOUT channel_update for {}", log_bytes!(channel.channel_id()));
+							log_trace!(self.logger, "Sending channel_ready WITHOUT channel_update for {}", log_bytes!(channel.channel_id()));
 						}
 					}
 					if let Some(announcement_sigs) = announcement_sigs {
@@ -5638,9 +5638,9 @@ where
 							}
 						}
 					}
-					if channel.is_our_funding_locked() {
+					if channel.is_our_channel_ready() {
 						if let Some(real_scid) = channel.get_short_channel_id() {
-							// If we sent a 0conf funding_locked, and now have an SCID, we add it
+							// If we sent a 0conf channel_ready, and now have an SCID, we add it
 							// to the short_to_id map here. Note that we check whether we can relay
 							// using the real SCID at relay-time (i.e. enforce option_scid_alias
 							// then), and if the funding tx is ever un-confirmed we force-close the
@@ -5765,9 +5765,9 @@ impl<Signer: Sign, M: Deref , T: Deref , K: Deref , F: Deref , L: Deref >
 		let _ = handle_error!(self, self.internal_funding_signed(counterparty_node_id, msg), *counterparty_node_id);
 	}
 
-	fn handle_funding_locked(&self, counterparty_node_id: &PublicKey, msg: &msgs::FundingLocked) {
+	fn handle_channel_ready(&self, counterparty_node_id: &PublicKey, msg: &msgs::ChannelReady) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
-		let _ = handle_error!(self, self.internal_funding_locked(counterparty_node_id, msg), *counterparty_node_id);
+		let _ = handle_error!(self, self.internal_channel_ready(counterparty_node_id, msg), *counterparty_node_id);
 	}
 
 	fn handle_shutdown(&self, counterparty_node_id: &PublicKey, their_features: &InitFeatures, msg: &msgs::Shutdown) {
@@ -5865,7 +5865,7 @@ impl<Signer: Sign, M: Deref , T: Deref , K: Deref , F: Deref , L: Deref >
 					&events::MessageSendEvent::SendOpenChannel { ref node_id, .. } => node_id != counterparty_node_id,
 					&events::MessageSendEvent::SendFundingCreated { ref node_id, .. } => node_id != counterparty_node_id,
 					&events::MessageSendEvent::SendFundingSigned { ref node_id, .. } => node_id != counterparty_node_id,
-					&events::MessageSendEvent::SendFundingLocked { ref node_id, .. } => node_id != counterparty_node_id,
+					&events::MessageSendEvent::SendChannelReady { ref node_id, .. } => node_id != counterparty_node_id,
 					&events::MessageSendEvent::SendAnnouncementSignatures { ref node_id, .. } => node_id != counterparty_node_id,
 					&events::MessageSendEvent::UpdateHTLCs { ref node_id, .. } => node_id != counterparty_node_id,
 					&events::MessageSendEvent::SendRevokeAndACK { ref node_id, .. } => node_id != counterparty_node_id,
@@ -6078,7 +6078,7 @@ impl_writeable_tlv_based!(ChannelDetails, {
 	(22, confirmations_required, option),
 	(24, force_close_spend_delay, option),
 	(26, is_outbound, required),
-	(28, is_funding_locked, required),
+	(28, is_channel_ready, required),
 	(30, is_usable, required),
 	(32, is_public, required),
 	(33, inbound_htlc_minimum_msat, option),
@@ -7652,12 +7652,12 @@ pub mod bench {
 		Listen::block_connected(&node_a, &block, 1);
 		Listen::block_connected(&node_b, &block, 1);
 
-		node_a.handle_funding_locked(&node_b.get_our_node_id(), &get_event_msg!(node_b_holder, MessageSendEvent::SendFundingLocked, node_a.get_our_node_id()));
+		node_a.handle_channel_ready(&node_b.get_our_node_id(), &get_event_msg!(node_b_holder, MessageSendEvent::SendChannelReady, node_a.get_our_node_id()));
 		let msg_events = node_a.get_and_clear_pending_msg_events();
 		assert_eq!(msg_events.len(), 2);
 		match msg_events[0] {
-			MessageSendEvent::SendFundingLocked { ref msg, .. } => {
-				node_b.handle_funding_locked(&node_a.get_our_node_id(), msg);
+			MessageSendEvent::SendChannelReady { ref msg, .. } => {
+				node_b.handle_channel_ready(&node_a.get_our_node_id(), msg);
 				get_event_msg!(node_b_holder, MessageSendEvent::SendChannelUpdate, node_a.get_our_node_id());
 			},
 			_ => panic!(),

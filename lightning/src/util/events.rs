@@ -902,12 +902,12 @@ pub enum MessageSendEvent {
 		/// The message which should be sent.
 		msg: msgs::FundingSigned,
 	},
-	/// Used to indicate that a funding_locked message should be sent to the peer with the given node_id.
-	SendFundingLocked {
+	/// Used to indicate that a channel_ready message should be sent to the peer with the given node_id.
+	SendChannelReady {
 		/// The node_id of the node which should receive these message(s)
 		node_id: PublicKey,
-		/// The funding_locked message which should be sent.
-		msg: msgs::FundingLocked,
+		/// The channel_ready message which should be sent.
+		msg: msgs::ChannelReady,
 	},
 	/// Used to indicate that an announcement_signatures message should be sent to the peer with the given node_id.
 	SendAnnouncementSignatures {

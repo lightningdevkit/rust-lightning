@@ -4,7 +4,7 @@ pub mod msg_announcement_signatures;
 pub mod msg_closing_signed;
 pub mod msg_commitment_signed;
 pub mod msg_funding_created;
-pub mod msg_funding_locked;
+pub mod msg_channel_ready;
 pub mod msg_funding_signed;
 pub mod msg_gossip_timestamp_filter;
 pub mod msg_init;
