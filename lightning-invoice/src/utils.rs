@@ -672,10 +672,10 @@ mod test {
 		connect_blocks(&nodes[2], CHAN_CONFIRM_DEPTH - 1);
 		confirm_transaction_at(&nodes[0], &tx, conf_height);
 		connect_blocks(&nodes[0], CHAN_CONFIRM_DEPTH - 1);
-		let as_funding_locked = get_event_msg!(nodes[2], MessageSendEvent::SendFundingLocked, nodes[0].node.get_our_node_id());
-		nodes[2].node.handle_funding_locked(&nodes[0].node.get_our_node_id(), &get_event_msg!(nodes[0], MessageSendEvent::SendFundingLocked, nodes[2].node.get_our_node_id()));
+		let as_channel_ready = get_event_msg!(nodes[2], MessageSendEvent::SendChannelReady, nodes[0].node.get_our_node_id());
+		nodes[2].node.handle_channel_ready(&nodes[0].node.get_our_node_id(), &get_event_msg!(nodes[0], MessageSendEvent::SendChannelReady, nodes[2].node.get_our_node_id()));
 		get_event_msg!(nodes[2], MessageSendEvent::SendChannelUpdate, nodes[0].node.get_our_node_id());
-		nodes[0].node.handle_funding_locked(&nodes[2].node.get_our_node_id(), &as_funding_locked);
+		nodes[0].node.handle_channel_ready(&nodes[2].node.get_our_node_id(), &as_channel_ready);
 		get_event_msg!(nodes[0], MessageSendEvent::SendChannelUpdate, nodes[2].node.get_our_node_id());
 
 		// As `msgs::ChannelUpdate` was never handled for the participating node(s) of the second
@@ -1059,10 +1059,10 @@ mod test {
 		connect_blocks(&nodes[1], CHAN_CONFIRM_DEPTH - 1);
 		confirm_transaction_at(&nodes[3], &tx, conf_height);
 		connect_blocks(&nodes[3], CHAN_CONFIRM_DEPTH - 1);
-		let as_funding_locked = get_event_msg!(nodes[1], MessageSendEvent::SendFundingLocked, nodes[3].node.get_our_node_id());
-		nodes[1].node.handle_funding_locked(&nodes[3].node.get_our_node_id(), &get_event_msg!(nodes[3], MessageSendEvent::SendFundingLocked, nodes[1].node.get_our_node_id()));
+		let as_channel_ready = get_event_msg!(nodes[1], MessageSendEvent::SendChannelReady, nodes[3].node.get_our_node_id());
+		nodes[1].node.handle_channel_ready(&nodes[3].node.get_our_node_id(), &get_event_msg!(nodes[3], MessageSendEvent::SendChannelReady, nodes[1].node.get_our_node_id()));
 		get_event_msg!(nodes[1], MessageSendEvent::SendChannelUpdate, nodes[3].node.get_our_node_id());
-		nodes[3].node.handle_funding_locked(&nodes[1].node.get_our_node_id(), &as_funding_locked);
+		nodes[3].node.handle_channel_ready(&nodes[1].node.get_our_node_id(), &as_channel_ready);
 		get_event_msg!(nodes[3], MessageSendEvent::SendChannelUpdate, nodes[1].node.get_our_node_id());
 
 		// As `msgs::ChannelUpdate` was never handled for the participating node(s) of the third

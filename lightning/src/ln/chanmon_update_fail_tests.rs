@@ -1848,7 +1848,7 @@ fn do_during_funding_monitor_fail(confirm_a_first: bool, restore_b_before_conf: 
 
 	if confirm_a_first {
 		confirm_transaction(&nodes[0], &funding_tx);
-		nodes[1].node.handle_funding_locked(&nodes[0].node.get_our_node_id(), &get_event_msg!(nodes[0], MessageSendEvent::SendFundingLocked, nodes[1].node.get_our_node_id()));
+		nodes[1].node.handle_channel_ready(&nodes[0].node.get_our_node_id(), &get_event_msg!(nodes[0], MessageSendEvent::SendChannelReady, nodes[1].node.get_our_node_id()));
 		assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 		assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
 	} else {
@@ -1857,7 +1857,7 @@ fn do_during_funding_monitor_fail(confirm_a_first: bool, restore_b_before_conf: 
 		assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 	}
 
-	// Make sure nodes[1] isn't stupid enough to re-send the FundingLocked on reconnect
+	// Make sure nodes[1] isn't stupid enough to re-send the ChannelReady on reconnect
 	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
 	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
 	reconnect_nodes(&nodes[0], &nodes[1], (false, confirm_a_first), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
@@ -1871,7 +1871,7 @@ fn do_during_funding_monitor_fail(confirm_a_first: bool, restore_b_before_conf: 
 	}
 	if !confirm_a_first && !restore_b_before_lock {
 		confirm_transaction(&nodes[0], &funding_tx);
-		nodes[1].node.handle_funding_locked(&nodes[0].node.get_our_node_id(), &get_event_msg!(nodes[0], MessageSendEvent::SendFundingLocked, nodes[1].node.get_our_node_id()));
+		nodes[1].node.handle_channel_ready(&nodes[0].node.get_our_node_id(), &get_event_msg!(nodes[0], MessageSendEvent::SendChannelReady, nodes[1].node.get_our_node_id()));
 		assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 		assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
 	}
@@ -1883,13 +1883,13 @@ fn do_during_funding_monitor_fail(confirm_a_first: bool, restore_b_before_conf: 
 
 	let (channel_id, (announcement, as_update, bs_update)) = if !confirm_a_first {
 		if !restore_b_before_lock {
-			let (funding_locked, channel_id) = create_chan_between_nodes_with_value_confirm_second(&nodes[0], &nodes[1]);
-			(channel_id, create_chan_between_nodes_with_value_b(&nodes[1], &nodes[0], &funding_locked))
+			let (channel_ready, channel_id) = create_chan_between_nodes_with_value_confirm_second(&nodes[0], &nodes[1]);
+			(channel_id, create_chan_between_nodes_with_value_b(&nodes[1], &nodes[0], &channel_ready))
 		} else {
-			nodes[0].node.handle_funding_locked(&nodes[1].node.get_our_node_id(), &get_event_msg!(nodes[1], MessageSendEvent::SendFundingLocked, nodes[0].node.get_our_node_id()));
+			nodes[0].node.handle_channel_ready(&nodes[1].node.get_our_node_id(), &get_event_msg!(nodes[1], MessageSendEvent::SendChannelReady, nodes[0].node.get_our_node_id()));
 			confirm_transaction(&nodes[0], &funding_tx);
-			let (funding_locked, channel_id) = create_chan_between_nodes_with_value_confirm_second(&nodes[1], &nodes[0]);
-			(channel_id, create_chan_between_nodes_with_value_b(&nodes[0], &nodes[1], &funding_locked))
+			let (channel_ready, channel_id) = create_chan_between_nodes_with_value_confirm_second(&nodes[1], &nodes[0]);
+			(channel_id, create_chan_between_nodes_with_value_b(&nodes[0], &nodes[1], &channel_ready))
 		}
 	} else {
 		if restore_b_before_conf {
@@ -1897,8 +1897,8 @@ fn do_during_funding_monitor_fail(confirm_a_first: bool, restore_b_before_conf: 
 			assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
 			confirm_transaction(&nodes[1], &funding_tx);
 		}
-		let (funding_locked, channel_id) = create_chan_between_nodes_with_value_confirm_second(&nodes[0], &nodes[1]);
-		(channel_id, create_chan_between_nodes_with_value_b(&nodes[1], &nodes[0], &funding_locked))
+		let (channel_ready, channel_id) = create_chan_between_nodes_with_value_confirm_second(&nodes[0], &nodes[1]);
+		(channel_id, create_chan_between_nodes_with_value_b(&nodes[1], &nodes[0], &channel_ready))
 	};
 	for node in nodes.iter() {
 		assert!(node.net_graph_msg_handler.handle_channel_announcement(&announcement).unwrap());

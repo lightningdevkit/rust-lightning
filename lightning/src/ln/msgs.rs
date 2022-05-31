@@ -239,9 +239,9 @@ pub struct FundingSigned {
 	pub signature: Signature,
 }
 
-/// A funding_locked message to be sent or received from a peer
+/// A channel_ready message to be sent or received from a peer
 #[derive(Clone, Debug, PartialEq)]
-pub struct FundingLocked {
+pub struct ChannelReady {
 	/// The channel ID
 	pub channel_id: [u8; 32],
 	/// The per-commitment point of the second commitment transaction
@@ -815,8 +815,8 @@ pub trait ChannelMessageHandler : MessageSendEventsProvider {
 	fn handle_funding_created(&self, their_node_id: &PublicKey, msg: &FundingCreated);
 	/// Handle an incoming funding_signed message from the given peer.
 	fn handle_funding_signed(&self, their_node_id: &PublicKey, msg: &FundingSigned);
-	/// Handle an incoming funding_locked message from the given peer.
-	fn handle_funding_locked(&self, their_node_id: &PublicKey, msg: &FundingLocked);
+	/// Handle an incoming channel_ready message from the given peer.
+	fn handle_channel_ready(&self, their_node_id: &PublicKey, msg: &ChannelReady);
 
 	// Channl close:
 	/// Handle an incoming shutdown message from the given peer.
@@ -1163,7 +1163,7 @@ impl_writeable_msg!(FundingSigned, {
 	signature
 }, {});
 
-impl_writeable_msg!(FundingLocked, {
+impl_writeable_msg!(ChannelReady, {
 	channel_id,
 	next_per_commitment_point,
 }, {
@@ -2262,15 +2262,15 @@ mod tests {
 	}
 
 	#[test]
-	fn encoding_funding_locked() {
+	fn encoding_channel_ready() {
 		let secp_ctx = Secp256k1::new();
 		let (_, pubkey_1,) = get_keys_from!("0101010101010101010101010101010101010101010101010101010101010101", secp_ctx);
-		let funding_locked = msgs::FundingLocked {
+		let channel_ready = msgs::ChannelReady {
 			channel_id: [2; 32],
 			next_per_commitment_point: pubkey_1,
 			short_channel_id_alias: None,
 		};
-		let encoded_value = funding_locked.encode();
+		let encoded_value = channel_ready.encode();
 		let target_value = hex::decode("0202020202020202020202020202020202020202020202020202020202020202031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f").unwrap();
 		assert_eq!(encoded_value, target_value);
 	}

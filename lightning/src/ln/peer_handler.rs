@@ -151,7 +151,7 @@ impl ChannelMessageHandler for ErroringMessageHandler {
 	fn handle_funding_signed(&self, their_node_id: &PublicKey, msg: &msgs::FundingSigned) {
 		ErroringMessageHandler::push_error(self, their_node_id, msg.channel_id);
 	}
-	fn handle_funding_locked(&self, their_node_id: &PublicKey, msg: &msgs::FundingLocked) {
+	fn handle_channel_ready(&self, their_node_id: &PublicKey, msg: &msgs::ChannelReady) {
 		ErroringMessageHandler::push_error(self, their_node_id, msg.channel_id);
 	}
 	fn handle_shutdown(&self, their_node_id: &PublicKey, _their_features: &InitFeatures, msg: &msgs::Shutdown) {
@@ -1209,8 +1209,8 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 			wire::Message::FundingSigned(msg) => {
 				self.message_handler.chan_handler.handle_funding_signed(&their_node_id, &msg);
 			},
-			wire::Message::FundingLocked(msg) => {
-				self.message_handler.chan_handler.handle_funding_locked(&their_node_id, &msg);
+			wire::Message::ChannelReady(msg) => {
+				self.message_handler.chan_handler.handle_channel_ready(&their_node_id, &msg);
 			},
 
 			wire::Message::Shutdown(msg) => {
@@ -1486,8 +1486,8 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 								log_bytes!(msg.channel_id));
 						self.enqueue_message(&mut *get_peer_for_forwarding!(node_id), msg);
 					},
-					MessageSendEvent::SendFundingLocked { ref node_id, ref msg } => {
-						log_debug!(self.logger, "Handling SendFundingLocked event in peer_handler for node {} for channel {}",
+					MessageSendEvent::SendChannelReady { ref node_id, ref msg } => {
+						log_debug!(self.logger, "Handling SendChannelReady event in peer_handler for node {} for channel {}",
 								log_pubkey!(node_id),
 								log_bytes!(msg.channel_id));
 						self.enqueue_message(&mut *get_peer_for_forwarding!(node_id), msg);

@@ -3624,11 +3624,11 @@ fn do_test_drop_messages_peer_disconnect(messages_delivered: u8, simulate_broken
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
-	let mut as_funding_locked = None;
+	let mut as_channel_ready = None;
 	if messages_delivered == 0 {
-		let (funding_locked, _, _) = create_chan_between_nodes_with_value_a(&nodes[0], &nodes[1], 100000, 10001, InitFeatures::known(), InitFeatures::known());
-		as_funding_locked = Some(funding_locked);
-		// nodes[1] doesn't receive the funding_locked message (it'll be re-sent on reconnect)
+		let (channel_ready, _, _) = create_chan_between_nodes_with_value_a(&nodes[0], &nodes[1], 100000, 10001, InitFeatures::known(), InitFeatures::known());
+		as_channel_ready = Some(channel_ready);
+		// nodes[1] doesn't receive the channel_ready message (it'll be re-sent on reconnect)
 		// Note that we store it so that if we're running with `simulate_broken_lnd` we can deliver
 		// it before the channel_reestablish message.
 	} else {
@@ -3681,17 +3681,17 @@ fn do_test_drop_messages_peer_disconnect(messages_delivered: u8, simulate_broken
 	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
 	if messages_delivered < 3 {
 		if simulate_broken_lnd {
-			// lnd has a long-standing bug where they send a funding_locked prior to a
-			// channel_reestablish if you reconnect prior to funding_locked time.
+			// lnd has a long-standing bug where they send a channel_ready prior to a
+			// channel_reestablish if you reconnect prior to channel_ready time.
 			//
-			// Here we simulate that behavior, delivering a funding_locked immediately on
-			// reconnect. Note that we don't bother skipping the now-duplicate funding_locked sent
+			// Here we simulate that behavior, delivering a channel_ready immediately on
+			// reconnect. Note that we don't bother skipping the now-duplicate channel_ready sent
 			// in `reconnect_nodes` but we currently don't fail based on that.
 			//
 			// See-also <https://github.com/lightningnetwork/lnd/issues/4006>
-			nodes[1].node.handle_funding_locked(&nodes[0].node.get_our_node_id(), &as_funding_locked.as_ref().unwrap().0);
+			nodes[1].node.handle_channel_ready(&nodes[0].node.get_our_node_id(), &as_channel_ready.as_ref().unwrap().0);
 		}
-		// Even if the funding_locked messages get exchanged, as long as nothing further was
+		// Even if the channel_ready messages get exchanged, as long as nothing further was
 		// received on either side, both sides will need to resend them.
 		reconnect_nodes(&nodes[0], &nodes[1], (true, true), (0, 1), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
 	} else if messages_delivered == 3 {
@@ -3886,26 +3886,26 @@ fn test_funding_peer_disconnect() {
 	nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id(), &msgs::Init { features: InitFeatures::empty(), remote_network_address: None });
 	let bs_reestablish = get_event_msg!(nodes[1], MessageSendEvent::SendChannelReestablish, nodes[0].node.get_our_node_id());
 
-	// nodes[0] hasn't yet received a funding_locked, so it only sends that on reconnect.
+	// nodes[0] hasn't yet received a channel_ready, so it only sends that on reconnect.
 	nodes[0].node.handle_channel_reestablish(&nodes[1].node.get_our_node_id(), &bs_reestablish);
 	let events_3 = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events_3.len(), 1);
-	let as_funding_locked = match events_3[0] {
-		MessageSendEvent::SendFundingLocked { ref node_id, ref msg } => {
+	let as_channel_ready = match events_3[0] {
+		MessageSendEvent::SendChannelReady { ref node_id, ref msg } => {
 			assert_eq!(*node_id, nodes[1].node.get_our_node_id());
 			msg.clone()
 		},
 		_ => panic!("Unexpected event {:?}", events_3[0]),
 	};
 
-	// nodes[1] received nodes[0]'s funding_locked on the first reconnect above, so it should send
+	// nodes[1] received nodes[0]'s channel_ready on the first reconnect above, so it should send
 	// announcement_signatures as well as channel_update.
 	nodes[1].node.handle_channel_reestablish(&nodes[0].node.get_our_node_id(), &as_reestablish);
 	let events_4 = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(events_4.len(), 3);
 	let chan_id;
-	let bs_funding_locked = match events_4[0] {
-		MessageSendEvent::SendFundingLocked { ref node_id, ref msg } => {
+	let bs_channel_ready = match events_4[0] {
+		MessageSendEvent::SendChannelReady { ref node_id, ref msg } => {
 			assert_eq!(*node_id, nodes[0].node.get_our_node_id());
 			chan_id = msg.channel_id;
 			msg.clone()
@@ -3926,9 +3926,9 @@ fn test_funding_peer_disconnect() {
 		_ => panic!("Unexpected event {:?}", events_4[2]),
 	}
 
-	// Re-deliver nodes[0]'s funding_locked, which nodes[1] can safely ignore. It currently
+	// Re-deliver nodes[0]'s channel_ready, which nodes[1] can safely ignore. It currently
 	// generates a duplicative private channel_update
-	nodes[1].node.handle_funding_locked(&nodes[0].node.get_our_node_id(), &as_funding_locked);
+	nodes[1].node.handle_channel_ready(&nodes[0].node.get_our_node_id(), &as_channel_ready);
 	let events_5 = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(events_5.len(), 1);
 	match events_5[0] {
@@ -3938,9 +3938,9 @@ fn test_funding_peer_disconnect() {
 		_ => panic!("Unexpected event {:?}", events_5[0]),
 	};
 
-	// When we deliver nodes[1]'s funding_locked, however, nodes[0] will generate its
+	// When we deliver nodes[1]'s channel_ready, however, nodes[0] will generate its
 	// announcement_signatures.
-	nodes[0].node.handle_funding_locked(&nodes[1].node.get_our_node_id(), &bs_funding_locked);
+	nodes[0].node.handle_channel_ready(&nodes[1].node.get_our_node_id(), &bs_channel_ready);
 	let events_6 = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events_6.len(), 1);
 	let as_announcement_sigs = match events_6[0] {
@@ -4043,11 +4043,11 @@ fn test_funding_peer_disconnect() {
 }
 
 #[test]
-fn test_funding_locked_without_best_block_updated() {
+fn test_channel_ready_without_best_block_updated() {
 	// Previously, if we were offline when a funding transaction was locked in, and then we came
 	// back online, calling best_block_updated once followed by transactions_confirmed, we'd not
-	// generate a funding_locked until a later best_block_updated. This tests that we generate the
-	// funding_locked immediately instead.
+	// generate a channel_ready until a later best_block_updated. This tests that we generate the
+	// channel_ready immediately instead.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
@@ -4063,9 +4063,9 @@ fn test_funding_locked_without_best_block_updated() {
 	let conf_block_header = nodes[0].get_block_header(conf_height);
 	nodes[0].node.transactions_confirmed(&conf_block_header, &conf_txn[..], conf_height);
 
-	// Ensure nodes[0] generates a funding_locked after the transactions_confirmed
-	let as_funding_locked = get_event_msg!(nodes[0], MessageSendEvent::SendFundingLocked, nodes[1].node.get_our_node_id());
-	nodes[1].node.handle_funding_locked(&nodes[0].node.get_our_node_id(), &as_funding_locked);
+	// Ensure nodes[0] generates a channel_ready after the transactions_confirmed
+	let as_channel_ready = get_event_msg!(nodes[0], MessageSendEvent::SendChannelReady, nodes[1].node.get_our_node_id());
+	nodes[1].node.handle_channel_ready(&nodes[0].node.get_our_node_id(), &as_channel_ready);
 }
 
 #[test]
@@ -4418,8 +4418,8 @@ fn test_no_txn_manager_serialize_deserialize() {
 	nodes[0].node.handle_channel_reestablish(&nodes[1].node.get_our_node_id(), &reestablish_2[0]);
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 
-	let (funding_locked, _) = create_chan_between_nodes_with_value_confirm(&nodes[0], &nodes[1], &tx);
-	let (announcement, as_update, bs_update) = create_chan_between_nodes_with_value_b(&nodes[0], &nodes[1], &funding_locked);
+	let (channel_ready, _) = create_chan_between_nodes_with_value_confirm(&nodes[0], &nodes[1], &tx);
+	let (announcement, as_update, bs_update) = create_chan_between_nodes_with_value_b(&nodes[0], &nodes[1], &channel_ready);
 	for node in nodes.iter() {
 		assert!(node.net_graph_msg_handler.handle_channel_announcement(&announcement).unwrap());
 		node.net_graph_msg_handler.handle_channel_update(&as_update).unwrap();
@@ -4538,8 +4538,8 @@ fn test_manager_serialize_deserialize_events() {
 	nodes[0].node.handle_channel_reestablish(&nodes[1].node.get_our_node_id(), &reestablish_2[0]);
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 
-	let (funding_locked, _) = create_chan_between_nodes_with_value_confirm(&nodes[0], &nodes[1], &tx);
-	let (announcement, as_update, bs_update) = create_chan_between_nodes_with_value_b(&nodes[0], &nodes[1], &funding_locked);
+	let (channel_ready, _) = create_chan_between_nodes_with_value_confirm(&nodes[0], &nodes[1], &tx);
+	let (announcement, as_update, bs_update) = create_chan_between_nodes_with_value_b(&nodes[0], &nodes[1], &channel_ready);
 	for node in nodes.iter() {
 		assert!(node.net_graph_msg_handler.handle_channel_announcement(&announcement).unwrap());
 		node.net_graph_msg_handler.handle_channel_update(&as_update).unwrap();
@@ -9330,8 +9330,8 @@ fn test_duplicate_chan_id() {
 	assert_eq!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 1);
 	assert_eq!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap()[0], tx);
 
-	let (funding_locked, _) = create_chan_between_nodes_with_value_confirm(&nodes[0], &nodes[1], &tx);
-	let (announcement, as_update, bs_update) = create_chan_between_nodes_with_value_b(&nodes[0], &nodes[1], &funding_locked);
+	let (channel_ready, _) = create_chan_between_nodes_with_value_confirm(&nodes[0], &nodes[1], &tx);
+	let (announcement, as_update, bs_update) = create_chan_between_nodes_with_value_b(&nodes[0], &nodes[1], &channel_ready);
 	update_nodes_with_chan_announce(&nodes, 0, 1, &announcement, &as_update, &bs_update);
 	send_payment(&nodes[0], &[&nodes[1]], 8000000);
 }
@@ -9631,7 +9631,7 @@ fn test_forwardable_regen() {
 	check_added_monitors!(nodes[1], 2);
 
 	reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
-	// Note that nodes[1] and nodes[2] resend their funding_locked here since they haven't updated
+	// Note that nodes[1] and nodes[2] resend their channel_ready here since they haven't updated
 	// the commitment state.
 	reconnect_nodes(&nodes[1], &nodes[2], (true, true), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
 
@@ -10213,8 +10213,8 @@ fn do_test_max_dust_htlc_exposure(dust_outbound_balance: bool, exposure_breach_e
 	nodes[0].node.handle_funding_signed(&nodes[1].node.get_our_node_id(), &get_event_msg!(nodes[1], MessageSendEvent::SendFundingSigned, nodes[0].node.get_our_node_id()));
 	check_added_monitors!(nodes[0], 1);
 
-	let (funding_locked, channel_id) = create_chan_between_nodes_with_value_confirm(&nodes[0], &nodes[1], &tx);
-	let (announcement, as_update, bs_update) = create_chan_between_nodes_with_value_b(&nodes[0], &nodes[1], &funding_locked);
+	let (channel_ready, channel_id) = create_chan_between_nodes_with_value_confirm(&nodes[0], &nodes[1], &tx);
+	let (announcement, as_update, bs_update) = create_chan_between_nodes_with_value_b(&nodes[0], &nodes[1], &channel_ready);
 	update_nodes_with_chan_announce(&nodes, 0, 1, &announcement, &as_update, &bs_update);
 
 	let dust_buffer_feerate = {

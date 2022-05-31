@@ -243,7 +243,7 @@ enum HTLCUpdateAwaitingACK {
 
 /// There are a few "states" and then a number of flags which can be applied:
 /// We first move through init with OurInitSent -> TheirInitSent -> FundingCreated -> FundingSent.
-/// TheirFundingLocked and OurFundingLocked then get set on FundingSent, and when both are set we
+/// TheirChannelReady and OurChannelReady then get set on FundingSent, and when both are set we
 /// move on to ChannelFunded.
 /// Note that PeerDisconnected can be set on both ChannelFunded and FundingSent.
 /// ChannelFunded can then get all remaining flags set on it, until we finish shutdown, then we
@@ -258,15 +258,15 @@ enum ChannelState {
 	/// upon receipt of funding_created, so simply skip this state.
 	FundingCreated = 4,
 	/// Set when we have received/sent funding_created and funding_signed and are thus now waiting
-	/// on the funding transaction to confirm. The FundingLocked flags are set to indicate when we
+	/// on the funding transaction to confirm. The ChannelReady flags are set to indicate when we
 	/// and our counterparty consider the funding transaction confirmed.
 	FundingSent = 8,
-	/// Flag which can be set on FundingSent to indicate they sent us a funding_locked message.
-	/// Once both TheirFundingLocked and OurFundingLocked are set, state moves on to ChannelFunded.
-	TheirFundingLocked = 1 << 4,
-	/// Flag which can be set on FundingSent to indicate we sent them a funding_locked message.
-	/// Once both TheirFundingLocked and OurFundingLocked are set, state moves on to ChannelFunded.
-	OurFundingLocked = 1 << 5,
+	/// Flag which can be set on FundingSent to indicate they sent us a channel_ready message.
+	/// Once both TheirChannelReady and OurChannelReady are set, state moves on to ChannelFunded.
+	TheirChannelReady = 1 << 4,
+	/// Flag which can be set on FundingSent to indicate we sent them a channel_ready message.
+	/// Once both TheirChannelReady and OurChannelReady are set, state moves on to ChannelFunded.
+	OurChannelReady = 1 << 5,
 	ChannelFunded = 64,
 	/// Flag which is set on ChannelFunded and FundingSent indicating remote side is considered
 	/// "disconnected" and no updates are allowed until after we've done a channel_reestablish
@@ -429,13 +429,13 @@ pub(super) struct MonitorRestoreUpdates {
 	pub failed_htlcs: Vec<(HTLCSource, PaymentHash, HTLCFailReason)>,
 	pub finalized_claimed_htlcs: Vec<HTLCSource>,
 	pub funding_broadcastable: Option<Transaction>,
-	pub funding_locked: Option<msgs::FundingLocked>,
+	pub channel_ready: Option<msgs::ChannelReady>,
 	pub announcement_sigs: Option<msgs::AnnouncementSignatures>,
 }
 
 /// The return value of `channel_reestablish`
 pub(super) struct ReestablishResponses {
-	pub funding_locked: Option<msgs::FundingLocked>,
+	pub channel_ready: Option<msgs::ChannelReady>,
 	pub raa: Option<msgs::RevokeAndACK>,
 	pub commitment_update: Option<msgs::CommitmentUpdate>,
 	pub order: RAACommitmentOrder,
@@ -543,7 +543,7 @@ pub(super) struct Channel<Signer: Sign> {
 	/// send it first.
 	resend_order: RAACommitmentOrder,
 
-	monitor_pending_funding_locked: bool,
+	monitor_pending_channel_ready: bool,
 	monitor_pending_revoke_and_ack: bool,
 	monitor_pending_commitment_signed: bool,
 	monitor_pending_forwards: Vec<(PendingHTLCInfo, u64)>,
@@ -688,12 +688,12 @@ pub(super) struct Channel<Signer: Sign> {
 
 	/// lnd has a long-standing bug where, upon reconnection, if the channel is not yet confirmed
 	/// they will not send a channel_reestablish until the channel locks in. Then, they will send a
-	/// funding_locked *before* sending the channel_reestablish (which is clearly a violation of
-	/// the BOLT specs). We copy c-lightning's workaround here and simply store the funding_locked
+	/// channel_ready *before* sending the channel_reestablish (which is clearly a violation of
+	/// the BOLT specs). We copy c-lightning's workaround here and simply store the channel_ready
 	/// message until we receive a channel_reestablish.
 	///
 	/// See-also <https://github.com/lightningnetwork/lnd/issues/4006>
-	pub workaround_lnd_bug_4006: Option<msgs::FundingLocked>,
+	pub workaround_lnd_bug_4006: Option<msgs::ChannelReady>,
 
 	#[cfg(any(test, fuzzing))]
 	// When we receive an HTLC fulfill on an outbound path, we may immediately fulfill the
@@ -960,7 +960,7 @@ impl<Signer: Sign> Channel<Signer> {
 
 			resend_order: RAACommitmentOrder::CommitmentFirst,
 
-			monitor_pending_funding_locked: false,
+			monitor_pending_channel_ready: false,
 			monitor_pending_revoke_and_ack: false,
 			monitor_pending_commitment_signed: false,
 			monitor_pending_forwards: Vec::new(),
@@ -1277,7 +1277,7 @@ impl<Signer: Sign> Channel<Signer> {
 
 			resend_order: RAACommitmentOrder::CommitmentFirst,
 
-			monitor_pending_funding_locked: false,
+			monitor_pending_channel_ready: false,
 			monitor_pending_revoke_and_ack: false,
 			monitor_pending_commitment_signed: false,
 			monitor_pending_forwards: Vec::new(),
@@ -2119,7 +2119,7 @@ impl<Signer: Sign> Channel<Signer> {
 		&self.get_counterparty_pubkeys().funding_pubkey
 	}
 
-	pub fn funding_created<L: Deref>(&mut self, msg: &msgs::FundingCreated, best_block: BestBlock, logger: &L) -> Result<(msgs::FundingSigned, ChannelMonitor<Signer>, Option<msgs::FundingLocked>), ChannelError> where L::Target: Logger {
+	pub fn funding_created<L: Deref>(&mut self, msg: &msgs::FundingCreated, best_block: BestBlock, logger: &L) -> Result<(msgs::FundingSigned, ChannelMonitor<Signer>, Option<msgs::ChannelReady>), ChannelError> where L::Target: Logger {
 		if self.is_outbound() {
 			return Err(ChannelError::Close("Received funding_created for an outbound channel?".to_owned()));
 		}
@@ -2194,12 +2194,12 @@ impl<Signer: Sign> Channel<Signer> {
 		Ok((msgs::FundingSigned {
 			channel_id: self.channel_id,
 			signature
-		}, channel_monitor, self.check_get_funding_locked(0)))
+		}, channel_monitor, self.check_get_channel_ready(0)))
 	}
 
 	/// Handles a funding_signed message from the remote end.
 	/// If this call is successful, broadcast the funding transaction (and not before!)
-	pub fn funding_signed<L: Deref>(&mut self, msg: &msgs::FundingSigned, best_block: BestBlock, logger: &L) -> Result<(ChannelMonitor<Signer>, Transaction, Option<msgs::FundingLocked>), ChannelError> where L::Target: Logger {
+	pub fn funding_signed<L: Deref>(&mut self, msg: &msgs::FundingSigned, best_block: BestBlock, logger: &L) -> Result<(ChannelMonitor<Signer>, Transaction, Option<msgs::ChannelReady>), ChannelError> where L::Target: Logger {
 		if !self.is_outbound() {
 			return Err(ChannelError::Close("Received funding_signed for an inbound channel?".to_owned()));
 		}
@@ -2268,16 +2268,16 @@ impl<Signer: Sign> Channel<Signer> {
 
 		log_info!(logger, "Received funding_signed from peer for channel {}", log_bytes!(self.channel_id()));
 
-		Ok((channel_monitor, self.funding_transaction.as_ref().cloned().unwrap(), self.check_get_funding_locked(0)))
+		Ok((channel_monitor, self.funding_transaction.as_ref().cloned().unwrap(), self.check_get_channel_ready(0)))
 	}
 
-	/// Handles a funding_locked message from our peer. If we've already sent our funding_locked
+	/// Handles a channel_ready message from our peer. If we've already sent our channel_ready
 	/// and the channel is now usable (and public), this may generate an announcement_signatures to
 	/// reply with.
-	pub fn funding_locked<L: Deref>(&mut self, msg: &msgs::FundingLocked, node_pk: PublicKey, genesis_block_hash: BlockHash, best_block: &BestBlock, logger: &L) -> Result<Option<msgs::AnnouncementSignatures>, ChannelError> where L::Target: Logger {
+	pub fn channel_ready<L: Deref>(&mut self, msg: &msgs::ChannelReady, node_pk: PublicKey, genesis_block_hash: BlockHash, best_block: &BestBlock, logger: &L) -> Result<Option<msgs::AnnouncementSignatures>, ChannelError> where L::Target: Logger {
 		if self.channel_state & (ChannelState::PeerDisconnected as u32) == ChannelState::PeerDisconnected as u32 {
 			self.workaround_lnd_bug_4006 = Some(msg.clone());
-			return Err(ChannelError::Ignore("Peer sent funding_locked when we needed a channel_reestablish. The peer is likely lnd, see https://github.com/lightningnetwork/lnd/issues/4006".to_owned()));
+			return Err(ChannelError::Ignore("Peer sent channel_ready when we needed a channel_reestablish. The peer is likely lnd, see https://github.com/lightningnetwork/lnd/issues/4006".to_owned()));
 		}
 
 		if let Some(scid_alias) = msg.short_channel_id_alias {
@@ -2292,16 +2292,16 @@ impl<Signer: Sign> Channel<Signer> {
 		let non_shutdown_state = self.channel_state & (!MULTI_STATE_FLAGS);
 
 		if non_shutdown_state == ChannelState::FundingSent as u32 {
-			self.channel_state |= ChannelState::TheirFundingLocked as u32;
-		} else if non_shutdown_state == (ChannelState::FundingSent as u32 | ChannelState::OurFundingLocked as u32) {
+			self.channel_state |= ChannelState::TheirChannelReady as u32;
+		} else if non_shutdown_state == (ChannelState::FundingSent as u32 | ChannelState::OurChannelReady as u32) {
 			self.channel_state = ChannelState::ChannelFunded as u32 | (self.channel_state & MULTI_STATE_FLAGS);
 			self.update_time_counter += 1;
 		} else if self.channel_state & (ChannelState::ChannelFunded as u32) != 0 ||
-			// If we reconnected before sending our funding locked they may still resend theirs:
-			(self.channel_state & (ChannelState::FundingSent as u32 | ChannelState::TheirFundingLocked as u32) ==
-			                      (ChannelState::FundingSent as u32 | ChannelState::TheirFundingLocked as u32))
+			// If we reconnected before sending our `channel_ready` they may still resend theirs:
+			(self.channel_state & (ChannelState::FundingSent as u32 | ChannelState::TheirChannelReady as u32) ==
+			                      (ChannelState::FundingSent as u32 | ChannelState::TheirChannelReady as u32))
 		{
-			// They probably disconnected/reconnected and re-sent the funding_locked, which is
+			// They probably disconnected/reconnected and re-sent the channel_ready, which is
 			// required, or they're sending a fresh SCID alias.
 			let expected_point =
 				if self.cur_counterparty_commitment_transaction_number == INITIAL_COMMITMENT_NUMBER - 1 {
@@ -2309,24 +2309,24 @@ impl<Signer: Sign> Channel<Signer> {
 					// the current one.
 					self.counterparty_cur_commitment_point
 				} else {
-					// If they have sent updated points, funding_locked is always supposed to match
+					// If they have sent updated points, channel_ready is always supposed to match
 					// their "first" point, which we re-derive here.
 					Some(PublicKey::from_secret_key(&self.secp_ctx, &SecretKey::from_slice(
 							&self.commitment_secrets.get_secret(INITIAL_COMMITMENT_NUMBER - 1).expect("We should have all prev secrets available")
 						).expect("We already advanced, so previous secret keys should have been validated already")))
 				};
 			if expected_point != Some(msg.next_per_commitment_point) {
-				return Err(ChannelError::Close("Peer sent a reconnect funding_locked with a different point".to_owned()));
+				return Err(ChannelError::Close("Peer sent a reconnect channel_ready with a different point".to_owned()));
 			}
 			return Ok(None);
 		} else {
-			return Err(ChannelError::Close("Peer sent a funding_locked at a strange time".to_owned()));
+			return Err(ChannelError::Close("Peer sent a channel_ready at a strange time".to_owned()));
 		}
 
 		self.counterparty_prev_commitment_point = self.counterparty_cur_commitment_point;
 		self.counterparty_cur_commitment_point = Some(msg.next_per_commitment_point);
 
-		log_info!(logger, "Received funding_locked from peer for channel {}", log_bytes!(self.channel_id()));
+		log_info!(logger, "Received channel_ready from peer for channel {}", log_bytes!(self.channel_id()));
 
 		Ok(self.get_announcement_sigs(node_pk, genesis_block_hash, best_block.height(), logger))
 	}
@@ -3570,13 +3570,13 @@ impl<Signer: Sign> Channel<Signer> {
 	/// monitor update failure must *not* have been sent to the remote end, and must instead
 	/// have been dropped. They will be regenerated when monitor_updating_restored is called.
 	pub fn monitor_update_failed(&mut self, resend_raa: bool, resend_commitment: bool,
-		resend_funding_locked: bool, mut pending_forwards: Vec<(PendingHTLCInfo, u64)>,
+		resend_channel_ready: bool, mut pending_forwards: Vec<(PendingHTLCInfo, u64)>,
 		mut pending_fails: Vec<(HTLCSource, PaymentHash, HTLCFailReason)>,
 		mut pending_finalized_claimed_htlcs: Vec<HTLCSource>
 	) {
 		self.monitor_pending_revoke_and_ack |= resend_raa;
 		self.monitor_pending_commitment_signed |= resend_commitment;
-		self.monitor_pending_funding_locked |= resend_funding_locked;
+		self.monitor_pending_channel_ready |= resend_channel_ready;
 		self.monitor_pending_forwards.append(&mut pending_forwards);
 		self.monitor_pending_failures.append(&mut pending_fails);
 		self.monitor_pending_finalized_fulfills.append(&mut pending_finalized_claimed_htlcs);
@@ -3605,16 +3605,16 @@ impl<Signer: Sign> Channel<Signer> {
 
 		// We will never broadcast the funding transaction when we're in MonitorUpdateFailed (and
 		// we assume the user never directly broadcasts the funding transaction and waits for us to
-		// do it). Thus, we can only ever hit monitor_pending_funding_locked when we're
+		// do it). Thus, we can only ever hit monitor_pending_channel_ready when we're
 		// * an inbound channel that failed to persist the monitor on funding_created and we got
 		//   the funding transaction confirmed before the monitor was persisted, or
-		// * a 0-conf channel and intended to send the funding_locked before any broadcast at all.
-		let funding_locked = if self.monitor_pending_funding_locked {
+		// * a 0-conf channel and intended to send the channel_ready before any broadcast at all.
+		let channel_ready = if self.monitor_pending_channel_ready {
 			assert!(!self.is_outbound() || self.minimum_depth == Some(0),
 				"Funding transaction broadcast by the local client before it should have - LDK didn't do it!");
-			self.monitor_pending_funding_locked = false;
+			self.monitor_pending_channel_ready = false;
 			let next_per_commitment_point = self.holder_signer.get_per_commitment_point(self.cur_holder_commitment_transaction_number, &self.secp_ctx);
-			Some(msgs::FundingLocked {
+			Some(msgs::ChannelReady {
 				channel_id: self.channel_id(),
 				next_per_commitment_point,
 				short_channel_id_alias: Some(self.outbound_scid_alias),
@@ -3635,7 +3635,7 @@ impl<Signer: Sign> Channel<Signer> {
 			self.monitor_pending_commitment_signed = false;
 			return MonitorRestoreUpdates {
 				raa: None, commitment_update: None, order: RAACommitmentOrder::RevokeAndACKFirst,
-				accepted_htlcs, failed_htlcs, finalized_claimed_htlcs, funding_broadcastable, funding_locked, announcement_sigs
+				accepted_htlcs, failed_htlcs, finalized_claimed_htlcs, funding_broadcastable, channel_ready, announcement_sigs
 			};
 		}
 
@@ -3654,7 +3654,7 @@ impl<Signer: Sign> Channel<Signer> {
 			if commitment_update.is_some() { "a" } else { "no" }, if raa.is_some() { "an" } else { "no" },
 			match order { RAACommitmentOrder::CommitmentFirst => "commitment", RAACommitmentOrder::RevokeAndACKFirst => "RAA"});
 		MonitorRestoreUpdates {
-			raa, commitment_update, order, accepted_htlcs, failed_htlcs, finalized_claimed_htlcs, funding_broadcastable, funding_locked, announcement_sigs
+			raa, commitment_update, order, accepted_htlcs, failed_htlcs, finalized_claimed_htlcs, funding_broadcastable, channel_ready, announcement_sigs
 		}
 	}
 
@@ -3826,15 +3826,15 @@ impl<Signer: Sign> Channel<Signer> {
 		let announcement_sigs = self.get_announcement_sigs(node_pk, genesis_block_hash, best_block.height(), logger);
 
 		if self.channel_state & (ChannelState::FundingSent as u32) == ChannelState::FundingSent as u32 {
-			// If we're waiting on a monitor update, we shouldn't re-send any funding_locked's.
-			if self.channel_state & (ChannelState::OurFundingLocked as u32) == 0 ||
+			// If we're waiting on a monitor update, we shouldn't re-send any channel_ready's.
+			if self.channel_state & (ChannelState::OurChannelReady as u32) == 0 ||
 					self.channel_state & (ChannelState::MonitorUpdateFailed as u32) != 0 {
 				if msg.next_remote_commitment_number != 0 {
-					return Err(ChannelError::Close("Peer claimed they saw a revoke_and_ack but we haven't sent funding_locked yet".to_owned()));
+					return Err(ChannelError::Close("Peer claimed they saw a revoke_and_ack but we haven't sent channel_ready yet".to_owned()));
 				}
 				// Short circuit the whole handler as there is nothing we can resend them
 				return Ok(ReestablishResponses {
-					funding_locked: None,
+					channel_ready: None,
 					raa: None, commitment_update: None, mon_update: None,
 					order: RAACommitmentOrder::CommitmentFirst,
 					holding_cell_failed_htlcs: Vec::new(),
@@ -3842,10 +3842,10 @@ impl<Signer: Sign> Channel<Signer> {
 				});
 			}
 
-			// We have OurFundingLocked set!
+			// We have OurChannelReady set!
 			let next_per_commitment_point = self.holder_signer.get_per_commitment_point(self.cur_holder_commitment_transaction_number, &self.secp_ctx);
 			return Ok(ReestablishResponses {
-				funding_locked: Some(msgs::FundingLocked {
+				channel_ready: Some(msgs::ChannelReady {
 					channel_id: self.channel_id(),
 					next_per_commitment_point,
 					short_channel_id_alias: Some(self.outbound_scid_alias),
@@ -3859,7 +3859,7 @@ impl<Signer: Sign> Channel<Signer> {
 
 		let required_revoke = if msg.next_remote_commitment_number + 1 == INITIAL_COMMITMENT_NUMBER - self.cur_holder_commitment_transaction_number {
 			// Remote isn't waiting on any RevokeAndACK from us!
-			// Note that if we need to repeat our FundingLocked we'll do that in the next if block.
+			// Note that if we need to repeat our ChannelReady we'll do that in the next if block.
 			None
 		} else if msg.next_remote_commitment_number + 1 == (INITIAL_COMMITMENT_NUMBER - 1) - self.cur_holder_commitment_transaction_number {
 			if self.channel_state & (ChannelState::MonitorUpdateFailed as u32) != 0 {
@@ -3878,10 +3878,10 @@ impl<Signer: Sign> Channel<Signer> {
 		// the corresponding revoke_and_ack back yet.
 		let next_counterparty_commitment_number = INITIAL_COMMITMENT_NUMBER - self.cur_counterparty_commitment_transaction_number + if (self.channel_state & ChannelState::AwaitingRemoteRevoke as u32) != 0 { 1 } else { 0 };
 
-		let funding_locked = if msg.next_local_commitment_number == 1 && INITIAL_COMMITMENT_NUMBER - self.cur_holder_commitment_transaction_number == 1 {
-			// We should never have to worry about MonitorUpdateFailed resending FundingLocked
+		let channel_ready = if msg.next_local_commitment_number == 1 && INITIAL_COMMITMENT_NUMBER - self.cur_holder_commitment_transaction_number == 1 {
+			// We should never have to worry about MonitorUpdateFailed resending ChannelReady
 			let next_per_commitment_point = self.holder_signer.get_per_commitment_point(self.cur_holder_commitment_transaction_number, &self.secp_ctx);
-			Some(msgs::FundingLocked {
+			Some(msgs::ChannelReady {
 				channel_id: self.channel_id(),
 				next_per_commitment_point,
 				short_channel_id_alias: Some(self.outbound_scid_alias),
@@ -3906,7 +3906,7 @@ impl<Signer: Sign> Channel<Signer> {
 						panic!("Got non-channel-failing result from free_holding_cell_htlcs"),
 					Ok((Some((commitment_update, monitor_update)), holding_cell_failed_htlcs)) => {
 						Ok(ReestablishResponses {
-							funding_locked, shutdown_msg, announcement_sigs,
+							channel_ready, shutdown_msg, announcement_sigs,
 							raa: required_revoke,
 							commitment_update: Some(commitment_update),
 							order: self.resend_order.clone(),
@@ -3916,7 +3916,7 @@ impl<Signer: Sign> Channel<Signer> {
 					},
 					Ok((None, holding_cell_failed_htlcs)) => {
 						Ok(ReestablishResponses {
-							funding_locked, shutdown_msg, announcement_sigs,
+							channel_ready, shutdown_msg, announcement_sigs,
 							raa: required_revoke,
 							commitment_update: None,
 							order: self.resend_order.clone(),
@@ -3927,7 +3927,7 @@ impl<Signer: Sign> Channel<Signer> {
 				}
 			} else {
 				Ok(ReestablishResponses {
-					funding_locked, shutdown_msg, announcement_sigs,
+					channel_ready, shutdown_msg, announcement_sigs,
 					raa: required_revoke,
 					commitment_update: None,
 					order: self.resend_order.clone(),
@@ -3945,14 +3945,14 @@ impl<Signer: Sign> Channel<Signer> {
 			if self.channel_state & (ChannelState::MonitorUpdateFailed as u32) != 0 {
 				self.monitor_pending_commitment_signed = true;
 				Ok(ReestablishResponses {
-					funding_locked, shutdown_msg, announcement_sigs,
+					channel_ready, shutdown_msg, announcement_sigs,
 					commitment_update: None, raa: None, mon_update: None,
 					order: self.resend_order.clone(),
 					holding_cell_failed_htlcs: Vec::new(),
 				})
 			} else {
 				Ok(ReestablishResponses {
-					funding_locked, shutdown_msg, announcement_sigs,
+					channel_ready, shutdown_msg, announcement_sigs,
 					raa: required_revoke,
 					commitment_update: Some(self.get_last_commitment_update(logger)),
 					order: self.resend_order.clone(),
@@ -4367,7 +4367,7 @@ impl<Signer: Sign> Channel<Signer> {
 		&self.channel_type
 	}
 
-	/// Guaranteed to be Some after both FundingLocked messages have been exchanged (and, thus,
+	/// Guaranteed to be Some after both ChannelReady messages have been exchanged (and, thus,
 	/// is_usable() returns true).
 	/// Allowed in any state (including after shutdown)
 	pub fn get_short_channel_id(&self) -> Option<u64> {
@@ -4572,7 +4572,7 @@ impl<Signer: Sign> Channel<Signer> {
 	/// Allowed in any state (including after shutdown)
 	pub fn is_usable(&self) -> bool {
 		let mask = ChannelState::ChannelFunded as u32 | BOTH_SIDES_SHUTDOWN_MASK;
-		(self.channel_state & mask) == (ChannelState::ChannelFunded as u32) && !self.monitor_pending_funding_locked
+		(self.channel_state & mask) == (ChannelState::ChannelFunded as u32) && !self.monitor_pending_channel_ready
 	}
 
 	/// Returns true if this channel is currently available for use. This is a superset of
@@ -4593,9 +4593,9 @@ impl<Signer: Sign> Channel<Signer> {
 		self.channel_state >= ChannelState::FundingSent as u32
 	}
 
-	/// Returns true if our funding_locked has been sent
-	pub fn is_our_funding_locked(&self) -> bool {
-		(self.channel_state & ChannelState::OurFundingLocked as u32) != 0 || self.channel_state >= ChannelState::ChannelFunded as u32
+	/// Returns true if our channel_ready has been sent
+	pub fn is_our_channel_ready(&self) -> bool {
+		(self.channel_state & ChannelState::OurChannelReady as u32) != 0 || self.channel_state >= ChannelState::ChannelFunded as u32
 	}
 
 	/// Returns true if our peer has either initiated or agreed to shut down the channel.
@@ -4627,7 +4627,7 @@ impl<Signer: Sign> Channel<Signer> {
 		self.channel_update_status = status;
 	}
 
-	fn check_get_funding_locked(&mut self, height: u32) -> Option<msgs::FundingLocked> {
+	fn check_get_channel_ready(&mut self, height: u32) -> Option<msgs::ChannelReady> {
 		if self.funding_tx_confirmation_height == 0 && self.minimum_depth != Some(0) {
 			return None;
 		}
@@ -4643,13 +4643,13 @@ impl<Signer: Sign> Channel<Signer> {
 
 		let non_shutdown_state = self.channel_state & (!MULTI_STATE_FLAGS);
 		let need_commitment_update = if non_shutdown_state == ChannelState::FundingSent as u32 {
-			self.channel_state |= ChannelState::OurFundingLocked as u32;
+			self.channel_state |= ChannelState::OurChannelReady as u32;
 			true
-		} else if non_shutdown_state == (ChannelState::FundingSent as u32 | ChannelState::TheirFundingLocked as u32) {
+		} else if non_shutdown_state == (ChannelState::FundingSent as u32 | ChannelState::TheirChannelReady as u32) {
 			self.channel_state = ChannelState::ChannelFunded as u32 | (self.channel_state & MULTI_STATE_FLAGS);
 			self.update_time_counter += 1;
 			true
-		} else if non_shutdown_state == (ChannelState::FundingSent as u32 | ChannelState::OurFundingLocked as u32) {
+		} else if non_shutdown_state == (ChannelState::FundingSent as u32 | ChannelState::OurChannelReady as u32) {
 			// We got a reorg but not enough to trigger a force close, just ignore.
 			false
 		} else if self.channel_state < ChannelState::ChannelFunded as u32 {
@@ -4664,14 +4664,14 @@ impl<Signer: Sign> Channel<Signer> {
 				if self.channel_state & (ChannelState::PeerDisconnected as u32) == 0 {
 					let next_per_commitment_point =
 						self.holder_signer.get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - 1, &self.secp_ctx);
-					return Some(msgs::FundingLocked {
+					return Some(msgs::ChannelReady {
 						channel_id: self.channel_id,
 						next_per_commitment_point,
 						short_channel_id_alias: Some(self.outbound_scid_alias),
 					});
 				}
 			} else {
-				self.monitor_pending_funding_locked = true;
+				self.monitor_pending_channel_ready = true;
 			}
 		}
 		None
@@ -4682,7 +4682,7 @@ impl<Signer: Sign> Channel<Signer> {
 	/// In the second, we simply return an Err indicating we need to be force-closed now.
 	pub fn transactions_confirmed<L: Deref>(&mut self, block_hash: &BlockHash, height: u32,
 		txdata: &TransactionData, genesis_block_hash: BlockHash, node_pk: PublicKey, logger: &L)
-	-> Result<(Option<msgs::FundingLocked>, Option<msgs::AnnouncementSignatures>), ClosureReason> where L::Target: Logger {
+	-> Result<(Option<msgs::ChannelReady>, Option<msgs::AnnouncementSignatures>), ClosureReason> where L::Target: Logger {
 		if let Some(funding_txo) = self.get_funding_txo() {
 			for &(index_in_block, tx) in txdata.iter() {
 				// Check if the transaction is the expected funding transaction, and if it is,
@@ -4723,13 +4723,13 @@ impl<Signer: Sign> Channel<Signer> {
 							}
 						}
 					}
-					// If we allow 1-conf funding, we may need to check for funding_locked here and
+					// If we allow 1-conf funding, we may need to check for channel_ready here and
 					// send it immediately instead of waiting for a best_block_updated call (which
 					// may have already happened for this block).
-					if let Some(funding_locked) = self.check_get_funding_locked(height) {
-						log_info!(logger, "Sending a funding_locked to our peer for channel {}", log_bytes!(self.channel_id));
+					if let Some(channel_ready) = self.check_get_channel_ready(height) {
+						log_info!(logger, "Sending a channel_ready to our peer for channel {}", log_bytes!(self.channel_id));
 						let announcement_sigs = self.get_announcement_sigs(node_pk, genesis_block_hash, height, logger);
-						return Ok((Some(funding_locked), announcement_sigs));
+						return Ok((Some(channel_ready), announcement_sigs));
 					}
 				}
 				for inp in tx.input.iter() {
@@ -4755,12 +4755,12 @@ impl<Signer: Sign> Channel<Signer> {
 	/// May return some HTLCs (and their payment_hash) which have timed out and should be failed
 	/// back.
 	pub fn best_block_updated<L: Deref>(&mut self, height: u32, highest_header_time: u32, genesis_block_hash: BlockHash, node_pk: PublicKey, logger: &L)
-	-> Result<(Option<msgs::FundingLocked>, Vec<(HTLCSource, PaymentHash)>, Option<msgs::AnnouncementSignatures>), ClosureReason> where L::Target: Logger {
+	-> Result<(Option<msgs::ChannelReady>, Vec<(HTLCSource, PaymentHash)>, Option<msgs::AnnouncementSignatures>), ClosureReason> where L::Target: Logger {
 		self.do_best_block_updated(height, highest_header_time, Some((genesis_block_hash, node_pk)), logger)
 	}
 
 	fn do_best_block_updated<L: Deref>(&mut self, height: u32, highest_header_time: u32, genesis_node_pk: Option<(BlockHash, PublicKey)>, logger: &L)
-	-> Result<(Option<msgs::FundingLocked>, Vec<(HTLCSource, PaymentHash)>, Option<msgs::AnnouncementSignatures>), ClosureReason> where L::Target: Logger {
+	-> Result<(Option<msgs::ChannelReady>, Vec<(HTLCSource, PaymentHash)>, Option<msgs::AnnouncementSignatures>), ClosureReason> where L::Target: Logger {
 		let mut timed_out_htlcs = Vec::new();
 		// This mirrors the check in ChannelManager::decode_update_add_htlc_onion, refusing to
 		// forward an HTLC when our counterparty should almost certainly just fail it for expiring
@@ -4780,26 +4780,26 @@ impl<Signer: Sign> Channel<Signer> {
 
 		self.update_time_counter = cmp::max(self.update_time_counter, highest_header_time);
 
-		if let Some(funding_locked) = self.check_get_funding_locked(height) {
+		if let Some(channel_ready) = self.check_get_channel_ready(height) {
 			let announcement_sigs = if let Some((genesis_block_hash, node_pk)) = genesis_node_pk {
 				self.get_announcement_sigs(node_pk, genesis_block_hash, height, logger)
 			} else { None };
-			log_info!(logger, "Sending a funding_locked to our peer for channel {}", log_bytes!(self.channel_id));
-			return Ok((Some(funding_locked), timed_out_htlcs, announcement_sigs));
+			log_info!(logger, "Sending a channel_ready to our peer for channel {}", log_bytes!(self.channel_id));
+			return Ok((Some(channel_ready), timed_out_htlcs, announcement_sigs));
 		}
 
 		let non_shutdown_state = self.channel_state & (!MULTI_STATE_FLAGS);
 		if non_shutdown_state >= ChannelState::ChannelFunded as u32 ||
-		   (non_shutdown_state & ChannelState::OurFundingLocked as u32) == ChannelState::OurFundingLocked as u32 {
+		   (non_shutdown_state & ChannelState::OurChannelReady as u32) == ChannelState::OurChannelReady as u32 {
 			let mut funding_tx_confirmations = height as i64 - self.funding_tx_confirmation_height as i64 + 1;
 			if self.funding_tx_confirmation_height == 0 {
-				// Note that check_get_funding_locked may reset funding_tx_confirmation_height to
+				// Note that check_get_channel_ready may reset funding_tx_confirmation_height to
 				// zero if it has been reorged out, however in either case, our state flags
-				// indicate we've already sent a funding_locked
+				// indicate we've already sent a channel_ready
 				funding_tx_confirmations = 0;
 			}
 
-			// If we've sent funding_locked (or have both sent and received funding_locked), and
+			// If we've sent channel_ready (or have both sent and received channel_ready), and
 			// the funding transaction has become unconfirmed,
 			// close the channel and hope we can get the latest state on chain (because presumably
 			// the funding transaction is at least still in the mempool of most nodes).
@@ -4817,7 +4817,7 @@ impl<Signer: Sign> Channel<Signer> {
 			log_info!(logger, "Closing channel {} due to funding timeout", log_bytes!(self.channel_id));
 			// If funding_tx_confirmed_in is unset, the channel must not be active
 			assert!(non_shutdown_state <= ChannelState::ChannelFunded as u32);
-			assert_eq!(non_shutdown_state & ChannelState::OurFundingLocked as u32, 0);
+			assert_eq!(non_shutdown_state & ChannelState::OurChannelReady as u32, 0);
 			return Err(ClosureReason::FundingTimedOut);
 		}
 
@@ -4829,7 +4829,7 @@ impl<Signer: Sign> Channel<Signer> {
 
 	/// Indicates the funding transaction is no longer confirmed in the main chain. This may
 	/// force-close the channel, but may also indicate a harmless reorganization of a block or two
-	/// before the channel has reached funding_locked and we can just wait for more blocks.
+	/// before the channel has reached channel_ready and we can just wait for more blocks.
 	pub fn funding_transaction_unconfirmed<L: Deref>(&mut self, logger: &L) -> Result<(), ClosureReason> where L::Target: Logger {
 		if self.funding_tx_confirmation_height != 0 {
 			// We handle the funding disconnection by calling best_block_updated with a height one
@@ -4840,8 +4840,8 @@ impl<Signer: Sign> Channel<Signer> {
 			// time we saw and it will be ignored.
 			let best_time = self.update_time_counter;
 			match self.do_best_block_updated(reorg_height, best_time, None, logger) {
-				Ok((funding_locked, timed_out_htlcs, announcement_sigs)) => {
-					assert!(funding_locked.is_none(), "We can't generate a funding with 0 confirmations?");
+				Ok((channel_ready, timed_out_htlcs, announcement_sigs)) => {
+					assert!(channel_ready.is_none(), "We can't generate a funding with 0 confirmations?");
 					assert!(timed_out_htlcs.is_empty(), "We can't have accepted HTLCs with a timeout before our funding confirmation?");
 					assert!(announcement_sigs.is_none(), "We can't generate an announcement_sigs with 0 confirmations?");
 					Ok(())
@@ -5031,7 +5031,7 @@ impl<Signer: Sign> Channel<Signer> {
 	}
 
 	/// Gets an UnsignedChannelAnnouncement for this channel. The channel must be publicly
-	/// announceable and available for use (have exchanged FundingLocked messages in both
+	/// announceable and available for use (have exchanged ChannelReady messages in both
 	/// directions). Should be used for both broadcasted announcements and in response to an
 	/// AnnouncementSignatures message from the remote peer.
 	///
@@ -5871,7 +5871,7 @@ impl<Signer: Sign> Writeable for Channel<Signer> {
 			RAACommitmentOrder::RevokeAndACKFirst => 1u8.write(writer)?,
 		}
 
-		self.monitor_pending_funding_locked.write(writer)?;
+		self.monitor_pending_channel_ready.write(writer)?;
 		self.monitor_pending_revoke_and_ack.write(writer)?;
 		self.monitor_pending_commitment_signed.write(writer)?;
 
@@ -6132,7 +6132,7 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<(&'a K, u32)> for Channel<Signer>
 			_ => return Err(DecodeError::InvalidValue),
 		};
 
-		let monitor_pending_funding_locked = Readable::read(reader)?;
+		let monitor_pending_channel_ready = Readable::read(reader)?;
 		let monitor_pending_revoke_and_ack = Readable::read(reader)?;
 		let monitor_pending_commitment_signed = Readable::read(reader)?;
 
@@ -6342,7 +6342,7 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<(&'a K, u32)> for Channel<Signer>
 
 			resend_order,
 
-			monitor_pending_funding_locked,
+			monitor_pending_channel_ready,
 			monitor_pending_revoke_and_ack,
 			monitor_pending_commitment_signed,
 			monitor_pending_forwards,

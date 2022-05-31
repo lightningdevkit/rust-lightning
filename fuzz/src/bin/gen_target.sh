@@ -21,7 +21,7 @@ GEN_TEST msg_closing_signed msg_targets::
 GEN_TEST msg_commitment_signed msg_targets::
 GEN_TEST msg_decoded_onion_error_packet msg_targets::
 GEN_TEST msg_funding_created msg_targets::
-GEN_TEST msg_funding_locked msg_targets::
+GEN_TEST msg_channel_ready msg_targets::
 GEN_TEST msg_funding_signed msg_targets::
 GEN_TEST msg_init msg_targets::
 GEN_TEST msg_open_channel msg_targets::
