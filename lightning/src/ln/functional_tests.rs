@@ -8512,6 +8512,56 @@ fn test_onchain_htlc_settlement_after_close() {
 }
 
 #[test]
+fn test_duplicate_temporary_channel_id_from_different_peers() {
+	// Tests that we can accept two different `OpenChannel` requests with the same
+	// `temporary_channel_id`, as long as they are from different peers.
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+	// Create an first channel channel
+	nodes[1].node.create_channel(nodes[0].node.get_our_node_id(), 100000, 10001, 42, None).unwrap();
+	let mut open_chan_msg_chan_1_0 = get_event_msg!(nodes[1], MessageSendEvent::SendOpenChannel, nodes[0].node.get_our_node_id());
+
+	// Create an second channel
+	nodes[2].node.create_channel(nodes[0].node.get_our_node_id(), 100000, 10001, 43, None).unwrap();
+	let mut open_chan_msg_chan_2_0 = get_event_msg!(nodes[2], MessageSendEvent::SendOpenChannel, nodes[0].node.get_our_node_id());
+
+	// Modify the `OpenChannel` from `nodes[2]` to `nodes[0]` to ensure that it uses the same
+	// `temporary_channel_id` as the `OpenChannel` from nodes[1] to nodes[0].
+	open_chan_msg_chan_2_0.temporary_channel_id = open_chan_msg_chan_1_0.temporary_channel_id;
+
+	// Assert that `nodes[0]` can accept both `OpenChannel` requests, even though they use the same
+	// `temporary_channel_id` as they are from different peers.
+	nodes[0].node.handle_open_channel(&nodes[1].node.get_our_node_id(), channelmanager::provided_init_features(), &open_chan_msg_chan_1_0);
+	{
+		let events = nodes[0].node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+		match &events[0] {
+			MessageSendEvent::SendAcceptChannel { node_id, msg } => {
+				assert_eq!(node_id, &nodes[1].node.get_our_node_id());
+				assert_eq!(msg.temporary_channel_id, open_chan_msg_chan_1_0.temporary_channel_id);
+			},
+			_ => panic!("Unexpected event"),
+		}
+	}
+
+	nodes[0].node.handle_open_channel(&nodes[2].node.get_our_node_id(), channelmanager::provided_init_features(), &open_chan_msg_chan_2_0);
+	{
+		let events = nodes[0].node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+		match &events[0] {
+			MessageSendEvent::SendAcceptChannel { node_id, msg } => {
+				assert_eq!(node_id, &nodes[2].node.get_our_node_id());
+				assert_eq!(msg.temporary_channel_id, open_chan_msg_chan_1_0.temporary_channel_id);
+			},
+			_ => panic!("Unexpected event"),
+		}
+	}
+}
+
+#[test]
 fn test_duplicate_chan_id() {
 	// Test that if a given peer tries to open a channel with the same channel_id as one that is
 	// already open we reject it and keep the old channel.
