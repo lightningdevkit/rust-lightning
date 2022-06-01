@@ -7,6 +7,7 @@ documentation = "https://docs.rs/lightning-invoice/"
 license = "MIT OR Apache-2.0"
 keywords = [ "lightning", "bitcoin", "invoice", "BOLT11" ]
 readme = "README.md"
+repository = "https://github.com/lightningdevkit/rust-lightning/"
 
 [package.metadata.docs.rs]
 all-features = true
