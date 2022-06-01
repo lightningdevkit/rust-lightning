@@ -2385,7 +2385,7 @@ mod tests {
 
 	#[test]
 	fn network_graph_tlv_serialization() {
-		let mut network_graph = create_network_graph();
+		let network_graph = create_network_graph();
 		network_graph.set_last_rapid_gossip_sync_timestamp(42);
 
 		let mut w = test_utils::TestVecWriter(Vec::new());

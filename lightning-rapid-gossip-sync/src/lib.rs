@@ -271,6 +271,7 @@ pub mod bench {
 					println!("{}", error_string);
 					return;
 				}
+				#[cfg(require_route_graph_test)]
 				panic!("{}", error_string);
 			}
 			assert!(sync_result.is_ok())
