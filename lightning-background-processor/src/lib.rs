@@ -79,6 +79,11 @@ const PING_TIMER: u64 = 1;
 /// Prune the network graph of stale entries hourly.
 const NETWORK_PRUNE_TIMER: u64 = 60 * 60;
 
+#[cfg(all(not(test), debug_assertions))]
+const SCORER_PERSIST_TIMER: u64 = 30;
+#[cfg(test)]
+const SCORER_PERSIST_TIMER: u64 = 1;
+
 #[cfg(not(test))]
 const FIRST_NETWORK_PRUNE_TIMER: u64 = 60;
 #[cfg(test)]
@@ -214,6 +219,7 @@ impl BackgroundProcessor {
 			let mut last_freshness_call = Instant::now();
 			let mut last_ping_call = Instant::now();
 			let mut last_prune_call = Instant::now();
+			let mut last_scorer_persist_call = Instant::now();
 			let mut have_pruned = false;
 
 			loop {
@@ -307,12 +313,16 @@ impl BackgroundProcessor {
 					} else {
 						log_trace!(logger, "Not pruning network graph, either due to pending rapid gossip sync or absence of a prunable graph.");
 					}
+				}
+
+				if last_scorer_persist_call.elapsed().as_secs() > SCORER_PERSIST_TIMER {
 					if let Some(ref scorer) = scorer {
 						log_trace!(logger, "Persisting scorer");
 						if let Err(e) = persister.persist_scorer(&scorer) {
 							log_error!(logger, "Error: Failed to persist scorer, check your disk and permissions {}", e)
 						}
 					}
+					last_scorer_persist_call = Instant::now();
 				}
 			}
 
