@@ -5700,7 +5700,7 @@ mod benches {
 	use chain::keysinterface::{KeysManager,KeysInterface};
 	use ln::channelmanager::{ChannelCounterparty, ChannelDetails};
 	use ln::features::{InitFeatures, InvoiceFeatures};
-	use routing::scoring::{FixedPenaltyScorer, ProbabilisticScorer, ProbabilisticScoringParameters, Scorer};
+	use routing::scoring::{FixedPenaltyScorer, ProbabilisticScorer, ProbabilisticScoringParameters};
 	use util::logger::{Logger, Record};
 	use util::test_utils::TestLogger;
 
@@ -5769,20 +5769,6 @@ mod benches {
 	fn generate_mpp_routes_with_zero_penalty_scorer(bench: &mut Bencher) {
 		let network_graph = read_network_graph();
 		let scorer = FixedPenaltyScorer::with_penalty(0);
-		generate_routes(bench, &network_graph, scorer, InvoiceFeatures::known());
-	}
-
-	#[bench]
-	fn generate_routes_with_default_scorer(bench: &mut Bencher) {
-		let network_graph = read_network_graph();
-		let scorer = Scorer::default();
-		generate_routes(bench, &network_graph, scorer, InvoiceFeatures::empty());
-	}
-
-	#[bench]
-	fn generate_mpp_routes_with_default_scorer(bench: &mut Bencher) {
-		let network_graph = read_network_graph();
-		let scorer = Scorer::default();
 		generate_routes(bench, &network_graph, scorer, InvoiceFeatures::known());
 	}
 
