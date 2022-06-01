@@ -78,9 +78,11 @@ pub mod ln;
 pub mod routing;
 
 #[cfg(feature = "std")]
-use std::io;
+/// Re-export of either `core2::io` or `std::io`, depending on the `std` feature flag.
+pub use std::io;
 #[cfg(not(feature = "std"))]
-use core2::io;
+/// Re-export of either `core2::io` or `std::io`, depending on the `std` feature flag.
+pub use core2::io;
 
 #[cfg(not(feature = "std"))]
 mod io_extras {
