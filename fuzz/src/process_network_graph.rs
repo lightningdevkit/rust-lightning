@@ -1,11 +1,13 @@
-// Import that needs to be added manually
+// Imports that need to be added manually
+use lightning_rapid_gossip_sync::RapidGossipSync;
 use utils::test_logger;
 
 /// Actual fuzz test, method signature and name are fixed
 fn do_test(data: &[u8]) {
 	let block_hash = bitcoin::BlockHash::default();
 	let network_graph = lightning::routing::network_graph::NetworkGraph::new(block_hash);
-	lightning_rapid_gossip_sync::processing::update_network_graph(&network_graph, data);
+	let rapid_sync = RapidGossipSync::new(&network_graph);
+	let _ = rapid_sync.update_network_graph(data);
 }
 
 /// Method that needs to be added manually, {name}_test

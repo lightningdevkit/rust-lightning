@@ -123,9 +123,7 @@ impl Readable for NodeId {
 
 /// Represents the network as nodes and channels between them
 pub struct NetworkGraph {
-	/// The unix timestamp in UTC provided by the most recent rapid gossip sync
-	/// It will be set by the rapid sync process after every sync completion
-	pub last_rapid_gossip_sync_timestamp: Option<u32>,
+	last_rapid_gossip_sync_timestamp: Mutex<Option<u32>>,
 	genesis_hash: BlockHash,
 	// Lock order: channels -> nodes
 	channels: RwLock<BTreeMap<u64, ChannelInfo>>,
@@ -136,11 +134,12 @@ impl Clone for NetworkGraph {
 	fn clone(&self) -> Self {
 		let channels = self.channels.read().unwrap();
 		let nodes = self.nodes.read().unwrap();
+		let last_rapid_gossip_sync_timestamp = self.get_last_rapid_gossip_sync_timestamp();
 		Self {
 			genesis_hash: self.genesis_hash.clone(),
 			channels: RwLock::new(channels.clone()),
 			nodes: RwLock::new(nodes.clone()),
-			last_rapid_gossip_sync_timestamp: self.last_rapid_gossip_sync_timestamp.clone(),
+			last_rapid_gossip_sync_timestamp: Mutex::new(last_rapid_gossip_sync_timestamp)
 		}
 	}
 }
@@ -994,8 +993,9 @@ impl Writeable for NetworkGraph {
 			node_info.write(writer)?;
 		}
 
+		let last_rapid_gossip_sync_timestamp = self.get_last_rapid_gossip_sync_timestamp();
 		write_tlv_fields!(writer, {
-			(1, self.last_rapid_gossip_sync_timestamp, option),
+			(1, last_rapid_gossip_sync_timestamp, option),
 		});
 		Ok(())
 	}
@@ -1030,7 +1030,7 @@ impl Readable for NetworkGraph {
 			genesis_hash,
 			channels: RwLock::new(channels),
 			nodes: RwLock::new(nodes),
-			last_rapid_gossip_sync_timestamp,
+			last_rapid_gossip_sync_timestamp: Mutex::new(last_rapid_gossip_sync_timestamp),
 		})
 	}
 }
@@ -1064,7 +1064,7 @@ impl NetworkGraph {
 			genesis_hash,
 			channels: RwLock::new(BTreeMap::new()),
 			nodes: RwLock::new(BTreeMap::new()),
-			last_rapid_gossip_sync_timestamp: None,
+			last_rapid_gossip_sync_timestamp: Mutex::new(None),
 		}
 	}
 
@@ -1076,6 +1076,18 @@ impl NetworkGraph {
 			channels,
 			nodes,
 		}
+	}
+
+	/// The unix timestamp provided by the most recent rapid gossip sync.
+	/// It will be set by the rapid sync process after every sync completion.
+	pub fn get_last_rapid_gossip_sync_timestamp(&self) -> Option<u32> {
+		self.last_rapid_gossip_sync_timestamp.lock().unwrap().clone()
+	}
+
+	/// Update the unix timestamp provided by the most recent rapid gossip sync.
+	/// This should be done automatically by the rapid sync process after every sync completion.
+	pub fn set_last_rapid_gossip_sync_timestamp(&self, last_rapid_gossip_sync_timestamp: u32) {
+		self.last_rapid_gossip_sync_timestamp.lock().unwrap().replace(last_rapid_gossip_sync_timestamp);
 	}
 
 	/// Clears the `NodeAnnouncementInfo` field for all nodes in the `NetworkGraph` for testing
@@ -2374,13 +2386,13 @@ mod tests {
 	#[test]
 	fn network_graph_tlv_serialization() {
 		let mut network_graph = create_network_graph();
-		network_graph.last_rapid_gossip_sync_timestamp.replace(42);
+		network_graph.set_last_rapid_gossip_sync_timestamp(42);
 
 		let mut w = test_utils::TestVecWriter(Vec::new());
 		network_graph.write(&mut w).unwrap();
 		let reassembled_network_graph: NetworkGraph = Readable::read(&mut io::Cursor::new(&w.0)).unwrap();
 		assert!(reassembled_network_graph == network_graph);
-		assert_eq!(reassembled_network_graph.last_rapid_gossip_sync_timestamp.unwrap(), 42);
+		assert_eq!(reassembled_network_graph.get_last_rapid_gossip_sync_timestamp().unwrap(), 42);
 	}
 
 	#[test]

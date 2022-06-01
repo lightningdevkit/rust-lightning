@@ -30,10 +30,12 @@
 //! use bitcoin::blockdata::constants::genesis_block;
 //! use bitcoin::Network;
 //! use lightning::routing::network_graph::NetworkGraph;
+//! use lightning_rapid_gossip_sync::RapidGossipSync;
 //!
 //! let block_hash = genesis_block(Network::Bitcoin).header.block_hash();
 //! let network_graph = NetworkGraph::new(block_hash);
-//! let new_last_sync_timestamp_result = lightning_rapid_gossip_sync::sync_network_graph_with_file_path(&network_graph, "./rapid_sync.lngossip");
+//! let rapid_sync = RapidGossipSync::new(&network_graph);
+//! let new_last_sync_timestamp_result = rapid_sync.sync_network_graph_with_file_path("./rapid_sync.lngossip");
 //! ```
 //!
 //! The primary benefit this syncing mechanism provides is that given a trusted server, a
@@ -57,8 +59,10 @@
 extern crate test;
 
 use std::fs::File;
+use std::ops::Deref;
+use std::sync::atomic::{AtomicBool, Ordering};
 
-use lightning::routing::network_graph;
+use lightning::routing::network_graph::NetworkGraph;
 
 use crate::error::GraphSyncError;
 
@@ -68,19 +72,51 @@ pub mod error;
 /// Core functionality of this crate
 pub mod processing;
 
-/// Sync gossip data from a file
-/// Returns the last sync timestamp to be used the next time rapid sync data is queried.
+/// Rapid Gossip Sync struct
+/// See [crate-level documentation] for usage.
 ///
-/// `network_graph`: The network graph to apply the updates to
-///
-/// `sync_path`: Path to the file where the gossip update data is located
-///
-pub fn sync_network_graph_with_file_path(
-	network_graph: &network_graph::NetworkGraph,
-	sync_path: &str,
-) -> Result<u32, GraphSyncError> {
-	let mut file = File::open(sync_path)?;
-	processing::update_network_graph_from_byte_stream(&network_graph, &mut file)
+/// [crate-level documentation]: crate
+pub struct RapidGossipSync<NG: Deref<Target=NetworkGraph>> {
+	network_graph: NG,
+	is_initial_sync_complete: AtomicBool
+}
+
+impl<NG: Deref<Target=NetworkGraph>> RapidGossipSync<NG> {
+	/// Instantiate a new [`RapidGossipSync`] instance
+	pub fn new(network_graph: NG) -> Self {
+		Self {
+			network_graph,
+			is_initial_sync_complete: AtomicBool::new(false)
+		}
+	}
+
+	/// Sync gossip data from a file
+	/// Returns the last sync timestamp to be used the next time rapid sync data is queried.
+	///
+	/// `network_graph`: The network graph to apply the updates to
+	///
+	/// `sync_path`: Path to the file where the gossip update data is located
+	///
+	pub fn sync_network_graph_with_file_path(
+		&self,
+		sync_path: &str,
+	) -> Result<u32, GraphSyncError> {
+		let mut file = File::open(sync_path)?;
+		self.update_network_graph_from_byte_stream(&mut file)
+	}
+
+	/// Gets a reference to the underlying [`NetworkGraph`] which was provided in
+	/// [`RapidGossipSync::new`].
+	///
+	/// (C-not exported) as bindings don't support a reference-to-a-reference yet
+	pub fn network_graph(&self) -> &NG {
+		&self.network_graph
+	}
+
+	/// Returns whether a rapid gossip sync has completed at least once
+	pub fn is_initial_sync_complete(&self) -> bool {
+		self.is_initial_sync_complete.load(Ordering::Acquire)
+	}
 }
 
 #[cfg(test)]
@@ -92,8 +128,7 @@ mod tests {
 
 	use lightning::ln::msgs::DecodeError;
 	use lightning::routing::network_graph::NetworkGraph;
-
-	use crate::sync_network_graph_with_file_path;
+	use crate::RapidGossipSync;
 
 	#[test]
 	fn test_sync_from_file() {
@@ -156,7 +191,8 @@ mod tests {
 
 		assert_eq!(network_graph.read_only().channels().len(), 0);
 
-		let sync_result = sync_network_graph_with_file_path(&network_graph, &graph_sync_test_file);
+		let rapid_sync = RapidGossipSync::new(&network_graph);
+		let sync_result = rapid_sync.sync_network_graph_with_file_path(&graph_sync_test_file);
 
 		if sync_result.is_err() {
 			panic!("Unexpected sync result: {:?}", sync_result)
@@ -187,11 +223,12 @@ mod tests {
 
 		assert_eq!(network_graph.read_only().channels().len(), 0);
 
+		let rapid_sync = RapidGossipSync::new(&network_graph);
 		let start = std::time::Instant::now();
-		let sync_result =
-			sync_network_graph_with_file_path(&network_graph, "./res/full_graph.lngossip");
+		let sync_result = rapid_sync
+			.sync_network_graph_with_file_path("./res/full_graph.lngossip");
 		if let Err(crate::error::GraphSyncError::DecodeError(DecodeError::Io(io_error))) = &sync_result {
-			let error_string = format!("Input file lightning-graph-sync/res/full_graph.lngossip is missing! Download it from https://bitcoin.ninja/ldk-compressed_graph-bc08df7542-2022-05-05.bin\n\n{:?}", io_error);
+			let error_string = format!("Input file lightning-rapid-gossip-sync/res/full_graph.lngossip is missing! Download it from https://bitcoin.ninja/ldk-compressed_graph-bc08df7542-2022-05-05.bin\n\n{:?}", io_error);
 			#[cfg(not(require_route_graph_test))]
 			{
 				println!("{}", error_string);
@@ -218,19 +255,17 @@ pub mod bench {
 	use lightning::ln::msgs::DecodeError;
 	use lightning::routing::network_graph::NetworkGraph;
 
-	use crate::sync_network_graph_with_file_path;
+	use crate::RapidGossipSync;
 
 	#[bench]
 	fn bench_reading_full_graph_from_file(b: &mut Bencher) {
 		let block_hash = genesis_block(Network::Bitcoin).block_hash();
 		b.iter(|| {
 			let network_graph = NetworkGraph::new(block_hash);
-			let sync_result = sync_network_graph_with_file_path(
-				&network_graph,
-				"./res/full_graph.lngossip",
-			);
+			let rapid_sync = RapidGossipSync::new(&network_graph);
+			let sync_result = rapid_sync.sync_network_graph_with_file_path("./res/full_graph.lngossip");
 			if let Err(crate::error::GraphSyncError::DecodeError(DecodeError::Io(io_error))) = &sync_result {
-				let error_string = format!("Input file lightning-graph-sync/res/full_graph.lngossip is missing! Download it from https://bitcoin.ninja/ldk-compressed_graph-bc08df7542-2022-05-05.bin\n\n{:?}", io_error);
+				let error_string = format!("Input file lightning-rapid-gossip-sync/res/full_graph.lngossip is missing! Download it from https://bitcoin.ninja/ldk-compressed_graph-bc08df7542-2022-05-05.bin\n\n{:?}", io_error);
 				#[cfg(not(require_route_graph_test))]
 				{
 					println!("{}", error_string);
