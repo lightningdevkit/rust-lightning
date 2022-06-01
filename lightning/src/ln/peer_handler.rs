@@ -12,8 +12,8 @@
 //! Instead of actually servicing sockets ourselves we require that you implement the
 //! SocketDescriptor interface and use that to receive actions which you should perform on the
 //! socket, and call into PeerManager with bytes read from the socket. The PeerManager will then
-//! call into the provided message handlers (probably a ChannelManager and NetGraphmsgHandler) with messages
-//! they should handle, and encoding/sending response messages.
+//! call into the provided message handlers (probably a ChannelManager and P2PGossipSync) with
+//! messages they should handle, and encoding/sending response messages.
 
 use bitcoin::secp256k1::{self, Secp256k1, SecretKey, PublicKey};
 
@@ -28,7 +28,7 @@ use ln::wire::Encode;
 use util::atomic_counter::AtomicCounter;
 use util::events::{MessageSendEvent, MessageSendEventsProvider};
 use util::logger::Logger;
-use routing::network_graph::{NetworkGraph, NetGraphMsgHandler};
+use routing::network_graph::{NetworkGraph, P2PGossipSync};
 
 use prelude::*;
 use io;
@@ -208,10 +208,9 @@ pub struct MessageHandler<CM: Deref, RM: Deref> where
 	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 	pub chan_handler: CM,
 	/// A message handler which handles messages updating our knowledge of the network channel
-	/// graph. Usually this is just a [`NetGraphMsgHandler`] object or an
-	/// [`IgnoringMessageHandler`].
+	/// graph. Usually this is just a [`P2PGossipSync`] object or an [`IgnoringMessageHandler`].
 	///
-	/// [`NetGraphMsgHandler`]: crate::routing::network_graph::NetGraphMsgHandler
+	/// [`P2PGossipSync`]: crate::routing::network_graph::P2PGossipSync
 	pub route_handler: RM,
 }
 
@@ -388,7 +387,7 @@ impl Peer {
 /// issues such as overly long function definitions.
 ///
 /// (C-not exported) as Arcs don't make sense in bindings
-pub type SimpleArcPeerManager<SD, M, T, F, C, L> = PeerManager<SD, Arc<SimpleArcChannelManager<M, T, F, L>>, Arc<NetGraphMsgHandler<Arc<NetworkGraph>, Arc<C>, Arc<L>>>, Arc<L>, Arc<IgnoringMessageHandler>>;
+pub type SimpleArcPeerManager<SD, M, T, F, C, L> = PeerManager<SD, Arc<SimpleArcChannelManager<M, T, F, L>>, Arc<P2PGossipSync<Arc<NetworkGraph>, Arc<C>, Arc<L>>>, Arc<L>, Arc<IgnoringMessageHandler>>;
 
 /// SimpleRefPeerManager is a type alias for a PeerManager reference, and is the reference
 /// counterpart to the SimpleArcPeerManager type alias. Use this type by default when you don't
@@ -398,7 +397,7 @@ pub type SimpleArcPeerManager<SD, M, T, F, C, L> = PeerManager<SD, Arc<SimpleArc
 /// helps with issues such as long function definitions.
 ///
 /// (C-not exported) as Arcs don't make sense in bindings
-pub type SimpleRefPeerManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, SD, M, T, F, C, L> = PeerManager<SD, SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, M, T, F, L>, &'e NetGraphMsgHandler<&'g NetworkGraph, &'h C, &'f L>, &'f L, IgnoringMessageHandler>;
+pub type SimpleRefPeerManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, SD, M, T, F, C, L> = PeerManager<SD, SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, M, T, F, L>, &'e P2PGossipSync<&'g NetworkGraph, &'h C, &'f L>, &'f L, IgnoringMessageHandler>;
 
 /// A PeerManager manages a set of peers, described by their [`SocketDescriptor`] and marshalls
 /// socket events into messages which it passes on to its [`MessageHandler`].
