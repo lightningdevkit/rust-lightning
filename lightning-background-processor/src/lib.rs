@@ -40,8 +40,8 @@ use std::ops::Deref;
 ///   [`ChannelManager`] persistence should be done in the background.
 /// * Calling [`ChannelManager::timer_tick_occurred`] and [`PeerManager::timer_tick_occurred`]
 ///   at the appropriate intervals.
-/// * Calling [`NetworkGraph::remove_stale_channels`] (if a [`P2PGossipSync`] is provided to
-///   [`BackgroundProcessor::start`]).
+/// * Calling [`NetworkGraph::remove_stale_channels`] (if a [`GossipSync`] with a [`NetworkGraph`]
+///   is provided to [`BackgroundProcessor::start`]).
 ///
 /// It will also call [`PeerManager::process_events`] periodically though this shouldn't be relied
 /// upon as doing so may result in high latency.
@@ -89,31 +89,82 @@ const FIRST_NETWORK_PRUNE_TIMER: u64 = 60;
 #[cfg(test)]
 const FIRST_NETWORK_PRUNE_TIMER: u64 = 1;
 
+/// Either [`P2PGossipSync`] or [`RapidGossipSync`].
+pub enum GossipSync<
+	P: Deref<Target = P2PGossipSync<G, A, L>>,
+	R: Deref<Target = RapidGossipSync<G, L>>,
+	G: Deref<Target = NetworkGraph<L>>,
+	A: Deref,
+	L: Deref,
+>
+where A::Target: chain::Access, L::Target: Logger {
+	/// Gossip sync via the lightning peer-to-peer network as defined by BOLT 7.
+	P2P(P),
+	/// Rapid gossip sync from a trusted server.
+	Rapid(R),
+	/// No gossip sync.
+	None,
+}
+
+impl<
+	P: Deref<Target = P2PGossipSync<G, A, L>>,
+	R: Deref<Target = RapidGossipSync<G, L>>,
+	G: Deref<Target = NetworkGraph<L>>,
+	A: Deref,
+	L: Deref,
+> GossipSync<P, R, G, A, L>
+where A::Target: chain::Access, L::Target: Logger {
+	fn network_graph(&self) -> Option<&G> {
+		match self {
+			GossipSync::P2P(gossip_sync) => Some(gossip_sync.network_graph()),
+			GossipSync::Rapid(gossip_sync) => Some(gossip_sync.network_graph()),
+			GossipSync::None => None,
+		}
+	}
+
+	fn prunable_network_graph(&self) -> Option<&G> {
+		match self {
+			GossipSync::P2P(gossip_sync) => Some(gossip_sync.network_graph()),
+			GossipSync::Rapid(gossip_sync) => {
+				if gossip_sync.is_initial_sync_complete() {
+					Some(gossip_sync.network_graph())
+				} else {
+					None
+				}
+			},
+			GossipSync::None => None,
+		}
+	}
+}
 
 /// Decorates an [`EventHandler`] with common functionality provided by standard [`EventHandler`]s.
 struct DecoratingEventHandler<
+	'a,
 	E: EventHandler,
-	P: Deref<Target = P2PGossipSync<G, A, L>>,
+	PGS: Deref<Target = P2PGossipSync<G, A, L>>,
+	RGS: Deref<Target = RapidGossipSync<G, L>>,
 	G: Deref<Target = NetworkGraph<L>>,
 	A: Deref,
 	L: Deref,
 >
 where A::Target: chain::Access, L::Target: Logger {
 	event_handler: E,
-	p2p_gossip_sync: Option<P>,
+	gossip_sync: &'a GossipSync<PGS, RGS, G, A, L>,
 }
 
 impl<
+	'a,
 	E: EventHandler,
-	P: Deref<Target = P2PGossipSync<G, A, L>>,
+	PGS: Deref<Target = P2PGossipSync<G, A, L>>,
+	RGS: Deref<Target = RapidGossipSync<G, L>>,
 	G: Deref<Target = NetworkGraph<L>>,
 	A: Deref,
 	L: Deref,
-> EventHandler for DecoratingEventHandler<E, P, G, A, L>
+> EventHandler for DecoratingEventHandler<'a, E, PGS, RGS, G, A, L>
 where A::Target: chain::Access, L::Target: Logger {
 	fn handle_event(&self, event: &Event) {
-		if let Some(gossip_sync) = &self.p2p_gossip_sync {
-			gossip_sync.network_graph().handle_event(event);
+		if let Some(network_graph) = self.gossip_sync.network_graph() {
+			network_graph.handle_event(event);
 		}
 		self.event_handler.handle_event(event);
 	}
@@ -134,9 +185,9 @@ impl BackgroundProcessor {
 	/// [`ChannelManager`]. See the `lightning-persister` crate for LDK's
 	/// provided implementation.
 	///
-	/// [`Persister::persist_graph`] is responsible for writing out the [`NetworkGraph`] to disk. See
-	/// [`NetworkGraph::write`] for writing out a [`NetworkGraph`]. See the `lightning-persister` crate
-	/// for LDK's provided implementation.
+	/// [`Persister::persist_graph`] is responsible for writing out the [`NetworkGraph`] to disk, if
+	/// [`GossipSync`] is supplied. See [`NetworkGraph::write`] for writing out a [`NetworkGraph`].
+	/// See the `lightning-persister` crate for LDK's provided implementation.
 	///
 	/// Typically, users should either implement [`Persister::persist_manager`] to never return an
 	/// error or call [`join`] and handle any error that may arise. For the latter case,
@@ -151,9 +202,9 @@ impl BackgroundProcessor {
 	///
 	/// # Rapid Gossip Sync
 	///
-	/// If rapid gossip sync is meant to run at startup, pass an optional [`RapidGossipSync`]
-	/// to `rapid_gossip_sync` to indicate to [`BackgroundProcessor`] not to prune the
-	/// [`NetworkGraph`] instance until the [`RapidGossipSync`] instance completes its first sync.
+	/// If rapid gossip sync is meant to run at startup, pass a [`RapidGossipSync`] to `gossip_sync`
+	/// to indicate that the [`BackgroundProcessor`] should not prune the [`NetworkGraph`] instance
+	/// until the [`RapidGossipSync`] instance completes its first sync.
 	///
 	/// [top-level documentation]: BackgroundProcessor
 	/// [`join`]: Self::join
@@ -184,15 +235,14 @@ impl BackgroundProcessor {
 		M: 'static + Deref<Target = ChainMonitor<Signer, CF, T, F, L, P>> + Send + Sync,
 		CM: 'static + Deref<Target = ChannelManager<Signer, CW, T, K, F, L>> + Send + Sync,
 		PGS: 'static + Deref<Target = P2PGossipSync<G, CA, L>> + Send + Sync,
+		RGS: 'static + Deref<Target = RapidGossipSync<G, L>> + Send,
 		UMH: 'static + Deref + Send + Sync,
 		PM: 'static + Deref<Target = PeerManager<Descriptor, CMH, RMH, L, UMH>> + Send + Sync,
 		S: 'static + Deref<Target = SC> + Send + Sync,
 		SC: WriteableScore<'a>,
-		RGS: 'static + Deref<Target = RapidGossipSync<G, L>> + Send
 	>(
 		persister: PS, event_handler: EH, chain_monitor: M, channel_manager: CM,
-		p2p_gossip_sync: Option<PGS>, peer_manager: PM, logger: L, scorer: Option<S>,
-		rapid_gossip_sync: Option<RGS>
+		gossip_sync: GossipSync<PGS, RGS, G, CA, L>, peer_manager: PM, logger: L, scorer: Option<S>,
 	) -> Self
 	where
 		CA::Target: 'static + chain::Access,
@@ -213,7 +263,7 @@ impl BackgroundProcessor {
 		let handle = thread::spawn(move || -> Result<(), std::io::Error> {
 			let event_handler = DecoratingEventHandler {
 				event_handler,
-				p2p_gossip_sync: p2p_gossip_sync.as_ref().map(|t| t.deref()),
+				gossip_sync: &gossip_sync,
 			};
 
 			log_trace!(logger, "Calling ChannelManager's timer_tick_occurred on startup");
@@ -293,21 +343,10 @@ impl BackgroundProcessor {
 				if last_prune_call.elapsed().as_secs() > if have_pruned { NETWORK_PRUNE_TIMER } else { FIRST_NETWORK_PRUNE_TIMER } {
 					// The network graph must not be pruned while rapid sync completion is pending
 					log_trace!(logger, "Assessing prunability of network graph");
-					let graph_to_prune = match rapid_gossip_sync.as_ref() {
-						Some(rapid_sync) => {
-							if rapid_sync.is_initial_sync_complete() {
-								Some(rapid_sync.network_graph())
-							} else {
-								None
-							}
-						},
-						None => p2p_gossip_sync.as_ref().map(|sync| sync.network_graph())
-					};
+					if let Some(network_graph) = gossip_sync.prunable_network_graph() {
+						network_graph.remove_stale_channels();
 
-					if let Some(network_graph_reference) = graph_to_prune {
-						network_graph_reference.remove_stale_channels();
-
-						if let Err(e) = persister.persist_graph(network_graph_reference) {
+						if let Err(e) = persister.persist_graph(network_graph) {
 							log_error!(logger, "Error: Failed to persist network graph, check your disk and permissions {}", e)
 						}
 
@@ -340,8 +379,8 @@ impl BackgroundProcessor {
 			}
 
 			// Persist NetworkGraph on exit
-			if let Some(ref gossip_sync) = p2p_gossip_sync {
-				persister.persist_graph(gossip_sync.network_graph())?;
+			if let Some(network_graph) = gossip_sync.network_graph() {
+				persister.persist_graph(network_graph)?;
 			}
 
 			Ok(())
@@ -427,7 +466,7 @@ mod tests {
 	use std::time::Duration;
 	use lightning::routing::scoring::{FixedPenaltyScorer};
 	use lightning_rapid_gossip_sync::RapidGossipSync;
-	use super::{BackgroundProcessor, FRESHNESS_TIMER};
+	use super::{BackgroundProcessor, GossipSync, FRESHNESS_TIMER};
 
 	const EVENT_DEADLINE: u64 = 5 * FRESHNESS_TIMER;
 
@@ -443,9 +482,13 @@ mod tests {
 
 	type ChainMonitor = chainmonitor::ChainMonitor<InMemorySigner, Arc<test_utils::TestChainSource>, Arc<test_utils::TestBroadcaster>, Arc<test_utils::TestFeeEstimator>, Arc<test_utils::TestLogger>, Arc<FilesystemPersister>>;
 
+	type PGS = Arc<P2PGossipSync<Arc<NetworkGraph<Arc<test_utils::TestLogger>>>, Arc<test_utils::TestChainSource>, Arc<test_utils::TestLogger>>>;
+	type RGS = Arc<RapidGossipSync<Arc<NetworkGraph<Arc<test_utils::TestLogger>>>, Arc<test_utils::TestLogger>>>;
+
 	struct Node {
 		node: Arc<SimpleArcChannelManager<ChainMonitor, test_utils::TestBroadcaster, test_utils::TestFeeEstimator, test_utils::TestLogger>>,
-		p2p_gossip_sync: Option<Arc<P2PGossipSync<Arc<NetworkGraph<Arc<test_utils::TestLogger>>>, Arc<test_utils::TestChainSource>, Arc<test_utils::TestLogger>>>>,
+		p2p_gossip_sync: PGS,
+		rapid_gossip_sync: RGS,
 		peer_manager: Arc<PeerManager<TestDescriptor, Arc<test_utils::TestChannelMessageHandler>, Arc<test_utils::TestRoutingMessageHandler>, Arc<test_utils::TestLogger>, IgnoringMessageHandler>>,
 		chain_monitor: Arc<ChainMonitor>,
 		persister: Arc<FilesystemPersister>,
@@ -454,7 +497,20 @@ mod tests {
 		logger: Arc<test_utils::TestLogger>,
 		best_block: BestBlock,
 		scorer: Arc<Mutex<FixedPenaltyScorer>>,
-		rapid_gossip_sync: Option<Arc<RapidGossipSync<Arc<NetworkGraph<Arc<test_utils::TestLogger>>>, Arc<test_utils::TestLogger>>>>,
+	}
+
+	impl Node {
+		fn p2p_gossip_sync(&self) -> GossipSync<PGS, RGS, Arc<NetworkGraph<Arc<test_utils::TestLogger>>>, Arc<test_utils::TestChainSource>, Arc<test_utils::TestLogger>> {
+			GossipSync::P2P(self.p2p_gossip_sync.clone())
+		}
+
+		fn rapid_gossip_sync(&self) -> GossipSync<PGS, RGS, Arc<NetworkGraph<Arc<test_utils::TestLogger>>>, Arc<test_utils::TestChainSource>, Arc<test_utils::TestLogger>> {
+			GossipSync::Rapid(self.rapid_gossip_sync.clone())
+		}
+
+		fn no_gossip_sync(&self) -> GossipSync<PGS, RGS, Arc<NetworkGraph<Arc<test_utils::TestLogger>>>, Arc<test_utils::TestChainSource>, Arc<test_utils::TestLogger>> {
+			GossipSync::None
+		}
 	}
 
 	impl Drop for Node {
@@ -550,12 +606,12 @@ mod tests {
 			let params = ChainParameters { network, best_block };
 			let manager = Arc::new(ChannelManager::new(fee_estimator.clone(), chain_monitor.clone(), tx_broadcaster.clone(), logger.clone(), keys_manager.clone(), UserConfig::default(), params));
 			let network_graph = Arc::new(NetworkGraph::new(genesis_block.header.block_hash(), logger.clone()));
-			let p2p_gossip_sync = Some(Arc::new(P2PGossipSync::new(network_graph.clone(), Some(chain_source.clone()), logger.clone())));
+			let p2p_gossip_sync = Arc::new(P2PGossipSync::new(network_graph.clone(), Some(chain_source.clone()), logger.clone()));
+			let rapid_gossip_sync = Arc::new(RapidGossipSync::new(network_graph.clone()));
 			let msg_handler = MessageHandler { chan_handler: Arc::new(test_utils::TestChannelMessageHandler::new()), route_handler: Arc::new(test_utils::TestRoutingMessageHandler::new() )};
 			let peer_manager = Arc::new(PeerManager::new(msg_handler, keys_manager.get_node_secret(Recipient::Node).unwrap(), &seed, logger.clone(), IgnoringMessageHandler{}));
 			let scorer = Arc::new(Mutex::new(test_utils::TestScorer::with_penalty(0)));
-			let rapid_gossip_sync = None;
-			let node = Node { node: manager, p2p_gossip_sync, peer_manager, chain_monitor, persister, tx_broadcaster, network_graph, logger, best_block, scorer, rapid_gossip_sync };
+			let node = Node { node: manager, p2p_gossip_sync, rapid_gossip_sync, peer_manager, chain_monitor, persister, tx_broadcaster, network_graph, logger, best_block, scorer };
 			nodes.push(node);
 		}
 
@@ -653,7 +709,7 @@ mod tests {
 		let data_dir = nodes[0].persister.get_data_dir();
 		let persister = Arc::new(Persister::new(data_dir));
 		let event_handler = |_: &_| {};
-		let bg_processor = BackgroundProcessor::start(persister, event_handler, nodes[0].chain_monitor.clone(), nodes[0].node.clone(), nodes[0].p2p_gossip_sync.clone(), nodes[0].peer_manager.clone(),  nodes[0].logger.clone(), Some(nodes[0].scorer.clone()), nodes[0].rapid_gossip_sync.clone());
+		let bg_processor = BackgroundProcessor::start(persister, event_handler, nodes[0].chain_monitor.clone(), nodes[0].node.clone(), nodes[0].p2p_gossip_sync(), nodes[0].peer_manager.clone(), nodes[0].logger.clone(), Some(nodes[0].scorer.clone()));
 
 		macro_rules! check_persisted_data {
 			($node: expr, $filepath: expr) => {
@@ -698,10 +754,7 @@ mod tests {
 
 		// Check network graph is persisted
 		let filepath = get_full_filepath("test_background_processor_persister_0".to_string(), "network_graph".to_string());
-		if let Some(ref handler) = nodes[0].p2p_gossip_sync {
-			let network_graph = handler.network_graph();
-			check_persisted_data!(network_graph, filepath.clone());
-		}
+		check_persisted_data!(nodes[0].network_graph, filepath.clone());
 
 		// Check scorer is persisted
 		let filepath = get_full_filepath("test_background_processor_persister_0".to_string(), "scorer".to_string());
@@ -718,7 +771,7 @@ mod tests {
 		let data_dir = nodes[0].persister.get_data_dir();
 		let persister = Arc::new(Persister::new(data_dir));
 		let event_handler = |_: &_| {};
-		let bg_processor = BackgroundProcessor::start(persister, event_handler, nodes[0].chain_monitor.clone(), nodes[0].node.clone(), nodes[0].p2p_gossip_sync.clone(), nodes[0].peer_manager.clone(), nodes[0].logger.clone(), Some(nodes[0].scorer.clone()), nodes[0].rapid_gossip_sync.clone());
+		let bg_processor = BackgroundProcessor::start(persister, event_handler, nodes[0].chain_monitor.clone(), nodes[0].node.clone(), nodes[0].no_gossip_sync(), nodes[0].peer_manager.clone(), nodes[0].logger.clone(), Some(nodes[0].scorer.clone()));
 		loop {
 			let log_entries = nodes[0].logger.lines.lock().unwrap();
 			let desired_log = "Calling ChannelManager's timer_tick_occurred".to_string();
@@ -741,7 +794,7 @@ mod tests {
 		let data_dir = nodes[0].persister.get_data_dir();
 		let persister = Arc::new(Persister::new(data_dir).with_manager_error(std::io::ErrorKind::Other, "test"));
 		let event_handler = |_: &_| {};
-		let bg_processor = BackgroundProcessor::start(persister, event_handler, nodes[0].chain_monitor.clone(), nodes[0].node.clone(), nodes[0].p2p_gossip_sync.clone(), nodes[0].peer_manager.clone(), nodes[0].logger.clone(), Some(nodes[0].scorer.clone()), nodes[0].rapid_gossip_sync.clone());
+		let bg_processor = BackgroundProcessor::start(persister, event_handler, nodes[0].chain_monitor.clone(), nodes[0].node.clone(), nodes[0].no_gossip_sync(), nodes[0].peer_manager.clone(), nodes[0].logger.clone(), Some(nodes[0].scorer.clone()));
 		match bg_processor.join() {
 			Ok(_) => panic!("Expected error persisting manager"),
 			Err(e) => {
@@ -758,7 +811,7 @@ mod tests {
 		let data_dir = nodes[0].persister.get_data_dir();
 		let persister = Arc::new(Persister::new(data_dir).with_graph_error(std::io::ErrorKind::Other, "test"));
 		let event_handler = |_: &_| {};
-		let bg_processor = BackgroundProcessor::start(persister, event_handler, nodes[0].chain_monitor.clone(), nodes[0].node.clone(), nodes[0].p2p_gossip_sync.clone(), nodes[0].peer_manager.clone(), nodes[0].logger.clone(), Some(nodes[0].scorer.clone()), nodes[0].rapid_gossip_sync.clone());
+		let bg_processor = BackgroundProcessor::start(persister, event_handler, nodes[0].chain_monitor.clone(), nodes[0].node.clone(), nodes[0].p2p_gossip_sync(), nodes[0].peer_manager.clone(), nodes[0].logger.clone(), Some(nodes[0].scorer.clone()));
 
 		match bg_processor.stop() {
 			Ok(_) => panic!("Expected error persisting network graph"),
@@ -776,7 +829,7 @@ mod tests {
 		let data_dir = nodes[0].persister.get_data_dir();
 		let persister = Arc::new(Persister::new(data_dir).with_scorer_error(std::io::ErrorKind::Other, "test"));
 		let event_handler = |_: &_| {};
-		let bg_processor = BackgroundProcessor::start(persister, event_handler, nodes[0].chain_monitor.clone(), nodes[0].node.clone(), nodes[0].p2p_gossip_sync.clone(), nodes[0].peer_manager.clone(),  nodes[0].logger.clone(), Some(nodes[0].scorer.clone()), nodes[0].rapid_gossip_sync.clone());
+		let bg_processor = BackgroundProcessor::start(persister, event_handler, nodes[0].chain_monitor.clone(), nodes[0].node.clone(), nodes[0].no_gossip_sync(), nodes[0].peer_manager.clone(),  nodes[0].logger.clone(), Some(nodes[0].scorer.clone()));
 
 		match bg_processor.stop() {
 			Ok(_) => panic!("Expected error persisting scorer"),
@@ -799,7 +852,7 @@ mod tests {
 		let event_handler = move |event: &Event| {
 			sender.send(handle_funding_generation_ready!(event, channel_value)).unwrap();
 		};
-		let bg_processor = BackgroundProcessor::start(persister, event_handler, nodes[0].chain_monitor.clone(), nodes[0].node.clone(), nodes[0].p2p_gossip_sync.clone(), nodes[0].peer_manager.clone(), nodes[0].logger.clone(), Some(nodes[0].scorer.clone()), nodes[0].rapid_gossip_sync.clone());
+		let bg_processor = BackgroundProcessor::start(persister, event_handler, nodes[0].chain_monitor.clone(), nodes[0].node.clone(), nodes[0].no_gossip_sync(), nodes[0].peer_manager.clone(), nodes[0].logger.clone(), Some(nodes[0].scorer.clone()));
 
 		// Open a channel and check that the FundingGenerationReady event was handled.
 		begin_open_channel!(nodes[0], nodes[1], channel_value);
@@ -824,7 +877,7 @@ mod tests {
 		let (sender, receiver) = std::sync::mpsc::sync_channel(1);
 		let event_handler = move |event: &Event| sender.send(event.clone()).unwrap();
 		let persister = Arc::new(Persister::new(data_dir));
-		let bg_processor = BackgroundProcessor::start(persister, event_handler, nodes[0].chain_monitor.clone(), nodes[0].node.clone(), nodes[0].p2p_gossip_sync.clone(), nodes[0].peer_manager.clone(), nodes[0].logger.clone(), Some(nodes[0].scorer.clone()), nodes[0].rapid_gossip_sync.clone());
+		let bg_processor = BackgroundProcessor::start(persister, event_handler, nodes[0].chain_monitor.clone(), nodes[0].node.clone(), nodes[0].no_gossip_sync(), nodes[0].peer_manager.clone(), nodes[0].logger.clone(), Some(nodes[0].scorer.clone()));
 
 		// Force close the channel and check that the SpendableOutputs event was handled.
 		nodes[0].node.force_close_channel(&nodes[0].node.list_channels()[0].channel_id, &nodes[1].node.get_our_node_id()).unwrap();
@@ -848,7 +901,7 @@ mod tests {
 		let data_dir = nodes[0].persister.get_data_dir();
 		let persister = Arc::new(Persister::new(data_dir));
 		let event_handler = |_: &_| {};
-		let bg_processor = BackgroundProcessor::start(persister, event_handler, nodes[0].chain_monitor.clone(), nodes[0].node.clone(), nodes[0].p2p_gossip_sync.clone(), nodes[0].peer_manager.clone(),  nodes[0].logger.clone(), Some(nodes[0].scorer.clone()), nodes[0].rapid_gossip_sync.clone());
+		let bg_processor = BackgroundProcessor::start(persister, event_handler, nodes[0].chain_monitor.clone(), nodes[0].node.clone(), nodes[0].no_gossip_sync(), nodes[0].peer_manager.clone(), nodes[0].logger.clone(), Some(nodes[0].scorer.clone()));
 
 		loop {
 			let log_entries = nodes[0].logger.lines.lock().unwrap();
@@ -868,7 +921,6 @@ mod tests {
 		let (sender, receiver) = std::sync::mpsc::sync_channel(1);
 		let persister = Arc::new(Persister::new(data_dir.clone()).with_graph_persistence_notifier(sender));
 		let network_graph = nodes[0].network_graph.clone();
-		let rapid_sync = Arc::new(RapidGossipSync::new(network_graph.clone()));
 		let features = ChannelFeatures::empty();
 		network_graph.add_channel_from_partial_announcement(42, 53, features, nodes[0].node.get_our_node_id(), nodes[1].node.get_our_node_id())
 			.expect("Failed to update channel from partial announcement");
@@ -877,7 +929,7 @@ mod tests {
 		assert_eq!(network_graph.read_only().channels().len(), 1);
 
 		let event_handler = |_: &_| {};
-		let background_processor = BackgroundProcessor::start(persister, event_handler, nodes[0].chain_monitor.clone(), nodes[0].node.clone(), nodes[0].p2p_gossip_sync.clone(), nodes[0].peer_manager.clone(), nodes[0].logger.clone(), Some(nodes[0].scorer.clone()), Some(rapid_sync.clone()));
+		let background_processor = BackgroundProcessor::start(persister, event_handler, nodes[0].chain_monitor.clone(), nodes[0].node.clone(), nodes[0].rapid_gossip_sync(), nodes[0].peer_manager.clone(), nodes[0].logger.clone(), Some(nodes[0].scorer.clone()));
 
 		loop {
 			let log_entries = nodes[0].logger.lines.lock().unwrap();
@@ -904,7 +956,7 @@ mod tests {
 			0, 0, 0, 1, 0, 0, 0, 0, 58, 85, 116, 216, 255, 8, 153, 192, 0, 2, 27, 0, 0, 25, 0, 0,
 			0, 1, 0, 0, 0, 125, 255, 2, 68, 226, 0, 6, 11, 0, 1, 5, 0, 0, 0, 0, 29, 129, 25, 192,
 		];
-		rapid_sync.update_network_graph(&initialization_input[..]).unwrap();
+		nodes[0].rapid_gossip_sync.update_network_graph(&initialization_input[..]).unwrap();
 
 		// this should have added two channels
 		assert_eq!(network_graph.read_only().channels().len(), 3);
@@ -931,7 +983,7 @@ mod tests {
 		let router = DefaultRouter::new(Arc::clone(&nodes[0].network_graph), Arc::clone(&nodes[0].logger), random_seed_bytes);
 		let invoice_payer = Arc::new(InvoicePayer::new(Arc::clone(&nodes[0].node), router, Arc::clone(&nodes[0].scorer), Arc::clone(&nodes[0].logger), |_: &_| {}, Retry::Attempts(2)));
 		let event_handler = Arc::clone(&invoice_payer);
-		let bg_processor = BackgroundProcessor::start(persister, event_handler, nodes[0].chain_monitor.clone(), nodes[0].node.clone(), nodes[0].p2p_gossip_sync.clone(), nodes[0].peer_manager.clone(), nodes[0].logger.clone(), Some(nodes[0].scorer.clone()), nodes[0].rapid_gossip_sync.clone());
+		let bg_processor = BackgroundProcessor::start(persister, event_handler, nodes[0].chain_monitor.clone(), nodes[0].node.clone(), nodes[0].no_gossip_sync(), nodes[0].peer_manager.clone(), nodes[0].logger.clone(), Some(nodes[0].scorer.clone()));
 		assert!(bg_processor.stop().is_ok());
 	}
 }
