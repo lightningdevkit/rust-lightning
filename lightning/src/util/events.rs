@@ -430,7 +430,8 @@ pub enum Event {
 		/// transaction.
 		claim_from_onchain_tx: bool,
 	},
-	/// Used to indicate that a channel with the given `channel_id` is in the process of closure.
+	/// Used to indicate that a previously opened channel with the given `channel_id` is in the
+	/// process of closure.
 	ChannelClosed  {
 		/// The channel_id of the channel which has been closed. Note that on-chain transactions
 		/// resolving the channel are likely still awaiting confirmation.
@@ -498,6 +499,12 @@ pub enum Event {
 		/// Note that if [`ChannelTypeFeatures::supports_scid_privacy`] returns true on this type,
 		/// the resulting [`ChannelManager`] will not be readable by versions of LDK prior to
 		/// 0.0.106.
+		///
+		/// Furthermore, note that if [`ChannelTypeFeatures::supports_zero_conf`] returns true on this type,
+		/// the resulting [`ChannelManager`] will not be readable by versions of LDK prior to
+		/// 0.0.107. Channels setting this type also need to get manually accepted via
+		/// [`crate::ln::channelmanager::ChannelManager::accept_inbound_channel_from_trusted_peer_0conf`],
+		/// or will be rejected otherwise.
 		///
 		/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 		channel_type: ChannelTypeFeatures,

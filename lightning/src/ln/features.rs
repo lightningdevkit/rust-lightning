@@ -130,6 +130,8 @@ mod sealed {
 			,
 			// Byte 5
 			,
+			// Byte 6
+			,
 		],
 		optional_features: [
 			// Byte 0
@@ -144,6 +146,8 @@ mod sealed {
 			,
 			// Byte 5
 			ChannelType | SCIDPrivacy,
+			// Byte 6
+			ZeroConf,
 		],
 	});
 	define_context!(NodeContext {
@@ -177,7 +181,7 @@ mod sealed {
 			// Byte 5
 			ChannelType | SCIDPrivacy,
 			// Byte 6
-			Keysend,
+			ZeroConf | Keysend,
 		],
 	});
 	define_context!(ChannelContext {
@@ -218,6 +222,8 @@ mod sealed {
 			,
 			// Byte 5
 			SCIDPrivacy,
+			// Byte 6
+			ZeroConf,
 		],
 		optional_features: [
 			// Byte 0
@@ -231,6 +237,8 @@ mod sealed {
 			// Byte 4
 			,
 			// Byte 5
+			,
+			// Byte 6
 			,
 		],
 	});
@@ -402,7 +410,9 @@ mod sealed {
 	define_feature!(47, SCIDPrivacy, [InitContext, NodeContext, ChannelTypeContext],
 		"Feature flags for only forwarding with SCID aliasing. Called `option_scid_alias` in the BOLTs",
 		set_scid_privacy_optional, set_scid_privacy_required, supports_scid_privacy, requires_scid_privacy);
-
+	define_feature!(51, ZeroConf, [InitContext, NodeContext, ChannelTypeContext],
+		"Feature flags for accepting channels with zero confirmations. Called `option_zeroconf` in the BOLTs",
+		set_zero_conf_optional, set_zero_conf_required, supports_zero_conf, requires_zero_conf);
 	define_feature!(55, Keysend, [NodeContext],
 		"Feature flags for keysend payments.", set_keysend_optional, set_keysend_required,
 		supports_keysend, requires_keysend);
@@ -852,13 +862,22 @@ mod tests {
 
 		assert!(InitFeatures::known().supports_scid_privacy());
 		assert!(NodeFeatures::known().supports_scid_privacy());
+		assert!(ChannelTypeFeatures::known().supports_scid_privacy());
 		assert!(!InitFeatures::known().requires_scid_privacy());
 		assert!(!NodeFeatures::known().requires_scid_privacy());
+		assert!(ChannelTypeFeatures::known().requires_scid_privacy());
 
 		assert!(InitFeatures::known().supports_wumbo());
 		assert!(NodeFeatures::known().supports_wumbo());
 		assert!(!InitFeatures::known().requires_wumbo());
 		assert!(!NodeFeatures::known().requires_wumbo());
+
+		assert!(InitFeatures::known().supports_zero_conf());
+		assert!(!InitFeatures::known().requires_zero_conf());
+		assert!(NodeFeatures::known().supports_zero_conf());
+		assert!(!NodeFeatures::known().requires_zero_conf());
+		assert!(ChannelTypeFeatures::known().supports_zero_conf());
+		assert!(ChannelTypeFeatures::known().requires_zero_conf());
 
 		let mut init_features = InitFeatures::known();
 		assert!(init_features.initial_routing_sync());
@@ -899,13 +918,15 @@ mod tests {
 			// - opt_shutdown_anysegwit
 			// -
 			// - option_channel_type | option_scid_alias
-			assert_eq!(node_features.flags.len(), 6);
+			// - option_zeroconf
+			assert_eq!(node_features.flags.len(), 7);
 			assert_eq!(node_features.flags[0], 0b00000010);
 			assert_eq!(node_features.flags[1], 0b01010001);
 			assert_eq!(node_features.flags[2], 0b00001010);
 			assert_eq!(node_features.flags[3], 0b00001000);
 			assert_eq!(node_features.flags[4], 0b00000000);
 			assert_eq!(node_features.flags[5], 0b10100000);
+			assert_eq!(node_features.flags[6], 0b00001000);
 		}
 
 		// Check that cleared flags are kept blank when converting back:
