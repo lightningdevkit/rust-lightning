@@ -1081,16 +1081,22 @@ impl<Signer: Sign> Channel<Signer> {
 			if channel_type.supports_any_optional_bits() {
 				return Err(ChannelError::Close("Channel Type field contained optional bits - this is not allowed".to_owned()));
 			}
-			// We currently only allow two channel types, so write it all out here - we allow
-			// `only_static_remote_key` in all contexts, and further allow
-			// `static_remote_key|scid_privacy` if the channel is not publicly announced.
-			let mut allowed_type = ChannelTypeFeatures::only_static_remote_key();
-			if *channel_type != allowed_type {
-				allowed_type.set_scid_privacy_required();
-				if *channel_type != allowed_type {
+
+			if channel_type.requires_unknown_bits() {
+				return Err(ChannelError::Close("Channel Type field contains unknown bits".to_owned()));
+			}
+
+			// We currently only allow four channel types, so write it all out here - we allow
+			// `only_static_remote_key` or `static_remote_key | zero_conf` in all contexts, and
+			// further allow `static_remote_key | scid_privacy` or
+			// `static_remote_key | scid_privacy | zero_conf`, if the channel is not
+			// publicly announced.
+			if *channel_type != ChannelTypeFeatures::only_static_remote_key() {
+				if !channel_type.requires_scid_privacy() && !channel_type.requires_zero_conf() {
 					return Err(ChannelError::Close("Channel Type was not understood".to_owned()));
 				}
-				if announced_channel {
+
+				if channel_type.requires_scid_privacy() && announced_channel {
 					return Err(ChannelError::Close("SCID Alias/Privacy Channel Type cannot be set on a public channel".to_owned()));
 				}
 			}
@@ -6407,7 +6413,7 @@ mod tests {
 	use ln::channelmanager::{HTLCSource, PaymentId};
 	use ln::channel::{Channel, InboundHTLCOutput, OutboundHTLCOutput, InboundHTLCState, OutboundHTLCState, HTLCCandidate, HTLCInitiator};
 	use ln::channel::{MAX_FUNDING_SATOSHIS_NO_WUMBO, TOTAL_BITCOIN_SUPPLY_SATOSHIS};
-	use ln::features::InitFeatures;
+	use ln::features::{InitFeatures, ChannelTypeFeatures};
 	use ln::msgs::{ChannelUpdate, DataLossProtect, DecodeError, OptionalField, UnsignedChannelUpdate};
 	use ln::script::ShutdownScript;
 	use ln::chan_utils;
@@ -7721,5 +7727,30 @@ mod tests {
 
 		assert_eq!(chan_utils::derive_private_revocation_key(&secp_ctx, &per_commitment_secret, &base_secret).unwrap(),
 				SecretKey::from_slice(&hex::decode("d09ffff62ddb2297ab000cc85bcb4283fdeb6aa052affbc9dddcf33b61078110").unwrap()[..]).unwrap());
+	}
+
+	#[test]
+	fn test_zero_conf_channel_type_support() {
+		let feeest = TestFeeEstimator{fee_est: 15000};
+		let secp_ctx = Secp256k1::new();
+		let seed = [42; 32];
+		let network = Network::Testnet;
+		let keys_provider = test_utils::TestKeysInterface::new(&seed, network);
+		let logger = test_utils::TestLogger::new();
+
+		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
+		let config = UserConfig::default();
+		let node_a_chan = Channel::<EnforcingSigner>::new_outbound(&&feeest, &&keys_provider,
+			node_b_node_id, &InitFeatures::known(), 10000000, 100000, 42, &config, 0, 42).unwrap();
+
+		let mut channel_type_features = ChannelTypeFeatures::only_static_remote_key();
+		channel_type_features.set_zero_conf_required();
+
+		let mut open_channel_msg = node_a_chan.get_open_channel(genesis_block(network).header.block_hash());
+		open_channel_msg.channel_type = Some(channel_type_features);
+		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[7; 32]).unwrap());
+		let res = Channel::<EnforcingSigner>::new_from_req(&&feeest, &&keys_provider,
+			node_b_node_id, &InitFeatures::known(), &open_channel_msg, 7, &config, 0, &&logger, 42);
+		assert!(res.is_ok());
 	}
 }

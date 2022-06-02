@@ -4159,6 +4159,10 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// [`Event::ChannelClosed::user_channel_id`] to allow tracking of which events correspond
 	/// with which `accept_inbound_channel`/`accept_inbound_channel_from_trusted_peer_0conf` call.
 	///
+	/// Note that this method will return an error and reject the channel, if it requires support
+	/// for zero confirmations. Instead, `accept_inbound_channel_from_trusted_peer_0conf` must be
+	/// used to accept such channels.
+	///
 	/// [`Event::OpenChannelRequest`]: events::Event::OpenChannelRequest
 	/// [`Event::ChannelClosed::user_channel_id`]: events::Event::ChannelClosed::user_channel_id
 	pub fn accept_inbound_channel(&self, temporary_channel_id: &[u8; 32], counterparty_node_id: &PublicKey, user_channel_id: u64) -> Result<(), APIError> {
@@ -4200,7 +4204,20 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				if *counterparty_node_id != channel.get().get_counterparty_node_id() {
 					return Err(APIError::APIMisuseError { err: "The passed counterparty_node_id doesn't match the channel's counterparty node_id".to_owned() });
 				}
-				if accept_0conf { channel.get_mut().set_0conf(); }
+				if accept_0conf {
+					channel.get_mut().set_0conf();
+				} else if channel.get().get_channel_type().requires_zero_conf() {
+					let send_msg_err_event = events::MessageSendEvent::HandleError {
+						node_id: channel.get().get_counterparty_node_id(),
+						action: msgs::ErrorAction::SendErrorMessage{
+							msg: msgs::ErrorMessage { channel_id: temporary_channel_id.clone(), data: "No zero confirmation channels accepted".to_owned(), }
+						}
+					};
+					channel_state.pending_msg_events.push(send_msg_err_event);
+					let _ = remove_channel!(self, channel_state, channel);
+					return Err(APIError::APIMisuseError { err: "Please use accept_inbound_channel_from_trusted_peer_0conf to accept channels with zero confirmations.".to_owned() });
+				}
+
 				channel_state.pending_msg_events.push(events::MessageSendEvent::SendAcceptChannel {
 					node_id: channel.get().get_counterparty_node_id(),
 					msg: channel.get_mut().accept_inbound_channel(user_channel_id),
@@ -4242,6 +4259,9 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			},
 			hash_map::Entry::Vacant(entry) => {
 				if !self.default_configuration.manually_accept_inbound_channels {
+					if channel.get_channel_type().requires_zero_conf() {
+						return Err(MsgHandleErrInternal::send_err_msg_no_close("No zero confirmation channels accepted".to_owned(), msg.temporary_channel_id.clone()));
+					}
 					channel_state.pending_msg_events.push(events::MessageSendEvent::SendAcceptChannel {
 						node_id: counterparty_node_id.clone(),
 						msg: channel.accept_inbound_channel(0),

@@ -17,9 +17,9 @@ use chain::keysinterface::{Recipient, KeysInterface};
 use ln::channelmanager::{ChannelManager, ChannelManagerReadArgs, MIN_CLTV_EXPIRY_DELTA};
 use routing::network_graph::RoutingFees;
 use routing::router::{PaymentParameters, RouteHint, RouteHintHop};
-use ln::features::{InitFeatures, InvoiceFeatures};
+use ln::features::{InitFeatures, InvoiceFeatures, ChannelTypeFeatures};
 use ln::msgs;
-use ln::msgs::{ChannelMessageHandler, RoutingMessageHandler, OptionalField, ChannelUpdate};
+use ln::msgs::{ChannelMessageHandler, RoutingMessageHandler, OptionalField, ChannelUpdate, ErrorAction};
 use ln::wire::Encode;
 use util::enforcing_trait_impls::EnforcingSigner;
 use util::events::{ClosureReason, Event, MessageSendEvent, MessageSendEventsProvider};
@@ -921,4 +921,103 @@ fn test_0conf_channel_reorg() {
 		err: "Funding transaction was un-confirmed. Locked at 0 confs, now have 0 confs.".to_owned()
 	});
 	check_closed_broadcast!(nodes[1], true);
+}
+
+#[test]
+fn test_zero_conf_accept_reject() {
+	let mut channel_type_features = ChannelTypeFeatures::only_static_remote_key();
+	channel_type_features.set_zero_conf_required();
+
+	// 1. Check we reject zero conf channels by default
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100000, 10001, 42, None).unwrap();
+	let mut open_channel_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
+
+	open_channel_msg.channel_type = Some(channel_type_features.clone());
+
+	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), InitFeatures::known(), &open_channel_msg);
+
+	let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
+	match msg_events[0] {
+		MessageSendEvent::HandleError { action: ErrorAction::SendErrorMessage { ref msg, .. }, .. } => {
+			assert_eq!(msg.data, "No zero confirmation channels accepted".to_owned());
+		},
+		_ => panic!(),
+	}
+
+	// 2. Check we can manually accept zero conf channels via the right method
+	let mut manually_accept_conf = UserConfig::default();
+	manually_accept_conf.manually_accept_inbound_channels = true;
+
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs,
+		&[None, Some(manually_accept_conf.clone())]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	// 2.1 First try the non-0conf method to manually accept
+	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100000, 10001, 42,
+		Some(manually_accept_conf)).unwrap();
+	let mut open_channel_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel,
+		nodes[1].node.get_our_node_id());
+
+	open_channel_msg.channel_type = Some(channel_type_features.clone());
+
+	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), InitFeatures::known(),
+		&open_channel_msg);
+
+	// Assert that `nodes[1]` has no `MessageSendEvent::SendAcceptChannel` in the `msg_events`.
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+
+	let events = nodes[1].node.get_and_clear_pending_events();
+	
+	match events[0] {
+		Event::OpenChannelRequest { temporary_channel_id, .. } => {
+			// Assert we fail to accept via the non-0conf method
+			assert!(nodes[1].node.accept_inbound_channel(&temporary_channel_id,
+				&nodes[0].node.get_our_node_id(), 0).is_err());
+		},
+		_ => panic!(),
+	}
+
+	let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
+	match msg_events[0] {
+		MessageSendEvent::HandleError { action: ErrorAction::SendErrorMessage { ref msg, .. }, .. } => {
+			assert_eq!(msg.data, "No zero confirmation channels accepted".to_owned());
+		},
+		_ => panic!(),
+	}
+
+	// 2.2 Try again with the 0conf method to manually accept
+	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100000, 10001, 42,
+		Some(manually_accept_conf)).unwrap();
+	let mut open_channel_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel,
+		nodes[1].node.get_our_node_id());
+
+	open_channel_msg.channel_type = Some(channel_type_features);
+
+	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), InitFeatures::known(),
+		&open_channel_msg);
+
+	let events = nodes[1].node.get_and_clear_pending_events();
+	
+	match events[0] {
+		Event::OpenChannelRequest { temporary_channel_id, .. } => {
+			// Assert we can accept via the 0conf method
+			assert!(nodes[1].node.accept_inbound_channel_from_trusted_peer_0conf(
+				&temporary_channel_id, &nodes[0].node.get_our_node_id(), 0).is_ok());
+		},
+		_ => panic!(),
+	}
+
+	// Check we would send accept
+	let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
+	match msg_events[0] {
+		MessageSendEvent::SendAcceptChannel { .. } => {},
+		_ => panic!(),
+	}
 }
