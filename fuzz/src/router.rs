@@ -16,11 +16,11 @@ use lightning::chain::transaction::OutPoint;
 use lightning::ln::channelmanager::{ChannelDetails, ChannelCounterparty};
 use lightning::ln::features::InitFeatures;
 use lightning::ln::msgs;
+use lightning::routing::gossip::{NetworkGraph, RoutingFees};
 use lightning::routing::router::{find_route, PaymentParameters, RouteHint, RouteHintHop, RouteParameters};
 use lightning::routing::scoring::FixedPenaltyScorer;
 use lightning::util::logger::Logger;
 use lightning::util::ser::Readable;
-use lightning::routing::network_graph::{NetworkGraph, RoutingFees};
 
 use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::PublicKey;
@@ -196,7 +196,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 			},
 			4 => {
 				let short_channel_id = slice_to_be64(get_slice!(8));
-				net_graph.close_channel_from_update(short_channel_id, false);
+				net_graph.channel_failed(short_channel_id, false);
 			},
 			_ if node_pks.is_empty() => {},
 			_ => {

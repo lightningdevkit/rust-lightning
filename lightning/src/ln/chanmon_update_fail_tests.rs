@@ -1901,9 +1901,9 @@ fn do_during_funding_monitor_fail(confirm_a_first: bool, restore_b_before_conf: 
 		(channel_id, create_chan_between_nodes_with_value_b(&nodes[1], &nodes[0], &channel_ready))
 	};
 	for node in nodes.iter() {
-		assert!(node.net_graph_msg_handler.handle_channel_announcement(&announcement).unwrap());
-		node.net_graph_msg_handler.handle_channel_update(&as_update).unwrap();
-		node.net_graph_msg_handler.handle_channel_update(&bs_update).unwrap();
+		assert!(node.gossip_sync.handle_channel_announcement(&announcement).unwrap());
+		node.gossip_sync.handle_channel_update(&as_update).unwrap();
+		node.gossip_sync.handle_channel_update(&bs_update).unwrap();
 	}
 
 	send_payment(&nodes[0], &[&nodes[1]], 8000000);

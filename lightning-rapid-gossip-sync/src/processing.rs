@@ -10,7 +10,7 @@ use bitcoin::secp256k1::PublicKey;
 use lightning::ln::msgs::{
 	DecodeError, ErrorAction, LightningError, OptionalField, UnsignedChannelUpdate,
 };
-use lightning::routing::network_graph::NetworkGraph;
+use lightning::routing::gossip::NetworkGraph;
 use lightning::util::ser::{BigSize, Readable};
 
 use crate::error::GraphSyncError;
@@ -235,7 +235,7 @@ mod tests {
 	use bitcoin::Network;
 
 	use lightning::ln::msgs::DecodeError;
-	use lightning::routing::network_graph::NetworkGraph;
+	use lightning::routing::gossip::NetworkGraph;
 
 	use crate::error::GraphSyncError;
 	use crate::RapidGossipSync;

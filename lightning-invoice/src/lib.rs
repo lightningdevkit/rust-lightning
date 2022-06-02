@@ -45,7 +45,7 @@ use bitcoin_hashes::sha256;
 use lightning::ln::PaymentSecret;
 use lightning::ln::features::InvoiceFeatures;
 #[cfg(any(doc, test))]
-use lightning::routing::network_graph::RoutingFees;
+use lightning::routing::gossip::RoutingFees;
 use lightning::routing::router::RouteHint;
 use lightning::util::invoice::construct_invoice_preimage;
 

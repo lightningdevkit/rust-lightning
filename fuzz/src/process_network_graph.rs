@@ -5,7 +5,7 @@ use utils::test_logger;
 /// Actual fuzz test, method signature and name are fixed
 fn do_test(data: &[u8]) {
 	let block_hash = bitcoin::BlockHash::default();
-	let network_graph = lightning::routing::network_graph::NetworkGraph::new(block_hash);
+	let network_graph = lightning::routing::gossip::NetworkGraph::new(block_hash);
 	let rapid_sync = RapidGossipSync::new(&network_graph);
 	let _ = rapid_sync.update_network_graph(data);
 }

@@ -2347,8 +2347,8 @@ fn channel_monitor_network_test() {
 		check_preimage_claim(&nodes[4], &node_txn);
 		(close_chan_update_1, close_chan_update_2)
 	};
-	nodes[3].net_graph_msg_handler.handle_channel_update(&close_chan_update_2).unwrap();
-	nodes[4].net_graph_msg_handler.handle_channel_update(&close_chan_update_1).unwrap();
+	nodes[3].gossip_sync.handle_channel_update(&close_chan_update_2).unwrap();
+	nodes[4].gossip_sync.handle_channel_update(&close_chan_update_1).unwrap();
 	assert_eq!(nodes[3].node.list_channels().len(), 0);
 	assert_eq!(nodes[4].node.list_channels().len(), 0);
 
@@ -3978,9 +3978,9 @@ fn test_funding_peer_disconnect() {
 	};
 
 	// Provide the channel announcement and public updates to the network graph
-	nodes[0].net_graph_msg_handler.handle_channel_announcement(&chan_announcement).unwrap();
-	nodes[0].net_graph_msg_handler.handle_channel_update(&bs_update).unwrap();
-	nodes[0].net_graph_msg_handler.handle_channel_update(&as_update).unwrap();
+	nodes[0].gossip_sync.handle_channel_announcement(&chan_announcement).unwrap();
+	nodes[0].gossip_sync.handle_channel_update(&bs_update).unwrap();
+	nodes[0].gossip_sync.handle_channel_update(&as_update).unwrap();
 
 	let (route, _, _, _) = get_route_and_payment_hash!(nodes[0], nodes[1], 1000000);
 	let payment_preimage = send_along_route(&nodes[0], route, &[&nodes[1]], 1000000).0;
@@ -4421,9 +4421,9 @@ fn test_no_txn_manager_serialize_deserialize() {
 	let (channel_ready, _) = create_chan_between_nodes_with_value_confirm(&nodes[0], &nodes[1], &tx);
 	let (announcement, as_update, bs_update) = create_chan_between_nodes_with_value_b(&nodes[0], &nodes[1], &channel_ready);
 	for node in nodes.iter() {
-		assert!(node.net_graph_msg_handler.handle_channel_announcement(&announcement).unwrap());
-		node.net_graph_msg_handler.handle_channel_update(&as_update).unwrap();
-		node.net_graph_msg_handler.handle_channel_update(&bs_update).unwrap();
+		assert!(node.gossip_sync.handle_channel_announcement(&announcement).unwrap());
+		node.gossip_sync.handle_channel_update(&as_update).unwrap();
+		node.gossip_sync.handle_channel_update(&bs_update).unwrap();
 	}
 
 	send_payment(&nodes[0], &[&nodes[1]], 1000000);
@@ -4541,9 +4541,9 @@ fn test_manager_serialize_deserialize_events() {
 	let (channel_ready, _) = create_chan_between_nodes_with_value_confirm(&nodes[0], &nodes[1], &tx);
 	let (announcement, as_update, bs_update) = create_chan_between_nodes_with_value_b(&nodes[0], &nodes[1], &channel_ready);
 	for node in nodes.iter() {
-		assert!(node.net_graph_msg_handler.handle_channel_announcement(&announcement).unwrap());
-		node.net_graph_msg_handler.handle_channel_update(&as_update).unwrap();
-		node.net_graph_msg_handler.handle_channel_update(&bs_update).unwrap();
+		assert!(node.gossip_sync.handle_channel_announcement(&announcement).unwrap());
+		node.gossip_sync.handle_channel_update(&as_update).unwrap();
+		node.gossip_sync.handle_channel_update(&bs_update).unwrap();
 	}
 
 	send_payment(&nodes[0], &[&nodes[1]], 1000000);

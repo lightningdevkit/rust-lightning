@@ -37,7 +37,7 @@ use lightning::ln::channelmanager::{ChainParameters, ChannelManager};
 use lightning::ln::peer_handler::{MessageHandler,PeerManager,SocketDescriptor,IgnoringMessageHandler};
 use lightning::ln::msgs::DecodeError;
 use lightning::ln::script::ShutdownScript;
-use lightning::routing::network_graph::{NetGraphMsgHandler, NetworkGraph};
+use lightning::routing::gossip::{P2PGossipSync, NetworkGraph};
 use lightning::routing::router::{find_route, PaymentParameters, RouteParameters};
 use lightning::routing::scoring::FixedPenaltyScorer;
 use lightning::util::config::UserConfig;
@@ -163,7 +163,7 @@ type ChannelMan = ChannelManager<
 	EnforcingSigner,
 	Arc<chainmonitor::ChainMonitor<EnforcingSigner, Arc<dyn chain::Filter>, Arc<TestBroadcaster>, Arc<FuzzEstimator>, Arc<dyn Logger>, Arc<TestPersister>>>,
 	Arc<TestBroadcaster>, Arc<KeyProvider>, Arc<FuzzEstimator>, Arc<dyn Logger>>;
-type PeerMan<'a> = PeerManager<Peer<'a>, Arc<ChannelMan>, Arc<NetGraphMsgHandler<Arc<NetworkGraph>, Arc<dyn chain::Access>, Arc<dyn Logger>>>, Arc<dyn Logger>, IgnoringMessageHandler>;
+type PeerMan<'a> = PeerManager<Peer<'a>, Arc<ChannelMan>, Arc<P2PGossipSync<Arc<NetworkGraph>, Arc<dyn chain::Access>, Arc<dyn Logger>>>, Arc<dyn Logger>, IgnoringMessageHandler>;
 
 struct MoneyLossDetector<'a> {
 	manager: Arc<ChannelMan>,
@@ -396,13 +396,13 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 	keys_manager.counter.fetch_sub(1, Ordering::AcqRel);
 	let our_id = PublicKey::from_secret_key(&Secp256k1::signing_only(), &keys_manager.get_node_secret(Recipient::Node).unwrap());
 	let network_graph = Arc::new(NetworkGraph::new(genesis_block(network).block_hash()));
-	let net_graph_msg_handler = Arc::new(NetGraphMsgHandler::new(Arc::clone(&network_graph), None, Arc::clone(&logger)));
+	let gossip_sync = Arc::new(P2PGossipSync::new(Arc::clone(&network_graph), None, Arc::clone(&logger)));
 	let scorer = FixedPenaltyScorer::with_penalty(0);
 
 	let peers = RefCell::new([false; 256]);
 	let mut loss_detector = MoneyLossDetector::new(&peers, channelmanager.clone(), monitor.clone(), PeerManager::new(MessageHandler {
 		chan_handler: channelmanager.clone(),
-		route_handler: net_graph_msg_handler.clone(),
+		route_handler: gossip_sync.clone(),
 	}, our_network_key, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15, 0], Arc::clone(&logger), IgnoringMessageHandler{}));
 
 	let mut should_forward = false;

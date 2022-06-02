@@ -11,10 +11,10 @@ receive `ChannelMonitorUpdate`s from `ChannelManager` and persist them to disk b
 channel steps forward.
 
 There are two additional important structures that you may use either on the same device
-as the `ChannelManager` or on a separate one. `NetGraphMsgHandler` handles receiving channel
-and node announcements, which are then used to calculate routes by `get_route` for sending payments.
-`PeerManager` handles the authenticated and encrypted communication protocol,
-monitoring for liveness of peers, routing messages to `ChannelManager` and `NetGraphMsgHandler`
+as the `ChannelManager` or on a separate one. `P2PGossipSync` handles receiving channel
+and node announcements, which are then used to calculate routes by `find_route` for sending
+payments. `PeerManager` handles the authenticated and encrypted communication protocol,
+monitoring for liveness of peers, routing messages to `ChannelManager` and `P2PGossipSync`
 instances directly, and receiving messages from them via the `EventsProvider` interface.
 
 These structs communicate with each other using a public API, so that you can easily add
@@ -56,7 +56,7 @@ At a high level, some of the common interfaces fit together as follows:
  |                    -----------------          \   /  ----------------
  |                            ^                   \ /          |
 (as RoutingMessageHandler)    |                    v           v
-  \                   ----------------------   ---------   -----------------
-   -----------------> | NetGraphMsgHandler |   | Event |   | chain::Filter |
-                      ----------------------   ---------   -----------------
+  \                   -----------------        ---------   -----------------
+   -----------------> | P2PGossipSync |        | Event |   | chain::Filter |
+                      -----------------        ---------   -----------------
 ```

@@ -29,7 +29,7 @@
 //! ```
 //! use bitcoin::blockdata::constants::genesis_block;
 //! use bitcoin::Network;
-//! use lightning::routing::network_graph::NetworkGraph;
+//! use lightning::routing::gossip::NetworkGraph;
 //! use lightning_rapid_gossip_sync::RapidGossipSync;
 //!
 //! let block_hash = genesis_block(Network::Bitcoin).header.block_hash();
@@ -62,7 +62,7 @@ use std::fs::File;
 use std::ops::Deref;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use lightning::routing::network_graph::NetworkGraph;
+use lightning::routing::gossip::NetworkGraph;
 
 use crate::error::GraphSyncError;
 
@@ -127,7 +127,7 @@ mod tests {
 	use bitcoin::Network;
 
 	use lightning::ln::msgs::DecodeError;
-	use lightning::routing::network_graph::NetworkGraph;
+	use lightning::routing::gossip::NetworkGraph;
 	use crate::RapidGossipSync;
 
 	#[test]
@@ -253,7 +253,7 @@ pub mod bench {
 	use bitcoin::Network;
 
 	use lightning::ln::msgs::DecodeError;
-	use lightning::routing::network_graph::NetworkGraph;
+	use lightning::routing::gossip::NetworkGraph;
 
 	use crate::RapidGossipSync;
 
@@ -271,6 +271,7 @@ pub mod bench {
 					println!("{}", error_string);
 					return;
 				}
+				#[cfg(require_route_graph_test)]
 				panic!("{}", error_string);
 			}
 			assert!(sync_result.is_ok())

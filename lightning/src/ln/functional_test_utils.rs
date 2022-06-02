@@ -15,7 +15,7 @@ use chain::channelmonitor::ChannelMonitor;
 use chain::transaction::OutPoint;
 use ln::{PaymentPreimage, PaymentHash, PaymentSecret};
 use ln::channelmanager::{ChainParameters, ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, PaymentSendFailure, PaymentId, MIN_CLTV_EXPIRY_DELTA};
-use routing::network_graph::{NetGraphMsgHandler, NetworkGraph};
+use routing::gossip::{P2PGossipSync, NetworkGraph};
 use routing::router::{PaymentParameters, Route, get_route};
 use ln::features::{InitFeatures, InvoiceFeatures};
 use ln::msgs;
@@ -279,7 +279,7 @@ pub struct Node<'a, 'b: 'a, 'c: 'b> {
 	pub keys_manager: &'b test_utils::TestKeysInterface,
 	pub node: &'a ChannelManager<EnforcingSigner, &'b TestChainMonitor<'c>, &'c test_utils::TestBroadcaster, &'b test_utils::TestKeysInterface, &'c test_utils::TestFeeEstimator, &'c test_utils::TestLogger>,
 	pub network_graph: &'c NetworkGraph,
-	pub net_graph_msg_handler: NetGraphMsgHandler<&'c NetworkGraph, &'c test_utils::TestChainSource, &'c test_utils::TestLogger>,
+	pub gossip_sync: P2PGossipSync<&'c NetworkGraph, &'c test_utils::TestChainSource, &'c test_utils::TestLogger>,
 	pub node_seed: [u8; 32],
 	pub network_payment_count: Rc<RefCell<u8>>,
 	pub network_chan_count: Rc<RefCell<u32>>,
@@ -313,13 +313,13 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 				self.network_graph.write(&mut w).unwrap();
 				let network_graph_deser = <NetworkGraph>::read(&mut io::Cursor::new(&w.0)).unwrap();
 				assert!(network_graph_deser == *self.network_graph);
-				let net_graph_msg_handler = NetGraphMsgHandler::new(
+				let gossip_sync = P2PGossipSync::new(
 					&network_graph_deser, Some(self.chain_source), self.logger
 				);
 				let mut chan_progress = 0;
 				loop {
-					let orig_announcements = self.net_graph_msg_handler.get_next_channel_announcements(chan_progress, 255);
-					let deserialized_announcements = net_graph_msg_handler.get_next_channel_announcements(chan_progress, 255);
+					let orig_announcements = self.gossip_sync.get_next_channel_announcements(chan_progress, 255);
+					let deserialized_announcements = gossip_sync.get_next_channel_announcements(chan_progress, 255);
 					assert!(orig_announcements == deserialized_announcements);
 					chan_progress = match orig_announcements.last() {
 						Some(announcement) => announcement.0.contents.short_channel_id + 1,
@@ -328,8 +328,8 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 				}
 				let mut node_progress = None;
 				loop {
-					let orig_announcements = self.net_graph_msg_handler.get_next_node_announcements(node_progress.as_ref(), 255);
-					let deserialized_announcements = net_graph_msg_handler.get_next_node_announcements(node_progress.as_ref(), 255);
+					let orig_announcements = self.gossip_sync.get_next_node_announcements(node_progress.as_ref(), 255);
+					let deserialized_announcements = gossip_sync.get_next_node_announcements(node_progress.as_ref(), 255);
 					assert!(orig_announcements == deserialized_announcements);
 					node_progress = match orig_announcements.last() {
 						Some(announcement) => Some(announcement.contents.node_id),
@@ -876,11 +876,11 @@ pub fn update_nodes_with_chan_announce<'a, 'b, 'c, 'd>(nodes: &'a Vec<Node<'b, '
 	};
 
 	for node in nodes {
-		assert!(node.net_graph_msg_handler.handle_channel_announcement(ann).unwrap());
-		node.net_graph_msg_handler.handle_channel_update(upd_1).unwrap();
-		node.net_graph_msg_handler.handle_channel_update(upd_2).unwrap();
-		node.net_graph_msg_handler.handle_node_announcement(&a_node_announcement).unwrap();
-		node.net_graph_msg_handler.handle_node_announcement(&b_node_announcement).unwrap();
+		assert!(node.gossip_sync.handle_channel_announcement(ann).unwrap());
+		node.gossip_sync.handle_channel_update(upd_1).unwrap();
+		node.gossip_sync.handle_channel_update(upd_2).unwrap();
+		node.gossip_sync.handle_node_announcement(&a_node_announcement).unwrap();
+		node.gossip_sync.handle_node_announcement(&b_node_announcement).unwrap();
 
 		// Note that channel_updates are also delivered to ChannelManagers to ensure we have
 		// forwarding info for local channels even if its not accepted in the network graph.
@@ -1506,13 +1506,13 @@ macro_rules! expect_payment_failed_conditions {
 
 				if let Some(chan_closed) = $conditions.expected_blamed_chan_closed {
 					match network_update {
-						&Some($crate::routing::network_graph::NetworkUpdate::ChannelUpdateMessage { ref msg }) if !chan_closed => {
+						&Some($crate::routing::gossip::NetworkUpdate::ChannelUpdateMessage { ref msg }) if !chan_closed => {
 							if let Some(scid) = $conditions.expected_blamed_scid {
 								assert_eq!(msg.contents.short_channel_id, scid);
 							}
 							assert_eq!(msg.contents.flags & 2, 0);
 						},
-						&Some($crate::routing::network_graph::NetworkUpdate::ChannelClosed { short_channel_id, is_permanent }) if chan_closed => {
+						&Some($crate::routing::gossip::NetworkUpdate::ChannelFailure { short_channel_id, is_permanent }) if chan_closed => {
 							if let Some(scid) = $conditions.expected_blamed_scid {
 								assert_eq!(short_channel_id, scid);
 							}
@@ -1992,11 +1992,11 @@ pub fn create_network<'a, 'b: 'a, 'c: 'b>(node_count: usize, cfgs: &'b Vec<NodeC
 	let connect_style = Rc::new(RefCell::new(ConnectStyle::random_style()));
 
 	for i in 0..node_count {
-		let net_graph_msg_handler = NetGraphMsgHandler::new(cfgs[i].network_graph, None, cfgs[i].logger);
+		let gossip_sync = P2PGossipSync::new(cfgs[i].network_graph, None, cfgs[i].logger);
 		nodes.push(Node{
 			chain_source: cfgs[i].chain_source, tx_broadcaster: cfgs[i].tx_broadcaster,
 			chain_monitor: &cfgs[i].chain_monitor, keys_manager: &cfgs[i].keys_manager,
-			node: &chan_mgrs[i], network_graph: &cfgs[i].network_graph, net_graph_msg_handler,
+			node: &chan_mgrs[i], network_graph: &cfgs[i].network_graph, gossip_sync,
 			node_seed: cfgs[i].node_seed, network_chan_count: chan_count.clone(),
 			network_payment_count: payment_count.clone(), logger: cfgs[i].logger,
 			blocks: Arc::clone(&cfgs[i].tx_broadcaster.blocks),
@@ -2160,8 +2160,8 @@ pub fn handle_announce_close_broadcast_events<'a, 'b, 'c>(nodes: &Vec<Node<'a, '
 	}
 
 	for node in nodes {
-		node.net_graph_msg_handler.handle_channel_update(&as_update).unwrap();
-		node.net_graph_msg_handler.handle_channel_update(&bs_update).unwrap();
+		node.gossip_sync.handle_channel_update(&as_update).unwrap();
+		node.gossip_sync.handle_channel_update(&bs_update).unwrap();
 	}
 }
 

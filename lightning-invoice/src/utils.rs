@@ -15,9 +15,9 @@ use lightning::ln::channelmanager::{ChannelDetails, ChannelManager, PaymentId, P
 use lightning::ln::channelmanager::{PhantomRouteHints, MIN_CLTV_EXPIRY_DELTA};
 use lightning::ln::inbound_payment::{create, create_from_hash, ExpandedKey};
 use lightning::ln::msgs::LightningError;
-use lightning::routing::scoring::Score;
-use lightning::routing::network_graph::{NetworkGraph, RoutingFees};
+use lightning::routing::gossip::{NetworkGraph, RoutingFees};
 use lightning::routing::router::{Route, RouteHint, RouteHintHop, RouteParameters, find_route};
+use lightning::routing::scoring::Score;
 use lightning::util::logger::Logger;
 use secp256k1::PublicKey;
 use core::ops::Deref;

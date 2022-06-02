@@ -162,17 +162,17 @@ pub enum NetworkUpdate {
 		/// The update to apply via [`NetworkGraph::update_channel`].
 		msg: ChannelUpdate,
 	},
-	/// An error indicating only that a channel has been closed, which should be applied via
-	/// [`NetworkGraph::close_channel_from_update`].
-	ChannelClosed {
+	/// An error indicating that a channel failed to route a payment, which should be applied via
+	/// [`NetworkGraph::channel_failed`].
+	ChannelFailure {
 		/// The short channel id of the closed channel.
 		short_channel_id: u64,
 		/// Whether the channel should be permanently removed or temporarily disabled until a new
 		/// `channel_update` message is received.
 		is_permanent: bool,
 	},
-	/// An error indicating only that a node has failed, which should be applied via
-	/// [`NetworkGraph::fail_node`].
+	/// An error indicating that a node failed to route a payment, which should be applied via
+	/// [`NetworkGraph::node_failed`].
 	NodeFailure {
 		/// The node id of the failed node.
 		node_id: PublicKey,
@@ -186,7 +186,7 @@ impl_writeable_tlv_based_enum_upgradable!(NetworkUpdate,
 	(0, ChannelUpdateMessage) => {
 		(0, msg, required),
 	},
-	(2, ChannelClosed) => {
+	(2, ChannelFailure) => {
 		(0, short_channel_id, required),
 		(2, is_permanent, required),
 	},
@@ -196,7 +196,7 @@ impl_writeable_tlv_based_enum_upgradable!(NetworkUpdate,
 	},
 );
 
-impl<G: Deref<Target=NetworkGraph>, C: Deref, L: Deref> EventHandler for NetGraphMsgHandler<G, C, L>
+impl<G: Deref<Target=NetworkGraph>, C: Deref, L: Deref> EventHandler for P2PGossipSync<G, C, L>
 where C::Target: chain::Access, L::Target: Logger {
 	fn handle_event(&self, event: &Event) {
 		if let Event::PaymentPathFailed { payment_hash: _, rejected_by_dest: _, network_update, .. } = event {
@@ -215,7 +215,7 @@ where C::Target: chain::Access, L::Target: Logger {
 ///
 /// Serves as an [`EventHandler`] for applying updates from [`Event::PaymentPathFailed`] to the
 /// [`NetworkGraph`].
-pub struct NetGraphMsgHandler<G: Deref<Target=NetworkGraph>, C: Deref, L: Deref>
+pub struct P2PGossipSync<G: Deref<Target=NetworkGraph>, C: Deref, L: Deref>
 where C::Target: chain::Access, L::Target: Logger
 {
 	secp_ctx: Secp256k1<secp256k1::VerifyOnly>,
@@ -226,7 +226,7 @@ where C::Target: chain::Access, L::Target: Logger
 	logger: L,
 }
 
-impl<G: Deref<Target=NetworkGraph>, C: Deref, L: Deref> NetGraphMsgHandler<G, C, L>
+impl<G: Deref<Target=NetworkGraph>, C: Deref, L: Deref> P2PGossipSync<G, C, L>
 where C::Target: chain::Access, L::Target: Logger
 {
 	/// Creates a new tracker of the actual state of the network of channels and nodes,
@@ -235,7 +235,7 @@ where C::Target: chain::Access, L::Target: Logger
 	/// channel data is correct, and that the announcement is signed with
 	/// channel owners' keys.
 	pub fn new(network_graph: G, chain_access: Option<C>, logger: L) -> Self {
-		NetGraphMsgHandler {
+		P2PGossipSync {
 			secp_ctx: Secp256k1::verification_only(),
 			network_graph,
 			full_syncs_requested: AtomicUsize::new(0),
@@ -253,7 +253,7 @@ where C::Target: chain::Access, L::Target: Logger
 	}
 
 	/// Gets a reference to the underlying [`NetworkGraph`] which was provided in
-	/// [`NetGraphMsgHandler::new`].
+	/// [`P2PGossipSync::new`].
 	///
 	/// (C-not exported) as bindings don't support a reference-to-a-reference yet
 	pub fn network_graph(&self) -> &G {
@@ -282,15 +282,15 @@ where C::Target: chain::Access, L::Target: Logger
 				log_debug!(self.logger, "Updating channel with channel_update from a payment failure. Channel {} is {}.", short_channel_id, status);
 				let _ = self.network_graph.update_channel(msg, &self.secp_ctx);
 			},
-			NetworkUpdate::ChannelClosed { short_channel_id, is_permanent } => {
+			NetworkUpdate::ChannelFailure { short_channel_id, is_permanent } => {
 				let action = if is_permanent { "Removing" } else { "Disabling" };
 				log_debug!(self.logger, "{} channel graph entry for {} due to a payment failure.", action, short_channel_id);
-				self.network_graph.close_channel_from_update(short_channel_id, is_permanent);
+				self.network_graph.channel_failed(short_channel_id, is_permanent);
 			},
 			NetworkUpdate::NodeFailure { ref node_id, is_permanent } => {
 				let action = if is_permanent { "Removing" } else { "Disabling" };
 				log_debug!(self.logger, "{} node graph entry for {} due to a payment failure.", action, node_id);
-				self.network_graph.fail_node(node_id, is_permanent);
+				self.network_graph.node_failed(node_id, is_permanent);
 			},
 		}
 	}
@@ -316,7 +316,7 @@ macro_rules! secp_verify_sig {
 	};
 }
 
-impl<G: Deref<Target=NetworkGraph>, C: Deref, L: Deref> RoutingMessageHandler for NetGraphMsgHandler<G, C, L>
+impl<G: Deref<Target=NetworkGraph>, C: Deref, L: Deref> RoutingMessageHandler for P2PGossipSync<G, C, L>
 where C::Target: chain::Access, L::Target: Logger
 {
 	fn handle_node_announcement(&self, msg: &msgs::NodeAnnouncement) -> Result<bool, LightningError> {
@@ -605,7 +605,7 @@ where C::Target: chain::Access, L::Target: Logger
 	}
 }
 
-impl<G: Deref<Target=NetworkGraph>, C: Deref, L: Deref> MessageSendEventsProvider for NetGraphMsgHandler<G, C, L>
+impl<G: Deref<Target=NetworkGraph>, C: Deref, L: Deref> MessageSendEventsProvider for P2PGossipSync<G, C, L>
 where
 	C::Target: chain::Access,
 	L::Target: Logger,
@@ -1102,7 +1102,7 @@ impl NetworkGraph {
 	/// For an already known node (from channel announcements), update its stored properties from a
 	/// given node announcement.
 	///
-	/// You probably don't want to call this directly, instead relying on a NetGraphMsgHandler's
+	/// You probably don't want to call this directly, instead relying on a P2PGossipSync's
 	/// RoutingMessageHandler implementation to call it indirectly. This may be useful to accept
 	/// routing messages from a source using a protocol other than the lightning P2P protocol.
 	pub fn update_node_from_announcement<T: secp256k1::Verification>(&self, msg: &msgs::NodeAnnouncement, secp_ctx: &Secp256k1<T>) -> Result<(), LightningError> {
@@ -1154,7 +1154,7 @@ impl NetworkGraph {
 
 	/// Store or update channel info from a channel announcement.
 	///
-	/// You probably don't want to call this directly, instead relying on a NetGraphMsgHandler's
+	/// You probably don't want to call this directly, instead relying on a P2PGossipSync's
 	/// RoutingMessageHandler implementation to call it indirectly. This may be useful to accept
 	/// routing messages from a source using a protocol other than the lightning P2P protocol.
 	///
@@ -1328,11 +1328,11 @@ impl NetworkGraph {
 		self.add_channel_between_nodes(msg.short_channel_id, chan_info, utxo_value)
 	}
 
-	/// Close a channel if a corresponding HTLC fail was sent.
+	/// Marks a channel in the graph as failed if a corresponding HTLC fail was sent.
 	/// If permanent, removes a channel from the local storage.
 	/// May cause the removal of nodes too, if this was their last channel.
 	/// If not permanent, makes channels unavailable for routing.
-	pub fn close_channel_from_update(&self, short_channel_id: u64, is_permanent: bool) {
+	pub fn channel_failed(&self, short_channel_id: u64, is_permanent: bool) {
 		let mut channels = self.channels.write().unwrap();
 		if is_permanent {
 			if let Some(chan) = channels.remove(&short_channel_id) {
@@ -1352,7 +1352,7 @@ impl NetworkGraph {
 	}
 
 	/// Marks a node in the graph as failed.
-	pub fn fail_node(&self, _node_id: &PublicKey, is_permanent: bool) {
+	pub fn node_failed(&self, _node_id: &PublicKey, is_permanent: bool) {
 		if is_permanent {
 			// TODO: Wholly remove the node
 		} else {
@@ -1426,7 +1426,7 @@ impl NetworkGraph {
 	/// For an already known (from announcement) channel, update info about one of the directions
 	/// of the channel.
 	///
-	/// You probably don't want to call this directly, instead relying on a NetGraphMsgHandler's
+	/// You probably don't want to call this directly, instead relying on a P2PGossipSync's
 	/// RoutingMessageHandler implementation to call it indirectly. This may be useful to accept
 	/// routing messages from a source using a protocol other than the lightning P2P protocol.
 	///
@@ -1643,7 +1643,7 @@ mod tests {
 	use chain;
 	use ln::PaymentHash;
 	use ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
-	use routing::network_graph::{NetGraphMsgHandler, NetworkGraph, NetworkUpdate, MAX_EXCESS_BYTES_FOR_RELAY};
+	use routing::gossip::{P2PGossipSync, NetworkGraph, NetworkUpdate, MAX_EXCESS_BYTES_FOR_RELAY};
 	use ln::msgs::{Init, OptionalField, RoutingMessageHandler, UnsignedNodeAnnouncement, NodeAnnouncement,
 		UnsignedChannelAnnouncement, ChannelAnnouncement, UnsignedChannelUpdate, ChannelUpdate,
 		ReplyChannelRange, QueryChannelRange, QueryShortChannelIds, MAX_VALUE_MSAT};
@@ -1678,27 +1678,27 @@ mod tests {
 		NetworkGraph::new(genesis_hash)
 	}
 
-	fn create_net_graph_msg_handler(network_graph: &NetworkGraph) -> (
-		Secp256k1<All>, NetGraphMsgHandler<&NetworkGraph, Arc<test_utils::TestChainSource>, Arc<test_utils::TestLogger>>
+	fn create_gossip_sync(network_graph: &NetworkGraph) -> (
+		Secp256k1<All>, P2PGossipSync<&NetworkGraph, Arc<test_utils::TestChainSource>, Arc<test_utils::TestLogger>>
 	) {
 		let secp_ctx = Secp256k1::new();
 		let logger = Arc::new(test_utils::TestLogger::new());
-		let net_graph_msg_handler = NetGraphMsgHandler::new(network_graph, None, Arc::clone(&logger));
-		(secp_ctx, net_graph_msg_handler)
+		let gossip_sync = P2PGossipSync::new(network_graph, None, Arc::clone(&logger));
+		(secp_ctx, gossip_sync)
 	}
 
 	#[test]
 	fn request_full_sync_finite_times() {
 		let network_graph = create_network_graph();
-		let (secp_ctx, net_graph_msg_handler) = create_net_graph_msg_handler(&network_graph);
+		let (secp_ctx, gossip_sync) = create_gossip_sync(&network_graph);
 		let node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&hex::decode("0202020202020202020202020202020202020202020202020202020202020202").unwrap()[..]).unwrap());
 
-		assert!(net_graph_msg_handler.should_request_full_sync(&node_id));
-		assert!(net_graph_msg_handler.should_request_full_sync(&node_id));
-		assert!(net_graph_msg_handler.should_request_full_sync(&node_id));
-		assert!(net_graph_msg_handler.should_request_full_sync(&node_id));
-		assert!(net_graph_msg_handler.should_request_full_sync(&node_id));
-		assert!(!net_graph_msg_handler.should_request_full_sync(&node_id));
+		assert!(gossip_sync.should_request_full_sync(&node_id));
+		assert!(gossip_sync.should_request_full_sync(&node_id));
+		assert!(gossip_sync.should_request_full_sync(&node_id));
+		assert!(gossip_sync.should_request_full_sync(&node_id));
+		assert!(gossip_sync.should_request_full_sync(&node_id));
+		assert!(!gossip_sync.should_request_full_sync(&node_id));
 	}
 
 	fn get_signed_node_announcement<F: Fn(&mut UnsignedNodeAnnouncement)>(f: F, node_key: &SecretKey, secp_ctx: &Secp256k1<secp256k1::All>) -> NodeAnnouncement {
@@ -1783,14 +1783,14 @@ mod tests {
 	#[test]
 	fn handling_node_announcements() {
 		let network_graph = create_network_graph();
-		let (secp_ctx, net_graph_msg_handler) = create_net_graph_msg_handler(&network_graph);
+		let (secp_ctx, gossip_sync) = create_gossip_sync(&network_graph);
 
 		let node_1_privkey = &SecretKey::from_slice(&[42; 32]).unwrap();
 		let node_2_privkey = &SecretKey::from_slice(&[41; 32]).unwrap();
 		let zero_hash = Sha256dHash::hash(&[0; 32]);
 
 		let valid_announcement = get_signed_node_announcement(|_| {}, node_1_privkey, &secp_ctx);
-		match net_graph_msg_handler.handle_node_announcement(&valid_announcement) {
+		match gossip_sync.handle_node_announcement(&valid_announcement) {
 			Ok(_) => panic!(),
 			Err(e) => assert_eq!("No existing channels for node_announcement", e.err)
 		};
@@ -1798,19 +1798,19 @@ mod tests {
 		{
 			// Announce a channel to add a corresponding node.
 			let valid_announcement = get_signed_channel_announcement(|_| {}, node_1_privkey, node_2_privkey, &secp_ctx);
-			match net_graph_msg_handler.handle_channel_announcement(&valid_announcement) {
+			match gossip_sync.handle_channel_announcement(&valid_announcement) {
 				Ok(res) => assert!(res),
 				_ => panic!()
 			};
 		}
 
-		match net_graph_msg_handler.handle_node_announcement(&valid_announcement) {
+		match gossip_sync.handle_node_announcement(&valid_announcement) {
 			Ok(res) => assert!(res),
 			Err(_) => panic!()
 		};
 
 		let fake_msghash = hash_to_message!(&zero_hash);
-		match net_graph_msg_handler.handle_node_announcement(
+		match gossip_sync.handle_node_announcement(
 			&NodeAnnouncement {
 				signature: secp_ctx.sign_ecdsa(&fake_msghash, node_1_privkey),
 				contents: valid_announcement.contents.clone()
@@ -1824,7 +1824,7 @@ mod tests {
 			unsigned_announcement.excess_data.resize(MAX_EXCESS_BYTES_FOR_RELAY + 1, 0);
 		}, node_1_privkey, &secp_ctx);
 		// Return false because contains excess data.
-		match net_graph_msg_handler.handle_node_announcement(&announcement_with_data) {
+		match gossip_sync.handle_node_announcement(&announcement_with_data) {
 			Ok(res) => assert!(!res),
 			Err(_) => panic!()
 		};
@@ -1834,7 +1834,7 @@ mod tests {
 		let outdated_announcement = get_signed_node_announcement(|unsigned_announcement| {
 			unsigned_announcement.timestamp += 1000 - 10;
 		}, node_1_privkey, &secp_ctx);
-		match net_graph_msg_handler.handle_node_announcement(&outdated_announcement) {
+		match gossip_sync.handle_node_announcement(&outdated_announcement) {
 			Ok(_) => panic!(),
 			Err(e) => assert_eq!(e.err, "Update older than last processed update")
 		};
@@ -1853,8 +1853,8 @@ mod tests {
 
 		// Test if the UTXO lookups were not supported
 		let network_graph = NetworkGraph::new(genesis_block(Network::Testnet).header.block_hash());
-		let mut net_graph_msg_handler = NetGraphMsgHandler::new(&network_graph, None, Arc::clone(&logger));
-		match net_graph_msg_handler.handle_channel_announcement(&valid_announcement) {
+		let mut gossip_sync = P2PGossipSync::new(&network_graph, None, Arc::clone(&logger));
+		match gossip_sync.handle_channel_announcement(&valid_announcement) {
 			Ok(res) => assert!(res),
 			_ => panic!()
 		};
@@ -1868,7 +1868,7 @@ mod tests {
 
 		// If we receive announcement for the same channel (with UTXO lookups disabled),
 		// drop new one on the floor, since we can't see any changes.
-		match net_graph_msg_handler.handle_channel_announcement(&valid_announcement) {
+		match gossip_sync.handle_channel_announcement(&valid_announcement) {
 			Ok(_) => panic!(),
 			Err(e) => assert_eq!(e.err, "Already have knowledge of channel")
 		};
@@ -1877,12 +1877,12 @@ mod tests {
 		let chain_source = Arc::new(test_utils::TestChainSource::new(Network::Testnet));
 		*chain_source.utxo_ret.lock().unwrap() = Err(chain::AccessError::UnknownTx);
 		let network_graph = NetworkGraph::new(genesis_block(Network::Testnet).header.block_hash());
-		net_graph_msg_handler = NetGraphMsgHandler::new(&network_graph, Some(chain_source.clone()), Arc::clone(&logger));
+		gossip_sync = P2PGossipSync::new(&network_graph, Some(chain_source.clone()), Arc::clone(&logger));
 
 		let valid_announcement = get_signed_channel_announcement(|unsigned_announcement| {
 			unsigned_announcement.short_channel_id += 1;
 		}, node_1_privkey, node_2_privkey, &secp_ctx);
-		match net_graph_msg_handler.handle_channel_announcement(&valid_announcement) {
+		match gossip_sync.handle_channel_announcement(&valid_announcement) {
 			Ok(_) => panic!(),
 			Err(e) => assert_eq!(e.err, "Channel announced without corresponding UTXO entry")
 		};
@@ -1892,7 +1892,7 @@ mod tests {
 		let valid_announcement = get_signed_channel_announcement(|unsigned_announcement| {
 			unsigned_announcement.short_channel_id += 2;
 		}, node_1_privkey, node_2_privkey, &secp_ctx);
-		match net_graph_msg_handler.handle_channel_announcement(&valid_announcement) {
+		match gossip_sync.handle_channel_announcement(&valid_announcement) {
 			Ok(res) => assert!(res),
 			_ => panic!()
 		};
@@ -1907,7 +1907,7 @@ mod tests {
 		// If we receive announcement for the same channel (but TX is not confirmed),
 		// drop new one on the floor, since we can't see any changes.
 		*chain_source.utxo_ret.lock().unwrap() = Err(chain::AccessError::UnknownTx);
-		match net_graph_msg_handler.handle_channel_announcement(&valid_announcement) {
+		match gossip_sync.handle_channel_announcement(&valid_announcement) {
 			Ok(_) => panic!(),
 			Err(e) => assert_eq!(e.err, "Channel announced without corresponding UTXO entry")
 		};
@@ -1918,7 +1918,7 @@ mod tests {
 			unsigned_announcement.features = ChannelFeatures::empty();
 			unsigned_announcement.short_channel_id += 2;
 		}, node_1_privkey, node_2_privkey, &secp_ctx);
-		match net_graph_msg_handler.handle_channel_announcement(&valid_announcement) {
+		match gossip_sync.handle_channel_announcement(&valid_announcement) {
 			Ok(res) => assert!(res),
 			_ => panic!()
 		};
@@ -1936,20 +1936,20 @@ mod tests {
 			unsigned_announcement.short_channel_id += 3;
 			unsigned_announcement.excess_data.resize(MAX_EXCESS_BYTES_FOR_RELAY + 1, 0);
 		}, node_1_privkey, node_2_privkey, &secp_ctx);
-		match net_graph_msg_handler.handle_channel_announcement(&valid_announcement) {
+		match gossip_sync.handle_channel_announcement(&valid_announcement) {
 			Ok(res) => assert!(!res),
 			_ => panic!()
 		};
 
 		let mut invalid_sig_announcement = valid_announcement.clone();
 		invalid_sig_announcement.contents.excess_data = Vec::new();
-		match net_graph_msg_handler.handle_channel_announcement(&invalid_sig_announcement) {
+		match gossip_sync.handle_channel_announcement(&invalid_sig_announcement) {
 			Ok(_) => panic!(),
 			Err(e) => assert_eq!(e.err, "Invalid signature on channel_announcement message")
 		};
 
 		let channel_to_itself_announcement = get_signed_channel_announcement(|_| {}, node_1_privkey, node_1_privkey, &secp_ctx);
-		match net_graph_msg_handler.handle_channel_announcement(&channel_to_itself_announcement) {
+		match gossip_sync.handle_channel_announcement(&channel_to_itself_announcement) {
 			Ok(_) => panic!(),
 			Err(e) => assert_eq!(e.err, "Channel announcement node had a channel with itself")
 		};
@@ -1961,7 +1961,7 @@ mod tests {
 		let logger: Arc<Logger> = Arc::new(test_utils::TestLogger::new());
 		let chain_source = Arc::new(test_utils::TestChainSource::new(Network::Testnet));
 		let network_graph = NetworkGraph::new(genesis_block(Network::Testnet).header.block_hash());
-		let net_graph_msg_handler = NetGraphMsgHandler::new(&network_graph, Some(chain_source.clone()), Arc::clone(&logger));
+		let gossip_sync = P2PGossipSync::new(&network_graph, Some(chain_source.clone()), Arc::clone(&logger));
 
 		let node_1_privkey = &SecretKey::from_slice(&[42; 32]).unwrap();
 		let node_2_privkey = &SecretKey::from_slice(&[41; 32]).unwrap();
@@ -1976,7 +1976,7 @@ mod tests {
 
 			let valid_channel_announcement = get_signed_channel_announcement(|_| {}, node_1_privkey, node_2_privkey, &secp_ctx);
 			short_channel_id = valid_channel_announcement.contents.short_channel_id;
-			match net_graph_msg_handler.handle_channel_announcement(&valid_channel_announcement) {
+			match gossip_sync.handle_channel_announcement(&valid_channel_announcement) {
 				Ok(_) => (),
 				Err(_) => panic!()
 			};
@@ -1984,7 +1984,7 @@ mod tests {
 		}
 
 		let valid_channel_update = get_signed_channel_update(|_| {}, node_1_privkey, &secp_ctx);
-		match net_graph_msg_handler.handle_channel_update(&valid_channel_update) {
+		match gossip_sync.handle_channel_update(&valid_channel_update) {
 			Ok(res) => assert!(res),
 			_ => panic!()
 		};
@@ -2004,7 +2004,7 @@ mod tests {
 			unsigned_channel_update.excess_data.resize(MAX_EXCESS_BYTES_FOR_RELAY + 1, 0);
 		}, node_1_privkey, &secp_ctx);
 		// Return false because contains excess data
-		match net_graph_msg_handler.handle_channel_update(&valid_channel_update) {
+		match gossip_sync.handle_channel_update(&valid_channel_update) {
 			Ok(res) => assert!(!res),
 			_ => panic!()
 		};
@@ -2013,7 +2013,7 @@ mod tests {
 			unsigned_channel_update.timestamp += 110;
 			unsigned_channel_update.short_channel_id += 1;
 		}, node_1_privkey, &secp_ctx);
-		match net_graph_msg_handler.handle_channel_update(&valid_channel_update) {
+		match gossip_sync.handle_channel_update(&valid_channel_update) {
 			Ok(_) => panic!(),
 			Err(e) => assert_eq!(e.err, "Couldn't find channel for update")
 		};
@@ -2022,7 +2022,7 @@ mod tests {
 			unsigned_channel_update.htlc_maximum_msat = OptionalField::Present(MAX_VALUE_MSAT + 1);
 			unsigned_channel_update.timestamp += 110;
 		}, node_1_privkey, &secp_ctx);
-		match net_graph_msg_handler.handle_channel_update(&valid_channel_update) {
+		match gossip_sync.handle_channel_update(&valid_channel_update) {
 			Ok(_) => panic!(),
 			Err(e) => assert_eq!(e.err, "htlc_maximum_msat is larger than maximum possible msats")
 		};
@@ -2031,7 +2031,7 @@ mod tests {
 			unsigned_channel_update.htlc_maximum_msat = OptionalField::Present(amount_sats * 1000 + 1);
 			unsigned_channel_update.timestamp += 110;
 		}, node_1_privkey, &secp_ctx);
-		match net_graph_msg_handler.handle_channel_update(&valid_channel_update) {
+		match gossip_sync.handle_channel_update(&valid_channel_update) {
 			Ok(_) => panic!(),
 			Err(e) => assert_eq!(e.err, "htlc_maximum_msat is larger than channel capacity or capacity is bogus")
 		};
@@ -2041,7 +2041,7 @@ mod tests {
 		let valid_channel_update = get_signed_channel_update(|unsigned_channel_update| {
 			unsigned_channel_update.timestamp += 100;
 		}, node_1_privkey, &secp_ctx);
-		match net_graph_msg_handler.handle_channel_update(&valid_channel_update) {
+		match gossip_sync.handle_channel_update(&valid_channel_update) {
 			Ok(_) => panic!(),
 			Err(e) => assert_eq!(e.err, "Update had same timestamp as last processed update")
 		};
@@ -2052,7 +2052,7 @@ mod tests {
 		let zero_hash = Sha256dHash::hash(&[0; 32]);
 		let fake_msghash = hash_to_message!(&zero_hash);
 		invalid_sig_channel_update.signature = secp_ctx.sign_ecdsa(&fake_msghash, node_1_privkey);
-		match net_graph_msg_handler.handle_channel_update(&invalid_sig_channel_update) {
+		match gossip_sync.handle_channel_update(&invalid_sig_channel_update) {
 			Ok(_) => panic!(),
 			Err(e) => assert_eq!(e.err, "Invalid signature on channel_update message")
 		};
@@ -2064,7 +2064,7 @@ mod tests {
 		let chain_source = Arc::new(test_utils::TestChainSource::new(Network::Testnet));
 		let genesis_hash = genesis_block(Network::Testnet).header.block_hash();
 		let network_graph = NetworkGraph::new(genesis_hash);
-		let net_graph_msg_handler = NetGraphMsgHandler::new(&network_graph, Some(chain_source.clone()), &logger);
+		let gossip_sync = P2PGossipSync::new(&network_graph, Some(chain_source.clone()), &logger);
 		let secp_ctx = Secp256k1::new();
 
 		let node_1_privkey = &SecretKey::from_slice(&[42; 32]).unwrap();
@@ -2087,7 +2087,7 @@ mod tests {
 			let valid_channel_update = get_signed_channel_update(|_| {}, node_1_privkey, &secp_ctx);
 			assert!(network_graph.read_only().channels().get(&short_channel_id).unwrap().one_to_two.is_none());
 
-			net_graph_msg_handler.handle_event(&Event::PaymentPathFailed {
+			gossip_sync.handle_event(&Event::PaymentPathFailed {
 				payment_id: None,
 				payment_hash: PaymentHash([0; 32]),
 				rejected_by_dest: false,
@@ -2114,13 +2114,13 @@ mod tests {
 				}
 			};
 
-			net_graph_msg_handler.handle_event(&Event::PaymentPathFailed {
+			gossip_sync.handle_event(&Event::PaymentPathFailed {
 				payment_id: None,
 				payment_hash: PaymentHash([0; 32]),
 				rejected_by_dest: false,
 				all_paths_failed: true,
 				path: vec![],
-				network_update: Some(NetworkUpdate::ChannelClosed {
+				network_update: Some(NetworkUpdate::ChannelFailure {
 					short_channel_id,
 					is_permanent: false,
 				}),
@@ -2139,13 +2139,13 @@ mod tests {
 		}
 
 		// Permanent closing deletes a channel
-		net_graph_msg_handler.handle_event(&Event::PaymentPathFailed {
+		gossip_sync.handle_event(&Event::PaymentPathFailed {
 			payment_id: None,
 			payment_hash: PaymentHash([0; 32]),
 			rejected_by_dest: false,
 			all_paths_failed: true,
 			path: vec![],
-			network_update: Some(NetworkUpdate::ChannelClosed {
+			network_update: Some(NetworkUpdate::ChannelFailure {
 				short_channel_id,
 				is_permanent: true,
 			}),
@@ -2168,7 +2168,7 @@ mod tests {
 		let chain_source = Arc::new(test_utils::TestChainSource::new(Network::Testnet));
 		let genesis_hash = genesis_block(Network::Testnet).header.block_hash();
 		let network_graph = NetworkGraph::new(genesis_hash);
-		let net_graph_msg_handler = NetGraphMsgHandler::new(&network_graph, Some(chain_source.clone()), &logger);
+		let gossip_sync = P2PGossipSync::new(&network_graph, Some(chain_source.clone()), &logger);
 		let secp_ctx = Secp256k1::new();
 
 		let node_1_privkey = &SecretKey::from_slice(&[42; 32]).unwrap();
@@ -2181,7 +2181,7 @@ mod tests {
 		assert!(network_graph.read_only().channels().get(&short_channel_id).is_some());
 
 		let valid_channel_update = get_signed_channel_update(|_| {}, node_1_privkey, &secp_ctx);
-		assert!(net_graph_msg_handler.handle_channel_update(&valid_channel_update).is_ok());
+		assert!(gossip_sync.handle_channel_update(&valid_channel_update).is_ok());
 		assert!(network_graph.read_only().channels().get(&short_channel_id).unwrap().one_to_two.is_some());
 
 		network_graph.remove_stale_channels_with_time(100 + STALE_CHANNEL_UPDATE_AGE_LIMIT_SECS);
@@ -2211,12 +2211,12 @@ mod tests {
 	#[test]
 	fn getting_next_channel_announcements() {
 		let network_graph = create_network_graph();
-		let (secp_ctx, net_graph_msg_handler) = create_net_graph_msg_handler(&network_graph);
+		let (secp_ctx, gossip_sync) = create_gossip_sync(&network_graph);
 		let node_1_privkey = &SecretKey::from_slice(&[42; 32]).unwrap();
 		let node_2_privkey = &SecretKey::from_slice(&[41; 32]).unwrap();
 
 		// Channels were not announced yet.
-		let channels_with_announcements = net_graph_msg_handler.get_next_channel_announcements(0, 1);
+		let channels_with_announcements = gossip_sync.get_next_channel_announcements(0, 1);
 		assert_eq!(channels_with_announcements.len(), 0);
 
 		let short_channel_id;
@@ -2224,14 +2224,14 @@ mod tests {
 			// Announce a channel we will update
 			let valid_channel_announcement = get_signed_channel_announcement(|_| {}, node_1_privkey, node_2_privkey, &secp_ctx);
 			short_channel_id = valid_channel_announcement.contents.short_channel_id;
-			match net_graph_msg_handler.handle_channel_announcement(&valid_channel_announcement) {
+			match gossip_sync.handle_channel_announcement(&valid_channel_announcement) {
 				Ok(_) => (),
 				Err(_) => panic!()
 			};
 		}
 
 		// Contains initial channel announcement now.
-		let channels_with_announcements = net_graph_msg_handler.get_next_channel_announcements(short_channel_id, 1);
+		let channels_with_announcements = gossip_sync.get_next_channel_announcements(short_channel_id, 1);
 		assert_eq!(channels_with_announcements.len(), 1);
 		if let Some(channel_announcements) = channels_with_announcements.first() {
 			let &(_, ref update_1, ref update_2) = channel_announcements;
@@ -2247,14 +2247,14 @@ mod tests {
 			let valid_channel_update = get_signed_channel_update(|unsigned_channel_update| {
 				unsigned_channel_update.timestamp = 101;
 			}, node_1_privkey, &secp_ctx);
-			match net_graph_msg_handler.handle_channel_update(&valid_channel_update) {
+			match gossip_sync.handle_channel_update(&valid_channel_update) {
 				Ok(_) => (),
 				Err(_) => panic!()
 			};
 		}
 
 		// Now contains an initial announcement and an update.
-		let channels_with_announcements = net_graph_msg_handler.get_next_channel_announcements(short_channel_id, 1);
+		let channels_with_announcements = gossip_sync.get_next_channel_announcements(short_channel_id, 1);
 		assert_eq!(channels_with_announcements.len(), 1);
 		if let Some(channel_announcements) = channels_with_announcements.first() {
 			let &(_, ref update_1, ref update_2) = channel_announcements;
@@ -2270,14 +2270,14 @@ mod tests {
 				unsigned_channel_update.timestamp = 102;
 				unsigned_channel_update.excess_data = [1; MAX_EXCESS_BYTES_FOR_RELAY + 1].to_vec();
 			}, node_1_privkey, &secp_ctx);
-			match net_graph_msg_handler.handle_channel_update(&valid_channel_update) {
+			match gossip_sync.handle_channel_update(&valid_channel_update) {
 				Ok(_) => (),
 				Err(_) => panic!()
 			};
 		}
 
 		// Test that announcements with excess data won't be returned
-		let channels_with_announcements = net_graph_msg_handler.get_next_channel_announcements(short_channel_id, 1);
+		let channels_with_announcements = gossip_sync.get_next_channel_announcements(short_channel_id, 1);
 		assert_eq!(channels_with_announcements.len(), 1);
 		if let Some(channel_announcements) = channels_with_announcements.first() {
 			let &(_, ref update_1, ref update_2) = channel_announcements;
@@ -2288,26 +2288,26 @@ mod tests {
 		}
 
 		// Further starting point have no channels after it
-		let channels_with_announcements = net_graph_msg_handler.get_next_channel_announcements(short_channel_id + 1000, 1);
+		let channels_with_announcements = gossip_sync.get_next_channel_announcements(short_channel_id + 1000, 1);
 		assert_eq!(channels_with_announcements.len(), 0);
 	}
 
 	#[test]
 	fn getting_next_node_announcements() {
 		let network_graph = create_network_graph();
-		let (secp_ctx, net_graph_msg_handler) = create_net_graph_msg_handler(&network_graph);
+		let (secp_ctx, gossip_sync) = create_gossip_sync(&network_graph);
 		let node_1_privkey = &SecretKey::from_slice(&[42; 32]).unwrap();
 		let node_2_privkey = &SecretKey::from_slice(&[41; 32]).unwrap();
 		let node_id_1 = PublicKey::from_secret_key(&secp_ctx, node_1_privkey);
 
 		// No nodes yet.
-		let next_announcements = net_graph_msg_handler.get_next_node_announcements(None, 10);
+		let next_announcements = gossip_sync.get_next_node_announcements(None, 10);
 		assert_eq!(next_announcements.len(), 0);
 
 		{
 			// Announce a channel to add 2 nodes
 			let valid_channel_announcement = get_signed_channel_announcement(|_| {}, node_1_privkey, node_2_privkey, &secp_ctx);
-			match net_graph_msg_handler.handle_channel_announcement(&valid_channel_announcement) {
+			match gossip_sync.handle_channel_announcement(&valid_channel_announcement) {
 				Ok(_) => (),
 				Err(_) => panic!()
 			};
@@ -2315,28 +2315,28 @@ mod tests {
 
 
 		// Nodes were never announced
-		let next_announcements = net_graph_msg_handler.get_next_node_announcements(None, 3);
+		let next_announcements = gossip_sync.get_next_node_announcements(None, 3);
 		assert_eq!(next_announcements.len(), 0);
 
 		{
 			let valid_announcement = get_signed_node_announcement(|_| {}, node_1_privkey, &secp_ctx);
-			match net_graph_msg_handler.handle_node_announcement(&valid_announcement) {
+			match gossip_sync.handle_node_announcement(&valid_announcement) {
 				Ok(_) => (),
 				Err(_) => panic!()
 			};
 
 			let valid_announcement = get_signed_node_announcement(|_| {}, node_2_privkey, &secp_ctx);
-			match net_graph_msg_handler.handle_node_announcement(&valid_announcement) {
+			match gossip_sync.handle_node_announcement(&valid_announcement) {
 				Ok(_) => (),
 				Err(_) => panic!()
 			};
 		}
 
-		let next_announcements = net_graph_msg_handler.get_next_node_announcements(None, 3);
+		let next_announcements = gossip_sync.get_next_node_announcements(None, 3);
 		assert_eq!(next_announcements.len(), 2);
 
 		// Skip the first node.
-		let next_announcements = net_graph_msg_handler.get_next_node_announcements(Some(&node_id_1), 2);
+		let next_announcements = gossip_sync.get_next_node_announcements(Some(&node_id_1), 2);
 		assert_eq!(next_announcements.len(), 1);
 
 		{
@@ -2345,33 +2345,33 @@ mod tests {
 				unsigned_announcement.timestamp += 10;
 				unsigned_announcement.excess_data = [1; MAX_EXCESS_BYTES_FOR_RELAY + 1].to_vec();
 			}, node_2_privkey, &secp_ctx);
-			match net_graph_msg_handler.handle_node_announcement(&valid_announcement) {
+			match gossip_sync.handle_node_announcement(&valid_announcement) {
 				Ok(res) => assert!(!res),
 				Err(_) => panic!()
 			};
 		}
 
-		let next_announcements = net_graph_msg_handler.get_next_node_announcements(Some(&node_id_1), 2);
+		let next_announcements = gossip_sync.get_next_node_announcements(Some(&node_id_1), 2);
 		assert_eq!(next_announcements.len(), 0);
 	}
 
 	#[test]
 	fn network_graph_serialization() {
 		let network_graph = create_network_graph();
-		let (secp_ctx, net_graph_msg_handler) = create_net_graph_msg_handler(&network_graph);
+		let (secp_ctx, gossip_sync) = create_gossip_sync(&network_graph);
 
 		let node_1_privkey = &SecretKey::from_slice(&[42; 32]).unwrap();
 		let node_2_privkey = &SecretKey::from_slice(&[41; 32]).unwrap();
 
 		// Announce a channel to add a corresponding node.
 		let valid_announcement = get_signed_channel_announcement(|_| {}, node_1_privkey, node_2_privkey, &secp_ctx);
-		match net_graph_msg_handler.handle_channel_announcement(&valid_announcement) {
+		match gossip_sync.handle_channel_announcement(&valid_announcement) {
 			Ok(res) => assert!(res),
 			_ => panic!()
 		};
 
 		let valid_announcement = get_signed_node_announcement(|_| {}, node_1_privkey, &secp_ctx);
-		match net_graph_msg_handler.handle_node_announcement(&valid_announcement) {
+		match gossip_sync.handle_node_announcement(&valid_announcement) {
 			Ok(_) => (),
 			Err(_) => panic!()
 		};
@@ -2385,7 +2385,7 @@ mod tests {
 
 	#[test]
 	fn network_graph_tlv_serialization() {
-		let mut network_graph = create_network_graph();
+		let network_graph = create_network_graph();
 		network_graph.set_last_rapid_gossip_sync_timestamp(42);
 
 		let mut w = test_utils::TestVecWriter(Vec::new());
@@ -2401,7 +2401,7 @@ mod tests {
 		use std::time::{SystemTime, UNIX_EPOCH};
 
 		let network_graph = create_network_graph();
-		let (secp_ctx, net_graph_msg_handler) = create_net_graph_msg_handler(&network_graph);
+		let (secp_ctx, gossip_sync) = create_gossip_sync(&network_graph);
 		let node_privkey_1 = &SecretKey::from_slice(&[42; 32]).unwrap();
 		let node_id_1 = PublicKey::from_secret_key(&secp_ctx, node_privkey_1);
 
@@ -2410,16 +2410,16 @@ mod tests {
 		// It should ignore if gossip_queries feature is not enabled
 		{
 			let init_msg = Init { features: InitFeatures::known().clear_gossip_queries(), remote_network_address: None };
-			net_graph_msg_handler.peer_connected(&node_id_1, &init_msg);
-			let events = net_graph_msg_handler.get_and_clear_pending_msg_events();
+			gossip_sync.peer_connected(&node_id_1, &init_msg);
+			let events = gossip_sync.get_and_clear_pending_msg_events();
 			assert_eq!(events.len(), 0);
 		}
 
 		// It should send a gossip_timestamp_filter with the correct information
 		{
 			let init_msg = Init { features: InitFeatures::known(), remote_network_address: None };
-			net_graph_msg_handler.peer_connected(&node_id_1, &init_msg);
-			let events = net_graph_msg_handler.get_and_clear_pending_msg_events();
+			gossip_sync.peer_connected(&node_id_1, &init_msg);
+			let events = gossip_sync.get_and_clear_pending_msg_events();
 			assert_eq!(events.len(), 1);
 			match &events[0] {
 				MessageSendEvent::SendGossipTimestampFilter{ node_id, msg } => {
@@ -2438,7 +2438,7 @@ mod tests {
 	#[test]
 	fn handling_query_channel_range() {
 		let network_graph = create_network_graph();
-		let (secp_ctx, net_graph_msg_handler) = create_net_graph_msg_handler(&network_graph);
+		let (secp_ctx, gossip_sync) = create_gossip_sync(&network_graph);
 
 		let chain_hash = genesis_block(Network::Testnet).header.block_hash();
 		let node_1_privkey = &SecretKey::from_slice(&[42; 32]).unwrap();
@@ -2462,7 +2462,7 @@ mod tests {
 			let valid_announcement = get_signed_channel_announcement(|unsigned_announcement| {
 				unsigned_announcement.short_channel_id = scid;
 			}, node_1_privkey, node_2_privkey, &secp_ctx);
-			match net_graph_msg_handler.handle_channel_announcement(&valid_announcement) {
+			match gossip_sync.handle_channel_announcement(&valid_announcement) {
 				Ok(_) => (),
 				_ => panic!()
 			};
@@ -2470,7 +2470,7 @@ mod tests {
 
 		// Error when number_of_blocks=0
 		do_handling_query_channel_range(
-			&net_graph_msg_handler,
+			&gossip_sync,
 			&node_id_2,
 			QueryChannelRange {
 				chain_hash: chain_hash.clone(),
@@ -2489,7 +2489,7 @@ mod tests {
 
 		// Error when wrong chain
 		do_handling_query_channel_range(
-			&net_graph_msg_handler,
+			&gossip_sync,
 			&node_id_2,
 			QueryChannelRange {
 				chain_hash: genesis_block(Network::Bitcoin).header.block_hash(),
@@ -2508,7 +2508,7 @@ mod tests {
 
 		// Error when first_blocknum > 0xffffff
 		do_handling_query_channel_range(
-			&net_graph_msg_handler,
+			&gossip_sync,
 			&node_id_2,
 			QueryChannelRange {
 				chain_hash: chain_hash.clone(),
@@ -2527,7 +2527,7 @@ mod tests {
 
 		// Empty reply when max valid SCID block num
 		do_handling_query_channel_range(
-			&net_graph_msg_handler,
+			&gossip_sync,
 			&node_id_2,
 			QueryChannelRange {
 				chain_hash: chain_hash.clone(),
@@ -2548,7 +2548,7 @@ mod tests {
 
 		// No results in valid query range
 		do_handling_query_channel_range(
-			&net_graph_msg_handler,
+			&gossip_sync,
 			&node_id_2,
 			QueryChannelRange {
 				chain_hash: chain_hash.clone(),
@@ -2569,7 +2569,7 @@ mod tests {
 
 		// Overflow first_blocknum + number_of_blocks
 		do_handling_query_channel_range(
-			&net_graph_msg_handler,
+			&gossip_sync,
 			&node_id_2,
 			QueryChannelRange {
 				chain_hash: chain_hash.clone(),
@@ -2592,7 +2592,7 @@ mod tests {
 
 		// Single block exactly full
 		do_handling_query_channel_range(
-			&net_graph_msg_handler,
+			&gossip_sync,
 			&node_id_2,
 			QueryChannelRange {
 				chain_hash: chain_hash.clone(),
@@ -2615,7 +2615,7 @@ mod tests {
 
 		// Multiple split on new block
 		do_handling_query_channel_range(
-			&net_graph_msg_handler,
+			&gossip_sync,
 			&node_id_2,
 			QueryChannelRange {
 				chain_hash: chain_hash.clone(),
@@ -2647,7 +2647,7 @@ mod tests {
 
 		// Multiple split on same block
 		do_handling_query_channel_range(
-			&net_graph_msg_handler,
+			&gossip_sync,
 			&node_id_2,
 			QueryChannelRange {
 				chain_hash: chain_hash.clone(),
@@ -2679,7 +2679,7 @@ mod tests {
 	}
 
 	fn do_handling_query_channel_range(
-		net_graph_msg_handler: &NetGraphMsgHandler<&NetworkGraph, Arc<test_utils::TestChainSource>, Arc<test_utils::TestLogger>>,
+		gossip_sync: &P2PGossipSync<&NetworkGraph, Arc<test_utils::TestChainSource>, Arc<test_utils::TestLogger>>,
 		test_node_id: &PublicKey,
 		msg: QueryChannelRange,
 		expected_ok: bool,
@@ -2688,7 +2688,7 @@ mod tests {
 		let mut max_firstblocknum = msg.first_blocknum.saturating_sub(1);
 		let mut c_lightning_0_9_prev_end_blocknum = max_firstblocknum;
 		let query_end_blocknum = msg.end_blocknum();
-		let result = net_graph_msg_handler.handle_query_channel_range(test_node_id, msg);
+		let result = gossip_sync.handle_query_channel_range(test_node_id, msg);
 
 		if expected_ok {
 			assert!(result.is_ok());
@@ -2696,7 +2696,7 @@ mod tests {
 			assert!(result.is_err());
 		}
 
-		let events = net_graph_msg_handler.get_and_clear_pending_msg_events();
+		let events = gossip_sync.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), expected_replies.len());
 
 		for i in 0..events.len() {
@@ -2729,13 +2729,13 @@ mod tests {
 	#[test]
 	fn handling_query_short_channel_ids() {
 		let network_graph = create_network_graph();
-		let (secp_ctx, net_graph_msg_handler) = create_net_graph_msg_handler(&network_graph);
+		let (secp_ctx, gossip_sync) = create_gossip_sync(&network_graph);
 		let node_privkey = &SecretKey::from_slice(&[41; 32]).unwrap();
 		let node_id = PublicKey::from_secret_key(&secp_ctx, node_privkey);
 
 		let chain_hash = genesis_block(Network::Testnet).header.block_hash();
 
-		let result = net_graph_msg_handler.handle_query_short_channel_ids(&node_id, QueryShortChannelIds {
+		let result = gossip_sync.handle_query_short_channel_ids(&node_id, QueryShortChannelIds {
 			chain_hash,
 			short_channel_ids: vec![0x0003e8_000000_0000],
 		});

@@ -15,7 +15,7 @@ use chain::{ChannelMonitorUpdateErr, Watch};
 use chain::channelmonitor::ChannelMonitor;
 use chain::keysinterface::{Recipient, KeysInterface};
 use ln::channelmanager::{ChannelManager, ChannelManagerReadArgs, MIN_CLTV_EXPIRY_DELTA};
-use routing::network_graph::RoutingFees;
+use routing::gossip::RoutingFees;
 use routing::router::{PaymentParameters, RouteHint, RouteHintHop};
 use ln::features::{InitFeatures, InvoiceFeatures, ChannelTypeFeatures};
 use ln::msgs;
@@ -236,9 +236,9 @@ fn do_test_1_conf_open(connect_style: ConnectStyle) {
 	assert_eq!(announcement, bs_announcement);
 
 	for node in nodes {
-		assert!(node.net_graph_msg_handler.handle_channel_announcement(&announcement).unwrap());
-		node.net_graph_msg_handler.handle_channel_update(&as_update).unwrap();
-		node.net_graph_msg_handler.handle_channel_update(&bs_update).unwrap();
+		assert!(node.gossip_sync.handle_channel_announcement(&announcement).unwrap());
+		node.gossip_sync.handle_channel_update(&as_update).unwrap();
+		node.gossip_sync.handle_channel_update(&bs_update).unwrap();
 	}
 }
 #[test]

@@ -11,7 +11,7 @@ use ln::{PaymentHash, PaymentPreimage, PaymentSecret};
 use ln::channelmanager::HTLCSource;
 use ln::msgs;
 use ln::wire::Encode;
-use routing::network_graph::NetworkUpdate;
+use routing::gossip::NetworkUpdate;
 use routing::router::RouteHop;
 use util::chacha20::{ChaCha20, ChaChaReader};
 use util::errors::{self, APIError};
@@ -395,7 +395,7 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(secp_ctx: &
 						}
 						else if error_code & PERM == PERM {
 							if !payment_failed {
-								network_update = Some(NetworkUpdate::ChannelClosed {
+								network_update = Some(NetworkUpdate::ChannelFailure {
 									short_channel_id: failing_route_hop.short_channel_id,
 									is_permanent: true,
 								});
@@ -440,7 +440,7 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(secp_ctx: &
 										if is_chan_update_invalid {
 											// This probably indicates the node which forwarded
 											// to the node in question corrupted something.
-											network_update = Some(NetworkUpdate::ChannelClosed {
+											network_update = Some(NetworkUpdate::ChannelFailure {
 												short_channel_id: route_hop.short_channel_id,
 												is_permanent: true,
 											});
