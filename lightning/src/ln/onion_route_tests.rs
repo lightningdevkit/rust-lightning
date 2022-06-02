@@ -16,7 +16,7 @@ use chain::keysinterface::{KeysInterface, Recipient};
 use ln::{PaymentHash, PaymentSecret};
 use ln::channelmanager::{HTLCForwardInfo, CLTV_FAR_FAR_AWAY, MIN_CLTV_EXPIRY_DELTA, PendingHTLCInfo, PendingHTLCRouting};
 use ln::onion_utils;
-use routing::network_graph::{NetworkUpdate, RoutingFees, NodeId};
+use routing::gossip::{NetworkUpdate, RoutingFees, NodeId};
 use routing::router::{get_route, PaymentParameters, Route, RouteHint, RouteHintHop};
 use ln::features::{InitFeatures, InvoiceFeatures, NodeFeatures};
 use ln::msgs;

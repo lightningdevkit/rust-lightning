@@ -1643,7 +1643,7 @@ mod tests {
 	use chain;
 	use ln::PaymentHash;
 	use ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
-	use routing::network_graph::{P2PGossipSync, NetworkGraph, NetworkUpdate, MAX_EXCESS_BYTES_FOR_RELAY};
+	use routing::gossip::{P2PGossipSync, NetworkGraph, NetworkUpdate, MAX_EXCESS_BYTES_FOR_RELAY};
 	use ln::msgs::{Init, OptionalField, RoutingMessageHandler, UnsignedNodeAnnouncement, NodeAnnouncement,
 		UnsignedChannelAnnouncement, ChannelAnnouncement, UnsignedChannelUpdate, ChannelUpdate,
 		ReplyChannelRange, QueryChannelRange, QueryShortChannelIds, MAX_VALUE_MSAT};

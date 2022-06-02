@@ -38,7 +38,7 @@
 //! # use lightning::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
 //! # use lightning::ln::channelmanager::{ChannelDetails, PaymentId, PaymentSendFailure};
 //! # use lightning::ln::msgs::LightningError;
-//! # use lightning::routing::network_graph::NodeId;
+//! # use lightning::routing::gossip::NodeId;
 //! # use lightning::routing::router::{Route, RouteHop, RouteParameters};
 //! # use lightning::routing::scoring::{ChannelUsage, Score};
 //! # use lightning::util::events::{Event, EventHandler, EventsProvider};
@@ -602,7 +602,7 @@ mod tests {
 	use lightning::ln::features::{ChannelFeatures, NodeFeatures, InitFeatures};
 	use lightning::ln::functional_test_utils::*;
 	use lightning::ln::msgs::{ChannelMessageHandler, ErrorAction, LightningError};
-	use lightning::routing::network_graph::NodeId;
+	use lightning::routing::gossip::NodeId;
 	use lightning::routing::router::{PaymentParameters, Route, RouteHop};
 	use lightning::routing::scoring::ChannelUsage;
 	use lightning::util::test_utils::TestLogger;

@@ -11,7 +11,7 @@ use ln::{PaymentHash, PaymentPreimage, PaymentSecret};
 use ln::channelmanager::HTLCSource;
 use ln::msgs;
 use ln::wire::Encode;
-use routing::network_graph::NetworkUpdate;
+use routing::gossip::NetworkUpdate;
 use routing::router::RouteHop;
 use util::chacha20::{ChaCha20, ChaChaReader};
 use util::errors::{self, APIError};

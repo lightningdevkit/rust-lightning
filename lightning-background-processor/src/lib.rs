@@ -18,7 +18,7 @@ use lightning::chain::keysinterface::{Sign, KeysInterface};
 use lightning::ln::channelmanager::ChannelManager;
 use lightning::ln::msgs::{ChannelMessageHandler, RoutingMessageHandler};
 use lightning::ln::peer_handler::{CustomMessageHandler, PeerManager, SocketDescriptor};
-use lightning::routing::network_graph::{NetworkGraph, P2PGossipSync};
+use lightning::routing::gossip::{NetworkGraph, P2PGossipSync};
 use lightning::routing::scoring::WriteableScore;
 use lightning::util::events::{Event, EventHandler, EventsProvider};
 use lightning::util::logger::Logger;
@@ -162,8 +162,8 @@ impl BackgroundProcessor {
 	/// [`ChannelManager::write`]: lightning::ln::channelmanager::ChannelManager#impl-Writeable
 	/// [`Persister::persist_manager`]: lightning::util::persist::Persister::persist_manager
 	/// [`Persister::persist_graph`]: lightning::util::persist::Persister::persist_graph
-	/// [`NetworkGraph`]: lightning::routing::network_graph::NetworkGraph
-	/// [`NetworkGraph::write`]: lightning::routing::network_graph::NetworkGraph#impl-Writeable
+	/// [`NetworkGraph`]: lightning::routing::gossip::NetworkGraph
+	/// [`NetworkGraph::write`]: lightning::routing::gossip::NetworkGraph#impl-Writeable
 	pub fn start<
 		'a,
 		Signer: 'static + Sign,
@@ -408,7 +408,7 @@ mod tests {
 	use lightning::ln::features::{ChannelFeatures, InitFeatures};
 	use lightning::ln::msgs::{ChannelMessageHandler, Init};
 	use lightning::ln::peer_handler::{PeerManager, MessageHandler, SocketDescriptor, IgnoringMessageHandler};
-	use lightning::routing::network_graph::{NetworkGraph, P2PGossipSync};
+	use lightning::routing::gossip::{NetworkGraph, P2PGossipSync};
 	use lightning::util::config::UserConfig;
 	use lightning::util::events::{Event, MessageSendEventsProvider, MessageSendEvent};
 	use lightning::util::ser::Writeable;

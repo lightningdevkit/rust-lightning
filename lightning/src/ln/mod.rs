@@ -19,7 +19,7 @@
 //! call into your [`P2PGossipSync`].
 //!
 //! [`ChannelManager`]: channelmanager::ChannelManager
-//! [`P2PGossipSync`]: crate::routing::network_graph::P2PGossipSync
+//! [`P2PGossipSync`]: crate::routing::gossip::P2PGossipSync
 
 #[cfg(any(test, feature = "_test_utils"))]
 #[macro_use]

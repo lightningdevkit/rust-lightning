@@ -16,11 +16,11 @@ use lightning::chain::transaction::OutPoint;
 use lightning::ln::channelmanager::{ChannelDetails, ChannelCounterparty};
 use lightning::ln::features::InitFeatures;
 use lightning::ln::msgs;
+use lightning::routing::gossip::{NetworkGraph, RoutingFees};
 use lightning::routing::router::{find_route, PaymentParameters, RouteHint, RouteHintHop, RouteParameters};
 use lightning::routing::scoring::FixedPenaltyScorer;
 use lightning::util::logger::Logger;
 use lightning::util::ser::Readable;
-use lightning::routing::network_graph::{NetworkGraph, RoutingFees};
 
 use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::PublicKey;

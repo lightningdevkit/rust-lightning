@@ -17,7 +17,7 @@
 //! ```
 //! # extern crate bitcoin;
 //! #
-//! # use lightning::routing::network_graph::NetworkGraph;
+//! # use lightning::routing::gossip::NetworkGraph;
 //! # use lightning::routing::router::{RouteParameters, find_route};
 //! # use lightning::routing::scoring::{ProbabilisticScorer, ProbabilisticScoringParameters};
 //! # use lightning::chain::keysinterface::{KeysManager, KeysInterface};
@@ -55,7 +55,7 @@
 //! [`find_route`]: crate::routing::router::find_route
 
 use ln::msgs::DecodeError;
-use routing::network_graph::{EffectiveCapacity, NetworkGraph, NodeId};
+use routing::gossip::{EffectiveCapacity, NetworkGraph, NodeId};
 use routing::router::RouteHop;
 use util::ser::{Readable, ReadableArgs, Writeable, Writer};
 use util::logger::Logger;
@@ -1120,9 +1120,9 @@ mod tests {
 
 	use ln::features::{ChannelFeatures, NodeFeatures};
 	use ln::msgs::{ChannelAnnouncement, ChannelUpdate, OptionalField, UnsignedChannelAnnouncement, UnsignedChannelUpdate};
-	use routing::scoring::{ChannelUsage, Score};
-	use routing::network_graph::{EffectiveCapacity, NetworkGraph, NodeId};
+	use routing::gossip::{EffectiveCapacity, NetworkGraph, NodeId};
 	use routing::router::RouteHop;
+	use routing::scoring::{ChannelUsage, Score};
 	use util::ser::{ReadableArgs, Writeable};
 	use util::test_utils::TestLogger;
 

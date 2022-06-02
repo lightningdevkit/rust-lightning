@@ -15,7 +15,7 @@ use chain::{ChannelMonitorUpdateErr, Watch};
 use chain::channelmonitor::ChannelMonitor;
 use chain::keysinterface::{Recipient, KeysInterface};
 use ln::channelmanager::{ChannelManager, ChannelManagerReadArgs, MIN_CLTV_EXPIRY_DELTA};
-use routing::network_graph::RoutingFees;
+use routing::gossip::RoutingFees;
 use routing::router::{PaymentParameters, RouteHint, RouteHintHop};
 use ln::features::{InitFeatures, InvoiceFeatures};
 use ln::msgs;

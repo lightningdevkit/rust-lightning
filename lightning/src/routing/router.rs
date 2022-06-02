@@ -17,8 +17,8 @@ use bitcoin::secp256k1::PublicKey;
 use ln::channelmanager::ChannelDetails;
 use ln::features::{ChannelFeatures, InvoiceFeatures, NodeFeatures};
 use ln::msgs::{DecodeError, ErrorAction, LightningError, MAX_VALUE_MSAT};
+use routing::gossip::{DirectedChannelInfoWithUpdate, EffectiveCapacity, NetworkGraph, ReadOnlyNetworkGraph, NodeId, RoutingFees};
 use routing::scoring::{ChannelUsage, Score};
-use routing::network_graph::{DirectedChannelInfoWithUpdate, EffectiveCapacity, NetworkGraph, ReadOnlyNetworkGraph, NodeId, RoutingFees};
 use util::ser::{Writeable, Readable, Writer};
 use util::logger::{Level, Logger};
 use util::chacha20::ChaCha20;
@@ -1858,7 +1858,7 @@ fn build_route_from_hops_internal<L: Deref>(
 
 #[cfg(test)]
 mod tests {
-	use routing::network_graph::{NetworkGraph, P2PGossipSync, NodeId};
+	use routing::gossip::{NetworkGraph, P2PGossipSync, NodeId};
 	use routing::router::{get_route, build_route_from_hops_internal, add_random_cltv_offset, default_node_features,
 		PaymentParameters, Route, RouteHint, RouteHintHop, RouteHop, RoutingFees,
 		DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA, MAX_PATH_LENGTH_ESTIMATE};

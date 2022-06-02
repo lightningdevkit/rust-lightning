@@ -7567,7 +7567,7 @@ pub mod bench {
 	use ln::features::{InitFeatures, InvoiceFeatures};
 	use ln::functional_test_utils::*;
 	use ln::msgs::{ChannelMessageHandler, Init};
-	use routing::network_graph::NetworkGraph;
+	use routing::gossip::NetworkGraph;
 	use routing::router::{PaymentParameters, get_route};
 	use util::test_utils;
 	use util::config::UserConfig;

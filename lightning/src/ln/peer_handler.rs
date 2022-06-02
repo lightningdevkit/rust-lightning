@@ -25,10 +25,10 @@ use util::ser::{VecWriter, Writeable, Writer};
 use ln::peer_channel_encryptor::{PeerChannelEncryptor,NextNoiseStep};
 use ln::wire;
 use ln::wire::Encode;
+use routing::gossip::{NetworkGraph, P2PGossipSync};
 use util::atomic_counter::AtomicCounter;
 use util::events::{MessageSendEvent, MessageSendEventsProvider};
 use util::logger::Logger;
-use routing::network_graph::{NetworkGraph, P2PGossipSync};
 
 use prelude::*;
 use io;
@@ -210,7 +210,7 @@ pub struct MessageHandler<CM: Deref, RM: Deref> where
 	/// A message handler which handles messages updating our knowledge of the network channel
 	/// graph. Usually this is just a [`P2PGossipSync`] object or an [`IgnoringMessageHandler`].
 	///
-	/// [`P2PGossipSync`]: crate::routing::network_graph::P2PGossipSync
+	/// [`P2PGossipSync`]: crate::routing::gossip::P2PGossipSync
 	pub route_handler: RM,
 }
 

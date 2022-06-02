@@ -13,7 +13,7 @@ use bitcoin_hashes::Hash;
 use bitcoin_hashes::sha256;
 use crate::prelude::*;
 use lightning::ln::PaymentSecret;
-use lightning::routing::network_graph::RoutingFees;
+use lightning::routing::gossip::RoutingFees;
 use lightning::routing::router::{RouteHint, RouteHintHop};
 
 use num_traits::{CheckedAdd, CheckedMul};
@@ -909,7 +909,7 @@ mod test {
 
 	#[test]
 	fn test_parse_route() {
-		use lightning::routing::network_graph::RoutingFees;
+		use lightning::routing::gossip::RoutingFees;
 		use lightning::routing::router::{RouteHint, RouteHintHop};
 		use ::PrivateRoute;
 		use bech32::FromBase32;

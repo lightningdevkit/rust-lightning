@@ -37,7 +37,7 @@ use lightning::ln::channelmanager::{ChainParameters, ChannelManager};
 use lightning::ln::peer_handler::{MessageHandler,PeerManager,SocketDescriptor,IgnoringMessageHandler};
 use lightning::ln::msgs::DecodeError;
 use lightning::ln::script::ShutdownScript;
-use lightning::routing::network_graph::{P2PGossipSync, NetworkGraph};
+use lightning::routing::gossip::{P2PGossipSync, NetworkGraph};
 use lightning::routing::router::{find_route, PaymentParameters, RouteParameters};
 use lightning::routing::scoring::FixedPenaltyScorer;
 use lightning::util::config::UserConfig;

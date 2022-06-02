@@ -15,7 +15,7 @@ use chain::channelmonitor::ChannelMonitor;
 use chain::transaction::OutPoint;
 use ln::{PaymentPreimage, PaymentHash, PaymentSecret};
 use ln::channelmanager::{ChainParameters, ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, PaymentSendFailure, PaymentId, MIN_CLTV_EXPIRY_DELTA};
-use routing::network_graph::{P2PGossipSync, NetworkGraph};
+use routing::gossip::{P2PGossipSync, NetworkGraph};
 use routing::router::{PaymentParameters, Route, get_route};
 use ln::features::{InitFeatures, InvoiceFeatures};
 use ln::msgs;
@@ -1506,13 +1506,13 @@ macro_rules! expect_payment_failed_conditions {
 
 				if let Some(chan_closed) = $conditions.expected_blamed_chan_closed {
 					match network_update {
-						&Some($crate::routing::network_graph::NetworkUpdate::ChannelUpdateMessage { ref msg }) if !chan_closed => {
+						&Some($crate::routing::gossip::NetworkUpdate::ChannelUpdateMessage { ref msg }) if !chan_closed => {
 							if let Some(scid) = $conditions.expected_blamed_scid {
 								assert_eq!(msg.contents.short_channel_id, scid);
 							}
 							assert_eq!(msg.contents.flags & 2, 0);
 						},
-						&Some($crate::routing::network_graph::NetworkUpdate::ChannelFailure { short_channel_id, is_permanent }) if chan_closed => {
+						&Some($crate::routing::gossip::NetworkUpdate::ChannelFailure { short_channel_id, is_permanent }) if chan_closed => {
 							if let Some(scid) = $conditions.expected_blamed_scid {
 								assert_eq!(short_channel_id, scid);
 							}
