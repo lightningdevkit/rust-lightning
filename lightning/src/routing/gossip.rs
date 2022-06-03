@@ -126,7 +126,7 @@ pub struct NetworkGraph<L: Deref> where L::Target: Logger {
 	secp_ctx: Secp256k1<secp256k1::VerifyOnly>,
 	last_rapid_gossip_sync_timestamp: Mutex<Option<u32>>,
 	genesis_hash: BlockHash,
-	_logger: L,
+	logger: L,
 	// Lock order: channels -> nodes
 	channels: RwLock<BTreeMap<u64, ChannelInfo>>,
 	nodes: RwLock<BTreeMap<NodeId, NodeInfo>>,
@@ -183,17 +183,6 @@ impl_writeable_tlv_based_enum_upgradable!(NetworkUpdate,
 		(2, is_permanent, required),
 	},
 );
-
-impl<G: Deref<Target=NetworkGraph<L>>, C: Deref, L: Deref> EventHandler for P2PGossipSync<G, C, L>
-where C::Target: chain::Access, L::Target: Logger {
-	fn handle_event(&self, event: &Event) {
-		if let Event::PaymentPathFailed { payment_hash: _, rejected_by_dest: _, network_update, .. } = event {
-			if let Some(network_update) = network_update {
-				self.handle_network_update(network_update);
-			}
-		}
-	}
-}
 
 /// Receives and validates network updates from peers,
 /// stores authentic and relevant data as a network graph.
@@ -257,27 +246,32 @@ where C::Target: chain::Access, L::Target: Logger
 			false
 		}
 	}
+}
 
-	/// Applies changes to the [`NetworkGraph`] from the given update.
-	fn handle_network_update(&self, update: &NetworkUpdate) {
-		match *update {
-			NetworkUpdate::ChannelUpdateMessage { ref msg } => {
-				let short_channel_id = msg.contents.short_channel_id;
-				let is_enabled = msg.contents.flags & (1 << 1) != (1 << 1);
-				let status = if is_enabled { "enabled" } else { "disabled" };
-				log_debug!(self.logger, "Updating channel with channel_update from a payment failure. Channel {} is {}.", short_channel_id, status);
-				let _ = self.network_graph.update_channel(msg);
-			},
-			NetworkUpdate::ChannelFailure { short_channel_id, is_permanent } => {
-				let action = if is_permanent { "Removing" } else { "Disabling" };
-				log_debug!(self.logger, "{} channel graph entry for {} due to a payment failure.", action, short_channel_id);
-				self.network_graph.channel_failed(short_channel_id, is_permanent);
-			},
-			NetworkUpdate::NodeFailure { ref node_id, is_permanent } => {
-				let action = if is_permanent { "Removing" } else { "Disabling" };
-				log_debug!(self.logger, "{} node graph entry for {} due to a payment failure.", action, node_id);
-				self.network_graph.node_failed(node_id, is_permanent);
-			},
+impl<L: Deref> EventHandler for NetworkGraph<L> where L::Target: Logger {
+	fn handle_event(&self, event: &Event) {
+		if let Event::PaymentPathFailed { payment_hash: _, rejected_by_dest: _, network_update, .. } = event {
+			if let Some(network_update) = network_update {
+				match *network_update {
+					NetworkUpdate::ChannelUpdateMessage { ref msg } => {
+						let short_channel_id = msg.contents.short_channel_id;
+						let is_enabled = msg.contents.flags & (1 << 1) != (1 << 1);
+						let status = if is_enabled { "enabled" } else { "disabled" };
+						log_debug!(self.logger, "Updating channel with channel_update from a payment failure. Channel {} is {}.", short_channel_id, status);
+						let _ = self.update_channel(msg);
+					},
+					NetworkUpdate::ChannelFailure { short_channel_id, is_permanent } => {
+						let action = if is_permanent { "Removing" } else { "Disabling" };
+						log_debug!(self.logger, "{} channel graph entry for {} due to a payment failure.", action, short_channel_id);
+						self.channel_failed(short_channel_id, is_permanent);
+					},
+					NetworkUpdate::NodeFailure { ref node_id, is_permanent } => {
+						let action = if is_permanent { "Removing" } else { "Disabling" };
+						log_debug!(self.logger, "{} node graph entry for {} due to a payment failure.", action, node_id);
+						self.node_failed(node_id, is_permanent);
+					},
+				}
+			}
 		}
 	}
 }
@@ -988,7 +982,7 @@ impl<L: Deref> Writeable for NetworkGraph<L> where L::Target: Logger {
 }
 
 impl<L: Deref> ReadableArgs<L> for NetworkGraph<L> where L::Target: Logger {
-	fn read<R: io::Read>(reader: &mut R, _logger: L) -> Result<NetworkGraph<L>, DecodeError> {
+	fn read<R: io::Read>(reader: &mut R, logger: L) -> Result<NetworkGraph<L>, DecodeError> {
 		let _ver = read_ver_prefix!(reader, SERIALIZATION_VERSION);
 
 		let genesis_hash: BlockHash = Readable::read(reader)?;
@@ -1015,7 +1009,7 @@ impl<L: Deref> ReadableArgs<L> for NetworkGraph<L> where L::Target: Logger {
 		Ok(NetworkGraph {
 			secp_ctx: Secp256k1::verification_only(),
 			genesis_hash,
-			_logger,
+			logger,
 			channels: RwLock::new(channels),
 			nodes: RwLock::new(nodes),
 			last_rapid_gossip_sync_timestamp: Mutex::new(last_rapid_gossip_sync_timestamp),
@@ -1047,11 +1041,11 @@ impl<L: Deref> PartialEq for NetworkGraph<L> where L::Target: Logger {
 
 impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 	/// Creates a new, empty, network graph.
-	pub fn new(genesis_hash: BlockHash, _logger: L) -> NetworkGraph<L> {
+	pub fn new(genesis_hash: BlockHash, logger: L) -> NetworkGraph<L> {
 		Self {
 			secp_ctx: Secp256k1::verification_only(),
 			genesis_hash,
-			_logger,
+			logger,
 			channels: RwLock::new(BTreeMap::new()),
 			nodes: RwLock::new(BTreeMap::new()),
 			last_rapid_gossip_sync_timestamp: Mutex::new(None),
@@ -2055,10 +2049,8 @@ mod tests {
 	#[test]
 	fn handling_network_update() {
 		let logger = test_utils::TestLogger::new();
-		let chain_source = Arc::new(test_utils::TestChainSource::new(Network::Testnet));
 		let genesis_hash = genesis_block(Network::Testnet).header.block_hash();
 		let network_graph = NetworkGraph::new(genesis_hash, &logger);
-		let gossip_sync = P2PGossipSync::new(&network_graph, Some(chain_source.clone()), &logger);
 		let secp_ctx = Secp256k1::new();
 
 		let node_1_privkey = &SecretKey::from_slice(&[42; 32]).unwrap();
@@ -2081,7 +2073,7 @@ mod tests {
 			let valid_channel_update = get_signed_channel_update(|_| {}, node_1_privkey, &secp_ctx);
 			assert!(network_graph.read_only().channels().get(&short_channel_id).unwrap().one_to_two.is_none());
 
-			gossip_sync.handle_event(&Event::PaymentPathFailed {
+			network_graph.handle_event(&Event::PaymentPathFailed {
 				payment_id: None,
 				payment_hash: PaymentHash([0; 32]),
 				rejected_by_dest: false,
@@ -2108,7 +2100,7 @@ mod tests {
 				}
 			};
 
-			gossip_sync.handle_event(&Event::PaymentPathFailed {
+			network_graph.handle_event(&Event::PaymentPathFailed {
 				payment_id: None,
 				payment_hash: PaymentHash([0; 32]),
 				rejected_by_dest: false,
@@ -2133,7 +2125,7 @@ mod tests {
 		}
 
 		// Permanent closing deletes a channel
-		gossip_sync.handle_event(&Event::PaymentPathFailed {
+		network_graph.handle_event(&Event::PaymentPathFailed {
 			payment_id: None,
 			payment_hash: PaymentHash([0; 32]),
 			rejected_by_dest: false,

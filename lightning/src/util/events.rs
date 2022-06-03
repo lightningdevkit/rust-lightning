@@ -337,10 +337,9 @@ pub enum Event {
 		/// payment route.
 		///
 		/// Should be applied to the [`NetworkGraph`] so that routing decisions can take into
-		/// account the update. [`P2PGossipSync`] is capable of doing this.
+		/// account the update.
 		///
 		/// [`NetworkGraph`]: crate::routing::gossip::NetworkGraph
-		/// [`P2PGossipSync`]: crate::routing::gossip::P2PGossipSync
 		network_update: Option<NetworkUpdate>,
 		/// For both single-path and multi-path payments, this is set if all paths of the payment have
 		/// failed. This will be set to false if (1) this is an MPP payment and (2) other parts of the

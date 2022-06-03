@@ -112,8 +112,8 @@ impl<
 > EventHandler for DecoratingEventHandler<E, P, G, A, L>
 where A::Target: chain::Access, L::Target: Logger {
 	fn handle_event(&self, event: &Event) {
-		if let Some(event_handler) = &self.p2p_gossip_sync {
-			event_handler.handle_event(event);
+		if let Some(gossip_sync) = &self.p2p_gossip_sync {
+			gossip_sync.network_graph().handle_event(event);
 		}
 		self.event_handler.handle_event(event);
 	}
@@ -211,7 +211,10 @@ impl BackgroundProcessor {
 		let stop_thread = Arc::new(AtomicBool::new(false));
 		let stop_thread_clone = stop_thread.clone();
 		let handle = thread::spawn(move || -> Result<(), std::io::Error> {
-			let event_handler = DecoratingEventHandler { event_handler, p2p_gossip_sync: p2p_gossip_sync.as_ref().map(|t| t.deref()) };
+			let event_handler = DecoratingEventHandler {
+				event_handler,
+				p2p_gossip_sync: p2p_gossip_sync.as_ref().map(|t| t.deref()),
+			};
 
 			log_trace!(logger, "Calling ChannelManager's timer_tick_occurred on startup");
 			channel_manager.timer_tick_occurred();
