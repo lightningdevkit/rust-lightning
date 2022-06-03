@@ -1228,7 +1228,7 @@ mod tests {
 		};
 		let chain_source: Option<&::util::test_utils::TestChainSource> = None;
 		network_graph.update_channel_from_announcement(
-			&signed_announcement, &chain_source, &secp_ctx).unwrap();
+			&signed_announcement, &chain_source).unwrap();
 		update_channel(network_graph, short_channel_id, node_1_key, 0);
 		update_channel(network_graph, short_channel_id, node_2_key, 1);
 	}
@@ -1255,7 +1255,7 @@ mod tests {
 			signature: secp_ctx.sign_ecdsa(&msghash, &node_key),
 			contents: unsigned_update,
 		};
-		network_graph.update_channel(&signed_update, &secp_ctx).unwrap();
+		network_graph.update_channel(&signed_update).unwrap();
 	}
 
 	fn payment_path_for_amount(amount_msat: u64) -> Vec<RouteHop> {
