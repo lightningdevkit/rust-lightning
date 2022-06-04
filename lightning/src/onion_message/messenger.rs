@@ -246,6 +246,14 @@ impl<Signer: Sign, K: Deref, L: Deref> OnionMessenger<Signer, K, L>
 			},
 		};
 	}
+
+	#[cfg(test)]
+	pub(super) fn release_pending_msgs(&self) -> HashMap<PublicKey, Vec<msgs::OnionMessage>> {
+		let mut pending_msgs = self.pending_messages.lock().unwrap();
+		let mut msgs = HashMap::new();
+		core::mem::swap(&mut *pending_msgs, &mut msgs);
+		msgs
+	}
 }
 
 // TODO: parameterize the below Simple* types with OnionMessenger and handle the messages it

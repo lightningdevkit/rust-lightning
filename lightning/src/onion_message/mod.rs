@@ -24,6 +24,8 @@ mod blinded_route;
 mod messenger;
 mod packet;
 mod utils;
+#[cfg(test)]
+mod functional_tests;
 
 // Re-export structs so they can be imported with just the `onion_message::` module prefix.
 pub use self::blinded_route::{BlindedRoute, BlindedHop};
