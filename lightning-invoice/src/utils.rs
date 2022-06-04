@@ -440,13 +440,13 @@ fn filter_channels(channels: Vec<ChannelDetails>, min_inbound_capacity_msat: Opt
 }
 
 /// A [`Router`] implemented using [`find_route`].
-pub struct DefaultRouter<G: Deref<Target = NetworkGraph>, L: Deref> where L::Target: Logger {
+pub struct DefaultRouter<G: Deref<Target = NetworkGraph<L>>, L: Deref> where L::Target: Logger {
 	network_graph: G,
 	logger: L,
 	random_seed_bytes: Mutex<[u8; 32]>,
 }
 
-impl<G: Deref<Target = NetworkGraph>, L: Deref> DefaultRouter<G, L> where L::Target: Logger {
+impl<G: Deref<Target = NetworkGraph<L>>, L: Deref> DefaultRouter<G, L> where L::Target: Logger {
 	/// Creates a new router using the given [`NetworkGraph`], a [`Logger`], and a randomness source
 	/// `random_seed_bytes`.
 	pub fn new(network_graph: G, logger: L, random_seed_bytes: [u8; 32]) -> Self {
@@ -455,18 +455,19 @@ impl<G: Deref<Target = NetworkGraph>, L: Deref> DefaultRouter<G, L> where L::Tar
 	}
 }
 
-impl<G: Deref<Target = NetworkGraph>, L: Deref, S: Score> Router<S> for DefaultRouter<G, L>
+impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, S: Score> Router<S> for DefaultRouter<G, L>
 where L::Target: Logger {
 	fn find_route(
 		&self, payer: &PublicKey, params: &RouteParameters, _payment_hash: &PaymentHash,
 		first_hops: Option<&[&ChannelDetails]>, scorer: &S
 	) -> Result<Route, LightningError> {
+		let network_graph = self.network_graph.read_only();
 		let random_seed_bytes = {
 			let mut locked_random_seed_bytes = self.random_seed_bytes.lock().unwrap();
 			*locked_random_seed_bytes = sha256::Hash::hash(&*locked_random_seed_bytes).into_inner();
 			*locked_random_seed_bytes
 		};
-		find_route(payer, params, &*self.network_graph, first_hops, &*self.logger, scorer, &random_seed_bytes)
+		find_route(payer, params, &network_graph, first_hops, &*self.logger, scorer, &random_seed_bytes)
 	}
 }
 
@@ -566,12 +567,12 @@ mod test {
 			final_cltv_expiry_delta: invoice.min_final_cltv_expiry() as u32,
 		};
 		let first_hops = nodes[0].node.list_usable_channels();
-		let network_graph = node_cfgs[0].network_graph;
+		let network_graph = &node_cfgs[0].network_graph;
 		let logger = test_utils::TestLogger::new();
 		let scorer = test_utils::TestScorer::with_penalty(0);
 		let random_seed_bytes = chanmon_cfgs[1].keys_manager.get_secure_random_bytes();
 		let route = find_route(
-			&nodes[0].node.get_our_node_id(), &route_params, network_graph,
+			&nodes[0].node.get_our_node_id(), &route_params, &network_graph.read_only(),
 			Some(&first_hops.iter().collect::<Vec<_>>()), &logger, &scorer, &random_seed_bytes
 		).unwrap();
 
@@ -842,12 +843,12 @@ mod test {
 			final_cltv_expiry_delta: invoice.min_final_cltv_expiry() as u32,
 		};
 		let first_hops = nodes[0].node.list_usable_channels();
-		let network_graph = node_cfgs[0].network_graph;
+		let network_graph = &node_cfgs[0].network_graph;
 		let logger = test_utils::TestLogger::new();
 		let scorer = test_utils::TestScorer::with_penalty(0);
 		let random_seed_bytes = chanmon_cfgs[1].keys_manager.get_secure_random_bytes();
 		let route = find_route(
-			&nodes[0].node.get_our_node_id(), &params, network_graph,
+			&nodes[0].node.get_our_node_id(), &params, &network_graph.read_only(),
 			Some(&first_hops.iter().collect::<Vec<_>>()), &logger, &scorer, &random_seed_bytes
 		).unwrap();
 		let (payment_event, fwd_idx) = {

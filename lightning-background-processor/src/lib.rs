@@ -94,7 +94,7 @@ const FIRST_NETWORK_PRUNE_TIMER: u64 = 1;
 struct DecoratingEventHandler<
 	E: EventHandler,
 	P: Deref<Target = P2PGossipSync<G, A, L>>,
-	G: Deref<Target = NetworkGraph>,
+	G: Deref<Target = NetworkGraph<L>>,
 	A: Deref,
 	L: Deref,
 >
@@ -106,7 +106,7 @@ where A::Target: chain::Access, L::Target: Logger {
 impl<
 	E: EventHandler,
 	P: Deref<Target = P2PGossipSync<G, A, L>>,
-	G: Deref<Target = NetworkGraph>,
+	G: Deref<Target = NetworkGraph<L>>,
 	A: Deref,
 	L: Deref,
 > EventHandler for DecoratingEventHandler<E, P, G, A, L>
@@ -173,7 +173,7 @@ impl BackgroundProcessor {
 		T: 'static + Deref + Send + Sync,
 		K: 'static + Deref + Send + Sync,
 		F: 'static + Deref + Send + Sync,
-		G: 'static + Deref<Target = NetworkGraph> + Send + Sync,
+		G: 'static + Deref<Target = NetworkGraph<L>> + Send + Sync,
 		L: 'static + Deref + Send + Sync,
 		P: 'static + Deref + Send + Sync,
 		Descriptor: 'static + SocketDescriptor + Send + Sync,
@@ -188,7 +188,7 @@ impl BackgroundProcessor {
 		PM: 'static + Deref<Target = PeerManager<Descriptor, CMH, RMH, L, UMH>> + Send + Sync,
 		S: 'static + Deref<Target = SC> + Send + Sync,
 		SC: WriteableScore<'a>,
-		RGS: 'static + Deref<Target = RapidGossipSync<G>> + Send
+		RGS: 'static + Deref<Target = RapidGossipSync<G, L>> + Send
 	>(
 		persister: PS, event_handler: EH, chain_monitor: M, channel_manager: CM,
 		p2p_gossip_sync: Option<PGS>, peer_manager: PM, logger: L, scorer: Option<S>,
@@ -442,16 +442,16 @@ mod tests {
 
 	struct Node {
 		node: Arc<SimpleArcChannelManager<ChainMonitor, test_utils::TestBroadcaster, test_utils::TestFeeEstimator, test_utils::TestLogger>>,
-		p2p_gossip_sync: Option<Arc<P2PGossipSync<Arc<NetworkGraph>, Arc<test_utils::TestChainSource>, Arc<test_utils::TestLogger>>>>,
+		p2p_gossip_sync: Option<Arc<P2PGossipSync<Arc<NetworkGraph<Arc<test_utils::TestLogger>>>, Arc<test_utils::TestChainSource>, Arc<test_utils::TestLogger>>>>,
 		peer_manager: Arc<PeerManager<TestDescriptor, Arc<test_utils::TestChannelMessageHandler>, Arc<test_utils::TestRoutingMessageHandler>, Arc<test_utils::TestLogger>, IgnoringMessageHandler>>,
 		chain_monitor: Arc<ChainMonitor>,
 		persister: Arc<FilesystemPersister>,
 		tx_broadcaster: Arc<test_utils::TestBroadcaster>,
-		network_graph: Arc<NetworkGraph>,
+		network_graph: Arc<NetworkGraph<Arc<test_utils::TestLogger>>>,
 		logger: Arc<test_utils::TestLogger>,
 		best_block: BestBlock,
 		scorer: Arc<Mutex<FixedPenaltyScorer>>,
-		rapid_gossip_sync: Option<Arc<RapidGossipSync<Arc<NetworkGraph>>>>
+		rapid_gossip_sync: Option<Arc<RapidGossipSync<Arc<NetworkGraph<Arc<test_utils::TestLogger>>>, Arc<test_utils::TestLogger>>>>,
 	}
 
 	impl Drop for Node {
@@ -546,7 +546,7 @@ mod tests {
 			let best_block = BestBlock::from_genesis(network);
 			let params = ChainParameters { network, best_block };
 			let manager = Arc::new(ChannelManager::new(fee_estimator.clone(), chain_monitor.clone(), tx_broadcaster.clone(), logger.clone(), keys_manager.clone(), UserConfig::default(), params));
-			let network_graph = Arc::new(NetworkGraph::new(genesis_block.header.block_hash()));
+			let network_graph = Arc::new(NetworkGraph::new(genesis_block.header.block_hash(), logger.clone()));
 			let p2p_gossip_sync = Some(Arc::new(P2PGossipSync::new(network_graph.clone(), Some(chain_source.clone()), logger.clone())));
 			let msg_handler = MessageHandler { chan_handler: Arc::new(test_utils::TestChannelMessageHandler::new()), route_handler: Arc::new(test_utils::TestRoutingMessageHandler::new() )};
 			let peer_manager = Arc::new(PeerManager::new(msg_handler, keys_manager.get_node_secret(Recipient::Node).unwrap(), &seed, logger.clone(), IgnoringMessageHandler{}));

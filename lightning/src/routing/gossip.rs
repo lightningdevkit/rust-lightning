@@ -28,7 +28,7 @@ use ln::msgs::{DecodeError, ErrorAction, Init, LightningError, RoutingMessageHan
 use ln::msgs::{ChannelAnnouncement, ChannelUpdate, NodeAnnouncement, OptionalField, GossipTimestampFilter};
 use ln::msgs::{QueryChannelRange, ReplyChannelRange, QueryShortChannelIds, ReplyShortChannelIdsEnd};
 use ln::msgs;
-use util::ser::{Writeable, Readable, Writer};
+use util::ser::{Readable, ReadableArgs, Writeable, Writer};
 use util::logger::{Logger, Level};
 use util::events::{Event, EventHandler, MessageSendEvent, MessageSendEventsProvider};
 use util::scid_utils::{block_from_scid, scid_from_parts, MAX_SCID_BLOCK};
@@ -122,28 +122,14 @@ impl Readable for NodeId {
 }
 
 /// Represents the network as nodes and channels between them
-pub struct NetworkGraph {
+pub struct NetworkGraph<L: Deref> where L::Target: Logger {
 	secp_ctx: Secp256k1<secp256k1::VerifyOnly>,
 	last_rapid_gossip_sync_timestamp: Mutex<Option<u32>>,
 	genesis_hash: BlockHash,
+	_logger: L,
 	// Lock order: channels -> nodes
 	channels: RwLock<BTreeMap<u64, ChannelInfo>>,
 	nodes: RwLock<BTreeMap<NodeId, NodeInfo>>,
-}
-
-impl Clone for NetworkGraph {
-	fn clone(&self) -> Self {
-		let channels = self.channels.read().unwrap();
-		let nodes = self.nodes.read().unwrap();
-		let last_rapid_gossip_sync_timestamp = self.get_last_rapid_gossip_sync_timestamp();
-		Self {
-			secp_ctx: Secp256k1::verification_only(),
-			genesis_hash: self.genesis_hash.clone(),
-			channels: RwLock::new(channels.clone()),
-			nodes: RwLock::new(nodes.clone()),
-			last_rapid_gossip_sync_timestamp: Mutex::new(last_rapid_gossip_sync_timestamp)
-		}
-	}
 }
 
 /// A read-only view of [`NetworkGraph`].
@@ -198,7 +184,7 @@ impl_writeable_tlv_based_enum_upgradable!(NetworkUpdate,
 	},
 );
 
-impl<G: Deref<Target=NetworkGraph>, C: Deref, L: Deref> EventHandler for P2PGossipSync<G, C, L>
+impl<G: Deref<Target=NetworkGraph<L>>, C: Deref, L: Deref> EventHandler for P2PGossipSync<G, C, L>
 where C::Target: chain::Access, L::Target: Logger {
 	fn handle_event(&self, event: &Event) {
 		if let Event::PaymentPathFailed { payment_hash: _, rejected_by_dest: _, network_update, .. } = event {
@@ -217,7 +203,7 @@ where C::Target: chain::Access, L::Target: Logger {
 ///
 /// Serves as an [`EventHandler`] for applying updates from [`Event::PaymentPathFailed`] to the
 /// [`NetworkGraph`].
-pub struct P2PGossipSync<G: Deref<Target=NetworkGraph>, C: Deref, L: Deref>
+pub struct P2PGossipSync<G: Deref<Target=NetworkGraph<L>>, C: Deref, L: Deref>
 where C::Target: chain::Access, L::Target: Logger
 {
 	network_graph: G,
@@ -227,7 +213,7 @@ where C::Target: chain::Access, L::Target: Logger
 	logger: L,
 }
 
-impl<G: Deref<Target=NetworkGraph>, C: Deref, L: Deref> P2PGossipSync<G, C, L>
+impl<G: Deref<Target=NetworkGraph<L>>, C: Deref, L: Deref> P2PGossipSync<G, C, L>
 where C::Target: chain::Access, L::Target: Logger
 {
 	/// Creates a new tracker of the actual state of the network of channels and nodes,
@@ -316,7 +302,7 @@ macro_rules! secp_verify_sig {
 	};
 }
 
-impl<G: Deref<Target=NetworkGraph>, C: Deref, L: Deref> RoutingMessageHandler for P2PGossipSync<G, C, L>
+impl<G: Deref<Target=NetworkGraph<L>>, C: Deref, L: Deref> RoutingMessageHandler for P2PGossipSync<G, C, L>
 where C::Target: chain::Access, L::Target: Logger
 {
 	fn handle_node_announcement(&self, msg: &msgs::NodeAnnouncement) -> Result<bool, LightningError> {
@@ -605,7 +591,7 @@ where C::Target: chain::Access, L::Target: Logger
 	}
 }
 
-impl<G: Deref<Target=NetworkGraph>, C: Deref, L: Deref> MessageSendEventsProvider for P2PGossipSync<G, C, L>
+impl<G: Deref<Target=NetworkGraph<L>>, C: Deref, L: Deref> MessageSendEventsProvider for P2PGossipSync<G, C, L>
 where
 	C::Target: chain::Access,
 	L::Target: Logger,
@@ -975,7 +961,7 @@ impl_writeable_tlv_based!(NodeInfo, {
 const SERIALIZATION_VERSION: u8 = 1;
 const MIN_SERIALIZATION_VERSION: u8 = 1;
 
-impl Writeable for NetworkGraph {
+impl<L: Deref> Writeable for NetworkGraph<L> where L::Target: Logger {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		write_ver_prefix!(writer, SERIALIZATION_VERSION, MIN_SERIALIZATION_VERSION);
 
@@ -1001,8 +987,8 @@ impl Writeable for NetworkGraph {
 	}
 }
 
-impl Readable for NetworkGraph {
-	fn read<R: io::Read>(reader: &mut R) -> Result<NetworkGraph, DecodeError> {
+impl<L: Deref> ReadableArgs<L> for NetworkGraph<L> where L::Target: Logger {
+	fn read<R: io::Read>(reader: &mut R, _logger: L) -> Result<NetworkGraph<L>, DecodeError> {
 		let _ver = read_ver_prefix!(reader, SERIALIZATION_VERSION);
 
 		let genesis_hash: BlockHash = Readable::read(reader)?;
@@ -1029,6 +1015,7 @@ impl Readable for NetworkGraph {
 		Ok(NetworkGraph {
 			secp_ctx: Secp256k1::verification_only(),
 			genesis_hash,
+			_logger,
 			channels: RwLock::new(channels),
 			nodes: RwLock::new(nodes),
 			last_rapid_gossip_sync_timestamp: Mutex::new(last_rapid_gossip_sync_timestamp),
@@ -1036,7 +1023,7 @@ impl Readable for NetworkGraph {
 	}
 }
 
-impl fmt::Display for NetworkGraph {
+impl<L: Deref> fmt::Display for NetworkGraph<L> where L::Target: Logger {
 	fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
 		writeln!(f, "Network map\n[Channels]")?;
 		for (key, val) in self.channels.read().unwrap().iter() {
@@ -1050,7 +1037,7 @@ impl fmt::Display for NetworkGraph {
 	}
 }
 
-impl PartialEq for NetworkGraph {
+impl<L: Deref> PartialEq for NetworkGraph<L> where L::Target: Logger {
 	fn eq(&self, other: &Self) -> bool {
 		self.genesis_hash == other.genesis_hash &&
 			*self.channels.read().unwrap() == *other.channels.read().unwrap() &&
@@ -1058,12 +1045,13 @@ impl PartialEq for NetworkGraph {
 	}
 }
 
-impl NetworkGraph {
+impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 	/// Creates a new, empty, network graph.
-	pub fn new(genesis_hash: BlockHash) -> NetworkGraph {
+	pub fn new(genesis_hash: BlockHash, _logger: L) -> NetworkGraph<L> {
 		Self {
 			secp_ctx: Secp256k1::verification_only(),
 			genesis_hash,
+			_logger,
 			channels: RwLock::new(BTreeMap::new()),
 			nodes: RwLock::new(BTreeMap::new()),
 			last_rapid_gossip_sync_timestamp: Mutex::new(None),
@@ -1651,7 +1639,7 @@ mod tests {
 		ReplyChannelRange, QueryChannelRange, QueryShortChannelIds, MAX_VALUE_MSAT};
 	use util::test_utils;
 	use util::logger::Logger;
-	use util::ser::{Readable, Writeable};
+	use util::ser::{ReadableArgs, Writeable};
 	use util::events::{Event, EventHandler, MessageSendEvent, MessageSendEventsProvider};
 	use util::scid_utils::scid_from_parts;
 
@@ -1675,13 +1663,15 @@ mod tests {
 	use prelude::*;
 	use sync::Arc;
 
-	fn create_network_graph() -> NetworkGraph {
+	fn create_network_graph() -> NetworkGraph<Arc<test_utils::TestLogger>> {
 		let genesis_hash = genesis_block(Network::Testnet).header.block_hash();
-		NetworkGraph::new(genesis_hash)
+		let logger = Arc::new(test_utils::TestLogger::new());
+		NetworkGraph::new(genesis_hash, logger)
 	}
 
-	fn create_gossip_sync(network_graph: &NetworkGraph) -> (
-		Secp256k1<All>, P2PGossipSync<&NetworkGraph, Arc<test_utils::TestChainSource>, Arc<test_utils::TestLogger>>
+	fn create_gossip_sync(network_graph: &NetworkGraph<Arc<test_utils::TestLogger>>) -> (
+		Secp256k1<All>, P2PGossipSync<&NetworkGraph<Arc<test_utils::TestLogger>>,
+		Arc<test_utils::TestChainSource>, Arc<test_utils::TestLogger>>
 	) {
 		let secp_ctx = Secp256k1::new();
 		let logger = Arc::new(test_utils::TestLogger::new());
@@ -1854,7 +1844,8 @@ mod tests {
 		let valid_announcement = get_signed_channel_announcement(|_| {}, node_1_privkey, node_2_privkey, &secp_ctx);
 
 		// Test if the UTXO lookups were not supported
-		let network_graph = NetworkGraph::new(genesis_block(Network::Testnet).header.block_hash());
+		let genesis_hash = genesis_block(Network::Testnet).header.block_hash();
+		let network_graph = NetworkGraph::new(genesis_hash, Arc::clone(&logger));
 		let mut gossip_sync = P2PGossipSync::new(&network_graph, None, Arc::clone(&logger));
 		match gossip_sync.handle_channel_announcement(&valid_announcement) {
 			Ok(res) => assert!(res),
@@ -1878,7 +1869,7 @@ mod tests {
 		// Test if an associated transaction were not on-chain (or not confirmed).
 		let chain_source = Arc::new(test_utils::TestChainSource::new(Network::Testnet));
 		*chain_source.utxo_ret.lock().unwrap() = Err(chain::AccessError::UnknownTx);
-		let network_graph = NetworkGraph::new(genesis_block(Network::Testnet).header.block_hash());
+		let network_graph = NetworkGraph::new(genesis_hash, Arc::clone(&logger));
 		gossip_sync = P2PGossipSync::new(&network_graph, Some(chain_source.clone()), Arc::clone(&logger));
 
 		let valid_announcement = get_signed_channel_announcement(|unsigned_announcement| {
@@ -1962,7 +1953,8 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let logger: Arc<Logger> = Arc::new(test_utils::TestLogger::new());
 		let chain_source = Arc::new(test_utils::TestChainSource::new(Network::Testnet));
-		let network_graph = NetworkGraph::new(genesis_block(Network::Testnet).header.block_hash());
+		let genesis_hash = genesis_block(Network::Testnet).header.block_hash();
+		let network_graph = NetworkGraph::new(genesis_hash, Arc::clone(&logger));
 		let gossip_sync = P2PGossipSync::new(&network_graph, Some(chain_source.clone()), Arc::clone(&logger));
 
 		let node_1_privkey = &SecretKey::from_slice(&[42; 32]).unwrap();
@@ -2065,7 +2057,7 @@ mod tests {
 		let logger = test_utils::TestLogger::new();
 		let chain_source = Arc::new(test_utils::TestChainSource::new(Network::Testnet));
 		let genesis_hash = genesis_block(Network::Testnet).header.block_hash();
-		let network_graph = NetworkGraph::new(genesis_hash);
+		let network_graph = NetworkGraph::new(genesis_hash, &logger);
 		let gossip_sync = P2PGossipSync::new(&network_graph, Some(chain_source.clone()), &logger);
 		let secp_ctx = Secp256k1::new();
 
@@ -2169,7 +2161,7 @@ mod tests {
 		let logger = test_utils::TestLogger::new();
 		let chain_source = Arc::new(test_utils::TestChainSource::new(Network::Testnet));
 		let genesis_hash = genesis_block(Network::Testnet).header.block_hash();
-		let network_graph = NetworkGraph::new(genesis_hash);
+		let network_graph = NetworkGraph::new(genesis_hash, &logger);
 		let gossip_sync = P2PGossipSync::new(&network_graph, Some(chain_source.clone()), &logger);
 		let secp_ctx = Secp256k1::new();
 
@@ -2382,7 +2374,9 @@ mod tests {
 		assert!(!network_graph.read_only().nodes().is_empty());
 		assert!(!network_graph.read_only().channels().is_empty());
 		network_graph.write(&mut w).unwrap();
-		assert!(<NetworkGraph>::read(&mut io::Cursor::new(&w.0)).unwrap() == network_graph);
+
+		let logger = Arc::new(test_utils::TestLogger::new());
+		assert!(<NetworkGraph<_>>::read(&mut io::Cursor::new(&w.0), logger).unwrap() == network_graph);
 	}
 
 	#[test]
@@ -2392,7 +2386,9 @@ mod tests {
 
 		let mut w = test_utils::TestVecWriter(Vec::new());
 		network_graph.write(&mut w).unwrap();
-		let reassembled_network_graph: NetworkGraph = Readable::read(&mut io::Cursor::new(&w.0)).unwrap();
+
+		let logger = Arc::new(test_utils::TestLogger::new());
+		let reassembled_network_graph: NetworkGraph<_> = ReadableArgs::read(&mut io::Cursor::new(&w.0), logger).unwrap();
 		assert!(reassembled_network_graph == network_graph);
 		assert_eq!(reassembled_network_graph.get_last_rapid_gossip_sync_timestamp().unwrap(), 42);
 	}
@@ -2681,7 +2677,7 @@ mod tests {
 	}
 
 	fn do_handling_query_channel_range(
-		gossip_sync: &P2PGossipSync<&NetworkGraph, Arc<test_utils::TestChainSource>, Arc<test_utils::TestLogger>>,
+		gossip_sync: &P2PGossipSync<&NetworkGraph<Arc<test_utils::TestLogger>>, Arc<test_utils::TestChainSource>, Arc<test_utils::TestLogger>>,
 		test_node_id: &PublicKey,
 		msg: QueryChannelRange,
 		expected_ok: bool,
@@ -2754,18 +2750,20 @@ mod benches {
 
 	#[bench]
 	fn read_network_graph(bench: &mut Bencher) {
+		let logger = ::util::test_utils::TestLogger::new();
 		let mut d = ::routing::router::test_utils::get_route_file().unwrap();
 		let mut v = Vec::new();
 		d.read_to_end(&mut v).unwrap();
 		bench.iter(|| {
-			let _ = NetworkGraph::read(&mut std::io::Cursor::new(&v)).unwrap();
+			let _ = NetworkGraph::read(&mut std::io::Cursor::new(&v), &logger).unwrap();
 		});
 	}
 
 	#[bench]
 	fn write_network_graph(bench: &mut Bencher) {
+		let logger = ::util::test_utils::TestLogger::new();
 		let mut d = ::routing::router::test_utils::get_route_file().unwrap();
-		let net_graph = NetworkGraph::read(&mut d).unwrap();
+		let net_graph = NetworkGraph::read(&mut d, &logger).unwrap();
 		bench.iter(|| {
 			let _ = net_graph.encode();
 		});

@@ -17,7 +17,7 @@ use bitcoin::secp256k1::PublicKey;
 use ln::channelmanager::ChannelDetails;
 use ln::features::{ChannelFeatures, InvoiceFeatures, NodeFeatures};
 use ln::msgs::{DecodeError, ErrorAction, LightningError, MAX_VALUE_MSAT};
-use routing::gossip::{DirectedChannelInfoWithUpdate, EffectiveCapacity, NetworkGraph, ReadOnlyNetworkGraph, NodeId, RoutingFees};
+use routing::gossip::{DirectedChannelInfoWithUpdate, EffectiveCapacity, ReadOnlyNetworkGraph, NodeId, RoutingFees};
 use routing::scoring::{ChannelUsage, Score};
 use util::ser::{Writeable, Readable, Writer};
 use util::logger::{Level, Logger};
@@ -369,7 +369,7 @@ enum CandidateRouteHop<'a> {
 	FirstHop {
 		details: &'a ChannelDetails,
 	},
-	/// A hop found in the [`NetworkGraph`], where the channel capacity may or may not be known.
+	/// A hop found in the [`ReadOnlyNetworkGraph`], where the channel capacity may be unknown.
 	PublicHop {
 		info: DirectedChannelInfoWithUpdate<'a>,
 		short_channel_id: u64,
@@ -650,8 +650,8 @@ fn default_node_features() -> NodeFeatures {
 /// Private routing paths between a public node and the target may be included in `params.payee`.
 ///
 /// If some channels aren't announced, it may be useful to fill in `first_hops` with the results
-/// from [`ChannelManager::list_usable_channels`]. If it is filled in, the view of our local
-/// channels from [`NetworkGraph`] will be ignored, and only those in `first_hops` will be used.
+/// from [`ChannelManager::list_usable_channels`]. If it is filled in, the view of these channels
+/// from `network_graph` will be ignored, and only those in `first_hops` will be used.
 ///
 /// The fees on channels from us to the next hop are ignored as they are assumed to all be equal.
 /// However, the enabled/disabled bit on such channels as well as the `htlc_minimum_msat` /
@@ -670,16 +670,17 @@ fn default_node_features() -> NodeFeatures {
 ///
 /// [`ChannelManager::list_usable_channels`]: crate::ln::channelmanager::ChannelManager::list_usable_channels
 /// [`Event::PaymentPathFailed`]: crate::util::events::Event::PaymentPathFailed
+/// [`NetworkGraph`]: crate::routing::gossip::NetworkGraph
 pub fn find_route<L: Deref, S: Score>(
-	our_node_pubkey: &PublicKey, route_params: &RouteParameters, network: &NetworkGraph,
-	first_hops: Option<&[&ChannelDetails]>, logger: L, scorer: &S, random_seed_bytes: &[u8; 32]
+	our_node_pubkey: &PublicKey, route_params: &RouteParameters,
+	network_graph: &ReadOnlyNetworkGraph, first_hops: Option<&[&ChannelDetails]>, logger: L,
+	scorer: &S, random_seed_bytes: &[u8; 32]
 ) -> Result<Route, LightningError>
 where L::Target: Logger {
-	let network_graph = network.read_only();
-	let mut route = get_route(our_node_pubkey, &route_params.payment_params, &network_graph, first_hops,
+	let mut route = get_route(our_node_pubkey, &route_params.payment_params, network_graph, first_hops,
 		route_params.final_value_msat, route_params.final_cltv_expiry_delta, logger, scorer,
 		random_seed_bytes)?;
-	add_random_cltv_offset(&mut route, &route_params.payment_params, &network_graph, random_seed_bytes);
+	add_random_cltv_offset(&mut route, &route_params.payment_params, network_graph, random_seed_bytes);
 	Ok(route)
 }
 
@@ -1787,11 +1788,10 @@ fn add_random_cltv_offset(route: &mut Route, payment_params: &PaymentParameters,
 ///
 /// Re-uses logic from `find_route`, so the restrictions described there also apply here.
 pub fn build_route_from_hops<L: Deref>(
-	our_node_pubkey: &PublicKey, hops: &[PublicKey], route_params: &RouteParameters, network: &NetworkGraph,
-	logger: L, random_seed_bytes: &[u8; 32]
+	our_node_pubkey: &PublicKey, hops: &[PublicKey], route_params: &RouteParameters,
+	network_graph: &ReadOnlyNetworkGraph, logger: L, random_seed_bytes: &[u8; 32]
 ) -> Result<Route, LightningError>
 where L::Target: Logger {
-	let network_graph = network.read_only();
 	let mut route = build_route_from_hops_internal(
 		our_node_pubkey, hops, &route_params.payment_params, &network_graph,
 		route_params.final_value_msat, route_params.final_cltv_expiry_delta, logger, random_seed_bytes)?;
@@ -1926,7 +1926,7 @@ mod tests {
 
 	// Using the same keys for LN and BTC ids
 	fn add_channel(
-		gossip_sync: &P2PGossipSync<Arc<NetworkGraph>, Arc<test_utils::TestChainSource>, Arc<test_utils::TestLogger>>,
+		gossip_sync: &P2PGossipSync<Arc<NetworkGraph<Arc<test_utils::TestLogger>>>, Arc<test_utils::TestChainSource>, Arc<test_utils::TestLogger>>,
 		secp_ctx: &Secp256k1<All>, node_1_privkey: &SecretKey, node_2_privkey: &SecretKey, features: ChannelFeatures, short_channel_id: u64
 	) {
 		let node_id_1 = PublicKey::from_secret_key(&secp_ctx, node_1_privkey);
@@ -1958,7 +1958,7 @@ mod tests {
 	}
 
 	fn update_channel(
-		gossip_sync: &P2PGossipSync<Arc<NetworkGraph>, Arc<test_utils::TestChainSource>, Arc<test_utils::TestLogger>>,
+		gossip_sync: &P2PGossipSync<Arc<NetworkGraph<Arc<test_utils::TestLogger>>>, Arc<test_utils::TestChainSource>, Arc<test_utils::TestLogger>>,
 		secp_ctx: &Secp256k1<All>, node_privkey: &SecretKey, update: UnsignedChannelUpdate
 	) {
 		let msghash = hash_to_message!(&Sha256dHash::hash(&update.encode()[..])[..]);
@@ -1974,7 +1974,7 @@ mod tests {
 	}
 
 	fn add_or_update_node(
-		gossip_sync: &P2PGossipSync<Arc<NetworkGraph>, Arc<test_utils::TestChainSource>, Arc<test_utils::TestLogger>>,
+		gossip_sync: &P2PGossipSync<Arc<NetworkGraph<Arc<test_utils::TestLogger>>>, Arc<test_utils::TestChainSource>, Arc<test_utils::TestLogger>>,
 		secp_ctx: &Secp256k1<All>, node_privkey: &SecretKey, features: NodeFeatures, timestamp: u32
 	) {
 		let node_id = PublicKey::from_secret_key(&secp_ctx, node_privkey);
@@ -2029,14 +2029,15 @@ mod tests {
 	}
 
 	fn build_line_graph() -> (
-		Secp256k1<All>, sync::Arc<NetworkGraph>, P2PGossipSync<sync::Arc<NetworkGraph>,
-		sync::Arc<test_utils::TestChainSource>, sync::Arc<crate::util::test_utils::TestLogger>>,
+		Secp256k1<All>, sync::Arc<NetworkGraph<Arc<test_utils::TestLogger>>>,
+		P2PGossipSync<sync::Arc<NetworkGraph<Arc<test_utils::TestLogger>>>, sync::Arc<test_utils::TestChainSource>, sync::Arc<test_utils::TestLogger>>,
 		sync::Arc<test_utils::TestChainSource>, sync::Arc<test_utils::TestLogger>,
 	) {
 		let secp_ctx = Secp256k1::new();
 		let logger = Arc::new(test_utils::TestLogger::new());
 		let chain_monitor = Arc::new(test_utils::TestChainSource::new(Network::Testnet));
-		let network_graph = Arc::new(NetworkGraph::new(genesis_block(Network::Testnet).header.block_hash()));
+		let genesis_hash = genesis_block(Network::Testnet).header.block_hash();
+		let network_graph = Arc::new(NetworkGraph::new(genesis_hash, Arc::clone(&logger)));
 		let gossip_sync = P2PGossipSync::new(Arc::clone(&network_graph), None, Arc::clone(&logger));
 
 		// Build network from our_id to node 19:
@@ -2081,15 +2082,16 @@ mod tests {
 
 	fn build_graph() -> (
 		Secp256k1<All>,
-		sync::Arc<NetworkGraph>,
-		P2PGossipSync<sync::Arc<NetworkGraph>, sync::Arc<test_utils::TestChainSource>, sync::Arc<crate::util::test_utils::TestLogger>>,
+		sync::Arc<NetworkGraph<Arc<test_utils::TestLogger>>>,
+		P2PGossipSync<sync::Arc<NetworkGraph<Arc<test_utils::TestLogger>>>, sync::Arc<test_utils::TestChainSource>, sync::Arc<test_utils::TestLogger>>,
 		sync::Arc<test_utils::TestChainSource>,
 		sync::Arc<test_utils::TestLogger>,
 	) {
 		let secp_ctx = Secp256k1::new();
 		let logger = Arc::new(test_utils::TestLogger::new());
 		let chain_monitor = Arc::new(test_utils::TestChainSource::new(Network::Testnet));
-		let network_graph = Arc::new(NetworkGraph::new(genesis_block(Network::Testnet).header.block_hash()));
+		let genesis_hash = genesis_block(Network::Testnet).header.block_hash();
+		let network_graph = Arc::new(NetworkGraph::new(genesis_hash, Arc::clone(&logger)));
 		let gossip_sync = P2PGossipSync::new(Arc::clone(&network_graph), None, Arc::clone(&logger));
 		// Build network from our_id to node6:
 		//
@@ -3489,8 +3491,12 @@ mod tests {
 		let scorer = test_utils::TestScorer::with_penalty(0);
 		let keys_manager = test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
 		let random_seed_bytes = keys_manager.get_secure_random_bytes();
-		get_route(&source_node_id, &payment_params, &NetworkGraph::new(genesis_block(Network::Testnet).header.block_hash()).read_only(),
-				Some(&our_chans.iter().collect::<Vec<_>>()), route_val, 42, &test_utils::TestLogger::new(), &scorer, &random_seed_bytes)
+		let genesis_hash = genesis_block(Network::Testnet).header.block_hash();
+		let logger = test_utils::TestLogger::new();
+		let network_graph = NetworkGraph::new(genesis_hash, &logger);
+		let route = get_route(&source_node_id, &payment_params, &network_graph.read_only(),
+				Some(&our_chans.iter().collect::<Vec<_>>()), route_val, 42, &logger, &scorer, &random_seed_bytes);
+		route
 	}
 
 	#[test]
@@ -4882,8 +4888,9 @@ mod tests {
 		// payment) htlc_minimum_msat. In the original algorithm, this resulted in node4's
 		// "previous hop" being set to node 3, creating a loop in the path.
 		let secp_ctx = Secp256k1::new();
+		let genesis_hash = genesis_block(Network::Testnet).header.block_hash();
 		let logger = Arc::new(test_utils::TestLogger::new());
-		let network = Arc::new(NetworkGraph::new(genesis_block(Network::Testnet).header.block_hash()));
+		let network = Arc::new(NetworkGraph::new(genesis_hash, Arc::clone(&logger)));
 		let gossip_sync = P2PGossipSync::new(Arc::clone(&network), None, Arc::clone(&logger));
 		let (our_privkey, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
 		let scorer = test_utils::TestScorer::with_penalty(0);
@@ -5148,8 +5155,9 @@ mod tests {
 		// route over multiple channels with the same first hop.
 		let secp_ctx = Secp256k1::new();
 		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
+		let genesis_hash = genesis_block(Network::Testnet).header.block_hash();
 		let logger = Arc::new(test_utils::TestLogger::new());
-		let network_graph = NetworkGraph::new(genesis_block(Network::Testnet).header.block_hash());
+		let network_graph = NetworkGraph::new(genesis_hash, Arc::clone(&logger));
 		let scorer = test_utils::TestScorer::with_penalty(0);
 		let payment_params = PaymentParameters::from_node_id(nodes[0]).with_features(InvoiceFeatures::known());
 		let keys_manager = test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
@@ -5587,7 +5595,7 @@ mod tests {
 		seed
 	}
 	#[cfg(not(feature = "no-std"))]
-	use util::ser::Readable;
+	use util::ser::ReadableArgs;
 
 	#[test]
 	#[cfg(not(feature = "no-std"))]
@@ -5601,7 +5609,8 @@ mod tests {
 				return;
 			},
 		};
-		let graph = NetworkGraph::read(&mut d).unwrap();
+		let logger = test_utils::TestLogger::new();
+		let graph = NetworkGraph::read(&mut d, &logger).unwrap();
 		let keys_manager = test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
 		let random_seed_bytes = keys_manager.get_secure_random_bytes();
 
@@ -5617,7 +5626,6 @@ mod tests {
 				let payment_params = PaymentParameters::from_node_id(dst);
 				let amt = seed as u64 % 200_000_000;
 				let params = ProbabilisticScoringParameters::default();
-				let logger = test_utils::TestLogger::new();
 				let scorer = ProbabilisticScorer::new(params, &graph, &logger);
 				if get_route(src, &payment_params, &graph.read_only(), None, amt, 42, &logger, &scorer, &random_seed_bytes).is_ok() {
 					continue 'load_endpoints;
@@ -5638,7 +5646,8 @@ mod tests {
 				return;
 			},
 		};
-		let graph = NetworkGraph::read(&mut d).unwrap();
+		let logger = test_utils::TestLogger::new();
+		let graph = NetworkGraph::read(&mut d, &logger).unwrap();
 		let keys_manager = test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
 		let random_seed_bytes = keys_manager.get_secure_random_bytes();
 
@@ -5654,7 +5663,6 @@ mod tests {
 				let payment_params = PaymentParameters::from_node_id(dst).with_features(InvoiceFeatures::known());
 				let amt = seed as u64 % 200_000_000;
 				let params = ProbabilisticScoringParameters::default();
-				let logger = test_utils::TestLogger::new();
 				let scorer = ProbabilisticScorer::new(params, &graph, &logger);
 				if get_route(src, &payment_params, &graph.read_only(), None, amt, 42, &logger, &scorer, &random_seed_bytes).is_ok() {
 					continue 'load_endpoints;
@@ -5700,9 +5708,10 @@ mod benches {
 	use chain::keysinterface::{KeysManager,KeysInterface};
 	use ln::channelmanager::{ChannelCounterparty, ChannelDetails};
 	use ln::features::{InitFeatures, InvoiceFeatures};
+	use routing::gossip::NetworkGraph;
 	use routing::scoring::{FixedPenaltyScorer, ProbabilisticScorer, ProbabilisticScoringParameters};
 	use util::logger::{Logger, Record};
-	use util::test_utils::TestLogger;
+	use util::ser::ReadableArgs;
 
 	use test::Bencher;
 
@@ -5711,9 +5720,9 @@ mod benches {
 		fn log(&self, _record: &Record) {}
 	}
 
-	fn read_network_graph() -> NetworkGraph {
+	fn read_network_graph(logger: &DummyLogger) -> NetworkGraph<&DummyLogger> {
 		let mut d = test_utils::get_route_file().unwrap();
-		NetworkGraph::read(&mut d).unwrap()
+		NetworkGraph::read(&mut d, logger).unwrap()
 	}
 
 	fn payer_pubkey() -> PublicKey {
@@ -5760,22 +5769,24 @@ mod benches {
 
 	#[bench]
 	fn generate_routes_with_zero_penalty_scorer(bench: &mut Bencher) {
-		let network_graph = read_network_graph();
+		let logger = DummyLogger {};
+		let network_graph = read_network_graph(&logger);
 		let scorer = FixedPenaltyScorer::with_penalty(0);
 		generate_routes(bench, &network_graph, scorer, InvoiceFeatures::empty());
 	}
 
 	#[bench]
 	fn generate_mpp_routes_with_zero_penalty_scorer(bench: &mut Bencher) {
-		let network_graph = read_network_graph();
+		let logger = DummyLogger {};
+		let network_graph = read_network_graph(&logger);
 		let scorer = FixedPenaltyScorer::with_penalty(0);
 		generate_routes(bench, &network_graph, scorer, InvoiceFeatures::known());
 	}
 
 	#[bench]
 	fn generate_routes_with_probabilistic_scorer(bench: &mut Bencher) {
-		let logger = TestLogger::new();
-		let network_graph = read_network_graph();
+		let logger = DummyLogger {};
+		let network_graph = read_network_graph(&logger);
 		let params = ProbabilisticScoringParameters::default();
 		let scorer = ProbabilisticScorer::new(params, &network_graph, &logger);
 		generate_routes(bench, &network_graph, scorer, InvoiceFeatures::empty());
@@ -5783,15 +5794,16 @@ mod benches {
 
 	#[bench]
 	fn generate_mpp_routes_with_probabilistic_scorer(bench: &mut Bencher) {
-		let logger = TestLogger::new();
-		let network_graph = read_network_graph();
+		let logger = DummyLogger {};
+		let network_graph = read_network_graph(&logger);
 		let params = ProbabilisticScoringParameters::default();
 		let scorer = ProbabilisticScorer::new(params, &network_graph, &logger);
 		generate_routes(bench, &network_graph, scorer, InvoiceFeatures::known());
 	}
 
 	fn generate_routes<S: Score>(
-		bench: &mut Bencher, graph: &NetworkGraph, mut scorer: S, features: InvoiceFeatures
+		bench: &mut Bencher, graph: &NetworkGraph<&DummyLogger>, mut scorer: S,
+		features: InvoiceFeatures
 	) {
 		let nodes = graph.read_only().nodes().clone();
 		let payer = payer_pubkey();

@@ -28,7 +28,7 @@
 //! # impl Logger for FakeLogger {
 //! #     fn log(&self, record: &Record) { unimplemented!() }
 //! # }
-//! # fn find_scored_route(payer: PublicKey, route_params: RouteParameters, network_graph: NetworkGraph) {
+//! # fn find_scored_route(payer: PublicKey, route_params: RouteParameters, network_graph: NetworkGraph<&FakeLogger>) {
 //! # let logger = FakeLogger {};
 //! #
 //! // Use the default channel penalties.
@@ -43,7 +43,7 @@
 //! let scorer = ProbabilisticScorer::new(params, &network_graph, &logger);
 //! # let random_seed_bytes = [42u8; 32];
 //!
-//! let route = find_route(&payer, &route_params, &network_graph, None, &logger, &scorer, &random_seed_bytes);
+//! let route = find_route(&payer, &route_params, &network_graph.read_only(), None, &logger, &scorer, &random_seed_bytes);
 //! # }
 //! ```
 //!
@@ -293,7 +293,8 @@ pub type ProbabilisticScorer<G, L> = ProbabilisticScorerUsingTime::<G, L, Config
 /// Probabilistic [`Score`] implementation.
 ///
 /// (C-not exported) generally all users should use the [`ProbabilisticScorer`] type alias.
-pub struct ProbabilisticScorerUsingTime<G: Deref<Target = NetworkGraph>, L: Deref, T: Time> where L::Target: Logger {
+pub struct ProbabilisticScorerUsingTime<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time>
+where L::Target: Logger {
 	params: ProbabilisticScoringParameters,
 	network_graph: G,
 	logger: L,
@@ -389,7 +390,7 @@ struct DirectedChannelLiquidity<L: Deref<Target = u64>, T: Time, U: Deref<Target
 	half_life: Duration,
 }
 
-impl<G: Deref<Target = NetworkGraph>, L: Deref, T: Time> ProbabilisticScorerUsingTime<G, L, T> where L::Target: Logger {
+impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> ProbabilisticScorerUsingTime<G, L, T> where L::Target: Logger {
 	/// Creates a new scorer using the given scoring parameters for sending payments from a node
 	/// through a network graph.
 	pub fn new(params: ProbabilisticScoringParameters, network_graph: G, logger: L) -> Self {
@@ -650,7 +651,7 @@ impl<L: DerefMut<Target = u64>, T: Time, U: DerefMut<Target = T>> DirectedChanne
 	}
 }
 
-impl<G: Deref<Target = NetworkGraph>, L: Deref, T: Time> Score for ProbabilisticScorerUsingTime<G, L, T> where L::Target: Logger {
+impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> Score for ProbabilisticScorerUsingTime<G, L, T> where L::Target: Logger {
 	fn channel_penalty_msat(
 		&self, short_channel_id: u64, source: &NodeId, target: &NodeId, usage: ChannelUsage
 	) -> u64 {
@@ -1050,7 +1051,7 @@ mod approx {
 	}
 }
 
-impl<G: Deref<Target = NetworkGraph>, L: Deref, T: Time> Writeable for ProbabilisticScorerUsingTime<G, L, T> where L::Target: Logger {
+impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> Writeable for ProbabilisticScorerUsingTime<G, L, T> where L::Target: Logger {
 	#[inline]
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		write_tlv_fields!(w, {
@@ -1060,7 +1061,7 @@ impl<G: Deref<Target = NetworkGraph>, L: Deref, T: Time> Writeable for Probabili
 	}
 }
 
-impl<G: Deref<Target = NetworkGraph>, L: Deref, T: Time>
+impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time>
 ReadableArgs<(ProbabilisticScoringParameters, G, L)> for ProbabilisticScorerUsingTime<G, L, T> where L::Target: Logger {
 	#[inline]
 	fn read<R: Read>(
@@ -1163,7 +1164,7 @@ mod tests {
 	// `ProbabilisticScorer` tests
 
 	/// A probabilistic scorer for testing with time that can be manually advanced.
-	type ProbabilisticScorer<'a> = ProbabilisticScorerUsingTime::<&'a NetworkGraph, &'a TestLogger, SinceEpoch>;
+	type ProbabilisticScorer<'a> = ProbabilisticScorerUsingTime::<&'a NetworkGraph<&'a TestLogger>, &'a TestLogger, SinceEpoch>;
 
 	fn sender_privkey() -> SecretKey {
 		SecretKey::from_slice(&[41; 32]).unwrap()
@@ -1191,9 +1192,9 @@ mod tests {
 		NodeId::from_pubkey(&recipient_pubkey())
 	}
 
-	fn network_graph() -> NetworkGraph {
+	fn network_graph(logger: &TestLogger) -> NetworkGraph<&TestLogger> {
 		let genesis_hash = genesis_block(Network::Testnet).header.block_hash();
-		let mut network_graph = NetworkGraph::new(genesis_hash);
+		let mut network_graph = NetworkGraph::new(genesis_hash, logger);
 		add_channel(&mut network_graph, 42, source_privkey(), target_privkey());
 		add_channel(&mut network_graph, 43, target_privkey(), recipient_privkey());
 
@@ -1201,7 +1202,7 @@ mod tests {
 	}
 
 	fn add_channel(
-		network_graph: &mut NetworkGraph, short_channel_id: u64, node_1_key: SecretKey,
+		network_graph: &mut NetworkGraph<&TestLogger>, short_channel_id: u64, node_1_key: SecretKey,
 		node_2_key: SecretKey
 	) {
 		let genesis_hash = genesis_block(Network::Testnet).header.block_hash();
@@ -1234,7 +1235,8 @@ mod tests {
 	}
 
 	fn update_channel(
-		network_graph: &mut NetworkGraph, short_channel_id: u64, node_key: SecretKey, flags: u8
+		network_graph: &mut NetworkGraph<&TestLogger>, short_channel_id: u64, node_key: SecretKey,
+		flags: u8
 	) {
 		let genesis_hash = genesis_block(Network::Testnet).header.block_hash();
 		let secp_ctx = Secp256k1::new();
@@ -1291,7 +1293,7 @@ mod tests {
 	fn liquidity_bounds_directed_from_lowest_node_id() {
 		let logger = TestLogger::new();
 		let last_updated = SinceEpoch::now();
-		let network_graph = network_graph();
+		let network_graph = network_graph(&logger);
 		let params = ProbabilisticScoringParameters::default();
 		let mut scorer = ProbabilisticScorer::new(params, &network_graph, &logger)
 			.with_channel(42,
@@ -1366,7 +1368,7 @@ mod tests {
 	fn resets_liquidity_upper_bound_when_crossed_by_lower_bound() {
 		let logger = TestLogger::new();
 		let last_updated = SinceEpoch::now();
-		let network_graph = network_graph();
+		let network_graph = network_graph(&logger);
 		let params = ProbabilisticScoringParameters::default();
 		let mut scorer = ProbabilisticScorer::new(params, &network_graph, &logger)
 			.with_channel(42,
@@ -1424,7 +1426,7 @@ mod tests {
 	fn resets_liquidity_lower_bound_when_crossed_by_upper_bound() {
 		let logger = TestLogger::new();
 		let last_updated = SinceEpoch::now();
-		let network_graph = network_graph();
+		let network_graph = network_graph(&logger);
 		let params = ProbabilisticScoringParameters::default();
 		let mut scorer = ProbabilisticScorer::new(params, &network_graph, &logger)
 			.with_channel(42,
@@ -1481,7 +1483,7 @@ mod tests {
 	#[test]
 	fn increased_penalty_nearing_liquidity_upper_bound() {
 		let logger = TestLogger::new();
-		let network_graph = network_graph();
+		let network_graph = network_graph(&logger);
 		let params = ProbabilisticScoringParameters {
 			liquidity_penalty_multiplier_msat: 1_000,
 			..ProbabilisticScoringParameters::zero_penalty()
@@ -1527,7 +1529,7 @@ mod tests {
 	fn constant_penalty_outside_liquidity_bounds() {
 		let logger = TestLogger::new();
 		let last_updated = SinceEpoch::now();
-		let network_graph = network_graph();
+		let network_graph = network_graph(&logger);
 		let params = ProbabilisticScoringParameters {
 			liquidity_penalty_multiplier_msat: 1_000,
 			..ProbabilisticScoringParameters::zero_penalty()
@@ -1556,7 +1558,7 @@ mod tests {
 	#[test]
 	fn does_not_further_penalize_own_channel() {
 		let logger = TestLogger::new();
-		let network_graph = network_graph();
+		let network_graph = network_graph(&logger);
 		let params = ProbabilisticScoringParameters {
 			liquidity_penalty_multiplier_msat: 1_000,
 			..ProbabilisticScoringParameters::zero_penalty()
@@ -1584,7 +1586,7 @@ mod tests {
 	#[test]
 	fn sets_liquidity_lower_bound_on_downstream_failure() {
 		let logger = TestLogger::new();
-		let network_graph = network_graph();
+		let network_graph = network_graph(&logger);
 		let params = ProbabilisticScoringParameters {
 			liquidity_penalty_multiplier_msat: 1_000,
 			..ProbabilisticScoringParameters::zero_penalty()
@@ -1618,7 +1620,7 @@ mod tests {
 	#[test]
 	fn sets_liquidity_upper_bound_on_failure() {
 		let logger = TestLogger::new();
-		let network_graph = network_graph();
+		let network_graph = network_graph(&logger);
 		let params = ProbabilisticScoringParameters {
 			liquidity_penalty_multiplier_msat: 1_000,
 			..ProbabilisticScoringParameters::zero_penalty()
@@ -1652,7 +1654,7 @@ mod tests {
 	#[test]
 	fn reduces_liquidity_upper_bound_along_path_on_success() {
 		let logger = TestLogger::new();
-		let network_graph = network_graph();
+		let network_graph = network_graph(&logger);
 		let params = ProbabilisticScoringParameters {
 			liquidity_penalty_multiplier_msat: 1_000,
 			..ProbabilisticScoringParameters::zero_penalty()
@@ -1683,7 +1685,7 @@ mod tests {
 	#[test]
 	fn decays_liquidity_bounds_over_time() {
 		let logger = TestLogger::new();
-		let network_graph = network_graph();
+		let network_graph = network_graph(&logger);
 		let params = ProbabilisticScoringParameters {
 			liquidity_penalty_multiplier_msat: 1_000,
 			liquidity_offset_half_life: Duration::from_secs(10),
@@ -1762,7 +1764,7 @@ mod tests {
 	#[test]
 	fn decays_liquidity_bounds_without_shift_overflow() {
 		let logger = TestLogger::new();
-		let network_graph = network_graph();
+		let network_graph = network_graph(&logger);
 		let params = ProbabilisticScoringParameters {
 			liquidity_penalty_multiplier_msat: 1_000,
 			liquidity_offset_half_life: Duration::from_secs(10),
@@ -1793,7 +1795,7 @@ mod tests {
 	#[test]
 	fn restricts_liquidity_bounds_after_decay() {
 		let logger = TestLogger::new();
-		let network_graph = network_graph();
+		let network_graph = network_graph(&logger);
 		let params = ProbabilisticScoringParameters {
 			liquidity_penalty_multiplier_msat: 1_000,
 			liquidity_offset_half_life: Duration::from_secs(10),
@@ -1837,7 +1839,7 @@ mod tests {
 	#[test]
 	fn restores_persisted_liquidity_bounds() {
 		let logger = TestLogger::new();
-		let network_graph = network_graph();
+		let network_graph = network_graph(&logger);
 		let params = ProbabilisticScoringParameters {
 			liquidity_penalty_multiplier_msat: 1_000,
 			liquidity_offset_half_life: Duration::from_secs(10),
@@ -1873,7 +1875,7 @@ mod tests {
 	#[test]
 	fn decays_persisted_liquidity_bounds() {
 		let logger = TestLogger::new();
-		let network_graph = network_graph();
+		let network_graph = network_graph(&logger);
 		let params = ProbabilisticScoringParameters {
 			liquidity_penalty_multiplier_msat: 1_000,
 			liquidity_offset_half_life: Duration::from_secs(10),
@@ -1913,7 +1915,7 @@ mod tests {
 		// Shows the scores of "realistic" sends of 100k sats over channels of 1-10m sats (with a
 		// 50k sat reserve).
 		let logger = TestLogger::new();
-		let network_graph = network_graph();
+		let network_graph = network_graph(&logger);
 		let params = ProbabilisticScoringParameters::default();
 		let scorer = ProbabilisticScorer::new(params, &network_graph, &logger);
 		let source = source_node_id();
@@ -1970,7 +1972,7 @@ mod tests {
 	#[test]
 	fn adds_base_penalty_to_liquidity_penalty() {
 		let logger = TestLogger::new();
-		let network_graph = network_graph();
+		let network_graph = network_graph(&logger);
 		let source = source_node_id();
 		let target = target_node_id();
 		let usage = ChannelUsage {
@@ -1996,7 +1998,7 @@ mod tests {
 	#[test]
 	fn adds_amount_penalty_to_liquidity_penalty() {
 		let logger = TestLogger::new();
-		let network_graph = network_graph();
+		let network_graph = network_graph(&logger);
 		let source = source_node_id();
 		let target = target_node_id();
 		let usage = ChannelUsage {
@@ -2025,7 +2027,7 @@ mod tests {
 	#[test]
 	fn calculates_log10_without_overflowing_u64_max_value() {
 		let logger = TestLogger::new();
-		let network_graph = network_graph();
+		let network_graph = network_graph(&logger);
 		let source = source_node_id();
 		let target = target_node_id();
 		let usage = ChannelUsage {
@@ -2044,8 +2046,8 @@ mod tests {
 
 	#[test]
 	fn accounts_for_inflight_htlc_usage() {
-		let network_graph = network_graph();
 		let logger = TestLogger::new();
+		let network_graph = network_graph(&logger);
 		let params = ProbabilisticScoringParameters::default();
 		let scorer = ProbabilisticScorer::new(params, &network_graph, &logger);
 		let source = source_node_id();
@@ -2064,8 +2066,8 @@ mod tests {
 
 	#[test]
 	fn removes_uncertainity_when_exact_liquidity_known() {
-		let network_graph = network_graph();
 		let logger = TestLogger::new();
+		let network_graph = network_graph(&logger);
 		let params = ProbabilisticScoringParameters::default();
 		let scorer = ProbabilisticScorer::new(params, &network_graph, &logger);
 		let source = source_node_id();

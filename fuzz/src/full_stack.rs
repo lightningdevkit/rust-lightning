@@ -163,7 +163,7 @@ type ChannelMan = ChannelManager<
 	EnforcingSigner,
 	Arc<chainmonitor::ChainMonitor<EnforcingSigner, Arc<dyn chain::Filter>, Arc<TestBroadcaster>, Arc<FuzzEstimator>, Arc<dyn Logger>, Arc<TestPersister>>>,
 	Arc<TestBroadcaster>, Arc<KeyProvider>, Arc<FuzzEstimator>, Arc<dyn Logger>>;
-type PeerMan<'a> = PeerManager<Peer<'a>, Arc<ChannelMan>, Arc<P2PGossipSync<Arc<NetworkGraph>, Arc<dyn chain::Access>, Arc<dyn Logger>>>, Arc<dyn Logger>, IgnoringMessageHandler>;
+type PeerMan<'a> = PeerManager<Peer<'a>, Arc<ChannelMan>, Arc<P2PGossipSync<Arc<NetworkGraph<Arc<dyn Logger>>>, Arc<dyn chain::Access>, Arc<dyn Logger>>>, Arc<dyn Logger>, IgnoringMessageHandler>;
 
 struct MoneyLossDetector<'a> {
 	manager: Arc<ChannelMan>,
@@ -395,7 +395,7 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 	// it's easier to just increment the counter here so the keys don't change.
 	keys_manager.counter.fetch_sub(1, Ordering::AcqRel);
 	let our_id = PublicKey::from_secret_key(&Secp256k1::signing_only(), &keys_manager.get_node_secret(Recipient::Node).unwrap());
-	let network_graph = Arc::new(NetworkGraph::new(genesis_block(network).block_hash()));
+	let network_graph = Arc::new(NetworkGraph::new(genesis_block(network).block_hash(), Arc::clone(&logger)));
 	let gossip_sync = Arc::new(P2PGossipSync::new(Arc::clone(&network_graph), None, Arc::clone(&logger)));
 	let scorer = FixedPenaltyScorer::with_penalty(0);
 
@@ -460,7 +460,7 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 					final_cltv_expiry_delta: 42,
 				};
 				let random_seed_bytes: [u8; 32] = keys_manager.get_secure_random_bytes();
-				let route = match find_route(&our_id, &params, &network_graph, None, Arc::clone(&logger), &scorer, &random_seed_bytes) {
+				let route = match find_route(&our_id, &params, &network_graph.read_only(), None, Arc::clone(&logger), &scorer, &random_seed_bytes) {
 					Ok(route) => route,
 					Err(_) => return,
 				};
@@ -484,7 +484,7 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 					final_cltv_expiry_delta: 42,
 				};
 				let random_seed_bytes: [u8; 32] = keys_manager.get_secure_random_bytes();
-				let mut route = match find_route(&our_id, &params, &network_graph, None, Arc::clone(&logger), &scorer, &random_seed_bytes) {
+				let mut route = match find_route(&our_id, &params, &network_graph.read_only(), None, Arc::clone(&logger), &scorer, &random_seed_bytes) {
 					Ok(route) => route,
 					Err(_) => return,
 				};
