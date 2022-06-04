@@ -185,6 +185,10 @@ fn shift_arr_right(arr: &mut [u8; ONION_DATA_LEN], amt: usize) {
 	}
 }
 
+#[inline]
+fn shift_vec_right(vec: &mut Vec<u8>, amt: usize) {
+}
+
 pub(super) fn route_size_insane(payloads: &Vec<msgs::OnionHopData>) -> bool {
 	let mut len = 0;
 	for payload in payloads.iter() {
@@ -206,7 +210,8 @@ pub(super) fn construct_onion_packet(payloads: Vec<msgs::OnionHopData>, onion_ke
 	let mut chacha = ChaCha20::new(&prng_seed, &[0; 8]);
 	chacha.process(&[0; ONION_DATA_LEN], &mut packet_data);
 
-	construct_onion_packet_with_init_noise(payloads, onion_keys, packet_data, associated_data)
+	construct_onion_packet_with_init_noise(
+		payloads, onion_keys, PacketData::Payment(packet_data), Some(associated_data)).try_into().unwrap()
 }
 
 #[cfg(test)]
@@ -218,11 +223,38 @@ pub(super) fn construct_onion_packet_bogus_hopdata<HD: Writeable>(payloads: Vec<
 	let mut chacha = ChaCha20::new(&prng_seed, &[0; 8]);
 	chacha.process(&[0; ONION_DATA_LEN], &mut packet_data);
 
-	construct_onion_packet_with_init_noise(payloads, onion_keys, packet_data, associated_data)
+	construct_onion_packet_with_init_noise(
+		payloads, onion_keys, PacketData::Payment(packet_data), Some(associated_data)).try_into().unwrap()
+}
+
+enum PacketData {
+	Payment([u8; ONION_DATA_LEN]),
+	Message(Vec<u8>),
+}
+
+impl PacketData {
+	fn len(&self) -> usize {
+	}
+}
+
+impl TryFrom<Packet> for onion_message::Packet {
+	type Error = ();
+	fn try_from(packet: Packet) -> Result<Self, Self::Error> {
+	}
+}
+impl TryFrom<Packet> for msgs::OnionPacket {
+	type Error = ();
+	fn try_from(packet: Packet) -> Result<Self, Self::Error> {
+	}
+}
+
+enum Packet {
+	Payment(msgs::OnionPacket),
+	Message(onion_message::Packet),
 }
 
 /// panics if route_size_insane(paylods)
-fn construct_onion_packet_with_init_noise<HD: Writeable>(mut payloads: Vec<HD>, onion_keys: Vec<OnionKeys>, mut packet_data: [u8; ONION_DATA_LEN], associated_data: &PaymentHash) -> msgs::OnionPacket {
+fn construct_onion_packet_with_init_noise<HD: Writeable>(mut payloads: Vec<HD>, onion_keys: Vec<OnionKeys>, mut packet_data: PacketData, associated_data: Option<&PaymentHash>) -> Packet {
 	let filler = {
 		const ONION_HOP_DATA_LEN: usize = 65; // We may decrease this eventually after TLV is common
 		let mut res = Vec::with_capacity(ONION_HOP_DATA_LEN * (payloads.len() - 1));

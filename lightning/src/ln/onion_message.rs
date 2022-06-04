@@ -9,6 +9,25 @@
 
 //! Onion Messages: sending, receiving, forwarding, and ancillary utilities live here
 
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Packet {
+	pub(crate) version: u8,
+	/// We don't want to disconnect a peer just because they provide a bogus public key, so we hold a
+	/// Result instead of a PublicKey as we'd like.
+	pub(crate) public_key: Result<PublicKey, secp256k1::Error>,
+	// Unlike the onion packets used for payments, onion message packets can have payloads greater than 1300 bytes.
+	pub(crate) hop_data: Vec<u8>,
+	pub(crate) hmac: [u8; 32],
+}
+
+impl Writeable for Packet {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {}
+}
+
+impl ReadableArgs<u16> for Packet {
+	fn read<R: Read>(r: &mut R, len: u16) -> Result<Self, DecodeError> {}
+}
+
 /// Onion messages have "control" TLVs and "data" TLVs. Control TLVs are used to control the
 /// direction and routing of an onion message from hop to hop, whereas data TLVs contain the onion
 /// message content itself.
