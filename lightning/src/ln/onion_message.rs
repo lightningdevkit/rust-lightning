@@ -64,6 +64,13 @@ impl Writeable for (Payload, SharedSecret) {
 	}
 }
 
+/// Reads of `Payload`s are parameterized by the `rho` of a `SharedSecret`, which is used to decrypt
+/// the onion message payload's `encrypted_data` field.
+impl ReadableArgs<SharedSecret> for Payload {
+	fn read<R: Read>(mut r: &mut R, encrypted_tlvs_ss: SharedSecret) -> Result<Self, DecodeError> {
+	}
+}
+
 /// Onion messages contain an encrypted TLV stream. This can be supplied by someone else, in the
 /// case that we're sending to a blinded route, or created by us if we're constructing payloads for
 /// unblinded hops in the onion message's path.

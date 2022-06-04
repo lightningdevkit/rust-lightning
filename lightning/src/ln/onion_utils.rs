@@ -558,7 +558,37 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(secp_ctx: &
 	} else { unreachable!(); }
 }
 
-/// Data decrypted from the onion payload.
+/// Used in the decoding of inbound payments' and onion messages' routing packets. This enum allows
+/// us to use `decode_next_hop` to return the payloads and next hop packet bytes of both payments
+/// and onion messages.
+enum Payload {
+	/// This payload was for an incoming payment.
+	Payment(msgs::OnionHopData),
+	/// This payload was for an incoming onion message.
+	Message(onion_message::Payload),
+}
+
+enum NextPacketBytes {
+	Payment([u8; 20*65]),
+	Message(Vec<u8>),
+}
+
+/// Data decrypted from an onion message's onion payload.
+pub(crate) enum MessageHop {
+	/// This onion payload was for us, not for forwarding to a next-hop.
+	Receive(onion_message::Payload),
+	/// This onion payload needs to be forwarded to a next-hop.
+	Forward {
+		/// Onion payload data used in forwarding the onion message.
+		next_hop_data: onion_message::Payload,
+		/// HMAC of the next hop's onion packet.
+		next_hop_hmac: [u8; 32],
+		/// Bytes of the onion packet we're forwarding.
+		new_packet_bytes: Vec<u8>,
+	},
+}
+
+/// Data decrypted from a payment's onion payload.
 pub(crate) enum Hop {
 	/// This onion payload was for us, not for forwarding to a next-hop. Contains information for
 	/// verifying the incoming payment.
@@ -588,7 +618,13 @@ pub(crate) enum OnionDecodeErr {
 	},
 }
 
-pub(crate) fn decode_next_hop(shared_secret: [u8; 32], hop_data: &[u8], hmac_bytes: [u8; 32], payment_hash: PaymentHash) -> Result<Hop, OnionDecodeErr> {
+pub(crate) fn decode_next_message_hop(shared_secret: [u8; 32], hop_data: &[u8], hmac_bytes: [u8; 32], encrypted_tlvs_ss: SharedSecret) -> Result<MessageHop, OnionDecodeErr> {
+}
+
+pub(crate) fn decode_next_payment_hop(shared_secret: [u8; 32], hop_data: &[u8], hmac_bytes: [u8; 32], payment_hash: PaymentHash) -> Result<Hop, OnionDecodeErr> {
+}
+
+fn decode_next_hop(shared_secret: [u8; 32], hop_data: &[u8], hmac_bytes: [u8; 32], payment_hash: Option<PaymentHash>, encrypted_tlv_ss: Option<SharedSecret>) -> Result<(Payload, Option<([u8; 32], NextPacketBytes)>), OnionDecodeErr> {
 	let (rho, mu) = gen_rho_mu_from_shared_secret(&shared_secret);
 	let mut hmac = HmacEngine::<Sha256>::new(&mu);
 	hmac.input(hop_data);
