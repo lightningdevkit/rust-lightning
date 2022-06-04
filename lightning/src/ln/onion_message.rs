@@ -9,6 +9,9 @@
 
 //! Onion Messages: sending, receiving, forwarding, and ancillary utilities live here
 
+pub(crate) const SMALL_PACKET_HOP_DATA_LEN: usize = 1300;
+pub(crate) const BIG_PACKET_HOP_DATA_LEN: usize = 32768;
+
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Packet {
 	pub(crate) version: u8,
@@ -20,12 +23,59 @@ pub(crate) struct Packet {
 	pub(crate) hmac: [u8; 32],
 }
 
+impl Packet {
+	fn len(&self) -> u16 {
+		// 32 (hmac) + 33 (public_key) + 1 (version) = 66
+		self.hop_data.len() as u16 + 66
+	}
+}
+
 impl Writeable for Packet {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {}
 }
 
 impl ReadableArgs<u16> for Packet {
 	fn read<R: Read>(r: &mut R, len: u16) -> Result<Self, DecodeError> {}
+}
+
+/// The payload of an onion message.
+pub(crate) struct Payload {
+	/// Onion message payloads contain an encrypted TLV stream, containing both "control" TLVs and
+	/// sometimes user-provided custom "data" TLVs. See [`EncryptedTlvs`] for more information.
+	encrypted_tlvs: EncryptedTlvs,
+	// Coming soon:
+	// * custom TLVs
+	// * `message: Message` field
+	// * `reply_path: Option<BlindedRoute>` field
+}
+
+// Coming soon:
+// enum Message {
+// 	InvoiceRequest(InvoiceRequest),
+// 	Invoice(Invoice),
+//	InvoiceError(InvoiceError),
+//	CustomMessage<T>,
+// }
+
+/// We want to avoid encoding and encrypting separately in order to avoid an intermediate Vec, thus
+/// we encode and encrypt at the same time using the `SharedSecret` here.
+impl Writeable for (Payload, SharedSecret) {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+	}
+}
+
+/// Onion messages contain an encrypted TLV stream. This can be supplied by someone else, in the
+/// case that we're sending to a blinded route, or created by us if we're constructing payloads for
+/// unblinded hops in the onion message's path.
+pub(crate) enum EncryptedTlvs {
+	/// If we're sending to a blinded route, the node that constructed the blinded route has provided
+	/// our onion message's `EncryptedTlvs`, already encrypted and encoded into bytes.
+	Blinded(Vec<u8>),
+	/// If we're receiving an onion message or constructing an onion message to send through any
+	/// unblinded nodes, we'll need to construct the onion message's `EncryptedTlvs` in their
+	/// unblinded state to avoid encoding them into an intermediate `Vec`.
+	// Below will later have an additional Vec<CustomTlv>
+	Unblinded(ControlTlvs),
 }
 
 /// Onion messages have "control" TLVs and "data" TLVs. Control TLVs are used to control the
@@ -105,6 +155,18 @@ impl BlindedRoute {
 	fn encrypt_payload(payload: ControlTlvs, encrypted_tlvs_ss: SharedSecret) -> Vec<u8> {}
 }
 
+/// The destination of an onion message.
+pub enum Destination {
+	/// We're sending this onion message to a node.
+	Node(PublicKey),
+	/// We're sending this onion message to a blinded route.
+	BlindedRoute(BlindedRoute),
+}
+
+impl Destination {
+	fn num_hops(&self) -> usize {
+}
+
 /// A sender, receiver and forwarder of onion messages. In upcoming releases, this object will be
 /// used to retrieve invoices and fulfill invoice requests from offers.
 pub struct OnionMessenger<Signer: Sign, K: Deref, L: Deref>
@@ -136,6 +198,10 @@ impl<Signer: Sign, K: Deref, L: Deref> OnionMessenger<Signer, K, L>
 			logger,
 		}
 	}
+
+	/// Send an empty onion message to `destination`, routing it through `intermediate_nodes`.
+	pub fn send_onion_message(&self, intermediate_nodes: Vec<PublicKey>, destination: Destination) -> Result<(), secp256k1::Error> {
+	}
 }
 
 impl<Signer: Sign, K: Deref, L: Deref> OnionMessageHandler for OnionMessenger<Signer, K, L>
@@ -153,9 +219,13 @@ impl<Signer: Sign, K: Deref, L: Deref> MessageSendEventsProvider for OnionMessen
 	}
 }
 
+/// Build an onion message's payloads for encoding in the onion packet.
+fn build_payloads(intermediate_nodes: Vec<PublicKey>, destination: Destination, mut encrypted_tlvs_keys: Vec<SharedSecret>) -> Vec<(Payload, SharedSecret)> {
+}
+
 #[allow(unused_assignments)]
 #[inline]
-fn construct_keys_callback<T: secp256k1::Signing + secp256k1::Verification, FType: FnMut(PublicKey, SharedSecret, [u8; 32], PublicKey, SharedSecret)> (secp_ctx: &Secp256k1<T>, unblinded_path: &Vec<PublicKey>, session_priv: &SecretKey, mut callback: FType) -> Result<(), secp256k1::Error> {}
+fn construct_keys_callback<T: secp256k1::Signing + secp256k1::Verification, FType: FnMut(PublicKey, SharedSecret, [u8; 32], PublicKey, SharedSecret)> (secp_ctx: &Secp256k1<T>, unblinded_path: &Vec<PublicKey>, destination: Option<&Destination>, session_priv: &SecretKey, mut callback: FType) -> Result<(), secp256k1::Error> {}
 
 /// Construct keys for constructing a blinded route along the given `unblinded_path`.
 ///
@@ -165,6 +235,17 @@ fn construct_keys_callback<T: secp256k1::Signing + secp256k1::Verification, FTyp
 fn construct_blinded_route_keys<T: secp256k1::Signing + secp256k1::Verification>(
 	secp_ctx: &Secp256k1<T>, unblinded_path: &Vec<PublicKey>, session_priv: &SecretKey
 ) -> Result<(Vec<SharedSecret>, Vec<PublicKey>), secp256k1::Error> {
+	// calls construct_keys_callback
+}
+
+/// Construct keys for sending an onion message along the given `path`.
+///
+/// Returns: `(encrypted_tlvs_keys, onion_packet_keys)`
+/// where the encrypted tlvs keys are used to encrypt the [`EncryptedTlvs`] of the onion message and the
+/// onion packet keys are used to encrypt the onion packet.
+fn construct_sending_keys<T: secp256k1::Signing + secp256k1::Verification>(
+	secp_ctx: &Secp256k1<T>, unblinded_path: &Vec<PublicKey>, destination: &Destination, session_priv: &SecretKey
+) -> Result<(Vec<SharedSecret>, Vec<onion_utils::OnionKeys>), secp256k1::Error> {
 	// calls construct_keys_callback
 }
 

@@ -214,6 +214,9 @@ pub(super) fn construct_onion_packet(payloads: Vec<msgs::OnionHopData>, onion_ke
 		payloads, onion_keys, PacketData::Payment(packet_data), Some(associated_data)).try_into().unwrap()
 }
 
+pub(super) fn construct_onion_message_packet(payloads: Vec<(onion_message::Payload, SharedSecret)>, onion_keys: Vec<OnionKeys>, prng_seed: [u8; 32]) -> onion_message::Packet {
+}
+
 #[cfg(test)]
 // Used in testing to write bogus OnionHopDatas, which is otherwise not representable in
 // msgs::OnionHopData.
