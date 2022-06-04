@@ -1030,6 +1030,13 @@ pub enum MessageSendEvent {
 		/// The gossip_timestamp_filter which should be sent.
 		msg: msgs::GossipTimestampFilter,
 	},
+	/// Sends an onion message.
+	SendOnionMessage {
+		/// The node_id of this message recipient
+		node_id: PublicKey,
+		/// The onion message which should be sent.
+		msg: msgs::OnionMessage,
+	},
 }
 
 /// A trait indicating an object may generate message send events

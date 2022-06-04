@@ -105,6 +105,54 @@ impl BlindedRoute {
 	fn encrypt_payload(payload: ControlTlvs, encrypted_tlvs_ss: SharedSecret) -> Vec<u8> {}
 }
 
+/// A sender, receiver and forwarder of onion messages. In upcoming releases, this object will be
+/// used to retrieve invoices and fulfill invoice requests from offers.
+pub struct OnionMessenger<Signer: Sign, K: Deref, L: Deref>
+	where K::Target: KeysInterface<Signer = Signer>,
+				L::Target: Logger,
+{
+	keys_manager: K,
+	logger: L,
+	pending_msg_events: Mutex<Vec<MessageSendEvent>>,
+	secp_ctx: Secp256k1<secp256k1::All>,
+	// Coming soon:
+	// invoice_handler: InvoiceHandler,
+	// custom_handler: CustomHandler, // handles custom onion messages
+}
+
+impl<Signer: Sign, K: Deref, L: Deref> OnionMessenger<Signer, K, L>
+	where K::Target: KeysInterface<Signer = Signer>,
+				L::Target: Logger,
+{
+	/// Constructs a new `OnionMessenger` to send, forward, and delegate received onion messages to
+	/// their respective handlers.
+	pub fn new(keys_manager: K, logger: L) -> Self {
+		let mut secp_ctx = Secp256k1::new();
+		secp_ctx.seeded_randomize(&keys_manager.get_secure_random_bytes());
+		OnionMessenger {
+			keys_manager,
+			pending_msg_events: Mutex::new(Vec::new()),
+			secp_ctx,
+			logger,
+		}
+	}
+}
+
+impl<Signer: Sign, K: Deref, L: Deref> OnionMessageHandler for OnionMessenger<Signer, K, L>
+	where K::Target: KeysInterface<Signer = Signer>,
+				L::Target: Logger,
+{
+	fn handle_onion_message(&self, _peer_node_id: &PublicKey, msg: &msgs::OnionMessage) {}
+}
+
+impl<Signer: Sign, K: Deref, L: Deref> MessageSendEventsProvider for OnionMessenger<Signer, K, L>
+	where K::Target: KeysInterface<Signer = Signer>,
+				L::Target: Logger,
+{
+	fn get_and_clear_pending_msg_events(&self) -> Vec<MessageSendEvent> {
+	}
+}
+
 #[allow(unused_assignments)]
 #[inline]
 fn construct_keys_callback<T: secp256k1::Signing + secp256k1::Verification, FType: FnMut(PublicKey, SharedSecret, [u8; 32], PublicKey, SharedSecret)> (secp_ctx: &Secp256k1<T>, unblinded_path: &Vec<PublicKey>, session_priv: &SecretKey, mut callback: FType) -> Result<(), secp256k1::Error> {}
@@ -119,3 +167,10 @@ fn construct_blinded_route_keys<T: secp256k1::Signing + secp256k1::Verification>
 ) -> Result<(Vec<SharedSecret>, Vec<PublicKey>), secp256k1::Error> {
 	// calls construct_keys_callback
 }
+
+/// Useful for simplifying the parameters of [`SimpleArcChannelManager`] and
+/// [`SimpleArcPeerManager`]. See their docs for more details.
+pub type SimpleArcOnionMessenger<L> = OnionMessenger<InMemorySigner, Arc<KeysManager>, Arc<L>>;
+/// Useful for simplifying the parameters of [`SimpleRefChannelManager`] and
+/// [`SimpleRefPeerManager`]. See their docs for more details.
+pub type SimpleRefOnionMessenger<'a, 'b, L> = OnionMessenger<InMemorySigner, &'a KeysManager, &'b L>;

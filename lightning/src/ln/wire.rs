@@ -9,7 +9,7 @@
 
 //! Wire encoding/decoding for Lightning messages according to [BOLT #1], and for
 //! custom message through the [`CustomMessageReader`] trait.
-//! 
+//!
 //! [BOLT #1]: https://github.com/lightning/bolts/blob/master/01-messaging.md
 
 use io;
@@ -60,6 +60,7 @@ pub(crate) enum Message<T> where T: core::fmt::Debug + Type + TestEq {
 	ChannelReady(msgs::ChannelReady),
 	Shutdown(msgs::Shutdown),
 	ClosingSigned(msgs::ClosingSigned),
+	OnionMessage(msgs::OnionMessage),
 	UpdateAddHTLC(msgs::UpdateAddHTLC),
 	UpdateFulfillHTLC(msgs::UpdateFulfillHTLC),
 	UpdateFailHTLC(msgs::UpdateFailHTLC),
@@ -342,6 +343,10 @@ impl Encode for msgs::Shutdown {
 
 impl Encode for msgs::ClosingSigned {
 	const TYPE: u16 = 39;
+}
+
+impl Encode for msgs::OnionMessage {
+	const TYPE: u16 = 513;
 }
 
 impl Encode for msgs::UpdateAddHTLC {

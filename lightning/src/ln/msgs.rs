@@ -304,6 +304,16 @@ pub struct UpdateAddHTLC {
 	pub(crate) onion_routing_packet: OnionPacket,
 }
 
+ /// An onion message to be sent or received from a peer
+#[derive(Clone, Debug, PartialEq)]
+pub struct OnionMessage {
+	/// This blinding point is used in the shared secret that is used to decrypt the onion message
+	/// payload's `encrypted_data` field.
+	pub(crate) blinding_point: PublicKey,
+	pub(crate) len: u16,
+	pub(crate) onion_routing_packet: onion_message::Packet,
+}
+
 /// An update_fulfill_htlc message to be sent or received from a peer
 #[derive(Clone, Debug, PartialEq)]
 pub struct UpdateFulfillHTLC {
@@ -912,6 +922,12 @@ pub trait RoutingMessageHandler : MessageSendEventsProvider {
 	fn handle_query_short_channel_ids(&self, their_node_id: &PublicKey, msg: QueryShortChannelIds) -> Result<(), LightningError>;
 }
 
+/// A trait to describe an object that can receive onion messages.
+pub trait OnionMessageHandler : MessageSendEventsProvider {
+	/// Handle an incoming onion_message message from the given peer.
+	fn handle_onion_message(&self, their_node_id: &PublicKey, msg: &OnionMessage);
+}
+
 mod fuzzy_internal_msgs {
 	use prelude::*;
 	use ln::{PaymentPreimage, PaymentSecret};
@@ -1303,6 +1319,15 @@ impl_writeable_msg!(UpdateAddHTLC, {
 	cltv_expiry,
 	onion_routing_packet
 }, {});
+
+impl Readable for OnionMessage {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+	}
+}
+
+impl Writeable for OnionMessage {
+	}
+}
 
 impl Writeable for FinalOnionHopData {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
