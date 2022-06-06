@@ -7233,7 +7233,7 @@ mod tests {
 	use ln::msgs::ChannelMessageHandler;
 	use routing::router::{PaymentParameters, RouteParameters, find_route};
 	use util::errors::APIError;
-	use util::events::{Event, MessageSendEvent, MessageSendEventsProvider};
+	use util::events::{Event, MessageSendEvent, MessageSendEventsProvider, ClosureReason};
 	use util::test_utils;
 	use chain::keysinterface::KeysInterface;
 
@@ -7721,6 +7721,119 @@ mod tests {
 
 		// Check that using the original payment hash succeeds.
 		assert!(inbound_payment::verify(payment_hash, &payment_data, nodes[0].node.highest_seen_timestamp.load(Ordering::Acquire) as u64, &nodes[0].node.inbound_payment_key, &nodes[0].logger).is_ok());
+	}
+
+	#[test]
+	fn test_id_to_peer_coverage() {
+		// Test that the `ChannelManager:id_to_peer` contains channels which have been assigned
+		// a `channel_id` (i.e. have had the funding tx created), and that they are removed once
+		// the channel is successfully closed.
+		let chanmon_cfgs = create_chanmon_cfgs(2);
+		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+		nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 1_000_000, 500_000_000, 42, None).unwrap();
+		let open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
+		nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), InitFeatures::known(), &open_channel);
+		let accept_channel = get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id());
+		nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), InitFeatures::known(), &accept_channel);
+
+		let (temporary_channel_id, tx, _funding_output) = create_funding_transaction(&nodes[0], &nodes[1].node.get_our_node_id(), 1_000_000, 42);
+		let channel_id = &tx.txid().into_inner();
+		{
+			// Ensure that the `id_to_peer` map is empty until either party has received the
+			// funding transaction, and have the real `channel_id`.
+			assert_eq!(nodes[0].node.id_to_peer.lock().unwrap().len(), 0);
+			assert_eq!(nodes[1].node.id_to_peer.lock().unwrap().len(), 0);
+		}
+
+		nodes[0].node.funding_transaction_generated(&temporary_channel_id, &nodes[1].node.get_our_node_id(), tx.clone()).unwrap();
+		{
+			// Assert that `nodes[0]`'s `id_to_peer` map is populated with the channel as soon as
+			// as it has the funding transaction.
+			let nodes_0_lock = nodes[0].node.id_to_peer.lock().unwrap();
+			assert_eq!(nodes_0_lock.len(), 1);
+			assert!(nodes_0_lock.contains_key(channel_id));
+
+			assert_eq!(nodes[1].node.id_to_peer.lock().unwrap().len(), 0);
+		}
+
+		let funding_created_msg = get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, nodes[1].node.get_our_node_id());
+
+		nodes[1].node.handle_funding_created(&nodes[0].node.get_our_node_id(), &funding_created_msg);
+		{
+			let nodes_0_lock = nodes[0].node.id_to_peer.lock().unwrap();
+			assert_eq!(nodes_0_lock.len(), 1);
+			assert!(nodes_0_lock.contains_key(channel_id));
+
+			// Assert that `nodes[1]`'s `id_to_peer` map is populated with the channel as soon as
+			// as it has the funding transaction.
+			let nodes_1_lock = nodes[1].node.id_to_peer.lock().unwrap();
+			assert_eq!(nodes_1_lock.len(), 1);
+			assert!(nodes_1_lock.contains_key(channel_id));
+		}
+		check_added_monitors!(nodes[1], 1);
+		let funding_signed = get_event_msg!(nodes[1], MessageSendEvent::SendFundingSigned, nodes[0].node.get_our_node_id());
+		nodes[0].node.handle_funding_signed(&nodes[1].node.get_our_node_id(), &funding_signed);
+		check_added_monitors!(nodes[0], 1);
+		let (channel_ready, _) = create_chan_between_nodes_with_value_confirm(&nodes[0], &nodes[1], &tx);
+		let (announcement, nodes_0_update, nodes_1_update) = create_chan_between_nodes_with_value_b(&nodes[0], &nodes[1], &channel_ready);
+		update_nodes_with_chan_announce(&nodes, 0, 1, &announcement, &nodes_0_update, &nodes_1_update);
+
+		nodes[0].node.close_channel(channel_id, &nodes[1].node.get_our_node_id()).unwrap();
+		nodes[1].node.handle_shutdown(&nodes[0].node.get_our_node_id(), &InitFeatures::known(), &get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[1].node.get_our_node_id()));
+		let nodes_1_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, nodes[0].node.get_our_node_id());
+		nodes[0].node.handle_shutdown(&nodes[1].node.get_our_node_id(), &InitFeatures::known(), &nodes_1_shutdown);
+
+		let closing_signed_node_0 = get_event_msg!(nodes[0], MessageSendEvent::SendClosingSigned, nodes[1].node.get_our_node_id());
+		nodes[1].node.handle_closing_signed(&nodes[0].node.get_our_node_id(), &closing_signed_node_0);
+		{
+			// Assert that the channel is kept in the `id_to_peer` map for both nodes until the
+			// channel can be fully closed by both parties (i.e. no outstanding htlcs exists, the
+			// fee for the closing transaction has been negotiated and the parties has the other
+			// party's signature for the fee negotiated closing transaction.)
+			let nodes_0_lock = nodes[0].node.id_to_peer.lock().unwrap();
+			assert_eq!(nodes_0_lock.len(), 1);
+			assert!(nodes_0_lock.contains_key(channel_id));
+
+			// At this stage, `nodes[1]` has proposed a fee for the closing transaction in the
+			// `handle_closing_signed` call above. As `nodes[1]` has not yet received the signature
+			// from `nodes[0]` for the closing transaction with the proposed fee, the channel is
+			// kept in the `nodes[1]`'s `id_to_peer` map.
+			let nodes_1_lock = nodes[1].node.id_to_peer.lock().unwrap();
+			assert_eq!(nodes_1_lock.len(), 1);
+			assert!(nodes_1_lock.contains_key(channel_id));
+		}
+
+		nodes[0].node.handle_closing_signed(&nodes[1].node.get_our_node_id(), &get_event_msg!(nodes[1], MessageSendEvent::SendClosingSigned, nodes[0].node.get_our_node_id()));
+		{
+			// `nodes[0]` accepts `nodes[1]`'s proposed fee for the closing transaction, and
+			// therefore has all it needs to fully close the channel (both signatures for the
+			// closing transaction).
+			// Assert that the channel is removed from `nodes[0]`'s `id_to_peer` map as it can be
+			// fully closed by `nodes[0]`.
+			assert_eq!(nodes[0].node.id_to_peer.lock().unwrap().len(), 0);
+
+			// Assert that the channel is still in `nodes[1]`'s  `id_to_peer` map, as `nodes[1]`
+			// doesn't have `nodes[0]`'s signature for the closing transaction yet.
+			let nodes_1_lock = nodes[1].node.id_to_peer.lock().unwrap();
+			assert_eq!(nodes_1_lock.len(), 1);
+			assert!(nodes_1_lock.contains_key(channel_id));
+		}
+
+		let (_nodes_0_update, closing_signed_node_0) = get_closing_signed_broadcast!(nodes[0].node, nodes[1].node.get_our_node_id());
+
+		nodes[1].node.handle_closing_signed(&nodes[0].node.get_our_node_id(), &closing_signed_node_0.unwrap());
+		{
+			// Assert that the channel has now been removed from both parties `id_to_peer` map once
+			// they both have everything required to fully close the channel.
+			assert_eq!(nodes[1].node.id_to_peer.lock().unwrap().len(), 0);
+		}
+		let (_nodes_1_update, _none) = get_closing_signed_broadcast!(nodes[1].node, nodes[0].node.get_our_node_id());
+
+		check_closed_event!(nodes[0], 1, ClosureReason::CooperativeClosure);
+		check_closed_event!(nodes[1], 1, ClosureReason::CooperativeClosure);
 	}
 }
 
