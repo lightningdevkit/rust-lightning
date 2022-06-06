@@ -3620,7 +3620,10 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	// Fail a list of HTLCs that were just freed from the holding cell. The HTLCs need to be
 	// failed backwards or, if they were one of our outgoing HTLCs, then their failure needs to
 	// be surfaced to the user.
-	fn fail_holding_cell_htlcs(&self, mut htlcs_to_fail: Vec<(HTLCSource, PaymentHash)>, channel_id: [u8; 32]) {
+	fn fail_holding_cell_htlcs(
+		&self, mut htlcs_to_fail: Vec<(HTLCSource, PaymentHash)>, channel_id: [u8; 32],
+		_counterparty_node_id: &PublicKey
+	) {
 		for (htlc_src, payment_hash) in htlcs_to_fail.drain(..) {
 			match htlc_src {
 				HTLCSource::PreviousHopData(HTLCPreviousHopData { .. }) => {
@@ -4828,7 +4831,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				hash_map::Entry::Vacant(_) => break Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))
 			}
 		};
-		self.fail_holding_cell_htlcs(htlcs_to_fail, msg.channel_id);
+		self.fail_holding_cell_htlcs(htlcs_to_fail, msg.channel_id, counterparty_node_id);
 		match res {
 			Ok((pending_forwards, mut pending_failures, finalized_claim_htlcs,
 				short_channel_id, channel_outpoint)) =>
@@ -4968,7 +4971,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			}
 		};
 		post_handle_chan_restoration!(self, chan_restoration_res);
-		self.fail_holding_cell_htlcs(htlcs_failed_forward, msg.channel_id);
+		self.fail_holding_cell_htlcs(htlcs_failed_forward, msg.channel_id, counterparty_node_id);
 
 		if let Some(channel_ready_msg) = need_lnd_workaround {
 			self.internal_channel_ready(counterparty_node_id, &channel_ready_msg)?;
@@ -5066,7 +5069,11 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				match chan.maybe_free_holding_cell_htlcs(&self.logger) {
 					Ok((commitment_opt, holding_cell_failed_htlcs)) => {
 						if !holding_cell_failed_htlcs.is_empty() {
-							failed_htlcs.push((holding_cell_failed_htlcs, *channel_id));
+							failed_htlcs.push((
+								holding_cell_failed_htlcs,
+								*channel_id,
+								chan.get_counterparty_node_id()
+							));
 						}
 						if let Some((commitment_update, monitor_update)) = commitment_opt {
 							if let Err(e) = self.chain_monitor.update_channel(chan.get_funding_txo().unwrap(), monitor_update) {
@@ -5094,8 +5101,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		}
 
 		let has_update = has_monitor_update || !failed_htlcs.is_empty() || !handle_errors.is_empty();
-		for (failures, channel_id) in failed_htlcs.drain(..) {
-			self.fail_holding_cell_htlcs(failures, channel_id);
+		for (failures, channel_id, counterparty_node_id) in failed_htlcs.drain(..) {
+			self.fail_holding_cell_htlcs(failures, channel_id, &counterparty_node_id);
 		}
 
 		for (counterparty_node_id, err) in handle_errors.drain(..) {
