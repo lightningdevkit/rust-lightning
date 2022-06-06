@@ -551,7 +551,7 @@ fn do_test_data_loss_protect(reconnect_panicing: bool) {
 		if let MessageSendEvent::HandleError { ref action, .. } = msg {
 			match action {
 				&ErrorAction::SendErrorMessage { ref msg } => {
-					assert_eq!(msg.data, "Failed to find corresponding channel");
+					assert_eq!(msg.data, format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", &nodes[1].node.get_our_node_id()));
 					err_msgs_0.push(msg.clone());
 				},
 				_ => panic!("Unexpected event!"),
@@ -564,7 +564,7 @@ fn do_test_data_loss_protect(reconnect_panicing: bool) {
 	nodes[1].node.handle_error(&nodes[0].node.get_our_node_id(), &err_msgs_0[0]);
 	assert!(nodes[1].node.list_usable_channels().is_empty());
 	check_added_monitors!(nodes[1], 1);
-	check_closed_event!(nodes[1], 1, ClosureReason::CounterpartyForceClosed { peer_msg: "Failed to find corresponding channel".to_owned() });
+	check_closed_event!(nodes[1], 1, ClosureReason::CounterpartyForceClosed { peer_msg: format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", &nodes[1].node.get_our_node_id()) });
 	check_closed_broadcast!(nodes[1], false);
 }
 

@@ -7850,7 +7850,7 @@ fn test_can_not_accept_unknown_inbound_channel() {
 	let api_res = nodes[0].node.accept_inbound_channel(&unknown_channel_id, &nodes[1].node.get_our_node_id(), 0);
 	match api_res {
 		Err(APIError::ChannelUnavailable { err }) => {
-			assert_eq!(err, "Can't accept a channel that doesn't exist");
+			assert_eq!(err, format!("Channel with id {} not found for the passed counterparty node_id {}", log_bytes!(unknown_channel_id), nodes[1].node.get_our_node_id()));
 		},
 		Ok(_) => panic!("It shouldn't be possible to accept an unkown channel"),
 		Err(_) => panic!("Unexpected Error"),

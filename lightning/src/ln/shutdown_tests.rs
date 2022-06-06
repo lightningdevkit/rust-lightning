@@ -380,7 +380,7 @@ fn do_test_shutdown_rebroadcast(recv_count: u8) {
 		// closing_signed so we do it ourselves
 		check_closed_broadcast!(nodes[1], false);
 		check_added_monitors!(nodes[1], 1);
-		check_closed_event!(nodes[1], 1, ClosureReason::CounterpartyForceClosed { peer_msg: "Failed to find corresponding channel".to_string() });
+		check_closed_event!(nodes[1], 1, ClosureReason::CounterpartyForceClosed { peer_msg: format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", &nodes[1].node.get_our_node_id()) });
 	}
 
 	assert!(nodes[0].node.list_channels().is_empty());
