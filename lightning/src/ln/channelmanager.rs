@@ -1703,12 +1703,18 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			return Err(APIError::APIMisuseError { err: format!("Channel value must be at least 1000 satoshis. It was {}", channel_value_satoshis) });
 		}
 
-		let channel = {
-			let per_peer_state = self.per_peer_state.read().unwrap();
-			match per_peer_state.get(&their_network_key) {
-				Some(peer_state) => {
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
+		// We want to make sure the lock is actually acquired by PersistenceNotifierGuard.
+		debug_assert!(&self.total_consistency_lock.try_write().is_err());
+
+		let mut channel_state = self.channel_state.lock().unwrap();
+		let per_peer_state = self.per_peer_state.read().unwrap();
+		match per_peer_state.get(&their_network_key) {
+			None => return Err(APIError::ChannelUnavailable { err: format!("Not connected to node: {}", their_network_key) }),
+			Some(peer_state) => {
+				let mut peer_state = peer_state.lock().unwrap();
+				let channel = {
 					let outbound_scid_alias = self.create_and_insert_outbound_scid_alias();
-					let peer_state = peer_state.lock().unwrap();
 					let their_features = &peer_state.latest_features;
 					let config = if override_config.is_some() { override_config.as_ref().unwrap() } else { &self.default_configuration };
 					match Channel::new_outbound(&self.fee_estimator, &self.keys_manager, their_network_key,
@@ -1721,38 +1727,29 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 							return Err(e);
 						},
 					}
-				},
-				None => return Err(APIError::ChannelUnavailable { err: format!("Not connected to node: {}", their_network_key) }),
-			}
-		};
-		let res = channel.get_open_channel(self.genesis_hash.clone());
+				};
+				let res = channel.get_open_channel(self.genesis_hash.clone());
 
-		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
-		// We want to make sure the lock is actually acquired by PersistenceNotifierGuard.
-		debug_assert!(&self.total_consistency_lock.try_write().is_err());
+				let temporary_channel_id = channel.channel_id();
 
-		let temporary_channel_id = channel.channel_id();
-		let mut channel_state = self.channel_state.lock().unwrap();
-		let per_peer_state = self.per_peer_state.read().unwrap();
-		if let Some(peer_state_mutex) = per_peer_state.get(&their_network_key){
-			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
-			let peer_state = &mut *peer_state_lock;
-			match peer_state.channel_by_id.entry(temporary_channel_id) {
-				hash_map::Entry::Occupied(_) => {
-					if cfg!(fuzzing) {
-						return Err(APIError::APIMisuseError { err: "Fuzzy bad RNG".to_owned() });
-					} else {
-						panic!("RNG is bad???");
-					}
-				},
-				hash_map::Entry::Vacant(entry) => { entry.insert(channel); }
+				match peer_state.channel_by_id.entry(temporary_channel_id) {
+					hash_map::Entry::Occupied(_) => {
+						if cfg!(fuzzing) {
+							return Err(APIError::APIMisuseError { err: "Fuzzy bad RNG".to_owned() });
+						} else {
+							panic!("RNG is bad???");
+						}
+					},
+					hash_map::Entry::Vacant(entry) => { entry.insert(channel); }
+				}
+
+				channel_state.pending_msg_events.push(events::MessageSendEvent::SendOpenChannel {
+					node_id: their_network_key,
+					msg: res,
+				});
+				Ok(temporary_channel_id)
 			}
-		} else { unreachable!() }
-		channel_state.pending_msg_events.push(events::MessageSendEvent::SendOpenChannel {
-			node_id: their_network_key,
-			msg: res,
-		});
-		Ok(temporary_channel_id)
+		}
 	}
 
 	fn list_channels_with_filter<Fn: FnMut(&(&[u8; 32], &Channel<Signer>)) -> bool + Copy>(&self, f: Fn) -> Vec<ChannelDetails> {
@@ -2789,12 +2786,15 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	fn funding_transaction_generated_intern<FundingOutput: Fn(&Channel<Signer>, &Transaction) -> Result<OutPoint, APIError>>(
 		&self, temporary_channel_id: &[u8; 32], counterparty_node_id: &PublicKey, funding_transaction: Transaction, find_funding_output: FundingOutput
 	) -> Result<(), APIError> {
-		let (chan, msg) = {
-			let (res, chan) = {
-				let per_peer_state = self.per_peer_state.read().unwrap();
-				if let Some(peer_state_mutex) = per_peer_state.get(counterparty_node_id) {
-					let mut peer_state_lock = peer_state_mutex.lock().unwrap();
-					let peer_state = &mut *peer_state_lock;
+		let mut channel_state_lock = self.channel_state.lock().unwrap();
+		let channel_state = &mut *channel_state_lock;
+		let per_peer_state = self.per_peer_state.read().unwrap();
+		if let Some(peer_state_mutex) = per_peer_state.get(counterparty_node_id) {
+			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+			let peer_state = &mut *peer_state_lock;
+
+			let (chan, msg) = {
+				let (res, chan) = {
 					match peer_state.channel_by_id.remove(temporary_channel_id) {
 						Some(mut chan) => {
 							let funding_txo = find_funding_output(&chan, &funding_transaction)?;
@@ -2807,31 +2807,22 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 						},
 						None => { return Err(APIError::ChannelUnavailable { err: "No such channel".to_owned() }) },
 					}
-				} else {
-					return Err(APIError::APIMisuseError { err: format!("Can't find a peer with a node_id matching the passed counterparty_node_id {}", counterparty_node_id) })
+				};
+				match handle_error!(self, res, chan.get_counterparty_node_id()) {
+					Ok(funding_msg) => {
+						(chan, funding_msg)
+					},
+					Err(_) => { return Err(APIError::ChannelUnavailable {
+						err: "Error deriving keys or signing initial commitment transactions - either our RNG or our counterparty's RNG is broken or the Signer refused to sign".to_owned()
+					}) },
 				}
 			};
-			match handle_error!(self, res, chan.get_counterparty_node_id()) {
-				Ok(funding_msg) => {
-					(chan, funding_msg)
-				},
-				Err(_) => { return Err(APIError::ChannelUnavailable {
-					err: "Error deriving keys or signing initial commitment transactions - either our RNG or our counterparty's RNG is broken or the Signer refused to sign".to_owned()
-				}) },
-			}
-		};
 
-		let mut channel_state_lock = self.channel_state.lock().unwrap();
-		let channel_state = &mut *channel_state_lock;
-		channel_state.pending_msg_events.push(events::MessageSendEvent::SendFundingCreated {
-			node_id: chan.get_counterparty_node_id(),
-			msg,
-		});
-		let per_peer_state = self.per_peer_state.read().unwrap();
-		let chan_id = chan.channel_id();
-		if let Some(peer_state_mutex) = per_peer_state.get(counterparty_node_id) {
-			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
-			let peer_state = &mut *peer_state_lock;
+			channel_state.pending_msg_events.push(events::MessageSendEvent::SendFundingCreated {
+				node_id: chan.get_counterparty_node_id(),
+				msg,
+			});
+			let chan_id = chan.channel_id();
 			match peer_state.channel_by_id.entry(chan_id) {
 				hash_map::Entry::Occupied(_) => {
 					panic!("Generated duplicate funding txid?");
@@ -2844,8 +2835,10 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					}
 				}
 			}
-		} else { unreachable!(); }
-		Ok(())
+			Ok(())
+		} else {
+			return Err(APIError::APIMisuseError { err: format!("Can't find a peer with a node_id matching the passed counterparty_node_id {}", counterparty_node_id) })
+		}
 	}
 
 	#[cfg(test)]
