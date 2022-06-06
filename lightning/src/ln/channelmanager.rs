@@ -2533,8 +2533,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 						},
 						None => { insert_outbound_payment!(); },
 					}
-				} else { unreachable!(); }
-			} else { unreachable!(); }
+				} else { return Err(APIError::ChannelUnavailable{err: format!("No such channel for the counterparty_node_id {}, as indicated by the short_to_id map", counterparty_node_id) })}
+			} else { return Err(APIError::ChannelUnavailable{err: format!("No such counterparty_node_id {}, as indicated by the short_to_id map", counterparty_node_id) })}
 			return Ok(());
 		};
 
@@ -3218,7 +3218,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 								});
 							}
 						} else {
-							unreachable!();
+							let err = Err(MsgHandleErrInternal::send_err_msg_no_close(format!("No such channel for the counterparty_node_id {}, as indicated by the short_to_id map", counterparty_node_id), forward_chan_id));
+							handle_errors.push((counterparty_node_id, err));
 						}
 					}
 					else {
@@ -3740,7 +3741,9 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 									hash_map::Entry::Vacant(_) => (0x4000|10, Vec::new())
 								}
 							} else {
-								unreachable!();
+								// Peer must have been dropped before acquiring the per_peer_state
+								// read lock again in this function.
+								(0x4000|10, Vec::new())
 							}
 						};
 					self.fail_htlc_backwards_internal(channel_state,
@@ -4078,6 +4081,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	fn claim_funds_from_hop(&self, channel_state_lock: &mut MutexGuard<ChannelHolder>, prev_hop: HTLCPreviousHopData, payment_preimage: PaymentPreimage) -> ClaimFundsFromHop {
 		//TODO: Delay the claimed_funds relaying just like we do outbound relay!
 		let channel_state = &mut **channel_state_lock;
+		let per_peer_state = self.per_peer_state.read().unwrap();
 		let (counterparty_node_id, chan_id) = match channel_state.short_to_chan_info.get(&prev_hop.short_channel_id) {
 			Some((cp_id, chan_id)) => (cp_id.clone(), chan_id.clone()),
 			None => {
@@ -4085,7 +4089,6 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			}
 		};
 
-		let per_peer_state = self.per_peer_state.read().unwrap();
 		if let Some(peer_state_mutex) = per_peer_state.get(&counterparty_node_id) {
 			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 			let peer_state = &mut *peer_state_lock;
@@ -4137,7 +4140,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 						return ClaimFundsFromHop::MonitorUpdateFail(counterparty_node_id, res, None);
 					},
 				}
-			} else { unreachable!(); }
+			} else { return ClaimFundsFromHop::PrevHopForceClosed }
 		} else { unreachable!(); }
 	}
 
@@ -4592,7 +4595,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					}
 				}
 			}
-		} else { unreachable!() }
+		} else { return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("The peer with node_id {}, was dropped before the signed funding tx was sent to the peer", counterparty_node_id), channel_id)) }
 		Ok(())
 	}
 
