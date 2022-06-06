@@ -1710,7 +1710,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		let mut channel_state = self.channel_state.lock().unwrap();
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		match per_peer_state.get(&their_network_key) {
-			None => return Err(APIError::ChannelUnavailable { err: format!("Not connected to node: {}", their_network_key) }),
+			None => return Err(APIError::APIMisuseError { err: format!("Can't find a peer with a node_id matching the passed counterparty_node_id {}", their_network_key) }),
 			Some(peer_state) => {
 				let mut peer_state = peer_state.lock().unwrap();
 				let channel = {
@@ -1867,9 +1867,6 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				let peer_state = &mut *peer_state_lock;
 				match peer_state.channel_by_id.entry(channel_id.clone()) {
 					hash_map::Entry::Occupied(mut chan_entry) => {
-						if *counterparty_node_id != chan_entry.get().get_counterparty_node_id(){
-							return Err(APIError::APIMisuseError { err: "The passed counterparty_node_id doesn't match the channel's counterparty node_id".to_owned() });
-						}
 						let (shutdown_msg, monitor_update, htlcs) = chan_entry.get_mut().get_shutdown(&self.keys_manager, &peer_state.latest_features, target_feerate_sats_per_1000_weight)?;
 						failed_htlcs = htlcs;
 
@@ -1901,10 +1898,10 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 						}
 						break Ok(());
 					},
-					hash_map::Entry::Vacant(_) => return Err(APIError::ChannelUnavailable { err: "No such channel".to_owned() })
+					hash_map::Entry::Vacant(_) => return Err(APIError::ChannelUnavailable{err: format!("No such channel for the passed counterparty_node_id {}", counterparty_node_id) })
 				}
 			} else {
-				return Err(APIError::ChannelUnavailable { err: format!("Not connected to node: {}", counterparty_node_id) });
+				return Err(APIError::APIMisuseError { err: format!("Can't find a peer with a node_id matching the passed counterparty_node_id {}", counterparty_node_id) });
 			}
 		};
 
@@ -1987,9 +1984,6 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 				let peer_state = &mut *peer_state_lock;
 				if let hash_map::Entry::Occupied(chan) = peer_state.channel_by_id.entry(channel_id.clone()) {
-					if chan.get().get_counterparty_node_id() != *peer_node_id {
-						return Err(APIError::ChannelUnavailable{err: "No such channel".to_owned()});
-					}
 					if let Some(peer_msg) = peer_msg {
 						self.issue_channel_close_events(chan.get(),ClosureReason::CounterpartyForceClosed { peer_msg: peer_msg.to_string() });
 					} else {
@@ -1997,7 +1991,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					}
 					remove_channel!(self, channel_state, chan)
 				} else {
-					return Err(APIError::ChannelUnavailable{ err: "No such channel".to_owned() });
+					return Err(APIError::ChannelUnavailable{ err: format!("No such channel for the passed counterparty_node_id {}", peer_node_id) });
 				}
 			} else {
 				return Err(APIError::APIMisuseError{ err: format!("Can't find a peer with a node_id matching the passed counterparty_node_id {}", peer_node_id) });
@@ -2805,7 +2799,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 								} else { unreachable!(); })
 							, chan)
 						},
-						None => { return Err(APIError::ChannelUnavailable { err: "No such channel".to_owned() }) },
+						None => { return Err(APIError::ChannelUnavailable { err: format!("No such channel for the passed counterparty_node_id {}", counterparty_node_id) }) },
 					}
 				};
 				match handle_error!(self, res, chan.get_counterparty_node_id()) {
@@ -4386,9 +4380,6 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					if !channel.get().inbound_is_awaiting_accept() {
 						return Err(APIError::APIMisuseError { err: "The channel isn't currently awaiting to be accepted.".to_owned() });
 					}
-					if *counterparty_node_id != channel.get().get_counterparty_node_id() {
-						return Err(APIError::APIMisuseError { err: "The passed counterparty_node_id doesn't match the channel's counterparty node_id".to_owned() });
-					}
 					if accept_0conf {
 						channel.get_mut().set_0conf();
 					} else if channel.get().get_channel_type().requires_zero_conf() {
@@ -4409,7 +4400,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					});
 				}
 				hash_map::Entry::Vacant(_) => {
-					return Err(APIError::ChannelUnavailable { err: "Can't accept a channel that doesn't exist".to_owned() });
+					return Err(APIError::APIMisuseError { err: format!("No such channel for the passed counterparty_node_id {}", counterparty_node_id) });
 				}
 			}
 		} else {
@@ -4490,13 +4481,10 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				let peer_state = &mut *peer_state_lock;
 				match peer_state.channel_by_id.entry(msg.temporary_channel_id) {
 					hash_map::Entry::Occupied(mut chan) => {
-						if chan.get().get_counterparty_node_id() != *counterparty_node_id {
-							return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.temporary_channel_id));
-						}
 						try_chan_entry!(self, chan.get_mut().accept_channel(&msg, &self.default_configuration.channel_handshake_limits, &their_features), channel_state, chan);
 						(chan.get().get_value_satoshis(), chan.get().get_funding_redeemscript().to_v0_p2wsh(), chan.get().get_user_id())
 					},
-					hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.temporary_channel_id))
+					hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.temporary_channel_id))
 				}
 			} else {
 				return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer with a node_id matching the passed counterparty_node_id {}", counterparty_node_id), msg.temporary_channel_id))
@@ -4524,12 +4512,9 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				let peer_state = &mut *peer_state_lock;
 				match peer_state.channel_by_id.entry(msg.temporary_channel_id.clone()) {
 					hash_map::Entry::Occupied(mut chan) => {
-						if chan.get().get_counterparty_node_id() != *counterparty_node_id {
-							return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.temporary_channel_id));
-						}
 						(try_chan_entry!(self, chan.get_mut().funding_created(msg, best_block, &self.logger), channel_state, chan), chan.remove())
 					},
-					hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.temporary_channel_id))
+					hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.temporary_channel_id))
 				}
 			} else {
 				return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer with a node_id matching the passed counterparty_node_id {}", counterparty_node_id), msg.temporary_channel_id))
@@ -4602,9 +4587,6 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				let peer_state = &mut *peer_state_lock;
 				match peer_state.channel_by_id.entry(msg.channel_id) {
 					hash_map::Entry::Occupied(mut chan) => {
-						if chan.get().get_counterparty_node_id() != *counterparty_node_id {
-							return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
-						}
 						let (monitor, funding_tx, channel_ready) = match chan.get_mut().funding_signed(&msg, best_block, &self.logger) {
 							Ok(update) => update,
 							Err(e) => try_chan_entry!(self, Err(e), channel_state, chan),
@@ -4626,7 +4608,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 						}
 						funding_tx
 					},
-					hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))
+					hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
 				}
 			} else {
 				return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer with a node_id matching the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
@@ -4646,9 +4628,6 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			let peer_state = &mut *peer_state_lock;
 			match peer_state.channel_by_id.entry(msg.channel_id) {
 				hash_map::Entry::Occupied(mut chan) => {
-					if chan.get().get_counterparty_node_id() != *counterparty_node_id {
-						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
-					}
 					let announcement_sigs_opt = try_chan_entry!(self, chan.get_mut().channel_ready(&msg, self.get_our_node_id(),
 						self.genesis_hash.clone(), &self.best_block.read().unwrap(), &self.logger), channel_state, chan);
 					if let Some(announcement_sigs) = announcement_sigs_opt {
@@ -4673,7 +4652,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					}
 					Ok(())
 				},
-				hash_map::Entry::Vacant(_) => Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))
+				hash_map::Entry::Vacant(_) => Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
 			}
 		} else {
 			Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer with a node_id matching the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
@@ -4692,9 +4671,6 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				let peer_state = &mut *peer_state_lock;
 				match peer_state.channel_by_id.entry(msg.channel_id.clone()) {
 					hash_map::Entry::Occupied(mut chan_entry) => {
-						if chan_entry.get().get_counterparty_node_id() != *counterparty_node_id {
-							return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
-						}
 
 						if !chan_entry.get().received_shutdown() {
 							log_info!(self.logger, "Received a shutdown message from our counterparty for channel {}{}.",
@@ -4726,7 +4702,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 
 						break Ok(());
 					},
-					hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))
+					hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
 				}
 			} else {
 				return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer with a node_id matching the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
@@ -4750,9 +4726,6 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				let peer_state = &mut *peer_state_lock;
 				match peer_state.channel_by_id.entry(msg.channel_id.clone()) {
 					hash_map::Entry::Occupied(mut chan_entry) => {
-						if chan_entry.get().get_counterparty_node_id() != *counterparty_node_id {
-							return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
-						}
 						let (closing_signed, tx) = try_chan_entry!(self, chan_entry.get_mut().closing_signed(&self.fee_estimator, &msg), channel_state, chan_entry);
 						if let Some(msg) = closing_signed {
 							channel_state.pending_msg_events.push(events::MessageSendEvent::SendClosingSigned {
@@ -4769,7 +4742,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 							(tx, Some(remove_channel!(self, channel_state, chan_entry)))
 						} else { (tx, None) }
 					},
-					hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))
+					hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
 				}
 			} else {
 				return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer with a node_id matching the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
@@ -4810,9 +4783,6 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			let peer_state = &mut *peer_state_lock;
 			match peer_state.channel_by_id.entry(msg.channel_id) {
 				hash_map::Entry::Occupied(mut chan) => {
-					if chan.get().get_counterparty_node_id() != *counterparty_node_id {
-						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
-					}
 
 					let create_pending_htlc_status = |chan: &Channel<Signer>, pending_forward_info: PendingHTLCStatus, error_code: u16| {
 						// If the update_add is completely bogus, the call will Err and we will close,
@@ -4838,7 +4808,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					};
 					try_chan_entry!(self, chan.get_mut().update_add_htlc(&msg, pending_forward_info, create_pending_htlc_status, &self.logger), channel_state, chan);
 				},
-				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))
+				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
 			}
 		} else {
 			return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer with a node_id matching the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
@@ -4856,12 +4826,9 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				let peer_state = &mut *peer_state_lock;
 				match peer_state.channel_by_id.entry(msg.channel_id) {
 					hash_map::Entry::Occupied(mut chan) => {
-						if chan.get().get_counterparty_node_id() != *counterparty_node_id {
-							return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
-						}
 						try_chan_entry!(self, chan.get_mut().update_fulfill_htlc(&msg), channel_state, chan)
 					},
-					hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))
+					hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
 				}
 			} else {
 				return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer with a node_id matching the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
@@ -4880,12 +4847,9 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			let peer_state = &mut *peer_state_lock;
 			match peer_state.channel_by_id.entry(msg.channel_id) {
 				hash_map::Entry::Occupied(mut chan) => {
-					if chan.get().get_counterparty_node_id() != *counterparty_node_id {
-						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
-					}
 					try_chan_entry!(self, chan.get_mut().update_fail_htlc(&msg, HTLCFailReason::LightningError { err: msg.reason.clone() }), channel_state, chan);
 				},
-				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))
+				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
 			}
 		} else {
 			return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer with a node_id matching the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id));
@@ -4902,9 +4866,6 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			let peer_state = &mut *peer_state_lock;
 			match peer_state.channel_by_id.entry(msg.channel_id) {
 				hash_map::Entry::Occupied(mut chan) => {
-					if chan.get().get_counterparty_node_id() != *counterparty_node_id {
-						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
-					}
 					if (msg.failure_code & 0x8000) == 0 {
 						let chan_err: ChannelError = ChannelError::Close("Got update_fail_malformed_htlc with BADONION not set".to_owned());
 						try_chan_entry!(self, Err(chan_err), channel_state, chan);
@@ -4912,7 +4873,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					try_chan_entry!(self, chan.get_mut().update_fail_malformed_htlc(&msg, HTLCFailReason::Reason { failure_code: msg.failure_code, data: Vec::new() }), channel_state, chan);
 					Ok(())
 				},
-				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))
+				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
 			}
 		} else {
 			return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer with a node_id matching the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
@@ -4928,9 +4889,6 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			let peer_state = &mut *peer_state_lock;
 			match peer_state.channel_by_id.entry(msg.channel_id) {
 				hash_map::Entry::Occupied(mut chan) => {
-					if chan.get().get_counterparty_node_id() != *counterparty_node_id {
-						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
-					}
 					let (revoke_and_ack, commitment_signed, monitor_update) =
 						match chan.get_mut().commitment_signed(&msg, &self.logger) {
 							Err((None, e)) => try_chan_entry!(self, Err(e), channel_state, chan),
@@ -4964,7 +4922,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					}
 					Ok(())
 				},
-				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))
+				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
 			}
 		} else {
 			return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer with a node_id matching the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
@@ -5020,9 +4978,6 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				let peer_state = &mut *peer_state_lock;
 				match peer_state.channel_by_id.entry(msg.channel_id) {
 					hash_map::Entry::Occupied(mut chan) => {
-						if chan.get().get_counterparty_node_id() != *counterparty_node_id {
-							break Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
-						}
 						let was_frozen_for_monitor = chan.get().is_awaiting_monitor_update();
 						let raa_updates = break_chan_entry!(self,
 							chan.get_mut().revoke_and_ack(&msg, &self.logger), channel_state, chan);
@@ -5056,7 +5011,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 									.unwrap_or(chan.get().outbound_scid_alias()),
 								chan.get().get_funding_txo().unwrap()))
 					},
-					hash_map::Entry::Vacant(_) => break Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))
+					hash_map::Entry::Vacant(_) => break Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
 				}
 			} else {
 				break Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer with a node_id matching the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
@@ -5087,12 +5042,9 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			let peer_state = &mut *peer_state_lock;
 			match peer_state.channel_by_id.entry(msg.channel_id) {
 				hash_map::Entry::Occupied(mut chan) => {
-					if chan.get().get_counterparty_node_id() != *counterparty_node_id {
-						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
-					}
 					try_chan_entry!(self, chan.get_mut().update_fee(&self.fee_estimator, &msg), channel_state, chan);
 				},
-				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))
+				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
 			}
 		} else {
 			return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer with a node_id matching the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id));
@@ -5110,9 +5062,6 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			let peer_state = &mut *peer_state_lock;
 			match peer_state.channel_by_id.entry(msg.channel_id) {
 				hash_map::Entry::Occupied(mut chan) => {
-					if chan.get().get_counterparty_node_id() != *counterparty_node_id {
-						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
-					}
 					if !chan.get().is_usable() {
 						return Err(MsgHandleErrInternal::from_no_close(LightningError{err: "Got an announcement_signatures before we were ready for it".to_owned(), action: msgs::ErrorAction::IgnoreError}));
 					}
@@ -5125,7 +5074,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 						update_msg: self.get_channel_update_for_broadcast(chan.get()).unwrap(),
 					});
 				},
-				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))
+				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
 			}
 		} else {
 			return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer with a node_id matching the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id));
@@ -5185,9 +5134,6 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				let peer_state = &mut *peer_state_lock;
 				match peer_state.channel_by_id.entry(msg.channel_id) {
 					hash_map::Entry::Occupied(mut chan) => {
-						if chan.get().get_counterparty_node_id() != *counterparty_node_id {
-							return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
-						}
 						// Currently, we expect all holding cell update_adds to be dropped on peer
 						// disconnect, so Channel's reestablish will never hand us any holding cell
 						// freed HTLCs to fail backwards. If in the future we no longer drop pending
@@ -5221,7 +5167,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 						}
 						(responses.holding_cell_failed_htlcs, need_lnd_workaround)
 					},
-					hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))
+					hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
 				}
 			} else {
 				return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer with a node_id matching the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id));
