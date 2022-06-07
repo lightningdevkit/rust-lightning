@@ -2529,12 +2529,6 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		if route.paths.len() < 1 {
 			return Err(PaymentSendFailure::ParameterError(APIError::RouteError{err: "There must be at least one path to send over"}));
 		}
-		if route.paths.len() > 10 {
-			// This limit is completely arbitrary - there aren't any real fundamental path-count
-			// limits. After we support retrying individual paths we should likely bump this, but
-			// for now more than 10 paths likely carries too much one-path failure.
-			return Err(PaymentSendFailure::ParameterError(APIError::RouteError{err: "Sending over more than 10 paths is not currently supported"}));
-		}
 		if payment_secret.is_none() && route.paths.len() > 1 {
 			return Err(PaymentSendFailure::ParameterError(APIError::APIMisuseError{err: "Payment secret is required for multi-path payments".to_string()}));
 		}

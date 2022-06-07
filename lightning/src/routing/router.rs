@@ -176,6 +176,11 @@ impl_writeable_tlv_based!(RouteParameters, {
 /// Maximum total CTLV difference we allow for a full payment path.
 pub const DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA: u32 = 1008;
 
+/// Maximum number of paths we allow an MPP payment to have.
+// The default limit is currently set rather arbitrary - there aren't any real fundamental path-count
+// limits, but for now more than 10 paths likely carries too much one-path failure.
+pub const DEFAULT_MAX_MPP_PATH_COUNT: u8 = 10;
+
 // The median hop CLTV expiry delta currently seen in the network.
 const MEDIAN_HOP_CLTV_EXPIRY_DELTA: u32 = 40;
 
@@ -214,13 +219,19 @@ pub struct PaymentParameters {
 	pub expiry_time: Option<u64>,
 
 	/// The maximum total CLTV delta we accept for the route.
+	/// Defaults to [`DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA`].
 	pub max_total_cltv_expiry_delta: u32,
+
+	/// The maximum number of paths that may be used by MPP payments.
+	/// Defaults to [`DEFAULT_MAX_MPP_PATH_COUNT`].
+	pub max_mpp_path_count: u8,
 }
 
 impl_writeable_tlv_based!(PaymentParameters, {
 	(0, payee_pubkey, required),
 	(1, max_total_cltv_expiry_delta, (default_value, DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA)),
 	(2, features, option),
+	(3, max_mpp_path_count, (default_value, DEFAULT_MAX_MPP_PATH_COUNT)),
 	(4, route_hints, vec_type),
 	(6, expiry_time, option),
 });
@@ -234,6 +245,7 @@ impl PaymentParameters {
 			route_hints: vec![],
 			expiry_time: None,
 			max_total_cltv_expiry_delta: DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA,
+			max_mpp_path_count: DEFAULT_MAX_MPP_PATH_COUNT,
 		}
 	}
 
@@ -268,6 +280,13 @@ impl PaymentParameters {
 	/// (C-not exported) since bindings don't support move semantics
 	pub fn with_max_total_cltv_expiry_delta(self, max_total_cltv_expiry_delta: u32) -> Self {
 		Self { max_total_cltv_expiry_delta, ..self }
+	}
+
+	/// Includes a limit for the maximum number of payment paths that may be used by MPP.
+	///
+	/// (C-not exported) since bindings don't support move semantics
+	pub fn with_max_mpp_path_count(self, max_mpp_path_count: u8) -> Self {
+		Self { max_mpp_path_count, ..self }
 	}
 }
 
@@ -790,6 +809,11 @@ where L::Target: Logger {
 			node_info.features.supports_basic_mpp()
 		} else { false }
 	} else { false };
+
+	if allow_mpp && payment_params.max_mpp_path_count == 0 {
+		return Err(LightningError{err: "Can't find an MPP route with no paths allowed.".to_owned(), action: ErrorAction::IgnoreError});
+	}
+
 	log_trace!(logger, "Searching for a route from payer {} to payee {} {} MPP and {} first hops {}overriding the network graph", our_node_pubkey,
 		payment_params.payee_pubkey, if allow_mpp { "with" } else { "without" },
 		first_hops.map(|hops| hops.len()).unwrap_or(0), if first_hops.is_some() { "" } else { "not " });
@@ -840,6 +864,21 @@ where L::Target: Logger {
 	let recommended_value_msat = final_value_msat * ROUTE_CAPACITY_PROVISION_FACTOR as u64;
 	let mut path_value_msat = final_value_msat;
 
+	// Routing Fragmentation Mitigation heuristic:
+	//
+	// Routing fragmentation across many payment paths increases the overall routing
+	// fees as you have irreducible routing fees per-link used (`fee_base_msat`).
+	// Taking too many smaller paths also increases the chance of payment failure.
+	// Thus to avoid this effect, we require from our collected links to provide
+	// at least a minimal contribution to the recommended value yet-to-be-fulfilled.
+	// This requirement is currently set to be 1/max_mpp_path_count of the payment
+	// value to ensure we only ever return routes that do not violate this limit.
+	let minimal_value_contribution_msat: u64 = if allow_mpp {
+		(final_value_msat + (payment_params.max_mpp_path_count as u64 - 1)) / payment_params.max_mpp_path_count as u64
+	} else {
+		final_value_msat
+	};
+
 	// Keep track of how much liquidity has been used in selected channels. Used to determine
 	// if the channel can be used by additional MPP paths or to inform path finding decisions. It is
 	// aware of direction *only* to ensure that the correct htlc_maximum_msat value is used. Hence,
@@ -847,11 +886,8 @@ where L::Target: Logger {
 	let mut used_channel_liquidities: HashMap<(u64, bool), u64> =
 		HashMap::with_capacity(network_nodes.len());
 
-	// Keeping track of how much value we already collected across other paths. Helps to decide:
-	// - how much a new path should be transferring (upper bound);
-	// - whether a channel should be disregarded because
-	//   it's available liquidity is too small comparing to how much more we need to collect;
-	// - when we want to stop looking for new paths.
+	// Keeping track of how much value we already collected across other paths. Helps to decide
+	// when we want to stop looking for new paths. 
 	let mut already_collected_value_msat = 0;
 
 	for (_, channels) in first_hop_targets.iter_mut() {
@@ -913,26 +949,6 @@ where L::Target: Logger {
 							*used_liquidity_msat
 						});
 
-					// Routing Fragmentation Mitigation heuristic:
-					//
-					// Routing fragmentation across many payment paths increases the overall routing
-					// fees as you have irreducible routing fees per-link used (`fee_base_msat`).
-					// Taking too many smaller paths also increases the chance of payment failure.
-					// Thus to avoid this effect, we require from our collected links to provide
-					// at least a minimal contribution to the recommended value yet-to-be-fulfilled.
-					//
-					// This requirement is currently 5% of the remaining-to-be-collected value.
-					// This means as we successfully advance in our collection,
-					// the absolute liquidity contribution is lowered,
-					// thus increasing the number of potential channels to be selected.
-
-					// Derive the minimal liquidity contribution with a ratio of 20 (5%, rounded up)
-					// or 100% if we're not allowed to do multipath payments.
-					let minimal_value_contribution_msat: u64 = if allow_mpp {
-						(recommended_value_msat - already_collected_value_msat + 19) / 20
-					} else {
-						final_value_msat
-					};
 					// Verify the liquidity offered by this channel complies to the minimal contribution.
 					let contributes_sufficient_value = available_value_contribution_msat >= minimal_value_contribution_msat;
 					// Do not consider candidate hops that would exceed the maximum path length.
@@ -1504,10 +1520,8 @@ where L::Target: Logger {
 					*used_channel_liquidities.entry((victim_scid, true)).or_default() = exhausted;
 				}
 
-				// Track the total amount all our collected paths allow to send so that we:
-				// - know when to stop looking for more paths
-				// - know which of the hops are useless considering how much more sats we need
-				//   (contributes_sufficient_value)
+				// Track the total amount all our collected paths allow to send so that we know
+				// when to stop looking for more paths
 				already_collected_value_msat += value_contribution_msat;
 
 				payment_paths.push(payment_path);
@@ -1678,6 +1692,8 @@ where L::Target: Logger {
 		});
 		selected_paths.push(path);
 	}
+	// Make sure we would never create a route with more paths than we allow.
+	debug_assert!(selected_paths.len() <= payment_params.max_mpp_path_count.into());
 
 	if let Some(features) = &payment_params.features {
 		for path in selected_paths.iter_mut() {
