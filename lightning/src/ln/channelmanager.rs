@@ -790,8 +790,13 @@ pub struct ChannelManager<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, 
 	///
 	/// If we are connected to a peer we always at least have an entry here, even if no channels
 	/// are currently open with that peer.
-	/// Currently, we usually take an outer read lock and then operate on the inner value freely.
-	/// Sadly, this prevents parallel per-peer operation.
+	///
+	/// Because adding or removing an entry is rare, we usually take an outer read lock and then
+	/// operate on the inner value freely. This opens up for parallel per-peer operation for
+	/// channels. Sadly, most functions that operate on the channels currently also require that
+	/// the `channel_state` lock is aquired until more fields from the `channel_state` is moved.
+	/// Aquiring the `channel_state` lock blocks parallel per-peer operation in the cases where it
+	/// is needed.
 	///
 	/// If also holding `channel_state` lock, must lock `channel_state` prior to `per_peer_state`.
 	#[cfg(not(any(test, feature = "_test_utils")))]
