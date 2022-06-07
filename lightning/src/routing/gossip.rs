@@ -28,7 +28,7 @@ use ln::msgs::{DecodeError, ErrorAction, Init, LightningError, RoutingMessageHan
 use ln::msgs::{ChannelAnnouncement, ChannelUpdate, NodeAnnouncement, OptionalField, GossipTimestampFilter};
 use ln::msgs::{QueryChannelRange, ReplyChannelRange, QueryShortChannelIds, ReplyShortChannelIdsEnd};
 use ln::msgs;
-use util::ser::{Writeable, Readable, Writer};
+use util::ser::{Readable, ReadableArgs, Writeable, Writer};
 use util::logger::{Logger, Level};
 use util::events::{Event, EventHandler, MessageSendEvent, MessageSendEventsProvider};
 use util::scid_utils::{block_from_scid, scid_from_parts, MAX_SCID_BLOCK};
@@ -122,26 +122,14 @@ impl Readable for NodeId {
 }
 
 /// Represents the network as nodes and channels between them
-pub struct NetworkGraph {
+pub struct NetworkGraph<L: Deref> where L::Target: Logger {
+	secp_ctx: Secp256k1<secp256k1::VerifyOnly>,
 	last_rapid_gossip_sync_timestamp: Mutex<Option<u32>>,
 	genesis_hash: BlockHash,
+	logger: L,
 	// Lock order: channels -> nodes
 	channels: RwLock<BTreeMap<u64, ChannelInfo>>,
 	nodes: RwLock<BTreeMap<NodeId, NodeInfo>>,
-}
-
-impl Clone for NetworkGraph {
-	fn clone(&self) -> Self {
-		let channels = self.channels.read().unwrap();
-		let nodes = self.nodes.read().unwrap();
-		let last_rapid_gossip_sync_timestamp = self.get_last_rapid_gossip_sync_timestamp();
-		Self {
-			genesis_hash: self.genesis_hash.clone(),
-			channels: RwLock::new(channels.clone()),
-			nodes: RwLock::new(nodes.clone()),
-			last_rapid_gossip_sync_timestamp: Mutex::new(last_rapid_gossip_sync_timestamp)
-		}
-	}
 }
 
 /// A read-only view of [`NetworkGraph`].
@@ -196,17 +184,6 @@ impl_writeable_tlv_based_enum_upgradable!(NetworkUpdate,
 	},
 );
 
-impl<G: Deref<Target=NetworkGraph>, C: Deref, L: Deref> EventHandler for P2PGossipSync<G, C, L>
-where C::Target: chain::Access, L::Target: Logger {
-	fn handle_event(&self, event: &Event) {
-		if let Event::PaymentPathFailed { payment_hash: _, rejected_by_dest: _, network_update, .. } = event {
-			if let Some(network_update) = network_update {
-				self.handle_network_update(network_update);
-			}
-		}
-	}
-}
-
 /// Receives and validates network updates from peers,
 /// stores authentic and relevant data as a network graph.
 /// This network graph is then used for routing payments.
@@ -215,10 +192,9 @@ where C::Target: chain::Access, L::Target: Logger {
 ///
 /// Serves as an [`EventHandler`] for applying updates from [`Event::PaymentPathFailed`] to the
 /// [`NetworkGraph`].
-pub struct P2PGossipSync<G: Deref<Target=NetworkGraph>, C: Deref, L: Deref>
+pub struct P2PGossipSync<G: Deref<Target=NetworkGraph<L>>, C: Deref, L: Deref>
 where C::Target: chain::Access, L::Target: Logger
 {
-	secp_ctx: Secp256k1<secp256k1::VerifyOnly>,
 	network_graph: G,
 	chain_access: Option<C>,
 	full_syncs_requested: AtomicUsize,
@@ -226,7 +202,7 @@ where C::Target: chain::Access, L::Target: Logger
 	logger: L,
 }
 
-impl<G: Deref<Target=NetworkGraph>, C: Deref, L: Deref> P2PGossipSync<G, C, L>
+impl<G: Deref<Target=NetworkGraph<L>>, C: Deref, L: Deref> P2PGossipSync<G, C, L>
 where C::Target: chain::Access, L::Target: Logger
 {
 	/// Creates a new tracker of the actual state of the network of channels and nodes,
@@ -236,7 +212,6 @@ where C::Target: chain::Access, L::Target: Logger
 	/// channel owners' keys.
 	pub fn new(network_graph: G, chain_access: Option<C>, logger: L) -> Self {
 		P2PGossipSync {
-			secp_ctx: Secp256k1::verification_only(),
 			network_graph,
 			full_syncs_requested: AtomicUsize::new(0),
 			chain_access,
@@ -271,27 +246,32 @@ where C::Target: chain::Access, L::Target: Logger
 			false
 		}
 	}
+}
 
-	/// Applies changes to the [`NetworkGraph`] from the given update.
-	fn handle_network_update(&self, update: &NetworkUpdate) {
-		match *update {
-			NetworkUpdate::ChannelUpdateMessage { ref msg } => {
-				let short_channel_id = msg.contents.short_channel_id;
-				let is_enabled = msg.contents.flags & (1 << 1) != (1 << 1);
-				let status = if is_enabled { "enabled" } else { "disabled" };
-				log_debug!(self.logger, "Updating channel with channel_update from a payment failure. Channel {} is {}.", short_channel_id, status);
-				let _ = self.network_graph.update_channel(msg, &self.secp_ctx);
-			},
-			NetworkUpdate::ChannelFailure { short_channel_id, is_permanent } => {
-				let action = if is_permanent { "Removing" } else { "Disabling" };
-				log_debug!(self.logger, "{} channel graph entry for {} due to a payment failure.", action, short_channel_id);
-				self.network_graph.channel_failed(short_channel_id, is_permanent);
-			},
-			NetworkUpdate::NodeFailure { ref node_id, is_permanent } => {
-				let action = if is_permanent { "Removing" } else { "Disabling" };
-				log_debug!(self.logger, "{} node graph entry for {} due to a payment failure.", action, node_id);
-				self.network_graph.node_failed(node_id, is_permanent);
-			},
+impl<L: Deref> EventHandler for NetworkGraph<L> where L::Target: Logger {
+	fn handle_event(&self, event: &Event) {
+		if let Event::PaymentPathFailed { payment_hash: _, rejected_by_dest: _, network_update, .. } = event {
+			if let Some(network_update) = network_update {
+				match *network_update {
+					NetworkUpdate::ChannelUpdateMessage { ref msg } => {
+						let short_channel_id = msg.contents.short_channel_id;
+						let is_enabled = msg.contents.flags & (1 << 1) != (1 << 1);
+						let status = if is_enabled { "enabled" } else { "disabled" };
+						log_debug!(self.logger, "Updating channel with channel_update from a payment failure. Channel {} is {}.", short_channel_id, status);
+						let _ = self.update_channel(msg);
+					},
+					NetworkUpdate::ChannelFailure { short_channel_id, is_permanent } => {
+						let action = if is_permanent { "Removing" } else { "Disabling" };
+						log_debug!(self.logger, "{} channel graph entry for {} due to a payment failure.", action, short_channel_id);
+						self.channel_failed(short_channel_id, is_permanent);
+					},
+					NetworkUpdate::NodeFailure { ref node_id, is_permanent } => {
+						let action = if is_permanent { "Removing" } else { "Disabling" };
+						log_debug!(self.logger, "{} node graph entry for {} due to a payment failure.", action, node_id);
+						self.node_failed(node_id, is_permanent);
+					},
+				}
+			}
 		}
 	}
 }
@@ -316,24 +296,24 @@ macro_rules! secp_verify_sig {
 	};
 }
 
-impl<G: Deref<Target=NetworkGraph>, C: Deref, L: Deref> RoutingMessageHandler for P2PGossipSync<G, C, L>
+impl<G: Deref<Target=NetworkGraph<L>>, C: Deref, L: Deref> RoutingMessageHandler for P2PGossipSync<G, C, L>
 where C::Target: chain::Access, L::Target: Logger
 {
 	fn handle_node_announcement(&self, msg: &msgs::NodeAnnouncement) -> Result<bool, LightningError> {
-		self.network_graph.update_node_from_announcement(msg, &self.secp_ctx)?;
+		self.network_graph.update_node_from_announcement(msg)?;
 		Ok(msg.contents.excess_data.len() <=  MAX_EXCESS_BYTES_FOR_RELAY &&
 		   msg.contents.excess_address_data.len() <= MAX_EXCESS_BYTES_FOR_RELAY &&
 		   msg.contents.excess_data.len() + msg.contents.excess_address_data.len() <= MAX_EXCESS_BYTES_FOR_RELAY)
 	}
 
 	fn handle_channel_announcement(&self, msg: &msgs::ChannelAnnouncement) -> Result<bool, LightningError> {
-		self.network_graph.update_channel_from_announcement(msg, &self.chain_access, &self.secp_ctx)?;
+		self.network_graph.update_channel_from_announcement(msg, &self.chain_access)?;
 		log_gossip!(self.logger, "Added channel_announcement for {}{}", msg.contents.short_channel_id, if !msg.contents.excess_data.is_empty() { " with excess uninterpreted data!" } else { "" });
 		Ok(msg.contents.excess_data.len() <= MAX_EXCESS_BYTES_FOR_RELAY)
 	}
 
 	fn handle_channel_update(&self, msg: &msgs::ChannelUpdate) -> Result<bool, LightningError> {
-		self.network_graph.update_channel(msg, &self.secp_ctx)?;
+		self.network_graph.update_channel(msg)?;
 		Ok(msg.contents.excess_data.len() <= MAX_EXCESS_BYTES_FOR_RELAY)
 	}
 
@@ -605,7 +585,7 @@ where C::Target: chain::Access, L::Target: Logger
 	}
 }
 
-impl<G: Deref<Target=NetworkGraph>, C: Deref, L: Deref> MessageSendEventsProvider for P2PGossipSync<G, C, L>
+impl<G: Deref<Target=NetworkGraph<L>>, C: Deref, L: Deref> MessageSendEventsProvider for P2PGossipSync<G, C, L>
 where
 	C::Target: chain::Access,
 	L::Target: Logger,
@@ -975,7 +955,7 @@ impl_writeable_tlv_based!(NodeInfo, {
 const SERIALIZATION_VERSION: u8 = 1;
 const MIN_SERIALIZATION_VERSION: u8 = 1;
 
-impl Writeable for NetworkGraph {
+impl<L: Deref> Writeable for NetworkGraph<L> where L::Target: Logger {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		write_ver_prefix!(writer, SERIALIZATION_VERSION, MIN_SERIALIZATION_VERSION);
 
@@ -1001,8 +981,8 @@ impl Writeable for NetworkGraph {
 	}
 }
 
-impl Readable for NetworkGraph {
-	fn read<R: io::Read>(reader: &mut R) -> Result<NetworkGraph, DecodeError> {
+impl<L: Deref> ReadableArgs<L> for NetworkGraph<L> where L::Target: Logger {
+	fn read<R: io::Read>(reader: &mut R, logger: L) -> Result<NetworkGraph<L>, DecodeError> {
 		let _ver = read_ver_prefix!(reader, SERIALIZATION_VERSION);
 
 		let genesis_hash: BlockHash = Readable::read(reader)?;
@@ -1027,7 +1007,9 @@ impl Readable for NetworkGraph {
 		});
 
 		Ok(NetworkGraph {
+			secp_ctx: Secp256k1::verification_only(),
 			genesis_hash,
+			logger,
 			channels: RwLock::new(channels),
 			nodes: RwLock::new(nodes),
 			last_rapid_gossip_sync_timestamp: Mutex::new(last_rapid_gossip_sync_timestamp),
@@ -1035,7 +1017,7 @@ impl Readable for NetworkGraph {
 	}
 }
 
-impl fmt::Display for NetworkGraph {
+impl<L: Deref> fmt::Display for NetworkGraph<L> where L::Target: Logger {
 	fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
 		writeln!(f, "Network map\n[Channels]")?;
 		for (key, val) in self.channels.read().unwrap().iter() {
@@ -1049,7 +1031,7 @@ impl fmt::Display for NetworkGraph {
 	}
 }
 
-impl PartialEq for NetworkGraph {
+impl<L: Deref> PartialEq for NetworkGraph<L> where L::Target: Logger {
 	fn eq(&self, other: &Self) -> bool {
 		self.genesis_hash == other.genesis_hash &&
 			*self.channels.read().unwrap() == *other.channels.read().unwrap() &&
@@ -1057,11 +1039,13 @@ impl PartialEq for NetworkGraph {
 	}
 }
 
-impl NetworkGraph {
+impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 	/// Creates a new, empty, network graph.
-	pub fn new(genesis_hash: BlockHash) -> NetworkGraph {
+	pub fn new(genesis_hash: BlockHash, logger: L) -> NetworkGraph<L> {
 		Self {
+			secp_ctx: Secp256k1::verification_only(),
 			genesis_hash,
+			logger,
 			channels: RwLock::new(BTreeMap::new()),
 			nodes: RwLock::new(BTreeMap::new()),
 			last_rapid_gossip_sync_timestamp: Mutex::new(None),
@@ -1105,9 +1089,9 @@ impl NetworkGraph {
 	/// You probably don't want to call this directly, instead relying on a P2PGossipSync's
 	/// RoutingMessageHandler implementation to call it indirectly. This may be useful to accept
 	/// routing messages from a source using a protocol other than the lightning P2P protocol.
-	pub fn update_node_from_announcement<T: secp256k1::Verification>(&self, msg: &msgs::NodeAnnouncement, secp_ctx: &Secp256k1<T>) -> Result<(), LightningError> {
+	pub fn update_node_from_announcement(&self, msg: &msgs::NodeAnnouncement) -> Result<(), LightningError> {
 		let msg_hash = hash_to_message!(&Sha256dHash::hash(&msg.contents.encode()[..])[..]);
-		secp_verify_sig!(secp_ctx, &msg_hash, &msg.signature, &msg.contents.node_id, "node_announcement");
+		secp_verify_sig!(self.secp_ctx, &msg_hash, &msg.signature, &msg.contents.node_id, "node_announcement");
 		self.update_node_from_announcement_intern(&msg.contents, Some(&msg))
 	}
 
@@ -1160,17 +1144,17 @@ impl NetworkGraph {
 	///
 	/// If a `chain::Access` object is provided via `chain_access`, it will be called to verify
 	/// the corresponding UTXO exists on chain and is correctly-formatted.
-	pub fn update_channel_from_announcement<T: secp256k1::Verification, C: Deref>(
-		&self, msg: &msgs::ChannelAnnouncement, chain_access: &Option<C>, secp_ctx: &Secp256k1<T>
+	pub fn update_channel_from_announcement<C: Deref>(
+		&self, msg: &msgs::ChannelAnnouncement, chain_access: &Option<C>,
 	) -> Result<(), LightningError>
 	where
 		C::Target: chain::Access,
 	{
 		let msg_hash = hash_to_message!(&Sha256dHash::hash(&msg.contents.encode()[..])[..]);
-		secp_verify_sig!(secp_ctx, &msg_hash, &msg.node_signature_1, &msg.contents.node_id_1, "channel_announcement");
-		secp_verify_sig!(secp_ctx, &msg_hash, &msg.node_signature_2, &msg.contents.node_id_2, "channel_announcement");
-		secp_verify_sig!(secp_ctx, &msg_hash, &msg.bitcoin_signature_1, &msg.contents.bitcoin_key_1, "channel_announcement");
-		secp_verify_sig!(secp_ctx, &msg_hash, &msg.bitcoin_signature_2, &msg.contents.bitcoin_key_2, "channel_announcement");
+		secp_verify_sig!(self.secp_ctx, &msg_hash, &msg.node_signature_1, &msg.contents.node_id_1, "channel_announcement");
+		secp_verify_sig!(self.secp_ctx, &msg_hash, &msg.node_signature_2, &msg.contents.node_id_2, "channel_announcement");
+		secp_verify_sig!(self.secp_ctx, &msg_hash, &msg.bitcoin_signature_1, &msg.contents.bitcoin_key_1, "channel_announcement");
+		secp_verify_sig!(self.secp_ctx, &msg_hash, &msg.bitcoin_signature_2, &msg.contents.bitcoin_key_2, "channel_announcement");
 		self.update_channel_from_unsigned_announcement_intern(&msg.contents, Some(msg), chain_access)
 	}
 
@@ -1432,8 +1416,8 @@ impl NetworkGraph {
 	///
 	/// If built with `no-std`, any updates with a timestamp more than two weeks in the past or
 	/// materially in the future will be rejected.
-	pub fn update_channel<T: secp256k1::Verification>(&self, msg: &msgs::ChannelUpdate, secp_ctx: &Secp256k1<T>) -> Result<(), LightningError> {
-		self.update_channel_intern(&msg.contents, Some(&msg), Some((&msg.signature, secp_ctx)))
+	pub fn update_channel(&self, msg: &msgs::ChannelUpdate) -> Result<(), LightningError> {
+		self.update_channel_intern(&msg.contents, Some(&msg), Some(&msg.signature))
 	}
 
 	/// For an already known (from announcement) channel, update info about one of the directions
@@ -1443,10 +1427,10 @@ impl NetworkGraph {
 	/// If built with `no-std`, any updates with a timestamp more than two weeks in the past or
 	/// materially in the future will be rejected.
 	pub fn update_channel_unsigned(&self, msg: &msgs::UnsignedChannelUpdate) -> Result<(), LightningError> {
-		self.update_channel_intern(msg, None, None::<(&secp256k1::ecdsa::Signature, &Secp256k1<secp256k1::VerifyOnly>)>)
+		self.update_channel_intern(msg, None, None)
 	}
 
-	fn update_channel_intern<T: secp256k1::Verification>(&self, msg: &msgs::UnsignedChannelUpdate, full_msg: Option<&msgs::ChannelUpdate>, sig_info: Option<(&secp256k1::ecdsa::Signature, &Secp256k1<T>)>) -> Result<(), LightningError> {
+	fn update_channel_intern(&self, msg: &msgs::UnsignedChannelUpdate, full_msg: Option<&msgs::ChannelUpdate>, sig: Option<&secp256k1::ecdsa::Signature>) -> Result<(), LightningError> {
 		let dest_node_id;
 		let chan_enabled = msg.flags & (1 << 1) != (1 << 1);
 		let chan_was_enabled;
@@ -1527,8 +1511,8 @@ impl NetworkGraph {
 				if msg.flags & 1 == 1 {
 					dest_node_id = channel.node_one.clone();
 					check_update_latest!(channel.two_to_one);
-					if let Some((sig, ctx)) = sig_info {
-						secp_verify_sig!(ctx, &msg_hash, &sig, &PublicKey::from_slice(channel.node_two.as_slice()).map_err(|_| LightningError{
+					if let Some(sig) = sig {
+						secp_verify_sig!(self.secp_ctx, &msg_hash, &sig, &PublicKey::from_slice(channel.node_two.as_slice()).map_err(|_| LightningError{
 							err: "Couldn't parse source node pubkey".to_owned(),
 							action: ErrorAction::IgnoreAndLog(Level::Debug)
 						})?, "channel_update");
@@ -1537,8 +1521,8 @@ impl NetworkGraph {
 				} else {
 					dest_node_id = channel.node_two.clone();
 					check_update_latest!(channel.one_to_two);
-					if let Some((sig, ctx)) = sig_info {
-						secp_verify_sig!(ctx, &msg_hash, &sig, &PublicKey::from_slice(channel.node_one.as_slice()).map_err(|_| LightningError{
+					if let Some(sig) = sig {
+						secp_verify_sig!(self.secp_ctx, &msg_hash, &sig, &PublicKey::from_slice(channel.node_one.as_slice()).map_err(|_| LightningError{
 							err: "Couldn't parse destination node pubkey".to_owned(),
 							action: ErrorAction::IgnoreAndLog(Level::Debug)
 						})?, "channel_update");
@@ -1649,7 +1633,7 @@ mod tests {
 		ReplyChannelRange, QueryChannelRange, QueryShortChannelIds, MAX_VALUE_MSAT};
 	use util::test_utils;
 	use util::logger::Logger;
-	use util::ser::{Readable, Writeable};
+	use util::ser::{ReadableArgs, Writeable};
 	use util::events::{Event, EventHandler, MessageSendEvent, MessageSendEventsProvider};
 	use util::scid_utils::scid_from_parts;
 
@@ -1673,13 +1657,15 @@ mod tests {
 	use prelude::*;
 	use sync::Arc;
 
-	fn create_network_graph() -> NetworkGraph {
+	fn create_network_graph() -> NetworkGraph<Arc<test_utils::TestLogger>> {
 		let genesis_hash = genesis_block(Network::Testnet).header.block_hash();
-		NetworkGraph::new(genesis_hash)
+		let logger = Arc::new(test_utils::TestLogger::new());
+		NetworkGraph::new(genesis_hash, logger)
 	}
 
-	fn create_gossip_sync(network_graph: &NetworkGraph) -> (
-		Secp256k1<All>, P2PGossipSync<&NetworkGraph, Arc<test_utils::TestChainSource>, Arc<test_utils::TestLogger>>
+	fn create_gossip_sync(network_graph: &NetworkGraph<Arc<test_utils::TestLogger>>) -> (
+		Secp256k1<All>, P2PGossipSync<&NetworkGraph<Arc<test_utils::TestLogger>>,
+		Arc<test_utils::TestChainSource>, Arc<test_utils::TestLogger>>
 	) {
 		let secp_ctx = Secp256k1::new();
 		let logger = Arc::new(test_utils::TestLogger::new());
@@ -1852,7 +1838,8 @@ mod tests {
 		let valid_announcement = get_signed_channel_announcement(|_| {}, node_1_privkey, node_2_privkey, &secp_ctx);
 
 		// Test if the UTXO lookups were not supported
-		let network_graph = NetworkGraph::new(genesis_block(Network::Testnet).header.block_hash());
+		let genesis_hash = genesis_block(Network::Testnet).header.block_hash();
+		let network_graph = NetworkGraph::new(genesis_hash, Arc::clone(&logger));
 		let mut gossip_sync = P2PGossipSync::new(&network_graph, None, Arc::clone(&logger));
 		match gossip_sync.handle_channel_announcement(&valid_announcement) {
 			Ok(res) => assert!(res),
@@ -1876,7 +1863,7 @@ mod tests {
 		// Test if an associated transaction were not on-chain (or not confirmed).
 		let chain_source = Arc::new(test_utils::TestChainSource::new(Network::Testnet));
 		*chain_source.utxo_ret.lock().unwrap() = Err(chain::AccessError::UnknownTx);
-		let network_graph = NetworkGraph::new(genesis_block(Network::Testnet).header.block_hash());
+		let network_graph = NetworkGraph::new(genesis_hash, Arc::clone(&logger));
 		gossip_sync = P2PGossipSync::new(&network_graph, Some(chain_source.clone()), Arc::clone(&logger));
 
 		let valid_announcement = get_signed_channel_announcement(|unsigned_announcement| {
@@ -1960,7 +1947,8 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let logger: Arc<Logger> = Arc::new(test_utils::TestLogger::new());
 		let chain_source = Arc::new(test_utils::TestChainSource::new(Network::Testnet));
-		let network_graph = NetworkGraph::new(genesis_block(Network::Testnet).header.block_hash());
+		let genesis_hash = genesis_block(Network::Testnet).header.block_hash();
+		let network_graph = NetworkGraph::new(genesis_hash, Arc::clone(&logger));
 		let gossip_sync = P2PGossipSync::new(&network_graph, Some(chain_source.clone()), Arc::clone(&logger));
 
 		let node_1_privkey = &SecretKey::from_slice(&[42; 32]).unwrap();
@@ -2061,10 +2049,8 @@ mod tests {
 	#[test]
 	fn handling_network_update() {
 		let logger = test_utils::TestLogger::new();
-		let chain_source = Arc::new(test_utils::TestChainSource::new(Network::Testnet));
 		let genesis_hash = genesis_block(Network::Testnet).header.block_hash();
-		let network_graph = NetworkGraph::new(genesis_hash);
-		let gossip_sync = P2PGossipSync::new(&network_graph, Some(chain_source.clone()), &logger);
+		let network_graph = NetworkGraph::new(genesis_hash, &logger);
 		let secp_ctx = Secp256k1::new();
 
 		let node_1_privkey = &SecretKey::from_slice(&[42; 32]).unwrap();
@@ -2081,13 +2067,13 @@ mod tests {
 			let valid_channel_announcement = get_signed_channel_announcement(|_| {}, node_1_privkey, node_2_privkey, &secp_ctx);
 			short_channel_id = valid_channel_announcement.contents.short_channel_id;
 			let chain_source: Option<&test_utils::TestChainSource> = None;
-			assert!(network_graph.update_channel_from_announcement(&valid_channel_announcement, &chain_source, &secp_ctx).is_ok());
+			assert!(network_graph.update_channel_from_announcement(&valid_channel_announcement, &chain_source).is_ok());
 			assert!(network_graph.read_only().channels().get(&short_channel_id).is_some());
 
 			let valid_channel_update = get_signed_channel_update(|_| {}, node_1_privkey, &secp_ctx);
 			assert!(network_graph.read_only().channels().get(&short_channel_id).unwrap().one_to_two.is_none());
 
-			gossip_sync.handle_event(&Event::PaymentPathFailed {
+			network_graph.handle_event(&Event::PaymentPathFailed {
 				payment_id: None,
 				payment_hash: PaymentHash([0; 32]),
 				rejected_by_dest: false,
@@ -2114,7 +2100,7 @@ mod tests {
 				}
 			};
 
-			gossip_sync.handle_event(&Event::PaymentPathFailed {
+			network_graph.handle_event(&Event::PaymentPathFailed {
 				payment_id: None,
 				payment_hash: PaymentHash([0; 32]),
 				rejected_by_dest: false,
@@ -2139,7 +2125,7 @@ mod tests {
 		}
 
 		// Permanent closing deletes a channel
-		gossip_sync.handle_event(&Event::PaymentPathFailed {
+		network_graph.handle_event(&Event::PaymentPathFailed {
 			payment_id: None,
 			payment_hash: PaymentHash([0; 32]),
 			rejected_by_dest: false,
@@ -2167,7 +2153,7 @@ mod tests {
 		let logger = test_utils::TestLogger::new();
 		let chain_source = Arc::new(test_utils::TestChainSource::new(Network::Testnet));
 		let genesis_hash = genesis_block(Network::Testnet).header.block_hash();
-		let network_graph = NetworkGraph::new(genesis_hash);
+		let network_graph = NetworkGraph::new(genesis_hash, &logger);
 		let gossip_sync = P2PGossipSync::new(&network_graph, Some(chain_source.clone()), &logger);
 		let secp_ctx = Secp256k1::new();
 
@@ -2177,7 +2163,7 @@ mod tests {
 		let valid_channel_announcement = get_signed_channel_announcement(|_| {}, node_1_privkey, node_2_privkey, &secp_ctx);
 		let short_channel_id = valid_channel_announcement.contents.short_channel_id;
 		let chain_source: Option<&test_utils::TestChainSource> = None;
-		assert!(network_graph.update_channel_from_announcement(&valid_channel_announcement, &chain_source, &secp_ctx).is_ok());
+		assert!(network_graph.update_channel_from_announcement(&valid_channel_announcement, &chain_source).is_ok());
 		assert!(network_graph.read_only().channels().get(&short_channel_id).is_some());
 
 		let valid_channel_update = get_signed_channel_update(|_| {}, node_1_privkey, &secp_ctx);
@@ -2380,7 +2366,9 @@ mod tests {
 		assert!(!network_graph.read_only().nodes().is_empty());
 		assert!(!network_graph.read_only().channels().is_empty());
 		network_graph.write(&mut w).unwrap();
-		assert!(<NetworkGraph>::read(&mut io::Cursor::new(&w.0)).unwrap() == network_graph);
+
+		let logger = Arc::new(test_utils::TestLogger::new());
+		assert!(<NetworkGraph<_>>::read(&mut io::Cursor::new(&w.0), logger).unwrap() == network_graph);
 	}
 
 	#[test]
@@ -2390,7 +2378,9 @@ mod tests {
 
 		let mut w = test_utils::TestVecWriter(Vec::new());
 		network_graph.write(&mut w).unwrap();
-		let reassembled_network_graph: NetworkGraph = Readable::read(&mut io::Cursor::new(&w.0)).unwrap();
+
+		let logger = Arc::new(test_utils::TestLogger::new());
+		let reassembled_network_graph: NetworkGraph<_> = ReadableArgs::read(&mut io::Cursor::new(&w.0), logger).unwrap();
 		assert!(reassembled_network_graph == network_graph);
 		assert_eq!(reassembled_network_graph.get_last_rapid_gossip_sync_timestamp().unwrap(), 42);
 	}
@@ -2679,7 +2669,7 @@ mod tests {
 	}
 
 	fn do_handling_query_channel_range(
-		gossip_sync: &P2PGossipSync<&NetworkGraph, Arc<test_utils::TestChainSource>, Arc<test_utils::TestLogger>>,
+		gossip_sync: &P2PGossipSync<&NetworkGraph<Arc<test_utils::TestLogger>>, Arc<test_utils::TestChainSource>, Arc<test_utils::TestLogger>>,
 		test_node_id: &PublicKey,
 		msg: QueryChannelRange,
 		expected_ok: bool,
@@ -2752,18 +2742,20 @@ mod benches {
 
 	#[bench]
 	fn read_network_graph(bench: &mut Bencher) {
+		let logger = ::util::test_utils::TestLogger::new();
 		let mut d = ::routing::router::test_utils::get_route_file().unwrap();
 		let mut v = Vec::new();
 		d.read_to_end(&mut v).unwrap();
 		bench.iter(|| {
-			let _ = NetworkGraph::read(&mut std::io::Cursor::new(&v)).unwrap();
+			let _ = NetworkGraph::read(&mut std::io::Cursor::new(&v), &logger).unwrap();
 		});
 	}
 
 	#[bench]
 	fn write_network_graph(bench: &mut Bencher) {
+		let logger = ::util::test_utils::TestLogger::new();
 		let mut d = ::routing::router::test_utils::get_route_file().unwrap();
-		let net_graph = NetworkGraph::read(&mut d).unwrap();
+		let net_graph = NetworkGraph::read(&mut d, &logger).unwrap();
 		bench.iter(|| {
 			let _ = net_graph.encode();
 		});

@@ -38,7 +38,7 @@ pub trait Persister<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L:
 	fn persist_manager(&self, channel_manager: &ChannelManager<Signer, M, T, K, F, L>) -> Result<(), io::Error>;
 
 	/// Persist the given [`NetworkGraph`] to disk, returning an error if persistence failed.
-	fn persist_graph(&self, network_graph: &NetworkGraph) -> Result<(), io::Error>;
+	fn persist_graph(&self, network_graph: &NetworkGraph<L>) -> Result<(), io::Error>;
 
 	/// Persist the given [`WriteableScore`] to disk, returning an error if persistence failed.
 	fn persist_scorer(&self, scorer: &S) -> Result<(), io::Error>;
@@ -58,7 +58,7 @@ impl<'a, A: KVStorePersister, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Der
 	}
 
 	/// Persist the given [`NetworkGraph`] to disk with the name "network_graph", returning an error if persistence failed.
-	fn persist_graph(&self, network_graph: &NetworkGraph) -> Result<(), io::Error> {
+	fn persist_graph(&self, network_graph: &NetworkGraph<L>) -> Result<(), io::Error> {
 		self.persist("network_graph", network_graph)
 	}
 

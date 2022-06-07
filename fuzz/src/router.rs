@@ -162,7 +162,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 	let logger: Arc<dyn Logger> = Arc::new(test_logger::TestLogger::new("".to_owned(), out));
 
 	let our_pubkey = get_pubkey!();
-	let net_graph = NetworkGraph::new(genesis_block(Network::Bitcoin).header.block_hash());
+	let net_graph = NetworkGraph::new(genesis_block(Network::Bitcoin).header.block_hash(), Arc::clone(&logger));
 
 	let mut node_pks = HashSet::new();
 	let mut scid = 42;
@@ -267,7 +267,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 						final_value_msat: slice_to_be64(get_slice!(8)),
 						final_cltv_expiry_delta: slice_to_be32(get_slice!(4)),
 					};
-					let _ = find_route(&our_pubkey, &route_params, &net_graph,
+					let _ = find_route(&our_pubkey, &route_params, &net_graph.read_only(),
 						first_hops.map(|c| c.iter().collect::<Vec<_>>()).as_ref().map(|a| a.as_slice()),
 						Arc::clone(&logger), &scorer, &random_seed_bytes);
 				}

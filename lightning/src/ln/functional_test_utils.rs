@@ -27,7 +27,7 @@ use util::test_utils::{panicking, TestChainMonitor};
 use util::events::{Event, MessageSendEvent, MessageSendEventsProvider, PaymentPurpose};
 use util::errors::APIError;
 use util::config::UserConfig;
-use util::ser::{ReadableArgs, Writeable, Readable};
+use util::ser::{ReadableArgs, Writeable};
 
 use bitcoin::blockdata::block::{Block, BlockHeader};
 use bitcoin::blockdata::constants::genesis_block;
@@ -257,7 +257,6 @@ pub struct TestChanMonCfg {
 	pub persister: test_utils::TestPersister,
 	pub logger: test_utils::TestLogger,
 	pub keys_manager: test_utils::TestKeysInterface,
-	pub network_graph: NetworkGraph,
 }
 
 pub struct NodeCfg<'a> {
@@ -267,7 +266,7 @@ pub struct NodeCfg<'a> {
 	pub chain_monitor: test_utils::TestChainMonitor<'a>,
 	pub keys_manager: &'a test_utils::TestKeysInterface,
 	pub logger: &'a test_utils::TestLogger,
-	pub network_graph: &'a NetworkGraph,
+	pub network_graph: NetworkGraph<&'a test_utils::TestLogger>,
 	pub node_seed: [u8; 32],
 	pub features: InitFeatures,
 }
@@ -278,8 +277,8 @@ pub struct Node<'a, 'b: 'a, 'c: 'b> {
 	pub chain_monitor: &'b test_utils::TestChainMonitor<'c>,
 	pub keys_manager: &'b test_utils::TestKeysInterface,
 	pub node: &'a ChannelManager<EnforcingSigner, &'b TestChainMonitor<'c>, &'c test_utils::TestBroadcaster, &'b test_utils::TestKeysInterface, &'c test_utils::TestFeeEstimator, &'c test_utils::TestLogger>,
-	pub network_graph: &'c NetworkGraph,
-	pub gossip_sync: P2PGossipSync<&'c NetworkGraph, &'c test_utils::TestChainSource, &'c test_utils::TestLogger>,
+	pub network_graph: &'b NetworkGraph<&'c test_utils::TestLogger>,
+	pub gossip_sync: P2PGossipSync<&'b NetworkGraph<&'c test_utils::TestLogger>, &'c test_utils::TestChainSource, &'c test_utils::TestLogger>,
 	pub node_seed: [u8; 32],
 	pub network_payment_count: Rc<RefCell<u8>>,
 	pub network_chan_count: Rc<RefCell<u32>>,
@@ -311,7 +310,7 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 			{
 				let mut w = test_utils::TestVecWriter(Vec::new());
 				self.network_graph.write(&mut w).unwrap();
-				let network_graph_deser = <NetworkGraph>::read(&mut io::Cursor::new(&w.0)).unwrap();
+				let network_graph_deser = <NetworkGraph<_>>::read(&mut io::Cursor::new(&w.0), self.logger).unwrap();
 				assert!(network_graph_deser == *self.network_graph);
 				let gossip_sync = P2PGossipSync::new(
 					&network_graph_deser, Some(self.chain_source), self.logger
@@ -1923,9 +1922,8 @@ pub fn create_chanmon_cfgs(node_count: usize) -> Vec<TestChanMonCfg> {
 		let persister = test_utils::TestPersister::new();
 		let seed = [i as u8; 32];
 		let keys_manager = test_utils::TestKeysInterface::new(&seed, Network::Testnet);
-		let network_graph = NetworkGraph::new(chain_source.genesis_hash);
 
-		chan_mon_cfgs.push(TestChanMonCfg{ tx_broadcaster, fee_estimator, chain_source, logger, persister, keys_manager, network_graph });
+		chan_mon_cfgs.push(TestChanMonCfg{ tx_broadcaster, fee_estimator, chain_source, logger, persister, keys_manager });
 	}
 
 	chan_mon_cfgs
@@ -1946,7 +1944,7 @@ pub fn create_node_cfgs<'a>(node_count: usize, chanmon_cfgs: &'a Vec<TestChanMon
 			keys_manager: &chanmon_cfgs[i].keys_manager,
 			node_seed: seed,
 			features: InitFeatures::known(),
-			network_graph: &chanmon_cfgs[i].network_graph,
+			network_graph: NetworkGraph::new(chanmon_cfgs[i].chain_source.genesis_hash, &chanmon_cfgs[i].logger),
 		});
 	}
 
@@ -1992,7 +1990,7 @@ pub fn create_network<'a, 'b: 'a, 'c: 'b>(node_count: usize, cfgs: &'b Vec<NodeC
 	let connect_style = Rc::new(RefCell::new(ConnectStyle::random_style()));
 
 	for i in 0..node_count {
-		let gossip_sync = P2PGossipSync::new(cfgs[i].network_graph, None, cfgs[i].logger);
+		let gossip_sync = P2PGossipSync::new(&cfgs[i].network_graph, None, cfgs[i].logger);
 		nodes.push(Node{
 			chain_source: cfgs[i].chain_source, tx_broadcaster: cfgs[i].tx_broadcaster,
 			chain_monitor: &cfgs[i].chain_monitor, keys_manager: &cfgs[i].keys_manager,
