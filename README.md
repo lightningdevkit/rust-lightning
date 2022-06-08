@@ -50,6 +50,8 @@ Crates
   this is a simple alternative to implementing the required network stack, especially for those already using Tokio.
 6. [lightning-persister](./lightning-persister)
   Utilities to manage Rust-Lightning channel data persistence and retrieval.
+7. [lightning-rapid-gossip-sync](./lightning-rapid-gossip-sync)
+  Client for rapid gossip graph syncing, aimed primarily at mobile clients.
 
 About
 -----------
