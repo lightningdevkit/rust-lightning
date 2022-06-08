@@ -411,7 +411,7 @@ fn test_upfront_shutdown_script() {
 	let mut config = UserConfig::default();
 	config.own_channel_config.announced_channel = true;
 	config.peer_channel_config_limits.force_announced_channel_preference = false;
-	config.channel_options.commit_upfront_shutdown_pubkey = false;
+	config.own_channel_config.commit_upfront_shutdown_pubkey = false;
 	let user_cfgs = [None, Some(config), None];
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
@@ -576,7 +576,7 @@ fn test_segwit_v0_shutdown_script() {
 	let mut config = UserConfig::default();
 	config.own_channel_config.announced_channel = true;
 	config.peer_channel_config_limits.force_announced_channel_preference = false;
-	config.channel_options.commit_upfront_shutdown_pubkey = false;
+	config.own_channel_config.commit_upfront_shutdown_pubkey = false;
 	let user_cfgs = [None, Some(config), None];
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
@@ -611,7 +611,7 @@ fn test_anysegwit_shutdown_script() {
 	let mut config = UserConfig::default();
 	config.own_channel_config.announced_channel = true;
 	config.peer_channel_config_limits.force_announced_channel_preference = false;
-	config.channel_options.commit_upfront_shutdown_pubkey = false;
+	config.own_channel_config.commit_upfront_shutdown_pubkey = false;
 	let user_cfgs = [None, Some(config), None];
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
@@ -646,7 +646,7 @@ fn test_unsupported_anysegwit_shutdown_script() {
 	let mut config = UserConfig::default();
 	config.own_channel_config.announced_channel = true;
 	config.peer_channel_config_limits.force_announced_channel_preference = false;
-	config.channel_options.commit_upfront_shutdown_pubkey = false;
+	config.own_channel_config.commit_upfront_shutdown_pubkey = false;
 	let user_cfgs = [None, Some(config), None];
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let mut node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
@@ -688,7 +688,7 @@ fn test_invalid_shutdown_script() {
 	let mut config = UserConfig::default();
 	config.own_channel_config.announced_channel = true;
 	config.peer_channel_config_limits.force_announced_channel_preference = false;
-	config.channel_options.commit_upfront_shutdown_pubkey = false;
+	config.own_channel_config.commit_upfront_shutdown_pubkey = false;
 	let user_cfgs = [None, Some(config), None];
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);

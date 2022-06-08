@@ -918,7 +918,7 @@ impl<Signer: Sign> Channel<Signer> {
 		let mut secp_ctx = Secp256k1::new();
 		secp_ctx.seeded_randomize(&keys_provider.get_secure_random_bytes());
 
-		let shutdown_scriptpubkey = if config.channel_options.commit_upfront_shutdown_pubkey {
+		let shutdown_scriptpubkey = if config.own_channel_config.commit_upfront_shutdown_pubkey {
 			Some(keys_provider.get_shutdown_scriptpubkey())
 		} else { None };
 
@@ -1239,7 +1239,7 @@ impl<Signer: Sign> Channel<Signer> {
 			}
 		} else { None };
 
-		let shutdown_scriptpubkey = if config.channel_options.commit_upfront_shutdown_pubkey {
+		let shutdown_scriptpubkey = if config.own_channel_config.commit_upfront_shutdown_pubkey {
 			Some(keys_provider.get_shutdown_scriptpubkey())
 		} else { None };
 

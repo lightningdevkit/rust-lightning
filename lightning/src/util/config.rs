@@ -87,7 +87,7 @@ pub struct ChannelHandshakeConfig {
 	///
 	/// If this option is set, channels may be created that will not be readable by LDK versions
 	/// prior to 0.0.106, causing [`ChannelManager`]'s read method to return a
-	/// [`DecodeError:InvalidValue`].
+	/// [`DecodeError::InvalidValue`].
 	///
 	/// Note that setting this to true does *not* prevent us from opening channels with
 	/// counterparties that do not support the `scid_alias` option; we will simply fall back to a
@@ -100,7 +100,7 @@ pub struct ChannelHandshakeConfig {
 	/// Default value: false. This value is likely to change to true in the future.
 	///
 	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
-	/// [`DecodeError:InvalidValue`]: crate::ln::msgs::DecodeError::InvalidValue
+	/// [`DecodeError::InvalidValue`]: crate::ln::msgs::DecodeError::InvalidValue
 	pub negotiate_scid_privacy: bool,
 	/// Set to announce the channel publicly and notify all nodes that they can route via this
 	/// channel.
@@ -112,6 +112,20 @@ pub struct ChannelHandshakeConfig {
 	///
 	/// Default value: false.
 	pub announced_channel: bool,
+	/// When set, we commit to an upfront shutdown_pubkey at channel open. If our counterparty
+	/// supports it, they will then enforce the mutual-close output to us matches what we provided
+	/// at intialization, preventing us from closing to an alternate pubkey.
+	///
+	/// This is set to true by default to provide a slight increase in security, though ultimately
+	/// any attacker who is able to take control of a channel can just as easily send the funds via
+	/// lightning payments, so we never require that our counterparties support this option.
+	///
+	/// The upfront key committed is provided from [`KeysInterface::get_shutdown_scriptpubkey`].
+	///
+	/// Default value: true.
+	///
+	/// [`KeysInterface::get_shutdown_scriptpubkey`]: crate::chain::keysinterface::KeysInterface::get_shutdown_scriptpubkey
+	pub commit_upfront_shutdown_pubkey: bool,
 }
 
 impl Default for ChannelHandshakeConfig {
@@ -123,6 +137,7 @@ impl Default for ChannelHandshakeConfig {
 			max_inbound_htlc_value_in_flight_percent_of_channel: 10,
 			negotiate_scid_privacy: false,
 			announced_channel: false,
+			commit_upfront_shutdown_pubkey: true,
 		}
 	}
 }
