@@ -870,7 +870,13 @@ pub(crate) const MAX_LOCAL_BREAKDOWN_TIMEOUT: u16 = 2 * 6 * 24 * 7;
 // the HTLC via a full update_fail_htlc/commitment_signed dance before we hit the
 // CLTV_CLAIM_BUFFER point (we static assert that it's at least 3 blocks more).
 pub const MIN_CLTV_EXPIRY_DELTA: u16 = 6*7;
-pub(super) const CLTV_FAR_FAR_AWAY: u32 = 6 * 24 * 7; //TODO?
+// This should be long enough to allow a payment path drawn across multiple routing hops with substantial
+// `cltv_expiry_delta`. Indeed, the length of those values is the reaction delay offered to a routing node
+// in case of HTLC on-chain settlement. While appearing less competitive, a node operator could decide to
+// scale them up to suit its security policy. At the network-level, we shouldn't constrain them too much,
+// while avoiding to introduce a DoS vector. Further, a low CTLV_FAR_FAR_AWAY could be a source of
+// routing failure for any HTLC sender picking up an LDK node among the first hops.
+pub(super) const CLTV_FAR_FAR_AWAY: u32 = 14 * 24 * 6;
 
 /// Minimum CLTV difference between the current block height and received inbound payments.
 /// Invoices generated for payment to us must set their `min_final_cltv_expiry` field to at least
