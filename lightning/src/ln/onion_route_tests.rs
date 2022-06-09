@@ -854,7 +854,7 @@ fn test_phantom_onion_hmac_failure() {
 		.blamed_scid(phantom_scid)
 		.blamed_chan_closed(true)
 		.expected_htlc_error_data(0x8000 | 0x4000 | 5, &sha256_of_onion);
-	expect_payment_failed_conditions!(nodes[0], payment_hash, false, fail_conditions);
+	expect_payment_failed_conditions(&nodes[0], payment_hash, false, fail_conditions);
 }
 
 #[test]
@@ -927,7 +927,7 @@ fn test_phantom_invalid_onion_payload() {
 		.blamed_scid(phantom_scid)
 		.blamed_chan_closed(true)
 		.expected_htlc_error_data(0x4000 | 22, &error_data);
-	expect_payment_failed_conditions!(nodes[0], payment_hash, true, fail_conditions);
+	expect_payment_failed_conditions(&nodes[0], payment_hash, true, fail_conditions);
 }
 
 #[test]
@@ -983,7 +983,7 @@ fn test_phantom_final_incorrect_cltv_expiry() {
 	let mut fail_conditions = PaymentFailedConditions::new()
 		.blamed_scid(phantom_scid)
 		.expected_htlc_error_data(18, &error_data);
-	expect_payment_failed_conditions!(nodes[0], payment_hash, false, fail_conditions);
+	expect_payment_failed_conditions(&nodes[0], payment_hash, false, fail_conditions);
 }
 
 #[test]
@@ -1028,7 +1028,7 @@ fn test_phantom_failure_too_low_cltv() {
 	let mut fail_conditions = PaymentFailedConditions::new()
 		.blamed_scid(phantom_scid)
 		.expected_htlc_error_data(17, &error_data);
-	expect_payment_failed_conditions!(nodes[0], payment_hash, false, fail_conditions);
+	expect_payment_failed_conditions(&nodes[0], payment_hash, false, fail_conditions);
 }
 
 #[test]
@@ -1076,7 +1076,7 @@ fn test_phantom_failure_too_low_recv_amt() {
 	let mut fail_conditions = PaymentFailedConditions::new()
 		.blamed_scid(phantom_scid)
 		.expected_htlc_error_data(0x4000 | 15, &error_data);
-	expect_payment_failed_conditions!(nodes[0], payment_hash, true, fail_conditions);
+	expect_payment_failed_conditions(&nodes[0], payment_hash, true, fail_conditions);
 }
 
 #[test]
@@ -1123,7 +1123,7 @@ fn test_phantom_dust_exposure_failure() {
 		.blamed_scid(channel.0.contents.short_channel_id)
 		.blamed_chan_closed(false)
 		.expected_htlc_error_data(0x1000 | 7, &err_data);
-		expect_payment_failed_conditions!(nodes[0], payment_hash, false, fail_conditions);
+		expect_payment_failed_conditions(&nodes[0], payment_hash, false, fail_conditions);
 }
 
 #[test]
@@ -1174,5 +1174,5 @@ fn test_phantom_failure_reject_payment() {
 	let mut fail_conditions = PaymentFailedConditions::new()
 		.blamed_scid(phantom_scid)
 		.expected_htlc_error_data(0x4000 | 15, &error_data);
-	expect_payment_failed_conditions!(nodes[0], payment_hash, true, fail_conditions);
+	expect_payment_failed_conditions(&nodes[0], payment_hash, true, fail_conditions);
 }

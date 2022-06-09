@@ -460,7 +460,7 @@ fn test_inbound_scid_privacy() {
 	nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &updates.update_fail_htlcs[0]);
 	commitment_signed_dance!(nodes[0], nodes[1], updates.commitment_signed, false);
 
-	expect_payment_failed_conditions!(nodes[0], payment_hash_2, false,
+	expect_payment_failed_conditions(&nodes[0], payment_hash_2, false,
 		PaymentFailedConditions::new().blamed_scid(last_hop[0].short_channel_id.unwrap())
 			.blamed_chan_closed(true).expected_htlc_error_data(0x4000|10, &[0; 0]));
 }
@@ -537,7 +537,7 @@ fn test_scid_alias_returned() {
 	err_data.extend_from_slice(&ChannelUpdate::TYPE.to_be_bytes());
 	err_data.extend_from_slice(&msg.encode());
 
-	expect_payment_failed_conditions!(nodes[0], payment_hash, false,
+	expect_payment_failed_conditions(&nodes[0], payment_hash, false,
 		PaymentFailedConditions::new().blamed_scid(last_hop[0].inbound_scid_alias.unwrap())
 			.blamed_chan_closed(false).expected_htlc_error_data(0x1000|7, &err_data));
 
@@ -560,7 +560,7 @@ fn test_scid_alias_returned() {
 	err_data.extend_from_slice(&(msg.serialized_length() as u16 + 2).to_be_bytes());
 	err_data.extend_from_slice(&ChannelUpdate::TYPE.to_be_bytes());
 	err_data.extend_from_slice(&msg.encode());
-	expect_payment_failed_conditions!(nodes[0], payment_hash, false,
+	expect_payment_failed_conditions(&nodes[0], payment_hash, false,
 		PaymentFailedConditions::new().blamed_scid(last_hop[0].inbound_scid_alias.unwrap())
 			.blamed_chan_closed(false).expected_htlc_error_data(0x1000|12, &err_data));
 }

@@ -9727,7 +9727,7 @@ fn do_test_dup_htlc_second_rejected(test_for_second_fail_panic: bool) {
 		nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &fail_updates_1.update_fail_htlcs[0]);
 		commitment_signed_dance!(nodes[0], nodes[1], fail_updates_1.commitment_signed, false);
 
-		expect_payment_failed_conditions!(nodes[0], our_payment_hash, true, PaymentFailedConditions::new().mpp_parts_remain());
+		expect_payment_failed_conditions(&nodes[0], our_payment_hash, true, PaymentFailedConditions::new().mpp_parts_remain());
 
 		claim_payment(&nodes[0], &[&nodes[1]], our_payment_preimage);
 	}
@@ -9832,7 +9832,7 @@ fn test_inconsistent_mpp_params() {
 	nodes[0].node.handle_update_fail_htlc(&nodes[2].node.get_our_node_id(), &fail_updates_2.update_fail_htlcs[0]);
 	commitment_signed_dance!(nodes[0], nodes[2], fail_updates_2.commitment_signed, false);
 
-	expect_payment_failed_conditions!(nodes[0], our_payment_hash, true, PaymentFailedConditions::new().mpp_parts_remain());
+	expect_payment_failed_conditions(&nodes[0], our_payment_hash, true, PaymentFailedConditions::new().mpp_parts_remain());
 
 	nodes[0].node.send_payment_along_path(&route.paths[1], &payment_params_opt, &our_payment_hash, &Some(our_payment_secret), 15_000_000, cur_height, payment_id, &None).unwrap();
 	check_added_monitors!(nodes[0], 1);
