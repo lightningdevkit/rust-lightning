@@ -171,9 +171,9 @@ fn do_test_counterparty_no_reserve(send_from_initiator: bool) {
 	{
 		let sender_node = if send_from_initiator { &nodes[1] } else { &nodes[0] };
 		let counterparty_node = if send_from_initiator { &nodes[0] } else { &nodes[1] };
-		let per_peer_lock = sender_node.node.per_peer_state.write().unwrap();
-		let mut peer_state_lock = per_peer_lock.get(&counterparty_node.node.get_our_node_id()).unwrap().lock().unwrap();
-		let mut chan = get_channel_ref!(sender_node, peer_state_lock, temp_channel_id);
+		let mut sender_node_per_peer_lock;
+		let mut sender_node_peer_state_lock;
+		let mut chan = get_channel_ref!(sender_node, counterparty_node, sender_node_per_peer_lock, sender_node_peer_state_lock, temp_channel_id);
 		chan.holder_selected_channel_reserve_satoshis = 0;
 		chan.holder_max_htlc_value_in_flight_msat = 100_000_000;
 	}
@@ -8461,9 +8461,9 @@ fn test_reject_funding_before_inbound_channel_accepted() {
 	// `handle_accept_channel`, which is required in order for `create_funding_transaction` to
 	// succeed when `nodes[0]` is passed to it.
 	{
-		let per_peer_lock = nodes[1].node.per_peer_state.write().unwrap();
-		let mut peer_state_lock = per_peer_lock.get(&nodes[0].node.get_our_node_id()).unwrap().lock().unwrap();
-		let channel = get_channel_ref!(&nodes[1], peer_state_lock, temp_channel_id);
+		let mut node_1_per_peer_lock;
+		let mut node_1_peer_state_lock;
+		let channel =  get_channel_ref!(&nodes[1], nodes[0], node_1_per_peer_lock, node_1_peer_state_lock, temp_channel_id);
 		let accept_chan_msg = channel.get_accept_channel_message();
 		nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), InitFeatures::known(), &accept_chan_msg);
 	}

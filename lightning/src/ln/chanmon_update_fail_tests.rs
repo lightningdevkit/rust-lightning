@@ -1413,12 +1413,12 @@ fn monitor_failed_no_reestablish_response() {
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let channel_id = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known()).2;
 	{
-		let node_0_per_peer_lock = nodes[0].node.per_peer_state.write().unwrap();
-		let mut node_0_peer_state_lock = node_0_per_peer_lock.get(&nodes[1].node.get_our_node_id()).unwrap().lock().unwrap();
-		let node_1_per_peer_lock = nodes[1].node.per_peer_state.write().unwrap();
-		let mut node_1_peer_state_lock = node_1_per_peer_lock.get(&nodes[0].node.get_our_node_id()).unwrap().lock().unwrap();
-		get_channel_ref!(nodes[0], node_0_peer_state_lock, channel_id).announcement_sigs_state = AnnouncementSigsState::PeerReceived;
-		get_channel_ref!(nodes[1], node_1_peer_state_lock, channel_id).announcement_sigs_state = AnnouncementSigsState::PeerReceived;
+		let mut node_0_per_peer_lock;
+		let mut node_0_peer_state_lock;
+		let mut node_1_per_peer_lock;
+		let mut node_1_peer_state_lock;
+		get_channel_ref!(nodes[0], nodes[1], node_0_per_peer_lock, node_0_peer_state_lock, channel_id).announcement_sigs_state = AnnouncementSigsState::PeerReceived;
+		get_channel_ref!(nodes[1], nodes[0], node_1_per_peer_lock, node_1_peer_state_lock, channel_id).announcement_sigs_state = AnnouncementSigsState::PeerReceived;
 	}
 
 	// Route the payment and deliver the initial commitment_signed (with a monitor update failure

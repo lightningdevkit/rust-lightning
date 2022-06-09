@@ -510,8 +510,10 @@ macro_rules! get_htlc_update_msgs {
 
 #[cfg(test)]
 macro_rules! get_channel_ref {
-	($node: expr, $peer_state_lock: ident, $channel_id: expr) => {
+	($node: expr, $counterparty_node: expr, $per_peer_state_lock: ident, $peer_state_lock: ident, $channel_id: expr) => {
 		{
+			$per_peer_state_lock = $node.node.per_peer_state.write().unwrap();
+			$peer_state_lock = $per_peer_state_lock.get(&$counterparty_node.node.get_our_node_id()).unwrap().lock().unwrap();
 			$peer_state_lock.channel_by_id.get_mut(&$channel_id).unwrap()
 		}
 	}
@@ -521,9 +523,9 @@ macro_rules! get_channel_ref {
 macro_rules! get_feerate {
 	($node: expr, $counterparty_node: expr, $channel_id: expr) => {
 		{
-			let per_peer_lock = $node.node.per_peer_state.write().unwrap();
-			let mut peer_state_lock = per_peer_lock.get(&$counterparty_node.node.get_our_node_id()).unwrap().lock().unwrap();
-			let chan = get_channel_ref!($node, peer_state_lock, $channel_id);
+			let mut per_peer_state_lock;
+			let mut peer_state_lock;
+			let chan = get_channel_ref!($node, $counterparty_node, per_peer_state_lock, peer_state_lock, $channel_id);
 			chan.get_feerate()
 		}
 	}
@@ -533,9 +535,9 @@ macro_rules! get_feerate {
 macro_rules! get_opt_anchors {
 	($node: expr, $counterparty_node: expr, $channel_id: expr) => {
 		{
-			let per_peer_lock = $node.node.per_peer_state.write().unwrap();
-			let mut peer_state_lock = per_peer_lock.get(&$counterparty_node.node.get_our_node_id()).unwrap().lock().unwrap();
-			let chan = get_channel_ref!($node, peer_state_lock, $channel_id);
+			let mut per_peer_state_lock;
+			let mut peer_state_lock;
+			let chan = get_channel_ref!($node, $counterparty_node, per_peer_state_lock, peer_state_lock, $channel_id);
 			chan.opt_anchors()
 		}
 	}
