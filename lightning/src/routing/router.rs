@@ -887,7 +887,7 @@ where L::Target: Logger {
 		HashMap::with_capacity(network_nodes.len());
 
 	// Keeping track of how much value we already collected across other paths. Helps to decide
-	// when we want to stop looking for new paths. 
+	// when we want to stop looking for new paths.
 	let mut already_collected_value_msat = 0;
 
 	for (_, channels) in first_hop_targets.iter_mut() {
@@ -4015,7 +4015,8 @@ mod tests {
 		let scorer = test_utils::TestScorer::with_penalty(0);
 		let keys_manager = test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
 		let random_seed_bytes = keys_manager.get_secure_random_bytes();
-		let payment_params = PaymentParameters::from_node_id(nodes[2]).with_features(InvoiceFeatures::known());
+		let payment_params = PaymentParameters::from_node_id(nodes[2])
+			.with_features(InvoiceFeatures::known());
 
 		// We need a route consisting of 3 paths:
 		// From our node to node2 via node0, node7, node1 (three paths one hop each).
@@ -4108,15 +4109,39 @@ mod tests {
 		{
 			// Attempt to route more than available results in a failure.
 			if let Err(LightningError{err, action: ErrorAction::IgnoreError}) = get_route(
-					&our_id, &payment_params, &network_graph.read_only(), None, 300_000, 42, Arc::clone(&logger), &scorer, &random_seed_bytes) {
-				assert_eq!(err, "Failed to find a sufficient route to the given destination");
+				&our_id, &payment_params, &network_graph.read_only(), None, 300_000, 42,
+				Arc::clone(&logger), &scorer, &random_seed_bytes) {
+					assert_eq!(err, "Failed to find a sufficient route to the given destination");
+			} else { panic!(); }
+		}
+
+		{
+			// Attempt to route while setting max_mpp_path_count to 0 results in a failure.
+			let zero_payment_params = payment_params.clone().with_max_mpp_path_count(0);
+			if let Err(LightningError{err, action: ErrorAction::IgnoreError}) = get_route(
+				&our_id, &zero_payment_params, &network_graph.read_only(), None, 100, 42,
+				Arc::clone(&logger), &scorer, &random_seed_bytes) {
+					assert_eq!(err, "Can't find an MPP route with no paths allowed.");
+			} else { panic!(); }
+		}
+
+		{
+			// Attempt to route while setting max_mpp_path_count to 3 results in a failure.
+			// This is the case because the minimal_value_contribution_msat would require each path
+			// to account for 1/3 of the total value, which is violated by 2 out of 3 paths.
+			let fail_payment_params = payment_params.clone().with_max_mpp_path_count(3);
+			if let Err(LightningError{err, action: ErrorAction::IgnoreError}) = get_route(
+				&our_id, &fail_payment_params, &network_graph.read_only(), None, 250_000, 42,
+				Arc::clone(&logger), &scorer, &random_seed_bytes) {
+					assert_eq!(err, "Failed to find a sufficient route to the given destination");
 			} else { panic!(); }
 		}
 
 		{
 			// Now, attempt to route 250 sats (just a bit below the capacity).
 			// Our algorithm should provide us with these 3 paths.
-			let route = get_route(&our_id, &payment_params, &network_graph.read_only(), None, 250_000, 42, Arc::clone(&logger), &scorer, &random_seed_bytes).unwrap();
+			let route = get_route(&our_id, &payment_params, &network_graph.read_only(), None,
+				250_000, 42, Arc::clone(&logger), &scorer, &random_seed_bytes).unwrap();
 			assert_eq!(route.paths.len(), 3);
 			let mut total_amount_paid_msat = 0;
 			for path in &route.paths {
@@ -4129,7 +4154,8 @@ mod tests {
 
 		{
 			// Attempt to route an exact amount is also fine
-			let route = get_route(&our_id, &payment_params, &network_graph.read_only(), None, 290_000, 42, Arc::clone(&logger), &scorer, &random_seed_bytes).unwrap();
+			let route = get_route(&our_id, &payment_params, &network_graph.read_only(), None,
+				290_000, 42, Arc::clone(&logger), &scorer, &random_seed_bytes).unwrap();
 			assert_eq!(route.paths.len(), 3);
 			let mut total_amount_paid_msat = 0;
 			for path in &route.paths {
