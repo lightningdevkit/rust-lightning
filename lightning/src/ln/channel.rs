@@ -39,7 +39,7 @@ use util::events::ClosureReason;
 use util::ser::{Readable, ReadableArgs, Writeable, Writer, VecWriter};
 use util::logger::Logger;
 use util::errors::APIError;
-use util::config::{UserConfig, ChannelConfig, ChannelHandshakeConfig, ChannelHandshakeLimits};
+use util::config::{UserConfig, LegacyChannelConfig, ChannelHandshakeConfig, ChannelHandshakeLimits};
 use util::scid_utils::scid_from_parts;
 
 use io;
@@ -491,9 +491,9 @@ pub(crate) const MIN_AFFORDABLE_HTLC_COUNT: usize = 4;
 // Counterparty designates channel data owned by the another channel participant entity.
 pub(super) struct Channel<Signer: Sign> {
 	#[cfg(any(test, feature = "_test_utils"))]
-	pub(crate) config: ChannelConfig,
+	pub(crate) config: LegacyChannelConfig,
 	#[cfg(not(any(test, feature = "_test_utils")))]
-	config: ChannelConfig,
+	config: LegacyChannelConfig,
 
 	inbound_handshake_limits_override: Option<ChannelHandshakeLimits>,
 
@@ -930,7 +930,13 @@ impl<Signer: Sign> Channel<Signer> {
 
 		Ok(Channel {
 			user_id,
-			config: config.channel_options.clone(),
+
+			config: LegacyChannelConfig {
+				mutable: config.channel_options.clone(),
+				announced_channel: config.own_channel_config.announced_channel,
+				commit_upfront_shutdown_pubkey: config.own_channel_config.commit_upfront_shutdown_pubkey,
+			},
+
 			inbound_handshake_limits_override: Some(config.peer_channel_config_limits.clone()),
 
 			channel_id: keys_provider.get_secure_random_bytes(),
@@ -1117,7 +1123,6 @@ impl<Signer: Sign> Channel<Signer> {
 			delayed_payment_basepoint: msg.delayed_payment_basepoint,
 			htlc_basepoint: msg.htlc_basepoint
 		};
-		let mut local_config = (*config).channel_options.clone();
 
 		if config.own_channel_config.our_to_self_delay < BREAKDOWN_TIMEOUT {
 			return Err(ChannelError::Close(format!("Configured with an unreasonable our_to_self_delay ({}) putting user funds at risks. It must be greater than {}", config.own_channel_config.our_to_self_delay, BREAKDOWN_TIMEOUT)));
@@ -1186,8 +1191,6 @@ impl<Signer: Sign> Channel<Signer> {
 				return Err(ChannelError::Close("Peer tried to open channel but their announcement preference is different from ours".to_owned()));
 			}
 		}
-		// we either accept their preference or the preferences match
-		local_config.announced_channel = announced_channel;
 
 		let holder_selected_channel_reserve_satoshis = Channel::<Signer>::get_holder_selected_channel_reserve_satoshis(msg.funding_satoshis);
 		if holder_selected_channel_reserve_satoshis < MIN_CHAN_DUST_LIMIT_SATOSHIS {
@@ -1254,7 +1257,13 @@ impl<Signer: Sign> Channel<Signer> {
 
 		let chan = Channel {
 			user_id,
-			config: local_config,
+
+			config: LegacyChannelConfig {
+				mutable: config.channel_options.clone(),
+				announced_channel,
+				commit_upfront_shutdown_pubkey: config.own_channel_config.commit_upfront_shutdown_pubkey,
+			},
+
 			inbound_handshake_limits_override: None,
 
 			channel_id: msg.temporary_channel_id,
@@ -4011,7 +4020,7 @@ impl<Signer: Sign> Channel<Signer> {
 				// We always add force_close_avoidance_max_fee_satoshis to our normal
 				// feerate-calculated fee, but allow the max to be overridden if we're using a
 				// target feerate-calculated fee.
-				cmp::max(normal_feerate as u64 * tx_weight / 1000 + self.config.force_close_avoidance_max_fee_satoshis,
+				cmp::max(normal_feerate as u64 * tx_weight / 1000 + self.config.mutable.force_close_avoidance_max_fee_satoshis,
 					proposed_max_feerate as u64 * tx_weight / 1000)
 			} else {
 				self.channel_value_satoshis - (self.value_to_self_msat + 999) / 1000
@@ -4471,15 +4480,15 @@ impl<Signer: Sign> Channel<Signer> {
 	}
 
 	pub fn get_fee_proportional_millionths(&self) -> u32 {
-		self.config.forwarding_fee_proportional_millionths
+		self.config.mutable.forwarding_fee_proportional_millionths
 	}
 
 	pub fn get_cltv_expiry_delta(&self) -> u16 {
-		cmp::max(self.config.cltv_expiry_delta, MIN_CLTV_EXPIRY_DELTA)
+		cmp::max(self.config.mutable.cltv_expiry_delta, MIN_CLTV_EXPIRY_DELTA)
 	}
 
 	pub fn get_max_dust_htlc_exposure_msat(&self) -> u64 {
-		self.config.max_dust_htlc_exposure_msat
+		self.config.mutable.max_dust_htlc_exposure_msat
 	}
 
 	pub fn get_feerate(&self) -> u32 {
@@ -4566,7 +4575,7 @@ impl<Signer: Sign> Channel<Signer> {
 	/// Gets the fee we'd want to charge for adding an HTLC output to this Channel
 	/// Allowed in any state (including after shutdown)
 	pub fn get_outbound_forwarding_fee_base_msat(&self) -> u32 {
-		self.config.forwarding_fee_base_msat
+		self.config.mutable.forwarding_fee_base_msat
 	}
 
 	/// Returns true if we've ever received a message from the remote end for this Channel
@@ -6022,11 +6031,11 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<(&'a K, u32)> for Channel<Signer>
 
 		let user_id = Readable::read(reader)?;
 
-		let mut config = Some(ChannelConfig::default());
+		let mut config = Some(LegacyChannelConfig::default());
 		if ver == 1 {
 			// Read the old serialization of the ChannelConfig from version 0.0.98.
-			config.as_mut().unwrap().forwarding_fee_proportional_millionths = Readable::read(reader)?;
-			config.as_mut().unwrap().cltv_expiry_delta = Readable::read(reader)?;
+			config.as_mut().unwrap().mutable.forwarding_fee_proportional_millionths = Readable::read(reader)?;
+			config.as_mut().unwrap().mutable.cltv_expiry_delta = Readable::read(reader)?;
 			config.as_mut().unwrap().announced_channel = Readable::read(reader)?;
 			config.as_mut().unwrap().commit_upfront_shutdown_pubkey = Readable::read(reader)?;
 		} else {

@@ -291,30 +291,6 @@ pub struct ChannelConfig {
 	///
 	/// [`MIN_CLTV_EXPIRY_DELTA`]: crate::ln::channelmanager::MIN_CLTV_EXPIRY_DELTA
 	pub cltv_expiry_delta: u16,
-	/// Set to announce the channel publicly and notify all nodes that they can route via this
-	/// channel.
-	///
-	/// This should only be set to true for nodes which expect to be online reliably.
-	///
-	/// As the node which funds a channel picks this value this will only apply for new outbound
-	/// channels unless [`ChannelHandshakeLimits::force_announced_channel_preference`] is set.
-	///
-	/// This cannot be changed after the initial channel handshake.
-	///
-	/// Default value: false.
-	pub announced_channel: bool,
-	/// When set, we commit to an upfront shutdown_pubkey at channel open. If our counterparty
-	/// supports it, they will then enforce the mutual-close output to us matches what we provided
-	/// at intialization, preventing us from closing to an alternate pubkey.
-	///
-	/// This is set to true by default to provide a slight increase in security, though ultimately
-	/// any attacker who is able to take control of a channel can just as easily send the funds via
-	/// lightning payments, so we never require that our counterparties support this option.
-	///
-	/// This cannot be changed after a channel has been initialized.
-	///
-	/// Default value: true.
-	pub commit_upfront_shutdown_pubkey: bool,
 	/// Limit our total exposure to in-flight HTLCs which are burned to fees as they are too
 	/// small to claim on-chain.
 	///
@@ -363,23 +339,83 @@ impl Default for ChannelConfig {
 			forwarding_fee_proportional_millionths: 0,
 			forwarding_fee_base_msat: 1000,
 			cltv_expiry_delta: 6 * 12, // 6 blocks/hour * 12 hours
-			announced_channel: false,
-			commit_upfront_shutdown_pubkey: true,
 			max_dust_htlc_exposure_msat: 5_000_000,
 			force_close_avoidance_max_fee_satoshis: 1000,
 		}
 	}
 }
 
-impl_writeable_tlv_based!(ChannelConfig, {
-	(0, forwarding_fee_proportional_millionths, required),
-	(1, max_dust_htlc_exposure_msat, (default_value, 5_000_000)),
-	(2, cltv_expiry_delta, required),
-	(3, force_close_avoidance_max_fee_satoshis, (default_value, 1000)),
-	(4, announced_channel, required),
-	(6, commit_upfront_shutdown_pubkey, required),
-	(8, forwarding_fee_base_msat, required),
-});
+/// Legacy version of [`ChannelConfig`] that stored the static
+/// [`ChannelHandshakeConfig::announced_channel`] and
+/// [`ChannelHandshakeConfig::commit_upfront_shutdown_pubkey`] fields.
+#[derive(Copy, Clone, Debug)]
+pub(crate) struct LegacyChannelConfig {
+	pub(crate) mutable: ChannelConfig,
+	/// Deprecated but may still be read from. See [`ChannelHandshakeConfig::announced_channel`] to
+	/// set this when opening/accepting a channel.
+	pub(crate) announced_channel: bool,
+	/// Deprecated but may still be read from. See
+	/// [`ChannelHandshakeConfig::commit_upfront_shutdown_pubkey`] to set this when
+	/// opening/accepting a channel.
+	pub(crate) commit_upfront_shutdown_pubkey: bool,
+}
+
+impl Default for LegacyChannelConfig {
+	fn default() -> Self {
+		Self {
+			mutable: ChannelConfig::default(),
+			announced_channel: false,
+			commit_upfront_shutdown_pubkey: true,
+		}
+	}
+}
+
+impl ::util::ser::Writeable for LegacyChannelConfig {
+	fn write<W: ::util::ser::Writer>(&self, writer: &mut W) -> Result<(), ::io::Error> {
+		write_tlv_fields!(writer, {
+			(0, self.mutable.forwarding_fee_proportional_millionths, required),
+			(1, self.mutable.max_dust_htlc_exposure_msat, (default_value, 5_000_000)),
+			(2, self.mutable.cltv_expiry_delta, required),
+			(3, self.mutable.force_close_avoidance_max_fee_satoshis, (default_value, 1000)),
+			(4, self.announced_channel, required),
+			(6, self.commit_upfront_shutdown_pubkey, required),
+			(8, self.mutable.forwarding_fee_base_msat, required),
+		});
+		Ok(())
+	}
+}
+
+impl ::util::ser::Readable for LegacyChannelConfig {
+	fn read<R: ::io::Read>(reader: &mut R) -> Result<Self, ::ln::msgs::DecodeError> {
+		let mut forwarding_fee_proportional_millionths = 0;
+		let mut max_dust_htlc_exposure_msat = 5_000_000;
+		let mut cltv_expiry_delta = 0;
+		let mut force_close_avoidance_max_fee_satoshis = 1000;
+		let mut announced_channel = false;
+		let mut commit_upfront_shutdown_pubkey = false;
+		let mut forwarding_fee_base_msat = 0;
+		read_tlv_fields!(reader, {
+			(0, forwarding_fee_proportional_millionths, required),
+			(1, max_dust_htlc_exposure_msat, (default_value, 5_000_000)),
+			(2, cltv_expiry_delta, required),
+			(3, force_close_avoidance_max_fee_satoshis, (default_value, 1000)),
+			(4, announced_channel, required),
+			(6, commit_upfront_shutdown_pubkey, required),
+			(8, forwarding_fee_base_msat, required),
+		});
+		Ok(Self {
+			mutable: ChannelConfig {
+				forwarding_fee_proportional_millionths,
+				max_dust_htlc_exposure_msat,
+				cltv_expiry_delta,
+				force_close_avoidance_max_fee_satoshis,
+				forwarding_fee_base_msat,
+			},
+			announced_channel,
+			commit_upfront_shutdown_pubkey,
+		})
+	}
+}
 
 /// Top-level config which holds ChannelHandshakeLimits and ChannelConfig.
 ///
