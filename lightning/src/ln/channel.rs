@@ -4658,9 +4658,17 @@ impl<Signer: Sign> Channel<Signer> {
 		} else if non_shutdown_state == (ChannelState::FundingSent as u32 | ChannelState::OurChannelReady as u32) {
 			// We got a reorg but not enough to trigger a force close, just ignore.
 			false
-		} else if self.channel_state < ChannelState::ChannelFunded as u32 {
-			panic!("Started confirming a channel in a state pre-FundingSent?: {}", self.channel_state);
 		} else {
+			if self.channel_state < ChannelState::ChannelFunded as u32 {
+				// We should never see a funding transaction on-chain until we've received
+				// funding_signed (if we're an outbound channel), or seen funding_generated (if we're
+				// an inbound channel - before that we have no known funding TXID). The fuzzer,
+				// however, may do this and we shouldn't treat it as a bug.
+				#[cfg(not(fuzzing))]
+				panic!("Started confirming a channel in a state pre-FundingSent: {}.\n\
+					Do NOT broadcast a funding transaction manually - let LDK do it for you!",
+					self.channel_state);
+			}
 			// We got a reorg but not enough to trigger a force close, just ignore.
 			false
 		};
