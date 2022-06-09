@@ -2801,6 +2801,11 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// not currently support replacing a funding transaction on an existing channel. Instead,
 	/// create a new channel with a conflicting funding transaction.
 	///
+	/// Note to keep the miner incentives aligned in moving the blockchain forward, we recommend
+	/// the wallet software generating the funding transaction to apply anti-fee sniping as
+	/// implemented by Bitcoin Core wallet. See <https://bitcoinops.org/en/topics/fee-sniping/>
+	/// for more details.
+	///
 	/// [`Event::FundingGenerationReady`]: crate::util::events::Event::FundingGenerationReady
 	/// [`Event::ChannelClosed`]: crate::util::events::Event::ChannelClosed
 	pub fn funding_transaction_generated(&self, temporary_channel_id: &[u8; 32], counterparty_node_id: &PublicKey, funding_transaction: Transaction) -> Result<(), APIError> {
