@@ -94,7 +94,7 @@ pub struct ChannelHandshakeConfig {
 	/// private channel without that option.
 	///
 	/// Ignored if the channel is negotiated to be announced, see
-	/// [`ChannelConfig::announced_channel`] and
+	/// [`ChannelHandshakeConfig::announced_channel`] and
 	/// [`ChannelHandshakeLimits::force_announced_channel_preference`] for more.
 	///
 	/// Default value: false. This value is likely to change to true in the future.
@@ -102,6 +102,16 @@ pub struct ChannelHandshakeConfig {
 	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 	/// [`DecodeError:InvalidValue`]: crate::ln::msgs::DecodeError::InvalidValue
 	pub negotiate_scid_privacy: bool,
+	/// Set to announce the channel publicly and notify all nodes that they can route via this
+	/// channel.
+	///
+	/// This should only be set to true for nodes which expect to be online reliably.
+	///
+	/// As the node which funds a channel picks this value this will only apply for new outbound
+	/// channels unless [`ChannelHandshakeLimits::force_announced_channel_preference`] is set.
+	///
+	/// Default value: false.
+	pub announced_channel: bool,
 }
 
 impl Default for ChannelHandshakeConfig {
@@ -112,6 +122,7 @@ impl Default for ChannelHandshakeConfig {
 			our_htlc_minimum_msat: 1,
 			max_inbound_htlc_value_in_flight_percent_of_channel: 10,
 			negotiate_scid_privacy: false,
+			announced_channel: false,
 		}
 	}
 }
@@ -186,10 +197,10 @@ pub struct ChannelHandshakeLimits {
 	/// Default value: true
 	pub trust_own_funding_0conf: bool,
 	/// Set to force an incoming channel to match our announced channel preference in
-	/// [`ChannelConfig::announced_channel`].
+	/// [`ChannelHandshakeConfig::announced_channel`].
 	///
 	/// For a node which is not online reliably, this should be set to true and
-	/// [`ChannelConfig::announced_channel`] set to false, ensuring that no announced (aka public)
+	/// [`ChannelHandshakeConfig::announced_channel`] set to false, ensuring that no announced (aka public)
 	/// channels will ever be opened.
 	///
 	/// Default value: true.
@@ -372,7 +383,7 @@ pub struct UserConfig {
 	/// node which is not online reliably.
 	///
 	/// For nodes which are not online reliably, you should set all channels to *not* be announced
-	/// (using [`ChannelConfig::announced_channel`] and
+	/// (using [`ChannelHandshakeConfig::announced_channel`] and
 	/// [`ChannelHandshakeLimits::force_announced_channel_preference`]) and set this to false to
 	/// ensure you are not exposed to any forwarding risk.
 	///

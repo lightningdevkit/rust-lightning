@@ -357,7 +357,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 
 			let mut config = UserConfig::default();
 			config.channel_options.forwarding_fee_proportional_millionths = 0;
-			config.channel_options.announced_channel = true;
+			config.own_channel_config.announced_channel = true;
 			let network = Network::Bitcoin;
 			let params = ChainParameters {
 				network,
@@ -377,7 +377,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 
 			let mut config = UserConfig::default();
 			config.channel_options.forwarding_fee_proportional_millionths = 0;
-			config.channel_options.announced_channel = true;
+			config.own_channel_config.announced_channel = true;
 
 			let mut monitors = HashMap::new();
 			let mut old_monitors = $old_monitors.latest_monitors.lock().unwrap();

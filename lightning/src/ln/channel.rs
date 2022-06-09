@@ -855,7 +855,7 @@ impl<Signer: Sign> Channel<Signer> {
 		// available. If it's private, we first try `scid_privacy` as it provides better privacy
 		// with no other changes, and fall back to `only_static_remotekey`
 		let mut ret = ChannelTypeFeatures::only_static_remote_key();
-		if !config.channel_options.announced_channel && config.own_channel_config.negotiate_scid_privacy {
+		if !config.own_channel_config.announced_channel && config.own_channel_config.negotiate_scid_privacy {
 			ret.set_scid_privacy_required();
 		}
 		ret
@@ -1182,7 +1182,7 @@ impl<Signer: Sign> Channel<Signer> {
 		// Convert things into internal flags and prep our state:
 
 		if config.peer_channel_config_limits.force_announced_channel_preference {
-			if local_config.announced_channel != announced_channel {
+			if config.own_channel_config.announced_channel != announced_channel {
 				return Err(ChannelError::Close("Peer tried to open channel but their announcement preference is different from ours".to_owned()));
 			}
 		}
@@ -6918,7 +6918,7 @@ mod tests {
 
 		let counterparty_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let mut config = UserConfig::default();
-		config.channel_options.announced_channel = false;
+		config.own_channel_config.announced_channel = false;
 		let mut chan = Channel::<InMemorySigner>::new_outbound(&&feeest, &&keys_provider, counterparty_node_id, &InitFeatures::known(), 10_000_000, 100000, 42, &config, 0, 42).unwrap(); // Nothing uses their network key in this test
 		chan.holder_dust_limit_satoshis = 546;
 		chan.counterparty_selected_channel_reserve_satoshis = Some(0); // Filled in in accept_channel

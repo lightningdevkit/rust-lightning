@@ -409,7 +409,7 @@ fn test_upfront_shutdown_script() {
 	// enforce it at shutdown message
 
 	let mut config = UserConfig::default();
-	config.channel_options.announced_channel = true;
+	config.own_channel_config.announced_channel = true;
 	config.peer_channel_config_limits.force_announced_channel_preference = false;
 	config.channel_options.commit_upfront_shutdown_pubkey = false;
 	let user_cfgs = [None, Some(config), None];
@@ -574,7 +574,7 @@ fn test_invalid_upfront_shutdown_script() {
 #[test]
 fn test_segwit_v0_shutdown_script() {
 	let mut config = UserConfig::default();
-	config.channel_options.announced_channel = true;
+	config.own_channel_config.announced_channel = true;
 	config.peer_channel_config_limits.force_announced_channel_preference = false;
 	config.channel_options.commit_upfront_shutdown_pubkey = false;
 	let user_cfgs = [None, Some(config), None];
@@ -609,7 +609,7 @@ fn test_segwit_v0_shutdown_script() {
 #[test]
 fn test_anysegwit_shutdown_script() {
 	let mut config = UserConfig::default();
-	config.channel_options.announced_channel = true;
+	config.own_channel_config.announced_channel = true;
 	config.peer_channel_config_limits.force_announced_channel_preference = false;
 	config.channel_options.commit_upfront_shutdown_pubkey = false;
 	let user_cfgs = [None, Some(config), None];
@@ -644,7 +644,7 @@ fn test_anysegwit_shutdown_script() {
 #[test]
 fn test_unsupported_anysegwit_shutdown_script() {
 	let mut config = UserConfig::default();
-	config.channel_options.announced_channel = true;
+	config.own_channel_config.announced_channel = true;
 	config.peer_channel_config_limits.force_announced_channel_preference = false;
 	config.channel_options.commit_upfront_shutdown_pubkey = false;
 	let user_cfgs = [None, Some(config), None];
@@ -686,7 +686,7 @@ fn test_unsupported_anysegwit_shutdown_script() {
 #[test]
 fn test_invalid_shutdown_script() {
 	let mut config = UserConfig::default();
-	config.channel_options.announced_channel = true;
+	config.own_channel_config.announced_channel = true;
 	config.peer_channel_config_limits.force_announced_channel_preference = false;
 	config.channel_options.commit_upfront_shutdown_pubkey = false;
 	let user_cfgs = [None, Some(config), None];
