@@ -904,7 +904,7 @@ pub struct NodeAnnouncementInfo {
 	/// Moniker assigned to the node.
 	/// May be invalid or malicious (eg control chars),
 	/// should not be exposed to the user.
-	pub alias: [u8; 32],
+	pub alias: NodeAlias,
 	/// Internet-level addresses via which one can connect to the node
 	pub addresses: Vec<NetAddress>,
 	/// An initial announcement of the node
@@ -922,6 +922,51 @@ impl_writeable_tlv_based!(NodeAnnouncementInfo, {
 	(8, announcement_message, option),
 	(10, addresses, vec_type),
 });
+
+/// A user-defined name for a node, which may be used when displaying the node in a graph.
+///
+/// Since node aliases are provided by third parties, they are a potential avenue for injection
+/// attacks. Care must be taken when processing.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NodeAlias(pub [u8; 32]);
+
+impl fmt::Display for NodeAlias {
+	fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
+		let control_symbol = core::char::REPLACEMENT_CHARACTER;
+		let first_null = self.0.iter().position(|b| *b == 0).unwrap_or(self.0.len());
+		let bytes = self.0.split_at(first_null).0;
+		match core::str::from_utf8(bytes) {
+			Ok(alias) => {
+				for c in alias.chars() {
+					let mut bytes = [0u8; 4];
+					let c = if !c.is_control() { c } else { control_symbol };
+					f.write_str(c.encode_utf8(&mut bytes))?;
+				}
+			},
+			Err(_) => {
+				for c in bytes.iter().map(|b| *b as char) {
+					// Display printable ASCII characters
+					let mut bytes = [0u8; 4];
+					let c = if c >= '\x20' && c <= '\x7e' { c } else { control_symbol };
+					f.write_str(c.encode_utf8(&mut bytes))?;
+				}
+			},
+		};
+		Ok(())
+	}
+}
+
+impl Writeable for NodeAlias {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		self.0.write(w)
+	}
+}
+
+impl Readable for NodeAlias {
+	fn read<R: io::Read>(r: &mut R) -> Result<Self, DecodeError> {
+		Ok(NodeAlias(Readable::read(r)?))
+	}
+}
 
 #[derive(Clone, Debug, PartialEq)]
 /// Details about a node in the network, known from the network announcement.
@@ -1126,7 +1171,7 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 					features: msg.features.clone(),
 					last_update: msg.timestamp,
 					rgb: msg.rgb,
-					alias: msg.alias,
+					alias: NodeAlias(msg.alias),
 					addresses: msg.addresses.clone(),
 					announcement_message: if should_relay { full_msg.cloned() } else { None },
 				});
@@ -1627,7 +1672,7 @@ mod tests {
 	use chain;
 	use ln::PaymentHash;
 	use ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
-	use routing::gossip::{P2PGossipSync, NetworkGraph, NetworkUpdate, MAX_EXCESS_BYTES_FOR_RELAY};
+	use routing::gossip::{P2PGossipSync, NetworkGraph, NetworkUpdate, NodeAlias, MAX_EXCESS_BYTES_FOR_RELAY};
 	use ln::msgs::{Init, OptionalField, RoutingMessageHandler, UnsignedNodeAnnouncement, NodeAnnouncement,
 		UnsignedChannelAnnouncement, ChannelAnnouncement, UnsignedChannelUpdate, ChannelUpdate,
 		ReplyChannelRange, QueryChannelRange, QueryShortChannelIds, MAX_VALUE_MSAT};
@@ -2730,6 +2775,29 @@ mod tests {
 			short_channel_ids: vec![0x0003e8_000000_0000],
 		});
 		assert!(result.is_err());
+	}
+
+	#[test]
+	fn displays_node_alias() {
+		let format_str_alias = |alias: &str| {
+			let mut bytes = [0u8; 32];
+			bytes[..alias.as_bytes().len()].copy_from_slice(alias.as_bytes());
+			format!("{}", NodeAlias(bytes))
+		};
+
+		assert_eq!(format_str_alias("I\u{1F496}LDK! \u{26A1}"), "I\u{1F496}LDK! \u{26A1}");
+		assert_eq!(format_str_alias("I\u{1F496}LDK!\0\u{26A1}"), "I\u{1F496}LDK!");
+		assert_eq!(format_str_alias("I\u{1F496}LDK!\t\u{26A1}"), "I\u{1F496}LDK!\u{FFFD}\u{26A1}");
+
+		let format_bytes_alias = |alias: &[u8]| {
+			let mut bytes = [0u8; 32];
+			bytes[..alias.len()].copy_from_slice(alias);
+			format!("{}", NodeAlias(bytes))
+		};
+
+		assert_eq!(format_bytes_alias(b"\xFFI <heart> LDK!"), "\u{FFFD}I <heart> LDK!");
+		assert_eq!(format_bytes_alias(b"\xFFI <heart>\0LDK!"), "\u{FFFD}I <heart>");
+		assert_eq!(format_bytes_alias(b"\xFFI <heart>\tLDK!"), "\u{FFFD}I <heart>\u{FFFD}LDK!");
 	}
 }
 
