@@ -4936,8 +4936,9 @@ impl<Signer: Sign> Channel<Signer> {
 			// the funding transaction is at least still in the mempool of most nodes).
 			//
 			// Note that ideally we wouldn't force-close if we see *any* reorg on a 1-conf or
-			// 0-conf channel, but not doing so may lead to the `ChannelManager::short_to_id` map
-			// being inconsistent, so we currently have to.
+			// 0-conf channel, but not doing so may lead to the
+			// `ChannelManager::short_to_chan_info` map  being inconsistent, so we currently have
+			// to.
 			if funding_tx_confirmations == 0 && self.funding_tx_confirmed_in.is_some() {
 				let err_reason = format!("Funding transaction was un-confirmed. Locked at {} confs, now have {} confs.",
 					self.minimum_depth.unwrap(), funding_tx_confirmations);
