@@ -41,6 +41,8 @@ use bitcoin::blockdata::script::Builder;
 use bitcoin::blockdata::opcodes;
 use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::network::constants::Network;
+use bitcoin::{Transaction, TxIn, TxOut, Witness};
+use bitcoin::OutPoint as BitcoinOutPoint;
 
 use bitcoin::secp256k1::Secp256k1;
 use bitcoin::secp256k1::{PublicKey,SecretKey};
@@ -10328,4 +10330,46 @@ fn test_max_dust_htlc_exposure() {
 	do_test_max_dust_htlc_exposure(true, ExposureEvent::AtUpdateFeeOutbound, false);
 	do_test_max_dust_htlc_exposure(false, ExposureEvent::AtUpdateFeeOutbound, false);
 	do_test_max_dust_htlc_exposure(false, ExposureEvent::AtUpdateFeeOutbound, true);
+}
+
+#[test]
+fn test_non_final_funding_tx() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let temp_channel_id = nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100_000, 0, 42, None).unwrap();
+	let open_channel_message = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
+	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), InitFeatures::known(), &open_channel_message);
+	let accept_channel_message = get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id());
+	nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), InitFeatures::known(), &accept_channel_message);
+
+	let best_height = nodes[0].node.best_block.read().unwrap().height();
+
+	let chan_id = *nodes[0].network_chan_count.borrow();
+	let events = nodes[0].node.get_and_clear_pending_events();
+	let input = TxIn { previous_output: BitcoinOutPoint::null(), script_sig: bitcoin::Script::new(), sequence: 0x1, witness: Witness::from_vec(vec!(vec!(1))) };
+	assert_eq!(events.len(), 1);
+	let mut tx = match events[0] {
+		Event::FundingGenerationReady { ref channel_value_satoshis, ref output_script, .. } => {
+			// Timelock the transaction _beyond_ the best client height + 2.
+			Transaction { version: chan_id as i32, lock_time: best_height + 3, input: vec![input], output: vec![TxOut {
+				value: *channel_value_satoshis, script_pubkey: output_script.clone(),
+			}]}
+		},
+		_ => panic!("Unexpected event"),
+	};
+	// Transaction should fail as it's evaluated as non-final for propagation.
+	match nodes[0].node.funding_transaction_generated(&temp_channel_id, &nodes[1].node.get_our_node_id(), tx.clone()) {
+		Err(APIError::APIMisuseError { err }) => {
+			assert_eq!(format!("Funding transaction absolute timelock is non-final"), err);
+		},
+		_ => panic!()
+	}
+
+	// However, transaction should be accepted if it's in a +2 headroom from best block.
+	tx.lock_time -= 1;
+	assert!(nodes[0].node.funding_transaction_generated(&temp_channel_id, &nodes[1].node.get_our_node_id(), tx.clone()).is_ok());
+	get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, nodes[1].node.get_our_node_id());
 }
