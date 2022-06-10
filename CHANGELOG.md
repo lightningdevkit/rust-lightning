@@ -1,3 +1,15 @@
+# 0.0.108 - 2022-06-10
+
+## Bug Fixes
+ * Fixed `lightning-background-processor` build in release mode.
+
+In total, this release features 9 files changed, 120 insertions, 74
+deletions in 5 commits from 4 authors, in alphabetical order:
+ * Elias Rohrer
+ * Matt Corallo
+ * Max Fang
+ * Viktor Tigerström
+
 # 0.0.107 - 2022-06-08
 
 ## API Updates
