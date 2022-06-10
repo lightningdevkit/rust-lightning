@@ -1590,7 +1590,7 @@ where
 						channel_id: (*channel_id).clone(),
 						counterparty: ChannelCounterparty {
 							node_id: channel.get_counterparty_node_id(),
-							features: InitFeatures::empty(),
+							features: peer_state.latest_features.clone(),
 							unspendable_punishment_reserve: to_remote_reserve_satoshis,
 							forwarding_info: channel.counterparty_forwarding_info(),
 							// Ensures that we have actually received the `htlc_minimum_msat` value
@@ -1628,12 +1628,6 @@ where
 						config: Some(channel.config()),
 					});
 				}
-			}
-		}
-		let per_peer_state = self.per_peer_state.read().unwrap();
-		for chan in res.iter_mut() {
-			if let Some(peer_state) = per_peer_state.get(&chan.counterparty.node_id) {
-				chan.counterparty.features = peer_state.lock().unwrap().latest_features.clone();
 			}
 		}
 		res
