@@ -275,6 +275,27 @@ jobs:
       - name: For each commit, run cargo check (including in fuzz)
         run: ci/check-each-commit.sh upstream/main
 
+  check_release:
+    runs-on: ubuntu-latest
+    env:
+      TOOLCHAIN: stable
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+      - name: Install Rust ${{ env.TOOLCHAIN }} toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: ${{ env.TOOLCHAIN }}
+          override: true
+          profile: minimal
+      - name: Run cargo check for release build.
+        run: |
+          cargo check --release
+          cargo check --no-default-features --features=no-std --release
+          cargo doc --release
+
   fuzz:
     runs-on: ubuntu-latest
     env:
