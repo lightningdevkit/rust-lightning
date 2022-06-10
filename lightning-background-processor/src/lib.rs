@@ -79,7 +79,7 @@ const PING_TIMER: u64 = 1;
 /// Prune the network graph of stale entries hourly.
 const NETWORK_PRUNE_TIMER: u64 = 60 * 60;
 
-#[cfg(all(not(test), debug_assertions))]
+#[cfg(not(test))]
 const SCORER_PERSIST_TIMER: u64 = 30;
 #[cfg(test)]
 const SCORER_PERSIST_TIMER: u64 = 1;
