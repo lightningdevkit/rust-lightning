@@ -308,7 +308,7 @@ fn test_onion_failure() {
 	// Channel::get_counterparty_htlc_minimum_msat().
 	let mut node_2_cfg: UserConfig = Default::default();
 	node_2_cfg.own_channel_config.our_htlc_minimum_msat = 2000;
-	node_2_cfg.channel_options.announced_channel = true;
+	node_2_cfg.own_channel_config.announced_channel = true;
 	node_2_cfg.peer_channel_config_limits.force_announced_channel_preference = false;
 
 	// When this test was written, the default base fee floated based on the HTLC count.
@@ -600,7 +600,7 @@ fn test_default_to_onion_payload_tlv_format() {
 	// `features` for a node in the `network_graph` exists, or when the node isn't in the
 	// `network_graph`, and no other known `features` for the node exists.
 	let mut priv_channels_conf = UserConfig::default();
-	priv_channels_conf.channel_options.announced_channel = false;
+	priv_channels_conf.own_channel_config.announced_channel = false;
 	let chanmon_cfgs = create_chanmon_cfgs(5);
 	let node_cfgs = create_node_cfgs(5, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(5, &node_cfgs, &[None, None, None, None, Some(priv_channels_conf)]);
@@ -1085,7 +1085,7 @@ fn test_phantom_dust_exposure_failure() {
 	let max_dust_exposure = 546;
 	let mut receiver_config = UserConfig::default();
 	receiver_config.channel_options.max_dust_htlc_exposure_msat = max_dust_exposure;
-	receiver_config.channel_options.announced_channel = true;
+	receiver_config.own_channel_config.announced_channel = true;
 
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);

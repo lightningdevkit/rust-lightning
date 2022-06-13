@@ -383,7 +383,7 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 	let keys_manager = Arc::new(KeyProvider { node_secret: our_network_key.clone(), inbound_payment_key: KeyMaterial(inbound_payment_key.try_into().unwrap()), counter: AtomicU64::new(0) });
 	let mut config = UserConfig::default();
 	config.channel_options.forwarding_fee_proportional_millionths =  slice_to_be32(get_slice!(4));
-	config.channel_options.announced_channel = get_slice!(1)[0] != 0;
+	config.own_channel_config.announced_channel = get_slice!(1)[0] != 0;
 	let network = Network::Bitcoin;
 	let params = ChainParameters {
 		network,

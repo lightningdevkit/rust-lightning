@@ -772,7 +772,7 @@ pub fn create_announced_chan_between_nodes_with_value<'a, 'b, 'c, 'd>(nodes: &'a
 
 pub fn create_unannounced_chan_between_nodes_with_value<'a, 'b, 'c, 'd>(nodes: &'a Vec<Node<'b, 'c, 'd>>, a: usize, b: usize, channel_value: u64, push_msat: u64, a_flags: InitFeatures, b_flags: InitFeatures) -> (msgs::ChannelReady, Transaction) {
 	let mut no_announce_cfg = test_default_channel_config();
-	no_announce_cfg.channel_options.announced_channel = false;
+	no_announce_cfg.own_channel_config.announced_channel = false;
 	nodes[a].node.create_channel(nodes[b].node.get_our_node_id(), channel_value, push_msat, 42, Some(no_announce_cfg)).unwrap();
 	let open_channel = get_event_msg!(nodes[a], MessageSendEvent::SendOpenChannel, nodes[b].node.get_our_node_id());
 	nodes[b].node.handle_open_channel(&nodes[a].node.get_our_node_id(), a_flags, &open_channel);
@@ -1689,7 +1689,9 @@ pub fn do_claim_payment_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, 
 			($node: expr, $prev_node: expr, $next_node: expr, $new_msgs: expr) => {
 				{
 					$node.node.handle_update_fulfill_htlc(&$prev_node.node.get_our_node_id(), &next_msgs.as_ref().unwrap().0);
-					let fee = $node.node.channel_state.lock().unwrap().by_id.get(&next_msgs.as_ref().unwrap().0.channel_id).unwrap().config.forwarding_fee_base_msat;
+					let fee = $node.node.channel_state.lock().unwrap()
+						.by_id.get(&next_msgs.as_ref().unwrap().0.channel_id).unwrap()
+						.config.mutable.forwarding_fee_base_msat;
 					expect_payment_forwarded!($node, $next_node, $prev_node, Some(fee as u64), false, false);
 					expected_total_fee_msat += fee as u64;
 					check_added_monitors!($node, 1);
@@ -1966,7 +1968,7 @@ pub fn test_default_channel_config() -> UserConfig {
 	// Set cltv_expiry_delta slightly lower to keep the final CLTV values inside one byte in our
 	// tests so that our script-length checks don't fail (see ACCEPTED_HTLC_SCRIPT_WEIGHT).
 	default_config.channel_options.cltv_expiry_delta = MIN_CLTV_EXPIRY_DELTA;
-	default_config.channel_options.announced_channel = true;
+	default_config.own_channel_config.announced_channel = true;
 	default_config.peer_channel_config_limits.force_announced_channel_preference = false;
 	// When most of our tests were written, the default HTLC minimum was fixed at 1000.
 	// It now defaults to 1, so we simply set it to the expected value here.

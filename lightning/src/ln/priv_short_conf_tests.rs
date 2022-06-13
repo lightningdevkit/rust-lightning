@@ -171,11 +171,11 @@ fn do_test_1_conf_open(connect_style: ConnectStyle) {
 	// tests that we properly send one in that case.
 	let mut alice_config = UserConfig::default();
 	alice_config.own_channel_config.minimum_depth = 1;
-	alice_config.channel_options.announced_channel = true;
+	alice_config.own_channel_config.announced_channel = true;
 	alice_config.peer_channel_config_limits.force_announced_channel_preference = false;
 	let mut bob_config = UserConfig::default();
 	bob_config.own_channel_config.minimum_depth = 1;
-	bob_config.channel_options.announced_channel = true;
+	bob_config.own_channel_config.announced_channel = true;
 	bob_config.peer_channel_config_limits.force_announced_channel_preference = false;
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
@@ -308,7 +308,7 @@ fn test_scid_privacy_on_pub_channel() {
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let mut scid_privacy_cfg = test_default_channel_config();
-	scid_privacy_cfg.channel_options.announced_channel = true;
+	scid_privacy_cfg.own_channel_config.announced_channel = true;
 	scid_privacy_cfg.own_channel_config.negotiate_scid_privacy = true;
 	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100000, 10001, 42, Some(scid_privacy_cfg)).unwrap();
 	let mut open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
@@ -332,7 +332,7 @@ fn test_scid_privacy_negotiation() {
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let mut scid_privacy_cfg = test_default_channel_config();
-	scid_privacy_cfg.channel_options.announced_channel = false;
+	scid_privacy_cfg.own_channel_config.announced_channel = false;
 	scid_privacy_cfg.own_channel_config.negotiate_scid_privacy = true;
 	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100000, 10001, 42, Some(scid_privacy_cfg)).unwrap();
 
@@ -378,7 +378,7 @@ fn test_inbound_scid_privacy() {
 	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0, InitFeatures::known(), InitFeatures::known());
 
 	let mut no_announce_cfg = test_default_channel_config();
-	no_announce_cfg.channel_options.announced_channel = false;
+	no_announce_cfg.own_channel_config.announced_channel = false;
 	no_announce_cfg.own_channel_config.negotiate_scid_privacy = true;
 	nodes[1].node.create_channel(nodes[2].node.get_our_node_id(), 100_000, 10_000, 42, Some(no_announce_cfg)).unwrap();
 	let mut open_channel = get_event_msg!(nodes[1], MessageSendEvent::SendOpenChannel, nodes[2].node.get_our_node_id());
@@ -665,7 +665,7 @@ fn test_0conf_channel_with_async_monitor() {
 
 	create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0, InitFeatures::known(), InitFeatures::known());
 
-	chan_config.channel_options.announced_channel = false;
+	chan_config.own_channel_config.announced_channel = false;
 	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100000, 10001, 42, Some(chan_config)).unwrap();
 	let open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
 
@@ -811,7 +811,7 @@ fn test_0conf_close_no_early_chan_update() {
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	// This is the default but we force it on anyway
-	chan_config.channel_options.announced_channel = true;
+	chan_config.own_channel_config.announced_channel = true;
 	open_zero_conf_channel(&nodes[0], &nodes[1], Some(chan_config));
 
 	// We can use the channel immediately, but won't generate a channel_update until we get confs
@@ -835,7 +835,7 @@ fn test_public_0conf_channel() {
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	// This is the default but we force it on anyway
-	chan_config.channel_options.announced_channel = true;
+	chan_config.own_channel_config.announced_channel = true;
 	let tx = open_zero_conf_channel(&nodes[0], &nodes[1], Some(chan_config));
 
 	// We can use the channel immediately, but we can't announce it until we get 6+ confirmations
@@ -888,7 +888,7 @@ fn test_0conf_channel_reorg() {
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	// This is the default but we force it on anyway
-	chan_config.channel_options.announced_channel = true;
+	chan_config.own_channel_config.announced_channel = true;
 	let tx = open_zero_conf_channel(&nodes[0], &nodes[1], Some(chan_config));
 
 	// We can use the channel immediately, but we can't announce it until we get 6+ confirmations
