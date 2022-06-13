@@ -1632,7 +1632,6 @@ mod tests {
 		UnsignedChannelAnnouncement, ChannelAnnouncement, UnsignedChannelUpdate, ChannelUpdate,
 		ReplyChannelRange, QueryChannelRange, QueryShortChannelIds, MAX_VALUE_MSAT};
 	use util::test_utils;
-	use util::logger::Logger;
 	use util::ser::{ReadableArgs, Writeable};
 	use util::events::{Event, EventHandler, MessageSendEvent, MessageSendEventsProvider};
 	use util::scid_utils::scid_from_parts;
@@ -1829,7 +1828,7 @@ mod tests {
 	#[test]
 	fn handling_channel_announcements() {
 		let secp_ctx = Secp256k1::new();
-		let logger: Arc<Logger> = Arc::new(test_utils::TestLogger::new());
+		let logger = test_utils::TestLogger::new();
 
 		let node_1_privkey = &SecretKey::from_slice(&[42; 32]).unwrap();
 		let node_2_privkey = &SecretKey::from_slice(&[41; 32]).unwrap();
@@ -1839,8 +1838,8 @@ mod tests {
 
 		// Test if the UTXO lookups were not supported
 		let genesis_hash = genesis_block(Network::Testnet).header.block_hash();
-		let network_graph = NetworkGraph::new(genesis_hash, Arc::clone(&logger));
-		let mut gossip_sync = P2PGossipSync::new(&network_graph, None, Arc::clone(&logger));
+		let network_graph = NetworkGraph::new(genesis_hash, &logger);
+		let mut gossip_sync = P2PGossipSync::new(&network_graph, None, &logger);
 		match gossip_sync.handle_channel_announcement(&valid_announcement) {
 			Ok(res) => assert!(res),
 			_ => panic!()
@@ -1861,10 +1860,10 @@ mod tests {
 		};
 
 		// Test if an associated transaction were not on-chain (or not confirmed).
-		let chain_source = Arc::new(test_utils::TestChainSource::new(Network::Testnet));
+		let chain_source = test_utils::TestChainSource::new(Network::Testnet);
 		*chain_source.utxo_ret.lock().unwrap() = Err(chain::AccessError::UnknownTx);
-		let network_graph = NetworkGraph::new(genesis_hash, Arc::clone(&logger));
-		gossip_sync = P2PGossipSync::new(&network_graph, Some(chain_source.clone()), Arc::clone(&logger));
+		let network_graph = NetworkGraph::new(genesis_hash, &logger);
+		gossip_sync = P2PGossipSync::new(&network_graph, Some(&chain_source), &logger);
 
 		let valid_announcement = get_signed_channel_announcement(|unsigned_announcement| {
 			unsigned_announcement.short_channel_id += 1;
@@ -1945,11 +1944,11 @@ mod tests {
 	#[test]
 	fn handling_channel_update() {
 		let secp_ctx = Secp256k1::new();
-		let logger: Arc<Logger> = Arc::new(test_utils::TestLogger::new());
-		let chain_source = Arc::new(test_utils::TestChainSource::new(Network::Testnet));
+		let logger = test_utils::TestLogger::new();
+		let chain_source = test_utils::TestChainSource::new(Network::Testnet);
 		let genesis_hash = genesis_block(Network::Testnet).header.block_hash();
-		let network_graph = NetworkGraph::new(genesis_hash, Arc::clone(&logger));
-		let gossip_sync = P2PGossipSync::new(&network_graph, Some(chain_source.clone()), Arc::clone(&logger));
+		let network_graph = NetworkGraph::new(genesis_hash, &logger);
+		let gossip_sync = P2PGossipSync::new(&network_graph, Some(&chain_source), &logger);
 
 		let node_1_privkey = &SecretKey::from_slice(&[42; 32]).unwrap();
 		let node_2_privkey = &SecretKey::from_slice(&[41; 32]).unwrap();
@@ -2151,10 +2150,10 @@ mod tests {
 	fn test_channel_timeouts() {
 		// Test the removal of channels with `remove_stale_channels`.
 		let logger = test_utils::TestLogger::new();
-		let chain_source = Arc::new(test_utils::TestChainSource::new(Network::Testnet));
+		let chain_source = test_utils::TestChainSource::new(Network::Testnet);
 		let genesis_hash = genesis_block(Network::Testnet).header.block_hash();
 		let network_graph = NetworkGraph::new(genesis_hash, &logger);
-		let gossip_sync = P2PGossipSync::new(&network_graph, Some(chain_source.clone()), &logger);
+		let gossip_sync = P2PGossipSync::new(&network_graph, Some(&chain_source), &logger);
 		let secp_ctx = Secp256k1::new();
 
 		let node_1_privkey = &SecretKey::from_slice(&[42; 32]).unwrap();
