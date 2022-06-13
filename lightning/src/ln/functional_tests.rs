@@ -61,7 +61,7 @@ fn test_insane_channel_opens() {
 	// Stand up a network of 2 nodes
 	use ln::channel::TOTAL_BITCOIN_SUPPLY_SATOSHIS;
 	let mut cfg = UserConfig::default();
-	cfg.peer_channel_config_limits.max_funding_satoshis = TOTAL_BITCOIN_SUPPLY_SATOSHIS + 1;
+	cfg.channel_handshake_limits.max_funding_satoshis = TOTAL_BITCOIN_SUPPLY_SATOSHIS + 1;
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(cfg)]);
@@ -1790,7 +1790,7 @@ fn test_channel_reserve_holding_cell_htlcs() {
 	// When this test was written, the default base fee floated based on the HTLC count.
 	// It is now fixed, so we simply set the fee to the expected value here.
 	let mut config = test_default_channel_config();
-	config.channel_options.forwarding_fee_base_msat = 239;
+	config.channel_config.forwarding_fee_base_msat = 239;
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[Some(config.clone()), Some(config.clone()), Some(config.clone())]);
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 	let chan_1 = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 190000, 1001, InitFeatures::known(), InitFeatures::known());
@@ -2362,13 +2362,13 @@ fn channel_monitor_network_test() {
 fn test_justice_tx() {
 	// Test justice txn built on revoked HTLC-Success tx, against both sides
 	let mut alice_config = UserConfig::default();
-	alice_config.own_channel_config.announced_channel = true;
-	alice_config.peer_channel_config_limits.force_announced_channel_preference = false;
-	alice_config.own_channel_config.our_to_self_delay = 6 * 24 * 5;
+	alice_config.channel_handshake_config.announced_channel = true;
+	alice_config.channel_handshake_limits.force_announced_channel_preference = false;
+	alice_config.channel_handshake_config.our_to_self_delay = 6 * 24 * 5;
 	let mut bob_config = UserConfig::default();
-	bob_config.own_channel_config.announced_channel = true;
-	bob_config.peer_channel_config_limits.force_announced_channel_preference = false;
-	bob_config.own_channel_config.our_to_self_delay = 6 * 24 * 3;
+	bob_config.channel_handshake_config.announced_channel = true;
+	bob_config.channel_handshake_limits.force_announced_channel_preference = false;
+	bob_config.channel_handshake_config.our_to_self_delay = 6 * 24 * 3;
 	let user_cfgs = [Some(alice_config), Some(bob_config)];
 	let mut chanmon_cfgs = create_chanmon_cfgs(2);
 	chanmon_cfgs[0].keys_manager.disable_revocation_policy_check = true;
@@ -5275,7 +5275,7 @@ fn test_duplicate_payment_hash_one_failure_one_success() {
 	// When this test was written, the default base fee floated based on the HTLC count.
 	// It is now fixed, so we simply set the fee to the expected value here.
 	let mut config = test_default_channel_config();
-	config.channel_options.forwarding_fee_base_msat = 196;
+	config.channel_config.forwarding_fee_base_msat = 196;
 	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs,
 		&[Some(config.clone()), Some(config.clone()), Some(config.clone()), Some(config.clone())]);
 	let mut nodes = create_network(4, &node_cfgs, &node_chanmgrs);
@@ -5487,7 +5487,7 @@ fn do_test_fail_backwards_unrevoked_remote_announce(deliver_last_raa: bool, anno
 	// When this test was written, the default base fee floated based on the HTLC count.
 	// It is now fixed, so we simply set the fee to the expected value here.
 	let mut config = test_default_channel_config();
-	config.channel_options.forwarding_fee_base_msat = 196;
+	config.channel_config.forwarding_fee_base_msat = 196;
 	let node_chanmgrs = create_node_chanmgrs(6, &node_cfgs,
 		&[Some(config.clone()), Some(config.clone()), Some(config.clone()), Some(config.clone()), Some(config.clone()), Some(config.clone())]);
 	let nodes = create_network(6, &node_cfgs, &node_chanmgrs);
@@ -6369,7 +6369,7 @@ fn test_fail_holding_cell_htlc_upon_free_multihop() {
 	// When this test was written, the default base fee floated based on the HTLC count.
 	// It is now fixed, so we simply set the fee to the expected value here.
 	let mut config = test_default_channel_config();
-	config.channel_options.forwarding_fee_base_msat = 196;
+	config.channel_config.forwarding_fee_base_msat = 196;
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[Some(config.clone()), Some(config.clone()), Some(config.clone())]);
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 	let chan_0_1 = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 95000000, InitFeatures::known(), InitFeatures::known());
@@ -7328,9 +7328,9 @@ fn test_user_configurable_csv_delay() {
 	// We test our channel constructors yield errors when we pass them absurd csv delay
 
 	let mut low_our_to_self_config = UserConfig::default();
-	low_our_to_self_config.own_channel_config.our_to_self_delay = 6;
+	low_our_to_self_config.channel_handshake_config.our_to_self_delay = 6;
 	let mut high_their_to_self_config = UserConfig::default();
-	high_their_to_self_config.peer_channel_config_limits.their_to_self_delay = 100;
+	high_their_to_self_config.channel_handshake_limits.their_to_self_delay = 100;
 	let user_cfgs = [Some(high_their_to_self_config.clone()), None];
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
@@ -8245,7 +8245,7 @@ fn test_override_channel_config() {
 
 	// Node0 initiates a channel to node1 using the override config.
 	let mut override_config = UserConfig::default();
-	override_config.own_channel_config.our_to_self_delay = 200;
+	override_config.channel_handshake_config.our_to_self_delay = 200;
 
 	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 16_000_000, 12_000_000, 42, Some(override_config)).unwrap();
 
@@ -8258,7 +8258,7 @@ fn test_override_channel_config() {
 #[test]
 fn test_override_0msat_htlc_minimum() {
 	let mut zero_config = UserConfig::default();
-	zero_config.own_channel_config.our_htlc_minimum_msat = 0;
+	zero_config.channel_handshake_config.our_htlc_minimum_msat = 0;
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(zero_config.clone())]);
@@ -8282,17 +8282,17 @@ fn test_channel_update_has_correct_htlc_maximum_msat() {
 	// 2. MUST be set to less than or equal to the `max_htlc_value_in_flight_msat` received from the peer.
 
 	let mut config_30_percent = UserConfig::default();
-	config_30_percent.own_channel_config.announced_channel = true;
-	config_30_percent.own_channel_config.max_inbound_htlc_value_in_flight_percent_of_channel = 30;
+	config_30_percent.channel_handshake_config.announced_channel = true;
+	config_30_percent.channel_handshake_config.max_inbound_htlc_value_in_flight_percent_of_channel = 30;
 	let mut config_50_percent = UserConfig::default();
-	config_50_percent.own_channel_config.announced_channel = true;
-	config_50_percent.own_channel_config.max_inbound_htlc_value_in_flight_percent_of_channel = 50;
+	config_50_percent.channel_handshake_config.announced_channel = true;
+	config_50_percent.channel_handshake_config.max_inbound_htlc_value_in_flight_percent_of_channel = 50;
 	let mut config_95_percent = UserConfig::default();
-	config_95_percent.own_channel_config.announced_channel = true;
-	config_95_percent.own_channel_config.max_inbound_htlc_value_in_flight_percent_of_channel = 95;
+	config_95_percent.channel_handshake_config.announced_channel = true;
+	config_95_percent.channel_handshake_config.max_inbound_htlc_value_in_flight_percent_of_channel = 95;
 	let mut config_100_percent = UserConfig::default();
-	config_100_percent.own_channel_config.announced_channel = true;
-	config_100_percent.own_channel_config.max_inbound_htlc_value_in_flight_percent_of_channel = 100;
+	config_100_percent.channel_handshake_config.announced_channel = true;
+	config_100_percent.channel_handshake_config.max_inbound_htlc_value_in_flight_percent_of_channel = 100;
 
 	let chanmon_cfgs = create_chanmon_cfgs(4);
 	let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
@@ -10182,7 +10182,7 @@ fn do_test_max_dust_htlc_exposure(dust_outbound_balance: bool, exposure_breach_e
 
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let mut config = test_default_channel_config();
-	config.channel_options.max_dust_htlc_exposure_msat = 5_000_000; // default setting value
+	config.channel_config.max_dust_htlc_exposure_msat = 5_000_000; // default setting value
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config), None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
@@ -10225,13 +10225,13 @@ fn do_test_max_dust_htlc_exposure(dust_outbound_balance: bool, exposure_breach_e
 		chan.get_dust_buffer_feerate(None) as u64
 	};
 	let dust_outbound_htlc_on_holder_tx_msat: u64 = (dust_buffer_feerate * htlc_timeout_tx_weight(opt_anchors) / 1000 + open_channel.dust_limit_satoshis - 1) * 1000;
-	let dust_outbound_htlc_on_holder_tx: u64 = config.channel_options.max_dust_htlc_exposure_msat / dust_outbound_htlc_on_holder_tx_msat;
+	let dust_outbound_htlc_on_holder_tx: u64 = config.channel_config.max_dust_htlc_exposure_msat / dust_outbound_htlc_on_holder_tx_msat;
 
 	let dust_inbound_htlc_on_holder_tx_msat: u64 = (dust_buffer_feerate * htlc_success_tx_weight(opt_anchors) / 1000 + open_channel.dust_limit_satoshis - 1) * 1000;
-	let dust_inbound_htlc_on_holder_tx: u64 = config.channel_options.max_dust_htlc_exposure_msat / dust_inbound_htlc_on_holder_tx_msat;
+	let dust_inbound_htlc_on_holder_tx: u64 = config.channel_config.max_dust_htlc_exposure_msat / dust_inbound_htlc_on_holder_tx_msat;
 
 	let dust_htlc_on_counterparty_tx: u64 = 25;
-	let dust_htlc_on_counterparty_tx_msat: u64 = config.channel_options.max_dust_htlc_exposure_msat / dust_htlc_on_counterparty_tx;
+	let dust_htlc_on_counterparty_tx_msat: u64 = config.channel_config.max_dust_htlc_exposure_msat / dust_htlc_on_counterparty_tx;
 
 	if on_holder_tx {
 		if dust_outbound_balance {
@@ -10275,9 +10275,9 @@ fn do_test_max_dust_htlc_exposure(dust_outbound_balance: bool, exposure_breach_e
 		if on_holder_tx {
 			let dust_outbound_overflow = dust_outbound_htlc_on_holder_tx_msat * (dust_outbound_htlc_on_holder_tx + 1);
 			let dust_inbound_overflow = dust_inbound_htlc_on_holder_tx_msat * dust_inbound_htlc_on_holder_tx + dust_outbound_htlc_on_holder_tx_msat;
-			unwrap_send_err!(nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret)), true, APIError::ChannelUnavailable { ref err }, assert_eq!(err, &format!("Cannot send value that would put our exposure to dust HTLCs at {} over the limit {} on holder commitment tx", if dust_outbound_balance { dust_outbound_overflow } else { dust_inbound_overflow }, config.channel_options.max_dust_htlc_exposure_msat)));
+			unwrap_send_err!(nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret)), true, APIError::ChannelUnavailable { ref err }, assert_eq!(err, &format!("Cannot send value that would put our exposure to dust HTLCs at {} over the limit {} on holder commitment tx", if dust_outbound_balance { dust_outbound_overflow } else { dust_inbound_overflow }, config.channel_config.max_dust_htlc_exposure_msat)));
 		} else {
-			unwrap_send_err!(nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret)), true, APIError::ChannelUnavailable { ref err }, assert_eq!(err, &format!("Cannot send value that would put our exposure to dust HTLCs at {} over the limit {} on counterparty commitment tx", dust_overflow, config.channel_options.max_dust_htlc_exposure_msat)));
+			unwrap_send_err!(nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret)), true, APIError::ChannelUnavailable { ref err }, assert_eq!(err, &format!("Cannot send value that would put our exposure to dust HTLCs at {} over the limit {} on counterparty commitment tx", dust_overflow, config.channel_config.max_dust_htlc_exposure_msat)));
 		}
 	} else if exposure_breach_event == ExposureEvent::AtHTLCReception {
 		let (route, payment_hash, _, payment_secret) = get_route_and_payment_hash!(nodes[1], nodes[0], if on_holder_tx { dust_inbound_htlc_on_holder_tx_msat } else { dust_htlc_on_counterparty_tx_msat });
@@ -10292,10 +10292,10 @@ fn do_test_max_dust_htlc_exposure(dust_outbound_balance: bool, exposure_breach_e
 			// Outbound dust balance: 6399 sats
 			let dust_inbound_overflow = dust_inbound_htlc_on_holder_tx_msat * (dust_inbound_htlc_on_holder_tx + 1);
 			let dust_outbound_overflow = dust_outbound_htlc_on_holder_tx_msat * dust_outbound_htlc_on_holder_tx + dust_inbound_htlc_on_holder_tx_msat;
-			nodes[0].logger.assert_log("lightning::ln::channel".to_string(), format!("Cannot accept value that would put our exposure to dust HTLCs at {} over the limit {} on holder commitment tx", if dust_outbound_balance { dust_outbound_overflow } else { dust_inbound_overflow }, config.channel_options.max_dust_htlc_exposure_msat), 1);
+			nodes[0].logger.assert_log("lightning::ln::channel".to_string(), format!("Cannot accept value that would put our exposure to dust HTLCs at {} over the limit {} on holder commitment tx", if dust_outbound_balance { dust_outbound_overflow } else { dust_inbound_overflow }, config.channel_config.max_dust_htlc_exposure_msat), 1);
 		} else {
 			// Outbound dust balance: 5200 sats
-			nodes[0].logger.assert_log("lightning::ln::channel".to_string(), format!("Cannot accept value that would put our exposure to dust HTLCs at {} over the limit {} on counterparty commitment tx", dust_overflow, config.channel_options.max_dust_htlc_exposure_msat), 1);
+			nodes[0].logger.assert_log("lightning::ln::channel".to_string(), format!("Cannot accept value that would put our exposure to dust HTLCs at {} over the limit {} on counterparty commitment tx", dust_overflow, config.channel_config.max_dust_htlc_exposure_msat), 1);
 		}
 	} else if exposure_breach_event == ExposureEvent::AtUpdateFeeOutbound {
 		let (route, payment_hash, _, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], 2_500_000);

@@ -356,8 +356,8 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 				Arc::new(TestPersister { update_ret: Mutex::new(Ok(())) }), Arc::clone(&keys_manager)));
 
 			let mut config = UserConfig::default();
-			config.channel_options.forwarding_fee_proportional_millionths = 0;
-			config.own_channel_config.announced_channel = true;
+			config.channel_config.forwarding_fee_proportional_millionths = 0;
+			config.channel_handshake_config.announced_channel = true;
 			let network = Network::Bitcoin;
 			let params = ChainParameters {
 				network,
@@ -376,8 +376,8 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 				Arc::new(TestPersister { update_ret: Mutex::new(Ok(())) }), Arc::clone(& $keys_manager)));
 
 			let mut config = UserConfig::default();
-			config.channel_options.forwarding_fee_proportional_millionths = 0;
-			config.own_channel_config.announced_channel = true;
+			config.channel_config.forwarding_fee_proportional_millionths = 0;
+			config.channel_handshake_config.announced_channel = true;
 
 			let mut monitors = HashMap::new();
 			let mut old_monitors = $old_monitors.latest_monitors.lock().unwrap();

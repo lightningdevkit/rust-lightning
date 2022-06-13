@@ -532,7 +532,7 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 	// and not the original fee. We also update node[1]'s relevant config as
 	// do_claim_payment_along_route expects us to never overpay.
 	nodes[1].node.channel_state.lock().unwrap().by_id.get_mut(&chan_id_2).unwrap()
-		.config.mutable.forwarding_fee_base_msat += 100_000;
+		.config.options.forwarding_fee_base_msat += 100_000;
 	new_route.paths[0][0].fee_msat += 100_000;
 
 	assert!(nodes[0].node.retry_payment(&new_route, payment_id_1).is_err()); // Shouldn't be allowed to retry a fulfilled payment
