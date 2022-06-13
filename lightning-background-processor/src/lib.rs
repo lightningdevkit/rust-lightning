@@ -202,7 +202,7 @@ impl BackgroundProcessor {
 	///
 	/// # Rapid Gossip Sync
 	///
-	/// If rapid gossip sync is meant to run at startup, pass a [`RapidGossipSync`] to `gossip_sync`
+	/// If rapid gossip sync is meant to run at startup, pass [`RapidGossipSync`] via `gossip_sync`
 	/// to indicate that the [`BackgroundProcessor`] should not prune the [`NetworkGraph`] instance
 	/// until the [`RapidGossipSync`] instance completes its first sync.
 	///
