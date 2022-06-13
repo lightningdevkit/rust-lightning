@@ -250,7 +250,7 @@ where C::Target: chain::Access, L::Target: Logger
 
 impl<L: Deref> EventHandler for NetworkGraph<L> where L::Target: Logger {
 	fn handle_event(&self, event: &Event) {
-		if let Event::PaymentPathFailed { payment_hash: _, rejected_by_dest: _, network_update, .. } = event {
+		if let Event::PaymentPathFailed { network_update, .. } = event {
 			if let Some(network_update) = network_update {
 				match *network_update {
 					NetworkUpdate::ChannelUpdateMessage { ref msg } => {
