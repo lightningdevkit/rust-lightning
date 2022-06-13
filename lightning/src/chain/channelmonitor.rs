@@ -42,7 +42,7 @@ use chain;
 use chain::{BestBlock, WatchedOutput};
 use chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use chain::transaction::{OutPoint, TransactionData};
-use chain::keysinterface::{SpendableOutputDescriptor, StaticPaymentOutputDescriptor, DelayedPaymentOutputDescriptor, Sign, KeysInterface};
+use chain::keysinterface::{SpendableOutputDescriptor, StaticPaymentOutputDescriptor, DelayedPaymentOutputDescriptor, Sign, KeysInterface, SignError};
 use chain::onchaintx::OnchainTxHandler;
 use chain::package::{CounterpartyOfferedHTLCOutput, CounterpartyReceivedHTLCOutput, HolderFundingOutput, HolderHTLCOutput, PackageSolvingData, PackageTemplate, RevokedOutput, RevokedHTLCOutput};
 use chain::Filter;
@@ -1098,7 +1098,7 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 		broadcaster: &B,
 		fee_estimator: &F,
 		logger: &L,
-	) where
+	) -> Result<(), SignError> where
 		B::Target: BroadcasterInterface,
 		F::Target: FeeEstimator,
 		L::Target: Logger,
@@ -1111,7 +1111,8 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 		&self,
 		broadcaster: &B,
 		logger: &L,
-	) where
+	)
+		where
 		B::Target: BroadcasterInterface,
 		L::Target: Logger,
 	{
@@ -1210,7 +1211,7 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 	/// substantial amount of time (a month or even a year) to get back funds. Best may be to contact
 	/// out-of-band the other node operator to coordinate with him if option is available to you.
 	/// In any-case, choice is up to the user.
-	pub fn get_latest_holder_commitment_txn<L: Deref>(&self, logger: &L) -> Vec<Transaction>
+	pub fn get_latest_holder_commitment_txn<L: Deref>(&self, logger: &L) -> Result<Vec<Transaction>, SignError>
 	where L::Target: Logger {
 		self.inner.lock().unwrap().get_latest_holder_commitment_txn(logger)
 	}
@@ -1847,7 +1848,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 
 	/// Provides a payment_hash->payment_preimage mapping. Will be automatically pruned when all
 	/// commitment_tx_infos which contain the payment hash have been revoked.
-	fn provide_payment_preimage<B: Deref, F: Deref, L: Deref>(&mut self, payment_hash: &PaymentHash, payment_preimage: &PaymentPreimage, broadcaster: &B, fee_estimator: &F, logger: &L)
+	fn provide_payment_preimage<B: Deref, F: Deref, L: Deref>(&mut self, payment_hash: &PaymentHash, payment_preimage: &PaymentPreimage, broadcaster: &B, fee_estimator: &F, logger: &L) -> Result<(), SignError>
 	where B::Target: BroadcasterInterface,
 		    F::Target: FeeEstimator,
 		    L::Target: Logger,
@@ -1859,19 +1860,19 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		macro_rules! claim_htlcs {
 			($commitment_number: expr, $txid: expr) => {
 				let htlc_claim_reqs = self.get_counterparty_htlc_output_claim_reqs($commitment_number, $txid, None);
-				self.onchain_tx_handler.update_claims_view(&Vec::new(), htlc_claim_reqs, self.best_block.height(), self.best_block.height(), broadcaster, fee_estimator, logger);
+				self.onchain_tx_handler.update_claims_view(&Vec::new(), htlc_claim_reqs, self.best_block.height(), self.best_block.height(), broadcaster, fee_estimator, logger)?;
 			}
 		}
 		if let Some(txid) = self.current_counterparty_commitment_txid {
 			if let Some(commitment_number) = self.counterparty_commitment_txn_on_chain.get(&txid) {
 				claim_htlcs!(*commitment_number, txid);
-				return;
+				return Ok(());
 			}
 		}
 		if let Some(txid) = self.prev_counterparty_commitment_txid {
 			if let Some(commitment_number) = self.counterparty_commitment_txn_on_chain.get(&txid) {
 				claim_htlcs!(*commitment_number, txid);
-				return;
+				return Ok(());
 			}
 		}
 
@@ -1885,21 +1886,33 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 			// block. Even if not, its a reasonable metric for the bump criteria on the HTLC
 			// transactions.
 			let (claim_reqs, _) = self.get_broadcasted_holder_claims(&self.current_holder_commitment_tx, self.best_block.height());
-			self.onchain_tx_handler.update_claims_view(&Vec::new(), claim_reqs, self.best_block.height(), self.best_block.height(), broadcaster, fee_estimator, logger);
+			if self.onchain_tx_handler.update_claims_view(&Vec::new(), claim_reqs, self.best_block.height(), self.best_block.height(), broadcaster, fee_estimator, logger).is_err() {
+				log_warn!(logger, "Unable to broadcast claims because signer is unavailable, will retry");
+			}
 			if let Some(ref tx) = self.prev_holder_signed_commitment_tx {
 				let (claim_reqs, _) = self.get_broadcasted_holder_claims(&tx, self.best_block.height());
-				self.onchain_tx_handler.update_claims_view(&Vec::new(), claim_reqs, self.best_block.height(), self.best_block.height(), broadcaster, fee_estimator, logger);
+				if self.onchain_tx_handler.update_claims_view(&Vec::new(), claim_reqs, self.best_block.height(), self.best_block.height(), broadcaster, fee_estimator, logger).is_err() {
+					log_warn!(logger, "Unable to broadcast claims for prev tx because signer is unavailable, will retry");
+				}
 			}
 		}
+		Ok(())
 	}
 
 	pub(crate) fn broadcast_latest_holder_commitment_txn<B: Deref, L: Deref>(&mut self, broadcaster: &B, logger: &L)
 		where B::Target: BroadcasterInterface,
 					L::Target: Logger,
 	{
-		for tx in self.get_latest_holder_commitment_txn(logger).iter() {
-			log_info!(logger, "Broadcasting local {}", log_tx!(tx));
-			broadcaster.broadcast_transaction(tx);
+		match self.get_latest_holder_commitment_txn(logger) {
+			Ok(txs) => {
+				for tx in txs.iter() {
+					log_info!(logger, "Broadcasting local {}", log_tx!(tx));
+					broadcaster.broadcast_transaction(tx);
+				}
+			}
+			Err(_) => {
+				log_warn!(logger, "Unable to broadcast holder tx because signer is unavailable, will retry");
+			}
 		}
 		self.pending_monitor_events.push(MonitorEvent::CommitmentTxConfirmed(self.funding_info.0));
 	}
@@ -1945,7 +1958,8 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 				},
 				ChannelMonitorUpdateStep::PaymentPreimage { payment_preimage } => {
 					log_trace!(logger, "Updating ChannelMonitor with payment preimage");
-					self.provide_payment_preimage(&PaymentHash(Sha256::hash(&payment_preimage.0[..]).into_inner()), &payment_preimage, broadcaster, fee_estimator, logger)
+					// No further error handling needed
+					let _ = self.provide_payment_preimage(&PaymentHash(Sha256::hash(&payment_preimage.0[..]).into_inner()), &payment_preimage, broadcaster, fee_estimator, logger);
 				},
 				ChannelMonitorUpdateStep::CommitmentSecret { idx, secret } => {
 					log_trace!(logger, "Updating ChannelMonitor with commitment secret");
@@ -2291,10 +2305,11 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		}
 	}
 
-	pub fn get_latest_holder_commitment_txn<L: Deref>(&mut self, logger: &L) -> Vec<Transaction> where L::Target: Logger {
+	pub fn get_latest_holder_commitment_txn<L: Deref>(&mut self, logger: &L) -> Result<Vec<Transaction>, SignError>
+		where L::Target: Logger {
 		log_debug!(logger, "Getting signed latest holder commitment transaction!");
 		self.holder_tx_signed = true;
-		let commitment_tx = self.onchain_tx_handler.get_fully_signed_holder_tx(&self.funding_redeemscript);
+		let commitment_tx = self.onchain_tx_handler.get_fully_signed_holder_tx(&self.funding_redeemscript)?;
 		let txid = commitment_tx.txid();
 		let mut holder_transactions = vec![commitment_tx];
 		for htlc in self.current_holder_commitment_tx.htlc_outputs.iter() {
@@ -2313,14 +2328,14 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 					continue;
 				} else { None };
 				if let Some(htlc_tx) = self.onchain_tx_handler.get_fully_signed_htlc_tx(
-					&::bitcoin::OutPoint { txid, vout }, &preimage) {
+					&::bitcoin::OutPoint { txid, vout }, &preimage)? {
 					holder_transactions.push(htlc_tx);
 				}
 			}
 		}
 		// We throw away the generated waiting_first_conf data as we aren't (yet) confirmed and we don't actually know what the caller wants to do.
 		// The data will be re-generated and tracked in check_spend_holder_transaction if we get a confirmation.
-		holder_transactions
+		Ok(holder_transactions)
 	}
 
 	#[cfg(any(test,feature = "unsafe_revoked_tx_signing"))]
@@ -2504,17 +2519,24 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 			let commitment_package = PackageTemplate::build_package(self.funding_info.0.txid.clone(), self.funding_info.0.index as u32, PackageSolvingData::HolderFundingOutput(funding_outp), self.best_block.height(), false, self.best_block.height());
 			claimable_outpoints.push(commitment_package);
 			self.pending_monitor_events.push(MonitorEvent::CommitmentTxConfirmed(self.funding_info.0));
-			let commitment_tx = self.onchain_tx_handler.get_fully_signed_holder_tx(&self.funding_redeemscript);
 			self.holder_tx_signed = true;
-			// Because we're broadcasting a commitment transaction, we should construct the package
-			// assuming it gets confirmed in the next block. Sadly, we have code which considers
-			// "not yet confirmed" things as discardable, so we cannot do that here.
-			let (mut new_outpoints, _) = self.get_broadcasted_holder_claims(&self.current_holder_commitment_tx, self.best_block.height());
-			let new_outputs = self.get_broadcasted_holder_watch_outputs(&self.current_holder_commitment_tx, &commitment_tx);
-			if !new_outputs.is_empty() {
-				watch_outputs.push((self.current_holder_commitment_tx.txid.clone(), new_outputs));
+			match self.onchain_tx_handler.get_fully_signed_holder_tx(&self.funding_redeemscript) {
+				Ok(commitment_tx) => {
+					// Because we're broadcasting a commitment transaction, we should construct the package
+					// assuming it gets confirmed in the next block. Sadly, we have code which considers
+					// "not yet confirmed" things as discardable, so we cannot do that here.
+					let (mut new_outpoints, _) = self.get_broadcasted_holder_claims(&self.current_holder_commitment_tx, self.best_block.height());
+					let new_outputs = self.get_broadcasted_holder_watch_outputs(&self.current_holder_commitment_tx, &commitment_tx);
+					if !new_outputs.is_empty() {
+						watch_outputs.push((self.current_holder_commitment_tx.txid.clone(), new_outputs));
+					}
+					claimable_outpoints.append(&mut new_outpoints);
+
+				}
+				Err(_) => {
+					log_warn!(logger, "Unable to broadcast holder commitment tx because the signer is not available, will retry");
+				}
 			}
-			claimable_outpoints.append(&mut new_outpoints);
 		}
 
 		// Find which on-chain events have reached their confirmation threshold.
@@ -2587,7 +2609,9 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 			}
 		}
 
-		self.onchain_tx_handler.update_claims_view(&txn_matched, claimable_outpoints, conf_height, self.best_block.height(), broadcaster, fee_estimator, logger);
+		if self.onchain_tx_handler.update_claims_view(&txn_matched, claimable_outpoints, conf_height, self.best_block.height(), broadcaster, fee_estimator, logger).is_err() {
+			log_warn!(logger, "Unable to broadcast claims because signer was not available, will retry");
+		}
 
 		// Determine new outputs to watch by comparing against previously known outputs to watch,
 		// updating the latter in the process.
@@ -3580,7 +3604,7 @@ mod tests {
 		monitor.provide_latest_counterparty_commitment_tx(dummy_txid, preimages_slice_to_htlc_outputs!(preimages[17..20]), 281474976710653, dummy_key, &logger);
 		monitor.provide_latest_counterparty_commitment_tx(dummy_txid, preimages_slice_to_htlc_outputs!(preimages[18..20]), 281474976710652, dummy_key, &logger);
 		for &(ref preimage, ref hash) in preimages.iter() {
-			monitor.provide_payment_preimage(hash, preimage, &broadcaster, &fee_estimator, &logger);
+			monitor.provide_payment_preimage(hash, preimage, &broadcaster, &fee_estimator, &logger).unwrap();
 		}
 
 		// Now provide a secret, pruning preimages 10-15

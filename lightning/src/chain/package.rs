@@ -25,7 +25,7 @@ use ln::chan_utils::{TxCreationKeys, HTLCOutputInCommitment};
 use ln::chan_utils;
 use ln::msgs::DecodeError;
 use chain::chaininterface::{FeeEstimator, ConfirmationTarget, MIN_RELAY_FEE_SAT_PER_1000_WEIGHT};
-use chain::keysinterface::Sign;
+use chain::keysinterface::{Sign, SignError};
 use chain::onchaintx::OnchainTxHandler;
 use util::byte_utils;
 use util::logger::Logger;
@@ -406,10 +406,10 @@ impl PackageSolvingData {
 		}
 		true
 	}
-	fn get_finalized_tx<Signer: Sign>(&self, outpoint: &BitcoinOutPoint, onchain_handler: &mut OnchainTxHandler<Signer>) -> Option<Transaction> {
+	fn get_finalized_tx<Signer: Sign>(&self, outpoint: &BitcoinOutPoint, onchain_handler: &mut OnchainTxHandler<Signer>) -> Result<Option<Transaction>, SignError> {
 		match self {
 			PackageSolvingData::HolderHTLCOutput(ref outp) => { return onchain_handler.get_fully_signed_htlc_tx(outpoint, &outp.preimage); }
-			PackageSolvingData::HolderFundingOutput(ref outp) => { return Some(onchain_handler.get_fully_signed_holder_tx(&outp.funding_redeemscript)); }
+			PackageSolvingData::HolderFundingOutput(ref outp) => { return Ok(Some(onchain_handler.get_fully_signed_holder_tx(&outp.funding_redeemscript)?)); }
 			_ => { panic!("API Error!"); }
 		}
 	}
@@ -606,7 +606,7 @@ impl PackageTemplate {
 		let output_weight = (8 + 1 + destination_script.len()) * WITNESS_SCALE_FACTOR;
 		inputs_weight + witnesses_weight + transaction_weight + output_weight
 	}
-	pub(crate) fn finalize_package<L: Deref, Signer: Sign>(&self, onchain_handler: &mut OnchainTxHandler<Signer>, value: u64, destination_script: Script, logger: &L) -> Option<Transaction>
+	pub(crate) fn finalize_package<L: Deref, Signer: Sign>(&self, onchain_handler: &mut OnchainTxHandler<Signer>, value: u64, destination_script: Script, logger: &L) -> Result<Option<Transaction>, SignError>
 		where L::Target: Logger,
 	{
 		match self.malleability {
@@ -630,20 +630,20 @@ impl PackageTemplate {
 				}
 				for (i, (outpoint, out)) in self.inputs.iter().enumerate() {
 					log_debug!(logger, "Adding claiming input for outpoint {}:{}", outpoint.txid, outpoint.vout);
-					if !out.finalize_input(&mut bumped_tx, i, onchain_handler) { return None; }
+					if !out.finalize_input(&mut bumped_tx, i, onchain_handler) { return Ok(None); }
 				}
 				log_debug!(logger, "Finalized transaction {} ready to broadcast", bumped_tx.txid());
-				return Some(bumped_tx);
+				return Ok(Some(bumped_tx));
 			},
 			PackageMalleability::Untractable => {
 				debug_assert_eq!(value, 0, "value is ignored for non-malleable packages, should be zero to ensure callsites are correct");
 				if let Some((outpoint, outp)) = self.inputs.first() {
-					if let Some(final_tx) = outp.get_finalized_tx(outpoint, onchain_handler) {
+					if let Some(final_tx) = outp.get_finalized_tx(outpoint, onchain_handler)? {
 						log_debug!(logger, "Adding claiming input for outpoint {}:{}", outpoint.txid, outpoint.vout);
 						log_debug!(logger, "Finalized transaction {} ready to broadcast", final_tx.txid());
-						return Some(final_tx);
+						return Ok(Some(final_tx));
 					}
-					return None;
+					return Ok(None);
 				} else { panic!("API Error: Package must not be inputs empty"); }
 			},
 		}

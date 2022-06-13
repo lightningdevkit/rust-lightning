@@ -9,7 +9,7 @@
 
 use ln::chan_utils::{HTLCOutputInCommitment, ChannelPublicKeys, HolderCommitmentTransaction, CommitmentTransaction, ChannelTransactionParameters, TrustedCommitmentTransaction, ClosingTransaction};
 use ln::{chan_utils, msgs, PaymentPreimage};
-use chain::keysinterface::{Sign, InMemorySigner, BaseSign};
+use chain::keysinterface::{Sign, InMemorySigner, BaseSign, SignError};
 
 use prelude::*;
 use core::cmp;
@@ -139,7 +139,7 @@ impl BaseSign for EnforcingSigner {
 		Ok(())
 	}
 
-	fn sign_holder_commitment_and_htlcs(&self, commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<(Signature, Vec<Signature>), ()> {
+	fn sign_holder_commitment_and_htlcs(&self, commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<(Signature, Vec<Signature>), SignError> {
 		let trusted_tx = self.verify_holder_commitment_tx(commitment_tx, secp_ctx);
 		let commitment_txid = trusted_tx.txid();
 		let holder_csv = self.inner.counterparty_selected_contest_delay();
@@ -164,7 +164,7 @@ impl BaseSign for EnforcingSigner {
 			secp_ctx.verify_ecdsa(&sighash, sig, &keys.countersignatory_htlc_key).unwrap();
 		}
 
-		Ok(self.inner.sign_holder_commitment_and_htlcs(commitment_tx, secp_ctx).unwrap())
+		self.inner.sign_holder_commitment_and_htlcs(commitment_tx, secp_ctx)
 	}
 
 	#[cfg(any(test,feature = "unsafe_revoked_tx_signing"))]

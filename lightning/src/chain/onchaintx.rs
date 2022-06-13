@@ -26,7 +26,7 @@ use ln::PaymentPreimage;
 use ln::chan_utils::{ChannelTransactionParameters, HolderCommitmentTransaction};
 use chain::chaininterface::{FeeEstimator, BroadcasterInterface};
 use chain::channelmonitor::{ANTI_REORG_DELAY, CLTV_SHARED_CLAIM_BUFFER};
-use chain::keysinterface::{Sign, KeysInterface};
+use chain::keysinterface::{Sign, KeysInterface, SignError};
 use chain::package::PackageTemplate;
 use util::logger::Logger;
 use util::ser::{Readable, ReadableArgs, MaybeReadable, Writer, Writeable, VecWriter};
@@ -377,11 +377,11 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 	/// (CSV or CLTV following cases). In case of high-fee spikes, claim tx may stuck in the mempool, so you need to bump its feerate quickly using Replace-By-Fee or Child-Pay-For-Parent.
 	/// Panics if there are signing errors, because signing operations in reaction to on-chain events
 	/// are not expected to fail, and if they do, we may lose funds.
-	fn generate_claim_tx<F: Deref, L: Deref>(&mut self, cur_height: u32, cached_request: &PackageTemplate, fee_estimator: &F, logger: &L) -> Option<(Option<u32>, u64, Transaction)>
+	fn generate_claim_tx<F: Deref, L: Deref>(&mut self, cur_height: u32, cached_request: &PackageTemplate, fee_estimator: &F, logger: &L) -> Result<Option<(Option<u32>, u64, Transaction)>, SignError>
 		where F::Target: FeeEstimator,
 					L::Target: Logger,
 	{
-		if cached_request.outpoints().len() == 0 { return None } // But don't prune pending claiming request yet, we may have to resurrect HTLCs
+		if cached_request.outpoints().len() == 0 { return Ok(None) } // But don't prune pending claiming request yet, we may have to resurrect HTLCs
 
 		// Compute new height timer to decide when we need to regenerate a new bumped version of the claim tx (if we
 		// didn't receive confirmation of it before, or not enough reorg-safe depth on top of it).
@@ -392,20 +392,20 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 					cached_request.compute_package_output(predicted_weight, self.destination_script.dust_value().as_sat(), fee_estimator, logger) {
 				assert!(new_feerate != 0);
 
-				let transaction = cached_request.finalize_package(self, output_value, self.destination_script.clone(), logger).unwrap();
+				let transaction = cached_request.finalize_package(self, output_value, self.destination_script.clone(), logger)?.unwrap();
 				log_trace!(logger, "...with timer {} and feerate {}", new_timer.unwrap(), new_feerate);
 				assert!(predicted_weight >= transaction.weight());
-				return Some((new_timer, new_feerate, transaction))
+				return Ok(Some((new_timer, new_feerate, transaction)))
 			}
 		} else {
 			// Note: Currently, amounts of holder outputs spending witnesses aren't used
 			// as we can't malleate spending package to increase their feerate. This
 			// should change with the remaining anchor output patchset.
-			if let Some(transaction) = cached_request.finalize_package(self, 0, self.destination_script.clone(), logger) {
-				return Some((None, 0, transaction));
+			if let Some(transaction) = cached_request.finalize_package(self, 0, self.destination_script.clone(), logger)? {
+				return Ok(Some((None, 0, transaction)));
 			}
 		}
-		None
+		Ok(None)
 	}
 
 	/// Upon channelmonitor.block_connected(..) or upon provision of a preimage on the forward link
@@ -415,7 +415,7 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 	/// `conf_height` represents the height at which the transactions in `txn_matched` were
 	/// confirmed. This does not need to equal the current blockchain tip height, which should be
 	/// provided via `cur_height`, however it must never be higher than `cur_height`.
-	pub(crate) fn update_claims_view<B: Deref, F: Deref, L: Deref>(&mut self, txn_matched: &[&Transaction], requests: Vec<PackageTemplate>, conf_height: u32, cur_height: u32, broadcaster: &B, fee_estimator: &F, logger: &L)
+	pub(crate) fn update_claims_view<B: Deref, F: Deref, L: Deref>(&mut self, txn_matched: &[&Transaction], requests: Vec<PackageTemplate>, conf_height: u32, cur_height: u32, broadcaster: &B, fee_estimator: &F, logger: &L) -> Result<(), SignError>
 		where B::Target: BroadcasterInterface,
 		      F::Target: FeeEstimator,
 					L::Target: Logger,
@@ -474,17 +474,24 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 		// Generate claim transactions and track them to bump if necessary at
 		// height timer expiration (i.e in how many blocks we're going to take action).
 		for mut req in preprocessed_requests {
-			if let Some((new_timer, new_feerate, tx)) = self.generate_claim_tx(cur_height, &req, &*fee_estimator, &*logger) {
-				req.set_timer(new_timer);
-				req.set_feerate(new_feerate);
-				let txid = tx.txid();
-				for k in req.outpoints() {
-					log_info!(logger, "Registering claiming request for {}:{}", k.txid, k.vout);
-					self.claimable_outpoints.insert(k.clone(), (txid, conf_height));
+			match self.generate_claim_tx(cur_height, &req, &*fee_estimator, &*logger) {
+				Ok(Some((new_timer, new_feerate, tx))) => {
+					req.set_timer(new_timer);
+					req.set_feerate(new_feerate);
+					let txid = tx.txid();
+					for k in req.outpoints() {
+						log_info!(logger, "Registering claiming request for {}:{}", k.txid, k.vout);
+						self.claimable_outpoints.insert(k.clone(), (txid, conf_height));
+					}
+					self.pending_claim_requests.insert(txid, req);
+					log_info!(logger, "Broadcasting onchain {}", log_tx!(tx));
+					broadcaster.broadcast_transaction(&tx);
 				}
-				self.pending_claim_requests.insert(txid, req);
-				log_info!(logger, "Broadcasting onchain {}", log_tx!(tx));
-				broadcaster.broadcast_transaction(&tx);
+				Ok(None) => {}
+				Err(_) => {
+					log_warn!(logger, "Unable to broadcast claims because signer was not available, will retry");
+					req.set_timer(Some(cur_height + 1));
+				}
 			}
 		}
 
@@ -601,16 +608,25 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 
 		// Build, bump and rebroadcast tx accordingly
 		log_trace!(logger, "Bumping {} candidates", bump_candidates.len());
-		for (first_claim_txid, request) in bump_candidates.iter() {
-			if let Some((new_timer, new_feerate, bump_tx)) = self.generate_claim_tx(cur_height, &request, &*fee_estimator, &*logger) {
-				log_info!(logger, "Broadcasting RBF-bumped onchain {}", log_tx!(bump_tx));
-				broadcaster.broadcast_transaction(&bump_tx);
-				if let Some(request) = self.pending_claim_requests.get_mut(first_claim_txid) {
-					request.set_timer(new_timer);
-					request.set_feerate(new_feerate);
+		for (first_claim_txid, req) in bump_candidates.iter_mut() {
+			match self.generate_claim_tx(cur_height, req, &*fee_estimator, &*logger) {
+				Ok(Some((new_timer, new_feerate, bump_tx))) => {
+					log_info!(logger, "Broadcasting RBF-bumped onchain {}", log_tx!(bump_tx));
+					broadcaster.broadcast_transaction(&bump_tx);
+					if let Some(request) = self.pending_claim_requests.get_mut(first_claim_txid) {
+						request.set_timer(new_timer);
+						request.set_feerate(new_feerate);
+					}
+				}
+				Ok(None) => {}
+				Err(_) => {
+					log_warn!(logger, "Unable to broadcast claims because signer was not available, will retry");
+					req.set_timer(Some(cur_height + 1));
 				}
 			}
 		}
+
+		Ok(())
 	}
 
 	pub(crate) fn transaction_unconfirmed<B: Deref, F: Deref, L: Deref>(
@@ -648,7 +664,7 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 		for entry in onchain_events_awaiting_threshold_conf {
 			if entry.height >= height {
 				//- our claim tx on a commitment tx output
-				//- resurect outpoint back in its claimable set and regenerate tx
+				//- resurrect outpoint back in its claimable set and regenerate tx
 				match entry.event {
 					OnchainEvent::ContentiousOutpoint { package } => {
 						if let Some(ancestor_claimable_txid) = self.claimable_outpoints.get(&package.outpoints()[0]) {
@@ -667,11 +683,18 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 			}
 		}
 		for (_, request) in bump_candidates.iter_mut() {
-			if let Some((new_timer, new_feerate, bump_tx)) = self.generate_claim_tx(height, &request, &&*fee_estimator, &&*logger) {
-				request.set_timer(new_timer);
-				request.set_feerate(new_feerate);
-				log_info!(logger, "Broadcasting onchain {}", log_tx!(bump_tx));
-				broadcaster.broadcast_transaction(&bump_tx);
+			match self.generate_claim_tx(height, &request, &&*fee_estimator, &&*logger) {
+				Ok(Some((new_timer, new_feerate, bump_tx))) => {
+					request.set_timer(new_timer);
+					request.set_feerate(new_feerate);
+					log_info!(logger, "Broadcasting onchain {}", log_tx!(bump_tx));
+					broadcaster.broadcast_transaction(&bump_tx);
+				}
+				Ok(None) => {}
+				Err(_) => {
+					log_warn!(logger, "Unable to generate claim tx because signer is unavailable, will retry next block");
+					request.set_timer(Some(height + 1));
+				}
 			}
 		}
 		for (ancestor_claim_txid, request) in bump_candidates.drain() {
@@ -682,8 +705,8 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 		let mut remove_request = Vec::new();
 		self.claimable_outpoints.retain(|_, ref v|
 			if v.1 >= height {
-			remove_request.push(v.0.clone());
-			false
+				remove_request.push(v.0.clone());
+				false
 			} else { true });
 		for req in remove_request {
 			self.pending_claim_requests.remove(&req);
@@ -708,23 +731,25 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 	// Normally holder HTLCs are signed at the same time as the holder commitment tx.  However,
 	// in some configurations, the holder commitment tx has been signed and broadcast by a
 	// ChannelMonitor replica, so we handle that case here.
-	fn sign_latest_holder_htlcs(&mut self) {
+	fn sign_latest_holder_htlcs(&mut self) -> Result<(), SignError> {
 		if self.holder_htlc_sigs.is_none() {
-			let (_sig, sigs) = self.signer.sign_holder_commitment_and_htlcs(&self.holder_commitment, &self.secp_ctx).expect("sign holder commitment");
+			let (_sig, sigs) = self.signer.sign_holder_commitment_and_htlcs(&self.holder_commitment, &self.secp_ctx)?;
 			self.holder_htlc_sigs = Some(Self::extract_holder_sigs(&self.holder_commitment, sigs));
 		}
+		Ok(())
 	}
 
 	// Normally only the latest commitment tx and HTLCs need to be signed.  However, in some
 	// configurations we may have updated our holder commitment but a replica of the ChannelMonitor
 	// broadcast the previous one before we sync with it.  We handle that case here.
-	fn sign_prev_holder_htlcs(&mut self) {
+	fn sign_prev_holder_htlcs(&mut self) -> Result<(), SignError> {
 		if self.prev_holder_htlc_sigs.is_none() {
 			if let Some(ref holder_commitment) = self.prev_holder_commitment {
-				let (_sig, sigs) = self.signer.sign_holder_commitment_and_htlcs(holder_commitment, &self.secp_ctx).expect("sign previous holder commitment");
+				let (_sig, sigs) = self.signer.sign_holder_commitment_and_htlcs(holder_commitment, &self.secp_ctx)?;
 				self.prev_holder_htlc_sigs = Some(Self::extract_holder_sigs(holder_commitment, sigs));
 			}
 		}
+		Ok(())
 	}
 
 	fn extract_holder_sigs(holder_commitment: &HolderCommitmentTransaction, sigs: Vec<Signature>) -> Vec<Option<(usize, Signature)>> {
@@ -737,14 +762,14 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 		ret
 	}
 
-	//TODO: getting lastest holder transactions should be infallible and result in us "force-closing the channel", but we may
+	//TODO: getting latest holder transactions should be infallible and result in us "force-closing the channel", but we may
 	// have empty holder commitment transaction if a ChannelMonitor is asked to force-close just after Channel::get_outbound_funding_created,
 	// before providing a initial commitment transaction. For outbound channel, init ChannelMonitor at Channel::funding_signed, there is nothing
 	// to monitor before.
-	pub(crate) fn get_fully_signed_holder_tx(&mut self, funding_redeemscript: &Script) -> Transaction {
-		let (sig, htlc_sigs) = self.signer.sign_holder_commitment_and_htlcs(&self.holder_commitment, &self.secp_ctx).expect("signing holder commitment");
+	pub(crate) fn get_fully_signed_holder_tx(&mut self, funding_redeemscript: &Script) -> Result<Transaction, SignError> {
+		let (sig, htlc_sigs) = self.signer.sign_holder_commitment_and_htlcs(&self.holder_commitment, &self.secp_ctx)?;
 		self.holder_htlc_sigs = Some(Self::extract_holder_sigs(&self.holder_commitment, htlc_sigs));
-		self.holder_commitment.add_holder_sig(funding_redeemscript, sig)
+		Ok(self.holder_commitment.add_holder_sig(funding_redeemscript, sig))
 	}
 
 	#[cfg(any(test, feature="unsafe_revoked_tx_signing"))]
@@ -754,12 +779,12 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 		self.holder_commitment.add_holder_sig(funding_redeemscript, sig)
 	}
 
-	pub(crate) fn get_fully_signed_htlc_tx(&mut self, outp: &::bitcoin::OutPoint, preimage: &Option<PaymentPreimage>) -> Option<Transaction> {
+	pub(crate) fn get_fully_signed_htlc_tx(&mut self, outp: &::bitcoin::OutPoint, preimage: &Option<PaymentPreimage>) -> Result<Option<Transaction>, SignError> {
 		let mut htlc_tx = None;
 		let commitment_txid = self.holder_commitment.trust().txid();
 		// Check if the HTLC spends from the current holder commitment
 		if commitment_txid == outp.txid {
-			self.sign_latest_holder_htlcs();
+			self.sign_latest_holder_htlcs()?;
 			if let &Some(ref htlc_sigs) = &self.holder_htlc_sigs {
 				let &(ref htlc_idx, ref htlc_sig) = htlc_sigs[outp.vout as usize].as_ref().unwrap();
 				let trusted_tx = self.holder_commitment.trust();
@@ -772,7 +797,7 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 		if htlc_tx.is_none() && self.prev_holder_commitment.is_some() {
 			let commitment_txid = self.prev_holder_commitment.as_ref().unwrap().trust().txid();
 			if commitment_txid == outp.txid {
-				self.sign_prev_holder_htlcs();
+				self.sign_prev_holder_htlcs()?;
 				if let &Some(ref htlc_sigs) = &self.prev_holder_htlc_sigs {
 					let &(ref htlc_idx, ref htlc_sig) = htlc_sigs[outp.vout as usize].as_ref().unwrap();
 					let holder_commitment = self.prev_holder_commitment.as_ref().unwrap();
@@ -783,7 +808,7 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 				}
 			}
 		}
-		htlc_tx
+		Ok(htlc_tx)
 	}
 
 	pub(crate) fn opt_anchors(&self) -> bool {
@@ -794,7 +819,7 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 	pub(crate) fn unsafe_get_fully_signed_htlc_tx(&mut self, outp: &::bitcoin::OutPoint, preimage: &Option<PaymentPreimage>) -> Option<Transaction> {
 		let latest_had_sigs = self.holder_htlc_sigs.is_some();
 		let prev_had_sigs = self.prev_holder_htlc_sigs.is_some();
-		let ret = self.get_fully_signed_htlc_tx(outp, preimage);
+		let ret = self.get_fully_signed_htlc_tx(outp, preimage).unwrap();
 		if !latest_had_sigs {
 			self.holder_htlc_sigs = None;
 		}

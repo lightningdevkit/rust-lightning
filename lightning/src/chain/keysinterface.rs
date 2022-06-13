@@ -187,6 +187,15 @@ impl_writeable_tlv_based_enum!(SpendableOutputDescriptor,
 	(2, StaticPaymentOutput),
 );
 
+/// An error while signing
+#[derive(Debug)]
+pub enum SignError {
+	/// The signer is temporarily unavailable
+	Temporary,
+	/// A signer internal error
+	Internal
+}
+
 /// A trait to sign lightning channel transactions as described in BOLT 3.
 ///
 /// Signing services could be implemented on a hardware wallet. In this case,
@@ -278,7 +287,7 @@ pub trait BaseSign {
 	//
 	// TODO: Document the things someone using this interface should enforce before signing.
 	// TODO: Key derivation failure should panic rather than Err
-	fn sign_holder_commitment_and_htlcs(&self, commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<(Signature, Vec<Signature>), ()>;
+	fn sign_holder_commitment_and_htlcs(&self, commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<(Signature, Vec<Signature>), SignError>;
 
 	/// Same as sign_holder_commitment, but exists only for tests to get access to holder commitment
 	/// transactions which will be broadcasted later, after the channel has moved on to a newer
@@ -683,13 +692,14 @@ impl BaseSign for InMemorySigner {
 		Ok(())
 	}
 
-	fn sign_holder_commitment_and_htlcs(&self, commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<(Signature, Vec<Signature>), ()> {
+	fn sign_holder_commitment_and_htlcs(&self, commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<(Signature, Vec<Signature>), SignError> {
 		let funding_pubkey = PublicKey::from_secret_key(secp_ctx, &self.funding_key);
 		let funding_redeemscript = make_funding_redeemscript(&funding_pubkey, &self.counterparty_pubkeys().funding_pubkey);
 		let trusted_tx = commitment_tx.trust();
 		let sig = trusted_tx.built_transaction().sign(&self.funding_key, &funding_redeemscript, self.channel_value_satoshis, secp_ctx);
 		let channel_parameters = self.get_channel_parameters();
-		let htlc_sigs = trusted_tx.get_htlc_sigs(&self.htlc_base_key, &channel_parameters.as_holder_broadcastable(), secp_ctx)?;
+		let htlc_sigs = trusted_tx.get_htlc_sigs(&self.htlc_base_key, &channel_parameters.as_holder_broadcastable(), secp_ctx)
+			.map_err(|()| SignError::Internal)?;
 		Ok((sig, htlc_sigs))
 	}
 
