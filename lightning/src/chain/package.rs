@@ -346,7 +346,7 @@ impl PackageSolvingData {
 			_ => { mem::discriminant(self) == mem::discriminant(&input) }
 		}
 	}
-	fn finalize_input<Signer: Sign>(&self, bumped_tx: &mut Transaction, i: usize, onchain_handler: &mut OnchainTxHandler<Signer>) -> bool {
+	fn finalize_input<Signer: Sign>(&self, bumped_tx: &mut Transaction, i: usize, onchain_handler: &mut OnchainTxHandler<Signer>) -> Result<bool, SignError> {
 		match self {
 			PackageSolvingData::RevokedOutput(ref outp) => {
 				if let Ok(chan_keys) = TxCreationKeys::derive_new(&onchain_handler.secp_ctx, &outp.per_commitment_point, &outp.counterparty_delayed_payment_base_key, &outp.counterparty_htlc_base_key, &onchain_handler.signer.pubkeys().revocation_basepoint, &onchain_handler.signer.pubkeys().htlc_basepoint) {
@@ -358,7 +358,7 @@ impl PackageSolvingData {
 						bumped_tx.input[i].witness.push(ser_sig);
 						bumped_tx.input[i].witness.push(vec!(1));
 						bumped_tx.input[i].witness.push(witness_script.clone().into_bytes());
-					} else { return false; }
+					} else { return Ok(false); }
 				}
 			},
 			PackageSolvingData::RevokedHTLCOutput(ref outp) => {
@@ -371,7 +371,7 @@ impl PackageSolvingData {
 						bumped_tx.input[i].witness.push(ser_sig);
 						bumped_tx.input[i].witness.push(chan_keys.revocation_key.clone().serialize().to_vec());
 						bumped_tx.input[i].witness.push(witness_script.clone().into_bytes());
-					} else { return false; }
+					} else { return Ok(false); }
 				}
 			},
 			PackageSolvingData::CounterpartyOfferedHTLCOutput(ref outp) => {
@@ -404,7 +404,7 @@ impl PackageSolvingData {
 			},
 			_ => { panic!("API Error!"); }
 		}
-		true
+		Ok(true)
 	}
 	fn get_finalized_tx<Signer: Sign>(&self, outpoint: &BitcoinOutPoint, onchain_handler: &mut OnchainTxHandler<Signer>) -> Result<Option<Transaction>, SignError> {
 		match self {
@@ -630,7 +630,7 @@ impl PackageTemplate {
 				}
 				for (i, (outpoint, out)) in self.inputs.iter().enumerate() {
 					log_debug!(logger, "Adding claiming input for outpoint {}:{}", outpoint.txid, outpoint.vout);
-					if !out.finalize_input(&mut bumped_tx, i, onchain_handler) { return Ok(None); }
+					if !out.finalize_input(&mut bumped_tx, i, onchain_handler)? { return Ok(None); }
 				}
 				log_debug!(logger, "Finalized transaction {} ready to broadcast", bumped_tx.txid());
 				return Ok(Some(bumped_tx));
