@@ -19,6 +19,35 @@
 //! supports a feature if it advertises the feature (as either required or optional) to its peers.
 //! And the implementation can interpret a feature if the feature is known to it.
 //!
+//! The following features are currently required in the LDK:
+//! - `VariableLengthOnion` - requires/supports variable-length routing onion payloads
+//!     (see [BOLT-4](https://github.com/lightning/bolts/blob/master/04-onion-routing.md) for more information).
+//! - `StaticRemoteKey` - requires/supports static key for remote output
+//!     (see [BOLT-3](https://github.com/lightning/bolts/blob/master/03-transactions.md) for more information).
+//!
+//! The following features are currently supported in the LDK:
+//! - `DataLossProtect` - requires/supports that a node which has somehow fallen behind, e.g., has been restored from an old backup,
+//!     can detect that it has fallen behind
+//!     (see [BOLT-2](https://github.com/lightning/bolts/blob/master/02-peer-protocol.md) for more information).
+//! - `InitialRoutingSync` - requires/supports that the sending node needs a complete routing information dump
+//!     (see [BOLT-7](https://github.com/lightning/bolts/blob/master/07-routing-gossip.md#initial-sync) for more information).
+//! - `UpfrontShutdownScript` - commits to a shutdown scriptpubkey when opening a channel
+//!     (see [BOLT-2](https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#the-open_channel-message) for more information).
+//! - `GossipQueries` - requires/supports more sophisticated gossip control
+//!     (see [BOLT-7](https://github.com/lightning/bolts/blob/master/07-routing-gossip.md) for more information).
+//! - `PaymentSecret` - requires/supports that a node supports payment_secret field
+//!     (see [BOLT-4](https://github.com/lightning/bolts/blob/master/04-onion-routing.md) for more information).
+//! - `BasicMPP` - requires/supports that a node can receive basic multi-part payments
+//!     (see [BOLT-4](https://github.com/lightning/bolts/blob/master/04-onion-routing.md#basic-multi-part-payments) for more information).
+//! - `ShutdownAnySegwit` - requires/supports that future segwit versions are allowed in `shutdown`
+//!     (see [BOLT-2](https://github.com/lightning/bolts/blob/master/02-peer-protocol.md) for more information).
+//! - `ChannelType` - node supports the channel_type field in open/accept
+//!     (see [BOLT-2](https://github.com/lightning/bolts/blob/master/02-peer-protocol.md) for more information).
+//! - `SCIDPrivacy` - supply channel aliases for routing
+//!     (see [BOLT-2](https://github.com/lightning/bolts/blob/master/02-peer-protocol.md) for more information).
+//! - `Keysend` - send funds to a node without an invoice
+//!     (see the [`Keysend` feature assignment proposal](https://github.com/lightning/bolts/issues/605#issuecomment-606679798) for more information).
+//!
 //! [BOLT #9]: https://github.com/lightning/bolts/blob/master/09-features.md
 //! [messages]: crate::ln::msgs
 
