@@ -2919,6 +2919,73 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		}
 	}
 
+	/// Atomically updates the [`ChannelConfig`] for the given channels.
+	///
+	/// Once the updates are applied, each eligible channel (advertised with a known short channel
+	/// ID and a change in [`forwarding_fee_proportional_millionths`], [`forwarding_fee_base_msat`],
+	/// or [`cltv_expiry_delta`]) has a [`BroadcastChannelUpdate`] event message generated
+	/// containing the new [`ChannelUpdate`] message which should be broadcast to the network.
+	///
+	/// Returns [`ChannelUnavailable`] when a channel is not found or an incorrect
+	/// `counterparty_node_id` is provided.
+	///
+	/// Returns [`APIMisuseError`] when a [`cltv_expiry_delta`] update is to be applied with a value
+	/// below [`MIN_CLTV_EXPIRY_DELTA`].
+	///
+	/// If an error is returned, none of the updates should be considered applied.
+	///
+	/// [`forwarding_fee_proportional_millionths`]: ChannelConfig::forwarding_fee_proportional_millionths
+	/// [`forwarding_fee_base_msat`]: ChannelConfig::forwarding_fee_base_msat
+	/// [`cltv_expiry_delta`]: ChannelConfig::cltv_expiry_delta
+	/// [`BroadcastChannelUpdate`]: events::MessageSendEvent::BroadcastChannelUpdate
+	/// [`ChannelUpdate`]: msgs::ChannelUpdate
+	/// [`ChannelUnavailable`]: APIError::ChannelUnavailable
+	/// [`APIMisuseError`]: APIError::APIMisuseError
+	pub fn update_channel_config(
+		&self, counterparty_node_id: &PublicKey, channel_ids: &[[u8; 32]], config: &ChannelConfig,
+	) -> Result<(), APIError> {
+		if config.cltv_expiry_delta < MIN_CLTV_EXPIRY_DELTA {
+			return Err(APIError::APIMisuseError {
+				err: format!("The chosen CLTV expiry delta is below the minimum of {}", MIN_CLTV_EXPIRY_DELTA),
+			});
+		}
+
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(
+			&self.total_consistency_lock, &self.persistence_notifier,
+		);
+		{
+			let mut channel_state_lock = self.channel_state.lock().unwrap();
+			let channel_state = &mut *channel_state_lock;
+			for channel_id in channel_ids {
+				let channel_counterparty_node_id = channel_state.by_id.get(channel_id)
+					.ok_or(APIError::ChannelUnavailable {
+						err: format!("Channel with ID {} was not found", log_bytes!(*channel_id)),
+					})?
+					.get_counterparty_node_id();
+				if channel_counterparty_node_id != *counterparty_node_id {
+					return Err(APIError::APIMisuseError {
+						err: "counterparty node id mismatch".to_owned(),
+					});
+				}
+			}
+			for channel_id in channel_ids {
+				let channel = channel_state.by_id.get_mut(channel_id).unwrap();
+				if !channel.update_config(config) {
+					continue;
+				}
+				if let Ok(msg) = self.get_channel_update_for_broadcast(channel) {
+					channel_state.pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate { msg });
+				} else if let Ok(msg) = self.get_channel_update_for_unicast(channel) {
+					channel_state.pending_msg_events.push(events::MessageSendEvent::SendChannelUpdate {
+						node_id: channel.get_counterparty_node_id(),
+						msg,
+					});
+				}
+			}
+		}
+		Ok(())
+	}
+
 	/// Processes HTLCs which are pending waiting on random forward delay.
 	///
 	/// Should only really ever be called in response to a PendingHTLCsForwardable event.

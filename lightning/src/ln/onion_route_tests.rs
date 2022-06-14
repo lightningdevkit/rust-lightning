@@ -11,10 +11,10 @@
 //! These tests work by standing up full nodes and route payments across the network, checking the
 //! returned errors decode to the correct thing.
 
-use chain::channelmonitor::{CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS};
+use chain::channelmonitor::{ChannelMonitor, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS};
 use chain::keysinterface::{KeysInterface, Recipient};
 use ln::{PaymentHash, PaymentSecret};
-use ln::channelmanager::{HTLCForwardInfo, CLTV_FAR_FAR_AWAY, MIN_CLTV_EXPIRY_DELTA, PendingHTLCInfo, PendingHTLCRouting};
+use ln::channelmanager::{ChannelManager, ChannelManagerReadArgs, HTLCForwardInfo, CLTV_FAR_FAR_AWAY, MIN_CLTV_EXPIRY_DELTA, PendingHTLCInfo, PendingHTLCRouting};
 use ln::onion_utils;
 use routing::gossip::{NetworkUpdate, RoutingFees, NodeId};
 use routing::router::{get_route, PaymentParameters, Route, RouteHint, RouteHintHop};
@@ -23,9 +23,10 @@ use ln::msgs;
 use ln::msgs::{ChannelMessageHandler, ChannelUpdate, OptionalField};
 use ln::wire::Encode;
 use util::events::{Event, MessageSendEvent, MessageSendEventsProvider};
-use util::ser::{Writeable, Writer};
+use util::ser::{ReadableArgs, Writeable, Writer};
 use util::{byte_utils, test_utils};
-use util::config::UserConfig;
+use util::config::{UserConfig, ChannelConfig};
+use util::errors::APIError;
 
 use bitcoin::hash_types::BlockHash;
 
@@ -506,8 +507,6 @@ fn test_onion_failure() {
 	let preimage = send_along_route(&nodes[0], bogus_route, &[&nodes[1], &nodes[2]], amt_to_forward+1).0;
 	claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], preimage);
 
-	//TODO: with new config API, we will be able to generate both valid and
-	//invalid channel_update cases.
 	let short_channel_id = channels[0].0.contents.short_channel_id;
 	run_onion_failure_test("fee_insufficient", 0, &nodes, &route, &payment_hash, &payment_secret, |msg| {
 		msg.amount_msat -= 1;
@@ -592,6 +591,183 @@ fn test_onion_failure() {
 	}, ||{
 		nodes[2].node.fail_htlc_backwards(&payment_hash);
 	}, true, Some(23), None, None);
+}
+
+fn do_test_onion_failure_stale_channel_update(announced_channel: bool) {
+	// Create a network of three nodes and two channels connecting them. We'll be updating the
+	// HTLC relay policy of the second channel, causing forwarding failures at the first hop.
+	let mut config = UserConfig::default();
+	config.channel_handshake_config.announced_channel = announced_channel;
+	config.channel_handshake_limits.force_announced_channel_preference = false;
+	config.accept_forwards_to_priv_channels = !announced_channel;
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, Some(config), None]);
+	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+	let other_channel = create_chan_between_nodes(
+		&nodes[0], &nodes[1], InitFeatures::known(), InitFeatures::known(),
+	);
+	let channel_to_update = if announced_channel {
+		let channel = create_announced_chan_between_nodes(
+			&nodes, 1, 2, InitFeatures::known(), InitFeatures::known(),
+		);
+		(channel.2, channel.0.contents.short_channel_id)
+	} else {
+		let channel = create_unannounced_chan_between_nodes_with_value(
+			&nodes, 1, 2, 100000, 10001, InitFeatures::known(), InitFeatures::known(),
+		);
+		(channel.0.channel_id, channel.0.short_channel_id_alias.unwrap())
+	};
+	let channel_to_update_counterparty = &nodes[2].node.get_our_node_id();
+
+	let default_config = ChannelConfig::default();
+
+	// A test payment should succeed as the ChannelConfig has not been changed yet.
+	const PAYMENT_AMT: u64 = 40000;
+	let (route, payment_hash, payment_preimage, payment_secret) = if announced_channel {
+		get_route_and_payment_hash!(nodes[0], nodes[2], PAYMENT_AMT)
+	} else {
+		let hop_hints = vec![RouteHint(vec![RouteHintHop {
+			src_node_id: nodes[1].node.get_our_node_id(),
+			short_channel_id: channel_to_update.1,
+			fees: RoutingFees {
+				base_msat: default_config.forwarding_fee_base_msat,
+				proportional_millionths: default_config.forwarding_fee_proportional_millionths,
+			},
+			cltv_expiry_delta: default_config.cltv_expiry_delta,
+			htlc_maximum_msat: None,
+			htlc_minimum_msat: None,
+		}])];
+		let payment_params = PaymentParameters::from_node_id(*channel_to_update_counterparty)
+			.with_features(InvoiceFeatures::known())
+			.with_route_hints(hop_hints);
+		get_route_and_payment_hash!(nodes[0], nodes[2], payment_params, PAYMENT_AMT, TEST_FINAL_CLTV)
+	};
+	send_along_route_with_secret(&nodes[0], route.clone(), &[&[&nodes[1], &nodes[2]]], PAYMENT_AMT,
+		payment_hash, payment_secret);
+	claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_preimage);
+
+	// Closure to update and retrieve the latest ChannelUpdate.
+	let update_and_get_channel_update = |config: &ChannelConfig, expect_new_update: bool,
+		prev_update: Option<&msgs::ChannelUpdate>| -> Option<msgs::ChannelUpdate> {
+		nodes[1].node.update_channel_config(
+			channel_to_update_counterparty, &[channel_to_update.0], config,
+		).unwrap();
+		let events = nodes[1].node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), expect_new_update as usize);
+		if !expect_new_update {
+			return None;
+		}
+		let new_update = match &events[0] {
+			MessageSendEvent::BroadcastChannelUpdate { msg } => {
+				assert!(announced_channel);
+				msg.clone()
+			},
+			MessageSendEvent::SendChannelUpdate { node_id, msg } => {
+				assert_eq!(node_id, channel_to_update_counterparty);
+				assert!(!announced_channel);
+				msg.clone()
+			},
+			_ => panic!("expected Broadcast/SendChannelUpdate event"),
+		};
+		if prev_update.is_some() {
+			assert!(new_update.contents.timestamp > prev_update.unwrap().contents.timestamp)
+		}
+		Some(new_update)
+	};
+
+	// We'll be attempting to route payments using the default ChannelUpdate for channels. This will
+	// lead to onion failures at the first hop once we update the ChannelConfig for the
+	// second hop.
+	let expect_onion_failure = |name: &str, error_code: u16, channel_update: &msgs::ChannelUpdate| {
+		let short_channel_id = channel_to_update.1;
+		let network_update = NetworkUpdate::ChannelUpdateMessage { msg: channel_update.clone() };
+		run_onion_failure_test(
+			name, 0, &nodes, &route, &payment_hash, &payment_secret, |_| {}, || {}, true,
+			Some(error_code), Some(network_update), Some(short_channel_id),
+		);
+	};
+
+	// Updates to cltv_expiry_delta below MIN_CLTV_EXPIRY_DELTA should fail with APIMisuseError.
+	let mut invalid_config = default_config.clone();
+	invalid_config.cltv_expiry_delta = 0;
+	match nodes[1].node.update_channel_config(
+		channel_to_update_counterparty, &[channel_to_update.0], &invalid_config,
+	) {
+		Err(APIError::APIMisuseError{ .. }) => {},
+		_ => panic!("unexpected result applying invalid cltv_expiry_delta"),
+	}
+
+	// Increase the base fee which should trigger a new ChannelUpdate.
+	let mut config = nodes[1].node.list_usable_channels().iter()
+		.find(|channel| channel.channel_id == channel_to_update.0).unwrap()
+		.config.unwrap();
+	config.forwarding_fee_base_msat = u32::max_value();
+	let msg = update_and_get_channel_update(&config, true, None).unwrap();
+	expect_onion_failure("fee_insufficient", UPDATE|12, &msg);
+
+	// Redundant updates should not trigger a new ChannelUpdate.
+	assert!(update_and_get_channel_update(&config, false, None).is_none());
+
+	// Similarly, updates that do not have an affect on ChannelUpdate should not trigger a new one.
+	config.force_close_avoidance_max_fee_satoshis *= 2;
+	assert!(update_and_get_channel_update(&config, false, None).is_none());
+
+	// Reset the base fee to the default and increase the proportional fee which should trigger a
+	// new ChannelUpdate.
+	config.forwarding_fee_base_msat = default_config.forwarding_fee_base_msat;
+	config.cltv_expiry_delta = u16::max_value();
+	let msg = update_and_get_channel_update(&config, true, Some(&msg)).unwrap();
+	expect_onion_failure("incorrect_cltv_expiry", UPDATE|13, &msg);
+
+	// Reset the proportional fee and increase the CLTV expiry delta which should trigger a new
+	// ChannelUpdate.
+	config.cltv_expiry_delta = default_config.cltv_expiry_delta;
+	config.forwarding_fee_proportional_millionths = u32::max_value();
+	let msg = update_and_get_channel_update(&config, true, Some(&msg)).unwrap();
+	expect_onion_failure("fee_insufficient", UPDATE|12, &msg);
+
+	// To test persistence of the updated config, we'll re-initialize the ChannelManager.
+	let config_after_restart = {
+		let persister = test_utils::TestPersister::new();
+		let chain_monitor = test_utils::TestChainMonitor::new(
+			Some(nodes[1].chain_source), nodes[1].tx_broadcaster.clone(), nodes[1].logger,
+			node_cfgs[1].fee_estimator, &persister, nodes[1].keys_manager,
+		);
+
+		let mut chanmon_1 = <(_, ChannelMonitor<_>)>::read(
+			&mut &get_monitor!(nodes[1], other_channel.3).encode()[..], nodes[1].keys_manager,
+		).unwrap().1;
+		let mut chanmon_2 = <(_, ChannelMonitor<_>)>::read(
+			&mut &get_monitor!(nodes[1], channel_to_update.0).encode()[..], nodes[1].keys_manager,
+		).unwrap().1;
+		let mut channel_monitors = HashMap::new();
+		channel_monitors.insert(chanmon_1.get_funding_txo().0, &mut chanmon_1);
+		channel_monitors.insert(chanmon_2.get_funding_txo().0, &mut chanmon_2);
+
+		let chanmgr = <(_, ChannelManager<_, _, _, _, _, _>)>::read(
+			&mut &nodes[1].node.encode()[..], ChannelManagerReadArgs {
+				default_config: *nodes[1].node.get_current_default_configuration(),
+				keys_manager: nodes[1].keys_manager,
+				fee_estimator: node_cfgs[1].fee_estimator,
+				chain_monitor: &chain_monitor,
+				tx_broadcaster: nodes[1].tx_broadcaster.clone(),
+				logger: nodes[1].logger,
+				channel_monitors: channel_monitors,
+			},
+		).unwrap().1;
+		chanmgr.list_channels().iter()
+			.find(|channel| channel.channel_id == channel_to_update.0).unwrap()
+			.config.unwrap()
+	};
+	assert_eq!(config, config_after_restart);
+}
+
+#[test]
+fn test_onion_failure_stale_channel_update() {
+	do_test_onion_failure_stale_channel_update(false);
+	do_test_onion_failure_stale_channel_update(true);
 }
 
 #[test]

@@ -4491,10 +4491,25 @@ impl<Signer: Sign> Channel<Signer> {
 		self.config.options.max_dust_htlc_exposure_msat
 	}
 
-
 	/// Returns the current [`ChannelConfig`] applied to the channel.
 	pub fn config(&self) -> ChannelConfig {
 		self.config.options
+	}
+
+	/// Updates the channel's config. A bool is returned indicating whether the config update
+	/// applied resulted in a new ChannelUpdate message.
+	pub fn update_config(&mut self, config: &ChannelConfig) -> bool {
+		let did_channel_update =
+			self.config.options.forwarding_fee_proportional_millionths != config.forwarding_fee_proportional_millionths ||
+			self.config.options.forwarding_fee_base_msat != config.forwarding_fee_base_msat ||
+			self.config.options.cltv_expiry_delta != config.cltv_expiry_delta;
+		if did_channel_update {
+			// Update the counter, which backs the ChannelUpdate timestamp, to allow the relay
+			// policy change to propagate throughout the network.
+			self.update_time_counter += 1;
+		}
+		self.config.options = *config;
+		did_channel_update
 	}
 
 	pub fn get_feerate(&self) -> u32 {
