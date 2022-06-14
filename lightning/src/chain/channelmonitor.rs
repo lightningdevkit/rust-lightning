@@ -1729,6 +1729,26 @@ macro_rules! fail_unbroadcast_htlcs {
 	} }
 }
 
+// In the `test_invalid_funding_tx` test, we need a bogus script which matches the HTLC-Accepted
+// witness length match (ie is 136 bytes long). We generate one here which we also use in some
+// in-line tests later.
+
+#[cfg(test)]
+pub fn deliberately_bogus_accepted_htlc_witness_program() -> Vec<u8> {
+	let mut ret = [opcodes::all::OP_NOP.into_u8(); 136];
+	ret[131] = opcodes::all::OP_DROP.into_u8();
+	ret[132] = opcodes::all::OP_DROP.into_u8();
+	ret[133] = opcodes::all::OP_DROP.into_u8();
+	ret[134] = opcodes::all::OP_DROP.into_u8();
+	ret[135] = opcodes::OP_TRUE.into_u8();
+	Vec::from(&ret[..])
+}
+
+#[cfg(test)]
+pub fn deliberately_bogus_accepted_htlc_witness() -> Vec<Vec<u8>> {
+	vec![Vec::new(), Vec::new(), Vec::new(), Vec::new(), deliberately_bogus_accepted_htlc_witness_program().into()].into()
+}
+
 impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 	/// Inserts a revocation secret into this channel monitor. Prunes old preimages if neither
 	/// needed by holder commitment transactions HTCLs nor by counterparty ones. Unless we haven't already seen
@@ -2701,14 +2721,21 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 					if *idx == input.previous_output.vout {
 						#[cfg(test)]
 						{
-						        // If the expected script is a known type, check that the witness
-						        // appears to be spending the correct type (ie that the match would
-						        // actually succeed in BIP 158/159-style filters).
-						        if _script_pubkey.is_v0_p2wsh() {
-						                assert_eq!(&bitcoin::Address::p2wsh(&Script::from(input.witness.last().unwrap().to_vec()), bitcoin::Network::Bitcoin).script_pubkey(), _script_pubkey);
-						        } else if _script_pubkey.is_v0_p2wpkh() {
-						                assert_eq!(&bitcoin::Address::p2wpkh(&bitcoin::PublicKey::from_slice(&input.witness.last().unwrap()).unwrap(), bitcoin::Network::Bitcoin).unwrap().script_pubkey(), _script_pubkey);
-						        } else { panic!(); }
+							// If the expected script is a known type, check that the witness
+							// appears to be spending the correct type (ie that the match would
+							// actually succeed in BIP 158/159-style filters).
+							if _script_pubkey.is_v0_p2wsh() {
+								if input.witness.last().unwrap().to_vec() == deliberately_bogus_accepted_htlc_witness_program() {
+									// In at least one test we use a deliberately bogus witness
+									// script which hit an old panic. Thus, we check for that here
+									// and avoid the assert if its the expected bogus script.
+									return true;
+								}
+
+								assert_eq!(&bitcoin::Address::p2wsh(&Script::from(input.witness.last().unwrap().to_vec()), bitcoin::Network::Bitcoin).script_pubkey(), _script_pubkey);
+							} else if _script_pubkey.is_v0_p2wpkh() {
+								assert_eq!(&bitcoin::Address::p2wpkh(&bitcoin::PublicKey::from_slice(&input.witness.last().unwrap()).unwrap(), bitcoin::Network::Bitcoin).unwrap().script_pubkey(), _script_pubkey);
+							} else { panic!(); }
 						}
 						return true;
 					}
@@ -2793,10 +2820,13 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 			let prev_last_witness_len = input.witness.second_to_last().map(|w| w.len()).unwrap_or(0);
 			let revocation_sig_claim = (witness_items == 3 && htlctype == Some(HTLCType::OfferedHTLC) && prev_last_witness_len == 33)
 				|| (witness_items == 3 && htlctype == Some(HTLCType::AcceptedHTLC) && prev_last_witness_len == 33);
-			let accepted_preimage_claim = witness_items == 5 && htlctype == Some(HTLCType::AcceptedHTLC);
+			let accepted_preimage_claim = witness_items == 5 && htlctype == Some(HTLCType::AcceptedHTLC)
+				&& input.witness.second_to_last().unwrap().len() == 32;
 			#[cfg(not(fuzzing))]
 			let accepted_timeout_claim = witness_items == 3 && htlctype == Some(HTLCType::AcceptedHTLC) && !revocation_sig_claim;
-			let offered_preimage_claim = witness_items == 3 && htlctype == Some(HTLCType::OfferedHTLC) && !revocation_sig_claim;
+			let offered_preimage_claim = witness_items == 3 && htlctype == Some(HTLCType::OfferedHTLC) &&
+				!revocation_sig_claim && input.witness.second_to_last().unwrap().len() == 32;
+
 			#[cfg(not(fuzzing))]
 			let offered_timeout_claim = witness_items == 5 && htlctype == Some(HTLCType::OfferedHTLC);
 
