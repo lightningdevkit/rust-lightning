@@ -377,11 +377,11 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 	/// (CSV or CLTV following cases). In case of high-fee spikes, claim tx may stuck in the mempool, so you need to bump its feerate quickly using Replace-By-Fee or Child-Pay-For-Parent.
 	/// Panics if there are signing errors, because signing operations in reaction to on-chain events
 	/// are not expected to fail, and if they do, we may lose funds.
-	fn generate_claim_tx<F: Deref, L: Deref>(&mut self, cur_height: u32, cached_request: &PackageTemplate, fee_estimator: &F, logger: &L) -> Result<Option<(Option<u32>, u64, Transaction)>, SignError>
+	fn generate_claim_tx<F: Deref, L: Deref>(&mut self, cur_height: u32, cached_request: &PackageTemplate, fee_estimator: &F, logger: &L) -> Option<(Option<u32>, u64, u64)>
 		where F::Target: FeeEstimator,
 					L::Target: Logger,
 	{
-		if cached_request.outpoints().len() == 0 { return Ok(None) } // But don't prune pending claiming request yet, we may have to resurrect HTLCs
+		if cached_request.outpoints().len() == 0 { return None } // But don't prune pending claiming request yet, we may have to resurrect HTLCs
 
 		// Compute new height timer to decide when we need to regenerate a new bumped version of the claim tx (if we
 		// didn't receive confirmation of it before, or not enough reorg-safe depth on top of it).
@@ -391,21 +391,32 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 			if let Some((output_value, new_feerate)) =
 					cached_request.compute_package_output(predicted_weight, self.destination_script.dust_value().as_sat(), fee_estimator, logger) {
 				assert!(new_feerate != 0);
-
-				let transaction = cached_request.finalize_package(self, output_value, self.destination_script.clone(), logger)?.unwrap();
 				log_trace!(logger, "...with timer {} and feerate {}", new_timer.unwrap(), new_feerate);
-				assert!(predicted_weight >= transaction.weight());
-				return Ok(Some((new_timer, new_feerate, transaction)))
+				return Some((new_timer, new_feerate, output_value))
 			}
 		} else {
 			// Note: Currently, amounts of holder outputs spending witnesses aren't used
 			// as we can't malleate spending package to increase their feerate. This
 			// should change with the remaining anchor output patchset.
-			if let Some(transaction) = cached_request.finalize_package(self, 0, self.destination_script.clone(), logger)? {
-				return Ok(Some((None, 0, transaction)));
-			}
+			return Some((None, 0, 0));
 		}
-		Ok(None)
+		None
+	}
+
+	fn finalize_claim_tx<L: Deref>(&mut self, output_value: u64, cached_request: &PackageTemplate, logger: &L) -> Result<Option<Transaction>, SignError>
+		where L::Target: Logger,
+	{
+		let transaction = cached_request.finalize_package(self, output_value, self.destination_script.clone(), logger)
+			.map_err(|e| {
+				log_warn!(logger, "Unable to sign claims because signer was not available, will retry");
+				e
+			})?;
+		if cached_request.is_malleable() {
+			let predicted_weight = cached_request.package_weight(&self.destination_script, self.channel_transaction_parameters.opt_anchors.is_some());
+			// If the request is malleable, a transaction must have been finalized, so the unwrap is safe
+			assert!(predicted_weight >= transaction.as_ref().unwrap().weight());
+		}
+		Ok(transaction)
 	}
 
 	/// Upon channelmonitor.block_connected(..) or upon provision of a preimage on the forward link
@@ -471,27 +482,15 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 		}
 		self.locktimed_packages = remaining_locked_packages;
 
+		let mut claims = Vec::new();
+
 		// Generate claim transactions and track them to bump if necessary at
 		// height timer expiration (i.e in how many blocks we're going to take action).
 		for mut req in preprocessed_requests {
-			match self.generate_claim_tx(cur_height, &req, &*fee_estimator, &*logger) {
-				Ok(Some((new_timer, new_feerate, tx))) => {
-					req.set_timer(new_timer);
-					req.set_feerate(new_feerate);
-					let txid = tx.txid();
-					for k in req.outpoints() {
-						log_info!(logger, "Registering claiming request for {}:{}", k.txid, k.vout);
-						self.claimable_outpoints.insert(k.clone(), (txid, conf_height));
-					}
-					self.pending_claim_requests.insert(txid, req);
-					log_info!(logger, "Broadcasting onchain {}", log_tx!(tx));
-					broadcaster.broadcast_transaction(&tx);
-				}
-				Ok(None) => {}
-				Err(_) => {
-					log_warn!(logger, "Unable to broadcast claims because signer was not available, will retry");
-					req.set_timer(Some(cur_height + 1));
-				}
+			if let Some((new_timer, new_feerate, output_value)) = self.generate_claim_tx(cur_height, &req, &*fee_estimator, &*logger) {
+				req.set_timer(new_timer);
+				req.set_feerate(new_feerate);
+				claims.push((output_value, req));
 			}
 		}
 
@@ -570,6 +569,26 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 			}
 		}
 
+		for (output_value, mut req) in claims {
+			match self.finalize_claim_tx(output_value, &req, &*logger) {
+				Ok(Some(tx)) => {
+					let txid = tx.txid();
+					for k in req.outpoints() {
+						log_info!(logger, "Registering claiming request for {}:{}", k.txid, k.vout);
+						// XXX this cannot be reordered to later than previous block because of data dependency - tests are failing
+						self.claimable_outpoints.insert(k.clone(), (txid, conf_height));
+					}
+					self.pending_claim_requests.insert(txid, req);
+					log_info!(logger, "Broadcasting onchain {}", log_tx!(tx));
+					broadcaster.broadcast_transaction(&tx);
+				}
+				Ok(None) => {}
+				Err(_) => {
+					req.set_timer(Some(cur_height + 1));
+				}
+			}
+		}
+
 		// After security delay, either our claim tx got enough confs or outpoint is definetely out of reach
 		let onchain_events_awaiting_threshold_conf =
 			self.onchain_events_awaiting_threshold_conf.drain(..).collect::<Vec<_>>();
@@ -608,21 +627,25 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 
 		// Build, bump and rebroadcast tx accordingly
 		log_trace!(logger, "Bumping {} candidates", bump_candidates.len());
-		for (first_claim_txid, req) in bump_candidates.iter_mut() {
-			match self.generate_claim_tx(cur_height, req, &*fee_estimator, &*logger) {
-				Ok(Some((new_timer, new_feerate, bump_tx))) => {
-					log_info!(logger, "Broadcasting RBF-bumped onchain {}", log_tx!(bump_tx));
-					broadcaster.broadcast_transaction(&bump_tx);
-					if let Some(request) = self.pending_claim_requests.get_mut(first_claim_txid) {
-						request.set_timer(new_timer);
-						request.set_feerate(new_feerate);
+		for (first_claim_txid, req) in bump_candidates.drain() {
+			if let Some((new_timer, new_feerate, output_value)) = self.generate_claim_tx(cur_height, &req, &*fee_estimator, &*logger) {
+				match self.finalize_claim_tx(output_value, &req, &*logger) {
+					Ok(Some(bump_tx)) => {
+						log_info!(logger, "Broadcasting RBF-bumped onchain {}", log_tx!(bump_tx));
+						broadcaster.broadcast_transaction(&bump_tx);
+						if let Some(request) = self.pending_claim_requests.get_mut(&first_claim_txid) {
+							request.set_timer(new_timer);
+							request.set_feerate(new_feerate);
+						}
+					}
+					Ok(None) => {}
+					Err(_) => {
+						if let Some(request) = self.pending_claim_requests.get_mut(&first_claim_txid) {
+							request.set_timer(Some(cur_height + 1));
+						}
 					}
 				}
-				Ok(None) => {}
-				Err(_) => {
-					log_warn!(logger, "Unable to broadcast claims because signer was not available, will retry");
-					req.set_timer(Some(cur_height + 1));
-				}
+
 			}
 		}
 
@@ -683,18 +706,14 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 			}
 		}
 		for (_, request) in bump_candidates.iter_mut() {
-			match self.generate_claim_tx(height, &request, &&*fee_estimator, &&*logger) {
-				Ok(Some((new_timer, new_feerate, bump_tx))) => {
-					request.set_timer(new_timer);
-					request.set_feerate(new_feerate);
-					log_info!(logger, "Broadcasting onchain {}", log_tx!(bump_tx));
-					broadcaster.broadcast_transaction(&bump_tx);
-				}
-				Ok(None) => {}
-				Err(_) => {
-					log_warn!(logger, "Unable to generate claim tx because signer is unavailable, will retry next block");
-					request.set_timer(Some(height + 1));
-				}
+			if let Some((new_timer, new_feerate, output_value)) = self.generate_claim_tx(height, request, &&*fee_estimator, &&*logger) {
+				let bump_tx = self.finalize_claim_tx(output_value, request, &&*logger).unwrap().unwrap();
+				request.set_timer(new_timer);
+				request.set_feerate(new_feerate);
+				log_info!(logger, "Broadcasting onchain {}", log_tx!(bump_tx));
+				broadcaster.broadcast_transaction(&bump_tx);
+				// log_warn!(logger, "Unable to generate claim tx because signer is unavailable, will retry next block");
+				// request.set_timer(Some(height + 1));
 			}
 		}
 		for (ancestor_claim_txid, request) in bump_candidates.drain() {
