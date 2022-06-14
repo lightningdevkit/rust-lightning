@@ -4346,7 +4346,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					if chan.get().get_counterparty_node_id() != *counterparty_node_id {
 						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.temporary_channel_id));
 					}
-					try_chan_entry!(self, chan.get_mut().accept_channel(&msg, &self.default_configuration.peer_channel_config_limits, &their_features), channel_state, chan);
+					try_chan_entry!(self, chan.get_mut().accept_channel(&msg, &self.default_configuration.channel_handshake_limits, &their_features), channel_state, chan);
 					(chan.get().get_value_satoshis(), chan.get().get_funding_redeemscript().to_v0_p2wsh(), chan.get().get_user_id())
 				},
 				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.temporary_channel_id))
@@ -7630,7 +7630,7 @@ pub mod bench {
 		let fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) };
 
 		let mut config: UserConfig = Default::default();
-		config.own_channel_config.minimum_depth = 1;
+		config.channel_handshake_config.minimum_depth = 1;
 
 		let logger_a = test_utils::TestLogger::with_id("node a".to_owned());
 		let chain_monitor_a = ChainMonitor::new(None, &tx_broadcaster, &logger_a, &fee_estimator, &persister_a);

@@ -170,13 +170,13 @@ fn do_test_1_conf_open(connect_style: ConnectStyle) {
 	// Previously, if the minium_depth config was set to 1, we'd never send a channel_ready. This
 	// tests that we properly send one in that case.
 	let mut alice_config = UserConfig::default();
-	alice_config.own_channel_config.minimum_depth = 1;
-	alice_config.own_channel_config.announced_channel = true;
-	alice_config.peer_channel_config_limits.force_announced_channel_preference = false;
+	alice_config.channel_handshake_config.minimum_depth = 1;
+	alice_config.channel_handshake_config.announced_channel = true;
+	alice_config.channel_handshake_limits.force_announced_channel_preference = false;
 	let mut bob_config = UserConfig::default();
-	bob_config.own_channel_config.minimum_depth = 1;
-	bob_config.own_channel_config.announced_channel = true;
-	bob_config.peer_channel_config_limits.force_announced_channel_preference = false;
+	bob_config.channel_handshake_config.minimum_depth = 1;
+	bob_config.channel_handshake_config.announced_channel = true;
+	bob_config.channel_handshake_limits.force_announced_channel_preference = false;
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(alice_config), Some(bob_config)]);
@@ -308,8 +308,8 @@ fn test_scid_privacy_on_pub_channel() {
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let mut scid_privacy_cfg = test_default_channel_config();
-	scid_privacy_cfg.own_channel_config.announced_channel = true;
-	scid_privacy_cfg.own_channel_config.negotiate_scid_privacy = true;
+	scid_privacy_cfg.channel_handshake_config.announced_channel = true;
+	scid_privacy_cfg.channel_handshake_config.negotiate_scid_privacy = true;
 	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100000, 10001, 42, Some(scid_privacy_cfg)).unwrap();
 	let mut open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
 
@@ -332,8 +332,8 @@ fn test_scid_privacy_negotiation() {
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let mut scid_privacy_cfg = test_default_channel_config();
-	scid_privacy_cfg.own_channel_config.announced_channel = false;
-	scid_privacy_cfg.own_channel_config.negotiate_scid_privacy = true;
+	scid_privacy_cfg.channel_handshake_config.announced_channel = false;
+	scid_privacy_cfg.channel_handshake_config.negotiate_scid_privacy = true;
 	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100000, 10001, 42, Some(scid_privacy_cfg)).unwrap();
 
 	let init_open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
@@ -378,8 +378,8 @@ fn test_inbound_scid_privacy() {
 	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0, InitFeatures::known(), InitFeatures::known());
 
 	let mut no_announce_cfg = test_default_channel_config();
-	no_announce_cfg.own_channel_config.announced_channel = false;
-	no_announce_cfg.own_channel_config.negotiate_scid_privacy = true;
+	no_announce_cfg.channel_handshake_config.announced_channel = false;
+	no_announce_cfg.channel_handshake_config.negotiate_scid_privacy = true;
 	nodes[1].node.create_channel(nodes[2].node.get_our_node_id(), 100_000, 10_000, 42, Some(no_announce_cfg)).unwrap();
 	let mut open_channel = get_event_msg!(nodes[1], MessageSendEvent::SendOpenChannel, nodes[2].node.get_our_node_id());
 
@@ -521,7 +521,7 @@ fn test_scid_alias_returned() {
 		short_channel_id: last_hop[0].inbound_scid_alias.unwrap(),
 		timestamp: 21,
 		flags: 1,
-		cltv_expiry_delta: accept_forward_cfg.channel_options.cltv_expiry_delta,
+		cltv_expiry_delta: accept_forward_cfg.channel_config.cltv_expiry_delta,
 		htlc_minimum_msat: 1_000,
 		htlc_maximum_msat: OptionalField::Present(1_000_000), // Defaults to 10% of the channel value
 		fee_base_msat: last_hop[0].counterparty.forwarding_info.as_ref().unwrap().fee_base_msat,
@@ -665,7 +665,7 @@ fn test_0conf_channel_with_async_monitor() {
 
 	create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0, InitFeatures::known(), InitFeatures::known());
 
-	chan_config.own_channel_config.announced_channel = false;
+	chan_config.channel_handshake_config.announced_channel = false;
 	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100000, 10001, 42, Some(chan_config)).unwrap();
 	let open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
 
@@ -811,7 +811,7 @@ fn test_0conf_close_no_early_chan_update() {
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	// This is the default but we force it on anyway
-	chan_config.own_channel_config.announced_channel = true;
+	chan_config.channel_handshake_config.announced_channel = true;
 	open_zero_conf_channel(&nodes[0], &nodes[1], Some(chan_config));
 
 	// We can use the channel immediately, but won't generate a channel_update until we get confs
@@ -835,7 +835,7 @@ fn test_public_0conf_channel() {
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	// This is the default but we force it on anyway
-	chan_config.own_channel_config.announced_channel = true;
+	chan_config.channel_handshake_config.announced_channel = true;
 	let tx = open_zero_conf_channel(&nodes[0], &nodes[1], Some(chan_config));
 
 	// We can use the channel immediately, but we can't announce it until we get 6+ confirmations
@@ -888,7 +888,7 @@ fn test_0conf_channel_reorg() {
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	// This is the default but we force it on anyway
-	chan_config.own_channel_config.announced_channel = true;
+	chan_config.channel_handshake_config.announced_channel = true;
 	let tx = open_zero_conf_channel(&nodes[0], &nodes[1], Some(chan_config));
 
 	// We can use the channel immediately, but we can't announce it until we get 6+ confirmations
@@ -974,7 +974,7 @@ fn test_zero_conf_accept_reject() {
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 
 	let events = nodes[1].node.get_and_clear_pending_events();
-	
+
 	match events[0] {
 		Event::OpenChannelRequest { temporary_channel_id, .. } => {
 			// Assert we fail to accept via the non-0conf method
@@ -1004,7 +1004,7 @@ fn test_zero_conf_accept_reject() {
 		&open_channel_msg);
 
 	let events = nodes[1].node.get_and_clear_pending_events();
-	
+
 	match events[0] {
 		Event::OpenChannelRequest { temporary_channel_id, .. } => {
 			// Assert we can accept via the 0conf method

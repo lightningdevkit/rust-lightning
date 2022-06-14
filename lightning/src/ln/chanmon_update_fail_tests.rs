@@ -2541,7 +2541,7 @@ fn test_temporary_error_during_shutdown() {
 	// Test that temporary failures when updating the monitor's shutdown script delay cooperative
 	// close.
 	let mut config = test_default_channel_config();
-	config.own_channel_config.commit_upfront_shutdown_pubkey = false;
+	config.channel_handshake_config.commit_upfront_shutdown_pubkey = false;
 
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
@@ -2596,7 +2596,7 @@ fn test_permanent_error_during_sending_shutdown() {
 	// Test that permanent failures when updating the monitor's shutdown script result in a force
 	// close when initiating a cooperative close.
 	let mut config = test_default_channel_config();
-	config.own_channel_config.commit_upfront_shutdown_pubkey = false;
+	config.channel_handshake_config.commit_upfront_shutdown_pubkey = false;
 
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
@@ -2617,7 +2617,7 @@ fn test_permanent_error_during_handling_shutdown() {
 	// Test that permanent failures when updating the monitor's shutdown script result in a force
 	// close when handling a cooperative close.
 	let mut config = test_default_channel_config();
-	config.own_channel_config.commit_upfront_shutdown_pubkey = false;
+	config.channel_handshake_config.commit_upfront_shutdown_pubkey = false;
 
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);

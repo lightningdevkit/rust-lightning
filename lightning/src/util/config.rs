@@ -350,7 +350,7 @@ impl Default for ChannelConfig {
 /// [`ChannelHandshakeConfig::commit_upfront_shutdown_pubkey`] fields.
 #[derive(Copy, Clone, Debug)]
 pub(crate) struct LegacyChannelConfig {
-	pub(crate) mutable: ChannelConfig,
+	pub(crate) options: ChannelConfig,
 	/// Deprecated but may still be read from. See [`ChannelHandshakeConfig::announced_channel`] to
 	/// set this when opening/accepting a channel.
 	pub(crate) announced_channel: bool,
@@ -363,7 +363,7 @@ pub(crate) struct LegacyChannelConfig {
 impl Default for LegacyChannelConfig {
 	fn default() -> Self {
 		Self {
-			mutable: ChannelConfig::default(),
+			options: ChannelConfig::default(),
 			announced_channel: false,
 			commit_upfront_shutdown_pubkey: true,
 		}
@@ -373,13 +373,13 @@ impl Default for LegacyChannelConfig {
 impl ::util::ser::Writeable for LegacyChannelConfig {
 	fn write<W: ::util::ser::Writer>(&self, writer: &mut W) -> Result<(), ::io::Error> {
 		write_tlv_fields!(writer, {
-			(0, self.mutable.forwarding_fee_proportional_millionths, required),
-			(1, self.mutable.max_dust_htlc_exposure_msat, (default_value, 5_000_000)),
-			(2, self.mutable.cltv_expiry_delta, required),
-			(3, self.mutable.force_close_avoidance_max_fee_satoshis, (default_value, 1000)),
+			(0, self.options.forwarding_fee_proportional_millionths, required),
+			(1, self.options.max_dust_htlc_exposure_msat, (default_value, 5_000_000)),
+			(2, self.options.cltv_expiry_delta, required),
+			(3, self.options.force_close_avoidance_max_fee_satoshis, (default_value, 1000)),
 			(4, self.announced_channel, required),
 			(6, self.commit_upfront_shutdown_pubkey, required),
-			(8, self.mutable.forwarding_fee_base_msat, required),
+			(8, self.options.forwarding_fee_base_msat, required),
 		});
 		Ok(())
 	}
@@ -404,7 +404,7 @@ impl ::util::ser::Readable for LegacyChannelConfig {
 			(8, forwarding_fee_base_msat, required),
 		});
 		Ok(Self {
-			mutable: ChannelConfig {
+			options: ChannelConfig {
 				forwarding_fee_proportional_millionths,
 				max_dust_htlc_exposure_msat,
 				cltv_expiry_delta,
@@ -423,12 +423,12 @@ impl ::util::ser::Readable for LegacyChannelConfig {
 /// (but currently with 0 relay fees!)
 #[derive(Copy, Clone, Debug)]
 pub struct UserConfig {
-	/// Channel config that we propose to our counterparty.
-	pub own_channel_config: ChannelHandshakeConfig,
-	/// Limits applied to our counterparty's proposed channel config settings.
-	pub peer_channel_config_limits: ChannelHandshakeLimits,
+	/// Channel handshake config that we propose to our counterparty.
+	pub channel_handshake_config: ChannelHandshakeConfig,
+	/// Limits applied to our counterparty's proposed channel handshake config settings.
+	pub channel_handshake_limits: ChannelHandshakeLimits,
 	/// Channel config which affects behavior during channel lifetime.
-	pub channel_options: ChannelConfig,
+	pub channel_config: ChannelConfig,
 	/// If this is set to false, we will reject any HTLCs which were to be forwarded over private
 	/// channels. This prevents us from taking on HTLC-forwarding risk when we intend to run as a
 	/// node which is not online reliably.
@@ -468,9 +468,9 @@ pub struct UserConfig {
 impl Default for UserConfig {
 	fn default() -> Self {
 		UserConfig {
-			own_channel_config: ChannelHandshakeConfig::default(),
-			peer_channel_config_limits: ChannelHandshakeLimits::default(),
-			channel_options: ChannelConfig::default(),
+			channel_handshake_config: ChannelHandshakeConfig::default(),
+			channel_handshake_limits: ChannelHandshakeLimits::default(),
+			channel_config: ChannelConfig::default(),
 			accept_forwards_to_priv_channels: false,
 			accept_inbound_channels: true,
 			manually_accept_inbound_channels: false,
