@@ -39,7 +39,7 @@ use util::events::ClosureReason;
 use util::ser::{Readable, ReadableArgs, Writeable, Writer, VecWriter};
 use util::logger::Logger;
 use util::errors::APIError;
-use util::config::{UserConfig, LegacyChannelConfig, ChannelHandshakeConfig, ChannelHandshakeLimits};
+use util::config::{UserConfig, ChannelConfig, LegacyChannelConfig, ChannelHandshakeConfig, ChannelHandshakeLimits};
 use util::scid_utils::scid_from_parts;
 
 use io;
@@ -4489,6 +4489,12 @@ impl<Signer: Sign> Channel<Signer> {
 
 	pub fn get_max_dust_htlc_exposure_msat(&self) -> u64 {
 		self.config.options.max_dust_htlc_exposure_msat
+	}
+
+
+	/// Returns the current [`ChannelConfig`] applied to the channel.
+	pub fn config(&self) -> ChannelConfig {
+		self.config.options
 	}
 
 	pub fn get_feerate(&self) -> u32 {

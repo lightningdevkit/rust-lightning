@@ -51,7 +51,7 @@ use ln::onion_utils;
 use ln::msgs::{ChannelMessageHandler, DecodeError, LightningError, MAX_VALUE_MSAT, OptionalField};
 use ln::wire::Encode;
 use chain::keysinterface::{Sign, KeysInterface, KeysManager, InMemorySigner, Recipient};
-use util::config::UserConfig;
+use util::config::{UserConfig, ChannelConfig};
 use util::events::{EventHandler, EventsProvider, MessageSendEvent, MessageSendEventsProvider, ClosureReason};
 use util::{byte_utils, events};
 use util::scid_utils::fake_scid;
@@ -1095,6 +1095,10 @@ pub struct ChannelDetails {
 	pub inbound_htlc_minimum_msat: Option<u64>,
 	/// The largest value HTLC (in msat) we currently will accept, for this channel.
 	pub inbound_htlc_maximum_msat: Option<u64>,
+	/// Set of configurable parameters that affect channel operation.
+	///
+	/// This field is only `None` for `ChannelDetails` objects serialized prior to LDK 0.0.109.
+	pub config: Option<ChannelConfig>,
 }
 
 impl ChannelDetails {
@@ -1759,7 +1763,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					is_usable: channel.is_live(),
 					is_public: channel.should_announce(),
 					inbound_htlc_minimum_msat: Some(channel.get_holder_htlc_minimum_msat()),
-					inbound_htlc_maximum_msat: channel.get_holder_htlc_maximum_msat()
+					inbound_htlc_maximum_msat: channel.get_holder_htlc_maximum_msat(),
+					config: Some(channel.config()),
 				});
 			}
 		}
@@ -6089,6 +6094,7 @@ impl_writeable_tlv_based!(ChannelDetails, {
 	(4, counterparty, required),
 	(5, outbound_scid_alias, option),
 	(6, funding_txo, option),
+	(7, config, option),
 	(8, short_channel_id, option),
 	(10, channel_value_satoshis, required),
 	(12, unspendable_punishment_reserve, option),

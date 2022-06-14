@@ -249,7 +249,7 @@ impl Default for ChannelHandshakeLimits {
 
 /// Options which apply on a per-channel basis and may change at runtime or based on negotiation
 /// with our counterparty.
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub struct ChannelConfig {
 	/// Amount (in millionths of a satoshi) charged per satoshi for payments forwarded outbound
 	/// over the channel.
@@ -344,6 +344,17 @@ impl Default for ChannelConfig {
 		}
 	}
 }
+
+impl_writeable_tlv_based!(ChannelConfig, {
+	(0, forwarding_fee_proportional_millionths, required),
+	(2, forwarding_fee_base_msat, required),
+	(4, cltv_expiry_delta, required),
+	(6, max_dust_htlc_exposure_msat, required),
+	// ChannelConfig serialized this field with a required type of 8 prior to the introduction of
+	// LegacyChannelConfig. To make sure that serialization is not compatible with this one, we use
+	// the next required type of 10, which if seen by the old serialization will always fail.
+	(10, force_close_avoidance_max_fee_satoshis, required),
+});
 
 /// Legacy version of [`ChannelConfig`] that stored the static
 /// [`ChannelHandshakeConfig::announced_channel`] and
