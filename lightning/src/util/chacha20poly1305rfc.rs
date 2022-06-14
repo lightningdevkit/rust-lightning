@@ -10,6 +10,9 @@
 // This is a port of Andrew Moons poly1305-donna
 // https://github.com/floodyberry/poly1305-donna
 
+use util::ser::{Writeable, Writer};
+use io::{self, Write};
+
 #[cfg(not(fuzzing))]
 mod real_chachapoly {
 	use util::chacha20::ChaCha20;
@@ -70,6 +73,26 @@ mod real_chachapoly {
 			self.mac.raw_result(out_tag);
 		}
 
+		// Encrypt `input_output` in-place. To finish and calculate the tag, use `finish_and_get_tag`
+		// below.
+		pub(super) fn encrypt_in_place(&mut self, input_output: &mut [u8]) {
+			debug_assert!(self.finished == false);
+			self.cipher.process_in_place(input_output);
+			self.data_len += input_output.len();
+			self.mac.input(input_output);
+		}
+
+		// If we were previously encrypting with `encrypt_in_place`, this method can be used to finish
+		// encrypting and calculate the tag.
+		pub(super) fn finish_and_get_tag(&mut self, out_tag: &mut [u8]) {
+			debug_assert!(self.finished == false);
+			ChaCha20Poly1305RFC::pad_mac_16(&mut self.mac, self.data_len);
+			self.finished = true;
+			self.mac.input(&self.aad_len.to_le_bytes());
+			self.mac.input(&(self.data_len as u64).to_le_bytes());
+			self.mac.raw_result(out_tag);
+		}
+
 		pub fn decrypt(&mut self, input: &[u8], output: &mut [u8], tag: &[u8]) -> bool {
 			assert!(input.len() == output.len());
 			assert!(self.finished == false);
@@ -96,6 +119,57 @@ mod real_chachapoly {
 }
 #[cfg(not(fuzzing))]
 pub use self::real_chachapoly::ChaCha20Poly1305RFC;
+
+/// Enables simultaneously writing and encrypting a byte stream into a Writer.
+struct ChaChaPolyWriter<'a, W: Writer> {
+	pub chacha: &'a mut ChaCha20Poly1305RFC,
+	pub write: &'a mut W,
+}
+
+impl<'a, W: Writer> Writer for ChaChaPolyWriter<'a, W> {
+	// Encrypt then write bytes from `src` into Self::write.
+	// `ChaCha20Poly1305RFC::finish_and_get_tag` can be called to retrieve the tag after all writes
+	// complete.
+	fn write_all(&mut self, src: &[u8]) -> Result<(), io::Error> {
+		let mut src_idx = 0;
+		while src_idx < src.len() {
+			let mut write_buffer = [0; 8192];
+			let bytes_written = (&mut write_buffer[..]).write(&src[src_idx..]).expect("In-memory writes can't fail");
+			self.chacha.encrypt_in_place(&mut write_buffer[..bytes_written]);
+			self.write.write_all(&write_buffer[..bytes_written])?;
+			src_idx += bytes_written;
+		}
+		Ok(())
+	}
+}
+
+/// Enables the use of the serialization macros for objects that need to be simultaneously encrypted and
+/// serialized. This allows us to avoid an intermediate Vec allocation.
+pub(crate) struct ChaChaPolyWriteAdapter<'a, W: Writeable> {
+	pub rho: [u8; 32],
+	pub writeable: &'a W,
+}
+
+impl<'a, W: Writeable> ChaChaPolyWriteAdapter<'a, W> {
+	#[allow(unused)] // This will be used for onion messages soon
+	pub fn new(rho: [u8; 32], writeable: &'a W) -> ChaChaPolyWriteAdapter<'a, W> {
+		Self { rho, writeable }
+	}
+}
+
+impl<'a, T: Writeable> Writeable for ChaChaPolyWriteAdapter<'a, T> {
+	// Simultaneously write and encrypt Self::writeable.
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		let mut chacha = ChaCha20Poly1305RFC::new(&self.rho, &[0; 12], &[]);
+		let mut chacha_stream = ChaChaPolyWriter { chacha: &mut chacha, write: w };
+		self.writeable.write(&mut chacha_stream)?;
+		let mut tag = [0 as u8; 16];
+		chacha.finish_and_get_tag(&mut tag);
+		tag.write(w)?;
+
+		Ok(())
+	}
+}
 
 #[cfg(fuzzing)]
 mod fuzzy_chachapoly {
@@ -126,6 +200,16 @@ mod fuzzy_chachapoly {
 			assert!(self.finished == false);
 
 			output.copy_from_slice(&input);
+			out_tag.copy_from_slice(&self.tag);
+			self.finished = true;
+		}
+
+		pub(super) fn encrypt_in_place(&mut self, _input_output: &mut [u8]) {
+			assert!(self.finished == false);
+			self.finished = true;
+		}
+
+		pub(super) fn finish_and_get_tag(&mut self, out_tag: &mut [u8]) {
 			out_tag.copy_from_slice(&self.tag);
 			self.finished = true;
 		}
