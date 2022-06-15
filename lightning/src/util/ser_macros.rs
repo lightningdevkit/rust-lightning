@@ -28,6 +28,7 @@ macro_rules! encode_tlv {
 	};
 }
 
+#[macro_export]
 macro_rules! encode_tlv_stream {
 	($stream: expr, {$(($type: expr, $field: expr, $fieldty: tt)),* $(,)*}) => { {
 		#[allow(unused_imports)]
@@ -165,6 +166,7 @@ macro_rules! decode_tlv {
 	}};
 }
 
+#[macro_export]
 macro_rules! decode_tlv_stream {
 	($stream: expr, {$(($type: expr, $field: ident, $fieldty: tt)),* $(,)*}) => { {
 		use ln::msgs::DecodeError;
@@ -231,6 +233,7 @@ macro_rules! decode_tlv_stream {
 	} }
 }
 
+#[macro_export]
 macro_rules! impl_writeable_msg {
 	($st:ident, {$($field:ident),* $(,)*}, {$(($type: expr, $tlvfield: ident, $fieldty: tt)),* $(,)*}) => {
 		impl ::util::ser::Writeable for $st {
@@ -254,6 +257,7 @@ macro_rules! impl_writeable_msg {
 	}
 }
 
+#[macro_export]
 macro_rules! impl_writeable {
 	($st:ident, {$($field:ident),*}) => {
 		impl ::util::ser::Writeable for $st {

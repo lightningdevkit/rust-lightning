@@ -12,6 +12,11 @@
 #[macro_use]
 pub(crate) mod fuzz_wrappers;
 
+#[cfg(feature = "msgs_macros")]
+#[macro_use]
+pub mod ser_macros;
+
+#[cfg(not(feature = "msgs_macros"))]
 #[macro_use]
 pub(crate) mod ser_macros;
 

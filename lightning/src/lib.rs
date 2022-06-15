@@ -37,7 +37,7 @@
 //!     * `max_level_debug`
 //!     * `max_level_trace`
 
-#![cfg_attr(not(any(test, fuzzing, feature = "_test_utils")), deny(missing_docs))]
+#![cfg_attr(not(any(test, fuzzing, feature = "_test_utils", feature = "msgs_macros")), deny(missing_docs))]
 #![cfg_attr(not(any(test, fuzzing, feature = "_test_utils")), forbid(unsafe_code))]
 #![deny(broken_intra_doc_links)]
 

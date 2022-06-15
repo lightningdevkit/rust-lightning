@@ -91,7 +91,7 @@ impl Writer for LengthCalculatingWriter {
 
 /// Essentially std::io::Take but a bit simpler and with a method to walk the underlying stream
 /// forward to ensure we always consume exactly the fixed length specified.
-pub(crate) struct FixedLengthReader<R: Read> {
+pub struct FixedLengthReader<R: Read> {
 	read: R,
 	bytes_read: u64,
 	total_bytes: u64,
@@ -136,7 +136,7 @@ impl<R: Read> Read for FixedLengthReader<R> {
 
 /// A Read which tracks whether any bytes have been read at all. This allows us to distinguish
 /// between "EOF reached before we started" and "EOF reached mid-read".
-pub(crate) struct ReadTrackingReader<R: Read> {
+pub struct ReadTrackingReader<R: Read> {
 	read: R,
 	pub have_read: bool,
 }
