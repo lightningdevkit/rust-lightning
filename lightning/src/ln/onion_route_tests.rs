@@ -14,6 +14,7 @@
 use chain::channelmonitor::{ChannelMonitor, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS};
 use chain::keysinterface::{KeysInterface, Recipient};
 use ln::{PaymentHash, PaymentSecret};
+use ln::channel::EXPIRE_PREV_CONFIG_TICKS;
 use ln::channelmanager::{ChannelManager, ChannelManagerReadArgs, HTLCForwardInfo, CLTV_FAR_FAR_AWAY, MIN_CLTV_EXPIRY_DELTA, PendingHTLCInfo, PendingHTLCRouting};
 use ln::onion_utils;
 use routing::gossip::{NetworkUpdate, RoutingFees, NodeId};
@@ -648,9 +649,16 @@ fn do_test_onion_failure_stale_channel_update(announced_channel: bool) {
 		payment_hash, payment_secret);
 	claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_preimage);
 
+	// Closure to force expiry of a channel's previous config.
+	let expire_prev_config = || {
+		for _ in 0..EXPIRE_PREV_CONFIG_TICKS {
+			nodes[1].node.timer_tick_occurred();
+		}
+	};
+
 	// Closure to update and retrieve the latest ChannelUpdate.
 	let update_and_get_channel_update = |config: &ChannelConfig, expect_new_update: bool,
-		prev_update: Option<&msgs::ChannelUpdate>| -> Option<msgs::ChannelUpdate> {
+		prev_update: Option<&msgs::ChannelUpdate>, should_expire_prev_config: bool| -> Option<msgs::ChannelUpdate> {
 		nodes[1].node.update_channel_config(
 			channel_to_update_counterparty, &[channel_to_update.0], config,
 		).unwrap();
@@ -673,6 +681,9 @@ fn do_test_onion_failure_stale_channel_update(announced_channel: bool) {
 		};
 		if prev_update.is_some() {
 			assert!(new_update.contents.timestamp > prev_update.unwrap().contents.timestamp)
+		}
+		if should_expire_prev_config {
+			expire_prev_config();
 		}
 		Some(new_update)
 	};
@@ -704,28 +715,37 @@ fn do_test_onion_failure_stale_channel_update(announced_channel: bool) {
 		.find(|channel| channel.channel_id == channel_to_update.0).unwrap()
 		.config.unwrap();
 	config.forwarding_fee_base_msat = u32::max_value();
-	let msg = update_and_get_channel_update(&config, true, None).unwrap();
+	let msg = update_and_get_channel_update(&config, true, None, false).unwrap();
+
+	// The old policy should still be in effect until a new block is connected.
+	send_along_route_with_secret(&nodes[0], route.clone(), &[&[&nodes[1], &nodes[2]]], PAYMENT_AMT,
+		payment_hash, payment_secret);
+	claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_preimage);
+
+	// Connect a block, which should expire the previous config, leading to a failure when
+	// forwarding the HTLC.
+	expire_prev_config();
 	expect_onion_failure("fee_insufficient", UPDATE|12, &msg);
 
 	// Redundant updates should not trigger a new ChannelUpdate.
-	assert!(update_and_get_channel_update(&config, false, None).is_none());
+	assert!(update_and_get_channel_update(&config, false, None, false).is_none());
 
 	// Similarly, updates that do not have an affect on ChannelUpdate should not trigger a new one.
 	config.force_close_avoidance_max_fee_satoshis *= 2;
-	assert!(update_and_get_channel_update(&config, false, None).is_none());
+	assert!(update_and_get_channel_update(&config, false, None, false).is_none());
 
 	// Reset the base fee to the default and increase the proportional fee which should trigger a
 	// new ChannelUpdate.
 	config.forwarding_fee_base_msat = default_config.forwarding_fee_base_msat;
 	config.cltv_expiry_delta = u16::max_value();
-	let msg = update_and_get_channel_update(&config, true, Some(&msg)).unwrap();
+	let msg = update_and_get_channel_update(&config, true, Some(&msg), true).unwrap();
 	expect_onion_failure("incorrect_cltv_expiry", UPDATE|13, &msg);
 
 	// Reset the proportional fee and increase the CLTV expiry delta which should trigger a new
 	// ChannelUpdate.
 	config.cltv_expiry_delta = default_config.cltv_expiry_delta;
 	config.forwarding_fee_proportional_millionths = u32::max_value();
-	let msg = update_and_get_channel_update(&config, true, Some(&msg)).unwrap();
+	let msg = update_and_get_channel_update(&config, true, Some(&msg), true).unwrap();
 	expect_onion_failure("fee_insufficient", UPDATE|12, &msg);
 
 	// To test persistence of the updated config, we'll re-initialize the ChannelManager.

@@ -2230,7 +2230,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 						},
 						Some(id) => Some(id.clone()),
 					};
-					let (chan_update_opt, forwardee_cltv_expiry_delta) = if let Some(forwarding_id) = forwarding_id_opt {
+					let chan_update_opt = if let Some(forwarding_id) = forwarding_id_opt {
 						let chan = channel_state.as_mut().unwrap().by_id.get_mut(&forwarding_id).unwrap();
 						if !chan.should_announce() && !self.default_configuration.accept_forwards_to_priv_channels {
 							// Note that the behavior here should be identical to the above block - we
@@ -2257,18 +2257,20 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 						if *amt_to_forward < chan.get_counterparty_htlc_minimum_msat() { // amount_below_minimum
 							break Some(("HTLC amount was below the htlc_minimum_msat", 0x1000 | 11, chan_update_opt));
 						}
-						let fee = amt_to_forward.checked_mul(chan.get_fee_proportional_millionths() as u64)
-							.and_then(|prop_fee| { (prop_fee / 1000000)
-							.checked_add(chan.get_outbound_forwarding_fee_base_msat() as u64) });
-						if fee.is_none() || msg.amount_msat < fee.unwrap() || (msg.amount_msat - fee.unwrap()) < *amt_to_forward { // fee_insufficient
-							break Some(("Prior hop has deviated from specified fees parameters or origin node has obsolete ones", 0x1000 | 12, chan_update_opt));
+						if let Err((err, code)) = chan.htlc_satisfies_config(&msg, *amt_to_forward, *outgoing_cltv_value) {
+							break Some((err, code, chan_update_opt));
 						}
-						(chan_update_opt, chan.get_cltv_expiry_delta())
-					} else { (None, MIN_CLTV_EXPIRY_DELTA) };
+						chan_update_opt
+					} else {
+						if (msg.cltv_expiry as u64) < (*outgoing_cltv_value) as u64 + MIN_CLTV_EXPIRY_DELTA as u64 { // incorrect_cltv_expiry
+							break Some((
+								"Forwarding node has tampered with the intended HTLC values or origin node has an obsolete cltv_expiry_delta",
+								0x1000 | 13, None,
+							));
+						}
+						None
+					};
 
-					if (msg.cltv_expiry as u64) < (*outgoing_cltv_value) as u64 + forwardee_cltv_expiry_delta as u64 { // incorrect_cltv_expiry
-						break Some(("Forwarding node has tampered with the intended HTLC values or origin node has an obsolete cltv_expiry_delta", 0x1000 | 13, chan_update_opt));
-					}
 					let cur_height = self.best_block.read().unwrap().height() + 1;
 					// Theoretically, channel counterparty shouldn't send us a HTLC expiring now,
 					// but we want to be robust wrt to counterparty packet sanitization (see
