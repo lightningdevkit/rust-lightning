@@ -3511,6 +3511,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	///  * Broadcasting `ChannelUpdate` messages if we've been disconnected from our peer for more
 	///    than a minute, informing the network that they should no longer attempt to route over
 	///    the channel.
+	///  * Expiring a channel's previous `ChannelConfig` if necessary to only allow forwarding HTLCs
+	///    with the current `ChannelConfig`.
 	///
 	/// Note that this may cause reentrancy through `chain::Watch::update_channel` calls or feerate
 	/// estimate fetches.
@@ -3568,6 +3570,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 						},
 						_ => {},
 					}
+
+					chan.maybe_expire_prev_config();
 
 					true
 				});

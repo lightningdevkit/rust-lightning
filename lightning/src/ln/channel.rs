@@ -482,6 +482,16 @@ pub(crate) const CONCURRENT_INBOUND_HTLC_FEE_BUFFER: u32 = 2;
 /// transaction (not counting the value of the HTLCs themselves).
 pub(crate) const MIN_AFFORDABLE_HTLC_COUNT: usize = 4;
 
+/// When a [`Channel`] has its [`ChannelConfig`] updated, its existing one is stashed for up to this
+/// number of ticks to allow forwarding HTLCs by nodes that have yet to receive the new
+/// ChannelUpdate prompted by the config update. This value was determined as follows:
+///
+///   * The expected interval between ticks (1 minute).
+///   * The average convergence delay of updates across the network, i.e., ~300 seconds on average
+///      for a node to see an update as seen on `<https://arxiv.org/pdf/2205.12737.pdf>`.
+///   * `EXPIRE_PREV_CONFIG_TICKS` = convergence_delay / tick_interval
+pub(crate) const EXPIRE_PREV_CONFIG_TICKS: usize = 5;
+
 // TODO: We should refactor this to be an Inbound/OutboundChannel until initial setup handshaking
 // has been completed, and then turn into a Channel to get compiler-time enforcement of things like
 // calling channel_id() before we're set up or things like get_outbound_funding_signed on an
@@ -494,6 +504,11 @@ pub(super) struct Channel<Signer: Sign> {
 	pub(crate) config: LegacyChannelConfig,
 	#[cfg(not(any(test, feature = "_test_utils")))]
 	config: LegacyChannelConfig,
+
+	// Track the previous `ChannelConfig` so that we can continue forwarding HTLCs that were
+	// constructed using it. The second element in the tuple corresponds to the number of ticks that
+	// have elapsed since the update occurred.
+	prev_config: Option<(ChannelConfig, usize)>,
 
 	inbound_handshake_limits_override: Option<ChannelHandshakeLimits>,
 
@@ -937,6 +952,8 @@ impl<Signer: Sign> Channel<Signer> {
 				commit_upfront_shutdown_pubkey: config.channel_handshake_config.commit_upfront_shutdown_pubkey,
 			},
 
+			prev_config: None,
+
 			inbound_handshake_limits_override: Some(config.channel_handshake_limits.clone()),
 
 			channel_id: keys_provider.get_secure_random_bytes(),
@@ -1263,6 +1280,8 @@ impl<Signer: Sign> Channel<Signer> {
 				announced_channel,
 				commit_upfront_shutdown_pubkey: config.channel_handshake_config.commit_upfront_shutdown_pubkey,
 			},
+
+			prev_config: None,
 
 			inbound_handshake_limits_override: None,
 
@@ -4491,6 +4510,25 @@ impl<Signer: Sign> Channel<Signer> {
 		self.config.options.max_dust_htlc_exposure_msat
 	}
 
+	/// Returns the previous [`ChannelConfig`] applied to this channel, if any.
+	pub fn prev_config(&self) -> Option<ChannelConfig> {
+		self.prev_config.map(|prev_config| prev_config.0)
+	}
+
+	/// Tracks the number of ticks elapsed since the previous [`ChannelConfig`] was updated. Once
+	/// [`EXPIRE_PREV_CONFIG_TICKS`] is reached, the previous config is considered expired and will
+	/// no longer be considered when forwarding HTLCs.
+	pub fn maybe_expire_prev_config(&mut self) {
+		if self.prev_config.is_none() {
+			return;
+		}
+		let prev_config = self.prev_config.as_mut().unwrap();
+		prev_config.1 += 1;
+		if prev_config.1 == EXPIRE_PREV_CONFIG_TICKS {
+			self.prev_config = None;
+		}
+	}
+
 	/// Returns the current [`ChannelConfig`] applied to the channel.
 	pub fn config(&self) -> ChannelConfig {
 		self.config.options
@@ -4504,6 +4542,7 @@ impl<Signer: Sign> Channel<Signer> {
 			self.config.options.forwarding_fee_base_msat != config.forwarding_fee_base_msat ||
 			self.config.options.cltv_expiry_delta != config.cltv_expiry_delta;
 		if did_channel_update {
+			self.prev_config = Some((self.config.options, 0));
 			// Update the counter, which backs the ChannelUpdate timestamp, to allow the relay
 			// policy change to propagate throughout the network.
 			self.update_time_counter += 1;
@@ -6359,6 +6398,8 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<(&'a K, u32)> for Channel<Signer>
 			user_id,
 
 			config: config.unwrap(),
+
+			prev_config: None,
 
 			// Note that we don't care about serializing handshake limits as we only ever serialize
 			// channel data after the handshake has completed.
