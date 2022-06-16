@@ -2777,6 +2777,9 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// Returns an [`APIError::APIMisuseError`] if the funding_transaction spent non-SegWit outputs
 	/// or if no output was found which matches the parameters in [`Event::FundingGenerationReady`].
 	///
+	/// Returns [`APIError::APIMisuseError`] if the funding transaction is not final for propagation
+	/// across the p2p network.
+	///
 	/// Returns [`APIError::ChannelUnavailable`] if a funding transaction has already been provided
 	/// for the channel or if the channel has been closed as indicated by [`Event::ChannelClosed`].
 	///
@@ -2792,6 +2795,11 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// not currently support replacing a funding transaction on an existing channel. Instead,
 	/// create a new channel with a conflicting funding transaction.
 	///
+	/// Note to keep the miner incentives aligned in moving the blockchain forward, we recommend
+	/// the wallet software generating the funding transaction to apply anti-fee sniping as
+	/// implemented by Bitcoin Core wallet. See <https://bitcoinops.org/en/topics/fee-sniping/>
+	/// for more details.
+	///
 	/// [`Event::FundingGenerationReady`]: crate::util::events::Event::FundingGenerationReady
 	/// [`Event::ChannelClosed`]: crate::util::events::Event::ChannelClosed
 	pub fn funding_transaction_generated(&self, temporary_channel_id: &[u8; 32], counterparty_node_id: &PublicKey, funding_transaction: Transaction) -> Result<(), APIError> {
@@ -2801,6 +2809,18 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			if inp.witness.is_empty() {
 				return Err(APIError::APIMisuseError {
 					err: "Funding transaction must be fully signed and spend Segwit outputs".to_owned()
+				});
+			}
+		}
+		{
+			let height = self.best_block.read().unwrap().height();
+			// Transactions are evaluated as final by network mempools at the next block. However, the modules
+			// constituting our Lightning node might not have perfect sync about their blockchain views. Thus, if
+			// the wallet module is in advance on the LDK view, allow one more block of headroom.
+			// TODO: updated if/when https://github.com/rust-bitcoin/rust-bitcoin/pull/994 landed and rust-bitcoin bumped.
+			if !funding_transaction.input.iter().all(|input| input.sequence == 0xffffffff) && funding_transaction.lock_time < 500_000_000 && funding_transaction.lock_time > height + 2 {
+				return Err(APIError::APIMisuseError {
+					err: "Funding transaction absolute timelock is non-final".to_owned()
 				});
 			}
 		}
