@@ -97,15 +97,18 @@ pub struct FixedLengthReader<R: Read> {
 	total_bytes: u64,
 }
 impl<R: Read> FixedLengthReader<R> {
+	/// Returns a new FixedLengthReader.
 	pub fn new(read: R, total_bytes: u64) -> Self {
 		Self { read, bytes_read: 0, total_bytes }
 	}
 
+	/// Returns whether there are remaining bytes or not.
 	#[inline]
 	pub fn bytes_remain(&mut self) -> bool {
 		self.bytes_read != self.total_bytes
 	}
 
+	/// Consume the remaning bytes.
 	#[inline]
 	pub fn eat_remaining(&mut self) -> Result<(), DecodeError> {
 		copy(self, &mut sink()).unwrap();
@@ -138,9 +141,11 @@ impl<R: Read> Read for FixedLengthReader<R> {
 /// between "EOF reached before we started" and "EOF reached mid-read".
 pub struct ReadTrackingReader<R: Read> {
 	read: R,
+	/// Tells whether we have read from this reader or not yet.
 	pub have_read: bool,
 }
 impl<R: Read> ReadTrackingReader<R> {
+	/// Returns a new ReadTrackingReader.
 	pub fn new(read: R) -> Self {
 		Self { read, have_read: false }
 	}
@@ -237,7 +242,8 @@ impl<T: Readable> MaybeReadable for T {
 	}
 }
 
-pub(crate) struct OptionDeserWrapper<T: Readable>(pub Option<T>);
+/// Wrapper to read a required (non-optional) TLV record.
+pub struct OptionDeserWrapper<T: Readable>(pub Option<T>);
 impl<T: Readable> Readable for OptionDeserWrapper<T> {
 	#[inline]
 	fn read<R: Read>(reader: &mut R) -> Result<Self, DecodeError> {
@@ -246,7 +252,7 @@ impl<T: Readable> Readable for OptionDeserWrapper<T> {
 }
 
 /// Wrapper to write each element of a Vec with no length prefix
-pub(crate) struct VecWriteWrapper<'a, T: Writeable>(pub &'a Vec<T>);
+pub struct VecWriteWrapper<'a, T: Writeable>(pub &'a Vec<T>);
 impl<'a, T: Writeable> Writeable for VecWriteWrapper<'a, T> {
 	#[inline]
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
@@ -258,7 +264,7 @@ impl<'a, T: Writeable> Writeable for VecWriteWrapper<'a, T> {
 }
 
 /// Wrapper to read elements from a given stream until it reaches the end of the stream.
-pub(crate) struct VecReadWrapper<T>(pub Vec<T>);
+pub struct VecReadWrapper<T>(pub Vec<T>);
 impl<T: MaybeReadable> Readable for VecReadWrapper<T> {
 	#[inline]
 	fn read<R: Read>(mut reader: &mut R) -> Result<Self, DecodeError> {

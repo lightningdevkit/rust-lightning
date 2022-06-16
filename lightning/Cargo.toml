@@ -17,8 +17,6 @@ rustdoc-args = ["--cfg", "docsrs"]
 [features]
 # Internal test utilities exposed to other repo crates
 _test_utils = ["hex", "regex", "bitcoin/bitcoinconsensus"]
-msgs_macros = []
-
 # Unlog messages superior at targeted level.
 max_level_off = []
 max_level_error = []
