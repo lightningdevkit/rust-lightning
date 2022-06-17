@@ -10,7 +10,7 @@
 //! Some macros that implement Readable/Writeable traits for lightning messages.
 //! They also handle serialization and deserialization of TLVs.
 
-/// doc
+/// Implements serialization for a single TLV record.
 #[macro_export]
 macro_rules! encode_tlv {
 	($stream: expr, $type: expr, $field: expr, (default_value, $default: expr)) => {
@@ -33,7 +33,7 @@ macro_rules! encode_tlv {
 	};
 }
 
-/// doc
+/// Implements the TLVs serialization part in a Writeable implementation of a struct.
 #[macro_export]
 macro_rules! encode_tlv_stream {
 	($stream: expr, {$(($type: expr, $field: expr, $fieldty: tt)),* $(,)*}) => { {
@@ -102,7 +102,7 @@ macro_rules! encode_varint_length_prefixed_tlv {
 	} }
 }
 
-/// doc
+/// Asserts that the type of the last seen TLV is strictly less than the type of the TLV currently being processed.
 #[macro_export]
 macro_rules! check_tlv_order {
 	($last_seen_type: expr, $typ: expr, $type: expr, $field: ident, (default_value, $default: expr)) => {{
@@ -130,7 +130,8 @@ macro_rules! check_tlv_order {
 	}};
 }
 
-/// doc
+/// Checks for required missing TLV records. If a required TLV is missing and has no default value,
+/// an error is returned.
 #[macro_export]
 macro_rules! check_missing_tlv {
 	($last_seen_type: expr, $type: expr, $field: ident, (default_value, $default: expr)) => {{
@@ -158,7 +159,7 @@ macro_rules! check_missing_tlv {
 	}};
 }
 
-/// doc
+/// Implements deserialization for a single TLV record.
 #[macro_export]
 macro_rules! decode_tlv {
 	($reader: expr, $field: ident, (default_value, $default: expr)) => {{
@@ -179,7 +180,7 @@ macro_rules! decode_tlv {
 	}};
 }
 
-/// doc
+/// Implements the TLVs deserialization part in a Readable implementation of a struct.
 #[macro_export]
 macro_rules! decode_tlv_stream {
 	($stream: expr, {$(($type: expr, $field: ident, $fieldty: tt)),* $(,)*}) => { {
@@ -247,7 +248,30 @@ macro_rules! decode_tlv_stream {
 	} }
 }
 
-/// doc
+/// Implements Readable/Writeable for a struct. This macro also handles (de)serialization of TLV records.
+/// # Example
+/// ```
+/// use lightning::*;
+/// 
+/// #[derive(Debug)]
+/// pub struct LightningMessage {
+/// 	pub to: String,
+/// 	pub note: String,
+/// 	pub secret_number: u64,
+/// 	// TLV records
+/// 	pub nick_name: Option<String>,
+/// 	pub street_number: Option<u16>,
+/// }
+/// 
+/// impl_writeable_msg!(LightningMessage, {
+/// 	to,
+/// 	note,
+/// 	secret_number,
+/// }, {
+/// 	(1, nick_name, option),
+/// 	(3, street_number, option),
+/// });
+/// ```
 #[macro_export]
 macro_rules! impl_writeable_msg {
 	($st:ident, {$($field:ident),* $(,)*}, {$(($type: expr, $tlvfield: ident, $fieldty: tt)),* $(,)*}) => {
@@ -272,7 +296,8 @@ macro_rules! impl_writeable_msg {
 	}
 }
 
-/// doc
+/// Implements Readable/Writeable for a struct. Note that this macro doesn't handle messages
+/// containing TLV records. If your message contains TLVs, use `impl_writeable_msg!` instead.
 #[macro_export]
 macro_rules! impl_writeable {
 	($st:ident, {$($field:ident),*}) => {
@@ -373,7 +398,7 @@ macro_rules! init_tlv_based_struct_field {
 	};
 }
 
-/// doc
+/// Initializes the variables we are going to read the TLVs into.
 #[macro_export]
 macro_rules! init_tlv_field_var {
 	($field: ident, (default_value, $default: expr)) => {
