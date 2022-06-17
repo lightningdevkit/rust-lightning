@@ -194,7 +194,7 @@ macro_rules! decode_tlv_stream {
 				// We track whether any bytes were read during the consensus_decode call to
 				// determine whether we should break or return ShortRead if we get an
 				// UnexpectedEof. This should in every case be largely cosmetic, but its nice to
-				// pass the TLV test vectors exactly, which requre this distinction.
+				// pass the TLV test vectors exactly, which require this distinction.
 				let mut tracking_reader = ser::ReadTrackingReader::new(&mut stream_ref);
 				match ser::Readable::read(&mut tracking_reader) {
 					Err(DecodeError::ShortRead) => {

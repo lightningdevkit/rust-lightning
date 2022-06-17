@@ -790,7 +790,7 @@ pub struct CommitmentUpdate {
 
 /// Messages could have optional fields to use with extended features
 /// As we wish to serialize these differently from Option<T>s (Options get a tag byte, but
-/// OptionalFeild simply gets Present if there are enough bytes to read into it), we have a
+/// OptionalField simply gets Present if there are enough bytes to read into it), we have a
 /// separate enum type for them.
 /// (C-not exported) due to a free generic in T
 #[derive(Clone, Debug, PartialEq)]
