@@ -54,7 +54,8 @@ macro_rules! encode_tlv_stream {
 			let mut last_seen: Option<u64> = None;
 			$(
 				if let Some(t) = last_seen {
-					debug_assert!(t <= $type);
+					#[allow(unused_comparisons)] // Note that $type may be 0 making the following comparison always true
+					(debug_assert!($type > t))
 				}
 				last_seen = Some($type);
 			)*
