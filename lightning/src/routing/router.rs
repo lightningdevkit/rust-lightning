@@ -1878,7 +1878,7 @@ mod tests {
 	use routing::router::{get_route, build_route_from_hops_internal, add_random_cltv_offset, default_node_features,
 		PaymentParameters, Route, RouteHint, RouteHintHop, RouteHop, RoutingFees,
 		DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA, MAX_PATH_LENGTH_ESTIMATE};
-	use routing::scoring::{ChannelUsage, Score};
+	use routing::scoring::{ChannelUsage, Score, ProbabilisticScorer, ProbabilisticScoringParameters};
 	use chain::transaction::OutPoint;
 	use chain::keysinterface::KeysInterface;
 	use ln::features::{ChannelFeatures, InitFeatures, InvoiceFeatures, NodeFeatures};
@@ -5712,6 +5712,33 @@ mod tests {
 				}
 			}
 		}
+	}
+
+	#[test]
+	fn avoids_banned_nodes() {
+		let (secp_ctx, network_graph, _, _, logger) = build_line_graph();
+		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
+
+		let keys_manager = test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
+		let random_seed_bytes = keys_manager.get_secure_random_bytes();
+
+		let scorer_params = ProbabilisticScoringParameters::default();
+		let mut scorer = ProbabilisticScorer::new(scorer_params, Arc::clone(&network_graph), Arc::clone(&logger));
+
+		// First check we can get a route.
+		let payment_params = PaymentParameters::from_node_id(nodes[10]);
+		let route = get_route(&our_id, &payment_params, &network_graph.read_only(), None, 100, 42, Arc::clone(&logger), &scorer, &random_seed_bytes);
+		assert!(route.is_ok());
+
+		// Then check that we can't get a route if we ban an intermediate node.
+		scorer.add_banned(&NodeId::from_pubkey(&nodes[3]));
+		let route = get_route(&our_id, &payment_params, &network_graph.read_only(), None, 100, 42, Arc::clone(&logger), &scorer, &random_seed_bytes);
+		assert!(route.is_err());
+
+		// Finally make sure we can route again, when we remove the ban.
+		scorer.remove_banned(&NodeId::from_pubkey(&nodes[3]));
+		let route = get_route(&our_id, &payment_params, &network_graph.read_only(), None, 100, 42, Arc::clone(&logger), &scorer, &random_seed_bytes);
+		assert!(route.is_ok());
 	}
 }
 
