@@ -434,6 +434,23 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> ProbabilisticScorerU
 			}
 		}
 	}
+
+	/// Query the estimated minimum and maximum liquidity available for sending a payment over the
+	/// channel with `scid` towards the given `target` node.
+	pub fn estimated_channel_liquidity_range(&self, scid: u64, target: &NodeId) -> Option<(u64, u64)> {
+		let graph = self.network_graph.read_only();
+
+		if let Some(chan) = graph.channels().get(&scid) {
+			if let Some(liq) = self.channel_liquidities.get(&scid) {
+				if let Some((directed_info, source)) = chan.as_directed_to(target) {
+					let amt = directed_info.effective_capacity().as_msat();
+					let dir_liq = liq.as_directed(source, target, amt, self.params.liquidity_offset_half_life);
+					return Some((dir_liq.min_liquidity_msat(), dir_liq.max_liquidity_msat()));
+				}
+			}
+		}
+		None
+	}
 }
 
 impl ProbabilisticScoringParameters {
