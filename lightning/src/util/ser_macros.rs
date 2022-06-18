@@ -102,7 +102,7 @@ macro_rules! encode_varint_length_prefixed_tlv {
 	} }
 }
 
-/// Asserts that the type of the last seen TLV is strictly less than the type of the TLV currently being processed.
+/// Errors if there are missing required TLV types between the last seen type and the type currently being processed.
 #[macro_export]
 macro_rules! check_tlv_order {
 	($last_seen_type: expr, $typ: expr, $type: expr, $field: ident, (default_value, $default: expr)) => {{
@@ -130,8 +130,7 @@ macro_rules! check_tlv_order {
 	}};
 }
 
-/// Checks for required missing TLV records. If a required TLV is missing and has no default value,
-/// an error is returned.
+/// Errors if there are missing required TLV types after the last seen type.
 #[macro_export]
 macro_rules! check_missing_tlv {
 	($last_seen_type: expr, $type: expr, $field: ident, (default_value, $default: expr)) => {{
@@ -217,7 +216,7 @@ macro_rules! decode_tlv_stream {
 				},
 				_ => {},
 			}
-			// As we read types, make sure we hit every required type:
+			// As we read types, make sure we hit every required type between last_seen_type and typ:
 			$({
 				check_tlv_order!(last_seen_type, typ, $type, $field, $fieldty);
 			})*
