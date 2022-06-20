@@ -1101,6 +1101,63 @@ fn fake_network_test() {
 }
 
 #[test]
+fn test_forward_through_substitute_channel() {
+	// Test that we forward htlcs over substitute channels if we receive an onion payload that
+	// specifies that we should forward an htlc over a channel where we have insufficient
+	// liquidity, but an alternative channel to the same node with enough liquidity exists.
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	let chan_0_1 = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 10001, InitFeatures::known(), InitFeatures::known());
+	let chan_1_2a = create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 10000, 1001, InitFeatures::known(), InitFeatures::known());
+	let chan_1_2b = create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 1000000, 100001, InitFeatures::known(), InitFeatures::known());
+
+	let mut hops = Vec::with_capacity(2);
+	hops.push(RouteHop {
+		pubkey: nodes[1].node.get_our_node_id(),
+		node_features: NodeFeatures::known(),
+		short_channel_id: chan_0_1.0.contents.short_channel_id,
+		channel_features: ChannelFeatures::known(),
+		fee_msat: 1000,
+		cltv_expiry_delta: chan_1_2a.0.contents.cltv_expiry_delta as u32
+	});
+	hops.push(RouteHop {
+		pubkey: nodes[2].node.get_our_node_id(),
+		node_features: NodeFeatures::known(),
+		short_channel_id: chan_1_2a.0.contents.short_channel_id,
+		channel_features: ChannelFeatures::known(),
+		fee_msat: 2000000,
+		cltv_expiry_delta: TEST_FINAL_CLTV
+	});
+
+	let (mut route, payment_hash, payment_preimage, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], 2000000);
+	// Explicity specify that is `chan_1_2a` is the last hop in the `route`, which doesn't have
+	// enough liquidity forward 2000000 msat from `nodes[1]` to `nodes[2]`.
+	route = Route { paths: vec![hops], payment_params: None };
+
+	nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret)).unwrap();
+	check_added_monitors!(nodes[0], 1);
+
+	let mut send_events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(send_events.len(), 1);
+
+	// Ensure that `chan_1_2b` is used instead of `chan_1_2a` when the htlc is actaully forwarded.
+	let expected_channels = vec![chan_0_1.2, chan_1_2b.2];
+	do_pass_along_path(&nodes[0], &[&nodes[1], &nodes[2]], 2000000, payment_hash, Some(payment_secret), send_events[0].clone(), true, false, None, Some(&expected_channels));
+
+	expect_payment_received!(nodes[2], payment_hash, payment_secret, 2000000);
+
+	nodes[2].node.claim_funds(payment_preimage);
+	check_added_monitors!(nodes[2], 1);
+	expect_payment_claimed!(nodes[2], payment_hash, 2000000);
+
+	// Clear `nodes[2]`'s pending `UpdateFulfillHTLC` msg, as handling it isn't relevant for this
+	// test.
+	nodes[2].node.get_and_clear_pending_msg_events();
+}
+
+#[test]
 fn holding_cell_htlc_counting() {
 	// Tests that HTLCs in the holding cell count towards the pending HTLC limits on outbound HTLCs
 	// to ensure we don't end up with HTLCs sitting around in our holding cell for several
@@ -10080,8 +10137,8 @@ fn do_test_partial_claim_before_restart(persist_both_monitors: bool) {
 	// Send the payment through to nodes[3] *without* clearing the PaymentReceived event
 	let mut send_events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(send_events.len(), 2);
-	do_pass_along_path(&nodes[0], &[&nodes[1], &nodes[3]], 15_000_000, payment_hash, Some(payment_secret), send_events[0].clone(), true, false, None);
-	do_pass_along_path(&nodes[0], &[&nodes[2], &nodes[3]], 15_000_000, payment_hash, Some(payment_secret), send_events[1].clone(), true, false, None);
+	do_pass_along_path(&nodes[0], &[&nodes[1], &nodes[3]], 15_000_000, payment_hash, Some(payment_secret), send_events[0].clone(), true, false, None, None);
+	do_pass_along_path(&nodes[0], &[&nodes[2], &nodes[3]], 15_000_000, payment_hash, Some(payment_secret), send_events[1].clone(), true, false, None, None);
 
 	// Now that we have an MPP payment pending, get the latest encoded copies of nodes[3]'s
 	// monitors and ChannelManager, for use later, if we don't want to persist both monitors.
