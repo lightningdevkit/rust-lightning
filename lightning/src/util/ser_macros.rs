@@ -14,7 +14,7 @@
 #[macro_export]
 macro_rules! encode_tlv {
 	($stream: expr, $type: expr, $field: expr, (default_value, $default: expr)) => {
-		encode_tlv!($stream, $type, $field, required)
+		$crate::encode_tlv!($stream, $type, $field, required)
 	};
 	($stream: expr, $type: expr, $field: expr, required) => {
 		BigSize($type).write($stream)?;
@@ -22,7 +22,7 @@ macro_rules! encode_tlv {
 		$field.write($stream)?;
 	};
 	($stream: expr, $type: expr, $field: expr, vec_type) => {
-		encode_tlv!($stream, $type, ser::VecWriteWrapper(&$field), required);
+		$crate::encode_tlv!($stream, $type, ser::VecWriteWrapper(&$field), required);
 	};
 	($stream: expr, $optional_type: expr, $optional_field: expr, option) => {
 		if let Some(ref field) = $optional_field {
@@ -45,7 +45,7 @@ macro_rules! encode_tlv_stream {
 		};
 
 		$(
-			encode_tlv!($stream, $type, $field, $fieldty);
+			$crate::encode_tlv!($stream, $type, $field, $fieldty);
 		)*
 
 		#[allow(unused_mut, unused_variables, unused_assignments)]
@@ -162,7 +162,7 @@ macro_rules! check_missing_tlv {
 #[macro_export]
 macro_rules! decode_tlv {
 	($reader: expr, $field: ident, (default_value, $default: expr)) => {{
-		decode_tlv!($reader, $field, required)
+		$crate::decode_tlv!($reader, $field, required)
 	}};
 	($reader: expr, $field: ident, required) => {{
 		$field = ser::Readable::read(&mut $reader)?;
@@ -218,7 +218,7 @@ macro_rules! decode_tlv_stream {
 			}
 			// As we read types, make sure we hit every required type between last_seen_type and typ:
 			$({
-				check_tlv_order!(last_seen_type, typ, $type, $field, $fieldty);
+				$crate::check_tlv_order!(last_seen_type, typ, $type, $field, $fieldty);
 			})*
 			last_seen_type = Some(typ.0);
 
@@ -227,7 +227,7 @@ macro_rules! decode_tlv_stream {
 			let mut s = ser::FixedLengthReader::new(&mut stream_ref, length.0);
 			match typ.0 {
 				$($type => {
-					decode_tlv!(s, $field, $fieldty);
+					$crate::decode_tlv!(s, $field, $fieldty);
 					if s.bytes_remain() {
 						s.eat_remaining()?; // Return ShortRead if there's actually not enough bytes
 						return Err(DecodeError::InvalidValue);
@@ -242,7 +242,7 @@ macro_rules! decode_tlv_stream {
 		}
 		// Make sure we got to each required type after we've read every TLV:
 		$({
-			check_missing_tlv!(last_seen_type, $type, $field, $fieldty);
+			$crate::check_missing_tlv!(last_seen_type, $type, $field, $fieldty);
 		})*
 	} }
 }
@@ -250,8 +250,6 @@ macro_rules! decode_tlv_stream {
 /// Implements Readable/Writeable for a struct. This macro also handles (de)serialization of TLV records.
 /// # Example
 /// ```
-/// use lightning::*;
-/// 
 /// #[derive(Debug)]
 /// pub struct LightningMessage {
 /// 	pub to: String,
@@ -262,7 +260,7 @@ macro_rules! decode_tlv_stream {
 /// 	pub street_number: Option<u16>,
 /// }
 /// 
-/// impl_writeable_msg!(LightningMessage, {
+/// lightning::impl_writeable_msg!(LightningMessage, {
 /// 	to,
 /// 	note,
 /// 	secret_number,
@@ -277,15 +275,15 @@ macro_rules! impl_writeable_msg {
 		impl $crate::util::ser::Writeable for $st {
 			fn write<W: $crate::util::ser::Writer>(&self, w: &mut W) -> Result<(), $crate::io::Error> {
 				$( self.$field.write(w)?; )*
-				encode_tlv_stream!(w, {$(($type, self.$tlvfield, $fieldty)),*});
+				$crate::encode_tlv_stream!(w, {$(($type, self.$tlvfield, $fieldty)),*});
 				Ok(())
 			}
 		}
 		impl $crate::util::ser::Readable for $st {
 			fn read<R: $crate::io::Read>(r: &mut R) -> Result<Self, $crate::ln::msgs::DecodeError> {
 				$(let $field = $crate::util::ser::Readable::read(r)?;)*
-				$(init_tlv_field_var!($tlvfield, $fieldty);)*
-				decode_tlv_stream!(r, {$(($type, $tlvfield, $fieldty)),*});
+				$($crate::init_tlv_field_var!($tlvfield, $fieldty);)*
+				$crate::decode_tlv_stream!(r, {$(($type, $tlvfield, $fieldty)),*});
 				Ok(Self {
 					$($field),*,
 					$($tlvfield),*
