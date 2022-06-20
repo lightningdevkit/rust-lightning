@@ -3081,9 +3081,36 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					if let Some(peer_state_mutex) = per_peer_state.get(&counterparty_node_id) {
 						let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 						let peer_state = &mut *peer_state_lock;
-						if let hash_map::Entry::Occupied(mut chan) = peer_state.channel_by_id.entry(forward_chan_id) {
-							let mut add_htlc_msgs = Vec::new();
-							let mut fail_htlc_msgs = Vec::new();
+						if peer_state.channel_by_id.contains_key(&forward_chan_id) {
+							let mut htlcs_msgs_by_id: HashMap<[u8; 32], (Vec<msgs::UpdateAddHTLC>, Vec<msgs::UpdateFailHTLC>)> = HashMap::new();
+
+							macro_rules! add_channel_key {
+								($channel_id: expr) => {{
+									if !htlcs_msgs_by_id.contains_key(&$channel_id){
+										htlcs_msgs_by_id.insert($channel_id, (Vec::new(), Vec::new()));
+									}
+								}}
+							}
+
+							macro_rules! add_update_add_htlc {
+								($add_htlc_msg: expr, $channel_id: expr) => {{
+									add_channel_key!($channel_id);
+									if let hash_map::Entry::Occupied(mut entry) = htlcs_msgs_by_id.entry($channel_id) {
+										let msgs_entry = entry.get_mut();
+										msgs_entry.0.push($add_htlc_msg);
+									}
+								}}
+							}
+
+							macro_rules! add_update_fail_htlc {
+								($fail_htlc_msg: expr, $channel_id: expr) => {{
+									add_channel_key!($channel_id);
+									if let hash_map::Entry::Occupied(mut entry) = htlcs_msgs_by_id.entry($channel_id) {
+										let msgs_entry = entry.get_mut();
+										msgs_entry.1.push($fail_htlc_msg);
+									}
+								}}
+							}
 							for forward_info in pending_forwards.drain(..) {
 								match forward_info {
 									HTLCForwardInfo::AddHTLC { prev_short_channel_id, prev_htlc_id, forward_info: PendingHTLCInfo {
@@ -3100,33 +3127,56 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 											// Phantom payments are only PendingHTLCRouting::Receive.
 											phantom_shared_secret: None,
 										});
-										match chan.get_mut().send_htlc(amt_to_forward, payment_hash, outgoing_cltv_value, htlc_source.clone(), onion_packet, &self.logger) {
-											Err(e) => {
-												if let ChannelError::Ignore(msg) = e {
-													log_trace!(self.logger, "Failed to forward HTLC with payment_hash {}: {}", log_bytes!(payment_hash.0), msg);
-												} else {
-													panic!("Stated return value requirements in send_htlc() were not met");
-												}
-												let (failure_code, data) = self.get_htlc_temp_fail_err_and_data(0x1000|7, short_chan_id, chan.get());
-												failed_forwards.push((htlc_source, payment_hash,
-													HTLCFailReason::Reason { failure_code, data }
-												));
-												continue;
-											},
-											Ok(update_add) => {
-												match update_add {
-													Some(msg) => { add_htlc_msgs.push(msg); },
-													None => {
-														// Nothing to do here...we're waiting on a remote
-														// revoke_and_ack before we can add anymore HTLCs. The Channel
-														// will automatically handle building the update_add_htlc and
-														// commitment_signed messages when we can.
-														// TODO: Do some kind of timer to set the channel as !is_live()
-														// as we don't really want others relying on us relaying through
-														// this channel currently :/.
+
+										// Attempt to forward the HTLC over all available channels
+										// to the peer, but attempt to forward the HTLC over the
+										// channel specified in the onion payload first.
+										let mut counterparty_channel_ids = peer_state.channel_by_id.keys()
+											.filter(|chan_id| **chan_id != forward_chan_id)
+											.map(|chan_id| *chan_id).collect::<Vec<_>>();
+										counterparty_channel_ids.insert(0, forward_chan_id);
+										let mut send_succeeded = false;
+										for chan_id in counterparty_channel_ids {
+											match peer_state.channel_by_id.get_mut(&chan_id).unwrap().send_htlc(amt_to_forward, payment_hash, outgoing_cltv_value, htlc_source.clone(), onion_packet.clone(), &self.logger) {
+												Err(e) => {
+													if let ChannelError::Ignore(msg) = e {
+														log_trace!(
+															self.logger,
+															"Could not forward HTLC with payment_hash {}, over channel {} to peer {}. Will attempt to forward the HTLC over a substitute channel instead if possible. Reason: {}",
+															log_bytes!(payment_hash.0), log_bytes!(chan_id), counterparty_node_id, msg
+														);
+													} else {
+														panic!("Stated return value requirements in send_htlc() were not met");
 													}
+												},
+												Ok(update_add) => {
+													match update_add {
+														Some(msg) => {
+															log_info!(self.logger, "Will forward HTLC with payment_hash {}, over channel {}", log_bytes!(payment_hash.0), log_bytes!(chan_id));
+															add_update_add_htlc!(msg, chan_id);
+														},
+														None => {
+															// Nothing to do here...we're waiting on a remote
+															// revoke_and_ack before we can add anymore HTLCs. The Channel
+															// will automatically handle building the update_add_htlc and
+															// commitment_signed messages when we can.
+															// TODO: Do some kind of timer to set the channel as !is_live()
+															// as we don't really want others relying on us relaying through
+															// this channel currently :/.
+														}
+													}
+													send_succeeded = true;
+													break;
 												}
 											}
+										}
+										if !send_succeeded {
+											log_trace!(self.logger, "Failed to forward HTLC with payment_hash {} over all of the available channels to the peer", log_bytes!(payment_hash.0));
+											let (failure_code, data) = self.get_htlc_temp_fail_err_and_data(0x1000|7, short_chan_id, peer_state.channel_by_id.get(&forward_chan_id).unwrap());
+											failed_forwards.push((htlc_source, payment_hash,
+												HTLCFailReason::Reason { failure_code, data }
+											));
+											continue;
 										}
 									},
 									HTLCForwardInfo::AddHTLC { .. } => {
@@ -3134,7 +3184,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 									},
 									HTLCForwardInfo::FailHTLC { htlc_id, err_packet } => {
 										log_trace!(self.logger, "Failing HTLC back to channel with short id {} (backward HTLC ID {}) after delay", short_chan_id, htlc_id);
-										match chan.get_mut().get_update_fail_htlc(htlc_id, err_packet, &self.logger) {
+										match peer_state.channel_by_id.get_mut(&forward_chan_id).unwrap().get_update_fail_htlc(htlc_id, err_packet, &self.logger) {
 											Err(e) => {
 												if let ChannelError::Ignore(msg) = e {
 													log_trace!(self.logger, "Failed to fail HTLC with ID {} backwards to short_id {}: {}", htlc_id, short_chan_id, msg);
@@ -3146,7 +3196,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 												// the chain and sending the HTLC-Timeout is their problem.
 												continue;
 											},
-											Ok(Some(msg)) => { fail_htlc_msgs.push(msg); },
+											Ok(Some(msg)) => { add_update_fail_htlc!(msg, forward_chan_id); },
 											Ok(None) => {
 												// Nothing to do here...we're waiting on a remote
 												// revoke_and_ack before we can update the commitment
@@ -3162,46 +3212,48 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 								}
 							}
 
-							if !add_htlc_msgs.is_empty() || !fail_htlc_msgs.is_empty() {
-								let (commitment_msg, monitor_update) = match chan.get_mut().send_commitment(&self.logger) {
-									Ok(res) => res,
-									Err(e) => {
-										// We surely failed send_commitment due to bad keys, in that case
-										// close channel and then send error message to peer.
-										let counterparty_node_id = chan.get().get_counterparty_node_id();
-										let err: Result<(), _>  = match e {
-											ChannelError::Ignore(_) | ChannelError::Warn(_) => {
-												panic!("Stated return value requirements in send_commitment() were not met");
-											}
-											ChannelError::Close(msg) => {
-												log_trace!(self.logger, "Closing channel {} due to Close-required error: {}", log_bytes!(chan.key()[..]), msg);
-												let mut channel = remove_channel!(self, channel_state, chan);
-												// ChannelClosed event is generated by handle_error for us.
-												Err(MsgHandleErrInternal::from_finish_shutdown(msg, channel.channel_id(), channel.get_user_id(), channel.force_shutdown(true), self.get_channel_update_for_broadcast(&channel).ok()))
-											},
-											ChannelError::CloseDelayBroadcast(_) => { panic!("Wait is only generated on receipt of channel_reestablish, which is handled by try_chan_entry, we don't bother to support it here"); }
-										};
-										handle_errors.push((counterparty_node_id, err));
+							for (chan_id, (add_htlc_msgs, fail_htlc_msgs)) in htlcs_msgs_by_id.into_iter() {
+								if let hash_map::Entry::Occupied(mut chan) = peer_state.channel_by_id.entry(chan_id) {
+									let (commitment_msg, monitor_update) = match chan.get_mut().send_commitment(&self.logger) {
+										Ok(res) => res,
+										Err(e) => {
+											// We surely failed send_commitment due to bad keys, in that case
+											// close channel and then send error message to peer.
+											let counterparty_node_id = chan.get().get_counterparty_node_id();
+											let err: Result<(), _>  = match e {
+												ChannelError::Ignore(_) | ChannelError::Warn(_) => {
+													panic!("Stated return value requirements in send_commitment() were not met");
+												}
+												ChannelError::Close(msg) => {
+													log_trace!(self.logger, "Closing channel {} due to Close-required error: {}", log_bytes!(chan.key()[..]), msg);
+													let mut channel = remove_channel!(self, channel_state, chan);
+													// ChannelClosed event is generated by handle_error for us.
+													Err(MsgHandleErrInternal::from_finish_shutdown(msg, channel.channel_id(), channel.get_user_id(), channel.force_shutdown(true), self.get_channel_update_for_broadcast(&channel).ok()))
+												},
+												ChannelError::CloseDelayBroadcast(_) => { panic!("Wait is only generated on receipt of channel_reestablish, which is handled by try_chan_entry, we don't bother to support it here"); }
+											};
+											handle_errors.push((counterparty_node_id, err));
+											continue;
+										}
+									};
+									if let Err(e) = self.chain_monitor.update_channel(chan.get().get_funding_txo().unwrap(), monitor_update) {
+										handle_errors.push((chan.get().get_counterparty_node_id(), handle_monitor_err!(self, e, channel_state, chan, RAACommitmentOrder::CommitmentFirst, false, true)));
 										continue;
 									}
-								};
-								if let Err(e) = self.chain_monitor.update_channel(chan.get().get_funding_txo().unwrap(), monitor_update) {
-									handle_errors.push((chan.get().get_counterparty_node_id(), handle_monitor_err!(self, e, channel_state, chan, RAACommitmentOrder::CommitmentFirst, false, true)));
-									continue;
+									log_debug!(self.logger, "Forwarding HTLCs resulted in a commitment update with {} HTLCs added and {} HTLCs failed for channel {}",
+										add_htlc_msgs.len(), fail_htlc_msgs.len(), log_bytes!(chan.get().channel_id()));
+									channel_state.pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
+										node_id: chan.get().get_counterparty_node_id(),
+										updates: msgs::CommitmentUpdate {
+											update_add_htlcs: add_htlc_msgs,
+											update_fulfill_htlcs: Vec::new(),
+											update_fail_htlcs: fail_htlc_msgs,
+											update_fail_malformed_htlcs: Vec::new(),
+											update_fee: None,
+											commitment_signed: commitment_msg,
+										},
+									});
 								}
-								log_debug!(self.logger, "Forwarding HTLCs resulted in a commitment update with {} HTLCs added and {} HTLCs failed for channel {}",
-									add_htlc_msgs.len(), fail_htlc_msgs.len(), log_bytes!(chan.get().channel_id()));
-								channel_state.pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
-									node_id: chan.get().get_counterparty_node_id(),
-									updates: msgs::CommitmentUpdate {
-										update_add_htlcs: add_htlc_msgs,
-										update_fulfill_htlcs: Vec::new(),
-										update_fail_htlcs: fail_htlc_msgs,
-										update_fail_malformed_htlcs: Vec::new(),
-										update_fee: None,
-										commitment_signed: commitment_msg,
-									},
-								});
 							}
 						} else {
 							let err = Err(MsgHandleErrInternal::send_err_msg_no_close(format!("No such channel for the counterparty_node_id {}, as indicated by the short_to_id map", counterparty_node_id), forward_chan_id));
