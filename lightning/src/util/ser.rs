@@ -16,6 +16,8 @@ use io_extras::{copy, sink};
 use core::hash::Hash;
 use sync::Mutex;
 use core::cmp;
+use core::convert::TryFrom;
+use core::ops::Deref;
 
 use bitcoin::secp256k1::{PublicKey, SecretKey};
 use bitcoin::secp256k1::constants::{PUBLIC_KEY_SIZE, SECRET_KEY_SIZE, COMPACT_SIGNATURE_SIZE};
@@ -913,6 +915,75 @@ impl Readable for String {
 	}
 }
 
+/// Represents a hostname for serialization purposes.
+/// Only the character set and length will be validated.
+/// The character set consists of ASCII alphanumeric characters, hyphens, and periods.
+/// Its length is guaranteed to be representable by a single byte.
+/// This serialization is used by BOLT 7 hostnames.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Hostname(String);
+impl Hostname {
+	/// Returns the length of the hostname.
+	pub fn len(&self) -> u8 {
+		(&self.0).len() as u8
+	}
+}
+impl Deref for Hostname {
+	type Target = String;
+
+	fn deref(&self) -> &Self::Target {
+		&self.0
+	}
+}
+impl From<Hostname> for String {
+	fn from(hostname: Hostname) -> Self {
+		hostname.0
+	}
+}
+impl TryFrom<Vec<u8>> for Hostname {
+	type Error = ();
+
+	fn try_from(bytes: Vec<u8>) -> Result<Self, Self::Error> {
+		if let Ok(s) = String::from_utf8(bytes) {
+			Hostname::try_from(s)
+		} else {
+			Err(())
+		}
+	}
+}
+impl TryFrom<String> for Hostname {
+	type Error = ();
+
+	fn try_from(s: String) -> Result<Self, Self::Error> {
+		if s.len() <= 255 && s.chars().all(|c|
+			c.is_ascii_alphanumeric() ||
+			c == '.' ||
+			c == '-'
+		) {
+			Ok(Hostname(s))
+		} else {
+			Err(())
+		}
+	}
+}
+impl Writeable for Hostname {
+	#[inline]
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		self.len().write(w)?;
+		w.write_all(self.as_bytes())
+	}
+}
+impl Readable for Hostname {
+	#[inline]
+	fn read<R: Read>(r: &mut R) -> Result<Hostname, DecodeError> {
+		let len: u8 = Readable::read(r)?;
+		let mut vec = Vec::with_capacity(len.into());
+		vec.resize(len.into(), 0);
+		r.read_exact(&mut vec)?;
+		Hostname::try_from(vec).map_err(|_| DecodeError::InvalidValue)
+	}
+}
+
 impl Writeable for Duration {
 	#[inline]
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
@@ -926,5 +997,31 @@ impl Readable for Duration {
 		let secs = Readable::read(r)?;
 		let nanos = Readable::read(r)?;
 		Ok(Duration::new(secs, nanos))
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use core::convert::TryFrom;
+	use util::ser::{Readable, Hostname, Writeable};
+
+	#[test]
+	fn hostname_conversion() {
+		assert_eq!(Hostname::try_from(String::from("a-test.com")).unwrap().as_str(), "a-test.com");
+
+		assert!(Hostname::try_from(String::from("\"")).is_err());
+		assert!(Hostname::try_from(String::from("$")).is_err());
+		assert!(Hostname::try_from(String::from("⚡")).is_err());
+		let mut large_vec = Vec::with_capacity(256);
+		large_vec.resize(256, b'A');
+		assert!(Hostname::try_from(String::from_utf8(large_vec).unwrap()).is_err());
+	}
+
+	#[test]
+	fn hostname_serialization() {
+		let hostname = Hostname::try_from(String::from("test")).unwrap();
+		let mut buf: Vec<u8> = Vec::new();
+		hostname.write(&mut buf).unwrap();
+		assert_eq!(Hostname::read(&mut buf.as_slice()).unwrap().as_str(), "test");
 	}
 }
