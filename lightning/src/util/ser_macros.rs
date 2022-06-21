@@ -118,6 +118,9 @@ macro_rules! check_tlv_order {
 	($last_seen_type: expr, $typ: expr, $type: expr, $field: ident, ignorable) => {{
 		// no-op
 	}};
+	($last_seen_type: expr, $typ: expr, $type: expr, $field: ident, (option: $trait: ident $(, $read_arg: expr)?)) => {{
+		// no-op
+	}};
 }
 
 macro_rules! check_missing_tlv {
@@ -144,6 +147,9 @@ macro_rules! check_missing_tlv {
 	($last_seen_type: expr, $type: expr, $field: ident, ignorable) => {{
 		// no-op
 	}};
+	($last_seen_type: expr, $type: expr, $field: ident, (option: $trait: ident $(, $read_arg: expr)?)) => {{
+		// no-op
+	}};
 }
 
 macro_rules! decode_tlv {
@@ -162,6 +168,9 @@ macro_rules! decode_tlv {
 	}};
 	($reader: expr, $field: ident, ignorable) => {{
 		$field = ser::MaybeReadable::read(&mut $reader)?;
+	}};
+	($reader: expr, $field: ident, (option: $trait: ident $(, $read_arg: expr)?)) => {{
+		$field = Some($trait::read(&mut $reader $(, $read_arg)*)?);
 	}};
 }
 

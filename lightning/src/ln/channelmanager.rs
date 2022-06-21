@@ -24,7 +24,7 @@ use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::network::constants::Network;
 
-use bitcoin::hashes::{Hash, HashEngine};
+use bitcoin::hashes::Hash;
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::hash_types::{BlockHash, Txid};
@@ -2175,22 +2175,10 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				}
 			},
 			onion_utils::Hop::Forward { next_hop_data, next_hop_hmac, new_packet_bytes } => {
-				let mut new_pubkey = msg.onion_routing_packet.public_key.unwrap();
-
-				let blinding_factor = {
-					let mut sha = Sha256::engine();
-					sha.input(&new_pubkey.serialize()[..]);
-					sha.input(&shared_secret);
-					Sha256::from_engine(sha).into_inner()
-				};
-
-				let public_key = if let Err(e) = new_pubkey.mul_assign(&self.secp_ctx, &blinding_factor[..]) {
-					Err(e)
-				} else { Ok(new_pubkey) };
-
+				let new_pubkey = msg.onion_routing_packet.public_key.unwrap();
 				let outgoing_packet = msgs::OnionPacket {
 					version: 0,
-					public_key,
+					public_key: onion_utils::next_hop_packet_pubkey(&self.secp_ctx, new_pubkey, &shared_secret),
 					hop_data: new_packet_bytes,
 					hmac: next_hop_hmac.clone(),
 				};

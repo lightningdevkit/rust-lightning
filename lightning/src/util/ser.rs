@@ -134,6 +134,13 @@ impl<R: Read> Read for FixedLengthReader<R> {
 	}
 }
 
+impl<R: Read> LengthRead for FixedLengthReader<R> {
+	#[inline]
+	fn total_bytes(&self) -> u64 {
+		self.total_bytes
+	}
+}
+
 /// A Read which tracks whether any bytes have been read at all. This allows us to distinguish
 /// between "EOF reached before we started" and "EOF reached mid-read".
 pub(crate) struct ReadTrackingReader<R: Read> {
@@ -218,6 +225,21 @@ pub trait ReadableArgs<P>
 {
 	/// Reads a Self in from the given Read
 	fn read<R: Read>(reader: &mut R, params: P) -> Result<Self, DecodeError>;
+}
+
+/// A std::io::Read that also provides the total bytes available to read.
+pub(crate) trait LengthRead: Read {
+	/// The total number of bytes available to read.
+	fn total_bytes(&self) -> u64;
+}
+
+/// A trait that various higher-level rust-lightning types implement allowing them to be read in
+/// from a Read given some additional set of arguments which is required to deserialize, requiring
+/// the implementer to provide the total length of the read.
+pub(crate) trait LengthReadableArgs<P> where Self: Sized
+{
+	/// Reads a Self in from the given LengthRead
+	fn read<R: LengthRead>(reader: &mut R, params: P) -> Result<Self, DecodeError>;
 }
 
 /// A trait that various rust-lightning types implement allowing them to (maybe) be read in from a Read

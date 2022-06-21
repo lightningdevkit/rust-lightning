@@ -74,6 +74,17 @@ pub(super) fn gen_ammag_from_shared_secret(shared_secret: &[u8]) -> [u8; 32] {
 	Hmac::from_engine(hmac).into_inner()
 }
 
+pub(super) fn next_hop_packet_pubkey<T: secp256k1::Signing + secp256k1::Verification>(secp_ctx: &Secp256k1<T>, mut packet_pubkey: PublicKey, packet_shared_secret: &[u8; 32]) -> Result<PublicKey, secp256k1::Error> {
+	let blinding_factor = {
+		let mut sha = Sha256::engine();
+		sha.input(&packet_pubkey.serialize()[..]);
+		sha.input(packet_shared_secret);
+		Sha256::from_engine(sha).into_inner()
+	};
+
+	packet_pubkey.mul_assign(secp_ctx, &blinding_factor[..]).map(|_| packet_pubkey)
+}
+
 // can only fail if an intermediary hop has an invalid public key or session_priv is invalid
 #[inline]
 pub(super) fn construct_onion_keys_callback<T: secp256k1::Signing, FType: FnMut(SharedSecret, [u8; 32], PublicKey, &RouteHop, usize)> (secp_ctx: &Secp256k1<T>, path: &Vec<RouteHop>, session_priv: &SecretKey, mut callback: FType) -> Result<(), secp256k1::Error> {
