@@ -54,7 +54,7 @@ macro_rules! encode_tlv_stream {
 			let mut last_seen: Option<u64> = None;
 			$(
 				if let Some(t) = last_seen {
-					#[allow(unused_comparisons)] // Note that $type may be 0 making the following comparison always true
+					#[allow(unused_comparisons)] // Note that $type may be 0 making the following comparison always false
 					(debug_assert!($type > t))
 				}
 				last_seen = Some($type);
@@ -106,14 +106,14 @@ macro_rules! encode_varint_length_prefixed_tlv {
 #[macro_export]
 macro_rules! check_tlv_order {
 	($last_seen_type: expr, $typ: expr, $type: expr, $field: ident, (default_value, $default: expr)) => {{
-		#[allow(unused_comparisons)] // Note that $type may be 0 making the second comparison always true
+		#[allow(unused_comparisons)] // Note that $type may be 0 making the second comparison always false
 		let invalid_order = ($last_seen_type.is_none() || $last_seen_type.unwrap() < $type) && $typ.0 > $type;
 		if invalid_order {
 			$field = $default;
 		}
 	}};
 	($last_seen_type: expr, $typ: expr, $type: expr, $field: ident, required) => {{
-		#[allow(unused_comparisons)] // Note that $type may be 0 making the second comparison always true
+		#[allow(unused_comparisons)] // Note that $type may be 0 making the second comparison always false
 		let invalid_order = ($last_seen_type.is_none() || $last_seen_type.unwrap() < $type) && $typ.0 > $type;
 		if invalid_order {
 			return Err(DecodeError::InvalidValue);
@@ -134,14 +134,14 @@ macro_rules! check_tlv_order {
 #[macro_export]
 macro_rules! check_missing_tlv {
 	($last_seen_type: expr, $type: expr, $field: ident, (default_value, $default: expr)) => {{
-		#[allow(unused_comparisons)] // Note that $type may be 0 making the second comparison always true
+		#[allow(unused_comparisons)] // Note that $type may be 0 making the second comparison always false
 		let missing_req_type = $last_seen_type.is_none() || $last_seen_type.unwrap() < $type;
 		if missing_req_type {
 			$field = $default;
 		}
 	}};
 	($last_seen_type: expr, $type: expr, $field: ident, required) => {{
-		#[allow(unused_comparisons)] // Note that $type may be 0 making the second comparison always true
+		#[allow(unused_comparisons)] // Note that $type may be 0 making the second comparison always false
 		let missing_req_type = $last_seen_type.is_none() || $last_seen_type.unwrap() < $type;
 		if missing_req_type {
 			return Err(DecodeError::InvalidValue);
