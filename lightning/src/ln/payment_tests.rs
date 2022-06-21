@@ -15,6 +15,7 @@ use chain::{ChannelMonitorUpdateErr, Confirm, Listen, Watch};
 use chain::channelmonitor::{ANTI_REORG_DELAY, ChannelMonitor, LATENCY_GRACE_PERIOD_BLOCKS};
 use chain::transaction::OutPoint;
 use chain::keysinterface::KeysInterface;
+use ln::channel::EXPIRE_PREV_CONFIG_TICKS;
 use ln::channelmanager::{BREAKDOWN_TIMEOUT, ChannelManager, ChannelManagerReadArgs, MPP_TIMEOUT_TICKS, PaymentId, PaymentSendFailure};
 use ln::features::{InitFeatures, InvoiceFeatures};
 use ln::msgs;
@@ -531,9 +532,19 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 	// Update the fee on the middle hop to ensure PaymentSent events have the correct (retried) fee
 	// and not the original fee. We also update node[1]'s relevant config as
 	// do_claim_payment_along_route expects us to never overpay.
-	nodes[1].node.channel_state.lock().unwrap().by_id.get_mut(&chan_id_2).unwrap()
-		.config.options.forwarding_fee_base_msat += 100_000;
-	new_route.paths[0][0].fee_msat += 100_000;
+	{
+		let mut channel_state = nodes[1].node.channel_state.lock().unwrap();
+		let mut channel = channel_state.by_id.get_mut(&chan_id_2).unwrap();
+		let mut new_config = channel.config();
+		new_config.forwarding_fee_base_msat += 100_000;
+		channel.update_config(&new_config);
+		new_route.paths[0][0].fee_msat += 100_000;
+	}
+
+	// Force expiration of the channel's previous config.
+	for _ in 0..EXPIRE_PREV_CONFIG_TICKS {
+		nodes[1].node.timer_tick_occurred();
+	}
 
 	assert!(nodes[0].node.retry_payment(&new_route, payment_id_1).is_err()); // Shouldn't be allowed to retry a fulfilled payment
 	nodes[0].node.retry_payment(&new_route, payment_id).unwrap();

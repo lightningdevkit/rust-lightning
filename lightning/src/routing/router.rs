@@ -1937,6 +1937,7 @@ mod tests {
 			is_usable: true, is_public: true,
 			inbound_htlc_minimum_msat: None,
 			inbound_htlc_maximum_msat: None,
+			config: None,
 		}
 	}
 
@@ -5806,6 +5807,7 @@ mod benches {
 			is_public: true,
 			inbound_htlc_minimum_msat: None,
 			inbound_htlc_maximum_msat: None,
+			config: None,
 		}
 	}
 

@@ -51,7 +51,7 @@ use ln::onion_utils;
 use ln::msgs::{ChannelMessageHandler, DecodeError, LightningError, MAX_VALUE_MSAT, OptionalField};
 use ln::wire::Encode;
 use chain::keysinterface::{Sign, KeysInterface, KeysManager, InMemorySigner, Recipient};
-use util::config::UserConfig;
+use util::config::{UserConfig, ChannelConfig};
 use util::events::{EventHandler, EventsProvider, MessageSendEvent, MessageSendEventsProvider, ClosureReason};
 use util::{byte_utils, events};
 use util::scid_utils::fake_scid;
@@ -1101,6 +1101,10 @@ pub struct ChannelDetails {
 	pub inbound_htlc_minimum_msat: Option<u64>,
 	/// The largest value HTLC (in msat) we currently will accept, for this channel.
 	pub inbound_htlc_maximum_msat: Option<u64>,
+	/// Set of configurable parameters that affect channel operation.
+	///
+	/// This field is only `None` for `ChannelDetails` objects serialized prior to LDK 0.0.109.
+	pub config: Option<ChannelConfig>,
 }
 
 impl ChannelDetails {
@@ -1765,7 +1769,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					is_usable: channel.is_live(),
 					is_public: channel.should_announce(),
 					inbound_htlc_minimum_msat: Some(channel.get_holder_htlc_minimum_msat()),
-					inbound_htlc_maximum_msat: channel.get_holder_htlc_maximum_msat()
+					inbound_htlc_maximum_msat: channel.get_holder_htlc_maximum_msat(),
+					config: Some(channel.config()),
 				});
 			}
 		}
@@ -2231,7 +2236,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 						},
 						Some(id) => Some(id.clone()),
 					};
-					let (chan_update_opt, forwardee_cltv_expiry_delta) = if let Some(forwarding_id) = forwarding_id_opt {
+					let chan_update_opt = if let Some(forwarding_id) = forwarding_id_opt {
 						let chan = channel_state.as_mut().unwrap().by_id.get_mut(&forwarding_id).unwrap();
 						if !chan.should_announce() && !self.default_configuration.accept_forwards_to_priv_channels {
 							// Note that the behavior here should be identical to the above block - we
@@ -2258,18 +2263,20 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 						if *amt_to_forward < chan.get_counterparty_htlc_minimum_msat() { // amount_below_minimum
 							break Some(("HTLC amount was below the htlc_minimum_msat", 0x1000 | 11, chan_update_opt));
 						}
-						let fee = amt_to_forward.checked_mul(chan.get_fee_proportional_millionths() as u64)
-							.and_then(|prop_fee| { (prop_fee / 1000000)
-							.checked_add(chan.get_outbound_forwarding_fee_base_msat() as u64) });
-						if fee.is_none() || msg.amount_msat < fee.unwrap() || (msg.amount_msat - fee.unwrap()) < *amt_to_forward { // fee_insufficient
-							break Some(("Prior hop has deviated from specified fees parameters or origin node has obsolete ones", 0x1000 | 12, chan_update_opt));
+						if let Err((err, code)) = chan.htlc_satisfies_config(&msg, *amt_to_forward, *outgoing_cltv_value) {
+							break Some((err, code, chan_update_opt));
 						}
-						(chan_update_opt, chan.get_cltv_expiry_delta())
-					} else { (None, MIN_CLTV_EXPIRY_DELTA) };
+						chan_update_opt
+					} else {
+						if (msg.cltv_expiry as u64) < (*outgoing_cltv_value) as u64 + MIN_CLTV_EXPIRY_DELTA as u64 { // incorrect_cltv_expiry
+							break Some((
+								"Forwarding node has tampered with the intended HTLC values or origin node has an obsolete cltv_expiry_delta",
+								0x1000 | 13, None,
+							));
+						}
+						None
+					};
 
-					if (msg.cltv_expiry as u64) < (*outgoing_cltv_value) as u64 + forwardee_cltv_expiry_delta as u64 { // incorrect_cltv_expiry
-						break Some(("Forwarding node has tampered with the intended HTLC values or origin node has an obsolete cltv_expiry_delta", 0x1000 | 13, chan_update_opt));
-					}
 					let cur_height = self.best_block.read().unwrap().height() + 1;
 					// Theoretically, channel counterparty shouldn't send us a HTLC expiring now,
 					// but we want to be robust wrt to counterparty packet sanitization (see
@@ -2940,6 +2947,73 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		}
 	}
 
+	/// Atomically updates the [`ChannelConfig`] for the given channels.
+	///
+	/// Once the updates are applied, each eligible channel (advertised with a known short channel
+	/// ID and a change in [`forwarding_fee_proportional_millionths`], [`forwarding_fee_base_msat`],
+	/// or [`cltv_expiry_delta`]) has a [`BroadcastChannelUpdate`] event message generated
+	/// containing the new [`ChannelUpdate`] message which should be broadcast to the network.
+	///
+	/// Returns [`ChannelUnavailable`] when a channel is not found or an incorrect
+	/// `counterparty_node_id` is provided.
+	///
+	/// Returns [`APIMisuseError`] when a [`cltv_expiry_delta`] update is to be applied with a value
+	/// below [`MIN_CLTV_EXPIRY_DELTA`].
+	///
+	/// If an error is returned, none of the updates should be considered applied.
+	///
+	/// [`forwarding_fee_proportional_millionths`]: ChannelConfig::forwarding_fee_proportional_millionths
+	/// [`forwarding_fee_base_msat`]: ChannelConfig::forwarding_fee_base_msat
+	/// [`cltv_expiry_delta`]: ChannelConfig::cltv_expiry_delta
+	/// [`BroadcastChannelUpdate`]: events::MessageSendEvent::BroadcastChannelUpdate
+	/// [`ChannelUpdate`]: msgs::ChannelUpdate
+	/// [`ChannelUnavailable`]: APIError::ChannelUnavailable
+	/// [`APIMisuseError`]: APIError::APIMisuseError
+	pub fn update_channel_config(
+		&self, counterparty_node_id: &PublicKey, channel_ids: &[[u8; 32]], config: &ChannelConfig,
+	) -> Result<(), APIError> {
+		if config.cltv_expiry_delta < MIN_CLTV_EXPIRY_DELTA {
+			return Err(APIError::APIMisuseError {
+				err: format!("The chosen CLTV expiry delta is below the minimum of {}", MIN_CLTV_EXPIRY_DELTA),
+			});
+		}
+
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(
+			&self.total_consistency_lock, &self.persistence_notifier,
+		);
+		{
+			let mut channel_state_lock = self.channel_state.lock().unwrap();
+			let channel_state = &mut *channel_state_lock;
+			for channel_id in channel_ids {
+				let channel_counterparty_node_id = channel_state.by_id.get(channel_id)
+					.ok_or(APIError::ChannelUnavailable {
+						err: format!("Channel with ID {} was not found", log_bytes!(*channel_id)),
+					})?
+					.get_counterparty_node_id();
+				if channel_counterparty_node_id != *counterparty_node_id {
+					return Err(APIError::APIMisuseError {
+						err: "counterparty node id mismatch".to_owned(),
+					});
+				}
+			}
+			for channel_id in channel_ids {
+				let channel = channel_state.by_id.get_mut(channel_id).unwrap();
+				if !channel.update_config(config) {
+					continue;
+				}
+				if let Ok(msg) = self.get_channel_update_for_broadcast(channel) {
+					channel_state.pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate { msg });
+				} else if let Ok(msg) = self.get_channel_update_for_unicast(channel) {
+					channel_state.pending_msg_events.push(events::MessageSendEvent::SendChannelUpdate {
+						node_id: channel.get_counterparty_node_id(),
+						msg,
+					});
+				}
+			}
+		}
+		Ok(())
+	}
+
 	/// Processes HTLCs which are pending waiting on random forward delay.
 	///
 	/// Should only really ever be called in response to a PendingHTLCsForwardable event.
@@ -3465,6 +3539,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	///  * Broadcasting `ChannelUpdate` messages if we've been disconnected from our peer for more
 	///    than a minute, informing the network that they should no longer attempt to route over
 	///    the channel.
+	///  * Expiring a channel's previous `ChannelConfig` if necessary to only allow forwarding HTLCs
+	///    with the current `ChannelConfig`.
 	///
 	/// Note that this may cause reentrancy through `chain::Watch::update_channel` calls or feerate
 	/// estimate fetches.
@@ -3522,6 +3598,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 						},
 						_ => {},
 					}
+
+					chan.maybe_expire_prev_config();
 
 					true
 				});
@@ -6115,6 +6193,7 @@ impl_writeable_tlv_based!(ChannelDetails, {
 	(4, counterparty, required),
 	(5, outbound_scid_alias, option),
 	(6, funding_txo, option),
+	(7, config, option),
 	(8, short_channel_id, option),
 	(10, channel_value_satoshis, required),
 	(12, unspendable_punishment_reserve, option),

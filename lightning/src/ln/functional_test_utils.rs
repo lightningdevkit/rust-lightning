@@ -1689,9 +1689,16 @@ pub fn do_claim_payment_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, 
 			($node: expr, $prev_node: expr, $next_node: expr, $new_msgs: expr) => {
 				{
 					$node.node.handle_update_fulfill_htlc(&$prev_node.node.get_our_node_id(), &next_msgs.as_ref().unwrap().0);
-					let fee = $node.node.channel_state.lock().unwrap()
-						.by_id.get(&next_msgs.as_ref().unwrap().0.channel_id).unwrap()
-						.config.options.forwarding_fee_base_msat;
+					let fee = {
+						let channel_state = $node.node.channel_state.lock().unwrap();
+						let channel = channel_state
+							.by_id.get(&next_msgs.as_ref().unwrap().0.channel_id).unwrap();
+						if let Some(prev_config) = channel.prev_config() {
+							prev_config.forwarding_fee_base_msat
+						} else {
+							channel.config().forwarding_fee_base_msat
+						}
+					};
 					expect_payment_forwarded!($node, $next_node, $prev_node, Some(fee as u64), false, false);
 					expected_total_fee_msat += fee as u64;
 					check_added_monitors!($node, 1);

@@ -39,7 +39,7 @@ use util::events::ClosureReason;
 use util::ser::{Readable, ReadableArgs, Writeable, Writer, VecWriter};
 use util::logger::Logger;
 use util::errors::APIError;
-use util::config::{UserConfig, LegacyChannelConfig, ChannelHandshakeConfig, ChannelHandshakeLimits};
+use util::config::{UserConfig, ChannelConfig, LegacyChannelConfig, ChannelHandshakeConfig, ChannelHandshakeLimits};
 use util::scid_utils::scid_from_parts;
 
 use io;
@@ -482,6 +482,16 @@ pub(crate) const CONCURRENT_INBOUND_HTLC_FEE_BUFFER: u32 = 2;
 /// transaction (not counting the value of the HTLCs themselves).
 pub(crate) const MIN_AFFORDABLE_HTLC_COUNT: usize = 4;
 
+/// When a [`Channel`] has its [`ChannelConfig`] updated, its existing one is stashed for up to this
+/// number of ticks to allow forwarding HTLCs by nodes that have yet to receive the new
+/// ChannelUpdate prompted by the config update. This value was determined as follows:
+///
+///   * The expected interval between ticks (1 minute).
+///   * The average convergence delay of updates across the network, i.e., ~300 seconds on average
+///      for a node to see an update as seen on `<https://arxiv.org/pdf/2205.12737.pdf>`.
+///   * `EXPIRE_PREV_CONFIG_TICKS` = convergence_delay / tick_interval
+pub(crate) const EXPIRE_PREV_CONFIG_TICKS: usize = 5;
+
 // TODO: We should refactor this to be an Inbound/OutboundChannel until initial setup handshaking
 // has been completed, and then turn into a Channel to get compiler-time enforcement of things like
 // calling channel_id() before we're set up or things like get_outbound_funding_signed on an
@@ -490,10 +500,12 @@ pub(crate) const MIN_AFFORDABLE_HTLC_COUNT: usize = 4;
 // Holder designates channel data owned for the benefice of the user client.
 // Counterparty designates channel data owned by the another channel participant entity.
 pub(super) struct Channel<Signer: Sign> {
-	#[cfg(any(test, feature = "_test_utils"))]
-	pub(crate) config: LegacyChannelConfig,
-	#[cfg(not(any(test, feature = "_test_utils")))]
 	config: LegacyChannelConfig,
+
+	// Track the previous `ChannelConfig` so that we can continue forwarding HTLCs that were
+	// constructed using it. The second element in the tuple corresponds to the number of ticks that
+	// have elapsed since the update occurred.
+	prev_config: Option<(ChannelConfig, usize)>,
 
 	inbound_handshake_limits_override: Option<ChannelHandshakeLimits>,
 
@@ -937,6 +949,8 @@ impl<Signer: Sign> Channel<Signer> {
 				commit_upfront_shutdown_pubkey: config.channel_handshake_config.commit_upfront_shutdown_pubkey,
 			},
 
+			prev_config: None,
+
 			inbound_handshake_limits_override: Some(config.channel_handshake_limits.clone()),
 
 			channel_id: keys_provider.get_secure_random_bytes(),
@@ -1263,6 +1277,8 @@ impl<Signer: Sign> Channel<Signer> {
 				announced_channel,
 				commit_upfront_shutdown_pubkey: config.channel_handshake_config.commit_upfront_shutdown_pubkey,
 			},
+
+			prev_config: None,
 
 			inbound_handshake_limits_override: None,
 
@@ -4491,6 +4507,84 @@ impl<Signer: Sign> Channel<Signer> {
 		self.config.options.max_dust_htlc_exposure_msat
 	}
 
+	/// Returns the previous [`ChannelConfig`] applied to this channel, if any.
+	pub fn prev_config(&self) -> Option<ChannelConfig> {
+		self.prev_config.map(|prev_config| prev_config.0)
+	}
+
+	/// Tracks the number of ticks elapsed since the previous [`ChannelConfig`] was updated. Once
+	/// [`EXPIRE_PREV_CONFIG_TICKS`] is reached, the previous config is considered expired and will
+	/// no longer be considered when forwarding HTLCs.
+	pub fn maybe_expire_prev_config(&mut self) {
+		if self.prev_config.is_none() {
+			return;
+		}
+		let prev_config = self.prev_config.as_mut().unwrap();
+		prev_config.1 += 1;
+		if prev_config.1 == EXPIRE_PREV_CONFIG_TICKS {
+			self.prev_config = None;
+		}
+	}
+
+	/// Returns the current [`ChannelConfig`] applied to the channel.
+	pub fn config(&self) -> ChannelConfig {
+		self.config.options
+	}
+
+	/// Updates the channel's config. A bool is returned indicating whether the config update
+	/// applied resulted in a new ChannelUpdate message.
+	pub fn update_config(&mut self, config: &ChannelConfig) -> bool {
+		let did_channel_update =
+			self.config.options.forwarding_fee_proportional_millionths != config.forwarding_fee_proportional_millionths ||
+			self.config.options.forwarding_fee_base_msat != config.forwarding_fee_base_msat ||
+			self.config.options.cltv_expiry_delta != config.cltv_expiry_delta;
+		if did_channel_update {
+			self.prev_config = Some((self.config.options, 0));
+			// Update the counter, which backs the ChannelUpdate timestamp, to allow the relay
+			// policy change to propagate throughout the network.
+			self.update_time_counter += 1;
+		}
+		self.config.options = *config;
+		did_channel_update
+	}
+
+	fn internal_htlc_satisfies_config(
+		&self, htlc: &msgs::UpdateAddHTLC, amt_to_forward: u64, outgoing_cltv_value: u32, config: &ChannelConfig,
+	) -> Result<(), (&'static str, u16)> {
+		let fee = amt_to_forward.checked_mul(config.forwarding_fee_proportional_millionths as u64)
+			.and_then(|prop_fee| (prop_fee / 1000000).checked_add(config.forwarding_fee_base_msat as u64));
+		if fee.is_none() || htlc.amount_msat < fee.unwrap() ||
+			(htlc.amount_msat - fee.unwrap()) < amt_to_forward {
+			return Err((
+				"Prior hop has deviated from specified fees parameters or origin node has obsolete ones",
+				0x1000 | 12, // fee_insufficient
+			));
+		}
+		if (htlc.cltv_expiry as u64) < outgoing_cltv_value as u64 + config.cltv_expiry_delta as u64 {
+			return Err((
+				"Forwarding node has tampered with the intended HTLC values or origin node has an obsolete cltv_expiry_delta",
+				0x1000 | 13, // incorrect_cltv_expiry
+			));
+		}
+		Ok(())
+	}
+
+	/// Determines whether the parameters of an incoming HTLC to be forwarded satisfy the channel's
+	/// [`ChannelConfig`]. This first looks at the channel's current [`ChannelConfig`], and if
+	/// unsuccessful, falls back to the previous one if one exists.
+	pub fn htlc_satisfies_config(
+		&self, htlc: &msgs::UpdateAddHTLC, amt_to_forward: u64, outgoing_cltv_value: u32,
+	) -> Result<(), (&'static str, u16)> {
+		self.internal_htlc_satisfies_config(&htlc, amt_to_forward, outgoing_cltv_value, &self.config())
+			.or_else(|err| {
+				if let Some(prev_config) = self.prev_config() {
+					self.internal_htlc_satisfies_config(htlc, amt_to_forward, outgoing_cltv_value, &prev_config)
+				} else {
+					Err(err)
+				}
+			})
+	}
+
 	pub fn get_feerate(&self) -> u32 {
 		self.feerate_per_kw
 	}
@@ -6338,6 +6432,8 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<(&'a K, u32)> for Channel<Signer>
 			user_id,
 
 			config: config.unwrap(),
+
+			prev_config: None,
 
 			// Note that we don't care about serializing handshake limits as we only ever serialize
 			// channel data after the handshake has completed.
