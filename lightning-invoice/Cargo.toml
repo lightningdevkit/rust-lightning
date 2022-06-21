@@ -26,7 +26,9 @@ num-traits = { version = "0.2.8", default-features = false }
 bitcoin_hashes = { version = "0.10", default-features = false }
 hashbrown = { version = "0.11", optional = true }
 core2 = { version = "0.3.0", default-features = false, optional = true }
+serde = { version = "1.0.118", optional = true }
 
 [dev-dependencies]
 lightning = { version = "0.0.108", path = "../lightning", default-features = false, features = ["_test_utils"] }
 hex = "0.4"
+serde_json = { version = "1"}
