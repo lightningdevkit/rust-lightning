@@ -2517,10 +2517,10 @@ fn claim_htlc_outputs_shared_tx() {
 	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 
 	// Rebalance the network to generate htlc in the two directions
-	send_payment(&nodes[0], &vec!(&nodes[1])[..], 8000000);
+	send_payment(&nodes[0], &[&nodes[1]], 8_000_000);
 	// node[0] is gonna to revoke an old state thus node[1] should be able to claim both offered/received HTLC outputs on top of commitment tx
-	let payment_preimage_1 = route_payment(&nodes[0], &vec!(&nodes[1])[..], 3000000).0;
-	let (_payment_preimage_2, payment_hash_2, _) = route_payment(&nodes[1], &vec!(&nodes[0])[..], 3000000);
+	let payment_preimage_1 = route_payment(&nodes[0], &[&nodes[1]], 3_000_000).0;
+	let (_payment_preimage_2, payment_hash_2, _) = route_payment(&nodes[1], &[&nodes[0]], 3_000_000);
 
 	// Get the will-be-revoked local txn from node[0]
 	let revoked_local_txn = get_local_commitment_txn!(nodes[0], chan_1.2);
@@ -2543,9 +2543,9 @@ fn claim_htlc_outputs_shared_tx() {
 		check_added_monitors!(nodes[1], 1);
 		check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed);
 		connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
-		expect_payment_failed!(nodes[1], payment_hash_2, true);
+		assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
 
-		let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
+		let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 		assert_eq!(node_txn.len(), 2); // ChannelMonitor: penalty tx, ChannelManager: local commitment
 
 		assert_eq!(node_txn[0].input.len(), 3); // Claim the revoked output + both revoked HTLC outputs
@@ -2562,7 +2562,13 @@ fn claim_htlc_outputs_shared_tx() {
 
 		// Next nodes[1] broadcasts its current local tx state:
 		assert_eq!(node_txn[1].input.len(), 1);
-		assert_eq!(node_txn[1].input[0].previous_output.txid, chan_1.3.txid()); //Spending funding tx unique txouput, tx broadcasted by ChannelManager
+		check_spends!(node_txn[1], chan_1.3);
+
+		// Finally, mine the penalty transaction and check that we get an HTLC failure after
+		// ANTI_REORG_DELAY confirmations.
+		mine_transaction(&nodes[1], &node_txn[0]);
+		connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
+		expect_payment_failed!(nodes[1], payment_hash_2, true);
 	}
 	get_announce_close_broadcast_events(&nodes, 0, 1);
 	assert_eq!(nodes[0].node.list_channels().len(), 0);
@@ -2581,11 +2587,11 @@ fn claim_htlc_outputs_single_tx() {
 	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 
 	// Rebalance the network to generate htlc in the two directions
-	send_payment(&nodes[0], &vec!(&nodes[1])[..], 8000000);
+	send_payment(&nodes[0], &[&nodes[1]], 8_000_000);
 	// node[0] is gonna to revoke an old state thus node[1] should be able to claim both offered/received HTLC outputs on top of commitment tx, but this
 	// time as two different claim transactions as we're gonna to timeout htlc with given a high current height
-	let payment_preimage_1 = route_payment(&nodes[0], &vec!(&nodes[1])[..], 3000000).0;
-	let (_payment_preimage_2, payment_hash_2, _payment_secret_2) = route_payment(&nodes[1], &vec!(&nodes[0])[..], 3000000);
+	let payment_preimage_1 = route_payment(&nodes[0], &[&nodes[1]], 3_000_000).0;
+	let (_payment_preimage_2, payment_hash_2, _payment_secret_2) = route_payment(&nodes[1], &[&nodes[0]], 3_000_000);
 
 	// Get the will-be-revoked local txn from node[0]
 	let revoked_local_txn = get_local_commitment_txn!(nodes[0], chan_1.2);
@@ -2607,9 +2613,9 @@ fn claim_htlc_outputs_single_tx() {
 		}
 
 		connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
-		expect_payment_failed!(nodes[1], payment_hash_2, true);
+		assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
 
-		let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
+		let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 		assert!(node_txn.len() == 9 || node_txn.len() == 10);
 
 		// Check the pair local commitment and HTLC-timeout broadcast due to HTLC expiration
@@ -2637,6 +2643,14 @@ fn claim_htlc_outputs_single_tx() {
 		assert_eq!(*witness_lens.iter().skip(0).next().unwrap(), 77); // revoked to_local
 		assert_eq!(*witness_lens.iter().skip(1).next().unwrap(), OFFERED_HTLC_SCRIPT_WEIGHT); // revoked offered HTLC
 		assert_eq!(*witness_lens.iter().skip(2).next().unwrap(), ACCEPTED_HTLC_SCRIPT_WEIGHT); // revoked received HTLC
+
+		// Finally, mine the penalty transactions and check that we get an HTLC failure after
+		// ANTI_REORG_DELAY confirmations.
+		mine_transaction(&nodes[1], &node_txn[2]);
+		mine_transaction(&nodes[1], &node_txn[3]);
+		mine_transaction(&nodes[1], &node_txn[4]);
+		connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
+		expect_payment_failed!(nodes[1], payment_hash_2, true);
 	}
 	get_announce_close_broadcast_events(&nodes, 0, 1);
 	assert_eq!(nodes[0].node.list_channels().len(), 0);
@@ -7284,37 +7298,25 @@ fn do_test_sweep_outbound_htlc_failure_update(revoked: bool, local: bool) {
 		check_added_monitors!(nodes[0], 1);
 		check_closed_event!(nodes[0], 1, ClosureReason::CommitmentTxConfirmed);
 		assert_eq!(nodes[0].node.get_and_clear_pending_events().len(), 0);
+
 		connect_blocks(&nodes[0], TEST_FINAL_CLTV - 1); // Confirm blocks until the HTLC expires
-		timeout_tx.push(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap()[1].clone());
+		timeout_tx = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().drain(..)
+			.filter(|tx| tx.input[0].previous_output.txid == bs_commitment_tx[0].txid()).collect();
+		check_spends!(timeout_tx[0], bs_commitment_tx[0]);
+		// For both a revoked or non-revoked commitment transaction, after ANTI_REORG_DELAY the
+		// dust HTLC should have been failed.
+		expect_payment_failed!(nodes[0], dust_hash, true);
+
 		if !revoked {
-			expect_payment_failed!(nodes[0], dust_hash, true);
 			assert_eq!(timeout_tx[0].input[0].witness.last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT);
-			// We fail non-dust-HTLC 2 by broadcast of local timeout tx on remote commitment tx
-			mine_transaction(&nodes[0], &timeout_tx[0]);
-			assert_eq!(nodes[0].node.get_and_clear_pending_events().len(), 0);
-			connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
-			expect_payment_failed!(nodes[0], non_dust_hash, true);
 		} else {
-			// If revoked, both dust & non-dust HTLCs should have been failed after ANTI_REORG_DELAY confs of revoked
-			// commitment tx
-			let events = nodes[0].node.get_and_clear_pending_events();
-			assert_eq!(events.len(), 2);
-			let first;
-			match events[0] {
-				Event::PaymentPathFailed { payment_hash, .. } => {
-					if payment_hash == dust_hash { first = true; }
-					else { first = false; }
-				},
-				_ => panic!("Unexpected event"),
-			}
-			match events[1] {
-				Event::PaymentPathFailed { payment_hash, .. } => {
-					if first { assert_eq!(payment_hash, non_dust_hash); }
-					else { assert_eq!(payment_hash, dust_hash); }
-				},
-				_ => panic!("Unexpected event"),
-			}
+			assert_eq!(timeout_tx[0].lock_time, 0);
 		}
+		// We fail non-dust-HTLC 2 by broadcast of local timeout/revocation-claim tx
+		mine_transaction(&nodes[0], &timeout_tx[0]);
+		assert_eq!(nodes[0].node.get_and_clear_pending_events().len(), 0);
+		connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
+		expect_payment_failed!(nodes[0], non_dust_hash, true);
 	}
 }
 
