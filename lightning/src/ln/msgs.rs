@@ -32,6 +32,7 @@ use bitcoin::hash_types::{Txid, BlockHash};
 
 use ln::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
 use ln::onion_utils;
+use onion_message;
 
 use prelude::*;
 use core::fmt;
@@ -41,7 +42,7 @@ use io_extras::read_to_end;
 
 use util::events::MessageSendEventsProvider;
 use util::logger;
-use util::ser::{Readable, Writeable, Writer, FixedLengthReader, HighZeroBytesDroppedVarInt, Hostname};
+use util::ser::{LengthReadable, Readable, Writeable, Writer, FixedLengthReader, HighZeroBytesDroppedVarInt, Hostname};
 
 use ln::{PaymentPreimage, PaymentHash, PaymentSecret};
 
@@ -303,6 +304,14 @@ pub struct UpdateAddHTLC {
 	/// The expiry height of the HTLC
 	pub cltv_expiry: u32,
 	pub(crate) onion_routing_packet: OnionPacket,
+}
+
+ /// An onion message to be sent or received from a peer
+#[derive(Clone, Debug, PartialEq)]
+pub struct OnionMessage {
+	/// Used in decrypting the onion packet's payload.
+	pub blinding_point: PublicKey,
+	pub(crate) onion_routing_packet: onion_message::Packet,
 }
 
 /// An update_fulfill_htlc message to be sent or received from a peer
@@ -1339,6 +1348,29 @@ impl_writeable_msg!(UpdateAddHTLC, {
 	cltv_expiry,
 	onion_routing_packet
 }, {});
+
+impl Readable for OnionMessage {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let blinding_point: PublicKey = Readable::read(r)?;
+		let len: u16 = Readable::read(r)?;
+		let mut packet_reader = FixedLengthReader::new(r, len as u64);
+		let onion_routing_packet: onion_message::Packet = <onion_message::Packet as LengthReadable>::read(&mut packet_reader)?;
+		Ok(Self {
+			blinding_point,
+			onion_routing_packet,
+		})
+	}
+}
+
+impl Writeable for OnionMessage {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		self.blinding_point.write(w)?;
+		let onion_packet_len = self.onion_routing_packet.serialized_length();
+		(onion_packet_len as u16).write(w)?;
+		self.onion_routing_packet.write(w)?;
+		Ok(())
+	}
+}
 
 impl Writeable for FinalOnionHopData {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {

@@ -10,8 +10,11 @@
 //! Onion Messages: sending, receiving, forwarding, and ancillary utilities live here
 
 mod blinded_route;
+mod messenger;
 mod packet;
 mod utils;
 
 // Re-export structs so they can be imported with just the `onion_message::` module prefix.
 pub use self::blinded_route::{BlindedRoute, BlindedHop};
+pub use self::messenger::{OnionMessenger, SimpleArcOnionMessenger, SimpleRefOnionMessenger};
+pub(crate) use self::packet::Packet;
