@@ -252,7 +252,7 @@ impl<'a> Drop for MoneyLossDetector<'a> {
 			}
 
 			// Force all channels onto the chain (and time out claim txn)
-			self.manager.force_close_all_channels();
+			self.manager.force_close_all_channels_broadcasting_latest_txn();
 		}
 	}
 }
@@ -624,7 +624,7 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 				let channel_id = get_slice!(1)[0] as usize;
 				if channel_id >= channels.len() { return; }
 				channels.sort_by(|a, b| { a.channel_id.cmp(&b.channel_id) });
-				channelmanager.force_close_channel(&channels[channel_id].channel_id, &channels[channel_id].counterparty.node_id).unwrap();
+				channelmanager.force_close_broadcasting_latest_txn(&channels[channel_id].channel_id, &channels[channel_id].counterparty.node_id).unwrap();
 			},
 			// 15 is above
 			_ => return,

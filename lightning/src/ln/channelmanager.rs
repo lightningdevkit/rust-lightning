@@ -1945,7 +1945,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 
 	/// `peer_msg` should be set when we receive a message from a peer, but not set when the
 	/// user closes, which will be re-exposed as the `ChannelClosed` reason.
-	fn force_close_channel_with_peer(&self, channel_id: &[u8; 32], peer_node_id: &PublicKey, peer_msg: Option<&String>) -> Result<PublicKey, APIError> {
+	fn force_close_channel_with_peer(&self, channel_id: &[u8; 32], peer_node_id: &PublicKey, peer_msg: Option<&String>, broadcast: bool)
+	-> Result<PublicKey, APIError> {
 		let mut chan = {
 			let mut channel_state_lock = self.channel_state.lock().unwrap();
 			let channel_state = &mut *channel_state_lock;
@@ -1964,7 +1965,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			}
 		};
 		log_error!(self.logger, "Force-closing channel {}", log_bytes!(channel_id[..]));
-		self.finish_force_close_channel(chan.force_shutdown(true));
+		self.finish_force_close_channel(chan.force_shutdown(broadcast));
 		if let Ok(update) = self.get_channel_update_for_broadcast(&chan) {
 			let mut channel_state = self.channel_state.lock().unwrap();
 			channel_state.pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
@@ -1975,13 +1976,9 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		Ok(chan.get_counterparty_node_id())
 	}
 
-	/// Force closes a channel, immediately broadcasting the latest local commitment transaction to
-	/// the chain and rejecting new HTLCs on the given channel. Fails if `channel_id` is unknown to
-	/// the manager, or if the `counterparty_node_id` isn't the counterparty of the corresponding
-	/// channel.
-	pub fn force_close_channel(&self, channel_id: &[u8; 32], counterparty_node_id: &PublicKey) -> Result<(), APIError> {
+	fn force_close_sending_error(&self, channel_id: &[u8; 32], counterparty_node_id: &PublicKey, broadcast: bool) -> Result<(), APIError> {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
-		match self.force_close_channel_with_peer(channel_id, counterparty_node_id, None) {
+		match self.force_close_channel_with_peer(channel_id, counterparty_node_id, None, broadcast) {
 			Ok(counterparty_node_id) => {
 				self.channel_state.lock().unwrap().pending_msg_events.push(
 					events::MessageSendEvent::HandleError {
@@ -1997,11 +1994,39 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		}
 	}
 
+	/// Force closes a channel, immediately broadcasting the latest local transaction(s) and
+	/// rejecting new HTLCs on the given channel. Fails if `channel_id` is unknown to
+	/// the manager, or if the `counterparty_node_id` isn't the counterparty of the corresponding
+	/// channel.
+	pub fn force_close_broadcasting_latest_txn(&self, channel_id: &[u8; 32], counterparty_node_id: &PublicKey)
+	-> Result<(), APIError> {
+		self.force_close_sending_error(channel_id, counterparty_node_id, true)
+	}
+
+	/// Force closes a channel, rejecting new HTLCs on the given channel but skips broadcasting
+	/// the latest local transaction(s). Fails if `channel_id` is unknown to the manager, or if the
+	/// `counterparty_node_id` isn't the counterparty of the corresponding channel.
+	///
+	/// You can always get the latest local transaction(s) to broadcast from
+	/// [`ChannelMonitor::get_latest_holder_commitment_txn`].
+	pub fn force_close_without_broadcasting_txn(&self, channel_id: &[u8; 32], counterparty_node_id: &PublicKey)
+	-> Result<(), APIError> {
+		self.force_close_sending_error(channel_id, counterparty_node_id, false)
+	}
+
 	/// Force close all channels, immediately broadcasting the latest local commitment transaction
 	/// for each to the chain and rejecting new HTLCs on each.
-	pub fn force_close_all_channels(&self) {
+	pub fn force_close_all_channels_broadcasting_latest_txn(&self) {
 		for chan in self.list_channels() {
-			let _ = self.force_close_channel(&chan.channel_id, &chan.counterparty.node_id);
+			let _ = self.force_close_broadcasting_latest_txn(&chan.channel_id, &chan.counterparty.node_id);
+		}
+	}
+
+	/// Force close all channels rejecting new HTLCs on each but without broadcasting the latest
+	/// local transaction(s).
+	pub fn force_close_all_channels_without_broadcasting_txn(&self) {
+		for chan in self.list_channels() {
+			let _ = self.force_close_without_broadcasting_txn(&chan.channel_id, &chan.counterparty.node_id);
 		}
 	}
 
@@ -6058,7 +6083,7 @@ impl<Signer: Sign, M: Deref , T: Deref , K: Deref , F: Deref , L: Deref >
 			for chan in self.list_channels() {
 				if chan.counterparty.node_id == *counterparty_node_id {
 					// Untrusted messages from peer, we throw away the error if id points to a non-existent channel
-					let _ = self.force_close_channel_with_peer(&chan.channel_id, counterparty_node_id, Some(&msg.data));
+					let _ = self.force_close_channel_with_peer(&chan.channel_id, counterparty_node_id, Some(&msg.data), true);
 				}
 			}
 		} else {
@@ -6080,7 +6105,7 @@ impl<Signer: Sign, M: Deref , T: Deref , K: Deref , F: Deref , L: Deref >
 			}
 
 			// Untrusted messages from peer, we throw away the error if id points to a non-existent channel
-			let _ = self.force_close_channel_with_peer(&msg.channel_id, counterparty_node_id, Some(&msg.data));
+			let _ = self.force_close_channel_with_peer(&msg.channel_id, counterparty_node_id, Some(&msg.data), true);
 		}
 	}
 }
