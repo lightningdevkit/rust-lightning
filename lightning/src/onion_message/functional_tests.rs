@@ -119,3 +119,24 @@ fn too_big_packet_error() {
 	let err = nodes[0].messenger.send_onion_message(&hops, Destination::Node(hop_node_id)).unwrap_err();
 	assert_eq!(err, SendError::TooBigPacket);
 }
+
+#[test]
+fn invalid_blinded_route_error() {
+	// Make sure we error as expected if a provided blinded route has 0 or 1 hops.
+	let mut nodes = create_nodes(3);
+	let (node1, node2, node3) = (nodes.remove(0), nodes.remove(0), nodes.remove(0));
+
+	// 0 hops
+	let secp_ctx = Secp256k1::new();
+	let mut blinded_route = BlindedRoute::new::<EnforcingSigner, _, _>(&[node2.get_node_pk(), node3.get_node_pk()], &*node3.keys_manager, &secp_ctx).unwrap();
+	blinded_route.blinded_hops.clear();
+	let err = node1.messenger.send_onion_message(&[], Destination::BlindedRoute(blinded_route)).unwrap_err();
+	assert_eq!(err, SendError::TooFewBlindedHops);
+
+	// 1 hop
+	let mut blinded_route = BlindedRoute::new::<EnforcingSigner, _, _>(&[node2.get_node_pk(), node3.get_node_pk()], &*node3.keys_manager, &secp_ctx).unwrap();
+	blinded_route.blinded_hops.remove(0);
+	assert_eq!(blinded_route.blinded_hops.len(), 1);
+	let err = node1.messenger.send_onion_message(&[], Destination::BlindedRoute(blinded_route)).unwrap_err();
+	assert_eq!(err, SendError::TooFewBlindedHops);
+}
