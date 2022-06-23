@@ -802,7 +802,6 @@ pub(super) enum ChannelError {
 	Ignore(String),
 	Warn(String),
 	Close(String),
-	CloseDelayBroadcast(String),
 }
 
 impl fmt::Debug for ChannelError {
@@ -811,7 +810,6 @@ impl fmt::Debug for ChannelError {
 			&ChannelError::Ignore(ref e) => write!(f, "Ignore : {}", e),
 			&ChannelError::Warn(ref e) => write!(f, "Warn : {}", e),
 			&ChannelError::Close(ref e) => write!(f, "Close : {}", e),
-			&ChannelError::CloseDelayBroadcast(ref e) => write!(f, "CloseDelayBroadcast : {}", e)
 		}
 	}
 }
@@ -3799,6 +3797,11 @@ impl<Signer: Sign> Channel<Signer> {
 
 	/// May panic if some calls other than message-handling calls (which will all Err immediately)
 	/// have been called between remove_uncommitted_htlcs_and_mark_paused and this call.
+	///
+	/// Some links printed in log lines are included here to check them during build (when run with
+	/// `cargo doc --document-private-items`):
+	/// [`super::channelmanager::ChannelManager::force_close_without_broadcasting_txn`] and
+	/// [`super::channelmanager::ChannelManager::force_close_all_channels_without_broadcasting_txn`].
 	pub fn channel_reestablish<L: Deref>(&mut self, msg: &msgs::ChannelReestablish, logger: &L,
 		node_pk: PublicKey, genesis_block_hash: BlockHash, best_block: &BestBlock)
 	-> Result<ReestablishResponses, ChannelError> where L::Target: Logger {
@@ -3824,9 +3827,20 @@ impl<Signer: Sign> Channel<Signer> {
 						return Err(ChannelError::Close("Peer sent a garbage channel_reestablish with secret key not matching the commitment height provided".to_owned()));
 					}
 					if msg.next_remote_commitment_number > INITIAL_COMMITMENT_NUMBER - self.cur_holder_commitment_transaction_number {
-						return Err(ChannelError::CloseDelayBroadcast(
-							"We have fallen behind - we have received proof that if we broadcast remote is going to claim our funds - we can't do any automated broadcasting".to_owned()
-						));
+						macro_rules! log_and_panic {
+							($err_msg: expr) => {
+								log_error!(logger, $err_msg, log_bytes!(self.channel_id), log_pubkey!(self.counterparty_node_id));
+								panic!($err_msg, log_bytes!(self.channel_id), log_pubkey!(self.counterparty_node_id));
+							}
+						}
+						log_and_panic!("We have fallen behind - we have received proof that if we broadcast our counterparty is going to claim all our funds.\n\
+							This implies you have restarted with lost ChannelMonitor and ChannelManager state, the first of which is a violation of the LDK chain::Watch requirements.\n\
+							More specifically, this means you have a bug in your implementation that can cause loss of funds, or you are running with an old backup, which is unsafe.\n\
+							If you have restored from an old backup and wish to force-close channels and return to operation, you should start up, call\n\
+							ChannelManager::force_close_without_broadcasting_txn on channel {} with counterparty {} or\n\
+							ChannelManager::force_close_all_channels_without_broadcasting_txn, then reconnect to peer(s).\n\
+							Note that due to a long-standing bug in lnd you may have to reach out to peers running lnd-based nodes to ask them to manually force-close channels\n\
+							See https://github.com/lightningdevkit/rust-lightning/issues/1565 for more info.");
 					}
 				},
 				OptionalField::Absent => {}
@@ -3933,7 +3947,7 @@ impl<Signer: Sign> Channel<Signer> {
 				// now!
 				match self.free_holding_cell_htlcs(logger) {
 					Err(ChannelError::Close(msg)) => Err(ChannelError::Close(msg)),
-					Err(ChannelError::Warn(_)) | Err(ChannelError::Ignore(_)) | Err(ChannelError::CloseDelayBroadcast(_)) =>
+					Err(ChannelError::Warn(_)) | Err(ChannelError::Ignore(_)) =>
 						panic!("Got non-channel-failing result from free_holding_cell_htlcs"),
 					Ok((Some((commitment_update, monitor_update)), holding_cell_failed_htlcs)) => {
 						Ok(ReestablishResponses {

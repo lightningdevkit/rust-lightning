@@ -7399,14 +7399,11 @@ fn test_user_configurable_csv_delay() {
 	} else { assert!(false); }
 }
 
-#[test]
-fn test_data_loss_protect() {
-	// We want to be sure that :
-	// * we don't broadcast our Local Commitment Tx in case of fallen behind
-	//   (but this is not quite true - we broadcast during Drop because chanmon is out of sync with chanmgr)
-	// * we close channel in case of detecting other being fallen behind
-	// * we are able to claim our own outputs thanks to to_remote being static
-	// TODO: this test is incomplete and the data_loss_protect implementation is incomplete - see issue #775
+fn do_test_data_loss_protect(reconnect_panicing: bool) {
+	// When we get a data_loss_protect proving we're behind, we immediately panic as the
+	// chain::Watch API requirements have been violated (e.g. the user restored from a backup). The
+	// panic message informs the user they should force-close without broadcasting, which is tested
+	// if `reconnect_panicing` is not set.
 	let persister;
 	let logger;
 	let fee_estimator;
@@ -7464,52 +7461,52 @@ fn test_data_loss_protect() {
 
 	check_added_monitors!(nodes[0], 1);
 
-	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init { features: InitFeatures::empty(), remote_network_address: None });
-	nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id(), &msgs::Init { features: InitFeatures::empty(), remote_network_address: None });
+	if reconnect_panicing {
+		nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init { features: InitFeatures::empty(), remote_network_address: None });
+		nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id(), &msgs::Init { features: InitFeatures::empty(), remote_network_address: None });
 
-	let reestablish_0 = get_chan_reestablish_msgs!(nodes[1], nodes[0]);
+		let reestablish_1 = get_chan_reestablish_msgs!(nodes[0], nodes[1]);
 
-	// Check we don't broadcast any transactions following learning of per_commitment_point from B
-	nodes[0].node.handle_channel_reestablish(&nodes[1].node.get_our_node_id(), &reestablish_0[0]);
+		// Check we close channel detecting A is fallen-behind
+		// Check that we sent the warning message when we detected that A has fallen behind,
+		// and give the possibility for A to recover from the warning.
+		nodes[1].node.handle_channel_reestablish(&nodes[0].node.get_our_node_id(), &reestablish_1[0]);
+		let warn_msg = "Peer attempted to reestablish channel with a very old local commitment transaction".to_owned();
+		assert!(check_warn_msg!(nodes[1], nodes[0].node.get_our_node_id(), chan.2).contains(&warn_msg));
+
+		{
+			let mut node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().clone();
+			// The node B should not broadcast the transaction to force close the channel!
+			assert!(node_txn.is_empty());
+		}
+
+		let reestablish_0 = get_chan_reestablish_msgs!(nodes[1], nodes[0]);
+		// Check A panics upon seeing proof it has fallen behind.
+		nodes[0].node.handle_channel_reestablish(&nodes[1].node.get_our_node_id(), &reestablish_0[0]);
+		return; // By this point we should have panic'ed!
+	}
+
+	nodes[0].node.force_close_without_broadcasting_txn(&chan.2, &nodes[1].node.get_our_node_id()).unwrap();
 	check_added_monitors!(nodes[0], 1);
-
+	check_closed_event!(nodes[0], 1, ClosureReason::HolderForceClosed);
 	{
-		let node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().clone();
+		let node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
 		assert_eq!(node_txn.len(), 0);
 	}
 
-	let mut reestablish_1 = Vec::with_capacity(1);
 	for msg in nodes[0].node.get_and_clear_pending_msg_events() {
-		if let MessageSendEvent::SendChannelReestablish { ref node_id, ref msg } = msg {
-			assert_eq!(*node_id, nodes[1].node.get_our_node_id());
-			reestablish_1.push(msg.clone());
-		} else if let MessageSendEvent::BroadcastChannelUpdate { .. } = msg {
+		if let MessageSendEvent::BroadcastChannelUpdate { .. } = msg {
 		} else if let MessageSendEvent::HandleError { ref action, .. } = msg {
 			match action {
 				&ErrorAction::SendErrorMessage { ref msg } => {
-					assert_eq!(msg.data, "We have fallen behind - we have received proof that if we broadcast remote is going to claim our funds - we can't do any automated broadcasting");
+					assert_eq!(msg.data, "Channel force-closed");
 				},
 				_ => panic!("Unexpected event!"),
 			}
 		} else {
-			panic!("Unexpected event")
+			panic!("Unexpected event {:?}", msg)
 		}
 	}
-
-	// Check we close channel detecting A is fallen-behind
-	// Check that we sent the warning message when we detected that A has fallen behind,
-	// and give the possibility for A to recover from the warning.
-	nodes[1].node.handle_channel_reestablish(&nodes[0].node.get_our_node_id(), &reestablish_1[0]);
-	let warn_msg = "Peer attempted to reestablish channel with a very old local commitment transaction".to_owned();
-	assert!(check_warn_msg!(nodes[1], nodes[0].node.get_our_node_id(), chan.2).contains(&warn_msg));
-
-	// Check A is able to claim to_remote output
-	let mut node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().clone();
-	// The node B should not broadcast the transaction to force close the channel!
-	assert!(node_txn.is_empty());
-	// B should now detect that there is something wrong and should force close the channel.
-	let exp_err = "We have fallen behind - we have received proof that if we broadcast remote is going to claim our funds - we can\'t do any automated broadcasting";
-	check_closed_event!(nodes[0], 1, ClosureReason::ProcessingError { err: exp_err.to_string() });
 
 	// after the warning message sent by B, we should not able to
 	// use the channel, or reconnect with success to the channel.
@@ -7539,6 +7536,17 @@ fn test_data_loss_protect() {
 	check_added_monitors!(nodes[1], 1);
 	check_closed_event!(nodes[1], 1, ClosureReason::CounterpartyForceClosed { peer_msg: "Failed to find corresponding channel".to_owned() });
 	check_closed_broadcast!(nodes[1], false);
+}
+
+#[test]
+#[should_panic]
+fn test_data_loss_protect_showing_stale_state_panics() {
+	do_test_data_loss_protect(true);
+}
+
+#[test]
+fn test_force_close_without_broadcast() {
+	do_test_data_loss_protect(false);
 }
 
 #[test]
