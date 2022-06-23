@@ -10,12 +10,12 @@
 //! Onion message testing and test utilities live here.
 
 use chain::keysinterface::{KeysInterface, Recipient};
-use super::{BlindedRoute, Destination, OnionMessenger};
+use super::{BlindedRoute, Destination, OnionMessenger, SendError};
 use util::enforcing_trait_impls::EnforcingSigner;
 use util::test_utils;
 
 use bitcoin::network::constants::Network;
-use bitcoin::secp256k1::{PublicKey, Secp256k1};
+use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 
 use sync::Arc;
 
@@ -104,4 +104,18 @@ fn three_blinded_hops() {
 
 	nodes[0].messenger.send_onion_message(&[], Destination::BlindedRoute(blinded_route)).unwrap();
 	pass_along_path(nodes, None);
+}
+
+#[test]
+fn too_big_packet_error() {
+	// Make sure we error as expected if a packet is too big to send.
+	let nodes = create_nodes(1);
+
+	let hop_secret = SecretKey::from_slice(&hex::decode("0101010101010101010101010101010101010101010101010101010101010101").unwrap()[..]).unwrap();
+	let secp_ctx = Secp256k1::new();
+	let hop_node_id = PublicKey::from_secret_key(&secp_ctx, &hop_secret);
+
+	let hops = [hop_node_id; 400];
+	let err = nodes[0].messenger.send_onion_message(&hops, Destination::Node(hop_node_id)).unwrap_err();
+	assert_eq!(err, SendError::TooBigPacket);
 }

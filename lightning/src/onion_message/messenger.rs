@@ -108,6 +108,18 @@ impl Destination {
 	}
 }
 
+/// Errors that may occur when [sending an onion message].
+///
+/// [sending an onion message]: OnionMessenger::send_onion_message
+#[derive(Debug, PartialEq)]
+pub enum SendError {
+	/// Errored computing onion message packet keys.
+	Secp256k1(secp256k1::Error),
+	/// Because implementations such as Eclair will drop onion messages where the message packet
+	/// exceeds 32834 bytes, we refuse to send messages where the packet exceeds this size.
+	TooBigPacket,
+}
+
 impl<Signer: Sign, K: Deref, L: Deref> OnionMessenger<Signer, K, L>
 	where K::Target: KeysInterface<Signer = Signer>,
 	      L::Target: Logger,
@@ -127,7 +139,7 @@ impl<Signer: Sign, K: Deref, L: Deref> OnionMessenger<Signer, K, L>
 
 	/// Send an empty onion message to `destination`, routing it through `intermediate_nodes`.
 	/// See [`OnionMessenger`] for example usage.
-	pub fn send_onion_message(&self, intermediate_nodes: &[PublicKey], destination: Destination) -> Result<(), secp256k1::Error> {
+	pub fn send_onion_message(&self, intermediate_nodes: &[PublicKey], destination: Destination) -> Result<(), SendError> {
 		let blinding_secret_bytes = self.keys_manager.get_secure_random_bytes();
 		let blinding_secret = SecretKey::from_slice(&blinding_secret_bytes[..]).expect("RNG is busted");
 		let (introduction_node_id, blinding_point) = if intermediate_nodes.len() != 0 {
@@ -140,10 +152,12 @@ impl<Signer: Sign, K: Deref, L: Deref> OnionMessenger<Signer, K, L>
 			}
 		};
 		let (packet_payloads, packet_keys) = packet_payloads_and_keys(
-			&self.secp_ctx, intermediate_nodes, destination, &blinding_secret)?;
+			&self.secp_ctx, intermediate_nodes, destination, &blinding_secret)
+			.map_err(|e| SendError::Secp256k1(e))?;
 
 		let prng_seed = self.keys_manager.get_secure_random_bytes();
-		let onion_packet = construct_onion_message_packet(packet_payloads, packet_keys, prng_seed);
+		let onion_packet = construct_onion_message_packet(
+			packet_payloads, packet_keys, prng_seed).map_err(|()| SendError::TooBigPacket)?;
 
 		let mut pending_per_peer_msgs = self.pending_messages.lock().unwrap();
 		let pending_msgs = pending_per_peer_msgs.entry(introduction_node_id).or_insert(Vec::new());
@@ -343,7 +357,8 @@ fn packet_payloads_and_keys<T: secp256k1::Signing + secp256k1::Verification>(
 	Ok((payloads, onion_packet_keys))
 }
 
-fn construct_onion_message_packet(payloads: Vec<(Payload, [u8; 32])>, onion_keys: Vec<onion_utils::OnionKeys>, prng_seed: [u8; 32]) -> Packet {
+/// Errors if the serialized payload size exceeds onion_message::BIG_PACKET_HOP_DATA_LEN
+fn construct_onion_message_packet(payloads: Vec<(Payload, [u8; 32])>, onion_keys: Vec<onion_utils::OnionKeys>, prng_seed: [u8; 32]) -> Result<Packet, ()> {
 	// Spec rationale:
 	// "`len` allows larger messages to be sent than the standard 1300 bytes allowed for an HTLC
 	// onion, but this should be used sparingly as it is reduces anonymity set, hence the
@@ -353,7 +368,8 @@ fn construct_onion_message_packet(payloads: Vec<(Payload, [u8; 32])>, onion_keys
 		SMALL_PACKET_HOP_DATA_LEN
 	} else if payloads_ser_len <= BIG_PACKET_HOP_DATA_LEN {
 		BIG_PACKET_HOP_DATA_LEN
-	} else { payloads_ser_len };
+	} else { return Err(()) };
 
-	onion_utils::construct_onion_message_packet::<_, _>(payloads, onion_keys, prng_seed, hop_data_len)
+	Ok(onion_utils::construct_onion_message_packet::<_, _>(
+		payloads, onion_keys, prng_seed, hop_data_len))
 }
