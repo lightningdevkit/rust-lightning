@@ -419,6 +419,9 @@ macro_rules! impl_writeable_primitive {
 				}
 			}
 		}
+		impl From<$val_type> for HighZeroBytesDroppedBigSize<$val_type> {
+			fn from(val: $val_type) -> Self { Self(val) }
+		}
 	}
 }
 
@@ -517,6 +520,23 @@ impl Readable for [u16; 8] {
 /// For variable-length values within TLV record where the length is encoded as part of the record.
 /// Used to prevent encoding the length twice.
 pub(crate) struct WithoutLength<T>(pub T);
+
+impl Writeable for WithoutLength<&String> {
+	#[inline]
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		w.write_all(self.0.as_bytes())
+	}
+}
+impl Readable for WithoutLength<String> {
+	#[inline]
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let v: WithoutLength<Vec<u8>> = Readable::read(r)?;
+		Ok(Self(String::from_utf8(v.0).map_err(|_| DecodeError::InvalidValue)?))
+	}
+}
+impl<'a> From<&'a String> for WithoutLength<&'a String> {
+	fn from(s: &'a String) -> Self { Self(s) }
+}
 
 impl<'a, T: Writeable> Writeable for WithoutLength<&'a Vec<T>> {
 	#[inline]
