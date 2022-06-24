@@ -102,6 +102,12 @@ pub trait Score $(: $supertrait)* {
 
 	/// Handles updating channel penalties after successfully routing along a path.
 	fn payment_path_successful(&mut self, path: &[&RouteHop]);
+
+	/// Handles updating channel penalties after a probe over the given path failed.
+	fn probe_failed(&mut self, path: &[&RouteHop], short_channel_id: u64);
+
+	/// Handles updating channel penalties after a probe over the given path succeeded.
+	fn probe_successful(&mut self, path: &[&RouteHop]);
 }
 
 impl<S: Score, T: DerefMut<Target=S> $(+ $supertrait)*> Score for T {
@@ -117,6 +123,14 @@ impl<S: Score, T: DerefMut<Target=S> $(+ $supertrait)*> Score for T {
 
 	fn payment_path_successful(&mut self, path: &[&RouteHop]) {
 		self.deref_mut().payment_path_successful(path)
+	}
+
+	fn probe_failed(&mut self, path: &[&RouteHop], short_channel_id: u64) {
+		self.deref_mut().probe_failed(path, short_channel_id)
+	}
+
+	fn probe_successful(&mut self, path: &[&RouteHop]) {
+		self.deref_mut().probe_successful(path)
 	}
 }
 } }
@@ -241,6 +255,10 @@ impl Score for FixedPenaltyScorer {
 	fn payment_path_failed(&mut self, _path: &[&RouteHop], _short_channel_id: u64) {}
 
 	fn payment_path_successful(&mut self, _path: &[&RouteHop]) {}
+
+	fn probe_failed(&mut self, _path: &[&RouteHop], _short_channel_id: u64) {}
+
+	fn probe_successful(&mut self, _path: &[&RouteHop]) {}
 }
 
 impl Writeable for FixedPenaltyScorer {
@@ -810,6 +828,14 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> Score for Probabilis
 					hop.short_channel_id);
 			}
 		}
+	}
+
+	fn probe_failed(&mut self, path: &[&RouteHop], short_channel_id: u64) {
+		self.payment_path_failed(path, short_channel_id)
+	}
+
+	fn probe_successful(&mut self, path: &[&RouteHop]) {
+		self.payment_path_failed(path, u64::max_value())
 	}
 }
 

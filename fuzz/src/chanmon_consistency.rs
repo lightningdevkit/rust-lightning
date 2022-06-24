@@ -850,6 +850,12 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 						events::Event::PaymentClaimed { .. } => {},
 						events::Event::PaymentPathSuccessful { .. } => {},
 						events::Event::PaymentPathFailed { .. } => {},
+						events::Event::ProbeSuccessful { .. } | events::Event::ProbeFailed { .. } => {
+							// Even though we don't explicitly send probes, because probes are
+							// detected based on hashing the payment hash+preimage, its rather
+							// trivial for the fuzzer to build payments that accidentally end up
+							// looking like probes.
+						},
 						events::Event::PaymentForwarded { .. } if $node == 1 => {},
 						events::Event::PendingHTLCsForwardable { .. } => {
 							nodes[$node].process_pending_htlc_forwards();

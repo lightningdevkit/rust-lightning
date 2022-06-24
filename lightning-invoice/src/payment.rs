@@ -94,6 +94,8 @@
 //! #     ) -> u64 { 0 }
 //! #     fn payment_path_failed(&mut self, _path: &[&RouteHop], _short_channel_id: u64) {}
 //! #     fn payment_path_successful(&mut self, _path: &[&RouteHop]) {}
+//! #     fn probe_failed(&mut self, _path: &[&RouteHop], _short_channel_id: u64) {}
+//! #     fn probe_successful(&mut self, _path: &[&RouteHop]) {}
 //! # }
 //! #
 //! # struct FakeLogger {}
@@ -583,6 +585,18 @@ where
 					.remove(payment_hash)
 					.map_or(1, |attempts| attempts.count + 1);
 				log_trace!(self.logger, "Payment {} succeeded (attempts: {})", log_bytes!(payment_hash.0), attempts);
+			},
+			Event::ProbeSuccessful { payment_hash, path, .. } => {
+				log_trace!(self.logger, "Probe payment {} of {}msat was successful", log_bytes!(payment_hash.0), path.last().unwrap().fee_msat);
+				let path = path.iter().collect::<Vec<_>>();
+				self.scorer.lock().probe_successful(&path);
+			},
+			Event::ProbeFailed { payment_hash, path, short_channel_id, .. } => {
+				if let Some(short_channel_id) = short_channel_id {
+					log_trace!(self.logger, "Probe payment {} of {}msat failed at channel {}", log_bytes!(payment_hash.0), path.last().unwrap().fee_msat, *short_channel_id);
+					let path = path.iter().collect::<Vec<_>>();
+					self.scorer.lock().probe_failed(&path, *short_channel_id);
+				}
 			},
 			_ => {},
 		}
@@ -1296,7 +1310,7 @@ mod tests {
 			.expect_send(Amount::ForInvoice(final_value_msat))
 			.expect_send(Amount::OnRetry(final_value_msat / 2));
 		let router = TestRouter {};
-		let scorer = RefCell::new(TestScorer::new().expect(PaymentPath::Failure {
+		let scorer = RefCell::new(TestScorer::new().expect(TestResult::PaymentFailure {
 			path: path.clone(), short_channel_id: path[0].short_channel_id,
 		}));
 		let logger = TestLogger::new();
@@ -1332,8 +1346,8 @@ mod tests {
 		let payer = TestPayer::new().expect_send(Amount::ForInvoice(final_value_msat));
 		let router = TestRouter {};
 		let scorer = RefCell::new(TestScorer::new()
-			.expect(PaymentPath::Success { path: route.paths[0].clone() })
-			.expect(PaymentPath::Success { path: route.paths[1].clone() })
+			.expect(TestResult::PaymentSuccess { path: route.paths[0].clone() })
+			.expect(TestResult::PaymentSuccess { path: route.paths[1].clone() })
 		);
 		let logger = TestLogger::new();
 		let invoice_payer =
@@ -1416,13 +1430,15 @@ mod tests {
 	}
 
 	struct TestScorer {
-		expectations: Option<VecDeque<PaymentPath>>,
+		expectations: Option<VecDeque<TestResult>>,
 	}
 
 	#[derive(Debug)]
-	enum PaymentPath {
-		Failure { path: Vec<RouteHop>, short_channel_id: u64 },
-		Success { path: Vec<RouteHop> },
+	enum TestResult {
+		PaymentFailure { path: Vec<RouteHop>, short_channel_id: u64 },
+		PaymentSuccess { path: Vec<RouteHop> },
+		ProbeFailure { path: Vec<RouteHop>, short_channel_id: u64 },
+		ProbeSuccess { path: Vec<RouteHop> },
 	}
 
 	impl TestScorer {
@@ -1432,7 +1448,7 @@ mod tests {
 			}
 		}
 
-		fn expect(mut self, expectation: PaymentPath) -> Self {
+		fn expect(mut self, expectation: TestResult) -> Self {
 			self.expectations.get_or_insert_with(|| VecDeque::new()).push_back(expectation);
 			self
 		}
@@ -1451,12 +1467,18 @@ mod tests {
 		fn payment_path_failed(&mut self, actual_path: &[&RouteHop], actual_short_channel_id: u64) {
 			if let Some(expectations) = &mut self.expectations {
 				match expectations.pop_front() {
-					Some(PaymentPath::Failure { path, short_channel_id }) => {
+					Some(TestResult::PaymentFailure { path, short_channel_id }) => {
 						assert_eq!(actual_path, &path.iter().collect::<Vec<_>>()[..]);
 						assert_eq!(actual_short_channel_id, short_channel_id);
 					},
-					Some(PaymentPath::Success { path }) => {
+					Some(TestResult::PaymentSuccess { path }) => {
 						panic!("Unexpected successful payment path: {:?}", path)
+					},
+					Some(TestResult::ProbeFailure { path, .. }) => {
+						panic!("Unexpected failed payment probe: {:?}", path)
+					},
+					Some(TestResult::ProbeSuccess { path }) => {
+						panic!("Unexpected successful payment probe: {:?}", path)
 					},
 					None => panic!("Unexpected payment_path_failed call: {:?}", actual_path),
 				}
@@ -1466,10 +1488,56 @@ mod tests {
 		fn payment_path_successful(&mut self, actual_path: &[&RouteHop]) {
 			if let Some(expectations) = &mut self.expectations {
 				match expectations.pop_front() {
-					Some(PaymentPath::Failure { path, .. }) => {
+					Some(TestResult::PaymentFailure { path, .. }) => {
 						panic!("Unexpected payment path failure: {:?}", path)
 					},
-					Some(PaymentPath::Success { path }) => {
+					Some(TestResult::PaymentSuccess { path }) => {
+						assert_eq!(actual_path, &path.iter().collect::<Vec<_>>()[..]);
+					},
+					Some(TestResult::ProbeFailure { path, .. }) => {
+						panic!("Unexpected failed payment probe: {:?}", path)
+					},
+					Some(TestResult::ProbeSuccess { path }) => {
+						panic!("Unexpected successful payment probe: {:?}", path)
+					},
+					None => panic!("Unexpected payment_path_successful call: {:?}", actual_path),
+				}
+			}
+		}
+
+		fn probe_failed(&mut self, actual_path: &[&RouteHop], actual_short_channel_id: u64) {
+			if let Some(expectations) = &mut self.expectations {
+				match expectations.pop_front() {
+					Some(TestResult::PaymentFailure { path, .. }) => {
+						panic!("Unexpected failed payment path: {:?}", path)
+					},
+					Some(TestResult::PaymentSuccess { path }) => {
+						panic!("Unexpected successful payment path: {:?}", path)
+					},
+					Some(TestResult::ProbeFailure { path, short_channel_id }) => {
+						assert_eq!(actual_path, &path.iter().collect::<Vec<_>>()[..]);
+						assert_eq!(actual_short_channel_id, short_channel_id);
+					},
+					Some(TestResult::ProbeSuccess { path }) => {
+						panic!("Unexpected successful payment probe: {:?}", path)
+					},
+					None => panic!("Unexpected payment_path_failed call: {:?}", actual_path),
+				}
+			}
+		}
+		fn probe_successful(&mut self, actual_path: &[&RouteHop]) {
+			if let Some(expectations) = &mut self.expectations {
+				match expectations.pop_front() {
+					Some(TestResult::PaymentFailure { path, .. }) => {
+						panic!("Unexpected payment path failure: {:?}", path)
+					},
+					Some(TestResult::PaymentSuccess { path }) => {
+						panic!("Unexpected successful payment path: {:?}", path)
+					},
+					Some(TestResult::ProbeFailure { path, .. }) => {
+						panic!("Unexpected failed payment probe: {:?}", path)
+					},
+					Some(TestResult::ProbeSuccess { path }) => {
 						assert_eq!(actual_path, &path.iter().collect::<Vec<_>>()[..]);
 					},
 					None => panic!("Unexpected payment_path_successful call: {:?}", actual_path),
