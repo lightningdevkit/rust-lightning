@@ -4550,8 +4550,19 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))
 			}
 		};
-		log_info!(self.logger, "Broadcasting funding transaction with txid {}", funding_tx.txid());
-		self.tx_broadcaster.broadcast_transaction(&funding_tx);
+		let need_sigs: bool = funding_tx.input.iter().any(|input| input.witness.is_empty());
+		if need_sigs {
+			log_info!(self.logger, "Funding transaction with txid {} requires signatures", funding_tx.txid());
+			let mut pending_events = self.pending_events.lock().unwrap();
+			pending_events.push(events::Event::BroadcastFunding {
+				transaction: funding_tx,
+				temporary_channel_id: msg.channel_id,
+				counterparty_node_id: counterparty_node_id.clone(),
+			});
+		} else {
+			log_info!(self.logger, "Broadcasting funding transaction with txid {}", funding_tx.txid());
+			self.tx_broadcaster.broadcast_transaction(&funding_tx);
+		}
 		Ok(())
 	}
 
