@@ -63,7 +63,9 @@ use util::time::Time;
 
 use prelude::*;
 use core::fmt;
-use core::cell::{RefCell, RefMut};
+#[cfg(not(c_bindings))]
+use core::cell::RefCell;
+use core::cell::RefMut;
 use core::ops::{Deref, DerefMut};
 use core::time::Duration;
 use io::{self, Read};
@@ -160,11 +162,13 @@ pub trait LockableScore<'a> {
 ///
 /// We need this trait to be able to pass in a scorer to `lightning-background-processor` that will enable us to
 /// use the Persister to persist it.
+#[cfg(not(c_bindings))] // This doesn't make sense in bindings as all `Score`s are `Writeable`.
 pub trait WriteableScore<'a>: LockableScore<'a> + Writeable {}
 
+#[cfg(not(c_bindings))] // This doesn't make sense in bindings as all `Score`s are `Writeable`.
 impl<'a, T> WriteableScore<'a> for T where T: LockableScore<'a> + Writeable {}
 
-/// (C-not exported)
+#[cfg(not(c_bindings))]
 impl<'a, T: 'a + Score> LockableScore<'a> for Mutex<T> {
 	type Locked = MutexGuard<'a, T>;
 
@@ -173,6 +177,7 @@ impl<'a, T: 'a + Score> LockableScore<'a> for Mutex<T> {
 	}
 }
 
+#[cfg(not(c_bindings))]
 impl<'a, T: 'a + Score> LockableScore<'a> for RefCell<T> {
 	type Locked = RefMut<'a, T>;
 
@@ -188,11 +193,18 @@ pub struct MultiThreadedLockableScore<S: Score> {
 }
 #[cfg(c_bindings)]
 /// (C-not exported)
-impl<'a, T: Score + 'a> LockableScore<'a> for MultiThreadedLockableScore<T> {
-	type Locked = MutexGuard<'a, T>;
+impl<'a, S: Score + 'a> LockableScore<'a> for MultiThreadedLockableScore<S> {
+	type Locked = MutexGuard<'a, S>;
 
-	fn lock(&'a self) -> MutexGuard<'a, T> {
+	fn lock(&'a self) -> MutexGuard<'a, S> {
 		Mutex::lock(&self.score).unwrap()
+	}
+}
+
+#[cfg(c_bindings)]
+impl<S: Score> Writeable for MultiThreadedLockableScore<S> {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		S::write(&*self.lock(), writer)
 	}
 }
 
