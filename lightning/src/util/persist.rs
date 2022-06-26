@@ -20,6 +20,7 @@ use super::{logger::Logger, ser::Writeable};
 /// Implementing `KVStorePersister` provides auto-implementations for [`Persister`]
 /// and [`Persist`] traits.  It uses "manager", "network_graph",
 /// and "monitors/{funding_txo_id}_{funding_txo_index}" for keys.
+/// (C-not exported)
 pub trait KVStorePersister {
 	/// Persist the given writeable using the provided key
 	fn persist<W: Writeable>(&self, key: &str, object: &W) -> io::Result<()>;
