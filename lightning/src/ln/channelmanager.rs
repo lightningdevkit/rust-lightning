@@ -71,6 +71,7 @@ use core::ops::Deref;
 
 #[cfg(any(test, feature = "std"))]
 use std::time::Instant;
+use std::any::Any;
 use util::crypto::sign;
 
 // We hold various information about HTLC relay in the HTLC objects in Channel itself:
@@ -3015,22 +3016,18 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				}}
 			}
 
-			macro_rules! add_update_add_htlc {
-				($add_htlc_msg: expr, $channel_id: expr, $counterparty_node_id: expr) => {{
+			macro_rules! add_update_htlc_msg {
+				($htlc_msg: expr, $channel_id: expr, $counterparty_node_id: expr) => {{
 					add_channel_key!($channel_id, $counterparty_node_id);
 					if let hash_map::Entry::Occupied(mut entry) = htlcs_msgs_by_id.entry($channel_id) {
 						let msgs_entry = entry.get_mut();
-						msgs_entry.0.push($add_htlc_msg);
-					}
-				}}
-			}
-
-			macro_rules! add_update_fail_htlc {
-				($fail_htlc_msg: expr, $channel_id: expr, $counterparty_node_id: expr) => {{
-					add_channel_key!($channel_id, $counterparty_node_id);
-					if let hash_map::Entry::Occupied(mut entry) = htlcs_msgs_by_id.entry($channel_id) {
-						let msgs_entry = entry.get_mut();
-						msgs_entry.1.push($fail_htlc_msg);
+						if let Some(msg) = (&$htlc_msg as &Any).downcast_ref::<msgs::UpdateAddHTLC>() {
+							msgs_entry.0.push(msg.clone());
+						} else if let Some(msg) = (&$htlc_msg as &Any).downcast_ref::<msgs::UpdateFailHTLC>() {
+							msgs_entry.1.push(msg.clone());
+						} else {
+							panic!("Only UpdateAddHTLC or UpdateFailHTLC msgs supported for add_update_htlc_msg");
+						}
 					}
 				}}
 			}
@@ -3154,7 +3151,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 													match update_add {
 														Some(msg) => {
 															log_info!(self.logger, "Will forward HTLC with payment_hash {}, over channel {}", log_bytes!(payment_hash.0), log_bytes!(chan_id));
-															add_update_add_htlc!(msg, chan_id, counterparty_node_id);
+															add_update_htlc_msg!(msg, chan_id, counterparty_node_id);
 														},
 														None => {
 															// Nothing to do here...we're waiting on a remote
@@ -3197,7 +3194,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 												// the chain and sending the HTLC-Timeout is their problem.
 												continue;
 											},
-											Ok(Some(msg)) => { add_update_fail_htlc!(msg, forward_chan_id, counterparty_node_id); },
+											Ok(Some(msg)) => { add_update_htlc_msg!(msg, forward_chan_id, counterparty_node_id); },
 											Ok(None) => {
 												// Nothing to do here...we're waiting on a remote
 												// revoke_and_ack before we can update the commitment
