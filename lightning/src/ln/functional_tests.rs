@@ -2203,7 +2203,7 @@ fn channel_monitor_network_test() {
 	send_payment(&nodes[0], &vec!(&nodes[1], &nodes[2], &nodes[3], &nodes[4])[..], 8000000);
 
 	// Simple case with no pending HTLCs:
-	nodes[1].node.force_close_channel(&chan_1.2, &nodes[0].node.get_our_node_id()).unwrap();
+	nodes[1].node.force_close_broadcasting_latest_txn(&chan_1.2, &nodes[0].node.get_our_node_id()).unwrap();
 	check_added_monitors!(nodes[1], 1);
 	check_closed_broadcast!(nodes[1], true);
 	{
@@ -2224,7 +2224,7 @@ fn channel_monitor_network_test() {
 
 	// Simple case of one pending HTLC to HTLC-Timeout (note that the HTLC-Timeout is not
 	// broadcasted until we reach the timelock time).
-	nodes[1].node.force_close_channel(&chan_2.2, &nodes[2].node.get_our_node_id()).unwrap();
+	nodes[1].node.force_close_broadcasting_latest_txn(&chan_2.2, &nodes[2].node.get_our_node_id()).unwrap();
 	check_closed_broadcast!(nodes[1], true);
 	check_added_monitors!(nodes[1], 1);
 	{
@@ -2264,7 +2264,7 @@ fn channel_monitor_network_test() {
 
 	// nodes[3] gets the preimage, but nodes[2] already disconnected, resulting in a nodes[2]
 	// HTLC-Timeout and a nodes[3] claim against it (+ its own announces)
-	nodes[2].node.force_close_channel(&chan_3.2, &nodes[3].node.get_our_node_id()).unwrap();
+	nodes[2].node.force_close_broadcasting_latest_txn(&chan_3.2, &nodes[3].node.get_our_node_id()).unwrap();
 	check_added_monitors!(nodes[2], 1);
 	check_closed_broadcast!(nodes[2], true);
 	let node2_commitment_txid;
@@ -3403,7 +3403,7 @@ fn test_htlc_ignore_latest_remote_commitment() {
 	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 
 	route_payment(&nodes[0], &[&nodes[1]], 10000000);
-	nodes[0].node.force_close_channel(&nodes[0].node.list_channels()[0].channel_id, &nodes[1].node.get_our_node_id()).unwrap();
+	nodes[0].node.force_close_broadcasting_latest_txn(&nodes[0].node.list_channels()[0].channel_id, &nodes[1].node.get_our_node_id()).unwrap();
 	connect_blocks(&nodes[0], TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS + 1);
 	check_closed_broadcast!(nodes[0], true);
 	check_added_monitors!(nodes[0], 1);
@@ -3466,7 +3466,7 @@ fn test_force_close_fail_back() {
 	// state or updated nodes[1]' state. Now force-close and broadcast that commitment/HTLC
 	// transaction and ensure nodes[1] doesn't fail-backwards (this was originally a bug!).
 
-	nodes[2].node.force_close_channel(&payment_event.commitment_msg.channel_id, &nodes[1].node.get_our_node_id()).unwrap();
+	nodes[2].node.force_close_broadcasting_latest_txn(&payment_event.commitment_msg.channel_id, &nodes[1].node.get_our_node_id()).unwrap();
 	check_closed_broadcast!(nodes[2], true);
 	check_added_monitors!(nodes[2], 1);
 	check_closed_event!(nodes[2], 1, ClosureReason::HolderForceClosed);
@@ -4793,7 +4793,7 @@ fn test_claim_sizeable_push_msat() {
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100_000, 98_000_000, InitFeatures::known(), InitFeatures::known());
-	nodes[1].node.force_close_channel(&chan.2, &nodes[0].node.get_our_node_id()).unwrap();
+	nodes[1].node.force_close_broadcasting_latest_txn(&chan.2, &nodes[0].node.get_our_node_id()).unwrap();
 	check_closed_broadcast!(nodes[1], true);
 	check_added_monitors!(nodes[1], 1);
 	check_closed_event!(nodes[1], 1, ClosureReason::HolderForceClosed);
@@ -4822,7 +4822,7 @@ fn test_claim_on_remote_sizeable_push_msat() {
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100_000, 98_000_000, InitFeatures::known(), InitFeatures::known());
-	nodes[0].node.force_close_channel(&chan.2, &nodes[1].node.get_our_node_id()).unwrap();
+	nodes[0].node.force_close_broadcasting_latest_txn(&chan.2, &nodes[1].node.get_our_node_id()).unwrap();
 	check_closed_broadcast!(nodes[0], true);
 	check_added_monitors!(nodes[0], 1);
 	check_closed_event!(nodes[0], 1, ClosureReason::HolderForceClosed);
@@ -7399,14 +7399,11 @@ fn test_user_configurable_csv_delay() {
 	} else { assert!(false); }
 }
 
-#[test]
-fn test_data_loss_protect() {
-	// We want to be sure that :
-	// * we don't broadcast our Local Commitment Tx in case of fallen behind
-	//   (but this is not quite true - we broadcast during Drop because chanmon is out of sync with chanmgr)
-	// * we close channel in case of detecting other being fallen behind
-	// * we are able to claim our own outputs thanks to to_remote being static
-	// TODO: this test is incomplete and the data_loss_protect implementation is incomplete - see issue #775
+fn do_test_data_loss_protect(reconnect_panicing: bool) {
+	// When we get a data_loss_protect proving we're behind, we immediately panic as the
+	// chain::Watch API requirements have been violated (e.g. the user restored from a backup). The
+	// panic message informs the user they should force-close without broadcasting, which is tested
+	// if `reconnect_panicing` is not set.
 	let persister;
 	let logger;
 	let fee_estimator;
@@ -7464,52 +7461,52 @@ fn test_data_loss_protect() {
 
 	check_added_monitors!(nodes[0], 1);
 
-	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init { features: InitFeatures::empty(), remote_network_address: None });
-	nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id(), &msgs::Init { features: InitFeatures::empty(), remote_network_address: None });
+	if reconnect_panicing {
+		nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init { features: InitFeatures::empty(), remote_network_address: None });
+		nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id(), &msgs::Init { features: InitFeatures::empty(), remote_network_address: None });
 
-	let reestablish_0 = get_chan_reestablish_msgs!(nodes[1], nodes[0]);
+		let reestablish_1 = get_chan_reestablish_msgs!(nodes[0], nodes[1]);
 
-	// Check we don't broadcast any transactions following learning of per_commitment_point from B
-	nodes[0].node.handle_channel_reestablish(&nodes[1].node.get_our_node_id(), &reestablish_0[0]);
+		// Check we close channel detecting A is fallen-behind
+		// Check that we sent the warning message when we detected that A has fallen behind,
+		// and give the possibility for A to recover from the warning.
+		nodes[1].node.handle_channel_reestablish(&nodes[0].node.get_our_node_id(), &reestablish_1[0]);
+		let warn_msg = "Peer attempted to reestablish channel with a very old local commitment transaction".to_owned();
+		assert!(check_warn_msg!(nodes[1], nodes[0].node.get_our_node_id(), chan.2).contains(&warn_msg));
+
+		{
+			let mut node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().clone();
+			// The node B should not broadcast the transaction to force close the channel!
+			assert!(node_txn.is_empty());
+		}
+
+		let reestablish_0 = get_chan_reestablish_msgs!(nodes[1], nodes[0]);
+		// Check A panics upon seeing proof it has fallen behind.
+		nodes[0].node.handle_channel_reestablish(&nodes[1].node.get_our_node_id(), &reestablish_0[0]);
+		return; // By this point we should have panic'ed!
+	}
+
+	nodes[0].node.force_close_without_broadcasting_txn(&chan.2, &nodes[1].node.get_our_node_id()).unwrap();
 	check_added_monitors!(nodes[0], 1);
-
+	check_closed_event!(nodes[0], 1, ClosureReason::HolderForceClosed);
 	{
-		let node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().clone();
+		let node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
 		assert_eq!(node_txn.len(), 0);
 	}
 
-	let mut reestablish_1 = Vec::with_capacity(1);
 	for msg in nodes[0].node.get_and_clear_pending_msg_events() {
-		if let MessageSendEvent::SendChannelReestablish { ref node_id, ref msg } = msg {
-			assert_eq!(*node_id, nodes[1].node.get_our_node_id());
-			reestablish_1.push(msg.clone());
-		} else if let MessageSendEvent::BroadcastChannelUpdate { .. } = msg {
+		if let MessageSendEvent::BroadcastChannelUpdate { .. } = msg {
 		} else if let MessageSendEvent::HandleError { ref action, .. } = msg {
 			match action {
 				&ErrorAction::SendErrorMessage { ref msg } => {
-					assert_eq!(msg.data, "We have fallen behind - we have received proof that if we broadcast remote is going to claim our funds - we can't do any automated broadcasting");
+					assert_eq!(msg.data, "Channel force-closed");
 				},
 				_ => panic!("Unexpected event!"),
 			}
 		} else {
-			panic!("Unexpected event")
+			panic!("Unexpected event {:?}", msg)
 		}
 	}
-
-	// Check we close channel detecting A is fallen-behind
-	// Check that we sent the warning message when we detected that A has fallen behind,
-	// and give the possibility for A to recover from the warning.
-	nodes[1].node.handle_channel_reestablish(&nodes[0].node.get_our_node_id(), &reestablish_1[0]);
-	let warn_msg = "Peer attempted to reestablish channel with a very old local commitment transaction".to_owned();
-	assert!(check_warn_msg!(nodes[1], nodes[0].node.get_our_node_id(), chan.2).contains(&warn_msg));
-
-	// Check A is able to claim to_remote output
-	let mut node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().clone();
-	// The node B should not broadcast the transaction to force close the channel!
-	assert!(node_txn.is_empty());
-	// B should now detect that there is something wrong and should force close the channel.
-	let exp_err = "We have fallen behind - we have received proof that if we broadcast remote is going to claim our funds - we can\'t do any automated broadcasting";
-	check_closed_event!(nodes[0], 1, ClosureReason::ProcessingError { err: exp_err.to_string() });
 
 	// after the warning message sent by B, we should not able to
 	// use the channel, or reconnect with success to the channel.
@@ -7539,6 +7536,17 @@ fn test_data_loss_protect() {
 	check_added_monitors!(nodes[1], 1);
 	check_closed_event!(nodes[1], 1, ClosureReason::CounterpartyForceClosed { peer_msg: "Failed to find corresponding channel".to_owned() });
 	check_closed_broadcast!(nodes[1], false);
+}
+
+#[test]
+#[should_panic]
+fn test_data_loss_protect_showing_stale_state_panics() {
+	do_test_data_loss_protect(true);
+}
+
+#[test]
+fn test_force_close_without_broadcast() {
+	do_test_data_loss_protect(false);
 }
 
 #[test]
@@ -8365,7 +8373,7 @@ fn test_manually_accept_inbound_channel_request() {
 		_ => panic!("Unexpected event"),
 	}
 
-	nodes[1].node.force_close_channel(&temp_channel_id, &nodes[0].node.get_our_node_id()).unwrap();
+	nodes[1].node.force_close_broadcasting_latest_txn(&temp_channel_id, &nodes[0].node.get_our_node_id()).unwrap();
 
 	let close_msg_ev = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(close_msg_ev.len(), 1);
@@ -8400,7 +8408,7 @@ fn test_manually_reject_inbound_channel_request() {
 	let events = nodes[1].node.get_and_clear_pending_events();
 	match events[0] {
 		Event::OpenChannelRequest { temporary_channel_id, .. } => {
-			nodes[1].node.force_close_channel(&temporary_channel_id, &nodes[0].node.get_our_node_id()).unwrap();
+			nodes[1].node.force_close_broadcasting_latest_txn(&temporary_channel_id, &nodes[0].node.get_our_node_id()).unwrap();
 		}
 		_ => panic!("Unexpected event"),
 	}
@@ -9053,7 +9061,7 @@ fn do_test_onchain_htlc_settlement_after_close(broadcast_alice: bool, go_onchain
 		force_closing_node = 1;
 		counterparty_node = 0;
 	}
-	nodes[force_closing_node].node.force_close_channel(&chan_ab.2, &nodes[counterparty_node].node.get_our_node_id()).unwrap();
+	nodes[force_closing_node].node.force_close_broadcasting_latest_txn(&chan_ab.2, &nodes[counterparty_node].node.get_our_node_id()).unwrap();
 	check_closed_broadcast!(nodes[force_closing_node], true);
 	check_added_monitors!(nodes[force_closing_node], 1);
 	check_closed_event!(nodes[force_closing_node], 1, ClosureReason::HolderForceClosed);
@@ -9489,7 +9497,7 @@ fn do_test_tx_confirmed_skipping_blocks_immediate_broadcast(test_height_before_t
 	nodes[1].node.peer_disconnected(&nodes[2].node.get_our_node_id(), false);
 	nodes[2].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
 
-	nodes[1].node.force_close_channel(&channel_id, &nodes[2].node.get_our_node_id()).unwrap();
+	nodes[1].node.force_close_broadcasting_latest_txn(&channel_id, &nodes[2].node.get_our_node_id()).unwrap();
 	check_closed_broadcast!(nodes[1], true);
 	check_closed_event!(nodes[1], 1, ClosureReason::HolderForceClosed);
 	check_added_monitors!(nodes[1], 1);
