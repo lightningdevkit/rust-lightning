@@ -745,13 +745,13 @@ impl<'a> DirectedChannelInfo<'a> {
 		let (htlc_maximum_msat, effective_capacity) = match (htlc_maximum_msat, capacity_msat) {
 			(Some(amount_msat), Some(capacity_msat)) => {
 				let htlc_maximum_msat = cmp::min(amount_msat, capacity_msat);
-				(htlc_maximum_msat, EffectiveCapacity::Total { capacity_msat })
+				(htlc_maximum_msat, EffectiveCapacity::Total { capacity_msat, htlc_maximum_msat: Some(htlc_maximum_msat) })
 			},
 			(Some(amount_msat), None) => {
 				(amount_msat, EffectiveCapacity::MaximumHTLC { amount_msat })
 			},
 			(None, Some(capacity_msat)) => {
-				(capacity_msat, EffectiveCapacity::Total { capacity_msat })
+				(capacity_msat, EffectiveCapacity::Total { capacity_msat, htlc_maximum_msat: None })
 			},
 			(None, None) => (EffectiveCapacity::Unknown.as_msat(), EffectiveCapacity::Unknown),
 		};
@@ -850,6 +850,8 @@ pub enum EffectiveCapacity {
 	Total {
 		/// The funding amount denominated in millisatoshi.
 		capacity_msat: u64,
+		/// The maximum HTLC amount denominated in millisatoshi.
+		htlc_maximum_msat: Option<u64>
 	},
 	/// A capacity sufficient to route any payment, typically used for private channels provided by
 	/// an invoice.
@@ -869,7 +871,7 @@ impl EffectiveCapacity {
 		match self {
 			EffectiveCapacity::ExactLiquidity { liquidity_msat } => *liquidity_msat,
 			EffectiveCapacity::MaximumHTLC { amount_msat } => *amount_msat,
-			EffectiveCapacity::Total { capacity_msat } => *capacity_msat,
+			EffectiveCapacity::Total { capacity_msat, .. } => *capacity_msat,
 			EffectiveCapacity::Infinite => u64::max_value(),
 			EffectiveCapacity::Unknown => UNKNOWN_CHANNEL_CAPACITY_MSAT,
 		}
