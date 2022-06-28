@@ -318,7 +318,7 @@ pub type ProbabilisticScorer<G, L> = ProbabilisticScorerUsingTime::<G, L, std::t
 /// behavior.
 ///
 /// [1]: https://arxiv.org/abs/2107.05322
-pub type ProbabilisticScorer<G, L> = ProbabilisticScorerUsingTime::<G, L, util::time::Eternity>;
+pub type ProbabilisticScorer<G, L> = ProbabilisticScorerUsingTime::<G, L, ::util::time::Eternity>;
 
 /// Probabilistic [`Score`] implementation.
 ///
