@@ -46,10 +46,9 @@ pub trait FeeEstimator {
 	/// LDK will wrap this method and ensure that the value returned is no smaller than 253
 	/// (ie 1 satoshi-per-byte rounded up to ensure later round-downs don't put us below 1 satoshi-per-byte).
 	///
-	/// The following unit conversions can be used to convert to sats/KW. Note that it is not
-	/// necessary to use max() as the minimum of 253 will be enforced by LDK:
-	///  * max(satoshis-per-byte * 250, 253)
-	///  * max(satoshis-per-kbyte / 4, 253)
+	/// The following unit conversions can be used to convert to sats/KW:
+	///  * satoshis-per-byte * 250
+	///  * satoshis-per-kbyte / 4
 	fn get_est_sat_per_1000_weight(&self, confirmation_target: ConfirmationTarget) -> u32;
 }
 
@@ -77,8 +76,10 @@ impl<F: Deref> LowerBoundedFeeEstimator<F> where F::Target: FeeEstimator {
 	pub fn new(fee_estimator: F) -> Self {
 		LowerBoundedFeeEstimator(fee_estimator)
 	}
+}
 
-	pub fn get_est_sat_per_1000_weight(&self, confirmation_target: ConfirmationTarget) -> u32 {
+impl<F: Deref> FeeEstimator for LowerBoundedFeeEstimator<F> where F::Target: FeeEstimator {
+	fn get_est_sat_per_1000_weight(&self, confirmation_target: ConfirmationTarget) -> u32 {
 		cmp::max(
 			self.0.get_est_sat_per_1000_weight(confirmation_target),
 			FEERATE_FLOOR_SATS_PER_KW,

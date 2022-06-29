@@ -24,7 +24,7 @@ use bitcoin::secp256k1;
 use ln::msgs::DecodeError;
 use ln::PaymentPreimage;
 use ln::chan_utils::{ChannelTransactionParameters, HolderCommitmentTransaction};
-use chain::chaininterface::{FeeEstimator, BroadcasterInterface};
+use chain::chaininterface::{FeeEstimator, BroadcasterInterface, LowerBoundedFeeEstimator};
 use chain::channelmonitor::{ANTI_REORG_DELAY, CLTV_SHARED_CLAIM_BUFFER};
 use chain::keysinterface::{Sign, KeysInterface};
 use chain::package::PackageTemplate;
@@ -377,7 +377,7 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 	/// (CSV or CLTV following cases). In case of high-fee spikes, claim tx may stuck in the mempool, so you need to bump its feerate quickly using Replace-By-Fee or Child-Pay-For-Parent.
 	/// Panics if there are signing errors, because signing operations in reaction to on-chain events
 	/// are not expected to fail, and if they do, we may lose funds.
-	fn generate_claim_tx<F: Deref, L: Deref>(&mut self, cur_height: u32, cached_request: &PackageTemplate, fee_estimator: &F, logger: &L) -> Option<(Option<u32>, u64, Transaction)>
+	fn generate_claim_tx<F: Deref, L: Deref>(&mut self, cur_height: u32, cached_request: &PackageTemplate, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L) -> Option<(Option<u32>, u64, Transaction)>
 		where F::Target: FeeEstimator,
 					L::Target: Logger,
 	{
@@ -415,7 +415,7 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 	/// `conf_height` represents the height at which the transactions in `txn_matched` were
 	/// confirmed. This does not need to equal the current blockchain tip height, which should be
 	/// provided via `cur_height`, however it must never be higher than `cur_height`.
-	pub(crate) fn update_claims_view<B: Deref, F: Deref, L: Deref>(&mut self, txn_matched: &[&Transaction], requests: Vec<PackageTemplate>, conf_height: u32, cur_height: u32, broadcaster: &B, fee_estimator: &F, logger: &L)
+	pub(crate) fn update_claims_view<B: Deref, F: Deref, L: Deref>(&mut self, txn_matched: &[&Transaction], requests: Vec<PackageTemplate>, conf_height: u32, cur_height: u32, broadcaster: &B, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L)
 		where B::Target: BroadcasterInterface,
 		      F::Target: FeeEstimator,
 					L::Target: Logger,
@@ -617,7 +617,7 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 		&mut self,
 		txid: &Txid,
 		broadcaster: B,
-		fee_estimator: F,
+		fee_estimator: &LowerBoundedFeeEstimator<F>,
 		logger: L,
 	) where
 		B::Target: BroadcasterInterface,
@@ -637,7 +637,7 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 		}
 	}
 
-	pub(crate) fn block_disconnected<B: Deref, F: Deref, L: Deref>(&mut self, height: u32, broadcaster: B, fee_estimator: F, logger: L)
+	pub(crate) fn block_disconnected<B: Deref, F: Deref, L: Deref>(&mut self, height: u32, broadcaster: B, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: L)
 		where B::Target: BroadcasterInterface,
 		      F::Target: FeeEstimator,
 					L::Target: Logger,
@@ -667,7 +667,7 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 			}
 		}
 		for (_, request) in bump_candidates.iter_mut() {
-			if let Some((new_timer, new_feerate, bump_tx)) = self.generate_claim_tx(height, &request, &&*fee_estimator, &&*logger) {
+			if let Some((new_timer, new_feerate, bump_tx)) = self.generate_claim_tx(height, &request, fee_estimator, &&*logger) {
 				request.set_timer(new_timer);
 				request.set_feerate(new_feerate);
 				log_info!(logger, "Broadcasting onchain {}", log_tx!(bump_tx));
