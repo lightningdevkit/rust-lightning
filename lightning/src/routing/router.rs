@@ -17,7 +17,7 @@ use bitcoin::secp256k1::PublicKey;
 use ln::channelmanager::ChannelDetails;
 use ln::features::{ChannelFeatures, InvoiceFeatures, NodeFeatures};
 use ln::msgs::{DecodeError, ErrorAction, LightningError, MAX_VALUE_MSAT};
-use routing::gossip::{DirectedChannelInfoWithUpdate, EffectiveCapacity, ReadOnlyNetworkGraph, NodeId, RoutingFees};
+use routing::gossip::{DirectedChannelInfoWithUpdate, EffectiveCapacity, ReadOnlyNetworkGraph, NetworkGraph, NodeId, RoutingFees};
 use routing::scoring::{ChannelUsage, Score};
 use util::ser::{Writeable, Readable, Writer};
 use util::logger::{Level, Logger};
@@ -690,16 +690,17 @@ fn default_node_features() -> NodeFeatures {
 /// [`ChannelManager::list_usable_channels`]: crate::ln::channelmanager::ChannelManager::list_usable_channels
 /// [`Event::PaymentPathFailed`]: crate::util::events::Event::PaymentPathFailed
 /// [`NetworkGraph`]: crate::routing::gossip::NetworkGraph
-pub fn find_route<L: Deref, S: Score>(
+pub fn find_route<L: Deref, GL: Deref, S: Score>(
 	our_node_pubkey: &PublicKey, route_params: &RouteParameters,
-	network_graph: &ReadOnlyNetworkGraph, first_hops: Option<&[&ChannelDetails]>, logger: L,
+	network_graph: &NetworkGraph<GL>, first_hops: Option<&[&ChannelDetails]>, logger: L,
 	scorer: &S, random_seed_bytes: &[u8; 32]
 ) -> Result<Route, LightningError>
-where L::Target: Logger {
-	let mut route = get_route(our_node_pubkey, &route_params.payment_params, network_graph, first_hops,
+where L::Target: Logger, GL::Target: Logger {
+	let graph_lock = network_graph.read_only();
+	let mut route = get_route(our_node_pubkey, &route_params.payment_params, &graph_lock, first_hops,
 		route_params.final_value_msat, route_params.final_cltv_expiry_delta, logger, scorer,
 		random_seed_bytes)?;
-	add_random_cltv_offset(&mut route, &route_params.payment_params, network_graph, random_seed_bytes);
+	add_random_cltv_offset(&mut route, &route_params.payment_params, &graph_lock, random_seed_bytes);
 	Ok(route)
 }
 
@@ -1803,15 +1804,16 @@ fn add_random_cltv_offset(route: &mut Route, payment_params: &PaymentParameters,
 /// exclude the payer, but include the payee). This may be useful, e.g., for probing the chosen path.
 ///
 /// Re-uses logic from `find_route`, so the restrictions described there also apply here.
-pub fn build_route_from_hops<L: Deref>(
+pub fn build_route_from_hops<L: Deref, GL: Deref>(
 	our_node_pubkey: &PublicKey, hops: &[PublicKey], route_params: &RouteParameters,
-	network_graph: &ReadOnlyNetworkGraph, logger: L, random_seed_bytes: &[u8; 32]
+	network_graph: &NetworkGraph<GL>, logger: L, random_seed_bytes: &[u8; 32]
 ) -> Result<Route, LightningError>
-where L::Target: Logger {
+where L::Target: Logger, GL::Target: Logger {
+	let graph_lock = network_graph.read_only();
 	let mut route = build_route_from_hops_internal(
-		our_node_pubkey, hops, &route_params.payment_params, &network_graph,
+		our_node_pubkey, hops, &route_params.payment_params, &graph_lock,
 		route_params.final_value_msat, route_params.final_cltv_expiry_delta, logger, random_seed_bytes)?;
-	add_random_cltv_offset(&mut route, &route_params.payment_params, &network_graph, random_seed_bytes);
+	add_random_cltv_offset(&mut route, &route_params.payment_params, &graph_lock, random_seed_bytes);
 	Ok(route)
 }
 

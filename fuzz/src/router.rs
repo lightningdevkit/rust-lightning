@@ -268,7 +268,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 						final_value_msat: slice_to_be64(get_slice!(8)),
 						final_cltv_expiry_delta: slice_to_be32(get_slice!(4)),
 					};
-					let _ = find_route(&our_pubkey, &route_params, &net_graph.read_only(),
+					let _ = find_route(&our_pubkey, &route_params, &net_graph,
 						first_hops.map(|c| c.iter().collect::<Vec<_>>()).as_ref().map(|a| a.as_slice()),
 						&logger, &scorer, &random_seed_bytes);
 				}
