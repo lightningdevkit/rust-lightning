@@ -13,6 +13,8 @@
 //! Includes traits for monitoring and receiving notifications of new blocks and block
 //! disconnections, transaction broadcasting, and feerate information requests.
 
+use core::{cmp, ops::Deref};
+
 use bitcoin::blockdata::transaction::Transaction;
 
 /// An interface to send a transaction to the Bitcoin network.
@@ -41,14 +43,78 @@ pub enum ConfirmationTarget {
 pub trait FeeEstimator {
 	/// Gets estimated satoshis of fee required per 1000 Weight-Units.
 	///
-	/// Must return a value no smaller than 253 (ie 1 satoshi-per-byte rounded up to ensure later
-	/// round-downs don't put us below 1 satoshi-per-byte).
+	/// LDK will wrap this method and ensure that the value returned is no smaller than 253
+	/// (ie 1 satoshi-per-byte rounded up to ensure later round-downs don't put us below 1 satoshi-per-byte).
 	///
-	/// This method can be implemented with the following unit conversions:
+	/// The following unit conversions can be used to convert to sats/KW. Note that it is not
+	/// necessary to use max() as the minimum of 253 will be enforced by LDK:
 	///  * max(satoshis-per-byte * 250, 253)
 	///  * max(satoshis-per-kbyte / 4, 253)
 	fn get_est_sat_per_1000_weight(&self, confirmation_target: ConfirmationTarget) -> u32;
 }
 
+// We need `FeeEstimator` implemented so that in some places where we only have a shared
+// reference to a `Deref` to a `FeeEstimator`, we can still wrap it.
+impl<D: Deref> FeeEstimator for D where D::Target: FeeEstimator {
+	fn get_est_sat_per_1000_weight(&self, confirmation_target: ConfirmationTarget) -> u32 {
+		(**self).get_est_sat_per_1000_weight(confirmation_target)
+	}
+}
+
 /// Minimum relay fee as required by bitcoin network mempool policy.
 pub const MIN_RELAY_FEE_SAT_PER_1000_WEIGHT: u64 = 4000;
+/// Minimum feerate that takes a sane approach to bitcoind weight-to-vbytes rounding.
+/// See the following Core Lightning commit for an explanation:
+/// https://github.com/ElementsProject/lightning/commit/2e687b9b352c9092b5e8bd4a688916ac50b44af0
+pub const FEERATE_FLOOR_SATS_PER_KW: u32 = 253;
+
+/// Wraps a `Deref` to a `FeeEstimator` so that any fee estimations provided by it
+/// are bounded below by `FEERATE_FLOOR_SATS_PER_KW` (253 sats/KW)
+pub(crate) struct LowerBoundedFeeEstimator<F: Deref>(pub F) where F::Target: FeeEstimator;
+
+impl<F: Deref> LowerBoundedFeeEstimator<F> where F::Target: FeeEstimator {
+	/// Creates a new `LowerBoundedFeeEstimator` which wraps the provided fee_estimator
+	pub fn new(fee_estimator: F) -> Self {
+		LowerBoundedFeeEstimator(fee_estimator)
+	}
+
+	pub fn get_est_sat_per_1000_weight(&self, confirmation_target: ConfirmationTarget) -> u32 {
+		cmp::max(
+			self.0.get_est_sat_per_1000_weight(confirmation_target),
+			FEERATE_FLOOR_SATS_PER_KW,
+		)
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::{FEERATE_FLOOR_SATS_PER_KW, LowerBoundedFeeEstimator, ConfirmationTarget, FeeEstimator};
+
+	struct TestFeeEstimator {
+		sat_per_kw: u32,
+	}
+
+	impl FeeEstimator for TestFeeEstimator {
+		fn get_est_sat_per_1000_weight(&self, _: ConfirmationTarget) -> u32 {
+			self.sat_per_kw
+		}
+	}
+
+	#[test]
+	fn test_fee_estimator_less_than_floor() {
+		let sat_per_kw = FEERATE_FLOOR_SATS_PER_KW - 1;
+		let test_fee_estimator = &TestFeeEstimator { sat_per_kw };
+		let fee_estimator = LowerBoundedFeeEstimator::new(test_fee_estimator);
+
+		assert_eq!(fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Background), FEERATE_FLOOR_SATS_PER_KW);
+	}
+
+	#[test]
+	fn test_fee_estimator_greater_than_floor() {
+		let sat_per_kw = FEERATE_FLOOR_SATS_PER_KW + 1;
+		let test_fee_estimator = &TestFeeEstimator { sat_per_kw };
+		let fee_estimator = LowerBoundedFeeEstimator::new(test_fee_estimator);
+
+		assert_eq!(fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Background), sat_per_kw);
+	}
+}
