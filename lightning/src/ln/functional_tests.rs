@@ -1131,10 +1131,10 @@ fn test_forward_through_substitute_channel() {
 		cltv_expiry_delta: TEST_FINAL_CLTV
 	});
 
-	let (mut route, payment_hash, payment_preimage, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], 2000000);
+	let (payment_preimage, payment_hash, payment_secret) = get_payment_preimage_hash!(nodes[2], Some(2000000));
 	// Explicity specify that is `chan_1_2a` is the last hop in the `route`, which doesn't have
 	// enough liquidity forward 2000000 msat from `nodes[1]` to `nodes[2]`.
-	route = Route { paths: vec![hops], payment_params: None };
+	let route = Route { paths: vec![hops], payment_params: None };
 
 	nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret)).unwrap();
 	check_added_monitors!(nodes[0], 1);
