@@ -9874,7 +9874,7 @@ fn test_keysend_payments_to_public_node() {
 	};
 	let scorer = test_utils::TestScorer::with_penalty(0);
 	let random_seed_bytes = chanmon_cfgs[1].keys_manager.get_secure_random_bytes();
-	let route = find_route(&payer_pubkey, &route_params, &network_graph.read_only(), None, nodes[0].logger, &scorer, &random_seed_bytes).unwrap();
+	let route = find_route(&payer_pubkey, &route_params, &network_graph, None, nodes[0].logger, &scorer, &random_seed_bytes).unwrap();
 
 	let test_preimage = PaymentPreimage([42; 32]);
 	let (payment_hash, _) = nodes[0].node.send_spontaneous_payment(&route, Some(test_preimage)).unwrap();
@@ -9910,8 +9910,8 @@ fn test_keysend_payments_to_private_node() {
 	let scorer = test_utils::TestScorer::with_penalty(0);
 	let random_seed_bytes = chanmon_cfgs[1].keys_manager.get_secure_random_bytes();
 	let route = find_route(
-		&payer_pubkey, &route_params, &network_graph.read_only(),
-		Some(&first_hops.iter().collect::<Vec<_>>()), nodes[0].logger, &scorer, &random_seed_bytes
+		&payer_pubkey, &route_params, &network_graph, Some(&first_hops.iter().collect::<Vec<_>>()),
+		nodes[0].logger, &scorer, &random_seed_bytes
 	).unwrap();
 
 	let test_preimage = PaymentPreimage([42; 32]);
