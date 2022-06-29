@@ -3129,10 +3129,11 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 										// Attempt to forward the HTLC over all available channels
 										// to the peer, but attempt to forward the HTLC over the
 										// channel specified in the onion payload first.
-										let mut counterparty_channel_ids = peer_state.channel_by_id.keys()
-											.filter(|chan_id| **chan_id != forward_chan_id)
-											.map(|chan_id| *chan_id).collect::<Vec<_>>();
-										counterparty_channel_ids.insert(0, forward_chan_id);
+										let counterparty_channel_ids = core::iter::once(forward_chan_id)
+											.chain(peer_state.channel_by_id.keys()
+														.filter(|&chan_id| *chan_id != forward_chan_id)
+														.map(|&chan_id| chan_id))
+											.collect::<Vec<_>>();
 										let mut send_succeeded = false;
 										for chan_id in counterparty_channel_ids {
 											match peer_state.channel_by_id.get_mut(&chan_id).unwrap().send_htlc(amt_to_forward, payment_hash, outgoing_cltv_value, htlc_source.clone(), onion_packet.clone(), &self.logger) {
