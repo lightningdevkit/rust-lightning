@@ -43,7 +43,7 @@
 //! let scorer = ProbabilisticScorer::new(params, &network_graph, &logger);
 //! # let random_seed_bytes = [42u8; 32];
 //!
-//! let route = find_route(&payer, &route_params, &network_graph.read_only(), None, &logger, &scorer, &random_seed_bytes);
+//! let route = find_route(&payer, &route_params, &network_graph, None, &logger, &scorer, &random_seed_bytes);
 //! # }
 //! ```
 //!
