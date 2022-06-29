@@ -7365,7 +7365,7 @@ mod tests {
 			final_cltv_expiry_delta: TEST_FINAL_CLTV,
 		};
 		let route = find_route(
-			&nodes[0].node.get_our_node_id(), &route_params, &nodes[0].network_graph.read_only(),
+			&nodes[0].node.get_our_node_id(), &route_params, &nodes[0].network_graph,
 			None, nodes[0].logger, &scorer, &random_seed_bytes
 		).unwrap();
 		nodes[0].node.send_spontaneous_payment(&route, Some(payment_preimage)).unwrap();
@@ -7396,7 +7396,7 @@ mod tests {
 		// To start (2), send a keysend payment but don't claim it.
 		let payment_preimage = PaymentPreimage([42; 32]);
 		let route = find_route(
-			&nodes[0].node.get_our_node_id(), &route_params, &nodes[0].network_graph.read_only(),
+			&nodes[0].node.get_our_node_id(), &route_params, &nodes[0].network_graph,
 			None, nodes[0].logger, &scorer, &random_seed_bytes
 		).unwrap();
 		let (payment_hash, _) = nodes[0].node.send_spontaneous_payment(&route, Some(payment_preimage)).unwrap();
@@ -7460,9 +7460,8 @@ mod tests {
 		let scorer = test_utils::TestScorer::with_penalty(0);
 		let random_seed_bytes = chanmon_cfgs[1].keys_manager.get_secure_random_bytes();
 		let route = find_route(
-			&payer_pubkey, &route_params, &network_graph.read_only(),
-			Some(&first_hops.iter().collect::<Vec<_>>()), nodes[0].logger, &scorer,
-			&random_seed_bytes
+			&payer_pubkey, &route_params, &network_graph, Some(&first_hops.iter().collect::<Vec<_>>()),
+			nodes[0].logger, &scorer, &random_seed_bytes
 		).unwrap();
 
 		let test_preimage = PaymentPreimage([42; 32]);
@@ -7505,9 +7504,8 @@ mod tests {
 		let scorer = test_utils::TestScorer::with_penalty(0);
 		let random_seed_bytes = chanmon_cfgs[1].keys_manager.get_secure_random_bytes();
 		let route = find_route(
-			&payer_pubkey, &route_params, &network_graph.read_only(),
-			Some(&first_hops.iter().collect::<Vec<_>>()), nodes[0].logger, &scorer,
-			&random_seed_bytes
+			&payer_pubkey, &route_params, &network_graph, Some(&first_hops.iter().collect::<Vec<_>>()),
+			nodes[0].logger, &scorer, &random_seed_bytes
 		).unwrap();
 
 		let test_preimage = PaymentPreimage([42; 32]);

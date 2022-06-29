@@ -461,13 +461,12 @@ where L::Target: Logger {
 		&self, payer: &PublicKey, params: &RouteParameters, _payment_hash: &PaymentHash,
 		first_hops: Option<&[&ChannelDetails]>, scorer: &S
 	) -> Result<Route, LightningError> {
-		let network_graph = self.network_graph.read_only();
 		let random_seed_bytes = {
 			let mut locked_random_seed_bytes = self.random_seed_bytes.lock().unwrap();
 			*locked_random_seed_bytes = sha256::Hash::hash(&*locked_random_seed_bytes).into_inner();
 			*locked_random_seed_bytes
 		};
-		find_route(payer, params, &network_graph, first_hops, &*self.logger, scorer, &random_seed_bytes)
+		find_route(payer, params, &self.network_graph, first_hops, &*self.logger, scorer, &random_seed_bytes)
 	}
 }
 
@@ -572,7 +571,7 @@ mod test {
 		let scorer = test_utils::TestScorer::with_penalty(0);
 		let random_seed_bytes = chanmon_cfgs[1].keys_manager.get_secure_random_bytes();
 		let route = find_route(
-			&nodes[0].node.get_our_node_id(), &route_params, &network_graph.read_only(),
+			&nodes[0].node.get_our_node_id(), &route_params, &network_graph,
 			Some(&first_hops.iter().collect::<Vec<_>>()), &logger, &scorer, &random_seed_bytes
 		).unwrap();
 
@@ -848,7 +847,7 @@ mod test {
 		let scorer = test_utils::TestScorer::with_penalty(0);
 		let random_seed_bytes = chanmon_cfgs[1].keys_manager.get_secure_random_bytes();
 		let route = find_route(
-			&nodes[0].node.get_our_node_id(), &params, &network_graph.read_only(),
+			&nodes[0].node.get_our_node_id(), &params, &network_graph,
 			Some(&first_hops.iter().collect::<Vec<_>>()), &logger, &scorer, &random_seed_bytes
 		).unwrap();
 		let (payment_event, fwd_idx) = {
