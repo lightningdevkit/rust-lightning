@@ -218,7 +218,7 @@ deletions in 153 commits from 18 authors, in alphabetical order:
  * Jurvis Tan
  * Justin Moon
  * KaFai Choi
- * Mateusz Faltyn
+ * Matt Faltyn
  * Matt Corallo
  * Valentine Wallace
  * Viktor Tigerström
