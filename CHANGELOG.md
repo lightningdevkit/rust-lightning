@@ -1,3 +1,73 @@
+# 0.0.109 - 2022-06-30
+
+## API Updates
+ * `ChannelManager::update_channel_config` has been added to allow the fields
+   in `ChannelConfig` to be changed in a given channel after open (#1527).
+ * If we reconnect to a peer which proves we have a stale channel state, rather
+   than force-closing we will instead panic to provide an opportunity to switch
+   to the latest state and continue operating without channel loss (#1564).
+ * A `NodeAlias` struct has been added which handles string sanitization for
+   node aliases via the `Display` trait (#1544).
+ * `ProbabilisticScoringParameters` now has a `banned_nodes` set which we will
+    never route through during path finding (#1550).
+ * `ProbabilisticScoringParameters` now offers an `anti_probing_penalty_msat`
+   option to prefer channels which afford better privacy when routing (#1555).
+ * `ProbabilisticScorer` now provides access to its estimated liquidity range
+   for a given channel via `estimated_channel_liquidity_range` (#1549).
+ * Options which cannot be changed at runtime have been moved from
+   `ChannelConfig` to `ChannelHandshakeConfig` (#1529).
+ * `find_route` takes `&NetworkGraph` instead of `ReadOnlyNetworkGraph (#1583).
+ * `ChannelDetails` now contains a copy of the current `ChannelConfig` (#1527).
+ * The `lightning-invoice` crate now optionally depends on `serde`, with
+   `Invoice` implementing `serde::{Deserialize,Serialize}` if enabled (#1548).
+ * Several fields in `UserConfig` have been renamed for clarity (#1540).
+
+## Bug Fixes
+ * `find_route` no longer selects routes with more than
+   `PaymentParameters::max_mpp_path_count` paths, and
+   `ChannelManager::send_payment` no longer refuses to send along routes with
+   more than ten paths (#1526).
+ * Fixed two cases where HTLCs pending at the time a counterparty broadcasts a
+   revoked commitment transaction are considered resolved prior to their actual
+   resolution on-chain, possibly passing the update to another channel (#1486).
+ * HTLCs which are relayed through LDK may now have a total expiry time two
+   weeks in the future, up from one, reducing forwarding failures (#1532).
+
+## Serialization Compatibility
+ * All new fields are ignored by prior versions of LDK. All new fields are not
+   present when reading objects serialized by prior versions of LDK.
+ * `ChannelConfig`'s serialization format has changed and is not compatible
+   with any previous version of LDK. Attempts to read values written by a
+   previous version of LDK will fail and attempts to read newly written objects
+   using a previous version of LDK will fail. It is not expected that users are
+   serializing `ChannelConfig` using the LDK serialization API, however, if a
+   backward compatibility wrapper is required, please open an issue.
+
+## Security
+0.0.109 fixes a denial-of-service vulnerability which is reachable from
+untrusted input in some application deployments.
+
+ * Third parties which are allowed to open channels with an LDK-based node may
+   fund a channel with a bogus and maliciously-crafted transaction which, when
+   spent, can cause a panic in the channel's corresponding `ChannelMonitor`.
+   Such a channel is never usable as it cannot be funded with a funding
+   transaction which matches the required output script, allowing the
+   `ChannelMonitor` for such channels to be safely purged as a workaround on
+   previous versions of LDK. Thanks to Eugene Siegel for reporting this issue.
+
+In total, this release features 32 files changed, 1948 insertions, 532
+deletions in 33 commits from 9 authors, in alphabetical order:
+ * Antoine Riard
+ * Daniel Granhão
+ * Elias Rohrer
+ * Jeffrey Czyz
+ * Matt Corallo
+ * Matt Faltyn
+ * NicolaLS
+ * Valentine Wallace
+ * Wilmer Paulino
+
+
 # 0.0.108 - 2022-06-10
 
 ## Bug Fixes
@@ -148,7 +218,7 @@ deletions in 153 commits from 18 authors, in alphabetical order:
  * Jurvis Tan
  * Justin Moon
  * KaFai Choi
- * Mateusz Faltyn
+ * Matt Faltyn
  * Matt Corallo
  * Valentine Wallace
  * Viktor Tigerström
