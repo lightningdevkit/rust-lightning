@@ -37,7 +37,7 @@ use util::config::UserConfig;
 
 use bitcoin::hash_types::BlockHash;
 use bitcoin::blockdata::block::{Block, BlockHeader};
-use bitcoin::blockdata::script::Builder;
+use bitcoin::blockdata::script::{Builder, Script};
 use bitcoin::blockdata::opcodes;
 use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::network::constants::Network;
@@ -9424,6 +9424,10 @@ fn test_invalid_funding_tx() {
 	// funding transactions from their counterparties, leading to a multi-implementation critical
 	// security vulnerability (though we always sanitized properly, we've previously had
 	// un-released crashes in the sanitization process).
+	//
+	// Further, if the funding transaction is consensus-valid, confirms, and is later spent, we'd
+	// previously have crashed in `ChannelMonitor` even though we closed the channel as bogus and
+	// gave up on it. We test this here by generating such a transaction.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
@@ -9434,9 +9438,19 @@ fn test_invalid_funding_tx() {
 	nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), InitFeatures::known(), &get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id()));
 
 	let (temporary_channel_id, mut tx, _) = create_funding_transaction(&nodes[0], &nodes[1].node.get_our_node_id(), 100_000, 42);
+
+	// Create a witness program which can be spent by a 4-empty-stack-elements witness and which is
+	// 136 bytes long. This matches our "accepted HTLC preimage spend" matching, previously causing
+	// a panic as we'd try to extract a 32 byte preimage from a witness element without checking
+	// its length.
+	let mut wit_program: Vec<u8> = channelmonitor::deliberately_bogus_accepted_htlc_witness_program();
+	assert!(chan_utils::HTLCType::scriptlen_to_htlctype(wit_program.len()).unwrap() ==
+		chan_utils::HTLCType::AcceptedHTLC);
+
+	let wit_program_script: Script = wit_program.clone().into();
 	for output in tx.output.iter_mut() {
 		// Make the confirmed funding transaction have a bogus script_pubkey
-		output.script_pubkey = bitcoin::Script::new();
+		output.script_pubkey = Script::new_v0_p2wsh(&wit_program_script.wscript_hash());
 	}
 
 	nodes[0].node.funding_transaction_generated_unchecked(&temporary_channel_id, &nodes[1].node.get_our_node_id(), tx.clone(), 0).unwrap();
@@ -9466,6 +9480,28 @@ fn test_invalid_funding_tx() {
 		} else { panic!(); }
 	} else { panic!(); }
 	assert_eq!(nodes[1].node.list_channels().len(), 0);
+
+	// Now confirm a spend of the (bogus) funding transaction. As long as the witness is 5 elements
+	// long the ChannelMonitor will try to read 32 bytes from the second-to-last element, panicing
+	// as its not 32 bytes long.
+	let mut spend_tx = Transaction {
+		version: 2i32, lock_time: 0,
+		input: tx.output.iter().enumerate().map(|(idx, _)| TxIn {
+			previous_output: BitcoinOutPoint {
+				txid: tx.txid(),
+				vout: idx as u32,
+			},
+			script_sig: Script::new(),
+			sequence: 0xfffffffd,
+			witness: Witness::from_vec(channelmonitor::deliberately_bogus_accepted_htlc_witness())
+		}).collect(),
+		output: vec![TxOut {
+			value: 1000,
+			script_pubkey: Script::new(),
+		}]
+	};
+	check_spends!(spend_tx, tx);
+	mine_transaction(&nodes[1], &spend_tx);
 }
 
 fn do_test_tx_confirmed_skipping_blocks_immediate_broadcast(test_height_before_timelock: bool) {
