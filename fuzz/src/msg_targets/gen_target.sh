@@ -45,3 +45,5 @@ GEN_TEST lightning::ln::msgs::ReplyChannelRange test_msg ""
 GEN_TEST lightning::ln::msgs::ErrorMessage test_msg_hole ", 32, 2"
 GEN_TEST lightning::ln::msgs::WarningMessage test_msg_hole ", 32, 2"
 GEN_TEST lightning::ln::msgs::ChannelUpdate test_msg_hole ", 108, 1"
+
+GEN_TEST lightning::ln::channelmanager::ChannelDetails test_msg_simple ""

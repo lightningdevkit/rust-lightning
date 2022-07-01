@@ -47,3 +47,5 @@ GEN_TEST msg_channel_update msg_targets::
 GEN_TEST msg_onion_hop_data msg_targets::
 GEN_TEST msg_ping msg_targets::
 GEN_TEST msg_pong msg_targets::
+
+GEN_TEST msg_channel_details msg_targets::
