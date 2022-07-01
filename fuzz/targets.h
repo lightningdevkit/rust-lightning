@@ -36,3 +36,4 @@ void msg_channel_update_run(const unsigned char* data, size_t data_len);
 void msg_onion_hop_data_run(const unsigned char* data, size_t data_len);
 void msg_ping_run(const unsigned char* data, size_t data_len);
 void msg_pong_run(const unsigned char* data, size_t data_len);
+void msg_channel_details_run(const unsigned char* data, size_t data_len);
