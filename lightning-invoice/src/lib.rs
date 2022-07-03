@@ -50,6 +50,9 @@ use lightning::ln::features::InvoiceFeatures;
 use lightning::routing::gossip::RoutingFees;
 use lightning::routing::router::RouteHint;
 use lightning::util::invoice::construct_invoice_preimage;
+use lightning::util::ser::{Readable, Writeable, Writer};
+use lightning::ln::msgs;
+use lightning::io::Read;
 
 use secp256k1::PublicKey;
 use secp256k1::{Message, Secp256k1};
@@ -1528,6 +1531,18 @@ impl<S> Display for SignOrCreationError<S> {
 	}
 }
 
+impl Readable for Invoice {
+	fn read<R: Read>(reader: &mut R) -> Result<Self, msgs::DecodeError> {
+		let invoice: String = Readable::read(reader)?;
+		Ok(invoice.parse().map_err(|_| msgs::DecodeError::InvalidValue)?)
+	}
+}
+impl Writeable for Invoice {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), lightning::io::Error> {
+		self.to_string().write(writer)
+	}
+}
+
 #[cfg(feature = "serde")]
 impl Serialize for Invoice {
 	fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error> where S: Serializer {
@@ -1549,6 +1564,18 @@ impl<'de> Deserialize<'de> for Invoice {
 mod test {
 	use bitcoin_hashes::hex::FromHex;
 	use bitcoin_hashes::sha256;
+
+	const INVOICE_STR: &str = "lnbc100p1psj9jhxdqud3jxktt5w46x7unfv9kz6mn0v3jsnp4q0d3p2sfluzdx45tqcs\
+				h2pu5qc7lgq0xs578ngs6s0s68ua4h7cvspp5q6rmq35js88zp5dvwrv9m459tnk2zunwj5jalqtyxqulh0l\
+				5gflssp5nf55ny5gcrfl30xuhzj3nphgj27rstekmr9fw3ny5989s300gyus9qyysgqcqpcrzjqw2sxwe993\
+				h5pcm4dxzpvttgza8zhkqxpgffcrf5v25nwpr3cmfg7z54kuqq8rgqqqqqqqq2qqqqq9qq9qrzjqd0ylaqcl\
+				j9424x9m8h2vcukcgnm6s56xfgu3j78zyqzhgs4hlpzvznlugqq9vsqqqqqqqlgqqqqqeqq9qrzjqwldmj9d\
+				ha74df76zhx6l9we0vjdquygcdt3kssupehe64g6yyp5yz5rhuqqwccqqyqqqqlgqqqqjcqq9qrzjqf9e58a\
+				guqr0rcun0ajlvmzq3ek63cw2w282gv3z5uupmuwvgjtq2z55qsqqg6qqqyqqqrtnqqqzq3cqygrzjqvphms\
+				ywntrrhqjcraumvc4y6r8v4z5v593trte429v4hredj7ms5z52usqq9ngqqqqqqqlgqqqqqqgq9qrzjq2v0v\
+				p62g49p7569ev48cmulecsxe59lvaw3wlxm7r982zxa9zzj7z5l0cqqxusqqyqqqqlgqqqqqzsqygarl9fh3\
+				8s0gyuxjjgux34w75dnc6xp2l35j7es3jd4ugt3lu0xzre26yg5m7ke54n2d5sym4xcmxtl8238xxvw5h5h5\
+				j5r6drg6k6zcqj0fcwg";
 
 	#[test]
 	fn test_system_time_bounds_assumptions() {
@@ -1997,25 +2024,31 @@ mod test {
 		assert!(invoice.would_expire(Duration::from_secs(1234567 + DEFAULT_EXPIRY_TIME + 1)));
 	}
 
+	#[test]
+	fn test_readable_writeable() {
+		use super::Invoice;
+		use lightning::io::Cursor;
+		use lightning::util::ser::{Readable, Writeable};
+		use lightning::util::test_utils::TestVecWriter;
+
+		let invoice: Invoice = INVOICE_STR.parse().unwrap();
+		let mut writer = TestVecWriter(Vec::new());
+		invoice.write(&mut writer).unwrap();
+		let mut reader = Cursor::new(writer.0);
+		let deserialized_invoice: Invoice = Readable::read(&mut reader).unwrap();
+
+		assert_eq!(invoice, deserialized_invoice);
+		assert_eq!(INVOICE_STR, deserialized_invoice.to_string().as_str());
+	}
+
 	#[cfg(feature = "serde")]
 	#[test]
 	fn test_serde() {
-		let invoice_str = "lnbc100p1psj9jhxdqud3jxktt5w46x7unfv9kz6mn0v3jsnp4q0d3p2sfluzdx45tqcs\
-			h2pu5qc7lgq0xs578ngs6s0s68ua4h7cvspp5q6rmq35js88zp5dvwrv9m459tnk2zunwj5jalqtyxqulh0l\
-			5gflssp5nf55ny5gcrfl30xuhzj3nphgj27rstekmr9fw3ny5989s300gyus9qyysgqcqpcrzjqw2sxwe993\
-			h5pcm4dxzpvttgza8zhkqxpgffcrf5v25nwpr3cmfg7z54kuqq8rgqqqqqqqq2qqqqq9qq9qrzjqd0ylaqcl\
-			j9424x9m8h2vcukcgnm6s56xfgu3j78zyqzhgs4hlpzvznlugqq9vsqqqqqqqlgqqqqqeqq9qrzjqwldmj9d\
-			ha74df76zhx6l9we0vjdquygcdt3kssupehe64g6yyp5yz5rhuqqwccqqyqqqqlgqqqqjcqq9qrzjqf9e58a\
-			guqr0rcun0ajlvmzq3ek63cw2w282gv3z5uupmuwvgjtq2z55qsqqg6qqqyqqqrtnqqqzq3cqygrzjqvphms\
-			ywntrrhqjcraumvc4y6r8v4z5v593trte429v4hredj7ms5z52usqq9ngqqqqqqqlgqqqqqqgq9qrzjq2v0v\
-			p62g49p7569ev48cmulecsxe59lvaw3wlxm7r982zxa9zzj7z5l0cqqxusqqyqqqqlgqqqqqzsqygarl9fh3\
-			8s0gyuxjjgux34w75dnc6xp2l35j7es3jd4ugt3lu0xzre26yg5m7ke54n2d5sym4xcmxtl8238xxvw5h5h5\
-			j5r6drg6k6zcqj0fcwg";
-		let invoice = invoice_str.parse::<super::Invoice>().unwrap();
+		let invoice = INVOICE_STR.parse::<super::Invoice>().unwrap();
 		let serialized_invoice = serde_json::to_string(&invoice).unwrap();
 		let deserialized_invoice: super::Invoice = serde_json::from_str(serialized_invoice.as_str()).unwrap();
 		assert_eq!(invoice, deserialized_invoice);
-		assert_eq!(invoice_str, deserialized_invoice.to_string().as_str());
-		assert_eq!(invoice_str, serialized_invoice.as_str().trim_matches('\"'));
+		assert_eq!(INVOICE_STR, deserialized_invoice.to_string().as_str());
+		assert_eq!(INVOICE_STR, serialized_invoice.as_str().trim_matches('\"'));
 	}
 }
