@@ -5409,7 +5409,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// Channel object.
 	fn handle_init_event_channel_failures(&self, mut failed_channels: Vec<ShutdownResult>) {
 		for mut failure in failed_channels.drain(..) {
-			// Either a commitment transactions has been confirmed on-chain or
+			// Either a commitment transaction has been confirmed on-chain or
 			// Channel::block_disconnected detected that the funding transaction has been
 			// reorganized out of the main chain.
 			// We cannot broadcast our latest local state via monitor update (as
@@ -6951,7 +6951,7 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 						log_bytes!(channel.channel_id()), monitor.get_latest_update_id(), channel.get_latest_monitor_update_id());
 					let (_, mut new_failed_htlcs) = channel.force_shutdown(true);
 					failed_htlcs.append(&mut new_failed_htlcs);
-					monitor.broadcast_latest_holder_commitment_txn(&args.tx_broadcaster, &args.logger);
+					monitor.maybe_broadcast_latest_holder_commitment_txn(&args.tx_broadcaster, &args.logger);
 					channel_closures.push(events::Event::ChannelClosed {
 						channel_id: channel.channel_id(),
 						user_channel_id: channel.get_user_id(),
@@ -6980,7 +6980,7 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 		for (ref funding_txo, ref mut monitor) in args.channel_monitors.iter_mut() {
 			if !funding_txo_set.contains(funding_txo) {
 				log_info!(args.logger, "Broadcasting latest holder commitment transaction for closed channel {}", log_bytes!(funding_txo.to_channel_id()));
-				monitor.broadcast_latest_holder_commitment_txn(&args.tx_broadcaster, &args.logger);
+				monitor.maybe_broadcast_latest_holder_commitment_txn(&args.tx_broadcaster, &args.logger);
 			}
 		}
 

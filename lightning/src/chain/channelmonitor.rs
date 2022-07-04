@@ -783,6 +783,10 @@ pub(crate) struct ChannelMonitorImpl<Signer: Sign> {
 	counterparty_node_id: Option<PublicKey>,
 
 	secp_ctx: Secp256k1<secp256k1::All>, //TODO: dedup this a bit...
+
+	// Used to track that the channel was updated with ChannelForceClosed {should_broadcast: false}
+	// implying that it's unsafe to broadcast the latest holder commitment transaction.
+	allow_automated_broadcast: bool,
 }
 
 /// Transaction outputs to watch for on-chain spends.
@@ -1130,6 +1134,8 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 			counterparty_node_id: Some(counterparty_node_id),
 
 			secp_ctx,
+
+			allow_automated_broadcast: true,
 		})
 	}
 
@@ -1180,7 +1186,7 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 			payment_hash, payment_preimage, broadcaster, fee_estimator, logger)
 	}
 
-	pub(crate) fn broadcast_latest_holder_commitment_txn<B: Deref, L: Deref>(
+	pub(crate) fn maybe_broadcast_latest_holder_commitment_txn<B: Deref, L: Deref>(
 		&self,
 		broadcaster: &B,
 		logger: &L,
@@ -1188,7 +1194,18 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 		B::Target: BroadcasterInterface,
 		L::Target: Logger,
 	{
-		self.inner.lock().unwrap().broadcast_latest_holder_commitment_txn(broadcaster, logger)
+		self.inner.lock().unwrap().maybe_broadcast_latest_holder_commitment_txn(broadcaster, logger)
+	}
+
+	pub(crate) fn force_broadcast_latest_holder_commitment_txn_unsafe<B: Deref, L: Deref>(
+		&self,
+		broadcaster: &B,
+		logger: &L,
+	) where
+		B::Target: BroadcasterInterface,
+		L::Target: Logger,
+	{
+		self.inner.lock().unwrap().force_broadcast_latest_holder_commitment_txn_unsafe(broadcaster, logger)
 	}
 
 	/// Updates a ChannelMonitor on the basis of some new information provided by the Channel
@@ -2148,7 +2165,22 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		}
 	}
 
-	pub(crate) fn broadcast_latest_holder_commitment_txn<B: Deref, L: Deref>(&mut self, broadcaster: &B, logger: &L)
+	pub(crate) fn maybe_broadcast_latest_holder_commitment_txn<B: Deref, L: Deref>(&mut self, broadcaster: &B, logger: &L)
+		where B::Target: BroadcasterInterface,
+					L::Target: Logger,
+	{
+		if self.allow_automated_broadcast{
+			for tx in self.get_latest_holder_commitment_txn(logger).iter() {
+				log_info!(logger, "Broadcasting local {}", log_tx!(tx));
+				broadcaster.broadcast_transaction(tx);
+			}
+			self.pending_monitor_events.push(MonitorEvent::CommitmentTxConfirmed(self.funding_info.0));
+		} else {
+			log_error!(logger, "You have a toxic holder commitment transaction avaible in channel monitor, read comment in ChannelMonitor::get_latest_holder_commitment_txn to be informed of manual action to take");
+		}
+	}
+
+	pub(crate) fn force_broadcast_latest_holder_commitment_txn_unsafe<B: Deref, L: Deref>(&mut self, broadcaster: &B, logger: &L)
 		where B::Target: BroadcasterInterface,
 					L::Target: Logger,
 	{
@@ -2215,8 +2247,9 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 					log_trace!(logger, "Updating ChannelMonitor: channel force closed, should broadcast: {}", should_broadcast);
 					self.lockdown_from_offchain = true;
 					if *should_broadcast {
-						self.broadcast_latest_holder_commitment_txn(broadcaster, logger);
+						self.maybe_broadcast_latest_holder_commitment_txn(broadcaster, logger);
 					} else if !self.holder_tx_signed {
+						self.allow_automated_broadcast = false;
 						log_error!(logger, "You have a toxic holder commitment transaction avaible in channel monitor, read comment in ChannelMonitor::get_latest_holder_commitment_txn to be informed of manual action to take");
 					} else {
 						// If we generated a MonitorEvent::CommitmentTxConfirmed, the ChannelManager
@@ -3692,6 +3725,8 @@ impl<'a, Signer: Sign, K: KeysInterface<Signer = Signer>> ReadableArgs<&'a K>
 			counterparty_node_id,
 
 			secp_ctx,
+
+			allow_automated_broadcast: true,
 		})))
 	}
 }
