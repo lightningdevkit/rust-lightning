@@ -1,4 +1,4 @@
-# 0.0.109 - 2022-06-30
+# 0.0.109 - 2022-07-01
 
 ## API Updates
  * `ChannelManager::update_channel_config` has been added to allow the fields
