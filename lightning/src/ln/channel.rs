@@ -2209,7 +2209,7 @@ impl<Signer: Sign> Channel<Signer> {
 		                                          &self.channel_transaction_parameters,
 		                                          funding_redeemscript.clone(), self.channel_value_satoshis,
 		                                          obscure_factor,
-		                                          holder_commitment_tx, best_block);
+		                                          holder_commitment_tx, best_block, self.counterparty_node_id);
 
 		channel_monitor.provide_latest_counterparty_commitment_tx(counterparty_initial_commitment_txid, Vec::new(), self.cur_counterparty_commitment_transaction_number, self.counterparty_cur_commitment_point.unwrap(), logger);
 
@@ -2286,7 +2286,7 @@ impl<Signer: Sign> Channel<Signer> {
 		                                          &self.channel_transaction_parameters,
 		                                          funding_redeemscript.clone(), self.channel_value_satoshis,
 		                                          obscure_factor,
-		                                          holder_commitment_tx, best_block);
+		                                          holder_commitment_tx, best_block, self.counterparty_node_id);
 
 		channel_monitor.provide_latest_counterparty_commitment_tx(counterparty_initial_bitcoin_tx.txid, Vec::new(), self.cur_counterparty_commitment_transaction_number, self.counterparty_cur_commitment_point.unwrap(), logger);
 

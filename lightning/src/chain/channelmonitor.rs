@@ -722,6 +722,9 @@ pub(crate) struct ChannelMonitorImpl<Signer: Sign> {
 	// the full block_connected).
 	best_block: BestBlock,
 
+	/// The node_id of our counterparty
+	counterparty_node_id: Option<PublicKey>,
+
 	secp_ctx: Secp256k1<secp256k1::All>, //TODO: dedup this a bit...
 }
 
@@ -954,6 +957,7 @@ impl<Signer: Sign> Writeable for ChannelMonitorImpl<Signer> {
 			(3, self.htlcs_resolved_on_chain, vec_type),
 			(5, self.pending_monitor_events, vec_type),
 			(7, self.funding_spend_seen, required),
+			(9, self.counterparty_node_id, option),
 		});
 
 		Ok(())
@@ -967,7 +971,7 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 	                  funding_redeemscript: Script, channel_value_satoshis: u64,
 	                  commitment_transaction_number_obscure_factor: u64,
 	                  initial_holder_commitment_tx: HolderCommitmentTransaction,
-	                  best_block: BestBlock) -> ChannelMonitor<Signer> {
+	                  best_block: BestBlock, counterparty_node_id: PublicKey) -> ChannelMonitor<Signer> {
 
 		assert!(commitment_transaction_number_obscure_factor <= (1 << 48));
 		let payment_key_hash = WPubkeyHash::hash(&keys.pubkeys().payment_point.serialize());
@@ -1057,6 +1061,7 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 				htlcs_resolved_on_chain: Vec::new(),
 
 				best_block,
+				counterparty_node_id: Some(counterparty_node_id),
 
 				secp_ctx,
 			}),
@@ -3336,11 +3341,13 @@ impl<'a, Signer: Sign, K: KeysInterface<Signer = Signer>> ReadableArgs<&'a K>
 		let mut funding_spend_confirmed = None;
 		let mut htlcs_resolved_on_chain = Some(Vec::new());
 		let mut funding_spend_seen = Some(false);
+		let mut counterparty_node_id = None;
 		read_tlv_fields!(reader, {
 			(1, funding_spend_confirmed, option),
 			(3, htlcs_resolved_on_chain, vec_type),
 			(5, pending_monitor_events, vec_type),
 			(7, funding_spend_seen, option),
+			(9, counterparty_node_id, option),
 		});
 
 		let mut secp_ctx = Secp256k1::new();
@@ -3395,6 +3402,7 @@ impl<'a, Signer: Sign, K: KeysInterface<Signer = Signer>> ReadableArgs<&'a K>
 				htlcs_resolved_on_chain: htlcs_resolved_on_chain.unwrap(),
 
 				best_block,
+				counterparty_node_id,
 
 				secp_ctx,
 			}),
@@ -3631,7 +3639,7 @@ mod tests {
 		                                  (OutPoint { txid: Txid::from_slice(&[43; 32]).unwrap(), index: 0 }, Script::new()),
 		                                  &channel_parameters,
 		                                  Script::new(), 46, 0,
-		                                  HolderCommitmentTransaction::dummy(), best_block);
+		                                  HolderCommitmentTransaction::dummy(), best_block, dummy_key);
 
 		monitor.provide_latest_holder_commitment_tx(HolderCommitmentTransaction::dummy(), preimages_to_holder_htlcs!(preimages[0..10])).unwrap();
 		let dummy_txid = dummy_tx.txid();
