@@ -6198,7 +6198,7 @@ impl_writeable_tlv_based!(ChannelDetails, {
 	(18, outbound_capacity_msat, required),
 	// Note that by the time we get past the required read above, outbound_capacity_msat will be
 	// filled in, so we can safely unwrap it here.
-	(19, next_outbound_htlc_limit_msat, (default_value, outbound_capacity_msat.0.unwrap())),
+	(19, next_outbound_htlc_limit_msat, (default_value, outbound_capacity_msat.0.unwrap() as u64)),
 	(20, inbound_capacity_msat, required),
 	(22, confirmations_required, option),
 	(24, force_close_spend_delay, option),

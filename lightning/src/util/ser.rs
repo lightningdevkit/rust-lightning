@@ -268,6 +268,12 @@ impl<T: Readable> Readable for OptionDeserWrapper<T> {
 		Ok(Self(Some(Readable::read(reader)?)))
 	}
 }
+/// When handling default_values, we want to map the default-value T directly
+/// to a OptionDeserWrapper<T> in a way that works for `field: T = t;` as
+/// well. Thus, we assume `Into<T> for T` does nothing and use that.
+impl<T: Readable> From<T> for OptionDeserWrapper<T> {
+	fn from(t: T) -> OptionDeserWrapper<T> { OptionDeserWrapper(Some(t)) }
+}
 
 /// Wrapper to write each element of a Vec with no length prefix
 pub(crate) struct VecWriteWrapper<'a, T: Writeable>(pub &'a Vec<T>);

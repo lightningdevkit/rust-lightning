@@ -30,3 +30,4 @@ pub mod msg_reply_channel_range;
 pub mod msg_error_message;
 pub mod msg_warning_message;
 pub mod msg_channel_update;
+pub mod msg_channel_details;

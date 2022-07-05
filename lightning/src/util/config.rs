@@ -407,9 +407,9 @@ impl ::util::ser::Readable for LegacyChannelConfig {
 		let mut forwarding_fee_base_msat = 0;
 		read_tlv_fields!(reader, {
 			(0, forwarding_fee_proportional_millionths, required),
-			(1, max_dust_htlc_exposure_msat, (default_value, 5_000_000)),
+			(1, max_dust_htlc_exposure_msat, (default_value, 5_000_000u64)),
 			(2, cltv_expiry_delta, required),
-			(3, force_close_avoidance_max_fee_satoshis, (default_value, 1000)),
+			(3, force_close_avoidance_max_fee_satoshis, (default_value, 1000u64)),
 			(4, announced_channel, required),
 			(6, commit_upfront_shutdown_pubkey, required),
 			(8, forwarding_fee_base_msat, required),

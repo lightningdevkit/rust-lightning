@@ -14,12 +14,12 @@ use msg_targets::utils::VecWriter;
 use utils::test_logger;
 
 #[inline]
-pub fn msg_reply_channel_range_test<Out: test_logger::Output>(data: &[u8], _out: Out) {
-	test_msg!(lightning::ln::msgs::ReplyChannelRange, data);
+pub fn msg_channel_details_test<Out: test_logger::Output>(data: &[u8], _out: Out) {
+	test_msg_simple!(lightning::ln::channelmanager::ChannelDetails, data);
 }
 
 #[no_mangle]
-pub extern "C" fn msg_reply_channel_range_run(data: *const u8, datalen: usize) {
+pub extern "C" fn msg_channel_details_run(data: *const u8, datalen: usize) {
 	let data = unsafe { std::slice::from_raw_parts(data, datalen) };
-	test_msg!(lightning::ln::msgs::ReplyChannelRange, data);
+	test_msg_simple!(lightning::ln::channelmanager::ChannelDetails, data);
 }

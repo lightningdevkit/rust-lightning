@@ -99,7 +99,7 @@ macro_rules! check_tlv_order {
 		#[allow(unused_comparisons)] // Note that $type may be 0 making the second comparison always true
 		let invalid_order = ($last_seen_type.is_none() || $last_seen_type.unwrap() < $type) && $typ.0 > $type;
 		if invalid_order {
-			$field = $default;
+			$field = $default.into();
 		}
 	}};
 	($last_seen_type: expr, $typ: expr, $type: expr, $field: ident, required) => {{
@@ -128,7 +128,7 @@ macro_rules! check_missing_tlv {
 		#[allow(unused_comparisons)] // Note that $type may be 0 making the second comparison always true
 		let missing_req_type = $last_seen_type.is_none() || $last_seen_type.unwrap() < $type;
 		if missing_req_type {
-			$field = $default;
+			$field = $default.into();
 		}
 	}};
 	($last_seen_type: expr, $type: expr, $field: ident, required) => {{
@@ -349,7 +349,7 @@ macro_rules! read_tlv_fields {
 
 macro_rules! init_tlv_based_struct_field {
 	($field: ident, (default_value, $default: expr)) => {
-		$field
+		$field.0.unwrap()
 	};
 	($field: ident, option) => {
 		$field
@@ -364,7 +364,7 @@ macro_rules! init_tlv_based_struct_field {
 
 macro_rules! init_tlv_field_var {
 	($field: ident, (default_value, $default: expr)) => {
-		let mut $field = $default;
+		let mut $field = ::util::ser::OptionDeserWrapper(None);
 	};
 	($field: ident, required) => {
 		let mut $field = ::util::ser::OptionDeserWrapper(None);
