@@ -40,7 +40,7 @@ use io_extras::read_to_end;
 
 use util::events::MessageSendEventsProvider;
 use util::logger;
-use util::ser::{Readable, Writeable, Writer, FixedLengthReader, HighZeroBytesDroppedVarInt};
+use util::ser::{Readable, Writeable, Writer, FixedLengthReader, HighZeroBytesDroppedVarInt, Hostname};
 
 use ln::{PaymentPreimage, PaymentHash, PaymentSecret};
 
@@ -442,6 +442,13 @@ pub enum NetAddress {
 		/// The port on which the node is listening
 		port: u16,
 	},
+	/// A hostname/port on which the peer is listening.
+	Hostname {
+		/// The hostname on which the node is listening.
+		hostname: Hostname,
+		/// The port on which the node is listening.
+		port: u16,
+	},
 }
 impl NetAddress {
 	/// Gets the ID of this address type. Addresses in node_announcement messages should be sorted
@@ -452,6 +459,7 @@ impl NetAddress {
 			&NetAddress::IPv6 {..} => { 2 },
 			&NetAddress::OnionV2(_) => { 3 },
 			&NetAddress::OnionV3 {..} => { 4 },
+			&NetAddress::Hostname {..} => { 5 },
 		}
 	}
 
@@ -462,11 +470,15 @@ impl NetAddress {
 			&NetAddress::IPv6 { .. } => { 18 },
 			&NetAddress::OnionV2(_) => { 12 },
 			&NetAddress::OnionV3 { .. } => { 37 },
+			// Consists of 1-byte hostname length, hostname bytes, and 2-byte port.
+			&NetAddress::Hostname { ref hostname, .. } => { u16::from(hostname.len()) + 3 },
 		}
 	}
 
-	/// The maximum length of any address descriptor, not including the 1-byte type
-	pub(crate) const MAX_LEN: u16 = 37;
+	/// The maximum length of any address descriptor, not including the 1-byte type.
+	/// This maximum length is reached by a hostname address descriptor:
+	/// a hostname with a maximum length of 255, its 1-byte length and a 2-byte port.
+	pub(crate) const MAX_LEN: u16 = 258;
 }
 
 impl Writeable for NetAddress {
@@ -492,7 +504,12 @@ impl Writeable for NetAddress {
 				checksum.write(writer)?;
 				version.write(writer)?;
 				port.write(writer)?;
-			}
+			},
+			&NetAddress::Hostname { ref hostname, ref port } => {
+				5u8.write(writer)?;
+				hostname.write(writer)?;
+				port.write(writer)?;
+			},
 		}
 		Ok(())
 	}
@@ -520,6 +537,12 @@ impl Readable for Result<NetAddress, u8> {
 					ed25519_pubkey: Readable::read(reader)?,
 					checksum: Readable::read(reader)?,
 					version: Readable::read(reader)?,
+					port: Readable::read(reader)?,
+				}))
+			},
+			5 => {
+				Ok(Ok(NetAddress::Hostname {
+					hostname: Readable::read(reader)?,
 					port: Readable::read(reader)?,
 				}))
 			},
@@ -1829,7 +1852,7 @@ mod tests {
 	use ln::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
 	use ln::msgs;
 	use ln::msgs::{FinalOnionHopData, OptionalField, OnionErrorPacket, OnionHopDataFormat};
-	use util::ser::{Writeable, Readable};
+	use util::ser::{Writeable, Readable, Hostname};
 
 	use bitcoin::hashes::hex::FromHex;
 	use bitcoin::util::address::Address;
@@ -1843,6 +1866,7 @@ mod tests {
 
 	use io::Cursor;
 	use prelude::*;
+	use core::convert::TryFrom;
 
 	#[test]
 	fn encoding_channel_reestablish_no_secret() {
@@ -1971,7 +1995,7 @@ mod tests {
 		do_encoding_channel_announcement(true, true);
 	}
 
-	fn do_encoding_node_announcement(unknown_features_bits: bool, ipv4: bool, ipv6: bool, onionv2: bool, onionv3: bool, excess_address_data: bool, excess_data: bool) {
+	fn do_encoding_node_announcement(unknown_features_bits: bool, ipv4: bool, ipv6: bool, onionv2: bool, onionv3: bool, hostname: bool, excess_address_data: bool, excess_data: bool) {
 		let secp_ctx = Secp256k1::new();
 		let (privkey_1, pubkey_1) = get_keys_from!("0101010101010101010101010101010101010101010101010101010101010101", secp_ctx);
 		let sig_1 = get_sig_on!(privkey_1, secp_ctx, String::from("01010101010101010101010101010101"));
@@ -2005,6 +2029,12 @@ mod tests {
 				checksum: 32,
 				version: 16,
 				port: 9735
+			});
+		}
+		if hostname {
+			addresses.push(msgs::NetAddress::Hostname {
+				hostname: Hostname::try_from(String::from("host")).unwrap(),
+				port: 9735,
 			});
 		}
 		let mut addr_len = 0;
@@ -2047,6 +2077,9 @@ mod tests {
 		if onionv3 {
 			target_value.append(&mut hex::decode("04fffefdfcfbfaf9f8f7f6f5f4f3f2f1f0efeeedecebeae9e8e7e6e5e4e3e2e1e00020102607").unwrap());
 		}
+		if hostname {
+			target_value.append(&mut hex::decode("0504686f73742607").unwrap());
+		}
 		if excess_address_data {
 			target_value.append(&mut hex::decode("216c280b5395a2546e7e4b2663e04f811622f15a4f92e83aa2e92ba2a573c139142c54ae63072a1ec1ee7dc0c04bde5c847806172aa05c92c22ae8e308d1d269").unwrap());
 		}
@@ -2058,15 +2091,16 @@ mod tests {
 
 	#[test]
 	fn encoding_node_announcement() {
-		do_encoding_node_announcement(true, true, true, true, true, true, true);
-		do_encoding_node_announcement(false, false, false, false, false, false, false);
-		do_encoding_node_announcement(false, true, false, false, false, false, false);
-		do_encoding_node_announcement(false, false, true, false, false, false, false);
-		do_encoding_node_announcement(false, false, false, true, false, false, false);
-		do_encoding_node_announcement(false, false, false, false, true, false, false);
-		do_encoding_node_announcement(false, false, false, false, false, true, false);
-		do_encoding_node_announcement(false, true, false, true, false, true, false);
-		do_encoding_node_announcement(false, false, true, false, true, false, false);
+		do_encoding_node_announcement(true, true, true, true, true, true, true, true);
+		do_encoding_node_announcement(false, false, false, false, false, false, false, false);
+		do_encoding_node_announcement(false, true, false, false, false, false, false, false);
+		do_encoding_node_announcement(false, false, true, false, false, false, false, false);
+		do_encoding_node_announcement(false, false, false, true, false, false, false, false);
+		do_encoding_node_announcement(false, false, false, false, true, false, false, false);
+		do_encoding_node_announcement(false, false, false, false, false, true, false, false);
+		do_encoding_node_announcement(false, false, false, false, false, false, true, false);
+		do_encoding_node_announcement(false, true, false, true, false, false, true, false);
+		do_encoding_node_announcement(false, false, true, false, true, false, false, false);
 	}
 
 	fn do_encoding_channel_update(direction: bool, disable: bool, htlc_maximum_msat: bool, excess_data: bool) {

@@ -2863,15 +2863,15 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 
 	#[allow(dead_code)]
 	// Messages of up to 64KB should never end up more than half full with addresses, as that would
-	// be absurd. We ensure this by checking that at least 500 (our stated public contract on when
+	// be absurd. We ensure this by checking that at least 100 (our stated public contract on when
 	// broadcast_node_announcement panics) of the maximum-length addresses would fit in a 64KB
 	// message...
 	const HALF_MESSAGE_IS_ADDRS: u32 = ::core::u16::MAX as u32 / (NetAddress::MAX_LEN as u32 + 1) / 2;
 	#[deny(const_err)]
 	#[allow(dead_code)]
 	// ...by failing to compile if the number of addresses that would be half of a message is
-	// smaller than 500:
-	const STATIC_ASSERT: u32 = Self::HALF_MESSAGE_IS_ADDRS - 500;
+	// smaller than 100:
+	const STATIC_ASSERT: u32 = Self::HALF_MESSAGE_IS_ADDRS - 100;
 
 	/// Regenerates channel_announcements and generates a signed node_announcement from the given
 	/// arguments, providing them in corresponding events via
@@ -2888,13 +2888,13 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// tying these addresses together and to this node. If you wish to preserve user privacy,
 	/// addresses should likely contain only Tor Onion addresses.
 	///
-	/// Panics if `addresses` is absurdly large (more than 500).
+	/// Panics if `addresses` is absurdly large (more than 100).
 	///
 	/// [`get_and_clear_pending_msg_events`]: MessageSendEventsProvider::get_and_clear_pending_msg_events
 	pub fn broadcast_node_announcement(&self, rgb: [u8; 3], alias: [u8; 32], mut addresses: Vec<NetAddress>) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 
-		if addresses.len() > 500 {
+		if addresses.len() > 100 {
 			panic!("More than half the message size was taken up by public addresses!");
 		}
 
