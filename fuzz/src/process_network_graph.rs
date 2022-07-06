@@ -1,10 +1,7 @@
 // Imports that need to be added manually
-use lightning::util::logger::Logger;
 use lightning_rapid_gossip_sync::RapidGossipSync;
 
 use utils::test_logger;
-
-use std::sync::Arc;
 
 /// Actual fuzz test, method signature and name are fixed
 fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {

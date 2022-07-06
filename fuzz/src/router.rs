@@ -19,7 +19,6 @@ use lightning::ln::msgs;
 use lightning::routing::gossip::{NetworkGraph, RoutingFees};
 use lightning::routing::router::{find_route, PaymentParameters, RouteHint, RouteHintHop, RouteParameters};
 use lightning::routing::scoring::FixedPenaltyScorer;
-use lightning::util::logger::Logger;
 use lightning::util::ser::Readable;
 
 use bitcoin::hashes::Hash;
