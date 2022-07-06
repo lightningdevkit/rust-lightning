@@ -36,6 +36,8 @@ use core::time::Duration;
 use core::ops::Deref;
 use sync::Arc;
 
+use crate::ln::channelmanager::InterceptId;
+
 /// Some information provided on receipt of payment depends on whether the payment received is a
 /// spontaneous payment or a "conventional" lightning payment that's paying an invoice.
 #[derive(Clone, Debug)]
@@ -469,6 +471,26 @@ pub enum Event {
 		/// now + 5*time_forwardable).
 		time_forwardable: Duration,
 	},
+	/// Used to indicate that the short_channel_id a payment was intended to be routed over signaled
+	/// for interception.  If this payment is to be rerouted you must call [`ChannelManager::forward_intercepted_payment`] with
+	/// the new short_channel_id and payment amount.  If this payment should be failed you must call
+	/// [`ChannelManager::fail_intercepted_payment`].
+	///
+	/// [`ChannelManager::forward_intercepted_payment`]: crate::ln::channelmanager::ChannelManager::forward_intercepted_payment
+	/// [`ChannelManager::fail_intercepted_payment`]: crate::ln::channelmanager::ChannelManager::fail_intercepted_payment
+	PaymentIntercepted {
+		/// The scid that indicated this payment should be intercepted
+		short_channel_id: u64,
+		/// The payment hash used for this payment
+		payment_hash: PaymentHash,
+		/// How many msats are to be received on the inbound edge of this payment
+		inbound_amount_msats: u64,
+		/// How many msats the payer intended to route to the next node. Depending on the reason you are
+		/// intercepting this payment, you might take a fee by forwarding less than this amount
+		expected_outbound_amount_msats: u64,
+		/// A id to help LDK identify which payment is being forwarded or failed
+		intercept_id: InterceptId
+	},
 	/// Used to indicate that an output which you should know how to spend was confirmed on chain
 	/// and is now spendable.
 	/// Such an output will *not* ever be spent by rust-lightning, and are not at risk of your
@@ -753,6 +775,16 @@ impl Writeable for Event {
 					(2, failed_next_destination, required),
 				})
 			},
+			&Event::PaymentIntercepted { short_channel_id, payment_hash, inbound_amount_msats, expected_outbound_amount_msats, intercept_id } => {
+				27u8.write(writer)?;
+				write_tlv_fields!(writer, {
+					(0, short_channel_id, required),
+					(2, payment_hash, required),
+					(4, inbound_amount_msats, required),
+					(6, expected_outbound_amount_msats, required),
+					(8, intercept_id, required)
+				});
+			}
 			// Note that, going forward, all new events must only write data inside of
 			// `write_tlv_fields`. Versions 0.0.101+ will ignore odd-numbered events that write
 			// data via `write_tlv_fields`.
@@ -1032,6 +1064,27 @@ impl MaybeReadable for Event {
 					}
 				};
 				f()
+			},
+			27u8 => {
+				let mut payment_hash = PaymentHash([0; 32]);
+					let mut intercept_id = InterceptId([0; 32]);
+					let mut short_channel_id = 0;
+					let mut inbound_amount_msats = 0;
+					let mut expected_outbound_amount_msats = 0;
+					read_tlv_fields!(reader, {
+						(0, short_channel_id, required),
+						(2, payment_hash, required),
+						(4, inbound_amount_msats, required),
+						(6, expected_outbound_amount_msats, required),
+						(8, intercept_id, required)
+					});
+					Ok(Some(Event::PaymentIntercepted {
+						payment_hash,
+						short_channel_id,
+						inbound_amount_msats,
+						expected_outbound_amount_msats,
+						intercept_id,
+					}))
 			},
 			// Versions prior to 0.0.100 did not ignore odd types, instead returning InvalidValue.
 			// Version 0.0.100 failed to properly ignore odd types, possibly resulting in corrupt

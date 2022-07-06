@@ -114,6 +114,7 @@ pub(super) struct PendingHTLCInfo {
 	payment_hash: PaymentHash,
 	pub(super) amt_to_forward: u64,
 	pub(super) outgoing_cltv_value: u32,
+	pub(super) amt_incoming: Option<u64>
 }
 
 #[derive(Clone)] // See Channel::revoke_and_ack for why, tl;dr: Rust bug
@@ -129,20 +130,23 @@ pub(super) enum PendingHTLCStatus {
 	Fail(HTLCFailureMsg),
 }
 
-pub(super) enum HTLCForwardInfo {
-	AddHTLC {
-		forward_info: PendingHTLCInfo,
+#[derive(Clone)]
+pub(super) struct PendingAddHTLCInfo {
+	pub(super) forward_info: PendingHTLCInfo,
 
-		// These fields are produced in `forward_htlcs()` and consumed in
-		// `process_pending_htlc_forwards()` for constructing the
-		// `HTLCSource::PreviousHopData` for failed and forwarded
-		// HTLCs.
-		//
-		// Note that this may be an outbound SCID alias for the associated channel.
-		prev_short_channel_id: u64,
-		prev_htlc_id: u64,
-		prev_funding_outpoint: OutPoint,
-	},
+	// These fields are produced in `forward_htlcs()` and consumed in
+	// `process_pending_htlc_forwards()` for constructing the
+	// `HTLCSource::PreviousHopData` for failed and forwarded
+	// HTLCs.
+	//
+	// Note that this may be an outbound SCID alias for the associated channel.
+	prev_short_channel_id: u64,
+	prev_htlc_id: u64,
+	prev_funding_outpoint: OutPoint,
+}
+
+pub(super) enum HTLCForwardInfo {
+	AddHTLC(PendingAddHTLCInfo),
 	FailHTLC {
 		htlc_id: u64,
 		err_packet: msgs::OnionErrorPacket,
@@ -184,6 +188,24 @@ struct ClaimableHTLC {
 	timer_ticks: u8,
 	/// The sum total of all MPP parts
 	total_msat: u64,
+}
+
+/// An identifier used to uniquely identify an intercepted htlc to LDK.
+/// (C-not exported) as we just use [u8; 32] directly
+#[derive(Hash, Copy, Clone, PartialEq, Eq, Debug)]
+pub struct InterceptId(pub [u8; 32]);
+
+impl Writeable for InterceptId {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		self.0.write(w)
+	}
+}
+
+impl Readable for InterceptId {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let buf: [u8; 32] = Readable::read(r)?;
+		Ok(InterceptId(buf))
+	}
 }
 
 /// A payment identifier used to uniquely identify a payment to LDK.
@@ -761,6 +783,9 @@ pub struct ChannelManager<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, 
 	pub(super) forward_htlcs: Mutex<HashMap<u64, Vec<HTLCForwardInfo>>>,
 	#[cfg(not(test))]
 	forward_htlcs: Mutex<HashMap<u64, Vec<HTLCForwardInfo>>>,
+	/// Storage for PendingInterceptedHTLC's that have been intercepted and bubbled up to the user.
+	/// We hold them here until the user tells us what we should to with them.
+	pending_intercepted_payments: Mutex<HashMap<InterceptId, PendingAddHTLCInfo>>,
 
 	/// The set of outbound SCID aliases across all our channels, including unconfirmed channels
 	/// and some closed channels which reached a usable state prior to being closed. This is used
@@ -1634,6 +1659,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			pending_outbound_payments: Mutex::new(HashMap::new()),
 			forward_htlcs: Mutex::new(HashMap::new()),
 			id_to_peer: Mutex::new(HashMap::new()),
+			pending_intercepted_payments: Mutex::new(HashMap::new()),
 
 			our_network_key: keys_manager.get_node_secret(Recipient::Node).unwrap(),
 			our_network_pubkey: PublicKey::from_secret_key(&secp_ctx, &keys_manager.get_node_secret(Recipient::Node).unwrap()),
@@ -2163,6 +2189,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			payment_hash,
 			incoming_shared_secret: shared_secret,
 			amt_to_forward: amt_msat,
+			amt_incoming: Some(amt_msat),
 			outgoing_cltv_value: hop_data.outgoing_cltv_value,
 		})
 	}
@@ -2260,6 +2287,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					incoming_shared_secret: shared_secret,
 					amt_to_forward: next_hop_data.amt_to_forward,
 					outgoing_cltv_value: next_hop_data.outgoing_cltv_value,
+					amt_incoming: Some(msg.amount_msat)
 				})
 			}
 		};
@@ -3030,6 +3058,66 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		Ok(())
 	}
 
+	/// Fails the intercepted payment indicated by intercept_id.  This should really only be called in response
+	/// to a PaymentIntercepted event
+	pub fn fail_intercepted_payment(&self, intercept_id: InterceptId) {
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
+
+		let pending_intercept = {
+			let mut pending_intercepts = self.pending_intercepted_payments.lock().unwrap();
+			pending_intercepts.remove(&intercept_id)
+		};
+
+		if let Some(payment) = pending_intercept {
+			if let PendingHTLCRouting::Forward { short_channel_id, .. } = payment.forward_info.routing {
+				let htlc_source = HTLCSource::PreviousHopData(HTLCPreviousHopData {
+					short_channel_id: payment.prev_short_channel_id,
+					outpoint: payment.prev_funding_outpoint,
+					htlc_id: payment.prev_htlc_id,
+					incoming_packet_shared_secret: payment.forward_info.incoming_shared_secret,
+					phantom_shared_secret: None,
+				});
+
+				let failure_reason = HTLCFailReason::Reason { failure_code: 0x4000 | 10, data: Vec::new() };
+				let destination = HTLCDestination::UnknownNextHop { requested_forward_scid: short_channel_id };
+				self.fail_htlc_backwards_internal(htlc_source, &payment.forward_info.payment_hash, failure_reason, destination);
+			}
+		}
+	}
+
+	/// Attempts to forward an intercepted payment over the provided scid and with the provided amt_to_forward.
+	/// Should only really be called in response to a PaymentIntercepted event
+	pub fn forward_intercepted_payment(&self, intercept_id: InterceptId, scid: u64, amt_to_forward: u64) -> Result<(), APIError> {
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
+
+		let pending_intercept = {
+			let mut pending_intercepts = self.pending_intercepted_payments.lock().unwrap();
+			pending_intercepts.remove(&intercept_id)
+		};
+
+		match pending_intercept {
+			None => Err(APIError::APIMisuseError { err: "Payment with that InterceptId not found".to_string() }),
+			Some(payment) => {
+					let routing = match payment.forward_info.routing {
+						PendingHTLCRouting::Forward { onion_packet, .. } => {
+							PendingHTLCRouting::Forward { onion_packet, short_channel_id: scid }
+						},
+						_ => payment.forward_info.routing
+					};
+
+					let pending_htlc_info = PendingHTLCInfo {
+						amt_to_forward,
+						routing,
+						..payment.forward_info
+					};
+
+					let mut per_source_pending_forward = vec![(payment.prev_short_channel_id, payment.prev_funding_outpoint, vec![(pending_htlc_info, payment.prev_htlc_id)])];
+					self.forward_htlcs(&mut per_source_pending_forward);
+					Ok(())
+			}
+		}
+	}
+
 	/// Processes HTLCs which are pending waiting on random forward delay.
 	///
 	/// Should only really ever be called in response to a PendingHTLCsForwardable event.
@@ -3054,9 +3142,9 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 						None => {
 							for forward_info in pending_forwards.drain(..) {
 								match forward_info {
-									HTLCForwardInfo::AddHTLC { prev_short_channel_id, prev_htlc_id, forward_info: PendingHTLCInfo {
-										routing, incoming_shared_secret, payment_hash, amt_to_forward, outgoing_cltv_value },
-										prev_funding_outpoint } => {
+									HTLCForwardInfo::AddHTLC(pending_add_htlc_info) => {
+											let PendingAddHTLCInfo { prev_short_channel_id, prev_htlc_id, forward_info, prev_funding_outpoint } = pending_add_htlc_info.clone();
+
 											macro_rules! failure_handler {
 												($msg: expr, $err_code: expr, $err_data: expr, $phantom_ss: expr, $next_hop_unknown: expr) => {
 													log_info!(self.logger, "Failed to accept/forward incoming HTLC: {}", $msg);
@@ -3065,17 +3153,17 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 														short_channel_id: prev_short_channel_id,
 														outpoint: prev_funding_outpoint,
 														htlc_id: prev_htlc_id,
-														incoming_packet_shared_secret: incoming_shared_secret,
+														incoming_packet_shared_secret: forward_info.incoming_shared_secret,
 														phantom_shared_secret: $phantom_ss,
 													});
 
 													let reason = if $next_hop_unknown {
 														HTLCDestination::UnknownNextHop { requested_forward_scid: short_chan_id }
 													} else {
-														HTLCDestination::FailedPayment{ payment_hash }
+														HTLCDestination::FailedPayment{ payment_hash: forward_info.payment_hash }
 													};
 
-													failed_forwards.push((htlc_source, payment_hash,
+													failed_forwards.push((htlc_source, forward_info.payment_hash,
 														HTLCFailReason::Reason { failure_code: $err_code, data: $err_data },
 														reason
 													));
@@ -3096,11 +3184,11 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 													}
 												}
 											}
-											if let PendingHTLCRouting::Forward { onion_packet, .. } = routing {
+											if let PendingHTLCRouting::Forward { ref onion_packet, .. } = forward_info.routing {
 												let phantom_secret_res = self.keys_manager.get_node_secret(Recipient::PhantomNode);
 												if phantom_secret_res.is_ok() && fake_scid::is_valid_phantom(&self.fake_scid_rand_bytes, short_chan_id) {
 													let phantom_shared_secret = SharedSecret::new(&onion_packet.public_key.unwrap(), &phantom_secret_res.unwrap()).secret_bytes();
-													let next_hop = match onion_utils::decode_next_payment_hop(phantom_shared_secret, &onion_packet.hop_data, onion_packet.hmac, payment_hash) {
+													let next_hop = match onion_utils::decode_next_payment_hop(phantom_shared_secret, &onion_packet.hop_data, onion_packet.hmac, forward_info.payment_hash) {
 														Ok(res) => res,
 														Err(onion_utils::OnionDecodeErr::Malformed { err_msg, err_code }) => {
 															let sha256_of_onion = Sha256::hash(&onion_packet.hop_data).into_inner();
@@ -3116,12 +3204,30 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 													};
 													match next_hop {
 														onion_utils::Hop::Receive(hop_data) => {
-															match self.construct_recv_pending_htlc_info(hop_data, incoming_shared_secret, payment_hash, amt_to_forward, outgoing_cltv_value, Some(phantom_shared_secret)) {
+															match self.construct_recv_pending_htlc_info(hop_data, forward_info.incoming_shared_secret, forward_info.payment_hash, forward_info.amt_to_forward, forward_info.outgoing_cltv_value, Some(phantom_shared_secret)) {
 																Ok(info) => phantom_receives.push((prev_short_channel_id, prev_funding_outpoint, vec![(info, prev_htlc_id)])),
 																Err(ReceiveError { err_code, err_data, msg }) => failed_payment!(msg, err_code, err_data, Some(phantom_shared_secret))
 															}
 														},
 														_ => panic!(),
+													}
+												} else if forward_info.amt_incoming.is_some() && fake_scid::is_valid_intercept(&self.fake_scid_rand_bytes, short_chan_id) {
+													let intercept_id = InterceptId(Sha256::hash(&forward_info.incoming_shared_secret).into_inner());
+													let mut pending_intercepts = self.pending_intercepted_payments.lock().unwrap();
+													match pending_intercepts.entry(intercept_id) {
+														hash_map::Entry::Vacant(entry) => {
+															entry.insert(pending_add_htlc_info);
+															new_events.push(events::Event::PaymentIntercepted {
+																short_channel_id: short_chan_id,
+																payment_hash: forward_info.payment_hash,
+																inbound_amount_msats: forward_info.amt_incoming.unwrap(),
+																expected_outbound_amount_msats: forward_info.amt_to_forward,
+																intercept_id
+															});
+														},
+														hash_map::Entry::Occupied(_) => {
+															fail_forward!(format!("Detected duplicate intercepted payment over short channel id {} for forward HTLC", short_chan_id), 0x4000 | 10, Vec::new(), None);
+														}
 													}
 												} else {
 													fail_forward!(format!("Unknown short channel id {} for forward HTLC", short_chan_id), 0x4000 | 10, Vec::new(), None);
@@ -3146,11 +3252,12 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 						let mut fail_htlc_msgs = Vec::new();
 						for forward_info in pending_forwards.drain(..) {
 							match forward_info {
-								HTLCForwardInfo::AddHTLC { prev_short_channel_id, prev_htlc_id, forward_info: PendingHTLCInfo {
-										routing: PendingHTLCRouting::Forward {
-											onion_packet, ..
-										}, incoming_shared_secret, payment_hash, amt_to_forward, outgoing_cltv_value },
-										prev_funding_outpoint } => {
+								HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo { prev_short_channel_id, prev_htlc_id, forward_info: PendingHTLCInfo {
+									routing: PendingHTLCRouting::Forward {
+										onion_packet, ..
+									}, incoming_shared_secret, payment_hash, amt_to_forward, outgoing_cltv_value, .. },
+									prev_funding_outpoint
+								}) => {
 									log_trace!(self.logger, "Adding HTLC from short id {} with payment_hash {} to channel with short id {} after delay", prev_short_channel_id, log_bytes!(payment_hash.0), short_chan_id);
 									let htlc_source = HTLCSource::PreviousHopData(HTLCPreviousHopData {
 										short_channel_id: prev_short_channel_id,
@@ -3272,9 +3379,9 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				} else {
 					for forward_info in pending_forwards.drain(..) {
 						match forward_info {
-							HTLCForwardInfo::AddHTLC { prev_short_channel_id, prev_htlc_id, forward_info: PendingHTLCInfo {
-									routing, incoming_shared_secret, payment_hash, amt_to_forward, .. },
-									prev_funding_outpoint } => {
+							HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo { prev_short_channel_id, prev_htlc_id, forward_info: PendingHTLCInfo {
+								routing, incoming_shared_secret, payment_hash, amt_to_forward, ..
+							}, prev_funding_outpoint, .. }) => {
 								let (cltv_expiry, onion_payload, payment_data, phantom_shared_secret) = match routing {
 									PendingHTLCRouting::Receive { payment_data, incoming_cltv_expiry, phantom_shared_secret } => {
 										let _legacy_hop_data = Some(payment_data.clone());
@@ -4939,12 +5046,12 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 							PendingHTLCRouting::ReceiveKeysend { .. } => 0,
 					}) {
 						hash_map::Entry::Occupied(mut entry) => {
-							entry.get_mut().push(HTLCForwardInfo::AddHTLC { prev_short_channel_id, prev_funding_outpoint,
-							                                                prev_htlc_id, forward_info });
+							entry.get_mut().push(HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo { prev_short_channel_id, prev_funding_outpoint,
+							                                                prev_htlc_id, forward_info }));
 						},
 						hash_map::Entry::Vacant(entry) => {
-							entry.insert(vec!(HTLCForwardInfo::AddHTLC { prev_short_channel_id, prev_funding_outpoint,
-							                                             prev_htlc_id, forward_info }));
+							entry.insert(vec!(HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo { prev_short_channel_id, prev_funding_outpoint,
+							                                             prev_htlc_id, forward_info })));
 						}
 					}
 				}
@@ -5519,6 +5626,21 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// [`create_inbound_payment`]: Self::create_inbound_payment
 	pub fn get_payment_preimage(&self, payment_hash: PaymentHash, payment_secret: PaymentSecret) -> Result<PaymentPreimage, APIError> {
 		inbound_payment::get_payment_preimage(payment_hash, payment_secret, &self.inbound_payment_key)
+	}
+
+	/// Gets a fake short channel id for use in receiving [intercepted payments]. These fake scids
+	/// are used when constructing the route hints for payments intended to be intercepted.
+	pub fn get_intercept_scid(&self) -> u64 {
+		let mut channel_state = self.channel_state.lock().unwrap();
+		let best_block = self.best_block.read().unwrap();
+		loop {
+			let scid_candidate = fake_scid::Namespace::Intercept.get_fake_scid(best_block.height(), &self.genesis_hash, &self.fake_scid_rand_bytes, &self.keys_manager);
+			// Ensure the generated scid doesn't conflict with a real channel.
+			match channel_state.short_to_chan_info.entry(scid_candidate) {
+				hash_map::Entry::Occupied(_) => continue,
+				hash_map::Entry::Vacant(_) => return scid_candidate
+			}
+		}
 	}
 
 	/// Gets a fake short channel id for use in receiving [phantom node payments]. These fake scids
@@ -6324,7 +6446,8 @@ impl_writeable_tlv_based!(PendingHTLCInfo, {
 	(2, incoming_shared_secret, required),
 	(4, payment_hash, required),
 	(6, amt_to_forward, required),
-	(8, outgoing_cltv_value, required)
+	(8, outgoing_cltv_value, required),
+	(9, amt_incoming, option),
 });
 
 
@@ -6546,18 +6669,21 @@ impl_writeable_tlv_based_enum!(HTLCFailReason,
 	},
 ;);
 
+impl_writeable_tlv_based!(PendingAddHTLCInfo, {
+	(0, forward_info, required),
+	(2, prev_short_channel_id, required),
+	(4, prev_htlc_id, required),
+	(6, prev_funding_outpoint, required)
+});
+
+
 impl_writeable_tlv_based_enum!(HTLCForwardInfo,
-	(0, AddHTLC) => {
-		(0, forward_info, required),
-		(2, prev_short_channel_id, required),
-		(4, prev_htlc_id, required),
-		(6, prev_funding_outpoint, required),
-	},
 	(1, FailHTLC) => {
 		(0, htlc_id, required),
 		(2, err_packet, required),
-	},
-;);
+	};
+	(0, AddHTLC)
+);
 
 impl_writeable_tlv_based!(PendingInboundPayment, {
 	(0, payment_secret, required),
@@ -6566,6 +6692,7 @@ impl_writeable_tlv_based!(PendingInboundPayment, {
 	(6, payment_preimage, required),
 	(8, min_value_msat, required),
 });
+
 
 impl_writeable_tlv_based_enum_upgradable!(PendingOutboundPayment,
 	(0, Legacy) => {
@@ -6661,6 +6788,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Writeable f
 
 		let pending_inbound_payments = self.pending_inbound_payments.lock().unwrap();
 		let pending_outbound_payments = self.pending_outbound_payments.lock().unwrap();
+		let pending_intercepted_payments = self.pending_intercepted_payments.lock().unwrap();
+
 		let events = self.pending_events.lock().unwrap();
 		(events.len() as u64).write(writer)?;
 		for event in events.iter() {
@@ -6731,6 +6860,12 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Writeable f
 			(9, htlc_purposes, vec_type),
 			(11, self.probing_cookie_secret, required),
 		});
+
+		(pending_intercepted_payments.len() as u64).write(writer)?;
+		for (intercept_id, pending_intercepted_payment) in pending_intercepted_payments.iter() {
+			intercept_id.write(writer)?;
+			pending_intercepted_payment.write(writer)?;
+		}
 
 		Ok(())
 	}
@@ -7032,7 +7167,7 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 		let mut fake_scid_rand_bytes: Option<[u8; 32]> = None;
 		let mut probing_cookie_secret: Option<[u8; 32]> = None;
 		let mut claimable_htlc_purposes = None;
-		read_tlv_fields!(reader, {
+		read_tlv_fields!(reader.by_ref(), {
 			(1, pending_outbound_payments_no_retry, option),
 			(3, pending_outbound_payments, option),
 			(5, received_network_pubkey, option),
@@ -7040,6 +7175,15 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 			(9, claimable_htlc_purposes, vec_type),
 			(11, probing_cookie_secret, option),
 		});
+
+		let pending_intercepted_payment_count: u64 = Readable::read(reader)?;
+		let mut pending_intercepted_payments: HashMap<InterceptId, PendingAddHTLCInfo> = HashMap::with_capacity(cmp::min(pending_intercepted_payment_count as usize, MAX_ALLOC_SIZE/(3*32)));
+		for _ in 0..pending_intercepted_payment_count {
+			if pending_intercepted_payments.insert(Readable::read(reader)?, Readable::read(reader)?).is_some() {
+				return Err(DecodeError::InvalidValue);
+			}
+		}
+
 		if fake_scid_rand_bytes.is_none() {
 			fake_scid_rand_bytes = Some(args.keys_manager.get_secure_random_bytes());
 		}
@@ -7250,6 +7394,7 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 			inbound_payment_key: expanded_inbound_key,
 			pending_inbound_payments: Mutex::new(pending_inbound_payments),
 			pending_outbound_payments: Mutex::new(pending_outbound_payments.unwrap()),
+			pending_intercepted_payments: Mutex::new(pending_intercepted_payments),
 
 			forward_htlcs: Mutex::new(forward_htlcs),
 			outbound_scid_aliases: Mutex::new(outbound_scid_aliases),
