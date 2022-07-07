@@ -406,7 +406,7 @@ pub struct ProbabilisticScoringParameters {
 	/// If you wish to avoid creating paths with such channels entirely, setting this to a value of
 	/// `u64::max_value()` will guarantee that.
 	///
-	/// Default value: `u64::max_value()`
+	/// Default value: 1_0000_0000_000 msat (1 Bitcoin)
 	///
 	/// [`liquidity_penalty_multiplier_msat`]: Self::liquidity_penalty_multiplier_msat
 	/// [`amount_penalty_multiplier_msat`]: Self::amount_penalty_multiplier_msat
@@ -563,7 +563,7 @@ impl Default for ProbabilisticScoringParameters {
 			amount_penalty_multiplier_msat: 256,
 			manual_node_penalties: HashMap::new(),
 			anti_probing_penalty_msat: 250,
-			considered_impossible_penalty_msat: u64::max_value(),
+			considered_impossible_penalty_msat: 1_0000_0000_000,
 		}
 	}
 }
@@ -2192,7 +2192,10 @@ mod tests {
 	fn accounts_for_inflight_htlc_usage() {
 		let logger = TestLogger::new();
 		let network_graph = network_graph(&logger);
-		let params = ProbabilisticScoringParameters::default();
+		let params = ProbabilisticScoringParameters {
+			considered_impossible_penalty_msat: u64::max_value(),
+			..ProbabilisticScoringParameters::zero_penalty()
+		};
 		let scorer = ProbabilisticScorer::new(params, &network_graph, &logger);
 		let source = source_node_id();
 		let target = target_node_id();
