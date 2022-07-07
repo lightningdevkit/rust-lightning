@@ -14,6 +14,9 @@
    option to prefer channels which afford better privacy when routing (#1555).
  * `ProbabilisticScorer` now provides access to its estimated liquidity range
    for a given channel via `estimated_channel_liquidity_range` (#1549).
+ * `ChannelManager::force_close_channel` has been renamed
+   `force_close_broadcasting_latest_txn` and
+   `force_close_without_broadcasting_txn` has been added (#1564).
  * Options which cannot be changed at runtime have been moved from
    `ChannelConfig` to `ChannelHandshakeConfig` (#1529).
  * `find_route` takes `&NetworkGraph` instead of `ReadOnlyNetworkGraph (#1583).
