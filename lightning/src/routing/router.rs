@@ -176,10 +176,10 @@ impl_writeable_tlv_based!(RouteParameters, {
 /// Maximum total CTLV difference we allow for a full payment path.
 pub const DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA: u32 = 1008;
 
-/// Maximum number of paths we allow an MPP payment to have.
+/// Maximum number of paths we allow an (MPP) payment to have.
 // The default limit is currently set rather arbitrary - there aren't any real fundamental path-count
 // limits, but for now more than 10 paths likely carries too much one-path failure.
-pub const DEFAULT_MAX_MPP_PATH_COUNT: u8 = 10;
+pub const DEFAULT_MAX_PATH_COUNT: u8 = 10;
 
 // The median hop CLTV expiry delta currently seen in the network.
 const MEDIAN_HOP_CLTV_EXPIRY_DELTA: u32 = 40;
@@ -222,16 +222,16 @@ pub struct PaymentParameters {
 	/// Defaults to [`DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA`].
 	pub max_total_cltv_expiry_delta: u32,
 
-	/// The maximum number of paths that may be used by MPP payments.
-	/// Defaults to [`DEFAULT_MAX_MPP_PATH_COUNT`].
-	pub max_mpp_path_count: u8,
+	/// The maximum number of paths that may be used by (MPP) payments.
+	/// Defaults to [`DEFAULT_MAX_PATH_COUNT`].
+	pub max_path_count: u8,
 }
 
 impl_writeable_tlv_based!(PaymentParameters, {
 	(0, payee_pubkey, required),
 	(1, max_total_cltv_expiry_delta, (default_value, DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA)),
 	(2, features, option),
-	(3, max_mpp_path_count, (default_value, DEFAULT_MAX_MPP_PATH_COUNT)),
+	(3, max_path_count, (default_value, DEFAULT_MAX_PATH_COUNT)),
 	(4, route_hints, vec_type),
 	(6, expiry_time, option),
 });
@@ -245,7 +245,7 @@ impl PaymentParameters {
 			route_hints: vec![],
 			expiry_time: None,
 			max_total_cltv_expiry_delta: DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA,
-			max_mpp_path_count: DEFAULT_MAX_MPP_PATH_COUNT,
+			max_path_count: DEFAULT_MAX_PATH_COUNT,
 		}
 	}
 
@@ -282,11 +282,11 @@ impl PaymentParameters {
 		Self { max_total_cltv_expiry_delta, ..self }
 	}
 
-	/// Includes a limit for the maximum number of payment paths that may be used by MPP.
+	/// Includes a limit for the maximum number of payment paths that may be used.
 	///
 	/// (C-not exported) since bindings don't support move semantics
-	pub fn with_max_mpp_path_count(self, max_mpp_path_count: u8) -> Self {
-		Self { max_mpp_path_count, ..self }
+	pub fn with_max_path_count(self, max_path_count: u8) -> Self {
+		Self { max_path_count, ..self }
 	}
 }
 
@@ -800,20 +800,22 @@ where L::Target: Logger {
 	let network_channels = network_graph.channels();
 	let network_nodes = network_graph.nodes();
 
+	if payment_params.max_path_count == 0 {
+		return Err(LightningError{err: "Can't find a route with no paths allowed.".to_owned(), action: ErrorAction::IgnoreError});
+	}
+
 	// Allow MPP only if we have a features set from somewhere that indicates the payee supports
 	// it. If the payee supports it they're supposed to include it in the invoice, so that should
 	// work reliably.
-	let allow_mpp = if let Some(features) = &payment_params.features {
+	let allow_mpp = if payment_params.max_path_count == 1 {
+		false
+	} else if let Some(features) = &payment_params.features {
 		features.supports_basic_mpp()
 	} else if let Some(node) = network_nodes.get(&payee_node_id) {
 		if let Some(node_info) = node.announcement_info.as_ref() {
 			node_info.features.supports_basic_mpp()
 		} else { false }
 	} else { false };
-
-	if allow_mpp && payment_params.max_mpp_path_count == 0 {
-		return Err(LightningError{err: "Can't find an MPP route with no paths allowed.".to_owned(), action: ErrorAction::IgnoreError});
-	}
 
 	log_trace!(logger, "Searching for a route from payer {} to payee {} {} MPP and {} first hops {}overriding the network graph", our_node_pubkey,
 		payment_params.payee_pubkey, if allow_mpp { "with" } else { "without" },
@@ -872,10 +874,10 @@ where L::Target: Logger {
 	// Taking too many smaller paths also increases the chance of payment failure.
 	// Thus to avoid this effect, we require from our collected links to provide
 	// at least a minimal contribution to the recommended value yet-to-be-fulfilled.
-	// This requirement is currently set to be 1/max_mpp_path_count of the payment
+	// This requirement is currently set to be 1/max_path_count of the payment
 	// value to ensure we only ever return routes that do not violate this limit.
 	let minimal_value_contribution_msat: u64 = if allow_mpp {
-		(final_value_msat + (payment_params.max_mpp_path_count as u64 - 1)) / payment_params.max_mpp_path_count as u64
+		(final_value_msat + (payment_params.max_path_count as u64 - 1)) / payment_params.max_path_count as u64
 	} else {
 		final_value_msat
 	};
@@ -1694,7 +1696,7 @@ where L::Target: Logger {
 		selected_paths.push(path);
 	}
 	// Make sure we would never create a route with more paths than we allow.
-	debug_assert!(selected_paths.len() <= payment_params.max_mpp_path_count.into());
+	debug_assert!(selected_paths.len() <= payment_params.max_path_count.into());
 
 	if let Some(features) = &payment_params.features {
 		for path in selected_paths.iter_mut() {
@@ -1849,6 +1851,10 @@ fn build_route_from_hops_internal<L: Deref>(
 		fn payment_path_failed(&mut self, _path: &[&RouteHop], _short_channel_id: u64) {}
 
 		fn payment_path_successful(&mut self, _path: &[&RouteHop]) {}
+
+		fn probe_failed(&mut self, _path: &[&RouteHop], _short_channel_id: u64) {}
+
+		fn probe_successful(&mut self, _path: &[&RouteHop]) {}
 	}
 
 	impl<'a> Writeable for HopScorer {
@@ -4119,20 +4125,20 @@ mod tests {
 		}
 
 		{
-			// Attempt to route while setting max_mpp_path_count to 0 results in a failure.
-			let zero_payment_params = payment_params.clone().with_max_mpp_path_count(0);
+			// Attempt to route while setting max_path_count to 0 results in a failure.
+			let zero_payment_params = payment_params.clone().with_max_path_count(0);
 			if let Err(LightningError{err, action: ErrorAction::IgnoreError}) = get_route(
 				&our_id, &zero_payment_params, &network_graph.read_only(), None, 100, 42,
 				Arc::clone(&logger), &scorer, &random_seed_bytes) {
-					assert_eq!(err, "Can't find an MPP route with no paths allowed.");
+					assert_eq!(err, "Can't find a route with no paths allowed.");
 			} else { panic!(); }
 		}
 
 		{
-			// Attempt to route while setting max_mpp_path_count to 3 results in a failure.
+			// Attempt to route while setting max_path_count to 3 results in a failure.
 			// This is the case because the minimal_value_contribution_msat would require each path
 			// to account for 1/3 of the total value, which is violated by 2 out of 3 paths.
-			let fail_payment_params = payment_params.clone().with_max_mpp_path_count(3);
+			let fail_payment_params = payment_params.clone().with_max_path_count(3);
 			if let Err(LightningError{err, action: ErrorAction::IgnoreError}) = get_route(
 				&our_id, &fail_payment_params, &network_graph.read_only(), None, 250_000, 42,
 				Arc::clone(&logger), &scorer, &random_seed_bytes) {
@@ -5314,6 +5320,8 @@ mod tests {
 
 		fn payment_path_failed(&mut self, _path: &[&RouteHop], _short_channel_id: u64) {}
 		fn payment_path_successful(&mut self, _path: &[&RouteHop]) {}
+		fn probe_failed(&mut self, _path: &[&RouteHop], _short_channel_id: u64) {}
+		fn probe_successful(&mut self, _path: &[&RouteHop]) {}
 	}
 
 	struct BadNodeScorer {
@@ -5332,6 +5340,8 @@ mod tests {
 
 		fn payment_path_failed(&mut self, _path: &[&RouteHop], _short_channel_id: u64) {}
 		fn payment_path_successful(&mut self, _path: &[&RouteHop]) {}
+		fn probe_failed(&mut self, _path: &[&RouteHop], _short_channel_id: u64) {}
+		fn probe_successful(&mut self, _path: &[&RouteHop]) {}
 	}
 
 	#[test]

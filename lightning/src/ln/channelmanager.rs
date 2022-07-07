@@ -740,6 +740,11 @@ pub struct ChannelManager<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, 
 	/// [fake scids]: crate::util::scid_utils::fake_scid
 	fake_scid_rand_bytes: [u8; 32],
 
+	/// When we send payment probes, we generate the [`PaymentHash`] based on this cookie secret
+	/// and a random [`PaymentId`]. This allows us to discern probes from real payments, without
+	/// keeping additional state.
+	probing_cookie_secret: [u8; 32],
+
 	/// Used to track the last value sent in a node_announcement "timestamp" field. We ensure this
 	/// value increases strictly since we don't assume access to a time source.
 	last_node_announcement_serial: AtomicUsize,
@@ -1588,6 +1593,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 
 			inbound_payment_key: expanded_inbound_key,
 			fake_scid_rand_bytes: keys_manager.get_secure_random_bytes(),
+
+			probing_cookie_secret: keys_manager.get_secure_random_bytes(),
 
 			last_node_announcement_serial: AtomicUsize::new(0),
 			highest_seen_timestamp: AtomicUsize::new(0),
@@ -2731,6 +2738,43 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		}
 	}
 
+	/// Send a payment that is probing the given route for liquidity. We calculate the
+	/// [`PaymentHash`] of probes based on a static secret and a random [`PaymentId`], which allows
+	/// us to easily discern them from real payments.
+	pub fn send_probe(&self, hops: Vec<RouteHop>) -> Result<(PaymentHash, PaymentId), PaymentSendFailure> {
+		let payment_id = PaymentId(self.keys_manager.get_secure_random_bytes());
+
+		let payment_hash = self.probing_cookie_from_id(&payment_id);
+
+		if hops.len() < 2 {
+			return Err(PaymentSendFailure::ParameterError(APIError::APIMisuseError {
+				err: "No need probing a path with less than two hops".to_string()
+			}))
+		}
+
+		let route = Route { paths: vec![hops], payment_params: None };
+
+		match self.send_payment_internal(&route, payment_hash, &None, None, Some(payment_id), None) {
+			Ok(payment_id) => Ok((payment_hash, payment_id)),
+			Err(e) => Err(e)
+		}
+	}
+
+	/// Returns whether a payment with the given [`PaymentHash`] and [`PaymentId`] is, in fact, a
+	/// payment probe.
+	pub(crate) fn payment_is_probe(&self, payment_hash: &PaymentHash, payment_id: &PaymentId) -> bool {
+		let target_payment_hash = self.probing_cookie_from_id(payment_id);
+		target_payment_hash == *payment_hash
+	}
+
+	/// Returns the 'probing cookie' for the given [`PaymentId`].
+	fn probing_cookie_from_id(&self, payment_id: &PaymentId) -> PaymentHash {
+		let mut preimage = [0u8; 64];
+		preimage[..32].copy_from_slice(&self.probing_cookie_secret);
+		preimage[32..].copy_from_slice(&payment_id.0);
+		PaymentHash(Sha256::hash(&preimage).into_inner())
+	}
+
 	/// Handles the generation of a funding transaction, optionally (for tests) with a function
 	/// which checks the correctness of the funding transaction given the associated channel.
 	fn funding_transaction_generated_intern<FundingOutput: Fn(&Channel<Signer>, &Transaction) -> Result<OutPoint, APIError>>(
@@ -3839,22 +3883,40 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 						let (network_update, short_channel_id, payment_retryable, onion_error_code, onion_error_data) = onion_utils::process_onion_failure(&self.secp_ctx, &self.logger, &source, err.data.clone());
 #[cfg(not(test))]
 						let (network_update, short_channel_id, payment_retryable, _, _) = onion_utils::process_onion_failure(&self.secp_ctx, &self.logger, &source, err.data.clone());
-						// TODO: If we decided to blame ourselves (or one of our channels) in
-						// process_onion_failure we should close that channel as it implies our
-						// next-hop is needlessly blaming us!
-						events::Event::PaymentPathFailed {
-							payment_id: Some(payment_id),
-							payment_hash: payment_hash.clone(),
-							rejected_by_dest: !payment_retryable,
-							network_update,
-							all_paths_failed,
-							path: path.clone(),
-							short_channel_id,
-							retry,
-#[cfg(test)]
-							error_code: onion_error_code,
-#[cfg(test)]
-							error_data: onion_error_data
+
+						if self.payment_is_probe(payment_hash, &payment_id) {
+							if !payment_retryable {
+								events::Event::ProbeSuccessful {
+									payment_id,
+									payment_hash: payment_hash.clone(),
+									path: path.clone(),
+								}
+							} else {
+								events::Event::ProbeFailed {
+									payment_id: payment_id,
+									payment_hash: payment_hash.clone(),
+									path: path.clone(),
+									short_channel_id,
+								}
+							}
+						} else {
+							// TODO: If we decided to blame ourselves (or one of our channels) in
+							// process_onion_failure we should close that channel as it implies our
+							// next-hop is needlessly blaming us!
+							events::Event::PaymentPathFailed {
+								payment_id: Some(payment_id),
+								payment_hash: payment_hash.clone(),
+								rejected_by_dest: !payment_retryable,
+								network_update,
+								all_paths_failed,
+								path: path.clone(),
+								short_channel_id,
+								retry,
+								#[cfg(test)]
+								error_code: onion_error_code,
+								#[cfg(test)]
+								error_data: onion_error_data
+							}
 						}
 					},
 					&HTLCFailReason::Reason {
@@ -6631,6 +6693,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Writeable f
 			(5, self.our_network_pubkey, required),
 			(7, self.fake_scid_rand_bytes, required),
 			(9, htlc_purposes, vec_type),
+			(11, self.probing_cookie_secret, required),
 		});
 
 		Ok(())
@@ -6927,6 +6990,7 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 		let mut pending_outbound_payments = None;
 		let mut received_network_pubkey: Option<PublicKey> = None;
 		let mut fake_scid_rand_bytes: Option<[u8; 32]> = None;
+		let mut probing_cookie_secret: Option<[u8; 32]> = None;
 		let mut claimable_htlc_purposes = None;
 		read_tlv_fields!(reader, {
 			(1, pending_outbound_payments_no_retry, option),
@@ -6934,9 +6998,14 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 			(5, received_network_pubkey, option),
 			(7, fake_scid_rand_bytes, option),
 			(9, claimable_htlc_purposes, vec_type),
+			(11, probing_cookie_secret, option),
 		});
 		if fake_scid_rand_bytes.is_none() {
 			fake_scid_rand_bytes = Some(args.keys_manager.get_secure_random_bytes());
+		}
+
+		if probing_cookie_secret.is_none() {
+			probing_cookie_secret = Some(args.keys_manager.get_secure_random_bytes());
 		}
 
 		if pending_outbound_payments.is_none() && pending_outbound_payments_no_retry.is_none() {
@@ -7143,6 +7212,8 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 
 			outbound_scid_aliases: Mutex::new(outbound_scid_aliases),
 			fake_scid_rand_bytes: fake_scid_rand_bytes.unwrap(),
+
+			probing_cookie_secret: probing_cookie_secret.unwrap(),
 
 			our_network_key,
 			our_network_pubkey,

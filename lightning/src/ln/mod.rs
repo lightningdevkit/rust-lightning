@@ -80,15 +80,15 @@ pub use self::peer_channel_encryptor::LN_MAX_MSG_LEN;
 /// payment_hash type, use to cross-lock hop
 /// (C-not exported) as we just use [u8; 32] directly
 #[derive(Hash, Copy, Clone, PartialEq, Eq, Debug)]
-pub struct PaymentHash(pub [u8;32]);
+pub struct PaymentHash(pub [u8; 32]);
 /// payment_preimage type, use to route payment between hop
 /// (C-not exported) as we just use [u8; 32] directly
 #[derive(Hash, Copy, Clone, PartialEq, Eq, Debug)]
-pub struct PaymentPreimage(pub [u8;32]);
+pub struct PaymentPreimage(pub [u8; 32]);
 /// payment_secret type, use to authenticate sender to the receiver and tie MPP HTLCs together
 /// (C-not exported) as we just use [u8; 32] directly
 #[derive(Hash, Copy, Clone, PartialEq, Eq, Debug)]
-pub struct PaymentSecret(pub [u8;32]);
+pub struct PaymentSecret(pub [u8; 32]);
 
 use prelude::*;
 use bitcoin::bech32;
