@@ -1177,10 +1177,22 @@ impl<T: Time> Readable for ChannelLiquidity<T> {
 			(2, max_liquidity_offset_msat, required),
 			(4, duration_since_epoch, required),
 		});
+		// On rust prior to 1.60 `Instant::duration_since` will panic if time goes backwards.
+		// We write `last_updated` as wallclock time even though its ultimately an `Instant` (which
+		// is a time from a monotonic clock usually represented as an offset against boot time).
+		// Thus, we have to construct an `Instant` by subtracting the difference in wallclock time
+		// from the one that was written. However, because `Instant` can panic if we construct one
+		// in the future, we must handle wallclock time jumping backwards, which we do by simply
+		// using `Instant::now()` in that case.
+		let wall_clock_now = T::duration_since_epoch();
+		let now = T::now();
+		let last_updated = if wall_clock_now > duration_since_epoch {
+			now - (wall_clock_now - duration_since_epoch)
+		} else { now };
 		Ok(Self {
 			min_liquidity_offset_msat,
 			max_liquidity_offset_msat,
-			last_updated: T::now() - (T::duration_since_epoch() - duration_since_epoch),
+			last_updated,
 		})
 	}
 }
