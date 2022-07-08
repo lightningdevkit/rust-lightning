@@ -231,6 +231,10 @@ pub struct PaymentParameters {
 	/// a lower value prefers to send larger MPP parts, potentially saturating channels and
 	/// increasing failure probability for those paths.
 	///
+	/// Note that this restriction will be relaxed during pathfinding after paths which meet this
+	/// restriction have been found. While paths which meet this criteria will be searched for, it
+	/// is ultimately up to the scorer to select them over other paths.
+	///
 	/// A value of 0 will allow payments up to and including a channel's total announced usable
 	/// capacity, a value of one will only use up to half its capacity, two 1/4, etc.
 	///
@@ -258,10 +262,6 @@ impl PaymentParameters {
 			expiry_time: None,
 			max_total_cltv_expiry_delta: DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA,
 			max_path_count: DEFAULT_MAX_PATH_COUNT,
-			#[cfg(test)] // Many tests were written prior to the introduction of this parameter, so
-			             // we leave it as 0 by default in tests, and change it for a few.
-			max_channel_saturation_power_of_half: 0,
-			#[cfg(not(test))]
 			max_channel_saturation_power_of_half: 1,
 		}
 	}
@@ -304,6 +304,13 @@ impl PaymentParameters {
 	/// (C-not exported) since bindings don't support move semantics
 	pub fn with_max_path_count(self, max_path_count: u8) -> Self {
 		Self { max_path_count, ..self }
+	}
+
+	/// Includes a limit for the maximum number of payment paths that may be used.
+	///
+	/// (C-not exported) since bindings don't support move semantics
+	pub fn with_max_channel_saturation_power_of_half(self, max_channel_saturation_power_of_half: u8) -> Self {
+		Self { max_channel_saturation_power_of_half, ..self }
 	}
 }
 
@@ -487,6 +494,17 @@ fn max_htlc_from_capacity(capacity: EffectiveCapacity, max_channel_saturation_po
 	}
 }
 
+fn iter_equal<I1: Iterator, I2: Iterator>(mut iter_a: I1, mut iter_b: I2)
+-> bool where I1::Item: PartialEq<I2::Item> {
+	loop {
+		let a = iter_a.next();
+		let b = iter_b.next();
+		if a.is_none() && b.is_none() { return true; }
+		if a.is_none() || b.is_none() { return false; }
+		if a.unwrap().ne(&b.unwrap()) { return false; }
+	}
+}
+
 /// It's useful to keep track of the hops associated with the fees required to use them,
 /// so that we can choose cheaper paths (as per Dijkstra's algorithm).
 /// Fee values should be updated only in the context of the whole path, see update_value_and_recompute_fees.
@@ -594,10 +612,9 @@ impl<'a> PaymentPath<'a> {
 	// to the fees being paid not lining up with the actual limits.
 	//
 	// Note that this function is not aware of the available_liquidity limit, and thus does not
-	// support increasing the value being transferred.
+	// support increasing the value being transferred beyond what was selected during the initial
+	// routing passes.
 	fn update_value_and_recompute_fees(&mut self, value_msat: u64) {
-		assert!(value_msat <= self.hops.last().unwrap().0.fee_msat);
-
 		let mut total_fee_paid_msat = 0 as u64;
 		for i in (0..self.hops.len()).rev() {
 			let last_hop = i == self.hops.len() - 1;
@@ -905,6 +922,11 @@ where L::Target: Logger {
 		final_value_msat
 	};
 
+	// When we start collecting routes we enforce the max_channel_saturation_power_of_half
+	// requirement strictly. After we've collected enough (or if we fail to find new routes) we
+	// drop the requirement by setting this to 0.
+	let mut channel_saturation_pow_half = payment_params.max_channel_saturation_power_of_half;
+
 	// Keep track of how much liquidity has been used in selected channels. Used to determine
 	// if the channel can be used by additional MPP paths or to inform path finding decisions. It is
 	// aware of direction *only* to ensure that the correct htlc_maximum_msat value is used. Hence,
@@ -958,7 +980,7 @@ where L::Target: Logger {
 			if $src_node_id != $dest_node_id {
 				let short_channel_id = $candidate.short_channel_id();
 				let effective_capacity = $candidate.effective_capacity();
-				let htlc_maximum_msat = max_htlc_from_capacity(effective_capacity, payment_params.max_channel_saturation_power_of_half);
+				let htlc_maximum_msat = max_htlc_from_capacity(effective_capacity, channel_saturation_pow_half);
 
 				// It is tricky to subtract $next_hops_fee_msat from available liquidity here.
 				// It may be misleading because we might later choose to reduce the value transferred
@@ -1530,8 +1552,7 @@ where L::Target: Logger {
 						.and_modify(|used_liquidity_msat| *used_liquidity_msat += spent_on_hop_msat)
 						.or_insert(spent_on_hop_msat);
 					let hop_capacity = hop.candidate.effective_capacity();
-					let hop_max_msat = max_htlc_from_capacity(hop_capacity,
-						payment_params.max_channel_saturation_power_of_half);
+					let hop_max_msat = max_htlc_from_capacity(hop_capacity, channel_saturation_pow_half);
 					if *used_liquidity_msat == hop_max_msat {
 						// If this path used all of this channel's available liquidity, we know
 						// this path will not be selected again in the next loop iteration.
@@ -1578,6 +1599,10 @@ where L::Target: Logger {
 		}
 
 		if !allow_mpp {
+			if !found_new_path && channel_saturation_pow_half != 0 {
+				channel_saturation_pow_half = 0;
+				continue 'paths_collection;
+			}
 			// If we don't support MPP, no use trying to gather more value ever.
 			break 'paths_collection;
 		}
@@ -1587,7 +1612,9 @@ where L::Target: Logger {
 		// iteration.
 		// In the latter case, making another path finding attempt won't help,
 		// because we deterministically terminated the search due to low liquidity.
-		if already_collected_value_msat >= recommended_value_msat || !found_new_path {
+		if !found_new_path && channel_saturation_pow_half != 0 {
+			channel_saturation_pow_half = 0;
+		} else if already_collected_value_msat >= recommended_value_msat || !found_new_path {
 			log_trace!(logger, "Have now collected {} msat (seeking {} msat) in paths. Last path loop {} a new path.",
 				already_collected_value_msat, recommended_value_msat, if found_new_path { "found" } else { "did not find" });
 			break 'paths_collection;
@@ -1703,8 +1730,32 @@ where L::Target: Logger {
 	// Step (9).
 	// Select the best route by lowest total cost.
 	drawn_routes.sort_unstable_by_key(|paths| paths.iter().map(|path| path.get_cost_msat()).sum::<u64>());
+	let selected_route = drawn_routes.first_mut().unwrap();
+
+	// Sort by the path itself and combine redundant paths.
+	// Note that we sort by SCIDs alone as its simpler but when combining we have to ensure we
+	// compare both SCIDs and NodeIds as individual nodes may use random aliases causing collisions
+	// across nodes.
+	selected_route.sort_unstable_by_key(|path| {
+		let mut key = [0u64; MAX_PATH_LENGTH_ESTIMATE as usize];
+		debug_assert!(path.hops.len() <= key.len());
+		for (scid, key) in path.hops.iter().map(|h| h.0.candidate.short_channel_id()).zip(key.iter_mut()) {
+			*key = scid;
+		}
+		key
+	});
+	for idx in 0..(selected_route.len() - 1) {
+		if idx + 1 >= selected_route.len() { break; }
+		if iter_equal(selected_route[idx    ].hops.iter().map(|h| (h.0.candidate.short_channel_id(), h.0.node_id)),
+		              selected_route[idx + 1].hops.iter().map(|h| (h.0.candidate.short_channel_id(), h.0.node_id))) {
+			let new_value = selected_route[idx].get_value_msat() + selected_route[idx + 1].get_value_msat();
+			selected_route[idx].update_value_and_recompute_fees(new_value);
+			selected_route.remove(idx + 1);
+		}
+	}
+
 	let mut selected_paths = Vec::<Vec<Result<RouteHop, LightningError>>>::new();
-	for payment_path in drawn_routes.first().unwrap() {
+	for payment_path in selected_route {
 		let mut path = payment_path.hops.iter().map(|(payment_hop, node_features)| {
 			Ok(RouteHop {
 				pubkey: PublicKey::from_slice(payment_hop.node_id.as_slice()).map_err(|_| LightningError{err: format!("Public key {:?} is invalid", &payment_hop.node_id), action: ErrorAction::IgnoreAndLog(Level::Trace)})?,
@@ -4790,17 +4841,18 @@ mod tests {
 
 		// Get a route for 100 sats and check that we found the MPP route no problem and didn't
 		// overpay at all.
-		let route = get_route(&our_id, &payment_params, &network_graph.read_only(), None, 100_000, 42, Arc::clone(&logger), &scorer, &random_seed_bytes).unwrap();
+		let mut route = get_route(&our_id, &payment_params, &network_graph.read_only(), None, 100_000, 42, Arc::clone(&logger), &scorer, &random_seed_bytes).unwrap();
 		assert_eq!(route.paths.len(), 2);
-		// Paths are somewhat randomly ordered, but:
-		// * the first is channel 2 (1 msat fee) -> channel 4 -> channel 42
-		// * the second is channel 1 (0 fee, but 99 sat maximum) -> channel 3 -> channel 42
-		assert_eq!(route.paths[0][0].short_channel_id, 2);
-		assert_eq!(route.paths[0][0].fee_msat, 1);
-		assert_eq!(route.paths[0][2].fee_msat, 1_000);
-		assert_eq!(route.paths[1][0].short_channel_id, 1);
-		assert_eq!(route.paths[1][0].fee_msat, 0);
-		assert_eq!(route.paths[1][2].fee_msat, 99_000);
+		route.paths.sort_by_key(|path| path[0].short_channel_id);
+		// Paths are manually ordered ordered by SCID, so:
+		// * the first is channel 1 (0 fee, but 99 sat maximum) -> channel 3 -> channel 42
+		// * the second is channel 2 (1 msat fee) -> channel 4 -> channel 42
+		assert_eq!(route.paths[0][0].short_channel_id, 1);
+		assert_eq!(route.paths[0][0].fee_msat, 0);
+		assert_eq!(route.paths[0][2].fee_msat, 99_000);
+		assert_eq!(route.paths[1][0].short_channel_id, 2);
+		assert_eq!(route.paths[1][0].fee_msat, 1);
+		assert_eq!(route.paths[1][2].fee_msat, 1_000);
 		assert_eq!(route.get_total_fees(), 1);
 		assert_eq!(route.get_total_amount(), 100_000);
 	}
@@ -4814,7 +4866,8 @@ mod tests {
 		let scorer = test_utils::TestScorer::with_penalty(0);
 		let keys_manager = test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
 		let random_seed_bytes = keys_manager.get_secure_random_bytes();
-		let payment_params = PaymentParameters::from_node_id(nodes[2]).with_features(InvoiceFeatures::known());
+		let payment_params = PaymentParameters::from_node_id(nodes[2]).with_features(InvoiceFeatures::known())
+			.with_max_channel_saturation_power_of_half(0);
 
 		// We need a route consisting of 3 paths:
 		// From our node to node2 via node0, node7, node1 (three paths one hop each).
@@ -5262,12 +5315,13 @@ mod tests {
 			assert_eq!(route.paths[0].len(), 1);
 			assert_eq!(route.paths[1].len(), 1);
 
+			assert!((route.paths[0][0].short_channel_id == 3 && route.paths[1][0].short_channel_id == 2) ||
+				(route.paths[0][0].short_channel_id == 2 && route.paths[1][0].short_channel_id == 3));
+
 			assert_eq!(route.paths[0][0].pubkey, nodes[0]);
-			assert_eq!(route.paths[0][0].short_channel_id, 3);
 			assert_eq!(route.paths[0][0].fee_msat, 50_000);
 
 			assert_eq!(route.paths[1][0].pubkey, nodes[0]);
-			assert_eq!(route.paths[1][0].short_channel_id, 2);
 			assert_eq!(route.paths[1][0].fee_msat, 50_000);
 		}
 

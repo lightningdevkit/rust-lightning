@@ -1823,9 +1823,12 @@ fn test_channel_reserve_holding_cell_htlcs() {
 
 	// attempt to send amt_msat > their_max_htlc_value_in_flight_msat
 	{
-		let (mut route, our_payment_hash, _, our_payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], recv_value_0);
+		let payment_params = PaymentParameters::from_node_id(nodes[2].node.get_our_node_id())
+			.with_features(InvoiceFeatures::known()).with_max_channel_saturation_power_of_half(0);
+		let (mut route, our_payment_hash, _, our_payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], payment_params, recv_value_0, TEST_FINAL_CLTV);
 		route.paths[0].last_mut().unwrap().fee_msat += 1;
 		assert!(route.paths[0].iter().rev().skip(1).all(|h| h.fee_msat == feemsat));
+
 		unwrap_send_err!(nodes[0].node.send_payment(&route, our_payment_hash, &Some(our_payment_secret)), true, APIError::ChannelUnavailable { ref err },
 			assert!(regex::Regex::new(r"Cannot send value that would put us over the max HTLC value in flight our peer will accept \(\d+\)").unwrap().is_match(err)));
 		assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
@@ -1844,7 +1847,12 @@ fn test_channel_reserve_holding_cell_htlcs() {
 		if stat01.value_to_self_msat < stat01.channel_reserve_msat + commit_tx_fee_all_htlcs + ensure_htlc_amounts_above_dust_buffer + amt_msat {
 			break;
 		}
-		send_payment(&nodes[0], &vec![&nodes[1], &nodes[2]][..], recv_value_0);
+
+		let payment_params = PaymentParameters::from_node_id(nodes[2].node.get_our_node_id())
+			.with_features(InvoiceFeatures::known()).with_max_channel_saturation_power_of_half(0);
+		let route = get_route!(nodes[0], payment_params, recv_value_0, TEST_FINAL_CLTV).unwrap();
+		let (payment_preimage, ..) = send_along_route(&nodes[0], route, &[&nodes[1], &nodes[2]], recv_value_0);
+		claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_preimage);
 
 		let (stat01_, stat11_, stat12_, stat22_) = (
 			get_channel_value_stat!(nodes[0], chan_1.2),
