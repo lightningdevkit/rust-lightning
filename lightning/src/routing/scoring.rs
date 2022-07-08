@@ -380,10 +380,12 @@ pub struct ProbabilisticScoringParameters {
 	/// Default value: 256 msat
 	pub amount_penalty_multiplier_msat: u64,
 
-	/// A list of nodes that won't be considered during path finding.
+	/// Manual penalties used for the given nodes. Allows to set a particular penalty for a given
+	/// node. Note that a manual penalty of `u64::max_value()` means the node would not ever be
+	/// considered during path finding.
 	///
 	/// (C-not exported)
-	pub banned_nodes: HashSet<NodeId>,
+	pub manual_node_penalties: HashMap<NodeId, u64>,
 
 	/// This penalty is applied when `htlc_maximum_msat` is equal to or larger than half of the
 	/// channel's capacity, which makes us prefer nodes with a smaller `htlc_maximum_msat`. We
@@ -486,17 +488,27 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> ProbabilisticScorerU
 	/// Marks the node with the given `node_id` as banned, i.e.,
 	/// it will be avoided during path finding.
 	pub fn add_banned(&mut self, node_id: &NodeId) {
-		self.params.banned_nodes.insert(*node_id);
+		self.params.manual_node_penalties.insert(*node_id, u64::max_value());
 	}
 
 	/// Removes the node with the given `node_id` from the list of nodes to avoid.
 	pub fn remove_banned(&mut self, node_id: &NodeId) {
-		self.params.banned_nodes.remove(node_id);
+		self.params.manual_node_penalties.remove(node_id);
 	}
 
-	/// Clears the list of nodes that are avoided during path finding.
-	pub fn clear_banned(&mut self) {
-		self.params.banned_nodes = HashSet::new();
+	/// Sets a manual penalty for the given node.
+	pub fn set_manual_penalty(&mut self, node_id: &NodeId, penalty: u64) {
+		self.params.manual_node_penalties.insert(*node_id, penalty);
+	}
+
+	/// Removes the node with the given `node_id` from the list of manual penalties.
+	pub fn remove_manual_penalty(&mut self, node_id: &NodeId) {
+		self.params.manual_node_penalties.remove(node_id);
+	}
+
+	/// Clears the list of manual penalties that are applied during path finding.
+	pub fn clear_manual_penalties(&mut self) {
+		self.params.manual_node_penalties = HashMap::new();
 	}
 }
 
@@ -508,7 +520,7 @@ impl ProbabilisticScoringParameters {
 			liquidity_penalty_multiplier_msat: 0,
 			liquidity_offset_half_life: Duration::from_secs(3600),
 			amount_penalty_multiplier_msat: 0,
-			banned_nodes: HashSet::new(),
+			manual_node_penalties: HashMap::new(),
 			anti_probing_penalty_msat: 0,
 		}
 	}
@@ -517,7 +529,7 @@ impl ProbabilisticScoringParameters {
 	/// they will be avoided during path finding.
 	pub fn add_banned_from_list(&mut self, node_ids: Vec<NodeId>) {
 		for id in node_ids {
-			self.banned_nodes.insert(id);
+			self.manual_node_penalties.insert(id, u64::max_value());
 		}
 	}
 }
@@ -529,7 +541,7 @@ impl Default for ProbabilisticScoringParameters {
 			liquidity_penalty_multiplier_msat: 40_000,
 			liquidity_offset_half_life: Duration::from_secs(3600),
 			amount_penalty_multiplier_msat: 256,
-			banned_nodes: HashSet::new(),
+			manual_node_penalties: HashMap::new(),
 			anti_probing_penalty_msat: 250,
 		}
 	}
@@ -731,8 +743,8 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> Score for Probabilis
 	fn channel_penalty_msat(
 		&self, short_channel_id: u64, source: &NodeId, target: &NodeId, usage: ChannelUsage
 	) -> u64 {
-		if self.params.banned_nodes.contains(source) || self.params.banned_nodes.contains(target) {
-			return u64::max_value();
+		if let Some(penalty) = self.params.manual_node_penalties.get(target) {
+			return *penalty;
 		}
 
 		let mut anti_probing_penalty_msat = 0;

@@ -1882,7 +1882,7 @@ fn build_route_from_hops_internal<L: Deref>(
 
 #[cfg(test)]
 mod tests {
-	use routing::gossip::{NetworkGraph, P2PGossipSync, NodeId};
+	use routing::gossip::{NetworkGraph, P2PGossipSync, NodeId, EffectiveCapacity};
 	use routing::router::{get_route, build_route_from_hops_internal, add_random_cltv_offset, default_node_features,
 		PaymentParameters, Route, RouteHint, RouteHintHop, RouteHop, RoutingFees,
 		DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA, MAX_PATH_LENGTH_ESTIMATE};
@@ -5727,7 +5727,7 @@ mod tests {
 	}
 
 	#[test]
-	fn avoids_banned_nodes() {
+	fn honors_manual_penalties() {
 		let (secp_ctx, network_graph, _, _, logger) = build_line_graph();
 		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
 
@@ -5737,7 +5737,17 @@ mod tests {
 		let scorer_params = ProbabilisticScoringParameters::default();
 		let mut scorer = ProbabilisticScorer::new(scorer_params, Arc::clone(&network_graph), Arc::clone(&logger));
 
-		// First check we can get a route.
+		// First check set manual penalties are returned by the scorer.
+		let usage = ChannelUsage {
+			amount_msat: 0,
+			inflight_htlc_msat: 0,
+			effective_capacity: EffectiveCapacity::Total { capacity_msat: 1_024_000, htlc_maximum_msat: Some(1_000) },
+		};
+		scorer.set_manual_penalty(&NodeId::from_pubkey(&nodes[3]), 123);
+		scorer.set_manual_penalty(&NodeId::from_pubkey(&nodes[4]), 456);
+		assert_eq!(scorer.channel_penalty_msat(42, &NodeId::from_pubkey(&nodes[3]), &NodeId::from_pubkey(&nodes[4]), usage), 456);
+
+		// Then check we can get a normal route
 		let payment_params = PaymentParameters::from_node_id(nodes[10]);
 		let route = get_route(&our_id, &payment_params, &network_graph.read_only(), None, 100, 42, Arc::clone(&logger), &scorer, &random_seed_bytes);
 		assert!(route.is_ok());
