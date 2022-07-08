@@ -816,10 +816,6 @@ impl<'a> DirectedChannelInfoWithUpdate<'a> {
 	/// Returns the [`EffectiveCapacity`] of the channel in the direction.
 	#[inline]
 	pub(super) fn effective_capacity(&self) -> EffectiveCapacity { self.inner.effective_capacity() }
-
-	/// Returns the maximum HTLC amount allowed over the channel in the direction.
-	#[inline]
-	pub(super) fn htlc_maximum_msat(&self) -> u64 { self.inner.htlc_maximum_msat() }
 }
 
 impl<'a> fmt::Debug for DirectedChannelInfoWithUpdate<'a> {

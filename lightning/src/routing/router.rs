@@ -225,6 +225,17 @@ pub struct PaymentParameters {
 	/// The maximum number of paths that may be used by (MPP) payments.
 	/// Defaults to [`DEFAULT_MAX_PATH_COUNT`].
 	pub max_path_count: u8,
+
+	/// Selects the maximum share of a channel's total capacity which will be sent over a channel,
+	/// as a power of 1/2. A higher value prefers to send the payment using more MPP parts whereas
+	/// a lower value prefers to send larger MPP parts, potentially saturating channels and
+	/// increasing failure probability for those paths.
+	///
+	/// A value of 0 will allow payments up to and including a channel's total announced usable
+	/// capacity, a value of one will only use up to half its capacity, two 1/4, etc.
+	///
+	/// Default value: 1
+	pub max_channel_saturation_power_of_half: u8,
 }
 
 impl_writeable_tlv_based!(PaymentParameters, {
@@ -233,6 +244,7 @@ impl_writeable_tlv_based!(PaymentParameters, {
 	(2, features, option),
 	(3, max_path_count, (default_value, DEFAULT_MAX_PATH_COUNT)),
 	(4, route_hints, vec_type),
+	(5, max_channel_saturation_power_of_half, (default_value, 1)),
 	(6, expiry_time, option),
 });
 
@@ -246,6 +258,11 @@ impl PaymentParameters {
 			expiry_time: None,
 			max_total_cltv_expiry_delta: DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA,
 			max_path_count: DEFAULT_MAX_PATH_COUNT,
+			#[cfg(test)] // Many tests were written prior to the introduction of this parameter, so
+			             // we leave it as 0 by default in tests, and change it for a few.
+			max_channel_saturation_power_of_half: 0,
+			#[cfg(not(test))]
+			max_channel_saturation_power_of_half: 1,
 		}
 	}
 
@@ -433,16 +450,6 @@ impl<'a> CandidateRouteHop<'a> {
 		}
 	}
 
-	fn htlc_maximum_msat(&self) -> u64 {
-		match self {
-			CandidateRouteHop::FirstHop { details } => details.next_outbound_htlc_limit_msat,
-			CandidateRouteHop::PublicHop { info, .. } => info.htlc_maximum_msat(),
-			CandidateRouteHop::PrivateHop { hint } => {
-				hint.htlc_maximum_msat.unwrap_or(u64::max_value())
-			},
-		}
-	}
-
 	fn fees(&self) -> RoutingFees {
 		match self {
 			CandidateRouteHop::FirstHop { .. } => RoutingFees {
@@ -461,6 +468,22 @@ impl<'a> CandidateRouteHop<'a> {
 			CandidateRouteHop::PublicHop { info, .. } => info.effective_capacity(),
 			CandidateRouteHop::PrivateHop { .. } => EffectiveCapacity::Infinite,
 		}
+	}
+}
+
+#[inline]
+fn max_htlc_from_capacity(capacity: EffectiveCapacity, max_channel_saturation_power_of_half: u8) -> u64 {
+	let saturation_shift: u32 = max_channel_saturation_power_of_half as u32;
+	match capacity {
+		EffectiveCapacity::ExactLiquidity { liquidity_msat } => liquidity_msat,
+		EffectiveCapacity::Infinite => u64::max_value(),
+		EffectiveCapacity::Unknown => EffectiveCapacity::Unknown.as_msat(),
+		EffectiveCapacity::MaximumHTLC { amount_msat } =>
+			amount_msat.checked_shr(saturation_shift).unwrap_or(0),
+		EffectiveCapacity::Total { capacity_msat, htlc_maximum_msat: None } =>
+			capacity_msat.checked_shr(saturation_shift).unwrap_or(0),
+		EffectiveCapacity::Total { capacity_msat, htlc_maximum_msat: Some(htlc_max) } =>
+			cmp::min(capacity_msat.checked_shr(saturation_shift).unwrap_or(0), htlc_max),
 	}
 }
 
@@ -934,7 +957,8 @@ where L::Target: Logger {
 			// - for first and last hops early in get_route
 			if $src_node_id != $dest_node_id {
 				let short_channel_id = $candidate.short_channel_id();
-				let htlc_maximum_msat = $candidate.htlc_maximum_msat();
+				let effective_capacity = $candidate.effective_capacity();
+				let htlc_maximum_msat = max_htlc_from_capacity(effective_capacity, payment_params.max_channel_saturation_power_of_half);
 
 				// It is tricky to subtract $next_hops_fee_msat from available liquidity here.
 				// It may be misleading because we might later choose to reduce the value transferred
@@ -1084,7 +1108,7 @@ where L::Target: Logger {
 							let channel_usage = ChannelUsage {
 								amount_msat: amount_to_transfer_over_msat,
 								inflight_htlc_msat: used_liquidity_msat,
-								effective_capacity: $candidate.effective_capacity(),
+								effective_capacity,
 							};
 							let channel_penalty_msat = scorer.channel_penalty_msat(
 								short_channel_id, &$src_node_id, &$dest_node_id, channel_usage
@@ -1505,12 +1529,15 @@ where L::Target: Logger {
 						.entry((hop.candidate.short_channel_id(), *prev_hop < hop.node_id))
 						.and_modify(|used_liquidity_msat| *used_liquidity_msat += spent_on_hop_msat)
 						.or_insert(spent_on_hop_msat);
-					if *used_liquidity_msat == hop.candidate.htlc_maximum_msat() {
+					let hop_capacity = hop.candidate.effective_capacity();
+					let hop_max_msat = max_htlc_from_capacity(hop_capacity,
+						payment_params.max_channel_saturation_power_of_half);
+					if *used_liquidity_msat == hop_max_msat {
 						// If this path used all of this channel's available liquidity, we know
 						// this path will not be selected again in the next loop iteration.
 						prevented_redundant_path_selection = true;
 					}
-					debug_assert!(*used_liquidity_msat <= hop.candidate.htlc_maximum_msat());
+					debug_assert!(*used_liquidity_msat <= hop_max_msat);
 				}
 				if !prevented_redundant_path_selection {
 					// If we weren't capped by hitting a liquidity limit on a channel in the path,
