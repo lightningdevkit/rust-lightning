@@ -5722,6 +5722,50 @@ mod tests {
 		}
 	}
 
+	#[test]
+	fn avoids_saturating_channels() {
+		let (secp_ctx, network_graph, gossip_sync, _, logger) = build_graph();
+		let (_, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
+
+		let scorer = ProbabilisticScorer::new(Default::default(), &*network_graph, Arc::clone(&logger));
+
+		// Set the fee on channel 13 to 100% to match channel 4 giving us two equivalent paths (us
+		// -> node 7 -> node2 and us -> node 1 -> node 2) which we should balance over.
+		update_channel(&gossip_sync, &secp_ctx, &privkeys[1], UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 4,
+			timestamp: 2,
+			flags: 0,
+			cltv_expiry_delta: (4 << 4) | 1,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Present(200_000_000),
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+		update_channel(&gossip_sync, &secp_ctx, &privkeys[7], UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 13,
+			timestamp: 2,
+			flags: 0,
+			cltv_expiry_delta: (13 << 4) | 1,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: OptionalField::Present(200_000_000),
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+
+		let payment_params = PaymentParameters::from_node_id(nodes[2]).with_features(InvoiceFeatures::known());
+		let keys_manager = test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
+		let random_seed_bytes = keys_manager.get_secure_random_bytes();
+		// 150,000 sat is less than the available liquidity on each channel, set above.
+		let route = get_route(&our_id, &payment_params, &network_graph.read_only(), None, 150_000_000, 42, Arc::clone(&logger), &scorer, &random_seed_bytes).unwrap();
+		assert_eq!(route.paths.len(), 2);
+		assert!((route.paths[0][1].short_channel_id == 4 && route.paths[1][1].short_channel_id == 13) ||
+			(route.paths[1][1].short_channel_id == 4 && route.paths[0][1].short_channel_id == 13));
+	}
+
 	#[cfg(not(feature = "no-std"))]
 	pub(super) fn random_init_seed() -> u64 {
 		// Because the default HashMap in std pulls OS randomness, we can use it as a (bad) RNG.
