@@ -6583,6 +6583,7 @@ mod tests {
 	use bitcoin::secp256k1::{Secp256k1, ecdsa::Signature};
 	use bitcoin::secp256k1::ffi::Signature as FFISignature;
 	use bitcoin::secp256k1::{SecretKey,PublicKey};
+	use bitcoin::secp256k1::ecdh::SharedSecret;
 	use bitcoin::secp256k1::ecdsa::RecoverableSignature;
 	use bitcoin::hashes::sha256::Hash as Sha256;
 	use bitcoin::hashes::Hash;
@@ -6621,6 +6622,7 @@ mod tests {
 		type Signer = InMemorySigner;
 
 		fn get_node_secret(&self, _recipient: Recipient) -> Result<SecretKey, ()> { panic!(); }
+		fn ecdh(&self, _recipient: Recipient, _other_key: &PublicKey, _tweak: Option<&[u8; 32]>) -> Result<SharedSecret, ()> { panic!(); }
 		fn get_inbound_payment_key_material(&self) -> KeyMaterial { panic!(); }
 		fn get_destination_script(&self) -> Script {
 			let secp_ctx = Secp256k1::signing_only();
