@@ -2471,7 +2471,7 @@ fn revoked_output_claim() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
-	// node[0] is gonna to revoke an old state thus node[1] should be able to claim the revoked output
+	// node[0] is going to revoke an old state thus node[1] should be able to claim the revoked output
 	let revoked_local_txn = get_local_commitment_txn!(nodes[0], chan_1.2);
 	assert_eq!(revoked_local_txn.len(), 1);
 	// Only output is the full channel value back to nodes[0]:
@@ -4750,6 +4750,75 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 			_ => panic!("Unexpected event!"),
 		}
 	}
+}
+
+#[test]
+fn test_deserialize_monitor_force_closed_without_broadcasting_txn() {
+	// Test deserializing a manager with a monitor that was force closed with {should_broadcast: false}.
+	// We expect not to broadcast the txn during deseriliazization, but to still be able to force-broadcast it.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let logger;
+	let fee_estimator;
+	let persister: test_utils::TestPersister;
+	let new_chain_monitor: test_utils::TestChainMonitor;
+	let deserialized_chanmgr: ChannelManager<EnforcingSigner, &test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>;
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None, None, None]);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let (_, _, channel_id, funding_tx) = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
+	
+	node_chanmgrs[0].force_close_without_broadcasting_txn(&channel_id, &nodes[1].node.get_our_node_id()).unwrap();
+
+	// Serialize the monitor and node.
+	let mut chanmon_writer = test_utils::TestVecWriter(Vec::new());
+	get_monitor!(nodes[0], channel_id).write(&mut chanmon_writer).unwrap();
+	let serialized_chanmon = chanmon_writer.0;
+	let serialized_node = nodes[0].node.encode();
+
+	logger = test_utils::TestLogger::new();
+	fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) };
+	persister = test_utils::TestPersister::new();
+	let keys_manager = &chanmon_cfgs[0].keys_manager;
+	new_chain_monitor = test_utils::TestChainMonitor::new(Some(nodes[0].chain_source), nodes[0].tx_broadcaster.clone(), &logger, &fee_estimator, &persister, keys_manager);
+	nodes[0].chain_monitor = &new_chain_monitor;
+
+	// Deserialize the result.
+	let mut chanmon_read = &serialized_chanmon[..];
+	let (_, mut deserialized_chanmon) = <(BlockHash, ChannelMonitor<EnforcingSigner>)>::read(&mut chanmon_read, keys_manager).unwrap();
+	assert!(chanmon_read.is_empty());
+	let mut node_read = &serialized_node[..];
+	let tx_broadcaster = nodes[0].tx_broadcaster.clone();
+	let channel_monitors = HashMap::from([(deserialized_chanmon.get_funding_txo().0, &mut deserialized_chanmon)]);
+	let (_, deserialized_chanmgr_temp) =
+		<(BlockHash, ChannelManager<EnforcingSigner, &test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>)>::read(&mut node_read, ChannelManagerReadArgs {
+		default_config: UserConfig::default(),
+		keys_manager,
+		fee_estimator: &fee_estimator,
+		chain_monitor: &new_chain_monitor,
+		tx_broadcaster,
+		logger: &logger,
+		channel_monitors,
+	}).unwrap();
+	deserialized_chanmgr = deserialized_chanmgr_temp;
+	nodes[0].node = &deserialized_chanmgr;
+
+	{ // Assert that the latest commitment txn hasn't been broadcasted.
+		let txn = tx_broadcaster.txn_broadcasted.lock().unwrap();
+		assert_eq!(txn.len(), 0);
+	}
+	
+	{ // Assert that we can still force-broadcast the latest commitment txn.
+		deserialized_chanmon.force_broadcast_latest_holder_commitment_txn_unsafe(&tx_broadcaster, &&logger); 
+		let txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
+		assert_eq!(txn.len(), 1);
+		check_spends!(txn[0], funding_tx);
+		assert_eq!(txn[0].input[0].previous_output.txid, funding_tx.txid());
+	}
+
+	assert!(nodes[0].chain_monitor.watch_channel(deserialized_chanmon.get_funding_txo().0, deserialized_chanmon).is_ok());
+	check_added_monitors!(nodes[0], 1);
+	nodes[0].node.get_and_clear_pending_msg_events();
+	nodes[0].node.get_and_clear_pending_events();
 }
 
 macro_rules! check_spendable_outputs {
@@ -7578,7 +7647,7 @@ fn test_force_close_without_broadcast() {
 #[test]
 fn test_check_htlc_underpaying() {
 	// Send payment through A -> B but A is maliciously
-	// sending a probe payment (i.e less than expected value0
+	// sending a probe payment (i.e less than expected value)
 	// to B, B should refuse payment.
 
 	let chanmon_cfgs = create_chanmon_cfgs(2);

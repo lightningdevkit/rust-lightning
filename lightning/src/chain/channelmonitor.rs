@@ -1013,6 +1013,7 @@ impl<Signer: Sign> Writeable for ChannelMonitorImpl<Signer> {
 
 		self.lockdown_from_offchain.write(writer)?;
 		self.holder_tx_signed.write(writer)?;
+		self.allow_automated_broadcast.write(writer)?;
 
 		write_tlv_fields!(writer, {
 			(1, self.funding_spend_confirmed, option),
@@ -2165,11 +2166,12 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		}
 	}
 
+	// Broadcasts the latest commitment transaction only if it's safe to do so.
 	pub(crate) fn maybe_broadcast_latest_holder_commitment_txn<B: Deref, L: Deref>(&mut self, broadcaster: &B, logger: &L)
 		where B::Target: BroadcasterInterface,
 					L::Target: Logger,
 	{
-		if self.allow_automated_broadcast{
+		if self.allow_automated_broadcast {
 			for tx in self.get_latest_holder_commitment_txn(logger).iter() {
 				log_info!(logger, "Broadcasting local {}", log_tx!(tx));
 				broadcaster.broadcast_transaction(tx);
@@ -2180,7 +2182,9 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		}
 	}
 
-	pub(crate) fn force_broadcast_latest_holder_commitment_txn_unsafe<B: Deref, L: Deref>(&mut self, broadcaster: &B, logger: &L)
+	// Broadcasts the latest commitment transaction, even if we can't ensure it's safe to do so
+	// due to missing information.
+	pub fn force_broadcast_latest_holder_commitment_txn_unsafe<B: Deref, L: Deref>(&mut self, broadcaster: &B, logger: &L)
 		where B::Target: BroadcasterInterface,
 					L::Target: Logger,
 	{
@@ -2248,14 +2252,16 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 					self.lockdown_from_offchain = true;
 					if *should_broadcast {
 						self.maybe_broadcast_latest_holder_commitment_txn(broadcaster, logger);
-					} else if !self.holder_tx_signed {
-						self.allow_automated_broadcast = false;
-						log_error!(logger, "You have a toxic holder commitment transaction avaible in channel monitor, read comment in ChannelMonitor::get_latest_holder_commitment_txn to be informed of manual action to take");
 					} else {
-						// If we generated a MonitorEvent::CommitmentTxConfirmed, the ChannelManager
-						// will still give us a ChannelForceClosed event with !should_broadcast, but we
-						// shouldn't print the scary warning above.
-						log_info!(logger, "Channel off-chain state closed after we broadcasted our latest commitment transaction.");
+						self.allow_automated_broadcast = false;
+						if !self.holder_tx_signed {
+							log_error!(logger, "You have a toxic holder commitment transaction avaible in channel monitor, read comment in ChannelMonitor::get_latest_holder_commitment_txn to be informed of manual action to take");
+						} else {
+							// If we generated a MonitorEvent::CommitmentTxConfirmed, the ChannelManager
+							// will still give us a ChannelForceClosed event with !should_broadcast, but we
+							// shouldn't print the scary warning above.
+							log_info!(logger, "Channel off-chain state closed after we broadcasted our latest commitment transaction.");
+						}
 					}
 				},
 				ChannelMonitorUpdateStep::ShutdownScript { scriptpubkey } => {
@@ -3638,6 +3644,7 @@ impl<'a, Signer: Sign, K: KeysInterface<Signer = Signer>> ReadableArgs<&'a K>
 
 		let lockdown_from_offchain = Readable::read(reader)?;
 		let holder_tx_signed = Readable::read(reader)?;
+		let allow_automated_broadcast: bool = Readable::read(reader)?;
 
 		if let Some(prev_commitment_tx) = prev_holder_signed_commitment_tx.as_mut() {
 			let prev_holder_value = onchain_tx_handler.get_prev_holder_commitment_to_self_value();
@@ -3726,7 +3733,7 @@ impl<'a, Signer: Sign, K: KeysInterface<Signer = Signer>> ReadableArgs<&'a K>
 
 			secp_ctx,
 
-			allow_automated_broadcast: true,
+			allow_automated_broadcast,
 		})))
 	}
 }

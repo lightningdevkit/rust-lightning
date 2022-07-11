@@ -368,7 +368,7 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool, use_funding_
 		}
 	}
 	// With expect_channel_force_closed set the TestChainMonitor will enforce that the next update
-	// is a ChannelForcClosed on the right channel with should_broadcast set.
+	// is a ChannelForceClosed on the right channel with should_broadcast set.
 	*nodes[0].chain_monitor.expect_channel_force_closed.lock().unwrap() = Some((chan.2, true));
 	nodes[0].node.test_process_background_events(); // Required to free the pending background monitor update
 	check_added_monitors!(nodes[0], 1);
