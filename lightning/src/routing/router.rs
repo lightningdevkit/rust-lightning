@@ -238,7 +238,7 @@ pub struct PaymentParameters {
 	/// A value of 0 will allow payments up to and including a channel's total announced usable
 	/// capacity, a value of one will only use up to half its capacity, two 1/4, etc.
 	///
-	/// Default value: 1
+	/// Default value: 2
 	pub max_channel_saturation_power_of_half: u8,
 
 	/// A list of SCIDs which this payment was previously attempted over and which caused the
@@ -253,7 +253,7 @@ impl_writeable_tlv_based!(PaymentParameters, {
 	(2, features, option),
 	(3, max_path_count, (default_value, DEFAULT_MAX_PATH_COUNT)),
 	(4, route_hints, vec_type),
-	(5, max_channel_saturation_power_of_half, (default_value, 1)),
+	(5, max_channel_saturation_power_of_half, (default_value, 2)),
 	(6, expiry_time, option),
 	(7, previously_failed_channels, vec_type),
 });
@@ -268,7 +268,7 @@ impl PaymentParameters {
 			expiry_time: None,
 			max_total_cltv_expiry_delta: DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA,
 			max_path_count: DEFAULT_MAX_PATH_COUNT,
-			max_channel_saturation_power_of_half: 1,
+			max_channel_saturation_power_of_half: 2,
 			previously_failed_channels: Vec::new(),
 		}
 	}
@@ -4757,7 +4757,7 @@ mod tests {
 				cltv_expiry_delta: 42,
 				htlc_minimum_msat: None,
 				htlc_maximum_msat: None,
-			}])]);
+			}])]).with_max_channel_saturation_power_of_half(0);
 
 		// Keep only two paths from us to nodes[2], both with a 99sat HTLC maximum, with one with
 		// no fee and one with a 1msat fee. Previously, trying to route 100 sats to nodes[2] here
@@ -5741,7 +5741,7 @@ mod tests {
 			flags: 0,
 			cltv_expiry_delta: (4 << 4) | 1,
 			htlc_minimum_msat: 0,
-			htlc_maximum_msat: OptionalField::Present(200_000_000),
+			htlc_maximum_msat: OptionalField::Present(250_000_000),
 			fee_base_msat: 0,
 			fee_proportional_millionths: 0,
 			excess_data: Vec::new()
@@ -5753,7 +5753,7 @@ mod tests {
 			flags: 0,
 			cltv_expiry_delta: (13 << 4) | 1,
 			htlc_minimum_msat: 0,
-			htlc_maximum_msat: OptionalField::Present(200_000_000),
+			htlc_maximum_msat: OptionalField::Present(250_000_000),
 			fee_base_msat: 0,
 			fee_proportional_millionths: 0,
 			excess_data: Vec::new()
@@ -5762,8 +5762,8 @@ mod tests {
 		let payment_params = PaymentParameters::from_node_id(nodes[2]).with_features(InvoiceFeatures::known());
 		let keys_manager = test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
 		let random_seed_bytes = keys_manager.get_secure_random_bytes();
-		// 150,000 sat is less than the available liquidity on each channel, set above.
-		let route = get_route(&our_id, &payment_params, &network_graph.read_only(), None, 150_000_000, 42, Arc::clone(&logger), &scorer, &random_seed_bytes).unwrap();
+		// 100,000 sats is less than the available liquidity on each channel, set above.
+		let route = get_route(&our_id, &payment_params, &network_graph.read_only(), None, 100_000_000, 42, Arc::clone(&logger), &scorer, &random_seed_bytes).unwrap();
 		assert_eq!(route.paths.len(), 2);
 		assert!((route.paths[0][1].short_channel_id == 4 && route.paths[1][1].short_channel_id == 13) ||
 			(route.paths[1][1].short_channel_id == 4 && route.paths[0][1].short_channel_id == 13));
