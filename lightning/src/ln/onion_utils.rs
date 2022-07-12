@@ -725,7 +725,8 @@ pub(crate) fn decode_next_hop<D: DecodeInput, R: ReadableArgs<D::Arg>, N: NextPa
 				return Ok((msg, None)); // We are the final destination for this packet
 			} else {
 				let mut new_packet_bytes = N::new(hop_data.len());
-				let read_pos = chacha_stream.read(new_packet_bytes.as_mut()).unwrap();
+				let read_pos = hop_data.len() - chacha_stream.read.position() as usize;
+				chacha_stream.read_exact(&mut new_packet_bytes.as_mut()[..read_pos]).unwrap();
 				#[cfg(debug_assertions)]
 				{
 					// Check two things:
