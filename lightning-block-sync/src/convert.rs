@@ -254,7 +254,7 @@ pub(crate) mod tests {
 	use serde_json::Value;
 
 	/// Converts from `BlockHeaderData` into a `GetHeaderResponse` JSON value.
-	impl From<BlockHeaderData> for serde_json::Value {
+	impl From<BlockHeaderData> for Value {
 		fn from(data: BlockHeaderData) -> Self {
 			let BlockHeaderData { chainwork, height, header } = data;
 			serde_json::json!({

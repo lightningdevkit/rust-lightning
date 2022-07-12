@@ -88,8 +88,8 @@ impl HttpEndpoint {
 	}
 }
 
-impl<'a> std::net::ToSocketAddrs for &'a HttpEndpoint {
-	type Iter = <(&'a str, u16) as std::net::ToSocketAddrs>::Iter;
+impl<'a> ToSocketAddrs for &'a HttpEndpoint {
+	type Iter = <(&'a str, u16) as ToSocketAddrs>::Iter;
 
 	fn to_socket_addrs(&self) -> std::io::Result<Self::Iter> {
 		(self.host(), self.port()).to_socket_addrs()
@@ -539,7 +539,7 @@ pub(crate) mod client_tests {
 
 	/// Server for handling HTTP client requests with a stock response.
 	pub struct HttpServer {
-		address: std::net::SocketAddr,
+		address: SocketAddr,
 		handler: std::thread::JoinHandle<()>,
 		shutdown: std::sync::Arc<std::sync::atomic::AtomicBool>,
 	}
@@ -658,8 +658,6 @@ pub(crate) mod client_tests {
 		match HttpClient::connect(("::", 80)) {
 			#[cfg(target_os = "windows")]
 			Err(e) => assert_eq!(e.kind(), std::io::ErrorKind::AddrNotAvailable),
-			#[cfg(not(target_os = "windows"))]
-			Err(e) => assert_eq!(e.kind(), std::io::ErrorKind::ConnectionRefused),
 			Ok(_) => panic!("Expected error"),
 		}
 	}

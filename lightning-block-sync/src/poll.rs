@@ -48,7 +48,7 @@ pub enum ChainTip {
 /// This trait is sealed and not meant to be implemented outside of this crate.
 pub trait Validate: sealed::Validate {
 	/// The validated data wrapper which can be dereferenced to obtain the validated data.
-	type T: std::ops::Deref<Target = Self>;
+	type T: Deref<Target = Self>;
 
 	/// Validates the chain data against the given block hash and any criteria needed to ensure that
 	/// it is internally consistent.
@@ -104,7 +104,7 @@ pub struct ValidatedBlockHeader {
 	inner: BlockHeaderData,
 }
 
-impl std::ops::Deref for ValidatedBlockHeader {
+impl Deref for ValidatedBlockHeader {
 	type Target = BlockHeaderData;
 
 	fn deref(&self) -> &Self::Target {
@@ -150,7 +150,7 @@ pub struct ValidatedBlock {
 	inner: Block,
 }
 
-impl std::ops::Deref for ValidatedBlock {
+impl Deref for ValidatedBlock {
 	type Target = Block;
 
 	fn deref(&self) -> &Self::Target {
