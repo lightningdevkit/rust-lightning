@@ -1476,7 +1476,7 @@ where L::Target: Logger {
 		// Both these cases (and other cases except reaching recommended_value_msat) mean that
 		// paths_collection will be stopped because found_new_path==false.
 		// This is not necessarily a routing failure.
-		'path_construction: while let Some(RouteGraphNode { node_id, lowest_fee_to_node, total_cltv_delta, value_contribution_msat, path_htlc_minimum_msat, path_penalty_msat, path_length_to_node, .. }) = targets.pop() {
+		'path_construction: while let Some(RouteGraphNode { node_id, lowest_fee_to_node, total_cltv_delta, mut value_contribution_msat, path_htlc_minimum_msat, path_penalty_msat, path_length_to_node, .. }) = targets.pop() {
 
 			// Since we're going payee-to-payer, hitting our node as a target means we should stop
 			// traversing the graph and arrange the path out of what we found.
@@ -1542,7 +1542,9 @@ where L::Target: Logger {
 				// on some channels we already passed (assuming dest->source direction). Here, we
 				// recompute the fees again, so that if that's the case, we match the currently
 				// underpaid htlc_minimum_msat with fees.
-				payment_path.update_value_and_recompute_fees(cmp::min(value_contribution_msat, final_value_msat));
+				debug_assert_eq!(payment_path.get_value_msat(), value_contribution_msat);
+				value_contribution_msat = cmp::min(value_contribution_msat, final_value_msat);
+				payment_path.update_value_and_recompute_fees(value_contribution_msat);
 
 				// Since a path allows to transfer as much value as
 				// the smallest channel it has ("bottleneck"), we should recompute
