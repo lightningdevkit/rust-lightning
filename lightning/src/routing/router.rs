@@ -754,7 +754,7 @@ where L::Target: Logger, GL::Target: Logger {
 pub(crate) fn get_route<L: Deref, S: Score>(
 	our_node_pubkey: &PublicKey, payment_params: &PaymentParameters, network_graph: &ReadOnlyNetworkGraph,
 	first_hops: Option<&[&ChannelDetails]>, final_value_msat: u64, final_cltv_expiry_delta: u32,
-	logger: L, scorer: &S, random_seed_bytes: &[u8; 32]
+	logger: L, scorer: &S, _random_seed_bytes: &[u8; 32]
 ) -> Result<Route, LightningError>
 where L::Target: Logger {
 	let payee_node_id = NodeId::from_pubkey(&payment_params.payee_pubkey);
@@ -796,11 +796,11 @@ where L::Target: Logger {
 	// 4. See if we managed to collect paths which aggregately are able to transfer target value
 	//    (not recommended value).
 	// 5. If yes, proceed. If not, fail routing.
-	// 6. Randomly combine paths into routes having enough to fulfill the payment. (TODO: knapsack)
-	// 7. Of all the found paths, select only those with the lowest total fee.
-	// 8. The last path in every selected route is likely to be more than we need.
-	//    Reduce its value-to-transfer and recompute fees.
-	// 9. Choose the best route by the lowest total fee.
+	// 6. Select the paths which have the lowest cost (fee plus scorer penalty) per amount
+	//    transferred up to the transfer target value.
+	// 7. Reduce the value of the last path until we are sending only the target value.
+	// 8. If our maximum channel saturation limit caused us to pick two identical paths, combine
+	//    them so that we're not sending two HTLCs along the same path.
 
 	// As for the actual search algorithm,
 	// we do a payee-to-payer pseudo-Dijkstra's sorting by each node's distance from the payee
@@ -1655,96 +1655,55 @@ where L::Target: Logger {
 		return Err(LightningError{err: "Failed to find a sufficient route to the given destination".to_owned(), action: ErrorAction::IgnoreError});
 	}
 
-	// Sort by total fees and take the best paths.
-	payment_paths.sort_unstable_by_key(|path| path.get_total_fee_paid_msat());
-	if payment_paths.len() > 50 {
-		payment_paths.truncate(50);
-	}
+	// Step (6).
+	let mut selected_route = payment_paths;
 
-	// Draw multiple sufficient routes by randomly combining the selected paths.
-	let mut drawn_routes = Vec::new();
-	let mut prng = ChaCha20::new(random_seed_bytes, &[0u8; 12]);
-	let mut random_index_bytes = [0u8; ::core::mem::size_of::<usize>()];
+	debug_assert_eq!(selected_route.iter().map(|p| p.get_value_msat()).sum::<u64>(), already_collected_value_msat);
+	let mut overpaid_value_msat = already_collected_value_msat - final_value_msat;
 
-	let num_permutations = payment_paths.len();
-	for _ in 0..num_permutations {
-		let mut cur_route = Vec::<PaymentPath>::new();
-		let mut aggregate_route_value_msat = 0;
+	// First, sort by the cost-per-value of the path, dropping the paths that cost the most for
+	// the value they contribute towards the payment amount.
+	// We sort in descending order as we will remove from the front in `retain`, next.
+	selected_route.sort_unstable_by(|a, b|
+		(((b.get_cost_msat() as u128) << 64) / (b.get_value_msat() as u128))
+			.cmp(&(((a.get_cost_msat() as u128) << 64) / (a.get_value_msat() as u128)))
+	);
 
-		// Step (6).
-		// Do a Fisher-Yates shuffle to create a random permutation of the payment paths
-		for cur_index in (1..payment_paths.len()).rev() {
-			prng.process_in_place(&mut random_index_bytes);
-			let random_index = usize::from_be_bytes(random_index_bytes).wrapping_rem(cur_index+1);
-			payment_paths.swap(cur_index, random_index);
+	// We should make sure that at least 1 path left.
+	let mut paths_left = selected_route.len();
+	selected_route.retain(|path| {
+		if paths_left == 1 {
+			return true
 		}
+		let path_value_msat = path.get_value_msat();
+		if path_value_msat <= overpaid_value_msat {
+			overpaid_value_msat -= path_value_msat;
+			paths_left -= 1;
+			return false;
+		}
+		true
+	});
+	debug_assert!(selected_route.len() > 0);
 
+	if overpaid_value_msat != 0 {
 		// Step (7).
-		for payment_path in &payment_paths {
-			cur_route.push(payment_path.clone());
-			aggregate_route_value_msat += payment_path.get_value_msat();
-			if aggregate_route_value_msat > final_value_msat {
-				// Last path likely overpaid. Substract it from the most expensive
-				// (in terms of proportional fee) path in this route and recompute fees.
-				// This might be not the most economically efficient way, but fewer paths
-				// also makes routing more reliable.
-				let mut overpaid_value_msat = aggregate_route_value_msat - final_value_msat;
+		// Now, subtract the remaining overpaid value from the most-expensive path.
+		// TODO: this could also be optimized by also sorting by feerate_per_sat_routed,
+		// so that the sender pays less fees overall. And also htlc_minimum_msat.
+		selected_route.sort_unstable_by(|a, b| {
+			let a_f = a.hops.iter().map(|hop| hop.0.candidate.fees().proportional_millionths as u64).sum::<u64>();
+			let b_f = b.hops.iter().map(|hop| hop.0.candidate.fees().proportional_millionths as u64).sum::<u64>();
+			a_f.cmp(&b_f).then_with(|| b.get_cost_msat().cmp(&a.get_cost_msat()))
+		});
+		let expensive_payment_path = selected_route.first_mut().unwrap();
 
-				// First, we drop some expensive low-value paths entirely if possible, since fewer
-				// paths is better: the payment is less likely to fail. In order to do so, we sort
-				// by value and fall back to total fees paid, i.e., in case of equal values we
-				// prefer lower cost paths.
-				cur_route.sort_unstable_by(|a, b| {
-					a.get_value_msat().cmp(&b.get_value_msat())
-						// Reverse ordering for cost, so we drop higher-cost paths first
-						.then_with(|| b.get_cost_msat().cmp(&a.get_cost_msat()))
-				});
-
-				// We should make sure that at least 1 path left.
-				let mut paths_left = cur_route.len();
-				cur_route.retain(|path| {
-					if paths_left == 1 {
-						return true
-					}
-					let mut keep = true;
-					let path_value_msat = path.get_value_msat();
-					if path_value_msat <= overpaid_value_msat {
-						keep = false;
-						overpaid_value_msat -= path_value_msat;
-						paths_left -= 1;
-					}
-					keep
-				});
-
-				if overpaid_value_msat == 0 {
-					break;
-				}
-
-				assert!(cur_route.len() > 0);
-
-				// Step (8).
-				// Now, subtract the overpaid value from the most-expensive path.
-				// TODO: this could also be optimized by also sorting by feerate_per_sat_routed,
-				// so that the sender pays less fees overall. And also htlc_minimum_msat.
-				cur_route.sort_unstable_by_key(|path| { path.hops.iter().map(|hop| hop.0.candidate.fees().proportional_millionths as u64).sum::<u64>() });
-				let expensive_payment_path = cur_route.first_mut().unwrap();
-
-				// We already dropped all the small value paths above, meaning all the
-				// remaining paths are larger than remaining overpaid_value_msat.
-				// Thus, this can't be negative.
-				let expensive_path_new_value_msat = expensive_payment_path.get_value_msat() - overpaid_value_msat;
-				expensive_payment_path.update_value_and_recompute_fees(expensive_path_new_value_msat);
-				break;
-			}
-		}
-		drawn_routes.push(cur_route);
+		// We already dropped all the paths with value below `overpaid_value_msat` above, thus this
+		// can't go negative.
+		let expensive_path_new_value_msat = expensive_payment_path.get_value_msat() - overpaid_value_msat;
+		expensive_payment_path.update_value_and_recompute_fees(expensive_path_new_value_msat);
 	}
 
-	// Step (9).
-	// Select the best route by lowest total cost.
-	drawn_routes.sort_unstable_by_key(|paths| paths.iter().map(|path| path.get_cost_msat()).sum::<u64>());
-	let selected_route = drawn_routes.first_mut().unwrap();
-
+	// Step (8).
 	// Sort by the path itself and combine redundant paths.
 	// Note that we sort by SCIDs alone as its simpler but when combining we have to ensure we
 	// compare both SCIDs and NodeIds as individual nodes may use random aliases causing collisions
