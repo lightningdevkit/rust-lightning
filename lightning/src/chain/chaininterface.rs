@@ -68,7 +68,10 @@ pub const MIN_RELAY_FEE_SAT_PER_1000_WEIGHT: u64 = 4000;
 pub const FEERATE_FLOOR_SATS_PER_KW: u32 = 253;
 
 /// Wraps a `Deref` to a `FeeEstimator` so that any fee estimations provided by it
-/// are bounded below by `FEERATE_FLOOR_SATS_PER_KW` (253 sats/KW)
+/// are bounded below by `FEERATE_FLOOR_SATS_PER_KW` (253 sats/KW).
+///
+/// Note that this does *not* implement [`FeeEstimator`] to make it harder to accidentally mix the
+/// two.
 pub(crate) struct LowerBoundedFeeEstimator<F: Deref>(pub F) where F::Target: FeeEstimator;
 
 impl<F: Deref> LowerBoundedFeeEstimator<F> where F::Target: FeeEstimator {
@@ -76,10 +79,8 @@ impl<F: Deref> LowerBoundedFeeEstimator<F> where F::Target: FeeEstimator {
 	pub fn new(fee_estimator: F) -> Self {
 		LowerBoundedFeeEstimator(fee_estimator)
 	}
-}
 
-impl<F: Deref> FeeEstimator for LowerBoundedFeeEstimator<F> where F::Target: FeeEstimator {
-	fn get_est_sat_per_1000_weight(&self, confirmation_target: ConfirmationTarget) -> u32 {
+	pub fn get_est_sat_per_1000_weight(&self, confirmation_target: ConfirmationTarget) -> u32 {
 		cmp::max(
 			self.0.get_est_sat_per_1000_weight(confirmation_target),
 			FEERATE_FLOOR_SATS_PER_KW,
