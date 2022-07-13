@@ -38,6 +38,8 @@ use core::mem;
 use core::ops::Deref;
 use bitcoin::Witness;
 
+use super::chaininterface::LowerBoundedFeeEstimator;
+
 const MAX_ALLOC_SIZE: usize = 64*1024;
 
 
@@ -665,7 +667,7 @@ impl PackageTemplate {
 	/// Returns value in satoshis to be included as package outgoing output amount and feerate
 	/// which was used to generate the value. Will not return less than `dust_limit_sats` for the
 	/// value.
-	pub(crate) fn compute_package_output<F: Deref, L: Deref>(&self, predicted_weight: usize, dust_limit_sats: u64, fee_estimator: &F, logger: &L) -> Option<(u64, u64)>
+	pub(crate) fn compute_package_output<F: Deref, L: Deref>(&self, predicted_weight: usize, dust_limit_sats: u64, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L) -> Option<(u64, u64)>
 		where F::Target: FeeEstimator,
 		      L::Target: Logger,
 	{
@@ -772,7 +774,7 @@ impl Readable for PackageTemplate {
 /// If the proposed fee is less than the available spent output's values, we return the proposed
 /// fee and the corresponding updated feerate. If the proposed fee is equal or more than the
 /// available spent output's values, we return nothing
-fn compute_fee_from_spent_amounts<F: Deref, L: Deref>(input_amounts: u64, predicted_weight: usize, fee_estimator: &F, logger: &L) -> Option<(u64, u64)>
+fn compute_fee_from_spent_amounts<F: Deref, L: Deref>(input_amounts: u64, predicted_weight: usize, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L) -> Option<(u64, u64)>
 	where F::Target: FeeEstimator,
 	      L::Target: Logger,
 {
@@ -808,7 +810,7 @@ fn compute_fee_from_spent_amounts<F: Deref, L: Deref>(input_amounts: u64, predic
 /// attempt, use them. Otherwise, blindly bump the feerate by 25% of the previous feerate. We also
 /// verify that those bumping heuristics respect BIP125 rules 3) and 4) and if required adjust
 /// the new fee to meet the RBF policy requirement.
-fn feerate_bump<F: Deref, L: Deref>(predicted_weight: usize, input_amounts: u64, previous_feerate: u64, fee_estimator: &F, logger: &L) -> Option<(u64, u64)>
+fn feerate_bump<F: Deref, L: Deref>(predicted_weight: usize, input_amounts: u64, previous_feerate: u64, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L) -> Option<(u64, u64)>
 	where F::Target: FeeEstimator,
 	      L::Target: Logger,
 {

@@ -40,7 +40,7 @@ use ln::chan_utils::{CounterpartyCommitmentSecrets, HTLCOutputInCommitment, HTLC
 use ln::channelmanager::HTLCSource;
 use chain;
 use chain::{BestBlock, WatchedOutput};
-use chain::chaininterface::{BroadcasterInterface, FeeEstimator};
+use chain::chaininterface::{BroadcasterInterface, FeeEstimator, LowerBoundedFeeEstimator};
 use chain::transaction::{OutPoint, TransactionData};
 use chain::keysinterface::{SpendableOutputDescriptor, StaticPaymentOutputDescriptor, DelayedPaymentOutputDescriptor, Sign, KeysInterface};
 use chain::onchaintx::OnchainTxHandler;
@@ -1104,7 +1104,7 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 		payment_hash: &PaymentHash,
 		payment_preimage: &PaymentPreimage,
 		broadcaster: &B,
-		fee_estimator: &F,
+		fee_estimator: &LowerBoundedFeeEstimator<F>,
 		logger: &L,
 	) where
 		B::Target: BroadcasterInterface,
@@ -1300,8 +1300,9 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 		F::Target: FeeEstimator,
 		L::Target: Logger,
 	{
+		let bounded_fee_estimator = LowerBoundedFeeEstimator::new(fee_estimator);
 		self.inner.lock().unwrap().transactions_confirmed(
-			header, txdata, height, broadcaster, fee_estimator, logger)
+			header, txdata, height, broadcaster, &bounded_fee_estimator, logger)
 	}
 
 	/// Processes a transaction that was reorganized out of the chain.
@@ -1321,8 +1322,9 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 		F::Target: FeeEstimator,
 		L::Target: Logger,
 	{
+		let bounded_fee_estimator = LowerBoundedFeeEstimator::new(fee_estimator);
 		self.inner.lock().unwrap().transaction_unconfirmed(
-			txid, broadcaster, fee_estimator, logger);
+			txid, broadcaster, &bounded_fee_estimator, logger);
 	}
 
 	/// Updates the monitor with the current best chain tip, returning new outputs to watch. See
@@ -1345,8 +1347,9 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 		F::Target: FeeEstimator,
 		L::Target: Logger,
 	{
+		let bounded_fee_estimator = LowerBoundedFeeEstimator::new(fee_estimator);
 		self.inner.lock().unwrap().best_block_updated(
-			header, height, broadcaster, fee_estimator, logger)
+			header, height, broadcaster, &bounded_fee_estimator, logger)
 	}
 
 	/// Returns the set of txids that should be monitored for re-organization out of the chain.
@@ -1882,7 +1885,9 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 
 	/// Provides a payment_hash->payment_preimage mapping. Will be automatically pruned when all
 	/// commitment_tx_infos which contain the payment hash have been revoked.
-	fn provide_payment_preimage<B: Deref, F: Deref, L: Deref>(&mut self, payment_hash: &PaymentHash, payment_preimage: &PaymentPreimage, broadcaster: &B, fee_estimator: &F, logger: &L)
+	fn provide_payment_preimage<B: Deref, F: Deref, L: Deref>(
+		&mut self, payment_hash: &PaymentHash, payment_preimage: &PaymentPreimage, broadcaster: &B,
+		fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L)
 	where B::Target: BroadcasterInterface,
 		    F::Target: FeeEstimator,
 		    L::Target: Logger,
@@ -1980,7 +1985,8 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 				},
 				ChannelMonitorUpdateStep::PaymentPreimage { payment_preimage } => {
 					log_trace!(logger, "Updating ChannelMonitor with payment preimage");
-					self.provide_payment_preimage(&PaymentHash(Sha256::hash(&payment_preimage.0[..]).into_inner()), &payment_preimage, broadcaster, fee_estimator, logger)
+					let bounded_fee_estimator = LowerBoundedFeeEstimator::new(fee_estimator);
+					self.provide_payment_preimage(&PaymentHash(Sha256::hash(&payment_preimage.0[..]).into_inner()), &payment_preimage, broadcaster, &bounded_fee_estimator, logger)
 				},
 				ChannelMonitorUpdateStep::CommitmentSecret { idx, secret } => {
 					log_trace!(logger, "Updating ChannelMonitor with commitment secret");
@@ -2406,7 +2412,8 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		let block_hash = header.block_hash();
 		self.best_block = BestBlock::new(block_hash, height);
 
-		self.transactions_confirmed(header, txdata, height, broadcaster, fee_estimator, logger)
+		let bounded_fee_estimator = LowerBoundedFeeEstimator::new(fee_estimator);
+		self.transactions_confirmed(header, txdata, height, broadcaster, &bounded_fee_estimator, logger)
 	}
 
 	fn best_block_updated<B: Deref, F: Deref, L: Deref>(
@@ -2414,7 +2421,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		header: &BlockHeader,
 		height: u32,
 		broadcaster: B,
-		fee_estimator: F,
+		fee_estimator: &LowerBoundedFeeEstimator<F>,
 		logger: L,
 	) -> Vec<TransactionOutputs>
 	where
@@ -2441,7 +2448,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		txdata: &TransactionData,
 		height: u32,
 		broadcaster: B,
-		fee_estimator: F,
+		fee_estimator: &LowerBoundedFeeEstimator<F>,
 		logger: L,
 	) -> Vec<TransactionOutputs>
 	where
@@ -2538,7 +2545,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		mut watch_outputs: Vec<TransactionOutputs>,
 		mut claimable_outpoints: Vec<PackageTemplate>,
 		broadcaster: &B,
-		fee_estimator: &F,
+		fee_estimator: &LowerBoundedFeeEstimator<F>,
 		logger: &L,
 	) -> Vec<TransactionOutputs>
 	where
@@ -2676,7 +2683,8 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		//- maturing spendable output has transaction paying us has been disconnected
 		self.onchain_events_awaiting_threshold_conf.retain(|ref entry| entry.height < height);
 
-		self.onchain_tx_handler.block_disconnected(height, broadcaster, fee_estimator, logger);
+		let bounded_fee_estimator = LowerBoundedFeeEstimator::new(fee_estimator);
+		self.onchain_tx_handler.block_disconnected(height, broadcaster, &bounded_fee_estimator, logger);
 
 		self.best_block = BestBlock::new(header.prev_blockhash, height - 1);
 	}
@@ -2685,7 +2693,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		&mut self,
 		txid: &Txid,
 		broadcaster: B,
-		fee_estimator: F,
+		fee_estimator: &LowerBoundedFeeEstimator<F>,
 		logger: L,
 	) where
 		B::Target: BroadcasterInterface,
@@ -3428,6 +3436,8 @@ mod tests {
 
 	use hex;
 
+	use crate::chain::chaininterface::LowerBoundedFeeEstimator;
+
 	use super::ChannelMonitorUpdateStep;
 	use ::{check_added_monitors, check_closed_broadcast, check_closed_event, check_spends, get_local_commitment_txn, get_monitor, get_route_and_payment_hash, unwrap_send_err};
 	use chain::{BestBlock, Confirm};
@@ -3549,7 +3559,7 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let logger = Arc::new(TestLogger::new());
 		let broadcaster = Arc::new(TestBroadcaster{txn_broadcasted: Mutex::new(Vec::new()), blocks: Arc::new(Mutex::new(Vec::new()))});
-		let fee_estimator = Arc::new(TestFeeEstimator { sat_per_kw: Mutex::new(253) });
+		let fee_estimator = TestFeeEstimator { sat_per_kw: Mutex::new(253) };
 
 		let dummy_key = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let dummy_tx = Transaction { version: 0, lock_time: 0, input: Vec::new(), output: Vec::new() };
@@ -3648,7 +3658,8 @@ mod tests {
 		monitor.provide_latest_counterparty_commitment_tx(dummy_txid, preimages_slice_to_htlc_outputs!(preimages[17..20]), 281474976710653, dummy_key, &logger);
 		monitor.provide_latest_counterparty_commitment_tx(dummy_txid, preimages_slice_to_htlc_outputs!(preimages[18..20]), 281474976710652, dummy_key, &logger);
 		for &(ref preimage, ref hash) in preimages.iter() {
-			monitor.provide_payment_preimage(hash, preimage, &broadcaster, &fee_estimator, &logger);
+			let bounded_fee_estimator = LowerBoundedFeeEstimator::new(&fee_estimator);
+			monitor.provide_payment_preimage(hash, preimage, &broadcaster, &bounded_fee_estimator, &logger);
 		}
 
 		// Now provide a secret, pruning preimages 10-15
