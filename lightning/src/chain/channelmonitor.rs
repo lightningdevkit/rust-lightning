@@ -1457,8 +1457,8 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 								OnchainEvent::HTLCUpdate { commitment_tx_output_idx, htlc_value_satoshis, .. }
 								if commitment_tx_output_idx == Some(htlc_commitment_tx_output_idx) => {
 									debug_assert!(htlc_update_pending.is_none());
-									htlc_update_pending =
-										Some((htlc_value_satoshis.unwrap(), event.confirmation_threshold()));
+									debug_assert_eq!(htlc_value_satoshis.unwrap(), htlc.amount_msat / 1000);
+									htlc_update_pending = Some(event.confirmation_threshold());
 								},
 								OnchainEvent::HTLCSpendConfirmation { commitment_tx_output_idx, preimage, .. }
 								if commitment_tx_output_idx == htlc_commitment_tx_output_idx => {
@@ -1496,9 +1496,9 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 								// If the payment was outbound, check if there's an HTLCUpdate
 								// indicating we have spent this HTLC with a timeout, claiming it back
 								// and awaiting confirmations on it.
-								if let Some((value, conf_thresh)) = htlc_update_pending {
+								if let Some(conf_thresh) = htlc_update_pending {
 									res.push(Balance::ClaimableAwaitingConfirmations {
-										claimable_amount_satoshis: value,
+										claimable_amount_satoshis: htlc.amount_msat / 1000,
 										confirmation_height: conf_thresh,
 									});
 								} else {
