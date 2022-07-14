@@ -2230,82 +2230,90 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 	-> (Vec<PackageTemplate>, CommitmentTxCounterpartyOutputInfo) {
 		let mut claimable_outpoints = Vec::new();
 		let mut to_counterparty_output_info: CommitmentTxCounterpartyOutputInfo = None;
-		if let Some(htlc_outputs) = self.counterparty_claimable_outpoints.get(&commitment_txid) {
-			if let Some(per_commitment_points) = self.their_cur_per_commitment_points {
-				let per_commitment_point_option =
-					// If the counterparty commitment tx is the latest valid state, use their latest
-					// per-commitment point
-					if per_commitment_points.0 == commitment_number { Some(&per_commitment_points.1) }
-					else if let Some(point) = per_commitment_points.2.as_ref() {
-						// If counterparty commitment tx is the state previous to the latest valid state, use
-						// their previous per-commitment point (non-atomicity of revocation means it's valid for
-						// them to temporarily have two valid commitment txns from our viewpoint)
-						if per_commitment_points.0 == commitment_number + 1 { Some(point) } else { None }
-					} else { None };
-				if let Some(per_commitment_point) = per_commitment_point_option {
-					if let Some(transaction) = tx {
-						let revokeable_p2wsh_opt =
-							if let Ok(revocation_pubkey) = chan_utils::derive_public_revocation_key(
-								&self.secp_ctx, &per_commitment_point, &self.holder_revocation_basepoint)
-							{
-								if let Ok(delayed_key) = chan_utils::derive_public_key(&self.secp_ctx,
-									&per_commitment_point,
-									&self.counterparty_commitment_params.counterparty_delayed_payment_base_key)
-								{
-									Some(chan_utils::get_revokeable_redeemscript(&revocation_pubkey,
-										self.counterparty_commitment_params.on_counterparty_tx_csv,
-										&delayed_key).to_v0_p2wsh())
-								} else {
-									debug_assert!(false, "Failed to derive a delayed payment key for a commitment state we accepted");
-									None
-								}
-							} else {
-								debug_assert!(false, "Failed to derive a revocation pubkey key for a commitment state we accepted");
-								None
-							};
-						if let Some(revokeable_p2wsh) = revokeable_p2wsh_opt {
-							for (idx, outp) in transaction.output.iter().enumerate() {
-								if outp.script_pubkey == revokeable_p2wsh {
-									to_counterparty_output_info =
-										Some((idx.try_into().expect("Can't have > 2^32 outputs"), outp.value));
-								}
-							}
-						}
-					}
 
-					for (_, &(ref htlc, _)) in htlc_outputs.iter().enumerate() {
-						if let Some(transaction_output_index) = htlc.transaction_output_index {
-							if let Some(transaction) = tx {
-								if transaction_output_index as usize >= transaction.output.len() ||
-									transaction.output[transaction_output_index as usize].value != htlc.amount_msat / 1000 {
-										// per_commitment_data is corrupt or our commitment signing key leaked!
-										return (claimable_outpoints, to_counterparty_output_info);
-									}
-							}
-							let preimage = if htlc.offered { if let Some(p) = self.payment_preimages.get(&htlc.payment_hash) { Some(*p) } else { None } } else { None };
-							if preimage.is_some() || !htlc.offered {
-								let counterparty_htlc_outp = if htlc.offered {
-									PackageSolvingData::CounterpartyOfferedHTLCOutput(
-										CounterpartyOfferedHTLCOutput::build(*per_commitment_point,
-											self.counterparty_commitment_params.counterparty_delayed_payment_base_key,
-											self.counterparty_commitment_params.counterparty_htlc_base_key,
-											preimage.unwrap(), htlc.clone()))
-								} else {
-									PackageSolvingData::CounterpartyReceivedHTLCOutput(
-										CounterpartyReceivedHTLCOutput::build(*per_commitment_point,
-											self.counterparty_commitment_params.counterparty_delayed_payment_base_key,
-											self.counterparty_commitment_params.counterparty_htlc_base_key,
-											htlc.clone()))
-								};
-								let aggregation = if !htlc.offered { false } else { true };
-								let counterparty_package = PackageTemplate::build_package(commitment_txid, transaction_output_index, counterparty_htlc_outp, htlc.cltv_expiry,aggregation, 0);
-								claimable_outpoints.push(counterparty_package);
-							}
-						}
+		let htlc_outputs = match self.counterparty_claimable_outpoints.get(&commitment_txid) {
+			Some(outputs) => outputs,
+			None => return (claimable_outpoints, to_counterparty_output_info),
+		};
+		let per_commitment_points = match self.their_cur_per_commitment_points {
+			Some(points) => points,
+			None => return (claimable_outpoints, to_counterparty_output_info),
+		};
+
+		let per_commitment_point =
+			// If the counterparty commitment tx is the latest valid state, use their latest
+			// per-commitment point
+			if per_commitment_points.0 == commitment_number { &per_commitment_points.1 }
+			else if let Some(point) = per_commitment_points.2.as_ref() {
+				// If counterparty commitment tx is the state previous to the latest valid state, use
+				// their previous per-commitment point (non-atomicity of revocation means it's valid for
+				// them to temporarily have two valid commitment txns from our viewpoint)
+				if per_commitment_points.0 == commitment_number + 1 {
+					point
+				} else { return (claimable_outpoints, to_counterparty_output_info); }
+			} else { return (claimable_outpoints, to_counterparty_output_info); };
+
+		if let Some(transaction) = tx {
+			let revokeable_p2wsh_opt =
+				if let Ok(revocation_pubkey) = chan_utils::derive_public_revocation_key(
+					&self.secp_ctx, &per_commitment_point, &self.holder_revocation_basepoint)
+				{
+					if let Ok(delayed_key) = chan_utils::derive_public_key(&self.secp_ctx,
+						&per_commitment_point,
+						&self.counterparty_commitment_params.counterparty_delayed_payment_base_key)
+					{
+						Some(chan_utils::get_revokeable_redeemscript(&revocation_pubkey,
+							self.counterparty_commitment_params.on_counterparty_tx_csv,
+							&delayed_key).to_v0_p2wsh())
+					} else {
+						debug_assert!(false, "Failed to derive a delayed payment key for a commitment state we accepted");
+						None
+					}
+				} else {
+					debug_assert!(false, "Failed to derive a revocation pubkey key for a commitment state we accepted");
+					None
+				};
+			if let Some(revokeable_p2wsh) = revokeable_p2wsh_opt {
+				for (idx, outp) in transaction.output.iter().enumerate() {
+					if outp.script_pubkey == revokeable_p2wsh {
+						to_counterparty_output_info =
+							Some((idx.try_into().expect("Can't have > 2^32 outputs"), outp.value));
 					}
 				}
 			}
 		}
+
+		for (_, &(ref htlc, _)) in htlc_outputs.iter().enumerate() {
+			if let Some(transaction_output_index) = htlc.transaction_output_index {
+				if let Some(transaction) = tx {
+					if transaction_output_index as usize >= transaction.output.len() ||
+						transaction.output[transaction_output_index as usize].value != htlc.amount_msat / 1000 {
+							// per_commitment_data is corrupt or our commitment signing key leaked!
+							return (claimable_outpoints, to_counterparty_output_info);
+						}
+				}
+				let preimage = if htlc.offered { if let Some(p) = self.payment_preimages.get(&htlc.payment_hash) { Some(*p) } else { None } } else { None };
+				if preimage.is_some() || !htlc.offered {
+					let counterparty_htlc_outp = if htlc.offered {
+						PackageSolvingData::CounterpartyOfferedHTLCOutput(
+							CounterpartyOfferedHTLCOutput::build(*per_commitment_point,
+								self.counterparty_commitment_params.counterparty_delayed_payment_base_key,
+								self.counterparty_commitment_params.counterparty_htlc_base_key,
+								preimage.unwrap(), htlc.clone()))
+					} else {
+						PackageSolvingData::CounterpartyReceivedHTLCOutput(
+							CounterpartyReceivedHTLCOutput::build(*per_commitment_point,
+								self.counterparty_commitment_params.counterparty_delayed_payment_base_key,
+								self.counterparty_commitment_params.counterparty_htlc_base_key,
+								htlc.clone()))
+					};
+					let aggregation = if !htlc.offered { false } else { true };
+					let counterparty_package = PackageTemplate::build_package(commitment_txid, transaction_output_index, counterparty_htlc_outp, htlc.cltv_expiry,aggregation, 0);
+					claimable_outpoints.push(counterparty_package);
+				}
+			}
+		}
+
 		(claimable_outpoints, to_counterparty_output_info)
 	}
 
