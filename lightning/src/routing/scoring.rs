@@ -324,12 +324,29 @@ where L::Target: Logger {
 ///
 /// Used to configure base, liquidity, and amount penalties, the sum of which comprises the channel
 /// penalty (i.e., the amount in msats willing to be paid to avoid routing through the channel).
+///
+/// The penalty applied to any channel by the [`ProbabilisticScorer`] is the sum of each of the
+/// parameters here.
 #[derive(Clone)]
 pub struct ProbabilisticScoringParameters {
 	/// A fixed penalty in msats to apply to each channel.
 	///
 	/// Default value: 500 msat
 	pub base_penalty_msat: u64,
+
+	/// A multiplier used with the payment amount to calculate a fixed penalty applied to each
+	/// channel, in excess of the [`base_penalty_msat`].
+	///
+	/// The purpose of the amount penalty is to avoid having fees dominate the channel cost (i.e.,
+	/// fees plus penalty) for large payments. The penalty is computed as the product of this
+	/// multiplier and `2^30`ths of the payment amount.
+	///
+	/// ie `base_penalty_amount_multiplier_msat * amount_msat / 2^30`
+	///
+	/// Default value: 8,192 msat
+	///
+	/// [`base_penalty_msat`]: Self::base_penalty_msat
+	pub base_penalty_amount_multiplier_msat: u64,
 
 	/// A multiplier used in conjunction with the negative `log10` of the channel's success
 	/// probability for a payment to determine the liquidity penalty.
@@ -536,6 +553,7 @@ impl ProbabilisticScoringParameters {
 	fn zero_penalty() -> Self {
 		Self {
 			base_penalty_msat: 0,
+			base_penalty_amount_multiplier_msat: 0,
 			liquidity_penalty_multiplier_msat: 0,
 			liquidity_offset_half_life: Duration::from_secs(3600),
 			amount_penalty_multiplier_msat: 0,
@@ -558,6 +576,7 @@ impl Default for ProbabilisticScoringParameters {
 	fn default() -> Self {
 		Self {
 			base_penalty_msat: 500,
+			base_penalty_amount_multiplier_msat: 8192,
 			liquidity_penalty_multiplier_msat: 40_000,
 			liquidity_offset_half_life: Duration::from_secs(3600),
 			amount_penalty_multiplier_msat: 256,
@@ -631,10 +650,11 @@ const PRECISION_LOWER_BOUND_DENOMINATOR: u64 = approx::LOWER_BITS_BOUND;
 
 /// The divisor used when computing the amount penalty.
 const AMOUNT_PENALTY_DIVISOR: u64 = 1 << 20;
+const BASE_AMOUNT_PENALTY_DIVISOR: u64 = 1 << 30;
 
 impl<L: Deref<Target = u64>, T: Time, U: Deref<Target = T>> DirectedChannelLiquidity<L, T, U> {
-	/// Returns a penalty for routing the given HTLC `amount_msat` through the channel in this
-	/// direction.
+	/// Returns a liquidity penalty for routing the given HTLC `amount_msat` through the channel in
+	/// this direction.
 	fn penalty_msat(&self, amount_msat: u64, params: &ProbabilisticScoringParameters) -> u64 {
 		let max_liquidity_msat = self.max_liquidity_msat();
 		let min_liquidity_msat = core::cmp::min(self.min_liquidity_msat(), max_liquidity_msat);
@@ -653,8 +673,8 @@ impl<L: Deref<Target = u64>, T: Time, U: Deref<Target = T>> DirectedChannelLiqui
 			if amount_msat - min_liquidity_msat < denominator / PRECISION_LOWER_BOUND_DENOMINATOR {
 				// If the failure probability is < 1.5625% (as 1 - numerator/denominator < 1/64),
 				// don't bother trying to use the log approximation as it gets too noisy to be
-				// particularly helpful, instead just round down to 0 and return the base penalty.
-				params.base_penalty_msat
+				// particularly helpful, instead just round down to 0.
+				0
 			} else {
 				let negative_log10_times_2048 =
 					approx::negative_log10_times_2048(numerator, denominator);
@@ -663,7 +683,7 @@ impl<L: Deref<Target = u64>, T: Time, U: Deref<Target = T>> DirectedChannelLiqui
 		}
 	}
 
-	/// Computes the liquidity and amount penalties and adds them to the base penalty.
+	/// Computes the liquidity penalty from the penalty multipliers.
 	#[inline(always)]
 	fn combined_penalty_msat(
 		&self, amount_msat: u64, negative_log10_times_2048: u64,
@@ -679,9 +699,7 @@ impl<L: Deref<Target = u64>, T: Time, U: Deref<Target = T>> DirectedChannelLiqui
 			.saturating_mul(params.amount_penalty_multiplier_msat)
 			.saturating_mul(amount_msat) / 2048 / AMOUNT_PENALTY_DIVISOR;
 
-		params.base_penalty_msat
-			.saturating_add(liquidity_penalty_msat)
-			.saturating_add(amount_penalty_msat)
+		liquidity_penalty_msat.saturating_add(amount_penalty_msat)
 	}
 
 	/// Returns the lower bound of the channel liquidity balance in this direction.
@@ -763,13 +781,17 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> Score for Probabilis
 			return *penalty;
 		}
 
+		let base_penalty_msat = self.params.base_penalty_msat.saturating_add(
+			self.params.base_penalty_amount_multiplier_msat
+				.saturating_mul(usage.amount_msat) / BASE_AMOUNT_PENALTY_DIVISOR);
+
 		let mut anti_probing_penalty_msat = 0;
 		match usage.effective_capacity {
 			EffectiveCapacity::ExactLiquidity { liquidity_msat } => {
 				if usage.amount_msat > liquidity_msat {
 					return u64::max_value();
 				} else {
-					return self.params.base_penalty_msat;
+					return base_penalty_msat;
 				}
 			},
 			EffectiveCapacity::Total { capacity_msat, htlc_maximum_msat: Some(htlc_maximum_msat) } => {
@@ -790,6 +812,7 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> Score for Probabilis
 			.as_directed(source, target, capacity_msat, liquidity_offset_half_life)
 			.penalty_msat(amount_msat, &self.params)
 			.saturating_add(anti_probing_penalty_msat)
+			.saturating_add(base_penalty_msat)
 	}
 
 	fn payment_path_failed(&mut self, path: &[&RouteHop], short_channel_id: u64) {
@@ -2069,47 +2092,47 @@ mod tests {
 			inflight_htlc_msat: 0,
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 950_000_000, htlc_maximum_msat: Some(1_000) },
 		};
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 3613);
+		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 4375);
 		let usage = ChannelUsage {
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 1_950_000_000, htlc_maximum_msat: Some(1_000) }, ..usage
 		};
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 1977);
+		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 2739);
 		let usage = ChannelUsage {
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 2_950_000_000, htlc_maximum_msat: Some(1_000) }, ..usage
 		};
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 1474);
+		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 2236);
 		let usage = ChannelUsage {
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 3_950_000_000, htlc_maximum_msat: Some(1_000) }, ..usage
 		};
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 1223);
+		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 1985);
 		let usage = ChannelUsage {
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 4_950_000_000, htlc_maximum_msat: Some(1_000) }, ..usage
 		};
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 877);
+		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 1639);
 		let usage = ChannelUsage {
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 5_950_000_000, htlc_maximum_msat: Some(1_000) }, ..usage
 		};
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 845);
+		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 1607);
 		let usage = ChannelUsage {
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 6_950_000_000, htlc_maximum_msat: Some(1_000) }, ..usage
 		};
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 500);
+		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 1262);
 		let usage = ChannelUsage {
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 7_450_000_000, htlc_maximum_msat: Some(1_000) }, ..usage
 		};
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 500);
+		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 1262);
 		let usage = ChannelUsage {
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 7_950_000_000, htlc_maximum_msat: Some(1_000) }, ..usage
 		};
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 500);
+		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 1262);
 		let usage = ChannelUsage {
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 8_950_000_000, htlc_maximum_msat: Some(1_000) }, ..usage
 		};
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 500);
+		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 1262);
 		let usage = ChannelUsage {
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 9_950_000_000, htlc_maximum_msat: Some(1_000) }, ..usage
 		};
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 500);
+		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 1262);
 	}
 
 	#[test]
@@ -2137,6 +2160,15 @@ mod tests {
 		};
 		let scorer = ProbabilisticScorer::new(params, &network_graph, &logger);
 		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 558);
+
+		let params = ProbabilisticScoringParameters {
+			base_penalty_msat: 500, liquidity_penalty_multiplier_msat: 1_000,
+			base_penalty_amount_multiplier_msat: (1 << 30),
+			anti_probing_penalty_msat: 0, ..Default::default()
+		};
+
+		let scorer = ProbabilisticScorer::new(params, &network_graph, &logger);
+		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 558 + 128);
 	}
 
 	#[test]
