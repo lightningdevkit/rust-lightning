@@ -942,7 +942,7 @@ fn failed_probe_yields_event() {
 
 	let payment_params = PaymentParameters::from_node_id(nodes[2].node.get_our_node_id());
 
-	let (route, _, _, _) = get_route_and_payment_hash!(&nodes[0], nodes[2], &payment_params, 9_999_000, 42);
+	let (route, _, _, _) = get_route_and_payment_hash!(&nodes[0], nodes[2], &payment_params, 9_998_000, 42);
 
 	let (payment_hash, payment_id) = nodes[0].node.send_probe(route.paths[0].clone()).unwrap();
 
