@@ -1649,11 +1649,21 @@ impl ReadOnlyNetworkGraph<'_> {
 		&*self.channels
 	}
 
+	/// Returns information on a channel with the given id.
+	pub fn channel(&self, short_channel_id: u64) -> Option<&ChannelInfo> {
+		self.channels.get(&short_channel_id)
+	}
+
 	/// Returns all known nodes' public keys along with announced node info.
 	///
 	/// (C-not exported) because we have no mapping for `BTreeMap`s
 	pub fn nodes(&self) -> &BTreeMap<NodeId, NodeInfo> {
 		&*self.nodes
+	}
+
+	/// Returns information on a node with the given id.
+	pub fn node(&self, node_id: &NodeId) -> Option<&NodeInfo> {
+		self.nodes.get(node_id)
 	}
 
 	/// Get network addresses by node id.
