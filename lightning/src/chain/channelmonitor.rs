@@ -965,6 +965,13 @@ impl<Signer: Sign> Writeable for ChannelMonitorImpl<Signer> {
 }
 
 impl<Signer: Sign> ChannelMonitor<Signer> {
+	/// For lockorder enforcement purposes, we need to have a single site which constructs the
+	/// `inner` mutex, otherwise cases where we lock two monitors at the same time (eg in our
+	/// PartialEq implementation) we may decide a lockorder violation has occurred.
+	fn from_impl(imp: ChannelMonitorImpl<Signer>) -> Self {
+		ChannelMonitor { inner: Mutex::new(imp) }
+	}
+
 	pub(crate) fn new(secp_ctx: Secp256k1<secp256k1::All>, keys: Signer, shutdown_script: Option<Script>,
 	                  on_counterparty_tx_csv: u16, destination_script: &Script, funding_info: (OutPoint, Script),
 	                  channel_parameters: &ChannelTransactionParameters,
@@ -1012,60 +1019,58 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 		let mut outputs_to_watch = HashMap::new();
 		outputs_to_watch.insert(funding_info.0.txid, vec![(funding_info.0.index as u32, funding_info.1.clone())]);
 
-		ChannelMonitor {
-			inner: Mutex::new(ChannelMonitorImpl {
-				latest_update_id: 0,
-				commitment_transaction_number_obscure_factor,
+		Self::from_impl(ChannelMonitorImpl {
+			latest_update_id: 0,
+			commitment_transaction_number_obscure_factor,
 
-				destination_script: destination_script.clone(),
-				broadcasted_holder_revokable_script: None,
-				counterparty_payment_script,
-				shutdown_script,
+			destination_script: destination_script.clone(),
+			broadcasted_holder_revokable_script: None,
+			counterparty_payment_script,
+			shutdown_script,
 
-				channel_keys_id,
-				holder_revocation_basepoint,
-				funding_info,
-				current_counterparty_commitment_txid: None,
-				prev_counterparty_commitment_txid: None,
+			channel_keys_id,
+			holder_revocation_basepoint,
+			funding_info,
+			current_counterparty_commitment_txid: None,
+			prev_counterparty_commitment_txid: None,
 
-				counterparty_commitment_params,
-				funding_redeemscript,
-				channel_value_satoshis,
-				their_cur_per_commitment_points: None,
+			counterparty_commitment_params,
+			funding_redeemscript,
+			channel_value_satoshis,
+			their_cur_per_commitment_points: None,
 
-				on_holder_tx_csv: counterparty_channel_parameters.selected_contest_delay,
+			on_holder_tx_csv: counterparty_channel_parameters.selected_contest_delay,
 
-				commitment_secrets: CounterpartyCommitmentSecrets::new(),
-				counterparty_claimable_outpoints: HashMap::new(),
-				counterparty_commitment_txn_on_chain: HashMap::new(),
-				counterparty_hash_commitment_number: HashMap::new(),
+			commitment_secrets: CounterpartyCommitmentSecrets::new(),
+			counterparty_claimable_outpoints: HashMap::new(),
+			counterparty_commitment_txn_on_chain: HashMap::new(),
+			counterparty_hash_commitment_number: HashMap::new(),
 
-				prev_holder_signed_commitment_tx: None,
-				current_holder_commitment_tx: holder_commitment_tx,
-				current_counterparty_commitment_number: 1 << 48,
-				current_holder_commitment_number,
+			prev_holder_signed_commitment_tx: None,
+			current_holder_commitment_tx: holder_commitment_tx,
+			current_counterparty_commitment_number: 1 << 48,
+			current_holder_commitment_number,
 
-				payment_preimages: HashMap::new(),
-				pending_monitor_events: Vec::new(),
-				pending_events: Vec::new(),
+			payment_preimages: HashMap::new(),
+			pending_monitor_events: Vec::new(),
+			pending_events: Vec::new(),
 
-				onchain_events_awaiting_threshold_conf: Vec::new(),
-				outputs_to_watch,
+			onchain_events_awaiting_threshold_conf: Vec::new(),
+			outputs_to_watch,
 
-				onchain_tx_handler,
+			onchain_tx_handler,
 
-				lockdown_from_offchain: false,
-				holder_tx_signed: false,
-				funding_spend_seen: false,
-				funding_spend_confirmed: None,
-				htlcs_resolved_on_chain: Vec::new(),
+			lockdown_from_offchain: false,
+			holder_tx_signed: false,
+			funding_spend_seen: false,
+			funding_spend_confirmed: None,
+			htlcs_resolved_on_chain: Vec::new(),
 
-				best_block,
-				counterparty_node_id: Some(counterparty_node_id),
+			best_block,
+			counterparty_node_id: Some(counterparty_node_id),
 
-				secp_ctx,
-			}),
-		}
+			secp_ctx,
+		})
 	}
 
 	#[cfg(test)]
@@ -3361,60 +3366,58 @@ impl<'a, Signer: Sign, K: KeysInterface<Signer = Signer>> ReadableArgs<&'a K>
 		let mut secp_ctx = Secp256k1::new();
 		secp_ctx.seeded_randomize(&keys_manager.get_secure_random_bytes());
 
-		Ok((best_block.block_hash(), ChannelMonitor {
-			inner: Mutex::new(ChannelMonitorImpl {
-				latest_update_id,
-				commitment_transaction_number_obscure_factor,
+		Ok((best_block.block_hash(), ChannelMonitor::from_impl(ChannelMonitorImpl {
+			latest_update_id,
+			commitment_transaction_number_obscure_factor,
 
-				destination_script,
-				broadcasted_holder_revokable_script,
-				counterparty_payment_script,
-				shutdown_script,
+			destination_script,
+			broadcasted_holder_revokable_script,
+			counterparty_payment_script,
+			shutdown_script,
 
-				channel_keys_id,
-				holder_revocation_basepoint,
-				funding_info,
-				current_counterparty_commitment_txid,
-				prev_counterparty_commitment_txid,
+			channel_keys_id,
+			holder_revocation_basepoint,
+			funding_info,
+			current_counterparty_commitment_txid,
+			prev_counterparty_commitment_txid,
 
-				counterparty_commitment_params,
-				funding_redeemscript,
-				channel_value_satoshis,
-				their_cur_per_commitment_points,
+			counterparty_commitment_params,
+			funding_redeemscript,
+			channel_value_satoshis,
+			their_cur_per_commitment_points,
 
-				on_holder_tx_csv,
+			on_holder_tx_csv,
 
-				commitment_secrets,
-				counterparty_claimable_outpoints,
-				counterparty_commitment_txn_on_chain,
-				counterparty_hash_commitment_number,
+			commitment_secrets,
+			counterparty_claimable_outpoints,
+			counterparty_commitment_txn_on_chain,
+			counterparty_hash_commitment_number,
 
-				prev_holder_signed_commitment_tx,
-				current_holder_commitment_tx,
-				current_counterparty_commitment_number,
-				current_holder_commitment_number,
+			prev_holder_signed_commitment_tx,
+			current_holder_commitment_tx,
+			current_counterparty_commitment_number,
+			current_holder_commitment_number,
 
-				payment_preimages,
-				pending_monitor_events: pending_monitor_events.unwrap(),
-				pending_events,
+			payment_preimages,
+			pending_monitor_events: pending_monitor_events.unwrap(),
+			pending_events,
 
-				onchain_events_awaiting_threshold_conf,
-				outputs_to_watch,
+			onchain_events_awaiting_threshold_conf,
+			outputs_to_watch,
 
-				onchain_tx_handler,
+			onchain_tx_handler,
 
-				lockdown_from_offchain,
-				holder_tx_signed,
-				funding_spend_seen: funding_spend_seen.unwrap(),
-				funding_spend_confirmed,
-				htlcs_resolved_on_chain: htlcs_resolved_on_chain.unwrap(),
+			lockdown_from_offchain,
+			holder_tx_signed,
+			funding_spend_seen: funding_spend_seen.unwrap(),
+			funding_spend_confirmed,
+			htlcs_resolved_on_chain: htlcs_resolved_on_chain.unwrap(),
 
-				best_block,
-				counterparty_node_id,
+			best_block,
+			counterparty_node_id,
 
-				secp_ctx,
-			}),
-		}))
+			secp_ctx,
+		})))
 	}
 }
 
