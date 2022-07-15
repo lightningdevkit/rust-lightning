@@ -137,6 +137,55 @@ where A::Target: chain::Access, L::Target: Logger {
 	}
 }
 
+/// (C-not exported) as the bindings concretize everything and have constructors for us
+impl<P: Deref<Target = P2PGossipSync<G, A, L>>, G: Deref<Target = NetworkGraph<L>>, A: Deref, L: Deref>
+	GossipSync<P, &RapidGossipSync<G, L>, G, A, L>
+where
+	A::Target: chain::Access,
+	L::Target: Logger,
+{
+	/// Initializes a new [`GossipSync::P2P`] variant.
+	pub fn p2p(gossip_sync: P) -> Self {
+		GossipSync::P2P(gossip_sync)
+	}
+}
+
+/// (C-not exported) as the bindings concretize everything and have constructors for us
+impl<'a, R: Deref<Target = RapidGossipSync<G, L>>, G: Deref<Target = NetworkGraph<L>>, L: Deref>
+	GossipSync<
+		&P2PGossipSync<G, &'a (dyn chain::Access + Send + Sync), L>,
+		R,
+		G,
+		&'a (dyn chain::Access + Send + Sync),
+		L,
+	>
+where
+	L::Target: Logger,
+{
+	/// Initializes a new [`GossipSync::Rapid`] variant.
+	pub fn rapid(gossip_sync: R) -> Self {
+		GossipSync::Rapid(gossip_sync)
+	}
+}
+
+/// (C-not exported) as the bindings concretize everything and have constructors for us
+impl<'a, L: Deref>
+	GossipSync<
+		&P2PGossipSync<&'a NetworkGraph<L>, &'a (dyn chain::Access + Send + Sync), L>,
+		&RapidGossipSync<&'a NetworkGraph<L>, L>,
+		&'a NetworkGraph<L>,
+		&'a (dyn chain::Access + Send + Sync),
+		L,
+	>
+where
+	L::Target: Logger,
+{
+	/// Initializes a new [`GossipSync::None`] variant.
+	pub fn none() -> Self {
+		GossipSync::None
+	}
+}
+
 /// Decorates an [`EventHandler`] with common functionality provided by standard [`EventHandler`]s.
 struct DecoratingEventHandler<
 	'a,
