@@ -240,6 +240,11 @@ pub struct PaymentParameters {
 	///
 	/// Default value: 1
 	pub max_channel_saturation_power_of_half: u8,
+
+	/// A list of SCIDs which this payment was previously attempted over and which caused the
+	/// payment to fail. Future attempts for the same payment shouldn't be relayed through any of
+	/// these SCIDs.
+	pub previously_failed_channels: Vec<u64>,
 }
 
 impl_writeable_tlv_based!(PaymentParameters, {
@@ -250,6 +255,7 @@ impl_writeable_tlv_based!(PaymentParameters, {
 	(4, route_hints, vec_type),
 	(5, max_channel_saturation_power_of_half, (default_value, 1)),
 	(6, expiry_time, option),
+	(7, previously_failed_channels, vec_type),
 });
 
 impl PaymentParameters {
@@ -263,6 +269,7 @@ impl PaymentParameters {
 			max_total_cltv_expiry_delta: DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA,
 			max_path_count: DEFAULT_MAX_PATH_COUNT,
 			max_channel_saturation_power_of_half: 1,
+			previously_failed_channels: Vec::new(),
 		}
 	}
 
@@ -1002,7 +1009,7 @@ where L::Target: Logger {
 					let contributes_sufficient_value = available_value_contribution_msat >= minimal_value_contribution_msat;
 					// Do not consider candidate hops that would exceed the maximum path length.
 					let path_length_to_node = $next_hops_path_length + 1;
-					let doesnt_exceed_max_path_length = path_length_to_node <= MAX_PATH_LENGTH_ESTIMATE;
+					let exceeds_max_path_length = path_length_to_node > MAX_PATH_LENGTH_ESTIMATE;
 
 					// Do not consider candidates that exceed the maximum total cltv expiry limit.
 					// In order to already account for some of the privacy enhancing random CLTV
@@ -1013,7 +1020,7 @@ where L::Target: Logger {
 						.unwrap_or(payment_params.max_total_cltv_expiry_delta - final_cltv_expiry_delta);
 					let hop_total_cltv_delta = ($next_hops_cltv_delta as u32)
 						.saturating_add($candidate.cltv_expiry_delta());
-					let doesnt_exceed_cltv_delta_limit = hop_total_cltv_delta <= max_total_cltv_expiry_delta;
+					let exceeds_cltv_delta_limit = hop_total_cltv_delta > max_total_cltv_expiry_delta;
 
 					let value_contribution_msat = cmp::min(available_value_contribution_msat, $next_hops_value_contribution);
 					// Includes paying fees for the use of the following channels.
@@ -1033,15 +1040,19 @@ where L::Target: Logger {
 						 (amount_to_transfer_over_msat < $next_hops_path_htlc_minimum_msat &&
 						  recommended_value_msat > $next_hops_path_htlc_minimum_msat));
 
+					let payment_failed_on_this_channel =
+						payment_params.previously_failed_channels.contains(&short_channel_id);
+
 					// If HTLC minimum is larger than the amount we're going to transfer, we shouldn't
 					// bother considering this channel. If retrying with recommended_value_msat may
 					// allow us to hit the HTLC minimum limit, set htlc_minimum_limit so that we go
 					// around again with a higher amount.
-					if contributes_sufficient_value && doesnt_exceed_max_path_length &&
-						doesnt_exceed_cltv_delta_limit && may_overpay_to_meet_path_minimum_msat {
+					if !contributes_sufficient_value || exceeds_max_path_length ||
+						exceeds_cltv_delta_limit || payment_failed_on_this_channel {
+						// Path isn't useful, ignore it and move on.
+					} else if may_overpay_to_meet_path_minimum_msat {
 						hit_minimum_limit = true;
-					} else if contributes_sufficient_value && doesnt_exceed_max_path_length &&
-						doesnt_exceed_cltv_delta_limit && over_path_minimum_msat {
+					} else if over_path_minimum_msat {
 						// Note that low contribution here (limited by available_liquidity_msat)
 						// might violate htlc_minimum_msat on the hops which are next along the
 						// payment path (upstream to the payee). To avoid that, we recompute
@@ -1992,6 +2003,8 @@ mod tests {
 
 	use prelude::*;
 	use sync::{self, Arc};
+
+	use core::convert::TryInto;
 
 	fn get_channel_details(short_channel_id: Option<u64>, node_id: PublicKey,
 			features: InitFeatures, outbound_capacity_msat: u64) -> channelmanager::ChannelDetails {
@@ -5570,6 +5583,35 @@ mod tests {
 				assert_eq!(err, "Failed to find a path to the given destination");
 			},
 			Ok(_) => panic!("Expected error"),
+		}
+	}
+
+	#[test]
+	fn avoids_recently_failed_paths() {
+		// Ensure that the router always avoids all of the `previously_failed_channels` channels by
+		// randomly inserting channels into it until we can't find a route anymore.
+		let (secp_ctx, network, _, _, logger) = build_graph();
+		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
+		let network_graph = network.read_only();
+
+		let scorer = test_utils::TestScorer::with_penalty(0);
+		let mut payment_params = PaymentParameters::from_node_id(nodes[6]).with_route_hints(last_hops(&nodes))
+			.with_max_path_count(1);
+		let keys_manager = test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
+		let random_seed_bytes = keys_manager.get_secure_random_bytes();
+
+		// We should be able to find a route initially, and then after we fail a few random
+		// channels eventually we won't be able to any longer.
+		assert!(get_route(&our_id, &payment_params, &network_graph, None, 100, 0, Arc::clone(&logger), &scorer, &random_seed_bytes).is_ok());
+		loop {
+			if let Ok(route) = get_route(&our_id, &payment_params, &network_graph, None, 100, 0, Arc::clone(&logger), &scorer, &random_seed_bytes) {
+				for chan in route.paths[0].iter() {
+					assert!(!payment_params.previously_failed_channels.contains(&chan.short_channel_id));
+				}
+				let victim = (u64::from_ne_bytes(random_seed_bytes[0..8].try_into().unwrap()) as usize)
+					% route.paths[0].len();
+				payment_params.previously_failed_channels.push(route.paths[0][victim].short_channel_id);
+			} else { break; }
 		}
 	}
 

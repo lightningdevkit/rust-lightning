@@ -3894,7 +3894,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					return;
 				}
 				mem::drop(channel_state_lock);
-				let retry = if let Some(payment_params_data) = payment_params {
+				let mut retry = if let Some(payment_params_data) = payment_params {
 					let path_last_hop = path.last().expect("Outbound payments must have had a valid path");
 					Some(RouteParameters {
 						payment_params: payment_params_data.clone(),
@@ -3930,6 +3930,9 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 							// TODO: If we decided to blame ourselves (or one of our channels) in
 							// process_onion_failure we should close that channel as it implies our
 							// next-hop is needlessly blaming us!
+							if let Some(scid) = short_channel_id {
+								retry.as_mut().map(|r| r.payment_params.previously_failed_channels.push(scid));
+							}
 							events::Event::PaymentPathFailed {
 								payment_id: Some(payment_id),
 								payment_hash: payment_hash.clone(),
@@ -3959,6 +3962,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 						// ChannelDetails.
 						// TODO: For non-temporary failures, we really should be closing the
 						// channel here as we apparently can't relay through them anyway.
+						let scid = path.first().unwrap().short_channel_id;
+						retry.as_mut().map(|r| r.payment_params.previously_failed_channels.push(scid));
 						events::Event::PaymentPathFailed {
 							payment_id: Some(payment_id),
 							payment_hash: payment_hash.clone(),
@@ -3966,7 +3971,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 							network_update: None,
 							all_paths_failed,
 							path: path.clone(),
-							short_channel_id: Some(path.first().unwrap().short_channel_id),
+							short_channel_id: Some(scid),
 							retry,
 #[cfg(test)]
 							error_code: Some(*failure_code),

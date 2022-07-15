@@ -1492,7 +1492,7 @@ pub fn expect_payment_failed_conditions<'a, 'b, 'c, 'd, 'e>(
 	let mut events = node.node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	let expected_payment_id = match events.pop().unwrap() {
-		Event::PaymentPathFailed { payment_hash, rejected_by_dest, path, retry, payment_id, network_update,
+		Event::PaymentPathFailed { payment_hash, rejected_by_dest, path, retry, payment_id, network_update, short_channel_id,
 			#[cfg(test)]
 			error_code,
 			#[cfg(test)]
@@ -1502,6 +1502,9 @@ pub fn expect_payment_failed_conditions<'a, 'b, 'c, 'd, 'e>(
 			assert!(retry.is_some(), "expected retry.is_some()");
 			assert_eq!(retry.as_ref().unwrap().final_value_msat, path.last().unwrap().fee_msat, "Retry amount should match last hop in path");
 			assert_eq!(retry.as_ref().unwrap().payment_params.payee_pubkey, path.last().unwrap().pubkey, "Retry payee node_id should match last hop in path");
+			if let Some(scid) = short_channel_id {
+				assert!(retry.as_ref().unwrap().payment_params.previously_failed_channels.contains(&scid));
+			}
 
 			#[cfg(test)]
 			{

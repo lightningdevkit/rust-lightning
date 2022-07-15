@@ -394,6 +394,25 @@ pub struct ProbabilisticScoringParameters {
 	///
 	/// Default value: 250 msat
 	pub anti_probing_penalty_msat: u64,
+
+	/// This penalty is applied when the amount we're attempting to send over a channel exceeds our
+	/// current estimate of the channel's available liquidity.
+	///
+	/// Note that in this case all other penalties, including the
+	/// [`liquidity_penalty_multiplier_msat`] and [`amount_penalty_multiplier_msat`]-based
+	/// penalties, as well as the [`base_penalty_msat`] and the [`anti_probing_penalty_msat`], if
+	/// applicable, are still included in the overall penalty.
+	///
+	/// If you wish to avoid creating paths with such channels entirely, setting this to a value of
+	/// `u64::max_value()` will guarantee that.
+	///
+	/// Default value: 1_0000_0000_000 msat (1 Bitcoin)
+	///
+	/// [`liquidity_penalty_multiplier_msat`]: Self::liquidity_penalty_multiplier_msat
+	/// [`amount_penalty_multiplier_msat`]: Self::amount_penalty_multiplier_msat
+	/// [`base_penalty_msat`]: Self::base_penalty_msat
+	/// [`anti_probing_penalty_msat`]: Self::anti_probing_penalty_msat
+	pub considered_impossible_penalty_msat: u64,
 }
 
 /// Accounting for channel liquidity balance uncertainty.
@@ -522,6 +541,7 @@ impl ProbabilisticScoringParameters {
 			amount_penalty_multiplier_msat: 0,
 			manual_node_penalties: HashMap::new(),
 			anti_probing_penalty_msat: 0,
+			considered_impossible_penalty_msat: 0,
 		}
 	}
 
@@ -543,6 +563,7 @@ impl Default for ProbabilisticScoringParameters {
 			amount_penalty_multiplier_msat: 256,
 			manual_node_penalties: HashMap::new(),
 			anti_probing_penalty_msat: 250,
+			considered_impossible_penalty_msat: 1_0000_0000_000,
 		}
 	}
 }
@@ -620,17 +641,12 @@ impl<L: Deref<Target = u64>, T: Time, U: Deref<Target = T>> DirectedChannelLiqui
 		if amount_msat <= min_liquidity_msat {
 			0
 		} else if amount_msat >= max_liquidity_msat {
-			if amount_msat > max_liquidity_msat {
-				u64::max_value()
-			} else if max_liquidity_msat != self.capacity_msat {
-				// Avoid using the failed channel on retry.
-				u64::max_value()
-			} else {
-				// Equivalent to hitting the else clause below with the amount equal to the
-				// effective capacity and without any certainty on the liquidity upper bound.
-				let negative_log10_times_2048 = NEGATIVE_LOG10_UPPER_BOUND * 2048;
-				self.combined_penalty_msat(amount_msat, negative_log10_times_2048, params)
-			}
+			// Equivalent to hitting the else clause below with the amount equal to the effective
+			// capacity and without any certainty on the liquidity upper bound, plus the
+			// impossibility penalty.
+			let negative_log10_times_2048 = NEGATIVE_LOG10_UPPER_BOUND * 2048;
+			self.combined_penalty_msat(amount_msat, negative_log10_times_2048, params)
+				.saturating_add(params.considered_impossible_penalty_msat)
 		} else {
 			let numerator = (max_liquidity_msat - amount_msat).saturating_add(1);
 			let denominator = (max_liquidity_msat - min_liquidity_msat).saturating_add(1);
@@ -1624,7 +1640,7 @@ mod tests {
 		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 0);
 		let usage = ChannelUsage { amount_msat: 102_400, ..usage };
 		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 47);
-		let usage = ChannelUsage { amount_msat: 1_024_000, ..usage };
+		let usage = ChannelUsage { amount_msat: 1_023_999, ..usage };
 		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 2_000);
 
 		let usage = ChannelUsage {
@@ -1654,6 +1670,7 @@ mod tests {
 		let network_graph = network_graph(&logger);
 		let params = ProbabilisticScoringParameters {
 			liquidity_penalty_multiplier_msat: 1_000,
+			considered_impossible_penalty_msat: u64::max_value(),
 			..ProbabilisticScoringParameters::zero_penalty()
 		};
 		let scorer = ProbabilisticScorer::new(params, &network_graph, &logger)
@@ -1745,6 +1762,7 @@ mod tests {
 		let network_graph = network_graph(&logger);
 		let params = ProbabilisticScoringParameters {
 			liquidity_penalty_multiplier_msat: 1_000,
+			considered_impossible_penalty_msat: u64::max_value(),
 			..ProbabilisticScoringParameters::zero_penalty()
 		};
 		let mut scorer = ProbabilisticScorer::new(params, &network_graph, &logger);
@@ -1811,6 +1829,7 @@ mod tests {
 		let params = ProbabilisticScoringParameters {
 			liquidity_penalty_multiplier_msat: 1_000,
 			liquidity_offset_half_life: Duration::from_secs(10),
+			considered_impossible_penalty_msat: u64::max_value(),
 			..ProbabilisticScoringParameters::zero_penalty()
 		};
 		let mut scorer = ProbabilisticScorer::new(params, &network_graph, &logger);
@@ -1820,10 +1839,10 @@ mod tests {
 		let usage = ChannelUsage {
 			amount_msat: 0,
 			inflight_htlc_msat: 0,
-			effective_capacity: EffectiveCapacity::Total { capacity_msat: 1_024, htlc_maximum_msat: Some(1_000) },
+			effective_capacity: EffectiveCapacity::Total { capacity_msat: 1_024, htlc_maximum_msat: Some(1_024) },
 		};
 		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 0);
-		let usage = ChannelUsage { amount_msat: 1_024, ..usage };
+		let usage = ChannelUsage { amount_msat: 1_023, ..usage };
 		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 2_000);
 
 		scorer.payment_path_failed(&payment_path_for_amount(768).iter().collect::<Vec<_>>(), 42);
@@ -1867,20 +1886,20 @@ mod tests {
 		let usage = ChannelUsage { amount_msat: 1_023, ..usage };
 		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 2_000);
 		let usage = ChannelUsage { amount_msat: 1_024, ..usage };
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 2_000);
+		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), u64::max_value());
 
 		// Fully decay liquidity upper bound.
 		SinceEpoch::advance(Duration::from_secs(10));
 		let usage = ChannelUsage { amount_msat: 0, ..usage };
 		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 0);
 		let usage = ChannelUsage { amount_msat: 1_024, ..usage };
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 2_000);
+		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), u64::max_value());
 
 		SinceEpoch::advance(Duration::from_secs(10));
 		let usage = ChannelUsage { amount_msat: 0, ..usage };
 		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 0);
 		let usage = ChannelUsage { amount_msat: 1_024, ..usage };
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 2_000);
+		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), u64::max_value());
 	}
 
 	#[test]
@@ -1965,6 +1984,7 @@ mod tests {
 		let params = ProbabilisticScoringParameters {
 			liquidity_penalty_multiplier_msat: 1_000,
 			liquidity_offset_half_life: Duration::from_secs(10),
+			considered_impossible_penalty_msat: u64::max_value(),
 			..ProbabilisticScoringParameters::zero_penalty()
 		};
 		let mut scorer = ProbabilisticScorer::new(params.clone(), &network_graph, &logger);
@@ -2001,6 +2021,7 @@ mod tests {
 		let params = ProbabilisticScoringParameters {
 			liquidity_penalty_multiplier_msat: 1_000,
 			liquidity_offset_half_life: Duration::from_secs(10),
+			considered_impossible_penalty_msat: u64::max_value(),
 			..ProbabilisticScoringParameters::zero_penalty()
 		};
 		let mut scorer = ProbabilisticScorer::new(params.clone(), &network_graph, &logger);
@@ -2171,7 +2192,10 @@ mod tests {
 	fn accounts_for_inflight_htlc_usage() {
 		let logger = TestLogger::new();
 		let network_graph = network_graph(&logger);
-		let params = ProbabilisticScoringParameters::default();
+		let params = ProbabilisticScoringParameters {
+			considered_impossible_penalty_msat: u64::max_value(),
+			..ProbabilisticScoringParameters::zero_penalty()
+		};
 		let scorer = ProbabilisticScorer::new(params, &network_graph, &logger);
 		let source = source_node_id();
 		let target = target_node_id();
