@@ -1427,7 +1427,150 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 	pub fn current_best_block(&self) -> BestBlock {
 		self.inner.lock().unwrap().best_block.clone()
 	}
+}
 
+impl<Signer: Sign> ChannelMonitorImpl<Signer> {
+	/// Helper for get_claimable_balances which does the work for an individual HTLC, generating up
+	/// to one `Balance` for the HTLC.
+	fn get_htlc_balance(&self, htlc: &HTLCOutputInCommitment, holder_commitment: bool,
+		counterparty_revoked_commitment: bool, confirmed_txid: Option<Txid>)
+	-> Option<Balance> {
+		let htlc_commitment_tx_output_idx =
+			if let Some(v) = htlc.transaction_output_index { v } else { return None; };
+
+		let mut htlc_spend_txid_opt = None;
+		let mut holder_timeout_spend_pending = None;
+		let mut htlc_spend_pending = None;
+		let mut holder_delayed_output_pending = None;
+		for event in self.onchain_events_awaiting_threshold_conf.iter() {
+			match event.event {
+				OnchainEvent::HTLCUpdate { commitment_tx_output_idx, htlc_value_satoshis, .. }
+				if commitment_tx_output_idx == Some(htlc_commitment_tx_output_idx) => {
+					debug_assert!(htlc_spend_txid_opt.is_none());
+					htlc_spend_txid_opt = event.transaction.as_ref().map(|tx| tx.txid());
+					debug_assert!(holder_timeout_spend_pending.is_none());
+					debug_assert_eq!(htlc_value_satoshis.unwrap(), htlc.amount_msat / 1000);
+					holder_timeout_spend_pending = Some(event.confirmation_threshold());
+				},
+				OnchainEvent::HTLCSpendConfirmation { commitment_tx_output_idx, preimage, .. }
+				if commitment_tx_output_idx == htlc_commitment_tx_output_idx => {
+					debug_assert!(htlc_spend_txid_opt.is_none());
+					htlc_spend_txid_opt = event.transaction.as_ref().map(|tx| tx.txid());
+					debug_assert!(htlc_spend_pending.is_none());
+					htlc_spend_pending = Some((event.confirmation_threshold(), preimage.is_some()));
+				},
+				OnchainEvent::MaturingOutput {
+					descriptor: SpendableOutputDescriptor::DelayedPaymentOutput(ref descriptor) }
+				if descriptor.outpoint.index as u32 == htlc_commitment_tx_output_idx => {
+					debug_assert!(holder_delayed_output_pending.is_none());
+					holder_delayed_output_pending = Some(event.confirmation_threshold());
+				},
+				_ => {},
+			}
+		}
+		let htlc_resolved = self.htlcs_resolved_on_chain.iter()
+			.find(|v| if v.commitment_tx_output_idx == htlc_commitment_tx_output_idx {
+				debug_assert!(htlc_spend_txid_opt.is_none());
+				htlc_spend_txid_opt = v.resolving_txid;
+				true
+			} else { false });
+		debug_assert!(holder_timeout_spend_pending.is_some() as u8 + htlc_spend_pending.is_some() as u8 + htlc_resolved.is_some() as u8 <= 1);
+
+		let htlc_output_to_spend =
+			if let Some(txid) = htlc_spend_txid_opt {
+				debug_assert!(
+					self.onchain_tx_handler.channel_transaction_parameters.opt_anchors.is_none(),
+					"This code needs updating for anchors");
+				BitcoinOutPoint::new(txid, 0)
+			} else {
+				BitcoinOutPoint::new(confirmed_txid.unwrap(), htlc_commitment_tx_output_idx)
+			};
+		let htlc_output_spend_pending = self.onchain_tx_handler.is_output_spend_pending(&htlc_output_to_spend);
+
+		if let Some(conf_thresh) = holder_delayed_output_pending {
+			debug_assert!(holder_commitment);
+			return Some(Balance::ClaimableAwaitingConfirmations {
+				claimable_amount_satoshis: htlc.amount_msat / 1000,
+				confirmation_height: conf_thresh,
+			});
+		} else if htlc_resolved.is_some() && !htlc_output_spend_pending {
+			// Funding transaction spends should be fully confirmed by the time any
+			// HTLC transactions are resolved, unless we're talking about a holder
+			// commitment tx, whose resolution is delayed until the CSV timeout is
+			// reached, even though HTLCs may be resolved after only
+			// ANTI_REORG_DELAY confirmations.
+			debug_assert!(holder_commitment || self.funding_spend_confirmed.is_some());
+		} else if counterparty_revoked_commitment {
+			let htlc_output_claim_pending = self.onchain_events_awaiting_threshold_conf.iter().find_map(|event| {
+				if let OnchainEvent::MaturingOutput {
+					descriptor: SpendableOutputDescriptor::StaticOutput { .. }
+				} = &event.event {
+					if event.transaction.as_ref().map(|tx| tx.input.iter().any(|inp| {
+						if let Some(htlc_spend_txid) = htlc_spend_txid_opt {
+							Some(tx.txid()) == htlc_spend_txid_opt ||
+								inp.previous_output.txid == htlc_spend_txid
+						} else {
+							Some(inp.previous_output.txid) == confirmed_txid &&
+								inp.previous_output.vout == htlc_commitment_tx_output_idx
+						}
+					})).unwrap_or(false) {
+						Some(())
+					} else { None }
+				} else { None }
+			});
+			if htlc_output_claim_pending.is_some() {
+				// We already push `Balance`s onto the `res` list for every
+				// `StaticOutput` in a `MaturingOutput` in the revoked
+				// counterparty commitment transaction case generally, so don't
+				// need to do so again here.
+			} else {
+				debug_assert!(holder_timeout_spend_pending.is_none(),
+					"HTLCUpdate OnchainEvents should never appear for preimage claims");
+				debug_assert!(!htlc.offered || htlc_spend_pending.is_none() || !htlc_spend_pending.unwrap().1,
+					"We don't (currently) generate preimage claims against revoked outputs, where did you get one?!");
+				return Some(Balance::CounterpartyRevokedOutputClaimable {
+					claimable_amount_satoshis: htlc.amount_msat / 1000,
+				});
+			}
+		} else if htlc.offered == holder_commitment {
+			// If the payment was outbound, check if there's an HTLCUpdate
+			// indicating we have spent this HTLC with a timeout, claiming it back
+			// and awaiting confirmations on it.
+			if let Some(conf_thresh) = holder_timeout_spend_pending {
+				return Some(Balance::ClaimableAwaitingConfirmations {
+					claimable_amount_satoshis: htlc.amount_msat / 1000,
+					confirmation_height: conf_thresh,
+				});
+			} else {
+				return Some(Balance::MaybeClaimableHTLCAwaitingTimeout {
+					claimable_amount_satoshis: htlc.amount_msat / 1000,
+					claimable_height: htlc.cltv_expiry,
+				});
+			}
+		} else if self.payment_preimages.get(&htlc.payment_hash).is_some() {
+			// Otherwise (the payment was inbound), only expose it as claimable if
+			// we know the preimage.
+			// Note that if there is a pending claim, but it did not use the
+			// preimage, we lost funds to our counterparty! We will then continue
+			// to show it as ContentiousClaimable until ANTI_REORG_DELAY.
+			debug_assert!(holder_timeout_spend_pending.is_none());
+			if let Some((conf_thresh, true)) = htlc_spend_pending {
+				return Some(Balance::ClaimableAwaitingConfirmations {
+					claimable_amount_satoshis: htlc.amount_msat / 1000,
+					confirmation_height: conf_thresh,
+				});
+			} else {
+				return Some(Balance::ContentiousClaimable {
+					claimable_amount_satoshis: htlc.amount_msat / 1000,
+					timeout_height: htlc.cltv_expiry,
+				});
+			}
+		}
+		None
+	}
+}
+
+impl<Signer: Sign> ChannelMonitor<Signer> {
 	/// Gets the balances in this channel which are either claimable by us if we were to
 	/// force-close the channel now or which are claimable on-chain (possibly awaiting
 	/// confirmation).
@@ -1468,136 +1611,10 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 		macro_rules! walk_htlcs {
 			($holder_commitment: expr, $counterparty_revoked_commitment: expr, $htlc_iter: expr) => {
 				for htlc in $htlc_iter {
-					if let Some(htlc_commitment_tx_output_idx) = htlc.transaction_output_index {
-						let mut htlc_spend_txid_opt = None;
-						let mut htlc_update_pending = None;
-						let mut htlc_spend_pending = None;
-						let mut delayed_output_pending = None;
-						for event in us.onchain_events_awaiting_threshold_conf.iter() {
-							match event.event {
-								OnchainEvent::HTLCUpdate { commitment_tx_output_idx, htlc_value_satoshis, .. }
-								if commitment_tx_output_idx == Some(htlc_commitment_tx_output_idx) => {
-									debug_assert!(htlc_spend_txid_opt.is_none());
-									htlc_spend_txid_opt = event.transaction.as_ref().map(|tx| tx.txid());
-									debug_assert!(htlc_update_pending.is_none());
-									debug_assert_eq!(htlc_value_satoshis.unwrap(), htlc.amount_msat / 1000);
-									htlc_update_pending = Some(event.confirmation_threshold());
-								},
-								OnchainEvent::HTLCSpendConfirmation { commitment_tx_output_idx, preimage, .. }
-								if commitment_tx_output_idx == htlc_commitment_tx_output_idx => {
-									debug_assert!(htlc_spend_txid_opt.is_none());
-									htlc_spend_txid_opt = event.transaction.as_ref().map(|tx| tx.txid());
-									debug_assert!(htlc_spend_pending.is_none());
-									htlc_spend_pending = Some((event.confirmation_threshold(), preimage.is_some()));
-								},
-								OnchainEvent::MaturingOutput {
-									descriptor: SpendableOutputDescriptor::DelayedPaymentOutput(ref descriptor) }
-								if descriptor.outpoint.index as u32 == htlc_commitment_tx_output_idx => {
-									debug_assert!(delayed_output_pending.is_none());
-									delayed_output_pending = Some(event.confirmation_threshold());
-								},
-								_ => {},
-							}
-						}
-						let htlc_resolved = us.htlcs_resolved_on_chain.iter()
-							.find(|v| if v.commitment_tx_output_idx == htlc_commitment_tx_output_idx {
-								debug_assert!(htlc_spend_txid_opt.is_none());
-								htlc_spend_txid_opt = v.resolving_txid;
-								true
-							} else { false });
-						debug_assert!(htlc_update_pending.is_some() as u8 + htlc_spend_pending.is_some() as u8 + htlc_resolved.is_some() as u8 <= 1);
+					if htlc.transaction_output_index.is_some() {
 
-						let htlc_output_to_spend =
-							if let Some(txid) = htlc_spend_txid_opt {
-								debug_assert!(
-									us.onchain_tx_handler.channel_transaction_parameters.opt_anchors.is_none(),
-									"This code needs updating for anchors");
-								BitcoinOutPoint::new(txid, 0)
-							} else {
-								BitcoinOutPoint::new(confirmed_txid.unwrap(), htlc_commitment_tx_output_idx)
-							};
-						let htlc_output_needs_spending = us.onchain_tx_handler.is_output_spend_pending(&htlc_output_to_spend);
-
-						if let Some(conf_thresh) = delayed_output_pending {
-							debug_assert!($holder_commitment);
-							res.push(Balance::ClaimableAwaitingConfirmations {
-								claimable_amount_satoshis: htlc.amount_msat / 1000,
-								confirmation_height: conf_thresh,
-							});
-						} else if htlc_resolved.is_some() && !htlc_output_needs_spending {
-							// Funding transaction spends should be fully confirmed by the time any
-							// HTLC transactions are resolved, unless we're talking about a holder
-							// commitment tx, whose resolution is delayed until the CSV timeout is
-							// reached, even though HTLCs may be resolved after only
-							// ANTI_REORG_DELAY confirmations.
-							debug_assert!($holder_commitment || us.funding_spend_confirmed.is_some());
-						} else if $counterparty_revoked_commitment {
-							let htlc_output_claim_pending = us.onchain_events_awaiting_threshold_conf.iter().find_map(|event| {
-								if let OnchainEvent::MaturingOutput {
-									descriptor: SpendableOutputDescriptor::StaticOutput { .. }
-								} = &event.event {
-									if event.transaction.as_ref().map(|tx| tx.input.iter().any(|inp| {
-										if let Some(htlc_spend_txid) = htlc_spend_txid_opt {
-											Some(tx.txid()) == htlc_spend_txid_opt ||
-												inp.previous_output.txid == htlc_spend_txid
-										} else {
-											Some(inp.previous_output.txid) == confirmed_txid &&
-												inp.previous_output.vout == htlc_commitment_tx_output_idx
-										}
-									})).unwrap_or(false) {
-										Some(())
-									} else { None }
-								} else { None }
-							});
-							if htlc_output_claim_pending.is_some() {
-								// We already push `Balance`s onto the `res` list for every
-								// `StaticOutput` in a `MaturingOutput` in the revoked
-								// counterparty commitment transaction case generally, so don't
-								// need to do so again here.
-							} else {
-								debug_assert!(htlc_update_pending.is_none(),
-									"HTLCUpdate OnchainEvents should never appear for preimage claims");
-								debug_assert!(!htlc.offered || htlc_spend_pending.is_none() || !htlc_spend_pending.unwrap().1,
-									"We don't (currently) generate preimage claims against revoked outputs, where did you get one?!");
-								res.push(Balance::CounterpartyRevokedOutputClaimable {
-									claimable_amount_satoshis: htlc.amount_msat / 1000,
-								});
-							}
-						} else {
-							if htlc.offered == $holder_commitment {
-								// If the payment was outbound, check if there's an HTLCUpdate
-								// indicating we have spent this HTLC with a timeout, claiming it back
-								// and awaiting confirmations on it.
-								if let Some(conf_thresh) = htlc_update_pending {
-									res.push(Balance::ClaimableAwaitingConfirmations {
-										claimable_amount_satoshis: htlc.amount_msat / 1000,
-										confirmation_height: conf_thresh,
-									});
-								} else {
-									res.push(Balance::MaybeClaimableHTLCAwaitingTimeout {
-										claimable_amount_satoshis: htlc.amount_msat / 1000,
-										claimable_height: htlc.cltv_expiry,
-									});
-								}
-							} else if us.payment_preimages.get(&htlc.payment_hash).is_some() {
-								// Otherwise (the payment was inbound), only expose it as claimable if
-								// we know the preimage.
-								// Note that if there is a pending claim, but it did not use the
-								// preimage, we lost funds to our counterparty! We will then continue
-								// to show it as ContentiousClaimable until ANTI_REORG_DELAY.
-								debug_assert!(htlc_update_pending.is_none());
-								if let Some((conf_thresh, true)) = htlc_spend_pending {
-									res.push(Balance::ClaimableAwaitingConfirmations {
-										claimable_amount_satoshis: htlc.amount_msat / 1000,
-										confirmation_height: conf_thresh,
-									});
-								} else {
-									res.push(Balance::ContentiousClaimable {
-										claimable_amount_satoshis: htlc.amount_msat / 1000,
-										timeout_height: htlc.cltv_expiry,
-									});
-								}
-							}
+						if let Some(bal) = us.get_htlc_balance(htlc, $holder_commitment, $counterparty_revoked_commitment, confirmed_txid) {
+							res.push(bal);
 						}
 					}
 				}
