@@ -73,7 +73,7 @@ fn test_insane_channel_opens() {
 	// Instantiate channel parameters where we push the maximum msats given our
 	// funding satoshis
 	let channel_value_sat = 31337; // same as funding satoshis
-	let channel_reserve_satoshis = Channel::<EnforcingSigner>::get_holder_selected_channel_reserve_satoshis(channel_value_sat);
+	let channel_reserve_satoshis = Channel::<EnforcingSigner>::get_holder_selected_channel_reserve_satoshis(channel_value_sat, &cfg);
 	let push_msat = (channel_value_sat - channel_reserve_satoshis) * 1000;
 
 	// Have node0 initiate a channel to node1 with aforementioned parameters
@@ -148,13 +148,14 @@ fn do_test_counterparty_no_reserve(send_from_initiator: bool) {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let default_config = UserConfig::default();
 
 	// Have node0 initiate a channel to node1 with aforementioned parameters
 	let mut push_amt = 100_000_000;
 	let feerate_per_kw = 253;
 	let opt_anchors = false;
 	push_amt -= feerate_per_kw as u64 * (commitment_tx_base_weight(opt_anchors) + 4 * COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000 * 1000;
-	push_amt -= Channel::<EnforcingSigner>::get_holder_selected_channel_reserve_satoshis(100_000) * 1000;
+	push_amt -= Channel::<EnforcingSigner>::get_holder_selected_channel_reserve_satoshis(100_000, &default_config) * 1000;
 
 	let temp_channel_id = nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100_000, if send_from_initiator { 0 } else { push_amt }, 42, None).unwrap();
 	let mut open_channel_message = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
@@ -633,7 +634,8 @@ fn test_update_fee_that_funder_cannot_afford() {
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, channel_value, push_sats * 1000, InitFeatures::known(), InitFeatures::known());
 	let channel_id = chan.2;
 	let secp_ctx = Secp256k1::new();
-	let bs_channel_reserve_sats = Channel::<EnforcingSigner>::get_holder_selected_channel_reserve_satoshis(channel_value);
+	let default_config = UserConfig::default();
+	let bs_channel_reserve_sats = Channel::<EnforcingSigner>::get_holder_selected_channel_reserve_satoshis(channel_value, &default_config);
 
 	let opt_anchors = false;
 
@@ -1520,12 +1522,13 @@ fn test_chan_reserve_violation_outbound_htlc_inbound_chan() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-
+	let default_config = UserConfig::default();
 	let opt_anchors = false;
 
 	let mut push_amt = 100_000_000;
 	push_amt -= commit_tx_fee_msat(feerate_per_kw, MIN_AFFORDABLE_HTLC_COUNT as u64, opt_anchors);
-	push_amt -= Channel::<EnforcingSigner>::get_holder_selected_channel_reserve_satoshis(100_000) * 1000;
+
+	push_amt -= Channel::<EnforcingSigner>::get_holder_selected_channel_reserve_satoshis(100_000, &default_config) * 1000;
 
 	let _ = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100_000, push_amt, InitFeatures::known(), InitFeatures::known());
 
@@ -1549,7 +1552,7 @@ fn test_chan_reserve_violation_inbound_htlc_outbound_channel() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-
+	let default_config = UserConfig::default();
 	let opt_anchors = false;
 
 	// Set nodes[0]'s balance such that they will consider any above-dust received HTLC to be a
@@ -1557,7 +1560,7 @@ fn test_chan_reserve_violation_inbound_htlc_outbound_channel() {
 	// transaction fee with 0 HTLCs (183 sats)).
 	let mut push_amt = 100_000_000;
 	push_amt -= commit_tx_fee_msat(feerate_per_kw, MIN_AFFORDABLE_HTLC_COUNT as u64, opt_anchors);
-	push_amt -= Channel::<EnforcingSigner>::get_holder_selected_channel_reserve_satoshis(100_000) * 1000;
+	push_amt -= Channel::<EnforcingSigner>::get_holder_selected_channel_reserve_satoshis(100_000, &default_config) * 1000;
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100_000, push_amt, InitFeatures::known(), InitFeatures::known());
 
 	// Send four HTLCs to cover the initial push_msat buffer we're required to include
@@ -1602,7 +1605,7 @@ fn test_chan_reserve_dust_inbound_htlcs_outbound_chan() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-
+	let default_config = UserConfig::default();
 	let opt_anchors = false;
 
 	// Set nodes[0]'s balance such that they will consider any above-dust received HTLC to be a
@@ -1610,7 +1613,7 @@ fn test_chan_reserve_dust_inbound_htlcs_outbound_chan() {
 	// transaction fee with 0 HTLCs (183 sats)).
 	let mut push_amt = 100_000_000;
 	push_amt -= commit_tx_fee_msat(feerate_per_kw, MIN_AFFORDABLE_HTLC_COUNT as u64, opt_anchors);
-	push_amt -= Channel::<EnforcingSigner>::get_holder_selected_channel_reserve_satoshis(100_000) * 1000;
+	push_amt -= Channel::<EnforcingSigner>::get_holder_selected_channel_reserve_satoshis(100_000, &default_config) * 1000;
 	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, push_amt, InitFeatures::known(), InitFeatures::known());
 
 	let dust_amt = crate::ln::channel::MIN_CHAN_DUST_LIMIT_SATOSHIS * 1000
@@ -1640,7 +1643,7 @@ fn test_chan_init_feerate_unaffordability() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-
+	let default_config = UserConfig::default();
 	let opt_anchors = false;
 
 	// Set the push_msat amount such that nodes[0] will not be able to afford to add even a single
@@ -1652,7 +1655,7 @@ fn test_chan_init_feerate_unaffordability() {
 
 	// During open, we don't have a "counterparty channel reserve" to check against, so that
 	// requirement only comes into play on the open_channel handling side.
-	push_amt -= Channel::<EnforcingSigner>::get_holder_selected_channel_reserve_satoshis(100_000) * 1000;
+	push_amt -= Channel::<EnforcingSigner>::get_holder_selected_channel_reserve_satoshis(100_000, &default_config) * 1000;
 	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100_000, push_amt, 42, None).unwrap();
 	let mut open_channel_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
 	open_channel_msg.push_msat += 1;
@@ -1771,10 +1774,11 @@ fn test_inbound_outbound_capacity_is_not_zero() {
 	let _ = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 95000000, InitFeatures::known(), InitFeatures::known());
 	let channels0 = node_chanmgrs[0].list_channels();
 	let channels1 = node_chanmgrs[1].list_channels();
+	let default_config = UserConfig::default();
 	assert_eq!(channels0.len(), 1);
 	assert_eq!(channels1.len(), 1);
 
-	let reserve = Channel::<EnforcingSigner>::get_holder_selected_channel_reserve_satoshis(100000);
+	let reserve = Channel::<EnforcingSigner>::get_holder_selected_channel_reserve_satoshis(100_000, &default_config);
 	assert_eq!(channels0[0].inbound_capacity_msat, 95000000 - reserve*1000);
 	assert_eq!(channels1[0].outbound_capacity_msat, 95000000 - reserve*1000);
 
