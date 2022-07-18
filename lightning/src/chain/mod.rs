@@ -187,16 +187,22 @@ pub trait Confirm {
 	fn get_relevant_txids(&self) -> Vec<Txid>;
 }
 
-/// An error enum representing a failure to persist a channel monitor update.
+/// An enum representing the status of a channel monitor update persistence.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub enum ChannelMonitorUpdateErr {
+pub enum ChannelMonitorUpdateStatus {
+	/// The update has been durably persisted and all copies of the relevant [`ChannelMonitor`]
+	/// have been updated.
+	///
+	/// This includes performing any `fsync()` calls required to ensure the update is guaranteed to
+	/// be available on restart even if the application crashes.
+	Completed,
 	/// Used to indicate a temporary failure (eg connection to a watchtower or remote backup of
 	/// our state failed, but is expected to succeed at some point in the future).
 	///
 	/// Such a failure will "freeze" a channel, preventing us from revoking old states or
 	/// submitting new commitment transactions to the counterparty. Once the update(s) which failed
-	/// have been successfully applied, a [`MonitorEvent::UpdateCompleted`] can be used to restore
-	/// the channel to an operational state.
+	/// have been successfully applied, a [`MonitorEvent::Completed`] can be used to restore the
+	/// channel to an operational state.
 	///
 	/// Note that a given [`ChannelManager`] will *never* re-generate a [`ChannelMonitorUpdate`].
 	/// If you return this error you must ensure that it is written to disk safely before writing
@@ -207,16 +213,17 @@ pub enum ChannelMonitorUpdateErr {
 	/// attempting to claim it on this channel) and those updates must still be persisted.
 	///
 	/// No updates to the channel will be made which could invalidate other [`ChannelMonitor`]s
-	/// until a [`MonitorEvent::UpdateCompleted`] is provided, even if you return no error on a
-	/// later monitor update for the same channel.
+	/// until a [`MonitorEvent::Completed`] is provided, even if you return no error on a later
+	/// monitor update for the same channel.
 	///
 	/// For deployments where a copy of ChannelMonitors and other local state are backed up in a
 	/// remote location (with local copies persisted immediately), it is anticipated that all
-	/// updates will return TemporaryFailure until the remote copies could be updated.
+	/// updates will return [`InProgress`] until the remote copies could be updated.
 	///
-	/// [`PermanentFailure`]: ChannelMonitorUpdateErr::PermanentFailure
+	/// [`PermanentFailure`]: ChannelMonitorUpdateStatus::PermanentFailure
+	/// [`InProgress`]: ChannelMonitorUpdateStatus::InProgress
 	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
-	TemporaryFailure,
+	InProgress,
 	/// Used to indicate no further channel monitor updates will be allowed (likely a disk failure
 	/// or a remote copy of this [`ChannelMonitor`] is no longer reachable and thus not updatable).
 	///
@@ -253,7 +260,7 @@ pub enum ChannelMonitorUpdateErr {
 	/// storage is used to claim outputs of rejected state confirmed onchain by another watchtower,
 	/// lagging behind on block processing.
 	///
-	/// [`PermanentFailure`]: ChannelMonitorUpdateErr::PermanentFailure
+	/// [`PermanentFailure`]: ChannelMonitorUpdateStatus::PermanentFailure
 	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 	PermanentFailure,
 }
@@ -273,10 +280,10 @@ pub enum ChannelMonitorUpdateErr {
 /// If an implementation maintains multiple instances of a channel's monitor (e.g., by storing
 /// backup copies), then it must ensure that updates are applied across all instances. Otherwise, it
 /// could result in a revoked transaction being broadcast, allowing the counterparty to claim all
-/// funds in the channel. See [`ChannelMonitorUpdateErr`] for more details about how to handle
+/// funds in the channel. See [`ChannelMonitorUpdateStatus`] for more details about how to handle
 /// multiple instances.
 ///
-/// [`PermanentFailure`]: ChannelMonitorUpdateErr::PermanentFailure
+/// [`PermanentFailure`]: ChannelMonitorUpdateStatus::PermanentFailure
 pub trait Watch<ChannelSigner: Sign> {
 	/// Watches a channel identified by `funding_txo` using `monitor`.
 	///
@@ -284,21 +291,21 @@ pub trait Watch<ChannelSigner: Sign> {
 	/// with any spends of outputs returned by [`get_outputs_to_watch`]. In practice, this means
 	/// calling [`block_connected`] and [`block_disconnected`] on the monitor.
 	///
-	/// Note: this interface MUST error with [`ChannelMonitorUpdateErr::PermanentFailure`] if
+	/// Note: this interface MUST error with [`ChannelMonitorUpdateStatus::PermanentFailure`] if
 	/// the given `funding_txo` has previously been registered via `watch_channel`.
 	///
 	/// [`get_outputs_to_watch`]: channelmonitor::ChannelMonitor::get_outputs_to_watch
 	/// [`block_connected`]: channelmonitor::ChannelMonitor::block_connected
 	/// [`block_disconnected`]: channelmonitor::ChannelMonitor::block_disconnected
-	fn watch_channel(&self, funding_txo: OutPoint, monitor: ChannelMonitor<ChannelSigner>) -> Result<(), ChannelMonitorUpdateErr>;
+	fn watch_channel(&self, funding_txo: OutPoint, monitor: ChannelMonitor<ChannelSigner>) -> ChannelMonitorUpdateStatus;
 
 	/// Updates a channel identified by `funding_txo` by applying `update` to its monitor.
 	///
 	/// Implementations must call [`update_monitor`] with the given update. See
-	/// [`ChannelMonitorUpdateErr`] for invariants around returning an error.
+	/// [`ChannelMonitorUpdateStatus`] for invariants around returning an error.
 	///
 	/// [`update_monitor`]: channelmonitor::ChannelMonitor::update_monitor
-	fn update_channel(&self, funding_txo: OutPoint, update: ChannelMonitorUpdate) -> Result<(), ChannelMonitorUpdateErr>;
+	fn update_channel(&self, funding_txo: OutPoint, update: ChannelMonitorUpdate) -> ChannelMonitorUpdateStatus;
 
 	/// Returns any monitor events since the last call. Subsequent calls must only return new
 	/// events.
@@ -308,7 +315,7 @@ pub trait Watch<ChannelSigner: Sign> {
 	/// to disk.
 	///
 	/// For details on asynchronous [`ChannelMonitor`] updating and returning
-	/// [`MonitorEvent::UpdateCompleted`] here, see [`ChannelMonitorUpdateErr::TemporaryFailure`].
+	/// [`MonitorEvent::Completed`] here, see [`ChannelMonitorUpdateStatus::InProgress`].
 	fn release_pending_monitor_events(&self) -> Vec<(OutPoint, Vec<MonitorEvent>, Option<PublicKey>)>;
 }
 
@@ -327,9 +334,9 @@ pub trait Watch<ChannelSigner: Sign> {
 /// Note that use as part of a [`Watch`] implementation involves reentrancy. Therefore, the `Filter`
 /// should not block on I/O. Implementations should instead queue the newly monitored data to be
 /// processed later. Then, in order to block until the data has been processed, any [`Watch`]
-/// invocation that has called the `Filter` must return [`TemporaryFailure`].
+/// invocation that has called the `Filter` must return [`InProgress`].
 ///
-/// [`TemporaryFailure`]: ChannelMonitorUpdateErr::TemporaryFailure
+/// [`InProgress`]: ChannelMonitorUpdateStatus::InProgress
 /// [BIP 157]: https://github.com/bitcoin/bips/blob/master/bip-0157.mediawiki
 /// [BIP 158]: https://github.com/bitcoin/bips/blob/master/bip-0158.mediawiki
 pub trait Filter {

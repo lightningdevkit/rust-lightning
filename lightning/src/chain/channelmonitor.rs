@@ -76,14 +76,14 @@ pub struct ChannelMonitorUpdate {
 	/// increasing and increase by one for each new update, with one exception specified below.
 	///
 	/// This sequence number is also used to track up to which points updates which returned
-	/// [`ChannelMonitorUpdateErr::TemporaryFailure`] have been applied to all copies of a given
+	/// [`ChannelMonitorUpdateStatus::InProgress`] have been applied to all copies of a given
 	/// ChannelMonitor when ChannelManager::channel_monitor_updated is called.
 	///
 	/// The only instance where update_id values are not strictly increasing is the case where we
 	/// allow post-force-close updates with a special update ID of [`CLOSED_CHANNEL_UPDATE_ID`]. See
 	/// its docs for more details.
 	///
-	/// [`ChannelMonitorUpdateErr::TemporaryFailure`]: super::ChannelMonitorUpdateErr::TemporaryFailure
+	/// [`ChannelMonitorUpdateStatus::InProgress`]: super::ChannelMonitorUpdateStatus::InProgress
 	pub update_id: u64,
 }
 
@@ -134,10 +134,10 @@ pub enum MonitorEvent {
 	CommitmentTxConfirmed(OutPoint),
 
 	/// Indicates a [`ChannelMonitor`] update has completed. See
-	/// [`ChannelMonitorUpdateErr::TemporaryFailure`] for more information on how this is used.
+	/// [`ChannelMonitorUpdateStatus::InProgress`] for more information on how this is used.
 	///
-	/// [`ChannelMonitorUpdateErr::TemporaryFailure`]: super::ChannelMonitorUpdateErr::TemporaryFailure
-	UpdateCompleted {
+	/// [`ChannelMonitorUpdateStatus::InProgress`]: super::ChannelMonitorUpdateStatus::InProgress
+	Completed {
 		/// The funding outpoint of the [`ChannelMonitor`] that was updated
 		funding_txo: OutPoint,
 		/// The Update ID from [`ChannelMonitorUpdate::update_id`] which was applied or
@@ -149,15 +149,15 @@ pub enum MonitorEvent {
 	},
 
 	/// Indicates a [`ChannelMonitor`] update has failed. See
-	/// [`ChannelMonitorUpdateErr::PermanentFailure`] for more information on how this is used.
+	/// [`ChannelMonitorUpdateStatus::PermanentFailure`] for more information on how this is used.
 	///
-	/// [`ChannelMonitorUpdateErr::PermanentFailure`]: super::ChannelMonitorUpdateErr::PermanentFailure
+	/// [`ChannelMonitorUpdateStatus::PermanentFailure`]: super::ChannelMonitorUpdateStatus::PermanentFailure
 	UpdateFailed(OutPoint),
 }
 impl_writeable_tlv_based_enum_upgradable!(MonitorEvent,
-	// Note that UpdateCompleted and UpdateFailed are currently never serialized to disk as they are
+	// Note that Completed and UpdateFailed are currently never serialized to disk as they are
 	// generated only in ChainMonitor
-	(0, UpdateCompleted) => {
+	(0, Completed) => {
 		(0, funding_txo, required),
 		(2, monitor_update_id, required),
 	},
@@ -1319,8 +1319,8 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 	/// the Channel was out-of-date.
 	///
 	/// You may also use this to broadcast the latest local commitment transaction, either because
-	/// a monitor update failed with [`ChannelMonitorUpdateErr::PermanentFailure`] or because we've
-	/// fallen behind (i.e we've received proof that our counterparty side knows a revocation
+	/// a monitor update failed with [`ChannelMonitorUpdateStatus::PermanentFailure`] or because we've
+	/// fallen behind (i.e. we've received proof that our counterparty side knows a revocation
 	/// secret we gave them that they shouldn't know).
 	///
 	/// Broadcasting these transactions in the second case is UNSAFE, as they allow counterparty
@@ -1329,7 +1329,7 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 	/// may be to contact the other node operator out-of-band to coordinate other options available
 	/// to you. In any-case, the choice is up to you.
 	///
-	/// [`ChannelMonitorUpdateErr::PermanentFailure`]: super::ChannelMonitorUpdateErr::PermanentFailure
+	/// [`ChannelMonitorUpdateStatus::PermanentFailure`]: super::ChannelMonitorUpdateStatus::PermanentFailure
 	pub fn get_latest_holder_commitment_txn<L: Deref>(&self, logger: &L) -> Vec<Transaction>
 	where L::Target: Logger {
 		self.inner.lock().unwrap().get_latest_holder_commitment_txn(logger)

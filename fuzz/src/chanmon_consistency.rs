@@ -32,7 +32,7 @@ use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hash_types::{BlockHash, WPubkeyHash};
 
 use lightning::chain;
-use lightning::chain::{BestBlock, ChannelMonitorUpdateErr, chainmonitor, channelmonitor, Confirm, Watch};
+use lightning::chain::{BestBlock, ChannelMonitorUpdateStatus, chainmonitor, channelmonitor, Confirm, Watch};
 use lightning::chain::channelmonitor::{ChannelMonitor, MonitorEvent};
 use lightning::chain::transaction::OutPoint;
 use lightning::chain::chaininterface::{BroadcasterInterface, ConfirmationTarget, FeeEstimator};
@@ -124,7 +124,7 @@ impl TestChainMonitor {
 	}
 }
 impl chain::Watch<EnforcingSigner> for TestChainMonitor {
-	fn watch_channel(&self, funding_txo: OutPoint, monitor: channelmonitor::ChannelMonitor<EnforcingSigner>) -> Result<(), chain::ChannelMonitorUpdateErr> {
+	fn watch_channel(&self, funding_txo: OutPoint, monitor: channelmonitor::ChannelMonitor<EnforcingSigner>) -> chain::ChannelMonitorUpdateStatus {
 		let mut ser = VecWriter(Vec::new());
 		monitor.write(&mut ser).unwrap();
 		if let Some(_) = self.latest_monitors.lock().unwrap().insert(funding_txo, (monitor.get_latest_update_id(), ser.0)) {
@@ -134,7 +134,7 @@ impl chain::Watch<EnforcingSigner> for TestChainMonitor {
 		self.chain_monitor.watch_channel(funding_txo, monitor)
 	}
 
-	fn update_channel(&self, funding_txo: OutPoint, update: channelmonitor::ChannelMonitorUpdate) -> Result<(), chain::ChannelMonitorUpdateErr> {
+	fn update_channel(&self, funding_txo: OutPoint, update: channelmonitor::ChannelMonitorUpdate) -> chain::ChannelMonitorUpdateStatus {
 		let mut map_lock = self.latest_monitors.lock().unwrap();
 		let mut map_entry = match map_lock.entry(funding_txo) {
 			hash_map::Entry::Occupied(entry) => entry,
@@ -363,7 +363,9 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 			let logger: Arc<dyn Logger> = Arc::new(test_logger::TestLogger::new($node_id.to_string(), out.clone()));
 			let keys_manager = Arc::new(KeyProvider { node_id: $node_id, rand_bytes_id: atomic::AtomicU32::new(0), enforcement_states: Mutex::new(HashMap::new()) });
 			let monitor = Arc::new(TestChainMonitor::new(broadcast.clone(), logger.clone(), $fee_estimator.clone(),
-				Arc::new(TestPersister { update_ret: Mutex::new(Ok(())) }), Arc::clone(&keys_manager)));
+				Arc::new(TestPersister {
+					update_ret: Mutex::new(ChannelMonitorUpdateStatus::Completed)
+				}), Arc::clone(&keys_manager)));
 
 			let mut config = UserConfig::default();
 			config.channel_config.forwarding_fee_proportional_millionths = 0;
@@ -383,7 +385,9 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 		    let keys_manager = Arc::clone(& $keys_manager);
 			let logger: Arc<dyn Logger> = Arc::new(test_logger::TestLogger::new($node_id.to_string(), out.clone()));
 			let chain_monitor = Arc::new(TestChainMonitor::new(broadcast.clone(), logger.clone(), $fee_estimator.clone(),
-				Arc::new(TestPersister { update_ret: Mutex::new(Ok(())) }), Arc::clone(& $keys_manager)));
+				Arc::new(TestPersister {
+					update_ret: Mutex::new(ChannelMonitorUpdateStatus::Completed)
+				}), Arc::clone(& $keys_manager)));
 
 			let mut config = UserConfig::default();
 			config.channel_config.forwarding_fee_proportional_millionths = 0;
@@ -412,7 +416,8 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 
 			let res = (<(BlockHash, ChanMan)>::read(&mut Cursor::new(&$ser.0), read_args).expect("Failed to read manager").1, chain_monitor.clone());
 			for (funding_txo, mon) in monitors.drain() {
-				assert!(chain_monitor.chain_monitor.watch_channel(funding_txo, mon).is_ok());
+				assert_eq!(chain_monitor.chain_monitor.watch_channel(funding_txo, mon),
+					ChannelMonitorUpdateStatus::Completed);
 			}
 			res
 		} }
@@ -889,12 +894,12 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 			// bit-twiddling mutations to have similar effects. This is probably overkill, but no
 			// harm in doing so.
 
-			0x00 => *monitor_a.persister.update_ret.lock().unwrap() = Err(ChannelMonitorUpdateErr::TemporaryFailure),
-			0x01 => *monitor_b.persister.update_ret.lock().unwrap() = Err(ChannelMonitorUpdateErr::TemporaryFailure),
-			0x02 => *monitor_c.persister.update_ret.lock().unwrap() = Err(ChannelMonitorUpdateErr::TemporaryFailure),
-			0x04 => *monitor_a.persister.update_ret.lock().unwrap() = Ok(()),
-			0x05 => *monitor_b.persister.update_ret.lock().unwrap() = Ok(()),
-			0x06 => *monitor_c.persister.update_ret.lock().unwrap() = Ok(()),
+			0x00 => *monitor_a.persister.update_ret.lock().unwrap() = ChannelMonitorUpdateStatus::InProgress,
+			0x01 => *monitor_b.persister.update_ret.lock().unwrap() = ChannelMonitorUpdateStatus::InProgress,
+			0x02 => *monitor_c.persister.update_ret.lock().unwrap() = ChannelMonitorUpdateStatus::InProgress,
+			0x04 => *monitor_a.persister.update_ret.lock().unwrap() = ChannelMonitorUpdateStatus::Completed,
+			0x05 => *monitor_b.persister.update_ret.lock().unwrap() = ChannelMonitorUpdateStatus::Completed,
+			0x06 => *monitor_c.persister.update_ret.lock().unwrap() = ChannelMonitorUpdateStatus::Completed,
 
 			0x08 => {
 				if let Some((id, _)) = monitor_a.latest_monitors.lock().unwrap().get(&chan_1_funding) {
@@ -1119,9 +1124,9 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 				// after we resolve all pending events.
 				// First make sure there are no pending monitor updates, resetting the error state
 				// and calling force_channel_monitor_updated for each monitor.
-				*monitor_a.persister.update_ret.lock().unwrap() = Ok(());
-				*monitor_b.persister.update_ret.lock().unwrap() = Ok(());
-				*monitor_c.persister.update_ret.lock().unwrap() = Ok(());
+				*monitor_a.persister.update_ret.lock().unwrap() = ChannelMonitorUpdateStatus::Completed;
+				*monitor_b.persister.update_ret.lock().unwrap() = ChannelMonitorUpdateStatus::Completed;
+				*monitor_c.persister.update_ret.lock().unwrap() = ChannelMonitorUpdateStatus::Completed;
 
 				if let Some((id, _)) = monitor_a.latest_monitors.lock().unwrap().get(&chan_1_funding) {
 					monitor_a.chain_monitor.force_channel_monitor_updated(chan_1_funding, *id);

@@ -46,8 +46,12 @@ pub enum APIError {
 		/// A human-readable error message
 		err: String
 	},
-	/// An attempt to call watch/update_channel returned an Err (ie you did this!), causing the
-	/// attempted action to fail.
+	/// An attempt to call watch/update_channel returned a
+	/// [`ChannelMonitorUpdateStatus::InProgress`] indicating the persistence of a monitor update
+	/// is awaiting async resolution. Once it resolves the attempted action should complete
+	/// automatically.
+	///
+	/// [`ChannelMonitorUpdateStatus::InProgress`]: crate::chain::ChannelMonitorUpdateStatus::InProgress
 	MonitorUpdateFailed,
 	/// [`KeysInterface::get_shutdown_scriptpubkey`] returned a shutdown scriptpubkey incompatible
 	/// with the channel counterparty as negotiated in [`InitFeatures`].

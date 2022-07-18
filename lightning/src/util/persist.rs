@@ -72,15 +72,19 @@ impl<ChannelSigner: Sign, K: KVStorePersister> Persist<ChannelSigner> for K {
 	// A PermanentFailure implies we need to shut down since we're force-closing channels without
 	// even broadcasting!
 
-	fn persist_new_channel(&self, funding_txo: OutPoint, monitor: &ChannelMonitor<ChannelSigner>, _update_id: MonitorUpdateId) -> Result<(), chain::ChannelMonitorUpdateErr> {
+	fn persist_new_channel(&self, funding_txo: OutPoint, monitor: &ChannelMonitor<ChannelSigner>, _update_id: MonitorUpdateId) -> chain::ChannelMonitorUpdateStatus {
 		let key = format!("monitors/{}_{}", funding_txo.txid.to_hex(), funding_txo.index);
-		self.persist(&key, monitor)
-			.map_err(|_| chain::ChannelMonitorUpdateErr::PermanentFailure)
+		match self.persist(&key, monitor) {
+			Ok(()) => chain::ChannelMonitorUpdateStatus::Completed,
+			Err(_) => chain::ChannelMonitorUpdateStatus::PermanentFailure,
+		}
 	}
 
-	fn update_persisted_channel(&self, funding_txo: OutPoint, _update: &Option<ChannelMonitorUpdate>, monitor: &ChannelMonitor<ChannelSigner>, _update_id: MonitorUpdateId) -> Result<(), chain::ChannelMonitorUpdateErr> {
+	fn update_persisted_channel(&self, funding_txo: OutPoint, _update: &Option<ChannelMonitorUpdate>, monitor: &ChannelMonitor<ChannelSigner>, _update_id: MonitorUpdateId) -> chain::ChannelMonitorUpdateStatus {
 		let key = format!("monitors/{}_{}", funding_txo.txid.to_hex(), funding_txo.index);
-		self.persist(&key, monitor)
-			.map_err(|_| chain::ChannelMonitorUpdateErr::PermanentFailure)
+		match self.persist(&key, monitor) {
+			Ok(()) => chain::ChannelMonitorUpdateStatus::Completed,
+			Err(_) => chain::ChannelMonitorUpdateStatus::PermanentFailure,
+		}
 	}
 }
