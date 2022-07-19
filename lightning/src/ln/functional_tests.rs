@@ -1059,26 +1059,6 @@ fn fake_network_test() {
 	fail_payment(&nodes[1], &vec!(&nodes[3], &nodes[2], &nodes[1])[..], payment_hash_2);
 	claim_payment(&nodes[1], &vec!(&nodes[2], &nodes[3], &nodes[1])[..], payment_preimage_1);
 
-	// Add a duplicate new channel from 2 to 4
-	let chan_5 = create_announced_chan_between_nodes(&nodes, 1, 3, InitFeatures::known(), InitFeatures::known());
-
-	// Send some payments across both channels
-	let payment_preimage_3 = route_payment(&nodes[0], &vec!(&nodes[1], &nodes[3])[..], 3000000).0;
-	let payment_preimage_4 = route_payment(&nodes[0], &vec!(&nodes[1], &nodes[3])[..], 3000000).0;
-	let payment_preimage_5 = route_payment(&nodes[0], &vec!(&nodes[1], &nodes[3])[..], 3000000).0;
-
-
-	route_over_limit(&nodes[0], &vec!(&nodes[1], &nodes[3])[..], 3000000);
-	let events = nodes[0].node.get_and_clear_pending_msg_events();
-	assert_eq!(events.len(), 0);
-	nodes[0].logger.assert_log_regex("lightning::ln::channelmanager".to_string(), regex::Regex::new(r"Cannot send value that would put us over the max HTLC value in flight our peer will accept \(\d+\)").unwrap(), 1);
-
-	//TODO: Test that routes work again here as we've been notified that the channel is full
-
-	claim_payment(&nodes[0], &vec!(&nodes[1], &nodes[3])[..], payment_preimage_3);
-	claim_payment(&nodes[0], &vec!(&nodes[1], &nodes[3])[..], payment_preimage_4);
-	claim_payment(&nodes[0], &vec!(&nodes[1], &nodes[3])[..], payment_preimage_5);
-
 	// Close down the channels...
 	close_channel(&nodes[0], &nodes[1], &chan_1.2, chan_1.3, true);
 	check_closed_event!(nodes[0], 1, ClosureReason::CooperativeClosure);
@@ -1090,9 +1070,6 @@ fn fake_network_test() {
 	check_closed_event!(nodes[2], 1, ClosureReason::CooperativeClosure);
 	check_closed_event!(nodes[3], 1, ClosureReason::CooperativeClosure);
 	close_channel(&nodes[1], &nodes[3], &chan_4.2, chan_4.3, false);
-	check_closed_event!(nodes[1], 1, ClosureReason::CooperativeClosure);
-	check_closed_event!(nodes[3], 1, ClosureReason::CooperativeClosure);
-	close_channel(&nodes[1], &nodes[3], &chan_5.2, chan_5.3, false);
 	check_closed_event!(nodes[1], 1, ClosureReason::CooperativeClosure);
 	check_closed_event!(nodes[3], 1, ClosureReason::CooperativeClosure);
 }
