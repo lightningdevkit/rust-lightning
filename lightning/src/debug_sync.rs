@@ -2,7 +2,6 @@ pub use ::alloc::sync::Arc;
 use core::ops::{Deref, DerefMut};
 use core::time::Duration;
 
-use std::collections::HashSet;
 use std::cell::RefCell;
 
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -13,8 +12,10 @@ use std::sync::RwLockReadGuard as StdRwLockReadGuard;
 use std::sync::RwLockWriteGuard as StdRwLockWriteGuard;
 use std::sync::Condvar as StdCondvar;
 
+use prelude::HashMap;
+
 #[cfg(feature = "backtrace")]
-use {prelude::{HashMap, hash_map}, backtrace::Backtrace, std::sync::Once};
+use {prelude::hash_map, backtrace::Backtrace, std::sync::Once};
 
 #[cfg(not(feature = "backtrace"))]
 struct Backtrace{}
@@ -48,7 +49,7 @@ impl Condvar {
 
 thread_local! {
 	/// We track the set of locks currently held by a reference to their `LockMetadata`
-	static LOCKS_HELD: RefCell<HashSet<Arc<LockMetadata>>> = RefCell::new(HashSet::new());
+	static LOCKS_HELD: RefCell<HashMap<u64, Arc<LockMetadata>>> = RefCell::new(HashMap::new());
 }
 static LOCK_IDX: AtomicUsize = AtomicUsize::new(0);
 
@@ -61,34 +62,13 @@ static LOCKS_INIT: Once = Once::new();
 /// when the Mutex itself was constructed.
 struct LockMetadata {
 	lock_idx: u64,
-	locked_before: StdMutex<HashSet<LockDep>>,
+	locked_before: StdMutex<HashMap<u64, LockDep>>,
 	_lock_construction_bt: Backtrace,
-}
-impl PartialEq for LockMetadata {
-	fn eq(&self, o: &LockMetadata) -> bool { self.lock_idx == o.lock_idx }
-}
-impl Eq for LockMetadata {}
-impl std::hash::Hash for LockMetadata {
-	fn hash<H: std::hash::Hasher>(&self, hasher: &mut H) { hasher.write_u64(self.lock_idx); }
 }
 
 struct LockDep {
 	lock: Arc<LockMetadata>,
-	lockdep_trace: Option<Backtrace>,
-}
-impl LockDep {
-	/// Note that `Backtrace::new()` is rather expensive so we rely on the caller to fill in the
-	/// `lockdep_backtrace` field after ensuring we need it.
-	fn new_without_bt(lock: &Arc<LockMetadata>) -> Self {
-		Self { lock: Arc::clone(lock), lockdep_trace: None }
-	}
-}
-impl PartialEq for LockDep {
-	fn eq(&self, o: &LockDep) -> bool { self.lock.lock_idx == o.lock.lock_idx }
-}
-impl Eq for LockDep {}
-impl std::hash::Hash for LockDep {
-	fn hash<H: std::hash::Hasher>(&self, hasher: &mut H) { hasher.write_u64(self.lock.lock_idx); }
+	lockdep_trace: Backtrace,
 }
 
 #[cfg(feature = "backtrace")]
@@ -123,7 +103,7 @@ impl LockMetadata {
 		let lock_idx = LOCK_IDX.fetch_add(1, Ordering::Relaxed) as u64;
 
 		let res = Arc::new(LockMetadata {
-			locked_before: StdMutex::new(HashSet::new()),
+			locked_before: StdMutex::new(HashMap::new()),
 			lock_idx,
 			_lock_construction_bt: backtrace,
 		});
@@ -148,20 +128,20 @@ impl LockMetadata {
 			// For each lock which is currently locked, check that no lock's locked-before
 			// set includes the lock we're about to lock, which would imply a lockorder
 			// inversion.
-			for locked in held.borrow().iter() {
-				if read && *locked == *this {
+			for (locked_idx, _locked) in held.borrow().iter() {
+				if read && *locked_idx == this.lock_idx {
 					// Recursive read locks are explicitly allowed
 					return;
 				}
 			}
-			for locked in held.borrow().iter() {
-				if !read && *locked == *this {
+			for (locked_idx, locked) in held.borrow().iter() {
+				if !read && *locked_idx == this.lock_idx {
 					// With `feature = "backtrace"` set, we may be looking at different instances
 					// of the same lock.
 					debug_assert!(cfg!(feature = "backtrace"), "Tried to acquire a lock while it was held!");
 				}
-				for locked_dep in locked.locked_before.lock().unwrap().iter() {
-					if locked_dep.lock == *this && locked_dep.lock != *locked {
+				for (locked_dep_idx, locked_dep) in locked.locked_before.lock().unwrap().iter() {
+					if *locked_dep_idx == this.lock_idx && *locked_dep_idx != locked.lock_idx {
 						#[cfg(feature = "backtrace")]
 						panic!("Tried to violate existing lockorder.\nMutex that should be locked after the current lock was created at the following backtrace.\nNote that to get a backtrace for the lockorder violation, you should set RUST_BACKTRACE=1\nLock being taken constructed at: {} ({}):\n{:?}\nLock constructed at: {} ({})\n{:?}\n\nLock dep created at:\n{:?}\n\n",
 							get_construction_location(&this._lock_construction_bt), this.lock_idx, this._lock_construction_bt,
@@ -173,13 +153,12 @@ impl LockMetadata {
 				}
 				// Insert any already-held locks in our locked-before set.
 				let mut locked_before = this.locked_before.lock().unwrap();
-				let mut lockdep = LockDep::new_without_bt(locked);
-				if !locked_before.contains(&lockdep) {
-					lockdep.lockdep_trace = Some(Backtrace::new());
-					locked_before.insert(lockdep);
+				if !locked_before.contains_key(&locked.lock_idx) {
+					let lockdep = LockDep { lock: Arc::clone(locked), lockdep_trace: Backtrace::new() };
+					locked_before.insert(lockdep.lock.lock_idx, lockdep);
 				}
 			}
-			held.borrow_mut().insert(Arc::clone(this));
+			held.borrow_mut().insert(this.lock_idx, Arc::clone(this));
 			inserted = true;
 		});
 		inserted
@@ -194,14 +173,13 @@ impl LockMetadata {
 			// consider try-locks to ever generate lockorder inversions. However, if a try-lock
 			// succeeds, we do consider it to have created lockorder dependencies.
 			let mut locked_before = this.locked_before.lock().unwrap();
-			for locked in held.borrow().iter() {
-				let mut lockdep = LockDep::new_without_bt(locked);
-				if !locked_before.contains(&lockdep) {
-					lockdep.lockdep_trace = Some(Backtrace::new());
-					locked_before.insert(lockdep);
+			for (locked_idx, locked) in held.borrow().iter() {
+				if !locked_before.contains_key(locked_idx) {
+					let lockdep = LockDep { lock: Arc::clone(locked), lockdep_trace: Backtrace::new() };
+					locked_before.insert(*locked_idx, lockdep);
 				}
 			}
-			held.borrow_mut().insert(Arc::clone(this));
+			held.borrow_mut().insert(this.lock_idx, Arc::clone(this));
 		});
 	}
 }
@@ -231,7 +209,7 @@ impl<'a, T: Sized> MutexGuard<'a, T> {
 impl<T: Sized> Drop for MutexGuard<'_, T> {
 	fn drop(&mut self) {
 		LOCKS_HELD.with(|held| {
-			held.borrow_mut().remove(&self.mutex.deps);
+			held.borrow_mut().remove(&self.mutex.deps.lock_idx);
 		});
 	}
 }
@@ -302,7 +280,7 @@ impl<T: Sized> Drop for RwLockReadGuard<'_, T> {
 			return;
 		}
 		LOCKS_HELD.with(|held| {
-			held.borrow_mut().remove(&self.lock.deps);
+			held.borrow_mut().remove(&self.lock.deps.lock_idx);
 		});
 	}
 }
@@ -318,7 +296,7 @@ impl<T: Sized> Deref for RwLockWriteGuard<'_, T> {
 impl<T: Sized> Drop for RwLockWriteGuard<'_, T> {
 	fn drop(&mut self) {
 		LOCKS_HELD.with(|held| {
-			held.borrow_mut().remove(&self.lock.deps);
+			held.borrow_mut().remove(&self.lock.deps.lock_idx);
 		});
 	}
 }
