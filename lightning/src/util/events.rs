@@ -152,6 +152,50 @@ impl_writeable_tlv_based_enum_upgradable!(ClosureReason,
 	(12, OutdatedChannelManager) => {},
 );
 
+/// Intended destination of a failed HTLC as indicated in [`Event::HTLCHandlingFailed`].
+#[derive(Clone, Debug, PartialEq)]
+pub enum HTLCDestination {
+	/// We tried forwarding to a channel but failed to do so. An example of such an instance is when
+	/// there is insufficient capacity in our outbound channel.
+	NextHopChannel {
+		/// The `node_id` of the next node. For backwards compatibility, this field is
+		/// marked as optional, versions prior to 0.0.110 may not always be able to provide
+		/// counterparty node information.
+		node_id: Option<PublicKey>,
+		/// The outgoing `channel_id` between us and the next node.
+		channel_id: [u8; 32],
+	},
+	/// Scenario where we are unsure of the next node to forward the HTLC to.
+	UnknownNextHop {
+		/// Short channel id we are requesting to forward an HTLC to.
+		requested_forward_scid: u64,
+	},
+	/// Failure scenario where an HTLC may have been forwarded to be intended for us,
+	/// but is invalid for some reason, so we reject it.
+	///
+	/// Some of the reasons may include:
+	/// * HTLC Timeouts
+	/// * Expected MPP amount to claim does not equal HTLC total
+	/// * Claimable amount does not match expected amount
+	FailedPayment {
+		/// The payment hash of the payment we attempted to process.
+		payment_hash: PaymentHash
+	},
+}
+
+impl_writeable_tlv_based_enum_upgradable!(HTLCDestination,
+	(0, NextHopChannel) => {
+		(0, node_id, required),
+		(2, channel_id, required),
+	},
+	(2, UnknownNextHop) => {
+		(0, requested_forward_scid, required),
+	},
+	(4, FailedPayment) => {
+		(0, payment_hash, required),
+	}
+);
+
 /// An Event which you should probably take some action in response to.
 ///
 /// Note that while Writeable and Readable are implemented for Event, you probably shouldn't use
@@ -540,6 +584,24 @@ pub enum Event {
 		/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 		channel_type: ChannelTypeFeatures,
 	},
+	/// Indicates that the HTLC was accepted, but could not be processed when or after attempting to
+	/// forward it.
+	///
+	/// Some scenarios where this event may be sent include:
+	/// * Insufficient capacity in the outbound channel
+	/// * While waiting to forward the HTLC, the channel it is meant to be forwarded through closes
+	/// * When an unknown SCID is requested for forwarding a payment.
+	/// * Claiming an amount for an MPP payment that exceeds the HTLC total
+	/// * The HTLC has timed out
+	///
+	/// This event, however, does not get generated if an HTLC fails to meet the forwarding
+	/// requirements (i.e. insufficient fees paid, or a CLTV that is too soon).
+	HTLCHandlingFailed {
+		/// The channel over which the HTLC was received.
+		prev_channel_id: [u8; 32],
+		/// Destination of the HTLC that failed to be processed.
+		failed_next_destination: HTLCDestination,
+	},
 }
 
 impl Writeable for Event {
@@ -682,6 +744,13 @@ impl Writeable for Event {
 					(2, payment_hash, required),
 					(4, path, vec_type),
 					(6, short_channel_id, option),
+				})
+			},
+			&Event::HTLCHandlingFailed { ref prev_channel_id, ref failed_next_destination } => {
+				25u8.write(writer)?;
+				write_tlv_fields!(writer, {
+					(0, prev_channel_id, required),
+					(2, failed_next_destination, required),
 				})
 			},
 			// Note that, going forward, all new events must only write data inside of
