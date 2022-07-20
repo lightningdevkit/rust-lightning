@@ -64,7 +64,7 @@ impl<D: Deref> FeeEstimator for D where D::Target: FeeEstimator {
 pub const MIN_RELAY_FEE_SAT_PER_1000_WEIGHT: u64 = 4000;
 /// Minimum feerate that takes a sane approach to bitcoind weight-to-vbytes rounding.
 /// See the following Core Lightning commit for an explanation:
-/// https://github.com/ElementsProject/lightning/commit/2e687b9b352c9092b5e8bd4a688916ac50b44af0
+/// <https://github.com/ElementsProject/lightning/commit/2e687b9b352c9092b5e8bd4a688916ac50b44af0>
 pub const FEERATE_FLOOR_SATS_PER_KW: u32 = 253;
 
 /// Wraps a `Deref` to a `FeeEstimator` so that any fee estimations provided by it
