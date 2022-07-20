@@ -1013,7 +1013,6 @@ impl<Signer: Sign> Writeable for ChannelMonitorImpl<Signer> {
 
 		self.lockdown_from_offchain.write(writer)?;
 		self.holder_tx_signed.write(writer)?;
-		self.allow_automated_broadcast.write(writer)?;
 
 		write_tlv_fields!(writer, {
 			(1, self.funding_spend_confirmed, option),
@@ -3644,7 +3643,6 @@ impl<'a, Signer: Sign, K: KeysInterface<Signer = Signer>> ReadableArgs<&'a K>
 
 		let lockdown_from_offchain = Readable::read(reader)?;
 		let holder_tx_signed = Readable::read(reader)?;
-		let allow_automated_broadcast: bool = Readable::read(reader)?;
 
 		if let Some(prev_commitment_tx) = prev_holder_signed_commitment_tx.as_mut() {
 			let prev_holder_value = onchain_tx_handler.get_prev_holder_commitment_to_self_value();
@@ -3733,7 +3731,7 @@ impl<'a, Signer: Sign, K: KeysInterface<Signer = Signer>> ReadableArgs<&'a K>
 
 			secp_ctx,
 
-			allow_automated_broadcast,
+			allow_automated_broadcast: allow_automated_broadcast.unwrap(),
 		})))
 	}
 }

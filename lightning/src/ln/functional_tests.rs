@@ -4817,8 +4817,7 @@ fn test_deserialize_monitor_force_closed_without_broadcasting_txn() {
 
 	assert!(nodes[0].chain_monitor.watch_channel(deserialized_chanmon.get_funding_txo().0, deserialized_chanmon).is_ok());
 	check_added_monitors!(nodes[0], 1);
-	nodes[0].node.get_and_clear_pending_msg_events();
-	nodes[0].node.get_and_clear_pending_events();
+	check_closed_event!(nodes[0], 1, ClosureReason::HolderForceClosed);
 }
 
 macro_rules! check_spendable_outputs {
