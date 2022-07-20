@@ -1197,7 +1197,7 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 		self.inner.lock().unwrap().maybe_broadcast_latest_holder_commitment_txn(broadcaster, logger)
 	}
 
-	pub(crate) fn force_broadcast_latest_holder_commitment_txn_unsafe<B: Deref, L: Deref>(
+	pub fn force_broadcast_latest_holder_commitment_txn_unsafe<B: Deref, L: Deref>(
 		&self,
 		broadcaster: &B,
 		logger: &L,
