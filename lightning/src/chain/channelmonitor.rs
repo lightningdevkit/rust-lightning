@@ -2177,7 +2177,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 			}
 			self.pending_monitor_events.push(MonitorEvent::CommitmentTxConfirmed(self.funding_info.0));
 		} else {
-			log_error!(logger, "You have a toxic holder commitment transaction avaible in channel monitor, read comment in ChannelMonitor::get_latest_holder_commitment_txn to be informed of manual action to take");
+			log_info!(logger, "Not broadcasting local commitment txn. Automated broadcasting is disabled.");
 		}
 	}
 
