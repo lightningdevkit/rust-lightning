@@ -2249,19 +2249,11 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 				ChannelMonitorUpdateStep::ChannelForceClosed { should_broadcast } => {
 					log_trace!(logger, "Updating ChannelMonitor: channel force closed, should broadcast: {}", should_broadcast);
 					self.lockdown_from_offchain = true;
-					if *should_broadcast {
-						self.maybe_broadcast_latest_holder_commitment_txn(broadcaster, logger);
-					} else {
-						self.allow_automated_broadcast = false;
-						if !self.holder_tx_signed {
-							log_error!(logger, "You have a toxic holder commitment transaction avaible in channel monitor, read comment in ChannelMonitor::get_latest_holder_commitment_txn to be informed of manual action to take");
-						} else {
-							// If we generated a MonitorEvent::CommitmentTxConfirmed, the ChannelManager
-							// will still give us a ChannelForceClosed event with !should_broadcast, but we
-							// shouldn't print the scary warning above.
-							log_info!(logger, "Channel off-chain state closed after we broadcasted our latest commitment transaction.");
-						}
+					self.allow_automated_broadcast = *should_broadcast;
+					if !*should_broadcast && self.holder_tx_signed {
+						log_info!(logger, "Channel off-chain state closed after we broadcasted our latest commitment transaction.");
 					}
+					self.maybe_broadcast_latest_holder_commitment_txn(broadcaster, logger);
 				},
 				ChannelMonitorUpdateStep::ShutdownScript { scriptpubkey } => {
 					log_trace!(logger, "Updating ChannelMonitor with shutdown script");
