@@ -350,7 +350,8 @@ pub struct ProbabilisticScoringParameters {
 	pub base_penalty_amount_multiplier_msat: u64,
 
 	/// A multiplier used in conjunction with the negative `log10` of the channel's success
-	/// probability for a payment to determine the liquidity penalty.
+	/// probability for a payment, as determined by our latest estimates of the channel's
+	/// liquidity, to determine the liquidity penalty.
 	///
 	/// The penalty is based in part on the knowledge learned from prior successful and unsuccessful
 	/// payments. This knowledge is decayed over time based on [`liquidity_offset_half_life`]. The
@@ -359,7 +360,7 @@ pub struct ProbabilisticScoringParameters {
 	/// uncertainty bounds of the channel liquidity balance. Amounts above the upper bound will
 	/// result in a `u64::max_value` penalty, however.
 	///
-	/// Default value: 40,000 msat
+	/// Default value: 30,000 msat
 	///
 	/// [`liquidity_offset_half_life`]: Self::liquidity_offset_half_life
 	pub liquidity_penalty_multiplier_msat: u64,
@@ -380,7 +381,8 @@ pub struct ProbabilisticScoringParameters {
 	pub liquidity_offset_half_life: Duration,
 
 	/// A multiplier used in conjunction with a payment amount and the negative `log10` of the
-	/// channel's success probability for the payment to determine the amount penalty.
+	/// channel's success probability for the payment, as determined by our latest estimates of the
+	/// channel's liquidity, to determine the amount penalty.
 	///
 	/// The purpose of the amount penalty is to avoid having fees dominate the channel cost (i.e.,
 	/// fees plus penalty) for large payments. The penalty is computed as the product of this
@@ -395,8 +397,44 @@ pub struct ProbabilisticScoringParameters {
 	/// probabilities, the multiplier will have a decreasing effect as the negative `log10` will
 	/// fall below `1`.
 	///
-	/// Default value: 256 msat
+	/// Default value: 192 msat
 	pub liquidity_penalty_amount_multiplier_msat: u64,
+
+	/// A multiplier used in conjunction with the negative `log10` of the channel's success
+	/// probability for the payment, as determined based on the history of our estimates of the
+	/// channel's available liquidity, to determine a penalty.
+	///
+	/// This penalty is similar to [`liquidity_penalty_multiplier_msat`], however, instead of using
+	/// only our latest estimate for the current liquidity available in the channel, it estimates
+	/// success probability based on the estimated liquidity available in the channel through
+	/// history. Specifically, every time we update our liquidity bounds on a given channel, we
+	/// track which of several buckets those bounds fall into, exponentially decaying the
+	/// probability of each bucket as new samples are added.
+	///
+	/// Default value: 10,000 msat
+	///
+	/// [`liquidity_penalty_multiplier_msat`]: Self::liquidity_penalty_multiplier_msat
+	pub historical_liquidity_penalty_multiplier_msat: u64,
+
+	/// A multiplier used in conjunction with the payment amount and the negative `log10` of the
+	/// channel's success probability for the payment, as determined based on the history of our
+	/// estimates of the channel's available liquidity, to determine a penalty.
+	///
+	/// The purpose of the amount penalty is to avoid having fees dominate the channel cost for
+	/// large payments. The penalty is computed as the product of this multiplier and the `2^20`ths
+	/// of the payment amount, weighted by the negative `log10` of the success probability.
+	///
+	/// This penalty is similar to [`liquidity_penalty_amount_multiplier_msat`], however, instead
+	/// of using only our latest estimate for the current liquidity available in the channel, it
+	/// estimates success probability based on the estimated liquidity available in the channel
+	/// through history. Specifically, every time we update our liquidity bounds on a given
+	/// channel, we track which of several buckets those bounds fall into, exponentially decaying
+	/// the probability of each bucket as new samples are added.
+	///
+	/// Default value: 64 msat
+	///
+	/// [`liquidity_penalty_amount_multiplier_msat`]: Self::liquidity_penalty_amount_multiplier_msat
+	pub historical_liquidity_penalty_amount_multiplier_msat: u64,
 
 	/// Manual penalties used for the given nodes. Allows to set a particular penalty for a given
 	/// node. Note that a manual penalty of `u64::max_value()` means the node would not ever be
@@ -605,6 +643,8 @@ impl ProbabilisticScoringParameters {
 			liquidity_penalty_multiplier_msat: 0,
 			liquidity_offset_half_life: Duration::from_secs(3600),
 			liquidity_penalty_amount_multiplier_msat: 0,
+			historical_liquidity_penalty_multiplier_msat: 0,
+			historical_liquidity_penalty_amount_multiplier_msat: 0,
 			manual_node_penalties: HashMap::new(),
 			anti_probing_penalty_msat: 0,
 			considered_impossible_penalty_msat: 0,
@@ -625,9 +665,11 @@ impl Default for ProbabilisticScoringParameters {
 		Self {
 			base_penalty_msat: 500,
 			base_penalty_amount_multiplier_msat: 8192,
-			liquidity_penalty_multiplier_msat: 40_000,
+			liquidity_penalty_multiplier_msat: 30_000,
 			liquidity_offset_half_life: Duration::from_secs(3600),
-			liquidity_penalty_amount_multiplier_msat: 256,
+			liquidity_penalty_amount_multiplier_msat: 192,
+			historical_liquidity_penalty_multiplier_msat: 10_000,
+			historical_liquidity_penalty_amount_multiplier_msat: 64,
 			manual_node_penalties: HashMap::new(),
 			anti_probing_penalty_msat: 250,
 			considered_impossible_penalty_msat: 1_0000_0000_000,
@@ -718,14 +760,17 @@ impl<L: Deref<Target = u64>, BRT: Deref<Target = HistoricalBucketRangeTracker>, 
 	fn penalty_msat(&self, amount_msat: u64, params: &ProbabilisticScoringParameters) -> u64 {
 		let max_liquidity_msat = self.max_liquidity_msat();
 		let min_liquidity_msat = core::cmp::min(self.min_liquidity_msat(), max_liquidity_msat);
-		if amount_msat <= min_liquidity_msat {
+
+		let mut res = if amount_msat <= min_liquidity_msat {
 			0
 		} else if amount_msat >= max_liquidity_msat {
 			// Equivalent to hitting the else clause below with the amount equal to the effective
 			// capacity and without any certainty on the liquidity upper bound, plus the
 			// impossibility penalty.
 			let negative_log10_times_2048 = NEGATIVE_LOG10_UPPER_BOUND * 2048;
-			self.combined_penalty_msat(amount_msat, negative_log10_times_2048, params)
+			Self::combined_penalty_msat(amount_msat, negative_log10_times_2048,
+					params.liquidity_penalty_multiplier_msat,
+					params.liquidity_penalty_amount_multiplier_msat)
 				.saturating_add(params.considered_impossible_penalty_msat)
 		} else {
 			let numerator = (max_liquidity_msat - amount_msat).saturating_add(1);
@@ -738,25 +783,96 @@ impl<L: Deref<Target = u64>, BRT: Deref<Target = HistoricalBucketRangeTracker>, 
 			} else {
 				let negative_log10_times_2048 =
 					approx::negative_log10_times_2048(numerator, denominator);
-				self.combined_penalty_msat(amount_msat, negative_log10_times_2048, params)
+				Self::combined_penalty_msat(amount_msat, negative_log10_times_2048,
+					params.liquidity_penalty_multiplier_msat,
+					params.liquidity_penalty_amount_multiplier_msat)
 			}
+		};
+
+		if params.historical_liquidity_penalty_multiplier_msat != 0 ||
+		   params.historical_liquidity_penalty_amount_multiplier_msat != 0 {
+			// If historical penalties are enabled, calculate the penalty by walking the set of
+			// historical liquidity bucket (min, max) combinations (where min_idx < max_idx)
+			// and, for each, calculate the probability of success given our payment amount, then
+			// total the weighted average probability of success.
+			//
+			// We use a sliding scale to decide which point within a given bucket will be compared
+			// to the amount being sent - for lower-bounds, the amount being sent is compared to
+			// the lower edge of the first bucket (i.e. zero), but compared to the upper 7/8ths of
+			// the last bucket (i.e. 9 times the index, or 63), with each bucket in between
+			// increasing the comparison point by 1/64th. For upper-bounds, the same applies,
+			// however with an offset of 1/64th (i.e. starting at one and ending at 64). This
+			// avoids failing to assign penalties to channels at the edges.
+			//
+			// If we used the bottom edge of buckets, we'd end up never assigning any penalty at
+			// all to such a channel when sending less than ~0.19% of the channel's capacity (e.g.
+			// ~200k sats for a 1 BTC channel!).
+			//
+			// If we used the middle of each bucket we'd never assign any penalty at all when
+			// sending less than 1/16th of a channel's capacity, or 1/8th if we used the top of the
+			// bucket.
+			let mut total_valid_points_tracked = 0;
+			for (min_idx, min_bucket) in self.min_liquidity_offset_history.buckets.iter().enumerate() {
+				for max_bucket in self.max_liquidity_offset_history.buckets.iter().take(8 - min_idx) {
+					total_valid_points_tracked += (*min_bucket as u64) * (*max_bucket as u64);
+				}
+			}
+			if total_valid_points_tracked == 0 {
+				// If we don't have any valid points, redo the non-historical calculation with no
+				// liquidity bounds tracked and the historical penalty multipliers.
+				let max_capacity = self.capacity_msat.saturating_sub(amount_msat).saturating_add(1);
+				let negative_log10_times_2048 =
+					approx::negative_log10_times_2048(max_capacity, self.capacity_msat.saturating_add(1));
+				res = res.saturating_add(Self::combined_penalty_msat(amount_msat, negative_log10_times_2048,
+					params.historical_liquidity_penalty_multiplier_msat,
+					params.historical_liquidity_penalty_amount_multiplier_msat));
+				return res;
+			}
+
+			let payment_amt_64th_bucket = amount_msat * 64 / self.capacity_msat;
+			debug_assert!(payment_amt_64th_bucket <= 64);
+			if payment_amt_64th_bucket > 64 { return res; }
+
+			let mut cumulative_success_prob_times_billion = 0;
+			for (min_idx, min_bucket) in self.min_liquidity_offset_history.buckets.iter().enumerate() {
+				for (max_idx, max_bucket) in self.max_liquidity_offset_history.buckets.iter().enumerate().take(8 - min_idx) {
+					let bucket_prob_times_million = (*min_bucket as u64) * (*max_bucket as u64)
+						* 1024 * 1024 / total_valid_points_tracked;
+					let min_64th_bucket = min_idx as u64 * 9;
+					let max_64th_bucket = (7 - max_idx as u64) * 9 + 1;
+					if payment_amt_64th_bucket > max_64th_bucket {
+						// Success probability 0, the payment amount is above the max liquidity
+					} else if payment_amt_64th_bucket <= min_64th_bucket {
+						cumulative_success_prob_times_billion += bucket_prob_times_million * 1024;
+					} else {
+						cumulative_success_prob_times_billion += bucket_prob_times_million *
+							(max_64th_bucket - payment_amt_64th_bucket) * 1024 /
+							(max_64th_bucket - min_64th_bucket);
+					}
+				}
+			}
+			let historical_negative_log10_times_2048 = approx::negative_log10_times_2048(cumulative_success_prob_times_billion + 1, 1024 * 1024 * 1024);
+			res = res.saturating_add(Self::combined_penalty_msat(amount_msat,
+				historical_negative_log10_times_2048, params.historical_liquidity_penalty_multiplier_msat,
+				params.historical_liquidity_penalty_amount_multiplier_msat));
 		}
+
+		res
 	}
 
 	/// Computes the liquidity penalty from the penalty multipliers.
 	#[inline(always)]
-	fn combined_penalty_msat(
-		&self, amount_msat: u64, negative_log10_times_2048: u64,
-		params: &ProbabilisticScoringParameters
+	fn combined_penalty_msat(amount_msat: u64, negative_log10_times_2048: u64,
+		liquidity_penalty_multiplier_msat: u64, liquidity_penalty_amount_multiplier_msat: u64,
 	) -> u64 {
 		let liquidity_penalty_msat = {
 			// Upper bound the liquidity penalty to ensure some channel is selected.
-			let multiplier_msat = params.liquidity_penalty_multiplier_msat;
+			let multiplier_msat = liquidity_penalty_multiplier_msat;
 			let max_penalty_msat = multiplier_msat.saturating_mul(NEGATIVE_LOG10_UPPER_BOUND);
 			(negative_log10_times_2048.saturating_mul(multiplier_msat) / 2048).min(max_penalty_msat)
 		};
 		let amount_penalty_msat = negative_log10_times_2048
-			.saturating_mul(params.liquidity_penalty_amount_multiplier_msat)
+			.saturating_mul(liquidity_penalty_amount_multiplier_msat)
 			.saturating_mul(amount_msat) / 2048 / AMOUNT_PENALTY_DIVISOR;
 
 		liquidity_penalty_msat.saturating_add(amount_penalty_msat)
@@ -2199,35 +2315,35 @@ mod tests {
 		let usage = ChannelUsage {
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 3_950_000_000, htlc_maximum_msat: Some(1_000) }, ..usage
 		};
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 1985);
+		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 1983);
 		let usage = ChannelUsage {
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 4_950_000_000, htlc_maximum_msat: Some(1_000) }, ..usage
 		};
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 1639);
+		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 1637);
 		let usage = ChannelUsage {
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 5_950_000_000, htlc_maximum_msat: Some(1_000) }, ..usage
 		};
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 1607);
+		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 1606);
 		let usage = ChannelUsage {
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 6_950_000_000, htlc_maximum_msat: Some(1_000) }, ..usage
 		};
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 1262);
+		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 1331);
 		let usage = ChannelUsage {
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 7_450_000_000, htlc_maximum_msat: Some(1_000) }, ..usage
 		};
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 1262);
+		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 1387);
 		let usage = ChannelUsage {
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 7_950_000_000, htlc_maximum_msat: Some(1_000) }, ..usage
 		};
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 1262);
+		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 1379);
 		let usage = ChannelUsage {
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 8_950_000_000, htlc_maximum_msat: Some(1_000) }, ..usage
 		};
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 1262);
+		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 1363);
 		let usage = ChannelUsage {
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 9_950_000_000, htlc_maximum_msat: Some(1_000) }, ..usage
 		};
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 1262);
+		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 1355);
 	}
 
 	#[test]
@@ -2251,7 +2367,7 @@ mod tests {
 
 		let params = ProbabilisticScoringParameters {
 			base_penalty_msat: 500, liquidity_penalty_multiplier_msat: 1_000,
-			anti_probing_penalty_msat: 0, ..Default::default()
+			anti_probing_penalty_msat: 0, ..ProbabilisticScoringParameters::zero_penalty()
 		};
 		let scorer = ProbabilisticScorer::new(params, &network_graph, &logger);
 		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 558);
@@ -2259,7 +2375,7 @@ mod tests {
 		let params = ProbabilisticScoringParameters {
 			base_penalty_msat: 500, liquidity_penalty_multiplier_msat: 1_000,
 			base_penalty_amount_multiplier_msat: (1 << 30),
-			anti_probing_penalty_msat: 0, ..Default::default()
+			anti_probing_penalty_msat: 0, ..ProbabilisticScoringParameters::zero_penalty()
 		};
 
 		let scorer = ProbabilisticScorer::new(params, &network_graph, &logger);
@@ -2360,6 +2476,36 @@ mod tests {
 
 		let usage = ChannelUsage { amount_msat: 1_001, ..usage };
 		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), u64::max_value());
+	}
+
+	#[test]
+	fn remembers_historical_failures() {
+		let logger = TestLogger::new();
+		let network_graph = network_graph(&logger);
+		let params = ProbabilisticScoringParameters {
+			historical_liquidity_penalty_multiplier_msat: 1024,
+			historical_liquidity_penalty_amount_multiplier_msat: 1024,
+			..ProbabilisticScoringParameters::zero_penalty()
+		};
+		let mut scorer = ProbabilisticScorer::new(params, &network_graph, &logger);
+		let source = source_node_id();
+		let target = target_node_id();
+
+		let usage = ChannelUsage {
+			amount_msat: 100,
+			inflight_htlc_msat: 0,
+			effective_capacity: EffectiveCapacity::Total { capacity_msat: 1_024, htlc_maximum_msat: Some(1_024) },
+		};
+		// With no historical data the normal liquidity penalty calculation is used.
+		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 47);
+
+		scorer.payment_path_failed(&payment_path_for_amount(1).iter().collect::<Vec<_>>(), 42);
+		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 2048);
+
+		// Even after we tell the scorer we definitely have enough available liquidity, it will
+		// still remember that there was some failure in the past, and assign a non-0 penalty.
+		scorer.payment_path_failed(&payment_path_for_amount(1000).iter().collect::<Vec<_>>(), 43);
+		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 198);
 	}
 
 	#[test]
