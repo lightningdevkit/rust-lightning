@@ -3395,7 +3395,7 @@ fn test_htlc_ignore_latest_remote_commitment() {
 	check_added_monitors!(nodes[0], 1);
 	check_closed_event!(nodes[0], 1, ClosureReason::HolderForceClosed);
 
-	let node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
+	let node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 	assert_eq!(node_txn.len(), 3);
 	assert_eq!(node_txn[0], node_txn[1]);
 
@@ -4813,7 +4813,7 @@ fn test_claim_on_remote_sizeable_push_msat() {
 	check_added_monitors!(nodes[0], 1);
 	check_closed_event!(nodes[0], 1, ClosureReason::HolderForceClosed);
 
-	let node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
+	let node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 	assert_eq!(node_txn.len(), 1);
 	check_spends!(node_txn[0], chan.3);
 	assert_eq!(node_txn[0].output.len(), 2); // We can't force trimming of to_remote output as channel_reserve_satoshis block us to do so at channel opening
@@ -5019,7 +5019,7 @@ fn test_static_spendable_outputs_justice_tx_revoked_htlc_timeout_tx() {
 	check_closed_event!(nodes[0], 1, ClosureReason::CommitmentTxConfirmed);
 	connect_blocks(&nodes[0], TEST_FINAL_CLTV - 1); // Confirm blocks until the HTLC expires
 
-	let revoked_htlc_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
+	let revoked_htlc_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 	assert_eq!(revoked_htlc_txn.len(), 2);
 	check_spends!(revoked_htlc_txn[0], chan_1.3);
 	assert_eq!(revoked_htlc_txn[1].input.len(), 1);
@@ -7824,7 +7824,7 @@ fn test_bump_penalty_txn_on_revoked_htlcs() {
 	check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed);
 	connect_blocks(&nodes[1], 49); // Confirm blocks until the HTLC expires (note CLTV was explicitly 50 above)
 
-	let revoked_htlc_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
+	let revoked_htlc_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 	assert_eq!(revoked_htlc_txn.len(), 3);
 	check_spends!(revoked_htlc_txn[1], chan.3);
 
@@ -8085,22 +8085,26 @@ fn test_counterparty_raa_skip_no_crash() {
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let channel_id = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known()).2;
 
-	let mut guard = nodes[0].node.channel_state.lock().unwrap();
-	let keys = guard.by_id.get_mut(&channel_id).unwrap().get_signer();
+	let per_commitment_secret;
+	let next_per_commitment_point;
+	{
+		let mut guard = nodes[0].node.channel_state.lock().unwrap();
+		let keys = guard.by_id.get_mut(&channel_id).unwrap().get_signer();
 
-	const INITIAL_COMMITMENT_NUMBER: u64 = (1 << 48) - 1;
+		const INITIAL_COMMITMENT_NUMBER: u64 = (1 << 48) - 1;
 
-	// Make signer believe we got a counterparty signature, so that it allows the revocation
-	keys.get_enforcement_state().last_holder_commitment -= 1;
-	let per_commitment_secret = keys.release_commitment_secret(INITIAL_COMMITMENT_NUMBER);
+		// Make signer believe we got a counterparty signature, so that it allows the revocation
+		keys.get_enforcement_state().last_holder_commitment -= 1;
+		per_commitment_secret = keys.release_commitment_secret(INITIAL_COMMITMENT_NUMBER);
 
-	// Must revoke without gaps
-	keys.get_enforcement_state().last_holder_commitment -= 1;
-	keys.release_commitment_secret(INITIAL_COMMITMENT_NUMBER - 1);
+		// Must revoke without gaps
+		keys.get_enforcement_state().last_holder_commitment -= 1;
+		keys.release_commitment_secret(INITIAL_COMMITMENT_NUMBER - 1);
 
-	keys.get_enforcement_state().last_holder_commitment -= 1;
-	let next_per_commitment_point = PublicKey::from_secret_key(&Secp256k1::new(),
-		&SecretKey::from_slice(&keys.release_commitment_secret(INITIAL_COMMITMENT_NUMBER - 2)).unwrap());
+		keys.get_enforcement_state().last_holder_commitment -= 1;
+		next_per_commitment_point = PublicKey::from_secret_key(&Secp256k1::new(),
+			&SecretKey::from_slice(&keys.release_commitment_secret(INITIAL_COMMITMENT_NUMBER - 2)).unwrap());
+	}
 
 	nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(),
 		&msgs::RevokeAndACK { channel_id, per_commitment_secret, next_per_commitment_point });
@@ -8442,12 +8446,12 @@ fn test_reject_funding_before_inbound_channel_accepted() {
 	// `MessageSendEvent::SendAcceptChannel` event. The message is passed to `nodes[0]`
 	// `handle_accept_channel`, which is required in order for `create_funding_transaction` to
 	// succeed when `nodes[0]` is passed to it.
-	{
+	let accept_chan_msg = {
 		let mut lock;
 		let channel = get_channel_ref!(&nodes[1], lock, temp_channel_id);
-		let accept_chan_msg = channel.get_accept_channel_message();
-		nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), InitFeatures::known(), &accept_chan_msg);
-	}
+		channel.get_accept_channel_message()
+	};
+	nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), InitFeatures::known(), &accept_chan_msg);
 
 	let (temporary_channel_id, tx, _) = create_funding_transaction(&nodes[0], &nodes[1].node.get_our_node_id(), 100000, 42);
 

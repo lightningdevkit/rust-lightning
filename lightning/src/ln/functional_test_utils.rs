@@ -352,6 +352,11 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 				}
 			}
 
+			let broadcaster = test_utils::TestBroadcaster {
+				txn_broadcasted: Mutex::new(self.tx_broadcaster.txn_broadcasted.lock().unwrap().clone()),
+				blocks: Arc::new(Mutex::new(self.tx_broadcaster.blocks.lock().unwrap().clone())),
+			};
+
 			// Before using all the new monitors to check the watch outpoints, use the full set of
 			// them to ensure we can write and reload our ChannelManager.
 			{
@@ -367,20 +372,13 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 					keys_manager: self.keys_manager,
 					fee_estimator: &test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) },
 					chain_monitor: self.chain_monitor,
-					tx_broadcaster: &test_utils::TestBroadcaster {
-						txn_broadcasted: Mutex::new(self.tx_broadcaster.txn_broadcasted.lock().unwrap().clone()),
-						blocks: Arc::new(Mutex::new(self.tx_broadcaster.blocks.lock().unwrap().clone())),
-					},
+					tx_broadcaster: &broadcaster,
 					logger: &self.logger,
 					channel_monitors,
 				}).unwrap();
 			}
 
 			let persister = test_utils::TestPersister::new();
-			let broadcaster = test_utils::TestBroadcaster {
-				txn_broadcasted: Mutex::new(self.tx_broadcaster.txn_broadcasted.lock().unwrap().clone()),
-				blocks: Arc::new(Mutex::new(self.tx_broadcaster.blocks.lock().unwrap().clone())),
-			};
 			let chain_source = test_utils::TestChainSource::new(Network::Testnet);
 			let chain_monitor = test_utils::TestChainMonitor::new(Some(&chain_source), &broadcaster, &self.logger, &feeest, &persister, &self.keys_manager);
 			for deserialized_monitor in deserialized_monitors.drain(..) {
