@@ -386,7 +386,7 @@ pub struct ProbabilisticScoringParameters {
 	/// multiplier and `2^20`ths of the payment amount, weighted by the negative `log10` of the
 	/// success probability.
 	///
-	/// `-log10(success_probability) * amount_penalty_multiplier_msat * amount_msat / 2^20`
+	/// `-log10(success_probability) * liquidity_penalty_amount_multiplier_msat * amount_msat / 2^20`
 	///
 	/// In practice, this means for 0.1 success probability (`-log10(0.1) == 1`) each `2^20`th of
 	/// the amount will result in a penalty of the multiplier. And, as the success probability
@@ -395,7 +395,7 @@ pub struct ProbabilisticScoringParameters {
 	/// fall below `1`.
 	///
 	/// Default value: 256 msat
-	pub amount_penalty_multiplier_msat: u64,
+	pub liquidity_penalty_amount_multiplier_msat: u64,
 
 	/// Manual penalties used for the given nodes. Allows to set a particular penalty for a given
 	/// node. Note that a manual penalty of `u64::max_value()` means the node would not ever be
@@ -416,7 +416,7 @@ pub struct ProbabilisticScoringParameters {
 	/// current estimate of the channel's available liquidity.
 	///
 	/// Note that in this case all other penalties, including the
-	/// [`liquidity_penalty_multiplier_msat`] and [`amount_penalty_multiplier_msat`]-based
+	/// [`liquidity_penalty_multiplier_msat`] and [`liquidity_penalty_amount_multiplier_msat`]-based
 	/// penalties, as well as the [`base_penalty_msat`] and the [`anti_probing_penalty_msat`], if
 	/// applicable, are still included in the overall penalty.
 	///
@@ -426,7 +426,7 @@ pub struct ProbabilisticScoringParameters {
 	/// Default value: 1_0000_0000_000 msat (1 Bitcoin)
 	///
 	/// [`liquidity_penalty_multiplier_msat`]: Self::liquidity_penalty_multiplier_msat
-	/// [`amount_penalty_multiplier_msat`]: Self::amount_penalty_multiplier_msat
+	/// [`liquidity_penalty_amount_multiplier_msat`]: Self::liquidity_penalty_amount_multiplier_msat
 	/// [`base_penalty_msat`]: Self::base_penalty_msat
 	/// [`anti_probing_penalty_msat`]: Self::anti_probing_penalty_msat
 	pub considered_impossible_penalty_msat: u64,
@@ -556,7 +556,7 @@ impl ProbabilisticScoringParameters {
 			base_penalty_amount_multiplier_msat: 0,
 			liquidity_penalty_multiplier_msat: 0,
 			liquidity_offset_half_life: Duration::from_secs(3600),
-			amount_penalty_multiplier_msat: 0,
+			liquidity_penalty_amount_multiplier_msat: 0,
 			manual_node_penalties: HashMap::new(),
 			anti_probing_penalty_msat: 0,
 			considered_impossible_penalty_msat: 0,
@@ -579,7 +579,7 @@ impl Default for ProbabilisticScoringParameters {
 			base_penalty_amount_multiplier_msat: 8192,
 			liquidity_penalty_multiplier_msat: 40_000,
 			liquidity_offset_half_life: Duration::from_secs(3600),
-			amount_penalty_multiplier_msat: 256,
+			liquidity_penalty_amount_multiplier_msat: 256,
 			manual_node_penalties: HashMap::new(),
 			anti_probing_penalty_msat: 250,
 			considered_impossible_penalty_msat: 1_0000_0000_000,
@@ -696,7 +696,7 @@ impl<L: Deref<Target = u64>, T: Time, U: Deref<Target = T>> DirectedChannelLiqui
 			(negative_log10_times_2048.saturating_mul(multiplier_msat) / 2048).min(max_penalty_msat)
 		};
 		let amount_penalty_msat = negative_log10_times_2048
-			.saturating_mul(params.amount_penalty_multiplier_msat)
+			.saturating_mul(params.liquidity_penalty_amount_multiplier_msat)
 			.saturating_mul(amount_msat) / 2048 / AMOUNT_PENALTY_DIVISOR;
 
 		liquidity_penalty_msat.saturating_add(amount_penalty_msat)
@@ -2185,7 +2185,7 @@ mod tests {
 
 		let params = ProbabilisticScoringParameters {
 			liquidity_penalty_multiplier_msat: 1_000,
-			amount_penalty_multiplier_msat: 0,
+			liquidity_penalty_amount_multiplier_msat: 0,
 			..ProbabilisticScoringParameters::zero_penalty()
 		};
 		let scorer = ProbabilisticScorer::new(params, &network_graph, &logger);
@@ -2193,7 +2193,7 @@ mod tests {
 
 		let params = ProbabilisticScoringParameters {
 			liquidity_penalty_multiplier_msat: 1_000,
-			amount_penalty_multiplier_msat: 256,
+			liquidity_penalty_amount_multiplier_msat: 256,
 			..ProbabilisticScoringParameters::zero_penalty()
 		};
 		let scorer = ProbabilisticScorer::new(params, &network_graph, &logger);
