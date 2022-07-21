@@ -52,14 +52,6 @@ pub trait FeeEstimator {
 	fn get_est_sat_per_1000_weight(&self, confirmation_target: ConfirmationTarget) -> u32;
 }
 
-// We need `FeeEstimator` implemented so that in some places where we only have a shared
-// reference to a `Deref` to a `FeeEstimator`, we can still wrap it.
-impl<D: Deref> FeeEstimator for D where D::Target: FeeEstimator {
-	fn get_est_sat_per_1000_weight(&self, confirmation_target: ConfirmationTarget) -> u32 {
-		(**self).get_est_sat_per_1000_weight(confirmation_target)
-	}
-}
-
 /// Minimum relay fee as required by bitcoin network mempool policy.
 pub const MIN_RELAY_FEE_SAT_PER_1000_WEIGHT: u64 = 4000;
 /// Minimum feerate that takes a sane approach to bitcoind weight-to-vbytes rounding.
