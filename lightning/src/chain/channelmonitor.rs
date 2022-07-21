@@ -1021,6 +1021,7 @@ impl<Signer: Sign> Writeable for ChannelMonitorImpl<Signer> {
 			(7, self.funding_spend_seen, required),
 			(9, self.counterparty_node_id, option),
 			(11, self.confirmed_commitment_tx_counterparty_output, option),
+			(13, self.allow_automated_broadcast, required),
 		});
 
 		Ok(())
@@ -3658,6 +3659,7 @@ impl<'a, Signer: Sign, K: KeysInterface<Signer = Signer>> ReadableArgs<&'a K>
 		let mut funding_spend_seen = Some(false);
 		let mut counterparty_node_id = None;
 		let mut confirmed_commitment_tx_counterparty_output = None;
+		let mut allow_automated_broadcast =  None;
 		read_tlv_fields!(reader, {
 			(1, funding_spend_confirmed, option),
 			(3, htlcs_resolved_on_chain, vec_type),
@@ -3665,6 +3667,7 @@ impl<'a, Signer: Sign, K: KeysInterface<Signer = Signer>> ReadableArgs<&'a K>
 			(7, funding_spend_seen, option),
 			(9, counterparty_node_id, option),
 			(11, confirmed_commitment_tx_counterparty_output, option),
+			(13, allow_automated_broadcast, option),
 		});
 
 		let mut secp_ctx = Secp256k1::new();
