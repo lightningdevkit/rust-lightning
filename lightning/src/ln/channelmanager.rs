@@ -2144,17 +2144,17 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		})
 	}
 
-	fn decode_update_add_htlc_onion(&self, msg: &msgs::UpdateAddHTLC) -> (PendingHTLCStatus, MutexGuard<ChannelHolder<Signer>>) {
+	fn decode_update_add_htlc_onion(&self, msg: &msgs::UpdateAddHTLC) -> PendingHTLCStatus {
 		macro_rules! return_malformed_err {
 			($msg: expr, $err_code: expr) => {
 				{
 					log_info!(self.logger, "Failed to accept/forward incoming HTLC: {}", $msg);
-					return (PendingHTLCStatus::Fail(HTLCFailureMsg::Malformed(msgs::UpdateFailMalformedHTLC {
+					return PendingHTLCStatus::Fail(HTLCFailureMsg::Malformed(msgs::UpdateFailMalformedHTLC {
 						channel_id: msg.channel_id,
 						htlc_id: msg.htlc_id,
 						sha256_of_onion: Sha256::hash(&msg.onion_routing_packet.hop_data).into_inner(),
 						failure_code: $err_code,
-					})), self.channel_state.lock().unwrap());
+					}));
 				}
 			}
 		}
@@ -2174,20 +2174,15 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			//node knows the HMAC matched, so they already know what is there...
 			return_malformed_err!("Unknown onion packet version", 0x8000 | 0x4000 | 4);
 		}
-
-		let mut channel_state = None;
 		macro_rules! return_err {
 			($msg: expr, $err_code: expr, $data: expr) => {
 				{
 					log_info!(self.logger, "Failed to accept/forward incoming HTLC: {}", $msg);
-					if channel_state.is_none() {
-						channel_state = Some(self.channel_state.lock().unwrap());
-					}
-					return (PendingHTLCStatus::Fail(HTLCFailureMsg::Relay(msgs::UpdateFailHTLC {
+					return PendingHTLCStatus::Fail(HTLCFailureMsg::Relay(msgs::UpdateFailHTLC {
 						channel_id: msg.channel_id,
 						htlc_id: msg.htlc_id,
 						reason: onion_utils::build_first_hop_failure_packet(&shared_secret, $err_code, $data),
-					})), channel_state.unwrap());
+					}));
 				}
 			}
 		}
@@ -2246,14 +2241,14 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			}
 		};
 
-		channel_state = Some(self.channel_state.lock().unwrap());
 		if let &PendingHTLCStatus::Forward(PendingHTLCInfo { ref routing, ref amt_to_forward, ref outgoing_cltv_value, .. }) = &pending_forward_info {
 			// If short_channel_id is 0 here, we'll reject the HTLC as there cannot be a channel
 			// with a short_channel_id of 0. This is important as various things later assume
 			// short_channel_id is non-0 in any ::Forward.
 			if let &PendingHTLCRouting::Forward { ref short_channel_id, .. } = routing {
-				let id_option = channel_state.as_ref().unwrap().short_to_chan_info.get(&short_channel_id).cloned();
 				if let Some((err, code, chan_update)) = loop {
+					let mut channel_state = self.channel_state.lock().unwrap();
+					let id_option = channel_state.short_to_chan_info.get(&short_channel_id).cloned();
 					let forwarding_id_opt = match id_option {
 						None => { // unknown_next_peer
 							// Note that this is likely a timing oracle for detecting whether an scid is a
@@ -2267,7 +2262,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 						Some((_cp_id, chan_id)) => Some(chan_id.clone()),
 					};
 					let chan_update_opt = if let Some(forwarding_id) = forwarding_id_opt {
-						let chan = channel_state.as_mut().unwrap().by_id.get_mut(&forwarding_id).unwrap();
+						let chan = channel_state.by_id.get_mut(&forwarding_id).unwrap();
 						if !chan.should_announce() && !self.default_configuration.accept_forwards_to_priv_channels {
 							// Note that the behavior here should be identical to the above block - we
 							// should NOT reveal the existence or non-existence of a private channel if
@@ -2353,7 +2348,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			}
 		}
 
-		(pending_forward_info, channel_state.unwrap())
+		pending_forward_info
 	}
 
 	/// Gets the current channel_update for the given channel. This first checks if the channel is
@@ -4850,7 +4845,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		//encrypted with the same key. It's not immediately obvious how to usefully exploit that,
 		//but we should prevent it anyway.
 
-		let (pending_forward_info, mut channel_state_lock) = self.decode_update_add_htlc_onion(msg);
+		let pending_forward_info = self.decode_update_add_htlc_onion(msg);
+		let mut channel_state_lock = self.channel_state.lock().unwrap();
 		let channel_state = &mut *channel_state_lock;
 
 		match channel_state.by_id.entry(msg.channel_id) {
