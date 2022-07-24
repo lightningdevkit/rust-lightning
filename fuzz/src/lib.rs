@@ -17,6 +17,7 @@ pub mod utils;
 pub mod chanmon_deser;
 pub mod chanmon_consistency;
 pub mod full_stack;
+pub mod onion_message;
 pub mod peer_crypt;
 pub mod process_network_graph;
 pub mod router;

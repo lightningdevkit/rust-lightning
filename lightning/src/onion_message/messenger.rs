@@ -248,7 +248,7 @@ impl<Signer: Sign, K: Deref, L: Deref> OnionMessenger<Signer, K, L>
 									sha.input(control_tlvs_ss.as_ref());
 									Sha256::from_engine(sha).into_inner()
 								};
-								let mut next_blinding_point = msg.blinding_point;
+								let next_blinding_point = msg.blinding_point;
 								match next_blinding_point.mul_tweak(&self.secp_ctx, &Scalar::from_be_bytes(blinding_factor).unwrap()) {
 									Ok(bp) => bp,
 									Err(e) => {
@@ -261,6 +261,7 @@ impl<Signer: Sign, K: Deref, L: Deref> OnionMessenger<Signer, K, L>
 						onion_routing_packet: outgoing_packet,
 					},
 				);
+				log_trace!(self.logger, "Forwarding an onion message to peer {}", next_node_id);
 			},
 			Err(e) => {
 				log_trace!(self.logger, "Errored decoding onion message packet: {:?}", e);
