@@ -21,7 +21,7 @@ use ln::features::{InitFeatures, InvoiceFeatures};
 use ln::msgs;
 use ln::msgs::ChannelMessageHandler;
 use routing::router::{PaymentParameters, get_route};
-use util::events::{ClosureReason, Event, MessageSendEvent, MessageSendEventsProvider};
+use util::events::{ClosureReason, Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider};
 use util::test_utils;
 use util::errors::APIError;
 use util::enforcing_trait_impls::EnforcingSigner;
@@ -43,7 +43,7 @@ fn retry_single_path_payment() {
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
 	let _chan_0 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
-	let _chan_1 = create_announced_chan_between_nodes(&nodes, 2, 1, InitFeatures::known(), InitFeatures::known());
+	let chan_1 = create_announced_chan_between_nodes(&nodes, 2, 1, InitFeatures::known(), InitFeatures::known());
 	// Rebalance to find a route
 	send_payment(&nodes[2], &vec!(&nodes[1])[..], 3_000_000);
 
@@ -62,7 +62,7 @@ fn retry_single_path_payment() {
 	check_added_monitors!(nodes[1], 0);
 	commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, false);
 	expect_pending_htlcs_forwardable!(nodes[1]);
-	expect_pending_htlcs_forwardable!(&nodes[1]);
+	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(&nodes[1], vec![HTLCDestination::NextHopChannel { node_id: Some(nodes[2].node.get_our_node_id()), channel_id: chan_1.2 }]);
 	let htlc_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 	assert!(htlc_updates.update_add_htlcs.is_empty());
 	assert_eq!(htlc_updates.update_fail_htlcs.len(), 1);
@@ -120,10 +120,10 @@ fn mpp_retry() {
 	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, None, None, None]);
 	let nodes = create_network(4, &node_cfgs, &node_chanmgrs);
 
-	let chan_1_id = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known()).0.contents.short_channel_id;
-	let chan_2_id = create_announced_chan_between_nodes(&nodes, 0, 2, InitFeatures::known(), InitFeatures::known()).0.contents.short_channel_id;
-	let chan_3_id = create_announced_chan_between_nodes(&nodes, 1, 3, InitFeatures::known(), InitFeatures::known()).0.contents.short_channel_id;
-	let chan_4_id = create_announced_chan_between_nodes(&nodes, 3, 2, InitFeatures::known(), InitFeatures::known()).0.contents.short_channel_id;
+	let (chan_1_update, _, _, _) = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
+	let (chan_2_update, _, _, _) = create_announced_chan_between_nodes(&nodes, 0, 2, InitFeatures::known(), InitFeatures::known());
+	let (chan_3_update, _, _, _) = create_announced_chan_between_nodes(&nodes, 1, 3, InitFeatures::known(), InitFeatures::known());
+	let (chan_4_update, _, chan_4_id, _) = create_announced_chan_between_nodes(&nodes, 3, 2, InitFeatures::known(), InitFeatures::known());
 	// Rebalance
 	send_payment(&nodes[3], &vec!(&nodes[2])[..], 1_500_000);
 
@@ -131,11 +131,11 @@ fn mpp_retry() {
 	let path = route.paths[0].clone();
 	route.paths.push(path);
 	route.paths[0][0].pubkey = nodes[1].node.get_our_node_id();
-	route.paths[0][0].short_channel_id = chan_1_id;
-	route.paths[0][1].short_channel_id = chan_3_id;
+	route.paths[0][0].short_channel_id = chan_1_update.contents.short_channel_id;
+	route.paths[0][1].short_channel_id = chan_3_update.contents.short_channel_id;
 	route.paths[1][0].pubkey = nodes[2].node.get_our_node_id();
-	route.paths[1][0].short_channel_id = chan_2_id;
-	route.paths[1][1].short_channel_id = chan_4_id;
+	route.paths[1][0].short_channel_id = chan_2_update.contents.short_channel_id;
+	route.paths[1][1].short_channel_id = chan_4_update.contents.short_channel_id;
 
 	// Initiate the MPP payment.
 	let payment_id = nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret)).unwrap();
@@ -165,7 +165,7 @@ fn mpp_retry() {
 
 	// Attempt to forward the payment and complete the 2nd path's failure.
 	expect_pending_htlcs_forwardable!(&nodes[2]);
-	expect_pending_htlcs_forwardable!(&nodes[2]);
+	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(&nodes[2], vec![HTLCDestination::NextHopChannel { node_id: Some(nodes[3].node.get_our_node_id()), channel_id: chan_4_id }]);
 	let htlc_updates = get_htlc_update_msgs!(nodes[2], nodes[0].node.get_our_node_id());
 	assert!(htlc_updates.update_add_htlcs.is_empty());
 	assert_eq!(htlc_updates.update_fail_htlcs.len(), 1);
@@ -206,20 +206,20 @@ fn do_mpp_receive_timeout(send_partial_mpp: bool) {
 	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, None, None, None]);
 	let nodes = create_network(4, &node_cfgs, &node_chanmgrs);
 
-	let chan_1_id = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known()).0.contents.short_channel_id;
-	let chan_2_id = create_announced_chan_between_nodes(&nodes, 0, 2, InitFeatures::known(), InitFeatures::known()).0.contents.short_channel_id;
-	let chan_3_id = create_announced_chan_between_nodes(&nodes, 1, 3, InitFeatures::known(), InitFeatures::known()).0.contents.short_channel_id;
-	let chan_4_id = create_announced_chan_between_nodes(&nodes, 2, 3, InitFeatures::known(), InitFeatures::known()).0.contents.short_channel_id;
+	let (chan_1_update, _, _, _) = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
+	let (chan_2_update, _, _, _) = create_announced_chan_between_nodes(&nodes, 0, 2, InitFeatures::known(), InitFeatures::known());
+	let (chan_3_update, _, chan_3_id, _) = create_announced_chan_between_nodes(&nodes, 1, 3, InitFeatures::known(), InitFeatures::known());
+	let (chan_4_update, _, _, _) = create_announced_chan_between_nodes(&nodes, 2, 3, InitFeatures::known(), InitFeatures::known());
 
 	let (mut route, payment_hash, payment_preimage, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[3], 100_000);
 	let path = route.paths[0].clone();
 	route.paths.push(path);
 	route.paths[0][0].pubkey = nodes[1].node.get_our_node_id();
-	route.paths[0][0].short_channel_id = chan_1_id;
-	route.paths[0][1].short_channel_id = chan_3_id;
+	route.paths[0][0].short_channel_id = chan_1_update.contents.short_channel_id;
+	route.paths[0][1].short_channel_id = chan_3_update.contents.short_channel_id;
 	route.paths[1][0].pubkey = nodes[2].node.get_our_node_id();
-	route.paths[1][0].short_channel_id = chan_2_id;
-	route.paths[1][1].short_channel_id = chan_4_id;
+	route.paths[1][0].short_channel_id = chan_2_update.contents.short_channel_id;
+	route.paths[1][1].short_channel_id = chan_4_update.contents.short_channel_id;
 
 	// Initiate the MPP payment.
 	let _ = nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret)).unwrap();
@@ -237,7 +237,7 @@ fn do_mpp_receive_timeout(send_partial_mpp: bool) {
 		}
 
 		// Failed HTLC from node 3 -> 1
-		expect_pending_htlcs_forwardable!(nodes[3]);
+		expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[3], vec![HTLCDestination::FailedPayment { payment_hash }]);
 		let htlc_fail_updates_3_1 = get_htlc_update_msgs!(nodes[3], nodes[1].node.get_our_node_id());
 		assert_eq!(htlc_fail_updates_3_1.update_fail_htlcs.len(), 1);
 		nodes[1].node.handle_update_fail_htlc(&nodes[3].node.get_our_node_id(), &htlc_fail_updates_3_1.update_fail_htlcs[0]);
@@ -245,7 +245,7 @@ fn do_mpp_receive_timeout(send_partial_mpp: bool) {
 		commitment_signed_dance!(nodes[1], nodes[3], htlc_fail_updates_3_1.commitment_signed, false);
 
 		// Failed HTLC from node 1 -> 0
-		expect_pending_htlcs_forwardable!(nodes[1]);
+		expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[1], vec![HTLCDestination::NextHopChannel { node_id: Some(nodes[3].node.get_our_node_id()), channel_id: chan_3_id }]);
 		let htlc_fail_updates_1_0 = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 		assert_eq!(htlc_fail_updates_1_0.update_fail_htlcs.len(), 1);
 		nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &htlc_fail_updates_1_0.update_fail_htlcs[0]);
@@ -280,7 +280,7 @@ fn retry_expired_payment() {
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
 	let _chan_0 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
-	let _chan_1 = create_announced_chan_between_nodes(&nodes, 2, 1, InitFeatures::known(), InitFeatures::known());
+	let chan_1 = create_announced_chan_between_nodes(&nodes, 2, 1, InitFeatures::known(), InitFeatures::known());
 	// Rebalance to find a route
 	send_payment(&nodes[2], &vec!(&nodes[1])[..], 3_000_000);
 
@@ -299,7 +299,7 @@ fn retry_expired_payment() {
 	check_added_monitors!(nodes[1], 0);
 	commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, false);
 	expect_pending_htlcs_forwardable!(nodes[1]);
-	expect_pending_htlcs_forwardable!(&nodes[1]);
+	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(&nodes[1], vec![HTLCDestination::NextHopChannel { node_id: Some(nodes[2].node.get_our_node_id()), channel_id: chan_1.2 }]);
 	let htlc_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 	assert!(htlc_updates.update_add_htlcs.is_empty());
 	assert_eq!(htlc_updates.update_fail_htlcs.len(), 1);
@@ -803,7 +803,7 @@ fn test_fulfill_restart_failure() {
 	reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
 
 	nodes[1].node.fail_htlc_backwards(&payment_hash);
-	expect_pending_htlcs_forwardable!(nodes[1]);
+	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[1], vec![HTLCDestination::FailedPayment { payment_hash }]);
 	check_added_monitors!(nodes[1], 1);
 	let htlc_fail_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 	nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &htlc_fail_updates.update_fail_htlcs[0]);

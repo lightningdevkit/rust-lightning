@@ -1209,6 +1209,10 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 		self.inner.lock().unwrap().get_cur_holder_commitment_number()
 	}
 
+	pub(crate) fn get_counterparty_node_id(&self) -> Option<PublicKey> {
+		self.inner.lock().unwrap().counterparty_node_id
+	}
+
 	/// Used by ChannelManager deserialization to broadcast the latest holder state if its copy of
 	/// the Channel was out-of-date. You may use it to get a broadcastable holder toxic tx in case of
 	/// fallen-behind, i.e when receiving a channel_reestablish with a proof that our counterparty side knows

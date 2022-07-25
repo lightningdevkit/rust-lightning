@@ -5765,7 +5765,7 @@ impl<Signer: Sign> Channel<Signer> {
 	/// those explicitly stated to be allowed after shutdown completes, eg some simple getters).
 	/// Also returns the list of payment_hashes for channels which we can safely fail backwards
 	/// immediately (others we will have to allow to time out).
-	pub fn force_shutdown(&mut self, should_broadcast: bool) -> (Option<(OutPoint, ChannelMonitorUpdate)>, Vec<(HTLCSource, PaymentHash)>) {
+	pub fn force_shutdown(&mut self, should_broadcast: bool) -> (Option<(OutPoint, ChannelMonitorUpdate)>, Vec<(HTLCSource, PaymentHash, PublicKey, [u8; 32])>) {
 		// Note that we MUST only generate a monitor update that indicates force-closure - we're
 		// called during initialization prior to the chain_monitor in the encompassing ChannelManager
 		// being fully configured in some cases. Thus, its likely any monitor events we generate will
@@ -5775,10 +5775,11 @@ impl<Signer: Sign> Channel<Signer> {
 		// We go ahead and "free" any holding cell HTLCs or HTLCs we haven't yet committed to and
 		// return them to fail the payment.
 		let mut dropped_outbound_htlcs = Vec::with_capacity(self.holding_cell_htlc_updates.len());
+		let counterparty_node_id = self.get_counterparty_node_id();
 		for htlc_update in self.holding_cell_htlc_updates.drain(..) {
 			match htlc_update {
 				HTLCUpdateAwaitingACK::AddHTLC { source, payment_hash, .. } => {
-					dropped_outbound_htlcs.push((source, payment_hash));
+					dropped_outbound_htlcs.push((source, payment_hash, counterparty_node_id, self.channel_id));
 				},
 				_ => {}
 			}

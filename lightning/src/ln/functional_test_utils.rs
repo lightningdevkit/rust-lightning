@@ -46,6 +46,7 @@ use core::cell::RefCell;
 use alloc::rc::Rc;
 use sync::{Arc, Mutex};
 use core::mem;
+use core::iter::repeat;
 
 pub const CHAN_CONFIRM_DEPTH: u32 = 10;
 
@@ -1187,7 +1188,7 @@ macro_rules! commitment_signed_dance {
 		{
 			commitment_signed_dance!($node_a, $node_b, $commitment_signed, $fail_backwards, true);
 			if $fail_backwards {
-				$crate::expect_pending_htlcs_forwardable!($node_a);
+				expect_pending_htlcs_forwardable_and_htlc_handling_failed!($node_a, vec![$crate::util::events::HTLCDestination::NextHopChannel{ node_id: Some($node_b.node.get_our_node_id()), channel_id: $commitment_signed.channel_id }]);
 				check_added_monitors!($node_a, 1);
 
 				let channel_state = $node_a.node.channel_state.lock().unwrap();
@@ -1254,55 +1255,33 @@ macro_rules! get_route_and_payment_hash {
 	}}
 }
 
-pub struct HTLCHandlingFailedConditions {
-	pub expected_destinations: Vec<HTLCDestination>,
-}
-
-impl HTLCHandlingFailedConditions {
-	pub fn new() -> Self {
-		Self {
-			expected_destinations: vec![],
-		}
-	}
-
-	pub fn with_reason(mut self, reason: HTLCDestination) -> Self {
-		self.expected_destinations = vec![reason];
-		self
-	}
-
-	pub fn with_reasons(mut self, reasons: Vec<HTLCDestination>) -> Self {
-		self.expected_destinations = reasons;
-		self
-	}
-}
-
 #[macro_export]
 macro_rules! expect_pending_htlcs_forwardable_conditions {
-	($node: expr, $conditions: expr) => {{
-		let conditions = $conditions;
+	($node: expr, $expected_failures: expr) => {{
+		let expected_failures = $expected_failures;
 		let events = $node.node.get_and_clear_pending_events();
 		match events[0] {
 			$crate::util::events::Event::PendingHTLCsForwardable { .. } => { },
 			_ => panic!("Unexpected event"),
 		};
 
-		let count = conditions.expected_destinations.len() + 1;
+		let count = expected_failures.len() + 1;
 		assert_eq!(events.len(), count);
 
-		if conditions.expected_destinations.len() > 0 {
-			expect_htlc_handling_failed_destinations!(events, conditions.expected_destinations)
+		if expected_failures.len() > 0 {
+			expect_htlc_handling_failed_destinations!(events, expected_failures)
 		}
 	}}
 }
 
 #[macro_export]
 macro_rules! expect_htlc_handling_failed_destinations {
-	($events: expr, $destinations: expr) => {{
+	($events: expr, $expected_failures: expr) => {{
 		for event in $events {
 			match event {
 				$crate::util::events::Event::PendingHTLCsForwardable { .. } => { },
 				$crate::util::events::Event::HTLCHandlingFailed { ref failed_next_destination, .. } => {
-					assert!($destinations.contains(&failed_next_destination))
+					assert!($expected_failures.contains(&failed_next_destination))
 				},
 				_ => panic!("Unexpected destination"),
 			}
@@ -1314,15 +1293,15 @@ macro_rules! expect_htlc_handling_failed_destinations {
 /// Clears (and ignores) a PendingHTLCsForwardable event
 macro_rules! expect_pending_htlcs_forwardable_ignore {
 	($node: expr) => {{
-		expect_pending_htlcs_forwardable_conditions!($node, $crate::ln::functional_test_utils::HTLCHandlingFailedConditions::new());
+		expect_pending_htlcs_forwardable_conditions!($node, vec![]);
 	}};
 }
 
 #[macro_export]
 /// Clears (and ignores) PendingHTLCsForwardable and HTLCHandlingFailed events
 macro_rules! expect_pending_htlcs_forwardable_and_htlc_handling_failed_ignore {
-	($node: expr, $conditions: expr) => {{
-		expect_pending_htlcs_forwardable_conditions!($node, $conditions);
+	($node: expr, $expected_failures: expr) => {{
+		expect_pending_htlcs_forwardable_conditions!($node, $expected_failures);
 	}};
 }
 
@@ -1341,8 +1320,8 @@ macro_rules! expect_pending_htlcs_forwardable {
 #[macro_export]
 /// Handles a PendingHTLCsForwardable and HTLCHandlingFailed event
 macro_rules! expect_pending_htlcs_forwardable_and_htlc_handling_failed {
-	($node: expr, $conditions: expr) => {{
-		expect_pending_htlcs_forwardable_and_htlc_handling_failed_ignore!($node, $conditions);
+	($node: expr, $expected_failures: expr) => {{
+		expect_pending_htlcs_forwardable_and_htlc_handling_failed_ignore!($node, $expected_failures);
 		$node.node.process_pending_htlc_forwards();
 
 		// Ensure process_pending_htlc_forwards is idempotent.
@@ -1884,7 +1863,8 @@ pub fn fail_payment_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expe
 		assert_eq!(path.last().unwrap().node.get_our_node_id(), expected_paths[0].last().unwrap().node.get_our_node_id());
 	}
 	expected_paths[0].last().unwrap().node.fail_htlc_backwards(&our_payment_hash);
-	expect_pending_htlcs_forwardable!(expected_paths[0].last().unwrap());
+	let expected_destinations: Vec<HTLCDestination> = repeat(HTLCDestination::FailedPayment { payment_hash: our_payment_hash }).take(expected_paths.len()).collect();
+	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(expected_paths[0].last().unwrap(), expected_destinations);
 
 	pass_failed_payment_back(origin_node, expected_paths, skip_last, our_payment_hash);
 }
@@ -1925,7 +1905,7 @@ pub fn pass_failed_payment_back<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expe
 				node.node.handle_update_fail_htlc(&prev_node.node.get_our_node_id(), &next_msgs.as_ref().unwrap().0);
 				commitment_signed_dance!(node, prev_node, next_msgs.as_ref().unwrap().1, update_next_node);
 				if !update_next_node {
-					expect_pending_htlcs_forwardable!(node);
+					expect_pending_htlcs_forwardable_and_htlc_handling_failed!(node, vec![HTLCDestination::NextHopChannel { node_id: Some(prev_node.node.get_our_node_id()), channel_id: next_msgs.as_ref().unwrap().0.channel_id }]);
 				}
 			}
 			let events = node.node.get_and_clear_pending_msg_events();
