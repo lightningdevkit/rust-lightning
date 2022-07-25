@@ -1258,7 +1258,7 @@ mod tests {
 	use util::time::tests::SinceEpoch;
 
 	use ln::features::{ChannelFeatures, NodeFeatures};
-	use ln::msgs::{ChannelAnnouncement, ChannelUpdate, OptionalField, UnsignedChannelAnnouncement, UnsignedChannelUpdate};
+	use ln::msgs::{ChannelAnnouncement, ChannelUpdate, UnsignedChannelAnnouncement, UnsignedChannelUpdate};
 	use routing::gossip::{EffectiveCapacity, NetworkGraph, NodeId};
 	use routing::router::RouteHop;
 	use routing::scoring::{ChannelUsage, Score};
@@ -1385,7 +1385,7 @@ mod tests {
 			flags,
 			cltv_expiry_delta: 18,
 			htlc_minimum_msat: 0,
-			htlc_maximum_msat: OptionalField::Present(1_000),
+			htlc_maximum_msat: 1_000,
 			fee_base_msat: 1,
 			fee_proportional_millionths: 0,
 			excess_data: Vec::new(),

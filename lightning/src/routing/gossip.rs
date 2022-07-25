@@ -25,15 +25,16 @@ use chain;
 use chain::Access;
 use ln::features::{ChannelFeatures, NodeFeatures};
 use ln::msgs::{DecodeError, ErrorAction, Init, LightningError, RoutingMessageHandler, NetAddress, MAX_VALUE_MSAT};
-use ln::msgs::{ChannelAnnouncement, ChannelUpdate, NodeAnnouncement, OptionalField, GossipTimestampFilter};
+use ln::msgs::{ChannelAnnouncement, ChannelUpdate, NodeAnnouncement, GossipTimestampFilter};
 use ln::msgs::{QueryChannelRange, ReplyChannelRange, QueryShortChannelIds, ReplyShortChannelIdsEnd};
 use ln::msgs;
-use util::ser::{Readable, ReadableArgs, Writeable, Writer};
+use util::ser::{Readable, ReadableArgs, Writeable, Writer, MaybeReadable};
 use util::logger::{Logger, Level};
 use util::events::{Event, EventHandler, MessageSendEvent, MessageSendEventsProvider};
 use util::scid_utils::{block_from_scid, scid_from_parts, MAX_SCID_BLOCK};
 
 use io;
+use io_extras::{copy, sink};
 use prelude::*;
 use alloc::collections::{BTreeMap, btree_map::Entry as BtreeEntry};
 use core::{cmp, fmt};
@@ -611,7 +612,7 @@ pub struct ChannelUpdateInfo {
 	/// The minimum value, which must be relayed to the next hop via the channel
 	pub htlc_minimum_msat: u64,
 	/// The maximum value which may be relayed to the next hop via the channel.
-	pub htlc_maximum_msat: Option<u64>,
+	pub htlc_maximum_msat: u64,
 	/// Fees charged when the channel is used for routing
 	pub fees: RoutingFees,
 	/// Most recent update for the channel received from the network
@@ -628,15 +629,58 @@ impl fmt::Display for ChannelUpdateInfo {
 	}
 }
 
-impl_writeable_tlv_based!(ChannelUpdateInfo, {
-	(0, last_update, required),
-	(2, enabled, required),
-	(4, cltv_expiry_delta, required),
-	(6, htlc_minimum_msat, required),
-	(8, htlc_maximum_msat, required),
-	(10, fees, required),
-	(12, last_update_message, required),
-});
+impl Writeable for ChannelUpdateInfo {
+	fn write<W: ::util::ser::Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		write_tlv_fields!(writer, {
+			(0, self.last_update, required),
+			(2, self.enabled, required),
+			(4, self.cltv_expiry_delta, required),
+			(6, self.htlc_minimum_msat, required),
+			// Writing htlc_maximum_msat as an Option<u64> is required to maintain backwards
+			// compatibility with LDK versions prior to v0.0.110.
+			(8, Some(self.htlc_maximum_msat), required),
+			(10, self.fees, required),
+			(12, self.last_update_message, required),
+		});
+		Ok(())
+	}
+}
+
+impl Readable for ChannelUpdateInfo {
+	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
+		init_tlv_field_var!(last_update, required);
+		init_tlv_field_var!(enabled, required);
+		init_tlv_field_var!(cltv_expiry_delta, required);
+		init_tlv_field_var!(htlc_minimum_msat, required);
+		init_tlv_field_var!(htlc_maximum_msat, option);
+		init_tlv_field_var!(fees, required);
+		init_tlv_field_var!(last_update_message, required);
+
+		read_tlv_fields!(reader, {
+			(0, last_update, required),
+			(2, enabled, required),
+			(4, cltv_expiry_delta, required),
+			(6, htlc_minimum_msat, required),
+			(8, htlc_maximum_msat, required),
+			(10, fees, required),
+			(12, last_update_message, required)
+		});
+
+		if let Some(htlc_maximum_msat) = htlc_maximum_msat {
+			Ok(ChannelUpdateInfo {
+				last_update: init_tlv_based_struct_field!(last_update, required),
+				enabled: init_tlv_based_struct_field!(enabled, required),
+				cltv_expiry_delta: init_tlv_based_struct_field!(cltv_expiry_delta, required),
+				htlc_minimum_msat: init_tlv_based_struct_field!(htlc_minimum_msat, required),
+				htlc_maximum_msat,
+				fees: init_tlv_based_struct_field!(fees, required),
+				last_update_message: init_tlv_based_struct_field!(last_update_message, required),
+			})
+		} else {
+			Err(DecodeError::InvalidValue)
+		}
+	}
+}
 
 #[derive(Clone, Debug, PartialEq)]
 /// Details about a channel (both directions).
@@ -715,16 +759,73 @@ impl fmt::Display for ChannelInfo {
 	}
 }
 
-impl_writeable_tlv_based!(ChannelInfo, {
-	(0, features, required),
-	(1, announcement_received_time, (default_value, 0)),
-	(2, node_one, required),
-	(4, one_to_two, required),
-	(6, node_two, required),
-	(8, two_to_one, required),
-	(10, capacity_sats, required),
-	(12, announcement_message, required),
-});
+impl Writeable for ChannelInfo {
+	fn write<W: ::util::ser::Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		write_tlv_fields!(writer, {
+			(0, self.features, required),
+			(1, self.announcement_received_time, (default_value, 0)),
+			(2, self.node_one, required),
+			(4, self.one_to_two, required),
+			(6, self.node_two, required),
+			(8, self.two_to_one, required),
+			(10, self.capacity_sats, required),
+			(12, self.announcement_message, required),
+		});
+		Ok(())
+	}
+}
+
+// A wrapper allowing for the optional deseralization of ChannelUpdateInfo. Utilizing this is
+// necessary to maintain backwards compatibility with previous serializations of `ChannelUpdateInfo`
+// that may have no `htlc_maximum_msat` field set. In case the field is absent, we simply ignore
+// the error and continue reading the `ChannelInfo`. Hopefully, we'll then eventually receive newer
+// channel updates via the gossip network.
+struct ChannelUpdateInfoDeserWrapper(Option<ChannelUpdateInfo>);
+
+impl MaybeReadable for ChannelUpdateInfoDeserWrapper {
+	fn read<R: io::Read>(reader: &mut R) -> Result<Option<Self>, DecodeError> {
+		match ::util::ser::Readable::read(reader) {
+			Ok(channel_update_option) => Ok(Some(Self(channel_update_option))),
+			Err(DecodeError::ShortRead) => Ok(None),
+			Err(DecodeError::InvalidValue) => Ok(None),
+			Err(err) => Err(err),
+		}
+	}
+}
+
+impl Readable for ChannelInfo {
+	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
+		init_tlv_field_var!(features, required);
+		init_tlv_field_var!(announcement_received_time, (default_value, 0));
+		init_tlv_field_var!(node_one, required);
+		let mut one_to_two_wrap: Option<ChannelUpdateInfoDeserWrapper> = None;
+		init_tlv_field_var!(node_two, required);
+		let mut two_to_one_wrap: Option<ChannelUpdateInfoDeserWrapper> = None;
+		init_tlv_field_var!(capacity_sats, required);
+		init_tlv_field_var!(announcement_message, required);
+		read_tlv_fields!(reader, {
+			(0, features, required),
+			(1, announcement_received_time, (default_value, 0)),
+			(2, node_one, required),
+			(4, one_to_two_wrap, ignorable),
+			(6, node_two, required),
+			(8, two_to_one_wrap, ignorable),
+			(10, capacity_sats, required),
+			(12, announcement_message, required),
+		});
+
+		Ok(ChannelInfo {
+			features: init_tlv_based_struct_field!(features, required),
+			node_one: init_tlv_based_struct_field!(node_one, required),
+			one_to_two: one_to_two_wrap.map(|w| w.0).unwrap_or(None),
+			node_two: init_tlv_based_struct_field!(node_two, required),
+			two_to_one: two_to_one_wrap.map(|w| w.0).unwrap_or(None),
+			capacity_sats: init_tlv_based_struct_field!(capacity_sats, required),
+			announcement_message: init_tlv_based_struct_field!(announcement_message, required),
+			announcement_received_time: init_tlv_based_struct_field!(announcement_received_time, (default_value, 0)),
+		})
+	}
+}
 
 /// A wrapper around [`ChannelInfo`] representing information about the channel as directed from a
 /// source node to a target node.
@@ -739,7 +840,7 @@ pub struct DirectedChannelInfo<'a> {
 impl<'a> DirectedChannelInfo<'a> {
 	#[inline]
 	fn new(channel: &'a ChannelInfo, direction: Option<&'a ChannelUpdateInfo>) -> Self {
-		let htlc_maximum_msat = direction.and_then(|direction| direction.htlc_maximum_msat);
+		let htlc_maximum_msat = direction.map(|direction| direction.htlc_maximum_msat);
 		let capacity_msat = channel.capacity_sats.map(|capacity_sats| capacity_sats * 1000);
 
 		let (htlc_maximum_msat, effective_capacity) = match (htlc_maximum_msat, capacity_msat) {
@@ -989,11 +1090,54 @@ impl fmt::Display for NodeInfo {
 	}
 }
 
-impl_writeable_tlv_based!(NodeInfo, {
-	(0, lowest_inbound_channel_fees, option),
-	(2, announcement_info, option),
-	(4, channels, vec_type),
-});
+impl Writeable for NodeInfo {
+	fn write<W: ::util::ser::Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		write_tlv_fields!(writer, {
+			(0, self.lowest_inbound_channel_fees, option),
+			(2, self.announcement_info, option),
+			(4, self.channels, vec_type),
+		});
+		Ok(())
+	}
+}
+
+// A wrapper allowing for the optional deseralization of `NodeAnnouncementInfo`. Utilizing this is
+// necessary to maintain compatibility with previous serializations of `NetAddress` that have an
+// invalid hostname set. We ignore and eat all errors until we are either able to read a
+// `NodeAnnouncementInfo` or hit a `ShortRead`, i.e., read the TLV field to the end.
+struct NodeAnnouncementInfoDeserWrapper(NodeAnnouncementInfo);
+
+impl MaybeReadable for NodeAnnouncementInfoDeserWrapper {
+	fn read<R: io::Read>(reader: &mut R) -> Result<Option<Self>, DecodeError> {
+		match ::util::ser::Readable::read(reader) {
+			Ok(node_announcement_info) => return Ok(Some(Self(node_announcement_info))),
+			Err(_) => {
+				copy(reader, &mut sink()).unwrap();
+				return Ok(None)
+			},
+		};
+	}
+}
+
+impl Readable for NodeInfo {
+	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
+		init_tlv_field_var!(lowest_inbound_channel_fees, option);
+		let mut announcement_info_wrap: Option<NodeAnnouncementInfoDeserWrapper> = None;
+		init_tlv_field_var!(channels, vec_type);
+
+		read_tlv_fields!(reader, {
+			(0, lowest_inbound_channel_fees, option),
+			(2, announcement_info_wrap, ignorable),
+			(4, channels, vec_type),
+		});
+
+		Ok(NodeInfo {
+			lowest_inbound_channel_fees: init_tlv_based_struct_field!(lowest_inbound_channel_fees, option),
+			announcement_info: announcement_info_wrap.map(|w| w.0),
+			channels: init_tlv_based_struct_field!(channels, vec_type),
+		})
+	}
+}
 
 const SERIALIZATION_VERSION: u8 = 1;
 const MIN_SERIALIZATION_VERSION: u8 = 1;
@@ -1495,17 +1639,19 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 		match channels.get_mut(&msg.short_channel_id) {
 			None => return Err(LightningError{err: "Couldn't find channel for update".to_owned(), action: ErrorAction::IgnoreError}),
 			Some(channel) => {
-				if let OptionalField::Present(htlc_maximum_msat) = msg.htlc_maximum_msat {
-					if htlc_maximum_msat > MAX_VALUE_MSAT {
-						return Err(LightningError{err: "htlc_maximum_msat is larger than maximum possible msats".to_owned(), action: ErrorAction::IgnoreError});
-					}
+				if msg.htlc_maximum_msat > MAX_VALUE_MSAT {
+					return Err(LightningError{err:
+						"htlc_maximum_msat is larger than maximum possible msats".to_owned(),
+						action: ErrorAction::IgnoreError});
+				}
 
-					if let Some(capacity_sats) = channel.capacity_sats {
-						// It's possible channel capacity is available now, although it wasn't available at announcement (so the field is None).
-						// Don't query UTXO set here to reduce DoS risks.
-						if capacity_sats > MAX_VALUE_MSAT / 1000 || htlc_maximum_msat > capacity_sats * 1000 {
-							return Err(LightningError{err: "htlc_maximum_msat is larger than channel capacity or capacity is bogus".to_owned(), action: ErrorAction::IgnoreError});
-						}
+				if let Some(capacity_sats) = channel.capacity_sats {
+					// It's possible channel capacity is available now, although it wasn't available at announcement (so the field is None).
+					// Don't query UTXO set here to reduce DoS risks.
+					if capacity_sats > MAX_VALUE_MSAT / 1000 || msg.htlc_maximum_msat > capacity_sats * 1000 {
+						return Err(LightningError{err:
+							"htlc_maximum_msat is larger than channel capacity or capacity is bogus".to_owned(),
+							action: ErrorAction::IgnoreError});
 					}
 				}
 				macro_rules! check_update_latest {
@@ -1539,7 +1685,7 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 							last_update: msg.timestamp,
 							cltv_expiry_delta: msg.cltv_expiry_delta,
 							htlc_minimum_msat: msg.htlc_minimum_msat,
-							htlc_maximum_msat: if let OptionalField::Present(max_value) = msg.htlc_maximum_msat { Some(max_value) } else { None },
+							htlc_maximum_msat: msg.htlc_maximum_msat,
 							fees: RoutingFees {
 								base_msat: msg.fee_base_msat,
 								proportional_millionths: msg.fee_proportional_millionths,
@@ -1680,8 +1826,8 @@ mod tests {
 	use chain;
 	use ln::PaymentHash;
 	use ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
-	use routing::gossip::{P2PGossipSync, NetworkGraph, NetworkUpdate, NodeAlias, MAX_EXCESS_BYTES_FOR_RELAY};
-	use ln::msgs::{Init, OptionalField, RoutingMessageHandler, UnsignedNodeAnnouncement, NodeAnnouncement,
+	use routing::gossip::{P2PGossipSync, NetworkGraph, NetworkUpdate, NodeAlias, MAX_EXCESS_BYTES_FOR_RELAY, NodeId, RoutingFees, ChannelUpdateInfo, ChannelInfo, NodeAnnouncementInfo, NodeInfo};
+	use ln::msgs::{Init, RoutingMessageHandler, UnsignedNodeAnnouncement, NodeAnnouncement,
 		UnsignedChannelAnnouncement, ChannelAnnouncement, UnsignedChannelUpdate, ChannelUpdate,
 		ReplyChannelRange, QueryChannelRange, QueryShortChannelIds, MAX_VALUE_MSAT};
 	use util::test_utils;
@@ -1805,7 +1951,7 @@ mod tests {
 			flags: 0,
 			cltv_expiry_delta: 144,
 			htlc_minimum_msat: 1_000_000,
-			htlc_maximum_msat: OptionalField::Absent,
+			htlc_maximum_msat: 1_000_000,
 			fee_base_msat: 10_000,
 			fee_proportional_millionths: 20,
 			excess_data: Vec::new()
@@ -2026,7 +2172,7 @@ mod tests {
 		let valid_channel_update = get_signed_channel_update(|_| {}, node_1_privkey, &secp_ctx);
 		match gossip_sync.handle_channel_update(&valid_channel_update) {
 			Ok(res) => assert!(res),
-			_ => panic!()
+			_ => panic!(),
 		};
 
 		{
@@ -2059,7 +2205,7 @@ mod tests {
 		};
 
 		let valid_channel_update = get_signed_channel_update(|unsigned_channel_update| {
-			unsigned_channel_update.htlc_maximum_msat = OptionalField::Present(MAX_VALUE_MSAT + 1);
+			unsigned_channel_update.htlc_maximum_msat = MAX_VALUE_MSAT + 1;
 			unsigned_channel_update.timestamp += 110;
 		}, node_1_privkey, &secp_ctx);
 		match gossip_sync.handle_channel_update(&valid_channel_update) {
@@ -2068,7 +2214,7 @@ mod tests {
 		};
 
 		let valid_channel_update = get_signed_channel_update(|unsigned_channel_update| {
-			unsigned_channel_update.htlc_maximum_msat = OptionalField::Present(amount_sats * 1000 + 1);
+			unsigned_channel_update.htlc_maximum_msat = amount_sats * 1000 + 1;
 			unsigned_channel_update.timestamp += 110;
 		}, node_1_privkey, &secp_ctx);
 		match gossip_sync.handle_channel_update(&valid_channel_update) {
@@ -2805,6 +2951,142 @@ mod tests {
 		assert_eq!(format_bytes_alias(b"\xFFI <heart> LDK!"), "\u{FFFD}I <heart> LDK!");
 		assert_eq!(format_bytes_alias(b"\xFFI <heart>\0LDK!"), "\u{FFFD}I <heart>");
 		assert_eq!(format_bytes_alias(b"\xFFI <heart>\tLDK!"), "\u{FFFD}I <heart>\u{FFFD}LDK!");
+	}
+
+	#[test]
+	fn channel_info_is_readable() {
+		let chanmon_cfgs = ::ln::functional_test_utils::create_chanmon_cfgs(2);
+		let node_cfgs = ::ln::functional_test_utils::create_node_cfgs(2, &chanmon_cfgs);
+		let node_chanmgrs = ::ln::functional_test_utils::create_node_chanmgrs(2, &node_cfgs, &[None, None, None, None]);
+		let nodes = ::ln::functional_test_utils::create_network(2, &node_cfgs, &node_chanmgrs);
+
+		// 1. Test encoding/decoding of ChannelUpdateInfo
+		let chan_update_info = ChannelUpdateInfo {
+			last_update: 23,
+			enabled: true,
+			cltv_expiry_delta: 42,
+			htlc_minimum_msat: 1234,
+			htlc_maximum_msat: 5678,
+			fees: RoutingFees { base_msat: 9, proportional_millionths: 10 },
+			last_update_message: None,
+		};
+
+		let mut encoded_chan_update_info: Vec<u8> = Vec::new();
+		assert!(chan_update_info.write(&mut encoded_chan_update_info).is_ok());
+
+		// First make sure we can read ChannelUpdateInfos we just wrote
+		let read_chan_update_info: ChannelUpdateInfo = ::util::ser::Readable::read(&mut encoded_chan_update_info.as_slice()).unwrap();
+		assert_eq!(chan_update_info, read_chan_update_info);
+
+		// Check the serialization hasn't changed.
+		let legacy_chan_update_info_with_some: Vec<u8> = hex::decode("340004000000170201010402002a060800000000000004d2080909000000000000162e0a0d0c00040000000902040000000a0c0100").unwrap();
+		assert_eq!(encoded_chan_update_info, legacy_chan_update_info_with_some);
+
+		// Check we fail if htlc_maximum_msat is not present in either the ChannelUpdateInfo itself
+		// or the ChannelUpdate enclosed with `last_update_message`.
+		let legacy_chan_update_info_with_some_and_fail_update: Vec<u8> = hex::decode("b40004000000170201010402002a060800000000000004d2080909000000000000162e0a0d0c00040000000902040000000a0c8181d977cb9b53d93a6ff64bb5f1e158b4094b66e798fb12911168a3ccdf80a83096340a6a95da0ae8d9f776528eecdbb747eb6b545495a4319ed5378e35b21e073a000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f00083a840000034d013413a70000009000000000000f42400000271000000014").unwrap();
+		let read_chan_update_info_res: Result<ChannelUpdateInfo, ::ln::msgs::DecodeError> = ::util::ser::Readable::read(&mut legacy_chan_update_info_with_some_and_fail_update.as_slice());
+		assert!(read_chan_update_info_res.is_err());
+
+		let legacy_chan_update_info_with_none: Vec<u8> = hex::decode("2c0004000000170201010402002a060800000000000004d20801000a0d0c00040000000902040000000a0c0100").unwrap();
+		let read_chan_update_info_res: Result<ChannelUpdateInfo, ::ln::msgs::DecodeError> = ::util::ser::Readable::read(&mut legacy_chan_update_info_with_none.as_slice());
+		assert!(read_chan_update_info_res.is_err());
+			
+		// 2. Test encoding/decoding of ChannelInfo
+		// Check we can encode/decode ChannelInfo without ChannelUpdateInfo fields present.
+		let chan_info_none_updates = ChannelInfo {
+			features: ChannelFeatures::known(),
+			node_one: NodeId::from_pubkey(&nodes[0].node.get_our_node_id()),
+			one_to_two: None,
+			node_two: NodeId::from_pubkey(&nodes[1].node.get_our_node_id()),
+			two_to_one: None,
+			capacity_sats: None,
+			announcement_message: None,
+			announcement_received_time: 87654,
+		};
+
+		let mut encoded_chan_info: Vec<u8> = Vec::new();
+		assert!(chan_info_none_updates.write(&mut encoded_chan_info).is_ok());
+
+		let read_chan_info: ChannelInfo = ::util::ser::Readable::read(&mut encoded_chan_info.as_slice()).unwrap();
+		assert_eq!(chan_info_none_updates, read_chan_info);
+
+		// Check we can encode/decode ChannelInfo with ChannelUpdateInfo fields present.
+		let chan_info_some_updates = ChannelInfo {
+			features: ChannelFeatures::known(),
+			node_one: NodeId::from_pubkey(&nodes[0].node.get_our_node_id()),
+			one_to_two: Some(chan_update_info.clone()),
+			node_two: NodeId::from_pubkey(&nodes[1].node.get_our_node_id()),
+			two_to_one: Some(chan_update_info.clone()),
+			capacity_sats: None,
+			announcement_message: None,
+			announcement_received_time: 87654,
+		};
+
+		let mut encoded_chan_info: Vec<u8> = Vec::new();
+		assert!(chan_info_some_updates.write(&mut encoded_chan_info).is_ok());
+
+		let read_chan_info: ChannelInfo = ::util::ser::Readable::read(&mut encoded_chan_info.as_slice()).unwrap();
+		assert_eq!(chan_info_some_updates, read_chan_info);
+
+		// Check the serialization hasn't changed.
+		let legacy_chan_info_with_some: Vec<u8> = hex::decode("ca00020000010800000000000156660221027f921585f2ac0c7c70e36110adecfd8fd14b8a99bfb3d000a283fcac358fce88043636340004000000170201010402002a060800000000000004d2080909000000000000162e0a0d0c00040000000902040000000a0c010006210355f8d2238a322d16b602bd0ceaad5b01019fb055971eaadcc9b29226a4da6c23083636340004000000170201010402002a060800000000000004d2080909000000000000162e0a0d0c00040000000902040000000a0c01000a01000c0100").unwrap();
+		assert_eq!(encoded_chan_info, legacy_chan_info_with_some);
+
+		// Check we can decode legacy ChannelInfo, even if the `two_to_one` / `one_to_two` /
+		// `last_update_message` fields fail to decode due to missing htlc_maximum_msat.
+		let legacy_chan_info_with_some_and_fail_update = hex::decode("fd01ca00020000010800000000000156660221027f921585f2ac0c7c70e36110adecfd8fd14b8a99bfb3d000a283fcac358fce8804b6b6b40004000000170201010402002a060800000000000004d2080909000000000000162e0a0d0c00040000000902040000000a0c8181d977cb9b53d93a6ff64bb5f1e158b4094b66e798fb12911168a3ccdf80a83096340a6a95da0ae8d9f776528eecdbb747eb6b545495a4319ed5378e35b21e073a000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f00083a840000034d013413a70000009000000000000f4240000027100000001406210355f8d2238a322d16b602bd0ceaad5b01019fb055971eaadcc9b29226a4da6c2308b6b6b40004000000170201010402002a060800000000000004d2080909000000000000162e0a0d0c00040000000902040000000a0c8181d977cb9b53d93a6ff64bb5f1e158b4094b66e798fb12911168a3ccdf80a83096340a6a95da0ae8d9f776528eecdbb747eb6b545495a4319ed5378e35b21e073a000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f00083a840000034d013413a70000009000000000000f424000002710000000140a01000c0100").unwrap();
+		let read_chan_info: ChannelInfo = ::util::ser::Readable::read(&mut legacy_chan_info_with_some_and_fail_update.as_slice()).unwrap();
+		assert_eq!(read_chan_info.announcement_received_time, 87654);
+		assert_eq!(read_chan_info.one_to_two, None);
+		assert_eq!(read_chan_info.two_to_one, None);
+
+		let legacy_chan_info_with_none: Vec<u8> = hex::decode("ba00020000010800000000000156660221027f921585f2ac0c7c70e36110adecfd8fd14b8a99bfb3d000a283fcac358fce88042e2e2c0004000000170201010402002a060800000000000004d20801000a0d0c00040000000902040000000a0c010006210355f8d2238a322d16b602bd0ceaad5b01019fb055971eaadcc9b29226a4da6c23082e2e2c0004000000170201010402002a060800000000000004d20801000a0d0c00040000000902040000000a0c01000a01000c0100").unwrap();
+		let read_chan_info: ChannelInfo = ::util::ser::Readable::read(&mut legacy_chan_info_with_none.as_slice()).unwrap();
+		assert_eq!(read_chan_info.announcement_received_time, 87654);
+		assert_eq!(read_chan_info.one_to_two, None);
+		assert_eq!(read_chan_info.two_to_one, None);
+	}
+
+	#[test]
+	fn node_info_is_readable() {
+		use std::convert::TryFrom;
+
+		// 1. Check we can read a valid NodeAnnouncementInfo and fail on an invalid one
+		let valid_netaddr = ::ln::msgs::NetAddress::Hostname { hostname: ::util::ser::Hostname::try_from("A".to_string()).unwrap(), port: 1234 };
+		let valid_node_ann_info = NodeAnnouncementInfo {
+			features: NodeFeatures::known(),
+			last_update: 0,
+			rgb: [0u8; 3],
+			alias: NodeAlias([0u8; 32]),
+			addresses: vec![valid_netaddr],
+			announcement_message: None,
+		};
+
+		let mut encoded_valid_node_ann_info = Vec::new();
+		assert!(valid_node_ann_info.write(&mut encoded_valid_node_ann_info).is_ok());
+		let read_valid_node_ann_info: NodeAnnouncementInfo = ::util::ser::Readable::read(&mut encoded_valid_node_ann_info.as_slice()).unwrap();
+		assert_eq!(read_valid_node_ann_info, valid_node_ann_info);
+
+		let encoded_invalid_node_ann_info = hex::decode("3f0009000788a000080a51a20204000000000403000000062000000000000000000000000000000000000000000000000000000000000000000a0505014004d2").unwrap();
+		let read_invalid_node_ann_info_res: Result<NodeAnnouncementInfo, ::ln::msgs::DecodeError> = ::util::ser::Readable::read(&mut encoded_invalid_node_ann_info.as_slice());
+		assert!(read_invalid_node_ann_info_res.is_err());
+
+		// 2. Check we can read a NodeInfo anyways, but set the NodeAnnouncementInfo to None if invalid
+		let valid_node_info = NodeInfo {
+			channels: Vec::new(),
+			lowest_inbound_channel_fees: None,
+			announcement_info: Some(valid_node_ann_info),
+		};
+
+		let mut encoded_valid_node_info = Vec::new();
+		assert!(valid_node_info.write(&mut encoded_valid_node_info).is_ok());
+		let read_valid_node_info: NodeInfo = ::util::ser::Readable::read(&mut encoded_valid_node_info.as_slice()).unwrap();
+		assert_eq!(read_valid_node_info, valid_node_info);
+
+		let encoded_invalid_node_info_hex = hex::decode("4402403f0009000788a000080a51a20204000000000403000000062000000000000000000000000000000000000000000000000000000000000000000a0505014004d20400").unwrap();
+		let read_invalid_node_info: NodeInfo = ::util::ser::Readable::read(&mut encoded_invalid_node_info_hex.as_slice()).unwrap();
+		assert_eq!(read_invalid_node_info.announcement_info, None);
 	}
 }
 

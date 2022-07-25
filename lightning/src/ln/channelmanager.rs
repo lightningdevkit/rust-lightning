@@ -48,7 +48,7 @@ use routing::router::{PaymentParameters, Route, RouteHop, RoutePath, RouteParame
 use ln::msgs;
 use ln::msgs::NetAddress;
 use ln::onion_utils;
-use ln::msgs::{ChannelMessageHandler, DecodeError, LightningError, MAX_VALUE_MSAT, OptionalField};
+use ln::msgs::{ChannelMessageHandler, DecodeError, LightningError, MAX_VALUE_MSAT};
 use ln::wire::Encode;
 use chain::keysinterface::{Sign, KeysInterface, KeysManager, InMemorySigner, Recipient};
 use util::config::{UserConfig, ChannelConfig};
@@ -2397,7 +2397,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			flags: (!were_node_one) as u8 | ((!chan.is_live() as u8) << 1),
 			cltv_expiry_delta: chan.get_cltv_expiry_delta(),
 			htlc_minimum_msat: chan.get_counterparty_htlc_minimum_msat(),
-			htlc_maximum_msat: OptionalField::Present(chan.get_announced_htlc_max_msat()),
+			htlc_maximum_msat: chan.get_announced_htlc_max_msat(),
 			fee_base_msat: chan.get_outbound_forwarding_fee_base_msat(),
 			fee_proportional_millionths: chan.get_fee_proportional_millionths(),
 			excess_data: Vec::new(),

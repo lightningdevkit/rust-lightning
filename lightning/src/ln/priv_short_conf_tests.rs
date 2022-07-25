@@ -19,7 +19,7 @@ use routing::gossip::RoutingFees;
 use routing::router::{PaymentParameters, RouteHint, RouteHintHop};
 use ln::features::{InitFeatures, InvoiceFeatures, ChannelTypeFeatures};
 use ln::msgs;
-use ln::msgs::{ChannelMessageHandler, RoutingMessageHandler, OptionalField, ChannelUpdate, ErrorAction};
+use ln::msgs::{ChannelMessageHandler, RoutingMessageHandler, ChannelUpdate, ErrorAction};
 use ln::wire::Encode;
 use util::enforcing_trait_impls::EnforcingSigner;
 use util::events::{ClosureReason, Event, MessageSendEvent, MessageSendEventsProvider};
@@ -523,7 +523,7 @@ fn test_scid_alias_returned() {
 		flags: 1,
 		cltv_expiry_delta: accept_forward_cfg.channel_config.cltv_expiry_delta,
 		htlc_minimum_msat: 1_000,
-		htlc_maximum_msat: OptionalField::Present(1_000_000), // Defaults to 10% of the channel value
+		htlc_maximum_msat: 1_000_000, // Defaults to 10% of the channel value
 		fee_base_msat: last_hop[0].counterparty.forwarding_info.as_ref().unwrap().fee_base_msat,
 		fee_proportional_millionths: last_hop[0].counterparty.forwarding_info.as_ref().unwrap().fee_proportional_millionths,
 		excess_data: Vec::new(),
