@@ -1,3 +1,60 @@
+# 0.0.110 - 2022-XXX
+
+## API Updates
+ * `ChannelManager::send_probe` and `Score::probe_{failed,successful}` have
+   been added to make probing more explicit, as well as new
+   `Event::Probe{Failed,Successful}` events (#1567).
+ * `ProbabilisticScoringParameters::banned_nodes` has been renamed
+   `manual_node_penalties` and changed to take msat penalties (#1592).
+ * Per-payment tracking of failed paths was added to enable configuration of
+   `ProbabilisticScoringParameters::considered_impossible_penalty_msat` (#1600)
+ * `ProbabilisticScoringParameters::base_penalty_amount_multiplier_msat` was
+   added to allow a penalty that is only amount-dependent (#1617).
+ * `ProbabilisticScoringParameters::amount_penalty_multiplier_msat` was renamed
+   `liquidity_penalty_amount_multiplier_msat` (#1617).
+ * A new `Event::HTLCHandlingFailed` has been added which provides visibility
+   into failures to forward/claim accepted HTLCs (#1403).
+ * Support has been added for DNS hostnames in the `NetAddress` type, see
+   [BOLT PR #911](https://github.com/lightning/bolts/pull/911) (#1553).
+ * `GossipSync` now has `rapid`, `p2p`, and `none` constructors (#1618).
+ * `lightning-net-tokio` no longer requires types to be in `Arc`s (#1623).
+ * The `htlc_maximum_msat` field is now required in `ChannelUpdate` gossip
+   messages. In tests this rejects < 1% of channels (#1519).
+ * `ReadOnlyNetworkGraph::{channel,node}` have been added to query for
+   individual channel/node data, primarily for bindings users (#1543).
+ * `FeeEstimator` implementations are now wrapped internally to ensure values
+   below 253 sats/kW are never used (#1552).
+ * Route selection no longer attempts to randomize path selection. This is
+   unlikely to lead to a material change in the paths selected (#1610).
+
+## Bug Fixes
+ * Fixed a panic when deserializing `ChannelDetails` objects (#1588).
+ * When routing, channels are no longer fully saturated before MPP splits are
+   generated, instead a configuration knob was added as
+   `PaymentParameters::max_channel_saturation_power_of_half` (#1605).
+ * Fixed a panic which occurred in `ProbabilisticScorer` when wallclock time
+   goes backwards across a restart (#1603).
+
+## Serialization Compatibility
+ * All new fields are ignored by prior versions of LDK. All new fields are not
+   present when reading objects serialized by prior versions of LDK.
+ * Channel information written in the `NetworkGraph` which is missing
+   `htlc_maximum_msat` may be dropped on deserialization (#1519).
+ * Similarly, node information written in the `NetworkGraph` which contains an
+   invalid hostname may be dropped on deserialization (#1519).
+
+In total, this release features 79 files changed, 2935 insertions, 1363
+deletions in 52 commits from 9 authors, in alphabetical order:
+ * Duncan Dean
+ * Elias Rohrer
+ * Jeffrey Czyz
+ * Matt Corallo
+ * Max Fang
+ * Viktor Tigerström
+ * Willem Van Lint
+ * Wilmer Paulino
+ * jurvis
+
 # 0.0.109 - 2022-07-01
 
 ## API Updates
