@@ -25,10 +25,10 @@ use chain;
 use chain::Access;
 use ln::features::{ChannelFeatures, NodeFeatures};
 use ln::msgs::{DecodeError, ErrorAction, Init, LightningError, RoutingMessageHandler, NetAddress, MAX_VALUE_MSAT};
-use ln::msgs::{ChannelAnnouncement, ChannelUpdate, NodeAnnouncement, OptionalField, GossipTimestampFilter};
+use ln::msgs::{ChannelAnnouncement, ChannelUpdate, NodeAnnouncement, GossipTimestampFilter};
 use ln::msgs::{QueryChannelRange, ReplyChannelRange, QueryShortChannelIds, ReplyShortChannelIdsEnd};
 use ln::msgs;
-use util::ser::{Readable, ReadableArgs, Writeable, Writer};
+use util::ser::{Readable, ReadableArgs, Writeable, Writer, MaybeReadable};
 use util::logger::{Logger, Level};
 use util::events::{Event, EventHandler, MessageSendEvent, MessageSendEventsProvider};
 use util::scid_utils::{block_from_scid, scid_from_parts, MAX_SCID_BLOCK};
@@ -611,7 +611,7 @@ pub struct ChannelUpdateInfo {
 	/// The minimum value, which must be relayed to the next hop via the channel
 	pub htlc_minimum_msat: u64,
 	/// The maximum value which may be relayed to the next hop via the channel.
-	pub htlc_maximum_msat: Option<u64>,
+	pub htlc_maximum_msat: u64,
 	/// Fees charged when the channel is used for routing
 	pub fees: RoutingFees,
 	/// Most recent update for the channel received from the network
@@ -628,15 +628,58 @@ impl fmt::Display for ChannelUpdateInfo {
 	}
 }
 
-impl_writeable_tlv_based!(ChannelUpdateInfo, {
-	(0, last_update, required),
-	(2, enabled, required),
-	(4, cltv_expiry_delta, required),
-	(6, htlc_minimum_msat, required),
-	(8, htlc_maximum_msat, required),
-	(10, fees, required),
-	(12, last_update_message, required),
-});
+impl Writeable for ChannelUpdateInfo {
+	fn write<W: ::util::ser::Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		write_tlv_fields!(writer, {
+			(0, self.last_update, required),
+			(2, self.enabled, required),
+			(4, self.cltv_expiry_delta, required),
+			(6, self.htlc_minimum_msat, required),
+			// Writing htlc_maximum_msat as an Option<u64> is required to maintain backwards
+			// compatibility with LDK versions prior to v0.0.110.
+			(8, Some(self.htlc_maximum_msat), required),
+			(10, self.fees, required),
+			(12, self.last_update_message, required),
+		});
+		Ok(())
+	}
+}
+
+impl Readable for ChannelUpdateInfo {
+	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
+		init_tlv_field_var!(last_update, required);
+		init_tlv_field_var!(enabled, required);
+		init_tlv_field_var!(cltv_expiry_delta, required);
+		init_tlv_field_var!(htlc_minimum_msat, required);
+		init_tlv_field_var!(htlc_maximum_msat, option);
+		init_tlv_field_var!(fees, required);
+		init_tlv_field_var!(last_update_message, required);
+
+		read_tlv_fields!(reader, {
+			(0, last_update, required),
+			(2, enabled, required),
+			(4, cltv_expiry_delta, required),
+			(6, htlc_minimum_msat, required),
+			(8, htlc_maximum_msat, required),
+			(10, fees, required),
+			(12, last_update_message, required)
+		});
+
+		if let Some(htlc_maximum_msat) = htlc_maximum_msat {
+			Ok(ChannelUpdateInfo {
+				last_update: init_tlv_based_struct_field!(last_update, required),
+				enabled: init_tlv_based_struct_field!(enabled, required),
+				cltv_expiry_delta: init_tlv_based_struct_field!(cltv_expiry_delta, required),
+				htlc_minimum_msat: init_tlv_based_struct_field!(htlc_minimum_msat, required),
+				htlc_maximum_msat,
+				fees: init_tlv_based_struct_field!(fees, required),
+				last_update_message: init_tlv_based_struct_field!(last_update_message, required),
+			})
+		} else {
+			Err(DecodeError::InvalidValue)
+		}
+	}
+}
 
 #[derive(Clone, Debug, PartialEq)]
 /// Details about a channel (both directions).
@@ -715,16 +758,73 @@ impl fmt::Display for ChannelInfo {
 	}
 }
 
-impl_writeable_tlv_based!(ChannelInfo, {
-	(0, features, required),
-	(1, announcement_received_time, (default_value, 0)),
-	(2, node_one, required),
-	(4, one_to_two, required),
-	(6, node_two, required),
-	(8, two_to_one, required),
-	(10, capacity_sats, required),
-	(12, announcement_message, required),
-});
+impl Writeable for ChannelInfo {
+	fn write<W: ::util::ser::Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		write_tlv_fields!(writer, {
+			(0, self.features, required),
+			(1, self.announcement_received_time, (default_value, 0)),
+			(2, self.node_one, required),
+			(4, self.one_to_two, required),
+			(6, self.node_two, required),
+			(8, self.two_to_one, required),
+			(10, self.capacity_sats, required),
+			(12, self.announcement_message, required),
+		});
+		Ok(())
+	}
+}
+
+// A wrapper allowing for the optional deseralization of ChannelUpdateInfo. Utilizing this is
+// necessary to maintain backwards compatibility with previous serializations of `ChannelUpdateInfo`
+// that may have no `htlc_maximum_msat` field set. In case the field is absent, we simply ignore
+// the error and continue reading the `ChannelInfo`. Hopefully, we'll then eventually receive newer
+// channel updates via the gossip network.
+struct ChannelUpdateInfoDeserWrapper(Option<ChannelUpdateInfo>);
+
+impl MaybeReadable for ChannelUpdateInfoDeserWrapper {
+	fn read<R: io::Read>(reader: &mut R) -> Result<Option<Self>, DecodeError> {
+		match ::util::ser::Readable::read(reader) {
+			Ok(channel_update_option) => Ok(Some(Self(channel_update_option))),
+			Err(DecodeError::ShortRead) => Ok(None),
+			Err(DecodeError::InvalidValue) => Ok(None),
+			Err(err) => Err(err),
+		}
+	}
+}
+
+impl Readable for ChannelInfo {
+	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
+		init_tlv_field_var!(features, required);
+		init_tlv_field_var!(announcement_received_time, (default_value, 0));
+		init_tlv_field_var!(node_one, required);
+		let mut one_to_two_wrap: Option<ChannelUpdateInfoDeserWrapper> = None;
+		init_tlv_field_var!(node_two, required);
+		let mut two_to_one_wrap: Option<ChannelUpdateInfoDeserWrapper> = None;
+		init_tlv_field_var!(capacity_sats, required);
+		init_tlv_field_var!(announcement_message, required);
+		read_tlv_fields!(reader, {
+			(0, features, required),
+			(1, announcement_received_time, (default_value, 0)),
+			(2, node_one, required),
+			(4, one_to_two_wrap, ignorable),
+			(6, node_two, required),
+			(8, two_to_one_wrap, ignorable),
+			(10, capacity_sats, required),
+			(12, announcement_message, required),
+		});
+
+		Ok(ChannelInfo {
+			features: init_tlv_based_struct_field!(features, required),
+			node_one: init_tlv_based_struct_field!(node_one, required),
+			one_to_two: one_to_two_wrap.map(|w| w.0).unwrap_or(None),
+			node_two: init_tlv_based_struct_field!(node_two, required),
+			two_to_one: two_to_one_wrap.map(|w| w.0).unwrap_or(None),
+			capacity_sats: init_tlv_based_struct_field!(capacity_sats, required),
+			announcement_message: init_tlv_based_struct_field!(announcement_message, required),
+			announcement_received_time: init_tlv_based_struct_field!(announcement_received_time, (default_value, 0)),
+		})
+	}
+}
 
 /// A wrapper around [`ChannelInfo`] representing information about the channel as directed from a
 /// source node to a target node.
@@ -739,7 +839,7 @@ pub struct DirectedChannelInfo<'a> {
 impl<'a> DirectedChannelInfo<'a> {
 	#[inline]
 	fn new(channel: &'a ChannelInfo, direction: Option<&'a ChannelUpdateInfo>) -> Self {
-		let htlc_maximum_msat = direction.and_then(|direction| direction.htlc_maximum_msat);
+		let htlc_maximum_msat = direction.map(|direction| direction.htlc_maximum_msat);
 		let capacity_msat = channel.capacity_sats.map(|capacity_sats| capacity_sats * 1000);
 
 		let (htlc_maximum_msat, effective_capacity) = match (htlc_maximum_msat, capacity_msat) {
@@ -1495,17 +1595,19 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 		match channels.get_mut(&msg.short_channel_id) {
 			None => return Err(LightningError{err: "Couldn't find channel for update".to_owned(), action: ErrorAction::IgnoreError}),
 			Some(channel) => {
-				if let OptionalField::Present(htlc_maximum_msat) = msg.htlc_maximum_msat {
-					if htlc_maximum_msat > MAX_VALUE_MSAT {
-						return Err(LightningError{err: "htlc_maximum_msat is larger than maximum possible msats".to_owned(), action: ErrorAction::IgnoreError});
-					}
+				if msg.htlc_maximum_msat > MAX_VALUE_MSAT {
+					return Err(LightningError{err:
+						"htlc_maximum_msat is larger than maximum possible msats".to_owned(),
+						action: ErrorAction::IgnoreError});
+				}
 
-					if let Some(capacity_sats) = channel.capacity_sats {
-						// It's possible channel capacity is available now, although it wasn't available at announcement (so the field is None).
-						// Don't query UTXO set here to reduce DoS risks.
-						if capacity_sats > MAX_VALUE_MSAT / 1000 || htlc_maximum_msat > capacity_sats * 1000 {
-							return Err(LightningError{err: "htlc_maximum_msat is larger than channel capacity or capacity is bogus".to_owned(), action: ErrorAction::IgnoreError});
-						}
+				if let Some(capacity_sats) = channel.capacity_sats {
+					// It's possible channel capacity is available now, although it wasn't available at announcement (so the field is None).
+					// Don't query UTXO set here to reduce DoS risks.
+					if capacity_sats > MAX_VALUE_MSAT / 1000 || msg.htlc_maximum_msat > capacity_sats * 1000 {
+						return Err(LightningError{err:
+							"htlc_maximum_msat is larger than channel capacity or capacity is bogus".to_owned(),
+							action: ErrorAction::IgnoreError});
 					}
 				}
 				macro_rules! check_update_latest {
@@ -1539,7 +1641,7 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 							last_update: msg.timestamp,
 							cltv_expiry_delta: msg.cltv_expiry_delta,
 							htlc_minimum_msat: msg.htlc_minimum_msat,
-							htlc_maximum_msat: if let OptionalField::Present(max_value) = msg.htlc_maximum_msat { Some(max_value) } else { None },
+							htlc_maximum_msat: msg.htlc_maximum_msat,
 							fees: RoutingFees {
 								base_msat: msg.fee_base_msat,
 								proportional_millionths: msg.fee_proportional_millionths,
@@ -1680,8 +1782,8 @@ mod tests {
 	use chain;
 	use ln::PaymentHash;
 	use ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
-	use routing::gossip::{P2PGossipSync, NetworkGraph, NetworkUpdate, NodeAlias, MAX_EXCESS_BYTES_FOR_RELAY};
-	use ln::msgs::{Init, OptionalField, RoutingMessageHandler, UnsignedNodeAnnouncement, NodeAnnouncement,
+	use routing::gossip::{P2PGossipSync, NetworkGraph, NetworkUpdate, NodeAlias, MAX_EXCESS_BYTES_FOR_RELAY, NodeId, RoutingFees, ChannelUpdateInfo, ChannelInfo, NodeAnnouncementInfo, NodeInfo};
+	use ln::msgs::{Init, RoutingMessageHandler, UnsignedNodeAnnouncement, NodeAnnouncement,
 		UnsignedChannelAnnouncement, ChannelAnnouncement, UnsignedChannelUpdate, ChannelUpdate,
 		ReplyChannelRange, QueryChannelRange, QueryShortChannelIds, MAX_VALUE_MSAT};
 	use util::test_utils;
@@ -1805,7 +1907,7 @@ mod tests {
 			flags: 0,
 			cltv_expiry_delta: 144,
 			htlc_minimum_msat: 1_000_000,
-			htlc_maximum_msat: OptionalField::Absent,
+			htlc_maximum_msat: 1_000_000,
 			fee_base_msat: 10_000,
 			fee_proportional_millionths: 20,
 			excess_data: Vec::new()
@@ -2026,7 +2128,7 @@ mod tests {
 		let valid_channel_update = get_signed_channel_update(|_| {}, node_1_privkey, &secp_ctx);
 		match gossip_sync.handle_channel_update(&valid_channel_update) {
 			Ok(res) => assert!(res),
-			_ => panic!()
+			_ => panic!(),
 		};
 
 		{
@@ -2059,7 +2161,7 @@ mod tests {
 		};
 
 		let valid_channel_update = get_signed_channel_update(|unsigned_channel_update| {
-			unsigned_channel_update.htlc_maximum_msat = OptionalField::Present(MAX_VALUE_MSAT + 1);
+			unsigned_channel_update.htlc_maximum_msat = MAX_VALUE_MSAT + 1;
 			unsigned_channel_update.timestamp += 110;
 		}, node_1_privkey, &secp_ctx);
 		match gossip_sync.handle_channel_update(&valid_channel_update) {
@@ -2068,7 +2170,7 @@ mod tests {
 		};
 
 		let valid_channel_update = get_signed_channel_update(|unsigned_channel_update| {
-			unsigned_channel_update.htlc_maximum_msat = OptionalField::Present(amount_sats * 1000 + 1);
+			unsigned_channel_update.htlc_maximum_msat = amount_sats * 1000 + 1;
 			unsigned_channel_update.timestamp += 110;
 		}, node_1_privkey, &secp_ctx);
 		match gossip_sync.handle_channel_update(&valid_channel_update) {

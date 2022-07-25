@@ -21,7 +21,7 @@ use routing::gossip::{NetworkUpdate, RoutingFees, NodeId};
 use routing::router::{get_route, PaymentParameters, Route, RouteHint, RouteHintHop};
 use ln::features::{InitFeatures, InvoiceFeatures, NodeFeatures};
 use ln::msgs;
-use ln::msgs::{ChannelMessageHandler, ChannelUpdate, OptionalField};
+use ln::msgs::{ChannelMessageHandler, ChannelUpdate};
 use ln::wire::Encode;
 use util::events::{Event, MessageSendEvent, MessageSendEventsProvider};
 use util::ser::{ReadableArgs, Writeable, Writer};
@@ -227,7 +227,7 @@ impl msgs::ChannelUpdate {
 				flags: 0,
 				cltv_expiry_delta: 0,
 				htlc_minimum_msat: 0,
-				htlc_maximum_msat: OptionalField::Absent,
+				htlc_maximum_msat: msgs::MAX_VALUE_MSAT,
 				fee_base_msat: 0,
 				fee_proportional_millionths: 0,
 				excess_data: vec![],

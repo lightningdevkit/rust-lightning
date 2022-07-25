@@ -28,7 +28,7 @@ use routing::gossip::NetworkGraph;
 use routing::router::{PaymentParameters, Route, RouteHop, RouteParameters, find_route, get_route};
 use ln::features::{ChannelFeatures, InitFeatures, InvoiceFeatures, NodeFeatures};
 use ln::msgs;
-use ln::msgs::{ChannelMessageHandler, RoutingMessageHandler, OptionalField, ErrorAction};
+use ln::msgs::{ChannelMessageHandler, RoutingMessageHandler, ErrorAction};
 use util::enforcing_trait_impls::EnforcingSigner;
 use util::{byte_utils, test_utils};
 use util::events::{Event, MessageSendEvent, MessageSendEventsProvider, PaymentPurpose, ClosureReason};
@@ -8308,19 +8308,19 @@ fn test_channel_update_has_correct_htlc_maximum_msat() {
 
 	// Assert that `node[0]`'s `ChannelUpdate` is capped at 50 percent of the `channel_value`, as
 	// that's the value of `node[1]`'s `holder_max_htlc_value_in_flight_msat`.
-	assert_eq!(node_0_chan_update.contents.htlc_maximum_msat, OptionalField::Present(channel_value_50_percent_msat));
+	assert_eq!(node_0_chan_update.contents.htlc_maximum_msat, channel_value_50_percent_msat);
 	// Assert that `node[1]`'s `ChannelUpdate` is capped at 30 percent of the `channel_value`, as
 	// that's the value of `node[0]`'s `holder_max_htlc_value_in_flight_msat`.
-	assert_eq!(node_1_chan_update.contents.htlc_maximum_msat, OptionalField::Present(channel_value_30_percent_msat));
+	assert_eq!(node_1_chan_update.contents.htlc_maximum_msat, channel_value_30_percent_msat);
 
 	// Assert that `node[2]`'s `ChannelUpdate` is capped at 90 percent of the `channel_value`, as
 	// the value of `node[3]`'s `holder_max_htlc_value_in_flight_msat` (100%), exceeds 90% of the
 	// `channel_value`.
-	assert_eq!(node_2_chan_update.contents.htlc_maximum_msat, OptionalField::Present(channel_value_90_percent_msat));
+	assert_eq!(node_2_chan_update.contents.htlc_maximum_msat, channel_value_90_percent_msat);
 	// Assert that `node[3]`'s `ChannelUpdate` is capped at 90 percent of the `channel_value`, as
 	// the value of `node[2]`'s `holder_max_htlc_value_in_flight_msat` (95%), exceeds 90% of the
 	// `channel_value`.
-	assert_eq!(node_3_chan_update.contents.htlc_maximum_msat, OptionalField::Present(channel_value_90_percent_msat));
+	assert_eq!(node_3_chan_update.contents.htlc_maximum_msat, channel_value_90_percent_msat);
 }
 
 #[test]

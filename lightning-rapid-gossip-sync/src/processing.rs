@@ -8,7 +8,7 @@ use bitcoin::BlockHash;
 use bitcoin::secp256k1::PublicKey;
 
 use lightning::ln::msgs::{
-	DecodeError, ErrorAction, LightningError, OptionalField, UnsignedChannelUpdate,
+	DecodeError, ErrorAction, LightningError, UnsignedChannelUpdate,
 };
 use lightning::routing::gossip::NetworkGraph;
 use lightning::util::logger::Logger;
@@ -119,12 +119,7 @@ impl<NG: Deref<Target=NetworkGraph<L>>, L: Deref> RapidGossipSync<NG, L> where L
 		let default_htlc_minimum_msat: u64 = Readable::read(&mut read_cursor)?;
 		let default_fee_base_msat: u32 = Readable::read(&mut read_cursor)?;
 		let default_fee_proportional_millionths: u32 = Readable::read(&mut read_cursor)?;
-		let tentative_default_htlc_maximum_msat: u64 = Readable::read(&mut read_cursor)?;
-		let default_htlc_maximum_msat = if tentative_default_htlc_maximum_msat == u64::max_value() {
-			OptionalField::Absent
-		} else {
-			OptionalField::Present(tentative_default_htlc_maximum_msat)
-		};
+		let default_htlc_maximum_msat: u64 = Readable::read(&mut read_cursor)?;
 
 		for _ in 0..update_count {
 			let scid_delta: BigSize = Readable::read(read_cursor)?;
@@ -147,7 +142,7 @@ impl<NG: Deref<Target=NetworkGraph<L>>, L: Deref> RapidGossipSync<NG, L> where L
 					flags: standard_channel_flags,
 					cltv_expiry_delta: default_cltv_expiry_delta,
 					htlc_minimum_msat: default_htlc_minimum_msat,
-					htlc_maximum_msat: default_htlc_maximum_msat.clone(),
+					htlc_maximum_msat: default_htlc_maximum_msat,
 					fee_base_msat: default_fee_base_msat,
 					fee_proportional_millionths: default_fee_proportional_millionths,
 					excess_data: vec![],
@@ -170,13 +165,6 @@ impl<NG: Deref<Target=NetworkGraph<L>>, L: Deref> RapidGossipSync<NG, L> where L
 						action: ErrorAction::IgnoreError,
 					})?;
 
-				let htlc_maximum_msat =
-					if let Some(htlc_maximum_msat) = directional_info.htlc_maximum_msat {
-						OptionalField::Present(htlc_maximum_msat)
-					} else {
-						OptionalField::Absent
-					};
-
 				UnsignedChannelUpdate {
 					chain_hash,
 					short_channel_id,
@@ -184,7 +172,7 @@ impl<NG: Deref<Target=NetworkGraph<L>>, L: Deref> RapidGossipSync<NG, L> where L
 					flags: standard_channel_flags,
 					cltv_expiry_delta: directional_info.cltv_expiry_delta,
 					htlc_minimum_msat: directional_info.htlc_minimum_msat,
-					htlc_maximum_msat,
+					htlc_maximum_msat: directional_info.htlc_maximum_msat,
 					fee_base_msat: directional_info.fees.base_msat,
 					fee_proportional_millionths: directional_info.fees.proportional_millionths,
 					excess_data: vec![],
@@ -212,13 +200,8 @@ impl<NG: Deref<Target=NetworkGraph<L>>, L: Deref> RapidGossipSync<NG, L> where L
 			}
 
 			if channel_flags & 0b_0000_0100 > 0 {
-				let tentative_htlc_maximum_msat: u64 = Readable::read(read_cursor)?;
-				synthetic_update.htlc_maximum_msat = if tentative_htlc_maximum_msat == u64::max_value()
-				{
-					OptionalField::Absent
-				} else {
-					OptionalField::Present(tentative_htlc_maximum_msat)
-				};
+				let htlc_maximum_msat: u64 = Readable::read(read_cursor)?;
+				synthetic_update.htlc_maximum_msat = htlc_maximum_msat;
 			}
 
 			network_graph.update_channel_unsigned(&synthetic_update)?;

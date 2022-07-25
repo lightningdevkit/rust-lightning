@@ -6572,7 +6572,7 @@ mod tests {
 	use ln::channel::{Channel, InboundHTLCOutput, OutboundHTLCOutput, InboundHTLCState, OutboundHTLCState, HTLCCandidate, HTLCInitiator};
 	use ln::channel::{MAX_FUNDING_SATOSHIS_NO_WUMBO, TOTAL_BITCOIN_SUPPLY_SATOSHIS};
 	use ln::features::{InitFeatures, ChannelTypeFeatures};
-	use ln::msgs::{ChannelUpdate, DataLossProtect, DecodeError, OptionalField, UnsignedChannelUpdate};
+	use ln::msgs::{ChannelUpdate, DataLossProtect, DecodeError, OptionalField, UnsignedChannelUpdate, MAX_VALUE_MSAT};
 	use ln::script::ShutdownScript;
 	use ln::chan_utils;
 	use ln::chan_utils::{htlc_success_tx_weight, htlc_timeout_tx_weight};
@@ -6988,7 +6988,7 @@ mod tests {
 				flags: 0,
 				cltv_expiry_delta: 100,
 				htlc_minimum_msat: 5,
-				htlc_maximum_msat: OptionalField::Absent,
+				htlc_maximum_msat: MAX_VALUE_MSAT,
 				fee_base_msat: 110,
 				fee_proportional_millionths: 11,
 				excess_data: Vec::new(),

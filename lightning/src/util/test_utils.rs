@@ -19,7 +19,6 @@ use chain::transaction::OutPoint;
 use chain::keysinterface;
 use ln::features::{ChannelFeatures, InitFeatures};
 use ln::{msgs, wire};
-use ln::msgs::OptionalField;
 use ln::script::ShutdownScript;
 use routing::scoring::FixedPenaltyScorer;
 use util::enforcing_trait_impls::{EnforcingSigner, EnforcementState};
@@ -407,7 +406,7 @@ fn get_dummy_channel_update(short_chan_id: u64) -> msgs::ChannelUpdate {
 			flags: 0,
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
-			htlc_maximum_msat: OptionalField::Absent,
+			htlc_maximum_msat: msgs::MAX_VALUE_MSAT,
 			fee_base_msat: 0,
 			fee_proportional_millionths: 0,
 			excess_data: vec![],
