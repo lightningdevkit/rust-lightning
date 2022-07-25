@@ -2952,6 +2952,142 @@ mod tests {
 		assert_eq!(format_bytes_alias(b"\xFFI <heart>\0LDK!"), "\u{FFFD}I <heart>");
 		assert_eq!(format_bytes_alias(b"\xFFI <heart>\tLDK!"), "\u{FFFD}I <heart>\u{FFFD}LDK!");
 	}
+
+	#[test]
+	fn channel_info_is_readable() {
+		let chanmon_cfgs = ::ln::functional_test_utils::create_chanmon_cfgs(2);
+		let node_cfgs = ::ln::functional_test_utils::create_node_cfgs(2, &chanmon_cfgs);
+		let node_chanmgrs = ::ln::functional_test_utils::create_node_chanmgrs(2, &node_cfgs, &[None, None, None, None]);
+		let nodes = ::ln::functional_test_utils::create_network(2, &node_cfgs, &node_chanmgrs);
+
+		// 1. Test encoding/decoding of ChannelUpdateInfo
+		let chan_update_info = ChannelUpdateInfo {
+			last_update: 23,
+			enabled: true,
+			cltv_expiry_delta: 42,
+			htlc_minimum_msat: 1234,
+			htlc_maximum_msat: 5678,
+			fees: RoutingFees { base_msat: 9, proportional_millionths: 10 },
+			last_update_message: None,
+		};
+
+		let mut encoded_chan_update_info: Vec<u8> = Vec::new();
+		assert!(chan_update_info.write(&mut encoded_chan_update_info).is_ok());
+
+		// First make sure we can read ChannelUpdateInfos we just wrote
+		let read_chan_update_info: ChannelUpdateInfo = ::util::ser::Readable::read(&mut encoded_chan_update_info.as_slice()).unwrap();
+		assert_eq!(chan_update_info, read_chan_update_info);
+
+		// Check the serialization hasn't changed.
+		let legacy_chan_update_info_with_some: Vec<u8> = hex::decode("340004000000170201010402002a060800000000000004d2080909000000000000162e0a0d0c00040000000902040000000a0c0100").unwrap();
+		assert_eq!(encoded_chan_update_info, legacy_chan_update_info_with_some);
+
+		// Check we fail if htlc_maximum_msat is not present in either the ChannelUpdateInfo itself
+		// or the ChannelUpdate enclosed with `last_update_message`.
+		let legacy_chan_update_info_with_some_and_fail_update: Vec<u8> = hex::decode("b40004000000170201010402002a060800000000000004d2080909000000000000162e0a0d0c00040000000902040000000a0c8181d977cb9b53d93a6ff64bb5f1e158b4094b66e798fb12911168a3ccdf80a83096340a6a95da0ae8d9f776528eecdbb747eb6b545495a4319ed5378e35b21e073a000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f00083a840000034d013413a70000009000000000000f42400000271000000014").unwrap();
+		let read_chan_update_info_res: Result<ChannelUpdateInfo, ::ln::msgs::DecodeError> = ::util::ser::Readable::read(&mut legacy_chan_update_info_with_some_and_fail_update.as_slice());
+		assert!(read_chan_update_info_res.is_err());
+
+		let legacy_chan_update_info_with_none: Vec<u8> = hex::decode("2c0004000000170201010402002a060800000000000004d20801000a0d0c00040000000902040000000a0c0100").unwrap();
+		let read_chan_update_info_res: Result<ChannelUpdateInfo, ::ln::msgs::DecodeError> = ::util::ser::Readable::read(&mut legacy_chan_update_info_with_none.as_slice());
+		assert!(read_chan_update_info_res.is_err());
+			
+		// 2. Test encoding/decoding of ChannelInfo
+		// Check we can encode/decode ChannelInfo without ChannelUpdateInfo fields present.
+		let chan_info_none_updates = ChannelInfo {
+			features: ChannelFeatures::known(),
+			node_one: NodeId::from_pubkey(&nodes[0].node.get_our_node_id()),
+			one_to_two: None,
+			node_two: NodeId::from_pubkey(&nodes[1].node.get_our_node_id()),
+			two_to_one: None,
+			capacity_sats: None,
+			announcement_message: None,
+			announcement_received_time: 87654,
+		};
+
+		let mut encoded_chan_info: Vec<u8> = Vec::new();
+		assert!(chan_info_none_updates.write(&mut encoded_chan_info).is_ok());
+
+		let read_chan_info: ChannelInfo = ::util::ser::Readable::read(&mut encoded_chan_info.as_slice()).unwrap();
+		assert_eq!(chan_info_none_updates, read_chan_info);
+
+		// Check we can encode/decode ChannelInfo with ChannelUpdateInfo fields present.
+		let chan_info_some_updates = ChannelInfo {
+			features: ChannelFeatures::known(),
+			node_one: NodeId::from_pubkey(&nodes[0].node.get_our_node_id()),
+			one_to_two: Some(chan_update_info.clone()),
+			node_two: NodeId::from_pubkey(&nodes[1].node.get_our_node_id()),
+			two_to_one: Some(chan_update_info.clone()),
+			capacity_sats: None,
+			announcement_message: None,
+			announcement_received_time: 87654,
+		};
+
+		let mut encoded_chan_info: Vec<u8> = Vec::new();
+		assert!(chan_info_some_updates.write(&mut encoded_chan_info).is_ok());
+
+		let read_chan_info: ChannelInfo = ::util::ser::Readable::read(&mut encoded_chan_info.as_slice()).unwrap();
+		assert_eq!(chan_info_some_updates, read_chan_info);
+
+		// Check the serialization hasn't changed.
+		let legacy_chan_info_with_some: Vec<u8> = hex::decode("ca00020000010800000000000156660221027f921585f2ac0c7c70e36110adecfd8fd14b8a99bfb3d000a283fcac358fce88043636340004000000170201010402002a060800000000000004d2080909000000000000162e0a0d0c00040000000902040000000a0c010006210355f8d2238a322d16b602bd0ceaad5b01019fb055971eaadcc9b29226a4da6c23083636340004000000170201010402002a060800000000000004d2080909000000000000162e0a0d0c00040000000902040000000a0c01000a01000c0100").unwrap();
+		assert_eq!(encoded_chan_info, legacy_chan_info_with_some);
+
+		// Check we can decode legacy ChannelInfo, even if the `two_to_one` / `one_to_two` /
+		// `last_update_message` fields fail to decode due to missing htlc_maximum_msat.
+		let legacy_chan_info_with_some_and_fail_update = hex::decode("fd01ca00020000010800000000000156660221027f921585f2ac0c7c70e36110adecfd8fd14b8a99bfb3d000a283fcac358fce8804b6b6b40004000000170201010402002a060800000000000004d2080909000000000000162e0a0d0c00040000000902040000000a0c8181d977cb9b53d93a6ff64bb5f1e158b4094b66e798fb12911168a3ccdf80a83096340a6a95da0ae8d9f776528eecdbb747eb6b545495a4319ed5378e35b21e073a000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f00083a840000034d013413a70000009000000000000f4240000027100000001406210355f8d2238a322d16b602bd0ceaad5b01019fb055971eaadcc9b29226a4da6c2308b6b6b40004000000170201010402002a060800000000000004d2080909000000000000162e0a0d0c00040000000902040000000a0c8181d977cb9b53d93a6ff64bb5f1e158b4094b66e798fb12911168a3ccdf80a83096340a6a95da0ae8d9f776528eecdbb747eb6b545495a4319ed5378e35b21e073a000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f00083a840000034d013413a70000009000000000000f424000002710000000140a01000c0100").unwrap();
+		let read_chan_info: ChannelInfo = ::util::ser::Readable::read(&mut legacy_chan_info_with_some_and_fail_update.as_slice()).unwrap();
+		assert_eq!(read_chan_info.announcement_received_time, 87654);
+		assert_eq!(read_chan_info.one_to_two, None);
+		assert_eq!(read_chan_info.two_to_one, None);
+
+		let legacy_chan_info_with_none: Vec<u8> = hex::decode("ba00020000010800000000000156660221027f921585f2ac0c7c70e36110adecfd8fd14b8a99bfb3d000a283fcac358fce88042e2e2c0004000000170201010402002a060800000000000004d20801000a0d0c00040000000902040000000a0c010006210355f8d2238a322d16b602bd0ceaad5b01019fb055971eaadcc9b29226a4da6c23082e2e2c0004000000170201010402002a060800000000000004d20801000a0d0c00040000000902040000000a0c01000a01000c0100").unwrap();
+		let read_chan_info: ChannelInfo = ::util::ser::Readable::read(&mut legacy_chan_info_with_none.as_slice()).unwrap();
+		assert_eq!(read_chan_info.announcement_received_time, 87654);
+		assert_eq!(read_chan_info.one_to_two, None);
+		assert_eq!(read_chan_info.two_to_one, None);
+	}
+
+	#[test]
+	fn node_info_is_readable() {
+		use std::convert::TryFrom;
+
+		// 1. Check we can read a valid NodeAnnouncementInfo and fail on an invalid one
+		let valid_netaddr = ::ln::msgs::NetAddress::Hostname { hostname: ::util::ser::Hostname::try_from("A".to_string()).unwrap(), port: 1234 };
+		let valid_node_ann_info = NodeAnnouncementInfo {
+			features: NodeFeatures::known(),
+			last_update: 0,
+			rgb: [0u8; 3],
+			alias: NodeAlias([0u8; 32]),
+			addresses: vec![valid_netaddr],
+			announcement_message: None,
+		};
+
+		let mut encoded_valid_node_ann_info = Vec::new();
+		assert!(valid_node_ann_info.write(&mut encoded_valid_node_ann_info).is_ok());
+		let read_valid_node_ann_info: NodeAnnouncementInfo = ::util::ser::Readable::read(&mut encoded_valid_node_ann_info.as_slice()).unwrap();
+		assert_eq!(read_valid_node_ann_info, valid_node_ann_info);
+
+		let encoded_invalid_node_ann_info = hex::decode("3f0009000788a000080a51a20204000000000403000000062000000000000000000000000000000000000000000000000000000000000000000a0505014004d2").unwrap();
+		let read_invalid_node_ann_info_res: Result<NodeAnnouncementInfo, ::ln::msgs::DecodeError> = ::util::ser::Readable::read(&mut encoded_invalid_node_ann_info.as_slice());
+		assert!(read_invalid_node_ann_info_res.is_err());
+
+		// 2. Check we can read a NodeInfo anyways, but set the NodeAnnouncementInfo to None if invalid
+		let valid_node_info = NodeInfo {
+			channels: Vec::new(),
+			lowest_inbound_channel_fees: None,
+			announcement_info: Some(valid_node_ann_info),
+		};
+
+		let mut encoded_valid_node_info = Vec::new();
+		assert!(valid_node_info.write(&mut encoded_valid_node_info).is_ok());
+		let read_valid_node_info: NodeInfo = ::util::ser::Readable::read(&mut encoded_valid_node_info.as_slice()).unwrap();
+		assert_eq!(read_valid_node_info, valid_node_info);
+
+		let encoded_invalid_node_info_hex = hex::decode("4402403f0009000788a000080a51a20204000000000403000000062000000000000000000000000000000000000000000000000000000000000000000a0505014004d20400").unwrap();
+		let read_invalid_node_info: NodeInfo = ::util::ser::Readable::read(&mut encoded_invalid_node_info_hex.as_slice()).unwrap();
+		assert_eq!(read_invalid_node_info.announcement_info, None);
+	}
 }
 
 #[cfg(all(test, feature = "_bench_unstable"))]
