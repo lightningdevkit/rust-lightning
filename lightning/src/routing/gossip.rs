@@ -34,6 +34,7 @@ use util::events::{Event, EventHandler, MessageSendEvent, MessageSendEventsProvi
 use util::scid_utils::{block_from_scid, scid_from_parts, MAX_SCID_BLOCK};
 
 use io;
+use io_extras::{copy, sink};
 use prelude::*;
 use alloc::collections::{BTreeMap, btree_map::Entry as BtreeEntry};
 use core::{cmp, fmt};
@@ -1089,11 +1090,54 @@ impl fmt::Display for NodeInfo {
 	}
 }
 
-impl_writeable_tlv_based!(NodeInfo, {
-	(0, lowest_inbound_channel_fees, option),
-	(2, announcement_info, option),
-	(4, channels, vec_type),
-});
+impl Writeable for NodeInfo {
+	fn write<W: ::util::ser::Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		write_tlv_fields!(writer, {
+			(0, self.lowest_inbound_channel_fees, option),
+			(2, self.announcement_info, option),
+			(4, self.channels, vec_type),
+		});
+		Ok(())
+	}
+}
+
+// A wrapper allowing for the optional deseralization of `NodeAnnouncementInfo`. Utilizing this is
+// necessary to maintain compatibility with previous serializations of `NetAddress` that have an
+// invalid hostname set. We ignore and eat all errors until we are either able to read a
+// `NodeAnnouncementInfo` or hit a `ShortRead`, i.e., read the TLV field to the end.
+struct NodeAnnouncementInfoDeserWrapper(NodeAnnouncementInfo);
+
+impl MaybeReadable for NodeAnnouncementInfoDeserWrapper {
+	fn read<R: io::Read>(reader: &mut R) -> Result<Option<Self>, DecodeError> {
+		match ::util::ser::Readable::read(reader) {
+			Ok(node_announcement_info) => return Ok(Some(Self(node_announcement_info))),
+			Err(_) => {
+				copy(reader, &mut sink()).unwrap();
+				return Ok(None)
+			},
+		};
+	}
+}
+
+impl Readable for NodeInfo {
+	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
+		init_tlv_field_var!(lowest_inbound_channel_fees, option);
+		let mut announcement_info_wrap: Option<NodeAnnouncementInfoDeserWrapper> = None;
+		init_tlv_field_var!(channels, vec_type);
+
+		read_tlv_fields!(reader, {
+			(0, lowest_inbound_channel_fees, option),
+			(2, announcement_info_wrap, ignorable),
+			(4, channels, vec_type),
+		});
+
+		Ok(NodeInfo {
+			lowest_inbound_channel_fees: init_tlv_based_struct_field!(lowest_inbound_channel_fees, option),
+			announcement_info: announcement_info_wrap.map(|w| w.0),
+			channels: init_tlv_based_struct_field!(channels, vec_type),
+		})
+	}
+}
 
 const SERIALIZATION_VERSION: u8 = 1;
 const MIN_SERIALIZATION_VERSION: u8 = 1;
