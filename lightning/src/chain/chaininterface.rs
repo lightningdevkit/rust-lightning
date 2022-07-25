@@ -72,7 +72,7 @@ impl<F: Deref> LowerBoundedFeeEstimator<F> where F::Target: FeeEstimator {
 		LowerBoundedFeeEstimator(fee_estimator)
 	}
 
-	pub fn get_est_sat_per_1000_weight(&self, confirmation_target: ConfirmationTarget) -> u32 {
+	pub fn bounded_sat_per_1000_weight(&self, confirmation_target: ConfirmationTarget) -> u32 {
 		cmp::max(
 			self.0.get_est_sat_per_1000_weight(confirmation_target),
 			FEERATE_FLOOR_SATS_PER_KW,
@@ -100,7 +100,7 @@ mod tests {
 		let test_fee_estimator = &TestFeeEstimator { sat_per_kw };
 		let fee_estimator = LowerBoundedFeeEstimator::new(test_fee_estimator);
 
-		assert_eq!(fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Background), FEERATE_FLOOR_SATS_PER_KW);
+		assert_eq!(fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::Background), FEERATE_FLOOR_SATS_PER_KW);
 	}
 
 	#[test]
@@ -109,6 +109,6 @@ mod tests {
 		let test_fee_estimator = &TestFeeEstimator { sat_per_kw };
 		let fee_estimator = LowerBoundedFeeEstimator::new(test_fee_estimator);
 
-		assert_eq!(fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Background), sat_per_kw);
+		assert_eq!(fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::Background), sat_per_kw);
 	}
 }

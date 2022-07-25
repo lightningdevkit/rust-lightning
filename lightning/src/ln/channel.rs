@@ -917,7 +917,7 @@ impl<Signer: Sign> Channel<Signer> {
 			return Err(APIError::APIMisuseError { err: format!("Holder selected channel  reserve below implemention limit dust_limit_satoshis {}", holder_selected_channel_reserve_satoshis) });
 		}
 
-		let feerate = fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Normal);
+		let feerate = fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::Normal);
 
 		let value_to_self_msat = channel_value_satoshis * 1000 - push_msat;
 		let commitment_tx_fee = Self::commit_tx_fee_msat(feerate, MIN_AFFORDABLE_HTLC_COUNT, opt_anchors);
@@ -1064,11 +1064,11 @@ impl<Signer: Sign> Channel<Signer> {
 		// We generally don't care too much if they set the feerate to something very high, but it
 		// could result in the channel being useless due to everything being dust.
 		let upper_limit = cmp::max(250 * 25,
-			fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::HighPriority) as u64 * 10);
+			fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::HighPriority) as u64 * 10);
 		if feerate_per_kw as u64 > upper_limit {
 			return Err(ChannelError::Close(format!("Peer's feerate much too high. Actual: {}. Our expected upper limit: {}", feerate_per_kw, upper_limit)));
 		}
-		let lower_limit = fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Background);
+		let lower_limit = fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::Background);
 		// Some fee estimators round up to the next full sat/vbyte (ie 250 sats per kw), causing
 		// occasional issues with feerate disagreements between an initiator that wants a feerate
 		// of 1.1 sat/vbyte and a receiver that wants 1.1 rounded up to 2. Thus, we always add 250
@@ -4022,8 +4022,8 @@ impl<Signer: Sign> Channel<Signer> {
 		// Propose a range from our current Background feerate to our Normal feerate plus our
 		// force_close_avoidance_max_fee_satoshis.
 		// If we fail to come to consensus, we'll have to force-close.
-		let mut proposed_feerate = fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Background);
-		let normal_feerate = fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Normal);
+		let mut proposed_feerate = fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::Background);
+		let normal_feerate = fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::Normal);
 		let mut proposed_max_feerate = if self.is_outbound() { normal_feerate } else { u32::max_value() };
 
 		// The spec requires that (when the channel does not have anchors) we only send absolute
