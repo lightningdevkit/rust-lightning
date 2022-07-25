@@ -52,14 +52,6 @@ pub trait FeeEstimator {
 	fn get_est_sat_per_1000_weight(&self, confirmation_target: ConfirmationTarget) -> u32;
 }
 
-// We need `FeeEstimator` implemented so that in some places where we only have a shared
-// reference to a `Deref` to a `FeeEstimator`, we can still wrap it.
-impl<D: Deref> FeeEstimator for D where D::Target: FeeEstimator {
-	fn get_est_sat_per_1000_weight(&self, confirmation_target: ConfirmationTarget) -> u32 {
-		(**self).get_est_sat_per_1000_weight(confirmation_target)
-	}
-}
-
 /// Minimum relay fee as required by bitcoin network mempool policy.
 pub const MIN_RELAY_FEE_SAT_PER_1000_WEIGHT: u64 = 4000;
 /// Minimum feerate that takes a sane approach to bitcoind weight-to-vbytes rounding.
@@ -68,7 +60,10 @@ pub const MIN_RELAY_FEE_SAT_PER_1000_WEIGHT: u64 = 4000;
 pub const FEERATE_FLOOR_SATS_PER_KW: u32 = 253;
 
 /// Wraps a `Deref` to a `FeeEstimator` so that any fee estimations provided by it
-/// are bounded below by `FEERATE_FLOOR_SATS_PER_KW` (253 sats/KW)
+/// are bounded below by `FEERATE_FLOOR_SATS_PER_KW` (253 sats/KW).
+///
+/// Note that this does *not* implement [`FeeEstimator`] to make it harder to accidentally mix the
+/// two.
 pub(crate) struct LowerBoundedFeeEstimator<F: Deref>(pub F) where F::Target: FeeEstimator;
 
 impl<F: Deref> LowerBoundedFeeEstimator<F> where F::Target: FeeEstimator {
@@ -76,10 +71,8 @@ impl<F: Deref> LowerBoundedFeeEstimator<F> where F::Target: FeeEstimator {
 	pub fn new(fee_estimator: F) -> Self {
 		LowerBoundedFeeEstimator(fee_estimator)
 	}
-}
 
-impl<F: Deref> FeeEstimator for LowerBoundedFeeEstimator<F> where F::Target: FeeEstimator {
-	fn get_est_sat_per_1000_weight(&self, confirmation_target: ConfirmationTarget) -> u32 {
+	pub fn bounded_sat_per_1000_weight(&self, confirmation_target: ConfirmationTarget) -> u32 {
 		cmp::max(
 			self.0.get_est_sat_per_1000_weight(confirmation_target),
 			FEERATE_FLOOR_SATS_PER_KW,
@@ -107,7 +100,7 @@ mod tests {
 		let test_fee_estimator = &TestFeeEstimator { sat_per_kw };
 		let fee_estimator = LowerBoundedFeeEstimator::new(test_fee_estimator);
 
-		assert_eq!(fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Background), FEERATE_FLOOR_SATS_PER_KW);
+		assert_eq!(fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::Background), FEERATE_FLOOR_SATS_PER_KW);
 	}
 
 	#[test]
@@ -116,6 +109,6 @@ mod tests {
 		let test_fee_estimator = &TestFeeEstimator { sat_per_kw };
 		let fee_estimator = LowerBoundedFeeEstimator::new(test_fee_estimator);
 
-		assert_eq!(fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Background), sat_per_kw);
+		assert_eq!(fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::Background), sat_per_kw);
 	}
 }

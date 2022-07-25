@@ -1139,7 +1139,7 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 		&self,
 		updates: &ChannelMonitorUpdate,
 		broadcaster: &B,
-		fee_estimator: &F,
+		fee_estimator: F,
 		logger: &L,
 	) -> Result<(), ()>
 	where
@@ -1949,10 +1949,10 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		self.pending_monitor_events.push(MonitorEvent::CommitmentTxConfirmed(self.funding_info.0));
 	}
 
-	pub fn update_monitor<B: Deref, F: Deref, L: Deref>(&mut self, updates: &ChannelMonitorUpdate, broadcaster: &B, fee_estimator: &F, logger: &L) -> Result<(), ()>
+	pub fn update_monitor<B: Deref, F: Deref, L: Deref>(&mut self, updates: &ChannelMonitorUpdate, broadcaster: &B, fee_estimator: F, logger: &L) -> Result<(), ()>
 	where B::Target: BroadcasterInterface,
-		    F::Target: FeeEstimator,
-		    L::Target: Logger,
+		F::Target: FeeEstimator,
+		L::Target: Logger,
 	{
 		log_info!(logger, "Applying update to monitor {}, bringing update_id from {} to {} with {} changes.",
 			log_funding_info!(self), self.latest_update_id, updates.update_id, updates.updates.len());
@@ -1990,7 +1990,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 				},
 				ChannelMonitorUpdateStep::PaymentPreimage { payment_preimage } => {
 					log_trace!(logger, "Updating ChannelMonitor with payment preimage");
-					let bounded_fee_estimator = LowerBoundedFeeEstimator::new(fee_estimator);
+					let bounded_fee_estimator = LowerBoundedFeeEstimator::new(&*fee_estimator);
 					self.provide_payment_preimage(&PaymentHash(Sha256::hash(&payment_preimage.0[..]).into_inner()), &payment_preimage, broadcaster, &bounded_fee_estimator, logger)
 				},
 				ChannelMonitorUpdateStep::CommitmentSecret { idx, secret } => {
@@ -3537,7 +3537,7 @@ mod tests {
 
 		let broadcaster = TestBroadcaster::new(Arc::clone(&nodes[1].blocks));
 		assert!(
-			pre_update_monitor.update_monitor(&replay_update, &&broadcaster, &&chanmon_cfgs[1].fee_estimator, &nodes[1].logger)
+			pre_update_monitor.update_monitor(&replay_update, &&broadcaster, &chanmon_cfgs[1].fee_estimator, &nodes[1].logger)
 			.is_err());
 		// Even though we error'd on the first update, we should still have generated an HTLC claim
 		// transaction

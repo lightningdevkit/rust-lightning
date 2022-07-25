@@ -778,13 +778,13 @@ fn compute_fee_from_spent_amounts<F: Deref, L: Deref>(input_amounts: u64, predic
 	where F::Target: FeeEstimator,
 	      L::Target: Logger,
 {
-	let mut updated_feerate = fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::HighPriority) as u64;
+	let mut updated_feerate = fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::HighPriority) as u64;
 	let mut fee = updated_feerate * (predicted_weight as u64) / 1000;
 	if input_amounts <= fee {
-		updated_feerate = fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Normal) as u64;
+		updated_feerate = fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::Normal) as u64;
 		fee = updated_feerate * (predicted_weight as u64) / 1000;
 		if input_amounts <= fee {
-			updated_feerate = fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::Background) as u64;
+			updated_feerate = fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::Background) as u64;
 			fee = updated_feerate * (predicted_weight as u64) / 1000;
 			if input_amounts <= fee {
 				log_error!(logger, "Failed to generate an on-chain punishment tx as even low priority fee ({} sat) was more than the entire claim balance ({} sat)",
