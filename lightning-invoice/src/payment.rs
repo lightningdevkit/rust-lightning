@@ -1437,8 +1437,6 @@ mod tests {
 	enum TestResult {
 		PaymentFailure { path: Vec<RouteHop>, short_channel_id: u64 },
 		PaymentSuccess { path: Vec<RouteHop> },
-		ProbeFailure { path: Vec<RouteHop>, short_channel_id: u64 },
-		ProbeSuccess { path: Vec<RouteHop> },
 	}
 
 	impl TestScorer {
@@ -1474,12 +1472,6 @@ mod tests {
 					Some(TestResult::PaymentSuccess { path }) => {
 						panic!("Unexpected successful payment path: {:?}", path)
 					},
-					Some(TestResult::ProbeFailure { path, .. }) => {
-						panic!("Unexpected failed payment probe: {:?}", path)
-					},
-					Some(TestResult::ProbeSuccess { path }) => {
-						panic!("Unexpected successful payment probe: {:?}", path)
-					},
 					None => panic!("Unexpected payment_path_failed call: {:?}", actual_path),
 				}
 			}
@@ -1494,18 +1486,12 @@ mod tests {
 					Some(TestResult::PaymentSuccess { path }) => {
 						assert_eq!(actual_path, &path.iter().collect::<Vec<_>>()[..]);
 					},
-					Some(TestResult::ProbeFailure { path, .. }) => {
-						panic!("Unexpected failed payment probe: {:?}", path)
-					},
-					Some(TestResult::ProbeSuccess { path }) => {
-						panic!("Unexpected successful payment probe: {:?}", path)
-					},
 					None => panic!("Unexpected payment_path_successful call: {:?}", actual_path),
 				}
 			}
 		}
 
-		fn probe_failed(&mut self, actual_path: &[&RouteHop], actual_short_channel_id: u64) {
+		fn probe_failed(&mut self, actual_path: &[&RouteHop], _: u64) {
 			if let Some(expectations) = &mut self.expectations {
 				match expectations.pop_front() {
 					Some(TestResult::PaymentFailure { path, .. }) => {
@@ -1513,13 +1499,6 @@ mod tests {
 					},
 					Some(TestResult::PaymentSuccess { path }) => {
 						panic!("Unexpected successful payment path: {:?}", path)
-					},
-					Some(TestResult::ProbeFailure { path, short_channel_id }) => {
-						assert_eq!(actual_path, &path.iter().collect::<Vec<_>>()[..]);
-						assert_eq!(actual_short_channel_id, short_channel_id);
-					},
-					Some(TestResult::ProbeSuccess { path }) => {
-						panic!("Unexpected successful payment probe: {:?}", path)
 					},
 					None => panic!("Unexpected payment_path_failed call: {:?}", actual_path),
 				}
@@ -1533,12 +1512,6 @@ mod tests {
 					},
 					Some(TestResult::PaymentSuccess { path }) => {
 						panic!("Unexpected successful payment path: {:?}", path)
-					},
-					Some(TestResult::ProbeFailure { path, .. }) => {
-						panic!("Unexpected failed payment probe: {:?}", path)
-					},
-					Some(TestResult::ProbeSuccess { path }) => {
-						assert_eq!(actual_path, &path.iter().collect::<Vec<_>>()[..]);
 					},
 					None => panic!("Unexpected payment_path_successful call: {:?}", actual_path),
 				}
