@@ -68,7 +68,8 @@ struct LockMetadata {
 
 struct LockDep {
 	lock: Arc<LockMetadata>,
-	lockdep_trace: Backtrace,
+	/// lockdep_trace is unused unless we're building with `backtrace`, so we mark it _
+	_lockdep_trace: Backtrace,
 }
 
 #[cfg(feature = "backtrace")]
@@ -140,13 +141,13 @@ impl LockMetadata {
 					// of the same lock.
 					debug_assert!(cfg!(feature = "backtrace"), "Tried to acquire a lock while it was held!");
 				}
-				for (locked_dep_idx, locked_dep) in locked.locked_before.lock().unwrap().iter() {
+				for (locked_dep_idx, _locked_dep) in locked.locked_before.lock().unwrap().iter() {
 					if *locked_dep_idx == this.lock_idx && *locked_dep_idx != locked.lock_idx {
 						#[cfg(feature = "backtrace")]
 						panic!("Tried to violate existing lockorder.\nMutex that should be locked after the current lock was created at the following backtrace.\nNote that to get a backtrace for the lockorder violation, you should set RUST_BACKTRACE=1\nLock being taken constructed at: {} ({}):\n{:?}\nLock constructed at: {} ({})\n{:?}\n\nLock dep created at:\n{:?}\n\n",
 							get_construction_location(&this._lock_construction_bt), this.lock_idx, this._lock_construction_bt,
 							get_construction_location(&locked._lock_construction_bt), locked.lock_idx, locked._lock_construction_bt,
-							locked_dep.lockdep_trace);
+							_locked_dep._lockdep_trace);
 						#[cfg(not(feature = "backtrace"))]
 						panic!("Tried to violate existing lockorder. Build with the backtrace feature for more info.");
 					}
@@ -154,7 +155,7 @@ impl LockMetadata {
 				// Insert any already-held locks in our locked-before set.
 				let mut locked_before = this.locked_before.lock().unwrap();
 				if !locked_before.contains_key(&locked.lock_idx) {
-					let lockdep = LockDep { lock: Arc::clone(locked), lockdep_trace: Backtrace::new() };
+					let lockdep = LockDep { lock: Arc::clone(locked), _lockdep_trace: Backtrace::new() };
 					locked_before.insert(lockdep.lock.lock_idx, lockdep);
 				}
 			}
@@ -175,7 +176,7 @@ impl LockMetadata {
 			let mut locked_before = this.locked_before.lock().unwrap();
 			for (locked_idx, locked) in held.borrow().iter() {
 				if !locked_before.contains_key(locked_idx) {
-					let lockdep = LockDep { lock: Arc::clone(locked), lockdep_trace: Backtrace::new() };
+					let lockdep = LockDep { lock: Arc::clone(locked), _lockdep_trace: Backtrace::new() };
 					locked_before.insert(*locked_idx, lockdep);
 				}
 			}
