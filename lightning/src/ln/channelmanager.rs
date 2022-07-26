@@ -3794,7 +3794,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		if let Ok(upd) = self.get_channel_update_for_onion(scid, chan) {
 			let mut enc = VecWriter(Vec::with_capacity(upd.serialized_length() + 6));
 			if desired_err_code == 0x1000 | 20 {
-				// TODO: underspecified, follow https://github.com/lightning/bolts/issues/791
+				// No flags for `disabled_flags` are currently defined so they're always two zero bytes.
+				// See https://github.com/lightning/bolts/blob/341ec84/04-onion-routing.md?plain=1#L1008
 				0u16.write(&mut enc).expect("Writes cannot fail");
 			}
 			(upd.serialized_length() as u16 + 2).write(&mut enc).expect("Writes cannot fail");
