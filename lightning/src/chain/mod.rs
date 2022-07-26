@@ -15,6 +15,7 @@ use bitcoin::blockdata::script::Script;
 use bitcoin::blockdata::transaction::{Transaction, TxOut};
 use bitcoin::hash_types::{BlockHash, Txid};
 use bitcoin::network::constants::Network;
+use bitcoin::secp256k1::PublicKey;
 
 use chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, MonitorEvent};
 use chain::keysinterface::Sign;
@@ -302,7 +303,7 @@ pub trait Watch<ChannelSigner: Sign> {
 	///
 	/// For details on asynchronous [`ChannelMonitor`] updating and returning
 	/// [`MonitorEvent::UpdateCompleted`] here, see [`ChannelMonitorUpdateErr::TemporaryFailure`].
-	fn release_pending_monitor_events(&self) -> Vec<(OutPoint, Vec<MonitorEvent>)>;
+	fn release_pending_monitor_events(&self) -> Vec<(OutPoint, Vec<MonitorEvent>, Option<PublicKey>)>;
 }
 
 /// The `Filter` trait defines behavior for indicating chain activity of interest pertaining to

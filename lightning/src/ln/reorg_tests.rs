@@ -16,7 +16,7 @@ use ln::channelmanager::{ChannelManager, ChannelManagerReadArgs};
 use ln::features::InitFeatures;
 use ln::msgs::ChannelMessageHandler;
 use util::enforcing_trait_impls::EnforcingSigner;
-use util::events::{Event, MessageSendEvent, MessageSendEventsProvider, ClosureReason};
+use util::events::{Event, MessageSendEvent, MessageSendEventsProvider, ClosureReason, HTLCDestination};
 use util::test_utils;
 use util::ser::{ReadableArgs, Writeable};
 
@@ -147,7 +147,7 @@ fn do_test_onchain_htlc_reorg(local_commitment: bool, claim: bool) {
 			txdata: vec![],
 		};
 		connect_block(&nodes[1], &block);
-		expect_pending_htlcs_forwardable!(nodes[1]);
+		expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[1], vec![HTLCDestination::NextHopChannel { node_id: Some(nodes[2].node.get_our_node_id()), channel_id: chan_2.2 }]);
 	}
 
 	check_added_monitors!(nodes[1], 1);

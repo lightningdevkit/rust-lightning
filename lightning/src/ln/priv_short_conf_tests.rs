@@ -22,7 +22,7 @@ use ln::msgs;
 use ln::msgs::{ChannelMessageHandler, RoutingMessageHandler, ChannelUpdate, ErrorAction};
 use ln::wire::Encode;
 use util::enforcing_trait_impls::EnforcingSigner;
-use util::events::{ClosureReason, Event, MessageSendEvent, MessageSendEventsProvider};
+use util::events::{ClosureReason, Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider};
 use util::config::UserConfig;
 use util::ser::{Writeable, ReadableArgs};
 use util::test_utils;
@@ -478,7 +478,7 @@ fn test_scid_alias_returned() {
 	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
 	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 10_000_000, 0, InitFeatures::known(), InitFeatures::known());
-	create_unannounced_chan_between_nodes_with_value(&nodes, 1, 2, 10_000, 0, InitFeatures::known(), InitFeatures::known());
+	let chan = create_unannounced_chan_between_nodes_with_value(&nodes, 1, 2, 10_000, 0, InitFeatures::known(), InitFeatures::known());
 
 	let last_hop = nodes[2].node.list_usable_channels();
 	let mut hop_hints = vec![RouteHint(vec![RouteHintHop {
@@ -508,7 +508,7 @@ fn test_scid_alias_returned() {
 	commitment_signed_dance!(nodes[1], nodes[0], &as_updates.commitment_signed, false, true);
 
 	expect_pending_htlcs_forwardable!(nodes[1]);
-	expect_pending_htlcs_forwardable!(nodes[1]);
+	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[1], vec![HTLCDestination::NextHopChannel { node_id: Some(nodes[2].node.get_our_node_id()), channel_id: chan.0.channel_id }]);
 	check_added_monitors!(nodes[1], 1);
 
 	let bs_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());

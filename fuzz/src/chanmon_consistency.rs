@@ -148,7 +148,7 @@ impl chain::Watch<EnforcingSigner> for TestChainMonitor {
 		self.chain_monitor.update_channel(funding_txo, update)
 	}
 
-	fn release_pending_monitor_events(&self) -> Vec<(OutPoint, Vec<MonitorEvent>)> {
+	fn release_pending_monitor_events(&self) -> Vec<(OutPoint, Vec<MonitorEvent>, Option<PublicKey>)> {
 		return self.chain_monitor.release_pending_monitor_events();
 	}
 }
@@ -860,6 +860,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 						events::Event::PendingHTLCsForwardable { .. } => {
 							nodes[$node].process_pending_htlc_forwards();
 						},
+						events::Event::HTLCHandlingFailed { .. } => {},
 						_ => if out.may_fail.load(atomic::Ordering::Acquire) {
 							return;
 						} else {

@@ -23,7 +23,7 @@ use ln::features::{InitFeatures, InvoiceFeatures, NodeFeatures};
 use ln::msgs;
 use ln::msgs::{ChannelMessageHandler, ChannelUpdate};
 use ln::wire::Encode;
-use util::events::{Event, MessageSendEvent, MessageSendEventsProvider};
+use util::events::{Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider};
 use util::ser::{ReadableArgs, Writeable, Writer};
 use util::{byte_utils, test_utils};
 use util::config::{UserConfig, ChannelConfig};
@@ -126,7 +126,7 @@ fn run_onion_failure_test_with_fail_intercept<F1,F2,F3>(_name: &str, test_case: 
 				expect_htlc_forward!(&nodes[2]);
 				expect_event!(&nodes[2], Event::PaymentReceived);
 				callback_node();
-				expect_pending_htlcs_forwardable!(nodes[2]);
+				expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[2], vec![HTLCDestination::FailedPayment { payment_hash: payment_hash.clone() }]);
 			}
 
 			let update_2_1 = get_htlc_update_msgs!(nodes[2], nodes[1].node.get_our_node_id());
@@ -1036,7 +1036,7 @@ fn test_phantom_onion_hmac_failure() {
 	};
 	expect_pending_htlcs_forwardable_ignore!(nodes[1]);
 	nodes[1].node.process_pending_htlc_forwards();
-	expect_pending_htlcs_forwardable_ignore!(nodes[1]);
+	expect_pending_htlcs_forwardable_and_htlc_handling_failed_ignore!(nodes[1], vec![HTLCDestination::FailedPayment { payment_hash }]);
 	nodes[1].node.process_pending_htlc_forwards();
 	let update_1 = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 	check_added_monitors!(&nodes[1], 1);
@@ -1108,7 +1108,7 @@ fn test_phantom_invalid_onion_payload() {
 	}
 	expect_pending_htlcs_forwardable_ignore!(nodes[1]);
 	nodes[1].node.process_pending_htlc_forwards();
-	expect_pending_htlcs_forwardable_ignore!(nodes[1]);
+	expect_pending_htlcs_forwardable_and_htlc_handling_failed_ignore!(nodes[1], vec![HTLCDestination::FailedPayment { payment_hash }]);
 	nodes[1].node.process_pending_htlc_forwards();
 	let update_1 = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 	check_added_monitors!(&nodes[1], 1);
@@ -1164,7 +1164,7 @@ fn test_phantom_final_incorrect_cltv_expiry() {
 	}
 	expect_pending_htlcs_forwardable_ignore!(nodes[1]);
 	nodes[1].node.process_pending_htlc_forwards();
-	expect_pending_htlcs_forwardable_ignore!(nodes[1]);
+	expect_pending_htlcs_forwardable_and_htlc_handling_failed_ignore!(nodes[1], vec![HTLCDestination::FailedPayment { payment_hash }]);
 	nodes[1].node.process_pending_htlc_forwards();
 	let update_1 = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 	check_added_monitors!(&nodes[1], 1);
@@ -1210,7 +1210,7 @@ fn test_phantom_failure_too_low_cltv() {
 
 	expect_pending_htlcs_forwardable_ignore!(nodes[1]);
 	nodes[1].node.process_pending_htlc_forwards();
-	expect_pending_htlcs_forwardable_ignore!(nodes[1]);
+	expect_pending_htlcs_forwardable_and_htlc_handling_failed_ignore!(nodes[1], vec![HTLCDestination::FailedPayment { payment_hash }]);
 	nodes[1].node.process_pending_htlc_forwards();
 	let update_1 = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 	check_added_monitors!(&nodes[1], 1);
@@ -1255,7 +1255,7 @@ fn test_phantom_failure_too_low_recv_amt() {
 	nodes[1].node.process_pending_htlc_forwards();
 	expect_pending_htlcs_forwardable_ignore!(nodes[1]);
 	nodes[1].node.process_pending_htlc_forwards();
-	expect_pending_htlcs_forwardable_ignore!(nodes[1]);
+	expect_pending_htlcs_forwardable_and_htlc_handling_failed_ignore!(nodes[1], vec![HTLCDestination::FailedPayment { payment_hash: payment_hash.clone() }]);
 	nodes[1].node.process_pending_htlc_forwards();
 	let update_1 = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 	check_added_monitors!(&nodes[1], 1);
@@ -1352,7 +1352,7 @@ fn test_phantom_failure_reject_payment() {
 	nodes[1].node.process_pending_htlc_forwards();
 	expect_payment_received!(nodes[1], payment_hash, payment_secret, recv_amt_msat);
 	nodes[1].node.fail_htlc_backwards(&payment_hash);
-	expect_pending_htlcs_forwardable_ignore!(nodes[1]);
+	expect_pending_htlcs_forwardable_and_htlc_handling_failed_ignore!(nodes[1], vec![HTLCDestination::FailedPayment { payment_hash }]);
 	nodes[1].node.process_pending_htlc_forwards();
 
 	let update_1 = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());

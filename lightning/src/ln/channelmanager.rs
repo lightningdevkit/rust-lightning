@@ -52,7 +52,7 @@ use ln::msgs::{ChannelMessageHandler, DecodeError, LightningError, MAX_VALUE_MSA
 use ln::wire::Encode;
 use chain::keysinterface::{Sign, KeysInterface, KeysManager, InMemorySigner, Recipient};
 use util::config::{UserConfig, ChannelConfig};
-use util::events::{EventHandler, EventsProvider, MessageSendEvent, MessageSendEventsProvider, ClosureReason};
+use util::events::{EventHandler, EventsProvider, MessageSendEvent, MessageSendEventsProvider, ClosureReason, HTLCDestination};
 use util::{byte_utils, events};
 use util::scid_utils::fake_scid;
 use util::ser::{BigSize, FixedLengthReader, Readable, ReadableArgs, MaybeReadable, Writeable, Writer, VecWriter};
@@ -281,7 +281,7 @@ enum ClaimFundsFromHop {
 	DuplicateClaim,
 }
 
-type ShutdownResult = (Option<(OutPoint, ChannelMonitorUpdate)>, Vec<(HTLCSource, PaymentHash)>);
+type ShutdownResult = (Option<(OutPoint, ChannelMonitorUpdate)>, Vec<(HTLCSource, PaymentHash, PublicKey, [u8; 32])>);
 
 /// Error type returned across the channel_state mutex boundary. When an Err is generated for a
 /// Channel, we generally end up with a ChannelError::Close for which we have to close the channel
@@ -1890,7 +1890,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		};
 
 		for htlc_source in failed_htlcs.drain(..) {
-			self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), htlc_source.0, &htlc_source.1, HTLCFailReason::Reason { failure_code: 0x4000 | 8, data: Vec::new() });
+			let receiver = HTLCDestination::NextHopChannel { node_id: Some(*counterparty_node_id), channel_id: *channel_id };
+			self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), htlc_source.0, &htlc_source.1, HTLCFailReason::Reason { failure_code: 0x4000 | 8, data: Vec::new() }, receiver);
 		}
 
 		let _ = handle_error!(self, result, *counterparty_node_id);
@@ -1946,7 +1947,9 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		let (monitor_update_option, mut failed_htlcs) = shutdown_res;
 		log_debug!(self.logger, "Finishing force-closure of channel with {} HTLCs to fail", failed_htlcs.len());
 		for htlc_source in failed_htlcs.drain(..) {
-			self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), htlc_source.0, &htlc_source.1, HTLCFailReason::Reason { failure_code: 0x4000 | 8, data: Vec::new() });
+			let (source, payment_hash, counterparty_node_id, channel_id) = htlc_source;
+			let receiver = HTLCDestination::NextHopChannel { node_id: Some(counterparty_node_id), channel_id: channel_id };
+			self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), source, &payment_hash, HTLCFailReason::Reason { failure_code: 0x4000 | 8, data: Vec::new() }, receiver);
 		}
 		if let Some((funding_txo, monitor_update)) = monitor_update_option {
 			// There isn't anything we can do if we get an update failure - we're already
@@ -3107,21 +3110,42 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 									HTLCForwardInfo::AddHTLC { prev_short_channel_id, prev_htlc_id, forward_info: PendingHTLCInfo {
 										routing, incoming_shared_secret, payment_hash, amt_to_forward, outgoing_cltv_value },
 										prev_funding_outpoint } => {
+											macro_rules! failure_handler {
+												($msg: expr, $err_code: expr, $err_data: expr, $phantom_ss: expr, $next_hop_unknown: expr) => {
+													log_info!(self.logger, "Failed to accept/forward incoming HTLC: {}", $msg);
+
+													let htlc_source = HTLCSource::PreviousHopData(HTLCPreviousHopData {
+														short_channel_id: prev_short_channel_id,
+														outpoint: prev_funding_outpoint,
+														htlc_id: prev_htlc_id,
+														incoming_packet_shared_secret: incoming_shared_secret,
+														phantom_shared_secret: $phantom_ss,
+													});
+
+													let reason = if $next_hop_unknown {
+														HTLCDestination::UnknownNextHop { requested_forward_scid: short_chan_id }
+													} else {
+														HTLCDestination::FailedPayment{ payment_hash }
+													};
+
+													failed_forwards.push((htlc_source, payment_hash,
+														HTLCFailReason::Reason { failure_code: $err_code, data: $err_data },
+														reason
+													));
+													continue;
+												}
+											}
 											macro_rules! fail_forward {
 												($msg: expr, $err_code: expr, $err_data: expr, $phantom_ss: expr) => {
 													{
-														log_info!(self.logger, "Failed to accept/forward incoming HTLC: {}", $msg);
-														let htlc_source = HTLCSource::PreviousHopData(HTLCPreviousHopData {
-															short_channel_id: prev_short_channel_id,
-															outpoint: prev_funding_outpoint,
-															htlc_id: prev_htlc_id,
-															incoming_packet_shared_secret: incoming_shared_secret,
-															phantom_shared_secret: $phantom_ss,
-														});
-														failed_forwards.push((htlc_source, payment_hash,
-															HTLCFailReason::Reason { failure_code: $err_code, data: $err_data }
-														));
-														continue;
+														failure_handler!($msg, $err_code, $err_data, $phantom_ss, true);
+													}
+												}
+											}
+											macro_rules! failed_payment {
+												($msg: expr, $err_code: expr, $err_data: expr, $phantom_ss: expr) => {
+													{
+														failure_handler!($msg, $err_code, $err_data, $phantom_ss, false);
 													}
 												}
 											}
@@ -3137,17 +3161,17 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 															// `update_fail_malformed_htlc`, meaning here we encrypt the error as
 															// if it came from us (the second-to-last hop) but contains the sha256
 															// of the onion.
-															fail_forward!(err_msg, err_code, sha256_of_onion.to_vec(), None);
+															failed_payment!(err_msg, err_code, sha256_of_onion.to_vec(), None);
 														},
 														Err(onion_utils::OnionDecodeErr::Relay { err_msg, err_code }) => {
-															fail_forward!(err_msg, err_code, Vec::new(), Some(phantom_shared_secret));
+															failed_payment!(err_msg, err_code, Vec::new(), Some(phantom_shared_secret));
 														},
 													};
 													match next_hop {
 														onion_utils::Hop::Receive(hop_data) => {
 															match self.construct_recv_pending_htlc_info(hop_data, incoming_shared_secret, payment_hash, amt_to_forward, outgoing_cltv_value, Some(phantom_shared_secret)) {
 																Ok(info) => phantom_receives.push((prev_short_channel_id, prev_funding_outpoint, vec![(info, prev_htlc_id)])),
-																Err(ReceiveError { err_code, err_data, msg }) => fail_forward!(msg, err_code, err_data, Some(phantom_shared_secret))
+																Err(ReceiveError { err_code, err_data, msg }) => failed_payment!(msg, err_code, err_data, Some(phantom_shared_secret))
 															}
 														},
 														_ => panic!(),
@@ -3198,7 +3222,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 											}
 											let (failure_code, data) = self.get_htlc_temp_fail_err_and_data(0x1000|7, short_chan_id, chan.get());
 											failed_forwards.push((htlc_source, payment_hash,
-												HTLCFailReason::Reason { failure_code, data }
+												HTLCFailReason::Reason { failure_code, data },
+												HTLCDestination::NextHopChannel { node_id: Some(chan.get().get_counterparty_node_id()), channel_id: forward_chan_id }
 											));
 											continue;
 										},
@@ -3327,7 +3352,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 								};
 
 								macro_rules! fail_htlc {
-									($htlc: expr) => {
+									($htlc: expr, $payment_hash: expr) => {
 										let mut htlc_msat_height_data = byte_utils::be64_to_array($htlc.value).to_vec();
 										htlc_msat_height_data.extend_from_slice(
 											&byte_utils::be32_to_array(self.best_block.read().unwrap().height()),
@@ -3339,7 +3364,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 												incoming_packet_shared_secret: $htlc.prev_hop.incoming_packet_shared_secret,
 												phantom_shared_secret,
 											}), payment_hash,
-											HTLCFailReason::Reason { failure_code: 0x4000 | 15, data: htlc_msat_height_data }
+											HTLCFailReason::Reason { failure_code: 0x4000 | 15, data: htlc_msat_height_data },
+											HTLCDestination::FailedPayment { payment_hash: $payment_hash },
 										));
 									}
 								}
@@ -3358,7 +3384,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 										if htlcs.len() == 1 {
 											if let OnionPayload::Spontaneous(_) = htlcs[0].onion_payload {
 												log_trace!(self.logger, "Failing new HTLC with payment_hash {} as we already had an existing keysend HTLC with the same payment hash", log_bytes!(payment_hash.0));
-												fail_htlc!(claimable_htlc);
+												fail_htlc!(claimable_htlc, payment_hash);
 												continue
 											}
 										}
@@ -3380,7 +3406,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 										if total_value >= msgs::MAX_VALUE_MSAT || total_value > $payment_data.total_msat {
 											log_trace!(self.logger, "Failing HTLCs with payment_hash {} as the total value {} ran over expected value {} (or HTLCs were inconsistent)",
 												log_bytes!(payment_hash.0), total_value, $payment_data.total_msat);
-											fail_htlc!(claimable_htlc);
+											fail_htlc!(claimable_htlc, payment_hash);
 										} else if total_value == $payment_data.total_msat {
 											htlcs.push(claimable_htlc);
 											new_events.push(events::Event::PaymentReceived {
@@ -3414,7 +3440,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 												let payment_preimage = match inbound_payment::verify(payment_hash, &payment_data, self.highest_seen_timestamp.load(Ordering::Acquire) as u64, &self.inbound_payment_key, &self.logger) {
 													Ok(payment_preimage) => payment_preimage,
 													Err(()) => {
-														fail_htlc!(claimable_htlc);
+														fail_htlc!(claimable_htlc, payment_hash);
 														continue
 													}
 												};
@@ -3433,7 +3459,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 													},
 													hash_map::Entry::Occupied(_) => {
 														log_trace!(self.logger, "Failing new keysend HTLC with payment_hash {} for a duplicative payment hash", log_bytes!(payment_hash.0));
-														fail_htlc!(claimable_htlc);
+														fail_htlc!(claimable_htlc, payment_hash);
 													}
 												}
 											}
@@ -3442,17 +3468,17 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 									hash_map::Entry::Occupied(inbound_payment) => {
 										if payment_data.is_none() {
 											log_trace!(self.logger, "Failing new keysend HTLC with payment_hash {} because we already have an inbound payment with the same payment hash", log_bytes!(payment_hash.0));
-											fail_htlc!(claimable_htlc);
+											fail_htlc!(claimable_htlc, payment_hash);
 											continue
 										};
 										let payment_data = payment_data.unwrap();
 										if inbound_payment.get().payment_secret != payment_data.payment_secret {
 											log_trace!(self.logger, "Failing new HTLC with payment_hash {} as it didn't match our expected payment secret.", log_bytes!(payment_hash.0));
-											fail_htlc!(claimable_htlc);
+											fail_htlc!(claimable_htlc, payment_hash);
 										} else if inbound_payment.get().min_value_msat.is_some() && payment_data.total_msat < inbound_payment.get().min_value_msat.unwrap() {
 											log_trace!(self.logger, "Failing new HTLC with payment_hash {} as it didn't match our minimum value (had {}, needed {}).",
 												log_bytes!(payment_hash.0), payment_data.total_msat, inbound_payment.get().min_value_msat.unwrap());
-											fail_htlc!(claimable_htlc);
+											fail_htlc!(claimable_htlc, payment_hash);
 										} else {
 											let payment_received_generated = check_total_value!(payment_data, inbound_payment.get().payment_preimage);
 											if payment_received_generated {
@@ -3471,8 +3497,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			}
 		}
 
-		for (htlc_source, payment_hash, failure_reason) in failed_forwards.drain(..) {
-			self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), htlc_source, &payment_hash, failure_reason);
+		for (htlc_source, payment_hash, failure_reason, destination) in failed_forwards.drain(..) {
+			self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), htlc_source, &payment_hash, failure_reason, destination);
 		}
 		self.forward_htlcs(&mut phantom_receives);
 
@@ -3695,7 +3721,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			}
 
 			for htlc_source in timed_out_mpp_htlcs.drain(..) {
-				self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), HTLCSource::PreviousHopData(htlc_source.0), &htlc_source.1, HTLCFailReason::Reason { failure_code: 23, data: Vec::new() });
+				let receiver = HTLCDestination::FailedPayment { payment_hash: htlc_source.1 };
+				self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), HTLCSource::PreviousHopData(htlc_source.0.clone()), &htlc_source.1, HTLCFailReason::Reason { failure_code: 23, data: Vec::new() }, receiver );
 			}
 
 			for (err, counterparty_node_id) in handle_errors.drain(..) {
@@ -3731,7 +3758,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 						self.best_block.read().unwrap().height()));
 				self.fail_htlc_backwards_internal(channel_state.take().unwrap(),
 						HTLCSource::PreviousHopData(htlc.prev_hop), payment_hash,
-						HTLCFailReason::Reason { failure_code: 0x4000 | 15, data: htlc_msat_height_data });
+						HTLCFailReason::Reason { failure_code: 0x4000 | 15, data: htlc_msat_height_data },
+						HTLCDestination::FailedPayment { payment_hash: *payment_hash });
 			}
 		}
 	}
@@ -3787,7 +3815,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	// be surfaced to the user.
 	fn fail_holding_cell_htlcs(
 		&self, mut htlcs_to_fail: Vec<(HTLCSource, PaymentHash)>, channel_id: [u8; 32],
-		_counterparty_node_id: &PublicKey
+		counterparty_node_id: &PublicKey
 	) {
 		for (htlc_src, payment_hash) in htlcs_to_fail.drain(..) {
 			match htlc_src {
@@ -3800,8 +3828,9 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 							hash_map::Entry::Vacant(_) => (0x4000|10, Vec::new())
 						};
 					let channel_state = self.channel_state.lock().unwrap();
-					self.fail_htlc_backwards_internal(channel_state,
-						htlc_src, &payment_hash, HTLCFailReason::Reason { failure_code, data: onion_failure_data});
+
+					let receiver = HTLCDestination::NextHopChannel { node_id: Some(counterparty_node_id.clone()), channel_id };
+					self.fail_htlc_backwards_internal(channel_state, htlc_src, &payment_hash, HTLCFailReason::Reason { failure_code, data: onion_failure_data }, receiver)
 				},
 				HTLCSource::OutboundRoute { session_priv, payment_id, path, payment_params, .. } => {
 					let mut session_priv_bytes = [0; 32];
@@ -3854,7 +3883,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// to fail and take the channel_state lock for each iteration (as we take ownership and may
 	/// drop it). In other words, no assumptions are made that entries in claimable_htlcs point to
 	/// still-available channels.
-	fn fail_htlc_backwards_internal(&self, mut channel_state_lock: MutexGuard<ChannelHolder<Signer>>, source: HTLCSource, payment_hash: &PaymentHash, onion_error: HTLCFailReason) {
+	fn fail_htlc_backwards_internal(&self, mut channel_state_lock: MutexGuard<ChannelHolder<Signer>>, source: HTLCSource, payment_hash: &PaymentHash, onion_error: HTLCFailReason, destination: HTLCDestination) {
 		//TODO: There is a timing attack here where if a node fails an HTLC back to us they can
 		//identify whether we sent it or not based on the (I presume) very different runtime
 		//between the branches here. We should make this async and move it into the forward HTLCs
@@ -3984,7 +4013,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				pending_events.push(path_failure);
 				if let Some(ev) = full_failure_ev { pending_events.push(ev); }
 			},
-			HTLCSource::PreviousHopData(HTLCPreviousHopData { short_channel_id, htlc_id, incoming_packet_shared_secret, phantom_shared_secret, .. }) => {
+			HTLCSource::PreviousHopData(HTLCPreviousHopData { short_channel_id, htlc_id, incoming_packet_shared_secret, phantom_shared_secret, outpoint }) => {
 				let err_packet = match onion_error {
 					HTLCFailReason::Reason { failure_code, data } => {
 						log_trace!(self.logger, "Failing HTLC with payment_hash {} backwards from us with code {}", log_bytes!(payment_hash.0), failure_code);
@@ -4016,12 +4045,16 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					}
 				}
 				mem::drop(channel_state_lock);
+				let mut pending_events = self.pending_events.lock().unwrap();
 				if let Some(time) = forward_event {
-					let mut pending_events = self.pending_events.lock().unwrap();
 					pending_events.push(events::Event::PendingHTLCsForwardable {
 						time_forwardable: time
 					});
 				}
+				pending_events.push(events::Event::HTLCHandlingFailed {
+					prev_channel_id: outpoint.to_channel_id(),
+					failed_next_destination: destination
+				});
 			},
 		}
 	}
@@ -4113,7 +4146,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 							self.best_block.read().unwrap().height()));
 					self.fail_htlc_backwards_internal(channel_state.take().unwrap(),
 									 HTLCSource::PreviousHopData(htlc.prev_hop), &payment_hash,
-									 HTLCFailReason::Reason { failure_code: 0x4000|15, data: htlc_msat_height_data });
+									 HTLCFailReason::Reason { failure_code: 0x4000|15, data: htlc_msat_height_data },
+									 HTLCDestination::FailedPayment { payment_hash } );
 				} else {
 					match self.claim_funds_from_hop(channel_state.as_mut().unwrap(), htlc.prev_hop, payment_preimage) {
 						ClaimFundsFromHop::MonitorUpdateFail(pk, err, _) => {
@@ -4357,7 +4391,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 
 		let chan_restoration_res;
-		let (mut pending_failures, finalized_claims) = {
+		let (mut pending_failures, finalized_claims, counterparty_node_id) = {
 			let mut channel_lock = self.channel_state.lock().unwrap();
 			let channel_state = &mut *channel_lock;
 			let mut channel = match channel_state.by_id.entry(funding_txo.to_channel_id()) {
@@ -4368,6 +4402,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				return;
 			}
 
+			let counterparty_node_id = channel.get().get_counterparty_node_id();
 			let updates = channel.get_mut().monitor_updating_restored(&self.logger, self.get_our_node_id(), self.genesis_hash, self.best_block.read().unwrap().height());
 			let channel_update = if updates.channel_ready.is_some() && channel.get().is_usable() {
 				// We only send a channel_update in the case where we are just now sending a
@@ -4386,12 +4421,14 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			if let Some(upd) = channel_update {
 				channel_state.pending_msg_events.push(upd);
 			}
-			(updates.failed_htlcs, updates.finalized_claimed_htlcs)
+
+			(updates.failed_htlcs, updates.finalized_claimed_htlcs, counterparty_node_id)
 		};
 		post_handle_chan_restoration!(self, chan_restoration_res);
 		self.finalize_claims(finalized_claims);
 		for failure in pending_failures.drain(..) {
-			self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), failure.0, &failure.1, failure.2);
+			let receiver = HTLCDestination::NextHopChannel { node_id: Some(counterparty_node_id), channel_id: funding_txo.to_channel_id() };
+			self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), failure.0, &failure.1, failure.2, receiver);
 		}
 	}
 
@@ -4750,7 +4787,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			}
 		};
 		for htlc_source in dropped_htlcs.drain(..) {
-			self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), htlc_source.0, &htlc_source.1, HTLCFailReason::Reason { failure_code: 0x4000 | 8, data: Vec::new() });
+			let receiver = HTLCDestination::NextHopChannel { node_id: Some(counterparty_node_id.clone()), channel_id: msg.channel_id };
+			self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), htlc_source.0, &htlc_source.1, HTLCFailReason::Reason { failure_code: 0x4000 | 8, data: Vec::new() }, receiver);
 		}
 
 		let _ = handle_error!(self, result, *counterparty_node_id);
@@ -5036,7 +5074,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				short_channel_id, channel_outpoint)) =>
 			{
 				for failure in pending_failures.drain(..) {
-					self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), failure.0, &failure.1, failure.2);
+					let receiver = HTLCDestination::NextHopChannel { node_id: Some(*counterparty_node_id), channel_id: channel_outpoint.to_channel_id() };
+					self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), failure.0, &failure.1, failure.2, receiver);
 				}
 				self.forward_htlcs(&mut [(short_channel_id, channel_outpoint, pending_forwards)]);
 				self.finalize_claims(finalized_claim_htlcs);
@@ -5183,7 +5222,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		let mut failed_channels = Vec::new();
 		let mut pending_monitor_events = self.chain_monitor.release_pending_monitor_events();
 		let has_pending_monitor_events = !pending_monitor_events.is_empty();
-		for (funding_outpoint, mut monitor_events) in pending_monitor_events.drain(..) {
+		for (funding_outpoint, mut monitor_events, counterparty_node_id) in pending_monitor_events.drain(..) {
 			for monitor_event in monitor_events.drain(..) {
 				match monitor_event {
 					MonitorEvent::HTLCEvent(htlc_update) => {
@@ -5192,7 +5231,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 							self.claim_funds_internal(self.channel_state.lock().unwrap(), htlc_update.source, preimage, htlc_update.htlc_value_satoshis.map(|v| v * 1000), true, funding_outpoint.to_channel_id());
 						} else {
 							log_trace!(self.logger, "Failing HTLC with hash {} from our monitor", log_bytes!(htlc_update.payment_hash.0));
-							self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), htlc_update.source, &htlc_update.payment_hash, HTLCFailReason::Reason { failure_code: 0x4000 | 8, data: Vec::new() });
+							let receiver = HTLCDestination::NextHopChannel { node_id: counterparty_node_id, channel_id: funding_outpoint.to_channel_id() };
+							self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), htlc_update.source, &htlc_update.payment_hash, HTLCFailReason::Reason { failure_code: 0x4000 | 8, data: Vec::new() }, receiver);
 						}
 					},
 					MonitorEvent::CommitmentTxConfirmed(funding_outpoint) |
@@ -5834,7 +5874,7 @@ where
 						let (failure_code, data) = self.get_htlc_inbound_temp_fail_err_and_data(0x1000|14 /* expiry_too_soon */, &channel);
 						timed_out_htlcs.push((source, payment_hash, HTLCFailReason::Reason {
 							failure_code, data,
-						}));
+						}, HTLCDestination::NextHopChannel { node_id: Some(channel.get_counterparty_node_id()), channel_id: channel.channel_id() }));
 					}
 					if let Some(channel_ready) = channel_ready_opt {
 						send_channel_ready!(short_to_chan_info, pending_msg_events, channel, channel_ready);
@@ -5915,10 +5955,11 @@ where
 						if height >= htlc.cltv_expiry - HTLC_FAIL_BACK_BUFFER {
 							let mut htlc_msat_height_data = byte_utils::be64_to_array(htlc.value).to_vec();
 							htlc_msat_height_data.extend_from_slice(&byte_utils::be32_to_array(height));
+
 							timed_out_htlcs.push((HTLCSource::PreviousHopData(htlc.prev_hop.clone()), payment_hash.clone(), HTLCFailReason::Reason {
 								failure_code: 0x4000 | 15,
 								data: htlc_msat_height_data
-							}));
+							}, HTLCDestination::FailedPayment { payment_hash: payment_hash.clone() }));
 							false
 						} else { true }
 					});
@@ -5929,8 +5970,8 @@ where
 
 		self.handle_init_event_channel_failures(failed_channels);
 
-		for (source, payment_hash, reason) in timed_out_htlcs.drain(..) {
-			self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), source, &payment_hash, reason);
+		for (source, payment_hash, reason, destination) in timed_out_htlcs.drain(..) {
+			self.fail_htlc_backwards_internal(self.channel_state.lock().unwrap(), source, &payment_hash, reason, destination);
 		}
 	}
 
@@ -7286,7 +7327,9 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 		};
 
 		for htlc_source in failed_htlcs.drain(..) {
-			channel_manager.fail_htlc_backwards_internal(channel_manager.channel_state.lock().unwrap(), htlc_source.0, &htlc_source.1, HTLCFailReason::Reason { failure_code: 0x4000 | 8, data: Vec::new() });
+			let (source, payment_hash, counterparty_node_id, channel_id) = htlc_source;
+			let receiver = HTLCDestination::NextHopChannel { node_id: Some(counterparty_node_id), channel_id };
+			channel_manager.fail_htlc_backwards_internal(channel_manager.channel_state.lock().unwrap(), source, &payment_hash, HTLCFailReason::Reason { failure_code: 0x4000 | 8, data: Vec::new() }, receiver);
 		}
 
 		//TODO: Broadcast channel update for closed channels, but only after we've made a
@@ -7311,7 +7354,7 @@ mod tests {
 	use ln::msgs::ChannelMessageHandler;
 	use routing::router::{PaymentParameters, RouteParameters, find_route};
 	use util::errors::APIError;
-	use util::events::{Event, MessageSendEvent, MessageSendEventsProvider, ClosureReason};
+	use util::events::{Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, ClosureReason};
 	use util::test_utils;
 	use chain::keysinterface::KeysInterface;
 
@@ -7474,7 +7517,7 @@ mod tests {
 		check_added_monitors!(nodes[1], 0);
 		commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, false);
 		expect_pending_htlcs_forwardable!(nodes[1]);
-		expect_pending_htlcs_forwardable!(nodes[1]);
+		expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[1], vec![HTLCDestination::FailedPayment { payment_hash: our_payment_hash }]);
 		check_added_monitors!(nodes[1], 1);
 		let updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 		assert!(updates.update_add_htlcs.is_empty());
@@ -7594,8 +7637,10 @@ mod tests {
 		nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
 		check_added_monitors!(nodes[1], 0);
 		commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, false);
+		// We have to forward pending HTLCs twice - once tries to forward the payment forward (and
+		// fails), the second will process the resulting failure and fail the HTLC backward
 		expect_pending_htlcs_forwardable!(nodes[1]);
-		expect_pending_htlcs_forwardable!(nodes[1]);
+		expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[1], vec![HTLCDestination::FailedPayment { payment_hash }]);
 		check_added_monitors!(nodes[1], 1);
 		let updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 		assert!(updates.update_add_htlcs.is_empty());
@@ -7636,7 +7681,7 @@ mod tests {
 		check_added_monitors!(nodes[1], 0);
 		commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, false);
 		expect_pending_htlcs_forwardable!(nodes[1]);
-		expect_pending_htlcs_forwardable!(nodes[1]);
+		expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[1], vec![HTLCDestination::FailedPayment { payment_hash }]);
 		check_added_monitors!(nodes[1], 1);
 		let updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 		assert!(updates.update_add_htlcs.is_empty());
