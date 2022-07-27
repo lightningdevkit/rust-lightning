@@ -63,7 +63,9 @@ use util::time::Time;
 
 use prelude::*;
 use core::fmt;
-use core::cell::{RefCell, RefMut};
+#[cfg(not(c_bindings))]
+use core::cell::RefCell;
+use core::cell::RefMut;
 use core::ops::{Deref, DerefMut};
 use core::time::Duration;
 use io::{self, Read};
@@ -160,11 +162,13 @@ pub trait LockableScore<'a> {
 ///
 /// We need this trait to be able to pass in a scorer to `lightning-background-processor` that will enable us to
 /// use the Persister to persist it.
+#[cfg(not(c_bindings))] // This doesn't make sense in bindings as all `Score`s are `Writeable`.
 pub trait WriteableScore<'a>: LockableScore<'a> + Writeable {}
 
+#[cfg(not(c_bindings))] // This doesn't make sense in bindings as all `Score`s are `Writeable`.
 impl<'a, T> WriteableScore<'a> for T where T: LockableScore<'a> + Writeable {}
 
-/// (C-not exported)
+#[cfg(not(c_bindings))]
 impl<'a, T: 'a + Score> LockableScore<'a> for Mutex<T> {
 	type Locked = MutexGuard<'a, T>;
 
@@ -173,6 +177,7 @@ impl<'a, T: 'a + Score> LockableScore<'a> for Mutex<T> {
 	}
 }
 
+#[cfg(not(c_bindings))]
 impl<'a, T: 'a + Score> LockableScore<'a> for RefCell<T> {
 	type Locked = RefMut<'a, T>;
 
@@ -188,11 +193,18 @@ pub struct MultiThreadedLockableScore<S: Score> {
 }
 #[cfg(c_bindings)]
 /// (C-not exported)
-impl<'a, T: Score + 'a> LockableScore<'a> for MultiThreadedLockableScore<T> {
-	type Locked = MutexGuard<'a, T>;
+impl<'a, S: Score + 'a> LockableScore<'a> for MultiThreadedLockableScore<S> {
+	type Locked = MutexGuard<'a, S>;
 
-	fn lock(&'a self) -> MutexGuard<'a, T> {
+	fn lock(&'a self) -> MutexGuard<'a, S> {
 		Mutex::lock(&self.score).unwrap()
+	}
+}
+
+#[cfg(c_bindings)]
+impl<S: Score> Writeable for MultiThreadedLockableScore<S> {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		S::write(&*self.lock(), writer)
 	}
 }
 
@@ -278,12 +290,6 @@ impl ReadableArgs<u64> for FixedPenaltyScorer {
 }
 
 #[cfg(not(feature = "no-std"))]
-type ConfiguredTime = std::time::Instant;
-#[cfg(feature = "no-std")]
-use util::time::Eternity;
-#[cfg(feature = "no-std")]
-type ConfiguredTime = Eternity;
-
 /// [`Score`] implementation using channel success probability distributions.
 ///
 /// Based on *Optimally Reliable & Cheap Payment Flows on the Lightning Network* by Rene Pickhardt
@@ -306,7 +312,31 @@ type ConfiguredTime = Eternity;
 /// behavior.
 ///
 /// [1]: https://arxiv.org/abs/2107.05322
-pub type ProbabilisticScorer<G, L> = ProbabilisticScorerUsingTime::<G, L, ConfiguredTime>;
+pub type ProbabilisticScorer<G, L> = ProbabilisticScorerUsingTime::<G, L, std::time::Instant>;
+#[cfg(feature = "no-std")]
+/// [`Score`] implementation using channel success probability distributions.
+///
+/// Based on *Optimally Reliable & Cheap Payment Flows on the Lightning Network* by Rene Pickhardt
+/// and Stefan Richter [[1]]. Given the uncertainty of channel liquidity balances, probability
+/// distributions are defined based on knowledge learned from successful and unsuccessful attempts.
+/// Then the negative `log10` of the success probability is used to determine the cost of routing a
+/// specific HTLC amount through a channel.
+///
+/// Knowledge about channel liquidity balances takes the form of upper and lower bounds on the
+/// possible liquidity. Certainty of the bounds is decreased over time using a decay function. See
+/// [`ProbabilisticScoringParameters`] for details.
+///
+/// Since the scorer aims to learn the current channel liquidity balances, it works best for nodes
+/// with high payment volume or that actively probe the [`NetworkGraph`]. Nodes with low payment
+/// volume are more likely to experience failed payment paths, which would need to be retried.
+///
+/// # Note
+///
+/// Mixing the `no-std` feature between serialization and deserialization results in undefined
+/// behavior.
+///
+/// [1]: https://arxiv.org/abs/2107.05322
+pub type ProbabilisticScorer<G, L> = ProbabilisticScorerUsingTime::<G, L, ::util::time::Eternity>;
 
 /// Probabilistic [`Score`] implementation.
 ///

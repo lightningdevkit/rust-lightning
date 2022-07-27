@@ -19,7 +19,7 @@ use lightning::ln::channelmanager::ChannelManager;
 use lightning::ln::msgs::{ChannelMessageHandler, RoutingMessageHandler};
 use lightning::ln::peer_handler::{CustomMessageHandler, PeerManager, SocketDescriptor};
 use lightning::routing::gossip::{NetworkGraph, P2PGossipSync};
-use lightning::routing::scoring::WriteableScore;
+use lightning::routing::scoring::{Score, MultiThreadedLockableScore};
 use lightning::util::events::{Event, EventHandler, EventsProvider};
 use lightning::util::logger::Logger;
 use lightning::util::persist::Persister;
@@ -287,11 +287,10 @@ impl BackgroundProcessor {
 		RGS: 'static + Deref<Target = RapidGossipSync<G, L>> + Send,
 		UMH: 'static + Deref + Send + Sync,
 		PM: 'static + Deref<Target = PeerManager<Descriptor, CMH, RMH, L, UMH>> + Send + Sync,
-		S: 'static + Deref<Target = SC> + Send + Sync,
-		SC: WriteableScore<'a>,
+		SC: Score + Send,
 	>(
 		persister: PS, event_handler: EH, chain_monitor: M, channel_manager: CM,
-		gossip_sync: GossipSync<PGS, RGS, G, CA, L>, peer_manager: PM, logger: L, scorer: Option<S>,
+		gossip_sync: GossipSync<PGS, RGS, G, CA, L>, peer_manager: PM, logger: L, scorer: Option<&'static MultiThreadedLockableScore<SC>>,
 	) -> Self
 	where
 		CA::Target: 'static + chain::Access,
