@@ -616,12 +616,17 @@ pub fn build_htlc_transaction(commitment_txid: &Txid, feerate_per_kw: u32, conte
 	} else {
 		htlc_success_tx_weight(opt_anchors)
 	};
-	let total_fee = feerate_per_kw as u64 * weight / 1000;
+	let output_value = if opt_anchors {
+		htlc.amount_msat / 1000
+	} else {
+		let total_fee = feerate_per_kw as u64 * weight / 1000;
+		htlc.amount_msat / 1000 - total_fee
+	};
 
 	let mut txouts: Vec<TxOut> = Vec::new();
 	txouts.push(TxOut {
 		script_pubkey: get_revokeable_redeemscript(revocation_key, contest_delay, broadcaster_delayed_payment_key).to_v0_p2wsh(),
-		value: htlc.amount_msat / 1000 - total_fee //TODO: BOLT 3 does not specify if we should add amount_msat before dividing or if we should divide by 1000 before subtracting (as we do here)
+		value: output_value,
 	});
 
 	Transaction {
@@ -680,7 +685,8 @@ pub struct ChannelTransactionParameters {
 	pub counterparty_parameters: Option<CounterpartyChannelTransactionParameters>,
 	/// The late-bound funding outpoint
 	pub funding_outpoint: Option<chain::transaction::OutPoint>,
-	/// Are anchors used for this channel.  Boolean is serialization backwards-compatible
+	/// Are anchors (zero fee HTLC transaction variant) used for this channel. Boolean is
+	/// serialization backwards-compatible.
 	pub opt_anchors: Option<()>
 }
 
