@@ -1,4 +1,4 @@
-# 0.0.110 - 2022-XXX
+# 0.0.110 - 2022-07-26
 
 ## API Updates
  * `ChannelManager::send_probe` and `Score::probe_{failed,successful}` have
