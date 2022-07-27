@@ -286,14 +286,16 @@ impl_writeable_tlv_based!(HolderHTLCOutput, {
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct HolderFundingOutput {
 	funding_redeemscript: Script,
+	funding_amount: Option<u64>,
 	opt_anchors: Option<()>,
 }
 
 
 impl HolderFundingOutput {
-	pub(crate) fn build(funding_redeemscript: Script, opt_anchors: bool) -> Self {
+	pub(crate) fn build(funding_redeemscript: Script, funding_amount: u64, opt_anchors: bool) -> Self {
 		HolderFundingOutput {
 			funding_redeemscript,
+			funding_amount: Some(funding_amount),
 			opt_anchors: if opt_anchors { Some(()) } else { None },
 		}
 	}
@@ -306,6 +308,7 @@ impl HolderFundingOutput {
 impl_writeable_tlv_based!(HolderFundingOutput, {
 	(0, funding_redeemscript, required),
 	(1, opt_anchors, option),
+	(3, funding_amount, option),
 });
 
 /// A wrapper encapsulating all in-protocol differing outputs types.
@@ -325,15 +328,18 @@ pub(crate) enum PackageSolvingData {
 impl PackageSolvingData {
 	fn amount(&self) -> u64 {
 		let amt = match self {
-			PackageSolvingData::RevokedOutput(ref outp) => { outp.amount },
-			PackageSolvingData::RevokedHTLCOutput(ref outp) => { outp.amount },
-			PackageSolvingData::CounterpartyOfferedHTLCOutput(ref outp) => { outp.htlc.amount_msat / 1000 },
-			PackageSolvingData::CounterpartyReceivedHTLCOutput(ref outp) => { outp.htlc.amount_msat / 1000 },
+			PackageSolvingData::RevokedOutput(ref outp) => outp.amount,
+			PackageSolvingData::RevokedHTLCOutput(ref outp) => outp.amount,
+			PackageSolvingData::CounterpartyOfferedHTLCOutput(ref outp) => outp.htlc.amount_msat / 1000,
+			PackageSolvingData::CounterpartyReceivedHTLCOutput(ref outp) => outp.htlc.amount_msat / 1000,
 			// Note: Currently, amounts of holder outputs spending witnesses aren't used
 			// as we can't malleate spending package to increase their feerate. This
 			// should change with the remaining anchor output patchset.
-			PackageSolvingData::HolderHTLCOutput(..) => { unreachable!() },
-			PackageSolvingData::HolderFundingOutput(..) => { unreachable!() },
+			PackageSolvingData::HolderHTLCOutput(..) => unreachable!(),
+			PackageSolvingData::HolderFundingOutput(ref outp) => {
+				debug_assert!(outp.opt_anchors());
+				outp.funding_amount.unwrap()
+			}
 		};
 		amt
 	}
