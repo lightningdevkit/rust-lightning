@@ -15,8 +15,8 @@ you'll learn.
 Communications Channels
 -----------------------
 
-Communication about Rust-Lightning happens primarily on #ldk-dev on the
-[LDK slack](http://www.lightningdevkit.org/), but also #rust-bitcoin on IRC Freenode.
+Communication about Rust-Lightning happens primarily in the
+[LDK Discord Server](https://discord.com/invite/5AcknnMfBw). Come say hi and introduce yourself in #introductions! 
 
 Discussion about code base improvements happens in GitHub issues and on pull
 requests.
