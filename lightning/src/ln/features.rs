@@ -52,6 +52,10 @@
 //!     (see [BOLT-2](https://github.com/lightning/bolts/blob/master/02-peer-protocol.md) for more information).
 //! - `Keysend` - send funds to a node without an invoice
 //!     (see the [`Keysend` feature assignment proposal](https://github.com/lightning/bolts/issues/605#issuecomment-606679798) for more information).
+//! - `AnchorsZeroFeeHtlcTx` - requires/supports that commitment transactions include anchor outputs
+//!   and HTLC transactions are pre-signed with zero fee (see
+//!   [BOLT-3](https://github.com/lightning/bolts/blob/master/03-transactions.md) for more
+//!   information).
 //!
 //! [BOLT #9]: https://github.com/lightning/bolts/blob/master/09-features.md
 //! [messages]: crate::ln::msgs
@@ -122,7 +126,7 @@ mod sealed {
 		// Byte 1
 		VariableLengthOnion | StaticRemoteKey | PaymentSecret,
 		// Byte 2
-		BasicMPP | Wumbo,
+		BasicMPP | Wumbo | AnchorsZeroFeeHtlcTx,
 		// Byte 3
 		ShutdownAnySegwit,
 		// Byte 4
@@ -138,7 +142,7 @@ mod sealed {
 		// Byte 1
 		VariableLengthOnion | StaticRemoteKey | PaymentSecret,
 		// Byte 2
-		BasicMPP | Wumbo,
+		BasicMPP | Wumbo | AnchorsZeroFeeHtlcTx,
 		// Byte 3
 		ShutdownAnySegwit,
 		// Byte 4
@@ -176,7 +180,7 @@ mod sealed {
 		// Byte 1
 		StaticRemoteKey,
 		// Byte 2
-		,
+		AnchorsZeroFeeHtlcTx,
 		// Byte 3
 		,
 		// Byte 4
@@ -357,6 +361,9 @@ mod sealed {
 	define_feature!(19, Wumbo, [InitContext, NodeContext],
 		"Feature flags for `option_support_large_channel` (aka wumbo channels).", set_wumbo_optional, set_wumbo_required,
 		supports_wumbo, requires_wumbo);
+	define_feature!(23, AnchorsZeroFeeHtlcTx, [InitContext, NodeContext, ChannelTypeContext],
+		"Feature flags for `option_anchors_zero_fee_htlc_tx`.", set_anchors_zero_fee_htlc_tx_optional,
+		set_anchors_zero_fee_htlc_tx_required, supports_anchors_zero_fee_htlc_tx, requires_anchors_zero_fee_htlc_tx);
 	define_feature!(27, ShutdownAnySegwit, [InitContext, NodeContext],
 		"Feature flags for `opt_shutdown_anysegwit`.", set_shutdown_any_segwit_optional,
 		set_shutdown_any_segwit_required, supports_shutdown_anysegwit, requires_shutdown_anysegwit);
@@ -826,7 +833,7 @@ mod tests {
 			assert_eq!(node_features.flags.len(), 7);
 			assert_eq!(node_features.flags[0], 0b00000010);
 			assert_eq!(node_features.flags[1], 0b01010001);
-			assert_eq!(node_features.flags[2], 0b00001010);
+			assert_eq!(node_features.flags[2], 0b10001010);
 			assert_eq!(node_features.flags[3], 0b00001000);
 			assert_eq!(node_features.flags[4], 0b10000000);
 			assert_eq!(node_features.flags[5], 0b10100000);
