@@ -1,27 +1,35 @@
 Contributing to Rust-Lightning
 ==============================
 
-The Rust-Lightning project operates an open contributor model where anyone is
-welcome to contribute towards development in the form of peer review, documentation,
-testing and patches.
+The `rust-lightning` project operates an open contributor model where anyone is
+welcome to contribute towards development in the form of peer review,
+documentation, testing and patches.
 
-Anyone is invited to contribute without regard to technical experience, "expertise", OSS
-experience, age, or other concern. However, the development of cryptocurrencies demands a
-high-level of rigor, adversarial thinking, thorough testing and risk-minimization.
-Any bug may cost users real money. That being said, we deeply welcome people contributing
-for the first time to an open source project or pick up Rust while contributing. Don't be shy,
-you'll learn.
+Anyone is invited to contribute without regard to technical experience,
+"expertise", OSS experience, age, or other concern. However, the development of
+cryptocurrencies demands a high-level of rigor, adversarial thinking, thorough
+testing and risk-minimization. Any bug may cost users real money. That being
+said, we deeply welcome people contributing for the first time to an open source
+project or pick up Rust while contributing. Don't be shy, you'll learn.
 
-Communications Channels
+Communication Channels
 -----------------------
 
-Communication about Rust-Lightning happens primarily on #ldk-dev on the
-[LDK slack](http://www.lightningdevkit.org/), but also #rust-bitcoin on IRC Freenode.
+Communication about the development of LDK and `rust-lightning` happens
+primarily on the [LDK Discord](https://discord.gg/5AcknnMfBw) in the `#ldk-dev`
+channel. Additionally, live LDK devevelopment meetings are held every other
+Monday 19:00 UTC in the [LDK Dev Jitsi Meeting
+Room](https://meet.jit.si/ldkdevmeeting). Upcoming events can be found in the
+[LDK calendar](https://calendar.google.com/calendar/embed?src=c_e6fv6vlshbpoob2mmbvblkkoj4%40group.calendar.google.com).
+
+Contributors starting out with the Rust language are welcome to discuss and ask
+for help in the `#rust-101` channel on LDK Discord.
 
 Discussion about code base improvements happens in GitHub issues and on pull
 requests.
 
-Major projects are tracked [here](https://github.com/lightningdevkit/rust-lightning/projects).
+The LDK roadmap is tracked [here](https://github.com/orgs/lightningdevkit/projects/2).
+
 Major milestones are tracked [here](https://github.com/lightningdevkit/rust-lightning/milestones?direction=asc&sort=title&state=open).
 
 Getting Started
@@ -29,25 +37,28 @@ Getting Started
 
 First and foremost, start small.
 
-This doesn't mean don't be ambitious with the breadth and depth of your contributions but rather
-understand the project culture before investing an asymmetric number of hours on
-development compared to your merged work.
+This doesn't mean don't be ambitious with the breadth and depth of your
+contributions but rather understand the project culture before investing an
+asymmetric number of hours on development compared to your merged work.
 
 Browsing through the [meeting minutes](https://github.com/lightningdevkit/rust-lightning/wiki/Meetings)
-is a good first step. You will learn who is working on what, how releases are drafted, what are the
-pending tasks to deliver, where you can contribute review bandwidth, etc.
+is a good first step. You will learn who is working on what, how releases are
+drafted, what are the pending tasks to deliver, where you can contribute review
+bandwidth, etc.
 
-Even if you have an extensive open source background or sound software engineering skills, consider
-that the reviewers' comprehension of the code is as much important as technical correctness.
+Even if you have an extensive open source background or sound software
+engineering skills, consider that the reviewers' comprehension of the code is as
+much important as technical correctness.
 
-It's very welcome to ask for review, either on IRC or LDK Slack. And also for reviewers, it's nice
-to provide timelines when you hope to fulfill the request while bearing in mind for both sides that's
-a "soft" commitment.
+It's very welcome to ask for review on LDK Discord. And also for reviewers, it's
+nice to provide timelines when you hope to fulfill the request while bearing in
+mind for both sides that's a "soft" commitment.
 
-If you're eager to increase the velocity of the dev process, reviewing other contributors work is
-the best you can do while waiting review on yours.
+If you're eager to increase the velocity of the dev process, reviewing other
+contributors work is the best you can do while waiting review on yours.
 
-Also, getting familiar with the [glossary](GLOSSARY.md) will streamline discussions with regular contributors.
+Also, getting familiar with the [glossary](GLOSSARY.md) will streamline
+discussions with regular contributors.
 
 Contribution Workflow
 ---------------------
@@ -80,14 +91,14 @@ our GitHub Actions). Also, the compatibility for LDK object serialization is
 currently ensured back to and including crate version 0.0.99 (see the
 [changelog](CHANGELOG.md)).
 
-Commits should cover both the issue fixed and the solution's rationale.
-These [guidelines](https://chris.beams.io/posts/git-commit/) should be kept in mind.
+Commits should cover both the issue fixed and the solution's rationale. These
+[guidelines](https://chris.beams.io/posts/git-commit/) should be kept in mind.
 
-To facilitate communication with other contributors, the project is making use of
-GitHub's "assignee" field. First check that no one is assigned and then comment
-suggesting that you're working on it. If someone is already assigned, don't hesitate
-to ask if the assigned party or previous commenters are still working on it if it has
-been awhile.
+To facilitate communication with other contributors, the project is making use
+of GitHub's "assignee" field. First check that no one is assigned and then
+comment suggesting that you're working on it. If someone is already assigned,
+don't hesitate to ask if the assigned party or previous commenters are still
+working on it if it has been awhile.
 
 Peer review
 -----------
@@ -95,8 +106,8 @@ Peer review
 Anyone may participate in peer review which is expressed by comments in the pull
 request. Typically reviewers will review the code for obvious errors, as well as
 test out the patch set and opine on the technical merits of the patch. PR should
-be reviewed first on the conceptual level before focusing on code style or grammar
-fixes.
+be reviewed first on the conceptual level before focusing on code style or
+grammar fixes.
 
 Coding Conventions
 ------------------
@@ -104,65 +115,70 @@ Coding Conventions
 Use tabs. If you want to align lines, use spaces. Any desired alignment should
 display fine at any tab-length display setting.
 
-Our CI enforces [clippy's](https://github.com/rust-lang/rust-clippy) default linting
-[settings](https://rust-lang.github.io/rust-clippy/rust-1.39.0/index.html).
-This includes all lint groups except for nursery, pedantic, and cargo in addition to allowing the following lints:
-`erasing_op`, `never_loop`, `if_same_then_else`.
+Our CI enforces [clippy's](https://github.com/rust-lang/rust-clippy) default
+linting
+[settings](https://rust-lang.github.io/rust-clippy/rust-1.39.0/index.html). This
+includes all lint groups except for nursery, pedantic, and cargo in addition to
+allowing the following lints: `erasing_op`, `never_loop`, `if_same_then_else`.
 
-If you use rustup, feel free to lint locally, otherwise you can just push to CI for automated linting.
+If you use rustup, feel free to lint locally, otherwise you can just push to CI
+for automated linting.
 
 ```bash
 rustup component add clippy
 cargo clippy
 ```
 
-Significant structures that users persist should always have their serialization methods (usually
-`Writeable::write` and `ReadableArgs::read`) begin with
+Significant structures that users persist should always have their serialization
+methods (usually `Writeable::write` and `ReadableArgs::read`) begin with
 `write_ver_prefix!()`/`read_ver_prefix!()` calls, and end with calls to
 `write_tlv_fields!()`/`read_tlv_fields!()`.
 
-Updates to the serialized format which has implications for backwards or forwards compatibility
-must be included in release notes.
+Updates to the serialized format which has implications for backwards or
+forwards compatibility must be included in release notes.
 
 Security
 --------
 
-Security is the primary focus of Rust-Lightning; disclosure of security vulnerabilites
-helps prevent user loss of funds. If you believe a vulnerability may affect other Lightning
-implementations, please inform them.
+Security is the primary focus of `rust-lightning`; disclosure of security
+vulnerabilites helps prevent user loss of funds. If you believe a vulnerability
+may affect other Lightning implementations, please inform them.
 
-Note that Rust-Lightning is currently considered "pre-production" during this time, there
-is no special handling of security issues. Please simply open an issue on Github.
+You can find further information on submitting (possible) vulnerabilities in the
+[security policy](SECURITY.md).
 
 Testing
 -------
 
-Related to the security aspect, Rust-Lightning developers take testing
-very seriously. Due to the modular nature of the project, writing new functional
-tests is easy and good test coverage of the codebase is an important goal. Refactoring
-the project to enable fine-grained unit testing is also an ongoing effort.
+Related to the security aspect, `rust-lightning` developers take testing very
+seriously. Due to the modular nature of the project, writing new functional
+tests is easy and good test coverage of the codebase is an important goal.
+Refactoring the project to enable fine-grained unit testing is also an ongoing
+effort.
 
 Fuzzing is heavily encouraged: you will find all related material under `fuzz/`
 
-Mutation testing is work-in-progress; any contribution there would be warmly welcomed.
+Mutation testing is work-in-progress; any contribution there would be warmly
+welcomed.
 
 C/C++ Bindings
 --------------
 
-You can learn more about the C/C++ bindings that are made available by reading the
-[C/C++ Bindings README](lightning-c-bindings/README.md). If you are not using the C/C++ bindings,
-you likely don't need to worry about them, and during their early experimental phase we are not
-requiring that pull requests keep the bindings up to date (and, thus, pass the bindings_check CI
-run). If you wish to ensure your PR passes the bindings generation phase, you should run the
-`genbindings.sh` script in the top of the directory tree to generate, build, and test C bindings on
-your local system.
+You can learn more about the C/C++ bindings that are made available by reading
+the [C/C++ Bindings README](https://github.com/lightningdevkit/ldk-c-bindings/blob/main/lightning-c-bindings/README.md).
+If you are not using the C/C++ bindings, you likely don't need to worry about
+them, and during their early experimental phase we are not requiring that pull
+requests keep the bindings up to date (and, thus, pass the `bindings_check` CI
+run). If you wish to ensure your PR passes the bindings generation phase, you
+should run the `genbindings.sh` script in the top of the directory tree to
+generate, build, and test C bindings on your local system.
 
 Going further
 -------------
 
-You may be interested by Jon Atack guide on [How to review Bitcoin Core PRs](https://github.com/jonatack/bitcoin-development/blob/master/how-to-review-bitcoin-core-prs.md)
+You may be interested by Jon Atack's guide on [How to review Bitcoin Core PRs](https://github.com/jonatack/bitcoin-development/blob/master/how-to-review-bitcoin-core-prs.md)
 and [How to make Bitcoin Core PRs](https://github.com/jonatack/bitcoin-development/blob/master/how-to-make-bitcoin-core-prs.md).
-While there are differences between the projects in terms of context and maturity, many
-of the suggestions offered apply to this project.
+While there are differences between the projects in terms of context and
+maturity, many of the suggestions offered apply to this project.
 
 Overall, have fun :)
