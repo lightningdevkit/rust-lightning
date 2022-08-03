@@ -79,11 +79,7 @@ pub mod util;
 pub mod chain;
 pub mod ln;
 pub mod routing;
-#[cfg(fuzzing)]
 pub mod onion_message;
-#[cfg(not(fuzzing))]
-#[allow(unused)]
-mod onion_message; // To be exposed after sending/receiving OMs is supported in PeerManager.
 
 #[cfg(feature = "std")]
 /// Re-export of either `core2::io` or `std::io`, depending on the `std` feature flag.

@@ -124,7 +124,7 @@ fn too_big_packet_error() {
 #[test]
 fn invalid_blinded_route_error() {
 	// Make sure we error as expected if a provided blinded route has 0 or 1 hops.
-	let mut nodes = create_nodes(3);
+	let nodes = create_nodes(3);
 
 	// 0 hops
 	let secp_ctx = Secp256k1::new();
@@ -143,7 +143,7 @@ fn invalid_blinded_route_error() {
 
 #[test]
 fn reply_path() {
-	let mut nodes = create_nodes(4);
+	let nodes = create_nodes(4);
 	let secp_ctx = Secp256k1::new();
 
 	// Destination::Node
