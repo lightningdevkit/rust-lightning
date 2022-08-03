@@ -126,6 +126,30 @@ pub struct ChannelHandshakeConfig {
 	///
 	/// [`KeysInterface::get_shutdown_scriptpubkey`]: crate::chain::keysinterface::KeysInterface::get_shutdown_scriptpubkey
 	pub commit_upfront_shutdown_pubkey: bool,
+
+	/// The Proportion of the channel value to configure as counterparty's channel reserve,
+	/// i.e., `their_channel_reserve_satoshis` for both outbound and inbound channels.
+	///
+	/// `their_channel_reserve_satoshis` is the minimum balance that the other node has to maintain
+	/// on their side, at all times.
+	/// This ensures that if our counterparty broadcasts a revoked state, we can punish them by
+	/// claiming at least this value on chain.
+	///
+	/// Channel reserve values greater than 30% could be considered highly unreasonable, since that
+	/// amount can never be used for payments.
+	/// Also, if our selected channel reserve for counterparty and counterparty's selected
+	/// channel reserve for us sum up to equal or greater than channel value, channel negotiations
+	/// will fail.
+	///
+	/// Note: Versions of LDK earlier than v0.0.104 will fail to read channels with any channel reserve
+	/// other than the default value.
+	///
+	/// Default value: 1% of channel value, i.e., configured as 10,000 millionths.
+	/// Minimum value: If the calculated proportional value is less than 1000 sats, it will be treated
+	///                as 1000 sats instead, which is a safe implementation-specific lower bound.
+	/// Maximum value: 1,000,000, any values larger than 1 Million will be treated as 1 Million (or 100%)
+	///                instead, although channel negotiations will fail in that case.
+	pub their_channel_reserve_proportional_millionths: u32
 }
 
 impl Default for ChannelHandshakeConfig {
@@ -138,6 +162,7 @@ impl Default for ChannelHandshakeConfig {
 			negotiate_scid_privacy: false,
 			announced_channel: false,
 			commit_upfront_shutdown_pubkey: true,
+			their_channel_reserve_proportional_millionths: 10_000,
 		}
 	}
 }

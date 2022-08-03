@@ -8,4 +8,6 @@ lightning-c-bindings/a.out
 Cargo.lock
 .idea
 lightning/target
+lightning/ldk-net_graph-*.bin
 no-std-check/target
+

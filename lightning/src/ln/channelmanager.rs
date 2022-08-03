@@ -1635,7 +1635,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		}
 	}
 
-	/// Gets the current configuration applied to all new channels,  as
+	/// Gets the current configuration applied to all new channels.
 	pub fn get_current_default_configuration(&self) -> &UserConfig {
 		&self.default_configuration
 	}
