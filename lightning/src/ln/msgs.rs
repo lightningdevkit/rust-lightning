@@ -31,6 +31,8 @@ use bitcoin::blockdata::script::Script;
 use bitcoin::hash_types::{Txid, BlockHash};
 
 use ln::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
+use ln::onion_utils;
+use onion_message;
 
 use prelude::*;
 use core::fmt;
@@ -40,7 +42,7 @@ use io_extras::read_to_end;
 
 use util::events::MessageSendEventsProvider;
 use util::logger;
-use util::ser::{Readable, Writeable, Writer, FixedLengthReader, HighZeroBytesDroppedVarInt, Hostname};
+use util::ser::{LengthReadable, Readable, ReadableArgs, Writeable, Writer, FixedLengthReader, HighZeroBytesDroppedVarInt, Hostname};
 
 use ln::{PaymentPreimage, PaymentHash, PaymentSecret};
 
@@ -302,6 +304,14 @@ pub struct UpdateAddHTLC {
 	/// The expiry height of the HTLC
 	pub cltv_expiry: u32,
 	pub(crate) onion_routing_packet: OnionPacket,
+}
+
+ /// An onion message to be sent or received from a peer
+#[derive(Clone, Debug, PartialEq)]
+pub struct OnionMessage {
+	/// Used in decrypting the onion packet's payload.
+	pub blinding_point: PublicKey,
+	pub(crate) onion_routing_packet: onion_message::Packet,
 }
 
 /// An update_fulfill_htlc message to be sent or received from a peer
@@ -993,6 +1003,18 @@ pub(crate) struct OnionPacket {
 	pub(crate) hmac: [u8; 32],
 }
 
+impl onion_utils::Packet for OnionPacket {
+	type Data = onion_utils::FixedSizeOnionPacket;
+	fn new(pubkey: PublicKey, hop_data: onion_utils::FixedSizeOnionPacket, hmac: [u8; 32]) -> Self {
+		Self {
+			version: 0,
+			public_key: Ok(pubkey),
+			hop_data: hop_data.0,
+			hmac,
+		}
+	}
+}
+
 impl PartialEq for OnionPacket {
 	fn eq(&self, other: &OnionPacket) -> bool {
 		for (i, j) in self.hop_data.iter().zip(other.hop_data.iter()) {
@@ -1327,6 +1349,29 @@ impl_writeable_msg!(UpdateAddHTLC, {
 	onion_routing_packet
 }, {});
 
+impl Readable for OnionMessage {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let blinding_point: PublicKey = Readable::read(r)?;
+		let len: u16 = Readable::read(r)?;
+		let mut packet_reader = FixedLengthReader::new(r, len as u64);
+		let onion_routing_packet: onion_message::Packet = <onion_message::Packet as LengthReadable>::read(&mut packet_reader)?;
+		Ok(Self {
+			blinding_point,
+			onion_routing_packet,
+		})
+	}
+}
+
+impl Writeable for OnionMessage {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		self.blinding_point.write(w)?;
+		let onion_packet_len = self.onion_routing_packet.serialized_length();
+		(onion_packet_len as u16).write(w)?;
+		self.onion_routing_packet.write(w)?;
+		Ok(())
+	}
+}
+
 impl Writeable for FinalOnionHopData {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		self.payment_secret.0.write(w)?;
@@ -1369,6 +1414,14 @@ impl Writeable for OnionHopData {
 			},
 		}
 		Ok(())
+	}
+}
+
+// ReadableArgs because we need onion_utils::decode_next_hop to accommodate payment packets and
+// onion message packets.
+impl ReadableArgs<()> for OnionHopData {
+	fn read<R: Read>(r: &mut R, _arg: ()) -> Result<Self, DecodeError> {
+		<Self as Readable>::read(r)
 	}
 }
 

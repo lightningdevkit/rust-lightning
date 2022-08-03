@@ -51,6 +51,7 @@ use utils::test_logger;
 use utils::test_persister::TestPersister;
 
 use bitcoin::secp256k1::{PublicKey,SecretKey};
+use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1::ecdsa::RecoverableSignature;
 use bitcoin::secp256k1::Secp256k1;
 
@@ -267,6 +268,14 @@ impl KeysInterface for KeyProvider {
 
 	fn get_node_secret(&self, _recipient: Recipient) -> Result<SecretKey, ()> {
 		Ok(self.node_secret.clone())
+	}
+
+	fn ecdh(&self, recipient: Recipient, other_key: &PublicKey, tweak: Option<&[u8; 32]>) -> Result<SharedSecret, ()> {
+		let mut node_secret = self.get_node_secret(recipient)?;
+		if let Some(tweak) = tweak {
+			node_secret.mul_assign(tweak).map_err(|_| ())?;
+		}
+		Ok(SharedSecret::new(other_key, &node_secret))
 	}
 
 	fn get_inbound_payment_key_material(&self) -> KeyMaterial {
