@@ -949,6 +949,12 @@ pub trait RoutingMessageHandler : MessageSendEventsProvider {
 pub trait OnionMessageHandler : OnionMessageProvider {
 	/// Handle an incoming onion_message message from the given peer.
 	fn handle_onion_message(&self, peer_node_id: &PublicKey, msg: &OnionMessage);
+	/// Called when a connection is established with a peer. Can be used to track which peers
+	/// advertise onion message support and are online.
+	fn peer_connected(&self, their_node_id: &PublicKey, init: &Init);
+	/// Indicates a connection to the peer failed/an existing connection was lost. Allows handlers to
+	/// drop and refuse to forward onion messages to this peer.
+	fn peer_disconnected(&self, their_node_id: &PublicKey, no_connection_possible: bool);
 }
 
 mod fuzzy_internal_msgs {

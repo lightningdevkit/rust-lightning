@@ -10,13 +10,14 @@
 //! Onion message testing and test utilities live here.
 
 use chain::keysinterface::{KeysInterface, Recipient};
-use ln::msgs::OnionMessageHandler;
+use ln::features::InitFeatures;
+use ln::msgs::{self, OnionMessageHandler};
 use super::{BlindedRoute, Destination, OnionMessenger, SendError};
 use util::enforcing_trait_impls::EnforcingSigner;
 use util::test_utils;
 
 use bitcoin::network::constants::Network;
-use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
+use bitcoin::secp256k1::{PublicKey, Secp256k1};
 
 use sync::Arc;
 
@@ -34,18 +35,26 @@ impl MessengerNode {
 }
 
 fn create_nodes(num_messengers: u8) -> Vec<MessengerNode> {
-	let mut res = Vec::new();
+	let mut nodes = Vec::new();
 	for i in 0..num_messengers {
 		let logger = Arc::new(test_utils::TestLogger::with_id(format!("node {}", i)));
 		let seed = [i as u8; 32];
 		let keys_manager = Arc::new(test_utils::TestKeysInterface::new(&seed, Network::Testnet));
-		res.push(MessengerNode {
+		nodes.push(MessengerNode {
 			keys_manager: keys_manager.clone(),
 			messenger: OnionMessenger::new(keys_manager, logger.clone()),
 			logger,
 		});
 	}
-	res
+	for idx in 0..num_messengers - 1 {
+		let i = idx as usize;
+		let mut features = InitFeatures::known();
+		features.set_onion_messages_optional();
+		let init_msg = msgs::Init { features, remote_network_address: None };
+		nodes[i].messenger.peer_connected(&nodes[i + 1].get_node_pk(), &init_msg.clone());
+		nodes[i + 1].messenger.peer_connected(&nodes[i].get_node_pk(), &init_msg.clone());
+	}
+	nodes
 }
 
 fn pass_along_path(path: &Vec<MessengerNode>, expected_path_id: Option<[u8; 32]>) {
@@ -53,7 +62,6 @@ fn pass_along_path(path: &Vec<MessengerNode>, expected_path_id: Option<[u8; 32]>
 	let num_nodes = path.len();
 	for (idx, node) in path.into_iter().skip(1).enumerate() {
 		let events = prev_node.messenger.release_pending_msgs();
-		assert_eq!(events.len(), 1);
 		let onion_msg =  {
 			let msgs = events.get(&node.get_node_pk()).unwrap();
 			assert_eq!(msgs.len(), 1);
@@ -110,12 +118,9 @@ fn three_blinded_hops() {
 #[test]
 fn too_big_packet_error() {
 	// Make sure we error as expected if a packet is too big to send.
-	let nodes = create_nodes(1);
+	let nodes = create_nodes(2);
 
-	let hop_secret = SecretKey::from_slice(&hex::decode("0101010101010101010101010101010101010101010101010101010101010101").unwrap()[..]).unwrap();
-	let secp_ctx = Secp256k1::new();
-	let hop_node_id = PublicKey::from_secret_key(&secp_ctx, &hop_secret);
-
+	let hop_node_id = nodes[1].get_node_pk();
 	let hops = [hop_node_id; 400];
 	let err = nodes[0].messenger.send_onion_message(&hops, Destination::Node(hop_node_id), None).unwrap_err();
 	assert_eq!(err, SendError::TooBigPacket);
