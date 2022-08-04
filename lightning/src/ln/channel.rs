@@ -877,15 +877,29 @@ impl<Signer: Sign> Channel<Signer> {
 		self.channel_transaction_parameters.opt_anchors.is_some()
 	}
 
-	fn get_initial_channel_type(config: &UserConfig) -> ChannelTypeFeatures {
+	fn get_initial_channel_type(config: &UserConfig, their_features: &InitFeatures) -> ChannelTypeFeatures {
 		// The default channel type (ie the first one we try) depends on whether the channel is
 		// public - if it is, we just go with `only_static_remotekey` as it's the only option
 		// available. If it's private, we first try `scid_privacy` as it provides better privacy
-		// with no other changes, and fall back to `only_static_remotekey`
+		// with no other changes, and fall back to `only_static_remotekey`.
 		let mut ret = ChannelTypeFeatures::only_static_remote_key();
-		if !config.channel_handshake_config.announced_channel && config.channel_handshake_config.negotiate_scid_privacy {
+		if !config.channel_handshake_config.announced_channel &&
+			config.channel_handshake_config.negotiate_scid_privacy &&
+			their_features.supports_scid_privacy() {
 			ret.set_scid_privacy_required();
 		}
+
+		// Optionally, if the user would like to negotiate the `anchors_zero_fee_htlc_tx` option, we
+		// set it now. If they don't understand it, we'll fall back to our default of
+		// `only_static_remotekey`.
+		#[cfg(anchors)]
+		{ // Attributes are not allowed on if expressions on our current MSRV of 1.41.
+			if config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx &&
+				their_features.supports_anchors_zero_fee_htlc_tx() {
+				ret.set_anchors_zero_fee_htlc_tx_required();
+			}
+		}
+
 		ret
 	}
 
@@ -898,7 +912,24 @@ impl<Signer: Sign> Channel<Signer> {
 			// We've exhausted our options
 			return Err(());
 		}
-		self.channel_type = ChannelTypeFeatures::only_static_remote_key(); // We only currently support two types
+		// We support opening a few different types of channels. Try removing our additional
+		// features one by one until we've either arrived at our default or the counterparty has
+		// accepted one.
+		//
+		// Due to the order below, we may not negotiate `option_anchors_zero_fee_htlc_tx` if the
+		// counterparty doesn't support `option_scid_privacy`. Since `get_initial_channel_type`
+		// checks whether the counterparty supports every feature, this would only happen if the
+		// counterparty is advertising the feature, but rejecting channels proposing the feature for
+		// whatever reason.
+		if self.channel_type.supports_anchors_zero_fee_htlc_tx() {
+			self.channel_type.clear_anchors_zero_fee_htlc_tx();
+			assert!(self.channel_transaction_parameters.opt_non_zero_fee_anchors.is_none());
+			self.channel_transaction_parameters.opt_anchors = None;
+		} else if self.channel_type.supports_scid_privacy() {
+			self.channel_type.clear_scid_privacy();
+		} else {
+			self.channel_type = ChannelTypeFeatures::only_static_remote_key();
+		}
 		Ok(self.get_open_channel(chain_hash))
 	}
 
@@ -912,8 +943,6 @@ impl<Signer: Sign> Channel<Signer> {
 	      SP::Target: SignerProvider<Signer = Signer>,
 	      F::Target: FeeEstimator,
 	{
-		let opt_anchors = false; // TODO - should be based on features
-
 		let holder_selected_contest_delay = config.channel_handshake_config.our_to_self_delay;
 		let channel_keys_id = signer_provider.generate_channel_keys_id(false, channel_value_satoshis, user_id);
 		let holder_signer = signer_provider.derive_channel_signer(channel_value_satoshis, channel_keys_id);
@@ -939,10 +968,13 @@ impl<Signer: Sign> Channel<Signer> {
 			return Err(APIError::APIMisuseError { err: format!("Holder selected channel  reserve below implemention limit dust_limit_satoshis {}", holder_selected_channel_reserve_satoshis) });
 		}
 
+		let channel_type = Self::get_initial_channel_type(&config, their_features);
+		debug_assert!(channel_type.is_subset(&channelmanager::provided_channel_type_features(&config)));
+
 		let feerate = fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::Normal);
 
 		let value_to_self_msat = channel_value_satoshis * 1000 - push_msat;
-		let commitment_tx_fee = Self::commit_tx_fee_msat(feerate, MIN_AFFORDABLE_HTLC_COUNT, opt_anchors);
+		let commitment_tx_fee = Self::commit_tx_fee_msat(feerate, MIN_AFFORDABLE_HTLC_COUNT, channel_type.requires_anchors_zero_fee_htlc_tx());
 		if value_to_self_msat < commitment_tx_fee {
 			return Err(APIError::APIMisuseError{ err: format!("Funding amount ({}) can't even pay fee for initial commitment transaction fee of {}.", value_to_self_msat / 1000, commitment_tx_fee / 1000) });
 		}
@@ -1044,7 +1076,7 @@ impl<Signer: Sign> Channel<Signer> {
 				is_outbound_from_holder: true,
 				counterparty_parameters: None,
 				funding_outpoint: None,
-				opt_anchors: if opt_anchors { Some(()) } else { None },
+				opt_anchors: if channel_type.requires_anchors_zero_fee_htlc_tx() { Some(()) } else { None },
 				opt_non_zero_fee_anchors: None
 			},
 			funding_transaction: None,
@@ -1077,7 +1109,7 @@ impl<Signer: Sign> Channel<Signer> {
 			#[cfg(any(test, fuzzing))]
 			historical_inbound_htlc_fulfills: HashSet::new(),
 
-			channel_type: Self::get_initial_channel_type(&config),
+			channel_type,
 			channel_keys_id,
 		})
 	}
@@ -1117,16 +1149,16 @@ impl<Signer: Sign> Channel<Signer> {
 	/// Creates a new channel from a remote sides' request for one.
 	/// Assumes chain_hash has already been checked and corresponds with what we expect!
 	pub fn new_from_req<ES: Deref, SP: Deref, F: Deref, L: Deref>(
-		fee_estimator: &LowerBoundedFeeEstimator<F>, entropy_source: &ES, signer_provider: &SP, counterparty_node_id: PublicKey, their_features: &InitFeatures,
-		msg: &msgs::OpenChannel, user_id: u128, config: &UserConfig, current_chain_height: u32, logger: &L,
-		outbound_scid_alias: u64
+		fee_estimator: &LowerBoundedFeeEstimator<F>, entropy_source: &ES, signer_provider: &SP,
+		counterparty_node_id: PublicKey, our_supported_features: &ChannelTypeFeatures,
+		their_features: &InitFeatures, msg: &msgs::OpenChannel, user_id: u128, config: &UserConfig,
+		current_chain_height: u32, logger: &L, outbound_scid_alias: u64
 	) -> Result<Channel<Signer>, ChannelError>
 		where ES::Target: EntropySource,
 			  SP::Target: SignerProvider<Signer = Signer>,
 			  F::Target: FeeEstimator,
 			  L::Target: Logger,
 	{
-		let opt_anchors = false; // TODO - should be based on features
 		let announced_channel = if (msg.channel_flags & 1) == 1 { true } else { false };
 
 		// First check the channel type is known, failing before we do anything else if we don't
@@ -1136,31 +1168,28 @@ impl<Signer: Sign> Channel<Signer> {
 				return Err(ChannelError::Close("Channel Type field contained optional bits - this is not allowed".to_owned()));
 			}
 
-			if channel_type.requires_unknown_bits() {
-				return Err(ChannelError::Close("Channel Type field contains unknown bits".to_owned()));
+			// We only support the channel types defined by the `ChannelManager` in
+			// `provided_channel_type_features`. The channel type must always support
+			// `static_remote_key`.
+			if !channel_type.requires_static_remote_key() {
+				return Err(ChannelError::Close("Channel Type was not understood - we require static remote key".to_owned()));
 			}
-
-			// We currently only allow four channel types, so write it all out here - we allow
-			// `only_static_remote_key` or `static_remote_key | zero_conf` in all contexts, and
-			// further allow `static_remote_key | scid_privacy` or
-			// `static_remote_key | scid_privacy | zero_conf`, if the channel is not
-			// publicly announced.
-			if *channel_type != ChannelTypeFeatures::only_static_remote_key() {
-				if !channel_type.requires_scid_privacy() && !channel_type.requires_zero_conf() {
-					return Err(ChannelError::Close("Channel Type was not understood".to_owned()));
-				}
-
-				if channel_type.requires_scid_privacy() && announced_channel {
-					return Err(ChannelError::Close("SCID Alias/Privacy Channel Type cannot be set on a public channel".to_owned()));
-				}
+			// Make sure we support all of the features behind the channel type.
+			if !channel_type.is_subset(our_supported_features) {
+				return Err(ChannelError::Close("Channel Type contains unsupported features".to_owned()));
+			}
+			if channel_type.requires_scid_privacy() && announced_channel {
+				return Err(ChannelError::Close("SCID Alias/Privacy Channel Type cannot be set on a public channel".to_owned()));
 			}
 			channel_type.clone()
 		} else {
-			ChannelTypeFeatures::from_counterparty_init(&their_features)
+			let channel_type = ChannelTypeFeatures::from_init(&their_features);
+			if channel_type != ChannelTypeFeatures::only_static_remote_key() {
+				return Err(ChannelError::Close("Only static_remote_key is supported for non-negotiated channel types".to_owned()));
+			}
+			channel_type
 		};
-		if !channel_type.supports_static_remote_key() {
-			return Err(ChannelError::Close("Channel Type was not understood - we require static remote key".to_owned()));
-		}
+		let opt_anchors = channel_type.supports_anchors_zero_fee_htlc_tx();
 
 		let channel_keys_id = signer_provider.generate_channel_keys_id(true, msg.funding_satoshis, user_id);
 		let holder_signer = signer_provider.derive_channel_signer(msg.funding_satoshis, channel_keys_id);
@@ -2130,7 +2159,11 @@ impl<Signer: Sign> Channel<Signer> {
 		} else if their_features.supports_channel_type() {
 			// Assume they've accepted the channel type as they said they understand it.
 		} else {
-			self.channel_type = ChannelTypeFeatures::from_counterparty_init(&their_features)
+			let channel_type = ChannelTypeFeatures::from_init(&their_features);
+			if channel_type != ChannelTypeFeatures::only_static_remote_key() {
+				return Err(ChannelError::Close("Only static_remote_key is supported for non-negotiated channel types".to_owned()));
+			}
+			self.channel_type = channel_type;
 		}
 
 		let counterparty_shutdown_scriptpubkey = if their_features.supports_upfront_shutdown_script() {
@@ -6331,13 +6364,13 @@ impl<Signer: Sign> Writeable for Channel<Signer> {
 }
 
 const MAX_ALLOC_SIZE: usize = 64*1024;
-impl<'a, 'b, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32)> for Channel<<SP::Target as SignerProvider>::Signer>
+impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c ChannelTypeFeatures)> for Channel<<SP::Target as SignerProvider>::Signer>
 		where
 			ES::Target: EntropySource,
 			SP::Target: SignerProvider
 {
-	fn read<R : io::Read>(reader: &mut R, args: (&'a ES, &'b SP, u32)) -> Result<Self, DecodeError> {
-		let (entropy_source, signer_provider, serialized_height) = args;
+	fn read<R : io::Read>(reader: &mut R, args: (&'a ES, &'b SP, u32, &'c ChannelTypeFeatures)) -> Result<Self, DecodeError> {
+		let (entropy_source, signer_provider, serialized_height, our_supported_features) = args;
 		let ver = read_ver_prefix!(reader, SERIALIZATION_VERSION);
 
 		// `user_id` used to be a single u64 value. In order to remain backwards compatible with
@@ -6653,15 +6686,10 @@ impl<'a, 'b, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32)> for Chann
 		}
 
 		let chan_features = channel_type.as_ref().unwrap();
-		if chan_features.supports_unknown_bits() || chan_features.requires_unknown_bits() {
+		if !chan_features.is_subset(our_supported_features) {
 			// If the channel was written by a new version and negotiated with features we don't
 			// understand yet, refuse to read it.
 			return Err(DecodeError::UnknownRequiredFeature);
-		}
-
-		if channel_parameters.opt_anchors.is_some() {
-			// Relax this check when ChannelTypeFeatures supports anchors.
-			return Err(DecodeError::InvalidValue);
 		}
 
 		let mut secp_ctx = Secp256k1::new();
@@ -6798,6 +6826,8 @@ mod tests {
 	use hex;
 	use crate::ln::PaymentHash;
 	use crate::ln::channelmanager::{self, HTLCSource, PaymentId};
+	#[cfg(anchors)]
+	use crate::ln::channel::InitFeatures;
 	use crate::ln::channel::{Channel, InboundHTLCOutput, OutboundHTLCOutput, InboundHTLCState, OutboundHTLCState, HTLCCandidate, HTLCInitiator};
 	use crate::ln::channel::{MAX_FUNDING_SATOSHIS_NO_WUMBO, TOTAL_BITCOIN_SUPPLY_SATOSHIS, MIN_THEIR_CHAN_RESERVE_SATOSHIS};
 	use crate::ln::features::ChannelTypeFeatures;
@@ -6979,7 +7009,7 @@ mod tests {
 		// Make sure A's dust limit is as we expect.
 		let open_channel_msg = node_a_chan.get_open_channel(genesis_block(network).header.block_hash());
 		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[7; 32]).unwrap());
-		let mut node_b_chan = Channel::<EnforcingSigner>::new_from_req(&feeest, &&keys_provider, &&keys_provider, node_b_node_id, &channelmanager::provided_init_features(&config), &open_channel_msg, 7, &config, 0, &&logger, 42).unwrap();
+		let mut node_b_chan = Channel::<EnforcingSigner>::new_from_req(&feeest, &&keys_provider, &&keys_provider, node_b_node_id, &channelmanager::provided_channel_type_features(&config), &channelmanager::provided_init_features(&config), &open_channel_msg, 7, &config, 0, &&logger, 42).unwrap();
 
 		// Node B --> Node A: accept channel, explicitly setting B's dust limit.
 		let mut accept_channel_msg = node_b_chan.accept_inbound_channel(0);
@@ -7097,7 +7127,7 @@ mod tests {
 		// Create Node B's channel by receiving Node A's open_channel message
 		let open_channel_msg = node_a_chan.get_open_channel(chain_hash);
 		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[7; 32]).unwrap());
-		let mut node_b_chan = Channel::<EnforcingSigner>::new_from_req(&feeest, &&keys_provider, &&keys_provider, node_b_node_id, &channelmanager::provided_init_features(&config), &open_channel_msg, 7, &config, 0, &&logger, 42).unwrap();
+		let mut node_b_chan = Channel::<EnforcingSigner>::new_from_req(&feeest, &&keys_provider, &&keys_provider, node_b_node_id, &channelmanager::provided_channel_type_features(&config), &channelmanager::provided_init_features(&config), &open_channel_msg, 7, &config, 0, &&logger, 42).unwrap();
 
 		// Node B --> Node A: accept channel
 		let accept_channel_msg = node_b_chan.accept_inbound_channel(0);
@@ -7179,12 +7209,12 @@ mod tests {
 		// Test that `new_from_req` creates a channel with the correct value for
 		// `holder_max_htlc_value_in_flight_msat`, when configured with a valid percentage value,
 		// which is set to the lower bound - 1 (2%) of the `channel_value`.
-		let chan_3 = Channel::<EnforcingSigner>::new_from_req(&feeest, &&keys_provider, &&keys_provider, inbound_node_id, &channelmanager::provided_init_features(&config_2_percent), &chan_1_open_channel_msg, 7, &config_2_percent, 0, &&logger, 42).unwrap();
+		let chan_3 = Channel::<EnforcingSigner>::new_from_req(&feeest, &&keys_provider, &&keys_provider, inbound_node_id, &channelmanager::provided_channel_type_features(&config_2_percent), &channelmanager::provided_init_features(&config_2_percent), &chan_1_open_channel_msg, 7, &config_2_percent, 0, &&logger, 42).unwrap();
 		let chan_3_value_msat = chan_3.channel_value_satoshis * 1000;
 		assert_eq!(chan_3.holder_max_htlc_value_in_flight_msat, (chan_3_value_msat as f64 * 0.02) as u64);
 
 		// Test with the upper bound - 1 of valid values (99%).
-		let chan_4 = Channel::<EnforcingSigner>::new_from_req(&feeest, &&keys_provider, &&keys_provider, inbound_node_id, &channelmanager::provided_init_features(&config_99_percent), &chan_1_open_channel_msg, 7, &config_99_percent, 0, &&logger, 42).unwrap();
+		let chan_4 = Channel::<EnforcingSigner>::new_from_req(&feeest, &&keys_provider, &&keys_provider, inbound_node_id, &channelmanager::provided_channel_type_features(&config_99_percent), &channelmanager::provided_init_features(&config_99_percent), &chan_1_open_channel_msg, 7, &config_99_percent, 0, &&logger, 42).unwrap();
 		let chan_4_value_msat = chan_4.channel_value_satoshis * 1000;
 		assert_eq!(chan_4.holder_max_htlc_value_in_flight_msat, (chan_4_value_msat as f64 * 0.99) as u64);
 
@@ -7203,14 +7233,14 @@ mod tests {
 
 		// Test that `new_from_req` uses the lower bound of the configurable percentage values (1%)
 		// if `max_inbound_htlc_value_in_flight_percent_of_channel` is set to a value less than 1.
-		let chan_7 = Channel::<EnforcingSigner>::new_from_req(&feeest, &&keys_provider, &&keys_provider, inbound_node_id, &channelmanager::provided_init_features(&config_0_percent), &chan_1_open_channel_msg, 7, &config_0_percent, 0, &&logger, 42).unwrap();
+		let chan_7 = Channel::<EnforcingSigner>::new_from_req(&feeest, &&keys_provider, &&keys_provider, inbound_node_id, &channelmanager::provided_channel_type_features(&config_0_percent), &channelmanager::provided_init_features(&config_0_percent), &chan_1_open_channel_msg, 7, &config_0_percent, 0, &&logger, 42).unwrap();
 		let chan_7_value_msat = chan_7.channel_value_satoshis * 1000;
 		assert_eq!(chan_7.holder_max_htlc_value_in_flight_msat, (chan_7_value_msat as f64 * 0.01) as u64);
 
 		// Test that `new_from_req` uses the upper bound of the configurable percentage values
 		// (100%) if `max_inbound_htlc_value_in_flight_percent_of_channel` is set to a larger value
 		// than 100.
-		let chan_8 = Channel::<EnforcingSigner>::new_from_req(&feeest, &&keys_provider, &&keys_provider, inbound_node_id, &channelmanager::provided_init_features(&config_101_percent), &chan_1_open_channel_msg, 7, &config_101_percent, 0, &&logger, 42).unwrap();
+		let chan_8 = Channel::<EnforcingSigner>::new_from_req(&feeest, &&keys_provider, &&keys_provider, inbound_node_id, &channelmanager::provided_channel_type_features(&config_101_percent), &channelmanager::provided_init_features(&config_101_percent), &chan_1_open_channel_msg, 7, &config_101_percent, 0, &&logger, 42).unwrap();
 		let chan_8_value_msat = chan_8.channel_value_satoshis * 1000;
 		assert_eq!(chan_8.holder_max_htlc_value_in_flight_msat, chan_8_value_msat);
 	}
@@ -7260,7 +7290,7 @@ mod tests {
 		inbound_node_config.channel_handshake_config.their_channel_reserve_proportional_millionths = (inbound_selected_channel_reserve_perc * 1_000_000.0) as u32;
 
 		if outbound_selected_channel_reserve_perc + inbound_selected_channel_reserve_perc < 1.0 {
-			let chan_inbound_node = Channel::<EnforcingSigner>::new_from_req(&&fee_est, &&keys_provider, &&keys_provider, inbound_node_id, &channelmanager::provided_init_features(&outbound_node_config), &chan_open_channel_msg, 7, &inbound_node_config, 0, &&logger, 42).unwrap();
+			let chan_inbound_node = Channel::<EnforcingSigner>::new_from_req(&&fee_est, &&keys_provider, &&keys_provider, inbound_node_id, &channelmanager::provided_channel_type_features(&inbound_node_config), &channelmanager::provided_init_features(&outbound_node_config), &chan_open_channel_msg, 7, &inbound_node_config, 0, &&logger, 42).unwrap();
 
 			let expected_inbound_selected_chan_reserve = cmp::max(MIN_THEIR_CHAN_RESERVE_SATOSHIS, (chan.channel_value_satoshis as f64 * inbound_selected_channel_reserve_perc) as u64);
 
@@ -7268,7 +7298,7 @@ mod tests {
 			assert_eq!(chan_inbound_node.counterparty_selected_channel_reserve_satoshis.unwrap(), expected_outbound_selected_chan_reserve);
 		} else {
 			// Channel Negotiations failed
-			let result = Channel::<EnforcingSigner>::new_from_req(&&fee_est, &&keys_provider, &&keys_provider, inbound_node_id, &channelmanager::provided_init_features(&outbound_node_config), &chan_open_channel_msg, 7, &inbound_node_config, 0, &&logger, 42);
+			let result = Channel::<EnforcingSigner>::new_from_req(&&fee_est, &&keys_provider, &&keys_provider, inbound_node_id, &channelmanager::provided_channel_type_features(&inbound_node_config), &channelmanager::provided_init_features(&outbound_node_config), &chan_open_channel_msg, 7, &inbound_node_config, 0, &&logger, 42);
 			assert!(result.is_err());
 		}
 	}
@@ -8088,7 +8118,164 @@ mod tests {
 		open_channel_msg.channel_type = Some(channel_type_features);
 		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[7; 32]).unwrap());
 		let res = Channel::<EnforcingSigner>::new_from_req(&feeest, &&keys_provider, &&keys_provider,
-			node_b_node_id, &channelmanager::provided_init_features(&config), &open_channel_msg, 7, &config, 0, &&logger, 42);
+			node_b_node_id, &channelmanager::provided_channel_type_features(&config),
+			&channelmanager::provided_init_features(&config), &open_channel_msg, 7, &config, 0, &&logger, 42);
 		assert!(res.is_ok());
+	}
+
+	#[cfg(anchors)]
+	#[test]
+	fn test_supports_anchors_zero_htlc_tx_fee() {
+		// Tests that if both sides support and negotiate `anchors_zero_fee_htlc_tx`, it is the
+		// resulting `channel_type`.
+		let secp_ctx = Secp256k1::new();
+		let fee_estimator = LowerBoundedFeeEstimator::new(&TestFeeEstimator{fee_est: 15000});
+		let network = Network::Testnet;
+		let keys_provider = test_utils::TestKeysInterface::new(&[42; 32], network);
+		let logger = test_utils::TestLogger::new();
+
+		let node_id_a = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[1; 32]).unwrap());
+		let node_id_b = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[2; 32]).unwrap());
+
+		let mut config = UserConfig::default();
+		config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+
+		// It is not enough for just the initiator to signal `option_anchors_zero_fee_htlc_tx`, both
+		// need to signal it.
+		let channel_a = Channel::<EnforcingSigner>::new_outbound(
+			&fee_estimator, &&keys_provider, &&keys_provider, node_id_b,
+			&channelmanager::provided_init_features(&UserConfig::default()), 10000000, 100000, 42,
+			&config, 0, 42
+		).unwrap();
+		assert!(!channel_a.channel_type.supports_anchors_zero_fee_htlc_tx());
+
+		let mut expected_channel_type = ChannelTypeFeatures::empty();
+		expected_channel_type.set_static_remote_key_required();
+		expected_channel_type.set_anchors_zero_fee_htlc_tx_required();
+
+		let channel_a = Channel::<EnforcingSigner>::new_outbound(
+			&fee_estimator, &&keys_provider, &&keys_provider, node_id_b,
+			&channelmanager::provided_init_features(&config), 10000000, 100000, 42, &config, 0, 42
+		).unwrap();
+
+		let open_channel_msg = channel_a.get_open_channel(genesis_block(network).header.block_hash());
+		let channel_b = Channel::<EnforcingSigner>::new_from_req(
+			&fee_estimator, &&keys_provider, &&keys_provider, node_id_a,
+			&channelmanager::provided_channel_type_features(&config), &channelmanager::provided_init_features(&config),
+			&open_channel_msg, 7, &config, 0, &&logger, 42
+		).unwrap();
+
+		assert_eq!(channel_a.channel_type, expected_channel_type);
+		assert_eq!(channel_b.channel_type, expected_channel_type);
+	}
+
+	#[cfg(anchors)]
+	#[test]
+	fn test_rejects_implicit_simple_anchors() {
+		// Tests that if `option_anchors` is being negotiated implicitly through the intersection of
+		// each side's `InitFeatures`, it is rejected.
+		let secp_ctx = Secp256k1::new();
+		let fee_estimator = LowerBoundedFeeEstimator::new(&TestFeeEstimator{fee_est: 15000});
+		let network = Network::Testnet;
+		let keys_provider = test_utils::TestKeysInterface::new(&[42; 32], network);
+		let logger = test_utils::TestLogger::new();
+
+		let node_id_a = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[1; 32]).unwrap());
+		let node_id_b = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[2; 32]).unwrap());
+
+		let config = UserConfig::default();
+
+		// See feature bit assignments: https://github.com/lightning/bolts/blob/master/09-features.md
+		let static_remote_key_required: u64 = 1 << 12;
+		let simple_anchors_required: u64 = 1 << 20;
+		let raw_init_features = static_remote_key_required | simple_anchors_required;
+		let init_features_with_simple_anchors = InitFeatures::from_le_bytes(raw_init_features.to_le_bytes().to_vec());
+
+		let channel_a = Channel::<EnforcingSigner>::new_outbound(
+			&fee_estimator, &&keys_provider, &&keys_provider, node_id_b,
+			&channelmanager::provided_init_features(&config), 10000000, 100000, 42, &config, 0, 42
+		).unwrap();
+
+		// Set `channel_type` to `None` to force the implicit feature negotiation.
+		let mut open_channel_msg = channel_a.get_open_channel(genesis_block(network).header.block_hash());
+		open_channel_msg.channel_type = None;
+
+		// Since A supports both `static_remote_key` and `option_anchors`, but B only accepts
+		// `static_remote_key`, it will fail the channel.
+		let channel_b = Channel::<EnforcingSigner>::new_from_req(
+			&fee_estimator, &&keys_provider, &&keys_provider, node_id_a,
+			&channelmanager::provided_channel_type_features(&config), &init_features_with_simple_anchors,
+			&open_channel_msg, 7, &config, 0, &&logger, 42
+		);
+		assert!(channel_b.is_err());
+	}
+
+	#[cfg(anchors)]
+	#[test]
+	fn test_rejects_simple_anchors_channel_type() {
+		// Tests that if `option_anchors` is being negotiated through the `channel_type` feature,
+		// it is rejected.
+		let secp_ctx = Secp256k1::new();
+		let fee_estimator = LowerBoundedFeeEstimator::new(&TestFeeEstimator{fee_est: 15000});
+		let network = Network::Testnet;
+		let keys_provider = test_utils::TestKeysInterface::new(&[42; 32], network);
+		let logger = test_utils::TestLogger::new();
+
+		let node_id_a = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[1; 32]).unwrap());
+		let node_id_b = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[2; 32]).unwrap());
+
+		let config = UserConfig::default();
+
+		// See feature bit assignments: https://github.com/lightning/bolts/blob/master/09-features.md
+		let static_remote_key_required: u64 = 1 << 12;
+		let simple_anchors_required: u64 = 1 << 20;
+		let simple_anchors_raw_features = static_remote_key_required | simple_anchors_required;
+		let simple_anchors_init = InitFeatures::from_le_bytes(simple_anchors_raw_features.to_le_bytes().to_vec());
+		let simple_anchors_channel_type = ChannelTypeFeatures::from_le_bytes(simple_anchors_raw_features.to_le_bytes().to_vec());
+		assert!(simple_anchors_init.requires_unknown_bits());
+		assert!(simple_anchors_channel_type.requires_unknown_bits());
+
+		// First, we'll try to open a channel between A and B where A requests a channel type for
+		// the original `option_anchors` feature (non zero fee htlc tx). This should be rejected by
+		// B as it's not supported by LDK.
+		let channel_a = Channel::<EnforcingSigner>::new_outbound(
+			&fee_estimator, &&keys_provider, &&keys_provider, node_id_b,
+			&channelmanager::provided_init_features(&config), 10000000, 100000, 42, &config, 0, 42
+		).unwrap();
+
+		let mut open_channel_msg = channel_a.get_open_channel(genesis_block(network).header.block_hash());
+		open_channel_msg.channel_type = Some(simple_anchors_channel_type.clone());
+
+		let res = Channel::<EnforcingSigner>::new_from_req(
+			&fee_estimator, &&keys_provider, &&keys_provider, node_id_a,
+			&channelmanager::provided_channel_type_features(&config), &simple_anchors_init,
+			&open_channel_msg, 7, &config, 0, &&logger, 42
+		);
+		assert!(res.is_err());
+
+		// Then, we'll try to open another channel where A requests a channel type for
+		// `anchors_zero_fee_htlc_tx`. B is malicious and tries to downgrade the channel type to the
+		// original `option_anchors` feature, which should be rejected by A as it's not supported by
+		// LDK.
+		let mut channel_a = Channel::<EnforcingSigner>::new_outbound(
+			&fee_estimator, &&keys_provider, &&keys_provider, node_id_b, &simple_anchors_init,
+			10000000, 100000, 42, &config, 0, 42
+		).unwrap();
+
+		let open_channel_msg = channel_a.get_open_channel(genesis_block(network).header.block_hash());
+
+		let channel_b = Channel::<EnforcingSigner>::new_from_req(
+			&fee_estimator, &&keys_provider, &&keys_provider, node_id_a,
+			&channelmanager::provided_channel_type_features(&config), &channelmanager::provided_init_features(&config),
+			&open_channel_msg, 7, &config, 0, &&logger, 42
+		).unwrap();
+
+		let mut accept_channel_msg = channel_b.get_accept_channel_message();
+		accept_channel_msg.channel_type = Some(simple_anchors_channel_type.clone());
+
+		let res = channel_a.accept_channel(
+			&accept_channel_msg, &config.channel_handshake_limits, &simple_anchors_init
+		);
+		assert!(res.is_err());
 	}
 }

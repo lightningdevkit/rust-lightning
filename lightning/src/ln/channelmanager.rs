@@ -4193,7 +4193,7 @@ where
 		let mut peer_state_lock = peer_state_mutex_opt.unwrap().lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
 		let mut channel = match Channel::new_from_req(&self.fee_estimator, &self.entropy_source, &self.signer_provider,
-			counterparty_node_id.clone(), &peer_state.latest_features, msg, user_channel_id, &self.default_configuration,
+			counterparty_node_id.clone(), &self.channel_type_features(), &peer_state.latest_features, msg, user_channel_id, &self.default_configuration,
 			self.best_block.read().unwrap().height(), &self.logger, outbound_scid_alias)
 		{
 			Err(e) => {
@@ -6264,7 +6264,7 @@ pub(crate) fn provided_channel_features(config: &UserConfig) -> ChannelFeatures 
 /// Fetches the set of [`ChannelTypeFeatures`] flags which are provided by or required by
 /// [`ChannelManager`].
 pub(crate) fn provided_channel_type_features(config: &UserConfig) -> ChannelTypeFeatures {
-	ChannelTypeFeatures::from_counterparty_init(&provided_init_features(config))
+	ChannelTypeFeatures::from_init(&provided_init_features(config))
 }
 
 /// Fetches the set of [`InitFeatures`] flags which are provided by or required by
@@ -6285,6 +6285,12 @@ pub fn provided_init_features(_config: &UserConfig) -> InitFeatures {
 	features.set_channel_type_optional();
 	features.set_scid_privacy_optional();
 	features.set_zero_conf_optional();
+	#[cfg(anchors)]
+	{ // Attributes are not allowed on if expressions on our current MSRV of 1.41.
+		if _config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx {
+			features.set_anchors_zero_fee_htlc_tx_optional();
+		}
+	}
 	features
 }
 
@@ -7023,7 +7029,9 @@ where
 		let mut short_to_chan_info = HashMap::with_capacity(cmp::min(channel_count as usize, 128));
 		let mut channel_closures = Vec::new();
 		for _ in 0..channel_count {
-			let mut channel: Channel<<SP::Target as SignerProvider>::Signer> = Channel::read(reader, (&args.entropy_source, &args.signer_provider, best_block_height))?;
+			let mut channel: Channel<<SP::Target as SignerProvider>::Signer> = Channel::read(reader, (
+				&args.entropy_source, &args.signer_provider, best_block_height, &provided_channel_type_features(&args.default_config)
+			))?;
 			let funding_txo = channel.get_funding_txo().ok_or(DecodeError::InvalidValue)?;
 			funding_txo_set.insert(funding_txo.clone());
 			if let Some(ref mut monitor) = args.channel_monitors.get_mut(&funding_txo) {
@@ -8306,6 +8314,42 @@ mod tests {
 		nodes[1].node.handle_revoke_and_ack(&unkown_public_key, &revoke_and_ack_msg);
 
 		nodes[1].node.handle_update_fee(&unkown_public_key, &update_fee_msg);
+	}
+
+	#[cfg(anchors)]
+	#[test]
+	fn test_anchors_zero_fee_htlc_tx_fallback() {
+		// Tests that if both nodes support anchors, but the remote node does not want to accept
+		// anchor channels at the moment, an error it sent to the local node such that it can retry
+		// the channel without the anchors feature.
+		let chanmon_cfgs = create_chanmon_cfgs(2);
+		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+		let mut anchors_config = test_default_channel_config();
+		anchors_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+		anchors_config.manually_accept_inbound_channels = true;
+		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(anchors_config.clone()), Some(anchors_config.clone())]);
+		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+		nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100_000, 0, 0, None).unwrap();
+		let open_channel_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
+		assert!(open_channel_msg.channel_type.as_ref().unwrap().supports_anchors_zero_fee_htlc_tx());
+
+		nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), &open_channel_msg);
+		let events = nodes[1].node.get_and_clear_pending_events();
+		match events[0] {
+			Event::OpenChannelRequest { temporary_channel_id, .. } => {
+				nodes[1].node.force_close_broadcasting_latest_txn(&temporary_channel_id, &nodes[0].node.get_our_node_id()).unwrap();
+			}
+			_ => panic!("Unexpected event"),
+		}
+
+		let error_msg = get_err_msg!(nodes[1], nodes[0].node.get_our_node_id());
+		nodes[0].node.handle_error(&nodes[1].node.get_our_node_id(), &error_msg);
+
+		let open_channel_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
+		assert!(!open_channel_msg.channel_type.unwrap().supports_anchors_zero_fee_htlc_tx());
+
+		check_closed_event!(nodes[1], 1, ClosureReason::HolderForceClosed);
 	}
 }
 

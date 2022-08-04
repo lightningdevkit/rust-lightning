@@ -512,10 +512,10 @@ impl InvoiceFeatures {
 }
 
 impl ChannelTypeFeatures {
-	/// Constructs the implicit channel type based on the common supported types between us and our
-	/// counterparty
-	pub(crate) fn from_counterparty_init(counterparty_init: &InitFeatures) -> Self {
-		let mut ret = counterparty_init.to_context_internal();
+	// Maps the relevant `InitFeatures` to `ChannelTypeFeatures`. Any unknown features to
+	// `ChannelTypeFeatures` are not included in the result.
+	pub(crate) fn from_init(init: &InitFeatures) -> Self {
+		let mut ret = init.to_context_internal();
 		// ChannelTypeFeatures must only contain required bits, so we OR the required forms of all
 		// optional bits and then AND out the optional ones.
 		for byte in ret.flags.iter_mut() {
@@ -685,6 +685,24 @@ impl<T: sealed::Context> Features<T> {
 			(byte & unknown_features) != 0
 		})
 	}
+
+	// Returns true if the features within `self` are a subset of the features within `other`.
+	pub(crate) fn is_subset(&self, other: &Self) -> bool {
+		for (idx, byte) in self.flags.iter().enumerate() {
+			if let Some(other_byte) = other.flags.get(idx) {
+				if byte & other_byte != *byte {
+					// `self` has bits set that `other` doesn't.
+					return false;
+				}
+			} else {
+				if *byte > 0 {
+					// `self` has a non-zero byte that `other` doesn't.
+					return false;
+				}
+			}
+		}
+		true
+	}
 }
 
 impl<T: sealed::UpfrontShutdownScript> Features<T> {
@@ -708,6 +726,18 @@ impl<T: sealed::Wumbo> Features<T> {
 	pub(crate) fn clear_wumbo(mut self) -> Self {
 		<T as sealed::Wumbo>::clear_bits(&mut self.flags);
 		self
+	}
+}
+
+impl<T: sealed::SCIDPrivacy> Features<T> {
+	pub(crate) fn clear_scid_privacy(&mut self) {
+		<T as sealed::SCIDPrivacy>::clear_bits(&mut self.flags);
+	}
+}
+
+impl<T: sealed::AnchorsZeroFeeHtlcTx> Features<T> {
+	pub(crate) fn clear_anchors_zero_fee_htlc_tx(&mut self) {
+		<T as sealed::AnchorsZeroFeeHtlcTx>::clear_bits(&mut self.flags);
 	}
 }
 
@@ -815,6 +845,7 @@ mod tests {
 		init_features.set_channel_type_optional();
 		init_features.set_scid_privacy_optional();
 		init_features.set_zero_conf_optional();
+		init_features.set_anchors_zero_fee_htlc_tx_optional();
 
 		assert!(init_features.initial_routing_sync());
 		assert!(!init_features.supports_upfront_shutdown_script());
@@ -924,7 +955,7 @@ mod tests {
 		// required-StaticRemoteKey ChannelTypeFeatures.
 		let mut init_features = InitFeatures::empty();
 		init_features.set_static_remote_key_optional();
-		let converted_features = ChannelTypeFeatures::from_counterparty_init(&init_features);
+		let converted_features = ChannelTypeFeatures::from_init(&init_features);
 		assert_eq!(converted_features, ChannelTypeFeatures::only_static_remote_key());
 		assert!(!converted_features.supports_any_optional_bits());
 		assert!(converted_features.requires_static_remote_key());
