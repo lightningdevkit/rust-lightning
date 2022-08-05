@@ -16,7 +16,7 @@ use ln::msgs::DecodeError;
 use ln::onion_utils;
 use super::blinded_route::{ForwardTlvs, ReceiveTlvs};
 use util::chacha20poly1305rfc::{ChaChaPolyReadAdapter, ChaChaPolyWriteAdapter};
-use util::ser::{FixedLengthReader, LengthRead, LengthReadable, LengthReadableArgs, Readable, ReadableArgs, Writeable, Writer};
+use util::ser::{BigSize, FixedLengthReader, LengthRead, LengthReadable, LengthReadableArgs, Readable, ReadableArgs, Writeable, Writer};
 
 use core::cmp;
 use io::{self, Read};
@@ -161,13 +161,7 @@ impl Writeable for (Payload, [u8; 32]) {
 // Uses the provided secret to simultaneously decode and decrypt the control TLVs.
 impl ReadableArgs<SharedSecret> for Payload {
 	fn read<R: Read>(mut r: &mut R, encrypted_tlvs_ss: SharedSecret) -> Result<Self, DecodeError> {
-		use bitcoin::consensus::encode::{Decodable, Error, VarInt};
-		let v: VarInt = Decodable::consensus_decode(&mut r)
-			.map_err(|e| match e {
-				Error::Io(ioe) => DecodeError::from(ioe),
-				_ => DecodeError::InvalidValue
-			})?;
-
+		let v: BigSize = Readable::read(r)?;
 		let mut rd = FixedLengthReader::new(r, v.0);
 		// TODO: support reply paths
 		let mut _reply_path_bytes: Option<Vec<u8>> = Some(Vec::new());
