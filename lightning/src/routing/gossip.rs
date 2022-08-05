@@ -1796,6 +1796,12 @@ impl ReadOnlyNetworkGraph<'_> {
 		self.channels.get(&short_channel_id)
 	}
 
+	#[cfg(c_bindings)] // Non-bindings users should use `channels`
+	/// Returns the list of channels in the graph
+	pub fn list_channels(&self) -> Vec<u64> {
+		self.channels.keys().map(|c| *c).collect()
+	}
+
 	/// Returns all known nodes' public keys along with announced node info.
 	///
 	/// (C-not exported) because we have no mapping for `BTreeMap`s
@@ -1806,6 +1812,12 @@ impl ReadOnlyNetworkGraph<'_> {
 	/// Returns information on a node with the given id.
 	pub fn node(&self, node_id: &NodeId) -> Option<&NodeInfo> {
 		self.nodes.get(node_id)
+	}
+
+	#[cfg(c_bindings)] // Non-bindings users should use `nodes`
+	/// Returns the list of nodes in the graph
+	pub fn list_nodes(&self) -> Vec<NodeId> {
+		self.nodes.keys().map(|n| *n).collect()
 	}
 
 	/// Get network addresses by node id.
