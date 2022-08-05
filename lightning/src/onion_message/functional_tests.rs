@@ -72,7 +72,7 @@ fn pass_along_path(path: &Vec<MessengerNode>, expected_path_id: Option<[u8; 32]>
 fn one_hop() {
 	let nodes = create_nodes(2);
 
-	nodes[0].messenger.send_onion_message(&[], Destination::Node(nodes[1].get_node_pk())).unwrap();
+	nodes[0].messenger.send_onion_message(&[], Destination::Node(nodes[1].get_node_pk()), None).unwrap();
 	pass_along_path(&nodes, None);
 }
 
@@ -80,7 +80,7 @@ fn one_hop() {
 fn two_unblinded_hops() {
 	let nodes = create_nodes(3);
 
-	nodes[0].messenger.send_onion_message(&[nodes[1].get_node_pk()], Destination::Node(nodes[2].get_node_pk())).unwrap();
+	nodes[0].messenger.send_onion_message(&[nodes[1].get_node_pk()], Destination::Node(nodes[2].get_node_pk()), None).unwrap();
 	pass_along_path(&nodes, None);
 }
 
@@ -91,7 +91,7 @@ fn two_unblinded_two_blinded() {
 	let secp_ctx = Secp256k1::new();
 	let blinded_route = BlindedRoute::new::<EnforcingSigner, _, _>(&[nodes[3].get_node_pk(), nodes[4].get_node_pk()], &*nodes[4].keys_manager, &secp_ctx).unwrap();
 
-	nodes[0].messenger.send_onion_message(&[nodes[1].get_node_pk(), nodes[2].get_node_pk()], Destination::BlindedRoute(blinded_route)).unwrap();
+	nodes[0].messenger.send_onion_message(&[nodes[1].get_node_pk(), nodes[2].get_node_pk()], Destination::BlindedRoute(blinded_route), None).unwrap();
 	pass_along_path(&nodes, None);
 }
 
@@ -102,7 +102,7 @@ fn three_blinded_hops() {
 	let secp_ctx = Secp256k1::new();
 	let blinded_route = BlindedRoute::new::<EnforcingSigner, _, _>(&[nodes[1].get_node_pk(), nodes[2].get_node_pk(), nodes[3].get_node_pk()], &*nodes[3].keys_manager, &secp_ctx).unwrap();
 
-	nodes[0].messenger.send_onion_message(&[], Destination::BlindedRoute(blinded_route)).unwrap();
+	nodes[0].messenger.send_onion_message(&[], Destination::BlindedRoute(blinded_route), None).unwrap();
 	pass_along_path(&nodes, None);
 }
 
@@ -116,7 +116,7 @@ fn too_big_packet_error() {
 	let hop_node_id = PublicKey::from_secret_key(&secp_ctx, &hop_secret);
 
 	let hops = [hop_node_id; 400];
-	let err = nodes[0].messenger.send_onion_message(&hops, Destination::Node(hop_node_id)).unwrap_err();
+	let err = nodes[0].messenger.send_onion_message(&hops, Destination::Node(hop_node_id), None).unwrap_err();
 	assert_eq!(err, SendError::TooBigPacket);
 }
 
@@ -129,13 +129,38 @@ fn invalid_blinded_route_error() {
 	let secp_ctx = Secp256k1::new();
 	let mut blinded_route = BlindedRoute::new::<EnforcingSigner, _, _>(&[nodes[1].get_node_pk(), nodes[2].get_node_pk()], &*nodes[2].keys_manager, &secp_ctx).unwrap();
 	blinded_route.blinded_hops.clear();
-	let err = nodes[0].messenger.send_onion_message(&[], Destination::BlindedRoute(blinded_route)).unwrap_err();
+	let err = nodes[0].messenger.send_onion_message(&[], Destination::BlindedRoute(blinded_route), None).unwrap_err();
 	assert_eq!(err, SendError::TooFewBlindedHops);
 
 	// 1 hop
 	let mut blinded_route = BlindedRoute::new::<EnforcingSigner, _, _>(&[nodes[1].get_node_pk(), nodes[2].get_node_pk()], &*nodes[2].keys_manager, &secp_ctx).unwrap();
 	blinded_route.blinded_hops.remove(0);
 	assert_eq!(blinded_route.blinded_hops.len(), 1);
-	let err = nodes[0].messenger.send_onion_message(&[], Destination::BlindedRoute(blinded_route)).unwrap_err();
+	let err = nodes[0].messenger.send_onion_message(&[], Destination::BlindedRoute(blinded_route), None).unwrap_err();
 	assert_eq!(err, SendError::TooFewBlindedHops);
+}
+
+#[test]
+fn reply_path() {
+	let mut nodes = create_nodes(4);
+	let secp_ctx = Secp256k1::new();
+
+	// Destination::Node
+	let reply_path = BlindedRoute::new::<EnforcingSigner, _, _>(&[nodes[2].get_node_pk(), nodes[1].get_node_pk(), nodes[0].get_node_pk()], &*nodes[0].keys_manager, &secp_ctx).unwrap();
+	nodes[0].messenger.send_onion_message(&[nodes[1].get_node_pk(), nodes[2].get_node_pk()], Destination::Node(nodes[3].get_node_pk()), Some(reply_path)).unwrap();
+	pass_along_path(&nodes, None);
+	// Make sure the last node successfully decoded the reply path.
+	nodes[3].logger.assert_log_contains(
+		"lightning::onion_message::messenger".to_string(),
+		format!("Received an onion message with path_id: None and reply_path").to_string(), 1);
+
+	// Destination::BlindedRoute
+	let blinded_route = BlindedRoute::new::<EnforcingSigner, _, _>(&[nodes[1].get_node_pk(), nodes[2].get_node_pk(), nodes[3].get_node_pk()], &*nodes[3].keys_manager, &secp_ctx).unwrap();
+	let reply_path = BlindedRoute::new::<EnforcingSigner, _, _>(&[nodes[2].get_node_pk(), nodes[1].get_node_pk(), nodes[0].get_node_pk()], &*nodes[0].keys_manager, &secp_ctx).unwrap();
+
+	nodes[0].messenger.send_onion_message(&[], Destination::BlindedRoute(blinded_route), Some(reply_path)).unwrap();
+	pass_along_path(&nodes, None);
+	nodes[3].logger.assert_log_contains(
+		"lightning::onion_message::messenger".to_string(),
+		format!("Received an onion message with path_id: None and reply_path").to_string(), 2);
 }
