@@ -1417,14 +1417,6 @@ impl Writeable for OnionHopData {
 	}
 }
 
-// ReadableArgs because we need onion_utils::decode_next_hop to accommodate payment packets and
-// onion message packets.
-impl ReadableArgs<()> for OnionHopData {
-	fn read<R: Read>(r: &mut R, _arg: ()) -> Result<Self, DecodeError> {
-		<Self as Readable>::read(r)
-	}
-}
-
 impl Readable for OnionHopData {
 	fn read<R: Read>(mut r: &mut R) -> Result<Self, DecodeError> {
 		use bitcoin::consensus::encode::{Decodable, Error, VarInt};
@@ -1441,12 +1433,12 @@ impl Readable for OnionHopData {
 			let mut short_id: Option<u64> = None;
 			let mut payment_data: Option<FinalOnionHopData> = None;
 			let mut keysend_preimage: Option<PaymentPreimage> = None;
-			// The TLV type is chosen to be compatible with lnd and c-lightning.
 			decode_tlv_stream!(&mut rd, {
 				(2, amt, required),
 				(4, cltv_value, required),
 				(6, short_id, option),
 				(8, payment_data, option),
+				// See https://github.com/lightning/blips/blob/master/blip-0003.md
 				(5482373484, keysend_preimage, option)
 			});
 			rd.eat_remaining().map_err(|_| DecodeError::ShortRead)?;
@@ -1485,6 +1477,14 @@ impl Readable for OnionHopData {
 			amt_to_forward: amt,
 			outgoing_cltv_value: cltv_value,
 		})
+	}
+}
+
+// ReadableArgs because we need onion_utils::decode_next_hop to accommodate payment packets and
+// onion message packets.
+impl ReadableArgs<()> for OnionHopData {
+	fn read<R: Read>(r: &mut R, _arg: ()) -> Result<Self, DecodeError> {
+		<Self as Readable>::read(r)
 	}
 }
 
