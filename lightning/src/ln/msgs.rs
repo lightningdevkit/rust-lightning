@@ -40,7 +40,7 @@ use core::fmt::Debug;
 use io::{self, Read};
 use io_extras::read_to_end;
 
-use util::events::MessageSendEventsProvider;
+use util::events::{MessageSendEventsProvider, OnionMessageProvider};
 use util::logger;
 use util::ser::{BigSize, LengthReadable, Readable, ReadableArgs, Writeable, Writer, FixedLengthReader, HighZeroBytesDroppedBigSize, Hostname};
 
@@ -943,6 +943,12 @@ pub trait RoutingMessageHandler : MessageSendEventsProvider {
 	/// Handles when a peer asks us to send routing gossip messages for a
 	/// list of short_channel_ids.
 	fn handle_query_short_channel_ids(&self, their_node_id: &PublicKey, msg: QueryShortChannelIds) -> Result<(), LightningError>;
+}
+
+/// A trait to describe an object that can receive onion messages.
+pub trait OnionMessageHandler : OnionMessageProvider {
+	/// Handle an incoming onion_message message from the given peer.
+	fn handle_onion_message(&self, peer_node_id: &PublicKey, msg: &OnionMessage);
 }
 
 mod fuzzy_internal_msgs {

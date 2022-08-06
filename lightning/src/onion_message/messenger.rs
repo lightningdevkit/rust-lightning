@@ -16,13 +16,15 @@ use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::secp256k1::{self, PublicKey, Scalar, Secp256k1, SecretKey};
 
 use chain::keysinterface::{InMemorySigner, KeysInterface, KeysManager, Recipient, Sign};
-use ln::msgs;
+use ln::msgs::{self, OnionMessageHandler};
 use ln::onion_utils;
 use super::blinded_route::{BlindedRoute, ForwardTlvs, ReceiveTlvs};
 use super::packet::{BIG_PACKET_HOP_DATA_LEN, ForwardControlTlvs, Packet, Payload, ReceiveControlTlvs, SMALL_PACKET_HOP_DATA_LEN};
 use super::utils;
+use util::events::OnionMessageProvider;
 use util::logger::Logger;
 
+use core::mem;
 use core::ops::Deref;
 use sync::{Arc, Mutex};
 use prelude::*;
@@ -178,10 +180,23 @@ impl<Signer: Sign, K: Deref, L: Deref> OnionMessenger<Signer, K, L>
 		Ok(())
 	}
 
+	#[cfg(test)]
+	pub(super) fn release_pending_msgs(&self) -> HashMap<PublicKey, Vec<msgs::OnionMessage>> {
+		let mut pending_msgs = self.pending_messages.lock().unwrap();
+		let mut msgs = HashMap::new();
+		core::mem::swap(&mut *pending_msgs, &mut msgs);
+		msgs
+	}
+}
+
+impl<Signer: Sign, K: Deref, L: Deref> OnionMessageHandler for OnionMessenger<Signer, K, L>
+	where K::Target: KeysInterface<Signer = Signer>,
+	      L::Target: Logger,
+{
 	/// Handle an incoming onion message. Currently, if a message was destined for us we will log, but
 	/// soon we'll delegate the onion message to a handler that can generate invoices or send
 	/// payments.
-	pub fn handle_onion_message(&self, _peer_node_id: &PublicKey, msg: &msgs::OnionMessage) {
+	fn handle_onion_message(&self, _peer_node_id: &PublicKey, msg: &msgs::OnionMessage) {
 		let control_tlvs_ss = match self.keys_manager.ecdh(Recipient::Node, &msg.blinding_point, None) {
 			Ok(ss) => ss,
 			Err(e) =>  {
@@ -273,13 +288,14 @@ impl<Signer: Sign, K: Deref, L: Deref> OnionMessenger<Signer, K, L>
 			},
 		};
 	}
+}
 
-	#[cfg(test)]
-	pub(super) fn release_pending_msgs(&self) -> HashMap<PublicKey, Vec<msgs::OnionMessage>> {
-		let mut pending_msgs = self.pending_messages.lock().unwrap();
-		let mut msgs = HashMap::new();
-		core::mem::swap(&mut *pending_msgs, &mut msgs);
-		msgs
+impl<Signer: Sign, K: Deref, L: Deref> OnionMessageProvider for OnionMessenger<Signer, K, L>
+	where K::Target: KeysInterface<Signer = Signer>,
+	      L::Target: Logger,
+{
+	fn next_onion_message_for_peer(&self, peer_node_id: PublicKey) -> Option<msgs::OnionMessage> {
+		None
 	}
 }
 
