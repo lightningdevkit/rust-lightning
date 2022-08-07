@@ -563,7 +563,7 @@ mod tests {
 	use io::{self, Cursor};
 	use prelude::*;
 	use ln::msgs::DecodeError;
-	use util::ser::{Writeable, HighZeroBytesDroppedVarInt, VecWriter};
+	use util::ser::{Writeable, HighZeroBytesDroppedBigSize, VecWriter};
 	use bitcoin::secp256k1::PublicKey;
 
 	// The BOLT TLV test cases don't include any tests which use our "required-value" logic since
@@ -632,9 +632,9 @@ mod tests {
 	}
 
 	// BOLT TLV test cases
-	fn tlv_reader_n1(s: &[u8]) -> Result<(Option<HighZeroBytesDroppedVarInt<u64>>, Option<u64>, Option<(PublicKey, u64, u64)>, Option<u16>), DecodeError> {
+	fn tlv_reader_n1(s: &[u8]) -> Result<(Option<HighZeroBytesDroppedBigSize<u64>>, Option<u64>, Option<(PublicKey, u64, u64)>, Option<u16>), DecodeError> {
 		let mut s = Cursor::new(s);
-		let mut tlv1: Option<HighZeroBytesDroppedVarInt<u64>> = None;
+		let mut tlv1: Option<HighZeroBytesDroppedBigSize<u64>> = None;
 		let mut tlv2: Option<u64> = None;
 		let mut tlv3: Option<(PublicKey, u64, u64)> = None;
 		let mut tlv4: Option<u16> = None;
@@ -765,11 +765,11 @@ mod tests {
 		assert_eq!(stream.0, ::hex::decode("06fd00ff02abcd").unwrap());
 
 		stream.0.clear();
-		encode_varint_length_prefixed_tlv!(&mut stream, {(0, 1u64, required), (42, None::<u64>, option), (0xff, HighZeroBytesDroppedVarInt(0u64), required)});
+		encode_varint_length_prefixed_tlv!(&mut stream, {(0, 1u64, required), (42, None::<u64>, option), (0xff, HighZeroBytesDroppedBigSize(0u64), required)});
 		assert_eq!(stream.0, ::hex::decode("0e00080000000000000001fd00ff00").unwrap());
 
 		stream.0.clear();
-		encode_varint_length_prefixed_tlv!(&mut stream, {(0, Some(1u64), option), (0xff, HighZeroBytesDroppedVarInt(0u64), required)});
+		encode_varint_length_prefixed_tlv!(&mut stream, {(0, Some(1u64), option), (0xff, HighZeroBytesDroppedBigSize(0u64), required)});
 		assert_eq!(stream.0, ::hex::decode("0e00080000000000000001fd00ff00").unwrap());
 
 		Ok(())

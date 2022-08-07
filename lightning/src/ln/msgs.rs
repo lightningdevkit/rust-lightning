@@ -42,7 +42,7 @@ use io_extras::read_to_end;
 
 use util::events::MessageSendEventsProvider;
 use util::logger;
-use util::ser::{BigSize, LengthReadable, Readable, ReadableArgs, Writeable, Writer, FixedLengthReader, HighZeroBytesDroppedVarInt, Hostname};
+use util::ser::{BigSize, LengthReadable, Readable, ReadableArgs, Writeable, Writer, FixedLengthReader, HighZeroBytesDroppedBigSize, Hostname};
 
 use ln::{PaymentPreimage, PaymentHash, PaymentSecret};
 
@@ -1375,14 +1375,14 @@ impl Writeable for OnionMessage {
 impl Writeable for FinalOnionHopData {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		self.payment_secret.0.write(w)?;
-		HighZeroBytesDroppedVarInt(self.total_msat).write(w)
+		HighZeroBytesDroppedBigSize(self.total_msat).write(w)
 	}
 }
 
 impl Readable for FinalOnionHopData {
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		let secret: [u8; 32] = Readable::read(r)?;
-		let amt: HighZeroBytesDroppedVarInt<u64> = Readable::read(r)?;
+		let amt: HighZeroBytesDroppedBigSize<u64> = Readable::read(r)?;
 		Ok(Self { payment_secret: PaymentSecret(secret), total_msat: amt.0 })
 	}
 }
@@ -1399,15 +1399,15 @@ impl Writeable for OnionHopData {
 			},
 			OnionHopDataFormat::NonFinalNode { short_channel_id } => {
 				encode_varint_length_prefixed_tlv!(w, {
-					(2, HighZeroBytesDroppedVarInt(self.amt_to_forward), required),
-					(4, HighZeroBytesDroppedVarInt(self.outgoing_cltv_value), required),
+					(2, HighZeroBytesDroppedBigSize(self.amt_to_forward), required),
+					(4, HighZeroBytesDroppedBigSize(self.outgoing_cltv_value), required),
 					(6, short_channel_id, required)
 				});
 			},
 			OnionHopDataFormat::FinalNode { ref payment_data, ref keysend_preimage } => {
 				encode_varint_length_prefixed_tlv!(w, {
-					(2, HighZeroBytesDroppedVarInt(self.amt_to_forward), required),
-					(4, HighZeroBytesDroppedVarInt(self.outgoing_cltv_value), required),
+					(2, HighZeroBytesDroppedBigSize(self.amt_to_forward), required),
+					(4, HighZeroBytesDroppedBigSize(self.outgoing_cltv_value), required),
 					(8, payment_data, option),
 					(5482373484, keysend_preimage, option)
 				});
@@ -1423,8 +1423,8 @@ impl Readable for OnionHopData {
 		const LEGACY_ONION_HOP_FLAG: u64 = 0;
 		let (format, amt, cltv_value) = if b.0 != LEGACY_ONION_HOP_FLAG {
 			let mut rd = FixedLengthReader::new(r, b.0);
-			let mut amt = HighZeroBytesDroppedVarInt(0u64);
-			let mut cltv_value = HighZeroBytesDroppedVarInt(0u32);
+			let mut amt = HighZeroBytesDroppedBigSize(0u64);
+			let mut cltv_value = HighZeroBytesDroppedBigSize(0u32);
 			let mut short_id: Option<u64> = None;
 			let mut payment_data: Option<FinalOnionHopData> = None;
 			let mut keysend_preimage: Option<PaymentPreimage> = None;
@@ -2835,7 +2835,7 @@ mod tests {
 	}
 	// see above test, needs to be a separate method for use of the serialization macros.
 	fn encode_big_payload() -> Result<Vec<u8>, io::Error> {
-		use util::ser::HighZeroBytesDroppedVarInt;
+		use util::ser::HighZeroBytesDroppedBigSize;
 		let payload = msgs::OnionHopData {
 			format: OnionHopDataFormat::NonFinalNode {
 				short_channel_id: 0xdeadbeef1bad1dea,
@@ -2848,8 +2848,8 @@ mod tests {
 		if let OnionHopDataFormat::NonFinalNode { short_channel_id } = payload.format {
 			encode_varint_length_prefixed_tlv!(&mut encoded_payload, {
 				(1, test_bytes, vec_type),
-				(2, HighZeroBytesDroppedVarInt(payload.amt_to_forward), required),
-				(4, HighZeroBytesDroppedVarInt(payload.outgoing_cltv_value), required),
+				(2, HighZeroBytesDroppedBigSize(payload.amt_to_forward), required),
+				(4, HighZeroBytesDroppedBigSize(payload.outgoing_cltv_value), required),
 				(6, short_channel_id, required)
 			});
 		}
