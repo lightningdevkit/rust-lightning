@@ -401,16 +401,6 @@ pub(super) struct ChannelHolder<Signer: Sign> {
 	/// SCIDs being added once the funding transaction is confirmed at the channel's required
 	/// confirmation depth.
 	pub(super) short_to_chan_info: HashMap<u64, (PublicKey, [u8; 32])>,
-	/// SCID/SCID Alias -> forward infos. Key of 0 means payments received.
-	///
-	/// Note that because we may have an SCID Alias as the key we can have two entries per channel,
-	/// though in practice we probably won't be receiving HTLCs for a channel both via the alias
-	/// and via the classic SCID.
-	///
-	/// Note that while this is held in the same mutex as the channels themselves, no consistency
-	/// guarantees are made about the existence of a channel with the short id here, nor the short
-	/// ids in the PendingHTLCInfo!
-	pub(super) forward_htlcs: HashMap<u64, Vec<HTLCForwardInfo>>,
 	/// Map from payment hash to the payment data and any HTLCs which are to us and can be
 	/// failed/claimed by the user.
 	///
@@ -721,6 +711,19 @@ pub struct ChannelManager<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, 
 	///
 	/// Locked *after* channel_state.
 	pending_outbound_payments: Mutex<HashMap<PaymentId, PendingOutboundPayment>>,
+
+	/// SCID/SCID Alias -> forward infos. Key of 0 means payments received.
+	///
+	/// Note that because we may have an SCID Alias as the key we can have two entries per channel,
+	/// though in practice we probably won't be receiving HTLCs for a channel both via the alias
+	/// and via the classic SCID.
+	///
+	/// Note that no consistency guarantees are made about the existence of a channel with the
+	/// `short_channel_id` here, nor the `short_channel_id` in the `PendingHTLCInfo`!
+	#[cfg(test)]
+	pub(super) forward_htlcs: Mutex<HashMap<u64, Vec<HTLCForwardInfo>>>,
+	#[cfg(not(test))]
+	forward_htlcs: Mutex<HashMap<u64, Vec<HTLCForwardInfo>>>,
 
 	/// The set of outbound SCID aliases across all our channels, including unconfirmed channels
 	/// and some closed channels which reached a usable state prior to being closed. This is used
@@ -1595,13 +1598,13 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			channel_state: Mutex::new(ChannelHolder{
 				by_id: HashMap::new(),
 				short_to_chan_info: HashMap::new(),
-				forward_htlcs: HashMap::new(),
 				claimable_htlcs: HashMap::new(),
 				pending_msg_events: Vec::new(),
 			}),
 			outbound_scid_aliases: Mutex::new(HashSet::new()),
 			pending_inbound_payments: Mutex::new(HashMap::new()),
 			pending_outbound_payments: Mutex::new(HashMap::new()),
+			forward_htlcs: Mutex::new(HashMap::new()),
 			id_to_peer: Mutex::new(HashMap::new()),
 
 			our_network_key: keys_manager.get_node_secret(Recipient::Node).unwrap(),
@@ -3005,7 +3008,10 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			let mut channel_state_lock = self.channel_state.lock().unwrap();
 			let channel_state = &mut *channel_state_lock;
 
-			for (short_chan_id, mut pending_forwards) in channel_state.forward_htlcs.drain() {
+			let mut forward_htlcs = HashMap::new();
+			mem::swap(&mut forward_htlcs, &mut self.forward_htlcs.lock().unwrap());
+
+			for (short_chan_id, mut pending_forwards) in forward_htlcs {
 				if short_chan_id != 0 {
 					let forward_chan_id = match channel_state.short_to_chan_info.get(&short_chan_id) {
 						Some((_cp_id, chan_id)) => chan_id.clone(),
@@ -3904,10 +3910,11 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				};
 
 				let mut forward_event = None;
-				if channel_state_lock.forward_htlcs.is_empty() {
+				let mut forward_htlcs = self.forward_htlcs.lock().unwrap();
+				if forward_htlcs.is_empty() {
 					forward_event = Some(Duration::from_millis(MIN_HTLC_RELAY_HOLDING_CELL_MILLIS));
 				}
-				match channel_state_lock.forward_htlcs.entry(short_channel_id) {
+				match forward_htlcs.entry(short_channel_id) {
 					hash_map::Entry::Occupied(mut entry) => {
 						entry.get_mut().push(HTLCForwardInfo::FailHTLC { htlc_id, err_packet });
 					},
@@ -3915,6 +3922,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 						entry.insert(vec!(HTLCForwardInfo::FailHTLC { htlc_id, err_packet }));
 					}
 				}
+				mem::drop(forward_htlcs);
 				mem::drop(channel_state_lock);
 				let mut pending_events = self.pending_events.lock().unwrap();
 				if let Some(time) = forward_event {
@@ -4862,11 +4870,12 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			let mut forward_event = None;
 			if !pending_forwards.is_empty() {
 				let mut channel_state = self.channel_state.lock().unwrap();
-				if channel_state.forward_htlcs.is_empty() {
+				let mut forward_htlcs = self.forward_htlcs.lock().unwrap();
+				if forward_htlcs.is_empty() {
 					forward_event = Some(Duration::from_millis(MIN_HTLC_RELAY_HOLDING_CELL_MILLIS))
 				}
 				for (forward_info, prev_htlc_id) in pending_forwards.drain(..) {
-					match channel_state.forward_htlcs.entry(match forward_info.routing {
+					match forward_htlcs.entry(match forward_info.routing {
 							PendingHTLCRouting::Forward { short_channel_id, .. } => short_channel_id,
 							PendingHTLCRouting::Receive { .. } => 0,
 							PendingHTLCRouting::ReceiveKeysend { .. } => 0,
@@ -6552,8 +6561,9 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Writeable f
 			}
 		}
 
-		(channel_state.forward_htlcs.len() as u64).write(writer)?;
-		for (short_channel_id, pending_forwards) in channel_state.forward_htlcs.iter() {
+		let forward_htlcs = self.forward_htlcs.lock().unwrap();
+		(forward_htlcs.len() as u64).write(writer)?;
+		for (short_channel_id, pending_forwards) in forward_htlcs.iter() {
 			short_channel_id.write(writer)?;
 			(pending_forwards.len() as u64).write(writer)?;
 			for forward in pending_forwards {
@@ -7165,7 +7175,6 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 			channel_state: Mutex::new(ChannelHolder {
 				by_id,
 				short_to_chan_info,
-				forward_htlcs,
 				claimable_htlcs,
 				pending_msg_events: Vec::new(),
 			}),
@@ -7173,6 +7182,7 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 			pending_inbound_payments: Mutex::new(pending_inbound_payments),
 			pending_outbound_payments: Mutex::new(pending_outbound_payments.unwrap()),
 
+			forward_htlcs: Mutex::new(forward_htlcs),
 			outbound_scid_aliases: Mutex::new(outbound_scid_aliases),
 			id_to_peer: Mutex::new(id_to_peer),
 			fake_scid_rand_bytes: fake_scid_rand_bytes.unwrap(),

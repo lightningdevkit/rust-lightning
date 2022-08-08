@@ -540,7 +540,7 @@ fn test_onion_failure() {
 	}, || {}, true, Some(17), None, None);
 
 	run_onion_failure_test("final_incorrect_cltv_expiry", 1, &nodes, &route, &payment_hash, &payment_secret, |_| {}, || {
-		for (_, pending_forwards) in nodes[1].node.channel_state.lock().unwrap().forward_htlcs.iter_mut() {
+		for (_, pending_forwards) in nodes[1].node.forward_htlcs.lock().unwrap().iter_mut() {
 			for f in pending_forwards.iter_mut() {
 				match f {
 					&mut HTLCForwardInfo::AddHTLC { ref mut forward_info, .. } =>
@@ -553,7 +553,7 @@ fn test_onion_failure() {
 
 	run_onion_failure_test("final_incorrect_htlc_amount", 1, &nodes, &route, &payment_hash, &payment_secret, |_| {}, || {
 		// violate amt_to_forward > msg.amount_msat
-		for (_, pending_forwards) in nodes[1].node.channel_state.lock().unwrap().forward_htlcs.iter_mut() {
+		for (_, pending_forwards) in nodes[1].node.forward_htlcs.lock().unwrap().iter_mut() {
 			for f in pending_forwards.iter_mut() {
 				match f {
 					&mut HTLCForwardInfo::AddHTLC { ref mut forward_info, .. } =>
@@ -1021,8 +1021,8 @@ fn test_phantom_onion_hmac_failure() {
 
 	// Modify the payload so the phantom hop's HMAC is bogus.
 	let sha256_of_onion = {
-		let mut channel_state = nodes[1].node.channel_state.lock().unwrap();
-		let mut pending_forward = channel_state.forward_htlcs.get_mut(&phantom_scid).unwrap();
+		let mut forward_htlcs = nodes[1].node.forward_htlcs.lock().unwrap();
+		let mut pending_forward = forward_htlcs.get_mut(&phantom_scid).unwrap();
 		match pending_forward[0] {
 			HTLCForwardInfo::AddHTLC {
 				forward_info: PendingHTLCInfo {
@@ -1081,7 +1081,7 @@ fn test_phantom_invalid_onion_payload() {
 	commitment_signed_dance!(nodes[1], nodes[0], &update_0.commitment_signed, false, true);
 
 	// Modify the onion packet to have an invalid payment amount.
-	for (_, pending_forwards) in nodes[1].node.channel_state.lock().unwrap().forward_htlcs.iter_mut() {
+	for (_, pending_forwards) in nodes[1].node.forward_htlcs.lock().unwrap().iter_mut() {
 		for f in pending_forwards.iter_mut() {
 			match f {
 				&mut HTLCForwardInfo::AddHTLC {
@@ -1152,7 +1152,7 @@ fn test_phantom_final_incorrect_cltv_expiry() {
 	commitment_signed_dance!(nodes[1], nodes[0], &update_0.commitment_signed, false, true);
 
 	// Modify the payload so the phantom hop's HMAC is bogus.
-	for (_, pending_forwards) in nodes[1].node.channel_state.lock().unwrap().forward_htlcs.iter_mut() {
+	for (_, pending_forwards) in nodes[1].node.forward_htlcs.lock().unwrap().iter_mut() {
 		for f in pending_forwards.iter_mut() {
 			match f {
 				&mut HTLCForwardInfo::AddHTLC {
