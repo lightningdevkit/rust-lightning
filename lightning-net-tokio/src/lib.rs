@@ -66,9 +66,11 @@
 //! }
 //! ```
 
+// Prefix these with `rustdoc::` when we update our MSRV to be >= 1.52 to remove warnings.
 #![deny(broken_intra_doc_links)]
-#![deny(missing_docs)]
+#![deny(private_intra_doc_links)]
 
+#![deny(missing_docs)]
 #![cfg_attr(docsrs, feature(doc_auto_cfg))]
 
 use bitcoin::secp256k1::PublicKey;

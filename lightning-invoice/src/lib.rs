@@ -1,9 +1,12 @@
+// Prefix these with `rustdoc::` when we update our MSRV to be >= 1.52 to remove warnings.
+#![deny(broken_intra_doc_links)]
+#![deny(private_intra_doc_links)]
+
 #![deny(missing_docs)]
 #![deny(non_upper_case_globals)]
 #![deny(non_camel_case_types)]
 #![deny(non_snake_case)]
 #![deny(unused_mut)]
-#![deny(broken_intra_doc_links)]
 
 #![cfg_attr(docsrs, feature(doc_auto_cfg))]
 
