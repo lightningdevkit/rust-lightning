@@ -67,9 +67,9 @@ impl RoutingMessageHandler for IgnoringMessageHandler {
 	fn handle_node_announcement(&self, _msg: &msgs::NodeAnnouncement) -> Result<bool, LightningError> { Ok(false) }
 	fn handle_channel_announcement(&self, _msg: &msgs::ChannelAnnouncement) -> Result<bool, LightningError> { Ok(false) }
 	fn handle_channel_update(&self, _msg: &msgs::ChannelUpdate) -> Result<bool, LightningError> { Ok(false) }
-	fn get_next_channel_announcements(&self, _starting_point: u64, _batch_amount: u8) ->
-		Vec<(msgs::ChannelAnnouncement, Option<msgs::ChannelUpdate>, Option<msgs::ChannelUpdate>)> { Vec::new() }
-	fn get_next_node_announcements(&self, _starting_point: Option<&PublicKey>, _batch_amount: u8) -> Vec<msgs::NodeAnnouncement> { Vec::new() }
+	fn get_next_channel_announcement(&self, _starting_point: u64) ->
+		Option<(msgs::ChannelAnnouncement, Option<msgs::ChannelUpdate>, Option<msgs::ChannelUpdate>)> { None }
+	fn get_next_node_announcement(&self, _starting_point: Option<&PublicKey>) -> Option<msgs::NodeAnnouncement> { None }
 	fn peer_connected(&self, _their_node_id: &PublicKey, _init: &msgs::Init) {}
 	fn handle_reply_channel_range(&self, _their_node_id: &PublicKey, _msg: msgs::ReplyChannelRange) -> Result<(), LightningError> { Ok(()) }
 	fn handle_reply_short_channel_ids_end(&self, _their_node_id: &PublicKey, _msg: msgs::ReplyShortChannelIdsEnd) -> Result<(), LightningError> { Ok(()) }
@@ -383,19 +383,17 @@ impl Peer {
 		}
 	}
 
-	/// Returns the number of gossip messages we can fit in this peer's buffer.
-	fn gossip_buffer_slots_available(&self) -> usize {
-		OUTBOUND_BUFFER_LIMIT_READ_PAUSE.saturating_sub(self.pending_outbound_buffer.len())
-	}
-
 	/// Returns whether we should be reading bytes from this peer, based on whether its outbound
 	/// buffer still has space and we don't need to pause reads to get some writes out.
 	fn should_read(&self) -> bool {
 		self.pending_outbound_buffer.len() < OUTBOUND_BUFFER_LIMIT_READ_PAUSE
 	}
 
-	fn should_backfill_gossip(&self) -> bool {
-		self.pending_outbound_buffer.len() < OUTBOUND_BUFFER_LIMIT_READ_PAUSE &&
+	/// Determines if we should push additional gossip messages onto a peer's outbound buffer for
+	/// backfilling gossip data to the peer. This is checked every time the peer's buffer may have
+	/// been drained.
+	fn should_buffer_gossip_backfill(&self) -> bool {
+		self.pending_outbound_buffer.is_empty() &&
 			self.msgs_sent_since_pong < BUFFER_DRAIN_MSGS_PER_TICK
 	}
 
@@ -739,46 +737,39 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 
 	fn do_attempt_write_data(&self, descriptor: &mut Descriptor, peer: &mut Peer) {
 		while !peer.awaiting_write_event {
-			if peer.should_backfill_gossip() {
+			if peer.should_buffer_gossip_backfill() {
 				match peer.sync_status {
 					InitSyncTracker::NoSyncRequested => {},
 					InitSyncTracker::ChannelsSyncing(c) if c < 0xffff_ffff_ffff_ffff => {
-						let steps = ((peer.gossip_buffer_slots_available() + 2) / 3) as u8;
-						let all_messages = self.message_handler.route_handler.get_next_channel_announcements(c, steps);
-						for &(ref announce, ref update_a_option, ref update_b_option) in all_messages.iter() {
-							self.enqueue_message(peer, announce);
-							if let &Some(ref update_a) = update_a_option {
-								self.enqueue_message(peer, update_a);
+						if let Some((announce, update_a_option, update_b_option)) =
+							self.message_handler.route_handler.get_next_channel_announcement(c)
+						{
+							self.enqueue_message(peer, &announce);
+							if let Some(update_a) = update_a_option {
+								self.enqueue_message(peer, &update_a);
 							}
-							if let &Some(ref update_b) = update_b_option {
-								self.enqueue_message(peer, update_b);
+							if let Some(update_b) = update_b_option {
+								self.enqueue_message(peer, &update_b);
 							}
 							peer.sync_status = InitSyncTracker::ChannelsSyncing(announce.contents.short_channel_id + 1);
-						}
-						if all_messages.is_empty() || all_messages.len() != steps as usize {
+						} else {
 							peer.sync_status = InitSyncTracker::ChannelsSyncing(0xffff_ffff_ffff_ffff);
 						}
 					},
 					InitSyncTracker::ChannelsSyncing(c) if c == 0xffff_ffff_ffff_ffff => {
-						let steps = peer.gossip_buffer_slots_available() as u8;
-						let all_messages = self.message_handler.route_handler.get_next_node_announcements(None, steps);
-						for msg in all_messages.iter() {
-							self.enqueue_message(peer, msg);
+						if let Some(msg) = self.message_handler.route_handler.get_next_node_announcement(None) {
+							self.enqueue_message(peer, &msg);
 							peer.sync_status = InitSyncTracker::NodesSyncing(msg.contents.node_id);
-						}
-						if all_messages.is_empty() || all_messages.len() != steps as usize {
+						} else {
 							peer.sync_status = InitSyncTracker::NoSyncRequested;
 						}
 					},
 					InitSyncTracker::ChannelsSyncing(_) => unreachable!(),
 					InitSyncTracker::NodesSyncing(key) => {
-						let steps = peer.gossip_buffer_slots_available() as u8;
-						let all_messages = self.message_handler.route_handler.get_next_node_announcements(Some(&key), steps);
-						for msg in all_messages.iter() {
-							self.enqueue_message(peer, msg);
+						if let Some(msg) = self.message_handler.route_handler.get_next_node_announcement(Some(&key)) {
+							self.enqueue_message(peer, &msg);
 							peer.sync_status = InitSyncTracker::NodesSyncing(msg.contents.node_id);
-						}
-						if all_messages.is_empty() || all_messages.len() != steps as usize {
+						} else {
 							peer.sync_status = InitSyncTracker::NoSyncRequested;
 						}
 					},
@@ -2082,10 +2073,10 @@ mod tests {
 
 		// Check that each peer has received the expected number of channel updates and channel
 		// announcements.
-		assert_eq!(cfgs[0].routing_handler.chan_upds_recvd.load(Ordering::Acquire), 100);
-		assert_eq!(cfgs[0].routing_handler.chan_anns_recvd.load(Ordering::Acquire), 50);
-		assert_eq!(cfgs[1].routing_handler.chan_upds_recvd.load(Ordering::Acquire), 100);
-		assert_eq!(cfgs[1].routing_handler.chan_anns_recvd.load(Ordering::Acquire), 50);
+		assert_eq!(cfgs[0].routing_handler.chan_upds_recvd.load(Ordering::Acquire), 108);
+		assert_eq!(cfgs[0].routing_handler.chan_anns_recvd.load(Ordering::Acquire), 54);
+		assert_eq!(cfgs[1].routing_handler.chan_upds_recvd.load(Ordering::Acquire), 108);
+		assert_eq!(cfgs[1].routing_handler.chan_anns_recvd.load(Ordering::Acquire), 54);
 	}
 
 	#[test]

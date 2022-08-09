@@ -318,20 +318,20 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 				);
 				let mut chan_progress = 0;
 				loop {
-					let orig_announcements = self.gossip_sync.get_next_channel_announcements(chan_progress, 255);
-					let deserialized_announcements = gossip_sync.get_next_channel_announcements(chan_progress, 255);
+					let orig_announcements = self.gossip_sync.get_next_channel_announcement(chan_progress);
+					let deserialized_announcements = gossip_sync.get_next_channel_announcement(chan_progress);
 					assert!(orig_announcements == deserialized_announcements);
-					chan_progress = match orig_announcements.last() {
+					chan_progress = match orig_announcements {
 						Some(announcement) => announcement.0.contents.short_channel_id + 1,
 						None => break,
 					};
 				}
 				let mut node_progress = None;
 				loop {
-					let orig_announcements = self.gossip_sync.get_next_node_announcements(node_progress.as_ref(), 255);
-					let deserialized_announcements = gossip_sync.get_next_node_announcements(node_progress.as_ref(), 255);
+					let orig_announcements = self.gossip_sync.get_next_node_announcement(node_progress.as_ref());
+					let deserialized_announcements = gossip_sync.get_next_node_announcement(node_progress.as_ref());
 					assert!(orig_announcements == deserialized_announcements);
-					node_progress = match orig_announcements.last() {
+					node_progress = match orig_announcements {
 						Some(announcement) => Some(announcement.contents.node_id),
 						None => break,
 					};

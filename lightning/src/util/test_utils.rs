@@ -45,7 +45,7 @@ use prelude::*;
 use core::time::Duration;
 use sync::{Mutex, Arc};
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use core::{cmp, mem};
+use core::mem;
 use bitcoin::bech32::u5;
 use chain::keysinterface::{InMemorySigner, Recipient, KeyMaterial};
 
@@ -445,23 +445,16 @@ impl msgs::RoutingMessageHandler for TestRoutingMessageHandler {
 		self.chan_upds_recvd.fetch_add(1, Ordering::AcqRel);
 		Err(msgs::LightningError { err: "".to_owned(), action: msgs::ErrorAction::IgnoreError })
 	}
-	fn get_next_channel_announcements(&self, starting_point: u64, batch_amount: u8) -> Vec<(msgs::ChannelAnnouncement, Option<msgs::ChannelUpdate>, Option<msgs::ChannelUpdate>)> {
-		let mut chan_anns = Vec::new();
-		const TOTAL_UPDS: u64 = 50;
-		let end: u64 = cmp::min(starting_point + batch_amount as u64, TOTAL_UPDS);
-		for i in starting_point..end {
-			let chan_upd_1 = get_dummy_channel_update(i);
-			let chan_upd_2 = get_dummy_channel_update(i);
-			let chan_ann = get_dummy_channel_announcement(i);
+	fn get_next_channel_announcement(&self, starting_point: u64) -> Option<(msgs::ChannelAnnouncement, Option<msgs::ChannelUpdate>, Option<msgs::ChannelUpdate>)> {
+		let chan_upd_1 = get_dummy_channel_update(starting_point);
+		let chan_upd_2 = get_dummy_channel_update(starting_point);
+		let chan_ann = get_dummy_channel_announcement(starting_point);
 
-			chan_anns.push((chan_ann, Some(chan_upd_1), Some(chan_upd_2)));
-		}
-
-		chan_anns
+		Some((chan_ann, Some(chan_upd_1), Some(chan_upd_2)))
 	}
 
-	fn get_next_node_announcements(&self, _starting_point: Option<&PublicKey>, _batch_amount: u8) -> Vec<msgs::NodeAnnouncement> {
-		Vec::new()
+	fn get_next_node_announcement(&self, _starting_point: Option<&PublicKey>) -> Option<msgs::NodeAnnouncement> {
+		None
 	}
 
 	fn peer_connected(&self, their_node_id: &PublicKey, init_msg: &msgs::Init) {
