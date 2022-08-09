@@ -28,6 +28,7 @@ use crate::prelude::*;
 
 /// Onion messages can be sent and received to blinded routes, which serve to hide the identity of
 /// the recipient.
+#[derive(Clone, Debug)]
 pub struct BlindedRoute {
 	/// To send to a blinded route, the sender first finds a route to the unblinded
 	/// `introduction_node_id`, which can unblind its [`encrypted_payload`] to find out the onion
@@ -41,14 +42,15 @@ pub struct BlindedRoute {
 	/// [`encrypted_payload`]: BlindedHop::encrypted_payload
 	pub(super) blinding_point: PublicKey,
 	/// The hops composing the blinded route.
-	pub(super) blinded_hops: Vec<BlindedHop>,
+	pub(crate) blinded_hops: Vec<BlindedHop>,
 }
 
 /// Used to construct the blinded hops portion of a blinded route. These hops cannot be identified
 /// by outside observers and thus can be used to hide the identity of the recipient.
+#[derive(Clone, Debug)]
 pub struct BlindedHop {
 	/// The blinded node id of this hop in a blinded route.
-	pub(super) blinded_node_id: PublicKey,
+	pub(crate) blinded_node_id: PublicKey,
 	/// The encrypted payload intended for this hop in a blinded route.
 	// The node sending to this blinded route will later encode this payload into the onion packet for
 	// this hop.

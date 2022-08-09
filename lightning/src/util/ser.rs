@@ -399,7 +399,8 @@ impl Readable for BigSize {
 /// In TLV we occasionally send fields which only consist of, or potentially end with, a
 /// variable-length integer which is simply truncated by skipping high zero bytes. This type
 /// encapsulates such integers implementing Readable/Writeable for them.
-#[cfg_attr(test, derive(PartialEq, Eq, Debug))]
+#[cfg_attr(test, derive(PartialEq, Eq))]
+#[derive(Clone, Debug)]
 pub(crate) struct HighZeroBytesDroppedBigSize<T>(pub T);
 
 macro_rules! impl_writeable_primitive {
