@@ -17,6 +17,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 bitcoin = "0.28.1"
 lightning = { version = "0.0.110", path = "../lightning", features = ["std"] }
 lightning-rapid-gossip-sync = { version = "0.0.110", path = "../lightning-rapid-gossip-sync" }
+futures = { version = "0.3", optional = true }
 
 [dev-dependencies]
 lightning = { version = "0.0.110", path = "../lightning", features = ["_test_utils"] }

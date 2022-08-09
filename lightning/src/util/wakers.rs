@@ -18,6 +18,8 @@ use core::mem;
 use core::time::Duration;
 use sync::{Condvar, Mutex};
 
+use prelude::{Box, Vec};
+
 #[cfg(any(test, feature = "std"))]
 use std::time::Instant;
 
