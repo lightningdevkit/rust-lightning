@@ -323,6 +323,10 @@ const MAX_BUFFER_DRAIN_TICK_INTERVALS_PER_PEER: i8 = 4;
 /// tick. Once we have sent this many messages since the last ping, we send a ping right away to
 /// ensures we don't just fill up our send buffer and leave the peer with too many messages to
 /// process before the next ping.
+///
+/// Note that we continue responding to other messages even after we've sent this many messages, so
+/// it's more of a general guideline used for gossip backfill (and gossip forwarding, times
+/// [`FORWARD_INIT_SYNC_BUFFER_LIMIT_RATIO`]) than a hard limit.
 const BUFFER_DRAIN_MSGS_PER_TICK: usize = 32;
 
 struct Peer {
