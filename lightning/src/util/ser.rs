@@ -22,6 +22,7 @@ use core::ops::Deref;
 use bitcoin::secp256k1::{PublicKey, SecretKey};
 use bitcoin::secp256k1::constants::{PUBLIC_KEY_SIZE, SECRET_KEY_SIZE, COMPACT_SIGNATURE_SIZE};
 use bitcoin::secp256k1::ecdsa::Signature;
+use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::blockdata::script::Script;
 use bitcoin::blockdata::transaction::{OutPoint, Transaction, TxOut};
 use bitcoin::consensus;
@@ -366,8 +367,7 @@ impl Readable for BigSize {
 /// In TLV we occasionally send fields which only consist of, or potentially end with, a
 /// variable-length integer which is simply truncated by skipping high zero bytes. This type
 /// encapsulates such integers implementing Readable/Writeable for them.
-#[cfg_attr(test, derive(PartialEq, Eq))]
-#[derive(Clone, Debug)]
+#[cfg_attr(test, derive(PartialEq, Eq, Debug))]
 pub(crate) struct HighZeroBytesDroppedBigSize<T>(pub T);
 
 macro_rules! impl_writeable_primitive {
@@ -485,7 +485,7 @@ macro_rules! impl_array {
 	);
 }
 
-impl_array!(3); // for rgb
+impl_array!(3); // for rgb, ISO 4712 code
 impl_array!(4); // for IPv4
 impl_array!(12); // for OnionV2
 impl_array!(16); // for IPv6
@@ -881,6 +881,19 @@ impl Readable for BlockHash {
 
 		let buf: [u8; 32] = Readable::read(r)?;
 		Ok(BlockHash::from_slice(&buf[..]).unwrap())
+	}
+}
+
+impl Writeable for ChainHash {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		w.write_all(self.as_bytes())
+	}
+}
+
+impl Readable for ChainHash {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let buf: [u8; 32] = Readable::read(r)?;
+		Ok(ChainHash::from(&buf[..]))
 	}
 }
 

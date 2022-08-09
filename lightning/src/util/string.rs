@@ -13,6 +13,7 @@ use core::fmt;
 
 /// A string that displays only printable characters, replacing control characters with
 /// [`core::char::REPLACEMENT_CHARACTER`].
+#[derive(Debug, PartialEq)]
 pub struct PrintableString<'a>(pub &'a str);
 
 impl<'a> fmt::Display for PrintableString<'a> {

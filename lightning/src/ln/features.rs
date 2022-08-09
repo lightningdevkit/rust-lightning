@@ -687,6 +687,15 @@ impl<T: sealed::Wumbo> Features<T> {
 	}
 }
 
+#[cfg(test)]
+impl<T: sealed::UnknownFeature> Features<T> {
+	pub(crate) fn unknown() -> Self {
+		let mut features = Self::empty();
+		features.set_unknown_feature_required();
+		features
+	}
+}
+
 macro_rules! impl_feature_len_prefixed_write {
 	($features: ident) => {
 		impl Writeable for $features {
