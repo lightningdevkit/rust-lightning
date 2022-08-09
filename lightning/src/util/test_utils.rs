@@ -51,6 +51,7 @@ use chain::keysinterface::{InMemorySigner, Recipient, KeyMaterial};
 
 #[cfg(feature = "std")]
 use std::time::{SystemTime, UNIX_EPOCH};
+use bitcoin::Sequence;
 
 pub struct TestVecWriter(pub Vec<u8>);
 impl Writer for TestVecWriter {
@@ -241,10 +242,11 @@ impl TestBroadcaster {
 
 impl chaininterface::BroadcasterInterface for TestBroadcaster {
 	fn broadcast_transaction(&self, tx: &Transaction) {
-		assert!(tx.lock_time < 1_500_000_000);
-		if tx.lock_time > self.blocks.lock().unwrap().len() as u32 + 1 && tx.lock_time < 500_000_000 {
+		let lock_time = tx.lock_time.0;
+		assert!(lock_time < 1_500_000_000);
+		if lock_time > self.blocks.lock().unwrap().len() as u32 + 1 && lock_time < 500_000_000 {
 			for inp in tx.input.iter() {
-				if inp.sequence != 0xffffffff {
+				if inp.sequence != Sequence::MAX {
 					panic!("We should never broadcast a transaction before its locktime ({})!", tx.lock_time);
 				}
 			}

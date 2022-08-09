@@ -25,11 +25,11 @@ use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::hash_types::WPubkeyHash;
 
-use bitcoin::secp256k1::{SecretKey, PublicKey};
+use bitcoin::secp256k1::{SecretKey, PublicKey, Scalar};
 use bitcoin::secp256k1::{Secp256k1, ecdsa::Signature, Signing};
 use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1::ecdsa::RecoverableSignature;
-use bitcoin::{secp256k1, Witness};
+use bitcoin::{PackedLockTime, secp256k1, Sequence, Witness};
 
 use util::{byte_utils, transaction_utils};
 use util::crypto::{hkdf_extract_expand_twice, sign};
@@ -626,7 +626,7 @@ impl InMemorySigner {
 		if spend_tx.input.len() <= input_idx { return Err(()); }
 		if !spend_tx.input[input_idx].script_sig.is_empty() { return Err(()); }
 		if spend_tx.input[input_idx].previous_output != descriptor.outpoint.into_bitcoin_outpoint() { return Err(()); }
-		if spend_tx.input[input_idx].sequence != descriptor.to_self_delay as u32 { return Err(()); }
+		if spend_tx.input[input_idx].sequence.0 != descriptor.to_self_delay as u32 { return Err(()); }
 
 		let delayed_payment_key = chan_utils::derive_private_key(&secp_ctx, &descriptor.per_commitment_point, &self.delayed_payment_base_key)
 			.expect("We constructed the payment_base_key, so we can only fail here if the RNG is busted.");
@@ -1022,7 +1022,7 @@ impl KeysManager {
 					input.push(TxIn {
 						previous_output: descriptor.outpoint.into_bitcoin_outpoint(),
 						script_sig: Script::new(),
-						sequence: 0,
+						sequence: Sequence::ZERO,
 						witness: Witness::new(),
 					});
 					witness_weight += StaticPaymentOutputDescriptor::MAX_WITNESS_LENGTH;
@@ -1033,7 +1033,7 @@ impl KeysManager {
 					input.push(TxIn {
 						previous_output: descriptor.outpoint.into_bitcoin_outpoint(),
 						script_sig: Script::new(),
-						sequence: descriptor.to_self_delay as u32,
+						sequence: Sequence(descriptor.to_self_delay as u32),
 						witness: Witness::new(),
 					});
 					witness_weight += DelayedPaymentOutputDescriptor::MAX_WITNESS_LENGTH;
@@ -1044,7 +1044,7 @@ impl KeysManager {
 					input.push(TxIn {
 						previous_output: outpoint.into_bitcoin_outpoint(),
 						script_sig: Script::new(),
-						sequence: 0,
+						sequence: Sequence::ZERO,
 						witness: Witness::new(),
 					});
 					witness_weight += 1 + 73 + 34;
@@ -1056,7 +1056,7 @@ impl KeysManager {
 		}
 		let mut spend_tx = Transaction {
 			version: 2,
-			lock_time: 0,
+			lock_time: PackedLockTime(0),
 			input,
 			output: outputs,
 		};
@@ -1143,7 +1143,7 @@ impl KeysInterface for KeysManager {
 	fn ecdh(&self, recipient: Recipient, other_key: &PublicKey, tweak: Option<&[u8; 32]>) -> Result<SharedSecret, ()> {
 		let mut node_secret = self.get_node_secret(recipient)?;
 		if let Some(tweak) = tweak {
-			node_secret.mul_assign(tweak).map_err(|_| ())?;
+			node_secret = node_secret.mul_tweak(&Scalar::from_be_bytes(*tweak).unwrap()).map_err(|_| ())?;
 		}
 		Ok(SharedSecret::new(other_key, &node_secret))
 	}
@@ -1235,7 +1235,7 @@ impl KeysInterface for PhantomKeysManager {
 	fn ecdh(&self, recipient: Recipient, other_key: &PublicKey, tweak: Option<&[u8; 32]>) -> Result<SharedSecret, ()> {
 		let mut node_secret = self.get_node_secret(recipient)?;
 		if let Some(tweak) = tweak {
-			node_secret.mul_assign(tweak).map_err(|_| ())?;
+			node_secret = node_secret.mul_tweak(&Scalar::from_be_bytes(*tweak).unwrap()).map_err(|_| ())?;
 		}
 		Ok(SharedSecret::new(other_key, &node_secret))
 	}

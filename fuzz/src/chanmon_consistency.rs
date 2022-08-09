@@ -18,11 +18,13 @@
 //! send-side handling is correct, other peers. We consider it a failure if any action results in a
 //! channel being force-closed.
 
+use bitcoin::TxMerkleNode;
 use bitcoin::blockdata::block::BlockHeader;
 use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::blockdata::transaction::{Transaction, TxOut};
 use bitcoin::blockdata::script::{Builder, Script};
 use bitcoin::blockdata::opcodes;
+use bitcoin::blockdata::locktime::PackedLockTime;
 use bitcoin::network::constants::Network;
 
 use bitcoin::hashes::Hash as TraitImport;
@@ -53,7 +55,7 @@ use lightning::routing::router::{Route, RouteHop};
 use utils::test_logger::{self, Output};
 use utils::test_persister::TestPersister;
 
-use bitcoin::secp256k1::{PublicKey,SecretKey};
+use bitcoin::secp256k1::{PublicKey, SecretKey, Scalar};
 use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1::ecdsa::RecoverableSignature;
 use bitcoin::secp256k1::Secp256k1;
@@ -169,7 +171,7 @@ impl KeysInterface for KeyProvider {
 	fn ecdh(&self, recipient: Recipient, other_key: &PublicKey, tweak: Option<&[u8; 32]>) -> Result<SharedSecret, ()> {
 		let mut node_secret = self.get_node_secret(recipient)?;
 		if let Some(tweak) = tweak {
-			node_secret.mul_assign(tweak).map_err(|_| ())?;
+			node_secret = node_secret.mul_tweak(&Scalar::from_be_bytes(*tweak).unwrap()).unwrap();
 		}
 		Ok(SharedSecret::new(other_key, &node_secret))
 	}
@@ -447,7 +449,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 				let events = $source.get_and_clear_pending_events();
 				assert_eq!(events.len(), 1);
 				if let events::Event::FundingGenerationReady { ref temporary_channel_id, ref channel_value_satoshis, ref output_script, .. } = events[0] {
-					let tx = Transaction { version: $chan_id, lock_time: 0, input: Vec::new(), output: vec![TxOut {
+					let tx = Transaction { version: $chan_id, lock_time: PackedLockTime::ZERO, input: Vec::new(), output: vec![TxOut {
 						value: *channel_value_satoshis, script_pubkey: output_script.clone(),
 					}]};
 					funding_output = OutPoint { txid: tx.txid(), index: 0 };
@@ -481,11 +483,11 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 	macro_rules! confirm_txn {
 		($node: expr) => { {
 			let chain_hash = genesis_block(Network::Bitcoin).block_hash();
-			let mut header = BlockHeader { version: 0x20000000, prev_blockhash: chain_hash, merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+			let mut header = BlockHeader { version: 0x20000000, prev_blockhash: chain_hash, merkle_root: TxMerkleNode::all_zeros(), time: 42, bits: 42, nonce: 42 };
 			let txdata: Vec<_> = channel_txn.iter().enumerate().map(|(i, tx)| (i + 1, tx)).collect();
 			$node.transactions_confirmed(&header, &txdata, 1);
 			for _ in 2..100 {
-				header = BlockHeader { version: 0x20000000, prev_blockhash: header.block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+				header = BlockHeader { version: 0x20000000, prev_blockhash: header.block_hash(), merkle_root: TxMerkleNode::all_zeros(), time: 42, bits: 42, nonce: 42 };
 			}
 			$node.best_block_updated(&header, 99);
 		} }

@@ -56,7 +56,7 @@ pub(crate) fn maybe_add_change_output(tx: &mut Transaction, input_value: u64, wi
 	weight_with_change += (VarInt(tx.output.len() as u64 + 1).len() - VarInt(tx.output.len() as u64).len()) as i64 * 4;
 	// When calculating weight, add two for the flag bytes
 	let change_value: i64 = (input_value - output_value) as i64 - weight_with_change * feerate_sat_per_1000_weight as i64 / 1000;
-	if change_value >= dust_value.as_sat() as i64 {
+	if change_value >= dust_value.to_sat() as i64 {
 		change_output.value = change_value as u64;
 		tx.output.push(change_output);
 		Ok(weight_with_change as usize)
@@ -75,9 +75,8 @@ mod tests {
 	use bitcoin::blockdata::script::{Script, Builder};
 	use bitcoin::hash_types::{PubkeyHash, Txid};
 
-	use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 	use bitcoin::hashes::Hash;
-	use bitcoin::Witness;
+	use bitcoin::{PackedLockTime, Sequence, Witness};
 
 	use hex::decode;
 
@@ -215,7 +214,7 @@ mod tests {
 	#[test]
 	fn test_tx_value_overrun() {
 		// If we have a bogus input amount or outputs valued more than inputs, we should fail
-		let mut tx = Transaction { version: 2, lock_time: 0, input: Vec::new(), output: vec![TxOut {
+		let mut tx = Transaction { version: 2, lock_time: PackedLockTime::ZERO, input: Vec::new(), output: vec![TxOut {
 			script_pubkey: Script::new(), value: 1000
 		}] };
 		assert!(maybe_add_change_output(&mut tx, 21_000_000_0000_0001, 0, 253, Script::new()).is_err());
@@ -226,10 +225,10 @@ mod tests {
 	#[test]
 	fn test_tx_change_edge() {
 		// Check that we never add dust outputs
-		let mut tx = Transaction { version: 2, lock_time: 0, input: Vec::new(), output: Vec::new() };
+		let mut tx = Transaction { version: 2, lock_time: PackedLockTime::ZERO, input: Vec::new(), output: Vec::new() };
 		let orig_wtxid = tx.wtxid();
 		let output_spk = Script::new_p2pkh(&PubkeyHash::hash(&[0; 0]));
-		assert_eq!(output_spk.dust_value().as_sat(), 546);
+		assert_eq!(output_spk.dust_value().to_sat(), 546);
 		// 9 sats isn't enough to pay fee on a dummy transaction...
 		assert_eq!(tx.weight() as u64, 40); // ie 10 vbytes
 		assert!(maybe_add_change_output(&mut tx, 9, 0, 250, output_spk.clone()).is_err());
@@ -260,8 +259,8 @@ mod tests {
 	#[test]
 	fn test_tx_extra_outputs() {
 		// Check that we correctly handle existing outputs
-		let mut tx = Transaction { version: 2, lock_time: 0, input: vec![TxIn {
-			previous_output: OutPoint::new(Txid::from_hash(Sha256dHash::default()), 0), script_sig: Script::new(), witness: Witness::new(), sequence: 0,
+		let mut tx = Transaction { version: 2, lock_time: PackedLockTime::ZERO, input: vec![TxIn {
+			previous_output: OutPoint::new(Txid::all_zeros(), 0), script_sig: Script::new(), witness: Witness::new(), sequence: Sequence::ZERO,
 		}], output: vec![TxOut {
 			script_pubkey: Builder::new().push_int(1).into_script(), value: 1000
 		}] };
@@ -269,7 +268,7 @@ mod tests {
 		let orig_weight = tx.weight();
 		assert_eq!(orig_weight / 4, 61);
 
-		assert_eq!(Builder::new().push_int(2).into_script().dust_value().as_sat(), 474);
+		assert_eq!(Builder::new().push_int(2).into_script().dust_value().to_sat(), 474);
 
 		// Input value of the output value + fee - 1 should fail:
 		assert!(maybe_add_change_output(&mut tx, 1000 + 61 + 100 - 1, 400, 250, Builder::new().push_int(2).into_script()).is_err());

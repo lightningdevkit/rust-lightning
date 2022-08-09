@@ -860,7 +860,7 @@ macro_rules! impl_consensus_ser {
 	($bitcoin_type: ty) => {
 		impl Writeable for $bitcoin_type {
 			fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
-				match self.consensus_encode(WriterWriteAdaptor(writer)) {
+				match self.consensus_encode(&mut WriterWriteAdaptor(writer)) {
 					Ok(_) => Ok(()),
 					Err(e) => Err(e),
 				}

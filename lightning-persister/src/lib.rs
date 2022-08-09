@@ -134,7 +134,7 @@ mod tests {
 	use crate::FilesystemPersister;
 	use bitcoin::blockdata::block::{Block, BlockHeader};
 	use bitcoin::hashes::hex::FromHex;
-	use bitcoin::Txid;
+	use bitcoin::{Txid, TxMerkleNode};
 	use lightning::chain::ChannelMonitorUpdateErr;
 	use lightning::chain::chainmonitor::Persist;
 	use lightning::chain::transaction::OutPoint;
@@ -144,6 +144,7 @@ mod tests {
 	use lightning::util::events::{ClosureReason, MessageSendEventsProvider};
 	use lightning::util::test_utils;
 	use std::fs;
+	use bitcoin::hashes::Hash;
 	#[cfg(target_os = "windows")]
 	use {
 		lightning::get_event_msg,
@@ -221,7 +222,7 @@ mod tests {
 		let node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
 		assert_eq!(node_txn.len(), 1);
 
-		let header = BlockHeader { version: 0x20000000, prev_blockhash: nodes[0].best_block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+		let header = BlockHeader { version: 0x20000000, prev_blockhash: nodes[0].best_block_hash(), merkle_root: TxMerkleNode::all_zeros(), time: 42, bits: 42, nonce: 42 };
 		connect_block(&nodes[1], &Block { header, txdata: vec![node_txn[0].clone(), node_txn[0].clone()]});
 		check_closed_broadcast!(nodes[1], true);
 		check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed);

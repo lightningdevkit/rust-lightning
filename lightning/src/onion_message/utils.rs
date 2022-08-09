@@ -12,7 +12,7 @@
 use bitcoin::hashes::{Hash, HashEngine};
 use bitcoin::hashes::hmac::{Hmac, HmacEngine};
 use bitcoin::hashes::sha256::Hash as Sha256;
-use bitcoin::secp256k1::{self, PublicKey, Secp256k1, SecretKey};
+use bitcoin::secp256k1::{self, PublicKey, Secp256k1, SecretKey, Scalar};
 use bitcoin::secp256k1::ecdh::SharedSecret;
 
 use ln::onion_utils;
@@ -43,9 +43,7 @@ pub(super) fn construct_keys_callback<T: secp256k1::Signing + secp256k1::Verific
 					hmac.input(encrypted_data_ss.as_ref());
 					Hmac::from_engine(hmac).into_inner()
 				};
-				let mut unblinded_pk = $pk;
-				unblinded_pk.mul_assign(secp_ctx, &hop_pk_blinding_factor)?;
-				unblinded_pk
+				$pk.mul_tweak(secp_ctx, &Scalar::from_be_bytes(hop_pk_blinding_factor).unwrap())?
 			};
 			let onion_packet_ss = SharedSecret::new(&blinded_hop_pk, &onion_packet_pubkey_priv);
 
@@ -67,7 +65,7 @@ pub(super) fn construct_keys_callback<T: secp256k1::Signing + secp256k1::Verific
 				Sha256::from_engine(sha).into_inner()
 			};
 
-			msg_blinding_point_priv.mul_assign(&msg_blinding_point_blinding_factor)?;
+			msg_blinding_point_priv = msg_blinding_point_priv.mul_tweak(&Scalar::from_be_bytes(msg_blinding_point_blinding_factor).unwrap())?;
 			msg_blinding_point = PublicKey::from_secret_key(secp_ctx, &msg_blinding_point_priv);
 
 			let onion_packet_pubkey_blinding_factor = {
@@ -76,7 +74,7 @@ pub(super) fn construct_keys_callback<T: secp256k1::Signing + secp256k1::Verific
 				sha.input(onion_packet_ss.as_ref());
 				Sha256::from_engine(sha).into_inner()
 			};
-			onion_packet_pubkey_priv.mul_assign(&onion_packet_pubkey_blinding_factor)?;
+			onion_packet_pubkey_priv = onion_packet_pubkey_priv.mul_tweak(&Scalar::from_be_bytes(onion_packet_pubkey_blinding_factor).unwrap())?;
 			onion_packet_pubkey = PublicKey::from_secret_key(secp_ctx, &onion_packet_pubkey_priv);
 		};
 	}

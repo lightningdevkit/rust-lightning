@@ -6612,6 +6612,7 @@ mod tests {
 	use bitcoin::hashes::Hash;
 	use bitcoin::hash_types::WPubkeyHash;
 	use bitcoin::bech32::u5;
+	use bitcoin::PackedLockTime;
 	use bitcoin::util::address::WitnessVersion;
 	use prelude::*;
 
@@ -6872,7 +6873,7 @@ mod tests {
 
 		// Node A --> Node B: funding created
 		let output_script = node_a_chan.get_funding_redeemscript();
-		let tx = Transaction { version: 1, lock_time: 0, input: Vec::new(), output: vec![TxOut {
+		let tx = Transaction { version: 1, lock_time: PackedLockTime::ZERO, input: Vec::new(), output: vec![TxOut {
 			value: 10000000, script_pubkey: output_script.clone(),
 		}]};
 		let funding_outpoint = OutPoint{ txid: tx.txid(), index: 0 };

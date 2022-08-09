@@ -13,7 +13,7 @@
 use bitcoin::hashes::{Hash, HashEngine};
 use bitcoin::hashes::hmac::{Hmac, HmacEngine};
 use bitcoin::hashes::sha256::Hash as Sha256;
-use bitcoin::secp256k1::{self, PublicKey, Secp256k1, SecretKey};
+use bitcoin::secp256k1::{self, PublicKey, Scalar, Secp256k1, SecretKey};
 
 use chain::keysinterface::{InMemorySigner, KeysInterface, KeysManager, Recipient, Sign};
 use ln::msgs;
@@ -249,11 +249,13 @@ impl<Signer: Sign, K: Deref, L: Deref> OnionMessenger<Signer, K, L>
 									Sha256::from_engine(sha).into_inner()
 								};
 								let mut next_blinding_point = msg.blinding_point;
-								if let Err(e) = next_blinding_point.mul_assign(&self.secp_ctx, &blinding_factor[..]) {
-									log_trace!(self.logger, "Failed to compute next blinding point: {}", e);
-									return
+								match next_blinding_point.mul_tweak(&self.secp_ctx, &Scalar::from_be_bytes(blinding_factor).unwrap()) {
+									Ok(bp) => bp,
+									Err(e) => {
+										log_trace!(self.logger, "Failed to compute next blinding point: {}", e);
+										return
+									}
 								}
-								next_blinding_point
 							},
 						},
 						onion_routing_packet: outgoing_packet,
