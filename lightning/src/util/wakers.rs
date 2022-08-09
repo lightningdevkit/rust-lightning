@@ -13,6 +13,7 @@
 //!
 //! [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 
+use alloc::sync::Arc;
 use core::mem;
 use core::time::Duration;
 use sync::{Condvar, Mutex};
@@ -20,32 +21,37 @@ use sync::{Condvar, Mutex};
 #[cfg(any(test, feature = "std"))]
 use std::time::Instant;
 
+use core::future::Future as StdFuture;
+use core::task::{Context, Poll};
+use core::pin::Pin;
+
+use prelude::*;
+
 /// Used to signal to one of many waiters that the condition they're waiting on has happened.
 pub(crate) struct Notifier {
-	/// Users won't access the lock directly, but rather wait on its bool using
-	/// `wait_timeout` and `wait`.
-	lock: (Mutex<bool>, Condvar),
+	notify_pending: Mutex<(bool, Option<Arc<Mutex<FutureState>>>)>,
+	condvar: Condvar,
 }
 
 impl Notifier {
 	pub(crate) fn new() -> Self {
 		Self {
-			lock: (Mutex::new(false), Condvar::new()),
+			notify_pending: Mutex::new((false, None)),
+			condvar: Condvar::new(),
 		}
 	}
 
 	pub(crate) fn wait(&self) {
 		loop {
-			let &(ref mtx, ref cvar) = &self.lock;
-			let mut guard = mtx.lock().unwrap();
-			if *guard {
-				*guard = false;
+			let mut guard = self.notify_pending.lock().unwrap();
+			if guard.0 {
+				guard.0 = false;
 				return;
 			}
-			guard = cvar.wait(guard).unwrap();
-			let result = *guard;
+			guard = self.condvar.wait(guard).unwrap();
+			let result = guard.0;
 			if result {
-				*guard = false;
+				guard.0 = false;
 				return
 			}
 		}
@@ -55,22 +61,21 @@ impl Notifier {
 	pub(crate) fn wait_timeout(&self, max_wait: Duration) -> bool {
 		let current_time = Instant::now();
 		loop {
-			let &(ref mtx, ref cvar) = &self.lock;
-			let mut guard = mtx.lock().unwrap();
-			if *guard {
-				*guard = false;
+			let mut guard = self.notify_pending.lock().unwrap();
+			if guard.0 {
+				guard.0 = false;
 				return true;
 			}
-			guard = cvar.wait_timeout(guard, max_wait).unwrap().0;
+			guard = self.condvar.wait_timeout(guard, max_wait).unwrap().0;
 			// Due to spurious wakeups that can happen on `wait_timeout`, here we need to check if the
 			// desired wait time has actually passed, and if not then restart the loop with a reduced wait
 			// time. Note that this logic can be highly simplified through the use of
 			// `Condvar::wait_while` and `Condvar::wait_timeout_while`, if and when our MSRV is raised to
 			// 1.42.0.
 			let elapsed = current_time.elapsed();
-			let result = *guard;
+			let result = guard.0;
 			if result || elapsed >= max_wait {
-				*guard = false;
+				guard.0 = false;
 				return result;
 			}
 			match max_wait.checked_sub(elapsed) {
@@ -82,29 +87,128 @@ impl Notifier {
 
 	/// Wake waiters, tracking that wake needs to occur even if there are currently no waiters.
 	pub(crate) fn notify(&self) {
-		let &(ref persist_mtx, ref cnd) = &self.lock;
-		let mut lock = persist_mtx.lock().unwrap();
-		*lock = true;
+		let mut lock = self.notify_pending.lock().unwrap();
+		lock.0 = true;
+		if let Some(future_state) = lock.1.take() {
+			future_state.lock().unwrap().complete();
+		}
 		mem::drop(lock);
-		cnd.notify_all();
+		self.condvar.notify_all();
+	}
+
+	/// Gets a [`Future`] that will get woken up with any waiters
+	pub(crate) fn get_future(&self) -> Future {
+		let mut lock = self.notify_pending.lock().unwrap();
+		if lock.0 {
+			Future {
+				state: Arc::new(Mutex::new(FutureState {
+					callbacks: Vec::new(),
+					complete: false,
+				}))
+			}
+		} else if let Some(existing_state) = &lock.1 {
+			Future { state: Arc::clone(&existing_state) }
+		} else {
+			let state = Arc::new(Mutex::new(FutureState {
+				callbacks: Vec::new(),
+				complete: false,
+			}));
+			lock.1 = Some(Arc::clone(&state));
+			Future { state }
+		}
 	}
 
 	#[cfg(any(test, feature = "_test_utils"))]
 	pub fn notify_pending(&self) -> bool {
-		let &(ref mtx, _) = &self.lock;
-		let guard = mtx.lock().unwrap();
-		*guard
+		self.notify_pending.lock().unwrap().0
+	}
+}
+
+/// A callback which is called when a [`Future`] completes.
+///
+/// Note that this MUST NOT call back into LDK directly, it must instead schedule actions to be
+/// taken later. Rust users should use the [`std::future::Future`] implementation for [`Future`]
+/// instead.
+///
+/// Note that the [`std::future::Future`] implementation may only work for runtimes which schedule
+/// futures when they receive a wake, rather than immediately executing them.
+pub trait FutureCallback : Send {
+	/// The method which is called.
+	fn call(&self);
+}
+
+impl<F: Fn() + Send> FutureCallback for F {
+	fn call(&self) { (self)(); }
+}
+
+pub(crate) struct FutureState {
+	callbacks: Vec<Box<dyn FutureCallback>>,
+	complete: bool,
+}
+
+impl FutureState {
+	fn complete(&mut self) {
+		for callback in self.callbacks.drain(..) {
+			callback.call();
+		}
+		self.complete = true;
+	}
+}
+
+/// A simple future which can complete once, and calls some callback(s) when it does so.
+pub struct Future {
+	state: Arc<Mutex<FutureState>>,
+}
+
+impl Future {
+	/// Registers a callback to be called upon completion of this future. If the future has already
+	/// completed, the callback will be called immediately.
+	pub fn register_callback(&self, callback: Box<dyn FutureCallback>) {
+		let mut state = self.state.lock().unwrap();
+		if state.complete {
+			mem::drop(state);
+			callback.call();
+		} else {
+			state.callbacks.push(callback);
+		}
+	}
+}
+
+mod std_future {
+	use core::task::Waker;
+	pub struct StdWaker(pub Waker);
+	impl super::FutureCallback for StdWaker {
+		fn call(&self) { self.0.wake_by_ref() }
+	}
+}
+
+/// (C-not exported) as Rust Futures aren't usable in language bindings.
+impl<'a> StdFuture for Future {
+	type Output = ();
+
+	fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+		let mut state = self.state.lock().unwrap();
+		if state.complete {
+			Poll::Ready(())
+		} else {
+			let waker = cx.waker().clone();
+			state.callbacks.push(Box::new(std_future::StdWaker(waker)));
+			Poll::Pending
+		}
 	}
 }
 
 #[cfg(test)]
 mod tests {
+	use super::*;
+	use core::sync::atomic::{AtomicBool, Ordering};
+	use core::future::Future as FutureTrait;
+	use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+
 	#[cfg(feature = "std")]
 	#[test]
 	fn test_wait_timeout() {
-		use super::*;
 		use sync::Arc;
-		use core::sync::atomic::{AtomicBool, Ordering};
 		use std::thread;
 
 		let persistence_notifier = Arc::new(Notifier::new());
@@ -114,10 +218,9 @@ mod tests {
 		let exit_thread_clone = exit_thread.clone();
 		thread::spawn(move || {
 			loop {
-				let &(ref persist_mtx, ref cnd) = &thread_notifier.lock;
-				let mut lock = persist_mtx.lock().unwrap();
-				*lock = true;
-				cnd.notify_all();
+				let mut lock = thread_notifier.notify_pending.lock().unwrap();
+				lock.0 = true;
+				thread_notifier.condvar.notify_all();
 
 				if exit_thread_clone.load(Ordering::SeqCst) {
 					break
@@ -145,5 +248,85 @@ mod tests {
 				break
 			}
 		}
+	}
+
+	#[test]
+	fn test_future_callbacks() {
+		let future = Future {
+			state: Arc::new(Mutex::new(FutureState {
+				callbacks: Vec::new(),
+				complete: false,
+			}))
+		};
+		let callback = Arc::new(AtomicBool::new(false));
+		let callback_ref = Arc::clone(&callback);
+		future.register_callback(Box::new(move || assert!(!callback_ref.fetch_or(true, Ordering::SeqCst))));
+
+		assert!(!callback.load(Ordering::SeqCst));
+		future.state.lock().unwrap().complete();
+		assert!(callback.load(Ordering::SeqCst));
+		future.state.lock().unwrap().complete();
+	}
+
+	#[test]
+	fn test_pre_completed_future_callbacks() {
+		let future = Future {
+			state: Arc::new(Mutex::new(FutureState {
+				callbacks: Vec::new(),
+				complete: false,
+			}))
+		};
+		future.state.lock().unwrap().complete();
+
+		let callback = Arc::new(AtomicBool::new(false));
+		let callback_ref = Arc::clone(&callback);
+		future.register_callback(Box::new(move || assert!(!callback_ref.fetch_or(true, Ordering::SeqCst))));
+
+		assert!(callback.load(Ordering::SeqCst));
+		assert!(future.state.lock().unwrap().callbacks.is_empty());
+	}
+
+	// Rather annoyingly, there's no safe way in Rust std to construct a Waker despite it being
+	// totally possible to construct from a trait implementation (though somewhat less effecient
+	// compared to a raw VTable). Instead, we have to write out a lot of boilerplate to build a
+	// waker, which we do here with a trivial Arc<AtomicBool> data element to track woke-ness.
+	const WAKER_V_TABLE: RawWakerVTable = RawWakerVTable::new(waker_clone, wake, wake_by_ref, drop);
+	unsafe fn wake_by_ref(ptr: *const ()) { let p = ptr as *const Arc<AtomicBool>; assert!(!(*p).fetch_or(true, Ordering::SeqCst)); }
+	unsafe fn drop(ptr: *const ()) { let p = ptr as *mut Arc<AtomicBool>; Box::from_raw(p); }
+	unsafe fn wake(ptr: *const ()) { wake_by_ref(ptr); drop(ptr); }
+	unsafe fn waker_clone(ptr: *const ()) -> RawWaker {
+		let p = ptr as *const Arc<AtomicBool>;
+		RawWaker::new(Box::into_raw(Box::new(Arc::clone(&*p))) as *const (), &WAKER_V_TABLE)
+	}
+
+	fn create_waker() -> (Arc<AtomicBool>, Waker) {
+		let a = Arc::new(AtomicBool::new(false));
+		let waker = unsafe { Waker::from_raw(waker_clone((&a as *const Arc<AtomicBool>) as *const ())) };
+		(a, waker)
+	}
+
+	#[test]
+	fn test_future() {
+		let mut future = Future {
+			state: Arc::new(Mutex::new(FutureState {
+				callbacks: Vec::new(),
+				complete: false,
+			}))
+		};
+		let mut second_future = Future { state: Arc::clone(&future.state) };
+
+		let (woken, waker) = create_waker();
+		assert_eq!(Pin::new(&mut future).poll(&mut Context::from_waker(&waker)), Poll::Pending);
+		assert!(!woken.load(Ordering::SeqCst));
+
+		let (second_woken, second_waker) = create_waker();
+		assert_eq!(Pin::new(&mut second_future).poll(&mut Context::from_waker(&second_waker)), Poll::Pending);
+		assert!(!second_woken.load(Ordering::SeqCst));
+
+		future.state.lock().unwrap().complete();
+		assert!(woken.load(Ordering::SeqCst));
+		assert!(second_woken.load(Ordering::SeqCst));
+		assert_eq!(Pin::new(&mut future).poll(&mut Context::from_waker(&waker)), Poll::Ready(()));
+		assert_eq!(Pin::new(&mut second_future).poll(&mut Context::from_waker(&second_waker)), Poll::Ready(()));
 	}
 }

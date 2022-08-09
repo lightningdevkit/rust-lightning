@@ -55,7 +55,7 @@ use util::config::{UserConfig, ChannelConfig};
 use util::events::{EventHandler, EventsProvider, MessageSendEvent, MessageSendEventsProvider, ClosureReason, HTLCDestination};
 use util::{byte_utils, events};
 use util::crypto::sign;
-use util::wakers::Notifier;
+use util::wakers::{Future, Notifier};
 use util::scid_utils::fake_scid;
 use util::ser::{BigSize, FixedLengthReader, Readable, ReadableArgs, MaybeReadable, Writeable, Writer, VecWriter};
 use util::logger::{Level, Logger};
@@ -5986,6 +5986,13 @@ where
 	/// up.
 	pub fn await_persistable_update(&self) {
 		self.persistence_notifier.wait()
+	}
+
+	/// Gets a [`Future`] that completes when a persistable update is available. Note that
+	/// callbacks registered on the [`Future`] MUST NOT call back into this [`ChannelManager`] and
+	/// should instead register actions to be taken later.
+	pub fn get_persistable_update_future(&self) -> Future {
+		self.persistence_notifier.get_future()
 	}
 
 	#[cfg(any(test, feature = "_test_utils"))]
