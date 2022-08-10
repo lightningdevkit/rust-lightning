@@ -5990,7 +5990,8 @@ where
 		self.persistence_notifier.wait()
 	}
 
-	#[cfg(any(test, feature = "_test_utils"))]
+	/// Immediately returns whether ChannelManager needs to be persisted.
+	/// Can be used to 'poll' for persistence updates.
 	pub fn get_persistence_condvar_value(&self) -> bool {
 		let mutcond = &self.persistence_notifier.persistence_lock;
 		let &(ref mtx, _) = mutcond;
