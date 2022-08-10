@@ -272,10 +272,10 @@ impl KeysInterface for KeyProvider {
 		Ok(self.node_secret.clone())
 	}
 
-	fn ecdh(&self, recipient: Recipient, other_key: &PublicKey, tweak: Option<&[u8; 32]>) -> Result<SharedSecret, ()> {
+	fn ecdh(&self, recipient: Recipient, other_key: &PublicKey, tweak: Option<&Scalar>) -> Result<SharedSecret, ()> {
 		let mut node_secret = self.get_node_secret(recipient)?;
 		if let Some(tweak) = tweak {
-			node_secret = node_secret.mul_tweak(&Scalar::from_be_bytes(*tweak).unwrap()).unwrap();
+			node_secret = node_secret.mul_tweak(tweak).unwrap();
 		}
 		Ok(SharedSecret::new(other_key, &node_secret))
 	}

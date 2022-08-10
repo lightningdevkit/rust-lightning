@@ -410,7 +410,7 @@ pub trait KeysInterface {
 	/// secret, though this is less efficient.
 	///
 	/// [`node secret`]: Self::get_node_secret
-	fn ecdh(&self, recipient: Recipient, other_key: &PublicKey, tweak: Option<&[u8; 32]>) -> Result<SharedSecret, ()>;
+	fn ecdh(&self, recipient: Recipient, other_key: &PublicKey, tweak: Option<&Scalar>) -> Result<SharedSecret, ()>;
 	/// Get a script pubkey which we send funds to when claiming on-chain contestable outputs.
 	///
 	/// This method should return a different value each time it is called, to avoid linking
@@ -1140,10 +1140,10 @@ impl KeysInterface for KeysManager {
 		}
 	}
 
-	fn ecdh(&self, recipient: Recipient, other_key: &PublicKey, tweak: Option<&[u8; 32]>) -> Result<SharedSecret, ()> {
+	fn ecdh(&self, recipient: Recipient, other_key: &PublicKey, tweak: Option<&Scalar>) -> Result<SharedSecret, ()> {
 		let mut node_secret = self.get_node_secret(recipient)?;
 		if let Some(tweak) = tweak {
-			node_secret = node_secret.mul_tweak(&Scalar::from_be_bytes(*tweak).unwrap()).map_err(|_| ())?;
+			node_secret = node_secret.mul_tweak(tweak).map_err(|_| ())?;
 		}
 		Ok(SharedSecret::new(other_key, &node_secret))
 	}
@@ -1232,10 +1232,10 @@ impl KeysInterface for PhantomKeysManager {
 		}
 	}
 
-	fn ecdh(&self, recipient: Recipient, other_key: &PublicKey, tweak: Option<&[u8; 32]>) -> Result<SharedSecret, ()> {
+	fn ecdh(&self, recipient: Recipient, other_key: &PublicKey, tweak: Option<&Scalar>) -> Result<SharedSecret, ()> {
 		let mut node_secret = self.get_node_secret(recipient)?;
 		if let Some(tweak) = tweak {
-			node_secret = node_secret.mul_tweak(&Scalar::from_be_bytes(*tweak).unwrap()).map_err(|_| ())?;
+			node_secret = node_secret.mul_tweak(tweak).map_err(|_| ())?;
 		}
 		Ok(SharedSecret::new(other_key, &node_secret))
 	}

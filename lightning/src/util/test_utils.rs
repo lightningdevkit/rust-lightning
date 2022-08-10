@@ -34,7 +34,7 @@ use bitcoin::blockdata::block::Block;
 use bitcoin::network::constants::Network;
 use bitcoin::hash_types::{BlockHash, Txid};
 
-use bitcoin::secp256k1::{SecretKey, PublicKey, Secp256k1, ecdsa::Signature};
+use bitcoin::secp256k1::{SecretKey, PublicKey, Secp256k1, ecdsa::Signature, Scalar};
 use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1::ecdsa::RecoverableSignature;
 
@@ -75,7 +75,7 @@ impl keysinterface::KeysInterface for OnlyReadsKeysInterface {
 	type Signer = EnforcingSigner;
 
 	fn get_node_secret(&self, _recipient: Recipient) -> Result<SecretKey, ()> { unreachable!(); }
-	fn ecdh(&self, _recipient: Recipient, _other_key: &PublicKey, _tweak: Option<&[u8; 32]>) -> Result<SharedSecret, ()> { unreachable!(); }
+	fn ecdh(&self, _recipient: Recipient, _other_key: &PublicKey, _tweak: Option<&Scalar>) -> Result<SharedSecret, ()> { unreachable!(); }
 	fn get_inbound_payment_key_material(&self) -> KeyMaterial { unreachable!(); }
 	fn get_destination_script(&self) -> Script { unreachable!(); }
 	fn get_shutdown_scriptpubkey(&self) -> ShutdownScript { unreachable!(); }
@@ -602,7 +602,7 @@ impl keysinterface::KeysInterface for TestKeysInterface {
 	fn get_node_secret(&self, recipient: Recipient) -> Result<SecretKey, ()> {
 		self.backing.get_node_secret(recipient)
 	}
-	fn ecdh(&self, recipient: Recipient, other_key: &PublicKey, tweak: Option<&[u8; 32]>) -> Result<SharedSecret, ()> {
+	fn ecdh(&self, recipient: Recipient, other_key: &PublicKey, tweak: Option<&Scalar>) -> Result<SharedSecret, ()> {
 		self.backing.ecdh(recipient, other_key, tweak)
 	}
 	fn get_inbound_payment_key_material(&self) -> keysinterface::KeyMaterial {

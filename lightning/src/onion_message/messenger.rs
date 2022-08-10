@@ -196,7 +196,7 @@ impl<Signer: Sign, K: Deref, L: Deref> OnionMessenger<Signer, K, L>
 				Hmac::from_engine(hmac).into_inner()
 			};
 			match self.keys_manager.ecdh(Recipient::Node, &msg.onion_routing_packet.public_key,
-				Some(&blinding_factor))
+				Some(&Scalar::from_be_bytes(blinding_factor).unwrap()))
 			{
 				Ok(ss) => ss.secret_bytes(),
 				Err(()) => {
