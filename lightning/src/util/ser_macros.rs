@@ -476,7 +476,7 @@ macro_rules! tlv_stream {
 		$(($type:expr, $field:ident : $fieldty:tt)),* $(,)*
 	}) => {
 		#[derive(Debug)]
-		struct $name {
+		pub(crate) struct $name {
 			$(
 				$field: Option<tlv_record_type!($fieldty)>,
 			)*
