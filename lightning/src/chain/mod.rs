@@ -12,7 +12,7 @@
 use bitcoin::blockdata::block::{Block, BlockHeader};
 use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::blockdata::script::Script;
-use bitcoin::blockdata::transaction::{Transaction, TxOut};
+use bitcoin::blockdata::transaction::TxOut;
 use bitcoin::hash_types::{BlockHash, Txid};
 use bitcoin::network::constants::Network;
 use bitcoin::secp256k1::PublicKey;
@@ -333,21 +333,18 @@ pub trait Filter {
 
 	/// Registers interest in spends of a transaction output.
 	///
-	/// Optionally, when `output.block_hash` is set, should return any transaction spending the
-	/// output that is found in the corresponding block along with its index.
-	///
-	/// This return value is useful for Electrum clients in order to supply in-block descendant
-	/// transactions which otherwise were not included. This is not necessary for other clients if
-	/// such descendant transactions were already included (e.g., when a BIP 157 client provides the
-	/// full block).
-	fn register_output(&self, output: WatchedOutput) -> Option<(usize, Transaction)>;
+	/// Note that this method might be called during processing of a new block. You therefore need
+	/// to ensure that also dependent output spents within an already connected block are correctly
+	/// handled, e.g., by re-scanning the block in question whenever new outputs have been
+	/// registered mid-processing.
+	fn register_output(&self, output: WatchedOutput);
 }
 
 /// A transaction output watched by a [`ChannelMonitor`] for spends on-chain.
 ///
 /// Used to convey to a [`Filter`] such an output with a given spending condition. Any transaction
 /// spending the output must be given to [`ChannelMonitor::block_connected`] either directly or via
-/// the return value of [`Filter::register_output`].
+/// [`Confirm::transactions_confirmed`].
 ///
 /// If `block_hash` is `Some`, this indicates the output was created in the corresponding block and
 /// may have been spent there. See [`Filter::register_output`] for details.
