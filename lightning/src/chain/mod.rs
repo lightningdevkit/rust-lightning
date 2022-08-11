@@ -151,15 +151,15 @@ pub trait Confirm {
 	/// in the event of a chain reorganization, it must not be called with a `header` that is no
 	/// longer in the chain as of the last call to [`best_block_updated`].
 	///
-	/// [chain order]: Confirm#Order
+	/// [chain order]: Confirm#order
 	/// [`best_block_updated`]: Self::best_block_updated
 	fn transactions_confirmed(&self, header: &BlockHeader, txdata: &TransactionData, height: u32);
 
 	/// Processes a transaction that is no longer confirmed as result of a chain reorganization.
 	///
 	/// Should be called for any transaction returned by [`get_relevant_txids`] if it has been
-	/// reorganized out of the best chain. Once called, the given transaction should not be returned
-	/// by [`get_relevant_txids`] unless it has been reconfirmed via [`transactions_confirmed`].
+	/// reorganized out of the best chain. Once called, the given transaction will not be returned
+	/// by [`get_relevant_txids`], unless it has been reconfirmed via [`transactions_confirmed`].
 	///
 	/// [`get_relevant_txids`]: Self::get_relevant_txids
 	/// [`transactions_confirmed`]: Self::transactions_confirmed
@@ -173,9 +173,9 @@ pub trait Confirm {
 
 	/// Returns transactions that should be monitored for reorganization out of the chain.
 	///
-	/// Should include any transactions passed to [`transactions_confirmed`] that have insufficient
-	/// confirmations to be safe from a chain reorganization. Should not include any transactions
-	/// passed to [`transaction_unconfirmed`] unless later reconfirmed.
+	/// Will include any transactions passed to [`transactions_confirmed`] that have insufficient
+	/// confirmations to be safe from a chain reorganization. Will not include any transactions
+	/// passed to [`transaction_unconfirmed`], unless later reconfirmed.
 	///
 	/// May be called to determine the subset of transactions that must still be monitored for
 	/// reorganization. Will be idempotent between calls but may change as a result of calls to the
