@@ -733,7 +733,8 @@ impl<ChannelSigner: Sign, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref> even
 
 #[cfg(test)]
 mod tests {
-	use bitcoin::BlockHeader;
+	use bitcoin::{BlockHeader, TxMerkleNode};
+	use bitcoin::hashes::Hash;
 	use ::{check_added_monitors, check_closed_broadcast, check_closed_event};
 	use ::{expect_payment_sent, expect_payment_claimed, expect_payment_sent_without_paths, expect_payment_path_successful, get_event_msg};
 	use ::{get_htlc_update_msgs, get_local_commitment_txn, get_revoke_commit_msgs, get_route_and_payment_hash, unwrap_send_err};
@@ -900,7 +901,7 @@ mod tests {
 		let new_header = BlockHeader {
 			version: 2, time: 0, bits: 0, nonce: 0,
 			prev_blockhash: nodes[0].best_block_info().0,
-			merkle_root: Default::default() };
+			merkle_root: TxMerkleNode::all_zeros() };
 		nodes[0].chain_monitor.chain_monitor.transactions_confirmed(&new_header,
 			&[(0, &remote_txn[0]), (1, &remote_txn[1])], nodes[0].best_block_info().1 + 1);
 		assert!(nodes[0].chain_monitor.release_pending_monitor_events().is_empty());
@@ -926,7 +927,7 @@ mod tests {
 			let latest_header = BlockHeader {
 				version: 2, time: 0, bits: 0, nonce: 0,
 				prev_blockhash: nodes[0].best_block_info().0,
-				merkle_root: Default::default() };
+				merkle_root: TxMerkleNode::all_zeros() };
 			nodes[0].chain_monitor.chain_monitor.best_block_updated(&latest_header, nodes[0].best_block_info().1 + LATENCY_GRACE_PERIOD_BLOCKS);
 		} else {
 			let persistences = chanmon_cfgs[0].persister.chain_sync_monitor_persistences.lock().unwrap().clone();

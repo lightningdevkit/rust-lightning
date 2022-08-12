@@ -491,6 +491,7 @@ impl Drop for BackgroundProcessor {
 mod tests {
 	use bitcoin::blockdata::block::BlockHeader;
 	use bitcoin::blockdata::constants::genesis_block;
+	use bitcoin::blockdata::locktime::PackedLockTime;
 	use bitcoin::blockdata::transaction::{Transaction, TxOut};
 	use bitcoin::network::constants::Network;
 	use lightning::chain::{BestBlock, Confirm, chainmonitor};
@@ -516,6 +517,8 @@ mod tests {
 	use std::sync::{Arc, Mutex};
 	use std::sync::mpsc::SyncSender;
 	use std::time::Duration;
+	use bitcoin::hashes::Hash;
+	use bitcoin::TxMerkleNode;
 	use lightning::routing::scoring::{FixedPenaltyScorer};
 	use lightning_rapid_gossip_sync::RapidGossipSync;
 	use super::{BackgroundProcessor, GossipSync, FRESHNESS_TIMER};
@@ -703,7 +706,7 @@ mod tests {
 					assert_eq!(channel_value_satoshis, $channel_value);
 					assert_eq!(user_channel_id, 42);
 
-					let tx = Transaction { version: 1 as i32, lock_time: 0, input: Vec::new(), output: vec![TxOut {
+					let tx = Transaction { version: 1 as i32, lock_time: PackedLockTime(0), input: Vec::new(), output: vec![TxOut {
 						value: channel_value_satoshis, script_pubkey: output_script.clone(),
 					}]};
 					(temporary_channel_id, tx)
@@ -725,7 +728,7 @@ mod tests {
 		for i in 1..=depth {
 			let prev_blockhash = node.best_block.block_hash();
 			let height = node.best_block.height() + 1;
-			let header = BlockHeader { version: 0x20000000, prev_blockhash, merkle_root: Default::default(), time: height, bits: 42, nonce: 42 };
+			let header = BlockHeader { version: 0x20000000, prev_blockhash, merkle_root: TxMerkleNode::all_zeros(), time: height, bits: 42, nonce: 42 };
 			let txdata = vec![(0, tx)];
 			node.best_block = BestBlock::new(header.block_hash(), height);
 			match i {

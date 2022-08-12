@@ -28,7 +28,8 @@ use util::enforcing_trait_impls::EnforcingSigner;
 use util::ser::{ReadableArgs, Writeable};
 use io;
 
-use bitcoin::{Block, BlockHeader, BlockHash};
+use bitcoin::{Block, BlockHeader, BlockHash, TxMerkleNode};
+use bitcoin::hashes::Hash;
 use bitcoin::network::constants::Network;
 
 use prelude::*;
@@ -605,7 +606,7 @@ fn do_test_dup_htlc_onchain_fails_on_reload(persist_manager_post_event: bool, co
 	check_added_monitors!(nodes[1], 1);
 	expect_payment_claimed!(nodes[1], payment_hash, 10_000_000);
 
-	let mut header = BlockHeader { version: 0x20000000, prev_blockhash: nodes[1].best_block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+	let mut header = BlockHeader { version: 0x20000000, prev_blockhash: nodes[1].best_block_hash(), merkle_root: TxMerkleNode::all_zeros(), time: 42, bits: 42, nonce: 42 };
 	connect_block(&nodes[1], &Block { header, txdata: vec![node_txn[1].clone()]});
 	check_closed_broadcast!(nodes[1], true);
 	check_added_monitors!(nodes[1], 1);

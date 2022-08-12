@@ -663,7 +663,7 @@ fn test_balances_on_local_commitment_htlcs() {
 			claimable_height: htlc_cltv_timeout,
 		}]),
 		sorted_vec(nodes[0].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
-	assert_eq!(as_txn[1].lock_time, nodes[0].best_block_info().1 + 1); // as_txn[1] can be included in the next block
+	assert_eq!(as_txn[1].lock_time.0, nodes[0].best_block_info().1 + 1); // as_txn[1] can be included in the next block
 
 	// Now confirm nodes[0]'s HTLC-Timeout transaction, which changes the claimable balance to an
 	// "awaiting confirmations" one.

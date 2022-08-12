@@ -32,7 +32,7 @@ use bitcoin::hash_types::{BlockHash, Txid};
 use bitcoin::secp256k1::{SecretKey,PublicKey};
 use bitcoin::secp256k1::Secp256k1;
 use bitcoin::secp256k1::ecdh::SharedSecret;
-use bitcoin::secp256k1;
+use bitcoin::{LockTime, secp256k1, Sequence};
 
 use chain;
 use chain::{Confirm, ChannelMonitorUpdateErr, Watch, BestBlock};
@@ -2897,7 +2897,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			// constituting our Lightning node might not have perfect sync about their blockchain views. Thus, if
 			// the wallet module is in advance on the LDK view, allow one more block of headroom.
 			// TODO: updated if/when https://github.com/rust-bitcoin/rust-bitcoin/pull/994 landed and rust-bitcoin bumped.
-			if !funding_transaction.input.iter().all(|input| input.sequence == 0xffffffff) && funding_transaction.lock_time < 500_000_000 && funding_transaction.lock_time > height + 2 {
+			if !funding_transaction.input.iter().all(|input| input.sequence == Sequence::MAX) && LockTime::from(funding_transaction.lock_time).is_block_height() && funding_transaction.lock_time.0 > height + 2 {
 				return Err(APIError::APIMisuseError {
 					err: "Funding transaction absolute timelock is non-final".to_owned()
 				});
@@ -7974,7 +7974,7 @@ pub mod bench {
 
 	use bitcoin::hashes::Hash;
 	use bitcoin::hashes::sha256::Hash as Sha256;
-	use bitcoin::{Block, BlockHeader, Transaction, TxOut};
+	use bitcoin::{Block, BlockHeader, PackedLockTime, Transaction, TxMerkleNode, TxOut};
 
 	use sync::{Arc, Mutex};
 
@@ -8036,7 +8036,7 @@ pub mod bench {
 
 		let tx;
 		if let Event::FundingGenerationReady { temporary_channel_id, output_script, .. } = get_event!(node_a_holder, Event::FundingGenerationReady) {
-			tx = Transaction { version: 2, lock_time: 0, input: Vec::new(), output: vec![TxOut {
+			tx = Transaction { version: 2, lock_time: PackedLockTime::ZERO, input: Vec::new(), output: vec![TxOut {
 				value: 8_000_000, script_pubkey: output_script,
 			}]};
 			node_a.funding_transaction_generated(&temporary_channel_id, &node_b.get_our_node_id(), tx.clone()).unwrap();
@@ -8048,7 +8048,7 @@ pub mod bench {
 		assert_eq!(&tx_broadcaster.txn_broadcasted.lock().unwrap()[..], &[tx.clone()]);
 
 		let block = Block {
-			header: BlockHeader { version: 0x20000000, prev_blockhash: genesis_hash, merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 },
+			header: BlockHeader { version: 0x20000000, prev_blockhash: genesis_hash, merkle_root: TxMerkleNode::all_zeros(), time: 42, bits: 42, nonce: 42 },
 			txdata: vec![tx],
 		};
 		Listen::block_connected(&node_a, &block, 1);

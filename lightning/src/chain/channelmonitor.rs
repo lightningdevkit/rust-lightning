@@ -404,7 +404,7 @@ impl Writeable for OnchainEventEntry {
 
 impl MaybeReadable for OnchainEventEntry {
 	fn read<R: io::Read>(reader: &mut R) -> Result<Option<Self>, DecodeError> {
-		let mut txid = Default::default();
+		let mut txid = Txid::all_zeros();
 		let mut height = 0;
 		let mut event = None;
 		read_tlv_fields!(reader, {
@@ -1756,12 +1756,12 @@ macro_rules! fail_unbroadcast_htlcs {
 
 #[cfg(test)]
 pub fn deliberately_bogus_accepted_htlc_witness_program() -> Vec<u8> {
-	let mut ret = [opcodes::all::OP_NOP.into_u8(); 136];
-	ret[131] = opcodes::all::OP_DROP.into_u8();
-	ret[132] = opcodes::all::OP_DROP.into_u8();
-	ret[133] = opcodes::all::OP_DROP.into_u8();
-	ret[134] = opcodes::all::OP_DROP.into_u8();
-	ret[135] = opcodes::OP_TRUE.into_u8();
+	let mut ret = [opcodes::all::OP_NOP.to_u8(); 136];
+	ret[131] = opcodes::all::OP_DROP.to_u8();
+	ret[132] = opcodes::all::OP_DROP.to_u8();
+	ret[133] = opcodes::all::OP_DROP.to_u8();
+	ret[134] = opcodes::all::OP_DROP.to_u8();
+	ret[135] = opcodes::OP_TRUE.to_u8();
 	Vec::from(&ret[..])
 }
 
@@ -2110,7 +2110,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 			};
 		}
 
-		let commitment_number = 0xffffffffffff - ((((tx.input[0].sequence as u64 & 0xffffff) << 3*8) | (tx.lock_time as u64 & 0xffffff)) ^ self.commitment_transaction_number_obscure_factor);
+		let commitment_number = 0xffffffffffff - ((((tx.input[0].sequence.0 as u64 & 0xffffff) << 3*8) | (tx.lock_time.0 as u64 & 0xffffff)) ^ self.commitment_transaction_number_obscure_factor);
 		if commitment_number >= self.get_min_seen_secret() {
 			let secret = self.get_secret(commitment_number).unwrap();
 			let per_commitment_key = ignore_error!(SecretKey::from_slice(&secret));
@@ -2495,7 +2495,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 					log_info!(logger, "Channel {} closed by funding output spend in txid {}.",
 						log_bytes!(self.funding_info.0.to_channel_id()), tx.txid());
 					self.funding_spend_seen = true;
-					if (tx.input[0].sequence >> 8*3) as u8 == 0x80 && (tx.lock_time >> 8*3) as u8 == 0x20 {
+					if (tx.input[0].sequence.0 >> 8*3) as u8 == 0x80 && (tx.lock_time.0 >> 8*3) as u8 == 0x20 {
 						let (mut new_outpoints, new_outputs) = self.check_spend_counterparty_transaction(&tx, height, &logger);
 						if !new_outputs.1.is_empty() {
 							watch_outputs.push(new_outputs);
@@ -3469,7 +3469,7 @@ mod tests {
 	use util::ser::{ReadableArgs, Writeable};
 	use sync::{Arc, Mutex};
 	use io;
-	use bitcoin::Witness;
+	use bitcoin::{PackedLockTime, Sequence, TxMerkleNode, Witness};
 	use prelude::*;
 
 	fn do_test_funding_spend_refuses_updates(use_local_txn: bool) {
@@ -3513,7 +3513,7 @@ mod tests {
 		let new_header = BlockHeader {
 			version: 2, time: 0, bits: 0, nonce: 0,
 			prev_blockhash: nodes[0].best_block_info().0,
-			merkle_root: Default::default() };
+			merkle_root: TxMerkleNode::all_zeros() };
 		let conf_height = nodes[0].best_block_info().1 + 1;
 		nodes[1].chain_monitor.chain_monitor.transactions_confirmed(&new_header,
 			&[(0, broadcast_tx)], conf_height);
@@ -3573,7 +3573,7 @@ mod tests {
 		let fee_estimator = TestFeeEstimator { sat_per_kw: Mutex::new(253) };
 
 		let dummy_key = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
-		let dummy_tx = Transaction { version: 0, lock_time: 0, input: Vec::new(), output: Vec::new() };
+		let dummy_tx = Transaction { version: 0, lock_time: PackedLockTime::ZERO, input: Vec::new(), output: Vec::new() };
 
 		let mut preimages = Vec::new();
 		{
@@ -3639,7 +3639,7 @@ mod tests {
 			delayed_payment_basepoint: PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[47; 32]).unwrap()),
 			htlc_basepoint: PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[48; 32]).unwrap())
 		};
-		let funding_outpoint = OutPoint { txid: Default::default(), index: u16::max_value() };
+		let funding_outpoint = OutPoint { txid: Txid::all_zeros(), index: u16::max_value() };
 		let channel_parameters = ChannelTransactionParameters {
 			holder_pubkeys: keys.holder_channel_pubkeys.clone(),
 			holder_selected_contest_delay: 66,
@@ -3753,7 +3753,7 @@ mod tests {
 
 		// Justice tx with 1 to_holder, 2 revoked offered HTLCs, 1 revoked received HTLCs
 		for &opt_anchors in [false, true].iter() {
-			let mut claim_tx = Transaction { version: 0, lock_time: 0, input: Vec::new(), output: Vec::new() };
+			let mut claim_tx = Transaction { version: 0, lock_time: PackedLockTime::ZERO, input: Vec::new(), output: Vec::new() };
 			let mut sum_actual_sigs = 0;
 			for i in 0..4 {
 				claim_tx.input.push(TxIn {
@@ -3762,7 +3762,7 @@ mod tests {
 						vout: i,
 					},
 					script_sig: Script::new(),
-					sequence: 0xfffffffd,
+					sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
 					witness: Witness::new(),
 				});
 			}
@@ -3785,7 +3785,7 @@ mod tests {
 
 		// Claim tx with 1 offered HTLCs, 3 received HTLCs
 		for &opt_anchors in [false, true].iter() {
-			let mut claim_tx = Transaction { version: 0, lock_time: 0, input: Vec::new(), output: Vec::new() };
+			let mut claim_tx = Transaction { version: 0, lock_time: PackedLockTime::ZERO, input: Vec::new(), output: Vec::new() };
 			let mut sum_actual_sigs = 0;
 			for i in 0..4 {
 				claim_tx.input.push(TxIn {
@@ -3794,7 +3794,7 @@ mod tests {
 						vout: i,
 					},
 					script_sig: Script::new(),
-					sequence: 0xfffffffd,
+					sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
 					witness: Witness::new(),
 				});
 			}
@@ -3817,7 +3817,7 @@ mod tests {
 
 		// Justice tx with 1 revoked HTLC-Success tx output
 		for &opt_anchors in [false, true].iter() {
-			let mut claim_tx = Transaction { version: 0, lock_time: 0, input: Vec::new(), output: Vec::new() };
+			let mut claim_tx = Transaction { version: 0, lock_time: PackedLockTime::ZERO, input: Vec::new(), output: Vec::new() };
 			let mut sum_actual_sigs = 0;
 			claim_tx.input.push(TxIn {
 				previous_output: BitcoinOutPoint {
@@ -3825,7 +3825,7 @@ mod tests {
 					vout: 0,
 				},
 				script_sig: Script::new(),
-				sequence: 0xfffffffd,
+				sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
 				witness: Witness::new(),
 			});
 			claim_tx.output.push(TxOut {

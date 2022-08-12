@@ -36,6 +36,8 @@ use ln::functional_test_utils::*;
 use util::test_utils;
 
 use io;
+use bitcoin::hashes::Hash;
+use bitcoin::TxMerkleNode;
 use prelude::*;
 use sync::{Arc, Mutex};
 
@@ -116,7 +118,14 @@ fn test_monitor_and_persister_update_fail() {
 		assert!(chain_mon.watch_channel(outpoint, new_monitor).is_ok());
 		chain_mon
 	};
-	let header = BlockHeader { version: 0x20000000, prev_blockhash: Default::default(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+	let header = BlockHeader {
+		version: 0x20000000,
+		prev_blockhash: BlockHash::all_zeros(),
+		merkle_root: TxMerkleNode::all_zeros(),
+		time: 42,
+		bits: 42,
+		nonce: 42
+	};
 	chain_mon.chain_monitor.block_connected(&Block { header, txdata: vec![] }, 200);
 
 	// Set the persister's return value to be a TemporaryFailure.

@@ -25,7 +25,7 @@ use routing::gossip::NetworkUpdate;
 use util::ser::{BigSize, FixedLengthReader, Writeable, Writer, MaybeReadable, Readable, VecReadWrapper, VecWriteWrapper};
 use routing::router::{RouteHop, RouteParameters};
 
-use bitcoin::Transaction;
+use bitcoin::{PackedLockTime, Transaction};
 use bitcoin::blockdata::script::Script;
 use bitcoin::hashes::Hash;
 use bitcoin::hashes::sha256::Hash as Sha256;
@@ -907,7 +907,7 @@ impl MaybeReadable for Event {
 			11u8 => {
 				let f = || {
 					let mut channel_id = [0; 32];
-					let mut transaction = Transaction{ version: 2, lock_time: 0, input: Vec::new(), output: Vec::new() };
+					let mut transaction = Transaction{ version: 2, lock_time: PackedLockTime::ZERO, input: Vec::new(), output: Vec::new() };
 					read_tlv_fields!(reader, {
 						(0, channel_id, required),
 						(2, transaction, required),

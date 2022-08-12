@@ -26,10 +26,10 @@ use util::ser::{Readable, Writeable, Writer};
 use util::{byte_utils, transaction_utils};
 
 use bitcoin::hash_types::WPubkeyHash;
-use bitcoin::secp256k1::{SecretKey, PublicKey};
+use bitcoin::secp256k1::{SecretKey, PublicKey, Scalar};
 use bitcoin::secp256k1::{Secp256k1, ecdsa::Signature, Message};
 use bitcoin::secp256k1::Error as SecpError;
-use bitcoin::{secp256k1, Witness};
+use bitcoin::{PackedLockTime, secp256k1, Sequence, Witness};
 
 use io;
 use prelude::*;
@@ -101,7 +101,7 @@ pub fn build_closing_transaction(to_holder_value_sat: u64, to_counterparty_value
 		ins.push(TxIn {
 			previous_output: funding_outpoint,
 			script_sig: Script::new(),
-			sequence: 0xffffffff,
+			sequence: Sequence::MAX,
 			witness: Witness::new(),
 		});
 		ins
@@ -132,7 +132,7 @@ pub fn build_closing_transaction(to_holder_value_sat: u64, to_counterparty_value
 
 	Transaction {
 		version: 2,
-		lock_time: 0,
+		lock_time: PackedLockTime::ZERO,
 		input: txins,
 		output: outputs,
 	}
@@ -264,9 +264,7 @@ pub fn derive_private_key<T: secp256k1::Signing>(secp_ctx: &Secp256k1<T>, per_co
 	sha.input(&PublicKey::from_secret_key(&secp_ctx, &base_secret).serialize());
 	let res = Sha256::from_engine(sha).into_inner();
 
-	let mut key = base_secret.clone();
-	key.add_assign(&res)?;
-	Ok(key)
+	base_secret.clone().add_tweak(&Scalar::from_be_bytes(res).unwrap())
 }
 
 /// Derives a per-commitment-transaction public key (eg an htlc key or a delayed_payment key)
@@ -313,12 +311,9 @@ pub fn derive_private_revocation_key<T: secp256k1::Signing>(secp_ctx: &Secp256k1
 		Sha256::from_engine(sha).into_inner()
 	};
 
-	let mut countersignatory_contrib = countersignatory_revocation_base_secret.clone();
-	countersignatory_contrib.mul_assign(&rev_append_commit_hash_key)?;
-	let mut broadcaster_contrib = per_commitment_secret.clone();
-	broadcaster_contrib.mul_assign(&commit_append_rev_hash_key)?;
-	countersignatory_contrib.add_assign(&broadcaster_contrib[..])?;
-	Ok(countersignatory_contrib)
+	let countersignatory_contrib = countersignatory_revocation_base_secret.clone().mul_tweak(&Scalar::from_be_bytes(rev_append_commit_hash_key).unwrap())?;
+	let broadcaster_contrib = per_commitment_secret.clone().mul_tweak(&Scalar::from_be_bytes(commit_append_rev_hash_key).unwrap())?;
+	countersignatory_contrib.add_tweak(&Scalar::from_be_bytes(broadcaster_contrib.secret_bytes()).unwrap())
 }
 
 /// Derives a per-commitment-transaction revocation public key from its constituent parts. This is
@@ -348,10 +343,8 @@ pub fn derive_public_revocation_key<T: secp256k1::Verification>(secp_ctx: &Secp2
 		Sha256::from_engine(sha).into_inner()
 	};
 
-	let mut countersignatory_contrib = countersignatory_revocation_base_point.clone();
-	countersignatory_contrib.mul_assign(&secp_ctx, &rev_append_commit_hash_key)?;
-	let mut broadcaster_contrib = per_commitment_point.clone();
-	broadcaster_contrib.mul_assign(&secp_ctx, &commit_append_rev_hash_key)?;
+	let countersignatory_contrib = countersignatory_revocation_base_point.clone().mul_tweak(&secp_ctx, &Scalar::from_be_bytes(rev_append_commit_hash_key).unwrap())?;
+	let broadcaster_contrib = per_commitment_point.clone().mul_tweak(&secp_ctx, &Scalar::from_be_bytes(commit_append_rev_hash_key).unwrap())?;
 	countersignatory_contrib.combine(&broadcaster_contrib)
 }
 
@@ -614,7 +607,7 @@ pub fn build_htlc_transaction(commitment_txid: &Txid, feerate_per_kw: u32, conte
 			vout: htlc.transaction_output_index.expect("Can't build an HTLC transaction for a dust output"),
 		},
 		script_sig: Script::new(),
-		sequence: if opt_anchors { 1 } else { 0 },
+		sequence: Sequence(if opt_anchors { 1 } else { 0 }),
 		witness: Witness::new(),
 	});
 
@@ -633,7 +626,7 @@ pub fn build_htlc_transaction(commitment_txid: &Txid, feerate_per_kw: u32, conte
 
 	Transaction {
 		version: 2,
-		lock_time: if htlc.offered { htlc.cltv_expiry } else { 0 },
+		lock_time: PackedLockTime(if htlc.offered { htlc.cltv_expiry } else { 0 }),
 		input: txins,
 		output: txouts,
 	}
@@ -863,7 +856,7 @@ impl HolderCommitmentTransaction {
 			holder_selected_contest_delay: 0,
 			is_outbound_from_holder: false,
 			counterparty_parameters: Some(CounterpartyChannelTransactionParameters { pubkeys: channel_pubkeys.clone(), selected_contest_delay: 0 }),
-			funding_outpoint: Some(chain::transaction::OutPoint { txid: Default::default(), index: 0 }),
+			funding_outpoint: Some(chain::transaction::OutPoint { txid: Txid::all_zeros(), index: 0 }),
 			opt_anchors: None
 		};
 		let mut htlcs_with_aux: Vec<(_, ())> = Vec::new();
@@ -1167,7 +1160,7 @@ impl CommitmentTransaction {
 	fn make_transaction(obscured_commitment_transaction_number: u64, txins: Vec<TxIn>, outputs: Vec<TxOut>) -> Transaction {
 		Transaction {
 			version: 2,
-			lock_time: ((0x20 as u32) << 8 * 3) | ((obscured_commitment_transaction_number & 0xffffffu64) as u32),
+			lock_time: PackedLockTime(((0x20 as u32) << 8 * 3) | ((obscured_commitment_transaction_number & 0xffffffu64) as u32)),
 			input: txins,
 			output: outputs,
 		}
@@ -1291,8 +1284,8 @@ impl CommitmentTransaction {
 			ins.push(TxIn {
 				previous_output: channel_parameters.funding_outpoint(),
 				script_sig: Script::new(),
-				sequence: ((0x80 as u32) << 8 * 3)
-					| ((obscured_commitment_transaction_number >> 3 * 8) as u32),
+				sequence: Sequence(((0x80 as u32) << 8 * 3)
+					| ((obscured_commitment_transaction_number >> 3 * 8) as u32)),
 				witness: Witness::new(),
 			});
 			ins
@@ -1508,7 +1501,8 @@ mod tests {
 	use bitcoin::secp256k1::{PublicKey, SecretKey, Secp256k1};
 	use util::test_utils;
 	use chain::keysinterface::{KeysInterface, BaseSign};
-	use bitcoin::Network;
+	use bitcoin::{Network, Txid};
+	use bitcoin::hashes::Hash;
 	use ln::PaymentHash;
 	use bitcoin::hashes::hex::ToHex;
 
@@ -1533,7 +1527,7 @@ mod tests {
 			holder_selected_contest_delay: 0,
 			is_outbound_from_holder: false,
 			counterparty_parameters: Some(CounterpartyChannelTransactionParameters { pubkeys: counterparty_pubkeys.clone(), selected_contest_delay: 0 }),
-			funding_outpoint: Some(chain::transaction::OutPoint { txid: Default::default(), index: 0 }),
+			funding_outpoint: Some(chain::transaction::OutPoint { txid: Txid::all_zeros(), index: 0 }),
 			opt_anchors: None
 		};
 

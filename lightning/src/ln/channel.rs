@@ -6603,7 +6603,7 @@ mod tests {
 	use util::errors::APIError;
 	use util::test_utils;
 	use util::test_utils::OnGetShutdownScriptpubkey;
-	use bitcoin::secp256k1::{Secp256k1, ecdsa::Signature};
+	use bitcoin::secp256k1::{Secp256k1, ecdsa::Signature, Scalar};
 	use bitcoin::secp256k1::ffi::Signature as FFISignature;
 	use bitcoin::secp256k1::{SecretKey,PublicKey};
 	use bitcoin::secp256k1::ecdh::SharedSecret;
@@ -6612,6 +6612,7 @@ mod tests {
 	use bitcoin::hashes::Hash;
 	use bitcoin::hash_types::WPubkeyHash;
 	use bitcoin::bech32::u5;
+	use bitcoin::PackedLockTime;
 	use bitcoin::util::address::WitnessVersion;
 	use prelude::*;
 
@@ -6647,7 +6648,7 @@ mod tests {
 		type Signer = InMemorySigner;
 
 		fn get_node_secret(&self, _recipient: Recipient) -> Result<SecretKey, ()> { panic!(); }
-		fn ecdh(&self, _recipient: Recipient, _other_key: &PublicKey, _tweak: Option<&[u8; 32]>) -> Result<SharedSecret, ()> { panic!(); }
+		fn ecdh(&self, _recipient: Recipient, _other_key: &PublicKey, _tweak: Option<&Scalar>) -> Result<SharedSecret, ()> { panic!(); }
 		fn get_inbound_payment_key_material(&self) -> KeyMaterial { panic!(); }
 		fn get_destination_script(&self) -> Script {
 			let secp_ctx = Secp256k1::signing_only();
@@ -6872,7 +6873,7 @@ mod tests {
 
 		// Node A --> Node B: funding created
 		let output_script = node_a_chan.get_funding_redeemscript();
-		let tx = Transaction { version: 1, lock_time: 0, input: Vec::new(), output: vec![TxOut {
+		let tx = Transaction { version: 1, lock_time: PackedLockTime::ZERO, input: Vec::new(), output: vec![TxOut {
 			value: 10000000, script_pubkey: output_script.clone(),
 		}]};
 		let funding_outpoint = OutPoint{ txid: tx.txid(), index: 0 };

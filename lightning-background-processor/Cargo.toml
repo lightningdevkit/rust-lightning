@@ -14,7 +14,7 @@ all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
-bitcoin = "0.28.1"
+bitcoin = "0.29.0"
 lightning = { version = "0.0.110", path = "../lightning", features = ["std"] }
 lightning-rapid-gossip-sync = { version = "0.0.110", path = "../lightning-rapid-gossip-sync" }
 
