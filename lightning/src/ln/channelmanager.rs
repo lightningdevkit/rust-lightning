@@ -55,7 +55,7 @@ use util::config::{UserConfig, ChannelConfig};
 use util::events::{EventHandler, EventsProvider, MessageSendEvent, MessageSendEventsProvider, ClosureReason, HTLCDestination};
 use util::{byte_utils, events};
 use util::crypto::sign;
-use util::wakers::PersistenceNotifier;
+use util::wakers::Notifier;
 use util::scid_utils::fake_scid;
 use util::ser::{BigSize, FixedLengthReader, Readable, ReadableArgs, MaybeReadable, Writeable, Writer, VecWriter};
 use util::logger::{Level, Logger};
@@ -790,10 +790,10 @@ pub struct ChannelManager<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, 
 	/// Taken first everywhere where we are making changes before any other locks.
 	/// When acquiring this lock in read mode, rather than acquiring it directly, call
 	/// `PersistenceNotifierGuard::notify_on_drop(..)` and pass the lock to it, to ensure the
-	/// PersistenceNotifier the lock contains sends out a notification when the lock is released.
+	/// Notifier the lock contains sends out a notification when the lock is released.
 	total_consistency_lock: RwLock<()>,
 
-	persistence_notifier: PersistenceNotifier,
+	persistence_notifier: Notifier,
 
 	keys_manager: K,
 
@@ -833,18 +833,18 @@ enum NotifyOption {
 /// notify or not based on whether relevant changes have been made, providing a closure to
 /// `optionally_notify` which returns a `NotifyOption`.
 struct PersistenceNotifierGuard<'a, F: Fn() -> NotifyOption> {
-	persistence_notifier: &'a PersistenceNotifier,
+	persistence_notifier: &'a Notifier,
 	should_persist: F,
 	// We hold onto this result so the lock doesn't get released immediately.
 	_read_guard: RwLockReadGuard<'a, ()>,
 }
 
 impl<'a> PersistenceNotifierGuard<'a, fn() -> NotifyOption> { // We don't care what the concrete F is here, it's unused
-	fn notify_on_drop(lock: &'a RwLock<()>, notifier: &'a PersistenceNotifier) -> PersistenceNotifierGuard<'a, impl Fn() -> NotifyOption> {
+	fn notify_on_drop(lock: &'a RwLock<()>, notifier: &'a Notifier) -> PersistenceNotifierGuard<'a, impl Fn() -> NotifyOption> {
 		PersistenceNotifierGuard::optionally_notify(lock, notifier, || -> NotifyOption { NotifyOption::DoPersist })
 	}
 
-	fn optionally_notify<F: Fn() -> NotifyOption>(lock: &'a RwLock<()>, notifier: &'a PersistenceNotifier, persist_check: F) -> PersistenceNotifierGuard<'a, F> {
+	fn optionally_notify<F: Fn() -> NotifyOption>(lock: &'a RwLock<()>, notifier: &'a Notifier, persist_check: F) -> PersistenceNotifierGuard<'a, F> {
 		let read_guard = lock.read().unwrap();
 
 		PersistenceNotifierGuard {
@@ -1625,7 +1625,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			pending_events: Mutex::new(Vec::new()),
 			pending_background_events: Mutex::new(Vec::new()),
 			total_consistency_lock: RwLock::new(()),
-			persistence_notifier: PersistenceNotifier::new(),
+			persistence_notifier: Notifier::new(),
 
 			keys_manager,
 
@@ -7240,7 +7240,7 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 			pending_events: Mutex::new(pending_events_read),
 			pending_background_events: Mutex::new(pending_background_events_read),
 			total_consistency_lock: RwLock::new(()),
-			persistence_notifier: PersistenceNotifier::new(),
+			persistence_notifier: Notifier::new(),
 
 			keys_manager: args.keys_manager,
 			logger: args.logger,

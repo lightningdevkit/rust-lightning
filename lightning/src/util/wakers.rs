@@ -22,13 +22,13 @@ use std::time::Instant;
 
 /// Used to signal to the ChannelManager persister that the manager needs to be re-persisted to
 /// disk/backups, through `await_persistable_update_timeout` and `await_persistable_update`.
-pub(crate) struct PersistenceNotifier {
+pub(crate) struct Notifier {
 	/// Users won't access the persistence_lock directly, but rather wait on its bool using
 	/// `wait_timeout` and `wait`.
 	persistence_lock: (Mutex<bool>, Condvar),
 }
 
-impl PersistenceNotifier {
+impl Notifier {
 	pub(crate) fn new() -> Self {
 		Self {
 			persistence_lock: (Mutex::new(false), Condvar::new()),
@@ -108,7 +108,7 @@ mod tests {
 		use core::sync::atomic::{AtomicBool, Ordering};
 		use std::thread;
 
-		let persistence_notifier = Arc::new(PersistenceNotifier::new());
+		let persistence_notifier = Arc::new(Notifier::new());
 		let thread_notifier = Arc::clone(&persistence_notifier);
 
 		let exit_thread = Arc::new(AtomicBool::new(false));
@@ -129,7 +129,7 @@ mod tests {
 		// Check that we can block indefinitely until updates are available.
 		let _ = persistence_notifier.wait();
 
-		// Check that the PersistenceNotifier will return after the given duration if updates are
+		// Check that the Notifier will return after the given duration if updates are
 		// available.
 		loop {
 			if persistence_notifier.wait_timeout(Duration::from_millis(100)) {
@@ -139,7 +139,7 @@ mod tests {
 
 		exit_thread.store(true, Ordering::SeqCst);
 
-		// Check that the PersistenceNotifier will return after the given duration even if no updates
+		// Check that the Notifier will return after the given duration even if no updates
 		// are available.
 		loop {
 			if !persistence_notifier.wait_timeout(Duration::from_millis(100)) {
