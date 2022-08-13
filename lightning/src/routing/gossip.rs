@@ -16,13 +16,12 @@ use bitcoin::secp256k1;
 
 use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::hashes::Hash;
-use bitcoin::blockdata::script::Builder;
 use bitcoin::blockdata::transaction::TxOut;
-use bitcoin::blockdata::opcodes;
 use bitcoin::hash_types::BlockHash;
 
 use chain;
 use chain::Access;
+use ln::chan_utils::make_funding_redeemscript;
 use ln::features::{ChannelFeatures, NodeFeatures};
 use ln::msgs::{DecodeError, ErrorAction, Init, LightningError, RoutingMessageHandler, NetAddress, MAX_VALUE_MSAT};
 use ln::msgs::{ChannelAnnouncement, ChannelUpdate, NodeAnnouncement, GossipTimestampFilter};
@@ -1455,11 +1454,8 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 			&Some(ref chain_access) => {
 				match chain_access.get_utxo(&msg.chain_hash, msg.short_channel_id) {
 					Ok(TxOut { value, script_pubkey }) => {
-						let expected_script = Builder::new().push_opcode(opcodes::all::OP_PUSHNUM_2)
-						                                    .push_slice(&msg.bitcoin_key_1.serialize())
-						                                    .push_slice(&msg.bitcoin_key_2.serialize())
-						                                    .push_opcode(opcodes::all::OP_PUSHNUM_2)
-						                                    .push_opcode(opcodes::all::OP_CHECKMULTISIG).into_script().to_v0_p2wsh();
+						let expected_script =
+							make_funding_redeemscript(&msg.bitcoin_key_1, &msg.bitcoin_key_2).to_v0_p2wsh();
 						if script_pubkey != expected_script {
 							return Err(LightningError{err: format!("Channel announcement key ({}) didn't match on-chain script ({})", script_pubkey.to_hex(), expected_script.to_hex()), action: ErrorAction::IgnoreError});
 						}
@@ -1836,6 +1832,7 @@ impl ReadOnlyNetworkGraph<'_> {
 #[cfg(test)]
 mod tests {
 	use chain;
+	use ln::chan_utils::make_funding_redeemscript;
 	use ln::PaymentHash;
 	use ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 	use routing::gossip::{P2PGossipSync, NetworkGraph, NetworkUpdate, NodeAlias, MAX_EXCESS_BYTES_FOR_RELAY, NodeId, RoutingFees, ChannelUpdateInfo, ChannelInfo, NodeAnnouncementInfo, NodeInfo};
@@ -1853,9 +1850,8 @@ mod tests {
 	use bitcoin::hashes::Hash;
 	use bitcoin::network::constants::Network;
 	use bitcoin::blockdata::constants::genesis_block;
-	use bitcoin::blockdata::script::{Builder, Script};
+	use bitcoin::blockdata::script::Script;
 	use bitcoin::blockdata::transaction::TxOut;
-	use bitcoin::blockdata::opcodes;
 
 	use hex;
 
@@ -1945,14 +1941,10 @@ mod tests {
 	}
 
 	fn get_channel_script(secp_ctx: &Secp256k1<secp256k1::All>) -> Script {
-		let node_1_btckey = &SecretKey::from_slice(&[40; 32]).unwrap();
-		let node_2_btckey = &SecretKey::from_slice(&[39; 32]).unwrap();
-		Builder::new().push_opcode(opcodes::all::OP_PUSHNUM_2)
-		              .push_slice(&PublicKey::from_secret_key(&secp_ctx, node_1_btckey).serialize())
-		              .push_slice(&PublicKey::from_secret_key(&secp_ctx, node_2_btckey).serialize())
-		              .push_opcode(opcodes::all::OP_PUSHNUM_2)
-		              .push_opcode(opcodes::all::OP_CHECKMULTISIG).into_script()
-		              .to_v0_p2wsh()
+		let node_1_btckey = SecretKey::from_slice(&[40; 32]).unwrap();
+		let node_2_btckey = SecretKey::from_slice(&[39; 32]).unwrap();
+		make_funding_redeemscript(&PublicKey::from_secret_key(secp_ctx, &node_1_btckey),
+			&PublicKey::from_secret_key(secp_ctx, &node_2_btckey)).to_v0_p2wsh()
 	}
 
 	fn get_signed_channel_update<F: Fn(&mut UnsignedChannelUpdate)>(f: F, node_key: &SecretKey, secp_ctx: &Secp256k1<secp256k1::All>) -> ChannelUpdate {
