@@ -29,14 +29,7 @@ pub fn find_route<L: Deref, GL: Deref, S: Score>(
 	scorer: &S) -> Result<Route, LightningError>
 where L::Target: Logger, GL::Target: Logger {
 
-// impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, S:Score> Router<S>
-//         for PickhardtRouter<G, L> where L::Target: Logger {
-//     fn find_route(
-// 		&self, payer: &PublicKey, route_params: &RouteParameters,
-//          payment_hash: &PaymentHash,
-// 		first_hops: Option<&[&ChannelDetails]>, scorer: &S
-// 	) -> Result<Route, LightningError> {
-        let payee_pubkey=route_params.payment_params.payee_pubkey;
+	let payee_pubkey=route_params.payment_params.payee_pubkey;
 
 	// Basic checks are the same as with the Dijstra routing algorithm.
     let our_node_id=NodeId::from_pubkey(&our_node_pubkey);
@@ -69,9 +62,9 @@ where L::Target: Logger, GL::Target: Logger {
             action: ErrorAction::IgnoreError});
     }
 
-	// log_trace!(logger, "Searching for a Pickhardt type route from payer {} to payee {} {} MPP and {} first hops {}overriding the network graph", our_node_pubkey,
-		// payment_params.payee_pubkey, if allow_mpp { "with" } else { "without" },
-		// first_hops.map(|hops| hops.len()).unwrap_or(0), if first_hops.is_some() { "" } else { "not " });
+	log_trace!(logger, "Searching for a Pickhardt type route from payer {} to payee {} with MPP and {} first hops {}overriding the network graph", our_node_pubkey,
+		payment_params.payee_pubkey,
+		first_hops.map(|hops| hops.len()).unwrap_or(0), if first_hops.is_some() { "" } else { "not " });
 
 	let mut edges:Vec<OriginalEdge> =Vec::new();  // enumerated channels.
 	let mut vidx:HashMap<NodeId,usize> =HashMap::new();  // NodeId -> enumerated node id
@@ -97,8 +90,8 @@ where L::Target: Logger, GL::Target: Logger {
 	if let Some(value) = add_hops_to_payee_node_from_route_hints(
 		&mut channel_meta_data, &mut short_channel_ids_set,
 		payment_params, payee_node_id, &mut edges, &mut vidx, &mut nodes) {
-    return value;
-}
+    	return value;
+	}
 
 	let payee_node=NodeId::from_pubkey(&payee_pubkey);
 	let t=*vidx.get(&payee_node).unwrap();
