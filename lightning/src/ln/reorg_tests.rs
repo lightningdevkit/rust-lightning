@@ -28,6 +28,8 @@ use bitcoin::secp256k1::Secp256k1;
 
 use prelude::*;
 use core::mem;
+use bitcoin::hashes::Hash;
+use bitcoin::TxMerkleNode;
 
 use ln::functional_test_utils::*;
 
@@ -68,7 +70,7 @@ fn do_test_onchain_htlc_reorg(local_commitment: bool, claim: bool) {
 	check_added_monitors!(nodes[2], 1);
 	get_htlc_update_msgs!(nodes[2], nodes[1].node.get_our_node_id());
 
-	let mut header = BlockHeader { version: 0x2000_0000, prev_blockhash: nodes[2].best_block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 };
+	let mut header = BlockHeader { version: 0x2000_0000, prev_blockhash: nodes[2].best_block_hash(), merkle_root: TxMerkleNode::all_zeros(), time: 42, bits: 42, nonce: 42 };
 	let claim_txn = if local_commitment {
 		// Broadcast node 1 commitment txn to broadcast the HTLC-Timeout
 		let node_1_commitment_txn = get_local_commitment_txn!(nodes[1], chan_2.2);
@@ -131,7 +133,7 @@ fn do_test_onchain_htlc_reorg(local_commitment: bool, claim: bool) {
 		disconnect_blocks(&nodes[1], ANTI_REORG_DELAY - 2);
 
 		let block = Block {
-			header: BlockHeader { version: 0x20000000, prev_blockhash: nodes[1].best_block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 },
+			header: BlockHeader { version: 0x20000000, prev_blockhash: nodes[1].best_block_hash(), merkle_root: TxMerkleNode::all_zeros(), time: 42, bits: 42, nonce: 42 },
 			txdata: claim_txn,
 		};
 		connect_block(&nodes[1], &block);
@@ -143,7 +145,7 @@ fn do_test_onchain_htlc_reorg(local_commitment: bool, claim: bool) {
 	} else {
 		// Confirm the timeout tx and check that we fail the HTLC backwards
 		let block = Block {
-			header: BlockHeader { version: 0x20000000, prev_blockhash: nodes[1].best_block_hash(), merkle_root: Default::default(), time: 42, bits: 42, nonce: 42 },
+			header: BlockHeader { version: 0x20000000, prev_blockhash: nodes[1].best_block_hash(), merkle_root: TxMerkleNode::all_zeros(), time: 42, bits: 42, nonce: 42 },
 			txdata: vec![],
 		};
 		connect_block(&nodes[1], &block);

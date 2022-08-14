@@ -122,7 +122,7 @@ pub(crate) fn is_bolt2_compliant(script: &Script, features: &InitFeatures) -> bo
 	if script.is_p2pkh() || script.is_p2sh() || script.is_v0_p2wpkh() || script.is_v0_p2wsh() {
 		true
 	} else if features.supports_shutdown_anysegwit() {
-		script.is_witness_program() && script.as_bytes()[0] != SEGWIT_V0.into_u8()
+		script.is_witness_program() && script.as_bytes()[0] != SEGWIT_V0.to_u8()
 	} else {
 		false
 	}

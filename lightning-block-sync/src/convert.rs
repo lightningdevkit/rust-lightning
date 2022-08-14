@@ -15,6 +15,7 @@ use serde_json;
 use std::convert::From;
 use std::convert::TryFrom;
 use std::convert::TryInto;
+use bitcoin::hashes::Hash;
 
 /// Conversion from `std::io::Error` into `BlockSourceError`.
 impl From<std::io::Error> for BlockSourceError {
@@ -57,7 +58,7 @@ impl TryInto<BlockHeaderData> for JsonResponse {
 
 		// Add an empty previousblockhash for the genesis block.
 		if let None = header.get("previousblockhash") {
-			let hash: BlockHash = Default::default();
+			let hash: BlockHash = BlockHash::all_zeros();
 			header.as_object_mut().unwrap().insert("previousblockhash".to_string(), serde_json::json!(hash.to_hex()));
 		}
 

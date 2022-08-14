@@ -23,7 +23,7 @@ use bitcoin::hashes::cmp::fixed_time_eq;
 use bitcoin::hashes::hmac::{Hmac, HmacEngine};
 use bitcoin::hashes::sha256::Hash as Sha256;
 
-use bitcoin::secp256k1::{SecretKey,PublicKey};
+use bitcoin::secp256k1::{SecretKey, PublicKey, Scalar};
 use bitcoin::secp256k1::Secp256k1;
 use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1;
@@ -82,7 +82,7 @@ pub(super) fn gen_ammag_from_shared_secret(shared_secret: &[u8]) -> [u8; 32] {
 	Hmac::from_engine(hmac).into_inner()
 }
 
-pub(crate) fn next_hop_packet_pubkey<T: secp256k1::Signing + secp256k1::Verification>(secp_ctx: &Secp256k1<T>, mut packet_pubkey: PublicKey, packet_shared_secret: &[u8; 32]) -> Result<PublicKey, secp256k1::Error> {
+pub(crate) fn next_hop_packet_pubkey<T: secp256k1::Signing + secp256k1::Verification>(secp_ctx: &Secp256k1<T>, packet_pubkey: PublicKey, packet_shared_secret: &[u8; 32]) -> Result<PublicKey, secp256k1::Error> {
 	let blinding_factor = {
 		let mut sha = Sha256::engine();
 		sha.input(&packet_pubkey.serialize()[..]);
@@ -90,7 +90,7 @@ pub(crate) fn next_hop_packet_pubkey<T: secp256k1::Signing + secp256k1::Verifica
 		Sha256::from_engine(sha).into_inner()
 	};
 
-	packet_pubkey.mul_assign(secp_ctx, &blinding_factor[..]).map(|_| packet_pubkey)
+	packet_pubkey.mul_tweak(secp_ctx, &Scalar::from_be_bytes(blinding_factor).unwrap())
 }
 
 // can only fail if an intermediary hop has an invalid public key or session_priv is invalid
@@ -109,7 +109,7 @@ pub(super) fn construct_onion_keys_callback<T: secp256k1::Signing, FType: FnMut(
 
 		let ephemeral_pubkey = blinded_pub;
 
-		blinded_priv.mul_assign(&blinding_factor)?;
+		blinded_priv = blinded_priv.mul_tweak(&Scalar::from_be_bytes(blinding_factor).unwrap())?;
 		blinded_pub = PublicKey::from_secret_key(secp_ctx, &blinded_priv);
 
 		callback(shared_secret, blinding_factor, ephemeral_pubkey, hop, idx);

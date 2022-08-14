@@ -38,6 +38,7 @@ use alloc::collections::BTreeMap;
 use core::cmp;
 use core::ops::Deref;
 use core::mem::replace;
+use bitcoin::hashes::Hash;
 
 const MAX_ALLOC_SIZE: usize = 64*1024;
 
@@ -92,7 +93,7 @@ impl Writeable for OnchainEventEntry {
 
 impl MaybeReadable for OnchainEventEntry {
 	fn read<R: io::Read>(reader: &mut R) -> Result<Option<Self>, DecodeError> {
-		let mut txid = Default::default();
+		let mut txid = Txid::all_zeros();
 		let mut height = 0;
 		let mut event = None;
 		read_tlv_fields!(reader, {
@@ -389,7 +390,7 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 		if cached_request.is_malleable() {
 			let predicted_weight = cached_request.package_weight(&self.destination_script, self.channel_transaction_parameters.opt_anchors.is_some());
 			if let Some((output_value, new_feerate)) =
-					cached_request.compute_package_output(predicted_weight, self.destination_script.dust_value().as_sat(), fee_estimator, logger) {
+					cached_request.compute_package_output(predicted_weight, self.destination_script.dust_value().to_sat(), fee_estimator, logger) {
 				assert!(new_feerate != 0);
 
 				let transaction = cached_request.finalize_package(self, output_value, self.destination_script.clone(), logger).unwrap();

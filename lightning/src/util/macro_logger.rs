@@ -91,7 +91,7 @@ impl<'a> core::fmt::Display for DebugTx<'a> {
 	fn fmt(&self, f: &mut core::fmt::Formatter) -> Result<(), core::fmt::Error> {
 		if self.0.input.len() >= 1 && self.0.input.iter().any(|i| !i.witness.is_empty()) {
 			if self.0.input.len() == 1 && self.0.input[0].witness.last().unwrap().len() == 71 &&
-					(self.0.input[0].sequence >> 8*3) as u8 == 0x80 {
+					(self.0.input[0].sequence.0 >> 8*3) as u8 == 0x80 {
 				write!(f, "commitment tx ")?;
 			} else if self.0.input.len() == 1 && self.0.input[0].witness.last().unwrap().len() == 71 {
 				write!(f, "closing tx ")?;

@@ -47,6 +47,7 @@ use alloc::rc::Rc;
 use sync::{Arc, Mutex};
 use core::mem;
 use core::iter::repeat;
+use bitcoin::{PackedLockTime, TxMerkleNode};
 
 pub const CHAN_CONFIRM_DEPTH: u32 = 10;
 
@@ -77,11 +78,11 @@ pub fn confirm_transaction_at<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, tx: &T
 		connect_blocks(node, conf_height - first_connect_height);
 	}
 	let mut block = Block {
-		header: BlockHeader { version: 0x20000000, prev_blockhash: node.best_block_hash(), merkle_root: Default::default(), time: conf_height, bits: 42, nonce: 42 },
+		header: BlockHeader { version: 0x20000000, prev_blockhash: node.best_block_hash(), merkle_root: TxMerkleNode::all_zeros(), time: conf_height, bits: 42, nonce: 42 },
 		txdata: Vec::new(),
 	};
 	for _ in 0..*node.network_chan_count.borrow() { // Make sure we don't end up with channels at the same short id by offsetting by chan_count
-		block.txdata.push(Transaction { version: 0, lock_time: 0, input: Vec::new(), output: Vec::new() });
+		block.txdata.push(Transaction { version: 0, lock_time: PackedLockTime::ZERO, input: Vec::new(), output: Vec::new() });
 	}
 	block.txdata.push(tx.clone());
 	connect_block(node, &block);
@@ -148,7 +149,7 @@ pub fn connect_blocks<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, depth: u32) ->
 
 	let height = node.best_block_info().1 + 1;
 	let mut block = Block {
-		header: BlockHeader { version: 0x2000000, prev_blockhash: node.best_block_hash(), merkle_root: Default::default(), time: height, bits: 42, nonce: 42 },
+		header: BlockHeader { version: 0x2000000, prev_blockhash: node.best_block_hash(), merkle_root: TxMerkleNode::all_zeros(), time: height, bits: 42, nonce: 42 },
 		txdata: vec![],
 	};
 	assert!(depth >= 1);
@@ -156,7 +157,7 @@ pub fn connect_blocks<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, depth: u32) ->
 		let prev_blockhash = block.header.block_hash();
 		do_connect_block(node, block, skip_intermediaries);
 		block = Block {
-			header: BlockHeader { version: 0x20000000, prev_blockhash, merkle_root: Default::default(), time: height + i, bits: 42, nonce: 42 },
+			header: BlockHeader { version: 0x20000000, prev_blockhash, merkle_root: TxMerkleNode::all_zeros(), time: height + i, bits: 42, nonce: 42 },
 			txdata: vec![],
 		};
 	}
@@ -619,7 +620,7 @@ pub fn create_funding_transaction<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, expected_
 			assert_eq!(*channel_value_satoshis, expected_chan_value);
 			assert_eq!(user_channel_id, expected_user_chan_id);
 
-			let tx = Transaction { version: chan_id as i32, lock_time: 0, input: Vec::new(), output: vec![TxOut {
+			let tx = Transaction { version: chan_id as i32, lock_time: PackedLockTime::ZERO, input: Vec::new(), output: vec![TxOut {
 				value: *channel_value_satoshis, script_pubkey: output_script.clone(),
 			}]};
 			let funding_outpoint = OutPoint { txid: tx.txid(), index: 0 };
@@ -893,11 +894,11 @@ macro_rules! check_spends {
 		{
 			$(
 			for outp in $spends_txn.output.iter() {
-				assert!(outp.value >= outp.script_pubkey.dust_value().as_sat(), "Input tx output didn't meet dust limit");
+				assert!(outp.value >= outp.script_pubkey.dust_value().to_sat(), "Input tx output didn't meet dust limit");
 			}
 			)*
 			for outp in $tx.output.iter() {
-				assert!(outp.value >= outp.script_pubkey.dust_value().as_sat(), "Spending tx output didn't meet dust limit");
+				assert!(outp.value >= outp.script_pubkey.dust_value().to_sat(), "Spending tx output didn't meet dust limit");
 			}
 			let get_output = |out_point: &bitcoin::blockdata::transaction::OutPoint| {
 				$(
@@ -2125,9 +2126,9 @@ pub fn test_txn_broadcast<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, chan: &(msgs::Cha
 			if tx.input.len() == 1 && tx.input[0].previous_output.txid == res[0].txid() {
 				check_spends!(tx, res[0]);
 				if has_htlc_tx == HTLCType::TIMEOUT {
-					assert!(tx.lock_time != 0);
+					assert!(tx.lock_time.0 != 0);
 				} else {
-					assert!(tx.lock_time == 0);
+					assert!(tx.lock_time.0 == 0);
 				}
 				res.push(tx.clone());
 				false
