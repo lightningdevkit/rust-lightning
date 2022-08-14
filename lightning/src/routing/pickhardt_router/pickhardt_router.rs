@@ -32,10 +32,10 @@ where L::Target: Logger, GL::Target: Logger {
 	let payee_pubkey=route_params.payment_params.payee_pubkey;
 
 	// Basic checks are the same as with the Dijstra routing algorithm.
-    let our_node_id=NodeId::from_pubkey(&our_node_pubkey);
-    let payee_node_id=NodeId::from_pubkey(&payee_pubkey);
-    let value_msat=route_params.final_value_msat;
-    let final_value_msat=value_msat;
+	let our_node_id=NodeId::from_pubkey(&our_node_pubkey);
+	let payee_node_id=NodeId::from_pubkey(&payee_pubkey);
+	let value_msat=route_params.final_value_msat;
+	let final_value_msat=value_msat;
 	if payee_node_id == our_node_id {
 		return Err(LightningError{err: "Cannot generate a route to ourselves".to_owned(), action: ErrorAction::IgnoreError});
 	}
@@ -47,9 +47,9 @@ where L::Target: Logger, GL::Target: Logger {
 	if final_value_msat == 0 {
 		return Err(LightningError{err: "Cannot send a payment of 0 msat".to_owned(), action: ErrorAction::IgnoreError});
 	}
-    let payment_params=&route_params.payment_params;
+	let payment_params=&route_params.payment_params;
 
-    let final_cltv_expiry_delta = route_params.final_cltv_expiry_delta;
+	let final_cltv_expiry_delta = route_params.final_cltv_expiry_delta;
 	if payment_params.max_total_cltv_expiry_delta <= final_cltv_expiry_delta {
 		return Err(LightningError{err: "Can't find a route where the maximum total CLTV expiry delta is below the final CLTV expiry.".to_owned(), action: ErrorAction::IgnoreError});
 	}
@@ -57,10 +57,10 @@ where L::Target: Logger, GL::Target: Logger {
 		return Err(LightningError{err: "Can't find a route with no paths allowed.".to_owned(), action: ErrorAction::IgnoreError});
 	}
 
-    if !should_allow_mpp(payment_params, &network_graph, payee_node_id) {
-        return Err(LightningError{err: "Payee node doesn't support MPP.".to_owned(),
-            action: ErrorAction::IgnoreError});
-    }
+	if !should_allow_mpp(payment_params, &network_graph, payee_node_id) {
+		return Err(LightningError{err: "Payee node doesn't support MPP.".to_owned(),
+			action: ErrorAction::IgnoreError});
+	}
 
 	log_trace!(logger, "Searching for a Pickhardt type route from payer {} to payee {} with MPP and {} first hops {}overriding the network graph", our_node_pubkey,
 		payment_params.payee_pubkey,
@@ -90,7 +90,7 @@ where L::Target: Logger, GL::Target: Logger {
 	if let Some(value) = add_hops_to_payee_node_from_route_hints(
 		&mut channel_meta_data, &mut short_channel_ids_set,
 		payment_params, payee_node_id, &mut edges, &mut vidx, &mut nodes) {
-    	return value;
+		return value;
 	}
 
 	let payee_node=NodeId::from_pubkey(&payee_pubkey);
@@ -133,28 +133,28 @@ fn add_hops_to_payee_node_from_route_hints(channel_meta_data: &mut Vec<u64>, sho
 	payment_params: &PaymentParameters,
 	payee_node_id: NodeId, edges: &mut Vec<OriginalEdge>, vidx: &mut HashMap<NodeId, usize>,
 	nodes: &mut Vec<(NodeId,NodeFeatures)>) -> Option<Result<Route, LightningError>> {
-    for route in payment_params.route_hints.iter() {
-		    let mut last_node_id=payee_node_id;
-		    for hop in route.0.iter().rev() {
-			    let src_node_id=NodeId::from_pubkey(&hop.src_node_id);
-			    if src_node_id == payee_node_id {
-				    return Some(Err(LightningError{err: "Route hint cannot have the payee as the source.".to_owned(), action: ErrorAction::IgnoreError}));
-			    }
-			    if hop.fees.base_msat > 0 || hop.htlc_maximum_msat.is_none() {
-				    continue;
-			    }
+	for route in payment_params.route_hints.iter() {
+			let mut last_node_id=payee_node_id;
+			for hop in route.0.iter().rev() {
+				let src_node_id=NodeId::from_pubkey(&hop.src_node_id);
+				if src_node_id == payee_node_id {
+					return Some(Err(LightningError{err: "Route hint cannot have the payee as the source.".to_owned(), action: ErrorAction::IgnoreError}));
+				}
+				if hop.fees.base_msat > 0 || hop.htlc_maximum_msat.is_none() {
+					continue;
+				}
 
-			    edges.push(OriginalEdge {
-				    u: add_or_get_node(vidx, src_node_id, &default_node_features(), nodes),
-				    v: add_or_get_node(vidx, last_node_id, &default_node_features(), nodes),
-				    capacity: hop.htlc_maximum_msat.unwrap() as i32,
-				    cost: hop.fees.proportional_millionths as i32,
-				    flow: 0,
-				    guaranteed_liquidity: 0});  // TODO: Ask whether the liquidity for the last hop is guaranteed.
-			    last_node_id=src_node_id;
-		    }
-	    }
-    None
+				edges.push(OriginalEdge {
+					u: add_or_get_node(vidx, src_node_id, &default_node_features(), nodes),
+					v: add_or_get_node(vidx, last_node_id, &default_node_features(), nodes),
+					capacity: hop.htlc_maximum_msat.unwrap() as i32,
+					cost: hop.fees.proportional_millionths as i32,
+					flow: 0,
+					guaranteed_liquidity: 0});  // TODO: Ask whether the liquidity for the last hop is guaranteed.
+				last_node_id=src_node_id;
+			}
+		}
+	None
 }
 
 fn extract_first_hops_from_payer_node(channel_meta_data: &mut Vec<u64>, short_channel_ids_set: &mut HashSet<u64>, first_hops: Option<&[&ChannelDetails]>,
@@ -166,7 +166,7 @@ fn extract_first_hops_from_payer_node(channel_meta_data: &mut Vec<u64>, short_ch
 			action: ErrorAction::IgnoreError});
 	}
 	let hops=first_hops.unwrap();
-    for chan in hops {
+	for chan in hops {
 		if chan.get_outbound_payment_scid().is_none() {
 			panic!("first_hops should be filled in with usable channels, not pending ones");
 		}
@@ -184,7 +184,7 @@ fn extract_first_hops_from_payer_node(channel_meta_data: &mut Vec<u64>, short_ch
 			cost: 0, flow: 0,
 			guaranteed_liquidity:chan.outbound_capacity_msat as i32 });
 	}
-    None
+	None
 }
 
 
@@ -210,11 +210,11 @@ fn extract_public_channels_from_network_graph<L:Deref>(
 	network_graph : &NetworkGraph<L>, channel_meta_data: &mut Vec<u64>, short_channel_ids_set: &mut HashSet<u64>,
 	 vidx: &mut HashMap<NodeId, usize>, nodes: &mut Vec<(NodeId,NodeFeatures)>, edges: &mut Vec<OriginalEdge>) 
 	 where L::Target : Logger  {
-    for channel in network_graph.read_only().channels() {
-		    if short_channel_ids_set.contains(channel.0) {
-			    continue;
-		    }
-		    let info=channel.1;
+	for channel in network_graph.read_only().channels() {
+			if short_channel_ids_set.contains(channel.0) {
+				continue;
+			}
+			let info=channel.1;
 			let mut node_features=default_node_features();
 			if let Some(unode)=network_graph.read_only().node(&info.node_one) {
 				if let Some(ai)=&unode.announcement_info {
@@ -230,21 +230,21 @@ fn extract_public_channels_from_network_graph<L:Deref>(
 				}
 			}
 			let v = add_or_get_node(vidx, info.node_two, &node_features, nodes);
-		    if let Some(ot)=&info.one_to_two {
-			    if ot.fees.base_msat==0 {
-				    edges.push(OriginalEdge {u, v, capacity:info.capacity_sats.unwrap_or(0) as i32,
-					    cost:ot.fees.proportional_millionths as i32,
-					    flow: 0, guaranteed_liquidity: 0})
-			    }
-		    }
-		    if let Some(to)=&info.two_to_one {
-			    if to.fees.base_msat==0 {
-				    edges.push(OriginalEdge {u:v, v:u, capacity:info.capacity_sats.unwrap_or(0) as i32,
-					    cost:to.fees.proportional_millionths as i32,
-					    flow: 0, guaranteed_liquidity: 0})
-			    }
-		    }
-	    }
+			if let Some(ot)=&info.one_to_two {
+				if ot.fees.base_msat==0 {
+					edges.push(OriginalEdge {u, v, capacity:info.capacity_sats.unwrap_or(0) as i32,
+						cost:ot.fees.proportional_millionths as i32,
+						flow: 0, guaranteed_liquidity: 0})
+				}
+			}
+			if let Some(to)=&info.two_to_one {
+				if to.fees.base_msat==0 {
+					edges.push(OriginalEdge {u:v, v:u, capacity:info.capacity_sats.unwrap_or(0) as i32,
+						cost:to.fees.proportional_millionths as i32,
+						flow: 0, guaranteed_liquidity: 0})
+				}
+			}
+		}
 }
 
 fn add_or_get_node(vidx: &mut HashMap<NodeId, usize>, other_node: NodeId,
@@ -258,48 +258,48 @@ fn add_or_get_node(vidx: &mut HashMap<NodeId, usize>, other_node: NodeId,
 
 fn flow_to_paths(edges: &Vec<OriginalEdge>, s: usize, t: usize, n : usize)
 			 -> Vec<(u32, Vec<usize>)> {
-    let mut edges_from:Vec<Vec<usize>> =Vec::new();
-    for _ in 0..n { edges_from.push(Vec::new())};
-    for edge_idx in 0..edges.len() {
-		    edges_from[edges[edge_idx].u].push(edge_idx);
-	    }
-    let mut paths:Vec<(u32, Vec<usize>)>=Vec::new();
-    loop {
-		    let mut parent=vec![n; n];
-		    let mut parent_edge_idx=vec![None; n];
-		    let mut capacity=vec![0; n];
-		    let mut to_see=Vec::new();
-		    to_see.push(s);
-		    while !to_see.is_empty() {
-			    let u=to_see.pop().unwrap();
-			    for edge_idx in &edges_from[u] {
+	let mut edges_from:Vec<Vec<usize>> =Vec::new();
+	for _ in 0..n { edges_from.push(Vec::new())};
+	for edge_idx in 0..edges.len() {
+			edges_from[edges[edge_idx].u].push(edge_idx);
+		}
+	let mut paths:Vec<(u32, Vec<usize>)>=Vec::new();
+	loop {
+			let mut parent=vec![n; n];
+			let mut parent_edge_idx=vec![None; n];
+			let mut capacity=vec![0; n];
+			let mut to_see=Vec::new();
+			to_see.push(s);
+			while !to_see.is_empty() {
+				let u=to_see.pop().unwrap();
+				for edge_idx in &edges_from[u] {
 					let edge=&edges[*edge_idx];
-				    if edge.v != s && parent[edge.v] == n {
-					    parent[edge.v]=u;
+					if edge.v != s && parent[edge.v] == n {
+						parent[edge.v]=u;
 						parent_edge_idx[edge.v]=Some(edge_idx);
-					    capacity[edge.v]=edge.capacity.try_into().unwrap();
-					    if edge.v==t {
-						    to_see.clear();
-						    break;
-					    }
-					    to_see.push(edge.v);
-				    }
-			    }
-		    }
-		    if parent[t] == n {
-			    break;
-		    }
-		    let mut u=t;
-		    let mut path:Vec<usize>=Vec::new();
+						capacity[edge.v]=edge.capacity.try_into().unwrap();
+						if edge.v==t {
+							to_see.clear();
+							break;
+						}
+						to_see.push(edge.v);
+					}
+				}
+			}
+			if parent[t] == n {
+				break;
+			}
+			let mut u=t;
+			let mut path:Vec<usize>=Vec::new();
 			let mut c=capacity[t];
-		    while u!=s {
+			while u!=s {
 				let edge_idx=*parent_edge_idx[u].unwrap();
-			    path.push(edge_idx);
-			    if capacity[u] < c { c=capacity[u]};
-			    u=parent[u];
-		    }
-		    path.reverse();
-		    paths.push((c, path));
-	    }
-    paths
+				path.push(edge_idx);
+				if capacity[u] < c { c=capacity[u]};
+				u=parent[u];
+			}
+			path.reverse();
+			paths.push((c, path));
+		}
+	paths
 }
