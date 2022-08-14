@@ -470,6 +470,34 @@ where L::Target: Logger {
 	}
 }
 
+
+/// Pickhardt [`Router`] implemented using an alterhative [`find_route`] implementation that computes min cost flow.
+pub struct PickhardtRouter<G: Deref<Target = NetworkGraph<L>>, L: Deref> where L::Target: Logger {
+	network_graph: G,
+	logger: L,
+}
+
+impl<G: Deref<Target = NetworkGraph<L>>, L: Deref> PickhardtRouter<G, L> where L::Target: Logger {
+	/// Creates a new router using the given [`NetworkGraph`], a [`Logger`], and a randomness source
+	/// `random_seed_bytes`.
+	pub fn new(network_graph: G, logger: L) -> Self {
+		Self { network_graph, logger  }
+	}
+}
+
+use lightning::routing::pickhardt_router::pickhardt_router;
+
+impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, S: Score> Router<S> for PickhardtRouter<G, L>
+where L::Target: Logger {
+	fn find_route(
+		&self, payer: &PublicKey, params: &RouteParameters, _payment_hash: &PaymentHash,
+		first_hops: Option<&[&ChannelDetails]>, scorer: &S
+	) -> Result<Route, LightningError> {
+		pickhardt_router::find_route(
+			payer, params, &self.network_graph, first_hops, &*self.logger, scorer)
+	}
+}
+
 impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Payer for ChannelManager<Signer, M, T, K, F, L>
 where
 	M::Target: chain::Watch<Signer>,

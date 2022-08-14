@@ -12,3 +12,4 @@
 pub mod gossip;
 pub mod router;
 pub mod scoring;
+pub mod pickhardt_router;
