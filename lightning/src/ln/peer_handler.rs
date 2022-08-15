@@ -779,17 +779,15 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 				self.maybe_send_extra_ping(peer);
 			}
 
-			if {
-				let next_buff = match peer.pending_outbound_buffer.front() {
-					None => return,
-					Some(buff) => buff,
-				};
+			let next_buff = match peer.pending_outbound_buffer.front() {
+				None => return,
+				Some(buff) => buff,
+			};
 
-				let pending = &next_buff[peer.pending_outbound_buffer_first_msg_offset..];
-				let data_sent = descriptor.send_data(pending, peer.should_read());
-				peer.pending_outbound_buffer_first_msg_offset += data_sent;
-				peer.pending_outbound_buffer_first_msg_offset == next_buff.len()
-			} {
+			let pending = &next_buff[peer.pending_outbound_buffer_first_msg_offset..];
+			let data_sent = descriptor.send_data(pending, peer.should_read());
+			peer.pending_outbound_buffer_first_msg_offset += data_sent;
+			if peer.pending_outbound_buffer_first_msg_offset == next_buff.len() {
 				peer.pending_outbound_buffer_first_msg_offset = 0;
 				peer.pending_outbound_buffer.pop_front();
 			} else {
