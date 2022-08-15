@@ -41,7 +41,7 @@ use core::{cmp, fmt};
 use sync::{RwLock, RwLockReadGuard};
 use core::sync::atomic::{AtomicUsize, Ordering};
 use sync::Mutex;
-use core::ops::Deref;
+use core::ops::{Bound, Deref};
 use bitcoin::hashes::hex::ToHex;
 
 #[cfg(feature = "std")]
@@ -320,50 +320,41 @@ where C::Target: chain::Access, L::Target: Logger
 
 	fn get_next_channel_announcement(&self, starting_point: u64) -> Option<(ChannelAnnouncement, Option<ChannelUpdate>, Option<ChannelUpdate>)> {
 		let channels = self.network_graph.channels.read().unwrap();
-		let mut iter = channels.range(starting_point..);
-		loop {
-			if let Some((_, ref chan)) = iter.next() {
-				if chan.announcement_message.is_some() {
-					let chan_announcement = chan.announcement_message.clone().unwrap();
-					let mut one_to_two_announcement: Option<msgs::ChannelUpdate> = None;
-					let mut two_to_one_announcement: Option<msgs::ChannelUpdate> = None;
-					if let Some(one_to_two) = chan.one_to_two.as_ref() {
-						one_to_two_announcement = one_to_two.last_update_message.clone();
-					}
-					if let Some(two_to_one) = chan.two_to_one.as_ref() {
-						two_to_one_announcement = two_to_one.last_update_message.clone();
-					}
-					return Some((chan_announcement, one_to_two_announcement, two_to_one_announcement));
-				} else {
-					// TODO: We may end up sending un-announced channel_updates if we are sending
-					// initial sync data while receiving announce/updates for this channel.
+		for (_, ref chan) in channels.range(starting_point..) {
+			if chan.announcement_message.is_some() {
+				let chan_announcement = chan.announcement_message.clone().unwrap();
+				let mut one_to_two_announcement: Option<msgs::ChannelUpdate> = None;
+				let mut two_to_one_announcement: Option<msgs::ChannelUpdate> = None;
+				if let Some(one_to_two) = chan.one_to_two.as_ref() {
+					one_to_two_announcement = one_to_two.last_update_message.clone();
 				}
+				if let Some(two_to_one) = chan.two_to_one.as_ref() {
+					two_to_one_announcement = two_to_one.last_update_message.clone();
+				}
+				return Some((chan_announcement, one_to_two_announcement, two_to_one_announcement));
 			} else {
-				return None;
+				// TODO: We may end up sending un-announced channel_updates if we are sending
+				// initial sync data while receiving announce/updates for this channel.
 			}
 		}
+		None
 	}
 
 	fn get_next_node_announcement(&self, starting_point: Option<&PublicKey>) -> Option<NodeAnnouncement> {
 		let nodes = self.network_graph.nodes.read().unwrap();
-		let mut iter = if let Some(pubkey) = starting_point {
-				let mut iter = nodes.range(NodeId::from_pubkey(pubkey)..);
-				iter.next();
-				iter
+		let iter = if let Some(pubkey) = starting_point {
+				nodes.range((Bound::Excluded(NodeId::from_pubkey(pubkey)), Bound::Unbounded))
 			} else {
-				nodes.range::<NodeId, _>(..)
+				nodes.range(..)
 			};
-		loop {
-			if let Some((_, ref node)) = iter.next() {
-				if let Some(node_info) = node.announcement_info.as_ref() {
-					if let Some(msg) = node_info.announcement_message.clone() {
-						return Some(msg);
-					}
+		for (_, ref node) in iter {
+			if let Some(node_info) = node.announcement_info.as_ref() {
+				if let Some(msg) = node_info.announcement_message.clone() {
+					return Some(msg);
 				}
-			} else {
-				return None;
 			}
 		}
+		None
 	}
 
 	/// Initiates a stateless sync of routing gossip information with a peer
