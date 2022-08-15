@@ -667,6 +667,38 @@ pub type SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, M, T, F, L> = ChannelManage
 /// essentially you should default to using a SimpleRefChannelManager, and use a
 /// SimpleArcChannelManager when you require a ChannelManager with a static lifetime, such as when
 /// you're using lightning-net-tokio.
+//
+// Lock order:
+// The tree structure below illustrates the lock order requirements for the different locks of the
+// `ChannelManager`. Locks can be held at the same time if they are on the same branch in the tree,
+// and should then be taken in the order of the lowest to the highest level in the tree.
+// Note that locks on different branches shall not be taken at the same time, as doing so will
+// create a new lock order for those specific locks in the order they were taken.
+//
+// Lock order tree:
+//
+// `total_consistency_lock`
+//  |
+//  |__`forward_htlcs`
+//  |
+//  |__`channel_state`
+//  |   |
+//  |   |__`id_to_peer`
+//  |   |
+//  |   |__`per_peer_state`
+//  |       |
+//  |       |__`outbound_scid_aliases`
+//  |       |
+//  |       |__`pending_inbound_payments`
+//  |           |
+//  |           |__`pending_outbound_payments`
+//  |               |
+//  |               |__`best_block`
+//  |               |
+//  |               |__`pending_events`
+//  |                   |
+//  |                   |__`pending_background_events`
+//
 pub struct ChannelManager<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 	where M::Target: chain::Watch<Signer>,
         T::Target: BroadcasterInterface,
@@ -680,12 +712,14 @@ pub struct ChannelManager<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, 
 	chain_monitor: M,
 	tx_broadcaster: T,
 
+	/// See `ChannelManager` struct-level documentation for lock order requirements.
 	#[cfg(test)]
 	pub(super) best_block: RwLock<BestBlock>,
 	#[cfg(not(test))]
 	best_block: RwLock<BestBlock>,
 	secp_ctx: Secp256k1<secp256k1::All>,
 
+	/// See `ChannelManager` struct-level documentation for lock order requirements.
 	#[cfg(any(test, feature = "_test_utils"))]
 	pub(super) channel_state: Mutex<ChannelHolder<Signer>>,
 	#[cfg(not(any(test, feature = "_test_utils")))]
@@ -695,7 +729,8 @@ pub struct ChannelManager<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, 
 	/// expose them to users via a PaymentReceived event. HTLCs which do not meet the requirements
 	/// here are failed when we process them as pending-forwardable-HTLCs, and entries are removed
 	/// after we generate a PaymentReceived upon receipt of all MPP parts or when they time out.
-	/// Locked *after* channel_state.
+	///
+	/// See `ChannelManager` struct-level documentation for lock order requirements.
 	pending_inbound_payments: Mutex<HashMap<PaymentHash, PendingInboundPayment>>,
 
 	/// The session_priv bytes and retry metadata of outbound payments which are pending resolution.
@@ -709,7 +744,7 @@ pub struct ChannelManager<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, 
 	///
 	/// See `PendingOutboundPayment` documentation for more info.
 	///
-	/// Locked *after* channel_state.
+	/// See `ChannelManager` struct-level documentation for lock order requirements.
 	pending_outbound_payments: Mutex<HashMap<PaymentId, PendingOutboundPayment>>,
 
 	/// SCID/SCID Alias -> forward infos. Key of 0 means payments received.
@@ -720,6 +755,8 @@ pub struct ChannelManager<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, 
 	///
 	/// Note that no consistency guarantees are made about the existence of a channel with the
 	/// `short_channel_id` here, nor the `short_channel_id` in the `PendingHTLCInfo`!
+	///
+	/// See `ChannelManager` struct-level documentation for lock order requirements.
 	#[cfg(test)]
 	pub(super) forward_htlcs: Mutex<HashMap<u64, Vec<HTLCForwardInfo>>>,
 	#[cfg(not(test))]
@@ -729,6 +766,8 @@ pub struct ChannelManager<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, 
 	/// and some closed channels which reached a usable state prior to being closed. This is used
 	/// only to avoid duplicates, and is not persisted explicitly to disk, but rebuilt from the
 	/// active channel list on load.
+	///
+	/// See `ChannelManager` struct-level documentation for lock order requirements.
 	outbound_scid_aliases: Mutex<HashSet<u64>>,
 
 	/// `channel_id` -> `counterparty_node_id`.
@@ -748,6 +787,8 @@ pub struct ChannelManager<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, 
 	/// We should add `counterparty_node_id`s to `MonitorEvent`s, and eventually rely on it in the
 	/// future. That would make this map redundant, as only the `ChannelManager::per_peer_state` is
 	/// required to access the channel with the `counterparty_node_id`.
+	///
+	/// See `ChannelManager` struct-level documentation for lock order requirements.
 	id_to_peer: Mutex<HashMap<[u8; 32], PublicKey>>,
 
 	our_network_key: SecretKey,
@@ -779,10 +820,12 @@ pub struct ChannelManager<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, 
 	/// operate on the inner value freely. Sadly, this prevents parallel operation when opening a
 	/// new channel.
 	///
-	/// If also holding `channel_state` lock, must lock `channel_state` prior to `per_peer_state`.
+	/// See `ChannelManager` struct-level documentation for lock order requirements.
 	per_peer_state: RwLock<HashMap<PublicKey, Mutex<PeerState>>>,
 
+	/// See `ChannelManager` struct-level documentation for lock order requirements.
 	pending_events: Mutex<Vec<events::Event>>,
+	/// See `ChannelManager` struct-level documentation for lock order requirements.
 	pending_background_events: Mutex<Vec<BackgroundEvent>>,
 	/// Used when we have to take a BIG lock to make sure everything is self-consistent.
 	/// Essentially just when we're serializing ourselves out.
