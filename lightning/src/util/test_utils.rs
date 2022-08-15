@@ -730,7 +730,6 @@ pub struct TestChainSource {
 	pub utxo_ret: Mutex<Result<TxOut, chain::AccessError>>,
 	pub watched_txn: Mutex<HashSet<(Txid, Script)>>,
 	pub watched_outputs: Mutex<HashSet<(OutPoint, Script)>>,
-	expectations: Mutex<Option<VecDeque<OnRegisterOutput>>>,
 }
 
 impl TestChainSource {
@@ -741,16 +740,7 @@ impl TestChainSource {
 			utxo_ret: Mutex::new(Ok(TxOut { value: u64::max_value(), script_pubkey })),
 			watched_txn: Mutex::new(HashSet::new()),
 			watched_outputs: Mutex::new(HashSet::new()),
-			expectations: Mutex::new(None),
 		}
-	}
-
-	/// Sets an expectation that [`chain::Filter::register_output`] is called.
-	pub fn expect(&self, expectation: OnRegisterOutput) -> &Self {
-		self.expectations.lock().unwrap()
-			.get_or_insert_with(|| VecDeque::new())
-			.push_back(expectation);
-		self
 	}
 }
 
@@ -769,24 +759,8 @@ impl chain::Filter for TestChainSource {
 		self.watched_txn.lock().unwrap().insert((*txid, script_pubkey.clone()));
 	}
 
-	fn register_output(&self, output: WatchedOutput) -> Option<(usize, Transaction)> {
-		let dependent_tx = match &mut *self.expectations.lock().unwrap() {
-			None => None,
-			Some(expectations) => match expectations.pop_front() {
-				None => {
-					panic!("Unexpected register_output: {:?}",
-						(output.outpoint, output.script_pubkey));
-				},
-				Some(expectation) => {
-					assert_eq!(output.outpoint, expectation.outpoint());
-					assert_eq!(&output.script_pubkey, expectation.script_pubkey());
-					expectation.returns
-				},
-			},
-		};
-
+	fn register_output(&self, output: WatchedOutput) {
 		self.watched_outputs.lock().unwrap().insert((output.outpoint, output.script_pubkey));
-		dependent_tx
 	}
 }
 
@@ -795,47 +769,6 @@ impl Drop for TestChainSource {
 		if panicking() {
 			return;
 		}
-
-		if let Some(expectations) = &*self.expectations.lock().unwrap() {
-			if !expectations.is_empty() {
-				panic!("Unsatisfied expectations: {:?}", expectations);
-			}
-		}
-	}
-}
-
-/// An expectation that [`chain::Filter::register_output`] was called with a transaction output and
-/// returns an optional dependent transaction that spends the output in the same block.
-pub struct OnRegisterOutput {
-	/// The transaction output to register.
-	pub with: TxOutReference,
-
-	/// A dependent transaction spending the output along with its position in the block.
-	pub returns: Option<(usize, Transaction)>,
-}
-
-/// A transaction output as identified by an index into a transaction's output list.
-pub struct TxOutReference(pub Transaction, pub usize);
-
-impl OnRegisterOutput {
-	fn outpoint(&self) -> OutPoint {
-		let txid = self.with.0.txid();
-		let index = self.with.1 as u16;
-		OutPoint { txid, index }
-	}
-
-	fn script_pubkey(&self) -> &Script {
-		let index = self.with.1;
-		&self.with.0.output[index].script_pubkey
-	}
-}
-
-impl core::fmt::Debug for OnRegisterOutput {
-	fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-		f.debug_struct("OnRegisterOutput")
-			.field("outpoint", &self.outpoint())
-			.field("script_pubkey", self.script_pubkey())
-			.finish()
 	}
 }
 
