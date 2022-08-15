@@ -12,3 +12,5 @@
 pub mod gossip;
 pub mod router;
 pub mod scoring;
+#[cfg(test)]
+pub(crate) mod test_utils;
