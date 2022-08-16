@@ -1368,7 +1368,7 @@ macro_rules! handle_monitor_err {
 				if !$resend_raa {
 					debug_assert!($action_type == RAACommitmentOrder::CommitmentFirst || !$resend_commitment);
 				}
-				$chan.monitor_update_failed($resend_raa, $resend_commitment, $resend_channel_ready, $failed_forwards, $failed_fails, $failed_finalized_fulfills);
+				$chan.monitor_updating_paused($resend_raa, $resend_commitment, $resend_channel_ready, $failed_forwards, $failed_fails, $failed_finalized_fulfills);
 				(Err(MsgHandleErrInternal::from_chan_no_close(ChannelError::Ignore("Failed to update ChannelMonitor".to_owned()), *$chan_id)), false)
 			},
 			ChannelMonitorUpdateStatus::Completed => {
@@ -4512,7 +4512,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				// hasn't persisted to disk yet - we can't lose money on a transaction that we haven't
 				// accepted payment from yet. We do, however, need to wait to send our channel_ready
 				// until we have persisted our monitor.
-				chan.monitor_update_failed(false, false, channel_ready.is_some(), Vec::new(), Vec::new(), Vec::new());
+				chan.monitor_updating_paused(false, false, channel_ready.is_some(), Vec::new(), Vec::new(), Vec::new());
 				channel_ready = None; // Don't send the channel_ready now
 			},
 		}
