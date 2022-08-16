@@ -915,15 +915,15 @@ pub trait RoutingMessageHandler : MessageSendEventsProvider {
 	/// Handle an incoming channel_update message, returning true if it should be forwarded on,
 	/// false or returning an Err otherwise.
 	fn handle_channel_update(&self, msg: &ChannelUpdate) -> Result<bool, LightningError>;
-	/// Gets a subset of the channel announcements and updates required to dump our routing table
-	/// to a remote node, starting at the short_channel_id indicated by starting_point and
-	/// including the batch_amount entries immediately higher in numerical value than starting_point.
-	fn get_next_channel_announcements(&self, starting_point: u64, batch_amount: u8) -> Vec<(ChannelAnnouncement, Option<ChannelUpdate>, Option<ChannelUpdate>)>;
-	/// Gets a subset of the node announcements required to dump our routing table to a remote node,
-	/// starting at the node *after* the provided publickey and including batch_amount entries
-	/// immediately higher (as defined by <PublicKey as Ord>::cmp) than starting_point.
+	/// Gets channel announcements and updates required to dump our routing table to a remote node,
+	/// starting at the short_channel_id indicated by starting_point and including announcements
+	/// for a single channel.
+	fn get_next_channel_announcement(&self, starting_point: u64) -> Option<(ChannelAnnouncement, Option<ChannelUpdate>, Option<ChannelUpdate>)>;
+	/// Gets a node announcement required to dump our routing table to a remote node, starting at
+	/// the node *after* the provided pubkey and including up to one announcement immediately
+	/// higher (as defined by <PublicKey as Ord>::cmp) than starting_point.
 	/// If None is provided for starting_point, we start at the first node.
-	fn get_next_node_announcements(&self, starting_point: Option<&PublicKey>, batch_amount: u8) -> Vec<NodeAnnouncement>;
+	fn get_next_node_announcement(&self, starting_point: Option<&PublicKey>) -> Option<NodeAnnouncement>;
 	/// Called when a connection is established with a peer. This can be used to
 	/// perform routing table synchronization using a strategy defined by the
 	/// implementor.

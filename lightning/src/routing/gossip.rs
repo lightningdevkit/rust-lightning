@@ -41,7 +41,7 @@ use core::{cmp, fmt};
 use sync::{RwLock, RwLockReadGuard};
 use core::sync::atomic::{AtomicUsize, Ordering};
 use sync::Mutex;
-use core::ops::Deref;
+use core::ops::{Bound, Deref};
 use bitcoin::hashes::hex::ToHex;
 
 #[cfg(feature = "std")]
@@ -318,56 +318,43 @@ where C::Target: chain::Access, L::Target: Logger
 		Ok(msg.contents.excess_data.len() <= MAX_EXCESS_BYTES_FOR_RELAY)
 	}
 
-	fn get_next_channel_announcements(&self, starting_point: u64, batch_amount: u8) -> Vec<(ChannelAnnouncement, Option<ChannelUpdate>, Option<ChannelUpdate>)> {
-		let mut result = Vec::with_capacity(batch_amount as usize);
+	fn get_next_channel_announcement(&self, starting_point: u64) -> Option<(ChannelAnnouncement, Option<ChannelUpdate>, Option<ChannelUpdate>)> {
 		let channels = self.network_graph.channels.read().unwrap();
-		let mut iter = channels.range(starting_point..);
-		while result.len() < batch_amount as usize {
-			if let Some((_, ref chan)) = iter.next() {
-				if chan.announcement_message.is_some() {
-					let chan_announcement = chan.announcement_message.clone().unwrap();
-					let mut one_to_two_announcement: Option<msgs::ChannelUpdate> = None;
-					let mut two_to_one_announcement: Option<msgs::ChannelUpdate> = None;
-					if let Some(one_to_two) = chan.one_to_two.as_ref() {
-						one_to_two_announcement = one_to_two.last_update_message.clone();
-					}
-					if let Some(two_to_one) = chan.two_to_one.as_ref() {
-						two_to_one_announcement = two_to_one.last_update_message.clone();
-					}
-					result.push((chan_announcement, one_to_two_announcement, two_to_one_announcement));
-				} else {
-					// TODO: We may end up sending un-announced channel_updates if we are sending
-					// initial sync data while receiving announce/updates for this channel.
+		for (_, ref chan) in channels.range(starting_point..) {
+			if chan.announcement_message.is_some() {
+				let chan_announcement = chan.announcement_message.clone().unwrap();
+				let mut one_to_two_announcement: Option<msgs::ChannelUpdate> = None;
+				let mut two_to_one_announcement: Option<msgs::ChannelUpdate> = None;
+				if let Some(one_to_two) = chan.one_to_two.as_ref() {
+					one_to_two_announcement = one_to_two.last_update_message.clone();
 				}
+				if let Some(two_to_one) = chan.two_to_one.as_ref() {
+					two_to_one_announcement = two_to_one.last_update_message.clone();
+				}
+				return Some((chan_announcement, one_to_two_announcement, two_to_one_announcement));
 			} else {
-				return result;
+				// TODO: We may end up sending un-announced channel_updates if we are sending
+				// initial sync data while receiving announce/updates for this channel.
 			}
 		}
-		result
+		None
 	}
 
-	fn get_next_node_announcements(&self, starting_point: Option<&PublicKey>, batch_amount: u8) -> Vec<NodeAnnouncement> {
-		let mut result = Vec::with_capacity(batch_amount as usize);
+	fn get_next_node_announcement(&self, starting_point: Option<&PublicKey>) -> Option<NodeAnnouncement> {
 		let nodes = self.network_graph.nodes.read().unwrap();
-		let mut iter = if let Some(pubkey) = starting_point {
-				let mut iter = nodes.range(NodeId::from_pubkey(pubkey)..);
-				iter.next();
-				iter
+		let iter = if let Some(pubkey) = starting_point {
+				nodes.range((Bound::Excluded(NodeId::from_pubkey(pubkey)), Bound::Unbounded))
 			} else {
-				nodes.range::<NodeId, _>(..)
+				nodes.range(..)
 			};
-		while result.len() < batch_amount as usize {
-			if let Some((_, ref node)) = iter.next() {
-				if let Some(node_info) = node.announcement_info.as_ref() {
-					if node_info.announcement_message.is_some() {
-						result.push(node_info.announcement_message.clone().unwrap());
-					}
+		for (_, ref node) in iter {
+			if let Some(node_info) = node.announcement_info.as_ref() {
+				if let Some(msg) = node_info.announcement_message.clone() {
+					return Some(msg);
 				}
-			} else {
-				return result;
 			}
 		}
-		result
+		None
 	}
 
 	/// Initiates a stateless sync of routing gossip information with a peer
@@ -2412,8 +2399,8 @@ mod tests {
 		let node_2_privkey = &SecretKey::from_slice(&[41; 32]).unwrap();
 
 		// Channels were not announced yet.
-		let channels_with_announcements = gossip_sync.get_next_channel_announcements(0, 1);
-		assert_eq!(channels_with_announcements.len(), 0);
+		let channels_with_announcements = gossip_sync.get_next_channel_announcement(0);
+		assert!(channels_with_announcements.is_none());
 
 		let short_channel_id;
 		{
@@ -2427,16 +2414,14 @@ mod tests {
 		}
 
 		// Contains initial channel announcement now.
-		let channels_with_announcements = gossip_sync.get_next_channel_announcements(short_channel_id, 1);
-		assert_eq!(channels_with_announcements.len(), 1);
-		if let Some(channel_announcements) = channels_with_announcements.first() {
-			let &(_, ref update_1, ref update_2) = channel_announcements;
+		let channels_with_announcements = gossip_sync.get_next_channel_announcement(short_channel_id);
+		if let Some(channel_announcements) = channels_with_announcements {
+			let (_, ref update_1, ref update_2) = channel_announcements;
 			assert_eq!(update_1, &None);
 			assert_eq!(update_2, &None);
 		} else {
 			panic!();
 		}
-
 
 		{
 			// Valid channel update
@@ -2450,10 +2435,9 @@ mod tests {
 		}
 
 		// Now contains an initial announcement and an update.
-		let channels_with_announcements = gossip_sync.get_next_channel_announcements(short_channel_id, 1);
-		assert_eq!(channels_with_announcements.len(), 1);
-		if let Some(channel_announcements) = channels_with_announcements.first() {
-			let &(_, ref update_1, ref update_2) = channel_announcements;
+		let channels_with_announcements = gossip_sync.get_next_channel_announcement(short_channel_id);
+		if let Some(channel_announcements) = channels_with_announcements {
+			let (_, ref update_1, ref update_2) = channel_announcements;
 			assert_ne!(update_1, &None);
 			assert_eq!(update_2, &None);
 		} else {
@@ -2473,10 +2457,9 @@ mod tests {
 		}
 
 		// Test that announcements with excess data won't be returned
-		let channels_with_announcements = gossip_sync.get_next_channel_announcements(short_channel_id, 1);
-		assert_eq!(channels_with_announcements.len(), 1);
-		if let Some(channel_announcements) = channels_with_announcements.first() {
-			let &(_, ref update_1, ref update_2) = channel_announcements;
+		let channels_with_announcements = gossip_sync.get_next_channel_announcement(short_channel_id);
+		if let Some(channel_announcements) = channels_with_announcements {
+			let (_, ref update_1, ref update_2) = channel_announcements;
 			assert_eq!(update_1, &None);
 			assert_eq!(update_2, &None);
 		} else {
@@ -2484,8 +2467,8 @@ mod tests {
 		}
 
 		// Further starting point have no channels after it
-		let channels_with_announcements = gossip_sync.get_next_channel_announcements(short_channel_id + 1000, 1);
-		assert_eq!(channels_with_announcements.len(), 0);
+		let channels_with_announcements = gossip_sync.get_next_channel_announcement(short_channel_id + 1000);
+		assert!(channels_with_announcements.is_none());
 	}
 
 	#[test]
@@ -2497,8 +2480,8 @@ mod tests {
 		let node_id_1 = PublicKey::from_secret_key(&secp_ctx, node_1_privkey);
 
 		// No nodes yet.
-		let next_announcements = gossip_sync.get_next_node_announcements(None, 10);
-		assert_eq!(next_announcements.len(), 0);
+		let next_announcements = gossip_sync.get_next_node_announcement(None);
+		assert!(next_announcements.is_none());
 
 		{
 			// Announce a channel to add 2 nodes
@@ -2509,10 +2492,9 @@ mod tests {
 			};
 		}
 
-
 		// Nodes were never announced
-		let next_announcements = gossip_sync.get_next_node_announcements(None, 3);
-		assert_eq!(next_announcements.len(), 0);
+		let next_announcements = gossip_sync.get_next_node_announcement(None);
+		assert!(next_announcements.is_none());
 
 		{
 			let valid_announcement = get_signed_node_announcement(|_| {}, node_1_privkey, &secp_ctx);
@@ -2528,12 +2510,12 @@ mod tests {
 			};
 		}
 
-		let next_announcements = gossip_sync.get_next_node_announcements(None, 3);
-		assert_eq!(next_announcements.len(), 2);
+		let next_announcements = gossip_sync.get_next_node_announcement(None);
+		assert!(next_announcements.is_some());
 
 		// Skip the first node.
-		let next_announcements = gossip_sync.get_next_node_announcements(Some(&node_id_1), 2);
-		assert_eq!(next_announcements.len(), 1);
+		let next_announcements = gossip_sync.get_next_node_announcement(Some(&node_id_1));
+		assert!(next_announcements.is_some());
 
 		{
 			// Later announcement which should not be relayed (excess data) prevent us from sharing a node
@@ -2547,8 +2529,8 @@ mod tests {
 			};
 		}
 
-		let next_announcements = gossip_sync.get_next_node_announcements(Some(&node_id_1), 2);
-		assert_eq!(next_announcements.len(), 0);
+		let next_announcements = gossip_sync.get_next_node_announcement(Some(&node_id_1));
+		assert!(next_announcements.is_none());
 	}
 
 	#[test]
