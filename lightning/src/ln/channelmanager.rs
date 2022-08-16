@@ -1301,8 +1301,10 @@ macro_rules! handle_error {
 
 macro_rules! update_maps_on_chan_removal {
 	($self: expr, $channel: expr) => {
-		// The lockorder for id_to_peer is prior to short_to_chan_info.
-		let mut id_to_peer = $self.id_to_peer.lock().unwrap();
+		{
+			let mut id_to_peer = $self.id_to_peer.lock().unwrap();
+			id_to_peer.remove(&$channel.channel_id());
+		}
 		let mut short_to_chan_info = $self.short_to_chan_info.write().unwrap();
 		if let Some(short_id) = $channel.get_short_channel_id() {
 			short_to_chan_info.remove(&short_id);
@@ -1316,7 +1318,6 @@ macro_rules! update_maps_on_chan_removal {
 			let alias_removed = $self.outbound_scid_aliases.lock().unwrap().remove(&$channel.outbound_scid_alias());
 			debug_assert!(alias_removed);
 		}
-		id_to_peer.remove(&$channel.channel_id());
 		short_to_chan_info.remove(&$channel.outbound_scid_alias());
 	}
 }
