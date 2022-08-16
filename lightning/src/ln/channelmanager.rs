@@ -4223,8 +4223,12 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					// event being update_fulfill_htlc).
 					let update_res = self.chain_monitor.update_channel(prev_outpoint, preimage_update);
 					if update_res != ChannelMonitorUpdateStatus::Completed {
+						// TODO: This needs to be handled somehow - if we receive a monitor update
+						// with a preimage we *must* somehow manage to propagate it to the upstream
+						// channel, or we must have an ability to receive the same event and try
+						// again on restart.
 						log_error!(self.logger, "Critical error: failed to update channel monitor with preimage {:?}: {:?}",
-											 payment_preimage, update_res);
+							payment_preimage, update_res);
 					}
 					// Note that we do *not* set `claimed_htlc` to false here. In fact, this
 					// totally could be a duplicate claim, but we have no way of knowing
