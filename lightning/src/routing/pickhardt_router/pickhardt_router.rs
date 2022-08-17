@@ -12,6 +12,7 @@ use util::logger::Logger;
 use ln::{PaymentHash, channelmanager::{ChannelDetails, self}, msgs::{LightningError, ErrorAction}, features::{Features, NodeFeatures, ChannelFeatures}};
 use routing::pickhardt_router::min_cost_lib::{self,OriginalEdge};
 
+type ChannelMetaData<'a>=(u64, u16, u64, Option<&'a ChannelFeatures>, Option<&'a Features<InitContext>>);
 /// The default `features` we assume for a node in a route, when no `features` are known about that
 /// specific node.
 ///
@@ -69,7 +70,8 @@ where L::Target: Logger, GL::Target: Logger {
 	let mut edges:Vec<OriginalEdge> =Vec::new();  // enumerated channels.
 	let mut vidx:HashMap<NodeId,usize> =HashMap::new();  // NodeId -> enumerated node id
 	let mut nodes:Vec<(NodeId,NodeFeatures)>=Vec::new();  // enumerated node id -> NodeId
-	let mut channel_meta_data:Vec<u64>=Vec::new();  // enumerated channel -> short channel id
+	// enumerated channel -> short channel id, ctlv_expiry_delta, htlc_minimum_msat
+	let mut channel_meta_data:Vec<ChannelMetaData>=Vec::new();
 	let mut short_channel_ids_set:HashSet<u64>=HashSet::new();  // set of short channel ids
 	let our_node=NodeId::from_pubkey(&our_node_pubkey);
 	let s=add_or_get_node(&mut vidx, our_node, &default_node_features(), &mut nodes);
@@ -107,19 +109,26 @@ where L::Target: Logger, GL::Target: Logger {
 		let mut route_path:Vec<RouteHop>=Vec::new();
 		let mut sum_fee_msat=0;
 		for idx in &path.1 {
-			let short_channel_id=channel_meta_data[*idx];
+			let md=&channel_meta_data[*idx];
+			let short_channel_id=md.0;
 			let vnode=&nodes[edges[*idx].v];
 			let node_features=&vnode.1;
-			let channel_features=ChannelFeatures::empty();  // TODO: create
+			let channel_features=
+				if let Some(features) = md.3
+				{features.clone()}
+				else if let Some(features2) = md.4
+				{features2.to_context()} else
+				{ChannelFeatures::empty()};
 			let fee_msat=if *idx==*path.1.last().unwrap() { path.0-sum_fee_msat }
 								else {path.0*edges[*idx].cost as u32/1000000 as u32};
 			sum_fee_msat+=fee_msat;
-			let cltv_expiry_delta:u32=0;  // TODO: add/compute
+			let cltv_expiry_delta:u32=md.1;  // TODO: add/compute???
 
 			route_path.push(RouteHop {
 				pubkey: PublicKey::from_slice(vnode.0.as_slice()).unwrap(),
 				short_channel_id: short_channel_id,
-				fee_msat : fee_msat as u64,  cltv_expiry_delta : cltv_expiry_delta,
+				fee_msat : fee_msat as u64,
+				cltv_expiry_delta : cltv_expiry_delta,
 				node_features: node_features.clone(),
 			channel_features: channel_features});
 		}
@@ -129,7 +138,7 @@ where L::Target: Logger, GL::Target: Logger {
 	return Ok(r);
 }
 
-fn add_hops_to_payee_node_from_route_hints(channel_meta_data: &mut Vec<u64>, short_channel_ids_set: &mut HashSet<u64>,
+fn add_hops_to_payee_node_from_route_hints(channel_meta_data: &mut Vec<ChannelMetaData>, short_channel_ids_set: &mut HashSet<u64>,
 	payment_params: &PaymentParameters,
 	payee_node_id: NodeId, edges: &mut Vec<OriginalEdge>, vidx: &mut HashMap<NodeId, usize>,
 	nodes: &mut Vec<(NodeId,NodeFeatures)>) -> Option<Result<Route, LightningError>> {
@@ -151,13 +160,15 @@ fn add_hops_to_payee_node_from_route_hints(channel_meta_data: &mut Vec<u64>, sho
 					cost: hop.fees.proportional_millionths as i32,
 					flow: 0,
 					guaranteed_liquidity: 0});  // TODO: Ask whether the liquidity for the last hop is guaranteed.
+				channel_meta_data.push((hop.short_channel_id, hop.cltv_expiry_delta, hop.htlc_minimum_msat.unwrap_or(0),
+					None, None));
 				last_node_id=src_node_id;
 			}
 		}
 	None
 }
 
-fn extract_first_hops_from_payer_node(channel_meta_data: &mut Vec<u64>, short_channel_ids_set: &mut HashSet<u64>, first_hops: Option<&[&ChannelDetails]>,
+fn extract_first_hops_from_payer_node(channel_meta_data: &mut Vec<ChannelMetaData>, short_channel_ids_set: &mut HashSet<u64>, first_hops: Option<&[&ChannelDetails]>,
 	our_node_pubkey: &PublicKey,
 	 vidx: &mut HashMap<NodeId, usize>, nodes: &mut Vec<(NodeId, NodeFeatures)>,
 	edges: &mut Vec<OriginalEdge>) -> Option<LightningError> {
@@ -183,6 +194,9 @@ fn extract_first_hops_from_payer_node(channel_meta_data: &mut Vec<u64>, short_ch
 			capacity: chan.outbound_capacity_msat as i32,
 			cost: 0, flow: 0,
 			guaranteed_liquidity:chan.outbound_capacity_msat as i32 });
+		channel_meta_data.push((chan.get_outbound_payment_scid().unwrap(),
+			if let Some(conf) = chan.config {conf.cltv_expiry_delta} else {0},
+			0, None, Some(&chan.counterparty.features)))
 	}
 	None
 }
@@ -207,8 +221,8 @@ fn should_allow_mpp<L:Deref>(payment_params: &PaymentParameters,
 }
 
 fn extract_public_channels_from_network_graph<L:Deref>(
-	network_graph : &NetworkGraph<L>, channel_meta_data: &mut Vec<u64>, short_channel_ids_set: &mut HashSet<u64>,
-	 vidx: &mut HashMap<NodeId, usize>, nodes: &mut Vec<(NodeId,NodeFeatures)>, edges: &mut Vec<OriginalEdge>) 
+	network_graph : &NetworkGraph<L>, channel_meta_data: &mut Vec<ChannelMetaData>, short_channel_ids_set: &mut HashSet<u64>,
+	 vidx: &mut HashMap<NodeId, usize>, nodes: &mut Vec<(NodeId,NodeFeatures)>, edges: &mut Vec<OriginalEdge>)
 	 where L::Target : Logger  {
 	for channel in network_graph.read_only().channels() {
 			if short_channel_ids_set.contains(channel.0) {
@@ -234,14 +248,18 @@ fn extract_public_channels_from_network_graph<L:Deref>(
 				if ot.fees.base_msat==0 {
 					edges.push(OriginalEdge {u, v, capacity:info.capacity_sats.unwrap_or(0) as i32,
 						cost:ot.fees.proportional_millionths as i32,
-						flow: 0, guaranteed_liquidity: 0})
+						flow: 0, guaranteed_liquidity: 0});
+					channel_meta_data.push((*channel.0, ot.cltv_expiry_delta, ot.htlc_minimum_msat,
+						Some(&info.features), None));
 				}
 			}
 			if let Some(to)=&info.two_to_one {
 				if to.fees.base_msat==0 {
 					edges.push(OriginalEdge {u:v, v:u, capacity:info.capacity_sats.unwrap_or(0) as i32,
 						cost:to.fees.proportional_millionths as i32,
-						flow: 0, guaranteed_liquidity: 0})
+						flow: 0, guaranteed_liquidity: 0});
+						channel_meta_data.push((*channel.0, to.cltv_expiry_delta, to.htlc_minimum_msat,
+							Some(&info.features), None));
 				}
 			}
 		}
