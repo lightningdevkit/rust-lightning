@@ -288,10 +288,16 @@ fn do_test_claim_value_force_close(prev_commitment_tx: bool) {
 			claimable_height: htlc_cltv_timeout,
 		}]),
 		sorted_vec(nodes[0].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
-	assert_eq!(vec![Balance::ClaimableOnChannelClose {
+	assert_eq!(sorted_vec(vec![Balance::ClaimableOnChannelClose {
 			claimable_amount_satoshis: 1_000,
-		}],
-		nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances());
+		}, Balance::MaybePreimageClaimableHTLC {
+			claimable_amount_satoshis: 3_000,
+			expiry_height: htlc_cltv_timeout,
+		}, Balance::MaybePreimageClaimableHTLC {
+			claimable_amount_satoshis: 4_000,
+			expiry_height: htlc_cltv_timeout,
+		}]),
+		sorted_vec(nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
 
 	nodes[1].node.claim_funds(payment_preimage);
 	check_added_monitors!(nodes[1], 1);
@@ -745,6 +751,238 @@ fn test_balances_on_local_commitment_htlcs() {
 	connect_blocks(&nodes[0], node_a_htlc_claimable - nodes[0].best_block_info().1);
 	assert!(nodes[0].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances().is_empty());
 	test_spendable_output(&nodes[0], &as_txn[1]);
+}
+
+#[test]
+fn test_no_preimage_inbound_htlc_balances() {
+	// Tests that MaybePreimageClaimableHTLC are generated for inbound HTLCs for which we do not
+	// have a preimage.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let (_, _, chan_id, funding_tx) = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 500_000_000, InitFeatures::known(), InitFeatures::known());
+	let funding_outpoint = OutPoint { txid: funding_tx.txid(), index: 0 };
+
+	// Send two HTLCs, one from A to B, and one from B to A.
+	let to_b_failed_payment_hash = route_payment(&nodes[0], &[&nodes[1]], 10_000_000).1;
+	let to_a_failed_payment_hash = route_payment(&nodes[1], &[&nodes[0]], 20_000_000).1;
+	let htlc_cltv_timeout = nodes[0].best_block_info().1 + TEST_FINAL_CLTV + 1; // Note ChannelManager adds one to CLTV timeouts for safety
+
+	let chan_feerate = get_feerate!(nodes[0], chan_id) as u64;
+	let opt_anchors = get_opt_anchors!(nodes[0], chan_id);
+
+	// Both A and B will have an HTLC that's claimable on timeout and one that's claimable if they
+	// receive the preimage. These will remain the same through the channel closure and until the
+	// HTLC output is spent.
+
+	assert_eq!(sorted_vec(vec![Balance::ClaimableOnChannelClose {
+			claimable_amount_satoshis: 1_000_000 - 500_000 - 10_000 - chan_feerate *
+				(channel::commitment_tx_base_weight(opt_anchors) + 2 * channel::COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000,
+		}, Balance::MaybePreimageClaimableHTLC {
+			claimable_amount_satoshis: 20_000,
+			expiry_height: htlc_cltv_timeout,
+		}, Balance::MaybeClaimableHTLCAwaitingTimeout {
+			claimable_amount_satoshis: 10_000,
+			claimable_height: htlc_cltv_timeout,
+		}]),
+		sorted_vec(nodes[0].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
+
+	assert_eq!(sorted_vec(vec![Balance::ClaimableOnChannelClose {
+			claimable_amount_satoshis: 500_000 - 20_000,
+		}, Balance::MaybePreimageClaimableHTLC {
+			claimable_amount_satoshis: 10_000,
+			expiry_height: htlc_cltv_timeout,
+		}, Balance::MaybeClaimableHTLCAwaitingTimeout {
+			claimable_amount_satoshis: 20_000,
+			claimable_height: htlc_cltv_timeout,
+		}]),
+		sorted_vec(nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
+
+	// Get nodes[0]'s commitment transaction and HTLC-Timeout transaction
+	let as_txn = get_local_commitment_txn!(nodes[0], chan_id);
+	assert_eq!(as_txn.len(), 2);
+	check_spends!(as_txn[1], as_txn[0]);
+	check_spends!(as_txn[0], funding_tx);
+
+	// Now close the channel by confirming A's commitment transaction on both nodes, checking the
+	// claimable balances remain the same except for the non-HTLC balance changing variant.
+	let node_a_commitment_claimable = nodes[0].best_block_info().1 + BREAKDOWN_TIMEOUT as u32;
+	let as_pre_spend_claims = sorted_vec(vec![Balance::ClaimableAwaitingConfirmations {
+			claimable_amount_satoshis: 1_000_000 - 500_000 - 10_000 - chan_feerate *
+				(channel::commitment_tx_base_weight(opt_anchors) + 2 * channel::COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000,
+			confirmation_height: node_a_commitment_claimable,
+		}, Balance::MaybePreimageClaimableHTLC {
+			claimable_amount_satoshis: 20_000,
+			expiry_height: htlc_cltv_timeout,
+		}, Balance::MaybeClaimableHTLCAwaitingTimeout {
+			claimable_amount_satoshis: 10_000,
+			claimable_height: htlc_cltv_timeout,
+		}]);
+
+	mine_transaction(&nodes[0], &as_txn[0]);
+	nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().clear();
+	check_added_monitors!(nodes[0], 1);
+	check_closed_broadcast!(nodes[0], true);
+	check_closed_event!(nodes[0], 1, ClosureReason::CommitmentTxConfirmed);
+
+	assert_eq!(as_pre_spend_claims,
+		sorted_vec(nodes[0].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
+
+	mine_transaction(&nodes[1], &as_txn[0]);
+	check_added_monitors!(nodes[1], 1);
+	check_closed_broadcast!(nodes[1], true);
+	check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed);
+
+	let node_b_commitment_claimable = nodes[1].best_block_info().1 + ANTI_REORG_DELAY - 1;
+	let mut bs_pre_spend_claims = sorted_vec(vec![Balance::ClaimableAwaitingConfirmations {
+			claimable_amount_satoshis: 500_000 - 20_000,
+			confirmation_height: node_b_commitment_claimable,
+		}, Balance::MaybePreimageClaimableHTLC {
+			claimable_amount_satoshis: 10_000,
+			expiry_height: htlc_cltv_timeout,
+		}, Balance::MaybeClaimableHTLCAwaitingTimeout {
+			claimable_amount_satoshis: 20_000,
+			claimable_height: htlc_cltv_timeout,
+		}]);
+	assert_eq!(bs_pre_spend_claims,
+		sorted_vec(nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
+
+	// We'll broadcast the HTLC-Timeout transaction one block prior to the htlc's expiration (as it
+	// is confirmable in the next block), but will still include the same claimable balances as no
+	// HTLC has been spent, even after the HTLC expires. We'll also fail the inbound HTLC, but it
+	// won't do anything as the channel is already closed.
+
+	connect_blocks(&nodes[0], TEST_FINAL_CLTV - 1);
+	let as_htlc_timeout_claim = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
+	assert_eq!(as_htlc_timeout_claim.len(), 1);
+	check_spends!(as_htlc_timeout_claim[0], as_txn[0]);
+	expect_pending_htlcs_forwardable_conditions!(nodes[0],
+		[HTLCDestination::FailedPayment { payment_hash: to_a_failed_payment_hash }]);
+
+	assert_eq!(as_pre_spend_claims,
+		sorted_vec(nodes[0].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
+
+	connect_blocks(&nodes[0], 1);
+	assert_eq!(as_pre_spend_claims,
+		sorted_vec(nodes[0].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
+
+	// For node B, we'll get the non-HTLC funds claimable after ANTI_REORG_DELAY confirmations
+	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
+	test_spendable_output(&nodes[1], &as_txn[0]);
+	bs_pre_spend_claims.retain(|e| if let Balance::ClaimableAwaitingConfirmations { .. } = e { false } else { true });
+
+	// The next few blocks for B look the same as for A, though for the opposite HTLC
+	nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().clear();
+	connect_blocks(&nodes[1], TEST_FINAL_CLTV - (ANTI_REORG_DELAY - 1) - 1);
+	expect_pending_htlcs_forwardable_conditions!(nodes[1],
+		[HTLCDestination::FailedPayment { payment_hash: to_b_failed_payment_hash }]);
+	let bs_htlc_timeout_claim = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
+	assert_eq!(bs_htlc_timeout_claim.len(), 1);
+	check_spends!(bs_htlc_timeout_claim[0], as_txn[0]);
+
+	assert_eq!(bs_pre_spend_claims,
+		sorted_vec(nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
+
+	connect_blocks(&nodes[1], 1);
+	assert_eq!(bs_pre_spend_claims,
+		sorted_vec(nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
+
+	// Now confirm the two HTLC timeout transactions for A, checking that the inbound HTLC resolves
+	// after ANTI_REORG_DELAY confirmations and the other takes BREAKDOWN_TIMEOUT confirmations.
+	mine_transaction(&nodes[0], &as_htlc_timeout_claim[0]);
+	let as_timeout_claimable_height = nodes[0].best_block_info().1 + (BREAKDOWN_TIMEOUT as u32) - 1;
+	assert_eq!(sorted_vec(vec![Balance::ClaimableAwaitingConfirmations {
+			claimable_amount_satoshis: 1_000_000 - 500_000 - 10_000 - chan_feerate *
+				(channel::commitment_tx_base_weight(opt_anchors) + 2 * channel::COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000,
+			confirmation_height: node_a_commitment_claimable,
+		}, Balance::MaybePreimageClaimableHTLC {
+			claimable_amount_satoshis: 20_000,
+			expiry_height: htlc_cltv_timeout,
+		}, Balance::ClaimableAwaitingConfirmations {
+			claimable_amount_satoshis: 10_000,
+			confirmation_height: as_timeout_claimable_height,
+		}]),
+		sorted_vec(nodes[0].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
+
+	mine_transaction(&nodes[0], &bs_htlc_timeout_claim[0]);
+	assert_eq!(sorted_vec(vec![Balance::ClaimableAwaitingConfirmations {
+			claimable_amount_satoshis: 1_000_000 - 500_000 - 10_000 - chan_feerate *
+				(channel::commitment_tx_base_weight(opt_anchors) + 2 * channel::COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000,
+			confirmation_height: node_a_commitment_claimable,
+		}, Balance::MaybePreimageClaimableHTLC {
+			claimable_amount_satoshis: 20_000,
+			expiry_height: htlc_cltv_timeout,
+		}, Balance::ClaimableAwaitingConfirmations {
+			claimable_amount_satoshis: 10_000,
+			confirmation_height: as_timeout_claimable_height,
+		}]),
+		sorted_vec(nodes[0].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
+
+	// Once as_htlc_timeout_claim[0] reaches ANTI_REORG_DELAY confirmations, we should get a
+	// payment failure event.
+	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 2);
+	expect_payment_failed!(nodes[0], to_b_failed_payment_hash, true);
+
+	connect_blocks(&nodes[0], 1);
+	assert_eq!(sorted_vec(vec![Balance::ClaimableAwaitingConfirmations {
+			claimable_amount_satoshis: 1_000_000 - 500_000 - 10_000 - chan_feerate *
+				(channel::commitment_tx_base_weight(opt_anchors) + 2 * channel::COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000,
+			confirmation_height: node_a_commitment_claimable,
+		}, Balance::ClaimableAwaitingConfirmations {
+			claimable_amount_satoshis: 10_000,
+			confirmation_height: core::cmp::max(as_timeout_claimable_height, htlc_cltv_timeout),
+		}]),
+		sorted_vec(nodes[0].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
+
+	connect_blocks(&nodes[0], node_a_commitment_claimable - nodes[0].best_block_info().1);
+	assert_eq!(vec![Balance::ClaimableAwaitingConfirmations {
+			claimable_amount_satoshis: 10_000,
+			confirmation_height: core::cmp::max(as_timeout_claimable_height, htlc_cltv_timeout),
+		}],
+		nodes[0].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances());
+	test_spendable_output(&nodes[0], &as_txn[0]);
+
+	connect_blocks(&nodes[0], as_timeout_claimable_height - nodes[0].best_block_info().1);
+	assert!(nodes[0].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances().is_empty());
+	test_spendable_output(&nodes[0], &as_htlc_timeout_claim[0]);
+
+	// The process for B should be completely identical as well, noting that the non-HTLC-balance
+	// was already claimed.
+	mine_transaction(&nodes[1], &bs_htlc_timeout_claim[0]);
+	let bs_timeout_claimable_height = nodes[1].best_block_info().1 + ANTI_REORG_DELAY - 1;
+	assert_eq!(sorted_vec(vec![Balance::MaybePreimageClaimableHTLC {
+			claimable_amount_satoshis: 10_000,
+			expiry_height: htlc_cltv_timeout,
+		}, Balance::ClaimableAwaitingConfirmations {
+			claimable_amount_satoshis: 20_000,
+			confirmation_height: bs_timeout_claimable_height,
+		}]),
+		sorted_vec(nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
+
+	mine_transaction(&nodes[1], &as_htlc_timeout_claim[0]);
+	assert_eq!(sorted_vec(vec![Balance::MaybePreimageClaimableHTLC {
+			claimable_amount_satoshis: 10_000,
+			expiry_height: htlc_cltv_timeout,
+		}, Balance::ClaimableAwaitingConfirmations {
+			claimable_amount_satoshis: 20_000,
+			confirmation_height: bs_timeout_claimable_height,
+		}]),
+		sorted_vec(nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
+
+	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 2);
+	expect_payment_failed!(nodes[1], to_a_failed_payment_hash, true);
+
+	assert_eq!(vec![Balance::MaybePreimageClaimableHTLC {
+			claimable_amount_satoshis: 10_000,
+			expiry_height: htlc_cltv_timeout,
+		}],
+		nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances());
+	test_spendable_output(&nodes[1], &bs_htlc_timeout_claim[0]);
+
+	connect_blocks(&nodes[1], 1);
+	assert!(nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances().is_empty());
 }
 
 fn sorted_vec_with_additions<T: Ord + Clone>(v_orig: &Vec<T>, extra_ts: &[&T]) -> Vec<T> {
