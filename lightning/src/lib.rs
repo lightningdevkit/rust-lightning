@@ -79,6 +79,9 @@ pub mod util;
 pub mod chain;
 pub mod ln;
 pub mod routing;
+#[cfg(fuzzing)]
+pub mod onion_message;
+#[cfg(not(fuzzing))]
 #[allow(unused)]
 mod onion_message; // To be exposed after sending/receiving OMs is supported in PeerManager.
 

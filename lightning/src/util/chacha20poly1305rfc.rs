@@ -286,10 +286,10 @@ mod fuzzy_chachapoly {
 
 		pub(super) fn encrypt_in_place(&mut self, _input_output: &mut [u8]) {
 			assert!(self.finished == false);
-			self.finished = true;
 		}
 
 		pub(super) fn finish_and_get_tag(&mut self, out_tag: &mut [u8]) {
+			assert!(self.finished == false);
 			out_tag.copy_from_slice(&self.tag);
 			self.finished = true;
 		}
