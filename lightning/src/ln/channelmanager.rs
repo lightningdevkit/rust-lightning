@@ -790,6 +790,12 @@ pub struct ChannelManager<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, 
 	/// Outbound SCID aliases are added here once the channel is available for normal use, with
 	/// SCIDs being added once the funding transaction is confirmed at the channel's required
 	/// confirmation depth.
+	///
+	/// Note that while this holds `counterparty_node_id`s and `channel_id`s, no consistency
+	/// guarantees are made about the existence of a peer with the `counterparty_node_id` nor a
+	/// channel with the `channel_id` in our other maps.
+	///
+	/// Locked *after* `channel_state`.
 	#[cfg(any(test, feature = "_test_utils"))]
 	pub(super) short_to_chan_info: FairRwLock<HashMap<u64, (PublicKey, [u8; 32])>>,
 	#[cfg(not(any(test, feature = "_test_utils")))]
