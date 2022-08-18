@@ -2317,7 +2317,14 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 						Some((_cp_id, chan_id)) => Some(chan_id.clone()),
 					};
 					let chan_update_opt = if let Some(forwarding_id) = forwarding_id_opt {
-						let chan = channel_state.by_id.get_mut(&forwarding_id).unwrap();
+						let chan = match channel_state.by_id.get_mut(&forwarding_id) {
+							None => {
+								// Channel was removed. The short_to_chan_info and by_id maps have
+								// no consistency guarantees.
+								break Some(("Don't have available channel for forwarding as requested.", 0x4000 | 10, None));
+							},
+							Some(chan) => chan
+						};
 						if !chan.should_announce() && !self.default_configuration.accept_forwards_to_priv_channels {
 							// Note that the behavior here should be identical to the above block - we
 							// should NOT reveal the existence or non-existence of a private channel if
@@ -2544,7 +2551,12 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 					},
 					None => { },
 				}
-			} else { unreachable!(); }
+			} else {
+				// The channel was likely removed after we fetched the id from the
+				// `short_to_chan_info` map, but before we successfully locked the `by_id` map.
+				// This can occur as no consistency guarantees exists between the two maps.
+				return Err(APIError::ChannelUnavailable{err: "No channel available with first hop!".to_owned()});
+			}
 			return Ok(());
 		};
 
@@ -3133,9 +3145,8 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 				let mut channel_state_lock = self.channel_state.lock().unwrap();
 				let channel_state = &mut *channel_state_lock;
 				if short_chan_id != 0 {
-					let forward_chan_id = match self.short_to_chan_info.read().unwrap().get(&short_chan_id) {
-						Some((_cp_id, chan_id)) => chan_id.clone(),
-						None => {
+					macro_rules! forwarding_channel_not_found {
+						() => {
 							for forward_info in pending_forwards.drain(..) {
 								match forward_info {
 									HTLCForwardInfo::AddHTLC { prev_short_channel_id, prev_htlc_id, forward_info: PendingHTLCInfo {
@@ -3222,6 +3233,12 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 									}
 								}
 							}
+						}
+					}
+					let forward_chan_id = match self.short_to_chan_info.read().unwrap().get(&short_chan_id) {
+						Some((_cp_id, chan_id)) => chan_id.clone(),
+						None => {
+							forwarding_channel_not_found!();
 							continue;
 						}
 					};
@@ -3351,7 +3368,8 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 							});
 						}
 					} else {
-						unreachable!();
+						forwarding_channel_not_found!();
+						continue;
 					}
 				} else {
 					for forward_info in pending_forwards.drain(..) {
@@ -4310,7 +4328,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 					return ClaimFundsFromHop::MonitorUpdateFail(counterparty_node_id, res, None);
 				},
 			}
-		} else { unreachable!(); }
+		} else { return ClaimFundsFromHop::PrevHopForceClosed }
 	}
 
 	fn finalize_claims(&self, mut sources: Vec<HTLCSource>) {
@@ -5226,7 +5244,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 					try_chan_entry!(self, chan.get_mut().channel_update(&msg), chan);
 				}
 			},
-			hash_map::Entry::Vacant(_) => unreachable!()
+			hash_map::Entry::Vacant(_) => return Ok(NotifyOption::SkipPersist)
 		}
 		Ok(NotifyOption::DoPersist)
 	}
