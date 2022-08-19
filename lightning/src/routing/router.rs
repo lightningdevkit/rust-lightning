@@ -1905,6 +1905,10 @@ fn build_route_from_hops_internal<L: Deref>(
 		fn probe_failed(&mut self, _path: &[&RouteHop], _short_channel_id: u64) {}
 
 		fn probe_successful(&mut self, _path: &[&RouteHop]) {}
+
+		fn estimated_channel_liquidity_range(&self,scid:u64,target: &NodeId) -> Option<(u64,u64)> {
+			None
+		}
 	}
 
 	impl<'a> Writeable for HopScorer {
@@ -5377,6 +5381,9 @@ mod tests {
 		fn payment_path_successful(&mut self, _path: &[&RouteHop]) {}
 		fn probe_failed(&mut self, _path: &[&RouteHop], _short_channel_id: u64) {}
 		fn probe_successful(&mut self, _path: &[&RouteHop]) {}
+		fn estimated_channel_liquidity_range(&self,scid:u64,target: &NodeId) -> Option<(u64,u64)> {
+			if scid==self.short_channel_id { Some((0, 0)) } else { None }
+		}
 	}
 
 	struct BadNodeScorer {
@@ -5397,6 +5404,9 @@ mod tests {
 		fn payment_path_successful(&mut self, _path: &[&RouteHop]) {}
 		fn probe_failed(&mut self, _path: &[&RouteHop], _short_channel_id: u64) {}
 		fn probe_successful(&mut self, _path: &[&RouteHop]) {}
+		fn estimated_channel_liquidity_range(&self,scid:u64,target: &NodeId) -> Option<(u64,u64)> {
+			if *target == self.node_id { Some((0, 0)) } else { None }
+		}
 	}
 
 	#[test]

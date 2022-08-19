@@ -4,16 +4,19 @@
 // TODO: Handle CTLV
 // TODO: In flight HTLC
 
-use std::{ops::Deref, collections::{HashMap, HashSet}, convert::TryInto};
+use core::{ops::Deref, convert::TryInto};
+use prelude::{HashMap, HashSet};
 const MAX_VALUE_MSAT: u64 = 2100000000000000000;
 use bitcoin::secp256k1::PublicKey;
-use routing::{scoring::Score, gossip::{NetworkGraph, NodeId}, router::{RouteParameters, Route, RouteHop, PaymentParameters}};
+use routing::{gossip::{NetworkGraph, NodeId}, router::{RouteParameters, Route, RouteHop, PaymentParameters}};
 use util::logger::Logger;
 use ln::{channelmanager::ChannelDetails, msgs::{LightningError, ErrorAction},
 		features::{NodeFeatures, ChannelFeatures}};
 use routing::pickhardt_router::min_cost_lib::{self,OriginalEdge};
 
-use crate::{routing::scoring::{ProbabilisticScorerUsingTime, LiquidityEstimator}, util::time::Time};
+use util::time::Time;
+
+use crate::routing::scoring::Score;
 
 type ChannelMetaData=(u64, u16, u64, ChannelFeatures);
 /// The default `features` we assume for a node in a route, when no `features` are known about that
@@ -29,11 +32,11 @@ fn default_node_features() -> NodeFeatures {
 
 // impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> Writeable for ProbabilisticScorerUsingTime<G, L, T> where L::Target: Logger
 
-pub fn find_route<L: Deref, GL: Deref, LL:Deref, G: Deref<Target = NetworkGraph<LL>>, T:Time>(
+pub fn find_route<L: Deref, GL: Deref, S:Score>(
 	our_node_pubkey: &PublicKey, route_params: &RouteParameters,
 	network_graph: &NetworkGraph<GL>, first_hops: Option<&[&ChannelDetails]>, logger: L,
-	liquidity_estimator: &LiquidityEstimator) -> Result<Route, LightningError>
-where L::Target: Logger, GL::Target: Logger, LL::Target: Logger {
+	liquidity_estimator: &S) -> Result<Route, LightningError>
+where L::Target: Logger, GL::Target: Logger {
 
 	let payee_pubkey=route_params.payment_params.payee_pubkey;
 
@@ -138,10 +141,11 @@ where L::Target: Logger, GL::Target: Logger, LL::Target: Logger {
 	return Ok(r);
 }
 
-fn add_hops_to_payee_node_from_route_hints(channel_meta_data: &mut Vec<ChannelMetaData>, short_channel_ids_set: &mut HashSet<u64>,
+fn add_hops_to_payee_node_from_route_hints<S:Score>(channel_meta_data: &mut Vec<ChannelMetaData>,
+	short_channel_ids_set: &mut HashSet<u64>,
 	payment_params: &PaymentParameters,
 	payee_node_id: NodeId, edges: &mut Vec<OriginalEdge>, vidx: &mut HashMap<NodeId, usize>,
-	nodes: &mut Vec<(NodeId,NodeFeatures)>, liquidity_estimator: &LiquidityEstimator) ->
+	nodes: &mut Vec<(NodeId,NodeFeatures)>, liquidity_estimator: &S) ->
 		 Option<Result<Route, LightningError>> {
 	for route in payment_params.route_hints.iter() {
 			let mut last_node_id=payee_node_id;
@@ -177,11 +181,11 @@ fn add_hops_to_payee_node_from_route_hints(channel_meta_data: &mut Vec<ChannelMe
 	None
 }
 
-fn extract_first_hops_from_payer_node(channel_meta_data: &mut Vec<ChannelMetaData>,
+fn extract_first_hops_from_payer_node<S:Score>(channel_meta_data: &mut Vec<ChannelMetaData>,
 	short_channel_ids_set: &mut HashSet<u64>, first_hops: Option<&[&ChannelDetails]>,
 	our_node_pubkey: &PublicKey,
 	 vidx: &mut HashMap<NodeId, usize>, nodes: &mut Vec<(NodeId, NodeFeatures)>,
-	edges: &mut Vec<OriginalEdge>, liquidity_estimator: &LiquidityEstimator) -> Option<LightningError> {
+	edges: &mut Vec<OriginalEdge>, liquidity_estimator: &S) -> Option<LightningError> {
 	if first_hops.is_none() {
 		return Some(LightningError {err: "No first hops provided".to_owned(),
 			action: ErrorAction::IgnoreError});
@@ -240,10 +244,10 @@ fn should_allow_mpp<L:Deref>(payment_params: &PaymentParameters,
 	allow_mpp
 }
 
-fn extract_public_channels_from_network_graph<L:Deref>(
+fn extract_public_channels_from_network_graph<L:Deref, S:Score>(
 	network_graph : &NetworkGraph<L>, channel_meta_data: &mut Vec<ChannelMetaData>, short_channel_ids_set: &mut HashSet<u64>,
 	 vidx: &mut HashMap<NodeId, usize>, nodes: &mut Vec<(NodeId,NodeFeatures)>, edges: &mut Vec<OriginalEdge>,
-	liquidity_estimator: &LiquidityEstimator)
+	liquidity_estimator: &S)
 	 where L::Target : Logger  {
 	for channel in network_graph.read_only().channels() {
 			if short_channel_ids_set.contains(channel.0) {

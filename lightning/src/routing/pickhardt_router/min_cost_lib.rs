@@ -12,12 +12,33 @@ pub struct OriginalEdge {
 	pub flow: i32,
 	pub guaranteed_liquidity: i32
 }
+use prelude::VecDeque;
+use core::time::Duration;
 
-use std::{time::{Instant, Duration}, collections::VecDeque};
+#[cfg(not(feature = "no-std"))]
+use std::time::Instant;
 
+#[cfg(not(feature = "no-std"))]
 pub fn elapsed(s:&str, start : Instant) {
 	println!("Time difference for  {} = {:?}", s, start.elapsed());
 }
+
+#[cfg(feature = "no-std")]
+struct Instant {
+}
+
+#[cfg(feature = "no-std")]
+impl Instant {
+	fn now()->Self {
+		Self {}
+	}
+	fn elapsed(&self)->Duration {
+		Duration::new(0, 0)
+	}
+}
+
+#[cfg(feature = "no-std")]
+pub fn elapsed(s:&str, start : Instant) {}
 
 fn crc(a:i32, b:i32) -> i32 {  // Used for comparing implementations
 	(a .wrapping_mul(17)) ^ (b.wrapping_mul(3))
@@ -47,7 +68,7 @@ impl<T> Lenv for  Vec<T> {
 
 // https://www.geeksforgeeks.org/dinics-algorithm-maximum-flow/
 // C++ implementation of Dinic's Algorithm for Maximum Flow
- 
+
 // A structure to represent a edge between
 // two vertex
 #[derive(Clone)]
@@ -56,11 +77,11 @@ struct MaxFlowEdge {
 		   // of a directed edge u-v. "From"
 		   // vertex u can be obtained using
 		   // index in adjacent array.
- 
+
 	flow: i32, // flow of data in edge
- 
+
 	C: i32, // capacity
- 
+
 	rev: Vindex, // To store index of reverse
 			 // edge in adjacency list so that
 			 // we can quickly find it.
@@ -94,7 +115,7 @@ impl<T> IndexMut<Vindex> for Vec<T> {
 		self.index_mut(index.value as usize)
 	}
 }
- 
+
 use std::cmp::min;
 
 // Residual MaxFlowGraph
@@ -117,16 +138,16 @@ struct MaxFlowGraph {
 	{
 		// Forward edge : 0 flow and C capacity
 		let a =MaxFlowEdge  { v:v, flow:0, C: C, rev: Vindex::from_usize(self.adj[v].len())};
- 
+
 		// Back edge : 0 flow and 0 capacity
 		let b = MaxFlowEdge  { v:u, flow:0, C: 0, rev: Vindex::from_usize(self.adj[u].len())};
- 
+
 		self.adj[u].push(a);
 		// self.adj[u as usize].push_back(a);
 		self.adj[v].push(b); // reverse edge
 		return Vindex::from_usize(self.adj[u].len()-1);
 	}
-	
+
 	// Finds if more flow can be sent from s to t.
 	// Also assigns levels to nodes.
 	fn BFS(&mut self,  s:Vindex, t:Vindex) -> bool
@@ -134,15 +155,15 @@ struct MaxFlowGraph {
 		for  i in &mut self.level {
 			*i=-1;
 		}
-	
+
 		self.level[s] = 0; // Level of source vertex
-	
+
 		// Create a queue, enqueue source vertex
 		// and mark source vertex as visited here
 		// level[] array works as visited array also.
 		let mut q: VecDeque<Vindex>=VecDeque::new();
 		q.push_back(s);
-		
+
 		while !q.is_empty() {
 			let u = *q.front().unwrap();
 			q.pop_front();
@@ -155,12 +176,12 @@ struct MaxFlowGraph {
 				}
 			}
 		}
-	
+
 		// IF we can not reach to the sink we
 		// return false else true
 		return self.level[t] >= 0;
 	}
-	
+
 	// A DFS based function to send flow after BFS has
 	// figured out that there is a possible flow and
 	// constructed levels. This function called multiple
@@ -177,24 +198,24 @@ struct MaxFlowGraph {
 		if u == t {
 			return flow;
 		}
-	
+
 		// Traverse all adjacent edges one -by - one.
 		while start[u] < self.adj[u].len() as i32 {
 			// Pick next edge from adjacency list of u
 			let e = self.adj[u][start[u] as usize].clone();
-	
+
 			if self.level[e.v] == self.level[u] + 1 && e.flow < e.C {
 				// find minimum flow from u to t
 				let curr_flow = min(flow, e.C - e.flow);
-	
+
 				let temp_flow
 					= self.sendFlow(e.v, curr_flow, t, start);
-	
+
 				// flow is greater than zero
 				if temp_flow > 0 {
 					// add flow  to current edge
 					self.adj[u][start[u] as usize].flow += temp_flow;
-	
+
 					// subtract flow from reverse edge
 					// of current edge
 					self.adj[e.v][e.rev].flow -= temp_flow;
@@ -203,10 +224,10 @@ struct MaxFlowGraph {
 			}
 			start[u]+=1;
 		}
-	
+
 		return 0;
 	}
-	
+
 	// Returns maximum flow in graph
 	fn  DinicMaxflow(&mut self, s: Vindex, t: Vindex, limit: i32) ->i32
 	{
@@ -214,9 +235,9 @@ struct MaxFlowGraph {
 		if s == t {
 			return -1;
 		}
-	
+
 		let mut total = 0; // Initialize result
-	
+
 		// Augment the flow while there is path
 		// from source to sink
 		while total < limit && self.BFS(s, t) == true {
@@ -224,7 +245,7 @@ struct MaxFlowGraph {
 			// from V { 0 to V }
 			let mut start=vec![0; (self.V.value+1) as usize];
 			let mut flow = self.sendFlow(s, limit-total, t, &mut start);
-	
+
 			// while flow is not zero in graph from S to D
 			while flow > 0 {
 				// Add path flow to overall flow
@@ -232,7 +253,7 @@ struct MaxFlowGraph {
 				flow = self.sendFlow(s, limit-total, t, &mut start)
 			}
 		}
-	
+
 		// return maximum flow
 		return total;
 	}
@@ -325,7 +346,7 @@ fn spfa_early_terminate(n: Vindex, adj:&Vec<Vec<(Vindex, i32)>>, adj2: &Vec<Vec<
 		in_queue[u] = false;
 		let disu: i64=dis[u];
 		// cout << adj[u].len() << endl;
-		
+
 		for i in 0..adj[u].len() {
 			let (v, w) : (Vindex, i32)=adj[u][i];
 			let disv: i64=dis[v];
@@ -496,7 +517,7 @@ fn derivative2_at(at:i32,edges:& Vec<(MinCostEdge,MinCostEdge)>,  log_probabilit
 fn print_at( at: i32,edges:& Vec<(MinCostEdge,MinCostEdge)>,  log_probability_cost_multiplier:f32) {
 	println!("  at {at} derivative: {}, relative cost: {}",
 			derivative_at(at, edges, log_probability_cost_multiplier),
-			relative_cost_at(at, edges, log_probability_cost_multiplier)) 
+			relative_cost_at(at, edges, log_probability_cost_multiplier))
 }
 
  fn find_local_minima(edges:& Vec<(MinCostEdge,MinCostEdge)>,  log_probability_cost_multiplier:f32,
@@ -606,7 +627,7 @@ fn print_at( at: i32,edges:& Vec<(MinCostEdge,MinCostEdge)>,  log_probability_co
 fn decrease_total_cost( N:Vindex,adj:&mut Vec<Vec<(Vindex, i32)>>,adj2:&mut Vec<Vec<MinCostEdge>>,
 	 log_probability_cost_multiplier:f32) -> bool {
 	// Find negative cycle
-	
+
 	// let begin=Instant::now();
 	let mut ccc=N.value;
 	for i in &*adj {
@@ -672,7 +693,7 @@ fn decrease_total_cost( N:Vindex,adj:&mut Vec<Vec<(Vindex, i32)>>,adj2:&mut Vec<
 		// cout << "Derivative at 0: " << derivative_at(0, &edges, log_probability_cost_multiplier)
 		//     << ", relative cost at 0: " << relative_cost_at(0, &edges, log_probability_cost_multiplier)
 		//     << ", relative cost at 1: " << relative_cost_at(1, &edges, log_probability_cost_multiplier)
-		//     << ", derivative at " << min_capacity << ": " 
+		//     << ", derivative at " << min_capacity << ": "
 		//     << derivative_at(min_capacity, &edges, log_probability_cost_multiplier)
 		//     << endl;}
 		min_capacity=find_local_minima(&edges, log_probability_cost_multiplier, min_capacity);
@@ -680,9 +701,9 @@ fn decrease_total_cost( N:Vindex,adj:&mut Vec<Vec<(Vindex, i32)>>,adj2:&mut Vec<
 						// relative_cost_at(floor(fmin_capacity)+1, edges, log_probability_cost_multiplier))
 						// ? floor(fmin_capacity) : (floor(fmin_capacity)+1);
 		// if(debug) {
-		//  cout << "Find local minima returned " << min_capacity << 
+		//  cout << "Find local minima returned " << min_capacity <<
 		//     ", derivative at 0: " << derivative_at(0, &edges, log_probability_cost_multiplier)
-		//     << ", derivative at new min capacity(" << min_capacity << "): " 
+		//     << ", derivative at new min capacity(" << min_capacity << "): "
 		//     << derivative_at(min_capacity, &edges, log_probability_cost_multiplier)
 		//     << ", relative cost at min_capacity: " <<
 		//     relative_cost_at(min_capacity, &edges, log_probability_cost_multiplier)
@@ -693,7 +714,7 @@ fn decrease_total_cost( N:Vindex,adj:&mut Vec<Vec<(Vindex, i32)>>,adj2:&mut Vec<
 	}
 	if(debug) {println!("min capacity={}", min_capacity);}
 	// decrease using min capacity
-	
+
 	// if(debug){cout << "adjusted cost before modification: " << adj_total_cost(N, adj2) << "+" <<
 	//     adj_total_mlog_prob(N, adj2) << "*" << log_probability_cost_multiplier << "=" <<
 	//     adj_total_cost(N, adj2)+adj_total_mlog_prob(N, adj2)*log_probability_cost_multiplier
@@ -780,7 +801,7 @@ pub fn min_cost_flow(n: usize, s: usize, t: usize, value: i32, log_probability_c
 	}
 	let mut numneg=0;
 	let mut lightning_data_idx:Vec<Vindex>=Vec::new();
-	for i in 0..lightning_data.len() 
+	for i in 0..lightning_data.len()
 	{
 		let data  = &lightning_data[i];
 		let u=data.u;
