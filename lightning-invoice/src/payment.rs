@@ -1517,6 +1517,9 @@ mod tests {
 				}
 			}
 		}
+		fn estimated_channel_liquidity_range(&self,scid:u64,target: &NodeId) -> Option<(u64,u64)> {
+			None
+		}
 	}
 
 	impl Drop for TestScorer {
