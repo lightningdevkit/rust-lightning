@@ -4,15 +4,16 @@
 // TODO: Handle CTLV
 // TODO: In flight HTLC
 
-use std::{ops::Deref, collections::{HashMap, HashSet}, sync::Arc, convert::TryInto};
+use std::{ops::Deref, collections::{HashMap, HashSet}, convert::TryInto};
 const MAX_VALUE_MSAT: u64 = 2100000000000000000;
 use bitcoin::secp256k1::PublicKey;
 use routing::{scoring::Score, gossip::{NetworkGraph, NodeId}, router::{RouteParameters, Route, RouteHop, PaymentParameters}};
 use util::logger::Logger;
-use ln::{PaymentHash, channelmanager::{ChannelDetails, self}, msgs::{LightningError, ErrorAction}, features::{Features, NodeFeatures, ChannelFeatures}};
+use ln::{channelmanager::ChannelDetails, msgs::{LightningError, ErrorAction},
+		features::{NodeFeatures, ChannelFeatures}};
 use routing::pickhardt_router::min_cost_lib::{self,OriginalEdge};
 
-type ChannelMetaData<'a>=(u64, u16, u64, Option<&'a ChannelFeatures>, Option<&'a Features<InitContext>>);
+type ChannelMetaData=(u64, u16, u64, ChannelFeatures);
 /// The default `features` we assume for a node in a route, when no `features` are known about that
 /// specific node.
 ///
@@ -113,24 +114,19 @@ where L::Target: Logger, GL::Target: Logger {
 			let short_channel_id=md.0;
 			let vnode=&nodes[edges[*idx].v];
 			let node_features=&vnode.1;
-			let channel_features=
-				if let Some(features) = md.3
-				{features.clone()}
-				else if let Some(features2) = md.4
-				{features2.to_context()} else
-				{ChannelFeatures::empty()};
+			let channel_features=&md.3;
 			let fee_msat=if *idx==*path.1.last().unwrap() { path.0-sum_fee_msat }
 								else {path.0*edges[*idx].cost as u32/1000000 as u32};
 			sum_fee_msat+=fee_msat;
-			let cltv_expiry_delta:u32=md.1;  // TODO: add/compute???
+			let cltv_expiry_delta=md.1;  // TODO: add/compute???
 
 			route_path.push(RouteHop {
 				pubkey: PublicKey::from_slice(vnode.0.as_slice()).unwrap(),
 				short_channel_id: short_channel_id,
 				fee_msat : fee_msat as u64,
-				cltv_expiry_delta : cltv_expiry_delta,
+				cltv_expiry_delta : cltv_expiry_delta as u32,
 				node_features: node_features.clone(),
-			channel_features: channel_features});
+			channel_features: channel_features.clone()});
 		}
 		route_paths.push(route_path);
 	};
@@ -161,14 +157,15 @@ fn add_hops_to_payee_node_from_route_hints(channel_meta_data: &mut Vec<ChannelMe
 					flow: 0,
 					guaranteed_liquidity: 0});  // TODO: Ask whether the liquidity for the last hop is guaranteed.
 				channel_meta_data.push((hop.short_channel_id, hop.cltv_expiry_delta, hop.htlc_minimum_msat.unwrap_or(0),
-					None, None));
+					ChannelFeatures::empty()));
 				last_node_id=src_node_id;
 			}
 		}
 	None
 }
 
-fn extract_first_hops_from_payer_node(channel_meta_data: &mut Vec<ChannelMetaData>, short_channel_ids_set: &mut HashSet<u64>, first_hops: Option<&[&ChannelDetails]>,
+fn extract_first_hops_from_payer_node(channel_meta_data: &mut Vec<ChannelMetaData>,
+	short_channel_ids_set: &mut HashSet<u64>, first_hops: Option<&[&ChannelDetails]>,
 	our_node_pubkey: &PublicKey,
 	 vidx: &mut HashMap<NodeId, usize>, nodes: &mut Vec<(NodeId, NodeFeatures)>,
 	edges: &mut Vec<OriginalEdge>) -> Option<LightningError> {
@@ -196,7 +193,7 @@ fn extract_first_hops_from_payer_node(channel_meta_data: &mut Vec<ChannelMetaDat
 			guaranteed_liquidity:chan.outbound_capacity_msat as i32 });
 		channel_meta_data.push((chan.get_outbound_payment_scid().unwrap(),
 			if let Some(conf) = chan.config {conf.cltv_expiry_delta} else {0},
-			0, None, Some(&chan.counterparty.features)))
+			0, chan.counterparty.features.to_context()))
 	}
 	None
 }
@@ -250,7 +247,7 @@ fn extract_public_channels_from_network_graph<L:Deref>(
 						cost:ot.fees.proportional_millionths as i32,
 						flow: 0, guaranteed_liquidity: 0});
 					channel_meta_data.push((*channel.0, ot.cltv_expiry_delta, ot.htlc_minimum_msat,
-						Some(&info.features), None));
+						info.features.clone()));
 				}
 			}
 			if let Some(to)=&info.two_to_one {
@@ -259,7 +256,7 @@ fn extract_public_channels_from_network_graph<L:Deref>(
 						cost:to.fees.proportional_millionths as i32,
 						flow: 0, guaranteed_liquidity: 0});
 						channel_meta_data.push((*channel.0, to.cltv_expiry_delta, to.htlc_minimum_msat,
-							Some(&info.features), None));
+							info.features.clone()));
 				}
 			}
 		}
