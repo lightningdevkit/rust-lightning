@@ -1444,7 +1444,7 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 						let expected_script =
 							make_funding_redeemscript(&msg.bitcoin_key_1, &msg.bitcoin_key_2).to_v0_p2wsh();
 						if script_pubkey != expected_script {
-							return Err(LightningError{err: format!("Channel announcement key ({}) didn't match on-chain script ({})", script_pubkey.to_hex(), expected_script.to_hex()), action: ErrorAction::IgnoreError});
+							return Err(LightningError{err: format!("Channel announcement key ({}) didn't match on-chain script ({})", expected_script.to_hex(), script_pubkey.to_hex()), action: ErrorAction::IgnoreError});
 						}
 						//TODO: Check if value is worth storing, use it to inform routing, and compare it
 						//to the new HTLC max field in channel_update
@@ -2977,7 +2977,7 @@ mod tests {
 		let legacy_chan_update_info_with_none: Vec<u8> = hex::decode("2c0004000000170201010402002a060800000000000004d20801000a0d0c00040000000902040000000a0c0100").unwrap();
 		let read_chan_update_info_res: Result<ChannelUpdateInfo, ::ln::msgs::DecodeError> = ::util::ser::Readable::read(&mut legacy_chan_update_info_with_none.as_slice());
 		assert!(read_chan_update_info_res.is_err());
-			
+
 		// 2. Test encoding/decoding of ChannelInfo
 		// Check we can encode/decode ChannelInfo without ChannelUpdateInfo fields present.
 		let chan_info_none_updates = ChannelInfo {
