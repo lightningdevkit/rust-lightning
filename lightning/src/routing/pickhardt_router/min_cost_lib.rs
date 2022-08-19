@@ -482,7 +482,7 @@ fn derivative_at(at:i32,edges:& Vec<(MinCostEdge,MinCostEdge)>,  log_probability
 	let mut r : i64=0;
 	const debug: bool=false;
 	if debug {
-		println!("at: {at}");
+		println!("at: {}", at);
 	}
 	for i in 0..edges.len() {
 		let mut e=edges[i].0.clone();
@@ -515,7 +515,7 @@ fn derivative2_at(at:i32,edges:& Vec<(MinCostEdge,MinCostEdge)>,  log_probabilit
 // If derivative is positive, restart. If derivative is negative, go back a bit and find 0 relative cost again.
 
 fn print_at( at: i32,edges:& Vec<(MinCostEdge,MinCostEdge)>,  log_probability_cost_multiplier:f32) {
-	println!("  at {at} derivative: {}, relative cost: {}",
+	println!("  at {} derivative: {}, relative cost: {}", at,
 			derivative_at(at, edges, log_probability_cost_multiplier),
 			relative_cost_at(at, edges, log_probability_cost_multiplier))
 }
@@ -525,7 +525,7 @@ fn print_at( at: i32,edges:& Vec<(MinCostEdge,MinCostEdge)>,  log_probability_co
 	let min_capacity0=min_capacity;
 	if debug {
 		println!("Find local minima called with {} edges and log_probability_cost_multiplier=\
-				{log_probability_cost_multiplier}, min_capacity={min_capacity}", edges.len());
+				{}, min_capacity={}", edges.len(), log_probability_cost_multiplier, min_capacity);
 		for i in 0..edges.len() {
 			println!("  fee: {}, remaining capacity: {}, edge capacity: {}, getAdj cost={}",
 				edges[i].0.cost, edges[i].0.remaining_capacity,
@@ -650,7 +650,7 @@ fn decrease_total_cost( N:Vindex,adj:&mut Vec<Vec<(Vindex, i32)>>,adj2:&mut Vec<
 	for i in 0..negative_cycle.len() {
 		let u=negative_cycle[i];
 		let v=negative_cycle[(i+1)%negative_cycle.len()];
-		if(debug) {print!("  {u}->{v}: costs=")};
+		if(debug) {print!("  {}->{}: costs=", u, v)};
 		let edges_from = &adj[u];
 		let mut min_cost=i32::MAX;
 		let mut min_cost_idx=Vindex::new(-1);
