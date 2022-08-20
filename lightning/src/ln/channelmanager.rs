@@ -6921,6 +6921,16 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 					}
 					by_id.insert(channel.channel_id(), channel);
 				}
+			} else if channel.is_awaiting_initial_mon_persist() {
+				// If we were persisted and shut down while the initial ChannelMonitor persistence
+				// was in-progress, we never broadcasted the funding transaction and can still
+				// safely discard the channel.
+				let _ = channel.force_shutdown(false);
+				channel_closures.push(events::Event::ChannelClosed {
+					channel_id: channel.channel_id(),
+					user_channel_id: channel.get_user_id(),
+					reason: ClosureReason::DisconnectedPeer,
+				});
 			} else {
 				log_error!(args.logger, "Missing ChannelMonitor for channel {} needed by ChannelManager.", log_bytes!(channel.channel_id()));
 				log_error!(args.logger, " The chain::Watch API *requires* that monitors are persisted durably before returning,");

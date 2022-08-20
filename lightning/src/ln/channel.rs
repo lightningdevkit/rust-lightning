@@ -4788,6 +4788,42 @@ impl<Signer: Sign> Channel<Signer> {
 		self.channel_state >= ChannelState::FundingSent as u32
 	}
 
+	/// Returns true if the channel is awaiting the persistence of the initial ChannelMonitor.
+	/// If the channel is outbound, this implies we have not yet broadcasted the funding
+	/// transaction. If the channel is inbound, this implies simply that the channel has not
+	/// advanced state.
+	pub fn is_awaiting_initial_mon_persist(&self) -> bool {
+		if !self.is_awaiting_monitor_update() { return false; }
+		if self.channel_state &
+			!(ChannelState::TheirChannelReady as u32 | ChannelState::PeerDisconnected as u32 | ChannelState::MonitorUpdateFailed as u32)
+				== ChannelState::FundingSent as u32 {
+			// If we're not a 0conf channel, we'll be waiting on a monitor update with only
+			// FundingSent set, though our peer could have sent their channel_ready.
+			debug_assert!(self.minimum_depth.unwrap_or(1) > 0);
+			return true;
+		}
+		if self.cur_holder_commitment_transaction_number == INITIAL_COMMITMENT_NUMBER - 1 &&
+			self.cur_counterparty_commitment_transaction_number == INITIAL_COMMITMENT_NUMBER - 1 {
+			// If we're a 0-conf channel, we'll move beyond FundingSent immediately even while
+			// waiting for the initial monitor persistence. Thus, we check if our commitment
+			// transaction numbers have both been iterated only exactly once (for the
+			// funding_signed), and we're awaiting monitor update.
+			//
+			// If we got here, we shouldn't have yet broadcasted the funding transaction (as the
+			// only way to get an awaiting-monitor-update state during initial funding is if the
+			// initial monitor persistence is still pending).
+			//
+			// Because deciding we're awaiting initial broadcast spuriously could result in
+			// funds-loss (as we don't have a monitor, but have the funding transaction confirmed),
+			// we hard-assert here, even in production builds.
+			if self.is_outbound() { assert!(self.funding_transaction.is_some()); }
+			assert!(self.monitor_pending_channel_ready);
+			assert_eq!(self.latest_monitor_update_id, 0);
+			return true;
+		}
+		false
+	}
+
 	/// Returns true if our channel_ready has been sent
 	pub fn is_our_channel_ready(&self) -> bool {
 		(self.channel_state & ChannelState::OurChannelReady as u32) != 0 || self.channel_state >= ChannelState::ChannelFunded as u32
