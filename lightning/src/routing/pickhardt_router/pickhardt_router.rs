@@ -13,9 +13,6 @@ use util::logger::Logger;
 use ln::{channelmanager::ChannelDetails, msgs::{LightningError, ErrorAction},
 		features::{NodeFeatures, ChannelFeatures}};
 use routing::pickhardt_router::min_cost_lib::{self,OriginalEdge};
-
-use util::time::Time;
-
 use crate::routing::scoring::Score;
 
 type ChannelMetaData=(u64, u16, u64, ChannelFeatures);
