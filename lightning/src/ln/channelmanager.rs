@@ -4042,10 +4042,20 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			let mut channel_state_lock = self.channel_state.lock().unwrap();
 			let channel_state = &mut *channel_state_lock;
 			for htlc in sources.iter() {
-				if let None = self.short_to_chan_info.read().unwrap().get(&htlc.prev_hop.short_channel_id) {
+				let chan_id = match self.short_to_chan_info.read().unwrap().get(&htlc.prev_hop.short_channel_id) {
+					Some((_cp_id, chan_id)) => chan_id.clone(),
+					None => {
+						valid_mpp = false;
+						break;
+					}
+				};
+
+				let chan_opt = channel_state.as_ref().unwrap().by_id.get(&chan_id);
+				if chan_opt.map(|chan| !chan.is_usable()).unwrap_or(true) {
 					valid_mpp = false;
 					break;
 				}
+
 				if expected_amt_msat.is_some() && expected_amt_msat != Some(htlc.total_msat) {
 					log_error!(self.logger, "Somehow ended up with an MPP payment with different total amounts - this should not be reachable!");
 					debug_assert!(false);
@@ -5543,7 +5553,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			let scid_candidate = fake_scid::Namespace::Phantom.get_fake_scid(best_block.height(), &self.genesis_hash, &self.fake_scid_rand_bytes, &self.keys_manager);
 			// Ensure the generated scid doesn't conflict with a real channel.
 			match short_to_chan_info.get(&scid_candidate) {
-				Some((_cp_id, _chan_id)) => continue,
+				Some(_) => continue,
 				None => return scid_candidate
 			}
 		}
@@ -5772,7 +5782,7 @@ where
 
 	fn get_relevant_txids(&self) -> Vec<Txid> {
 		let channel_state = self.channel_state.lock().unwrap();
-		let mut res = Vec::with_capacity(self.short_to_chan_info.read().unwrap().len());
+		let mut res = Vec::with_capacity(channel_state.by_id.len());
 		for chan in channel_state.by_id.values() {
 			if let Some(funding_txo) = chan.get_funding_txo() {
 				res.push(funding_txo.txid);
