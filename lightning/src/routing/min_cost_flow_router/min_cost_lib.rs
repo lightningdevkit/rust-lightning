@@ -3,7 +3,7 @@
 // min_cost alternative Rust implementation
 // Usage: cargo run  --bin min_cost_rs --release
 
-#[derive(Clone)]
+#[derive(Clone,Debug)]
 pub struct OriginalEdge {
 	pub u: usize,
 	pub v: usize,

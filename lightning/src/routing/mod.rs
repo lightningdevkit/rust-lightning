@@ -12,4 +12,4 @@
 pub mod gossip;
 pub mod router;
 pub mod scoring;
-pub mod pickhardt_router;
+pub mod min_cost_flow_router;
