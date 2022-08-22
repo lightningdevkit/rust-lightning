@@ -487,7 +487,7 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref> MinCostFlowRouter<G, L> where
 	}
 }
 
-use lightning::routing::min_cost_flow_router::min_cost_flow_router;
+use lightning::routing::min_cost_flow_router;
 
 impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, S: Score> Router<S> for MinCostFlowRouter<G, L>
 where L::Target: Logger {

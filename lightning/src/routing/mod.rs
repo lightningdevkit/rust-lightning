@@ -13,3 +13,4 @@ pub mod gossip;
 pub mod router;
 pub mod scoring;
 pub mod min_cost_flow_router;
+pub mod min_cost_flow_lib;

@@ -12,7 +12,7 @@ use routing::{gossip::{NetworkGraph, NodeId}, router::{RouteParameters, Route, R
 use util::logger::Logger;
 use ln::{channelmanager::ChannelDetails, msgs::{LightningError, ErrorAction},
 		features::{NodeFeatures, ChannelFeatures}};
-use routing::min_cost_flow_router::min_cost_lib::{self,OriginalEdge};
+use routing::min_cost_flow_lib::{self,OriginalEdge};
 use crate::routing::{scoring::Score, gossip::ReadOnlyNetworkGraph, router::add_random_cltv_offset};
 
 type ChannelMetaData=(u64, u16, u64, ChannelFeatures);
@@ -124,7 +124,7 @@ where L::Target: Logger {
 
 	let payee_node=NodeId::from_pubkey(&payee_pubkey);
 	let t=*vidx.get(&payee_node).unwrap();
-	min_cost_lib::min_cost_flow(nodes.len(), s, t, value_msat as i32,
+	min_cost_flow_lib::min_cost_flow(nodes.len(), s, t, value_msat as i32,
 		100000000, &mut edges,
 		10);
 	// Build paths from min cost flow;
@@ -4274,8 +4274,8 @@ mod tests {
 	use util::ser::ReadableArgs;
 
 use crate::routing::gossip::RoutingFees;
-use crate::routing::min_cost_flow_router::min_cost_lib::OriginalEdge;
-use crate::routing::min_cost_flow_router::min_cost_flow_router::{get_route, default_node_features};
+use crate::routing::min_cost_flow_router::min_cost_flow_lib::OriginalEdge;
+use crate::routing::min_cost_flow_router::{get_route, default_node_features};
 use crate::routing::router::{add_random_cltv_offset};
 
 use super::flow_to_paths;
