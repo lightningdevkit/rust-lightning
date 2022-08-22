@@ -86,7 +86,7 @@ pub struct OnionMessenger<Signer: Sign, K: Deref, L: Deref>
 {
 	keys_manager: K,
 	logger: L,
-	pending_messages: Mutex<HashMap<PublicKey, Vec<msgs::OnionMessage>>>,
+	pending_messages: Mutex<HashMap<PublicKey, VecDeque<msgs::OnionMessage>>>,
 	secp_ctx: Secp256k1<secp256k1::All>,
 	// Coming soon:
 	// invoice_handler: InvoiceHandler,
@@ -170,8 +170,8 @@ impl<Signer: Sign, K: Deref, L: Deref> OnionMessenger<Signer, K, L>
 			packet_payloads, packet_keys, prng_seed).map_err(|()| SendError::TooBigPacket)?;
 
 		let mut pending_per_peer_msgs = self.pending_messages.lock().unwrap();
-		let pending_msgs = pending_per_peer_msgs.entry(introduction_node_id).or_insert(Vec::new());
-		pending_msgs.push(
+		let pending_msgs = pending_per_peer_msgs.entry(introduction_node_id).or_insert_with(VecDeque::new);
+		pending_msgs.push_back(
 			msgs::OnionMessage {
 				blinding_point,
 				onion_routing_packet: onion_packet,
@@ -181,7 +181,7 @@ impl<Signer: Sign, K: Deref, L: Deref> OnionMessenger<Signer, K, L>
 	}
 
 	#[cfg(test)]
-	pub(super) fn release_pending_msgs(&self) -> HashMap<PublicKey, Vec<msgs::OnionMessage>> {
+	pub(super) fn release_pending_msgs(&self) -> HashMap<PublicKey, VecDeque<msgs::OnionMessage>> {
 		let mut pending_msgs = self.pending_messages.lock().unwrap();
 		let mut msgs = HashMap::new();
 		core::mem::swap(&mut *pending_msgs, &mut msgs);
@@ -253,8 +253,8 @@ impl<Signer: Sign, K: Deref, L: Deref> OnionMessageHandler for OnionMessenger<Si
 				};
 
 				let mut pending_per_peer_msgs = self.pending_messages.lock().unwrap();
-				let pending_msgs = pending_per_peer_msgs.entry(next_node_id).or_insert(Vec::new());
-				pending_msgs.push(
+				let pending_msgs = pending_per_peer_msgs.entry(next_node_id).or_insert_with(VecDeque::new);
+				pending_msgs.push_back(
 					msgs::OnionMessage {
 						blinding_point: match next_blinding_override {
 							Some(blinding_point) => blinding_point,
@@ -295,6 +295,10 @@ impl<Signer: Sign, K: Deref, L: Deref> OnionMessageProvider for OnionMessenger<S
 	      L::Target: Logger,
 {
 	fn next_onion_message_for_peer(&self, peer_node_id: PublicKey) -> Option<msgs::OnionMessage> {
+		let mut pending_msgs = self.pending_messages.lock().unwrap();
+		if let Some(msgs) = pending_msgs.get_mut(&peer_node_id) {
+			return msgs.pop_front()
+		}
 		None
 	}
 }
