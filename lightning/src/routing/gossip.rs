@@ -1433,6 +1433,39 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 			return Err(LightningError{err: "Channel announcement node had a channel with itself".to_owned(), action: ErrorAction::IgnoreError});
 		}
 
+		{
+			let channels = self.channels.read().unwrap();
+
+			if let Some(chan) = channels.get(&msg.short_channel_id) {
+				if chan.capacity_sats.is_some() {
+					// If we'd previously looked up the channel on-chain and checked the script
+					// against what appears on-chain, ignore the duplicate announcement.
+					//
+					// Because a reorg could replace one channel with another at the same SCID, if
+					// the channel appears to be different, we re-validate. This doesn't expose us
+					// to any more DoS risk than not, as a peer can always flood us with
+					// randomly-generated SCID values anyway.
+					//
+					// We use the Node IDs rather than the bitcoin_keys to check for "equivalence"
+					// as we didn't (necessarily) store the bitcoin keys, and we only really care
+					// if the peers on the channel changed anyway.
+					if NodeId::from_pubkey(&msg.node_id_1) == chan.node_one && NodeId::from_pubkey(&msg.node_id_2) == chan.node_two {
+						return Err(LightningError {
+							err: "Already have chain-validated channel".to_owned(),
+							action: ErrorAction::IgnoreDuplicateGossip
+						});
+					}
+				} else if chain_access.is_none() {
+					// Similarly, if we can't check the chain right now anyway, ignore the
+					// duplicate announcement without bothering to take the channels write lock.
+					return Err(LightningError {
+						err: "Already have non-chain-validated channel".to_owned(),
+						action: ErrorAction::IgnoreDuplicateGossip
+					});
+				}
+			}
+		}
+
 		let utxo_value = match &chain_access {
 			&None => {
 				// Tentatively accept, potentially exposing us to DoS attacks
@@ -2046,7 +2079,7 @@ mod tests {
 		// drop new one on the floor, since we can't see any changes.
 		match gossip_sync.handle_channel_announcement(&valid_announcement) {
 			Ok(_) => panic!(),
-			Err(e) => assert_eq!(e.err, "Already have knowledge of channel")
+			Err(e) => assert_eq!(e.err, "Already have non-chain-validated channel")
 		};
 
 		// Test if an associated transaction were not on-chain (or not confirmed).
@@ -2080,32 +2113,13 @@ mod tests {
 			};
 		}
 
-		// If we receive announcement for the same channel (but TX is not confirmed),
-		// drop new one on the floor, since we can't see any changes.
-		*chain_source.utxo_ret.lock().unwrap() = Err(chain::AccessError::UnknownTx);
+		// If we receive announcement for the same channel, once we've validated it against the
+		// chain, we simply ignore all new (duplicate) announcements.
+		*chain_source.utxo_ret.lock().unwrap() = Ok(TxOut { value: 0, script_pubkey: good_script });
 		match gossip_sync.handle_channel_announcement(&valid_announcement) {
 			Ok(_) => panic!(),
-			Err(e) => assert_eq!(e.err, "Channel announced without corresponding UTXO entry")
+			Err(e) => assert_eq!(e.err, "Already have chain-validated channel")
 		};
-
-		// But if it is confirmed, replace the channel
-		*chain_source.utxo_ret.lock().unwrap() = Ok(TxOut { value: 0, script_pubkey: good_script });
-		let valid_announcement = get_signed_channel_announcement(|unsigned_announcement| {
-			unsigned_announcement.features = ChannelFeatures::empty();
-			unsigned_announcement.short_channel_id += 2;
-		}, node_1_privkey, node_2_privkey, &secp_ctx);
-		match gossip_sync.handle_channel_announcement(&valid_announcement) {
-			Ok(res) => assert!(res),
-			_ => panic!()
-		};
-		{
-			match network_graph.read_only().channels().get(&valid_announcement.contents.short_channel_id) {
-				Some(channel_entry) => {
-					assert_eq!(channel_entry.features, ChannelFeatures::empty());
-				},
-				_ => panic!()
-			};
-		}
 
 		// Don't relay valid channels with excess data
 		let valid_announcement = get_signed_channel_announcement(|unsigned_announcement| {
