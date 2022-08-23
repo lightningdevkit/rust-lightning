@@ -9,6 +9,8 @@
 
 //! Data structures and encoding for `invoice_request_metadata` records.
 
+use crate::util::ser::WithoutLength;
+
 use crate::prelude::*;
 
 /// An unpredictable sequence of bytes typically containing information needed to derive
@@ -16,4 +18,8 @@ use crate::prelude::*;
 ///
 /// [`InvoiceRequest::payer_id`]: crate::offers::invoice_request::InvoiceRequest::payer_id
 #[derive(Clone, Debug)]
-pub(crate) struct PayerContents(pub Vec<u8>);
+pub(super) struct PayerContents(pub Vec<u8>);
+
+tlv_stream!(PayerTlvStream, PayerTlvStreamRef, 0..1, {
+	(0, metadata: (Vec<u8>, WithoutLength)),
+});

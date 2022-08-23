@@ -506,7 +506,7 @@ macro_rules! tlv_stream {
 		#[derive(Debug)]
 		pub(super) struct $name {
 			$(
-				$field: Option<tlv_record_type!($fieldty)>,
+				pub(super) $field: Option<tlv_record_type!($fieldty)>,
 			)*
 		}
 
