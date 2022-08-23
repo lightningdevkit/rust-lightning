@@ -54,12 +54,13 @@ use bitcoin::network::constants::Network;
 use bitcoin::secp256k1::{Message, PublicKey, self};
 use bitcoin::secp256k1::schnorr::Signature;
 use core::convert::TryFrom;
+use core::str::FromStr;
 use crate::io;
 use crate::ln::features::OfferFeatures;
 use crate::ln::msgs::DecodeError;
 use crate::offers::merkle::{SignatureTlvStream, SignatureTlvStreamRef, self};
 use crate::offers::offer::{Amount, Offer, OfferContents, OfferTlvStream, OfferTlvStreamRef, SendInvoiceOfferContents};
-use crate::offers::parse::{ParseError, ParsedMessage, SemanticError};
+use crate::offers::parse::{Bech32Encode, ParseError, ParsedMessage, SemanticError};
 use crate::offers::payer::{PayerContents, PayerTlvStream, PayerTlvStreamRef};
 use crate::util::ser::{HighZeroBytesDroppedBigSize, SeekReadable, WithoutLength, Writeable, Writer};
 
@@ -323,6 +324,12 @@ impl InvoiceRequestContents {
 	}
 }
 
+impl AsRef<[u8]> for InvoiceRequest {
+	fn as_ref(&self) -> &[u8] {
+		&self.bytes
+	}
+}
+
 impl Writeable for InvoiceRequest {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		WithoutLength(&self.bytes).write(writer)
@@ -353,6 +360,10 @@ tlv_stream!(InvoiceRequestTlvStream, InvoiceRequestTlvStreamRef, 80..160, {
 	(89, payer_note: (String, WithoutLength)),
 });
 
+impl Bech32Encode for InvoiceRequest {
+	const BECH32_HRP: &'static str = "lnr";
+}
+
 type FullInvoiceRequestTlvStream =
 	(PayerTlvStream, OfferTlvStream, InvoiceRequestTlvStream, SignatureTlvStream);
 
@@ -374,6 +385,14 @@ type PartialInvoiceRequestTlvStreamRef<'a> = (
 	OfferTlvStreamRef<'a>,
 	InvoiceRequestTlvStreamRef<'a>,
 );
+
+impl FromStr for InvoiceRequest {
+	type Err = ParseError;
+
+	fn from_str(s: &str) -> Result<Self, <Self as FromStr>::Err> {
+		InvoiceRequest::from_bech32_str(s)
+	}
+}
 
 impl TryFrom<ParsedMessage<FullInvoiceRequestTlvStream>> for InvoiceRequest {
 	type Error = ParseError;
@@ -457,6 +476,12 @@ impl TryFrom<PartialInvoiceRequestTlvStream> for InvoiceRequestContents {
 		Ok(InvoiceRequestContents {
 			payer, offer, chain, amount_msats, features, quantity, payer_id, payer_note,
 		})
+	}
+}
+
+impl core::fmt::Display for InvoiceRequest {
+	fn fmt(&self, f: &mut core::fmt::Formatter) -> Result<(), core::fmt::Error> {
+		self.fmt_bech32_str(f)
 	}
 }
 
