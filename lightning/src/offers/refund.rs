@@ -21,16 +21,17 @@ use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::network::constants::Network;
 use bitcoin::secp256k1::PublicKey;
 use core::convert::TryFrom;
+use core::str::FromStr;
 use core::time::Duration;
 use crate::io;
 use crate::ln::features::InvoiceRequestFeatures;
 use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
 use crate::offers::invoice_request::InvoiceRequestTlvStream;
 use crate::offers::offer::OfferTlvStream;
-use crate::offers::parse::{ParseError, ParsedMessage, SemanticError};
+use crate::offers::parse::{Bech32Encode, ParseError, ParsedMessage, SemanticError};
 use crate::offers::payer::{PayerContents, PayerTlvStream};
 use crate::onion_message::BlindedPath;
-use crate::util::ser::SeekReadable;
+use crate::util::ser::{SeekReadable, WithoutLength, Writeable, Writer};
 use crate::util::string::PrintableString;
 
 use crate::prelude::*;
@@ -143,6 +144,18 @@ impl Refund {
 	}
 }
 
+impl AsRef<[u8]> for Refund {
+	fn as_ref(&self) -> &[u8] {
+		&self.bytes
+	}
+}
+
+impl Writeable for Refund {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		WithoutLength(&self.bytes).write(writer)
+	}
+}
+
 type RefundTlvStream = (PayerTlvStream, OfferTlvStream, InvoiceRequestTlvStream);
 
 impl SeekReadable for RefundTlvStream {
@@ -152,6 +165,18 @@ impl SeekReadable for RefundTlvStream {
 		let invoice_request = SeekReadable::read(r)?;
 
 		Ok((payer, offer, invoice_request))
+	}
+}
+
+impl Bech32Encode for Refund {
+	const BECH32_HRP: &'static str = "lnr";
+}
+
+impl FromStr for Refund {
+	type Err = ParseError;
+
+	fn from_str(s: &str) -> Result<Self, <Self as FromStr>::Err> {
+		Refund::from_bech32_str(s)
 	}
 }
 
@@ -237,5 +262,11 @@ impl TryFrom<RefundTlvStream> for RefundContents {
 			payer, metadata, description, absolute_expiry, issuer, paths, chain, amount_msats,
 			features, payer_id, payer_note,
 		})
+	}
+}
+
+impl core::fmt::Display for Refund {
+	fn fmt(&self, f: &mut core::fmt::Formatter) -> Result<(), core::fmt::Error> {
+		self.fmt_bech32_str(f)
 	}
 }
