@@ -269,6 +269,11 @@ impl Offer {
 		self.contents.chains()
 	}
 
+	/// Returns whether the given chain is supported by the offer.
+	pub fn supports_chain(&self, chain: ChainHash) -> bool {
+		self.contents.supports_chain(chain)
+	}
+
 	// TODO: Link to corresponding method in `InvoiceRequest`.
 	/// Opaque bytes set by the originator. Useful for authentication and validating fields since it
 	/// is reflected in `invoice_request` messages along with all the other fields from the `offer`.
@@ -278,7 +283,7 @@ impl Offer {
 
 	/// The minimum amount required for a successful payment of a single item.
 	pub fn amount(&self) -> Option<&Amount> {
-		self.contents.amount.as_ref()
+		self.contents.amount()
 	}
 
 	/// A complete description of the purpose of the payment. Intended to be displayed to the user
@@ -328,6 +333,18 @@ impl Offer {
 		self.contents.supported_quantity()
 	}
 
+	/// Returns whether the given quantity is valid for the offer.
+	pub fn is_valid_quantity(&self, quantity: u64) -> bool {
+		self.contents.is_valid_quantity(quantity)
+	}
+
+	/// Returns whether a quantity is expected in an [`InvoiceRequest`] for the offer.
+	///
+	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
+	pub fn expects_quantity(&self) -> bool {
+		self.contents.expects_quantity()
+	}
+
 	/// The public key used by the recipient to sign invoices.
 	pub fn signing_pubkey(&self) -> PublicKey {
 		self.contents.signing_pubkey.unwrap()
@@ -354,8 +371,46 @@ impl OfferContents {
 		ChainHash::using_genesis_block(Network::Bitcoin)
 	}
 
+	pub fn supports_chain(&self, chain: ChainHash) -> bool {
+		self.chains().contains(&chain)
+	}
+
+	pub fn amount(&self) -> Option<&Amount> {
+		self.amount.as_ref()
+	}
+
+	pub fn amount_msats(&self) -> u64 {
+		match self.amount() {
+			None => 0,
+			Some(&Amount::Bitcoin { amount_msats }) => amount_msats,
+			Some(&Amount::Currency { .. }) => unreachable!(),
+		}
+	}
+
+	pub fn expected_invoice_amount_msats(&self, quantity: u64) -> u64 {
+		self.amount_msats() * quantity
+	}
+
 	pub fn supported_quantity(&self) -> Quantity {
 		self.supported_quantity
+	}
+
+	pub fn is_valid_quantity(&self, quantity: u64) -> bool {
+		match self.supported_quantity {
+			Quantity::Bounded(n) => {
+				let n = n.get();
+				if n == 1 { false }
+				else { quantity > 0 && quantity <= n }
+			},
+			Quantity::Unbounded => quantity > 0,
+		}
+	}
+
+	pub fn expects_quantity(&self) -> bool {
+		match self.supported_quantity {
+			Quantity::Bounded(n) => n.get() != 1,
+			Quantity::Unbounded => true,
+		}
 	}
 
 	fn as_tlv_stream(&self) -> OfferTlvStreamRef {
@@ -587,6 +642,7 @@ mod tests {
 
 		assert_eq!(offer.bytes, buffer.as_slice());
 		assert_eq!(offer.chains(), vec![ChainHash::using_genesis_block(Network::Bitcoin)]);
+		assert!(offer.supports_chain(ChainHash::using_genesis_block(Network::Bitcoin)));
 		assert_eq!(offer.metadata(), None);
 		assert_eq!(offer.amount(), None);
 		assert_eq!(offer.description(), PrintableString("foo"));
@@ -625,6 +681,7 @@ mod tests {
 			.chain(Network::Bitcoin)
 			.build()
 			.unwrap();
+		assert!(offer.supports_chain(mainnet));
 		assert_eq!(offer.chains(), vec![mainnet]);
 		assert_eq!(offer.as_tlv_stream().chains, None);
 
@@ -632,6 +689,7 @@ mod tests {
 			.chain(Network::Testnet)
 			.build()
 			.unwrap();
+		assert!(offer.supports_chain(testnet));
 		assert_eq!(offer.chains(), vec![testnet]);
 		assert_eq!(offer.as_tlv_stream().chains, Some(&vec![testnet]));
 
@@ -640,6 +698,7 @@ mod tests {
 			.chain(Network::Testnet)
 			.build()
 			.unwrap();
+		assert!(offer.supports_chain(testnet));
 		assert_eq!(offer.chains(), vec![testnet]);
 		assert_eq!(offer.as_tlv_stream().chains, Some(&vec![testnet]));
 
@@ -648,6 +707,8 @@ mod tests {
 			.chain(Network::Testnet)
 			.build()
 			.unwrap();
+		assert!(offer.supports_chain(mainnet));
+		assert!(offer.supports_chain(testnet));
 		assert_eq!(offer.chains(), vec![mainnet, testnet]);
 		assert_eq!(offer.as_tlv_stream().chains, Some(&vec![mainnet, testnet]));
 	}

@@ -10,6 +10,8 @@
 //! Tagged hashes for use in signature calculation and verification.
 
 use bitcoin::hashes::{Hash, HashEngine, sha256};
+use bitcoin::secp256k1::{Message, PublicKey, Secp256k1, self};
+use bitcoin::secp256k1::schnorr::Signature;
 use crate::io;
 use crate::util::ser::{BigSize, Readable};
 
@@ -17,6 +19,23 @@ use crate::prelude::*;
 
 /// Valid type range for signature TLV records.
 const SIGNATURE_TYPES: core::ops::RangeInclusive<u64> = 240..=1000;
+
+tlv_stream!(SignatureTlvStream, SignatureTlvStreamRef, SIGNATURE_TYPES, {
+	(240, signature: Signature),
+});
+
+/// Verifies the signature with a pubkey over the given bytes using a tagged hash as the message
+/// digest.
+pub(super) fn verify_signature(
+	signature: &Signature, tag: &str, bytes: &[u8], pubkey: PublicKey,
+) -> Result<(), secp256k1::Error> {
+	let tag = sha256::Hash::hash(tag.as_bytes());
+	let merkle_root = root_hash(bytes);
+	let digest = Message::from_slice(&tagged_hash(tag, merkle_root)).unwrap();
+	let pubkey = pubkey.into();
+	let secp_ctx = Secp256k1::verification_only();
+	secp_ctx.verify_schnorr(signature, &digest, &pubkey)
+}
 
 /// Computes a merkle root hash for the given data, which must be a well-formed TLV stream
 /// containing at least one TLV record.

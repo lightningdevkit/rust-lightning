@@ -12,9 +12,15 @@
 use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::secp256k1::PublicKey;
 use bitcoin::secp256k1::schnorr::Signature;
+use core::convert::TryFrom;
+use crate::io;
 use crate::ln::features::OfferFeatures;
-use crate::offers::offer::OfferContents;
-use crate::offers::payer::PayerContents;
+use crate::ln::msgs::DecodeError;
+use crate::offers::merkle::{SignatureTlvStream, self};
+use crate::offers::offer::{Amount, OfferContents, OfferTlvStream};
+use crate::offers::parse::{ParseError, ParsedMessage, SemanticError};
+use crate::offers::payer::{PayerContents, PayerTlvStream};
+use crate::util::ser::{HighZeroBytesDroppedBigSize, SeekReadable, WithoutLength, Writeable, Writer};
 
 use crate::prelude::*;
 
@@ -74,9 +80,9 @@ impl InvoiceRequest {
 		self.contents.features.as_ref()
 	}
 
-	/// The quantity of the offer's item conforming to [`Offer::supported_quantity`].
+	/// The quantity of the offer's item conforming to [`Offer::is_valid_quantity`].
 	///
-	/// [`Offer::supported_quantity`]: crate::offers::offer::Offer::supported_quantity
+	/// [`Offer::is_valid_quantity`]: crate::offers::offer::Offer::is_valid_quantity
 	pub fn quantity(&self) -> Option<u64> {
 		self.contents.quantity
 	}
@@ -96,5 +102,128 @@ impl InvoiceRequest {
 	/// [`payer_id`]: Self::payer_id
 	pub fn signature(&self) -> Option<Signature> {
 		self.signature
+	}
+}
+
+impl Writeable for InvoiceRequest {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		WithoutLength(&self.bytes).write(writer)
+	}
+}
+
+impl TryFrom<Vec<u8>> for InvoiceRequest {
+	type Error = ParseError;
+
+	fn try_from(bytes: Vec<u8>) -> Result<Self, Self::Error> {
+		let parsed_invoice_request = ParsedMessage::<FullInvoiceRequestTlvStream>::try_from(bytes)?;
+		InvoiceRequest::try_from(parsed_invoice_request)
+	}
+}
+
+tlv_stream!(InvoiceRequestTlvStream, InvoiceRequestTlvStreamRef, 80..160, {
+	(80, chain: ChainHash),
+	(82, amount: (u64, HighZeroBytesDroppedBigSize)),
+	(84, features: OfferFeatures),
+	(86, quantity: (u64, HighZeroBytesDroppedBigSize)),
+	(88, payer_id: PublicKey),
+	(89, payer_note: (String, WithoutLength)),
+});
+
+type FullInvoiceRequestTlvStream =
+	(PayerTlvStream, OfferTlvStream, InvoiceRequestTlvStream, SignatureTlvStream);
+
+impl SeekReadable for FullInvoiceRequestTlvStream {
+	fn read<R: io::Read + io::Seek>(r: &mut R) -> Result<Self, DecodeError> {
+		let payer = SeekReadable::read(r)?;
+		let offer = SeekReadable::read(r)?;
+		let invoice_request = SeekReadable::read(r)?;
+		let signature = SeekReadable::read(r)?;
+
+		Ok((payer, offer, invoice_request, signature))
+	}
+}
+
+type PartialInvoiceRequestTlvStream = (PayerTlvStream, OfferTlvStream, InvoiceRequestTlvStream);
+
+impl TryFrom<ParsedMessage<FullInvoiceRequestTlvStream>> for InvoiceRequest {
+	type Error = ParseError;
+
+	fn try_from(invoice_request: ParsedMessage<FullInvoiceRequestTlvStream>)
+		-> Result<Self, Self::Error>
+	{
+		let ParsedMessage {bytes, tlv_stream } = invoice_request;
+		let (
+			payer_tlv_stream, offer_tlv_stream, invoice_request_tlv_stream,
+			SignatureTlvStream { signature },
+		) = tlv_stream;
+		let contents = InvoiceRequestContents::try_from(
+			(payer_tlv_stream, offer_tlv_stream, invoice_request_tlv_stream)
+		)?;
+
+		if let Some(signature) = &signature {
+			let tag = concat!("lightning", "invoice_request", "signature");
+			merkle::verify_signature(signature, tag, &bytes, contents.payer_id)?;
+		}
+
+		Ok(InvoiceRequest { bytes, contents, signature })
+	}
+}
+
+impl TryFrom<PartialInvoiceRequestTlvStream> for InvoiceRequestContents {
+	type Error = SemanticError;
+
+	fn try_from(tlv_stream: PartialInvoiceRequestTlvStream) -> Result<Self, Self::Error> {
+		let (
+			PayerTlvStream { metadata },
+			offer_tlv_stream,
+			InvoiceRequestTlvStream { chain, amount, features, quantity, payer_id, payer_note },
+		) = tlv_stream;
+
+		let payer = PayerContents(metadata);
+		let offer = OfferContents::try_from(offer_tlv_stream)?;
+
+		if !offer.supports_chain(chain.unwrap_or_else(|| offer.implied_chain())) {
+			return Err(SemanticError::UnsupportedChain);
+		}
+
+		let amount_msats = match (offer.amount(), amount) {
+			(Some(_), None) => return Err(SemanticError::MissingAmount),
+			(Some(Amount::Currency { .. }), _) => return Err(SemanticError::UnsupportedCurrency),
+			(_, amount_msats) => amount_msats,
+		};
+
+		if let Some(features) = &features {
+			if features.requires_unknown_bits() {
+				return Err(SemanticError::UnknownRequiredFeatures);
+			}
+		}
+
+		let expects_quantity = offer.expects_quantity();
+		let quantity = match quantity {
+			None if expects_quantity => return Err(SemanticError::MissingQuantity),
+			Some(_) if !expects_quantity => return Err(SemanticError::UnexpectedQuantity),
+			Some(quantity) if !offer.is_valid_quantity(quantity) => {
+				return Err(SemanticError::InvalidQuantity);
+			}
+			quantity => quantity,
+		};
+
+		{
+			let amount_msats = amount_msats.unwrap_or(offer.amount_msats());
+			let quantity = quantity.unwrap_or(1);
+			if amount_msats < offer.expected_invoice_amount_msats(quantity) {
+				return Err(SemanticError::InsufficientAmount);
+			}
+		}
+
+
+		let payer_id = match payer_id {
+			None => return Err(SemanticError::MissingPayerId),
+			Some(payer_id) => payer_id,
+		};
+
+		Ok(InvoiceRequestContents {
+			payer, offer, chain, amount_msats, features, quantity, payer_id, payer_note,
+		})
 	}
 }
