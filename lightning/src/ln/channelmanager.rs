@@ -5093,8 +5093,6 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 
 	/// Returns ShouldPersist if anything changed, otherwise either SkipPersist or an Err.
 	fn internal_channel_update(&self, counterparty_node_id: &PublicKey, msg: &msgs::ChannelUpdate) -> Result<NotifyOption, MsgHandleErrInternal> {
-		let mut channel_state_lock = self.channel_state.lock().unwrap();
-		let channel_state = &mut *channel_state_lock;
 		let chan_id = match self.short_to_chan_info.read().unwrap().get(&msg.contents.short_channel_id) {
 			Some((_cp_id, chan_id)) => chan_id.clone(),
 			None => {
@@ -5102,6 +5100,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				return Ok(NotifyOption::SkipPersist)
 			}
 		};
+		let mut channel_state_lock = self.channel_state.lock().unwrap();
+		let channel_state = &mut *channel_state_lock;
 		match channel_state.by_id.entry(chan_id) {
 			hash_map::Entry::Occupied(mut chan) => {
 				if chan.get().get_counterparty_node_id() != *counterparty_node_id {
