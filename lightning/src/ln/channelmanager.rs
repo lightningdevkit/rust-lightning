@@ -1311,20 +1311,22 @@ macro_rules! update_maps_on_chan_removal {
 			let mut id_to_peer = $self.id_to_peer.lock().unwrap();
 			id_to_peer.remove(&$channel.channel_id());
 		}
-		let mut short_to_chan_info = $self.short_to_chan_info.write().unwrap();
-		if let Some(short_id) = $channel.get_short_channel_id() {
-			short_to_chan_info.remove(&short_id);
-		} else {
-			// If the channel was never confirmed on-chain prior to its closure, remove the
-			// outbound SCID alias we used for it from the collision-prevention set. While we
-			// generally want to avoid ever re-using an outbound SCID alias across all channels, we
-			// also don't want a counterparty to be able to trivially cause a memory leak by simply
-			// opening a million channels with us which are closed before we ever reach the funding
-			// stage.
-			let alias_removed = $self.outbound_scid_aliases.lock().unwrap().remove(&$channel.outbound_scid_alias());
-			debug_assert!(alias_removed);
+		{
+			let mut short_to_chan_info = $self.short_to_chan_info.write().unwrap();
+			if let Some(short_id) = $channel.get_short_channel_id() {
+				short_to_chan_info.remove(&short_id);
+			} else {
+				// If the channel was never confirmed on-chain prior to its closure, remove the
+				// outbound SCID alias we used for it from the collision-prevention set. While we
+				// generally want to avoid ever re-using an outbound SCID alias across all channels, we
+				// also don't want a counterparty to be able to trivially cause a memory leak by simply
+				// opening a million channels with us which are closed before we ever reach the funding
+				// stage.
+				let alias_removed = $self.outbound_scid_aliases.lock().unwrap().remove(&$channel.outbound_scid_alias());
+				debug_assert!(alias_removed);
+			}
+			short_to_chan_info.remove(&$channel.outbound_scid_alias());
 		}
-		short_to_chan_info.remove(&$channel.outbound_scid_alias());
 	}
 }
 
