@@ -1,8 +1,8 @@
 #![allow(missing_docs)]
-// TODO: Handle base fee > 0
-// TODO: Handle htlc_min_msat > 1000 (>0???)
+// TODO: take fees into account for transfering money: add 1% for fees, compute exact fees for paths.
 // TODO: Handle CTLV
 // TODO: In flight HTLC
+// TODO: translate the ,,big test'' from pickhardt_payments to a payments test that uses in-flight-htlcs.
 
 use core::{ops::Deref, convert::TryInto};
 use prelude::{HashMap, HashSet};
@@ -27,8 +27,6 @@ fn default_node_features() -> NodeFeatures {
 	features
 }
 
-// impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> Writeable for ProbabilisticScorerUsingTime<G, L, T> where L::Target: Logger
-
 pub fn find_route<L: Deref, GL: Deref, S: Score>(
 	our_node_pubkey: &PublicKey, route_params: &RouteParameters,
 	network_graph: &NetworkGraph<GL>, first_hops: Option<&[&ChannelDetails]>, logger: L,
@@ -43,20 +41,14 @@ where L::Target: Logger, GL::Target: Logger {
 	Ok(route)
 }
 
+const VALUE_MSAT_FEE_MILLIS:u32=10;  // Add to value_msat for relative fees. 10 is 1 percent additional value requested for fees.
+
 pub(crate) fn get_route<L: Deref, S: Score>(
 	our_node_pubkey: &PublicKey, payment_params: &PaymentParameters, network_graph: &ReadOnlyNetworkGraph,
 	first_hops: Option<&[&ChannelDetails]>, final_value_msat: u64, final_cltv_expiry_delta: u32,
 	logger: L, scorer: &S, _random_seed_bytes: &[u8; 32]
 ) -> Result<Route, LightningError>
 where L::Target: Logger {
-// pub fn get_route_non_locked<L: Deref, GL: Deref, S:Score>(
-// 	our_node_pubkey: &PublicKey, route_params: &RouteParameters,
-// 	network_graph: &NetworkGraph<GL>, first_hops: Option<&[&ChannelDetails]>, logger: L,
-// 	liquidity_estimator: &S) -> Result<Route, LightningError>
-// where L::Target: Logger, GL::Target: Logger {
-	// let payment_params = &route_params.payment_params;
-	// let final_value_msat = route_params.final_value_msat;
-	// let final_cltv_expiry_delta = route_params.final_cltv_expiry_delta;
 	let payee_pubkey=payment_params.payee_pubkey;
 	let liquidity_estimator = scorer;
 
@@ -107,11 +99,6 @@ where L::Target: Logger {
 				first_hops, our_node_pubkey, &mut vidx, &mut nodes, &mut edges, liquidity_estimator) {
 		return Err(lightning_error);
 	}
-	// if edges.is_empty() {
-	// 	// Cannot route when there are no outbound routes away from us
-	// 	return Err(LightningError{err: "Failed to find a sufficient route to the given destination".to_owned(),
-	// 	action: ErrorAction::IgnoreError});
-	// }
 
 	extract_public_channels_from_network_graph(network_graph, &mut channel_meta_data, &mut short_channel_ids_set,
 		 &mut vidx, &mut nodes, &mut edges, liquidity_estimator);
@@ -124,7 +111,7 @@ where L::Target: Logger {
 
 	let payee_node=NodeId::from_pubkey(&payee_pubkey);
 	let t=*vidx.get(&payee_node).unwrap();
-	min_cost_flow_lib::min_cost_flow(nodes.len(), s, t, value_msat as i32,
+	min_cost_flow_lib::min_cost_flow(nodes.len(), s, t, (value_msat*(1000+VALUE_MSAT_FEE_MILLIS) as u64/1000 as u64) as i32,
 		100000000, &mut edges,
 		10);
 	// Build paths from min cost flow;
@@ -136,33 +123,39 @@ where L::Target: Logger {
 		action: ErrorAction::IgnoreError});
 	}
 	// Converts paths to hops.
-	let mut route_paths:Vec<Vec<RouteHop>>=Vec::new();
-	for path in paths {
-		let mut route_path:Vec<RouteHop>=Vec::new();
-		let mut sum_fee_msat=0;
-		for idx in &path.1 {
-			let md=&channel_meta_data[*idx];
-			let short_channel_id=md.0;
-			let vnode=&nodes[edges[*idx].v];
-			let node_features=&vnode.1;
-			let channel_features=&md.3;
-			let fee_msat=if *idx==*path.1.last().unwrap() { path.0-sum_fee_msat }
-								else {path.0*edges[*idx].cost as u32/1000000 as u32};
-			sum_fee_msat+=fee_msat;
-			let cltv_expiry_delta=md.1;  // TODO: add/compute???
-
-			route_path.push(RouteHop {
-				pubkey: PublicKey::from_slice(vnode.0.as_slice()).unwrap(),
-				short_channel_id: short_channel_id,
-				fee_msat : fee_msat as u64,
-				cltv_expiry_delta : cltv_expiry_delta as u32,
-				node_features: node_features.clone(),
-			channel_features: channel_features.clone()});
-		}
-		route_paths.push(route_path);
-	};
+	let route_paths = build_route_paths(paths, &channel_meta_data, &nodes, edges, value_msat);
 	let r=Route {paths: route_paths, payment_params: Some(payment_params.clone()) };
 	return Ok(r);
+}
+
+fn build_route_paths(paths: Vec<(u32, Vec<usize>)>, channel_meta_data: &Vec<ChannelMetaData>,
+	nodes: &Vec<(NodeId, NodeFeatures)>, edges: Vec<OriginalEdge>, value_msat: u64) -> Vec<Vec<RouteHop>> {
+    let mut route_paths:Vec<Vec<RouteHop>>=Vec::new();
+    for path in paths {
+		    let mut route_path:Vec<RouteHop>=Vec::new();
+		    let mut sum_fee_msat=0;
+		    for idx in &path.1 {
+			    let md=&channel_meta_data[*idx];
+			    let short_channel_id=md.0;
+			    let vnode=&nodes[edges[*idx].v];
+			    let node_features=&vnode.1;
+			    let channel_features=&md.3;
+			    let fee_msat=if *idx==*path.1.last().unwrap() { path.0-sum_fee_msat }
+								    else {path.0*edges[*idx].cost as u32/1000000 as u32};
+			    sum_fee_msat+=fee_msat;
+			    let cltv_expiry_delta=md.1;  // TODO: add/compute???
+
+			    route_path.push(RouteHop {
+				    pubkey: PublicKey::from_slice(vnode.0.as_slice()).unwrap(),
+				    short_channel_id: short_channel_id,
+				    fee_msat : fee_msat as u64,
+				    cltv_expiry_delta : cltv_expiry_delta as u32,
+				    node_features: node_features.clone(),
+			    channel_features: channel_features.clone()});
+		    }
+		    route_paths.push(route_path);
+	    };
+    route_paths
 }
 
 fn add_hops_to_payee_node_from_route_hints<S:Score>(channel_meta_data: &mut Vec<ChannelMetaData>,
@@ -188,21 +181,42 @@ fn add_hops_to_payee_node_from_route_hints<S:Score>(channel_meta_data: &mut Vec<
 						guaranteed_liquidity=liquidity_range.0;
 						capacity=liquidity_range.1;
 				}
+				let u=add_or_get_node(vidx, src_node_id, &default_node_features(), nodes);
+				let v=add_or_get_node(vidx, last_node_id, &default_node_features(), nodes);
 
-				edges.push(OriginalEdge {
-					u: add_or_get_node(vidx, src_node_id, &default_node_features(), nodes),
-					v: add_or_get_node(vidx, last_node_id, &default_node_features(), nodes),
-					capacity: capacity as i32,
-					cost: hop.fees.proportional_millionths as i32,
-					flow: 0,
-					guaranteed_liquidity: guaranteed_liquidity as i32});
-				channel_meta_data.push((hop.short_channel_id, hop.cltv_expiry_delta, hop.htlc_minimum_msat.unwrap_or(0),
-					ChannelFeatures::empty()));
-				short_channel_ids_set.insert(hop.short_channel_id);
+				add_channel(hop.short_channel_id, edges, u, v, capacity as i32, hop.fees.proportional_millionths as i32,
+					guaranteed_liquidity as i32, channel_meta_data,
+					hop.cltv_expiry_delta, hop.htlc_minimum_msat.unwrap_or(0),
+					ChannelFeatures::empty(), short_channel_ids_set, hop.fees.base_msat);
+
 				last_node_id=src_node_id;
 			}
 		}
 	None
+}
+
+fn add_channel(short_channel_id: u64,edges: &mut Vec<OriginalEdge>, u: usize, v: usize, capacity: i32,
+	fee_proportional_millionths: i32, guaranteed_liquidity: i32, channel_meta_data: &mut Vec<ChannelMetaData>,  cltv_expiry_delta: u16, htlc_minimum_msat: u64,
+	channel_features: ChannelFeatures, short_channel_ids_set: &mut HashSet<u64>, base_msat: u32) {
+    if short_channel_ids_set.contains(&short_channel_id) {
+		return;
+	}
+	if base_msat > 0 {
+		return;
+	}
+	if htlc_minimum_msat > 1000 {
+		return;
+	}
+	edges.push(OriginalEdge {
+					    u: u,
+					    v: v,
+					    capacity: capacity,
+					    cost: fee_proportional_millionths,
+					    flow: 0,
+					    guaranteed_liquidity: guaranteed_liquidity});
+    channel_meta_data.push((short_channel_id, cltv_expiry_delta, htlc_minimum_msat,
+					    channel_features));
+    short_channel_ids_set.insert(short_channel_id);
 }
 
 fn extract_first_hops_from_payer_node<S:Score>(channel_meta_data: &mut Vec<ChannelMetaData>,
@@ -236,14 +250,11 @@ fn extract_first_hops_from_payer_node<S:Score>(channel_meta_data: &mut Vec<Chann
 				guaranteed_liquidity=liquidity_range.0;
 				capacity=liquidity_range.1;
 		}
-		edges.push(OriginalEdge { u: 0, v: other_node_idx,
-			capacity: capacity as i32,
-			cost: 0, flow: 0,
-			guaranteed_liquidity:guaranteed_liquidity as i32 });
-		channel_meta_data.push((scid,
-			if let Some(conf) = chan.config {conf.cltv_expiry_delta} else {0},
-			0, chan.counterparty.features.to_context()));
-		short_channel_ids_set.insert(scid);
+		let cltv_expiry_delta=if let Some(conf) = chan.config {conf.cltv_expiry_delta} else {0};
+		add_channel(scid, edges, 0, other_node_idx, capacity as i32,
+			 0, guaranteed_liquidity as i32,
+			 channel_meta_data, cltv_expiry_delta, 0, chan.counterparty.features.to_context(),
+			 short_channel_ids_set, 0);
 	}
 	None
 }
@@ -301,12 +312,10 @@ fn extract_public_channels_from_network_graph<S:Score>(
 							capacity=liquidity_range.1;
 					}
 
-					edges.push(OriginalEdge {u, v, capacity:capacity as i32,
-						cost:ot.fees.proportional_millionths as i32,
-						flow: 0, guaranteed_liquidity: guaranteed_liquidity as i32});
-					channel_meta_data.push((*channel.0, ot.cltv_expiry_delta, ot.htlc_minimum_msat,
-						info.features.clone()));
-					short_channel_ids_set.insert(*channel.0);
+					add_channel(*channel.0, edges, u, v, capacity as i32,
+						ot.fees.proportional_millionths as i32, guaranteed_liquidity as i32,
+						channel_meta_data, ot.cltv_expiry_delta, ot.htlc_minimum_msat, info.features.clone(),
+						short_channel_ids_set, ot.fees.base_msat);
 				}
 			}
 			if let Some(to)=&info.two_to_one {
@@ -319,12 +328,10 @@ fn extract_public_channels_from_network_graph<S:Score>(
 							capacity=liquidity_range.1;
 					}
 
-					edges.push(OriginalEdge {u:v, v:u, capacity:capacity as i32,
-						cost:to.fees.proportional_millionths as i32,
-						flow: 0, guaranteed_liquidity: guaranteed_liquidity as i32});
-					channel_meta_data.push((*channel.0, to.cltv_expiry_delta, to.htlc_minimum_msat,
-						info.features.clone()));
-					short_channel_ids_set.insert(*channel.0);
+					add_channel(*channel.0, edges, v, u, capacity as i32,
+						to.fees.proportional_millionths as i32, guaranteed_liquidity as i32,
+						channel_meta_data, to.cltv_expiry_delta, to.htlc_minimum_msat, info.features.clone(),
+						short_channel_ids_set, to.fees.base_msat);
 				}
 			}
 		}
