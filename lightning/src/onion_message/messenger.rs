@@ -142,7 +142,7 @@ impl<Signer: Sign, K: Deref, L: Deref> OnionMessenger<Signer, K, L>
 
 	/// Send an empty onion message to `destination`, routing it through `intermediate_nodes`.
 	/// See [`OnionMessenger`] for example usage.
-	pub fn send_onion_message(&self, intermediate_nodes: &[PublicKey], destination: Destination) -> Result<(), SendError> {
+	pub fn send_onion_message(&self, intermediate_nodes: &[PublicKey], destination: Destination, reply_path: Option<BlindedRoute>) -> Result<(), SendError> {
 		if let Destination::BlindedRoute(BlindedRoute { ref blinded_hops, .. }) = destination {
 			if blinded_hops.len() < 2 {
 				return Err(SendError::TooFewBlindedHops);
@@ -160,7 +160,7 @@ impl<Signer: Sign, K: Deref, L: Deref> OnionMessenger<Signer, K, L>
 			}
 		};
 		let (packet_payloads, packet_keys) = packet_payloads_and_keys(
-			&self.secp_ctx, intermediate_nodes, destination, &blinding_secret)
+			&self.secp_ctx, intermediate_nodes, destination, reply_path, &blinding_secret)
 			.map_err(|e| SendError::Secp256k1(e))?;
 
 		let prng_seed = self.keys_manager.get_secure_random_bytes();
@@ -209,9 +209,11 @@ impl<Signer: Sign, K: Deref, L: Deref> OnionMessenger<Signer, K, L>
 			msg.onion_routing_packet.hmac, control_tlvs_ss)
 		{
 			Ok((Payload::Receive {
-				control_tlvs: ReceiveControlTlvs::Unblinded(ReceiveTlvs { path_id })
+				control_tlvs: ReceiveControlTlvs::Unblinded(ReceiveTlvs { path_id }), reply_path,
 			}, None)) => {
-				log_info!(self.logger, "Received an onion message with path_id: {:02x?}", path_id);
+				log_info!(self.logger,
+					"Received an onion message with path_id: {:02x?} and {}reply_path",
+						path_id, if reply_path.is_some() { "" } else { "no " });
 			},
 			Ok((Payload::Forward(ForwardControlTlvs::Unblinded(ForwardTlvs {
 				next_node_id, next_blinding_override
@@ -299,7 +301,8 @@ pub type SimpleRefOnionMessenger<'a, 'b, L> = OnionMessenger<InMemorySigner, &'a
 /// Construct onion packet payloads and keys for sending an onion message along the given
 /// `unblinded_path` to the given `destination`.
 fn packet_payloads_and_keys<T: secp256k1::Signing + secp256k1::Verification>(
-	secp_ctx: &Secp256k1<T>, unblinded_path: &[PublicKey], destination: Destination, session_priv: &SecretKey
+	secp_ctx: &Secp256k1<T>, unblinded_path: &[PublicKey], destination: Destination, mut reply_path:
+	Option<BlindedRoute>, session_priv: &SecretKey
 ) -> Result<(Vec<(Payload, [u8; 32])>, Vec<onion_utils::OnionKeys>), secp256k1::Error> {
 	let num_hops = unblinded_path.len() + destination.num_hops();
 	let mut payloads = Vec::with_capacity(num_hops);
@@ -344,6 +347,7 @@ fn packet_payloads_and_keys<T: secp256k1::Signing + secp256k1::Verification>(
 		} else if let Some(encrypted_payload) = enc_payload_opt {
 			payloads.push((Payload::Receive {
 				control_tlvs: ReceiveControlTlvs::Blinded(encrypted_payload),
+				reply_path: reply_path.take(),
 			}, control_tlvs_ss));
 		}
 
@@ -361,7 +365,8 @@ fn packet_payloads_and_keys<T: secp256k1::Signing + secp256k1::Verification>(
 
 	if let Some(control_tlvs_ss) = prev_control_tlvs_ss {
 		payloads.push((Payload::Receive {
-			control_tlvs: ReceiveControlTlvs::Unblinded(ReceiveTlvs { path_id: None, })
+			control_tlvs: ReceiveControlTlvs::Unblinded(ReceiveTlvs { path_id: None, }),
+			reply_path: reply_path.take(),
 		}, control_tlvs_ss));
 	}
 
