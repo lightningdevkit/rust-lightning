@@ -578,7 +578,7 @@ pub enum Balance {
 	/// HTLCs which we sent to our counterparty which are claimable after a timeout (less on-chain
 	/// fees) if the counterparty does not know the preimage for the HTLCs. These are somewhat
 	/// likely to be claimed by our counterparty before we do.
-	MaybeClaimableHTLCAwaitingTimeout {
+	MaybeTimeoutClaimableHTLC {
 		/// The amount potentially available to claim, in satoshis, excluding the on-chain fees
 		/// which will be required to do so.
 		claimable_amount_satoshis: u64,
@@ -1553,7 +1553,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 					confirmation_height: conf_thresh,
 				});
 			} else {
-				return Some(Balance::MaybeClaimableHTLCAwaitingTimeout {
+				return Some(Balance::MaybeTimeoutClaimableHTLC {
 					claimable_amount_satoshis: htlc.amount_msat / 1000,
 					claimable_height: htlc.cltv_expiry,
 				});
@@ -1738,7 +1738,7 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 			for (htlc, _, _) in us.current_holder_commitment_tx.htlc_outputs.iter() {
 				if htlc.transaction_output_index.is_none() { continue; }
 				if htlc.offered {
-					res.push(Balance::MaybeClaimableHTLCAwaitingTimeout {
+					res.push(Balance::MaybeTimeoutClaimableHTLC {
 						claimable_amount_satoshis: htlc.amount_msat / 1000,
 						claimable_height: htlc.cltv_expiry,
 					});

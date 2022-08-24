@@ -280,10 +280,10 @@ fn do_test_claim_value_force_close(prev_commitment_tx: bool) {
 	assert_eq!(sorted_vec(vec![Balance::ClaimableOnChannelClose {
 			claimable_amount_satoshis: 1_000_000 - 3_000 - 4_000 - 1_000 - 3 - chan_feerate *
 				(channel::commitment_tx_base_weight(opt_anchors) + 2 * channel::COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000,
-		}, Balance::MaybeClaimableHTLCAwaitingTimeout {
+		}, Balance::MaybeTimeoutClaimableHTLC {
 			claimable_amount_satoshis: 3_000,
 			claimable_height: htlc_cltv_timeout,
-		}, Balance::MaybeClaimableHTLCAwaitingTimeout {
+		}, Balance::MaybeTimeoutClaimableHTLC {
 			claimable_amount_satoshis: 4_000,
 			claimable_height: htlc_cltv_timeout,
 		}]),
@@ -341,12 +341,12 @@ fn do_test_claim_value_force_close(prev_commitment_tx: bool) {
 				chan_feerate * (channel::commitment_tx_base_weight(opt_anchors) +
 								if prev_commitment_tx { 1 } else { 2 } *
 								channel::COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000,
-		}, Balance::MaybeClaimableHTLCAwaitingTimeout {
+		}, Balance::MaybeTimeoutClaimableHTLC {
 			claimable_amount_satoshis: 4_000,
 			claimable_height: htlc_cltv_timeout,
 		}];
 	if !prev_commitment_tx {
-		a_expected_balances.push(Balance::MaybeClaimableHTLCAwaitingTimeout {
+		a_expected_balances.push(Balance::MaybeTimeoutClaimableHTLC {
 			claimable_amount_satoshis: 3_000,
 			claimable_height: htlc_cltv_timeout,
 		});
@@ -403,10 +403,10 @@ fn do_test_claim_value_force_close(prev_commitment_tx: bool) {
 			claimable_amount_satoshis: 1_000_000 - 3_000 - 4_000 - 1_000 - 3 - chan_feerate *
 				(channel::commitment_tx_base_weight(opt_anchors) + 2 * channel::COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000,
 			confirmation_height: nodes[0].best_block_info().1 + ANTI_REORG_DELAY - 1,
-		}, Balance::MaybeClaimableHTLCAwaitingTimeout {
+		}, Balance::MaybeTimeoutClaimableHTLC {
 			claimable_amount_satoshis: 3_000,
 			claimable_height: htlc_cltv_timeout,
-		}, Balance::MaybeClaimableHTLCAwaitingTimeout {
+		}, Balance::MaybeTimeoutClaimableHTLC {
 			claimable_amount_satoshis: 4_000,
 			claimable_height: htlc_cltv_timeout,
 		}]),
@@ -434,10 +434,10 @@ fn do_test_claim_value_force_close(prev_commitment_tx: bool) {
 
 	// After ANTI_REORG_DELAY, A will consider its balance fully spendable and generate a
 	// `SpendableOutputs` event. However, B still has to wait for the CSV delay.
-	assert_eq!(sorted_vec(vec![Balance::MaybeClaimableHTLCAwaitingTimeout {
+	assert_eq!(sorted_vec(vec![Balance::MaybeTimeoutClaimableHTLC {
 			claimable_amount_satoshis: 3_000,
 			claimable_height: htlc_cltv_timeout,
-		}, Balance::MaybeClaimableHTLCAwaitingTimeout {
+		}, Balance::MaybeTimeoutClaimableHTLC {
 			claimable_amount_satoshis: 4_000,
 			claimable_height: htlc_cltv_timeout,
 		}]),
@@ -465,16 +465,16 @@ fn do_test_claim_value_force_close(prev_commitment_tx: bool) {
 	} else {
 		expect_payment_sent!(nodes[0], payment_preimage);
 	}
-	assert_eq!(sorted_vec(vec![Balance::MaybeClaimableHTLCAwaitingTimeout {
+	assert_eq!(sorted_vec(vec![Balance::MaybeTimeoutClaimableHTLC {
 			claimable_amount_satoshis: 3_000,
 			claimable_height: htlc_cltv_timeout,
-		}, Balance::MaybeClaimableHTLCAwaitingTimeout {
+		}, Balance::MaybeTimeoutClaimableHTLC {
 			claimable_amount_satoshis: 4_000,
 			claimable_height: htlc_cltv_timeout,
 		}]),
 		sorted_vec(nodes[0].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
 	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
-	assert_eq!(vec![Balance::MaybeClaimableHTLCAwaitingTimeout {
+	assert_eq!(vec![Balance::MaybeTimeoutClaimableHTLC {
 			claimable_amount_satoshis: 4_000,
 			claimable_height: htlc_cltv_timeout,
 		}],
@@ -646,10 +646,10 @@ fn test_balances_on_local_commitment_htlcs() {
 			claimable_amount_satoshis: 1_000_000 - 10_000 - 20_000 - chan_feerate *
 				(channel::commitment_tx_base_weight(opt_anchors) + 2 * channel::COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000,
 			confirmation_height: node_a_commitment_claimable,
-		}, Balance::MaybeClaimableHTLCAwaitingTimeout {
+		}, Balance::MaybeTimeoutClaimableHTLC {
 			claimable_amount_satoshis: 10_000,
 			claimable_height: htlc_cltv_timeout,
-		}, Balance::MaybeClaimableHTLCAwaitingTimeout {
+		}, Balance::MaybeTimeoutClaimableHTLC {
 			claimable_amount_satoshis: 20_000,
 			claimable_height: htlc_cltv_timeout,
 		}]),
@@ -673,10 +673,10 @@ fn test_balances_on_local_commitment_htlcs() {
 			claimable_amount_satoshis: 1_000_000 - 10_000 - 20_000 - chan_feerate *
 				(channel::commitment_tx_base_weight(opt_anchors) + 2 * channel::COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000,
 			confirmation_height: node_a_commitment_claimable,
-		}, Balance::MaybeClaimableHTLCAwaitingTimeout {
+		}, Balance::MaybeTimeoutClaimableHTLC {
 			claimable_amount_satoshis: 10_000,
 			claimable_height: htlc_cltv_timeout,
-		}, Balance::MaybeClaimableHTLCAwaitingTimeout {
+		}, Balance::MaybeTimeoutClaimableHTLC {
 			claimable_amount_satoshis: 20_000,
 			claimable_height: htlc_cltv_timeout,
 		}]),
@@ -697,7 +697,7 @@ fn test_balances_on_local_commitment_htlcs() {
 		}, Balance::ClaimableAwaitingConfirmations {
 			claimable_amount_satoshis: 10_000,
 			confirmation_height: node_a_htlc_claimable,
-		}, Balance::MaybeClaimableHTLCAwaitingTimeout {
+		}, Balance::MaybeTimeoutClaimableHTLC {
 			claimable_amount_satoshis: 20_000,
 			claimable_height: htlc_cltv_timeout,
 		}]),
@@ -714,7 +714,7 @@ fn test_balances_on_local_commitment_htlcs() {
 		}, Balance::ClaimableAwaitingConfirmations {
 			claimable_amount_satoshis: 10_000,
 			confirmation_height: node_a_htlc_claimable,
-		}, Balance::MaybeClaimableHTLCAwaitingTimeout {
+		}, Balance::MaybeTimeoutClaimableHTLC {
 			claimable_amount_satoshis: 20_000,
 			claimable_height: htlc_cltv_timeout,
 		}]),
@@ -783,7 +783,7 @@ fn test_no_preimage_inbound_htlc_balances() {
 		}, Balance::MaybePreimageClaimableHTLC {
 			claimable_amount_satoshis: 20_000,
 			expiry_height: htlc_cltv_timeout,
-		}, Balance::MaybeClaimableHTLCAwaitingTimeout {
+		}, Balance::MaybeTimeoutClaimableHTLC {
 			claimable_amount_satoshis: 10_000,
 			claimable_height: htlc_cltv_timeout,
 		}]),
@@ -794,7 +794,7 @@ fn test_no_preimage_inbound_htlc_balances() {
 		}, Balance::MaybePreimageClaimableHTLC {
 			claimable_amount_satoshis: 10_000,
 			expiry_height: htlc_cltv_timeout,
-		}, Balance::MaybeClaimableHTLCAwaitingTimeout {
+		}, Balance::MaybeTimeoutClaimableHTLC {
 			claimable_amount_satoshis: 20_000,
 			claimable_height: htlc_cltv_timeout,
 		}]),
@@ -816,7 +816,7 @@ fn test_no_preimage_inbound_htlc_balances() {
 		}, Balance::MaybePreimageClaimableHTLC {
 			claimable_amount_satoshis: 20_000,
 			expiry_height: htlc_cltv_timeout,
-		}, Balance::MaybeClaimableHTLCAwaitingTimeout {
+		}, Balance::MaybeTimeoutClaimableHTLC {
 			claimable_amount_satoshis: 10_000,
 			claimable_height: htlc_cltv_timeout,
 		}]);
@@ -842,7 +842,7 @@ fn test_no_preimage_inbound_htlc_balances() {
 		}, Balance::MaybePreimageClaimableHTLC {
 			claimable_amount_satoshis: 10_000,
 			expiry_height: htlc_cltv_timeout,
-		}, Balance::MaybeClaimableHTLCAwaitingTimeout {
+		}, Balance::MaybeTimeoutClaimableHTLC {
 			claimable_amount_satoshis: 20_000,
 			claimable_height: htlc_cltv_timeout,
 		}]);
@@ -1089,13 +1089,13 @@ fn do_test_revoked_counterparty_commitment_balances(confirm_htlc_spend_first: bo
 	// lists the two on-chain timeout-able HTLCs as claimable balances.
 	assert_eq!(sorted_vec(vec![Balance::ClaimableOnChannelClose {
 			claimable_amount_satoshis: 100_000 - 5_000 - 4_000 - 3 - 2_000 + 3_000,
-		}, Balance::MaybeClaimableHTLCAwaitingTimeout {
+		}, Balance::MaybeTimeoutClaimableHTLC {
 			claimable_amount_satoshis: 2_000,
 			claimable_height: missing_htlc_cltv_timeout,
-		}, Balance::MaybeClaimableHTLCAwaitingTimeout {
+		}, Balance::MaybeTimeoutClaimableHTLC {
 			claimable_amount_satoshis: 4_000,
 			claimable_height: htlc_cltv_timeout,
-		}, Balance::MaybeClaimableHTLCAwaitingTimeout {
+		}, Balance::MaybeTimeoutClaimableHTLC {
 			claimable_amount_satoshis: 5_000,
 			claimable_height: live_htlc_cltv_timeout,
 		}]),
@@ -1501,10 +1501,10 @@ fn test_revoked_counterparty_aggregated_claims() {
 
 	assert_eq!(sorted_vec(vec![Balance::ClaimableOnChannelClose {
 			claimable_amount_satoshis: 100_000 - 4_000 - 3_000,
-		}, Balance::MaybeClaimableHTLCAwaitingTimeout {
+		}, Balance::MaybeTimeoutClaimableHTLC {
 			claimable_amount_satoshis: 4_000,
 			claimable_height: htlc_cltv_timeout,
-		}, Balance::MaybeClaimableHTLCAwaitingTimeout {
+		}, Balance::MaybeTimeoutClaimableHTLC {
 			claimable_amount_satoshis: 3_000,
 			claimable_height: htlc_cltv_timeout,
 		}]),
