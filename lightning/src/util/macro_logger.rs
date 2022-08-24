@@ -160,6 +160,7 @@ macro_rules! log_internal {
 }
 
 /// Logs an entry at the given level.
+#[doc(hidden)]
 #[macro_export]
 macro_rules! log_given_level {
 	($logger: expr, $lvl:expr, $($arg:tt)+) => (
@@ -185,7 +186,7 @@ macro_rules! log_given_level {
 	);
 }
 
-/// Log an error.
+/// Log at the `ERROR` level.
 #[macro_export]
 macro_rules! log_error {
 	($logger: expr, $($arg:tt)*) => (
@@ -193,25 +194,31 @@ macro_rules! log_error {
 	)
 }
 
+/// Log at the `WARN` level.
+#[macro_export]
 macro_rules! log_warn {
 	($logger: expr, $($arg:tt)*) => (
 		log_given_level!($logger, $crate::util::logger::Level::Warn, $($arg)*);
 	)
 }
 
+/// Log at the `INFO` level.
+#[macro_export]
 macro_rules! log_info {
 	($logger: expr, $($arg:tt)*) => (
 		log_given_level!($logger, $crate::util::logger::Level::Info, $($arg)*);
 	)
 }
 
+/// Log at the `DEBUG` level.
+#[macro_export]
 macro_rules! log_debug {
 	($logger: expr, $($arg:tt)*) => (
 		log_given_level!($logger, $crate::util::logger::Level::Debug, $($arg)*);
 	)
 }
 
-/// Log a trace log.
+/// Log at the `TRACE` level.
 #[macro_export]
 macro_rules! log_trace {
 	($logger: expr, $($arg:tt)*) => (
@@ -219,7 +226,8 @@ macro_rules! log_trace {
 	)
 }
 
-/// Log a gossip log.
+/// Log at the `GOSSIP` level.
+#[macro_export]
 macro_rules! log_gossip {
 	($logger: expr, $($arg:tt)*) => (
 		log_given_level!($logger, $crate::util::logger::Level::Gossip, $($arg)*);
