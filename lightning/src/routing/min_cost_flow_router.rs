@@ -131,9 +131,13 @@ where L::Target: Logger {
 fn build_route_paths(paths: Vec<(u32, Vec<usize>)>, channel_meta_data: &Vec<ChannelMetaData>,
 	nodes: &Vec<(NodeId, NodeFeatures)>, edges: Vec<OriginalEdge>, value_msat: u64) -> Vec<Vec<RouteHop>> {
     let mut route_paths:Vec<Vec<RouteHop>>=Vec::new();
+	let mut total_msat = 0;
     for path in paths {
 		    let mut route_path:Vec<RouteHop>=Vec::new();
 		    let mut sum_fee_msat=0;
+			if path.1.is_empty() {
+				continue;
+			}
 		    for idx in &path.1 {
 			    let md=&channel_meta_data[*idx];
 			    let short_channel_id=md.0;
@@ -141,7 +145,7 @@ fn build_route_paths(paths: Vec<(u32, Vec<usize>)>, channel_meta_data: &Vec<Chan
 			    let node_features=&vnode.1;
 			    let channel_features=&md.3;
 			    let fee_msat=if *idx==*path.1.last().unwrap() { path.0-sum_fee_msat }
-								    else {path.0*edges[*idx].cost as u32/1000000 as u32};
+								    else {(path.0 as u64*edges[*idx].cost as u64/1000000 as u64) as u32};
 			    sum_fee_msat+=fee_msat;
 			    let cltv_expiry_delta=md.1;  // TODO: add/compute???
 
@@ -153,7 +157,27 @@ fn build_route_paths(paths: Vec<(u32, Vec<usize>)>, channel_meta_data: &Vec<Chan
 				    node_features: node_features.clone(),
 			    channel_features: channel_features.clone()});
 		    }
+			if total_msat + route_path.last().unwrap().fee_msat > value_msat {
+				// Decrease value going through route path.
+				route_path.last_mut().unwrap().fee_msat=value_msat-total_msat;
+				let mut value_to_route=value_msat-total_msat;
+				for i in (0..(route_path.len()-1)).rev() {
+					let hop=&mut route_path[i];
+					let edge=&edges[path.1[i]];
+					let fee_per_million_msat=edge.cost as u64;
+					hop.fee_msat=value_to_route*fee_per_million_msat/(1000000 - fee_per_million_msat);
+					let value_to_route_candidate=hop.fee_msat;
+					if value_to_route_candidate*fee_per_million_msat/1000000 > hop.fee_msat {
+						hop.fee_msat=value_to_route_candidate*fee_per_million_msat/1000000;
+					}
+					value_to_route+=hop.fee_msat;
+				}
+			}
+			total_msat += route_path.last().unwrap().fee_msat;
 		    route_paths.push(route_path);
+			if total_msat == value_msat {
+				break;
+			}
 	    };
     route_paths
 }
