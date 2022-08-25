@@ -411,6 +411,13 @@ impl Peer {
 			&& self.msgs_sent_since_pong < BUFFER_DRAIN_MSGS_PER_TICK
 	}
 
+	/// Determines if we should push an onion message onto a peer's outbound buffer. This is checked
+	/// every time the peer's buffer may have been drained.
+	fn should_buffer_onion_message(&self) -> bool {
+		self.pending_outbound_buffer.is_empty()
+			&& self.msgs_sent_since_pong < BUFFER_DRAIN_MSGS_PER_TICK
+	}
+
 	/// Determines if we should push additional gossip broadcast messages onto a peer's outbound
 	/// buffer. This is checked every time the peer's buffer may have been drained.
 	fn should_buffer_gossip_broadcast(&self) -> bool {
@@ -766,6 +773,14 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 
 	fn do_attempt_write_data(&self, descriptor: &mut Descriptor, peer: &mut Peer) {
 		while !peer.awaiting_write_event {
+			if peer.should_buffer_onion_message() {
+				if let Some(peer_node_id) = peer.their_node_id {
+					if let Some(next_onion_message) =
+						self.message_handler.onion_message_handler.next_onion_message_for_peer(peer_node_id) {
+							self.enqueue_message(peer, &next_onion_message);
+					}
+				}
+			}
 			if peer.should_buffer_gossip_broadcast() {
 				if let Some(msg) = peer.gossip_broadcast_buffer.pop_front() {
 					peer.pending_outbound_buffer.push_back(msg);
