@@ -2653,6 +2653,11 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		let commitment_tx = self.onchain_tx_handler.get_fully_signed_holder_tx(&self.funding_redeemscript);
 		let txid = commitment_tx.txid();
 		let mut holder_transactions = vec![commitment_tx];
+		// When anchor outputs are present, the HTLC transactions are only valid once the commitment
+		// transaction confirms.
+		if self.onchain_tx_handler.opt_anchors() {
+			return holder_transactions;
+		}
 		for htlc in self.current_holder_commitment_tx.htlc_outputs.iter() {
 			if let Some(vout) = htlc.0.transaction_output_index {
 				let preimage = if !htlc.0.offered {
@@ -2686,6 +2691,11 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		let commitment_tx = self.onchain_tx_handler.get_fully_signed_copy_holder_tx(&self.funding_redeemscript);
 		let txid = commitment_tx.txid();
 		let mut holder_transactions = vec![commitment_tx];
+		// When anchor outputs are present, the HTLC transactions are only final once the commitment
+		// transaction confirms due to the CSV 1 encumberance.
+		if self.onchain_tx_handler.opt_anchors() {
+			return holder_transactions;
+		}
 		for htlc in self.current_holder_commitment_tx.htlc_outputs.iter() {
 			if let Some(vout) = htlc.0.transaction_output_index {
 				let preimage = if !htlc.0.offered {
