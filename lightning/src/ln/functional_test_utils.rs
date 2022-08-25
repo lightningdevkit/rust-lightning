@@ -61,17 +61,22 @@ pub fn confirm_transaction<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, tx: &Tran
 	connect_blocks(node, CHAN_CONFIRM_DEPTH - 1);
 	scid
 }
-/// Mine a signle block containing the given transaction
+/// Mine a single block containing the given transaction
 pub fn mine_transaction<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, tx: &Transaction) {
 	let height = node.best_block_info().1 + 1;
 	confirm_transaction_at(node, tx, height);
+}
+/// Mine a single block containing the given transactions
+pub fn mine_transactions<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, txn: &[&Transaction]) {
+	let height = node.best_block_info().1 + 1;
+	confirm_transactions_at(node, txn, height);
 }
 /// Mine the given transaction at the given height, mining blocks as required to build to that
 /// height
 ///
 /// Returns the SCID a channel confirmed in the given transaction will have, assuming the funding
 /// output is the 1st output in the transaction.
-pub fn confirm_transaction_at<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, tx: &Transaction, conf_height: u32) -> u64 {
+pub fn confirm_transactions_at<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, txn: &[&Transaction], conf_height: u32) -> u64 {
 	let first_connect_height = node.best_block_info().1 + 1;
 	assert!(first_connect_height <= conf_height);
 	if conf_height > first_connect_height {
@@ -84,9 +89,14 @@ pub fn confirm_transaction_at<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, tx: &T
 	for _ in 0..*node.network_chan_count.borrow() { // Make sure we don't end up with channels at the same short id by offsetting by chan_count
 		block.txdata.push(Transaction { version: 0, lock_time: PackedLockTime::ZERO, input: Vec::new(), output: Vec::new() });
 	}
-	block.txdata.push(tx.clone());
+	for tx in txn {
+		block.txdata.push((*tx).clone());
+	}
 	connect_block(node, &block);
 	scid_utils::scid_from_parts(conf_height as u64, block.txdata.len() as u64 - 1, 0).unwrap()
+}
+pub fn confirm_transaction_at<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, tx: &Transaction, conf_height: u32) -> u64 {
+	confirm_transactions_at(node, &[tx], conf_height)
 }
 
 /// The possible ways we may notify a ChannelManager of a new block
