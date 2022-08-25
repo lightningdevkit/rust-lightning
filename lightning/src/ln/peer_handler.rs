@@ -399,11 +399,8 @@ impl Peer {
 
 	/// Returns whether this peer's buffer is full and we should drop gossip messages.
 	fn buffer_full_drop_gossip(&self) -> bool {
-		if self.pending_outbound_buffer.len() > OUTBOUND_BUFFER_LIMIT_DROP_GOSSIP
-			|| self.msgs_sent_since_pong > BUFFER_DRAIN_MSGS_PER_TICK * FORWARD_INIT_SYNC_BUFFER_LIMIT_RATIO {
-				return false
-		}
-		true
+		self.pending_outbound_buffer.len() > OUTBOUND_BUFFER_LIMIT_DROP_GOSSIP ||
+			self.msgs_sent_since_pong > BUFFER_DRAIN_MSGS_PER_TICK * FORWARD_INIT_SYNC_BUFFER_LIMIT_RATIO
 	}
 }
 
