@@ -583,13 +583,24 @@ pub enum Balance {
 	/// HTLCs which we sent to our counterparty which are claimable after a timeout (less on-chain
 	/// fees) if the counterparty does not know the preimage for the HTLCs. These are somewhat
 	/// likely to be claimed by our counterparty before we do.
-	MaybeClaimableHTLCAwaitingTimeout {
-		/// The amount available to claim, in satoshis, excluding the on-chain fees which will be
-		/// required to do so.
+	MaybeTimeoutClaimableHTLC {
+		/// The amount potentially available to claim, in satoshis, excluding the on-chain fees
+		/// which will be required to do so.
 		claimable_amount_satoshis: u64,
 		/// The height at which we will be able to claim the balance if our counterparty has not
 		/// done so.
 		claimable_height: u32,
+	},
+	/// HTLCs which we received from our counterparty which are claimable with a preimage which we
+	/// do not currently have. This will only be claimable if we receive the preimage from the node
+	/// to which we forwarded this HTLC before the timeout.
+	MaybePreimageClaimableHTLC {
+		/// The amount potentially available to claim, in satoshis, excluding the on-chain fees
+		/// which will be required to do so.
+		claimable_amount_satoshis: u64,
+		/// The height at which our counterparty will be able to claim the balance if we have not
+		/// yet received the preimage and claimed it ourselves.
+		expiry_height: u32,
 	},
 	/// The channel has been closed, and our counterparty broadcasted a revoked commitment
 	/// transaction.
@@ -1547,7 +1558,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 					confirmation_height: conf_thresh,
 				});
 			} else {
-				return Some(Balance::MaybeClaimableHTLCAwaitingTimeout {
+				return Some(Balance::MaybeTimeoutClaimableHTLC {
 					claimable_amount_satoshis: htlc.amount_msat / 1000,
 					claimable_height: htlc.cltv_expiry,
 				});
@@ -1570,6 +1581,11 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 					timeout_height: htlc.cltv_expiry,
 				});
 			}
+		} else if htlc_resolved.is_none() {
+			return Some(Balance::MaybePreimageClaimableHTLC {
+				claimable_amount_satoshis: htlc.amount_msat / 1000,
+				expiry_height: htlc.cltv_expiry,
+			});
 		}
 		None
 	}
@@ -1727,12 +1743,19 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 			for (htlc, _, _) in us.current_holder_commitment_tx.htlc_outputs.iter() {
 				if htlc.transaction_output_index.is_none() { continue; }
 				if htlc.offered {
-					res.push(Balance::MaybeClaimableHTLCAwaitingTimeout {
+					res.push(Balance::MaybeTimeoutClaimableHTLC {
 						claimable_amount_satoshis: htlc.amount_msat / 1000,
 						claimable_height: htlc.cltv_expiry,
 					});
 				} else if us.payment_preimages.get(&htlc.payment_hash).is_some() {
 					claimable_inbound_htlc_value_sat += htlc.amount_msat / 1000;
+				} else {
+					// As long as the HTLC is still in our latest commitment state, treat
+					// it as potentially claimable, even if it has long-since expired.
+					res.push(Balance::MaybePreimageClaimableHTLC {
+						claimable_amount_satoshis: htlc.amount_msat / 1000,
+						expiry_height: htlc.cltv_expiry,
+					});
 				}
 			}
 			res.push(Balance::ClaimableOnChannelClose {
