@@ -23,7 +23,7 @@ use ln::channel::{commitment_tx_base_weight, COMMITMENT_TX_WEIGHT_PER_HTLC, CONC
 use ln::channelmanager::{ChannelManager, ChannelManagerReadArgs, PaymentId, RAACommitmentOrder, PaymentSendFailure, BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA, PAYMENT_EXPIRY_BLOCKS };
 use ln::channel::{Channel, ChannelError};
 use ln::{chan_utils, onion_utils};
-use ln::chan_utils::{htlc_success_tx_weight, htlc_timeout_tx_weight, HTLCOutputInCommitment};
+use ln::chan_utils::{OFFERED_HTLC_SCRIPT_WEIGHT, htlc_success_tx_weight, htlc_timeout_tx_weight, HTLCOutputInCommitment};
 use routing::gossip::{NetworkGraph, NetworkUpdate};
 use routing::router::{PaymentParameters, Route, RouteHop, RouteParameters, find_route, get_route};
 use ln::features::{ChannelFeatures, InitFeatures, InvoiceFeatures, NodeFeatures};
@@ -9518,10 +9518,7 @@ fn test_invalid_funding_tx() {
 	// a panic as we'd try to extract a 32 byte preimage from a witness element without checking
 	// its length.
 	let mut wit_program: Vec<u8> = channelmonitor::deliberately_bogus_accepted_htlc_witness_program();
-	assert!(chan_utils::HTLCType::scriptlen_to_htlctype(wit_program.len()).unwrap() ==
-		chan_utils::HTLCType::AcceptedHTLC);
-
-	let wit_program_script: Script = wit_program.clone().into();
+	let wit_program_script: Script = wit_program.into();
 	for output in tx.output.iter_mut() {
 		// Make the confirmed funding transaction have a bogus script_pubkey
 		output.script_pubkey = Script::new_v0_p2wsh(&wit_program_script.wscript_hash());

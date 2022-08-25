@@ -15,7 +15,7 @@ use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::secp256k1::PublicKey;
 
 use routing::router::Route;
-use ln::chan_utils::HTLCType;
+use ln::chan_utils::HTLCClaim;
 use util::logger::DebugBytes;
 
 pub(crate) struct DebugPubKey<'a>(pub &'a PublicKey);
@@ -90,25 +90,34 @@ pub(crate) struct DebugTx<'a>(pub &'a Transaction);
 impl<'a> core::fmt::Display for DebugTx<'a> {
 	fn fmt(&self, f: &mut core::fmt::Formatter) -> Result<(), core::fmt::Error> {
 		if self.0.input.len() >= 1 && self.0.input.iter().any(|i| !i.witness.is_empty()) {
-			if self.0.input.len() == 1 && self.0.input[0].witness.last().unwrap().len() == 71 &&
-					(self.0.input[0].sequence.0 >> 8*3) as u8 == 0x80 {
+			let first_input = &self.0.input[0];
+			let witness_script_len = first_input.witness.last().unwrap_or(&[]).len();
+			if self.0.input.len() == 1 && witness_script_len == 71 &&
+					(first_input.sequence.0 >> 8*3) as u8 == 0x80 {
 				write!(f, "commitment tx ")?;
-			} else if self.0.input.len() == 1 && self.0.input[0].witness.last().unwrap().len() == 71 {
+			} else if self.0.input.len() == 1 && witness_script_len == 71 {
 				write!(f, "closing tx ")?;
-			} else if self.0.input.len() == 1 && HTLCType::scriptlen_to_htlctype(self.0.input[0].witness.last().unwrap().len()) == Some(HTLCType::OfferedHTLC) &&
-					self.0.input[0].witness.len() == 5 {
+			} else if self.0.input.len() == 1 && HTLCClaim::from_witness(&first_input.witness) == Some(HTLCClaim::OfferedTimeout) {
 				write!(f, "HTLC-timeout tx ")?;
-			} else if self.0.input.len() == 1 && HTLCType::scriptlen_to_htlctype(self.0.input[0].witness.last().unwrap().len()) == Some(HTLCType::AcceptedHTLC) &&
-					self.0.input[0].witness.len() == 5 {
+			} else if self.0.input.len() == 1 && HTLCClaim::from_witness(&first_input.witness) == Some(HTLCClaim::AcceptedPreimage) {
 				write!(f, "HTLC-success tx ")?;
 			} else {
+				let mut num_preimage = 0;
+				let mut num_timeout = 0;
+				let mut num_revoked = 0;
 				for inp in &self.0.input {
-					if !inp.witness.is_empty() {
-						if HTLCType::scriptlen_to_htlctype(inp.witness.last().unwrap().len()) == Some(HTLCType::OfferedHTLC) { write!(f, "preimage-")?; break }
-						else if HTLCType::scriptlen_to_htlctype(inp.witness.last().unwrap().len()) == Some(HTLCType::AcceptedHTLC) { write!(f, "timeout-")?; break }
+					let htlc_claim = HTLCClaim::from_witness(&inp.witness);
+					match htlc_claim {
+						Some(HTLCClaim::AcceptedPreimage)|Some(HTLCClaim::OfferedPreimage) => num_preimage += 1,
+						Some(HTLCClaim::AcceptedTimeout)|Some(HTLCClaim::OfferedTimeout) => num_timeout += 1,
+						Some(HTLCClaim::Revocation) => num_revoked += 1,
+						None => continue,
 					}
 				}
-				write!(f, "tx ")?;
+				if num_preimage > 0 || num_timeout > 0 || num_revoked > 0 {
+					write!(f, "HTLC claim tx ({} preimage, {} timeout, {} revoked)",
+						num_preimage, num_timeout, num_revoked)?;
+				}
 			}
 		} else {
 			debug_assert!(false, "We should never generate unknown transaction types");
