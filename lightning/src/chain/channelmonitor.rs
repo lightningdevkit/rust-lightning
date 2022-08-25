@@ -647,6 +647,7 @@ struct IrrevocablyResolvedHTLC {
 	/// was not present in the confirmed commitment transaction), HTLC-Success, or HTLC-Timeout
 	/// transaction.
 	resolving_txid: Option<Txid>, // Added as optional, but always filled in, in 0.0.110
+	resolving_tx: Option<Transaction>,
 	/// Only set if the HTLC claim was ours using a payment preimage
 	payment_preimage: Option<PaymentPreimage>,
 }
@@ -662,6 +663,7 @@ impl Writeable for IrrevocablyResolvedHTLC {
 			(0, mapped_commitment_tx_output_idx, required),
 			(1, self.resolving_txid, option),
 			(2, self.payment_preimage, option),
+			(3, self.resolving_tx, option),
 		});
 		Ok(())
 	}
@@ -672,15 +674,18 @@ impl Readable for IrrevocablyResolvedHTLC {
 		let mut mapped_commitment_tx_output_idx = 0;
 		let mut resolving_txid = None;
 		let mut payment_preimage = None;
+		let mut resolving_tx = None;
 		read_tlv_fields!(reader, {
 			(0, mapped_commitment_tx_output_idx, required),
 			(1, resolving_txid, option),
 			(2, payment_preimage, option),
+			(3, resolving_tx, option),
 		});
 		Ok(Self {
 			commitment_tx_output_idx: if mapped_commitment_tx_output_idx == u32::max_value() { None } else { Some(mapped_commitment_tx_output_idx) },
 			resolving_txid,
 			payment_preimage,
+			resolving_tx,
 		})
 	}
 }
@@ -1526,6 +1531,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 			if let Some(v) = htlc.transaction_output_index { v } else { return None; };
 
 		let mut htlc_spend_txid_opt = None;
+		let mut htlc_spend_tx_opt = None;
 		let mut holder_timeout_spend_pending = None;
 		let mut htlc_spend_pending = None;
 		let mut holder_delayed_output_pending = None;
@@ -1534,7 +1540,9 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 				OnchainEvent::HTLCUpdate { commitment_tx_output_idx, htlc_value_satoshis, .. }
 				if commitment_tx_output_idx == Some(htlc_commitment_tx_output_idx) => {
 					debug_assert!(htlc_spend_txid_opt.is_none());
-					htlc_spend_txid_opt = event.transaction.as_ref().map(|tx| tx.txid());
+					htlc_spend_txid_opt = Some(&event.txid);
+					debug_assert!(htlc_spend_tx_opt.is_none());
+					htlc_spend_tx_opt = event.transaction.as_ref();
 					debug_assert!(holder_timeout_spend_pending.is_none());
 					debug_assert_eq!(htlc_value_satoshis.unwrap(), htlc.amount_msat / 1000);
 					holder_timeout_spend_pending = Some(event.confirmation_threshold());
@@ -1542,7 +1550,9 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 				OnchainEvent::HTLCSpendConfirmation { commitment_tx_output_idx, preimage, .. }
 				if commitment_tx_output_idx == htlc_commitment_tx_output_idx => {
 					debug_assert!(htlc_spend_txid_opt.is_none());
-					htlc_spend_txid_opt = event.transaction.as_ref().map(|tx| tx.txid());
+					htlc_spend_txid_opt = Some(&event.txid);
+					debug_assert!(htlc_spend_tx_opt.is_none());
+					htlc_spend_tx_opt = event.transaction.as_ref();
 					debug_assert!(htlc_spend_pending.is_none());
 					htlc_spend_pending = Some((event.confirmation_threshold(), preimage.is_some()));
 				},
@@ -1558,19 +1568,32 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		let htlc_resolved = self.htlcs_resolved_on_chain.iter()
 			.find(|v| if v.commitment_tx_output_idx == Some(htlc_commitment_tx_output_idx) {
 				debug_assert!(htlc_spend_txid_opt.is_none());
-				htlc_spend_txid_opt = v.resolving_txid;
+				htlc_spend_txid_opt = v.resolving_txid.as_ref();
+				debug_assert!(htlc_spend_tx_opt.is_none());
+				htlc_spend_tx_opt = v.resolving_tx.as_ref();
 				true
 			} else { false });
 		debug_assert!(holder_timeout_spend_pending.is_some() as u8 + htlc_spend_pending.is_some() as u8 + htlc_resolved.is_some() as u8 <= 1);
 
+		let htlc_commitment_outpoint = BitcoinOutPoint::new(confirmed_txid.unwrap(), htlc_commitment_tx_output_idx);
 		let htlc_output_to_spend =
 			if let Some(txid) = htlc_spend_txid_opt {
-				debug_assert!(
-					self.onchain_tx_handler.channel_transaction_parameters.opt_anchors.is_none(),
-					"This code needs updating for anchors");
-				BitcoinOutPoint::new(txid, 0)
+				// Because HTLC transactions either only have 1 input and 1 output (pre-anchors) or
+				// are signed with SIGHASH_SINGLE|ANYONECANPAY under BIP-0143 (post-anchors), we can
+				// locate the correct output by ensuring its adjacent input spends the HTLC output
+				// in the commitment.
+				if let Some(ref tx) = htlc_spend_tx_opt {
+					let htlc_input_idx_opt = tx.input.iter().enumerate()
+						.find(|(_, input)| input.previous_output == htlc_commitment_outpoint)
+						.map(|(idx, _)| idx as u32);
+					debug_assert!(htlc_input_idx_opt.is_some());
+					BitcoinOutPoint::new(*txid, htlc_input_idx_opt.unwrap_or(0))
+				} else {
+					debug_assert!(!self.onchain_tx_handler.opt_anchors());
+					BitcoinOutPoint::new(*txid, 0)
+				}
 			} else {
-				BitcoinOutPoint::new(confirmed_txid.unwrap(), htlc_commitment_tx_output_idx)
+				htlc_commitment_outpoint
 			};
 		let htlc_output_spend_pending = self.onchain_tx_handler.is_output_spend_pending(&htlc_output_to_spend);
 
@@ -1594,8 +1617,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 				} = &event.event {
 					if event.transaction.as_ref().map(|tx| tx.input.iter().any(|inp| {
 						if let Some(htlc_spend_txid) = htlc_spend_txid_opt {
-							Some(tx.txid()) == htlc_spend_txid_opt ||
-								inp.previous_output.txid == htlc_spend_txid
+							tx.txid() == *htlc_spend_txid || inp.previous_output.txid == *htlc_spend_txid
 						} else {
 							Some(inp.previous_output.txid) == confirmed_txid &&
 								inp.previous_output.vout == htlc_commitment_tx_output_idx
@@ -3074,7 +3096,9 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 						htlc_value_satoshis,
 					}));
 					self.htlcs_resolved_on_chain.push(IrrevocablyResolvedHTLC {
-						commitment_tx_output_idx, resolving_txid: Some(entry.txid),
+						commitment_tx_output_idx,
+						resolving_txid: Some(entry.txid),
+						resolving_tx: entry.transaction,
 						payment_preimage: None,
 					});
 				},
@@ -3087,7 +3111,9 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 				},
 				OnchainEvent::HTLCSpendConfirmation { commitment_tx_output_idx, preimage, .. } => {
 					self.htlcs_resolved_on_chain.push(IrrevocablyResolvedHTLC {
-						commitment_tx_output_idx: Some(commitment_tx_output_idx), resolving_txid: Some(entry.txid),
+						commitment_tx_output_idx: Some(commitment_tx_output_idx),
+						resolving_txid: Some(entry.txid),
+						resolving_tx: entry.transaction,
 						payment_preimage: preimage,
 					});
 				},

@@ -249,7 +249,7 @@ pub enum BumpTransactionEvent {
 	/// with additional inputs to meet the target feerate. Failure to meet the target feerate
 	/// decreases the confirmation odds of the transaction package (which includes the commitment
 	/// and child anchor transactions), possibly resulting in a loss of funds. Once the transaction
-	/// is constructed, it must be fully signed for and broadcasted by the consumer of the event
+	/// is constructed, it must be fully signed for and broadcast by the consumer of the event
 	/// along with the `commitment_tx` enclosed. Note that the `commitment_tx` must always be
 	/// broadcast first, as the child anchor transaction depends on it.
 	///
