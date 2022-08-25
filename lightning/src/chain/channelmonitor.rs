@@ -793,7 +793,10 @@ pub(crate) struct ChannelMonitorImpl<Signer: Sign> {
 	// of block connection between ChannelMonitors and the ChannelManager.
 	funding_spend_seen: bool,
 
+	/// Set to `Some` of the confirmed transaction spending the funding input of the channel after
+	/// reaching `ANTI_REORG_DELAY` confirmations.
 	funding_spend_confirmed: Option<Txid>,
+
 	confirmed_commitment_tx_counterparty_output: CommitmentTxCounterpartyOutputInfo,
 	/// The set of HTLCs which have been either claimed or failed on chain and have reached
 	/// the requisite confirmations on the claim/fail transaction (either ANTI_REORG_DELAY or the
@@ -3068,6 +3071,16 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 	}
 
 	fn should_broadcast_holder_commitment_txn<L: Deref>(&self, logger: &L) -> bool where L::Target: Logger {
+		// There's no need to broadcast our commitment transaction if we've seen one confirmed (even
+		// with 1 confirmation) as it'll be rejected as duplicate/conflicting.
+		if self.funding_spend_confirmed.is_some() ||
+			self.onchain_events_awaiting_threshold_conf.iter().find(|event| match event.event {
+				OnchainEvent::FundingSpendConfirmation { .. } => true,
+				_ => false,
+			}).is_some()
+		{
+			return false;
+		}
 		// We need to consider all HTLCs which are:
 		//  * in any unrevoked counterparty commitment transaction, as they could broadcast said
 		//    transactions and we'd end up in a race, or
