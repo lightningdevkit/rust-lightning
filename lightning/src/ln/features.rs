@@ -43,6 +43,9 @@
 //!     (see [BOLT-2](https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#the-open_channel-message) for more information).
 //! - `ShutdownAnySegwit` - requires/supports that future segwit versions are allowed in `shutdown`
 //!     (see [BOLT-2](https://github.com/lightning/bolts/blob/master/02-peer-protocol.md) for more information).
+//! - `OnionMessages` - requires/supports forwarding onion messages
+//!     (see [BOLT-7](https://github.com/lightning/bolts/pull/759/files) for more information).
+//!     TODO: update link
 //! - `ChannelType` - node supports the channel_type field in open/accept
 //!     (see [BOLT-2](https://github.com/lightning/bolts/blob/master/02-peer-protocol.md) for more information).
 //! - `SCIDPrivacy` - supply channel aliases for routing
@@ -177,7 +180,7 @@ mod sealed {
 			// Byte 3
 			ShutdownAnySegwit,
 			// Byte 4
-			,
+			OnionMessages,
 			// Byte 5
 			ChannelType | SCIDPrivacy,
 			// Byte 6
@@ -211,7 +214,7 @@ mod sealed {
 			// Byte 3
 			ShutdownAnySegwit,
 			// Byte 4
-			,
+			OnionMessages,
 			// Byte 5
 			ChannelType | SCIDPrivacy,
 			// Byte 6
@@ -438,8 +441,6 @@ mod sealed {
 	define_feature!(27, ShutdownAnySegwit, [InitContext, NodeContext],
 		"Feature flags for `opt_shutdown_anysegwit`.", set_shutdown_any_segwit_optional,
 		set_shutdown_any_segwit_required, supports_shutdown_anysegwit, requires_shutdown_anysegwit);
-	// We do not yet advertise the onion messages feature bit, but we need to detect when peers
-	// support it.
 	define_feature!(39, OnionMessages, [InitContext, NodeContext],
 		"Feature flags for `option_onion_messages`.", set_onion_messages_optional,
 		set_onion_messages_required, supports_onion_messages, requires_onion_messages);
@@ -924,6 +925,11 @@ mod tests {
 		assert!(!InitFeatures::known().requires_wumbo());
 		assert!(!NodeFeatures::known().requires_wumbo());
 
+		assert!(InitFeatures::known().supports_onion_messages());
+		assert!(NodeFeatures::known().supports_onion_messages());
+		assert!(!InitFeatures::known().requires_onion_messages());
+		assert!(!NodeFeatures::known().requires_onion_messages());
+
 		assert!(InitFeatures::known().supports_zero_conf());
 		assert!(!InitFeatures::known().requires_zero_conf());
 		assert!(NodeFeatures::known().supports_zero_conf());
@@ -968,7 +974,7 @@ mod tests {
 			// - var_onion_optin (req) | static_remote_key (req) | payment_secret(req)
 			// - basic_mpp | wumbo
 			// - opt_shutdown_anysegwit
-			// -
+			// - onion_messages
 			// - option_channel_type | option_scid_alias
 			// - option_zeroconf
 			assert_eq!(node_features.flags.len(), 7);
@@ -976,7 +982,7 @@ mod tests {
 			assert_eq!(node_features.flags[1], 0b01010001);
 			assert_eq!(node_features.flags[2], 0b00001010);
 			assert_eq!(node_features.flags[3], 0b00001000);
-			assert_eq!(node_features.flags[4], 0b00000000);
+			assert_eq!(node_features.flags[4], 0b10000000);
 			assert_eq!(node_features.flags[5], 0b10100000);
 			assert_eq!(node_features.flags[6], 0b00001000);
 		}
