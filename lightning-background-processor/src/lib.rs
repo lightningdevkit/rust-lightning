@@ -46,8 +46,8 @@ use futures::{select, future::FutureExt};
 ///   [`ChannelManager`] persistence should be done in the background.
 /// * Calling [`ChannelManager::timer_tick_occurred`] and [`PeerManager::timer_tick_occurred`]
 ///   at the appropriate intervals.
-/// * Calling [`NetworkGraph::remove_stale_channels`] (if a [`GossipSync`] with a [`NetworkGraph`]
-///   is provided to [`BackgroundProcessor::start`]).
+/// * Calling [`NetworkGraph::remove_stale_channels_and_tracking`] (if a [`GossipSync`] with a
+///   [`NetworkGraph`] is provided to [`BackgroundProcessor::start`]).
 ///
 /// It will also call [`PeerManager::process_events`] periodically though this shouldn't be relied
 /// upon as doing so may result in high latency.
@@ -312,7 +312,7 @@ macro_rules! define_run_body {
 				// The network graph must not be pruned while rapid sync completion is pending
 				log_trace!($logger, "Assessing prunability of network graph");
 				if let Some(network_graph) = $gossip_sync.prunable_network_graph() {
-					network_graph.remove_stale_channels();
+					network_graph.remove_stale_channels_and_tracking();
 
 					if let Err(e) = $persister.persist_graph(network_graph) {
 						log_error!($logger, "Error: Failed to persist network graph, check your disk and permissions {}", e)
