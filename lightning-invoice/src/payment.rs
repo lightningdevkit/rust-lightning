@@ -1560,7 +1560,8 @@ mod tests {
 		assert_eq!(inflight_map.get(&(2, false)).unwrap().clone(), 64);
 
 		// Second path check
-		assert_eq!(inflight_map.get(&(1, false)).unwrap().clone(), 64);
+		assert_eq!(inflight_map.get(&(3, false)).unwrap().clone(), 74);
+		assert_eq!(inflight_map.get(&(4, false)).unwrap().clone(), 64);
 
 		invoice_payer.handle_event(&Event::PaymentPathSuccessful {
 			payment_id, payment_hash, path: route.paths[0].clone()
@@ -1573,7 +1574,8 @@ mod tests {
 		assert_eq!(inflight_map.get(&(2, false)), None);
 
 		// Second path should still be inflight
-		assert_eq!(inflight_map.get(&(1, false)).unwrap().clone(), 64)
+		assert_eq!(inflight_map.get(&(3, false)).unwrap().clone(), 74);
+		assert_eq!(inflight_map.get(&(4, false)).unwrap().clone(), 64)
 	}
 
 	#[test]
@@ -1595,17 +1597,19 @@ mod tests {
 		let router = TestRouter {};
 		let scorer = RefCell::new(TestScorer::new()
 			// 1st invoice, 1st path
-			.expect_usage(ChannelUsage { amount_msat: 10, inflight_htlc_msat: 0, effective_capacity: EffectiveCapacity::Unknown } )
-			.expect_usage(ChannelUsage { amount_msat: 20, inflight_htlc_msat: 0, effective_capacity: EffectiveCapacity::Unknown } )
 			.expect_usage(ChannelUsage { amount_msat: 64, inflight_htlc_msat: 0, effective_capacity: EffectiveCapacity::Unknown } )
+			.expect_usage(ChannelUsage { amount_msat: 84, inflight_htlc_msat: 0, effective_capacity: EffectiveCapacity::Unknown } )
+			.expect_usage(ChannelUsage { amount_msat: 94, inflight_htlc_msat: 0, effective_capacity: EffectiveCapacity::Unknown } )
 			// 1st invoice, 2nd path
 			.expect_usage(ChannelUsage { amount_msat: 64, inflight_htlc_msat: 0, effective_capacity: EffectiveCapacity::Unknown } )
+			.expect_usage(ChannelUsage { amount_msat: 74, inflight_htlc_msat: 0, effective_capacity: EffectiveCapacity::Unknown } )
 			// 2nd invoice, 1st path
-			.expect_usage(ChannelUsage { amount_msat: 10, inflight_htlc_msat: 0, effective_capacity: EffectiveCapacity::Unknown } )
-			.expect_usage(ChannelUsage { amount_msat: 20, inflight_htlc_msat: 64, effective_capacity: EffectiveCapacity::Unknown } )
 			.expect_usage(ChannelUsage { amount_msat: 64, inflight_htlc_msat: 0, effective_capacity: EffectiveCapacity::Unknown } )
+			.expect_usage(ChannelUsage { amount_msat: 84, inflight_htlc_msat: 0, effective_capacity: EffectiveCapacity::Unknown } )
+			.expect_usage(ChannelUsage { amount_msat: 94, inflight_htlc_msat: 0, effective_capacity: EffectiveCapacity::Unknown } )
 			// 2nd invoice, 2nd path
 			.expect_usage(ChannelUsage { amount_msat: 64, inflight_htlc_msat: 64, effective_capacity: EffectiveCapacity::Unknown } )
+			.expect_usage(ChannelUsage { amount_msat: 74, inflight_htlc_msat: 74, effective_capacity: EffectiveCapacity::Unknown } )
 		);
 		let logger = TestLogger::new();
 		let invoice_payer =
@@ -1640,26 +1644,31 @@ mod tests {
 		let payer = TestPayer::new()
 			.expect_send(Amount::ForInvoice(final_value_msat))
 			.expect_send(Amount::OnRetry(final_value_msat / 2))
-			.expect_send(Amount::OnRetry(final_value_msat / 2));
+			.expect_send(Amount::OnRetry(final_value_msat / 4));
 		let final_value_msat = payment_invoice.amount_milli_satoshis().unwrap();
 		let router = TestRouter {};
 		let scorer = RefCell::new(TestScorer::new()
 			// 1st invoice, 1st path
-			.expect_usage(ChannelUsage { amount_msat: 10, inflight_htlc_msat: 0, effective_capacity: EffectiveCapacity::Unknown } )
-			.expect_usage(ChannelUsage { amount_msat: 20, inflight_htlc_msat: 0, effective_capacity: EffectiveCapacity::Unknown } )
 			.expect_usage(ChannelUsage { amount_msat: 64, inflight_htlc_msat: 0, effective_capacity: EffectiveCapacity::Unknown } )
+			.expect_usage(ChannelUsage { amount_msat: 84, inflight_htlc_msat: 0, effective_capacity: EffectiveCapacity::Unknown } )
+			.expect_usage(ChannelUsage { amount_msat: 94, inflight_htlc_msat: 0, effective_capacity: EffectiveCapacity::Unknown } )
 			// 1st invoice, 2nd path
 			.expect_usage(ChannelUsage { amount_msat: 64, inflight_htlc_msat: 0, effective_capacity: EffectiveCapacity::Unknown } )
-			// Retry 1
-			.expect_usage(ChannelUsage { amount_msat: 10, inflight_htlc_msat: 0, effective_capacity: EffectiveCapacity::Unknown } )
-			.expect_usage(ChannelUsage { amount_msat: 20, inflight_htlc_msat: 64, effective_capacity: EffectiveCapacity::Unknown } )
+			.expect_usage(ChannelUsage { amount_msat: 74, inflight_htlc_msat: 0, effective_capacity: EffectiveCapacity::Unknown } )
+			// Retry 1, 1st path
 			.expect_usage(ChannelUsage { amount_msat: 32, inflight_htlc_msat: 0, effective_capacity: EffectiveCapacity::Unknown } )
+			.expect_usage(ChannelUsage { amount_msat: 52, inflight_htlc_msat: 0, effective_capacity: EffectiveCapacity::Unknown } )
+			.expect_usage(ChannelUsage { amount_msat: 62, inflight_htlc_msat: 0, effective_capacity: EffectiveCapacity::Unknown } )
+			// Retry 1, 2nd path
 			.expect_usage(ChannelUsage { amount_msat: 32, inflight_htlc_msat: 64, effective_capacity: EffectiveCapacity::Unknown } )
-			// Retry 2
-			.expect_usage(ChannelUsage { amount_msat: 10, inflight_htlc_msat: 0, effective_capacity: EffectiveCapacity::Unknown } )
-			.expect_usage(ChannelUsage { amount_msat: 20, inflight_htlc_msat: 96, effective_capacity: EffectiveCapacity::Unknown } )
-			.expect_usage(ChannelUsage { amount_msat: 32, inflight_htlc_msat: 0, effective_capacity: EffectiveCapacity::Unknown } )
-			.expect_usage(ChannelUsage { amount_msat: 32, inflight_htlc_msat: 96, effective_capacity: EffectiveCapacity::Unknown } )
+			.expect_usage(ChannelUsage { amount_msat: 42, inflight_htlc_msat: 64 + 10, effective_capacity: EffectiveCapacity::Unknown } )
+			// Retry 2, 1st path
+			.expect_usage(ChannelUsage { amount_msat: 16, inflight_htlc_msat: 0, effective_capacity: EffectiveCapacity::Unknown } )
+			.expect_usage(ChannelUsage { amount_msat: 36, inflight_htlc_msat: 0, effective_capacity: EffectiveCapacity::Unknown } )
+			.expect_usage(ChannelUsage { amount_msat: 46, inflight_htlc_msat: 0, effective_capacity: EffectiveCapacity::Unknown } )
+			// Retry 2, 2nd path
+			.expect_usage(ChannelUsage { amount_msat: 16, inflight_htlc_msat: 64 + 32, effective_capacity: EffectiveCapacity::Unknown } )
+			.expect_usage(ChannelUsage { amount_msat: 26, inflight_htlc_msat: 74 + 32 + 10, effective_capacity: EffectiveCapacity::Unknown } )
 		);
 		let logger = TestLogger::new();
 		let invoice_payer =
@@ -1688,7 +1697,7 @@ mod tests {
 			path: TestRouter::path_for_value(final_value_msat / 2),
 			short_channel_id: None,
 			retry: Some(RouteParameters {
-				final_value_msat: final_value_msat / 2,
+				final_value_msat: final_value_msat / 4,
 				..TestRouter::retry_for_invoice(&payment_invoice)
 			}),
 		});
@@ -1723,7 +1732,7 @@ mod tests {
 
 		// Only the second path, which failed with `MonitorUpdateFailed` should be added to our
 		// inflight map because retries are disabled.
-		assert_eq!(inflight_map.len(), 1);
+		assert_eq!(inflight_map.len(), 2);
 	}
 
 	#[test]
@@ -1753,8 +1762,8 @@ mod tests {
 		invoice_payer.pay_invoice(&invoice_to_pay).unwrap();
 		let inflight_map = invoice_payer.create_inflight_map();
 
-		// All paths successful, hence we check of the existence of all 4 hops.
-		assert_eq!(inflight_map.len(), 4);
+		// All paths successful, hence we check of the existence of all 5 hops.
+		assert_eq!(inflight_map.len(), 5);
 	}
 
 	struct TestRouter;
@@ -1789,12 +1798,24 @@ mod tests {
 							cltv_expiry_delta: 0
 						},
 					],
-					vec![RouteHop {
-						pubkey: PublicKey::from_slice(&hex::decode("0324653eac434488002cc06bbfb7f10fe18991e35f9fe4302dbea6d2353dc0ab1c").unwrap()[..]).unwrap(),
-						channel_features: ChannelFeatures::empty(),
-						node_features: NodeFeatures::empty(),
-						short_channel_id: 1, fee_msat: final_value_msat / 2, cltv_expiry_delta: 144
-					}],
+					vec![
+						RouteHop {
+							pubkey: PublicKey::from_slice(&hex::decode("029e03a901b85534ff1e92c43c74431f7ce72046060fcf7a95c37e148f78c77255").unwrap()[..]).unwrap(),
+							channel_features: ChannelFeatures::empty(),
+							node_features: NodeFeatures::empty(),
+							short_channel_id: 3,
+							fee_msat: 10,
+							cltv_expiry_delta: 144
+						},
+						RouteHop {
+							pubkey: PublicKey::from_slice(&hex::decode("027f31ebc5462c1fdce1b737ecff52d37d75dea43ce11c74d25aa297165faa2007").unwrap()[..]).unwrap(),
+							channel_features: ChannelFeatures::empty(),
+							node_features: NodeFeatures::empty(),
+							short_channel_id: 4,
+							fee_msat: final_value_msat / 2,
+							cltv_expiry_delta: 144
+						}
+					],
 				],
 				payment_params: None,
 			}
@@ -1828,13 +1849,22 @@ mod tests {
 			// Simulate calling the Scorer just as you would in find_route
 			let route = Self::route_for_value(route_params.final_value_msat);
 			for path in route.paths {
-				for hop in path {
+				let mut aggregate_msat = 0u64;
+				for (idx, hop) in path.iter().rev().enumerate() {
+					aggregate_msat += hop.fee_msat;
 					let usage = ChannelUsage {
-						amount_msat: hop.fee_msat,
+						amount_msat: aggregate_msat,
 						inflight_htlc_msat: 0,
 						effective_capacity: EffectiveCapacity::Unknown,
 					};
-					scorer.channel_penalty_msat(hop.short_channel_id, &NodeId::from_pubkey(payer), &NodeId::from_pubkey(&hop.pubkey), usage);
+
+					// Since the path is reversed, the last element in our iteration is the first
+					// hop.
+					if idx == path.len() - 1 {
+						scorer.channel_penalty_msat(hop.short_channel_id, &NodeId::from_pubkey(payer), &NodeId::from_pubkey(&hop.pubkey), usage);
+					} else {
+						scorer.channel_penalty_msat(hop.short_channel_id, &NodeId::from_pubkey(&path[idx + 1].pubkey), &NodeId::from_pubkey(&hop.pubkey), usage);
+					}
 				}
 			}
 
