@@ -13,9 +13,11 @@ use bitcoin::secp256k1::{self, PublicKey, Secp256k1, SecretKey};
 
 use chain::keysinterface::KeysInterface;
 use super::utils;
+use ::get_control_tlv_length;
 use ln::msgs::DecodeError;
 use util::chacha20poly1305rfc::ChaChaPolyWriteAdapter;
 use util::ser::{Readable, VecWriter, Writeable, Writer};
+use super::packet::{ControlTlvs, Padding};
 
 use io;
 use prelude::*;
@@ -54,10 +56,11 @@ impl BlindedRoute {
 	/// will be the destination node.
 	///
 	/// Errors if less than two hops are provided or if `node_pk`(s) are invalid.
-	//  TODO: make all payloads the same size with padding + add dummy hops
-	pub fn new<K: KeysInterface, T: secp256k1::Signing + secp256k1::Verification>
-		(node_pks: &[PublicKey], keys_manager: &K, secp_ctx: &Secp256k1<T>) -> Result<Self, ()>
-	{
+	//  TODO: Add dummy hops
+	pub fn new<K: KeysInterface, T: secp256k1::Signing + secp256k1::Verification> (
+		node_pks: &[PublicKey], keys_manager: &K, secp_ctx: &Secp256k1<T>,
+		include_next_blinding_override_padding: bool
+	) -> Result<Self, ()> {
 		if node_pks.len() < 2 { return Err(()) }
 		let blinding_secret_bytes = keys_manager.get_secure_random_bytes();
 		let blinding_secret = SecretKey::from_slice(&blinding_secret_bytes[..]).expect("RNG is busted");
@@ -66,16 +69,18 @@ impl BlindedRoute {
 		Ok(BlindedRoute {
 			introduction_node_id,
 			blinding_point: PublicKey::from_secret_key(secp_ctx, &blinding_secret),
-			blinded_hops: blinded_hops(secp_ctx, node_pks, &blinding_secret).map_err(|_| ())?,
+			blinded_hops: blinded_hops(secp_ctx, node_pks, &blinding_secret, include_next_blinding_override_padding).map_err(|_| ())?,
 		})
 	}
 }
 
 /// Construct blinded hops for the given `unblinded_path`.
 fn blinded_hops<T: secp256k1::Signing + secp256k1::Verification>(
-	secp_ctx: &Secp256k1<T>, unblinded_path: &[PublicKey], session_priv: &SecretKey
+	secp_ctx: &Secp256k1<T>, unblinded_path: &[PublicKey], session_priv: &SecretKey,
+	include_next_blinding_override_padding: bool
 ) -> Result<Vec<BlindedHop>, secp256k1::Error> {
 	let mut blinded_hops = Vec::with_capacity(unblinded_path.len());
+	let max_length = get_control_tlv_length!(true, include_next_blinding_override_padding);
 
 	let mut prev_ss_and_blinded_node_id = None;
 	utils::construct_keys_callback(secp_ctx, unblinded_path, None, session_priv, |blinded_node_id, _, _, encrypted_payload_ss, unblinded_pk, _| {
@@ -84,6 +89,7 @@ fn blinded_hops<T: secp256k1::Signing + secp256k1::Verification>(
 				let payload = ForwardTlvs {
 					next_node_id: pk,
 					next_blinding_override: None,
+					total_length: max_length,
 				};
 				blinded_hops.push(BlindedHop {
 					blinded_node_id: prev_blinded_node_id,
@@ -95,7 +101,7 @@ fn blinded_hops<T: secp256k1::Signing + secp256k1::Verification>(
 	})?;
 
 	if let Some((final_ss, final_blinded_node_id)) = prev_ss_and_blinded_node_id {
-		let final_payload = ReceiveTlvs { path_id: None };
+		let final_payload = ReceiveTlvs { path_id: None, total_length: max_length, };
 		blinded_hops.push(BlindedHop {
 			blinded_node_id: final_blinded_node_id,
 			encrypted_payload: encrypt_payload(final_payload, final_ss),
@@ -150,28 +156,36 @@ impl_writeable!(BlindedHop, {
 
 /// TLVs to encode in an intermediate onion message packet's hop data. When provided in a blinded
 /// route, they are encoded into [`BlindedHop::encrypted_payload`].
+#[derive(Clone, Copy)]
 pub(crate) struct ForwardTlvs {
 	/// The node id of the next hop in the onion message's path.
 	pub(super) next_node_id: PublicKey,
 	/// Senders to a blinded route use this value to concatenate the route they find to the
 	/// introduction node with the blinded route.
 	pub(super) next_blinding_override: Option<PublicKey>,
+	/// The length the tlv should have when it's serialized, with padding included if needed.
+	/// Used to ensure that all control tlvs in a blinded route have the same length.
+	pub(super) total_length: u16,
 }
 
 /// Similar to [`ForwardTlvs`], but these TLVs are for the final node.
+#[derive(Clone, Copy)]
 pub(crate) struct ReceiveTlvs {
 	/// If `path_id` is `Some`, it is used to identify the blinded route that this onion message is
 	/// sending to. This is useful for receivers to check that said blinded route is being used in
 	/// the right context.
 	pub(super) path_id: Option<[u8; 32]>,
+	/// The length the tlv should have when it's serialized, with padding included if needed.
+	/// Used to ensure that all control tlvs in a blinded route have the same length.
+	pub(super) total_length: u16,
 }
 
 impl Writeable for ForwardTlvs {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
-		// TODO: write padding
 		encode_tlv_stream!(writer, {
+			(1, Padding::new_from_tlv(ControlTlvs::Forward(*self)), option),
 			(4, self.next_node_id, required),
-			(8, self.next_blinding_override, option)
+			(8, self.next_blinding_override, option),
 		});
 		Ok(())
 	}
@@ -179,8 +193,8 @@ impl Writeable for ForwardTlvs {
 
 impl Writeable for ReceiveTlvs {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
-		// TODO: write padding
 		encode_tlv_stream!(writer, {
+			(1, Padding::new_from_tlv(ControlTlvs::Receive(*self)), option),
 			(6, self.path_id, option),
 		});
 		Ok(())

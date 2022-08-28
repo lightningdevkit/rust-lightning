@@ -22,6 +22,7 @@ use ln::onion_utils;
 use super::blinded_route::{BlindedRoute, ForwardTlvs, ReceiveTlvs};
 use super::packet::{BIG_PACKET_HOP_DATA_LEN, ForwardControlTlvs, Packet, Payload, ReceiveControlTlvs, SMALL_PACKET_HOP_DATA_LEN};
 use super::utils;
+use ::get_control_tlv_length;
 use util::events::OnionMessageProvider;
 use util::logger::Logger;
 use util::ser::Writeable;
@@ -71,7 +72,7 @@ use prelude::*;
 /// // Create a blinded route to yourself, for someone to send an onion message to.
 /// # let your_node_id = hop_node_id1;
 /// let hops = [hop_node_id3, hop_node_id4, your_node_id];
-/// let blinded_route = BlindedRoute::new(&hops, &keys_manager, &secp_ctx).unwrap();
+/// let blinded_route = BlindedRoute::new(&hops, &keys_manager, &secp_ctx, true).unwrap();
 ///
 /// // Send an empty onion message to a blinded route.
 /// # let intermediate_hops = [hop_node_id1, hop_node_id2];
@@ -256,14 +257,14 @@ impl<Signer: Sign, K: Deref, L: Deref> OnionMessageHandler for OnionMessenger<Si
 			msg.onion_routing_packet.hmac, control_tlvs_ss)
 		{
 			Ok((Payload::Receive {
-				control_tlvs: ReceiveControlTlvs::Unblinded(ReceiveTlvs { path_id }), reply_path,
+				control_tlvs: ReceiveControlTlvs::Unblinded(ReceiveTlvs { path_id, .. }), reply_path,
 			}, None)) => {
 				log_info!(self.logger,
 					"Received an onion message with path_id: {:02x?} and {}reply_path",
 						path_id, if reply_path.is_some() { "" } else { "no " });
 			},
 			Ok((Payload::Forward(ForwardControlTlvs::Unblinded(ForwardTlvs {
-				next_node_id, next_blinding_override
+				next_node_id, next_blinding_override, ..
 			})), Some((next_hop_hmac, new_packet_bytes)))) => {
 				// TODO: we need to check whether `next_node_id` is our node, in which case this is a dummy
 				// blinded hop and this onion message is destined for us. In this situation, we should keep
@@ -418,6 +419,7 @@ fn packet_payloads_and_keys<T: secp256k1::Signing + secp256k1::Verification>(
 					ForwardTlvs {
 						next_node_id: unblinded_pk_opt.unwrap(),
 						next_blinding_override: None,
+						total_length: get_control_tlv_length!(true, false),
 					}
 				)), ss));
 			}
@@ -428,6 +430,7 @@ fn packet_payloads_and_keys<T: secp256k1::Signing + secp256k1::Verification>(
 				payloads.push((Payload::Forward(ForwardControlTlvs::Unblinded(ForwardTlvs {
 					next_node_id: intro_node_id,
 					next_blinding_override: Some(blinding_pt),
+					total_length: get_control_tlv_length!(true, true),
 				})), control_tlvs_ss));
 			}
 			if let Some(encrypted_payload) = enc_payload_opt {
@@ -460,7 +463,7 @@ fn packet_payloads_and_keys<T: secp256k1::Signing + secp256k1::Verification>(
 
 	if let Some(control_tlvs_ss) = prev_control_tlvs_ss {
 		payloads.push((Payload::Receive {
-			control_tlvs: ReceiveControlTlvs::Unblinded(ReceiveTlvs { path_id: None, }),
+			control_tlvs: ReceiveControlTlvs::Unblinded(ReceiveTlvs { path_id: None, total_length: get_control_tlv_length!(false), }),
 			reply_path: reply_path.take(),
 		}, control_tlvs_ss));
 	}
