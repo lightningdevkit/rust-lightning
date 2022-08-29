@@ -1021,3 +1021,45 @@ fn test_zero_conf_accept_reject() {
 		_ => panic!(),
 	}
 }
+
+#[test]
+fn test_connect_before_funding() {
+	// Tests for a particularly dumb explicit panic that existed prior to 0.0.111 for 0conf
+	// channels. If we received a block while awaiting funding for 0-conf channels we'd hit an
+	// explicit panic when deciding if we should broadcast our channel_ready message.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+
+	let mut manually_accept_conf = test_default_channel_config();
+	manually_accept_conf.manually_accept_inbound_channels = true;
+
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(manually_accept_conf)]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100_000, 10_001, 42, None).unwrap();
+	let open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
+
+	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), InitFeatures::known(), &open_channel);
+	let events = nodes[1].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	match events[0] {
+		Event::OpenChannelRequest { temporary_channel_id, .. } => {
+			nodes[1].node.accept_inbound_channel_from_trusted_peer_0conf(&temporary_channel_id, &nodes[0].node.get_our_node_id(), 0).unwrap();
+		},
+		_ => panic!("Unexpected event"),
+	};
+
+	let mut accept_channel = get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id());
+	assert_eq!(accept_channel.minimum_depth, 0);
+	nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), InitFeatures::known(), &accept_channel);
+
+	let events = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	match events[0] {
+		Event::FundingGenerationReady { .. } => {},
+		_ => panic!("Unexpected event"),
+	}
+
+	connect_blocks(&nodes[0], 1);
+	connect_blocks(&nodes[1], 1);
+}
