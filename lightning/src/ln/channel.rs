@@ -1466,7 +1466,12 @@ impl<Signer: Sign> Channel<Signer> {
 			($htlc: expr, $outbound: expr, $source: expr, $state_name: expr) => {
 				if $outbound == local { // "offered HTLC output"
 					let htlc_in_tx = get_htlc_in_commitment!($htlc, true);
-					if $htlc.amount_msat / 1000 >= broadcaster_dust_limit_satoshis + (feerate_per_kw as u64 * htlc_timeout_tx_weight(self.opt_anchors()) / 1000) {
+					let htlc_tx_fee = if self.opt_anchors() {
+						0
+					} else {
+						feerate_per_kw as u64 * htlc_timeout_tx_weight(false) / 1000
+					};
+					if $htlc.amount_msat / 1000 >= broadcaster_dust_limit_satoshis + htlc_tx_fee {
 						log_trace!(logger, "   ...including {} {} HTLC {} (hash {}) with value {}", if $outbound { "outbound" } else { "inbound" }, $state_name, $htlc.htlc_id, log_bytes!($htlc.payment_hash.0), $htlc.amount_msat);
 						included_non_dust_htlcs.push((htlc_in_tx, $source));
 					} else {
@@ -1475,7 +1480,12 @@ impl<Signer: Sign> Channel<Signer> {
 					}
 				} else {
 					let htlc_in_tx = get_htlc_in_commitment!($htlc, false);
-					if $htlc.amount_msat / 1000 >= broadcaster_dust_limit_satoshis + (feerate_per_kw as u64 * htlc_success_tx_weight(self.opt_anchors()) / 1000) {
+					let htlc_tx_fee = if self.opt_anchors() {
+						0
+					} else {
+						feerate_per_kw as u64 * htlc_success_tx_weight(false) / 1000
+					};
+					if $htlc.amount_msat / 1000 >= broadcaster_dust_limit_satoshis + htlc_tx_fee {
 						log_trace!(logger, "   ...including {} {} HTLC {} (hash {}) with value {}", if $outbound { "outbound" } else { "inbound" }, $state_name, $htlc.htlc_id, log_bytes!($htlc.payment_hash.0), $htlc.amount_msat);
 						included_non_dust_htlcs.push((htlc_in_tx, $source));
 					} else {
@@ -2396,8 +2406,15 @@ impl<Signer: Sign> Channel<Signer> {
 			on_holder_tx_holding_cell_htlcs_count: 0,
 		};
 
-		let counterparty_dust_limit_timeout_sat = (self.get_dust_buffer_feerate(outbound_feerate_update) as u64 * htlc_timeout_tx_weight(self.opt_anchors()) / 1000) + self.counterparty_dust_limit_satoshis;
-		let holder_dust_limit_success_sat = (self.get_dust_buffer_feerate(outbound_feerate_update) as u64 * htlc_success_tx_weight(self.opt_anchors()) / 1000) + self.holder_dust_limit_satoshis;
+		let (htlc_timeout_dust_limit, htlc_success_dust_limit) = if self.opt_anchors() {
+			(0, 0)
+		} else {
+			let dust_buffer_feerate = self.get_dust_buffer_feerate(outbound_feerate_update) as u64;
+			(dust_buffer_feerate * htlc_timeout_tx_weight(false) / 1000,
+				dust_buffer_feerate * htlc_success_tx_weight(false) / 1000)
+		};
+		let counterparty_dust_limit_timeout_sat = htlc_timeout_dust_limit + self.counterparty_dust_limit_satoshis;
+		let holder_dust_limit_success_sat = htlc_success_dust_limit + self.holder_dust_limit_satoshis;
 		for ref htlc in self.pending_inbound_htlcs.iter() {
 			stats.pending_htlcs_value_msat += htlc.amount_msat;
 			if htlc.amount_msat / 1000 < counterparty_dust_limit_timeout_sat {
@@ -2421,8 +2438,15 @@ impl<Signer: Sign> Channel<Signer> {
 			on_holder_tx_holding_cell_htlcs_count: 0,
 		};
 
-		let counterparty_dust_limit_success_sat = (self.get_dust_buffer_feerate(outbound_feerate_update) as u64 * htlc_success_tx_weight(self.opt_anchors()) / 1000) + self.counterparty_dust_limit_satoshis;
-		let holder_dust_limit_timeout_sat = (self.get_dust_buffer_feerate(outbound_feerate_update) as u64 * htlc_timeout_tx_weight(self.opt_anchors()) / 1000) + self.holder_dust_limit_satoshis;
+		let (htlc_timeout_dust_limit, htlc_success_dust_limit) = if self.opt_anchors() {
+			(0, 0)
+		} else {
+			let dust_buffer_feerate = self.get_dust_buffer_feerate(outbound_feerate_update) as u64;
+			(dust_buffer_feerate * htlc_timeout_tx_weight(false) / 1000,
+				dust_buffer_feerate * htlc_success_tx_weight(false) / 1000)
+		};
+		let counterparty_dust_limit_success_sat = htlc_success_dust_limit + self.counterparty_dust_limit_satoshis;
+		let holder_dust_limit_timeout_sat = htlc_timeout_dust_limit + self.holder_dust_limit_satoshis;
 		for ref htlc in self.pending_outbound_htlcs.iter() {
 			stats.pending_htlcs_value_msat += htlc.amount_msat;
 			if htlc.amount_msat / 1000 < counterparty_dust_limit_success_sat {
@@ -2512,8 +2536,14 @@ impl<Signer: Sign> Channel<Signer> {
 	fn next_local_commit_tx_fee_msat(&self, htlc: HTLCCandidate, fee_spike_buffer_htlc: Option<()>) -> u64 {
 		assert!(self.is_outbound());
 
-		let real_dust_limit_success_sat = (self.feerate_per_kw as u64 * htlc_success_tx_weight(self.opt_anchors()) / 1000) + self.holder_dust_limit_satoshis;
-		let real_dust_limit_timeout_sat = (self.feerate_per_kw as u64 * htlc_timeout_tx_weight(self.opt_anchors()) / 1000) + self.holder_dust_limit_satoshis;
+		let (htlc_success_dust_limit, htlc_timeout_dust_limit) = if self.opt_anchors() {
+			(0, 0)
+		} else {
+			(self.feerate_per_kw as u64 * htlc_success_tx_weight(false) / 1000,
+				self.feerate_per_kw as u64 * htlc_timeout_tx_weight(false) / 1000)
+		};
+		let real_dust_limit_success_sat = htlc_success_dust_limit + self.holder_dust_limit_satoshis;
+		let real_dust_limit_timeout_sat = htlc_timeout_dust_limit + self.holder_dust_limit_satoshis;
 
 		let mut addl_htlcs = 0;
 		if fee_spike_buffer_htlc.is_some() { addl_htlcs += 1; }
@@ -2603,8 +2633,14 @@ impl<Signer: Sign> Channel<Signer> {
 	fn next_remote_commit_tx_fee_msat(&self, htlc: HTLCCandidate, fee_spike_buffer_htlc: Option<()>) -> u64 {
 		assert!(!self.is_outbound());
 
-		let real_dust_limit_success_sat = (self.feerate_per_kw as u64 * htlc_success_tx_weight(self.opt_anchors()) / 1000) + self.counterparty_dust_limit_satoshis;
-		let real_dust_limit_timeout_sat = (self.feerate_per_kw as u64 * htlc_timeout_tx_weight(self.opt_anchors()) / 1000) + self.counterparty_dust_limit_satoshis;
+		let (htlc_success_dust_limit, htlc_timeout_dust_limit) = if self.opt_anchors() {
+			(0, 0)
+		} else {
+			(self.feerate_per_kw as u64 * htlc_success_tx_weight(false) / 1000,
+				self.feerate_per_kw as u64 * htlc_timeout_tx_weight(false) / 1000)
+		};
+		let real_dust_limit_success_sat = htlc_success_dust_limit + self.counterparty_dust_limit_satoshis;
+		let real_dust_limit_timeout_sat = htlc_timeout_dust_limit + self.counterparty_dust_limit_satoshis;
 
 		let mut addl_htlcs = 0;
 		if fee_spike_buffer_htlc.is_some() { addl_htlcs += 1; }
@@ -2727,7 +2763,14 @@ impl<Signer: Sign> Channel<Signer> {
 			}
 		}
 
-		let exposure_dust_limit_timeout_sats = (self.get_dust_buffer_feerate(None) as u64 * htlc_timeout_tx_weight(self.opt_anchors()) / 1000) + self.counterparty_dust_limit_satoshis;
+		let (htlc_timeout_dust_limit, htlc_success_dust_limit) = if self.opt_anchors() {
+			(0, 0)
+		} else {
+			let dust_buffer_feerate = self.get_dust_buffer_feerate(None) as u64;
+			(dust_buffer_feerate * htlc_timeout_tx_weight(false) / 1000,
+				dust_buffer_feerate * htlc_success_tx_weight(false) / 1000)
+		};
+		let exposure_dust_limit_timeout_sats = htlc_timeout_dust_limit + self.counterparty_dust_limit_satoshis;
 		if msg.amount_msat / 1000 < exposure_dust_limit_timeout_sats {
 			let on_counterparty_tx_dust_htlc_exposure_msat = inbound_stats.on_counterparty_tx_dust_exposure_msat + outbound_stats.on_counterparty_tx_dust_exposure_msat + msg.amount_msat;
 			if on_counterparty_tx_dust_htlc_exposure_msat > self.get_max_dust_htlc_exposure_msat() {
@@ -2737,7 +2780,7 @@ impl<Signer: Sign> Channel<Signer> {
 			}
 		}
 
-		let exposure_dust_limit_success_sats = (self.get_dust_buffer_feerate(None) as u64 * htlc_success_tx_weight(self.opt_anchors()) / 1000) + self.holder_dust_limit_satoshis;
+		let exposure_dust_limit_success_sats = htlc_success_dust_limit + self.holder_dust_limit_satoshis;
 		if msg.amount_msat / 1000 < exposure_dust_limit_success_sats {
 			let on_holder_tx_dust_htlc_exposure_msat = inbound_stats.on_holder_tx_dust_exposure_msat + outbound_stats.on_holder_tx_dust_exposure_msat + msg.amount_msat;
 			if on_holder_tx_dust_htlc_exposure_msat > self.get_max_dust_htlc_exposure_msat() {
@@ -5444,7 +5487,14 @@ impl<Signer: Sign> Channel<Signer> {
 			}
 		}
 
-		let exposure_dust_limit_success_sats = (self.get_dust_buffer_feerate(None) as u64 * htlc_success_tx_weight(self.opt_anchors()) / 1000) + self.counterparty_dust_limit_satoshis;
+		let (htlc_success_dust_limit, htlc_timeout_dust_limit) = if self.opt_anchors() {
+			(0, 0)
+		} else {
+			let dust_buffer_feerate = self.get_dust_buffer_feerate(None) as u64;
+			(dust_buffer_feerate * htlc_success_tx_weight(false) / 1000,
+				dust_buffer_feerate * htlc_timeout_tx_weight(false) / 1000)
+		};
+		let exposure_dust_limit_success_sats = htlc_success_dust_limit + self.counterparty_dust_limit_satoshis;
 		if amount_msat / 1000 < exposure_dust_limit_success_sats {
 			let on_counterparty_dust_htlc_exposure_msat = inbound_stats.on_counterparty_tx_dust_exposure_msat + outbound_stats.on_counterparty_tx_dust_exposure_msat + amount_msat;
 			if on_counterparty_dust_htlc_exposure_msat > self.get_max_dust_htlc_exposure_msat() {
@@ -5453,7 +5503,7 @@ impl<Signer: Sign> Channel<Signer> {
 			}
 		}
 
-		let exposure_dust_limit_timeout_sats = (self.get_dust_buffer_feerate(None) as u64 * htlc_timeout_tx_weight(self.opt_anchors()) / 1000) + self.holder_dust_limit_satoshis;
+		let exposure_dust_limit_timeout_sats = htlc_timeout_dust_limit + self.holder_dust_limit_satoshis;
 		if amount_msat / 1000 <  exposure_dust_limit_timeout_sats {
 			let on_holder_dust_htlc_exposure_msat = inbound_stats.on_holder_tx_dust_exposure_msat + outbound_stats.on_holder_tx_dust_exposure_msat + amount_msat;
 			if on_holder_dust_htlc_exposure_msat > self.get_max_dust_htlc_exposure_msat() {
