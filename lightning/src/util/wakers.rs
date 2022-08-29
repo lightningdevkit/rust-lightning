@@ -20,24 +20,23 @@ use sync::{Condvar, Mutex};
 #[cfg(any(test, feature = "std"))]
 use std::time::Instant;
 
-/// Used to signal to the ChannelManager persister that the manager needs to be re-persisted to
-/// disk/backups, through `await_persistable_update_timeout` and `await_persistable_update`.
+/// Used to signal to one of many waiters that the condition they're waiting on has happened.
 pub(crate) struct Notifier {
-	/// Users won't access the persistence_lock directly, but rather wait on its bool using
+	/// Users won't access the lock directly, but rather wait on its bool using
 	/// `wait_timeout` and `wait`.
-	persistence_lock: (Mutex<bool>, Condvar),
+	lock: (Mutex<bool>, Condvar),
 }
 
 impl Notifier {
 	pub(crate) fn new() -> Self {
 		Self {
-			persistence_lock: (Mutex::new(false), Condvar::new()),
+			lock: (Mutex::new(false), Condvar::new()),
 		}
 	}
 
 	pub(crate) fn wait(&self) {
 		loop {
-			let &(ref mtx, ref cvar) = &self.persistence_lock;
+			let &(ref mtx, ref cvar) = &self.lock;
 			let mut guard = mtx.lock().unwrap();
 			if *guard {
 				*guard = false;
@@ -56,7 +55,7 @@ impl Notifier {
 	pub(crate) fn wait_timeout(&self, max_wait: Duration) -> bool {
 		let current_time = Instant::now();
 		loop {
-			let &(ref mtx, ref cvar) = &self.persistence_lock;
+			let &(ref mtx, ref cvar) = &self.lock;
 			let mut guard = mtx.lock().unwrap();
 			if *guard {
 				*guard = false;
@@ -81,18 +80,18 @@ impl Notifier {
 		}
 	}
 
-	/// Wake waiters, tracking that persistence needs to occur.
+	/// Wake waiters, tracking that wake needs to occur even if there are currently no waiters.
 	pub(crate) fn notify(&self) {
-		let &(ref persist_mtx, ref cnd) = &self.persistence_lock;
-		let mut persistence_lock = persist_mtx.lock().unwrap();
-		*persistence_lock = true;
-		mem::drop(persistence_lock);
+		let &(ref persist_mtx, ref cnd) = &self.lock;
+		let mut lock = persist_mtx.lock().unwrap();
+		*lock = true;
+		mem::drop(lock);
 		cnd.notify_all();
 	}
 
 	#[cfg(any(test, feature = "_test_utils"))]
-	pub fn needs_persist(&self) -> bool {
-		let &(ref mtx, _) = &self.persistence_lock;
+	pub fn notify_pending(&self) -> bool {
+		let &(ref mtx, _) = &self.lock;
 		let guard = mtx.lock().unwrap();
 		*guard
 	}
@@ -115,9 +114,9 @@ mod tests {
 		let exit_thread_clone = exit_thread.clone();
 		thread::spawn(move || {
 			loop {
-				let &(ref persist_mtx, ref cnd) = &thread_notifier.persistence_lock;
-				let mut persistence_lock = persist_mtx.lock().unwrap();
-				*persistence_lock = true;
+				let &(ref persist_mtx, ref cnd) = &thread_notifier.lock;
+				let mut lock = persist_mtx.lock().unwrap();
+				*lock = true;
 				cnd.notify_all();
 
 				if exit_thread_clone.load(Ordering::SeqCst) {

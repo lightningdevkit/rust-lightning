@@ -5990,7 +5990,7 @@ where
 
 	#[cfg(any(test, feature = "_test_utils"))]
 	pub fn get_persistence_condvar_value(&self) -> bool {
-		self.persistence_notifier.needs_persist()
+		self.persistence_notifier.notify_pending()
 	}
 
 	/// Gets the latest best block which was connected either via the [`chain::Listen`] or
