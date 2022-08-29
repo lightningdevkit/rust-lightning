@@ -10,6 +10,7 @@
 //! Onion message testing and test utilities live here.
 
 use chain::keysinterface::{KeysInterface, Recipient};
+use ln::msgs::OnionMessageHandler;
 use super::{BlindedRoute, Destination, OnionMessenger, SendError};
 use util::enforcing_trait_impls::EnforcingSigner;
 use util::test_utils;

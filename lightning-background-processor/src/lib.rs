@@ -19,7 +19,7 @@ use lightning::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use lightning::chain::chainmonitor::{ChainMonitor, Persist};
 use lightning::chain::keysinterface::{Sign, KeysInterface};
 use lightning::ln::channelmanager::ChannelManager;
-use lightning::ln::msgs::{ChannelMessageHandler, RoutingMessageHandler};
+use lightning::ln::msgs::{ChannelMessageHandler, OnionMessageHandler, RoutingMessageHandler};
 use lightning::ln::peer_handler::{CustomMessageHandler, PeerManager, SocketDescriptor};
 use lightning::routing::gossip::{NetworkGraph, P2PGossipSync};
 use lightning::routing::scoring::WriteableScore;
@@ -281,6 +281,7 @@ impl BackgroundProcessor {
 		P: 'static + Deref + Send + Sync,
 		Descriptor: 'static + SocketDescriptor + Send + Sync,
 		CMH: 'static + Deref + Send + Sync,
+		OMH: 'static + Deref + Send + Sync,
 		RMH: 'static + Deref + Send + Sync,
 		EH: 'static + EventHandler + Send,
 		PS: 'static + Deref + Send,
@@ -289,7 +290,7 @@ impl BackgroundProcessor {
 		PGS: 'static + Deref<Target = P2PGossipSync<G, CA, L>> + Send + Sync,
 		RGS: 'static + Deref<Target = RapidGossipSync<G, L>> + Send,
 		UMH: 'static + Deref + Send + Sync,
-		PM: 'static + Deref<Target = PeerManager<Descriptor, CMH, RMH, L, UMH>> + Send + Sync,
+		PM: 'static + Deref<Target = PeerManager<Descriptor, CMH, RMH, OMH, L, UMH>> + Send + Sync,
 		S: 'static + Deref<Target = SC> + Send + Sync,
 		SC: WriteableScore<'a>,
 	>(
@@ -306,6 +307,7 @@ impl BackgroundProcessor {
 		L::Target: 'static + Logger,
 		P::Target: 'static + Persist<Signer>,
 		CMH::Target: 'static + ChannelMessageHandler,
+		OMH::Target: 'static + OnionMessageHandler,
 		RMH::Target: 'static + RoutingMessageHandler,
 		UMH::Target: 'static + CustomMessageHandler,
 		PS::Target: 'static + Persister<'a, Signer, CW, T, K, F, L, SC>,
@@ -544,7 +546,7 @@ mod tests {
 		node: Arc<SimpleArcChannelManager<ChainMonitor, test_utils::TestBroadcaster, test_utils::TestFeeEstimator, test_utils::TestLogger>>,
 		p2p_gossip_sync: PGS,
 		rapid_gossip_sync: RGS,
-		peer_manager: Arc<PeerManager<TestDescriptor, Arc<test_utils::TestChannelMessageHandler>, Arc<test_utils::TestRoutingMessageHandler>, Arc<test_utils::TestLogger>, IgnoringMessageHandler>>,
+		peer_manager: Arc<PeerManager<TestDescriptor, Arc<test_utils::TestChannelMessageHandler>, Arc<test_utils::TestRoutingMessageHandler>, IgnoringMessageHandler, Arc<test_utils::TestLogger>, IgnoringMessageHandler>>,
 		chain_monitor: Arc<ChainMonitor>,
 		persister: Arc<FilesystemPersister>,
 		tx_broadcaster: Arc<test_utils::TestBroadcaster>,
@@ -663,7 +665,7 @@ mod tests {
 			let network_graph = Arc::new(NetworkGraph::new(genesis_block.header.block_hash(), logger.clone()));
 			let p2p_gossip_sync = Arc::new(P2PGossipSync::new(network_graph.clone(), Some(chain_source.clone()), logger.clone()));
 			let rapid_gossip_sync = Arc::new(RapidGossipSync::new(network_graph.clone()));
-			let msg_handler = MessageHandler { chan_handler: Arc::new(test_utils::TestChannelMessageHandler::new()), route_handler: Arc::new(test_utils::TestRoutingMessageHandler::new() )};
+			let msg_handler = MessageHandler { chan_handler: Arc::new(test_utils::TestChannelMessageHandler::new()), route_handler: Arc::new(test_utils::TestRoutingMessageHandler::new()), onion_message_handler: IgnoringMessageHandler{}};
 			let peer_manager = Arc::new(PeerManager::new(msg_handler, keys_manager.get_node_secret(Recipient::Node).unwrap(), &seed, logger.clone(), IgnoringMessageHandler{}));
 			let scorer = Arc::new(Mutex::new(test_utils::TestScorer::with_penalty(0)));
 			let node = Node { node: manager, p2p_gossip_sync, rapid_gossip_sync, peer_manager, chain_monitor, persister, tx_broadcaster, network_graph, logger, best_block, scorer };
