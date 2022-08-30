@@ -1336,6 +1336,9 @@ where L::Target: Logger {
 			},
 		}
 
+		log_trace!(logger, "Targets.len: {}", targets.len());
+
+
 		// Step (2).
 		// If a caller provided us with last hops, add them to routing targets. Since this happens
 		// earlier than general path finding, they will be somewhat prioritized, although currently
@@ -1461,7 +1464,7 @@ where L::Target: Logger {
 			}
 		}
 
-		log_trace!(logger, "Starting main path collection loop with {} nodes pre-filled from first/last hops.", targets.len());
+		log_trace!(logger, "Starting main path collection loop with {} nodes pre-filled from first/last hops, first-hop-targets-len: {}, last hop len: {}.", targets.len(), first_hop_targets.len(), payment_params.route_hints.len());
 
 		// At this point, targets are filled with the data from first and
 		// last hops communicated by the caller, and the payment receiver.

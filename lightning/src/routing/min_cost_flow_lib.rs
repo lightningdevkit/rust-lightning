@@ -407,11 +407,11 @@ const use_guaranteed_capacity:bool=true;
 // Returns positive number
 fn minus_log_probability(e:&MinCostEdge , er: &MinCostEdge) -> f32 {
 	let from_total=if e.cost>0 { e.remaining_capacity } else { er.remaining_capacity };
-	let capacity=e.remaining_capacity+er.remaining_capacity;
-	if use_guaranteed_capacity && from_total+e.guaranteed_liquidity>=capacity {
+	let capacity=e.remaining_capacity as i64+er.remaining_capacity as i64;
+	if use_guaranteed_capacity && from_total as i64+e.guaranteed_liquidity as i64>=capacity {
 		return 0.0;
 	}
-	let p=((from_total+1) as f32)/(capacity-e.guaranteed_liquidity+1) as f32;
+	let p=((from_total+1) as f32)/(capacity as i64-e.guaranteed_liquidity as i64+1) as f32;
 	return -p.log2()
 }
 
@@ -886,5 +886,9 @@ pub fn min_cost_flow(n: usize, s: usize, t: usize, value: i32, log_probability_c
 		let e=&adj2[u][lightning_data_idx[i]];
 		let er=&adj2[e.v][e.reverse_idx];
 		lightning_data[i].flow=er.remaining_capacity;
+	}
+	// Undo cost scaling
+	for l in &mut *lightning_data {
+		l.cost/=cost_scaling;
 	}
 }
