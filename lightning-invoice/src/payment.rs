@@ -145,7 +145,7 @@ use lightning::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
 use lightning::ln::channelmanager::{ChannelDetails, PaymentId, PaymentSendFailure};
 use lightning::ln::msgs::LightningError;
 use lightning::routing::scoring::{LockableScore, Score};
-use lightning::routing::router::{PaymentParameters, Route, RouteParameters};
+use lightning::routing::router::{PaymentParameters, Route, RouteHop, RouteParameters};
 use lightning::util::events::{Event, EventHandler};
 use lightning::util::logger::Logger;
 use time_utils::Time;
@@ -188,10 +188,25 @@ where
 	logger: L,
 	event_handler: E,
 	/// Caches the overall attempts at making a payment, which is updated prior to retrying.
-	payment_cache: Mutex<HashMap<PaymentHash, PaymentAttempts<T>>>,
+	payment_cache: Mutex<HashMap<PaymentHash, PaymentInfo<T>>>,
 	retry: Retry,
 }
 
+/// Used by [`InvoicePayerUsingTime::payment_cache`] to track the payments that are either
+/// currently being made, or have outstanding paths that need retrying.
+struct PaymentInfo<T: Time> {
+	attempts: PaymentAttempts<T>,
+	paths: Vec<Vec<RouteHop>>,
+}
+
+impl<T: Time> PaymentInfo<T> {
+	fn new() -> Self {
+		PaymentInfo {
+			attempts: PaymentAttempts::new(),
+			paths: vec![],
+		}
+	}
+}
 /// Storing minimal payment attempts information required for determining if a outbound payment can
 /// be retried.
 #[derive(Clone, Copy)]
@@ -361,7 +376,7 @@ where
 		let payment_hash = PaymentHash(invoice.payment_hash().clone().into_inner());
 		match self.payment_cache.lock().unwrap().entry(payment_hash) {
 			hash_map::Entry::Occupied(_) => return Err(PaymentError::Invoice("payment pending")),
-			hash_map::Entry::Vacant(entry) => entry.insert(PaymentAttempts::new()),
+			hash_map::Entry::Vacant(entry) => entry.insert(PaymentInfo::new()),
 		};
 
 		let payment_secret = Some(invoice.payment_secret().clone());
@@ -397,7 +412,7 @@ where
 		let payment_hash = PaymentHash(Sha256::hash(&payment_preimage.0).into_inner());
 		match self.payment_cache.lock().unwrap().entry(payment_hash) {
 			hash_map::Entry::Occupied(_) => return Err(PaymentError::Invoice("payment pending")),
-			hash_map::Entry::Vacant(entry) => entry.insert(PaymentAttempts::new()),
+			hash_map::Entry::Vacant(entry) => entry.insert(PaymentInfo::new()),
 		};
 
 		let route_params = RouteParameters {
@@ -437,9 +452,9 @@ where
 				PaymentSendFailure::PathParameterError(_) => Err(e),
 				PaymentSendFailure::AllFailedRetrySafe(_) => {
 					let mut payment_cache = self.payment_cache.lock().unwrap();
-					let payment_attempts = payment_cache.get_mut(&payment_hash).unwrap();
-					payment_attempts.count += 1;
-					if self.retry.is_retryable_now(payment_attempts) {
+					let payment_info = payment_cache.get_mut(&payment_hash).unwrap();
+					payment_info.attempts.count += 1;
+					if self.retry.is_retryable_now(&payment_info.attempts) {
 						core::mem::drop(payment_cache);
 						Ok(self.pay_internal(params, payment_hash, send_payment)?)
 					} else {
@@ -469,13 +484,15 @@ where
 	fn retry_payment(
 		&self, payment_id: PaymentId, payment_hash: PaymentHash, params: &RouteParameters
 	) -> Result<(), ()> {
-		let attempts =
-			*self.payment_cache.lock().unwrap().entry(payment_hash)
-			.and_modify(|attempts| attempts.count += 1)
-			.or_insert(PaymentAttempts {
-				count: 1,
-				first_attempted_at: T::now()
-			});
+		let attempts = self.payment_cache.lock().unwrap().entry(payment_hash)
+			.and_modify(|info| info.attempts.count += 1 )
+			.or_insert_with(|| PaymentInfo {
+				attempts: PaymentAttempts {
+					count: 1,
+					first_attempted_at: T::now(),
+				},
+				paths: vec![],
+			}).attempts;
 
 		if !self.retry.is_retryable_now(&attempts) {
 			log_trace!(self.logger, "Payment {} exceeded maximum attempts; not retrying ({})", log_bytes!(payment_hash.0), attempts);
@@ -583,7 +600,7 @@ where
 				let mut payment_cache = self.payment_cache.lock().unwrap();
 				let attempts = payment_cache
 					.remove(payment_hash)
-					.map_or(1, |attempts| attempts.count + 1);
+					.map_or(1, |payment_info| payment_info.attempts.count + 1);
 				log_trace!(self.logger, "Payment {} succeeded (attempts: {})", log_bytes!(payment_hash.0), attempts);
 			},
 			Event::ProbeSuccessful { payment_hash, path, .. } => {
