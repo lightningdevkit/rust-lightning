@@ -455,9 +455,9 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref> DefaultRouter<G, L> where L::
 	}
 }
 
-impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, S: Score> Router<S> for DefaultRouter<G, L>
+impl<G: Deref<Target = NetworkGraph<L>>, L: Deref> Router for DefaultRouter<G, L>
 where L::Target: Logger {
-	fn find_route(
+	fn find_route<S: Score>(
 		&self, payer: &PublicKey, params: &RouteParameters, _payment_hash: &PaymentHash,
 		first_hops: Option<&[&ChannelDetails]>, scorer: &S
 	) -> Result<Route, LightningError> {
