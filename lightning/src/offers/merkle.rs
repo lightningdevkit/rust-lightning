@@ -24,6 +24,35 @@ tlv_stream!(SignatureTlvStream, SignatureTlvStreamRef, SIGNATURE_TYPES, {
 	(240, signature: Signature),
 });
 
+/// Error when signing messages.
+#[derive(Debug)]
+pub enum SignError<E> {
+	/// User-defined error when signing the message.
+	Signing(E),
+	/// Error when verifying the produced signature using the given pubkey.
+	Verification(secp256k1::Error),
+}
+
+/// Signs a message digest consisting of a tagged hash of the given bytes, checking if it can be
+/// verified with the supplied pubkey.
+///
+/// Panics if `bytes` is not a well-formed TLV stream containing at least one TLV record.
+pub(super) fn sign_message<F, E>(
+	sign: F, tag: &str, bytes: &[u8], pubkey: PublicKey,
+) -> Result<Signature, SignError<E>>
+where
+	F: FnOnce(&Message) -> Result<Signature, E>
+{
+	let digest = message_digest(tag, bytes);
+	let signature = sign(&digest).map_err(|e| SignError::Signing(e))?;
+
+	let pubkey = pubkey.into();
+	let secp_ctx = Secp256k1::verification_only();
+	secp_ctx.verify_schnorr(&signature, &digest, &pubkey).map_err(|e| SignError::Verification(e))?;
+
+	Ok(signature)
+}
+
 /// Verifies the signature with a pubkey over the given bytes using a tagged hash as the message
 /// digest.
 ///
@@ -31,12 +60,16 @@ tlv_stream!(SignatureTlvStream, SignatureTlvStreamRef, SIGNATURE_TYPES, {
 pub(super) fn verify_signature(
 	signature: &Signature, tag: &str, bytes: &[u8], pubkey: PublicKey,
 ) -> Result<(), secp256k1::Error> {
-	let tag = sha256::Hash::hash(tag.as_bytes());
-	let merkle_root = root_hash(bytes);
-	let digest = Message::from_slice(&tagged_hash(tag, merkle_root)).unwrap();
+	let digest = message_digest(tag, bytes);
 	let pubkey = pubkey.into();
 	let secp_ctx = Secp256k1::verification_only();
 	secp_ctx.verify_schnorr(signature, &digest, &pubkey)
+}
+
+fn message_digest(tag: &str, bytes: &[u8]) -> Message {
+	let tag = sha256::Hash::hash(tag.as_bytes());
+	let merkle_root = root_hash(bytes);
+	Message::from_slice(&tagged_hash(tag, merkle_root)).unwrap()
 }
 
 /// Computes a merkle root hash for the given data, which must be a well-formed TLV stream

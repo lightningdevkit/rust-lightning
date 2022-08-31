@@ -76,6 +76,7 @@ use core::time::Duration;
 use crate::io;
 use crate::ln::features::OfferFeatures;
 use crate::ln::msgs::MAX_VALUE_MSAT;
+use crate::offers::invoice_request::InvoiceRequestBuilder;
 use crate::offers::parse::{Bech32Encode, ParseError, ParsedMessage, SemanticError};
 use crate::onion_message::BlindedPath;
 use crate::util::ser::{HighZeroBytesDroppedBigSize, WithoutLength, Writeable, Writer};
@@ -149,15 +150,6 @@ impl OfferBuilder {
 		self
 	}
 
-	/// Sets the [`Offer::features`].
-	///
-	/// Successive calls to this method will override the previous setting.
-	#[cfg(test)]
-	pub fn features(mut self, features: OfferFeatures) -> Self {
-		self.offer.features = features;
-		self
-	}
-
 	/// Sets the [`Offer::absolute_expiry`] as seconds since the Unix epoch. Any expiry that has
 	/// already passed is valid and can be checked for using [`Offer::is_expired`].
 	///
@@ -222,6 +214,14 @@ impl OfferBuilder {
 	}
 }
 
+#[cfg(test)]
+impl OfferBuilder {
+	fn features_unchecked(mut self, features: OfferFeatures) -> Self {
+		self.offer.features = features;
+		self
+	}
+}
+
 /// An `Offer` is a potentially long-lived proposal for payment of a good or service.
 ///
 /// An offer is a precursor to an [`InvoiceRequest`]. A merchant publishes an offer from which a
@@ -238,8 +238,8 @@ impl OfferBuilder {
 pub struct Offer {
 	// The serialized offer. Needed when creating an `InvoiceRequest` if the offer contains unknown
 	// fields.
-	bytes: Vec<u8>,
-	contents: OfferContents,
+	pub(super) bytes: Vec<u8>,
+	pub(super) contents: OfferContents,
 }
 
 /// The contents of an [`Offer`], which may be shared with an [`InvoiceRequest`] or an `Invoice`.
@@ -268,6 +268,10 @@ impl Offer {
 	/// for the selected chain.
 	pub fn chains(&self) -> Vec<ChainHash> {
 		self.contents.chains()
+	}
+
+	pub(super) fn implied_chain(&self) -> ChainHash {
+		self.contents.implied_chain()
 	}
 
 	/// Returns whether the given chain is supported by the offer.
@@ -351,6 +355,29 @@ impl Offer {
 		self.contents.signing_pubkey.unwrap()
 	}
 
+	/// Creates an [`InvoiceRequest`] for the offer with the given `metadata` and `payer_id`, which
+	/// will be reflected in the `Invoice` response.
+	///
+	/// The `metadata` is useful for including information about the derivation of `payer_id` such
+	/// that invoice response handling can be stateless. Also serves as payer-provided entropy while
+	/// hashing in the signature calculation.
+	///
+	/// This should not leak any information such as by using a simple BIP-32 derivation path.
+	/// Otherwise, payments may be correlated.
+	///
+	/// Errors if the offer contains unknown required features.
+	///
+	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
+	pub fn request_invoice(
+		&self, metadata: Vec<u8>, payer_id: PublicKey
+	) -> Result<InvoiceRequestBuilder, SemanticError> {
+		if self.features().requires_unknown_bits() {
+			return Err(SemanticError::UnknownRequiredFeatures);
+		}
+
+		Ok(InvoiceRequestBuilder::new(self, metadata, payer_id))
+	}
+
 	#[cfg(test)]
 	fn as_tlv_stream(&self) -> OfferTlvStreamRef {
 		self.contents.as_tlv_stream()
@@ -380,23 +407,48 @@ impl OfferContents {
 		self.amount.as_ref()
 	}
 
-	pub fn amount_msats(&self) -> u64 {
-		match self.amount() {
+	pub(super) fn check_amount_msats_for_quantity(
+		&self, amount_msats: Option<u64>, quantity: Option<u64>
+	) -> Result<(), SemanticError> {
+		let offer_amount_msats = match self.amount {
 			None => 0,
-			Some(&Amount::Bitcoin { amount_msats }) => amount_msats,
-			Some(&Amount::Currency { .. }) => unreachable!(),
-		}
-	}
+			Some(Amount::Bitcoin { amount_msats }) => amount_msats,
+			Some(Amount::Currency { .. }) => return Err(SemanticError::UnsupportedCurrency),
+		};
 
-	pub fn expected_invoice_amount_msats(&self, quantity: u64) -> u64 {
-		self.amount_msats() * quantity
+		if !self.expects_quantity() || quantity.is_some() {
+			let expected_amount_msats = offer_amount_msats * quantity.unwrap_or(1);
+			let amount_msats = amount_msats.unwrap_or(expected_amount_msats);
+
+			if amount_msats < expected_amount_msats {
+				return Err(SemanticError::InsufficientAmount);
+			}
+
+			if amount_msats > MAX_VALUE_MSAT {
+				return Err(SemanticError::InvalidAmount);
+			}
+		}
+
+		Ok(())
 	}
 
 	pub fn supported_quantity(&self) -> Quantity {
 		self.supported_quantity
 	}
 
-	pub fn is_valid_quantity(&self, quantity: u64) -> bool {
+	pub(super) fn check_quantity(&self, quantity: Option<u64>) -> Result<(), SemanticError> {
+		let expects_quantity = self.expects_quantity();
+		match quantity {
+			None if expects_quantity => Err(SemanticError::MissingQuantity),
+			Some(_) if !expects_quantity => Err(SemanticError::UnexpectedQuantity),
+			Some(quantity) if !self.is_valid_quantity(quantity) => {
+				Err(SemanticError::InvalidQuantity)
+			},
+			_ => Ok(()),
+		}
+	}
+
+	fn is_valid_quantity(&self, quantity: u64) -> bool {
 		match self.supported_quantity {
 			Quantity::Bounded(n) => {
 				let n = n.get();
@@ -407,14 +459,14 @@ impl OfferContents {
 		}
 	}
 
-	pub fn expects_quantity(&self) -> bool {
+	fn expects_quantity(&self) -> bool {
 		match self.supported_quantity {
 			Quantity::Bounded(n) => n.get() != 1,
 			Quantity::Unbounded => true,
 		}
 	}
 
-	fn as_tlv_stream(&self) -> OfferTlvStreamRef {
+	pub(super) fn as_tlv_stream(&self) -> OfferTlvStreamRef {
 		let (currency, amount) = match &self.amount {
 			None => (None, None),
 			Some(Amount::Bitcoin { amount_msats }) => (None, Some(*amount_msats)),
@@ -760,15 +812,15 @@ mod tests {
 	#[test]
 	fn builds_offer_with_features() {
 		let offer = OfferBuilder::new("foo".into(), pubkey(42))
-			.features(OfferFeatures::unknown())
+			.features_unchecked(OfferFeatures::unknown())
 			.build()
 			.unwrap();
 		assert_eq!(offer.features(), &OfferFeatures::unknown());
 		assert_eq!(offer.as_tlv_stream().features, Some(&OfferFeatures::unknown()));
 
 		let offer = OfferBuilder::new("foo".into(), pubkey(42))
-			.features(OfferFeatures::unknown())
-			.features(OfferFeatures::empty())
+			.features_unchecked(OfferFeatures::unknown())
+			.features_unchecked(OfferFeatures::empty())
 			.build()
 			.unwrap();
 		assert_eq!(offer.features(), &OfferFeatures::empty());
@@ -888,6 +940,18 @@ mod tests {
 		let tlv_stream = offer.as_tlv_stream();
 		assert_eq!(offer.supported_quantity(), Quantity::one());
 		assert_eq!(tlv_stream.quantity_max, None);
+	}
+
+	#[test]
+	fn fails_requesting_invoice_with_unknown_required_features() {
+		match OfferBuilder::new("foo".into(), pubkey(42))
+			.features_unchecked(OfferFeatures::unknown())
+			.build().unwrap()
+			.request_invoice(vec![1; 32], pubkey(43))
+		{
+			Ok(_) => panic!("expected error"),
+			Err(e) => assert_eq!(e, SemanticError::UnknownRequiredFeatures),
+		}
 	}
 
 	#[test]
