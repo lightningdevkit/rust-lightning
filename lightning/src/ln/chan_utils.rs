@@ -727,6 +727,15 @@ pub fn get_anchor_redeemscript(funding_pubkey: &PublicKey) -> Script {
 		.into_script()
 }
 
+#[cfg(anchors)]
+/// Locates the output with an anchor script paying to `funding_pubkey` within `commitment_tx`.
+pub(crate) fn get_anchor_output<'a>(commitment_tx: &'a Transaction, funding_pubkey: &PublicKey) -> Option<(u32, &'a TxOut)> {
+	let anchor_script = chan_utils::get_anchor_redeemscript(funding_pubkey).to_v0_p2wsh();
+	commitment_tx.output.iter().enumerate()
+		.find(|(_, txout)| txout.script_pubkey == anchor_script)
+		.map(|(idx, txout)| (idx as u32, txout))
+}
+
 /// Per-channel data used to build transactions in conjunction with the per-commitment data (CommitmentTransaction).
 /// The fields are organized by holder/counterparty.
 ///

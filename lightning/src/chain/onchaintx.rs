@@ -23,10 +23,16 @@ use bitcoin::secp256k1;
 
 use ln::msgs::DecodeError;
 use ln::PaymentPreimage;
+#[cfg(anchors)]
+use ln::chan_utils;
 use ln::chan_utils::{ChannelTransactionParameters, HolderCommitmentTransaction};
+#[cfg(anchors)]
+use chain::chaininterface::ConfirmationTarget;
 use chain::chaininterface::{FeeEstimator, BroadcasterInterface, LowerBoundedFeeEstimator};
 use chain::channelmonitor::{ANTI_REORG_DELAY, CLTV_SHARED_CLAIM_BUFFER};
 use chain::keysinterface::{Sign, KeysInterface};
+#[cfg(anchors)]
+use chain::package::PackageSolvingData;
 use chain::package::PackageTemplate;
 use util::logger::Logger;
 use util::ser::{Readable, ReadableArgs, MaybeReadable, Writer, Writeable, VecWriter};
@@ -162,11 +168,28 @@ impl Writeable for Option<Vec<Option<(usize, Signature)>>> {
 	}
 }
 
+// Represents the different types of claims for which events are yielded externally to satisfy said
+// claims.
+#[cfg(anchors)]
+pub(crate) enum ClaimEvent {
+	/// Event yielded to signal that the commitment transaction fee must be bumped to claim any
+	/// encumbered funds and proceed to HTLC resolution, if any HTLCs exist.
+	BumpCommitment {
+		package_target_feerate_sat_per_1000_weight: u32,
+		commitment_tx: Transaction,
+		anchor_output_idx: u32,
+	},
+}
+
 /// Represents the different ways an output can be claimed (i.e., spent to an address under our
 /// control) onchain.
 pub(crate) enum OnchainClaim {
 	/// A finalized transaction pending confirmation spending the output to claim.
 	Tx(Transaction),
+	#[cfg(anchors)]
+	/// An event yielded externally to signal additional inputs must be added to a transaction
+	/// pending confirmation spending the output to claim.
+	Event(ClaimEvent),
 }
 
 /// OnchainTxHandler receives claiming requests, aggregates them if it's sound, broadcast and
@@ -199,6 +222,8 @@ pub struct OnchainTxHandler<ChannelSigner: Sign> {
 	pub(crate) pending_claim_requests: HashMap<Txid, PackageTemplate>,
 	#[cfg(not(test))]
 	pending_claim_requests: HashMap<Txid, PackageTemplate>,
+	#[cfg(anchors)]
+	pending_claim_events: HashMap<Txid, ClaimEvent>,
 
 	// Used to link outpoints claimed in a connected block to a pending claim request.
 	// Key is outpoint than monitor parsing has detected we have keys/scripts to claim
@@ -348,6 +373,8 @@ impl<'a, K: KeysInterface> ReadableArgs<&'a K> for OnchainTxHandler<K::Signer> {
 			locktimed_packages,
 			pending_claim_requests,
 			onchain_events_awaiting_threshold_conf,
+			#[cfg(anchors)]
+			pending_claim_events: HashMap::new(),
 			secp_ctx,
 		})
 	}
@@ -367,6 +394,8 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 			claimable_outpoints: HashMap::new(),
 			locktimed_packages: BTreeMap::new(),
 			onchain_events_awaiting_threshold_conf: Vec::new(),
+			#[cfg(anchors)]
+			pending_claim_events: HashMap::new(),
 
 			secp_ctx,
 		}
@@ -380,10 +409,14 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 		self.holder_commitment.to_broadcaster_value_sat()
 	}
 
-	/// Lightning security model (i.e being able to redeem/timeout HTLC or penalize coutnerparty onchain) lays on the assumption of claim transactions getting confirmed before timelock expiration
-	/// (CSV or CLTV following cases). In case of high-fee spikes, claim tx may stuck in the mempool, so you need to bump its feerate quickly using Replace-By-Fee or Child-Pay-For-Parent.
-	/// Panics if there are signing errors, because signing operations in reaction to on-chain events
-	/// are not expected to fail, and if they do, we may lose funds.
+	/// Lightning security model (i.e being able to redeem/timeout HTLC or penalize counterparty
+	/// onchain) lays on the assumption of claim transactions getting confirmed before timelock
+	/// expiration (CSV or CLTV following cases). In case of high-fee spikes, claim tx may get stuck
+	/// in the mempool, so you need to bump its feerate quickly using Replace-By-Fee or
+	/// Child-Pay-For-Parent.
+	///
+	/// Panics if there are signing errors, because signing operations in reaction to on-chain
+	/// events are not expected to fail, and if they do, we may lose funds.
 	fn generate_claim<F: Deref, L: Deref>(&mut self, cur_height: u32, cached_request: &PackageTemplate, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L) -> Option<(Option<u32>, u64, OnchainClaim)>
 		where F::Target: FeeEstimator,
 					L::Target: Logger,
@@ -405,12 +438,60 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 				return Some((new_timer, new_feerate, OnchainClaim::Tx(transaction)))
 			}
 		} else {
-			// Note: Currently, amounts of holder outputs spending witnesses aren't used
-			// as we can't malleate spending package to increase their feerate. This
-			// should change with the remaining anchor output patchset.
-			if let Some(transaction) = cached_request.finalize_untractable_package(self, logger) {
-				return Some((None, 0, OnchainClaim::Tx(transaction)));
+			// Untractable packages cannot have their fees bumped through Replace-By-Fee. Some
+			// packages may support fee bumping through Child-Pays-For-Parent, indicated by those
+			// which require external funding.
+			#[cfg(not(anchors))]
+			let inputs = cached_request.inputs();
+			#[cfg(anchors)]
+			let mut inputs = cached_request.inputs();
+			debug_assert_eq!(inputs.len(), 1);
+			let tx = match cached_request.finalize_untractable_package(self, logger) {
+				Some(tx) => tx,
+				None => return None,
+			};
+			if !cached_request.requires_external_funding() {
+				return Some((None, 0, OnchainClaim::Tx(tx)));
 			}
+			#[cfg(anchors)]
+			return inputs.find_map(|input| match input {
+				// Commitment inputs with anchors support are the only untractable inputs supported
+				// thus far that require external funding.
+				PackageSolvingData::HolderFundingOutput(..) => {
+					debug_assert_eq!(tx.txid(), self.holder_commitment.trust().txid(),
+						"Holder commitment transaction mismatch");
+					// We'll locate an anchor output we can spend within the commitment transaction.
+					let funding_pubkey = &self.channel_transaction_parameters.holder_pubkeys.funding_pubkey;
+					match chan_utils::get_anchor_output(&tx, funding_pubkey) {
+						// An anchor output was found, so we should yield a funding event externally.
+						Some((idx, _)) => {
+							// TODO: Use a lower confirmation target when both our and the
+							// counterparty's latest commitment don't have any HTLCs present.
+							let conf_target = ConfirmationTarget::HighPriority;
+							let package_target_feerate_sat_per_1000_weight = cached_request
+								.compute_package_feerate(fee_estimator, conf_target);
+							Some((
+								new_timer,
+								package_target_feerate_sat_per_1000_weight as u64,
+								OnchainClaim::Event(ClaimEvent::BumpCommitment {
+									package_target_feerate_sat_per_1000_weight,
+									commitment_tx: tx.clone(),
+									anchor_output_idx: idx,
+								}),
+							))
+						},
+						// An anchor output was not found. There's nothing we can do other than
+						// attempt to broadcast the transaction with its current fee rate and hope
+						// it confirms. This is essentially the same behavior as a commitment
+						// transaction without anchor outputs.
+						None => Some((None, 0, OnchainClaim::Tx(tx.clone()))),
+					}
+				},
+				_ => {
+					debug_assert!(false, "Only HolderFundingOutput inputs should be untractable and require external funding");
+					None
+				},
+			});
 		}
 		None
 	}
@@ -489,6 +570,15 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 						log_info!(logger, "Broadcasting onchain {}", log_tx!(tx));
 						broadcaster.broadcast_transaction(&tx);
 						tx.txid()
+					},
+					#[cfg(anchors)]
+					OnchainClaim::Event(claim_event) => {
+						log_info!(logger, "Yielding onchain event to spend inputs {:?}", req.outpoints());
+						let txid = match claim_event {
+							ClaimEvent::BumpCommitment { ref commitment_tx, .. } => commitment_tx.txid(),
+						};
+						self.pending_claim_events.insert(txid, claim_event);
+						txid
 					},
 				};
 				for k in req.outpoints() {
@@ -587,6 +677,8 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 							for outpoint in request.outpoints() {
 								log_debug!(logger, "Removing claim tracking for {} due to maturation of claim tx {}.", outpoint, claim_request);
 								self.claimable_outpoints.remove(&outpoint);
+								#[cfg(anchors)]
+								self.pending_claim_events.remove(&claim_request);
 							}
 						}
 					},
@@ -618,6 +710,11 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 					OnchainClaim::Tx(bump_tx) => {
 						log_info!(logger, "Broadcasting RBF-bumped onchain {}", log_tx!(bump_tx));
 						broadcaster.broadcast_transaction(&bump_tx);
+					},
+					#[cfg(anchors)]
+					OnchainClaim::Event(claim_event) => {
+						log_info!(logger, "Yielding RBF-bumped onchain event to spend inputs {:?}", request.outpoints());
+						self.pending_claim_events.insert(*first_claim_txid, claim_event);
 					},
 				}
 				if let Some(request) = self.pending_claim_requests.get_mut(first_claim_txid) {
@@ -681,7 +778,7 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 				self.onchain_events_awaiting_threshold_conf.push(entry);
 			}
 		}
-		for (_, request) in bump_candidates.iter_mut() {
+		for (_first_claim_txid_height, request) in bump_candidates.iter_mut() {
 			if let Some((new_timer, new_feerate, bump_claim)) = self.generate_claim(height, &request, fee_estimator, &&*logger) {
 				request.set_timer(new_timer);
 				request.set_feerate(new_feerate);
@@ -689,6 +786,11 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 					OnchainClaim::Tx(bump_tx) => {
 						log_info!(logger, "Broadcasting onchain {}", log_tx!(bump_tx));
 						broadcaster.broadcast_transaction(&bump_tx);
+					},
+					#[cfg(anchors)]
+					OnchainClaim::Event(claim_event) => {
+						log_info!(logger, "Yielding onchain event after reorg to spend inputs {:?}", request.outpoints());
+						self.pending_claim_events.insert(_first_claim_txid_height.0, claim_event);
 					},
 				}
 			}

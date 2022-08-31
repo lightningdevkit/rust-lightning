@@ -34,6 +34,8 @@ use util::ser::{Readable, Writer, Writeable};
 use io;
 use prelude::*;
 use core::cmp;
+#[cfg(anchors)]
+use core::convert::TryInto;
 use core::mem;
 use core::ops::Deref;
 use bitcoin::{PackedLockTime, Sequence, Witness};
@@ -548,6 +550,9 @@ impl PackageTemplate {
 	pub(crate) fn outpoints(&self) -> Vec<&BitcoinOutPoint> {
 		self.inputs.iter().map(|(o, _)| o).collect()
 	}
+	pub(crate) fn inputs(&self) -> impl ExactSizeIterator<Item = &PackageSolvingData> {
+		self.inputs.iter().map(|(_, i)| i)
+	}
 	pub(crate) fn split_package(&mut self, split_outp: &BitcoinOutPoint) -> Option<PackageTemplate> {
 		match self.malleability {
 			PackageMalleability::Malleable => {
@@ -611,7 +616,7 @@ impl PackageTemplate {
 	}
 	/// Gets the amount of all outptus being spent by this package, only valid for malleable
 	/// packages.
-	fn package_amount(&self) -> u64 {
+	pub(crate) fn package_amount(&self) -> u64 {
 		let mut amounts = 0;
 		for (_, outp) in self.inputs.iter() {
 			amounts += outp.amount();
@@ -637,7 +642,7 @@ impl PackageTemplate {
 		inputs_weight + witnesses_weight + transaction_weight + output_weight
 	}
 	pub(crate) fn finalize_malleable_package<L: Deref, Signer: Sign>(
-		&self, onchain_handler: &mut OnchainTxHandler<Signer>, value: u64, destination_script: Script, logger: &L,
+		&self, onchain_handler: &mut OnchainTxHandler<Signer>, value: u64, destination_script: Script, logger: &L
 	) -> Option<Transaction> where L::Target: Logger {
 		debug_assert!(self.is_malleable());
 		let mut bumped_tx = Transaction {
@@ -713,14 +718,45 @@ impl PackageTemplate {
 		}
 		None
 	}
+
+	#[cfg(anchors)]
+	/// Computes a feerate based on the given confirmation target. If a previous feerate was used,
+	/// and the new feerate is below it, we'll use a 25% increase of the previous feerate instead of
+	/// the new one.
+	pub(crate) fn compute_package_feerate<F: Deref>(
+		&self, fee_estimator: &LowerBoundedFeeEstimator<F>, conf_target: ConfirmationTarget,
+	) -> u32 where F::Target: FeeEstimator {
+		let feerate_estimate = fee_estimator.bounded_sat_per_1000_weight(conf_target);
+		if self.feerate_previous != 0 {
+			// If old feerate inferior to actual one given back by Fee Estimator, use it to compute new fee...
+			if feerate_estimate as u64 > self.feerate_previous {
+				feerate_estimate
+			} else {
+				// ...else just increase the previous feerate by 25% (because that's a nice number)
+				(self.feerate_previous + (self.feerate_previous / 4)).try_into().unwrap_or(u32::max_value())
+			}
+		} else {
+			feerate_estimate
+		}
+	}
+
+	/// Determines whether a package contains an input which must have additional external inputs
+	/// attached to help the spending transaction reach confirmation.
+	pub(crate) fn requires_external_funding(&self) -> bool {
+		self.inputs.iter().find(|input| match input.1 {
+			PackageSolvingData::HolderFundingOutput(ref outp) => outp.opt_anchors(),
+			_ => false,
+		}).is_some()
+	}
+
 	pub (crate) fn build_package(txid: Txid, vout: u32, input_solving_data: PackageSolvingData, soonest_conf_deadline: u32, aggregable: bool, height_original: u32) -> Self {
 		let malleability = match input_solving_data {
-			PackageSolvingData::RevokedOutput(..) => { PackageMalleability::Malleable },
-			PackageSolvingData::RevokedHTLCOutput(..) => { PackageMalleability::Malleable },
-			PackageSolvingData::CounterpartyOfferedHTLCOutput(..) => { PackageMalleability::Malleable },
-			PackageSolvingData::CounterpartyReceivedHTLCOutput(..) => { PackageMalleability::Malleable },
-			PackageSolvingData::HolderHTLCOutput(..) => { PackageMalleability::Untractable },
-			PackageSolvingData::HolderFundingOutput(..) => { PackageMalleability::Untractable },
+			PackageSolvingData::RevokedOutput(..) => PackageMalleability::Malleable,
+			PackageSolvingData::RevokedHTLCOutput(..) => PackageMalleability::Malleable,
+			PackageSolvingData::CounterpartyOfferedHTLCOutput(..) => PackageMalleability::Malleable,
+			PackageSolvingData::CounterpartyReceivedHTLCOutput(..) => PackageMalleability::Malleable,
+			PackageSolvingData::HolderHTLCOutput(..) => PackageMalleability::Untractable,
+			PackageSolvingData::HolderFundingOutput(..) => PackageMalleability::Untractable,
 		};
 		let mut inputs = Vec::with_capacity(1);
 		inputs.push((BitcoinOutPoint { txid, vout }, input_solving_data));
