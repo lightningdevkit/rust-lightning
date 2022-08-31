@@ -76,6 +76,7 @@ use core::time::Duration;
 use crate::io;
 use crate::ln::features::OfferFeatures;
 use crate::ln::msgs::MAX_VALUE_MSAT;
+use crate::offers::invoice_request::InvoiceRequestBuilder;
 use crate::offers::parse::{Bech32Encode, ParseError, ParsedMessage, SemanticError};
 use crate::onion_message::BlindedPath;
 use crate::util::ser::{HighZeroBytesDroppedBigSize, WithoutLength, Writeable, Writer};
@@ -237,8 +238,8 @@ impl OfferBuilder {
 pub struct Offer {
 	// The serialized offer. Needed when creating an `InvoiceRequest` if the offer contains unknown
 	// fields.
-	bytes: Vec<u8>,
-	contents: OfferContents,
+	pub(super) bytes: Vec<u8>,
+	pub(super) contents: OfferContents,
 }
 
 /// The contents of an [`Offer`], which may be shared with an [`InvoiceRequest`] or an `Invoice`.
@@ -284,6 +285,16 @@ impl Offer {
 	/// The minimum amount required for a successful payment of a single item.
 	pub fn amount(&self) -> Option<&Amount> {
 		self.contents.amount()
+	}
+
+	/// The minimum amount in msats required for a successful payment.
+	pub fn amount_msats(&self) -> u64 {
+		self.contents.amount_msats()
+	}
+
+	/// Returns the minimum amount in msats required for the given quantity.
+	pub fn expected_invoice_amount_msats(&self, quantity: u64) -> u64 {
+		self.contents.expected_invoice_amount_msats(quantity)
 	}
 
 	/// A complete description of the purpose of the payment. Intended to be displayed to the user
@@ -350,6 +361,11 @@ impl Offer {
 		self.contents.signing_pubkey.unwrap()
 	}
 
+	///
+	pub fn request_invoice(&self, payer_id: PublicKey) -> InvoiceRequestBuilder {
+		InvoiceRequestBuilder::new(self, payer_id)
+	}
+
 	#[cfg(test)]
 	fn as_tlv_stream(&self) -> OfferTlvStreamRef {
 		self.contents.as_tlv_stream()
@@ -413,7 +429,7 @@ impl OfferContents {
 		}
 	}
 
-	fn as_tlv_stream(&self) -> OfferTlvStreamRef {
+	pub(super) fn as_tlv_stream(&self) -> OfferTlvStreamRef {
 		let (currency, amount) = match &self.amount {
 			None => (None, None),
 			Some(Amount::Bitcoin { amount_msats }) => (None, Some(*amount_msats)),
