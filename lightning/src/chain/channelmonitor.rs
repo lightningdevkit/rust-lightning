@@ -21,8 +21,7 @@
 //! ChannelMonitors to get out of the HSM and onto monitoring devices.
 
 use bitcoin::blockdata::block::BlockHeader;
-use bitcoin::blockdata::transaction::{TxOut,Transaction};
-use bitcoin::blockdata::transaction::OutPoint as BitcoinOutPoint;
+use bitcoin::blockdata::transaction::{OutPoint as BitcoinOutPoint, TxOut, Transaction};
 use bitcoin::blockdata::script::{Script, Builder};
 use bitcoin::blockdata::opcodes;
 
@@ -44,6 +43,8 @@ use chain::{BestBlock, WatchedOutput};
 use chain::chaininterface::{BroadcasterInterface, FeeEstimator, LowerBoundedFeeEstimator};
 use chain::transaction::{OutPoint, TransactionData};
 use chain::keysinterface::{SpendableOutputDescriptor, StaticPaymentOutputDescriptor, DelayedPaymentOutputDescriptor, Sign, KeysInterface};
+#[cfg(anchors)]
+use chain::onchaintx::ClaimEvent;
 use chain::onchaintx::OnchainTxHandler;
 use chain::package::{CounterpartyOfferedHTLCOutput, CounterpartyReceivedHTLCOutput, HolderFundingOutput, HolderHTLCOutput, PackageSolvingData, PackageTemplate, RevokedOutput, RevokedHTLCOutput};
 use chain::Filter;
@@ -51,6 +52,8 @@ use util::logger::Logger;
 use util::ser::{Readable, ReadableArgs, MaybeReadable, Writer, Writeable, U48, OptionDeserWrapper};
 use util::byte_utils;
 use util::events::Event;
+#[cfg(anchors)]
+use util::events::{AnchorDescriptor, BumpTransactionEvent};
 
 use prelude::*;
 use core::{cmp, mem};
@@ -262,6 +265,20 @@ impl_writeable_tlv_based!(HolderSignedTx, {
 	(12, feerate_per_kw, required),
 	(14, htlc_outputs, vec_type)
 });
+
+#[cfg(anchors)]
+impl HolderSignedTx {
+	fn non_dust_htlcs(&self) -> Vec<HTLCOutputInCommitment> {
+		self.htlc_outputs.iter().filter_map(|(htlc, _, _)| {
+			if let Some(_) = htlc.transaction_output_index {
+				Some(htlc.clone())
+			} else {
+				None
+			}
+		})
+		.collect()
+	}
+}
 
 /// We use this to track static counterparty commitment transaction data and to generate any
 /// justice or 2nd-stage preimage/timeout transactions.
@@ -1221,7 +1238,7 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 		B::Target: BroadcasterInterface,
 		L::Target: Logger,
 	{
-		self.inner.lock().unwrap().broadcast_latest_holder_commitment_txn(broadcaster, logger)
+		self.inner.lock().unwrap().broadcast_latest_holder_commitment_txn(broadcaster, logger);
 	}
 
 	/// Updates a ChannelMonitor on the basis of some new information provided by the Channel
@@ -2222,6 +2239,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 			panic!("Attempted to apply ChannelMonitorUpdates out of order, check the update_id before passing an update to update_monitor!");
 		}
 		let mut ret = Ok(());
+		let bounded_fee_estimator = LowerBoundedFeeEstimator::new(&*fee_estimator);
 		for update in updates.updates.iter() {
 			match update {
 				ChannelMonitorUpdateStep::LatestHolderCommitmentTXInfo { commitment_tx, htlc_outputs } => {
@@ -2239,7 +2257,6 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 				},
 				ChannelMonitorUpdateStep::PaymentPreimage { payment_preimage } => {
 					log_trace!(logger, "Updating ChannelMonitor with payment preimage");
-					let bounded_fee_estimator = LowerBoundedFeeEstimator::new(&*fee_estimator);
 					self.provide_payment_preimage(&PaymentHash(Sha256::hash(&payment_preimage.0[..]).into_inner()), &payment_preimage, broadcaster, &bounded_fee_estimator, logger)
 				},
 				ChannelMonitorUpdateStep::CommitmentSecret { idx, secret } => {
@@ -2255,6 +2272,25 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 					self.lockdown_from_offchain = true;
 					if *should_broadcast {
 						self.broadcast_latest_holder_commitment_txn(broadcaster, logger);
+						// If the channel supports anchor outputs, we'll need to emit an external
+						// event to be consumed such that a child transaction is broadcast with a
+						// high enough feerate for the parent commitment transaction to confirm.
+						if self.onchain_tx_handler.opt_anchors() {
+							let funding_output = HolderFundingOutput::build(
+								self.funding_redeemscript.clone(), self.channel_value_satoshis,
+								self.onchain_tx_handler.opt_anchors(),
+							);
+							let best_block_height = self.best_block.height();
+							let commitment_package = PackageTemplate::build_package(
+								self.funding_info.0.txid.clone(), self.funding_info.0.index as u32,
+								PackageSolvingData::HolderFundingOutput(funding_output),
+								best_block_height, false, best_block_height,
+							);
+							self.onchain_tx_handler.update_claims_view(
+								&[], vec![commitment_package], best_block_height, best_block_height,
+								broadcaster, &bounded_fee_estimator, logger,
+							);
+						}
 					} else if !self.holder_tx_signed {
 						log_error!(logger, "WARNING: You have a potentially-unsafe holder commitment transaction available to broadcast");
 						log_error!(logger, "    in channel monitor for channel {}!", log_bytes!(self.funding_info.0.to_channel_id()));
@@ -2309,6 +2345,34 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 	pub fn get_and_clear_pending_events(&mut self) -> Vec<Event> {
 		let mut ret = Vec::new();
 		mem::swap(&mut ret, &mut self.pending_events);
+		#[cfg(anchors)]
+		for claim_event in self.onchain_tx_handler.get_and_clear_pending_claim_events().drain(..) {
+			match claim_event {
+				ClaimEvent::BumpCommitment {
+					package_target_feerate_sat_per_1000_weight, commitment_tx, anchor_output_idx,
+				} => {
+					let commitment_txid = commitment_tx.txid();
+					debug_assert_eq!(self.current_holder_commitment_tx.txid, commitment_txid);
+					let pending_htlcs = self.current_holder_commitment_tx.non_dust_htlcs();
+					let commitment_tx_fee_satoshis = self.channel_value_satoshis -
+						commitment_tx.output.iter().fold(0u64, |sum, output| sum + output.value);
+					ret.push(Event::BumpTransaction(BumpTransactionEvent::ChannelClose {
+						package_target_feerate_sat_per_1000_weight,
+						commitment_tx,
+						commitment_tx_fee_satoshis,
+						anchor_descriptor: AnchorDescriptor {
+							channel_keys_id: self.channel_keys_id,
+							channel_value_satoshis: self.channel_value_satoshis,
+							outpoint: BitcoinOutPoint {
+								txid: commitment_txid,
+								vout: anchor_output_idx,
+							},
+						},
+						pending_htlcs,
+					}));
+				},
+			}
+		}
 		ret
 	}
 
@@ -2890,15 +2954,20 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 			self.pending_monitor_events.push(MonitorEvent::CommitmentTxConfirmed(self.funding_info.0));
 			let commitment_tx = self.onchain_tx_handler.get_fully_signed_holder_tx(&self.funding_redeemscript);
 			self.holder_tx_signed = true;
-			// Because we're broadcasting a commitment transaction, we should construct the package
-			// assuming it gets confirmed in the next block. Sadly, we have code which considers
-			// "not yet confirmed" things as discardable, so we cannot do that here.
-			let (mut new_outpoints, _) = self.get_broadcasted_holder_claims(&self.current_holder_commitment_tx, self.best_block.height());
-			let new_outputs = self.get_broadcasted_holder_watch_outputs(&self.current_holder_commitment_tx, &commitment_tx);
-			if !new_outputs.is_empty() {
-				watch_outputs.push((self.current_holder_commitment_tx.txid.clone(), new_outputs));
+			// We can't broadcast our HTLC transactions while the commitment transaction is
+			// unconfirmed. We'll delay doing so until we detect the confirmed commitment in
+			// `transactions_confirmed`.
+			if !self.onchain_tx_handler.opt_anchors() {
+				// Because we're broadcasting a commitment transaction, we should construct the package
+				// assuming it gets confirmed in the next block. Sadly, we have code which considers
+				// "not yet confirmed" things as discardable, so we cannot do that here.
+				let (mut new_outpoints, _) = self.get_broadcasted_holder_claims(&self.current_holder_commitment_tx, self.best_block.height());
+				let new_outputs = self.get_broadcasted_holder_watch_outputs(&self.current_holder_commitment_tx, &commitment_tx);
+				if !new_outputs.is_empty() {
+					watch_outputs.push((self.current_holder_commitment_tx.txid.clone(), new_outputs));
+				}
+				claimable_outpoints.append(&mut new_outpoints);
 			}
-			claimable_outpoints.append(&mut new_outpoints);
 		}
 
 		// Find which on-chain events have reached their confirmation threshold.

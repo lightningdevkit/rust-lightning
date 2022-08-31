@@ -526,8 +526,8 @@ pub fn get_revokeable_redeemscript(revocation_key: &PublicKey, contest_delay: u1
 	res
 }
 
-#[derive(Clone, PartialEq, Eq)]
 /// Information about an HTLC as it appears in a commitment transaction
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HTLCOutputInCommitment {
 	/// Whether the HTLC was "offered" (ie outbound in relation to this commitment transaction).
 	/// Note that this is not the same as whether it is ountbound *from us*. To determine that you

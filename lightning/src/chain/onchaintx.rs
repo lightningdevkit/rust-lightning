@@ -44,6 +44,8 @@ use alloc::collections::BTreeMap;
 use core::cmp;
 use core::ops::Deref;
 use core::mem::replace;
+#[cfg(anchors)]
+use core::mem::swap;
 use bitcoin::hashes::Hash;
 
 const MAX_ALLOC_SIZE: usize = 64*1024;
@@ -407,6 +409,13 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 
 	pub(crate) fn get_cur_holder_commitment_to_self_value(&self) -> u64 {
 		self.holder_commitment.to_broadcaster_value_sat()
+	}
+
+	#[cfg(anchors)]
+	pub(crate) fn get_and_clear_pending_claim_events(&mut self) -> Vec<ClaimEvent> {
+		let mut ret = HashMap::new();
+		swap(&mut ret, &mut self.pending_claim_events);
+		ret.into_iter().map(|(_, event)| event).collect::<Vec<_>>()
 	}
 
 	/// Lightning security model (i.e being able to redeem/timeout HTLC or penalize counterparty
