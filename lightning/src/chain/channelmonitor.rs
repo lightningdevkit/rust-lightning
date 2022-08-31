@@ -53,7 +53,7 @@ use crate::util::ser::{Readable, ReadableArgs, MaybeReadable, Writer, Writeable,
 use crate::util::byte_utils;
 use crate::util::events::Event;
 #[cfg(anchors)]
-use crate::util::events::{AnchorDescriptor, BumpTransactionEvent};
+use crate::util::events::{AnchorDescriptor, HTLCDescriptor, BumpTransactionEvent};
 
 use crate::prelude::*;
 use core::{cmp, mem};
@@ -2425,7 +2425,27 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 						pending_htlcs,
 					}));
 				},
-				_ => {},
+				ClaimEvent::BumpHTLC {
+					target_feerate_sat_per_1000_weight, htlcs,
+				} => {
+					let mut htlc_descriptors = Vec::with_capacity(htlcs.len());
+					for htlc in htlcs {
+						htlc_descriptors.push(HTLCDescriptor {
+							channel_keys_id: self.channel_keys_id,
+							channel_value_satoshis: self.channel_value_satoshis,
+							channel_parameters: self.onchain_tx_handler.channel_transaction_parameters.clone(),
+							commitment_txid: htlc.commitment_txid,
+							per_commitment_number: htlc.per_commitment_number,
+							htlc: htlc.htlc,
+							preimage: htlc.preimage,
+							counterparty_sig: htlc.counterparty_sig,
+						});
+					}
+					ret.push(Event::BumpTransaction(BumpTransactionEvent::HTLCResolution {
+						target_feerate_sat_per_1000_weight,
+						htlc_descriptors,
+					}));
+				}
 			}
 		}
 		ret

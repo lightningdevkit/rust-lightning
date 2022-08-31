@@ -16,7 +16,7 @@
 
 use crate::chain::keysinterface::SpendableOutputDescriptor;
 #[cfg(anchors)]
-use crate::ln::chan_utils::HTLCOutputInCommitment;
+use crate::ln::chan_utils::{self, ChannelTransactionParameters, HTLCOutputInCommitment};
 use crate::ln::channelmanager::{InterceptId, PaymentId};
 use crate::ln::channel::FUNDING_CONF_DEADLINE_BLOCKS;
 use crate::ln::features::ChannelTypeFeatures;
@@ -29,11 +29,15 @@ use crate::routing::router::{RouteHop, RouteParameters};
 
 use bitcoin::{PackedLockTime, Transaction};
 #[cfg(anchors)]
-use bitcoin::OutPoint;
+use bitcoin::{OutPoint, Txid, TxIn, TxOut, Witness};
 use bitcoin::blockdata::script::Script;
 use bitcoin::hashes::Hash;
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::secp256k1::PublicKey;
+#[cfg(anchors)]
+use bitcoin::secp256k1::{self, Secp256k1};
+#[cfg(anchors)]
+use bitcoin::secp256k1::ecdsa::Signature;
 use crate::io;
 use crate::prelude::*;
 use core::time::Duration;
@@ -238,6 +242,99 @@ pub struct AnchorDescriptor {
 }
 
 #[cfg(anchors)]
+/// A descriptor used to sign for a commitment transaction's HTLC output.
+#[derive(Clone, Debug)]
+pub struct HTLCDescriptor {
+	/// A unique identifier used along with `channel_value_satoshis` to re-derive the
+	/// [`InMemorySigner`] required to sign `input`.
+	///
+	/// [`InMemorySigner`]: crate::chain::keysinterface::InMemorySigner
+	pub channel_keys_id: [u8; 32],
+	/// The value in satoshis of the channel we're attempting to spend the anchor output of. This is
+	/// used along with `channel_keys_id` to re-derive the [`InMemorySigner`] required to sign
+	/// `input`.
+	///
+	/// [`InMemorySigner`]: crate::chain::keysinterface::InMemorySigner
+	pub channel_value_satoshis: u64,
+	/// The necessary channel parameters that need to be provided to the re-derived
+	/// [`InMemorySigner`] through [`BaseSign::ready_channel`].
+	///
+	/// [`InMemorySigner`]: crate::chain::keysinterface::InMemorySigner
+	/// [`BaseSign::ready_channel`]: crate::chain::keysinterface::BaseSign::ready_channel
+	pub channel_parameters: ChannelTransactionParameters,
+	/// The txid of the commitment transaction in which the HTLC output lives.
+	pub commitment_txid: Txid,
+	/// The number of the commitment transaction in which the HTLC output lives.
+	pub per_commitment_number: u64,
+	/// The details of the HTLC as it appears in the commitment transaction.
+	pub htlc: HTLCOutputInCommitment,
+	/// The preimage, if `Some`, to claim the HTLC output with. If `None`, the timeout path must be
+	/// taken.
+	pub preimage: Option<PaymentPreimage>,
+	/// The counterparty's signature required to spend the HTLC output.
+	pub counterparty_sig: Signature
+}
+
+#[cfg(anchors)]
+impl HTLCDescriptor {
+	/// Returns the unsigned transaction input spending the HTLC output in the commitment
+	/// transaction.
+	pub fn unsigned_tx_input(&self) -> TxIn {
+		chan_utils::build_htlc_input(&self.commitment_txid, &self.htlc, true /* opt_anchors */)
+	}
+
+	/// Returns the delayed output created as a result of spending the HTLC output in the commitment
+	/// transaction.
+	pub fn tx_output<C: secp256k1::Signing + secp256k1::Verification>(
+		&self, per_commitment_point: &PublicKey, secp: &Secp256k1<C>
+	) -> TxOut {
+		let channel_params = self.channel_parameters.as_holder_broadcastable();
+		let broadcaster_keys = channel_params.broadcaster_pubkeys();
+		let counterparty_keys = channel_params.countersignatory_pubkeys();
+		let broadcaster_delayed_key = chan_utils::derive_public_key(
+			secp, per_commitment_point, &broadcaster_keys.delayed_payment_basepoint
+		);
+		let counterparty_revocation_key = chan_utils::derive_public_revocation_key(
+			secp, per_commitment_point, &counterparty_keys.revocation_basepoint
+		);
+		chan_utils::build_htlc_output(
+			0 /* feerate_per_kw */, channel_params.contest_delay(), &self.htlc, true /* opt_anchors */,
+			false /* use_non_zero_fee_anchors */, &broadcaster_delayed_key, &counterparty_revocation_key
+		)
+	}
+
+	/// Returns the witness script of the HTLC output in the commitment transaction.
+	pub fn witness_script<C: secp256k1::Signing + secp256k1::Verification>(
+		&self, per_commitment_point: &PublicKey, secp: &Secp256k1<C>
+	) -> Script {
+		let channel_params = self.channel_parameters.as_holder_broadcastable();
+		let broadcaster_keys = channel_params.broadcaster_pubkeys();
+		let counterparty_keys = channel_params.countersignatory_pubkeys();
+		let broadcaster_htlc_key = chan_utils::derive_public_key(
+			secp, per_commitment_point, &broadcaster_keys.htlc_basepoint
+		);
+		let counterparty_htlc_key = chan_utils::derive_public_key(
+			secp, per_commitment_point, &counterparty_keys.htlc_basepoint
+		);
+		let counterparty_revocation_key = chan_utils::derive_public_revocation_key(
+			secp, per_commitment_point, &counterparty_keys.revocation_basepoint
+		);
+		chan_utils::get_htlc_redeemscript_with_explicit_keys(
+			&self.htlc, true /* opt_anchors */, &broadcaster_htlc_key, &counterparty_htlc_key,
+			&counterparty_revocation_key,
+		)
+	}
+
+	/// Returns the fully signed witness required to spend the HTLC output in the commitment
+	/// transaction.
+	pub fn tx_input_witness(&self, signature: &Signature, witness_script: &Script) -> Witness {
+		chan_utils::build_htlc_input_witness(
+			signature, &self.counterparty_sig, &self.preimage, witness_script, true /* opt_anchors */
+		)
+	}
+}
+
+#[cfg(anchors)]
 /// Represents the different types of transactions, originating from LDK, to be bumped.
 #[derive(Clone, Debug)]
 pub enum BumpTransactionEvent {
@@ -256,7 +353,10 @@ pub enum BumpTransactionEvent {
 	/// The consumer should be able to sign for any of the additional inputs included within the
 	/// child anchor transaction. To sign its anchor input, an [`InMemorySigner`] should be
 	/// re-derived through [`KeysManager::derive_channel_keys`] with the help of
-	/// [`AnchorDescriptor::channel_keys_id`] and [`AnchorDescriptor::channel_value_satoshis`].
+	/// [`AnchorDescriptor::channel_keys_id`] and [`AnchorDescriptor::channel_value_satoshis`]. The
+	/// anchor input signature can be computed with [`BaseSign::sign_holder_anchor_input`],
+	/// which can then be provided to [`build_anchor_input_witness`] along with the `funding_pubkey`
+	/// to obtain the full witness required to spend.
 	///
 	/// It is possible to receive more than one instance of this event if a valid child anchor
 	/// transaction is never broadcast or is but not with a sufficient fee to be mined. Care should
@@ -277,6 +377,8 @@ pub enum BumpTransactionEvent {
 	///
 	/// [`InMemorySigner`]: crate::chain::keysinterface::InMemorySigner
 	/// [`KeysManager::derive_channel_keys`]: crate::chain::keysinterface::KeysManager::derive_channel_keys
+	/// [`BaseSign::sign_holder_anchor_input`]: crate::chain::keysinterface::BaseSign::sign_holder_anchor_input
+	/// [`build_anchor_input_witness`]: crate::ln::chan_utils::build_anchor_input_witness
 	ChannelClose {
 		/// The target feerate that the transaction package, which consists of the commitment
 		/// transaction and the to-be-crafted child anchor transaction, must meet.
@@ -294,6 +396,41 @@ pub enum BumpTransactionEvent {
 		/// The set of pending HTLCs on the commitment transaction that need to be resolved once the
 		/// commitment transaction confirms.
 		pending_htlcs: Vec<HTLCOutputInCommitment>,
+	},
+	/// Indicates that a channel featuring anchor outputs has unilaterally closed on-chain by a
+	/// holder commitment transaction and its HTLC(s) need to be resolved on-chain. With the
+	/// zero-HTLC-transaction-fee variant of anchor outputs, the pre-signed HTLC
+	/// transactions have a zero fee, thus requiring additional inputs and/or outputs to be attached
+	/// for a timely confirmation within the chain. These additional inputs and/or outputs must be
+	/// appended to the resulting HTLC transaction to meet the target feerate. Failure to meet the
+	/// target feerate decreases the confirmation odds of the transaction, possibly resulting in a
+	/// loss of funds. Once the transaction meets the target feerate, it must be signed for and
+	/// broadcast by the consumer of the event.
+	///
+	/// The consumer should be able to sign for any of the non-HTLC inputs added to the resulting
+	/// HTLC transaction. To sign HTLC inputs, an [`InMemorySigner`] should be re-derived through
+	/// [`KeysManager::derive_channel_keys`] with the help of `channel_keys_id` and
+	/// `channel_value_satoshis`. Each HTLC input's signature can be computed with
+	/// [`BaseSign::sign_holder_htlc_transaction`], which can then be provided to
+	/// [`HTLCDescriptor::tx_input_witness`] to obtain the fully signed witness required to spend.
+	///
+	/// It is possible to receive more than one instance of this event if a valid HTLC transaction
+	/// is never broadcast or is but not with a sufficient fee to be mined. Care should be taken by
+	/// the consumer of the event to ensure any future iterations of the HTLC transaction adhere to
+	/// the [Replace-By-Fee
+	/// rules](https://github.com/bitcoin/bitcoin/blob/master/doc/policy/mempool-replacements.md)
+	/// for fee bumps to be accepted into the mempool, and eventually the chain. As the frequency of
+	/// these events is not user-controlled, users may ignore/drop the event if either they are no
+	/// longer able to commit external confirmed funds to the HTLC transaction or the fee committed
+	/// to the HTLC transaction is greater in value than the HTLCs being claimed.
+	///
+	/// [`InMemorySigner`]: crate::chain::keysinterface::InMemorySigner
+	/// [`KeysManager::derive_channel_keys`]: crate::chain::keysinterface::KeysManager::derive_channel_keys
+	/// [`BaseSign::sign_holder_htlc_transaction`]: crate::chain::keysinterface::BaseSign::sign_holder_htlc_transaction
+	/// [`HTLCDescriptor::tx_input_witness`]: HTLCDescriptor::tx_input_witness
+	HTLCResolution {
+		target_feerate_sat_per_1000_weight: u32,
+		htlc_descriptors: Vec<HTLCDescriptor>,
 	},
 }
 
@@ -983,9 +1120,10 @@ impl Writeable for Event {
 			&Event::BumpTransaction(ref event)=> {
 				27u8.write(writer)?;
 				match event {
-					// We never write the ChannelClose events as they'll be replayed upon restarting
-					// anyway if the commitment transaction remains unconfirmed.
+					// We never write the ChannelClose|HTLCResolution events as they'll be replayed
+					// upon restarting anyway if they remain unresolved.
 					BumpTransactionEvent::ChannelClose { .. } => {}
+					BumpTransactionEvent::HTLCResolution { .. } => {}
 				}
 			}
 			&Event::ChannelReady { ref channel_id, ref user_channel_id, ref counterparty_node_id, ref channel_type } => {
