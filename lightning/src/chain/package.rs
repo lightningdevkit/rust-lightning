@@ -636,47 +636,46 @@ impl PackageTemplate {
 		let output_weight = (8 + 1 + destination_script.len()) * WITNESS_SCALE_FACTOR;
 		inputs_weight + witnesses_weight + transaction_weight + output_weight
 	}
-	pub(crate) fn finalize_package<L: Deref, Signer: Sign>(&self, onchain_handler: &mut OnchainTxHandler<Signer>, value: u64, destination_script: Script, logger: &L) -> Option<Transaction>
-		where L::Target: Logger,
-	{
-		match self.malleability {
-			PackageMalleability::Malleable => {
-				let mut bumped_tx = Transaction {
-					version: 2,
-					lock_time: PackedLockTime::ZERO,
-					input: vec![],
-					output: vec![TxOut {
-						script_pubkey: destination_script,
-						value,
-					}],
-				};
-				for (outpoint, _) in self.inputs.iter() {
-					bumped_tx.input.push(TxIn {
-						previous_output: *outpoint,
-						script_sig: Script::new(),
-						sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
-						witness: Witness::new(),
-					});
-				}
-				for (i, (outpoint, out)) in self.inputs.iter().enumerate() {
-					log_debug!(logger, "Adding claiming input for outpoint {}:{}", outpoint.txid, outpoint.vout);
-					if !out.finalize_input(&mut bumped_tx, i, onchain_handler) { return None; }
-				}
-				log_debug!(logger, "Finalized transaction {} ready to broadcast", bumped_tx.txid());
-				return Some(bumped_tx);
-			},
-			PackageMalleability::Untractable => {
-				debug_assert_eq!(value, 0, "value is ignored for non-malleable packages, should be zero to ensure callsites are correct");
-				if let Some((outpoint, outp)) = self.inputs.first() {
-					if let Some(final_tx) = outp.get_finalized_tx(outpoint, onchain_handler) {
-						log_debug!(logger, "Adding claiming input for outpoint {}:{}", outpoint.txid, outpoint.vout);
-						log_debug!(logger, "Finalized transaction {} ready to broadcast", final_tx.txid());
-						return Some(final_tx);
-					}
-					return None;
-				} else { panic!("API Error: Package must not be inputs empty"); }
-			},
+	pub(crate) fn finalize_malleable_package<L: Deref, Signer: Sign>(
+		&self, onchain_handler: &mut OnchainTxHandler<Signer>, value: u64, destination_script: Script, logger: &L,
+	) -> Option<Transaction> where L::Target: Logger {
+		debug_assert!(self.is_malleable());
+		let mut bumped_tx = Transaction {
+			version: 2,
+			lock_time: PackedLockTime::ZERO,
+			input: vec![],
+			output: vec![TxOut {
+				script_pubkey: destination_script,
+				value,
+			}],
+		};
+		for (outpoint, _) in self.inputs.iter() {
+			bumped_tx.input.push(TxIn {
+				previous_output: *outpoint,
+				script_sig: Script::new(),
+				sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+				witness: Witness::new(),
+			});
 		}
+		for (i, (outpoint, out)) in self.inputs.iter().enumerate() {
+			log_debug!(logger, "Adding claiming input for outpoint {}:{}", outpoint.txid, outpoint.vout);
+			if !out.finalize_input(&mut bumped_tx, i, onchain_handler) { return None; }
+		}
+		log_debug!(logger, "Finalized transaction {} ready to broadcast", bumped_tx.txid());
+		Some(bumped_tx)
+	}
+	pub(crate) fn finalize_untractable_package<L: Deref, Signer: Sign>(
+		&self, onchain_handler: &mut OnchainTxHandler<Signer>, logger: &L,
+	) -> Option<Transaction> where L::Target: Logger {
+		debug_assert!(!self.is_malleable());
+		if let Some((outpoint, outp)) = self.inputs.first() {
+			if let Some(final_tx) = outp.get_finalized_tx(outpoint, onchain_handler) {
+				log_debug!(logger, "Adding claiming input for outpoint {}:{}", outpoint.txid, outpoint.vout);
+				log_debug!(logger, "Finalized transaction {} ready to broadcast", final_tx.txid());
+				return Some(final_tx);
+			}
+			return None;
+		} else { panic!("API Error: Package must not be inputs empty"); }
 	}
 	/// In LN, output claimed are time-sensitive, which means we have to spend them before reaching some timelock expiration. At in-channel
 	/// output detection, we generate a first version of a claim tx and associate to it a height timer. A height timer is an absolute block

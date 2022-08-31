@@ -393,7 +393,7 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 					cached_request.compute_package_output(predicted_weight, self.destination_script.dust_value().to_sat(), fee_estimator, logger) {
 				assert!(new_feerate != 0);
 
-				let transaction = cached_request.finalize_package(self, output_value, self.destination_script.clone(), logger).unwrap();
+				let transaction = cached_request.finalize_malleable_package(self, output_value, self.destination_script.clone(), logger).unwrap();
 				log_trace!(logger, "...with timer {} and feerate {}", new_timer.unwrap(), new_feerate);
 				assert!(predicted_weight >= transaction.weight());
 				return Some((new_timer, new_feerate, transaction))
@@ -402,7 +402,7 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 			// Note: Currently, amounts of holder outputs spending witnesses aren't used
 			// as we can't malleate spending package to increase their feerate. This
 			// should change with the remaining anchor output patchset.
-			if let Some(transaction) = cached_request.finalize_package(self, 0, self.destination_script.clone(), logger) {
+			if let Some(transaction) = cached_request.finalize_untractable_package(self, logger) {
 				return Some((None, 0, transaction));
 			}
 		}
