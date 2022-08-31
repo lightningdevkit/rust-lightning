@@ -2701,18 +2701,28 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 
 		for &(ref htlc, _, _) in holder_tx.htlc_outputs.iter() {
 			if let Some(transaction_output_index) = htlc.transaction_output_index {
-				let htlc_output = if htlc.offered {
-						HolderHTLCOutput::build_offered(htlc.amount_msat, htlc.cltv_expiry)
+				let (htlc_output, aggregable) = if htlc.offered {
+					let htlc_output = HolderHTLCOutput::build_offered(
+						htlc.amount_msat, htlc.cltv_expiry, self.onchain_tx_handler.opt_anchors()
+					);
+					(htlc_output, false)
+				} else {
+					let payment_preimage = if let Some(preimage) = self.payment_preimages.get(&htlc.payment_hash) {
+						preimage.clone()
 					} else {
-						let payment_preimage = if let Some(preimage) = self.payment_preimages.get(&htlc.payment_hash) {
-							preimage.clone()
-						} else {
-							// We can't build an HTLC-Success transaction without the preimage
-							continue;
-						};
-						HolderHTLCOutput::build_accepted(payment_preimage, htlc.amount_msat)
+						// We can't build an HTLC-Success transaction without the preimage
+						continue;
 					};
-				let htlc_package = PackageTemplate::build_package(holder_tx.txid, transaction_output_index, PackageSolvingData::HolderHTLCOutput(htlc_output), htlc.cltv_expiry, false, conf_height);
+					let htlc_output = HolderHTLCOutput::build_accepted(
+						payment_preimage, htlc.amount_msat, self.onchain_tx_handler.opt_anchors()
+					);
+					(htlc_output, self.onchain_tx_handler.opt_anchors())
+				};
+				let htlc_package = PackageTemplate::build_package(
+					holder_tx.txid, transaction_output_index,
+					PackageSolvingData::HolderHTLCOutput(htlc_output),
+					htlc.cltv_expiry, aggregable, conf_height
+				);
 				claim_requests.push(htlc_package);
 			}
 		}

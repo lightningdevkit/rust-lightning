@@ -255,30 +255,38 @@ pub(crate) struct HolderHTLCOutput {
 	amount_msat: u64,
 	/// Defaults to 0 for HTLC-Success transactions, which have no expiry
 	cltv_expiry: u32,
+	opt_anchors: Option<()>,
 }
 
 impl HolderHTLCOutput {
-	pub(crate) fn build_offered(amount_msat: u64, cltv_expiry: u32) -> Self {
+	pub(crate) fn build_offered(amount_msat: u64, cltv_expiry: u32, opt_anchors: bool) -> Self {
 		HolderHTLCOutput {
 			preimage: None,
 			amount_msat,
 			cltv_expiry,
+			opt_anchors: if opt_anchors { Some(()) } else { None } ,
 		}
 	}
 
-	pub(crate) fn build_accepted(preimage: PaymentPreimage, amount_msat: u64) -> Self {
+	pub(crate) fn build_accepted(preimage: PaymentPreimage, amount_msat: u64, opt_anchors: bool) -> Self {
 		HolderHTLCOutput {
 			preimage: Some(preimage),
 			amount_msat,
 			cltv_expiry: 0,
+			opt_anchors: if opt_anchors { Some(()) } else { None } ,
 		}
+	}
+
+	fn opt_anchors(&self) -> bool {
+		self.opt_anchors.is_some()
 	}
 }
 
 impl_writeable_tlv_based!(HolderHTLCOutput, {
 	(0, amount_msat, required),
 	(2, cltv_expiry, required),
-	(4, preimage, option)
+	(4, preimage, option),
+	(6, opt_anchors, option)
 });
 
 /// A struct to describe the channel output on the funding transaction.
@@ -333,10 +341,10 @@ impl PackageSolvingData {
 			PackageSolvingData::RevokedHTLCOutput(ref outp) => outp.amount,
 			PackageSolvingData::CounterpartyOfferedHTLCOutput(ref outp) => outp.htlc.amount_msat / 1000,
 			PackageSolvingData::CounterpartyReceivedHTLCOutput(ref outp) => outp.htlc.amount_msat / 1000,
-			// Note: Currently, amounts of holder outputs spending witnesses aren't used
-			// as we can't malleate spending package to increase their feerate. This
-			// should change with the remaining anchor output patchset.
-			PackageSolvingData::HolderHTLCOutput(..) => unreachable!(),
+			PackageSolvingData::HolderHTLCOutput(ref outp) => {
+				debug_assert!(outp.opt_anchors());
+				outp.amount_msat / 1000
+			},
 			PackageSolvingData::HolderFundingOutput(ref outp) => {
 				debug_assert!(outp.opt_anchors());
 				outp.funding_amount.unwrap()
@@ -345,18 +353,23 @@ impl PackageSolvingData {
 		amt
 	}
 	fn weight(&self) -> usize {
-		let weight = match self {
-			PackageSolvingData::RevokedOutput(ref outp) => { outp.weight as usize },
-			PackageSolvingData::RevokedHTLCOutput(ref outp) => { outp.weight as usize },
-			PackageSolvingData::CounterpartyOfferedHTLCOutput(ref outp) => { weight_offered_htlc(outp.opt_anchors()) as usize },
-			PackageSolvingData::CounterpartyReceivedHTLCOutput(ref outp) => { weight_received_htlc(outp.opt_anchors()) as usize },
-			// Note: Currently, weights of holder outputs spending witnesses aren't used
-			// as we can't malleate spending package to increase their feerate. This
-			// should change with the remaining anchor output patchset.
-			PackageSolvingData::HolderHTLCOutput(..) => { unreachable!() },
-			PackageSolvingData::HolderFundingOutput(..) => { unreachable!() },
-		};
-		weight
+		match self {
+			PackageSolvingData::RevokedOutput(ref outp) => outp.weight as usize,
+			PackageSolvingData::RevokedHTLCOutput(ref outp) => outp.weight as usize,
+			PackageSolvingData::CounterpartyOfferedHTLCOutput(ref outp) => weight_offered_htlc(outp.opt_anchors()) as usize,
+			PackageSolvingData::CounterpartyReceivedHTLCOutput(ref outp) => weight_received_htlc(outp.opt_anchors()) as usize,
+			PackageSolvingData::HolderHTLCOutput(ref outp) => {
+				debug_assert!(outp.opt_anchors());
+				if outp.preimage.is_none() {
+					weight_offered_htlc(true) as usize
+				} else {
+					weight_received_htlc(true) as usize
+				}
+			},
+			// Since HolderFundingOutput maps to an untractable package that is already signed, its
+			// weight can be determined from the transaction itself.
+			PackageSolvingData::HolderFundingOutput(..) => unreachable!(),
+		}
 	}
 	fn is_compatible(&self, input: &PackageSolvingData) -> bool {
 		match self {
@@ -740,6 +753,7 @@ impl PackageTemplate {
 	pub(crate) fn requires_external_funding(&self) -> bool {
 		self.inputs.iter().find(|input| match input.1 {
 			PackageSolvingData::HolderFundingOutput(ref outp) => outp.opt_anchors(),
+			PackageSolvingData::HolderHTLCOutput(ref outp) => outp.opt_anchors(),
 			_ => false,
 		}).is_some()
 	}
@@ -750,7 +764,11 @@ impl PackageTemplate {
 			PackageSolvingData::RevokedHTLCOutput(..) => PackageMalleability::Malleable,
 			PackageSolvingData::CounterpartyOfferedHTLCOutput(..) => PackageMalleability::Malleable,
 			PackageSolvingData::CounterpartyReceivedHTLCOutput(..) => PackageMalleability::Malleable,
-			PackageSolvingData::HolderHTLCOutput(..) => PackageMalleability::Untractable,
+			PackageSolvingData::HolderHTLCOutput(ref outp) => if outp.opt_anchors() {
+				PackageMalleability::Malleable
+			} else {
+				PackageMalleability::Untractable
+			},
 			PackageSolvingData::HolderFundingOutput(..) => PackageMalleability::Untractable,
 		};
 		let mut inputs = Vec::with_capacity(1);
@@ -799,7 +817,11 @@ impl Readable for PackageTemplate {
 				PackageSolvingData::RevokedHTLCOutput(..) => { (PackageMalleability::Malleable, true) },
 				PackageSolvingData::CounterpartyOfferedHTLCOutput(..) => { (PackageMalleability::Malleable, true) },
 				PackageSolvingData::CounterpartyReceivedHTLCOutput(..) => { (PackageMalleability::Malleable, false) },
-				PackageSolvingData::HolderHTLCOutput(..) => { (PackageMalleability::Untractable, false) },
+				PackageSolvingData::HolderHTLCOutput(ref outp) => if outp.opt_anchors() {
+					(PackageMalleability::Malleable, outp.preimage.is_some())
+				} else {
+					(PackageMalleability::Untractable, false)
+				},
 				PackageSolvingData::HolderFundingOutput(..) => { (PackageMalleability::Untractable, false) },
 			}
 		} else { return Err(DecodeError::InvalidValue); };
@@ -959,7 +981,7 @@ mod tests {
 		() => {
 			{
 				let preimage = PaymentPreimage([2;32]);
-				PackageSolvingData::HolderHTLCOutput(HolderHTLCOutput::build_accepted(preimage, 0))
+				PackageSolvingData::HolderHTLCOutput(HolderHTLCOutput::build_accepted(preimage, 0, false))
 			}
 		}
 	}
