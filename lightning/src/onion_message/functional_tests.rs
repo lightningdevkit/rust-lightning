@@ -170,3 +170,13 @@ fn reply_path() {
 		"lightning::onion_message::messenger".to_string(),
 		format!("Received an onion message with path_id: None and reply_path").to_string(), 2);
 }
+
+#[test]
+fn peer_buffer_full() {
+	let nodes = create_nodes(2);
+	for _ in 0..188 { // Based on MAX_PER_PEER_BUFFER_SIZE in OnionMessenger
+		nodes[0].messenger.send_onion_message(&[], Destination::Node(nodes[1].get_node_pk()), None).unwrap();
+	}
+	let err = nodes[0].messenger.send_onion_message(&[], Destination::Node(nodes[1].get_node_pk()), None).unwrap_err();
+	assert_eq!(err, SendError::BufferFull);
+}

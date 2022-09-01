@@ -23,6 +23,7 @@ use super::packet::{BIG_PACKET_HOP_DATA_LEN, ForwardControlTlvs, Packet, Payload
 use super::utils;
 use util::events::OnionMessageProvider;
 use util::logger::Logger;
+use util::ser::Writeable;
 
 use core::ops::Deref;
 use sync::{Arc, Mutex};
@@ -124,6 +125,8 @@ pub enum SendError {
 	TooFewBlindedHops,
 	/// Our next-hop peer was offline or does not support onion message forwarding.
 	InvalidFirstHop,
+	/// Our next-hop peer's buffer was full or our total outbound buffer was full.
+	BufferFull,
 }
 
 impl<Signer: Sign, K: Deref, L: Deref> OnionMessenger<Signer, K, L>
@@ -171,6 +174,7 @@ impl<Signer: Sign, K: Deref, L: Deref> OnionMessenger<Signer, K, L>
 			packet_payloads, packet_keys, prng_seed).map_err(|()| SendError::TooBigPacket)?;
 
 		let mut pending_per_peer_msgs = self.pending_messages.lock().unwrap();
+		if outbound_buffer_full(&introduction_node_id, &pending_per_peer_msgs) { return Err(SendError::BufferFull) }
 		match pending_per_peer_msgs.entry(introduction_node_id) {
 			hash_map::Entry::Vacant(_) => Err(SendError::InvalidFirstHop),
 			hash_map::Entry::Occupied(mut e) => {
@@ -191,6 +195,29 @@ impl<Signer: Sign, K: Deref, L: Deref> OnionMessenger<Signer, K, L>
 		}
 		msgs
 	}
+}
+
+fn outbound_buffer_full(peer_node_id: &PublicKey, buffer: &HashMap<PublicKey, VecDeque<msgs::OnionMessage>>) -> bool {
+	const MAX_TOTAL_BUFFER_SIZE: usize = (1 << 20) * 128;
+	const MAX_PER_PEER_BUFFER_SIZE: usize = (1 << 10) * 256;
+	let mut total_buffered_bytes = 0;
+	let mut peer_buffered_bytes = 0;
+	for (pk, peer_buf) in buffer {
+		for om in peer_buf {
+			let om_len = om.serialized_length();
+			if pk == peer_node_id {
+				peer_buffered_bytes += om_len;
+			}
+			total_buffered_bytes += om_len;
+
+			if total_buffered_bytes >= MAX_TOTAL_BUFFER_SIZE ||
+				peer_buffered_bytes >= MAX_PER_PEER_BUFFER_SIZE
+			{
+				return true
+			}
+		}
+	}
+	false
 }
 
 impl<Signer: Sign, K: Deref, L: Deref> OnionMessageHandler for OnionMessenger<Signer, K, L>
@@ -279,6 +306,10 @@ impl<Signer: Sign, K: Deref, L: Deref> OnionMessageHandler for OnionMessenger<Si
 				};
 
 				let mut pending_per_peer_msgs = self.pending_messages.lock().unwrap();
+				if outbound_buffer_full(&next_node_id, &pending_per_peer_msgs) {
+					log_trace!(self.logger, "Dropping forwarded onion message to peer {:?}: outbound buffer full", next_node_id);
+					return
+				}
 
 				#[cfg(fuzzing)]
 				pending_per_peer_msgs.entry(next_node_id).or_insert_with(VecDeque::new);
