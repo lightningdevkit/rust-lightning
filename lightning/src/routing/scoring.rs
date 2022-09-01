@@ -221,7 +221,7 @@ impl<'a, S: Writeable> Writeable for MutexGuard<'a, S> {
 }
 
 /// Proposed use of a channel passed as a parameter to [`Score::channel_penalty_msat`].
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct ChannelUsage {
 	/// The amount to send through the channel, denominated in millisatoshis.
 	pub amount_msat: u64,
