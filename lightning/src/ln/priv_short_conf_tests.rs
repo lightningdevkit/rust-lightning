@@ -565,69 +565,6 @@ fn test_scid_alias_returned() {
 			.blamed_chan_closed(false).expected_htlc_error_data(0x1000|12, &err_data));
 }
 
-// Receiver must have been initialized with manually_accept_inbound_channels set to true.
-fn open_zero_conf_channel<'a, 'b, 'c, 'd>(initiator: &'a Node<'b, 'c, 'd>, receiver: &'a Node<'b, 'c, 'd>, initiator_config: Option<UserConfig>) -> bitcoin::Transaction {
-	initiator.node.create_channel(receiver.node.get_our_node_id(), 100_000, 10_001, 42, initiator_config).unwrap();
-	let open_channel = get_event_msg!(initiator, MessageSendEvent::SendOpenChannel, receiver.node.get_our_node_id());
-
-	receiver.node.handle_open_channel(&initiator.node.get_our_node_id(), InitFeatures::known(), &open_channel);
-	let events = receiver.node.get_and_clear_pending_events();
-	assert_eq!(events.len(), 1);
-	match events[0] {
-		Event::OpenChannelRequest { temporary_channel_id, .. } => {
-			receiver.node.accept_inbound_channel_from_trusted_peer_0conf(&temporary_channel_id, &initiator.node.get_our_node_id(), 0).unwrap();
-		},
-		_ => panic!("Unexpected event"),
-	};
-
-	let mut accept_channel = get_event_msg!(receiver, MessageSendEvent::SendAcceptChannel, initiator.node.get_our_node_id());
-	assert_eq!(accept_channel.minimum_depth, 0);
-	initiator.node.handle_accept_channel(&receiver.node.get_our_node_id(), InitFeatures::known(), &accept_channel);
-
-	let (temporary_channel_id, tx, _) = create_funding_transaction(&initiator, &receiver.node.get_our_node_id(), 100_000, 42);
-	initiator.node.funding_transaction_generated(&temporary_channel_id, &receiver.node.get_our_node_id(), tx.clone()).unwrap();
-	let funding_created = get_event_msg!(initiator, MessageSendEvent::SendFundingCreated, receiver.node.get_our_node_id());
-
-	receiver.node.handle_funding_created(&initiator.node.get_our_node_id(), &funding_created);
-	check_added_monitors!(receiver, 1);
-	let bs_signed_locked = receiver.node.get_and_clear_pending_msg_events();
-	assert_eq!(bs_signed_locked.len(), 2);
-	let as_channel_ready;
-	match &bs_signed_locked[0] {
-		MessageSendEvent::SendFundingSigned { node_id, msg } => {
-			assert_eq!(*node_id, initiator.node.get_our_node_id());
-			initiator.node.handle_funding_signed(&receiver.node.get_our_node_id(), &msg);
-			check_added_monitors!(initiator, 1);
-
-			assert_eq!(initiator.tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 1);
-			assert_eq!(initiator.tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0)[0], tx);
-
-			as_channel_ready = get_event_msg!(initiator, MessageSendEvent::SendChannelReady, receiver.node.get_our_node_id());
-		}
-		_ => panic!("Unexpected event"),
-	}
-	match &bs_signed_locked[1] {
-		MessageSendEvent::SendChannelReady { node_id, msg } => {
-			assert_eq!(*node_id, initiator.node.get_our_node_id());
-			initiator.node.handle_channel_ready(&receiver.node.get_our_node_id(), &msg);
-		}
-		_ => panic!("Unexpected event"),
-	}
-
-	receiver.node.handle_channel_ready(&initiator.node.get_our_node_id(), &as_channel_ready);
-
-	let as_channel_update = get_event_msg!(initiator, MessageSendEvent::SendChannelUpdate, receiver.node.get_our_node_id());
-	let bs_channel_update = get_event_msg!(receiver, MessageSendEvent::SendChannelUpdate, initiator.node.get_our_node_id());
-
-	initiator.node.handle_channel_update(&receiver.node.get_our_node_id(), &bs_channel_update);
-	receiver.node.handle_channel_update(&initiator.node.get_our_node_id(), &as_channel_update);
-
-	assert_eq!(initiator.node.list_usable_channels().len(), 1);
-	assert_eq!(receiver.node.list_usable_channels().len(), 1);
-
-	tx
-}
-
 #[test]
 fn test_simple_0conf_channel() {
 	// If our peer tells us they will accept our channel with 0 confs, and we funded the channel,
@@ -836,7 +773,7 @@ fn test_public_0conf_channel() {
 
 	// This is the default but we force it on anyway
 	chan_config.channel_handshake_config.announced_channel = true;
-	let tx = open_zero_conf_channel(&nodes[0], &nodes[1], Some(chan_config));
+	let (tx, ..) = open_zero_conf_channel(&nodes[0], &nodes[1], Some(chan_config));
 
 	// We can use the channel immediately, but we can't announce it until we get 6+ confirmations
 	send_payment(&nodes[0], &[&nodes[1]], 100_000);
@@ -889,7 +826,7 @@ fn test_0conf_channel_reorg() {
 
 	// This is the default but we force it on anyway
 	chan_config.channel_handshake_config.announced_channel = true;
-	let tx = open_zero_conf_channel(&nodes[0], &nodes[1], Some(chan_config));
+	let (tx, ..) = open_zero_conf_channel(&nodes[0], &nodes[1], Some(chan_config));
 
 	// We can use the channel immediately, but we can't announce it until we get 6+ confirmations
 	send_payment(&nodes[0], &[&nodes[1]], 100_000);
