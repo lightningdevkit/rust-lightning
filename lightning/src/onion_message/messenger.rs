@@ -255,6 +255,28 @@ impl<Signer: Sign, K: Deref, L: Deref> OnionMessageHandler for OnionMessenger<Si
 					hop_data: new_packet_bytes,
 					hmac: next_hop_hmac,
 				};
+				let onion_message = msgs::OnionMessage {
+					blinding_point: match next_blinding_override {
+						Some(blinding_point) => blinding_point,
+						None => {
+							let blinding_factor = {
+								let mut sha = Sha256::engine();
+								sha.input(&msg.blinding_point.serialize()[..]);
+								sha.input(control_tlvs_ss.as_ref());
+								Sha256::from_engine(sha).into_inner()
+							};
+							let next_blinding_point = msg.blinding_point;
+							match next_blinding_point.mul_tweak(&self.secp_ctx, &Scalar::from_be_bytes(blinding_factor).unwrap()) {
+								Ok(bp) => bp,
+								Err(e) => {
+									log_trace!(self.logger, "Failed to compute next blinding point: {}", e);
+									return
+								}
+							}
+						},
+					},
+					onion_routing_packet: outgoing_packet,
+				};
 
 				let mut pending_per_peer_msgs = self.pending_messages.lock().unwrap();
 
@@ -267,30 +289,7 @@ impl<Signer: Sign, K: Deref, L: Deref> OnionMessageHandler for OnionMessenger<Si
 						return
 					},
 					hash_map::Entry::Occupied(mut e) => {
-						e.get_mut().push_back(
-							msgs::OnionMessage {
-								blinding_point: match next_blinding_override {
-									Some(blinding_point) => blinding_point,
-									None => {
-										let blinding_factor = {
-											let mut sha = Sha256::engine();
-											sha.input(&msg.blinding_point.serialize()[..]);
-											sha.input(control_tlvs_ss.as_ref());
-											Sha256::from_engine(sha).into_inner()
-										};
-										let next_blinding_point = msg.blinding_point;
-										match next_blinding_point.mul_tweak(&self.secp_ctx, &Scalar::from_be_bytes(blinding_factor).unwrap()) {
-											Ok(bp) => bp,
-											Err(e) => {
-												log_trace!(self.logger, "Failed to compute next blinding point: {}", e);
-												return
-											}
-										}
-									},
-								},
-								onion_routing_packet: outgoing_packet,
-							},
-						);
+						e.get_mut().push_back(onion_message);
 						log_trace!(self.logger, "Forwarding an onion message to peer {}", next_node_id);
 					}
 				};
