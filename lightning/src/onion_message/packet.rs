@@ -74,7 +74,7 @@ impl LengthReadable for Packet {
 		while read_idx < hop_data_len {
 			let mut read_buffer = [0; READ_BUFFER_SIZE];
 			let read_amt = cmp::min(hop_data_len - read_idx, READ_BUFFER_SIZE);
-			r.read_exact(&mut read_buffer[..read_amt]);
+			r.read_exact(&mut read_buffer[..read_amt])?;
 			hop_data.extend_from_slice(&read_buffer[..read_amt]);
 			read_idx += read_amt;
 		}
@@ -170,7 +170,7 @@ impl Writeable for (Payload, [u8; 32]) {
 
 // Uses the provided secret to simultaneously decode and decrypt the control TLVs.
 impl ReadableArgs<SharedSecret> for Payload {
-	fn read<R: Read>(mut r: &mut R, encrypted_tlvs_ss: SharedSecret) -> Result<Self, DecodeError> {
+	fn read<R: Read>(r: &mut R, encrypted_tlvs_ss: SharedSecret) -> Result<Self, DecodeError> {
 		let v: BigSize = Readable::read(r)?;
 		let mut rd = FixedLengthReader::new(r, v.0);
 		let mut reply_path: Option<BlindedRoute> = None;

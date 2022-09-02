@@ -81,6 +81,8 @@ impl OnionMessageProvider for IgnoringMessageHandler {
 }
 impl OnionMessageHandler for IgnoringMessageHandler {
 	fn handle_onion_message(&self, _their_node_id: &PublicKey, _msg: &msgs::OnionMessage) {}
+	fn peer_connected(&self, _their_node_id: &PublicKey, _init: &msgs::Init) {}
+	fn peer_disconnected(&self, _their_node_id: &PublicKey, _no_connection_possible: bool) {}
 }
 impl Deref for IgnoringMessageHandler {
 	type Target = IgnoringMessageHandler;
@@ -1173,8 +1175,9 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 			}
 
 			self.message_handler.route_handler.peer_connected(&their_node_id, &msg);
-
 			self.message_handler.chan_handler.peer_connected(&their_node_id, &msg);
+			self.message_handler.onion_message_handler.peer_connected(&their_node_id, &msg);
+
 			peer_lock.their_features = Some(msg.features);
 			return Ok(None);
 		} else if peer_lock.their_features.is_none() {
@@ -1729,6 +1732,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 					}
 					descriptor.disconnect_socket();
 					self.message_handler.chan_handler.peer_disconnected(&node_id, false);
+					self.message_handler.onion_message_handler.peer_disconnected(&node_id, false);
 				}
 			}
 		}
@@ -1756,6 +1760,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 						log_pubkey!(node_id), if no_connection_possible { "no " } else { "" });
 					self.node_id_to_descriptor.lock().unwrap().remove(&node_id);
 					self.message_handler.chan_handler.peer_disconnected(&node_id, no_connection_possible);
+					self.message_handler.onion_message_handler.peer_disconnected(&node_id, no_connection_possible);
 				}
 			}
 		};
@@ -1776,6 +1781,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 			log_trace!(self.logger, "Disconnecting peer with id {} due to client request", node_id);
 			peers_lock.remove(&descriptor);
 			self.message_handler.chan_handler.peer_disconnected(&node_id, no_connection_possible);
+			self.message_handler.onion_message_handler.peer_disconnected(&node_id, no_connection_possible);
 			descriptor.disconnect_socket();
 		}
 	}
@@ -1791,6 +1797,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 			if let Some(node_id) = peer.lock().unwrap().their_node_id {
 				log_trace!(self.logger, "Disconnecting peer with id {} due to client request to disconnect all peers", node_id);
 				self.message_handler.chan_handler.peer_disconnected(&node_id, false);
+				self.message_handler.onion_message_handler.peer_disconnected(&node_id, false);
 			}
 			descriptor.disconnect_socket();
 		}
@@ -1881,6 +1888,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 							log_trace!(self.logger, "Disconnecting peer with id {} due to ping timeout", node_id);
 							self.node_id_to_descriptor.lock().unwrap().remove(&node_id);
 							self.message_handler.chan_handler.peer_disconnected(&node_id, false);
+							self.message_handler.onion_message_handler.peer_disconnected(&node_id, false);
 						}
 					}
 				}
