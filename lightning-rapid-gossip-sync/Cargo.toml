@@ -14,7 +14,7 @@ _bench_unstable = []
 
 [dependencies]
 lightning = { version = "0.0.110", path = "../lightning" }
-bitcoin = { version = "0.29.0", default-features = false }
+bitcoin = { version = "0.29.1", default-features = false }
 
 [dev-dependencies]
 lightning = { version = "0.0.110", path = "../lightning", features = ["_test_utils"] }
