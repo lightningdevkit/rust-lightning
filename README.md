@@ -5,21 +5,19 @@ Rust-Lightning
 [![Documentation](https://img.shields.io/static/v1?logo=read-the-docs&label=docs.rs&message=lightning&color=informational)](https://docs.rs/lightning/)
 [![Safety Dance](https://img.shields.io/badge/unsafe-forbidden-success.svg)](https://github.com/rust-secure-code/safety-dance/)
 
-`rust-lightning` is a Bitcoin Lightning library written in Rust. The main crate,
-`lightning`, does not handle networking, persistence, or any other I/O. Thus,
-it is runtime-agnostic, but users must implement basic networking logic, chain
-interactions, and disk storage. More information is available in the `About`
-section.
+[LDK](https://lightningdevkit.org)/`rust-lightning` is a highly performant and flexible 
+implementation of the Lightning Network protocol.
+
+The primary crate, `lightning`, is runtime-agnostic. Data persistence, chain interactions,
+and networking can be provided by LDK's [sample modules](#crates), or you may provide your
+own custom implementations.
+More information is available in the [`About`](#about) section.
 
 Status
 ------
-The project implements all of the [BOLT
-specifications](https://github.com/lightning/bolts). The
-implementation has pretty good test coverage that is expected to continue to
-improve. It is also anticipated that as developers begin using the API, the
-lessons from that will result in changes to the API, so any developer using this
-API at this stage should be prepared to embrace that. The current state is
-sufficient for a developer or project to experiment with it.
+The project implements all of the [BOLT specifications](https://github.com/lightning/bolts),
+and has been in production use since 2021. As with any Lightning implementation, care and attention
+to detail is important for safe deployment.
 
 Communications for `rust-lightning` and Lightning Development Kit happen through
 our LDK [Discord](https://discord.gg/5AcknnMfBw) channels.
@@ -51,17 +49,14 @@ Crates
 
 About
 -----------
-LDK/`rust-lightning` is a generic library which allows you to build a Lightning
+LDK/`rust-lightning` is a generic library that allows you to build a Lightning
 node without needing to worry about getting all of the Lightning state machine,
 routing, and on-chain punishment code (and other chain interactions) exactly
-correct. Note that `rust-lightning` isn't, in itself, a node. There are various
-working/in progress demos which could be used as a node today, but if you "just"
-want a generic Lightning node, you're almost certainly better off with [Core
-Lightning](https://github.com/ElementsProject/lightning) or
-[LND](https://github.com/lightningnetwork/lnd). If, on the other hand, you want
-to integrate Lightning with custom features such as your own chain sync, your
-own key management, your own data storage/backup logic, etc., LDK is likely your
-only option. Some `rust-lightning` utilities such as those in
+correct. Note that LDK isn't, in itself, a node. For an out-of-the-box Lightning
+node based on LDK, see [Sensei](https://l2.technology/sensei). However, if you
+want to integrate Lightning with custom features such as your own chain sync,
+key management, data storage/backup logic, etc., LDK is likely your best option.
+Some `rust-lightning` utilities such as those in
 [`chan_utils`](./lightning/src/ln/chan_utils.rs) are also suitable for use in
 non-LN Bitcoin applications such as Discreet Log Contracts (DLCs) and bulletin boards.
 
