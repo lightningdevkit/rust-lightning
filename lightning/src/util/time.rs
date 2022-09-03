@@ -65,7 +65,12 @@ impl Time for std::time::Instant {
 	}
 
 	fn duration_since(&self, earlier: Self) -> Duration {
-		self.duration_since(earlier)
+		// On rust prior to 1.60 `Instant::duration_since` will panic if time goes backwards.
+		// However, we support rust versions prior to 1.60 and some users appear to have "monotonic
+		// clocks" that go backwards in practice (likely relatively ancient kernels/etc). Thus, we
+		// manually check for time going backwards here and return a duration of zero in that case.
+		let now = Self::now();
+		if now > earlier { now - earlier } else { Duration::from_secs(0) }
 	}
 
 	fn duration_since_epoch() -> Duration {
