@@ -433,6 +433,11 @@ mod sealed {
 	define_feature!(27, ShutdownAnySegwit, [InitContext, NodeContext],
 		"Feature flags for `opt_shutdown_anysegwit`.", set_shutdown_any_segwit_optional,
 		set_shutdown_any_segwit_required, supports_shutdown_anysegwit, requires_shutdown_anysegwit);
+	// We do not yet advertise the onion messages feature bit, but we need to detect when peers
+	// support it.
+	define_feature!(39, OnionMessages, [InitContext, NodeContext],
+		"Feature flags for `option_onion_messages`.", set_onion_messages_optional,
+		set_onion_messages_required, supports_onion_messages, requires_onion_messages);
 	define_feature!(45, ChannelType, [InitContext, NodeContext],
 		"Feature flags for `option_channel_type`.", set_channel_type_optional,
 		set_channel_type_required, supports_channel_type, requires_channel_type);
@@ -767,7 +772,7 @@ impl<T: sealed::GossipQueries> Features<T> {
 
 impl<T: sealed::InitialRoutingSync> Features<T> {
 	// We are no longer setting initial_routing_sync now that gossip_queries
-	// is enabled. This feature is ignored by a peer when gossip_queries has 
+	// is enabled. This feature is ignored by a peer when gossip_queries has
 	// been negotiated.
 	#[cfg(test)]
 	pub(crate) fn clear_initial_routing_sync(&mut self) {

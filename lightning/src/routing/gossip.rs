@@ -16,13 +16,12 @@ use bitcoin::secp256k1;
 
 use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::hashes::Hash;
-use bitcoin::blockdata::script::Builder;
 use bitcoin::blockdata::transaction::TxOut;
-use bitcoin::blockdata::opcodes;
 use bitcoin::hash_types::BlockHash;
 
 use chain;
 use chain::Access;
+use ln::chan_utils::make_funding_redeemscript;
 use ln::features::{ChannelFeatures, NodeFeatures};
 use ln::msgs::{DecodeError, ErrorAction, Init, LightningError, RoutingMessageHandler, NetAddress, MAX_VALUE_MSAT};
 use ln::msgs::{ChannelAnnouncement, ChannelUpdate, NodeAnnouncement, GossipTimestampFilter};
@@ -41,7 +40,7 @@ use core::{cmp, fmt};
 use sync::{RwLock, RwLockReadGuard};
 use core::sync::atomic::{AtomicUsize, Ordering};
 use sync::Mutex;
-use core::ops::Deref;
+use core::ops::{Bound, Deref};
 use bitcoin::hashes::hex::ToHex;
 
 #[cfg(feature = "std")]
@@ -318,56 +317,43 @@ where C::Target: chain::Access, L::Target: Logger
 		Ok(msg.contents.excess_data.len() <= MAX_EXCESS_BYTES_FOR_RELAY)
 	}
 
-	fn get_next_channel_announcements(&self, starting_point: u64, batch_amount: u8) -> Vec<(ChannelAnnouncement, Option<ChannelUpdate>, Option<ChannelUpdate>)> {
-		let mut result = Vec::with_capacity(batch_amount as usize);
+	fn get_next_channel_announcement(&self, starting_point: u64) -> Option<(ChannelAnnouncement, Option<ChannelUpdate>, Option<ChannelUpdate>)> {
 		let channels = self.network_graph.channels.read().unwrap();
-		let mut iter = channels.range(starting_point..);
-		while result.len() < batch_amount as usize {
-			if let Some((_, ref chan)) = iter.next() {
-				if chan.announcement_message.is_some() {
-					let chan_announcement = chan.announcement_message.clone().unwrap();
-					let mut one_to_two_announcement: Option<msgs::ChannelUpdate> = None;
-					let mut two_to_one_announcement: Option<msgs::ChannelUpdate> = None;
-					if let Some(one_to_two) = chan.one_to_two.as_ref() {
-						one_to_two_announcement = one_to_two.last_update_message.clone();
-					}
-					if let Some(two_to_one) = chan.two_to_one.as_ref() {
-						two_to_one_announcement = two_to_one.last_update_message.clone();
-					}
-					result.push((chan_announcement, one_to_two_announcement, two_to_one_announcement));
-				} else {
-					// TODO: We may end up sending un-announced channel_updates if we are sending
-					// initial sync data while receiving announce/updates for this channel.
+		for (_, ref chan) in channels.range(starting_point..) {
+			if chan.announcement_message.is_some() {
+				let chan_announcement = chan.announcement_message.clone().unwrap();
+				let mut one_to_two_announcement: Option<msgs::ChannelUpdate> = None;
+				let mut two_to_one_announcement: Option<msgs::ChannelUpdate> = None;
+				if let Some(one_to_two) = chan.one_to_two.as_ref() {
+					one_to_two_announcement = one_to_two.last_update_message.clone();
 				}
+				if let Some(two_to_one) = chan.two_to_one.as_ref() {
+					two_to_one_announcement = two_to_one.last_update_message.clone();
+				}
+				return Some((chan_announcement, one_to_two_announcement, two_to_one_announcement));
 			} else {
-				return result;
+				// TODO: We may end up sending un-announced channel_updates if we are sending
+				// initial sync data while receiving announce/updates for this channel.
 			}
 		}
-		result
+		None
 	}
 
-	fn get_next_node_announcements(&self, starting_point: Option<&PublicKey>, batch_amount: u8) -> Vec<NodeAnnouncement> {
-		let mut result = Vec::with_capacity(batch_amount as usize);
+	fn get_next_node_announcement(&self, starting_point: Option<&PublicKey>) -> Option<NodeAnnouncement> {
 		let nodes = self.network_graph.nodes.read().unwrap();
-		let mut iter = if let Some(pubkey) = starting_point {
-				let mut iter = nodes.range(NodeId::from_pubkey(pubkey)..);
-				iter.next();
-				iter
+		let iter = if let Some(pubkey) = starting_point {
+				nodes.range((Bound::Excluded(NodeId::from_pubkey(pubkey)), Bound::Unbounded))
 			} else {
-				nodes.range::<NodeId, _>(..)
+				nodes.range(..)
 			};
-		while result.len() < batch_amount as usize {
-			if let Some((_, ref node)) = iter.next() {
-				if let Some(node_info) = node.announcement_info.as_ref() {
-					if node_info.announcement_message.is_some() {
-						result.push(node_info.announcement_message.clone().unwrap());
-					}
+		for (_, ref node) in iter {
+			if let Some(node_info) = node.announcement_info.as_ref() {
+				if let Some(msg) = node_info.announcement_message.clone() {
+					return Some(msg);
 				}
-			} else {
-				return result;
 			}
 		}
-		result
+		None
 	}
 
 	/// Initiates a stateless sync of routing gossip information with a peer
@@ -929,7 +915,7 @@ impl<'a> fmt::Debug for DirectedChannelInfoWithUpdate<'a> {
 ///
 /// While this may be smaller than the actual channel capacity, amounts greater than
 /// [`Self::as_msat`] should not be routed through the channel.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum EffectiveCapacity {
 	/// The available liquidity in the channel known from being a channel counterparty, and thus a
 	/// direct hop.
@@ -1447,6 +1433,39 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 			return Err(LightningError{err: "Channel announcement node had a channel with itself".to_owned(), action: ErrorAction::IgnoreError});
 		}
 
+		{
+			let channels = self.channels.read().unwrap();
+
+			if let Some(chan) = channels.get(&msg.short_channel_id) {
+				if chan.capacity_sats.is_some() {
+					// If we'd previously looked up the channel on-chain and checked the script
+					// against what appears on-chain, ignore the duplicate announcement.
+					//
+					// Because a reorg could replace one channel with another at the same SCID, if
+					// the channel appears to be different, we re-validate. This doesn't expose us
+					// to any more DoS risk than not, as a peer can always flood us with
+					// randomly-generated SCID values anyway.
+					//
+					// We use the Node IDs rather than the bitcoin_keys to check for "equivalence"
+					// as we didn't (necessarily) store the bitcoin keys, and we only really care
+					// if the peers on the channel changed anyway.
+					if NodeId::from_pubkey(&msg.node_id_1) == chan.node_one && NodeId::from_pubkey(&msg.node_id_2) == chan.node_two {
+						return Err(LightningError {
+							err: "Already have chain-validated channel".to_owned(),
+							action: ErrorAction::IgnoreDuplicateGossip
+						});
+					}
+				} else if chain_access.is_none() {
+					// Similarly, if we can't check the chain right now anyway, ignore the
+					// duplicate announcement without bothering to take the channels write lock.
+					return Err(LightningError {
+						err: "Already have non-chain-validated channel".to_owned(),
+						action: ErrorAction::IgnoreDuplicateGossip
+					});
+				}
+			}
+		}
+
 		let utxo_value = match &chain_access {
 			&None => {
 				// Tentatively accept, potentially exposing us to DoS attacks
@@ -1455,13 +1474,10 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 			&Some(ref chain_access) => {
 				match chain_access.get_utxo(&msg.chain_hash, msg.short_channel_id) {
 					Ok(TxOut { value, script_pubkey }) => {
-						let expected_script = Builder::new().push_opcode(opcodes::all::OP_PUSHNUM_2)
-						                                    .push_slice(&msg.bitcoin_key_1.serialize())
-						                                    .push_slice(&msg.bitcoin_key_2.serialize())
-						                                    .push_opcode(opcodes::all::OP_PUSHNUM_2)
-						                                    .push_opcode(opcodes::all::OP_CHECKMULTISIG).into_script().to_v0_p2wsh();
+						let expected_script =
+							make_funding_redeemscript(&msg.bitcoin_key_1, &msg.bitcoin_key_2).to_v0_p2wsh();
 						if script_pubkey != expected_script {
-							return Err(LightningError{err: format!("Channel announcement key ({}) didn't match on-chain script ({})", script_pubkey.to_hex(), expected_script.to_hex()), action: ErrorAction::IgnoreError});
+							return Err(LightningError{err: format!("Channel announcement key ({}) didn't match on-chain script ({})", expected_script.to_hex(), script_pubkey.to_hex()), action: ErrorAction::IgnoreError});
 						}
 						//TODO: Check if value is worth storing, use it to inform routing, and compare it
 						//to the new HTLC max field in channel_update
@@ -1836,6 +1852,7 @@ impl ReadOnlyNetworkGraph<'_> {
 #[cfg(test)]
 mod tests {
 	use chain;
+	use ln::chan_utils::make_funding_redeemscript;
 	use ln::PaymentHash;
 	use ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 	use routing::gossip::{P2PGossipSync, NetworkGraph, NetworkUpdate, NodeAlias, MAX_EXCESS_BYTES_FOR_RELAY, NodeId, RoutingFees, ChannelUpdateInfo, ChannelInfo, NodeAnnouncementInfo, NodeInfo};
@@ -1853,9 +1870,8 @@ mod tests {
 	use bitcoin::hashes::Hash;
 	use bitcoin::network::constants::Network;
 	use bitcoin::blockdata::constants::genesis_block;
-	use bitcoin::blockdata::script::{Builder, Script};
+	use bitcoin::blockdata::script::Script;
 	use bitcoin::blockdata::transaction::TxOut;
-	use bitcoin::blockdata::opcodes;
 
 	use hex;
 
@@ -1945,14 +1961,10 @@ mod tests {
 	}
 
 	fn get_channel_script(secp_ctx: &Secp256k1<secp256k1::All>) -> Script {
-		let node_1_btckey = &SecretKey::from_slice(&[40; 32]).unwrap();
-		let node_2_btckey = &SecretKey::from_slice(&[39; 32]).unwrap();
-		Builder::new().push_opcode(opcodes::all::OP_PUSHNUM_2)
-		              .push_slice(&PublicKey::from_secret_key(&secp_ctx, node_1_btckey).serialize())
-		              .push_slice(&PublicKey::from_secret_key(&secp_ctx, node_2_btckey).serialize())
-		              .push_opcode(opcodes::all::OP_PUSHNUM_2)
-		              .push_opcode(opcodes::all::OP_CHECKMULTISIG).into_script()
-		              .to_v0_p2wsh()
+		let node_1_btckey = SecretKey::from_slice(&[40; 32]).unwrap();
+		let node_2_btckey = SecretKey::from_slice(&[39; 32]).unwrap();
+		make_funding_redeemscript(&PublicKey::from_secret_key(secp_ctx, &node_1_btckey),
+			&PublicKey::from_secret_key(secp_ctx, &node_2_btckey)).to_v0_p2wsh()
 	}
 
 	fn get_signed_channel_update<F: Fn(&mut UnsignedChannelUpdate)>(f: F, node_key: &SecretKey, secp_ctx: &Secp256k1<secp256k1::All>) -> ChannelUpdate {
@@ -2067,7 +2079,7 @@ mod tests {
 		// drop new one on the floor, since we can't see any changes.
 		match gossip_sync.handle_channel_announcement(&valid_announcement) {
 			Ok(_) => panic!(),
-			Err(e) => assert_eq!(e.err, "Already have knowledge of channel")
+			Err(e) => assert_eq!(e.err, "Already have non-chain-validated channel")
 		};
 
 		// Test if an associated transaction were not on-chain (or not confirmed).
@@ -2101,32 +2113,13 @@ mod tests {
 			};
 		}
 
-		// If we receive announcement for the same channel (but TX is not confirmed),
-		// drop new one on the floor, since we can't see any changes.
-		*chain_source.utxo_ret.lock().unwrap() = Err(chain::AccessError::UnknownTx);
+		// If we receive announcement for the same channel, once we've validated it against the
+		// chain, we simply ignore all new (duplicate) announcements.
+		*chain_source.utxo_ret.lock().unwrap() = Ok(TxOut { value: 0, script_pubkey: good_script });
 		match gossip_sync.handle_channel_announcement(&valid_announcement) {
 			Ok(_) => panic!(),
-			Err(e) => assert_eq!(e.err, "Channel announced without corresponding UTXO entry")
+			Err(e) => assert_eq!(e.err, "Already have chain-validated channel")
 		};
-
-		// But if it is confirmed, replace the channel
-		*chain_source.utxo_ret.lock().unwrap() = Ok(TxOut { value: 0, script_pubkey: good_script });
-		let valid_announcement = get_signed_channel_announcement(|unsigned_announcement| {
-			unsigned_announcement.features = ChannelFeatures::empty();
-			unsigned_announcement.short_channel_id += 2;
-		}, node_1_privkey, node_2_privkey, &secp_ctx);
-		match gossip_sync.handle_channel_announcement(&valid_announcement) {
-			Ok(res) => assert!(res),
-			_ => panic!()
-		};
-		{
-			match network_graph.read_only().channels().get(&valid_announcement.contents.short_channel_id) {
-				Some(channel_entry) => {
-					assert_eq!(channel_entry.features, ChannelFeatures::empty());
-				},
-				_ => panic!()
-			};
-		}
 
 		// Don't relay valid channels with excess data
 		let valid_announcement = get_signed_channel_announcement(|unsigned_announcement| {
@@ -2412,8 +2405,8 @@ mod tests {
 		let node_2_privkey = &SecretKey::from_slice(&[41; 32]).unwrap();
 
 		// Channels were not announced yet.
-		let channels_with_announcements = gossip_sync.get_next_channel_announcements(0, 1);
-		assert_eq!(channels_with_announcements.len(), 0);
+		let channels_with_announcements = gossip_sync.get_next_channel_announcement(0);
+		assert!(channels_with_announcements.is_none());
 
 		let short_channel_id;
 		{
@@ -2427,16 +2420,14 @@ mod tests {
 		}
 
 		// Contains initial channel announcement now.
-		let channels_with_announcements = gossip_sync.get_next_channel_announcements(short_channel_id, 1);
-		assert_eq!(channels_with_announcements.len(), 1);
-		if let Some(channel_announcements) = channels_with_announcements.first() {
-			let &(_, ref update_1, ref update_2) = channel_announcements;
+		let channels_with_announcements = gossip_sync.get_next_channel_announcement(short_channel_id);
+		if let Some(channel_announcements) = channels_with_announcements {
+			let (_, ref update_1, ref update_2) = channel_announcements;
 			assert_eq!(update_1, &None);
 			assert_eq!(update_2, &None);
 		} else {
 			panic!();
 		}
-
 
 		{
 			// Valid channel update
@@ -2450,10 +2441,9 @@ mod tests {
 		}
 
 		// Now contains an initial announcement and an update.
-		let channels_with_announcements = gossip_sync.get_next_channel_announcements(short_channel_id, 1);
-		assert_eq!(channels_with_announcements.len(), 1);
-		if let Some(channel_announcements) = channels_with_announcements.first() {
-			let &(_, ref update_1, ref update_2) = channel_announcements;
+		let channels_with_announcements = gossip_sync.get_next_channel_announcement(short_channel_id);
+		if let Some(channel_announcements) = channels_with_announcements {
+			let (_, ref update_1, ref update_2) = channel_announcements;
 			assert_ne!(update_1, &None);
 			assert_eq!(update_2, &None);
 		} else {
@@ -2473,10 +2463,9 @@ mod tests {
 		}
 
 		// Test that announcements with excess data won't be returned
-		let channels_with_announcements = gossip_sync.get_next_channel_announcements(short_channel_id, 1);
-		assert_eq!(channels_with_announcements.len(), 1);
-		if let Some(channel_announcements) = channels_with_announcements.first() {
-			let &(_, ref update_1, ref update_2) = channel_announcements;
+		let channels_with_announcements = gossip_sync.get_next_channel_announcement(short_channel_id);
+		if let Some(channel_announcements) = channels_with_announcements {
+			let (_, ref update_1, ref update_2) = channel_announcements;
 			assert_eq!(update_1, &None);
 			assert_eq!(update_2, &None);
 		} else {
@@ -2484,8 +2473,8 @@ mod tests {
 		}
 
 		// Further starting point have no channels after it
-		let channels_with_announcements = gossip_sync.get_next_channel_announcements(short_channel_id + 1000, 1);
-		assert_eq!(channels_with_announcements.len(), 0);
+		let channels_with_announcements = gossip_sync.get_next_channel_announcement(short_channel_id + 1000);
+		assert!(channels_with_announcements.is_none());
 	}
 
 	#[test]
@@ -2497,8 +2486,8 @@ mod tests {
 		let node_id_1 = PublicKey::from_secret_key(&secp_ctx, node_1_privkey);
 
 		// No nodes yet.
-		let next_announcements = gossip_sync.get_next_node_announcements(None, 10);
-		assert_eq!(next_announcements.len(), 0);
+		let next_announcements = gossip_sync.get_next_node_announcement(None);
+		assert!(next_announcements.is_none());
 
 		{
 			// Announce a channel to add 2 nodes
@@ -2509,10 +2498,9 @@ mod tests {
 			};
 		}
 
-
 		// Nodes were never announced
-		let next_announcements = gossip_sync.get_next_node_announcements(None, 3);
-		assert_eq!(next_announcements.len(), 0);
+		let next_announcements = gossip_sync.get_next_node_announcement(None);
+		assert!(next_announcements.is_none());
 
 		{
 			let valid_announcement = get_signed_node_announcement(|_| {}, node_1_privkey, &secp_ctx);
@@ -2528,12 +2516,12 @@ mod tests {
 			};
 		}
 
-		let next_announcements = gossip_sync.get_next_node_announcements(None, 3);
-		assert_eq!(next_announcements.len(), 2);
+		let next_announcements = gossip_sync.get_next_node_announcement(None);
+		assert!(next_announcements.is_some());
 
 		// Skip the first node.
-		let next_announcements = gossip_sync.get_next_node_announcements(Some(&node_id_1), 2);
-		assert_eq!(next_announcements.len(), 1);
+		let next_announcements = gossip_sync.get_next_node_announcement(Some(&node_id_1));
+		assert!(next_announcements.is_some());
 
 		{
 			// Later announcement which should not be relayed (excess data) prevent us from sharing a node
@@ -2547,8 +2535,8 @@ mod tests {
 			};
 		}
 
-		let next_announcements = gossip_sync.get_next_node_announcements(Some(&node_id_1), 2);
-		assert_eq!(next_announcements.len(), 0);
+		let next_announcements = gossip_sync.get_next_node_announcement(Some(&node_id_1));
+		assert!(next_announcements.is_none());
 	}
 
 	#[test]
@@ -3003,7 +2991,7 @@ mod tests {
 		let legacy_chan_update_info_with_none: Vec<u8> = hex::decode("2c0004000000170201010402002a060800000000000004d20801000a0d0c00040000000902040000000a0c0100").unwrap();
 		let read_chan_update_info_res: Result<ChannelUpdateInfo, ::ln::msgs::DecodeError> = ::util::ser::Readable::read(&mut legacy_chan_update_info_with_none.as_slice());
 		assert!(read_chan_update_info_res.is_err());
-			
+
 		// 2. Test encoding/decoding of ChannelInfo
 		// Check we can encode/decode ChannelInfo without ChannelUpdateInfo fields present.
 		let chan_info_none_updates = ChannelInfo {

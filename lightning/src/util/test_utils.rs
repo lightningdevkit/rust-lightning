@@ -45,7 +45,7 @@ use prelude::*;
 use core::time::Duration;
 use sync::{Mutex, Arc};
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use core::{cmp, mem};
+use core::mem;
 use bitcoin::bech32::u5;
 use chain::keysinterface::{InMemorySigner, Recipient, KeyMaterial};
 
@@ -447,23 +447,16 @@ impl msgs::RoutingMessageHandler for TestRoutingMessageHandler {
 		self.chan_upds_recvd.fetch_add(1, Ordering::AcqRel);
 		Err(msgs::LightningError { err: "".to_owned(), action: msgs::ErrorAction::IgnoreError })
 	}
-	fn get_next_channel_announcements(&self, starting_point: u64, batch_amount: u8) -> Vec<(msgs::ChannelAnnouncement, Option<msgs::ChannelUpdate>, Option<msgs::ChannelUpdate>)> {
-		let mut chan_anns = Vec::new();
-		const TOTAL_UPDS: u64 = 50;
-		let end: u64 = cmp::min(starting_point + batch_amount as u64, TOTAL_UPDS);
-		for i in starting_point..end {
-			let chan_upd_1 = get_dummy_channel_update(i);
-			let chan_upd_2 = get_dummy_channel_update(i);
-			let chan_ann = get_dummy_channel_announcement(i);
+	fn get_next_channel_announcement(&self, starting_point: u64) -> Option<(msgs::ChannelAnnouncement, Option<msgs::ChannelUpdate>, Option<msgs::ChannelUpdate>)> {
+		let chan_upd_1 = get_dummy_channel_update(starting_point);
+		let chan_upd_2 = get_dummy_channel_update(starting_point);
+		let chan_ann = get_dummy_channel_announcement(starting_point);
 
-			chan_anns.push((chan_ann, Some(chan_upd_1), Some(chan_upd_2)));
-		}
-
-		chan_anns
+		Some((chan_ann, Some(chan_upd_1), Some(chan_upd_2)))
 	}
 
-	fn get_next_node_announcements(&self, _starting_point: Option<&PublicKey>, _batch_amount: u8) -> Vec<msgs::NodeAnnouncement> {
-		Vec::new()
+	fn get_next_node_announcement(&self, _starting_point: Option<&PublicKey>) -> Option<msgs::NodeAnnouncement> {
+		None
 	}
 
 	fn peer_connected(&self, their_node_id: &PublicKey, init_msg: &msgs::Init) {
@@ -730,7 +723,6 @@ pub struct TestChainSource {
 	pub utxo_ret: Mutex<Result<TxOut, chain::AccessError>>,
 	pub watched_txn: Mutex<HashSet<(Txid, Script)>>,
 	pub watched_outputs: Mutex<HashSet<(OutPoint, Script)>>,
-	expectations: Mutex<Option<VecDeque<OnRegisterOutput>>>,
 }
 
 impl TestChainSource {
@@ -741,16 +733,7 @@ impl TestChainSource {
 			utxo_ret: Mutex::new(Ok(TxOut { value: u64::max_value(), script_pubkey })),
 			watched_txn: Mutex::new(HashSet::new()),
 			watched_outputs: Mutex::new(HashSet::new()),
-			expectations: Mutex::new(None),
 		}
-	}
-
-	/// Sets an expectation that [`chain::Filter::register_output`] is called.
-	pub fn expect(&self, expectation: OnRegisterOutput) -> &Self {
-		self.expectations.lock().unwrap()
-			.get_or_insert_with(|| VecDeque::new())
-			.push_back(expectation);
-		self
 	}
 }
 
@@ -769,24 +752,8 @@ impl chain::Filter for TestChainSource {
 		self.watched_txn.lock().unwrap().insert((*txid, script_pubkey.clone()));
 	}
 
-	fn register_output(&self, output: WatchedOutput) -> Option<(usize, Transaction)> {
-		let dependent_tx = match &mut *self.expectations.lock().unwrap() {
-			None => None,
-			Some(expectations) => match expectations.pop_front() {
-				None => {
-					panic!("Unexpected register_output: {:?}",
-						(output.outpoint, output.script_pubkey));
-				},
-				Some(expectation) => {
-					assert_eq!(output.outpoint, expectation.outpoint());
-					assert_eq!(&output.script_pubkey, expectation.script_pubkey());
-					expectation.returns
-				},
-			},
-		};
-
+	fn register_output(&self, output: WatchedOutput) {
 		self.watched_outputs.lock().unwrap().insert((output.outpoint, output.script_pubkey));
-		dependent_tx
 	}
 }
 
@@ -795,47 +762,6 @@ impl Drop for TestChainSource {
 		if panicking() {
 			return;
 		}
-
-		if let Some(expectations) = &*self.expectations.lock().unwrap() {
-			if !expectations.is_empty() {
-				panic!("Unsatisfied expectations: {:?}", expectations);
-			}
-		}
-	}
-}
-
-/// An expectation that [`chain::Filter::register_output`] was called with a transaction output and
-/// returns an optional dependent transaction that spends the output in the same block.
-pub struct OnRegisterOutput {
-	/// The transaction output to register.
-	pub with: TxOutReference,
-
-	/// A dependent transaction spending the output along with its position in the block.
-	pub returns: Option<(usize, Transaction)>,
-}
-
-/// A transaction output as identified by an index into a transaction's output list.
-pub struct TxOutReference(pub Transaction, pub usize);
-
-impl OnRegisterOutput {
-	fn outpoint(&self) -> OutPoint {
-		let txid = self.with.0.txid();
-		let index = self.with.1 as u16;
-		OutPoint { txid, index }
-	}
-
-	fn script_pubkey(&self) -> &Script {
-		let index = self.with.1;
-		&self.with.0.output[index].script_pubkey
-	}
-}
-
-impl core::fmt::Debug for OnRegisterOutput {
-	fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-		f.debug_struct("OnRegisterOutput")
-			.field("outpoint", &self.outpoint())
-			.field("script_pubkey", self.script_pubkey())
-			.finish()
 	}
 }
 

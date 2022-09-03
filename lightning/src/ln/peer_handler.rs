@@ -19,7 +19,7 @@ use bitcoin::secp256k1::{self, Secp256k1, SecretKey, PublicKey};
 
 use ln::features::InitFeatures;
 use ln::msgs;
-use ln::msgs::{ChannelMessageHandler, LightningError, NetAddress, RoutingMessageHandler};
+use ln::msgs::{ChannelMessageHandler, LightningError, NetAddress, OnionMessageHandler, RoutingMessageHandler};
 use ln::channelmanager::{SimpleArcChannelManager, SimpleRefChannelManager};
 use util::ser::{VecWriter, Writeable, Writer};
 use ln::peer_channel_encryptor::{PeerChannelEncryptor,NextNoiseStep};
@@ -27,7 +27,7 @@ use ln::wire;
 use ln::wire::Encode;
 use routing::gossip::{NetworkGraph, P2PGossipSync};
 use util::atomic_counter::AtomicCounter;
-use util::events::{MessageSendEvent, MessageSendEventsProvider};
+use util::events::{MessageSendEvent, MessageSendEventsProvider, OnionMessageProvider};
 use util::logger::Logger;
 
 use prelude::*;
@@ -67,14 +67,22 @@ impl RoutingMessageHandler for IgnoringMessageHandler {
 	fn handle_node_announcement(&self, _msg: &msgs::NodeAnnouncement) -> Result<bool, LightningError> { Ok(false) }
 	fn handle_channel_announcement(&self, _msg: &msgs::ChannelAnnouncement) -> Result<bool, LightningError> { Ok(false) }
 	fn handle_channel_update(&self, _msg: &msgs::ChannelUpdate) -> Result<bool, LightningError> { Ok(false) }
-	fn get_next_channel_announcements(&self, _starting_point: u64, _batch_amount: u8) ->
-		Vec<(msgs::ChannelAnnouncement, Option<msgs::ChannelUpdate>, Option<msgs::ChannelUpdate>)> { Vec::new() }
-	fn get_next_node_announcements(&self, _starting_point: Option<&PublicKey>, _batch_amount: u8) -> Vec<msgs::NodeAnnouncement> { Vec::new() }
+	fn get_next_channel_announcement(&self, _starting_point: u64) ->
+		Option<(msgs::ChannelAnnouncement, Option<msgs::ChannelUpdate>, Option<msgs::ChannelUpdate>)> { None }
+	fn get_next_node_announcement(&self, _starting_point: Option<&PublicKey>) -> Option<msgs::NodeAnnouncement> { None }
 	fn peer_connected(&self, _their_node_id: &PublicKey, _init: &msgs::Init) {}
 	fn handle_reply_channel_range(&self, _their_node_id: &PublicKey, _msg: msgs::ReplyChannelRange) -> Result<(), LightningError> { Ok(()) }
 	fn handle_reply_short_channel_ids_end(&self, _their_node_id: &PublicKey, _msg: msgs::ReplyShortChannelIdsEnd) -> Result<(), LightningError> { Ok(()) }
 	fn handle_query_channel_range(&self, _their_node_id: &PublicKey, _msg: msgs::QueryChannelRange) -> Result<(), LightningError> { Ok(()) }
 	fn handle_query_short_channel_ids(&self, _their_node_id: &PublicKey, _msg: msgs::QueryShortChannelIds) -> Result<(), LightningError> { Ok(()) }
+}
+impl OnionMessageProvider for IgnoringMessageHandler {
+	fn next_onion_message_for_peer(&self, _peer_node_id: PublicKey) -> Option<msgs::OnionMessage> { None }
+}
+impl OnionMessageHandler for IgnoringMessageHandler {
+	fn handle_onion_message(&self, _their_node_id: &PublicKey, _msg: &msgs::OnionMessage) {}
+	fn peer_connected(&self, _their_node_id: &PublicKey, _init: &msgs::Init) {}
+	fn peer_disconnected(&self, _their_node_id: &PublicKey, _no_connection_possible: bool) {}
 }
 impl Deref for IgnoringMessageHandler {
 	type Target = IgnoringMessageHandler;
@@ -199,9 +207,11 @@ impl Deref for ErroringMessageHandler {
 }
 
 /// Provides references to trait impls which handle different types of messages.
-pub struct MessageHandler<CM: Deref, RM: Deref> where
+pub struct MessageHandler<CM: Deref, RM: Deref, OM: Deref> where
 		CM::Target: ChannelMessageHandler,
-		RM::Target: RoutingMessageHandler {
+		RM::Target: RoutingMessageHandler,
+		OM::Target: OnionMessageHandler,
+{
 	/// A message handler which handles messages specific to channels. Usually this is just a
 	/// [`ChannelManager`] object or an [`ErroringMessageHandler`].
 	///
@@ -212,6 +222,10 @@ pub struct MessageHandler<CM: Deref, RM: Deref> where
 	///
 	/// [`P2PGossipSync`]: crate::routing::gossip::P2PGossipSync
 	pub route_handler: RM,
+
+	/// A message handler which handles onion messages. For now, this can only be an
+	/// [`IgnoringMessageHandler`].
+	pub onion_message_handler: OM,
 }
 
 /// Provides an object which can be used to send data to and which uniquely identifies a connection
@@ -298,7 +312,7 @@ const FORWARD_INIT_SYNC_BUFFER_LIMIT_RATIO: usize = 2;
 /// we have fewer than this many messages in the outbound buffer again.
 /// We also use this as the target number of outbound gossip messages to keep in the write buffer,
 /// refilled as we send bytes.
-const OUTBOUND_BUFFER_LIMIT_READ_PAUSE: usize = 10;
+const OUTBOUND_BUFFER_LIMIT_READ_PAUSE: usize = 12;
 /// When the outbound buffer has this many messages, we'll simply skip relaying gossip messages to
 /// the peer.
 const OUTBOUND_BUFFER_LIMIT_DROP_GOSSIP: usize = OUTBOUND_BUFFER_LIMIT_READ_PAUSE * FORWARD_INIT_SYNC_BUFFER_LIMIT_RATIO;
@@ -323,6 +337,10 @@ const MAX_BUFFER_DRAIN_TICK_INTERVALS_PER_PEER: i8 = 4;
 /// tick. Once we have sent this many messages since the last ping, we send a ping right away to
 /// ensures we don't just fill up our send buffer and leave the peer with too many messages to
 /// process before the next ping.
+///
+/// Note that we continue responding to other messages even after we've sent this many messages, so
+/// it's more of a general guideline used for gossip backfill (and gossip forwarding, times
+/// [`FORWARD_INIT_SYNC_BUFFER_LIMIT_RATIO`]) than a hard limit.
 const BUFFER_DRAIN_MSGS_PER_TICK: usize = 32;
 
 struct Peer {
@@ -333,6 +351,9 @@ struct Peer {
 
 	pending_outbound_buffer: LinkedList<Vec<u8>>,
 	pending_outbound_buffer_first_msg_offset: usize,
+	// Queue gossip broadcasts separately from `pending_outbound_buffer` so we can easily prioritize
+	// channel messages over them.
+	gossip_broadcast_buffer: LinkedList<Vec<u8>>,
 	awaiting_write_event: bool,
 
 	pending_read_buffer: Vec<u8>,
@@ -378,6 +399,42 @@ impl Peer {
 			InitSyncTracker::NodesSyncing(pk) => pk < node_id,
 		}
 	}
+
+	/// Returns whether we should be reading bytes from this peer, based on whether its outbound
+	/// buffer still has space and we don't need to pause reads to get some writes out.
+	fn should_read(&self) -> bool {
+		self.pending_outbound_buffer.len() < OUTBOUND_BUFFER_LIMIT_READ_PAUSE
+	}
+
+	/// Determines if we should push additional gossip background sync (aka "backfill") onto a peer's
+	/// outbound buffer. This is checked every time the peer's buffer may have been drained.
+	fn should_buffer_gossip_backfill(&self) -> bool {
+		self.pending_outbound_buffer.is_empty() && self.gossip_broadcast_buffer.is_empty()
+			&& self.msgs_sent_since_pong < BUFFER_DRAIN_MSGS_PER_TICK
+	}
+
+	/// Determines if we should push an onion message onto a peer's outbound buffer. This is checked
+	/// every time the peer's buffer may have been drained.
+	fn should_buffer_onion_message(&self) -> bool {
+		self.pending_outbound_buffer.is_empty()
+			&& self.msgs_sent_since_pong < BUFFER_DRAIN_MSGS_PER_TICK
+	}
+
+	/// Determines if we should push additional gossip broadcast messages onto a peer's outbound
+	/// buffer. This is checked every time the peer's buffer may have been drained.
+	fn should_buffer_gossip_broadcast(&self) -> bool {
+		self.pending_outbound_buffer.is_empty()
+			&& self.msgs_sent_since_pong < BUFFER_DRAIN_MSGS_PER_TICK
+	}
+
+	/// Returns whether this peer's outbound buffers are full and we should drop gossip broadcasts.
+	fn buffer_full_drop_gossip_broadcast(&self) -> bool {
+		let total_outbound_buffered =
+			self.gossip_broadcast_buffer.len() + self.pending_outbound_buffer.len();
+
+		total_outbound_buffered > OUTBOUND_BUFFER_LIMIT_DROP_GOSSIP ||
+			self.msgs_sent_since_pong > BUFFER_DRAIN_MSGS_PER_TICK * FORWARD_INIT_SYNC_BUFFER_LIMIT_RATIO
+	}
 }
 
 /// SimpleArcPeerManager is useful when you need a PeerManager with a static lifetime, e.g.
@@ -387,7 +444,7 @@ impl Peer {
 /// issues such as overly long function definitions.
 ///
 /// (C-not exported) as Arcs don't make sense in bindings
-pub type SimpleArcPeerManager<SD, M, T, F, C, L> = PeerManager<SD, Arc<SimpleArcChannelManager<M, T, F, L>>, Arc<P2PGossipSync<Arc<NetworkGraph<Arc<L>>>, Arc<C>, Arc<L>>>, Arc<L>, Arc<IgnoringMessageHandler>>;
+pub type SimpleArcPeerManager<SD, M, T, F, C, L> = PeerManager<SD, Arc<SimpleArcChannelManager<M, T, F, L>>, Arc<P2PGossipSync<Arc<NetworkGraph<Arc<L>>>, Arc<C>, Arc<L>>>, IgnoringMessageHandler, Arc<L>, Arc<IgnoringMessageHandler>>;
 
 /// SimpleRefPeerManager is a type alias for a PeerManager reference, and is the reference
 /// counterpart to the SimpleArcPeerManager type alias. Use this type by default when you don't
@@ -397,7 +454,7 @@ pub type SimpleArcPeerManager<SD, M, T, F, C, L> = PeerManager<SD, Arc<SimpleArc
 /// helps with issues such as long function definitions.
 ///
 /// (C-not exported) as Arcs don't make sense in bindings
-pub type SimpleRefPeerManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, SD, M, T, F, C, L> = PeerManager<SD, SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, M, T, F, L>, &'e P2PGossipSync<&'g NetworkGraph<&'f L>, &'h C, &'f L>, &'f L, IgnoringMessageHandler>;
+pub type SimpleRefPeerManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, SD, M, T, F, C, L> = PeerManager<SD, SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, M, T, F, L>, &'e P2PGossipSync<&'g NetworkGraph<&'f L>, &'h C, &'f L>, IgnoringMessageHandler, &'f L, IgnoringMessageHandler>;
 
 /// A PeerManager manages a set of peers, described by their [`SocketDescriptor`] and marshalls
 /// socket events into messages which it passes on to its [`MessageHandler`].
@@ -418,12 +475,13 @@ pub type SimpleRefPeerManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, SD, M, T, F, C, L>
 /// you're using lightning-net-tokio.
 ///
 /// [`read_event`]: PeerManager::read_event
-pub struct PeerManager<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> where
+pub struct PeerManager<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CMH: Deref> where
 		CM::Target: ChannelMessageHandler,
 		RM::Target: RoutingMessageHandler,
+		OM::Target: OnionMessageHandler,
 		L::Target: Logger,
 		CMH::Target: CustomMessageHandler {
-	message_handler: MessageHandler<CM, RM>,
+	message_handler: MessageHandler<CM, RM, OM>,
 	/// Connection state for each connected peer - we have an outer read-write lock which is taken
 	/// as read while we're doing processing for a peer and taken write when a peer is being added
 	/// or removed.
@@ -482,31 +540,34 @@ macro_rules! encode_msg {
 	}}
 }
 
-impl<Descriptor: SocketDescriptor, CM: Deref, L: Deref> PeerManager<Descriptor, CM, IgnoringMessageHandler, L, IgnoringMessageHandler> where
+impl<Descriptor: SocketDescriptor, CM: Deref, OM: Deref, L: Deref> PeerManager<Descriptor, CM, IgnoringMessageHandler, OM, L, IgnoringMessageHandler> where
 		CM::Target: ChannelMessageHandler,
+		OM::Target: OnionMessageHandler,
 		L::Target: Logger {
-	/// Constructs a new PeerManager with the given ChannelMessageHandler. No routing message
-	/// handler is used and network graph messages are ignored.
+	/// Constructs a new `PeerManager` with the given `ChannelMessageHandler` and
+	/// `OnionMessageHandler`. No routing message handler is used and network graph messages are
+	/// ignored.
 	///
 	/// ephemeral_random_data is used to derive per-connection ephemeral keys and must be
 	/// cryptographically secure random bytes.
 	///
 	/// (C-not exported) as we can't export a PeerManager with a dummy route handler
-	pub fn new_channel_only(channel_message_handler: CM, our_node_secret: SecretKey, ephemeral_random_data: &[u8; 32], logger: L) -> Self {
+	pub fn new_channel_only(channel_message_handler: CM, onion_message_handler: OM, our_node_secret: SecretKey, ephemeral_random_data: &[u8; 32], logger: L) -> Self {
 		Self::new(MessageHandler {
 			chan_handler: channel_message_handler,
 			route_handler: IgnoringMessageHandler{},
+			onion_message_handler,
 		}, our_node_secret, ephemeral_random_data, logger, IgnoringMessageHandler{})
 	}
 }
 
-impl<Descriptor: SocketDescriptor, RM: Deref, L: Deref> PeerManager<Descriptor, ErroringMessageHandler, RM, L, IgnoringMessageHandler> where
+impl<Descriptor: SocketDescriptor, RM: Deref, L: Deref> PeerManager<Descriptor, ErroringMessageHandler, RM, IgnoringMessageHandler, L, IgnoringMessageHandler> where
 		RM::Target: RoutingMessageHandler,
 		L::Target: Logger {
-	/// Constructs a new PeerManager with the given RoutingMessageHandler. No channel message
-	/// handler is used and messages related to channels will be ignored (or generate error
-	/// messages). Note that some other lightning implementations time-out connections after some
-	/// time if no channel is built with the peer.
+	/// Constructs a new `PeerManager` with the given `RoutingMessageHandler`. No channel message
+	/// handler or onion message handler is used and onion and channel messages will be ignored (or
+	/// generate error messages). Note that some other lightning implementations time-out connections
+	/// after some time if no channel is built with the peer.
 	///
 	/// ephemeral_random_data is used to derive per-connection ephemeral keys and must be
 	/// cryptographically secure random bytes.
@@ -516,6 +577,7 @@ impl<Descriptor: SocketDescriptor, RM: Deref, L: Deref> PeerManager<Descriptor, 
 		Self::new(MessageHandler {
 			chan_handler: ErroringMessageHandler::new(),
 			route_handler: routing_message_handler,
+			onion_message_handler: IgnoringMessageHandler{},
 		}, our_node_secret, ephemeral_random_data, logger, IgnoringMessageHandler{})
 	}
 }
@@ -561,15 +623,16 @@ fn filter_addresses(ip_address: Option<NetAddress>) -> Option<NetAddress> {
 	}
 }
 
-impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> PeerManager<Descriptor, CM, RM, L, CMH> where
+impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CMH: Deref> PeerManager<Descriptor, CM, RM, OM, L, CMH> where
 		CM::Target: ChannelMessageHandler,
 		RM::Target: RoutingMessageHandler,
+		OM::Target: OnionMessageHandler,
 		L::Target: Logger,
 		CMH::Target: CustomMessageHandler {
 	/// Constructs a new PeerManager with the given message handlers and node_id secret key
 	/// ephemeral_random_data is used to derive per-connection ephemeral keys and must be
 	/// cryptographically secure random bytes.
-	pub fn new(message_handler: MessageHandler<CM, RM>, our_node_secret: SecretKey, ephemeral_random_data: &[u8; 32], logger: L, custom_message_handler: CMH) -> Self {
+	pub fn new(message_handler: MessageHandler<CM, RM, OM>, our_node_secret: SecretKey, ephemeral_random_data: &[u8; 32], logger: L, custom_message_handler: CMH) -> Self {
 		let mut ephemeral_key_midstate = Sha256::engine();
 		ephemeral_key_midstate.input(ephemeral_random_data);
 
@@ -644,6 +707,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 
 			pending_outbound_buffer: LinkedList::new(),
 			pending_outbound_buffer_first_msg_offset: 0,
+			gossip_broadcast_buffer: LinkedList::new(),
 			awaiting_write_event: false,
 
 			pending_read_buffer,
@@ -690,6 +754,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 
 			pending_outbound_buffer: LinkedList::new(),
 			pending_outbound_buffer_first_msg_offset: 0,
+			gossip_broadcast_buffer: LinkedList::new(),
 			awaiting_write_event: false,
 
 			pending_read_buffer,
@@ -710,46 +775,52 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 
 	fn do_attempt_write_data(&self, descriptor: &mut Descriptor, peer: &mut Peer) {
 		while !peer.awaiting_write_event {
-			if peer.pending_outbound_buffer.len() < OUTBOUND_BUFFER_LIMIT_READ_PAUSE && peer.msgs_sent_since_pong < BUFFER_DRAIN_MSGS_PER_TICK {
+			if peer.should_buffer_onion_message() {
+				if let Some(peer_node_id) = peer.their_node_id {
+					if let Some(next_onion_message) =
+						self.message_handler.onion_message_handler.next_onion_message_for_peer(peer_node_id) {
+							self.enqueue_message(peer, &next_onion_message);
+					}
+				}
+			}
+			if peer.should_buffer_gossip_broadcast() {
+				if let Some(msg) = peer.gossip_broadcast_buffer.pop_front() {
+					peer.pending_outbound_buffer.push_back(msg);
+				}
+			}
+			if peer.should_buffer_gossip_backfill() {
 				match peer.sync_status {
 					InitSyncTracker::NoSyncRequested => {},
 					InitSyncTracker::ChannelsSyncing(c) if c < 0xffff_ffff_ffff_ffff => {
-						let steps = ((OUTBOUND_BUFFER_LIMIT_READ_PAUSE - peer.pending_outbound_buffer.len() + 2) / 3) as u8;
-						let all_messages = self.message_handler.route_handler.get_next_channel_announcements(c, steps);
-						for &(ref announce, ref update_a_option, ref update_b_option) in all_messages.iter() {
-							self.enqueue_message(peer, announce);
-							if let &Some(ref update_a) = update_a_option {
-								self.enqueue_message(peer, update_a);
+						if let Some((announce, update_a_option, update_b_option)) =
+							self.message_handler.route_handler.get_next_channel_announcement(c)
+						{
+							self.enqueue_message(peer, &announce);
+							if let Some(update_a) = update_a_option {
+								self.enqueue_message(peer, &update_a);
 							}
-							if let &Some(ref update_b) = update_b_option {
-								self.enqueue_message(peer, update_b);
+							if let Some(update_b) = update_b_option {
+								self.enqueue_message(peer, &update_b);
 							}
 							peer.sync_status = InitSyncTracker::ChannelsSyncing(announce.contents.short_channel_id + 1);
-						}
-						if all_messages.is_empty() || all_messages.len() != steps as usize {
+						} else {
 							peer.sync_status = InitSyncTracker::ChannelsSyncing(0xffff_ffff_ffff_ffff);
 						}
 					},
 					InitSyncTracker::ChannelsSyncing(c) if c == 0xffff_ffff_ffff_ffff => {
-						let steps = (OUTBOUND_BUFFER_LIMIT_READ_PAUSE - peer.pending_outbound_buffer.len()) as u8;
-						let all_messages = self.message_handler.route_handler.get_next_node_announcements(None, steps);
-						for msg in all_messages.iter() {
-							self.enqueue_message(peer, msg);
+						if let Some(msg) = self.message_handler.route_handler.get_next_node_announcement(None) {
+							self.enqueue_message(peer, &msg);
 							peer.sync_status = InitSyncTracker::NodesSyncing(msg.contents.node_id);
-						}
-						if all_messages.is_empty() || all_messages.len() != steps as usize {
+						} else {
 							peer.sync_status = InitSyncTracker::NoSyncRequested;
 						}
 					},
 					InitSyncTracker::ChannelsSyncing(_) => unreachable!(),
 					InitSyncTracker::NodesSyncing(key) => {
-						let steps = (OUTBOUND_BUFFER_LIMIT_READ_PAUSE - peer.pending_outbound_buffer.len()) as u8;
-						let all_messages = self.message_handler.route_handler.get_next_node_announcements(Some(&key), steps);
-						for msg in all_messages.iter() {
-							self.enqueue_message(peer, msg);
+						if let Some(msg) = self.message_handler.route_handler.get_next_node_announcement(Some(&key)) {
+							self.enqueue_message(peer, &msg);
 							peer.sync_status = InitSyncTracker::NodesSyncing(msg.contents.node_id);
-						}
-						if all_messages.is_empty() || all_messages.len() != steps as usize {
+						} else {
 							peer.sync_status = InitSyncTracker::NoSyncRequested;
 						}
 					},
@@ -759,18 +830,15 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 				self.maybe_send_extra_ping(peer);
 			}
 
-			if {
-				let next_buff = match peer.pending_outbound_buffer.front() {
-					None => return,
-					Some(buff) => buff,
-				};
+			let next_buff = match peer.pending_outbound_buffer.front() {
+				None => return,
+				Some(buff) => buff,
+			};
 
-				let should_be_reading = peer.pending_outbound_buffer.len() < OUTBOUND_BUFFER_LIMIT_READ_PAUSE;
-				let pending = &next_buff[peer.pending_outbound_buffer_first_msg_offset..];
-				let data_sent = descriptor.send_data(pending, should_be_reading);
-				peer.pending_outbound_buffer_first_msg_offset += data_sent;
-				if peer.pending_outbound_buffer_first_msg_offset == next_buff.len() { true } else { false }
-			} {
+			let pending = &next_buff[peer.pending_outbound_buffer_first_msg_offset..];
+			let data_sent = descriptor.send_data(pending, peer.should_read());
+			peer.pending_outbound_buffer_first_msg_offset += data_sent;
+			if peer.pending_outbound_buffer_first_msg_offset == next_buff.len() {
 				peer.pending_outbound_buffer_first_msg_offset = 0;
 				peer.pending_outbound_buffer.pop_front();
 			} else {
@@ -835,12 +903,6 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 	}
 
 	/// Append a message to a peer's pending outbound/write buffer
-	fn enqueue_encoded_message(&self, peer: &mut Peer, encoded_message: &Vec<u8>) {
-		peer.msgs_sent_since_pong += 1;
-		peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&encoded_message[..]));
-	}
-
-	/// Append a message to a peer's pending outbound/write buffer
 	fn enqueue_message<M: wire::Type>(&self, peer: &mut Peer, message: &M) {
 		let mut buffer = VecWriter(Vec::with_capacity(2048));
 		wire::write(message, &mut buffer).unwrap(); // crash if the write failed
@@ -850,7 +912,14 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 		} else {
 			log_trace!(self.logger, "Enqueueing message {:?} to {}", message, log_pubkey!(peer.their_node_id.unwrap()))
 		}
-		self.enqueue_encoded_message(peer, &buffer.0);
+		peer.msgs_sent_since_pong += 1;
+		peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&buffer.0[..]));
+	}
+
+	/// Append a message to a peer's pending outbound/write gossip broadcast buffer
+	fn enqueue_encoded_gossip_broadcast(&self, peer: &mut Peer, encoded_message: &Vec<u8>) {
+		peer.msgs_sent_since_pong += 1;
+		peer.gossip_broadcast_buffer.push_back(peer.channel_encryptor.encrypt_message(&encoded_message[..]));
 	}
 
 	fn do_read_event(&self, peer_descriptor: &mut Descriptor, data: &[u8]) -> Result<bool, PeerHandleError> {
@@ -1045,7 +1114,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 							}
 						}
 					}
-					pause_read = peer.pending_outbound_buffer.len() > OUTBOUND_BUFFER_LIMIT_READ_PAUSE;
+					pause_read = !peer.should_read();
 
 					if let Some(message) = msg_to_handle {
 						match self.handle_message(&peer_mutex, peer_lock, message) {
@@ -1106,8 +1175,9 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 			}
 
 			self.message_handler.route_handler.peer_connected(&their_node_id, &msg);
-
 			self.message_handler.chan_handler.peer_connected(&their_node_id, &msg);
+			self.message_handler.onion_message_handler.peer_connected(&their_node_id, &msg);
+
 			peer_lock.their_features = Some(msg.features);
 			return Ok(None);
 		} else if peer_lock.their_features.is_none() {
@@ -1280,6 +1350,11 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 				self.message_handler.route_handler.handle_reply_channel_range(&their_node_id, msg)?;
 			},
 
+			// Onion message:
+			wire::Message::OnionMessage(msg) => {
+				self.message_handler.onion_message_handler.handle_onion_message(&their_node_id, &msg);
+			},
+
 			// Unknown messages:
 			wire::Message::Unknown(type_id) if message.is_even() => {
 				log_debug!(self.logger, "Received unknown even message of type {}, disconnecting peer!", type_id);
@@ -1308,9 +1383,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 							!peer.should_forward_channel_announcement(msg.contents.short_channel_id) {
 						continue
 					}
-					if peer.pending_outbound_buffer.len() > OUTBOUND_BUFFER_LIMIT_DROP_GOSSIP
-						|| peer.msgs_sent_since_pong > BUFFER_DRAIN_MSGS_PER_TICK * FORWARD_INIT_SYNC_BUFFER_LIMIT_RATIO
-					{
+					if peer.buffer_full_drop_gossip_broadcast() {
 						log_gossip!(self.logger, "Skipping broadcast message to {:?} as its outbound buffer is full", peer.their_node_id);
 						continue;
 					}
@@ -1321,7 +1394,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 					if except_node.is_some() && peer.their_node_id.as_ref() == except_node {
 						continue;
 					}
-					self.enqueue_encoded_message(&mut *peer, &encoded_msg);
+					self.enqueue_encoded_gossip_broadcast(&mut *peer, &encoded_msg);
 				}
 			},
 			wire::Message::NodeAnnouncement(ref msg) => {
@@ -1334,9 +1407,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 							!peer.should_forward_node_announcement(msg.contents.node_id) {
 						continue
 					}
-					if peer.pending_outbound_buffer.len() > OUTBOUND_BUFFER_LIMIT_DROP_GOSSIP
-						|| peer.msgs_sent_since_pong > BUFFER_DRAIN_MSGS_PER_TICK * FORWARD_INIT_SYNC_BUFFER_LIMIT_RATIO
-					{
+					if peer.buffer_full_drop_gossip_broadcast() {
 						log_gossip!(self.logger, "Skipping broadcast message to {:?} as its outbound buffer is full", peer.their_node_id);
 						continue;
 					}
@@ -1346,7 +1417,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 					if except_node.is_some() && peer.their_node_id.as_ref() == except_node {
 						continue;
 					}
-					self.enqueue_encoded_message(&mut *peer, &encoded_msg);
+					self.enqueue_encoded_gossip_broadcast(&mut *peer, &encoded_msg);
 				}
 			},
 			wire::Message::ChannelUpdate(ref msg) => {
@@ -1359,16 +1430,14 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 							!peer.should_forward_channel_announcement(msg.contents.short_channel_id)  {
 						continue
 					}
-					if peer.pending_outbound_buffer.len() > OUTBOUND_BUFFER_LIMIT_DROP_GOSSIP
-						|| peer.msgs_sent_since_pong > BUFFER_DRAIN_MSGS_PER_TICK * FORWARD_INIT_SYNC_BUFFER_LIMIT_RATIO
-					{
+					if peer.buffer_full_drop_gossip_broadcast() {
 						log_gossip!(self.logger, "Skipping broadcast message to {:?} as its outbound buffer is full", peer.their_node_id);
 						continue;
 					}
 					if except_node.is_some() && peer.their_node_id.as_ref() == except_node {
 						continue;
 					}
-					self.enqueue_encoded_message(&mut *peer, &encoded_msg);
+					self.enqueue_encoded_gossip_broadcast(&mut *peer, &encoded_msg);
 				}
 			},
 			_ => debug_assert!(false, "We shouldn't attempt to forward anything but gossip messages"),
@@ -1663,6 +1732,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 					}
 					descriptor.disconnect_socket();
 					self.message_handler.chan_handler.peer_disconnected(&node_id, false);
+					self.message_handler.onion_message_handler.peer_disconnected(&node_id, false);
 				}
 			}
 		}
@@ -1690,6 +1760,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 						log_pubkey!(node_id), if no_connection_possible { "no " } else { "" });
 					self.node_id_to_descriptor.lock().unwrap().remove(&node_id);
 					self.message_handler.chan_handler.peer_disconnected(&node_id, no_connection_possible);
+					self.message_handler.onion_message_handler.peer_disconnected(&node_id, no_connection_possible);
 				}
 			}
 		};
@@ -1710,6 +1781,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 			log_trace!(self.logger, "Disconnecting peer with id {} due to client request", node_id);
 			peers_lock.remove(&descriptor);
 			self.message_handler.chan_handler.peer_disconnected(&node_id, no_connection_possible);
+			self.message_handler.onion_message_handler.peer_disconnected(&node_id, no_connection_possible);
 			descriptor.disconnect_socket();
 		}
 	}
@@ -1725,6 +1797,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 			if let Some(node_id) = peer.lock().unwrap().their_node_id {
 				log_trace!(self.logger, "Disconnecting peer with id {} due to client request to disconnect all peers", node_id);
 				self.message_handler.chan_handler.peer_disconnected(&node_id, false);
+				self.message_handler.onion_message_handler.peer_disconnected(&node_id, false);
 			}
 			descriptor.disconnect_socket();
 		}
@@ -1815,6 +1888,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, L: Deref, CMH: Deref> P
 							log_trace!(self.logger, "Disconnecting peer with id {} due to ping timeout", node_id);
 							self.node_id_to_descriptor.lock().unwrap().remove(&node_id);
 							self.message_handler.chan_handler.peer_disconnected(&node_id, false);
+							self.message_handler.onion_message_handler.peer_disconnected(&node_id, false);
 						}
 					}
 				}
@@ -1902,12 +1976,12 @@ mod tests {
 		cfgs
 	}
 
-	fn create_network<'a>(peer_count: usize, cfgs: &'a Vec<PeerManagerCfg>) -> Vec<PeerManager<FileDescriptor, &'a test_utils::TestChannelMessageHandler, &'a test_utils::TestRoutingMessageHandler, &'a test_utils::TestLogger, IgnoringMessageHandler>> {
+	fn create_network<'a>(peer_count: usize, cfgs: &'a Vec<PeerManagerCfg>) -> Vec<PeerManager<FileDescriptor, &'a test_utils::TestChannelMessageHandler, &'a test_utils::TestRoutingMessageHandler, IgnoringMessageHandler, &'a test_utils::TestLogger, IgnoringMessageHandler>> {
 		let mut peers = Vec::new();
 		for i in 0..peer_count {
 			let node_secret = SecretKey::from_slice(&[42 + i as u8; 32]).unwrap();
 			let ephemeral_bytes = [i as u8; 32];
-			let msg_handler = MessageHandler { chan_handler: &cfgs[i].chan_handler, route_handler: &cfgs[i].routing_handler };
+			let msg_handler = MessageHandler { chan_handler: &cfgs[i].chan_handler, route_handler: &cfgs[i].routing_handler, onion_message_handler: IgnoringMessageHandler {} };
 			let peer = PeerManager::new(msg_handler, node_secret, &ephemeral_bytes, &cfgs[i].logger, IgnoringMessageHandler {});
 			peers.push(peer);
 		}
@@ -1915,7 +1989,7 @@ mod tests {
 		peers
 	}
 
-	fn establish_connection<'a>(peer_a: &PeerManager<FileDescriptor, &'a test_utils::TestChannelMessageHandler, &'a test_utils::TestRoutingMessageHandler, &'a test_utils::TestLogger, IgnoringMessageHandler>, peer_b: &PeerManager<FileDescriptor, &'a test_utils::TestChannelMessageHandler, &'a test_utils::TestRoutingMessageHandler, &'a test_utils::TestLogger, IgnoringMessageHandler>) -> (FileDescriptor, FileDescriptor) {
+	fn establish_connection<'a>(peer_a: &PeerManager<FileDescriptor, &'a test_utils::TestChannelMessageHandler, &'a test_utils::TestRoutingMessageHandler, IgnoringMessageHandler, &'a test_utils::TestLogger, IgnoringMessageHandler>, peer_b: &PeerManager<FileDescriptor, &'a test_utils::TestChannelMessageHandler, &'a test_utils::TestRoutingMessageHandler, IgnoringMessageHandler, &'a test_utils::TestLogger, IgnoringMessageHandler>) -> (FileDescriptor, FileDescriptor) {
 		let secp_ctx = Secp256k1::new();
 		let a_id = PublicKey::from_secret_key(&secp_ctx, &peer_a.our_node_secret);
 		let mut fd_a = FileDescriptor { fd: 1, outbound_data: Arc::new(Mutex::new(Vec::new())) };
@@ -2060,10 +2134,10 @@ mod tests {
 
 		// Check that each peer has received the expected number of channel updates and channel
 		// announcements.
-		assert_eq!(cfgs[0].routing_handler.chan_upds_recvd.load(Ordering::Acquire), 100);
-		assert_eq!(cfgs[0].routing_handler.chan_anns_recvd.load(Ordering::Acquire), 50);
-		assert_eq!(cfgs[1].routing_handler.chan_upds_recvd.load(Ordering::Acquire), 100);
-		assert_eq!(cfgs[1].routing_handler.chan_anns_recvd.load(Ordering::Acquire), 50);
+		assert_eq!(cfgs[0].routing_handler.chan_upds_recvd.load(Ordering::Acquire), 108);
+		assert_eq!(cfgs[0].routing_handler.chan_anns_recvd.load(Ordering::Acquire), 54);
+		assert_eq!(cfgs[1].routing_handler.chan_upds_recvd.load(Ordering::Acquire), 108);
+		assert_eq!(cfgs[1].routing_handler.chan_anns_recvd.load(Ordering::Acquire), 54);
 	}
 
 	#[test]

@@ -9,7 +9,7 @@
 
 //! Wire encoding/decoding for Lightning messages according to [BOLT #1], and for
 //! custom message through the [`CustomMessageReader`] trait.
-//! 
+//!
 //! [BOLT #1]: https://github.com/lightning/bolts/blob/master/01-messaging.md
 
 use io;
@@ -60,6 +60,7 @@ pub(crate) enum Message<T> where T: core::fmt::Debug + Type + TestEq {
 	ChannelReady(msgs::ChannelReady),
 	Shutdown(msgs::Shutdown),
 	ClosingSigned(msgs::ClosingSigned),
+	OnionMessage(msgs::OnionMessage),
 	UpdateAddHTLC(msgs::UpdateAddHTLC),
 	UpdateFulfillHTLC(msgs::UpdateFulfillHTLC),
 	UpdateFailHTLC(msgs::UpdateFailHTLC),
@@ -100,6 +101,7 @@ impl<T> Message<T> where T: core::fmt::Debug + Type + TestEq {
 			&Message::ChannelReady(ref msg) => msg.type_id(),
 			&Message::Shutdown(ref msg) => msg.type_id(),
 			&Message::ClosingSigned(ref msg) => msg.type_id(),
+			&Message::OnionMessage(ref msg) => msg.type_id(),
 			&Message::UpdateAddHTLC(ref msg) => msg.type_id(),
 			&Message::UpdateFulfillHTLC(ref msg) => msg.type_id(),
 			&Message::UpdateFailHTLC(ref msg) => msg.type_id(),
@@ -184,6 +186,9 @@ fn do_read<R: io::Read, T, H: core::ops::Deref>(buffer: &mut R, message_type: u1
 		},
 		msgs::ClosingSigned::TYPE => {
 			Ok(Message::ClosingSigned(Readable::read(buffer)?))
+		},
+		msgs::OnionMessage::TYPE => {
+			Ok(Message::OnionMessage(Readable::read(buffer)?))
 		},
 		msgs::UpdateAddHTLC::TYPE => {
 			Ok(Message::UpdateAddHTLC(Readable::read(buffer)?))
@@ -342,6 +347,10 @@ impl Encode for msgs::Shutdown {
 
 impl Encode for msgs::ClosingSigned {
 	const TYPE: u16 = 39;
+}
+
+impl Encode for msgs::OnionMessage {
+	const TYPE: u16 = 513;
 }
 
 impl Encode for msgs::UpdateAddHTLC {

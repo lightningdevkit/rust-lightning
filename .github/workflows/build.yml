@@ -62,6 +62,8 @@ jobs:
       - name: Pin tokio to 1.14 for Rust 1.45
         if: "matrix.build-net-old-tokio"
         run: cargo update -p tokio --precise "1.14.0" --verbose
+        env:
+          CARGO_NET_GIT_FETCH_WITH_CLI: "true"
       - name: Build on Rust ${{ matrix.toolchain }} with net-tokio
         if: "matrix.build-net-tokio && !matrix.coverage"
         run: cargo build --verbose --color always

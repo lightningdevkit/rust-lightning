@@ -13,10 +13,10 @@ use bitcoin::secp256k1::{self, PublicKey, Secp256k1, SecretKey};
 
 use chain::keysinterface::{KeysInterface, Sign};
 use super::utils;
+use ln::msgs::DecodeError;
 use util::chacha20poly1305rfc::ChaChaPolyWriteAdapter;
-use util::ser::{VecWriter, Writeable, Writer};
+use util::ser::{Readable, VecWriter, Writeable, Writer};
 
-use core::iter::FromIterator;
 use io;
 use prelude::*;
 
@@ -112,6 +112,41 @@ fn encrypt_payload<P: Writeable>(payload: P, encrypted_tlvs_ss: [u8; 32]) -> Vec
 	write_adapter.write(&mut writer).expect("In-memory writes cannot fail");
 	writer.0
 }
+
+impl Writeable for BlindedRoute {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		self.introduction_node_id.write(w)?;
+		self.blinding_point.write(w)?;
+		(self.blinded_hops.len() as u8).write(w)?;
+		for hop in &self.blinded_hops {
+			hop.write(w)?;
+		}
+		Ok(())
+	}
+}
+
+impl Readable for BlindedRoute {
+	fn read<R: io::Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let introduction_node_id = Readable::read(r)?;
+		let blinding_point = Readable::read(r)?;
+		let num_hops: u8 = Readable::read(r)?;
+		if num_hops == 0 { return Err(DecodeError::InvalidValue) }
+		let mut blinded_hops: Vec<BlindedHop> = Vec::with_capacity(num_hops.into());
+		for _ in 0..num_hops {
+			blinded_hops.push(Readable::read(r)?);
+		}
+		Ok(BlindedRoute {
+			introduction_node_id,
+			blinding_point,
+			blinded_hops,
+		})
+	}
+}
+
+impl_writeable!(BlindedHop, {
+	blinded_node_id,
+	encrypted_payload
+});
 
 /// TLVs to encode in an intermediate onion message packet's hop data. When provided in a blinded
 /// route, they are encoded into [`BlindedHop::encrypted_payload`].

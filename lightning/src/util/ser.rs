@@ -400,7 +400,7 @@ impl Readable for BigSize {
 /// variable-length integer which is simply truncated by skipping high zero bytes. This type
 /// encapsulates such integers implementing Readable/Writeable for them.
 #[cfg_attr(test, derive(PartialEq, Debug))]
-pub(crate) struct HighZeroBytesDroppedVarInt<T>(pub T);
+pub(crate) struct HighZeroBytesDroppedBigSize<T>(pub T);
 
 macro_rules! impl_writeable_primitive {
 	($val_type:ty, $len: expr) => {
@@ -410,7 +410,7 @@ macro_rules! impl_writeable_primitive {
 				writer.write_all(&self.to_be_bytes())
 			}
 		}
-		impl Writeable for HighZeroBytesDroppedVarInt<$val_type> {
+		impl Writeable for HighZeroBytesDroppedBigSize<$val_type> {
 			#[inline]
 			fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 				// Skip any full leading 0 bytes when writing (in BE):
@@ -425,9 +425,9 @@ macro_rules! impl_writeable_primitive {
 				Ok(<$val_type>::from_be_bytes(buf))
 			}
 		}
-		impl Readable for HighZeroBytesDroppedVarInt<$val_type> {
+		impl Readable for HighZeroBytesDroppedBigSize<$val_type> {
 			#[inline]
-			fn read<R: Read>(reader: &mut R) -> Result<HighZeroBytesDroppedVarInt<$val_type>, DecodeError> {
+			fn read<R: Read>(reader: &mut R) -> Result<HighZeroBytesDroppedBigSize<$val_type>, DecodeError> {
 				// We need to accept short reads (read_len == 0) as "EOF" and handle them as simply
 				// the high bytes being dropped. To do so, we start reading into the middle of buf
 				// and then convert the appropriate number of bytes with extra high bytes out of
@@ -443,7 +443,7 @@ macro_rules! impl_writeable_primitive {
 					let first_byte = $len - ($len - total_read_len);
 					let mut bytes = [0; $len];
 					bytes.copy_from_slice(&buf[first_byte..first_byte + $len]);
-					Ok(HighZeroBytesDroppedVarInt(<$val_type>::from_be_bytes(bytes)))
+					Ok(HighZeroBytesDroppedBigSize(<$val_type>::from_be_bytes(bytes)))
 				} else {
 					// If the encoding had extra zero bytes, return a failure even though we know
 					// what they meant (as the TLV test vectors require this)

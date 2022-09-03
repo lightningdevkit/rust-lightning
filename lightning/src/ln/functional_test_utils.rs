@@ -319,20 +319,20 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 				);
 				let mut chan_progress = 0;
 				loop {
-					let orig_announcements = self.gossip_sync.get_next_channel_announcements(chan_progress, 255);
-					let deserialized_announcements = gossip_sync.get_next_channel_announcements(chan_progress, 255);
+					let orig_announcements = self.gossip_sync.get_next_channel_announcement(chan_progress);
+					let deserialized_announcements = gossip_sync.get_next_channel_announcement(chan_progress);
 					assert!(orig_announcements == deserialized_announcements);
-					chan_progress = match orig_announcements.last() {
+					chan_progress = match orig_announcements {
 						Some(announcement) => announcement.0.contents.short_channel_id + 1,
 						None => break,
 					};
 				}
 				let mut node_progress = None;
 				loop {
-					let orig_announcements = self.gossip_sync.get_next_node_announcements(node_progress.as_ref(), 255);
-					let deserialized_announcements = gossip_sync.get_next_node_announcements(node_progress.as_ref(), 255);
+					let orig_announcements = self.gossip_sync.get_next_node_announcement(node_progress.as_ref());
+					let deserialized_announcements = gossip_sync.get_next_node_announcement(node_progress.as_ref());
 					assert!(orig_announcements == deserialized_announcements);
-					node_progress = match orig_announcements.last() {
+					node_progress = match orig_announcements {
 						Some(announcement) => Some(announcement.contents.node_id),
 						None => break,
 					};
@@ -1534,13 +1534,11 @@ macro_rules! expect_payment_failed {
 	};
 }
 
-pub fn expect_payment_failed_conditions<'a, 'b, 'c, 'd, 'e>(
-	node: &'a Node<'b, 'c, 'd>, expected_payment_hash: PaymentHash, expected_rejected_by_dest: bool,
-	conditions: PaymentFailedConditions<'e>
+pub fn expect_payment_failed_conditions_event<'a, 'b, 'c, 'd, 'e>(
+	node: &'a Node<'b, 'c, 'd>, payment_failed_event: Event, expected_payment_hash: PaymentHash,
+	expected_rejected_by_dest: bool, conditions: PaymentFailedConditions<'e>
 ) {
-	let mut events = node.node.get_and_clear_pending_events();
-	assert_eq!(events.len(), 1);
-	let expected_payment_id = match events.pop().unwrap() {
+	let expected_payment_id = match payment_failed_event {
 		Event::PaymentPathFailed { payment_hash, rejected_by_dest, path, retry, payment_id, network_update, short_channel_id,
 			#[cfg(test)]
 			error_code,
@@ -1601,6 +1599,15 @@ pub fn expect_payment_failed_conditions<'a, 'b, 'c, 'd, 'e>(
 			_ => panic!("Unexpected second event"),
 		}
 	}
+}
+
+pub fn expect_payment_failed_conditions<'a, 'b, 'c, 'd, 'e>(
+	node: &'a Node<'b, 'c, 'd>, expected_payment_hash: PaymentHash, expected_rejected_by_dest: bool,
+	conditions: PaymentFailedConditions<'e>
+) {
+	let mut events = node.node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	expect_payment_failed_conditions_event(node, events.pop().unwrap(), expected_payment_hash, expected_rejected_by_dest, conditions);
 }
 
 pub fn send_along_route_with_secret<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, route: Route, expected_paths: &[&[&Node<'a, 'b, 'c>]], recv_value: u64, our_payment_hash: PaymentHash, our_payment_secret: PaymentSecret) -> PaymentId {

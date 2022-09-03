@@ -239,7 +239,7 @@ pub struct InvoiceBuilder<D: tb::Bool, H: tb::Bool, T: tb::Bool, C: tb::Bool, S:
 ///  1. using `InvoiceBuilder`
 ///  2. using `Invoice::from_signed(SignedRawInvoice)`
 ///  3. using `str::parse::<Invoice>(&str)`
-#[derive(Eq, PartialEq, Debug, Clone)]
+#[derive(Eq, PartialEq, Debug, Clone, Hash)]
 pub struct Invoice {
 	signed_invoice: SignedRawInvoice,
 }
@@ -263,7 +263,7 @@ pub enum InvoiceDescription<'f> {
 ///
 /// # Invariants
 /// The hash has to be either from the deserialized invoice or from the serialized `raw_invoice`.
-#[derive(Eq, PartialEq, Debug, Clone)]
+#[derive(Eq, PartialEq, Debug, Clone, Hash)]
 pub struct SignedRawInvoice {
 	/// The rawInvoice that the signature belongs to
 	raw_invoice: RawInvoice,
@@ -286,7 +286,7 @@ pub struct SignedRawInvoice {
 /// De- and encoding should not lead to information loss but may lead to different hashes.
 ///
 /// For methods without docs see the corresponding methods in `Invoice`.
-#[derive(Eq, PartialEq, Debug, Clone)]
+#[derive(Eq, PartialEq, Debug, Clone, Hash)]
 pub struct RawInvoice {
 	/// human readable part
 	pub hrp: RawHrp,
@@ -298,7 +298,7 @@ pub struct RawInvoice {
 /// Data of the `RawInvoice` that is encoded in the human readable part
 ///
 /// (C-not exported) As we don't yet support Option<Enum>
-#[derive(Eq, PartialEq, Debug, Clone)]
+#[derive(Eq, PartialEq, Debug, Clone, Hash)]
 pub struct RawHrp {
 	/// The currency deferred from the 3rd and 4th character of the bech32 transaction
 	pub currency: Currency,
@@ -311,7 +311,7 @@ pub struct RawHrp {
 }
 
 /// Data of the `RawInvoice` that is encoded in the data part
-#[derive(Eq, PartialEq, Debug, Clone)]
+#[derive(Eq, PartialEq, Debug, Clone, Hash)]
 pub struct RawDataPart {
 	/// generation time of the invoice
 	pub timestamp: PositiveTimestamp,
@@ -326,11 +326,11 @@ pub struct RawDataPart {
 ///
 /// The Unix timestamp representing the stored time has to be positive and no greater than
 /// [`MAX_TIMESTAMP`].
-#[derive(Eq, PartialEq, Debug, Clone)]
+#[derive(Eq, PartialEq, Debug, Clone, Hash)]
 pub struct PositiveTimestamp(Duration);
 
 /// SI prefixes for the human readable part
-#[derive(Eq, PartialEq, Debug, Clone, Copy)]
+#[derive(Eq, PartialEq, Debug, Clone, Copy, Hash)]
 pub enum SiPrefix {
 	/// 10^-3
 	Milli,
@@ -456,7 +456,7 @@ pub enum Fallback {
 }
 
 /// Recoverable signature
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Hash, Eq, PartialEq)]
 pub struct InvoiceSignature(pub RecoverableSignature);
 
 /// Private routing information

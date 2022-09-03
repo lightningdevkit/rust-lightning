@@ -16,12 +16,14 @@ use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::secp256k1::{self, PublicKey, Scalar, Secp256k1, SecretKey};
 
 use chain::keysinterface::{InMemorySigner, KeysInterface, KeysManager, Recipient, Sign};
-use ln::msgs;
+use ln::msgs::{self, OnionMessageHandler};
 use ln::onion_utils;
 use super::blinded_route::{BlindedRoute, ForwardTlvs, ReceiveTlvs};
 use super::packet::{BIG_PACKET_HOP_DATA_LEN, ForwardControlTlvs, Packet, Payload, ReceiveControlTlvs, SMALL_PACKET_HOP_DATA_LEN};
 use super::utils;
+use util::events::OnionMessageProvider;
 use util::logger::Logger;
+use util::ser::Writeable;
 
 use core::ops::Deref;
 use sync::{Arc, Mutex};
@@ -33,9 +35,7 @@ use prelude::*;
 ///
 /// # Example
 ///
-//  Needs to be `ignore` until the `onion_message` module is made public, otherwise this is a test
-//  failure.
-/// ```ignore
+/// ```
 /// # extern crate bitcoin;
 /// # use bitcoin::hashes::_export::_core::time::Duration;
 /// # use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
@@ -64,7 +64,8 @@ use prelude::*;
 ///
 /// // Send an empty onion message to a node id.
 /// let intermediate_hops = [hop_node_id1, hop_node_id2];
-/// onion_messenger.send_onion_message(&intermediate_hops, Destination::Node(destination_node_id));
+/// let reply_path = None;
+/// onion_messenger.send_onion_message(&intermediate_hops, Destination::Node(destination_node_id), reply_path);
 ///
 /// // Create a blinded route to yourself, for someone to send an onion message to.
 /// # let your_node_id = hop_node_id1;
@@ -73,7 +74,8 @@ use prelude::*;
 ///
 /// // Send an empty onion message to a blinded route.
 /// # let intermediate_hops = [hop_node_id1, hop_node_id2];
-/// onion_messenger.send_onion_message(&intermediate_hops, Destination::BlindedRoute(blinded_route));
+/// let reply_path = None;
+/// onion_messenger.send_onion_message(&intermediate_hops, Destination::BlindedRoute(blinded_route), reply_path);
 /// ```
 ///
 /// [offers]: <https://github.com/lightning/bolts/pull/798>
@@ -84,7 +86,7 @@ pub struct OnionMessenger<Signer: Sign, K: Deref, L: Deref>
 {
 	keys_manager: K,
 	logger: L,
-	pending_messages: Mutex<HashMap<PublicKey, Vec<msgs::OnionMessage>>>,
+	pending_messages: Mutex<HashMap<PublicKey, VecDeque<msgs::OnionMessage>>>,
 	secp_ctx: Secp256k1<secp256k1::All>,
 	// Coming soon:
 	// invoice_handler: InvoiceHandler,
@@ -121,6 +123,10 @@ pub enum SendError {
 	/// The provided [`Destination`] was an invalid [`BlindedRoute`], due to having fewer than two
 	/// blinded hops.
 	TooFewBlindedHops,
+	/// Our next-hop peer was offline or does not support onion message forwarding.
+	InvalidFirstHop,
+	/// Our next-hop peer's buffer was full or our total outbound buffer was full.
+	BufferFull,
 }
 
 impl<Signer: Sign, K: Deref, L: Deref> OnionMessenger<Signer, K, L>
@@ -142,7 +148,7 @@ impl<Signer: Sign, K: Deref, L: Deref> OnionMessenger<Signer, K, L>
 
 	/// Send an empty onion message to `destination`, routing it through `intermediate_nodes`.
 	/// See [`OnionMessenger`] for example usage.
-	pub fn send_onion_message(&self, intermediate_nodes: &[PublicKey], destination: Destination) -> Result<(), SendError> {
+	pub fn send_onion_message(&self, intermediate_nodes: &[PublicKey], destination: Destination, reply_path: Option<BlindedRoute>) -> Result<(), SendError> {
 		if let Destination::BlindedRoute(BlindedRoute { ref blinded_hops, .. }) = destination {
 			if blinded_hops.len() < 2 {
 				return Err(SendError::TooFewBlindedHops);
@@ -160,28 +166,68 @@ impl<Signer: Sign, K: Deref, L: Deref> OnionMessenger<Signer, K, L>
 			}
 		};
 		let (packet_payloads, packet_keys) = packet_payloads_and_keys(
-			&self.secp_ctx, intermediate_nodes, destination, &blinding_secret)
+			&self.secp_ctx, intermediate_nodes, destination, reply_path, &blinding_secret)
 			.map_err(|e| SendError::Secp256k1(e))?;
 
 		let prng_seed = self.keys_manager.get_secure_random_bytes();
-		let onion_packet = construct_onion_message_packet(
+		let onion_routing_packet = construct_onion_message_packet(
 			packet_payloads, packet_keys, prng_seed).map_err(|()| SendError::TooBigPacket)?;
 
 		let mut pending_per_peer_msgs = self.pending_messages.lock().unwrap();
-		let pending_msgs = pending_per_peer_msgs.entry(introduction_node_id).or_insert(Vec::new());
-		pending_msgs.push(
-			msgs::OnionMessage {
-				blinding_point,
-				onion_routing_packet: onion_packet,
+		if outbound_buffer_full(&introduction_node_id, &pending_per_peer_msgs) { return Err(SendError::BufferFull) }
+		match pending_per_peer_msgs.entry(introduction_node_id) {
+			hash_map::Entry::Vacant(_) => Err(SendError::InvalidFirstHop),
+			hash_map::Entry::Occupied(mut e) => {
+				e.get_mut().push_back(msgs::OnionMessage { blinding_point, onion_routing_packet });
+				Ok(())
 			}
-		);
-		Ok(())
+		}
 	}
 
+	#[cfg(test)]
+	pub(super) fn release_pending_msgs(&self) -> HashMap<PublicKey, VecDeque<msgs::OnionMessage>> {
+		let mut pending_msgs = self.pending_messages.lock().unwrap();
+		let mut msgs = HashMap::new();
+		// We don't want to disconnect the peers by removing them entirely from the original map, so we
+		// swap the pending message buffers individually.
+		for (peer_node_id, pending_messages) in &mut *pending_msgs {
+			msgs.insert(*peer_node_id, core::mem::take(pending_messages));
+		}
+		msgs
+	}
+}
+
+fn outbound_buffer_full(peer_node_id: &PublicKey, buffer: &HashMap<PublicKey, VecDeque<msgs::OnionMessage>>) -> bool {
+	const MAX_TOTAL_BUFFER_SIZE: usize = (1 << 20) * 128;
+	const MAX_PER_PEER_BUFFER_SIZE: usize = (1 << 10) * 256;
+	let mut total_buffered_bytes = 0;
+	let mut peer_buffered_bytes = 0;
+	for (pk, peer_buf) in buffer {
+		for om in peer_buf {
+			let om_len = om.serialized_length();
+			if pk == peer_node_id {
+				peer_buffered_bytes += om_len;
+			}
+			total_buffered_bytes += om_len;
+
+			if total_buffered_bytes >= MAX_TOTAL_BUFFER_SIZE ||
+				peer_buffered_bytes >= MAX_PER_PEER_BUFFER_SIZE
+			{
+				return true
+			}
+		}
+	}
+	false
+}
+
+impl<Signer: Sign, K: Deref, L: Deref> OnionMessageHandler for OnionMessenger<Signer, K, L>
+	where K::Target: KeysInterface<Signer = Signer>,
+	      L::Target: Logger,
+{
 	/// Handle an incoming onion message. Currently, if a message was destined for us we will log, but
 	/// soon we'll delegate the onion message to a handler that can generate invoices or send
 	/// payments.
-	pub fn handle_onion_message(&self, _peer_node_id: &PublicKey, msg: &msgs::OnionMessage) {
+	fn handle_onion_message(&self, _peer_node_id: &PublicKey, msg: &msgs::OnionMessage) {
 		let control_tlvs_ss = match self.keys_manager.ecdh(Recipient::Node, &msg.blinding_point, None) {
 			Ok(ss) => ss,
 			Err(e) =>  {
@@ -209,9 +255,11 @@ impl<Signer: Sign, K: Deref, L: Deref> OnionMessenger<Signer, K, L>
 			msg.onion_routing_packet.hmac, control_tlvs_ss)
 		{
 			Ok((Payload::Receive {
-				control_tlvs: ReceiveControlTlvs::Unblinded(ReceiveTlvs { path_id })
+				control_tlvs: ReceiveControlTlvs::Unblinded(ReceiveTlvs { path_id }), reply_path,
 			}, None)) => {
-				log_info!(self.logger, "Received an onion message with path_id: {:02x?}", path_id);
+				log_info!(self.logger,
+					"Received an onion message with path_id: {:02x?} and {}reply_path",
+						path_id, if reply_path.is_some() { "" } else { "no " });
 			},
 			Ok((Payload::Forward(ForwardControlTlvs::Unblinded(ForwardTlvs {
 				next_node_id, next_blinding_override
@@ -234,33 +282,48 @@ impl<Signer: Sign, K: Deref, L: Deref> OnionMessenger<Signer, K, L>
 					hop_data: new_packet_bytes,
 					hmac: next_hop_hmac,
 				};
+				let onion_message = msgs::OnionMessage {
+					blinding_point: match next_blinding_override {
+						Some(blinding_point) => blinding_point,
+						None => {
+							let blinding_factor = {
+								let mut sha = Sha256::engine();
+								sha.input(&msg.blinding_point.serialize()[..]);
+								sha.input(control_tlvs_ss.as_ref());
+								Sha256::from_engine(sha).into_inner()
+							};
+							let next_blinding_point = msg.blinding_point;
+							match next_blinding_point.mul_tweak(&self.secp_ctx, &Scalar::from_be_bytes(blinding_factor).unwrap()) {
+								Ok(bp) => bp,
+								Err(e) => {
+									log_trace!(self.logger, "Failed to compute next blinding point: {}", e);
+									return
+								}
+							}
+						},
+					},
+					onion_routing_packet: outgoing_packet,
+				};
 
 				let mut pending_per_peer_msgs = self.pending_messages.lock().unwrap();
-				let pending_msgs = pending_per_peer_msgs.entry(next_node_id).or_insert(Vec::new());
-				pending_msgs.push(
-					msgs::OnionMessage {
-						blinding_point: match next_blinding_override {
-							Some(blinding_point) => blinding_point,
-							None => {
-								let blinding_factor = {
-									let mut sha = Sha256::engine();
-									sha.input(&msg.blinding_point.serialize()[..]);
-									sha.input(control_tlvs_ss.as_ref());
-									Sha256::from_engine(sha).into_inner()
-								};
-								let mut next_blinding_point = msg.blinding_point;
-								match next_blinding_point.mul_tweak(&self.secp_ctx, &Scalar::from_be_bytes(blinding_factor).unwrap()) {
-									Ok(bp) => bp,
-									Err(e) => {
-										log_trace!(self.logger, "Failed to compute next blinding point: {}", e);
-										return
-									}
-								}
-							},
-						},
-						onion_routing_packet: outgoing_packet,
+				if outbound_buffer_full(&next_node_id, &pending_per_peer_msgs) {
+					log_trace!(self.logger, "Dropping forwarded onion message to peer {:?}: outbound buffer full", next_node_id);
+					return
+				}
+
+				#[cfg(fuzzing)]
+				pending_per_peer_msgs.entry(next_node_id).or_insert_with(VecDeque::new);
+
+				match pending_per_peer_msgs.entry(next_node_id) {
+					hash_map::Entry::Vacant(_) => {
+						log_trace!(self.logger, "Dropping forwarded onion message to disconnected peer {:?}", next_node_id);
+						return
 					},
-				);
+					hash_map::Entry::Occupied(mut e) => {
+						e.get_mut().push_back(onion_message);
+						log_trace!(self.logger, "Forwarding an onion message to peer {}", next_node_id);
+					}
+				};
 			},
 			Err(e) => {
 				log_trace!(self.logger, "Errored decoding onion message packet: {:?}", e);
@@ -271,12 +334,29 @@ impl<Signer: Sign, K: Deref, L: Deref> OnionMessenger<Signer, K, L>
 		};
 	}
 
-	#[cfg(test)]
-	pub(super) fn release_pending_msgs(&self) -> HashMap<PublicKey, Vec<msgs::OnionMessage>> {
+	fn peer_connected(&self, their_node_id: &PublicKey, init: &msgs::Init) {
+		if init.features.supports_onion_messages() {
+			let mut peers = self.pending_messages.lock().unwrap();
+			peers.insert(their_node_id.clone(), VecDeque::new());
+		}
+	}
+
+	fn peer_disconnected(&self, their_node_id: &PublicKey, _no_connection_possible: bool) {
 		let mut pending_msgs = self.pending_messages.lock().unwrap();
-		let mut msgs = HashMap::new();
-		core::mem::swap(&mut *pending_msgs, &mut msgs);
-		msgs
+		pending_msgs.remove(their_node_id);
+	}
+}
+
+impl<Signer: Sign, K: Deref, L: Deref> OnionMessageProvider for OnionMessenger<Signer, K, L>
+	where K::Target: KeysInterface<Signer = Signer>,
+	      L::Target: Logger,
+{
+	fn next_onion_message_for_peer(&self, peer_node_id: PublicKey) -> Option<msgs::OnionMessage> {
+		let mut pending_msgs = self.pending_messages.lock().unwrap();
+		if let Some(msgs) = pending_msgs.get_mut(&peer_node_id) {
+			return msgs.pop_front()
+		}
+		None
 	}
 }
 
@@ -298,7 +378,8 @@ pub type SimpleRefOnionMessenger<'a, 'b, L> = OnionMessenger<InMemorySigner, &'a
 /// Construct onion packet payloads and keys for sending an onion message along the given
 /// `unblinded_path` to the given `destination`.
 fn packet_payloads_and_keys<T: secp256k1::Signing + secp256k1::Verification>(
-	secp_ctx: &Secp256k1<T>, unblinded_path: &[PublicKey], destination: Destination, session_priv: &SecretKey
+	secp_ctx: &Secp256k1<T>, unblinded_path: &[PublicKey], destination: Destination, mut reply_path:
+	Option<BlindedRoute>, session_priv: &SecretKey
 ) -> Result<(Vec<(Payload, [u8; 32])>, Vec<onion_utils::OnionKeys>), secp256k1::Error> {
 	let num_hops = unblinded_path.len() + destination.num_hops();
 	let mut payloads = Vec::with_capacity(num_hops);
@@ -343,6 +424,7 @@ fn packet_payloads_and_keys<T: secp256k1::Signing + secp256k1::Verification>(
 		} else if let Some(encrypted_payload) = enc_payload_opt {
 			payloads.push((Payload::Receive {
 				control_tlvs: ReceiveControlTlvs::Blinded(encrypted_payload),
+				reply_path: reply_path.take(),
 			}, control_tlvs_ss));
 		}
 
@@ -360,7 +442,8 @@ fn packet_payloads_and_keys<T: secp256k1::Signing + secp256k1::Verification>(
 
 	if let Some(control_tlvs_ss) = prev_control_tlvs_ss {
 		payloads.push((Payload::Receive {
-			control_tlvs: ReceiveControlTlvs::Unblinded(ReceiveTlvs { path_id: None, })
+			control_tlvs: ReceiveControlTlvs::Unblinded(ReceiveTlvs { path_id: None, }),
+			reply_path: reply_path.take(),
 		}, control_tlvs_ss));
 	}
 
