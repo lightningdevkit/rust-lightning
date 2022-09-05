@@ -5154,6 +5154,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				if were_node_one == msg_from_node_one {
 					return Ok(NotifyOption::SkipPersist);
 				} else {
+					log_debug!(self.logger, "Received channel_update for channel {}.", log_bytes!(chan_id));
 					try_chan_entry!(self, chan.get_mut().channel_update(&msg), channel_state, chan);
 				}
 			},
