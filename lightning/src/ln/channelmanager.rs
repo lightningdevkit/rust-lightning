@@ -2470,6 +2470,11 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		let err: Result<(), _> = loop {
 			let mut channel_lock = self.channel_state.lock().unwrap();
 
+			let id = match self.short_to_chan_info.read().unwrap().get(&path.first().unwrap().short_channel_id) {
+				None => return Err(APIError::ChannelUnavailable{err: "No channel available with first hop!".to_owned()}),
+				Some((_cp_id, chan_id)) => chan_id.clone(),
+			};
+
 			let mut pending_outbounds = self.pending_outbound_payments.lock().unwrap();
 			let payment_entry = pending_outbounds.entry(payment_id);
 			if let hash_map::Entry::Occupied(payment) = &payment_entry {
@@ -2479,11 +2484,6 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					});
 				}
 			}
-
-			let id = match self.short_to_chan_info.read().unwrap().get(&path.first().unwrap().short_channel_id) {
-				None => return Err(APIError::ChannelUnavailable{err: "No channel available with first hop!".to_owned()}),
-				Some((_cp_id, chan_id)) => chan_id.clone(),
-			};
 
 			macro_rules! insert_outbound_payment {
 				() => {
