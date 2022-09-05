@@ -1187,7 +1187,7 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 			payment_hash, payment_preimage, broadcaster, fee_estimator, logger)
 	}
 
-	// Broadcasts the latest commitment transaction only if it's safe to do so.
+	/// Broadcasts the latest commitment transaction only if it's safe to do so.
 	pub(crate) fn maybe_broadcast_latest_holder_commitment_txn<B: Deref, L: Deref>(
 		&self,
 		broadcaster: &B,
@@ -1199,8 +1199,8 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 		self.inner.lock().unwrap().maybe_broadcast_latest_holder_commitment_txn(broadcaster, logger)
 	}
 
-	// Broadcasts the latest commitment transaction, even if we can't ensure it's safe to do so
-	// due to missing information.
+	/// Broadcasts the latest commitment transaction, even if we can't ensure it's safe to do so
+	/// due to missing information.
 	pub fn force_broadcast_latest_holder_commitment_txn_unsafe<B: Deref, L: Deref>(
 		&self,
 		broadcaster: &B,
@@ -2169,7 +2169,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		}
 	}
 
-	// Broadcasts the latest commitment transaction only if it's safe to do so.
+	/// Broadcasts the latest commitment transaction only if it's safe to do so.
 	pub fn maybe_broadcast_latest_holder_commitment_txn<B: Deref, L: Deref>(&mut self, broadcaster: &B, logger: &L)
 		where B::Target: BroadcasterInterface,
 					L::Target: Logger,
@@ -2185,8 +2185,8 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		}
 	}
 
-	// Broadcasts the latest commitment transaction, even if we can't ensure it's safe to do so
-	// due to missing information.
+	/// Broadcasts the latest commitment transaction, even if we can't ensure it's safe to do so
+	/// due to missing information.
 	pub fn force_broadcast_latest_holder_commitment_txn_unsafe<B: Deref, L: Deref>(&mut self, broadcaster: &B, logger: &L)
 		where B::Target: BroadcasterInterface,
 					L::Target: Logger,
