@@ -5549,10 +5549,10 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	///
 	/// [phantom node payments]: crate::chain::keysinterface::PhantomKeysManager
 	pub fn get_phantom_scid(&self) -> u64 {
+		let best_block_height = self.best_block.read().unwrap().height();
 		let short_to_chan_info = self.short_to_chan_info.read().unwrap();
-		let best_block = self.best_block.read().unwrap();
 		loop {
-			let scid_candidate = fake_scid::Namespace::Phantom.get_fake_scid(best_block.height(), &self.genesis_hash, &self.fake_scid_rand_bytes, &self.keys_manager);
+			let scid_candidate = fake_scid::Namespace::Phantom.get_fake_scid(best_block_height, &self.genesis_hash, &self.fake_scid_rand_bytes, &self.keys_manager);
 			// Ensure the generated scid doesn't conflict with a real channel.
 			match short_to_chan_info.get(&scid_candidate) {
 				Some(_) => continue,
