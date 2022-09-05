@@ -6548,30 +6548,37 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Writeable f
 			best_block.block_hash().write(writer)?;
 		}
 
+		{
+			// Take `channel_state` lock temporarily to avoid creating a lock order that requires
+			// that the `forward_htlcs` lock is taken after `channel_state`
+			let channel_state = self.channel_state.lock().unwrap();
+			let mut unfunded_channels = 0;
+			for (_, channel) in channel_state.by_id.iter() {
+				if !channel.is_funding_initiated() {
+					unfunded_channels += 1;
+				}
+			}
+			((channel_state.by_id.len() - unfunded_channels) as u64).write(writer)?;
+			for (_, channel) in channel_state.by_id.iter() {
+				if channel.is_funding_initiated() {
+					channel.write(writer)?;
+				}
+			}
+		}
+
+		{
+			let forward_htlcs = self.forward_htlcs.lock().unwrap();
+			(forward_htlcs.len() as u64).write(writer)?;
+			for (short_channel_id, pending_forwards) in forward_htlcs.iter() {
+				short_channel_id.write(writer)?;
+				(pending_forwards.len() as u64).write(writer)?;
+				for forward in pending_forwards {
+					forward.write(writer)?;
+				}
+			}
+		}
+
 		let channel_state = self.channel_state.lock().unwrap();
-		let mut unfunded_channels = 0;
-		for (_, channel) in channel_state.by_id.iter() {
-			if !channel.is_funding_initiated() {
-				unfunded_channels += 1;
-			}
-		}
-		((channel_state.by_id.len() - unfunded_channels) as u64).write(writer)?;
-		for (_, channel) in channel_state.by_id.iter() {
-			if channel.is_funding_initiated() {
-				channel.write(writer)?;
-			}
-		}
-
-		let forward_htlcs = self.forward_htlcs.lock().unwrap();
-		(forward_htlcs.len() as u64).write(writer)?;
-		for (short_channel_id, pending_forwards) in forward_htlcs.iter() {
-			short_channel_id.write(writer)?;
-			(pending_forwards.len() as u64).write(writer)?;
-			for forward in pending_forwards {
-				forward.write(writer)?;
-			}
-		}
-
 		let mut htlc_purposes: Vec<&events::PaymentPurpose> = Vec::new();
 		(channel_state.claimable_htlcs.len() as u64).write(writer)?;
 		for (payment_hash, (purpose, previous_hops)) in channel_state.claimable_htlcs.iter() {
