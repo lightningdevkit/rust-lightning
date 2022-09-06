@@ -1002,12 +1002,34 @@ impl MaybeReadable for Event {
 						(4, path, vec_type),
 						(6, short_channel_id, option),
 					});
-					Ok(Some(Event::ProbeFailed{
+					Ok(Some(Event::ProbeFailed {
 						payment_id,
 						payment_hash,
 						path: path.unwrap(),
 						short_channel_id,
 					}))
+				};
+				f()
+			},
+			25u8 => {
+				let f = || {
+					let mut prev_channel_id = [0; 32];
+					let mut failed_next_destination_opt = None;
+					read_tlv_fields!(reader, {
+						(0, prev_channel_id, required),
+						(2, failed_next_destination_opt, ignorable),
+					});
+					if let Some(failed_next_destination) = failed_next_destination_opt {
+						Ok(Some(Event::HTLCHandlingFailed {
+							prev_channel_id,
+							failed_next_destination,
+						}))
+					} else {
+						// If we fail to read a `failed_next_destination` assume it's because
+						// `MaybeReadable::read` returned `Ok(None)`, though it's also possible we
+						// were simply missing the field.
+						Ok(None)
+					}
 				};
 				f()
 			},
