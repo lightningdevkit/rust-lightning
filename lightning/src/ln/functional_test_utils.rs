@@ -892,34 +892,10 @@ pub fn create_unannounced_chan_between_nodes_with_value<'a, 'b, 'c, 'd>(nodes: &
 }
 
 pub fn update_nodes_with_chan_announce<'a, 'b, 'c, 'd>(nodes: &'a Vec<Node<'b, 'c, 'd>>, a: usize, b: usize, ann: &msgs::ChannelAnnouncement, upd_1: &msgs::ChannelUpdate, upd_2: &msgs::ChannelUpdate) {
-	nodes[a].node.broadcast_node_announcement([0, 0, 0], [0; 32], Vec::new());
-	let a_events = nodes[a].node.get_and_clear_pending_msg_events();
-	assert_eq!(a_events.len(), 1);
-
-	let a_node_announcement = match a_events.last().unwrap() {
-		MessageSendEvent::BroadcastNodeAnnouncement { ref msg } => {
-			(*msg).clone()
-		},
-		_ => panic!("Unexpected event"),
-	};
-
-	nodes[b].node.broadcast_node_announcement([1, 1, 1], [1; 32], Vec::new());
-	let b_events = nodes[b].node.get_and_clear_pending_msg_events();
-	assert_eq!(b_events.len(), 1);
-
-	let b_node_announcement = match b_events.last().unwrap() {
-		MessageSendEvent::BroadcastNodeAnnouncement { ref msg } => {
-			(*msg).clone()
-		},
-		_ => panic!("Unexpected event"),
-	};
-
 	for node in nodes {
 		assert!(node.gossip_sync.handle_channel_announcement(ann).unwrap());
 		node.gossip_sync.handle_channel_update(upd_1).unwrap();
 		node.gossip_sync.handle_channel_update(upd_2).unwrap();
-		node.gossip_sync.handle_node_announcement(&a_node_announcement).unwrap();
-		node.gossip_sync.handle_node_announcement(&b_node_announcement).unwrap();
 
 		// Note that channel_updates are also delivered to ChannelManagers to ensure we have
 		// forwarding info for local channels even if its not accepted in the network graph.

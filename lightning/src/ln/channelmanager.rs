@@ -54,7 +54,6 @@ use chain::keysinterface::{Sign, KeysInterface, KeysManager, InMemorySigner, Rec
 use util::config::{UserConfig, ChannelConfig};
 use util::events::{EventHandler, EventsProvider, MessageSendEvent, MessageSendEventsProvider, ClosureReason, HTLCDestination};
 use util::{byte_utils, events};
-use util::crypto::sign;
 use util::wakers::{Future, Notifier};
 use util::scid_utils::fake_scid;
 use util::ser::{BigSize, FixedLengthReader, Readable, ReadableArgs, MaybeReadable, Writeable, Writer, VecWriter};
@@ -763,10 +762,6 @@ pub struct ChannelManager<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, 
 	/// and a random [`PaymentId`]. This allows us to discern probes from real payments, without
 	/// keeping additional state.
 	probing_cookie_secret: [u8; 32],
-
-	/// Used to track the last value sent in a node_announcement "timestamp" field. We ensure this
-	/// value increases strictly since we don't assume access to a time source.
-	last_node_announcement_serial: AtomicUsize,
 
 	/// The highest block timestamp we've seen, which is usually a good guess at the current time.
 	/// Assuming most miners are generating blocks with reasonable timestamps, this shouldn't be
@@ -1617,7 +1612,6 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 
 			probing_cookie_secret: keys_manager.get_secure_random_bytes(),
 
-			last_node_announcement_serial: AtomicUsize::new(0),
 			highest_seen_timestamp: AtomicUsize::new(0),
 
 			per_peer_state: RwLock::new(HashMap::new()),
@@ -2926,80 +2920,6 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			}
 			Ok(OutPoint { txid: tx.txid(), index: output_index.unwrap() })
 		})
-	}
-
-	#[allow(dead_code)]
-	// Messages of up to 64KB should never end up more than half full with addresses, as that would
-	// be absurd. We ensure this by checking that at least 100 (our stated public contract on when
-	// broadcast_node_announcement panics) of the maximum-length addresses would fit in a 64KB
-	// message...
-	const HALF_MESSAGE_IS_ADDRS: u32 = ::core::u16::MAX as u32 / (NetAddress::MAX_LEN as u32 + 1) / 2;
-	#[deny(const_err)]
-	#[allow(dead_code)]
-	// ...by failing to compile if the number of addresses that would be half of a message is
-	// smaller than 100:
-	const STATIC_ASSERT: u32 = Self::HALF_MESSAGE_IS_ADDRS - 100;
-
-	/// Regenerates channel_announcements and generates a signed node_announcement from the given
-	/// arguments, providing them in corresponding events via
-	/// [`get_and_clear_pending_msg_events`], if at least one public channel has been confirmed
-	/// on-chain. This effectively re-broadcasts all channel announcements and sends our node
-	/// announcement to ensure that the lightning P2P network is aware of the channels we have and
-	/// our network addresses.
-	///
-	/// `rgb` is a node "color" and `alias` is a printable human-readable string to describe this
-	/// node to humans. They carry no in-protocol meaning.
-	///
-	/// `addresses` represent the set (possibly empty) of socket addresses on which this node
-	/// accepts incoming connections. These will be included in the node_announcement, publicly
-	/// tying these addresses together and to this node. If you wish to preserve user privacy,
-	/// addresses should likely contain only Tor Onion addresses.
-	///
-	/// Panics if `addresses` is absurdly large (more than 100).
-	///
-	/// [`get_and_clear_pending_msg_events`]: MessageSendEventsProvider::get_and_clear_pending_msg_events
-	pub fn broadcast_node_announcement(&self, rgb: [u8; 3], alias: [u8; 32], mut addresses: Vec<NetAddress>) {
-		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
-
-		if addresses.len() > 100 {
-			panic!("More than half the message size was taken up by public addresses!");
-		}
-
-		// While all existing nodes handle unsorted addresses just fine, the spec requires that
-		// addresses be sorted for future compatibility.
-		addresses.sort_by_key(|addr| addr.get_id());
-
-		let announcement = msgs::UnsignedNodeAnnouncement {
-			features: NodeFeatures::known(),
-			timestamp: self.last_node_announcement_serial.fetch_add(1, Ordering::AcqRel) as u32,
-			node_id: self.get_our_node_id(),
-			rgb, alias, addresses,
-			excess_address_data: Vec::new(),
-			excess_data: Vec::new(),
-		};
-		let msghash = hash_to_message!(&Sha256dHash::hash(&announcement.encode()[..])[..]);
-		let node_announce_sig = sign(&self.secp_ctx, &msghash, &self.our_network_key);
-
-		let mut channel_state_lock = self.channel_state.lock().unwrap();
-		let channel_state = &mut *channel_state_lock;
-
-		let mut announced_chans = false;
-		for (_, chan) in channel_state.by_id.iter() {
-			if chan.get_signed_channel_announcement(self.get_our_node_id(), self.genesis_hash.clone(), self.best_block.read().unwrap().height()).is_some()
-				&& self.get_channel_update_for_broadcast(chan).is_ok()
-			{
-				announced_chans = true;
-			}
-		}
-
-		if announced_chans {
-			channel_state.pending_msg_events.push(events::MessageSendEvent::BroadcastNodeAnnouncement {
-				msg: msgs::NodeAnnouncement {
-					signature: node_announce_sig,
-					contents: announcement
-				},
-			});
-		}
 	}
 
 	/// Atomically updates the [`ChannelConfig`] for the given channels.
@@ -5780,7 +5700,6 @@ where
 				}
 			}
 		}
-		max_time!(self.last_node_announcement_serial);
 		max_time!(self.highest_seen_timestamp);
 		let mut payment_secrets = self.pending_inbound_payments.lock().unwrap();
 		payment_secrets.retain(|_, inbound_payment| {
@@ -6132,7 +6051,6 @@ impl<Signer: Sign, M: Deref , T: Deref , K: Deref , F: Deref , L: Deref >
 					&events::MessageSendEvent::SendChannelReestablish { ref node_id, .. } => node_id != counterparty_node_id,
 					&events::MessageSendEvent::SendChannelAnnouncement { ref node_id, .. } => node_id != counterparty_node_id,
 					&events::MessageSendEvent::BroadcastChannelAnnouncement { .. } => true,
-					&events::MessageSendEvent::BroadcastNodeAnnouncement { .. } => true,
 					&events::MessageSendEvent::BroadcastChannelUpdate { .. } => true,
 					&events::MessageSendEvent::SendChannelUpdate { ref node_id, .. } => node_id != counterparty_node_id,
 					&events::MessageSendEvent::HandleError { ref node_id, .. } => node_id != counterparty_node_id,
@@ -6236,6 +6154,10 @@ impl<Signer: Sign, M: Deref , T: Deref , K: Deref , F: Deref , L: Deref >
 			// Untrusted messages from peer, we throw away the error if id points to a non-existent channel
 			let _ = self.force_close_channel_with_peer(&msg.channel_id, counterparty_node_id, Some(&msg.data), true);
 		}
+	}
+
+	fn provided_node_features(&self) -> NodeFeatures {
+		NodeFeatures::known()
 	}
 }
 
@@ -6659,7 +6581,10 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Writeable f
 			}
 		}
 
-		(self.last_node_announcement_serial.load(Ordering::Acquire) as u32).write(writer)?;
+		// Prior to 0.0.111 we tracked node_announcement serials here, however that now happens in
+		// `PeerManager`, and thus we simply write the `highest_seen_timestamp` twice, which is
+		// likely to be identical.
+		(self.highest_seen_timestamp.load(Ordering::Acquire) as u32).write(writer)?;
 		(self.highest_seen_timestamp.load(Ordering::Acquire) as u32).write(writer)?;
 
 		(pending_inbound_payments.len() as u64).write(writer)?;
@@ -6978,7 +6903,7 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 			}
 		}
 
-		let last_node_announcement_serial: u32 = Readable::read(reader)?;
+		let _last_node_announcement_serial: u32 = Readable::read(reader)?; // Only used < 0.0.111
 		let highest_seen_timestamp: u32 = Readable::read(reader)?;
 
 		let pending_inbound_payment_count: u64 = Readable::read(reader)?;
@@ -7239,7 +7164,6 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 			our_network_pubkey,
 			secp_ctx,
 
-			last_node_announcement_serial: AtomicUsize::new(last_node_announcement_serial as usize),
 			highest_seen_timestamp: AtomicUsize::new(highest_seen_timestamp as usize),
 
 			per_peer_state: RwLock::new(per_peer_state),

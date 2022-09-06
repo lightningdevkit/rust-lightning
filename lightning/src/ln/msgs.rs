@@ -896,6 +896,12 @@ pub trait ChannelMessageHandler : MessageSendEventsProvider {
 	// Error:
 	/// Handle an incoming error message from the given peer.
 	fn handle_error(&self, their_node_id: &PublicKey, msg: &ErrorMessage);
+
+	// Handler information:
+	/// Gets the node feature flags which this handler itself supports. All available handlers are
+	/// queried similarly and their feature flags are OR'd together to form the [`NodeFeatures`]
+	/// which are broadcasted in our node_announcement message.
+	fn provided_node_features(&self) -> NodeFeatures;
 }
 
 /// A trait to describe an object which can receive routing messages.
