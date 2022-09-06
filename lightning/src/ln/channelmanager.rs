@@ -5671,10 +5671,6 @@ where
 	///
 	/// An [`EventHandler`] may safely call back to the provider in order to handle an event.
 	/// However, it must not call [`Writeable::write`] as doing so would result in a deadlock.
-	///
-	/// Pending events are persisted as part of [`ChannelManager`]. While these events are cleared
-	/// when processed, an [`EventHandler`] must be able to handle previously seen events when
-	/// restarting from an old state.
 	fn process_pending_events<H: Deref>(&self, handler: H) where H::Target: EventHandler {
 		PersistenceNotifierGuard::optionally_notify(&self.total_consistency_lock, &self.persistence_notifier, || {
 			let mut result = NotifyOption::SkipPersist;
