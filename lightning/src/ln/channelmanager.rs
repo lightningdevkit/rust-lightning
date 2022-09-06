@@ -2985,19 +2985,10 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 
 		let mut announced_chans = false;
 		for (_, chan) in channel_state.by_id.iter() {
-			if let Some(msg) = chan.get_signed_channel_announcement(self.get_our_node_id(), self.genesis_hash.clone(), self.best_block.read().unwrap().height()) {
-				channel_state.pending_msg_events.push(events::MessageSendEvent::BroadcastChannelAnnouncement {
-					msg,
-					update_msg: match self.get_channel_update_for_broadcast(chan) {
-						Ok(msg) => msg,
-						Err(_) => continue,
-					},
-				});
+			if chan.get_signed_channel_announcement(self.get_our_node_id(), self.genesis_hash.clone(), self.best_block.read().unwrap().height()).is_some()
+				&& self.get_channel_update_for_broadcast(chan).is_ok()
+			{
 				announced_chans = true;
-			} else {
-				// If the channel is not public or has not yet reached channel_ready, check the
-				// next channel. If we don't yet have any public channels, we'll skip the broadcast
-				// below as peers may not accept it without channels on chain first.
 			}
 		}
 
@@ -6139,6 +6130,7 @@ impl<Signer: Sign, M: Deref , T: Deref , K: Deref , F: Deref , L: Deref >
 					&events::MessageSendEvent::SendClosingSigned { ref node_id, .. } => node_id != counterparty_node_id,
 					&events::MessageSendEvent::SendShutdown { ref node_id, .. } => node_id != counterparty_node_id,
 					&events::MessageSendEvent::SendChannelReestablish { ref node_id, .. } => node_id != counterparty_node_id,
+					&events::MessageSendEvent::SendChannelAnnouncement { ref node_id, .. } => node_id != counterparty_node_id,
 					&events::MessageSendEvent::BroadcastChannelAnnouncement { .. } => true,
 					&events::MessageSendEvent::BroadcastNodeAnnouncement { .. } => true,
 					&events::MessageSendEvent::BroadcastChannelUpdate { .. } => true,
@@ -6183,7 +6175,7 @@ impl<Signer: Sign, M: Deref , T: Deref , K: Deref , F: Deref , L: Deref >
 		let channel_state = &mut *channel_state_lock;
 		let pending_msg_events = &mut channel_state.pending_msg_events;
 		channel_state.by_id.retain(|_, chan| {
-			if chan.get_counterparty_node_id() == *counterparty_node_id {
+			let retain = if chan.get_counterparty_node_id() == *counterparty_node_id {
 				if !chan.have_received_message() {
 					// If we created this (outbound) channel while we were disconnected from the
 					// peer we probably failed to send the open_channel message, which is now
@@ -6197,7 +6189,18 @@ impl<Signer: Sign, M: Deref , T: Deref , K: Deref , F: Deref , L: Deref >
 					});
 					true
 				}
-			} else { true }
+			} else { true };
+			if retain && chan.get_counterparty_node_id() != *counterparty_node_id {
+				if let Some(msg) = chan.get_signed_channel_announcement(self.get_our_node_id(), self.genesis_hash.clone(), self.best_block.read().unwrap().height()) {
+					if let Ok(update_msg) = self.get_channel_update_for_broadcast(chan) {
+						pending_msg_events.push(events::MessageSendEvent::SendChannelAnnouncement {
+							node_id: *counterparty_node_id,
+							msg, update_msg,
+						});
+					}
+				}
+			}
+			retain
 		});
 		//TODO: Also re-broadcast announcement_signatures
 	}

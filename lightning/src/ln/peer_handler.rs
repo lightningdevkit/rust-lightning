@@ -1613,6 +1613,13 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 								log_bytes!(msg.channel_id));
 						self.enqueue_message(&mut *get_peer_for_forwarding!(node_id), msg);
 					},
+					MessageSendEvent::SendChannelAnnouncement { ref node_id, ref msg, ref update_msg } => {
+						log_debug!(self.logger, "Handling SendChannelAnnouncement event in peer_handler for node {} for short channel id {}",
+								log_pubkey!(node_id),
+								msg.contents.short_channel_id);
+						self.enqueue_message(&mut *get_peer_for_forwarding!(node_id), msg);
+						self.enqueue_message(&mut *get_peer_for_forwarding!(node_id), update_msg);
+					},
 					MessageSendEvent::BroadcastChannelAnnouncement { msg, update_msg } => {
 						log_debug!(self.logger, "Handling BroadcastChannelAnnouncement event in peer_handler for short channel id {}", msg.contents.short_channel_id);
 						match self.message_handler.route_handler.handle_channel_announcement(&msg) {
