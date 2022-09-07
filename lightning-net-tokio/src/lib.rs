@@ -614,6 +614,7 @@ mod tests {
 		fn handle_channel_reestablish(&self, _their_node_id: &PublicKey, _msg: &ChannelReestablish) {}
 		fn handle_error(&self, _their_node_id: &PublicKey, _msg: &ErrorMessage) {}
 		fn provided_node_features(&self) -> NodeFeatures { NodeFeatures::known() }
+		fn provided_init_features(&self, _their_node_id: &PublicKey) -> InitFeatures { InitFeatures::known() }
 	}
 	impl MessageSendEventsProvider for MsgHandler {
 		fn get_and_clear_pending_msg_events(&self) -> Vec<MessageSendEvent> {

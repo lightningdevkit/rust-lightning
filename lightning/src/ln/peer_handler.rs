@@ -203,6 +203,7 @@ impl ChannelMessageHandler for ErroringMessageHandler {
 	fn peer_connected(&self, _their_node_id: &PublicKey, _msg: &msgs::Init) {}
 	fn handle_error(&self, _their_node_id: &PublicKey, _msg: &msgs::ErrorMessage) {}
 	fn provided_node_features(&self) -> NodeFeatures { NodeFeatures::empty() }
+	fn provided_init_features(&self, _their_node_id: &PublicKey) -> InitFeatures { InitFeatures::known() }
 }
 impl Deref for ErroringMessageHandler {
 	type Target = ErroringMessageHandler;
@@ -1052,7 +1053,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 
 								peer.their_node_id = Some(their_node_id);
 								insert_node_id!();
-								let features = InitFeatures::known();
+								let features = self.message_handler.chan_handler.provided_init_features(&their_node_id);
 								let resp = msgs::Init { features, remote_network_address: filter_addresses(peer.their_net_address.clone()) };
 								self.enqueue_message(peer, &resp);
 								peer.awaiting_pong_timer_tick_intervals = 0;
@@ -1064,7 +1065,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 								peer.pending_read_is_header = true;
 								peer.their_node_id = Some(their_node_id);
 								insert_node_id!();
-								let features = InitFeatures::known();
+								let features = self.message_handler.chan_handler.provided_init_features(&their_node_id);
 								let resp = msgs::Init { features, remote_network_address: filter_addresses(peer.their_net_address.clone()) };
 								self.enqueue_message(peer, &resp);
 								peer.awaiting_pong_timer_tick_intervals = 0;

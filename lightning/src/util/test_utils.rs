@@ -360,6 +360,9 @@ impl msgs::ChannelMessageHandler for TestChannelMessageHandler {
 	fn provided_node_features(&self) -> NodeFeatures {
 		NodeFeatures::empty()
 	}
+	fn provided_init_features(&self, _their_init_features: &PublicKey) -> InitFeatures {
+		InitFeatures::known()
+	}
 }
 
 impl events::MessageSendEventsProvider for TestChannelMessageHandler {
