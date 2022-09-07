@@ -3942,19 +3942,29 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 						// channel here as we apparently can't relay through them anyway.
 						let scid = path.first().unwrap().short_channel_id;
 						retry.as_mut().map(|r| r.payment_params.previously_failed_channels.push(scid));
-						events::Event::PaymentPathFailed {
-							payment_id: Some(payment_id),
-							payment_hash: payment_hash.clone(),
-							payment_failed_permanently: false,
-							network_update: None,
-							all_paths_failed,
-							path: path.clone(),
-							short_channel_id: Some(scid),
-							retry,
+
+						if self.payment_is_probe(payment_hash, &payment_id) {
+							events::Event::ProbeFailed {
+								payment_id: payment_id,
+								payment_hash: payment_hash.clone(),
+								path: path.clone(),
+								short_channel_id: Some(scid),
+							}
+						} else {
+							events::Event::PaymentPathFailed {
+								payment_id: Some(payment_id),
+								payment_hash: payment_hash.clone(),
+								payment_failed_permanently: false,
+								network_update: None,
+								all_paths_failed,
+								path: path.clone(),
+								short_channel_id: Some(scid),
+								retry,
 #[cfg(test)]
-							error_code: Some(*failure_code),
+								error_code: Some(*failure_code),
 #[cfg(test)]
-							error_data: Some(data.clone()),
+								error_data: Some(data.clone()),
+							}
 						}
 					}
 				};

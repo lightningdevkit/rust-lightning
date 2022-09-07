@@ -1200,3 +1200,57 @@ fn failed_probe_yields_event() {
 		_ => panic!(),
 	};
 }
+
+#[test]
+fn onchain_failed_probe_yields_event() {
+	// Tests that an attempt to probe over a channel that is eventaully closed results in a failure
+	// event.
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+	let chan_id = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known()).2;
+	create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::known(), InitFeatures::known());
+
+	let payment_params = PaymentParameters::from_node_id(nodes[2].node.get_our_node_id());
+
+	// Send a dust HTLC, which will be treated as if it timed out once the channel hits the chain.
+	let (route, _, _, _) = get_route_and_payment_hash!(&nodes[0], nodes[2], &payment_params, 1_000, 42);
+	let (payment_hash, payment_id) = nodes[0].node.send_probe(route.paths[0].clone()).unwrap();
+
+	// node[0] -- update_add_htlcs -> node[1]
+	check_added_monitors!(nodes[0], 1);
+	let updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+	let probe_event = SendEvent::from_commitment_update(nodes[1].node.get_our_node_id(), updates);
+	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &probe_event.msgs[0]);
+	check_added_monitors!(nodes[1], 0);
+	commitment_signed_dance!(nodes[1], nodes[0], probe_event.commitment_msg, false);
+	expect_pending_htlcs_forwardable!(nodes[1]);
+
+	check_added_monitors!(nodes[1], 1);
+	let _ = get_htlc_update_msgs!(nodes[1], nodes[2].node.get_our_node_id());
+
+	// Don't bother forwarding the HTLC onwards and just confirm the force-close transaction on
+	// Node A, which after 6 confirmations should result in a probe failure event.
+	let bs_txn = get_local_commitment_txn!(nodes[1], chan_id);
+	confirm_transaction(&nodes[0], &bs_txn[0]);
+	check_closed_broadcast!(&nodes[0], true);
+	check_added_monitors!(nodes[0], 1);
+
+	let mut events = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 2);
+	let mut found_probe_failed = false;
+	for event in events.drain(..) {
+		match event {
+			Event::ProbeFailed { payment_id: ev_pid, payment_hash: ev_ph, .. } => {
+				assert_eq!(payment_id, ev_pid);
+				assert_eq!(payment_hash, ev_ph);
+				found_probe_failed = true;
+			},
+			Event::ChannelClosed { .. } => {},
+			_ => panic!(),
+		}
+	}
+	assert!(found_probe_failed);
+}
