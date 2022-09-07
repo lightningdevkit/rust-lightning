@@ -619,7 +619,7 @@ pub enum Balance {
 /// An HTLC which has been irrevocably resolved on-chain, and has reached ANTI_REORG_DELAY.
 #[derive(PartialEq)]
 struct IrrevocablyResolvedHTLC {
-	commitment_tx_output_idx: u32,
+	commitment_tx_output_idx: Option<u32>,
 	/// The txid of the transaction which resolved the HTLC, this may be a commitment (if the HTLC
 	/// was not present in the confirmed commitment transaction), HTLC-Success, or HTLC-Timeout
 	/// transaction.
@@ -628,11 +628,39 @@ struct IrrevocablyResolvedHTLC {
 	payment_preimage: Option<PaymentPreimage>,
 }
 
-impl_writeable_tlv_based!(IrrevocablyResolvedHTLC, {
-	(0, commitment_tx_output_idx, required),
-	(1, resolving_txid, option),
-	(2, payment_preimage, option),
-});
+// In LDK versions prior to 0.0.111 commitment_tx_output_idx was not Option-al and
+// IrrevocablyResolvedHTLC objects only existed for non-dust HTLCs. This was a bug, but to maintain
+// backwards compatibility we must ensure we always write out a commitment_tx_output_idx field,
+// using `u32::max_value()` as a sentinal to indicate the HTLC was dust.
+impl Writeable for IrrevocablyResolvedHTLC {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		let mapped_commitment_tx_output_idx = self.commitment_tx_output_idx.unwrap_or(u32::max_value());
+		write_tlv_fields!(writer, {
+			(0, mapped_commitment_tx_output_idx, required),
+			(1, self.resolving_txid, option),
+			(2, self.payment_preimage, option),
+		});
+		Ok(())
+	}
+}
+
+impl Readable for IrrevocablyResolvedHTLC {
+	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
+		let mut mapped_commitment_tx_output_idx = 0;
+		let mut resolving_txid = None;
+		let mut payment_preimage = None;
+		read_tlv_fields!(reader, {
+			(0, mapped_commitment_tx_output_idx, required),
+			(1, resolving_txid, option),
+			(2, payment_preimage, option),
+		});
+		Ok(Self {
+			commitment_tx_output_idx: if mapped_commitment_tx_output_idx == u32::max_value() { None } else { Some(mapped_commitment_tx_output_idx) },
+			resolving_txid,
+			payment_preimage,
+		})
+	}
+}
 
 /// A ChannelMonitor handles chain events (blocks connected and disconnected) and generates
 /// on-chain transactions to ensure no loss of funds occurs.
@@ -1485,7 +1513,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 			}
 		}
 		let htlc_resolved = self.htlcs_resolved_on_chain.iter()
-			.find(|v| if v.commitment_tx_output_idx == htlc_commitment_tx_output_idx {
+			.find(|v| if v.commitment_tx_output_idx == Some(htlc_commitment_tx_output_idx) {
 				debug_assert!(htlc_spend_txid_opt.is_none());
 				htlc_spend_txid_opt = v.resolving_txid;
 				true
@@ -1775,7 +1803,7 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 		macro_rules! walk_htlcs {
 			($holder_commitment: expr, $htlc_iter: expr) => {
 				for (htlc, source) in $htlc_iter {
-					if us.htlcs_resolved_on_chain.iter().any(|v| Some(v.commitment_tx_output_idx) == htlc.transaction_output_index) {
+					if us.htlcs_resolved_on_chain.iter().any(|v| v.commitment_tx_output_idx == htlc.transaction_output_index) {
 						// We should assert that funding_spend_confirmed is_some() here, but we
 						// have some unit tests which violate HTLC transaction CSVs entirely and
 						// would fail.
@@ -2902,12 +2930,10 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 						source: source.clone(),
 						htlc_value_satoshis,
 					}));
-					if let Some(idx) = commitment_tx_output_idx {
-						self.htlcs_resolved_on_chain.push(IrrevocablyResolvedHTLC {
-							commitment_tx_output_idx: idx, resolving_txid: Some(entry.txid),
-							payment_preimage: None,
-						});
-					}
+					self.htlcs_resolved_on_chain.push(IrrevocablyResolvedHTLC {
+						commitment_tx_output_idx, resolving_txid: Some(entry.txid),
+						payment_preimage: None,
+					});
 				},
 				OnchainEvent::MaturingOutput { descriptor } => {
 					log_debug!(logger, "Descriptor {} has got enough confirmations to be passed upstream", log_spendable!(descriptor));
@@ -2917,7 +2943,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 				},
 				OnchainEvent::HTLCSpendConfirmation { commitment_tx_output_idx, preimage, .. } => {
 					self.htlcs_resolved_on_chain.push(IrrevocablyResolvedHTLC {
-						commitment_tx_output_idx, resolving_txid: Some(entry.txid),
+						commitment_tx_output_idx: Some(commitment_tx_output_idx), resolving_txid: Some(entry.txid),
 						payment_preimage: preimage,
 					});
 				},
