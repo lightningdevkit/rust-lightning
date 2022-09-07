@@ -3990,7 +3990,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 						events::Event::PaymentPathFailed {
 							payment_id: Some(payment_id),
 							payment_hash: payment_hash.clone(),
-							rejected_by_dest: path.len() == 1,
+							rejected_by_dest: false,
 							network_update: None,
 							all_paths_failed,
 							path: path.clone(),

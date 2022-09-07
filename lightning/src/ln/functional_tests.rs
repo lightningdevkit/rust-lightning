@@ -2560,7 +2560,7 @@ fn claim_htlc_outputs_shared_tx() {
 		// ANTI_REORG_DELAY confirmations.
 		mine_transaction(&nodes[1], &node_txn[0]);
 		connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
-		expect_payment_failed!(nodes[1], payment_hash_2, true);
+		expect_payment_failed!(nodes[1], payment_hash_2, false);
 	}
 	get_announce_close_broadcast_events(&nodes, 0, 1);
 	assert_eq!(nodes[0].node.list_channels().len(), 0);
@@ -2642,7 +2642,7 @@ fn claim_htlc_outputs_single_tx() {
 		mine_transaction(&nodes[1], &node_txn[3]);
 		mine_transaction(&nodes[1], &node_txn[4]);
 		connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
-		expect_payment_failed!(nodes[1], payment_hash_2, true);
+		expect_payment_failed!(nodes[1], payment_hash_2, false);
 	}
 	get_announce_close_broadcast_events(&nodes, 0, 1);
 	assert_eq!(nodes[0].node.list_channels().len(), 0);
@@ -4960,7 +4960,7 @@ fn test_static_spendable_outputs_timeout_tx() {
 	mine_transaction(&nodes[1], &node_txn[1]);
 	check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed);
 	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
-	expect_payment_failed!(nodes[1], our_payment_hash, true);
+	expect_payment_failed!(nodes[1], our_payment_hash, false);
 
 	let spend_txn = check_spendable_outputs!(nodes[1], node_cfgs[1].keys_manager);
 	assert_eq!(spend_txn.len(), 3); // SpendableOutput: remote_commitment_tx.to_remote, timeout_tx.output
@@ -5818,7 +5818,7 @@ fn test_dynamic_spendable_outputs_local_htlc_timeout_tx() {
 
 	mine_transaction(&nodes[0], &htlc_timeout);
 	connect_blocks(&nodes[0], BREAKDOWN_TIMEOUT as u32 - 1);
-	expect_payment_failed!(nodes[0], our_payment_hash, true);
+	expect_payment_failed!(nodes[0], our_payment_hash, false);
 
 	// Verify that A is able to spend its own HTLC-Timeout tx thanks to spendable output event given back by its ChannelMonitor
 	let spend_txn = check_spendable_outputs!(nodes[0], node_cfgs[0].keys_manager);
@@ -5900,7 +5900,7 @@ fn test_key_derivation_params() {
 
 	mine_transaction(&nodes[0], &htlc_timeout);
 	connect_blocks(&nodes[0], BREAKDOWN_TIMEOUT as u32 - 1);
-	expect_payment_failed!(nodes[0], our_payment_hash, true);
+	expect_payment_failed!(nodes[0], our_payment_hash, false);
 
 	// Verify that A is able to spend its own HTLC-Timeout tx thanks to spendable output event given back by its ChannelMonitor
 	let new_keys_manager = test_utils::TestKeysInterface::new(&seed, Network::Testnet);
@@ -7304,7 +7304,7 @@ fn do_test_sweep_outbound_htlc_failure_update(revoked: bool, local: bool) {
 		mine_transaction(&nodes[0], &as_commitment_tx[0]);
 		check_closed_event!(nodes[0], 1, ClosureReason::CommitmentTxConfirmed);
 		connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
-		expect_payment_failed!(nodes[0], dust_hash, true);
+		expect_payment_failed!(nodes[0], dust_hash, false);
 
 		connect_blocks(&nodes[0], TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS - ANTI_REORG_DELAY);
 		check_closed_broadcast!(nodes[0], true);
@@ -7316,7 +7316,7 @@ fn do_test_sweep_outbound_htlc_failure_update(revoked: bool, local: bool) {
 		assert_eq!(nodes[0].node.get_and_clear_pending_events().len(), 0);
 		mine_transaction(&nodes[0], &timeout_tx[0]);
 		connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
-		expect_payment_failed!(nodes[0], non_dust_hash, true);
+		expect_payment_failed!(nodes[0], non_dust_hash, false);
 	} else {
 		// We fail dust-HTLC 1 by broadcast of remote commitment tx. If revoked, fail also non-dust HTLC
 		mine_transaction(&nodes[0], &bs_commitment_tx[0]);
@@ -7331,7 +7331,7 @@ fn do_test_sweep_outbound_htlc_failure_update(revoked: bool, local: bool) {
 		check_spends!(timeout_tx[0], bs_commitment_tx[0]);
 		// For both a revoked or non-revoked commitment transaction, after ANTI_REORG_DELAY the
 		// dust HTLC should have been failed.
-		expect_payment_failed!(nodes[0], dust_hash, true);
+		expect_payment_failed!(nodes[0], dust_hash, false);
 
 		if !revoked {
 			assert_eq!(timeout_tx[0].input[0].witness.last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT);
@@ -7342,7 +7342,7 @@ fn do_test_sweep_outbound_htlc_failure_update(revoked: bool, local: bool) {
 		mine_transaction(&nodes[0], &timeout_tx[0]);
 		assert_eq!(nodes[0].node.get_and_clear_pending_events().len(), 0);
 		connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
-		expect_payment_failed!(nodes[0], non_dust_hash, true);
+		expect_payment_failed!(nodes[0], non_dust_hash, false);
 	}
 }
 
@@ -9042,7 +9042,7 @@ fn test_htlc_no_detection() {
 	let header_201 = BlockHeader { version: 0x20000000, prev_blockhash: nodes[0].best_block_hash(), merkle_root: TxMerkleNode::all_zeros(), time: 42, bits: 42, nonce: 42 };
 	connect_block(&nodes[0], &Block { header: header_201, txdata: vec![htlc_timeout.clone()] });
 	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
-	expect_payment_failed!(nodes[0], our_payment_hash, true);
+	expect_payment_failed!(nodes[0], our_payment_hash, false);
 }
 
 fn do_test_onchain_htlc_settlement_after_close(broadcast_alice: bool, go_onchain_before_fulfill: bool) {
