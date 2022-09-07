@@ -717,7 +717,7 @@ where
 
 		match event {
 			Event::PaymentPathFailed {
-				payment_id, payment_hash, rejected_by_dest, path, short_channel_id, retry, ..
+				payment_id, payment_hash, payment_failed_permanently, path, short_channel_id, retry, ..
 			} => {
 				if let Some(short_channel_id) = short_channel_id {
 					let path = path.iter().collect::<Vec<_>>();
@@ -726,7 +726,7 @@ where
 
 				if payment_id.is_none() {
 					log_trace!(self.logger, "Payment {} has no id; not retrying", log_bytes!(payment_hash.0));
-				} else if *rejected_by_dest {
+				} else if *payment_failed_permanently {
 					log_trace!(self.logger, "Payment {} rejected by destination; not retrying", log_bytes!(payment_hash.0));
 					self.payer.abandon_payment(payment_id.unwrap());
 				} else if retry.is_none() {
@@ -916,7 +916,7 @@ mod tests {
 			payment_id,
 			payment_hash,
 			network_update: None,
-			rejected_by_dest: false,
+			payment_failed_permanently: false,
 			all_paths_failed: false,
 			path: TestRouter::path_for_value(final_value_msat),
 			short_channel_id: None,
@@ -981,7 +981,7 @@ mod tests {
 			payment_id,
 			payment_hash,
 			network_update: None,
-			rejected_by_dest: false,
+			payment_failed_permanently: false,
 			all_paths_failed: false,
 			path: TestRouter::path_for_value(final_value_msat),
 			short_channel_id: None,
@@ -1028,7 +1028,7 @@ mod tests {
 			payment_id,
 			payment_hash: PaymentHash(invoice.payment_hash().clone().into_inner()),
 			network_update: None,
-			rejected_by_dest: false,
+			payment_failed_permanently: false,
 			all_paths_failed: true,
 			path: TestRouter::path_for_value(final_value_msat),
 			short_channel_id: None,
@@ -1042,7 +1042,7 @@ mod tests {
 			payment_id,
 			payment_hash: PaymentHash(invoice.payment_hash().clone().into_inner()),
 			network_update: None,
-			rejected_by_dest: false,
+			payment_failed_permanently: false,
 			all_paths_failed: false,
 			path: TestRouter::path_for_value(final_value_msat / 2),
 			short_channel_id: None,
@@ -1088,7 +1088,7 @@ mod tests {
 			payment_id,
 			payment_hash: PaymentHash(invoice.payment_hash().clone().into_inner()),
 			network_update: None,
-			rejected_by_dest: false,
+			payment_failed_permanently: false,
 			all_paths_failed: true,
 			path: TestRouter::path_for_value(final_value_msat),
 			short_channel_id: None,
@@ -1128,7 +1128,7 @@ mod tests {
 			payment_id,
 			payment_hash: PaymentHash(invoice.payment_hash().clone().into_inner()),
 			network_update: None,
-			rejected_by_dest: false,
+			payment_failed_permanently: false,
 			all_paths_failed: false,
 			path: vec![],
 			short_channel_id: None,
@@ -1189,7 +1189,7 @@ mod tests {
 			payment_id,
 			payment_hash: PaymentHash(invoice.payment_hash().clone().into_inner()),
 			network_update: None,
-			rejected_by_dest: false,
+			payment_failed_permanently: false,
 			all_paths_failed: false,
 			path: vec![],
 			short_channel_id: None,
@@ -1226,7 +1226,7 @@ mod tests {
 			payment_id,
 			payment_hash: PaymentHash(invoice.payment_hash().clone().into_inner()),
 			network_update: None,
-			rejected_by_dest: false,
+			payment_failed_permanently: false,
 			all_paths_failed: false,
 			path: TestRouter::path_for_value(final_value_msat / 2),
 			short_channel_id: None,
@@ -1260,7 +1260,7 @@ mod tests {
 			payment_id,
 			payment_hash: PaymentHash(invoice.payment_hash().clone().into_inner()),
 			network_update: None,
-			rejected_by_dest: true,
+			payment_failed_permanently: true,
 			all_paths_failed: false,
 			path: vec![],
 			short_channel_id: None,
@@ -1309,7 +1309,7 @@ mod tests {
 			payment_id,
 			payment_hash,
 			network_update: None,
-			rejected_by_dest: false,
+			payment_failed_permanently: false,
 			all_paths_failed: false,
 			path: vec![],
 			short_channel_id: None,
@@ -1444,7 +1444,7 @@ mod tests {
 			payment_id,
 			payment_hash,
 			network_update: None,
-			rejected_by_dest: false,
+			payment_failed_permanently: false,
 			all_paths_failed: false,
 			path: vec![],
 			short_channel_id: None,
@@ -1490,7 +1490,7 @@ mod tests {
 			payment_id,
 			payment_hash,
 			network_update: None,
-			rejected_by_dest: false,
+			payment_failed_permanently: false,
 			all_paths_failed: false,
 			path,
 			short_channel_id,
@@ -1680,7 +1680,7 @@ mod tests {
 			payment_id,
 			payment_hash,
 			network_update: None,
-			rejected_by_dest: false,
+			payment_failed_permanently: false,
 			all_paths_failed: false,
 			path: TestRouter::path_for_value(final_value_msat),
 			short_channel_id: None,
@@ -1692,7 +1692,7 @@ mod tests {
 			payment_id,
 			payment_hash,
 			network_update: None,
-			rejected_by_dest: false,
+			payment_failed_permanently: false,
 			all_paths_failed: false,
 			path: TestRouter::path_for_value(final_value_msat / 2),
 			short_channel_id: None,
@@ -2393,8 +2393,8 @@ mod tests {
 		// treated this as "HTLC complete" and dropped the retry counter, causing us to retry again
 		// if the final HTLC failed.
 		expected_events.borrow_mut().push_back(&|ev: &Event| {
-			if let Event::PaymentPathFailed { rejected_by_dest, all_paths_failed, .. } = ev {
-				assert!(!rejected_by_dest);
+			if let Event::PaymentPathFailed { payment_failed_permanently, all_paths_failed, .. } = ev {
+				assert!(!payment_failed_permanently);
 				assert!(all_paths_failed);
 			} else { panic!("Unexpected event"); }
 		});
@@ -2411,8 +2411,8 @@ mod tests {
 		commitment_signed_dance!(nodes[0], nodes[1], &bs_fail_update.commitment_signed, false, true);
 
 		expected_events.borrow_mut().push_back(&|ev: &Event| {
-			if let Event::PaymentPathFailed { rejected_by_dest, all_paths_failed, .. } = ev {
-				assert!(!rejected_by_dest);
+			if let Event::PaymentPathFailed { payment_failed_permanently, all_paths_failed, .. } = ev {
+				assert!(!payment_failed_permanently);
 				assert!(all_paths_failed);
 			} else { panic!("Unexpected event"); }
 		});
