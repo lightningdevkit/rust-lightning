@@ -1207,11 +1207,17 @@ pub trait OnionMessageProvider {
 ///
 /// # Requirements
 ///
-/// See [`process_pending_events`] for requirements around event processing.
-///
 /// When using this trait, [`process_pending_events`] will call [`handle_event`] for each pending
-/// event since the last invocation. The handler must either act upon the event immediately
-/// or preserve it for later handling.
+/// event since the last invocation.
+///
+/// In order to ensure no [`Event`]s are lost, implementors of this trait will persist [`Event`]s
+/// and replay any unhandled events on startup. An [`Event`] is considered handled when
+/// [`process_pending_events`] returns, thus handlers MUST fully handle [`Event`]s and persist any
+/// relevant changes to disk *before* returning.
+///
+/// Further, because an application may crash between an [`Event`] being handled and the
+/// implementor of this trait being re-serialized, [`Event`] handling must be idempotent - in
+/// effect, [`Event`]s may be replayed.
 ///
 /// Note, handlers may call back into the provider and thus deadlocking must be avoided. Be sure to
 /// consult the provider's documentation on the implication of processing events and how a handler
@@ -1228,9 +1234,7 @@ pub trait OnionMessageProvider {
 pub trait EventsProvider {
 	/// Processes any events generated since the last call using the given event handler.
 	///
-	/// Subsequent calls must only process new events. However, handlers must be capable of handling
-	/// duplicate events across process restarts. This may occur if the provider was recovered from
-	/// an old state (i.e., it hadn't been successfully persisted after processing pending events).
+	/// See the trait-level documentation for requirements.
 	fn process_pending_events<H: Deref>(&self, handler: H) where H::Target: EventHandler;
 }
 
