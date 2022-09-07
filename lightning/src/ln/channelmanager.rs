@@ -3812,62 +3812,17 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		counterparty_node_id: &PublicKey
 	) {
 		for (htlc_src, payment_hash) in htlcs_to_fail.drain(..) {
-			match htlc_src {
-				HTLCSource::PreviousHopData(HTLCPreviousHopData { .. }) => {
-					let (failure_code, onion_failure_data) =
-						match self.channel_state.lock().unwrap().by_id.entry(channel_id) {
-							hash_map::Entry::Occupied(chan_entry) => {
-								self.get_htlc_inbound_temp_fail_err_and_data(0x1000|7, &chan_entry.get())
-							},
-							hash_map::Entry::Vacant(_) => (0x4000|10, Vec::new())
-						};
-					let channel_state = self.channel_state.lock().unwrap();
+			let mut channel_state = self.channel_state.lock().unwrap();
+			let (failure_code, onion_failure_data) =
+				match channel_state.by_id.entry(channel_id) {
+					hash_map::Entry::Occupied(chan_entry) => {
+						self.get_htlc_inbound_temp_fail_err_and_data(0x1000|7, &chan_entry.get())
+					},
+					hash_map::Entry::Vacant(_) => (0x4000|10, Vec::new())
+				};
 
-					let receiver = HTLCDestination::NextHopChannel { node_id: Some(counterparty_node_id.clone()), channel_id };
-					self.fail_htlc_backwards_internal(channel_state, htlc_src, &payment_hash, HTLCFailReason::Reason { failure_code, data: onion_failure_data }, receiver)
-				},
-				HTLCSource::OutboundRoute { session_priv, payment_id, path, payment_params, .. } => {
-					let mut session_priv_bytes = [0; 32];
-					session_priv_bytes.copy_from_slice(&session_priv[..]);
-					let mut outbounds = self.pending_outbound_payments.lock().unwrap();
-					if let hash_map::Entry::Occupied(mut payment) = outbounds.entry(payment_id) {
-						if payment.get_mut().remove(&session_priv_bytes, Some(&path)) && !payment.get().is_fulfilled() {
-							let retry = if let Some(payment_params_data) = payment_params {
-								let path_last_hop = path.last().expect("Outbound payments must have had a valid path");
-								Some(RouteParameters {
-									payment_params: payment_params_data,
-									final_value_msat: path_last_hop.fee_msat,
-									final_cltv_expiry_delta: path_last_hop.cltv_expiry_delta,
-								})
-							} else { None };
-							let mut pending_events = self.pending_events.lock().unwrap();
-							pending_events.push(events::Event::PaymentPathFailed {
-								payment_id: Some(payment_id),
-								payment_hash,
-								payment_failed_permanently: false,
-								network_update: None,
-								all_paths_failed: payment.get().remaining_parts() == 0,
-								path: path.clone(),
-								short_channel_id: None,
-								retry,
-								#[cfg(test)]
-								error_code: None,
-								#[cfg(test)]
-								error_data: None,
-							});
-							if payment.get().abandoned() && payment.get().remaining_parts() == 0 {
-								pending_events.push(events::Event::PaymentFailed {
-									payment_id,
-									payment_hash: payment.get().payment_hash().expect("PendingOutboundPayments::RetriesExceeded always has a payment hash set"),
-								});
-								payment.remove();
-							}
-						}
-					} else {
-						log_trace!(self.logger, "Received duplicative fail for HTLC with payment_hash {}", log_bytes!(payment_hash.0));
-					}
-				},
-			};
+			let receiver = HTLCDestination::NextHopChannel { node_id: Some(counterparty_node_id.clone()), channel_id };
+			self.fail_htlc_backwards_internal(channel_state, htlc_src, &payment_hash, HTLCFailReason::Reason { failure_code, data: onion_failure_data }, receiver);
 		}
 	}
 
