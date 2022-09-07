@@ -361,7 +361,7 @@ impl msgs::ChannelMessageHandler for TestChannelMessageHandler {
 		NodeFeatures::empty()
 	}
 	fn provided_init_features(&self, _their_init_features: &PublicKey) -> InitFeatures {
-		InitFeatures::known()
+		InitFeatures::known_channel_features()
 	}
 }
 

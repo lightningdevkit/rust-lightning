@@ -206,7 +206,11 @@ impl ChannelMessageHandler for ErroringMessageHandler {
 	fn peer_connected(&self, _their_node_id: &PublicKey, _msg: &msgs::Init) {}
 	fn handle_error(&self, _their_node_id: &PublicKey, _msg: &msgs::ErrorMessage) {}
 	fn provided_node_features(&self) -> NodeFeatures { NodeFeatures::empty() }
-	fn provided_init_features(&self, _their_node_id: &PublicKey) -> InitFeatures { InitFeatures::known() }
+	fn provided_init_features(&self, _their_node_id: &PublicKey) -> InitFeatures {
+		// Use our known channel feature set as peers may otherwise not be willing to talk to us at
+		// all.
+		InitFeatures::known_channel_features()
+	}
 }
 impl Deref for ErroringMessageHandler {
 	type Target = ErroringMessageHandler;

@@ -163,6 +163,8 @@ mod sealed {
 			,
 		],
 		optional_features: [
+			// Note that if new "non-channel-related" flags are added here they should be
+			// explicitly cleared in InitFeatures::known_channel_features.
 			// Byte 0
 			DataLossProtect | InitialRoutingSync | UpfrontShutdownScript | GossipQueries,
 			// Byte 1
@@ -545,6 +547,14 @@ impl InitFeatures {
 	pub(crate) fn to_context<C: sealed::Context>(&self) -> Features<C> {
 		self.to_context_internal()
 	}
+
+	/// Returns the set of known init features that are related to channels. At least some of
+	/// these features are likely required for peers to talk to us.
+	pub fn known_channel_features() -> InitFeatures {
+		let mut features = Self::known().clear_gossip_queries();
+		features.clear_initial_routing_sync();
+		features
+	}
 }
 
 impl InvoiceFeatures {
@@ -763,7 +773,6 @@ impl<T: sealed::UpfrontShutdownScript> Features<T> {
 
 
 impl<T: sealed::GossipQueries> Features<T> {
-	#[cfg(test)]
 	pub(crate) fn clear_gossip_queries(mut self) -> Self {
 		<T as sealed::GossipQueries>::clear_bits(&mut self.flags);
 		self
@@ -771,10 +780,7 @@ impl<T: sealed::GossipQueries> Features<T> {
 }
 
 impl<T: sealed::InitialRoutingSync> Features<T> {
-	// We are no longer setting initial_routing_sync now that gossip_queries
-	// is enabled. This feature is ignored by a peer when gossip_queries has
-	// been negotiated.
-	#[cfg(test)]
+	// Note that initial_routing_sync is ignored if gossip_queries is set.
 	pub(crate) fn clear_initial_routing_sync(&mut self) {
 		<T as sealed::InitialRoutingSync>::clear_bits(&mut self.flags)
 	}
