@@ -304,9 +304,18 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 	fn drop(&mut self) {
 		if !panicking() {
 			// Check that we processed all pending events
-			assert!(self.node.get_and_clear_pending_msg_events().is_empty());
-			assert!(self.node.get_and_clear_pending_events().is_empty());
-			assert!(self.chain_monitor.added_monitors.lock().unwrap().is_empty());
+			let msg_events = self.node.get_and_clear_pending_msg_events();
+			if !msg_events.is_empty() {
+				panic!("Had excess message events on node {}: {:?}", self.logger.id, msg_events);
+			}
+			let events = self.node.get_and_clear_pending_events();
+			if !events.is_empty() {
+				panic!("Had excess events on node {}: {:?}", self.logger.id, events);
+			}
+			let added_monitors = self.chain_monitor.added_monitors.lock().unwrap().split_off(0);
+			if !added_monitors.is_empty() {
+				panic!("Had {} excess added monitors on node {}", added_monitors.len(), self.logger.id);
+			}
 
 			// Check that if we serialize the Router, we can deserialize it again.
 			{
