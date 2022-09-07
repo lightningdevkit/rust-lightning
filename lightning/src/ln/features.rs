@@ -551,9 +551,9 @@ impl InitFeatures {
 	/// Returns the set of known init features that are related to channels. At least some of
 	/// these features are likely required for peers to talk to us.
 	pub fn known_channel_features() -> InitFeatures {
-		let mut features = Self::known().clear_gossip_queries();
-		features.clear_initial_routing_sync();
-		features
+		Self::known()
+			.clear_initial_routing_sync()
+			.clear_gossip_queries()
 	}
 }
 
@@ -781,8 +781,9 @@ impl<T: sealed::GossipQueries> Features<T> {
 
 impl<T: sealed::InitialRoutingSync> Features<T> {
 	// Note that initial_routing_sync is ignored if gossip_queries is set.
-	pub(crate) fn clear_initial_routing_sync(&mut self) {
-		<T as sealed::InitialRoutingSync>::clear_bits(&mut self.flags)
+	pub(crate) fn clear_initial_routing_sync(mut self) -> Self {
+		<T as sealed::InitialRoutingSync>::clear_bits(&mut self.flags);
+		self
 	}
 }
 
@@ -921,7 +922,7 @@ mod tests {
 
 		let mut init_features = InitFeatures::known();
 		assert!(init_features.initial_routing_sync());
-		init_features.clear_initial_routing_sync();
+		init_features = init_features.clear_initial_routing_sync();
 		assert!(!init_features.initial_routing_sync());
 	}
 
