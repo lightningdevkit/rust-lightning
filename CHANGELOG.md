@@ -1,4 +1,4 @@
-# 0.0.110 - 2022-07-26
+# 0.0.110 - 2022-07-26 - "Routing, With a Vengeance"
 
 ## API Updates
  * `ChannelManager::send_probe` and `Score::probe_{failed,successful}` have
@@ -55,7 +55,7 @@ deletions in 52 commits from 9 authors, in alphabetical order:
  * Wilmer Paulino
  * jurvis
 
-# 0.0.109 - 2022-07-01
+# 0.0.109 - 2022-07-01 - "The Kitchen Sink"
 
 ## API Updates
  * `ChannelManager::update_channel_config` has been added to allow the fields
@@ -128,7 +128,7 @@ deletions in 33 commits from 9 authors, in alphabetical order:
  * Wilmer Paulino
 
 
-# 0.0.108 - 2022-06-10
+# 0.0.108 - 2022-06-10 - "You Wanted It To Build?! Why Didn't You Say So?"
 
 ## Bug Fixes
  * Fixed `lightning-background-processor` build in release mode.
@@ -140,7 +140,7 @@ deletions in 5 commits from 4 authors, in alphabetical order:
  * Max Fang
  * Viktor Tigerström
 
-# 0.0.107 - 2022-06-08
+# 0.0.107 - 2022-06-08 - "BlueWallet's Wishlist"
 
 ## API Updates
  * Channels larger than 16777215 sats (Wumbo!) are now supported and can be
@@ -864,7 +864,7 @@ deletions in 89 commits from 12 authors, in alphabetical order:
  * vss96
 
 
-# 0.0.100 - 2021-08-17
+# 0.0.100 - 2021-08-17 - "Oh, so *that's* what's going on inside the box"
 
 ## API Updates
  * The `lightning` crate can now be built in no_std mode, making it easy to
@@ -957,7 +957,7 @@ In total, this release features 59 files changed, 5861 insertions, and 2082
 deletions in 95 commits from 6 authors.
 
 
-# 0.0.99 - 2021-07-09
+# 0.0.99 - 2021-07-09 - "It's a Bugz Life"
 
 ## API Updates
 
@@ -1028,7 +1028,7 @@ deletions in 95 commits from 6 authors.
    versions. If you have such a `ChannelManager` available, a simple patch will
    allow it to deserialize. Please file an issue if you need assistance (#973).
 
-# 0.0.98 - 2021-06-11
+# 0.0.98 - 2021-06-11 - "It's ALIVVVVEEEEEEE"
 
 0.0.98 should be considered a release candidate to the first alpha release of
 Rust-Lightning and the broader LDK. It represents several years of work
