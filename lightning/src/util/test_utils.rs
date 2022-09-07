@@ -510,6 +510,12 @@ impl msgs::RoutingMessageHandler for TestRoutingMessageHandler {
 	fn handle_query_short_channel_ids(&self, _their_node_id: &PublicKey, _msg: msgs::QueryShortChannelIds) -> Result<(), msgs::LightningError> {
 		Ok(())
 	}
+
+	fn provided_init_features(&self, _their_init_features: &PublicKey) -> InitFeatures {
+		let mut features = InitFeatures::empty();
+		features.set_gossip_queries_optional();
+		features
+	}
 }
 
 impl events::MessageSendEventsProvider for TestRoutingMessageHandler {

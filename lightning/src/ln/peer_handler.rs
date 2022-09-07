@@ -77,6 +77,9 @@ impl RoutingMessageHandler for IgnoringMessageHandler {
 	fn handle_reply_short_channel_ids_end(&self, _their_node_id: &PublicKey, _msg: msgs::ReplyShortChannelIdsEnd) -> Result<(), LightningError> { Ok(()) }
 	fn handle_query_channel_range(&self, _their_node_id: &PublicKey, _msg: msgs::QueryChannelRange) -> Result<(), LightningError> { Ok(()) }
 	fn handle_query_short_channel_ids(&self, _their_node_id: &PublicKey, _msg: msgs::QueryShortChannelIds) -> Result<(), LightningError> { Ok(()) }
+	fn provided_init_features(&self, _their_node_id: &PublicKey) -> InitFeatures {
+		InitFeatures::empty()
+	}
 }
 impl OnionMessageProvider for IgnoringMessageHandler {
 	fn next_onion_message_for_peer(&self, _peer_node_id: PublicKey) -> Option<msgs::OnionMessage> { None }
@@ -1053,7 +1056,8 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 
 								peer.their_node_id = Some(their_node_id);
 								insert_node_id!();
-								let features = self.message_handler.chan_handler.provided_init_features(&their_node_id);
+								let features = self.message_handler.chan_handler.provided_init_features(&their_node_id)
+									.or(self.message_handler.route_handler.provided_init_features(&their_node_id));
 								let resp = msgs::Init { features, remote_network_address: filter_addresses(peer.their_net_address.clone()) };
 								self.enqueue_message(peer, &resp);
 								peer.awaiting_pong_timer_tick_intervals = 0;
@@ -1065,7 +1069,8 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 								peer.pending_read_is_header = true;
 								peer.their_node_id = Some(their_node_id);
 								insert_node_id!();
-								let features = self.message_handler.chan_handler.provided_init_features(&their_node_id);
+								let features = self.message_handler.chan_handler.provided_init_features(&their_node_id)
+									.or(self.message_handler.route_handler.provided_init_features(&their_node_id));
 								let resp = msgs::Init { features, remote_network_address: filter_addresses(peer.their_net_address.clone()) };
 								self.enqueue_message(peer, &resp);
 								peer.awaiting_pong_timer_tick_intervals = 0;
