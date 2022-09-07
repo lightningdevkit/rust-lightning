@@ -1,0 +1,2 @@
+`broadcast_node_announcement` has been moved to `PeerManager` from `ChannelManager`.
+`PeerManager::new`'s new `current_time` argument must be set to a UNIX timestamp, not a persistent counter, for any existing nodes that upgrade.

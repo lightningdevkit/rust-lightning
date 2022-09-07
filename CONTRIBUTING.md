@@ -100,6 +100,10 @@ comment suggesting that you're working on it. If someone is already assigned,
 don't hesitate to ask if the assigned party or previous commenters are still
 working on it if it has been awhile.
 
+Any changes that have nontrivial backwards compatibility considerations should
+have an entry added in the `pending_changelog` folder which includes the
+CHANGELOG entries that should be added in the next release.
+
 Peer review
 -----------
 
