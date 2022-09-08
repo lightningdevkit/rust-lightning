@@ -28,8 +28,8 @@ use std::io::Cursor;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 
-/// FilesystemPersister persists channel data on disk, where each channel's
-/// data is stored in a file named after its funding outpoint.
+/// `FilesystemPersister` persists a given `Writeable` object on disk. In the case of channel data,
+/// it is stored in a file named after its funding outpoint.
 ///
 /// Warning: this module does the best it can with calls to persist data, but it
 /// can only guarantee that the data is passed to the drive. It is up to the
@@ -39,23 +39,22 @@ use std::path::{Path, PathBuf};
 /// persistent.
 /// Corollary: especially when dealing with larger amounts of money, it is best
 /// practice to have multiple channel data backups and not rely only on one
-/// FilesystemPersister.
+/// `FilesystemPersister`.
 pub struct FilesystemPersister {
-	path_to_channel_data: String,
+	path_to_data: String,
 }
 
 impl FilesystemPersister {
-	/// Initialize a new FilesystemPersister and set the path to the individual channels'
-	/// files.
-	pub fn new(path_to_channel_data: String) -> Self {
+	/// Initialize a new FilesystemPersister and set the parent path of the individual files.
+	pub fn new(path_to_data: String) -> Self {
 		return Self {
-			path_to_channel_data,
+			path_to_data,
 		}
 	}
 
 	/// Get the directory which was provided when this persister was initialized.
 	pub fn get_data_dir(&self) -> String {
-		self.path_to_channel_data.clone()
+		self.path_to_data.clone()
 	}
 
 	/// Read `ChannelMonitor`s from disk.
@@ -64,7 +63,7 @@ impl FilesystemPersister {
 	) -> Result<Vec<(BlockHash, ChannelMonitor<Signer>)>, std::io::Error>
 		where K::Target: KeysInterface<Signer=Signer> + Sized,
 	{
-		let mut path = PathBuf::from(&self.path_to_channel_data);
+		let mut path = PathBuf::from(&self.path_to_data);
 		path.push("monitors");
 		if !Path::new(&path).exists() {
 			return Ok(Vec::new());
@@ -124,13 +123,13 @@ impl FilesystemPersister {
 
 impl KVStorePersister for FilesystemPersister {
 	fn persist<W: Writeable>(&self, key: &str, object: &W) -> std::io::Result<()> {
-		let mut dest_file = PathBuf::from(self.path_to_channel_data.clone());
+		let mut dest_file = PathBuf::from(self.path_to_data.clone());
 		dest_file.push(key);
 		util::write_to_file(dest_file, object)
 	}
 
 	fn unpersist(&self, key: &str) -> std::io::Result<bool> {
-		let mut dest_file = PathBuf::from(self.path_to_channel_data.clone());
+		let mut dest_file = PathBuf::from(self.path_to_data.clone());
 		dest_file.push(key);
 		util::delete_file(dest_file)
 	}
@@ -164,7 +163,7 @@ mod tests {
 		fn drop(&mut self) {
 			// We test for invalid directory names, so it's OK if directory removal
 			// fails.
-			match fs::remove_dir_all(&self.path_to_channel_data) {
+			match fs::remove_dir_all(&self.path_to_data) {
 				Err(e) => println!("Failed to remove test persister directory: {}", e),
 				_ => {}
 			}
@@ -248,7 +247,7 @@ mod tests {
 	#[test]
 	fn test_readonly_dir_perm_failure() {
 		let persister = FilesystemPersister::new("test_readonly_dir_perm_failure".to_string());
-		fs::create_dir_all(&persister.path_to_channel_data).unwrap();
+		fs::create_dir_all(&persister.path_to_data).unwrap();
 
 		// Set up a dummy channel and force close. This will produce a monitor
 		// that we can then use to test persistence.
@@ -266,7 +265,7 @@ mod tests {
 		// Set the persister's directory to read-only, which should result in
 		// returning a permanent failure when we then attempt to persist a
 		// channel update.
-		let path = &persister.path_to_channel_data;
+		let path = &persister.path_to_data;
 		let mut perms = fs::metadata(path).unwrap().permissions();
 		perms.set_readonly(true);
 		fs::set_permissions(path, perms).unwrap();
