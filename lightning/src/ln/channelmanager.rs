@@ -796,9 +796,9 @@ pub struct ChannelManager<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, 
 	/// channel with the `channel_id` in our other maps.
 	///
 	/// Locked *after* `channel_state`.
-	#[cfg(any(test, feature = "_test_utils"))]
+	#[cfg(test)]
 	pub(super) short_to_chan_info: FairRwLock<HashMap<u64, (PublicKey, [u8; 32])>>,
-	#[cfg(not(any(test, feature = "_test_utils")))]
+	#[cfg(not(test))]
 	short_to_chan_info: FairRwLock<HashMap<u64, (PublicKey, [u8; 32])>>,
 
 	our_network_key: SecretKey,
