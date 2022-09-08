@@ -1310,10 +1310,7 @@ macro_rules! handle_error {
 macro_rules! update_maps_on_chan_removal {
 	($self: expr, $channel: expr) => {
 		{
-			let mut id_to_peer = $self.id_to_peer.lock().unwrap();
-			id_to_peer.remove(&$channel.channel_id());
-		}
-		{
+			$self.id_to_peer.lock().unwrap().remove(&$channel.channel_id());
 			let mut short_to_chan_info = $self.short_to_chan_info.write().unwrap();
 			if let Some(short_id) = $channel.get_short_channel_id() {
 				short_to_chan_info.remove(&short_id);
