@@ -1869,9 +1869,10 @@ impl ReadOnlyNetworkGraph<'_> {
 #[cfg(test)]
 mod tests {
 	use chain;
+	use ln::channelmanager;
 	use ln::chan_utils::make_funding_redeemscript;
 	use ln::PaymentHash;
-	use ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
+	use ln::features::InitFeatures;
 	use routing::gossip::{P2PGossipSync, NetworkGraph, NetworkUpdate, NodeAlias, MAX_EXCESS_BYTES_FOR_RELAY, NodeId, RoutingFees, ChannelUpdateInfo, ChannelInfo, NodeAnnouncementInfo, NodeInfo};
 	use ln::msgs::{RoutingMessageHandler, UnsignedNodeAnnouncement, NodeAnnouncement,
 		UnsignedChannelAnnouncement, ChannelAnnouncement, UnsignedChannelUpdate, ChannelUpdate,
@@ -1934,7 +1935,7 @@ mod tests {
 	fn get_signed_node_announcement<F: Fn(&mut UnsignedNodeAnnouncement)>(f: F, node_key: &SecretKey, secp_ctx: &Secp256k1<secp256k1::All>) -> NodeAnnouncement {
 		let node_id = PublicKey::from_secret_key(&secp_ctx, node_key);
 		let mut unsigned_announcement = UnsignedNodeAnnouncement {
-			features: NodeFeatures::known(),
+			features: channelmanager::provided_node_features(),
 			timestamp: 100,
 			node_id: node_id,
 			rgb: [0; 3],
@@ -1958,7 +1959,7 @@ mod tests {
 		let node_2_btckey = &SecretKey::from_slice(&[39; 32]).unwrap();
 
 		let mut unsigned_announcement = UnsignedChannelAnnouncement {
-			features: ChannelFeatures::known(),
+			features: channelmanager::provided_channel_features(),
 			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
 			short_channel_id: 0,
 			node_id_1,
@@ -2616,7 +2617,7 @@ mod tests {
 
 		// It should ignore if gossip_queries feature is not enabled
 		{
-			let init_msg = Init { features: InitFeatures::known().clear_gossip_queries(), remote_network_address: None };
+			let init_msg = Init { features: InitFeatures::empty(), remote_network_address: None };
 			gossip_sync.peer_connected(&node_id_1, &init_msg).unwrap();
 			let events = gossip_sync.get_and_clear_pending_msg_events();
 			assert_eq!(events.len(), 0);
@@ -2624,7 +2625,9 @@ mod tests {
 
 		// It should send a gossip_timestamp_filter with the correct information
 		{
-			let init_msg = Init { features: InitFeatures::known(), remote_network_address: None };
+			let mut features = InitFeatures::empty();
+			features.set_gossip_queries_optional();
+			let init_msg = Init { features, remote_network_address: None };
 			gossip_sync.peer_connected(&node_id_1, &init_msg).unwrap();
 			let events = gossip_sync.get_and_clear_pending_msg_events();
 			assert_eq!(events.len(), 1);
@@ -3014,7 +3017,7 @@ mod tests {
 		// 2. Test encoding/decoding of ChannelInfo
 		// Check we can encode/decode ChannelInfo without ChannelUpdateInfo fields present.
 		let chan_info_none_updates = ChannelInfo {
-			features: ChannelFeatures::known(),
+			features: channelmanager::provided_channel_features(),
 			node_one: NodeId::from_pubkey(&nodes[0].node.get_our_node_id()),
 			one_to_two: None,
 			node_two: NodeId::from_pubkey(&nodes[1].node.get_our_node_id()),
@@ -3032,7 +3035,7 @@ mod tests {
 
 		// Check we can encode/decode ChannelInfo with ChannelUpdateInfo fields present.
 		let chan_info_some_updates = ChannelInfo {
-			features: ChannelFeatures::known(),
+			features: channelmanager::provided_channel_features(),
 			node_one: NodeId::from_pubkey(&nodes[0].node.get_our_node_id()),
 			one_to_two: Some(chan_update_info.clone()),
 			node_two: NodeId::from_pubkey(&nodes[1].node.get_our_node_id()),
@@ -3074,7 +3077,7 @@ mod tests {
 		// 1. Check we can read a valid NodeAnnouncementInfo and fail on an invalid one
 		let valid_netaddr = ::ln::msgs::NetAddress::Hostname { hostname: ::util::ser::Hostname::try_from("A".to_string()).unwrap(), port: 1234 };
 		let valid_node_ann_info = NodeAnnouncementInfo {
-			features: NodeFeatures::known(),
+			features: channelmanager::provided_node_features(),
 			last_update: 0,
 			rgb: [0u8; 3],
 			alias: NodeAlias([0u8; 32]),

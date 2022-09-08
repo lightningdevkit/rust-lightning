@@ -1281,7 +1281,7 @@ mod tests {
 	use util::time::Time;
 	use util::time::tests::SinceEpoch;
 
-	use ln::features::{ChannelFeatures, NodeFeatures};
+	use ln::channelmanager;
 	use ln::msgs::{ChannelAnnouncement, ChannelUpdate, UnsignedChannelAnnouncement, UnsignedChannelUpdate};
 	use routing::gossip::{EffectiveCapacity, NetworkGraph, NodeId};
 	use routing::router::RouteHop;
@@ -1372,7 +1372,7 @@ mod tests {
 		let node_2_secret = &SecretKey::from_slice(&[40; 32]).unwrap();
 		let secp_ctx = Secp256k1::new();
 		let unsigned_announcement = UnsignedChannelAnnouncement {
-			features: ChannelFeatures::known(),
+			features: channelmanager::provided_channel_features(),
 			chain_hash: genesis_hash,
 			short_channel_id,
 			node_id_1: PublicKey::from_secret_key(&secp_ctx, &node_1_key),
@@ -1426,25 +1426,25 @@ mod tests {
 		vec![
 			RouteHop {
 				pubkey: source_pubkey(),
-				node_features: NodeFeatures::known(),
+				node_features: channelmanager::provided_node_features(),
 				short_channel_id: 41,
-				channel_features: ChannelFeatures::known(),
+				channel_features: channelmanager::provided_channel_features(),
 				fee_msat: 1,
 				cltv_expiry_delta: 18,
 			},
 			RouteHop {
 				pubkey: target_pubkey(),
-				node_features: NodeFeatures::known(),
+				node_features: channelmanager::provided_node_features(),
 				short_channel_id: 42,
-				channel_features: ChannelFeatures::known(),
+				channel_features: channelmanager::provided_channel_features(),
 				fee_msat: 2,
 				cltv_expiry_delta: 18,
 			},
 			RouteHop {
 				pubkey: recipient_pubkey(),
-				node_features: NodeFeatures::known(),
+				node_features: channelmanager::provided_node_features(),
 				short_channel_id: 43,
-				channel_features: ChannelFeatures::known(),
+				channel_features: channelmanager::provided_channel_features(),
 				fee_msat: amount_msat,
 				cltv_expiry_delta: 18,
 			},
