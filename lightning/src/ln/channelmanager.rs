@@ -2289,8 +2289,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			// short_channel_id is non-0 in any ::Forward.
 			if let &PendingHTLCRouting::Forward { ref short_channel_id, .. } = routing {
 				if let Some((err, code, chan_update)) = loop {
-					let mut channel_state = self.channel_state.lock().unwrap();
 					let id_option = self.short_to_chan_info.read().unwrap().get(&short_channel_id).cloned();
+					let mut channel_state = self.channel_state.lock().unwrap();
 					let forwarding_id_opt = match id_option {
 						None => { // unknown_next_peer
 							// Note that this is likely a timing oracle for detecting whether an scid is a
@@ -2477,13 +2477,12 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 
 		let err: Result<(), _> = loop {
-			let mut channel_lock = self.channel_state.lock().unwrap();
-
 			let id = match self.short_to_chan_info.read().unwrap().get(&path.first().unwrap().short_channel_id) {
 				None => return Err(APIError::ChannelUnavailable{err: "No channel available with first hop!".to_owned()}),
 				Some((_cp_id, chan_id)) => chan_id.clone(),
 			};
 
+			let mut channel_lock = self.channel_state.lock().unwrap();
 			let mut pending_outbounds = self.pending_outbound_payments.lock().unwrap();
 			let payment_entry = pending_outbounds.entry(payment_id);
 			if let hash_map::Entry::Occupied(payment) = &payment_entry {
