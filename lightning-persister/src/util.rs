@@ -85,7 +85,10 @@ pub(crate) fn delete_file(dest_file: PathBuf) -> std::io::Result<bool> {
 	fs::remove_file(&dest_file)?;
 	let parent_directory = dest_file.parent().unwrap();
 	let dir_file = fs::OpenOptions::new().read(true).open(parent_directory)?;
-	unsafe { libc::fsync(dir_file.as_raw_fd()); }
+	#[cfg(not(target_os = "windows"))]
+	{
+		unsafe { libc::fsync(dir_file.as_raw_fd()); }
+	}
 
 	if dest_file.is_file() {
 		return Err(std::io::Error::new(std::io::ErrorKind::Other, "Unpersisting key failed"));
