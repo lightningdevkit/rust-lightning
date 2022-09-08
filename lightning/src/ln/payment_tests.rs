@@ -894,7 +894,7 @@ fn do_test_dup_htlc_onchain_fails_on_reload(persist_manager_post_event: bool, co
 		nodes[0].chain_monitor.chain_monitor.channel_monitor_updated(funding_txo, update).unwrap();
 	}
 	if payment_timeout {
-		expect_payment_failed!(nodes[0], payment_hash, true);
+		expect_payment_failed!(nodes[0], payment_hash, false);
 	} else {
 		expect_payment_sent!(nodes[0], payment_preimage);
 	}
@@ -938,7 +938,7 @@ fn do_test_dup_htlc_onchain_fails_on_reload(persist_manager_post_event: bool, co
 	if persist_manager_post_event {
 		assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
 	} else if payment_timeout {
-		expect_payment_failed!(nodes[0], payment_hash, true);
+		expect_payment_failed!(nodes[0], payment_hash, false);
 	} else {
 		expect_payment_sent!(nodes[0], payment_preimage);
 	}

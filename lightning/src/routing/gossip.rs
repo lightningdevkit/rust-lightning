@@ -2279,7 +2279,7 @@ mod tests {
 			network_graph.handle_event(&Event::PaymentPathFailed {
 				payment_id: None,
 				payment_hash: PaymentHash([0; 32]),
-				rejected_by_dest: false,
+				payment_failed_permanently: false,
 				all_paths_failed: true,
 				path: vec![],
 				network_update: Some(NetworkUpdate::ChannelUpdateMessage {
@@ -2306,7 +2306,7 @@ mod tests {
 			network_graph.handle_event(&Event::PaymentPathFailed {
 				payment_id: None,
 				payment_hash: PaymentHash([0; 32]),
-				rejected_by_dest: false,
+				payment_failed_permanently: false,
 				all_paths_failed: true,
 				path: vec![],
 				network_update: Some(NetworkUpdate::ChannelFailure {
@@ -2331,7 +2331,7 @@ mod tests {
 		network_graph.handle_event(&Event::PaymentPathFailed {
 			payment_id: None,
 			payment_hash: PaymentHash([0; 32]),
-			rejected_by_dest: false,
+			payment_failed_permanently: false,
 			all_paths_failed: true,
 			path: vec![],
 			network_update: Some(NetworkUpdate::ChannelFailure {

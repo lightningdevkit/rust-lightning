@@ -167,8 +167,8 @@ fn run_onion_failure_test_with_fail_intercept<F1,F2,F3>(_name: &str, test_case: 
 
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
-	if let &Event::PaymentPathFailed { ref rejected_by_dest, ref network_update, ref all_paths_failed, ref short_channel_id, ref error_code, .. } = &events[0] {
-		assert_eq!(*rejected_by_dest, !expected_retryable);
+	if let &Event::PaymentPathFailed { ref payment_failed_permanently, ref network_update, ref all_paths_failed, ref short_channel_id, ref error_code, .. } = &events[0] {
+		assert_eq!(*payment_failed_permanently, !expected_retryable);
 		assert_eq!(*all_paths_failed, true);
 		assert_eq!(*error_code, expected_error_code);
 		if expected_channel_update.is_some() {

@@ -256,7 +256,7 @@ fn test_counterparty_revoked_reorg() {
 
 	// Connect blocks to confirm the unrevoked commitment transaction
 	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 2);
-	expect_payment_failed!(nodes[1], payment_hash_4, true);
+	expect_payment_failed!(nodes[1], payment_hash_4, false);
 }
 
 fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool, use_funding_unconfirmed: bool, connect_style: ConnectStyle) {

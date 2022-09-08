@@ -3844,7 +3844,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 							pending_events.push(events::Event::PaymentPathFailed {
 								payment_id: Some(payment_id),
 								payment_hash,
-								rejected_by_dest: false,
+								payment_failed_permanently: false,
 								network_update: None,
 								all_paths_failed: payment.get().remaining_parts() == 0,
 								path: path.clone(),
@@ -3959,7 +3959,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 							events::Event::PaymentPathFailed {
 								payment_id: Some(payment_id),
 								payment_hash: payment_hash.clone(),
-								rejected_by_dest: !payment_retryable,
+								payment_failed_permanently: !payment_retryable,
 								network_update,
 								all_paths_failed,
 								path: path.clone(),
@@ -3990,7 +3990,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 						events::Event::PaymentPathFailed {
 							payment_id: Some(payment_id),
 							payment_hash: payment_hash.clone(),
-							rejected_by_dest: path.len() == 1,
+							payment_failed_permanently: false,
 							network_update: None,
 							all_paths_failed,
 							path: path.clone(),

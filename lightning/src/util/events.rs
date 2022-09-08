@@ -376,7 +376,7 @@ pub enum Event {
 		/// Indicates the payment was rejected for some reason by the recipient. This implies that
 		/// the payment has failed, not just the route in question. If this is not set, you may
 		/// retry the payment via a different route.
-		rejected_by_dest: bool,
+		payment_failed_permanently: bool,
 		/// Any failure information conveyed via the Onion return packet by a node along the failed
 		/// payment route.
 		///
@@ -643,7 +643,7 @@ impl Writeable for Event {
 				});
 			},
 			&Event::PaymentPathFailed {
-				ref payment_id, ref payment_hash, ref rejected_by_dest, ref network_update,
+				ref payment_id, ref payment_hash, ref payment_failed_permanently, ref network_update,
 				ref all_paths_failed, ref path, ref short_channel_id, ref retry,
 				#[cfg(test)]
 				ref error_code,
@@ -658,7 +658,7 @@ impl Writeable for Event {
 				write_tlv_fields!(writer, {
 					(0, payment_hash, required),
 					(1, network_update, option),
-					(2, rejected_by_dest, required),
+					(2, payment_failed_permanently, required),
 					(3, all_paths_failed, required),
 					(5, path, vec_type),
 					(7, short_channel_id, option),
@@ -827,7 +827,7 @@ impl MaybeReadable for Event {
 					#[cfg(test)]
 					let error_data = Readable::read(reader)?;
 					let mut payment_hash = PaymentHash([0; 32]);
-					let mut rejected_by_dest = false;
+					let mut payment_failed_permanently = false;
 					let mut network_update = None;
 					let mut all_paths_failed = Some(true);
 					let mut path: Option<Vec<RouteHop>> = Some(vec![]);
@@ -837,7 +837,7 @@ impl MaybeReadable for Event {
 					read_tlv_fields!(reader, {
 						(0, payment_hash, required),
 						(1, network_update, ignorable),
-						(2, rejected_by_dest, required),
+						(2, payment_failed_permanently, required),
 						(3, all_paths_failed, option),
 						(5, path, vec_type),
 						(7, short_channel_id, option),
@@ -847,7 +847,7 @@ impl MaybeReadable for Event {
 					Ok(Some(Event::PaymentPathFailed {
 						payment_id,
 						payment_hash,
-						rejected_by_dest,
+						payment_failed_permanently,
 						network_update,
 						all_paths_failed: all_paths_failed.unwrap(),
 						path: path.unwrap(),

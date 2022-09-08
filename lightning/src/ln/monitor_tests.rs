@@ -141,7 +141,7 @@ fn revoked_output_htlc_resolution_timing() {
 	assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
 
 	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
-	expect_payment_failed!(nodes[1], payment_hash_1, true);
+	expect_payment_failed!(nodes[1], payment_hash_1, false);
 }
 
 #[test]
@@ -429,7 +429,7 @@ fn do_test_claim_value_force_close(prev_commitment_tx: bool) {
 		sorted_vec(nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
 
 	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
-	expect_payment_failed!(nodes[0], dust_payment_hash, true);
+	expect_payment_failed!(nodes[0], dust_payment_hash, false);
 	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
 
 	// After ANTI_REORG_DELAY, A will consider its balance fully spendable and generate a
@@ -509,7 +509,7 @@ fn do_test_claim_value_force_close(prev_commitment_tx: bool) {
 	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
 	assert_eq!(Vec::<Balance>::new(),
 		nodes[0].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances());
-	expect_payment_failed!(nodes[0], timeout_payment_hash, true);
+	expect_payment_failed!(nodes[0], timeout_payment_hash, false);
 
 	test_spendable_output(&nodes[0], &a_broadcast_txn[2]);
 
@@ -724,7 +724,7 @@ fn test_balances_on_local_commitment_htlcs() {
 	// panicked as described in the test introduction. This will remove the "maybe claimable"
 	// spendable output as nodes[1] has fully claimed the second HTLC.
 	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
-	expect_payment_failed!(nodes[0], payment_hash, true);
+	expect_payment_failed!(nodes[0], payment_hash, false);
 
 	assert_eq!(sorted_vec(vec![Balance::ClaimableAwaitingConfirmations {
 			claimable_amount_satoshis: 1_000_000 - 10_000 - 20_000 - chan_feerate *
@@ -923,7 +923,7 @@ fn test_no_preimage_inbound_htlc_balances() {
 	// Once as_htlc_timeout_claim[0] reaches ANTI_REORG_DELAY confirmations, we should get a
 	// payment failure event.
 	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 2);
-	expect_payment_failed!(nodes[0], to_b_failed_payment_hash, true);
+	expect_payment_failed!(nodes[0], to_b_failed_payment_hash, false);
 
 	connect_blocks(&nodes[0], 1);
 	assert_eq!(sorted_vec(vec![Balance::ClaimableAwaitingConfirmations {
@@ -972,7 +972,7 @@ fn test_no_preimage_inbound_htlc_balances() {
 		sorted_vec(nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
 
 	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 2);
-	expect_payment_failed!(nodes[1], to_a_failed_payment_hash, true);
+	expect_payment_failed!(nodes[1], to_a_failed_payment_hash, false);
 
 	assert_eq!(vec![Balance::MaybePreimageClaimableHTLC {
 			claimable_amount_satoshis: 10_000,
@@ -1216,21 +1216,21 @@ fn do_test_revoked_counterparty_commitment_balances(confirm_htlc_spend_first: bo
 
 	let mut payment_failed_events = nodes[1].node.get_and_clear_pending_events();
 	expect_payment_failed_conditions_event(&nodes[1], payment_failed_events.pop().unwrap(),
-		dust_payment_hash, true, PaymentFailedConditions::new());
+		dust_payment_hash, false, PaymentFailedConditions::new());
 	expect_payment_failed_conditions_event(&nodes[1], payment_failed_events.pop().unwrap(),
-		missing_htlc_payment_hash, true, PaymentFailedConditions::new());
+		missing_htlc_payment_hash, false, PaymentFailedConditions::new());
 	assert!(payment_failed_events.is_empty());
 
 	connect_blocks(&nodes[1], 1);
 	test_spendable_output(&nodes[1], &claim_txn[if confirm_htlc_spend_first { 2 } else { 3 }]);
 	connect_blocks(&nodes[1], 1);
 	test_spendable_output(&nodes[1], &claim_txn[if confirm_htlc_spend_first { 3 } else { 2 }]);
-	expect_payment_failed!(nodes[1], live_payment_hash, true);
+	expect_payment_failed!(nodes[1], live_payment_hash, false);
 	connect_blocks(&nodes[1], 1);
 	test_spendable_output(&nodes[1], &claim_txn[0]);
 	connect_blocks(&nodes[1], 1);
 	test_spendable_output(&nodes[1], &claim_txn[1]);
-	expect_payment_failed!(nodes[1], timeout_payment_hash, true);
+	expect_payment_failed!(nodes[1], timeout_payment_hash, false);
 	assert_eq!(nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances(), Vec::new());
 }
 
@@ -1626,7 +1626,7 @@ fn test_revoked_counterparty_aggregated_claims() {
 	assert!(nodes[1].node.get_and_clear_pending_events().is_empty()); // We shouldn't fail the payment until we spend the output
 
 	connect_blocks(&nodes[1], 5);
-	expect_payment_failed!(nodes[1], revoked_payment_hash, true);
+	expect_payment_failed!(nodes[1], revoked_payment_hash, false);
 	test_spendable_output(&nodes[1], &claim_txn_2[0]);
 	assert!(nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances().is_empty());
 }
