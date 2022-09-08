@@ -717,6 +717,14 @@ mod tests {
 
 			self.filesystem_persister.persist(key, object)
 		}
+
+		fn unpersist(&self, key: &str) -> std::io::Result<bool> {
+			if key == "manager" || key == "network_graph" || key == "scorer" {
+				return Err(std::io::Error::new(std::io::ErrorKind::Other, "Refusing to unpersist this key"));
+			}
+
+			self.filesystem_persister.unpersist(key)
+		}
 	}
 
 	fn get_full_filepath(filepath: String, filename: String) -> String {

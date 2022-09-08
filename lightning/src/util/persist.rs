@@ -21,8 +21,12 @@ use super::{logger::Logger, ser::Writeable};
 /// and [`Persist`] traits.  It uses "manager", "network_graph",
 /// and "monitors/{funding_txo_id}_{funding_txo_index}" for keys.
 pub trait KVStorePersister {
-	/// Persist the given writeable using the provided key
+	/// Persist the given writeable using the provided key.
 	fn persist<W: Writeable>(&self, key: &str, object: &W) -> io::Result<()>;
+
+	/// Unpersist (i.e., remove) the writeable previously persisted under the provided key.
+	/// Returns `true` if the key was present, and `false` otherwise.
+	fn unpersist(&self, key: &str) -> io::Result<bool>;
 }
 
 /// Trait that handles persisting a [`ChannelManager`], [`NetworkGraph`], and [`WriteableScore`] to disk.

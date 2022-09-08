@@ -128,6 +128,12 @@ impl KVStorePersister for FilesystemPersister {
 		dest_file.push(key);
 		util::write_to_file(dest_file, object)
 	}
+
+	fn unpersist(&self, key: &str) -> std::io::Result<bool> {
+		let mut dest_file = PathBuf::from(self.path_to_channel_data.clone());
+		dest_file.push(key);
+		util::delete_file(dest_file)
+	}
 }
 
 #[cfg(test)]
