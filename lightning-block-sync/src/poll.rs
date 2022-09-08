@@ -1,8 +1,7 @@
 //! Adapters that make one or more [`BlockSource`]s simpler to poll for new chain tip transitions.
 
-use crate::{AsyncBlockSourceResult, BlockHeaderData, BlockSource, BlockSourceError, BlockSourceResult};
+use crate::{AsyncBlockSourceResult, BlockData, BlockHeaderData, BlockSource, BlockSourceError, BlockSourceResult};
 
-use bitcoin::blockdata::block::Block;
 use bitcoin::hash_types::BlockHash;
 use bitcoin::network::constants::Network;
 
@@ -71,24 +70,31 @@ impl Validate for BlockHeaderData {
 	}
 }
 
-impl Validate for Block {
+impl Validate for BlockData {
 	type T = ValidatedBlock;
 
 	fn validate(self, block_hash: BlockHash) -> BlockSourceResult<Self::T> {
-		let pow_valid_block_hash = self.header
-			.validate_pow(&self.header.target())
+		let header = match &self {
+			BlockData::FullBlock(block) => &block.header,
+			BlockData::HeaderOnly(header) => header,
+		};
+
+		let pow_valid_block_hash = header
+			.validate_pow(&header.target())
 			.or_else(|e| Err(BlockSourceError::persistent(e)))?;
 
 		if pow_valid_block_hash != block_hash {
 			return Err(BlockSourceError::persistent("invalid block hash"));
 		}
 
-		if !self.check_merkle_root() {
-			return Err(BlockSourceError::persistent("invalid merkle root"));
-		}
+		if let BlockData::FullBlock(block) = &self {
+			if !block.check_merkle_root() {
+				return Err(BlockSourceError::persistent("invalid merkle root"));
+			}
 
-		if !self.check_witness_commitment() {
-			return Err(BlockSourceError::persistent("invalid witness commitment"));
+			if !block.check_witness_commitment() {
+				return Err(BlockSourceError::persistent("invalid witness commitment"));
+			}
 		}
 
 		Ok(ValidatedBlock { block_hash, inner: self })
@@ -145,11 +151,11 @@ impl ValidatedBlockHeader {
 /// A block with validated data against its transaction list and corresponding block hash.
 pub struct ValidatedBlock {
 	pub(crate) block_hash: BlockHash,
-	inner: Block,
+	inner: BlockData,
 }
 
 impl std::ops::Deref for ValidatedBlock {
-	type Target = Block;
+	type Target = BlockData;
 
 	fn deref(&self) -> &Self::Target {
 		&self.inner
@@ -161,7 +167,7 @@ mod sealed {
 	pub trait Validate {}
 
 	impl Validate for crate::BlockHeaderData {}
-	impl Validate for bitcoin::blockdata::block::Block {}
+	impl Validate for crate::BlockData {}
 }
 
 /// The canonical `Poll` implementation used for a single `BlockSource`.

@@ -1,4 +1,4 @@
-use crate::{AsyncBlockSourceResult, BlockHeaderData, BlockSource, BlockSourceError, UnboundedCache};
+use crate::{AsyncBlockSourceResult, BlockData, BlockHeaderData, BlockSource, BlockSourceError, UnboundedCache};
 use crate::poll::{Validate, ValidatedBlockHeader};
 
 use bitcoin::blockdata::block::{Block, BlockHeader};
@@ -20,6 +20,7 @@ pub struct Blockchain {
 	without_blocks: Option<std::ops::RangeFrom<usize>>,
 	without_headers: bool,
 	malformed_headers: bool,
+	filtered_blocks: bool,
 }
 
 impl Blockchain {
@@ -75,6 +76,10 @@ impl Blockchain {
 
 	pub fn malformed_headers(self) -> Self {
 		Self { malformed_headers: true, ..self }
+	}
+
+	pub fn filtered_blocks(self) -> Self {
+		Self { filtered_blocks: true, ..self }
 	}
 
 	pub fn fork_at_height(&self, height: usize) -> Self {
@@ -146,7 +151,7 @@ impl BlockSource for Blockchain {
 		})
 	}
 
-	fn get_block<'a>(&'a self, header_hash: &'a BlockHash) -> AsyncBlockSourceResult<'a, Block> {
+	fn get_block<'a>(&'a self, header_hash: &'a BlockHash) -> AsyncBlockSourceResult<'a, BlockData> {
 		Box::pin(async move {
 			for (height, block) in self.blocks.iter().enumerate() {
 				if block.header.block_hash() == *header_hash {
@@ -156,7 +161,11 @@ impl BlockSource for Blockchain {
 						}
 					}
 
-					return Ok(block.clone());
+					if self.filtered_blocks {
+						return Ok(BlockData::HeaderOnly(block.header.clone()));
+					} else {
+						return Ok(BlockData::FullBlock(block.clone()));
+					}
 				}
 			}
 			Err(BlockSourceError::transient("block not found"))
@@ -185,6 +194,7 @@ impl chain::Listen for NullChainListener {
 
 pub struct MockChainListener {
 	expected_blocks_connected: RefCell<VecDeque<BlockHeaderData>>,
+	expected_filtered_blocks_connected: RefCell<VecDeque<BlockHeaderData>>,
 	expected_blocks_disconnected: RefCell<VecDeque<BlockHeaderData>>,
 }
 
@@ -192,12 +202,18 @@ impl MockChainListener {
 	pub fn new() -> Self {
 		Self {
 			expected_blocks_connected: RefCell::new(VecDeque::new()),
+			expected_filtered_blocks_connected: RefCell::new(VecDeque::new()),
 			expected_blocks_disconnected: RefCell::new(VecDeque::new()),
 		}
 	}
 
 	pub fn expect_block_connected(self, block: BlockHeaderData) -> Self {
 		self.expected_blocks_connected.borrow_mut().push_back(block);
+		self
+	}
+
+	pub fn expect_filtered_block_connected(self, block: BlockHeaderData) -> Self {
+		self.expected_filtered_blocks_connected.borrow_mut().push_back(block);
 		self
 	}
 
@@ -208,10 +224,22 @@ impl MockChainListener {
 }
 
 impl chain::Listen for MockChainListener {
-	fn filtered_block_connected(&self, header: &BlockHeader, _txdata: &chain::transaction::TransactionData, height: u32) {
+	fn block_connected(&self, block: &Block, height: u32) {
 		match self.expected_blocks_connected.borrow_mut().pop_front() {
 			None => {
-				panic!("Unexpected block connected: {:?}", header.block_hash());
+				panic!("Unexpected block connected: {:?}", block.block_hash());
+			},
+			Some(expected_block) => {
+				assert_eq!(block.block_hash(), expected_block.header.block_hash());
+				assert_eq!(height, expected_block.height);
+			},
+		}
+	}
+
+	fn filtered_block_connected(&self, header: &BlockHeader, _txdata: &chain::transaction::TransactionData, height: u32) {
+		match self.expected_filtered_blocks_connected.borrow_mut().pop_front() {
+			None => {
+				panic!("Unexpected filtered block connected: {:?}", header.block_hash());
 			},
 			Some(expected_block) => {
 				assert_eq!(header.block_hash(), expected_block.header.block_hash());
@@ -242,6 +270,11 @@ impl Drop for MockChainListener {
 		let expected_blocks_connected = self.expected_blocks_connected.borrow();
 		if !expected_blocks_connected.is_empty() {
 			panic!("Expected blocks connected: {:?}", expected_blocks_connected);
+		}
+
+		let expected_filtered_blocks_connected = self.expected_filtered_blocks_connected.borrow();
+		if !expected_filtered_blocks_connected.is_empty() {
+			panic!("Expected filtered_blocks connected: {:?}", expected_filtered_blocks_connected);
 		}
 
 		let expected_blocks_disconnected = self.expected_blocks_disconnected.borrow();

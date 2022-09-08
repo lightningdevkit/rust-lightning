@@ -68,7 +68,7 @@ pub trait BlockSource : Sync + Send {
 
 	/// Returns the block for a given hash. A headers-only block source should return a `Transient`
 	/// error.
-	fn get_block<'a>(&'a self, header_hash: &'a BlockHash) -> AsyncBlockSourceResult<'a, Block>;
+	fn get_block<'a>(&'a self, header_hash: &'a BlockHash) -> AsyncBlockSourceResult<'a, BlockData>;
 
 	/// Returns the hash of the best block and, optionally, its height.
 	///
@@ -150,6 +150,18 @@ pub struct BlockHeaderData {
 	/// The total chain work in expected number of double-SHA256 hashes required to build a chain
 	/// of equivalent weight.
 	pub chainwork: Uint256,
+}
+
+/// A block including either all its transactions or only the block header.
+///
+/// [`BlockSource`] may be implemented to either always return full blocks or, in the case of
+/// compact block filters (BIP 157/158), return header-only blocks when no pertinent transactions
+/// match. See [`chain::Filter`] for details on how to notify a source of such transactions.
+pub enum BlockData {
+	/// A block containing all its transactions.
+	FullBlock(Block),
+	/// A block header for when the block does not contain any pertinent transactions.
+	HeaderOnly(BlockHeader),
 }
 
 /// A lightweight client for keeping a listener in sync with the chain, allowing for Simplified
@@ -396,13 +408,22 @@ impl<'a, C: Cache, L: Deref> ChainNotifier<'a, C, L> where L::Target: chain::Lis
 		chain_poller: &mut P,
 	) -> Result<(), (BlockSourceError, Option<ValidatedBlockHeader>)> {
 		for header in connected_blocks.drain(..).rev() {
-			let block = chain_poller
+			let height = header.height;
+			let block_data = chain_poller
 				.fetch_block(&header).await
 				.or_else(|e| Err((e, Some(new_tip))))?;
-			debug_assert_eq!(block.block_hash, header.block_hash);
+			debug_assert_eq!(block_data.block_hash, header.block_hash);
+
+			match block_data.deref() {
+				BlockData::FullBlock(block) => {
+					self.chain_listener.block_connected(&block, height);
+				},
+				BlockData::HeaderOnly(header) => {
+					self.chain_listener.filtered_block_connected(&header, &[], height);
+				},
+			}
 
 			self.header_cache.block_connected(header.block_hash, header);
-			self.chain_listener.block_connected(&block, header.height);
 			new_tip = header;
 		}
 
@@ -707,4 +728,25 @@ mod chain_notifier_tests {
 			Ok(_) => panic!("Expected error"),
 		}
 	}
+
+	#[tokio::test]
+	async fn sync_from_chain_with_filtered_blocks() {
+		let mut chain = Blockchain::default().with_height(3).filtered_blocks();
+
+		let new_tip = chain.tip();
+		let old_tip = chain.at_height(1);
+		let chain_listener = &MockChainListener::new()
+			.expect_filtered_block_connected(*chain.at_height(2))
+			.expect_filtered_block_connected(*new_tip);
+		let mut notifier = ChainNotifier {
+			header_cache: &mut chain.header_cache(0..=1),
+			chain_listener,
+		};
+		let mut poller = poll::ChainPoller::new(&mut chain, Network::Testnet);
+		match notifier.synchronize_listener(new_tip, &old_tip, &mut poller).await {
+			Err((e, _)) => panic!("Unexpected error: {:?}", e),
+			Ok(_) => {},
+		}
+	}
+
 }

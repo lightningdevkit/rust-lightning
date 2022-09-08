@@ -1,10 +1,9 @@
 //! Simple REST client implementation which implements [`BlockSource`] against a Bitcoin Core REST
 //! endpoint.
 
-use crate::{BlockHeaderData, BlockSource, AsyncBlockSourceResult};
+use crate::{BlockData, BlockHeaderData, BlockSource, AsyncBlockSourceResult};
 use crate::http::{BinaryResponse, HttpEndpoint, HttpClient, JsonResponse};
 
-use bitcoin::blockdata::block::Block;
 use bitcoin::hash_types::BlockHash;
 use bitcoin::hashes::hex::ToHex;
 
@@ -45,10 +44,10 @@ impl BlockSource for RestClient {
 		})
 	}
 
-	fn get_block<'a>(&'a self, header_hash: &'a BlockHash) -> AsyncBlockSourceResult<'a, Block> {
+	fn get_block<'a>(&'a self, header_hash: &'a BlockHash) -> AsyncBlockSourceResult<'a, BlockData> {
 		Box::pin(async move {
 			let resource_path = format!("block/{}.bin", header_hash.to_hex());
-			Ok(self.request_resource::<BinaryResponse, _>(&resource_path).await?)
+			Ok(BlockData::FullBlock(self.request_resource::<BinaryResponse, _>(&resource_path).await?))
 		})
 	}
 
