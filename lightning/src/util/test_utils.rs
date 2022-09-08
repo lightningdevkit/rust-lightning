@@ -517,10 +517,7 @@ impl events::MessageSendEventsProvider for TestRoutingMessageHandler {
 
 pub struct TestLogger {
 	level: Level,
-	#[cfg(feature = "std")]
-	id: String,
-	#[cfg(not(feature = "std"))]
-	_id: String,
+	pub(crate) id: String,
 	pub lines: Mutex<HashMap<(String, String), usize>>,
 }
 
@@ -531,10 +528,7 @@ impl TestLogger {
 	pub fn with_id(id: String) -> TestLogger {
 		TestLogger {
 			level: Level::Trace,
-			#[cfg(feature = "std")]
 			id,
-			#[cfg(not(feature = "std"))]
-			_id: id,
 			lines: Mutex::new(HashMap::new())
 		}
 	}
@@ -558,10 +552,10 @@ impl TestLogger {
 		assert_eq!(l, count)
 	}
 
-    /// Search for the number of occurrences of logged lines which
-    /// 1. belong to the specified module and
-    /// 2. match the given regex pattern.
-    /// Assert that the number of occurrences equals the given `count`
+	/// Search for the number of occurrences of logged lines which
+	/// 1. belong to the specified module and
+	/// 2. match the given regex pattern.
+	/// Assert that the number of occurrences equals the given `count`
 	pub fn assert_log_regex(&self, module: String, pattern: regex::Regex, count: usize) {
 		let log_entries = self.lines.lock().unwrap();
 		let l: usize = log_entries.iter().filter(|&(&(ref m, ref l), _c)| {

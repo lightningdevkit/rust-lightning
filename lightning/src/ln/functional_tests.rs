@@ -6264,15 +6264,13 @@ fn test_fail_holding_cell_htlc_upon_free() {
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match &events[0] {
-		&Event::PaymentPathFailed { ref payment_id, ref payment_hash, ref payment_failed_permanently, ref network_update, ref all_paths_failed, ref short_channel_id, ref error_code, ref error_data, .. } => {
+		&Event::PaymentPathFailed { ref payment_id, ref payment_hash, ref payment_failed_permanently, ref network_update, ref all_paths_failed, ref short_channel_id, .. } => {
 			assert_eq!(our_payment_id, *payment_id.as_ref().unwrap());
 			assert_eq!(our_payment_hash.clone(), *payment_hash);
 			assert_eq!(*payment_failed_permanently, false);
 			assert_eq!(*all_paths_failed, true);
 			assert_eq!(*network_update, None);
-			assert_eq!(*short_channel_id, None);
-			assert_eq!(*error_code, None);
-			assert_eq!(*error_data, None);
+			assert_eq!(*short_channel_id, Some(route.paths[0][0].short_channel_id));
 		},
 		_ => panic!("Unexpected event"),
 	}
@@ -6350,15 +6348,13 @@ fn test_free_and_fail_holding_cell_htlcs() {
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match &events[0] {
-		&Event::PaymentPathFailed { ref payment_id, ref payment_hash, ref payment_failed_permanently, ref network_update, ref all_paths_failed, ref short_channel_id, ref error_code, ref error_data, .. } => {
+		&Event::PaymentPathFailed { ref payment_id, ref payment_hash, ref payment_failed_permanently, ref network_update, ref all_paths_failed, ref short_channel_id, .. } => {
 			assert_eq!(payment_id_2, *payment_id.as_ref().unwrap());
 			assert_eq!(payment_hash_2.clone(), *payment_hash);
 			assert_eq!(*payment_failed_permanently, false);
 			assert_eq!(*all_paths_failed, true);
 			assert_eq!(*network_update, None);
-			assert_eq!(*short_channel_id, None);
-			assert_eq!(*error_code, None);
-			assert_eq!(*error_data, None);
+			assert_eq!(*short_channel_id, Some(route_2.paths[0][0].short_channel_id));
 		},
 		_ => panic!("Unexpected event"),
 	}
