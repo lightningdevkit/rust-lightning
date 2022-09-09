@@ -18,7 +18,7 @@ use core::mem;
 use core::time::Duration;
 use sync::{Condvar, Mutex};
 
-use prelude::{Box, Vec};
+use prelude::*;
 
 #[cfg(any(test, feature = "std"))]
 use std::time::Instant;
@@ -27,7 +27,6 @@ use core::future::Future as StdFuture;
 use core::task::{Context, Poll};
 use core::pin::Pin;
 
-use prelude::*;
 
 /// Used to signal to one of many waiters that the condition they're waiting on has happened.
 pub(crate) struct Notifier {
