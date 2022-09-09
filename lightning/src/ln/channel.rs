@@ -4771,6 +4771,9 @@ impl<Signer: Sign> Channel<Signer> {
 	}
 
 	fn check_get_channel_ready(&mut self, height: u32) -> Option<msgs::ChannelReady> {
+		// Called:
+		//  * always when a new block/transactions are confirmed with the new height
+		//  * when funding is signed with a height of 0
 		if self.funding_tx_confirmation_height == 0 && self.minimum_depth != Some(0) {
 			return None;
 		}
@@ -4796,7 +4799,7 @@ impl<Signer: Sign> Channel<Signer> {
 			// We got a reorg but not enough to trigger a force close, just ignore.
 			false
 		} else {
-			if self.channel_state < ChannelState::ChannelFunded as u32 {
+			if self.funding_tx_confirmation_height != 0 && self.channel_state < ChannelState::ChannelFunded as u32 {
 				// We should never see a funding transaction on-chain until we've received
 				// funding_signed (if we're an outbound channel), or seen funding_generated (if we're
 				// an inbound channel - before that we have no known funding TXID). The fuzzer,
