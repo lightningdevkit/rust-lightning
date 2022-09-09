@@ -1,3 +1,97 @@
+# 0.0.111 - Sep 12, 2022 - "Saturated with Messages"
+
+## API Updates
+ * Support for relaying onion messages has been added via a new
+   `OnionMessenger` struct when passed as the `OnionMessageHandler` to a
+   `PeerManager`. Pre-encoded onion messages can also be sent and received
+   (#1503, #1650, #1652, #1688).
+ * Rate-limiting of outbound gossip syncs has been rewritten to utilize less
+   buffering inside LDK. The new rate-limiting is also used for onion messages
+   to avoid delaying other messages (#1604. #1660, #1683).
+ * Rather than spawning a full OS thread, `lightning-background-processor` has
+   a new `process_events_async` method which takes the place of a
+   `BackgroundProcessor` for those using Rust's async (#1657).
+ * `ChannelManager::get_persistable_update_future` has been added to block on
+   a ChannelManager needing re-persistence in a Rust async environment (#1657).
+ * The `Filter::register_output` return value has been removed, as it was
+   very difficult to correctly implement (i.e., without blocking). Users
+   previously using it should instead pass dependent transactions in via
+   additional `chain::Confirm::transactions_confirmed` calls (#1663).
+ * `ChannelHandshakeConfig::their_channel_reserve_proportional_millionths` has
+   been added to allow configuring counterparty reserve values (#1619).
+ * `KeysInterface::ecdh` has been added as an ECDH oracle (#1503, #1658).
+ * The `rust-bitcoin` dependency has been updated 0.29 (#1658).
+ * The `bitcoin_hashes` dependency has been updated 0.11 (#1677).
+ * `ChannelManager::broadcast_node_announcement` has been moved to
+   `PeerManager` (#1699).
+ * `channel_` and `node_announcement`s are now rebroadcast automatically to all
+   new peers which connect (#1699).
+ * `{Init,Node}Features` sent to peers/broadcasted are now fetched via the
+   various `*MessageHandler` traits, rather than hard-coded (#1701, #1688).
+ * `Event::PaymentPathFailed::rejected_by_dest` has been renamed
+   `payment_failed_permanently` (#1702).
+ * `Invoice` now derives the std `Hash` trait (#1575).
+ * `{Signed,}RawInvoice::hash` have been renamed `signable_hash` (#1714).
+ * `chain::AccessError` now derives the std `Debug` trait (#1709).
+ * `ReadOnlyNetworkGraph::list_{channels,nodes}` have been added largely for
+   users of downstream bindings (#1651).
+ * `ChannelMonitor::get_counterparty_node_id` is now available (#1635).
+
+## Bug Fixes
+ * The script compared with that returned from `chain::Access` was incorrect
+   ~half of the time, causing spurious gossip rejection (#1666).
+ * Pending in-flight HTLCs are now considered when calculating new routes,
+   ensuring, e.g. MPP retries do not take known-saturated paths (#1643).
+ * Counterparty-revoked outputs are now included in `get_claimable_balance`
+   output via a new `Balance::CounterpartyRevokedOutputClaimable` (#1495).
+ * Inbound HTLCs for which we do not (yet) have a preimage are now included in
+   `get_claimable_balance` via a `Balance::MaybePreimageClaimableHTLC` (#1673).
+ * Probes that fail prior to being sent over their first hop are correctly
+   failed with a `Event::ProbeFailed` rather than a `PaymentPathFailed` (#1704).
+ * Pending `Event::HTLCHandlingFailed`s are no longer lost on restart (#1700).
+ * HTLCs that fail prior to being sent over their first hop are now marked as
+   retryable via `!PaymentPathFailed::payment_failed_permanently` (#1702).
+ * Dust HTLCs are now considered failed in the payment tracking logic after the
+   commitment transaction confirms, allowing retry on restart (#1691).
+ * On machines with buggy "monotonic" clocks, LDK will no longer panic if time
+   goes backwards (#1692).
+
+## Backwards Compatibility
+ * The new `current_time` argument to `PeerManager` constructors must be set to
+   a UNIX timestamp for upgraded nodes; new nodes may use a counter (#1699).
+ * `Balance::CounterpartyRevokedOutputClaimable` will never be generated for
+   channels that were observed to go on-chain with LDK versions prior to
+   0.0.111 (#1495).
+ * `ChannelMonitor::get_counterparty_node_id` will return `None` for all
+   channels opened on a version of LDK prior to 0.0.110 (#1635).
+ * Setting `their_channel_reserve_proportional_millionths` to any value other
+   than the default will cause LDK versions prior to 0.0.104 to be unable to
+   read the serialized `ChannelManager` (#1619).
+
+## Security
+0.0.111 fixes a denial-of-service vulnerability which is reachable from
+untrusted input in deployments accepting 0conf channels, or via a race-condition
+in deployments creating outbound 0conf channels.
+
+ * LDK versions prior to 0.0.111 may spuriously panic when receiving a block if
+   they are awaiting the construction of a funding transaction for a 0-conf
+   channel (#1711). 0-conf support was added in LDK version 0.0.107.
+
+In total, this release features 84 files changed, 6306 insertions, 1960
+deletions in 121 commits from 11 authors, in alphabetical order:
+ * Arik Sosman
+ * Devrandom
+ * Duncan Dean
+ * Elias Rohrer
+ * Gursharan Singh
+ * Matt Corallo
+ * NicolaLS
+ * Valentine Wallace
+ * Viktor Tigerström
+ * jurvis
+ * ok300
+
+
 # 0.0.110 - 2022-07-26 - "Routing, With a Vengeance"
 
 ## API Updates
