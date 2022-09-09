@@ -1630,7 +1630,7 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 	/// confirmations on the claim transaction.
 	///
 	/// Note that for `ChannelMonitors` which track a channel which went on-chain with versions of
-	/// LDK prior to 0.0.108, balances may not be fully captured if our counterparty broadcasted
+	/// LDK prior to 0.0.111, balances may not be fully captured if our counterparty broadcasted
 	/// a revoked state.
 	///
 	/// See [`Balance`] for additional details on the types of claimable balances which
