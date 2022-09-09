@@ -200,3 +200,127 @@ impl Writeable for ReceiveTlvs {
 		Ok(())
 	}
 }
+
+#[cfg(test)]
+mod test {
+	use bitcoin::secp256k1::{PublicKey, SecretKey, Secp256k1};
+	use ::get_control_tlv_length;
+	use super::{ForwardTlvs, ReceiveTlvs, blinded_hops};
+	use util::ser::{VecWriter, Writeable};
+
+	#[test]
+	fn padding_is_correctly_serialized() {
+		let max_length = get_control_tlv_length!(true, true);
+
+		let dummy_next_node_id = PublicKey::from_slice(&hex::decode("030101010101010101010101010101010101010101010101010101010101010101").unwrap()[..]).unwrap();
+		let dummy_blinding_override = PublicKey::from_slice(&hex::decode("030202020202020202020202020202020202020202020202020202020202020202").unwrap()[..]).unwrap();
+		let dummy_path_id = [1; 32];
+
+		let no_padding_tlv = ForwardTlvs {
+			next_node_id: dummy_next_node_id,
+			next_blinding_override: Some(dummy_blinding_override),
+			total_length: max_length,
+		};
+
+		let blinding_override_padding_tlv = ForwardTlvs {
+			next_node_id: dummy_next_node_id,
+			next_blinding_override: None,
+			total_length: max_length,
+		};
+
+		let recieve_tlv_padding_tlv = ReceiveTlvs {
+			path_id: Some(dummy_path_id),
+			total_length: max_length,
+		};
+
+		let full_padding_tlv = ReceiveTlvs {
+			path_id: None,
+			total_length: max_length,
+		};
+
+		let mut w = VecWriter(Vec::new());
+		no_padding_tlv.write(&mut w).unwrap();
+		let serialized_no_padding_tlv = w.0;
+		// As `serialized_no_padding_tlv` is the longest tlv, no padding is expected.
+		// Expected data tlv is:
+		// 1. 4 (type) for `next_node_id`
+		// 2. 33 (length) for the length of a point/public key
+		// 3. 33 bytes of the `dummy_next_node_id`
+		// 4. 8 (type) for `next_blinding_override`
+		// 5. 33 (length) for the length of a point/public key
+		// 6. 33 bytes of the `dummy_blinding_override`
+		let expected_serialized_no_padding_tlv_payload = &hex::decode("04210301010101010101010101010101010101010101010101010101010101010101010821030202020202020202020202020202020202020202020202020202020202020202").unwrap()[..];
+		assert_eq!(serialized_no_padding_tlv, expected_serialized_no_padding_tlv_payload);
+		assert_eq!(serialized_no_padding_tlv.len(), max_length as usize);
+
+		w = VecWriter(Vec::new());
+		blinding_override_padding_tlv.write(&mut w).unwrap();
+		let serialized_blinding_override_padding_tlv = w.0;
+		// As `serialized_blinding_override_padding_tlv` has no `next_blinding_override`, 35 bytes
+		// of padding is expected (the serialized length of `next_blinding_override`).
+		// Expected data tlv is:
+		// 1. 1 (type) for padding
+		// 2. 33 (length) given the length of a the missing `next_blinding_override`
+		// 3. 33 0 bytes of padding
+		// 4. 4 (type) for `next_node_id`
+		// 5. 33 (length) for the length of a point/public key
+		// 6. 33 bytes of the `dummy_next_node_id`
+		let expected_serialized_blinding_override_padding_tlv = &hex::decode("01210000000000000000000000000000000000000000000000000000000000000000000421030101010101010101010101010101010101010101010101010101010101010101").unwrap()[..];
+		assert_eq!(serialized_blinding_override_padding_tlv, expected_serialized_blinding_override_padding_tlv);
+		assert_eq!(serialized_blinding_override_padding_tlv.len(), max_length as usize);
+
+		w = VecWriter(Vec::new());
+		recieve_tlv_padding_tlv.write(&mut w).unwrap();
+		let serialized_recieve_tlv_padding_tlv = w.0;
+		// As `recieve_tlv_padding_tlv` is a `ReceiveTlv` and has a `path_id`, 36 bytes of padding
+		// is expected, ie. 70 (value of `max_length`) - 34 (the serialized length of `path_id`).
+		// Expected data tlv is:
+		// 1. 1 (type) for padding
+		// 2. 34 (length) given 70 - 34
+		// 3. 34 0 bytes of padding
+		// 4. 6 (type) for `path_id`
+		// 5. 32 (length) for the length of a `path_id`
+		// 6. 32 bytes of the `path_id`
+		let expected_serialized_recieve_tlv_padding_tlv_payload = &hex::decode("01220000000000000000000000000000000000000000000000000000000000000000000006200101010101010101010101010101010101010101010101010101010101010101").unwrap()[..];
+		assert_eq!(serialized_recieve_tlv_padding_tlv, expected_serialized_recieve_tlv_padding_tlv_payload);
+		assert_eq!(serialized_recieve_tlv_padding_tlv.len(), max_length as usize);
+
+		w = VecWriter(Vec::new());
+		full_padding_tlv.write(&mut w).unwrap();
+		let serialized_full_padding_tlv = w.0;
+		// As `serialized_full_padding_tlv` is a `ReceiveTlv` with no data at alll, 70 bytes of
+		// padding is expected (value of `max_length`).
+		// Expected data tlv is:
+		// 1. 1 (type) for padding
+		// 2. 68 (length) the length of the padding minus the prefix
+		// 3. 68 0 bytes of padding
+		let expected_serialized_full_padding_tlv_payload = &hex::decode("01440000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000").unwrap()[..];
+		assert_eq!(serialized_full_padding_tlv, expected_serialized_full_padding_tlv_payload);
+		assert_eq!(serialized_full_padding_tlv.len(), max_length as usize);
+	}
+
+	#[test]
+	fn blinded_hops_are_same_length() {
+		let secp_ctx = Secp256k1::new();
+		let first_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&hex::decode(format!("{:02}", 41).repeat(32)).unwrap()[..]).unwrap());
+		let middle_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&hex::decode(format!("{:02}", 42).repeat(32)).unwrap()[..]).unwrap());
+		let recieve_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&hex::decode(format!("{:02}", 43).repeat(32)).unwrap()[..]).unwrap());
+		let session_priv = SecretKey::from_slice(&hex::decode(format!("{:02}", 3).repeat(32)).unwrap()[..]).unwrap();
+
+		let blinded_hops = blinded_hops(&secp_ctx, &[first_node_id, middle_node_id, recieve_node_id], &session_priv, false).unwrap();
+
+		// Verify that the blinded hops returned from `blinded_hops` have the same
+		// `encrypted_payload` length, regardless of which type of payload it is.
+		let mut expected_encrypted_payload_len = None;
+		for blinded_hop in blinded_hops {
+			match expected_encrypted_payload_len {
+				None => {
+					expected_encrypted_payload_len = Some(blinded_hop.encrypted_payload.len());
+				},
+				Some(expected_len) => {
+					assert_eq!(blinded_hop.encrypted_payload.len(), expected_len)
+				}
+			}
+		}
+	}
+}

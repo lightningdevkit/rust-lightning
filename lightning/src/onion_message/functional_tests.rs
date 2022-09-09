@@ -13,11 +13,13 @@ use chain::keysinterface::{KeysInterface, Recipient};
 use ln::features::InitFeatures;
 use ln::msgs::{self, OnionMessageHandler};
 use super::{BlindedRoute, Destination, OnionMessenger, SendError};
+use super::messenger::packet_payloads_and_keys;
+use super::packet::{Payload, ForwardControlTlvs, ReceiveControlTlvs};
 use util::enforcing_trait_impls::EnforcingSigner;
 use util::test_utils;
 
 use bitcoin::network::constants::Network;
-use bitcoin::secp256k1::{PublicKey, Secp256k1};
+use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 
 use sync::Arc;
 
@@ -179,4 +181,76 @@ fn peer_buffer_full() {
 	}
 	let err = nodes[0].messenger.send_onion_message(&[], Destination::Node(nodes[1].get_node_pk()), None).unwrap_err();
 	assert_eq!(err, SendError::BufferFull);
+}
+
+#[test]
+fn onion_message_blinded_control_tlv_payloads_are_same_length() {
+	let nodes = create_nodes(4);
+	let secp_ctx = Secp256k1::new();
+	let two_blinded_hops = BlindedRoute::new(&[nodes[2].get_node_pk(), nodes[3].get_node_pk()], &*nodes[3].keys_manager, &secp_ctx, true).unwrap();
+	let three_blinded_hops = BlindedRoute::new(&[nodes[1].get_node_pk(), nodes[2].get_node_pk(), nodes[3].get_node_pk()], &*nodes[3].keys_manager, &secp_ctx, true).unwrap();
+	let session_priv = SecretKey::from_slice(&hex::decode(format!("{:02}", 3).repeat(32)).unwrap()[..]).unwrap();
+
+	let only_unblinded_payloads = packet_payloads_and_keys(&secp_ctx, &[nodes[0].get_node_pk(), nodes[1].get_node_pk()], Destination::Node(nodes[2].get_node_pk()), None,  &session_priv).unwrap().0;
+	let one_unblinded_and_three_blinded_payloads = packet_payloads_and_keys(&secp_ctx, &[nodes[1].get_node_pk()], Destination::BlindedRoute(three_blinded_hops), None,  &session_priv).unwrap().0;
+	// When more that one unblinded payload exists, the blinded payloads should be the same length
+	// as the largest unblinded payload.
+	let multiple_unblinded_and_blinded_payloads = packet_payloads_and_keys(&secp_ctx, &[nodes[0].get_node_pk(), nodes[1].get_node_pk()], Destination::BlindedRoute(two_blinded_hops), None,  &session_priv).unwrap().0;
+
+	// Verify that the blinded contol tlv payloads returned from `packet_payloads_and_keys` have
+	// the same length, and that the payload for every blinded payload matches the length of the
+	// largest unblinded payload length.
+	for payloads in [only_unblinded_payloads, one_unblinded_and_three_blinded_payloads, multiple_unblinded_and_blinded_payloads].iter() {
+		let mut longest_tlv_length = None;
+
+		macro_rules! assign_longest_tlv_length {
+			($unblinded_tlv_length: expr) => {
+				if longest_tlv_length.map(|current_len| $unblinded_tlv_length > current_len).unwrap_or(true) {
+					longest_tlv_length = Some($unblinded_tlv_length);
+				}
+			};
+		}
+
+		macro_rules! assert_correct_tlv_length {
+			($tlv_length: expr) => {
+				match longest_tlv_length {
+					None => {
+						longest_tlv_length = Some($tlv_length);
+					},
+					Some(expected_len) => {
+						assert_eq!($tlv_length, expected_len);
+					}
+				}
+			};
+		}
+
+		for payload in payloads {
+			match &payload.0 {
+				Payload::Forward(control_tlvs) => {
+					match control_tlvs {
+						ForwardControlTlvs::Blinded(bytes) => {
+							// 16 deducted to account for the 16 byte tag of the ChaCha encryption
+							// in Blinded ControlTLVs
+							assert_correct_tlv_length!(bytes.len() as u16 - 16);
+						},
+						ForwardControlTlvs::Unblinded(tlv) => {
+							assign_longest_tlv_length!(tlv.total_length);
+						},
+					}
+				},
+				Payload::Receive { control_tlvs, .. } => {
+					match control_tlvs {
+						ReceiveControlTlvs::Blinded(bytes) => {
+							// 16 deducted to account for the 16 byte tag of the ChaCha encryption
+							// in Blinded ControlTLVs
+							assert_correct_tlv_length!(bytes.len() as u16 - 16);
+						},
+						ReceiveControlTlvs::Unblinded(tlv) => {
+							assign_longest_tlv_length!(tlv.total_length);
+						},
+					}
+				},
+			};
+		}
+	}
 }

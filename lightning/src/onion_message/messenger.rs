@@ -396,7 +396,7 @@ pub type SimpleRefOnionMessenger<'a, 'b, L> = OnionMessenger<InMemorySigner, &'a
 
 /// Construct onion packet payloads and keys for sending an onion message along the given
 /// `unblinded_path` to the given `destination`.
-fn packet_payloads_and_keys<T: secp256k1::Signing + secp256k1::Verification>(
+pub(super) fn packet_payloads_and_keys<T: secp256k1::Signing + secp256k1::Verification>(
 	secp_ctx: &Secp256k1<T>, unblinded_path: &[PublicKey], destination: Destination, mut reply_path:
 	Option<BlindedRoute>, session_priv: &SecretKey
 ) -> Result<(Vec<(Payload, [u8; 32])>, Vec<onion_utils::OnionKeys>), secp256k1::Error> {
