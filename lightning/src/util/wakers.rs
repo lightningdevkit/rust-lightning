@@ -293,7 +293,7 @@ mod tests {
 	// waker, which we do here with a trivial Arc<AtomicBool> data element to track woke-ness.
 	const WAKER_V_TABLE: RawWakerVTable = RawWakerVTable::new(waker_clone, wake, wake_by_ref, drop);
 	unsafe fn wake_by_ref(ptr: *const ()) { let p = ptr as *const Arc<AtomicBool>; assert!(!(*p).fetch_or(true, Ordering::SeqCst)); }
-	unsafe fn drop(ptr: *const ()) { let p = ptr as *mut Arc<AtomicBool>; Box::from_raw(p); }
+	unsafe fn drop(ptr: *const ()) { let p = ptr as *mut Arc<AtomicBool>; let _freed = Box::from_raw(p); }
 	unsafe fn wake(ptr: *const ()) { wake_by_ref(ptr); drop(ptr); }
 	unsafe fn waker_clone(ptr: *const ()) -> RawWaker {
 		let p = ptr as *const Arc<AtomicBool>;
