@@ -16,6 +16,7 @@ use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::secp256k1::{self, PublicKey, Scalar, Secp256k1, SecretKey};
 
 use chain::keysinterface::{InMemorySigner, KeysInterface, KeysManager, Recipient, Sign};
+use ln::features::{InitFeatures, NodeFeatures};
 use ln::msgs::{self, OnionMessageHandler};
 use ln::onion_utils;
 use super::blinded_route::{BlindedRoute, ForwardTlvs, ReceiveTlvs};
@@ -344,6 +345,18 @@ impl<Signer: Sign, K: Deref, L: Deref> OnionMessageHandler for OnionMessenger<Si
 	fn peer_disconnected(&self, their_node_id: &PublicKey, _no_connection_possible: bool) {
 		let mut pending_msgs = self.pending_messages.lock().unwrap();
 		pending_msgs.remove(their_node_id);
+	}
+
+	fn provided_node_features(&self) -> NodeFeatures {
+		let mut features = NodeFeatures::empty();
+		features.set_onion_messages_optional();
+		features
+	}
+
+	fn provided_init_features(&self, _their_node_id: &PublicKey) -> InitFeatures {
+		let mut features = InitFeatures::empty();
+		features.set_onion_messages_optional();
+		features
 	}
 }
 
