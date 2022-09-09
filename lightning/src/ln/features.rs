@@ -71,15 +71,11 @@ mod sealed {
 	use prelude::*;
 	use ln::features::Features;
 
-	/// The context in which [`Features`] are applicable. Defines which features are required and
-	/// which are optional for the context.
+	/// The context in which [`Features`] are applicable. Defines which features are known to the
+	/// implementation, though specification of them as required or optional is up to the code
+	/// constructing a features object.
 	pub trait Context {
-		/// Features that are known to the implementation, where a required feature is indicated by
-		/// its even bit and an optional feature is indicated by its odd bit.
-		const KNOWN_FEATURE_FLAGS: &'static [u8];
-
-		/// Bitmask for selecting features that are known to the implementation, regardless of
-		/// whether each feature is required or optional.
+		/// Bitmask for selecting features that are known to the implementation.
 		const KNOWN_FEATURE_MASK: &'static [u8];
 	}
 
@@ -87,41 +83,16 @@ mod sealed {
 	/// are specified as a comma-separated list of bytes where each byte is a pipe-delimited list of
 	/// feature identifiers.
 	macro_rules! define_context {
-		($context: ident {
-			required_features: [$( $( $required_feature: ident )|*, )*],
-			optional_features: [$( $( $optional_feature: ident )|*, )*],
-		}) => {
+		($context: ident, [$( $( $known_feature: ident )|*, )*]) => {
 			#[derive(Eq, PartialEq)]
 			pub struct $context {}
 
 			impl Context for $context {
-				const KNOWN_FEATURE_FLAGS: &'static [u8] = &[
-					// For each byte, use bitwise-OR to compute the applicable flags for known
-					// required features `r_i` and optional features `o_j` for all `i` and `j` such
-					// that the following slice is formed:
-					//
-					// [
-					//  `r_0` | `r_1` | ... | `o_0` | `o_1` | ...,
-					//  ...,
-					// ]
-					$(
-						0b00_00_00_00 $(|
-							<Self as $required_feature>::REQUIRED_MASK)*
-						$(|
-							<Self as $optional_feature>::OPTIONAL_MASK)*,
-					)*
-				];
-
 				const KNOWN_FEATURE_MASK: &'static [u8] = &[
-					// Similar as above, but set both flags for each feature regardless of whether
-					// the feature is required or optional.
 					$(
 						0b00_00_00_00 $(|
-							<Self as $required_feature>::REQUIRED_MASK |
-							<Self as $required_feature>::OPTIONAL_MASK)*
-						$(|
-							<Self as $optional_feature>::REQUIRED_MASK |
-							<Self as $optional_feature>::OPTIONAL_MASK)*,
+							<Self as $known_feature>::REQUIRED_MASK |
+							<Self as $known_feature>::OPTIONAL_MASK)*,
 					)*
 				];
 			}
@@ -130,17 +101,12 @@ mod sealed {
 				fn fmt(&self, fmt: &mut alloc::fmt::Formatter) -> Result<(), alloc::fmt::Error> {
 					$(
 						$(
-							fmt.write_fmt(format_args!("{}: {}, ", stringify!($required_feature),
-								if <$context as $required_feature>::requires_feature(&self.flags) { "required" }
-								else if <$context as $required_feature>::supports_feature(&self.flags) { "supported" }
+							fmt.write_fmt(format_args!("{}: {}, ", stringify!($known_feature),
+								if <$context as $known_feature>::requires_feature(&self.flags) { "required" }
+								else if <$context as $known_feature>::supports_feature(&self.flags) { "supported" }
 								else { "not supported" }))?;
 						)*
-						$(
-							fmt.write_fmt(format_args!("{}: {}, ", stringify!($optional_feature),
-								if <$context as $optional_feature>::requires_feature(&self.flags) { "required" }
-								else if <$context as $optional_feature>::supports_feature(&self.flags) { "supported" }
-								else { "not supported" }))?;
-						)*
+						{} // Rust gets mad if we only have a $()* block here, so add a dummy {}
 					)*
 					fmt.write_fmt(format_args!("unknown flags: {}",
 						if self.requires_unknown_bits() { "required" }
@@ -150,132 +116,65 @@ mod sealed {
 		};
 	}
 
-	define_context!(InitContext {
-		required_features: [
-			// Byte 0
-			,
-			// Byte 1
-			VariableLengthOnion | StaticRemoteKey | PaymentSecret,
-			// Byte 2
-			,
-			// Byte 3
-			,
-			// Byte 4
-			,
-			// Byte 5
-			,
-			// Byte 6
-			,
-		],
-		optional_features: [
-			// Byte 0
-			DataLossProtect | InitialRoutingSync | UpfrontShutdownScript | GossipQueries,
-			// Byte 1
-			,
-			// Byte 2
-			BasicMPP | Wumbo,
-			// Byte 3
-			ShutdownAnySegwit,
-			// Byte 4
-			OnionMessages,
-			// Byte 5
-			ChannelType | SCIDPrivacy,
-			// Byte 6
-			ZeroConf,
-		],
-	});
-	define_context!(NodeContext {
-		required_features: [
-			// Byte 0
-			,
-			// Byte 1
-			VariableLengthOnion | StaticRemoteKey | PaymentSecret,
-			// Byte 2
-			,
-			// Byte 3
-			,
-			// Byte 4
-			,
-			// Byte 5
-			,
-			// Byte 6
-			,
-		],
-		optional_features: [
-			// Byte 0
-			DataLossProtect | UpfrontShutdownScript | GossipQueries,
-			// Byte 1
-			,
-			// Byte 2
-			BasicMPP | Wumbo,
-			// Byte 3
-			ShutdownAnySegwit,
-			// Byte 4
-			OnionMessages,
-			// Byte 5
-			ChannelType | SCIDPrivacy,
-			// Byte 6
-			ZeroConf | Keysend,
-		],
-	});
-	define_context!(ChannelContext {
-		required_features: [],
-		optional_features: [],
-	});
-	define_context!(InvoiceContext {
-		required_features: [
-			// Byte 0
-			,
-			// Byte 1
-			VariableLengthOnion | PaymentSecret,
-			// Byte 2
-			,
-		],
-		optional_features: [
-			// Byte 0
-			,
-			// Byte 1
-			,
-			// Byte 2
-			BasicMPP,
-		],
-	});
+	define_context!(InitContext, [
+		// Byte 0
+		DataLossProtect | InitialRoutingSync | UpfrontShutdownScript | GossipQueries,
+		// Byte 1
+		VariableLengthOnion | StaticRemoteKey | PaymentSecret,
+		// Byte 2
+		BasicMPP | Wumbo,
+		// Byte 3
+		ShutdownAnySegwit,
+		// Byte 4
+		OnionMessages,
+		// Byte 5
+		ChannelType | SCIDPrivacy,
+		// Byte 6
+		ZeroConf,
+	]);
+	define_context!(NodeContext, [
+		// Byte 0
+		DataLossProtect | UpfrontShutdownScript | GossipQueries,
+		// Byte 1
+		VariableLengthOnion | StaticRemoteKey | PaymentSecret,
+		// Byte 2
+		BasicMPP | Wumbo,
+		// Byte 3
+		ShutdownAnySegwit,
+		// Byte 4
+		OnionMessages,
+		// Byte 5
+		ChannelType | SCIDPrivacy,
+		// Byte 6
+		ZeroConf | Keysend,
+	]);
+	define_context!(ChannelContext, []);
+	define_context!(InvoiceContext, [
+		// Byte 0
+		,
+		// Byte 1
+		VariableLengthOnion | PaymentSecret,
+		// Byte 2
+		BasicMPP,
+	]);
 	// This isn't a "real" feature context, and is only used in the channel_type field in an
 	// `OpenChannel` message.
-	define_context!(ChannelTypeContext {
-		required_features: [
-			// Byte 0
-			,
-			// Byte 1
-			StaticRemoteKey,
-			// Byte 2
-			,
-			// Byte 3
-			,
-			// Byte 4
-			,
-			// Byte 5
-			SCIDPrivacy,
-			// Byte 6
-			ZeroConf,
-		],
-		optional_features: [
-			// Byte 0
-			,
-			// Byte 1
-			,
-			// Byte 2
-			,
-			// Byte 3
-			,
-			// Byte 4
-			,
-			// Byte 5
-			,
-			// Byte 6
-			,
-		],
-	});
+	define_context!(ChannelTypeContext, [
+		// Byte 0
+		,
+		// Byte 1
+		StaticRemoteKey,
+		// Byte 2
+		,
+		// Byte 3
+		,
+		// Byte 4
+		,
+		// Byte 5
+		SCIDPrivacy,
+		// Byte 6
+		ZeroConf,
+	]);
 
 	/// Defines a feature with the given bits for the specified [`Context`]s. The generated trait is
 	/// useful for manipulating feature flags.
