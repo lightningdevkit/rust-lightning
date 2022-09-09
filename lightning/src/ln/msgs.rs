@@ -900,7 +900,7 @@ pub trait ChannelMessageHandler : MessageSendEventsProvider {
 	// Handler information:
 	/// Gets the node feature flags which this handler itself supports. All available handlers are
 	/// queried similarly and their feature flags are OR'd together to form the [`NodeFeatures`]
-	/// which are broadcasted in our node_announcement message.
+	/// which are broadcasted in our [`NodeAnnouncement`] message.
 	fn provided_node_features(&self) -> NodeFeatures;
 
 	/// Gets the init feature flags which should be sent to the given peer. All available handlers
