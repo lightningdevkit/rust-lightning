@@ -559,13 +559,16 @@ impl InitFeatures {
 		Self::known()
 			.clear_initial_routing_sync()
 			.clear_gossip_queries()
+			.clear_onion_messages()
 	}
 }
 
 impl NodeFeatures {
 	/// Returns the set of known node features that are related to channels.
 	pub fn known_channel_features() -> NodeFeatures {
-		Self::known().clear_gossip_queries()
+		Self::known()
+			.clear_gossip_queries()
+			.clear_onion_messages()
 	}
 }
 
@@ -795,6 +798,13 @@ impl<T: sealed::InitialRoutingSync> Features<T> {
 	// Note that initial_routing_sync is ignored if gossip_queries is set.
 	pub(crate) fn clear_initial_routing_sync(mut self) -> Self {
 		<T as sealed::InitialRoutingSync>::clear_bits(&mut self.flags);
+		self
+	}
+}
+
+impl<T: sealed::OnionMessages> Features<T> {
+	pub(crate) fn clear_onion_messages(mut self) -> Self {
+		<T as sealed::OnionMessages>::clear_bits(&mut self.flags);
 		self
 	}
 }
