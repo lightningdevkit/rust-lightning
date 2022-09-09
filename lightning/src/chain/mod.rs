@@ -61,7 +61,7 @@ impl BestBlock {
 }
 
 /// An error when accessing the chain via [`Access`].
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum AccessError {
 	/// The requested chain is unknown.
 	UnknownChain,
