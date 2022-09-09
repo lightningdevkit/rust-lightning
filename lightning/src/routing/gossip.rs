@@ -22,7 +22,7 @@ use bitcoin::hash_types::BlockHash;
 use chain;
 use chain::Access;
 use ln::chan_utils::make_funding_redeemscript;
-use ln::features::{ChannelFeatures, NodeFeatures};
+use ln::features::{ChannelFeatures, NodeFeatures, InitFeatures};
 use ln::msgs::{DecodeError, ErrorAction, Init, LightningError, RoutingMessageHandler, NetAddress, MAX_VALUE_MSAT};
 use ln::msgs::{ChannelAnnouncement, ChannelUpdate, NodeAnnouncement, GossipTimestampFilter};
 use ln::msgs::{QueryChannelRange, ReplyChannelRange, QueryShortChannelIds, ReplyShortChannelIdsEnd};
@@ -569,6 +569,12 @@ where C::Target: chain::Access, L::Target: Logger
 			err: String::from("Not implemented"),
 			action: ErrorAction::IgnoreError,
 		})
+	}
+
+	fn provided_init_features(&self, _their_node_id: &PublicKey) -> InitFeatures {
+		let mut features = InitFeatures::empty();
+		features.set_gossip_queries_optional();
+		features
 	}
 }
 
