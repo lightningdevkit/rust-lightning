@@ -10,24 +10,35 @@
 #![deny(unused_mut)]
 #![deny(unused_variables)]
 #![deny(unused_imports)]
-//! This crate exposes functionality to rapidly sync gossip data, aimed primarily at mobile
+//! This crate exposes client functionality to rapidly sync gossip data, aimed primarily at mobile
 //! devices.
 //!
-//! The server sends a compressed response containing differential gossip data. The gossip data is
-//! formatted compactly, omitting signatures and opportunistically incremental where previous
-//! channel updates are known (a mechanism that is enabled when the timestamp of the last known
-//! channel update is communicated). A reference server implementation can be found
-//! [here](https://github.com/lightningdevkit/rapid-gossip-sync-server).
+//! The rapid gossip sync server will provide a compressed response containing differential gossip
+//! data. The gossip data is formatted compactly, omitting signatures and opportunistically
+//! incremental where previous channel updates are known. This mechanism is enabled when the
+//! timestamp of the last known channel update is communicated. A reference server implementation
+//! can be found [on Github](https://github.com/lightningdevkit/rapid-gossip-sync-server).
 //!
-//! An example server request could look as simple as the following. Note that the first ever rapid
-//! sync should use `0` for `last_sync_timestamp`:
+//! The primary benefit of this syncing mechanism is that it allows a low-powered client to offload
+//! the validation of gossip signatures to a semi-trusted server. This enables the client to
+//! privately calculate routes for payments, and to do so much faster than requiring a full
+//! peer-to-peer gossip sync to complete.
+//!
+//! The server calculates its response on the basis of a client-provided `latest_seen` timestamp,
+//! i.e., the server will return all rapid gossip sync data it has seen after the given timestamp.
+//!
+//! # Getting Started
+//! Firstly, the data needs to be retrieved from the server. For example, you could use the server
+//! at <https://rapidsync.lightningdevkit.org> with the following request format:
 //!
 //! ```shell
 //! curl -o rapid_sync.lngossip https://rapidsync.lightningdevkit.org/snapshot/<last_sync_timestamp>
 //! ```
+//! Note that the first ever rapid sync should use `0` for `last_sync_timestamp`.
 //!
-//! Then, call the network processing function. In this example, we process the update by reading
-//! its contents from disk, which we do by calling the `sync_network_graph_with_file_path` method:
+//! After the gossip data snapshot has been downloaded, one of the client's graph processing
+//! functions needs to be called. In this example, we process the update by reading its contents
+//! from disk, which we do by calling [sync_network_graph_with_file_path]:
 //!
 //! ```
 //! use bitcoin::blockdata::constants::genesis_block;
@@ -47,21 +58,7 @@
 //! let rapid_sync = RapidGossipSync::new(&network_graph);
 //! let new_last_sync_timestamp_result = rapid_sync.sync_network_graph_with_file_path("./rapid_sync.lngossip");
 //! ```
-//!
-//! The primary benefit this syncing mechanism provides is that given a trusted server, a
-//! low-powered client can offload the validation of gossip signatures. This enables a client to
-//! privately calculate routes for payments, and do so much faster and earlier than requiring a full
-//! peer-to-peer gossip sync to complete.
-//!
-//! The reason the rapid sync server requires trust is that it could provide bogus data, though at
-//! worst, all that would result in is a fake network topology, which wouldn't enable the server to
-//! steal or siphon off funds. It could, however, reduce the client's privacy by forcing all
-//! payments to be routed via channels the server controls.
-//!
-//! The way a server is meant to calculate this rapid gossip sync data is by using a `latest_seen`
-//! timestamp provided by the client. It's not included in either channel announcement or update,
-//! (not least due to announcements not including any timestamps at all, but only a block height)
-//! but rather, it's a timestamp of when the server saw a particular message.
+//! [sync_network_graph_with_file_path]: RapidGossipSync::sync_network_graph_with_file_path
 
 // Allow and import test features for benching
 #![cfg_attr(all(test, feature = "_bench_unstable"), feature(test))]
@@ -83,7 +80,8 @@ pub mod error;
 /// Core functionality of this crate
 pub mod processing;
 
-/// Rapid Gossip Sync struct
+/// The main Rapid Gossip Sync object.
+///
 /// See [crate-level documentation] for usage.
 ///
 /// [crate-level documentation]: crate
@@ -94,7 +92,7 @@ where L::Target: Logger {
 }
 
 impl<NG: Deref<Target=NetworkGraph<L>>, L: Deref> RapidGossipSync<NG, L> where L::Target: Logger {
-	/// Instantiate a new [`RapidGossipSync`] instance
+	/// Instantiate a new [`RapidGossipSync`] instance.
 	pub fn new(network_graph: NG) -> Self {
 		Self {
 			network_graph,
@@ -102,7 +100,7 @@ impl<NG: Deref<Target=NetworkGraph<L>>, L: Deref> RapidGossipSync<NG, L> where L
 		}
 	}
 
-	/// Sync gossip data from a file
+	/// Sync gossip data from a file.
 	/// Returns the last sync timestamp to be used the next time rapid sync data is queried.
 	///
 	/// `network_graph`: The network graph to apply the updates to
@@ -125,7 +123,7 @@ impl<NG: Deref<Target=NetworkGraph<L>>, L: Deref> RapidGossipSync<NG, L> where L
 		&self.network_graph
 	}
 
-	/// Returns whether a rapid gossip sync has completed at least once
+	/// Returns whether a rapid gossip sync has completed at least once.
 	pub fn is_initial_sync_complete(&self) -> bool {
 		self.is_initial_sync_complete.load(Ordering::Acquire)
 	}
