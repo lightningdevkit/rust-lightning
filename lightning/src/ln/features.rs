@@ -39,8 +39,13 @@
 //!     (see [BOLT-4](https://github.com/lightning/bolts/blob/master/04-onion-routing.md) for more information).
 //! - `BasicMPP` - requires/supports that a node can receive basic multi-part payments
 //!     (see [BOLT-4](https://github.com/lightning/bolts/blob/master/04-onion-routing.md#basic-multi-part-payments) for more information).
+//! - `Wumbo` - requires/supports that a node create large channels. Called `option_support_large_channel` in the spec.
+//!     (see [BOLT-2](https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#the-open_channel-message) for more information).
 //! - `ShutdownAnySegwit` - requires/supports that future segwit versions are allowed in `shutdown`
 //!     (see [BOLT-2](https://github.com/lightning/bolts/blob/master/02-peer-protocol.md) for more information).
+//! - `OnionMessages` - requires/supports forwarding onion messages
+//!     (see [BOLT-7](https://github.com/lightning/bolts/pull/759/files) for more information).
+//!     TODO: update link
 //! - `ChannelType` - node supports the channel_type field in open/accept
 //!     (see [BOLT-2](https://github.com/lightning/bolts/blob/master/02-peer-protocol.md) for more information).
 //! - `SCIDPrivacy` - supply channel aliases for routing
@@ -164,7 +169,8 @@ mod sealed {
 		],
 		optional_features: [
 			// Note that if new "non-channel-related" flags are added here they should be
-			// explicitly cleared in InitFeatures::known_channel_features.
+			// explicitly cleared in InitFeatures::known_channel_features and
+			// NodeFeatures::known_channel_features.
 			// Byte 0
 			DataLossProtect | InitialRoutingSync | UpfrontShutdownScript | GossipQueries,
 			// Byte 1
@@ -174,7 +180,7 @@ mod sealed {
 			// Byte 3
 			ShutdownAnySegwit,
 			// Byte 4
-			,
+			OnionMessages,
 			// Byte 5
 			ChannelType | SCIDPrivacy,
 			// Byte 6
@@ -208,7 +214,7 @@ mod sealed {
 			// Byte 3
 			ShutdownAnySegwit,
 			// Byte 4
-			,
+			OnionMessages,
 			// Byte 5
 			ChannelType | SCIDPrivacy,
 			// Byte 6
@@ -435,8 +441,6 @@ mod sealed {
 	define_feature!(27, ShutdownAnySegwit, [InitContext, NodeContext],
 		"Feature flags for `opt_shutdown_anysegwit`.", set_shutdown_any_segwit_optional,
 		set_shutdown_any_segwit_required, supports_shutdown_anysegwit, requires_shutdown_anysegwit);
-	// We do not yet advertise the onion messages feature bit, but we need to detect when peers
-	// support it.
 	define_feature!(39, OnionMessages, [InitContext, NodeContext],
 		"Feature flags for `option_onion_messages`.", set_onion_messages_optional,
 		set_onion_messages_required, supports_onion_messages, requires_onion_messages);
@@ -468,6 +472,17 @@ pub struct Features<T: sealed::Context> {
 	/// Note that, for convenience, flags is LITTLE endian (despite being big-endian on the wire)
 	flags: Vec<u8>,
 	mark: PhantomData<T>,
+}
+
+impl <T: sealed::Context> Features<T> {
+	pub(crate) fn or(mut self, o: Self) -> Self {
+		let total_feature_len = cmp::max(self.flags.len(), o.flags.len());
+		self.flags.resize(total_feature_len, 0u8);
+		for (byte, o_byte) in self.flags.iter_mut().zip(o.flags.iter()) {
+			*byte |= *o_byte;
+		}
+		self
+	}
 }
 
 impl<T: sealed::Context> Clone for Features<T> {
@@ -532,16 +547,6 @@ impl InitFeatures {
 		Ok(())
 	}
 
-	/// or's another InitFeatures into this one.
-	pub(crate) fn or(mut self, o: InitFeatures) -> InitFeatures {
-		let total_feature_len = cmp::max(self.flags.len(), o.flags.len());
-		self.flags.resize(total_feature_len, 0u8);
-		for (byte, o_byte) in self.flags.iter_mut().zip(o.flags.iter()) {
-			*byte |= *o_byte;
-		}
-		self
-	}
-
 	/// Converts `InitFeatures` to `Features<C>`. Only known `InitFeatures` relevant to context `C`
 	/// are included in the result.
 	pub(crate) fn to_context<C: sealed::Context>(&self) -> Features<C> {
@@ -554,6 +559,16 @@ impl InitFeatures {
 		Self::known()
 			.clear_initial_routing_sync()
 			.clear_gossip_queries()
+			.clear_onion_messages()
+	}
+}
+
+impl NodeFeatures {
+	/// Returns the set of known node features that are related to channels.
+	pub fn known_channel_features() -> NodeFeatures {
+		Self::known()
+			.clear_gossip_queries()
+			.clear_onion_messages()
 	}
 }
 
@@ -787,6 +802,13 @@ impl<T: sealed::InitialRoutingSync> Features<T> {
 	}
 }
 
+impl<T: sealed::OnionMessages> Features<T> {
+	pub(crate) fn clear_onion_messages(mut self) -> Self {
+		<T as sealed::OnionMessages>::clear_bits(&mut self.flags);
+		self
+	}
+}
+
 impl<T: sealed::ShutdownAnySegwit> Features<T> {
 	#[cfg(test)]
 	pub(crate) fn clear_shutdown_anysegwit(mut self) -> Self {
@@ -913,6 +935,11 @@ mod tests {
 		assert!(!InitFeatures::known().requires_wumbo());
 		assert!(!NodeFeatures::known().requires_wumbo());
 
+		assert!(InitFeatures::known().supports_onion_messages());
+		assert!(NodeFeatures::known().supports_onion_messages());
+		assert!(!InitFeatures::known().requires_onion_messages());
+		assert!(!NodeFeatures::known().requires_onion_messages());
+
 		assert!(InitFeatures::known().supports_zero_conf());
 		assert!(!InitFeatures::known().requires_zero_conf());
 		assert!(NodeFeatures::known().supports_zero_conf());
@@ -957,7 +984,7 @@ mod tests {
 			// - var_onion_optin (req) | static_remote_key (req) | payment_secret(req)
 			// - basic_mpp | wumbo
 			// - opt_shutdown_anysegwit
-			// -
+			// - onion_messages
 			// - option_channel_type | option_scid_alias
 			// - option_zeroconf
 			assert_eq!(node_features.flags.len(), 7);
@@ -965,7 +992,7 @@ mod tests {
 			assert_eq!(node_features.flags[1], 0b01010001);
 			assert_eq!(node_features.flags[2], 0b00001010);
 			assert_eq!(node_features.flags[3], 0b00001000);
-			assert_eq!(node_features.flags[4], 0b00000000);
+			assert_eq!(node_features.flags[4], 0b10000000);
 			assert_eq!(node_features.flags[5], 0b10100000);
 			assert_eq!(node_features.flags[6], 0b00001000);
 		}

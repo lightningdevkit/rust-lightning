@@ -6122,7 +6122,7 @@ impl<Signer: Sign, M: Deref , T: Deref , K: Deref , F: Deref , L: Deref >
 	}
 
 	fn provided_node_features(&self) -> NodeFeatures {
-		NodeFeatures::known()
+		NodeFeatures::known_channel_features()
 	}
 
 	fn provided_init_features(&self, _their_init_features: &PublicKey) -> InitFeatures {

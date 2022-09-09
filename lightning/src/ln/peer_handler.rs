@@ -77,6 +77,7 @@ impl RoutingMessageHandler for IgnoringMessageHandler {
 	fn handle_reply_short_channel_ids_end(&self, _their_node_id: &PublicKey, _msg: msgs::ReplyShortChannelIdsEnd) -> Result<(), LightningError> { Ok(()) }
 	fn handle_query_channel_range(&self, _their_node_id: &PublicKey, _msg: msgs::QueryChannelRange) -> Result<(), LightningError> { Ok(()) }
 	fn handle_query_short_channel_ids(&self, _their_node_id: &PublicKey, _msg: msgs::QueryShortChannelIds) -> Result<(), LightningError> { Ok(()) }
+	fn provided_node_features(&self) -> NodeFeatures { NodeFeatures::empty() }
 	fn provided_init_features(&self, _their_node_id: &PublicKey) -> InitFeatures {
 		InitFeatures::empty()
 	}
@@ -88,6 +89,10 @@ impl OnionMessageHandler for IgnoringMessageHandler {
 	fn handle_onion_message(&self, _their_node_id: &PublicKey, _msg: &msgs::OnionMessage) {}
 	fn peer_connected(&self, _their_node_id: &PublicKey, _init: &msgs::Init) {}
 	fn peer_disconnected(&self, _their_node_id: &PublicKey, _no_connection_possible: bool) {}
+	fn provided_node_features(&self) -> NodeFeatures { NodeFeatures::empty() }
+	fn provided_init_features(&self, _their_node_id: &PublicKey) -> InitFeatures {
+		InitFeatures::empty()
+	}
 }
 impl Deref for IgnoringMessageHandler {
 	type Target = IgnoringMessageHandler;
@@ -1061,7 +1066,8 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 								peer.their_node_id = Some(their_node_id);
 								insert_node_id!();
 								let features = self.message_handler.chan_handler.provided_init_features(&their_node_id)
-									.or(self.message_handler.route_handler.provided_init_features(&their_node_id));
+									.or(self.message_handler.route_handler.provided_init_features(&their_node_id))
+									.or(self.message_handler.onion_message_handler.provided_init_features(&their_node_id));
 								let resp = msgs::Init { features, remote_network_address: filter_addresses(peer.their_net_address.clone()) };
 								self.enqueue_message(peer, &resp);
 								peer.awaiting_pong_timer_tick_intervals = 0;
@@ -1074,7 +1080,8 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 								peer.their_node_id = Some(their_node_id);
 								insert_node_id!();
 								let features = self.message_handler.chan_handler.provided_init_features(&their_node_id)
-									.or(self.message_handler.route_handler.provided_init_features(&their_node_id));
+									.or(self.message_handler.route_handler.provided_init_features(&their_node_id))
+									.or(self.message_handler.onion_message_handler.provided_init_features(&their_node_id));
 								let resp = msgs::Init { features, remote_network_address: filter_addresses(peer.their_net_address.clone()) };
 								self.enqueue_message(peer, &resp);
 								peer.awaiting_pong_timer_tick_intervals = 0;
@@ -1969,8 +1976,11 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 		// addresses be sorted for future compatibility.
 		addresses.sort_by_key(|addr| addr.get_id());
 
+		let features = self.message_handler.chan_handler.provided_node_features()
+			.or(self.message_handler.route_handler.provided_node_features())
+			.or(self.message_handler.onion_message_handler.provided_node_features());
 		let announcement = msgs::UnsignedNodeAnnouncement {
-			features: self.message_handler.chan_handler.provided_node_features(),
+			features,
 			timestamp: self.last_node_announcement_serial.fetch_add(1, Ordering::AcqRel) as u32,
 			node_id: PublicKey::from_secret_key(&self.secp_ctx, &self.our_node_secret),
 			rgb, alias, addresses,

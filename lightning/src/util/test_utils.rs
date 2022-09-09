@@ -358,7 +358,7 @@ impl msgs::ChannelMessageHandler for TestChannelMessageHandler {
 		self.received_msg(wire::Message::Error(msg.clone()));
 	}
 	fn provided_node_features(&self) -> NodeFeatures {
-		NodeFeatures::empty()
+		NodeFeatures::known_channel_features()
 	}
 	fn provided_init_features(&self, _their_init_features: &PublicKey) -> InitFeatures {
 		InitFeatures::known_channel_features()
@@ -509,6 +509,12 @@ impl msgs::RoutingMessageHandler for TestRoutingMessageHandler {
 
 	fn handle_query_short_channel_ids(&self, _their_node_id: &PublicKey, _msg: msgs::QueryShortChannelIds) -> Result<(), msgs::LightningError> {
 		Ok(())
+	}
+
+	fn provided_node_features(&self) -> NodeFeatures {
+		let mut features = NodeFeatures::empty();
+		features.set_gossip_queries_optional();
+		features
 	}
 
 	fn provided_init_features(&self, _their_init_features: &PublicKey) -> InitFeatures {
