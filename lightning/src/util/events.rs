@@ -1137,24 +1137,31 @@ pub enum MessageSendEvent {
 		/// The message which should be sent.
 		msg: msgs::ChannelReestablish,
 	},
-	/// Used to indicate that a channel_announcement and channel_update should be broadcast to all
-	/// peers (except the peer with node_id either msg.contents.node_id_1 or msg.contents.node_id_2).
-	///
-	/// Note that after doing so, you very likely (unless you did so very recently) want to call
-	/// ChannelManager::broadcast_node_announcement to trigger a BroadcastNodeAnnouncement event.
-	/// This ensures that any nodes which see our channel_announcement also have a relevant
-	/// node_announcement, including relevant feature flags which may be important for routing
-	/// through or to us.
-	BroadcastChannelAnnouncement {
+	/// Used to send a channel_announcement and channel_update to a specific peer, likely on
+	/// initial connection to ensure our peers know about our channels.
+	SendChannelAnnouncement {
+		/// The node_id of the node which should receive this message
+		node_id: PublicKey,
 		/// The channel_announcement which should be sent.
 		msg: msgs::ChannelAnnouncement,
 		/// The followup channel_update which should be sent.
 		update_msg: msgs::ChannelUpdate,
 	},
-	/// Used to indicate that a node_announcement should be broadcast to all peers.
-	BroadcastNodeAnnouncement {
-		/// The node_announcement which should be sent.
-		msg: msgs::NodeAnnouncement,
+	/// Used to indicate that a channel_announcement and channel_update should be broadcast to all
+	/// peers (except the peer with node_id either msg.contents.node_id_1 or msg.contents.node_id_2).
+	///
+	/// Note that after doing so, you very likely (unless you did so very recently) want to
+	/// broadcast a node_announcement (e.g. via [`PeerManager::broadcast_node_announcement`]). This
+	/// ensures that any nodes which see our channel_announcement also have a relevant
+	/// node_announcement, including relevant feature flags which may be important for routing
+	/// through or to us.
+	///
+	/// [`PeerManager::broadcast_node_announcement`]: crate::ln::peer_handler::PeerManager::broadcast_node_announcement
+	BroadcastChannelAnnouncement {
+		/// The channel_announcement which should be sent.
+		msg: msgs::ChannelAnnouncement,
+		/// The followup channel_update which should be sent.
+		update_msg: msgs::ChannelUpdate,
 	},
 	/// Used to indicate that a channel_update should be broadcast to all peers.
 	BroadcastChannelUpdate {

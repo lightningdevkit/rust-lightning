@@ -17,7 +17,7 @@ use chain::channelmonitor;
 use chain::channelmonitor::MonitorEvent;
 use chain::transaction::OutPoint;
 use chain::keysinterface;
-use ln::features::{ChannelFeatures, InitFeatures};
+use ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 use ln::{msgs, wire};
 use ln::script::ShutdownScript;
 use routing::scoring::FixedPenaltyScorer;
@@ -356,6 +356,9 @@ impl msgs::ChannelMessageHandler for TestChannelMessageHandler {
 	}
 	fn handle_error(&self, _their_node_id: &PublicKey, msg: &msgs::ErrorMessage) {
 		self.received_msg(wire::Message::Error(msg.clone()));
+	}
+	fn provided_node_features(&self) -> NodeFeatures {
+		NodeFeatures::empty()
 	}
 }
 

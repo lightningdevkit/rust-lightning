@@ -3895,9 +3895,9 @@ fn test_funding_peer_disconnect() {
 	assert!(events_2.is_empty());
 
 	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init { features: InitFeatures::empty(), remote_network_address: None });
-	let as_reestablish = get_event_msg!(nodes[0], MessageSendEvent::SendChannelReestablish, nodes[1].node.get_our_node_id());
+	let as_reestablish = get_chan_reestablish_msgs!(nodes[0], nodes[1]).pop().unwrap();
 	nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id(), &msgs::Init { features: InitFeatures::empty(), remote_network_address: None });
-	let bs_reestablish = get_event_msg!(nodes[1], MessageSendEvent::SendChannelReestablish, nodes[0].node.get_our_node_id());
+	let bs_reestablish = get_chan_reestablish_msgs!(nodes[1], nodes[0]).pop().unwrap();
 
 	// nodes[0] hasn't yet received a channel_ready, so it only sends that on reconnect.
 	nodes[0].node.handle_channel_reestablish(&nodes[1].node.get_our_node_id(), &bs_reestablish);
@@ -4038,21 +4038,6 @@ fn test_funding_peer_disconnect() {
 	check_added_monitors!(nodes[0], 1);
 
 	reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
-
-	// The channel announcement should be re-generated exactly by broadcast_node_announcement.
-	nodes[0].node.broadcast_node_announcement([0, 0, 0], [0; 32], Vec::new());
-	let msgs = nodes[0].node.get_and_clear_pending_msg_events();
-	let mut found_announcement = false;
-	for event in msgs.iter() {
-		match event {
-			MessageSendEvent::BroadcastChannelAnnouncement { ref msg, .. } => {
-				if *msg == chan_announcement { found_announcement = true; }
-			},
-			MessageSendEvent::BroadcastNodeAnnouncement { .. } => {},
-			_ => panic!("Unexpected event"),
-		}
-	}
-	assert!(found_announcement);
 }
 
 #[test]
@@ -4737,19 +4722,23 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 	claim_payment(&nodes[2], &[&nodes[0], &nodes[1]], our_payment_preimage);
 
 	nodes[3].node.peer_connected(&nodes[0].node.get_our_node_id(), &msgs::Init { features: InitFeatures::empty(), remote_network_address: None });
-	let reestablish = get_event_msg!(nodes[3], MessageSendEvent::SendChannelReestablish, nodes[0].node.get_our_node_id());
+	let reestablish = get_chan_reestablish_msgs!(nodes[3], nodes[0]).pop().unwrap();
 	nodes[0].node.peer_connected(&nodes[3].node.get_our_node_id(), &msgs::Init { features: InitFeatures::empty(), remote_network_address: None });
 	nodes[0].node.handle_channel_reestablish(&nodes[3].node.get_our_node_id(), &reestablish);
-	let msg_events = nodes[0].node.get_and_clear_pending_msg_events();
-	assert_eq!(msg_events.len(), 1);
-	if let MessageSendEvent::HandleError { ref action, .. } = msg_events[0] {
-		match action {
-			&ErrorAction::SendErrorMessage { ref msg } => {
-				assert_eq!(msg.channel_id, channel_id);
-			},
-			_ => panic!("Unexpected event!"),
+	let mut found_err = false;
+	for msg_event in nodes[0].node.get_and_clear_pending_msg_events() {
+		if let MessageSendEvent::HandleError { ref action, .. } = msg_event {
+			match action {
+				&ErrorAction::SendErrorMessage { ref msg } => {
+					assert_eq!(msg.channel_id, channel_id);
+					assert!(!found_err);
+					found_err = true;
+				},
+				_ => panic!("Unexpected event!"),
+			}
 		}
 	}
+	assert!(found_err);
 }
 
 macro_rules! check_spendable_outputs {

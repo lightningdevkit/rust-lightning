@@ -546,6 +546,7 @@ mod tests {
 	use lightning::ln::features::*;
 	use lightning::ln::msgs::*;
 	use lightning::ln::peer_handler::{MessageHandler, PeerManager};
+	use lightning::ln::features::NodeFeatures;
 	use lightning::util::events::*;
 	use bitcoin::secp256k1::{Secp256k1, SecretKey, PublicKey};
 
@@ -612,6 +613,7 @@ mod tests {
 		}
 		fn handle_channel_reestablish(&self, _their_node_id: &PublicKey, _msg: &ChannelReestablish) {}
 		fn handle_error(&self, _their_node_id: &PublicKey, _msg: &ErrorMessage) {}
+		fn provided_node_features(&self) -> NodeFeatures { NodeFeatures::known() }
 	}
 	impl MessageSendEventsProvider for MsgHandler {
 		fn get_and_clear_pending_msg_events(&self) -> Vec<MessageSendEvent> {
@@ -657,7 +659,7 @@ mod tests {
 			chan_handler: Arc::clone(&a_handler),
 			route_handler: Arc::clone(&a_handler),
 			onion_message_handler: Arc::new(lightning::ln::peer_handler::IgnoringMessageHandler{}),
-		}, a_key.clone(), &[1; 32], Arc::new(TestLogger()), Arc::new(lightning::ln::peer_handler::IgnoringMessageHandler{})));
+		}, a_key.clone(), 0, &[1; 32], Arc::new(TestLogger()), Arc::new(lightning::ln::peer_handler::IgnoringMessageHandler{})));
 
 		let (b_connected_sender, mut b_connected) = mpsc::channel(1);
 		let (b_disconnected_sender, mut b_disconnected) = mpsc::channel(1);
@@ -672,7 +674,7 @@ mod tests {
 			chan_handler: Arc::clone(&b_handler),
 			route_handler: Arc::clone(&b_handler),
 			onion_message_handler: Arc::new(lightning::ln::peer_handler::IgnoringMessageHandler{}),
-		}, b_key.clone(), &[2; 32], Arc::new(TestLogger()), Arc::new(lightning::ln::peer_handler::IgnoringMessageHandler{})));
+		}, b_key.clone(), 0, &[2; 32], Arc::new(TestLogger()), Arc::new(lightning::ln::peer_handler::IgnoringMessageHandler{})));
 
 		// We bind on localhost, hoping the environment is properly configured with a local
 		// address. This may not always be the case in containers and the like, so if this test is
@@ -725,7 +727,7 @@ mod tests {
 			chan_handler: Arc::new(lightning::ln::peer_handler::ErroringMessageHandler::new()),
 			onion_message_handler: Arc::new(lightning::ln::peer_handler::IgnoringMessageHandler{}),
 			route_handler: Arc::new(lightning::ln::peer_handler::IgnoringMessageHandler{}),
-		}, a_key, &[1; 32], Arc::new(TestLogger()), Arc::new(lightning::ln::peer_handler::IgnoringMessageHandler{})));
+		}, a_key, 0, &[1; 32], Arc::new(TestLogger()), Arc::new(lightning::ln::peer_handler::IgnoringMessageHandler{})));
 
 		// Make two connections, one for an inbound and one for an outbound connection
 		let conn_a = {
