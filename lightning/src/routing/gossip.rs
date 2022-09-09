@@ -571,6 +571,12 @@ where C::Target: chain::Access, L::Target: Logger
 		})
 	}
 
+	fn provided_node_features(&self) -> NodeFeatures {
+		let mut features = NodeFeatures::empty();
+		features.set_gossip_queries_optional();
+		features
+	}
+
 	fn provided_init_features(&self, _their_node_id: &PublicKey) -> InitFeatures {
 		let mut features = InitFeatures::empty();
 		features.set_gossip_queries_optional();
