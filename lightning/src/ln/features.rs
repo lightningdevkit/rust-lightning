@@ -203,6 +203,12 @@ mod sealed {
 				/// [`ODD_BIT`]: #associatedconstant.ODD_BIT
 				const ASSERT_ODD_BIT_PARITY: usize;
 
+				/// Assertion that the bits are set in the context's [`KNOWN_FEATURE_MASK`].
+				///
+				/// [`KNOWN_FEATURE_MASK`]: Context::KNOWN_FEATURE_MASK
+				#[cfg(not(test))] // We violate this constraint with `UnknownFeature`
+				const ASSERT_BITS_IN_MASK: u8;
+
 				/// The byte where the feature is set.
 				const BYTE_OFFSET: usize = Self::EVEN_BIT / 8;
 
@@ -289,6 +295,12 @@ mod sealed {
 
 					// ODD_BIT % 2 == 1
 					const ASSERT_ODD_BIT_PARITY: usize = (<Self as $feature>::ODD_BIT % 2) - 1;
+
+					// (byte & (REQUIRED_MASK | OPTIONAL_MASK)) >> (EVEN_BIT % 8) == 3
+					#[cfg(not(test))] // We violate this constraint with `UnknownFeature`
+					const ASSERT_BITS_IN_MASK: u8 =
+						((<$context>::KNOWN_FEATURE_MASK[<Self as $feature>::BYTE_OFFSET] & (<Self as $feature>::REQUIRED_MASK | <Self as $feature>::OPTIONAL_MASK))
+						 >> (<Self as $feature>::EVEN_BIT % 8)) - 3;
 				}
 			)*
 		};
