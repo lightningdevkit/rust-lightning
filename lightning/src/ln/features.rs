@@ -470,6 +470,17 @@ pub struct Features<T: sealed::Context> {
 	mark: PhantomData<T>,
 }
 
+impl <T: sealed::Context> Features<T> {
+	pub(crate) fn or(mut self, o: Self) -> Self {
+		let total_feature_len = cmp::max(self.flags.len(), o.flags.len());
+		self.flags.resize(total_feature_len, 0u8);
+		for (byte, o_byte) in self.flags.iter_mut().zip(o.flags.iter()) {
+			*byte |= *o_byte;
+		}
+		self
+	}
+}
+
 impl<T: sealed::Context> Clone for Features<T> {
 	fn clone(&self) -> Self {
 		Self {
@@ -530,16 +541,6 @@ impl InitFeatures {
 			}
 		}
 		Ok(())
-	}
-
-	/// or's another InitFeatures into this one.
-	pub(crate) fn or(mut self, o: InitFeatures) -> InitFeatures {
-		let total_feature_len = cmp::max(self.flags.len(), o.flags.len());
-		self.flags.resize(total_feature_len, 0u8);
-		for (byte, o_byte) in self.flags.iter_mut().zip(o.flags.iter()) {
-			*byte |= *o_byte;
-		}
-		self
 	}
 
 	/// Converts `InitFeatures` to `Features<C>`. Only known `InitFeatures` relevant to context `C`
