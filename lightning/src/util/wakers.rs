@@ -15,13 +15,12 @@
 
 use alloc::sync::Arc;
 use core::mem;
-use core::time::Duration;
 use sync::{Condvar, Mutex};
 
 use prelude::*;
 
 #[cfg(any(test, feature = "std"))]
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use core::future::Future as StdFuture;
 use core::task::{Context, Poll};

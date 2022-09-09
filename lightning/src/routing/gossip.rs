@@ -197,6 +197,7 @@ where C::Target: chain::Access, L::Target: Logger
 {
 	network_graph: G,
 	chain_access: Option<C>,
+	#[cfg(feature = "std")]
 	full_syncs_requested: AtomicUsize,
 	pending_events: Mutex<Vec<MessageSendEvent>>,
 	logger: L,
@@ -213,6 +214,7 @@ where C::Target: chain::Access, L::Target: Logger
 	pub fn new(network_graph: G, chain_access: Option<C>, logger: L) -> Self {
 		P2PGossipSync {
 			network_graph,
+			#[cfg(feature = "std")]
 			full_syncs_requested: AtomicUsize::new(0),
 			chain_access,
 			pending_events: Mutex::new(vec![]),
@@ -235,6 +237,7 @@ where C::Target: chain::Access, L::Target: Logger
 		&self.network_graph
 	}
 
+	#[cfg(feature = "std")]
 	/// Returns true when a full routing table sync should be performed with a peer.
 	fn should_request_full_sync(&self, _node_id: &PublicKey) -> bool {
 		//TODO: Determine whether to request a full sync based on the network map.
@@ -421,13 +424,12 @@ where C::Target: chain::Access, L::Target: Logger
 		// `gossip_timestamp_filter`, with the filter time set either two weeks ago or an hour ago.
 		//
 		// For no-std builds, we bury our head in the sand and do a full sync on each connection.
-		let should_request_full_sync = self.should_request_full_sync(&their_node_id);
 		#[allow(unused_mut, unused_assignments)]
 		let mut gossip_start_time = 0;
 		#[cfg(feature = "std")]
 		{
 			gossip_start_time = SystemTime::now().duration_since(UNIX_EPOCH).expect("Time must be > 1970").as_secs();
-			if should_request_full_sync {
+			if self.should_request_full_sync(&their_node_id) {
 				gossip_start_time -= 60 * 60 * 24 * 7 * 2; // 2 weeks ago
 			} else {
 				gossip_start_time -= 60 * 60; // an hour ago
@@ -1862,7 +1864,7 @@ mod tests {
 	use ln::PaymentHash;
 	use ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 	use routing::gossip::{P2PGossipSync, NetworkGraph, NetworkUpdate, NodeAlias, MAX_EXCESS_BYTES_FOR_RELAY, NodeId, RoutingFees, ChannelUpdateInfo, ChannelInfo, NodeAnnouncementInfo, NodeInfo};
-	use ln::msgs::{Init, RoutingMessageHandler, UnsignedNodeAnnouncement, NodeAnnouncement,
+	use ln::msgs::{RoutingMessageHandler, UnsignedNodeAnnouncement, NodeAnnouncement,
 		UnsignedChannelAnnouncement, ChannelAnnouncement, UnsignedChannelUpdate, ChannelUpdate,
 		ReplyChannelRange, QueryChannelRange, QueryShortChannelIds, MAX_VALUE_MSAT};
 	use util::test_utils;
@@ -1906,6 +1908,7 @@ mod tests {
 	}
 
 	#[test]
+	#[cfg(feature = "std")]
 	fn request_full_sync_finite_times() {
 		let network_graph = create_network_graph();
 		let (secp_ctx, gossip_sync) = create_gossip_sync(&network_graph);
@@ -2593,6 +2596,7 @@ mod tests {
 	#[cfg(feature = "std")]
 	fn calling_sync_routing_table() {
 		use std::time::{SystemTime, UNIX_EPOCH};
+		use ln::msgs::Init;
 
 		let network_graph = create_network_graph();
 		let (secp_ctx, gossip_sync) = create_gossip_sync(&network_graph);
