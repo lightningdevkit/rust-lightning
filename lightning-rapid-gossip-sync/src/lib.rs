@@ -75,13 +75,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use lightning::routing::gossip::NetworkGraph;
 use lightning::util::logger::Logger;
 
-use crate::error::GraphSyncError;
+pub use crate::error::GraphSyncError;
 
 /// Error types that these functions can return
-pub mod error;
+mod error;
 
 /// Core functionality of this crate
-pub mod processing;
+mod processing;
 
 /// Rapid Gossip Sync struct
 /// See [crate-level documentation] for usage.
