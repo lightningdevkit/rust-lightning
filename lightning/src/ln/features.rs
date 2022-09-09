@@ -164,7 +164,8 @@ mod sealed {
 		],
 		optional_features: [
 			// Note that if new "non-channel-related" flags are added here they should be
-			// explicitly cleared in InitFeatures::known_channel_features.
+			// explicitly cleared in InitFeatures::known_channel_features and
+			// NodeFeatures::known_channel_features.
 			// Byte 0
 			DataLossProtect | InitialRoutingSync | UpfrontShutdownScript | GossipQueries,
 			// Byte 1
@@ -555,6 +556,13 @@ impl InitFeatures {
 		Self::known()
 			.clear_initial_routing_sync()
 			.clear_gossip_queries()
+	}
+}
+
+impl NodeFeatures {
+	/// Returns the set of known node features that are related to channels.
+	pub fn known_channel_features() -> NodeFeatures {
+		Self::known().clear_gossip_queries()
 	}
 }
 
