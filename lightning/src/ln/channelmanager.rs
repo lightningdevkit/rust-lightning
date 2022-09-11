@@ -46,7 +46,6 @@ use ln::channel::{Channel, ChannelError, ChannelUpdateStatus, UpdateFulfillCommi
 use ln::features::{ChannelTypeFeatures, InitFeatures, NodeFeatures};
 use routing::router::{PaymentParameters, Route, RouteHop, RoutePath, RouteParameters};
 use ln::msgs;
-use ln::msgs::NetAddress;
 use ln::onion_utils;
 use ln::msgs::{ChannelMessageHandler, DecodeError, LightningError, MAX_VALUE_MSAT};
 use ln::wire::Encode;

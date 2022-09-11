@@ -287,9 +287,9 @@ impl TestChannelMessageHandler {
 
 impl Drop for TestChannelMessageHandler {
 	fn drop(&mut self) {
-		let l = self.expected_recv_msgs.lock().unwrap();
 		#[cfg(feature = "std")]
 		{
+			let l = self.expected_recv_msgs.lock().unwrap();
 			if !std::thread::panicking() {
 				assert!(l.is_none() || l.as_ref().unwrap().is_empty());
 			}
@@ -470,14 +470,12 @@ impl msgs::RoutingMessageHandler for TestRoutingMessageHandler {
 			return ();
 		}
 
-		let should_request_full_sync = self.request_full_sync.load(Ordering::Acquire);
-
 		#[allow(unused_mut, unused_assignments)]
 		let mut gossip_start_time = 0;
 		#[cfg(feature = "std")]
 		{
 			gossip_start_time = SystemTime::now().duration_since(UNIX_EPOCH).expect("Time must be > 1970").as_secs();
-			if should_request_full_sync {
+			if self.request_full_sync.load(Ordering::Acquire) {
 				gossip_start_time -= 60 * 60 * 24 * 7 * 2; // 2 weeks ago
 			} else {
 				gossip_start_time -= 60 * 60; // an hour ago
