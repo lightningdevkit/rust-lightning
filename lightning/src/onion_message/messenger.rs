@@ -378,14 +378,18 @@ impl<Signer: Sign, K: Deref, L: Deref> OnionMessageProvider for OnionMessenger<S
 /// Useful for simplifying the parameters of [`SimpleArcChannelManager`] and
 /// [`SimpleArcPeerManager`]. See their docs for more details.
 ///
-///[`SimpleArcChannelManager`]: crate::ln::channelmanager::SimpleArcChannelManager
-///[`SimpleArcPeerManager`]: crate::ln::peer_handler::SimpleArcPeerManager
+/// (C-not exported) as `Arc`s don't make sense in bindings.
+///
+/// [`SimpleArcChannelManager`]: crate::ln::channelmanager::SimpleArcChannelManager
+/// [`SimpleArcPeerManager`]: crate::ln::peer_handler::SimpleArcPeerManager
 pub type SimpleArcOnionMessenger<L> = OnionMessenger<InMemorySigner, Arc<KeysManager>, Arc<L>>;
 /// Useful for simplifying the parameters of [`SimpleRefChannelManager`] and
 /// [`SimpleRefPeerManager`]. See their docs for more details.
 ///
-///[`SimpleRefChannelManager`]: crate::ln::channelmanager::SimpleRefChannelManager
-///[`SimpleRefPeerManager`]: crate::ln::peer_handler::SimpleRefPeerManager
+/// (C-not exported) as general type aliases don't make sense in bindings.
+///
+/// [`SimpleRefChannelManager`]: crate::ln::channelmanager::SimpleRefChannelManager
+/// [`SimpleRefPeerManager`]: crate::ln::peer_handler::SimpleRefPeerManager
 pub type SimpleRefOnionMessenger<'a, 'b, L> = OnionMessenger<InMemorySigner, &'a KeysManager, &'b L>;
 
 /// Construct onion packet payloads and keys for sending an onion message along the given
