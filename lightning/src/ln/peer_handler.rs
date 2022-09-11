@@ -25,7 +25,7 @@ use util::ser::{VecWriter, Writeable, Writer};
 use ln::peer_channel_encryptor::{PeerChannelEncryptor,NextNoiseStep};
 use ln::wire;
 use ln::wire::Encode;
-use onion_message::{SimpleArcOnionMessenger, SimpleRefOnionMessenger};
+use onion_message::messenger::{SimpleArcOnionMessenger, SimpleRefOnionMessenger};
 use routing::gossip::{NetworkGraph, P2PGossipSync};
 use util::atomic_counter::AtomicCounter;
 use util::crypto::sign;

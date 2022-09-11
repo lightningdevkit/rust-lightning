@@ -311,7 +311,7 @@ pub struct UpdateAddHTLC {
 pub struct OnionMessage {
 	/// Used in decrypting the onion packet's payload.
 	pub blinding_point: PublicKey,
-	pub(crate) onion_routing_packet: onion_message::Packet,
+	pub(crate) onion_routing_packet: onion_message::packet::Packet,
 }
 
 /// An update_fulfill_htlc message to be sent or received from a peer
@@ -1404,7 +1404,7 @@ impl Readable for OnionMessage {
 		let blinding_point: PublicKey = Readable::read(r)?;
 		let len: u16 = Readable::read(r)?;
 		let mut packet_reader = FixedLengthReader::new(r, len as u64);
-		let onion_routing_packet: onion_message::Packet = <onion_message::Packet as LengthReadable>::read(&mut packet_reader)?;
+		let onion_routing_packet = <onion_message::packet::Packet as LengthReadable>::read(&mut packet_reader)?;
 		Ok(Self {
 			blinding_point,
 			onion_routing_packet,

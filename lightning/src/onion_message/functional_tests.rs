@@ -12,7 +12,8 @@
 use chain::keysinterface::{KeysInterface, Recipient};
 use ln::features::InitFeatures;
 use ln::msgs::{self, OnionMessageHandler};
-use super::{BlindedRoute, Destination, OnionMessenger, SendError};
+use super::blinded_route::BlindedRoute;
+use super::messenger::{Destination, OnionMessenger, SendError};
 use util::enforcing_trait_impls::EnforcingSigner;
 use util::test_utils;
 
