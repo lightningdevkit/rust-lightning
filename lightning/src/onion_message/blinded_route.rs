@@ -11,7 +11,7 @@
 
 use bitcoin::secp256k1::{self, PublicKey, Secp256k1, SecretKey};
 
-use chain::keysinterface::{KeysInterface, Sign};
+use chain::keysinterface::KeysInterface;
 use super::utils;
 use ln::msgs::DecodeError;
 use util::chacha20poly1305rfc::ChaChaPolyWriteAdapter;
@@ -55,7 +55,7 @@ impl BlindedRoute {
 	///
 	/// Errors if less than two hops are provided or if `node_pk`(s) are invalid.
 	//  TODO: make all payloads the same size with padding + add dummy hops
-	pub fn new<Signer: Sign, K: KeysInterface, T: secp256k1::Signing + secp256k1::Verification>
+	pub fn new<K: KeysInterface, T: secp256k1::Signing + secp256k1::Verification>
 		(node_pks: &[PublicKey], keys_manager: &K, secp_ctx: &Secp256k1<T>) -> Result<Self, ()>
 	{
 		if node_pks.len() < 2 { return Err(()) }

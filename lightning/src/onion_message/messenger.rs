@@ -71,7 +71,7 @@ use prelude::*;
 /// // Create a blinded route to yourself, for someone to send an onion message to.
 /// # let your_node_id = hop_node_id1;
 /// let hops = [hop_node_id3, hop_node_id4, your_node_id];
-/// let blinded_route = BlindedRoute::new::<InMemorySigner, _, _>(&hops, &keys_manager, &secp_ctx).unwrap();
+/// let blinded_route = BlindedRoute::new(&hops, &keys_manager, &secp_ctx).unwrap();
 ///
 /// // Send an empty onion message to a blinded route.
 /// # let intermediate_hops = [hop_node_id1, hop_node_id2];
