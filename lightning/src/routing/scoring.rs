@@ -162,6 +162,7 @@ pub trait LockableScore<'a> {
 /// use the Persister to persist it.
 pub trait WriteableScore<'a>: LockableScore<'a> + Writeable {}
 
+#[cfg(not(c_bindings))]
 impl<'a, T> WriteableScore<'a> for T where T: LockableScore<'a> + Writeable {}
 
 /// (C-not exported)

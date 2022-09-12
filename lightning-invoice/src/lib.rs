@@ -745,7 +745,7 @@ impl SignedRawInvoice {
 	}
 
 	/// The hash of the `RawInvoice` that was signed.
-	pub fn hash(&self) -> &[u8; 32] {
+	pub fn signable_hash(&self) -> &[u8; 32] {
 		&self.hash
 	}
 
@@ -853,8 +853,8 @@ impl RawInvoice {
 		hash
 	}
 
-	/// Calculate the hash of the encoded `RawInvoice`
-	pub fn hash(&self) -> [u8; 32] {
+	/// Calculate the hash of the encoded `RawInvoice` which should be signed.
+	pub fn signable_hash(&self) -> [u8; 32] {
 		use bech32::ToBase32;
 
 		RawInvoice::hash_from_parts(
@@ -872,7 +872,7 @@ impl RawInvoice {
 	pub fn sign<F, E>(self, sign_method: F) -> Result<SignedRawInvoice, E>
 		where F: FnOnce(&Message) -> Result<RecoverableSignature, E>
 	{
-		let raw_hash = self.hash();
+		let raw_hash = self.signable_hash();
 		let hash = Message::from_slice(&raw_hash[..])
 			.expect("Hash is 32 bytes long, same as MESSAGE_SIZE");
 		let signature = sign_method(&hash)?;
@@ -1591,7 +1591,7 @@ mod test {
 			0xd5, 0x18, 0xe1, 0xc9
 		];
 
-		assert_eq!(invoice.hash(), expected_hash)
+		assert_eq!(invoice.signable_hash(), expected_hash)
 	}
 
 	#[test]
