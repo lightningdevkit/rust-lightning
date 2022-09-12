@@ -232,7 +232,7 @@ impl OfferBuilder {
 /// An `Offer` is a potentially long-lived proposal for payment of a good or service.
 ///
 /// An offer is a precursor to an [`InvoiceRequest`]. A merchant publishes an offer from which a
-/// customer may request an `Invoice` for a specific quantity and using an amount sufficient to
+/// customer may request an [`Invoice`] for a specific quantity and using an amount sufficient to
 /// cover that quantity (i.e., at least `quantity * amount`). See [`Offer::amount`].
 ///
 /// Offers may be denominated in currency other than bitcoin but are ultimately paid using the
@@ -241,6 +241,7 @@ impl OfferBuilder {
 /// Through the use of [`BlindedPath`]s, offers provide recipient privacy.
 ///
 /// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
+/// [`Invoice`]: crate::offers::invoice::Invoice
 #[derive(Clone, Debug)]
 pub struct Offer {
 	// The serialized offer. Needed when creating an `InvoiceRequest` if the offer contains unknown
@@ -249,9 +250,10 @@ pub struct Offer {
 	pub(super) contents: OfferContents,
 }
 
-/// The contents of an [`Offer`], which may be shared with an [`InvoiceRequest`] or an `Invoice`.
+/// The contents of an [`Offer`], which may be shared with an [`InvoiceRequest`] or an [`Invoice`].
 ///
 /// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
+/// [`Invoice`]: crate::offers::invoice::Invoice
 #[derive(Clone, Debug)]
 pub(super) struct OfferContents {
 	chains: Option<Vec<ChainHash>>,
@@ -359,7 +361,7 @@ impl Offer {
 
 	/// The public key used by the recipient to sign invoices.
 	pub fn signing_pubkey(&self) -> PublicKey {
-		self.contents.signing_pubkey
+		self.contents.signing_pubkey()
 	}
 
 	/// Creates an [`InvoiceRequest`] for the offer with the given `metadata` and `payer_id`, which
@@ -471,6 +473,10 @@ impl OfferContents {
 			Quantity::Bounded(n) => n.get() != 1,
 			Quantity::Unbounded => true,
 		}
+	}
+
+	pub(super) fn signing_pubkey(&self) -> PublicKey {
+		self.signing_pubkey
 	}
 
 	pub(super) fn as_tlv_stream(&self) -> OfferTlvStreamRef {

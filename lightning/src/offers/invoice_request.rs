@@ -11,11 +11,12 @@
 //!
 //! An [`InvoiceRequest`] can be built from a parsed [`Offer`] as an "offer to be paid". It is
 //! typically constructed by a customer and sent to the merchant who had published the corresponding
-//! offer. The recipient of the request responds with an `Invoice`.
+//! offer. The recipient of the request responds with an [`Invoice`].
 //!
 //! For an "offer for money" (e.g., refund, ATM withdrawal), where an offer doesn't exist as a
 //! precursor, see [`Refund`].
 //!
+//! [`Invoice`]: crate::offers::invoice::Invoice
 //! [`Refund`]: crate::offers::refund::Refund
 //!
 //! ```ignore
@@ -239,11 +240,12 @@ impl<'a> UnsignedInvoiceRequest<'a> {
 	}
 }
 
-/// An `InvoiceRequest` is a request for an `Invoice` formulated from an [`Offer`].
+/// An `InvoiceRequest` is a request for an [`Invoice`] formulated from an [`Offer`].
 ///
 /// An offer may provide choices such as quantity, amount, chain, features, etc. An invoice request
 /// specifies these such that its recipient can send an invoice for payment.
 ///
+/// [`Invoice`]: crate::offers::invoice::Invoice
 /// [`Offer`]: crate::offers::offer::Offer
 #[derive(Clone, Debug)]
 pub struct InvoiceRequest {
@@ -252,11 +254,13 @@ pub struct InvoiceRequest {
 	signature: Signature,
 }
 
-/// The contents of an [`InvoiceRequest`], which may be shared with an `Invoice`.
+/// The contents of an [`InvoiceRequest`], which may be shared with an [`Invoice`].
+///
+/// [`Invoice`]: crate::offers::invoice::Invoice
 #[derive(Clone, Debug)]
 pub(super) struct InvoiceRequestContents {
 	payer: PayerContents,
-	offer: OfferContents,
+	pub(super) offer: OfferContents,
 	chain: Option<ChainHash>,
 	amount_msats: Option<u64>,
 	features: InvoiceRequestFeatures,
@@ -327,7 +331,7 @@ impl InvoiceRequest {
 }
 
 impl InvoiceRequestContents {
-	fn chain(&self) -> ChainHash {
+	pub(super) fn chain(&self) -> ChainHash {
 		self.chain.unwrap_or_else(|| self.offer.implied_chain())
 	}
 

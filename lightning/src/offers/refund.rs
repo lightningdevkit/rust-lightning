@@ -10,10 +10,11 @@
 //! Data structures and encoding for refunds.
 //!
 //! A [`Refund`] is an "offer for money" and is typically constructed by a merchant and presented
-//! directly to the customer. The recipient responds with an `Invoice` to be paid.
+//! directly to the customer. The recipient responds with an [`Invoice`] to be paid.
 //!
 //! This is an [`InvoiceRequest`] produced *not* in response to an [`Offer`].
 //!
+//! [`Invoice`]: crate::offers::invoice::Invoice
 //! [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 //! [`Offer`]: crate::offers::offer::Offer
 //!
@@ -191,12 +192,13 @@ impl RefundBuilder {
 	}
 }
 
-/// A `Refund` is a request to send an `Invoice` without a preceding [`Offer`].
+/// A `Refund` is a request to send an [`Invoice`] without a preceding [`Offer`].
 ///
 /// Typically, after an invoice is paid, the recipient may publish a refund allowing the sender to
 /// recoup their funds. A refund may be used more generally as an "offer for money", such as with a
 /// bitcoin ATM.
 ///
+/// [`Invoice`]: crate::offers::invoice::Invoice
 /// [`Offer`]: crate::offers::offer::Offer
 #[derive(Clone, Debug)]
 pub struct Refund {
@@ -204,9 +206,11 @@ pub struct Refund {
 	contents: RefundContents,
 }
 
-/// The contents of a [`Refund`], which may be shared with an `Invoice`.
+/// The contents of a [`Refund`], which may be shared with an [`Invoice`].
+///
+/// [`Invoice`]: crate::offers::invoice::Invoice
 #[derive(Clone, Debug)]
-struct RefundContents {
+pub(super) struct RefundContents {
 	payer: PayerContents,
 	// offer fields
 	metadata: Option<Vec<u8>>,
@@ -311,7 +315,7 @@ impl AsRef<[u8]> for Refund {
 }
 
 impl RefundContents {
-	fn chain(&self) -> ChainHash {
+	pub(super) fn chain(&self) -> ChainHash {
 		self.chain.unwrap_or_else(|| self.implied_chain())
 	}
 
