@@ -168,9 +168,6 @@ mod sealed {
 			,
 		],
 		optional_features: [
-			// Note that if new "non-channel-related" flags are added here they should be
-			// explicitly cleared in InitFeatures::known_channel_features and
-			// NodeFeatures::known_channel_features.
 			// Byte 0
 			DataLossProtect | InitialRoutingSync | UpfrontShutdownScript | GossipQueries,
 			// Byte 1
@@ -552,24 +549,6 @@ impl InitFeatures {
 	pub(crate) fn to_context<C: sealed::Context>(&self) -> Features<C> {
 		self.to_context_internal()
 	}
-
-	/// Returns the set of known init features that are related to channels. At least some of
-	/// these features are likely required for peers to talk to us.
-	pub fn known_channel_features() -> InitFeatures {
-		Self::known()
-			.clear_initial_routing_sync()
-			.clear_gossip_queries()
-			.clear_onion_messages()
-	}
-}
-
-impl NodeFeatures {
-	/// Returns the set of known node features that are related to channels.
-	pub fn known_channel_features() -> NodeFeatures {
-		Self::known()
-			.clear_gossip_queries()
-			.clear_onion_messages()
-	}
 }
 
 impl InvoiceFeatures {
@@ -788,6 +767,7 @@ impl<T: sealed::UpfrontShutdownScript> Features<T> {
 
 
 impl<T: sealed::GossipQueries> Features<T> {
+	#[cfg(test)]
 	pub(crate) fn clear_gossip_queries(mut self) -> Self {
 		<T as sealed::GossipQueries>::clear_bits(&mut self.flags);
 		self
@@ -796,15 +776,9 @@ impl<T: sealed::GossipQueries> Features<T> {
 
 impl<T: sealed::InitialRoutingSync> Features<T> {
 	// Note that initial_routing_sync is ignored if gossip_queries is set.
+	#[cfg(test)]
 	pub(crate) fn clear_initial_routing_sync(mut self) -> Self {
 		<T as sealed::InitialRoutingSync>::clear_bits(&mut self.flags);
-		self
-	}
-}
-
-impl<T: sealed::OnionMessages> Features<T> {
-	pub(crate) fn clear_onion_messages(mut self) -> Self {
-		<T as sealed::OnionMessages>::clear_bits(&mut self.flags);
 		self
 	}
 }

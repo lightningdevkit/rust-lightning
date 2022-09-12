@@ -43,7 +43,9 @@ use chain::transaction::{OutPoint, TransactionData};
 // construct one themselves.
 use ln::{inbound_payment, PaymentHash, PaymentPreimage, PaymentSecret};
 use ln::channel::{Channel, ChannelError, ChannelUpdateStatus, UpdateFulfillCommitFetch};
-use ln::features::{ChannelTypeFeatures, InitFeatures, NodeFeatures};
+use ln::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
+#[cfg(any(feature = "_test_utils", test))]
+use ln::features::InvoiceFeatures;
 use routing::router::{PaymentParameters, Route, RouteHop, RoutePath, RouteParameters};
 use ln::msgs;
 use ln::onion_utils;
@@ -6127,12 +6129,55 @@ impl<Signer: Sign, M: Deref , T: Deref , K: Deref , F: Deref , L: Deref >
 	}
 
 	fn provided_node_features(&self) -> NodeFeatures {
-		NodeFeatures::known_channel_features()
+		provided_node_features()
 	}
 
 	fn provided_init_features(&self, _their_init_features: &PublicKey) -> InitFeatures {
-		InitFeatures::known_channel_features()
+		provided_init_features()
 	}
+}
+
+/// Fetches the set of [`NodeFeatures`] flags which are provided by or required by
+/// [`ChannelManager`].
+pub fn provided_node_features() -> NodeFeatures {
+	provided_init_features().to_context()
+}
+
+/// Fetches the set of [`InvoiceFeatures`] flags which are provided by or required by
+/// [`ChannelManager`].
+///
+/// Note that the invoice feature flags can vary depending on if the invoice is a "phantom invoice"
+/// or not. Thus, this method is not public.
+#[cfg(any(feature = "_test_utils", test))]
+pub fn provided_invoice_features() -> InvoiceFeatures {
+	provided_init_features().to_context()
+}
+
+/// Fetches the set of [`ChannelFeatures`] flags which are provided by or required by
+/// [`ChannelManager`].
+pub fn provided_channel_features() -> ChannelFeatures {
+	provided_init_features().to_context()
+}
+
+/// Fetches the set of [`InitFeatures`] flags which are provided by or required by
+/// [`ChannelManager`].
+pub fn provided_init_features() -> InitFeatures {
+	// Note that if new features are added here which other peers may (eventually) require, we
+	// should also add the corresponding (optional) bit to the ChannelMessageHandler impl for
+	// ErroringMessageHandler.
+	let mut features = InitFeatures::empty();
+	features.set_data_loss_protect_optional();
+	features.set_upfront_shutdown_script_optional();
+	features.set_variable_length_onion_required();
+	features.set_static_remote_key_required();
+	features.set_payment_secret_required();
+	features.set_basic_mpp_optional();
+	features.set_wumbo_optional();
+	features.set_shutdown_any_segwit_optional();
+	features.set_channel_type_optional();
+	features.set_scid_privacy_optional();
+	features.set_zero_conf_optional();
+	features
 }
 
 const SERIALIZATION_VERSION: u8 = 1;

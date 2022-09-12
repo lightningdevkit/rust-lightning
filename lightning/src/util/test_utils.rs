@@ -17,6 +17,7 @@ use chain::channelmonitor;
 use chain::channelmonitor::MonitorEvent;
 use chain::transaction::OutPoint;
 use chain::keysinterface;
+use ln::channelmanager;
 use ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 use ln::{msgs, wire};
 use ln::script::ShutdownScript;
@@ -359,10 +360,10 @@ impl msgs::ChannelMessageHandler for TestChannelMessageHandler {
 		self.received_msg(wire::Message::Error(msg.clone()));
 	}
 	fn provided_node_features(&self) -> NodeFeatures {
-		NodeFeatures::known_channel_features()
+		channelmanager::provided_node_features()
 	}
 	fn provided_init_features(&self, _their_init_features: &PublicKey) -> InitFeatures {
-		InitFeatures::known_channel_features()
+		channelmanager::provided_init_features()
 	}
 }
 

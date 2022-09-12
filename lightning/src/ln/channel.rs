@@ -23,11 +23,11 @@ use bitcoin::secp256k1::{Secp256k1,ecdsa::Signature};
 use bitcoin::secp256k1;
 
 use ln::{PaymentPreimage, PaymentHash};
-use ln::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures};
+use ln::features::{ChannelTypeFeatures, InitFeatures};
 use ln::msgs;
 use ln::msgs::{DecodeError, OptionalField, DataLossProtect};
 use ln::script::{self, ShutdownScript};
-use ln::channelmanager::{CounterpartyForwardingInfo, PendingHTLCStatus, HTLCSource, HTLCFailReason, HTLCFailureMsg, PendingHTLCInfo, RAACommitmentOrder, BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA, MAX_LOCAL_BREAKDOWN_TIMEOUT};
+use ln::channelmanager::{self, CounterpartyForwardingInfo, PendingHTLCStatus, HTLCSource, HTLCFailReason, HTLCFailureMsg, PendingHTLCInfo, RAACommitmentOrder, BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA, MAX_LOCAL_BREAKDOWN_TIMEOUT};
 use ln::chan_utils::{CounterpartyCommitmentSecrets, TxCreationKeys, HTLCOutputInCommitment, htlc_success_tx_weight, htlc_timeout_tx_weight, make_funding_redeemscript, ChannelPublicKeys, CommitmentTransaction, HolderCommitmentTransaction, ChannelTransactionParameters, CounterpartyChannelTransactionParameters, MAX_HTLCS, get_commitment_transaction_number_obscure_factor, ClosingTransaction};
 use ln::chan_utils;
 use chain::BestBlock;
@@ -5254,7 +5254,7 @@ impl<Signer: Sign> Channel<Signer> {
 		let were_node_one = node_id.serialize()[..] < self.counterparty_node_id.serialize()[..];
 
 		let msg = msgs::UnsignedChannelAnnouncement {
-			features: ChannelFeatures::known(),
+			features: channelmanager::provided_channel_features(),
 			chain_hash,
 			short_channel_id: self.get_short_channel_id().unwrap(),
 			node_id_1: if were_node_one { node_id } else { self.get_counterparty_node_id() },
