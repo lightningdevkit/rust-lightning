@@ -883,6 +883,9 @@ pub trait ChannelMessageHandler : MessageSendEventsProvider {
 	/// is believed to be possible in the future (eg they're sending us messages we don't
 	/// understand or indicate they require unknown feature bits), no_connection_possible is set
 	/// and any outstanding channels should be failed.
+	///
+	/// Note that in some rare cases this may be called without a corresponding
+	/// [`Self::peer_connected`].
 	fn peer_disconnected(&self, their_node_id: &PublicKey, no_connection_possible: bool);
 
 	/// Handle a peer reconnecting, possibly generating channel_reestablish message(s).
@@ -979,6 +982,9 @@ pub trait OnionMessageHandler : OnionMessageProvider {
 	fn peer_connected(&self, their_node_id: &PublicKey, init: &Init);
 	/// Indicates a connection to the peer failed/an existing connection was lost. Allows handlers to
 	/// drop and refuse to forward onion messages to this peer.
+	///
+	/// Note that in some rare cases this may be called without a corresponding
+	/// [`Self::peer_connected`].
 	fn peer_disconnected(&self, their_node_id: &PublicKey, no_connection_possible: bool);
 
 	// Handler information:
