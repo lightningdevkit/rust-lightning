@@ -780,7 +780,8 @@ mod tests {
 	use utils::create_invoice_from_channelmanager_and_duration_since_epoch;
 	use bitcoin_hashes::sha256::Hash as Sha256;
 	use lightning::ln::PaymentPreimage;
-	use lightning::ln::features::{ChannelFeatures, NodeFeatures, InitFeatures};
+	use lightning::ln::channelmanager;
+	use lightning::ln::features::{ChannelFeatures, NodeFeatures};
 	use lightning::ln::functional_test_utils::*;
 	use lightning::ln::msgs::{ChannelMessageHandler, ErrorAction, LightningError};
 	use lightning::routing::gossip::{EffectiveCapacity, NodeId};
@@ -2160,24 +2161,24 @@ mod tests {
 		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None, None]);
 		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
-		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0, InitFeatures::known(), InitFeatures::known());
-		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0, InitFeatures::known(), InitFeatures::known());
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0, channelmanager::provided_init_features(), channelmanager::provided_init_features());
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0, channelmanager::provided_init_features(), channelmanager::provided_init_features());
 		let chans = nodes[0].node.list_usable_channels();
 		let mut route = Route {
 			paths: vec![
 				vec![RouteHop {
 					pubkey: nodes[1].node.get_our_node_id(),
-					node_features: NodeFeatures::known(),
+					node_features: channelmanager::provided_node_features(),
 					short_channel_id: chans[0].short_channel_id.unwrap(),
-					channel_features: ChannelFeatures::known(),
+					channel_features: channelmanager::provided_channel_features(),
 					fee_msat: 10_000,
 					cltv_expiry_delta: 100,
 				}],
 				vec![RouteHop {
 					pubkey: nodes[1].node.get_our_node_id(),
-					node_features: NodeFeatures::known(),
+					node_features: channelmanager::provided_node_features(),
 					short_channel_id: chans[1].short_channel_id.unwrap(),
-					channel_features: ChannelFeatures::known(),
+					channel_features: channelmanager::provided_channel_features(),
 					fee_msat: 100_000_001, // Our default max-HTLC-value is 10% of the channel value, which this is one more than
 					cltv_expiry_delta: 100,
 				}],
@@ -2212,16 +2213,16 @@ mod tests {
 		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None, None]);
 		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
-		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0, InitFeatures::known(), InitFeatures::known());
-		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0, InitFeatures::known(), InitFeatures::known());
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0, channelmanager::provided_init_features(), channelmanager::provided_init_features());
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0, channelmanager::provided_init_features(), channelmanager::provided_init_features());
 		let chans = nodes[0].node.list_usable_channels();
 		let mut route = Route {
 			paths: vec![
 				vec![RouteHop {
 					pubkey: nodes[1].node.get_our_node_id(),
-					node_features: NodeFeatures::known(),
+					node_features: channelmanager::provided_node_features(),
 					short_channel_id: chans[0].short_channel_id.unwrap(),
-					channel_features: ChannelFeatures::known(),
+					channel_features: channelmanager::provided_channel_features(),
 					fee_msat: 100_000_001, // Our default max-HTLC-value is 10% of the channel value, which this is one more than
 					cltv_expiry_delta: 100,
 				}],
@@ -2271,38 +2272,38 @@ mod tests {
 		let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
 		let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
-		let chan_1_scid = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 10_000_000, 0, InitFeatures::known(), InitFeatures::known()).0.contents.short_channel_id;
-		let chan_2_scid = create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 10_000_000, 0, InitFeatures::known(), InitFeatures::known()).0.contents.short_channel_id;
+		let chan_1_scid = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 10_000_000, 0, channelmanager::provided_init_features(), channelmanager::provided_init_features()).0.contents.short_channel_id;
+		let chan_2_scid = create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 10_000_000, 0, channelmanager::provided_init_features(), channelmanager::provided_init_features()).0.contents.short_channel_id;
 
 		let mut route = Route {
 			paths: vec![
 				vec![RouteHop {
 					pubkey: nodes[1].node.get_our_node_id(),
-					node_features: NodeFeatures::known(),
+					node_features: channelmanager::provided_node_features(),
 					short_channel_id: chan_1_scid,
-					channel_features: ChannelFeatures::known(),
+					channel_features: channelmanager::provided_channel_features(),
 					fee_msat: 0,
 					cltv_expiry_delta: 100,
 				}, RouteHop {
 					pubkey: nodes[2].node.get_our_node_id(),
-					node_features: NodeFeatures::known(),
+					node_features: channelmanager::provided_node_features(),
 					short_channel_id: chan_2_scid,
-					channel_features: ChannelFeatures::known(),
+					channel_features: channelmanager::provided_channel_features(),
 					fee_msat: 100_000_000,
 					cltv_expiry_delta: 100,
 				}],
 				vec![RouteHop {
 					pubkey: nodes[1].node.get_our_node_id(),
-					node_features: NodeFeatures::known(),
+					node_features: channelmanager::provided_node_features(),
 					short_channel_id: chan_1_scid,
-					channel_features: ChannelFeatures::known(),
+					channel_features: channelmanager::provided_channel_features(),
 					fee_msat: 0,
 					cltv_expiry_delta: 100,
 				}, RouteHop {
 					pubkey: nodes[2].node.get_our_node_id(),
-					node_features: NodeFeatures::known(),
+					node_features: channelmanager::provided_node_features(),
 					short_channel_id: chan_2_scid,
-					channel_features: ChannelFeatures::known(),
+					channel_features: channelmanager::provided_channel_features(),
 					fee_msat: 100_000_000,
 					cltv_expiry_delta: 100,
 				}]
