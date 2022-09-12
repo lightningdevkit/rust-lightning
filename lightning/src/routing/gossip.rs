@@ -2617,7 +2617,7 @@ mod tests {
 		// It should ignore if gossip_queries feature is not enabled
 		{
 			let init_msg = Init { features: InitFeatures::known().clear_gossip_queries(), remote_network_address: None };
-			gossip_sync.peer_connected(&node_id_1, &init_msg);
+			gossip_sync.peer_connected(&node_id_1, &init_msg).unwrap();
 			let events = gossip_sync.get_and_clear_pending_msg_events();
 			assert_eq!(events.len(), 0);
 		}
@@ -2625,7 +2625,7 @@ mod tests {
 		// It should send a gossip_timestamp_filter with the correct information
 		{
 			let init_msg = Init { features: InitFeatures::known(), remote_network_address: None };
-			gossip_sync.peer_connected(&node_id_1, &init_msg);
+			gossip_sync.peer_connected(&node_id_1, &init_msg).unwrap();
 			let events = gossip_sync.get_and_clear_pending_msg_events();
 			assert_eq!(events.len(), 1);
 			match &events[0] {
