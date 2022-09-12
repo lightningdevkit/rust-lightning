@@ -824,7 +824,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 			}
 			if peer.should_buffer_gossip_broadcast() {
 				if let Some(msg) = peer.gossip_broadcast_buffer.pop_front() {
-					peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&msg[..]));
+					peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_buffer(&msg[..]));
 				}
 			}
 			if peer.should_buffer_gossip_backfill() {
@@ -943,16 +943,13 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 
 	/// Append a message to a peer's pending outbound/write buffer
 	fn enqueue_message<M: wire::Type>(&self, peer: &mut Peer, message: &M) {
-		let mut buffer = VecWriter(Vec::with_capacity(2048));
-		wire::write(message, &mut buffer).unwrap(); // crash if the write failed
-
 		if is_gossip_msg(message.type_id()) {
 			log_gossip!(self.logger, "Enqueueing message {:?} to {}", message, log_pubkey!(peer.their_node_id.unwrap()));
 		} else {
 			log_trace!(self.logger, "Enqueueing message {:?} to {}", message, log_pubkey!(peer.their_node_id.unwrap()))
 		}
 		peer.msgs_sent_since_pong += 1;
-		peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&buffer.0[..]));
+		peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(message));
 	}
 
 	/// Append a message to a peer's pending outbound/write gossip broadcast buffer
