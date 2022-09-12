@@ -240,7 +240,7 @@ pub struct InvoiceRequest {
 #[derive(Clone, Debug)]
 pub(crate) struct InvoiceRequestContents {
 	payer: PayerContents,
-	offer: OfferContents,
+	pub(super) offer: OfferContents,
 	chain: Option<ChainHash>,
 	amount_msats: Option<u64>,
 	features: Option<OfferFeatures>,
@@ -302,6 +302,21 @@ impl InvoiceRequest {
 impl InvoiceRequestContents {
 	fn chain(&self) -> ChainHash {
 		self.chain.unwrap_or_else(|| self.offer.implied_chain())
+	}
+
+	pub fn network(&self) -> Network {
+		let chain = self.chain();
+		if chain == ChainHash::using_genesis_block(Network::Bitcoin) {
+			Network::Bitcoin
+		} else if chain == ChainHash::using_genesis_block(Network::Testnet) {
+			Network::Testnet
+		} else if chain == ChainHash::using_genesis_block(Network::Signet) {
+			Network::Signet
+		} else if chain == ChainHash::using_genesis_block(Network::Regtest) {
+			Network::Regtest
+		} else {
+			unreachable!()
+		}
 	}
 
 	pub(super) fn as_tlv_stream(&self) -> PartialInvoiceRequestTlvStreamRef {

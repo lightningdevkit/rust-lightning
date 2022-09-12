@@ -30,6 +30,7 @@ use bitcoin::consensus;
 use bitcoin::consensus::Encodable;
 use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::hash_types::{Txid, BlockHash};
+use bitcoin::util::address::WitnessVersion;
 use core::marker::Sized;
 use core::time::Duration;
 use crate::ln::msgs::DecodeError;
@@ -970,6 +971,22 @@ macro_rules! impl_consensus_ser {
 impl_consensus_ser!(Transaction);
 impl_consensus_ser!(TxOut);
 
+impl Writeable for WitnessVersion {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		self.to_num().write(w)
+	}
+}
+
+impl Readable for WitnessVersion {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let num: u8 = Readable::read(r)?;
+		match WitnessVersion::try_from(num) {
+			Ok(version) => Ok(version),
+			Err(_) => Err(DecodeError::InvalidValue),
+		}
+	}
+}
+
 impl<T: Readable> Readable for Mutex<T> {
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		let t: T = Readable::read(r)?;
@@ -1027,6 +1044,26 @@ impl<A: Writeable, B: Writeable, C: Writeable, D: Writeable> Writeable for (A, B
 		self.1.write(w)?;
 		self.2.write(w)?;
 		self.3.write(w)
+	}
+}
+
+impl<A: Readable, B: Readable, C: Readable, D: Readable, E: Readable> Readable for (A, B, C, D, E) {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let a: A = Readable::read(r)?;
+		let b: B = Readable::read(r)?;
+		let c: C = Readable::read(r)?;
+		let d: D = Readable::read(r)?;
+		let e: E = Readable::read(r)?;
+		Ok((a, b, c, d, e))
+	}
+}
+impl<A: Writeable, B: Writeable, C: Writeable, D: Writeable, E: Writeable> Writeable for (A, B, C, D, E) {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		self.0.write(w)?;
+		self.1.write(w)?;
+		self.2.write(w)?;
+		self.3.write(w)?;
+		self.4.write(w)
 	}
 }
 

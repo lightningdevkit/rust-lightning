@@ -358,7 +358,7 @@ impl Offer {
 
 	/// The public key used by the recipient to sign invoices.
 	pub fn signing_pubkey(&self) -> PublicKey {
-		self.contents.signing_pubkey.unwrap()
+		self.contents.signing_pubkey()
 	}
 
 	///
@@ -427,6 +427,10 @@ impl OfferContents {
 			Quantity::Bounded(n) => n.get() != 1,
 			Quantity::Unbounded => true,
 		}
+	}
+
+	pub fn signing_pubkey(&self) -> PublicKey {
+		self.signing_pubkey.unwrap()
 	}
 
 	pub(super) fn as_tlv_stream(&self) -> OfferTlvStreamRef {

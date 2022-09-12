@@ -132,6 +132,12 @@ pub enum SemanticError {
 	UnexpectedQuantity,
 	/// A payer id was expected but was missing.
 	MissingPayerId,
+	///
+	InvalidPayInfo,
+	///
+	MissingCreationTime,
+	///
+	MissingPaymentHash,
 }
 
 impl From<bech32::Error> for ParseError {
