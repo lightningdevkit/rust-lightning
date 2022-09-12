@@ -368,10 +368,12 @@ where C::Target: chain::Access, L::Target: Logger
 	/// to request gossip messages for each channel. The sync is considered complete
 	/// when the final reply_scids_end message is received, though we are not
 	/// tracking this directly.
-	fn peer_connected(&self, their_node_id: &PublicKey, init_msg: &Init) {
+	fn peer_connected(&self, their_node_id: &PublicKey, init_msg: &Init) -> Result<(), ()> {
 		// We will only perform a sync with peers that support gossip_queries.
 		if !init_msg.features.supports_gossip_queries() {
-			return ();
+			// Don't disconnect peers for not supporting gossip queries. We may wish to have
+			// channels with peers even without being able to exchange gossip.
+			return Ok(());
 		}
 
 		// The lightning network's gossip sync system is completely broken in numerous ways.
@@ -445,6 +447,7 @@ where C::Target: chain::Access, L::Target: Logger
 				timestamp_range: u32::max_value(),
 			},
 		});
+		Ok(())
 	}
 
 	fn handle_reply_channel_range(&self, _their_node_id: &PublicKey, _msg: ReplyChannelRange) -> Result<(), LightningError> {

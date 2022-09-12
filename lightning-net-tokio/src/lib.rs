@@ -577,7 +577,7 @@ mod tests {
 		fn handle_channel_update(&self, _msg: &ChannelUpdate) -> Result<bool, LightningError> { Ok(false) }
 		fn get_next_channel_announcement(&self, _starting_point: u64) -> Option<(ChannelAnnouncement, Option<ChannelUpdate>, Option<ChannelUpdate>)> { None }
 		fn get_next_node_announcement(&self, _starting_point: Option<&PublicKey>) -> Option<NodeAnnouncement> { None }
-		fn peer_connected(&self, _their_node_id: &PublicKey, _init_msg: &Init) { }
+		fn peer_connected(&self, _their_node_id: &PublicKey, _init_msg: &Init) -> Result<(), ()> { Ok(()) }
 		fn handle_reply_channel_range(&self, _their_node_id: &PublicKey, _msg: ReplyChannelRange) -> Result<(), LightningError> { Ok(()) }
 		fn handle_reply_short_channel_ids_end(&self, _their_node_id: &PublicKey, _msg: ReplyShortChannelIdsEnd) -> Result<(), LightningError> { Ok(()) }
 		fn handle_query_channel_range(&self, _their_node_id: &PublicKey, _msg: QueryChannelRange) -> Result<(), LightningError> { Ok(()) }
@@ -608,10 +608,11 @@ mod tests {
 				self.pubkey_disconnected.clone().try_send(()).unwrap();
 			}
 		}
-		fn peer_connected(&self, their_node_id: &PublicKey, _msg: &Init) {
+		fn peer_connected(&self, their_node_id: &PublicKey, _init_msg: &Init) -> Result<(), ()> {
 			if *their_node_id == self.expected_pubkey {
 				self.pubkey_connected.clone().try_send(()).unwrap();
 			}
+			Ok(())
 		}
 		fn handle_channel_reestablish(&self, _their_node_id: &PublicKey, _msg: &ChannelReestablish) {}
 		fn handle_error(&self, _their_node_id: &PublicKey, _msg: &ErrorMessage) {}

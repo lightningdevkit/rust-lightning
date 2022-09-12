@@ -335,11 +335,12 @@ impl<Signer: Sign, K: Deref, L: Deref> OnionMessageHandler for OnionMessenger<Si
 		};
 	}
 
-	fn peer_connected(&self, their_node_id: &PublicKey, init: &msgs::Init) {
+	fn peer_connected(&self, their_node_id: &PublicKey, init: &msgs::Init) -> Result<(), ()> {
 		if init.features.supports_onion_messages() {
 			let mut peers = self.pending_messages.lock().unwrap();
 			peers.insert(their_node_id.clone(), VecDeque::new());
 		}
+		Ok(())
 	}
 
 	fn peer_disconnected(&self, their_node_id: &PublicKey, _no_connection_possible: bool) {

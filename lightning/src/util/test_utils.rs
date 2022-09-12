@@ -350,9 +350,10 @@ impl msgs::ChannelMessageHandler for TestChannelMessageHandler {
 		self.received_msg(wire::Message::ChannelReestablish(msg.clone()));
 	}
 	fn peer_disconnected(&self, _their_node_id: &PublicKey, _no_connection_possible: bool) {}
-	fn peer_connected(&self, _their_node_id: &PublicKey, _msg: &msgs::Init) {
+	fn peer_connected(&self, _their_node_id: &PublicKey, _msg: &msgs::Init) -> Result<(), ()> {
 		// Don't bother with `received_msg` for Init as its auto-generated and we don't want to
 		// bother re-generating the expected Init message in all tests.
+		Ok(())
 	}
 	fn handle_error(&self, _their_node_id: &PublicKey, msg: &msgs::ErrorMessage) {
 		self.received_msg(wire::Message::Error(msg.clone()));
@@ -465,9 +466,9 @@ impl msgs::RoutingMessageHandler for TestRoutingMessageHandler {
 		None
 	}
 
-	fn peer_connected(&self, their_node_id: &PublicKey, init_msg: &msgs::Init) {
+	fn peer_connected(&self, their_node_id: &PublicKey, init_msg: &msgs::Init) -> Result<(), ()> {
 		if !init_msg.features.supports_gossip_queries() {
-			return ();
+			return Ok(());
 		}
 
 		#[allow(unused_mut, unused_assignments)]
@@ -491,6 +492,7 @@ impl msgs::RoutingMessageHandler for TestRoutingMessageHandler {
 				timestamp_range: u32::max_value(),
 			},
 		});
+		Ok(())
 	}
 
 	fn handle_reply_channel_range(&self, _their_node_id: &PublicKey, _msg: msgs::ReplyChannelRange) -> Result<(), msgs::LightningError> {
