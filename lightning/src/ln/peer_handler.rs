@@ -367,8 +367,10 @@ struct Peer {
 
 	pending_outbound_buffer: LinkedList<Vec<u8>>,
 	pending_outbound_buffer_first_msg_offset: usize,
-	// Queue gossip broadcasts separately from `pending_outbound_buffer` so we can easily prioritize
-	// channel messages over them.
+	/// Queue gossip broadcasts separately from `pending_outbound_buffer` so we can easily
+	/// prioritize channel messages over them.
+	///
+	/// Note that these messages are *not* encrypted/MAC'd, and are only serialized.
 	gossip_broadcast_buffer: LinkedList<Vec<u8>>,
 	awaiting_write_event: bool,
 
@@ -822,7 +824,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 			}
 			if peer.should_buffer_gossip_broadcast() {
 				if let Some(msg) = peer.gossip_broadcast_buffer.pop_front() {
-					peer.pending_outbound_buffer.push_back(msg);
+					peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_buffer(&msg[..]));
 				}
 			}
 			if peer.should_buffer_gossip_backfill() {
@@ -941,22 +943,19 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 
 	/// Append a message to a peer's pending outbound/write buffer
 	fn enqueue_message<M: wire::Type>(&self, peer: &mut Peer, message: &M) {
-		let mut buffer = VecWriter(Vec::with_capacity(2048));
-		wire::write(message, &mut buffer).unwrap(); // crash if the write failed
-
 		if is_gossip_msg(message.type_id()) {
 			log_gossip!(self.logger, "Enqueueing message {:?} to {}", message, log_pubkey!(peer.their_node_id.unwrap()));
 		} else {
 			log_trace!(self.logger, "Enqueueing message {:?} to {}", message, log_pubkey!(peer.their_node_id.unwrap()))
 		}
 		peer.msgs_sent_since_pong += 1;
-		peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&buffer.0[..]));
+		peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(message));
 	}
 
 	/// Append a message to a peer's pending outbound/write gossip broadcast buffer
-	fn enqueue_encoded_gossip_broadcast(&self, peer: &mut Peer, encoded_message: &Vec<u8>) {
+	fn enqueue_encoded_gossip_broadcast(&self, peer: &mut Peer, encoded_message: Vec<u8>) {
 		peer.msgs_sent_since_pong += 1;
-		peer.gossip_broadcast_buffer.push_back(peer.channel_encryptor.encrypt_message(&encoded_message[..]));
+		peer.gossip_broadcast_buffer.push_back(encoded_message);
 	}
 
 	fn do_read_event(&self, peer_descriptor: &mut Descriptor, data: &[u8]) -> Result<bool, PeerHandleError> {
@@ -1438,7 +1437,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 					if except_node.is_some() && peer.their_node_id.as_ref() == except_node {
 						continue;
 					}
-					self.enqueue_encoded_gossip_broadcast(&mut *peer, &encoded_msg);
+					self.enqueue_encoded_gossip_broadcast(&mut *peer, encoded_msg.clone());
 				}
 			},
 			wire::Message::NodeAnnouncement(ref msg) => {
@@ -1461,7 +1460,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 					if except_node.is_some() && peer.their_node_id.as_ref() == except_node {
 						continue;
 					}
-					self.enqueue_encoded_gossip_broadcast(&mut *peer, &encoded_msg);
+					self.enqueue_encoded_gossip_broadcast(&mut *peer, encoded_msg.clone());
 				}
 			},
 			wire::Message::ChannelUpdate(ref msg) => {
@@ -1481,7 +1480,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 					if except_node.is_some() && peer.their_node_id.as_ref() == except_node {
 						continue;
 					}
-					self.enqueue_encoded_gossip_broadcast(&mut *peer, &encoded_msg);
+					self.enqueue_encoded_gossip_broadcast(&mut *peer, encoded_msg.clone());
 				}
 			},
 			_ => debug_assert!(false, "We shouldn't attempt to forward anything but gossip messages"),

@@ -74,6 +74,11 @@ mod real_chachapoly {
 			self.mac.raw_result(out_tag);
 		}
 
+		pub fn encrypt_full_message_in_place(&mut self, input_output: &mut [u8], out_tag: &mut [u8]) {
+			self.encrypt_in_place(input_output);
+			self.finish_and_get_tag(out_tag);
+		}
+
 		// Encrypt `input_output` in-place. To finish and calculate the tag, use `finish_and_get_tag`
 		// below.
 		pub(super) fn encrypt_in_place(&mut self, input_output: &mut [u8]) {
@@ -282,6 +287,11 @@ mod fuzzy_chachapoly {
 			output.copy_from_slice(&input);
 			out_tag.copy_from_slice(&self.tag);
 			self.finished = true;
+		}
+
+		pub fn encrypt_full_message_in_place(&mut self, input_output: &mut [u8], out_tag: &mut [u8]) {
+			self.encrypt_in_place(input_output);
+			self.finish_and_get_tag(out_tag);
 		}
 
 		pub(super) fn encrypt_in_place(&mut self, _input_output: &mut [u8]) {

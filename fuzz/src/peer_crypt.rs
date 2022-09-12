@@ -74,7 +74,7 @@ pub fn do_test(data: &[u8]) {
 	};
 	loop {
 		if get_slice!(1)[0] == 0 {
-			crypter.encrypt_message(get_slice!(slice_to_be16(get_slice!(2))));
+			crypter.encrypt_buffer(get_slice!(slice_to_be16(get_slice!(2))));
 		} else {
 			let len = match crypter.decrypt_length_header(get_slice!(16+2)) {
 				Ok(len) => len,
