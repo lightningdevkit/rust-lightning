@@ -1127,7 +1127,10 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 												}
 												(_, Some(ty)) if is_gossip_msg(ty) => {
 													log_gossip!(self.logger, "Got an invalid value while deserializing a gossip message");
-													self.enqueue_message(peer, &msgs::WarningMessage { channel_id: [0; 32], data: "Unreadable/bogus gossip message".to_owned() });
+													self.enqueue_message(peer, &msgs::WarningMessage {
+														channel_id: [0; 32],
+														data: format!("Unreadable/bogus gossip message of type {}", ty),
+													});
 													continue;
 												}
 												(msgs::DecodeError::UnknownRequiredFeature, ty) => {
