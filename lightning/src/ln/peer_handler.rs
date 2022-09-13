@@ -73,7 +73,7 @@ impl RoutingMessageHandler for IgnoringMessageHandler {
 	fn get_next_channel_announcement(&self, _starting_point: u64) ->
 		Option<(msgs::ChannelAnnouncement, Option<msgs::ChannelUpdate>, Option<msgs::ChannelUpdate>)> { None }
 	fn get_next_node_announcement(&self, _starting_point: Option<&PublicKey>) -> Option<msgs::NodeAnnouncement> { None }
-	fn peer_connected(&self, _their_node_id: &PublicKey, _init: &msgs::Init) {}
+	fn peer_connected(&self, _their_node_id: &PublicKey, _init: &msgs::Init) -> Result<(), ()> { Ok(()) }
 	fn handle_reply_channel_range(&self, _their_node_id: &PublicKey, _msg: msgs::ReplyChannelRange) -> Result<(), LightningError> { Ok(()) }
 	fn handle_reply_short_channel_ids_end(&self, _their_node_id: &PublicKey, _msg: msgs::ReplyShortChannelIdsEnd) -> Result<(), LightningError> { Ok(()) }
 	fn handle_query_channel_range(&self, _their_node_id: &PublicKey, _msg: msgs::QueryChannelRange) -> Result<(), LightningError> { Ok(()) }
@@ -88,7 +88,7 @@ impl OnionMessageProvider for IgnoringMessageHandler {
 }
 impl OnionMessageHandler for IgnoringMessageHandler {
 	fn handle_onion_message(&self, _their_node_id: &PublicKey, _msg: &msgs::OnionMessage) {}
-	fn peer_connected(&self, _their_node_id: &PublicKey, _init: &msgs::Init) {}
+	fn peer_connected(&self, _their_node_id: &PublicKey, _init: &msgs::Init) -> Result<(), ()> { Ok(()) }
 	fn peer_disconnected(&self, _their_node_id: &PublicKey, _no_connection_possible: bool) {}
 	fn provided_node_features(&self) -> NodeFeatures { NodeFeatures::empty() }
 	fn provided_init_features(&self, _their_node_id: &PublicKey) -> InitFeatures {
@@ -209,7 +209,7 @@ impl ChannelMessageHandler for ErroringMessageHandler {
 	// msgs::ChannelUpdate does not contain the channel_id field, so we just drop them.
 	fn handle_channel_update(&self, _their_node_id: &PublicKey, _msg: &msgs::ChannelUpdate) {}
 	fn peer_disconnected(&self, _their_node_id: &PublicKey, _no_connection_possible: bool) {}
-	fn peer_connected(&self, _their_node_id: &PublicKey, _msg: &msgs::Init) {}
+	fn peer_connected(&self, _their_node_id: &PublicKey, _init: &msgs::Init) -> Result<(), ()> { Ok(()) }
 	fn handle_error(&self, _their_node_id: &PublicKey, _msg: &msgs::ErrorMessage) {}
 	fn provided_node_features(&self) -> NodeFeatures { NodeFeatures::empty() }
 	fn provided_init_features(&self, _their_node_id: &PublicKey) -> InitFeatures {
@@ -1213,14 +1213,18 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 				peer_lock.sync_status = InitSyncTracker::ChannelsSyncing(0);
 			}
 
-			if !msg.features.supports_static_remote_key() {
-				log_debug!(self.logger, "Peer {} does not support static remote key, disconnecting with no_connection_possible", log_pubkey!(their_node_id));
+			if let Err(()) = self.message_handler.route_handler.peer_connected(&their_node_id, &msg) {
+				log_debug!(self.logger, "Route Handler decided we couldn't communicate with peer {}", log_pubkey!(their_node_id));
 				return Err(PeerHandleError{ no_connection_possible: true }.into());
 			}
-
-			self.message_handler.route_handler.peer_connected(&their_node_id, &msg);
-			self.message_handler.chan_handler.peer_connected(&their_node_id, &msg);
-			self.message_handler.onion_message_handler.peer_connected(&their_node_id, &msg);
+			if let Err(()) = self.message_handler.chan_handler.peer_connected(&their_node_id, &msg) {
+				log_debug!(self.logger, "Channel Handler decided we couldn't communicate with peer {}", log_pubkey!(their_node_id));
+				return Err(PeerHandleError{ no_connection_possible: true }.into());
+			}
+			if let Err(()) = self.message_handler.onion_message_handler.peer_connected(&their_node_id, &msg) {
+				log_debug!(self.logger, "Onion Message Handler decided we couldn't communicate with peer {}", log_pubkey!(their_node_id));
+				return Err(PeerHandleError{ no_connection_possible: true }.into());
+			}
 
 			peer_lock.their_features = Some(msg.features);
 			return Ok(None);

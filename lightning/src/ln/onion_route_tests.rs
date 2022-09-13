@@ -887,10 +887,12 @@ fn test_do_not_default_to_onion_payload_tlv_format_when_unsupported() {
 	let chanmon_cfgs = create_chanmon_cfgs(4);
 	let mut node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
 
-	// Set `node[1]` config to `InitFeatures::empty()` which return `false` for
-	// `supports_variable_length_onion()`
+	// Set `node[1]` config to `InitFeatures::empty()` + `static_remote_key` which implies
+	// `!supports_variable_length_onion()` but still supports the required static-remote-key
+	// feature.
 	let mut node_1_cfg = &mut node_cfgs[1];
 	node_1_cfg.features = InitFeatures::empty();
+	node_1_cfg.features.set_static_remote_key_required();
 
 	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, None, None, None]);
 	let mut nodes = create_network(4, &node_cfgs, &node_chanmgrs);

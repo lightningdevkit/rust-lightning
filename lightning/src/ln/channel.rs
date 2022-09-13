@@ -3550,6 +3550,12 @@ impl<Signer: Sign> Channel<Signer> {
 			return;
 		}
 
+		if self.channel_state & (ChannelState::PeerDisconnected as u32) == (ChannelState::PeerDisconnected as u32) {
+			// While the below code should be idempotent, it's simpler to just return early, as
+			// redundant disconnect events can fire, though they should be rare.
+			return;
+		}
+
 		if self.announcement_sigs_state == AnnouncementSigsState::MessageSent || self.announcement_sigs_state == AnnouncementSigsState::Committed {
 			self.announcement_sigs_state = AnnouncementSigsState::NotSent;
 		}

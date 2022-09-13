@@ -883,10 +883,17 @@ pub trait ChannelMessageHandler : MessageSendEventsProvider {
 	/// is believed to be possible in the future (eg they're sending us messages we don't
 	/// understand or indicate they require unknown feature bits), no_connection_possible is set
 	/// and any outstanding channels should be failed.
+	///
+	/// Note that in some rare cases this may be called without a corresponding
+	/// [`Self::peer_connected`].
 	fn peer_disconnected(&self, their_node_id: &PublicKey, no_connection_possible: bool);
 
 	/// Handle a peer reconnecting, possibly generating channel_reestablish message(s).
-	fn peer_connected(&self, their_node_id: &PublicKey, msg: &Init);
+	///
+	/// May return an `Err(())` if the features the peer supports are not sufficient to communicate
+	/// with us. Implementors should be somewhat conservative about doing so, however, as other
+	/// message handlers may still wish to communicate with this peer.
+	fn peer_connected(&self, their_node_id: &PublicKey, msg: &Init) -> Result<(), ()>;
 	/// Handle an incoming channel_reestablish message from the given peer.
 	fn handle_channel_reestablish(&self, their_node_id: &PublicKey, msg: &ChannelReestablish);
 
@@ -940,7 +947,11 @@ pub trait RoutingMessageHandler : MessageSendEventsProvider {
 	/// Called when a connection is established with a peer. This can be used to
 	/// perform routing table synchronization using a strategy defined by the
 	/// implementor.
-	fn peer_connected(&self, their_node_id: &PublicKey, init: &Init);
+	///
+	/// May return an `Err(())` if the features the peer supports are not sufficient to communicate
+	/// with us. Implementors should be somewhat conservative about doing so, however, as other
+	/// message handlers may still wish to communicate with this peer.
+	fn peer_connected(&self, their_node_id: &PublicKey, init: &Init) -> Result<(), ()>;
 	/// Handles the reply of a query we initiated to learn about channels
 	/// for a given range of blocks. We can expect to receive one or more
 	/// replies to a single query.
@@ -976,9 +987,16 @@ pub trait OnionMessageHandler : OnionMessageProvider {
 	fn handle_onion_message(&self, peer_node_id: &PublicKey, msg: &OnionMessage);
 	/// Called when a connection is established with a peer. Can be used to track which peers
 	/// advertise onion message support and are online.
-	fn peer_connected(&self, their_node_id: &PublicKey, init: &Init);
+	///
+	/// May return an `Err(())` if the features the peer supports are not sufficient to communicate
+	/// with us. Implementors should be somewhat conservative about doing so, however, as other
+	/// message handlers may still wish to communicate with this peer.
+	fn peer_connected(&self, their_node_id: &PublicKey, init: &Init) -> Result<(), ()>;
 	/// Indicates a connection to the peer failed/an existing connection was lost. Allows handlers to
 	/// drop and refuse to forward onion messages to this peer.
+	///
+	/// Note that in some rare cases this may be called without a corresponding
+	/// [`Self::peer_connected`].
 	fn peer_disconnected(&self, their_node_id: &PublicKey, no_connection_possible: bool);
 
 	// Handler information:

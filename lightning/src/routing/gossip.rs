@@ -368,10 +368,12 @@ where C::Target: chain::Access, L::Target: Logger
 	/// to request gossip messages for each channel. The sync is considered complete
 	/// when the final reply_scids_end message is received, though we are not
 	/// tracking this directly.
-	fn peer_connected(&self, their_node_id: &PublicKey, init_msg: &Init) {
+	fn peer_connected(&self, their_node_id: &PublicKey, init_msg: &Init) -> Result<(), ()> {
 		// We will only perform a sync with peers that support gossip_queries.
 		if !init_msg.features.supports_gossip_queries() {
-			return ();
+			// Don't disconnect peers for not supporting gossip queries. We may wish to have
+			// channels with peers even without being able to exchange gossip.
+			return Ok(());
 		}
 
 		// The lightning network's gossip sync system is completely broken in numerous ways.
@@ -445,6 +447,7 @@ where C::Target: chain::Access, L::Target: Logger
 				timestamp_range: u32::max_value(),
 			},
 		});
+		Ok(())
 	}
 
 	fn handle_reply_channel_range(&self, _their_node_id: &PublicKey, _msg: ReplyChannelRange) -> Result<(), LightningError> {
@@ -2614,7 +2617,7 @@ mod tests {
 		// It should ignore if gossip_queries feature is not enabled
 		{
 			let init_msg = Init { features: InitFeatures::known().clear_gossip_queries(), remote_network_address: None };
-			gossip_sync.peer_connected(&node_id_1, &init_msg);
+			gossip_sync.peer_connected(&node_id_1, &init_msg).unwrap();
 			let events = gossip_sync.get_and_clear_pending_msg_events();
 			assert_eq!(events.len(), 0);
 		}
@@ -2622,7 +2625,7 @@ mod tests {
 		// It should send a gossip_timestamp_filter with the correct information
 		{
 			let init_msg = Init { features: InitFeatures::known(), remote_network_address: None };
-			gossip_sync.peer_connected(&node_id_1, &init_msg);
+			gossip_sync.peer_connected(&node_id_1, &init_msg).unwrap();
 			let events = gossip_sync.get_and_clear_pending_msg_events();
 			assert_eq!(events.len(), 1);
 			match &events[0] {
