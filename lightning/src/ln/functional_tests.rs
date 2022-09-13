@@ -24,7 +24,7 @@ use ln::channelmanager::{ChannelManager, ChannelManagerReadArgs, PaymentId, RAAC
 use ln::channel::{Channel, ChannelError};
 use ln::{chan_utils, onion_utils};
 use ln::chan_utils::{htlc_success_tx_weight, htlc_timeout_tx_weight, HTLCOutputInCommitment};
-use routing::gossip::NetworkGraph;
+use routing::gossip::{NetworkGraph, NetworkUpdate};
 use routing::router::{PaymentParameters, Route, RouteHop, RouteParameters, find_route, get_route};
 use ln::features::{ChannelFeatures, InitFeatures, InvoiceFeatures, NodeFeatures};
 use ln::msgs;
@@ -7164,6 +7164,85 @@ fn test_update_fulfill_htlc_bolt2_after_malformed_htlc_message_must_forward_upda
 	};
 
 	check_added_monitors!(nodes[1], 1);
+}
+
+#[test]
+fn test_channel_failed_after_message_with_badonion_node_perm_bits_set() {
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
+	let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::known(), InitFeatures::known());
+
+	let (route, our_payment_hash, _, our_payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], 100_000);
+
+	// First hop
+	let mut payment_event = {
+		nodes[0].node.send_payment(&route, our_payment_hash, &Some(our_payment_secret)).unwrap();
+		check_added_monitors!(nodes[0], 1);
+		SendEvent::from_node(&nodes[0])
+	};
+
+	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
+	commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, false);
+	expect_pending_htlcs_forwardable!(nodes[1]);
+	check_added_monitors!(nodes[1], 1);
+	payment_event = SendEvent::from_node(&nodes[1]);
+	assert_eq!(payment_event.msgs.len(), 1);
+
+	// Second Hop
+	payment_event.msgs[0].onion_routing_packet.version = 1; // Trigger an invalid_onion_version error
+	nodes[2].node.handle_update_add_htlc(&nodes[1].node.get_our_node_id(), &payment_event.msgs[0]);
+	check_added_monitors!(nodes[2], 0);
+	commitment_signed_dance!(nodes[2], nodes[1], payment_event.commitment_msg, false, true);
+
+	let events_3 = nodes[2].node.get_and_clear_pending_msg_events();
+	assert_eq!(events_3.len(), 1);
+	match events_3[0] {
+		MessageSendEvent::UpdateHTLCs { ref updates, .. } => {
+			let mut update_msg = updates.update_fail_malformed_htlcs[0].clone();
+			// Set the NODE bit (BADONION and PERM already set in invalid_onion_version error)
+			update_msg.failure_code |= 0x2000;
+
+			nodes[1].node.handle_update_fail_malformed_htlc(&nodes[2].node.get_our_node_id(), &update_msg);
+			commitment_signed_dance!(nodes[1], nodes[2], updates.commitment_signed, false, true);
+		},
+		_ => panic!("Unexpected event"),
+	}
+
+	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[1],
+		vec![HTLCDestination::NextHopChannel {
+			node_id: Some(nodes[2].node.get_our_node_id()), channel_id: chan_2.2 }]);
+	let events_4 = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(events_4.len(), 1);
+	check_added_monitors!(nodes[1], 1);
+
+	match events_4[0] {
+		MessageSendEvent::UpdateHTLCs { ref updates, .. } => {
+			nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &updates.update_fail_htlcs[0]);
+			commitment_signed_dance!(nodes[0], nodes[1], updates.commitment_signed, false, true);
+		},
+		_ => panic!("Unexpected event"),
+	}
+
+	let events_5 = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(events_5.len(), 1);
+
+	// Expect a PaymentPathFailed event with a ChannelFailure network update for the channel between
+	// the node originating the error to its next hop.
+	match events_5[0] {
+		Event::PaymentPathFailed { network_update:
+			Some(NetworkUpdate::ChannelFailure { short_channel_id, is_permanent }), error_code, ..
+		} => {
+			assert_eq!(short_channel_id, chan_2.0.contents.short_channel_id);
+			assert!(is_permanent);
+			assert_eq!(error_code, Some(0x8000|0x4000|0x2000|4));
+		},
+		_ => panic!("Unexpected event"),
+	}
+
+	// TODO: Test actual removal of channel from NetworkGraph when it's implemented.
 }
 
 fn do_test_failure_delay_dust_htlc_local_commitment(announce_latest: bool) {
