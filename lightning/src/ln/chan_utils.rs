@@ -42,6 +42,12 @@ use chain;
 use util::crypto::sign;
 
 pub(crate) const MAX_HTLCS: u16 = 483;
+pub(crate) const OFFERED_HTLC_SCRIPT_WEIGHT: usize = 133;
+pub(crate) const OFFERED_HTLC_SCRIPT_WEIGHT_ANCHORS: usize = 136;
+// The weight of `accepted_htlc_script` can vary in function of its CLTV argument value. We define a
+// range that encompasses both its non-anchors and anchors variants.
+pub(crate) const MIN_ACCEPTED_HTLC_SCRIPT_WEIGHT: usize = 136;
+pub(crate) const MAX_ACCEPTED_HTLC_SCRIPT_WEIGHT: usize = 143;
 
 /// Gets the weight for an HTLC-Success transaction.
 #[inline]
@@ -60,18 +66,72 @@ pub fn htlc_timeout_tx_weight(opt_anchors: bool) -> u64 {
 }
 
 #[derive(PartialEq)]
-pub(crate) enum HTLCType {
-	AcceptedHTLC,
-	OfferedHTLC
+pub(crate) enum HTLCClaim {
+	OfferedTimeout,
+	OfferedPreimage,
+	AcceptedTimeout,
+	AcceptedPreimage,
+	Revocation,
 }
 
-impl HTLCType {
-	/// Check if a given tx witnessScript len matchs one of a pre-signed HTLC
-	pub(crate) fn scriptlen_to_htlctype(witness_script_len: usize) ->  Option<HTLCType> {
-		if witness_script_len == 133 {
-			Some(HTLCType::OfferedHTLC)
-		} else if witness_script_len >= 136 && witness_script_len <= 139 {
-			Some(HTLCType::AcceptedHTLC)
+impl HTLCClaim {
+	/// Check if a given input witness attempts to claim a HTLC.
+	pub(crate) fn from_witness(witness: &Witness) -> Option<Self> {
+		debug_assert_eq!(OFFERED_HTLC_SCRIPT_WEIGHT_ANCHORS, MIN_ACCEPTED_HTLC_SCRIPT_WEIGHT);
+		if witness.len() < 2 {
+			return None;
+		}
+		let witness_script = witness.last().unwrap();
+		let second_to_last = witness.second_to_last().unwrap();
+		if witness_script.len() == OFFERED_HTLC_SCRIPT_WEIGHT {
+			if witness.len() == 3 && second_to_last.len() == 33 {
+				// <revocation sig> <revocationpubkey> <witness_script>
+				Some(Self::Revocation)
+			} else if witness.len() == 3 && second_to_last.len() == 32 {
+				// <remotehtlcsig> <payment_preimage> <witness_script>
+				Some(Self::OfferedPreimage)
+			} else if witness.len() == 5 && second_to_last.len() == 0 {
+				// 0 <remotehtlcsig> <localhtlcsig> <> <witness_script>
+				Some(Self::OfferedTimeout)
+			} else {
+				None
+			}
+		} else if witness_script.len() == OFFERED_HTLC_SCRIPT_WEIGHT_ANCHORS {
+			// It's possible for the weight of `offered_htlc_script` and `accepted_htlc_script` to
+			// match so we check for both here.
+			if witness.len() == 3 && second_to_last.len() == 33 {
+				// <revocation sig> <revocationpubkey> <witness_script>
+				Some(Self::Revocation)
+			} else if witness.len() == 3 && second_to_last.len() == 32 {
+				// <remotehtlcsig> <payment_preimage> <witness_script>
+				Some(Self::OfferedPreimage)
+			} else if witness.len() == 5 && second_to_last.len() == 0 {
+				// 0 <remotehtlcsig> <localhtlcsig> <> <witness_script>
+				Some(Self::OfferedTimeout)
+			} else if witness.len() == 3 && second_to_last.len() == 0 {
+				// <remotehtlcsig> <> <witness_script>
+				Some(Self::AcceptedTimeout)
+			} else if witness.len() == 5 && second_to_last.len() == 32 {
+				// 0 <remotehtlcsig> <localhtlcsig> <payment_preimage> <witness_script>
+				Some(Self::AcceptedPreimage)
+			} else {
+				None
+			}
+		} else if witness_script.len() > MIN_ACCEPTED_HTLC_SCRIPT_WEIGHT &&
+			witness_script.len() <= MAX_ACCEPTED_HTLC_SCRIPT_WEIGHT {
+			// Handle remaining range of ACCEPTED_HTLC_SCRIPT_WEIGHT.
+			if witness.len() == 3 && second_to_last.len() == 33 {
+				// <revocation sig> <revocationpubkey> <witness_script>
+				Some(Self::Revocation)
+			} else if witness.len() == 3 && second_to_last.len() == 0 {
+				// <remotehtlcsig> <> <witness_script>
+				Some(Self::AcceptedTimeout)
+			} else if witness.len() == 5 && second_to_last.len() == 32 {
+				// 0 <remotehtlcsig> <localhtlcsig> <payment_preimage> <witness_script>
+				Some(Self::AcceptedPreimage)
+			} else {
+				None
+			}
 		} else {
 			None
 		}
@@ -285,7 +345,7 @@ pub fn derive_public_key<T: secp256k1::Signing>(secp_ctx: &Secp256k1<T>, per_com
 
 /// Derives a per-commitment-transaction revocation key from its constituent parts.
 ///
-/// Only the cheating participant owns a valid witness to propagate a revoked 
+/// Only the cheating participant owns a valid witness to propagate a revoked
 /// commitment transaction, thus per_commitment_secret always come from cheater
 /// and revocation_base_secret always come from punisher, which is the broadcaster
 /// of the transaction spending with this key knowledge.
@@ -320,7 +380,7 @@ pub fn derive_private_revocation_key<T: secp256k1::Signing>(secp_ctx: &Secp256k1
 /// the public equivalend of derive_private_revocation_key - using only public keys to derive a
 /// public key instead of private keys.
 ///
-/// Only the cheating participant owns a valid witness to propagate a revoked 
+/// Only the cheating participant owns a valid witness to propagate a revoked
 /// commitment transaction, thus per_commitment_point always come from cheater
 /// and revocation_base_point always come from punisher, which is the broadcaster
 /// of the transaction spending with this key knowledge.
@@ -616,12 +676,17 @@ pub fn build_htlc_transaction(commitment_txid: &Txid, feerate_per_kw: u32, conte
 	} else {
 		htlc_success_tx_weight(opt_anchors)
 	};
-	let total_fee = feerate_per_kw as u64 * weight / 1000;
+	let output_value = if opt_anchors {
+		htlc.amount_msat / 1000
+	} else {
+		let total_fee = feerate_per_kw as u64 * weight / 1000;
+		htlc.amount_msat / 1000 - total_fee
+	};
 
 	let mut txouts: Vec<TxOut> = Vec::new();
 	txouts.push(TxOut {
 		script_pubkey: get_revokeable_redeemscript(revocation_key, contest_delay, broadcaster_delayed_payment_key).to_v0_p2wsh(),
-		value: htlc.amount_msat / 1000 - total_fee //TODO: BOLT 3 does not specify if we should add amount_msat before dividing or if we should divide by 1000 before subtracting (as we do here)
+		value: output_value,
 	});
 
 	Transaction {
@@ -680,7 +745,8 @@ pub struct ChannelTransactionParameters {
 	pub counterparty_parameters: Option<CounterpartyChannelTransactionParameters>,
 	/// The late-bound funding outpoint
 	pub funding_outpoint: Option<chain::transaction::OutPoint>,
-	/// Are anchors used for this channel.  Boolean is serialization backwards-compatible
+	/// Are anchors (zero fee HTLC transaction variant) used for this channel. Boolean is
+	/// serialization backwards-compatible.
 	pub opt_anchors: Option<()>
 }
 

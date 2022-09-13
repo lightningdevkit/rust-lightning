@@ -160,7 +160,16 @@ impl BaseSign for EnforcingSigner {
 
 			let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&this_htlc, self.opt_anchors(), &keys);
 
-			let sighash = hash_to_message!(&sighash::SighashCache::new(&htlc_tx).segwit_signature_hash(0, &htlc_redeemscript, this_htlc.amount_msat / 1000, EcdsaSighashType::All).unwrap()[..]);
+			let sighash_type = if self.opt_anchors() {
+				EcdsaSighashType::SinglePlusAnyoneCanPay
+			} else {
+				EcdsaSighashType::All
+			};
+			let sighash = hash_to_message!(
+				&sighash::SighashCache::new(&htlc_tx).segwit_signature_hash(
+					0, &htlc_redeemscript, this_htlc.amount_msat / 1000, sighash_type,
+				).unwrap()[..]
+			);
 			secp_ctx.verify_ecdsa(&sighash, sig, &keys.countersignatory_htlc_key).unwrap();
 		}
 
