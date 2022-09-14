@@ -14,7 +14,7 @@ exclude = [
     "no-std-check",
 ]
 
-# Our tests do actual crypo and lots of work, the tradeoff for -O1 is well worth it.
+# Our tests do actual crypto and lots of work, the tradeoff for -O1 is well worth it.
 # Ideally we would only do this in profile.test, but profile.test only applies to
 # the test binary, not dependencies, which means most of the critical code still
 # gets compiled as -O0. See
