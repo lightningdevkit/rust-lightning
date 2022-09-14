@@ -666,14 +666,6 @@ impl<T: sealed::Context> Features<T> {
 		}
 	}
 
-	/// Creates a Features with the bits set which are known by the implementation
-	pub fn known() -> Self {
-		Self {
-			flags: T::KNOWN_FEATURE_FLAGS.to_vec(),
-			mark: PhantomData,
-		}
-	}
-
 	/// Converts `Features<T>` to `Features<C>`. Only known `T` features relevant to context `C` are
 	/// included in the result.
 	fn to_context_internal<C: sealed::Context>(&self) -> Features<C> {
@@ -765,24 +757,6 @@ impl<T: sealed::UpfrontShutdownScript> Features<T> {
 	}
 }
 
-
-impl<T: sealed::GossipQueries> Features<T> {
-	#[cfg(test)]
-	pub(crate) fn clear_gossip_queries(mut self) -> Self {
-		<T as sealed::GossipQueries>::clear_bits(&mut self.flags);
-		self
-	}
-}
-
-impl<T: sealed::InitialRoutingSync> Features<T> {
-	// Note that initial_routing_sync is ignored if gossip_queries is set.
-	#[cfg(test)]
-	pub(crate) fn clear_initial_routing_sync(mut self) -> Self {
-		<T as sealed::InitialRoutingSync>::clear_bits(&mut self.flags);
-		self
-	}
-}
-
 impl<T: sealed::ShutdownAnySegwit> Features<T> {
 	#[cfg(test)]
 	pub(crate) fn clear_shutdown_anysegwit(mut self) -> Self {
@@ -836,96 +810,8 @@ impl Readable for ChannelTypeFeatures {
 
 #[cfg(test)]
 mod tests {
-	use super::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, InvoiceFeatures, NodeFeatures};
+	use super::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, InvoiceFeatures, NodeFeatures, sealed};
 	use bitcoin::bech32::{Base32Len, FromBase32, ToBase32, u5};
-
-	#[test]
-	fn sanity_test_known_features() {
-		assert!(!ChannelFeatures::known().requires_unknown_bits());
-		assert!(!ChannelFeatures::known().supports_unknown_bits());
-		assert!(!InitFeatures::known().requires_unknown_bits());
-		assert!(!InitFeatures::known().supports_unknown_bits());
-		assert!(!NodeFeatures::known().requires_unknown_bits());
-		assert!(!NodeFeatures::known().supports_unknown_bits());
-
-		assert!(InitFeatures::known().supports_upfront_shutdown_script());
-		assert!(NodeFeatures::known().supports_upfront_shutdown_script());
-		assert!(!InitFeatures::known().requires_upfront_shutdown_script());
-		assert!(!NodeFeatures::known().requires_upfront_shutdown_script());
-
-		assert!(InitFeatures::known().supports_gossip_queries());
-		assert!(NodeFeatures::known().supports_gossip_queries());
-		assert!(!InitFeatures::known().requires_gossip_queries());
-		assert!(!NodeFeatures::known().requires_gossip_queries());
-
-		assert!(InitFeatures::known().supports_data_loss_protect());
-		assert!(NodeFeatures::known().supports_data_loss_protect());
-		assert!(!InitFeatures::known().requires_data_loss_protect());
-		assert!(!NodeFeatures::known().requires_data_loss_protect());
-
-		assert!(InitFeatures::known().supports_variable_length_onion());
-		assert!(NodeFeatures::known().supports_variable_length_onion());
-		assert!(InvoiceFeatures::known().supports_variable_length_onion());
-		assert!(InitFeatures::known().requires_variable_length_onion());
-		assert!(NodeFeatures::known().requires_variable_length_onion());
-		assert!(InvoiceFeatures::known().requires_variable_length_onion());
-
-		assert!(InitFeatures::known().supports_static_remote_key());
-		assert!(NodeFeatures::known().supports_static_remote_key());
-		assert!(InitFeatures::known().requires_static_remote_key());
-		assert!(NodeFeatures::known().requires_static_remote_key());
-
-		assert!(InitFeatures::known().supports_payment_secret());
-		assert!(NodeFeatures::known().supports_payment_secret());
-		assert!(InvoiceFeatures::known().supports_payment_secret());
-		assert!(InitFeatures::known().requires_payment_secret());
-		assert!(NodeFeatures::known().requires_payment_secret());
-		assert!(InvoiceFeatures::known().requires_payment_secret());
-
-		assert!(InitFeatures::known().supports_basic_mpp());
-		assert!(NodeFeatures::known().supports_basic_mpp());
-		assert!(InvoiceFeatures::known().supports_basic_mpp());
-		assert!(!InitFeatures::known().requires_basic_mpp());
-		assert!(!NodeFeatures::known().requires_basic_mpp());
-		assert!(!InvoiceFeatures::known().requires_basic_mpp());
-
-		assert!(InitFeatures::known().supports_channel_type());
-		assert!(NodeFeatures::known().supports_channel_type());
-		assert!(!InitFeatures::known().requires_channel_type());
-		assert!(!NodeFeatures::known().requires_channel_type());
-
-		assert!(InitFeatures::known().supports_shutdown_anysegwit());
-		assert!(NodeFeatures::known().supports_shutdown_anysegwit());
-
-		assert!(InitFeatures::known().supports_scid_privacy());
-		assert!(NodeFeatures::known().supports_scid_privacy());
-		assert!(ChannelTypeFeatures::known().supports_scid_privacy());
-		assert!(!InitFeatures::known().requires_scid_privacy());
-		assert!(!NodeFeatures::known().requires_scid_privacy());
-		assert!(ChannelTypeFeatures::known().requires_scid_privacy());
-
-		assert!(InitFeatures::known().supports_wumbo());
-		assert!(NodeFeatures::known().supports_wumbo());
-		assert!(!InitFeatures::known().requires_wumbo());
-		assert!(!NodeFeatures::known().requires_wumbo());
-
-		assert!(InitFeatures::known().supports_onion_messages());
-		assert!(NodeFeatures::known().supports_onion_messages());
-		assert!(!InitFeatures::known().requires_onion_messages());
-		assert!(!NodeFeatures::known().requires_onion_messages());
-
-		assert!(InitFeatures::known().supports_zero_conf());
-		assert!(!InitFeatures::known().requires_zero_conf());
-		assert!(NodeFeatures::known().supports_zero_conf());
-		assert!(!NodeFeatures::known().requires_zero_conf());
-		assert!(ChannelTypeFeatures::known().supports_zero_conf());
-		assert!(ChannelTypeFeatures::known().requires_zero_conf());
-
-		let mut init_features = InitFeatures::known();
-		assert!(init_features.initial_routing_sync());
-		init_features = init_features.clear_initial_routing_sync();
-		assert!(!init_features.initial_routing_sync());
-	}
 
 	#[test]
 	fn sanity_test_unknown_bits() {
@@ -946,7 +832,22 @@ mod tests {
 
 	#[test]
 	fn convert_to_context_with_relevant_flags() {
-		let init_features = InitFeatures::known().clear_upfront_shutdown_script().clear_gossip_queries();
+		let mut init_features = InitFeatures::empty();
+		// Set a bunch of features we use, plus initial_routing_sync_required (which shouldn't get
+		// converted as it's only relevant in an init context).
+		init_features.set_initial_routing_sync_required();
+		init_features.set_data_loss_protect_optional();
+		init_features.set_variable_length_onion_required();
+		init_features.set_static_remote_key_required();
+		init_features.set_payment_secret_required();
+		init_features.set_basic_mpp_optional();
+		init_features.set_wumbo_optional();
+		init_features.set_shutdown_any_segwit_optional();
+		init_features.set_onion_messages_optional();
+		init_features.set_channel_type_optional();
+		init_features.set_scid_privacy_optional();
+		init_features.set_zero_conf_optional();
+
 		assert!(init_features.initial_routing_sync());
 		assert!(!init_features.supports_upfront_shutdown_script());
 		assert!(!init_features.supports_gossip_queries());
@@ -984,8 +885,9 @@ mod tests {
 	#[test]
 	fn convert_to_context_with_unknown_flags() {
 		// Ensure the `from` context has fewer known feature bytes than the `to` context.
-		assert!(InvoiceFeatures::known().flags.len() < NodeFeatures::known().flags.len());
-		let mut invoice_features = InvoiceFeatures::known();
+		assert!(<sealed::InvoiceContext as sealed::Context>::KNOWN_FEATURE_MASK.len() <
+			<sealed::NodeContext as sealed::Context>::KNOWN_FEATURE_MASK.len());
+		let mut invoice_features = InvoiceFeatures::empty();
 		invoice_features.set_unknown_feature_optional();
 		assert!(invoice_features.supports_unknown_bits());
 		let node_features: NodeFeatures = invoice_features.to_context();
