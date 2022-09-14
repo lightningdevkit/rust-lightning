@@ -3162,8 +3162,10 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 			let htlc_claim = HTLCClaim::from_witness(&input.witness);
 			let revocation_sig_claim = htlc_claim == Some(HTLCClaim::Revocation);
 			let accepted_preimage_claim = htlc_claim == Some(HTLCClaim::AcceptedPreimage);
+			#[cfg(not(fuzzing))]
 			let accepted_timeout_claim = htlc_claim == Some(HTLCClaim::AcceptedTimeout);
 			let offered_preimage_claim = htlc_claim == Some(HTLCClaim::OfferedPreimage);
+			#[cfg(not(fuzzing))]
 			let offered_timeout_claim = htlc_claim == Some(HTLCClaim::OfferedTimeout);
 
 			let mut payment_preimage = PaymentPreimage([0; 32]);
