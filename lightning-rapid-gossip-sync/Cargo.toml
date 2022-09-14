@@ -10,6 +10,9 @@ Utility to process gossip routing data from Rapid Gossip Sync Server.
 """
 
 [features]
+default = ["std"]
+no-std = ["lightning/no-std"]
+std = ["lightning/std"]
 _bench_unstable = []
 
 [dependencies]

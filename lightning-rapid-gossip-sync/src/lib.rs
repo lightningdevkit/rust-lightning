@@ -65,10 +65,12 @@
 #[cfg(all(test, feature = "_bench_unstable"))]
 extern crate test;
 
+#[cfg(feature = "std")]
 use std::fs::File;
-use std::ops::Deref;
-use std::sync::atomic::{AtomicBool, Ordering};
+use core::ops::Deref;
+use core::sync::atomic::{AtomicBool, Ordering};
 
+use lightning::io;
 use lightning::routing::gossip::NetworkGraph;
 use lightning::util::logger::Logger;
 
@@ -107,12 +109,24 @@ impl<NG: Deref<Target=NetworkGraph<L>>, L: Deref> RapidGossipSync<NG, L> where L
 	///
 	/// `sync_path`: Path to the file where the gossip update data is located
 	///
+	#[cfg(feature = "std")]
 	pub fn sync_network_graph_with_file_path(
 		&self,
 		sync_path: &str,
 	) -> Result<u32, GraphSyncError> {
 		let mut file = File::open(sync_path)?;
 		self.update_network_graph_from_byte_stream(&mut file)
+	}
+
+	/// Update network graph from binary data.
+	/// Returns the last sync timestamp to be used the next time rapid sync data is queried.
+	///
+	/// `network_graph`: network graph to be updated
+	///
+	/// `update_data`: `&[u8]` binary stream that comprises the update data
+	pub fn update_network_graph(&self, update_data: &[u8]) -> Result<u32, GraphSyncError> {
+		let mut read_cursor = io::Cursor::new(update_data);
+		self.update_network_graph_from_byte_stream(&mut read_cursor)
 	}
 
 	/// Gets a reference to the underlying [`NetworkGraph`] which was provided in
