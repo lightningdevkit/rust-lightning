@@ -286,18 +286,26 @@ impl_writeable_tlv_based!(HolderHTLCOutput, {
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct HolderFundingOutput {
 	funding_redeemscript: Script,
+	opt_anchors: Option<()>,
 }
 
+
 impl HolderFundingOutput {
-	pub(crate) fn build(funding_redeemscript: Script) -> Self {
+	pub(crate) fn build(funding_redeemscript: Script, opt_anchors: bool) -> Self {
 		HolderFundingOutput {
 			funding_redeemscript,
+			opt_anchors: if opt_anchors { Some(()) } else { None },
 		}
+	}
+
+	fn opt_anchors(&self) -> bool {
+		self.opt_anchors.is_some()
 	}
 }
 
 impl_writeable_tlv_based!(HolderFundingOutput, {
 	(0, funding_redeemscript, required),
+	(1, opt_anchors, option),
 });
 
 /// A wrapper encapsulating all in-protocol differing outputs types.
