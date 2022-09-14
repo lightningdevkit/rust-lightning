@@ -2860,7 +2860,7 @@ mod tests {
 		let random_seed_bytes = keys_manager.get_secure_random_bytes();
 
 		// Disable nodes 1, 2, and 8 by requiring unknown feature bits
-		let mut unknown_features = NodeFeatures::known();
+		let mut unknown_features = NodeFeatures::empty();
 		unknown_features.set_unknown_feature_required();
 		add_or_update_node(&gossip_sync, &secp_ctx, &privkeys[0], unknown_features.clone(), 1);
 		add_or_update_node(&gossip_sync, &secp_ctx, &privkeys[1], unknown_features.clone(), 1);

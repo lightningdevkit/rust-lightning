@@ -3767,8 +3767,7 @@ mod tests {
 	use ln::{PaymentPreimage, PaymentHash};
 	use ln::chan_utils;
 	use ln::chan_utils::{HTLCOutputInCommitment, ChannelPublicKeys, ChannelTransactionParameters, HolderCommitmentTransaction, CounterpartyChannelTransactionParameters};
-	use ln::channelmanager::PaymentSendFailure;
-	use ln::features::InitFeatures;
+	use ln::channelmanager::{self, PaymentSendFailure};
 	use ln::functional_test_utils::*;
 	use ln::script::ShutdownScript;
 	use util::errors::APIError;
@@ -3797,9 +3796,9 @@ mod tests {
 		let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
 		let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 		let channel = create_announced_chan_between_nodes(
-			&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
+			&nodes, 0, 1, channelmanager::provided_init_features(), channelmanager::provided_init_features());
 		create_announced_chan_between_nodes(
-			&nodes, 1, 2, InitFeatures::known(), InitFeatures::known());
+			&nodes, 1, 2, channelmanager::provided_init_features(), channelmanager::provided_init_features());
 
 		// Rebalance somewhat
 		send_payment(&nodes[0], &[&nodes[1]], 10_000_000);

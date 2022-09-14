@@ -7,6 +7,7 @@ use bitcoin::hash_types::{WPubkeyHash, WScriptHash};
 use bitcoin::secp256k1::PublicKey;
 use bitcoin::util::address::WitnessVersion;
 
+use ln::channelmanager;
 use ln::features::InitFeatures;
 use ln::msgs::DecodeError;
 use util::ser::{Readable, Writeable, Writer};
@@ -134,7 +135,7 @@ impl TryFrom<Script> for ShutdownScript {
 	type Error = InvalidShutdownScript;
 
 	fn try_from(script: Script) -> Result<Self, Self::Error> {
-		Self::try_from((script, &InitFeatures::known()))
+		Self::try_from((script, &channelmanager::provided_init_features()))
 	}
 }
 
@@ -199,6 +200,12 @@ mod shutdown_script_tests {
 			.into_script()
 	}
 
+	fn any_segwit_features() -> InitFeatures {
+		let mut features = InitFeatures::empty();
+		features.set_shutdown_any_segwit_optional();
+		features
+	}
+
 	#[test]
 	fn generates_p2wpkh_from_pubkey() {
 		let pubkey = pubkey();
@@ -206,8 +213,8 @@ mod shutdown_script_tests {
 		let p2wpkh_script = Script::new_v0_p2wpkh(&pubkey_hash);
 
 		let shutdown_script = ShutdownScript::new_p2wpkh_from_pubkey(pubkey.inner);
-		assert!(shutdown_script.is_compatible(&InitFeatures::known()));
-		assert!(shutdown_script.is_compatible(&InitFeatures::known().clear_shutdown_anysegwit()));
+		assert!(shutdown_script.is_compatible(&any_segwit_features()));
+		assert!(shutdown_script.is_compatible(&InitFeatures::empty()));
 		assert_eq!(shutdown_script.into_inner(), p2wpkh_script);
 	}
 
@@ -217,8 +224,8 @@ mod shutdown_script_tests {
 		let p2wpkh_script = Script::new_v0_p2wpkh(&pubkey_hash);
 
 		let shutdown_script = ShutdownScript::new_p2wpkh(&pubkey_hash);
-		assert!(shutdown_script.is_compatible(&InitFeatures::known()));
-		assert!(shutdown_script.is_compatible(&InitFeatures::known().clear_shutdown_anysegwit()));
+		assert!(shutdown_script.is_compatible(&any_segwit_features()));
+		assert!(shutdown_script.is_compatible(&InitFeatures::empty()));
 		assert_eq!(shutdown_script.into_inner(), p2wpkh_script);
 		assert!(ShutdownScript::try_from(p2wpkh_script).is_ok());
 	}
@@ -229,8 +236,8 @@ mod shutdown_script_tests {
 		let p2wsh_script = Script::new_v0_p2wsh(&script_hash);
 
 		let shutdown_script = ShutdownScript::new_p2wsh(&script_hash);
-		assert!(shutdown_script.is_compatible(&InitFeatures::known()));
-		assert!(shutdown_script.is_compatible(&InitFeatures::known().clear_shutdown_anysegwit()));
+		assert!(shutdown_script.is_compatible(&any_segwit_features()));
+		assert!(shutdown_script.is_compatible(&InitFeatures::empty()));
 		assert_eq!(shutdown_script.into_inner(), p2wsh_script);
 		assert!(ShutdownScript::try_from(p2wsh_script).is_ok());
 	}
@@ -239,8 +246,8 @@ mod shutdown_script_tests {
 	fn generates_segwit_from_non_v0_witness_program() {
 		let witness_program = Script::new_witness_program(WitnessVersion::V16, &[0; 40]);
 		let shutdown_script = ShutdownScript::new_witness_program(WitnessVersion::V16, &[0; 40]).unwrap();
-		assert!(shutdown_script.is_compatible(&InitFeatures::known()));
-		assert!(!shutdown_script.is_compatible(&InitFeatures::known().clear_shutdown_anysegwit()));
+		assert!(shutdown_script.is_compatible(&any_segwit_features()));
+		assert!(!shutdown_script.is_compatible(&InitFeatures::empty()));
 		assert_eq!(shutdown_script.into_inner(), witness_program);
 	}
 

@@ -385,7 +385,7 @@ fn get_dummy_channel_announcement(short_chan_id: u64) -> msgs::ChannelAnnounceme
 	let node_1_btckey = SecretKey::from_slice(&[40; 32]).unwrap();
 	let node_2_btckey = SecretKey::from_slice(&[39; 32]).unwrap();
 	let unsigned_ann = msgs::UnsignedChannelAnnouncement {
-		features: ChannelFeatures::known(),
+		features: ChannelFeatures::empty(),
 		chain_hash: genesis_block(network).header.block_hash(),
 		short_channel_id: short_chan_id,
 		node_id_1: PublicKey::from_secret_key(&secp_ctx, &node_1_privkey),
