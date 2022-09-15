@@ -15,7 +15,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 default = ["std"]
-no-std = ["hashbrown", "lightning/no-std", "core2/alloc"]
+no-std = ["hashbrown", "lightning/no-std"]
 std = ["bitcoin_hashes/std", "num-traits/std", "lightning/std", "bech32/std"]
 
 [dependencies]
@@ -25,7 +25,6 @@ secp256k1 = { version = "0.24.0", default-features = false, features = ["recover
 num-traits = { version = "0.2.8", default-features = false }
 bitcoin_hashes = { version = "0.11", default-features = false }
 hashbrown = { version = "0.11", optional = true }
-core2 = { version = "0.3.0", default-features = false, optional = true }
 serde = { version = "1.0.118", optional = true }
 
 [dev-dependencies]
