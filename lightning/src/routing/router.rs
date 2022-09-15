@@ -483,6 +483,16 @@ impl<'a> CandidateRouteHop<'a> {
 			CandidateRouteHop::PrivateHop { .. } => EffectiveCapacity::Infinite,
 		}
 	}
+
+	fn lowest_inbound_channel_fees(&self) -> Option<RoutingFees> {
+		match self {
+			CandidateRouteHop::FirstHop { .. } => Some(RoutingFees {
+				base_msat: 0, proportional_millionths: 0,
+			}),
+			CandidateRouteHop::PublicHop { info, .. } => info.lowest_inbound_channel_fees(),
+			CandidateRouteHop::PrivateHop { .. } => None,
+		}
+	}
 }
 
 #[inline]
@@ -1070,7 +1080,7 @@ where L::Target: Logger {
 							// as a way to reach the $dest_node_id.
 							let mut fee_base_msat = 0;
 							let mut fee_proportional_millionths = 0;
-							if let Some(Some(fees)) = network_nodes.get(&$src_node_id).map(|node| node.lowest_inbound_channel_fees) {
+							if let Some(fees) = $candidate.lowest_inbound_channel_fees() {
 								fee_base_msat = fees.base_msat;
 								fee_proportional_millionths = fees.proportional_millionths;
 							}

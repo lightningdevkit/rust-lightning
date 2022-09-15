@@ -707,37 +707,45 @@ pub struct ChannelInfo {
 	/// (which we can probably assume we are - no-std environments probably won't have a full
 	/// network graph in memory!).
 	announcement_received_time: u64,
+	/// Lowest fees to enter the first direction, based on the cheapest channel to the source node.
+	/// The two fields (flat and proportional fee) are independent,
+	/// meaning they don't have to refer to the same channel.
+	pub lowest_inbound_channel_fees_to_one: Option<RoutingFees>,
+	/// Lowest fees to enter the second direction, based on the cheapest channel to the source node.
+	/// The two fields (flat and proportional fee) are independent,
+	/// meaning they don't have to refer to the same channel.
+	pub lowest_inbound_channel_fees_to_two: Option<RoutingFees>,
 }
 
 impl ChannelInfo {
 	/// Returns a [`DirectedChannelInfo`] for the channel directed to the given `target` from a
 	/// returned `source`, or `None` if `target` is not one of the channel's counterparties.
 	pub fn as_directed_to(&self, target: &NodeId) -> Option<(DirectedChannelInfo, &NodeId)> {
-		let (direction, source) = {
+		let (direction, source, lowest_inbound_channel_fees) = {
 			if target == &self.node_one {
-				(self.two_to_one.as_ref(), &self.node_two)
+				(self.two_to_one.as_ref(), &self.node_two, self.lowest_inbound_channel_fees_to_two)
 			} else if target == &self.node_two {
-				(self.one_to_two.as_ref(), &self.node_one)
+				(self.one_to_two.as_ref(), &self.node_one, self.lowest_inbound_channel_fees_to_one)
 			} else {
 				return None;
 			}
 		};
-		Some((DirectedChannelInfo::new(self, direction), source))
+		Some((DirectedChannelInfo::new(self, direction, lowest_inbound_channel_fees), source))
 	}
 
 	/// Returns a [`DirectedChannelInfo`] for the channel directed from the given `source` to a
 	/// returned `target`, or `None` if `source` is not one of the channel's counterparties.
 	pub fn as_directed_from(&self, source: &NodeId) -> Option<(DirectedChannelInfo, &NodeId)> {
-		let (direction, target) = {
+		let (direction, target, lowest_inbound_channel_fees) = {
 			if source == &self.node_one {
-				(self.one_to_two.as_ref(), &self.node_two)
+				(self.one_to_two.as_ref(), &self.node_two, self.lowest_inbound_channel_fees_to_two)
 			} else if source == &self.node_two {
-				(self.two_to_one.as_ref(), &self.node_one)
+				(self.two_to_one.as_ref(), &self.node_one, self.lowest_inbound_channel_fees_to_one)
 			} else {
 				return None;
 			}
 		};
-		Some((DirectedChannelInfo::new(self, direction), target))
+		Some((DirectedChannelInfo::new(self, direction, lowest_inbound_channel_fees), target))
 	}
 
 	/// Returns a [`ChannelUpdateInfo`] based on the direction implied by the channel_flag.
@@ -770,6 +778,8 @@ impl Writeable for ChannelInfo {
 			(8, self.two_to_one, required),
 			(10, self.capacity_sats, required),
 			(12, self.announcement_message, required),
+			(14, self.lowest_inbound_channel_fees_to_one, option),
+			(16, self.lowest_inbound_channel_fees_to_two, option),
 		});
 		Ok(())
 	}
@@ -803,6 +813,8 @@ impl Readable for ChannelInfo {
 		let mut two_to_one_wrap: Option<ChannelUpdateInfoDeserWrapper> = None;
 		init_tlv_field_var!(capacity_sats, required);
 		init_tlv_field_var!(announcement_message, required);
+		init_tlv_field_var!(lowest_inbound_channel_fees_to_one, option);
+		init_tlv_field_var!(lowest_inbound_channel_fees_to_two, option);
 		read_tlv_fields!(reader, {
 			(0, features, required),
 			(1, announcement_received_time, (default_value, 0)),
@@ -812,6 +824,8 @@ impl Readable for ChannelInfo {
 			(8, two_to_one_wrap, ignorable),
 			(10, capacity_sats, required),
 			(12, announcement_message, required),
+			(14, lowest_inbound_channel_fees_to_one, option),
+			(16, lowest_inbound_channel_fees_to_two, option),
 		});
 
 		Ok(ChannelInfo {
@@ -823,6 +837,8 @@ impl Readable for ChannelInfo {
 			capacity_sats: init_tlv_based_struct_field!(capacity_sats, required),
 			announcement_message: init_tlv_based_struct_field!(announcement_message, required),
 			announcement_received_time: init_tlv_based_struct_field!(announcement_received_time, (default_value, 0)),
+			lowest_inbound_channel_fees_to_one: init_tlv_based_struct_field!(lowest_inbound_channel_fees_to_one, option),
+			lowest_inbound_channel_fees_to_two: init_tlv_based_struct_field!(lowest_inbound_channel_fees_to_two, option),
 		})
 	}
 }
@@ -835,11 +851,12 @@ pub struct DirectedChannelInfo<'a> {
 	direction: Option<&'a ChannelUpdateInfo>,
 	htlc_maximum_msat: u64,
 	effective_capacity: EffectiveCapacity,
+	lowest_inbound_channel_fees: Option<RoutingFees>,
 }
 
 impl<'a> DirectedChannelInfo<'a> {
 	#[inline]
-	fn new(channel: &'a ChannelInfo, direction: Option<&'a ChannelUpdateInfo>) -> Self {
+	fn new(channel: &'a ChannelInfo, direction: Option<&'a ChannelUpdateInfo>, lowest_inbound_channel_fees: Option<RoutingFees>) -> Self {
 		let htlc_maximum_msat = direction.map(|direction| direction.htlc_maximum_msat);
 		let capacity_msat = channel.capacity_sats.map(|capacity_sats| capacity_sats * 1000);
 
@@ -858,7 +875,7 @@ impl<'a> DirectedChannelInfo<'a> {
 		};
 
 		Self {
-			channel, direction, htlc_maximum_msat, effective_capacity
+			channel, direction, htlc_maximum_msat, effective_capacity, lowest_inbound_channel_fees,
 		}
 	}
 
@@ -880,6 +897,13 @@ impl<'a> DirectedChannelInfo<'a> {
 	/// otherwise.
 	pub fn effective_capacity(&self) -> EffectiveCapacity {
 		self.effective_capacity
+	}
+
+	/// Returns the [`Option<RoutingFees>`] to reach the channel in the direction.
+	///
+	/// This is based on the known and enabled channels to the entry node.
+	pub fn lowest_inbound_channel_fees(&self) -> Option<RoutingFees> {
+		self.lowest_inbound_channel_fees
 	}
 
 	/// Returns `Some` if [`ChannelUpdateInfo`] is available in the direction.
@@ -917,6 +941,10 @@ impl<'a> DirectedChannelInfoWithUpdate<'a> {
 	/// Returns the [`EffectiveCapacity`] of the channel in the direction.
 	#[inline]
 	pub(super) fn effective_capacity(&self) -> EffectiveCapacity { self.inner.effective_capacity() }
+
+	#[inline]
+	pub(super) fn lowest_inbound_channel_fees(&self) -> Option<RoutingFees> { self.inner.lowest_inbound_channel_fees() }
+
 }
 
 impl<'a> fmt::Debug for DirectedChannelInfoWithUpdate<'a> {
@@ -1382,6 +1410,8 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 			capacity_sats: None,
 			announcement_message: None,
 			announcement_received_time: timestamp,
+			lowest_inbound_channel_fees_to_one: None,
+			lowest_inbound_channel_fees_to_two: None,
 		};
 
 		self.add_channel_between_nodes(short_channel_id, channel_info, None)
@@ -1524,6 +1554,8 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 			announcement_message: if msg.excess_data.len() <= MAX_EXCESS_BYTES_FOR_RELAY
 				{ full_msg.cloned() } else { None },
 			announcement_received_time,
+			lowest_inbound_channel_fees_to_one: None,
+			lowest_inbound_channel_fees_to_two: None,
 		};
 
 		self.add_channel_between_nodes(msg.short_channel_id, chan_info, utxo_value)
@@ -1752,22 +1784,20 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 		}
 
 		let mut nodes = self.nodes.write().unwrap();
+		let node = nodes.get_mut(&dest_node_id).unwrap();
+		let mut updated_lowest_inbound_channel_fee = None;
 		if chan_enabled {
-			let node = nodes.get_mut(&dest_node_id).unwrap();
 			let mut base_msat = msg.fee_base_msat;
 			let mut proportional_millionths = msg.fee_proportional_millionths;
 			if let Some(fees) = node.lowest_inbound_channel_fees {
 				base_msat = cmp::min(base_msat, fees.base_msat);
 				proportional_millionths = cmp::min(proportional_millionths, fees.proportional_millionths);
 			}
-			node.lowest_inbound_channel_fees = Some(RoutingFees {
+			updated_lowest_inbound_channel_fee = Some(RoutingFees {
 				base_msat,
 				proportional_millionths
 			});
 		} else if chan_was_enabled {
-			let node = nodes.get_mut(&dest_node_id).unwrap();
-			let mut lowest_inbound_channel_fees = None;
-
 			for chan_id in node.channels.iter() {
 				let chan = channels.get(chan_id).unwrap();
 				let chan_info_opt;
@@ -1778,15 +1808,27 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 				}
 				if let Some(chan_info) = chan_info_opt {
 					if chan_info.enabled {
-						let fees = lowest_inbound_channel_fees.get_or_insert(RoutingFees {
+						let fees = updated_lowest_inbound_channel_fee.get_or_insert(RoutingFees {
 							base_msat: u32::max_value(), proportional_millionths: u32::max_value() });
 						fees.base_msat = cmp::min(fees.base_msat, chan_info.fees.base_msat);
 						fees.proportional_millionths = cmp::min(fees.proportional_millionths, chan_info.fees.proportional_millionths);
 					}
 				}
 			}
+		}
 
-			node.lowest_inbound_channel_fees = lowest_inbound_channel_fees;
+		if updated_lowest_inbound_channel_fee.is_some() {
+			node.lowest_inbound_channel_fees = updated_lowest_inbound_channel_fee;
+
+			for (_, chan) in channels.iter_mut() {
+				if chan.node_one == dest_node_id {
+					chan.lowest_inbound_channel_fees_to_two = updated_lowest_inbound_channel_fee;
+				}
+
+				if chan.node_two == dest_node_id {
+					chan.lowest_inbound_channel_fees_to_one = updated_lowest_inbound_channel_fee;
+				}
+			}
 		}
 
 		Ok(())
@@ -3019,6 +3061,8 @@ mod tests {
 			capacity_sats: None,
 			announcement_message: None,
 			announcement_received_time: 87654,
+			lowest_inbound_channel_fees_to_one: None,
+			lowest_inbound_channel_fees_to_two: None,
 		};
 
 		let mut encoded_chan_info: Vec<u8> = Vec::new();
@@ -3037,6 +3081,8 @@ mod tests {
 			capacity_sats: None,
 			announcement_message: None,
 			announcement_received_time: 87654,
+			lowest_inbound_channel_fees_to_one: None,
+			lowest_inbound_channel_fees_to_two: None,
 		};
 
 		let mut encoded_chan_info: Vec<u8> = Vec::new();
