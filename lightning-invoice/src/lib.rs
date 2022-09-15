@@ -1712,11 +1712,14 @@ mod test {
 		}.unwrap();
 		assert_eq!(Invoice::from_signed(invoice), Err(SemanticError::InvalidFeatures));
 
+		let mut payment_secret_features = InvoiceFeatures::empty();
+		payment_secret_features.set_payment_secret_required();
+
 		// Including payment secret and feature bits
 		let invoice = {
 			let mut invoice = invoice_template.clone();
 			invoice.data.tagged_fields.push(PaymentSecret(payment_secret).into());
-			invoice.data.tagged_fields.push(Features(InvoiceFeatures::known()).into());
+			invoice.data.tagged_fields.push(Features(payment_secret_features.clone()).into());
 			invoice.sign::<_, ()>(|hash| Ok(Secp256k1::new().sign_ecdsa_recoverable(hash, &private_key)))
 		}.unwrap();
 		assert!(Invoice::from_signed(invoice).is_ok());
@@ -1739,7 +1742,7 @@ mod test {
 		// Missing payment secret
 		let invoice = {
 			let mut invoice = invoice_template.clone();
-			invoice.data.tagged_fields.push(Features(InvoiceFeatures::known()).into());
+			invoice.data.tagged_fields.push(Features(payment_secret_features).into());
 			invoice.sign::<_, ()>(|hash| Ok(Secp256k1::new().sign_ecdsa_recoverable(hash, &private_key)))
 		}.unwrap();
 		assert_eq!(Invoice::from_signed(invoice), Err(SemanticError::NoPaymentSecret));
@@ -1944,7 +1947,12 @@ mod test {
 		);
 		assert_eq!(invoice.payment_hash(), &sha256::Hash::from_slice(&[21;32][..]).unwrap());
 		assert_eq!(invoice.payment_secret(), &PaymentSecret([42; 32]));
-		assert_eq!(invoice.features(), Some(&InvoiceFeatures::known()));
+
+		let mut expected_features = InvoiceFeatures::empty();
+		expected_features.set_variable_length_onion_required();
+		expected_features.set_payment_secret_required();
+		expected_features.set_basic_mpp_optional();
+		assert_eq!(invoice.features(), Some(&expected_features));
 
 		let raw_invoice = builder.build_raw().unwrap();
 		assert_eq!(raw_invoice, *invoice.into_signed_raw().raw_invoice())

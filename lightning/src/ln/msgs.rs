@@ -2063,7 +2063,7 @@ mod tests {
 		let sig_2 = get_sig_on!(privkey_2, secp_ctx, String::from("01010101010101010101010101010101"));
 		let sig_3 = get_sig_on!(privkey_3, secp_ctx, String::from("01010101010101010101010101010101"));
 		let sig_4 = get_sig_on!(privkey_4, secp_ctx, String::from("01010101010101010101010101010101"));
-		let mut features = ChannelFeatures::known();
+		let mut features = ChannelFeatures::empty();
 		if unknown_features_bits {
 			features = ChannelFeatures::from_le_bytes(vec![0xFF, 0xFF]);
 		}

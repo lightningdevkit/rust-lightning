@@ -17,6 +17,7 @@ use chain::channelmonitor;
 use chain::channelmonitor::MonitorEvent;
 use chain::transaction::OutPoint;
 use chain::keysinterface;
+use ln::channelmanager;
 use ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 use ln::{msgs, wire};
 use ln::script::ShutdownScript;
@@ -359,10 +360,10 @@ impl msgs::ChannelMessageHandler for TestChannelMessageHandler {
 		self.received_msg(wire::Message::Error(msg.clone()));
 	}
 	fn provided_node_features(&self) -> NodeFeatures {
-		NodeFeatures::known_channel_features()
+		channelmanager::provided_node_features()
 	}
 	fn provided_init_features(&self, _their_init_features: &PublicKey) -> InitFeatures {
-		InitFeatures::known_channel_features()
+		channelmanager::provided_init_features()
 	}
 }
 
@@ -384,7 +385,7 @@ fn get_dummy_channel_announcement(short_chan_id: u64) -> msgs::ChannelAnnounceme
 	let node_1_btckey = SecretKey::from_slice(&[40; 32]).unwrap();
 	let node_2_btckey = SecretKey::from_slice(&[39; 32]).unwrap();
 	let unsigned_ann = msgs::UnsignedChannelAnnouncement {
-		features: ChannelFeatures::known(),
+		features: ChannelFeatures::empty(),
 		chain_hash: genesis_block(network).header.block_hash(),
 		short_channel_id: short_chan_id,
 		node_id_1: PublicKey::from_secret_key(&secp_ctx, &node_1_privkey),

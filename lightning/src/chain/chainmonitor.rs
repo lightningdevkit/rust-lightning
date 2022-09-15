@@ -725,8 +725,7 @@ mod tests {
 	use ::{get_htlc_update_msgs, get_local_commitment_txn, get_revoke_commit_msgs, get_route_and_payment_hash, unwrap_send_err};
 	use chain::{ChannelMonitorUpdateErr, Confirm, Watch};
 	use chain::channelmonitor::LATENCY_GRACE_PERIOD_BLOCKS;
-	use ln::channelmanager::PaymentSendFailure;
-	use ln::features::InitFeatures;
+	use ln::channelmanager::{self, PaymentSendFailure};
 	use ln::functional_test_utils::*;
 	use ln::msgs::ChannelMessageHandler;
 	use util::errors::APIError;
@@ -741,7 +740,7 @@ mod tests {
 		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-		create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
+		create_announced_chan_between_nodes(&nodes, 0, 1, channelmanager::provided_init_features(), channelmanager::provided_init_features());
 
 		// Route two payments to be claimed at the same time.
 		let (payment_preimage_1, payment_hash_1, _) = route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
@@ -818,7 +817,7 @@ mod tests {
 		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 		let channel = create_announced_chan_between_nodes(
-			&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
+			&nodes, 0, 1, channelmanager::provided_init_features(), channelmanager::provided_init_features());
 
 		// Get a route for later and rebalance the channel somewhat
 		send_payment(&nodes[0], &[&nodes[1]], 10_000_000);
@@ -894,7 +893,7 @@ mod tests {
 		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-		create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
+		create_announced_chan_between_nodes(&nodes, 0, 1, channelmanager::provided_init_features(), channelmanager::provided_init_features());
 
 		chanmon_cfgs[0].persister.chain_sync_monitor_persistences.lock().unwrap().clear();
 		chanmon_cfgs[0].persister.set_update_ret(Err(ChannelMonitorUpdateErr::PermanentFailure));

@@ -581,8 +581,8 @@ mod tests {
 	use lightning::chain::keysinterface::{InMemorySigner, Recipient, KeysInterface, KeysManager};
 	use lightning::chain::transaction::OutPoint;
 	use lightning::get_event_msg;
-	use lightning::ln::channelmanager::{BREAKDOWN_TIMEOUT, ChainParameters, ChannelManager, SimpleArcChannelManager};
-	use lightning::ln::features::{ChannelFeatures, InitFeatures};
+	use lightning::ln::channelmanager::{self, BREAKDOWN_TIMEOUT, ChainParameters, ChannelManager, SimpleArcChannelManager};
+	use lightning::ln::features::ChannelFeatures;
 	use lightning::ln::msgs::{ChannelMessageHandler, Init};
 	use lightning::ln::peer_handler::{PeerManager, MessageHandler, SocketDescriptor, IgnoringMessageHandler};
 	use lightning::routing::gossip::{NetworkGraph, P2PGossipSync};
@@ -754,8 +754,8 @@ mod tests {
 
 		for i in 0..num_nodes {
 			for j in (i+1)..num_nodes {
-				nodes[i].node.peer_connected(&nodes[j].node.get_our_node_id(), &Init { features: InitFeatures::known(), remote_network_address: None }).unwrap();
-				nodes[j].node.peer_connected(&nodes[i].node.get_our_node_id(), &Init { features: InitFeatures::known(), remote_network_address: None }).unwrap();
+				nodes[i].node.peer_connected(&nodes[j].node.get_our_node_id(), &Init { features: channelmanager::provided_init_features(), remote_network_address: None }).unwrap();
+				nodes[j].node.peer_connected(&nodes[i].node.get_our_node_id(), &Init { features: channelmanager::provided_init_features(), remote_network_address: None }).unwrap();
 			}
 		}
 
@@ -776,8 +776,8 @@ mod tests {
 	macro_rules! begin_open_channel {
 		($node_a: expr, $node_b: expr, $channel_value: expr) => {{
 			$node_a.node.create_channel($node_b.node.get_our_node_id(), $channel_value, 100, 42, None).unwrap();
-			$node_b.node.handle_open_channel(&$node_a.node.get_our_node_id(), InitFeatures::known(), &get_event_msg!($node_a, MessageSendEvent::SendOpenChannel, $node_b.node.get_our_node_id()));
-			$node_a.node.handle_accept_channel(&$node_b.node.get_our_node_id(), InitFeatures::known(), &get_event_msg!($node_b, MessageSendEvent::SendAcceptChannel, $node_a.node.get_our_node_id()));
+			$node_b.node.handle_open_channel(&$node_a.node.get_our_node_id(), channelmanager::provided_init_features(), &get_event_msg!($node_a, MessageSendEvent::SendOpenChannel, $node_b.node.get_our_node_id()));
+			$node_a.node.handle_accept_channel(&$node_b.node.get_our_node_id(), channelmanager::provided_init_features(), &get_event_msg!($node_b, MessageSendEvent::SendAcceptChannel, $node_a.node.get_our_node_id()));
 		}}
 	}
 

@@ -213,9 +213,22 @@ impl ChannelMessageHandler for ErroringMessageHandler {
 	fn handle_error(&self, _their_node_id: &PublicKey, _msg: &msgs::ErrorMessage) {}
 	fn provided_node_features(&self) -> NodeFeatures { NodeFeatures::empty() }
 	fn provided_init_features(&self, _their_node_id: &PublicKey) -> InitFeatures {
-		// Use our known channel feature set as peers may otherwise not be willing to talk to us at
-		// all.
-		InitFeatures::known_channel_features()
+		// Set a number of features which various nodes may require to talk to us. It's totally
+		// reasonable to indicate we "support" all kinds of channel features...we just reject all
+		// channels.
+		let mut features = InitFeatures::empty();
+		features.set_data_loss_protect_optional();
+		features.set_upfront_shutdown_script_optional();
+		features.set_variable_length_onion_optional();
+		features.set_static_remote_key_optional();
+		features.set_payment_secret_optional();
+		features.set_basic_mpp_optional();
+		features.set_wumbo_optional();
+		features.set_shutdown_any_segwit_optional();
+		features.set_channel_type_optional();
+		features.set_scid_privacy_optional();
+		features.set_zero_conf_optional();
+		features
 	}
 }
 impl Deref for ErroringMessageHandler {

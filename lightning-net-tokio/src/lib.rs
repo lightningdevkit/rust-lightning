@@ -582,8 +582,8 @@ mod tests {
 		fn handle_reply_short_channel_ids_end(&self, _their_node_id: &PublicKey, _msg: ReplyShortChannelIdsEnd) -> Result<(), LightningError> { Ok(()) }
 		fn handle_query_channel_range(&self, _their_node_id: &PublicKey, _msg: QueryChannelRange) -> Result<(), LightningError> { Ok(()) }
 		fn handle_query_short_channel_ids(&self, _their_node_id: &PublicKey, _msg: QueryShortChannelIds) -> Result<(), LightningError> { Ok(()) }
-		fn provided_node_features(&self) -> NodeFeatures { NodeFeatures::known() }
-		fn provided_init_features(&self, _their_node_id: &PublicKey) -> InitFeatures { InitFeatures::known() }
+		fn provided_node_features(&self) -> NodeFeatures { NodeFeatures::empty() }
+		fn provided_init_features(&self, _their_node_id: &PublicKey) -> InitFeatures { InitFeatures::empty() }
 	}
 	impl ChannelMessageHandler for MsgHandler {
 		fn handle_open_channel(&self, _their_node_id: &PublicKey, _their_features: InitFeatures, _msg: &OpenChannel) {}
@@ -616,8 +616,8 @@ mod tests {
 		}
 		fn handle_channel_reestablish(&self, _their_node_id: &PublicKey, _msg: &ChannelReestablish) {}
 		fn handle_error(&self, _their_node_id: &PublicKey, _msg: &ErrorMessage) {}
-		fn provided_node_features(&self) -> NodeFeatures { NodeFeatures::known() }
-		fn provided_init_features(&self, _their_node_id: &PublicKey) -> InitFeatures { InitFeatures::known() }
+		fn provided_node_features(&self) -> NodeFeatures { NodeFeatures::empty() }
+		fn provided_init_features(&self, _their_node_id: &PublicKey) -> InitFeatures { InitFeatures::empty() }
 	}
 	impl MessageSendEventsProvider for MsgHandler {
 		fn get_and_clear_pending_msg_events(&self) -> Vec<MessageSendEvent> {

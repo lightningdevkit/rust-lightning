@@ -14,10 +14,10 @@ use chain::{BestBlock, Confirm, Listen, Watch, keysinterface::KeysInterface};
 use chain::channelmonitor::ChannelMonitor;
 use chain::transaction::OutPoint;
 use ln::{PaymentPreimage, PaymentHash, PaymentSecret};
-use ln::channelmanager::{ChainParameters, ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, PaymentSendFailure, PaymentId, MIN_CLTV_EXPIRY_DELTA};
+use ln::channelmanager::{self, ChainParameters, ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, PaymentSendFailure, PaymentId, MIN_CLTV_EXPIRY_DELTA};
 use routing::gossip::{P2PGossipSync, NetworkGraph, NetworkUpdate};
 use routing::router::{PaymentParameters, Route, get_route};
-use ln::features::{InitFeatures, InvoiceFeatures};
+use ln::features::InitFeatures;
 use ln::msgs;
 use ln::msgs::{ChannelMessageHandler,RoutingMessageHandler};
 use util::enforcing_trait_impls::EnforcingSigner;
@@ -686,7 +686,7 @@ pub fn open_zero_conf_channel<'a, 'b, 'c, 'd>(initiator: &'a Node<'b, 'c, 'd>, r
 	initiator.node.create_channel(receiver.node.get_our_node_id(), 100_000, 10_001, 42, initiator_config).unwrap();
 	let open_channel = get_event_msg!(initiator, MessageSendEvent::SendOpenChannel, receiver.node.get_our_node_id());
 
-	receiver.node.handle_open_channel(&initiator.node.get_our_node_id(), InitFeatures::known(), &open_channel);
+	receiver.node.handle_open_channel(&initiator.node.get_our_node_id(), channelmanager::provided_init_features(), &open_channel);
 	let events = receiver.node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match events[0] {
@@ -698,7 +698,7 @@ pub fn open_zero_conf_channel<'a, 'b, 'c, 'd>(initiator: &'a Node<'b, 'c, 'd>, r
 
 	let accept_channel = get_event_msg!(receiver, MessageSendEvent::SendAcceptChannel, initiator.node.get_our_node_id());
 	assert_eq!(accept_channel.minimum_depth, 0);
-	initiator.node.handle_accept_channel(&receiver.node.get_our_node_id(), InitFeatures::known(), &accept_channel);
+	initiator.node.handle_accept_channel(&receiver.node.get_our_node_id(), channelmanager::provided_init_features(), &accept_channel);
 
 	let (temporary_channel_id, tx, _) = create_funding_transaction(&initiator, &receiver.node.get_our_node_id(), 100_000, 42);
 	initiator.node.funding_transaction_generated(&temporary_channel_id, &receiver.node.get_our_node_id(), tx.clone()).unwrap();
@@ -1051,7 +1051,7 @@ pub fn close_channel<'a, 'b, 'c>(outbound_node: &Node<'a, 'b, 'c>, inbound_node:
 	let (tx_a, tx_b);
 
 	node_a.close_channel(channel_id, &node_b.get_our_node_id()).unwrap();
-	node_b.handle_shutdown(&node_a.get_our_node_id(), &InitFeatures::known(), &get_event_msg!(struct_a, MessageSendEvent::SendShutdown, node_b.get_our_node_id()));
+	node_b.handle_shutdown(&node_a.get_our_node_id(), &channelmanager::provided_init_features(), &get_event_msg!(struct_a, MessageSendEvent::SendShutdown, node_b.get_our_node_id()));
 
 	let events_1 = node_b.get_and_clear_pending_msg_events();
 	assert!(events_1.len() >= 1);
@@ -1076,7 +1076,7 @@ pub fn close_channel<'a, 'b, 'c>(outbound_node: &Node<'a, 'b, 'c>, inbound_node:
 		})
 	};
 
-	node_a.handle_shutdown(&node_b.get_our_node_id(), &InitFeatures::known(), &shutdown_b);
+	node_a.handle_shutdown(&node_b.get_our_node_id(), &channelmanager::provided_init_features(), &shutdown_b);
 	let (as_update, bs_update) = if close_inbound_first {
 		assert!(node_a.get_and_clear_pending_msg_events().is_empty());
 		node_a.handle_closing_signed(&node_b.get_our_node_id(), &closing_signed_b.unwrap());
@@ -1269,7 +1269,7 @@ macro_rules! get_route {
 macro_rules! get_route_and_payment_hash {
 	($send_node: expr, $recv_node: expr, $recv_value: expr) => {{
 		let payment_params = $crate::routing::router::PaymentParameters::from_node_id($recv_node.node.get_our_node_id())
-			.with_features($crate::ln::features::InvoiceFeatures::known());
+			.with_features($crate::ln::channelmanager::provided_invoice_features());
 		$crate::get_route_and_payment_hash!($send_node, $recv_node, payment_params, $recv_value, TEST_FINAL_CLTV)
 	}};
 	($send_node: expr, $recv_node: expr, $payment_params: expr, $recv_value: expr, $cltv: expr) => {{
@@ -1853,7 +1853,7 @@ pub const TEST_FINAL_CLTV: u32 = 70;
 
 pub fn route_payment<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route: &[&Node<'a, 'b, 'c>], recv_value: u64) -> (PaymentPreimage, PaymentHash, PaymentSecret) {
 	let payment_params = PaymentParameters::from_node_id(expected_route.last().unwrap().node.get_our_node_id())
-		.with_features(InvoiceFeatures::known());
+		.with_features(channelmanager::provided_invoice_features());
 	let route = get_route!(origin_node, payment_params, recv_value, TEST_FINAL_CLTV).unwrap();
 	assert_eq!(route.paths.len(), 1);
 	assert_eq!(route.paths[0].len(), expected_route.len());
@@ -1867,7 +1867,7 @@ pub fn route_payment<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route:
 
 pub fn route_over_limit<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route: &[&Node<'a, 'b, 'c>], recv_value: u64)  {
 	let payment_params = PaymentParameters::from_node_id(expected_route.last().unwrap().node.get_our_node_id())
-		.with_features(InvoiceFeatures::known());
+		.with_features(channelmanager::provided_invoice_features());
 	let network_graph = origin_node.network_graph.read_only();
 	let scorer = test_utils::TestScorer::with_penalty(0);
 	let seed = [0u8; 32];
@@ -2047,7 +2047,7 @@ pub fn create_node_cfgs<'a>(node_count: usize, chanmon_cfgs: &'a Vec<TestChanMon
 			chain_monitor,
 			keys_manager: &chanmon_cfgs[i].keys_manager,
 			node_seed: seed,
-			features: InitFeatures::known(),
+			features: channelmanager::provided_init_features(),
 			network_graph: NetworkGraph::new(chanmon_cfgs[i].chain_source.genesis_hash, &chanmon_cfgs[i].logger),
 		});
 	}
@@ -2382,9 +2382,9 @@ macro_rules! handle_chan_reestablish_msgs {
 /// pending_htlc_adds includes both the holding cell and in-flight update_add_htlcs, whereas
 /// for claims/fails they are separated out.
 pub fn reconnect_nodes<'a, 'b, 'c>(node_a: &Node<'a, 'b, 'c>, node_b: &Node<'a, 'b, 'c>, send_channel_ready: (bool, bool), pending_htlc_adds: (i64, i64), pending_htlc_claims: (usize, usize), pending_htlc_fails: (usize, usize), pending_cell_htlc_claims: (usize, usize), pending_cell_htlc_fails: (usize, usize), pending_raa: (bool, bool))  {
-	node_a.node.peer_connected(&node_b.node.get_our_node_id(), &msgs::Init { features: InitFeatures::known(), remote_network_address: None }).unwrap();
+	node_a.node.peer_connected(&node_b.node.get_our_node_id(), &msgs::Init { features: channelmanager::provided_init_features(), remote_network_address: None }).unwrap();
 	let reestablish_1 = get_chan_reestablish_msgs!(node_a, node_b);
-	node_b.node.peer_connected(&node_a.node.get_our_node_id(), &msgs::Init { features: InitFeatures::known(), remote_network_address: None }).unwrap();
+	node_b.node.peer_connected(&node_a.node.get_our_node_id(), &msgs::Init { features: channelmanager::provided_init_features(), remote_network_address: None }).unwrap();
 	let reestablish_2 = get_chan_reestablish_msgs!(node_b, node_a);
 
 	if send_channel_ready.0 {
