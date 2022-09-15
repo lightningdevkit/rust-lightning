@@ -1,7 +1,7 @@
 //! Convenient utilities to create an invoice.
 
 use {CreationError, Currency, Invoice, InvoiceBuilder, SignOrCreationError};
-use payment::{Payer, Router};
+use payment::{InFlightHtlcs, Payer, Router};
 
 use crate::{prelude::*, Description, InvoiceDescription, Sha256};
 use bech32::ToBase32;
@@ -15,9 +15,9 @@ use lightning::ln::channelmanager::{ChannelDetails, ChannelManager, PaymentId, P
 use lightning::ln::channelmanager::{PhantomRouteHints, MIN_CLTV_EXPIRY_DELTA};
 use lightning::ln::inbound_payment::{create, create_from_hash, ExpandedKey};
 use lightning::ln::msgs::LightningError;
-use lightning::routing::gossip::{NetworkGraph, RoutingFees};
-use lightning::routing::router::{Route, RouteHint, RouteHintHop, RouteParameters, find_route};
-use lightning::routing::scoring::Score;
+use lightning::routing::gossip::{NetworkGraph, NodeId, RoutingFees};
+use lightning::routing::router::{Route, RouteHint, RouteHintHop, RouteParameters, find_route, RouteHop};
+use lightning::routing::scoring::{ChannelUsage, LockableScore, Score};
 use lightning::util::logger::Logger;
 use secp256k1::PublicKey;
 use core::ops::Deref;
@@ -440,33 +440,63 @@ fn filter_channels(channels: Vec<ChannelDetails>, min_inbound_capacity_msat: Opt
 }
 
 /// A [`Router`] implemented using [`find_route`].
-pub struct DefaultRouter<G: Deref<Target = NetworkGraph<L>>, L: Deref> where L::Target: Logger {
+pub struct DefaultRouter<G: Deref<Target = NetworkGraph<L>>, L: Deref, S: Deref> where
+	L::Target: Logger,
+	S::Target: for <'a> LockableScore<'a>,
+{
 	network_graph: G,
 	logger: L,
 	random_seed_bytes: Mutex<[u8; 32]>,
+	scorer: S
 }
 
-impl<G: Deref<Target = NetworkGraph<L>>, L: Deref> DefaultRouter<G, L> where L::Target: Logger {
+impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, S: Deref> DefaultRouter<G, L, S> where
+	L::Target: Logger,
+	S::Target: for <'a> LockableScore<'a>,
+{
 	/// Creates a new router using the given [`NetworkGraph`], a [`Logger`], and a randomness source
 	/// `random_seed_bytes`.
-	pub fn new(network_graph: G, logger: L, random_seed_bytes: [u8; 32]) -> Self {
+	pub fn new(network_graph: G, logger: L, random_seed_bytes: [u8; 32], scorer: S) -> Self {
 		let random_seed_bytes = Mutex::new(random_seed_bytes);
-		Self { network_graph, logger, random_seed_bytes }
+		Self { network_graph, logger, random_seed_bytes, scorer }
 	}
 }
 
-impl<G: Deref<Target = NetworkGraph<L>>, L: Deref> Router for DefaultRouter<G, L>
-where L::Target: Logger {
-	fn find_route<S: Score>(
+impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, S: Deref> Router for DefaultRouter<G, L, S> where
+	L::Target: Logger,
+	S::Target: for <'a> LockableScore<'a>,
+{
+	fn find_route(
 		&self, payer: &PublicKey, params: &RouteParameters, _payment_hash: &PaymentHash,
-		first_hops: Option<&[&ChannelDetails]>, scorer: &S
+		first_hops: Option<&[&ChannelDetails]>, inflight_htlcs: InFlightHtlcs
 	) -> Result<Route, LightningError> {
 		let random_seed_bytes = {
 			let mut locked_random_seed_bytes = self.random_seed_bytes.lock().unwrap();
 			*locked_random_seed_bytes = sha256::Hash::hash(&*locked_random_seed_bytes).into_inner();
 			*locked_random_seed_bytes
 		};
-		find_route(payer, params, &self.network_graph, first_hops, &*self.logger, scorer, &random_seed_bytes)
+
+		find_route(
+			payer, params, &self.network_graph, first_hops, &*self.logger,
+			&ScorerAccountingForInFlightHtlcs::new(&mut self.scorer.lock(), inflight_htlcs),
+			&random_seed_bytes
+		)
+	}
+
+	fn notify_payment_path_failed(&self, path: Vec<&RouteHop>, short_channel_id: u64) {
+		self.scorer.lock().payment_path_failed(&path, short_channel_id);
+	}
+
+	fn notify_payment_path_successful(&self, path: Vec<&RouteHop>) {
+		self.scorer.lock().payment_path_successful(&path);
+	}
+
+	fn notify_payment_probe_successful(&self, path: Vec<&RouteHop>) {
+		self.scorer.lock().probe_successful(&path);
+	}
+
+	fn notify_payment_probe_failed(&self, path: Vec<&RouteHop>, short_channel_id: u64) {
+		self.scorer.lock().probe_failed(&path, short_channel_id);
 	}
 }
 
@@ -509,6 +539,54 @@ where
 		self.abandon_payment(payment_id)
 	}
 }
+
+
+/// Used to store information about all the HTLCs that are inflight across all payment attempts.
+pub(crate) struct ScorerAccountingForInFlightHtlcs<'a, S: Score> {
+	scorer: &'a mut S,
+	/// Maps a channel's short channel id and its direction to the liquidity used up.
+	inflight_htlcs: InFlightHtlcs,
+}
+
+impl<'a, S: Score> ScorerAccountingForInFlightHtlcs<'a, S> {
+	pub(crate) fn new(scorer: &'a mut S, inflight_htlcs: InFlightHtlcs) -> Self {
+		ScorerAccountingForInFlightHtlcs {
+			scorer,
+			inflight_htlcs
+		}
+	}
+}
+
+#[cfg(c_bindings)]
+impl<'a, S:Score> lightning::util::ser::Writeable for ScorerAccountingForInFlightHtlcs<'a, S> {
+	fn write<W: lightning::util::ser::Writer>(&self, writer: &mut W) -> Result<(), std::io::Error> { self.scorer.write(writer) }
+}
+
+impl<'a, S: Score> Score for ScorerAccountingForInFlightHtlcs<'a, S> {
+	fn channel_penalty_msat(&self, short_channel_id: u64, source: &NodeId, target: &NodeId, usage: ChannelUsage) -> u64 {
+		if let Some(used_liqudity) = self.inflight_htlcs.used_liquidity_msat(
+			source, target, short_channel_id
+		) {
+			let usage = ChannelUsage {
+				inflight_htlc_msat: usage.inflight_htlc_msat + used_liqudity,
+				..usage
+			};
+
+			self.scorer.channel_penalty_msat(short_channel_id, source, target, usage)
+		} else {
+			self.scorer.channel_penalty_msat(short_channel_id, source, target, usage)
+		}
+	}
+
+	fn payment_path_failed(&mut self, _path: &[&RouteHop], _short_channel_id: u64) { unreachable!() }
+
+	fn payment_path_successful(&mut self, _path: &[&RouteHop]) { unreachable!() }
+
+	fn probe_failed(&mut self, _path: &[&RouteHop], _short_channel_id: u64) { unreachable!() }
+
+	fn probe_successful(&mut self, _path: &[&RouteHop]) { unreachable!() }
+}
+
 
 #[cfg(test)]
 mod test {
