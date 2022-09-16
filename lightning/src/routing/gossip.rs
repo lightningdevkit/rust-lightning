@@ -1438,7 +1438,7 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 					// b) we don't track UTXOs of channels we know about and remove them if they
 					//    get reorg'd out.
 					// c) it's unclear how to do so without exposing ourselves to massive DoS risk.
-					Self::remove_channel_in_nodes(&mut nodes, &entry.get(), short_channel_id);
+					self.remove_channel_in_nodes(&mut nodes, &entry.get(), short_channel_id);
 					*entry.get_mut() = channel_info;
 				} else {
 					return Err(LightningError{err: "Already have knowledge of channel".to_owned(), action: ErrorAction::IgnoreDuplicateGossip});
@@ -1570,7 +1570,7 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 		if is_permanent {
 			if let Some(chan) = channels.remove(&short_channel_id) {
 				let mut nodes = self.nodes.write().unwrap();
-				Self::remove_channel_in_nodes(&mut nodes, &chan, short_channel_id);
+				self.remove_channel_in_nodes(&mut nodes, &chan, short_channel_id);
 			}
 		} else {
 			if let Some(chan) = channels.get_mut(&short_channel_id) {
@@ -1651,7 +1651,7 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 			let mut nodes = self.nodes.write().unwrap();
 			for scid in scids_to_remove {
 				let info = channels.remove(&scid).expect("We just accessed this scid, it should be present");
-				Self::remove_channel_in_nodes(&mut nodes, &info, scid);
+				self.remove_channel_in_nodes(&mut nodes, &info, scid);
 			}
 		}
 	}
@@ -1785,7 +1785,6 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 
 		let mut nodes = self.nodes.write().unwrap();
 		let node = nodes.get_mut(&dest_node_id).unwrap();
-		let mut updated_lowest_inbound_channel_fee = None;
 		if chan_enabled {
 			let mut base_msat = msg.fee_base_msat;
 			let mut proportional_millionths = msg.fee_proportional_millionths;
@@ -1793,48 +1792,17 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 				base_msat = cmp::min(base_msat, fees.base_msat);
 				proportional_millionths = cmp::min(proportional_millionths, fees.proportional_millionths);
 			}
-			updated_lowest_inbound_channel_fee = Some(RoutingFees {
-				base_msat,
-				proportional_millionths
-			});
+			self.update_lowest_inbound_channel_fees(dest_node_id, node, &mut channels, Some(RoutingFees {
+				base_msat, proportional_millionths
+			}));
 		} else if chan_was_enabled {
-			for chan_id in node.channels.iter() {
-				let chan = channels.get(chan_id).unwrap();
-				let chan_info_opt;
-				if chan.node_one == dest_node_id {
-					chan_info_opt = chan.two_to_one.as_ref();
-				} else {
-					chan_info_opt = chan.one_to_two.as_ref();
-				}
-				if let Some(chan_info) = chan_info_opt {
-					if chan_info.enabled {
-						let fees = updated_lowest_inbound_channel_fee.get_or_insert(RoutingFees {
-							base_msat: u32::max_value(), proportional_millionths: u32::max_value() });
-						fees.base_msat = cmp::min(fees.base_msat, chan_info.fees.base_msat);
-						fees.proportional_millionths = cmp::min(fees.proportional_millionths, chan_info.fees.proportional_millionths);
-					}
-				}
-			}
-		}
-
-		if updated_lowest_inbound_channel_fee.is_some() {
-			node.lowest_inbound_channel_fees = updated_lowest_inbound_channel_fee;
-
-			for (_, chan) in channels.iter_mut() {
-				if chan.node_one == dest_node_id {
-					chan.lowest_inbound_channel_fees_to_two = updated_lowest_inbound_channel_fee;
-				}
-
-				if chan.node_two == dest_node_id {
-					chan.lowest_inbound_channel_fees_to_one = updated_lowest_inbound_channel_fee;
-				}
-			}
+			self.recompute_and_update_lowest_inbound_channel_fees(dest_node_id, node, &mut channels);
 		}
 
 		Ok(())
 	}
 
-	fn remove_channel_in_nodes(nodes: &mut BTreeMap<NodeId, NodeInfo>, chan: &ChannelInfo, short_channel_id: u64) {
+	fn remove_channel_in_nodes(&self, nodes: &mut BTreeMap<NodeId, NodeInfo>, chan: &ChannelInfo, short_channel_id: u64) {
 		macro_rules! remove_from_node {
 			($node_id: expr) => {
 				if let BtreeEntry::Occupied(mut entry) = nodes.entry($node_id) {
@@ -1847,12 +1815,51 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 				} else {
 					panic!("Had channel that pointed to unknown node (ie inconsistent network map)!");
 				}
+				if let Some(node) = nodes.get_mut(&$node_id) {
+					self.recompute_and_update_lowest_inbound_channel_fees($node_id, node, &mut self.channels.write().unwrap());
+				}
 			}
 		}
 
 		remove_from_node!(chan.node_one);
 		remove_from_node!(chan.node_two);
 	}
+
+	fn recompute_and_update_lowest_inbound_channel_fees(&self, node_id: NodeId, node: &mut NodeInfo, channels: &mut BTreeMap<u64, ChannelInfo>) {
+		let mut updated_lowest_inbound_channel_fee = None;
+		for chan_id in node.channels.iter() {
+			let chan = channels.get(chan_id).unwrap();
+			let chan_info_opt;
+			if chan.node_one == node_id {
+				chan_info_opt = chan.two_to_one.as_ref();
+			} else {
+				chan_info_opt = chan.one_to_two.as_ref();
+			}
+			if let Some(chan_info) = chan_info_opt {
+				if chan_info.enabled {
+					let fees = updated_lowest_inbound_channel_fee.get_or_insert(RoutingFees {
+						base_msat: u32::max_value(), proportional_millionths: u32::max_value() });
+					fees.base_msat = cmp::min(fees.base_msat, chan_info.fees.base_msat);
+					fees.proportional_millionths = cmp::min(fees.proportional_millionths, chan_info.fees.proportional_millionths);
+				}
+			}
+		}
+		self.update_lowest_inbound_channel_fees(node_id, node, channels, updated_lowest_inbound_channel_fee);
+	}
+
+	fn update_lowest_inbound_channel_fees(&self, node_id: NodeId, node: &mut NodeInfo, channels: &mut BTreeMap<u64, ChannelInfo>, updated_fees: Option<RoutingFees>) {
+		node.lowest_inbound_channel_fees = updated_fees;
+		for (_, chan) in channels.iter_mut() {
+			if chan.node_one == node_id {
+				chan.lowest_inbound_channel_fees_to_two = updated_fees;
+			}
+
+			if chan.node_two == node_id {
+				chan.lowest_inbound_channel_fees_to_one = updated_fees;
+			}
+		}
+	}
+
 }
 
 impl ReadOnlyNetworkGraph<'_> {
