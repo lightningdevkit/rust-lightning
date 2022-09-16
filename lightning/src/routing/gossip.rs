@@ -813,8 +813,8 @@ impl Readable for ChannelInfo {
 		let mut two_to_one_wrap: Option<ChannelUpdateInfoDeserWrapper> = None;
 		init_tlv_field_var!(capacity_sats, required);
 		init_tlv_field_var!(announcement_message, required);
-		init_tlv_field_var!(lowest_inbound_channel_fees_to_one, option);
-		init_tlv_field_var!(lowest_inbound_channel_fees_to_two, option);
+		let mut lowest_inbound_channel_fees_to_one = None;
+		let mut lowest_inbound_channel_fees_to_two = None;
 		read_tlv_fields!(reader, {
 			(0, features, required),
 			(1, announcement_received_time, (default_value, 0)),
