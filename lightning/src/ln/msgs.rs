@@ -883,10 +883,17 @@ pub trait ChannelMessageHandler : MessageSendEventsProvider {
 	/// is believed to be possible in the future (eg they're sending us messages we don't
 	/// understand or indicate they require unknown feature bits), no_connection_possible is set
 	/// and any outstanding channels should be failed.
+	///
+	/// Note that in some rare cases this may be called without a corresponding
+	/// [`Self::peer_connected`].
 	fn peer_disconnected(&self, their_node_id: &PublicKey, no_connection_possible: bool);
 
 	/// Handle a peer reconnecting, possibly generating channel_reestablish message(s).
-	fn peer_connected(&self, their_node_id: &PublicKey, msg: &Init);
+	///
+	/// May return an `Err(())` if the features the peer supports are not sufficient to communicate
+	/// with us. Implementors should be somewhat conservative about doing so, however, as other
+	/// message handlers may still wish to communicate with this peer.
+	fn peer_connected(&self, their_node_id: &PublicKey, msg: &Init) -> Result<(), ()>;
 	/// Handle an incoming channel_reestablish message from the given peer.
 	fn handle_channel_reestablish(&self, their_node_id: &PublicKey, msg: &ChannelReestablish);
 
@@ -896,6 +903,19 @@ pub trait ChannelMessageHandler : MessageSendEventsProvider {
 	// Error:
 	/// Handle an incoming error message from the given peer.
 	fn handle_error(&self, their_node_id: &PublicKey, msg: &ErrorMessage);
+
+	// Handler information:
+	/// Gets the node feature flags which this handler itself supports. All available handlers are
+	/// queried similarly and their feature flags are OR'd together to form the [`NodeFeatures`]
+	/// which are broadcasted in our [`NodeAnnouncement`] message.
+	fn provided_node_features(&self) -> NodeFeatures;
+
+	/// Gets the init feature flags which should be sent to the given peer. All available handlers
+	/// are queried similarly and their feature flags are OR'd together to form the [`InitFeatures`]
+	/// which are sent in our [`Init`] message.
+	///
+	/// Note that this method is called before [`Self::peer_connected`].
+	fn provided_init_features(&self, their_node_id: &PublicKey) -> InitFeatures;
 }
 
 /// A trait to describe an object which can receive routing messages.
@@ -927,7 +947,11 @@ pub trait RoutingMessageHandler : MessageSendEventsProvider {
 	/// Called when a connection is established with a peer. This can be used to
 	/// perform routing table synchronization using a strategy defined by the
 	/// implementor.
-	fn peer_connected(&self, their_node_id: &PublicKey, init: &Init);
+	///
+	/// May return an `Err(())` if the features the peer supports are not sufficient to communicate
+	/// with us. Implementors should be somewhat conservative about doing so, however, as other
+	/// message handlers may still wish to communicate with this peer.
+	fn peer_connected(&self, their_node_id: &PublicKey, init: &Init) -> Result<(), ()>;
 	/// Handles the reply of a query we initiated to learn about channels
 	/// for a given range of blocks. We can expect to receive one or more
 	/// replies to a single query.
@@ -943,6 +967,18 @@ pub trait RoutingMessageHandler : MessageSendEventsProvider {
 	/// Handles when a peer asks us to send routing gossip messages for a
 	/// list of short_channel_ids.
 	fn handle_query_short_channel_ids(&self, their_node_id: &PublicKey, msg: QueryShortChannelIds) -> Result<(), LightningError>;
+
+	// Handler information:
+	/// Gets the node feature flags which this handler itself supports. All available handlers are
+	/// queried similarly and their feature flags are OR'd together to form the [`NodeFeatures`]
+	/// which are broadcasted in our [`NodeAnnouncement`] message.
+	fn provided_node_features(&self) -> NodeFeatures;
+	/// Gets the init feature flags which should be sent to the given peer. All available handlers
+	/// are queried similarly and their feature flags are OR'd together to form the [`InitFeatures`]
+	/// which are sent in our [`Init`] message.
+	///
+	/// Note that this method is called before [`Self::peer_connected`].
+	fn provided_init_features(&self, their_node_id: &PublicKey) -> InitFeatures;
 }
 
 /// A trait to describe an object that can receive onion messages.
@@ -951,10 +987,30 @@ pub trait OnionMessageHandler : OnionMessageProvider {
 	fn handle_onion_message(&self, peer_node_id: &PublicKey, msg: &OnionMessage);
 	/// Called when a connection is established with a peer. Can be used to track which peers
 	/// advertise onion message support and are online.
-	fn peer_connected(&self, their_node_id: &PublicKey, init: &Init);
+	///
+	/// May return an `Err(())` if the features the peer supports are not sufficient to communicate
+	/// with us. Implementors should be somewhat conservative about doing so, however, as other
+	/// message handlers may still wish to communicate with this peer.
+	fn peer_connected(&self, their_node_id: &PublicKey, init: &Init) -> Result<(), ()>;
 	/// Indicates a connection to the peer failed/an existing connection was lost. Allows handlers to
 	/// drop and refuse to forward onion messages to this peer.
+	///
+	/// Note that in some rare cases this may be called without a corresponding
+	/// [`Self::peer_connected`].
 	fn peer_disconnected(&self, their_node_id: &PublicKey, no_connection_possible: bool);
+
+	// Handler information:
+	/// Gets the node feature flags which this handler itself supports. All available handlers are
+	/// queried similarly and their feature flags are OR'd together to form the [`NodeFeatures`]
+	/// which are broadcasted in our [`NodeAnnouncement`] message.
+	fn provided_node_features(&self) -> NodeFeatures;
+
+	/// Gets the init feature flags which should be sent to the given peer. All available handlers
+	/// are queried similarly and their feature flags are OR'd together to form the [`InitFeatures`]
+	/// which are sent in our [`Init`] message.
+	///
+	/// Note that this method is called before [`Self::peer_connected`].
+	fn provided_init_features(&self, their_node_id: &PublicKey) -> InitFeatures;
 }
 
 mod fuzzy_internal_msgs {
@@ -2007,7 +2063,7 @@ mod tests {
 		let sig_2 = get_sig_on!(privkey_2, secp_ctx, String::from("01010101010101010101010101010101"));
 		let sig_3 = get_sig_on!(privkey_3, secp_ctx, String::from("01010101010101010101010101010101"));
 		let sig_4 = get_sig_on!(privkey_4, secp_ctx, String::from("01010101010101010101010101010101"));
-		let mut features = ChannelFeatures::known();
+		let mut features = ChannelFeatures::empty();
 		if unknown_features_bits {
 			features = ChannelFeatures::from_le_bytes(vec![0xFF, 0xFF]);
 		}

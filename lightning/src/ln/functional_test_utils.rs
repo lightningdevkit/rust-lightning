@@ -14,10 +14,10 @@ use chain::{BestBlock, Confirm, Listen, Watch, keysinterface::KeysInterface};
 use chain::channelmonitor::ChannelMonitor;
 use chain::transaction::OutPoint;
 use ln::{PaymentPreimage, PaymentHash, PaymentSecret};
-use ln::channelmanager::{ChainParameters, ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, PaymentSendFailure, PaymentId, MIN_CLTV_EXPIRY_DELTA};
+use ln::channelmanager::{self, ChainParameters, ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, PaymentSendFailure, PaymentId, MIN_CLTV_EXPIRY_DELTA};
 use routing::gossip::{P2PGossipSync, NetworkGraph, NetworkUpdate};
 use routing::router::{PaymentParameters, Route, get_route};
-use ln::features::{InitFeatures, InvoiceFeatures};
+use ln::features::InitFeatures;
 use ln::msgs;
 use ln::msgs::{ChannelMessageHandler,RoutingMessageHandler};
 use util::enforcing_trait_impls::EnforcingSigner;
@@ -304,9 +304,18 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 	fn drop(&mut self) {
 		if !panicking() {
 			// Check that we processed all pending events
-			assert!(self.node.get_and_clear_pending_msg_events().is_empty());
-			assert!(self.node.get_and_clear_pending_events().is_empty());
-			assert!(self.chain_monitor.added_monitors.lock().unwrap().is_empty());
+			let msg_events = self.node.get_and_clear_pending_msg_events();
+			if !msg_events.is_empty() {
+				panic!("Had excess message events on node {}: {:?}", self.logger.id, msg_events);
+			}
+			let events = self.node.get_and_clear_pending_events();
+			if !events.is_empty() {
+				panic!("Had excess events on node {}: {:?}", self.logger.id, events);
+			}
+			let added_monitors = self.chain_monitor.added_monitors.lock().unwrap().split_off(0);
+			if !added_monitors.is_empty() {
+				panic!("Had {} excess added monitors on node {}", added_monitors.len(), self.logger.id);
+			}
 
 			// Check that if we serialize the Router, we can deserialize it again.
 			{
@@ -669,6 +678,72 @@ pub fn sign_funding_transaction<'a, 'b, 'c>(node_a: &Node<'a, 'b, 'c>, node_b: &
 	tx
 }
 
+// Receiver must have been initialized with manually_accept_inbound_channels set to true.
+pub fn open_zero_conf_channel<'a, 'b, 'c, 'd>(initiator: &'a Node<'b, 'c, 'd>, receiver: &'a Node<'b, 'c, 'd>, initiator_config: Option<UserConfig>) -> (bitcoin::Transaction, [u8; 32]) {
+	let initiator_channels = initiator.node.list_usable_channels().len();
+	let receiver_channels = receiver.node.list_usable_channels().len();
+
+	initiator.node.create_channel(receiver.node.get_our_node_id(), 100_000, 10_001, 42, initiator_config).unwrap();
+	let open_channel = get_event_msg!(initiator, MessageSendEvent::SendOpenChannel, receiver.node.get_our_node_id());
+
+	receiver.node.handle_open_channel(&initiator.node.get_our_node_id(), channelmanager::provided_init_features(), &open_channel);
+	let events = receiver.node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	match events[0] {
+		Event::OpenChannelRequest { temporary_channel_id, .. } => {
+			receiver.node.accept_inbound_channel_from_trusted_peer_0conf(&temporary_channel_id, &initiator.node.get_our_node_id(), 0).unwrap();
+		},
+		_ => panic!("Unexpected event"),
+	};
+
+	let accept_channel = get_event_msg!(receiver, MessageSendEvent::SendAcceptChannel, initiator.node.get_our_node_id());
+	assert_eq!(accept_channel.minimum_depth, 0);
+	initiator.node.handle_accept_channel(&receiver.node.get_our_node_id(), channelmanager::provided_init_features(), &accept_channel);
+
+	let (temporary_channel_id, tx, _) = create_funding_transaction(&initiator, &receiver.node.get_our_node_id(), 100_000, 42);
+	initiator.node.funding_transaction_generated(&temporary_channel_id, &receiver.node.get_our_node_id(), tx.clone()).unwrap();
+	let funding_created = get_event_msg!(initiator, MessageSendEvent::SendFundingCreated, receiver.node.get_our_node_id());
+
+	receiver.node.handle_funding_created(&initiator.node.get_our_node_id(), &funding_created);
+	check_added_monitors!(receiver, 1);
+	let bs_signed_locked = receiver.node.get_and_clear_pending_msg_events();
+	assert_eq!(bs_signed_locked.len(), 2);
+	let as_channel_ready;
+	match &bs_signed_locked[0] {
+		MessageSendEvent::SendFundingSigned { node_id, msg } => {
+			assert_eq!(*node_id, initiator.node.get_our_node_id());
+			initiator.node.handle_funding_signed(&receiver.node.get_our_node_id(), &msg);
+			check_added_monitors!(initiator, 1);
+
+			assert_eq!(initiator.tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 1);
+			assert_eq!(initiator.tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0)[0], tx);
+
+			as_channel_ready = get_event_msg!(initiator, MessageSendEvent::SendChannelReady, receiver.node.get_our_node_id());
+		}
+		_ => panic!("Unexpected event"),
+	}
+	match &bs_signed_locked[1] {
+		MessageSendEvent::SendChannelReady { node_id, msg } => {
+			assert_eq!(*node_id, initiator.node.get_our_node_id());
+			initiator.node.handle_channel_ready(&receiver.node.get_our_node_id(), &msg);
+		}
+		_ => panic!("Unexpected event"),
+	}
+
+	receiver.node.handle_channel_ready(&initiator.node.get_our_node_id(), &as_channel_ready);
+
+	let as_channel_update = get_event_msg!(initiator, MessageSendEvent::SendChannelUpdate, receiver.node.get_our_node_id());
+	let bs_channel_update = get_event_msg!(receiver, MessageSendEvent::SendChannelUpdate, initiator.node.get_our_node_id());
+
+	initiator.node.handle_channel_update(&receiver.node.get_our_node_id(), &bs_channel_update);
+	receiver.node.handle_channel_update(&initiator.node.get_our_node_id(), &as_channel_update);
+
+	assert_eq!(initiator.node.list_usable_channels().len(), initiator_channels + 1);
+	assert_eq!(receiver.node.list_usable_channels().len(), receiver_channels + 1);
+
+	(tx, as_channel_ready.channel_id)
+}
+
 pub fn create_chan_between_nodes_with_value_init<'a, 'b, 'c>(node_a: &Node<'a, 'b, 'c>, node_b: &Node<'a, 'b, 'c>, channel_value: u64, push_msat: u64, a_flags: InitFeatures, b_flags: InitFeatures) -> Transaction {
 	let create_chan_id = node_a.node.create_channel(node_b.node.get_our_node_id(), channel_value, push_msat, 42, None).unwrap();
 	let open_channel_msg = get_event_msg!(node_a, MessageSendEvent::SendOpenChannel, node_b.node.get_our_node_id());
@@ -826,60 +901,10 @@ pub fn create_unannounced_chan_between_nodes_with_value<'a, 'b, 'c, 'd>(nodes: &
 }
 
 pub fn update_nodes_with_chan_announce<'a, 'b, 'c, 'd>(nodes: &'a Vec<Node<'b, 'c, 'd>>, a: usize, b: usize, ann: &msgs::ChannelAnnouncement, upd_1: &msgs::ChannelUpdate, upd_2: &msgs::ChannelUpdate) {
-	nodes[a].node.broadcast_node_announcement([0, 0, 0], [0; 32], Vec::new());
-	let a_events = nodes[a].node.get_and_clear_pending_msg_events();
-	assert!(a_events.len() >= 2);
-
-	// ann should be re-generated by broadcast_node_announcement - check that we have it.
-	let mut found_ann_1 = false;
-	for event in a_events.iter() {
-		match event {
-			MessageSendEvent::BroadcastChannelAnnouncement { ref msg, .. } => {
-				if msg == ann { found_ann_1 = true; }
-			},
-			MessageSendEvent::BroadcastNodeAnnouncement { .. } => {},
-			_ => panic!("Unexpected event {:?}", event),
-		}
-	}
-	assert!(found_ann_1);
-
-	let a_node_announcement = match a_events.last().unwrap() {
-		MessageSendEvent::BroadcastNodeAnnouncement { ref msg } => {
-			(*msg).clone()
-		},
-		_ => panic!("Unexpected event"),
-	};
-
-	nodes[b].node.broadcast_node_announcement([1, 1, 1], [1; 32], Vec::new());
-	let b_events = nodes[b].node.get_and_clear_pending_msg_events();
-	assert!(b_events.len() >= 2);
-
-	// ann should be re-generated by broadcast_node_announcement - check that we have it.
-	let mut found_ann_2 = false;
-	for event in b_events.iter() {
-		match event {
-			MessageSendEvent::BroadcastChannelAnnouncement { ref msg, .. } => {
-				if msg == ann { found_ann_2 = true; }
-			},
-			MessageSendEvent::BroadcastNodeAnnouncement { .. } => {},
-			_ => panic!("Unexpected event"),
-		}
-	}
-	assert!(found_ann_2);
-
-	let b_node_announcement = match b_events.last().unwrap() {
-		MessageSendEvent::BroadcastNodeAnnouncement { ref msg } => {
-			(*msg).clone()
-		},
-		_ => panic!("Unexpected event"),
-	};
-
 	for node in nodes {
 		assert!(node.gossip_sync.handle_channel_announcement(ann).unwrap());
 		node.gossip_sync.handle_channel_update(upd_1).unwrap();
 		node.gossip_sync.handle_channel_update(upd_2).unwrap();
-		node.gossip_sync.handle_node_announcement(&a_node_announcement).unwrap();
-		node.gossip_sync.handle_node_announcement(&b_node_announcement).unwrap();
 
 		// Note that channel_updates are also delivered to ChannelManagers to ensure we have
 		// forwarding info for local channels even if its not accepted in the network graph.
@@ -1026,7 +1051,7 @@ pub fn close_channel<'a, 'b, 'c>(outbound_node: &Node<'a, 'b, 'c>, inbound_node:
 	let (tx_a, tx_b);
 
 	node_a.close_channel(channel_id, &node_b.get_our_node_id()).unwrap();
-	node_b.handle_shutdown(&node_a.get_our_node_id(), &InitFeatures::known(), &get_event_msg!(struct_a, MessageSendEvent::SendShutdown, node_b.get_our_node_id()));
+	node_b.handle_shutdown(&node_a.get_our_node_id(), &channelmanager::provided_init_features(), &get_event_msg!(struct_a, MessageSendEvent::SendShutdown, node_b.get_our_node_id()));
 
 	let events_1 = node_b.get_and_clear_pending_msg_events();
 	assert!(events_1.len() >= 1);
@@ -1051,7 +1076,7 @@ pub fn close_channel<'a, 'b, 'c>(outbound_node: &Node<'a, 'b, 'c>, inbound_node:
 		})
 	};
 
-	node_a.handle_shutdown(&node_b.get_our_node_id(), &InitFeatures::known(), &shutdown_b);
+	node_a.handle_shutdown(&node_b.get_our_node_id(), &channelmanager::provided_init_features(), &shutdown_b);
 	let (as_update, bs_update) = if close_inbound_first {
 		assert!(node_a.get_and_clear_pending_msg_events().is_empty());
 		node_a.handle_closing_signed(&node_b.get_our_node_id(), &closing_signed_b.unwrap());
@@ -1244,7 +1269,7 @@ macro_rules! get_route {
 macro_rules! get_route_and_payment_hash {
 	($send_node: expr, $recv_node: expr, $recv_value: expr) => {{
 		let payment_params = $crate::routing::router::PaymentParameters::from_node_id($recv_node.node.get_our_node_id())
-			.with_features($crate::ln::features::InvoiceFeatures::known());
+			.with_features($crate::ln::channelmanager::provided_invoice_features());
 		$crate::get_route_and_payment_hash!($send_node, $recv_node, payment_params, $recv_value, TEST_FINAL_CLTV)
 	}};
 	($send_node: expr, $recv_node: expr, $payment_params: expr, $recv_value: expr, $cltv: expr) => {{
@@ -1514,9 +1539,9 @@ impl<'a> PaymentFailedConditions<'a> {
 
 #[cfg(test)]
 macro_rules! expect_payment_failed_with_update {
-	($node: expr, $expected_payment_hash: expr, $rejected_by_dest: expr, $scid: expr, $chan_closed: expr) => {
+	($node: expr, $expected_payment_hash: expr, $payment_failed_permanently: expr, $scid: expr, $chan_closed: expr) => {
 		$crate::ln::functional_test_utils::expect_payment_failed_conditions(
-			&$node, $expected_payment_hash, $rejected_by_dest,
+			&$node, $expected_payment_hash, $payment_failed_permanently,
 			$crate::ln::functional_test_utils::PaymentFailedConditions::new()
 				.blamed_scid($scid).blamed_chan_closed($chan_closed));
 	}
@@ -1524,28 +1549,28 @@ macro_rules! expect_payment_failed_with_update {
 
 #[cfg(test)]
 macro_rules! expect_payment_failed {
-	($node: expr, $expected_payment_hash: expr, $rejected_by_dest: expr $(, $expected_error_code: expr, $expected_error_data: expr)*) => {
+	($node: expr, $expected_payment_hash: expr, $payment_failed_permanently: expr $(, $expected_error_code: expr, $expected_error_data: expr)*) => {
 		#[allow(unused_mut)]
 		let mut conditions = $crate::ln::functional_test_utils::PaymentFailedConditions::new();
 		$(
 			conditions = conditions.expected_htlc_error_data($expected_error_code, &$expected_error_data);
 		)*
-		$crate::ln::functional_test_utils::expect_payment_failed_conditions(&$node, $expected_payment_hash, $rejected_by_dest, conditions);
+		$crate::ln::functional_test_utils::expect_payment_failed_conditions(&$node, $expected_payment_hash, $payment_failed_permanently, conditions);
 	};
 }
 
 pub fn expect_payment_failed_conditions_event<'a, 'b, 'c, 'd, 'e>(
 	node: &'a Node<'b, 'c, 'd>, payment_failed_event: Event, expected_payment_hash: PaymentHash,
-	expected_rejected_by_dest: bool, conditions: PaymentFailedConditions<'e>
+	expected_payment_failed_permanently: bool, conditions: PaymentFailedConditions<'e>
 ) {
 	let expected_payment_id = match payment_failed_event {
-		Event::PaymentPathFailed { payment_hash, rejected_by_dest, path, retry, payment_id, network_update, short_channel_id,
+		Event::PaymentPathFailed { payment_hash, payment_failed_permanently, path, retry, payment_id, network_update, short_channel_id,
 			#[cfg(test)]
 			error_code,
 			#[cfg(test)]
 			error_data, .. } => {
 			assert_eq!(payment_hash, expected_payment_hash, "unexpected payment_hash");
-			assert_eq!(rejected_by_dest, expected_rejected_by_dest, "unexpected rejected_by_dest value");
+			assert_eq!(payment_failed_permanently, expected_payment_failed_permanently, "unexpected payment_failed_permanently value");
 			assert!(retry.is_some(), "expected retry.is_some()");
 			assert_eq!(retry.as_ref().unwrap().final_value_msat, path.last().unwrap().fee_msat, "Retry amount should match last hop in path");
 			assert_eq!(retry.as_ref().unwrap().payment_params.payee_pubkey, path.last().unwrap().pubkey, "Retry payee node_id should match last hop in path");
@@ -1602,12 +1627,12 @@ pub fn expect_payment_failed_conditions_event<'a, 'b, 'c, 'd, 'e>(
 }
 
 pub fn expect_payment_failed_conditions<'a, 'b, 'c, 'd, 'e>(
-	node: &'a Node<'b, 'c, 'd>, expected_payment_hash: PaymentHash, expected_rejected_by_dest: bool,
+	node: &'a Node<'b, 'c, 'd>, expected_payment_hash: PaymentHash, expected_payment_failed_permanently: bool,
 	conditions: PaymentFailedConditions<'e>
 ) {
 	let mut events = node.node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
-	expect_payment_failed_conditions_event(node, events.pop().unwrap(), expected_payment_hash, expected_rejected_by_dest, conditions);
+	expect_payment_failed_conditions_event(node, events.pop().unwrap(), expected_payment_hash, expected_payment_failed_permanently, conditions);
 }
 
 pub fn send_along_route_with_secret<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, route: Route, expected_paths: &[&[&Node<'a, 'b, 'c>]], recv_value: u64, our_payment_hash: PaymentHash, our_payment_secret: PaymentSecret) -> PaymentId {
@@ -1828,7 +1853,7 @@ pub const TEST_FINAL_CLTV: u32 = 70;
 
 pub fn route_payment<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route: &[&Node<'a, 'b, 'c>], recv_value: u64) -> (PaymentPreimage, PaymentHash, PaymentSecret) {
 	let payment_params = PaymentParameters::from_node_id(expected_route.last().unwrap().node.get_our_node_id())
-		.with_features(InvoiceFeatures::known());
+		.with_features(channelmanager::provided_invoice_features());
 	let route = get_route!(origin_node, payment_params, recv_value, TEST_FINAL_CLTV).unwrap();
 	assert_eq!(route.paths.len(), 1);
 	assert_eq!(route.paths[0].len(), expected_route.len());
@@ -1842,7 +1867,7 @@ pub fn route_payment<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route:
 
 pub fn route_over_limit<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route: &[&Node<'a, 'b, 'c>], recv_value: u64)  {
 	let payment_params = PaymentParameters::from_node_id(expected_route.last().unwrap().node.get_our_node_id())
-		.with_features(InvoiceFeatures::known());
+		.with_features(channelmanager::provided_invoice_features());
 	let network_graph = origin_node.network_graph.read_only();
 	let scorer = test_utils::TestScorer::with_penalty(0);
 	let seed = [0u8; 32];
@@ -1951,9 +1976,9 @@ pub fn pass_failed_payment_back<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expe
 			let events = origin_node.node.get_and_clear_pending_events();
 			assert_eq!(events.len(), 1);
 			let expected_payment_id = match events[0] {
-				Event::PaymentPathFailed { payment_hash, rejected_by_dest, all_paths_failed, ref path, ref payment_id, .. } => {
+				Event::PaymentPathFailed { payment_hash, payment_failed_permanently, all_paths_failed, ref path, ref payment_id, .. } => {
 					assert_eq!(payment_hash, our_payment_hash);
-					assert!(rejected_by_dest);
+					assert!(payment_failed_permanently);
 					assert_eq!(all_paths_failed, i == expected_paths.len() - 1);
 					for (idx, hop) in expected_route.iter().enumerate() {
 						assert_eq!(hop.node.get_our_node_id(), path[idx].pubkey);
@@ -2022,7 +2047,7 @@ pub fn create_node_cfgs<'a>(node_count: usize, chanmon_cfgs: &'a Vec<TestChanMon
 			chain_monitor,
 			keys_manager: &chanmon_cfgs[i].keys_manager,
 			node_seed: seed,
-			features: InitFeatures::known(),
+			features: channelmanager::provided_init_features(),
 			network_graph: NetworkGraph::new(chanmon_cfgs[i].chain_source.genesis_hash, &chanmon_cfgs[i].logger),
 		});
 	}
@@ -2083,8 +2108,8 @@ pub fn create_network<'a, 'b: 'a, 'c: 'b>(node_count: usize, cfgs: &'b Vec<NodeC
 
 	for i in 0..node_count {
 		for j in (i+1)..node_count {
-			nodes[i].node.peer_connected(&nodes[j].node.get_our_node_id(), &msgs::Init { features: cfgs[j].features.clone(), remote_network_address: None });
-			nodes[j].node.peer_connected(&nodes[i].node.get_our_node_id(), &msgs::Init { features: cfgs[i].features.clone(), remote_network_address: None });
+			nodes[i].node.peer_connected(&nodes[j].node.get_our_node_id(), &msgs::Init { features: cfgs[j].features.clone(), remote_network_address: None }).unwrap();
+			nodes[j].node.peer_connected(&nodes[i].node.get_our_node_id(), &msgs::Init { features: cfgs[i].features.clone(), remote_network_address: None }).unwrap();
 		}
 	}
 
@@ -2093,7 +2118,6 @@ pub fn create_network<'a, 'b: 'a, 'c: 'b>(node_count: usize, cfgs: &'b Vec<NodeC
 
 // Note that the following only works for CLTV values up to 128
 pub const ACCEPTED_HTLC_SCRIPT_WEIGHT: usize = 137; //Here we have a diff due to HTLC CLTV expiry being < 2^15 in test
-pub const OFFERED_HTLC_SCRIPT_WEIGHT: usize = 133;
 
 #[derive(PartialEq)]
 pub enum HTLCType { NONE, TIMEOUT, SUCCESS }
@@ -2258,15 +2282,27 @@ macro_rules! get_channel_value_stat {
 macro_rules! get_chan_reestablish_msgs {
 	($src_node: expr, $dst_node: expr) => {
 		{
+			let mut announcements = $crate::prelude::HashSet::new();
 			let mut res = Vec::with_capacity(1);
 			for msg in $src_node.node.get_and_clear_pending_msg_events() {
 				if let MessageSendEvent::SendChannelReestablish { ref node_id, ref msg } = msg {
 					assert_eq!(*node_id, $dst_node.node.get_our_node_id());
 					res.push(msg.clone());
+				} else if let MessageSendEvent::SendChannelAnnouncement { ref node_id, ref msg, .. } = msg {
+					assert_eq!(*node_id, $dst_node.node.get_our_node_id());
+					announcements.insert(msg.contents.short_channel_id);
 				} else {
 					panic!("Unexpected event")
 				}
 			}
+			for chan in $src_node.node.list_channels() {
+				if chan.is_public && chan.counterparty.node_id != $dst_node.node.get_our_node_id() {
+					if let Some(scid) = chan.short_channel_id {
+						assert!(announcements.remove(&scid));
+					}
+				}
+			}
+			assert!(announcements.is_empty());
 			res
 		}
 	}
@@ -2346,9 +2382,9 @@ macro_rules! handle_chan_reestablish_msgs {
 /// pending_htlc_adds includes both the holding cell and in-flight update_add_htlcs, whereas
 /// for claims/fails they are separated out.
 pub fn reconnect_nodes<'a, 'b, 'c>(node_a: &Node<'a, 'b, 'c>, node_b: &Node<'a, 'b, 'c>, send_channel_ready: (bool, bool), pending_htlc_adds: (i64, i64), pending_htlc_claims: (usize, usize), pending_htlc_fails: (usize, usize), pending_cell_htlc_claims: (usize, usize), pending_cell_htlc_fails: (usize, usize), pending_raa: (bool, bool))  {
-	node_a.node.peer_connected(&node_b.node.get_our_node_id(), &msgs::Init { features: InitFeatures::empty(), remote_network_address: None });
+	node_a.node.peer_connected(&node_b.node.get_our_node_id(), &msgs::Init { features: channelmanager::provided_init_features(), remote_network_address: None }).unwrap();
 	let reestablish_1 = get_chan_reestablish_msgs!(node_a, node_b);
-	node_b.node.peer_connected(&node_a.node.get_our_node_id(), &msgs::Init { features: InitFeatures::empty(), remote_network_address: None });
+	node_b.node.peer_connected(&node_a.node.get_our_node_id(), &msgs::Init { features: channelmanager::provided_init_features(), remote_network_address: None }).unwrap();
 	let reestablish_2 = get_chan_reestablish_msgs!(node_b, node_a);
 
 	if send_channel_ready.0 {

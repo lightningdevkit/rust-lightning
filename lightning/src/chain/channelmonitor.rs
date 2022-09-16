@@ -37,7 +37,7 @@ use bitcoin::secp256k1;
 use ln::{PaymentHash, PaymentPreimage};
 use ln::msgs::DecodeError;
 use ln::chan_utils;
-use ln::chan_utils::{CounterpartyCommitmentSecrets, HTLCOutputInCommitment, HTLCType, ChannelTransactionParameters, HolderCommitmentTransaction};
+use ln::chan_utils::{CounterpartyCommitmentSecrets, HTLCOutputInCommitment, HTLCClaim, ChannelTransactionParameters, HolderCommitmentTransaction};
 use ln::channelmanager::HTLCSource;
 use chain;
 use chain::{BestBlock, WatchedOutput};
@@ -619,7 +619,7 @@ pub enum Balance {
 /// An HTLC which has been irrevocably resolved on-chain, and has reached ANTI_REORG_DELAY.
 #[derive(PartialEq)]
 struct IrrevocablyResolvedHTLC {
-	commitment_tx_output_idx: u32,
+	commitment_tx_output_idx: Option<u32>,
 	/// The txid of the transaction which resolved the HTLC, this may be a commitment (if the HTLC
 	/// was not present in the confirmed commitment transaction), HTLC-Success, or HTLC-Timeout
 	/// transaction.
@@ -628,11 +628,39 @@ struct IrrevocablyResolvedHTLC {
 	payment_preimage: Option<PaymentPreimage>,
 }
 
-impl_writeable_tlv_based!(IrrevocablyResolvedHTLC, {
-	(0, commitment_tx_output_idx, required),
-	(1, resolving_txid, option),
-	(2, payment_preimage, option),
-});
+// In LDK versions prior to 0.0.111 commitment_tx_output_idx was not Option-al and
+// IrrevocablyResolvedHTLC objects only existed for non-dust HTLCs. This was a bug, but to maintain
+// backwards compatibility we must ensure we always write out a commitment_tx_output_idx field,
+// using `u32::max_value()` as a sentinal to indicate the HTLC was dust.
+impl Writeable for IrrevocablyResolvedHTLC {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		let mapped_commitment_tx_output_idx = self.commitment_tx_output_idx.unwrap_or(u32::max_value());
+		write_tlv_fields!(writer, {
+			(0, mapped_commitment_tx_output_idx, required),
+			(1, self.resolving_txid, option),
+			(2, self.payment_preimage, option),
+		});
+		Ok(())
+	}
+}
+
+impl Readable for IrrevocablyResolvedHTLC {
+	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
+		let mut mapped_commitment_tx_output_idx = 0;
+		let mut resolving_txid = None;
+		let mut payment_preimage = None;
+		read_tlv_fields!(reader, {
+			(0, mapped_commitment_tx_output_idx, required),
+			(1, resolving_txid, option),
+			(2, payment_preimage, option),
+		});
+		Ok(Self {
+			commitment_tx_output_idx: if mapped_commitment_tx_output_idx == u32::max_value() { None } else { Some(mapped_commitment_tx_output_idx) },
+			resolving_txid,
+			payment_preimage,
+		})
+	}
+}
 
 /// A ChannelMonitor handles chain events (blocks connected and disconnected) and generates
 /// on-chain transactions to ensure no loss of funds occurs.
@@ -765,7 +793,10 @@ pub(crate) struct ChannelMonitorImpl<Signer: Sign> {
 	// of block connection between ChannelMonitors and the ChannelManager.
 	funding_spend_seen: bool,
 
+	/// Set to `Some` of the confirmed transaction spending the funding input of the channel after
+	/// reaching `ANTI_REORG_DELAY` confirmations.
 	funding_spend_confirmed: Option<Txid>,
+
 	confirmed_commitment_tx_counterparty_output: CommitmentTxCounterpartyOutputInfo,
 	/// The set of HTLCs which have been either claimed or failed on chain and have reached
 	/// the requisite confirmations on the claim/fail transaction (either ANTI_REORG_DELAY or the
@@ -1485,7 +1516,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 			}
 		}
 		let htlc_resolved = self.htlcs_resolved_on_chain.iter()
-			.find(|v| if v.commitment_tx_output_idx == htlc_commitment_tx_output_idx {
+			.find(|v| if v.commitment_tx_output_idx == Some(htlc_commitment_tx_output_idx) {
 				debug_assert!(htlc_spend_txid_opt.is_none());
 				htlc_spend_txid_opt = v.resolving_txid;
 				true
@@ -1602,7 +1633,7 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 	/// confirmations on the claim transaction.
 	///
 	/// Note that for `ChannelMonitors` which track a channel which went on-chain with versions of
-	/// LDK prior to 0.0.108, balances may not be fully captured if our counterparty broadcasted
+	/// LDK prior to 0.0.111, balances may not be fully captured if our counterparty broadcasted
 	/// a revoked state.
 	///
 	/// See [`Balance`] for additional details on the types of claimable balances which
@@ -1775,7 +1806,7 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 		macro_rules! walk_htlcs {
 			($holder_commitment: expr, $htlc_iter: expr) => {
 				for (htlc, source) in $htlc_iter {
-					if us.htlcs_resolved_on_chain.iter().any(|v| Some(v.commitment_tx_output_idx) == htlc.transaction_output_index) {
+					if us.htlcs_resolved_on_chain.iter().any(|v| v.commitment_tx_output_idx == htlc.transaction_output_index) {
 						// We should assert that funding_spend_confirmed is_some() here, but we
 						// have some unit tests which violate HTLC transaction CSVs entirely and
 						// would fail.
@@ -2622,6 +2653,11 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		let commitment_tx = self.onchain_tx_handler.get_fully_signed_holder_tx(&self.funding_redeemscript);
 		let txid = commitment_tx.txid();
 		let mut holder_transactions = vec![commitment_tx];
+		// When anchor outputs are present, the HTLC transactions are only valid once the commitment
+		// transaction confirms.
+		if self.onchain_tx_handler.opt_anchors() {
+			return holder_transactions;
+		}
 		for htlc in self.current_holder_commitment_tx.htlc_outputs.iter() {
 			if let Some(vout) = htlc.0.transaction_output_index {
 				let preimage = if !htlc.0.offered {
@@ -2655,6 +2691,11 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		let commitment_tx = self.onchain_tx_handler.get_fully_signed_copy_holder_tx(&self.funding_redeemscript);
 		let txid = commitment_tx.txid();
 		let mut holder_transactions = vec![commitment_tx];
+		// When anchor outputs are present, the HTLC transactions are only final once the commitment
+		// transaction confirms due to the CSV 1 encumberance.
+		if self.onchain_tx_handler.opt_anchors() {
+			return holder_transactions;
+		}
 		for htlc in self.current_holder_commitment_tx.htlc_outputs.iter() {
 			if let Some(vout) = htlc.0.transaction_output_index {
 				let preimage = if !htlc.0.offered {
@@ -2902,12 +2943,10 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 						source: source.clone(),
 						htlc_value_satoshis,
 					}));
-					if let Some(idx) = commitment_tx_output_idx {
-						self.htlcs_resolved_on_chain.push(IrrevocablyResolvedHTLC {
-							commitment_tx_output_idx: idx, resolving_txid: Some(entry.txid),
-							payment_preimage: None,
-						});
-					}
+					self.htlcs_resolved_on_chain.push(IrrevocablyResolvedHTLC {
+						commitment_tx_output_idx, resolving_txid: Some(entry.txid),
+						payment_preimage: None,
+					});
 				},
 				OnchainEvent::MaturingOutput { descriptor } => {
 					log_debug!(logger, "Descriptor {} has got enough confirmations to be passed upstream", log_spendable!(descriptor));
@@ -2917,7 +2956,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 				},
 				OnchainEvent::HTLCSpendConfirmation { commitment_tx_output_idx, preimage, .. } => {
 					self.htlcs_resolved_on_chain.push(IrrevocablyResolvedHTLC {
-						commitment_tx_output_idx, resolving_txid: Some(entry.txid),
+						commitment_tx_output_idx: Some(commitment_tx_output_idx), resolving_txid: Some(entry.txid),
 						payment_preimage: preimage,
 					});
 				},
@@ -3042,6 +3081,16 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 	}
 
 	fn should_broadcast_holder_commitment_txn<L: Deref>(&self, logger: &L) -> bool where L::Target: Logger {
+		// There's no need to broadcast our commitment transaction if we've seen one confirmed (even
+		// with 1 confirmation) as it'll be rejected as duplicate/conflicting.
+		if self.funding_spend_confirmed.is_some() ||
+			self.onchain_events_awaiting_threshold_conf.iter().find(|event| match event.event {
+				OnchainEvent::FundingSpendConfirmation { .. } => true,
+				_ => false,
+			}).is_some()
+		{
+			return false;
+		}
 		// We need to consider all HTLCs which are:
 		//  * in any unrevoked counterparty commitment transaction, as they could broadcast said
 		//    transactions and we'd end up in a race, or
@@ -3110,25 +3159,17 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 	fn is_resolving_htlc_output<L: Deref>(&mut self, tx: &Transaction, height: u32, logger: &L) where L::Target: Logger {
 		'outer_loop: for input in &tx.input {
 			let mut payment_data = None;
-			let witness_items = input.witness.len();
-			let htlctype = input.witness.last().map(|w| w.len()).and_then(HTLCType::scriptlen_to_htlctype);
-			let prev_last_witness_len = input.witness.second_to_last().map(|w| w.len()).unwrap_or(0);
-			let revocation_sig_claim = (witness_items == 3 && htlctype == Some(HTLCType::OfferedHTLC) && prev_last_witness_len == 33)
-				|| (witness_items == 3 && htlctype == Some(HTLCType::AcceptedHTLC) && prev_last_witness_len == 33);
-			let accepted_preimage_claim = witness_items == 5 && htlctype == Some(HTLCType::AcceptedHTLC)
-				&& input.witness.second_to_last().unwrap().len() == 32;
+			let htlc_claim = HTLCClaim::from_witness(&input.witness);
+			let revocation_sig_claim = htlc_claim == Some(HTLCClaim::Revocation);
+			let accepted_preimage_claim = htlc_claim == Some(HTLCClaim::AcceptedPreimage);
 			#[cfg(not(fuzzing))]
-			let accepted_timeout_claim = witness_items == 3 && htlctype == Some(HTLCType::AcceptedHTLC) && !revocation_sig_claim;
-			let offered_preimage_claim = witness_items == 3 && htlctype == Some(HTLCType::OfferedHTLC) &&
-				!revocation_sig_claim && input.witness.second_to_last().unwrap().len() == 32;
-
+			let accepted_timeout_claim = htlc_claim == Some(HTLCClaim::AcceptedTimeout);
+			let offered_preimage_claim = htlc_claim == Some(HTLCClaim::OfferedPreimage);
 			#[cfg(not(fuzzing))]
-			let offered_timeout_claim = witness_items == 5 && htlctype == Some(HTLCType::OfferedHTLC);
+			let offered_timeout_claim = htlc_claim == Some(HTLCClaim::OfferedTimeout);
 
 			let mut payment_preimage = PaymentPreimage([0; 32]);
-			if accepted_preimage_claim {
-				payment_preimage.0.copy_from_slice(input.witness.second_to_last().unwrap());
-			} else if offered_preimage_claim {
+			if offered_preimage_claim || accepted_preimage_claim {
 				payment_preimage.0.copy_from_slice(input.witness.second_to_last().unwrap());
 			}
 
@@ -3726,8 +3767,7 @@ mod tests {
 	use ln::{PaymentPreimage, PaymentHash};
 	use ln::chan_utils;
 	use ln::chan_utils::{HTLCOutputInCommitment, ChannelPublicKeys, ChannelTransactionParameters, HolderCommitmentTransaction, CounterpartyChannelTransactionParameters};
-	use ln::channelmanager::PaymentSendFailure;
-	use ln::features::InitFeatures;
+	use ln::channelmanager::{self, PaymentSendFailure};
 	use ln::functional_test_utils::*;
 	use ln::script::ShutdownScript;
 	use util::errors::APIError;
@@ -3756,9 +3796,9 @@ mod tests {
 		let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
 		let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 		let channel = create_announced_chan_between_nodes(
-			&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
+			&nodes, 0, 1, channelmanager::provided_init_features(), channelmanager::provided_init_features());
 		create_announced_chan_between_nodes(
-			&nodes, 1, 2, InitFeatures::known(), InitFeatures::known());
+			&nodes, 1, 2, channelmanager::provided_init_features(), channelmanager::provided_init_features());
 
 		// Rebalance somewhat
 		send_payment(&nodes[0], &[&nodes[1]], 10_000_000);

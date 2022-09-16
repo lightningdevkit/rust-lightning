@@ -1,8 +1,6 @@
-use std::cmp::max;
-use std::io;
-use std::io::Read;
-use std::ops::Deref;
-use std::sync::atomic::Ordering;
+use core::cmp::max;
+use core::ops::Deref;
+use core::sync::atomic::Ordering;
 
 use bitcoin::BlockHash;
 use bitcoin::secp256k1::PublicKey;
@@ -13,6 +11,7 @@ use lightning::ln::msgs::{
 use lightning::routing::gossip::NetworkGraph;
 use lightning::util::logger::Logger;
 use lightning::util::ser::{BigSize, Readable};
+use lightning::io;
 
 use crate::error::GraphSyncError;
 use crate::RapidGossipSync;
@@ -28,19 +27,7 @@ const GOSSIP_PREFIX: [u8; 4] = [76, 68, 75, 1];
 const MAX_INITIAL_NODE_ID_VECTOR_CAPACITY: u32 = 50_000;
 
 impl<NG: Deref<Target=NetworkGraph<L>>, L: Deref> RapidGossipSync<NG, L> where L::Target: Logger {
-	/// Update network graph from binary data.
-	/// Returns the last sync timestamp to be used the next time rapid sync data is queried.
-	///
-	/// `network_graph`: network graph to be updated
-	///
-	/// `update_data`: `&[u8]` binary stream that comprises the update data
-	pub fn update_network_graph(&self, update_data: &[u8]) -> Result<u32, GraphSyncError> {
-		let mut read_cursor = io::Cursor::new(update_data);
-		self.update_network_graph_from_byte_stream(&mut read_cursor)
-	}
-
-
-	pub(crate) fn update_network_graph_from_byte_stream<R: Read>(
+	pub(crate) fn update_network_graph_from_byte_stream<R: io::Read>(
 		&self,
 		mut read_cursor: &mut R,
 	) -> Result<u32, GraphSyncError> {

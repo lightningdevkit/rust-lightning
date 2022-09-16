@@ -39,8 +39,13 @@
 //!     (see [BOLT-4](https://github.com/lightning/bolts/blob/master/04-onion-routing.md) for more information).
 //! - `BasicMPP` - requires/supports that a node can receive basic multi-part payments
 //!     (see [BOLT-4](https://github.com/lightning/bolts/blob/master/04-onion-routing.md#basic-multi-part-payments) for more information).
+//! - `Wumbo` - requires/supports that a node create large channels. Called `option_support_large_channel` in the spec.
+//!     (see [BOLT-2](https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#the-open_channel-message) for more information).
 //! - `ShutdownAnySegwit` - requires/supports that future segwit versions are allowed in `shutdown`
 //!     (see [BOLT-2](https://github.com/lightning/bolts/blob/master/02-peer-protocol.md) for more information).
+//! - `OnionMessages` - requires/supports forwarding onion messages
+//!     (see [BOLT-7](https://github.com/lightning/bolts/pull/759/files) for more information).
+//!     TODO: update link
 //! - `ChannelType` - node supports the channel_type field in open/accept
 //!     (see [BOLT-2](https://github.com/lightning/bolts/blob/master/02-peer-protocol.md) for more information).
 //! - `SCIDPrivacy` - supply channel aliases for routing
@@ -66,15 +71,11 @@ mod sealed {
 	use prelude::*;
 	use ln::features::Features;
 
-	/// The context in which [`Features`] are applicable. Defines which features are required and
-	/// which are optional for the context.
+	/// The context in which [`Features`] are applicable. Defines which features are known to the
+	/// implementation, though specification of them as required or optional is up to the code
+	/// constructing a features object.
 	pub trait Context {
-		/// Features that are known to the implementation, where a required feature is indicated by
-		/// its even bit and an optional feature is indicated by its odd bit.
-		const KNOWN_FEATURE_FLAGS: &'static [u8];
-
-		/// Bitmask for selecting features that are known to the implementation, regardless of
-		/// whether each feature is required or optional.
+		/// Bitmask for selecting features that are known to the implementation.
 		const KNOWN_FEATURE_MASK: &'static [u8];
 	}
 
@@ -82,41 +83,16 @@ mod sealed {
 	/// are specified as a comma-separated list of bytes where each byte is a pipe-delimited list of
 	/// feature identifiers.
 	macro_rules! define_context {
-		($context: ident {
-			required_features: [$( $( $required_feature: ident )|*, )*],
-			optional_features: [$( $( $optional_feature: ident )|*, )*],
-		}) => {
+		($context: ident, [$( $( $known_feature: ident )|*, )*]) => {
 			#[derive(Eq, PartialEq)]
 			pub struct $context {}
 
 			impl Context for $context {
-				const KNOWN_FEATURE_FLAGS: &'static [u8] = &[
-					// For each byte, use bitwise-OR to compute the applicable flags for known
-					// required features `r_i` and optional features `o_j` for all `i` and `j` such
-					// that the following slice is formed:
-					//
-					// [
-					//  `r_0` | `r_1` | ... | `o_0` | `o_1` | ...,
-					//  ...,
-					// ]
-					$(
-						0b00_00_00_00 $(|
-							<Self as $required_feature>::REQUIRED_MASK)*
-						$(|
-							<Self as $optional_feature>::OPTIONAL_MASK)*,
-					)*
-				];
-
 				const KNOWN_FEATURE_MASK: &'static [u8] = &[
-					// Similar as above, but set both flags for each feature regardless of whether
-					// the feature is required or optional.
 					$(
 						0b00_00_00_00 $(|
-							<Self as $required_feature>::REQUIRED_MASK |
-							<Self as $required_feature>::OPTIONAL_MASK)*
-						$(|
-							<Self as $optional_feature>::REQUIRED_MASK |
-							<Self as $optional_feature>::OPTIONAL_MASK)*,
+							<Self as $known_feature>::REQUIRED_MASK |
+							<Self as $known_feature>::OPTIONAL_MASK)*,
 					)*
 				];
 			}
@@ -125,17 +101,12 @@ mod sealed {
 				fn fmt(&self, fmt: &mut alloc::fmt::Formatter) -> Result<(), alloc::fmt::Error> {
 					$(
 						$(
-							fmt.write_fmt(format_args!("{}: {}, ", stringify!($required_feature),
-								if <$context as $required_feature>::requires_feature(&self.flags) { "required" }
-								else if <$context as $required_feature>::supports_feature(&self.flags) { "supported" }
+							fmt.write_fmt(format_args!("{}: {}, ", stringify!($known_feature),
+								if <$context as $known_feature>::requires_feature(&self.flags) { "required" }
+								else if <$context as $known_feature>::supports_feature(&self.flags) { "supported" }
 								else { "not supported" }))?;
 						)*
-						$(
-							fmt.write_fmt(format_args!("{}: {}, ", stringify!($optional_feature),
-								if <$context as $optional_feature>::requires_feature(&self.flags) { "required" }
-								else if <$context as $optional_feature>::supports_feature(&self.flags) { "supported" }
-								else { "not supported" }))?;
-						)*
+						{} // Rust gets mad if we only have a $()* block here, so add a dummy {}
 					)*
 					fmt.write_fmt(format_args!("unknown flags: {}",
 						if self.requires_unknown_bits() { "required" }
@@ -145,132 +116,65 @@ mod sealed {
 		};
 	}
 
-	define_context!(InitContext {
-		required_features: [
-			// Byte 0
-			,
-			// Byte 1
-			VariableLengthOnion | StaticRemoteKey | PaymentSecret,
-			// Byte 2
-			,
-			// Byte 3
-			,
-			// Byte 4
-			,
-			// Byte 5
-			,
-			// Byte 6
-			,
-		],
-		optional_features: [
-			// Byte 0
-			DataLossProtect | InitialRoutingSync | UpfrontShutdownScript | GossipQueries,
-			// Byte 1
-			,
-			// Byte 2
-			BasicMPP | Wumbo,
-			// Byte 3
-			ShutdownAnySegwit,
-			// Byte 4
-			,
-			// Byte 5
-			ChannelType | SCIDPrivacy,
-			// Byte 6
-			ZeroConf,
-		],
-	});
-	define_context!(NodeContext {
-		required_features: [
-			// Byte 0
-			,
-			// Byte 1
-			VariableLengthOnion | StaticRemoteKey | PaymentSecret,
-			// Byte 2
-			,
-			// Byte 3
-			,
-			// Byte 4
-			,
-			// Byte 5
-			,
-			// Byte 6
-			,
-		],
-		optional_features: [
-			// Byte 0
-			DataLossProtect | UpfrontShutdownScript | GossipQueries,
-			// Byte 1
-			,
-			// Byte 2
-			BasicMPP | Wumbo,
-			// Byte 3
-			ShutdownAnySegwit,
-			// Byte 4
-			,
-			// Byte 5
-			ChannelType | SCIDPrivacy,
-			// Byte 6
-			ZeroConf | Keysend,
-		],
-	});
-	define_context!(ChannelContext {
-		required_features: [],
-		optional_features: [],
-	});
-	define_context!(InvoiceContext {
-		required_features: [
-			// Byte 0
-			,
-			// Byte 1
-			VariableLengthOnion | PaymentSecret,
-			// Byte 2
-			,
-		],
-		optional_features: [
-			// Byte 0
-			,
-			// Byte 1
-			,
-			// Byte 2
-			BasicMPP,
-		],
-	});
+	define_context!(InitContext, [
+		// Byte 0
+		DataLossProtect | InitialRoutingSync | UpfrontShutdownScript | GossipQueries,
+		// Byte 1
+		VariableLengthOnion | StaticRemoteKey | PaymentSecret,
+		// Byte 2
+		BasicMPP | Wumbo,
+		// Byte 3
+		ShutdownAnySegwit,
+		// Byte 4
+		OnionMessages,
+		// Byte 5
+		ChannelType | SCIDPrivacy,
+		// Byte 6
+		ZeroConf,
+	]);
+	define_context!(NodeContext, [
+		// Byte 0
+		DataLossProtect | UpfrontShutdownScript | GossipQueries,
+		// Byte 1
+		VariableLengthOnion | StaticRemoteKey | PaymentSecret,
+		// Byte 2
+		BasicMPP | Wumbo,
+		// Byte 3
+		ShutdownAnySegwit,
+		// Byte 4
+		OnionMessages,
+		// Byte 5
+		ChannelType | SCIDPrivacy,
+		// Byte 6
+		ZeroConf | Keysend,
+	]);
+	define_context!(ChannelContext, []);
+	define_context!(InvoiceContext, [
+		// Byte 0
+		,
+		// Byte 1
+		VariableLengthOnion | PaymentSecret,
+		// Byte 2
+		BasicMPP,
+	]);
 	// This isn't a "real" feature context, and is only used in the channel_type field in an
 	// `OpenChannel` message.
-	define_context!(ChannelTypeContext {
-		required_features: [
-			// Byte 0
-			,
-			// Byte 1
-			StaticRemoteKey,
-			// Byte 2
-			,
-			// Byte 3
-			,
-			// Byte 4
-			,
-			// Byte 5
-			SCIDPrivacy,
-			// Byte 6
-			ZeroConf,
-		],
-		optional_features: [
-			// Byte 0
-			,
-			// Byte 1
-			,
-			// Byte 2
-			,
-			// Byte 3
-			,
-			// Byte 4
-			,
-			// Byte 5
-			,
-			// Byte 6
-			,
-		],
-	});
+	define_context!(ChannelTypeContext, [
+		// Byte 0
+		,
+		// Byte 1
+		StaticRemoteKey,
+		// Byte 2
+		,
+		// Byte 3
+		,
+		// Byte 4
+		,
+		// Byte 5
+		SCIDPrivacy,
+		// Byte 6
+		ZeroConf,
+	]);
 
 	/// Defines a feature with the given bits for the specified [`Context`]s. The generated trait is
 	/// useful for manipulating feature flags.
@@ -298,6 +202,12 @@ mod sealed {
 				///
 				/// [`ODD_BIT`]: #associatedconstant.ODD_BIT
 				const ASSERT_ODD_BIT_PARITY: usize;
+
+				/// Assertion that the bits are set in the context's [`KNOWN_FEATURE_MASK`].
+				///
+				/// [`KNOWN_FEATURE_MASK`]: Context::KNOWN_FEATURE_MASK
+				#[cfg(not(test))] // We violate this constraint with `UnknownFeature`
+				const ASSERT_BITS_IN_MASK: u8;
 
 				/// The byte where the feature is set.
 				const BYTE_OFFSET: usize = Self::EVEN_BIT / 8;
@@ -385,6 +295,12 @@ mod sealed {
 
 					// ODD_BIT % 2 == 1
 					const ASSERT_ODD_BIT_PARITY: usize = (<Self as $feature>::ODD_BIT % 2) - 1;
+
+					// (byte & (REQUIRED_MASK | OPTIONAL_MASK)) >> (EVEN_BIT % 8) == 3
+					#[cfg(not(test))] // We violate this constraint with `UnknownFeature`
+					const ASSERT_BITS_IN_MASK: u8 =
+						((<$context>::KNOWN_FEATURE_MASK[<Self as $feature>::BYTE_OFFSET] & (<Self as $feature>::REQUIRED_MASK | <Self as $feature>::OPTIONAL_MASK))
+						 >> (<Self as $feature>::EVEN_BIT % 8)) - 3;
 				}
 			)*
 		};
@@ -433,8 +349,6 @@ mod sealed {
 	define_feature!(27, ShutdownAnySegwit, [InitContext, NodeContext],
 		"Feature flags for `opt_shutdown_anysegwit`.", set_shutdown_any_segwit_optional,
 		set_shutdown_any_segwit_required, supports_shutdown_anysegwit, requires_shutdown_anysegwit);
-	// We do not yet advertise the onion messages feature bit, but we need to detect when peers
-	// support it.
 	define_feature!(39, OnionMessages, [InitContext, NodeContext],
 		"Feature flags for `option_onion_messages`.", set_onion_messages_optional,
 		set_onion_messages_required, supports_onion_messages, requires_onion_messages);
@@ -466,6 +380,17 @@ pub struct Features<T: sealed::Context> {
 	/// Note that, for convenience, flags is LITTLE endian (despite being big-endian on the wire)
 	flags: Vec<u8>,
 	mark: PhantomData<T>,
+}
+
+impl <T: sealed::Context> Features<T> {
+	pub(crate) fn or(mut self, o: Self) -> Self {
+		let total_feature_len = cmp::max(self.flags.len(), o.flags.len());
+		self.flags.resize(total_feature_len, 0u8);
+		for (byte, o_byte) in self.flags.iter_mut().zip(o.flags.iter()) {
+			*byte |= *o_byte;
+		}
+		self
+	}
 }
 
 impl<T: sealed::Context> Clone for Features<T> {
@@ -528,16 +453,6 @@ impl InitFeatures {
 			}
 		}
 		Ok(())
-	}
-
-	/// or's another InitFeatures into this one.
-	pub(crate) fn or(mut self, o: InitFeatures) -> InitFeatures {
-		let total_feature_len = cmp::max(self.flags.len(), o.flags.len());
-		self.flags.resize(total_feature_len, 0u8);
-		for (byte, o_byte) in self.flags.iter_mut().zip(o.flags.iter()) {
-			*byte |= *o_byte;
-		}
-		self
 	}
 
 	/// Converts `InitFeatures` to `Features<C>`. Only known `InitFeatures` relevant to context `C`
@@ -662,14 +577,6 @@ impl<T: sealed::Context> Features<T> {
 		}
 	}
 
-	/// Creates a Features with the bits set which are known by the implementation
-	pub fn known() -> Self {
-		Self {
-			flags: T::KNOWN_FEATURE_FLAGS.to_vec(),
-			mark: PhantomData,
-		}
-	}
-
 	/// Converts `Features<T>` to `Features<C>`. Only known `T` features relevant to context `C` are
 	/// included in the result.
 	fn to_context_internal<C: sealed::Context>(&self) -> Features<C> {
@@ -761,25 +668,6 @@ impl<T: sealed::UpfrontShutdownScript> Features<T> {
 	}
 }
 
-
-impl<T: sealed::GossipQueries> Features<T> {
-	#[cfg(test)]
-	pub(crate) fn clear_gossip_queries(mut self) -> Self {
-		<T as sealed::GossipQueries>::clear_bits(&mut self.flags);
-		self
-	}
-}
-
-impl<T: sealed::InitialRoutingSync> Features<T> {
-	// We are no longer setting initial_routing_sync now that gossip_queries
-	// is enabled. This feature is ignored by a peer when gossip_queries has
-	// been negotiated.
-	#[cfg(test)]
-	pub(crate) fn clear_initial_routing_sync(&mut self) {
-		<T as sealed::InitialRoutingSync>::clear_bits(&mut self.flags)
-	}
-}
-
 impl<T: sealed::ShutdownAnySegwit> Features<T> {
 	#[cfg(test)]
 	pub(crate) fn clear_shutdown_anysegwit(mut self) -> Self {
@@ -833,91 +721,8 @@ impl Readable for ChannelTypeFeatures {
 
 #[cfg(test)]
 mod tests {
-	use super::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, InvoiceFeatures, NodeFeatures};
+	use super::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, InvoiceFeatures, NodeFeatures, sealed};
 	use bitcoin::bech32::{Base32Len, FromBase32, ToBase32, u5};
-
-	#[test]
-	fn sanity_test_known_features() {
-		assert!(!ChannelFeatures::known().requires_unknown_bits());
-		assert!(!ChannelFeatures::known().supports_unknown_bits());
-		assert!(!InitFeatures::known().requires_unknown_bits());
-		assert!(!InitFeatures::known().supports_unknown_bits());
-		assert!(!NodeFeatures::known().requires_unknown_bits());
-		assert!(!NodeFeatures::known().supports_unknown_bits());
-
-		assert!(InitFeatures::known().supports_upfront_shutdown_script());
-		assert!(NodeFeatures::known().supports_upfront_shutdown_script());
-		assert!(!InitFeatures::known().requires_upfront_shutdown_script());
-		assert!(!NodeFeatures::known().requires_upfront_shutdown_script());
-
-		assert!(InitFeatures::known().supports_gossip_queries());
-		assert!(NodeFeatures::known().supports_gossip_queries());
-		assert!(!InitFeatures::known().requires_gossip_queries());
-		assert!(!NodeFeatures::known().requires_gossip_queries());
-
-		assert!(InitFeatures::known().supports_data_loss_protect());
-		assert!(NodeFeatures::known().supports_data_loss_protect());
-		assert!(!InitFeatures::known().requires_data_loss_protect());
-		assert!(!NodeFeatures::known().requires_data_loss_protect());
-
-		assert!(InitFeatures::known().supports_variable_length_onion());
-		assert!(NodeFeatures::known().supports_variable_length_onion());
-		assert!(InvoiceFeatures::known().supports_variable_length_onion());
-		assert!(InitFeatures::known().requires_variable_length_onion());
-		assert!(NodeFeatures::known().requires_variable_length_onion());
-		assert!(InvoiceFeatures::known().requires_variable_length_onion());
-
-		assert!(InitFeatures::known().supports_static_remote_key());
-		assert!(NodeFeatures::known().supports_static_remote_key());
-		assert!(InitFeatures::known().requires_static_remote_key());
-		assert!(NodeFeatures::known().requires_static_remote_key());
-
-		assert!(InitFeatures::known().supports_payment_secret());
-		assert!(NodeFeatures::known().supports_payment_secret());
-		assert!(InvoiceFeatures::known().supports_payment_secret());
-		assert!(InitFeatures::known().requires_payment_secret());
-		assert!(NodeFeatures::known().requires_payment_secret());
-		assert!(InvoiceFeatures::known().requires_payment_secret());
-
-		assert!(InitFeatures::known().supports_basic_mpp());
-		assert!(NodeFeatures::known().supports_basic_mpp());
-		assert!(InvoiceFeatures::known().supports_basic_mpp());
-		assert!(!InitFeatures::known().requires_basic_mpp());
-		assert!(!NodeFeatures::known().requires_basic_mpp());
-		assert!(!InvoiceFeatures::known().requires_basic_mpp());
-
-		assert!(InitFeatures::known().supports_channel_type());
-		assert!(NodeFeatures::known().supports_channel_type());
-		assert!(!InitFeatures::known().requires_channel_type());
-		assert!(!NodeFeatures::known().requires_channel_type());
-
-		assert!(InitFeatures::known().supports_shutdown_anysegwit());
-		assert!(NodeFeatures::known().supports_shutdown_anysegwit());
-
-		assert!(InitFeatures::known().supports_scid_privacy());
-		assert!(NodeFeatures::known().supports_scid_privacy());
-		assert!(ChannelTypeFeatures::known().supports_scid_privacy());
-		assert!(!InitFeatures::known().requires_scid_privacy());
-		assert!(!NodeFeatures::known().requires_scid_privacy());
-		assert!(ChannelTypeFeatures::known().requires_scid_privacy());
-
-		assert!(InitFeatures::known().supports_wumbo());
-		assert!(NodeFeatures::known().supports_wumbo());
-		assert!(!InitFeatures::known().requires_wumbo());
-		assert!(!NodeFeatures::known().requires_wumbo());
-
-		assert!(InitFeatures::known().supports_zero_conf());
-		assert!(!InitFeatures::known().requires_zero_conf());
-		assert!(NodeFeatures::known().supports_zero_conf());
-		assert!(!NodeFeatures::known().requires_zero_conf());
-		assert!(ChannelTypeFeatures::known().supports_zero_conf());
-		assert!(ChannelTypeFeatures::known().requires_zero_conf());
-
-		let mut init_features = InitFeatures::known();
-		assert!(init_features.initial_routing_sync());
-		init_features.clear_initial_routing_sync();
-		assert!(!init_features.initial_routing_sync());
-	}
 
 	#[test]
 	fn sanity_test_unknown_bits() {
@@ -938,7 +743,22 @@ mod tests {
 
 	#[test]
 	fn convert_to_context_with_relevant_flags() {
-		let init_features = InitFeatures::known().clear_upfront_shutdown_script().clear_gossip_queries();
+		let mut init_features = InitFeatures::empty();
+		// Set a bunch of features we use, plus initial_routing_sync_required (which shouldn't get
+		// converted as it's only relevant in an init context).
+		init_features.set_initial_routing_sync_required();
+		init_features.set_data_loss_protect_optional();
+		init_features.set_variable_length_onion_required();
+		init_features.set_static_remote_key_required();
+		init_features.set_payment_secret_required();
+		init_features.set_basic_mpp_optional();
+		init_features.set_wumbo_optional();
+		init_features.set_shutdown_any_segwit_optional();
+		init_features.set_onion_messages_optional();
+		init_features.set_channel_type_optional();
+		init_features.set_scid_privacy_optional();
+		init_features.set_zero_conf_optional();
+
 		assert!(init_features.initial_routing_sync());
 		assert!(!init_features.supports_upfront_shutdown_script());
 		assert!(!init_features.supports_gossip_queries());
@@ -950,7 +770,7 @@ mod tests {
 			// - var_onion_optin (req) | static_remote_key (req) | payment_secret(req)
 			// - basic_mpp | wumbo
 			// - opt_shutdown_anysegwit
-			// -
+			// - onion_messages
 			// - option_channel_type | option_scid_alias
 			// - option_zeroconf
 			assert_eq!(node_features.flags.len(), 7);
@@ -958,7 +778,7 @@ mod tests {
 			assert_eq!(node_features.flags[1], 0b01010001);
 			assert_eq!(node_features.flags[2], 0b00001010);
 			assert_eq!(node_features.flags[3], 0b00001000);
-			assert_eq!(node_features.flags[4], 0b00000000);
+			assert_eq!(node_features.flags[4], 0b10000000);
 			assert_eq!(node_features.flags[5], 0b10100000);
 			assert_eq!(node_features.flags[6], 0b00001000);
 		}
@@ -976,8 +796,9 @@ mod tests {
 	#[test]
 	fn convert_to_context_with_unknown_flags() {
 		// Ensure the `from` context has fewer known feature bytes than the `to` context.
-		assert!(InvoiceFeatures::known().flags.len() < NodeFeatures::known().flags.len());
-		let mut invoice_features = InvoiceFeatures::known();
+		assert!(<sealed::InvoiceContext as sealed::Context>::KNOWN_FEATURE_MASK.len() <
+			<sealed::NodeContext as sealed::Context>::KNOWN_FEATURE_MASK.len());
+		let mut invoice_features = InvoiceFeatures::empty();
 		invoice_features.set_unknown_feature_optional();
 		assert!(invoice_features.supports_unknown_bits());
 		let node_features: NodeFeatures = invoice_features.to_context();

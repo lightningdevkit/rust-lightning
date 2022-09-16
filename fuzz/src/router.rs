@@ -13,8 +13,7 @@ use bitcoin::hash_types::BlockHash;
 
 use lightning::chain;
 use lightning::chain::transaction::OutPoint;
-use lightning::ln::channelmanager::{ChannelDetails, ChannelCounterparty};
-use lightning::ln::features::InitFeatures;
+use lightning::ln::channelmanager::{self, ChannelDetails, ChannelCounterparty};
 use lightning::ln::msgs;
 use lightning::routing::gossip::{NetworkGraph, RoutingFees};
 use lightning::routing::router::{find_route, PaymentParameters, RouteHint, RouteHintHop, RouteParameters};
@@ -211,7 +210,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 								channel_id: [0; 32],
 								counterparty: ChannelCounterparty {
 									node_id: *rnid,
-									features: InitFeatures::known(),
+									features: channelmanager::provided_init_features(),
 									unspendable_punishment_reserve: 0,
 									forwarding_info: None,
 									outbound_htlc_minimum_msat: None,

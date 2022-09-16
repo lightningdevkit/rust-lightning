@@ -325,6 +325,12 @@ pub struct ChannelConfig {
 	/// to such payments may be sustantial if there are many dust HTLCs present when the
 	/// channel is force-closed.
 	///
+	/// The dust threshold for each HTLC is based on the `dust_limit_satoshis` for each party in a
+	/// channel negotiated throughout the channel open process, along with the fees required to have
+	/// a broadcastable HTLC spending transaction. When a channel supports anchor outputs
+	/// (specifically the zero fee HTLC transaction variant), this threshold no longer takes into
+	/// account the HTLC transaction fee as it is zero.
+	///
 	/// This limit is applied for sent, forwarded, and received HTLCs and limits the total
 	/// exposure across all three types per-channel. Setting this too low may prevent the
 	/// sending or receipt of low-value HTLCs on high-traffic nodes, and this limit is very

@@ -16,8 +16,7 @@ use chain::channelmonitor::{ANTI_REORG_DELAY, ChannelMonitor, LATENCY_GRACE_PERI
 use chain::transaction::OutPoint;
 use chain::keysinterface::KeysInterface;
 use ln::channel::EXPIRE_PREV_CONFIG_TICKS;
-use ln::channelmanager::{BREAKDOWN_TIMEOUT, ChannelManager, ChannelManagerReadArgs, MPP_TIMEOUT_TICKS, PaymentId, PaymentSendFailure};
-use ln::features::{InitFeatures, InvoiceFeatures};
+use ln::channelmanager::{self, BREAKDOWN_TIMEOUT, ChannelManager, ChannelManagerReadArgs, MPP_TIMEOUT_TICKS, MIN_CLTV_EXPIRY_DELTA, PaymentId, PaymentSendFailure};
 use ln::msgs;
 use ln::msgs::ChannelMessageHandler;
 use routing::router::{PaymentParameters, get_route};
@@ -43,8 +42,8 @@ fn retry_single_path_payment() {
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
-	let _chan_0 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
-	let chan_1 = create_announced_chan_between_nodes(&nodes, 2, 1, InitFeatures::known(), InitFeatures::known());
+	let _chan_0 = create_announced_chan_between_nodes(&nodes, 0, 1, channelmanager::provided_init_features(), channelmanager::provided_init_features());
+	let chan_1 = create_announced_chan_between_nodes(&nodes, 2, 1, channelmanager::provided_init_features(), channelmanager::provided_init_features());
 	// Rebalance to find a route
 	send_payment(&nodes[2], &vec!(&nodes[1])[..], 3_000_000);
 
@@ -96,10 +95,10 @@ fn mpp_failure() {
 	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, None, None, None]);
 	let nodes = create_network(4, &node_cfgs, &node_chanmgrs);
 
-	let chan_1_id = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known()).0.contents.short_channel_id;
-	let chan_2_id = create_announced_chan_between_nodes(&nodes, 0, 2, InitFeatures::known(), InitFeatures::known()).0.contents.short_channel_id;
-	let chan_3_id = create_announced_chan_between_nodes(&nodes, 1, 3, InitFeatures::known(), InitFeatures::known()).0.contents.short_channel_id;
-	let chan_4_id = create_announced_chan_between_nodes(&nodes, 2, 3, InitFeatures::known(), InitFeatures::known()).0.contents.short_channel_id;
+	let chan_1_id = create_announced_chan_between_nodes(&nodes, 0, 1, channelmanager::provided_init_features(), channelmanager::provided_init_features()).0.contents.short_channel_id;
+	let chan_2_id = create_announced_chan_between_nodes(&nodes, 0, 2, channelmanager::provided_init_features(), channelmanager::provided_init_features()).0.contents.short_channel_id;
+	let chan_3_id = create_announced_chan_between_nodes(&nodes, 1, 3, channelmanager::provided_init_features(), channelmanager::provided_init_features()).0.contents.short_channel_id;
+	let chan_4_id = create_announced_chan_between_nodes(&nodes, 2, 3, channelmanager::provided_init_features(), channelmanager::provided_init_features()).0.contents.short_channel_id;
 
 	let (mut route, payment_hash, _, payment_secret) = get_route_and_payment_hash!(&nodes[0], nodes[3], 100000);
 	let path = route.paths[0].clone();
@@ -121,10 +120,10 @@ fn mpp_retry() {
 	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, None, None, None]);
 	let nodes = create_network(4, &node_cfgs, &node_chanmgrs);
 
-	let (chan_1_update, _, _, _) = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
-	let (chan_2_update, _, _, _) = create_announced_chan_between_nodes(&nodes, 0, 2, InitFeatures::known(), InitFeatures::known());
-	let (chan_3_update, _, _, _) = create_announced_chan_between_nodes(&nodes, 1, 3, InitFeatures::known(), InitFeatures::known());
-	let (chan_4_update, _, chan_4_id, _) = create_announced_chan_between_nodes(&nodes, 3, 2, InitFeatures::known(), InitFeatures::known());
+	let (chan_1_update, _, _, _) = create_announced_chan_between_nodes(&nodes, 0, 1, channelmanager::provided_init_features(), channelmanager::provided_init_features());
+	let (chan_2_update, _, _, _) = create_announced_chan_between_nodes(&nodes, 0, 2, channelmanager::provided_init_features(), channelmanager::provided_init_features());
+	let (chan_3_update, _, _, _) = create_announced_chan_between_nodes(&nodes, 1, 3, channelmanager::provided_init_features(), channelmanager::provided_init_features());
+	let (chan_4_update, _, chan_4_id, _) = create_announced_chan_between_nodes(&nodes, 3, 2, channelmanager::provided_init_features(), channelmanager::provided_init_features());
 	// Rebalance
 	send_payment(&nodes[3], &vec!(&nodes[2])[..], 1_500_000);
 
@@ -207,10 +206,10 @@ fn do_mpp_receive_timeout(send_partial_mpp: bool) {
 	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, None, None, None]);
 	let nodes = create_network(4, &node_cfgs, &node_chanmgrs);
 
-	let (chan_1_update, _, _, _) = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
-	let (chan_2_update, _, _, _) = create_announced_chan_between_nodes(&nodes, 0, 2, InitFeatures::known(), InitFeatures::known());
-	let (chan_3_update, _, chan_3_id, _) = create_announced_chan_between_nodes(&nodes, 1, 3, InitFeatures::known(), InitFeatures::known());
-	let (chan_4_update, _, _, _) = create_announced_chan_between_nodes(&nodes, 2, 3, InitFeatures::known(), InitFeatures::known());
+	let (chan_1_update, _, _, _) = create_announced_chan_between_nodes(&nodes, 0, 1, channelmanager::provided_init_features(), channelmanager::provided_init_features());
+	let (chan_2_update, _, _, _) = create_announced_chan_between_nodes(&nodes, 0, 2, channelmanager::provided_init_features(), channelmanager::provided_init_features());
+	let (chan_3_update, _, chan_3_id, _) = create_announced_chan_between_nodes(&nodes, 1, 3, channelmanager::provided_init_features(), channelmanager::provided_init_features());
+	let (chan_4_update, _, _, _) = create_announced_chan_between_nodes(&nodes, 2, 3, channelmanager::provided_init_features(), channelmanager::provided_init_features());
 
 	let (mut route, payment_hash, payment_preimage, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[3], 100_000);
 	let path = route.paths[0].clone();
@@ -280,8 +279,8 @@ fn retry_expired_payment() {
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
-	let _chan_0 = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
-	let chan_1 = create_announced_chan_between_nodes(&nodes, 2, 1, InitFeatures::known(), InitFeatures::known());
+	let _chan_0 = create_announced_chan_between_nodes(&nodes, 0, 1, channelmanager::provided_init_features(), channelmanager::provided_init_features());
+	let chan_1 = create_announced_chan_between_nodes(&nodes, 2, 1, channelmanager::provided_init_features(), channelmanager::provided_init_features());
 	// Rebalance to find a route
 	send_payment(&nodes[2], &vec!(&nodes[1])[..], 3_000_000);
 
@@ -335,7 +334,7 @@ fn no_pending_leak_on_initial_send_failure() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
-	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
+	create_announced_chan_between_nodes(&nodes, 0, 1, channelmanager::provided_init_features(), channelmanager::provided_init_features());
 
 	let (route, payment_hash, _, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], 100_000);
 
@@ -369,8 +368,8 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 	let nodes_0_deserialized: ChannelManager<EnforcingSigner, &test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>;
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
-	let chan_id = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known()).2;
-	let (_, _, chan_id_2, _) = create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::known(), InitFeatures::known());
+	let chan_id = create_announced_chan_between_nodes(&nodes, 0, 1, channelmanager::provided_init_features(), channelmanager::provided_init_features()).2;
+	let (_, _, chan_id_2, _) = create_announced_chan_between_nodes(&nodes, 1, 2, channelmanager::provided_init_features(), channelmanager::provided_init_features());
 
 	// Serialize the ChannelManager prior to sending payments
 	let nodes_0_serialized = nodes[0].node.encode();
@@ -451,13 +450,13 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 	assert_eq!(as_broadcasted_txn[0], as_commitment_tx);
 
 	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
-	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init { features: InitFeatures::known(), remote_network_address: None });
+	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init { features: channelmanager::provided_init_features(), remote_network_address: None }).unwrap();
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 
 	// Now nodes[1] should send a channel reestablish, which nodes[0] will respond to with an
 	// error, as the channel has hit the chain.
-	nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id(), &msgs::Init { features: InitFeatures::known(), remote_network_address: None });
-	let bs_reestablish = get_event_msg!(nodes[1], MessageSendEvent::SendChannelReestablish, nodes[0].node.get_our_node_id());
+	nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id(), &msgs::Init { features: channelmanager::provided_init_features(), remote_network_address: None }).unwrap();
+	let bs_reestablish = get_chan_reestablish_msgs!(nodes[1], nodes[0]).pop().unwrap();
 	nodes[0].node.handle_channel_reestablish(&nodes[1].node.get_our_node_id(), &bs_reestablish);
 	let as_err = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(as_err.len(), 1);
@@ -492,7 +491,7 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 	// Create a new channel on which to retry the payment before we fail the payment via the
 	// HTLC-Timeout transaction. This avoids ChannelManager timing out the payment due to us
 	// connecting several blocks while creating the channel (implying time has passed).
-	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
+	create_announced_chan_between_nodes(&nodes, 0, 1, channelmanager::provided_init_features(), channelmanager::provided_init_features());
 	assert_eq!(nodes[0].node.list_usable_channels().len(), 1);
 
 	mine_transaction(&nodes[1], &as_commitment_tx);
@@ -508,13 +507,8 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 	expect_payment_sent!(nodes[0], payment_preimage_1);
 	connect_blocks(&nodes[0], TEST_FINAL_CLTV*4 + 20);
 	let as_htlc_timeout_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
-	assert_eq!(as_htlc_timeout_txn.len(), 3);
-	let (first_htlc_timeout_tx, second_htlc_timeout_tx) = if as_htlc_timeout_txn[0] == as_commitment_tx {
-		(&as_htlc_timeout_txn[1], &as_htlc_timeout_txn[2])
-	} else {
-		assert_eq!(as_htlc_timeout_txn[2], as_commitment_tx);
-		(&as_htlc_timeout_txn[0], &as_htlc_timeout_txn[1])
-	};
+	assert_eq!(as_htlc_timeout_txn.len(), 2);
+	let (first_htlc_timeout_tx, second_htlc_timeout_tx) = (&as_htlc_timeout_txn[0], &as_htlc_timeout_txn[1]);
 	check_spends!(first_htlc_timeout_tx, as_commitment_tx);
 	check_spends!(second_htlc_timeout_tx, as_commitment_tx);
 	if first_htlc_timeout_tx.input[0].previous_output == bs_htlc_claim_txn[0].input[0].previous_output {
@@ -563,6 +557,231 @@ fn retry_with_no_persist() {
 	do_retry_with_no_persist(false);
 }
 
+fn do_test_completed_payment_not_retryable_on_reload(use_dust: bool) {
+	// Test that an off-chain completed payment is not retryable on restart. This was previously
+	// broken for dust payments, but we test for both dust and non-dust payments.
+	//
+	// `use_dust` switches to using a dust HTLC, which results in the HTLC not having an on-chain
+	// output at all.
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+
+	let mut manually_accept_config = test_default_channel_config();
+	manually_accept_config.manually_accept_inbound_channels = true;
+
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, Some(manually_accept_config), None]);
+
+	let first_persister: test_utils::TestPersister;
+	let first_new_chain_monitor: test_utils::TestChainMonitor;
+	let first_nodes_0_deserialized: ChannelManager<EnforcingSigner, &test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>;
+	let second_persister: test_utils::TestPersister;
+	let second_new_chain_monitor: test_utils::TestChainMonitor;
+	let second_nodes_0_deserialized: ChannelManager<EnforcingSigner, &test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>;
+	let third_persister: test_utils::TestPersister;
+	let third_new_chain_monitor: test_utils::TestChainMonitor;
+	let third_nodes_0_deserialized: ChannelManager<EnforcingSigner, &test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>;
+
+	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+	// Because we set nodes[1] to manually accept channels, just open a 0-conf channel.
+	let (funding_tx, chan_id) = open_zero_conf_channel(&nodes[0], &nodes[1], None);
+	confirm_transaction(&nodes[0], &funding_tx);
+	confirm_transaction(&nodes[1], &funding_tx);
+	// Ignore the announcement_signatures messages
+	nodes[0].node.get_and_clear_pending_msg_events();
+	nodes[1].node.get_and_clear_pending_msg_events();
+	let chan_id_2 = create_announced_chan_between_nodes(&nodes, 1, 2, channelmanager::provided_init_features(), channelmanager::provided_init_features()).2;
+
+	// Serialize the ChannelManager prior to sending payments
+	let mut nodes_0_serialized = nodes[0].node.encode();
+
+	let route = get_route_and_payment_hash!(nodes[0], nodes[2], if use_dust { 1_000 } else { 1_000_000 }).0;
+	let (payment_preimage, payment_hash, payment_secret, payment_id) = send_along_route(&nodes[0], route, &[&nodes[1], &nodes[2]], if use_dust { 1_000 } else { 1_000_000 });
+
+	// The ChannelMonitor should always be the latest version, as we're required to persist it
+	// during the `commitment_signed_dance!()`.
+	let mut chan_0_monitor_serialized = test_utils::TestVecWriter(Vec::new());
+	get_monitor!(nodes[0], chan_id).write(&mut chan_0_monitor_serialized).unwrap();
+
+	let mut chan_1_monitor_serialized = test_utils::TestVecWriter(Vec::new());
+
+	macro_rules! reload_node {
+		($chain_monitor: ident, $chan_manager: ident, $persister: ident) => { {
+			$persister = test_utils::TestPersister::new();
+			let keys_manager = &chanmon_cfgs[0].keys_manager;
+			$chain_monitor = test_utils::TestChainMonitor::new(Some(nodes[0].chain_source), nodes[0].tx_broadcaster.clone(), nodes[0].logger, node_cfgs[0].fee_estimator, &$persister, keys_manager);
+			nodes[0].chain_monitor = &$chain_monitor;
+			let mut chan_0_monitor_read = &chan_0_monitor_serialized.0[..];
+			let (_, mut chan_0_monitor) = <(BlockHash, ChannelMonitor<EnforcingSigner>)>::read(
+				&mut chan_0_monitor_read, keys_manager).unwrap();
+			assert!(chan_0_monitor_read.is_empty());
+
+			let mut chan_1_monitor = None;
+			let mut channel_monitors = HashMap::new();
+			channel_monitors.insert(chan_0_monitor.get_funding_txo().0, &mut chan_0_monitor);
+
+			if !chan_1_monitor_serialized.0.is_empty() {
+				let mut chan_1_monitor_read = &chan_1_monitor_serialized.0[..];
+				chan_1_monitor = Some(<(BlockHash, ChannelMonitor<EnforcingSigner>)>::read(
+					&mut chan_1_monitor_read, keys_manager).unwrap().1);
+				assert!(chan_1_monitor_read.is_empty());
+				channel_monitors.insert(chan_1_monitor.as_ref().unwrap().get_funding_txo().0, chan_1_monitor.as_mut().unwrap());
+			}
+
+			let mut nodes_0_read = &nodes_0_serialized[..];
+			let (_, nodes_0_deserialized_tmp) = {
+				<(BlockHash, ChannelManager<EnforcingSigner, &test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>)>::read(&mut nodes_0_read, ChannelManagerReadArgs {
+					default_config: test_default_channel_config(),
+					keys_manager,
+					fee_estimator: node_cfgs[0].fee_estimator,
+					chain_monitor: nodes[0].chain_monitor,
+					tx_broadcaster: nodes[0].tx_broadcaster.clone(),
+					logger: nodes[0].logger,
+					channel_monitors,
+				}).unwrap()
+			};
+			$chan_manager = nodes_0_deserialized_tmp;
+			assert!(nodes_0_read.is_empty());
+
+			assert!(nodes[0].chain_monitor.watch_channel(chan_0_monitor.get_funding_txo().0, chan_0_monitor).is_ok());
+			if !chan_1_monitor_serialized.0.is_empty() {
+				let funding_txo = chan_1_monitor.as_ref().unwrap().get_funding_txo().0;
+				assert!(nodes[0].chain_monitor.watch_channel(funding_txo, chan_1_monitor.unwrap()).is_ok());
+			}
+			nodes[0].node = &$chan_manager;
+			check_added_monitors!(nodes[0], if !chan_1_monitor_serialized.0.is_empty() { 2 } else { 1 });
+
+			nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+		} }
+	}
+
+	reload_node!(first_new_chain_monitor, first_nodes_0_deserialized, first_persister);
+
+	// On reload, the ChannelManager should realize it is stale compared to the ChannelMonitor and
+	// force-close the channel.
+	check_closed_event!(nodes[0], 1, ClosureReason::OutdatedChannelManager);
+	assert!(nodes[0].node.list_channels().is_empty());
+	assert!(nodes[0].node.has_pending_payments());
+	assert_eq!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0).len(), 1);
+
+	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init { features: channelmanager::provided_init_features(), remote_network_address: None }).unwrap();
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+
+	// Now nodes[1] should send a channel reestablish, which nodes[0] will respond to with an
+	// error, as the channel has hit the chain.
+	nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id(), &msgs::Init { features: channelmanager::provided_init_features(), remote_network_address: None }).unwrap();
+	let bs_reestablish = get_chan_reestablish_msgs!(nodes[1], nodes[0]).pop().unwrap();
+	nodes[0].node.handle_channel_reestablish(&nodes[1].node.get_our_node_id(), &bs_reestablish);
+	let as_err = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(as_err.len(), 1);
+	let bs_commitment_tx;
+	match as_err[0] {
+		MessageSendEvent::HandleError { node_id, action: msgs::ErrorAction::SendErrorMessage { ref msg } } => {
+			assert_eq!(node_id, nodes[1].node.get_our_node_id());
+			nodes[1].node.handle_error(&nodes[0].node.get_our_node_id(), msg);
+			check_closed_event!(nodes[1], 1, ClosureReason::CounterpartyForceClosed { peer_msg: "Failed to find corresponding channel".to_string() });
+			check_added_monitors!(nodes[1], 1);
+			bs_commitment_tx = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
+		},
+		_ => panic!("Unexpected event"),
+	}
+	check_closed_broadcast!(nodes[1], false);
+
+	// Now fail back the payment from nodes[2] to nodes[1]. This doesn't really matter as the
+	// previous hop channel is already on-chain, but it makes nodes[2] willing to see additional
+	// incoming HTLCs with the same payment hash later.
+	nodes[2].node.fail_htlc_backwards(&payment_hash);
+	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[2], [HTLCDestination::FailedPayment { payment_hash }]);
+	check_added_monitors!(nodes[2], 1);
+
+	let htlc_fulfill_updates = get_htlc_update_msgs!(nodes[2], nodes[1].node.get_our_node_id());
+	nodes[1].node.handle_update_fail_htlc(&nodes[2].node.get_our_node_id(), &htlc_fulfill_updates.update_fail_htlcs[0]);
+	commitment_signed_dance!(nodes[1], nodes[2], htlc_fulfill_updates.commitment_signed, false);
+	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[1],
+		[HTLCDestination::NextHopChannel { node_id: Some(nodes[2].node.get_our_node_id()), channel_id: chan_id_2 }]);
+
+	// Connect the HTLC-Timeout transaction, timing out the HTLC on both nodes (but not confirming
+	// the HTLC-Timeout transaction beyond 1 conf). For dust HTLCs, the HTLC is considered resolved
+	// after the commitment transaction, so always connect the commitment transaction.
+	mine_transaction(&nodes[0], &bs_commitment_tx[0]);
+	mine_transaction(&nodes[1], &bs_commitment_tx[0]);
+	if !use_dust {
+		connect_blocks(&nodes[0], TEST_FINAL_CLTV - 1 + (MIN_CLTV_EXPIRY_DELTA as u32));
+		connect_blocks(&nodes[1], TEST_FINAL_CLTV - 1 + (MIN_CLTV_EXPIRY_DELTA as u32));
+		let as_htlc_timeout = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
+		check_spends!(as_htlc_timeout[0], bs_commitment_tx[0]);
+		assert_eq!(as_htlc_timeout.len(), 1);
+
+		mine_transaction(&nodes[0], &as_htlc_timeout[0]);
+		// nodes[0] may rebroadcast (or RBF-bump) its HTLC-Timeout, so wipe the announced set.
+		nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().clear();
+		mine_transaction(&nodes[1], &as_htlc_timeout[0]);
+	}
+
+	// Create a new channel on which to retry the payment before we fail the payment via the
+	// HTLC-Timeout transaction. This avoids ChannelManager timing out the payment due to us
+	// connecting several blocks while creating the channel (implying time has passed).
+	// We do this with a zero-conf channel to avoid connecting blocks as a side-effect.
+	let (_, chan_id_3) = open_zero_conf_channel(&nodes[0], &nodes[1], None);
+	assert_eq!(nodes[0].node.list_usable_channels().len(), 1);
+
+	// If we attempt to retry prior to the HTLC-Timeout (or commitment transaction, for dust HTLCs)
+	// confirming, we will fail as it's considered still-pending...
+	let (new_route, _, _, _) = get_route_and_payment_hash!(nodes[0], nodes[2], if use_dust { 1_000 } else { 1_000_000 });
+	assert!(nodes[0].node.retry_payment(&new_route, payment_id).is_err());
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+
+	// After ANTI_REORG_DELAY confirmations, the HTLC should be failed and we can try the payment
+	// again. We serialize the node first as we'll then test retrying the HTLC after a restart
+	// (which should also still work).
+	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
+	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
+	// We set mpp_parts_remain to avoid having abandon_payment called
+	expect_payment_failed_conditions(&nodes[0], payment_hash, false, PaymentFailedConditions::new().mpp_parts_remain());
+
+	chan_0_monitor_serialized = test_utils::TestVecWriter(Vec::new());
+	get_monitor!(nodes[0], chan_id).write(&mut chan_0_monitor_serialized).unwrap();
+	chan_1_monitor_serialized = test_utils::TestVecWriter(Vec::new());
+	get_monitor!(nodes[0], chan_id_3).write(&mut chan_1_monitor_serialized).unwrap();
+	nodes_0_serialized = nodes[0].node.encode();
+
+	assert!(nodes[0].node.retry_payment(&new_route, payment_id).is_ok());
+	assert!(!nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+
+	reload_node!(second_new_chain_monitor, second_nodes_0_deserialized, second_persister);
+	reconnect_nodes(&nodes[0], &nodes[1], (true, true), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+
+	// Now resend the payment, delivering the HTLC and actually claiming it this time. This ensures
+	// the payment is not (spuriously) listed as still pending.
+	assert!(nodes[0].node.retry_payment(&new_route, payment_id).is_ok());
+	check_added_monitors!(nodes[0], 1);
+	pass_along_route(&nodes[0], &[&[&nodes[1], &nodes[2]]], if use_dust { 1_000 } else { 1_000_000 }, payment_hash, payment_secret);
+	claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_preimage);
+
+	assert!(nodes[0].node.retry_payment(&new_route, payment_id).is_err());
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+
+	chan_0_monitor_serialized = test_utils::TestVecWriter(Vec::new());
+	get_monitor!(nodes[0], chan_id).write(&mut chan_0_monitor_serialized).unwrap();
+	chan_1_monitor_serialized = test_utils::TestVecWriter(Vec::new());
+	get_monitor!(nodes[0], chan_id_3).write(&mut chan_1_monitor_serialized).unwrap();
+	nodes_0_serialized = nodes[0].node.encode();
+
+	// Ensure that after reload we cannot retry the payment.
+	reload_node!(third_new_chain_monitor, third_nodes_0_deserialized, third_persister);
+	reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+
+	assert!(nodes[0].node.retry_payment(&new_route, payment_id).is_err());
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+}
+
+#[test]
+fn test_completed_payment_not_retryable_on_reload() {
+	do_test_completed_payment_not_retryable_on_reload(true);
+	do_test_completed_payment_not_retryable_on_reload(false);
+}
+
+
 fn do_test_dup_htlc_onchain_fails_on_reload(persist_manager_post_event: bool, confirm_commitment_tx: bool, payment_timeout: bool) {
 	// When a Channel is closed, any outbound HTLCs which were relayed through it are simply
 	// dropped when the Channel is. From there, the ChannelManager relies on the ChannelMonitor
@@ -580,7 +799,7 @@ fn do_test_dup_htlc_onchain_fails_on_reload(persist_manager_post_event: bool, co
 	let nodes_0_deserialized: ChannelManager<EnforcingSigner, &test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>;
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
-	let (_, _, chan_id, funding_tx) = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
+	let (_, _, chan_id, funding_tx) = create_announced_chan_between_nodes(&nodes, 0, 1, channelmanager::provided_init_features(), channelmanager::provided_init_features());
 
 	// Route a payment, but force-close the channel before the HTLC fulfill message arrives at
 	// nodes[0].
@@ -669,7 +888,7 @@ fn do_test_dup_htlc_onchain_fails_on_reload(persist_manager_post_event: bool, co
 		nodes[0].chain_monitor.chain_monitor.channel_monitor_updated(funding_txo, update).unwrap();
 	}
 	if payment_timeout {
-		expect_payment_failed!(nodes[0], payment_hash, true);
+		expect_payment_failed!(nodes[0], payment_hash, false);
 	} else {
 		expect_payment_sent!(nodes[0], payment_preimage);
 	}
@@ -713,7 +932,7 @@ fn do_test_dup_htlc_onchain_fails_on_reload(persist_manager_post_event: bool, co
 	if persist_manager_post_event {
 		assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
 	} else if payment_timeout {
-		expect_payment_failed!(nodes[0], payment_hash, true);
+		expect_payment_failed!(nodes[0], payment_hash, false);
 	} else {
 		expect_payment_sent!(nodes[0], payment_preimage);
 	}
@@ -752,7 +971,7 @@ fn test_fulfill_restart_failure() {
 	let nodes_1_deserialized: ChannelManager<EnforcingSigner, &test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>;
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
-	let chan_id = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known()).2;
+	let chan_id = create_announced_chan_between_nodes(&nodes, 0, 1, channelmanager::provided_init_features(), channelmanager::provided_init_features()).2;
 	let (payment_preimage, payment_hash, _) = route_payment(&nodes[0], &[&nodes[1]], 100_000);
 
 	// The simplest way to get a failure after a fulfill is to reload nodes[1] from a state
@@ -821,14 +1040,14 @@ fn get_ldk_payment_preimage() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
+	create_announced_chan_between_nodes(&nodes, 0, 1, channelmanager::provided_init_features(), channelmanager::provided_init_features());
 
 	let amt_msat = 60_000;
 	let expiry_secs = 60 * 60;
 	let (payment_hash, payment_secret) = nodes[1].node.create_inbound_payment(Some(amt_msat), expiry_secs).unwrap();
 
 	let payment_params = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id())
-		.with_features(InvoiceFeatures::known());
+		.with_features(channelmanager::provided_invoice_features());
 	let scorer = test_utils::TestScorer::with_penalty(0);
 	let keys_manager = test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
 	let random_seed_bytes = keys_manager.get_secure_random_bytes();
@@ -854,8 +1073,8 @@ fn sent_probe_is_probe_of_sending_node() {
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None, None]);
 	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
-	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
-	create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::known(), InitFeatures::known());
+	create_announced_chan_between_nodes(&nodes, 0, 1, channelmanager::provided_init_features(), channelmanager::provided_init_features());
+	create_announced_chan_between_nodes(&nodes, 1, 2, channelmanager::provided_init_features(), channelmanager::provided_init_features());
 
 	// First check we refuse to build a single-hop probe
 	let (route, _, _, _) = get_route_and_payment_hash!(&nodes[0], nodes[1], 100_000);
@@ -884,8 +1103,8 @@ fn successful_probe_yields_event() {
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None, None]);
 	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
-	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
-	create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::known(), InitFeatures::known());
+	create_announced_chan_between_nodes(&nodes, 0, 1, channelmanager::provided_init_features(), channelmanager::provided_init_features());
+	create_announced_chan_between_nodes(&nodes, 1, 2, channelmanager::provided_init_features(), channelmanager::provided_init_features());
 
 	let (route, _, _, _) = get_route_and_payment_hash!(&nodes[0], nodes[2], 100_000);
 
@@ -938,8 +1157,8 @@ fn failed_probe_yields_event() {
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None, None]);
 	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
-	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
-	create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 100000, 90000000, InitFeatures::known(), InitFeatures::known());
+	create_announced_chan_between_nodes(&nodes, 0, 1, channelmanager::provided_init_features(), channelmanager::provided_init_features());
+	create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 100000, 90000000, channelmanager::provided_init_features(), channelmanager::provided_init_features());
 
 	let payment_params = PaymentParameters::from_node_id(nodes[2].node.get_our_node_id());
 
@@ -974,4 +1193,58 @@ fn failed_probe_yields_event() {
 		},
 		_ => panic!(),
 	};
+}
+
+#[test]
+fn onchain_failed_probe_yields_event() {
+	// Tests that an attempt to probe over a channel that is eventaully closed results in a failure
+	// event.
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+	let chan_id = create_announced_chan_between_nodes(&nodes, 0, 1, channelmanager::provided_init_features(), channelmanager::provided_init_features()).2;
+	create_announced_chan_between_nodes(&nodes, 1, 2, channelmanager::provided_init_features(), channelmanager::provided_init_features());
+
+	let payment_params = PaymentParameters::from_node_id(nodes[2].node.get_our_node_id());
+
+	// Send a dust HTLC, which will be treated as if it timed out once the channel hits the chain.
+	let (route, _, _, _) = get_route_and_payment_hash!(&nodes[0], nodes[2], &payment_params, 1_000, 42);
+	let (payment_hash, payment_id) = nodes[0].node.send_probe(route.paths[0].clone()).unwrap();
+
+	// node[0] -- update_add_htlcs -> node[1]
+	check_added_monitors!(nodes[0], 1);
+	let updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+	let probe_event = SendEvent::from_commitment_update(nodes[1].node.get_our_node_id(), updates);
+	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &probe_event.msgs[0]);
+	check_added_monitors!(nodes[1], 0);
+	commitment_signed_dance!(nodes[1], nodes[0], probe_event.commitment_msg, false);
+	expect_pending_htlcs_forwardable!(nodes[1]);
+
+	check_added_monitors!(nodes[1], 1);
+	let _ = get_htlc_update_msgs!(nodes[1], nodes[2].node.get_our_node_id());
+
+	// Don't bother forwarding the HTLC onwards and just confirm the force-close transaction on
+	// Node A, which after 6 confirmations should result in a probe failure event.
+	let bs_txn = get_local_commitment_txn!(nodes[1], chan_id);
+	confirm_transaction(&nodes[0], &bs_txn[0]);
+	check_closed_broadcast!(&nodes[0], true);
+	check_added_monitors!(nodes[0], 1);
+
+	let mut events = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 2);
+	let mut found_probe_failed = false;
+	for event in events.drain(..) {
+		match event {
+			Event::ProbeFailed { payment_id: ev_pid, payment_hash: ev_ph, .. } => {
+				assert_eq!(payment_id, ev_pid);
+				assert_eq!(payment_hash, ev_ph);
+				found_probe_failed = true;
+			},
+			Event::ChannelClosed { .. } => {},
+			_ => panic!(),
+		}
+	}
+	assert!(found_probe_failed);
 }

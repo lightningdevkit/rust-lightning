@@ -48,11 +48,11 @@ fn create_nodes(num_messengers: u8) -> Vec<MessengerNode> {
 	}
 	for idx in 0..num_messengers - 1 {
 		let i = idx as usize;
-		let mut features = InitFeatures::known();
+		let mut features = InitFeatures::empty();
 		features.set_onion_messages_optional();
 		let init_msg = msgs::Init { features, remote_network_address: None };
-		nodes[i].messenger.peer_connected(&nodes[i + 1].get_node_pk(), &init_msg.clone());
-		nodes[i + 1].messenger.peer_connected(&nodes[i].get_node_pk(), &init_msg.clone());
+		nodes[i].messenger.peer_connected(&nodes[i + 1].get_node_pk(), &init_msg.clone()).unwrap();
+		nodes[i + 1].messenger.peer_connected(&nodes[i].get_node_pk(), &init_msg.clone()).unwrap();
 	}
 	nodes
 }
@@ -98,7 +98,7 @@ fn two_unblinded_two_blinded() {
 	let nodes = create_nodes(5);
 
 	let secp_ctx = Secp256k1::new();
-	let blinded_route = BlindedRoute::new::<EnforcingSigner, _, _>(&[nodes[3].get_node_pk(), nodes[4].get_node_pk()], &*nodes[4].keys_manager, &secp_ctx).unwrap();
+	let blinded_route = BlindedRoute::new(&[nodes[3].get_node_pk(), nodes[4].get_node_pk()], &*nodes[4].keys_manager, &secp_ctx).unwrap();
 
 	nodes[0].messenger.send_onion_message(&[nodes[1].get_node_pk(), nodes[2].get_node_pk()], Destination::BlindedRoute(blinded_route), None).unwrap();
 	pass_along_path(&nodes, None);
@@ -109,7 +109,7 @@ fn three_blinded_hops() {
 	let nodes = create_nodes(4);
 
 	let secp_ctx = Secp256k1::new();
-	let blinded_route = BlindedRoute::new::<EnforcingSigner, _, _>(&[nodes[1].get_node_pk(), nodes[2].get_node_pk(), nodes[3].get_node_pk()], &*nodes[3].keys_manager, &secp_ctx).unwrap();
+	let blinded_route = BlindedRoute::new(&[nodes[1].get_node_pk(), nodes[2].get_node_pk(), nodes[3].get_node_pk()], &*nodes[3].keys_manager, &secp_ctx).unwrap();
 
 	nodes[0].messenger.send_onion_message(&[], Destination::BlindedRoute(blinded_route), None).unwrap();
 	pass_along_path(&nodes, None);
@@ -133,13 +133,13 @@ fn invalid_blinded_route_error() {
 
 	// 0 hops
 	let secp_ctx = Secp256k1::new();
-	let mut blinded_route = BlindedRoute::new::<EnforcingSigner, _, _>(&[nodes[1].get_node_pk(), nodes[2].get_node_pk()], &*nodes[2].keys_manager, &secp_ctx).unwrap();
+	let mut blinded_route = BlindedRoute::new(&[nodes[1].get_node_pk(), nodes[2].get_node_pk()], &*nodes[2].keys_manager, &secp_ctx).unwrap();
 	blinded_route.blinded_hops.clear();
 	let err = nodes[0].messenger.send_onion_message(&[], Destination::BlindedRoute(blinded_route), None).unwrap_err();
 	assert_eq!(err, SendError::TooFewBlindedHops);
 
 	// 1 hop
-	let mut blinded_route = BlindedRoute::new::<EnforcingSigner, _, _>(&[nodes[1].get_node_pk(), nodes[2].get_node_pk()], &*nodes[2].keys_manager, &secp_ctx).unwrap();
+	let mut blinded_route = BlindedRoute::new(&[nodes[1].get_node_pk(), nodes[2].get_node_pk()], &*nodes[2].keys_manager, &secp_ctx).unwrap();
 	blinded_route.blinded_hops.remove(0);
 	assert_eq!(blinded_route.blinded_hops.len(), 1);
 	let err = nodes[0].messenger.send_onion_message(&[], Destination::BlindedRoute(blinded_route), None).unwrap_err();
@@ -152,7 +152,7 @@ fn reply_path() {
 	let secp_ctx = Secp256k1::new();
 
 	// Destination::Node
-	let reply_path = BlindedRoute::new::<EnforcingSigner, _, _>(&[nodes[2].get_node_pk(), nodes[1].get_node_pk(), nodes[0].get_node_pk()], &*nodes[0].keys_manager, &secp_ctx).unwrap();
+	let reply_path = BlindedRoute::new(&[nodes[2].get_node_pk(), nodes[1].get_node_pk(), nodes[0].get_node_pk()], &*nodes[0].keys_manager, &secp_ctx).unwrap();
 	nodes[0].messenger.send_onion_message(&[nodes[1].get_node_pk(), nodes[2].get_node_pk()], Destination::Node(nodes[3].get_node_pk()), Some(reply_path)).unwrap();
 	pass_along_path(&nodes, None);
 	// Make sure the last node successfully decoded the reply path.
@@ -161,8 +161,8 @@ fn reply_path() {
 		format!("Received an onion message with path_id: None and reply_path").to_string(), 1);
 
 	// Destination::BlindedRoute
-	let blinded_route = BlindedRoute::new::<EnforcingSigner, _, _>(&[nodes[1].get_node_pk(), nodes[2].get_node_pk(), nodes[3].get_node_pk()], &*nodes[3].keys_manager, &secp_ctx).unwrap();
-	let reply_path = BlindedRoute::new::<EnforcingSigner, _, _>(&[nodes[2].get_node_pk(), nodes[1].get_node_pk(), nodes[0].get_node_pk()], &*nodes[0].keys_manager, &secp_ctx).unwrap();
+	let blinded_route = BlindedRoute::new(&[nodes[1].get_node_pk(), nodes[2].get_node_pk(), nodes[3].get_node_pk()], &*nodes[3].keys_manager, &secp_ctx).unwrap();
+	let reply_path = BlindedRoute::new(&[nodes[2].get_node_pk(), nodes[1].get_node_pk(), nodes[0].get_node_pk()], &*nodes[0].keys_manager, &secp_ctx).unwrap();
 
 	nodes[0].messenger.send_onion_message(&[], Destination::BlindedRoute(blinded_route), Some(reply_path)).unwrap();
 	pass_along_path(&nodes, None);

@@ -376,7 +376,7 @@ pub enum Event {
 		/// Indicates the payment was rejected for some reason by the recipient. This implies that
 		/// the payment has failed, not just the route in question. If this is not set, you may
 		/// retry the payment via a different route.
-		rejected_by_dest: bool,
+		payment_failed_permanently: bool,
 		/// Any failure information conveyed via the Onion return packet by a node along the failed
 		/// payment route.
 		///
@@ -643,7 +643,7 @@ impl Writeable for Event {
 				});
 			},
 			&Event::PaymentPathFailed {
-				ref payment_id, ref payment_hash, ref rejected_by_dest, ref network_update,
+				ref payment_id, ref payment_hash, ref payment_failed_permanently, ref network_update,
 				ref all_paths_failed, ref path, ref short_channel_id, ref retry,
 				#[cfg(test)]
 				ref error_code,
@@ -658,7 +658,7 @@ impl Writeable for Event {
 				write_tlv_fields!(writer, {
 					(0, payment_hash, required),
 					(1, network_update, option),
-					(2, rejected_by_dest, required),
+					(2, payment_failed_permanently, required),
 					(3, all_paths_failed, required),
 					(5, path, vec_type),
 					(7, short_channel_id, option),
@@ -827,7 +827,7 @@ impl MaybeReadable for Event {
 					#[cfg(test)]
 					let error_data = Readable::read(reader)?;
 					let mut payment_hash = PaymentHash([0; 32]);
-					let mut rejected_by_dest = false;
+					let mut payment_failed_permanently = false;
 					let mut network_update = None;
 					let mut all_paths_failed = Some(true);
 					let mut path: Option<Vec<RouteHop>> = Some(vec![]);
@@ -837,7 +837,7 @@ impl MaybeReadable for Event {
 					read_tlv_fields!(reader, {
 						(0, payment_hash, required),
 						(1, network_update, ignorable),
-						(2, rejected_by_dest, required),
+						(2, payment_failed_permanently, required),
 						(3, all_paths_failed, option),
 						(5, path, vec_type),
 						(7, short_channel_id, option),
@@ -847,7 +847,7 @@ impl MaybeReadable for Event {
 					Ok(Some(Event::PaymentPathFailed {
 						payment_id,
 						payment_hash,
-						rejected_by_dest,
+						payment_failed_permanently,
 						network_update,
 						all_paths_failed: all_paths_failed.unwrap(),
 						path: path.unwrap(),
@@ -1002,12 +1002,34 @@ impl MaybeReadable for Event {
 						(4, path, vec_type),
 						(6, short_channel_id, option),
 					});
-					Ok(Some(Event::ProbeFailed{
+					Ok(Some(Event::ProbeFailed {
 						payment_id,
 						payment_hash,
 						path: path.unwrap(),
 						short_channel_id,
 					}))
+				};
+				f()
+			},
+			25u8 => {
+				let f = || {
+					let mut prev_channel_id = [0; 32];
+					let mut failed_next_destination_opt = None;
+					read_tlv_fields!(reader, {
+						(0, prev_channel_id, required),
+						(2, failed_next_destination_opt, ignorable),
+					});
+					if let Some(failed_next_destination) = failed_next_destination_opt {
+						Ok(Some(Event::HTLCHandlingFailed {
+							prev_channel_id,
+							failed_next_destination,
+						}))
+					} else {
+						// If we fail to read a `failed_next_destination` assume it's because
+						// `MaybeReadable::read` returned `Ok(None)`, though it's also possible we
+						// were simply missing the field.
+						Ok(None)
+					}
 				};
 				f()
 			},
@@ -1115,24 +1137,31 @@ pub enum MessageSendEvent {
 		/// The message which should be sent.
 		msg: msgs::ChannelReestablish,
 	},
-	/// Used to indicate that a channel_announcement and channel_update should be broadcast to all
-	/// peers (except the peer with node_id either msg.contents.node_id_1 or msg.contents.node_id_2).
-	///
-	/// Note that after doing so, you very likely (unless you did so very recently) want to call
-	/// ChannelManager::broadcast_node_announcement to trigger a BroadcastNodeAnnouncement event.
-	/// This ensures that any nodes which see our channel_announcement also have a relevant
-	/// node_announcement, including relevant feature flags which may be important for routing
-	/// through or to us.
-	BroadcastChannelAnnouncement {
+	/// Used to send a channel_announcement and channel_update to a specific peer, likely on
+	/// initial connection to ensure our peers know about our channels.
+	SendChannelAnnouncement {
+		/// The node_id of the node which should receive this message
+		node_id: PublicKey,
 		/// The channel_announcement which should be sent.
 		msg: msgs::ChannelAnnouncement,
 		/// The followup channel_update which should be sent.
 		update_msg: msgs::ChannelUpdate,
 	},
-	/// Used to indicate that a node_announcement should be broadcast to all peers.
-	BroadcastNodeAnnouncement {
-		/// The node_announcement which should be sent.
-		msg: msgs::NodeAnnouncement,
+	/// Used to indicate that a channel_announcement and channel_update should be broadcast to all
+	/// peers (except the peer with node_id either msg.contents.node_id_1 or msg.contents.node_id_2).
+	///
+	/// Note that after doing so, you very likely (unless you did so very recently) want to
+	/// broadcast a node_announcement (e.g. via [`PeerManager::broadcast_node_announcement`]). This
+	/// ensures that any nodes which see our channel_announcement also have a relevant
+	/// node_announcement, including relevant feature flags which may be important for routing
+	/// through or to us.
+	///
+	/// [`PeerManager::broadcast_node_announcement`]: crate::ln::peer_handler::PeerManager::broadcast_node_announcement
+	BroadcastChannelAnnouncement {
+		/// The channel_announcement which should be sent.
+		msg: msgs::ChannelAnnouncement,
+		/// The followup channel_update which should be sent.
+		update_msg: msgs::ChannelUpdate,
 	},
 	/// Used to indicate that a channel_update should be broadcast to all peers.
 	BroadcastChannelUpdate {
@@ -1207,11 +1236,17 @@ pub trait OnionMessageProvider {
 ///
 /// # Requirements
 ///
-/// See [`process_pending_events`] for requirements around event processing.
-///
 /// When using this trait, [`process_pending_events`] will call [`handle_event`] for each pending
-/// event since the last invocation. The handler must either act upon the event immediately
-/// or preserve it for later handling.
+/// event since the last invocation.
+///
+/// In order to ensure no [`Event`]s are lost, implementors of this trait will persist [`Event`]s
+/// and replay any unhandled events on startup. An [`Event`] is considered handled when
+/// [`process_pending_events`] returns, thus handlers MUST fully handle [`Event`]s and persist any
+/// relevant changes to disk *before* returning.
+///
+/// Further, because an application may crash between an [`Event`] being handled and the
+/// implementor of this trait being re-serialized, [`Event`] handling must be idempotent - in
+/// effect, [`Event`]s may be replayed.
 ///
 /// Note, handlers may call back into the provider and thus deadlocking must be avoided. Be sure to
 /// consult the provider's documentation on the implication of processing events and how a handler
@@ -1228,9 +1263,7 @@ pub trait OnionMessageProvider {
 pub trait EventsProvider {
 	/// Processes any events generated since the last call using the given event handler.
 	///
-	/// Subsequent calls must only process new events. However, handlers must be capable of handling
-	/// duplicate events across process restarts. This may occur if the provider was recovered from
-	/// an old state (i.e., it hadn't been successfully persisted after processing pending events).
+	/// See the trait-level documentation for requirements.
 	fn process_pending_events<H: Deref>(&self, handler: H) where H::Target: EventHandler;
 }
 

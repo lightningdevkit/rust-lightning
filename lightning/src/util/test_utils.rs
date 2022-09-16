@@ -17,7 +17,8 @@ use chain::channelmonitor;
 use chain::channelmonitor::MonitorEvent;
 use chain::transaction::OutPoint;
 use chain::keysinterface;
-use ln::features::{ChannelFeatures, InitFeatures};
+use ln::channelmanager;
+use ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 use ln::{msgs, wire};
 use ln::script::ShutdownScript;
 use routing::scoring::FixedPenaltyScorer;
@@ -287,9 +288,9 @@ impl TestChannelMessageHandler {
 
 impl Drop for TestChannelMessageHandler {
 	fn drop(&mut self) {
-		let l = self.expected_recv_msgs.lock().unwrap();
 		#[cfg(feature = "std")]
 		{
+			let l = self.expected_recv_msgs.lock().unwrap();
 			if !std::thread::panicking() {
 				assert!(l.is_none() || l.as_ref().unwrap().is_empty());
 			}
@@ -350,12 +351,19 @@ impl msgs::ChannelMessageHandler for TestChannelMessageHandler {
 		self.received_msg(wire::Message::ChannelReestablish(msg.clone()));
 	}
 	fn peer_disconnected(&self, _their_node_id: &PublicKey, _no_connection_possible: bool) {}
-	fn peer_connected(&self, _their_node_id: &PublicKey, _msg: &msgs::Init) {
+	fn peer_connected(&self, _their_node_id: &PublicKey, _msg: &msgs::Init) -> Result<(), ()> {
 		// Don't bother with `received_msg` for Init as its auto-generated and we don't want to
 		// bother re-generating the expected Init message in all tests.
+		Ok(())
 	}
 	fn handle_error(&self, _their_node_id: &PublicKey, msg: &msgs::ErrorMessage) {
 		self.received_msg(wire::Message::Error(msg.clone()));
+	}
+	fn provided_node_features(&self) -> NodeFeatures {
+		channelmanager::provided_node_features()
+	}
+	fn provided_init_features(&self, _their_init_features: &PublicKey) -> InitFeatures {
+		channelmanager::provided_init_features()
 	}
 }
 
@@ -377,7 +385,7 @@ fn get_dummy_channel_announcement(short_chan_id: u64) -> msgs::ChannelAnnounceme
 	let node_1_btckey = SecretKey::from_slice(&[40; 32]).unwrap();
 	let node_2_btckey = SecretKey::from_slice(&[39; 32]).unwrap();
 	let unsigned_ann = msgs::UnsignedChannelAnnouncement {
-		features: ChannelFeatures::known(),
+		features: ChannelFeatures::empty(),
 		chain_hash: genesis_block(network).header.block_hash(),
 		short_channel_id: short_chan_id,
 		node_id_1: PublicKey::from_secret_key(&secp_ctx, &node_1_privkey),
@@ -459,19 +467,17 @@ impl msgs::RoutingMessageHandler for TestRoutingMessageHandler {
 		None
 	}
 
-	fn peer_connected(&self, their_node_id: &PublicKey, init_msg: &msgs::Init) {
+	fn peer_connected(&self, their_node_id: &PublicKey, init_msg: &msgs::Init) -> Result<(), ()> {
 		if !init_msg.features.supports_gossip_queries() {
-			return ();
+			return Ok(());
 		}
-
-		let should_request_full_sync = self.request_full_sync.load(Ordering::Acquire);
 
 		#[allow(unused_mut, unused_assignments)]
 		let mut gossip_start_time = 0;
 		#[cfg(feature = "std")]
 		{
 			gossip_start_time = SystemTime::now().duration_since(UNIX_EPOCH).expect("Time must be > 1970").as_secs();
-			if should_request_full_sync {
+			if self.request_full_sync.load(Ordering::Acquire) {
 				gossip_start_time -= 60 * 60 * 24 * 7 * 2; // 2 weeks ago
 			} else {
 				gossip_start_time -= 60 * 60; // an hour ago
@@ -487,6 +493,7 @@ impl msgs::RoutingMessageHandler for TestRoutingMessageHandler {
 				timestamp_range: u32::max_value(),
 			},
 		});
+		Ok(())
 	}
 
 	fn handle_reply_channel_range(&self, _their_node_id: &PublicKey, _msg: msgs::ReplyChannelRange) -> Result<(), msgs::LightningError> {
@@ -504,6 +511,18 @@ impl msgs::RoutingMessageHandler for TestRoutingMessageHandler {
 	fn handle_query_short_channel_ids(&self, _their_node_id: &PublicKey, _msg: msgs::QueryShortChannelIds) -> Result<(), msgs::LightningError> {
 		Ok(())
 	}
+
+	fn provided_node_features(&self) -> NodeFeatures {
+		let mut features = NodeFeatures::empty();
+		features.set_gossip_queries_optional();
+		features
+	}
+
+	fn provided_init_features(&self, _their_init_features: &PublicKey) -> InitFeatures {
+		let mut features = InitFeatures::empty();
+		features.set_gossip_queries_optional();
+		features
+	}
 }
 
 impl events::MessageSendEventsProvider for TestRoutingMessageHandler {
@@ -517,10 +536,7 @@ impl events::MessageSendEventsProvider for TestRoutingMessageHandler {
 
 pub struct TestLogger {
 	level: Level,
-	#[cfg(feature = "std")]
-	id: String,
-	#[cfg(not(feature = "std"))]
-	_id: String,
+	pub(crate) id: String,
 	pub lines: Mutex<HashMap<(String, String), usize>>,
 }
 
@@ -531,10 +547,7 @@ impl TestLogger {
 	pub fn with_id(id: String) -> TestLogger {
 		TestLogger {
 			level: Level::Trace,
-			#[cfg(feature = "std")]
 			id,
-			#[cfg(not(feature = "std"))]
-			_id: id,
 			lines: Mutex::new(HashMap::new())
 		}
 	}
@@ -558,10 +571,10 @@ impl TestLogger {
 		assert_eq!(l, count)
 	}
 
-    /// Search for the number of occurrences of logged lines which
-    /// 1. belong to the specified module and
-    /// 2. match the given regex pattern.
-    /// Assert that the number of occurrences equals the given `count`
+	/// Search for the number of occurrences of logged lines which
+	/// 1. belong to the specified module and
+	/// 2. match the given regex pattern.
+	/// Assert that the number of occurrences equals the given `count`
 	pub fn assert_log_regex(&self, module: String, pattern: regex::Regex, count: usize) {
 		let log_entries = self.lines.lock().unwrap();
 		let l: usize = log_entries.iter().filter(|&(&(ref m, ref l), _c)| {

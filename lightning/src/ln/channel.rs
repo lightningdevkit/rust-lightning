@@ -23,11 +23,11 @@ use bitcoin::secp256k1::{Secp256k1,ecdsa::Signature};
 use bitcoin::secp256k1;
 
 use ln::{PaymentPreimage, PaymentHash};
-use ln::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures};
+use ln::features::{ChannelTypeFeatures, InitFeatures};
 use ln::msgs;
 use ln::msgs::{DecodeError, OptionalField, DataLossProtect};
 use ln::script::{self, ShutdownScript};
-use ln::channelmanager::{CounterpartyForwardingInfo, PendingHTLCStatus, HTLCSource, HTLCFailReason, HTLCFailureMsg, PendingHTLCInfo, RAACommitmentOrder, BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA, MAX_LOCAL_BREAKDOWN_TIMEOUT};
+use ln::channelmanager::{self, CounterpartyForwardingInfo, PendingHTLCStatus, HTLCSource, HTLCFailReason, HTLCFailureMsg, PendingHTLCInfo, RAACommitmentOrder, BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA, MAX_LOCAL_BREAKDOWN_TIMEOUT};
 use ln::chan_utils::{CounterpartyCommitmentSecrets, TxCreationKeys, HTLCOutputInCommitment, htlc_success_tx_weight, htlc_timeout_tx_weight, make_funding_redeemscript, ChannelPublicKeys, CommitmentTransaction, HolderCommitmentTransaction, ChannelTransactionParameters, CounterpartyChannelTransactionParameters, MAX_HTLCS, get_commitment_transaction_number_obscure_factor, ClosingTransaction};
 use ln::chan_utils;
 use chain::BestBlock;
@@ -1466,7 +1466,12 @@ impl<Signer: Sign> Channel<Signer> {
 			($htlc: expr, $outbound: expr, $source: expr, $state_name: expr) => {
 				if $outbound == local { // "offered HTLC output"
 					let htlc_in_tx = get_htlc_in_commitment!($htlc, true);
-					if $htlc.amount_msat / 1000 >= broadcaster_dust_limit_satoshis + (feerate_per_kw as u64 * htlc_timeout_tx_weight(self.opt_anchors()) / 1000) {
+					let htlc_tx_fee = if self.opt_anchors() {
+						0
+					} else {
+						feerate_per_kw as u64 * htlc_timeout_tx_weight(false) / 1000
+					};
+					if $htlc.amount_msat / 1000 >= broadcaster_dust_limit_satoshis + htlc_tx_fee {
 						log_trace!(logger, "   ...including {} {} HTLC {} (hash {}) with value {}", if $outbound { "outbound" } else { "inbound" }, $state_name, $htlc.htlc_id, log_bytes!($htlc.payment_hash.0), $htlc.amount_msat);
 						included_non_dust_htlcs.push((htlc_in_tx, $source));
 					} else {
@@ -1475,7 +1480,12 @@ impl<Signer: Sign> Channel<Signer> {
 					}
 				} else {
 					let htlc_in_tx = get_htlc_in_commitment!($htlc, false);
-					if $htlc.amount_msat / 1000 >= broadcaster_dust_limit_satoshis + (feerate_per_kw as u64 * htlc_success_tx_weight(self.opt_anchors()) / 1000) {
+					let htlc_tx_fee = if self.opt_anchors() {
+						0
+					} else {
+						feerate_per_kw as u64 * htlc_success_tx_weight(false) / 1000
+					};
+					if $htlc.amount_msat / 1000 >= broadcaster_dust_limit_satoshis + htlc_tx_fee {
 						log_trace!(logger, "   ...including {} {} HTLC {} (hash {}) with value {}", if $outbound { "outbound" } else { "inbound" }, $state_name, $htlc.htlc_id, log_bytes!($htlc.payment_hash.0), $htlc.amount_msat);
 						included_non_dust_htlcs.push((htlc_in_tx, $source));
 					} else {
@@ -2396,8 +2406,15 @@ impl<Signer: Sign> Channel<Signer> {
 			on_holder_tx_holding_cell_htlcs_count: 0,
 		};
 
-		let counterparty_dust_limit_timeout_sat = (self.get_dust_buffer_feerate(outbound_feerate_update) as u64 * htlc_timeout_tx_weight(self.opt_anchors()) / 1000) + self.counterparty_dust_limit_satoshis;
-		let holder_dust_limit_success_sat = (self.get_dust_buffer_feerate(outbound_feerate_update) as u64 * htlc_success_tx_weight(self.opt_anchors()) / 1000) + self.holder_dust_limit_satoshis;
+		let (htlc_timeout_dust_limit, htlc_success_dust_limit) = if self.opt_anchors() {
+			(0, 0)
+		} else {
+			let dust_buffer_feerate = self.get_dust_buffer_feerate(outbound_feerate_update) as u64;
+			(dust_buffer_feerate * htlc_timeout_tx_weight(false) / 1000,
+				dust_buffer_feerate * htlc_success_tx_weight(false) / 1000)
+		};
+		let counterparty_dust_limit_timeout_sat = htlc_timeout_dust_limit + self.counterparty_dust_limit_satoshis;
+		let holder_dust_limit_success_sat = htlc_success_dust_limit + self.holder_dust_limit_satoshis;
 		for ref htlc in self.pending_inbound_htlcs.iter() {
 			stats.pending_htlcs_value_msat += htlc.amount_msat;
 			if htlc.amount_msat / 1000 < counterparty_dust_limit_timeout_sat {
@@ -2421,8 +2438,15 @@ impl<Signer: Sign> Channel<Signer> {
 			on_holder_tx_holding_cell_htlcs_count: 0,
 		};
 
-		let counterparty_dust_limit_success_sat = (self.get_dust_buffer_feerate(outbound_feerate_update) as u64 * htlc_success_tx_weight(self.opt_anchors()) / 1000) + self.counterparty_dust_limit_satoshis;
-		let holder_dust_limit_timeout_sat = (self.get_dust_buffer_feerate(outbound_feerate_update) as u64 * htlc_timeout_tx_weight(self.opt_anchors()) / 1000) + self.holder_dust_limit_satoshis;
+		let (htlc_timeout_dust_limit, htlc_success_dust_limit) = if self.opt_anchors() {
+			(0, 0)
+		} else {
+			let dust_buffer_feerate = self.get_dust_buffer_feerate(outbound_feerate_update) as u64;
+			(dust_buffer_feerate * htlc_timeout_tx_weight(false) / 1000,
+				dust_buffer_feerate * htlc_success_tx_weight(false) / 1000)
+		};
+		let counterparty_dust_limit_success_sat = htlc_success_dust_limit + self.counterparty_dust_limit_satoshis;
+		let holder_dust_limit_timeout_sat = htlc_timeout_dust_limit + self.holder_dust_limit_satoshis;
 		for ref htlc in self.pending_outbound_htlcs.iter() {
 			stats.pending_htlcs_value_msat += htlc.amount_msat;
 			if htlc.amount_msat / 1000 < counterparty_dust_limit_success_sat {
@@ -2512,8 +2536,14 @@ impl<Signer: Sign> Channel<Signer> {
 	fn next_local_commit_tx_fee_msat(&self, htlc: HTLCCandidate, fee_spike_buffer_htlc: Option<()>) -> u64 {
 		assert!(self.is_outbound());
 
-		let real_dust_limit_success_sat = (self.feerate_per_kw as u64 * htlc_success_tx_weight(self.opt_anchors()) / 1000) + self.holder_dust_limit_satoshis;
-		let real_dust_limit_timeout_sat = (self.feerate_per_kw as u64 * htlc_timeout_tx_weight(self.opt_anchors()) / 1000) + self.holder_dust_limit_satoshis;
+		let (htlc_success_dust_limit, htlc_timeout_dust_limit) = if self.opt_anchors() {
+			(0, 0)
+		} else {
+			(self.feerate_per_kw as u64 * htlc_success_tx_weight(false) / 1000,
+				self.feerate_per_kw as u64 * htlc_timeout_tx_weight(false) / 1000)
+		};
+		let real_dust_limit_success_sat = htlc_success_dust_limit + self.holder_dust_limit_satoshis;
+		let real_dust_limit_timeout_sat = htlc_timeout_dust_limit + self.holder_dust_limit_satoshis;
 
 		let mut addl_htlcs = 0;
 		if fee_spike_buffer_htlc.is_some() { addl_htlcs += 1; }
@@ -2603,8 +2633,14 @@ impl<Signer: Sign> Channel<Signer> {
 	fn next_remote_commit_tx_fee_msat(&self, htlc: HTLCCandidate, fee_spike_buffer_htlc: Option<()>) -> u64 {
 		assert!(!self.is_outbound());
 
-		let real_dust_limit_success_sat = (self.feerate_per_kw as u64 * htlc_success_tx_weight(self.opt_anchors()) / 1000) + self.counterparty_dust_limit_satoshis;
-		let real_dust_limit_timeout_sat = (self.feerate_per_kw as u64 * htlc_timeout_tx_weight(self.opt_anchors()) / 1000) + self.counterparty_dust_limit_satoshis;
+		let (htlc_success_dust_limit, htlc_timeout_dust_limit) = if self.opt_anchors() {
+			(0, 0)
+		} else {
+			(self.feerate_per_kw as u64 * htlc_success_tx_weight(false) / 1000,
+				self.feerate_per_kw as u64 * htlc_timeout_tx_weight(false) / 1000)
+		};
+		let real_dust_limit_success_sat = htlc_success_dust_limit + self.counterparty_dust_limit_satoshis;
+		let real_dust_limit_timeout_sat = htlc_timeout_dust_limit + self.counterparty_dust_limit_satoshis;
 
 		let mut addl_htlcs = 0;
 		if fee_spike_buffer_htlc.is_some() { addl_htlcs += 1; }
@@ -2727,7 +2763,14 @@ impl<Signer: Sign> Channel<Signer> {
 			}
 		}
 
-		let exposure_dust_limit_timeout_sats = (self.get_dust_buffer_feerate(None) as u64 * htlc_timeout_tx_weight(self.opt_anchors()) / 1000) + self.counterparty_dust_limit_satoshis;
+		let (htlc_timeout_dust_limit, htlc_success_dust_limit) = if self.opt_anchors() {
+			(0, 0)
+		} else {
+			let dust_buffer_feerate = self.get_dust_buffer_feerate(None) as u64;
+			(dust_buffer_feerate * htlc_timeout_tx_weight(false) / 1000,
+				dust_buffer_feerate * htlc_success_tx_weight(false) / 1000)
+		};
+		let exposure_dust_limit_timeout_sats = htlc_timeout_dust_limit + self.counterparty_dust_limit_satoshis;
 		if msg.amount_msat / 1000 < exposure_dust_limit_timeout_sats {
 			let on_counterparty_tx_dust_htlc_exposure_msat = inbound_stats.on_counterparty_tx_dust_exposure_msat + outbound_stats.on_counterparty_tx_dust_exposure_msat + msg.amount_msat;
 			if on_counterparty_tx_dust_htlc_exposure_msat > self.get_max_dust_htlc_exposure_msat() {
@@ -2737,7 +2780,7 @@ impl<Signer: Sign> Channel<Signer> {
 			}
 		}
 
-		let exposure_dust_limit_success_sats = (self.get_dust_buffer_feerate(None) as u64 * htlc_success_tx_weight(self.opt_anchors()) / 1000) + self.holder_dust_limit_satoshis;
+		let exposure_dust_limit_success_sats = htlc_success_dust_limit + self.holder_dust_limit_satoshis;
 		if msg.amount_msat / 1000 < exposure_dust_limit_success_sats {
 			let on_holder_tx_dust_htlc_exposure_msat = inbound_stats.on_holder_tx_dust_exposure_msat + outbound_stats.on_holder_tx_dust_exposure_msat + msg.amount_msat;
 			if on_holder_tx_dust_htlc_exposure_msat > self.get_max_dust_htlc_exposure_msat() {
@@ -3547,6 +3590,12 @@ impl<Signer: Sign> Channel<Signer> {
 		assert_eq!(self.channel_state & ChannelState::ShutdownComplete as u32, 0);
 		if self.channel_state < ChannelState::FundingSent as u32 {
 			self.channel_state = ChannelState::ShutdownComplete as u32;
+			return;
+		}
+
+		if self.channel_state & (ChannelState::PeerDisconnected as u32) == (ChannelState::PeerDisconnected as u32) {
+			// While the below code should be idempotent, it's simpler to just return early, as
+			// redundant disconnect events can fire, though they should be rare.
 			return;
 		}
 
@@ -4771,6 +4820,9 @@ impl<Signer: Sign> Channel<Signer> {
 	}
 
 	fn check_get_channel_ready(&mut self, height: u32) -> Option<msgs::ChannelReady> {
+		// Called:
+		//  * always when a new block/transactions are confirmed with the new height
+		//  * when funding is signed with a height of 0
 		if self.funding_tx_confirmation_height == 0 && self.minimum_depth != Some(0) {
 			return None;
 		}
@@ -4796,7 +4848,7 @@ impl<Signer: Sign> Channel<Signer> {
 			// We got a reorg but not enough to trigger a force close, just ignore.
 			false
 		} else {
-			if self.channel_state < ChannelState::ChannelFunded as u32 {
+			if self.funding_tx_confirmation_height != 0 && self.channel_state < ChannelState::ChannelFunded as u32 {
 				// We should never see a funding transaction on-chain until we've received
 				// funding_signed (if we're an outbound channel), or seen funding_generated (if we're
 				// an inbound channel - before that we have no known funding TXID). The fuzzer,
@@ -5202,7 +5254,7 @@ impl<Signer: Sign> Channel<Signer> {
 		let were_node_one = node_id.serialize()[..] < self.counterparty_node_id.serialize()[..];
 
 		let msg = msgs::UnsignedChannelAnnouncement {
-			features: ChannelFeatures::known(),
+			features: channelmanager::provided_channel_features(),
 			chain_hash,
 			short_channel_id: self.get_short_channel_id().unwrap(),
 			node_id_1: if were_node_one { node_id } else { self.get_counterparty_node_id() },
@@ -5441,7 +5493,14 @@ impl<Signer: Sign> Channel<Signer> {
 			}
 		}
 
-		let exposure_dust_limit_success_sats = (self.get_dust_buffer_feerate(None) as u64 * htlc_success_tx_weight(self.opt_anchors()) / 1000) + self.counterparty_dust_limit_satoshis;
+		let (htlc_success_dust_limit, htlc_timeout_dust_limit) = if self.opt_anchors() {
+			(0, 0)
+		} else {
+			let dust_buffer_feerate = self.get_dust_buffer_feerate(None) as u64;
+			(dust_buffer_feerate * htlc_success_tx_weight(false) / 1000,
+				dust_buffer_feerate * htlc_timeout_tx_weight(false) / 1000)
+		};
+		let exposure_dust_limit_success_sats = htlc_success_dust_limit + self.counterparty_dust_limit_satoshis;
 		if amount_msat / 1000 < exposure_dust_limit_success_sats {
 			let on_counterparty_dust_htlc_exposure_msat = inbound_stats.on_counterparty_tx_dust_exposure_msat + outbound_stats.on_counterparty_tx_dust_exposure_msat + amount_msat;
 			if on_counterparty_dust_htlc_exposure_msat > self.get_max_dust_htlc_exposure_msat() {
@@ -5450,7 +5509,7 @@ impl<Signer: Sign> Channel<Signer> {
 			}
 		}
 
-		let exposure_dust_limit_timeout_sats = (self.get_dust_buffer_feerate(None) as u64 * htlc_timeout_tx_weight(self.opt_anchors()) / 1000) + self.holder_dust_limit_satoshis;
+		let exposure_dust_limit_timeout_sats = htlc_timeout_dust_limit + self.holder_dust_limit_satoshis;
 		if amount_msat / 1000 <  exposure_dust_limit_timeout_sats {
 			let on_holder_dust_htlc_exposure_msat = inbound_stats.on_holder_tx_dust_exposure_msat + outbound_stats.on_holder_tx_dust_exposure_msat + amount_msat;
 			if on_holder_dust_htlc_exposure_msat > self.get_max_dust_htlc_exposure_msat() {
@@ -6586,10 +6645,10 @@ mod tests {
 	use bitcoin::network::constants::Network;
 	use hex;
 	use ln::PaymentHash;
-	use ln::channelmanager::{HTLCSource, PaymentId};
+	use ln::channelmanager::{self, HTLCSource, PaymentId};
 	use ln::channel::{Channel, InboundHTLCOutput, OutboundHTLCOutput, InboundHTLCState, OutboundHTLCState, HTLCCandidate, HTLCInitiator};
 	use ln::channel::{MAX_FUNDING_SATOSHIS_NO_WUMBO, TOTAL_BITCOIN_SUPPLY_SATOSHIS, MIN_THEIR_CHAN_RESERVE_SATOSHIS};
-	use ln::features::{InitFeatures, ChannelTypeFeatures};
+	use ln::features::ChannelTypeFeatures;
 	use ln::msgs::{ChannelUpdate, DataLossProtect, DecodeError, OptionalField, UnsignedChannelUpdate, MAX_VALUE_MSAT};
 	use ln::script::ShutdownScript;
 	use ln::chan_utils;
@@ -6678,7 +6737,7 @@ mod tests {
 
 	#[test]
 	fn upfront_shutdown_script_incompatibility() {
-		let features = InitFeatures::known().clear_shutdown_anysegwit();
+		let features = channelmanager::provided_init_features().clear_shutdown_anysegwit();
 		let non_v0_segwit_shutdown_script =
 			ShutdownScript::new_witness_program(WitnessVersion::V16, &[0, 40]).unwrap();
 
@@ -6715,7 +6774,7 @@ mod tests {
 
 		let node_a_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let config = UserConfig::default();
-		let node_a_chan = Channel::<EnforcingSigner>::new_outbound(&bounded_fee_estimator, &&keys_provider, node_a_node_id, &InitFeatures::known(), 10000000, 100000, 42, &config, 0, 42).unwrap();
+		let node_a_chan = Channel::<EnforcingSigner>::new_outbound(&bounded_fee_estimator, &&keys_provider, node_a_node_id, &channelmanager::provided_init_features(), 10000000, 100000, 42, &config, 0, 42).unwrap();
 
 		// Now change the fee so we can check that the fee in the open_channel message is the
 		// same as the old fee.
@@ -6741,18 +6800,18 @@ mod tests {
 		// Create Node A's channel pointing to Node B's pubkey
 		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let config = UserConfig::default();
-		let mut node_a_chan = Channel::<EnforcingSigner>::new_outbound(&feeest, &&keys_provider, node_b_node_id, &InitFeatures::known(), 10000000, 100000, 42, &config, 0, 42).unwrap();
+		let mut node_a_chan = Channel::<EnforcingSigner>::new_outbound(&feeest, &&keys_provider, node_b_node_id, &channelmanager::provided_init_features(), 10000000, 100000, 42, &config, 0, 42).unwrap();
 
 		// Create Node B's channel by receiving Node A's open_channel message
 		// Make sure A's dust limit is as we expect.
 		let open_channel_msg = node_a_chan.get_open_channel(genesis_block(network).header.block_hash());
 		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[7; 32]).unwrap());
-		let mut node_b_chan = Channel::<EnforcingSigner>::new_from_req(&feeest, &&keys_provider, node_b_node_id, &InitFeatures::known(), &open_channel_msg, 7, &config, 0, &&logger, 42).unwrap();
+		let mut node_b_chan = Channel::<EnforcingSigner>::new_from_req(&feeest, &&keys_provider, node_b_node_id, &channelmanager::provided_init_features(), &open_channel_msg, 7, &config, 0, &&logger, 42).unwrap();
 
 		// Node B --> Node A: accept channel, explicitly setting B's dust limit.
 		let mut accept_channel_msg = node_b_chan.accept_inbound_channel(0);
 		accept_channel_msg.dust_limit_satoshis = 546;
-		node_a_chan.accept_channel(&accept_channel_msg, &config.channel_handshake_limits, &InitFeatures::known()).unwrap();
+		node_a_chan.accept_channel(&accept_channel_msg, &config.channel_handshake_limits, &channelmanager::provided_init_features()).unwrap();
 		node_a_chan.holder_dust_limit_satoshis = 1560;
 
 		// Put some inbound and outbound HTLCs in A's channel.
@@ -6811,7 +6870,7 @@ mod tests {
 
 		let node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let config = UserConfig::default();
-		let mut chan = Channel::<EnforcingSigner>::new_outbound(&fee_est, &&keys_provider, node_id, &InitFeatures::known(), 10000000, 100000, 42, &config, 0, 42).unwrap();
+		let mut chan = Channel::<EnforcingSigner>::new_outbound(&fee_est, &&keys_provider, node_id, &channelmanager::provided_init_features(), 10000000, 100000, 42, &config, 0, 42).unwrap();
 
 		let commitment_tx_fee_0_htlcs = Channel::<EnforcingSigner>::commit_tx_fee_msat(chan.feerate_per_kw, 0, chan.opt_anchors());
 		let commitment_tx_fee_1_htlc = Channel::<EnforcingSigner>::commit_tx_fee_msat(chan.feerate_per_kw, 1, chan.opt_anchors());
@@ -6860,16 +6919,16 @@ mod tests {
 		// Create Node A's channel pointing to Node B's pubkey
 		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let config = UserConfig::default();
-		let mut node_a_chan = Channel::<EnforcingSigner>::new_outbound(&feeest, &&keys_provider, node_b_node_id, &InitFeatures::known(), 10000000, 100000, 42, &config, 0, 42).unwrap();
+		let mut node_a_chan = Channel::<EnforcingSigner>::new_outbound(&feeest, &&keys_provider, node_b_node_id, &channelmanager::provided_init_features(), 10000000, 100000, 42, &config, 0, 42).unwrap();
 
 		// Create Node B's channel by receiving Node A's open_channel message
 		let open_channel_msg = node_a_chan.get_open_channel(chain_hash);
 		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[7; 32]).unwrap());
-		let mut node_b_chan = Channel::<EnforcingSigner>::new_from_req(&feeest, &&keys_provider, node_b_node_id, &InitFeatures::known(), &open_channel_msg, 7, &config, 0, &&logger, 42).unwrap();
+		let mut node_b_chan = Channel::<EnforcingSigner>::new_from_req(&feeest, &&keys_provider, node_b_node_id, &channelmanager::provided_init_features(), &open_channel_msg, 7, &config, 0, &&logger, 42).unwrap();
 
 		// Node B --> Node A: accept channel
 		let accept_channel_msg = node_b_chan.accept_inbound_channel(0);
-		node_a_chan.accept_channel(&accept_channel_msg, &config.channel_handshake_limits, &InitFeatures::known()).unwrap();
+		node_a_chan.accept_channel(&accept_channel_msg, &config.channel_handshake_limits, &channelmanager::provided_init_features()).unwrap();
 
 		// Node A --> Node B: funding created
 		let output_script = node_a_chan.get_funding_redeemscript();
@@ -6933,12 +6992,12 @@ mod tests {
 		// Test that `new_outbound` creates a channel with the correct value for
 		// `holder_max_htlc_value_in_flight_msat`, when configured with a valid percentage value,
 		// which is set to the lower bound + 1 (2%) of the `channel_value`.
-		let chan_1 = Channel::<EnforcingSigner>::new_outbound(&feeest, &&keys_provider, outbound_node_id, &InitFeatures::known(), 10000000, 100000, 42, &config_2_percent, 0, 42).unwrap();
+		let chan_1 = Channel::<EnforcingSigner>::new_outbound(&feeest, &&keys_provider, outbound_node_id, &channelmanager::provided_init_features(), 10000000, 100000, 42, &config_2_percent, 0, 42).unwrap();
 		let chan_1_value_msat = chan_1.channel_value_satoshis * 1000;
 		assert_eq!(chan_1.holder_max_htlc_value_in_flight_msat, (chan_1_value_msat as f64 * 0.02) as u64);
 
 		// Test with the upper bound - 1 of valid values (99%).
-		let chan_2 = Channel::<EnforcingSigner>::new_outbound(&feeest, &&keys_provider, outbound_node_id, &InitFeatures::known(), 10000000, 100000, 42, &config_99_percent, 0, 42).unwrap();
+		let chan_2 = Channel::<EnforcingSigner>::new_outbound(&feeest, &&keys_provider, outbound_node_id, &channelmanager::provided_init_features(), 10000000, 100000, 42, &config_99_percent, 0, 42).unwrap();
 		let chan_2_value_msat = chan_2.channel_value_satoshis * 1000;
 		assert_eq!(chan_2.holder_max_htlc_value_in_flight_msat, (chan_2_value_msat as f64 * 0.99) as u64);
 
@@ -6947,38 +7006,38 @@ mod tests {
 		// Test that `new_from_req` creates a channel with the correct value for
 		// `holder_max_htlc_value_in_flight_msat`, when configured with a valid percentage value,
 		// which is set to the lower bound - 1 (2%) of the `channel_value`.
-		let chan_3 = Channel::<EnforcingSigner>::new_from_req(&feeest, &&keys_provider, inbound_node_id, &InitFeatures::known(), &chan_1_open_channel_msg, 7, &config_2_percent, 0, &&logger, 42).unwrap();
+		let chan_3 = Channel::<EnforcingSigner>::new_from_req(&feeest, &&keys_provider, inbound_node_id, &channelmanager::provided_init_features(), &chan_1_open_channel_msg, 7, &config_2_percent, 0, &&logger, 42).unwrap();
 		let chan_3_value_msat = chan_3.channel_value_satoshis * 1000;
 		assert_eq!(chan_3.holder_max_htlc_value_in_flight_msat, (chan_3_value_msat as f64 * 0.02) as u64);
 
 		// Test with the upper bound - 1 of valid values (99%).
-		let chan_4 = Channel::<EnforcingSigner>::new_from_req(&feeest, &&keys_provider, inbound_node_id, &InitFeatures::known(), &chan_1_open_channel_msg, 7, &config_99_percent, 0, &&logger, 42).unwrap();
+		let chan_4 = Channel::<EnforcingSigner>::new_from_req(&feeest, &&keys_provider, inbound_node_id, &channelmanager::provided_init_features(), &chan_1_open_channel_msg, 7, &config_99_percent, 0, &&logger, 42).unwrap();
 		let chan_4_value_msat = chan_4.channel_value_satoshis * 1000;
 		assert_eq!(chan_4.holder_max_htlc_value_in_flight_msat, (chan_4_value_msat as f64 * 0.99) as u64);
 
 		// Test that `new_outbound` uses the lower bound of the configurable percentage values (1%)
 		// if `max_inbound_htlc_value_in_flight_percent_of_channel` is set to a value less than 1.
-		let chan_5 = Channel::<EnforcingSigner>::new_outbound(&feeest, &&keys_provider, outbound_node_id, &InitFeatures::known(), 10000000, 100000, 42, &config_0_percent, 0, 42).unwrap();
+		let chan_5 = Channel::<EnforcingSigner>::new_outbound(&feeest, &&keys_provider, outbound_node_id, &channelmanager::provided_init_features(), 10000000, 100000, 42, &config_0_percent, 0, 42).unwrap();
 		let chan_5_value_msat = chan_5.channel_value_satoshis * 1000;
 		assert_eq!(chan_5.holder_max_htlc_value_in_flight_msat, (chan_5_value_msat as f64 * 0.01) as u64);
 
 		// Test that `new_outbound` uses the upper bound of the configurable percentage values
 		// (100%) if `max_inbound_htlc_value_in_flight_percent_of_channel` is set to a larger value
 		// than 100.
-		let chan_6 = Channel::<EnforcingSigner>::new_outbound(&feeest, &&keys_provider, outbound_node_id, &InitFeatures::known(), 10000000, 100000, 42, &config_101_percent, 0, 42).unwrap();
+		let chan_6 = Channel::<EnforcingSigner>::new_outbound(&feeest, &&keys_provider, outbound_node_id, &channelmanager::provided_init_features(), 10000000, 100000, 42, &config_101_percent, 0, 42).unwrap();
 		let chan_6_value_msat = chan_6.channel_value_satoshis * 1000;
 		assert_eq!(chan_6.holder_max_htlc_value_in_flight_msat, chan_6_value_msat);
 
 		// Test that `new_from_req` uses the lower bound of the configurable percentage values (1%)
 		// if `max_inbound_htlc_value_in_flight_percent_of_channel` is set to a value less than 1.
-		let chan_7 = Channel::<EnforcingSigner>::new_from_req(&feeest, &&keys_provider, inbound_node_id, &InitFeatures::known(), &chan_1_open_channel_msg, 7, &config_0_percent, 0, &&logger, 42).unwrap();
+		let chan_7 = Channel::<EnforcingSigner>::new_from_req(&feeest, &&keys_provider, inbound_node_id, &channelmanager::provided_init_features(), &chan_1_open_channel_msg, 7, &config_0_percent, 0, &&logger, 42).unwrap();
 		let chan_7_value_msat = chan_7.channel_value_satoshis * 1000;
 		assert_eq!(chan_7.holder_max_htlc_value_in_flight_msat, (chan_7_value_msat as f64 * 0.01) as u64);
 
 		// Test that `new_from_req` uses the upper bound of the configurable percentage values
 		// (100%) if `max_inbound_htlc_value_in_flight_percent_of_channel` is set to a larger value
 		// than 100.
-		let chan_8 = Channel::<EnforcingSigner>::new_from_req(&feeest, &&keys_provider, inbound_node_id, &InitFeatures::known(), &chan_1_open_channel_msg, 7, &config_101_percent, 0, &&logger, 42).unwrap();
+		let chan_8 = Channel::<EnforcingSigner>::new_from_req(&feeest, &&keys_provider, inbound_node_id, &channelmanager::provided_init_features(), &chan_1_open_channel_msg, 7, &config_101_percent, 0, &&logger, 42).unwrap();
 		let chan_8_value_msat = chan_8.channel_value_satoshis * 1000;
 		assert_eq!(chan_8.holder_max_htlc_value_in_flight_msat, chan_8_value_msat);
 	}
@@ -7018,7 +7077,7 @@ mod tests {
 
 		let mut outbound_node_config = UserConfig::default();
 		outbound_node_config.channel_handshake_config.their_channel_reserve_proportional_millionths = (outbound_selected_channel_reserve_perc * 1_000_000.0) as u32;
-		let chan = Channel::<EnforcingSigner>::new_outbound(&&fee_est, &&keys_provider, outbound_node_id, &InitFeatures::known(), channel_value_satoshis, 100_000, 42, &outbound_node_config, 0, 42).unwrap();
+		let chan = Channel::<EnforcingSigner>::new_outbound(&&fee_est, &&keys_provider, outbound_node_id, &channelmanager::provided_init_features(), channel_value_satoshis, 100_000, 42, &outbound_node_config, 0, 42).unwrap();
 
 		let expected_outbound_selected_chan_reserve = cmp::max(MIN_THEIR_CHAN_RESERVE_SATOSHIS, (chan.channel_value_satoshis as f64 * outbound_selected_channel_reserve_perc) as u64);
 		assert_eq!(chan.holder_selected_channel_reserve_satoshis, expected_outbound_selected_chan_reserve);
@@ -7028,7 +7087,7 @@ mod tests {
 		inbound_node_config.channel_handshake_config.their_channel_reserve_proportional_millionths = (inbound_selected_channel_reserve_perc * 1_000_000.0) as u32;
 
 		if outbound_selected_channel_reserve_perc + inbound_selected_channel_reserve_perc < 1.0 {
-			let chan_inbound_node = Channel::<EnforcingSigner>::new_from_req(&&fee_est, &&keys_provider, inbound_node_id, &InitFeatures::known(), &chan_open_channel_msg, 7, &inbound_node_config, 0, &&logger, 42).unwrap();
+			let chan_inbound_node = Channel::<EnforcingSigner>::new_from_req(&&fee_est, &&keys_provider, inbound_node_id, &channelmanager::provided_init_features(), &chan_open_channel_msg, 7, &inbound_node_config, 0, &&logger, 42).unwrap();
 
 			let expected_inbound_selected_chan_reserve = cmp::max(MIN_THEIR_CHAN_RESERVE_SATOSHIS, (chan.channel_value_satoshis as f64 * inbound_selected_channel_reserve_perc) as u64);
 
@@ -7036,7 +7095,7 @@ mod tests {
 			assert_eq!(chan_inbound_node.counterparty_selected_channel_reserve_satoshis.unwrap(), expected_outbound_selected_chan_reserve);
 		} else {
 			// Channel Negotiations failed
-			let result = Channel::<EnforcingSigner>::new_from_req(&&fee_est, &&keys_provider, inbound_node_id, &InitFeatures::known(), &chan_open_channel_msg, 7, &inbound_node_config, 0, &&logger, 42);
+			let result = Channel::<EnforcingSigner>::new_from_req(&&fee_est, &&keys_provider, inbound_node_id, &channelmanager::provided_init_features(), &chan_open_channel_msg, 7, &inbound_node_config, 0, &&logger, 42);
 			assert!(result.is_err());
 		}
 	}
@@ -7053,7 +7112,7 @@ mod tests {
 		// Create a channel.
 		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let config = UserConfig::default();
-		let mut node_a_chan = Channel::<EnforcingSigner>::new_outbound(&feeest, &&keys_provider, node_b_node_id, &InitFeatures::known(), 10000000, 100000, 42, &config, 0, 42).unwrap();
+		let mut node_a_chan = Channel::<EnforcingSigner>::new_outbound(&feeest, &&keys_provider, node_b_node_id, &channelmanager::provided_init_features(), 10000000, 100000, 42, &config, 0, 42).unwrap();
 		assert!(node_a_chan.counterparty_forwarding_info.is_none());
 		assert_eq!(node_a_chan.holder_htlc_minimum_msat, 1); // the default
 		assert!(node_a_chan.counterparty_forwarding_info().is_none());
@@ -7132,7 +7191,7 @@ mod tests {
 		let counterparty_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let mut config = UserConfig::default();
 		config.channel_handshake_config.announced_channel = false;
-		let mut chan = Channel::<InMemorySigner>::new_outbound(&LowerBoundedFeeEstimator::new(&feeest), &&keys_provider, counterparty_node_id, &InitFeatures::known(), 10_000_000, 100000, 42, &config, 0, 42).unwrap(); // Nothing uses their network key in this test
+		let mut chan = Channel::<InMemorySigner>::new_outbound(&LowerBoundedFeeEstimator::new(&feeest), &&keys_provider, counterparty_node_id, &channelmanager::provided_init_features(), 10_000_000, 100000, 42, &config, 0, 42).unwrap(); // Nothing uses their network key in this test
 		chan.holder_dust_limit_satoshis = 546;
 		chan.counterparty_selected_channel_reserve_satoshis = Some(0); // Filled in in accept_channel
 
@@ -7413,40 +7472,6 @@ mod tests {
 		                  "020000000001012cfb3e4788c206881d38f2996b6cb2109b5935acb527d14bdaa7b908afa9b2fe04000000000000000001da0d0000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e05004830450221009acd6a827a76bfee50806178dfe0495cd4e1d9c58279c194c7b01520fe68cb8d022024d439047c368883e570997a7d40f0b430cb5a742f507965e7d3063ae3feccca01473044022048762cf546bbfe474f1536365ea7c416e3c0389d60558bc9412cb148fb6ab68202207215d7083b75c96ff9d2b08c59c34e287b66820f530b486a9aa4cdd9c347d5b9012004040404040404040404040404040404040404040404040404040404040404048a76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a91418bc1a114ccf9c052d3d23e28d3b0a9d1227434288527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f801b175ac686800000000" }
 		} );
 
-		// anchors: commitment tx with seven outputs untrimmed (maximum feerate)
-		chan.value_to_self_msat = 6993000000; // 7000000000 - 7000000
-		chan.feerate_per_kw = 644;
-
-		test_commitment_with_anchors!("3045022100e0106830467a558c07544a3de7715610c1147062e7d091deeebe8b5c661cda9402202ad049c1a6d04834317a78483f723c205c9f638d17222aafc620800cc1b6ae35",
-		                 "3045022100ef82a405364bfc4007e63a7cc82925a513d79065bdbc216d60b6a4223a323f8a02200716730b8561f3c6d362eaf47f202e99fb30d0557b61b92b5f9134f8e2de3681",
-		                 "02000000000101bef67e4e2fb9ddeeb3461973cd4c62abb35050b1add772995b820b584a488489000000000038b02b80094a010000000000002200202b1b5854183c12d3316565972c4668929d314d81c5dcdbb21cb45fe8a9a8114f4a01000000000000220020e9e86e4823faa62e222ebc858a226636856158f07e69898da3b0d1af0ddb3994e80300000000000022002010f88bf09e56f14fb4543fd26e47b0db50ea5de9cf3fc46434792471082621aed0070000000000002200203e68115ae0b15b8de75b6c6bc9af5ac9f01391544e0870dae443a1e8fe7837ead007000000000000220020fe0598d74fee2205cc3672e6e6647706b4f3099713b4661b62482c3addd04a5eb80b000000000000220020f96d0334feb64a4f40eb272031d07afcb038db56aa57446d60308c9f8ccadef9a00f000000000000220020ce6e751274836ff59622a0d1e07f8831d80bd6730bd48581398bfadd2bb8da9ac0c62d0000000000220020f3394e1e619b0eca1f91be2fb5ab4dfc59ba5b84ebe014ad1d43a564d012994a4f996a00000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0400483045022100ef82a405364bfc4007e63a7cc82925a513d79065bdbc216d60b6a4223a323f8a02200716730b8561f3c6d362eaf47f202e99fb30d0557b61b92b5f9134f8e2de368101483045022100e0106830467a558c07544a3de7715610c1147062e7d091deeebe8b5c661cda9402202ad049c1a6d04834317a78483f723c205c9f638d17222aafc620800cc1b6ae3501475221023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb21030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c152ae3e195220", {
-
-		                  { 0,
-		                  "304402205912d91c58016f593d9e46fefcdb6f4125055c41a17b03101eaaa034b9028ab60220520d4d239c85c66e4c75c5b413620b62736e227659d7821b308e2b8ced3e728e",
-		                  "30440220473166a5adcca68550bab80403f410a726b5bd855030527e3fefa8c1e4b4fd7b02203b1dc91d8d69039473036cb5c34398b99e8eb90ae500c22130a557b62294b188",
-		                  "02000000000101b8cefef62ea66f5178b9361b2371be0759cbc8c689bcfa7a8e6746d497ec221a0200000000010000000122020000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e050047304402205912d91c58016f593d9e46fefcdb6f4125055c41a17b03101eaaa034b9028ab60220520d4d239c85c66e4c75c5b413620b62736e227659d7821b308e2b8ced3e728e834730440220473166a5adcca68550bab80403f410a726b5bd855030527e3fefa8c1e4b4fd7b02203b1dc91d8d69039473036cb5c34398b99e8eb90ae500c22130a557b62294b188012000000000000000000000000000000000000000000000000000000000000000008d76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a914b8bcb07f6344b42ab04250c86a6e8b75d3fdbbc688527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f401b175ac6851b2756800000000" },
-
-		                  { 1,
-		                  "3045022100c6b4113678039ee1e43a6cba5e3224ed2355ffc05e365a393afe8843dc9a76860220566d01fd52d65a89ba8595023884f9e8f2e9a310a6b9b85281c0bce06863430c",
-		                  "3045022100d0d86307ea55d5daa80f453ad6d64b78fe8a6504aac25407c73e8502c0702c1602206a0809a02aa00c8dc4a53d976bb05d4605d8bb0b7b26b973a5c4e2734d8afbb4",
-		                  "02000000000101b8cefef62ea66f5178b9361b2371be0759cbc8c689bcfa7a8e6746d497ec221a0300000000010000000124060000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500483045022100c6b4113678039ee1e43a6cba5e3224ed2355ffc05e365a393afe8843dc9a76860220566d01fd52d65a89ba8595023884f9e8f2e9a310a6b9b85281c0bce06863430c83483045022100d0d86307ea55d5daa80f453ad6d64b78fe8a6504aac25407c73e8502c0702c1602206a0809a02aa00c8dc4a53d976bb05d4605d8bb0b7b26b973a5c4e2734d8afbb401008876a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a914b43e1b38138a41b37f7cd9a1d274bc63e3a9b5d188ac6851b27568f6010000" },
-
-		                  { 2,
-		                  "304402203c3a699fb80a38112aafd73d6e3a9b7d40bc2c3ed8b7fbc182a20f43b215172202204e71821b984d1af52c4b8e2cd4c572578c12a965866130c2345f61e4c2d3fef4",
-		                  "304402205bcfa92f83c69289a412b0b6dd4f2a0fe0b0fc2d45bd74706e963257a09ea24902203783e47883e60b86240e877fcbf33d50b1742f65bc93b3162d1be26583b367ee",
-		                  "02000000000101b8cefef62ea66f5178b9361b2371be0759cbc8c689bcfa7a8e6746d497ec221a040000000001000000010a060000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e050047304402203c3a699fb80a38112aafd73d6e3a9b7d40bc2c3ed8b7fbc182a20f43b215172202204e71821b984d1af52c4b8e2cd4c572578c12a965866130c2345f61e4c2d3fef48347304402205bcfa92f83c69289a412b0b6dd4f2a0fe0b0fc2d45bd74706e963257a09ea24902203783e47883e60b86240e877fcbf33d50b1742f65bc93b3162d1be26583b367ee012001010101010101010101010101010101010101010101010101010101010101018d76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a9144b6b2e5444c2639cc0fb7bcea5afba3f3cdce23988527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f501b175ac6851b2756800000000" },
-
-		                  { 3,
-		                  "304402200f089bcd20f25475216307d32aa5b6c857419624bfba1da07335f51f6ba4645b02206ce0f7153edfba23b0d4b2afc26bb3157d404368cb8ea0ca7cf78590dcdd28cf",
-		                  "3045022100e4516da08f72c7a4f7b2f37aa84a0feb54ae2cc5b73f0da378e81ae0ca8119bf02207751b2628d8e2f62b4b9abccda4866246c1bfcc82e3d416ad562fd212102c28f",
-		                  "02000000000101b8cefef62ea66f5178b9361b2371be0759cbc8c689bcfa7a8e6746d497ec221a050000000001000000010c0a0000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e050047304402200f089bcd20f25475216307d32aa5b6c857419624bfba1da07335f51f6ba4645b02206ce0f7153edfba23b0d4b2afc26bb3157d404368cb8ea0ca7cf78590dcdd28cf83483045022100e4516da08f72c7a4f7b2f37aa84a0feb54ae2cc5b73f0da378e81ae0ca8119bf02207751b2628d8e2f62b4b9abccda4866246c1bfcc82e3d416ad562fd212102c28f01008876a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a9148a486ff2e31d6158bf39e2608864d63fefd09d5b88ac6851b27568f7010000" },
-
-		                  { 4,
-		                  "3045022100aa72cfaf0965020c73a12c77276c6411ca68c4de36ac1998adf86c917a899a43022060da0a159fecfe0bed37c3962d767f12f90e30fed8a8f34b1301775c21a2bd3a",
-		                  "304402203cd12065c2a42963c762e6b1a981e17695616ecb6f9fb33d8b0717cdd7ca0ee4022065500005c491c1dcf2fe9c4024f74b1c90785d572527055a491278f901143904",
-		                  "02000000000101b8cefef62ea66f5178b9361b2371be0759cbc8c689bcfa7a8e6746d497ec221a06000000000100000001da0d0000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500483045022100aa72cfaf0965020c73a12c77276c6411ca68c4de36ac1998adf86c917a899a43022060da0a159fecfe0bed37c3962d767f12f90e30fed8a8f34b1301775c21a2bd3a8347304402203cd12065c2a42963c762e6b1a981e17695616ecb6f9fb33d8b0717cdd7ca0ee4022065500005c491c1dcf2fe9c4024f74b1c90785d572527055a491278f901143904012004040404040404040404040404040404040404040404040404040404040404048d76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a91418bc1a114ccf9c052d3d23e28d3b0a9d1227434288527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f801b175ac6851b2756800000000" }
-		} );
-
 		// commitment tx with six outputs untrimmed (minimum feerate)
 		chan.value_to_self_msat = 6993000000; // 7000000000 - 7000000
 		chan.feerate_per_kw = 648;
@@ -7476,38 +7501,40 @@ mod tests {
 		                  "020000000001010f44041fdfba175987cf4e6135ba2a154e3b7fb96483dc0ed5efc0678e5b6bf103000000000000000001d90d0000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500473044022024cd52e4198c8ae0e414a86d86b5a65ea7450f2eb4e783096736d93395eca5ce022078f0094745b45be4d4b2b04dd5978c9e66ba49109e5704403e84aaf5f387d6be01483045022100bbfb9d0a946d420807c86e985d636cceb16e71c3694ed186316251a00cbd807202207773223f9a337e145f64673825be9b30d07ef1542c82188b264bedcf7cda78c6012004040404040404040404040404040404040404040404040404040404040404048a76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a91418bc1a114ccf9c052d3d23e28d3b0a9d1227434288527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f801b175ac686800000000" }
 		} );
 
-		// anchors: commitment tx with six outputs untrimmed (minimum feerate)
+		// anchors: commitment tx with six outputs untrimmed (minimum dust limit)
 		chan.value_to_self_msat = 6993000000; // 7000000000 - 7000000
 		chan.feerate_per_kw = 645;
+		chan.holder_dust_limit_satoshis = 1001;
 
 		test_commitment_with_anchors!("3044022025d97466c8049e955a5afce28e322f4b34d2561118e52332fb400f9b908cc0a402205dc6fba3a0d67ee142c428c535580cd1f2ff42e2f89b47e0c8a01847caffc312",
 		                 "3045022100d57697c707b6f6d053febf24b98e8989f186eea42e37e9e91663ec2c70bb8f70022079b0715a472118f262f43016a674f59c015d9cafccec885968e76d9d9c5d0051",
 		                 "02000000000101bef67e4e2fb9ddeeb3461973cd4c62abb35050b1add772995b820b584a488489000000000038b02b80084a010000000000002200202b1b5854183c12d3316565972c4668929d314d81c5dcdbb21cb45fe8a9a8114f4a01000000000000220020e9e86e4823faa62e222ebc858a226636856158f07e69898da3b0d1af0ddb3994d0070000000000002200203e68115ae0b15b8de75b6c6bc9af5ac9f01391544e0870dae443a1e8fe7837ead007000000000000220020fe0598d74fee2205cc3672e6e6647706b4f3099713b4661b62482c3addd04a5eb80b000000000000220020f96d0334feb64a4f40eb272031d07afcb038db56aa57446d60308c9f8ccadef9a00f000000000000220020ce6e751274836ff59622a0d1e07f8831d80bd6730bd48581398bfadd2bb8da9ac0c62d0000000000220020f3394e1e619b0eca1f91be2fb5ab4dfc59ba5b84ebe014ad1d43a564d012994abc996a00000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0400483045022100d57697c707b6f6d053febf24b98e8989f186eea42e37e9e91663ec2c70bb8f70022079b0715a472118f262f43016a674f59c015d9cafccec885968e76d9d9c5d005101473044022025d97466c8049e955a5afce28e322f4b34d2561118e52332fb400f9b908cc0a402205dc6fba3a0d67ee142c428c535580cd1f2ff42e2f89b47e0c8a01847caffc31201475221023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb21030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c152ae3e195220", {
 
 		                  { 0,
-		                  "30440220446f9e5c375db6a61d6eeee8b59219a30a4a37372afc2670a1a2889c78e9b943022061895f6088fb48b490ab2140a4842c277b64bf25ff591625dd0356e0c96ab7a8",
-		                  "3045022100c1621ba26a99c263fd885feff5fda5ca2cc73df080b3a49ecf15164ee244d2a5022037f4cc7fd4441af39a83a0e44c3b1db7d64a4c8080e8697f9e952f85421a34d8",
-		                  "02000000000101104f394af4c4fad78337f95e3e9f802f4c0d86ab231853af09b28534856132000200000000010000000123060000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e05004730440220446f9e5c375db6a61d6eeee8b59219a30a4a37372afc2670a1a2889c78e9b943022061895f6088fb48b490ab2140a4842c277b64bf25ff591625dd0356e0c96ab7a883483045022100c1621ba26a99c263fd885feff5fda5ca2cc73df080b3a49ecf15164ee244d2a5022037f4cc7fd4441af39a83a0e44c3b1db7d64a4c8080e8697f9e952f85421a34d801008876a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a914b43e1b38138a41b37f7cd9a1d274bc63e3a9b5d188ac6851b27568f6010000" },
+		                  "3045022100e04d160a326432659fe9fb127304c1d348dfeaba840081bdc57d8efd902a48d8022008a824e7cf5492b97e4d9e03c06a09f822775a44f6b5b2533a2088904abfc282",
+		                  "3045022100b7c49846466b13b190ff739bbe3005c105482fc55539e55b1c561f76b6982b6c02200e5c35808619cf543c8405cff9fedd25f333a4a2f6f6d5e8af8150090c40ef09",
+		                  "02000000000101104f394af4c4fad78337f95e3e9f802f4c0d86ab231853af09b285348561320002000000000100000001d0070000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500483045022100e04d160a326432659fe9fb127304c1d348dfeaba840081bdc57d8efd902a48d8022008a824e7cf5492b97e4d9e03c06a09f822775a44f6b5b2533a2088904abfc28283483045022100b7c49846466b13b190ff739bbe3005c105482fc55539e55b1c561f76b6982b6c02200e5c35808619cf543c8405cff9fedd25f333a4a2f6f6d5e8af8150090c40ef0901008876a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a914b43e1b38138a41b37f7cd9a1d274bc63e3a9b5d188ac6851b27568f6010000" },
 
 		                  { 1,
-		                  "3044022027a3ffcb8a007e3349d75382efbd4b3fb99fcbd479a18555e58697bd1278d5c402205c8303d46211c3ae8975fe84a0df08b4623119fecd03bc93b49d7f7a0c64c710",
-		                  "3045022100b697aca55c6fb15e5348bb7387b584815fd15e8dd306afe0c477cb550d0c2d40022050b0f7e370f7604d2fec781fefe86715dbe95dff4dab88d628f509d62f854de1",
-		                  "02000000000101104f394af4c4fad78337f95e3e9f802f4c0d86ab231853af09b28534856132000300000000010000000109060000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500473044022027a3ffcb8a007e3349d75382efbd4b3fb99fcbd479a18555e58697bd1278d5c402205c8303d46211c3ae8975fe84a0df08b4623119fecd03bc93b49d7f7a0c64c71083483045022100b697aca55c6fb15e5348bb7387b584815fd15e8dd306afe0c477cb550d0c2d40022050b0f7e370f7604d2fec781fefe86715dbe95dff4dab88d628f509d62f854de1012001010101010101010101010101010101010101010101010101010101010101018d76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a9144b6b2e5444c2639cc0fb7bcea5afba3f3cdce23988527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f501b175ac6851b2756800000000" },
+		                  "3045022100fbdc3c367ce3bf30796025cc590ee1f2ce0e72ae1ac19f5986d6d0a4fc76211f02207e45ae9267e8e820d188569604f71d1abd11bd385d58853dd7dc034cdb3e9a6e",
+		                  "3045022100d29330f24db213b262068706099b39c15fa7e070c3fcdf8836c09723fc4d365602203ce57d01e9f28601e461a0b5c4a50119b270bde8b70148d133a6849c70b115ac",
+		                  "02000000000101104f394af4c4fad78337f95e3e9f802f4c0d86ab231853af09b285348561320003000000000100000001d0070000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500483045022100fbdc3c367ce3bf30796025cc590ee1f2ce0e72ae1ac19f5986d6d0a4fc76211f02207e45ae9267e8e820d188569604f71d1abd11bd385d58853dd7dc034cdb3e9a6e83483045022100d29330f24db213b262068706099b39c15fa7e070c3fcdf8836c09723fc4d365602203ce57d01e9f28601e461a0b5c4a50119b270bde8b70148d133a6849c70b115ac012001010101010101010101010101010101010101010101010101010101010101018d76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a9144b6b2e5444c2639cc0fb7bcea5afba3f3cdce23988527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f501b175ac6851b2756800000000" },
 
 		                  { 2,
-		                  "30440220013975ae356e6daf22a86a29f21c4f35aca82ed8f731a1103c60c74f5ed1c5aa02200350d4e5455cdbcacb7ccf174db5bed8286019e509a113f6b4c5e606ee12c9d7",
-		                  "3045022100e69a29f78779577830e73f327073c93168896f1b89432124b7846f5def9cd9cb02204433db3697e6ed7ac89574ca066a749640e0c9e114ac2e0ee4545741fcf7b7e9",
-		                  "02000000000101104f394af4c4fad78337f95e3e9f802f4c0d86ab231853af09b2853485613200040000000001000000010b0a0000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e05004730440220013975ae356e6daf22a86a29f21c4f35aca82ed8f731a1103c60c74f5ed1c5aa02200350d4e5455cdbcacb7ccf174db5bed8286019e509a113f6b4c5e606ee12c9d783483045022100e69a29f78779577830e73f327073c93168896f1b89432124b7846f5def9cd9cb02204433db3697e6ed7ac89574ca066a749640e0c9e114ac2e0ee4545741fcf7b7e901008876a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a9148a486ff2e31d6158bf39e2608864d63fefd09d5b88ac6851b27568f7010000" },
+		                  "3044022066c5ef625cee3ddd2bc7b6bfb354b5834cf1cc6d52dd972fb41b7b225437ae4a022066cb85647df65c6b87a54e416dcdcca778a776c36a9643d2b5dc793c9b29f4c1",
+		                  "304402202d4ce515cd9000ec37575972d70b8d24f73909fb7012e8ebd8c2066ef6fe187902202830b53e64ea565fecd0f398100691da6bb2a5cf9bb0d1926f1d71d05828a11e",
+		                  "02000000000101104f394af4c4fad78337f95e3e9f802f4c0d86ab231853af09b285348561320004000000000100000001b80b0000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500473044022066c5ef625cee3ddd2bc7b6bfb354b5834cf1cc6d52dd972fb41b7b225437ae4a022066cb85647df65c6b87a54e416dcdcca778a776c36a9643d2b5dc793c9b29f4c18347304402202d4ce515cd9000ec37575972d70b8d24f73909fb7012e8ebd8c2066ef6fe187902202830b53e64ea565fecd0f398100691da6bb2a5cf9bb0d1926f1d71d05828a11e01008876a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a9148a486ff2e31d6158bf39e2608864d63fefd09d5b88ac6851b27568f7010000" },
 
 		                  { 3,
-		                  "304402205257017423644c7e831f30bc0c334eecfe66e9a6d2e92d157c5bece576b2be4f022047b21cf8e955e22b7471940563922d1a5852fb95459ca32905c7d46a19141664",
-		                  "304402204f5de65a624e3f757adffb678bd887eb4e656538c5ea7044922f6ee3eed8a06202206ff6f7bfe73b565343cae76131ac658f1a9c60d3ca2343358cda60b9e35f94c8",
-		                  "02000000000101104f394af4c4fad78337f95e3e9f802f4c0d86ab231853af09b285348561320005000000000100000001d90d0000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e050047304402205257017423644c7e831f30bc0c334eecfe66e9a6d2e92d157c5bece576b2be4f022047b21cf8e955e22b7471940563922d1a5852fb95459ca32905c7d46a191416648347304402204f5de65a624e3f757adffb678bd887eb4e656538c5ea7044922f6ee3eed8a06202206ff6f7bfe73b565343cae76131ac658f1a9c60d3ca2343358cda60b9e35f94c8012004040404040404040404040404040404040404040404040404040404040404048d76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a91418bc1a114ccf9c052d3d23e28d3b0a9d1227434288527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f801b175ac6851b2756800000000" }
+		                  "3044022022c7e11595c53ee89a57ca76baf0aed730da035952d6ab3fe6459f5eff3b337a022075e10cc5f5fd724a35ce4087a5d03cd616698626c69814032132b50bb97dc615",
+		                  "3045022100b20cd63e0587d1711beaebda4730775c4ac8b8b2ec78fe18a0c44c3f168c25230220079abb7fc4924e2fca5950842e5b9e416735585026914570078c4ef62f286226",
+		                  "02000000000101104f394af4c4fad78337f95e3e9f802f4c0d86ab231853af09b285348561320005000000000100000001a00f0000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500473044022022c7e11595c53ee89a57ca76baf0aed730da035952d6ab3fe6459f5eff3b337a022075e10cc5f5fd724a35ce4087a5d03cd616698626c69814032132b50bb97dc61583483045022100b20cd63e0587d1711beaebda4730775c4ac8b8b2ec78fe18a0c44c3f168c25230220079abb7fc4924e2fca5950842e5b9e416735585026914570078c4ef62f286226012004040404040404040404040404040404040404040404040404040404040404048d76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a91418bc1a114ccf9c052d3d23e28d3b0a9d1227434288527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f801b175ac6851b2756800000000" }
 		} );
 
 		// commitment tx with six outputs untrimmed (maximum feerate)
 		chan.value_to_self_msat = 6993000000; // 7000000000 - 7000000
 		chan.feerate_per_kw = 2069;
+		chan.holder_dust_limit_satoshis = 546;
 
 		test_commitment!("304502210090b96a2498ce0c0f2fadbec2aab278fed54c1a7838df793ec4d2c78d96ec096202204fdd439c50f90d483baa7b68feeef4bd33bc277695405447bcd0bfb2ca34d7bc",
 		                 "3045022100ad9a9bbbb75d506ca3b716b336ee3cf975dd7834fcf129d7dd188146eb58a8b4022061a759ee417339f7fe2ea1e8deb83abb6a74db31a09b7648a932a639cda23e33",
@@ -7534,35 +7561,6 @@ mod tests {
 		                  "02000000000101adbe717a63fb658add30ada1e6e12ed257637581898abe475c11d7bbcd65bd4d03000000000000000001f2090000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e050047304402207475aeb0212ef9bf5130b60937817ad88c9a87976988ef1f323f026148cc4a850220739fea17ad3257dcad72e509c73eebe86bee30b178467b9fdab213d631b109df01483045022100d315522e09e7d53d2a659a79cb67fef56d6c4bddf3f46df6772d0d20a7beb7c8022070bcc17e288607b6a72be0bd83368bb6d53488db266c1cdb4d72214e4f02ac33012004040404040404040404040404040404040404040404040404040404040404048a76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a91418bc1a114ccf9c052d3d23e28d3b0a9d1227434288527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f801b175ac686800000000" }
 		} );
 
-		// anchors: commitment tx with six outputs untrimmed (maximum feerate)
-		chan.value_to_self_msat = 6993000000; // 7000000000 - 7000000
-		chan.feerate_per_kw = 2060;
-
-		test_commitment_with_anchors!("304402206208aeb34e404bd052ce3f298dfa832891c9d42caec99fe2a0d2832e9690b94302201b034bfcc6fa9faec667a9b7cbfe0b8d85e954aa239b66277887b5088aff08c3",
-		                 "304402201ce37a44b95213358c20f44404d6db7a6083bea6f58de6c46547ae41a47c9f8202206db1d45be41373e92f90d346381febbea8c78671b28c153e30ad1db3441a9497",
-		                 "02000000000101bef67e4e2fb9ddeeb3461973cd4c62abb35050b1add772995b820b584a488489000000000038b02b80084a010000000000002200202b1b5854183c12d3316565972c4668929d314d81c5dcdbb21cb45fe8a9a8114f4a01000000000000220020e9e86e4823faa62e222ebc858a226636856158f07e69898da3b0d1af0ddb3994d0070000000000002200203e68115ae0b15b8de75b6c6bc9af5ac9f01391544e0870dae443a1e8fe7837ead007000000000000220020fe0598d74fee2205cc3672e6e6647706b4f3099713b4661b62482c3addd04a5eb80b000000000000220020f96d0334feb64a4f40eb272031d07afcb038db56aa57446d60308c9f8ccadef9a00f000000000000220020ce6e751274836ff59622a0d1e07f8831d80bd6730bd48581398bfadd2bb8da9ac0c62d0000000000220020f3394e1e619b0eca1f91be2fb5ab4dfc59ba5b84ebe014ad1d43a564d012994ab88f6a00000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e040047304402201ce37a44b95213358c20f44404d6db7a6083bea6f58de6c46547ae41a47c9f8202206db1d45be41373e92f90d346381febbea8c78671b28c153e30ad1db3441a94970147304402206208aeb34e404bd052ce3f298dfa832891c9d42caec99fe2a0d2832e9690b94302201b034bfcc6fa9faec667a9b7cbfe0b8d85e954aa239b66277887b5088aff08c301475221023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb21030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c152ae3e195220", {
-
-		                  { 0,
-		                  "30440220011f999016570bbab9f3125377d0f35096b4dbe155f97c20f71829ead2817d1602201f23f7e17f6928734601c5d8613431eed5c90aa41c3106e8c1cb02ce32aacb5d",
-		                  "3044022017da96dfb0eb4061fa0162dc6fa6b2e07ecc5040ab5e6cb07be59838460b3e58022079371ffc95002cc1dc2891ec38198c9c25aca8164304fe114f1b55e2ffd1ddd5",
-		                  "02000000000101e7f364cf3a554b670767e723ef14b2af7a3eac70bd79dbde9256f384369c062d0200000000010000000175020000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e05004730440220011f999016570bbab9f3125377d0f35096b4dbe155f97c20f71829ead2817d1602201f23f7e17f6928734601c5d8613431eed5c90aa41c3106e8c1cb02ce32aacb5d83473044022017da96dfb0eb4061fa0162dc6fa6b2e07ecc5040ab5e6cb07be59838460b3e58022079371ffc95002cc1dc2891ec38198c9c25aca8164304fe114f1b55e2ffd1ddd501008876a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a914b43e1b38138a41b37f7cd9a1d274bc63e3a9b5d188ac6851b27568f6010000" },
-
-		                  { 1,
-		                  "304402202d2d9681409b0a0987bd4a268ffeb112df85c4c988ac2a3a2475cb00a61912c302206aa4f4d1388b7d3282bc847871af3cca30766cc8f1064e3a41ec7e82221e10f7",
-		                  "304402206426d67911aa6ff9b1cb147b093f3f65a37831a86d7c741d999afc0666e1773d022000bb71821650c70ea58d9bcdd03af736c41a5a8159d436c3ee0408a07394dcce",
-		                  "02000000000101e7f364cf3a554b670767e723ef14b2af7a3eac70bd79dbde9256f384369c062d0300000000010000000122020000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e050047304402202d2d9681409b0a0987bd4a268ffeb112df85c4c988ac2a3a2475cb00a61912c302206aa4f4d1388b7d3282bc847871af3cca30766cc8f1064e3a41ec7e82221e10f78347304402206426d67911aa6ff9b1cb147b093f3f65a37831a86d7c741d999afc0666e1773d022000bb71821650c70ea58d9bcdd03af736c41a5a8159d436c3ee0408a07394dcce012001010101010101010101010101010101010101010101010101010101010101018d76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a9144b6b2e5444c2639cc0fb7bcea5afba3f3cdce23988527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f501b175ac6851b2756800000000" },
-
-		                  { 2,
-		                  "3045022100f51cdaa525b7d4304548c642bb7945215eb5ae7d32874517cde67ca23ab0a12202206286d59e4b19926c6ac844be6f3ab8149a1ddb9c70f5026b7e83e40a6c08e6e1",
-		                  "304502210091b16b1ac63b867e7a5ca0344f7b2aa1cdd49d4b72eac86a31e7ec6f069e20640220402bfb571ba3a9c49e3b0061c89303453803d0241059d899222aaac4799b5076",
-		                  "02000000000101e7f364cf3a554b670767e723ef14b2af7a3eac70bd79dbde9256f384369c062d040000000001000000015d060000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500483045022100f51cdaa525b7d4304548c642bb7945215eb5ae7d32874517cde67ca23ab0a12202206286d59e4b19926c6ac844be6f3ab8149a1ddb9c70f5026b7e83e40a6c08e6e18348304502210091b16b1ac63b867e7a5ca0344f7b2aa1cdd49d4b72eac86a31e7ec6f069e20640220402bfb571ba3a9c49e3b0061c89303453803d0241059d899222aaac4799b507601008876a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a9148a486ff2e31d6158bf39e2608864d63fefd09d5b88ac6851b27568f7010000" },
-
-		                  { 3,
-		                  "304402202f058d99cb5a54f90773d43ba4e7a0089efd9f8269ef2da1b85d48a3e230555402205acc4bd6561830867d45cd7b84bba9fa35ad2b345016471c1737142bc99782c4",
-		                  "304402202913f9cacea54efd2316cffa91219def9e0e111977216c1e76e9da80befab14f022000a9a69e8f37ebe4a39107ab50fab0dde537334588f8f412bbaca57b179b87a6",
-		                  "02000000000101e7f364cf3a554b670767e723ef14b2af7a3eac70bd79dbde9256f384369c062d05000000000100000001f2090000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e050047304402202f058d99cb5a54f90773d43ba4e7a0089efd9f8269ef2da1b85d48a3e230555402205acc4bd6561830867d45cd7b84bba9fa35ad2b345016471c1737142bc99782c48347304402202913f9cacea54efd2316cffa91219def9e0e111977216c1e76e9da80befab14f022000a9a69e8f37ebe4a39107ab50fab0dde537334588f8f412bbaca57b179b87a6012004040404040404040404040404040404040404040404040404040404040404048d76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a91418bc1a114ccf9c052d3d23e28d3b0a9d1227434288527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f801b175ac6851b2756800000000" }
-		} );
-
 		// commitment tx with five outputs untrimmed (minimum feerate)
 		chan.value_to_self_msat = 6993000000; // 7000000000 - 7000000
 		chan.feerate_per_kw = 2070;
@@ -7585,30 +7583,6 @@ mod tests {
 		                  "3045022100ae5fc7717ae684bc1fcf9020854e5dbe9842c9e7472879ac06ff95ac2bb10e4e022057728ada4c00083a3e65493fb5d50a232165948a1a0f530ef63185c2c8c56504",
 		                  "30440220408ad3009827a8fccf774cb285587686bfb2ed041f89a89453c311ce9c8ee0f902203c7392d9f8306d3a46522a66bd2723a7eb2628cb2d9b34d4c104f1766bf37502",
 		                  "02000000000101403ad7602b43293497a3a2235a12ecefda4f3a1f1d06e49b1786d945685de1ff02000000000000000001f1090000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500483045022100ae5fc7717ae684bc1fcf9020854e5dbe9842c9e7472879ac06ff95ac2bb10e4e022057728ada4c00083a3e65493fb5d50a232165948a1a0f530ef63185c2c8c56504014730440220408ad3009827a8fccf774cb285587686bfb2ed041f89a89453c311ce9c8ee0f902203c7392d9f8306d3a46522a66bd2723a7eb2628cb2d9b34d4c104f1766bf37502012004040404040404040404040404040404040404040404040404040404040404048a76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a91418bc1a114ccf9c052d3d23e28d3b0a9d1227434288527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f801b175ac686800000000" }
-		} );
-
-		// anchors: commitment tx with five outputs untrimmed (minimum feerate)
-		chan.value_to_self_msat = 6993000000; // 7000000000 - 7000000
-		chan.feerate_per_kw = 2061;
-
-		test_commitment_with_anchors!("3045022100a2faf2ad7e323b2a82e07dc40b6847207ca6ad7b089f2c21dea9a4d37e52d59d02204c9480ce0358eb51d92a4342355a97e272e3cc45f86c612a76a3fe32fc3c4cb4",
-		                 "304402204ab07c659412dd2cd6043b1ad811ab215e901b6b5653e08cb3d2fe63d3e3dc57022031c7b3d130f9380ef09581f4f5a15cb6f359a2e0a597146b96c3533a26d6f4cd",
-		                 "02000000000101bef67e4e2fb9ddeeb3461973cd4c62abb35050b1add772995b820b584a488489000000000038b02b80074a010000000000002200202b1b5854183c12d3316565972c4668929d314d81c5dcdbb21cb45fe8a9a8114f4a01000000000000220020e9e86e4823faa62e222ebc858a226636856158f07e69898da3b0d1af0ddb3994d0070000000000002200203e68115ae0b15b8de75b6c6bc9af5ac9f01391544e0870dae443a1e8fe7837eab80b000000000000220020f96d0334feb64a4f40eb272031d07afcb038db56aa57446d60308c9f8ccadef9a00f000000000000220020ce6e751274836ff59622a0d1e07f8831d80bd6730bd48581398bfadd2bb8da9ac0c62d0000000000220020f3394e1e619b0eca1f91be2fb5ab4dfc59ba5b84ebe014ad1d43a564d012994a18916a00000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e040047304402204ab07c659412dd2cd6043b1ad811ab215e901b6b5653e08cb3d2fe63d3e3dc57022031c7b3d130f9380ef09581f4f5a15cb6f359a2e0a597146b96c3533a26d6f4cd01483045022100a2faf2ad7e323b2a82e07dc40b6847207ca6ad7b089f2c21dea9a4d37e52d59d02204c9480ce0358eb51d92a4342355a97e272e3cc45f86c612a76a3fe32fc3c4cb401475221023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb21030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c152ae3e195220", {
-
-		                  { 0,
-		                  "3045022100e10744f572a2cd1d787c969e894b792afaed21217ee0480df0112d2fa3ef96ea02202af4f66eb6beebc36d8e98719ed6b4be1b181659fcb561fc491d8cfebff3aa85",
-		                  "3045022100c3dc3ea50a0ca20e350f97b50c52c5514717cfa36cb9600918caac5cb556842b022049af018d676dde0c8e28ecf325f3ff5c1594261c4f7511d501f9d62d0594d2a2",
-		                  "02000000000101cf32732fe2d1387ed4e2335f69ddd3c0f337dabc03269e742531f89d35e161d10200000000010000000174020000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500483045022100e10744f572a2cd1d787c969e894b792afaed21217ee0480df0112d2fa3ef96ea02202af4f66eb6beebc36d8e98719ed6b4be1b181659fcb561fc491d8cfebff3aa8583483045022100c3dc3ea50a0ca20e350f97b50c52c5514717cfa36cb9600918caac5cb556842b022049af018d676dde0c8e28ecf325f3ff5c1594261c4f7511d501f9d62d0594d2a201008876a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a914b43e1b38138a41b37f7cd9a1d274bc63e3a9b5d188ac6851b27568f6010000" },
-
-		                  { 1,
-		                  "3045022100e1f51fb72fec604b029b348a3bb6363454e1869f5b1e24fd736f860c8039f8070220030a2c90186437d8c9b47d4897798c024521b1274991c4cdc125970b346094b1",
-		                  "3045022100ec7ade6037e531629f24390ca9713782a04d648065d17fbe6b015981cdb296c202202d61049a6ecba2fb5314f3edcda2361cad187a89bea6e5d15185354d80c0c085",
-		                  "02000000000101cf32732fe2d1387ed4e2335f69ddd3c0f337dabc03269e742531f89d35e161d1030000000001000000015c060000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500483045022100e1f51fb72fec604b029b348a3bb6363454e1869f5b1e24fd736f860c8039f8070220030a2c90186437d8c9b47d4897798c024521b1274991c4cdc125970b346094b183483045022100ec7ade6037e531629f24390ca9713782a04d648065d17fbe6b015981cdb296c202202d61049a6ecba2fb5314f3edcda2361cad187a89bea6e5d15185354d80c0c08501008876a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a9148a486ff2e31d6158bf39e2608864d63fefd09d5b88ac6851b27568f7010000" },
-
-		                  { 2,
-		                  "304402203479f81a1d83c516957679dc98bf91d35deada967739a8e3869e3e8db08246130220053c8e154b97e3019048dcec3d51bfaf396f36861fbda6d33f0e2a57155c8b9f",
-		                  "3045022100a558eb5caa04e35a4417c1f0123ac12eec5f6badee28f5764dc6b69486e594f802201589b12784e242f205832d2d032149bd4e79433ec304c05394241fc7dcba5a71",
-		                  "02000000000101cf32732fe2d1387ed4e2335f69ddd3c0f337dabc03269e742531f89d35e161d104000000000100000001f1090000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e050047304402203479f81a1d83c516957679dc98bf91d35deada967739a8e3869e3e8db08246130220053c8e154b97e3019048dcec3d51bfaf396f36861fbda6d33f0e2a57155c8b9f83483045022100a558eb5caa04e35a4417c1f0123ac12eec5f6badee28f5764dc6b69486e594f802201589b12784e242f205832d2d032149bd4e79433ec304c05394241fc7dcba5a71012004040404040404040404040404040404040404040404040404040404040404048d76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a91418bc1a114ccf9c052d3d23e28d3b0a9d1227434288527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f801b175ac6851b2756800000000" }
 		} );
 
 		// commitment tx with five outputs untrimmed (maximum feerate)
@@ -7635,30 +7609,6 @@ mod tests {
 		                  "02000000000101153cd825fdb3aa624bfe513e8031d5d08c5e582fb3d1d1fe8faf27d3eed410cd020000000000000000019a090000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500483045022100c9e6f0454aa598b905a35e641a70cc9f67b5f38cc4b00843a041238c4a9f1c4a0220260a2822a62da97e44583e837245995ca2e36781769c52f19e498efbdcca262b014830450221008a9f2ea24cd455c2b64c1472a5fa83865b0a5f49a62b661801e884cf2849af8302204d44180e50bf6adfcf1c1e581d75af91aba4e28681ce4a5ee5f3cbf65eca10f3012004040404040404040404040404040404040404040404040404040404040404048a76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a91418bc1a114ccf9c052d3d23e28d3b0a9d1227434288527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f801b175ac686800000000" }
 		} );
 
-		// anchors: commitment tx with five outputs untrimmed (maximum feerate)
-		chan.value_to_self_msat = 6993000000; // 7000000000 - 7000000
-		chan.feerate_per_kw = 2184;
-
-		test_commitment_with_anchors!("3044022013d326f80ff7607cf366c823fcbbcb7a2b10322484825f151e6c4c756af24b8f02201ba05b9d8beb7cea2947f9f4d9e03f90435e93db2dd48b32eb9ca3f3dd042c79",
-		                 "30440220555c05261f72c5b4702d5c83a608630822b473048724b08640d6e75e345094250220448950b74a96a56963928ba5db8b457661a742c855e69d239b3b6ab73de307a3",
-		                 "02000000000101bef67e4e2fb9ddeeb3461973cd4c62abb35050b1add772995b820b584a488489000000000038b02b80074a010000000000002200202b1b5854183c12d3316565972c4668929d314d81c5dcdbb21cb45fe8a9a8114f4a01000000000000220020e9e86e4823faa62e222ebc858a226636856158f07e69898da3b0d1af0ddb3994d0070000000000002200203e68115ae0b15b8de75b6c6bc9af5ac9f01391544e0870dae443a1e8fe7837eab80b000000000000220020f96d0334feb64a4f40eb272031d07afcb038db56aa57446d60308c9f8ccadef9a00f000000000000220020ce6e751274836ff59622a0d1e07f8831d80bd6730bd48581398bfadd2bb8da9ac0c62d0000000000220020f3394e1e619b0eca1f91be2fb5ab4dfc59ba5b84ebe014ad1d43a564d012994a4f906a00000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e04004730440220555c05261f72c5b4702d5c83a608630822b473048724b08640d6e75e345094250220448950b74a96a56963928ba5db8b457661a742c855e69d239b3b6ab73de307a301473044022013d326f80ff7607cf366c823fcbbcb7a2b10322484825f151e6c4c756af24b8f02201ba05b9d8beb7cea2947f9f4d9e03f90435e93db2dd48b32eb9ca3f3dd042c7901475221023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb21030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c152ae3e195220", {
-
-		                  { 0,
-		                  "304402202e03ba1390998b3487e9a7fefcb66814c09abea0ef1bcc915dbaefbcf310569a02206bd10493a105ac69048e9bcedcb8e3301ef81b55018d911a4afd297297f98d30",
-		                  "304402200c3952ca04be0c60dcc0b7873a0829f560607524943554ae4a27d8d967166199022021a68657b88e22f9bf9ac6065be412685aff643d17049f04f2e99e86197dabb1",
-		                  "020000000001015b03043e20eb467029305a22af4c3b915e793743f192c5d225cf1d3c6e8c03010200000000010000000122020000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e050047304402202e03ba1390998b3487e9a7fefcb66814c09abea0ef1bcc915dbaefbcf310569a02206bd10493a105ac69048e9bcedcb8e3301ef81b55018d911a4afd297297f98d308347304402200c3952ca04be0c60dcc0b7873a0829f560607524943554ae4a27d8d967166199022021a68657b88e22f9bf9ac6065be412685aff643d17049f04f2e99e86197dabb101008876a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a914b43e1b38138a41b37f7cd9a1d274bc63e3a9b5d188ac6851b27568f6010000" },
-
-		                  { 1,
-		                  "304402201f8a6adda2403bc400c919ea69d72d315337291e00d02cde085ea32953dbc50002202d65230da98df7af8ebefd2b60b457d0945232988ee2d7460a94a77d414a9acc",
-		                  "3045022100ea69c9273b8914ac62b5b7082d6ac1da2b7b065ebf2ef3cd6403f5305ce3f26802203d98736ea97638895a898dfcc5ee0d0c55eb496b3964df0bb25d223688ea8b87",
-		                  "020000000001015b03043e20eb467029305a22af4c3b915e793743f192c5d225cf1d3c6e8c0301030000000001000000010a060000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e050047304402201f8a6adda2403bc400c919ea69d72d315337291e00d02cde085ea32953dbc50002202d65230da98df7af8ebefd2b60b457d0945232988ee2d7460a94a77d414a9acc83483045022100ea69c9273b8914ac62b5b7082d6ac1da2b7b065ebf2ef3cd6403f5305ce3f26802203d98736ea97638895a898dfcc5ee0d0c55eb496b3964df0bb25d223688ea8b8701008876a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a9148a486ff2e31d6158bf39e2608864d63fefd09d5b88ac6851b27568f7010000" },
-
-		                  { 2,
-		                  "3045022100ea6e4c9b8f56dd9cf5799492a201cdd65b8bc9bc089c3cff34107896ae313f90022034760f7760975cc68e8917a7f62894e25583da7be11af557c4fc402661d0cbf8",
-		                  "30440220717012f2f7ef6cac590aaf66c2109132c93ffba245959ac62d82e394ba80191302203f00fd9cb37c92c6b0ad4b33e62c3e55b04e5c2cfa0adcca5a9bc49774eeca8a",
-		                  "020000000001015b03043e20eb467029305a22af4c3b915e793743f192c5d225cf1d3c6e8c0301040000000001000000019b090000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500483045022100ea6e4c9b8f56dd9cf5799492a201cdd65b8bc9bc089c3cff34107896ae313f90022034760f7760975cc68e8917a7f62894e25583da7be11af557c4fc402661d0cbf8834730440220717012f2f7ef6cac590aaf66c2109132c93ffba245959ac62d82e394ba80191302203f00fd9cb37c92c6b0ad4b33e62c3e55b04e5c2cfa0adcca5a9bc49774eeca8a012004040404040404040404040404040404040404040404040404040404040404048d76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a91418bc1a114ccf9c052d3d23e28d3b0a9d1227434288527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f801b175ac6851b2756800000000" }
-		} );
-
 		// commitment tx with four outputs untrimmed (minimum feerate)
 		chan.value_to_self_msat = 6993000000; // 7000000000 - 7000000
 		chan.feerate_per_kw = 2195;
@@ -7678,28 +7628,30 @@ mod tests {
 		                  "020000000001018130a10f09b13677ba2885a8bca32860f3a952e5912b829a473639b5a2c07b900100000000000000000199090000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500483045022100d193b7ecccad8057571620a0b1ffa6c48e9483311723b59cf536043b20bc51550220546d4bd37b3b101ecda14f6c907af46ec391abce1cd9c7ce22b1a62b534f2f2a01473044022014d66f11f9cacf923807eba49542076c5fe5cccf252fb08fe98c78ef3ca6ab5402201b290dbe043cc512d9d78de074a5a129b8759bc6a6c546b190d120b690bd6e82012004040404040404040404040404040404040404040404040404040404040404048a76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a91418bc1a114ccf9c052d3d23e28d3b0a9d1227434288527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f801b175ac686800000000" }
 		} );
 
-		// anchors: commitment tx with four outputs untrimmed (minimum feerate)
+		// anchors: commitment tx with four outputs untrimmed (minimum dust limit)
 		chan.value_to_self_msat = 6993000000; // 7000000000 - 7000000
 		chan.feerate_per_kw = 2185;
+		chan.holder_dust_limit_satoshis = 2001;
 
 		test_commitment_with_anchors!("3044022040f63a16148cf35c8d3d41827f5ae7f7c3746885bb64d4d1b895892a83812b3e02202fcf95c2bf02c466163b3fa3ced6a24926fbb4035095a96842ef516e86ba54c0",
 		                 "3045022100cd8479cfe1edb1e5a1d487391e0451a469c7171e51e680183f19eb4321f20e9b02204eab7d5a6384b1b08e03baa6e4d9748dfd2b5ab2bae7e39604a0d0055bbffdd5",
 		                 "02000000000101bef67e4e2fb9ddeeb3461973cd4c62abb35050b1add772995b820b584a488489000000000038b02b80064a010000000000002200202b1b5854183c12d3316565972c4668929d314d81c5dcdbb21cb45fe8a9a8114f4a01000000000000220020e9e86e4823faa62e222ebc858a226636856158f07e69898da3b0d1af0ddb3994b80b000000000000220020f96d0334feb64a4f40eb272031d07afcb038db56aa57446d60308c9f8ccadef9a00f000000000000220020ce6e751274836ff59622a0d1e07f8831d80bd6730bd48581398bfadd2bb8da9ac0c62d0000000000220020f3394e1e619b0eca1f91be2fb5ab4dfc59ba5b84ebe014ad1d43a564d012994ac5916a00000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0400483045022100cd8479cfe1edb1e5a1d487391e0451a469c7171e51e680183f19eb4321f20e9b02204eab7d5a6384b1b08e03baa6e4d9748dfd2b5ab2bae7e39604a0d0055bbffdd501473044022040f63a16148cf35c8d3d41827f5ae7f7c3746885bb64d4d1b895892a83812b3e02202fcf95c2bf02c466163b3fa3ced6a24926fbb4035095a96842ef516e86ba54c001475221023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb21030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c152ae3e195220", {
 
 		                  { 0,
-		                  "304502210094480e38afb41d10fae299224872f19c53abe23c7033a1c0642c48713e7863a10220726dd9456407682667dc4bd9c66975acb3744961770b5002f7eb9c0df9ef2f3e",
-		                  "304402203148dac61513dc0361738cba30cb341a1e580f8acd5ab0149bf65bd670688cf002207e5d9a0fcbbea2c263bc714fa9e9c44d7f582ea447f366119fc614a23de32f1f",
-		                  "02000000000101ac13a7715f80b8e52dda43c6929cade5521bdced3a405da02b443f1ffb1e33cc0200000000010000000109060000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e050048304502210094480e38afb41d10fae299224872f19c53abe23c7033a1c0642c48713e7863a10220726dd9456407682667dc4bd9c66975acb3744961770b5002f7eb9c0df9ef2f3e8347304402203148dac61513dc0361738cba30cb341a1e580f8acd5ab0149bf65bd670688cf002207e5d9a0fcbbea2c263bc714fa9e9c44d7f582ea447f366119fc614a23de32f1f01008876a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a9148a486ff2e31d6158bf39e2608864d63fefd09d5b88ac6851b27568f7010000" },
+		                  "304402206870514a72ad6e723ff7f1e0370d7a33c1cd2a0b9272674143ebaf6a1d02dee102205bd953c34faf5e7322e9a1c0103581cb090280fda4f1039ee8552668afa90ebb",
+		                  "30440220669de9ca7910eff65a7773ebd14a9fc371fe88cde5b8e2a81609d85c87ac939b02201ac29472fa4067322e92d75b624942d60be5050139b20bb363db75be79eb946f",
+		                  "02000000000101ac13a7715f80b8e52dda43c6929cade5521bdced3a405da02b443f1ffb1e33cc02000000000100000001b80b0000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e050047304402206870514a72ad6e723ff7f1e0370d7a33c1cd2a0b9272674143ebaf6a1d02dee102205bd953c34faf5e7322e9a1c0103581cb090280fda4f1039ee8552668afa90ebb834730440220669de9ca7910eff65a7773ebd14a9fc371fe88cde5b8e2a81609d85c87ac939b02201ac29472fa4067322e92d75b624942d60be5050139b20bb363db75be79eb946f01008876a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a9148a486ff2e31d6158bf39e2608864d63fefd09d5b88ac6851b27568f7010000" },
 
 		                  { 1,
-		                  "304402200dbde868dbc20c6a2433fe8979ba5e3f966b1c2d1aeb615f1c42e9c938b3495402202eec5f663c8b601c2061c1453d35de22597c137d1907a2feaf714d551035cb6e",
-		                  "3045022100b896bded41d7feac7af25c19e35c53037c53b50e73cfd01eb4ba139c7fdf231602203a3be049d3d89396c4dc766d82ce31e237da8bc3a93e2c7d35992d1932d9cfeb",
-		                  "02000000000101ac13a7715f80b8e52dda43c6929cade5521bdced3a405da02b443f1ffb1e33cc030000000001000000019a090000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e050047304402200dbde868dbc20c6a2433fe8979ba5e3f966b1c2d1aeb615f1c42e9c938b3495402202eec5f663c8b601c2061c1453d35de22597c137d1907a2feaf714d551035cb6e83483045022100b896bded41d7feac7af25c19e35c53037c53b50e73cfd01eb4ba139c7fdf231602203a3be049d3d89396c4dc766d82ce31e237da8bc3a93e2c7d35992d1932d9cfeb012004040404040404040404040404040404040404040404040404040404040404048d76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a91418bc1a114ccf9c052d3d23e28d3b0a9d1227434288527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f801b175ac6851b2756800000000" }
+		                  "3045022100949e8dd938da56445b1cdfdebe1b7efea086edd05d89910d205a1e2e033ce47102202cbd68b5262ab144d9ec12653f87dfb0bb6bd05d1f58ae1e523f028eaefd7271",
+		                  "3045022100e3104ed8b239f8019e5f0a1a73d7782a94a8c36e7984f476c3a0b3cb0e62e27902207e3d52884600985f8a2098e53a5c30dd6a5e857733acfaa07ab2162421ed2688",
+		                  "02000000000101ac13a7715f80b8e52dda43c6929cade5521bdced3a405da02b443f1ffb1e33cc03000000000100000001a00f0000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500483045022100949e8dd938da56445b1cdfdebe1b7efea086edd05d89910d205a1e2e033ce47102202cbd68b5262ab144d9ec12653f87dfb0bb6bd05d1f58ae1e523f028eaefd727183483045022100e3104ed8b239f8019e5f0a1a73d7782a94a8c36e7984f476c3a0b3cb0e62e27902207e3d52884600985f8a2098e53a5c30dd6a5e857733acfaa07ab2162421ed2688012004040404040404040404040404040404040404040404040404040404040404048d76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a91418bc1a114ccf9c052d3d23e28d3b0a9d1227434288527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f801b175ac6851b2756800000000" }
 		} );
 
 		// commitment tx with four outputs untrimmed (maximum feerate)
 		chan.value_to_self_msat = 6993000000; // 7000000000 - 7000000
 		chan.feerate_per_kw = 3702;
+		chan.holder_dust_limit_satoshis = 546;
 
 		test_commitment!("304502210092a587aeb777f869e7ff0d7898ea619ee26a3dacd1f3672b945eea600be431100220077ee9eae3528d15251f2a52b607b189820e57a6ccfac8d1af502b132ee40169",
 		                 "3045022100e5efb73c32d32da2d79702299b6317de6fb24a60476e3855926d78484dd1b3c802203557cb66a42c944ef06e00bcc4da35a5bcb2f185aab0f8e403e519e1d66aaf75",
@@ -7716,25 +7668,6 @@ mod tests {
 		                  "020000000001018db483bff65c70ee71d8282aeec5a880e2e2b39e45772bda5460403095c62e3f0100000000000000000176050000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500473044022057649739b0eb74d541ead0dfdb3d4b2c15aa192720031044c3434c67812e5ca902201e5ede42d960ae551707f4a6b34b09393cf4dee2418507daa022e3550dbb58170147304402207faad26678c8850e01b4a0696d60841f7305e1832b786110ee9075cb92ed14a30220516ef8ee5dfa80824ea28cbcec0dd95f8b847146257c16960db98507db15ffdc012004040404040404040404040404040404040404040404040404040404040404048a76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a91418bc1a114ccf9c052d3d23e28d3b0a9d1227434288527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f801b175ac686800000000" }
 		} );
 
-		// anchors: commitment tx with four outputs untrimmed (maximum feerate)
-		chan.value_to_self_msat = 6993000000; // 7000000000 - 7000000
-		chan.feerate_per_kw = 3686;
-
-		test_commitment_with_anchors!("30440220784485cf7a0ad7979daf2c858ffdaf5298d0020cea7aea466843e7948223bd9902206031b81d25e02a178c64e62f843577fdcdfc7a1decbbfb54cd895de692df85ca",
-		                 "3045022100c268496aad5c3f97f25cf41c1ba5483a12982de29b222051b6de3daa2229413b02207f3c82d77a2c14f0096ed9bb4c34649483bb20fa71f819f71af44de6593e8bb2",
-		                 "02000000000101bef67e4e2fb9ddeeb3461973cd4c62abb35050b1add772995b820b584a488489000000000038b02b80064a010000000000002200202b1b5854183c12d3316565972c4668929d314d81c5dcdbb21cb45fe8a9a8114f4a01000000000000220020e9e86e4823faa62e222ebc858a226636856158f07e69898da3b0d1af0ddb3994b80b000000000000220020f96d0334feb64a4f40eb272031d07afcb038db56aa57446d60308c9f8ccadef9a00f000000000000220020ce6e751274836ff59622a0d1e07f8831d80bd6730bd48581398bfadd2bb8da9ac0c62d0000000000220020f3394e1e619b0eca1f91be2fb5ab4dfc59ba5b84ebe014ad1d43a564d012994a29896a00000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0400483045022100c268496aad5c3f97f25cf41c1ba5483a12982de29b222051b6de3daa2229413b02207f3c82d77a2c14f0096ed9bb4c34649483bb20fa71f819f71af44de6593e8bb2014730440220784485cf7a0ad7979daf2c858ffdaf5298d0020cea7aea466843e7948223bd9902206031b81d25e02a178c64e62f843577fdcdfc7a1decbbfb54cd895de692df85ca01475221023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb21030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c152ae3e195220", {
-
-		                  { 0,
-		                  "304402202cfe6618926ca9f1574f8c4659b425e9790b4677ba2248d77901290806130ffe02204ab37bb0287abcdb8b750b018d41a09effe37cb65ff801fa70d3f1a416599841",
-		                  "3044022030b318139715e3b34f19be852cc01c1c0e1599e8b926a73df2bfb70dd186ddee022062a2b7398aed9f563b4014da04a1a99debd0ff663ceece68a547df5982dc2d72",
-		                  "020000000001012c32e55722e4b96324d8e5b398d583a20780b25202816adc32dc3157dee731c90200000000010000000122020000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e050047304402202cfe6618926ca9f1574f8c4659b425e9790b4677ba2248d77901290806130ffe02204ab37bb0287abcdb8b750b018d41a09effe37cb65ff801fa70d3f1a41659984183473044022030b318139715e3b34f19be852cc01c1c0e1599e8b926a73df2bfb70dd186ddee022062a2b7398aed9f563b4014da04a1a99debd0ff663ceece68a547df5982dc2d7201008876a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a9148a486ff2e31d6158bf39e2608864d63fefd09d5b88ac6851b27568f7010000" },
-
-		                  { 1,
-		                  "30440220687af8544d335376620a6f4b5412bfd0da48de047c1785674f26e669d4a3ff82022058591c1e3a6c50017427d38a8f756eb685bdab88ec73838eed3530048861f9d5",
-		                  "30440220109f1a62b5a13d28d5b7634dd7693b1d5994eb404c4bb4a9a80aa540d3984d170220307251107ff8499a23e99abce7dda4f1c707c98abddb9405a83de0081cde8ace",
-		                  "020000000001012c32e55722e4b96324d8e5b398d583a20780b25202816adc32dc3157dee731c90300000000010000000176050000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e05004730440220687af8544d335376620a6f4b5412bfd0da48de047c1785674f26e669d4a3ff82022058591c1e3a6c50017427d38a8f756eb685bdab88ec73838eed3530048861f9d5834730440220109f1a62b5a13d28d5b7634dd7693b1d5994eb404c4bb4a9a80aa540d3984d170220307251107ff8499a23e99abce7dda4f1c707c98abddb9405a83de0081cde8ace012004040404040404040404040404040404040404040404040404040404040404048d76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a91418bc1a114ccf9c052d3d23e28d3b0a9d1227434288527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f801b175ac6851b2756800000000" }
-		} );
-
 		// commitment tx with three outputs untrimmed (minimum feerate)
 		chan.value_to_self_msat = 6993000000; // 7000000000 - 7000000
 		chan.feerate_per_kw = 3703;
@@ -7749,23 +7682,25 @@ mod tests {
 		                  "0200000000010120060e4a29579d429f0f27c17ee5f1ee282f20d706d6f90b63d35946d8f3029a0000000000000000000175050000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500483045022100c34c61735f93f2e324cc873c3b248111ccf8f6db15d5969583757010d4ad2b4602207867bb919b2ddd6387873e425345c9b7fd18d1d66aba41f3607bc2896ef3c30a01483045022100988c143e2110067117d2321bdd4bd16ca1734c98b29290d129384af0962b634e02206c1b02478878c5f547018b833986578f90c3e9be669fe5788ad0072a55acbb05012004040404040404040404040404040404040404040404040404040404040404048a76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a91418bc1a114ccf9c052d3d23e28d3b0a9d1227434288527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f801b175ac686800000000" }
 		} );
 
-		// anchors: commitment tx with three outputs untrimmed (minimum feerate)
+		// anchors: commitment tx with three outputs untrimmed (minimum dust limit)
 		chan.value_to_self_msat = 6993000000; // 7000000000 - 7000000
 		chan.feerate_per_kw = 3687;
+		chan.holder_dust_limit_satoshis = 3001;
 
 		test_commitment_with_anchors!("3045022100ad6c71569856b2d7ff42e838b4abe74a713426b37f22fa667a195a4c88908c6902202b37272b02a42dc6d9f4f82cab3eaf84ac882d9ed762859e1e75455c2c228377",
 		                 "3045022100c970799bcb33f43179eb43b3378a0a61991cf2923f69b36ef12548c3df0e6d500220413dc27d2e39ee583093adfcb7799be680141738babb31cc7b0669a777a31f5d",
 		                 "02000000000101bef67e4e2fb9ddeeb3461973cd4c62abb35050b1add772995b820b584a488489000000000038b02b80054a010000000000002200202b1b5854183c12d3316565972c4668929d314d81c5dcdbb21cb45fe8a9a8114f4a01000000000000220020e9e86e4823faa62e222ebc858a226636856158f07e69898da3b0d1af0ddb3994a00f000000000000220020ce6e751274836ff59622a0d1e07f8831d80bd6730bd48581398bfadd2bb8da9ac0c62d0000000000220020f3394e1e619b0eca1f91be2fb5ab4dfc59ba5b84ebe014ad1d43a564d012994aa28b6a00000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0400483045022100c970799bcb33f43179eb43b3378a0a61991cf2923f69b36ef12548c3df0e6d500220413dc27d2e39ee583093adfcb7799be680141738babb31cc7b0669a777a31f5d01483045022100ad6c71569856b2d7ff42e838b4abe74a713426b37f22fa667a195a4c88908c6902202b37272b02a42dc6d9f4f82cab3eaf84ac882d9ed762859e1e75455c2c22837701475221023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb21030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c152ae3e195220", {
 
 		                  { 0,
-		                  "3045022100b287bb8e079a62dcb3aaa8b6c67c0f434a87ebf64ab0bcfb2fc14b55576b859f02206d37c2eb5fd04cfc9eb0534c76a28a98da251b84a931377cce307af39dfaed74",
-		                  "3045022100a497c64faea286ec4221f48628086dc6403fd7b60a23c4176e8ebbca15ae70dc0220754e20e968e96cf6421fd2a672c8c26d3bc6e19218cfc8fc2aa51fce026c14b1",
-		                  "02000000000101542562b326c08e3a076d9cfca2be175041366591da334d8d513ff1686fd95a600200000000010000000175050000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500483045022100b287bb8e079a62dcb3aaa8b6c67c0f434a87ebf64ab0bcfb2fc14b55576b859f02206d37c2eb5fd04cfc9eb0534c76a28a98da251b84a931377cce307af39dfaed7483483045022100a497c64faea286ec4221f48628086dc6403fd7b60a23c4176e8ebbca15ae70dc0220754e20e968e96cf6421fd2a672c8c26d3bc6e19218cfc8fc2aa51fce026c14b1012004040404040404040404040404040404040404040404040404040404040404048d76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a91418bc1a114ccf9c052d3d23e28d3b0a9d1227434288527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f801b175ac6851b2756800000000" }
+		                  "3044022017b558a3cf5f0cb94269e2e927b29ed22bd2416abb8a7ce6de4d1256f359b93602202e9ca2b1a23ea3e69f433c704e327739e219804b8c188b1d52f74fd5a9de954c",
+		                  "3045022100af7a8b7c7ff2080c68995254cb66d64d9954edcc5baac3bb4f27ed2d29aaa6120220421c27da7a60574a9263f271e0f3bd34594ec6011095190022b3b54596ea03de",
+		                  "02000000000101542562b326c08e3a076d9cfca2be175041366591da334d8d513ff1686fd95a6002000000000100000001a00f0000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500473044022017b558a3cf5f0cb94269e2e927b29ed22bd2416abb8a7ce6de4d1256f359b93602202e9ca2b1a23ea3e69f433c704e327739e219804b8c188b1d52f74fd5a9de954c83483045022100af7a8b7c7ff2080c68995254cb66d64d9954edcc5baac3bb4f27ed2d29aaa6120220421c27da7a60574a9263f271e0f3bd34594ec6011095190022b3b54596ea03de012004040404040404040404040404040404040404040404040404040404040404048d76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a91418bc1a114ccf9c052d3d23e28d3b0a9d1227434288527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f801b175ac6851b2756800000000" }
 		} );
 
 		// commitment tx with three outputs untrimmed (maximum feerate)
 		chan.value_to_self_msat = 6993000000; // 7000000000 - 7000000
 		chan.feerate_per_kw = 4914;
+		chan.holder_dust_limit_satoshis = 546;
 
 		test_commitment!("3045022100b4b16d5f8cc9fc4c1aff48831e832a0d8990e133978a66e302c133550954a44d022073573ce127e2200d316f6b612803a5c0c97b8d20e1e44dbe2ac0dd2fb8c95244",
 		                 "3045022100d72638bc6308b88bb6d45861aae83e5b9ff6e10986546e13bce769c70036e2620220320be7c6d66d22f30b9fcd52af66531505b1310ca3b848c19285b38d8a1a8c19",
@@ -7777,31 +7712,19 @@ mod tests {
 		                  "02000000000101a9172908eace869cc35128c31fc2ab502f72e4dff31aab23e0244c4b04b11ab00000000000000000000122020000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500483045022100f43591c156038ba217756006bb3c55f7d113a325cdd7d9303c82115372858d68022016355b5aadf222bc8d12e426c75f4a03423917b2443a103eb2a498a3a2234374014730440220585dee80fafa264beac535c3c0bb5838ac348b156fdc982f86adc08dfc9bfd250220130abb82f9f295cc9ef423dcfef772fde2acd85d9df48cc538981d26a10a9c10012004040404040404040404040404040404040404040404040404040404040404048a76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a91418bc1a114ccf9c052d3d23e28d3b0a9d1227434288527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f801b175ac686800000000" }
 		} );
 
-		// anchors: commitment tx with three outputs untrimmed (maximum feerate)
-		chan.value_to_self_msat = 6993000000; // 7000000000 - 7000000
-		chan.feerate_per_kw = 4893;
-
-		test_commitment_with_anchors!("3045022100a8771147109e4d3f44a5976c3c3de98732bbb77308d21444dbe0d76faf06480e02200b4e916e850c3d1f918de87bbbbb07843ffea1d4658dfe060b6f9ccd96d34be8",
-		                 "30440220086288faceab47461eb2d808e9e9b0cb3ffc24a03c2f18db7198247d38f10e58022031d1c2782a58c8c6ce187d0019eb47a83babdf3040e2caff299ab48f7e12b1fa",
-		                 "02000000000101bef67e4e2fb9ddeeb3461973cd4c62abb35050b1add772995b820b584a488489000000000038b02b80054a010000000000002200202b1b5854183c12d3316565972c4668929d314d81c5dcdbb21cb45fe8a9a8114f4a01000000000000220020e9e86e4823faa62e222ebc858a226636856158f07e69898da3b0d1af0ddb3994a00f000000000000220020ce6e751274836ff59622a0d1e07f8831d80bd6730bd48581398bfadd2bb8da9ac0c62d0000000000220020f3394e1e619b0eca1f91be2fb5ab4dfc59ba5b84ebe014ad1d43a564d012994a87856a00000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e04004730440220086288faceab47461eb2d808e9e9b0cb3ffc24a03c2f18db7198247d38f10e58022031d1c2782a58c8c6ce187d0019eb47a83babdf3040e2caff299ab48f7e12b1fa01483045022100a8771147109e4d3f44a5976c3c3de98732bbb77308d21444dbe0d76faf06480e02200b4e916e850c3d1f918de87bbbbb07843ffea1d4658dfe060b6f9ccd96d34be801475221023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb21030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c152ae3e195220", {
-
-		                  { 0,
-		                  "30450221008db80f8531104820b3e894492b4463f074f965b542e1b5c153ddfb108a5ea642022030b203d857a2b3581c2087a7bf17c95d04fadc1c6cdae88c620477f2dccb1ee4",
-		                  "3045022100e5fbae857c47dbfc050a05924bd449fc9804798bd6442002c578437dc34450810220296589bc387645512345299e307116aaac4ce9fc752abcd1936b802d03526312",
-		                  "02000000000101d515a15e9175fd315bb8d4e768f28684801a9e5a9acdfeba34f7b3b3b3a9ba1d0200000000010000000122020000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e05004830450221008db80f8531104820b3e894492b4463f074f965b542e1b5c153ddfb108a5ea642022030b203d857a2b3581c2087a7bf17c95d04fadc1c6cdae88c620477f2dccb1ee483483045022100e5fbae857c47dbfc050a05924bd449fc9804798bd6442002c578437dc34450810220296589bc387645512345299e307116aaac4ce9fc752abcd1936b802d03526312012004040404040404040404040404040404040404040404040404040404040404048d76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a91418bc1a114ccf9c052d3d23e28d3b0a9d1227434288527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f801b175ac6851b2756800000000" }
-		} );
-
 		// commitment tx with two outputs untrimmed (minimum feerate)
 		chan.value_to_self_msat = 6993000000; // 7000000000 - 7000000
 		chan.feerate_per_kw = 4915;
+		chan.holder_dust_limit_satoshis = 546;
 
 		test_commitment!("304402203a286936e74870ca1459c700c71202af0381910a6bfab687ef494ef1bc3e02c902202506c362d0e3bee15e802aa729bf378e051644648253513f1c085b264cc2a720",
 		                 "30450221008a953551f4d67cb4df3037207fc082ddaf6be84d417b0bd14c80aab66f1b01a402207508796dc75034b2dee876fe01dc05a08b019f3e5d689ac8842ade2f1befccf5",
 		                 "02000000000101bef67e4e2fb9ddeeb3461973cd4c62abb35050b1add772995b820b584a488489000000000038b02b8002c0c62d0000000000160014cc1b07838e387deacd0e5232e1e8b49f4c29e484fa926a00000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e04004830450221008a953551f4d67cb4df3037207fc082ddaf6be84d417b0bd14c80aab66f1b01a402207508796dc75034b2dee876fe01dc05a08b019f3e5d689ac8842ade2f1befccf50147304402203a286936e74870ca1459c700c71202af0381910a6bfab687ef494ef1bc3e02c902202506c362d0e3bee15e802aa729bf378e051644648253513f1c085b264cc2a72001475221023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb21030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c152ae3e195220", {});
 
-		// anchors: commitment tx with two outputs untrimmed (minimum feerate)
+		// anchors: commitment tx with two outputs untrimmed (minimum dust limit)
 		chan.value_to_self_msat = 6993000000; // 7000000000 - 7000000
 		chan.feerate_per_kw = 4894;
+		chan.holder_dust_limit_satoshis = 4001;
 
 		test_commitment_with_anchors!("3045022100e784a66b1588575801e237d35e510fd92a81ae3a4a2a1b90c031ad803d07b3f3022021bc5f16501f167607d63b681442da193eb0a76b4b7fd25c2ed4f8b28fd35b95",
 		                 "30450221009f16ac85d232e4eddb3fcd750a68ebf0b58e3356eaada45d3513ede7e817bf4c02207c2b043b4e5f971261975406cb955219fa56bffe5d834a833694b5abc1ce4cfd",
@@ -7810,6 +7733,7 @@ mod tests {
 		// commitment tx with two outputs untrimmed (maximum feerate)
 		chan.value_to_self_msat = 6993000000; // 7000000000 - 7000000
 		chan.feerate_per_kw = 9651180;
+		chan.holder_dust_limit_satoshis = 546;
 
 		test_commitment!("304402200a8544eba1d216f5c5e530597665fa9bec56943c0f66d98fc3d028df52d84f7002201e45fa5c6bc3a506cc2553e7d1c0043a9811313fc39c954692c0d47cfce2bbd3",
 		                 "3045022100e11b638c05c650c2f63a421d36ef8756c5ce82f2184278643520311cdf50aa200220259565fb9c8e4a87ccaf17f27a3b9ca4f20625754a0920d9c6c239d8156a11de",
@@ -7823,9 +7747,10 @@ mod tests {
 		                 "304402207e8d51e0c570a5868a78414f4e0cbfaed1106b171b9581542c30718ee4eb95ba02203af84194c97adf98898c9afe2f2ed4a7f8dba05a2dfab28ac9d9c604aa49a379",
 		                 "02000000000101bef67e4e2fb9ddeeb3461973cd4c62abb35050b1add772995b820b584a488489000000000038b02b8001c0c62d0000000000160014cc1b07838e387deacd0e5232e1e8b49f4c29e484040047304402207e8d51e0c570a5868a78414f4e0cbfaed1106b171b9581542c30718ee4eb95ba02203af84194c97adf98898c9afe2f2ed4a7f8dba05a2dfab28ac9d9c604aa49a3790147304402202ade0142008309eb376736575ad58d03e5b115499709c6db0b46e36ff394b492022037b63d78d66404d6504d4c4ac13be346f3d1802928a6d3ad95a6a944227161a201475221023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb21030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c152ae3e195220", {});
 
-		// anchors: commitment tx with one output untrimmed (minimum feerate)
+		// anchors: commitment tx with one output untrimmed (minimum dust limit)
 		chan.value_to_self_msat = 6993000000; // 7000000000 - 7000000
 		chan.feerate_per_kw = 6216010;
+		chan.holder_dust_limit_satoshis = 4001;
 
 		test_commitment_with_anchors!("30450221008fd5dbff02e4b59020d4cd23a3c30d3e287065fda75a0a09b402980adf68ccda022001e0b8b620cd915ddff11f1de32addf23d81d51b90e6841b2cb8dcaf3faa5ecf",
 		                 "30450221009ad80792e3038fe6968d12ff23e6888a565c3ddd065037f357445f01675d63f3022018384915e5f1f4ae157e15debf4f49b61c8d9d2b073c7d6f97c4a68caa3ed4c1",
@@ -7834,6 +7759,7 @@ mod tests {
 		// commitment tx with fee greater than funder amount
 		chan.value_to_self_msat = 6993000000; // 7000000000 - 7000000
 		chan.feerate_per_kw = 9651936;
+		chan.holder_dust_limit_satoshis = 546;
 
 		test_commitment!("304402202ade0142008309eb376736575ad58d03e5b115499709c6db0b46e36ff394b492022037b63d78d66404d6504d4c4ac13be346f3d1802928a6d3ad95a6a944227161a2",
 		                 "304402207e8d51e0c570a5868a78414f4e0cbfaed1106b171b9581542c30718ee4eb95ba02203af84194c97adf98898c9afe2f2ed4a7f8dba05a2dfab28ac9d9c604aa49a379",
@@ -7903,17 +7829,17 @@ mod tests {
 		                 "02000000000101bef67e4e2fb9ddeeb3461973cd4c62abb35050b1add772995b820b584a488489000000000038b02b80074a010000000000002200202b1b5854183c12d3316565972c4668929d314d81c5dcdbb21cb45fe8a9a8114f4a01000000000000220020e9e86e4823faa62e222ebc858a226636856158f07e69898da3b0d1af0ddb3994d007000000000000220020fe0598d74fee2205cc3672e6e6647706b4f3099713b4661b62482c3addd04a5e881300000000000022002018e40f9072c44350f134bdc887bab4d9bdfc8aa468a25616c80e21757ba5dac7881300000000000022002018e40f9072c44350f134bdc887bab4d9bdfc8aa468a25616c80e21757ba5dac7c0c62d0000000000220020f3394e1e619b0eca1f91be2fb5ab4dfc59ba5b84ebe014ad1d43a564d012994aae9c6a00000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0400483045022100c37ac4fc8538677631230c4b286f36b6f54c51fb4b34ef0bd0ba219ba47452630220278e09a745454ea380f3694392ed113762c68dd209b48360f547541088be9e4501483045022100c592f6b80d35b4f5d1e3bc9788f51141a0065be6013bad53a1977f7c444651660220278ac06ead9016bfb8dc476f186eabace2b02793b2f308442f5b0d5f24a6894801475221023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb21030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c152ae3e195220", {
 
 		                  { 0,
-		                  "304402202060a5acb12105e92f27d7b86e6caf1e003d9d82068338e5a8a9a0d14cba11260220030ca4dba8fad24a2e395906220c991eccd5369bc4b0f216d217b5f86d1fc61d",
-		                  "3044022044f5425fe630fa614f349f55642e4a0b76e2583054b21543821660d9e8f3735702207f70424835b541874ca8bf0443cca4028afa2f6c03a17b0688df85d5c44eeefc",
-		                  "02000000000101aa443fb63abc1e8c754f98a7b96c27cb02b21d891d1242a16b630dc32c2afe29020000000001000000011e070000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e050047304402202060a5acb12105e92f27d7b86e6caf1e003d9d82068338e5a8a9a0d14cba11260220030ca4dba8fad24a2e395906220c991eccd5369bc4b0f216d217b5f86d1fc61d83473044022044f5425fe630fa614f349f55642e4a0b76e2583054b21543821660d9e8f3735702207f70424835b541874ca8bf0443cca4028afa2f6c03a17b0688df85d5c44eeefc012001010101010101010101010101010101010101010101010101010101010101018d76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a9144b6b2e5444c2639cc0fb7bcea5afba3f3cdce23988527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f501b175ac6851b2756800000000" },
+		                  "3045022100de8a0649d54fd2e4fc04502c77df9b65da839bbd01854f818f129338b99564b2022009528dbb12c00e874cb2149b1dccc600c69ea5e4042ebf584984fcb029c2d1ec",
+		                  "304402203e7c2622fa3ca29355d37a0ea991bfd7cdb54e6122a1d98d3229d092131f55cd022055263f7f8f32f4cd2f86da63ca106bd7badf0b19ee9833d80cd3b9216eeafd74",
+		                  "02000000000101aa443fb63abc1e8c754f98a7b96c27cb02b21d891d1242a16b630dc32c2afe2902000000000100000001d0070000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500483045022100de8a0649d54fd2e4fc04502c77df9b65da839bbd01854f818f129338b99564b2022009528dbb12c00e874cb2149b1dccc600c69ea5e4042ebf584984fcb029c2d1ec8347304402203e7c2622fa3ca29355d37a0ea991bfd7cdb54e6122a1d98d3229d092131f55cd022055263f7f8f32f4cd2f86da63ca106bd7badf0b19ee9833d80cd3b9216eeafd74012001010101010101010101010101010101010101010101010101010101010101018d76a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c8201208763a9144b6b2e5444c2639cc0fb7bcea5afba3f3cdce23988527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae677502f501b175ac6851b2756800000000" },
 		                  { 1,
-		                  "304402206fde7eb6d7a47fdc63705d3db2169054e229f10342dea66f150b163381f48a0802201be28509c2de9be4b7ab72c569c6fd51c0ce0904fea459142f31d442cd043eb8",
-		                  "3045022100ad0236a78dbd029d3a8f583f7f82ee62892273d45303d00ef5a03fecf8903a36022004b2db33f8ff2f4a08ca6127c9cbfd9144c691a2feb9287e36ae6bc7c83c5a5f",
-		                  "02000000000101aa443fb63abc1e8c754f98a7b96c27cb02b21d891d1242a16b630dc32c2afe2903000000000100000001e0120000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e050047304402206fde7eb6d7a47fdc63705d3db2169054e229f10342dea66f150b163381f48a0802201be28509c2de9be4b7ab72c569c6fd51c0ce0904fea459142f31d442cd043eb883483045022100ad0236a78dbd029d3a8f583f7f82ee62892273d45303d00ef5a03fecf8903a36022004b2db33f8ff2f4a08ca6127c9cbfd9144c691a2feb9287e36ae6bc7c83c5a5f01008876a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a9142002cc93ebefbb1b73f0af055dcc27a0b504ad7688ac6851b27568f9010000" },
+		                  "3045022100de6eee8474376ea316d007b33103b4543a46bdf6fda5cbd5902b28a5bc14584f022002989e7b4f7813b77acbe4babcf96d7ffbbe0bf14cba24672364f8e591479edb",
+		                  "3045022100c10688346a9d84647bde7027da07f0d79c6d4129307e4c6c9aea7bdbf25ac3350220269104209793c32c47491698c4e46ebea9c3293a1e4403f9abda39f79698f6b5",
+		                  "02000000000101aa443fb63abc1e8c754f98a7b96c27cb02b21d891d1242a16b630dc32c2afe290300000000010000000188130000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500483045022100de6eee8474376ea316d007b33103b4543a46bdf6fda5cbd5902b28a5bc14584f022002989e7b4f7813b77acbe4babcf96d7ffbbe0bf14cba24672364f8e591479edb83483045022100c10688346a9d84647bde7027da07f0d79c6d4129307e4c6c9aea7bdbf25ac3350220269104209793c32c47491698c4e46ebea9c3293a1e4403f9abda39f79698f6b501008876a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a9142002cc93ebefbb1b73f0af055dcc27a0b504ad7688ac6851b27568f9010000" },
 		                  { 2,
-		                  "304402205eebc78d8ae6a36c27ef80172359eb757fb18e99fa75b28c37ffe3444b967bc7022060a01c33398d4d8244c42c762fb699e9f61c1f034ff976df2c94350c5a6032a7",
-		                  "3045022100ad3fd523594e1b876316401774a30ee6c48bb7fa0efd768bf9a2d022201311ff02207bed627ed8e01041137f03dbaf03c836970be27a4d50f69d90cf1282ff2815e3",
-		                  "02000000000101aa443fb63abc1e8c754f98a7b96c27cb02b21d891d1242a16b630dc32c2afe2904000000000100000001e0120000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e050047304402205eebc78d8ae6a36c27ef80172359eb757fb18e99fa75b28c37ffe3444b967bc7022060a01c33398d4d8244c42c762fb699e9f61c1f034ff976df2c94350c5a6032a783483045022100ad3fd523594e1b876316401774a30ee6c48bb7fa0efd768bf9a2d022201311ff02207bed627ed8e01041137f03dbaf03c836970be27a4d50f69d90cf1282ff2815e301008876a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a9142002cc93ebefbb1b73f0af055dcc27a0b504ad7688ac6851b27568fa010000" }
+		                  "3045022100fe87da8124ceecbcabb9d599c5339f40277c7c7406514fafbccbf180c7c09cf40220429c7fb6d0fd3705e931ab1219ab0432af38ae4d676008cc1964fbeb8cd35d2e",
+		                  "3044022040ac769a851da31d8e4863e5f94719204f716c82a1ce6d6c52193d9a33b84bce022035df97b078ce80f20dca2109e4c6075af0b50148811452e7290e68b2680fced4",
+		                  "02000000000101aa443fb63abc1e8c754f98a7b96c27cb02b21d891d1242a16b630dc32c2afe290400000000010000000188130000000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e0500483045022100fe87da8124ceecbcabb9d599c5339f40277c7c7406514fafbccbf180c7c09cf40220429c7fb6d0fd3705e931ab1219ab0432af38ae4d676008cc1964fbeb8cd35d2e83473044022040ac769a851da31d8e4863e5f94719204f716c82a1ce6d6c52193d9a33b84bce022035df97b078ce80f20dca2109e4c6075af0b50148811452e7290e68b2680fced401008876a91414011f7254d96b819c76986c277d115efce6f7b58763ac67210394854aa6eab5b2a8122cc726e9dded053a2184d88256816826d6231c068d4a5b7c820120876475527c21030d417a46946384f88d5f3337267c5e579765875dc4daca813e21734b140639e752ae67a9142002cc93ebefbb1b73f0af055dcc27a0b504ad7688ac6851b27568fa010000" }
 		} );
 	}
 
@@ -7980,7 +7906,7 @@ mod tests {
 		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let config = UserConfig::default();
 		let node_a_chan = Channel::<EnforcingSigner>::new_outbound(&feeest, &&keys_provider,
-			node_b_node_id, &InitFeatures::known(), 10000000, 100000, 42, &config, 0, 42).unwrap();
+			node_b_node_id, &channelmanager::provided_init_features(), 10000000, 100000, 42, &config, 0, 42).unwrap();
 
 		let mut channel_type_features = ChannelTypeFeatures::only_static_remote_key();
 		channel_type_features.set_zero_conf_required();
@@ -7989,7 +7915,7 @@ mod tests {
 		open_channel_msg.channel_type = Some(channel_type_features);
 		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[7; 32]).unwrap());
 		let res = Channel::<EnforcingSigner>::new_from_req(&feeest, &&keys_provider,
-			node_b_node_id, &InitFeatures::known(), &open_channel_msg, 7, &config, 0, &&logger, 42);
+			node_b_node_id, &channelmanager::provided_init_features(), &open_channel_msg, 7, &config, 0, &&logger, 42);
 		assert!(res.is_ok());
 	}
 }

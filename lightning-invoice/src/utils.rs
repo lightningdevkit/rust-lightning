@@ -553,9 +553,8 @@ mod test {
 	use bitcoin_hashes::sha256::Hash as Sha256;
 	use lightning::chain::keysinterface::PhantomKeysManager;
 	use lightning::ln::{PaymentPreimage, PaymentHash};
-	use lightning::ln::channelmanager::{PhantomRouteHints, MIN_FINAL_CLTV_EXPIRY};
+	use lightning::ln::channelmanager::{self, PhantomRouteHints, MIN_FINAL_CLTV_EXPIRY};
 	use lightning::ln::functional_test_utils::*;
-	use lightning::ln::features::InitFeatures;
 	use lightning::ln::msgs::ChannelMessageHandler;
 	use lightning::routing::router::{PaymentParameters, RouteParameters, find_route};
 	use lightning::util::enforcing_trait_impls::EnforcingSigner;
@@ -572,7 +571,7 @@ mod test {
 		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-		create_unannounced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 10001, InitFeatures::known(), InitFeatures::known());
+		create_unannounced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 10001, channelmanager::provided_init_features(), channelmanager::provided_init_features());
 		let non_default_invoice_expiry_secs = 4200;
 		let invoice = create_invoice_from_channelmanager_and_duration_since_epoch(
 			&nodes[1].node, nodes[1].keys_manager, Currency::BitcoinTestnet, Some(10_000), "test".to_string(),
@@ -655,8 +654,8 @@ mod test {
 		let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
 		let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
-		let chan_1_0 = create_unannounced_chan_between_nodes_with_value(&nodes, 1, 0, 100000, 10001, InitFeatures::known(), InitFeatures::known());
-		let chan_2_0 = create_unannounced_chan_between_nodes_with_value(&nodes, 2, 0, 100000, 10001, InitFeatures::known(), InitFeatures::known());
+		let chan_1_0 = create_unannounced_chan_between_nodes_with_value(&nodes, 1, 0, 100000, 10001, channelmanager::provided_init_features(), channelmanager::provided_init_features());
+		let chan_2_0 = create_unannounced_chan_between_nodes_with_value(&nodes, 2, 0, 100000, 10001, channelmanager::provided_init_features(), channelmanager::provided_init_features());
 
 		let mut scid_aliases = HashSet::new();
 		scid_aliases.insert(chan_1_0.0.short_channel_id_alias.unwrap());
@@ -671,9 +670,9 @@ mod test {
 		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-		let _chan_1_0_low_inbound_capacity = create_unannounced_chan_between_nodes_with_value(&nodes, 1, 0, 100_000, 0, InitFeatures::known(), InitFeatures::known());
-		let chan_1_0_high_inbound_capacity = create_unannounced_chan_between_nodes_with_value(&nodes, 1, 0, 10_000_000, 0, InitFeatures::known(), InitFeatures::known());
-		let _chan_1_0_medium_inbound_capacity = create_unannounced_chan_between_nodes_with_value(&nodes, 1, 0, 1_000_000, 0, InitFeatures::known(), InitFeatures::known());
+		let _chan_1_0_low_inbound_capacity = create_unannounced_chan_between_nodes_with_value(&nodes, 1, 0, 100_000, 0, channelmanager::provided_init_features(), channelmanager::provided_init_features());
+		let chan_1_0_high_inbound_capacity = create_unannounced_chan_between_nodes_with_value(&nodes, 1, 0, 10_000_000, 0, channelmanager::provided_init_features(), channelmanager::provided_init_features());
+		let _chan_1_0_medium_inbound_capacity = create_unannounced_chan_between_nodes_with_value(&nodes, 1, 0, 1_000_000, 0, channelmanager::provided_init_features(), channelmanager::provided_init_features());
 
 		let mut scid_aliases = HashSet::new();
 		scid_aliases.insert(chan_1_0_high_inbound_capacity.0.short_channel_id_alias.unwrap());
@@ -687,7 +686,7 @@ mod test {
 		let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 		let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
 		let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
-		let chan_1_0 = create_unannounced_chan_between_nodes_with_value(&nodes, 1, 0, 100000, 10001, InitFeatures::known(), InitFeatures::known());
+		let chan_1_0 = create_unannounced_chan_between_nodes_with_value(&nodes, 1, 0, 100000, 10001, channelmanager::provided_init_features(), channelmanager::provided_init_features());
 
 		// Create an unannonced channel between `nodes[2]` and `nodes[0]`, for which the
 		// `msgs::ChannelUpdate` is never handled for the node(s). As the `msgs::ChannelUpdate`
@@ -696,9 +695,9 @@ mod test {
 		private_chan_cfg.channel_handshake_config.announced_channel = false;
 		let temporary_channel_id = nodes[2].node.create_channel(nodes[0].node.get_our_node_id(), 1_000_000, 500_000_000, 42, Some(private_chan_cfg)).unwrap();
 		let open_channel = get_event_msg!(nodes[2], MessageSendEvent::SendOpenChannel, nodes[0].node.get_our_node_id());
-		nodes[0].node.handle_open_channel(&nodes[2].node.get_our_node_id(), InitFeatures::known(), &open_channel);
+		nodes[0].node.handle_open_channel(&nodes[2].node.get_our_node_id(), channelmanager::provided_init_features(), &open_channel);
 		let accept_channel = get_event_msg!(nodes[0], MessageSendEvent::SendAcceptChannel, nodes[2].node.get_our_node_id());
-		nodes[2].node.handle_accept_channel(&nodes[0].node.get_our_node_id(), InitFeatures::known(), &accept_channel);
+		nodes[2].node.handle_accept_channel(&nodes[0].node.get_our_node_id(), channelmanager::provided_init_features(), &accept_channel);
 
 		let tx = sign_funding_transaction(&nodes[2], &nodes[0], 1_000_000, temporary_channel_id);
 
@@ -727,9 +726,9 @@ mod test {
 		let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 		let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
 		let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
-		let _chan_1_0 = create_unannounced_chan_between_nodes_with_value(&nodes, 1, 0, 100000, 10001, InitFeatures::known(), InitFeatures::known());
+		let _chan_1_0 = create_unannounced_chan_between_nodes_with_value(&nodes, 1, 0, 100000, 10001, channelmanager::provided_init_features(), channelmanager::provided_init_features());
 
-		let chan_2_0 = create_announced_chan_between_nodes_with_value(&nodes, 2, 0, 100000, 10001, InitFeatures::known(), InitFeatures::known());
+		let chan_2_0 = create_announced_chan_between_nodes_with_value(&nodes, 2, 0, 100000, 10001, channelmanager::provided_init_features(), channelmanager::provided_init_features());
 		nodes[2].node.handle_channel_update(&nodes[0].node.get_our_node_id(), &chan_2_0.1);
 		nodes[0].node.handle_channel_update(&nodes[2].node.get_our_node_id(), &chan_2_0.0);
 
@@ -745,11 +744,11 @@ mod test {
 		let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 		let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
 		let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
-		let chan_1_0 = create_announced_chan_between_nodes_with_value(&nodes, 1, 0, 100000, 10001, InitFeatures::known(), InitFeatures::known());
+		let chan_1_0 = create_announced_chan_between_nodes_with_value(&nodes, 1, 0, 100000, 10001, channelmanager::provided_init_features(), channelmanager::provided_init_features());
 		nodes[0].node.handle_channel_update(&nodes[1].node.get_our_node_id(), &chan_1_0.0);
 		nodes[1].node.handle_channel_update(&nodes[0].node.get_our_node_id(), &chan_1_0.1);
 
-		let chan_2_0 = create_announced_chan_between_nodes_with_value(&nodes, 2, 0, 100000, 10001, InitFeatures::known(), InitFeatures::known());
+		let chan_2_0 = create_announced_chan_between_nodes_with_value(&nodes, 2, 0, 100000, 10001, channelmanager::provided_init_features(), channelmanager::provided_init_features());
 		nodes[2].node.handle_channel_update(&nodes[0].node.get_our_node_id(), &chan_2_0.1);
 		nodes[0].node.handle_channel_update(&nodes[2].node.get_our_node_id(), &chan_2_0.0);
 
@@ -763,8 +762,8 @@ mod test {
 		let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 		let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
 		let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
-		let chan_1_0 = create_unannounced_chan_between_nodes_with_value(&nodes, 1, 0, 100_000, 0, InitFeatures::known(), InitFeatures::known());
-		let chan_2_0 = create_unannounced_chan_between_nodes_with_value(&nodes, 2, 0, 1_000_000, 0, InitFeatures::known(), InitFeatures::known());
+		let chan_1_0 = create_unannounced_chan_between_nodes_with_value(&nodes, 1, 0, 100_000, 0, channelmanager::provided_init_features(), channelmanager::provided_init_features());
+		let chan_2_0 = create_unannounced_chan_between_nodes_with_value(&nodes, 2, 0, 1_000_000, 0, channelmanager::provided_init_features(), channelmanager::provided_init_features());
 
 		// As the invoice amt is 1 msat above chan_1_0's inbound capacity, it shouldn't be included
 		let mut scid_aliases_99_000_001_msat = HashSet::new();
@@ -829,10 +828,10 @@ mod test {
 		let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 		let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
 		let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
-		let chan_0_1 = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 10001, InitFeatures::known(), InitFeatures::known());
+		let chan_0_1 = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 10001, channelmanager::provided_init_features(), channelmanager::provided_init_features());
 		nodes[0].node.handle_channel_update(&nodes[1].node.get_our_node_id(), &chan_0_1.1);
 		nodes[1].node.handle_channel_update(&nodes[0].node.get_our_node_id(), &chan_0_1.0);
-		let chan_0_2 = create_announced_chan_between_nodes_with_value(&nodes, 0, 2, 100000, 10001, InitFeatures::known(), InitFeatures::known());
+		let chan_0_2 = create_announced_chan_between_nodes_with_value(&nodes, 0, 2, 100000, 10001, channelmanager::provided_init_features(), channelmanager::provided_init_features());
 		nodes[0].node.handle_channel_update(&nodes[2].node.get_our_node_id(), &chan_0_2.1);
 		nodes[2].node.handle_channel_update(&nodes[0].node.get_our_node_id(), &chan_0_2.0);
 
@@ -950,8 +949,8 @@ mod test {
 		let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
 		let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
-		create_unannounced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 10001, InitFeatures::known(), InitFeatures::known());
-		create_unannounced_chan_between_nodes_with_value(&nodes, 0, 2, 100000, 10001, InitFeatures::known(), InitFeatures::known());
+		create_unannounced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 10001, channelmanager::provided_init_features(), channelmanager::provided_init_features());
+		create_unannounced_chan_between_nodes_with_value(&nodes, 0, 2, 100000, 10001, channelmanager::provided_init_features(), channelmanager::provided_init_features());
 
 		let payment_amt = 20_000;
 		let (payment_hash, _payment_secret) = nodes[1].node.create_inbound_payment(Some(payment_amt), 3600).unwrap();
@@ -1013,8 +1012,8 @@ mod test {
 		let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
 		let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
-		let chan_0_1 = create_unannounced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 10001, InitFeatures::known(), InitFeatures::known());
-		let chan_0_2 = create_unannounced_chan_between_nodes_with_value(&nodes, 0, 2, 100000, 10001, InitFeatures::known(), InitFeatures::known());
+		let chan_0_1 = create_unannounced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 10001, channelmanager::provided_init_features(), channelmanager::provided_init_features());
+		let chan_0_2 = create_unannounced_chan_between_nodes_with_value(&nodes, 0, 2, 100000, 10001, channelmanager::provided_init_features(), channelmanager::provided_init_features());
 
 		let mut scid_aliases = HashSet::new();
 		scid_aliases.insert(chan_0_1.0.short_channel_id_alias.unwrap());
@@ -1042,9 +1041,9 @@ mod test {
 		let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, None, None, None]);
 		let nodes = create_network(4, &node_cfgs, &node_chanmgrs);
 
-		let chan_0_2 = create_unannounced_chan_between_nodes_with_value(&nodes, 0, 2, 100000, 10001, InitFeatures::known(), InitFeatures::known());
-		let chan_0_3 = create_unannounced_chan_between_nodes_with_value(&nodes, 0, 3, 1000000, 10001, InitFeatures::known(), InitFeatures::known());
-		let chan_1_3 = create_unannounced_chan_between_nodes_with_value(&nodes, 1, 3, 3_000_000, 10005, InitFeatures::known(), InitFeatures::known());
+		let chan_0_2 = create_unannounced_chan_between_nodes_with_value(&nodes, 0, 2, 100000, 10001, channelmanager::provided_init_features(), channelmanager::provided_init_features());
+		let chan_0_3 = create_unannounced_chan_between_nodes_with_value(&nodes, 0, 3, 1000000, 10001, channelmanager::provided_init_features(), channelmanager::provided_init_features());
+		let chan_1_3 = create_unannounced_chan_between_nodes_with_value(&nodes, 1, 3, 3_000_000, 10005, channelmanager::provided_init_features(), channelmanager::provided_init_features());
 
 		let mut scid_aliases = HashSet::new();
 		scid_aliases.insert(chan_0_2.0.short_channel_id_alias.unwrap());
@@ -1073,8 +1072,8 @@ mod test {
 		let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, None, None, None]);
 		let nodes = create_network(4, &node_cfgs, &node_chanmgrs);
 
-		let chan_0_2 = create_unannounced_chan_between_nodes_with_value(&nodes, 0, 2, 100000, 10001, InitFeatures::known(), InitFeatures::known());
-		let chan_0_3 = create_unannounced_chan_between_nodes_with_value(&nodes, 0, 3, 1000000, 10001, InitFeatures::known(), InitFeatures::known());
+		let chan_0_2 = create_unannounced_chan_between_nodes_with_value(&nodes, 0, 2, 100000, 10001, channelmanager::provided_init_features(), channelmanager::provided_init_features());
+		let chan_0_3 = create_unannounced_chan_between_nodes_with_value(&nodes, 0, 3, 1000000, 10001, channelmanager::provided_init_features(), channelmanager::provided_init_features());
 
 		// Create an unannonced channel between `nodes[1]` and `nodes[3]`, for which the
 		// `msgs::ChannelUpdate` is never handled for the node(s). As the `msgs::ChannelUpdate`
@@ -1083,9 +1082,9 @@ mod test {
 		private_chan_cfg.channel_handshake_config.announced_channel = false;
 		let temporary_channel_id = nodes[1].node.create_channel(nodes[3].node.get_our_node_id(), 1_000_000, 500_000_000, 42, Some(private_chan_cfg)).unwrap();
 		let open_channel = get_event_msg!(nodes[1], MessageSendEvent::SendOpenChannel, nodes[3].node.get_our_node_id());
-		nodes[3].node.handle_open_channel(&nodes[1].node.get_our_node_id(), InitFeatures::known(), &open_channel);
+		nodes[3].node.handle_open_channel(&nodes[1].node.get_our_node_id(), channelmanager::provided_init_features(), &open_channel);
 		let accept_channel = get_event_msg!(nodes[3], MessageSendEvent::SendAcceptChannel, nodes[1].node.get_our_node_id());
-		nodes[1].node.handle_accept_channel(&nodes[3].node.get_our_node_id(), InitFeatures::known(), &accept_channel);
+		nodes[1].node.handle_accept_channel(&nodes[3].node.get_our_node_id(), channelmanager::provided_init_features(), &accept_channel);
 
 		let tx = sign_funding_transaction(&nodes[1], &nodes[3], 1_000_000, temporary_channel_id);
 
@@ -1129,9 +1128,9 @@ mod test {
 		let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
 		let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
-		let chan_0_1 = create_unannounced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 10001, InitFeatures::known(), InitFeatures::known());
+		let chan_0_1 = create_unannounced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 10001, channelmanager::provided_init_features(), channelmanager::provided_init_features());
 
-		let chan_2_0 = create_announced_chan_between_nodes_with_value(&nodes, 2, 0, 100000, 10001, InitFeatures::known(), InitFeatures::known());
+		let chan_2_0 = create_announced_chan_between_nodes_with_value(&nodes, 2, 0, 100000, 10001, channelmanager::provided_init_features(), channelmanager::provided_init_features());
 		nodes[2].node.handle_channel_update(&nodes[0].node.get_our_node_id(), &chan_2_0.1);
 		nodes[0].node.handle_channel_update(&nodes[2].node.get_our_node_id(), &chan_2_0.0);
 
@@ -1162,12 +1161,12 @@ mod test {
 		let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, None, None, None]);
 		let nodes = create_network(4, &node_cfgs, &node_chanmgrs);
 
-		let chan_0_2 = create_announced_chan_between_nodes_with_value(&nodes, 0, 2, 100000, 10001, InitFeatures::known(), InitFeatures::known());
+		let chan_0_2 = create_announced_chan_between_nodes_with_value(&nodes, 0, 2, 100000, 10001, channelmanager::provided_init_features(), channelmanager::provided_init_features());
 		nodes[0].node.handle_channel_update(&nodes[2].node.get_our_node_id(), &chan_0_2.1);
 		nodes[2].node.handle_channel_update(&nodes[0].node.get_our_node_id(), &chan_0_2.0);
-		let _chan_1_2 = create_unannounced_chan_between_nodes_with_value(&nodes, 1, 2, 100000, 10001, InitFeatures::known(), InitFeatures::known());
+		let _chan_1_2 = create_unannounced_chan_between_nodes_with_value(&nodes, 1, 2, 100000, 10001, channelmanager::provided_init_features(), channelmanager::provided_init_features());
 
-		let chan_0_3 = create_unannounced_chan_between_nodes_with_value(&nodes, 0, 3, 100000, 10001, InitFeatures::known(), InitFeatures::known());
+		let chan_0_3 = create_unannounced_chan_between_nodes_with_value(&nodes, 0, 3, 100000, 10001, channelmanager::provided_init_features(), channelmanager::provided_init_features());
 
 		// Hints should include `chan_0_3` from as `nodes[3]` only have private channels, and no
 		// channels for `nodes[2]` as it contains a mix of public and private channels.
@@ -1196,10 +1195,10 @@ mod test {
 		let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
 		let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
-		let _chan_0_1_low_inbound_capacity = create_unannounced_chan_between_nodes_with_value(&nodes, 0, 1, 100_000, 0, InitFeatures::known(), InitFeatures::known());
-		let chan_0_1_high_inbound_capacity = create_unannounced_chan_between_nodes_with_value(&nodes, 0, 1, 10_000_000, 0, InitFeatures::known(), InitFeatures::known());
-		let _chan_0_1_medium_inbound_capacity = create_unannounced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0, InitFeatures::known(), InitFeatures::known());
-		let chan_0_2 = create_unannounced_chan_between_nodes_with_value(&nodes, 0, 2, 100000, 10001, InitFeatures::known(), InitFeatures::known());
+		let _chan_0_1_low_inbound_capacity = create_unannounced_chan_between_nodes_with_value(&nodes, 0, 1, 100_000, 0, channelmanager::provided_init_features(), channelmanager::provided_init_features());
+		let chan_0_1_high_inbound_capacity = create_unannounced_chan_between_nodes_with_value(&nodes, 0, 1, 10_000_000, 0, channelmanager::provided_init_features(), channelmanager::provided_init_features());
+		let _chan_0_1_medium_inbound_capacity = create_unannounced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0, channelmanager::provided_init_features(), channelmanager::provided_init_features());
+		let chan_0_2 = create_unannounced_chan_between_nodes_with_value(&nodes, 0, 2, 100000, 10001, channelmanager::provided_init_features(), channelmanager::provided_init_features());
 
 		let mut scid_aliases = HashSet::new();
 		scid_aliases.insert(chan_0_1_high_inbound_capacity.0.short_channel_id_alias.unwrap());
@@ -1227,9 +1226,9 @@ mod test {
 		let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, None, None, None]);
 		let nodes = create_network(4, &node_cfgs, &node_chanmgrs);
 
-		let chan_0_2 = create_unannounced_chan_between_nodes_with_value(&nodes, 0, 2, 1_000_000, 0, InitFeatures::known(), InitFeatures::known());
-		let chan_0_3 = create_unannounced_chan_between_nodes_with_value(&nodes, 0, 3, 100_000, 0, InitFeatures::known(), InitFeatures::known());
-		let chan_1_3 = create_unannounced_chan_between_nodes_with_value(&nodes, 1, 3, 200_000, 0, InitFeatures::known(), InitFeatures::known());
+		let chan_0_2 = create_unannounced_chan_between_nodes_with_value(&nodes, 0, 2, 1_000_000, 0, channelmanager::provided_init_features(), channelmanager::provided_init_features());
+		let chan_0_3 = create_unannounced_chan_between_nodes_with_value(&nodes, 0, 3, 100_000, 0, channelmanager::provided_init_features(), channelmanager::provided_init_features());
+		let chan_1_3 = create_unannounced_chan_between_nodes_with_value(&nodes, 1, 3, 200_000, 0, channelmanager::provided_init_features(), channelmanager::provided_init_features());
 
 		// Since the invoice 1 msat above chan_0_3's inbound capacity, it should be filtered out.
 		let mut scid_aliases_99_000_001_msat = HashSet::new();

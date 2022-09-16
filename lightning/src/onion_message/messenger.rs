@@ -16,6 +16,7 @@ use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::secp256k1::{self, PublicKey, Scalar, Secp256k1, SecretKey};
 
 use chain::keysinterface::{InMemorySigner, KeysInterface, KeysManager, Recipient, Sign};
+use ln::features::{InitFeatures, NodeFeatures};
 use ln::msgs::{self, OnionMessageHandler};
 use ln::onion_utils;
 use super::blinded_route::{BlindedRoute, ForwardTlvs, ReceiveTlvs};
@@ -70,7 +71,7 @@ use prelude::*;
 /// // Create a blinded route to yourself, for someone to send an onion message to.
 /// # let your_node_id = hop_node_id1;
 /// let hops = [hop_node_id3, hop_node_id4, your_node_id];
-/// let blinded_route = BlindedRoute::new::<InMemorySigner, _, _>(&hops, &keys_manager, &secp_ctx).unwrap();
+/// let blinded_route = BlindedRoute::new(&hops, &keys_manager, &secp_ctx).unwrap();
 ///
 /// // Send an empty onion message to a blinded route.
 /// # let intermediate_hops = [hop_node_id1, hop_node_id2];
@@ -334,16 +335,29 @@ impl<Signer: Sign, K: Deref, L: Deref> OnionMessageHandler for OnionMessenger<Si
 		};
 	}
 
-	fn peer_connected(&self, their_node_id: &PublicKey, init: &msgs::Init) {
+	fn peer_connected(&self, their_node_id: &PublicKey, init: &msgs::Init) -> Result<(), ()> {
 		if init.features.supports_onion_messages() {
 			let mut peers = self.pending_messages.lock().unwrap();
 			peers.insert(their_node_id.clone(), VecDeque::new());
 		}
+		Ok(())
 	}
 
 	fn peer_disconnected(&self, their_node_id: &PublicKey, _no_connection_possible: bool) {
 		let mut pending_msgs = self.pending_messages.lock().unwrap();
 		pending_msgs.remove(their_node_id);
+	}
+
+	fn provided_node_features(&self) -> NodeFeatures {
+		let mut features = NodeFeatures::empty();
+		features.set_onion_messages_optional();
+		features
+	}
+
+	fn provided_init_features(&self, _their_node_id: &PublicKey) -> InitFeatures {
+		let mut features = InitFeatures::empty();
+		features.set_onion_messages_optional();
+		features
 	}
 }
 
@@ -365,14 +379,18 @@ impl<Signer: Sign, K: Deref, L: Deref> OnionMessageProvider for OnionMessenger<S
 /// Useful for simplifying the parameters of [`SimpleArcChannelManager`] and
 /// [`SimpleArcPeerManager`]. See their docs for more details.
 ///
-///[`SimpleArcChannelManager`]: crate::ln::channelmanager::SimpleArcChannelManager
-///[`SimpleArcPeerManager`]: crate::ln::peer_handler::SimpleArcPeerManager
+/// (C-not exported) as `Arc`s don't make sense in bindings.
+///
+/// [`SimpleArcChannelManager`]: crate::ln::channelmanager::SimpleArcChannelManager
+/// [`SimpleArcPeerManager`]: crate::ln::peer_handler::SimpleArcPeerManager
 pub type SimpleArcOnionMessenger<L> = OnionMessenger<InMemorySigner, Arc<KeysManager>, Arc<L>>;
 /// Useful for simplifying the parameters of [`SimpleRefChannelManager`] and
 /// [`SimpleRefPeerManager`]. See their docs for more details.
 ///
-///[`SimpleRefChannelManager`]: crate::ln::channelmanager::SimpleRefChannelManager
-///[`SimpleRefPeerManager`]: crate::ln::peer_handler::SimpleRefPeerManager
+/// (C-not exported) as general type aliases don't make sense in bindings.
+///
+/// [`SimpleRefChannelManager`]: crate::ln::channelmanager::SimpleRefChannelManager
+/// [`SimpleRefPeerManager`]: crate::ln::peer_handler::SimpleRefPeerManager
 pub type SimpleRefOnionMessenger<'a, 'b, L> = OnionMessenger<InMemorySigner, &'a KeysManager, &'b L>;
 
 /// Construct onion packet payloads and keys for sending an onion message along the given

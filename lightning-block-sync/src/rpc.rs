@@ -1,10 +1,9 @@
 //! Simple RPC client implementation which implements [`BlockSource`] against a Bitcoin Core RPC
 //! endpoint.
 
-use crate::{BlockHeaderData, BlockSource, AsyncBlockSourceResult};
+use crate::{BlockData, BlockHeaderData, BlockSource, AsyncBlockSourceResult};
 use crate::http::{HttpClient, HttpEndpoint, HttpError, JsonResponse};
 
-use bitcoin::blockdata::block::Block;
 use bitcoin::hash_types::BlockHash;
 use bitcoin::hashes::hex::ToHex;
 
@@ -91,11 +90,11 @@ impl BlockSource for RpcClient {
 		})
 	}
 
-	fn get_block<'a>(&'a self, header_hash: &'a BlockHash) -> AsyncBlockSourceResult<'a, Block> {
+	fn get_block<'a>(&'a self, header_hash: &'a BlockHash) -> AsyncBlockSourceResult<'a, BlockData> {
 		Box::pin(async move {
 			let header_hash = serde_json::json!(header_hash.to_hex());
 			let verbosity = serde_json::json!(0);
-			Ok(self.call_method("getblock", &[header_hash, verbosity]).await?)
+			Ok(BlockData::FullBlock(self.call_method("getblock", &[header_hash, verbosity]).await?))
 		})
 	}
 

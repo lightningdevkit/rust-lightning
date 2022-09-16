@@ -216,6 +216,16 @@ impl<'a, L: chain::Listen + ?Sized> chain::Listen for DynamicChainListener<'a, L
 struct ChainListenerSet<'a, L: chain::Listen + ?Sized>(Vec<(u32, &'a L)>);
 
 impl<'a, L: chain::Listen + ?Sized> chain::Listen for ChainListenerSet<'a, L> {
+	// Needed to differentiate test expectations.
+	#[cfg(test)]
+	fn block_connected(&self, block: &bitcoin::Block, height: u32) {
+		for (starting_height, chain_listener) in self.0.iter() {
+			if height > *starting_height {
+				chain_listener.block_connected(block, height);
+			}
+		}
+	}
+
 	fn filtered_block_connected(&self, header: &BlockHeader, txdata: &chain::transaction::TransactionData, height: u32) {
 		for (starting_height, chain_listener) in self.0.iter() {
 			if height > *starting_height {

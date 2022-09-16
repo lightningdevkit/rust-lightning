@@ -17,7 +17,7 @@
 
 use bitcoin::secp256k1::{self, Secp256k1, SecretKey, PublicKey};
 
-use ln::features::InitFeatures;
+use ln::features::{InitFeatures, NodeFeatures};
 use ln::msgs;
 use ln::msgs::{ChannelMessageHandler, LightningError, NetAddress, OnionMessageHandler, RoutingMessageHandler};
 use ln::channelmanager::{SimpleArcChannelManager, SimpleRefChannelManager};
@@ -25,8 +25,10 @@ use util::ser::{VecWriter, Writeable, Writer};
 use ln::peer_channel_encryptor::{PeerChannelEncryptor,NextNoiseStep};
 use ln::wire;
 use ln::wire::Encode;
+use onion_message::{SimpleArcOnionMessenger, SimpleRefOnionMessenger};
 use routing::gossip::{NetworkGraph, P2PGossipSync};
 use util::atomic_counter::AtomicCounter;
+use util::crypto::sign;
 use util::events::{MessageSendEvent, MessageSendEventsProvider, OnionMessageProvider};
 use util::logger::Logger;
 
@@ -34,13 +36,14 @@ use prelude::*;
 use io;
 use alloc::collections::LinkedList;
 use sync::{Arc, Mutex, MutexGuard, FairRwLock};
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use core::{cmp, hash, fmt, mem};
 use core::ops::Deref;
 use core::convert::Infallible;
 #[cfg(feature = "std")] use std::error;
 
 use bitcoin::hashes::sha256::Hash as Sha256;
+use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::hashes::sha256::HashEngine as Sha256Engine;
 use bitcoin::hashes::{HashEngine, Hash};
 
@@ -70,19 +73,27 @@ impl RoutingMessageHandler for IgnoringMessageHandler {
 	fn get_next_channel_announcement(&self, _starting_point: u64) ->
 		Option<(msgs::ChannelAnnouncement, Option<msgs::ChannelUpdate>, Option<msgs::ChannelUpdate>)> { None }
 	fn get_next_node_announcement(&self, _starting_point: Option<&PublicKey>) -> Option<msgs::NodeAnnouncement> { None }
-	fn peer_connected(&self, _their_node_id: &PublicKey, _init: &msgs::Init) {}
+	fn peer_connected(&self, _their_node_id: &PublicKey, _init: &msgs::Init) -> Result<(), ()> { Ok(()) }
 	fn handle_reply_channel_range(&self, _their_node_id: &PublicKey, _msg: msgs::ReplyChannelRange) -> Result<(), LightningError> { Ok(()) }
 	fn handle_reply_short_channel_ids_end(&self, _their_node_id: &PublicKey, _msg: msgs::ReplyShortChannelIdsEnd) -> Result<(), LightningError> { Ok(()) }
 	fn handle_query_channel_range(&self, _their_node_id: &PublicKey, _msg: msgs::QueryChannelRange) -> Result<(), LightningError> { Ok(()) }
 	fn handle_query_short_channel_ids(&self, _their_node_id: &PublicKey, _msg: msgs::QueryShortChannelIds) -> Result<(), LightningError> { Ok(()) }
+	fn provided_node_features(&self) -> NodeFeatures { NodeFeatures::empty() }
+	fn provided_init_features(&self, _their_node_id: &PublicKey) -> InitFeatures {
+		InitFeatures::empty()
+	}
 }
 impl OnionMessageProvider for IgnoringMessageHandler {
 	fn next_onion_message_for_peer(&self, _peer_node_id: PublicKey) -> Option<msgs::OnionMessage> { None }
 }
 impl OnionMessageHandler for IgnoringMessageHandler {
 	fn handle_onion_message(&self, _their_node_id: &PublicKey, _msg: &msgs::OnionMessage) {}
-	fn peer_connected(&self, _their_node_id: &PublicKey, _init: &msgs::Init) {}
+	fn peer_connected(&self, _their_node_id: &PublicKey, _init: &msgs::Init) -> Result<(), ()> { Ok(()) }
 	fn peer_disconnected(&self, _their_node_id: &PublicKey, _no_connection_possible: bool) {}
+	fn provided_node_features(&self) -> NodeFeatures { NodeFeatures::empty() }
+	fn provided_init_features(&self, _their_node_id: &PublicKey) -> InitFeatures {
+		InitFeatures::empty()
+	}
 }
 impl Deref for IgnoringMessageHandler {
 	type Target = IgnoringMessageHandler;
@@ -198,8 +209,27 @@ impl ChannelMessageHandler for ErroringMessageHandler {
 	// msgs::ChannelUpdate does not contain the channel_id field, so we just drop them.
 	fn handle_channel_update(&self, _their_node_id: &PublicKey, _msg: &msgs::ChannelUpdate) {}
 	fn peer_disconnected(&self, _their_node_id: &PublicKey, _no_connection_possible: bool) {}
-	fn peer_connected(&self, _their_node_id: &PublicKey, _msg: &msgs::Init) {}
+	fn peer_connected(&self, _their_node_id: &PublicKey, _init: &msgs::Init) -> Result<(), ()> { Ok(()) }
 	fn handle_error(&self, _their_node_id: &PublicKey, _msg: &msgs::ErrorMessage) {}
+	fn provided_node_features(&self) -> NodeFeatures { NodeFeatures::empty() }
+	fn provided_init_features(&self, _their_node_id: &PublicKey) -> InitFeatures {
+		// Set a number of features which various nodes may require to talk to us. It's totally
+		// reasonable to indicate we "support" all kinds of channel features...we just reject all
+		// channels.
+		let mut features = InitFeatures::empty();
+		features.set_data_loss_protect_optional();
+		features.set_upfront_shutdown_script_optional();
+		features.set_variable_length_onion_optional();
+		features.set_static_remote_key_optional();
+		features.set_payment_secret_optional();
+		features.set_basic_mpp_optional();
+		features.set_wumbo_optional();
+		features.set_shutdown_any_segwit_optional();
+		features.set_channel_type_optional();
+		features.set_scid_privacy_optional();
+		features.set_zero_conf_optional();
+		features
+	}
 }
 impl Deref for ErroringMessageHandler {
 	type Target = ErroringMessageHandler;
@@ -351,8 +381,10 @@ struct Peer {
 
 	pending_outbound_buffer: LinkedList<Vec<u8>>,
 	pending_outbound_buffer_first_msg_offset: usize,
-	// Queue gossip broadcasts separately from `pending_outbound_buffer` so we can easily prioritize
-	// channel messages over them.
+	/// Queue gossip broadcasts separately from `pending_outbound_buffer` so we can easily
+	/// prioritize channel messages over them.
+	///
+	/// Note that these messages are *not* encrypted/MAC'd, and are only serialized.
 	gossip_broadcast_buffer: LinkedList<Vec<u8>>,
 	awaiting_write_event: bool,
 
@@ -443,8 +475,8 @@ impl Peer {
 /// SimpleRefPeerManager is the more appropriate type. Defining these type aliases prevents
 /// issues such as overly long function definitions.
 ///
-/// (C-not exported) as Arcs don't make sense in bindings
-pub type SimpleArcPeerManager<SD, M, T, F, C, L> = PeerManager<SD, Arc<SimpleArcChannelManager<M, T, F, L>>, Arc<P2PGossipSync<Arc<NetworkGraph<Arc<L>>>, Arc<C>, Arc<L>>>, IgnoringMessageHandler, Arc<L>, Arc<IgnoringMessageHandler>>;
+/// (C-not exported) as `Arc`s don't make sense in bindings.
+pub type SimpleArcPeerManager<SD, M, T, F, C, L> = PeerManager<SD, Arc<SimpleArcChannelManager<M, T, F, L>>, Arc<P2PGossipSync<Arc<NetworkGraph<Arc<L>>>, Arc<C>, Arc<L>>>, Arc<SimpleArcOnionMessenger<L>>, Arc<L>, IgnoringMessageHandler>;
 
 /// SimpleRefPeerManager is a type alias for a PeerManager reference, and is the reference
 /// counterpart to the SimpleArcPeerManager type alias. Use this type by default when you don't
@@ -453,8 +485,8 @@ pub type SimpleArcPeerManager<SD, M, T, F, C, L> = PeerManager<SD, Arc<SimpleArc
 /// But if this is not necessary, using a reference is more efficient. Defining these type aliases
 /// helps with issues such as long function definitions.
 ///
-/// (C-not exported) as Arcs don't make sense in bindings
-pub type SimpleRefPeerManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, SD, M, T, F, C, L> = PeerManager<SD, SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, M, T, F, L>, &'e P2PGossipSync<&'g NetworkGraph<&'f L>, &'h C, &'f L>, IgnoringMessageHandler, &'f L, IgnoringMessageHandler>;
+/// (C-not exported) as general type aliases don't make sense in bindings.
+pub type SimpleRefPeerManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, 'i, 'j, 'k, SD, M, T, F, C, L> = PeerManager<SD, SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, M, T, F, L>, &'e P2PGossipSync<&'g NetworkGraph<&'f L>, &'h C, &'f L>, &'i SimpleRefOnionMessenger<'j, 'k, L>, &'f L, IgnoringMessageHandler>;
 
 /// A PeerManager manages a set of peers, described by their [`SocketDescriptor`] and marshalls
 /// socket events into messages which it passes on to its [`MessageHandler`].
@@ -505,6 +537,11 @@ pub struct PeerManager<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: D
 	/// Instead, we limit the total blocked event processors to always exactly one by setting this
 	/// when an event process call is waiting.
 	blocked_event_processors: AtomicBool,
+
+	/// Used to track the last value sent in a node_announcement "timestamp" field. We ensure this
+	/// value increases strictly since we don't assume access to a time source.
+	last_node_announcement_serial: AtomicU64,
+
 	our_node_secret: SecretKey,
 	ephemeral_key_midstate: Sha256Engine,
 	custom_message_handler: CMH,
@@ -551,13 +588,18 @@ impl<Descriptor: SocketDescriptor, CM: Deref, OM: Deref, L: Deref> PeerManager<D
 	/// ephemeral_random_data is used to derive per-connection ephemeral keys and must be
 	/// cryptographically secure random bytes.
 	///
+	/// `current_time` is used as an always-increasing counter that survives across restarts and is
+	/// incremented irregularly internally. In general it is best to simply use the current UNIX
+	/// timestamp, however if it is not available a persistent counter that increases once per
+	/// minute should suffice.
+	///
 	/// (C-not exported) as we can't export a PeerManager with a dummy route handler
-	pub fn new_channel_only(channel_message_handler: CM, onion_message_handler: OM, our_node_secret: SecretKey, ephemeral_random_data: &[u8; 32], logger: L) -> Self {
+	pub fn new_channel_only(channel_message_handler: CM, onion_message_handler: OM, our_node_secret: SecretKey, current_time: u64, ephemeral_random_data: &[u8; 32], logger: L) -> Self {
 		Self::new(MessageHandler {
 			chan_handler: channel_message_handler,
 			route_handler: IgnoringMessageHandler{},
 			onion_message_handler,
-		}, our_node_secret, ephemeral_random_data, logger, IgnoringMessageHandler{})
+		}, our_node_secret, current_time, ephemeral_random_data, logger, IgnoringMessageHandler{})
 	}
 }
 
@@ -569,16 +611,21 @@ impl<Descriptor: SocketDescriptor, RM: Deref, L: Deref> PeerManager<Descriptor, 
 	/// generate error messages). Note that some other lightning implementations time-out connections
 	/// after some time if no channel is built with the peer.
 	///
+	/// `current_time` is used as an always-increasing counter that survives across restarts and is
+	/// incremented irregularly internally. In general it is best to simply use the current UNIX
+	/// timestamp, however if it is not available a persistent counter that increases once per
+	/// minute should suffice.
+	///
 	/// ephemeral_random_data is used to derive per-connection ephemeral keys and must be
 	/// cryptographically secure random bytes.
 	///
 	/// (C-not exported) as we can't export a PeerManager with a dummy channel handler
-	pub fn new_routing_only(routing_message_handler: RM, our_node_secret: SecretKey, ephemeral_random_data: &[u8; 32], logger: L) -> Self {
+	pub fn new_routing_only(routing_message_handler: RM, our_node_secret: SecretKey, current_time: u64, ephemeral_random_data: &[u8; 32], logger: L) -> Self {
 		Self::new(MessageHandler {
 			chan_handler: ErroringMessageHandler::new(),
 			route_handler: routing_message_handler,
 			onion_message_handler: IgnoringMessageHandler{},
-		}, our_node_secret, ephemeral_random_data, logger, IgnoringMessageHandler{})
+		}, our_node_secret, current_time, ephemeral_random_data, logger, IgnoringMessageHandler{})
 	}
 }
 
@@ -632,7 +679,12 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 	/// Constructs a new PeerManager with the given message handlers and node_id secret key
 	/// ephemeral_random_data is used to derive per-connection ephemeral keys and must be
 	/// cryptographically secure random bytes.
-	pub fn new(message_handler: MessageHandler<CM, RM, OM>, our_node_secret: SecretKey, ephemeral_random_data: &[u8; 32], logger: L, custom_message_handler: CMH) -> Self {
+	///
+	/// `current_time` is used as an always-increasing counter that survives across restarts and is
+	/// incremented irregularly internally. In general it is best to simply use the current UNIX
+	/// timestamp, however if it is not available a persistent counter that increases once per
+	/// minute should suffice.
+	pub fn new(message_handler: MessageHandler<CM, RM, OM>, our_node_secret: SecretKey, current_time: u64, ephemeral_random_data: &[u8; 32], logger: L, custom_message_handler: CMH) -> Self {
 		let mut ephemeral_key_midstate = Sha256::engine();
 		ephemeral_key_midstate.input(ephemeral_random_data);
 
@@ -649,6 +701,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 			our_node_secret,
 			ephemeral_key_midstate,
 			peer_counter: AtomicCounter::new(),
+			last_node_announcement_serial: AtomicU64::new(current_time),
 			logger,
 			custom_message_handler,
 			secp_ctx,
@@ -785,7 +838,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 			}
 			if peer.should_buffer_gossip_broadcast() {
 				if let Some(msg) = peer.gossip_broadcast_buffer.pop_front() {
-					peer.pending_outbound_buffer.push_back(msg);
+					peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_buffer(&msg[..]));
 				}
 			}
 			if peer.should_buffer_gossip_backfill() {
@@ -904,22 +957,19 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 
 	/// Append a message to a peer's pending outbound/write buffer
 	fn enqueue_message<M: wire::Type>(&self, peer: &mut Peer, message: &M) {
-		let mut buffer = VecWriter(Vec::with_capacity(2048));
-		wire::write(message, &mut buffer).unwrap(); // crash if the write failed
-
 		if is_gossip_msg(message.type_id()) {
 			log_gossip!(self.logger, "Enqueueing message {:?} to {}", message, log_pubkey!(peer.their_node_id.unwrap()));
 		} else {
 			log_trace!(self.logger, "Enqueueing message {:?} to {}", message, log_pubkey!(peer.their_node_id.unwrap()))
 		}
 		peer.msgs_sent_since_pong += 1;
-		peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(&buffer.0[..]));
+		peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(message));
 	}
 
 	/// Append a message to a peer's pending outbound/write gossip broadcast buffer
-	fn enqueue_encoded_gossip_broadcast(&self, peer: &mut Peer, encoded_message: &Vec<u8>) {
+	fn enqueue_encoded_gossip_broadcast(&self, peer: &mut Peer, encoded_message: Vec<u8>) {
 		peer.msgs_sent_since_pong += 1;
-		peer.gossip_broadcast_buffer.push_back(peer.channel_encryptor.encrypt_message(&encoded_message[..]));
+		peer.gossip_broadcast_buffer.push_back(encoded_message);
 	}
 
 	fn do_read_event(&self, peer_descriptor: &mut Descriptor, data: &[u8]) -> Result<bool, PeerHandleError> {
@@ -1028,7 +1078,9 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 
 								peer.their_node_id = Some(their_node_id);
 								insert_node_id!();
-								let features = InitFeatures::known();
+								let features = self.message_handler.chan_handler.provided_init_features(&their_node_id)
+									.or(self.message_handler.route_handler.provided_init_features(&their_node_id))
+									.or(self.message_handler.onion_message_handler.provided_init_features(&their_node_id));
 								let resp = msgs::Init { features, remote_network_address: filter_addresses(peer.their_net_address.clone()) };
 								self.enqueue_message(peer, &resp);
 								peer.awaiting_pong_timer_tick_intervals = 0;
@@ -1040,7 +1092,9 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 								peer.pending_read_is_header = true;
 								peer.their_node_id = Some(their_node_id);
 								insert_node_id!();
-								let features = InitFeatures::known();
+								let features = self.message_handler.chan_handler.provided_init_features(&their_node_id)
+									.or(self.message_handler.route_handler.provided_init_features(&their_node_id))
+									.or(self.message_handler.onion_message_handler.provided_init_features(&their_node_id));
 								let resp = msgs::Init { features, remote_network_address: filter_addresses(peer.their_net_address.clone()) };
 								self.enqueue_message(peer, &resp);
 								peer.awaiting_pong_timer_tick_intervals = 0;
@@ -1086,7 +1140,10 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 												}
 												(_, Some(ty)) if is_gossip_msg(ty) => {
 													log_gossip!(self.logger, "Got an invalid value while deserializing a gossip message");
-													self.enqueue_message(peer, &msgs::WarningMessage { channel_id: [0; 32], data: "Unreadable/bogus gossip message".to_owned() });
+													self.enqueue_message(peer, &msgs::WarningMessage {
+														channel_id: [0; 32],
+														data: format!("Unreadable/bogus gossip message of type {}", ty),
+													});
 													continue;
 												}
 												(msgs::DecodeError::UnknownRequiredFeature, ty) => {
@@ -1169,14 +1226,18 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 				peer_lock.sync_status = InitSyncTracker::ChannelsSyncing(0);
 			}
 
-			if !msg.features.supports_static_remote_key() {
-				log_debug!(self.logger, "Peer {} does not support static remote key, disconnecting with no_connection_possible", log_pubkey!(their_node_id));
+			if let Err(()) = self.message_handler.route_handler.peer_connected(&their_node_id, &msg) {
+				log_debug!(self.logger, "Route Handler decided we couldn't communicate with peer {}", log_pubkey!(their_node_id));
 				return Err(PeerHandleError{ no_connection_possible: true }.into());
 			}
-
-			self.message_handler.route_handler.peer_connected(&their_node_id, &msg);
-			self.message_handler.chan_handler.peer_connected(&their_node_id, &msg);
-			self.message_handler.onion_message_handler.peer_connected(&their_node_id, &msg);
+			if let Err(()) = self.message_handler.chan_handler.peer_connected(&their_node_id, &msg) {
+				log_debug!(self.logger, "Channel Handler decided we couldn't communicate with peer {}", log_pubkey!(their_node_id));
+				return Err(PeerHandleError{ no_connection_possible: true }.into());
+			}
+			if let Err(()) = self.message_handler.onion_message_handler.peer_connected(&their_node_id, &msg) {
+				log_debug!(self.logger, "Onion Message Handler decided we couldn't communicate with peer {}", log_pubkey!(their_node_id));
+				return Err(PeerHandleError{ no_connection_possible: true }.into());
+			}
 
 			peer_lock.their_features = Some(msg.features);
 			return Ok(None);
@@ -1394,7 +1455,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 					if except_node.is_some() && peer.their_node_id.as_ref() == except_node {
 						continue;
 					}
-					self.enqueue_encoded_gossip_broadcast(&mut *peer, &encoded_msg);
+					self.enqueue_encoded_gossip_broadcast(&mut *peer, encoded_msg.clone());
 				}
 			},
 			wire::Message::NodeAnnouncement(ref msg) => {
@@ -1417,7 +1478,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 					if except_node.is_some() && peer.their_node_id.as_ref() == except_node {
 						continue;
 					}
-					self.enqueue_encoded_gossip_broadcast(&mut *peer, &encoded_msg);
+					self.enqueue_encoded_gossip_broadcast(&mut *peer, encoded_msg.clone());
 				}
 			},
 			wire::Message::ChannelUpdate(ref msg) => {
@@ -1437,7 +1498,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 					if except_node.is_some() && peer.their_node_id.as_ref() == except_node {
 						continue;
 					}
-					self.enqueue_encoded_gossip_broadcast(&mut *peer, &encoded_msg);
+					self.enqueue_encoded_gossip_broadcast(&mut *peer, encoded_msg.clone());
 				}
 			},
 			_ => debug_assert!(false, "We shouldn't attempt to forward anything but gossip messages"),
@@ -1613,6 +1674,13 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 								log_bytes!(msg.channel_id));
 						self.enqueue_message(&mut *get_peer_for_forwarding!(node_id), msg);
 					},
+					MessageSendEvent::SendChannelAnnouncement { ref node_id, ref msg, ref update_msg } => {
+						log_debug!(self.logger, "Handling SendChannelAnnouncement event in peer_handler for node {} for short channel id {}",
+								log_pubkey!(node_id),
+								msg.contents.short_channel_id);
+						self.enqueue_message(&mut *get_peer_for_forwarding!(node_id), msg);
+						self.enqueue_message(&mut *get_peer_for_forwarding!(node_id), update_msg);
+					},
 					MessageSendEvent::BroadcastChannelAnnouncement { msg, update_msg } => {
 						log_debug!(self.logger, "Handling BroadcastChannelAnnouncement event in peer_handler for short channel id {}", msg.contents.short_channel_id);
 						match self.message_handler.route_handler.handle_channel_announcement(&msg) {
@@ -1623,14 +1691,6 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 						match self.message_handler.route_handler.handle_channel_update(&update_msg) {
 							Ok(_) | Err(LightningError { action: msgs::ErrorAction::IgnoreDuplicateGossip, .. }) =>
 								self.forward_broadcast_msg(peers, &wire::Message::ChannelUpdate(update_msg), None),
-							_ => {},
-						}
-					},
-					MessageSendEvent::BroadcastNodeAnnouncement { msg } => {
-						log_debug!(self.logger, "Handling BroadcastNodeAnnouncement event in peer_handler");
-						match self.message_handler.route_handler.handle_node_announcement(&msg) {
-							Ok(_) | Err(LightningError { action: msgs::ErrorAction::IgnoreDuplicateGossip, .. }) =>
-								self.forward_broadcast_msg(peers, &wire::Message::NodeAnnouncement(msg), None),
 							_ => {},
 						}
 					},
@@ -1899,6 +1959,66 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 			}
 		}
 	}
+
+	#[allow(dead_code)]
+	// Messages of up to 64KB should never end up more than half full with addresses, as that would
+	// be absurd. We ensure this by checking that at least 100 (our stated public contract on when
+	// broadcast_node_announcement panics) of the maximum-length addresses would fit in a 64KB
+	// message...
+	const HALF_MESSAGE_IS_ADDRS: u32 = ::core::u16::MAX as u32 / (NetAddress::MAX_LEN as u32 + 1) / 2;
+	#[deny(const_err)]
+	#[allow(dead_code)]
+	// ...by failing to compile if the number of addresses that would be half of a message is
+	// smaller than 100:
+	const STATIC_ASSERT: u32 = Self::HALF_MESSAGE_IS_ADDRS - 100;
+
+	/// Generates a signed node_announcement from the given arguments, sending it to all connected
+	/// peers. Note that peers will likely ignore this message unless we have at least one public
+	/// channel which has at least six confirmations on-chain.
+	///
+	/// `rgb` is a node "color" and `alias` is a printable human-readable string to describe this
+	/// node to humans. They carry no in-protocol meaning.
+	///
+	/// `addresses` represent the set (possibly empty) of socket addresses on which this node
+	/// accepts incoming connections. These will be included in the node_announcement, publicly
+	/// tying these addresses together and to this node. If you wish to preserve user privacy,
+	/// addresses should likely contain only Tor Onion addresses.
+	///
+	/// Panics if `addresses` is absurdly large (more than 100).
+	///
+	/// [`get_and_clear_pending_msg_events`]: MessageSendEventsProvider::get_and_clear_pending_msg_events
+	pub fn broadcast_node_announcement(&self, rgb: [u8; 3], alias: [u8; 32], mut addresses: Vec<NetAddress>) {
+		if addresses.len() > 100 {
+			panic!("More than half the message size was taken up by public addresses!");
+		}
+
+		// While all existing nodes handle unsorted addresses just fine, the spec requires that
+		// addresses be sorted for future compatibility.
+		addresses.sort_by_key(|addr| addr.get_id());
+
+		let features = self.message_handler.chan_handler.provided_node_features()
+			.or(self.message_handler.route_handler.provided_node_features())
+			.or(self.message_handler.onion_message_handler.provided_node_features());
+		let announcement = msgs::UnsignedNodeAnnouncement {
+			features,
+			timestamp: self.last_node_announcement_serial.fetch_add(1, Ordering::AcqRel) as u32,
+			node_id: PublicKey::from_secret_key(&self.secp_ctx, &self.our_node_secret),
+			rgb, alias, addresses,
+			excess_address_data: Vec::new(),
+			excess_data: Vec::new(),
+		};
+		let msghash = hash_to_message!(&Sha256dHash::hash(&announcement.encode()[..])[..]);
+		let node_announce_sig = sign(&self.secp_ctx, &msghash, &self.our_node_secret);
+
+		let msg = msgs::NodeAnnouncement {
+			signature: node_announce_sig,
+			contents: announcement
+		};
+
+		log_debug!(self.logger, "Broadcasting NodeAnnouncement after passing it to our own RoutingMessageHandler.");
+		let _ = self.message_handler.route_handler.handle_node_announcement(&msg);
+		self.forward_broadcast_msg(&*self.peers.read().unwrap(), &wire::Message::NodeAnnouncement(msg), None);
+	}
 }
 
 fn is_gossip_msg(type_id: u16) -> bool {
@@ -1982,7 +2102,7 @@ mod tests {
 			let node_secret = SecretKey::from_slice(&[42 + i as u8; 32]).unwrap();
 			let ephemeral_bytes = [i as u8; 32];
 			let msg_handler = MessageHandler { chan_handler: &cfgs[i].chan_handler, route_handler: &cfgs[i].routing_handler, onion_message_handler: IgnoringMessageHandler {} };
-			let peer = PeerManager::new(msg_handler, node_secret, &ephemeral_bytes, &cfgs[i].logger, IgnoringMessageHandler {});
+			let peer = PeerManager::new(msg_handler, node_secret, 0, &ephemeral_bytes, &cfgs[i].logger, IgnoringMessageHandler {});
 			peers.push(peer);
 		}
 

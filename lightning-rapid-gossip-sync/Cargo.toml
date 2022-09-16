@@ -1,6 +1,6 @@
 [package]
 name = "lightning-rapid-gossip-sync"
-version = "0.0.110"
+version = "0.0.111"
 authors = ["Arik Sosman <git@arik.io>"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/lightningdevkit/rust-lightning"
@@ -10,11 +10,14 @@ Utility to process gossip routing data from Rapid Gossip Sync Server.
 """
 
 [features]
+default = ["std"]
+no-std = ["lightning/no-std"]
+std = ["lightning/std"]
 _bench_unstable = []
 
 [dependencies]
-lightning = { version = "0.0.110", path = "../lightning" }
+lightning = { version = "0.0.111", path = "../lightning" }
 bitcoin = { version = "0.29.0", default-features = false }
 
 [dev-dependencies]
-lightning = { version = "0.0.110", path = "../lightning", features = ["_test_utils"] }
+lightning = { version = "0.0.111", path = "../lightning", features = ["_test_utils"] }

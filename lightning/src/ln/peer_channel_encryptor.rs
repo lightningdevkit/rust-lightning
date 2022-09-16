@@ -11,6 +11,7 @@ use prelude::*;
 
 use ln::msgs::LightningError;
 use ln::msgs;
+use ln::wire;
 
 use bitcoin::hashes::{Hash, HashEngine};
 use bitcoin::hashes::sha256::Hash as Sha256;
@@ -22,6 +23,7 @@ use bitcoin::secp256k1;
 
 use util::chacha20poly1305rfc::ChaCha20Poly1305RFC;
 use util::crypto::hkdf_extract_expand_twice;
+use util::ser::VecWriter;
 use bitcoin::hashes::hex::ToHex;
 
 /// Maximum Lightning message data length according to
@@ -140,6 +142,19 @@ impl PeerChannelEncryptor {
 		let mut tag = [0; 16];
 		chacha.encrypt(plaintext, &mut res[0..plaintext.len()], &mut tag);
 		res[plaintext.len()..].copy_from_slice(&tag);
+	}
+
+	#[inline]
+	/// Encrypts the message in res[offset..] in-place and pushes a 16-byte tag onto the end of
+	/// res.
+	fn encrypt_in_place_with_ad(res: &mut Vec<u8>, offset: usize, n: u64, key: &[u8; 32], h: &[u8]) {
+		let mut nonce = [0; 12];
+		nonce[4..].copy_from_slice(&n.to_le_bytes()[..]);
+
+		let mut chacha = ChaCha20Poly1305RFC::new(key, &nonce, h);
+		let mut tag = [0; 16];
+		chacha.encrypt_full_message_in_place(&mut res[offset..], &mut tag);
+		res.extend_from_slice(&tag);
 	}
 
 	#[inline]
@@ -372,9 +387,9 @@ impl PeerChannelEncryptor {
 		Ok(self.their_node_id.unwrap().clone())
 	}
 
-	/// Encrypts the given message, returning the encrypted version
+	/// Encrypts the given pre-serialized message, returning the encrypted version.
 	/// panics if msg.len() > 65535 or Noise handshake has not finished.
-	pub fn encrypt_message(&mut self, msg: &[u8]) -> Vec<u8> {
+	pub fn encrypt_buffer(&mut self, msg: &[u8]) -> Vec<u8> {
 		if msg.len() > LN_MAX_MSG_LEN {
 			panic!("Attempted to encrypt message longer than 65535 bytes!");
 		}
@@ -401,6 +416,42 @@ impl PeerChannelEncryptor {
 		}
 
 		res
+	}
+
+	/// Encrypts the given message, returning the encrypted version.
+	/// panics if the length of `message`, once encoded, is greater than 65535 or if the Noise
+	/// handshake has not finished.
+	pub fn encrypt_message<M: wire::Type>(&mut self, message: &M) -> Vec<u8> {
+		// Allocate a buffer with 2KB, fitting most common messages. Reserve the first 16+2 bytes
+		// for the 2-byte message type prefix and its MAC.
+		let mut res = VecWriter(Vec::with_capacity(2048));
+		res.0.resize(16 + 2, 0);
+		wire::write(message, &mut res).expect("In-memory messages must never fail to serialize");
+
+		let msg_len = res.0.len() - 16 - 2;
+		if msg_len > LN_MAX_MSG_LEN {
+			panic!("Attempted to encrypt message longer than 65535 bytes!");
+		}
+
+		match self.noise_state {
+			NoiseState::Finished { ref mut sk, ref mut sn, ref mut sck, rk: _, rn: _, rck: _ } => {
+				if *sn >= 1000 {
+					let (new_sck, new_sk) = hkdf_extract_expand_twice(sck, sk);
+					*sck = new_sck;
+					*sk = new_sk;
+					*sn = 0;
+				}
+
+				Self::encrypt_with_ad(&mut res.0[0..16+2], *sn, sk, &[0; 0], &(msg_len as u16).to_be_bytes());
+				*sn += 1;
+
+				Self::encrypt_in_place_with_ad(&mut res.0, 16+2, *sn, sk, &[0; 0]);
+				*sn += 1;
+			},
+			_ => panic!("Tried to encrypt a message prior to noise handshake completion"),
+		}
+
+		res.0
 	}
 
 	/// Decrypts a message length header from the remote peer.
@@ -682,7 +733,7 @@ mod tests {
 
 		for i in 0..1005 {
 			let msg = [0x68, 0x65, 0x6c, 0x6c, 0x6f];
-			let res = outbound_peer.encrypt_message(&msg);
+			let res = outbound_peer.encrypt_buffer(&msg);
 			assert_eq!(res.len(), 5 + 2*16 + 2);
 
 			let len_header = res[0..2+16].to_vec();
@@ -716,7 +767,7 @@ mod tests {
 	fn max_message_len_encryption() {
 		let mut outbound_peer = get_outbound_peer_for_initiator_test_vectors();
 		let msg = [4u8; LN_MAX_MSG_LEN + 1];
-		outbound_peer.encrypt_message(&msg);
+		outbound_peer.encrypt_buffer(&msg);
 	}
 
 	#[test]

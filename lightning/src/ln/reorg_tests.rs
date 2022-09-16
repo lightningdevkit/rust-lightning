@@ -12,8 +12,7 @@
 use chain::channelmonitor::{ANTI_REORG_DELAY, ChannelMonitor};
 use chain::transaction::OutPoint;
 use chain::{Confirm, Watch};
-use ln::channelmanager::{ChannelManager, ChannelManagerReadArgs};
-use ln::features::InitFeatures;
+use ln::channelmanager::{self, ChannelManager, ChannelManagerReadArgs};
 use ln::msgs::ChannelMessageHandler;
 use util::enforcing_trait_impls::EnforcingSigner;
 use util::events::{Event, MessageSendEvent, MessageSendEventsProvider, ClosureReason, HTLCDestination};
@@ -54,8 +53,8 @@ fn do_test_onchain_htlc_reorg(local_commitment: bool, claim: bool) {
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
 	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
-	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
-	let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::known(), InitFeatures::known());
+	create_announced_chan_between_nodes(&nodes, 0, 1, channelmanager::provided_init_features(), channelmanager::provided_init_features());
+	let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2, channelmanager::provided_init_features(), channelmanager::provided_init_features());
 
 	// Make sure all nodes are at the same starting height
 	connect_blocks(&nodes[0], 2*CHAN_CONFIRM_DEPTH + 1 - nodes[0].best_block_info().1);
@@ -199,7 +198,7 @@ fn test_counterparty_revoked_reorg() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
-	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 500_000_000, InitFeatures::known(), InitFeatures::known());
+	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 500_000_000, channelmanager::provided_init_features(), channelmanager::provided_init_features());
 
 	// Get the initial commitment transaction for broadcast, before any HTLCs are added at all.
 	let revoked_local_txn = get_local_commitment_txn!(nodes[0], chan.2);
@@ -256,7 +255,7 @@ fn test_counterparty_revoked_reorg() {
 
 	// Connect blocks to confirm the unrevoked commitment transaction
 	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 2);
-	expect_payment_failed!(nodes[1], payment_hash_4, true);
+	expect_payment_failed!(nodes[1], payment_hash_4, false);
 }
 
 fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool, use_funding_unconfirmed: bool, connect_style: ConnectStyle) {
@@ -272,7 +271,7 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool, use_funding_
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	*nodes[0].connect_style.borrow_mut() = connect_style;
 
-	let chan = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
+	let chan = create_announced_chan_between_nodes(&nodes, 0, 1, channelmanager::provided_init_features(), channelmanager::provided_init_features());
 
 	let channel_state = nodes[0].node.channel_state.lock().unwrap();
 	assert_eq!(channel_state.by_id.len(), 1);
@@ -379,7 +378,7 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool, use_funding_
 	nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().clear();
 
 	// Now check that we can create a new channel
-	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
+	create_announced_chan_between_nodes(&nodes, 0, 1, channelmanager::provided_init_features(), channelmanager::provided_init_features());
 	send_payment(&nodes[0], &[&nodes[1]], 8000000);
 }
 
@@ -432,7 +431,7 @@ fn test_set_outpoints_partial_claiming() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
-	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1000000, 59000000, InitFeatures::known(), InitFeatures::known());
+	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1000000, 59000000, channelmanager::provided_init_features(), channelmanager::provided_init_features());
 	let (payment_preimage_1, payment_hash_1, _) = route_payment(&nodes[1], &[&nodes[0]], 3_000_000);
 	let (payment_preimage_2, payment_hash_2, _) = route_payment(&nodes[1], &[&nodes[0]], 3_000_000);
 
@@ -537,7 +536,7 @@ fn do_test_to_remote_after_local_detection(style: ConnectStyle) {
 	*nodes[1].connect_style.borrow_mut() = style;
 
 	let (_, _, chan_id, funding_tx) =
-		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 100_000_000, InitFeatures::known(), InitFeatures::known());
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 100_000_000, channelmanager::provided_init_features(), channelmanager::provided_init_features());
 	let funding_outpoint = OutPoint { txid: funding_tx.txid(), index: 0 };
 	assert_eq!(funding_outpoint.to_channel_id(), chan_id);
 

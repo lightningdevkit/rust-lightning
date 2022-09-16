@@ -22,7 +22,7 @@ use bitcoin::hash_types::BlockHash;
 use chain;
 use chain::Access;
 use ln::chan_utils::make_funding_redeemscript;
-use ln::features::{ChannelFeatures, NodeFeatures};
+use ln::features::{ChannelFeatures, NodeFeatures, InitFeatures};
 use ln::msgs::{DecodeError, ErrorAction, Init, LightningError, RoutingMessageHandler, NetAddress, MAX_VALUE_MSAT};
 use ln::msgs::{ChannelAnnouncement, ChannelUpdate, NodeAnnouncement, GossipTimestampFilter};
 use ln::msgs::{QueryChannelRange, ReplyChannelRange, QueryShortChannelIds, ReplyShortChannelIdsEnd};
@@ -197,6 +197,7 @@ where C::Target: chain::Access, L::Target: Logger
 {
 	network_graph: G,
 	chain_access: Option<C>,
+	#[cfg(feature = "std")]
 	full_syncs_requested: AtomicUsize,
 	pending_events: Mutex<Vec<MessageSendEvent>>,
 	logger: L,
@@ -213,6 +214,7 @@ where C::Target: chain::Access, L::Target: Logger
 	pub fn new(network_graph: G, chain_access: Option<C>, logger: L) -> Self {
 		P2PGossipSync {
 			network_graph,
+			#[cfg(feature = "std")]
 			full_syncs_requested: AtomicUsize::new(0),
 			chain_access,
 			pending_events: Mutex::new(vec![]),
@@ -235,6 +237,7 @@ where C::Target: chain::Access, L::Target: Logger
 		&self.network_graph
 	}
 
+	#[cfg(feature = "std")]
 	/// Returns true when a full routing table sync should be performed with a peer.
 	fn should_request_full_sync(&self, _node_id: &PublicKey) -> bool {
 		//TODO: Determine whether to request a full sync based on the network map.
@@ -365,10 +368,12 @@ where C::Target: chain::Access, L::Target: Logger
 	/// to request gossip messages for each channel. The sync is considered complete
 	/// when the final reply_scids_end message is received, though we are not
 	/// tracking this directly.
-	fn peer_connected(&self, their_node_id: &PublicKey, init_msg: &Init) {
+	fn peer_connected(&self, their_node_id: &PublicKey, init_msg: &Init) -> Result<(), ()> {
 		// We will only perform a sync with peers that support gossip_queries.
 		if !init_msg.features.supports_gossip_queries() {
-			return ();
+			// Don't disconnect peers for not supporting gossip queries. We may wish to have
+			// channels with peers even without being able to exchange gossip.
+			return Ok(());
 		}
 
 		// The lightning network's gossip sync system is completely broken in numerous ways.
@@ -421,13 +426,12 @@ where C::Target: chain::Access, L::Target: Logger
 		// `gossip_timestamp_filter`, with the filter time set either two weeks ago or an hour ago.
 		//
 		// For no-std builds, we bury our head in the sand and do a full sync on each connection.
-		let should_request_full_sync = self.should_request_full_sync(&their_node_id);
 		#[allow(unused_mut, unused_assignments)]
 		let mut gossip_start_time = 0;
 		#[cfg(feature = "std")]
 		{
 			gossip_start_time = SystemTime::now().duration_since(UNIX_EPOCH).expect("Time must be > 1970").as_secs();
-			if should_request_full_sync {
+			if self.should_request_full_sync(&their_node_id) {
 				gossip_start_time -= 60 * 60 * 24 * 7 * 2; // 2 weeks ago
 			} else {
 				gossip_start_time -= 60 * 60; // an hour ago
@@ -443,6 +447,7 @@ where C::Target: chain::Access, L::Target: Logger
 				timestamp_range: u32::max_value(),
 			},
 		});
+		Ok(())
 	}
 
 	fn handle_reply_channel_range(&self, _their_node_id: &PublicKey, _msg: ReplyChannelRange) -> Result<(), LightningError> {
@@ -569,6 +574,18 @@ where C::Target: chain::Access, L::Target: Logger
 			err: String::from("Not implemented"),
 			action: ErrorAction::IgnoreError,
 		})
+	}
+
+	fn provided_node_features(&self) -> NodeFeatures {
+		let mut features = NodeFeatures::empty();
+		features.set_gossip_queries_optional();
+		features
+	}
+
+	fn provided_init_features(&self, _their_node_id: &PublicKey) -> InitFeatures {
+		let mut features = InitFeatures::empty();
+		features.set_gossip_queries_optional();
+		features
 	}
 }
 
@@ -1852,11 +1869,12 @@ impl ReadOnlyNetworkGraph<'_> {
 #[cfg(test)]
 mod tests {
 	use chain;
+	use ln::channelmanager;
 	use ln::chan_utils::make_funding_redeemscript;
 	use ln::PaymentHash;
-	use ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
+	use ln::features::InitFeatures;
 	use routing::gossip::{P2PGossipSync, NetworkGraph, NetworkUpdate, NodeAlias, MAX_EXCESS_BYTES_FOR_RELAY, NodeId, RoutingFees, ChannelUpdateInfo, ChannelInfo, NodeAnnouncementInfo, NodeInfo};
-	use ln::msgs::{Init, RoutingMessageHandler, UnsignedNodeAnnouncement, NodeAnnouncement,
+	use ln::msgs::{RoutingMessageHandler, UnsignedNodeAnnouncement, NodeAnnouncement,
 		UnsignedChannelAnnouncement, ChannelAnnouncement, UnsignedChannelUpdate, ChannelUpdate,
 		ReplyChannelRange, QueryChannelRange, QueryShortChannelIds, MAX_VALUE_MSAT};
 	use util::test_utils;
@@ -1900,6 +1918,7 @@ mod tests {
 	}
 
 	#[test]
+	#[cfg(feature = "std")]
 	fn request_full_sync_finite_times() {
 		let network_graph = create_network_graph();
 		let (secp_ctx, gossip_sync) = create_gossip_sync(&network_graph);
@@ -1916,7 +1935,7 @@ mod tests {
 	fn get_signed_node_announcement<F: Fn(&mut UnsignedNodeAnnouncement)>(f: F, node_key: &SecretKey, secp_ctx: &Secp256k1<secp256k1::All>) -> NodeAnnouncement {
 		let node_id = PublicKey::from_secret_key(&secp_ctx, node_key);
 		let mut unsigned_announcement = UnsignedNodeAnnouncement {
-			features: NodeFeatures::known(),
+			features: channelmanager::provided_node_features(),
 			timestamp: 100,
 			node_id: node_id,
 			rgb: [0; 3],
@@ -1940,7 +1959,7 @@ mod tests {
 		let node_2_btckey = &SecretKey::from_slice(&[39; 32]).unwrap();
 
 		let mut unsigned_announcement = UnsignedChannelAnnouncement {
-			features: ChannelFeatures::known(),
+			features: channelmanager::provided_channel_features(),
 			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
 			short_channel_id: 0,
 			node_id_1,
@@ -2279,7 +2298,7 @@ mod tests {
 			network_graph.handle_event(&Event::PaymentPathFailed {
 				payment_id: None,
 				payment_hash: PaymentHash([0; 32]),
-				rejected_by_dest: false,
+				payment_failed_permanently: false,
 				all_paths_failed: true,
 				path: vec![],
 				network_update: Some(NetworkUpdate::ChannelUpdateMessage {
@@ -2306,7 +2325,7 @@ mod tests {
 			network_graph.handle_event(&Event::PaymentPathFailed {
 				payment_id: None,
 				payment_hash: PaymentHash([0; 32]),
-				rejected_by_dest: false,
+				payment_failed_permanently: false,
 				all_paths_failed: true,
 				path: vec![],
 				network_update: Some(NetworkUpdate::ChannelFailure {
@@ -2331,7 +2350,7 @@ mod tests {
 		network_graph.handle_event(&Event::PaymentPathFailed {
 			payment_id: None,
 			payment_hash: PaymentHash([0; 32]),
-			rejected_by_dest: false,
+			payment_failed_permanently: false,
 			all_paths_failed: true,
 			path: vec![],
 			network_update: Some(NetworkUpdate::ChannelFailure {
@@ -2587,6 +2606,7 @@ mod tests {
 	#[cfg(feature = "std")]
 	fn calling_sync_routing_table() {
 		use std::time::{SystemTime, UNIX_EPOCH};
+		use ln::msgs::Init;
 
 		let network_graph = create_network_graph();
 		let (secp_ctx, gossip_sync) = create_gossip_sync(&network_graph);
@@ -2597,16 +2617,18 @@ mod tests {
 
 		// It should ignore if gossip_queries feature is not enabled
 		{
-			let init_msg = Init { features: InitFeatures::known().clear_gossip_queries(), remote_network_address: None };
-			gossip_sync.peer_connected(&node_id_1, &init_msg);
+			let init_msg = Init { features: InitFeatures::empty(), remote_network_address: None };
+			gossip_sync.peer_connected(&node_id_1, &init_msg).unwrap();
 			let events = gossip_sync.get_and_clear_pending_msg_events();
 			assert_eq!(events.len(), 0);
 		}
 
 		// It should send a gossip_timestamp_filter with the correct information
 		{
-			let init_msg = Init { features: InitFeatures::known(), remote_network_address: None };
-			gossip_sync.peer_connected(&node_id_1, &init_msg);
+			let mut features = InitFeatures::empty();
+			features.set_gossip_queries_optional();
+			let init_msg = Init { features, remote_network_address: None };
+			gossip_sync.peer_connected(&node_id_1, &init_msg).unwrap();
 			let events = gossip_sync.get_and_clear_pending_msg_events();
 			assert_eq!(events.len(), 1);
 			match &events[0] {
@@ -2995,7 +3017,7 @@ mod tests {
 		// 2. Test encoding/decoding of ChannelInfo
 		// Check we can encode/decode ChannelInfo without ChannelUpdateInfo fields present.
 		let chan_info_none_updates = ChannelInfo {
-			features: ChannelFeatures::known(),
+			features: channelmanager::provided_channel_features(),
 			node_one: NodeId::from_pubkey(&nodes[0].node.get_our_node_id()),
 			one_to_two: None,
 			node_two: NodeId::from_pubkey(&nodes[1].node.get_our_node_id()),
@@ -3013,7 +3035,7 @@ mod tests {
 
 		// Check we can encode/decode ChannelInfo with ChannelUpdateInfo fields present.
 		let chan_info_some_updates = ChannelInfo {
-			features: ChannelFeatures::known(),
+			features: channelmanager::provided_channel_features(),
 			node_one: NodeId::from_pubkey(&nodes[0].node.get_our_node_id()),
 			one_to_two: Some(chan_update_info.clone()),
 			node_two: NodeId::from_pubkey(&nodes[1].node.get_our_node_id()),
@@ -3055,7 +3077,7 @@ mod tests {
 		// 1. Check we can read a valid NodeAnnouncementInfo and fail on an invalid one
 		let valid_netaddr = ::ln::msgs::NetAddress::Hostname { hostname: ::util::ser::Hostname::try_from("A".to_string()).unwrap(), port: 1234 };
 		let valid_node_ann_info = NodeAnnouncementInfo {
-			features: NodeFeatures::known(),
+			features: channelmanager::provided_node_features(),
 			last_update: 0,
 			rgb: [0u8; 3],
 			alias: NodeAlias([0u8; 32]),

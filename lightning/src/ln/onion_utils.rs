@@ -425,6 +425,7 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(secp_ctx: &
 
 				if fixed_time_eq(&Hmac::from_engine(hmac).into_inner(), &err_packet.hmac) {
 					if let Some(error_code_slice) = err_packet.failuremsg.get(0..2) {
+						const BADONION: u16 = 0x8000;
 						const PERM: u16 = 0x4000;
 						const NODE: u16 = 0x2000;
 						const UPDATE: u16 = 0x1000;
@@ -445,12 +446,24 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(secp_ctx: &
 						let mut network_update = None;
 						let mut short_channel_id = None;
 
-						if error_code & NODE == NODE {
+						if error_code & BADONION == BADONION {
+							// If the error code has the BADONION bit set, always blame the channel
+							// from the node "originating" the error to its next hop. The
+							// "originator" is ultimately actually claiming that its counterparty
+							// is the one who is failing the HTLC.
+							// If the "originator" here isn't lying we should really mark the
+							// next-hop node as failed entirely, but we can't be confident in that,
+							// as it would allow any node to get us to completely ban one of its
+							// counterparties. Instead, we simply remove the channel in question.
+							network_update = Some(NetworkUpdate::ChannelFailure {
+								short_channel_id: failing_route_hop.short_channel_id,
+								is_permanent: true,
+							});
+						} else if error_code & NODE == NODE {
 							let is_permanent = error_code & PERM == PERM;
 							network_update = Some(NetworkUpdate::NodeFailure { node_id: route_hop.pubkey, is_permanent });
 							short_channel_id = Some(route_hop.short_channel_id);
-						}
-						else if error_code & PERM == PERM {
+						} else if error_code & PERM == PERM {
 							if !payment_failed {
 								network_update = Some(NetworkUpdate::ChannelFailure {
 									short_channel_id: failing_route_hop.short_channel_id,
@@ -458,8 +471,7 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(secp_ctx: &
 								});
 								short_channel_id = Some(failing_route_hop.short_channel_id);
 							}
-						}
-						else if error_code & UPDATE == UPDATE {
+						} else if error_code & UPDATE == UPDATE {
 							if let Some(update_len_slice) = err_packet.failuremsg.get(debug_field_size+2..debug_field_size+4) {
 								let update_len = u16::from_be_bytes(update_len_slice.try_into().expect("len is 2")) as usize;
 								if let Some(mut update_slice) = err_packet.failuremsg.get(debug_field_size + 4..debug_field_size + 4 + update_len) {
@@ -545,9 +557,6 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(secp_ctx: &
 							short_channel_id = Some(route_hop.short_channel_id);
 						}
 
-						// TODO: Here (and a few other places) we assume that BADONION errors
-						// are always "sourced" from the node previous to the one which failed
-						// to decode the onion.
 						res = Some((network_update, short_channel_id, !(error_code & PERM == PERM && is_from_final_node)));
 
 						let (description, title) = errors::get_onion_error_description(error_code);
