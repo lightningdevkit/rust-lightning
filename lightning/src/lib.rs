@@ -173,18 +173,18 @@ mod prelude {
 	pub use alloc::string::ToString;
 }
 
-#[cfg(all(feature = "std", test))]
+#[cfg(all(not(feature = "_bench_unstable"), feature = "std", test))]
 mod debug_sync;
-#[cfg(all(feature = "backtrace", feature = "std", test))]
+#[cfg(all(not(feature = "_bench_unstable"), feature = "backtrace", feature = "std", test))]
 extern crate backtrace;
 
 #[cfg(feature = "std")]
 mod sync {
-	#[cfg(test)]
+	#[cfg(all(not(feature = "_bench_unstable"), test))]
 	pub use debug_sync::*;
-	#[cfg(not(test))]
+	#[cfg(any(feature = "_bench_unstable", not(test)))]
 	pub use ::std::sync::{Arc, Mutex, Condvar, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
-	#[cfg(not(test))]
+	#[cfg(any(feature = "_bench_unstable", not(test)))]
 	pub use crate::util::fairrwlock::FairRwLock;
 }
 
