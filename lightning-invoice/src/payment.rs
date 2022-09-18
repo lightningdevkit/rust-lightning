@@ -741,8 +741,8 @@ pub struct InFlightHtlcs(HashMap<(u64, bool), u64>);
 impl InFlightHtlcs {
 	/// Returns liquidity in msat given the public key of the HTLC source, target, and short channel
 	/// id.
-	pub fn used_liquidity_msat(&self, source: &NodeId, target: &NodeId, channel_scid: u64) -> Option<&u64> {
-		self.0.get(&(channel_scid, source < target))
+	pub fn used_liquidity_msat(&self, source: &NodeId, target: &NodeId, channel_scid: u64) -> Option<u64> {
+		self.0.get(&(channel_scid, source < target)).map(|v| *v)
 	}
 }
 
