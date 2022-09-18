@@ -483,20 +483,20 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, S: Deref> Router for DefaultR
 		)
 	}
 
-	fn notify_payment_path_failed(&self, path: Vec<&RouteHop>, short_channel_id: u64) {
-		self.scorer.lock().payment_path_failed(&path, short_channel_id);
+	fn notify_payment_path_failed(&self, path: &[&RouteHop], short_channel_id: u64) {
+		self.scorer.lock().payment_path_failed(path, short_channel_id);
 	}
 
-	fn notify_payment_path_successful(&self, path: Vec<&RouteHop>) {
-		self.scorer.lock().payment_path_successful(&path);
+	fn notify_payment_path_successful(&self, path: &[&RouteHop]) {
+		self.scorer.lock().payment_path_successful(path);
 	}
 
-	fn notify_payment_probe_successful(&self, path: Vec<&RouteHop>) {
-		self.scorer.lock().probe_successful(&path);
+	fn notify_payment_probe_successful(&self, path: &[&RouteHop]) {
+		self.scorer.lock().probe_successful(path);
 	}
 
-	fn notify_payment_probe_failed(&self, path: Vec<&RouteHop>, short_channel_id: u64) {
-		self.scorer.lock().probe_failed(&path, short_channel_id);
+	fn notify_payment_probe_failed(&self, path: &[&RouteHop], short_channel_id: u64) {
+		self.scorer.lock().probe_failed(path, short_channel_id);
 	}
 }
 
