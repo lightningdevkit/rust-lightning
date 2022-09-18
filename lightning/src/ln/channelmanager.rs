@@ -3080,7 +3080,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				let mut channel_state_lock = self.channel_state.lock().unwrap();
 				let channel_state = &mut *channel_state_lock;
 				if short_chan_id != 0 {
-					macro_rules! fail_pending_forwards {
+					macro_rules! forwarding_channel_not_found {
 						() => {
 							for forward_info in pending_forwards.drain(..) {
 								match forward_info {
@@ -3173,7 +3173,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					let forward_chan_id = match self.short_to_chan_info.read().unwrap().get(&short_chan_id) {
 						Some((_cp_id, chan_id)) => chan_id.clone(),
 						None => {
-							fail_pending_forwards!();
+							forwarding_channel_not_found!();
 							continue;
 						}
 					};
@@ -3303,7 +3303,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 							});
 						}
 					} else {
-						fail_pending_forwards!();
+						forwarding_channel_not_found!();
 						continue;
 					}
 				} else {
