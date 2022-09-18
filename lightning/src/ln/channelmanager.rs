@@ -2569,6 +2569,9 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					None => { insert_outbound_payment!(); },
 				}
 			} else {
+				// The channel was likely removed after we fetched the id from the
+				// `short_to_chan_info` map, but before we successfully locked the `by_id` map.
+				// This can occur as no consistency guarantees exists between the two maps.
 				return Err(APIError::ChannelUnavailable{err: "No channel available with first hop!".to_owned()});
 			}
 			return Ok(());
