@@ -77,10 +77,10 @@
 //! #         first_hops: Option<&[&ChannelDetails]>, _inflight_htlcs: InFlightHtlcs
 //! #     ) -> Result<Route, LightningError> { unimplemented!() }
 //! #
-//! #     fn notify_payment_path_failed(&self, path: Vec<&RouteHop>, short_channel_id: u64) {  unimplemented!() }
-//! #     fn notify_payment_path_successful(&self, path: Vec<&RouteHop>) {  unimplemented!() }
-//! #     fn notify_payment_probe_successful(&self, path: Vec<&RouteHop>) {  unimplemented!() }
-//! #     fn notify_payment_probe_failed(&self, path: Vec<&RouteHop>, short_channel_id: u64) { unimplemented!() }
+//! #     fn notify_payment_path_failed(&self, path: &[&RouteHop], short_channel_id: u64) {  unimplemented!() }
+//! #     fn notify_payment_path_successful(&self, path: &[&RouteHop]) {  unimplemented!() }
+//! #     fn notify_payment_probe_successful(&self, path: &[&RouteHop]) {  unimplemented!() }
+//! #     fn notify_payment_probe_failed(&self, path: &[&RouteHop], short_channel_id: u64) { unimplemented!() }
 //! # }
 //! #
 //! # struct FakeScorer {}
@@ -273,13 +273,13 @@ pub trait Router {
 		first_hops: Option<&[&ChannelDetails]>, inflight_htlcs: InFlightHtlcs
 	) -> Result<Route, LightningError>;
 	/// Lets the router know that payment through a specific path has failed.
-	fn notify_payment_path_failed(&self, path: Vec<&RouteHop>, short_channel_id: u64);
+	fn notify_payment_path_failed(&self, path: &[&RouteHop], short_channel_id: u64);
 	/// Lets the router know that payment through a specific path was successful.
-	fn notify_payment_path_successful(&self, path: Vec<&RouteHop>);
+	fn notify_payment_path_successful(&self, path: &[&RouteHop]);
 	/// Lets the router know that a payment probe was successful.
-	fn notify_payment_probe_successful(&self, path: Vec<&RouteHop>);
+	fn notify_payment_probe_successful(&self, path: &[&RouteHop]);
 	/// Lets the router know that a payment probe failed.
-	fn notify_payment_probe_failed(&self, path: Vec<&RouteHop>, short_channel_id: u64);
+	fn notify_payment_probe_failed(&self, path: &[&RouteHop], short_channel_id: u64);
 }
 
 /// Strategies available to retry payment path failures for an [`Invoice`].
@@ -680,7 +680,7 @@ where
 			} => {
 				if let Some(short_channel_id) = short_channel_id {
 					let path = path.iter().collect::<Vec<_>>();
-					self.router.notify_payment_path_failed(path, *short_channel_id)
+					self.router.notify_payment_path_failed(&path, *short_channel_id)
 				}
 
 				if payment_id.is_none() {
@@ -703,7 +703,7 @@ where
 			},
 			Event::PaymentPathSuccessful { path, .. } => {
 				let path = path.iter().collect::<Vec<_>>();
-				self.router.notify_payment_path_successful(path);
+				self.router.notify_payment_path_successful(&path);
 			},
 			Event::PaymentSent { payment_hash, .. } => {
 				let mut payment_cache = self.payment_cache.lock().unwrap();
@@ -715,13 +715,13 @@ where
 			Event::ProbeSuccessful { payment_hash, path, .. } => {
 				log_trace!(self.logger, "Probe payment {} of {}msat was successful", log_bytes!(payment_hash.0), path.last().unwrap().fee_msat);
 				let path = path.iter().collect::<Vec<_>>();
-				self.router.notify_payment_probe_successful(path);
+				self.router.notify_payment_probe_successful(&path);
 			},
 			Event::ProbeFailed { payment_hash, path, short_channel_id, .. } => {
 				if let Some(short_channel_id) = short_channel_id {
 					log_trace!(self.logger, "Probe payment {} of {}msat failed at channel {}", log_bytes!(payment_hash.0), path.last().unwrap().fee_msat, *short_channel_id);
 					let path = path.iter().collect::<Vec<_>>();
-					self.router.notify_payment_probe_failed(path, *short_channel_id);
+					self.router.notify_payment_probe_failed(&path, *short_channel_id);
 				}
 			},
 			_ => {},
@@ -741,8 +741,8 @@ pub struct InFlightHtlcs(HashMap<(u64, bool), u64>);
 impl InFlightHtlcs {
 	/// Returns liquidity in msat given the public key of the HTLC source, target, and short channel
 	/// id.
-	pub fn used_liquidity_msat(&self, source: &NodeId, target: &NodeId, channel_scid: u64) -> Option<&u64> {
-		self.0.get(&(channel_scid, source < target))
+	pub fn used_liquidity_msat(&self, source: &NodeId, target: &NodeId, channel_scid: u64) -> Option<u64> {
+		self.0.get(&(channel_scid, source < target)).map(|v| *v)
 	}
 }
 
@@ -1844,20 +1844,20 @@ mod tests {
 			})
 		}
 
-		fn notify_payment_path_failed(&self, path: Vec<&RouteHop>, short_channel_id: u64) {
-			self.scorer.lock().payment_path_failed(&path, short_channel_id);
+		fn notify_payment_path_failed(&self, path: &[&RouteHop], short_channel_id: u64) {
+			self.scorer.lock().payment_path_failed(path, short_channel_id);
 		}
 
-		fn notify_payment_path_successful(&self, path: Vec<&RouteHop>) {
-			self.scorer.lock().payment_path_successful(&path);
+		fn notify_payment_path_successful(&self, path: &[&RouteHop]) {
+			self.scorer.lock().payment_path_successful(path);
 		}
 
-		fn notify_payment_probe_successful(&self, path: Vec<&RouteHop>) {
-			self.scorer.lock().probe_successful(&path);
+		fn notify_payment_probe_successful(&self, path: &[&RouteHop]) {
+			self.scorer.lock().probe_successful(path);
 		}
 
-		fn notify_payment_probe_failed(&self, path: Vec<&RouteHop>, short_channel_id: u64) {
-			self.scorer.lock().probe_failed(&path, short_channel_id);
+		fn notify_payment_probe_failed(&self, path: &[&RouteHop], short_channel_id: u64) {
+			self.scorer.lock().probe_failed(path, short_channel_id);
 		}
 	}
 
@@ -1871,13 +1871,13 @@ mod tests {
 			Err(LightningError { err: String::new(), action: ErrorAction::IgnoreError })
 		}
 
-		fn notify_payment_path_failed(&self, _path: Vec<&RouteHop>, _short_channel_id: u64) {}
+		fn notify_payment_path_failed(&self, _path: &[&RouteHop], _short_channel_id: u64) {}
 
-		fn notify_payment_path_successful(&self, _path: Vec<&RouteHop>) {}
+		fn notify_payment_path_successful(&self, _path: &[&RouteHop]) {}
 
-		fn notify_payment_probe_successful(&self, _path: Vec<&RouteHop>) {}
+		fn notify_payment_probe_successful(&self, _path: &[&RouteHop]) {}
 
-		fn notify_payment_probe_failed(&self, _path: Vec<&RouteHop>, _short_channel_id: u64) {}
+		fn notify_payment_probe_failed(&self, _path: &[&RouteHop], _short_channel_id: u64) {}
 	}
 
 	struct TestScorer {
@@ -2133,13 +2133,13 @@ mod tests {
 			self.0.borrow_mut().pop_front().unwrap()
 		}
 
-		fn notify_payment_path_failed(&self, _path: Vec<&RouteHop>, _short_channel_id: u64) {}
+		fn notify_payment_path_failed(&self, _path: &[&RouteHop], _short_channel_id: u64) {}
 
-		fn notify_payment_path_successful(&self, _path: Vec<&RouteHop>) {}
+		fn notify_payment_path_successful(&self, _path: &[&RouteHop]) {}
 
-		fn notify_payment_probe_successful(&self, _path: Vec<&RouteHop>) {}
+		fn notify_payment_probe_successful(&self, _path: &[&RouteHop]) {}
 
-		fn notify_payment_probe_failed(&self, _path: Vec<&RouteHop>, _short_channel_id: u64) {}
+		fn notify_payment_probe_failed(&self, _path: &[&RouteHop], _short_channel_id: u64) {}
 	}
 	impl ManualRouter {
 		fn expect_find_route(&self, result: Result<Route, LightningError>) {
