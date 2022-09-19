@@ -188,12 +188,39 @@ pub struct MultiThreadedLockableScore<S: Score> {
 	score: Mutex<S>,
 }
 #[cfg(c_bindings)]
-/// (C-not exported)
-impl<'a, T: Score + 'a> LockableScore<'a> for MultiThreadedLockableScore<T> {
-	type Locked = MutexGuard<'a, T>;
+/// A locked `MultiThreadedLockableScore`.
+pub struct MultiThreadedLockableScoreLock<'a, S: Score>(MutexGuard<'a, S>);
+#[cfg(c_bindings)]
+impl<'a, T: Score + 'a> Score for MultiThreadedLockableScoreLock<'a, T> {
+	fn channel_penalty_msat(&self, scid: u64, source: &NodeId, target: &NodeId, usage: ChannelUsage) -> u64 {
+		self.0.channel_penalty_msat(scid, source, target, usage)
+	}
+	fn payment_path_failed(&mut self, path: &[&RouteHop], short_channel_id: u64) {
+		self.0.payment_path_failed(path, short_channel_id)
+	}
+	fn payment_path_successful(&mut self, path: &[&RouteHop]) {
+		self.0.payment_path_successful(path)
+	}
+	fn probe_failed(&mut self, path: &[&RouteHop], short_channel_id: u64) {
+		self.0.probe_failed(path, short_channel_id)
+	}
+	fn probe_successful(&mut self, path: &[&RouteHop]) {
+		self.0.probe_successful(path)
+	}
+}
+#[cfg(c_bindings)]
+impl<'a, T: Score + 'a> Writeable for MultiThreadedLockableScoreLock<'a, T> {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		self.0.write(writer)
+	}
+}
 
-	fn lock(&'a self) -> MutexGuard<'a, T> {
-		Mutex::lock(&self.score).unwrap()
+#[cfg(c_bindings)]
+impl<'a, T: Score + 'a> LockableScore<'a> for MultiThreadedLockableScore<T> {
+	type Locked = MultiThreadedLockableScoreLock<'a, T>;
+
+	fn lock(&'a self) -> MultiThreadedLockableScoreLock<'a, T> {
+		MultiThreadedLockableScoreLock(Mutex::lock(&self.score).unwrap())
 	}
 }
 
