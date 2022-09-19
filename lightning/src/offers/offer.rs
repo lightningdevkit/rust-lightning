@@ -223,7 +223,7 @@ impl OfferBuilder {
 
 /// An `Offer` is a potentially long-lived proposal for payment of a good or service.
 ///
-/// An offer is a precursor to an `InvoiceRequest`. A merchant publishes an offer from which a
+/// An offer is a precursor to an [`InvoiceRequest`]. A merchant publishes an offer from which a
 /// customer may request an `Invoice` for a specific quantity and using an amount sufficient to
 /// cover that quantity (i.e., at least `quantity * amount`). See [`Offer::amount`].
 ///
@@ -231,6 +231,8 @@ impl OfferBuilder {
 /// latter.
 ///
 /// Through the use of [`BlindedPath`]s, offers provide recipient privacy.
+///
+/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 #[derive(Clone, Debug)]
 pub struct Offer {
 	// The serialized offer. Needed when creating an `InvoiceRequest` if the offer contains unknown
@@ -239,7 +241,9 @@ pub struct Offer {
 	contents: OfferContents,
 }
 
-/// The contents of an [`Offer`], which may be shared with an `InvoiceRequest` or an `Invoice`.
+/// The contents of an [`Offer`], which may be shared with an [`InvoiceRequest`] or an `Invoice`.
+///
+/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 #[derive(Clone, Debug)]
 pub(crate) struct OfferContents {
 	chains: Option<Vec<ChainHash>>,
@@ -262,10 +266,7 @@ impl Offer {
 	/// Payments must be denominated in units of the minimal lightning-payable unit (e.g., msats)
 	/// for the selected chain.
 	pub fn chains(&self) -> Vec<ChainHash> {
-		self.contents.chains
-			.as_ref()
-			.cloned()
-			.unwrap_or_else(|| vec![self.contents.implied_chain()])
+		self.contents.chains()
 	}
 
 	// TODO: Link to corresponding method in `InvoiceRequest`.
@@ -345,6 +346,10 @@ impl AsRef<[u8]> for Offer {
 }
 
 impl OfferContents {
+	pub fn chains(&self) -> Vec<ChainHash> {
+		self.chains.as_ref().cloned().unwrap_or_else(|| vec![self.implied_chain()])
+	}
+
 	pub fn implied_chain(&self) -> ChainHash {
 		ChainHash::using_genesis_block(Network::Bitcoin)
 	}

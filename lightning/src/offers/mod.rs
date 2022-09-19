@@ -12,5 +12,7 @@
 //!
 //! Offers are a flexible protocol for Lightning payments.
 
+pub mod invoice_request;
 pub mod offer;
 pub mod parse;
+mod payer;
