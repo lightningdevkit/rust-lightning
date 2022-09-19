@@ -7,12 +7,13 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-//! Implementation of Lightning Offers
-//! ([BOLT 12](https://github.com/lightning/bolts/blob/master/12-offer-encoding.md)).
-//!
-//! Offers are a flexible protocol for Lightning payments.
+//! Data structures and encoding for `invoice_request_metadata` records.
 
-pub mod invoice_request;
-pub mod offer;
-pub mod parse;
-mod payer;
+use crate::prelude::*;
+
+/// An unpredictable sequence of bytes typically containing information needed to derive
+/// [`InvoiceRequest::payer_id`].
+///
+/// [`InvoiceRequest::payer_id`]: crate::offers::invoice_request::InvoiceRequest::payer_id
+#[derive(Clone, Debug)]
+pub(crate) struct PayerContents(pub Vec<u8>);

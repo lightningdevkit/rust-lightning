@@ -158,6 +158,7 @@ mod sealed {
 		BasicMPP,
 	]);
 	define_context!(OfferContext, []);
+	define_context!(InvoiceRequestContext, []);
 	// This isn't a "real" feature context, and is only used in the channel_type field in an
 	// `OpenChannel` message.
 	define_context!(ChannelTypeContext, [
@@ -367,7 +368,8 @@ mod sealed {
 		supports_keysend, requires_keysend);
 
 	#[cfg(test)]
-	define_feature!(123456789, UnknownFeature, [NodeContext, ChannelContext, InvoiceContext, OfferContext],
+	define_feature!(123456789, UnknownFeature,
+		[NodeContext, ChannelContext, InvoiceContext, OfferContext, InvoiceRequestContext],
 		"Feature flags for an unknown feature used in testing.", set_unknown_feature_optional,
 		set_unknown_feature_required, supports_unknown_test_feature, requires_unknown_test_feature);
 }
@@ -426,8 +428,10 @@ pub type NodeFeatures = Features<sealed::NodeContext>;
 pub type ChannelFeatures = Features<sealed::ChannelContext>;
 /// Features used within an invoice.
 pub type InvoiceFeatures = Features<sealed::InvoiceContext>;
-/// Features used within an offer.
+/// Features used within an `offer`.
 pub type OfferFeatures = Features<sealed::OfferContext>;
+/// Features used within an `invoice_request`.
+pub type InvoiceRequestFeatures = Features<sealed::InvoiceRequestContext>;
 
 /// Features used within the channel_type field in an OpenChannel message.
 ///
@@ -735,6 +739,7 @@ macro_rules! impl_feature_tlv_write {
 
 impl_feature_tlv_write!(ChannelTypeFeatures);
 impl_feature_tlv_write!(OfferFeatures);
+impl_feature_tlv_write!(InvoiceRequestFeatures);
 
 #[cfg(test)]
 mod tests {
