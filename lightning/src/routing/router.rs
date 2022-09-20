@@ -5314,7 +5314,7 @@ mod tests {
 	fn generate_routes() {
 		use routing::scoring::{ProbabilisticScorer, ProbabilisticScoringParameters};
 
-		let mut d = match super::test_utils::get_route_file() {
+		let mut d = match super::bench_utils::get_route_file() {
 			Ok(f) => f,
 			Err(e) => {
 				eprintln!("{}", e);
@@ -5351,7 +5351,7 @@ mod tests {
 	fn generate_routes_mpp() {
 		use routing::scoring::{ProbabilisticScorer, ProbabilisticScoringParameters};
 
-		let mut d = match super::test_utils::get_route_file() {
+		let mut d = match super::bench_utils::get_route_file() {
 			Ok(f) => f,
 			Err(e) => {
 				eprintln!("{}", e);
@@ -5422,7 +5422,7 @@ mod tests {
 }
 
 #[cfg(all(test, not(feature = "no-std")))]
-pub(crate) mod test_utils {
+pub(crate) mod bench_utils {
 	use std::fs::File;
 	/// Tries to open a network graph file, or panics with a URL to fetch it.
 	pub(crate) fn get_route_file() -> Result<std::fs::File, &'static str> {
@@ -5470,7 +5470,7 @@ mod benches {
 	}
 
 	fn read_network_graph(logger: &DummyLogger) -> NetworkGraph<&DummyLogger> {
-		let mut d = test_utils::get_route_file().unwrap();
+		let mut d = bench_utils::get_route_file().unwrap();
 		NetworkGraph::read(&mut d, logger).unwrap()
 	}
 
