@@ -58,6 +58,7 @@ pub fn find_path<L: Deref, GL: Deref>(
 	if let Some(first_hops) = first_hops {
 		for hop in first_hops {
 			if hop.counterparty.node_id == *our_node_pubkey { return Err(Error::InvalidFirstHop) }
+			#[cfg(not(feature = "_bench_unstable"))]
 			if !hop.counterparty.features.supports_onion_messages() { continue; }
 			let node_id = NodeId::from_pubkey(&hop.counterparty.node_id);
 			frontier.push(PathBuildingHop { cost: 1, node_id, parent_node_id: start });
@@ -80,6 +81,7 @@ pub fn find_path<L: Deref, GL: Deref>(
 			// Only consider the network graph if first_hops does not override it.
 			if valid_first_hops.contains(&node_id) || node_id == our_node_id {
 			} else if let Some(node_ann) = &node_info.announcement_info {
+				#[cfg(not(feature = "_bench_unstable"))]
 				if !node_ann.features.supports_onion_messages() || node_ann.features.requires_unknown_bits()
 				{ continue; }
 			} else { continue; }
@@ -274,5 +276,74 @@ mod tests {
 
 		let path = super::find_path(&our_id, &node_pks[2], &network_graph, None, Arc::clone(&logger)).unwrap();
 		assert_eq!(path.len(), 2);
+	}
+}
+
+#[cfg(all(test, feature = "_bench_unstable", not(feature = "no-std")))]
+mod benches {
+	use super::*;
+	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
+	use crate::routing::gossip::NetworkGraph;
+	use crate::routing::router::bench_utils;
+	use crate::test::Bencher;
+	use crate::util::logger::{Logger, Record};
+	use crate::util::ser::ReadableArgs;
+
+	struct DummyLogger {}
+	impl Logger for DummyLogger {
+		fn log(&self, _record: &Record) {}
+	}
+
+	fn read_network_graph(logger: &DummyLogger) -> NetworkGraph<&DummyLogger> {
+		let mut d = bench_utils::get_route_file().unwrap();
+		NetworkGraph::read(&mut d, logger).unwrap()
+	}
+
+	#[bench]
+	fn generate_simple_routes(bench: &mut Bencher) {
+		let logger = DummyLogger {};
+		let network_graph = read_network_graph(&logger);
+		generate_routes(bench, &network_graph);
+	}
+
+	fn payer_pubkey() -> PublicKey {
+		let secp_ctx = Secp256k1::new();
+		PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap())
+	}
+
+	fn generate_routes(
+		bench: &mut Bencher, graph: &NetworkGraph<&DummyLogger>,
+	) {
+		let nodes = graph.read_only().nodes().clone();
+		let payer = payer_pubkey();
+
+		// Get 100 (source, destination) pairs for which route-getting actually succeeds...
+		let mut routes = Vec::new();
+		let mut route_endpoints = Vec::new();
+		let mut seed: usize = 0xdeadbeef;
+		'load_endpoints: for _ in 0..150 {
+			loop {
+				seed *= 0xdeadbeef;
+				let src = PublicKey::from_slice(nodes.unordered_keys().skip(seed % nodes.len()).next().unwrap().as_slice()).unwrap();
+				let first_hop = bench_utils::first_hop(src);
+				seed *= 0xdeadbeef;
+				let dst = PublicKey::from_slice(nodes.unordered_keys().skip(seed % nodes.len()).next().unwrap().as_slice()).unwrap();
+				if let Ok(route) = find_path(&payer, &dst, &graph, Some(&[&first_hop]), &DummyLogger{}) {
+					routes.push(route);
+					route_endpoints.push((first_hop, dst));
+					continue 'load_endpoints;
+				}
+			}
+		}
+		route_endpoints.truncate(100);
+		assert_eq!(route_endpoints.len(), 100);
+
+		// Benchmark finding paths between the nodes we learned.
+		let mut idx = 0;
+		bench.iter(|| {
+			let (first_hop, dst) = &route_endpoints[idx % route_endpoints.len()];
+			assert!(find_path(&payer, &dst, &graph, Some(&[first_hop]), &DummyLogger{}).is_ok());
+			idx += 1;
+		});
 	}
 }
