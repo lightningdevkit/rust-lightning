@@ -9,13 +9,14 @@
 
 //! Data structures and encoding for `invoice_request` messages.
 //!
-//! An [`InvoiceRequest`] can be either built from a parsed [`Offer`] as an "offer to be paid" or
-//! built directly as an "offer for money" (e.g., refund, ATM withdrawal). In the former case, it is
+//! An [`InvoiceRequest`] can be built from a parsed [`Offer`] as an "offer to be paid". It is
 //! typically constructed by a customer and sent to the merchant who had published the corresponding
-//! offer. In the latter case, an offer doesn't exist as a precursor to the request. Rather the
-//! merchant would typically construct the invoice request and present it to the customer.
+//! offer. The recipient of the request responds with an `Invoice`.
 //!
-//! The recipient of the request responds with an `Invoice`.
+//! For an "offer for money" (e.g., refund, ATM withdrawal), where an offer doesn't exist as a
+//! precursor, see [`Refund`].
+//!
+//! [`Refund`]: crate::offers::refund::Refund
 //!
 //! ```ignore
 //! extern crate bitcoin;
@@ -34,7 +35,6 @@
 //! let pubkey = PublicKey::from(keys);
 //! let mut buffer = Vec::new();
 //!
-//! // "offer to be paid" flow
 //! "lno1qcp4256ypq"
 //!     .parse::<Offer>()?
 //!     .request_invoice(vec![42; 64], pubkey)?
@@ -287,7 +287,7 @@ impl InvoiceRequest {
 		self.contents.amount_msats
 	}
 
-	/// Features for paying the invoice.
+	/// Features pertaining to requesting an invoice.
 	pub fn features(&self) -> &InvoiceRequestFeatures {
 		&self.contents.features
 	}

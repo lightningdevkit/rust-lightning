@@ -127,20 +127,28 @@ pub enum SemanticError {
 	AlreadyExpired,
 	/// The provided chain hash does not correspond to a supported chain.
 	UnsupportedChain,
+	/// A chain was provided but was not expected.
+	UnexpectedChain,
 	/// An amount was expected but was missing.
 	MissingAmount,
 	/// The amount exceeded the total bitcoin supply.
 	InvalidAmount,
 	/// An amount was provided but was not sufficient in value.
 	InsufficientAmount,
+	/// An amount was provided but was not expected.
+	UnexpectedAmount,
 	/// A currency was provided that is not supported.
 	UnsupportedCurrency,
 	/// A feature was required but is unknown.
 	UnknownRequiredFeatures,
+	/// Features were provided but were not expected.
+	UnexpectedFeatures,
 	/// A required description was not provided.
 	MissingDescription,
 	/// A signing pubkey was not provided.
 	MissingSigningPubkey,
+	/// A signing pubkey was provided but was not expected.
+	UnexpectedSigningPubkey,
 	/// A quantity was expected but was missing.
 	MissingQuantity,
 	/// An unsupported quantity was provided.
