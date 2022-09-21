@@ -2951,26 +2951,8 @@ fn do_test_htlc_on_chain_timeout(connect_style: ConnectStyle) {
 	mine_transaction(&nodes[1], &timeout_tx);
 	check_added_monitors!(nodes[1], 1);
 	check_closed_broadcast!(nodes[1], true);
-	{
-		// B will rebroadcast a fee-bumped timeout transaction here.
-		let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
-		assert_eq!(node_txn.len(), 1);
-		check_spends!(node_txn[0], commitment_tx[0]);
-	}
 
 	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
-	{
-		// B may rebroadcast its own holder commitment transaction here, as a safeguard against
-		// some incredibly unlikely partial-eclipse-attack scenarios. That said, because the
-		// original commitment_tx[0] (also spending chan_2.3) has reached ANTI_REORG_DELAY B really
-		// shouldn't broadcast anything here, and in some connect style scenarios we do not.
-		let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
-		if node_txn.len() == 1 {
-			check_spends!(node_txn[0], chan_2.3);
-		} else {
-			assert_eq!(node_txn.len(), 0);
-		}
-	}
 
 	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[1], vec![HTLCDestination::NextHopChannel { node_id: Some(nodes[2].node.get_our_node_id()), channel_id: chan_2.2 }]);
 	check_added_monitors!(nodes[1], 1);
@@ -8001,22 +7983,6 @@ fn test_bump_penalty_txn_on_revoked_htlcs() {
 	connect_block(&nodes[0], &Block { header: header_130, txdata: penalty_txn });
 	let header_131 = BlockHeader { version: 0x20000000, prev_blockhash: header_130.block_hash(), merkle_root: TxMerkleNode::all_zeros(), time: 42, bits: 42, nonce: 42 };
 	connect_block(&nodes[0], &Block { header: header_131, txdata: Vec::new() });
-	{
-		let mut node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
-		assert_eq!(node_txn.len(), 2); // 2 bumped penalty txn on revoked commitment tx
-
-		check_spends!(node_txn[0], revoked_local_txn[0]);
-		check_spends!(node_txn[1], revoked_local_txn[0]);
-		// Note that these are both bogus - they spend outputs already claimed in block 129:
-		if node_txn[0].input[0].previous_output == revoked_htlc_txn[0].input[0].previous_output  {
-			assert_eq!(node_txn[1].input[0].previous_output, revoked_htlc_txn[2].input[0].previous_output);
-		} else {
-			assert_eq!(node_txn[0].input[0].previous_output, revoked_htlc_txn[2].input[0].previous_output);
-			assert_eq!(node_txn[1].input[0].previous_output, revoked_htlc_txn[0].input[0].previous_output);
-		}
-
-		node_txn.clear();
-	};
 
 	// Few more blocks to confirm penalty txn
 	connect_blocks(&nodes[0], 4);
