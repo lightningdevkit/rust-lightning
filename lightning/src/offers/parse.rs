@@ -98,6 +98,8 @@ pub enum SemanticError {
 	MissingAmount,
 	/// The amount exceeded the total bitcoin supply.
 	InvalidAmount,
+	/// A currency was provided that is not supported.
+	UnsupportedCurrency,
 	/// A required description was not provided.
 	MissingDescription,
 	/// A signing pubkey was not provided.
