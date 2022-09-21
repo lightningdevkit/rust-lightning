@@ -74,6 +74,10 @@ pub enum ParseError {
 pub enum SemanticError {
 	/// An amount was expected but was missing.
 	MissingAmount,
+	/// An amount exceeded the maximum number of bitcoin.
+	InvalidAmount,
+	/// A currency was provided that is not supported.
+	UnsupportedCurrency,
 	/// A required description was not provided.
 	MissingDescription,
 	/// A node id was not provided.

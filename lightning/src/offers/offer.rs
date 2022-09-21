@@ -48,8 +48,7 @@
 //!     .issuer("Foo Bar".to_string())
 //!     .path(create_blinded_path())
 //!     .path(create_another_blinded_path())
-//!     .build()
-//!     .unwrap();
+//!     .build()?;
 //!
 //! // Encode as a bech32 string for use in a QR code.
 //! let encoded_offer = offer.to_string();
@@ -195,14 +194,14 @@ impl OfferBuilder {
 	}
 
 	/// Builds an [`Offer`] from the builder's settings.
-	pub fn build(mut self) -> Result<Offer, ()> {
+	pub fn build(mut self) -> Result<Offer, SemanticError> {
 		match self.offer.amount {
 			Some(Amount::Bitcoin { amount_msats }) => {
 				if amount_msats > MAX_VALUE_MSAT {
-					return Err(());
+					return Err(SemanticError::InvalidAmount);
 				}
 			},
-			Some(Amount::Currency { .. }) => unreachable!(),
+			Some(Amount::Currency { .. }) => return Err(SemanticError::UnsupportedCurrency),
 			None => {},
 		}
 
@@ -562,6 +561,7 @@ mod tests {
 	use core::time::Duration;
 	use crate::ln::features::OfferFeatures;
 	use crate::ln::msgs::MAX_VALUE_MSAT;
+	use crate::offers::parse::SemanticError;
 	use crate::onion_message::{BlindedHop, BlindedPath};
 	use crate::util::ser::Writeable;
 	use crate::util::string::PrintableString;
@@ -687,6 +687,10 @@ mod tests {
 		assert_eq!(builder.offer.amount, Some(currency_amount.clone()));
 		assert_eq!(tlv_stream.amount, Some(10));
 		assert_eq!(tlv_stream.currency, Some(b"USD"));
+		match builder.build() {
+			Ok(_) => panic!("expected error"),
+			Err(e) => assert_eq!(e, SemanticError::UnsupportedCurrency),
+		}
 
 		let offer = OfferBuilder::new("foo".into(), pubkey(42))
 			.amount(currency_amount.clone())
@@ -700,7 +704,7 @@ mod tests {
 		let invalid_amount = Amount::Bitcoin { amount_msats: MAX_VALUE_MSAT + 1 };
 		match OfferBuilder::new("foo".into(), pubkey(42)).amount(invalid_amount).build() {
 			Ok(_) => panic!("expected error"),
-			Err(e) => assert_eq!(e, ()),
+			Err(e) => assert_eq!(e, SemanticError::InvalidAmount),
 		}
 	}
 
