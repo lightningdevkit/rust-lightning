@@ -58,7 +58,7 @@ use crate::io;
 use crate::ln::features::OfferFeatures;
 use crate::ln::msgs::DecodeError;
 use crate::offers::merkle::{SignatureTlvStream, SignatureTlvStreamRef, self};
-use crate::offers::offer::{Amount, Offer, OfferContents, OfferTlvStream, OfferTlvStreamRef};
+use crate::offers::offer::{Amount, Offer, OfferContents, OfferTlvStream, OfferTlvStreamRef, SendInvoiceOfferContents};
 use crate::offers::parse::{ParseError, ParsedMessage, SemanticError};
 use crate::offers::payer::{PayerContents, PayerTlvStream, PayerTlvStreamRef};
 use crate::util::ser::{HighZeroBytesDroppedBigSize, SeekReadable, WithoutLength, Writeable, Writer};
@@ -409,7 +409,10 @@ impl TryFrom<PartialInvoiceRequestTlvStream> for InvoiceRequestContents {
 		) = tlv_stream;
 
 		let payer = PayerContents(metadata);
-		let offer = OfferContents::try_from(offer_tlv_stream)?;
+		let offer = match offer_tlv_stream.node_id {
+			Some(_) => OfferContents::try_from(offer_tlv_stream)?,
+			None => SendInvoiceOfferContents::try_from(offer_tlv_stream)?.0,
+		};
 
 		if !offer.supports_chain(chain.unwrap_or_else(|| offer.implied_chain())) {
 			return Err(SemanticError::UnsupportedChain);

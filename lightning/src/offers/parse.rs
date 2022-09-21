@@ -102,16 +102,22 @@ pub enum ParseError {
 pub enum SemanticError {
 	/// The provided chain hash does not correspond to a supported chain.
 	UnsupportedChain,
-	/// An amount was expected but was missing.
+	/// A chain was provided but was not expected.
+	UnexpectedChain,
+	/// An amount was not provided.
 	MissingAmount,
 	/// An amount exceeded the maximum number of bitcoin.
 	InvalidAmount,
 	/// An amount was provided but was not sufficient in value.
 	InsufficientAmount,
+	/// An amount was provided but was not expected.
+	UnexpectedAmount,
 	/// A currency was provided that is not supported.
 	UnsupportedCurrency,
 	/// A feature was required but is unknown.
 	UnknownRequiredFeatures,
+	/// Features were provided but were not expected.
+	UnexpectedFeatures,
 	/// A required description was not provided.
 	MissingDescription,
 	/// A node id was not provided.

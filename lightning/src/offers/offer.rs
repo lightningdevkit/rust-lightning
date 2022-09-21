@@ -617,6 +617,57 @@ impl TryFrom<OfferTlvStream> for OfferContents {
 	}
 }
 
+/// [`OfferContents`] used with a "send invoice" offer (i.e., a published [`InvoiceRequest`]).
+///
+/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
+pub(super) struct SendInvoiceOfferContents(pub OfferContents);
+
+impl TryFrom<OfferTlvStream> for SendInvoiceOfferContents {
+	type Error = SemanticError;
+
+	fn try_from(tlv_stream: OfferTlvStream) -> Result<Self, Self::Error> {
+		let OfferTlvStream {
+			chains, metadata, currency, amount, description, features, absolute_expiry, paths,
+			issuer, quantity_max, node_id,
+		} = tlv_stream;
+		assert!(node_id.is_none());
+
+		if chains.is_some() {
+			return Err(SemanticError::UnexpectedChain);
+		}
+
+		if currency.is_some() || amount.is_some() {
+			return Err(SemanticError::UnexpectedAmount);
+		}
+
+		let description = match description {
+			None => return Err(SemanticError::MissingDescription),
+			Some(description) => description,
+		};
+
+		let features = match features {
+			None => OfferFeatures::empty(),
+			Some(_) => return Err(SemanticError::UnexpectedFeatures),
+		};
+
+		let absolute_expiry = absolute_expiry.map(Duration::from_secs);
+
+		let paths = match paths {
+			Some(paths) if paths.is_empty() => return Err(SemanticError::MissingPaths),
+			paths => paths,
+		};
+
+		if quantity_max.is_some() {
+			return Err(SemanticError::UnexpectedQuantity);
+		}
+
+		Ok(SendInvoiceOfferContents(OfferContents {
+			chains: None, metadata, amount: None, description, features, absolute_expiry, issuer,
+			paths, supported_quantity: Quantity::one(), signing_pubkey: None,
+		}))
+	}
+}
+
 impl core::fmt::Display for Offer {
 	fn fmt(&self, f: &mut core::fmt::Formatter) -> Result<(), core::fmt::Error> {
 		self.fmt_bech32_str(f)
