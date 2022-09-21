@@ -108,6 +108,9 @@ pub trait Score $(: $supertrait)* {
 
 	/// Handles updating channel penalties after a probe over the given path succeeded.
 	fn probe_successful(&mut self, path: &[&RouteHop]);
+
+	/// Range of minimum - maximum liquidity for given channel and target node.
+	fn estimated_channel_liquidity_range(&self, scid: u64, target: &NodeId) -> Option<(u64, u64)>;
 }
 
 impl<S: Score, T: DerefMut<Target=S> $(+ $supertrait)*> Score for T {
@@ -131,6 +134,10 @@ impl<S: Score, T: DerefMut<Target=S> $(+ $supertrait)*> Score for T {
 
 	fn probe_successful(&mut self, path: &[&RouteHop]) {
 		self.deref_mut().probe_successful(path)
+	}
+
+	fn estimated_channel_liquidity_range(&self, scid: u64, target: &NodeId) -> Option<(u64, u64)> {
+		self.deref().estimated_channel_liquidity_range(scid, target)
 	}
 }
 } }
@@ -287,6 +294,8 @@ impl Score for FixedPenaltyScorer {
 	fn probe_failed(&mut self, _path: &[&RouteHop], _short_channel_id: u64) {}
 
 	fn probe_successful(&mut self, _path: &[&RouteHop]) {}
+
+	fn estimated_channel_liquidity_range(&self,scid:u64,target: &NodeId) -> Option<(u64,u64)> { None }
 }
 
 impl Writeable for FixedPenaltyScorer {
@@ -532,22 +541,6 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> ProbabilisticScorerU
 		}
 	}
 
-	/// Query the estimated minimum and maximum liquidity available for sending a payment over the
-	/// channel with `scid` towards the given `target` node.
-	pub fn estimated_channel_liquidity_range(&self, scid: u64, target: &NodeId) -> Option<(u64, u64)> {
-		let graph = self.network_graph.read_only();
-
-		if let Some(chan) = graph.channels().get(&scid) {
-			if let Some(liq) = self.channel_liquidities.get(&scid) {
-				if let Some((directed_info, source)) = chan.as_directed_to(target) {
-					let amt = directed_info.effective_capacity().as_msat();
-					let dir_liq = liq.as_directed(source, target, amt, self.params.liquidity_offset_half_life);
-					return Some((dir_liq.min_liquidity_msat(), dir_liq.max_liquidity_msat()));
-				}
-			}
-		}
-		None
-	}
 
 	/// Marks the node with the given `node_id` as banned, i.e.,
 	/// it will be avoided during path finding.
@@ -575,6 +568,12 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> ProbabilisticScorerU
 		self.params.manual_node_penalties = HashMap::new();
 	}
 }
+
+
+// impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> Score for
+	//  ProbabilisticScorerUsingTime<G, L, T> where L::Target: Logger {
+	//
+// }
 
 impl ProbabilisticScoringParameters {
 	#[cfg(test)]
@@ -915,6 +914,23 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> Score for Probabilis
 
 	fn probe_successful(&mut self, path: &[&RouteHop]) {
 		self.payment_path_failed(path, u64::max_value())
+	}
+
+	/// Query the estimated minimum and maximum liquidity available for sending a payment over the
+	/// channel with `scid` towards the given `target` node.
+	fn estimated_channel_liquidity_range(&self, scid: u64, target: &NodeId) -> Option<(u64, u64)> {
+		let graph = self.network_graph.read_only();
+
+		if let Some(chan) = graph.channels().get(&scid) {
+			if let Some(liq) = self.channel_liquidities.get(&scid) {
+				if let Some((directed_info, source)) = chan.as_directed_to(target) {
+					let amt = directed_info.effective_capacity().as_msat();
+					let dir_liq = liq.as_directed(source, target, amt, self.params.liquidity_offset_half_life);
+					return Some((dir_liq.min_liquidity_msat(), dir_liq.max_liquidity_msat()));
+				}
+			}
+		}
+		None
 	}
 }
 

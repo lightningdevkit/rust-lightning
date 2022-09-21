@@ -500,6 +500,41 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, S: Deref> Router for DefaultR
 	}
 }
 
+
+/// Pickhardt [`Router`] implemented using an alterhative [`find_route`] implementation that computes min cost flow.
+pub struct MinCostFlowRouter<G: Deref<Target = NetworkGraph<L>>, L: Deref> where L::Target: Logger {
+	network_graph: G,
+	logger: L,
+	random_seed_bytes: Mutex<[u8; 32]>,
+}
+
+impl<G: Deref<Target = NetworkGraph<L>>, L: Deref> MinCostFlowRouter<G, L> where L::Target: Logger {
+	/// Creates a new router using the given [`NetworkGraph`], a [`Logger`], and a randomness source
+	/// `random_seed_bytes`.
+	pub fn new(network_graph: G, logger: L, random_seed_bytes: [u8; 32]) -> Self {
+		let random_seed_bytes = Mutex::new(random_seed_bytes);
+		Self { network_graph, logger, random_seed_bytes  }
+	}
+}
+
+use lightning::routing::min_cost_flow_router;
+
+impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, S: Score> Router<S> for MinCostFlowRouter<G, L>
+where L::Target: Logger {
+	fn find_route(
+		&self, payer: &PublicKey, params: &RouteParameters, _payment_hash: &PaymentHash,
+		first_hops: Option<&[&ChannelDetails]>, scorer: &S
+	) -> Result<Route, LightningError> {
+		let random_seed_bytes = {
+			let mut locked_random_seed_bytes = self.random_seed_bytes.lock().unwrap();
+			*locked_random_seed_bytes = sha256::Hash::hash(&*locked_random_seed_bytes).into_inner();
+			*locked_random_seed_bytes
+		};
+		min_cost_flow_router::find_route(
+			payer, params, &self.network_graph, first_hops, &*self.logger, scorer, &random_seed_bytes)
+	}
+}
+
 impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Payer for ChannelManager<Signer, M, T, K, F, L>
 where
 	M::Target: chain::Watch<Signer>,
