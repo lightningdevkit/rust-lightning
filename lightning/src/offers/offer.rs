@@ -561,7 +561,7 @@ mod tests {
 	use core::time::Duration;
 	use crate::ln::features::OfferFeatures;
 	use crate::ln::msgs::MAX_VALUE_MSAT;
-	use crate::offers::parse::SemanticError;
+	use crate::offers::parse::{ParseError, SemanticError};
 	use crate::onion_message::{BlindedHop, BlindedPath};
 	use crate::util::ser::Writeable;
 	use crate::util::string::PrintableString;
@@ -839,6 +839,165 @@ mod tests {
 		let tlv_stream = offer.as_tlv_stream();
 		assert_eq!(offer.supported_quantity(), Quantity::one());
 		assert_eq!(tlv_stream.quantity_max, None);
+	}
+
+	#[test]
+	fn parses_offer_with_chains() {
+		let offer = OfferBuilder::new("foo".into(), pubkey(42))
+			.chain(Network::Bitcoin)
+			.chain(Network::Testnet)
+			.build()
+			.unwrap();
+		if let Err(e) = offer.to_string().parse::<Offer>() {
+			panic!("error parsing offer: {:?}", e);
+		}
+	}
+
+	#[test]
+	fn parses_offer_with_amount() {
+		let offer = OfferBuilder::new("foo".into(), pubkey(42))
+			.amount(Amount::Bitcoin { amount_msats: 1000 })
+			.build()
+			.unwrap();
+		if let Err(e) = offer.to_string().parse::<Offer>() {
+			panic!("error parsing offer: {:?}", e);
+		}
+
+		let mut tlv_stream = offer.as_tlv_stream();
+		tlv_stream.amount = Some(1000);
+		tlv_stream.currency = Some(b"USD");
+
+		let mut encoded_offer = Vec::new();
+		tlv_stream.write(&mut encoded_offer).unwrap();
+
+		if let Err(e) = Offer::try_from(encoded_offer) {
+			panic!("error parsing offer: {:?}", e);
+		}
+
+		let mut tlv_stream = offer.as_tlv_stream();
+		tlv_stream.amount = None;
+		tlv_stream.currency = Some(b"USD");
+
+		let mut encoded_offer = Vec::new();
+		tlv_stream.write(&mut encoded_offer).unwrap();
+
+		match Offer::try_from(encoded_offer) {
+			Ok(_) => panic!("expected error"),
+			Err(e) => assert_eq!(e, ParseError::InvalidSemantics(SemanticError::MissingAmount)),
+		}
+	}
+
+	#[test]
+	fn parses_offer_with_description() {
+		let offer = OfferBuilder::new("foo".into(), pubkey(42)).build().unwrap();
+		if let Err(e) = offer.to_string().parse::<Offer>() {
+			panic!("error parsing offer: {:?}", e);
+		}
+
+		let mut tlv_stream = offer.as_tlv_stream();
+		tlv_stream.description = None;
+
+		let mut encoded_offer = Vec::new();
+		tlv_stream.write(&mut encoded_offer).unwrap();
+
+		match Offer::try_from(encoded_offer) {
+			Ok(_) => panic!("expected error"),
+			Err(e) => {
+				assert_eq!(e, ParseError::InvalidSemantics(SemanticError::MissingDescription));
+			},
+		}
+	}
+
+	#[test]
+	fn parses_offer_with_paths() {
+		let offer = OfferBuilder::new("foo".into(), pubkey(42))
+			.path(BlindedPath {
+				introduction_node_id: pubkey(40),
+				blinding_point: pubkey(41),
+				blinded_hops: vec![
+					BlindedHop { blinded_node_id: pubkey(43), encrypted_payload: vec![0; 43] },
+					BlindedHop { blinded_node_id: pubkey(44), encrypted_payload: vec![0; 44] },
+				],
+			})
+			.path(BlindedPath {
+				introduction_node_id: pubkey(40),
+				blinding_point: pubkey(41),
+				blinded_hops: vec![
+					BlindedHop { blinded_node_id: pubkey(45), encrypted_payload: vec![0; 45] },
+					BlindedHop { blinded_node_id: pubkey(46), encrypted_payload: vec![0; 46] },
+				],
+			})
+			.build()
+			.unwrap();
+		if let Err(e) = offer.to_string().parse::<Offer>() {
+			panic!("error parsing offer: {:?}", e);
+		}
+
+		let mut builder = OfferBuilder::new("foo".into(), pubkey(42));
+		builder.offer.paths = Some(vec![]);
+
+		let offer = builder.build().unwrap();
+		match offer.to_string().parse::<Offer>() {
+			Ok(_) => panic!("expected error"),
+			Err(e) => assert_eq!(e, ParseError::InvalidSemantics(SemanticError::MissingPaths)),
+		}
+	}
+
+	#[test]
+	fn parses_offer_with_quantity() {
+		let offer = OfferBuilder::new("foo".into(), pubkey(42))
+			.supported_quantity(Quantity::one())
+			.build()
+			.unwrap();
+		if let Err(e) = offer.to_string().parse::<Offer>() {
+			panic!("error parsing offer: {:?}", e);
+		}
+
+		let offer = OfferBuilder::new("foo".into(), pubkey(42))
+			.supported_quantity(Quantity::Unbounded)
+			.build()
+			.unwrap();
+		if let Err(e) = offer.to_string().parse::<Offer>() {
+			panic!("error parsing offer: {:?}", e);
+		}
+
+		let offer = OfferBuilder::new("foo".into(), pubkey(42))
+			.supported_quantity(Quantity::Bounded(NonZeroU64::new(10).unwrap()))
+			.build()
+			.unwrap();
+		if let Err(e) = offer.to_string().parse::<Offer>() {
+			panic!("error parsing offer: {:?}", e);
+		}
+
+		let mut tlv_stream = offer.as_tlv_stream();
+		tlv_stream.quantity_max = Some(1);
+
+		let mut encoded_offer = Vec::new();
+		tlv_stream.write(&mut encoded_offer).unwrap();
+
+		match Offer::try_from(encoded_offer) {
+			Ok(_) => panic!("expected error"),
+			Err(e) => {
+				assert_eq!(e, ParseError::InvalidSemantics(SemanticError::InvalidQuantity));
+			},
+		}
+	}
+
+	#[test]
+	fn parses_offer_with_node_id() {
+		let offer = OfferBuilder::new("foo".into(), pubkey(42)).build().unwrap();
+		if let Err(e) = offer.to_string().parse::<Offer>() {
+			panic!("error parsing offer: {:?}", e);
+		}
+
+		let mut builder = OfferBuilder::new("foo".into(), pubkey(42));
+		builder.offer.signing_pubkey = None;
+
+		let offer = builder.build().unwrap();
+		match offer.to_string().parse::<Offer>() {
+			Ok(_) => panic!("expected error"),
+			Err(e) => assert_eq!(e, ParseError::InvalidSemantics(SemanticError::MissingNodeId)),
+		}
 	}
 }
 
