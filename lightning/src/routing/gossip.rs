@@ -3122,7 +3122,7 @@ mod benches {
 	#[bench]
 	fn read_network_graph(bench: &mut Bencher) {
 		let logger = ::util::test_utils::TestLogger::new();
-		let mut d = ::routing::router::test_utils::get_route_file().unwrap();
+		let mut d = ::routing::router::bench_utils::get_route_file().unwrap();
 		let mut v = Vec::new();
 		d.read_to_end(&mut v).unwrap();
 		bench.iter(|| {
@@ -3133,7 +3133,7 @@ mod benches {
 	#[bench]
 	fn write_network_graph(bench: &mut Bencher) {
 		let logger = ::util::test_utils::TestLogger::new();
-		let mut d = ::routing::router::test_utils::get_route_file().unwrap();
+		let mut d = ::routing::router::bench_utils::get_route_file().unwrap();
 		let net_graph = NetworkGraph::read(&mut d, &logger).unwrap();
 		bench.iter(|| {
 			let _ = net_graph.encode();
