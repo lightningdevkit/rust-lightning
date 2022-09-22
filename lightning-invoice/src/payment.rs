@@ -149,6 +149,7 @@ use lightning::routing::router::{PaymentParameters, Route, RouteHop, RouteParame
 use lightning::util::errors::APIError;
 use lightning::util::events::{Event, EventHandler};
 use lightning::util::logger::Logger;
+use lightning::util::ser::Writeable;
 use time_utils::Time;
 use crate::sync::Mutex;
 
@@ -746,7 +747,7 @@ impl InFlightHtlcs {
 	}
 }
 
-impl lightning::util::ser::Writeable for InFlightHtlcs {
+impl Writeable for InFlightHtlcs {
 	fn write<W: lightning::util::ser::Writer>(&self, writer: &mut W) -> Result<(), io::Error> { self.0.write(writer) }
 }
 
