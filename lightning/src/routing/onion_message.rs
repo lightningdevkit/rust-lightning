@@ -73,6 +73,11 @@ pub fn find_path<L: Deref, GL: Deref>(
 			return Ok(path)
 		}
 		if let Some(node_info) = network_nodes.get(&node_id) {
+			if node_id == our_node_id {
+			} else if let Some(node_ann) = &node_info.announcement_info {
+				if !node_ann.features.supports_onion_messages() || node_ann.features.requires_unknown_bits()
+				{ continue; }
+			} else { continue; }
 			for scid in &node_info.channels {
 				if let Some(chan_info) = network_channels.get(&scid) {
 					if let Some((_, successor)) = chan_info.as_directed_from(&node_id) {
@@ -161,14 +166,17 @@ fn reverse_path(
 
 #[cfg(test)]
 mod tests {
-	use crate::routing::test_utils;
+	use crate::ln::features::{InitFeatures, NodeFeatures};
+	use crate::routing::test_utils::*;
 
 	use crate::sync::Arc;
 
 	#[test]
 	fn three_hops() {
-		let (secp_ctx, network_graph, _, _, logger) = test_utils::build_graph();
-		let (_, our_id, _, node_pks) = test_utils::get_nodes(&secp_ctx);
+		let mut features = NodeFeatures::empty();
+		features.set_onion_messages_optional();
+		let (secp_ctx, network_graph, _, _, logger) = build_graph_with_features(features);
+		let (_, our_id, _, node_pks) = get_nodes(&secp_ctx);
 
 		let mut path = super::find_path(&our_id, &node_pks[5], &network_graph, None, Arc::clone(&logger)).unwrap();
 		assert_eq!(path.len(), 3);
@@ -179,10 +187,32 @@ mod tests {
 
 	#[test]
 	fn long_path() {
-		let (secp_ctx, network_graph, _, _, logger) = test_utils::build_line_graph();
-		let (_, our_id, _, node_pks) = test_utils::get_nodes(&secp_ctx);
+		let mut features = NodeFeatures::empty();
+		features.set_onion_messages_optional();
+		let (secp_ctx, network_graph, _, _, logger) = build_line_graph_with_features(features);
+		let (_, our_id, _, node_pks) = get_nodes(&secp_ctx);
 
 		let path = super::find_path(&our_id, &node_pks[18], &network_graph, None, Arc::clone(&logger)).unwrap();
 		assert_eq!(path.len(), 19);
+	}
+
+	#[test]
+	fn disable_nodes_test() {
+		// Check that we won't route over nodes that require unknown feature bits.
+		let mut features = InitFeatures::empty();
+		features.set_onion_messages_optional();
+		let (secp_ctx, network_graph, gossip_sync, _, logger) = build_graph_with_features(features.to_context());
+		let (_, our_id, privkeys, node_pks) = get_nodes(&secp_ctx);
+
+		// Disable nodes 1, 2, and 8 by requiring unknown feature bits
+		let mut unknown_features = NodeFeatures::empty();
+		unknown_features.set_unknown_feature_required();
+		add_or_update_node(&gossip_sync, &secp_ctx, &privkeys[0], unknown_features.clone(), 1);
+		add_or_update_node(&gossip_sync, &secp_ctx, &privkeys[1], unknown_features.clone(), 1);
+		add_or_update_node(&gossip_sync, &secp_ctx, &privkeys[7], unknown_features.clone(), 1);
+
+		// If all nodes require some features we don't understand, route should fail
+		let err = super::find_path(&our_id, &node_pks[2], &network_graph, None, Arc::clone(&logger)).unwrap_err();
+		assert_eq!(err, super::Error::PathNotFound);
 	}
 }

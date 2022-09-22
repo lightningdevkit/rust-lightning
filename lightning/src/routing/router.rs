@@ -5291,7 +5291,8 @@ mod tests {
 
 	#[test]
 	fn limits_path_length() {
-		let (secp_ctx, network, _, _, logger) = build_line_graph();
+		let features = NodeFeatures::from_le_bytes(id_to_feature_flags(1));
+		let (secp_ctx, network, _, _, logger) = build_line_graph_with_features(features);
 		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
 		let network_graph = network.read_only();
 
@@ -5569,7 +5570,8 @@ mod tests {
 
 	#[test]
 	fn honors_manual_penalties() {
-		let (secp_ctx, network_graph, _, _, logger) = build_line_graph();
+		let features = NodeFeatures::from_le_bytes(id_to_feature_flags(1));
+		let (secp_ctx, network_graph, _, _, logger) = build_line_graph_with_features(features);
 		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
 
 		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
