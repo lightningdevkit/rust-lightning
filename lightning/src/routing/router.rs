@@ -2147,8 +2147,7 @@ mod tests {
 		PaymentParameters, Route, RouteHint, RouteHintHop, RouteHop, RoutingFees,
 		DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA, MAX_PATH_LENGTH_ESTIMATE};
 	use crate::routing::scoring::{ChannelUsage, FixedPenaltyScorer, Score, ProbabilisticScorer, ProbabilisticScoringParameters};
-	use crate::routing::test_utils::{add_channel, add_or_update_node, build_graph, build_line_graph, id_to_feature_flags, get_nodes, update_channel};
-	use crate::chain::transaction::OutPoint;
+	use crate::routing::test_utils::*;
 	use crate::chain::keysinterface::EntropySource;
 	use crate::ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 	use crate::ln::msgs::{ErrorAction, LightningError, UnsignedChannelUpdate, MAX_VALUE_MSAT};
@@ -2159,7 +2158,6 @@ mod tests {
 	#[cfg(c_bindings)]
 	use crate::util::ser::{Writeable, Writer};
 
-	use bitcoin::hashes::Hash;
 	use bitcoin::network::constants::Network;
 	use bitcoin::blockdata::constants::genesis_block;
 	use bitcoin::blockdata::script::Builder;
@@ -2175,41 +2173,6 @@ mod tests {
 	use crate::sync::Arc;
 
 	use core::convert::TryInto;
-
-	fn get_channel_details(short_channel_id: Option<u64>, node_id: PublicKey,
-			features: InitFeatures, outbound_capacity_msat: u64) -> channelmanager::ChannelDetails {
-		channelmanager::ChannelDetails {
-			channel_id: [0; 32],
-			counterparty: channelmanager::ChannelCounterparty {
-				features,
-				node_id,
-				unspendable_punishment_reserve: 0,
-				forwarding_info: None,
-				outbound_htlc_minimum_msat: None,
-				outbound_htlc_maximum_msat: None,
-			},
-			funding_txo: Some(OutPoint { txid: bitcoin::Txid::from_slice(&[0; 32]).unwrap(), index: 0 }),
-			channel_type: None,
-			short_channel_id,
-			outbound_scid_alias: None,
-			inbound_scid_alias: None,
-			channel_value_satoshis: 0,
-			user_channel_id: 0,
-			balance_msat: 0,
-			outbound_capacity_msat,
-			next_outbound_htlc_limit_msat: outbound_capacity_msat,
-			inbound_capacity_msat: 42,
-			unspendable_punishment_reserve: None,
-			confirmations_required: None,
-			confirmations: None,
-			force_close_spend_delay: None,
-			is_outbound: true, is_channel_ready: true,
-			is_usable: true, is_public: true,
-			inbound_htlc_minimum_msat: None,
-			inbound_htlc_maximum_msat: None,
-			config: None,
-		}
-	}
 
 	#[test]
 	fn simple_route_test() {

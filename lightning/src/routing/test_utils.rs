@@ -7,8 +7,10 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
+use crate::chain::transaction::OutPoint;
 use crate::routing::gossip::{NetworkGraph, P2PGossipSync};
-use crate::ln::features::{ChannelFeatures, NodeFeatures};
+use crate::ln::channelmanager::{ChannelCounterparty, ChannelDetails};
+use crate::ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 use crate::ln::msgs::{UnsignedChannelAnnouncement, ChannelAnnouncement, RoutingMessageHandler,
 	NodeAnnouncement, UnsignedNodeAnnouncement, ChannelUpdate, UnsignedChannelUpdate, MAX_VALUE_MSAT};
 use crate::util::test_utils;
@@ -28,6 +30,41 @@ use crate::prelude::*;
 use crate::sync::{self, Arc};
 
 use crate::routing::gossip::NodeId;
+
+pub(super) fn get_channel_details(short_channel_id: Option<u64>, node_id: PublicKey,
+	features: InitFeatures, outbound_capacity_msat: u64) -> ChannelDetails {
+	ChannelDetails {
+		channel_id: [0; 32],
+		counterparty: ChannelCounterparty {
+			features,
+			node_id,
+			unspendable_punishment_reserve: 0,
+			forwarding_info: None,
+			outbound_htlc_minimum_msat: None,
+			outbound_htlc_maximum_msat: None,
+		},
+		funding_txo: Some(OutPoint { txid: bitcoin::Txid::from_slice(&[0; 32]).unwrap(), index: 0 }),
+		channel_type: None,
+		short_channel_id,
+		outbound_scid_alias: None,
+		inbound_scid_alias: None,
+		channel_value_satoshis: 0,
+		user_channel_id: 0,
+		balance_msat: 0,
+		outbound_capacity_msat,
+		next_outbound_htlc_limit_msat: outbound_capacity_msat,
+		inbound_capacity_msat: 42,
+		unspendable_punishment_reserve: None,
+		confirmations_required: None,
+		confirmations: None,
+		force_close_spend_delay: None,
+		is_outbound: true, is_channel_ready: true,
+		is_usable: true, is_public: true,
+		inbound_htlc_minimum_msat: None,
+		inbound_htlc_maximum_msat: None,
+		config: None,
+	}
+}
 
 // Using the same keys for LN and BTC ids
 pub(super) fn add_channel(
