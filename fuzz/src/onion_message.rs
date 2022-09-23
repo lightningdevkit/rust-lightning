@@ -11,7 +11,7 @@ use lightning::ln::script::ShutdownScript;
 use lightning::util::enforcing_trait_impls::EnforcingSigner;
 use lightning::util::logger::Logger;
 use lightning::util::ser::{Readable, Writer};
-use lightning::onion_message::OnionMessenger;
+use lightning::onion_message::messenger::OnionMessenger;
 
 use utils::test_logger;
 
