@@ -163,6 +163,8 @@ pub struct Future {
 impl Future {
 	/// Registers a callback to be called upon completion of this future. If the future has already
 	/// completed, the callback will be called immediately.
+	///
+	/// (C-not exported) use the bindings-only `register_callback_fn` instead
 	pub fn register_callback(&self, callback: Box<dyn FutureCallback>) {
 		let mut state = self.state.lock().unwrap();
 		if state.complete {
@@ -171,6 +173,16 @@ impl Future {
 		} else {
 			state.callbacks.push(callback);
 		}
+	}
+
+	// C bindings don't (currently) know how to map `Box<dyn Trait>`, and while it could add the
+	// following wrapper, doing it in the bindings is currently much more work than simply doing it
+	// here.
+	/// Registers a callback to be called upon completion of this future. If the future has already
+	/// completed, the callback will be called immediately.
+	#[cfg(c_bindings)]
+	pub fn register_callback_fn<F: 'static + FutureCallback>(&self, callback: F) {
+		self.register_callback(Box::new(callback));
 	}
 }
 
