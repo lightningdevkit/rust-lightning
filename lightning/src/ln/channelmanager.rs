@@ -679,6 +679,8 @@ pub type SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, M, T, F, L> = ChannelManage
 //  |   |
 //  |   |__`id_to_peer`
 //  |   |
+//  |   |__`short_to_chan_info`
+//  |   |
 //  |   |__`per_peer_state`
 //  |       |
 //  |       |__`outbound_scid_aliases`
@@ -795,7 +797,7 @@ pub struct ChannelManager<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, 
 	/// guarantees are made about the existence of a peer with the `counterparty_node_id` nor a
 	/// channel with the `channel_id` in our other maps.
 	///
-	/// Locked *after* `channel_state`.
+	/// See `ChannelManager` struct-level documentation for lock order requirements.
 	#[cfg(test)]
 	pub(super) short_to_chan_info: FairRwLock<HashMap<u64, (PublicKey, [u8; 32])>>,
 	#[cfg(not(test))]
