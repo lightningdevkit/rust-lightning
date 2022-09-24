@@ -4050,7 +4050,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					}
 				};
 
-				let chan_opt = channel_state.as_ref().unwrap().by_id.get(&chan_id);
+				let chan_opt = channel_state.by_id.get(&chan_id);
 				if chan_opt.map(|chan| !chan.is_usable()).unwrap_or(true) {
 					valid_mpp = false;
 					break;
