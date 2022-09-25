@@ -559,7 +559,7 @@ impl<'a, S: Score> ScorerAccountingForInFlightHtlcs<'a, S> {
 
 #[cfg(c_bindings)]
 impl<'a, S:Score> lightning::util::ser::Writeable for ScorerAccountingForInFlightHtlcs<'a, S> {
-	fn write<W: lightning::util::ser::Writer>(&self, writer: &mut W) -> Result<(), std::io::Error> { self.scorer.write(writer) }
+	fn write<W: lightning::util::ser::Writer>(&self, writer: &mut W) -> Result<(), lightning::io::Error> { self.scorer.write(writer) }
 }
 
 impl<'a, S: Score> Score for ScorerAccountingForInFlightHtlcs<'a, S> {
