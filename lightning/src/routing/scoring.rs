@@ -189,9 +189,9 @@ pub struct MultiThreadedLockableScore<S: Score> {
 }
 #[cfg(c_bindings)]
 /// A locked `MultiThreadedLockableScore`.
-pub struct MultiThreadedLockableScoreLock<'a, S: Score>(MutexGuard<'a, S>);
+pub struct MultiThreadedScoreLock<'a, S: Score>(MutexGuard<'a, S>);
 #[cfg(c_bindings)]
-impl<'a, T: Score + 'a> Score for MultiThreadedLockableScoreLock<'a, T> {
+impl<'a, T: Score + 'a> Score for MultiThreadedScoreLock<'a, T> {
 	fn channel_penalty_msat(&self, scid: u64, source: &NodeId, target: &NodeId, usage: ChannelUsage) -> u64 {
 		self.0.channel_penalty_msat(scid, source, target, usage)
 	}
@@ -209,7 +209,7 @@ impl<'a, T: Score + 'a> Score for MultiThreadedLockableScoreLock<'a, T> {
 	}
 }
 #[cfg(c_bindings)]
-impl<'a, T: Score + 'a> Writeable for MultiThreadedLockableScoreLock<'a, T> {
+impl<'a, T: Score + 'a> Writeable for MultiThreadedScoreLock<'a, T> {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		self.0.write(writer)
 	}
@@ -217,10 +217,10 @@ impl<'a, T: Score + 'a> Writeable for MultiThreadedLockableScoreLock<'a, T> {
 
 #[cfg(c_bindings)]
 impl<'a, T: Score + 'a> LockableScore<'a> for MultiThreadedLockableScore<T> {
-	type Locked = MultiThreadedLockableScoreLock<'a, T>;
+	type Locked = MultiThreadedScoreLock<'a, T>;
 
-	fn lock(&'a self) -> MultiThreadedLockableScoreLock<'a, T> {
-		MultiThreadedLockableScoreLock(Mutex::lock(&self.score).unwrap())
+	fn lock(&'a self) -> MultiThreadedScoreLock<'a, T> {
+		MultiThreadedScoreLock(Mutex::lock(&self.score).unwrap())
 	}
 }
 
