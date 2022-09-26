@@ -51,6 +51,7 @@ pub fn find_path<L: Deref, GL: Deref>(
 
 	// Add our start and first-hops to `frontier`, which is the set of hops that we'll next explore.
 	let start = NodeId::from_pubkey(&our_node_pubkey);
+	let mut valid_first_hops = HashSet::new();
 	let mut frontier = BinaryHeap::new();
 	frontier.push(PathBuildingHop { cost: 0, node_id: start, parent_node_id: start });
 	if let Some(first_hops) = first_hops {
@@ -58,6 +59,7 @@ pub fn find_path<L: Deref, GL: Deref>(
 			if !hop.counterparty.features.supports_onion_messages() { continue; }
 			let node_id = NodeId::from_pubkey(&hop.counterparty.node_id);
 			frontier.push(PathBuildingHop { cost: 1, node_id, parent_node_id: start });
+			valid_first_hops.insert(node_id);
 		}
 	}
 
@@ -73,7 +75,8 @@ pub fn find_path<L: Deref, GL: Deref>(
 			return Ok(path)
 		}
 		if let Some(node_info) = network_nodes.get(&node_id) {
-			if node_id == our_node_id {
+			// Only consider the network graph if first_hops does not override it.
+			if valid_first_hops.contains(&node_id) || node_id == our_node_id {
 			} else if let Some(node_ann) = &node_info.announcement_info {
 				if !node_ann.features.supports_onion_messages() || node_ann.features.requires_unknown_bits()
 				{ continue; }
@@ -216,6 +219,13 @@ mod tests {
 		// If all nodes require some features we don't understand, route should fail
 		let err = super::find_path(&our_id, &node_pks[2], &network_graph, None, Arc::clone(&logger)).unwrap_err();
 		assert_eq!(err, super::Error::PathNotFound);
+
+		// If we specify a channel to node7, that overrides our local channel view and that gets used
+		let our_chans = vec![get_channel_details(Some(42), node_pks[7].clone(), features, 250_000_000)];
+		let path = super::find_path(&our_id, &node_pks[2], &network_graph, Some(&our_chans.iter().collect::<Vec<_>>()), Arc::clone(&logger)).unwrap();
+		assert_eq!(path.len(), 2);
+		assert_eq!(path[0], node_pks[7]);
+		assert_eq!(path[1], node_pks[2]);
 	}
 
 	#[test]
@@ -233,5 +243,11 @@ mod tests {
 		assert_eq!(path[0], node_pks[1]);
 		assert_eq!(path[1], node_pks[2]);
 		assert_eq!(path[2], node_pks[0]);
+
+		// If we specify a channel to node1, that overrides our local channel view and that gets used
+		let our_chans = vec![get_channel_details(Some(42), node_pks[0].clone(), features, 250_000_000)];
+		let path = super::find_path(&our_id, &node_pks[0], &network_graph, Some(&our_chans.iter().collect::<Vec<_>>()), Arc::clone(&logger)).unwrap();
+		assert_eq!(path.len(), 1);
+		assert_eq!(path[0], node_pks[0]);
 	}
 }
