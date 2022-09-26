@@ -1912,7 +1912,7 @@ mod tests {
 
 	#[cfg(c_bindings)]
 	impl lightning::util::ser::Writeable for TestScorer {
-		fn write<W: lightning::util::ser::Writer>(&self, _: &mut W) -> Result<(), std::io::Error> { unreachable!(); }
+		fn write<W: lightning::util::ser::Writer>(&self, _: &mut W) -> Result<(), lightning::io::Error> { unreachable!(); }
 	}
 
 	impl Score for TestScorer {

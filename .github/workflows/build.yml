@@ -127,6 +127,8 @@ jobs:
           cargo test --verbose --color always --no-default-features --features no-std
           # check if there is a conflict between no-std and the default std feature
           cargo test --verbose --color always --features no-std
+          # check if there is a conflict between no-std and the c_bindings cfg
+          RUSTFLAGS="--cfg=c_bindings" cargo test --verbose --color always --no-default-features --features=no-std
           # check no-std compatibility across dependencies
           cd ..
           cd no-std-check
