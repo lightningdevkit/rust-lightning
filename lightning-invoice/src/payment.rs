@@ -253,6 +253,15 @@ impl<'a, S: Score> Score for AccountForInFlightHtlcs<'a, S> {
 	fn probe_successful(&mut self, path: &[&RouteHop]) {
 		self.scorer.probe_successful(path)
 	}
+
+	fn estimated_channel_liquidity_range(&self,scid:u64,source: &NodeId, target: &NodeId) -> Option<(u64,u64)> {
+		if let Some(used_liquidity) = self.inflight_htlcs.get(&(scid, source < target)) {
+			self.scorer.estimated_channel_liquidity_range(scid, source, target).map(
+				|(min, max)| (min.saturating_sub(*used_liquidity), max.saturating_sub(*used_liquidity)))
+		} else {
+			self.scorer.estimated_channel_liquidity_range(scid, source, target)
+		}
+	}
 }
 
 /// Storing minimal payment attempts information required for determining if a outbound payment can
@@ -1995,7 +2004,7 @@ mod tests {
 				}
 			}
 		}
-		fn estimated_channel_liquidity_range(&self,scid:u64,target: &NodeId) -> Option<(u64,u64)> {
+		fn estimated_channel_liquidity_range(&self,scid:u64,source: &NodeId, target: &NodeId) -> Option<(u64,u64)> {
 			None
 		}
 	}

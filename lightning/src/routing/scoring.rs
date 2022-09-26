@@ -110,7 +110,7 @@ pub trait Score $(: $supertrait)* {
 	fn probe_successful(&mut self, path: &[&RouteHop]);
 
 	/// Range of minimum - maximum liquidity for given channel and target node.
-	fn estimated_channel_liquidity_range(&self, scid: u64, target: &NodeId) -> Option<(u64, u64)>;
+	fn estimated_channel_liquidity_range(&self, scid: u64, source: &NodeId, target: &NodeId) -> Option<(u64, u64)>;
 }
 
 impl<S: Score, T: DerefMut<Target=S> $(+ $supertrait)*> Score for T {
@@ -136,8 +136,8 @@ impl<S: Score, T: DerefMut<Target=S> $(+ $supertrait)*> Score for T {
 		self.deref_mut().probe_successful(path)
 	}
 
-	fn estimated_channel_liquidity_range(&self, scid: u64, target: &NodeId) -> Option<(u64, u64)> {
-		self.deref().estimated_channel_liquidity_range(scid, target)
+	fn estimated_channel_liquidity_range(&self, scid: u64, source: &NodeId, target: &NodeId) -> Option<(u64, u64)> {
+		self.deref().estimated_channel_liquidity_range(scid, source, target)
 	}
 }
 } }
@@ -268,7 +268,7 @@ impl Score for FixedPenaltyScorer {
 
 	fn probe_successful(&mut self, _path: &[&RouteHop]) {}
 
-	fn estimated_channel_liquidity_range(&self,scid:u64,target: &NodeId) -> Option<(u64,u64)> { None }
+	fn estimated_channel_liquidity_range(&self,scid:u64,source: &NodeId, target: &NodeId) -> Option<(u64,u64)> { None }
 }
 
 impl Writeable for FixedPenaltyScorer {
@@ -891,7 +891,7 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> Score for Probabilis
 
 	/// Query the estimated minimum and maximum liquidity available for sending a payment over the
 	/// channel with `scid` towards the given `target` node.
-	fn estimated_channel_liquidity_range(&self, scid: u64, target: &NodeId) -> Option<(u64, u64)> {
+	fn estimated_channel_liquidity_range(&self, scid: u64, source: &NodeId, target: &NodeId) -> Option<(u64, u64)> {
 		let graph = self.network_graph.read_only();
 
 		if let Some(chan) = graph.channels().get(&scid) {
