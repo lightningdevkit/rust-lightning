@@ -80,15 +80,17 @@ pub fn find_path<L: Deref, GL: Deref>(
 			} else { continue; }
 			for scid in &node_info.channels {
 				if let Some(chan_info) = network_channels.get(&scid) {
-					if let Some((_, successor)) = chan_info.as_directed_from(&node_id) {
-						// We may push a given successor multiple times, but the heap should sort its best entry
-						// to the top. We do this because there is no way to adjust the priority of an existing
-						// entry in `BinaryHeap`.
-						frontier.push(PathBuildingHop {
-							cost: cost + 1,
-							node_id: *successor,
-							parent_node_id: node_id,
-						});
+					if let Some((directed_channel, successor)) = chan_info.as_directed_from(&node_id) {
+						if directed_channel.direction().enabled {
+							// We may push a given successor multiple times, but the heap should sort its best
+							// entry to the top. We do this because there is no way to adjust the priority of an
+							// existing entry in `BinaryHeap`.
+							frontier.push(PathBuildingHop {
+								cost: cost + 1,
+								node_id: *successor,
+								parent_node_id: node_id,
+							});
+						}
 					}
 				}
 			}
@@ -214,5 +216,22 @@ mod tests {
 		// If all nodes require some features we don't understand, route should fail
 		let err = super::find_path(&our_id, &node_pks[2], &network_graph, None, Arc::clone(&logger)).unwrap_err();
 		assert_eq!(err, super::Error::PathNotFound);
+	}
+
+	#[test]
+	fn disabled_channels_test() {
+		// Check that we won't attempt to route over nodes where the channel is disabled from their
+		// direction (implying the peer is offline).
+		let mut features = InitFeatures::empty();
+		features.set_onion_messages_optional();
+		let (secp_ctx, network_graph, _, _, logger) = build_graph_with_features(features.to_context());
+		let (_, our_id, _, node_pks) = get_nodes(&secp_ctx);
+
+		// Route to 1 via 2 and 3 because our channel to 1 is disabled
+		let path = super::find_path(&our_id, &node_pks[0], &network_graph, None, Arc::clone(&logger)).unwrap();
+		assert_eq!(path.len(), 3);
+		assert_eq!(path[0], node_pks[1]);
+		assert_eq!(path[1], node_pks[2]);
+		assert_eq!(path[2], node_pks[0]);
 	}
 }
