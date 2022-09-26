@@ -2935,7 +2935,6 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			// Transactions are evaluated as final by network mempools at the next block. However, the modules
 			// constituting our Lightning node might not have perfect sync about their blockchain views. Thus, if
 			// the wallet module is in advance on the LDK view, allow one more block of headroom.
-			// TODO: updated if/when https://github.com/rust-bitcoin/rust-bitcoin/pull/994 landed and rust-bitcoin bumped.
 			if !funding_transaction.input.iter().all(|input| input.sequence == Sequence::MAX) && LockTime::from(funding_transaction.lock_time).is_block_height() && funding_transaction.lock_time.0 > height + 2 {
 				return Err(APIError::APIMisuseError {
 					err: "Funding transaction absolute timelock is non-final".to_owned()
