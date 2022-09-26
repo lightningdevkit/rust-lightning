@@ -2424,4 +2424,143 @@ mod tests {
 		nodes[0].node.process_pending_events(&invoice_payer);
 		assert!(expected_events.borrow().is_empty());
 	}
+
+	fn handle_message_send_events(sender:&Node, node_indices_by_id: &HashMap<PublicKey, usize>, nodes: &Vec<Node>) {
+		let mut to_notify : Vec<&Node>=Vec::new();
+		for msg in sender.node.get_and_clear_pending_msg_events() {
+			match msg {
+				MessageSendEvent::SendRevokeAndACK { node_id, msg } => {
+					println!("Sendrevoke {:?}", msg);
+					let idx = node_indices_by_id[&node_id];
+					let other_node=&nodes[idx];
+					other_node.node.handle_revoke_and_ack(&sender.node.node_id(), &msg);
+					to_notify.push(other_node);
+					// handle_message_send_events(&other_node, node_indices_by_id, nodes);
+				}
+				MessageSendEvent::UpdateHTLCs { node_id, updates } => {
+					println!("Update {:?}", updates);
+					let idx = node_indices_by_id[&node_id];
+					let other_node=&nodes[idx];
+					for add_htlc in updates.update_add_htlcs {
+						other_node.node.handle_update_add_htlc(&sender.node.node_id(), &add_htlc);
+					}
+					for update_fail_htlc in updates.update_fail_htlcs {
+						other_node.node.handle_update_fail_htlc(&sender.node.node_id(), &update_fail_htlc);
+					}
+					other_node.node.handle_commitment_signed(&sender.node.node_id(), &updates.commitment_signed);
+					to_notify.push(other_node);
+
+					// handle_message_send_events(&other_node, node_indices_by_id, nodes);
+				},
+				_ => panic!("Unexpected event: {:?}", msg),
+			}
+		}
+		// clear monitors
+		let mut added_monitors = sender.chain_monitor.added_monitors.lock().unwrap();
+		added_monitors.clear();
+
+		for ton in to_notify {
+			handle_message_send_events(ton, node_indices_by_id, nodes);
+		}
+	}
+
+	#[test]
+	/// A simpler version of no_extra_retries_on_back_to_back_fail test that demonstrates
+	/// automatically handling and forwarding message send events during a payment inside the test case.
+	fn no_extra_retries_on_back_to_back_fail_automatically_handle_message_send_events() {
+		let chanmon_cfgs = create_chanmon_cfgs(3);
+		let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+		let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+		let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+		let chan_1_scid = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 10_000_000, 0, channelmanager::provided_init_features(), channelmanager::provided_init_features()).0.contents.short_channel_id;
+		let chan_2_scid = create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 10_000_000, 0, channelmanager::provided_init_features(), channelmanager::provided_init_features()).0.contents.short_channel_id;
+
+		let mut route = Route {
+			paths: vec![
+				vec![RouteHop {
+					pubkey: nodes[1].node.get_our_node_id(),
+					node_features: channelmanager::provided_node_features(),
+					short_channel_id: chan_1_scid,
+					channel_features: channelmanager::provided_channel_features(),
+					fee_msat: 0,
+					cltv_expiry_delta: 100,
+				}, RouteHop {
+					pubkey: nodes[2].node.get_our_node_id(),
+					node_features: channelmanager::provided_node_features(),
+					short_channel_id: chan_2_scid,
+					channel_features: channelmanager::provided_channel_features(),
+					fee_msat: 100_000_000,
+					cltv_expiry_delta: 100,
+				}],
+				vec![RouteHop {
+					pubkey: nodes[1].node.get_our_node_id(),
+					node_features: channelmanager::provided_node_features(),
+					short_channel_id: chan_1_scid,
+					channel_features: channelmanager::provided_channel_features(),
+					fee_msat: 0,
+					cltv_expiry_delta: 100,
+				}, RouteHop {
+					pubkey: nodes[2].node.get_our_node_id(),
+					node_features: channelmanager::provided_node_features(),
+					short_channel_id: chan_2_scid,
+					channel_features: channelmanager::provided_channel_features(),
+					fee_msat: 100_000_000,
+					cltv_expiry_delta: 100,
+				}]
+			],
+			payment_params: Some(PaymentParameters::from_node_id(nodes[2].node.get_our_node_id())),
+		};
+		let router = ManualRouter(RefCell::new(VecDeque::new()));
+		router.expect_find_route(Ok(route.clone()));
+		// On retry, we'll only be asked for one path
+		route.paths.remove(1);
+		router.expect_find_route(Ok(route.clone()));
+
+		let expected_events: RefCell<VecDeque<&dyn Fn(&Event)>> = RefCell::new(VecDeque::new());
+		let event_handler = |event: &Event| {
+			let event_checker = expected_events.borrow_mut().pop_front().unwrap();
+			event_checker(event);
+		};
+		let scorer = RefCell::new(TestScorer::new());
+		let invoice_payer = InvoicePayer::new(nodes[0].node, router, &scorer, nodes[0].logger, event_handler, Retry::Attempts(1));
+
+		assert!(invoice_payer.pay_invoice(&create_invoice_from_channelmanager_and_duration_since_epoch(
+			&nodes[1].node, nodes[1].keys_manager, Currency::Bitcoin, Some(100_010_000), "Invoice".to_string(),
+			duration_since_epoch(), 3600).unwrap())
+			.is_ok());
+		let entries=nodes.iter().enumerate().map(|(i, n)| (n.node.node_id(), i));
+		let node_map:HashMap<PublicKey, usize>=entries.collect();
+		handle_message_send_events(&nodes[0], &node_map, &nodes);
+
+		// At this point A has sent two HTLCs which both failed due to lack of fee. It now has two
+		// pending `PaymentPathFailed` events, one with `all_paths_failed` unset, and the second
+		// with it set. The first event will use up the only retry we are allowed, with the second
+		// `PaymentPathFailed` being passed up to the user (us, in this case). Previously, we'd
+		// treated this as "HTLC complete" and dropped the retry counter, causing us to retry again
+		// if the final HTLC failed.
+		expected_events.borrow_mut().push_back(&|ev: &Event| {
+			if let Event::PaymentPathFailed { payment_failed_permanently, all_paths_failed, .. } = ev {
+				assert!(!payment_failed_permanently);
+				assert!(all_paths_failed);
+			} else { panic!("Unexpected event"); }
+		});
+		nodes[0].node.process_pending_events(&invoice_payer);
+		assert!(expected_events.borrow().is_empty());
+
+		handle_message_send_events(&nodes[0], &node_map, &nodes);
+
+		expected_events.borrow_mut().push_back(&|ev: &Event| {
+			if let Event::PaymentPathFailed { payment_failed_permanently, all_paths_failed, .. } = ev {
+				assert!(!payment_failed_permanently);
+				assert!(all_paths_failed);
+			} else { panic!("Unexpected event"); }
+		});
+		expected_events.borrow_mut().push_back(&|ev: &Event| {
+			if let Event::PaymentFailed { .. } = ev {
+			} else { panic!("Unexpected event"); }
+		});
+		nodes[0].node.process_pending_events(&invoice_payer);
+		assert!(expected_events.borrow().is_empty());
+	}
 }
