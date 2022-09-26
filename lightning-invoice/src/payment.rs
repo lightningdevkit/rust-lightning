@@ -2455,13 +2455,13 @@ mod tests {
 				_ => panic!("Unexpected event: {:?}", msg),
 			}
 		}
-		// clear monitors
-		let mut added_monitors = sender.chain_monitor.added_monitors.lock().unwrap();
-		added_monitors.clear();
 
 		for ton in to_notify {
 			handle_message_send_events(ton, node_indices_by_id, nodes);
 		}
+		// clear monitors
+		let mut added_monitors = sender.chain_monitor.added_monitors.lock().unwrap();
+		added_monitors.clear();
 	}
 
 	#[test]
@@ -2522,8 +2522,7 @@ mod tests {
 			let event_checker = expected_events.borrow_mut().pop_front().unwrap();
 			event_checker(event);
 		};
-		let scorer = RefCell::new(TestScorer::new());
-		let invoice_payer = InvoicePayer::new(nodes[0].node, router, &scorer, nodes[0].logger, event_handler, Retry::Attempts(1));
+		let invoice_payer = InvoicePayer::new(nodes[0].node, router, nodes[0].logger, event_handler, Retry::Attempts(1));
 
 		assert!(invoice_payer.pay_invoice(&create_invoice_from_channelmanager_and_duration_since_epoch(
 			&nodes[1].node, nodes[1].keys_manager, Currency::Bitcoin, Some(100_010_000), "Invoice".to_string(),
