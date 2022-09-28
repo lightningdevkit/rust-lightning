@@ -2425,6 +2425,7 @@ mod tests {
 		assert!(expected_events.borrow().is_empty());
 	}
 
+	///	Helper function to forward HTLC update and RevokeAndAck messages
 	fn handle_message_send_events(sender:&Node, node_indices_by_id: &HashMap<PublicKey, usize>, nodes: &Vec<Node>) {
 		let mut to_notify : Vec<&Node>=Vec::new();
 		for msg in sender.node.get_and_clear_pending_msg_events() {
