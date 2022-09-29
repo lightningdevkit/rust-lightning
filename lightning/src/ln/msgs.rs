@@ -647,7 +647,7 @@ pub struct UnsignedChannelUpdate {
 	/// Message flags
 	pub message_flags: u8,
 	/// Channel flags
-	pub flags: u8,
+	pub channel_flags: u8,
 	/// The number of blocks such that if:
 	/// `incoming_htlc.cltv_expiry < outgoing_htlc.cltv_expiry + cltv_expiry_delta`
 	/// then we need to fail the HTLC backwards. When forwarding an HTLC, cltv_expiry_delta determines
@@ -1636,7 +1636,7 @@ impl Writeable for UnsignedChannelUpdate {
 		self.short_channel_id.write(w)?;
 		self.timestamp.write(w)?;
 		self.message_flags.write(w)?;
-		self.flags.write(w)?;
+		self.channel_flags.write(w)?;
 		self.cltv_expiry_delta.write(w)?;
 		self.htlc_minimum_msat.write(w)?;
 		self.fee_base_msat.write(w)?;
@@ -1654,7 +1654,7 @@ impl Readable for UnsignedChannelUpdate {
 			short_channel_id: Readable::read(r)?,
 			timestamp: Readable::read(r)?,
 			message_flags: Readable::read(r)?,
-			flags: Readable::read(r)?,
+			channel_flags: Readable::read(r)?,
 			cltv_expiry_delta: Readable::read(r)?,
 			htlc_minimum_msat: Readable::read(r)?,
 			fee_base_msat: Readable::read(r)?,
@@ -2221,7 +2221,7 @@ mod tests {
 			short_channel_id: 2316138423780173,
 			timestamp: 20190119,
 			message_flags: 1 | if dont_forward { 1 << 1 } else { 0 },
-			flags: if direction { 1 } else { 0 } | if disable { 1 << 1 } else { 0 },
+			channel_flags: if direction { 1 } else { 0 } | if disable { 1 << 1 } else { 0 },
 			cltv_expiry_delta: 144,
 			htlc_minimum_msat: 1000000,
 			htlc_maximum_msat: 131355275467161,

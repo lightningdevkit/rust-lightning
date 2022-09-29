@@ -1434,7 +1434,7 @@ mod tests {
 			short_channel_id,
 			timestamp: 100,
 			message_flags: 1,
-			flags,
+			channel_flags: flags,
 			cltv_expiry_delta: 18,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: 1_000,

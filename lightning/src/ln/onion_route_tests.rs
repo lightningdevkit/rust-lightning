@@ -225,7 +225,7 @@ impl msgs::ChannelUpdate {
 				short_channel_id,
 				timestamp: 0,
 				message_flags: 1,
-				flags: 0,
+				channel_flags: 0,
 				cltv_expiry_delta: 0,
 				htlc_minimum_msat: 0,
 				htlc_maximum_msat: msgs::MAX_VALUE_MSAT,

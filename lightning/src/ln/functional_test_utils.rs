@@ -956,7 +956,7 @@ macro_rules! get_closing_signed_broadcast {
 			assert!(events.len() == 1 || events.len() == 2);
 			(match events[events.len() - 1] {
 				MessageSendEvent::BroadcastChannelUpdate { ref msg } => {
-					assert_eq!(msg.contents.flags & 2, 2);
+					assert_eq!(msg.contents.channel_flags & 2, 2);
 					msg.clone()
 				},
 				_ => panic!("Unexpected event"),
@@ -1001,7 +1001,7 @@ macro_rules! check_closed_broadcast {
 		assert_eq!(msg_events.len(), if $with_error_msg { 2 } else { 1 });
 		match msg_events[0] {
 			MessageSendEvent::BroadcastChannelUpdate { ref msg } => {
-				assert_eq!(msg.contents.flags & 2, 2);
+				assert_eq!(msg.contents.channel_flags & 2, 2);
 			},
 			_ => panic!("Unexpected event"),
 		}
@@ -1595,7 +1595,7 @@ pub fn expect_payment_failed_conditions_event<'a, 'b, 'c, 'd, 'e>(
 							assert_eq!(msg.contents.short_channel_id, scid);
 						}
 						const CHAN_DISABLED_FLAG: u8 = 2;
-						assert_eq!(msg.contents.flags & CHAN_DISABLED_FLAG, 0);
+						assert_eq!(msg.contents.channel_flags & CHAN_DISABLED_FLAG, 0);
 					},
 					Some(NetworkUpdate::ChannelFailure { short_channel_id, is_permanent }) if chan_closed => {
 						if let Some(scid) = conditions.expected_blamed_scid {
@@ -2369,7 +2369,7 @@ macro_rules! handle_chan_reestablish_msgs {
 			if let Some(&MessageSendEvent::SendChannelUpdate { ref node_id, ref msg }) = msg_events.get(idx) {
 				assert_eq!(*node_id, $dst_node.node.get_our_node_id());
 				idx += 1;
-				assert_eq!(msg.contents.flags & 2, 0); // "disabled" flag must not be set as we just reconnected.
+				assert_eq!(msg.contents.channel_flags & 2, 0); // "disabled" flag must not be set as we just reconnected.
 			}
 
 			assert_eq!(msg_events.len(), idx);
