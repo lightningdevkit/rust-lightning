@@ -224,6 +224,7 @@ impl msgs::ChannelUpdate {
 				chain_hash: BlockHash::hash(&vec![0u8][..]),
 				short_channel_id,
 				timestamp: 0,
+				message_flags: 1,
 				flags: 0,
 				cltv_expiry_delta: 0,
 				htlc_minimum_msat: 0,

@@ -644,6 +644,8 @@ pub struct UnsignedChannelUpdate {
 	pub short_channel_id: u64,
 	/// A strictly monotonic announcement counter, with gaps allowed, specific to this channel
 	pub timestamp: u32,
+	/// Message flags
+	pub message_flags: u8,
 	/// Channel flags
 	pub flags: u8,
 	/// The number of blocks such that if:
@@ -1630,13 +1632,11 @@ impl_writeable!(ChannelAnnouncement, {
 
 impl Writeable for UnsignedChannelUpdate {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		// `message_flags` used to indicate presence of `htlc_maximum_msat`, but was deprecated in the spec.
-		const MESSAGE_FLAGS: u8 = 1;
 		self.chain_hash.write(w)?;
 		self.short_channel_id.write(w)?;
 		self.timestamp.write(w)?;
-		let all_flags = self.flags as u16 | ((MESSAGE_FLAGS as u16) << 8);
-		all_flags.write(w)?;
+		self.message_flags.write(w)?;
+		self.flags.write(w)?;
 		self.cltv_expiry_delta.write(w)?;
 		self.htlc_minimum_msat.write(w)?;
 		self.fee_base_msat.write(w)?;
@@ -1653,11 +1653,8 @@ impl Readable for UnsignedChannelUpdate {
 			chain_hash: Readable::read(r)?,
 			short_channel_id: Readable::read(r)?,
 			timestamp: Readable::read(r)?,
-			flags: {
-				let flags: u16 = Readable::read(r)?;
-				// Note: we ignore the `message_flags` for now, since it was deprecated by the spec.
-				flags as u8
-			},
+			message_flags: Readable::read(r)?,
+			flags: Readable::read(r)?,
 			cltv_expiry_delta: Readable::read(r)?,
 			htlc_minimum_msat: Readable::read(r)?,
 			fee_base_msat: Readable::read(r)?,
@@ -2215,7 +2212,7 @@ mod tests {
 		do_encoding_node_announcement(false, false, true, false, true, false, false, false);
 	}
 
-	fn do_encoding_channel_update(direction: bool, disable: bool, excess_data: bool) {
+	fn do_encoding_channel_update(dont_forward: bool, direction: bool, disable: bool, excess_data: bool) {
 		let secp_ctx = Secp256k1::new();
 		let (privkey_1, _) = get_keys_from!("0101010101010101010101010101010101010101010101010101010101010101", secp_ctx);
 		let sig_1 = get_sig_on!(privkey_1, secp_ctx, String::from("01010101010101010101010101010101"));
@@ -2223,6 +2220,7 @@ mod tests {
 			chain_hash: BlockHash::from_hex("6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000").unwrap(),
 			short_channel_id: 2316138423780173,
 			timestamp: 20190119,
+			message_flags: 1 | if dont_forward { 1 << 1 } else { 0 },
 			flags: if direction { 1 } else { 0 } | if disable { 1 << 1 } else { 0 },
 			cltv_expiry_delta: 144,
 			htlc_minimum_msat: 1000000,
@@ -2239,16 +2237,8 @@ mod tests {
 		let mut target_value = hex::decode("d977cb9b53d93a6ff64bb5f1e158b4094b66e798fb12911168a3ccdf80a83096340a6a95da0ae8d9f776528eecdbb747eb6b545495a4319ed5378e35b21e073a").unwrap();
 		target_value.append(&mut hex::decode("000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f").unwrap());
 		target_value.append(&mut hex::decode("00083a840000034d013413a7").unwrap());
-		target_value.append(&mut hex::decode("01").unwrap());
-		target_value.append(&mut hex::decode("00").unwrap());
-		if direction {
-			let flag = target_value.last_mut().unwrap();
-			*flag = 1;
-		}
-		if disable {
-			let flag = target_value.last_mut().unwrap();
-			*flag = *flag | 1 << 1;
-		}
+		target_value.append(&mut vec![1 | if dont_forward { 1 << 1 } else { 0 }]);
+		target_value.append(&mut vec![if direction { 1 } else { 0 } | if disable { 1 << 1 } else { 0 }]);
 		target_value.append(&mut hex::decode("009000000000000f42400000271000000014").unwrap());
 		target_value.append(&mut hex::decode("0000777788889999").unwrap());
 		if excess_data {
@@ -2259,14 +2249,22 @@ mod tests {
 
 	#[test]
 	fn encoding_channel_update() {
-		do_encoding_channel_update(false, false, false);
-		do_encoding_channel_update(false, false, true);
-		do_encoding_channel_update(true, false, false);
-		do_encoding_channel_update(true, false, true);
-		do_encoding_channel_update(false, true, false);
-		do_encoding_channel_update(false, true, true);
-		do_encoding_channel_update(true, true, false);
-		do_encoding_channel_update(true, true, true);
+		do_encoding_channel_update(false, false, false, false);
+		do_encoding_channel_update(false, false, false, true);
+		do_encoding_channel_update(false, true, false, false);
+		do_encoding_channel_update(false, true, false, true);
+		do_encoding_channel_update(false, false, true, false);
+		do_encoding_channel_update(false, false, true, true);
+		do_encoding_channel_update(false, true, true, false);
+		do_encoding_channel_update(false, true, true, true);
+		do_encoding_channel_update(true, false, false, false);
+		do_encoding_channel_update(true, false, false, true);
+		do_encoding_channel_update(true, true, false, false);
+		do_encoding_channel_update(true, true, false, true);
+		do_encoding_channel_update(true, false, true, false);
+		do_encoding_channel_update(true, false, true, true);
+		do_encoding_channel_update(true, true, true, false);
+		do_encoding_channel_update(true, true, true, true);
 	}
 
 	fn do_encoding_open_channel(random_bit: bool, shutdown: bool, incl_chan_type: bool) {

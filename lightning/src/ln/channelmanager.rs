@@ -2431,6 +2431,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			chain_hash: self.genesis_hash,
 			short_channel_id,
 			timestamp: chan.get_update_time_counter(),
+			message_flags: 1 | ((!chan.should_announce() as u8) << 1),
 			flags: (!were_node_one) as u8 | ((!chan.is_live() as u8) << 1),
 			cltv_expiry_delta: chan.get_cltv_expiry_delta(),
 			htlc_minimum_msat: chan.get_counterparty_htlc_minimum_msat(),

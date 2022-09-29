@@ -520,6 +520,7 @@ fn test_scid_alias_returned() {
 		chain_hash: genesis_block(Network::Testnet).header.block_hash(),
 		short_channel_id: last_hop[0].inbound_scid_alias.unwrap(),
 		timestamp: 21,
+		message_flags: 1|2, // Channel is unannounced
 		flags: 1,
 		cltv_expiry_delta: accept_forward_cfg.channel_config.cltv_expiry_delta,
 		htlc_minimum_msat: 1_000,

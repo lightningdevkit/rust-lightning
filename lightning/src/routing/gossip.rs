@@ -1991,6 +1991,7 @@ mod tests {
 			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
 			short_channel_id: 0,
 			timestamp: 100,
+			message_flags: 1,
 			flags: 0,
 			cltv_expiry_delta: 144,
 			htlc_minimum_msat: 1_000_000,

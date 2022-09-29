@@ -1433,6 +1433,7 @@ mod tests {
 			chain_hash: genesis_hash,
 			short_channel_id,
 			timestamp: 100,
+			message_flags: 1,
 			flags,
 			cltv_expiry_delta: 18,
 			htlc_minimum_msat: 0,
