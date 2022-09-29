@@ -46,9 +46,15 @@ pub enum APIError {
 		/// A human-readable error message
 		err: String
 	},
-	/// An attempt to call watch/update_channel returned an Err (ie you did this!), causing the
-	/// attempted action to fail.
-	MonitorUpdateFailed,
+	/// An attempt to call [`chain::Watch::watch_channel`]/[`chain::Watch::update_channel`]
+	/// returned a [`ChannelMonitorUpdateStatus::InProgress`] indicating the persistence of a
+	/// monitor update is awaiting async resolution. Once it resolves the attempted action should
+	/// complete automatically.
+	///
+	/// [`chain::Watch::watch_channel`]: crate::chain::Watch::watch_channel
+	/// [`chain::Watch::update_channel`]: crate::chain::Watch::update_channel
+	/// [`ChannelMonitorUpdateStatus::InProgress`]: crate::chain::ChannelMonitorUpdateStatus::InProgress
+	MonitorUpdateInProgress,
 	/// [`KeysInterface::get_shutdown_scriptpubkey`] returned a shutdown scriptpubkey incompatible
 	/// with the channel counterparty as negotiated in [`InitFeatures`].
 	///
@@ -70,7 +76,7 @@ impl fmt::Debug for APIError {
 			APIError::FeeRateTooHigh {ref err, ref feerate} => write!(f, "{} feerate: {}", err, feerate),
 			APIError::RouteError {ref err} => write!(f, "Route error: {}", err),
 			APIError::ChannelUnavailable {ref err} => write!(f, "Channel unavailable: {}", err),
-			APIError::MonitorUpdateFailed => f.write_str("Client indicated a channel monitor update failed"),
+			APIError::MonitorUpdateInProgress => f.write_str("Client indicated a channel monitor update is in progress but not yet complete"),
 			APIError::IncompatibleShutdownScript { ref script } => {
 				write!(f, "Provided a scriptpubkey format not accepted by peer: {}", script)
 			},

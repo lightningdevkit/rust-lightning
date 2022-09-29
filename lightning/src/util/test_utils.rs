@@ -126,7 +126,7 @@ impl<'a> TestChainMonitor<'a> {
 	}
 }
 impl<'a> chain::Watch<EnforcingSigner> for TestChainMonitor<'a> {
-	fn watch_channel(&self, funding_txo: OutPoint, monitor: channelmonitor::ChannelMonitor<EnforcingSigner>) -> Result<(), chain::ChannelMonitorUpdateErr> {
+	fn watch_channel(&self, funding_txo: OutPoint, monitor: channelmonitor::ChannelMonitor<EnforcingSigner>) -> chain::ChannelMonitorUpdateStatus {
 		// At every point where we get a monitor update, we should be able to send a useful monitor
 		// to a watchtower and disk...
 		let mut w = TestVecWriter(Vec::new());
@@ -140,7 +140,7 @@ impl<'a> chain::Watch<EnforcingSigner> for TestChainMonitor<'a> {
 		self.chain_monitor.watch_channel(funding_txo, new_monitor)
 	}
 
-	fn update_channel(&self, funding_txo: OutPoint, update: channelmonitor::ChannelMonitorUpdate) -> Result<(), chain::ChannelMonitorUpdateErr> {
+	fn update_channel(&self, funding_txo: OutPoint, update: channelmonitor::ChannelMonitorUpdate) -> chain::ChannelMonitorUpdateStatus {
 		// Every monitor update should survive roundtrip
 		let mut w = TestVecWriter(Vec::new());
 		update.write(&mut w).unwrap();
@@ -178,10 +178,10 @@ impl<'a> chain::Watch<EnforcingSigner> for TestChainMonitor<'a> {
 }
 
 pub struct TestPersister {
-	pub update_ret: Mutex<Result<(), chain::ChannelMonitorUpdateErr>>,
+	pub update_ret: Mutex<chain::ChannelMonitorUpdateStatus>,
 	/// If this is set to Some(), after the next return, we'll always return this until update_ret
 	/// is changed:
-	pub next_update_ret: Mutex<Option<Result<(), chain::ChannelMonitorUpdateErr>>>,
+	pub next_update_ret: Mutex<Option<chain::ChannelMonitorUpdateStatus>>,
 	/// When we get an update_persisted_channel call with no ChannelMonitorUpdate, we insert the
 	/// MonitorUpdateId here.
 	pub chain_sync_monitor_persistences: Mutex<HashMap<OutPoint, HashSet<MonitorUpdateId>>>,
@@ -192,23 +192,23 @@ pub struct TestPersister {
 impl TestPersister {
 	pub fn new() -> Self {
 		Self {
-			update_ret: Mutex::new(Ok(())),
+			update_ret: Mutex::new(chain::ChannelMonitorUpdateStatus::Completed),
 			next_update_ret: Mutex::new(None),
 			chain_sync_monitor_persistences: Mutex::new(HashMap::new()),
 			offchain_monitor_updates: Mutex::new(HashMap::new()),
 		}
 	}
 
-	pub fn set_update_ret(&self, ret: Result<(), chain::ChannelMonitorUpdateErr>) {
+	pub fn set_update_ret(&self, ret: chain::ChannelMonitorUpdateStatus) {
 		*self.update_ret.lock().unwrap() = ret;
 	}
 
-	pub fn set_next_update_ret(&self, next_ret: Option<Result<(), chain::ChannelMonitorUpdateErr>>) {
+	pub fn set_next_update_ret(&self, next_ret: Option<chain::ChannelMonitorUpdateStatus>) {
 		*self.next_update_ret.lock().unwrap() = next_ret;
 	}
 }
 impl<Signer: keysinterface::Sign> chainmonitor::Persist<Signer> for TestPersister {
-	fn persist_new_channel(&self, _funding_txo: OutPoint, _data: &channelmonitor::ChannelMonitor<Signer>, _id: MonitorUpdateId) -> Result<(), chain::ChannelMonitorUpdateErr> {
+	fn persist_new_channel(&self, _funding_txo: OutPoint, _data: &channelmonitor::ChannelMonitor<Signer>, _id: MonitorUpdateId) -> chain::ChannelMonitorUpdateStatus {
 		let ret = self.update_ret.lock().unwrap().clone();
 		if let Some(next_ret) = self.next_update_ret.lock().unwrap().take() {
 			*self.update_ret.lock().unwrap() = next_ret;
@@ -216,7 +216,7 @@ impl<Signer: keysinterface::Sign> chainmonitor::Persist<Signer> for TestPersiste
 		ret
 	}
 
-	fn update_persisted_channel(&self, funding_txo: OutPoint, update: &Option<channelmonitor::ChannelMonitorUpdate>, _data: &channelmonitor::ChannelMonitor<Signer>, update_id: MonitorUpdateId) -> Result<(), chain::ChannelMonitorUpdateErr> {
+	fn update_persisted_channel(&self, funding_txo: OutPoint, update: &Option<channelmonitor::ChannelMonitorUpdate>, _data: &channelmonitor::ChannelMonitor<Signer>, update_id: MonitorUpdateId) -> chain::ChannelMonitorUpdateStatus {
 		let ret = self.update_ret.lock().unwrap().clone();
 		if let Some(next_ret) = self.next_update_ret.lock().unwrap().take() {
 			*self.update_ret.lock().unwrap() = next_ret;

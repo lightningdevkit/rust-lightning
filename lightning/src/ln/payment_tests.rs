@@ -11,7 +11,7 @@
 //! serialization ordering between ChannelManager/ChannelMonitors and ensuring we can still retry
 //! payments thereafter.
 
-use chain::{ChannelMonitorUpdateErr, Confirm, Listen, Watch};
+use chain::{ChannelMonitorUpdateStatus, Confirm, Listen, Watch};
 use chain::channelmonitor::{ANTI_REORG_DELAY, ChannelMonitor, LATENCY_GRACE_PERIOD_BLOCKS};
 use chain::transaction::OutPoint;
 use chain::keysinterface::KeysInterface;
@@ -436,7 +436,8 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 	nodes_0_deserialized = nodes_0_deserialized_tmp;
 	assert!(nodes_0_read.is_empty());
 
-	assert!(nodes[0].chain_monitor.watch_channel(chan_0_monitor.get_funding_txo().0, chan_0_monitor).is_ok());
+	assert_eq!(nodes[0].chain_monitor.watch_channel(chan_0_monitor.get_funding_txo().0, chan_0_monitor),
+		ChannelMonitorUpdateStatus::Completed);
 	nodes[0].node = &nodes_0_deserialized;
 	check_added_monitors!(nodes[0], 1);
 
@@ -643,10 +644,12 @@ fn do_test_completed_payment_not_retryable_on_reload(use_dust: bool) {
 			$chan_manager = nodes_0_deserialized_tmp;
 			assert!(nodes_0_read.is_empty());
 
-			assert!(nodes[0].chain_monitor.watch_channel(chan_0_monitor.get_funding_txo().0, chan_0_monitor).is_ok());
+			assert_eq!(nodes[0].chain_monitor.watch_channel(chan_0_monitor.get_funding_txo().0, chan_0_monitor),
+				ChannelMonitorUpdateStatus::Completed);
 			if !chan_1_monitor_serialized.0.is_empty() {
 				let funding_txo = chan_1_monitor.as_ref().unwrap().get_funding_txo().0;
-				assert!(nodes[0].chain_monitor.watch_channel(funding_txo, chan_1_monitor.unwrap()).is_ok());
+				assert_eq!(nodes[0].chain_monitor.watch_channel(funding_txo, chan_1_monitor.unwrap()),
+					ChannelMonitorUpdateStatus::Completed);
 			}
 			nodes[0].node = &$chan_manager;
 			check_added_monitors!(nodes[0], if !chan_1_monitor_serialized.0.is_empty() { 2 } else { 1 });
@@ -853,10 +856,10 @@ fn do_test_dup_htlc_onchain_fails_on_reload(persist_manager_post_event: bool, co
 	}
 
 	// Now connect the HTLC claim transaction with the ChainMonitor-generated ChannelMonitor update
-	// returning TemporaryFailure. This should cause the claim event to never make its way to the
+	// returning InProgress. This should cause the claim event to never make its way to the
 	// ChannelManager.
 	chanmon_cfgs[0].persister.chain_sync_monitor_persistences.lock().unwrap().clear();
-	chanmon_cfgs[0].persister.set_update_ret(Err(ChannelMonitorUpdateErr::TemporaryFailure));
+	chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
 
 	if payment_timeout {
 		connect_blocks(&nodes[0], 1);
@@ -881,7 +884,7 @@ fn do_test_dup_htlc_onchain_fails_on_reload(persist_manager_post_event: bool, co
 
 	// Now persist the ChannelMonitor and inform the ChainMonitor that we're done, generating the
 	// payment sent event.
-	chanmon_cfgs[0].persister.set_update_ret(Ok(()));
+	chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
 	let mut chan_0_monitor_serialized = test_utils::TestVecWriter(Vec::new());
 	get_monitor!(nodes[0], chan_id).write(&mut chan_0_monitor_serialized).unwrap();
 	for update in mon_updates {
@@ -925,7 +928,8 @@ fn do_test_dup_htlc_onchain_fails_on_reload(persist_manager_post_event: bool, co
 	};
 	nodes_0_deserialized = nodes_0_deserialized_tmp;
 
-	assert!(nodes[0].chain_monitor.watch_channel(chan_0_monitor.get_funding_txo().0, chan_0_monitor).is_ok());
+	assert_eq!(nodes[0].chain_monitor.watch_channel(chan_0_monitor.get_funding_txo().0, chan_0_monitor),
+		ChannelMonitorUpdateStatus::Completed);
 	check_added_monitors!(nodes[0], 1);
 	nodes[0].node = &nodes_0_deserialized;
 
@@ -1015,7 +1019,8 @@ fn test_fulfill_restart_failure() {
 	};
 	nodes_1_deserialized = nodes_1_deserialized_tmp;
 
-	assert!(nodes[1].chain_monitor.watch_channel(chan_0_monitor.get_funding_txo().0, chan_0_monitor).is_ok());
+	assert_eq!(nodes[1].chain_monitor.watch_channel(chan_0_monitor.get_funding_txo().0, chan_0_monitor),
+		ChannelMonitorUpdateStatus::Completed);
 	check_added_monitors!(nodes[1], 1);
 	nodes[1].node = &nodes_1_deserialized;
 

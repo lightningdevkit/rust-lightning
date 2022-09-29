@@ -11,7 +11,7 @@
 
 use chain::channelmonitor::{ANTI_REORG_DELAY, ChannelMonitor};
 use chain::transaction::OutPoint;
-use chain::{Confirm, Watch};
+use chain::{ChannelMonitorUpdateStatus, Confirm, Watch};
 use ln::channelmanager::{self, ChannelManager, ChannelManagerReadArgs};
 use ln::msgs::ChannelMessageHandler;
 use util::enforcing_trait_impls::EnforcingSigner;
@@ -342,7 +342,8 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool, use_funding_
 			nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().clear();
 		}
 
-		nodes[0].chain_monitor.watch_channel(chan_0_monitor.get_funding_txo().0.clone(), chan_0_monitor).unwrap();
+		assert_eq!(nodes[0].chain_monitor.watch_channel(chan_0_monitor.get_funding_txo().0.clone(), chan_0_monitor),
+			ChannelMonitorUpdateStatus::Completed);
 		check_added_monitors!(nodes[0], 1);
 	}
 

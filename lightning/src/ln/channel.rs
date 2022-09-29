@@ -3657,13 +3657,16 @@ impl<Signer: Sign> Channel<Signer> {
 		log_trace!(logger, "Peer disconnection resulted in {} remote-announced HTLC drops on channel {}", inbound_drop_count, log_bytes!(self.channel_id()));
 	}
 
-	/// Indicates that a ChannelMonitor update failed to be stored by the client and further
-	/// updates are partially paused.
-	/// This must be called immediately after the call which generated the ChannelMonitor update
-	/// which failed. The messages which were generated from that call which generated the
-	/// monitor update failure must *not* have been sent to the remote end, and must instead
-	/// have been dropped. They will be regenerated when monitor_updating_restored is called.
-	pub fn monitor_update_failed(&mut self, resend_raa: bool, resend_commitment: bool,
+	/// Indicates that a ChannelMonitor update is in progress and has not yet been fully persisted.
+	/// This must be called immediately after the [`chain::Watch`] call which returned
+	/// [`ChannelMonitorUpdateStatus::InProgress`].
+	/// The messages which were generated with the monitor update must *not* have been sent to the
+	/// remote end, and must instead have been dropped. They will be regenerated when
+	/// [`Self::monitor_updating_restored`] is called.
+	///
+	/// [`chain::Watch`]: crate::chain::Watch
+	/// [`ChannelMonitorUpdateStatus::InProgress`]: crate::chain::ChannelMonitorUpdateStatus::InProgress
+	pub fn monitor_updating_paused(&mut self, resend_raa: bool, resend_commitment: bool,
 		resend_channel_ready: bool, mut pending_forwards: Vec<(PendingHTLCInfo, u64)>,
 		mut pending_fails: Vec<(HTLCSource, PaymentHash, HTLCFailReason)>,
 		mut pending_finalized_claimed_htlcs: Vec<HTLCSource>

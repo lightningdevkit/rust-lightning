@@ -12,7 +12,7 @@
 //! claim outputs on-chain.
 
 use chain;
-use chain::{Confirm, Listen, Watch};
+use chain::{ChannelMonitorUpdateStatus, Confirm, Listen, Watch};
 use chain::chaininterface::LowerBoundedFeeEstimator;
 use chain::channelmonitor;
 use chain::channelmonitor::{ChannelMonitor, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ANTI_REORG_DELAY};
@@ -2335,7 +2335,8 @@ fn channel_monitor_network_test() {
 	assert_eq!(nodes[3].node.list_channels().len(), 0);
 	assert_eq!(nodes[4].node.list_channels().len(), 0);
 
-	nodes[3].chain_monitor.chain_monitor.watch_channel(OutPoint { txid: chan_3.3.txid(), index: 0 }, chan_3_mon).unwrap();
+	assert_eq!(nodes[3].chain_monitor.chain_monitor.watch_channel(OutPoint { txid: chan_3.3.txid(), index: 0 }, chan_3_mon),
+		ChannelMonitorUpdateStatus::Completed);
 	check_closed_event!(nodes[3], 1, ClosureReason::CommitmentTxConfirmed);
 	check_closed_event!(nodes[4], 1, ClosureReason::CommitmentTxConfirmed);
 }
@@ -4021,7 +4022,8 @@ fn test_funding_peer_disconnect() {
 	nodes_0_deserialized = nodes_0_deserialized_tmp;
 	assert!(nodes_0_read.is_empty());
 
-	assert!(nodes[0].chain_monitor.watch_channel(chan_0_monitor.get_funding_txo().0, chan_0_monitor).is_ok());
+	assert_eq!(nodes[0].chain_monitor.watch_channel(chan_0_monitor.get_funding_txo().0, chan_0_monitor),
+		ChannelMonitorUpdateStatus::Completed);
 	nodes[0].node = &nodes_0_deserialized;
 	check_added_monitors!(nodes[0], 1);
 
@@ -4389,7 +4391,8 @@ fn test_no_txn_manager_serialize_deserialize() {
 	nodes_0_deserialized = nodes_0_deserialized_tmp;
 	assert!(nodes_0_read.is_empty());
 
-	assert!(nodes[0].chain_monitor.watch_channel(chan_0_monitor.get_funding_txo().0, chan_0_monitor).is_ok());
+	assert_eq!(nodes[0].chain_monitor.watch_channel(chan_0_monitor.get_funding_txo().0, chan_0_monitor),
+		ChannelMonitorUpdateStatus::Completed);
 	nodes[0].node = &nodes_0_deserialized;
 	assert_eq!(nodes[0].node.list_channels().len(), 1);
 	check_added_monitors!(nodes[0], 1);
@@ -4501,7 +4504,8 @@ fn test_manager_serialize_deserialize_events() {
 
 	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
 
-	assert!(nodes[0].chain_monitor.watch_channel(chan_0_monitor.get_funding_txo().0, chan_0_monitor).is_ok());
+	assert_eq!(nodes[0].chain_monitor.watch_channel(chan_0_monitor.get_funding_txo().0, chan_0_monitor),
+		ChannelMonitorUpdateStatus::Completed);
 	nodes[0].node = &nodes_0_deserialized;
 
 	// After deserializing, make sure the funding_transaction is still held by the channel manager
@@ -4585,7 +4589,8 @@ fn test_simple_manager_serialize_deserialize() {
 	nodes_0_deserialized = nodes_0_deserialized_tmp;
 	assert!(nodes_0_read.is_empty());
 
-	assert!(nodes[0].chain_monitor.watch_channel(chan_0_monitor.get_funding_txo().0, chan_0_monitor).is_ok());
+	assert_eq!(nodes[0].chain_monitor.watch_channel(chan_0_monitor.get_funding_txo().0, chan_0_monitor),
+		ChannelMonitorUpdateStatus::Completed);
 	nodes[0].node = &nodes_0_deserialized;
 	check_added_monitors!(nodes[0], 1);
 
@@ -4697,7 +4702,8 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 	}
 
 	for monitor in node_0_monitors.drain(..) {
-		assert!(nodes[0].chain_monitor.watch_channel(monitor.get_funding_txo().0, monitor).is_ok());
+		assert_eq!(nodes[0].chain_monitor.watch_channel(monitor.get_funding_txo().0, monitor),
+			ChannelMonitorUpdateStatus::Completed);
 		check_added_monitors!(nodes[0], 1);
 	}
 	nodes[0].node = &nodes_0_deserialized;
@@ -7533,7 +7539,8 @@ fn do_test_data_loss_protect(reconnect_panicing: bool) {
 		}).unwrap().1
 	};
 	nodes[0].node = &node_state_0;
-	assert!(monitor.watch_channel(OutPoint { txid: chan.3.txid(), index: 0 }, chain_monitor).is_ok());
+	assert_eq!(monitor.watch_channel(OutPoint { txid: chan.3.txid(), index: 0 }, chain_monitor),
+		ChannelMonitorUpdateStatus::Completed);
 	nodes[0].chain_monitor = &monitor;
 	nodes[0].chain_source = &chain_source;
 
@@ -8826,7 +8833,8 @@ fn test_bad_secret_hash() {
 fn test_update_err_monitor_lockdown() {
 	// Our monitor will lock update of local commitment transaction if a broadcastion condition
 	// has been fulfilled (either force-close from Channel or block height requiring a HTLC-
-	// timeout). Trying to update monitor after lockdown should return a ChannelMonitorUpdateErr.
+	// timeout). Trying to update monitor after lockdown should return a ChannelMonitorUpdateStatus
+	// error.
 	//
 	// This scenario may happen in a watchtower setup, where watchtower process a block height
 	// triggering a timeout while a slow-block-processing ChannelManager receives a local signed
@@ -8859,7 +8867,7 @@ fn test_update_err_monitor_lockdown() {
 				&mut io::Cursor::new(&w.0), &test_utils::OnlyReadsKeysInterface {}).unwrap().1;
 		assert!(new_monitor == *monitor);
 		let watchtower = test_utils::TestChainMonitor::new(Some(&chain_source), &chanmon_cfgs[0].tx_broadcaster, &logger, &chanmon_cfgs[0].fee_estimator, &persister, &node_cfgs[0].keys_manager);
-		assert!(watchtower.watch_channel(outpoint, new_monitor).is_ok());
+		assert_eq!(watchtower.watch_channel(outpoint, new_monitor), ChannelMonitorUpdateStatus::Completed);
 		watchtower
 	};
 	let header = BlockHeader { version: 0x20000000, prev_blockhash: BlockHash::all_zeros(), merkle_root: TxMerkleNode::all_zeros(), time: 42, bits: 42, nonce: 42 };
@@ -8879,8 +8887,8 @@ fn test_update_err_monitor_lockdown() {
 	nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &updates.update_fulfill_htlcs[0]);
 	if let Some(ref mut channel) = nodes[0].node.channel_state.lock().unwrap().by_id.get_mut(&chan_1.2) {
 		if let Ok((_, _, update)) = channel.commitment_signed(&updates.commitment_signed, &node_cfgs[0].logger) {
-			if let Err(_) =  watchtower.chain_monitor.update_channel(outpoint, update.clone()) {} else { assert!(false); }
-			if let Ok(_) = nodes[0].chain_monitor.update_channel(outpoint, update) {} else { assert!(false); }
+			assert_eq!(watchtower.chain_monitor.update_channel(outpoint, update.clone()), ChannelMonitorUpdateStatus::PermanentFailure);
+			assert_eq!(nodes[0].chain_monitor.update_channel(outpoint, update), ChannelMonitorUpdateStatus::Completed);
 		} else { assert!(false); }
 	} else { assert!(false); };
 	// Our local monitor is in-sync and hasn't processed yet timeout
@@ -8923,7 +8931,7 @@ fn test_concurrent_monitor_claim() {
 				&mut io::Cursor::new(&w.0), &test_utils::OnlyReadsKeysInterface {}).unwrap().1;
 		assert!(new_monitor == *monitor);
 		let watchtower = test_utils::TestChainMonitor::new(Some(&chain_source), &chanmon_cfgs[0].tx_broadcaster, &logger, &chanmon_cfgs[0].fee_estimator, &persister, &node_cfgs[0].keys_manager);
-		assert!(watchtower.watch_channel(outpoint, new_monitor).is_ok());
+		assert_eq!(watchtower.watch_channel(outpoint, new_monitor), ChannelMonitorUpdateStatus::Completed);
 		watchtower
 	};
 	let header = BlockHeader { version: 0x20000000, prev_blockhash: BlockHash::all_zeros(), merkle_root: TxMerkleNode::all_zeros(), time: 42, bits: 42, nonce: 42 };
@@ -8952,7 +8960,7 @@ fn test_concurrent_monitor_claim() {
 				&mut io::Cursor::new(&w.0), &test_utils::OnlyReadsKeysInterface {}).unwrap().1;
 		assert!(new_monitor == *monitor);
 		let watchtower = test_utils::TestChainMonitor::new(Some(&chain_source), &chanmon_cfgs[0].tx_broadcaster, &logger, &chanmon_cfgs[0].fee_estimator, &persister, &node_cfgs[0].keys_manager);
-		assert!(watchtower.watch_channel(outpoint, new_monitor).is_ok());
+		assert_eq!(watchtower.watch_channel(outpoint, new_monitor), ChannelMonitorUpdateStatus::Completed);
 		watchtower
 	};
 	let header = BlockHeader { version: 0x20000000, prev_blockhash: BlockHash::all_zeros(), merkle_root: TxMerkleNode::all_zeros(), time: 42, bits: 42, nonce: 42 };
@@ -8971,9 +8979,9 @@ fn test_concurrent_monitor_claim() {
 	if let Some(ref mut channel) = nodes[0].node.channel_state.lock().unwrap().by_id.get_mut(&chan_1.2) {
 		if let Ok((_, _, update)) = channel.commitment_signed(&updates.commitment_signed, &node_cfgs[0].logger) {
 			// Watchtower Alice should already have seen the block and reject the update
-			if let Err(_) =  watchtower_alice.chain_monitor.update_channel(outpoint, update.clone()) {} else { assert!(false); }
-			if let Ok(_) = watchtower_bob.chain_monitor.update_channel(outpoint, update.clone()) {} else { assert!(false); }
-			if let Ok(_) = nodes[0].chain_monitor.update_channel(outpoint, update) {} else { assert!(false); }
+			assert_eq!(watchtower_alice.chain_monitor.update_channel(outpoint, update.clone()), ChannelMonitorUpdateStatus::PermanentFailure);
+			assert_eq!(watchtower_bob.chain_monitor.update_channel(outpoint, update.clone()), ChannelMonitorUpdateStatus::Completed);
+			assert_eq!(nodes[0].chain_monitor.update_channel(outpoint, update), ChannelMonitorUpdateStatus::Completed);
 		} else { assert!(false); }
 	} else { assert!(false); };
 	// Our local monitor is in-sync and hasn't processed yet timeout
@@ -9746,8 +9754,10 @@ fn test_forwardable_regen() {
 	nodes_1_deserialized = nodes_1_deserialized_tmp;
 	assert!(nodes_1_read.is_empty());
 
-	assert!(nodes[1].chain_monitor.watch_channel(chan_0_monitor.get_funding_txo().0, chan_0_monitor).is_ok());
-	assert!(nodes[1].chain_monitor.watch_channel(chan_1_monitor.get_funding_txo().0, chan_1_monitor).is_ok());
+	assert_eq!(nodes[1].chain_monitor.watch_channel(chan_0_monitor.get_funding_txo().0, chan_0_monitor),
+		ChannelMonitorUpdateStatus::Completed);
+	assert_eq!(nodes[1].chain_monitor.watch_channel(chan_1_monitor.get_funding_txo().0, chan_1_monitor),
+		ChannelMonitorUpdateStatus::Completed);
 	nodes[1].node = &nodes_1_deserialized;
 	check_added_monitors!(nodes[1], 2);
 
@@ -10211,7 +10221,8 @@ fn do_test_partial_claim_before_restart(persist_both_monitors: bool) {
 	for monitor in monitors {
 		// On startup the preimage should have been copied into the non-persisted monitor:
 		assert!(monitor.get_stored_preimages().contains_key(&payment_hash));
-		nodes[3].chain_monitor.watch_channel(monitor.get_funding_txo().0.clone(), monitor).unwrap();
+		assert_eq!(nodes[3].chain_monitor.watch_channel(monitor.get_funding_txo().0.clone(), monitor),
+			ChannelMonitorUpdateStatus::Completed);
 	}
 	check_added_monitors!(nodes[3], 2);
 

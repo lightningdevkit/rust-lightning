@@ -138,7 +138,7 @@ mod tests {
 	use bitcoin::blockdata::block::{Block, BlockHeader};
 	use bitcoin::hashes::hex::FromHex;
 	use bitcoin::{Txid, TxMerkleNode};
-	use lightning::chain::ChannelMonitorUpdateErr;
+	use lightning::chain::ChannelMonitorUpdateStatus;
 	use lightning::chain::chainmonitor::Persist;
 	use lightning::chain::transaction::OutPoint;
 	use lightning::{check_closed_broadcast, check_closed_event, check_added_monitors};
@@ -270,7 +270,7 @@ mod tests {
 			index: 0
 		};
 		match persister.persist_new_channel(test_txo, &added_monitors[0].1, update_id.2) {
-			Err(ChannelMonitorUpdateErr::PermanentFailure) => {},
+			ChannelMonitorUpdateStatus::PermanentFailure => {},
 			_ => panic!("unexpected result from persisting new channel")
 		}
 
@@ -307,7 +307,7 @@ mod tests {
 			index: 0
 		};
 		match persister.persist_new_channel(test_txo, &added_monitors[0].1, update_id.2) {
-			Err(ChannelMonitorUpdateErr::PermanentFailure) => {},
+			ChannelMonitorUpdateStatus::PermanentFailure => {},
 			_ => panic!("unexpected result from persisting new channel")
 		}
 

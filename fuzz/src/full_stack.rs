@@ -29,7 +29,7 @@ use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hash_types::{Txid, BlockHash, WPubkeyHash};
 
 use lightning::chain;
-use lightning::chain::{BestBlock, Confirm, Listen};
+use lightning::chain::{BestBlock, ChannelMonitorUpdateStatus, Confirm, Listen};
 use lightning::chain::chaininterface::{BroadcasterInterface, ConfirmationTarget, FeeEstimator};
 use lightning::chain::chainmonitor;
 use lightning::chain::transaction::OutPoint;
@@ -389,7 +389,7 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 
 	let broadcast = Arc::new(TestBroadcaster{ txn_broadcasted: Mutex::new(Vec::new()) });
 	let monitor = Arc::new(chainmonitor::ChainMonitor::new(None, broadcast.clone(), Arc::clone(&logger), fee_est.clone(),
-		Arc::new(TestPersister { update_ret: Mutex::new(Ok(())) })));
+		Arc::new(TestPersister { update_ret: Mutex::new(ChannelMonitorUpdateStatus::Completed) })));
 
 	let keys_manager = Arc::new(KeyProvider { node_secret: our_network_key.clone(), inbound_payment_key: KeyMaterial(inbound_payment_key.try_into().unwrap()), counter: AtomicU64::new(0) });
 	let mut config = UserConfig::default();

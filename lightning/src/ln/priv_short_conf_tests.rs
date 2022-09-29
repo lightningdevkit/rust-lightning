@@ -11,7 +11,7 @@
 //! other behavior that exists only on private channels or with a semi-trusted counterparty (eg
 //! LSP).
 
-use chain::{ChannelMonitorUpdateErr, Watch};
+use chain::{ChannelMonitorUpdateStatus, Watch};
 use chain::channelmonitor::ChannelMonitor;
 use chain::keysinterface::{Recipient, KeysInterface};
 use ln::channelmanager::{self, ChannelManager, ChannelManagerReadArgs, MIN_CLTV_EXPIRY_DELTA};
@@ -137,8 +137,10 @@ fn test_priv_forwarding_rejection() {
 	assert!(nodes_1_read.is_empty());
 	nodes_1_deserialized = nodes_1_deserialized_tmp;
 
-	assert!(nodes[1].chain_monitor.watch_channel(monitor_a.get_funding_txo().0, monitor_a).is_ok());
-	assert!(nodes[1].chain_monitor.watch_channel(monitor_b.get_funding_txo().0, monitor_b).is_ok());
+	assert_eq!(nodes[1].chain_monitor.watch_channel(monitor_a.get_funding_txo().0, monitor_a),
+		ChannelMonitorUpdateStatus::Completed);
+	assert_eq!(nodes[1].chain_monitor.watch_channel(monitor_b.get_funding_txo().0, monitor_b),
+		ChannelMonitorUpdateStatus::Completed);
 	check_added_monitors!(nodes[1], 2);
 	nodes[1].node = &nodes_1_deserialized;
 
@@ -624,7 +626,7 @@ fn test_0conf_channel_with_async_monitor() {
 	nodes[0].node.funding_transaction_generated(&temporary_channel_id, &nodes[1].node.get_our_node_id(), tx.clone()).unwrap();
 	let funding_created = get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, nodes[1].node.get_our_node_id());
 
-	chanmon_cfgs[1].persister.set_update_ret(Err(ChannelMonitorUpdateErr::TemporaryFailure));
+	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
 	nodes[1].node.handle_funding_created(&nodes[0].node.get_our_node_id(), &funding_created);
 	check_added_monitors!(nodes[1], 1);
 	assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
@@ -634,7 +636,7 @@ fn test_0conf_channel_with_async_monitor() {
 
 	let bs_signed_locked = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(bs_signed_locked.len(), 2);
-	chanmon_cfgs[0].persister.set_update_ret(Err(ChannelMonitorUpdateErr::TemporaryFailure));
+	chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
 
 	match &bs_signed_locked[0] {
 		MessageSendEvent::SendFundingSigned { node_id, msg } => {
@@ -680,8 +682,8 @@ fn test_0conf_channel_with_async_monitor() {
 		_ => panic!("Unexpected event"),
 	};
 
-	chanmon_cfgs[0].persister.set_update_ret(Ok(()));
-	chanmon_cfgs[1].persister.set_update_ret(Ok(()));
+	chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
+	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
 
 	nodes[0].node.handle_channel_update(&nodes[1].node.get_our_node_id(), &bs_channel_update);
 	nodes[1].node.handle_channel_update(&nodes[0].node.get_our_node_id(), &as_channel_update);
@@ -710,12 +712,12 @@ fn test_0conf_channel_with_async_monitor() {
 	nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &bs_commitment_signed);
 	check_added_monitors!(nodes[0], 1);
 
-	chanmon_cfgs[1].persister.set_update_ret(Err(ChannelMonitorUpdateErr::TemporaryFailure));
+	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
 	nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, nodes[1].node.get_our_node_id()));
 	check_added_monitors!(nodes[1], 1);
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 
-	chanmon_cfgs[1].persister.set_update_ret(Ok(()));
+	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
 	let (outpoint, _, latest_update) = nodes[1].chain_monitor.latest_monitor_update_id.lock().unwrap().get(&bs_raa.channel_id).unwrap().clone();
 	nodes[1].chain_monitor.chain_monitor.channel_monitor_updated(outpoint, latest_update).unwrap();
 	check_added_monitors!(nodes[1], 0);

@@ -69,18 +69,22 @@ impl<'a, A: KVStorePersister, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Der
 impl<ChannelSigner: Sign, K: KVStorePersister> Persist<ChannelSigner> for K {
 	// TODO: We really need a way for the persister to inform the user that its time to crash/shut
 	// down once these start returning failure.
-	// A PermanentFailure implies we need to shut down since we're force-closing channels without
-	// even broadcasting!
+	// A PermanentFailure implies we should probably just shut down the node since we're
+	// force-closing channels without even broadcasting!
 
-	fn persist_new_channel(&self, funding_txo: OutPoint, monitor: &ChannelMonitor<ChannelSigner>, _update_id: MonitorUpdateId) -> Result<(), chain::ChannelMonitorUpdateErr> {
+	fn persist_new_channel(&self, funding_txo: OutPoint, monitor: &ChannelMonitor<ChannelSigner>, _update_id: MonitorUpdateId) -> chain::ChannelMonitorUpdateStatus {
 		let key = format!("monitors/{}_{}", funding_txo.txid.to_hex(), funding_txo.index);
-		self.persist(&key, monitor)
-			.map_err(|_| chain::ChannelMonitorUpdateErr::PermanentFailure)
+		match self.persist(&key, monitor) {
+			Ok(()) => chain::ChannelMonitorUpdateStatus::Completed,
+			Err(_) => chain::ChannelMonitorUpdateStatus::PermanentFailure,
+		}
 	}
 
-	fn update_persisted_channel(&self, funding_txo: OutPoint, _update: &Option<ChannelMonitorUpdate>, monitor: &ChannelMonitor<ChannelSigner>, _update_id: MonitorUpdateId) -> Result<(), chain::ChannelMonitorUpdateErr> {
+	fn update_persisted_channel(&self, funding_txo: OutPoint, _update: &Option<ChannelMonitorUpdate>, monitor: &ChannelMonitor<ChannelSigner>, _update_id: MonitorUpdateId) -> chain::ChannelMonitorUpdateStatus {
 		let key = format!("monitors/{}_{}", funding_txo.txid.to_hex(), funding_txo.index);
-		self.persist(&key, monitor)
-			.map_err(|_| chain::ChannelMonitorUpdateErr::PermanentFailure)
+		match self.persist(&key, monitor) {
+			Ok(()) => chain::ChannelMonitorUpdateStatus::Completed,
+			Err(_) => chain::ChannelMonitorUpdateStatus::PermanentFailure,
+		}
 	}
 }

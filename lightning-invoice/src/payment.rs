@@ -474,11 +474,11 @@ where
 				},
 				PaymentSendFailure::PartialFailure { failed_paths_retry, payment_id, results } => {
 					// If a `PartialFailure` event returns a result that is an `Ok()`, it means that
-					// part of our payment is retried. When we receive `MonitorUpdateFailed`, it
+					// part of our payment is retried. When we receive `MonitorUpdateInProgress`, it
 					// means that we are still waiting for our channel monitor update to be completed.
 					for (result, path) in results.iter().zip(route.paths.into_iter()) {
 						match result {
-							Ok(_) | Err(APIError::MonitorUpdateFailed) => {
+							Ok(_) | Err(APIError::MonitorUpdateInProgress) => {
 								self.process_path_inflight_htlcs(payment_hash, path);
 							},
 							_ => {},
@@ -578,11 +578,11 @@ where
 			},
 			Err(PaymentSendFailure::PartialFailure { failed_paths_retry, results, .. }) => {
 				// If a `PartialFailure` error contains a result that is an `Ok()`, it means that
-				// part of our payment is retried. When we receive `MonitorUpdateFailed`, it
+				// part of our payment is retried. When we receive `MonitorUpdateInProgress`, it
 				// means that we are still waiting for our channel monitor update to complete.
 				for (result, path) in results.iter().zip(route.unwrap().paths.into_iter()) {
 					match result {
-						Ok(_) | Err(APIError::MonitorUpdateFailed) => {
+						Ok(_) | Err(APIError::MonitorUpdateInProgress) => {
 							self.process_path_inflight_htlcs(payment_hash, path);
 						},
 						_ => {},
@@ -782,7 +782,7 @@ mod tests {
 	use std::time::{SystemTime, Duration};
 	use time_utils::tests::SinceEpoch;
 	use DEFAULT_EXPIRY_TIME;
-	use lightning::util::errors::APIError::{ChannelUnavailable, MonitorUpdateFailed};
+	use lightning::util::errors::APIError::{ChannelUnavailable, MonitorUpdateInProgress};
 
 	fn invoice(payment_preimage: PaymentPreimage) -> Invoice {
 		let payment_hash = Sha256::hash(&payment_preimage.0);
@@ -1683,7 +1683,7 @@ mod tests {
 			.fails_with_partial_failure(
 				retry.clone(), OnAttempt(1),
 				Some(vec![
-					Err(ChannelUnavailable { err: "abc".to_string() }), Err(MonitorUpdateFailed)
+					Err(ChannelUnavailable { err: "abc".to_string() }), Err(MonitorUpdateInProgress)
 				]))
 			.expect_send(Amount::ForInvoice(final_value_msat));
 
@@ -1695,7 +1695,7 @@ mod tests {
 		invoice_payer.pay_invoice(&invoice_to_pay).unwrap();
 		let inflight_map = invoice_payer.create_inflight_map();
 
-		// Only the second path, which failed with `MonitorUpdateFailed` should be added to our
+		// Only the second path, which failed with `MonitorUpdateInProgress` should be added to our
 		// inflight map because retries are disabled.
 		assert_eq!(inflight_map.0.len(), 2);
 	}
@@ -1714,7 +1714,7 @@ mod tests {
 			.fails_with_partial_failure(
 				retry.clone(), OnAttempt(1),
 				Some(vec![
-					Ok(()), Err(MonitorUpdateFailed)
+					Ok(()), Err(MonitorUpdateInProgress)
 				]))
 			.expect_send(Amount::ForInvoice(final_value_msat));
 
@@ -2039,7 +2039,7 @@ mod tests {
 		}
 
 		fn fails_on_attempt(self, attempt: usize) -> Self {
-			let failure = PaymentSendFailure::ParameterError(APIError::MonitorUpdateFailed);
+			let failure = PaymentSendFailure::ParameterError(APIError::MonitorUpdateInProgress);
 			self.fails_with(failure, OnAttempt(attempt))
 		}
 
