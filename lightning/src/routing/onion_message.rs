@@ -48,6 +48,7 @@ pub fn find_path<L: Deref, GL: Deref>(
 	let network_nodes = graph_lock.nodes();
 	let our_node_id = NodeId::from_pubkey(our_node_pubkey);
 	let dest_node_id = NodeId::from_pubkey(destination);
+	if our_node_id == dest_node_id { return Err(Error::InvalidDestination) }
 
 	// Add our start and first-hops to `frontier`, which is the set of hops that we'll next explore.
 	let start = NodeId::from_pubkey(&our_node_pubkey);
@@ -56,6 +57,7 @@ pub fn find_path<L: Deref, GL: Deref>(
 	frontier.push(PathBuildingHop { cost: 0, node_id: start, parent_node_id: start });
 	if let Some(first_hops) = first_hops {
 		for hop in first_hops {
+			if hop.counterparty.node_id == *our_node_pubkey { return Err(Error::InvalidFirstHop) }
 			if !hop.counterparty.features.supports_onion_messages() { continue; }
 			let node_id = NodeId::from_pubkey(&hop.counterparty.node_id);
 			frontier.push(PathBuildingHop { cost: 1, node_id, parent_node_id: start });
@@ -110,6 +112,10 @@ pub enum Error {
 	PathNotFound,
 	/// We failed to convert this node id into a [`PublicKey`].
 	InvalidNodeId(secp256k1::Error),
+	/// We attempted to generate a path to ourselves, which is not allowed.
+	InvalidDestination,
+	/// First hops cannot have our node id as a counterparty node id.
+	InvalidFirstHop,
 }
 
 impl fmt::Display for Error {
@@ -118,6 +124,8 @@ impl fmt::Display for Error {
 			Error::PathNotFound => write!(f, "Failed to find a path to the destination"),
 			Error::InvalidNodeId(e) =>
 				write!(f, "Failed to convert a node id into a PublicKey with error: {}", e),
+			Error::InvalidDestination => write!(f, "Cannot generate a route to ourselves"),
+			Error::InvalidFirstHop => write!(f, "First hops cannot have our node id as a counterparty node id"),
 		}
 	}
 }
@@ -249,5 +257,22 @@ mod tests {
 		let path = super::find_path(&our_id, &node_pks[0], &network_graph, Some(&our_chans.iter().collect::<Vec<_>>()), Arc::clone(&logger)).unwrap();
 		assert_eq!(path.len(), 1);
 		assert_eq!(path[0], node_pks[0]);
+	}
+
+	#[test]
+	fn invalid_first_hop() {
+		// Check that we can't generate a path if first_hops contains a counterparty node id that
+		// is equal to our node id.
+		let mut features = InitFeatures::empty();
+		features.set_onion_messages_optional();
+		let (secp_ctx, network_graph, gossip_sync, _, logger) = build_graph_with_features(features.to_context());
+		let (_, our_id, privkeys, node_pks) = get_nodes(&secp_ctx);
+
+		let bad_first_hop = vec![get_channel_details(Some(2), our_id, features, 100000)];
+		let err = super::find_path(&our_id, &node_pks[2], &network_graph, Some(&bad_first_hop.iter().collect::<Vec<_>>()), Arc::clone(&logger)).unwrap_err();
+		assert_eq!(err, super::Error::InvalidFirstHop);
+
+		let path = super::find_path(&our_id, &node_pks[2], &network_graph, None, Arc::clone(&logger)).unwrap();
+		assert_eq!(path.len(), 2);
 	}
 }
