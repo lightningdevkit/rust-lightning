@@ -170,7 +170,7 @@ fn do_test_simple_monitor_temporary_update_fail(disconnect: bool) {
 	chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
 
 	{
-		unwrap_send_err!(nodes[0].node.send_payment(&route, payment_hash_1, &Some(payment_secret_1)), false, APIError::MonitorUpdateFailed, {});
+		unwrap_send_err!(nodes[0].node.send_payment(&route, payment_hash_1, &Some(payment_secret_1)), false, APIError::MonitorUpdateInProgress, {});
 		check_added_monitors!(nodes[0], 1);
 	}
 
@@ -221,7 +221,7 @@ fn do_test_simple_monitor_temporary_update_fail(disconnect: bool) {
 	let (route, payment_hash_2, _, payment_secret_2) = get_route_and_payment_hash!(&nodes[0], nodes[1], 1000000);
 	{
 		chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
-		unwrap_send_err!(nodes[0].node.send_payment(&route, payment_hash_2, &Some(payment_secret_2)), false, APIError::MonitorUpdateFailed, {});
+		unwrap_send_err!(nodes[0].node.send_payment(&route, payment_hash_2, &Some(payment_secret_2)), false, APIError::MonitorUpdateInProgress, {});
 		check_added_monitors!(nodes[0], 1);
 	}
 
@@ -285,7 +285,7 @@ fn do_test_monitor_temporary_update_fail(disconnect_count: usize) {
 	let (route, payment_hash_2, payment_preimage_2, payment_secret_2) = get_route_and_payment_hash!(nodes[0], nodes[1], 1000000);
 	{
 		chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
-		unwrap_send_err!(nodes[0].node.send_payment(&route, payment_hash_2, &Some(payment_secret_2)), false, APIError::MonitorUpdateFailed, {});
+		unwrap_send_err!(nodes[0].node.send_payment(&route, payment_hash_2, &Some(payment_secret_2)), false, APIError::MonitorUpdateInProgress, {});
 		check_added_monitors!(nodes[0], 1);
 	}
 
@@ -1962,12 +1962,12 @@ fn test_path_paused_mpp() {
 	chanmon_cfgs[0].persister.set_next_update_ret(Some(ChannelMonitorUpdateStatus::InProgress));
 
 	// Now check that we get the right return value, indicating that the first path succeeded but
-	// the second got a MonitorUpdateFailed err. This implies PaymentSendFailure::PartialFailure as
-	// some paths succeeded, preventing retry.
+	// the second got a MonitorUpdateInProgress err. This implies
+	// PaymentSendFailure::PartialFailure as some paths succeeded, preventing retry.
 	if let Err(PaymentSendFailure::PartialFailure { results, ..}) = nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret)) {
 		assert_eq!(results.len(), 2);
 		if let Ok(()) = results[0] {} else { panic!(); }
-		if let Err(APIError::MonitorUpdateFailed) = results[1] {} else { panic!(); }
+		if let Err(APIError::MonitorUpdateInProgress) = results[1] {} else { panic!(); }
 	} else { panic!(); }
 	check_added_monitors!(nodes[0], 2);
 	chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);

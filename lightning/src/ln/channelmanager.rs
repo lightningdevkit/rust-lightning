@@ -1166,13 +1166,13 @@ pub enum PaymentSendFailure {
 	/// in over-/re-payment.
 	///
 	/// The results here are ordered the same as the paths in the route object which was passed to
-	/// send_payment, and any Errs which are not APIError::MonitorUpdateFailed can be safely
-	/// retried (though there is currently no API with which to do so).
+	/// send_payment, and any `Err`s which are not [`APIError::MonitorUpdateInProgress`] can be
+	/// safely retried via [`ChannelManager::retry_payment`].
 	///
-	/// Any entries which contain Err(APIError::MonitorUpdateFailed) or Ok(()) MUST NOT be retried
-	/// as they will result in over-/re-payment. These HTLCs all either successfully sent (in the
-	/// case of Ok(())) or will send once a [`MonitorEvent::Completed`] is provided for the
-	/// next-hop channel with the latest update_id.
+	/// Any entries which contain `Err(APIError::MonitorUpdateInprogress)` or `Ok(())` MUST NOT be
+	/// retried as they will result in over-/re-payment. These HTLCs all either successfully sent
+	/// (in the case of `Ok(())`) or will send once a [`MonitorEvent::Completed`] is provided for
+	/// the next-hop channel with the latest update_id.
 	PartialFailure {
 		/// The errors themselves, in the same order as the route hops.
 		results: Vec<Result<(), APIError>>,
@@ -2469,13 +2469,14 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 								insert_outbound_payment!();
 							},
 							(ChannelMonitorUpdateStatus::InProgress, Err(_)) => {
-								// Note that MonitorUpdateFailed here indicates (per function docs)
-								// that we will resend the commitment update once monitor updating
-								// is restored. Therefore, we must return an error indicating that
-								// it is unsafe to retry the payment wholesale, which we do in the
-								// send_payment check for MonitorUpdateFailed, below.
+								// Note that MonitorUpdateInProgress here indicates (per function
+								// docs) that we will resend the commitment update once monitor
+								// updating completes. Therefore, we must return an error
+								// indicating that it is unsafe to retry the payment wholesale,
+								// which we do in the send_payment check for
+								// MonitorUpdateInProgress, below.
 								insert_outbound_payment!(); // Only do this after possibly break'ing on Perm failure above.
-								return Err(APIError::MonitorUpdateFailed);
+								return Err(APIError::MonitorUpdateInProgress);
 							},
 							_ => unreachable!(),
 						}
@@ -2526,12 +2527,12 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// PaymentSendFailure for more info.
 	///
 	/// In general, a path may raise:
-	///  * APIError::RouteError when an invalid route or forwarding parameter (cltv_delta, fee,
+	///  * [`APIError::RouteError`] when an invalid route or forwarding parameter (cltv_delta, fee,
 	///    node public key) is specified.
-	///  * APIError::ChannelUnavailable if the next-hop channel is not available for updates
+	///  * [`APIError::ChannelUnavailable`] if the next-hop channel is not available for updates
 	///    (including due to previous monitor update failure or new permanent monitor update
 	///    failure).
-	///  * APIError::MonitorUpdateFailed if a new monitor update failure prevented sending the
+	///  * [`APIError::MonitorUpdateInProgress`] if a new monitor update failure prevented sending the
 	///    relevant updates.
 	///
 	/// Note that depending on the type of the PaymentSendFailure the HTLC may have been
@@ -2595,8 +2596,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		for (res, path) in results.iter().zip(route.paths.iter()) {
 			if res.is_ok() { has_ok = true; }
 			if res.is_err() { has_err = true; }
-			if let &Err(APIError::MonitorUpdateFailed) = res {
-				// MonitorUpdateFailed is inherently unsafe to retry, so we call it a
+			if let &Err(APIError::MonitorUpdateInProgress) = res {
+				// MonitorUpdateInProgress is inherently unsafe to retry, so we call it a
 				// PartialFailure.
 				has_err = true;
 				has_ok = true;
