@@ -76,9 +76,9 @@ use core::time::Duration;
 use crate::io;
 use crate::ln::features::OfferFeatures;
 use crate::ln::msgs::MAX_VALUE_MSAT;
-use crate::offers::parse::{Bech32Encode, ParseError, SemanticError};
+use crate::offers::parse::{Bech32Encode, ParseError, ParsedMessage, SemanticError};
 use crate::onion_message::BlindedPath;
-use crate::util::ser::{HighZeroBytesDroppedBigSize, Readable, WithoutLength, Writeable, Writer};
+use crate::util::ser::{HighZeroBytesDroppedBigSize, WithoutLength, Writeable, Writer};
 use crate::util::string::PrintableString;
 
 use crate::prelude::*;
@@ -394,15 +394,6 @@ impl Writeable for OfferContents {
 	}
 }
 
-impl TryFrom<Vec<u8>> for Offer {
-	type Error = ParseError;
-
-	fn try_from(bytes: Vec<u8>) -> Result<Self, Self::Error> {
-		let tlv_stream: OfferTlvStream = Readable::read(&mut &bytes[..])?;
-		Offer::try_from((bytes, tlv_stream))
-	}
-}
-
 /// The minimum amount required for an item in an [`Offer`], denominated in either bitcoin or
 /// another currency.
 #[derive(Clone, Debug, PartialEq)]
@@ -449,7 +440,7 @@ impl Quantity {
 	}
 }
 
-tlv_stream!(OfferTlvStream, OfferTlvStreamRef, {
+tlv_stream!(OfferTlvStream, OfferTlvStreamRef, 1..80, {
 	(2, chains: (Vec<ChainHash>, WithoutLength)),
 	(4, metadata: (Vec<u8>, WithoutLength)),
 	(6, currency: CurrencyCode),
@@ -467,8 +458,6 @@ impl Bech32Encode for Offer {
 	const BECH32_HRP: &'static str = "lno";
 }
 
-type ParsedOffer = (Vec<u8>, OfferTlvStream);
-
 impl FromStr for Offer {
 	type Err = ParseError;
 
@@ -477,11 +466,12 @@ impl FromStr for Offer {
 	}
 }
 
-impl TryFrom<ParsedOffer> for Offer {
+impl TryFrom<Vec<u8>> for Offer {
 	type Error = ParseError;
 
-	fn try_from(offer: ParsedOffer) -> Result<Self, Self::Error> {
-		let (bytes, tlv_stream) = offer;
+	fn try_from(bytes: Vec<u8>) -> Result<Self, Self::Error> {
+		let offer = ParsedMessage::<OfferTlvStream>::try_from(bytes)?;
+		let ParsedMessage { bytes, tlv_stream } = offer;
 		let contents = OfferContents::try_from(tlv_stream)?;
 		Ok(Offer { bytes, contents })
 	}
@@ -551,10 +541,10 @@ mod tests {
 	use core::num::NonZeroU64;
 	use core::time::Duration;
 	use crate::ln::features::OfferFeatures;
-	use crate::ln::msgs::MAX_VALUE_MSAT;
+	use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
 	use crate::offers::parse::{ParseError, SemanticError};
 	use crate::onion_message::{BlindedHop, BlindedPath};
-	use crate::util::ser::Writeable;
+	use crate::util::ser::{BigSize, Writeable};
 	use crate::util::string::PrintableString;
 
 	fn pubkey(byte: u8) -> PublicKey {
@@ -1001,6 +991,22 @@ mod tests {
 			Err(e) => {
 				assert_eq!(e, ParseError::InvalidSemantics(SemanticError::MissingSigningPubkey));
 			},
+		}
+	}
+
+	#[test]
+	fn fails_parsing_offer_with_extra_tlv_records() {
+		let offer = OfferBuilder::new("foo".into(), pubkey(42)).build().unwrap();
+
+		let mut encoded_offer = Vec::new();
+		offer.write(&mut encoded_offer).unwrap();
+		BigSize(80).write(&mut encoded_offer).unwrap();
+		BigSize(32).write(&mut encoded_offer).unwrap();
+		[42u8; 32].write(&mut encoded_offer).unwrap();
+
+		match Offer::try_from(encoded_offer) {
+			Ok(_) => panic!("expected error"),
+			Err(e) => assert_eq!(e, ParseError::Decode(DecodeError::InvalidValue)),
 		}
 	}
 }

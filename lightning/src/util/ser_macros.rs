@@ -202,6 +202,17 @@ macro_rules! decode_tlv {
 macro_rules! decode_tlv_stream {
 	($stream: expr, {$(($type: expr, $field: ident, $fieldty: tt)),* $(,)*}
 	 $(, $decode_custom_tlv: expr)?) => { {
+		let rewind = |_, _| { unreachable!() };
+		use core::ops::RangeBounds;
+		decode_tlv_stream_range!(
+			$stream, .., rewind, {$(($type, $field, $fieldty)),*} $(, $decode_custom_tlv)?
+		);
+	} }
+}
+
+macro_rules! decode_tlv_stream_range {
+	($stream: expr, $range: expr, $rewind: ident, {$(($type: expr, $field: ident, $fieldty: tt)),* $(,)*}
+	 $(, $decode_custom_tlv: expr)?) => { {
 		use $crate::ln::msgs::DecodeError;
 		let mut last_seen_type: Option<u64> = None;
 		let mut stream_ref = $stream;
@@ -215,7 +226,7 @@ macro_rules! decode_tlv_stream {
 				// UnexpectedEof. This should in every case be largely cosmetic, but its nice to
 				// pass the TLV test vectors exactly, which requre this distinction.
 				let mut tracking_reader = ser::ReadTrackingReader::new(&mut stream_ref);
-				match $crate::util::ser::Readable::read(&mut tracking_reader) {
+				match <$crate::util::ser::BigSize as $crate::util::ser::Readable>::read(&mut tracking_reader) {
 					Err(DecodeError::ShortRead) => {
 						if !tracking_reader.have_read {
 							break 'tlv_read;
@@ -224,7 +235,15 @@ macro_rules! decode_tlv_stream {
 						}
 					},
 					Err(e) => return Err(e),
-					Ok(t) => t,
+					Ok(t) => if $range.contains(&t.0) { t } else {
+						drop(tracking_reader);
+
+						// Assumes the type id is minimally encoded, which is enforced on read.
+						use $crate::util::ser::Writeable;
+						let bytes_read = t.serialized_length();
+						$rewind(stream_ref, bytes_read);
+						break 'tlv_read;
+					},
 				}
 			};
 
@@ -472,7 +491,7 @@ macro_rules! impl_writeable_tlv_based {
 /// [`Readable`]: crate::util::ser::Readable
 /// [`Writeable`]: crate::util::ser::Writeable
 macro_rules! tlv_stream {
-	($name:ident, $nameref:ident, {
+	($name:ident, $nameref:ident, $range:expr, {
 		$(($type:expr, $field:ident : $fieldty:tt)),* $(,)*
 	}) => {
 		#[derive(Debug)]
@@ -497,12 +516,15 @@ macro_rules! tlv_stream {
 			}
 		}
 
-		impl $crate::util::ser::Readable for $name {
-			fn read<R: $crate::io::Read>(reader: &mut R) -> Result<Self, $crate::ln::msgs::DecodeError> {
+		impl $crate::util::ser::SeekReadable for $name {
+			fn read<R: $crate::io::Read + $crate::io::Seek>(reader: &mut R) -> Result<Self, $crate::ln::msgs::DecodeError> {
 				$(
 					init_tlv_field_var!($field, option);
 				)*
-				decode_tlv_stream!(reader, {
+				let rewind = |cursor: &mut R, offset: usize| {
+					cursor.seek($crate::io::SeekFrom::Current(-(offset as i64))).expect("");
+				};
+				decode_tlv_stream_range!(reader, $range, rewind, {
 					$(($type, $field, (option, encoding: $fieldty))),*
 				});
 
