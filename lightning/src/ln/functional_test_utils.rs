@@ -24,7 +24,7 @@ use util::enforcing_trait_impls::EnforcingSigner;
 use util::scid_utils;
 use util::test_utils;
 use util::test_utils::{panicking, TestChainMonitor};
-use util::events::{Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, PaymentPurpose, FundingGenerationReadyEvent};
+use util::events::{Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, PaymentPurpose, FundingGenerationReadyEvent, PaymentReceivedEvent};
 use util::errors::APIError;
 use util::config::UserConfig;
 use util::ser::{ReadableArgs, Writeable};
@@ -1380,7 +1380,7 @@ macro_rules! expect_payment_received {
 		let events = $node.node.get_and_clear_pending_events();
 		assert_eq!(events.len(), 1);
 		match events[0] {
-			$crate::util::events::Event::PaymentReceived { ref payment_hash, ref purpose, amount_msat } => {
+			$crate::util::events::Event::PaymentReceived(PaymentReceivedEvent { ref payment_hash, ref purpose, amount_msat }) => {
 				assert_eq!($expected_payment_hash, *payment_hash);
 				assert_eq!($expected_recv_value, amount_msat);
 				match purpose {
@@ -1660,7 +1660,7 @@ pub fn do_pass_along_path<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_p
 			if payment_received_expected {
 				assert_eq!(events_2.len(), 1);
 				match events_2[0] {
-					Event::PaymentReceived { ref payment_hash, ref purpose, amount_msat } => {
+					Event::PaymentReceived(PaymentReceivedEvent { ref payment_hash, ref purpose, amount_msat }) => {
 						assert_eq!(our_payment_hash, *payment_hash);
 						match &purpose {
 							PaymentPurpose::InvoicePayment { payment_preimage, payment_secret, .. } => {

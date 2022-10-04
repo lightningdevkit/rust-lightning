@@ -31,7 +31,7 @@ use ln::msgs;
 use ln::msgs::{ChannelMessageHandler, RoutingMessageHandler, ErrorAction};
 use util::enforcing_trait_impls::EnforcingSigner;
 use util::{byte_utils, test_utils};
-use util::events::{Event, MessageSendEvent, MessageSendEventsProvider, PaymentPurpose, ClosureReason, HTLCDestination, FundingGenerationReadyEvent};
+use util::events::{Event, MessageSendEvent, MessageSendEventsProvider, PaymentPurpose, ClosureReason, HTLCDestination, FundingGenerationReadyEvent, PaymentReceivedEvent};
 use util::errors::APIError;
 use util::ser::{Writeable, ReadableArgs};
 use util::config::UserConfig;
@@ -833,7 +833,7 @@ fn test_update_fee_with_fundee_update_add_htlc() {
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match events[0] {
-		Event::PaymentReceived { .. } => { },
+		Event::PaymentReceived (_) => { },
 		_ => panic!("Unexpected event"),
 	};
 
@@ -1178,7 +1178,7 @@ fn holding_cell_htlc_counting() {
 	assert_eq!(events.len(), payments.len());
 	for (event, &(_, ref hash)) in events.iter().zip(payments.iter()) {
 		match event {
-			&Event::PaymentReceived { ref payment_hash, .. } => {
+			&Event::PaymentReceived(PaymentReceivedEvent { ref payment_hash, .. }) => {
 				assert_eq!(*payment_hash, *hash);
 			},
 			_ => panic!("Unexpected event"),
@@ -1955,7 +1955,7 @@ fn test_channel_reserve_holding_cell_htlcs() {
 	let events = nodes[2].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 2);
 	match events[0] {
-		Event::PaymentReceived { ref payment_hash, ref purpose, amount_msat } => {
+		Event::PaymentReceived(PaymentReceivedEvent { ref payment_hash, ref purpose, amount_msat }) => {
 			assert_eq!(our_payment_hash_21, *payment_hash);
 			assert_eq!(recv_value_21, amount_msat);
 			match &purpose {
@@ -1969,7 +1969,7 @@ fn test_channel_reserve_holding_cell_htlcs() {
 		_ => panic!("Unexpected event"),
 	}
 	match events[1] {
-		Event::PaymentReceived { ref payment_hash, ref purpose, amount_msat } => {
+		Event::PaymentReceived(PaymentReceivedEvent { ref payment_hash, ref purpose, amount_msat }) => {
 			assert_eq!(our_payment_hash_22, *payment_hash);
 			assert_eq!(recv_value_22, amount_msat);
 			match &purpose {
@@ -3726,7 +3726,7 @@ fn do_test_drop_messages_peer_disconnect(messages_delivered: u8, simulate_broken
 	let events_2 = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(events_2.len(), 1);
 	match events_2[0] {
-		Event::PaymentReceived { ref payment_hash, ref purpose, amount_msat } => {
+		Event::PaymentReceived(PaymentReceivedEvent { ref payment_hash, ref purpose, amount_msat }) => {
 			assert_eq!(payment_hash_1, *payment_hash);
 			assert_eq!(amount_msat, 1_000_000);
 			match &purpose {
@@ -4185,7 +4185,7 @@ fn test_drop_messages_peer_disconnect_dual_htlc() {
 	let events_5 = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(events_5.len(), 1);
 	match events_5[0] {
-		Event::PaymentReceived { ref payment_hash, ref purpose, .. } => {
+		Event::PaymentReceived(PaymentReceivedEvent { ref payment_hash, ref purpose, .. }) => {
 			assert_eq!(payment_hash_2, *payment_hash);
 			match &purpose {
 				PaymentPurpose::InvoicePayment { payment_preimage, payment_secret, .. } => {
@@ -6366,7 +6366,7 @@ fn test_free_and_fail_holding_cell_htlcs() {
 	let events = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match events[0] {
-		Event::PaymentReceived { .. } => {},
+		Event::PaymentReceived(PaymentReceivedEvent { .. }) => {},
 		_ => panic!("Unexpected event"),
 	}
 	nodes[1].node.claim_funds(payment_preimage_1);
@@ -8687,7 +8687,7 @@ fn test_preimage_storage() {
 	let events = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match events[0] {
-		Event::PaymentReceived { ref purpose, .. } => {
+		Event::PaymentReceived(PaymentReceivedEvent { ref purpose, .. }) => {
 			match &purpose {
 				PaymentPurpose::InvoicePayment { payment_preimage, .. } => {
 					claim_payment(&nodes[0], &[&nodes[1]], payment_preimage.unwrap());
@@ -8757,7 +8757,7 @@ fn test_secret_timeout() {
 	let events = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match events[0] {
-		Event::PaymentReceived { purpose: PaymentPurpose::InvoicePayment { payment_preimage, payment_secret }, .. } => {
+		Event::PaymentReceived(PaymentReceivedEvent { purpose: PaymentPurpose::InvoicePayment { payment_preimage, payment_secret }, .. }) => {
 			assert!(payment_preimage.is_none());
 			assert_eq!(payment_secret, our_payment_secret);
 			// We don't actually have the payment preimage with which to claim this payment!
@@ -10234,7 +10234,7 @@ fn do_test_partial_claim_before_restart(persist_both_monitors: bool) {
 	// never finished processing.
 	let events = nodes[3].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), if persist_both_monitors { 4 } else { 3 });
-	if let Event::PaymentReceived { amount_msat: 15_000_000, .. } = events[0] { } else { panic!(); }
+	if let Event::PaymentReceived(PaymentReceivedEvent { amount_msat: 15_000_000, .. }) = events[0] { } else { panic!(); }
 	if let Event::ChannelClosed { reason: ClosureReason::OutdatedChannelManager, .. } = events[1] { } else { panic!(); }
 	if persist_both_monitors {
 		if let Event::ChannelClosed { reason: ClosureReason::OutdatedChannelManager, .. } = events[2] { } else { panic!(); }

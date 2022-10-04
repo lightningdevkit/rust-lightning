@@ -53,7 +53,7 @@ use ln::msgs::{ChannelMessageHandler, DecodeError, LightningError, MAX_VALUE_MSA
 use ln::wire::Encode;
 use chain::keysinterface::{Sign, KeysInterface, KeysManager, InMemorySigner, Recipient};
 use util::config::{UserConfig, ChannelConfig};
-use util::events::{EventHandler, EventsProvider, MessageSendEvent, MessageSendEventsProvider, ClosureReason, HTLCDestination, FundingGenerationReadyEvent};
+use util::events::{EventHandler, EventsProvider, MessageSendEvent, MessageSendEventsProvider, ClosureReason, HTLCDestination, FundingGenerationReadyEvent, PaymentReceivedEvent};
 use util::{byte_utils, events};
 use util::wakers::{Future, Notifier};
 use util::scid_utils::fake_scid;
@@ -726,9 +726,9 @@ pub struct ChannelManager<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, 
 	channel_state: Mutex<ChannelHolder<Signer>>,
 
 	/// Storage for PaymentSecrets and any requirements on future inbound payments before we will
-	/// expose them to users via a PaymentReceived event. HTLCs which do not meet the requirements
+	/// expose them to users via a [`PaymentReceivedEvent`]. HTLCs which do not meet the requirements
 	/// here are failed when we process them as pending-forwardable-HTLCs, and entries are removed
-	/// after we generate a PaymentReceived upon receipt of all MPP parts or when they time out.
+	/// after we generate a [`PaymentReceivedEvent`] upon receipt of all MPP parts or when they time out.
 	///
 	/// See `ChannelManager` struct-level documentation for lock order requirements.
 	pending_inbound_payments: Mutex<HashMap<PaymentHash, PendingInboundPayment>>,
@@ -3359,11 +3359,11 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 											fail_htlc!(claimable_htlc, payment_hash);
 										} else if total_value == $payment_data.total_msat {
 											htlcs.push(claimable_htlc);
-											new_events.push(events::Event::PaymentReceived {
+											new_events.push(events::Event::PaymentReceived(PaymentReceivedEvent {
 												payment_hash,
 												purpose: purpose(),
 												amount_msat: total_value,
-											});
+											}));
 											payment_received_generated = true;
 										} else {
 											// Nothing to do - we haven't reached the total
@@ -3401,11 +3401,11 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 													hash_map::Entry::Vacant(e) => {
 														let purpose = events::PaymentPurpose::SpontaneousPayment(preimage);
 														e.insert((purpose.clone(), vec![claimable_htlc]));
-														new_events.push(events::Event::PaymentReceived {
+														new_events.push(events::Event::PaymentReceived(PaymentReceivedEvent {
 															payment_hash,
 															amount_msat: amt_to_forward,
 															purpose,
-														});
+														}));
 													},
 													hash_map::Entry::Occupied(_) => {
 														log_trace!(self.logger, "Failing new keysend HTLC with payment_hash {} for a duplicative payment hash", log_bytes!(payment_hash.0));
@@ -3691,7 +3691,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	///
 	/// Note that in some cases around unclean shutdown, it is possible the payment may have
 	/// already been claimed by you via [`ChannelManager::claim_funds`] prior to you seeing (a
-	/// second copy of) the [`events::Event::PaymentReceived`] event. Alternatively, the payment
+	/// second copy of) the [`events::PaymentReceivedEvent`] event. Alternatively, the payment
 	/// may have already been failed automatically by LDK if it was nearing its expiration time.
 	///
 	/// While LDK will never claim a payment automatically on your behalf (i.e. without you calling
@@ -3983,7 +3983,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		}
 	}
 
-	/// Provides a payment preimage in response to [`Event::PaymentReceived`], generating any
+	/// Provides a payment preimage in response to [`PaymentReceivedEvent`], generating any
 	/// [`MessageSendEvent`]s needed to claim the payment.
 	///
 	/// Note that calling this method does *not* guarantee that the payment has been claimed. You
@@ -3995,7 +3995,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// event matches your expectation. If you fail to do so and call this method, you may provide
 	/// the sender "proof-of-payment" when they did not fulfill the full expected payment.
 	///
-	/// [`Event::PaymentReceived`]: crate::util::events::Event::PaymentReceived
+	/// [`PaymentReceivedEvent`]: crate::util::events::PaymentReceivedEvent
 	/// [`Event::PaymentClaimed`]: crate::util::events::Event::PaymentClaimed
 	/// [`process_pending_events`]: EventsProvider::process_pending_events
 	/// [`create_inbound_payment`]: Self::create_inbound_payment
@@ -5411,8 +5411,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// This differs from [`create_inbound_payment_for_hash`] only in that it generates the
 	/// [`PaymentHash`] and [`PaymentPreimage`] for you.
 	///
-	/// The [`PaymentPreimage`] will ultimately be returned to you in the [`PaymentReceived`], which
-	/// will have the [`PaymentReceived::payment_preimage`] field filled in. That should then be
+	/// The [`PaymentPreimage`] will ultimately be returned to you in the [`PaymentReceivedEvent`], which
+	/// will have the [`PaymentReceivedEvent::purpose`] field filled in. That should then be
 	/// passed directly to [`claim_funds`].
 	///
 	/// See [`create_inbound_payment_for_hash`] for detailed documentation on behavior and requirements.
@@ -5428,8 +5428,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// Errors if `min_value_msat` is greater than total bitcoin supply.
 	///
 	/// [`claim_funds`]: Self::claim_funds
-	/// [`PaymentReceived`]: events::Event::PaymentReceived
-	/// [`PaymentReceived::payment_preimage`]: events::Event::PaymentReceived::payment_preimage
+	/// [`PaymentReceivedEvent`]: events::PaymentReceivedEvent
+	/// [`PaymentReceivedEvent::purpose`]: events::PaymentReceivedEvent::purpose
 	/// [`create_inbound_payment_for_hash`]: Self::create_inbound_payment_for_hash
 	pub fn create_inbound_payment(&self, min_value_msat: Option<u64>, invoice_expiry_delta_secs: u32) -> Result<(PaymentHash, PaymentSecret), ()> {
 		inbound_payment::create(&self.inbound_payment_key, min_value_msat, invoice_expiry_delta_secs, &self.keys_manager, self.highest_seen_timestamp.load(Ordering::Acquire) as u64)
@@ -5455,7 +5455,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// Gets a [`PaymentSecret`] for a given [`PaymentHash`], for which the payment preimage is
 	/// stored external to LDK.
 	///
-	/// A [`PaymentReceived`] event will only be generated if the [`PaymentSecret`] matches a
+	/// A [`PaymentReceivedEvent`] will only be generated if the [`PaymentSecret`] matches a
 	/// payment secret fetched via this method or [`create_inbound_payment`], and which is at least
 	/// the `min_value_msat` provided here, if one is provided.
 	///
@@ -5465,7 +5465,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	///
 	/// `min_value_msat` should be set if the invoice being generated contains a value. Any payment
 	/// received for the returned [`PaymentHash`] will be required to be at least `min_value_msat`
-	/// before a [`PaymentReceived`] event will be generated, ensuring that we do not provide the
+	/// before a [`PaymentReceivedEvent`] will be generated, ensuring that we do not provide the
 	/// sender "proof-of-payment" unless they have paid the required amount.
 	///
 	/// `invoice_expiry_delta_secs` describes the number of seconds that the invoice is valid for
@@ -5476,9 +5476,9 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	///
 	/// Note that we use block header time to time-out pending inbound payments (with some margin
 	/// to compensate for the inaccuracy of block header timestamps). Thus, in practice we will
-	/// accept a payment and generate a [`PaymentReceived`] event for some time after the expiry.
+	/// accept a payment and generate a [`PaymentReceivedEvent`] for some time after the expiry.
 	/// If you need exact expiry semantics, you should enforce them upon receipt of
-	/// [`PaymentReceived`].
+	/// [`PaymentReceivedEvent`].
 	///
 	/// Note that invoices generated for inbound payments should have their `min_final_cltv_expiry`
 	/// set to at least [`MIN_FINAL_CLTV_EXPIRY`].
@@ -5494,7 +5494,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// Errors if `min_value_msat` is greater than total bitcoin supply.
 	///
 	/// [`create_inbound_payment`]: Self::create_inbound_payment
-	/// [`PaymentReceived`]: events::Event::PaymentReceived
+	/// [`PaymentReceivedEvent`]: events::PaymentReceivedEvent
 	pub fn create_inbound_payment_for_hash(&self, payment_hash: PaymentHash, min_value_msat: Option<u64>, invoice_expiry_delta_secs: u32) -> Result<PaymentSecret, ()> {
 		inbound_payment::create_from_hash(&self.inbound_payment_key, min_value_msat, payment_hash, invoice_expiry_delta_secs, self.highest_seen_timestamp.load(Ordering::Acquire) as u64)
 	}
@@ -7873,7 +7873,7 @@ pub mod bench {
 	use routing::router::{PaymentParameters, get_route};
 	use util::test_utils;
 	use util::config::UserConfig;
-	use util::events::{Event, MessageSendEvent, MessageSendEventsProvider, FundingGenerationReadyEvent};
+	use util::events::{Event, MessageSendEvent, MessageSendEventsProvider, FundingGenerationReadyEvent, PaymentReceivedEvent};
 
 	use bitcoin::hashes::Hash;
 	use bitcoin::hashes::sha256::Hash as Sha256;

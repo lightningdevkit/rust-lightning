@@ -47,7 +47,7 @@ use lightning::util::errors::APIError;
 use lightning::util::events;
 use lightning::util::logger::Logger;
 use lightning::util::config::UserConfig;
-use lightning::util::events::{MessageSendEventsProvider, FundingGenerationReadyEvent};
+use lightning::util::events::{MessageSendEventsProvider, FundingGenerationReadyEvent, PaymentReceivedEvent};
 use lightning::util::ser::{Readable, ReadableArgs, Writeable, Writer};
 use lightning::routing::router::{Route, RouteHop};
 
@@ -839,12 +839,12 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 				// PaymentReceived event for the second HTLC in our pending_events (and breaking
 				// our claim_set deduplication).
 				events.sort_by(|a, b| {
-					if let events::Event::PaymentReceived { .. } = a {
+					if let events::Event::PaymentReceived(PaymentReceivedEvent { .. }) = a {
 						if let events::Event::PendingHTLCsForwardable { .. } = b {
 							Ordering::Less
 						} else { Ordering::Equal }
 					} else if let events::Event::PendingHTLCsForwardable { .. } = a {
-						if let events::Event::PaymentReceived { .. } = b {
+						if let events::Event::PaymentReceived(PaymentReceivedEvent { .. }) = b {
 							Ordering::Greater
 						} else { Ordering::Equal }
 					} else { Ordering::Equal }
@@ -852,7 +852,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 				let had_events = !events.is_empty();
 				for event in events.drain(..) {
 					match event {
-						events::Event::PaymentReceived { payment_hash, .. } => {
+						events::Event::PaymentReceived(PaymentReceivedEvent { payment_hash, .. }) => {
 							if claim_set.insert(payment_hash.0) {
 								if $fail {
 									nodes[$node].fail_htlc_backwards(&payment_hash);

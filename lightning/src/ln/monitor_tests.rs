@@ -15,7 +15,7 @@ use chain::chaininterface::LowerBoundedFeeEstimator;
 use ln::channel;
 use ln::channelmanager::{self, BREAKDOWN_TIMEOUT};
 use ln::msgs::ChannelMessageHandler;
-use util::events::{Event, MessageSendEvent, MessageSendEventsProvider, ClosureReason, HTLCDestination};
+use util::events::{Event, MessageSendEvent, MessageSendEventsProvider, ClosureReason, HTLCDestination, PaymentReceivedEvent};
 
 use bitcoin::blockdata::script::Builder;
 use bitcoin::blockdata::opcodes;

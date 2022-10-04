@@ -601,7 +601,7 @@ mod test {
 	use lightning::ln::msgs::ChannelMessageHandler;
 	use lightning::routing::router::{PaymentParameters, RouteParameters, find_route};
 	use lightning::util::enforcing_trait_impls::EnforcingSigner;
-	use lightning::util::events::{MessageSendEvent, MessageSendEventsProvider, Event};
+	use lightning::util::events::{MessageSendEvent, MessageSendEventsProvider, Event, PaymentReceivedEvent};
 	use lightning::util::test_utils;
 	use lightning::util::config::UserConfig;
 	use lightning::chain::keysinterface::KeysInterface;

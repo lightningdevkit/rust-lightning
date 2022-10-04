@@ -44,7 +44,7 @@ use lightning::routing::router::{find_route, PaymentParameters, RouteParameters}
 use lightning::routing::scoring::FixedPenaltyScorer;
 use lightning::util::config::UserConfig;
 use lightning::util::errors::APIError;
-use lightning::util::events::{Event, FundingGenerationReadyEvent};
+use lightning::util::events::{Event, FundingGenerationReadyEvent, PaymentReceivedEvent};
 use lightning::util::enforcing_trait_impls::{EnforcingSigner, EnforcementState};
 use lightning::util::logger::Logger;
 use lightning::util::ser::ReadableArgs;
@@ -647,7 +647,7 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 				Event::FundingGenerationReady(FundingGenerationReadyEvent { temporary_channel_id, counterparty_node_id, channel_value_satoshis, output_script, .. }) => {
 					pending_funding_generation.push((temporary_channel_id, counterparty_node_id, channel_value_satoshis, output_script));
 				},
-				Event::PaymentReceived { payment_hash, .. } => {
+				Event::PaymentReceived(PaymentReceivedEvent { payment_hash, .. }) => {
 					//TODO: enhance by fetching random amounts from fuzz input?
 					payments_received.push(payment_hash);
 				},

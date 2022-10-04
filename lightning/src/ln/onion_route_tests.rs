@@ -23,7 +23,7 @@ use ln::features::{InitFeatures, InvoiceFeatures, NodeFeatures};
 use ln::msgs;
 use ln::msgs::{ChannelMessageHandler, ChannelUpdate};
 use ln::wire::Encode;
-use util::events::{Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider};
+use util::events::{Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, PaymentReceivedEvent};
 use util::ser::{ReadableArgs, Writeable, Writer};
 use util::{byte_utils, test_utils};
 use util::config::{UserConfig, ChannelConfig};

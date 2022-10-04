@@ -22,7 +22,7 @@ use ln::msgs;
 use ln::msgs::{ChannelMessageHandler, RoutingMessageHandler, ChannelUpdate, ErrorAction};
 use ln::wire::Encode;
 use util::enforcing_trait_impls::EnforcingSigner;
-use util::events::{ClosureReason, Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider};
+use util::events::{ClosureReason, Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, PaymentReceivedEvent};
 use util::config::UserConfig;
 use util::ser::{Writeable, ReadableArgs};
 use util::test_utils;

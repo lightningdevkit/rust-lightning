@@ -25,7 +25,7 @@ use ln::msgs;
 use ln::msgs::{ChannelMessageHandler, RoutingMessageHandler};
 use util::config::UserConfig;
 use util::enforcing_trait_impls::EnforcingSigner;
-use util::events::{Event, MessageSendEvent, MessageSendEventsProvider, PaymentPurpose, ClosureReason, HTLCDestination};
+use util::events::{Event, MessageSendEvent, MessageSendEventsProvider, PaymentPurpose, ClosureReason, HTLCDestination, PaymentReceivedEvent};
 use util::errors::APIError;
 use util::ser::{ReadableArgs, Writeable};
 use util::test_utils::TestBroadcaster;
@@ -201,7 +201,7 @@ fn do_test_simple_monitor_temporary_update_fail(disconnect: bool) {
 	let events_3 = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(events_3.len(), 1);
 	match events_3[0] {
-		Event::PaymentReceived { ref payment_hash, ref purpose, amount_msat } => {
+		Event::PaymentReceived(PaymentReceivedEvent { ref payment_hash, ref purpose, amount_msat }) => {
 			assert_eq!(payment_hash_1, *payment_hash);
 			assert_eq!(amount_msat, 1_000_000);
 			match &purpose {
@@ -569,7 +569,7 @@ fn do_test_monitor_temporary_update_fail(disconnect_count: usize) {
 	let events_5 = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(events_5.len(), 1);
 	match events_5[0] {
-		Event::PaymentReceived { ref payment_hash, ref purpose, amount_msat } => {
+		Event::PaymentReceived(PaymentReceivedEvent { ref payment_hash, ref purpose, amount_msat }) => {
 			assert_eq!(payment_hash_2, *payment_hash);
 			assert_eq!(amount_msat, 1_000_000);
 			match &purpose {
@@ -686,7 +686,7 @@ fn test_monitor_update_fail_cs() {
 	let events = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match events[0] {
-		Event::PaymentReceived { payment_hash, ref purpose, amount_msat } => {
+		Event::PaymentReceived(PaymentReceivedEvent { payment_hash, ref purpose, amount_msat }) => {
 			assert_eq!(payment_hash, our_payment_hash);
 			assert_eq!(amount_msat, 1_000_000);
 			match &purpose {
@@ -742,7 +742,7 @@ fn test_monitor_update_fail_no_rebroadcast() {
 	let events = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match events[0] {
-		Event::PaymentReceived { payment_hash, .. } => {
+		Event::PaymentReceived(PaymentReceivedEvent { payment_hash, .. }) => {
 			assert_eq!(payment_hash, our_payment_hash);
 		},
 		_ => panic!("Unexpected event"),
@@ -1052,11 +1052,11 @@ fn do_test_monitor_update_fail_raa(test_ignore_second_cs: bool) {
 	let events_6 = nodes[2].node.get_and_clear_pending_events();
 	assert_eq!(events_6.len(), 2);
 	match events_6[0] {
-		Event::PaymentReceived { payment_hash, .. } => { assert_eq!(payment_hash, payment_hash_2); },
+		Event::PaymentReceived(PaymentReceivedEvent { payment_hash, .. }) => { assert_eq!(payment_hash, payment_hash_2); },
 		_ => panic!("Unexpected event"),
 	};
 	match events_6[1] {
-		Event::PaymentReceived { payment_hash, .. } => { assert_eq!(payment_hash, payment_hash_3); },
+		Event::PaymentReceived(PaymentReceivedEvent { payment_hash, .. }) => { assert_eq!(payment_hash, payment_hash_3); },
 		_ => panic!("Unexpected event"),
 	};
 
@@ -1075,7 +1075,7 @@ fn do_test_monitor_update_fail_raa(test_ignore_second_cs: bool) {
 		let events_9 = nodes[0].node.get_and_clear_pending_events();
 		assert_eq!(events_9.len(), 1);
 		match events_9[0] {
-			Event::PaymentReceived { payment_hash, .. } => assert_eq!(payment_hash, payment_hash_4.unwrap()),
+			Event::PaymentReceived(PaymentReceivedEvent { payment_hash, .. }) => assert_eq!(payment_hash, payment_hash_4.unwrap()),
 			_ => panic!("Unexpected event"),
 		};
 		claim_payment(&nodes[2], &[&nodes[1], &nodes[0]], payment_preimage_4.unwrap());
@@ -1660,7 +1660,7 @@ fn test_monitor_update_fail_claim() {
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 2);
 	match events[0] {
-		Event::PaymentReceived { ref payment_hash, ref purpose, amount_msat } => {
+		Event::PaymentReceived(PaymentReceivedEvent { ref payment_hash, ref purpose, amount_msat }) => {
 			assert_eq!(payment_hash_2, *payment_hash);
 			assert_eq!(1_000_000, amount_msat);
 			match &purpose {
@@ -1674,7 +1674,7 @@ fn test_monitor_update_fail_claim() {
 		_ => panic!("Unexpected event"),
 	}
 	match events[1] {
-		Event::PaymentReceived { ref payment_hash, ref purpose, amount_msat } => {
+		Event::PaymentReceived(PaymentReceivedEvent { ref payment_hash, ref purpose, amount_msat }) => {
 			assert_eq!(payment_hash_3, *payment_hash);
 			assert_eq!(1_000_000, amount_msat);
 			match &purpose {

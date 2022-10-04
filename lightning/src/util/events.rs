@@ -205,32 +205,8 @@ impl_writeable_tlv_based_enum_upgradable!(HTLCDestination,
 pub enum Event {
 	/// A [`FundingGenerationReadyEvent`].
 	FundingGenerationReady(FundingGenerationReadyEvent),
-	/// Indicates we've received (an offer of) money! Just gotta dig out that payment preimage and
-	/// feed it to [`ChannelManager::claim_funds`] to get it....
-	///
-	/// Note that if the preimage is not known, you should call
-	/// [`ChannelManager::fail_htlc_backwards`] to free up resources for this HTLC and avoid
-	/// network congestion.
-	/// If you fail to call either [`ChannelManager::claim_funds`] or
-	/// [`ChannelManager::fail_htlc_backwards`] within the HTLC's timeout, the HTLC will be
-	/// automatically failed.
-	///
-	/// # Note
-	/// LDK will not stop an inbound payment from being paid multiple times, so multiple
-	/// `PaymentReceived` events may be generated for the same payment.
-	///
-	/// [`ChannelManager::claim_funds`]: crate::ln::channelmanager::ChannelManager::claim_funds
-	/// [`ChannelManager::fail_htlc_backwards`]: crate::ln::channelmanager::ChannelManager::fail_htlc_backwards
-	PaymentReceived {
-		/// The hash for which the preimage should be handed to the ChannelManager. Note that LDK will
-		/// not stop you from registering duplicate payment hashes for inbound payments.
-		payment_hash: PaymentHash,
-		/// The value, in thousandths of a satoshi, that this payment is for.
-		amount_msat: u64,
-		/// Information for claiming this received payment, based on whether the purpose of the
-		/// payment is to pay an invoice or to send a spontaneous payment.
-		purpose: PaymentPurpose,
-	},
+	/// A [`PaymentReceivedEvent`].
+	PaymentReceived(PaymentReceivedEvent),
 	/// Indicates a payment has been claimed and we've received money!
 	///
 	/// This most likely occurs when [`ChannelManager::claim_funds`] has been called in response
@@ -583,26 +559,8 @@ impl Writeable for Event {
 			Self::FundingGenerationReady(event) => {
 				event.write(writer)?;
 			},
-			&Event::PaymentReceived { ref payment_hash, ref amount_msat, ref purpose } => {
-				1u8.write(writer)?;
-				let mut payment_secret = None;
-				let payment_preimage;
-				match &purpose {
-					PaymentPurpose::InvoicePayment { payment_preimage: preimage, payment_secret: secret } => {
-						payment_secret = Some(secret);
-						payment_preimage = *preimage;
-					},
-					PaymentPurpose::SpontaneousPayment(preimage) => {
-						payment_preimage = Some(*preimage);
-					}
-				}
-				write_tlv_fields!(writer, {
-					(0, payment_hash, required),
-					(2, payment_secret, option),
-					(4, amount_msat, required),
-					(6, 0u64, required), // user_payment_id required for compatibility with 0.0.103 and earlier
-					(8, payment_preimage, option),
-				});
+			Self::PaymentReceived(event) => {
+				event.write(writer)?;
 			},
 			&Event::PaymentSent { ref payment_id, ref payment_preimage, ref payment_hash, ref fee_paid_msat } => {
 				2u8.write(writer)?;
@@ -737,35 +695,8 @@ impl MaybeReadable for Event {
 			FundingGenerationReadyEvent::TYPE => {
 				Ok(MaybeReadable::read(reader).unwrap_or(None).map(|e| Self::FundingGenerationReady(e)))
 			},
-			1u8 => {
-				let f = || {
-					let mut payment_hash = PaymentHash([0; 32]);
-					let mut payment_preimage = None;
-					let mut payment_secret = None;
-					let mut amount_msat = 0;
-					let mut _user_payment_id = None::<u64>; // For compatibility with 0.0.103 and earlier
-					read_tlv_fields!(reader, {
-						(0, payment_hash, required),
-						(2, payment_secret, option),
-						(4, amount_msat, required),
-						(6, _user_payment_id, option),
-						(8, payment_preimage, option),
-					});
-					let purpose = match payment_secret {
-						Some(secret) => PaymentPurpose::InvoicePayment {
-							payment_preimage,
-							payment_secret: secret
-						},
-						None if payment_preimage.is_some() => PaymentPurpose::SpontaneousPayment(payment_preimage.unwrap()),
-						None => return Err(msgs::DecodeError::InvalidValue),
-					};
-					Ok(Some(Event::PaymentReceived {
-						payment_hash,
-						amount_msat,
-						purpose,
-					}))
-				};
-				f()
+			PaymentReceivedEvent::TYPE => {
+				Ok(MaybeReadable::read(reader).unwrap_or(None).map(|e| Self::PaymentReceived(e)))
 			},
 			2u8 => {
 				let f = || {
@@ -1082,6 +1013,100 @@ impl MaybeReadable for FundingGenerationReadyEvent {
 		Ok(None)
 	}
 }
+
+/// Indicates we've received (an offer of) money! Just gotta dig out that payment preimage and
+/// feed it to [`ChannelManager::claim_funds`] to get it....
+///
+/// Note that if the preimage is not known, you should call
+/// [`ChannelManager::fail_htlc_backwards`] to free up resources for this HTLC and avoid
+/// network congestion.
+/// If you fail to call either [`ChannelManager::claim_funds`] or
+/// [`ChannelManager::fail_htlc_backwards`] within the HTLC's timeout, the HTLC will be
+/// automatically failed.
+///
+/// # Note
+/// LDK will not stop an inbound payment from being paid multiple times, so multiple
+/// `PaymentReceived` events may be generated for the same payment.
+///
+/// [`ChannelManager::claim_funds`]: crate::ln::channelmanager::ChannelManager::claim_funds
+/// [`ChannelManager::fail_htlc_backwards`]: crate::ln::channelmanager::ChannelManager::fail_htlc_backwards
+#[derive(Debug, Clone)]
+pub struct PaymentReceivedEvent {
+	/// The hash for which the preimage should be handed to the ChannelManager. Note that LDK will
+	/// not stop you from registering duplicate payment hashes for inbound payments.
+	pub payment_hash: PaymentHash,
+	/// The value, in thousandths of a satoshi, that this payment is for.
+	pub amount_msat: u64,
+	/// Information for claiming this received payment, based on whether the purpose of the
+	/// payment is to pay an invoice or to send a spontaneous payment.
+	pub purpose: PaymentPurpose,
+}
+
+impl EventType for PaymentReceivedEvent {
+	const TYPE: u8 = 1u8;
+}
+
+impl Writeable for PaymentReceivedEvent {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		Self::TYPE.write(writer)?;
+		let mut payment_secret = None;
+		let payment_preimage;
+		match &self.purpose {
+			PaymentPurpose::InvoicePayment { payment_preimage: preimage, payment_secret: secret } => {
+				payment_secret = Some(secret);
+				payment_preimage = *preimage;
+			},
+			PaymentPurpose::SpontaneousPayment(preimage) => {
+				payment_preimage = Some(*preimage);
+			}
+		}
+		write_tlv_fields!(writer, {
+			(0, self.payment_hash, required),
+			(2, payment_secret, option),
+			(4, self.amount_msat, required),
+			(6, 0u64, required), // user_payment_id required for compatibility with 0.0.103 and earlier
+			(8, payment_preimage, option),
+		});
+		Ok(())
+	}
+}
+
+impl MaybeReadable for PaymentReceivedEvent {
+	fn read<R: io::Read>(
+		reader: &mut R,
+	) -> Result<Option<Self>, DecodeError> {
+		let f = || {
+			let mut payment_hash = PaymentHash([0; 32]);
+			let mut payment_preimage = None;
+			let mut payment_secret = None;
+			let mut amount_msat = 0;
+			let mut _user_payment_id = None::<u64>; // For compatibility with 0.0.103 and earlier
+			read_tlv_fields!(reader, {
+				(0, payment_hash, required),
+				(2, payment_secret, option),
+				(4, amount_msat, required),
+				(6, _user_payment_id, option),
+				(8, payment_preimage, option),
+			});
+			let purpose = match payment_secret {
+				Some(secret) => PaymentPurpose::InvoicePayment {
+					payment_preimage,
+					payment_secret: secret
+				},
+				None if payment_preimage.is_some() => PaymentPurpose::SpontaneousPayment(payment_preimage.unwrap()),
+				None => return Err(msgs::DecodeError::InvalidValue),
+			};
+			Ok(Some(Self {
+				payment_hash,
+				amount_msat,
+				purpose,
+			}))
+		};
+		f()
+	}
+}
+
+
 /// An event generated by ChannelManager which indicates a message should be sent to a peer (or
 /// broadcast to most peers).
 /// These events are handled by PeerManager::process_events if you are using a PeerManager.
