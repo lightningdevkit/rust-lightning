@@ -203,35 +203,8 @@ impl_writeable_tlv_based_enum_upgradable!(HTLCDestination,
 /// written as it makes no sense to respond to it after reconnecting to peers).
 #[derive(Clone, Debug)]
 pub enum Event {
-	/// Used to indicate that the client should generate a funding transaction with the given
-	/// parameters and then call [`ChannelManager::funding_transaction_generated`].
-	/// Generated in [`ChannelManager`] message handling.
-	/// Note that *all inputs* in the funding transaction must spend SegWit outputs or your
-	/// counterparty can steal your funds!
-	///
-	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
-	/// [`ChannelManager::funding_transaction_generated`]: crate::ln::channelmanager::ChannelManager::funding_transaction_generated
-	FundingGenerationReady {
-		/// The random channel_id we picked which you'll need to pass into
-		/// [`ChannelManager::funding_transaction_generated`].
-		///
-		/// [`ChannelManager::funding_transaction_generated`]: crate::ln::channelmanager::ChannelManager::funding_transaction_generated
-		temporary_channel_id: [u8; 32],
-		/// The counterparty's node_id, which you'll need to pass back into
-		/// [`ChannelManager::funding_transaction_generated`].
-		///
-		/// [`ChannelManager::funding_transaction_generated`]: crate::ln::channelmanager::ChannelManager::funding_transaction_generated
-		counterparty_node_id: PublicKey,
-		/// The value, in satoshis, that the output should have.
-		channel_value_satoshis: u64,
-		/// The script which should be used in the transaction output.
-		output_script: Script,
-		/// The `user_channel_id` value passed in to [`ChannelManager::create_channel`], or 0 for
-		/// an inbound channel.
-		///
-		/// [`ChannelManager::create_channel`]: crate::ln::channelmanager::ChannelManager::create_channel
-		user_channel_id: u64,
-	},
+	/// A [`FundingGenerationReadyEvent`].
+	FundingGenerationReady(FundingGenerationReadyEvent),
 	/// Indicates we've received (an offer of) money! Just gotta dig out that payment preimage and
 	/// feed it to [`ChannelManager::claim_funds`] to get it....
 	///
@@ -607,10 +580,8 @@ pub enum Event {
 impl Writeable for Event {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		match self {
-			&Event::FundingGenerationReady { .. } => {
-				0u8.write(writer)?;
-				// We never write out FundingGenerationReady events as, upon disconnection, peers
-				// drop any channels which have not yet exchanged funding_signed.
+			Self::FundingGenerationReady(event) => {
+				event.write(writer)?;
 			},
 			&Event::PaymentReceived { ref payment_hash, ref amount_msat, ref purpose } => {
 				1u8.write(writer)?;
@@ -763,9 +734,9 @@ impl Writeable for Event {
 impl MaybeReadable for Event {
 	fn read<R: io::Read>(reader: &mut R) -> Result<Option<Self>, msgs::DecodeError> {
 		match Readable::read(reader)? {
-			// Note that we do not write a length-prefixed TLV for FundingGenerationReady events,
-			// unlike all other events, thus we return immediately here.
-			0u8 => Ok(None),
+			FundingGenerationReadyEvent::TYPE => {
+				Ok(MaybeReadable::read(reader).unwrap_or(None).map(|e| Self::FundingGenerationReady(e)))
+			},
 			1u8 => {
 				let f = || {
 					let mut payment_hash = PaymentHash([0; 32]);
@@ -1052,6 +1023,65 @@ impl MaybeReadable for Event {
 	}
 }
 
+trait EventType {
+	const TYPE: u8;
+}
+
+
+/// Used to indicate that the client should generate a funding transaction with the given
+/// parameters and then call [`ChannelManager::funding_transaction_generated`].
+///
+/// Generated in [`ChannelManager`] message handling.
+/// Note that *all inputs* in the funding transaction must spend SegWit outputs or your
+/// counterparty can steal your funds!
+///
+/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
+/// [`ChannelManager::funding_transaction_generated`]: crate::ln::channelmanager::ChannelManager::funding_transaction_generated
+#[derive(Debug, Clone)]
+pub struct FundingGenerationReadyEvent {
+	/// The random channel_id we picked which you'll need to pass into
+	/// [`ChannelManager::funding_transaction_generated`].
+	///
+	/// [`ChannelManager::funding_transaction_generated`]: crate::ln::channelmanager::ChannelManager::funding_transaction_generated
+	pub temporary_channel_id: [u8; 32],
+	/// The counterparty's node_id, which you'll need to pass back into
+	/// [`ChannelManager::funding_transaction_generated`].
+	///
+	/// [`ChannelManager::funding_transaction_generated`]: crate::ln::channelmanager::ChannelManager::funding_transaction_generated
+	pub counterparty_node_id: PublicKey,
+	/// The value, in satoshis, that the output should have.
+	pub channel_value_satoshis: u64,
+	/// The script which should be used in the transaction output.
+	pub output_script: Script,
+	/// The `user_channel_id` value passed in to [`ChannelManager::create_channel`], or 0 for
+	/// an inbound channel.
+	///
+	/// [`ChannelManager::create_channel`]: crate::ln::channelmanager::ChannelManager::create_channel
+	pub user_channel_id: u64,
+}
+
+impl EventType for FundingGenerationReadyEvent {
+	const TYPE: u8 = 0u8;
+}
+
+impl Writeable for FundingGenerationReadyEvent {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		Self::TYPE.write(writer)?;
+		// We never write out FundingGenerationReady events as, upon disconnection, peers
+		// drop any channels which have not yet exchanged funding_signed.
+		Ok(())
+	}
+}
+
+impl MaybeReadable for FundingGenerationReadyEvent {
+	fn read<R: io::Read>(
+		_reader: &mut R,
+	) -> Result<Option<Self>, DecodeError> {
+		// Note that we do not write a length-prefixed TLV for FundingGenerationReady events,
+		// unlike all other events, thus we return immediately here.
+		Ok(None)
+	}
+}
 /// An event generated by ChannelManager which indicates a message should be sent to a peer (or
 /// broadcast to most peers).
 /// These events are handled by PeerManager::process_events if you are using a PeerManager.

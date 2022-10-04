@@ -589,7 +589,7 @@ mod tests {
 	use lightning::ln::peer_handler::{PeerManager, MessageHandler, SocketDescriptor, IgnoringMessageHandler};
 	use lightning::routing::gossip::{NetworkGraph, P2PGossipSync};
 	use lightning::util::config::UserConfig;
-	use lightning::util::events::{Event, MessageSendEventsProvider, MessageSendEvent};
+	use lightning::util::events::{Event, MessageSendEventsProvider, MessageSendEvent, FundingGenerationReadyEvent};
 	use lightning::util::ser::Writeable;
 	use lightning::util::test_utils;
 	use lightning::util::persist::KVStorePersister;
@@ -786,7 +786,7 @@ mod tests {
 	macro_rules! handle_funding_generation_ready {
 		($event: expr, $channel_value: expr) => {{
 			match $event {
-				&Event::FundingGenerationReady { temporary_channel_id, channel_value_satoshis, ref output_script, user_channel_id, .. } => {
+				&Event::FundingGenerationReady(FundingGenerationReadyEvent{ temporary_channel_id, channel_value_satoshis, ref output_script, user_channel_id, .. }) => {
 					assert_eq!(channel_value_satoshis, $channel_value);
 					assert_eq!(user_channel_id, 42);
 
@@ -997,7 +997,7 @@ mod tests {
 		begin_open_channel!(nodes[0], nodes[1], channel_value);
 		let (temporary_channel_id, funding_tx) = receiver
 			.recv_timeout(Duration::from_secs(EVENT_DEADLINE))
-			.expect("FundingGenerationReady not handled within deadline");
+			.expect("FundingGenerationReadyEvent not handled within deadline");
 		end_open_channel!(nodes[0], nodes[1], temporary_channel_id, funding_tx);
 
 		// Confirm the funding transaction.

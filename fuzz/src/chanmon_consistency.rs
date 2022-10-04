@@ -47,7 +47,7 @@ use lightning::util::errors::APIError;
 use lightning::util::events;
 use lightning::util::logger::Logger;
 use lightning::util::config::UserConfig;
-use lightning::util::events::MessageSendEventsProvider;
+use lightning::util::events::{MessageSendEventsProvider, FundingGenerationReadyEvent};
 use lightning::util::ser::{Readable, ReadableArgs, Writeable, Writer};
 use lightning::routing::router::{Route, RouteHop};
 
@@ -452,7 +452,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 			{
 				let events = $source.get_and_clear_pending_events();
 				assert_eq!(events.len(), 1);
-				if let events::Event::FundingGenerationReady { ref temporary_channel_id, ref channel_value_satoshis, ref output_script, .. } = events[0] {
+				if let events::Event::FundingGenerationReady(FundingGenerationReadyEvent { ref temporary_channel_id, ref channel_value_satoshis, ref output_script, .. }) = events[0] {
 					let tx = Transaction { version: $chan_id, lock_time: PackedLockTime::ZERO, input: Vec::new(), output: vec![TxOut {
 						value: *channel_value_satoshis, script_pubkey: output_script.clone(),
 					}]};

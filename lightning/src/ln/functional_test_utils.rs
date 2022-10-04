@@ -24,7 +24,7 @@ use util::enforcing_trait_impls::EnforcingSigner;
 use util::scid_utils;
 use util::test_utils;
 use util::test_utils::{panicking, TestChainMonitor};
-use util::events::{Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, PaymentPurpose};
+use util::events::{Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, PaymentPurpose, FundingGenerationReadyEvent};
 use util::errors::APIError;
 use util::config::UserConfig;
 use util::ser::{ReadableArgs, Writeable};
@@ -624,7 +624,7 @@ pub fn create_funding_transaction<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, expected_
 	let events = node.node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match events[0] {
-		Event::FundingGenerationReady { ref temporary_channel_id, ref counterparty_node_id, ref channel_value_satoshis, ref output_script, user_channel_id } => {
+		Event::FundingGenerationReady(FundingGenerationReadyEvent { ref temporary_channel_id, ref counterparty_node_id, ref channel_value_satoshis, ref output_script, user_channel_id }) => {
 			assert_eq!(counterparty_node_id, expected_counterparty_node_id);
 			assert_eq!(*channel_value_satoshis, expected_chan_value);
 			assert_eq!(user_channel_id, expected_user_chan_id);

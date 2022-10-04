@@ -31,7 +31,7 @@ use ln::msgs;
 use ln::msgs::{ChannelMessageHandler, RoutingMessageHandler, ErrorAction};
 use util::enforcing_trait_impls::EnforcingSigner;
 use util::{byte_utils, test_utils};
-use util::events::{Event, MessageSendEvent, MessageSendEventsProvider, PaymentPurpose, ClosureReason, HTLCDestination};
+use util::events::{Event, MessageSendEvent, MessageSendEventsProvider, PaymentPurpose, ClosureReason, HTLCDestination, FundingGenerationReadyEvent};
 use util::errors::APIError;
 use util::ser::{Writeable, ReadableArgs};
 use util::config::UserConfig;
@@ -10488,7 +10488,7 @@ fn test_non_final_funding_tx() {
 	let input = TxIn { previous_output: BitcoinOutPoint::null(), script_sig: bitcoin::Script::new(), sequence: Sequence(1), witness: Witness::from_vec(vec!(vec!(1))) };
 	assert_eq!(events.len(), 1);
 	let mut tx = match events[0] {
-		Event::FundingGenerationReady { ref channel_value_satoshis, ref output_script, .. } => {
+		Event::FundingGenerationReady(FundingGenerationReadyEvent { ref channel_value_satoshis, ref output_script, .. }) => {
 			// Timelock the transaction _beyond_ the best client height + 2.
 			Transaction { version: chan_id as i32, lock_time: PackedLockTime(best_height + 3), input: vec![input], output: vec![TxOut {
 				value: *channel_value_satoshis, script_pubkey: output_script.clone(),

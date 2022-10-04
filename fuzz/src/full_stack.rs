@@ -44,7 +44,7 @@ use lightning::routing::router::{find_route, PaymentParameters, RouteParameters}
 use lightning::routing::scoring::FixedPenaltyScorer;
 use lightning::util::config::UserConfig;
 use lightning::util::errors::APIError;
-use lightning::util::events::Event;
+use lightning::util::events::{Event, FundingGenerationReadyEvent};
 use lightning::util::enforcing_trait_impls::{EnforcingSigner, EnforcementState};
 use lightning::util::logger::Logger;
 use lightning::util::ser::ReadableArgs;
@@ -644,7 +644,7 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 		loss_detector.handler.process_events();
 		for event in loss_detector.manager.get_and_clear_pending_events() {
 			match event {
-				Event::FundingGenerationReady { temporary_channel_id, counterparty_node_id, channel_value_satoshis, output_script, .. } => {
+				Event::FundingGenerationReady(FundingGenerationReadyEvent { temporary_channel_id, counterparty_node_id, channel_value_satoshis, output_script, .. }) => {
 					pending_funding_generation.push((temporary_channel_id, counterparty_node_id, channel_value_satoshis, output_script));
 				},
 				Event::PaymentReceived { payment_hash, .. } => {

@@ -53,7 +53,7 @@ use ln::msgs::{ChannelMessageHandler, DecodeError, LightningError, MAX_VALUE_MSA
 use ln::wire::Encode;
 use chain::keysinterface::{Sign, KeysInterface, KeysManager, InMemorySigner, Recipient};
 use util::config::{UserConfig, ChannelConfig};
-use util::events::{EventHandler, EventsProvider, MessageSendEvent, MessageSendEventsProvider, ClosureReason, HTLCDestination};
+use util::events::{EventHandler, EventsProvider, MessageSendEvent, MessageSendEventsProvider, ClosureReason, HTLCDestination, FundingGenerationReadyEvent};
 use util::{byte_utils, events};
 use util::wakers::{Future, Notifier};
 use util::scid_utils::fake_scid;
@@ -1686,7 +1686,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// Creates a new outbound channel to the given remote node and with the given value.
 	///
 	/// `user_channel_id` will be provided back as in
-	/// [`Event::FundingGenerationReady::user_channel_id`] to allow tracking of which events
+	/// [`FundingGenerationReadyEvent::user_channel_id`] to allow tracking of which events
 	/// correspond with which `create_channel` call. Note that the `user_channel_id` defaults to 0
 	/// for inbound channels, so you may wish to avoid using 0 for `user_channel_id` here.
 	/// `user_channel_id` has no meaning inside of LDK, it is simply copied to events and otherwise
@@ -1700,14 +1700,14 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// the channel eventually being silently forgotten (dropped on reload).
 	///
 	/// Returns the new Channel's temporary `channel_id`. This ID will appear as
-	/// [`Event::FundingGenerationReady::temporary_channel_id`] and in
+	/// [`FundingGenerationReadyEvent::temporary_channel_id`] and in
 	/// [`ChannelDetails::channel_id`] until after
 	/// [`ChannelManager::funding_transaction_generated`] is called, swapping the Channel's ID for
 	/// one derived from the funding transaction's TXID. If the counterparty rejects the channel
 	/// immediately, this temporary ID will appear in [`Event::ChannelClosed::channel_id`].
 	///
-	/// [`Event::FundingGenerationReady::user_channel_id`]: events::Event::FundingGenerationReady::user_channel_id
-	/// [`Event::FundingGenerationReady::temporary_channel_id`]: events::Event::FundingGenerationReady::temporary_channel_id
+	/// [`FundingGenerationReadyEvent::user_channel_id`]: events::FundingGenerationReadyEvent::user_channel_id
+	/// [`FundingGenerationReadyEvent::temporary_channel_id`]: events::FundingGenerationReadyEvent::temporary_channel_id
 	/// [`Event::ChannelClosed::channel_id`]: events::Event::ChannelClosed::channel_id
 	pub fn create_channel(&self, their_network_key: PublicKey, channel_value_satoshis: u64, push_msat: u64, user_channel_id: u64, override_config: Option<UserConfig>) -> Result<[u8; 32], APIError> {
 		if channel_value_satoshis < 1000 {
@@ -2888,7 +2888,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// Call this upon creation of a funding transaction for the given channel.
 	///
 	/// Returns an [`APIError::APIMisuseError`] if the funding_transaction spent non-SegWit outputs
-	/// or if no output was found which matches the parameters in [`Event::FundingGenerationReady`].
+	/// or if no output was found which matches the parameters in [`FundingGenerationReadyEvent`].
 	///
 	/// Returns [`APIError::APIMisuseError`] if the funding transaction is not final for propagation
 	/// across the p2p network.
@@ -2913,7 +2913,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// implemented by Bitcoin Core wallet. See <https://bitcoinops.org/en/topics/fee-sniping/>
 	/// for more details.
 	///
-	/// [`Event::FundingGenerationReady`]: crate::util::events::Event::FundingGenerationReady
+	/// [`FundingGenerationReadyEvent`]: crate::util::events::FundingGenerationReadyEvent
 	/// [`Event::ChannelClosed`]: crate::util::events::Event::ChannelClosed
 	pub fn funding_transaction_generated(&self, temporary_channel_id: &[u8; 32], counterparty_node_id: &PublicKey, funding_transaction: Transaction) -> Result<(), APIError> {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
@@ -4519,13 +4519,13 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			}
 		};
 		let mut pending_events = self.pending_events.lock().unwrap();
-		pending_events.push(events::Event::FundingGenerationReady {
+		pending_events.push(events::Event::FundingGenerationReady(FundingGenerationReadyEvent {
 			temporary_channel_id: msg.temporary_channel_id,
 			counterparty_node_id: *counterparty_node_id,
 			channel_value_satoshis: value,
 			output_script,
 			user_channel_id: user_id,
-		});
+		}));
 		Ok(())
 	}
 
@@ -7873,7 +7873,7 @@ pub mod bench {
 	use routing::router::{PaymentParameters, get_route};
 	use util::test_utils;
 	use util::config::UserConfig;
-	use util::events::{Event, MessageSendEvent, MessageSendEventsProvider};
+	use util::events::{Event, MessageSendEvent, MessageSendEventsProvider, FundingGenerationReadyEvent};
 
 	use bitcoin::hashes::Hash;
 	use bitcoin::hashes::sha256::Hash as Sha256;
@@ -7938,7 +7938,7 @@ pub mod bench {
 		node_a.handle_accept_channel(&node_b.get_our_node_id(), channelmanager::provided_init_features(), &get_event_msg!(node_b_holder, MessageSendEvent::SendAcceptChannel, node_a.get_our_node_id()));
 
 		let tx;
-		if let Event::FundingGenerationReady { temporary_channel_id, output_script, .. } = get_event!(node_a_holder, Event::FundingGenerationReady) {
+		if let Event::FundingGenerationReady(FundingGenerationReadyEvent { temporary_channel_id, output_script, .. }) = get_event!(node_a_holder, Event::FundingGenerationReady) {
 			tx = Transaction { version: 2, lock_time: PackedLockTime::ZERO, input: Vec::new(), output: vec![TxOut {
 				value: 8_000_000, script_pubkey: output_script,
 			}]};
