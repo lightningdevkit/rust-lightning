@@ -7866,7 +7866,6 @@ pub mod bench {
 	use chain::chainmonitor::{ChainMonitor, Persist};
 	use chain::keysinterface::{KeysManager, KeysInterface, InMemorySigner};
 	use ln::channelmanager::{self, BestBlock, ChainParameters, ChannelManager, PaymentHash, PaymentPreimage};
-	use ln::features::{InitFeatures, InvoiceFeatures};
 	use ln::functional_test_utils::*;
 	use ln::msgs::{ChannelMessageHandler, Init};
 	use routing::gossip::NetworkGraph;

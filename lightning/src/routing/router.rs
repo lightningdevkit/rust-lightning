@@ -5456,7 +5456,7 @@ mod benches {
 	use chain::transaction::OutPoint;
 	use chain::keysinterface::{KeysManager,KeysInterface};
 	use ln::channelmanager::{self, ChannelCounterparty, ChannelDetails};
-	use ln::features::{InitFeatures, InvoiceFeatures};
+	use ln::features::InvoiceFeatures;
 	use routing::gossip::NetworkGraph;
 	use routing::scoring::{FixedPenaltyScorer, ProbabilisticScorer, ProbabilisticScoringParameters};
 	use util::logger::{Logger, Record};
