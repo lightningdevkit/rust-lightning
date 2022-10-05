@@ -273,9 +273,9 @@ enum ChannelState {
 	/// dance.
 	PeerDisconnected = 1 << 7,
 	/// Flag which is set on ChannelFunded, FundingCreated, and FundingSent indicating the user has
-	/// told us they failed to update our ChannelMonitor somewhere and we should pause sending any
-	/// outbound messages until they've managed to do so.
-	MonitorUpdateFailed = 1 << 8,
+	/// told us a ChannelMonitor update is pending async persistence somewhere and we should pause
+	/// sending any outbound messages until they've managed to finish.
+	MonitorUpdateInProgress = 1 << 8,
 	/// Flag which implies that we have sent a commitment_signed but are awaiting the responding
 	/// revoke_and_ack message. During this time period, we can't generate new commitment_signed
 	/// messages as then we will be unable to determine which HTLCs they included in their
@@ -295,7 +295,7 @@ enum ChannelState {
 	ShutdownComplete = 4096,
 }
 const BOTH_SIDES_SHUTDOWN_MASK: u32 = ChannelState::LocalShutdownSent as u32 | ChannelState::RemoteShutdownSent as u32;
-const MULTI_STATE_FLAGS: u32 = BOTH_SIDES_SHUTDOWN_MASK | ChannelState::PeerDisconnected as u32 | ChannelState::MonitorUpdateFailed as u32;
+const MULTI_STATE_FLAGS: u32 = BOTH_SIDES_SHUTDOWN_MASK | ChannelState::PeerDisconnected as u32 | ChannelState::MonitorUpdateInProgress as u32;
 
 pub const INITIAL_COMMITMENT_NUMBER: u64 = (1 << 48) - 1;
 
@@ -1776,7 +1776,7 @@ impl<Signer: Sign> Channel<Signer> {
 	where L::Target: Logger {
 		// Assert that we'll add the HTLC claim to the holding cell in `get_update_fulfill_htlc`
 		// (see equivalent if condition there).
-		assert!(self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32 | ChannelState::PeerDisconnected as u32 | ChannelState::MonitorUpdateFailed as u32) != 0);
+		assert!(self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32 | ChannelState::PeerDisconnected as u32 | ChannelState::MonitorUpdateInProgress as u32) != 0);
 		let mon_update_id = self.latest_monitor_update_id; // Forget the ChannelMonitor update
 		let fulfill_resp = self.get_update_fulfill_htlc(htlc_id_arg, payment_preimage_arg, logger);
 		self.latest_monitor_update_id = mon_update_id;
@@ -1846,7 +1846,7 @@ impl<Signer: Sign> Channel<Signer> {
 			}],
 		};
 
-		if (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32 | ChannelState::PeerDisconnected as u32 | ChannelState::MonitorUpdateFailed as u32)) != 0 {
+		if (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32 | ChannelState::PeerDisconnected as u32 | ChannelState::MonitorUpdateInProgress as u32)) != 0 {
 			// Note that this condition is the same as the assertion in
 			// `claim_htlc_while_disconnected_dropping_mon_update` and must match exactly -
 			// `claim_htlc_while_disconnected_dropping_mon_update` would not work correctly if we
@@ -1971,7 +1971,7 @@ impl<Signer: Sign> Channel<Signer> {
 		}
 
 		// Now update local state:
-		if (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32 | ChannelState::PeerDisconnected as u32 | ChannelState::MonitorUpdateFailed as u32)) != 0 {
+		if (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32 | ChannelState::PeerDisconnected as u32 | ChannelState::MonitorUpdateInProgress as u32)) != 0 {
 			for pending_update in self.holding_cell_htlc_updates.iter() {
 				match pending_update {
 					&HTLCUpdateAwaitingACK::ClaimHTLC { htlc_id, .. } => {
@@ -2258,7 +2258,7 @@ impl<Signer: Sign> Channel<Signer> {
 		if !self.is_outbound() {
 			return Err(ChannelError::Close("Received funding_signed for an inbound channel?".to_owned()));
 		}
-		if self.channel_state & !(ChannelState::MonitorUpdateFailed as u32) != ChannelState::FundingCreated as u32 {
+		if self.channel_state & !(ChannelState::MonitorUpdateInProgress as u32) != ChannelState::FundingCreated as u32 {
 			return Err(ChannelError::Close("Received funding_signed in strange state!".to_owned()));
 		}
 		if self.commitment_secrets.get_min_seen_secret() != (1 << 48) ||
@@ -2316,7 +2316,7 @@ impl<Signer: Sign> Channel<Signer> {
 
 		channel_monitor.provide_latest_counterparty_commitment_tx(counterparty_initial_bitcoin_tx.txid, Vec::new(), self.cur_counterparty_commitment_transaction_number, self.counterparty_cur_commitment_point.unwrap(), logger);
 
-		assert_eq!(self.channel_state & (ChannelState::MonitorUpdateFailed as u32), 0); // We have no had any monitor(s) yet to fail update!
+		assert_eq!(self.channel_state & (ChannelState::MonitorUpdateInProgress as u32), 0); // We have no had any monitor(s) yet to fail update!
 		self.channel_state = ChannelState::FundingSent as u32;
 		self.cur_holder_commitment_transaction_number -= 1;
 		self.cur_counterparty_commitment_transaction_number -= 1;
@@ -3078,7 +3078,7 @@ impl<Signer: Sign> Channel<Signer> {
 		// send_commitment_no_status_check() next which will reset this to RAAFirst.
 		self.resend_order = RAACommitmentOrder::CommitmentFirst;
 
-		if (self.channel_state & ChannelState::MonitorUpdateFailed as u32) != 0 {
+		if (self.channel_state & ChannelState::MonitorUpdateInProgress as u32) != 0 {
 			// In case we initially failed monitor updating without requiring a response, we need
 			// to make sure the RAA gets sent first.
 			self.monitor_pending_revoke_and_ack = true;
@@ -3125,7 +3125,7 @@ impl<Signer: Sign> Channel<Signer> {
 	/// returns `(None, Vec::new())`.
 	pub fn maybe_free_holding_cell_htlcs<L: Deref>(&mut self, logger: &L) -> Result<(Option<(msgs::CommitmentUpdate, ChannelMonitorUpdate)>, Vec<(HTLCSource, PaymentHash)>), ChannelError> where L::Target: Logger {
 		if self.channel_state >= ChannelState::ChannelFunded as u32 &&
-		   (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32 | ChannelState::PeerDisconnected as u32 | ChannelState::MonitorUpdateFailed as u32)) == 0 {
+		   (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32 | ChannelState::PeerDisconnected as u32 | ChannelState::MonitorUpdateInProgress as u32)) == 0 {
 			self.free_holding_cell_htlcs(logger)
 		} else { Ok((None, Vec::new())) }
 	}
@@ -3133,7 +3133,7 @@ impl<Signer: Sign> Channel<Signer> {
 	/// Used to fulfill holding_cell_htlcs when we get a remote ack (or implicitly get it by them
 	/// fulfilling or failing the last pending HTLC)
 	fn free_holding_cell_htlcs<L: Deref>(&mut self, logger: &L) -> Result<(Option<(msgs::CommitmentUpdate, ChannelMonitorUpdate)>, Vec<(HTLCSource, PaymentHash)>), ChannelError> where L::Target: Logger {
-		assert_eq!(self.channel_state & ChannelState::MonitorUpdateFailed as u32, 0);
+		assert_eq!(self.channel_state & ChannelState::MonitorUpdateInProgress as u32, 0);
 		if self.holding_cell_htlc_updates.len() != 0 || self.holding_cell_update_fee.is_some() {
 			log_trace!(logger, "Freeing holding cell with {} HTLC updates{} in channel {}", self.holding_cell_htlc_updates.len(),
 				if self.holding_cell_update_fee.is_some() { " and a fee update" } else { "" }, log_bytes!(self.channel_id()));
@@ -3428,7 +3428,7 @@ impl<Signer: Sign> Channel<Signer> {
 			}
 		}
 
-		if (self.channel_state & ChannelState::MonitorUpdateFailed as u32) == ChannelState::MonitorUpdateFailed as u32 {
+		if (self.channel_state & ChannelState::MonitorUpdateInProgress as u32) == ChannelState::MonitorUpdateInProgress as u32 {
 			// We can't actually generate a new commitment transaction (incl by freeing holding
 			// cells) while we can't update the monitor, so we just return what we have.
 			if require_commitment {
@@ -3557,7 +3557,7 @@ impl<Signer: Sign> Channel<Signer> {
 			return None;
 		}
 
-		if (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32 | ChannelState::MonitorUpdateFailed as u32)) != 0 {
+		if (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32 | ChannelState::MonitorUpdateInProgress as u32)) != 0 {
 			self.holding_cell_update_fee = Some(feerate_per_kw);
 			return None;
 		}
@@ -3677,15 +3677,15 @@ impl<Signer: Sign> Channel<Signer> {
 		self.monitor_pending_forwards.append(&mut pending_forwards);
 		self.monitor_pending_failures.append(&mut pending_fails);
 		self.monitor_pending_finalized_fulfills.append(&mut pending_finalized_claimed_htlcs);
-		self.channel_state |= ChannelState::MonitorUpdateFailed as u32;
+		self.channel_state |= ChannelState::MonitorUpdateInProgress as u32;
 	}
 
 	/// Indicates that the latest ChannelMonitor update has been committed by the client
 	/// successfully and we should restore normal operation. Returns messages which should be sent
 	/// to the remote side.
 	pub fn monitor_updating_restored<L: Deref>(&mut self, logger: &L, node_pk: PublicKey, genesis_block_hash: BlockHash, best_block_height: u32) -> MonitorRestoreUpdates where L::Target: Logger {
-		assert_eq!(self.channel_state & ChannelState::MonitorUpdateFailed as u32, ChannelState::MonitorUpdateFailed as u32);
-		self.channel_state &= !(ChannelState::MonitorUpdateFailed as u32);
+		assert_eq!(self.channel_state & ChannelState::MonitorUpdateInProgress as u32, ChannelState::MonitorUpdateInProgress as u32);
+		self.channel_state &= !(ChannelState::MonitorUpdateInProgress as u32);
 
 		// If we're past (or at) the FundingSent stage on an outbound channel, try to
 		// (re-)broadcast the funding transaction as we may have declined to broadcast it when we
@@ -3700,9 +3700,9 @@ impl<Signer: Sign> Channel<Signer> {
 			funding_broadcastable = None;
 		}
 
-		// We will never broadcast the funding transaction when we're in MonitorUpdateFailed (and
-		// we assume the user never directly broadcasts the funding transaction and waits for us to
-		// do it). Thus, we can only ever hit monitor_pending_channel_ready when we're
+		// We will never broadcast the funding transaction when we're in MonitorUpdateInProgress
+		// (and we assume the user never directly broadcasts the funding transaction and waits for
+		// us to do it). Thus, we can only ever hit monitor_pending_channel_ready when we're
 		// * an inbound channel that failed to persist the monitor on funding_created and we got
 		//   the funding transaction confirmed before the monitor was persisted, or
 		// * a 0-conf channel and intended to send the channel_ready before any broadcast at all.
@@ -3941,7 +3941,7 @@ impl<Signer: Sign> Channel<Signer> {
 		if self.channel_state & (ChannelState::FundingSent as u32) == ChannelState::FundingSent as u32 {
 			// If we're waiting on a monitor update, we shouldn't re-send any channel_ready's.
 			if self.channel_state & (ChannelState::OurChannelReady as u32) == 0 ||
-					self.channel_state & (ChannelState::MonitorUpdateFailed as u32) != 0 {
+					self.channel_state & (ChannelState::MonitorUpdateInProgress as u32) != 0 {
 				if msg.next_remote_commitment_number != 0 {
 					return Err(ChannelError::Close("Peer claimed they saw a revoke_and_ack but we haven't sent channel_ready yet".to_owned()));
 				}
@@ -3975,7 +3975,7 @@ impl<Signer: Sign> Channel<Signer> {
 			// Note that if we need to repeat our ChannelReady we'll do that in the next if block.
 			None
 		} else if msg.next_remote_commitment_number + 1 == (INITIAL_COMMITMENT_NUMBER - 1) - self.cur_holder_commitment_transaction_number {
-			if self.channel_state & (ChannelState::MonitorUpdateFailed as u32) != 0 {
+			if self.channel_state & (ChannelState::MonitorUpdateInProgress as u32) != 0 {
 				self.monitor_pending_revoke_and_ack = true;
 				None
 			} else {
@@ -3992,7 +3992,7 @@ impl<Signer: Sign> Channel<Signer> {
 		let next_counterparty_commitment_number = INITIAL_COMMITMENT_NUMBER - self.cur_counterparty_commitment_transaction_number + if (self.channel_state & ChannelState::AwaitingRemoteRevoke as u32) != 0 { 1 } else { 0 };
 
 		let channel_ready = if msg.next_local_commitment_number == 1 && INITIAL_COMMITMENT_NUMBER - self.cur_holder_commitment_transaction_number == 1 {
-			// We should never have to worry about MonitorUpdateFailed resending ChannelReady
+			// We should never have to worry about MonitorUpdateInProgress resending ChannelReady
 			let next_per_commitment_point = self.holder_signer.get_per_commitment_point(self.cur_holder_commitment_transaction_number, &self.secp_ctx);
 			Some(msgs::ChannelReady {
 				channel_id: self.channel_id(),
@@ -4008,7 +4008,7 @@ impl<Signer: Sign> Channel<Signer> {
 				log_debug!(logger, "Reconnected channel {} with no loss", log_bytes!(self.channel_id()));
 			}
 
-			if (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32 | ChannelState::MonitorUpdateFailed as u32)) == 0 {
+			if (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32 | ChannelState::MonitorUpdateInProgress as u32)) == 0 {
 				// We're up-to-date and not waiting on a remote revoke (if we are our
 				// channel_reestablish should result in them sending a revoke_and_ack), but we may
 				// have received some updates while we were disconnected. Free the holding cell
@@ -4055,7 +4055,7 @@ impl<Signer: Sign> Channel<Signer> {
 				log_debug!(logger, "Reconnected channel {} with only lost remote commitment tx", log_bytes!(self.channel_id()));
 			}
 
-			if self.channel_state & (ChannelState::MonitorUpdateFailed as u32) != 0 {
+			if self.channel_state & (ChannelState::MonitorUpdateInProgress as u32) != 0 {
 				self.monitor_pending_commitment_signed = true;
 				Ok(ReestablishResponses {
 					channel_ready, shutdown_msg, announcement_sigs,
@@ -4137,7 +4137,7 @@ impl<Signer: Sign> Channel<Signer> {
 		self.pending_inbound_htlcs.is_empty() && self.pending_outbound_htlcs.is_empty() &&
 			self.channel_state &
 				(BOTH_SIDES_SHUTDOWN_MASK | ChannelState::AwaitingRemoteRevoke as u32 |
-				 ChannelState::PeerDisconnected as u32 | ChannelState::MonitorUpdateFailed as u32)
+				 ChannelState::PeerDisconnected as u32 | ChannelState::MonitorUpdateInProgress as u32)
 				== BOTH_SIDES_SHUTDOWN_MASK &&
 			self.pending_update_fee.is_none()
 	}
@@ -4333,7 +4333,7 @@ impl<Signer: Sign> Channel<Signer> {
 			return Err(ChannelError::Close("Remote tried to send a closing_signed when we were supposed to propose the first one".to_owned()));
 		}
 
-		if self.channel_state & ChannelState::MonitorUpdateFailed as u32 != 0 {
+		if self.channel_state & ChannelState::MonitorUpdateInProgress as u32 != 0 {
 			self.pending_counterparty_closing_signed = Some(msg.clone());
 			return Ok((None, None));
 		}
@@ -4780,7 +4780,7 @@ impl<Signer: Sign> Channel<Signer> {
 	/// Returns true if this channel has been marked as awaiting a monitor update to move forward.
 	/// Allowed in any state (including after shutdown)
 	pub fn is_awaiting_monitor_update(&self) -> bool {
-		(self.channel_state & ChannelState::MonitorUpdateFailed as u32) != 0
+		(self.channel_state & ChannelState::MonitorUpdateInProgress as u32) != 0
 	}
 
 	/// Returns true if funding_created was sent/received.
@@ -4795,7 +4795,7 @@ impl<Signer: Sign> Channel<Signer> {
 	pub fn is_awaiting_initial_mon_persist(&self) -> bool {
 		if !self.is_awaiting_monitor_update() { return false; }
 		if self.channel_state &
-			!(ChannelState::TheirChannelReady as u32 | ChannelState::PeerDisconnected as u32 | ChannelState::MonitorUpdateFailed as u32)
+			!(ChannelState::TheirChannelReady as u32 | ChannelState::PeerDisconnected as u32 | ChannelState::MonitorUpdateInProgress as u32)
 				== ChannelState::FundingSent as u32 {
 			// If we're not a 0conf channel, we'll be waiting on a monitor update with only
 			// FundingSent set, though our peer could have sent their channel_ready.
@@ -4902,7 +4902,7 @@ impl<Signer: Sign> Channel<Signer> {
 		};
 
 		if need_commitment_update {
-			if self.channel_state & (ChannelState::MonitorUpdateFailed as u32) == 0 {
+			if self.channel_state & (ChannelState::MonitorUpdateInProgress as u32) == 0 {
 				if self.channel_state & (ChannelState::PeerDisconnected as u32) == 0 {
 					let next_per_commitment_point =
 						self.holder_signer.get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - 1, &self.secp_ctx);
@@ -5476,9 +5476,9 @@ impl<Signer: Sign> Channel<Signer> {
 	/// * In cases where we're waiting on the remote peer to send us a revoke_and_ack, we
 	///   wouldn't be able to determine what they actually ACK'ed if we have two sets of updates
 	///   awaiting ACK.
-	/// * In cases where we're marked MonitorUpdateFailed, we cannot commit to a new state as we
-	///   may not yet have sent the previous commitment update messages and will need to regenerate
-	///   them.
+	/// * In cases where we're marked MonitorUpdateInProgress, we cannot commit to a new state as
+	///   we may not yet have sent the previous commitment update messages and will need to
+	///   regenerate them.
 	///
 	/// You MUST call send_commitment prior to calling any other methods on this Channel!
 	///
@@ -5579,7 +5579,7 @@ impl<Signer: Sign> Channel<Signer> {
 		}
 
 		// Now update local state:
-		if (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32 | ChannelState::MonitorUpdateFailed as u32)) != 0 {
+		if (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32 | ChannelState::MonitorUpdateInProgress as u32)) != 0 {
 			self.holding_cell_htlc_updates.push(HTLCUpdateAwaitingACK::AddHTLC {
 				amount_msat,
 				payment_hash,
@@ -5626,7 +5626,7 @@ impl<Signer: Sign> Channel<Signer> {
 		if (self.channel_state & (ChannelState::PeerDisconnected as u32)) == (ChannelState::PeerDisconnected as u32) {
 			panic!("Cannot create commitment tx while disconnected, as send_htlc will have returned an Err so a send_commitment precondition has been violated");
 		}
-		if (self.channel_state & (ChannelState::MonitorUpdateFailed as u32)) == (ChannelState::MonitorUpdateFailed as u32) {
+		if (self.channel_state & (ChannelState::MonitorUpdateInProgress as u32)) == (ChannelState::MonitorUpdateInProgress as u32) {
 			panic!("Cannot create commitment tx while awaiting monitor update unfreeze, as send_htlc will have returned an Err so a send_commitment precondition has been violated");
 		}
 		let mut have_updates = self.is_outbound() && self.pending_update_fee.is_some();
@@ -5818,7 +5818,7 @@ impl<Signer: Sign> Channel<Signer> {
 			}
 		}
 		assert_eq!(self.channel_state & ChannelState::ShutdownComplete as u32, 0);
-		if self.channel_state & (ChannelState::PeerDisconnected as u32 | ChannelState::MonitorUpdateFailed as u32) != 0 {
+		if self.channel_state & (ChannelState::PeerDisconnected as u32 | ChannelState::MonitorUpdateInProgress as u32) != 0 {
 			return Err(APIError::ChannelUnavailable{err: "Cannot begin shutdown while peer is disconnected or we're waiting on a monitor update, maybe force-close instead?".to_owned()});
 		}
 

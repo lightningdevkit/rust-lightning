@@ -2238,11 +2238,12 @@ fn do_channel_holding_cell_serialize(disconnect: bool, reload_a: bool) {
 	let (route, payment_hash_1, payment_preimage_1, payment_secret_1) = get_route_and_payment_hash!(&nodes[0], nodes[1], 100000);
 	let (payment_preimage_2, payment_hash_2, payment_secret_2) = get_payment_preimage_hash!(&nodes[1]);
 
-	// Do a really complicated dance to get an HTLC into the holding cell, with MonitorUpdateFailed
-	// set but AwaitingRemoteRevoke unset. When this test was written, any attempts to send an HTLC
-	// while MonitorUpdateFailed is set are immediately failed-backwards. Thus, the only way to get
-	// an AddHTLC into the holding cell is to add it while AwaitingRemoteRevoke is set but
-	// MonitorUpdateFailed is unset, and then swap the flags.
+	// Do a really complicated dance to get an HTLC into the holding cell, with
+	// MonitorUpdateInProgress set but AwaitingRemoteRevoke unset. When this test was written, any
+	// attempts to send an HTLC while MonitorUpdateInProgress is set are immediately
+	// failed-backwards. Thus, the only way to get an AddHTLC into the holding cell is to add it
+	// while AwaitingRemoteRevoke is set but MonitorUpdateInProgress is unset, and then swap the
+	// flags.
 	//
 	// We do this by:
 	//  a) routing a payment from node B to node A,
@@ -2255,8 +2256,8 @@ fn do_channel_holding_cell_serialize(disconnect: bool, reload_a: bool) {
 	//  e) delivering A's commitment_signed from (b) and the resulting B revoke_and_ack message,
 	//     clearing AwaitingRemoteRevoke on node A.
 	//
-	// Note that because, at the end, MonitorUpdateFailed is still set, the HTLC generated in (c)
-	// will not be freed from the holding cell.
+	// Note that because, at the end, MonitorUpdateInProgress is still set, the HTLC generated in
+	// (c) will not be freed from the holding cell.
 	let (payment_preimage_0, payment_hash_0, _) = route_payment(&nodes[1], &[&nodes[0]], 100_000);
 
 	nodes[0].node.send_payment(&route, payment_hash_1, &Some(payment_secret_1)).unwrap();
