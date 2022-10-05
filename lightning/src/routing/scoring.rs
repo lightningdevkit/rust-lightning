@@ -422,7 +422,7 @@ pub struct ProbabilisticScoringParameters {
 	/// liquidity bounds are 200,000 sats and 600,000 sats, after this amount of time the upper
 	/// and lower liquidity bounds will be decayed to 100,000 and 800,000 sats.
 	///
-	/// Default value:  hour
+	/// Default value: 6 hours
 	///
 	/// # Note
 	///
@@ -780,7 +780,7 @@ impl ProbabilisticScoringParameters {
 			base_penalty_msat: 0,
 			base_penalty_amount_multiplier_msat: 0,
 			liquidity_penalty_multiplier_msat: 0,
-			liquidity_offset_half_life: Duration::from_secs(3600),
+			liquidity_offset_half_life: Duration::from_secs(6 * 60 * 60),
 			liquidity_penalty_amount_multiplier_msat: 0,
 			historical_liquidity_penalty_multiplier_msat: 0,
 			historical_liquidity_penalty_amount_multiplier_msat: 0,
@@ -806,7 +806,7 @@ impl Default for ProbabilisticScoringParameters {
 			base_penalty_msat: 500,
 			base_penalty_amount_multiplier_msat: 8192,
 			liquidity_penalty_multiplier_msat: 30_000,
-			liquidity_offset_half_life: Duration::from_secs(3600),
+			liquidity_offset_half_life: Duration::from_secs(6 * 60 * 60),
 			liquidity_penalty_amount_multiplier_msat: 192,
 			historical_liquidity_penalty_multiplier_msat: 10_000,
 			historical_liquidity_penalty_amount_multiplier_msat: 64,
