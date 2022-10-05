@@ -3691,7 +3691,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	///
 	/// Note that in some cases around unclean shutdown, it is possible the payment may have
 	/// already been claimed by you via [`ChannelManager::claim_funds`] prior to you seeing (a
-	/// second copy of) the [`events::PaymentReceivedEvent`] event. Alternatively, the payment
+	/// second copy of) the [`PaymentReceivedEvent`] event. Alternatively, the payment
 	/// may have already been failed automatically by LDK if it was nearing its expiration time.
 	///
 	/// While LDK will never claim a payment automatically on your behalf (i.e. without you calling
