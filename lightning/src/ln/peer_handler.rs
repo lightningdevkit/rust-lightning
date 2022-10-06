@@ -36,7 +36,7 @@ use prelude::*;
 use io;
 use alloc::collections::LinkedList;
 use sync::{Arc, Mutex, MutexGuard, FairRwLock};
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use core::{cmp, hash, fmt, mem};
 use core::ops::Deref;
 use core::convert::Infallible;
@@ -540,7 +540,7 @@ pub struct PeerManager<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: D
 
 	/// Used to track the last value sent in a node_announcement "timestamp" field. We ensure this
 	/// value increases strictly since we don't assume access to a time source.
-	last_node_announcement_serial: AtomicU64,
+	last_node_announcement_serial: AtomicU32,
 
 	our_node_secret: SecretKey,
 	ephemeral_key_midstate: Sha256Engine,
@@ -594,7 +594,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, OM: Deref, L: Deref> PeerManager<D
 	/// minute should suffice.
 	///
 	/// (C-not exported) as we can't export a PeerManager with a dummy route handler
-	pub fn new_channel_only(channel_message_handler: CM, onion_message_handler: OM, our_node_secret: SecretKey, current_time: u64, ephemeral_random_data: &[u8; 32], logger: L) -> Self {
+	pub fn new_channel_only(channel_message_handler: CM, onion_message_handler: OM, our_node_secret: SecretKey, current_time: u32, ephemeral_random_data: &[u8; 32], logger: L) -> Self {
 		Self::new(MessageHandler {
 			chan_handler: channel_message_handler,
 			route_handler: IgnoringMessageHandler{},
@@ -620,7 +620,7 @@ impl<Descriptor: SocketDescriptor, RM: Deref, L: Deref> PeerManager<Descriptor, 
 	/// cryptographically secure random bytes.
 	///
 	/// (C-not exported) as we can't export a PeerManager with a dummy channel handler
-	pub fn new_routing_only(routing_message_handler: RM, our_node_secret: SecretKey, current_time: u64, ephemeral_random_data: &[u8; 32], logger: L) -> Self {
+	pub fn new_routing_only(routing_message_handler: RM, our_node_secret: SecretKey, current_time: u32, ephemeral_random_data: &[u8; 32], logger: L) -> Self {
 		Self::new(MessageHandler {
 			chan_handler: ErroringMessageHandler::new(),
 			route_handler: routing_message_handler,
@@ -684,7 +684,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 	/// incremented irregularly internally. In general it is best to simply use the current UNIX
 	/// timestamp, however if it is not available a persistent counter that increases once per
 	/// minute should suffice.
-	pub fn new(message_handler: MessageHandler<CM, RM, OM>, our_node_secret: SecretKey, current_time: u64, ephemeral_random_data: &[u8; 32], logger: L, custom_message_handler: CMH) -> Self {
+	pub fn new(message_handler: MessageHandler<CM, RM, OM>, our_node_secret: SecretKey, current_time: u32, ephemeral_random_data: &[u8; 32], logger: L, custom_message_handler: CMH) -> Self {
 		let mut ephemeral_key_midstate = Sha256::engine();
 		ephemeral_key_midstate.input(ephemeral_random_data);
 
@@ -701,7 +701,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 			our_node_secret,
 			ephemeral_key_midstate,
 			peer_counter: AtomicCounter::new(),
-			last_node_announcement_serial: AtomicU64::new(current_time),
+			last_node_announcement_serial: AtomicU32::new(current_time),
 			logger,
 			custom_message_handler,
 			secp_ctx,
@@ -2001,7 +2001,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 			.or(self.message_handler.onion_message_handler.provided_node_features());
 		let announcement = msgs::UnsignedNodeAnnouncement {
 			features,
-			timestamp: self.last_node_announcement_serial.fetch_add(1, Ordering::AcqRel) as u32,
+			timestamp: self.last_node_announcement_serial.fetch_add(1, Ordering::AcqRel),
 			node_id: PublicKey::from_secret_key(&self.secp_ctx, &self.our_node_secret),
 			rgb, alias, addresses,
 			excess_address_data: Vec::new(),
