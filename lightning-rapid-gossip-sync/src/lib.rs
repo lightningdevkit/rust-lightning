@@ -60,10 +60,15 @@
 //! ```
 //! [sync_network_graph_with_file_path]: RapidGossipSync::sync_network_graph_with_file_path
 
+#![cfg_attr(all(not(feature = "std"), not(test)), no_std)]
+
 // Allow and import test features for benching
 #![cfg_attr(all(test, feature = "_bench_unstable"), feature(test))]
 #[cfg(all(test, feature = "_bench_unstable"))]
 extern crate test;
+
+#[cfg(not(feature = "std"))]
+extern crate alloc;
 
 #[cfg(feature = "std")]
 use std::fs::File;
@@ -156,6 +161,7 @@ mod tests {
 	use crate::RapidGossipSync;
 
 	#[test]
+	#[cfg(feature = "std")]
 	fn test_sync_from_file() {
 		struct FileSyncTest {
 			directory: String,
@@ -243,6 +249,7 @@ mod tests {
 	}
 
 	#[test]
+	#[cfg(feature = "std")]
 	fn measure_native_read_from_file() {
 		let block_hash = genesis_block(Network::Bitcoin).block_hash();
 		let logger = TestLogger::new();

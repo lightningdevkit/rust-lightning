@@ -16,6 +16,9 @@ use lightning::io;
 use crate::error::GraphSyncError;
 use crate::RapidGossipSync;
 
+#[cfg(not(feature = "std"))]
+use alloc::{vec::Vec, borrow::ToOwned};
+
 /// The purpose of this prefix is to identify the serialization format, should other rapid gossip
 /// sync formats arise in the future.
 ///
@@ -47,7 +50,7 @@ impl<NG: Deref<Target=NetworkGraph<L>>, L: Deref> RapidGossipSync<NG, L> where L
 		let backdated_timestamp = latest_seen_timestamp.saturating_sub(24 * 3600 * 7);
 
 		let node_id_count: u32 = Readable::read(read_cursor)?;
-		let mut node_ids: Vec<PublicKey> = Vec::with_capacity(std::cmp::min(
+		let mut node_ids: Vec<PublicKey> = Vec::with_capacity(core::cmp::min(
 			node_id_count,
 			MAX_INITIAL_NODE_ID_VECTOR_CAPACITY,
 		) as usize);
@@ -132,7 +135,7 @@ impl<NG: Deref<Target=NetworkGraph<L>>, L: Deref> RapidGossipSync<NG, L> where L
 					htlc_maximum_msat: default_htlc_maximum_msat,
 					fee_base_msat: default_fee_base_msat,
 					fee_proportional_millionths: default_fee_proportional_millionths,
-					excess_data: vec![],
+					excess_data: Vec::new(),
 				}
 			} else {
 				// incremental update, field flags will indicate mutated values
@@ -162,7 +165,7 @@ impl<NG: Deref<Target=NetworkGraph<L>>, L: Deref> RapidGossipSync<NG, L> where L
 					htlc_maximum_msat: directional_info.htlc_maximum_msat,
 					fee_base_msat: directional_info.fees.base_msat,
 					fee_proportional_millionths: directional_info.fees.proportional_millionths,
-					excess_data: vec![],
+					excess_data: Vec::new(),
 				}
 			};
 
