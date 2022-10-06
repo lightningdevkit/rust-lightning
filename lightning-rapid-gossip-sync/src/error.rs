@@ -1,5 +1,5 @@
 use core::fmt::Debug;
-use std::fmt::Formatter;
+use core::fmt::Formatter;
 use lightning::ln::msgs::{DecodeError, LightningError};
 
 /// All-encompassing standard error type that processing can return
@@ -12,8 +12,8 @@ pub enum GraphSyncError {
 	LightningError(LightningError),
 }
 
-impl From<std::io::Error> for GraphSyncError {
-	fn from(error: std::io::Error) -> Self {
+impl From<lightning::io::Error> for GraphSyncError {
+	fn from(error: lightning::io::Error) -> Self {
 		Self::DecodeError(DecodeError::Io(error.kind()))
 	}
 }
@@ -31,7 +31,7 @@ impl From<LightningError> for GraphSyncError {
 }
 
 impl Debug for GraphSyncError {
-	fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+	fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
 		match self {
 			GraphSyncError::DecodeError(e) => f.write_fmt(format_args!("DecodeError: {:?}", e)),
 			GraphSyncError::LightningError(e) => f.write_fmt(format_args!("LightningError: {:?}", e))
