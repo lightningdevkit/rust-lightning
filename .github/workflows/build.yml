@@ -128,7 +128,13 @@ jobs:
           # check no-std compatibility across dependencies
           cd no-std-check
           cargo check --verbose --color always
-          cd ..
+      - name: Build no-std-check on Rust ${{ matrix.toolchain }} for ARM Embedded
+        if: "matrix.build-no-std && matrix.platform == 'ubuntu-latest'"
+        run: |
+          cd no-std-check
+          rustup target add thumbv7m-none-eabi
+          sudo apt-get -y install gcc-arm-none-eabi
+          cargo build --target=thumbv7m-none-eabi
       - name: Test on no-std builds Rust ${{ matrix.toolchain }} and full code-linking for coverage generation
         if: "matrix.build-no-std && matrix.coverage"
         run: |
