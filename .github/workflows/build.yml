@@ -113,24 +113,19 @@ jobs:
         if: "matrix.build-no-std && !matrix.coverage"
         shell: bash # Default on Winblows is powershell
         run: |
-          cd lightning
-          cargo test --verbose --color always --no-default-features --features no-std
-          # check if there is a conflict between no-std and the default std feature
-          cargo test --verbose --color always --features no-std
-          # check that things still pass without grind_signatures
-          # note that outbound_commitment_test only runs in this mode, because of hardcoded signature values
-          cargo test --verbose --color always --no-default-features --features std
-          # check if there is a conflict between no-std and the c_bindings cfg
-          RUSTFLAGS="--cfg=c_bindings" cargo test --verbose --color always --no-default-features --features=no-std
-          cd ..
-          cd lightning-invoice
-          cargo test --verbose --color always --no-default-features --features no-std
-          # check if there is a conflict between no-std and the default std feature
-          cargo test --verbose --color always --features no-std
-          # check if there is a conflict between no-std and the c_bindings cfg
-          RUSTFLAGS="--cfg=c_bindings" cargo test --verbose --color always --no-default-features --features=no-std
+          for DIR in lightning lightning-invoice lightning-rapid-gossip-sync; do
+          cd $DIR
+            cargo test --verbose --color always --no-default-features --features no-std
+            # check if there is a conflict between no-std and the default std feature
+            cargo test --verbose --color always --features no-std
+            # check that things still pass without grind_signatures
+            # note that outbound_commitment_test only runs in this mode, because of hardcoded signature values
+            cargo test --verbose --color always --no-default-features --features std
+            # check if there is a conflict between no-std and the c_bindings cfg
+            RUSTFLAGS="--cfg=c_bindings" cargo test --verbose --color always --no-default-features --features=no-std
+            cd ..
+          done
           # check no-std compatibility across dependencies
-          cd ..
           cd no-std-check
           cargo check --verbose --color always
           cd ..
