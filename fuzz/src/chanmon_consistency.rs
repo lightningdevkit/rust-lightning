@@ -38,7 +38,7 @@ use lightning::chain::transaction::OutPoint;
 use lightning::chain::chaininterface::{BroadcasterInterface, ConfirmationTarget, FeeEstimator};
 use lightning::chain::keysinterface::{KeyMaterial, KeysInterface, InMemorySigner, Recipient};
 use lightning::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
-use lightning::ln::channelmanager::{self, ChainParameters, ChannelManager, PaymentSendFailure, ChannelManagerReadArgs};
+use lightning::ln::channelmanager::{self, ChainParameters, ChannelManager, PaymentSendFailure, ChannelManagerReadArgs, PaymentId};
 use lightning::ln::channel::FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE;
 use lightning::ln::msgs::{CommitmentUpdate, ChannelMessageHandler, DecodeError, UpdateAddHTLC, Init};
 use lightning::ln::script::ShutdownScript;
@@ -308,9 +308,12 @@ fn get_payment_secret_hash(dest: &ChanMan, payment_id: &mut u8) -> Option<(Payme
 }
 
 #[inline]
-fn send_payment(source: &ChanMan, dest: &ChanMan, dest_chan_id: u64, amt: u64, payment_id: &mut u8) -> bool {
+fn send_payment(source: &ChanMan, dest: &ChanMan, dest_chan_id: u64, amt: u64, payment_id: &mut u8, payment_idx: &mut u64) -> bool {
 	let (payment_secret, payment_hash) =
 		if let Some((secret, hash)) = get_payment_secret_hash(dest, payment_id) { (secret, hash) } else { return true; };
+	let mut payment_id = [0; 32];
+	payment_id[0..8].copy_from_slice(&payment_idx.to_ne_bytes());
+	*payment_idx += 1;
 	if let Err(err) = source.send_payment(&Route {
 		paths: vec![vec![RouteHop {
 			pubkey: dest.get_our_node_id(),
@@ -321,15 +324,18 @@ fn send_payment(source: &ChanMan, dest: &ChanMan, dest_chan_id: u64, amt: u64, p
 			cltv_expiry_delta: 200,
 		}]],
 		payment_params: None,
-	}, payment_hash, &Some(payment_secret)) {
+	}, payment_hash, &Some(payment_secret), PaymentId(payment_id)) {
 		check_payment_err(err);
 		false
 	} else { true }
 }
 #[inline]
-fn send_hop_payment(source: &ChanMan, middle: &ChanMan, middle_chan_id: u64, dest: &ChanMan, dest_chan_id: u64, amt: u64, payment_id: &mut u8) -> bool {
+fn send_hop_payment(source: &ChanMan, middle: &ChanMan, middle_chan_id: u64, dest: &ChanMan, dest_chan_id: u64, amt: u64, payment_id: &mut u8, payment_idx: &mut u64) -> bool {
 	let (payment_secret, payment_hash) =
 		if let Some((secret, hash)) = get_payment_secret_hash(dest, payment_id) { (secret, hash) } else { return true; };
+	let mut payment_id = [0; 32];
+	payment_id[0..8].copy_from_slice(&payment_idx.to_ne_bytes());
+	*payment_idx += 1;
 	if let Err(err) = source.send_payment(&Route {
 		paths: vec![vec![RouteHop {
 			pubkey: middle.get_our_node_id(),
@@ -347,7 +353,7 @@ fn send_hop_payment(source: &ChanMan, middle: &ChanMan, middle_chan_id: u64, des
 			cltv_expiry_delta: 200,
 		}]],
 		payment_params: None,
-	}, payment_hash, &Some(payment_secret)) {
+	}, payment_hash, &Some(payment_secret), PaymentId(payment_id)) {
 		check_payment_err(err);
 		false
 	} else { true }
@@ -553,6 +559,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 	let chan_b = nodes[2].list_usable_channels()[0].short_channel_id.unwrap();
 
 	let mut payment_id: u8 = 0;
+	let mut payment_idx: u64 = 0;
 
 	let mut chan_a_disconnected = false;
 	let mut chan_b_disconnected = false;
@@ -1036,61 +1043,61 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 			},
 
 			// 1/10th the channel size:
-			0x30 => { send_payment(&nodes[0], &nodes[1], chan_a, 10_000_000, &mut payment_id); },
-			0x31 => { send_payment(&nodes[1], &nodes[0], chan_a, 10_000_000, &mut payment_id); },
-			0x32 => { send_payment(&nodes[1], &nodes[2], chan_b, 10_000_000, &mut payment_id); },
-			0x33 => { send_payment(&nodes[2], &nodes[1], chan_b, 10_000_000, &mut payment_id); },
-			0x34 => { send_hop_payment(&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 10_000_000, &mut payment_id); },
-			0x35 => { send_hop_payment(&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 10_000_000, &mut payment_id); },
+			0x30 => { send_payment(&nodes[0], &nodes[1], chan_a, 10_000_000, &mut payment_id, &mut payment_idx); },
+			0x31 => { send_payment(&nodes[1], &nodes[0], chan_a, 10_000_000, &mut payment_id, &mut payment_idx); },
+			0x32 => { send_payment(&nodes[1], &nodes[2], chan_b, 10_000_000, &mut payment_id, &mut payment_idx); },
+			0x33 => { send_payment(&nodes[2], &nodes[1], chan_b, 10_000_000, &mut payment_id, &mut payment_idx); },
+			0x34 => { send_hop_payment(&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 10_000_000, &mut payment_id, &mut payment_idx); },
+			0x35 => { send_hop_payment(&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 10_000_000, &mut payment_id, &mut payment_idx); },
 
-			0x38 => { send_payment(&nodes[0], &nodes[1], chan_a, 1_000_000, &mut payment_id); },
-			0x39 => { send_payment(&nodes[1], &nodes[0], chan_a, 1_000_000, &mut payment_id); },
-			0x3a => { send_payment(&nodes[1], &nodes[2], chan_b, 1_000_000, &mut payment_id); },
-			0x3b => { send_payment(&nodes[2], &nodes[1], chan_b, 1_000_000, &mut payment_id); },
-			0x3c => { send_hop_payment(&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 1_000_000, &mut payment_id); },
-			0x3d => { send_hop_payment(&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 1_000_000, &mut payment_id); },
+			0x38 => { send_payment(&nodes[0], &nodes[1], chan_a, 1_000_000, &mut payment_id, &mut payment_idx); },
+			0x39 => { send_payment(&nodes[1], &nodes[0], chan_a, 1_000_000, &mut payment_id, &mut payment_idx); },
+			0x3a => { send_payment(&nodes[1], &nodes[2], chan_b, 1_000_000, &mut payment_id, &mut payment_idx); },
+			0x3b => { send_payment(&nodes[2], &nodes[1], chan_b, 1_000_000, &mut payment_id, &mut payment_idx); },
+			0x3c => { send_hop_payment(&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 1_000_000, &mut payment_id, &mut payment_idx); },
+			0x3d => { send_hop_payment(&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 1_000_000, &mut payment_id, &mut payment_idx); },
 
-			0x40 => { send_payment(&nodes[0], &nodes[1], chan_a, 100_000, &mut payment_id); },
-			0x41 => { send_payment(&nodes[1], &nodes[0], chan_a, 100_000, &mut payment_id); },
-			0x42 => { send_payment(&nodes[1], &nodes[2], chan_b, 100_000, &mut payment_id); },
-			0x43 => { send_payment(&nodes[2], &nodes[1], chan_b, 100_000, &mut payment_id); },
-			0x44 => { send_hop_payment(&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 100_000, &mut payment_id); },
-			0x45 => { send_hop_payment(&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 100_000, &mut payment_id); },
+			0x40 => { send_payment(&nodes[0], &nodes[1], chan_a, 100_000, &mut payment_id, &mut payment_idx); },
+			0x41 => { send_payment(&nodes[1], &nodes[0], chan_a, 100_000, &mut payment_id, &mut payment_idx); },
+			0x42 => { send_payment(&nodes[1], &nodes[2], chan_b, 100_000, &mut payment_id, &mut payment_idx); },
+			0x43 => { send_payment(&nodes[2], &nodes[1], chan_b, 100_000, &mut payment_id, &mut payment_idx); },
+			0x44 => { send_hop_payment(&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 100_000, &mut payment_id, &mut payment_idx); },
+			0x45 => { send_hop_payment(&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 100_000, &mut payment_id, &mut payment_idx); },
 
-			0x48 => { send_payment(&nodes[0], &nodes[1], chan_a, 10_000, &mut payment_id); },
-			0x49 => { send_payment(&nodes[1], &nodes[0], chan_a, 10_000, &mut payment_id); },
-			0x4a => { send_payment(&nodes[1], &nodes[2], chan_b, 10_000, &mut payment_id); },
-			0x4b => { send_payment(&nodes[2], &nodes[1], chan_b, 10_000, &mut payment_id); },
-			0x4c => { send_hop_payment(&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 10_000, &mut payment_id); },
-			0x4d => { send_hop_payment(&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 10_000, &mut payment_id); },
+			0x48 => { send_payment(&nodes[0], &nodes[1], chan_a, 10_000, &mut payment_id, &mut payment_idx); },
+			0x49 => { send_payment(&nodes[1], &nodes[0], chan_a, 10_000, &mut payment_id, &mut payment_idx); },
+			0x4a => { send_payment(&nodes[1], &nodes[2], chan_b, 10_000, &mut payment_id, &mut payment_idx); },
+			0x4b => { send_payment(&nodes[2], &nodes[1], chan_b, 10_000, &mut payment_id, &mut payment_idx); },
+			0x4c => { send_hop_payment(&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 10_000, &mut payment_id, &mut payment_idx); },
+			0x4d => { send_hop_payment(&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 10_000, &mut payment_id, &mut payment_idx); },
 
-			0x50 => { send_payment(&nodes[0], &nodes[1], chan_a, 1_000, &mut payment_id); },
-			0x51 => { send_payment(&nodes[1], &nodes[0], chan_a, 1_000, &mut payment_id); },
-			0x52 => { send_payment(&nodes[1], &nodes[2], chan_b, 1_000, &mut payment_id); },
-			0x53 => { send_payment(&nodes[2], &nodes[1], chan_b, 1_000, &mut payment_id); },
-			0x54 => { send_hop_payment(&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 1_000, &mut payment_id); },
-			0x55 => { send_hop_payment(&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 1_000, &mut payment_id); },
+			0x50 => { send_payment(&nodes[0], &nodes[1], chan_a, 1_000, &mut payment_id, &mut payment_idx); },
+			0x51 => { send_payment(&nodes[1], &nodes[0], chan_a, 1_000, &mut payment_id, &mut payment_idx); },
+			0x52 => { send_payment(&nodes[1], &nodes[2], chan_b, 1_000, &mut payment_id, &mut payment_idx); },
+			0x53 => { send_payment(&nodes[2], &nodes[1], chan_b, 1_000, &mut payment_id, &mut payment_idx); },
+			0x54 => { send_hop_payment(&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 1_000, &mut payment_id, &mut payment_idx); },
+			0x55 => { send_hop_payment(&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 1_000, &mut payment_id, &mut payment_idx); },
 
-			0x58 => { send_payment(&nodes[0], &nodes[1], chan_a, 100, &mut payment_id); },
-			0x59 => { send_payment(&nodes[1], &nodes[0], chan_a, 100, &mut payment_id); },
-			0x5a => { send_payment(&nodes[1], &nodes[2], chan_b, 100, &mut payment_id); },
-			0x5b => { send_payment(&nodes[2], &nodes[1], chan_b, 100, &mut payment_id); },
-			0x5c => { send_hop_payment(&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 100, &mut payment_id); },
-			0x5d => { send_hop_payment(&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 100, &mut payment_id); },
+			0x58 => { send_payment(&nodes[0], &nodes[1], chan_a, 100, &mut payment_id, &mut payment_idx); },
+			0x59 => { send_payment(&nodes[1], &nodes[0], chan_a, 100, &mut payment_id, &mut payment_idx); },
+			0x5a => { send_payment(&nodes[1], &nodes[2], chan_b, 100, &mut payment_id, &mut payment_idx); },
+			0x5b => { send_payment(&nodes[2], &nodes[1], chan_b, 100, &mut payment_id, &mut payment_idx); },
+			0x5c => { send_hop_payment(&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 100, &mut payment_id, &mut payment_idx); },
+			0x5d => { send_hop_payment(&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 100, &mut payment_id, &mut payment_idx); },
 
-			0x60 => { send_payment(&nodes[0], &nodes[1], chan_a, 10, &mut payment_id); },
-			0x61 => { send_payment(&nodes[1], &nodes[0], chan_a, 10, &mut payment_id); },
-			0x62 => { send_payment(&nodes[1], &nodes[2], chan_b, 10, &mut payment_id); },
-			0x63 => { send_payment(&nodes[2], &nodes[1], chan_b, 10, &mut payment_id); },
-			0x64 => { send_hop_payment(&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 10, &mut payment_id); },
-			0x65 => { send_hop_payment(&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 10, &mut payment_id); },
+			0x60 => { send_payment(&nodes[0], &nodes[1], chan_a, 10, &mut payment_id, &mut payment_idx); },
+			0x61 => { send_payment(&nodes[1], &nodes[0], chan_a, 10, &mut payment_id, &mut payment_idx); },
+			0x62 => { send_payment(&nodes[1], &nodes[2], chan_b, 10, &mut payment_id, &mut payment_idx); },
+			0x63 => { send_payment(&nodes[2], &nodes[1], chan_b, 10, &mut payment_id, &mut payment_idx); },
+			0x64 => { send_hop_payment(&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 10, &mut payment_id, &mut payment_idx); },
+			0x65 => { send_hop_payment(&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 10, &mut payment_id, &mut payment_idx); },
 
-			0x68 => { send_payment(&nodes[0], &nodes[1], chan_a, 1, &mut payment_id); },
-			0x69 => { send_payment(&nodes[1], &nodes[0], chan_a, 1, &mut payment_id); },
-			0x6a => { send_payment(&nodes[1], &nodes[2], chan_b, 1, &mut payment_id); },
-			0x6b => { send_payment(&nodes[2], &nodes[1], chan_b, 1, &mut payment_id); },
-			0x6c => { send_hop_payment(&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 1, &mut payment_id); },
-			0x6d => { send_hop_payment(&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 1, &mut payment_id); },
+			0x68 => { send_payment(&nodes[0], &nodes[1], chan_a, 1, &mut payment_id, &mut payment_idx); },
+			0x69 => { send_payment(&nodes[1], &nodes[0], chan_a, 1, &mut payment_id, &mut payment_idx); },
+			0x6a => { send_payment(&nodes[1], &nodes[2], chan_b, 1, &mut payment_id, &mut payment_idx); },
+			0x6b => { send_payment(&nodes[2], &nodes[1], chan_b, 1, &mut payment_id, &mut payment_idx); },
+			0x6c => { send_hop_payment(&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 1, &mut payment_id, &mut payment_idx); },
+			0x6d => { send_hop_payment(&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 1, &mut payment_id, &mut payment_idx); },
 
 			0x80 => {
 				let max_feerate = last_htlc_clear_fee_a * FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE as u32;
@@ -1173,11 +1180,11 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 
 				// Finally, make sure that at least one end of each channel can make a substantial payment
 				assert!(
-					send_payment(&nodes[0], &nodes[1], chan_a, 10_000_000, &mut payment_id) ||
-					send_payment(&nodes[1], &nodes[0], chan_a, 10_000_000, &mut payment_id));
+					send_payment(&nodes[0], &nodes[1], chan_a, 10_000_000, &mut payment_id, &mut payment_idx) ||
+					send_payment(&nodes[1], &nodes[0], chan_a, 10_000_000, &mut payment_id, &mut payment_idx));
 				assert!(
-					send_payment(&nodes[1], &nodes[2], chan_b, 10_000_000, &mut payment_id) ||
-					send_payment(&nodes[2], &nodes[1], chan_b, 10_000_000, &mut payment_id));
+					send_payment(&nodes[1], &nodes[2], chan_b, 10_000_000, &mut payment_id, &mut payment_idx) ||
+					send_payment(&nodes[2], &nodes[1], chan_b, 10_000_000, &mut payment_id, &mut payment_idx));
 
 				last_htlc_clear_fee_a = fee_est_a.ret_val.load(atomic::Ordering::Acquire);
 				last_htlc_clear_fee_b = fee_est_b.ret_val.load(atomic::Ordering::Acquire);

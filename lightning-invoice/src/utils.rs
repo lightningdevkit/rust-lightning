@@ -604,14 +604,16 @@ where
 	fn send_payment(
 		&self, route: &Route, payment_hash: PaymentHash, payment_secret: &Option<PaymentSecret>
 	) -> Result<PaymentId, PaymentSendFailure> {
-		self.send_payment(route, payment_hash, payment_secret)
+		let payment_id = PaymentId(payment_hash.0);
+		self.send_payment(route, payment_hash, payment_secret, payment_id).map(|()| payment_id)
 	}
 
 	fn send_spontaneous_payment(
 		&self, route: &Route, payment_preimage: PaymentPreimage,
 	) -> Result<PaymentId, PaymentSendFailure> {
-		self.send_spontaneous_payment(route, Some(payment_preimage))
-			.map(|(_, payment_id)| payment_id)
+		let payment_id = PaymentId(sha256::Hash::hash(&payment_preimage.0).into_inner());
+		self.send_spontaneous_payment(route, Some(payment_preimage), payment_id)
+			.map(|_| payment_id)
 	}
 
 	fn retry_payment(
@@ -681,7 +683,7 @@ mod test {
 	use bitcoin_hashes::sha256::Hash as Sha256;
 	use lightning::chain::keysinterface::PhantomKeysManager;
 	use lightning::ln::{PaymentPreimage, PaymentHash};
-	use lightning::ln::channelmanager::{self, PhantomRouteHints, MIN_FINAL_CLTV_EXPIRY};
+	use lightning::ln::channelmanager::{self, PhantomRouteHints, MIN_FINAL_CLTV_EXPIRY, PaymentId};
 	use lightning::ln::functional_test_utils::*;
 	use lightning::ln::msgs::ChannelMessageHandler;
 	use lightning::routing::router::{PaymentParameters, RouteParameters, find_route};
@@ -741,7 +743,7 @@ mod test {
 		let payment_event = {
 			let mut payment_hash = PaymentHash([0; 32]);
 			payment_hash.0.copy_from_slice(&invoice.payment_hash().as_ref()[0..32]);
-			nodes[0].node.send_payment(&route, payment_hash, &Some(invoice.payment_secret().clone())).unwrap();
+			nodes[0].node.send_payment(&route, payment_hash, &Some(invoice.payment_secret().clone()), PaymentId(payment_hash.0)).unwrap();
 			let mut added_monitors = nodes[0].chain_monitor.added_monitors.lock().unwrap();
 			assert_eq!(added_monitors.len(), 1);
 			added_monitors.clear();
@@ -1046,7 +1048,7 @@ mod test {
 		let (payment_event, fwd_idx) = {
 			let mut payment_hash = PaymentHash([0; 32]);
 			payment_hash.0.copy_from_slice(&invoice.payment_hash().as_ref()[0..32]);
-			nodes[0].node.send_payment(&route, payment_hash, &Some(invoice.payment_secret().clone())).unwrap();
+			nodes[0].node.send_payment(&route, payment_hash, &Some(invoice.payment_secret().clone()), PaymentId(payment_hash.0)).unwrap();
 			let mut added_monitors = nodes[0].chain_monitor.added_monitors.lock().unwrap();
 			assert_eq!(added_monitors.len(), 1);
 			added_monitors.clear();

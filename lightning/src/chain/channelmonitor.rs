@@ -3846,7 +3846,7 @@ mod tests {
 	use crate::ln::{PaymentPreimage, PaymentHash};
 	use crate::ln::chan_utils;
 	use crate::ln::chan_utils::{HTLCOutputInCommitment, ChannelPublicKeys, ChannelTransactionParameters, HolderCommitmentTransaction, CounterpartyChannelTransactionParameters};
-	use crate::ln::channelmanager::{self, PaymentSendFailure};
+	use crate::ln::channelmanager::{self, PaymentSendFailure, PaymentId};
 	use crate::ln::functional_test_utils::*;
 	use crate::ln::script::ShutdownScript;
 	use crate::util::errors::APIError;
@@ -3911,7 +3911,7 @@ mod tests {
 		// If the ChannelManager tries to update the channel, however, the ChainMonitor will pass
 		// the update through to the ChannelMonitor which will refuse it (as the channel is closed).
 		let (route, payment_hash, _, payment_secret) = get_route_and_payment_hash!(nodes[1], nodes[0], 100_000);
-		unwrap_send_err!(nodes[1].node.send_payment(&route, payment_hash, &Some(payment_secret)),
+		unwrap_send_err!(nodes[1].node.send_payment(&route, payment_hash, &Some(payment_secret), PaymentId(payment_hash.0)),
 			true, APIError::ChannelUnavailable { ref err },
 			assert!(err.contains("ChannelMonitor storage failure")));
 		check_added_monitors!(nodes[1], 2); // After the failure we generate a close-channel monitor update

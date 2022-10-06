@@ -14,7 +14,7 @@
 use crate::chain::{ChannelMonitorUpdateStatus, Watch};
 use crate::chain::channelmonitor::ChannelMonitor;
 use crate::chain::keysinterface::{Recipient, KeysInterface};
-use crate::ln::channelmanager::{self, ChannelManager, ChannelManagerReadArgs, MIN_CLTV_EXPIRY_DELTA};
+use crate::ln::channelmanager::{self, ChannelManager, ChannelManagerReadArgs, MIN_CLTV_EXPIRY_DELTA, PaymentId};
 use crate::routing::gossip::RoutingFees;
 use crate::routing::router::{PaymentParameters, RouteHint, RouteHintHop};
 use crate::ln::features::ChannelTypeFeatures;
@@ -77,7 +77,7 @@ fn test_priv_forwarding_rejection() {
 		.with_route_hints(last_hops);
 	let (route, our_payment_hash, our_payment_preimage, our_payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], payment_params, 10_000, TEST_FINAL_CLTV);
 
-	nodes[0].node.send_payment(&route, our_payment_hash, &Some(our_payment_secret)).unwrap();
+	nodes[0].node.send_payment(&route, our_payment_hash, &Some(our_payment_secret), PaymentId(our_payment_hash.0)).unwrap();
 	check_added_monitors!(nodes[0], 1);
 	let payment_event = SendEvent::from_event(nodes[0].node.get_and_clear_pending_msg_events().remove(0));
 	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
@@ -162,7 +162,7 @@ fn test_priv_forwarding_rejection() {
 	get_event_msg!(nodes[1], MessageSendEvent::SendChannelUpdate, nodes[2].node.get_our_node_id());
 	get_event_msg!(nodes[2], MessageSendEvent::SendChannelUpdate, nodes[1].node.get_our_node_id());
 
-	nodes[0].node.send_payment(&route, our_payment_hash, &Some(our_payment_secret)).unwrap();
+	nodes[0].node.send_payment(&route, our_payment_hash, &Some(our_payment_secret), PaymentId(our_payment_hash.0)).unwrap();
 	check_added_monitors!(nodes[0], 1);
 	pass_along_route(&nodes[0], &[&[&nodes[1], &nodes[2]]], 10_000, our_payment_hash, our_payment_secret);
 	claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], our_payment_preimage);
@@ -280,7 +280,7 @@ fn test_routed_scid_alias() {
 		.with_route_hints(hop_hints);
 	let (route, payment_hash, payment_preimage, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], payment_params, 100_000, 42);
 	assert_eq!(route.paths[0][1].short_channel_id, last_hop[0].inbound_scid_alias.unwrap());
-	nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret)).unwrap();
+	nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret), PaymentId(payment_hash.0)).unwrap();
 	check_added_monitors!(nodes[0], 1);
 
 	pass_along_route(&nodes[0], &[&[&nodes[1], &nodes[2]]], 100_000, payment_hash, payment_secret);
@@ -433,7 +433,7 @@ fn test_inbound_scid_privacy() {
 		.with_route_hints(hop_hints.clone());
 	let (route, payment_hash, payment_preimage, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], payment_params, 100_000, 42);
 	assert_eq!(route.paths[0][1].short_channel_id, last_hop[0].inbound_scid_alias.unwrap());
-	nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret)).unwrap();
+	nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret), PaymentId(payment_hash.0)).unwrap();
 	check_added_monitors!(nodes[0], 1);
 
 	pass_along_route(&nodes[0], &[&[&nodes[1], &nodes[2]]], 100_000, payment_hash, payment_secret);
@@ -448,7 +448,7 @@ fn test_inbound_scid_privacy() {
 		.with_route_hints(hop_hints);
 	let (route_2, payment_hash_2, _, payment_secret_2) = get_route_and_payment_hash!(nodes[0], nodes[2], payment_params_2, 100_000, 42);
 	assert_eq!(route_2.paths[0][1].short_channel_id, last_hop[0].short_channel_id.unwrap());
-	nodes[0].node.send_payment(&route_2, payment_hash_2, &Some(payment_secret_2)).unwrap();
+	nodes[0].node.send_payment(&route_2, payment_hash_2, &Some(payment_secret_2), PaymentId(payment_hash_2.0)).unwrap();
 	check_added_monitors!(nodes[0], 1);
 
 	let payment_event = SendEvent::from_node(&nodes[0]);
@@ -503,7 +503,7 @@ fn test_scid_alias_returned() {
 	route.paths[0][1].fee_msat = 10_000_000; // Overshoot the last channel's value
 
 	// Route the HTLC through to the destination.
-	nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret)).unwrap();
+	nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret), PaymentId(payment_hash.0)).unwrap();
 	check_added_monitors!(nodes[0], 1);
 	let as_updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
 	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &as_updates.update_add_htlcs[0]);
@@ -547,7 +547,7 @@ fn test_scid_alias_returned() {
 	route.paths[0][0].fee_msat = 0; // But set fee paid to the middle hop to 0
 
 	// Route the HTLC through to the destination.
-	nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret)).unwrap();
+	nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret), PaymentId(payment_hash.0)).unwrap();
 	check_added_monitors!(nodes[0], 1);
 	let as_updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
 	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &as_updates.update_add_htlcs[0]);
@@ -697,7 +697,7 @@ fn test_0conf_channel_with_async_monitor() {
 	// failure before we've ever confirmed the funding transaction. This previously caused a panic.
 	let (route, payment_hash, payment_preimage, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], 1_000_000);
 
-	nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret)).unwrap();
+	nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret), PaymentId(payment_hash.0)).unwrap();
 	check_added_monitors!(nodes[0], 1);
 
 	let as_send = SendEvent::from_node(&nodes[0]);
