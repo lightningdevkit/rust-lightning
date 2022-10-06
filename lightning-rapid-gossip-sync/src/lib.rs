@@ -60,10 +60,15 @@
 //! ```
 //! [sync_network_graph_with_file_path]: RapidGossipSync::sync_network_graph_with_file_path
 
+#![cfg_attr(all(not(feature = "std"), not(test)), no_std)]
+
 // Allow and import test features for benching
 #![cfg_attr(all(test, feature = "_bench_unstable"), feature(test))]
 #[cfg(all(test, feature = "_bench_unstable"))]
 extern crate test;
+
+#[cfg(not(feature = "std"))]
+extern crate alloc;
 
 #[cfg(feature = "std")]
 use std::fs::File;
@@ -143,6 +148,7 @@ impl<NG: Deref<Target=NetworkGraph<L>>, L: Deref> RapidGossipSync<NG, L> where L
 	}
 }
 
+#[cfg(feature = "std")]
 #[cfg(test)]
 mod tests {
 	use std::fs;
