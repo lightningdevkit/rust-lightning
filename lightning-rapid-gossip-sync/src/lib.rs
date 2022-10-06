@@ -38,7 +38,7 @@
 //!
 //! After the gossip data snapshot has been downloaded, one of the client's graph processing
 //! functions needs to be called. In this example, we process the update by reading its contents
-//! from disk, which we do by calling [sync_network_graph_with_file_path]:
+//! from disk, which we do by calling [`RapidGossipSync::update_network_graph`]:
 //!
 //! ```
 //! use bitcoin::blockdata::constants::genesis_block;
@@ -56,9 +56,9 @@
 //! let block_hash = genesis_block(Network::Bitcoin).header.block_hash();
 //! let network_graph = NetworkGraph::new(block_hash, &logger);
 //! let rapid_sync = RapidGossipSync::new(&network_graph);
-//! let new_last_sync_timestamp_result = rapid_sync.sync_network_graph_with_file_path("./rapid_sync.lngossip");
+//! let snapshot_contents: &[u8] = &[0; 0];
+//! let new_last_sync_timestamp_result = rapid_sync.update_network_graph(snapshot_contents);
 //! ```
-//! [sync_network_graph_with_file_path]: RapidGossipSync::sync_network_graph_with_file_path
 
 #![cfg_attr(all(not(feature = "std"), not(test)), no_std)]
 
