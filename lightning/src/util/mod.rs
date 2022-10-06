@@ -21,6 +21,7 @@ pub mod ser;
 pub mod message_signing;
 pub mod invoice;
 pub mod persist;
+pub mod string;
 pub mod wakers;
 
 pub(crate) mod atomic_counter;
