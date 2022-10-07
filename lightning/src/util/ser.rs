@@ -283,39 +283,6 @@ impl<T: Readable> From<T> for OptionDeserWrapper<T> {
 	fn from(t: T) -> OptionDeserWrapper<T> { OptionDeserWrapper(Some(t)) }
 }
 
-/// Wrapper to write each element of a Vec with no length prefix
-pub(crate) struct VecWriteWrapper<'a, T: Writeable>(pub &'a Vec<T>);
-impl<'a, T: Writeable> Writeable for VecWriteWrapper<'a, T> {
-	#[inline]
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
-		for ref v in self.0.iter() {
-			v.write(writer)?;
-		}
-		Ok(())
-	}
-}
-
-/// Wrapper to read elements from a given stream until it reaches the end of the stream.
-pub(crate) struct VecReadWrapper<T>(pub Vec<T>);
-impl<T: MaybeReadable> Readable for VecReadWrapper<T> {
-	#[inline]
-	fn read<R: Read>(mut reader: &mut R) -> Result<Self, DecodeError> {
-		let mut values = Vec::new();
-		loop {
-			let mut track_read = ReadTrackingReader::new(&mut reader);
-			match MaybeReadable::read(&mut track_read) {
-				Ok(Some(v)) => { values.push(v); },
-				Ok(None) => { },
-				// If we failed to read any bytes at all, we reached the end of our TLV
-				// stream and have simply exhausted all entries.
-				Err(ref e) if e == &DecodeError::ShortRead && !track_read.have_read => break,
-				Err(e) => return Err(e),
-			}
-		}
-		Ok(Self(values))
-	}
-}
-
 pub(crate) struct U48(pub u64);
 impl Writeable for U48 {
 	#[inline]
@@ -545,6 +512,42 @@ impl Readable for [u16; 8] {
 		}
 		Ok(res)
 	}
+}
+
+/// For variable-length values within TLV record where the length is encoded as part of the record.
+/// Used to prevent encoding the length twice.
+pub(crate) struct WithoutLength<T>(pub T);
+
+impl<'a, T: Writeable> Writeable for WithoutLength<&'a Vec<T>> {
+	#[inline]
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		for ref v in self.0.iter() {
+			v.write(writer)?;
+		}
+		Ok(())
+	}
+}
+
+impl<T: MaybeReadable> Readable for WithoutLength<Vec<T>> {
+	#[inline]
+	fn read<R: Read>(mut reader: &mut R) -> Result<Self, DecodeError> {
+		let mut values = Vec::new();
+		loop {
+			let mut track_read = ReadTrackingReader::new(&mut reader);
+			match MaybeReadable::read(&mut track_read) {
+				Ok(Some(v)) => { values.push(v); },
+				Ok(None) => { },
+				// If we failed to read any bytes at all, we reached the end of our TLV
+				// stream and have simply exhausted all entries.
+				Err(ref e) if e == &DecodeError::ShortRead && !track_read.have_read => break,
+				Err(e) => return Err(e),
+			}
+		}
+		Ok(Self(values))
+	}
+}
+impl<'a, T> From<&'a Vec<T>> for WithoutLength<&'a Vec<T>> {
+	fn from(v: &'a Vec<T>) -> Self { Self(v) }
 }
 
 // HashMap

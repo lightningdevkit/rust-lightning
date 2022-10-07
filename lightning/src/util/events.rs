@@ -24,7 +24,7 @@ use crate::ln::msgs;
 use crate::ln::msgs::DecodeError;
 use crate::ln::{PaymentPreimage, PaymentHash, PaymentSecret};
 use crate::routing::gossip::NetworkUpdate;
-use crate::util::ser::{BigSize, FixedLengthReader, Writeable, Writer, MaybeReadable, Readable, VecReadWrapper, VecWriteWrapper, OptionDeserWrapper};
+use crate::util::ser::{BigSize, FixedLengthReader, Writeable, Writer, MaybeReadable, Readable, WithoutLength, OptionDeserWrapper};
 use crate::routing::router::{RouteHop, RouteParameters};
 
 use bitcoin::{PackedLockTime, Transaction};
@@ -785,7 +785,7 @@ impl Writeable for Event {
 					(1, network_update, option),
 					(2, payment_failed_permanently, required),
 					(3, all_paths_failed, required),
-					(5, path, vec_type),
+					(5, *path, vec_type),
 					(7, short_channel_id, option),
 					(9, retry, option),
 					(11, payment_id, option),
@@ -799,7 +799,7 @@ impl Writeable for Event {
 			&Event::SpendableOutputs { ref outputs } => {
 				5u8.write(writer)?;
 				write_tlv_fields!(writer, {
-					(0, VecWriteWrapper(outputs), required),
+					(0, WithoutLength(outputs), required),
 				});
 			},
 			&Event::PaymentForwarded { fee_earned_msat, prev_channel_id, claim_from_onchain_tx, next_channel_id } => {
@@ -831,7 +831,7 @@ impl Writeable for Event {
 				write_tlv_fields!(writer, {
 					(0, payment_id, required),
 					(2, payment_hash, option),
-					(4, path, vec_type)
+					(4, *path, vec_type)
 				})
 			},
 			&Event::PaymentFailed { ref payment_id, ref payment_hash } => {
@@ -859,7 +859,7 @@ impl Writeable for Event {
 				write_tlv_fields!(writer, {
 					(0, payment_id, required),
 					(2, payment_hash, required),
-					(4, path, vec_type)
+					(4, *path, vec_type)
 				})
 			},
 			&Event::ProbeFailed { ref payment_id, ref payment_hash, ref path, ref short_channel_id } => {
@@ -867,7 +867,7 @@ impl Writeable for Event {
 				write_tlv_fields!(writer, {
 					(0, payment_id, required),
 					(2, payment_hash, required),
-					(4, path, vec_type),
+					(4, *path, vec_type),
 					(6, short_channel_id, option),
 				})
 			},
@@ -1007,7 +1007,7 @@ impl MaybeReadable for Event {
 			4u8 => Ok(None),
 			5u8 => {
 				let f = || {
-					let mut outputs = VecReadWrapper(Vec::new());
+					let mut outputs = WithoutLength(Vec::new());
 					read_tlv_fields!(reader, {
 						(0, outputs, required),
 					});

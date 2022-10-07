@@ -6620,7 +6620,7 @@ impl Writeable for HTLCSource {
 					(1, payment_id_opt, option),
 					(2, first_hop_htlc_msat, required),
 					(3, payment_secret, option),
-					(4, path, vec_type),
+					(4, *path, vec_type),
 					(5, payment_params, option),
 				 });
 			}

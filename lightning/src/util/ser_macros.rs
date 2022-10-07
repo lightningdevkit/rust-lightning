@@ -17,7 +17,7 @@ macro_rules! encode_tlv {
 		$field.write($stream)?;
 	};
 	($stream: expr, $type: expr, $field: expr, vec_type) => {
-		encode_tlv!($stream, $type, $crate::util::ser::VecWriteWrapper(&$field), required);
+		encode_tlv!($stream, $type, $crate::util::ser::WithoutLength(&$field), required);
 	};
 	($stream: expr, $optional_type: expr, $optional_field: expr, option) => {
 		if let Some(ref field) = $optional_field {
@@ -66,7 +66,7 @@ macro_rules! get_varint_length_prefixed_tlv_length {
 		$len.0 += field_len;
 	};
 	($len: expr, $type: expr, $field: expr, vec_type) => {
-		get_varint_length_prefixed_tlv_length!($len, $type, $crate::util::ser::VecWriteWrapper(&$field), required);
+		get_varint_length_prefixed_tlv_length!($len, $type, $crate::util::ser::WithoutLength(&$field), required);
 	};
 	($len: expr, $optional_type: expr, $optional_field: expr, option) => {
 		if let Some(ref field) = $optional_field {
@@ -160,7 +160,7 @@ macro_rules! decode_tlv {
 		$field = $crate::util::ser::Readable::read(&mut $reader)?;
 	}};
 	($reader: expr, $field: ident, vec_type) => {{
-		let f: $crate::util::ser::VecReadWrapper<_> = $crate::util::ser::Readable::read(&mut $reader)?;
+		let f: $crate::util::ser::WithoutLength<Vec<_>> = $crate::util::ser::Readable::read(&mut $reader)?;
 		$field = Some(f.0);
 	}};
 	($reader: expr, $field: ident, option) => {{
@@ -453,7 +453,7 @@ macro_rules! _impl_writeable_tlv_based_enum_common {
 						let id: u8 = $variant_id;
 						id.write(writer)?;
 						write_tlv_fields!(writer, {
-							$(($type, $field, $fieldty)),*
+							$(($type, *$field, $fieldty)),*
 						});
 					}),*
 					$($st::$tuple_variant_name (ref field) => {
