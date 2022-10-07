@@ -157,17 +157,17 @@ macro_rules! decode_tlv {
 		decode_tlv!($reader, $field, required)
 	}};
 	($reader: expr, $field: ident, required) => {{
-		$field = ser::Readable::read(&mut $reader)?;
+		$field = ::util::ser::Readable::read(&mut $reader)?;
 	}};
 	($reader: expr, $field: ident, vec_type) => {{
-		let f: ::util::ser::VecReadWrapper<_> = ser::Readable::read(&mut $reader)?;
+		let f: ::util::ser::VecReadWrapper<_> = ::util::ser::Readable::read(&mut $reader)?;
 		$field = Some(f.0);
 	}};
 	($reader: expr, $field: ident, option) => {{
-		$field = Some(ser::Readable::read(&mut $reader)?);
+		$field = Some(::util::ser::Readable::read(&mut $reader)?);
 	}};
 	($reader: expr, $field: ident, ignorable) => {{
-		$field = ser::MaybeReadable::read(&mut $reader)?;
+		$field = ::util::ser::MaybeReadable::read(&mut $reader)?;
 	}};
 	($reader: expr, $field: ident, (option: $trait: ident $(, $read_arg: expr)?)) => {{
 		$field = Some($trait::read(&mut $reader $(, $read_arg)*)?);
