@@ -50,6 +50,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// suggestion.
 const STALE_CHANNEL_UPDATE_AGE_LIMIT_SECS: u64 = 60 * 60 * 24 * 14;
 
+/// We stop tracking the removal of permanently failed nodes and channels one week after removal
+const REMOVED_ENTRIES_TRACKING_AGE_LIMIT_SECS: u64 = 60 * 60 * 24 * 7;
+
 /// The maximum number of extra bytes which we do not understand in a gossip message before we will
 /// refuse to relay the message.
 const MAX_EXCESS_BYTES_FOR_RELAY: usize = 1024;
@@ -130,6 +133,25 @@ pub struct NetworkGraph<L: Deref> where L::Target: Logger {
 	// Lock order: channels -> nodes
 	channels: RwLock<BTreeMap<u64, ChannelInfo>>,
 	nodes: RwLock<BTreeMap<NodeId, NodeInfo>>,
+	// Lock order: removed_channels -> removed_nodes
+	//
+	// NOTE: In the following `removed_*` maps, we use seconds since UNIX epoch to track time instead
+	// of `std::time::Instant`s for a few reasons:
+	//   * We want it to be possible to do tracking in no-std environments where we can compare
+	//     a provided current UNIX timestamp with the time at which we started tracking.
+	//   * In the future, if we decide to persist these maps, they will already be serializable.
+	//   * Although we lose out on the platform's monotonic clock, the system clock in a std
+	//     environment should be practical over the time period we are considering (on the order of a
+	//     week).
+	//
+	/// Keeps track of short channel IDs for channels we have explicitly removed due to permanent
+	/// failure so that we don't resync them from gossip. Each SCID is mapped to the time (in seconds)
+	/// it was removed so that once some time passes, we can potentially resync it from gossip again.
+	removed_channels: Mutex<HashMap<u64, Option<u64>>>,
+	/// Keeps track of `NodeId`s we have explicitly removed due to permanent failure so that we don't
+	/// resync them from gossip. Each `NodeId` is mapped to the time (in seconds) it was removed so
+	/// that once some time passes, we can potentially resync it from gossip again.
+	removed_nodes: Mutex<HashMap<NodeId, Option<u64>>>,
 }
 
 /// A read-only view of [`NetworkGraph`].
@@ -160,7 +182,7 @@ pub enum NetworkUpdate {
 		is_permanent: bool,
 	},
 	/// An error indicating that a node failed to route a payment, which should be applied via
-	/// [`NetworkGraph::node_failed`].
+	/// [`NetworkGraph::node_failed_permanent`] if permanent.
 	NodeFailure {
 		/// The node id of the failed node.
 		node_id: PublicKey,
@@ -269,9 +291,11 @@ impl<L: Deref> EventHandler for NetworkGraph<L> where L::Target: Logger {
 						self.channel_failed(short_channel_id, is_permanent);
 					},
 					NetworkUpdate::NodeFailure { ref node_id, is_permanent } => {
-						let action = if is_permanent { "Removing" } else { "Disabling" };
-						log_debug!(self.logger, "{} node graph entry for {} due to a payment failure.", action, node_id);
-						self.node_failed(node_id, is_permanent);
+						if is_permanent {
+							log_debug!(self.logger,
+								"Removed node graph entry for {} due to a payment failure.", log_pubkey!(node_id));
+							self.node_failed_permanent(node_id);
+						};
 					},
 				}
 			}
@@ -1203,6 +1227,8 @@ impl<L: Deref> ReadableArgs<L> for NetworkGraph<L> where L::Target: Logger {
 			channels: RwLock::new(channels),
 			nodes: RwLock::new(nodes),
 			last_rapid_gossip_sync_timestamp: Mutex::new(last_rapid_gossip_sync_timestamp),
+			removed_nodes: Mutex::new(HashMap::new()),
+			removed_channels: Mutex::new(HashMap::new()),
 		})
 	}
 }
@@ -1239,6 +1265,8 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 			channels: RwLock::new(BTreeMap::new()),
 			nodes: RwLock::new(BTreeMap::new()),
 			last_rapid_gossip_sync_timestamp: Mutex::new(None),
+			removed_channels: Mutex::new(HashMap::new()),
+			removed_nodes: Mutex::new(HashMap::new()),
 		}
 	}
 
@@ -1450,6 +1478,9 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 			return Err(LightningError{err: "Channel announcement node had a channel with itself".to_owned(), action: ErrorAction::IgnoreError});
 		}
 
+		let node_one = NodeId::from_pubkey(&msg.node_id_1);
+		let node_two = NodeId::from_pubkey(&msg.node_id_2);
+
 		{
 			let channels = self.channels.read().unwrap();
 
@@ -1466,7 +1497,7 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 					// We use the Node IDs rather than the bitcoin_keys to check for "equivalence"
 					// as we didn't (necessarily) store the bitcoin keys, and we only really care
 					// if the peers on the channel changed anyway.
-					if NodeId::from_pubkey(&msg.node_id_1) == chan.node_one && NodeId::from_pubkey(&msg.node_id_2) == chan.node_two {
+					if node_one == chan.node_one && node_two == chan.node_two {
 						return Err(LightningError {
 							err: "Already have chain-validated channel".to_owned(),
 							action: ErrorAction::IgnoreDuplicateGossip
@@ -1480,6 +1511,18 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 						action: ErrorAction::IgnoreDuplicateGossip
 					});
 				}
+			}
+		}
+
+		{
+			let removed_channels = self.removed_channels.lock().unwrap();
+			let removed_nodes = self.removed_nodes.lock().unwrap();
+			if removed_channels.contains_key(&msg.short_channel_id) ||
+				removed_nodes.contains_key(&node_one) ||
+				removed_nodes.contains_key(&node_two) {
+				return Err(LightningError{
+					err: format!("Channel with SCID {} or one of its nodes was removed from our network graph recently", &msg.short_channel_id),
+					action: ErrorAction::IgnoreAndLog(Level::Gossip)});
 			}
 		}
 
@@ -1519,9 +1562,9 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 
 		let chan_info = ChannelInfo {
 			features: msg.features.clone(),
-			node_one: NodeId::from_pubkey(&msg.node_id_1),
+			node_one,
 			one_to_two: None,
-			node_two: NodeId::from_pubkey(&msg.node_id_2),
+			node_two,
 			two_to_one: None,
 			capacity_sats: utxo_value,
 			announcement_message: if msg.excess_data.len() <= MAX_EXCESS_BYTES_FOR_RELAY
@@ -1537,10 +1580,16 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 	/// May cause the removal of nodes too, if this was their last channel.
 	/// If not permanent, makes channels unavailable for routing.
 	pub fn channel_failed(&self, short_channel_id: u64, is_permanent: bool) {
+		#[cfg(feature = "std")]
+		let current_time_unix = Some(SystemTime::now().duration_since(UNIX_EPOCH).expect("Time must be > 1970").as_secs());
+		#[cfg(not(feature = "std"))]
+		let current_time_unix = None;
+
 		let mut channels = self.channels.write().unwrap();
 		if is_permanent {
 			if let Some(chan) = channels.remove(&short_channel_id) {
 				let mut nodes = self.nodes.write().unwrap();
+				self.removed_channels.lock().unwrap().insert(short_channel_id, current_time_unix);
 				Self::remove_channel_in_nodes(&mut nodes, &chan, short_channel_id);
 			}
 		} else {
@@ -1555,12 +1604,36 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 		}
 	}
 
-	/// Marks a node in the graph as failed.
-	pub fn node_failed(&self, _node_id: &PublicKey, is_permanent: bool) {
-		if is_permanent {
-			// TODO: Wholly remove the node
-		} else {
-			// TODO: downgrade the node
+	/// Marks a node in the graph as permanently failed, effectively removing it and its channels
+	/// from local storage.
+	pub fn node_failed_permanent(&self, node_id: &PublicKey) {
+		#[cfg(feature = "std")]
+		let current_time_unix = Some(SystemTime::now().duration_since(UNIX_EPOCH).expect("Time must be > 1970").as_secs());
+		#[cfg(not(feature = "std"))]
+		let current_time_unix = None;
+
+		let node_id = NodeId::from_pubkey(node_id);
+		let mut channels = self.channels.write().unwrap();
+		let mut nodes = self.nodes.write().unwrap();
+		let mut removed_channels = self.removed_channels.lock().unwrap();
+		let mut removed_nodes = self.removed_nodes.lock().unwrap();
+
+		if let Some(node) = nodes.remove(&node_id) {
+			for scid in node.channels.iter() {
+				if let Some(chan_info) = channels.remove(scid) {
+					let other_node_id = if node_id == chan_info.node_one { chan_info.node_two } else { chan_info.node_one };
+					if let BtreeEntry::Occupied(mut other_node_entry) = nodes.entry(other_node_id) {
+						other_node_entry.get_mut().channels.retain(|chan_id| {
+							*scid != *chan_id
+						});
+						if other_node_entry.get().channels.is_empty() {
+							other_node_entry.remove_entry();
+						}
+					}
+					removed_channels.insert(*scid, current_time_unix);
+				}
+			}
+			removed_nodes.insert(node_id, current_time_unix);
 		}
 	}
 
@@ -1576,11 +1649,14 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 	/// Note that for users of the `lightning-background-processor` crate this method may be
 	/// automatically called regularly for you.
 	///
+	/// This method will also cause us to stop tracking removed nodes and channels if they have been
+	/// in the map for a while so that these can be resynced from gossip in the future.
+	///
 	/// This method is only available with the `std` feature. See
-	/// [`NetworkGraph::remove_stale_channels_with_time`] for `no-std` use.
-	pub fn remove_stale_channels(&self) {
+	/// [`NetworkGraph::remove_stale_channels_and_tracking_with_time`] for `no-std` use.
+	pub fn remove_stale_channels_and_tracking(&self) {
 		let time = SystemTime::now().duration_since(UNIX_EPOCH).expect("Time must be > 1970").as_secs();
-		self.remove_stale_channels_with_time(time);
+		self.remove_stale_channels_and_tracking_with_time(time);
 	}
 
 	/// Removes information about channels that we haven't heard any updates about in some time.
@@ -1591,9 +1667,12 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 	/// updates every two weeks, the non-normative section of BOLT 7 currently suggests that
 	/// pruning occur for updates which are at least two weeks old, which we implement here.
 	///
+	/// This method will also cause us to stop tracking removed nodes and channels if they have been
+	/// in the map for a while so that these can be resynced from gossip in the future.
+	///
 	/// This function takes the current unix time as an argument. For users with the `std` feature
-	/// enabled, [`NetworkGraph::remove_stale_channels`] may be preferable.
-	pub fn remove_stale_channels_with_time(&self, current_time_unix: u64) {
+	/// enabled, [`NetworkGraph::remove_stale_channels_and_tracking`] may be preferable.
+	pub fn remove_stale_channels_and_tracking_with_time(&self, current_time_unix: u64) {
 		let mut channels = self.channels.write().unwrap();
 		// Time out if we haven't received an update in at least 14 days.
 		if current_time_unix > u32::max_value() as u64 { return; } // Remove by 2106
@@ -1625,6 +1704,26 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 				Self::remove_channel_in_nodes(&mut nodes, &info, scid);
 			}
 		}
+
+		let should_keep_tracking = |time: &mut Option<u64>| {
+			if let Some(time) = time {
+				current_time_unix.saturating_sub(*time) < REMOVED_ENTRIES_TRACKING_AGE_LIMIT_SECS
+			} else {
+				// NOTE: In the case of no-std, we won't have access to the current UNIX time at the time of removal,
+				// so we'll just set the removal time here to the current UNIX time on the very next invocation
+				// of this function.
+				#[cfg(feature = "no-std")]
+				{
+					let mut tracked_time = Some(current_time_unix);
+					core::mem::swap(time, &mut tracked_time);
+					return true;
+				}
+				#[allow(unreachable_code)]
+				false
+			}};
+
+		self.removed_channels.lock().unwrap().retain(|_, time| should_keep_tracking(time));
+		self.removed_nodes.lock().unwrap().retain(|_, time| should_keep_tracking(time));
 	}
 
 	/// For an already known (from announcement) channel, update info about one of the directions
@@ -1882,6 +1981,7 @@ mod tests {
 	use util::events::{Event, EventHandler, MessageSendEvent, MessageSendEventsProvider};
 	use util::scid_utils::scid_from_parts;
 
+	use crate::routing::gossip::REMOVED_ENTRIES_TRACKING_AGE_LIMIT_SECS;
 	use super::STALE_CHANNEL_UPDATE_AGE_LIMIT_SECS;
 
 	use bitcoin::hashes::sha256d::Hash as Sha256dHash;
@@ -2140,9 +2240,35 @@ mod tests {
 			Err(e) => assert_eq!(e.err, "Already have chain-validated channel")
 		};
 
+		#[cfg(feature = "std")]
+		{
+			use std::time::{SystemTime, UNIX_EPOCH};
+
+			let tracking_time = SystemTime::now().duration_since(UNIX_EPOCH).expect("Time must be > 1970").as_secs();
+			// Mark a node as permanently failed so it's tracked as removed.
+			gossip_sync.network_graph().node_failed_permanent(&PublicKey::from_secret_key(&secp_ctx, node_1_privkey));
+
+			// Return error and ignore valid channel announcement if one of the nodes has been tracked as removed.
+			let valid_announcement = get_signed_channel_announcement(|unsigned_announcement| {
+				unsigned_announcement.short_channel_id += 3;
+			}, node_1_privkey, node_2_privkey, &secp_ctx);
+			match gossip_sync.handle_channel_announcement(&valid_announcement) {
+				Ok(_) => panic!(),
+				Err(e) => assert_eq!(e.err, "Channel with SCID 3 or one of its nodes was removed from our network graph recently")
+			}
+
+			gossip_sync.network_graph().remove_stale_channels_and_tracking_with_time(tracking_time + REMOVED_ENTRIES_TRACKING_AGE_LIMIT_SECS);
+
+			// The above channel announcement should be handled as per normal now.
+			match gossip_sync.handle_channel_announcement(&valid_announcement) {
+				Ok(res) => assert!(res),
+				_ => panic!()
+			}
+		}
+
 		// Don't relay valid channels with excess data
 		let valid_announcement = get_signed_channel_announcement(|unsigned_announcement| {
-			unsigned_announcement.short_channel_id += 3;
+			unsigned_announcement.short_channel_id += 4;
 			unsigned_announcement.excess_data.resize(MAX_EXCESS_BYTES_FOR_RELAY + 1, 0);
 		}, node_1_privkey, node_2_privkey, &secp_ctx);
 		match gossip_sync.handle_channel_announcement(&valid_announcement) {
@@ -2277,6 +2403,7 @@ mod tests {
 
 		let node_1_privkey = &SecretKey::from_slice(&[42; 32]).unwrap();
 		let node_2_privkey = &SecretKey::from_slice(&[41; 32]).unwrap();
+		let node_2_id = PublicKey::from_secret_key(&secp_ctx, node_2_privkey);
 
 		{
 			// There is no nodes in the table at the beginning.
@@ -2366,12 +2493,64 @@ mod tests {
 		assert_eq!(network_graph.read_only().channels().len(), 0);
 		// Nodes are also deleted because there are no associated channels anymore
 		assert_eq!(network_graph.read_only().nodes().len(), 0);
-		// TODO: Test NetworkUpdate::NodeFailure, which is not implemented yet.
+
+		{
+			// Get a new network graph since we don't want to track removed nodes in this test with "std"
+			let network_graph = NetworkGraph::new(genesis_hash, &logger);
+
+			// Announce a channel to test permanent node failure
+			let valid_channel_announcement = get_signed_channel_announcement(|_| {}, node_1_privkey, node_2_privkey, &secp_ctx);
+			let short_channel_id = valid_channel_announcement.contents.short_channel_id;
+			let chain_source: Option<&test_utils::TestChainSource> = None;
+			assert!(network_graph.update_channel_from_announcement(&valid_channel_announcement, &chain_source).is_ok());
+			assert!(network_graph.read_only().channels().get(&short_channel_id).is_some());
+
+			// Non-permanent node failure does not delete any nodes or channels
+			network_graph.handle_event(&Event::PaymentPathFailed {
+				payment_id: None,
+				payment_hash: PaymentHash([0; 32]),
+				payment_failed_permanently: false,
+				all_paths_failed: true,
+				path: vec![],
+				network_update: Some(NetworkUpdate::NodeFailure {
+					node_id: node_2_id,
+					is_permanent: false,
+				}),
+				short_channel_id: None,
+				retry: None,
+				error_code: None,
+				error_data: None,
+			});
+
+			assert!(network_graph.read_only().channels().get(&short_channel_id).is_some());
+			assert!(network_graph.read_only().nodes().get(&NodeId::from_pubkey(&node_2_id)).is_some());
+
+			// Permanent node failure deletes node and its channels
+			network_graph.handle_event(&Event::PaymentPathFailed {
+				payment_id: None,
+				payment_hash: PaymentHash([0; 32]),
+				payment_failed_permanently: false,
+				all_paths_failed: true,
+				path: vec![],
+				network_update: Some(NetworkUpdate::NodeFailure {
+					node_id: node_2_id,
+					is_permanent: true,
+				}),
+				short_channel_id: None,
+				retry: None,
+				error_code: None,
+				error_data: None,
+			});
+
+			assert_eq!(network_graph.read_only().nodes().len(), 0);
+			// Channels are also deleted because the associated node has been deleted
+			assert_eq!(network_graph.read_only().channels().len(), 0);
+		}
 	}
 
 	#[test]
 	fn test_channel_timeouts() {
-		// Test the removal of channels with `remove_stale_channels`.
+		// Test the removal of channels with `remove_stale_channels_and_tracking`.
 		let logger = test_utils::TestLogger::new();
 		let chain_source = test_utils::TestChainSource::new(Network::Testnet);
 		let genesis_hash = genesis_block(Network::Testnet).header.block_hash();
@@ -2392,11 +2571,11 @@ mod tests {
 		assert!(gossip_sync.handle_channel_update(&valid_channel_update).is_ok());
 		assert!(network_graph.read_only().channels().get(&short_channel_id).unwrap().one_to_two.is_some());
 
-		network_graph.remove_stale_channels_with_time(100 + STALE_CHANNEL_UPDATE_AGE_LIMIT_SECS);
+		network_graph.remove_stale_channels_and_tracking_with_time(100 + STALE_CHANNEL_UPDATE_AGE_LIMIT_SECS);
 		assert_eq!(network_graph.read_only().channels().len(), 1);
 		assert_eq!(network_graph.read_only().nodes().len(), 2);
 
-		network_graph.remove_stale_channels_with_time(101 + STALE_CHANNEL_UPDATE_AGE_LIMIT_SECS);
+		network_graph.remove_stale_channels_and_tracking_with_time(101 + STALE_CHANNEL_UPDATE_AGE_LIMIT_SECS);
 		#[cfg(feature = "std")]
 		{
 			// In std mode, a further check is performed before fully removing the channel -
@@ -2409,11 +2588,74 @@ mod tests {
 
 			use std::time::{SystemTime, UNIX_EPOCH};
 			let announcement_time = SystemTime::now().duration_since(UNIX_EPOCH).expect("Time must be > 1970").as_secs();
-			network_graph.remove_stale_channels_with_time(announcement_time + 1 + STALE_CHANNEL_UPDATE_AGE_LIMIT_SECS);
+			network_graph.remove_stale_channels_and_tracking_with_time(announcement_time + 1 + STALE_CHANNEL_UPDATE_AGE_LIMIT_SECS);
 		}
 
 		assert_eq!(network_graph.read_only().channels().len(), 0);
 		assert_eq!(network_graph.read_only().nodes().len(), 0);
+
+		#[cfg(feature = "std")]
+		{
+			use std::time::{SystemTime, UNIX_EPOCH};
+
+			let tracking_time = SystemTime::now().duration_since(UNIX_EPOCH).expect("Time must be > 1970").as_secs();
+
+			// Clear tracked nodes and channels for clean slate
+			network_graph.removed_channels.lock().unwrap().clear();
+			network_graph.removed_nodes.lock().unwrap().clear();
+
+			// Add a channel and nodes from channel announcement. So our network graph will
+			// now only consist of two nodes and one channel between them.
+			assert!(network_graph.update_channel_from_announcement(
+				&valid_channel_announcement, &chain_source).is_ok());
+
+			// Mark the channel as permanently failed. This will also remove the two nodes
+			// and all of the entries will be tracked as removed.
+			network_graph.channel_failed(short_channel_id, true);
+
+			// Should not remove from tracking if insufficient time has passed
+			network_graph.remove_stale_channels_and_tracking_with_time(
+				tracking_time + REMOVED_ENTRIES_TRACKING_AGE_LIMIT_SECS - 1);
+			assert_eq!(network_graph.removed_channels.lock().unwrap().len(), 1);
+
+			// Provide a later time so that sufficient time has passed
+			network_graph.remove_stale_channels_and_tracking_with_time(
+				tracking_time + REMOVED_ENTRIES_TRACKING_AGE_LIMIT_SECS);
+			assert!(network_graph.removed_channels.lock().unwrap().is_empty());
+			assert!(network_graph.removed_nodes.lock().unwrap().is_empty());
+		}
+
+		#[cfg(not(feature = "std"))]
+		{
+			// When we don't have access to the system clock, the time we started tracking removal will only
+			// be that provided by the first call to `remove_stale_channels_and_tracking_with_time`. Hence,
+			// only if sufficient time has passed after that first call, will the next call remove it from
+			// tracking.
+			let removal_time = 1664619654;
+
+			// Clear removed nodes and channels for clean slate
+			network_graph.removed_channels.lock().unwrap().clear();
+			network_graph.removed_nodes.lock().unwrap().clear();
+
+			// Add a channel and nodes from channel announcement. So our network graph will
+			// now only consist of two nodes and one channel between them.
+			assert!(network_graph.update_channel_from_announcement(
+				&valid_channel_announcement, &chain_source).is_ok());
+
+			// Mark the channel as permanently failed. This will also remove the two nodes
+			// and all of the entries will be tracked as removed.
+			network_graph.channel_failed(short_channel_id, true);
+
+			// The first time we call the following, the channel will have a removal time assigned.
+			network_graph.remove_stale_channels_and_tracking_with_time(removal_time);
+			assert_eq!(network_graph.removed_channels.lock().unwrap().len(), 1);
+
+			// Provide a later time so that sufficient time has passed
+			network_graph.remove_stale_channels_and_tracking_with_time(
+				removal_time + REMOVED_ENTRIES_TRACKING_AGE_LIMIT_SECS);
+			assert!(network_graph.removed_channels.lock().unwrap().is_empty());
+			assert!(network_graph.removed_nodes.lock().unwrap().is_empty());
+		}
 	}
 
 	#[test]
