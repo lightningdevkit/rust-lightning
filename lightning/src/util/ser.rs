@@ -523,6 +523,29 @@ impl_array!(PUBLIC_KEY_SIZE); // for PublicKey
 impl_array!(COMPACT_SIGNATURE_SIZE); // for Signature
 impl_array!(1300); // for OnionPacket.hop_data
 
+impl Writeable for [u16; 8] {
+	#[inline]
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		for v in self.iter() {
+			w.write_all(&v.to_be_bytes())?
+		}
+		Ok(())
+	}
+}
+
+impl Readable for [u16; 8] {
+	#[inline]
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let mut buf = [0u8; 16];
+		r.read_exact(&mut buf)?;
+		let mut res = [0u16; 8];
+		for (idx, v) in res.iter_mut().enumerate() {
+			*v = (buf[idx] as u16) << 8 | (buf[idx + 1] as u16)
+		}
+		Ok(res)
+	}
+}
+
 // HashMap
 impl<K, V> Writeable for HashMap<K, V>
 	where K: Writeable + Eq + Hash,
