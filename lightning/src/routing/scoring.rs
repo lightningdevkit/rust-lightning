@@ -753,21 +753,25 @@ impl<L: Deref<Target = u64>, T: Time, U: Deref<Target = T>> DirectedChannelLiqui
 impl<L: DerefMut<Target = u64>, T: Time, U: DerefMut<Target = T>> DirectedChannelLiquidity<L, T, U> {
 	/// Adjusts the channel liquidity balance bounds when failing to route `amount_msat`.
 	fn failed_at_channel<Log: Deref>(&mut self, amount_msat: u64, chan_descr: fmt::Arguments, logger: &Log) where Log::Target: Logger {
-		if amount_msat < self.max_liquidity_msat() {
-			log_debug!(logger, "Setting max liquidity of {} to {}", chan_descr, amount_msat);
+		let existing_max_msat = self.max_liquidity_msat();
+		if amount_msat < existing_max_msat {
+			log_debug!(logger, "Setting max liquidity of {} from {} to {}", chan_descr, existing_max_msat, amount_msat);
 			self.set_max_liquidity_msat(amount_msat);
 		} else {
-			log_trace!(logger, "Max liquidity of {} already more than {}", chan_descr, amount_msat);
+			log_trace!(logger, "Max liquidity of {} is {} (already less than or equal to {})",
+				chan_descr, existing_max_msat, amount_msat);
 		}
 	}
 
 	/// Adjusts the channel liquidity balance bounds when failing to route `amount_msat` downstream.
 	fn failed_downstream<Log: Deref>(&mut self, amount_msat: u64, chan_descr: fmt::Arguments, logger: &Log) where Log::Target: Logger {
-		if amount_msat > self.min_liquidity_msat() {
-			log_debug!(logger, "Setting min liquidity of {} to {}", chan_descr, amount_msat);
+		let existing_min_msat = self.min_liquidity_msat();
+		if amount_msat > existing_min_msat {
+			log_debug!(logger, "Setting min liquidity of {} from {} to {}", existing_min_msat, chan_descr, amount_msat);
 			self.set_min_liquidity_msat(amount_msat);
 		} else {
-			log_trace!(logger, "Min liquidity of {} already less than {}", chan_descr, amount_msat);
+			log_trace!(logger, "Min liquidity of {} is {} (already greater than or equal to {})",
+				chan_descr, existing_min_msat, amount_msat);
 		}
 	}
 
