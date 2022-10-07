@@ -280,7 +280,7 @@ impl<L: Deref> EventHandler for NetworkGraph<L> where L::Target: Logger {
 				match *network_update {
 					NetworkUpdate::ChannelUpdateMessage { ref msg } => {
 						let short_channel_id = msg.contents.short_channel_id;
-						let is_enabled = msg.contents.flags & (1 << 1) != (1 << 1);
+						let is_enabled = msg.contents.channel_flags & (1 << 1) != (1 << 1);
 						let status = if is_enabled { "enabled" } else { "disabled" };
 						log_debug!(self.logger, "Updating channel with channel_update from a payment failure. Channel {} is {}.", short_channel_id, status);
 						let _ = self.update_channel(msg);
@@ -1751,7 +1751,7 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 
 	fn update_channel_intern(&self, msg: &msgs::UnsignedChannelUpdate, full_msg: Option<&msgs::ChannelUpdate>, sig: Option<&secp256k1::ecdsa::Signature>) -> Result<(), LightningError> {
 		let dest_node_id;
-		let chan_enabled = msg.flags & (1 << 1) != (1 << 1);
+		let chan_enabled = msg.channel_flags & (1 << 1) != (1 << 1);
 		let chan_was_enabled;
 
 		#[cfg(all(feature = "std", not(test), not(feature = "_test_utils")))]
@@ -1829,7 +1829,7 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 				}
 
 				let msg_hash = hash_to_message!(&Sha256dHash::hash(&msg.encode()[..])[..]);
-				if msg.flags & 1 == 1 {
+				if msg.channel_flags & 1 == 1 {
 					dest_node_id = channel.node_one.clone();
 					check_update_latest!(channel.two_to_one);
 					if let Some(sig) = sig {
@@ -2091,7 +2091,8 @@ mod tests {
 			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
 			short_channel_id: 0,
 			timestamp: 100,
-			flags: 0,
+			message_flags: 1,
+			channel_flags: 0,
 			cltv_expiry_delta: 144,
 			htlc_minimum_msat: 1_000_000,
 			htlc_maximum_msat: 1_000_000,

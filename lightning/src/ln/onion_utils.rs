@@ -503,7 +503,7 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(secp_ctx: &
 												.unwrap_or(false),
 											13 => route_hop.cltv_expiry_delta as u16 >= chan_update.contents.cltv_expiry_delta,
 											14 => false, // expiry_too_soon; always valid?
-											20 => chan_update.contents.flags & 2 == 0,
+											20 => chan_update.contents.channel_flags & 2 == 0,
 											_ => false, // unknown error code; take channel_update as valid
 										};
 										if is_chan_update_invalid {

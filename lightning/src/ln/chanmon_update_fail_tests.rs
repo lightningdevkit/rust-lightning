@@ -1135,7 +1135,7 @@ fn test_monitor_update_fail_reestablish() {
 	nodes[1].node.handle_channel_reestablish(&nodes[0].node.get_our_node_id(), &as_reestablish);
 	assert_eq!(
 		get_event_msg!(nodes[0], MessageSendEvent::SendChannelUpdate, nodes[1].node.get_our_node_id())
-			.contents.flags & 2, 0); // The "disabled" bit should be unset as we just reconnected
+			.contents.channel_flags & 2, 0); // The "disabled" bit should be unset as we just reconnected
 
 	nodes[1].logger.assert_log("lightning::ln::channelmanager".to_string(), "Failed to update ChannelMonitor".to_string(), 1);
 	check_added_monitors!(nodes[1], 1);
@@ -1152,13 +1152,13 @@ fn test_monitor_update_fail_reestablish() {
 	nodes[0].node.handle_channel_reestablish(&nodes[1].node.get_our_node_id(), &bs_reestablish);
 	assert_eq!(
 		get_event_msg!(nodes[0], MessageSendEvent::SendChannelUpdate, nodes[1].node.get_our_node_id())
-			.contents.flags & 2, 0); // The "disabled" bit should be unset as we just reconnected
+			.contents.channel_flags & 2, 0); // The "disabled" bit should be unset as we just reconnected
 
 	nodes[1].node.handle_channel_reestablish(&nodes[0].node.get_our_node_id(), &as_reestablish);
 	check_added_monitors!(nodes[1], 0);
 	assert_eq!(
 		get_event_msg!(nodes[1], MessageSendEvent::SendChannelUpdate, nodes[0].node.get_our_node_id())
-			.contents.flags & 2, 0); // The "disabled" bit should be unset as we just reconnected
+			.contents.channel_flags & 2, 0); // The "disabled" bit should be unset as we just reconnected
 
 	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
 	let (outpoint, latest_update, _) = nodes[1].chain_monitor.latest_monitor_update_id.lock().unwrap().get(&chan_1.2).unwrap().clone();
