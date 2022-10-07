@@ -103,7 +103,7 @@ impl Notifier {
 			Future {
 				state: Arc::new(Mutex::new(FutureState {
 					callbacks: Vec::new(),
-					complete: false,
+					complete: true,
 				}))
 			}
 		} else if let Some(existing_state) = &lock.1 {
@@ -216,6 +216,20 @@ mod tests {
 	use core::sync::atomic::{AtomicBool, Ordering};
 	use core::future::Future as FutureTrait;
 	use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+
+	#[test]
+	fn notifier_pre_notified_future() {
+		// Previously, if we generated a future after a `Notifier` had been notified, the future
+		// would never complete. This tests this behavior, ensuring the future instead completes
+		// immediately.
+		let notifier = Notifier::new();
+		notifier.notify();
+
+		let callback = Arc::new(AtomicBool::new(false));
+		let callback_ref = Arc::clone(&callback);
+		notifier.get_future().register_callback(Box::new(move || assert!(!callback_ref.fetch_or(true, Ordering::SeqCst))));
+		assert!(callback.load(Ordering::SeqCst));
+	}
 
 	#[cfg(feature = "std")]
 	#[test]
