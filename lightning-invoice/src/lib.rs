@@ -540,7 +540,8 @@ impl<D: tb::Bool, H: tb::Bool, T: tb::Bool, C: tb::Bool, S: tb::Bool> InvoiceBui
 		self
 	}
 
-	/// Sets the expiry time
+	/// Sets the expiry time, dropping the subsecond part (which is not representable in BOLT 11
+	/// invoices).
 	pub fn expiry_time(mut self, expiry_time: Duration) -> Self {
 		self.tagged_fields.push(TaggedField::ExpiryTime(ExpiryTime::from_duration(expiry_time)));
 		self
@@ -632,7 +633,8 @@ impl<D: tb::Bool, H: tb::Bool, C: tb::Bool, S: tb::Bool> InvoiceBuilder<D, H, tb
 		self.set_flags()
 	}
 
-	/// Sets the timestamp to a duration since the Unix epoch.
+	/// Sets the timestamp to a duration since the Unix epoch, dropping the subsecond part (which
+	/// is not representable in BOLT 11 invoices).
 	pub fn duration_since_epoch(mut self, time: Duration) -> InvoiceBuilder<D, H, tb::True, C, S> {
 		match PositiveTimestamp::from_duration_since_epoch(time) {
 			Ok(t) => self.timestamp = Some(t),
@@ -960,11 +962,17 @@ impl PositiveTimestamp {
 	///
 	/// Otherwise, returns a [`CreationError::TimestampOutOfBounds`].
 	pub fn from_unix_timestamp(unix_seconds: u64) -> Result<Self, CreationError> {
-		Self::from_duration_since_epoch(Duration::from_secs(unix_seconds))
+		if unix_seconds <= MAX_TIMESTAMP {
+			Ok(Self(Duration::from_secs(unix_seconds)))
+		} else {
+			Err(CreationError::TimestampOutOfBounds)
+		}
 	}
 
 	/// Creates a `PositiveTimestamp` from a [`SystemTime`] with a corresponding Unix timestamp in
 	/// the range `0..=MAX_TIMESTAMP`.
+	///
+	/// Note that the subsecond part is dropped as it is not representable in BOLT 11 invoices.
 	///
 	/// Otherwise, returns a [`CreationError::TimestampOutOfBounds`].
 	#[cfg(feature = "std")]
@@ -977,13 +985,11 @@ impl PositiveTimestamp {
 	/// Creates a `PositiveTimestamp` from a [`Duration`] since the Unix epoch in the range
 	/// `0..=MAX_TIMESTAMP`.
 	///
+	/// Note that the subsecond part is dropped as it is not representable in BOLT 11 invoices.
+	///
 	/// Otherwise, returns a [`CreationError::TimestampOutOfBounds`].
 	pub fn from_duration_since_epoch(duration: Duration) -> Result<Self, CreationError> {
-		if duration.as_secs() <= MAX_TIMESTAMP {
-			Ok(PositiveTimestamp(duration))
-		} else {
-			Err(CreationError::TimestampOutOfBounds)
-		}
+		Self::from_unix_timestamp(duration.as_secs())
 	}
 
 	/// Returns the Unix timestamp representing the stored time
@@ -1356,9 +1362,9 @@ impl ExpiryTime {
 		ExpiryTime(Duration::from_secs(seconds))
 	}
 
-	/// Construct an `ExpiryTime` from a `Duration`.
+	/// Construct an `ExpiryTime` from a `Duration`, dropping the sub-second part.
 	pub fn from_duration(duration: Duration) -> ExpiryTime {
-		ExpiryTime(duration)
+		Self::from_seconds(duration.as_secs())
 	}
 
 	/// Returns the expiry time in seconds
