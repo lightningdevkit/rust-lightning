@@ -473,6 +473,7 @@ pub(crate) enum PendingOutboundPayment {
 	Fulfilled {
 		session_privs: HashSet<[u8; 32]>,
 		payment_hash: Option<PaymentHash>,
+		timer_ticks_without_htlcs: u8,
 	},
 	/// When a payer gives up trying to retry a payment, they inform us, letting us generate a
 	/// `PaymentFailed` event when all HTLCs have irrevocably failed. This avoids a number of race
@@ -526,7 +527,7 @@ impl PendingOutboundPayment {
 				=> session_privs,
 		});
 		let payment_hash = self.payment_hash();
-		*self = PendingOutboundPayment::Fulfilled { session_privs, payment_hash };
+		*self = PendingOutboundPayment::Fulfilled { session_privs, payment_hash, timer_ticks_without_htlcs: 0 };
 	}
 
 	fn mark_abandoned(&mut self) -> Result<(), ()> {
@@ -959,6 +960,11 @@ pub(crate) const PAYMENT_EXPIRY_BLOCKS: u32 = 3;
 
 /// The number of ticks of [`ChannelManager::timer_tick_occurred`] until expiry of incomplete MPPs
 pub(crate) const MPP_TIMEOUT_TICKS: u8 = 3;
+
+/// The number of ticks of [`ChannelManager::timer_tick_occurred`] until we time-out the
+/// idempotency of payments by [`PaymentId`]. See
+/// [`ChannelManager::remove_stale_resolved_payments`].
+pub(crate) const IDEMPOTENCY_TIMEOUT_TICKS: u8 = 7;
 
 /// Information needed for constructing an invoice route hint for this channel.
 #[derive(Clone, Debug, PartialEq)]
@@ -3628,6 +3634,45 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		});
 	}
 
+	fn remove_stale_resolved_payments(&self) {
+		// If an outbound payment was completed, and no pending HTLCs remain, we should remove it
+		// from the map. However, if we did that immediately when the last payment HTLC is claimed,
+		// this could race the user making a duplicate send_payment call and our idempotency
+		// guarantees would be violated. Instead, we wait a few timer ticks to do the actual
+		// removal. This should be more than sufficient to ensure the idempotency of any
+		// `send_payment` calls that were made at the same time the `PaymentSent` event was being
+		// processed.
+		let mut pending_outbound_payments = self.pending_outbound_payments.lock().unwrap();
+		let pending_events = self.pending_events.lock().unwrap();
+		pending_outbound_payments.retain(|payment_id, payment| {
+			if let PendingOutboundPayment::Fulfilled { session_privs, timer_ticks_without_htlcs, .. } = payment {
+				let mut no_remaining_entries = session_privs.is_empty();
+				if no_remaining_entries {
+					for ev in pending_events.iter() {
+						match ev {
+							events::Event::PaymentSent { payment_id: Some(ev_payment_id), .. } |
+							events::Event::PaymentPathSuccessful { payment_id: ev_payment_id, .. } |
+							events::Event::PaymentPathFailed { payment_id: Some(ev_payment_id), .. } => {
+								if payment_id == ev_payment_id {
+									no_remaining_entries = false;
+									break;
+								}
+							},
+							_ => {},
+						}
+					}
+				}
+				if no_remaining_entries {
+					*timer_ticks_without_htlcs += 1;
+					*timer_ticks_without_htlcs <= IDEMPOTENCY_TIMEOUT_TICKS
+				} else {
+					*timer_ticks_without_htlcs = 0;
+					true
+				}
+			} else { true }
+		});
+	}
+
 	/// Performs actions which should happen on startup and roughly once per minute thereafter.
 	///
 	/// This currently includes:
@@ -3731,6 +3776,9 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			for (err, counterparty_node_id) in handle_errors.drain(..) {
 				let _ = handle_error!(self, err, counterparty_node_id);
 			}
+
+			self.remove_stale_resolved_payments();
+
 			should_persist
 		});
 	}
@@ -4248,9 +4296,6 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 							}
 						);
 					}
-					if payment.get().remaining_parts() == 0 {
-						payment.remove();
-					}
 				}
 			}
 		}
@@ -4295,10 +4340,6 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 									path,
 								}
 							);
-						}
-
-						if payment.get().remaining_parts() == 0 {
-							payment.remove();
 						}
 					}
 				} else {
@@ -6624,6 +6665,7 @@ impl_writeable_tlv_based_enum_upgradable!(PendingOutboundPayment,
 	(1, Fulfilled) => {
 		(0, session_privs, required),
 		(1, payment_hash, option),
+		(3, timer_ticks_without_htlcs, (default_value, 0)),
 	},
 	(2, Retryable) => {
 		(0, session_privs, required),
