@@ -404,8 +404,8 @@ pub enum Event {
 	/// provide failure information for each MPP part in the payment.
 	///
 	/// This event is provided once there are no further pending HTLCs for the payment and the
-	/// payment is no longer retryable, either due to a several-block timeout or because
-	/// [`ChannelManager::abandon_payment`] was previously called for the corresponding payment.
+	/// payment is no longer retryable due to [`ChannelManager::abandon_payment`] having been
+	/// called for the corresponding payment.
 	///
 	/// [`ChannelManager::abandon_payment`]: crate::ln::channelmanager::ChannelManager::abandon_payment
 	PaymentFailed {
@@ -444,9 +444,14 @@ pub enum Event {
 	/// Indicates an outbound HTLC we sent failed. Probably some intermediary node dropped
 	/// something. You may wish to retry with a different route.
 	///
+	/// If you have given up retrying this payment and wish to fail it, you MUST call
+	/// [`ChannelManager::abandon_payment`] at least once for a given [`PaymentId`] or memory
+	/// related to payment tracking will leak.
+	///
 	/// Note that this does *not* indicate that all paths for an MPP payment have failed, see
 	/// [`Event::PaymentFailed`] and [`all_paths_failed`].
 	///
+	/// [`ChannelManager::abandon_payment`]: crate::ln::channelmanager::ChannelManager::abandon_payment
 	/// [`all_paths_failed`]: Self::PaymentPathFailed::all_paths_failed
 	PaymentPathFailed {
 		/// The id returned by [`ChannelManager::send_payment`] and used with

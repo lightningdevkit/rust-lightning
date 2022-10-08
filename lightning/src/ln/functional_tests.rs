@@ -20,7 +20,7 @@ use crate::chain::transaction::OutPoint;
 use crate::chain::keysinterface::{BaseSign, KeysInterface};
 use crate::ln::{PaymentPreimage, PaymentSecret, PaymentHash};
 use crate::ln::channel::{commitment_tx_base_weight, COMMITMENT_TX_WEIGHT_PER_HTLC, CONCURRENT_INBOUND_HTLC_FEE_BUFFER, FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE, MIN_AFFORDABLE_HTLC_COUNT};
-use crate::ln::channelmanager::{self, ChannelManager, ChannelManagerReadArgs, PaymentId, RAACommitmentOrder, PaymentSendFailure, BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA, PAYMENT_EXPIRY_BLOCKS};
+use crate::ln::channelmanager::{self, ChannelManager, ChannelManagerReadArgs, PaymentId, RAACommitmentOrder, PaymentSendFailure, BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA};
 use crate::ln::channel::{Channel, ChannelError};
 use crate::ln::{chan_utils, onion_utils};
 use crate::ln::chan_utils::{OFFERED_HTLC_SCRIPT_WEIGHT, htlc_success_tx_weight, htlc_timeout_tx_weight, HTLCOutputInCommitment};
@@ -3184,10 +3184,9 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(deliver_bs_raa: bool, use
 	mine_transaction(&nodes[1], &revoked_local_txn[0]);
 	check_added_monitors!(nodes[1], 1);
 	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
-	assert!(ANTI_REORG_DELAY > PAYMENT_EXPIRY_BLOCKS); // We assume payments will also expire
 
 	let events = nodes[1].node.get_and_clear_pending_events();
-	assert_eq!(events.len(), if deliver_bs_raa { 2 + (nodes.len() - 1) } else { 4 + nodes.len() });
+	assert_eq!(events.len(), if deliver_bs_raa { 2 + nodes.len() - 1 } else { 3 + nodes.len() });
 	match events[0] {
 		Event::ChannelClosed { reason: ClosureReason::CommitmentTxConfirmed, .. } => { },
 		_ => panic!("Unexepected event"),
@@ -3200,15 +3199,18 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(deliver_bs_raa: bool, use
 	}
 	if !deliver_bs_raa {
 		match events[2] {
+			Event::PendingHTLCsForwardable { .. } => { },
+			_ => panic!("Unexpected event"),
+		};
+		nodes[1].node.abandon_payment(PaymentId(fourth_payment_hash.0));
+		let payment_failed_events = nodes[1].node.get_and_clear_pending_events();
+		assert_eq!(payment_failed_events.len(), 1);
+		match payment_failed_events[0] {
 			Event::PaymentFailed { ref payment_hash, .. } => {
 				assert_eq!(*payment_hash, fourth_payment_hash);
 			},
 			_ => panic!("Unexpected event"),
 		}
-		match events[3] {
-			Event::PendingHTLCsForwardable { .. } => { },
-			_ => panic!("Unexpected event"),
-		};
 	}
 	nodes[1].node.process_pending_htlc_forwards();
 	check_added_monitors!(nodes[1], 1);
@@ -4325,14 +4327,7 @@ fn do_test_holding_cell_htlc_add_timeouts(forwarded_htlc: bool) {
 		}
 		expect_payment_failed_with_update!(nodes[0], second_payment_hash, false, chan_2.0.contents.short_channel_id, false);
 	} else {
-		let events = nodes[1].node.get_and_clear_pending_events();
-		assert_eq!(events.len(), 2);
-		if let Event::PaymentPathFailed { ref payment_hash, .. } = events[0] {
-			assert_eq!(*payment_hash, second_payment_hash);
-		} else { panic!("Unexpected event"); }
-		if let Event::PaymentFailed { ref payment_hash, .. } = events[1] {
-			assert_eq!(*payment_hash, second_payment_hash);
-		} else { panic!("Unexpected event"); }
+		expect_payment_failed!(nodes[1], second_payment_hash, false);
 	}
 }
 
@@ -6047,14 +6042,7 @@ fn do_htlc_claim_previous_remote_commitment_only(use_dust: bool, check_revoke_no
 		check_added_monitors!(nodes[0], 1);
 		check_closed_event!(nodes[0], 1, ClosureReason::CommitmentTxConfirmed);
 	} else {
-		let events = nodes[0].node.get_and_clear_pending_events();
-		assert_eq!(events.len(), 2);
-		if let Event::PaymentPathFailed { ref payment_hash, .. } = events[0] {
-			assert_eq!(*payment_hash, our_payment_hash);
-		} else { panic!("Unexpected event"); }
-		if let Event::PaymentFailed { ref payment_hash, .. } = events[1] {
-			assert_eq!(*payment_hash, our_payment_hash);
-		} else { panic!("Unexpected event"); }
+		expect_payment_failed!(nodes[0], our_payment_hash, true);
 	}
 }
 

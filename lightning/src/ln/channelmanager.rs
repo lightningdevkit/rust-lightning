@@ -954,10 +954,6 @@ const CHECK_CLTV_EXPIRY_SANITY: u32 = MIN_CLTV_EXPIRY_DELTA as u32 - LATENCY_GRA
 #[allow(dead_code)]
 const CHECK_CLTV_EXPIRY_SANITY_2: u32 = MIN_CLTV_EXPIRY_DELTA as u32 - LATENCY_GRACE_PERIOD_BLOCKS - 2*CLTV_CLAIM_BUFFER;
 
-/// The number of blocks before we consider an outbound payment for expiry if it doesn't have any
-/// pending HTLCs in flight.
-pub(crate) const PAYMENT_EXPIRY_BLOCKS: u32 = 3;
-
 /// The number of ticks of [`ChannelManager::timer_tick_occurred`] until expiry of incomplete MPPs
 pub(crate) const MPP_TIMEOUT_TICKS: u8 = 3;
 
@@ -5832,21 +5828,6 @@ where
 		let mut payment_secrets = self.pending_inbound_payments.lock().unwrap();
 		payment_secrets.retain(|_, inbound_payment| {
 			inbound_payment.expiry_time > header.time as u64
-		});
-
-		let mut outbounds = self.pending_outbound_payments.lock().unwrap();
-		let mut pending_events = self.pending_events.lock().unwrap();
-		outbounds.retain(|payment_id, payment| {
-			if payment.remaining_parts() != 0 { return true }
-			if let PendingOutboundPayment::Retryable { starting_block_height, payment_hash, .. } = payment {
-				if *starting_block_height + PAYMENT_EXPIRY_BLOCKS <= height {
-					log_info!(self.logger, "Timing out payment with id {} and hash {}", log_bytes!(payment_id.0), log_bytes!(payment_hash.0));
-					pending_events.push(events::Event::PaymentFailed {
-						payment_id: *payment_id, payment_hash: *payment_hash,
-					});
-					false
-				} else { true }
-			} else { true }
 		});
 	}
 
