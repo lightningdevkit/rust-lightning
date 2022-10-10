@@ -12,7 +12,7 @@ jobs:
                      beta,
                      # 1.41.1 is MSRV for Rust-Lightning, lightning-invoice, and lightning-persister
                      1.41.1,
-                     # 1.45.2 is MSRV for lightning-net-tokio, lightning-block-sync, and coverage generation
+                     # 1.45.2 is MSRV for lightning-net-tokio, lightning-block-sync, lightning-background-processor, and coverage generation
                      1.45.2,
                      # 1.47.0 will be the MSRV for no-std builds using hashbrown once core2 is updated
                      1.47.0]
@@ -20,34 +20,43 @@ jobs:
           - toolchain: stable
             build-net-tokio: true
             build-no-std: true
+            build-futures: true
           - toolchain: stable
             platform: macos-latest
             build-net-tokio: true
             build-no-std: true
+            build-futures: true
           - toolchain: beta
             platform: macos-latest
             build-net-tokio: true
             build-no-std: true
+            build-futures: true
           - toolchain: stable
             platform: windows-latest
             build-net-tokio: true
             build-no-std: true
+            build-futures: true
           - toolchain: beta
             platform: windows-latest
             build-net-tokio: true
             build-no-std: true
+            build-futures: true
           - toolchain: beta
             build-net-tokio: true
             build-no-std: true
+            build-futures: true
           - toolchain: 1.41.1
             build-no-std: false
             test-log-variants: true
+            build-futures: false
           - toolchain: 1.45.2
             build-net-old-tokio: true
             build-net-tokio: true
             build-no-std: false
+            build-futures: true
             coverage: true
           - toolchain: 1.47.0
+            build-futures: true
             build-no-std: true
     runs-on: ${{ matrix.platform }}
     steps:
@@ -109,7 +118,7 @@ jobs:
       - name: Test on Rust ${{ matrix.toolchain }} with net-tokio and full code-linking for coverage generation
         if: matrix.coverage
         run: RUSTFLAGS="-C link-dead-code" cargo test --verbose --color always
-      - name: Test on no-std bullds Rust ${{ matrix.toolchain }}
+      - name: Test no-std builds on Rust ${{ matrix.toolchain }}
         if: "matrix.build-no-std && !matrix.coverage"
         shell: bash # Default on Winblows is powershell
         run: |
@@ -140,15 +149,26 @@ jobs:
         run: |
           cd lightning
           RUSTFLAGS="-C link-dead-code" cargo test --verbose --color always --no-default-features --features no-std
-          cd ..
+      - name: Test futures builds on Rust ${{ matrix.toolchain }}
+        if: "matrix.build-futures && !matrix.coverage"
+        shell: bash # Default on Winblows is powershell
+        run: |
+          cd lightning-background-processor
+          cargo test --verbose --color always --no-default-features --features futures
+      - name: Test futures builds on Rust ${{ matrix.toolchain }} and full code-linking for coverage generation
+        if: "matrix.build-futures && matrix.coverage"
+        shell: bash # Default on Winblows is powershell
+        run: |
+          cd lightning-background-processor
+          RUSTFLAGS="-C link-dead-code" cargo test --verbose --color always --no-default-features --features futures
       - name: Test on Rust ${{ matrix.toolchain }}
         if: "! matrix.build-net-tokio"
         run: |
-          cargo test --verbose --color always  -p lightning
-          cargo test --verbose --color always  -p lightning-invoice
-          cargo test --verbose --color always  -p lightning-rapid-gossip-sync
-          cargo build --verbose  --color always -p lightning-persister
-          cargo build --verbose  --color always -p lightning-background-processor
+          cargo test --verbose --color always -p lightning
+          cargo test --verbose --color always -p lightning-invoice
+          cargo test --verbose --color always -p lightning-rapid-gossip-sync
+          cargo test --verbose --color always -p lightning-persister
+          cargo test --verbose --color always -p lightning-background-processor
       - name: Test C Bindings Modifications on Rust ${{ matrix.toolchain }}
         if: "! matrix.build-net-tokio"
         run: |
@@ -299,6 +319,7 @@ jobs:
         run: |
           cargo check --release
           cargo check --no-default-features --features=no-std --release
+          cargo check --no-default-features --features=futures --release
           cargo doc --release
 
   fuzz:

@@ -7,7 +7,7 @@ use crate::http::{HttpClient, HttpEndpoint, HttpError, JsonResponse};
 use bitcoin::hash_types::BlockHash;
 use bitcoin::hashes::hex::ToHex;
 
-use futures::lock::Mutex;
+use futures_util::lock::Mutex;
 
 use serde_json;
 

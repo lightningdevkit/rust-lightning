@@ -20,7 +20,7 @@ rpc-client = [ "serde", "serde_json", "chunked_transfer" ]
 [dependencies]
 bitcoin = "0.29.0"
 lightning = { version = "0.0.111", path = "../lightning" }
-futures = { version = "0.3" }
+futures-util = { version = "0.3" }
 tokio = { version = "1.0", features = [ "io-util", "net", "time" ], optional = true }
 serde = { version = "1.0", features = ["derive"], optional = true }
 serde_json = { version = "1.0", optional = true }

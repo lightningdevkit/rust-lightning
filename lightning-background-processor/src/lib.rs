@@ -35,7 +35,7 @@ use std::time::{Duration, Instant};
 use std::ops::Deref;
 
 #[cfg(feature = "futures")]
-use futures::{select, future::FutureExt};
+use futures_util::{select_biased, future::FutureExt};
 
 /// `BackgroundProcessor` takes care of tasks that (1) need to happen periodically to keep
 /// Rust-Lightning running properly, and (2) either can or should be run in the background. Its
@@ -378,6 +378,7 @@ pub async fn process_events_async<
 	Descriptor: 'static + SocketDescriptor + Send + Sync,
 	CMH: 'static + Deref + Send + Sync,
 	RMH: 'static + Deref + Send + Sync,
+	OMH: 'static + Deref + Send + Sync,
 	EH: 'static + EventHandler + Send,
 	PS: 'static + Deref + Send,
 	M: 'static + Deref<Target = ChainMonitor<Signer, CF, T, F, L, P>> + Send + Sync,
@@ -385,7 +386,7 @@ pub async fn process_events_async<
 	PGS: 'static + Deref<Target = P2PGossipSync<G, CA, L>> + Send + Sync,
 	RGS: 'static + Deref<Target = RapidGossipSync<G, L>> + Send,
 	UMH: 'static + Deref + Send + Sync,
-	PM: 'static + Deref<Target = PeerManager<Descriptor, CMH, RMH, L, UMH>> + Send + Sync,
+	PM: 'static + Deref<Target = PeerManager<Descriptor, CMH, RMH, OMH, L, UMH>> + Send + Sync,
 	S: 'static + Deref<Target = SC> + Send + Sync,
 	SC: WriteableScore<'a>,
 	SleepFuture: core::future::Future<Output = bool>,
@@ -405,6 +406,7 @@ where
 	L::Target: 'static + Logger,
 	P::Target: 'static + Persist<Signer>,
 	CMH::Target: 'static + ChannelMessageHandler,
+	OMH::Target: 'static + OnionMessageHandler,
 	RMH::Target: 'static + RoutingMessageHandler,
 	UMH::Target: 'static + CustomMessageHandler,
 	PS::Target: 'static + Persister<'a, Signer, CW, T, K, F, L, SC>,
@@ -412,7 +414,7 @@ where
 	let mut should_continue = true;
 	define_run_body!(persister, event_handler, chain_monitor, channel_manager,
 		gossip_sync, peer_manager, logger, scorer, should_continue, {
-			select! {
+			select_biased! {
 				_ = channel_manager.get_persistable_update_future().fuse() => true,
 				cont = sleeper(Duration::from_millis(100)).fuse() => {
 					should_continue = cont;
