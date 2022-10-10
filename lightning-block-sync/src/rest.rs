@@ -7,7 +7,7 @@ use crate::http::{BinaryResponse, HttpEndpoint, HttpClient, JsonResponse};
 use bitcoin::hash_types::BlockHash;
 use bitcoin::hashes::hex::ToHex;
 
-use futures::lock::Mutex;
+use futures_util::lock::Mutex;
 
 use std::convert::TryFrom;
 use std::convert::TryInto;

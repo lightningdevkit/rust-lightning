@@ -35,7 +35,7 @@ use std::time::{Duration, Instant};
 use std::ops::Deref;
 
 #[cfg(feature = "futures")]
-use futures::{select, future::FutureExt};
+use futures_util::{select_biased, future::FutureExt};
 
 /// `BackgroundProcessor` takes care of tasks that (1) need to happen periodically to keep
 /// Rust-Lightning running properly, and (2) either can or should be run in the background. Its
@@ -377,7 +377,6 @@ pub async fn process_events_async<
 	P: 'static + Deref + Send + Sync,
 	Descriptor: 'static + SocketDescriptor + Send + Sync,
 	CMH: 'static + Deref + Send + Sync,
-	CUMH: 'static + Deref + Send + Sync,
 	RMH: 'static + Deref + Send + Sync,
 	OMH: 'static + Deref + Send + Sync,
 	EH: 'static + EventHandler + Send,
@@ -415,7 +414,7 @@ where
 	let mut should_continue = true;
 	define_run_body!(persister, event_handler, chain_monitor, channel_manager,
 		gossip_sync, peer_manager, logger, scorer, should_continue, {
-			select! {
+			select_biased! {
 				_ = channel_manager.get_persistable_update_future().fuse() => true,
 				cont = sleeper(Duration::from_millis(100)).fuse() => {
 					should_continue = cont;

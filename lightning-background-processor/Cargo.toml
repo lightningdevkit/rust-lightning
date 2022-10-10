@@ -13,11 +13,14 @@ edition = "2018"
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
+[features]
+futures = [ "futures-util" ]
+
 [dependencies]
 bitcoin = "0.29.0"
 lightning = { version = "0.0.111", path = "../lightning", features = ["std"] }
 lightning-rapid-gossip-sync = { version = "0.0.111", path = "../lightning-rapid-gossip-sync" }
-futures = { version = "0.3", optional = true }
+futures-util = { version = "0.3", default-features = false, features = ["async-await-macro"], optional = true }
 
 [dev-dependencies]
 lightning = { version = "0.0.111", path = "../lightning", features = ["_test_utils"] }
