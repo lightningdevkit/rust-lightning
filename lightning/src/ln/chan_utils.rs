@@ -736,6 +736,14 @@ pub(crate) fn get_anchor_output<'a>(commitment_tx: &'a Transaction, funding_pubk
 		.map(|(idx, txout)| (idx as u32, txout))
 }
 
+/// Returns the witness required to satisfy and spend an anchor input.
+pub fn build_anchor_input_witness(funding_key: &PublicKey, funding_sig: &Signature) -> Witness {
+	let anchor_redeem_script = chan_utils::get_anchor_redeemscript(funding_key);
+	let mut funding_sig = funding_sig.serialize_der().to_vec();
+	funding_sig.push(EcdsaSighashType::All as u8);
+	Witness::from_vec(vec![funding_sig, anchor_redeem_script.to_bytes()])
+}
+
 /// Per-channel data used to build transactions in conjunction with the per-commitment data (CommitmentTransaction).
 /// The fields are organized by holder/counterparty.
 ///
