@@ -1330,7 +1330,7 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 					// updates to ensure you always have the latest one, only vaguely suggesting
 					// that it be at least the current time.
 					if node_info.last_update  > msg.timestamp {
-						return Err(LightningError{err: "Update older than last processed update".to_owned(), action: ErrorAction::IgnoreAndLog(Level::Gossip)});
+						return Err(LightningError{err: "Update older than last processed update".to_owned(), action: ErrorAction::IgnoreDuplicateGossip});
 					} else if node_info.last_update  == msg.timestamp {
 						return Err(LightningError{err: "Update had the same timestamp as last processed update".to_owned(), action: ErrorAction::IgnoreDuplicateGossip});
 					}
@@ -1796,7 +1796,7 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 							// pruning based on the timestamp field being more than two weeks old,
 							// but only in the non-normative section.
 							if existing_chan_info.last_update > msg.timestamp {
-								return Err(LightningError{err: "Update older than last processed update".to_owned(), action: ErrorAction::IgnoreAndLog(Level::Gossip)});
+								return Err(LightningError{err: "Update older than last processed update".to_owned(), action: ErrorAction::IgnoreDuplicateGossip});
 							} else if existing_chan_info.last_update == msg.timestamp {
 								return Err(LightningError{err: "Update had same timestamp as last processed update".to_owned(), action: ErrorAction::IgnoreDuplicateGossip});
 							}

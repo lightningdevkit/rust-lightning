@@ -194,7 +194,13 @@ impl<NG: Deref<Target=NetworkGraph<L>>, L: Deref> RapidGossipSync<NG, L> where L
 				synthetic_update.htlc_maximum_msat = htlc_maximum_msat;
 			}
 
-			network_graph.update_channel_unsigned(&synthetic_update)?;
+			match network_graph.update_channel_unsigned(&synthetic_update) {
+				Ok(_) => {},
+				Err(LightningError { action: ErrorAction::IgnoreDuplicateGossip, .. }) => {},
+				Err(LightningError { action: ErrorAction::IgnoreAndLog(_), .. }) => {},
+				Err(LightningError { action: ErrorAction::IgnoreError, .. }) => {},
+				Err(e) => return Err(e.into()),
+			}
 		}
 
 		self.network_graph.set_last_rapid_gossip_sync_timestamp(latest_seen_timestamp);
@@ -433,6 +439,50 @@ mod tests {
 		);
 		assert!(after.contains("619737530008010752"));
 		assert!(after.contains("783241506229452801"));
+	}
+
+	#[test]
+	fn update_succeeds_when_duplicate_gossip_is_applied() {
+		let initialization_input = vec![
+			76, 68, 75, 1, 111, 226, 140, 10, 182, 241, 179, 114, 193, 166, 162, 70, 174, 99, 247,
+			79, 147, 30, 131, 101, 225, 90, 8, 156, 104, 214, 25, 0, 0, 0, 0, 0, 97, 227, 98, 218,
+			0, 0, 0, 4, 2, 22, 7, 207, 206, 25, 164, 197, 231, 230, 231, 56, 102, 61, 250, 251,
+			187, 172, 38, 46, 79, 247, 108, 44, 155, 48, 219, 238, 252, 53, 192, 6, 67, 2, 36, 125,
+			157, 176, 223, 175, 234, 116, 94, 248, 201, 225, 97, 235, 50, 47, 115, 172, 63, 136,
+			88, 216, 115, 11, 111, 217, 114, 84, 116, 124, 231, 107, 2, 158, 1, 242, 121, 152, 106,
+			204, 131, 186, 35, 93, 70, 216, 10, 237, 224, 183, 89, 95, 65, 3, 83, 185, 58, 138,
+			181, 64, 187, 103, 127, 68, 50, 2, 201, 19, 17, 138, 136, 149, 185, 226, 156, 137, 175,
+			110, 32, 237, 0, 217, 90, 31, 100, 228, 149, 46, 219, 175, 168, 77, 4, 143, 38, 128,
+			76, 97, 0, 0, 0, 2, 0, 0, 255, 8, 153, 192, 0, 2, 27, 0, 0, 0, 1, 0, 0, 255, 2, 68,
+			226, 0, 6, 11, 0, 1, 2, 3, 0, 0, 0, 4, 0, 40, 0, 0, 0, 0, 0, 0, 3, 232, 0, 0, 3, 232,
+			0, 0, 0, 1, 0, 0, 0, 0, 58, 85, 116, 216, 255, 8, 153, 192, 0, 2, 27, 0, 0, 56, 0, 0,
+			0, 0, 0, 0, 0, 1, 0, 0, 0, 100, 0, 0, 2, 224, 0, 25, 0, 0, 0, 1, 0, 0, 0, 125, 255, 2,
+			68, 226, 0, 6, 11, 0, 1, 4, 0, 0, 0, 0, 29, 129, 25, 192, 0, 5, 0, 0, 0, 0, 29, 129,
+			25, 192,
+		];
+
+		let block_hash = genesis_block(Network::Bitcoin).block_hash();
+		let logger = TestLogger::new();
+		let network_graph = NetworkGraph::new(block_hash, &logger);
+
+		assert_eq!(network_graph.read_only().channels().len(), 0);
+
+		let rapid_sync = RapidGossipSync::new(&network_graph);
+		let initialization_result = rapid_sync.update_network_graph(&initialization_input[..]);
+		assert!(initialization_result.is_ok());
+
+		let single_direction_incremental_update_input = vec![
+			76, 68, 75, 1, 111, 226, 140, 10, 182, 241, 179, 114, 193, 166, 162, 70, 174, 99, 247,
+			79, 147, 30, 131, 101, 225, 90, 8, 156, 104, 214, 25, 0, 0, 0, 0, 0, 97, 229, 183, 167,
+			0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+			0, 0, 0, 0, 0, 0, 0, 0, 0, 255, 8, 153, 192, 0, 2, 27, 0, 0, 136, 0, 0, 0, 221, 255, 2,
+			68, 226, 0, 6, 11, 0, 1, 128,
+		];
+		let update_result_1 = rapid_sync.update_network_graph(&single_direction_incremental_update_input[..]);
+		// Apply duplicate update
+		let update_result_2 = rapid_sync.update_network_graph(&single_direction_incremental_update_input[..]);
+		assert!(update_result_1.is_ok());
+		assert!(update_result_2.is_ok());
 	}
 
 	#[test]
