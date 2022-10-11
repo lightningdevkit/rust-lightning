@@ -1126,7 +1126,7 @@ impl SendEvent {
 		assert!(updates.update_fail_htlcs.is_empty());
 		assert!(updates.update_fail_malformed_htlcs.is_empty());
 		assert!(updates.update_fee.is_none());
-		SendEvent { node_id: node_id, msgs: updates.update_add_htlcs, commitment_msg: updates.commitment_signed }
+		SendEvent { node_id, msgs: updates.update_add_htlcs, commitment_msg: updates.commitment_signed }
 	}
 
 	pub fn from_event(event: MessageSendEvent) -> SendEvent {

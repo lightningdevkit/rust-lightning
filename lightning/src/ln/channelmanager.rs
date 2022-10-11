@@ -1971,7 +1971,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		log_debug!(self.logger, "Finishing force-closure of channel with {} HTLCs to fail", failed_htlcs.len());
 		for htlc_source in failed_htlcs.drain(..) {
 			let (source, payment_hash, counterparty_node_id, channel_id) = htlc_source;
-			let receiver = HTLCDestination::NextHopChannel { node_id: Some(counterparty_node_id), channel_id: channel_id };
+			let receiver = HTLCDestination::NextHopChannel { node_id: Some(counterparty_node_id), channel_id };
 			self.fail_htlc_backwards_internal(source, &payment_hash, HTLCFailReason::Reason { failure_code: 0x4000 | 8, data: Vec::new() }, receiver);
 		}
 		if let Some((funding_txo, monitor_update)) = monitor_update_option {
@@ -3862,7 +3862,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 								}
 							} else {
 								events::Event::ProbeFailed {
-									payment_id: payment_id,
+									payment_id,
 									payment_hash: payment_hash.clone(),
 									path: path.clone(),
 									short_channel_id,
@@ -3909,7 +3909,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 
 						if self.payment_is_probe(payment_hash, &payment_id) {
 							events::Event::ProbeFailed {
-								payment_id: payment_id,
+								payment_id,
 								payment_hash: payment_hash.clone(),
 								path: path.clone(),
 								short_channel_id: Some(scid),
@@ -6499,7 +6499,7 @@ impl Readable for HTLCSource {
 				}
 				Ok(HTLCSource::OutboundRoute {
 					session_priv: session_priv.0.unwrap(),
-					first_hop_htlc_msat: first_hop_htlc_msat,
+					first_hop_htlc_msat,
 					path: path.unwrap(),
 					payment_id: payment_id.unwrap(),
 					payment_secret,

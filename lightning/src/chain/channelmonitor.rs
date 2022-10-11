@@ -2826,7 +2826,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 					self.onchain_events_awaiting_threshold_conf.push(OnchainEventEntry {
 						txid,
 						transaction: Some((*tx).clone()),
-						height: height,
+						height,
 						event: OnchainEvent::FundingSpendConfirmation {
 							on_local_output_csv: balance_spendable_csv,
 							commitment_tx_to_counterparty_output,
@@ -3418,7 +3418,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 			let entry = OnchainEventEntry {
 				txid: tx.txid(),
 				transaction: Some(tx.clone()),
-				height: height,
+				height,
 				event: OnchainEvent::MaturingOutput { descriptor: spendable_output.clone() },
 			};
 			log_info!(logger, "Received spendable output {}, spendable at height {}", log_spendable!(spendable_output), entry.confirmation_threshold());

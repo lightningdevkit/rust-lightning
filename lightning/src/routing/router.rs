@@ -1153,7 +1153,7 @@ where L::Target: Logger {
 								lowest_fee_to_peer_through_node: total_fee_msat,
 								lowest_fee_to_node: $next_hops_fee_msat as u64 + hop_use_fee_msat,
 								total_cltv_delta: hop_total_cltv_delta,
-								value_contribution_msat: value_contribution_msat,
+								value_contribution_msat,
 								path_htlc_minimum_msat,
 								path_penalty_msat,
 								path_length_to_node,
