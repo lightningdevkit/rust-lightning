@@ -674,6 +674,8 @@ pub type SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, M, T, F, L> = ChannelManage
 //  |
 //  |__`forward_htlcs`
 //  |
+//  |__`pending_background_events`
+//  |
 //  |__`pending_inbound_payments`
 //  |   |
 //  |   |__`claimable_htlcs`
@@ -685,8 +687,6 @@ pub type SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, M, T, F, L> = ChannelManage
 //  |           |__`id_to_peer`
 //  |           |
 //  |           |__`pending_events`
-//  |           |   |
-//  |           |   |__`pending_background_events`
 //  |           |
 //  |           |__`per_peer_state`
 //  |               |
@@ -5360,6 +5360,16 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// pushing the channel monitor update (if any) to the background events queue and removing the
 	/// Channel object.
 	fn handle_init_event_channel_failures(&self, mut failed_channels: Vec<ShutdownResult>) {
+		#[cfg(debug_assertions)]
+		{
+			// Ensure that the different lock branches are not held when calling this function.
+			// This ensures that future code doesn't introduce a lock_order requirement for
+			// `pending_background_events`.
+			assert!(self.channel_state.try_lock().is_ok());
+			assert!(self.per_peer_state.read().is_ok());
+			assert!(self.pending_inbound_payments.try_lock().is_ok());
+			assert!(self.pending_events.try_lock().is_ok());
+		}
 		for mut failure in failed_channels.drain(..) {
 			// Either a commitment transactions has been confirmed on-chain or
 			// Channel::block_disconnected detected that the funding transaction has been
@@ -6668,24 +6678,25 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Writeable f
 			}
 		}
 
-
-		let pending_inbound_payments = self.pending_inbound_payments.lock().unwrap();
-		let pending_outbound_payments = self.pending_outbound_payments.lock().unwrap();
-		let events = self.pending_events.lock().unwrap();
-		(events.len() as u64).write(writer)?;
-		for event in events.iter() {
-			event.write(writer)?;
+		{
+			let events = self.pending_events.lock().unwrap();
+			(events.len() as u64).write(writer)?;
+			for event in events.iter() {
+				event.write(writer)?;
+			}
 		}
 
-		let background_events = self.pending_background_events.lock().unwrap();
-		(background_events.len() as u64).write(writer)?;
-		for event in background_events.iter() {
-			match event {
-				BackgroundEvent::ClosingMonitorUpdate((funding_txo, monitor_update)) => {
-					0u8.write(writer)?;
-					funding_txo.write(writer)?;
-					monitor_update.write(writer)?;
-				},
+		{
+			let background_events = self.pending_background_events.lock().unwrap();
+			(background_events.len() as u64).write(writer)?;
+			for event in background_events.iter() {
+				match event {
+					BackgroundEvent::ClosingMonitorUpdate((funding_txo, monitor_update)) => {
+						0u8.write(writer)?;
+						funding_txo.write(writer)?;
+						monitor_update.write(writer)?;
+					},
+				}
 			}
 		}
 
@@ -6695,12 +6706,14 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Writeable f
 		(self.highest_seen_timestamp.load(Ordering::Acquire) as u32).write(writer)?;
 		(self.highest_seen_timestamp.load(Ordering::Acquire) as u32).write(writer)?;
 
+		let pending_inbound_payments = self.pending_inbound_payments.lock().unwrap();
 		(pending_inbound_payments.len() as u64).write(writer)?;
 		for (hash, pending_payment) in pending_inbound_payments.iter() {
 			hash.write(writer)?;
 			pending_payment.write(writer)?;
 		}
 
+		let pending_outbound_payments = self.pending_outbound_payments.lock().unwrap();
 		// For backwards compat, write the session privs and their total length.
 		let mut num_pending_outbounds_compat: u64 = 0;
 		for (_, outbound) in pending_outbound_payments.iter() {
