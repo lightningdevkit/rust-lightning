@@ -663,21 +663,21 @@ pub type SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, M, T, F, L> = ChannelManage
 //  |
 //  |__`forward_htlcs`
 //  |
-//  |__`channel_state`
+//  |__`pending_inbound_payments`
 //  |   |
-//  |   |__`id_to_peer`
+//  |   |__`claimable_htlcs`
 //  |   |
-//  |   |__`short_to_chan_info`
-//  |   |
-//  |   |__`per_peer_state`
+//  |   |__`pending_outbound_payments`
 //  |       |
-//  |       |__`outbound_scid_aliases`
-//  |       |
-//  |       |__`pending_inbound_payments`
+//  |       |__`channel_state`
 //  |           |
-//  |           |__`claimable_htlcs`
+//  |           |__`id_to_peer`
 //  |           |
-//  |           |__`pending_outbound_payments`
+//  |           |__`short_to_chan_info`
+//  |           |
+//  |           |__`per_peer_state`
+//  |               |
+//  |               |__`outbound_scid_aliases`
 //  |               |
 //  |               |__`best_block`
 //  |               |
@@ -6777,18 +6777,19 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Writeable for ChannelMana
 			}
 		}
 
-		let mut htlc_purposes: Vec<events::PaymentPurpose> = Vec::new();
-		{
-			let claimable_htlcs = self.claimable_htlcs.lock().unwrap();
-			(claimable_htlcs.len() as u64).write(writer)?;
-			for (payment_hash, (purpose, previous_hops)) in claimable_htlcs.iter() {
-				payment_hash.write(writer)?;
-				(previous_hops.len() as u64).write(writer)?;
-				for htlc in previous_hops.iter() {
-					htlc.write(writer)?;
-				}
-				htlc_purposes.push(purpose.clone());
+		let pending_inbound_payments = self.pending_inbound_payments.lock().unwrap();
+		let claimable_htlcs = self.claimable_htlcs.lock().unwrap();
+		let pending_outbound_payments = self.pending_outbound_payments.lock().unwrap();
+
+		let mut htlc_purposes: Vec<&events::PaymentPurpose> = Vec::new();
+		(claimable_htlcs.len() as u64).write(writer)?;
+		for (payment_hash, (purpose, previous_hops)) in claimable_htlcs.iter() {
+			payment_hash.write(writer)?;
+			(previous_hops.len() as u64).write(writer)?;
+			for htlc in previous_hops.iter() {
+				htlc.write(writer)?;
 			}
+			htlc_purposes.push(purpose);
 		}
 
 		let per_peer_state = self.per_peer_state.write().unwrap();
@@ -6799,8 +6800,6 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Writeable for ChannelMana
 			peer_state.latest_features.write(writer)?;
 		}
 
-		let pending_inbound_payments = self.pending_inbound_payments.lock().unwrap();
-		let pending_outbound_payments = self.pending_outbound_payments.lock().unwrap();
 		let events = self.pending_events.lock().unwrap();
 		(events.len() as u64).write(writer)?;
 		for event in events.iter() {
