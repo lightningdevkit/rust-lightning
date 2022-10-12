@@ -1469,20 +1469,20 @@ macro_rules! expect_pending_htlcs_forwardable_from_events {
 		}
 	}}
 }
-
 #[macro_export]
 #[cfg(any(test, feature = "_bench_unstable", feature = "_test_utils"))]
 macro_rules! expect_payment_received {
 	($node: expr, $expected_payment_hash: expr, $expected_payment_secret: expr, $expected_recv_value: expr) => {
-		expect_payment_received!($node, $expected_payment_hash, $expected_payment_secret, $expected_recv_value, None)
+		expect_payment_received!($node, $expected_payment_hash, $expected_payment_secret, $expected_recv_value, None, $node.node.get_our_node_id())
 	};
-	($node: expr, $expected_payment_hash: expr, $expected_payment_secret: expr, $expected_recv_value: expr, $expected_payment_preimage: expr) => {
+	($node: expr, $expected_payment_hash: expr, $expected_payment_secret: expr, $expected_recv_value: expr, $expected_payment_preimage: expr, $expected_receiver_node_id: expr) => {
 		let events = $node.node.get_and_clear_pending_events();
 		assert_eq!(events.len(), 1);
 		match events[0] {
-			$crate::util::events::Event::PaymentReceived { ref payment_hash, ref purpose, amount_msat } => {
+			$crate::util::events::Event::PaymentReceived { ref payment_hash, ref purpose, amount_msat, receiver_node_id } => {
 				assert_eq!($expected_payment_hash, *payment_hash);
 				assert_eq!($expected_recv_value, amount_msat);
+				assert_eq!($expected_receiver_node_id, receiver_node_id.unwrap());
 				match purpose {
 					$crate::util::events::PaymentPurpose::InvoicePayment { payment_preimage, payment_secret, .. } => {
 						assert_eq!(&$expected_payment_preimage, payment_preimage);
@@ -1774,8 +1774,9 @@ pub fn do_pass_along_path<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_p
 			if payment_received_expected {
 				assert_eq!(events_2.len(), 1);
 				match events_2[0] {
-					Event::PaymentReceived { ref payment_hash, ref purpose, amount_msat } => {
+					Event::PaymentReceived { ref payment_hash, ref purpose, amount_msat, receiver_node_id } => {
 						assert_eq!(our_payment_hash, *payment_hash);
+						assert_eq!(node.node.get_our_node_id(), receiver_node_id.unwrap());
 						match &purpose {
 							PaymentPurpose::InvoicePayment { payment_preimage, payment_secret, .. } => {
 								assert_eq!(expected_preimage, *payment_preimage);

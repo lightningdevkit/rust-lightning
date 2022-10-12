@@ -1083,7 +1083,7 @@ mod test {
 		nodes[fwd_idx].node.process_pending_htlc_forwards();
 
 		let payment_preimage_opt = if user_generated_pmt_hash { None } else { Some(payment_preimage) };
-		expect_payment_received!(&nodes[fwd_idx], payment_hash, payment_secret, payment_amt, payment_preimage_opt);
+		expect_payment_received!(&nodes[fwd_idx], payment_hash, payment_secret, payment_amt, payment_preimage_opt, route.paths[0].last().unwrap().pubkey);
 		do_claim_payment_along_route(&nodes[0], &vec!(&vec!(&nodes[fwd_idx])[..]), false, payment_preimage);
 		let events = nodes[0].node.get_and_clear_pending_events();
 		assert_eq!(events.len(), 2);

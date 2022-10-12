@@ -3323,6 +3323,12 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 										));
 									}
 								}
+								let phantom_shared_secret = claimable_htlc.prev_hop.phantom_shared_secret;
+								let mut receiver_node_id = self.our_network_pubkey;
+								if phantom_shared_secret.is_some() {
+									receiver_node_id = self.keys_manager.get_node_id(Recipient::PhantomNode)
+										.expect("Failed to get node_id for phantom node recipient");
+								}
 
 								macro_rules! check_total_value {
 									($payment_data: expr, $payment_preimage: expr) => {{
@@ -3365,6 +3371,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 										} else if total_value == $payment_data.total_msat {
 											htlcs.push(claimable_htlc);
 											new_events.push(events::Event::PaymentReceived {
+												receiver_node_id: Some(receiver_node_id),
 												payment_hash,
 												purpose: purpose(),
 												amount_msat: total_value,
@@ -3407,6 +3414,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 														let purpose = events::PaymentPurpose::SpontaneousPayment(preimage);
 														e.insert((purpose.clone(), vec![claimable_htlc]));
 														new_events.push(events::Event::PaymentReceived {
+															receiver_node_id: Some(receiver_node_id),
 															payment_hash,
 															amount_msat: outgoing_amt_msat,
 															purpose,
@@ -4070,6 +4078,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 			let mut claimed_any_htlcs = false;
 			let mut channel_state_lock = self.channel_state.lock().unwrap();
 			let channel_state = &mut *channel_state_lock;
+			let mut receiver_node_id = Some(self.our_network_pubkey);
 			for htlc in sources.iter() {
 				let chan_id = match self.short_to_chan_info.read().unwrap().get(&htlc.prev_hop.short_channel_id) {
 					Some((_cp_id, chan_id)) => chan_id.clone(),
@@ -4100,6 +4109,12 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 						valid_mpp = false;
 						break;
 					}
+				}
+				let phantom_shared_secret = htlc.prev_hop.phantom_shared_secret;
+				if phantom_shared_secret.is_some() {
+					let phantom_pubkey = self.keys_manager.get_node_id(Recipient::PhantomNode)
+						.expect("Failed to get node_id for phantom node recipient");
+					receiver_node_id = Some(phantom_pubkey)
 				}
 
 				claimable_amt_msat += htlc.value;
@@ -4150,6 +4165,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 
 			if claimed_any_htlcs {
 				self.pending_events.lock().unwrap().push(events::Event::PaymentClaimed {
+					receiver_node_id,
 					payment_hash,
 					purpose: payment_purpose,
 					amount_msat: claimable_amt_msat,
@@ -7447,6 +7463,13 @@ impl<'a, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 				if let Some((payment_purpose, claimable_htlcs)) = claimable_htlcs.remove(&payment_hash) {
 					log_info!(args.logger, "Re-claiming HTLCs with payment hash {} as we've released the preimage to a ChannelMonitor!", log_bytes!(payment_hash.0));
 					let mut claimable_amt_msat = 0;
+					let mut receiver_node_id = Some(our_network_pubkey);
+					let phantom_shared_secret = claimable_htlcs[0].prev_hop.phantom_shared_secret;
+					if phantom_shared_secret.is_some() {
+						let phantom_pubkey = args.keys_manager.get_node_id(Recipient::PhantomNode)
+							.expect("Failed to get node_id for phantom node recipient");
+						receiver_node_id = Some(phantom_pubkey)
+					}
 					for claimable_htlc in claimable_htlcs {
 						claimable_amt_msat += claimable_htlc.value;
 
@@ -7474,6 +7497,7 @@ impl<'a, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 						}
 					}
 					pending_events_read.push(events::Event::PaymentClaimed {
+						receiver_node_id,
 						payment_hash,
 						purpose: payment_purpose,
 						amount_msat: claimable_amt_msat,
