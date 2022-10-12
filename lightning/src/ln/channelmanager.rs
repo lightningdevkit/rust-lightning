@@ -674,25 +674,25 @@ pub type SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, M, T, F, L> = ChannelManage
 //  |
 //  |__`forward_htlcs`
 //  |
-//  |__`channel_state`
+//  |__`pending_inbound_payments`
 //  |   |
-//  |   |__`id_to_peer`
+//  |   |__`claimable_htlcs`
 //  |   |
-//  |   |__`per_peer_state`
+//  |   |__`pending_outbound_payments`
 //  |       |
-//  |       |__`outbound_scid_aliases`
-//  |       |
-//  |       |__`pending_inbound_payments`
+//  |       |__`channel_state`
 //  |           |
-//  |           |__`claimable_htlcs`
+//  |           |__`id_to_peer`
 //  |           |
-//  |           |__`pending_outbound_payments`
+//  |           |__`pending_events`
+//  |           |   |
+//  |           |   |__`pending_background_events`
+//  |           |
+//  |           |__`per_peer_state`
+//  |               |
+//  |               |__`outbound_scid_aliases`
 //  |               |
 //  |               |__`best_block`
-//  |               |
-//  |               |__`pending_events`
-//  |                   |
-//  |                   |__`pending_background_events`
 //
 pub struct ChannelManager<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 	where M::Target: chain::Watch<Signer>,
@@ -2455,7 +2455,6 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 
 		let err: Result<(), _> = loop {
-			let mut channel_lock = self.channel_state.lock().unwrap();
 
 			let mut pending_outbounds = self.pending_outbound_payments.lock().unwrap();
 			let payment_entry = pending_outbounds.entry(payment_id);
@@ -2466,6 +2465,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					});
 				}
 			}
+
+			let mut channel_lock = self.channel_state.lock().unwrap();
 
 			let id = match channel_lock.short_to_chan_info.get(&path.first().unwrap().short_channel_id) {
 				None => return Err(APIError::ChannelUnavailable{err: "No channel available with first hop!".to_owned()}),
@@ -6657,13 +6658,16 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Writeable f
 			}
 		}
 
-		let per_peer_state = self.per_peer_state.write().unwrap();
-		(per_peer_state.len() as u64).write(writer)?;
-		for (peer_pubkey, peer_state_mutex) in per_peer_state.iter() {
-			peer_pubkey.write(writer)?;
-			let peer_state = peer_state_mutex.lock().unwrap();
-			peer_state.latest_features.write(writer)?;
+		{
+			let per_peer_state = self.per_peer_state.write().unwrap();
+			(per_peer_state.len() as u64).write(writer)?;
+			for (peer_pubkey, peer_state_mutex) in per_peer_state.iter() {
+				peer_pubkey.write(writer)?;
+				let peer_state = peer_state_mutex.lock().unwrap();
+				peer_state.latest_features.write(writer)?;
+			}
 		}
+
 
 		let pending_inbound_payments = self.pending_inbound_payments.lock().unwrap();
 		let pending_outbound_payments = self.pending_outbound_payments.lock().unwrap();
