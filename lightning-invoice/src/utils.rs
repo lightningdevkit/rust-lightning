@@ -439,8 +439,10 @@ fn filter_channels(channels: Vec<ChannelDetails>, min_inbound_capacity_msat: Opt
 	// the payment value and where we're currently connected to the channel counterparty.
 	// Even if we cannot satisfy both goals, always ensure we include *some* hints, preferring
 	// those which meet at least one criteria.
-	filtered_channels.into_iter()
-		.filter(|(_counterparty_id, channel)| {
+	filtered_channels
+		.into_iter()
+		.map(|(_, channel)| channel)
+		.filter(|channel| {
 			if online_min_capacity_channel_exists {
 				channel.inbound_capacity_msat >= min_inbound_capacity && channel.is_usable
 			} else if min_capacity_channel_exists && online_channel_exists {
@@ -454,7 +456,7 @@ fn filter_channels(channels: Vec<ChannelDetails>, min_inbound_capacity_msat: Opt
 				channel.is_usable
 			} else { true }
 		})
-		.map(|(_counterparty_id, channel)| route_hint_from_channel(channel))
+		.map(route_hint_from_channel)
 		.collect::<Vec<RouteHint>>()
 }
 
