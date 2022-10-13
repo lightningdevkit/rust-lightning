@@ -326,7 +326,7 @@ where
 	F::Target: FeeEstimator,
 	L::Target: Logger,
 {
-	let route_hints = filter_channels(channelmanager.list_usable_channels(), amt_msat);
+	let route_hints = filter_channels(channelmanager.list_channels(), amt_msat);
 
 	// `create_inbound_payment` only returns an error if the amount is greater than the total bitcoin
 	// supply.
@@ -377,16 +377,18 @@ where
 /// The filtering is based on the following criteria:
 /// * Only one channel per counterparty node
 /// * Always select the channel with the highest inbound capacity per counterparty node
-/// * Filter out channels with a lower inbound capacity than `min_inbound_capacity_msat`, if any
-/// channel with a higher or equal inbound capacity than `min_inbound_capacity_msat` exists
+/// * Prefer channels with capacity at least `min_inbound_capacity_msat` and where the channel
+///   `is_usable` (i.e. the peer is connected).
 /// * If any public channel exists, the returned `RouteHint`s will be empty, and the sender will
-/// need to find the path by looking at the public channels instead
+///   need to find the path by looking at the public channels instead
 fn filter_channels(channels: Vec<ChannelDetails>, min_inbound_capacity_msat: Option<u64>) -> Vec<RouteHint>{
-	let mut filtered_channels: HashMap<PublicKey, &ChannelDetails> = HashMap::new();
+	let mut filtered_channels: HashMap<PublicKey, ChannelDetails> = HashMap::new();
 	let min_inbound_capacity = min_inbound_capacity_msat.unwrap_or(0);
 	let mut min_capacity_channel_exists = false;
+	let mut online_channel_exists = false;
+	let mut online_min_capacity_channel_exists = false;
 
-	for channel in channels.iter() {
+	for channel in channels.into_iter().filter(|chan| chan.is_channel_ready) {
 		if channel.get_inbound_payment_scid().is_none() || channel.counterparty.forwarding_info.is_none() {
 			continue;
 		}
@@ -399,7 +401,13 @@ fn filter_channels(channels: Vec<ChannelDetails>, min_inbound_capacity_msat: Opt
 
 		if channel.inbound_capacity_msat >= min_inbound_capacity {
 			min_capacity_channel_exists = true;
-		};
+			if channel.is_usable {
+				online_min_capacity_channel_exists = true;
+			}
+		}
+		if channel.is_usable {
+			online_channel_exists = true;
+		}
 		match filtered_channels.entry(channel.counterparty.node_id) {
 			hash_map::Entry::Occupied(mut entry) => {
 				let current_max_capacity = entry.get().inbound_capacity_msat;
@@ -414,7 +422,7 @@ fn filter_channels(channels: Vec<ChannelDetails>, min_inbound_capacity_msat: Opt
 		}
 	}
 
-	let route_hint_from_channel = |channel: &ChannelDetails| {
+	let route_hint_from_channel = |channel: ChannelDetails| {
 		let forwarding_info = channel.counterparty.forwarding_info.as_ref().unwrap();
 		RouteHint(vec![RouteHintHop {
 			src_node_id: channel.counterparty.node_id,
@@ -427,15 +435,26 @@ fn filter_channels(channels: Vec<ChannelDetails>, min_inbound_capacity_msat: Opt
 			htlc_minimum_msat: channel.inbound_htlc_minimum_msat,
 			htlc_maximum_msat: channel.inbound_htlc_maximum_msat,}])
 	};
-	// If all channels are private, return the route hint for the highest inbound capacity channel
-	// per counterparty node. If channels with an higher inbound capacity than the
-	// min_inbound_capacity exists, filter out the channels with a lower capacity than that.
+	// If all channels are private, prefer to return route hints which have a higher capacity than
+	// the payment value and where we're currently connected to the channel counterparty.
+	// Even if we cannot satisfy both goals, always ensure we include *some* hints, preferring
+	// those which meet at least one criteria.
 	filtered_channels.into_iter()
 		.filter(|(_counterparty_id, channel)| {
-			min_capacity_channel_exists && channel.inbound_capacity_msat >= min_inbound_capacity ||
-			!min_capacity_channel_exists
+			if online_min_capacity_channel_exists {
+				channel.inbound_capacity_msat >= min_inbound_capacity && channel.is_usable
+			} else if min_capacity_channel_exists && online_channel_exists {
+				// If there are some online channels and some min_capacity channels, but no
+				// online-and-min_capacity channels, just include the min capacity ones and ignore
+				// online-ness.
+				channel.inbound_capacity_msat >= min_inbound_capacity
+			} else if min_capacity_channel_exists {
+				channel.inbound_capacity_msat >= min_inbound_capacity
+			} else if online_channel_exists {
+				channel.is_usable
+			} else { true }
 		})
-		.map(|(_counterparty_id, channel)| route_hint_from_channel(&channel))
+		.map(|(_counterparty_id, channel)| route_hint_from_channel(channel))
 		.collect::<Vec<RouteHint>>()
 }
 
@@ -721,6 +740,35 @@ mod test {
 		scid_aliases.insert(chan_1_0_high_inbound_capacity.0.short_channel_id_alias.unwrap());
 
 		match_invoice_routes(Some(5000), &nodes[0], scid_aliases);
+	}
+
+	#[test]
+	fn test_hints_has_only_online_channels() {
+		let chanmon_cfgs = create_chanmon_cfgs(4);
+		let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
+		let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, None, None, None]);
+		let nodes = create_network(4, &node_cfgs, &node_chanmgrs);
+		let chan_a = create_unannounced_chan_between_nodes_with_value(&nodes, 1, 0, 10_000_000, 0, channelmanager::provided_init_features(), channelmanager::provided_init_features());
+		let chan_b = create_unannounced_chan_between_nodes_with_value(&nodes, 2, 0, 10_000_000, 0, channelmanager::provided_init_features(), channelmanager::provided_init_features());
+		let _chan_c = create_unannounced_chan_between_nodes_with_value(&nodes, 3, 0, 1_000_000, 0, channelmanager::provided_init_features(), channelmanager::provided_init_features());
+
+		// With all peers connected we should get all hints that have sufficient value
+		let mut scid_aliases = HashSet::new();
+		scid_aliases.insert(chan_a.0.short_channel_id_alias.unwrap());
+		scid_aliases.insert(chan_b.0.short_channel_id_alias.unwrap());
+
+		match_invoice_routes(Some(1_000_000_000), &nodes[0], scid_aliases.clone());
+
+		// With only one sufficient-value peer connected we should only get its hint
+		scid_aliases.remove(&chan_b.0.short_channel_id_alias.unwrap());
+		nodes[0].node.peer_disconnected(&nodes[2].node.get_our_node_id(), false);
+		match_invoice_routes(Some(1_000_000_000), &nodes[0], scid_aliases.clone());
+
+		// If we don't have any sufficient-value peers connected we should get all hints with
+		// sufficient value, even though there is a connected insufficient-value peer.
+		scid_aliases.insert(chan_b.0.short_channel_id_alias.unwrap());
+		nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
+		match_invoice_routes(Some(1_000_000_000), &nodes[0], scid_aliases);
 	}
 
 	#[test]
