@@ -15,11 +15,11 @@ use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::secp256k1::{self, PublicKey, Secp256k1, SecretKey, Scalar};
 use bitcoin::secp256k1::ecdh::SharedSecret;
 
-use ln::onion_utils;
+use crate::ln::onion_utils;
 use super::blinded_route::BlindedRoute;
 use super::messenger::Destination;
 
-use prelude::*;
+use crate::prelude::*;
 
 // TODO: DRY with onion_utils::construct_onion_keys_callback
 #[inline]

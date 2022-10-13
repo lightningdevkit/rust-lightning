@@ -11,14 +11,14 @@
 
 use bitcoin::secp256k1::{self, PublicKey, Secp256k1, SecretKey};
 
-use chain::keysinterface::KeysInterface;
+use crate::chain::keysinterface::KeysInterface;
 use super::utils;
-use ln::msgs::DecodeError;
-use util::chacha20poly1305rfc::ChaChaPolyWriteAdapter;
-use util::ser::{Readable, VecWriter, Writeable, Writer};
+use crate::ln::msgs::DecodeError;
+use crate::util::chacha20poly1305rfc::ChaChaPolyWriteAdapter;
+use crate::util::ser::{Readable, VecWriter, Writeable, Writer};
 
-use io;
-use prelude::*;
+use crate::io;
+use crate::prelude::*;
 
 /// Onion messages can be sent and received to blinded routes, which serve to hide the identity of
 /// the recipient.

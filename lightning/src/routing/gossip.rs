@@ -19,27 +19,28 @@ use bitcoin::hashes::Hash;
 use bitcoin::blockdata::transaction::TxOut;
 use bitcoin::hash_types::BlockHash;
 
-use chain;
-use chain::Access;
-use ln::chan_utils::make_funding_redeemscript;
-use ln::features::{ChannelFeatures, NodeFeatures, InitFeatures};
-use ln::msgs::{DecodeError, ErrorAction, Init, LightningError, RoutingMessageHandler, NetAddress, MAX_VALUE_MSAT};
-use ln::msgs::{ChannelAnnouncement, ChannelUpdate, NodeAnnouncement, GossipTimestampFilter};
-use ln::msgs::{QueryChannelRange, ReplyChannelRange, QueryShortChannelIds, ReplyShortChannelIdsEnd};
-use ln::msgs;
-use util::ser::{Readable, ReadableArgs, Writeable, Writer, MaybeReadable};
-use util::logger::{Logger, Level};
-use util::events::{Event, EventHandler, MessageSendEvent, MessageSendEventsProvider};
-use util::scid_utils::{block_from_scid, scid_from_parts, MAX_SCID_BLOCK};
+use crate::chain;
+use crate::chain::Access;
+use crate::ln::chan_utils::make_funding_redeemscript;
+use crate::ln::features::{ChannelFeatures, NodeFeatures, InitFeatures};
+use crate::ln::msgs::{DecodeError, ErrorAction, Init, LightningError, RoutingMessageHandler, NetAddress, MAX_VALUE_MSAT};
+use crate::ln::msgs::{ChannelAnnouncement, ChannelUpdate, NodeAnnouncement, GossipTimestampFilter};
+use crate::ln::msgs::{QueryChannelRange, ReplyChannelRange, QueryShortChannelIds, ReplyShortChannelIdsEnd};
+use crate::ln::msgs;
+use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer, MaybeReadable};
+use crate::util::logger::{Logger, Level};
+use crate::util::events::{Event, EventHandler, MessageSendEvent, MessageSendEventsProvider};
+use crate::util::scid_utils::{block_from_scid, scid_from_parts, MAX_SCID_BLOCK};
 
-use io;
-use io_extras::{copy, sink};
-use prelude::*;
+use crate::io;
+use crate::io_extras::{copy, sink};
+use crate::prelude::*;
 use alloc::collections::{BTreeMap, btree_map::Entry as BtreeEntry};
 use core::{cmp, fmt};
-use sync::{RwLock, RwLockReadGuard};
+use crate::sync::{RwLock, RwLockReadGuard};
+#[cfg(feature = "std")]
 use core::sync::atomic::{AtomicUsize, Ordering};
-use sync::Mutex;
+use crate::sync::Mutex;
 use core::ops::{Bound, Deref};
 use bitcoin::hashes::hex::ToHex;
 
@@ -657,7 +658,7 @@ impl fmt::Display for ChannelUpdateInfo {
 }
 
 impl Writeable for ChannelUpdateInfo {
-	fn write<W: ::util::ser::Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+	fn write<W: crate::util::ser::Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		write_tlv_fields!(writer, {
 			(0, self.last_update, required),
 			(2, self.enabled, required),
@@ -787,7 +788,7 @@ impl fmt::Display for ChannelInfo {
 }
 
 impl Writeable for ChannelInfo {
-	fn write<W: ::util::ser::Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+	fn write<W: crate::util::ser::Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		write_tlv_fields!(writer, {
 			(0, self.features, required),
 			(1, self.announcement_received_time, (default_value, 0)),
@@ -811,7 +812,7 @@ struct ChannelUpdateInfoDeserWrapper(Option<ChannelUpdateInfo>);
 
 impl MaybeReadable for ChannelUpdateInfoDeserWrapper {
 	fn read<R: io::Read>(reader: &mut R) -> Result<Option<Self>, DecodeError> {
-		match ::util::ser::Readable::read(reader) {
+		match crate::util::ser::Readable::read(reader) {
 			Ok(channel_update_option) => Ok(Some(Self(channel_update_option))),
 			Err(DecodeError::ShortRead) => Ok(None),
 			Err(DecodeError::InvalidValue) => Ok(None),
@@ -1118,7 +1119,7 @@ impl fmt::Display for NodeInfo {
 }
 
 impl Writeable for NodeInfo {
-	fn write<W: ::util::ser::Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+	fn write<W: crate::util::ser::Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		write_tlv_fields!(writer, {
 			(0, self.lowest_inbound_channel_fees, option),
 			(2, self.announcement_info, option),
@@ -1136,7 +1137,7 @@ struct NodeAnnouncementInfoDeserWrapper(NodeAnnouncementInfo);
 
 impl MaybeReadable for NodeAnnouncementInfoDeserWrapper {
 	fn read<R: io::Read>(reader: &mut R) -> Result<Option<Self>, DecodeError> {
-		match ::util::ser::Readable::read(reader) {
+		match crate::util::ser::Readable::read(reader) {
 			Ok(node_announcement_info) => return Ok(Some(Self(node_announcement_info))),
 			Err(_) => {
 				copy(reader, &mut sink()).unwrap();
@@ -1968,19 +1969,19 @@ impl ReadOnlyNetworkGraph<'_> {
 
 #[cfg(test)]
 mod tests {
-	use chain;
-	use ln::channelmanager;
-	use ln::chan_utils::make_funding_redeemscript;
-	use ln::PaymentHash;
-	use ln::features::InitFeatures;
-	use routing::gossip::{P2PGossipSync, NetworkGraph, NetworkUpdate, NodeAlias, MAX_EXCESS_BYTES_FOR_RELAY, NodeId, RoutingFees, ChannelUpdateInfo, ChannelInfo, NodeAnnouncementInfo, NodeInfo};
-	use ln::msgs::{RoutingMessageHandler, UnsignedNodeAnnouncement, NodeAnnouncement,
+	use crate::chain;
+	use crate::ln::channelmanager;
+	use crate::ln::chan_utils::make_funding_redeemscript;
+	use crate::ln::PaymentHash;
+	use crate::ln::features::InitFeatures;
+	use crate::routing::gossip::{P2PGossipSync, NetworkGraph, NetworkUpdate, NodeAlias, MAX_EXCESS_BYTES_FOR_RELAY, NodeId, RoutingFees, ChannelUpdateInfo, ChannelInfo, NodeAnnouncementInfo, NodeInfo};
+	use crate::ln::msgs::{RoutingMessageHandler, UnsignedNodeAnnouncement, NodeAnnouncement,
 		UnsignedChannelAnnouncement, ChannelAnnouncement, UnsignedChannelUpdate, ChannelUpdate,
 		ReplyChannelRange, QueryChannelRange, QueryShortChannelIds, MAX_VALUE_MSAT};
-	use util::test_utils;
-	use util::ser::{ReadableArgs, Writeable};
-	use util::events::{Event, EventHandler, MessageSendEvent, MessageSendEventsProvider};
-	use util::scid_utils::scid_from_parts;
+	use crate::util::test_utils;
+	use crate::util::ser::{ReadableArgs, Writeable};
+	use crate::util::events::{Event, EventHandler, MessageSendEvent, MessageSendEventsProvider};
+	use crate::util::scid_utils::scid_from_parts;
 
 	use crate::routing::gossip::REMOVED_ENTRIES_TRACKING_AGE_LIMIT_SECS;
 	use super::STALE_CHANNEL_UPDATE_AGE_LIMIT_SECS;
@@ -1997,10 +1998,10 @@ mod tests {
 	use bitcoin::secp256k1::{PublicKey, SecretKey};
 	use bitcoin::secp256k1::{All, Secp256k1};
 
-	use io;
+	use crate::io;
 	use bitcoin::secp256k1;
-	use prelude::*;
-	use sync::Arc;
+	use crate::prelude::*;
+	use crate::sync::Arc;
 
 	fn create_network_graph() -> NetworkGraph<Arc<test_utils::TestLogger>> {
 		let genesis_hash = genesis_block(Network::Testnet).header.block_hash();
@@ -2849,7 +2850,7 @@ mod tests {
 	#[cfg(feature = "std")]
 	fn calling_sync_routing_table() {
 		use std::time::{SystemTime, UNIX_EPOCH};
-		use ln::msgs::Init;
+		use crate::ln::msgs::Init;
 
 		let network_graph = create_network_graph();
 		let (secp_ctx, gossip_sync) = create_gossip_sync(&network_graph);
@@ -3220,10 +3221,10 @@ mod tests {
 
 	#[test]
 	fn channel_info_is_readable() {
-		let chanmon_cfgs = ::ln::functional_test_utils::create_chanmon_cfgs(2);
-		let node_cfgs = ::ln::functional_test_utils::create_node_cfgs(2, &chanmon_cfgs);
-		let node_chanmgrs = ::ln::functional_test_utils::create_node_chanmgrs(2, &node_cfgs, &[None, None, None, None]);
-		let nodes = ::ln::functional_test_utils::create_network(2, &node_cfgs, &node_chanmgrs);
+		let chanmon_cfgs = crate::ln::functional_test_utils::create_chanmon_cfgs(2);
+		let node_cfgs = crate::ln::functional_test_utils::create_node_cfgs(2, &chanmon_cfgs);
+		let node_chanmgrs = crate::ln::functional_test_utils::create_node_chanmgrs(2, &node_cfgs, &[None, None, None, None]);
+		let nodes = crate::ln::functional_test_utils::create_network(2, &node_cfgs, &node_chanmgrs);
 
 		// 1. Test encoding/decoding of ChannelUpdateInfo
 		let chan_update_info = ChannelUpdateInfo {
@@ -3240,7 +3241,7 @@ mod tests {
 		assert!(chan_update_info.write(&mut encoded_chan_update_info).is_ok());
 
 		// First make sure we can read ChannelUpdateInfos we just wrote
-		let read_chan_update_info: ChannelUpdateInfo = ::util::ser::Readable::read(&mut encoded_chan_update_info.as_slice()).unwrap();
+		let read_chan_update_info: ChannelUpdateInfo = crate::util::ser::Readable::read(&mut encoded_chan_update_info.as_slice()).unwrap();
 		assert_eq!(chan_update_info, read_chan_update_info);
 
 		// Check the serialization hasn't changed.
@@ -3250,11 +3251,11 @@ mod tests {
 		// Check we fail if htlc_maximum_msat is not present in either the ChannelUpdateInfo itself
 		// or the ChannelUpdate enclosed with `last_update_message`.
 		let legacy_chan_update_info_with_some_and_fail_update: Vec<u8> = hex::decode("b40004000000170201010402002a060800000000000004d2080909000000000000162e0a0d0c00040000000902040000000a0c8181d977cb9b53d93a6ff64bb5f1e158b4094b66e798fb12911168a3ccdf80a83096340a6a95da0ae8d9f776528eecdbb747eb6b545495a4319ed5378e35b21e073a000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f00083a840000034d013413a70000009000000000000f42400000271000000014").unwrap();
-		let read_chan_update_info_res: Result<ChannelUpdateInfo, ::ln::msgs::DecodeError> = ::util::ser::Readable::read(&mut legacy_chan_update_info_with_some_and_fail_update.as_slice());
+		let read_chan_update_info_res: Result<ChannelUpdateInfo, crate::ln::msgs::DecodeError> = crate::util::ser::Readable::read(&mut legacy_chan_update_info_with_some_and_fail_update.as_slice());
 		assert!(read_chan_update_info_res.is_err());
 
 		let legacy_chan_update_info_with_none: Vec<u8> = hex::decode("2c0004000000170201010402002a060800000000000004d20801000a0d0c00040000000902040000000a0c0100").unwrap();
-		let read_chan_update_info_res: Result<ChannelUpdateInfo, ::ln::msgs::DecodeError> = ::util::ser::Readable::read(&mut legacy_chan_update_info_with_none.as_slice());
+		let read_chan_update_info_res: Result<ChannelUpdateInfo, crate::ln::msgs::DecodeError> = crate::util::ser::Readable::read(&mut legacy_chan_update_info_with_none.as_slice());
 		assert!(read_chan_update_info_res.is_err());
 
 		// 2. Test encoding/decoding of ChannelInfo
@@ -3273,7 +3274,7 @@ mod tests {
 		let mut encoded_chan_info: Vec<u8> = Vec::new();
 		assert!(chan_info_none_updates.write(&mut encoded_chan_info).is_ok());
 
-		let read_chan_info: ChannelInfo = ::util::ser::Readable::read(&mut encoded_chan_info.as_slice()).unwrap();
+		let read_chan_info: ChannelInfo = crate::util::ser::Readable::read(&mut encoded_chan_info.as_slice()).unwrap();
 		assert_eq!(chan_info_none_updates, read_chan_info);
 
 		// Check we can encode/decode ChannelInfo with ChannelUpdateInfo fields present.
@@ -3291,7 +3292,7 @@ mod tests {
 		let mut encoded_chan_info: Vec<u8> = Vec::new();
 		assert!(chan_info_some_updates.write(&mut encoded_chan_info).is_ok());
 
-		let read_chan_info: ChannelInfo = ::util::ser::Readable::read(&mut encoded_chan_info.as_slice()).unwrap();
+		let read_chan_info: ChannelInfo = crate::util::ser::Readable::read(&mut encoded_chan_info.as_slice()).unwrap();
 		assert_eq!(chan_info_some_updates, read_chan_info);
 
 		// Check the serialization hasn't changed.
@@ -3301,13 +3302,13 @@ mod tests {
 		// Check we can decode legacy ChannelInfo, even if the `two_to_one` / `one_to_two` /
 		// `last_update_message` fields fail to decode due to missing htlc_maximum_msat.
 		let legacy_chan_info_with_some_and_fail_update = hex::decode("fd01ca00020000010800000000000156660221027f921585f2ac0c7c70e36110adecfd8fd14b8a99bfb3d000a283fcac358fce8804b6b6b40004000000170201010402002a060800000000000004d2080909000000000000162e0a0d0c00040000000902040000000a0c8181d977cb9b53d93a6ff64bb5f1e158b4094b66e798fb12911168a3ccdf80a83096340a6a95da0ae8d9f776528eecdbb747eb6b545495a4319ed5378e35b21e073a000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f00083a840000034d013413a70000009000000000000f4240000027100000001406210355f8d2238a322d16b602bd0ceaad5b01019fb055971eaadcc9b29226a4da6c2308b6b6b40004000000170201010402002a060800000000000004d2080909000000000000162e0a0d0c00040000000902040000000a0c8181d977cb9b53d93a6ff64bb5f1e158b4094b66e798fb12911168a3ccdf80a83096340a6a95da0ae8d9f776528eecdbb747eb6b545495a4319ed5378e35b21e073a000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f00083a840000034d013413a70000009000000000000f424000002710000000140a01000c0100").unwrap();
-		let read_chan_info: ChannelInfo = ::util::ser::Readable::read(&mut legacy_chan_info_with_some_and_fail_update.as_slice()).unwrap();
+		let read_chan_info: ChannelInfo = crate::util::ser::Readable::read(&mut legacy_chan_info_with_some_and_fail_update.as_slice()).unwrap();
 		assert_eq!(read_chan_info.announcement_received_time, 87654);
 		assert_eq!(read_chan_info.one_to_two, None);
 		assert_eq!(read_chan_info.two_to_one, None);
 
 		let legacy_chan_info_with_none: Vec<u8> = hex::decode("ba00020000010800000000000156660221027f921585f2ac0c7c70e36110adecfd8fd14b8a99bfb3d000a283fcac358fce88042e2e2c0004000000170201010402002a060800000000000004d20801000a0d0c00040000000902040000000a0c010006210355f8d2238a322d16b602bd0ceaad5b01019fb055971eaadcc9b29226a4da6c23082e2e2c0004000000170201010402002a060800000000000004d20801000a0d0c00040000000902040000000a0c01000a01000c0100").unwrap();
-		let read_chan_info: ChannelInfo = ::util::ser::Readable::read(&mut legacy_chan_info_with_none.as_slice()).unwrap();
+		let read_chan_info: ChannelInfo = crate::util::ser::Readable::read(&mut legacy_chan_info_with_none.as_slice()).unwrap();
 		assert_eq!(read_chan_info.announcement_received_time, 87654);
 		assert_eq!(read_chan_info.one_to_two, None);
 		assert_eq!(read_chan_info.two_to_one, None);
@@ -3318,7 +3319,7 @@ mod tests {
 		use std::convert::TryFrom;
 
 		// 1. Check we can read a valid NodeAnnouncementInfo and fail on an invalid one
-		let valid_netaddr = ::ln::msgs::NetAddress::Hostname { hostname: ::util::ser::Hostname::try_from("A".to_string()).unwrap(), port: 1234 };
+		let valid_netaddr = crate::ln::msgs::NetAddress::Hostname { hostname: crate::util::ser::Hostname::try_from("A".to_string()).unwrap(), port: 1234 };
 		let valid_node_ann_info = NodeAnnouncementInfo {
 			features: channelmanager::provided_node_features(),
 			last_update: 0,
@@ -3330,11 +3331,11 @@ mod tests {
 
 		let mut encoded_valid_node_ann_info = Vec::new();
 		assert!(valid_node_ann_info.write(&mut encoded_valid_node_ann_info).is_ok());
-		let read_valid_node_ann_info: NodeAnnouncementInfo = ::util::ser::Readable::read(&mut encoded_valid_node_ann_info.as_slice()).unwrap();
+		let read_valid_node_ann_info: NodeAnnouncementInfo = crate::util::ser::Readable::read(&mut encoded_valid_node_ann_info.as_slice()).unwrap();
 		assert_eq!(read_valid_node_ann_info, valid_node_ann_info);
 
 		let encoded_invalid_node_ann_info = hex::decode("3f0009000788a000080a51a20204000000000403000000062000000000000000000000000000000000000000000000000000000000000000000a0505014004d2").unwrap();
-		let read_invalid_node_ann_info_res: Result<NodeAnnouncementInfo, ::ln::msgs::DecodeError> = ::util::ser::Readable::read(&mut encoded_invalid_node_ann_info.as_slice());
+		let read_invalid_node_ann_info_res: Result<NodeAnnouncementInfo, crate::ln::msgs::DecodeError> = crate::util::ser::Readable::read(&mut encoded_invalid_node_ann_info.as_slice());
 		assert!(read_invalid_node_ann_info_res.is_err());
 
 		// 2. Check we can read a NodeInfo anyways, but set the NodeAnnouncementInfo to None if invalid
@@ -3346,11 +3347,11 @@ mod tests {
 
 		let mut encoded_valid_node_info = Vec::new();
 		assert!(valid_node_info.write(&mut encoded_valid_node_info).is_ok());
-		let read_valid_node_info: NodeInfo = ::util::ser::Readable::read(&mut encoded_valid_node_info.as_slice()).unwrap();
+		let read_valid_node_info: NodeInfo = crate::util::ser::Readable::read(&mut encoded_valid_node_info.as_slice()).unwrap();
 		assert_eq!(read_valid_node_info, valid_node_info);
 
 		let encoded_invalid_node_info_hex = hex::decode("4402403f0009000788a000080a51a20204000000000403000000062000000000000000000000000000000000000000000000000000000000000000000a0505014004d20400").unwrap();
-		let read_invalid_node_info: NodeInfo = ::util::ser::Readable::read(&mut encoded_invalid_node_info_hex.as_slice()).unwrap();
+		let read_invalid_node_info: NodeInfo = crate::util::ser::Readable::read(&mut encoded_invalid_node_info_hex.as_slice()).unwrap();
 		assert_eq!(read_invalid_node_info.announcement_info, None);
 	}
 }
@@ -3364,8 +3365,8 @@ mod benches {
 
 	#[bench]
 	fn read_network_graph(bench: &mut Bencher) {
-		let logger = ::util::test_utils::TestLogger::new();
-		let mut d = ::routing::router::bench_utils::get_route_file().unwrap();
+		let logger = crate::util::test_utils::TestLogger::new();
+		let mut d = crate::routing::router::bench_utils::get_route_file().unwrap();
 		let mut v = Vec::new();
 		d.read_to_end(&mut v).unwrap();
 		bench.iter(|| {
@@ -3375,8 +3376,8 @@ mod benches {
 
 	#[bench]
 	fn write_network_graph(bench: &mut Bencher) {
-		let logger = ::util::test_utils::TestLogger::new();
-		let mut d = ::routing::router::bench_utils::get_route_file().unwrap();
+		let logger = crate::util::test_utils::TestLogger::new();
+		let mut d = crate::routing::router::bench_utils::get_route_file().unwrap();
 		let net_graph = NetworkGraph::read(&mut d, &logger).unwrap();
 		bench.iter(|| {
 			let _ = net_graph.encode();

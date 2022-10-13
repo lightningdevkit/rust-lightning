@@ -25,7 +25,7 @@ use bitcoin::secp256k1::PublicKey;
 use bitcoin::network::constants::Network;
 use bitcoin::blockdata::constants::genesis_block;
 
-use utils::test_logger;
+use crate::utils::test_logger;
 
 use std::convert::TryInto;
 use std::collections::HashSet;

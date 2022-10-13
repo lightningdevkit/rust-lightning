@@ -49,8 +49,8 @@ use lightning::util::enforcing_trait_impls::{EnforcingSigner, EnforcementState};
 use lightning::util::logger::Logger;
 use lightning::util::ser::ReadableArgs;
 
-use utils::test_logger;
-use utils::test_persister::TestPersister;
+use crate::utils::test_logger;
+use crate::utils::test_persister::TestPersister;
 
 use bitcoin::secp256k1::{PublicKey, SecretKey, Scalar};
 use bitcoin::secp256k1::ecdh::SharedSecret;

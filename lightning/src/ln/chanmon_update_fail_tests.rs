@@ -16,29 +16,29 @@ use bitcoin::blockdata::block::{Block, BlockHeader};
 use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::hash_types::BlockHash;
 use bitcoin::network::constants::Network;
-use chain::channelmonitor::{ANTI_REORG_DELAY, ChannelMonitor};
-use chain::transaction::OutPoint;
-use chain::{ChannelMonitorUpdateStatus, Listen, Watch};
-use ln::channelmanager::{self, ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, PaymentSendFailure};
-use ln::channel::AnnouncementSigsState;
-use ln::msgs;
-use ln::msgs::{ChannelMessageHandler, RoutingMessageHandler};
-use util::config::UserConfig;
-use util::enforcing_trait_impls::EnforcingSigner;
-use util::events::{Event, MessageSendEvent, MessageSendEventsProvider, PaymentPurpose, ClosureReason, HTLCDestination};
-use util::errors::APIError;
-use util::ser::{ReadableArgs, Writeable};
-use util::test_utils::TestBroadcaster;
+use crate::chain::channelmonitor::{ANTI_REORG_DELAY, ChannelMonitor};
+use crate::chain::transaction::OutPoint;
+use crate::chain::{ChannelMonitorUpdateStatus, Listen, Watch};
+use crate::ln::channelmanager::{self, ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, PaymentSendFailure};
+use crate::ln::channel::AnnouncementSigsState;
+use crate::ln::msgs;
+use crate::ln::msgs::{ChannelMessageHandler, RoutingMessageHandler};
+use crate::util::config::UserConfig;
+use crate::util::enforcing_trait_impls::EnforcingSigner;
+use crate::util::events::{Event, MessageSendEvent, MessageSendEventsProvider, PaymentPurpose, ClosureReason, HTLCDestination};
+use crate::util::errors::APIError;
+use crate::util::ser::{ReadableArgs, Writeable};
+use crate::util::test_utils::TestBroadcaster;
 
-use ln::functional_test_utils::*;
+use crate::ln::functional_test_utils::*;
 
-use util::test_utils;
+use crate::util::test_utils;
 
-use io;
+use crate::io;
 use bitcoin::hashes::Hash;
 use bitcoin::TxMerkleNode;
-use prelude::*;
-use sync::{Arc, Mutex};
+use crate::prelude::*;
+use crate::sync::{Arc, Mutex};
 
 #[test]
 fn test_simple_monitor_permanent_update_fail() {

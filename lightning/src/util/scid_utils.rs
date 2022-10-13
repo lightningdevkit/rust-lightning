@@ -66,9 +66,9 @@ pub fn scid_from_parts(block: u64, tx_index: u64, vout_index: u64) -> Result<u64
 pub(crate) mod fake_scid {
 	use bitcoin::hash_types::BlockHash;
 	use bitcoin::hashes::hex::FromHex;
-	use chain::keysinterface::{Sign, KeysInterface};
-	use util::chacha20::ChaCha20;
-	use util::scid_utils;
+	use crate::chain::keysinterface::{Sign, KeysInterface};
+	use crate::util::chacha20::ChaCha20;
+	use crate::util::scid_utils;
 
 	use core::convert::TryInto;
 	use core::ops::Deref;
@@ -163,10 +163,10 @@ pub(crate) mod fake_scid {
 	mod tests {
 		use bitcoin::blockdata::constants::genesis_block;
 		use bitcoin::network::constants::Network;
-		use util::scid_utils::fake_scid::{is_valid_phantom, MAINNET_SEGWIT_ACTIVATION_HEIGHT, MAX_TX_INDEX, MAX_NAMESPACES, Namespace, NAMESPACE_ID_BITMASK, segwit_activation_height, TEST_SEGWIT_ACTIVATION_HEIGHT};
-		use util::scid_utils;
-		use util::test_utils;
-		use sync::Arc;
+		use crate::util::scid_utils::fake_scid::{is_valid_phantom, MAINNET_SEGWIT_ACTIVATION_HEIGHT, MAX_TX_INDEX, MAX_NAMESPACES, Namespace, NAMESPACE_ID_BITMASK, segwit_activation_height, TEST_SEGWIT_ACTIVATION_HEIGHT};
+		use crate::util::scid_utils;
+		use crate::util::test_utils;
+		use crate::sync::Arc;
 
 		#[test]
 		fn namespace_identifier_is_within_range() {

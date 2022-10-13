@@ -9,15 +9,15 @@
 
 //! Further functional tests which test blockchain reorganizations.
 
-use chain::channelmonitor::{ANTI_REORG_DELAY, ChannelMonitor};
-use chain::transaction::OutPoint;
-use chain::{ChannelMonitorUpdateStatus, Confirm, Watch};
-use ln::channelmanager::{self, ChannelManager, ChannelManagerReadArgs};
-use ln::msgs::ChannelMessageHandler;
-use util::enforcing_trait_impls::EnforcingSigner;
-use util::events::{Event, MessageSendEvent, MessageSendEventsProvider, ClosureReason, HTLCDestination};
-use util::test_utils;
-use util::ser::{ReadableArgs, Writeable};
+use crate::chain::channelmonitor::{ANTI_REORG_DELAY, ChannelMonitor};
+use crate::chain::transaction::OutPoint;
+use crate::chain::{ChannelMonitorUpdateStatus, Confirm, Watch};
+use crate::ln::channelmanager::{self, ChannelManager, ChannelManagerReadArgs};
+use crate::ln::msgs::ChannelMessageHandler;
+use crate::util::enforcing_trait_impls::EnforcingSigner;
+use crate::util::events::{Event, MessageSendEvent, MessageSendEventsProvider, ClosureReason, HTLCDestination};
+use crate::util::test_utils;
+use crate::util::ser::{ReadableArgs, Writeable};
 
 use bitcoin::blockdata::block::{Block, BlockHeader};
 use bitcoin::blockdata::script::Builder;
@@ -25,12 +25,12 @@ use bitcoin::blockdata::opcodes;
 use bitcoin::hash_types::BlockHash;
 use bitcoin::secp256k1::Secp256k1;
 
-use prelude::*;
+use crate::prelude::*;
 use core::mem;
 use bitcoin::hashes::Hash;
 use bitcoin::TxMerkleNode;
 
-use ln::functional_test_utils::*;
+use crate::ln::functional_test_utils::*;
 
 fn do_test_onchain_htlc_reorg(local_commitment: bool, claim: bool) {
 	// Our on-chain HTLC-claim learning has a few properties worth testing:

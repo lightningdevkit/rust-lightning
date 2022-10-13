@@ -11,30 +11,30 @@
 //! payments/messages between them, and often checking the resulting ChannelMonitors are able to
 //! claim outputs on-chain.
 
-use chain;
-use chain::{ChannelMonitorUpdateStatus, Confirm, Listen, Watch};
-use chain::chaininterface::LowerBoundedFeeEstimator;
-use chain::channelmonitor;
-use chain::channelmonitor::{ChannelMonitor, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ANTI_REORG_DELAY};
-use chain::transaction::OutPoint;
-use chain::keysinterface::{BaseSign, KeysInterface};
-use ln::{PaymentPreimage, PaymentSecret, PaymentHash};
-use ln::channel::{commitment_tx_base_weight, COMMITMENT_TX_WEIGHT_PER_HTLC, CONCURRENT_INBOUND_HTLC_FEE_BUFFER, FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE, MIN_AFFORDABLE_HTLC_COUNT};
-use ln::channelmanager::{self, ChannelManager, ChannelManagerReadArgs, PaymentId, RAACommitmentOrder, PaymentSendFailure, BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA, PAYMENT_EXPIRY_BLOCKS};
-use ln::channel::{Channel, ChannelError};
-use ln::{chan_utils, onion_utils};
-use ln::chan_utils::{OFFERED_HTLC_SCRIPT_WEIGHT, htlc_success_tx_weight, htlc_timeout_tx_weight, HTLCOutputInCommitment};
-use routing::gossip::{NetworkGraph, NetworkUpdate};
-use routing::router::{PaymentParameters, Route, RouteHop, RouteParameters, find_route, get_route};
-use ln::features::{ChannelFeatures, NodeFeatures};
-use ln::msgs;
-use ln::msgs::{ChannelMessageHandler, RoutingMessageHandler, ErrorAction};
-use util::enforcing_trait_impls::EnforcingSigner;
-use util::{byte_utils, test_utils};
-use util::events::{Event, MessageSendEvent, MessageSendEventsProvider, PaymentPurpose, ClosureReason, HTLCDestination};
-use util::errors::APIError;
-use util::ser::{Writeable, ReadableArgs};
-use util::config::UserConfig;
+use crate::chain;
+use crate::chain::{ChannelMonitorUpdateStatus, Confirm, Listen, Watch};
+use crate::chain::chaininterface::LowerBoundedFeeEstimator;
+use crate::chain::channelmonitor;
+use crate::chain::channelmonitor::{ChannelMonitor, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ANTI_REORG_DELAY};
+use crate::chain::transaction::OutPoint;
+use crate::chain::keysinterface::{BaseSign, KeysInterface};
+use crate::ln::{PaymentPreimage, PaymentSecret, PaymentHash};
+use crate::ln::channel::{commitment_tx_base_weight, COMMITMENT_TX_WEIGHT_PER_HTLC, CONCURRENT_INBOUND_HTLC_FEE_BUFFER, FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE, MIN_AFFORDABLE_HTLC_COUNT};
+use crate::ln::channelmanager::{self, ChannelManager, ChannelManagerReadArgs, PaymentId, RAACommitmentOrder, PaymentSendFailure, BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA, PAYMENT_EXPIRY_BLOCKS};
+use crate::ln::channel::{Channel, ChannelError};
+use crate::ln::{chan_utils, onion_utils};
+use crate::ln::chan_utils::{OFFERED_HTLC_SCRIPT_WEIGHT, htlc_success_tx_weight, htlc_timeout_tx_weight, HTLCOutputInCommitment};
+use crate::routing::gossip::{NetworkGraph, NetworkUpdate};
+use crate::routing::router::{PaymentParameters, Route, RouteHop, RouteParameters, find_route, get_route};
+use crate::ln::features::{ChannelFeatures, NodeFeatures};
+use crate::ln::msgs;
+use crate::ln::msgs::{ChannelMessageHandler, RoutingMessageHandler, ErrorAction};
+use crate::util::enforcing_trait_impls::EnforcingSigner;
+use crate::util::{byte_utils, test_utils};
+use crate::util::events::{Event, MessageSendEvent, MessageSendEventsProvider, PaymentPurpose, ClosureReason, HTLCDestination};
+use crate::util::errors::APIError;
+use crate::util::ser::{Writeable, ReadableArgs};
+use crate::util::config::UserConfig;
 
 use bitcoin::hash_types::BlockHash;
 use bitcoin::blockdata::block::{Block, BlockHeader};
@@ -50,21 +50,21 @@ use bitcoin::secp256k1::{PublicKey,SecretKey};
 
 use regex;
 
-use io;
-use prelude::*;
+use crate::io;
+use crate::prelude::*;
 use alloc::collections::BTreeSet;
 use core::default::Default;
 use core::iter::repeat;
 use bitcoin::hashes::Hash;
-use sync::{Arc, Mutex};
+use crate::sync::{Arc, Mutex};
 
-use ln::functional_test_utils::*;
-use ln::chan_utils::CommitmentTransaction;
+use crate::ln::functional_test_utils::*;
+use crate::ln::chan_utils::CommitmentTransaction;
 
 #[test]
 fn test_insane_channel_opens() {
 	// Stand up a network of 2 nodes
-	use ln::channel::TOTAL_BITCOIN_SUPPLY_SATOSHIS;
+	use crate::ln::channel::TOTAL_BITCOIN_SUPPLY_SATOSHIS;
 	let mut cfg = UserConfig::default();
 	cfg.channel_handshake_limits.max_funding_satoshis = TOTAL_BITCOIN_SUPPLY_SATOSHIS + 1;
 	let chanmon_cfgs = create_chanmon_cfgs(2);
@@ -101,7 +101,7 @@ fn test_insane_channel_opens() {
 		} else { assert!(false); }
 	};
 
-	use ln::channelmanager::MAX_LOCAL_BREAKDOWN_TIMEOUT;
+	use crate::ln::channelmanager::MAX_LOCAL_BREAKDOWN_TIMEOUT;
 
 	// Test all mutations that would make the channel open message insane
 	insane_open_helper(format!("Per our config, funding must be at most {}. It was {}", TOTAL_BITCOIN_SUPPLY_SATOSHIS + 1, TOTAL_BITCOIN_SUPPLY_SATOSHIS + 2).as_str(), |mut msg| { msg.funding_satoshis = TOTAL_BITCOIN_SUPPLY_SATOSHIS + 2; msg });
@@ -126,7 +126,7 @@ fn test_insane_channel_opens() {
 fn test_funding_exceeds_no_wumbo_limit() {
 	// Test that if a peer does not support wumbo channels, we'll refuse to open a wumbo channel to
 	// them.
-	use ln::channel::MAX_FUNDING_SATOSHIS_NO_WUMBO;
+	use crate::ln::channel::MAX_FUNDING_SATOSHIS_NO_WUMBO;
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let mut node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	node_cfgs[1].features = channelmanager::provided_init_features().clear_wumbo();
@@ -1091,7 +1091,7 @@ fn holding_cell_htlc_counting() {
 	let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2, channelmanager::provided_init_features(), channelmanager::provided_init_features());
 
 	let mut payments = Vec::new();
-	for _ in 0..::ln::channel::OUR_MAX_HTLCS {
+	for _ in 0..crate::ln::channel::OUR_MAX_HTLCS {
 		let (route, payment_hash, payment_preimage, payment_secret) = get_route_and_payment_hash!(nodes[1], nodes[2], 100000);
 		nodes[1].node.send_payment(&route, payment_hash, &Some(payment_secret)).unwrap();
 		payments.push((payment_preimage, payment_hash));
@@ -9042,7 +9042,7 @@ fn test_pre_lockin_no_chan_closed_update() {
 	check_added_monitors!(nodes[0], 0);
 
 	let funding_created_msg = get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, nodes[1].node.get_our_node_id());
-	let channel_id = ::chain::transaction::OutPoint { txid: funding_created_msg.funding_txid, index: funding_created_msg.funding_output_index }.to_channel_id();
+	let channel_id = crate::chain::transaction::OutPoint { txid: funding_created_msg.funding_txid, index: funding_created_msg.funding_output_index }.to_channel_id();
 	nodes[0].node.handle_error(&nodes[1].node.get_our_node_id(), &msgs::ErrorMessage { channel_id, data: "Hi".to_owned() });
 	assert!(nodes[0].chain_monitor.added_monitors.lock().unwrap().is_empty());
 	check_closed_event!(nodes[0], 2, ClosureReason::CounterpartyForceClosed { peer_msg: "Hi".to_string() }, true);
@@ -9348,7 +9348,7 @@ fn test_duplicate_chan_id() {
 	}
 	let funding_signed_msg = get_event_msg!(nodes[1], MessageSendEvent::SendFundingSigned, nodes[0].node.get_our_node_id());
 
-	let funding_outpoint = ::chain::transaction::OutPoint { txid: funding_created_msg.funding_txid, index: funding_created_msg.funding_output_index };
+	let funding_outpoint = crate::chain::transaction::OutPoint { txid: funding_created_msg.funding_txid, index: funding_created_msg.funding_output_index };
 	let channel_id = funding_outpoint.to_channel_id();
 
 	// Now we have the first channel past funding_created (ie it has a txid-based channel_id, not a

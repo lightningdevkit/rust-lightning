@@ -14,28 +14,28 @@
 //! future, as well as generate and broadcast funding transactions handle payment preimages and a
 //! few other things.
 
-use chain::keysinterface::SpendableOutputDescriptor;
-use ln::chan_utils::HTLCOutputInCommitment;
-use ln::channelmanager::PaymentId;
-use ln::channel::FUNDING_CONF_DEADLINE_BLOCKS;
-use ln::features::ChannelTypeFeatures;
-use ln::msgs;
-use ln::msgs::DecodeError;
-use ln::{PaymentPreimage, PaymentHash, PaymentSecret};
-use routing::gossip::NetworkUpdate;
-use util::ser::{BigSize, FixedLengthReader, Writeable, Writer, MaybeReadable, Readable, VecReadWrapper, VecWriteWrapper};
-use routing::router::{RouteHop, RouteParameters};
+use crate::chain::keysinterface::SpendableOutputDescriptor;
+use crate::ln::chan_utils::HTLCOutputInCommitment;
+use crate::ln::channelmanager::PaymentId;
+use crate::ln::channel::FUNDING_CONF_DEADLINE_BLOCKS;
+use crate::ln::features::ChannelTypeFeatures;
+use crate::ln::msgs;
+use crate::ln::msgs::DecodeError;
+use crate::ln::{PaymentPreimage, PaymentHash, PaymentSecret};
+use crate::routing::gossip::NetworkUpdate;
+use crate::util::ser::{BigSize, FixedLengthReader, Writeable, Writer, MaybeReadable, Readable, VecReadWrapper, VecWriteWrapper};
+use crate::routing::router::{RouteHop, RouteParameters};
 
 use bitcoin::{PackedLockTime, Transaction, OutPoint};
 use bitcoin::blockdata::script::Script;
 use bitcoin::hashes::Hash;
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::secp256k1::PublicKey;
-use io;
-use prelude::*;
+use crate::io;
+use crate::prelude::*;
 use core::time::Duration;
 use core::ops::Deref;
-use sync::Arc;
+use crate::sync::Arc;
 
 /// Some information provided on receipt of payment depends on whether the payment received is a
 /// spontaneous payment or a "conventional" lightning payment that's paying an invoice.

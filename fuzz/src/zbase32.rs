@@ -9,7 +9,7 @@
 
 use lightning::util::zbase32;
 
-use utils::test_logger;
+use crate::utils::test_logger;
 
 #[inline]
 pub fn do_test(data: &[u8]) {

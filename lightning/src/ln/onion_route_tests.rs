@@ -11,23 +11,23 @@
 //! These tests work by standing up full nodes and route payments across the network, checking the
 //! returned errors decode to the correct thing.
 
-use chain::channelmonitor::{ChannelMonitor, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS};
-use chain::keysinterface::{KeysInterface, Recipient};
-use ln::{PaymentHash, PaymentSecret};
-use ln::channel::EXPIRE_PREV_CONFIG_TICKS;
-use ln::channelmanager::{self, ChannelManager, ChannelManagerReadArgs, HTLCForwardInfo, CLTV_FAR_FAR_AWAY, MIN_CLTV_EXPIRY_DELTA, PendingHTLCInfo, PendingHTLCRouting};
-use ln::onion_utils;
-use routing::gossip::{NetworkUpdate, RoutingFees, NodeId};
-use routing::router::{get_route, PaymentParameters, Route, RouteHint, RouteHintHop};
-use ln::features::{InitFeatures, InvoiceFeatures, NodeFeatures};
-use ln::msgs;
-use ln::msgs::{ChannelMessageHandler, ChannelUpdate};
-use ln::wire::Encode;
-use util::events::{Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider};
-use util::ser::{ReadableArgs, Writeable, Writer};
-use util::{byte_utils, test_utils};
-use util::config::{UserConfig, ChannelConfig};
-use util::errors::APIError;
+use crate::chain::channelmonitor::{ChannelMonitor, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS};
+use crate::chain::keysinterface::{KeysInterface, Recipient};
+use crate::ln::{PaymentHash, PaymentSecret};
+use crate::ln::channel::EXPIRE_PREV_CONFIG_TICKS;
+use crate::ln::channelmanager::{self, ChannelManager, ChannelManagerReadArgs, HTLCForwardInfo, CLTV_FAR_FAR_AWAY, MIN_CLTV_EXPIRY_DELTA, PendingHTLCInfo, PendingHTLCRouting};
+use crate::ln::onion_utils;
+use crate::routing::gossip::{NetworkUpdate, RoutingFees, NodeId};
+use crate::routing::router::{get_route, PaymentParameters, Route, RouteHint, RouteHintHop};
+use crate::ln::features::{InitFeatures, InvoiceFeatures, NodeFeatures};
+use crate::ln::msgs;
+use crate::ln::msgs::{ChannelMessageHandler, ChannelUpdate};
+use crate::ln::wire::Encode;
+use crate::util::events::{Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider};
+use crate::util::ser::{ReadableArgs, Writeable, Writer};
+use crate::util::{byte_utils, test_utils};
+use crate::util::config::{UserConfig, ChannelConfig};
+use crate::util::errors::APIError;
 
 use bitcoin::hash_types::BlockHash;
 
@@ -38,11 +38,11 @@ use bitcoin::secp256k1;
 use bitcoin::secp256k1::Secp256k1;
 use bitcoin::secp256k1::{PublicKey, SecretKey};
 
-use io;
-use prelude::*;
+use crate::io;
+use crate::prelude::*;
 use core::default::Default;
 
-use ln::functional_test_utils::*;
+use crate::ln::functional_test_utils::*;
 
 fn run_onion_failure_test<F1,F2>(_name: &str, test_case: u8, nodes: &Vec<Node>, route: &Route, payment_hash: &PaymentHash, payment_secret: &PaymentSecret, callback_msg: F1, callback_node: F2, expected_retryable: bool, expected_error_code: Option<u16>, expected_channel_update: Option<NetworkUpdate>, expected_short_channel_id: Option<u64>)
 	where F1: for <'a> FnMut(&'a mut msgs::UpdateAddHTLC),

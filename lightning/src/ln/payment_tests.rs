@@ -11,29 +11,29 @@
 //! serialization ordering between ChannelManager/ChannelMonitors and ensuring we can still retry
 //! payments thereafter.
 
-use chain::{ChannelMonitorUpdateStatus, Confirm, Listen, Watch};
-use chain::channelmonitor::{ANTI_REORG_DELAY, ChannelMonitor, LATENCY_GRACE_PERIOD_BLOCKS};
-use chain::transaction::OutPoint;
-use chain::keysinterface::KeysInterface;
-use ln::channel::EXPIRE_PREV_CONFIG_TICKS;
-use ln::channelmanager::{self, BREAKDOWN_TIMEOUT, ChannelManager, ChannelManagerReadArgs, MPP_TIMEOUT_TICKS, MIN_CLTV_EXPIRY_DELTA, PaymentId, PaymentSendFailure};
-use ln::msgs;
-use ln::msgs::ChannelMessageHandler;
-use routing::router::{PaymentParameters, get_route};
-use util::events::{ClosureReason, Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider};
-use util::test_utils;
-use util::errors::APIError;
-use util::enforcing_trait_impls::EnforcingSigner;
-use util::ser::{ReadableArgs, Writeable};
-use io;
+use crate::chain::{ChannelMonitorUpdateStatus, Confirm, Listen, Watch};
+use crate::chain::channelmonitor::{ANTI_REORG_DELAY, ChannelMonitor, LATENCY_GRACE_PERIOD_BLOCKS};
+use crate::chain::transaction::OutPoint;
+use crate::chain::keysinterface::KeysInterface;
+use crate::ln::channel::EXPIRE_PREV_CONFIG_TICKS;
+use crate::ln::channelmanager::{self, BREAKDOWN_TIMEOUT, ChannelManager, ChannelManagerReadArgs, MPP_TIMEOUT_TICKS, MIN_CLTV_EXPIRY_DELTA, PaymentId, PaymentSendFailure};
+use crate::ln::msgs;
+use crate::ln::msgs::ChannelMessageHandler;
+use crate::routing::router::{PaymentParameters, get_route};
+use crate::util::events::{ClosureReason, Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider};
+use crate::util::test_utils;
+use crate::util::errors::APIError;
+use crate::util::enforcing_trait_impls::EnforcingSigner;
+use crate::util::ser::{ReadableArgs, Writeable};
+use crate::io;
 
 use bitcoin::{Block, BlockHeader, BlockHash, TxMerkleNode};
 use bitcoin::hashes::Hash;
 use bitcoin::network::constants::Network;
 
-use prelude::*;
+use crate::prelude::*;
 
-use ln::functional_test_utils::*;
+use crate::ln::functional_test_utils::*;
 
 #[test]
 fn retry_single_path_payment() {

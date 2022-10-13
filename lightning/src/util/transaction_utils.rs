@@ -12,10 +12,10 @@ use bitcoin::blockdata::script::Script;
 use bitcoin::consensus::Encodable;
 use bitcoin::consensus::encode::VarInt;
 
-use ln::msgs::MAX_VALUE_MSAT;
+use crate::ln::msgs::MAX_VALUE_MSAT;
 
-use prelude::*;
-use io_extras::sink;
+use crate::prelude::*;
+use crate::io_extras::sink;
 use core::cmp::Ordering;
 
 pub fn sort_outputs<T, C : Fn(&T, &T) -> Ordering>(outputs: &mut Vec<(TxOut, T)>, tie_breaker: C) {

@@ -15,22 +15,22 @@ use bitcoin::hashes::hmac::{Hmac, HmacEngine};
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::secp256k1::{self, PublicKey, Scalar, Secp256k1, SecretKey};
 
-use chain::keysinterface::{InMemorySigner, KeysInterface, KeysManager, Recipient, Sign};
-use ln::features::{InitFeatures, NodeFeatures};
-use ln::msgs::{self, OnionMessageHandler};
-use ln::onion_utils;
-use ln::peer_handler::IgnoringMessageHandler;
+use crate::chain::keysinterface::{InMemorySigner, KeysInterface, KeysManager, Recipient, Sign};
+use crate::ln::features::{InitFeatures, NodeFeatures};
+use crate::ln::msgs::{self, OnionMessageHandler};
+use crate::ln::onion_utils;
+use crate::ln::peer_handler::IgnoringMessageHandler;
 use super::blinded_route::{BlindedRoute, ForwardTlvs, ReceiveTlvs};
 pub use super::packet::{CustomOnionMessageContents, OnionMessageContents};
 use super::packet::{BIG_PACKET_HOP_DATA_LEN, ForwardControlTlvs, Packet, Payload, ReceiveControlTlvs, SMALL_PACKET_HOP_DATA_LEN};
 use super::utils;
-use util::events::OnionMessageProvider;
-use util::logger::Logger;
-use util::ser::Writeable;
+use crate::util::events::OnionMessageProvider;
+use crate::util::logger::Logger;
+use crate::util::ser::Writeable;
 
 use core::ops::Deref;
-use sync::{Arc, Mutex};
-use prelude::*;
+use crate::sync::{Arc, Mutex};
+use crate::prelude::*;
 
 /// A sender, receiver and forwarder of onion messages. In upcoming releases, this object will be
 /// used to retrieve invoices and fulfill invoice requests from [offers]. Currently, only sending

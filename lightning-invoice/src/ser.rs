@@ -469,7 +469,7 @@ mod test {
 
 	#[test]
 	fn test_currency_code() {
-		use Currency;
+		use crate::Currency;
 
 		assert_eq!("bc", Currency::Bitcoin.to_string());
 		assert_eq!("tb", Currency::BitcoinTestnet.to_string());
@@ -480,7 +480,7 @@ mod test {
 
 	#[test]
 	fn test_raw_hrp() {
-		use ::{Currency, RawHrp, SiPrefix};
+		use crate::{Currency, RawHrp, SiPrefix};
 
 		let hrp = RawHrp {
 			currency: Currency::Bitcoin,
@@ -493,7 +493,7 @@ mod test {
 
 	#[test]
 	fn test_encode_int_be_base32() {
-		use ser::encode_int_be_base32;
+		use crate::ser::encode_int_be_base32;
 
 		let input: u64 = 33764;
 		let expected_out = CheckBase32::check_base32(&[1, 0, 31, 4]).unwrap();
@@ -503,7 +503,7 @@ mod test {
 
 	#[test]
 	fn test_encode_int_be_base256() {
-		use ser::encode_int_be_base256;
+		use crate::ser::encode_int_be_base256;
 
 		let input: u64 = 16842530;
 		let expected_out = vec![1, 0, 255, 34];

@@ -7,11 +7,11 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-use prelude::*;
+use crate::prelude::*;
 
-use ln::msgs::LightningError;
-use ln::msgs;
-use ln::wire;
+use crate::ln::msgs::LightningError;
+use crate::ln::msgs;
+use crate::ln::wire;
 
 use bitcoin::hashes::{Hash, HashEngine};
 use bitcoin::hashes::sha256::Hash as Sha256;
@@ -21,9 +21,9 @@ use bitcoin::secp256k1::{PublicKey,SecretKey};
 use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1;
 
-use util::chacha20poly1305rfc::ChaCha20Poly1305RFC;
-use util::crypto::hkdf_extract_expand_twice;
-use util::ser::VecWriter;
+use crate::util::chacha20poly1305rfc::ChaCha20Poly1305RFC;
+use crate::util::crypto::hkdf_extract_expand_twice;
+use crate::util::ser::VecWriter;
 use bitcoin::hashes::hex::ToHex;
 
 /// Maximum Lightning message data length according to
@@ -527,7 +527,7 @@ mod tests {
 
 	use hex;
 
-	use ln::peer_channel_encryptor::{PeerChannelEncryptor,NoiseState};
+	use crate::ln::peer_channel_encryptor::{PeerChannelEncryptor,NoiseState};
 
 	fn get_outbound_peer_for_initiator_test_vectors() -> PeerChannelEncryptor {
 		let their_node_id = PublicKey::from_slice(&hex::decode("028d7500dd4c12685d1f568b4c2b5048e8534b873319f3a8daa612b469132ec7f7").unwrap()[..]).unwrap();

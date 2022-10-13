@@ -56,20 +56,20 @@
 //! [BOLT #9]: https://github.com/lightning/bolts/blob/master/09-features.md
 //! [messages]: crate::ln::msgs
 
-use {io, io_extras};
-use prelude::*;
+use crate::{io, io_extras};
+use crate::prelude::*;
 use core::{cmp, fmt};
 use core::hash::{Hash, Hasher};
 use core::marker::PhantomData;
 
 use bitcoin::bech32;
 use bitcoin::bech32::{Base32Len, FromBase32, ToBase32, u5, WriteBase32};
-use ln::msgs::DecodeError;
-use util::ser::{Readable, Writeable, Writer};
+use crate::ln::msgs::DecodeError;
+use crate::util::ser::{Readable, Writeable, Writer};
 
 mod sealed {
-	use prelude::*;
-	use ln::features::Features;
+	use crate::prelude::*;
+	use crate::ln::features::Features;
 
 	/// The context in which [`Features`] are applicable. Defines which features are known to the
 	/// implementation, though specification of them as required or optional is up to the code

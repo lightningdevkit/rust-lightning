@@ -1,7 +1,7 @@
 //! Convenient utilities to create an invoice.
 
-use {CreationError, Currency, Invoice, InvoiceBuilder, SignOrCreationError};
-use payment::{InFlightHtlcs, Payer, Router};
+use crate::{CreationError, Currency, Invoice, InvoiceBuilder, SignOrCreationError};
+use crate::payment::{InFlightHtlcs, Payer, Router};
 
 use crate::{prelude::*, Description, InvoiceDescription, Sha256};
 use bech32::ToBase32;
@@ -22,7 +22,7 @@ use lightning::util::logger::Logger;
 use secp256k1::PublicKey;
 use core::ops::Deref;
 use core::time::Duration;
-use sync::Mutex;
+use crate::sync::Mutex;
 
 #[cfg(feature = "std")]
 /// Utility to create an invoice that can be paid to one of multiple nodes, or a "phantom invoice."
@@ -676,7 +676,7 @@ impl<'a, S: Score> Score for ScorerAccountingForInFlightHtlcs<'a, S> {
 #[cfg(test)]
 mod test {
 	use core::time::Duration;
-	use {Currency, Description, InvoiceDescription};
+	use crate::{Currency, Description, InvoiceDescription};
 	use bitcoin_hashes::Hash;
 	use bitcoin_hashes::sha256::Hash as Sha256;
 	use lightning::chain::keysinterface::PhantomKeysManager;
@@ -690,7 +690,7 @@ mod test {
 	use lightning::util::test_utils;
 	use lightning::util::config::UserConfig;
 	use lightning::chain::keysinterface::KeysInterface;
-	use utils::create_invoice_from_channelmanager_and_duration_since_epoch;
+	use crate::utils::create_invoice_from_channelmanager_and_duration_since_epoch;
 	use std::collections::HashSet;
 
 	#[test]
@@ -767,7 +767,7 @@ mod test {
 		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 		let description_hash = crate::Sha256(Hash::hash("Testing description_hash".as_bytes()));
-		let invoice = ::utils::create_invoice_from_channelmanager_with_description_hash_and_duration_since_epoch(
+		let invoice = crate::utils::create_invoice_from_channelmanager_with_description_hash_and_duration_since_epoch(
 			&nodes[1].node, nodes[1].keys_manager, nodes[1].logger, Currency::BitcoinTestnet,
 			Some(10_000), description_hash, Duration::from_secs(1234567), 3600
 		).unwrap();
@@ -1009,7 +1009,7 @@ mod test {
 		let non_default_invoice_expiry_secs = 4200;
 
 		let invoice =
-			::utils::create_phantom_invoice::<EnforcingSigner, &test_utils::TestKeysInterface, &test_utils::TestLogger>(
+			crate::utils::create_phantom_invoice::<EnforcingSigner, &test_utils::TestKeysInterface, &test_utils::TestLogger>(
 				Some(payment_amt), payment_hash, "test".to_string(), non_default_invoice_expiry_secs,
 				route_hints, &nodes[1].keys_manager, &nodes[1].logger, Currency::BitcoinTestnet
 			).unwrap();
@@ -1118,7 +1118,7 @@ mod test {
 			nodes[2].node.get_phantom_route_hints(),
 		];
 
-		let invoice = ::utils::create_phantom_invoice::<EnforcingSigner, &test_utils::TestKeysInterface, &test_utils::TestLogger>(Some(payment_amt), Some(payment_hash), "test".to_string(), 3600, route_hints, &nodes[1].keys_manager, &nodes[1].logger, Currency::BitcoinTestnet).unwrap();
+		let invoice = crate::utils::create_phantom_invoice::<EnforcingSigner, &test_utils::TestKeysInterface, &test_utils::TestLogger>(Some(payment_amt), Some(payment_hash), "test".to_string(), 3600, route_hints, &nodes[1].keys_manager, &nodes[1].logger, Currency::BitcoinTestnet).unwrap();
 
 		let chan_0_1 = &nodes[1].node.list_usable_channels()[0];
 		assert_eq!(invoice.route_hints()[0].0[0].htlc_minimum_msat, chan_0_1.inbound_htlc_minimum_msat);
@@ -1145,7 +1145,7 @@ mod test {
 
 		let description_hash = crate::Sha256(Hash::hash("Description hash phantom invoice".as_bytes()));
 		let non_default_invoice_expiry_secs = 4200;
-		let invoice = ::utils::create_phantom_invoice_with_description_hash::<
+		let invoice = crate::utils::create_phantom_invoice_with_description_hash::<
 			EnforcingSigner, &test_utils::TestKeysInterface, &test_utils::TestLogger,
 		>(
 			Some(payment_amt), None, non_default_invoice_expiry_secs, description_hash,
@@ -1461,7 +1461,7 @@ mod test {
 			.map(|route_hint| route_hint.phantom_scid)
 			.collect::<HashSet<u64>>();
 
-		let invoice = ::utils::create_phantom_invoice::<EnforcingSigner, &test_utils::TestKeysInterface, &test_utils::TestLogger>(invoice_amt, None, "test".to_string(), 3600, phantom_route_hints, &invoice_node.keys_manager, &invoice_node.logger, Currency::BitcoinTestnet).unwrap();
+		let invoice = crate::utils::create_phantom_invoice::<EnforcingSigner, &test_utils::TestKeysInterface, &test_utils::TestLogger>(invoice_amt, None, "test".to_string(), 3600, phantom_route_hints, &invoice_node.keys_manager, &invoice_node.logger, Currency::BitcoinTestnet).unwrap();
 
 		let invoice_hints = invoice.private_routes();
 

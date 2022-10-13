@@ -150,7 +150,7 @@ use lightning::util::errors::APIError;
 use lightning::util::events::{Event, EventHandler};
 use lightning::util::logger::Logger;
 use lightning::util::ser::Writeable;
-use time_utils::Time;
+use crate::time_utils::Time;
 use crate::sync::Mutex;
 
 use secp256k1::PublicKey;
@@ -172,7 +172,7 @@ pub type InvoicePayer<P, R, L, E> = InvoicePayerUsingTime::<P, R, L, E, Configur
 #[cfg(not(feature = "no-std"))]
 type ConfiguredTime = std::time::Instant;
 #[cfg(feature = "no-std")]
-use time_utils;
+use crate::time_utils;
 #[cfg(feature = "no-std")]
 type ConfiguredTime = time_utils::Eternity;
 
@@ -762,7 +762,7 @@ impl lightning::util::ser::Readable for InFlightHtlcs {
 mod tests {
 	use super::*;
 	use crate::{InvoiceBuilder, Currency};
-	use utils::{ScorerAccountingForInFlightHtlcs, create_invoice_from_channelmanager_and_duration_since_epoch};
+	use crate::utils::{ScorerAccountingForInFlightHtlcs, create_invoice_from_channelmanager_and_duration_since_epoch};
 	use bitcoin_hashes::sha256::Hash as Sha256;
 	use lightning::ln::PaymentPreimage;
 	use lightning::ln::channelmanager;
@@ -780,8 +780,8 @@ mod tests {
 	use std::collections::VecDeque;
 	use std::ops::DerefMut;
 	use std::time::{SystemTime, Duration};
-	use time_utils::tests::SinceEpoch;
-	use DEFAULT_EXPIRY_TIME;
+	use crate::time_utils::tests::SinceEpoch;
+	use crate::DEFAULT_EXPIRY_TIME;
 	use lightning::util::errors::APIError::{ChannelUnavailable, MonitorUpdateInProgress};
 
 	fn invoice(payment_preimage: PaymentPreimage) -> Invoice {

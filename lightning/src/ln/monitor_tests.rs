@@ -9,22 +9,22 @@
 
 //! Further functional tests which test blockchain reorganizations.
 
-use chain::channelmonitor::{ANTI_REORG_DELAY, Balance};
-use chain::transaction::OutPoint;
-use chain::chaininterface::LowerBoundedFeeEstimator;
-use ln::channel;
-use ln::channelmanager::{self, BREAKDOWN_TIMEOUT};
-use ln::msgs::ChannelMessageHandler;
-use util::events::{Event, MessageSendEvent, MessageSendEventsProvider, ClosureReason, HTLCDestination};
+use crate::chain::channelmonitor::{ANTI_REORG_DELAY, Balance};
+use crate::chain::transaction::OutPoint;
+use crate::chain::chaininterface::LowerBoundedFeeEstimator;
+use crate::ln::channel;
+use crate::ln::channelmanager::{self, BREAKDOWN_TIMEOUT};
+use crate::ln::msgs::ChannelMessageHandler;
+use crate::util::events::{Event, MessageSendEvent, MessageSendEventsProvider, ClosureReason, HTLCDestination};
 
 use bitcoin::blockdata::script::Builder;
 use bitcoin::blockdata::opcodes;
 use bitcoin::secp256k1::Secp256k1;
 use bitcoin::Transaction;
 
-use prelude::*;
+use crate::prelude::*;
 
-use ln::functional_test_utils::*;
+use crate::ln::functional_test_utils::*;
 
 #[test]
 fn chanmon_fail_from_stale_commitment() {

@@ -14,17 +14,17 @@
 
 use bitcoin::secp256k1::PublicKey;
 
-use ln::channelmanager::ChannelDetails;
-use ln::features::{ChannelFeatures, InvoiceFeatures, NodeFeatures};
-use ln::msgs::{DecodeError, ErrorAction, LightningError, MAX_VALUE_MSAT};
-use routing::gossip::{DirectedChannelInfoWithUpdate, EffectiveCapacity, ReadOnlyNetworkGraph, NetworkGraph, NodeId, RoutingFees};
-use routing::scoring::{ChannelUsage, Score};
-use util::ser::{Writeable, Readable, Writer};
-use util::logger::{Level, Logger};
-use util::chacha20::ChaCha20;
+use crate::ln::channelmanager::ChannelDetails;
+use crate::ln::features::{ChannelFeatures, InvoiceFeatures, NodeFeatures};
+use crate::ln::msgs::{DecodeError, ErrorAction, LightningError, MAX_VALUE_MSAT};
+use crate::routing::gossip::{DirectedChannelInfoWithUpdate, EffectiveCapacity, ReadOnlyNetworkGraph, NetworkGraph, NodeId, RoutingFees};
+use crate::routing::scoring::{ChannelUsage, Score};
+use crate::util::ser::{Writeable, Readable, Writer};
+use crate::util::logger::{Level, Logger};
+use crate::util::chacha20::ChaCha20;
 
-use io;
-use prelude::*;
+use crate::io;
+use crate::prelude::*;
 use alloc::collections::BinaryHeap;
 use core::cmp;
 use core::ops::Deref;
@@ -112,7 +112,7 @@ const SERIALIZATION_VERSION: u8 = 1;
 const MIN_SERIALIZATION_VERSION: u8 = 1;
 
 impl Writeable for Route {
-	fn write<W: ::util::ser::Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+	fn write<W: crate::util::ser::Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		write_ver_prefix!(writer, SERIALIZATION_VERSION, MIN_SERIALIZATION_VERSION);
 		(self.paths.len() as u64).write(writer)?;
 		for hops in self.paths.iter() {
@@ -326,7 +326,7 @@ impl PaymentParameters {
 pub struct RouteHint(pub Vec<RouteHintHop>);
 
 impl Writeable for RouteHint {
-	fn write<W: ::util::ser::Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+	fn write<W: crate::util::ser::Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		(self.0.len() as u64).write(writer)?;
 		for hop in self.0.iter() {
 			hop.write(writer)?;
@@ -1932,21 +1932,21 @@ fn build_route_from_hops_internal<L: Deref>(
 
 #[cfg(test)]
 mod tests {
-	use routing::gossip::{NetworkGraph, P2PGossipSync, NodeId, EffectiveCapacity};
-	use routing::router::{get_route, build_route_from_hops_internal, add_random_cltv_offset, default_node_features,
+	use crate::routing::gossip::{NetworkGraph, P2PGossipSync, NodeId, EffectiveCapacity};
+	use crate::routing::router::{get_route, build_route_from_hops_internal, add_random_cltv_offset, default_node_features,
 		PaymentParameters, Route, RouteHint, RouteHintHop, RouteHop, RoutingFees,
 		DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA, MAX_PATH_LENGTH_ESTIMATE};
-	use routing::scoring::{ChannelUsage, Score, ProbabilisticScorer, ProbabilisticScoringParameters};
-	use routing::test_utils::{add_channel, add_or_update_node, build_graph, build_line_graph, id_to_feature_flags, get_nodes, update_channel};
-	use chain::transaction::OutPoint;
-	use chain::keysinterface::KeysInterface;
-	use ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
-	use ln::msgs::{ErrorAction, LightningError, UnsignedChannelUpdate, MAX_VALUE_MSAT};
-	use ln::channelmanager;
-	use util::test_utils as ln_test_utils;
-	use util::chacha20::ChaCha20;
+	use crate::routing::scoring::{ChannelUsage, Score, ProbabilisticScorer, ProbabilisticScoringParameters};
+	use crate::routing::test_utils::{add_channel, add_or_update_node, build_graph, build_line_graph, id_to_feature_flags, get_nodes, update_channel};
+	use crate::chain::transaction::OutPoint;
+	use crate::chain::keysinterface::KeysInterface;
+	use crate::ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
+	use crate::ln::msgs::{ErrorAction, LightningError, UnsignedChannelUpdate, MAX_VALUE_MSAT};
+	use crate::ln::channelmanager;
+	use crate::util::test_utils as ln_test_utils;
+	use crate::util::chacha20::ChaCha20;
 	#[cfg(c_bindings)]
-	use util::ser::{Writeable, Writer};
+	use crate::util::ser::{Writeable, Writer};
 
 	use bitcoin::hashes::Hash;
 	use bitcoin::network::constants::Network;
@@ -1960,8 +1960,8 @@ mod tests {
 	use bitcoin::secp256k1::{PublicKey,SecretKey};
 	use bitcoin::secp256k1::Secp256k1;
 
-	use prelude::*;
-	use sync::Arc;
+	use crate::prelude::*;
+	use crate::sync::Arc;
 
 	use core::convert::TryInto;
 
@@ -4895,7 +4895,7 @@ mod tests {
 
 	#[cfg(c_bindings)]
 	impl Writeable for BadChannelScorer {
-		fn write<W: Writer>(&self, _w: &mut W) -> Result<(), ::io::Error> { unimplemented!() }
+		fn write<W: Writer>(&self, _w: &mut W) -> Result<(), crate::io::Error> { unimplemented!() }
 	}
 	impl Score for BadChannelScorer {
 		fn channel_penalty_msat(&self, short_channel_id: u64, _: &NodeId, _: &NodeId, _: ChannelUsage) -> u64 {
@@ -4914,7 +4914,7 @@ mod tests {
 
 	#[cfg(c_bindings)]
 	impl Writeable for BadNodeScorer {
-		fn write<W: Writer>(&self, _w: &mut W) -> Result<(), ::io::Error> { unimplemented!() }
+		fn write<W: Writer>(&self, _w: &mut W) -> Result<(), crate::io::Error> { unimplemented!() }
 	}
 
 	impl Score for BadNodeScorer {
@@ -5307,12 +5307,12 @@ mod tests {
 		seed
 	}
 	#[cfg(not(feature = "no-std"))]
-	use util::ser::ReadableArgs;
+	use crate::util::ser::ReadableArgs;
 
 	#[test]
 	#[cfg(not(feature = "no-std"))]
 	fn generate_routes() {
-		use routing::scoring::{ProbabilisticScorer, ProbabilisticScoringParameters};
+		use crate::routing::scoring::{ProbabilisticScorer, ProbabilisticScoringParameters};
 
 		let mut d = match super::bench_utils::get_route_file() {
 			Ok(f) => f,
@@ -5349,7 +5349,7 @@ mod tests {
 	#[test]
 	#[cfg(not(feature = "no-std"))]
 	fn generate_routes_mpp() {
-		use routing::scoring::{ProbabilisticScorer, ProbabilisticScoringParameters};
+		use crate::routing::scoring::{ProbabilisticScorer, ProbabilisticScoringParameters};
 
 		let mut d = match super::bench_utils::get_route_file() {
 			Ok(f) => f,
@@ -5453,14 +5453,14 @@ mod benches {
 	use super::*;
 	use bitcoin::hashes::Hash;
 	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
-	use chain::transaction::OutPoint;
-	use chain::keysinterface::{KeysManager,KeysInterface};
-	use ln::channelmanager::{self, ChannelCounterparty, ChannelDetails};
-	use ln::features::{InitFeatures, InvoiceFeatures};
-	use routing::gossip::NetworkGraph;
-	use routing::scoring::{FixedPenaltyScorer, ProbabilisticScorer, ProbabilisticScoringParameters};
-	use util::logger::{Logger, Record};
-	use util::ser::ReadableArgs;
+	use crate::chain::transaction::OutPoint;
+	use crate::chain::keysinterface::{KeysManager,KeysInterface};
+	use crate::ln::channelmanager::{self, ChannelCounterparty, ChannelDetails};
+	use crate::ln::features::InvoiceFeatures;
+	use crate::routing::gossip::NetworkGraph;
+	use crate::routing::scoring::{FixedPenaltyScorer, ProbabilisticScorer, ProbabilisticScoringParameters};
+	use crate::util::logger::{Logger, Record};
+	use crate::util::ser::ReadableArgs;
 
 	use test::Bencher;
 

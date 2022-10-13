@@ -11,7 +11,7 @@ use lightning::ln::peer_channel_encryptor::PeerChannelEncryptor;
 
 use bitcoin::secp256k1::{Secp256k1, PublicKey, SecretKey};
 
-use utils::test_logger;
+use crate::utils::test_logger;
 
 #[inline]
 fn slice_to_be16(v: &[u8]) -> u16 {

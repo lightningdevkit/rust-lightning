@@ -86,7 +86,7 @@ mod prelude {
 	pub use alloc::string::ToString;
 }
 
-use prelude::*;
+use crate::prelude::*;
 
 /// Sync compat for std/no_std
 #[cfg(feature = "std")]
@@ -135,7 +135,7 @@ pub enum ParseOrSemanticError {
 	ParseError(ParseError),
 
 	/// The invoice could be decoded but violates the BOLT11 standard
-	SemanticError(::SemanticError),
+	SemanticError(crate::SemanticError),
 }
 
 /// The number of bits used to represent timestamps as defined in BOLT 11.
@@ -360,7 +360,7 @@ impl SiPrefix {
 	/// (C-not exported) As we don't yet support a slice of enums, and also because this function
 	/// isn't the most critical to expose.
 	pub fn values_desc() -> &'static [SiPrefix] {
-		use SiPrefix::*;
+		use crate::SiPrefix::*;
 		static VALUES: [SiPrefix; 4] = [Milli, Micro, Nano, Pico];
 		&VALUES
 	}
@@ -1562,15 +1562,15 @@ mod test {
 	#[test]
 	fn test_system_time_bounds_assumptions() {
 		assert_eq!(
-			::PositiveTimestamp::from_unix_timestamp(::MAX_TIMESTAMP + 1),
-			Err(::CreationError::TimestampOutOfBounds)
+			crate::PositiveTimestamp::from_unix_timestamp(crate::MAX_TIMESTAMP + 1),
+			Err(crate::CreationError::TimestampOutOfBounds)
 		);
 	}
 
 	#[test]
 	fn test_calc_invoice_hash() {
-		use ::{RawInvoice, RawHrp, RawDataPart, Currency, PositiveTimestamp};
-		use ::TaggedField::*;
+		use crate::{RawInvoice, RawHrp, RawDataPart, Currency, PositiveTimestamp};
+		use crate::TaggedField::*;
 
 		let invoice = RawInvoice {
 			hrp: RawHrp {
@@ -1581,10 +1581,10 @@ mod test {
 			data: RawDataPart {
 				timestamp: PositiveTimestamp::from_unix_timestamp(1496314658).unwrap(),
 				tagged_fields: vec![
-					PaymentHash(::Sha256(sha256::Hash::from_hex(
+					PaymentHash(crate::Sha256(sha256::Hash::from_hex(
 						"0001020304050607080900010203040506070809000102030405060708090102"
 					).unwrap())).into(),
-					Description(::Description::new(
+					Description(crate::Description::new(
 						"Please consider supporting this project".to_owned()
 					).unwrap()).into(),
 				],
@@ -1602,11 +1602,11 @@ mod test {
 
 	#[test]
 	fn test_check_signature() {
-		use TaggedField::*;
+		use crate::TaggedField::*;
 		use secp256k1::Secp256k1;
 		use secp256k1::ecdsa::{RecoveryId, RecoverableSignature};
 		use secp256k1::{SecretKey, PublicKey};
-		use {SignedRawInvoice, InvoiceSignature, RawInvoice, RawHrp, RawDataPart, Currency, Sha256,
+		use crate::{SignedRawInvoice, InvoiceSignature, RawInvoice, RawHrp, RawDataPart, Currency, Sha256,
 			 PositiveTimestamp};
 
 		let invoice = SignedRawInvoice {
@@ -1623,7 +1623,7 @@ mod test {
 							"0001020304050607080900010203040506070809000102030405060708090102"
 						).unwrap())).into(),
 						Description(
-							::Description::new(
+							crate::Description::new(
 								"Please consider supporting this project".to_owned()
 							).unwrap()
 						).into(),
@@ -1659,7 +1659,7 @@ mod test {
 		).unwrap();
 		let public_key = PublicKey::from_secret_key(&Secp256k1::new(), &private_key);
 
-		assert_eq!(invoice.recover_payee_pub_key(), Ok(::PayeePubKey(public_key)));
+		assert_eq!(invoice.recover_payee_pub_key(), Ok(crate::PayeePubKey(public_key)));
 
 		let (raw_invoice, _, _) = invoice.into_parts();
 		let new_signed = raw_invoice.sign::<_, ()>(|hash| {
@@ -1671,11 +1671,11 @@ mod test {
 
 	#[test]
 	fn test_check_feature_bits() {
-		use TaggedField::*;
+		use crate::TaggedField::*;
 		use lightning::ln::features::InvoiceFeatures;
 		use secp256k1::Secp256k1;
 		use secp256k1::SecretKey;
-		use {RawInvoice, RawHrp, RawDataPart, Currency, Sha256, PositiveTimestamp, Invoice,
+		use crate::{RawInvoice, RawHrp, RawDataPart, Currency, Sha256, PositiveTimestamp, Invoice,
 			 SemanticError};
 
 		let private_key = SecretKey::from_slice(&[42; 32]).unwrap();
@@ -1693,7 +1693,7 @@ mod test {
 						"0001020304050607080900010203040506070809000102030405060708090102"
 					).unwrap())).into(),
 					Description(
-						::Description::new(
+						crate::Description::new(
 							"Please consider supporting this project".to_owned()
 						).unwrap()
 					).into(),
@@ -1765,7 +1765,7 @@ mod test {
 
 	#[test]
 	fn test_builder_amount() {
-		use ::*;
+		use crate::*;
 
 		let builder = InvoiceBuilder::new(Currency::Bitcoin)
 			.description("Test".into())
@@ -1792,7 +1792,7 @@ mod test {
 
 	#[test]
 	fn test_builder_fail() {
-		use ::*;
+		use crate::*;
 		use lightning::routing::router::RouteHintHop;
 		use std::iter::FromIterator;
 		use secp256k1::PublicKey;
@@ -1846,7 +1846,7 @@ mod test {
 
 	#[test]
 	fn test_builder_ok() {
-		use ::*;
+		use crate::*;
 		use lightning::routing::router::RouteHintHop;
 		use secp256k1::Secp256k1;
 		use secp256k1::{SecretKey, PublicKey};
@@ -1966,7 +1966,7 @@ mod test {
 
 	#[test]
 	fn test_default_values() {
-		use ::*;
+		use crate::*;
 		use secp256k1::Secp256k1;
 		use secp256k1::SecretKey;
 
@@ -1992,7 +1992,7 @@ mod test {
 
 	#[test]
 	fn test_expiration() {
-		use ::*;
+		use crate::*;
 		use secp256k1::Secp256k1;
 		use secp256k1::SecretKey;
 

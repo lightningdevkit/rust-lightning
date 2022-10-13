@@ -9,6 +9,7 @@ A Bitcoin Lightning library in Rust.
 Does most of the hard work, without implying a specific runtime, requiring clients implement basic network logic, chain interactions and disk storage.
 Still missing tons of error-handling. See GitHub issues for suggested projects if you want to contribute. Don't have to bother telling you not to use this for anything serious, because you'd have to build a client around it to even try.
 """
+edition = "2018"
 
 [package.metadata.docs.rs]
 features = ["std"]

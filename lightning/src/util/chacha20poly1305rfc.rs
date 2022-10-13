@@ -10,14 +10,14 @@
 // This is a port of Andrew Moons poly1305-donna
 // https://github.com/floodyberry/poly1305-donna
 
-use ln::msgs::DecodeError;
-use util::ser::{FixedLengthReader, LengthRead, LengthReadableArgs, Readable, Writeable, Writer};
-use io::{self, Read, Write};
+use crate::ln::msgs::DecodeError;
+use crate::util::ser::{FixedLengthReader, LengthRead, LengthReadableArgs, Readable, Writeable, Writer};
+use crate::io::{self, Read, Write};
 
 #[cfg(not(fuzzing))]
 mod real_chachapoly {
-	use util::chacha20::ChaCha20;
-	use util::poly1305::Poly1305;
+	use crate::util::chacha20::ChaCha20;
+	use crate::util::poly1305::Poly1305;
 	use bitcoin::hashes::cmp::fixed_time_eq;
 
 	#[derive(Clone, Copy)]
@@ -330,9 +330,9 @@ pub use self::fuzzy_chachapoly::ChaCha20Poly1305RFC;
 
 #[cfg(test)]
 mod tests {
-	use ln::msgs::DecodeError;
+	use crate::ln::msgs::DecodeError;
 	use super::{ChaChaPolyReadAdapter, ChaChaPolyWriteAdapter};
-	use util::ser::{self, FixedLengthReader, LengthReadableArgs, Writeable};
+	use crate::util::ser::{self, FixedLengthReader, LengthReadableArgs, Writeable};
 
 	// Used for for testing various lengths of serialization.
 	#[derive(Debug, PartialEq, Eq)]

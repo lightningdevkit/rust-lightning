@@ -205,10 +205,10 @@ impl Poly1305 {
 
 #[cfg(test)]
 mod test {
-	use prelude::*;
+	use crate::prelude::*;
 	use core::iter::repeat;
 
-	use util::poly1305::Poly1305;
+	use crate::util::poly1305::Poly1305;
 
 	fn poly1305(key: &[u8], msg: &[u8], mac: &mut [u8]) {
 		let mut poly = Poly1305::new(key);

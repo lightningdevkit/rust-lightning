@@ -54,21 +54,21 @@
 //!
 //! [`find_route`]: crate::routing::router::find_route
 
-use ln::msgs::DecodeError;
-use routing::gossip::{EffectiveCapacity, NetworkGraph, NodeId};
-use routing::router::RouteHop;
-use util::ser::{Readable, ReadableArgs, Writeable, Writer};
-use util::logger::Logger;
-use util::time::Time;
+use crate::ln::msgs::DecodeError;
+use crate::routing::gossip::{EffectiveCapacity, NetworkGraph, NodeId};
+use crate::routing::router::RouteHop;
+use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer};
+use crate::util::logger::Logger;
+use crate::util::time::Time;
 
-use prelude::*;
+use crate::prelude::*;
 use core::{cmp, fmt};
 use core::cell::{RefCell, RefMut};
 use core::convert::TryInto;
 use core::ops::{Deref, DerefMut};
 use core::time::Duration;
-use io::{self, Read};
-use sync::{Mutex, MutexGuard};
+use crate::io::{self, Read};
+use crate::sync::{Mutex, MutexGuard};
 
 /// We define Score ever-so-slightly differently based on whether we are being built for C bindings
 /// or not. For users, `LockableScore` must somehow be writeable to disk. For Rust users, this is
@@ -319,7 +319,7 @@ impl ReadableArgs<u64> for FixedPenaltyScorer {
 #[cfg(not(feature = "no-std"))]
 type ConfiguredTime = std::time::Instant;
 #[cfg(feature = "no-std")]
-use util::time::Eternity;
+use crate::util::time::Eternity;
 #[cfg(feature = "no-std")]
 type ConfiguredTime = Eternity;
 
@@ -1601,16 +1601,16 @@ impl<T: Time> Readable for ChannelLiquidity<T> {
 #[cfg(test)]
 mod tests {
 	use super::{ChannelLiquidity, HistoricalBucketRangeTracker, ProbabilisticScoringParameters, ProbabilisticScorerUsingTime};
-	use util::time::Time;
-	use util::time::tests::SinceEpoch;
+	use crate::util::time::Time;
+	use crate::util::time::tests::SinceEpoch;
 
-	use ln::channelmanager;
-	use ln::msgs::{ChannelAnnouncement, ChannelUpdate, UnsignedChannelAnnouncement, UnsignedChannelUpdate};
-	use routing::gossip::{EffectiveCapacity, NetworkGraph, NodeId};
-	use routing::router::RouteHop;
-	use routing::scoring::{ChannelUsage, Score};
-	use util::ser::{ReadableArgs, Writeable};
-	use util::test_utils::TestLogger;
+	use crate::ln::channelmanager;
+	use crate::ln::msgs::{ChannelAnnouncement, ChannelUpdate, UnsignedChannelAnnouncement, UnsignedChannelUpdate};
+	use crate::routing::gossip::{EffectiveCapacity, NetworkGraph, NodeId};
+	use crate::routing::router::RouteHop;
+	use crate::routing::scoring::{ChannelUsage, Score};
+	use crate::util::ser::{ReadableArgs, Writeable};
+	use crate::util::test_utils::TestLogger;
 
 	use bitcoin::blockdata::constants::genesis_block;
 	use bitcoin::hashes::Hash;
@@ -1618,7 +1618,7 @@ mod tests {
 	use bitcoin::network::constants::Network;
 	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 	use core::time::Duration;
-	use io;
+	use crate::io;
 
 	fn source_privkey() -> SecretKey {
 		SecretKey::from_slice(&[42; 32]).unwrap()
@@ -1712,7 +1712,7 @@ mod tests {
 			bitcoin_signature_2: secp_ctx.sign_ecdsa(&msghash, &node_2_secret),
 			contents: unsigned_announcement,
 		};
-		let chain_source: Option<&::util::test_utils::TestChainSource> = None;
+		let chain_source: Option<&crate::util::test_utils::TestChainSource> = None;
 		network_graph.update_channel_from_announcement(
 			&signed_announcement, &chain_source).unwrap();
 		update_channel(network_graph, short_channel_id, node_1_key, 0);

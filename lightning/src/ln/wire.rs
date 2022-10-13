@@ -12,9 +12,9 @@
 //!
 //! [BOLT #1]: https://github.com/lightning/bolts/blob/master/01-messaging.md
 
-use io;
-use ln::msgs;
-use util::ser::{Readable, Writeable, Writer};
+use crate::io;
+use crate::ln::msgs;
+use crate::util::ser::{Readable, Writeable, Writer};
 
 /// Trait to be implemented by custom message (unrelated to the channel/gossip LN layers)
 /// decoders.
@@ -81,7 +81,7 @@ pub(crate) enum Message<T> where T: core::fmt::Debug + Type + TestEq {
 	/// A message that could not be decoded because its type is unknown.
 	Unknown(u16),
 	/// A message that was produced by a [`CustomMessageReader`] and is to be handled by a
-	/// [`::ln::peer_handler::CustomMessageHandler`].
+	/// [`crate::ln::peer_handler::CustomMessageHandler`].
 	Custom(T),
 }
 
@@ -424,9 +424,9 @@ impl Encode for msgs::GossipTimestampFilter {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use prelude::*;
+	use crate::prelude::*;
 	use core::convert::TryInto;
-	use ::ln::peer_handler::IgnoringMessageHandler;
+	use crate::ln::peer_handler::IgnoringMessageHandler;
 
 	// Big-endian wire encoding of Pong message (type = 19, byteslen = 2).
 	const ENCODED_PONG: [u8; 6] = [0u8, 19u8, 0u8, 2u8, 0u8, 0u8];

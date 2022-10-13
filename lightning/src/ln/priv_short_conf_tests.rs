@@ -11,26 +11,26 @@
 //! other behavior that exists only on private channels or with a semi-trusted counterparty (eg
 //! LSP).
 
-use chain::{ChannelMonitorUpdateStatus, Watch};
-use chain::channelmonitor::ChannelMonitor;
-use chain::keysinterface::{Recipient, KeysInterface};
-use ln::channelmanager::{self, ChannelManager, ChannelManagerReadArgs, MIN_CLTV_EXPIRY_DELTA};
-use routing::gossip::RoutingFees;
-use routing::router::{PaymentParameters, RouteHint, RouteHintHop};
-use ln::features::ChannelTypeFeatures;
-use ln::msgs;
-use ln::msgs::{ChannelMessageHandler, RoutingMessageHandler, ChannelUpdate, ErrorAction};
-use ln::wire::Encode;
-use util::enforcing_trait_impls::EnforcingSigner;
-use util::events::{ClosureReason, Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider};
-use util::config::UserConfig;
-use util::ser::{Writeable, ReadableArgs};
-use util::test_utils;
+use crate::chain::{ChannelMonitorUpdateStatus, Watch};
+use crate::chain::channelmonitor::ChannelMonitor;
+use crate::chain::keysinterface::{Recipient, KeysInterface};
+use crate::ln::channelmanager::{self, ChannelManager, ChannelManagerReadArgs, MIN_CLTV_EXPIRY_DELTA};
+use crate::routing::gossip::RoutingFees;
+use crate::routing::router::{PaymentParameters, RouteHint, RouteHintHop};
+use crate::ln::features::ChannelTypeFeatures;
+use crate::ln::msgs;
+use crate::ln::msgs::{ChannelMessageHandler, RoutingMessageHandler, ChannelUpdate, ErrorAction};
+use crate::ln::wire::Encode;
+use crate::util::enforcing_trait_impls::EnforcingSigner;
+use crate::util::events::{ClosureReason, Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider};
+use crate::util::config::UserConfig;
+use crate::util::ser::{Writeable, ReadableArgs};
+use crate::util::test_utils;
 
-use prelude::*;
+use crate::prelude::*;
 use core::default::Default;
 
-use ln::functional_test_utils::*;
+use crate::ln::functional_test_utils::*;
 
 use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::hash_types::BlockHash;

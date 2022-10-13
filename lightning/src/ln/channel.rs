@@ -22,32 +22,32 @@ use bitcoin::secp256k1::{PublicKey,SecretKey};
 use bitcoin::secp256k1::{Secp256k1,ecdsa::Signature};
 use bitcoin::secp256k1;
 
-use ln::{PaymentPreimage, PaymentHash};
-use ln::features::{ChannelTypeFeatures, InitFeatures};
-use ln::msgs;
-use ln::msgs::{DecodeError, OptionalField, DataLossProtect};
-use ln::script::{self, ShutdownScript};
-use ln::channelmanager::{self, CounterpartyForwardingInfo, PendingHTLCStatus, HTLCSource, HTLCFailReason, HTLCFailureMsg, PendingHTLCInfo, RAACommitmentOrder, BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA, MAX_LOCAL_BREAKDOWN_TIMEOUT};
-use ln::chan_utils::{CounterpartyCommitmentSecrets, TxCreationKeys, HTLCOutputInCommitment, htlc_success_tx_weight, htlc_timeout_tx_weight, make_funding_redeemscript, ChannelPublicKeys, CommitmentTransaction, HolderCommitmentTransaction, ChannelTransactionParameters, CounterpartyChannelTransactionParameters, MAX_HTLCS, get_commitment_transaction_number_obscure_factor, ClosingTransaction};
-use ln::chan_utils;
-use chain::BestBlock;
-use chain::chaininterface::{FeeEstimator, ConfirmationTarget, LowerBoundedFeeEstimator};
-use chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, LATENCY_GRACE_PERIOD_BLOCKS};
-use chain::transaction::{OutPoint, TransactionData};
-use chain::keysinterface::{Sign, KeysInterface};
-use util::events::ClosureReason;
-use util::ser::{Readable, ReadableArgs, Writeable, Writer, VecWriter};
-use util::logger::Logger;
-use util::errors::APIError;
-use util::config::{UserConfig, ChannelConfig, LegacyChannelConfig, ChannelHandshakeConfig, ChannelHandshakeLimits};
-use util::scid_utils::scid_from_parts;
+use crate::ln::{PaymentPreimage, PaymentHash};
+use crate::ln::features::{ChannelTypeFeatures, InitFeatures};
+use crate::ln::msgs;
+use crate::ln::msgs::{DecodeError, OptionalField, DataLossProtect};
+use crate::ln::script::{self, ShutdownScript};
+use crate::ln::channelmanager::{self, CounterpartyForwardingInfo, PendingHTLCStatus, HTLCSource, HTLCFailReason, HTLCFailureMsg, PendingHTLCInfo, RAACommitmentOrder, BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA, MAX_LOCAL_BREAKDOWN_TIMEOUT};
+use crate::ln::chan_utils::{CounterpartyCommitmentSecrets, TxCreationKeys, HTLCOutputInCommitment, htlc_success_tx_weight, htlc_timeout_tx_weight, make_funding_redeemscript, ChannelPublicKeys, CommitmentTransaction, HolderCommitmentTransaction, ChannelTransactionParameters, CounterpartyChannelTransactionParameters, MAX_HTLCS, get_commitment_transaction_number_obscure_factor, ClosingTransaction};
+use crate::ln::chan_utils;
+use crate::chain::BestBlock;
+use crate::chain::chaininterface::{FeeEstimator, ConfirmationTarget, LowerBoundedFeeEstimator};
+use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, LATENCY_GRACE_PERIOD_BLOCKS};
+use crate::chain::transaction::{OutPoint, TransactionData};
+use crate::chain::keysinterface::{Sign, KeysInterface};
+use crate::util::events::ClosureReason;
+use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer, VecWriter};
+use crate::util::logger::Logger;
+use crate::util::errors::APIError;
+use crate::util::config::{UserConfig, ChannelConfig, LegacyChannelConfig, ChannelHandshakeConfig, ChannelHandshakeLimits};
+use crate::util::scid_utils::scid_from_parts;
 
-use io;
-use prelude::*;
+use crate::io;
+use crate::prelude::*;
 use core::{cmp,mem,fmt};
 use core::ops::Deref;
 #[cfg(any(test, fuzzing, debug_assertions))]
-use sync::Mutex;
+use crate::sync::Mutex;
 use bitcoin::hashes::hex::ToHex;
 
 #[cfg(test)]
@@ -6683,24 +6683,24 @@ mod tests {
 	use bitcoin::blockdata::opcodes;
 	use bitcoin::network::constants::Network;
 	use hex;
-	use ln::PaymentHash;
-	use ln::channelmanager::{self, HTLCSource, PaymentId};
-	use ln::channel::{Channel, InboundHTLCOutput, OutboundHTLCOutput, InboundHTLCState, OutboundHTLCState, HTLCCandidate, HTLCInitiator};
-	use ln::channel::{MAX_FUNDING_SATOSHIS_NO_WUMBO, TOTAL_BITCOIN_SUPPLY_SATOSHIS, MIN_THEIR_CHAN_RESERVE_SATOSHIS};
-	use ln::features::ChannelTypeFeatures;
-	use ln::msgs::{ChannelUpdate, DataLossProtect, DecodeError, OptionalField, UnsignedChannelUpdate, MAX_VALUE_MSAT};
-	use ln::script::ShutdownScript;
-	use ln::chan_utils;
-	use ln::chan_utils::{htlc_success_tx_weight, htlc_timeout_tx_weight};
-	use chain::BestBlock;
-	use chain::chaininterface::{FeeEstimator, LowerBoundedFeeEstimator, ConfirmationTarget};
-	use chain::keysinterface::{InMemorySigner, Recipient, KeyMaterial, KeysInterface};
-	use chain::transaction::OutPoint;
-	use util::config::UserConfig;
-	use util::enforcing_trait_impls::EnforcingSigner;
-	use util::errors::APIError;
-	use util::test_utils;
-	use util::test_utils::OnGetShutdownScriptpubkey;
+	use crate::ln::PaymentHash;
+	use crate::ln::channelmanager::{self, HTLCSource, PaymentId};
+	use crate::ln::channel::{Channel, InboundHTLCOutput, OutboundHTLCOutput, InboundHTLCState, OutboundHTLCState, HTLCCandidate, HTLCInitiator};
+	use crate::ln::channel::{MAX_FUNDING_SATOSHIS_NO_WUMBO, TOTAL_BITCOIN_SUPPLY_SATOSHIS, MIN_THEIR_CHAN_RESERVE_SATOSHIS};
+	use crate::ln::features::ChannelTypeFeatures;
+	use crate::ln::msgs::{ChannelUpdate, DataLossProtect, DecodeError, OptionalField, UnsignedChannelUpdate, MAX_VALUE_MSAT};
+	use crate::ln::script::ShutdownScript;
+	use crate::ln::chan_utils;
+	use crate::ln::chan_utils::{htlc_success_tx_weight, htlc_timeout_tx_weight};
+	use crate::chain::BestBlock;
+	use crate::chain::chaininterface::{FeeEstimator, LowerBoundedFeeEstimator, ConfirmationTarget};
+	use crate::chain::keysinterface::{InMemorySigner, Recipient, KeyMaterial, KeysInterface};
+	use crate::chain::transaction::OutPoint;
+	use crate::util::config::UserConfig;
+	use crate::util::enforcing_trait_impls::EnforcingSigner;
+	use crate::util::errors::APIError;
+	use crate::util::test_utils;
+	use crate::util::test_utils::OnGetShutdownScriptpubkey;
 	use bitcoin::secp256k1::{Secp256k1, ecdsa::Signature, Scalar};
 	use bitcoin::secp256k1::ffi::Signature as FFISignature;
 	use bitcoin::secp256k1::{SecretKey,PublicKey};
@@ -6712,7 +6712,7 @@ mod tests {
 	use bitcoin::bech32::u5;
 	use bitcoin::PackedLockTime;
 	use bitcoin::util::address::WitnessVersion;
-	use prelude::*;
+	use crate::prelude::*;
 
 	struct TestFeeEstimator {
 		fee_est: u32
@@ -7196,12 +7196,12 @@ mod tests {
 		use bitcoin::hashes::hex::FromHex;
 		use bitcoin::hash_types::Txid;
 		use bitcoin::secp256k1::Message;
-		use chain::keysinterface::BaseSign;
-		use ln::PaymentPreimage;
-		use ln::channel::{HTLCOutputInCommitment ,TxCreationKeys};
-		use ln::chan_utils::{ChannelPublicKeys, HolderCommitmentTransaction, CounterpartyChannelTransactionParameters};
-		use util::logger::Logger;
-		use sync::Arc;
+		use crate::chain::keysinterface::BaseSign;
+		use crate::ln::PaymentPreimage;
+		use crate::ln::channel::{HTLCOutputInCommitment ,TxCreationKeys};
+		use crate::ln::chan_utils::{ChannelPublicKeys, HolderCommitmentTransaction, CounterpartyChannelTransactionParameters};
+		use crate::util::logger::Logger;
+		use crate::sync::Arc;
 
 		// Test vectors from BOLT 3 Appendices C and F (anchors):
 		let feeest = TestFeeEstimator{fee_est: 15000};

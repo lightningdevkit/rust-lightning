@@ -2,7 +2,7 @@
 use lightning_rapid_gossip_sync::RapidGossipSync;
 use bitcoin::hashes::Hash as TraitImport;
 
-use utils::test_logger;
+use crate::utils::test_logger;
 
 /// Actual fuzz test, method signature and name are fixed
 fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {

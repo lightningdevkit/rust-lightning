@@ -7,12 +7,12 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-use routing::gossip::{NetworkGraph, P2PGossipSync};
-use ln::features::{ChannelFeatures, NodeFeatures};
-use ln::msgs::{UnsignedChannelAnnouncement, ChannelAnnouncement, RoutingMessageHandler,
+use crate::routing::gossip::{NetworkGraph, P2PGossipSync};
+use crate::ln::features::{ChannelFeatures, NodeFeatures};
+use crate::ln::msgs::{UnsignedChannelAnnouncement, ChannelAnnouncement, RoutingMessageHandler,
 	NodeAnnouncement, UnsignedNodeAnnouncement, ChannelUpdate, UnsignedChannelUpdate, MAX_VALUE_MSAT};
-use util::test_utils;
-use util::ser::Writeable;
+use crate::util::test_utils;
+use crate::util::ser::Writeable;
 
 use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::hashes::Hash;
@@ -24,8 +24,8 @@ use hex;
 use bitcoin::secp256k1::{PublicKey,SecretKey};
 use bitcoin::secp256k1::{Secp256k1, All};
 
-use prelude::*;
-use sync::{self, Arc};
+use crate::prelude::*;
+use crate::sync::{self, Arc};
 
 // Using the same keys for LN and BTC ids
 pub(super) fn add_channel(
