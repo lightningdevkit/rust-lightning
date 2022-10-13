@@ -53,7 +53,7 @@ use ln::msgs::{ChannelMessageHandler, DecodeError, LightningError, MAX_VALUE_MSA
 use ln::wire::Encode;
 use chain::keysinterface::{Sign, KeysInterface, KeysManager, InMemorySigner, Recipient};
 use util::config::{UserConfig, ChannelConfig};
-use util::events::{EventHandler, EventsProvider, MessageSendEvent, MessageSendEventsProvider, ClosureReason, HTLCDestination, FundingGenerationReadyEvent, PaymentReceivedEvent};
+use util::events::{EventHandler, EventsProvider, MessageSendEvent, MessageSendEventsProvider, ClosureReason, HTLCDestination, FundingGenerationReadyEvent, PaymentReceivedEvent, PaymentClaimedEvent};
 use util::{byte_utils, events};
 use util::wakers::{Future, Notifier};
 use util::scid_utils::fake_scid;
@@ -3696,8 +3696,10 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	///
 	/// While LDK will never claim a payment automatically on your behalf (i.e. without you calling
 	/// [`ChannelManager::claim_funds`]), you should still monitor for
-	/// [`events::Event::PaymentClaimed`] events even for payments you intend to fail, especially on
+	/// [`PaymentClaimed`] events even for payments you intend to fail, especially on
 	/// startup during which time claims that were in-progress at shutdown may be replayed.
+	///
+	/// [`PaymentClaimed`]: crate::util::events::PaymentClaimedEvent
 	pub fn fail_htlc_backwards(&self, payment_hash: &PaymentHash) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 
@@ -3987,7 +3989,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// [`MessageSendEvent`]s needed to claim the payment.
 	///
 	/// Note that calling this method does *not* guarantee that the payment has been claimed. You
-	/// *must* wait for an [`Event::PaymentClaimed`] event which upon a successful claim will be
+	/// *must* wait for an [`PaymentClaimedEvent`] event which upon a successful claim will be
 	/// provided to your [`EventHandler`] when [`process_pending_events`] is next called.
 	///
 	/// Note that if you did not set an `amount_msat` when calling [`create_inbound_payment`] or
@@ -3996,7 +3998,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// the sender "proof-of-payment" when they did not fulfill the full expected payment.
 	///
 	/// [`PaymentReceivedEvent`]: crate::util::events::PaymentReceivedEvent
-	/// [`Event::PaymentClaimed`]: crate::util::events::Event::PaymentClaimed
+	/// [`PaymentClaimedEvent`]: crate::util::events::PaymentClaimedEvent
 	/// [`process_pending_events`]: EventsProvider::process_pending_events
 	/// [`create_inbound_payment`]: Self::create_inbound_payment
 	/// [`create_inbound_payment_for_hash`]: Self::create_inbound_payment_for_hash
@@ -4098,11 +4100,11 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			}
 
 			if claimed_any_htlcs {
-				self.pending_events.lock().unwrap().push(events::Event::PaymentClaimed {
+				self.pending_events.lock().unwrap().push(events::Event::PaymentClaimed(PaymentClaimedEvent {
 					payment_hash,
 					purpose: payment_purpose,
 					amount_msat: claimable_amt_msat,
-				});
+				}));
 			}
 
 			// Now we can handle any errors which were generated.
@@ -7224,11 +7226,11 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 							previous_hop_monitor.provide_payment_preimage(&payment_hash, &payment_preimage, &args.tx_broadcaster, &bounded_fee_estimator, &args.logger);
 						}
 					}
-					pending_events_read.push(events::Event::PaymentClaimed {
+					pending_events_read.push(events::Event::PaymentClaimed(PaymentClaimedEvent {
 						payment_hash,
 						purpose: payment_purpose,
 						amount_msat: claimable_amt_msat,
-					});
+					}));
 				}
 			}
 		}
@@ -7302,7 +7304,7 @@ mod tests {
 	use ln::msgs::ChannelMessageHandler;
 	use routing::router::{PaymentParameters, RouteParameters, find_route};
 	use util::errors::APIError;
-	use util::events::{Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, ClosureReason};
+	use util::events::{Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, ClosureReason, PaymentClaimedEvent};
 	use util::test_utils;
 	use chain::keysinterface::KeysInterface;
 
@@ -7872,7 +7874,7 @@ pub mod bench {
 	use routing::router::{PaymentParameters, get_route};
 	use util::test_utils;
 	use util::config::UserConfig;
-	use util::events::{Event, MessageSendEvent, MessageSendEventsProvider, FundingGenerationReadyEvent, PaymentReceivedEvent};
+	use util::events::{Event, MessageSendEvent, MessageSendEventsProvider, FundingGenerationReadyEvent, PaymentReceivedEvent, PaymentClaimedEvent};
 
 	use bitcoin::hashes::Hash;
 	use bitcoin::hashes::sha256::Hash as Sha256;

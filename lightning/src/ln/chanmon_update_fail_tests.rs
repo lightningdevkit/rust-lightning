@@ -25,7 +25,7 @@ use ln::msgs;
 use ln::msgs::{ChannelMessageHandler, RoutingMessageHandler};
 use util::config::UserConfig;
 use util::enforcing_trait_impls::EnforcingSigner;
-use util::events::{Event, MessageSendEvent, MessageSendEventsProvider, PaymentPurpose, ClosureReason, HTLCDestination, PaymentReceivedEvent};
+use util::events::{Event, MessageSendEvent, MessageSendEventsProvider, PaymentPurpose, ClosureReason, HTLCDestination, PaymentReceivedEvent, PaymentClaimedEvent};
 use util::errors::APIError;
 use util::ser::{ReadableArgs, Writeable};
 use util::test_utils::TestBroadcaster;

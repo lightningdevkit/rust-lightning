@@ -207,30 +207,8 @@ pub enum Event {
 	FundingGenerationReady(FundingGenerationReadyEvent),
 	/// A [`PaymentReceivedEvent`].
 	PaymentReceived(PaymentReceivedEvent),
-	/// Indicates a payment has been claimed and we've received money!
-	///
-	/// This most likely occurs when [`ChannelManager::claim_funds`] has been called in response
-	/// to an [`Event::PaymentReceived`]. However, if we previously crashed during a
-	/// [`ChannelManager::claim_funds`] call you may see this event without a corresponding
-	/// [`Event::PaymentReceived`] event.
-	///
-	/// # Note
-	/// LDK will not stop an inbound payment from being paid multiple times, so multiple
-	/// `PaymentReceived` events may be generated for the same payment. If you then call
-	/// [`ChannelManager::claim_funds`] twice for the same [`Event::PaymentReceived`] you may get
-	/// multiple `PaymentClaimed` events.
-	///
-	/// [`ChannelManager::claim_funds`]: crate::ln::channelmanager::ChannelManager::claim_funds
-	PaymentClaimed {
-		/// The payment hash of the claimed payment. Note that LDK will not stop you from
-		/// registering duplicate payment hashes for inbound payments.
-		payment_hash: PaymentHash,
-		/// The value, in thousandths of a satoshi, that this payment is for.
-		amount_msat: u64,
-		/// The purpose of this claimed payment, i.e. whether the payment was for an invoice or a
-		/// spontaneous payment.
-		purpose: PaymentPurpose,
-	},
+	/// A [`PaymentClaimedEvent`].
+	PaymentClaimed(PaymentClaimedEvent),
 	/// Indicates an outbound payment we made succeeded (i.e. it made it all the way to its target
 	/// and we got back the payment preimage for it).
 	///
@@ -650,13 +628,8 @@ impl Writeable for Event {
 				// We never write the OpenChannelRequest events as, upon disconnection, peers
 				// drop any channels which have not yet exchanged funding_signed.
 			},
-			&Event::PaymentClaimed { ref payment_hash, ref amount_msat, ref purpose } => {
-				19u8.write(writer)?;
-				write_tlv_fields!(writer, {
-					(0, payment_hash, required),
-					(2, purpose, required),
-					(4, amount_msat, required),
-				});
+			Self::PaymentClaimed(event) => {
+				write_event(event, writer)?;
 			},
 			&Event::ProbeSuccessful { ref payment_id, ref payment_hash, ref path } => {
 				21u8.write(writer)?;
@@ -855,24 +828,8 @@ impl MaybeReadable for Event {
 				// Value 17 is used for `Event::OpenChannelRequest`.
 				Ok(None)
 			},
-			19u8 => {
-				let f = || {
-					let mut payment_hash = PaymentHash([0; 32]);
-					let mut purpose = None;
-					let mut amount_msat = 0;
-					read_tlv_fields!(reader, {
-						(0, payment_hash, required),
-						(2, purpose, ignorable),
-						(4, amount_msat, required),
-					});
-					if purpose.is_none() { return Ok(None); }
-					Ok(Some(Event::PaymentClaimed {
-						payment_hash,
-						purpose: purpose.unwrap(),
-						amount_msat,
-					}))
-				};
-				f()
+			PaymentClaimedEvent::TYPE => {
+				Ok(MaybeReadable::read(reader).unwrap_or(None).map(|e| Self::PaymentClaimed(e)))
 			},
 			21u8 => {
 				let f = || {
@@ -1103,6 +1060,71 @@ impl MaybeReadable for PaymentReceivedEvent {
 				payment_hash,
 				amount_msat,
 				purpose,
+			}))
+		};
+		f()
+	}
+}
+
+/// Indicates a payment has been claimed and we've received money!
+///
+/// This most likely occurs when [`ChannelManager::claim_funds`] has been called in response
+/// to an [`Event::PaymentReceived`]. However, if we previously crashed during a
+/// [`ChannelManager::claim_funds`] call you may see this event without a corresponding
+/// [`Event::PaymentReceived`] event.
+///
+/// # Note
+/// LDK will not stop an inbound payment from being paid multiple times, so multiple
+/// `PaymentReceived` events may be generated for the same payment. If you then call
+/// [`ChannelManager::claim_funds`] twice for the same [`Event::PaymentReceived`] you may get
+/// multiple `PaymentClaimed` events.
+///
+/// [`ChannelManager::claim_funds`]: crate::ln::channelmanager::ChannelManager::claim_funds
+#[derive(Debug, Clone)]
+pub struct PaymentClaimedEvent {
+		/// The payment hash of the claimed payment. Note that LDK will not stop you from
+		/// registering duplicate payment hashes for inbound payments.
+		pub payment_hash: PaymentHash,
+		/// The value, in thousandths of a satoshi, that this payment is for.
+		pub amount_msat: u64,
+		/// The purpose of this claimed payment, i.e. whether the payment was for an invoice or a
+		/// spontaneous payment.
+		pub purpose: PaymentPurpose,
+}
+
+impl EventType for PaymentClaimedEvent {
+	const TYPE: u8 = 19u8;
+}
+
+impl Writeable for PaymentClaimedEvent {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		write_tlv_fields!(writer, {
+			(0, self.payment_hash, required),
+			(2, self.purpose, required),
+			(4, self.amount_msat, required),
+		});
+		Ok(())
+	}
+}
+
+impl MaybeReadable for PaymentClaimedEvent {
+	fn read<R: io::Read>(
+		reader: &mut R,
+	) -> Result<Option<Self>, DecodeError> {
+		let f = || {
+			let mut payment_hash = PaymentHash([0; 32]);
+			let mut purpose = None;
+			let mut amount_msat = 0;
+			read_tlv_fields!(reader, {
+				(0, payment_hash, required),
+				(2, purpose, ignorable),
+				(4, amount_msat, required),
+			});
+			if purpose.is_none() { return Ok(None); }
+			Ok(Some(Self {
+				payment_hash,
+				purpose: purpose.unwrap(),
+				amount_msat,
 			}))
 		};
 		f()

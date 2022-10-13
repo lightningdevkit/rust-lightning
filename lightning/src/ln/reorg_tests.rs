@@ -15,7 +15,7 @@ use chain::{ChannelMonitorUpdateStatus, Confirm, Watch};
 use ln::channelmanager::{self, ChannelManager, ChannelManagerReadArgs};
 use ln::msgs::ChannelMessageHandler;
 use util::enforcing_trait_impls::EnforcingSigner;
-use util::events::{Event, MessageSendEvent, MessageSendEventsProvider, ClosureReason, HTLCDestination};
+use util::events::{Event, MessageSendEvent, MessageSendEventsProvider, ClosureReason, HTLCDestination, PaymentClaimedEvent};
 use util::test_utils;
 use util::ser::{ReadableArgs, Writeable};
 

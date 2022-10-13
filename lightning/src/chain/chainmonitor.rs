@@ -737,7 +737,7 @@ mod tests {
 	use ln::functional_test_utils::*;
 	use ln::msgs::ChannelMessageHandler;
 	use util::errors::APIError;
-	use util::events::{ClosureReason, MessageSendEvent, MessageSendEventsProvider};
+	use util::events::{ClosureReason, MessageSendEvent, MessageSendEventsProvider, PaymentClaimedEvent};
 
 	#[test]
 	fn test_async_ooo_offchain_updates() {

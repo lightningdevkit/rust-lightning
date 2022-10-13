@@ -31,7 +31,7 @@ use ln::msgs;
 use ln::msgs::{ChannelMessageHandler, RoutingMessageHandler, ErrorAction};
 use util::enforcing_trait_impls::EnforcingSigner;
 use util::{byte_utils, test_utils};
-use util::events::{Event, MessageSendEvent, MessageSendEventsProvider, PaymentPurpose, ClosureReason, HTLCDestination, FundingGenerationReadyEvent, PaymentReceivedEvent};
+use util::events::{Event, MessageSendEvent, MessageSendEventsProvider, PaymentPurpose, ClosureReason, HTLCDestination, FundingGenerationReadyEvent, PaymentReceivedEvent, PaymentClaimedEvent};
 use util::errors::APIError;
 use util::ser::{Writeable, ReadableArgs};
 use util::config::UserConfig;
@@ -10242,7 +10242,7 @@ fn do_test_partial_claim_before_restart(persist_both_monitors: bool) {
 
 	// On restart, we should also get a duplicate PaymentClaimed event as we persisted the
 	// ChannelManager prior to handling the original one.
-	if let Event::PaymentClaimed { payment_hash: our_payment_hash, amount_msat: 15_000_000, .. } =
+	if let Event::PaymentClaimed(PaymentClaimedEvent { payment_hash: our_payment_hash, amount_msat: 15_000_000, .. }) =
 		events[if persist_both_monitors { 3 } else { 2 }]
 	{
 		assert_eq!(payment_hash, our_payment_hash);

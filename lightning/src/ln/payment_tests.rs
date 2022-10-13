@@ -20,7 +20,7 @@ use ln::channelmanager::{self, BREAKDOWN_TIMEOUT, ChannelManager, ChannelManager
 use ln::msgs;
 use ln::msgs::ChannelMessageHandler;
 use routing::router::{PaymentParameters, get_route};
-use util::events::{ClosureReason, Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider};
+use util::events::{ClosureReason, Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, PaymentClaimedEvent};
 use util::test_utils;
 use util::errors::APIError;
 use util::enforcing_trait_impls::EnforcingSigner;

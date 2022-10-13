@@ -24,7 +24,7 @@ use util::enforcing_trait_impls::EnforcingSigner;
 use util::scid_utils;
 use util::test_utils;
 use util::test_utils::{panicking, TestChainMonitor};
-use util::events::{Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, PaymentPurpose, FundingGenerationReadyEvent, PaymentReceivedEvent};
+use util::events::{Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, PaymentPurpose, FundingGenerationReadyEvent, PaymentReceivedEvent, PaymentClaimedEvent};
 use util::errors::APIError;
 use util::config::UserConfig;
 use util::ser::{ReadableArgs, Writeable};
@@ -1403,7 +1403,7 @@ macro_rules! expect_payment_claimed {
 		let events = $node.node.get_and_clear_pending_events();
 		assert_eq!(events.len(), 1);
 		match events[0] {
-			$crate::util::events::Event::PaymentClaimed { ref payment_hash, amount_msat, .. } => {
+			$crate::util::events::Event::PaymentClaimed(PaymentClaimedEvent { ref payment_hash, amount_msat, .. }) => {
 				assert_eq!($expected_payment_hash, *payment_hash);
 				assert_eq!($expected_recv_value, amount_msat);
 			},
@@ -1721,10 +1721,10 @@ pub fn do_claim_payment_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, 
 	let claim_event = expected_paths[0].last().unwrap().node.get_and_clear_pending_events();
 	assert_eq!(claim_event.len(), 1);
 	match claim_event[0] {
-		Event::PaymentClaimed { purpose: PaymentPurpose::SpontaneousPayment(preimage), .. }|
-		Event::PaymentClaimed { purpose: PaymentPurpose::InvoicePayment { payment_preimage: Some(preimage), ..}, .. } =>
+		Event::PaymentClaimed(PaymentClaimedEvent { purpose: PaymentPurpose::SpontaneousPayment(preimage), .. }) |
+		Event::PaymentClaimed(PaymentClaimedEvent { purpose: PaymentPurpose::InvoicePayment { payment_preimage: Some(preimage), ..}, .. }) =>
 			assert_eq!(preimage, our_payment_preimage),
-		Event::PaymentClaimed { purpose: PaymentPurpose::InvoicePayment { .. }, payment_hash, .. } =>
+		Event::PaymentClaimed(PaymentClaimedEvent { purpose: PaymentPurpose::InvoicePayment { .. }, payment_hash, .. }) =>
 			assert_eq!(&payment_hash.0, &Sha256::hash(&our_payment_preimage.0)[..]),
 		_ => panic!(),
 	}

@@ -18,7 +18,7 @@ use ln::msgs::{ChannelMessageHandler, ErrorAction};
 use ln::script::ShutdownScript;
 use util::test_utils;
 use util::test_utils::OnGetShutdownScriptpubkey;
-use util::events::{Event, MessageSendEvent, MessageSendEventsProvider, ClosureReason};
+use util::events::{Event, MessageSendEvent, MessageSendEventsProvider, ClosureReason, PaymentClaimedEvent};
 use util::errors::APIError;
 use util::config::UserConfig;
 
