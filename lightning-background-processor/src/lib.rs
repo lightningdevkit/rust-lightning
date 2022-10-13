@@ -389,7 +389,7 @@ pub async fn process_events_async<
 	PM: 'static + Deref<Target = PeerManager<Descriptor, CMH, RMH, OMH, L, UMH>> + Send + Sync,
 	S: 'static + Deref<Target = SC> + Send + Sync,
 	SC: WriteableScore<'a>,
-	SleepFuture: core::future::Future<Output = bool>,
+	SleepFuture: core::future::Future<Output = bool> + core::marker::Unpin,
 	Sleeper: Fn(Duration) -> SleepFuture
 >(
 	persister: PS, event_handler: EH, chain_monitor: M, channel_manager: CM,
@@ -412,14 +412,20 @@ where
 	PS::Target: 'static + Persister<'a, Signer, CW, T, K, F, L, SC>,
 {
 	let mut should_continue = true;
-	define_run_body!(persister, event_handler, chain_monitor, channel_manager,
-		gossip_sync, peer_manager, logger, scorer, should_continue, {
-			select_biased! {
-				_ = channel_manager.get_persistable_update_future().fuse() => true,
-				cont = sleeper(Duration::from_millis(100)).fuse() => {
-					should_continue = cont;
-					false
-				}
+	let mut channel_manager_update_future = channel_manager.get_persistable_update_future().fuse();
+	let mut sleep_future = sleeper(Duration::from_millis(100)).fuse();
+	define_run_body!(persister, event_handler, chain_monitor, channel_manager, gossip_sync,
+		peer_manager, logger, scorer, should_continue, select_biased! {
+			_ = channel_manager_update_future => {
+				// Get a new future now that the current one completed.
+				channel_manager_update_future = channel_manager.get_persistable_update_future().fuse();
+				true
+			},
+			cont = sleep_future => {
+				// Get a new future now that the current one completed.
+				sleep_future = sleeper(Duration::from_millis(100)).fuse();
+				should_continue = cont;
+				false
 			}
 		})
 }
