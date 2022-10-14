@@ -29,7 +29,7 @@ pub trait Poll {
 }
 
 /// A chain tip relative to another chain tip in terms of block hash and chainwork.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ChainTip {
 	/// A chain tip with the same hash as another chain's tip.
 	Common,
@@ -102,7 +102,7 @@ impl Validate for BlockData {
 }
 
 /// A block header with validated proof of work and corresponding block hash.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ValidatedBlockHeader {
 	pub(crate) block_hash: BlockHash,
 	inner: BlockHeaderData,

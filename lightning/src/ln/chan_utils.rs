@@ -65,7 +65,7 @@ pub fn htlc_timeout_tx_weight(opt_anchors: bool) -> u64 {
 	if opt_anchors { HTLC_TIMEOUT_ANCHOR_TX_WEIGHT } else { HTLC_TIMEOUT_TX_WEIGHT }
 }
 
-#[derive(PartialEq)]
+#[derive(PartialEq, Eq)]
 pub(crate) enum HTLCClaim {
 	OfferedTimeout,
 	OfferedPreimage,
@@ -208,6 +208,7 @@ pub struct CounterpartyCommitmentSecrets {
 	old_secrets: [([u8; 32], u64); 49],
 }
 
+impl Eq for CounterpartyCommitmentSecrets {}
 impl PartialEq for CounterpartyCommitmentSecrets {
 	fn eq(&self, other: &Self) -> bool {
 		for (&(ref secret, ref idx), &(ref o_secret, ref o_idx)) in self.old_secrets.iter().zip(other.old_secrets.iter()) {
@@ -419,7 +420,7 @@ pub fn derive_public_revocation_key<T: secp256k1::Verification>(secp_ctx: &Secp2
 /// channel basepoints via the new function, or they were obtained via
 /// CommitmentTransaction.trust().keys() because we trusted the source of the
 /// pre-calculated keys.
-#[derive(PartialEq, Clone)]
+#[derive(PartialEq, Eq, Clone)]
 pub struct TxCreationKeys {
 	/// The broadcaster's per-commitment public key which was used to derive the other keys.
 	pub per_commitment_point: PublicKey,
@@ -444,7 +445,7 @@ impl_writeable_tlv_based!(TxCreationKeys, {
 });
 
 /// One counterparty's public keys which do not change over the life of a channel.
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ChannelPublicKeys {
 	/// The public key which is used to sign all commitment transactions, as it appears in the
 	/// on-chain channel lock-in 2-of-2 multisig output.
@@ -525,7 +526,7 @@ pub fn get_revokeable_redeemscript(revocation_key: &PublicKey, contest_delay: u1
 	res
 }
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Eq)]
 /// Information about an HTLC as it appears in a commitment transaction
 pub struct HTLCOutputInCommitment {
 	/// Whether the HTLC was "offered" (ie outbound in relation to this commitment transaction).
@@ -882,6 +883,7 @@ impl Deref for HolderCommitmentTransaction {
 	fn deref(&self) -> &Self::Target { &self.inner }
 }
 
+impl Eq for HolderCommitmentTransaction {}
 impl PartialEq for HolderCommitmentTransaction {
 	// We dont care whether we are signed in equality comparison
 	fn eq(&self, o: &Self) -> bool {
@@ -1007,7 +1009,7 @@ impl BuiltCommitmentTransaction {
 ///
 /// This class can be used inside a signer implementation to generate a signature given the relevant
 /// secret key.
-#[derive(Clone, Hash, PartialEq)]
+#[derive(Clone, Hash, PartialEq, Eq)]
 pub struct ClosingTransaction {
 	to_holder_value_sat: u64,
 	to_counterparty_value_sat: u64,
@@ -1147,6 +1149,7 @@ pub struct CommitmentTransaction {
 	built: BuiltCommitmentTransaction,
 }
 
+impl Eq for CommitmentTransaction {}
 impl PartialEq for CommitmentTransaction {
 	fn eq(&self, o: &Self) -> bool {
 		let eq = self.commitment_number == o.commitment_number &&

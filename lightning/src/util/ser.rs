@@ -399,7 +399,7 @@ impl Readable for BigSize {
 /// In TLV we occasionally send fields which only consist of, or potentially end with, a
 /// variable-length integer which is simply truncated by skipping high zero bytes. This type
 /// encapsulates such integers implementing Readable/Writeable for them.
-#[cfg_attr(test, derive(PartialEq, Debug))]
+#[cfg_attr(test, derive(PartialEq, Eq, Debug))]
 pub(crate) struct HighZeroBytesDroppedBigSize<T>(pub T);
 
 macro_rules! impl_writeable_primitive {
@@ -979,7 +979,7 @@ impl Readable for String {
 /// The character set consists of ASCII alphanumeric characters, hyphens, and periods.
 /// Its length is guaranteed to be representable by a single byte.
 /// This serialization is used by BOLT 7 hostnames.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Hostname(String);
 impl Hostname {
 	/// Returns the length of the hostname.

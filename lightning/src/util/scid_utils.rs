@@ -20,7 +20,7 @@ pub const MAX_SCID_TX_INDEX: u64 = 0x00ffffff;
 pub const MAX_SCID_VOUT_INDEX: u64 = 0xffff;
 
 /// A `short_channel_id` construction error
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum ShortChannelIdError {
 	BlockOverflow,
 	TxIndexOverflow,

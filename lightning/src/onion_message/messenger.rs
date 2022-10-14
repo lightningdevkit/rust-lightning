@@ -114,7 +114,7 @@ impl Destination {
 /// Errors that may occur when [sending an onion message].
 ///
 /// [sending an onion message]: OnionMessenger::send_onion_message
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum SendError {
 	/// Errored computing onion message packet keys.
 	Secp256k1(secp256k1::Error),

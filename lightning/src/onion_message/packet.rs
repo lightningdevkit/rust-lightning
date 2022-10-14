@@ -27,7 +27,7 @@ use prelude::*;
 pub(super) const SMALL_PACKET_HOP_DATA_LEN: usize = 1300;
 pub(super) const BIG_PACKET_HOP_DATA_LEN: usize = 32768;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Packet {
 	pub(super) version: u8,
 	pub(super) public_key: PublicKey,
