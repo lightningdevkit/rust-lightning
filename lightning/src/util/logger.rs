@@ -14,6 +14,8 @@
 //! The second one, client-side by implementing check against Record Level field.
 //! Each module may have its own Logger or share one.
 
+use bitcoin::secp256k1::PublicKey;
+
 use core::cmp;
 use core::fmt;
 
@@ -136,6 +138,19 @@ impl<'a> Record<'a> {
 pub trait Logger {
 	/// Logs the `Record`
 	fn log(&self, record: &Record);
+}
+
+/// Wrapper for logging a [`PublicKey`] in hex format.
+/// (C-not exported) as fmt can't be used in C
+#[doc(hidden)]
+pub struct DebugPubKey<'a>(pub &'a PublicKey);
+impl<'a> core::fmt::Display for DebugPubKey<'a> {
+	fn fmt(&self, f: &mut core::fmt::Formatter) -> Result<(), core::fmt::Error> {
+		for i in self.0.serialize().iter() {
+			write!(f, "{:02x}", i)?;
+		}
+		Ok(())
+	}
 }
 
 /// Wrapper for logging byte slices in hex format.

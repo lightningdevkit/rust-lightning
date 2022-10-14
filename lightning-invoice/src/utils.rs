@@ -54,14 +54,20 @@ use sync::Mutex;
 /// [`ChannelManager::create_inbound_payment`]: lightning::ln::channelmanager::ChannelManager::create_inbound_payment
 /// [`ChannelManager::create_inbound_payment_for_hash`]: lightning::ln::channelmanager::ChannelManager::create_inbound_payment_for_hash
 /// [`PhantomRouteHints::channels`]: lightning::ln::channelmanager::PhantomRouteHints::channels
-pub fn create_phantom_invoice<Signer: Sign, K: Deref>(
-	amt_msat: Option<u64>, payment_hash: Option<PaymentHash>, description: String, invoice_expiry_delta_secs: u32,
-	phantom_route_hints: Vec<PhantomRouteHints>, keys_manager: K, network: Currency,
-) -> Result<Invoice, SignOrCreationError<()>> where K::Target: KeysInterface {
+pub fn create_phantom_invoice<Signer: Sign, K: Deref, L: Deref>(
+	amt_msat: Option<u64>, payment_hash: Option<PaymentHash>, description: String,
+	invoice_expiry_delta_secs: u32, phantom_route_hints: Vec<PhantomRouteHints>, keys_manager: K,
+	logger: L, network: Currency,
+) -> Result<Invoice, SignOrCreationError<()>>
+where
+	K::Target: KeysInterface,
+	L::Target: Logger,
+{
 	let description = Description::new(description).map_err(SignOrCreationError::CreationError)?;
 	let description = InvoiceDescription::Direct(&description,);
-	_create_phantom_invoice::<Signer, K>(
-		amt_msat, payment_hash, description, invoice_expiry_delta_secs, phantom_route_hints, keys_manager, network,
+	_create_phantom_invoice::<Signer, K, L>(
+		amt_msat, payment_hash, description, invoice_expiry_delta_secs, phantom_route_hints,
+		keys_manager, logger, network,
 	)
 }
 
@@ -97,22 +103,30 @@ pub fn create_phantom_invoice<Signer: Sign, K: Deref>(
 /// [`ChannelManager::create_inbound_payment`]: lightning::ln::channelmanager::ChannelManager::create_inbound_payment
 /// [`ChannelManager::create_inbound_payment_for_hash`]: lightning::ln::channelmanager::ChannelManager::create_inbound_payment_for_hash
 /// [`PhantomRouteHints::channels`]: lightning::ln::channelmanager::PhantomRouteHints::channels
-pub fn create_phantom_invoice_with_description_hash<Signer: Sign, K: Deref>(
+pub fn create_phantom_invoice_with_description_hash<Signer: Sign, K: Deref, L: Deref>(
 	amt_msat: Option<u64>, payment_hash: Option<PaymentHash>, invoice_expiry_delta_secs: u32,
-	description_hash: Sha256, phantom_route_hints: Vec<PhantomRouteHints>, keys_manager: K, network: Currency,
-) -> Result<Invoice, SignOrCreationError<()>> where K::Target: KeysInterface
+	description_hash: Sha256, phantom_route_hints: Vec<PhantomRouteHints>, keys_manager: K,
+	logger: L, network: Currency
+) -> Result<Invoice, SignOrCreationError<()>>
+where
+	K::Target: KeysInterface,
+	L::Target: Logger,
 {
-	_create_phantom_invoice::<Signer, K>(
+	_create_phantom_invoice::<Signer, K, L>(
 		amt_msat, payment_hash, InvoiceDescription::Hash(&description_hash),
-		invoice_expiry_delta_secs, phantom_route_hints, keys_manager, network,
+		invoice_expiry_delta_secs, phantom_route_hints, keys_manager, logger, network,
 	)
 }
 
 #[cfg(feature = "std")]
-fn _create_phantom_invoice<Signer: Sign, K: Deref>(
+fn _create_phantom_invoice<Signer: Sign, K: Deref, L: Deref>(
 	amt_msat: Option<u64>, payment_hash: Option<PaymentHash>, description: InvoiceDescription,
-	invoice_expiry_delta_secs: u32, phantom_route_hints: Vec<PhantomRouteHints>, keys_manager: K, network: Currency,
-) -> Result<Invoice, SignOrCreationError<()>> where K::Target: KeysInterface
+	invoice_expiry_delta_secs: u32, phantom_route_hints: Vec<PhantomRouteHints>, keys_manager: K,
+	logger: L, network: Currency,
+) -> Result<Invoice, SignOrCreationError<()>>
+where
+	K::Target: KeysInterface,
+	L::Target: Logger,
 {
 	use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -121,6 +135,7 @@ fn _create_phantom_invoice<Signer: Sign, K: Deref>(
 			CreationError::MissingRouteHints,
 		));
 	}
+
 	let invoice = match description {
 		InvoiceDescription::Direct(description) => {
 			InvoiceBuilder::new(network).description(description.0.clone())
@@ -157,6 +172,9 @@ fn _create_phantom_invoice<Signer: Sign, K: Deref>(
 		.map_err(|_| SignOrCreationError::CreationError(CreationError::InvalidAmount))?
 	};
 
+	log_trace!(logger, "Creating phantom invoice from {} participating nodes with payment hash {}",
+		phantom_route_hints.len(), log_bytes!(payment_hash.0));
+
 	let mut invoice = invoice
 		.current_timestamp()
 		.payment_hash(Hash::from_slice(&payment_hash.0).unwrap())
@@ -168,7 +186,9 @@ fn _create_phantom_invoice<Signer: Sign, K: Deref>(
 	}
 
 	for PhantomRouteHints { channels, phantom_scid, real_node_pubkey } in phantom_route_hints {
-		let mut route_hints = filter_channels(channels, amt_msat);
+		log_trace!(logger, "Generating phantom route hints for node {}",
+			log_pubkey!(real_node_pubkey));
+		let mut route_hints = filter_channels(channels, amt_msat, &logger);
 
 		// If we have any public channel, the route hints from `filter_channels` will be empty.
 		// In that case we create a RouteHint on which we will push a single hop with the phantom
@@ -216,8 +236,8 @@ fn _create_phantom_invoice<Signer: Sign, K: Deref>(
 /// `invoice_expiry_delta_secs` describes the number of seconds that the invoice is valid for
 /// in excess of the current time.
 pub fn create_invoice_from_channelmanager<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>(
-	channelmanager: &ChannelManager<Signer, M, T, K, F, L>, keys_manager: K, network: Currency,
-	amt_msat: Option<u64>, description: String, invoice_expiry_delta_secs: u32
+	channelmanager: &ChannelManager<Signer, M, T, K, F, L>, keys_manager: K, logger: L,
+	network: Currency, amt_msat: Option<u64>, description: String, invoice_expiry_delta_secs: u32
 ) -> Result<Invoice, SignOrCreationError<()>>
 where
 	M::Target: chain::Watch<Signer>,
@@ -230,7 +250,7 @@ where
 	let duration = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)
 		.expect("for the foreseeable future this shouldn't happen");
 	create_invoice_from_channelmanager_and_duration_since_epoch(
-		channelmanager, keys_manager, network, amt_msat, description, duration,
+		channelmanager, keys_manager, logger, network, amt_msat, description, duration,
 		invoice_expiry_delta_secs
 	)
 }
@@ -246,8 +266,9 @@ where
 /// `invoice_expiry_delta_secs` describes the number of seconds that the invoice is valid for
 /// in excess of the current time.
 pub fn create_invoice_from_channelmanager_with_description_hash<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>(
-	channelmanager: &ChannelManager<Signer, M, T, K, F, L>, keys_manager: K, network: Currency,
-	amt_msat: Option<u64>, description_hash: Sha256, invoice_expiry_delta_secs: u32
+	channelmanager: &ChannelManager<Signer, M, T, K, F, L>, keys_manager: K, logger: L,
+	network: Currency, amt_msat: Option<u64>, description_hash: Sha256,
+	invoice_expiry_delta_secs: u32
 ) -> Result<Invoice, SignOrCreationError<()>>
 where
 	M::Target: chain::Watch<Signer>,
@@ -263,7 +284,7 @@ where
 		.expect("for the foreseeable future this shouldn't happen");
 
 	create_invoice_from_channelmanager_with_description_hash_and_duration_since_epoch(
-		channelmanager, keys_manager, network, amt_msat,
+		channelmanager, keys_manager, logger, network, amt_msat,
 		description_hash, duration, invoice_expiry_delta_secs
 	)
 }
@@ -272,9 +293,9 @@ where
 /// This version can be used in a `no_std` environment, where [`std::time::SystemTime`] is not
 /// available and the current time is supplied by the caller.
 pub fn create_invoice_from_channelmanager_with_description_hash_and_duration_since_epoch<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>(
-	channelmanager: &ChannelManager<Signer, M, T, K, F, L>, keys_manager: K, network: Currency,
-	amt_msat: Option<u64>, description_hash: Sha256, duration_since_epoch: Duration,
-	invoice_expiry_delta_secs: u32
+	channelmanager: &ChannelManager<Signer, M, T, K, F, L>, keys_manager: K, logger: L,
+	network: Currency, amt_msat: Option<u64>, description_hash: Sha256,
+	duration_since_epoch: Duration, invoice_expiry_delta_secs: u32
 ) -> Result<Invoice, SignOrCreationError<()>>
 where
 	M::Target: chain::Watch<Signer>,
@@ -284,7 +305,7 @@ where
 	L::Target: Logger,
 {
 	_create_invoice_from_channelmanager_and_duration_since_epoch(
-		channelmanager, keys_manager, network, amt_msat,
+		channelmanager, keys_manager, logger, network, amt_msat,
 		InvoiceDescription::Hash(&description_hash),
 		duration_since_epoch, invoice_expiry_delta_secs
 	)
@@ -294,8 +315,8 @@ where
 /// This version can be used in a `no_std` environment, where [`std::time::SystemTime`] is not
 /// available and the current time is supplied by the caller.
 pub fn create_invoice_from_channelmanager_and_duration_since_epoch<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>(
-	channelmanager: &ChannelManager<Signer, M, T, K, F, L>, keys_manager: K, network: Currency,
-	amt_msat: Option<u64>, description: String, duration_since_epoch: Duration,
+	channelmanager: &ChannelManager<Signer, M, T, K, F, L>, keys_manager: K, logger: L,
+	network: Currency, amt_msat: Option<u64>, description: String, duration_since_epoch: Duration,
 	invoice_expiry_delta_secs: u32
 ) -> Result<Invoice, SignOrCreationError<()>>
 where
@@ -306,7 +327,7 @@ where
 	L::Target: Logger,
 {
 	_create_invoice_from_channelmanager_and_duration_since_epoch(
-		channelmanager, keys_manager, network, amt_msat,
+		channelmanager, keys_manager, logger, network, amt_msat,
 		InvoiceDescription::Direct(
 			&Description::new(description).map_err(SignOrCreationError::CreationError)?,
 		),
@@ -315,9 +336,9 @@ where
 }
 
 fn _create_invoice_from_channelmanager_and_duration_since_epoch<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>(
-	channelmanager: &ChannelManager<Signer, M, T, K, F, L>, keys_manager: K, network: Currency,
-	amt_msat: Option<u64>, description: InvoiceDescription, duration_since_epoch: Duration,
-	invoice_expiry_delta_secs: u32
+	channelmanager: &ChannelManager<Signer, M, T, K, F, L>, keys_manager: K, logger: L,
+	network: Currency, amt_msat: Option<u64>, description: InvoiceDescription,
+	duration_since_epoch: Duration, invoice_expiry_delta_secs: u32
 ) -> Result<Invoice, SignOrCreationError<()>>
 where
 	M::Target: chain::Watch<Signer>,
@@ -326,14 +347,15 @@ where
 	F::Target: FeeEstimator,
 	L::Target: Logger,
 {
-	let route_hints = filter_channels(channelmanager.list_channels(), amt_msat);
-
 	// `create_inbound_payment` only returns an error if the amount is greater than the total bitcoin
 	// supply.
 	let (payment_hash, payment_secret) = channelmanager
 		.create_inbound_payment(amt_msat, invoice_expiry_delta_secs)
 		.map_err(|()| SignOrCreationError::CreationError(CreationError::InvalidAmount))?;
 	let our_node_pubkey = channelmanager.get_our_node_id();
+	let channels = channelmanager.list_channels();
+
+	log_trace!(logger, "Creating invoice with payment hash {}", log_bytes!(payment_hash.0));
 
 	let invoice = match description {
 		InvoiceDescription::Direct(description) => {
@@ -353,6 +375,8 @@ where
 	if let Some(amt) = amt_msat {
 		invoice = invoice.amount_milli_satoshis(amt);
 	}
+
+	let route_hints = filter_channels(channels, amt_msat, &logger);
 	for hint in route_hints {
 		invoice = invoice.private_route(hint);
 	}
@@ -381,39 +405,64 @@ where
 ///   `is_usable` (i.e. the peer is connected).
 /// * If any public channel exists, the returned `RouteHint`s will be empty, and the sender will
 ///   need to find the path by looking at the public channels instead
-fn filter_channels(channels: Vec<ChannelDetails>, min_inbound_capacity_msat: Option<u64>) -> Vec<RouteHint>{
+fn filter_channels<L: Deref>(
+	channels: Vec<ChannelDetails>, min_inbound_capacity_msat: Option<u64>, logger: &L
+) -> Vec<RouteHint> where L::Target: Logger {
 	let mut filtered_channels: HashMap<PublicKey, ChannelDetails> = HashMap::new();
 	let min_inbound_capacity = min_inbound_capacity_msat.unwrap_or(0);
 	let mut min_capacity_channel_exists = false;
 	let mut online_channel_exists = false;
 	let mut online_min_capacity_channel_exists = false;
 
+	log_trace!(logger, "Considering {} channels for invoice route hints", channels.len());
 	for channel in channels.into_iter().filter(|chan| chan.is_channel_ready) {
 		if channel.get_inbound_payment_scid().is_none() || channel.counterparty.forwarding_info.is_none() {
+			log_trace!(logger, "Ignoring channel {} for invoice route hints", log_bytes!(channel.channel_id));
 			continue;
 		}
 
 		if channel.is_public {
 			// If any public channel exists, return no hints and let the sender
 			// look at the public channels instead.
+			log_trace!(logger, "Not including channels in invoice route hints on account of public channel {}",
+				log_bytes!(channel.channel_id));
 			return vec![]
 		}
 
 		if channel.inbound_capacity_msat >= min_inbound_capacity {
-			min_capacity_channel_exists = true;
+			if !min_capacity_channel_exists {
+				log_trace!(logger, "Channel with enough inbound capacity exists for invoice route hints");
+				min_capacity_channel_exists = true;
+			}
+
 			if channel.is_usable {
 				online_min_capacity_channel_exists = true;
 			}
 		}
+
 		if channel.is_usable {
-			online_channel_exists = true;
+			if !online_channel_exists {
+				log_trace!(logger, "Channel with connected peer exists for invoice route hints");
+				online_channel_exists = true;
+			}
 		}
+
 		match filtered_channels.entry(channel.counterparty.node_id) {
 			hash_map::Entry::Occupied(mut entry) => {
 				let current_max_capacity = entry.get().inbound_capacity_msat;
 				if channel.inbound_capacity_msat < current_max_capacity {
+					log_trace!(logger,
+						"Preferring counterparty {} channel {} ({} msats) over {} ({} msats) for invoice route hints",
+						log_pubkey!(channel.counterparty.node_id),
+						log_bytes!(entry.get().channel_id), current_max_capacity,
+						log_bytes!(channel.channel_id), channel.inbound_capacity_msat);
 					continue;
 				}
+				log_trace!(logger,
+					"Preferring counterparty {} channel {} ({} msats) over {} ({} msats) for invoice route hints",
+					log_pubkey!(channel.counterparty.node_id),
+					log_bytes!(channel.channel_id), channel.inbound_capacity_msat,
+					log_bytes!(entry.get().channel_id), current_max_capacity);
 				entry.insert(channel);
 			}
 			hash_map::Entry::Vacant(entry) => {
@@ -443,18 +492,33 @@ fn filter_channels(channels: Vec<ChannelDetails>, min_inbound_capacity_msat: Opt
 		.into_iter()
 		.map(|(_, channel)| channel)
 		.filter(|channel| {
-			if online_min_capacity_channel_exists {
-				channel.inbound_capacity_msat >= min_inbound_capacity && channel.is_usable
+			let has_enough_capacity = channel.inbound_capacity_msat >= min_inbound_capacity;
+			let include_channel = if online_min_capacity_channel_exists {
+				has_enough_capacity && channel.is_usable
 			} else if min_capacity_channel_exists && online_channel_exists {
 				// If there are some online channels and some min_capacity channels, but no
 				// online-and-min_capacity channels, just include the min capacity ones and ignore
 				// online-ness.
-				channel.inbound_capacity_msat >= min_inbound_capacity
+				has_enough_capacity
 			} else if min_capacity_channel_exists {
-				channel.inbound_capacity_msat >= min_inbound_capacity
+				has_enough_capacity
 			} else if online_channel_exists {
 				channel.is_usable
-			} else { true }
+			} else { true };
+
+			if include_channel {
+				log_trace!(logger, "Including channel {} in invoice route hints",
+					log_bytes!(channel.channel_id));
+			} else if !has_enough_capacity {
+				log_trace!(logger, "Ignoring channel {} without enough capacity for invoice route hints",
+					log_bytes!(channel.channel_id));
+			} else {
+				debug_assert!(!channel.is_usable);
+				log_trace!(logger, "Ignoring channel {} with disconnected peer",
+					log_bytes!(channel.channel_id));
+			}
+
+			include_channel
 		})
 		.map(route_hint_from_channel)
 		.collect::<Vec<RouteHint>>()
@@ -638,8 +702,9 @@ mod test {
 		create_unannounced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 10001, channelmanager::provided_init_features(), channelmanager::provided_init_features());
 		let non_default_invoice_expiry_secs = 4200;
 		let invoice = create_invoice_from_channelmanager_and_duration_since_epoch(
-			&nodes[1].node, nodes[1].keys_manager, Currency::BitcoinTestnet, Some(10_000), "test".to_string(),
-			Duration::from_secs(1234567), non_default_invoice_expiry_secs).unwrap();
+			&nodes[1].node, nodes[1].keys_manager, nodes[1].logger, Currency::BitcoinTestnet,
+			Some(10_000), "test".to_string(), Duration::from_secs(1234567),
+			non_default_invoice_expiry_secs).unwrap();
 		assert_eq!(invoice.amount_pico_btc(), Some(100_000));
 		assert_eq!(invoice.min_final_cltv_expiry(), MIN_FINAL_CLTV_EXPIRY as u64);
 		assert_eq!(invoice.description(), InvoiceDescription::Direct(&Description("test".to_string())));
@@ -703,8 +768,8 @@ mod test {
 		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 		let description_hash = crate::Sha256(Hash::hash("Testing description_hash".as_bytes()));
 		let invoice = ::utils::create_invoice_from_channelmanager_with_description_hash_and_duration_since_epoch(
-			&nodes[1].node, nodes[1].keys_manager, Currency::BitcoinTestnet, Some(10_000),
-			description_hash, Duration::from_secs(1234567), 3600
+			&nodes[1].node, nodes[1].keys_manager, nodes[1].logger, Currency::BitcoinTestnet,
+			Some(10_000), description_hash, Duration::from_secs(1234567), 3600
 		).unwrap();
 		assert_eq!(invoice.amount_pico_btc(), Some(100_000));
 		assert_eq!(invoice.min_final_cltv_expiry(), MIN_FINAL_CLTV_EXPIRY as u64);
@@ -892,8 +957,9 @@ mod test {
 		mut chan_ids_to_match: HashSet<u64>
 	) {
 		let invoice = create_invoice_from_channelmanager_and_duration_since_epoch(
-			&invoice_node.node, invoice_node.keys_manager, Currency::BitcoinTestnet, invoice_amt, "test".to_string(),
-			Duration::from_secs(1234567), 3600).unwrap();
+			&invoice_node.node, invoice_node.keys_manager, invoice_node.logger,
+			Currency::BitcoinTestnet, invoice_amt, "test".to_string(), Duration::from_secs(1234567),
+			3600).unwrap();
 		let hints = invoice.private_routes();
 
 		for hint in hints {
@@ -943,9 +1009,9 @@ mod test {
 		let non_default_invoice_expiry_secs = 4200;
 
 		let invoice =
-			::utils::create_phantom_invoice::<EnforcingSigner, &test_utils::TestKeysInterface>(
+			::utils::create_phantom_invoice::<EnforcingSigner, &test_utils::TestKeysInterface, &test_utils::TestLogger>(
 				Some(payment_amt), payment_hash, "test".to_string(), non_default_invoice_expiry_secs,
-				route_hints, &nodes[1].keys_manager, Currency::BitcoinTestnet
+				route_hints, &nodes[1].keys_manager, &nodes[1].logger, Currency::BitcoinTestnet
 			).unwrap();
 		let (payment_hash, payment_secret) = (PaymentHash(invoice.payment_hash().into_inner()), *invoice.payment_secret());
 		let payment_preimage = if user_generated_pmt_hash {
@@ -1052,7 +1118,7 @@ mod test {
 			nodes[2].node.get_phantom_route_hints(),
 		];
 
-		let invoice = ::utils::create_phantom_invoice::<EnforcingSigner, &test_utils::TestKeysInterface>(Some(payment_amt), Some(payment_hash), "test".to_string(), 3600, route_hints, &nodes[1].keys_manager, Currency::BitcoinTestnet).unwrap();
+		let invoice = ::utils::create_phantom_invoice::<EnforcingSigner, &test_utils::TestKeysInterface, &test_utils::TestLogger>(Some(payment_amt), Some(payment_hash), "test".to_string(), 3600, route_hints, &nodes[1].keys_manager, &nodes[1].logger, Currency::BitcoinTestnet).unwrap();
 
 		let chan_0_1 = &nodes[1].node.list_usable_channels()[0];
 		assert_eq!(invoice.route_hints()[0].0[0].htlc_minimum_msat, chan_0_1.inbound_htlc_minimum_msat);
@@ -1080,10 +1146,10 @@ mod test {
 		let description_hash = crate::Sha256(Hash::hash("Description hash phantom invoice".as_bytes()));
 		let non_default_invoice_expiry_secs = 4200;
 		let invoice = ::utils::create_phantom_invoice_with_description_hash::<
-			EnforcingSigner, &test_utils::TestKeysInterface,
+			EnforcingSigner, &test_utils::TestKeysInterface, &test_utils::TestLogger,
 		>(
 			Some(payment_amt), None, non_default_invoice_expiry_secs, description_hash,
-			route_hints, &nodes[1].keys_manager, Currency::BitcoinTestnet
+			route_hints, &nodes[1].keys_manager, &nodes[1].logger, Currency::BitcoinTestnet
 		)
 		.unwrap();
 		assert_eq!(invoice.amount_pico_btc(), Some(200_000));
@@ -1395,7 +1461,7 @@ mod test {
 			.map(|route_hint| route_hint.phantom_scid)
 			.collect::<HashSet<u64>>();
 
-		let invoice = ::utils::create_phantom_invoice::<EnforcingSigner, &test_utils::TestKeysInterface>(invoice_amt, None, "test".to_string(), 3600, phantom_route_hints, &invoice_node.keys_manager, Currency::BitcoinTestnet).unwrap();
+		let invoice = ::utils::create_phantom_invoice::<EnforcingSigner, &test_utils::TestKeysInterface, &test_utils::TestLogger>(invoice_amt, None, "test".to_string(), 3600, phantom_route_hints, &invoice_node.keys_manager, &invoice_node.logger, Currency::BitcoinTestnet).unwrap();
 
 		let invoice_hints = invoice.private_routes();
 
