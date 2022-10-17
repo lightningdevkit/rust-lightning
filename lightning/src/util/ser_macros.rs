@@ -174,8 +174,13 @@ macro_rules! decode_tlv {
 	}};
 }
 
+// `$decode_custom_tlv` is a closure that may be optionally provided to handle custom message types.
+// If it is provided, it will be called with the custom type and the `FixedLengthReader` containing
+// the message contents. It should return `Ok(true)` if the custom message is successfully parsed,
+// `Ok(false)` if the message type is unknown, and `Err(DecodeError)` if parsing fails.
 macro_rules! decode_tlv_stream {
-	($stream: expr, {$(($type: expr, $field: ident, $fieldty: tt)),* $(,)*}) => { {
+	($stream: expr, {$(($type: expr, $field: ident, $fieldty: tt)),* $(,)*}
+	 $(, $decode_custom_tlv: expr)?) => { {
 		use ln::msgs::DecodeError;
 		let mut last_seen_type: Option<u64> = None;
 		let mut stream_ref = $stream;
@@ -226,10 +231,19 @@ macro_rules! decode_tlv_stream {
 						return Err(DecodeError::InvalidValue);
 					}
 				},)*
-				x if x % 2 == 0 => {
-					return Err(DecodeError::UnknownRequiredFeature);
-				},
-				_ => {},
+				t => {
+					$(
+						if $decode_custom_tlv(t, &mut s)? {
+							// If a custom TLV was successfully read (i.e. decode_custom_tlv returns true),
+							// continue to the next TLV read.
+							s.eat_remaining()?;
+							continue 'tlv_read;
+						}
+					)?
+					if t % 2 == 0 {
+						return Err(DecodeError::UnknownRequiredFeature);
+					}
+				}
 			}
 			s.eat_remaining()?;
 		}
