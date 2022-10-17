@@ -11,19 +11,21 @@
 
 use chain::keysinterface::{KeysInterface, Recipient};
 use ln::features::InitFeatures;
-use ln::msgs::{self, OnionMessageHandler};
-use super::{BlindedRoute, Destination, OnionMessenger, SendError};
+use ln::msgs::{self, DecodeError, OnionMessageHandler};
+use super::{BlindedRoute, CustomOnionMessageContents, CustomOnionMessageHandler, Destination, OnionMessenger, SendError};
 use util::enforcing_trait_impls::EnforcingSigner;
+use util::ser::{MaybeReadableArgs, Writeable, Writer};
 use util::test_utils;
 
 use bitcoin::network::constants::Network;
 use bitcoin::secp256k1::{PublicKey, Secp256k1};
 
+use io;
 use sync::Arc;
 
 struct MessengerNode {
 	keys_manager: Arc<test_utils::TestKeysInterface>,
-	messenger: OnionMessenger<EnforcingSigner, Arc<test_utils::TestKeysInterface>, Arc<test_utils::TestLogger>>,
+	messenger: OnionMessenger<EnforcingSigner, Arc<test_utils::TestKeysInterface>, Arc<test_utils::TestLogger>, Arc<TestCustomMessageHandler>>,
 	logger: Arc<test_utils::TestLogger>,
 }
 
@@ -34,6 +36,43 @@ impl MessengerNode {
 	}
 }
 
+#[derive(Clone)]
+struct TestCustomMessage {}
+
+const CUSTOM_MESSAGE_TYPE: u64 = 4242;
+const CUSTOM_MESSAGE_CONTENTS: [u8; 32] = [42; 32];
+
+impl CustomOnionMessageContents for TestCustomMessage {
+	fn tlv_type(&self) -> u64 {
+		CUSTOM_MESSAGE_TYPE
+	}
+}
+
+impl Writeable for TestCustomMessage {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		Ok(CUSTOM_MESSAGE_CONTENTS.write(w)?)
+	}
+}
+
+impl MaybeReadableArgs<u64> for TestCustomMessage {
+	fn read<R: io::Read>(buffer: &mut R, message_type: u64) -> Result<Option<Self>, DecodeError> where Self: Sized {
+		if message_type == CUSTOM_MESSAGE_TYPE {
+			let mut buf = Vec::new();
+			buffer.read_to_end(&mut buf)?;
+			assert_eq!(buf, CUSTOM_MESSAGE_CONTENTS);
+			return Ok(Some(TestCustomMessage {}))
+		}
+		Ok(None)
+	}
+}
+
+struct TestCustomMessageHandler {}
+
+impl CustomOnionMessageHandler for TestCustomMessageHandler {
+	type CustomMessage = TestCustomMessage;
+	fn handle_custom_message(&self, _msg: Self::CustomMessage) {}
+}
+
 fn create_nodes(num_messengers: u8) -> Vec<MessengerNode> {
 	let mut nodes = Vec::new();
 	for i in 0..num_messengers {
@@ -42,7 +81,7 @@ fn create_nodes(num_messengers: u8) -> Vec<MessengerNode> {
 		let keys_manager = Arc::new(test_utils::TestKeysInterface::new(&seed, Network::Testnet));
 		nodes.push(MessengerNode {
 			keys_manager: keys_manager.clone(),
-			messenger: OnionMessenger::new(keys_manager, logger.clone()),
+			messenger: OnionMessenger::new(keys_manager, logger.clone(), Arc::new(TestCustomMessageHandler {})),
 			logger,
 		});
 	}

@@ -19,7 +19,9 @@ use chain::keysinterface::{InMemorySigner, KeysInterface, KeysManager, Recipient
 use ln::features::{InitFeatures, NodeFeatures};
 use ln::msgs::{self, OnionMessageHandler};
 use ln::onion_utils;
+use ln::peer_handler::IgnoringMessageHandler;
 use super::blinded_route::{BlindedRoute, ForwardTlvs, ReceiveTlvs};
+pub use super::packet::CustomOnionMessageContents;
 use super::packet::{BIG_PACKET_HOP_DATA_LEN, ForwardControlTlvs, Packet, Payload, ReceiveControlTlvs, SMALL_PACKET_HOP_DATA_LEN};
 use super::utils;
 use util::events::OnionMessageProvider;
@@ -41,8 +43,12 @@ use prelude::*;
 /// # use bitcoin::hashes::_export::_core::time::Duration;
 /// # use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 /// # use lightning::chain::keysinterface::{InMemorySigner, KeysManager, KeysInterface};
-/// # use lightning::onion_message::{BlindedRoute, Destination, OnionMessenger};
+/// # use lightning::ln::msgs::DecodeError;
+/// # use lightning::ln::peer_handler::IgnoringMessageHandler;
+/// # use lightning::onion_message::{BlindedRoute, CustomOnionMessageContents, Destination, OnionMessenger};
 /// # use lightning::util::logger::{Logger, Record};
+/// # use lightning::util::ser::{MaybeReadableArgs, Writeable, Writer};
+/// # use lightning::io;
 /// # use std::sync::Arc;
 /// # struct FakeLogger {};
 /// # impl Logger for FakeLogger {
@@ -58,12 +64,31 @@ use prelude::*;
 /// # let (hop_node_id2, hop_node_id3, hop_node_id4) = (hop_node_id1, hop_node_id1,
 /// hop_node_id1);
 /// # let destination_node_id = hop_node_id1;
-/// #
+/// # let your_custom_message_handler = IgnoringMessageHandler {};
 /// // Create the onion messenger. This must use the same `keys_manager` as is passed to your
 /// // ChannelManager.
-/// let onion_messenger = OnionMessenger::new(&keys_manager, logger);
+/// let onion_messenger = OnionMessenger::new(&keys_manager, logger, your_custom_message_handler);
 ///
-/// // Send an empty onion message to a node id.
+/// # struct YourCustomMessage {}
+/// impl Writeable for YourCustomMessage {
+/// 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+/// 		# Ok(())
+/// 		// Write your custom onion message to `w`
+/// 	}
+/// }
+/// impl CustomOnionMessageContents for YourCustomMessage {
+/// 	fn tlv_type(&self) -> u64 {
+/// 		# let your_custom_message_type = 42;
+/// 		your_custom_message_type
+/// 	}
+/// }
+/// impl MaybeReadableArgs<u64> for YourCustomMessage {
+/// 	fn read<R: io::Read>(r: &mut R, message_type: u64) -> Result<Option<Self>, DecodeError> {
+/// 		# unreachable!()
+/// 		// Read your custom onion message of type `message_type` from `r`, or return `None`
+/// 		// if the message type is unknown
+/// 	}
+/// }
 /// let intermediate_hops = [hop_node_id1, hop_node_id2];
 /// let reply_path = None;
 /// onion_messenger.send_onion_message(&intermediate_hops, Destination::Node(destination_node_id), reply_path);
@@ -81,17 +106,18 @@ use prelude::*;
 ///
 /// [offers]: <https://github.com/lightning/bolts/pull/798>
 /// [`OnionMessenger`]: crate::onion_message::OnionMessenger
-pub struct OnionMessenger<Signer: Sign, K: Deref, L: Deref>
+pub struct OnionMessenger<Signer: Sign, K: Deref, L: Deref, CMH: Deref>
 	where K::Target: KeysInterface<Signer = Signer>,
 	      L::Target: Logger,
+	      CMH:: Target: CustomOnionMessageHandler,
 {
 	keys_manager: K,
 	logger: L,
 	pending_messages: Mutex<HashMap<PublicKey, VecDeque<msgs::OnionMessage>>>,
 	secp_ctx: Secp256k1<secp256k1::All>,
+	custom_handler: CMH,
 	// Coming soon:
 	// invoice_handler: InvoiceHandler,
-	// custom_handler: CustomHandler, // handles custom onion messages
 }
 
 /// The destination of an onion message.
@@ -130,13 +156,32 @@ pub enum SendError {
 	BufferFull,
 }
 
-impl<Signer: Sign, K: Deref, L: Deref> OnionMessenger<Signer, K, L>
+/// Handler for custom onion messages. If you are using [`SimpleArcOnionMessenger`],
+/// [`SimpleRefOnionMessenger`], or prefer to ignore inbound custom onion messages,
+/// [`IgnoringMessageHandler`] must be provided to [`OnionMessenger::new`]. Otherwise, a custom
+/// implementation of this trait must be provided, with [`CustomMessage`] specifying the supported
+/// message types.
+///
+/// See [`OnionMessenger`] for example usage.
+///
+/// [`IgnoringMessageHandler`]: crate::ln::peer_handler::IgnoringMessageHandler
+/// [`CustomMessage`]: Self::CustomMessage
+pub trait CustomOnionMessageHandler {
+	/// The message known to the handler. To support multiple message types, you may want to make this
+	/// an enum with a variant for each supported message.
+	type CustomMessage: CustomOnionMessageContents;
+	/// Called with the custom message that was received.
+	fn handle_custom_message(&self, msg: Self::CustomMessage);
+}
+
+impl<Signer: Sign, K: Deref, L: Deref, CMH: Deref> OnionMessenger<Signer, K, L, CMH>
 	where K::Target: KeysInterface<Signer = Signer>,
 	      L::Target: Logger,
+	      CMH::Target: CustomOnionMessageHandler,
 {
 	/// Constructs a new `OnionMessenger` to send, forward, and delegate received onion messages to
 	/// their respective handlers.
-	pub fn new(keys_manager: K, logger: L) -> Self {
+	pub fn new(keys_manager: K, logger: L, custom_handler: CMH) -> Self {
 		let mut secp_ctx = Secp256k1::new();
 		secp_ctx.seeded_randomize(&keys_manager.get_secure_random_bytes());
 		OnionMessenger {
@@ -144,6 +189,7 @@ impl<Signer: Sign, K: Deref, L: Deref> OnionMessenger<Signer, K, L>
 			pending_messages: Mutex::new(HashMap::new()),
 			secp_ctx,
 			logger,
+			custom_handler,
 		}
 	}
 
@@ -221,9 +267,10 @@ fn outbound_buffer_full(peer_node_id: &PublicKey, buffer: &HashMap<PublicKey, Ve
 	false
 }
 
-impl<Signer: Sign, K: Deref, L: Deref> OnionMessageHandler for OnionMessenger<Signer, K, L>
+impl<Signer: Sign, K: Deref, L: Deref, CMH: Deref> OnionMessageHandler for OnionMessenger<Signer, K, L, CMH>
 	where K::Target: KeysInterface<Signer = Signer>,
 	      L::Target: Logger,
+	      CMH::Target: CustomOnionMessageHandler,
 {
 	/// Handle an incoming onion message. Currently, if a message was destined for us we will log, but
 	/// soon we'll delegate the onion message to a handler that can generate invoices or send
@@ -361,9 +408,10 @@ impl<Signer: Sign, K: Deref, L: Deref> OnionMessageHandler for OnionMessenger<Si
 	}
 }
 
-impl<Signer: Sign, K: Deref, L: Deref> OnionMessageProvider for OnionMessenger<Signer, K, L>
+impl<Signer: Sign, K: Deref, L: Deref, CMH: Deref> OnionMessageProvider for OnionMessenger<Signer, K, L, CMH>
 	where K::Target: KeysInterface<Signer = Signer>,
 	      L::Target: Logger,
+	      CMH::Target: CustomOnionMessageHandler,
 {
 	fn next_onion_message_for_peer(&self, peer_node_id: PublicKey) -> Option<msgs::OnionMessage> {
 		let mut pending_msgs = self.pending_messages.lock().unwrap();
@@ -383,7 +431,7 @@ impl<Signer: Sign, K: Deref, L: Deref> OnionMessageProvider for OnionMessenger<S
 ///
 /// [`SimpleArcChannelManager`]: crate::ln::channelmanager::SimpleArcChannelManager
 /// [`SimpleArcPeerManager`]: crate::ln::peer_handler::SimpleArcPeerManager
-pub type SimpleArcOnionMessenger<L> = OnionMessenger<InMemorySigner, Arc<KeysManager>, Arc<L>>;
+pub type SimpleArcOnionMessenger<L> = OnionMessenger<InMemorySigner, Arc<KeysManager>, Arc<L>, IgnoringMessageHandler>;
 /// Useful for simplifying the parameters of [`SimpleRefChannelManager`] and
 /// [`SimpleRefPeerManager`]. See their docs for more details.
 ///
@@ -391,7 +439,7 @@ pub type SimpleArcOnionMessenger<L> = OnionMessenger<InMemorySigner, Arc<KeysMan
 ///
 /// [`SimpleRefChannelManager`]: crate::ln::channelmanager::SimpleRefChannelManager
 /// [`SimpleRefPeerManager`]: crate::ln::peer_handler::SimpleRefPeerManager
-pub type SimpleRefOnionMessenger<'a, 'b, L> = OnionMessenger<InMemorySigner, &'a KeysManager, &'b L>;
+pub type SimpleRefOnionMessenger<'a, 'b, L> = OnionMessenger<InMemorySigner, &'a KeysManager, &'b L, IgnoringMessageHandler>;
 
 /// Construct onion packet payloads and keys for sending an onion message along the given
 /// `unblinded_path` to the given `destination`.

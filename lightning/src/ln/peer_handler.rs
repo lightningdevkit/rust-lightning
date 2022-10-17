@@ -21,11 +21,11 @@ use ln::features::{InitFeatures, NodeFeatures};
 use ln::msgs;
 use ln::msgs::{ChannelMessageHandler, LightningError, NetAddress, OnionMessageHandler, RoutingMessageHandler};
 use ln::channelmanager::{SimpleArcChannelManager, SimpleRefChannelManager};
-use util::ser::{VecWriter, Writeable, Writer};
+use util::ser::{MaybeReadableArgs, VecWriter, Writeable, Writer};
 use ln::peer_channel_encryptor::{PeerChannelEncryptor,NextNoiseStep};
 use ln::wire;
 use ln::wire::Encode;
-use onion_message::{SimpleArcOnionMessenger, SimpleRefOnionMessenger};
+use onion_message::{CustomOnionMessageContents, CustomOnionMessageHandler, SimpleArcOnionMessenger, SimpleRefOnionMessenger};
 use routing::gossip::{NetworkGraph, P2PGossipSync};
 use util::atomic_counter::AtomicCounter;
 use util::crypto::sign;
@@ -95,6 +95,23 @@ impl OnionMessageHandler for IgnoringMessageHandler {
 		InitFeatures::empty()
 	}
 }
+impl CustomOnionMessageHandler for IgnoringMessageHandler {
+	type CustomMessage = Infallible;
+	fn handle_custom_message(&self, _msg: Self::CustomMessage) {
+		// Since we always return `None` in the read the handle method should never be called.
+		unreachable!();
+	}
+}
+impl MaybeReadableArgs<u64> for Infallible {
+	fn read<R: io::Read>(_buffer: &mut R, _msg_type: u64) -> Result<Option<Self>, msgs::DecodeError> where Self: Sized {
+		Ok(None)
+	}
+}
+
+impl CustomOnionMessageContents for Infallible {
+	fn tlv_type(&self) -> u64 { unreachable!(); }
+}
+
 impl Deref for IgnoringMessageHandler {
 	type Target = IgnoringMessageHandler;
 	fn deref(&self) -> &Self { self }

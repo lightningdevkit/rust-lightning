@@ -10,12 +10,12 @@ use lightning::ln::msgs::{self, DecodeError, OnionMessageHandler};
 use lightning::ln::script::ShutdownScript;
 use lightning::util::enforcing_trait_impls::EnforcingSigner;
 use lightning::util::logger::Logger;
-use lightning::util::ser::{Readable, Writer};
-use lightning::onion_message::OnionMessenger;
+use lightning::util::ser::{MaybeReadableArgs, Readable, Writeable, Writer};
+use lightning::onion_message::{CustomOnionMessageContents, CustomOnionMessageHandler, OnionMessenger};
 
 use utils::test_logger;
 
-use std::io::Cursor;
+use std::io::{self, Cursor};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 #[inline]
@@ -29,7 +29,8 @@ pub fn do_test<L: Logger>(data: &[u8], logger: &L) {
 			node_secret: secret,
 			counter: AtomicU64::new(0),
 		};
-		let onion_messenger = OnionMessenger::new(&keys_manager, logger);
+		let custom_msg_handler = TestCustomMessageHandler {};
+		let onion_messenger = OnionMessenger::new(&keys_manager, logger, &custom_msg_handler);
 		let mut pk = [2; 33]; pk[1] = 0xff;
 		let peer_node_id_not_used = PublicKey::from_slice(&pk).unwrap();
 		onion_messenger.handle_onion_message(&peer_node_id_not_used, &msg);
@@ -47,6 +48,38 @@ pub fn onion_message_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 pub extern "C" fn onion_message_run(data: *const u8, datalen: usize) {
 	let logger = test_logger::TestLogger::new("".to_owned(), test_logger::DevNull {});
 	do_test(unsafe { std::slice::from_raw_parts(data, datalen) }, &logger);
+}
+
+struct TestCustomMessage {}
+
+const CUSTOM_MESSAGE_TYPE: u64 = 4242;
+const CUSTOM_MESSAGE_CONTENTS: [u8; 32] = [42; 32];
+
+impl CustomOnionMessageContents for TestCustomMessage {
+	fn tlv_type(&self) -> u64 {
+		CUSTOM_MESSAGE_TYPE
+	}
+}
+
+impl Writeable for TestCustomMessage {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		Ok(CUSTOM_MESSAGE_CONTENTS.write(w)?)
+	}
+}
+
+impl MaybeReadableArgs<u64> for TestCustomMessage {
+	fn read<R: io::Read>(buffer: &mut R, _message_type: u64,) -> Result<Option<Self>, DecodeError> where Self: Sized {
+		let mut buf = Vec::new();
+		buffer.read_to_end(&mut buf)?;
+		return Ok(Some(TestCustomMessage {}))
+	}
+}
+
+struct TestCustomMessageHandler {}
+
+impl CustomOnionMessageHandler for TestCustomMessageHandler {
+	type CustomMessage = TestCustomMessage;
+	fn handle_custom_message(&self, _msg: Self::CustomMessage) {}
 }
 
 pub struct VecWriter(pub Vec<u8>);

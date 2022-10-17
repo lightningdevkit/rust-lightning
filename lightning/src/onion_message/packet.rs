@@ -16,7 +16,7 @@ use ln::msgs::DecodeError;
 use ln::onion_utils;
 use super::blinded_route::{BlindedRoute, ForwardTlvs, ReceiveTlvs};
 use util::chacha20poly1305rfc::{ChaChaPolyReadAdapter, ChaChaPolyWriteAdapter};
-use util::ser::{BigSize, FixedLengthReader, LengthRead, LengthReadable, LengthReadableArgs, Readable, ReadableArgs, Writeable, Writer};
+use util::ser::{BigSize, FixedLengthReader, LengthRead, LengthReadable, LengthReadableArgs, MaybeReadableArgs, Readable, ReadableArgs, Writeable, Writer};
 
 use core::cmp;
 use io::{self, Read};
@@ -111,6 +111,13 @@ pub(super) enum Payload {
 //	InvoiceError(InvoiceError),
 //	CustomMessage<T>,
 // }
+
+/// The contents of a custom onion message. Must implement `MaybeReadableArgs<u64>` where the `u64`
+/// is the custom TLV type attempting to be read, and return `Ok(None)` if the TLV type is unknown.
+pub trait CustomOnionMessageContents: Writeable + MaybeReadableArgs<u64> {
+	/// Returns the TLV type identifying the message contents. MUST be >= 64.
+	fn tlv_type(&self) -> u64;
+}
 
 /// Forward control TLVs in their blinded and unblinded form.
 pub(super) enum ForwardControlTlvs {
