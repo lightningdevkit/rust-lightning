@@ -66,7 +66,7 @@ use sync::Mutex;
 /// much smaller than a full [`ChannelMonitor`]. However, for large single commitment transaction
 /// updates (e.g. ones during which there are hundreds of HTLCs pending on the commitment
 /// transaction), a single update may reach upwards of 1 MiB in serialized size.
-#[cfg_attr(any(test, fuzzing, feature = "_test_utils"), derive(PartialEq))]
+#[cfg_attr(any(test, fuzzing, feature = "_test_utils"), derive(PartialEq, Eq))]
 #[derive(Clone)]
 #[must_use]
 pub struct ChannelMonitorUpdate {
@@ -125,7 +125,7 @@ impl Readable for ChannelMonitorUpdate {
 }
 
 /// An event to be processed by the ChannelManager.
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum MonitorEvent {
 	/// A monitor event containing an HTLCUpdate.
 	HTLCEvent(HTLCUpdate),
@@ -170,7 +170,7 @@ impl_writeable_tlv_based_enum_upgradable!(MonitorEvent,
 /// Simple structure sent back by `chain::Watch` when an HTLC from a forward channel is detected on
 /// chain. Used to update the corresponding HTLC in the backward channel. Failing to pass the
 /// preimage claim backward will lead to loss of funds.
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct HTLCUpdate {
 	pub(crate) payment_hash: PaymentHash,
 	pub(crate) payment_preimage: Option<PaymentPreimage>,
@@ -236,7 +236,7 @@ pub const ANTI_REORG_DELAY: u32 = 6;
 pub(crate) const HTLC_FAIL_BACK_BUFFER: u32 = CLTV_CLAIM_BUFFER + LATENCY_GRACE_PERIOD_BLOCKS;
 
 // TODO(devrandom) replace this with HolderCommitmentTransaction
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Eq)]
 struct HolderSignedTx {
 	/// txid of the transaction in tx, just used to make comparison faster
 	txid: Txid,
@@ -265,7 +265,7 @@ impl_writeable_tlv_based!(HolderSignedTx, {
 
 /// We use this to track static counterparty commitment transaction data and to generate any
 /// justice or 2nd-stage preimage/timeout transactions.
-#[derive(PartialEq)]
+#[derive(PartialEq, Eq)]
 struct CounterpartyCommitmentParameters {
 	counterparty_delayed_payment_base_key: PublicKey,
 	counterparty_htlc_base_key: PublicKey,
@@ -319,7 +319,7 @@ impl Readable for CounterpartyCommitmentParameters {
 /// transaction causing it.
 ///
 /// Used to determine when the on-chain event can be considered safe from a chain reorganization.
-#[derive(PartialEq)]
+#[derive(PartialEq, Eq)]
 struct OnchainEventEntry {
 	txid: Txid,
 	height: u32,
@@ -361,7 +361,7 @@ type CommitmentTxCounterpartyOutputInfo = Option<(u32, u64)>;
 
 /// Upon discovering of some classes of onchain tx by ChannelMonitor, we may have to take actions on it
 /// once they mature to enough confirmations (ANTI_REORG_DELAY)
-#[derive(PartialEq)]
+#[derive(PartialEq, Eq)]
 enum OnchainEvent {
 	/// An outbound HTLC failing after a transaction is confirmed. Used
 	///  * when an outbound HTLC output is spent by us after the HTLC timed out
@@ -471,7 +471,7 @@ impl_writeable_tlv_based_enum_upgradable!(OnchainEvent,
 
 );
 
-#[cfg_attr(any(test, fuzzing, feature = "_test_utils"), derive(PartialEq))]
+#[cfg_attr(any(test, fuzzing, feature = "_test_utils"), derive(PartialEq, Eq))]
 #[derive(Clone)]
 pub(crate) enum ChannelMonitorUpdateStep {
 	LatestHolderCommitmentTXInfo {
@@ -619,7 +619,7 @@ pub enum Balance {
 }
 
 /// An HTLC which has been irrevocably resolved on-chain, and has reached ANTI_REORG_DELAY.
-#[derive(PartialEq)]
+#[derive(PartialEq, Eq)]
 struct IrrevocablyResolvedHTLC {
 	commitment_tx_output_idx: Option<u32>,
 	/// The txid of the transaction which resolved the HTLC, this may be a commitment (if the HTLC

@@ -164,7 +164,7 @@ pub struct ReadOnlyNetworkGraph<'a> {
 /// return packet by a node along the route. See [BOLT #4] for details.
 ///
 /// [BOLT #4]: https://github.com/lightning/bolts/blob/master/04-onion-routing.md
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NetworkUpdate {
 	/// An error indicating a `channel_update` messages should be applied via
 	/// [`NetworkGraph::update_channel`].
@@ -626,7 +626,7 @@ where
 	}
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 /// Details about one direction of a channel as received within a [`ChannelUpdate`].
 pub struct ChannelUpdateInfo {
 	/// When the last update to the channel direction was issued.
@@ -709,7 +709,7 @@ impl Readable for ChannelUpdateInfo {
 	}
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 /// Details about a channel (both directions).
 /// Received within a channel announcement.
 pub struct ChannelInfo {
@@ -1017,7 +1017,7 @@ impl_writeable_tlv_based!(RoutingFees, {
 	(2, proportional_millionths, required)
 });
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 /// Information received in the latest node_announcement from this node.
 pub struct NodeAnnouncementInfo {
 	/// Protocol features the node announced support for
@@ -1053,7 +1053,7 @@ impl_writeable_tlv_based!(NodeAnnouncementInfo, {
 ///
 /// Since node aliases are provided by third parties, they are a potential avenue for injection
 /// attacks. Care must be taken when processing.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NodeAlias(pub [u8; 32]);
 
 impl fmt::Display for NodeAlias {
@@ -1094,7 +1094,7 @@ impl Readable for NodeAlias {
 	}
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 /// Details about a node in the network, known from the network announcement.
 pub struct NodeInfo {
 	/// All valid channels a node has announced
@@ -1247,6 +1247,7 @@ impl<L: Deref> fmt::Display for NetworkGraph<L> where L::Target: Logger {
 	}
 }
 
+impl<L: Deref> Eq for NetworkGraph<L> where L::Target: Logger {}
 impl<L: Deref> PartialEq for NetworkGraph<L> where L::Target: Logger {
 	fn eq(&self, other: &Self) -> bool {
 		self.genesis_hash == other.genesis_hash &&

@@ -86,7 +86,7 @@ const HIGH_FREQUENCY_BUMP_INTERVAL: u32 = 1;
 ///
 /// CSV and pubkeys are used as part of a witnessScript redeeming a balance output, amount is used
 /// as part of the signature hash and revocation secret to generate a satisfying witness.
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) struct RevokedOutput {
 	per_commitment_point: PublicKey,
 	counterparty_delayed_payment_base_key: PublicKey,
@@ -129,7 +129,7 @@ impl_writeable_tlv_based!(RevokedOutput, {
 ///
 /// CSV is used as part of a witnessScript redeeming a balance output, amount is used as part
 /// of the signature hash and revocation secret to generate a satisfying witness.
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) struct RevokedHTLCOutput {
 	per_commitment_point: PublicKey,
 	counterparty_delayed_payment_base_key: PublicKey,
@@ -171,7 +171,7 @@ impl_writeable_tlv_based!(RevokedHTLCOutput, {
 /// witnessScript.
 ///
 /// The preimage is used as part of the witness.
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) struct CounterpartyOfferedHTLCOutput {
 	per_commitment_point: PublicKey,
 	counterparty_delayed_payment_base_key: PublicKey,
@@ -204,7 +204,7 @@ impl_writeable_tlv_based!(CounterpartyOfferedHTLCOutput, {
 ///
 /// HTLCOutputInCommitment (hash, timelock, directon) and pubkeys are used to generate a suitable
 /// witnessScript.
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) struct CounterpartyReceivedHTLCOutput {
 	per_commitment_point: PublicKey,
 	counterparty_delayed_payment_base_key: PublicKey,
@@ -234,7 +234,7 @@ impl_writeable_tlv_based!(CounterpartyReceivedHTLCOutput, {
 ///
 /// Either offered or received, the amount is always used as part of the bip143 sighash.
 /// Preimage is only included as part of the witness in former case.
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) struct HolderHTLCOutput {
 	preimage: Option<PaymentPreimage>,
 	amount: u64,
@@ -269,7 +269,7 @@ impl_writeable_tlv_based!(HolderHTLCOutput, {
 /// A struct to describe the channel output on the funding transaction.
 ///
 /// witnessScript is used as part of the witness redeeming the funding utxo.
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) struct HolderFundingOutput {
 	funding_redeemscript: Script,
 }
@@ -290,7 +290,7 @@ impl_writeable_tlv_based!(HolderFundingOutput, {
 ///
 /// The generic API offers access to an outputs common attributes or allow transformation such as
 /// finalizing an input claiming the output.
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) enum PackageSolvingData {
 	RevokedOutput(RevokedOutput),
 	RevokedHTLCOutput(RevokedHTLCOutput),
@@ -444,7 +444,7 @@ impl_writeable_tlv_based_enum!(PackageSolvingData, ;
 /// A malleable package might be aggregated with other packages to save on fees.
 /// A untractable package has been counter-signed and aggregable will break cached counterparty
 /// signatures.
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) enum PackageMalleability {
 	Malleable,
 	Untractable,
@@ -459,7 +459,7 @@ pub(crate) enum PackageMalleability {
 ///
 /// As packages are time-sensitive, we fee-bump and rebroadcast them at scheduled intervals.
 /// Failing to confirm a package translate as a loss of funds for the user.
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct PackageTemplate {
 	// List of onchain outputs and solving data to generate satisfying witnesses.
 	inputs: Vec<(BitcoinOutPoint, PackageSolvingData)>,

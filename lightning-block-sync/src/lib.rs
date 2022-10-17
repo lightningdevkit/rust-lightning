@@ -98,7 +98,7 @@ pub struct BlockSourceError {
 }
 
 /// The kind of `BlockSourceError`, either persistent or transient.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BlockSourceErrorKind {
 	/// Indicates an error that won't resolve when retrying a request (e.g., invalid data).
 	Persistent,
@@ -139,7 +139,7 @@ impl BlockSourceError {
 
 /// A block header and some associated data. This information should be available from most block
 /// sources (and, notably, is available in Bitcoin Core's RPC and REST interfaces).
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BlockHeaderData {
 	/// The block header itself.
 	pub header: BlockHeader,

@@ -32,7 +32,7 @@ pub(crate) mod onchaintx;
 pub(crate) mod package;
 
 /// The best known block as identified by its hash and height.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct BestBlock {
 	block_hash: BlockHash,
 	height: u32,
@@ -188,7 +188,7 @@ pub trait Confirm {
 }
 
 /// An enum representing the status of a channel monitor update persistence.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChannelMonitorUpdateStatus {
 	/// The update has been durably persisted and all copies of the relevant [`ChannelMonitor`]
 	/// have been updated.
@@ -364,7 +364,7 @@ pub trait Filter {
 ///
 /// [`ChannelMonitor`]: channelmonitor::ChannelMonitor
 /// [`ChannelMonitor::block_connected`]: channelmonitor::ChannelMonitor::block_connected
-#[derive(Clone, PartialEq, Hash)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct WatchedOutput {
 	/// First block where the transaction output may have been spent.
 	pub block_hash: Option<BlockHash>,

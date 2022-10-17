@@ -274,7 +274,7 @@ impl Default for ChannelHandshakeLimits {
 
 /// Options which apply on a per-channel basis and may change at runtime or based on negotiation
 /// with our counterparty.
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct ChannelConfig {
 	/// Amount (in millionths of a satoshi) charged per satoshi for payments forwarded outbound
 	/// over the channel.

@@ -16,7 +16,7 @@ use core::fmt;
 
 /// Indicates an error on the client's part (usually some variant of attempting to use too-low or
 /// too-high values)
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum APIError {
 	/// Indicates the API was wholly misused (see err for more). Cases where these can be returned
 	/// are documented, but generally indicates some precondition of a function was violated.

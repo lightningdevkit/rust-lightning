@@ -50,7 +50,7 @@ use ln::{PaymentPreimage, PaymentHash, PaymentSecret};
 pub(crate) const MAX_VALUE_MSAT: u64 = 21_000_000_0000_0000_000;
 
 /// An error in decoding a message or struct.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DecodeError {
 	/// A version byte specified something we don't know how to handle.
 	/// Includes unknown realm byte in an OnionHopData packet
@@ -73,7 +73,7 @@ pub enum DecodeError {
 }
 
 /// An init message to be sent or received from a peer
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Init {
 	/// The relevant features which the sender supports
 	pub features: InitFeatures,
@@ -85,7 +85,7 @@ pub struct Init {
 }
 
 /// An error message to be sent or received from a peer
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ErrorMessage {
 	/// The channel ID involved in the error.
 	///
@@ -100,7 +100,7 @@ pub struct ErrorMessage {
 }
 
 /// A warning message to be sent or received from a peer
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WarningMessage {
 	/// The channel ID involved in the warning.
 	///
@@ -114,7 +114,7 @@ pub struct WarningMessage {
 }
 
 /// A ping message to be sent or received from a peer
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Ping {
 	/// The desired response length
 	pub ponglen: u16,
@@ -124,7 +124,7 @@ pub struct Ping {
 }
 
 /// A pong message to be sent or received from a peer
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Pong {
 	/// The pong packet size.
 	/// This field is not sent on the wire. byteslen zeros are sent.
@@ -132,7 +132,7 @@ pub struct Pong {
 }
 
 /// An open_channel message to be sent or received from a peer
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OpenChannel {
 	/// The genesis hash of the blockchain where the channel is to be opened
 	pub chain_hash: BlockHash,
@@ -179,7 +179,7 @@ pub struct OpenChannel {
 }
 
 /// An accept_channel message to be sent or received from a peer
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AcceptChannel {
 	/// A temporary channel ID, until the funding outpoint is announced
 	pub temporary_channel_id: [u8; 32],
@@ -220,7 +220,7 @@ pub struct AcceptChannel {
 }
 
 /// A funding_created message to be sent or received from a peer
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FundingCreated {
 	/// A temporary channel ID, until the funding is established
 	pub temporary_channel_id: [u8; 32],
@@ -233,7 +233,7 @@ pub struct FundingCreated {
 }
 
 /// A funding_signed message to be sent or received from a peer
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FundingSigned {
 	/// The channel ID
 	pub channel_id: [u8; 32],
@@ -242,7 +242,7 @@ pub struct FundingSigned {
 }
 
 /// A channel_ready message to be sent or received from a peer
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChannelReady {
 	/// The channel ID
 	pub channel_id: [u8; 32],
@@ -254,7 +254,7 @@ pub struct ChannelReady {
 }
 
 /// A shutdown message to be sent or received from a peer
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Shutdown {
 	/// The channel ID
 	pub channel_id: [u8; 32],
@@ -266,7 +266,7 @@ pub struct Shutdown {
 /// The minimum and maximum fees which the sender is willing to place on the closing transaction.
 /// This is provided in [`ClosingSigned`] by both sides to indicate the fee range they are willing
 /// to use.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ClosingSignedFeeRange {
 	/// The minimum absolute fee, in satoshis, which the sender is willing to place on the closing
 	/// transaction.
@@ -277,7 +277,7 @@ pub struct ClosingSignedFeeRange {
 }
 
 /// A closing_signed message to be sent or received from a peer
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ClosingSigned {
 	/// The channel ID
 	pub channel_id: [u8; 32],
@@ -291,7 +291,7 @@ pub struct ClosingSigned {
 }
 
 /// An update_add_htlc message to be sent or received from a peer
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UpdateAddHTLC {
 	/// The channel ID
 	pub channel_id: [u8; 32],
@@ -307,7 +307,7 @@ pub struct UpdateAddHTLC {
 }
 
  /// An onion message to be sent or received from a peer
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OnionMessage {
 	/// Used in decrypting the onion packet's payload.
 	pub blinding_point: PublicKey,
@@ -315,7 +315,7 @@ pub struct OnionMessage {
 }
 
 /// An update_fulfill_htlc message to be sent or received from a peer
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UpdateFulfillHTLC {
 	/// The channel ID
 	pub channel_id: [u8; 32],
@@ -326,7 +326,7 @@ pub struct UpdateFulfillHTLC {
 }
 
 /// An update_fail_htlc message to be sent or received from a peer
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UpdateFailHTLC {
 	/// The channel ID
 	pub channel_id: [u8; 32],
@@ -336,7 +336,7 @@ pub struct UpdateFailHTLC {
 }
 
 /// An update_fail_malformed_htlc message to be sent or received from a peer
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UpdateFailMalformedHTLC {
 	/// The channel ID
 	pub channel_id: [u8; 32],
@@ -348,7 +348,7 @@ pub struct UpdateFailMalformedHTLC {
 }
 
 /// A commitment_signed message to be sent or received from a peer
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CommitmentSigned {
 	/// The channel ID
 	pub channel_id: [u8; 32],
@@ -359,7 +359,7 @@ pub struct CommitmentSigned {
 }
 
 /// A revoke_and_ack message to be sent or received from a peer
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RevokeAndACK {
 	/// The channel ID
 	pub channel_id: [u8; 32],
@@ -370,7 +370,7 @@ pub struct RevokeAndACK {
 }
 
 /// An update_fee message to be sent or received from a peer
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UpdateFee {
 	/// The channel ID
 	pub channel_id: [u8; 32],
@@ -378,7 +378,7 @@ pub struct UpdateFee {
 	pub feerate_per_kw: u32,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 /// Proof that the sender knows the per-commitment secret of the previous commitment transaction.
 /// This is used to convince the recipient that the channel is at a certain commitment
 /// number even if they lost that data due to a local failure.  Of course, the peer may lie
@@ -392,7 +392,7 @@ pub struct DataLossProtect {
 }
 
 /// A channel_reestablish message to be sent or received from a peer
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChannelReestablish {
 	/// The channel ID
 	pub channel_id: [u8; 32],
@@ -405,7 +405,7 @@ pub struct ChannelReestablish {
 }
 
 /// An announcement_signatures message to be sent or received from a peer
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AnnouncementSignatures {
 	/// The channel ID
 	pub channel_id: [u8; 32],
@@ -418,7 +418,7 @@ pub struct AnnouncementSignatures {
 }
 
 /// An address which can be used to connect to a remote peer
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NetAddress {
 	/// An IPv4 address/port on which the peer is listening.
 	IPv4 {
@@ -573,7 +573,7 @@ impl Readable for NetAddress {
 
 
 /// The unsigned part of a node_announcement
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UnsignedNodeAnnouncement {
 	/// The advertised features
 	pub features: NodeFeatures,
@@ -592,7 +592,7 @@ pub struct UnsignedNodeAnnouncement {
 	pub(crate) excess_address_data: Vec<u8>,
 	pub(crate) excess_data: Vec<u8>,
 }
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 /// A node_announcement message to be sent or received from a peer
 pub struct NodeAnnouncement {
 	/// The signature by the node key
@@ -602,7 +602,7 @@ pub struct NodeAnnouncement {
 }
 
 /// The unsigned part of a channel_announcement
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UnsignedChannelAnnouncement {
 	/// The advertised channel features
 	pub features: ChannelFeatures,
@@ -621,7 +621,7 @@ pub struct UnsignedChannelAnnouncement {
 	pub(crate) excess_data: Vec<u8>,
 }
 /// A channel_announcement message to be sent or received from a peer
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChannelAnnouncement {
 	/// Authentication of the announcement by the first public node
 	pub node_signature_1: Signature,
@@ -636,7 +636,7 @@ pub struct ChannelAnnouncement {
 }
 
 /// The unsigned part of a channel_update
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UnsignedChannelUpdate {
 	/// The genesis hash of the blockchain where the channel is to be opened
 	pub chain_hash: BlockHash,
@@ -669,7 +669,7 @@ pub struct UnsignedChannelUpdate {
 	pub excess_data: Vec<u8>,
 }
 /// A channel_update message to be sent or received from a peer
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChannelUpdate {
 	/// A signature of the channel update
 	pub signature: Signature,
@@ -681,7 +681,7 @@ pub struct ChannelUpdate {
 /// UTXOs in a range of blocks. The recipient of a query makes a best
 /// effort to reply to the query using one or more reply_channel_range
 /// messages.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QueryChannelRange {
 	/// The genesis hash of the blockchain being queried
 	pub chain_hash: BlockHash,
@@ -698,7 +698,7 @@ pub struct QueryChannelRange {
 /// not be a perfect view of the network. The short_channel_ids in the
 /// reply are encoded. We only support encoding_type=0 uncompressed
 /// serialization and do not support encoding_type=1 zlib serialization.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReplyChannelRange {
 	/// The genesis hash of the blockchain being queried
 	pub chain_hash: BlockHash,
@@ -720,7 +720,7 @@ pub struct ReplyChannelRange {
 /// reply_short_channel_ids_end message. The short_channel_ids sent in
 /// this query are encoded. We only support encoding_type=0 uncompressed
 /// serialization and do not support encoding_type=1 zlib serialization.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QueryShortChannelIds {
 	/// The genesis hash of the blockchain being queried
 	pub chain_hash: BlockHash,
@@ -732,7 +732,7 @@ pub struct QueryShortChannelIds {
 /// query_short_channel_ids message. The query recipient makes a best
 /// effort to respond based on their local network view which may not be
 /// a perfect view of the network.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReplyShortChannelIdsEnd {
 	/// The genesis hash of the blockchain that was queried
 	pub chain_hash: BlockHash,
@@ -744,7 +744,7 @@ pub struct ReplyShortChannelIdsEnd {
 /// A gossip_timestamp_filter message is used by a node to request
 /// gossip relay for messages in the requested time range when the
 /// gossip_queries feature has been negotiated.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GossipTimestampFilter {
 	/// The genesis hash of the blockchain for channel and node information
 	pub chain_hash: BlockHash,
@@ -805,7 +805,7 @@ pub struct LightningError {
 
 /// Struct used to return values from revoke_and_ack messages, containing a bunch of commitment
 /// transaction updates if they were pending.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CommitmentUpdate {
 	/// update_add_htlc messages which should be sent
 	pub update_add_htlcs: Vec<UpdateAddHTLC>,
@@ -826,7 +826,7 @@ pub struct CommitmentUpdate {
 /// OptionalFeild simply gets Present if there are enough bytes to read into it), we have a
 /// separate enum type for them.
 /// (C-not exported) due to a free generic in T
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OptionalField<T> {
 	/// Optional field is included in message
 	Present(T),
@@ -1083,6 +1083,7 @@ impl onion_utils::Packet for OnionPacket {
 	}
 }
 
+impl Eq for OnionPacket { }
 impl PartialEq for OnionPacket {
 	fn eq(&self, other: &OnionPacket) -> bool {
 		for (i, j) in self.hop_data.iter().zip(other.hop_data.iter()) {
@@ -1100,7 +1101,7 @@ impl fmt::Debug for OnionPacket {
 	}
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct OnionErrorPacket {
 	// This really should be a constant size slice, but the spec lets these things be up to 128KB?
 	// (TODO) We limit it in decode to much lower...

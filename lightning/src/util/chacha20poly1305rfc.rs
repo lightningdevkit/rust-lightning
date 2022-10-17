@@ -335,7 +335,7 @@ mod tests {
 	use util::ser::{self, FixedLengthReader, LengthReadableArgs, Writeable};
 
 	// Used for for testing various lengths of serialization.
-	#[derive(Debug, PartialEq)]
+	#[derive(Debug, PartialEq, Eq)]
 	struct TestWriteable {
 		field1: Vec<u8>,
 		field2: Vec<u8>,

@@ -609,7 +609,7 @@ mod tests {
 
 	const EVENT_DEADLINE: u64 = 5 * FRESHNESS_TIMER;
 
-	#[derive(Clone, Eq, Hash, PartialEq)]
+	#[derive(Clone, Hash, PartialEq, Eq)]
 	struct TestDescriptor{}
 	impl SocketDescriptor for TestDescriptor {
 		fn send_data(&mut self, _data: &[u8], _resume_read: bool) -> usize {

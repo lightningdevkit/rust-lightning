@@ -74,7 +74,7 @@ impl_writeable_tlv_based_enum!(PaymentPurpose,
 	(2, SpontaneousPayment)
 );
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 /// The reason the channel was closed. See individual variants more details.
 pub enum ClosureReason {
 	/// Closure generated from receiving a peer error message.
@@ -153,7 +153,7 @@ impl_writeable_tlv_based_enum_upgradable!(ClosureReason,
 );
 
 /// Intended destination of a failed HTLC as indicated in [`Event::HTLCHandlingFailed`].
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum HTLCDestination {
 	/// We tried forwarding to a channel but failed to do so. An example of such an instance is when
 	/// there is insufficient capacity in our outbound channel.

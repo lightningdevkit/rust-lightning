@@ -101,7 +101,7 @@ mod sync;
 /// Errors that indicate what is wrong with the invoice. They have some granularity for debug
 /// reasons, but should generally result in an "invalid BOLT11 invoice" message for the user.
 #[allow(missing_docs)]
-#[derive(PartialEq, Debug, Clone)]
+#[derive(PartialEq, Eq, Debug, Clone)]
 pub enum ParseError {
 	Bech32Error(bech32::Error),
 	ParseAmountError(ParseIntError),
@@ -129,7 +129,7 @@ pub enum ParseError {
 /// Indicates that something went wrong while parsing or validating the invoice. Parsing errors
 /// should be mostly seen as opaque and are only there for debugging reasons. Semantic errors
 /// like wrong signatures, missing fields etc. could mean that someone tampered with the invoice.
-#[derive(PartialEq, Debug, Clone)]
+#[derive(PartialEq, Eq, Debug, Clone)]
 pub enum ParseOrSemanticError {
 	/// The invoice couldn't be decoded
 	ParseError(ParseError),
