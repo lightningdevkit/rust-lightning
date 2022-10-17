@@ -269,6 +269,15 @@ impl<T: Readable> MaybeReadable for T {
 	}
 }
 
+/// A trait that various rust-lightning types implement allowing them to (maybe) be read in from a
+/// Read, given some additional set of arguments which is required to deserialize.
+///
+/// (C-not exported) as we only export serialization to/from byte arrays instead
+pub trait MaybeReadableArgs<P> {
+	/// Reads a Self in from the given Read
+	fn read<R: Read>(reader: &mut R, params: P) -> Result<Option<Self>, DecodeError> where Self: Sized;
+}
+
 pub(crate) struct OptionDeserWrapper<T: Readable>(pub Option<T>);
 impl<T: Readable> Readable for OptionDeserWrapper<T> {
 	#[inline]
