@@ -104,13 +104,34 @@ pub(super) enum Payload {
 	}
 }
 
-// Coming soon:
-// enum Message {
-// 	InvoiceRequest(InvoiceRequest),
-// 	Invoice(Invoice),
-//	InvoiceError(InvoiceError),
-//	CustomMessage<T>,
-// }
+#[derive(Debug)]
+/// The contents of an onion message. In the context of offers, this would be the invoice, invoice
+/// request, or invoice error.
+pub enum OnionMessageContents<T> where T: CustomOnionMessageContents {
+	// Coming soon:
+	// Invoice,
+	// InvoiceRequest,
+	// InvoiceError,
+	/// A custom onion message specified by the user.
+	Custom(T),
+}
+
+impl<T> OnionMessageContents<T> where T: CustomOnionMessageContents {
+	/// Returns the type that was used to decode the message payload.
+	pub fn tlv_type(&self) -> u64 {
+		match self {
+			&OnionMessageContents::Custom(ref msg) => msg.tlv_type(),
+		}
+	}
+}
+
+impl<T: CustomOnionMessageContents> Writeable for OnionMessageContents<T> {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		match self {
+			OnionMessageContents::Custom(msg) => Ok(msg.write(w)?),
+		}
+	}
+}
 
 /// The contents of a custom onion message. Must implement `MaybeReadableArgs<u64>` where the `u64`
 /// is the custom TLV type attempting to be read, and return `Ok(None)` if the TLV type is unknown.

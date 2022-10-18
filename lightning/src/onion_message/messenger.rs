@@ -21,7 +21,7 @@ use ln::msgs::{self, OnionMessageHandler};
 use ln::onion_utils;
 use ln::peer_handler::IgnoringMessageHandler;
 use super::blinded_route::{BlindedRoute, ForwardTlvs, ReceiveTlvs};
-pub use super::packet::CustomOnionMessageContents;
+pub use super::packet::{CustomOnionMessageContents, OnionMessageContents};
 use super::packet::{BIG_PACKET_HOP_DATA_LEN, ForwardControlTlvs, Packet, Payload, ReceiveControlTlvs, SMALL_PACKET_HOP_DATA_LEN};
 use super::utils;
 use util::events::OnionMessageProvider;
@@ -34,7 +34,7 @@ use prelude::*;
 
 /// A sender, receiver and forwarder of onion messages. In upcoming releases, this object will be
 /// used to retrieve invoices and fulfill invoice requests from [offers]. Currently, only sending
-/// and receiving empty onion messages is supported.
+/// and receiving custom onion messages is supported.
 ///
 /// # Example
 ///
@@ -45,7 +45,7 @@ use prelude::*;
 /// # use lightning::chain::keysinterface::{InMemorySigner, KeysManager, KeysInterface};
 /// # use lightning::ln::msgs::DecodeError;
 /// # use lightning::ln::peer_handler::IgnoringMessageHandler;
-/// # use lightning::onion_message::{BlindedRoute, CustomOnionMessageContents, Destination, OnionMessenger};
+/// # use lightning::onion_message::{BlindedRoute, CustomOnionMessageContents, Destination, OnionMessageContents, OnionMessenger};
 /// # use lightning::util::logger::{Logger, Record};
 /// # use lightning::util::ser::{MaybeReadableArgs, Writeable, Writer};
 /// # use lightning::io;
@@ -88,19 +88,24 @@ use prelude::*;
 /// 		// if the message type is unknown
 /// 	}
 /// }
+/// // Send a custom onion message to a node id.
 /// let intermediate_hops = [hop_node_id1, hop_node_id2];
 /// let reply_path = None;
-/// onion_messenger.send_onion_message(&intermediate_hops, Destination::Node(destination_node_id), reply_path);
+/// # let your_custom_message = YourCustomMessage {};
+/// let message = OnionMessageContents::Custom(your_custom_message);
+/// onion_messenger.send_onion_message(&intermediate_hops, Destination::Node(destination_node_id), message, reply_path);
 ///
 /// // Create a blinded route to yourself, for someone to send an onion message to.
 /// # let your_node_id = hop_node_id1;
 /// let hops = [hop_node_id3, hop_node_id4, your_node_id];
 /// let blinded_route = BlindedRoute::new(&hops, &keys_manager, &secp_ctx).unwrap();
 ///
-/// // Send an empty onion message to a blinded route.
+/// // Send a custom onion message to a blinded route.
 /// # let intermediate_hops = [hop_node_id1, hop_node_id2];
 /// let reply_path = None;
-/// onion_messenger.send_onion_message(&intermediate_hops, Destination::BlindedRoute(blinded_route), reply_path);
+/// # let your_custom_message = YourCustomMessage {};
+/// let message = OnionMessageContents::Custom(your_custom_message);
+/// onion_messenger.send_onion_message(&intermediate_hops, Destination::BlindedRoute(blinded_route), message, reply_path);
 /// ```
 ///
 /// [offers]: <https://github.com/lightning/bolts/pull/798>
@@ -192,9 +197,9 @@ impl<Signer: Sign, K: Deref, L: Deref, CMH: Deref> OnionMessenger<Signer, K, L, 
 		}
 	}
 
-	/// Send an empty onion message to `destination`, routing it through `intermediate_nodes`.
+	/// Send an onion message with contents `message` to `destination`, routing it through `intermediate_nodes`.
 	/// See [`OnionMessenger`] for example usage.
-	pub fn send_onion_message(&self, intermediate_nodes: &[PublicKey], destination: Destination, reply_path: Option<BlindedRoute>) -> Result<(), SendError> {
+	pub fn send_onion_message<T: CustomOnionMessageContents>(&self, intermediate_nodes: &[PublicKey], destination: Destination, message: OnionMessageContents<T>, reply_path: Option<BlindedRoute>) -> Result<(), SendError> {
 		if let Destination::BlindedRoute(BlindedRoute { ref blinded_hops, .. }) = destination {
 			if blinded_hops.len() < 2 {
 				return Err(SendError::TooFewBlindedHops);
