@@ -218,6 +218,33 @@ fn reply_path() {
 }
 
 #[test]
+fn invalid_custom_message_type() {
+	let nodes = create_nodes(2);
+
+	struct InvalidCustomMessage{}
+	impl CustomOnionMessageContents for InvalidCustomMessage {
+		fn tlv_type(&self) -> u64 {
+			// Onion message contents must have a TLV >= 64.
+			63
+		}
+	}
+
+	impl Writeable for InvalidCustomMessage {
+		fn write<W: Writer>(&self, _w: &mut W) -> Result<(), io::Error> { unreachable!() }
+	}
+
+	impl MaybeReadableArgs<u64> for InvalidCustomMessage {
+		fn read<R: io::Read>(_buffer: &mut R, _message_type: u64) -> Result<Option<Self>, DecodeError> where Self: Sized {
+			unreachable!()
+		}
+	}
+
+	let test_msg = OnionMessageContents::Custom(InvalidCustomMessage {});
+	let err = nodes[0].messenger.send_onion_message(&[], Destination::Node(nodes[1].get_node_pk()), test_msg, None).unwrap_err();
+	assert_eq!(err, SendError::InvalidMessage);
+}
+
+#[test]
 fn peer_buffer_full() {
 	let nodes = create_nodes(2);
 	let test_msg = TestCustomMessage {};

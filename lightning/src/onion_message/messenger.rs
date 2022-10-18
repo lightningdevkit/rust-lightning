@@ -156,6 +156,8 @@ pub enum SendError {
 	TooFewBlindedHops,
 	/// Our next-hop peer was offline or does not support onion message forwarding.
 	InvalidFirstHop,
+	/// Onion message contents must have a TLV type >= 64.
+	InvalidMessage,
 	/// Our next-hop peer's buffer was full or our total outbound buffer was full.
 	BufferFull,
 }
@@ -205,6 +207,9 @@ impl<Signer: Sign, K: Deref, L: Deref, CMH: Deref> OnionMessenger<Signer, K, L, 
 				return Err(SendError::TooFewBlindedHops);
 			}
 		}
+		let OnionMessageContents::Custom(ref msg) = message;
+		if msg.tlv_type() < 64 { return Err(SendError::InvalidMessage) }
+
 		let blinding_secret_bytes = self.keys_manager.get_secure_random_bytes();
 		let blinding_secret = SecretKey::from_slice(&blinding_secret_bytes[..]).expect("RNG is busted");
 		let (introduction_node_id, blinding_point) = if intermediate_nodes.len() != 0 {
