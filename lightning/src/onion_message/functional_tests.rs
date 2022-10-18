@@ -197,7 +197,7 @@ fn reply_path() {
 	// Make sure the last node successfully decoded the reply path.
 	nodes[3].logger.assert_log_contains(
 		"lightning::onion_message::messenger".to_string(),
-		format!("Received an onion message with path_id: None and reply_path").to_string(), 1);
+		format!("Received an onion message with path_id None and a reply_path").to_string(), 1);
 
 	// Destination::BlindedRoute
 	let blinded_route = BlindedRoute::new(&[nodes[1].get_node_pk(), nodes[2].get_node_pk(), nodes[3].get_node_pk()], &*nodes[3].keys_manager, &secp_ctx).unwrap();
@@ -207,7 +207,7 @@ fn reply_path() {
 	pass_along_path(&nodes, None);
 	nodes[3].logger.assert_log_contains(
 		"lightning::onion_message::messenger".to_string(),
-		format!("Received an onion message with path_id: None and reply_path").to_string(), 2);
+		format!("Received an onion message with path_id None and a reply_path").to_string(), 2);
 }
 
 #[test]

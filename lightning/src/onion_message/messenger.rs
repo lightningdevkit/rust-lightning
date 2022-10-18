@@ -306,8 +306,8 @@ impl<Signer: Sign, K: Deref, L: Deref, CMH: Deref> OnionMessageHandler for Onion
 				control_tlvs: ReceiveControlTlvs::Unblinded(ReceiveTlvs { path_id }), reply_path,
 			}, None)) => {
 				log_info!(self.logger,
-					"Received an onion message with path_id: {:02x?} and {}reply_path",
-						path_id, if reply_path.is_some() { "" } else { "no " });
+					"Received an onion message with path_id {:02x?} and {} reply_path",
+						path_id, if reply_path.is_some() { "a" } else { "no" });
 			},
 			Ok((Payload::Forward(ForwardControlTlvs::Unblinded(ForwardTlvs {
 				next_node_id, next_blinding_override
