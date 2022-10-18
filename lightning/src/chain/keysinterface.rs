@@ -412,6 +412,17 @@ pub trait KeysInterface {
 	/// This method must return the same value each time it is called with a given `Recipient`
 	/// parameter.
 	fn get_node_secret(&self, recipient: Recipient) -> Result<SecretKey, ()>;
+	/// Get node id based on the provided [`Recipient`]. This public key corresponds to the secret in
+	/// [`get_node_secret`].
+	///
+	/// This method must return the same value each time it is called with a given `Recipient`
+	/// parameter.
+	///
+	/// [`get_node_secret`]: KeysInterface::get_node_secret
+	fn get_node_id(&self, recipient: Recipient) -> Result<PublicKey, ()> {
+		let secp_ctx = Secp256k1::signing_only();
+		Ok(PublicKey::from_secret_key(&secp_ctx, &self.get_node_secret(recipient)?))
+	}
 	/// Gets the ECDH shared secret of our [`node secret`] and `other_key`, multiplying by `tweak` if
 	/// one is provided. Note that this tweak can be applied to `other_key` instead of our node
 	/// secret, though this is less efficient.
@@ -871,6 +882,7 @@ impl ReadableArgs<SecretKey> for InMemorySigner {
 pub struct KeysManager {
 	secp_ctx: Secp256k1<secp256k1::All>,
 	node_secret: SecretKey,
+	node_id: PublicKey,
 	inbound_payment_key: KeyMaterial,
 	destination_script: Script,
 	shutdown_pubkey: PublicKey,
@@ -912,6 +924,7 @@ impl KeysManager {
 		match ExtendedPrivKey::new_master(Network::Testnet, seed) {
 			Ok(master_key) => {
 				let node_secret = master_key.ckd_priv(&secp_ctx, ChildNumber::from_hardened_idx(0).unwrap()).expect("Your RNG is busted").private_key;
+				let node_id = PublicKey::from_secret_key(&secp_ctx, &node_secret);
 				let destination_script = match master_key.ckd_priv(&secp_ctx, ChildNumber::from_hardened_idx(1).unwrap()) {
 					Ok(destination_key) => {
 						let wpubkey_hash = WPubkeyHash::hash(&ExtendedPubKey::from_priv(&secp_ctx, &destination_key).to_pub().to_bytes());
@@ -939,6 +952,7 @@ impl KeysManager {
 				let mut res = KeysManager {
 					secp_ctx,
 					node_secret,
+					node_id,
 					inbound_payment_key: KeyMaterial(inbound_pmt_key_bytes),
 
 					destination_script,
@@ -1158,6 +1172,13 @@ impl KeysInterface for KeysManager {
 		}
 	}
 
+	fn get_node_id(&self, recipient: Recipient) -> Result<PublicKey, ()> {
+		match recipient {
+			Recipient::Node => Ok(self.node_id.clone()),
+			Recipient::PhantomNode => Err(())
+		}
+	}
+
 	fn ecdh(&self, recipient: Recipient, other_key: &PublicKey, tweak: Option<&Scalar>) -> Result<SharedSecret, ()> {
 		let mut node_secret = self.get_node_secret(recipient)?;
 		if let Some(tweak) = tweak {
@@ -1238,6 +1259,7 @@ pub struct PhantomKeysManager {
 	inner: KeysManager,
 	inbound_payment_key: KeyMaterial,
 	phantom_secret: SecretKey,
+	phantom_node_id: PublicKey,
 }
 
 impl KeysInterface for PhantomKeysManager {
@@ -1247,6 +1269,13 @@ impl KeysInterface for PhantomKeysManager {
 		match recipient {
 			Recipient::Node => self.inner.get_node_secret(Recipient::Node),
 			Recipient::PhantomNode => Ok(self.phantom_secret.clone()),
+		}
+	}
+
+	fn get_node_id(&self, recipient: Recipient) -> Result<PublicKey, ()> {
+		match recipient {
+			Recipient::Node => self.inner.get_node_id(Recipient::Node),
+			Recipient::PhantomNode => Ok(self.phantom_node_id.clone()),
 		}
 	}
 
@@ -1303,10 +1332,13 @@ impl PhantomKeysManager {
 	pub fn new(seed: &[u8; 32], starting_time_secs: u64, starting_time_nanos: u32, cross_node_seed: &[u8; 32]) -> Self {
 		let inner = KeysManager::new(seed, starting_time_secs, starting_time_nanos);
 		let (inbound_key, phantom_key) = hkdf_extract_expand_twice(b"LDK Inbound and Phantom Payment Key Expansion", cross_node_seed);
+		let phantom_secret = SecretKey::from_slice(&phantom_key).unwrap();
+		let phantom_node_id = PublicKey::from_secret_key(&inner.secp_ctx, &phantom_secret);
 		Self {
 			inner,
 			inbound_payment_key: KeyMaterial(inbound_key),
-			phantom_secret: SecretKey::from_slice(&phantom_key).unwrap(),
+			phantom_secret,
+			phantom_node_id,
 		}
 	}
 
