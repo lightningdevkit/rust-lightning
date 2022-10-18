@@ -5,6 +5,7 @@ use crate::{AsyncBlockSourceResult, BlockHeaderData, BlockSource, BlockSourceErr
 use bitcoin::blockdata::block::Block;
 use bitcoin::hash_types::BlockHash;
 use bitcoin::network::constants::Network;
+use lightning::chain::BestBlock;
 
 use std::ops::Deref;
 
@@ -140,6 +141,19 @@ impl ValidatedBlockHeader {
 
 		Ok(())
 	}
+
+    /// Returns the [`BestBlock`] corresponding to this validated block header, which can be passed
+    /// into [`ChannelManager::new`] as part of its [`ChainParameters`]. Useful for ensuring that
+    /// the [`SpvClient`] and [`ChannelManager`] are initialized to the same block during a fresh
+    /// start.
+    ///
+    /// [`SpvClient`]: crate::SpvClient
+    /// [`ChainParameters`]: lightning::ln::channelmanager::ChainParameters
+    /// [`ChannelManager`]: lightning::ln::channelmanager::ChannelManager
+    /// [`ChannelManager::new`]: lightning::ln::channelmanager::ChannelManager::new
+    pub fn to_best_block(&self) -> BestBlock {
+        BestBlock::new(self.block_hash, self.inner.height)
+    }
 }
 
 /// A block with validated data against its transaction list and corresponding block hash.
