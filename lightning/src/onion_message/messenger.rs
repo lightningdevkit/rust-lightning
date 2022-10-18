@@ -217,7 +217,7 @@ impl<Signer: Sign, K: Deref, L: Deref, CMH: Deref> OnionMessenger<Signer, K, L, 
 			}
 		};
 		let (packet_payloads, packet_keys) = packet_payloads_and_keys(
-			&self.secp_ctx, intermediate_nodes, destination, reply_path, &blinding_secret)
+			&self.secp_ctx, intermediate_nodes, destination, message, reply_path, &blinding_secret)
 			.map_err(|e| SendError::Secp256k1(e))?;
 
 		let prng_seed = self.keys_manager.get_secure_random_bytes();
@@ -306,12 +306,15 @@ impl<Signer: Sign, K: Deref, L: Deref, CMH: Deref> OnionMessageHandler for Onion
 		match onion_utils::decode_next_hop(onion_decode_ss, &msg.onion_routing_packet.hop_data[..],
 			msg.onion_routing_packet.hmac, control_tlvs_ss)
 		{
-			Ok((Payload::Receive {
-				control_tlvs: ReceiveControlTlvs::Unblinded(ReceiveTlvs { path_id }), reply_path,
+			Ok((Payload::Receive::<<<CMH as Deref>::Target as CustomOnionMessageHandler>::CustomMessage> {
+				message, control_tlvs: ReceiveControlTlvs::Unblinded(ReceiveTlvs { path_id }), reply_path,
 			}, None)) => {
 				log_info!(self.logger,
 					"Received an onion message with path_id {:02x?} and {} reply_path",
 						path_id, if reply_path.is_some() { "a" } else { "no" });
+				match message {
+					OnionMessageContents::Custom(msg) => self.custom_handler.handle_custom_message(msg),
+				}
 			},
 			Ok((Payload::Forward(ForwardControlTlvs::Unblinded(ForwardTlvs {
 				next_node_id, next_blinding_override
@@ -447,10 +450,10 @@ pub type SimpleRefOnionMessenger<'a, 'b, L> = OnionMessenger<InMemorySigner, &'a
 
 /// Construct onion packet payloads and keys for sending an onion message along the given
 /// `unblinded_path` to the given `destination`.
-fn packet_payloads_and_keys<T: secp256k1::Signing + secp256k1::Verification>(
-	secp_ctx: &Secp256k1<T>, unblinded_path: &[PublicKey], destination: Destination, mut reply_path:
-	Option<BlindedRoute>, session_priv: &SecretKey
-) -> Result<(Vec<(Payload, [u8; 32])>, Vec<onion_utils::OnionKeys>), secp256k1::Error> {
+fn packet_payloads_and_keys<T: CustomOnionMessageContents, S: secp256k1::Signing + secp256k1::Verification>(
+	secp_ctx: &Secp256k1<S>, unblinded_path: &[PublicKey], destination: Destination,
+	message: OnionMessageContents<T>, mut reply_path: Option<BlindedRoute>, session_priv: &SecretKey
+) -> Result<(Vec<(Payload<T>, [u8; 32])>, Vec<onion_utils::OnionKeys>), secp256k1::Error> {
 	let num_hops = unblinded_path.len() + destination.num_hops();
 	let mut payloads = Vec::with_capacity(num_hops);
 	let mut onion_packet_keys = Vec::with_capacity(num_hops);
@@ -463,6 +466,7 @@ fn packet_payloads_and_keys<T: secp256k1::Signing + secp256k1::Verification>(
 	let mut unblinded_path_idx = 0;
 	let mut blinded_path_idx = 0;
 	let mut prev_control_tlvs_ss = None;
+	let mut final_control_tlvs = None;
 	utils::construct_keys_callback(secp_ctx, unblinded_path, Some(destination), session_priv, |_, onion_packet_ss, ephemeral_pubkey, control_tlvs_ss, unblinded_pk_opt, enc_payload_opt| {
 		if num_unblinded_hops != 0 && unblinded_path_idx < num_unblinded_hops {
 			if let Some(ss) = prev_control_tlvs_ss.take() {
@@ -492,10 +496,8 @@ fn packet_payloads_and_keys<T: secp256k1::Signing + secp256k1::Verification>(
 				control_tlvs_ss));
 			blinded_path_idx += 1;
 		} else if let Some(encrypted_payload) = enc_payload_opt {
-			payloads.push((Payload::Receive {
-				control_tlvs: ReceiveControlTlvs::Blinded(encrypted_payload),
-				reply_path: reply_path.take(),
-			}, control_tlvs_ss));
+			final_control_tlvs = Some(ReceiveControlTlvs::Blinded(encrypted_payload));
+			prev_control_tlvs_ss = Some(control_tlvs_ss);
 		}
 
 		let (rho, mu) = onion_utils::gen_rho_mu_from_shared_secret(onion_packet_ss.as_ref());
@@ -510,18 +512,25 @@ fn packet_payloads_and_keys<T: secp256k1::Signing + secp256k1::Verification>(
 		});
 	})?;
 
-	if let Some(control_tlvs_ss) = prev_control_tlvs_ss {
+	if let Some(control_tlvs) = final_control_tlvs {
+		payloads.push((Payload::Receive {
+			control_tlvs,
+			reply_path: reply_path.take(),
+			message,
+		}, prev_control_tlvs_ss.unwrap()));
+	} else {
 		payloads.push((Payload::Receive {
 			control_tlvs: ReceiveControlTlvs::Unblinded(ReceiveTlvs { path_id: None, }),
 			reply_path: reply_path.take(),
-		}, control_tlvs_ss));
+			message,
+		}, prev_control_tlvs_ss.unwrap()));
 	}
 
 	Ok((payloads, onion_packet_keys))
 }
 
 /// Errors if the serialized payload size exceeds onion_message::BIG_PACKET_HOP_DATA_LEN
-fn construct_onion_message_packet(payloads: Vec<(Payload, [u8; 32])>, onion_keys: Vec<onion_utils::OnionKeys>, prng_seed: [u8; 32]) -> Result<Packet, ()> {
+fn construct_onion_message_packet<T: CustomOnionMessageContents>(payloads: Vec<(Payload<T>, [u8; 32])>, onion_keys: Vec<onion_utils::OnionKeys>, prng_seed: [u8; 32]) -> Result<Packet, ()> {
 	// Spec rationale:
 	// "`len` allows larger messages to be sent than the standard 1300 bytes allowed for an HTLC
 	// onion, but this should be used sparingly as it is reduces anonymity set, hence the

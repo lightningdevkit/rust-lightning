@@ -92,15 +92,14 @@ impl LengthReadable for Packet {
 /// Onion message payloads contain "control" TLVs and "data" TLVs. Control TLVs are used to route
 /// the onion message from hop to hop and for path verification, whereas data TLVs contain the onion
 /// message content itself, such as an invoice request.
-pub(super) enum Payload {
+pub(super) enum Payload<T: CustomOnionMessageContents> {
 	/// This payload is for an intermediate hop.
 	Forward(ForwardControlTlvs),
 	/// This payload is for the final hop.
 	Receive {
 		control_tlvs: ReceiveControlTlvs,
 		reply_path: Option<BlindedRoute>,
-		// Coming soon:
-		// message: Message,
+		message: OnionMessageContents<T>,
 	}
 }
 
@@ -160,7 +159,7 @@ pub(super) enum ReceiveControlTlvs {
 }
 
 // Uses the provided secret to simultaneously encode and encrypt the unblinded control TLVs.
-impl Writeable for (Payload, [u8; 32]) {
+impl<T: CustomOnionMessageContents> Writeable for (Payload<T>, [u8; 32]) {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		match &self.0 {
 			Payload::Forward(ForwardControlTlvs::Blinded(encrypted_bytes)) => {
@@ -169,11 +168,12 @@ impl Writeable for (Payload, [u8; 32]) {
 				})
 			},
 			Payload::Receive {
-				control_tlvs: ReceiveControlTlvs::Blinded(encrypted_bytes), reply_path
+				control_tlvs: ReceiveControlTlvs::Blinded(encrypted_bytes), reply_path, message,
 			} => {
 				encode_varint_length_prefixed_tlv!(w, {
 					(2, reply_path, option),
-					(4, encrypted_bytes, vec_type)
+					(4, encrypted_bytes, vec_type),
+					(message.tlv_type(), message, required)
 				})
 			},
 			Payload::Forward(ForwardControlTlvs::Unblinded(control_tlvs)) => {
@@ -183,12 +183,13 @@ impl Writeable for (Payload, [u8; 32]) {
 				})
 			},
 			Payload::Receive {
-				control_tlvs: ReceiveControlTlvs::Unblinded(control_tlvs), reply_path,
+				control_tlvs: ReceiveControlTlvs::Unblinded(control_tlvs), reply_path, message,
 			} => {
 				let write_adapter = ChaChaPolyWriteAdapter::new(self.1, &control_tlvs);
 				encode_varint_length_prefixed_tlv!(w, {
 					(2, reply_path, option),
-					(4, write_adapter, required)
+					(4, write_adapter, required),
+					(message.tlv_type(), message, required)
 				})
 			},
 		}
@@ -196,28 +197,52 @@ impl Writeable for (Payload, [u8; 32]) {
 	}
 }
 
-// Uses the provided secret to simultaneously decode and decrypt the control TLVs.
-impl ReadableArgs<SharedSecret> for Payload {
+// Uses the provided secret to simultaneously decode and decrypt the control TLVs and data TLV.
+impl<T: CustomOnionMessageContents> ReadableArgs<SharedSecret> for Payload<T> {
 	fn read<R: Read>(r: &mut R, encrypted_tlvs_ss: SharedSecret) -> Result<Self, DecodeError> {
 		let v: BigSize = Readable::read(r)?;
 		let mut rd = FixedLengthReader::new(r, v.0);
 		let mut reply_path: Option<BlindedRoute> = None;
 		let mut read_adapter: Option<ChaChaPolyReadAdapter<ControlTlvs>> = None;
 		let rho = onion_utils::gen_rho_from_shared_secret(&encrypted_tlvs_ss.secret_bytes());
+		let mut message_type: Option<u64> = None;
+		let mut message = None;
 		decode_tlv_stream!(&mut rd, {
 			(2, reply_path, option),
-			(4, read_adapter, (option: LengthReadableArgs, rho))
+			(4, read_adapter, (option: LengthReadableArgs, rho)),
+		}, |msg_type, msg_reader| {
+			if msg_type < 64 { return Ok(false) }
+			// Don't allow reading more than one data TLV from an onion message.
+			if message_type.is_some() { return Err(DecodeError::InvalidValue) }
+
+			message_type = Some(msg_type);
+			match T::read(msg_reader, msg_type) {
+				Ok(Some(msg)) => {
+					message = Some(msg);
+					Ok(true)
+				},
+				Ok(None) => Ok(false),
+				Err(e) => Err(e),
+			}
 		});
 		rd.eat_remaining().map_err(|_| DecodeError::ShortRead)?;
 
 		match read_adapter {
 			None => return Err(DecodeError::InvalidValue),
 			Some(ChaChaPolyReadAdapter { readable: ControlTlvs::Forward(tlvs)}) => {
+				if message_type.is_some() {
+					return Err(DecodeError::InvalidValue)
+				}
 				Ok(Payload::Forward(ForwardControlTlvs::Unblinded(tlvs)))
 			},
 			Some(ChaChaPolyReadAdapter { readable: ControlTlvs::Receive(tlvs)}) => {
-				Ok(Payload::Receive { control_tlvs: ReceiveControlTlvs::Unblinded(tlvs), reply_path })
-			},
+				if message.is_none() { return Err(DecodeError::InvalidValue) }
+				Ok(Payload::Receive {
+					control_tlvs: ReceiveControlTlvs::Unblinded(tlvs),
+					reply_path,
+					message: OnionMessageContents::Custom(message.unwrap()),
+				})
+			}
 		}
 	}
 }
