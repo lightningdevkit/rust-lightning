@@ -112,11 +112,19 @@ pub enum ClosureReason {
 	/// The peer disconnected prior to funding completing. In this case the spec mandates that we
 	/// forget the channel entirely - we can attempt again if the peer reconnects.
 	///
+	/// This includes cases where we restarted prior to funding completion, including prior to the
+	/// initial [`ChannelMonitor`] persistence completing.
+	///
 	/// In LDK versions prior to 0.0.107 this could also occur if we were unable to connect to the
 	/// peer because of mutual incompatibility between us and our channel counterparty.
+	///
+	/// [`ChannelMonitor`]: crate::chain::channelmonitor::ChannelMonitor
 	DisconnectedPeer,
-	/// Closure generated from `ChannelManager::read` if the ChannelMonitor is newer than
-	/// the ChannelManager deserialized.
+	/// Closure generated from `ChannelManager::read` if the [`ChannelMonitor`] is newer than
+	/// the [`ChannelManager`] deserialized.
+	///
+	/// [`ChannelMonitor`]: crate::chain::channelmonitor::ChannelMonitor
+	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 	OutdatedChannelManager
 }
 

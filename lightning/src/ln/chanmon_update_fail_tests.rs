@@ -2238,11 +2238,12 @@ fn do_channel_holding_cell_serialize(disconnect: bool, reload_a: bool) {
 	let (route, payment_hash_1, payment_preimage_1, payment_secret_1) = get_route_and_payment_hash!(&nodes[0], nodes[1], 100000);
 	let (payment_preimage_2, payment_hash_2, payment_secret_2) = get_payment_preimage_hash!(&nodes[1]);
 
-	// Do a really complicated dance to get an HTLC into the holding cell, with MonitorUpdateFailed
-	// set but AwaitingRemoteRevoke unset. When this test was written, any attempts to send an HTLC
-	// while MonitorUpdateFailed is set are immediately failed-backwards. Thus, the only way to get
-	// an AddHTLC into the holding cell is to add it while AwaitingRemoteRevoke is set but
-	// MonitorUpdateFailed is unset, and then swap the flags.
+	// Do a really complicated dance to get an HTLC into the holding cell, with
+	// MonitorUpdateInProgress set but AwaitingRemoteRevoke unset. When this test was written, any
+	// attempts to send an HTLC while MonitorUpdateInProgress is set are immediately
+	// failed-backwards. Thus, the only way to get an AddHTLC into the holding cell is to add it
+	// while AwaitingRemoteRevoke is set but MonitorUpdateInProgress is unset, and then swap the
+	// flags.
 	//
 	// We do this by:
 	//  a) routing a payment from node B to node A,
@@ -2255,8 +2256,8 @@ fn do_channel_holding_cell_serialize(disconnect: bool, reload_a: bool) {
 	//  e) delivering A's commitment_signed from (b) and the resulting B revoke_and_ack message,
 	//     clearing AwaitingRemoteRevoke on node A.
 	//
-	// Note that because, at the end, MonitorUpdateFailed is still set, the HTLC generated in (c)
-	// will not be freed from the holding cell.
+	// Note that because, at the end, MonitorUpdateInProgress is still set, the HTLC generated in
+	// (c) will not be freed from the holding cell.
 	let (payment_preimage_0, payment_hash_0, _) = route_payment(&nodes[1], &[&nodes[0]], 100_000);
 
 	nodes[0].node.send_payment(&route, payment_hash_1, &Some(payment_secret_1)).unwrap();
@@ -2744,4 +2745,222 @@ fn double_temp_error() {
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 	commitment_signed_dance!(nodes[0], nodes[1], commitment_signed_b2, false);
 	expect_payment_sent!(nodes[0], payment_preimage_2);
+}
+
+fn do_test_outbound_reload_without_init_mon(use_0conf: bool) {
+	// Test that if the monitor update generated in funding_signed is stored async and we restart
+	// with the latest ChannelManager but the ChannelMonitor persistence never completed we happily
+	// drop the channel and move on.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+
+	let persister: test_utils::TestPersister;
+	let new_chain_monitor: test_utils::TestChainMonitor;
+	let nodes_0_deserialized: ChannelManager<EnforcingSigner, &test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>;
+
+	let mut chan_config = test_default_channel_config();
+	chan_config.manually_accept_inbound_channels = true;
+	chan_config.channel_handshake_limits.trust_own_funding_0conf = true;
+
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(chan_config), Some(chan_config)]);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100000, 10001, 43, None).unwrap();
+	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), channelmanager::provided_init_features(), &get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id()));
+
+	let events = nodes[1].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	match events[0] {
+		Event::OpenChannelRequest { temporary_channel_id, .. } => {
+			if use_0conf {
+				nodes[1].node.accept_inbound_channel_from_trusted_peer_0conf(&temporary_channel_id, &nodes[0].node.get_our_node_id(), 0).unwrap();
+			} else {
+				nodes[1].node.accept_inbound_channel(&temporary_channel_id, &nodes[0].node.get_our_node_id(), 0).unwrap();
+			}
+		},
+		_ => panic!("Unexpected event"),
+	};
+
+	nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), channelmanager::provided_init_features(), &get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id()));
+
+	let (temporary_channel_id, funding_tx, ..) = create_funding_transaction(&nodes[0], &nodes[1].node.get_our_node_id(), 100000, 43);
+
+	nodes[0].node.funding_transaction_generated(&temporary_channel_id, &nodes[1].node.get_our_node_id(), funding_tx.clone()).unwrap();
+	check_added_monitors!(nodes[0], 0);
+
+	let funding_created_msg = get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, nodes[1].node.get_our_node_id());
+	nodes[1].node.handle_funding_created(&nodes[0].node.get_our_node_id(), &funding_created_msg);
+	check_added_monitors!(nodes[1], 1);
+
+	let bs_signed_locked = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(bs_signed_locked.len(), if use_0conf { 2 } else { 1 });
+	match &bs_signed_locked[0] {
+		MessageSendEvent::SendFundingSigned { msg, .. } => {
+			chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
+
+			nodes[0].node.handle_funding_signed(&nodes[1].node.get_our_node_id(), &msg);
+			check_added_monitors!(nodes[0], 1);
+		}
+		_ => panic!("Unexpected event"),
+	}
+	if use_0conf {
+		match &bs_signed_locked[1] {
+			MessageSendEvent::SendChannelReady { msg, .. } => {
+				nodes[0].node.handle_channel_ready(&nodes[1].node.get_our_node_id(), &msg);
+			}
+			_ => panic!("Unexpected event"),
+		}
+	}
+
+	assert!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().is_empty());
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+	assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
+
+	// nodes[0] is now waiting on the first ChannelMonitor persistence to complete in order to
+	// broadcast the funding transaction. If nodes[0] restarts at this point with the
+	// ChannelMonitor lost, we should simply discard the channel.
+
+	// The test framework checks that watched_txn/outputs match the monitor set, which they will
+	// not, so we have to clear them here.
+	nodes[0].chain_source.watched_txn.lock().unwrap().clear();
+	nodes[0].chain_source.watched_outputs.lock().unwrap().clear();
+
+	let nodes_0_serialized = nodes[0].node.encode();
+	persister = test_utils::TestPersister::new();
+	let keys_manager = &chanmon_cfgs[0].keys_manager;
+	new_chain_monitor = test_utils::TestChainMonitor::new(Some(nodes[0].chain_source), nodes[0].tx_broadcaster.clone(), nodes[0].logger, node_cfgs[0].fee_estimator, &persister, keys_manager);
+	nodes[0].chain_monitor = &new_chain_monitor;
+
+	let mut nodes_0_read = &nodes_0_serialized[..];
+	let config = UserConfig::default();
+	nodes_0_deserialized = {
+		<(BlockHash, ChannelManager<EnforcingSigner, &test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>)>::read(&mut nodes_0_read, ChannelManagerReadArgs {
+			default_config: config,
+			keys_manager,
+			fee_estimator: node_cfgs[0].fee_estimator,
+			chain_monitor: nodes[0].chain_monitor,
+			tx_broadcaster: nodes[0].tx_broadcaster.clone(),
+			logger: nodes[0].logger,
+			channel_monitors: HashMap::new(),
+		}).unwrap().1
+	};
+	nodes[0].node = &nodes_0_deserialized;
+	assert!(nodes_0_read.is_empty());
+
+	check_closed_event!(nodes[0], 1, ClosureReason::DisconnectedPeer);
+	assert!(nodes[0].node.list_channels().is_empty());
+}
+
+#[test]
+fn test_outbound_reload_without_init_mon() {
+	do_test_outbound_reload_without_init_mon(true);
+	do_test_outbound_reload_without_init_mon(false);
+}
+
+fn do_test_inbound_reload_without_init_mon(use_0conf: bool, lock_commitment: bool) {
+	// Test that if the monitor update generated by funding_transaction_generated is stored async
+	// and we restart with the latest ChannelManager but the ChannelMonitor persistence never
+	// completed we happily drop the channel and move on.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+
+	let persister: test_utils::TestPersister;
+	let new_chain_monitor: test_utils::TestChainMonitor;
+	let nodes_1_deserialized: ChannelManager<EnforcingSigner, &test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>;
+
+	let mut chan_config = test_default_channel_config();
+	chan_config.manually_accept_inbound_channels = true;
+	chan_config.channel_handshake_limits.trust_own_funding_0conf = true;
+
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(chan_config), Some(chan_config)]);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100000, 10001, 43, None).unwrap();
+	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), channelmanager::provided_init_features(), &get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id()));
+
+	let events = nodes[1].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	match events[0] {
+		Event::OpenChannelRequest { temporary_channel_id, .. } => {
+			if use_0conf {
+				nodes[1].node.accept_inbound_channel_from_trusted_peer_0conf(&temporary_channel_id, &nodes[0].node.get_our_node_id(), 0).unwrap();
+			} else {
+				nodes[1].node.accept_inbound_channel(&temporary_channel_id, &nodes[0].node.get_our_node_id(), 0).unwrap();
+			}
+		},
+		_ => panic!("Unexpected event"),
+	};
+
+	nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), channelmanager::provided_init_features(), &get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id()));
+
+	let (temporary_channel_id, funding_tx, ..) = create_funding_transaction(&nodes[0], &nodes[1].node.get_our_node_id(), 100000, 43);
+
+	nodes[0].node.funding_transaction_generated(&temporary_channel_id, &nodes[1].node.get_our_node_id(), funding_tx.clone()).unwrap();
+	check_added_monitors!(nodes[0], 0);
+
+	let funding_created_msg = get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, nodes[1].node.get_our_node_id());
+	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
+	nodes[1].node.handle_funding_created(&nodes[0].node.get_our_node_id(), &funding_created_msg);
+	check_added_monitors!(nodes[1], 1);
+
+	// nodes[1] happily sends its funding_signed even though its awaiting the persistence of the
+	// initial ChannelMonitor, but it will decline to send its channel_ready even if the funding
+	// transaction is confirmed.
+	let funding_signed_msg = get_event_msg!(nodes[1], MessageSendEvent::SendFundingSigned, nodes[0].node.get_our_node_id());
+
+	nodes[0].node.handle_funding_signed(&nodes[1].node.get_our_node_id(), &funding_signed_msg);
+	check_added_monitors!(nodes[0], 1);
+
+	let as_funding_tx = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
+	if lock_commitment {
+		confirm_transaction(&nodes[0], &as_funding_tx[0]);
+		confirm_transaction(&nodes[1], &as_funding_tx[0]);
+	}
+	if use_0conf || lock_commitment {
+		let as_ready = get_event_msg!(nodes[0], MessageSendEvent::SendChannelReady, nodes[1].node.get_our_node_id());
+		nodes[1].node.handle_channel_ready(&nodes[0].node.get_our_node_id(), &as_ready);
+	}
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+
+	// nodes[1] is now waiting on the first ChannelMonitor persistence to complete in order to
+	// move the channel to ready (or is waiting on the funding transaction to confirm). If nodes[1]
+	// restarts at this point with the ChannelMonitor lost, we should simply discard the channel.
+
+	// The test framework checks that watched_txn/outputs match the monitor set, which they will
+	// not, so we have to clear them here.
+	nodes[1].chain_source.watched_txn.lock().unwrap().clear();
+	nodes[1].chain_source.watched_outputs.lock().unwrap().clear();
+
+	let nodes_1_serialized = nodes[1].node.encode();
+	persister = test_utils::TestPersister::new();
+	let keys_manager = &chanmon_cfgs[1].keys_manager;
+	new_chain_monitor = test_utils::TestChainMonitor::new(Some(nodes[1].chain_source), nodes[1].tx_broadcaster.clone(), nodes[1].logger, node_cfgs[1].fee_estimator, &persister, keys_manager);
+	nodes[1].chain_monitor = &new_chain_monitor;
+
+	let mut nodes_1_read = &nodes_1_serialized[..];
+	let config = UserConfig::default();
+	nodes_1_deserialized = {
+		<(BlockHash, ChannelManager<EnforcingSigner, &test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>)>::read(&mut nodes_1_read, ChannelManagerReadArgs {
+			default_config: config,
+			keys_manager,
+			fee_estimator: node_cfgs[1].fee_estimator,
+			chain_monitor: nodes[1].chain_monitor,
+			tx_broadcaster: nodes[1].tx_broadcaster.clone(),
+			logger: nodes[1].logger,
+			channel_monitors: HashMap::new(),
+		}).unwrap().1
+	};
+	nodes[1].node = &nodes_1_deserialized;
+	assert!(nodes_1_read.is_empty());
+
+	check_closed_event!(nodes[1], 1, ClosureReason::DisconnectedPeer);
+	assert!(nodes[1].node.list_channels().is_empty());
+}
+
+#[test]
+fn test_inbound_reload_without_init_mon() {
+	do_test_inbound_reload_without_init_mon(true, true);
+	do_test_inbound_reload_without_init_mon(true, false);
+	do_test_inbound_reload_without_init_mon(false, true);
+	do_test_inbound_reload_without_init_mon(false, false);
 }
