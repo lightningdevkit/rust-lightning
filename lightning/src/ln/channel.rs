@@ -1676,7 +1676,7 @@ impl<Signer: Sign> Channel<Signer> {
 		1 +                                            // witness element count
 		4 +                                            // 4 element lengths (2 sigs, multisig dummy, and witness script)
 		self.get_funding_redeemscript().len() as u64 + // funding witness script
-		2*(1 + 71);                                    // two signatures + sighash type flags
+		2*(1 + 72);                                    // two signatures max length + sighash type flags
 		if let Some(spk) = a_scriptpubkey {
 			ret += ((8+1) +                            // output values and script length
 				spk.len() as u64) * 4;                 // scriptpubkey and witness multiplier
