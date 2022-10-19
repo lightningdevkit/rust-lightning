@@ -36,6 +36,7 @@ use util::crypto::{hkdf_extract_expand_twice, sign};
 use util::ser::{Writeable, Writer, Readable, ReadableArgs};
 
 use chain::transaction::OutPoint;
+use ln::channel::ANCHOR_OUTPUT_VALUE_SATOSHI;
 use ln::{chan_utils, PaymentPreimage};
 use ln::chan_utils::{HTLCOutputInCommitment, make_funding_redeemscript, ChannelPublicKeys, HolderCommitmentTransaction, ChannelTransactionParameters, CommitmentTransaction, ClosingTransaction};
 use ln::msgs::UnsignedChannelAnnouncement;
@@ -348,6 +349,12 @@ pub trait BaseSign {
 	/// chosen to forgo their output as dust.
 	fn sign_closing_transaction(&self, closing_tx: &ClosingTransaction, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()>;
 
+	/// Computes the signature for a commitment transaction's anchor output used as an
+	/// input within `anchor_tx`, which spends the commitment transaction, at index `input`.
+	fn sign_holder_anchor_input(
+		&self, anchor_tx: &mut Transaction, input: usize, secp_ctx: &Secp256k1<secp256k1::All>,
+	) -> Result<Signature, ()>;
+
 	/// Signs a channel announcement message with our funding key and our node secret key (aka
 	/// node_id or network_key), proving it comes from one of the channel participants.
 	///
@@ -645,6 +652,7 @@ impl InMemorySigner {
 		witness.push(witness_script.clone().into_bytes());
 		Ok(witness)
 	}
+
 }
 
 impl BaseSign for InMemorySigner {
@@ -760,6 +768,16 @@ impl BaseSign for InMemorySigner {
 		let funding_pubkey = PublicKey::from_secret_key(secp_ctx, &self.funding_key);
 		let channel_funding_redeemscript = make_funding_redeemscript(&funding_pubkey, &self.counterparty_pubkeys().funding_pubkey);
 		Ok(closing_tx.trust().sign(&self.funding_key, &channel_funding_redeemscript, self.channel_value_satoshis, secp_ctx))
+	}
+
+	fn sign_holder_anchor_input(
+		&self, anchor_tx: &mut Transaction, input: usize, secp_ctx: &Secp256k1<secp256k1::All>,
+	) -> Result<Signature, ()> {
+		let witness_script = chan_utils::get_anchor_redeemscript(&self.holder_channel_pubkeys.funding_pubkey);
+		let sighash = sighash::SighashCache::new(&*anchor_tx).segwit_signature_hash(
+			input, &witness_script, ANCHOR_OUTPUT_VALUE_SATOSHI, EcdsaSighashType::All,
+		).unwrap();
+		Ok(sign(secp_ctx, &hash_to_message!(&sighash[..]), &self.funding_key))
 	}
 
 	fn sign_channel_announcement(&self, msg: &UnsignedChannelAnnouncement, secp_ctx: &Secp256k1<secp256k1::All>)

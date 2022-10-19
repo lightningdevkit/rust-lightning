@@ -526,8 +526,8 @@ pub fn get_revokeable_redeemscript(revocation_key: &PublicKey, contest_delay: u1
 	res
 }
 
-#[derive(Clone, PartialEq, Eq)]
 /// Information about an HTLC as it appears in a commitment transaction
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HTLCOutputInCommitment {
 	/// Whether the HTLC was "offered" (ie outbound in relation to this commitment transaction).
 	/// Note that this is not the same as whether it is ountbound *from us*. To determine that you
@@ -725,6 +725,23 @@ pub fn get_anchor_redeemscript(funding_pubkey: &PublicKey) -> Script {
 		.push_opcode(opcodes::all::OP_CSV)
 		.push_opcode(opcodes::all::OP_ENDIF)
 		.into_script()
+}
+
+#[cfg(anchors)]
+/// Locates the output with an anchor script paying to `funding_pubkey` within `commitment_tx`.
+pub(crate) fn get_anchor_output<'a>(commitment_tx: &'a Transaction, funding_pubkey: &PublicKey) -> Option<(u32, &'a TxOut)> {
+	let anchor_script = chan_utils::get_anchor_redeemscript(funding_pubkey).to_v0_p2wsh();
+	commitment_tx.output.iter().enumerate()
+		.find(|(_, txout)| txout.script_pubkey == anchor_script)
+		.map(|(idx, txout)| (idx as u32, txout))
+}
+
+/// Returns the witness required to satisfy and spend an anchor input.
+pub fn build_anchor_input_witness(funding_key: &PublicKey, funding_sig: &Signature) -> Witness {
+	let anchor_redeem_script = chan_utils::get_anchor_redeemscript(funding_key);
+	let mut funding_sig = funding_sig.serialize_der().to_vec();
+	funding_sig.push(EcdsaSighashType::All as u8);
+	Witness::from_vec(vec![funding_sig, anchor_redeem_script.to_bytes()])
 }
 
 /// Per-channel data used to build transactions in conjunction with the per-commitment data (CommitmentTransaction).

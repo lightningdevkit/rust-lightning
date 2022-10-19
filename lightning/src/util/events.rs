@@ -15,6 +15,7 @@
 //! few other things.
 
 use chain::keysinterface::SpendableOutputDescriptor;
+use ln::chan_utils::HTLCOutputInCommitment;
 use ln::channelmanager::PaymentId;
 use ln::channel::FUNDING_CONF_DEADLINE_BLOCKS;
 use ln::features::ChannelTypeFeatures;
@@ -25,7 +26,7 @@ use routing::gossip::NetworkUpdate;
 use util::ser::{BigSize, FixedLengthReader, Writeable, Writer, MaybeReadable, Readable, VecReadWrapper, VecWriteWrapper};
 use routing::router::{RouteHop, RouteParameters};
 
-use bitcoin::{PackedLockTime, Transaction};
+use bitcoin::{PackedLockTime, Transaction, OutPoint};
 use bitcoin::blockdata::script::Script;
 use bitcoin::hashes::Hash;
 use bitcoin::hashes::sha256::Hash as Sha256;
@@ -195,6 +196,84 @@ impl_writeable_tlv_based_enum_upgradable!(HTLCDestination,
 		(0, payment_hash, required),
 	}
 );
+
+/// A descriptor used to sign for a commitment transaction's anchor output.
+#[derive(Clone, Debug)]
+pub struct AnchorDescriptor {
+	/// A unique identifier used along with `channel_value_satoshis` to re-derive the
+	/// [`InMemorySigner`] required to sign `input`.
+	///
+	/// [`InMemorySigner`]: crate::chain::keysinterface::InMemorySigner
+	pub channel_keys_id: [u8; 32],
+	/// The value in satoshis of the channel we're attempting to spend the anchor output of. This is
+	/// used along with `channel_keys_id` to re-derive the [`InMemorySigner`] required to sign
+	/// `input`.
+	///
+	/// [`InMemorySigner`]: crate::chain::keysinterface::InMemorySigner
+	pub channel_value_satoshis: u64,
+	/// The transaction input's outpoint corresponding to the commitment transaction's anchor
+	/// output.
+	pub outpoint: OutPoint,
+}
+
+/// Represents the different types of transactions, originating from LDK, to be bumped.
+#[derive(Clone, Debug)]
+pub enum BumpTransactionEvent {
+	/// Indicates that a channel featuring anchor outputs is to be closed by broadcasting the local
+	/// commitment transaction. Since commitment transactions have a static feerate pre-agreed upon,
+	/// they may need additional fees to be attached through a child transaction using the popular
+	/// [Child-Pays-For-Parent](https://bitcoinops.org/en/topics/cpfp) fee bumping technique. This
+	/// child transaction must include the anchor input described within `anchor_descriptor` along
+	/// with additional inputs to meet the target feerate. Failure to meet the target feerate
+	/// decreases the confirmation odds of the transaction package (which includes the commitment
+	/// and child anchor transactions), possibly resulting in a loss of funds. Once the transaction
+	/// is constructed, it must be fully signed for and broadcasted by the consumer of the event
+	/// along with the `commitment_tx` enclosed. Note that the `commitment_tx` must always be
+	/// broadcast first, as the child anchor transaction depends on it.
+	///
+	/// The consumer should be able to sign for any of the additional inputs included within the
+	/// child anchor transaction. To sign its anchor input, an [`InMemorySigner`] should be
+	/// re-derived through [`KeysManager::derive_channel_keys`] with the help of
+	/// [`AnchorDescriptor::channel_keys_id`] and [`AnchorDescriptor::channel_value_satoshis`].
+	///
+	/// It is possible to receive more than one instance of this event if a valid child anchor
+	/// transaction is never broadcast or is but not with a sufficient fee to be mined. Care should
+	/// be taken by the consumer of the event to ensure any future iterations of the child anchor
+	/// transaction adhere to the [Replace-By-Fee
+	/// rules](https://github.com/bitcoin/bitcoin/blob/master/doc/policy/mempool-replacements.md)
+	/// for fee bumps to be accepted into the mempool, and eventually the chain. As the frequency of
+	/// these events is not user-controlled, users may ignore/drop the event if they are no longer
+	/// able to commit external confirmed funds to the child anchor transaction.
+	///
+	/// The set of `pending_htlcs` on the commitment transaction to be broadcast can be inspected to
+	/// determine whether a significant portion of the channel's funds are allocated to HTLCs,
+	/// enabling users to make their own decisions regarding the importance of the commitment
+	/// transaction's confirmation. Note that this is not required, but simply exists as an option
+	/// for users to override LDK's behavior. On commitments with no HTLCs (indicated by those with
+	/// an empty `pending_htlcs`), confirmation of the commitment transaction can be considered to
+	/// be not urgent.
+	///
+	/// [`InMemorySigner`]: crate::chain::keysinterface::InMemorySigner
+	/// [`KeysManager::derive_channel_keys`]: crate::chain::keysinterface::KeysManager::derive_channel_keys
+	ChannelClose {
+		/// The target feerate that the transaction package, which consists of the commitment
+		/// transaction and the to-be-crafted child anchor transaction, must meet.
+		package_target_feerate_sat_per_1000_weight: u32,
+		/// The channel's commitment transaction to bump the fee of. This transaction should be
+		/// broadcast along with the anchor transaction constructed as a result of consuming this
+		/// event.
+		commitment_tx: Transaction,
+		/// The absolute fee in satoshis of the commitment transaction. This can be used along the
+		/// with weight of the commitment transaction to determine its feerate.
+		commitment_tx_fee_satoshis: u64,
+		/// The descriptor to sign the anchor input of the anchor transaction constructed as a
+		/// result of consuming this event.
+		anchor_descriptor: AnchorDescriptor,
+		/// The set of pending HTLCs on the commitment transaction that need to be resolved once the
+		/// commitment transaction confirms.
+		pending_htlcs: Vec<HTLCOutputInCommitment>,
+	},
+}
 
 /// An Event which you should probably take some action in response to.
 ///
@@ -602,6 +681,13 @@ pub enum Event {
 		/// Destination of the HTLC that failed to be processed.
 		failed_next_destination: HTLCDestination,
 	},
+	#[cfg(anchors)]
+	/// Indicates that a transaction originating from LDK needs to have its fee bumped. This event
+	/// requires confirmed external funds to be readily available to spend.
+	///
+	/// LDK does not currently generate this event. It is limited to the scope of channels with
+	/// anchor outputs, which will be introduced in a future release.
+	BumpTransaction(BumpTransactionEvent),
 }
 
 impl Writeable for Event {
@@ -753,6 +839,15 @@ impl Writeable for Event {
 					(2, failed_next_destination, required),
 				})
 			},
+			#[cfg(anchors)]
+			&Event::BumpTransaction(ref event)=> {
+				27u8.write(writer)?;
+				match event {
+					// We never write the ChannelClose events as they'll be replayed upon restarting
+					// anyway if the commitment transaction remains unconfirmed.
+					BumpTransactionEvent::ChannelClose { .. } => {}
+				}
+			}
 			// Note that, going forward, all new events must only write data inside of
 			// `write_tlv_fields`. Versions 0.0.101+ will ignore odd-numbered events that write
 			// data via `write_tlv_fields`.

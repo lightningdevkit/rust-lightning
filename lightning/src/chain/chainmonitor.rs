@@ -707,12 +707,36 @@ impl<ChannelSigner: Sign, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref> even
 	      L::Target: Logger,
 	      P::Target: Persist<ChannelSigner>,
 {
+	#[cfg(not(anchors))]
 	/// Processes [`SpendableOutputs`] events produced from each [`ChannelMonitor`] upon maturity.
 	///
 	/// An [`EventHandler`] may safely call back to the provider, though this shouldn't be needed in
 	/// order to handle these events.
 	///
 	/// [`SpendableOutputs`]: events::Event::SpendableOutputs
+	fn process_pending_events<H: Deref>(&self, handler: H) where H::Target: EventHandler {
+		let mut pending_events = Vec::new();
+		for monitor_state in self.monitors.read().unwrap().values() {
+			pending_events.append(&mut monitor_state.monitor.get_and_clear_pending_events());
+		}
+		for event in pending_events.drain(..) {
+			handler.handle_event(&event);
+		}
+	}
+	#[cfg(anchors)]
+	/// Processes [`SpendableOutputs`] events produced from each [`ChannelMonitor`] upon maturity.
+	///
+	/// For channels featuring anchor outputs, this method will also process [`BumpTransaction`]
+	/// events produced from each [`ChannelMonitor`] while there is a balance to claim onchain
+	/// within each channel. As the confirmation of a commitment transaction may be critical to the
+	/// safety of funds, this method must be invoked frequently, ideally once for every chain tip
+	/// update (block connected or disconnected).
+	///
+	/// An [`EventHandler`] may safely call back to the provider, though this shouldn't be needed in
+	/// order to handle these events.
+	///
+	/// [`SpendableOutputs`]: events::Event::SpendableOutputs
+	/// [`BumpTransaction`]: events::Event::BumpTransaction
 	fn process_pending_events<H: Deref>(&self, handler: H) where H::Target: EventHandler {
 		let mut pending_events = Vec::new();
 		for monitor_state in self.monitors.read().unwrap().values() {

@@ -34,6 +34,8 @@ use util::ser::{Readable, Writer, Writeable};
 use io;
 use prelude::*;
 use core::cmp;
+#[cfg(anchors)]
+use core::convert::TryInto;
 use core::mem;
 use core::ops::Deref;
 use bitcoin::{PackedLockTime, Sequence, Witness};
@@ -177,23 +179,30 @@ pub(crate) struct CounterpartyOfferedHTLCOutput {
 	counterparty_delayed_payment_base_key: PublicKey,
 	counterparty_htlc_base_key: PublicKey,
 	preimage: PaymentPreimage,
-	htlc: HTLCOutputInCommitment
+	htlc: HTLCOutputInCommitment,
+	opt_anchors: Option<()>,
 }
 
 impl CounterpartyOfferedHTLCOutput {
-	pub(crate) fn build(per_commitment_point: PublicKey, counterparty_delayed_payment_base_key: PublicKey, counterparty_htlc_base_key: PublicKey, preimage: PaymentPreimage, htlc: HTLCOutputInCommitment) -> Self {
+	pub(crate) fn build(per_commitment_point: PublicKey, counterparty_delayed_payment_base_key: PublicKey, counterparty_htlc_base_key: PublicKey, preimage: PaymentPreimage, htlc: HTLCOutputInCommitment, opt_anchors: bool) -> Self {
 		CounterpartyOfferedHTLCOutput {
 			per_commitment_point,
 			counterparty_delayed_payment_base_key,
 			counterparty_htlc_base_key,
 			preimage,
-			htlc
+			htlc,
+			opt_anchors: if opt_anchors { Some(()) } else { None },
 		}
+	}
+
+	fn opt_anchors(&self) -> bool {
+		self.opt_anchors.is_some()
 	}
 }
 
 impl_writeable_tlv_based!(CounterpartyOfferedHTLCOutput, {
 	(0, per_commitment_point, required),
+	(1, opt_anchors, option),
 	(2, counterparty_delayed_payment_base_key, required),
 	(4, counterparty_htlc_base_key, required),
 	(6, preimage, required),
@@ -209,22 +218,29 @@ pub(crate) struct CounterpartyReceivedHTLCOutput {
 	per_commitment_point: PublicKey,
 	counterparty_delayed_payment_base_key: PublicKey,
 	counterparty_htlc_base_key: PublicKey,
-	htlc: HTLCOutputInCommitment
+	htlc: HTLCOutputInCommitment,
+	opt_anchors: Option<()>,
 }
 
 impl CounterpartyReceivedHTLCOutput {
-	pub(crate) fn build(per_commitment_point: PublicKey, counterparty_delayed_payment_base_key: PublicKey, counterparty_htlc_base_key: PublicKey, htlc: HTLCOutputInCommitment) -> Self {
+	pub(crate) fn build(per_commitment_point: PublicKey, counterparty_delayed_payment_base_key: PublicKey, counterparty_htlc_base_key: PublicKey, htlc: HTLCOutputInCommitment, opt_anchors: bool) -> Self {
 		CounterpartyReceivedHTLCOutput {
 			per_commitment_point,
 			counterparty_delayed_payment_base_key,
 			counterparty_htlc_base_key,
-			htlc
+			htlc,
+			opt_anchors: if opt_anchors { Some(()) } else { None },
 		}
+	}
+
+	fn opt_anchors(&self) -> bool {
+		self.opt_anchors.is_some()
 	}
 }
 
 impl_writeable_tlv_based!(CounterpartyReceivedHTLCOutput, {
 	(0, per_commitment_point, required),
+	(1, opt_anchors, option),
 	(2, counterparty_delayed_payment_base_key, required),
 	(4, counterparty_htlc_base_key, required),
 	(6, htlc, required),
@@ -272,18 +288,29 @@ impl_writeable_tlv_based!(HolderHTLCOutput, {
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct HolderFundingOutput {
 	funding_redeemscript: Script,
+	funding_amount: Option<u64>,
+	opt_anchors: Option<()>,
 }
 
+
 impl HolderFundingOutput {
-	pub(crate) fn build(funding_redeemscript: Script) -> Self {
+	pub(crate) fn build(funding_redeemscript: Script, funding_amount: u64, opt_anchors: bool) -> Self {
 		HolderFundingOutput {
 			funding_redeemscript,
+			funding_amount: Some(funding_amount),
+			opt_anchors: if opt_anchors { Some(()) } else { None },
 		}
+	}
+
+	fn opt_anchors(&self) -> bool {
+		self.opt_anchors.is_some()
 	}
 }
 
 impl_writeable_tlv_based!(HolderFundingOutput, {
 	(0, funding_redeemscript, required),
+	(1, opt_anchors, option),
+	(3, funding_amount, option),
 });
 
 /// A wrapper encapsulating all in-protocol differing outputs types.
@@ -303,24 +330,27 @@ pub(crate) enum PackageSolvingData {
 impl PackageSolvingData {
 	fn amount(&self) -> u64 {
 		let amt = match self {
-			PackageSolvingData::RevokedOutput(ref outp) => { outp.amount },
-			PackageSolvingData::RevokedHTLCOutput(ref outp) => { outp.amount },
-			PackageSolvingData::CounterpartyOfferedHTLCOutput(ref outp) => { outp.htlc.amount_msat / 1000 },
-			PackageSolvingData::CounterpartyReceivedHTLCOutput(ref outp) => { outp.htlc.amount_msat / 1000 },
+			PackageSolvingData::RevokedOutput(ref outp) => outp.amount,
+			PackageSolvingData::RevokedHTLCOutput(ref outp) => outp.amount,
+			PackageSolvingData::CounterpartyOfferedHTLCOutput(ref outp) => outp.htlc.amount_msat / 1000,
+			PackageSolvingData::CounterpartyReceivedHTLCOutput(ref outp) => outp.htlc.amount_msat / 1000,
 			// Note: Currently, amounts of holder outputs spending witnesses aren't used
 			// as we can't malleate spending package to increase their feerate. This
 			// should change with the remaining anchor output patchset.
-			PackageSolvingData::HolderHTLCOutput(..) => { unreachable!() },
-			PackageSolvingData::HolderFundingOutput(..) => { unreachable!() },
+			PackageSolvingData::HolderHTLCOutput(..) => unreachable!(),
+			PackageSolvingData::HolderFundingOutput(ref outp) => {
+				debug_assert!(outp.opt_anchors());
+				outp.funding_amount.unwrap()
+			}
 		};
 		amt
 	}
-	fn weight(&self, opt_anchors: bool) -> usize {
+	fn weight(&self) -> usize {
 		let weight = match self {
 			PackageSolvingData::RevokedOutput(ref outp) => { outp.weight as usize },
 			PackageSolvingData::RevokedHTLCOutput(ref outp) => { outp.weight as usize },
-			PackageSolvingData::CounterpartyOfferedHTLCOutput(..) => { weight_offered_htlc(opt_anchors) as usize },
-			PackageSolvingData::CounterpartyReceivedHTLCOutput(..) => { weight_received_htlc(opt_anchors) as usize },
+			PackageSolvingData::CounterpartyOfferedHTLCOutput(ref outp) => { weight_offered_htlc(outp.opt_anchors()) as usize },
+			PackageSolvingData::CounterpartyReceivedHTLCOutput(ref outp) => { weight_received_htlc(outp.opt_anchors()) as usize },
 			// Note: Currently, weights of holder outputs spending witnesses aren't used
 			// as we can't malleate spending package to increase their feerate. This
 			// should change with the remaining anchor output patchset.
@@ -520,6 +550,9 @@ impl PackageTemplate {
 	pub(crate) fn outpoints(&self) -> Vec<&BitcoinOutPoint> {
 		self.inputs.iter().map(|(o, _)| o).collect()
 	}
+	pub(crate) fn inputs(&self) -> impl ExactSizeIterator<Item = &PackageSolvingData> {
+		self.inputs.iter().map(|(_, i)| i)
+	}
 	pub(crate) fn split_package(&mut self, split_outp: &BitcoinOutPoint) -> Option<PackageTemplate> {
 		match self.malleability {
 			PackageMalleability::Malleable => {
@@ -583,7 +616,7 @@ impl PackageTemplate {
 	}
 	/// Gets the amount of all outptus being spent by this package, only valid for malleable
 	/// packages.
-	fn package_amount(&self) -> u64 {
+	pub(crate) fn package_amount(&self) -> u64 {
 		let mut amounts = 0;
 		for (_, outp) in self.inputs.iter() {
 			amounts += outp.amount();
@@ -594,13 +627,13 @@ impl PackageTemplate {
 		self.inputs.iter().map(|(_, outp)| outp.absolute_tx_timelock(self.height_original))
 			.max().expect("There must always be at least one output to spend in a PackageTemplate")
 	}
-	pub(crate) fn package_weight(&self, destination_script: &Script, opt_anchors: bool) -> usize {
+	pub(crate) fn package_weight(&self, destination_script: &Script) -> usize {
 		let mut inputs_weight = 0;
 		let mut witnesses_weight = 2; // count segwit flags
 		for (_, outp) in self.inputs.iter() {
 			// previous_out_point: 36 bytes ; var_int: 1 byte ; sequence: 4 bytes
 			inputs_weight += 41 * WITNESS_SCALE_FACTOR;
-			witnesses_weight += outp.weight(opt_anchors);
+			witnesses_weight += outp.weight();
 		}
 		// version: 4 bytes ; count_tx_in: 1 byte ; count_tx_out: 1 byte ; lock_time: 4 bytes
 		let transaction_weight = 10 * WITNESS_SCALE_FACTOR;
@@ -608,47 +641,46 @@ impl PackageTemplate {
 		let output_weight = (8 + 1 + destination_script.len()) * WITNESS_SCALE_FACTOR;
 		inputs_weight + witnesses_weight + transaction_weight + output_weight
 	}
-	pub(crate) fn finalize_package<L: Deref, Signer: Sign>(&self, onchain_handler: &mut OnchainTxHandler<Signer>, value: u64, destination_script: Script, logger: &L) -> Option<Transaction>
-		where L::Target: Logger,
-	{
-		match self.malleability {
-			PackageMalleability::Malleable => {
-				let mut bumped_tx = Transaction {
-					version: 2,
-					lock_time: PackedLockTime::ZERO,
-					input: vec![],
-					output: vec![TxOut {
-						script_pubkey: destination_script,
-						value,
-					}],
-				};
-				for (outpoint, _) in self.inputs.iter() {
-					bumped_tx.input.push(TxIn {
-						previous_output: *outpoint,
-						script_sig: Script::new(),
-						sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
-						witness: Witness::new(),
-					});
-				}
-				for (i, (outpoint, out)) in self.inputs.iter().enumerate() {
-					log_debug!(logger, "Adding claiming input for outpoint {}:{}", outpoint.txid, outpoint.vout);
-					if !out.finalize_input(&mut bumped_tx, i, onchain_handler) { return None; }
-				}
-				log_debug!(logger, "Finalized transaction {} ready to broadcast", bumped_tx.txid());
-				return Some(bumped_tx);
-			},
-			PackageMalleability::Untractable => {
-				debug_assert_eq!(value, 0, "value is ignored for non-malleable packages, should be zero to ensure callsites are correct");
-				if let Some((outpoint, outp)) = self.inputs.first() {
-					if let Some(final_tx) = outp.get_finalized_tx(outpoint, onchain_handler) {
-						log_debug!(logger, "Adding claiming input for outpoint {}:{}", outpoint.txid, outpoint.vout);
-						log_debug!(logger, "Finalized transaction {} ready to broadcast", final_tx.txid());
-						return Some(final_tx);
-					}
-					return None;
-				} else { panic!("API Error: Package must not be inputs empty"); }
-			},
+	pub(crate) fn finalize_malleable_package<L: Deref, Signer: Sign>(
+		&self, onchain_handler: &mut OnchainTxHandler<Signer>, value: u64, destination_script: Script, logger: &L
+	) -> Option<Transaction> where L::Target: Logger {
+		debug_assert!(self.is_malleable());
+		let mut bumped_tx = Transaction {
+			version: 2,
+			lock_time: PackedLockTime::ZERO,
+			input: vec![],
+			output: vec![TxOut {
+				script_pubkey: destination_script,
+				value,
+			}],
+		};
+		for (outpoint, _) in self.inputs.iter() {
+			bumped_tx.input.push(TxIn {
+				previous_output: *outpoint,
+				script_sig: Script::new(),
+				sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+				witness: Witness::new(),
+			});
 		}
+		for (i, (outpoint, out)) in self.inputs.iter().enumerate() {
+			log_debug!(logger, "Adding claiming input for outpoint {}:{}", outpoint.txid, outpoint.vout);
+			if !out.finalize_input(&mut bumped_tx, i, onchain_handler) { return None; }
+		}
+		log_debug!(logger, "Finalized transaction {} ready to broadcast", bumped_tx.txid());
+		Some(bumped_tx)
+	}
+	pub(crate) fn finalize_untractable_package<L: Deref, Signer: Sign>(
+		&self, onchain_handler: &mut OnchainTxHandler<Signer>, logger: &L,
+	) -> Option<Transaction> where L::Target: Logger {
+		debug_assert!(!self.is_malleable());
+		if let Some((outpoint, outp)) = self.inputs.first() {
+			if let Some(final_tx) = outp.get_finalized_tx(outpoint, onchain_handler) {
+				log_debug!(logger, "Adding claiming input for outpoint {}:{}", outpoint.txid, outpoint.vout);
+				log_debug!(logger, "Finalized transaction {} ready to broadcast", final_tx.txid());
+				return Some(final_tx);
+			}
+			return None;
+		} else { panic!("API Error: Package must not be inputs empty"); }
 	}
 	/// In LN, output claimed are time-sensitive, which means we have to spend them before reaching some timelock expiration. At in-channel
 	/// output detection, we generate a first version of a claim tx and associate to it a height timer. A height timer is an absolute block
@@ -686,14 +718,45 @@ impl PackageTemplate {
 		}
 		None
 	}
+
+	#[cfg(anchors)]
+	/// Computes a feerate based on the given confirmation target. If a previous feerate was used,
+	/// and the new feerate is below it, we'll use a 25% increase of the previous feerate instead of
+	/// the new one.
+	pub(crate) fn compute_package_feerate<F: Deref>(
+		&self, fee_estimator: &LowerBoundedFeeEstimator<F>, conf_target: ConfirmationTarget,
+	) -> u32 where F::Target: FeeEstimator {
+		let feerate_estimate = fee_estimator.bounded_sat_per_1000_weight(conf_target);
+		if self.feerate_previous != 0 {
+			// If old feerate inferior to actual one given back by Fee Estimator, use it to compute new fee...
+			if feerate_estimate as u64 > self.feerate_previous {
+				feerate_estimate
+			} else {
+				// ...else just increase the previous feerate by 25% (because that's a nice number)
+				(self.feerate_previous + (self.feerate_previous / 4)).try_into().unwrap_or(u32::max_value())
+			}
+		} else {
+			feerate_estimate
+		}
+	}
+
+	/// Determines whether a package contains an input which must have additional external inputs
+	/// attached to help the spending transaction reach confirmation.
+	pub(crate) fn requires_external_funding(&self) -> bool {
+		self.inputs.iter().find(|input| match input.1 {
+			PackageSolvingData::HolderFundingOutput(ref outp) => outp.opt_anchors(),
+			_ => false,
+		}).is_some()
+	}
+
 	pub (crate) fn build_package(txid: Txid, vout: u32, input_solving_data: PackageSolvingData, soonest_conf_deadline: u32, aggregable: bool, height_original: u32) -> Self {
 		let malleability = match input_solving_data {
-			PackageSolvingData::RevokedOutput(..) => { PackageMalleability::Malleable },
-			PackageSolvingData::RevokedHTLCOutput(..) => { PackageMalleability::Malleable },
-			PackageSolvingData::CounterpartyOfferedHTLCOutput(..) => { PackageMalleability::Malleable },
-			PackageSolvingData::CounterpartyReceivedHTLCOutput(..) => { PackageMalleability::Malleable },
-			PackageSolvingData::HolderHTLCOutput(..) => { PackageMalleability::Untractable },
-			PackageSolvingData::HolderFundingOutput(..) => { PackageMalleability::Untractable },
+			PackageSolvingData::RevokedOutput(..) => PackageMalleability::Malleable,
+			PackageSolvingData::RevokedHTLCOutput(..) => PackageMalleability::Malleable,
+			PackageSolvingData::CounterpartyOfferedHTLCOutput(..) => PackageMalleability::Malleable,
+			PackageSolvingData::CounterpartyReceivedHTLCOutput(..) => PackageMalleability::Malleable,
+			PackageSolvingData::HolderHTLCOutput(..) => PackageMalleability::Untractable,
+			PackageSolvingData::HolderFundingOutput(..) => PackageMalleability::Untractable,
 		};
 		let mut inputs = Vec::with_capacity(1);
 		inputs.push((BitcoinOutPoint { txid, vout }, input_solving_data));
@@ -873,26 +936,26 @@ mod tests {
 	}
 
 	macro_rules! dumb_counterparty_output {
-		($secp_ctx: expr, $amt: expr) => {
+		($secp_ctx: expr, $amt: expr, $opt_anchors: expr) => {
 			{
 				let dumb_scalar = SecretKey::from_slice(&hex::decode("0101010101010101010101010101010101010101010101010101010101010101").unwrap()[..]).unwrap();
 				let dumb_point = PublicKey::from_secret_key(&$secp_ctx, &dumb_scalar);
 				let hash = PaymentHash([1; 32]);
 				let htlc = HTLCOutputInCommitment { offered: true, amount_msat: $amt, cltv_expiry: 0, payment_hash: hash, transaction_output_index: None };
-				PackageSolvingData::CounterpartyReceivedHTLCOutput(CounterpartyReceivedHTLCOutput::build(dumb_point, dumb_point, dumb_point, htlc))
+				PackageSolvingData::CounterpartyReceivedHTLCOutput(CounterpartyReceivedHTLCOutput::build(dumb_point, dumb_point, dumb_point, htlc, $opt_anchors))
 			}
 		}
 	}
 
 	macro_rules! dumb_counterparty_offered_output {
-		($secp_ctx: expr, $amt: expr) => {
+		($secp_ctx: expr, $amt: expr, $opt_anchors: expr) => {
 			{
 				let dumb_scalar = SecretKey::from_slice(&hex::decode("0101010101010101010101010101010101010101010101010101010101010101").unwrap()[..]).unwrap();
 				let dumb_point = PublicKey::from_secret_key(&$secp_ctx, &dumb_scalar);
 				let hash = PaymentHash([1; 32]);
 				let preimage = PaymentPreimage([2;32]);
 				let htlc = HTLCOutputInCommitment { offered: false, amount_msat: $amt, cltv_expiry: 1000, payment_hash: hash, transaction_output_index: None };
-				PackageSolvingData::CounterpartyOfferedHTLCOutput(CounterpartyOfferedHTLCOutput::build(dumb_point, dumb_point, dumb_point, preimage, htlc))
+				PackageSolvingData::CounterpartyOfferedHTLCOutput(CounterpartyOfferedHTLCOutput::build(dumb_point, dumb_point, dumb_point, preimage, htlc, $opt_anchors))
 			}
 		}
 	}
@@ -987,7 +1050,7 @@ mod tests {
 		let txid = Txid::from_hex("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
 		let secp_ctx = Secp256k1::new();
 		let revk_outp = dumb_revk_output!(secp_ctx);
-		let counterparty_outp = dumb_counterparty_output!(secp_ctx, 0);
+		let counterparty_outp = dumb_counterparty_output!(secp_ctx, 0, false);
 
 		let mut revoked_package = PackageTemplate::build_package(txid, 0, revk_outp, 1000, true, 100);
 		let counterparty_package = PackageTemplate::build_package(txid, 1, counterparty_outp, 1000, true, 100);
@@ -1051,7 +1114,7 @@ mod tests {
 	fn test_package_amounts() {
 		let txid = Txid::from_hex("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
 		let secp_ctx = Secp256k1::new();
-		let counterparty_outp = dumb_counterparty_output!(secp_ctx, 1_000_000);
+		let counterparty_outp = dumb_counterparty_output!(secp_ctx, 1_000_000, false);
 
 		let package = PackageTemplate::build_package(txid, 0, counterparty_outp, 1000, true, 100);
 		assert_eq!(package.package_amount(), 1000);
@@ -1068,24 +1131,22 @@ mod tests {
 		{
 			let revk_outp = dumb_revk_output!(secp_ctx);
 			let package = PackageTemplate::build_package(txid, 0, revk_outp, 0, true, 100);
+			assert_eq!(package.package_weight(&Script::new()),  weight_sans_output + WEIGHT_REVOKED_OUTPUT as usize);
+		}
+
+		{
 			for &opt_anchors in [false, true].iter() {
-				assert_eq!(package.package_weight(&Script::new(), opt_anchors),  weight_sans_output + WEIGHT_REVOKED_OUTPUT as usize);
+				let counterparty_outp = dumb_counterparty_output!(secp_ctx, 1_000_000, opt_anchors);
+				let package = PackageTemplate::build_package(txid, 0, counterparty_outp, 1000, true, 100);
+				assert_eq!(package.package_weight(&Script::new()), weight_sans_output + weight_received_htlc(opt_anchors) as usize);
 			}
 		}
 
 		{
-			let counterparty_outp = dumb_counterparty_output!(secp_ctx, 1_000_000);
-			let package = PackageTemplate::build_package(txid, 0, counterparty_outp, 1000, true, 100);
 			for &opt_anchors in [false, true].iter() {
-				assert_eq!(package.package_weight(&Script::new(), opt_anchors), weight_sans_output + weight_received_htlc(opt_anchors) as usize);
-			}
-		}
-
-		{
-			let counterparty_outp = dumb_counterparty_offered_output!(secp_ctx, 1_000_000);
-			let package = PackageTemplate::build_package(txid, 0, counterparty_outp, 1000, true, 100);
-			for &opt_anchors in [false, true].iter() {
-				assert_eq!(package.package_weight(&Script::new(), opt_anchors), weight_sans_output + weight_offered_htlc(opt_anchors) as usize);
+				let counterparty_outp = dumb_counterparty_offered_output!(secp_ctx, 1_000_000, opt_anchors);
+				let package = PackageTemplate::build_package(txid, 0, counterparty_outp, 1000, true, 100);
+				assert_eq!(package.package_weight(&Script::new()), weight_sans_output + weight_offered_htlc(opt_anchors) as usize);
 			}
 		}
 	}

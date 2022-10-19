@@ -7,6 +7,7 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
+use ln::channel::{ANCHOR_OUTPUT_VALUE_SATOSHI, MIN_CHAN_DUST_LIMIT_SATOSHIS};
 use ln::chan_utils::{HTLCOutputInCommitment, ChannelPublicKeys, HolderCommitmentTransaction, CommitmentTransaction, ChannelTransactionParameters, TrustedCommitmentTransaction, ClosingTransaction};
 use ln::{chan_utils, msgs, PaymentPreimage};
 use chain::keysinterface::{Sign, InMemorySigner, BaseSign};
@@ -197,6 +198,16 @@ impl BaseSign for EnforcingSigner {
 		closing_tx.verify(self.inner.funding_outpoint().into_bitcoin_outpoint())
 			.expect("derived different closing transaction");
 		Ok(self.inner.sign_closing_transaction(closing_tx, secp_ctx).unwrap())
+	}
+
+	fn sign_holder_anchor_input(
+		&self, anchor_tx: &mut Transaction, input: usize, secp_ctx: &Secp256k1<secp256k1::All>,
+	) -> Result<Signature, ()> {
+		debug_assert!(MIN_CHAN_DUST_LIMIT_SATOSHIS > ANCHOR_OUTPUT_VALUE_SATOSHI);
+		// As long as our minimum dust limit is enforced and is greater than our anchor output
+		// value, an anchor output can only have an index within [0, 1].
+		assert!(anchor_tx.input[input].previous_output.vout == 0 || anchor_tx.input[input].previous_output.vout == 1);
+		self.inner.sign_holder_anchor_input(anchor_tx, input, secp_ctx)
 	}
 
 	fn sign_channel_announcement(&self, msg: &msgs::UnsignedChannelAnnouncement, secp_ctx: &Secp256k1<secp256k1::All>)
