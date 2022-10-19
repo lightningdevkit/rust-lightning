@@ -14,6 +14,7 @@ use bitcoin::secp256k1::ecdh::SharedSecret;
 
 use ln::msgs::DecodeError;
 use ln::onion_utils;
+use ::get_control_tlv_length;
 use super::blinded_route::{BlindedRoute, ForwardTlvs, ReceiveTlvs};
 use util::chacha20poly1305rfc::{ChaChaPolyReadAdapter, ChaChaPolyWriteAdapter};
 use util::ser::{BigSize, FixedLengthReader, LengthRead, LengthReadable, LengthReadableArgs, Readable, ReadableArgs, Writeable, Writer};
@@ -197,7 +198,7 @@ impl ReadableArgs<SharedSecret> for Payload {
 /// When reading a packet off the wire, we don't know a priori whether the packet is to be forwarded
 /// or received. Thus we read a ControlTlvs rather than reading a ForwardControlTlvs or
 /// ReceiveControlTlvs directly.
-pub(super) enum ControlTlvs {
+pub(crate) enum ControlTlvs {
 	/// This onion message is intended to be forwarded.
 	Forward(ForwardTlvs),
 	/// This onion message is intended to be received.
@@ -206,13 +207,13 @@ pub(super) enum ControlTlvs {
 
 impl Readable for ControlTlvs {
 	fn read<R: Read>(mut r: &mut R) -> Result<Self, DecodeError> {
-		let mut _padding: Option<Padding> = None;
+		let mut padding: Option<Padding> = None;
 		let mut _short_channel_id: Option<u64> = None;
 		let mut next_node_id: Option<PublicKey> = None;
 		let mut path_id: Option<[u8; 32]> = None;
 		let mut next_blinding_override: Option<PublicKey> = None;
 		decode_tlv_stream!(&mut r, {
-			(1, _padding, option),
+			(1, padding, option),
 			(2, _short_channel_id, option),
 			(4, next_node_id, option),
 			(6, path_id, option),
@@ -222,13 +223,20 @@ impl Readable for ControlTlvs {
 		let valid_fwd_fmt  = next_node_id.is_some() && path_id.is_none();
 		let valid_recv_fmt = next_node_id.is_none() && next_blinding_override.is_none();
 
+		let mut total_length = get_control_tlv_length!(next_node_id.is_some(), next_blinding_override.is_some(), path_id.is_some(), 0, 0);
+		if padding.is_some() {
+			total_length += padding.unwrap().padding_length + 2 // 2 extra prefix bytes
+		}
+
 		let payload_fmt = if valid_fwd_fmt {
 			ControlTlvs::Forward(ForwardTlvs {
+				total_length,
 				next_node_id: next_node_id.unwrap(),
 				next_blinding_override,
 			})
 		} else if valid_recv_fmt {
 			ControlTlvs::Receive(ReceiveTlvs {
+				total_length,
 				path_id,
 			})
 		} else {
@@ -239,15 +247,57 @@ impl Readable for ControlTlvs {
 	}
 }
 
-/// Reads padding to the end, ignoring what's read.
-pub(crate) struct Padding {}
+pub(crate) struct Padding {
+	padding_length: u16,
+}
+
+/// Reads padding to the end, and validates that the read bytes' content are 0s.
 impl Readable for Padding {
 	#[inline]
 	fn read<R: Read>(reader: &mut R) -> Result<Self, DecodeError> {
+		let mut padding_length = 0;
 		loop {
 			let mut buf = [0; 8192];
-			if reader.read(&mut buf[..])? == 0 { break; }
+			let read_bytes_len = reader.read(&mut buf[..])?;
+			if read_bytes_len == 0 { break; }
+			for n in 0..read_bytes_len {
+				if buf[n] != 0 as u8 { return Err(DecodeError::InvalidValue); }
+			}
+			padding_length += read_bytes_len as u16;
 		}
-		Ok(Self {})
+		Ok(Self { padding_length })
+	}
+}
+
+impl Writeable for Padding {
+	#[inline]
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		for _ in 0..self.padding_length {
+			(0 as u8).write(writer)?;
+		}
+		Ok(())
+	}
+}
+
+impl Padding {
+	pub fn new_from_tlv(tlv: ControlTlvs) -> Option<Padding> {
+		let (data_length, tlv_total_length) = match tlv {
+			ControlTlvs::Forward(forward_tlvs) => {
+				let data_length = get_control_tlv_length!(true, forward_tlvs.next_blinding_override.is_some());
+				(data_length, forward_tlvs.total_length as u16)
+			},
+			ControlTlvs::Receive(receive_tlvs) => {
+				let data_length = get_control_tlv_length!(receive_tlvs.path_id.is_some());
+				(data_length, receive_tlvs.total_length as u16)
+			}
+		};
+
+		let extra_bytes_needed = tlv_total_length - data_length;
+		if extra_bytes_needed >= 2 {
+			let padding_length = extra_bytes_needed - 2; // 2 bytes of prefix removed
+			Some(Padding { padding_length })
+		} else {
+			None
+		}
 	}
 }

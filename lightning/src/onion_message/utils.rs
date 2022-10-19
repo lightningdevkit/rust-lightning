@@ -96,3 +96,59 @@ pub(super) fn construct_keys_callback<T: secp256k1::Signing + secp256k1::Verific
 	}
 	Ok(())
 }
+
+/// Calculates the length of a Control TLV payload, based on the payload content.
+#[macro_export]
+macro_rules! get_control_tlv_length {
+	($has_path_id: expr) => {{ // ReceiveControlTlvs
+		get_control_tlv_length!(false, false, $has_path_id, 0, 0)
+	}};
+	($has_next_node_id: expr, $has_next_blinding_override: expr) => {{ // ForwardControlTlvs
+		get_control_tlv_length!($has_next_node_id, $has_next_blinding_override, false, 0, 0)
+	}};
+	($has_next_node_id: expr, $has_next_blinding_override: expr, $has_path_id: expr, $tag_prefix_length: expr, $tag_length: expr) => {{
+		// tag_prefix_length and tag_length refer to custom types in ControlTlvs, not the be
+		// confused with the onion message tag.
+		let mut res = 0;
+
+		macro_rules! add_length {
+			($should_add_len: expr, $prefix_len: expr, $content_len: expr) => {
+				if $should_add_len {
+					res += $prefix_len;
+					res += $content_len;
+				}
+			}
+		}
+
+		add_length!($has_next_node_id, 2, 33);
+		add_length!($has_next_blinding_override, 2, 33);
+		add_length!($has_path_id, 2, 32);
+		add_length!($tag_length > 0, $tag_prefix_length, $tag_length);
+
+		res
+	}}
+
+	/*
+	TODO:
+
+	Also add support for payment_onion ControlTlvs also consisting of:
+
+	payment_relay:
+	2 bytes prefix
+	2 bytes for cltv_expiry_delta
+	4 bytes for fee_proportional_millionths
+	0-4 bytes for fee_base_msat (tu32)
+
+	payment_constraints:
+	2 bytes prefix
+	4 bytes max_cltv_expiry
+	0-8 bytes htlc_minimum_msat (tu64)
+
+	allowed_features:
+	- If IS payment onion AND has NO known allowed_features:
+	  2 bytes prefix only
+	- If IS payment onion AND HAS known allowed_features:
+	  2 bytes prefix
+	  X bytes of allowed_features
+	*/
+}
