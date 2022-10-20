@@ -31,7 +31,7 @@ use bitcoin::secp256k1::schnorr;
 use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::blockdata::script::{self, Script};
 use bitcoin::blockdata::transaction::{OutPoint, Transaction, TxOut};
-use bitcoin::consensus;
+use bitcoin::{consensus, Witness};
 use bitcoin::consensus::Encodable;
 use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::hash_types::{Txid, BlockHash};
@@ -512,6 +512,10 @@ impl_writeable_primitive!(u128, 16);
 impl_writeable_primitive!(u64, 8);
 impl_writeable_primitive!(u32, 4);
 impl_writeable_primitive!(u16, 2);
+impl_writeable_primitive!(i64, 8);
+impl_writeable_primitive!(i32, 4);
+impl_writeable_primitive!(i16, 2);
+impl_writeable_primitive!(i8, 1);
 
 impl Writeable for u8 {
 	#[inline]
@@ -832,6 +836,40 @@ impl_for_vec!((A, B), A, B);
 impl_writeable_for_vec!(&crate::routing::router::BlindedTail);
 impl_readable_for_vec!(crate::routing::router::BlindedTail);
 
+impl Writeable for Vec<Witness> {
+	#[inline]
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		(self.len() as u16).write(w)?;
+		for witness in self {
+			(witness.serialized_len() as u16).write(w)?;
+			witness.write(w)?;
+		}
+		Ok(())
+	}
+}
+
+impl Readable for Vec<Witness> {
+	#[inline]
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let num_witnesses = <u16 as Readable>::read(r)? as usize;
+		let mut witnesses = Vec::with_capacity(num_witnesses);
+		for _ in 0..num_witnesses {
+			// Even though the length of each witness can be inferred in its consensus-encoded form,
+			// the spec includes a length prefix so that implementations don't have to deserialize
+			//  each initially. We do that here anyway as in general we'll need to be able to make
+			// assertions on some properties of the witnesses when receiving a message providing a list
+			// of witnesses. We'll just do a sanity check for the lengths and error if there is a mismatch.
+			let witness_len = <u16 as Readable>::read(r)? as usize;
+			let witness = <Witness as Readable>::read(r)?;
+			if witness.serialized_len() != witness_len {
+				return Err(DecodeError::BadLengthDescriptor);
+			}
+			witnesses.push(witness);
+		}
+		Ok(witnesses)
+	}
+}
+
 impl Writeable for Script {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		(self.len() as u16).write(w)?;
@@ -1135,6 +1173,7 @@ macro_rules! impl_consensus_ser {
 }
 impl_consensus_ser!(Transaction);
 impl_consensus_ser!(TxOut);
+impl_consensus_ser!(Witness);
 
 impl<T: Readable> Readable for Mutex<T> {
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {

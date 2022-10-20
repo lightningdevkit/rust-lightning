@@ -349,6 +349,50 @@ impl Encode for msgs::ClosingSigned {
 	const TYPE: u16 = 39;
 }
 
+impl Encode for msgs::OpenChannelV2 {
+	const TYPE: u16 = 64;
+}
+
+impl Encode for msgs::AcceptChannelV2 {
+	const TYPE: u16 = 65;
+}
+
+impl Encode for msgs::TxAddInput {
+	const TYPE: u16 = 66;
+}
+
+impl Encode for msgs::TxAddOutput {
+	const TYPE: u16 = 67;
+}
+
+impl Encode for msgs::TxRemoveInput {
+	const TYPE: u16 = 68;
+}
+
+impl Encode for msgs::TxRemoveOutput {
+	const TYPE: u16 = 69;
+}
+
+impl Encode for msgs::TxComplete {
+	const TYPE: u16 = 70;
+}
+
+impl Encode for msgs::TxSignatures {
+	const TYPE: u16 = 71;
+}
+
+impl Encode for msgs::TxInitRbf {
+	const TYPE: u16 = 72;
+}
+
+impl Encode for msgs::TxAckRbf {
+	const TYPE: u16 = 73;
+}
+
+impl Encode for msgs::TxAbort {
+	const TYPE: u16 = 74;
+}
+
 impl Encode for msgs::OnionMessage {
 	const TYPE: u16 = 513;
 }

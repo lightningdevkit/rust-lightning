@@ -33,8 +33,8 @@ GEN_TEST lightning::ln::msgs::UpdateFailHTLC test_msg_simple ""
 GEN_TEST lightning::ln::msgs::UpdateFailMalformedHTLC test_msg_simple ""
 GEN_TEST lightning::ln::msgs::UpdateFee test_msg_simple ""
 GEN_TEST lightning::ln::msgs::UpdateFulfillHTLC test_msg_simple ""
+GEN_TEST lightning::ln::msgs::ChannelReestablish test_msg_simple ""
 
-GEN_TEST lightning::ln::msgs::ChannelReestablish test_msg ""
 GEN_TEST lightning::ln::msgs::DecodedOnionErrorPacket test_msg ""
 
 GEN_TEST lightning::ln::msgs::ChannelAnnouncement test_msg_exact ""

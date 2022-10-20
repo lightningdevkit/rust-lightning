@@ -5695,6 +5695,9 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			next_remote_commitment_number: INITIAL_COMMITMENT_NUMBER - self.cur_counterparty_commitment_transaction_number - 1,
 			your_last_per_commitment_secret: remote_last_secret,
 			my_current_per_commitment_point: dummy_pubkey,
+			// TODO(dual_funding): If we've sent `commtiment_signed` for an interactive transaction construction but have not received `tx_signatures`
+			// we MUST set `next_funding_txid` to the txid of that interactive transaction, else we MUST NOT set it.
+			next_funding_txid: None,
 		}
 	}
 
