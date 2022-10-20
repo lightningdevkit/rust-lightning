@@ -2103,13 +2103,6 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		}
 
 		let routing = match hop_data.format {
-			msgs::OnionHopDataFormat::Legacy { .. } => {
-				return Err(ReceiveError {
-					err_code: 0x4000|0x2000|3,
-					err_data: Vec::new(),
-					msg: "We require payment_secrets",
-				});
-			},
 			msgs::OnionHopDataFormat::NonFinalNode { .. } => {
 				return Err(ReceiveError {
 					err_code: 0x4000|22,
@@ -2244,7 +2237,6 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				};
 
 				let short_channel_id = match next_hop_data.format {
-					msgs::OnionHopDataFormat::Legacy { short_channel_id } => short_channel_id,
 					msgs::OnionHopDataFormat::NonFinalNode { short_channel_id } => short_channel_id,
 					msgs::OnionHopDataFormat::FinalNode { .. } => {
 						return_err!("Final Node OnionHopData provided for us as an intermediary node", 0x4000 | 22, &[0;0]);

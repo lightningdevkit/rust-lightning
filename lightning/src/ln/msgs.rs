@@ -42,7 +42,7 @@ use crate::io_extras::read_to_end;
 
 use crate::util::events::{MessageSendEventsProvider, OnionMessageProvider};
 use crate::util::logger;
-use crate::util::ser::{BigSize, LengthReadable, Readable, ReadableArgs, Writeable, Writer, FixedLengthReader, HighZeroBytesDroppedBigSize, Hostname};
+use crate::util::ser::{LengthReadable, Readable, ReadableArgs, Writeable, Writer, FixedLengthReader, HighZeroBytesDroppedBigSize, Hostname};
 
 use crate::ln::{PaymentPreimage, PaymentHash, PaymentSecret};
 
@@ -1028,9 +1028,6 @@ mod fuzzy_internal_msgs {
 	}
 
 	pub(crate) enum OnionHopDataFormat {
-		Legacy { // aka Realm-0
-			short_channel_id: u64,
-		},
 		NonFinalNode {
 			short_channel_id: u64,
 		},
@@ -1046,7 +1043,6 @@ mod fuzzy_internal_msgs {
 		/// Message serialization may panic if this value is more than 21 million Bitcoin.
 		pub(crate) amt_to_forward: u64,
 		pub(crate) outgoing_cltv_value: u32,
-		// 12 bytes of 0-padding for Legacy format
 	}
 
 	pub struct DecodedOnionErrorPacket {
@@ -1459,13 +1455,6 @@ impl Readable for FinalOnionHopData {
 impl Writeable for OnionHopData {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		match self.format {
-			OnionHopDataFormat::Legacy { short_channel_id } => {
-				0u8.write(w)?;
-				short_channel_id.write(w)?;
-				self.amt_to_forward.write(w)?;
-				self.outgoing_cltv_value.write(w)?;
-				w.write_all(&[0;12])?;
-			},
 			OnionHopDataFormat::NonFinalNode { short_channel_id } => {
 				encode_varint_length_prefixed_tlv!(w, {
 					(2, HighZeroBytesDroppedBigSize(self.amt_to_forward), required),
@@ -1488,58 +1477,44 @@ impl Writeable for OnionHopData {
 
 impl Readable for OnionHopData {
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
-		let b: BigSize = Readable::read(r)?;
-		const LEGACY_ONION_HOP_FLAG: u64 = 0;
-		let (format, amt, cltv_value) = if b.0 != LEGACY_ONION_HOP_FLAG {
-			let mut rd = FixedLengthReader::new(r, b.0);
-			let mut amt = HighZeroBytesDroppedBigSize(0u64);
-			let mut cltv_value = HighZeroBytesDroppedBigSize(0u32);
-			let mut short_id: Option<u64> = None;
-			let mut payment_data: Option<FinalOnionHopData> = None;
-			let mut keysend_preimage: Option<PaymentPreimage> = None;
-			decode_tlv_stream!(&mut rd, {
-				(2, amt, required),
-				(4, cltv_value, required),
-				(6, short_id, option),
-				(8, payment_data, option),
-				// See https://github.com/lightning/blips/blob/master/blip-0003.md
-				(5482373484, keysend_preimage, option)
-			});
-			rd.eat_remaining().map_err(|_| DecodeError::ShortRead)?;
-			let format = if let Some(short_channel_id) = short_id {
-				if payment_data.is_some() { return Err(DecodeError::InvalidValue); }
-				OnionHopDataFormat::NonFinalNode {
-					short_channel_id,
-				}
-			} else {
-				if let &Some(ref data) = &payment_data {
-					if data.total_msat > MAX_VALUE_MSAT {
-						return Err(DecodeError::InvalidValue);
-					}
-				}
-				OnionHopDataFormat::FinalNode {
-					payment_data,
-					keysend_preimage,
-				}
-			};
-			(format, amt.0, cltv_value.0)
+		let mut amt = HighZeroBytesDroppedBigSize(0u64);
+		let mut cltv_value = HighZeroBytesDroppedBigSize(0u32);
+		let mut short_id: Option<u64> = None;
+		let mut payment_data: Option<FinalOnionHopData> = None;
+		let mut keysend_preimage: Option<PaymentPreimage> = None;
+		read_tlv_fields!(r, {
+			(2, amt, required),
+			(4, cltv_value, required),
+			(6, short_id, option),
+			(8, payment_data, option),
+			// See https://github.com/lightning/blips/blob/master/blip-0003.md
+			(5482373484, keysend_preimage, option)
+		});
+
+		let format = if let Some(short_channel_id) = short_id {
+			if payment_data.is_some() { return Err(DecodeError::InvalidValue); }
+			OnionHopDataFormat::NonFinalNode {
+				short_channel_id,
+			}
 		} else {
-			let format = OnionHopDataFormat::Legacy {
-				short_channel_id: Readable::read(r)?,
-			};
-			let amt: u64 = Readable::read(r)?;
-			let cltv_value: u32 = Readable::read(r)?;
-			r.read_exact(&mut [0; 12])?;
-			(format, amt, cltv_value)
+			if let &Some(ref data) = &payment_data {
+				if data.total_msat > MAX_VALUE_MSAT {
+					return Err(DecodeError::InvalidValue);
+				}
+			}
+			OnionHopDataFormat::FinalNode {
+				payment_data,
+				keysend_preimage,
+			}
 		};
 
-		if amt > MAX_VALUE_MSAT {
+		if amt.0 > MAX_VALUE_MSAT {
 			return Err(DecodeError::InvalidValue);
 		}
 		Ok(OnionHopData {
 			format,
-			amt_to_forward: amt,
-			outgoing_cltv_value: cltv_value,
+			amt_to_forward: amt.0,
+			outgoing_cltv_value: cltv_value.0,
 		})
 	}
 }
@@ -2666,20 +2641,6 @@ mod tests {
 		};
 		let encoded_value = pong.encode();
 		let target_value = hex::decode("004000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000").unwrap();
-		assert_eq!(encoded_value, target_value);
-	}
-
-	#[test]
-	fn encoding_legacy_onion_hop_data() {
-		let msg = msgs::OnionHopData {
-			format: OnionHopDataFormat::Legacy {
-				short_channel_id: 0xdeadbeef1bad1dea,
-			},
-			amt_to_forward: 0x0badf00d01020304,
-			outgoing_cltv_value: 0xffffffff,
-		};
-		let encoded_value = msg.encode();
-		let target_value = hex::decode("00deadbeef1bad1dea0badf00d01020304ffffffff000000000000000000000000").unwrap();
 		assert_eq!(encoded_value, target_value);
 	}
 
