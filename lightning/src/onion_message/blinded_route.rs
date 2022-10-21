@@ -9,15 +9,21 @@
 
 //! Creating blinded routes and related utilities live here.
 
-use bitcoin::secp256k1::{self, PublicKey, Secp256k1, SecretKey};
+use bitcoin::hashes::{Hash, HashEngine};
+use bitcoin::hashes::sha256::Hash as Sha256;
+use bitcoin::secp256k1::{self, PublicKey, Scalar, Secp256k1, SecretKey};
 
-use crate::chain::keysinterface::KeysInterface;
+use crate::chain::keysinterface::{KeysInterface, Recipient};
+use super::packet::ControlTlvs;
 use super::utils;
 use crate::ln::msgs::DecodeError;
-use crate::util::chacha20poly1305rfc::ChaChaPolyWriteAdapter;
-use crate::util::ser::{Readable, VecWriter, Writeable, Writer};
+use crate::ln::onion_utils;
+use crate::util::chacha20poly1305rfc::{ChaChaPolyReadAdapter, ChaChaPolyWriteAdapter};
+use crate::util::ser::{FixedLengthReader, LengthReadableArgs, Readable, VecWriter, Writeable, Writer};
 
-use crate::io;
+use core::mem;
+use core::ops::Deref;
+use crate::io::{self, Cursor};
 use crate::prelude::*;
 
 /// Onion messages can be sent and received to blinded routes, which serve to hide the identity of
@@ -68,6 +74,41 @@ impl BlindedRoute {
 			blinding_point: PublicKey::from_secret_key(secp_ctx, &blinding_secret),
 			blinded_hops: blinded_hops(secp_ctx, node_pks, &blinding_secret).map_err(|_| ())?,
 		})
+	}
+
+	// Advance the blinded route by one hop, so make the second hop into the new introduction node.
+	pub(super) fn advance_by_one<K: Deref, T: secp256k1::Signing + secp256k1::Verification>
+		(&mut self, keys_manager: &K, secp_ctx: &Secp256k1<T>) -> Result<(), ()>
+		where K::Target: KeysInterface
+	{
+		let control_tlvs_ss = keys_manager.ecdh(Recipient::Node, &self.blinding_point, None)?;
+		let rho = onion_utils::gen_rho_from_shared_secret(&control_tlvs_ss.secret_bytes());
+		let encrypted_control_tlvs = self.blinded_hops.remove(0).encrypted_payload;
+		let mut s = Cursor::new(&encrypted_control_tlvs);
+		let mut reader = FixedLengthReader::new(&mut s, encrypted_control_tlvs.len() as u64);
+		match ChaChaPolyReadAdapter::read(&mut reader, rho) {
+			Ok(ChaChaPolyReadAdapter { readable: ControlTlvs::Forward(ForwardTlvs {
+				mut next_node_id, next_blinding_override,
+			})}) => {
+				let mut new_blinding_point = match next_blinding_override {
+					Some(blinding_point) => blinding_point,
+					None => {
+						let blinding_factor = {
+							let mut sha = Sha256::engine();
+							sha.input(&self.blinding_point.serialize()[..]);
+							sha.input(control_tlvs_ss.as_ref());
+							Sha256::from_engine(sha).into_inner()
+						};
+						self.blinding_point.mul_tweak(secp_ctx, &Scalar::from_be_bytes(blinding_factor).unwrap())
+							.map_err(|_| ())?
+					}
+				};
+				mem::swap(&mut self.blinding_point, &mut new_blinding_point);
+				mem::swap(&mut self.introduction_node_id, &mut next_node_id);
+				Ok(())
+			},
+			_ => Err(())
+		}
 	}
 }
 
