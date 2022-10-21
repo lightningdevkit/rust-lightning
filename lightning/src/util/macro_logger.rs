@@ -12,24 +12,16 @@ use chain::keysinterface::SpendableOutputDescriptor;
 
 use bitcoin::hash_types::Txid;
 use bitcoin::blockdata::transaction::Transaction;
-use bitcoin::secp256k1::PublicKey;
 
 use routing::router::Route;
 use ln::chan_utils::HTLCClaim;
 use util::logger::DebugBytes;
 
-pub(crate) struct DebugPubKey<'a>(pub &'a PublicKey);
-impl<'a> core::fmt::Display for DebugPubKey<'a> {
-	fn fmt(&self, f: &mut core::fmt::Formatter) -> Result<(), core::fmt::Error> {
-		for i in self.0.serialize().iter() {
-			write!(f, "{:02x}", i)?;
-		}
-		Ok(())
-	}
-}
+/// Logs a pubkey in hex format.
+#[macro_export]
 macro_rules! log_pubkey {
 	($obj: expr) => {
-		::util::macro_logger::DebugPubKey(&$obj)
+		$crate::util::logger::DebugPubKey(&$obj)
 	}
 }
 
