@@ -1719,10 +1719,9 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 	///
 	/// `user_channel_id` will be provided back as in
 	/// [`Event::FundingGenerationReady::user_channel_id`] to allow tracking of which events
-	/// correspond with which `create_channel` call. Note that the `user_channel_id` defaults to 0
-	/// for inbound channels, so you may wish to avoid using 0 for `user_channel_id` here.
-	/// `user_channel_id` has no meaning inside of LDK, it is simply copied to events and otherwise
-	/// ignored.
+	/// correspond with which `create_channel` call. Note that the `user_channel_id` defaults to a
+	/// randomized value for inbound channels. `user_channel_id` has no meaning inside of LDK, it
+	/// is simply copied to events and otherwise ignored.
 	///
 	/// Raises [`APIError::APIMisuseError`] when `channel_value_satoshis` > 2**24 or `push_msat` is
 	/// greater than `channel_value_satoshis * 1k` or `channel_value_satoshis < 1000`.
@@ -4604,9 +4603,13 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 			return Err(MsgHandleErrInternal::send_err_msg_no_close("No inbound channels accepted".to_owned(), msg.temporary_channel_id.clone()));
 		}
 
+		let mut random_bytes = [0u8; 8];
+		random_bytes.copy_from_slice(&self.keys_manager.get_secure_random_bytes()[..8]);
+		let user_channel_id = u64::from_be_bytes(random_bytes);
+
 		let outbound_scid_alias = self.create_and_insert_outbound_scid_alias();
 		let mut channel = match Channel::new_from_req(&self.fee_estimator, &self.keys_manager,
-			counterparty_node_id.clone(), &their_features, msg, 0, &self.default_configuration,
+			counterparty_node_id.clone(), &their_features, msg, user_channel_id, &self.default_configuration,
 			self.best_block.read().unwrap().height(), &self.logger, outbound_scid_alias)
 		{
 			Err(e) => {
