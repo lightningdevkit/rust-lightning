@@ -411,12 +411,16 @@ pub trait KeysInterface {
 	///
 	/// This method must return the same value each time it is called with a given `Recipient`
 	/// parameter.
+	///
+	/// Errors if the `Recipient` variant is not supported by the implementation.
 	fn get_node_secret(&self, recipient: Recipient) -> Result<SecretKey, ()>;
 	/// Get node id based on the provided [`Recipient`]. This public key corresponds to the secret in
 	/// [`get_node_secret`].
 	///
 	/// This method must return the same value each time it is called with a given `Recipient`
 	/// parameter.
+	///
+	/// Errors if the `Recipient` variant is not supported by the implementation.
 	///
 	/// [`get_node_secret`]: KeysInterface::get_node_secret
 	fn get_node_id(&self, recipient: Recipient) -> Result<PublicKey, ()> {
@@ -426,6 +430,8 @@ pub trait KeysInterface {
 	/// Gets the ECDH shared secret of our [`node secret`] and `other_key`, multiplying by `tweak` if
 	/// one is provided. Note that this tweak can be applied to `other_key` instead of our node
 	/// secret, though this is less efficient.
+	///
+	/// Errors if the `Recipient` variant is not supported by the implementation.
 	///
 	/// [`node secret`]: Self::get_node_secret
 	fn ecdh(&self, recipient: Recipient, other_key: &PublicKey, tweak: Option<&Scalar>) -> Result<SharedSecret, ()>;
@@ -466,6 +472,8 @@ pub trait KeysInterface {
 	/// The hrp is ascii bytes, while the invoice data is base32.
 	///
 	/// The secret key used to sign the invoice is dependent on the [`Recipient`].
+	///
+	/// Errors if the `Recipient` variant is not supported by the implementation.
 	fn sign_invoice(&self, hrp_bytes: &[u8], invoice_data: &[u5], receipient: Recipient) -> Result<RecoverableSignature, ()>;
 
 	/// Get secret key material as bytes for use in encrypting and decrypting inbound payment data.
