@@ -90,7 +90,7 @@ pub struct PaymentPreimage(pub [u8; 32]);
 #[derive(Hash, Copy, Clone, PartialEq, Eq, Debug)]
 pub struct PaymentSecret(pub [u8; 32]);
 
-use prelude::*;
+use crate::prelude::*;
 use bitcoin::bech32;
 use bitcoin::bech32::{Base32Len, FromBase32, ToBase32, WriteBase32, u5};
 

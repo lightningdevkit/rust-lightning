@@ -7,13 +7,13 @@ use bitcoin::hash_types::{WPubkeyHash, WScriptHash};
 use bitcoin::secp256k1::PublicKey;
 use bitcoin::util::address::WitnessVersion;
 
-use ln::channelmanager;
-use ln::features::InitFeatures;
-use ln::msgs::DecodeError;
-use util::ser::{Readable, Writeable, Writer};
+use crate::ln::channelmanager;
+use crate::ln::features::InitFeatures;
+use crate::ln::msgs::DecodeError;
+use crate::util::ser::{Readable, Writeable, Writer};
 
 use core::convert::TryFrom;
-use io;
+use crate::io;
 
 /// A script pubkey for shutting down a channel as defined by [BOLT #2].
 ///
@@ -179,7 +179,7 @@ mod shutdown_script_tests {
 	use bitcoin::blockdata::script::{Builder, Script};
 	use bitcoin::secp256k1::Secp256k1;
 	use bitcoin::secp256k1::{PublicKey, SecretKey};
-	use ln::features::InitFeatures;
+	use crate::ln::features::InitFeatures;
 	use core::convert::TryFrom;
 	use bitcoin::util::address::WitnessVersion;
 

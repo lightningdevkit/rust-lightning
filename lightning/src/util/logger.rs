@@ -20,7 +20,7 @@ use core::cmp;
 use core::fmt;
 
 #[cfg(c_bindings)]
-use prelude::*; // Needed for String
+use crate::prelude::*; // Needed for String
 
 static LOG_LEVEL_NAMES: [&'static str; 6] = ["GOSSIP", "TRACE", "DEBUG", "INFO", "WARN", "ERROR"];
 
@@ -168,9 +168,9 @@ impl<'a> core::fmt::Display for DebugBytes<'a> {
 
 #[cfg(test)]
 mod tests {
-	use util::logger::{Logger, Level};
-	use util::test_utils::TestLogger;
-	use sync::Arc;
+	use crate::util::logger::{Logger, Level};
+	use crate::util::test_utils::TestLogger;
+	use crate::sync::Arc;
 
 	#[test]
 	fn test_level_show() {

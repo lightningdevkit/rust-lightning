@@ -9,7 +9,7 @@
 
 //! Error types live here.
 
-use ln::script::ShutdownScript;
+use crate::ln::script::ShutdownScript;
 
 use alloc::string::String;
 use core::fmt;

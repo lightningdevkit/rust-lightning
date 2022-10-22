@@ -13,7 +13,7 @@ use lightning::util::logger::Logger;
 use lightning::util::ser::{MaybeReadableArgs, Readable, Writeable, Writer};
 use lightning::onion_message::{CustomOnionMessageContents, CustomOnionMessageHandler, OnionMessenger};
 
-use utils::test_logger;
+use crate::utils::test_logger;
 
 use std::io::{self, Cursor};
 use std::sync::atomic::{AtomicU64, Ordering};

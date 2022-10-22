@@ -17,25 +17,25 @@
 
 use bitcoin::secp256k1::{self, Secp256k1, SecretKey, PublicKey};
 
-use ln::features::{InitFeatures, NodeFeatures};
-use ln::msgs;
-use ln::msgs::{ChannelMessageHandler, LightningError, NetAddress, OnionMessageHandler, RoutingMessageHandler};
-use ln::channelmanager::{SimpleArcChannelManager, SimpleRefChannelManager};
-use util::ser::{MaybeReadableArgs, VecWriter, Writeable, Writer};
-use ln::peer_channel_encryptor::{PeerChannelEncryptor,NextNoiseStep};
-use ln::wire;
-use ln::wire::Encode;
-use onion_message::{CustomOnionMessageContents, CustomOnionMessageHandler, SimpleArcOnionMessenger, SimpleRefOnionMessenger};
-use routing::gossip::{NetworkGraph, P2PGossipSync};
-use util::atomic_counter::AtomicCounter;
-use util::crypto::sign;
-use util::events::{MessageSendEvent, MessageSendEventsProvider, OnionMessageProvider};
-use util::logger::Logger;
+use crate::ln::features::{InitFeatures, NodeFeatures};
+use crate::ln::msgs;
+use crate::ln::msgs::{ChannelMessageHandler, LightningError, NetAddress, OnionMessageHandler, RoutingMessageHandler};
+use crate::ln::channelmanager::{SimpleArcChannelManager, SimpleRefChannelManager};
+use crate::util::ser::{MaybeReadableArgs, VecWriter, Writeable, Writer};
+use crate::ln::peer_channel_encryptor::{PeerChannelEncryptor,NextNoiseStep};
+use crate::ln::wire;
+use crate::ln::wire::Encode;
+use crate::onion_message::{CustomOnionMessageContents, CustomOnionMessageHandler, SimpleArcOnionMessenger, SimpleRefOnionMessenger};
+use crate::routing::gossip::{NetworkGraph, P2PGossipSync};
+use crate::util::atomic_counter::AtomicCounter;
+use crate::util::crypto::sign;
+use crate::util::events::{MessageSendEvent, MessageSendEventsProvider, OnionMessageProvider};
+use crate::util::logger::Logger;
 
-use prelude::*;
-use io;
+use crate::prelude::*;
+use crate::io;
 use alloc::collections::LinkedList;
-use sync::{Arc, Mutex, MutexGuard, FairRwLock};
+use crate::sync::{Arc, Mutex, MutexGuard, FairRwLock};
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use core::{cmp, hash, fmt, mem};
 use core::ops::Deref;
@@ -2053,17 +2053,17 @@ fn is_gossip_msg(type_id: u16) -> bool {
 
 #[cfg(test)]
 mod tests {
-	use ln::peer_handler::{PeerManager, MessageHandler, SocketDescriptor, IgnoringMessageHandler, filter_addresses};
-	use ln::{msgs, wire};
-	use ln::msgs::NetAddress;
-	use util::events;
-	use util::test_utils;
+	use crate::ln::peer_handler::{PeerManager, MessageHandler, SocketDescriptor, IgnoringMessageHandler, filter_addresses};
+	use crate::ln::{msgs, wire};
+	use crate::ln::msgs::NetAddress;
+	use crate::util::events;
+	use crate::util::test_utils;
 
 	use bitcoin::secp256k1::Secp256k1;
 	use bitcoin::secp256k1::{SecretKey, PublicKey};
 
-	use prelude::*;
-	use sync::{Arc, Mutex};
+	use crate::prelude::*;
+	use crate::sync::{Arc, Mutex};
 	use core::sync::atomic::Ordering;
 
 	#[derive(Clone)]

@@ -9,18 +9,18 @@
 
 //! Tests of our shutdown and closing_signed negotiation logic.
 
-use chain::keysinterface::KeysInterface;
-use chain::transaction::OutPoint;
-use ln::channelmanager::{self, PaymentSendFailure};
-use routing::router::{PaymentParameters, get_route};
-use ln::msgs;
-use ln::msgs::{ChannelMessageHandler, ErrorAction};
-use ln::script::ShutdownScript;
-use util::test_utils;
-use util::test_utils::OnGetShutdownScriptpubkey;
-use util::events::{Event, MessageSendEvent, MessageSendEventsProvider, ClosureReason};
-use util::errors::APIError;
-use util::config::UserConfig;
+use crate::chain::keysinterface::KeysInterface;
+use crate::chain::transaction::OutPoint;
+use crate::ln::channelmanager::{self, PaymentSendFailure};
+use crate::routing::router::{PaymentParameters, get_route};
+use crate::ln::msgs;
+use crate::ln::msgs::{ChannelMessageHandler, ErrorAction};
+use crate::ln::script::ShutdownScript;
+use crate::util::test_utils;
+use crate::util::test_utils::OnGetShutdownScriptpubkey;
+use crate::util::events::{Event, MessageSendEvent, MessageSendEventsProvider, ClosureReason};
+use crate::util::errors::APIError;
+use crate::util::config::UserConfig;
 
 use bitcoin::blockdata::script::Builder;
 use bitcoin::blockdata::opcodes;
@@ -31,8 +31,8 @@ use regex;
 
 use core::default::Default;
 
-use ln::functional_test_utils::*;
-use ln::msgs::OptionalField::Present;
+use crate::ln::functional_test_utils::*;
+use crate::ln::msgs::OptionalField::Present;
 
 #[test]
 fn pre_funding_lock_shutdown_test() {

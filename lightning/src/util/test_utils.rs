@@ -7,25 +7,25 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-use chain;
-use chain::WatchedOutput;
-use chain::chaininterface;
-use chain::chaininterface::ConfirmationTarget;
-use chain::chainmonitor;
-use chain::chainmonitor::MonitorUpdateId;
-use chain::channelmonitor;
-use chain::channelmonitor::MonitorEvent;
-use chain::transaction::OutPoint;
-use chain::keysinterface;
-use ln::channelmanager;
-use ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
-use ln::{msgs, wire};
-use ln::script::ShutdownScript;
-use routing::scoring::FixedPenaltyScorer;
-use util::enforcing_trait_impls::{EnforcingSigner, EnforcementState};
-use util::events;
-use util::logger::{Logger, Level, Record};
-use util::ser::{Readable, ReadableArgs, Writer, Writeable};
+use crate::chain;
+use crate::chain::WatchedOutput;
+use crate::chain::chaininterface;
+use crate::chain::chaininterface::ConfirmationTarget;
+use crate::chain::chainmonitor;
+use crate::chain::chainmonitor::MonitorUpdateId;
+use crate::chain::channelmonitor;
+use crate::chain::channelmonitor::MonitorEvent;
+use crate::chain::transaction::OutPoint;
+use crate::chain::keysinterface;
+use crate::ln::channelmanager;
+use crate::ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
+use crate::ln::{msgs, wire};
+use crate::ln::script::ShutdownScript;
+use crate::routing::scoring::FixedPenaltyScorer;
+use crate::util::enforcing_trait_impls::{EnforcingSigner, EnforcementState};
+use crate::util::events;
+use crate::util::logger::{Logger, Level, Record};
+use crate::util::ser::{Readable, ReadableArgs, Writer, Writeable};
 
 use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::blockdata::transaction::{Transaction, TxOut};
@@ -41,14 +41,14 @@ use bitcoin::secp256k1::ecdsa::RecoverableSignature;
 
 use regex;
 
-use io;
-use prelude::*;
+use crate::io;
+use crate::prelude::*;
 use core::time::Duration;
-use sync::{Mutex, Arc};
+use crate::sync::{Mutex, Arc};
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use core::mem;
 use bitcoin::bech32::u5;
-use chain::keysinterface::{InMemorySigner, Recipient, KeyMaterial};
+use crate::chain::keysinterface::{InMemorySigner, Recipient, KeyMaterial};
 
 #[cfg(feature = "std")]
 use std::time::{SystemTime, UNIX_EPOCH};

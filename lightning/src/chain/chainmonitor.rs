@@ -26,21 +26,21 @@
 use bitcoin::blockdata::block::BlockHeader;
 use bitcoin::hash_types::Txid;
 
-use chain;
-use chain::{ChannelMonitorUpdateStatus, Filter, WatchedOutput};
-use chain::chaininterface::{BroadcasterInterface, FeeEstimator};
-use chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, Balance, MonitorEvent, TransactionOutputs, LATENCY_GRACE_PERIOD_BLOCKS};
-use chain::transaction::{OutPoint, TransactionData};
-use chain::keysinterface::Sign;
-use util::atomic_counter::AtomicCounter;
-use util::logger::Logger;
-use util::errors::APIError;
-use util::events;
-use util::events::EventHandler;
-use ln::channelmanager::ChannelDetails;
+use crate::chain;
+use crate::chain::{ChannelMonitorUpdateStatus, Filter, WatchedOutput};
+use crate::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
+use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, Balance, MonitorEvent, TransactionOutputs, LATENCY_GRACE_PERIOD_BLOCKS};
+use crate::chain::transaction::{OutPoint, TransactionData};
+use crate::chain::keysinterface::Sign;
+use crate::util::atomic_counter::AtomicCounter;
+use crate::util::logger::Logger;
+use crate::util::errors::APIError;
+use crate::util::events;
+use crate::util::events::EventHandler;
+use crate::ln::channelmanager::ChannelDetails;
 
-use prelude::*;
-use sync::{RwLock, RwLockReadGuard, Mutex, MutexGuard};
+use crate::prelude::*;
+use crate::sync::{RwLock, RwLockReadGuard, Mutex, MutexGuard};
 use core::ops::Deref;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use bitcoin::secp256k1::PublicKey;
@@ -473,7 +473,7 @@ where C::Target: chain::Filter,
 
 	#[cfg(any(test, fuzzing, feature = "_test_utils"))]
 	pub fn get_and_clear_pending_events(&self) -> Vec<events::Event> {
-		use util::events::EventsProvider;
+		use crate::util::events::EventsProvider;
 		let events = core::cell::RefCell::new(Vec::new());
 		let event_handler = |event: &events::Event| events.borrow_mut().push(event.clone());
 		self.process_pending_events(&event_handler);
@@ -752,16 +752,16 @@ impl<ChannelSigner: Sign, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref> even
 mod tests {
 	use bitcoin::{BlockHeader, TxMerkleNode};
 	use bitcoin::hashes::Hash;
-	use ::{check_added_monitors, check_closed_broadcast, check_closed_event};
-	use ::{expect_payment_sent, expect_payment_claimed, expect_payment_sent_without_paths, expect_payment_path_successful, get_event_msg};
-	use ::{get_htlc_update_msgs, get_local_commitment_txn, get_revoke_commit_msgs, get_route_and_payment_hash, unwrap_send_err};
-	use chain::{ChannelMonitorUpdateStatus, Confirm, Watch};
-	use chain::channelmonitor::LATENCY_GRACE_PERIOD_BLOCKS;
-	use ln::channelmanager::{self, PaymentSendFailure};
-	use ln::functional_test_utils::*;
-	use ln::msgs::ChannelMessageHandler;
-	use util::errors::APIError;
-	use util::events::{ClosureReason, MessageSendEvent, MessageSendEventsProvider};
+	use crate::{check_added_monitors, check_closed_broadcast, check_closed_event};
+	use crate::{expect_payment_sent, expect_payment_claimed, expect_payment_sent_without_paths, expect_payment_path_successful, get_event_msg};
+	use crate::{get_htlc_update_msgs, get_local_commitment_txn, get_revoke_commit_msgs, get_route_and_payment_hash, unwrap_send_err};
+	use crate::chain::{ChannelMonitorUpdateStatus, Confirm, Watch};
+	use crate::chain::channelmonitor::LATENCY_GRACE_PERIOD_BLOCKS;
+	use crate::ln::channelmanager::{self, PaymentSendFailure};
+	use crate::ln::functional_test_utils::*;
+	use crate::ln::msgs::ChannelMessageHandler;
+	use crate::util::errors::APIError;
+	use crate::util::events::{ClosureReason, MessageSendEvent, MessageSendEventsProvider};
 
 	#[test]
 	fn test_async_ooo_offchain_updates() {

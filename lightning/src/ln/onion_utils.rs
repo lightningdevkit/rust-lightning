@@ -7,16 +7,16 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-use ln::{PaymentHash, PaymentPreimage, PaymentSecret};
-use ln::channelmanager::HTLCSource;
-use ln::msgs;
-use ln::wire::Encode;
-use routing::gossip::NetworkUpdate;
-use routing::router::RouteHop;
-use util::chacha20::{ChaCha20, ChaChaReader};
-use util::errors::{self, APIError};
-use util::ser::{Readable, ReadableArgs, Writeable, LengthCalculatingWriter};
-use util::logger::Logger;
+use crate::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
+use crate::ln::channelmanager::HTLCSource;
+use crate::ln::msgs;
+use crate::ln::wire::Encode;
+use crate::routing::gossip::NetworkUpdate;
+use crate::routing::router::RouteHop;
+use crate::util::chacha20::{ChaCha20, ChaChaReader};
+use crate::util::errors::{self, APIError};
+use crate::util::ser::{Readable, ReadableArgs, Writeable, LengthCalculatingWriter};
+use crate::util::logger::Logger;
 
 use bitcoin::hashes::{Hash, HashEngine};
 use bitcoin::hashes::cmp::fixed_time_eq;
@@ -28,8 +28,8 @@ use bitcoin::secp256k1::Secp256k1;
 use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1;
 
-use prelude::*;
-use io::{Cursor, Read};
+use crate::prelude::*;
+use crate::io::{Cursor, Read};
 use core::convert::{AsMut, TryInto};
 use core::ops::Deref;
 
@@ -756,13 +756,13 @@ pub(crate) fn decode_next_hop<D: DecodeInput, R: ReadableArgs<D::Arg>, N: NextPa
 
 #[cfg(test)]
 mod tests {
-	use io;
-	use prelude::*;
-	use ln::PaymentHash;
-	use ln::features::{ChannelFeatures, NodeFeatures};
-	use routing::router::{Route, RouteHop};
-	use ln::msgs;
-	use util::ser::{Writeable, Writer};
+	use crate::io;
+	use crate::prelude::*;
+	use crate::ln::PaymentHash;
+	use crate::ln::features::{ChannelFeatures, NodeFeatures};
+	use crate::routing::router::{Route, RouteHop};
+	use crate::ln::msgs;
+	use crate::util::ser::{Writeable, Writer};
 
 	use hex;
 

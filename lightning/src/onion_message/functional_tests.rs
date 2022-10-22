@@ -9,19 +9,19 @@
 
 //! Onion message testing and test utilities live here.
 
-use chain::keysinterface::{KeysInterface, Recipient};
-use ln::features::InitFeatures;
-use ln::msgs::{self, DecodeError, OnionMessageHandler};
+use crate::chain::keysinterface::{KeysInterface, Recipient};
+use crate::ln::features::InitFeatures;
+use crate::ln::msgs::{self, DecodeError, OnionMessageHandler};
 use super::{BlindedRoute, CustomOnionMessageContents, CustomOnionMessageHandler, Destination, OnionMessageContents, OnionMessenger, SendError};
-use util::enforcing_trait_impls::EnforcingSigner;
-use util::ser::{MaybeReadableArgs, Writeable, Writer};
-use util::test_utils;
+use crate::util::enforcing_trait_impls::EnforcingSigner;
+use crate::util::ser::{MaybeReadableArgs, Writeable, Writer};
+use crate::util::test_utils;
 
 use bitcoin::network::constants::Network;
 use bitcoin::secp256k1::{PublicKey, Secp256k1};
 
-use io;
-use sync::Arc;
+use crate::io;
+use crate::sync::Arc;
 
 struct MessengerNode {
 	keys_manager: Arc<test_utils::TestKeysInterface>,

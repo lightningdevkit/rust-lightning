@@ -197,7 +197,7 @@ impl FromStr for SiPrefix {
 	type Err = ParseError;
 
 	fn from_str(currency_prefix: &str) -> Result<Self, ParseError> {
-		use SiPrefix::*;
+		use crate::SiPrefix::*;
 		match currency_prefix {
 			"m" => Ok(Milli),
 			"u" => Ok(Micro),
@@ -715,7 +715,7 @@ impl From<ParseError> for ParseOrSemanticError {
 	}
 }
 
-impl From<::SemanticError> for ParseOrSemanticError {
+impl From<crate::SemanticError> for ParseOrSemanticError {
 	fn from(e: SemanticError) -> Self {
 		ParseOrSemanticError::SemanticError(e)
 	}
@@ -723,7 +723,7 @@ impl From<::SemanticError> for ParseOrSemanticError {
 
 #[cfg(test)]
 mod test {
-	use de::ParseError;
+	use crate::de::ParseError;
 	use secp256k1::PublicKey;
 	use bech32::u5;
 	use bitcoin_hashes::hex::FromHex;
@@ -749,7 +749,7 @@ mod test {
 
 	#[test]
 	fn test_parse_currency_prefix() {
-		use Currency;
+		use crate::Currency;
 
 		assert_eq!("bc".parse::<Currency>(), Ok(Currency::Bitcoin));
 		assert_eq!("tb".parse::<Currency>(), Ok(Currency::BitcoinTestnet));
@@ -761,7 +761,7 @@ mod test {
 
 	#[test]
 	fn test_parse_int_from_bytes_be() {
-		use de::parse_int_be;
+		use crate::de::parse_int_be;
 
 		assert_eq!(parse_int_be::<u32, u8>(&[1, 2, 3, 4], 256), Some(16909060));
 		assert_eq!(parse_int_be::<u32, u8>(&[1, 3], 32), Some(35));
@@ -771,7 +771,7 @@ mod test {
 
 	#[test]
 	fn test_parse_sha256_hash() {
-		use Sha256;
+		use crate::Sha256;
 		use bech32::FromBase32;
 
 		let input = from_bech32(
@@ -794,7 +794,7 @@ mod test {
 
 	#[test]
 	fn test_parse_description() {
-		use ::Description;
+		use crate::Description;
 		use bech32::FromBase32;
 
 		let input = from_bech32("xysxxatsyp3k7enxv4js".as_bytes());
@@ -804,7 +804,7 @@ mod test {
 
 	#[test]
 	fn test_parse_payee_pub_key() {
-		use ::PayeePubKey;
+		use crate::PayeePubKey;
 		use bech32::FromBase32;
 
 		let input = from_bech32("q0n326hr8v9zprg8gsvezcch06gfaqqhde2aj730yg0durunfhv66".as_bytes());
@@ -828,7 +828,7 @@ mod test {
 
 	#[test]
 	fn test_parse_expiry_time() {
-		use ::ExpiryTime;
+		use crate::ExpiryTime;
 		use bech32::FromBase32;
 
 		let input = from_bech32("pu".as_bytes());
@@ -841,7 +841,7 @@ mod test {
 
 	#[test]
 	fn test_parse_min_final_cltv_expiry() {
-		use ::MinFinalCltvExpiry;
+		use crate::MinFinalCltvExpiry;
 		use bech32::FromBase32;
 
 		let input = from_bech32("pr".as_bytes());
@@ -852,7 +852,7 @@ mod test {
 
 	#[test]
 	fn test_parse_fallback() {
-		use Fallback;
+		use crate::Fallback;
 		use bech32::FromBase32;
 
 		let cases = vec![
@@ -911,9 +911,9 @@ mod test {
 	fn test_parse_route() {
 		use lightning::routing::gossip::RoutingFees;
 		use lightning::routing::router::{RouteHint, RouteHintHop};
-		use ::PrivateRoute;
+		use crate::PrivateRoute;
 		use bech32::FromBase32;
-		use de::parse_int_be;
+		use crate::de::parse_int_be;
 
 		let input = from_bech32(
 			"q20q82gphp2nflc7jtzrcazrra7wwgzxqc8u7754cdlpfrmccae92qgzqvzq2ps8pqqqqqqpqqqqq9qqqvpeuqa\
@@ -968,8 +968,8 @@ mod test {
 	fn test_payment_secret_and_features_de_and_ser() {
 		use lightning::ln::features::InvoiceFeatures;
 		use secp256k1::ecdsa::{RecoveryId, RecoverableSignature};
-		use TaggedField::*;
-		use {SiPrefix, SignedRawInvoice, InvoiceSignature, RawInvoice, RawHrp, RawDataPart,
+		use crate::TaggedField::*;
+		use crate::{SiPrefix, SignedRawInvoice, InvoiceSignature, RawInvoice, RawHrp, RawDataPart,
 				 Currency, Sha256, PositiveTimestamp};
 
 		// Feature bits 9, 15, and 99 are set.
@@ -988,8 +988,8 @@ mod test {
 								PaymentHash(Sha256(sha256::Hash::from_hex(
 									"0001020304050607080900010203040506070809000102030405060708090102"
 								).unwrap())).into(),
-								Description(::Description::new("coffee beans".to_owned()).unwrap()).into(),
-								PaymentSecret(::PaymentSecret([17; 32])).into(),
+								Description(crate::Description::new("coffee beans".to_owned()).unwrap()).into(),
+								PaymentSecret(crate::PaymentSecret([17; 32])).into(),
 								Features(expected_features).into()]}
 								},
 					hash: [0xb1, 0x96, 0x46, 0xc3, 0xbc, 0x56, 0x76, 0x1d, 0x20, 0x65, 0x6e, 0x0e, 0x32,
@@ -1013,9 +1013,9 @@ mod test {
 
 	#[test]
 	fn test_raw_signed_invoice_deserialization() {
-		use TaggedField::*;
+		use crate::TaggedField::*;
 		use secp256k1::ecdsa::{RecoveryId, RecoverableSignature};
-		use {SignedRawInvoice, InvoiceSignature, RawInvoice, RawHrp, RawDataPart, Currency, Sha256,
+		use crate::{SignedRawInvoice, InvoiceSignature, RawInvoice, RawHrp, RawDataPart, Currency, Sha256,
 			 PositiveTimestamp};
 
 		assert_eq!(
@@ -1036,7 +1036,7 @@ mod test {
 							"0001020304050607080900010203040506070809000102030405060708090102"
 						).unwrap())).into(),
 						Description(
-							::Description::new(
+							crate::Description::new(
 								"Please consider supporting this project".to_owned()
 							).unwrap()
 						).into(),

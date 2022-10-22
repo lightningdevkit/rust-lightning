@@ -3,6 +3,7 @@ name = "lightning-fuzz"
 version = "0.0.1"
 authors = ["Automatically generated"]
 publish = false
+edition = "2018"
 # Because the function is unused it gets dropped before we link lightning, so
 # we have to duplicate build.rs here. Note that this is only required for
 # fuzzing mode.

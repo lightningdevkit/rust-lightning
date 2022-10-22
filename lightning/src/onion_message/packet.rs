@@ -12,15 +12,15 @@
 use bitcoin::secp256k1::PublicKey;
 use bitcoin::secp256k1::ecdh::SharedSecret;
 
-use ln::msgs::DecodeError;
-use ln::onion_utils;
+use crate::ln::msgs::DecodeError;
+use crate::ln::onion_utils;
 use super::blinded_route::{BlindedRoute, ForwardTlvs, ReceiveTlvs};
-use util::chacha20poly1305rfc::{ChaChaPolyReadAdapter, ChaChaPolyWriteAdapter};
-use util::ser::{BigSize, FixedLengthReader, LengthRead, LengthReadable, LengthReadableArgs, MaybeReadableArgs, Readable, ReadableArgs, Writeable, Writer};
+use crate::util::chacha20poly1305rfc::{ChaChaPolyReadAdapter, ChaChaPolyWriteAdapter};
+use crate::util::ser::{BigSize, FixedLengthReader, LengthRead, LengthReadable, LengthReadableArgs, MaybeReadableArgs, Readable, ReadableArgs, Writeable, Writer};
 
 use core::cmp;
-use io::{self, Read};
-use prelude::*;
+use crate::io::{self, Read};
+use crate::prelude::*;
 
 // Per the spec, an onion message packet's `hop_data` field length should be
 // SMALL_PACKET_HOP_DATA_LEN if it fits, else BIG_PACKET_HOP_DATA_LEN if it fits.

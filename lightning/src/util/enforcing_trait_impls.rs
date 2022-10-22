@@ -7,15 +7,15 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-use ln::channel::{ANCHOR_OUTPUT_VALUE_SATOSHI, MIN_CHAN_DUST_LIMIT_SATOSHIS};
-use ln::chan_utils::{HTLCOutputInCommitment, ChannelPublicKeys, HolderCommitmentTransaction, CommitmentTransaction, ChannelTransactionParameters, TrustedCommitmentTransaction, ClosingTransaction};
-use ln::{chan_utils, msgs, PaymentPreimage};
-use chain::keysinterface::{Sign, InMemorySigner, BaseSign};
+use crate::ln::channel::{ANCHOR_OUTPUT_VALUE_SATOSHI, MIN_CHAN_DUST_LIMIT_SATOSHIS};
+use crate::ln::chan_utils::{HTLCOutputInCommitment, ChannelPublicKeys, HolderCommitmentTransaction, CommitmentTransaction, ChannelTransactionParameters, TrustedCommitmentTransaction, ClosingTransaction};
+use crate::ln::{chan_utils, msgs, PaymentPreimage};
+use crate::chain::keysinterface::{Sign, InMemorySigner, BaseSign};
 
-use prelude::*;
+use crate::prelude::*;
 use core::cmp;
-use sync::{Mutex, Arc};
-#[cfg(test)] use sync::MutexGuard;
+use crate::sync::{Mutex, Arc};
+#[cfg(test)] use crate::sync::MutexGuard;
 
 use bitcoin::blockdata::transaction::{Transaction, EcdsaSighashType};
 use bitcoin::util::sighash;
@@ -23,8 +23,8 @@ use bitcoin::util::sighash;
 use bitcoin::secp256k1;
 use bitcoin::secp256k1::{SecretKey, PublicKey};
 use bitcoin::secp256k1::{Secp256k1, ecdsa::Signature};
-use util::ser::{Writeable, Writer};
-use io::Error;
+use crate::util::ser::{Writeable, Writer};
+use crate::io::Error;
 
 /// Initial value for revoked commitment downward counter
 pub const INITIAL_REVOKED_COMMITMENT_NUMBER: u64 = 1 << 48;

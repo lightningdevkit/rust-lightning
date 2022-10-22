@@ -20,7 +20,7 @@
 //! <https://lightning.readthedocs.io/lightning-signmessage.7.html>
 //! <https://api.lightning.community/#signmessage>
 
-use prelude::*;
+use crate::prelude::*;
 use crate::util::zbase32;
 use bitcoin::hashes::{sha256d, Hash};
 use bitcoin::secp256k1::ecdsa::{RecoverableSignature, RecoveryId};
@@ -89,7 +89,7 @@ pub fn verify(msg: &[u8], sig: &str, pk: &PublicKey) -> bool {
 #[cfg(test)]
 mod test {
     use core::str::FromStr;
-    use util::message_signing::{sign, recover_pk, verify};
+    use crate::util::message_signing::{sign, recover_pk, verify};
     use bitcoin::secp256k1::ONE_KEY;
     use bitcoin::secp256k1::{PublicKey, Secp256k1};
 

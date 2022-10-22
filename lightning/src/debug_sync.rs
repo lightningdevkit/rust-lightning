@@ -12,10 +12,10 @@ use std::sync::RwLockReadGuard as StdRwLockReadGuard;
 use std::sync::RwLockWriteGuard as StdRwLockWriteGuard;
 use std::sync::Condvar as StdCondvar;
 
-use prelude::HashMap;
+use crate::prelude::HashMap;
 
 #[cfg(feature = "backtrace")]
-use {prelude::hash_map, backtrace::Backtrace, std::sync::Once};
+use {crate::prelude::hash_map, backtrace::Backtrace, std::sync::Once};
 
 #[cfg(not(feature = "backtrace"))]
 struct Backtrace{}

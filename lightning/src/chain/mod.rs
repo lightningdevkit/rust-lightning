@@ -17,11 +17,11 @@ use bitcoin::hash_types::{BlockHash, Txid};
 use bitcoin::network::constants::Network;
 use bitcoin::secp256k1::PublicKey;
 
-use chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, MonitorEvent};
-use chain::keysinterface::Sign;
-use chain::transaction::{OutPoint, TransactionData};
+use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, MonitorEvent};
+use crate::chain::keysinterface::Sign;
+use crate::chain::transaction::{OutPoint, TransactionData};
 
-use prelude::*;
+use crate::prelude::*;
 
 pub mod chaininterface;
 pub mod chainmonitor;

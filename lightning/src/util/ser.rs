@@ -10,11 +10,11 @@
 //! A very simple serialization framework which is used to serialize/deserialize messages as well
 //! as ChannelsManagers and ChannelMonitors.
 
-use prelude::*;
-use io::{self, Read, Write};
-use io_extras::{copy, sink};
+use crate::prelude::*;
+use crate::io::{self, Read, Write};
+use crate::io_extras::{copy, sink};
 use core::hash::Hash;
-use sync::Mutex;
+use crate::sync::Mutex;
 use core::cmp;
 use core::convert::TryFrom;
 use core::ops::Deref;
@@ -30,10 +30,10 @@ use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::hash_types::{Txid, BlockHash};
 use core::marker::Sized;
 use core::time::Duration;
-use ln::msgs::DecodeError;
-use ln::{PaymentPreimage, PaymentHash, PaymentSecret};
+use crate::ln::msgs::DecodeError;
+use crate::ln::{PaymentPreimage, PaymentHash, PaymentSecret};
 
-use util::byte_utils::{be48_to_array, slice_to_be48};
+use crate::util::byte_utils::{be48_to_array, slice_to_be48};
 
 /// serialization buffer size
 pub const MAX_BUF_SIZE: usize = 64 * 1024;
@@ -1071,7 +1071,7 @@ impl Readable for Duration {
 #[cfg(test)]
 mod tests {
 	use core::convert::TryFrom;
-	use util::ser::{Readable, Hostname, Writeable};
+	use crate::util::ser::{Readable, Hostname, Writeable};
 
 	#[test]
 	fn hostname_conversion() {

@@ -7,15 +7,15 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-use chain::transaction::OutPoint;
-use chain::keysinterface::SpendableOutputDescriptor;
+use crate::chain::transaction::OutPoint;
+use crate::chain::keysinterface::SpendableOutputDescriptor;
 
 use bitcoin::hash_types::Txid;
 use bitcoin::blockdata::transaction::Transaction;
 
-use routing::router::Route;
-use ln::chan_utils::HTLCClaim;
-use util::logger::DebugBytes;
+use crate::routing::router::Route;
+use crate::ln::chan_utils::HTLCClaim;
+use crate::util::logger::DebugBytes;
 
 /// Logs a pubkey in hex format.
 #[macro_export]
@@ -44,7 +44,7 @@ impl<'a> core::fmt::Display for DebugFundingChannelId<'a> {
 }
 macro_rules! log_funding_channel_id {
 	($funding_txid: expr, $funding_txo: expr) => {
-		::util::macro_logger::DebugFundingChannelId(&$funding_txid, $funding_txo)
+		$crate::util::macro_logger::DebugFundingChannelId(&$funding_txid, $funding_txo)
 	}
 }
 
@@ -56,7 +56,7 @@ impl<'a, T> core::fmt::Display for DebugFundingInfo<'a, T> {
 }
 macro_rules! log_funding_info {
 	($key_storage: expr) => {
-		::util::macro_logger::DebugFundingInfo(&$key_storage.get_funding_txo())
+		$crate::util::macro_logger::DebugFundingInfo(&$key_storage.get_funding_txo())
 	}
 }
 
@@ -74,7 +74,7 @@ impl<'a> core::fmt::Display for DebugRoute<'a> {
 }
 macro_rules! log_route {
 	($obj: expr) => {
-		::util::macro_logger::DebugRoute(&$obj)
+		$crate::util::macro_logger::DebugRoute(&$obj)
 	}
 }
 
@@ -122,7 +122,7 @@ impl<'a> core::fmt::Display for DebugTx<'a> {
 
 macro_rules! log_tx {
 	($obj: expr) => {
-		::util::macro_logger::DebugTx(&$obj)
+		$crate::util::macro_logger::DebugTx(&$obj)
 	}
 }
 
@@ -146,7 +146,7 @@ impl<'a> core::fmt::Display for DebugSpendable<'a> {
 
 macro_rules! log_spendable {
 	($obj: expr) => {
-		::util::macro_logger::DebugSpendable(&$obj)
+		$crate::util::macro_logger::DebugSpendable(&$obj)
 	}
 }
 

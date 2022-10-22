@@ -30,21 +30,21 @@ use bitcoin::secp256k1;
 use bitcoin::blockdata::script::Script;
 use bitcoin::hash_types::{Txid, BlockHash};
 
-use ln::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
-use ln::onion_utils;
-use onion_message;
+use crate::ln::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
+use crate::ln::onion_utils;
+use crate::onion_message;
 
-use prelude::*;
+use crate::prelude::*;
 use core::fmt;
 use core::fmt::Debug;
-use io::{self, Read};
-use io_extras::read_to_end;
+use crate::io::{self, Read};
+use crate::io_extras::read_to_end;
 
-use util::events::{MessageSendEventsProvider, OnionMessageProvider};
-use util::logger;
-use util::ser::{BigSize, LengthReadable, Readable, ReadableArgs, Writeable, Writer, FixedLengthReader, HighZeroBytesDroppedBigSize, Hostname};
+use crate::util::events::{MessageSendEventsProvider, OnionMessageProvider};
+use crate::util::logger;
+use crate::util::ser::{BigSize, LengthReadable, Readable, ReadableArgs, Writeable, Writer, FixedLengthReader, HighZeroBytesDroppedBigSize, Hostname};
 
-use ln::{PaymentPreimage, PaymentHash, PaymentSecret};
+use crate::ln::{PaymentPreimage, PaymentHash, PaymentSecret};
 
 /// 21 million * 10^8 * 1000
 pub(crate) const MAX_VALUE_MSAT: u64 = 21_000_000_0000_0000_000;
@@ -1014,8 +1014,8 @@ pub trait OnionMessageHandler : OnionMessageProvider {
 }
 
 mod fuzzy_internal_msgs {
-	use prelude::*;
-	use ln::{PaymentPreimage, PaymentSecret};
+	use crate::prelude::*;
+	use crate::ln::{PaymentPreimage, PaymentSecret};
 
 	// These types aren't intended to be pub, but are exposed for direct fuzzing (as we deserialize
 	// them from untrusted input):
@@ -1961,11 +1961,11 @@ impl_writeable_msg!(GossipTimestampFilter, {
 #[cfg(test)]
 mod tests {
 	use hex;
-	use ln::{PaymentPreimage, PaymentHash, PaymentSecret};
-	use ln::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
-	use ln::msgs;
-	use ln::msgs::{FinalOnionHopData, OptionalField, OnionErrorPacket, OnionHopDataFormat};
-	use util::ser::{Writeable, Readable, Hostname};
+	use crate::ln::{PaymentPreimage, PaymentHash, PaymentSecret};
+	use crate::ln::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
+	use crate::ln::msgs;
+	use crate::ln::msgs::{FinalOnionHopData, OptionalField, OnionErrorPacket, OnionHopDataFormat};
+	use crate::util::ser::{Writeable, Readable, Hostname};
 
 	use bitcoin::hashes::hex::FromHex;
 	use bitcoin::util::address::Address;
@@ -1977,8 +1977,8 @@ mod tests {
 	use bitcoin::secp256k1::{PublicKey,SecretKey};
 	use bitcoin::secp256k1::{Secp256k1, Message};
 
-	use io::{self, Cursor};
-	use prelude::*;
+	use crate::io::{self, Cursor};
+	use crate::prelude::*;
 	use core::convert::TryFrom;
 
 	#[test]
@@ -2904,7 +2904,7 @@ mod tests {
 	}
 	// see above test, needs to be a separate method for use of the serialization macros.
 	fn encode_big_payload() -> Result<Vec<u8>, io::Error> {
-		use util::ser::HighZeroBytesDroppedBigSize;
+		use crate::util::ser::HighZeroBytesDroppedBigSize;
 		let payload = msgs::OnionHopData {
 			format: OnionHopDataFormat::NonFinalNode {
 				short_channel_id: 0xdeadbeef1bad1dea,

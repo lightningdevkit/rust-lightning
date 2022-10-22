@@ -10,8 +10,8 @@
 
 use core::ops::Deref;
 use bitcoin::hashes::hex::ToHex;
-use io::{self};
-use routing::scoring::WriteableScore;
+use crate::io::{self};
+use crate::routing::scoring::WriteableScore;
 
 use crate::{chain::{keysinterface::{Sign, KeysInterface}, self, transaction::{OutPoint}, chaininterface::{BroadcasterInterface, FeeEstimator}, chainmonitor::{Persist, MonitorUpdateId}, channelmonitor::{ChannelMonitor, ChannelMonitorUpdate}}, ln::channelmanager::ChannelManager, routing::gossip::NetworkGraph};
 use super::{logger::Logger, ser::Writeable};

@@ -51,8 +51,8 @@ use lightning::util::events::MessageSendEventsProvider;
 use lightning::util::ser::{Readable, ReadableArgs, Writeable, Writer};
 use lightning::routing::router::{Route, RouteHop};
 
-use utils::test_logger::{self, Output};
-use utils::test_persister::TestPersister;
+use crate::utils::test_logger::{self, Output};
+use crate::utils::test_persister::TestPersister;
 
 use bitcoin::secp256k1::{PublicKey, SecretKey, Scalar};
 use bitcoin::secp256k1::ecdh::SharedSecret;

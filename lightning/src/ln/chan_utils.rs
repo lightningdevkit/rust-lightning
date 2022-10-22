@@ -20,10 +20,10 @@ use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::ripemd160::Hash as Ripemd160;
 use bitcoin::hash_types::{Txid, PubkeyHash};
 
-use ln::{PaymentHash, PaymentPreimage};
-use ln::msgs::DecodeError;
-use util::ser::{Readable, Writeable, Writer};
-use util::{byte_utils, transaction_utils};
+use crate::ln::{PaymentHash, PaymentPreimage};
+use crate::ln::msgs::DecodeError;
+use crate::util::ser::{Readable, Writeable, Writer};
+use crate::util::{byte_utils, transaction_utils};
 
 use bitcoin::hash_types::WPubkeyHash;
 use bitcoin::secp256k1::{SecretKey, PublicKey, Scalar};
@@ -31,15 +31,15 @@ use bitcoin::secp256k1::{Secp256k1, ecdsa::Signature, Message};
 use bitcoin::secp256k1::Error as SecpError;
 use bitcoin::{PackedLockTime, secp256k1, Sequence, Witness};
 
-use io;
-use prelude::*;
+use crate::io;
+use crate::prelude::*;
 use core::cmp;
-use ln::chan_utils;
-use util::transaction_utils::sort_outputs;
-use ln::channel::{INITIAL_COMMITMENT_NUMBER, ANCHOR_OUTPUT_VALUE_SATOSHI};
+use crate::ln::chan_utils;
+use crate::util::transaction_utils::sort_outputs;
+use crate::ln::channel::{INITIAL_COMMITMENT_NUMBER, ANCHOR_OUTPUT_VALUE_SATOSHI};
 use core::ops::Deref;
-use chain;
-use util::crypto::sign;
+use crate::chain;
+use crate::util::crypto::sign;
 
 pub(crate) const MAX_HTLCS: u16 = 483;
 pub(crate) const OFFERED_HTLC_SCRIPT_WEIGHT: usize = 133;
@@ -1581,15 +1581,15 @@ fn get_p2wpkh_redeemscript(key: &PublicKey) -> Script {
 #[cfg(test)]
 mod tests {
 	use super::CounterpartyCommitmentSecrets;
-	use ::{hex, chain};
-	use prelude::*;
-	use ln::chan_utils::{get_htlc_redeemscript, get_to_countersignatory_with_anchors_redeemscript, get_p2wpkh_redeemscript, CommitmentTransaction, TxCreationKeys, ChannelTransactionParameters, CounterpartyChannelTransactionParameters, HTLCOutputInCommitment};
+	use crate::{hex, chain};
+	use crate::prelude::*;
+	use crate::ln::chan_utils::{get_htlc_redeemscript, get_to_countersignatory_with_anchors_redeemscript, get_p2wpkh_redeemscript, CommitmentTransaction, TxCreationKeys, ChannelTransactionParameters, CounterpartyChannelTransactionParameters, HTLCOutputInCommitment};
 	use bitcoin::secp256k1::{PublicKey, SecretKey, Secp256k1};
-	use util::test_utils;
-	use chain::keysinterface::{KeysInterface, BaseSign};
+	use crate::util::test_utils;
+	use crate::chain::keysinterface::{KeysInterface, BaseSign};
 	use bitcoin::{Network, Txid};
 	use bitcoin::hashes::Hash;
-	use ln::PaymentHash;
+	use crate::ln::PaymentHash;
 	use bitcoin::hashes::hex::ToHex;
 
 	#[test]

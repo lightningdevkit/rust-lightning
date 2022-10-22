@@ -15,9 +15,9 @@
 
 use alloc::sync::Arc;
 use core::mem;
-use sync::{Condvar, Mutex};
+use crate::sync::{Condvar, Mutex};
 
-use prelude::*;
+use crate::prelude::*;
 
 #[cfg(any(test, feature = "std"))]
 use std::time::{Duration, Instant};
@@ -234,7 +234,7 @@ mod tests {
 	#[cfg(feature = "std")]
 	#[test]
 	fn test_wait_timeout() {
-		use sync::Arc;
+		use crate::sync::Arc;
 		use std::thread;
 
 		let persistence_notifier = Arc::new(Notifier::new());

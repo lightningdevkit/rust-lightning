@@ -10,8 +10,8 @@
 //! Various user-configurable channel limits and settings which ChannelManager
 //! applies for you.
 
-use ln::channel::MAX_FUNDING_SATOSHIS_NO_WUMBO;
-use ln::channelmanager::{BREAKDOWN_TIMEOUT, MAX_LOCAL_BREAKDOWN_TIMEOUT};
+use crate::ln::channel::MAX_FUNDING_SATOSHIS_NO_WUMBO;
+use crate::ln::channelmanager::{BREAKDOWN_TIMEOUT, MAX_LOCAL_BREAKDOWN_TIMEOUT};
 
 /// Configuration we set when applicable.
 ///
@@ -412,8 +412,8 @@ impl Default for LegacyChannelConfig {
 	}
 }
 
-impl ::util::ser::Writeable for LegacyChannelConfig {
-	fn write<W: ::util::ser::Writer>(&self, writer: &mut W) -> Result<(), ::io::Error> {
+impl crate::util::ser::Writeable for LegacyChannelConfig {
+	fn write<W: crate::util::ser::Writer>(&self, writer: &mut W) -> Result<(), crate::io::Error> {
 		write_tlv_fields!(writer, {
 			(0, self.options.forwarding_fee_proportional_millionths, required),
 			(1, self.options.max_dust_htlc_exposure_msat, (default_value, 5_000_000)),
@@ -427,8 +427,8 @@ impl ::util::ser::Writeable for LegacyChannelConfig {
 	}
 }
 
-impl ::util::ser::Readable for LegacyChannelConfig {
-	fn read<R: ::io::Read>(reader: &mut R) -> Result<Self, ::ln::msgs::DecodeError> {
+impl crate::util::ser::Readable for LegacyChannelConfig {
+	fn read<R: crate::io::Read>(reader: &mut R) -> Result<Self, crate::ln::msgs::DecodeError> {
 		let mut forwarding_fee_proportional_millionths = 0;
 		let mut max_dust_htlc_exposure_msat = 5_000_000;
 		let mut cltv_expiry_delta = 0;

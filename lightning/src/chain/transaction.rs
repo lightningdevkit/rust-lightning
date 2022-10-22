@@ -79,7 +79,7 @@ impl_writeable!(OutPoint, { txid, index });
 
 #[cfg(test)]
 mod tests {
-	use chain::transaction::OutPoint;
+	use crate::chain::transaction::OutPoint;
 
 	use bitcoin::blockdata::transaction::Transaction;
 	use bitcoin::consensus::encode;

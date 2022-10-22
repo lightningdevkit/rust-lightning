@@ -20,19 +20,19 @@ use bitcoin::hash_types::Txid;
 
 use bitcoin::secp256k1::{SecretKey,PublicKey};
 
-use ln::PaymentPreimage;
-use ln::chan_utils::{TxCreationKeys, HTLCOutputInCommitment};
-use ln::chan_utils;
-use ln::msgs::DecodeError;
-use chain::chaininterface::{FeeEstimator, ConfirmationTarget, MIN_RELAY_FEE_SAT_PER_1000_WEIGHT};
-use chain::keysinterface::Sign;
-use chain::onchaintx::OnchainTxHandler;
-use util::byte_utils;
-use util::logger::Logger;
-use util::ser::{Readable, Writer, Writeable};
+use crate::ln::PaymentPreimage;
+use crate::ln::chan_utils::{TxCreationKeys, HTLCOutputInCommitment};
+use crate::ln::chan_utils;
+use crate::ln::msgs::DecodeError;
+use crate::chain::chaininterface::{FeeEstimator, ConfirmationTarget, MIN_RELAY_FEE_SAT_PER_1000_WEIGHT};
+use crate::chain::keysinterface::Sign;
+use crate::chain::onchaintx::OnchainTxHandler;
+use crate::util::byte_utils;
+use crate::util::logger::Logger;
+use crate::util::ser::{Readable, Writer, Writeable};
 
-use io;
-use prelude::*;
+use crate::io;
+use crate::prelude::*;
 use core::cmp;
 #[cfg(anchors)]
 use core::convert::TryInto;
@@ -911,10 +911,10 @@ fn feerate_bump<F: Deref, L: Deref>(predicted_weight: usize, input_amounts: u64,
 
 #[cfg(test)]
 mod tests {
-	use chain::package::{CounterpartyOfferedHTLCOutput, CounterpartyReceivedHTLCOutput, HolderHTLCOutput, PackageTemplate, PackageSolvingData, RevokedOutput, WEIGHT_REVOKED_OUTPUT, weight_offered_htlc, weight_received_htlc};
-	use chain::Txid;
-	use ln::chan_utils::HTLCOutputInCommitment;
-	use ln::{PaymentPreimage, PaymentHash};
+	use crate::chain::package::{CounterpartyOfferedHTLCOutput, CounterpartyReceivedHTLCOutput, HolderHTLCOutput, PackageTemplate, PackageSolvingData, RevokedOutput, WEIGHT_REVOKED_OUTPUT, weight_offered_htlc, weight_received_htlc};
+	use crate::chain::Txid;
+	use crate::ln::chan_utils::HTLCOutputInCommitment;
+	use crate::ln::{PaymentPreimage, PaymentHash};
 
 	use bitcoin::blockdata::constants::WITNESS_SCALE_FACTOR;
 	use bitcoin::blockdata::script::Script;

@@ -34,39 +34,39 @@ use bitcoin::secp256k1::Secp256k1;
 use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::{LockTime, secp256k1, Sequence};
 
-use chain;
-use chain::{Confirm, ChannelMonitorUpdateStatus, Watch, BestBlock};
-use chain::chaininterface::{BroadcasterInterface, ConfirmationTarget, FeeEstimator, LowerBoundedFeeEstimator};
-use chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, HTLC_FAIL_BACK_BUFFER, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ANTI_REORG_DELAY, MonitorEvent, CLOSED_CHANNEL_UPDATE_ID};
-use chain::transaction::{OutPoint, TransactionData};
+use crate::chain;
+use crate::chain::{Confirm, ChannelMonitorUpdateStatus, Watch, BestBlock};
+use crate::chain::chaininterface::{BroadcasterInterface, ConfirmationTarget, FeeEstimator, LowerBoundedFeeEstimator};
+use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, HTLC_FAIL_BACK_BUFFER, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ANTI_REORG_DELAY, MonitorEvent, CLOSED_CHANNEL_UPDATE_ID};
+use crate::chain::transaction::{OutPoint, TransactionData};
 // Since this struct is returned in `list_channels` methods, expose it here in case users want to
 // construct one themselves.
-use ln::{inbound_payment, PaymentHash, PaymentPreimage, PaymentSecret};
-use ln::channel::{Channel, ChannelError, ChannelUpdateStatus, UpdateFulfillCommitFetch};
-use ln::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
+use crate::ln::{inbound_payment, PaymentHash, PaymentPreimage, PaymentSecret};
+use crate::ln::channel::{Channel, ChannelError, ChannelUpdateStatus, UpdateFulfillCommitFetch};
+use crate::ln::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
 #[cfg(any(feature = "_test_utils", test))]
-use ln::features::InvoiceFeatures;
-use routing::router::{PaymentParameters, Route, RouteHop, RoutePath, RouteParameters};
-use ln::msgs;
-use ln::onion_utils;
-use ln::msgs::{ChannelMessageHandler, DecodeError, LightningError, MAX_VALUE_MSAT};
-use ln::wire::Encode;
-use chain::keysinterface::{Sign, KeysInterface, KeysManager, InMemorySigner, Recipient};
-use util::config::{UserConfig, ChannelConfig};
-use util::events::{EventHandler, EventsProvider, MessageSendEvent, MessageSendEventsProvider, ClosureReason, HTLCDestination};
-use util::{byte_utils, events};
-use util::wakers::{Future, Notifier};
-use util::scid_utils::fake_scid;
-use util::ser::{BigSize, FixedLengthReader, Readable, ReadableArgs, MaybeReadable, Writeable, Writer, VecWriter};
-use util::logger::{Level, Logger};
-use util::errors::APIError;
+use crate::ln::features::InvoiceFeatures;
+use crate::routing::router::{PaymentParameters, Route, RouteHop, RoutePath, RouteParameters};
+use crate::ln::msgs;
+use crate::ln::onion_utils;
+use crate::ln::msgs::{ChannelMessageHandler, DecodeError, LightningError, MAX_VALUE_MSAT};
+use crate::ln::wire::Encode;
+use crate::chain::keysinterface::{Sign, KeysInterface, KeysManager, InMemorySigner, Recipient};
+use crate::util::config::{UserConfig, ChannelConfig};
+use crate::util::events::{EventHandler, EventsProvider, MessageSendEvent, MessageSendEventsProvider, ClosureReason, HTLCDestination};
+use crate::util::{byte_utils, events};
+use crate::util::wakers::{Future, Notifier};
+use crate::util::scid_utils::fake_scid;
+use crate::util::ser::{BigSize, FixedLengthReader, Readable, ReadableArgs, MaybeReadable, Writeable, Writer, VecWriter};
+use crate::util::logger::{Level, Logger};
+use crate::util::errors::APIError;
 
-use io;
-use prelude::*;
+use crate::io;
+use crate::prelude::*;
 use core::{cmp, mem};
 use core::cell::RefCell;
-use io::Read;
-use sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard};
+use crate::io::Read;
+use crate::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard};
 use core::sync::atomic::{AtomicUsize, Ordering};
 use core::time::Duration;
 use core::ops::Deref;
@@ -6428,7 +6428,7 @@ impl Writeable for ClaimableHTLC {
 
 impl Readable for ClaimableHTLC {
 	fn read<R: Read>(reader: &mut R) -> Result<Self, DecodeError> {
-		let mut prev_hop = ::util::ser::OptionDeserWrapper(None);
+		let mut prev_hop = crate::util::ser::OptionDeserWrapper(None);
 		let mut value = 0;
 		let mut payment_data: Option<msgs::FinalOnionHopData> = None;
 		let mut cltv_expiry = 0;
@@ -6478,7 +6478,7 @@ impl Readable for HTLCSource {
 		let id: u8 = Readable::read(reader)?;
 		match id {
 			0 => {
-				let mut session_priv: ::util::ser::OptionDeserWrapper<SecretKey> = ::util::ser::OptionDeserWrapper(None);
+				let mut session_priv: crate::util::ser::OptionDeserWrapper<SecretKey> = crate::util::ser::OptionDeserWrapper(None);
 				let mut first_hop_htlc_msat: u64 = 0;
 				let mut path = Some(Vec::new());
 				let mut payment_id = None;
@@ -6513,7 +6513,7 @@ impl Readable for HTLCSource {
 }
 
 impl Writeable for HTLCSource {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), ::io::Error> {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), crate::io::Error> {
 		match self {
 			HTLCSource::OutboundRoute { ref session_priv, ref first_hop_htlc_msat, ref path, payment_id, payment_secret, payment_params } => {
 				0u8.write(writer)?;
@@ -7305,16 +7305,16 @@ mod tests {
 	use bitcoin::hashes::sha256::Hash as Sha256;
 	use core::time::Duration;
 	use core::sync::atomic::Ordering;
-	use ln::{PaymentPreimage, PaymentHash, PaymentSecret};
-	use ln::channelmanager::{self, inbound_payment, PaymentId, PaymentSendFailure};
-	use ln::functional_test_utils::*;
-	use ln::msgs;
-	use ln::msgs::ChannelMessageHandler;
-	use routing::router::{PaymentParameters, RouteParameters, find_route};
-	use util::errors::APIError;
-	use util::events::{Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, ClosureReason};
-	use util::test_utils;
-	use chain::keysinterface::KeysInterface;
+	use crate::ln::{PaymentPreimage, PaymentHash, PaymentSecret};
+	use crate::ln::channelmanager::{self, inbound_payment, PaymentId, PaymentSendFailure};
+	use crate::ln::functional_test_utils::*;
+	use crate::ln::msgs;
+	use crate::ln::msgs::ChannelMessageHandler;
+	use crate::routing::router::{PaymentParameters, RouteParameters, find_route};
+	use crate::util::errors::APIError;
+	use crate::util::events::{Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, ClosureReason};
+	use crate::util::test_utils;
+	use crate::chain::keysinterface::KeysInterface;
 
 	#[test]
 	fn test_notify_limits() {
@@ -7872,24 +7872,23 @@ mod tests {
 
 #[cfg(all(any(test, feature = "_test_utils"), feature = "_bench_unstable"))]
 pub mod bench {
-	use chain::Listen;
-	use chain::chainmonitor::{ChainMonitor, Persist};
-	use chain::keysinterface::{KeysManager, KeysInterface, InMemorySigner};
-	use ln::channelmanager::{self, BestBlock, ChainParameters, ChannelManager, PaymentHash, PaymentPreimage};
-	use ln::features::{InitFeatures, InvoiceFeatures};
-	use ln::functional_test_utils::*;
-	use ln::msgs::{ChannelMessageHandler, Init};
-	use routing::gossip::NetworkGraph;
-	use routing::router::{PaymentParameters, get_route};
-	use util::test_utils;
-	use util::config::UserConfig;
-	use util::events::{Event, MessageSendEvent, MessageSendEventsProvider};
+	use crate::chain::Listen;
+	use crate::chain::chainmonitor::{ChainMonitor, Persist};
+	use crate::chain::keysinterface::{KeysManager, KeysInterface, InMemorySigner};
+	use crate::ln::channelmanager::{self, BestBlock, ChainParameters, ChannelManager, PaymentHash, PaymentPreimage};
+	use crate::ln::functional_test_utils::*;
+	use crate::ln::msgs::{ChannelMessageHandler, Init};
+	use crate::routing::gossip::NetworkGraph;
+	use crate::routing::router::{PaymentParameters, get_route};
+	use crate::util::test_utils;
+	use crate::util::config::UserConfig;
+	use crate::util::events::{Event, MessageSendEvent, MessageSendEventsProvider};
 
 	use bitcoin::hashes::Hash;
 	use bitcoin::hashes::sha256::Hash as Sha256;
 	use bitcoin::{Block, BlockHeader, PackedLockTime, Transaction, TxMerkleNode, TxOut};
 
-	use sync::{Arc, Mutex};
+	use crate::sync::{Arc, Mutex};
 
 	use test::Bencher;
 

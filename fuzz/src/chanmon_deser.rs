@@ -8,7 +8,7 @@ use lightning::util::enforcing_trait_impls::EnforcingSigner;
 use lightning::util::ser::{ReadableArgs, Writer, Writeable};
 use lightning::util::test_utils::OnlyReadsKeysInterface;
 
-use utils::test_logger;
+use crate::utils::test_logger;
 
 use std::io::Cursor;
 

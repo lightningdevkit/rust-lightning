@@ -10,24 +10,24 @@
 //! A bunch of useful utilities for building networks of nodes and exchanging messages between
 //! nodes for functional tests.
 
-use chain::{BestBlock, ChannelMonitorUpdateStatus, Confirm, Listen, Watch, keysinterface::KeysInterface};
-use chain::channelmonitor::ChannelMonitor;
-use chain::transaction::OutPoint;
-use ln::{PaymentPreimage, PaymentHash, PaymentSecret};
-use ln::channelmanager::{self, ChainParameters, ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, PaymentSendFailure, PaymentId, MIN_CLTV_EXPIRY_DELTA};
-use routing::gossip::{P2PGossipSync, NetworkGraph, NetworkUpdate};
-use routing::router::{PaymentParameters, Route, get_route};
-use ln::features::InitFeatures;
-use ln::msgs;
-use ln::msgs::{ChannelMessageHandler,RoutingMessageHandler};
-use util::enforcing_trait_impls::EnforcingSigner;
-use util::scid_utils;
-use util::test_utils;
-use util::test_utils::{panicking, TestChainMonitor};
-use util::events::{Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, PaymentPurpose};
-use util::errors::APIError;
-use util::config::UserConfig;
-use util::ser::{ReadableArgs, Writeable};
+use crate::chain::{BestBlock, ChannelMonitorUpdateStatus, Confirm, Listen, Watch, keysinterface::KeysInterface};
+use crate::chain::channelmonitor::ChannelMonitor;
+use crate::chain::transaction::OutPoint;
+use crate::ln::{PaymentPreimage, PaymentHash, PaymentSecret};
+use crate::ln::channelmanager::{self, ChainParameters, ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, PaymentSendFailure, PaymentId, MIN_CLTV_EXPIRY_DELTA};
+use crate::routing::gossip::{P2PGossipSync, NetworkGraph, NetworkUpdate};
+use crate::routing::router::{PaymentParameters, Route, get_route};
+use crate::ln::features::InitFeatures;
+use crate::ln::msgs;
+use crate::ln::msgs::{ChannelMessageHandler,RoutingMessageHandler};
+use crate::util::enforcing_trait_impls::EnforcingSigner;
+use crate::util::scid_utils;
+use crate::util::test_utils;
+use crate::util::test_utils::{panicking, TestChainMonitor};
+use crate::util::events::{Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, PaymentPurpose};
+use crate::util::errors::APIError;
+use crate::util::config::UserConfig;
+use crate::util::ser::{ReadableArgs, Writeable};
 
 use bitcoin::blockdata::block::{Block, BlockHeader};
 use bitcoin::blockdata::constants::genesis_block;
@@ -40,11 +40,11 @@ use bitcoin::hashes::Hash as _;
 
 use bitcoin::secp256k1::PublicKey;
 
-use io;
-use prelude::*;
+use crate::io;
+use crate::prelude::*;
 use core::cell::RefCell;
 use alloc::rc::Rc;
-use sync::{Arc, Mutex};
+use crate::sync::{Arc, Mutex};
 use core::mem;
 use core::iter::repeat;
 use bitcoin::{PackedLockTime, TxMerkleNode};

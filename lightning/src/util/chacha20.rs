@@ -9,7 +9,7 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-use io;
+use crate::io;
 
 #[cfg(not(fuzzing))]
 mod real_chacha {
@@ -316,7 +316,7 @@ impl<'a, R: io::Read> io::Read for ChaChaReader<'a, R> {
 
 #[cfg(test)]
 mod test {
-	use prelude::*;
+	use crate::prelude::*;
 	use core::iter::repeat;
 
 	use super::ChaCha20;
