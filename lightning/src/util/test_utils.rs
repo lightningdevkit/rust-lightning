@@ -608,6 +608,9 @@ impl keysinterface::KeysInterface for TestKeysInterface {
 	fn get_node_secret(&self, recipient: Recipient) -> Result<SecretKey, ()> {
 		self.backing.get_node_secret(recipient)
 	}
+	fn get_node_id(&self, recipient: Recipient) -> Result<PublicKey, ()> {
+		self.backing.get_node_id(recipient)
+	}
 	fn ecdh(&self, recipient: Recipient, other_key: &PublicKey, tweak: Option<&Scalar>) -> Result<SharedSecret, ()> {
 		self.backing.ecdh(recipient, other_key, tweak)
 	}
