@@ -51,7 +51,7 @@ use crate::ln::msgs;
 use crate::ln::onion_utils;
 use crate::ln::msgs::{ChannelMessageHandler, DecodeError, LightningError, MAX_VALUE_MSAT};
 use crate::ln::wire::Encode;
-use crate::chain::keysinterface::{Sign, KeysInterface, KeysManager, InMemorySigner, Recipient};
+use crate::chain::keysinterface::{Sign, KeysInterface, KeysManager, Recipient};
 use crate::util::config::{UserConfig, ChannelConfig};
 use crate::util::events::{EventHandler, EventsProvider, MessageSendEvent, MessageSendEventsProvider, ClosureReason, HTLCDestination};
 use crate::util::{byte_utils, events};
@@ -617,7 +617,7 @@ impl PendingOutboundPayment {
 /// concrete type of the KeysManager.
 ///
 /// (C-not exported) as Arcs don't make sense in bindings
-pub type SimpleArcChannelManager<M, T, F, L> = ChannelManager<InMemorySigner, Arc<M>, Arc<T>, Arc<KeysManager>, Arc<F>, Arc<L>>;
+pub type SimpleArcChannelManager<M, T, F, L> = ChannelManager<Arc<M>, Arc<T>, Arc<KeysManager>, Arc<F>, Arc<L>>;
 
 /// SimpleRefChannelManager is a type alias for a ChannelManager reference, and is the reference
 /// counterpart to the SimpleArcChannelManager type alias. Use this type by default when you don't
@@ -629,7 +629,7 @@ pub type SimpleArcChannelManager<M, T, F, L> = ChannelManager<InMemorySigner, Ar
 /// concrete type of the KeysManager.
 ///
 /// (C-not exported) as Arcs don't make sense in bindings
-pub type SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, M, T, F, L> = ChannelManager<InMemorySigner, &'a M, &'b T, &'c KeysManager, &'d F, &'e L>;
+pub type SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, M, T, F, L> = ChannelManager<&'a M, &'b T, &'c KeysManager, &'d F, &'e L>;
 
 /// Manager which keeps track of a number of channels and sends messages to the appropriate
 /// channel, also tracking HTLC preimages and forwarding onion packets appropriately.
@@ -699,10 +699,10 @@ pub type SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, M, T, F, L> = ChannelManage
 //  |                   |
 //  |                   |__`pending_background_events`
 //
-pub struct ChannelManager<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
-	where M::Target: chain::Watch<Signer>,
+pub struct ChannelManager<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
+	where M::Target: chain::Watch<<K::Target as KeysInterface>::Signer>,
         T::Target: BroadcasterInterface,
-        K::Target: KeysInterface<Signer = Signer>,
+        K::Target: KeysInterface,
         F::Target: FeeEstimator,
 				L::Target: Logger,
 {
@@ -721,9 +721,9 @@ pub struct ChannelManager<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, 
 
 	/// See `ChannelManager` struct-level documentation for lock order requirements.
 	#[cfg(any(test, feature = "_test_utils"))]
-	pub(super) channel_state: Mutex<ChannelHolder<Signer>>,
+	pub(super) channel_state: Mutex<ChannelHolder<<K::Target as KeysInterface>::Signer>>,
 	#[cfg(not(any(test, feature = "_test_utils")))]
-	channel_state: Mutex<ChannelHolder<Signer>>,
+	channel_state: Mutex<ChannelHolder<<K::Target as KeysInterface>::Signer>>,
 
 	/// Storage for PaymentSecrets and any requirements on future inbound payments before we will
 	/// expose them to users via a PaymentReceived event. HTLCs which do not meet the requirements
@@ -1592,10 +1592,10 @@ macro_rules! post_handle_chan_restoration {
 	} }
 }
 
-impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<Signer, M, T, K, F, L>
-	where M::Target: chain::Watch<Signer>,
+impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F, L>
+	where M::Target: chain::Watch<<K::Target as KeysInterface>::Signer>,
         T::Target: BroadcasterInterface,
-        K::Target: KeysInterface<Signer = Signer>,
+        K::Target: KeysInterface,
         F::Target: FeeEstimator,
         L::Target: Logger,
 {
@@ -1761,7 +1761,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		Ok(temporary_channel_id)
 	}
 
-	fn list_channels_with_filter<Fn: FnMut(&(&[u8; 32], &Channel<Signer>)) -> bool>(&self, f: Fn) -> Vec<ChannelDetails> {
+	fn list_channels_with_filter<Fn: FnMut(&(&[u8; 32], &Channel<<K::Target as KeysInterface>::Signer>)) -> bool>(&self, f: Fn) -> Vec<ChannelDetails> {
 		let mut res = Vec::new();
 		{
 			let channel_state = self.channel_state.lock().unwrap();
@@ -1843,7 +1843,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	}
 
 	/// Helper function that issues the channel close events
-	fn issue_channel_close_events(&self, channel: &Channel<Signer>, closure_reason: ClosureReason) {
+	fn issue_channel_close_events(&self, channel: &Channel<<K::Target as KeysInterface>::Signer>, closure_reason: ClosureReason) {
 		let mut pending_events_lock = self.pending_events.lock().unwrap();
 		match channel.unbroadcasted_funding() {
 			Some(transaction) => {
@@ -2379,7 +2379,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// [`MessageSendEvent::BroadcastChannelUpdate`] event.
 	///
 	/// May be called with channel_state already locked!
-	fn get_channel_update_for_broadcast(&self, chan: &Channel<Signer>) -> Result<msgs::ChannelUpdate, LightningError> {
+	fn get_channel_update_for_broadcast(&self, chan: &Channel<<K::Target as KeysInterface>::Signer>) -> Result<msgs::ChannelUpdate, LightningError> {
 		if !chan.should_announce() {
 			return Err(LightningError {
 				err: "Cannot broadcast a channel_update for a private channel".to_owned(),
@@ -2398,7 +2398,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	/// and thus MUST NOT be called unless the recipient of the resulting message has already
 	/// provided evidence that they know about the existence of the channel.
 	/// May be called with channel_state already locked!
-	fn get_channel_update_for_unicast(&self, chan: &Channel<Signer>) -> Result<msgs::ChannelUpdate, LightningError> {
+	fn get_channel_update_for_unicast(&self, chan: &Channel<<K::Target as KeysInterface>::Signer>) -> Result<msgs::ChannelUpdate, LightningError> {
 		log_trace!(self.logger, "Attempting to generate channel update for channel {}", log_bytes!(chan.channel_id()));
 		let short_channel_id = match chan.get_short_channel_id().or(chan.latest_inbound_scid_alias()) {
 			None => return Err(LightningError{err: "Channel not yet established".to_owned(), action: msgs::ErrorAction::IgnoreError}),
@@ -2407,7 +2407,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 
 		self.get_channel_update_for_onion(short_channel_id, chan)
 	}
-	fn get_channel_update_for_onion(&self, short_channel_id: u64, chan: &Channel<Signer>) -> Result<msgs::ChannelUpdate, LightningError> {
+	fn get_channel_update_for_onion(&self, short_channel_id: u64, chan: &Channel<<K::Target as KeysInterface>::Signer>) -> Result<msgs::ChannelUpdate, LightningError> {
 		log_trace!(self.logger, "Generating channel update for channel {}", log_bytes!(chan.channel_id()));
 		let were_node_one = PublicKey::from_secret_key(&self.secp_ctx, &self.our_network_key).serialize()[..] < chan.get_counterparty_node_id().serialize()[..];
 
@@ -2832,7 +2832,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 
 	/// Handles the generation of a funding transaction, optionally (for tests) with a function
 	/// which checks the correctness of the funding transaction given the associated channel.
-	fn funding_transaction_generated_intern<FundingOutput: Fn(&Channel<Signer>, &Transaction) -> Result<OutPoint, APIError>>(
+	fn funding_transaction_generated_intern<FundingOutput: Fn(&Channel<<K::Target as KeysInterface>::Signer>, &Transaction) -> Result<OutPoint, APIError>>(
 		&self, temporary_channel_id: &[u8; 32], _counterparty_node_id: &PublicKey, funding_transaction: Transaction, find_funding_output: FundingOutput
 	) -> Result<(), APIError> {
 		let (chan, msg) = {
@@ -3492,7 +3492,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		self.process_background_events();
 	}
 
-	fn update_channel_fee(&self, short_to_chan_info: &mut HashMap<u64, (PublicKey, [u8; 32])>, pending_msg_events: &mut Vec<events::MessageSendEvent>, chan_id: &[u8; 32], chan: &mut Channel<Signer>, new_feerate: u32) -> (bool, NotifyOption, Result<(), MsgHandleErrInternal>) {
+	fn update_channel_fee(&self, short_to_chan_info: &mut HashMap<u64, (PublicKey, [u8; 32])>, pending_msg_events: &mut Vec<events::MessageSendEvent>, chan_id: &[u8; 32], chan: &mut Channel<<K::Target as KeysInterface>::Signer>, new_feerate: u32) -> (bool, NotifyOption, Result<(), MsgHandleErrInternal>) {
 		if !chan.is_outbound() { return (true, NotifyOption::SkipPersist, Ok(())); }
 		// If the feerate has decreased by less than half, don't bother
 		if new_feerate <= chan.get_feerate() && new_feerate * 2 > chan.get_feerate() {
@@ -3723,7 +3723,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	///
 	/// This is for failures on the channel on which the HTLC was *received*, not failures
 	/// forwarding
-	fn get_htlc_inbound_temp_fail_err_and_data(&self, desired_err_code: u16, chan: &Channel<Signer>) -> (u16, Vec<u8>) {
+	fn get_htlc_inbound_temp_fail_err_and_data(&self, desired_err_code: u16, chan: &Channel<<K::Target as KeysInterface>::Signer>) -> (u16, Vec<u8>) {
 		// We can't be sure what SCID was used when relaying inbound towards us, so we have to
 		// guess somewhat. If its a public channel, we figure best to just use the real SCID (as
 		// we're not leaking that we have a channel with the counterparty), otherwise we try to use
@@ -3743,7 +3743,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 
 	/// Gets an HTLC onion failure code and error data for an `UPDATE` error, given the error code
 	/// that we want to return and a channel.
-	fn get_htlc_temp_fail_err_and_data(&self, desired_err_code: u16, scid: u64, chan: &Channel<Signer>) -> (u16, Vec<u8>) {
+	fn get_htlc_temp_fail_err_and_data(&self, desired_err_code: u16, scid: u64, chan: &Channel<<K::Target as KeysInterface>::Signer>) -> (u16, Vec<u8>) {
 		debug_assert_eq!(desired_err_code & 0x1000, 0x1000);
 		if let Ok(upd) = self.get_channel_update_for_onion(scid, chan) {
 			let mut enc = VecWriter(Vec::with_capacity(upd.serialized_length() + 6));
@@ -4113,7 +4113,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		}
 	}
 
-	fn claim_funds_from_hop(&self, channel_state_lock: &mut MutexGuard<ChannelHolder<Signer>>, prev_hop: HTLCPreviousHopData, payment_preimage: PaymentPreimage) -> ClaimFundsFromHop {
+	fn claim_funds_from_hop(&self, channel_state_lock: &mut MutexGuard<ChannelHolder<<K::Target as KeysInterface>::Signer>>, prev_hop: HTLCPreviousHopData, payment_preimage: PaymentPreimage) -> ClaimFundsFromHop {
 		//TODO: Delay the claimed_funds relaying just like we do outbound relay!
 		let channel_state = &mut **channel_state_lock;
 		let chan_id = match channel_state.short_to_chan_info.get(&prev_hop.short_channel_id) {
@@ -4206,7 +4206,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		}
 	}
 
-	fn claim_funds_internal(&self, mut channel_state_lock: MutexGuard<ChannelHolder<Signer>>, source: HTLCSource, payment_preimage: PaymentPreimage, forwarded_htlc_value_msat: Option<u64>, from_onchain: bool, next_channel_id: [u8; 32]) {
+	fn claim_funds_internal(&self, mut channel_state_lock: MutexGuard<ChannelHolder<<K::Target as KeysInterface>::Signer>>, source: HTLCSource, payment_preimage: PaymentPreimage, forwarded_htlc_value_msat: Option<u64>, from_onchain: bool, next_channel_id: [u8; 32]) {
 		match source {
 			HTLCSource::OutboundRoute { session_priv, payment_id, path, .. } => {
 				mem::drop(channel_state_lock);
@@ -4795,7 +4795,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
 				}
 
-				let create_pending_htlc_status = |chan: &Channel<Signer>, pending_forward_info: PendingHTLCStatus, error_code: u16| {
+				let create_pending_htlc_status = |chan: &Channel<<K::Target as KeysInterface>::Signer>, pending_forward_info: PendingHTLCStatus, error_code: u16| {
 					// If the update_add is completely bogus, the call will Err and we will close,
 					// but if we've sent a shutdown and they haven't acknowledged it yet, we just
 					// want to reject the new HTLC and fail it backwards instead of forwarding.
@@ -5568,10 +5568,10 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	}
 }
 
-impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> MessageSendEventsProvider for ChannelManager<Signer, M, T, K, F, L>
-	where M::Target: chain::Watch<Signer>,
+impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> MessageSendEventsProvider for ChannelManager<M, T, K, F, L>
+	where M::Target: chain::Watch<<K::Target as KeysInterface>::Signer>,
         T::Target: BroadcasterInterface,
-        K::Target: KeysInterface<Signer = Signer>,
+        K::Target: KeysInterface,
         F::Target: FeeEstimator,
 				L::Target: Logger,
 {
@@ -5607,11 +5607,11 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> MessageSend
 	}
 }
 
-impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> EventsProvider for ChannelManager<Signer, M, T, K, F, L>
+impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> EventsProvider for ChannelManager<M, T, K, F, L>
 where
-	M::Target: chain::Watch<Signer>,
+	M::Target: chain::Watch<<K::Target as KeysInterface>::Signer>,
 	T::Target: BroadcasterInterface,
-	K::Target: KeysInterface<Signer = Signer>,
+	K::Target: KeysInterface,
 	F::Target: FeeEstimator,
 	L::Target: Logger,
 {
@@ -5643,11 +5643,11 @@ where
 	}
 }
 
-impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> chain::Listen for ChannelManager<Signer, M, T, K, F, L>
+impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> chain::Listen for ChannelManager<M, T, K, F, L>
 where
-	M::Target: chain::Watch<Signer>,
+	M::Target: chain::Watch<<K::Target as KeysInterface>::Signer>,
 	T::Target: BroadcasterInterface,
-	K::Target: KeysInterface<Signer = Signer>,
+	K::Target: KeysInterface,
 	F::Target: FeeEstimator,
 	L::Target: Logger,
 {
@@ -5680,11 +5680,11 @@ where
 	}
 }
 
-impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> chain::Confirm for ChannelManager<Signer, M, T, K, F, L>
+impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> chain::Confirm for ChannelManager<M, T, K, F, L>
 where
-	M::Target: chain::Watch<Signer>,
+	M::Target: chain::Watch<<K::Target as KeysInterface>::Signer>,
 	T::Target: BroadcasterInterface,
-	K::Target: KeysInterface<Signer = Signer>,
+	K::Target: KeysInterface,
 	F::Target: FeeEstimator,
 	L::Target: Logger,
 {
@@ -5782,18 +5782,18 @@ where
 	}
 }
 
-impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<Signer, M, T, K, F, L>
+impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F, L>
 where
-	M::Target: chain::Watch<Signer>,
+	M::Target: chain::Watch<<K::Target as KeysInterface>::Signer>,
 	T::Target: BroadcasterInterface,
-	K::Target: KeysInterface<Signer = Signer>,
+	K::Target: KeysInterface,
 	F::Target: FeeEstimator,
 	L::Target: Logger,
 {
 	/// Calls a function which handles an on-chain event (blocks dis/connected, transactions
 	/// un/confirmed, etc) on each channel, handling any resulting errors or messages generated by
 	/// the function.
-	fn do_chain_event<FN: Fn(&mut Channel<Signer>) -> Result<(Option<msgs::ChannelReady>, Vec<(HTLCSource, PaymentHash)>, Option<msgs::AnnouncementSignatures>), ClosureReason>>
+	fn do_chain_event<FN: Fn(&mut Channel<<K::Target as KeysInterface>::Signer>) -> Result<(Option<msgs::ChannelReady>, Vec<(HTLCSource, PaymentHash)>, Option<msgs::AnnouncementSignatures>), ClosureReason>>
 			(&self, height_opt: Option<u32>, f: FN) {
 		// Note that we MUST NOT end up calling methods on self.chain_monitor here - we're called
 		// during initialization prior to the chain_monitor being fully configured in some cases.
@@ -5951,11 +5951,11 @@ where
 	}
 }
 
-impl<Signer: Sign, M: Deref , T: Deref , K: Deref , F: Deref , L: Deref >
-	ChannelMessageHandler for ChannelManager<Signer, M, T, K, F, L>
-	where M::Target: chain::Watch<Signer>,
+impl<M: Deref , T: Deref , K: Deref , F: Deref , L: Deref >
+	ChannelMessageHandler for ChannelManager<M, T, K, F, L>
+	where M::Target: chain::Watch<<K::Target as KeysInterface>::Signer>,
         T::Target: BroadcasterInterface,
-        K::Target: KeysInterface<Signer = Signer>,
+        K::Target: KeysInterface,
         F::Target: FeeEstimator,
         L::Target: Logger,
 {
@@ -6590,10 +6590,10 @@ impl_writeable_tlv_based_enum_upgradable!(PendingOutboundPayment,
 	},
 );
 
-impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Writeable for ChannelManager<Signer, M, T, K, F, L>
-	where M::Target: chain::Watch<Signer>,
+impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Writeable for ChannelManager<M, T, K, F, L>
+	where M::Target: chain::Watch<<K::Target as KeysInterface>::Signer>,
         T::Target: BroadcasterInterface,
-        K::Target: KeysInterface<Signer = Signer>,
+        K::Target: KeysInterface,
         F::Target: FeeEstimator,
         L::Target: Logger,
 {
@@ -6839,29 +6839,29 @@ impl<'a, Signer: 'a + Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 
 // Implement ReadableArgs for an Arc'd ChannelManager to make it a bit easier to work with the
 // SipmleArcChannelManager type:
-impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
-	ReadableArgs<ChannelManagerReadArgs<'a, Signer, M, T, K, F, L>> for (BlockHash, Arc<ChannelManager<Signer, M, T, K, F, L>>)
-	where M::Target: chain::Watch<Signer>,
+impl<'a, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
+	ReadableArgs<ChannelManagerReadArgs<'a, <K::Target as KeysInterface>::Signer, M, T, K, F, L>> for (BlockHash, Arc<ChannelManager<M, T, K, F, L>>)
+	where M::Target: chain::Watch<<K::Target as KeysInterface>::Signer>,
         T::Target: BroadcasterInterface,
-        K::Target: KeysInterface<Signer = Signer>,
+        K::Target: KeysInterface,
         F::Target: FeeEstimator,
         L::Target: Logger,
 {
-	fn read<R: io::Read>(reader: &mut R, args: ChannelManagerReadArgs<'a, Signer, M, T, K, F, L>) -> Result<Self, DecodeError> {
-		let (blockhash, chan_manager) = <(BlockHash, ChannelManager<Signer, M, T, K, F, L>)>::read(reader, args)?;
+	fn read<R: io::Read>(reader: &mut R, args: ChannelManagerReadArgs<'a, <K::Target as KeysInterface>::Signer, M, T, K, F, L>) -> Result<Self, DecodeError> {
+		let (blockhash, chan_manager) = <(BlockHash, ChannelManager<M, T, K, F, L>)>::read(reader, args)?;
 		Ok((blockhash, Arc::new(chan_manager)))
 	}
 }
 
-impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
-	ReadableArgs<ChannelManagerReadArgs<'a, Signer, M, T, K, F, L>> for (BlockHash, ChannelManager<Signer, M, T, K, F, L>)
-	where M::Target: chain::Watch<Signer>,
+impl<'a, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
+	ReadableArgs<ChannelManagerReadArgs<'a, <K::Target as KeysInterface>::Signer, M, T, K, F, L>> for (BlockHash, ChannelManager<M, T, K, F, L>)
+	where M::Target: chain::Watch<<K::Target as KeysInterface>::Signer>,
         T::Target: BroadcasterInterface,
-        K::Target: KeysInterface<Signer = Signer>,
+        K::Target: KeysInterface,
         F::Target: FeeEstimator,
         L::Target: Logger,
 {
-	fn read<R: io::Read>(reader: &mut R, mut args: ChannelManagerReadArgs<'a, Signer, M, T, K, F, L>) -> Result<Self, DecodeError> {
+	fn read<R: io::Read>(reader: &mut R, mut args: ChannelManagerReadArgs<'a, <K::Target as KeysInterface>::Signer, M, T, K, F, L>) -> Result<Self, DecodeError> {
 		let _ver = read_ver_prefix!(reader, SERIALIZATION_VERSION);
 
 		let genesis_hash: BlockHash = Readable::read(reader)?;
@@ -6877,7 +6877,7 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 		let mut short_to_chan_info = HashMap::with_capacity(cmp::min(channel_count as usize, 128));
 		let mut channel_closures = Vec::new();
 		for _ in 0..channel_count {
-			let mut channel: Channel<Signer> = Channel::read(reader, (&args.keys_manager, best_block_height))?;
+			let mut channel: Channel<<K::Target as KeysInterface>::Signer> = Channel::read(reader, (&args.keys_manager, best_block_height))?;
 			let funding_txo = channel.get_funding_txo().ok_or(DecodeError::InvalidValue)?;
 			funding_txo_set.insert(funding_txo.clone());
 			if let Some(ref mut monitor) = args.channel_monitors.get_mut(&funding_txo) {
@@ -7893,12 +7893,12 @@ pub mod bench {
 	use test::Bencher;
 
 	struct NodeHolder<'a, P: Persist<InMemorySigner>> {
-		node: &'a ChannelManager<InMemorySigner,
+		node: &'a ChannelManager<
 			&'a ChainMonitor<InMemorySigner, &'a test_utils::TestChainSource,
 				&'a test_utils::TestBroadcaster, &'a test_utils::TestFeeEstimator,
 				&'a test_utils::TestLogger, &'a P>,
 			&'a test_utils::TestBroadcaster, &'a KeysManager,
-			&'a test_utils::TestFeeEstimator, &'a test_utils::TestLogger>
+			&'a test_utils::TestFeeEstimator, &'a test_utils::TestLogger>,
 	}
 
 	#[cfg(test)]

@@ -292,7 +292,7 @@ fn check_payment_err(send_err: PaymentSendFailure) {
 	}
 }
 
-type ChanMan = ChannelManager<EnforcingSigner, Arc<TestChainMonitor>, Arc<TestBroadcaster>, Arc<KeyProvider>, Arc<FuzzEstimator>, Arc<dyn Logger>>;
+type ChanMan = ChannelManager<Arc<TestChainMonitor>, Arc<TestBroadcaster>, Arc<KeyProvider>, Arc<FuzzEstimator>, Arc<dyn Logger>>;
 
 #[inline]
 fn get_payment_secret_hash(dest: &ChanMan, payment_id: &mut u8) -> Option<(PaymentSecret, PaymentHash)> {

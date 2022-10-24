@@ -95,7 +95,7 @@ BlockSourceResult<ValidatedBlockHeader> where B::Target: BlockSource {
 /// 			config,
 /// 			vec![&mut monitor],
 /// 		);
-/// 		<(BlockHash, ChannelManager<S, &ChainMonitor<S, &C, &T, &F, &L, &P>, &T, &K, &F, &L>)>::read(
+/// 		<(BlockHash, ChannelManager<&ChainMonitor<S, &C, &T, &F, &L, &P>, &T, &K, &F, &L>)>::read(
 /// 			&mut Cursor::new(&serialized_manager), read_args).unwrap()
 /// 	};
 ///
