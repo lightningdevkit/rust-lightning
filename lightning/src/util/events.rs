@@ -318,11 +318,11 @@ pub enum Event {
 		channel_value_satoshis: u64,
 		/// The script which should be used in the transaction output.
 		output_script: Script,
-		/// The `user_channel_id` value passed in to [`ChannelManager::create_channel`], or 0 for
-		/// an inbound channel.
+		/// The `user_channel_id` value passed in to [`ChannelManager::create_channel`], or a
+		/// random value for an inbound channel.
 		///
 		/// [`ChannelManager::create_channel`]: crate::ln::channelmanager::ChannelManager::create_channel
-		user_channel_id: u64,
+		user_channel_id: u128,
 	},
 	/// Indicates we've received (an offer of) money! Just gotta dig out that payment preimage and
 	/// feed it to [`ChannelManager::claim_funds`] to get it....
@@ -612,12 +612,12 @@ pub enum Event {
 		/// The `user_channel_id` value passed in to [`ChannelManager::create_channel`] for outbound
 		/// channels, or to [`ChannelManager::accept_inbound_channel`] for inbound channels if
 		/// [`UserConfig::manually_accept_inbound_channels`] config flag is set to true. Otherwise
-		/// `user_channel_id` will be 0 for an inbound channel.
+		/// `user_channel_id` will be randomized for an inbound channel.
 		///
 		/// [`ChannelManager::create_channel`]: crate::ln::channelmanager::ChannelManager::create_channel
 		/// [`ChannelManager::accept_inbound_channel`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel
 		/// [`UserConfig::manually_accept_inbound_channels`]: crate::util::config::UserConfig::manually_accept_inbound_channels
-		user_channel_id: u64,
+		user_channel_id: u128,
 		/// The node_id of the channel counterparty.
 		counterparty_node_id: PublicKey,
 		/// The features that this channel will operate with.
@@ -632,13 +632,13 @@ pub enum Event {
 		/// The `user_channel_id` value passed in to [`ChannelManager::create_channel`] for outbound
 		/// channels, or to [`ChannelManager::accept_inbound_channel`] for inbound channels if
 		/// [`UserConfig::manually_accept_inbound_channels`] config flag is set to true. Otherwise
-		/// `user_channel_id` will be 0 for an inbound channel.
+		/// `user_channel_id` will be randomized for an inbound channel.
 		/// This will always be zero for objects serialized with LDK versions prior to 0.0.102.
 		///
 		/// [`ChannelManager::create_channel`]: crate::ln::channelmanager::ChannelManager::create_channel
 		/// [`ChannelManager::accept_inbound_channel`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel
 		/// [`UserConfig::manually_accept_inbound_channels`]: crate::util::config::UserConfig::manually_accept_inbound_channels
-		user_channel_id: u64,
+		user_channel_id: u128,
 		/// The reason the channel was closed.
 		reason: ClosureReason
 	},
@@ -813,10 +813,16 @@ impl Writeable for Event {
 			},
 			&Event::ChannelClosed { ref channel_id, ref user_channel_id, ref reason } => {
 				9u8.write(writer)?;
+				// `user_channel_id` used to be a single u64 value. In order to remain backwards
+				// compatible with versions prior to 0.0.113, the u128 is serialized as two
+				// separate u64 values.
+				let user_channel_id_low = *user_channel_id as u64;
+				let user_channel_id_high = (*user_channel_id >> 64) as u64;
 				write_tlv_fields!(writer, {
 					(0, channel_id, required),
-					(1, user_channel_id, required),
-					(2, reason, required)
+					(1, user_channel_id_low, required),
+					(2, reason, required),
+					(3, user_channel_id_high, required),
 				});
 			},
 			&Event::DiscardFunding { ref channel_id, ref transaction } => {
@@ -1035,14 +1041,22 @@ impl MaybeReadable for Event {
 				let f = || {
 					let mut channel_id = [0; 32];
 					let mut reason = None;
-					let mut user_channel_id_opt = None;
+					let mut user_channel_id_low_opt: Option<u64> = None;
+					let mut user_channel_id_high_opt: Option<u64> = None;
 					read_tlv_fields!(reader, {
 						(0, channel_id, required),
-						(1, user_channel_id_opt, option),
+						(1, user_channel_id_low_opt, option),
 						(2, reason, ignorable),
+						(3, user_channel_id_high_opt, option),
 					});
 					if reason.is_none() { return Ok(None); }
-					let user_channel_id = if let Some(id) = user_channel_id_opt { id } else { 0 };
+
+					// `user_channel_id` used to be a single u64 value. In order to remain
+					// backwards compatible with versions prior to 0.0.113, the u128 is serialized
+					// as two separate u64 values.
+					let user_channel_id = (user_channel_id_low_opt.unwrap_or(0) as u128) +
+						((user_channel_id_high_opt.unwrap_or(0) as u128) << 64);
+
 					Ok(Some(Event::ChannelClosed { channel_id, user_channel_id, reason: reason.unwrap() }))
 				};
 				f()
@@ -1180,7 +1194,7 @@ impl MaybeReadable for Event {
 			29u8 => {
 				let f = || {
 					let mut channel_id = [0; 32];
-					let mut user_channel_id: u64 = 0;
+					let mut user_channel_id: u128 = 0;
 					let mut counterparty_node_id = OptionDeserWrapper(None);
 					let mut channel_type = OptionDeserWrapper(None);
 					read_tlv_fields!(reader, {

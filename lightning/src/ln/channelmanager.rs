@@ -289,7 +289,7 @@ type ShutdownResult = (Option<(OutPoint, ChannelMonitorUpdate)>, Vec<(HTLCSource
 
 struct MsgHandleErrInternal {
 	err: msgs::LightningError,
-	chan_id: Option<([u8; 32], u64)>, // If Some a channel of ours has been closed
+	chan_id: Option<([u8; 32], u128)>, // If Some a channel of ours has been closed
 	shutdown_finish: Option<(ShutdownResult, Option<msgs::ChannelUpdate>)>,
 }
 impl MsgHandleErrInternal {
@@ -325,7 +325,7 @@ impl MsgHandleErrInternal {
 		Self { err, chan_id: None, shutdown_finish: None }
 	}
 	#[inline]
-	fn from_finish_shutdown(err: String, channel_id: [u8; 32], user_channel_id: u64, shutdown_res: ShutdownResult, channel_update: Option<msgs::ChannelUpdate>) -> Self {
+	fn from_finish_shutdown(err: String, channel_id: [u8; 32], user_channel_id: u128, shutdown_res: ShutdownResult, channel_update: Option<msgs::ChannelUpdate>) -> Self {
 		Self {
 			err: LightningError {
 				err: err.clone(),
@@ -1083,8 +1083,9 @@ pub struct ChannelDetails {
 	///
 	/// [`outbound_capacity_msat`]: ChannelDetails::outbound_capacity_msat
 	pub unspendable_punishment_reserve: Option<u64>,
-	/// The `user_channel_id` passed in to create_channel, or 0 if the channel was inbound.
-	pub user_channel_id: u64,
+	/// The `user_channel_id` passed in to create_channel, or a random value if the channel was
+	/// inbound.
+	pub user_channel_id: u128,
 	/// Our total balance.  This is the amount we would get if we close the channel.
 	/// This value is not exact. Due to various in-flight changes and feerate changes, exactly this
 	/// amount is not likely to be recoverable on close.
@@ -1740,7 +1741,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 	/// [`Event::FundingGenerationReady::user_channel_id`]: events::Event::FundingGenerationReady::user_channel_id
 	/// [`Event::FundingGenerationReady::temporary_channel_id`]: events::Event::FundingGenerationReady::temporary_channel_id
 	/// [`Event::ChannelClosed::channel_id`]: events::Event::ChannelClosed::channel_id
-	pub fn create_channel(&self, their_network_key: PublicKey, channel_value_satoshis: u64, push_msat: u64, user_channel_id: u64, override_config: Option<UserConfig>) -> Result<[u8; 32], APIError> {
+	pub fn create_channel(&self, their_network_key: PublicKey, channel_value_satoshis: u64, push_msat: u64, user_channel_id: u128, override_config: Option<UserConfig>) -> Result<[u8; 32], APIError> {
 		if channel_value_satoshis < 1000 {
 			return Err(APIError::APIMisuseError { err: format!("Channel value must be at least 1000 satoshis. It was {}", channel_value_satoshis) });
 		}
@@ -4529,7 +4530,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 	///
 	/// [`Event::OpenChannelRequest`]: events::Event::OpenChannelRequest
 	/// [`Event::ChannelClosed::user_channel_id`]: events::Event::ChannelClosed::user_channel_id
-	pub fn accept_inbound_channel(&self, temporary_channel_id: &[u8; 32], counterparty_node_id: &PublicKey, user_channel_id: u64) -> Result<(), APIError> {
+	pub fn accept_inbound_channel(&self, temporary_channel_id: &[u8; 32], counterparty_node_id: &PublicKey, user_channel_id: u128) -> Result<(), APIError> {
 		self.do_accept_inbound_channel(temporary_channel_id, counterparty_node_id, false, user_channel_id)
 	}
 
@@ -4551,11 +4552,11 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 	///
 	/// [`Event::OpenChannelRequest`]: events::Event::OpenChannelRequest
 	/// [`Event::ChannelClosed::user_channel_id`]: events::Event::ChannelClosed::user_channel_id
-	pub fn accept_inbound_channel_from_trusted_peer_0conf(&self, temporary_channel_id: &[u8; 32], counterparty_node_id: &PublicKey, user_channel_id: u64) -> Result<(), APIError> {
+	pub fn accept_inbound_channel_from_trusted_peer_0conf(&self, temporary_channel_id: &[u8; 32], counterparty_node_id: &PublicKey, user_channel_id: u128) -> Result<(), APIError> {
 		self.do_accept_inbound_channel(temporary_channel_id, counterparty_node_id, true, user_channel_id)
 	}
 
-	fn do_accept_inbound_channel(&self, temporary_channel_id: &[u8; 32], counterparty_node_id: &PublicKey, accept_0conf: bool, user_channel_id: u64) -> Result<(), APIError> {
+	fn do_accept_inbound_channel(&self, temporary_channel_id: &[u8; 32], counterparty_node_id: &PublicKey, accept_0conf: bool, user_channel_id: u128) -> Result<(), APIError> {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 
 		let mut channel_state_lock = self.channel_state.lock().unwrap();
@@ -4603,9 +4604,9 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 			return Err(MsgHandleErrInternal::send_err_msg_no_close("No inbound channels accepted".to_owned(), msg.temporary_channel_id.clone()));
 		}
 
-		let mut random_bytes = [0u8; 8];
-		random_bytes.copy_from_slice(&self.keys_manager.get_secure_random_bytes()[..8]);
-		let user_channel_id = u64::from_be_bytes(random_bytes);
+		let mut random_bytes = [0u8; 16];
+		random_bytes.copy_from_slice(&self.keys_manager.get_secure_random_bytes()[..16]);
+		let user_channel_id = u128::from_be_bytes(random_bytes);
 
 		let outbound_scid_alias = self.create_and_insert_outbound_scid_alias();
 		let mut channel = match Channel::new_from_req(&self.fee_estimator, &self.keys_manager,
@@ -6407,33 +6408,108 @@ impl_writeable_tlv_based!(ChannelCounterparty, {
 	(11, outbound_htlc_maximum_msat, option),
 });
 
-impl_writeable_tlv_based!(ChannelDetails, {
-	(1, inbound_scid_alias, option),
-	(2, channel_id, required),
-	(3, channel_type, option),
-	(4, counterparty, required),
-	(5, outbound_scid_alias, option),
-	(6, funding_txo, option),
-	(7, config, option),
-	(8, short_channel_id, option),
-	(10, channel_value_satoshis, required),
-	(12, unspendable_punishment_reserve, option),
-	(14, user_channel_id, required),
-	(16, balance_msat, required),
-	(18, outbound_capacity_msat, required),
-	// Note that by the time we get past the required read above, outbound_capacity_msat will be
-	// filled in, so we can safely unwrap it here.
-	(19, next_outbound_htlc_limit_msat, (default_value, outbound_capacity_msat.0.unwrap() as u64)),
-	(20, inbound_capacity_msat, required),
-	(22, confirmations_required, option),
-	(24, force_close_spend_delay, option),
-	(26, is_outbound, required),
-	(28, is_channel_ready, required),
-	(30, is_usable, required),
-	(32, is_public, required),
-	(33, inbound_htlc_minimum_msat, option),
-	(35, inbound_htlc_maximum_msat, option),
-});
+impl Writeable for ChannelDetails {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		// `user_channel_id` used to be a single u64 value. In order to remain backwards compatible with
+		// versions prior to 0.0.113, the u128 is serialized as two separate u64 values.
+		let user_channel_id_low = self.user_channel_id as u64;
+		let user_channel_id_high_opt = Some((self.user_channel_id >> 64) as u64);
+		write_tlv_fields!(writer, {
+			(1, self.inbound_scid_alias, option),
+			(2, self.channel_id, required),
+			(3, self.channel_type, option),
+			(4, self.counterparty, required),
+			(5, self.outbound_scid_alias, option),
+			(6, self.funding_txo, option),
+			(7, self.config, option),
+			(8, self.short_channel_id, option),
+			(10, self.channel_value_satoshis, required),
+			(12, self.unspendable_punishment_reserve, option),
+			(14, user_channel_id_low, required),
+			(16, self.balance_msat, required),
+			(18, self.outbound_capacity_msat, required),
+			// Note that by the time we get past the required read above, outbound_capacity_msat will be
+			// filled in, so we can safely unwrap it here.
+			(19, self.next_outbound_htlc_limit_msat, (default_value, outbound_capacity_msat.0.unwrap() as u64)),
+			(20, self.inbound_capacity_msat, required),
+			(22, self.confirmations_required, option),
+			(24, self.force_close_spend_delay, option),
+			(26, self.is_outbound, required),
+			(28, self.is_channel_ready, required),
+			(30, self.is_usable, required),
+			(32, self.is_public, required),
+			(33, self.inbound_htlc_minimum_msat, option),
+			(35, self.inbound_htlc_maximum_msat, option),
+			(37, user_channel_id_high_opt, option),
+		});
+		Ok(())
+	}
+}
+
+impl Readable for ChannelDetails {
+	fn read<R: Read>(reader: &mut R) -> Result<Self, DecodeError> {
+		init_and_read_tlv_fields!(reader, {
+			(1, inbound_scid_alias, option),
+			(2, channel_id, required),
+			(3, channel_type, option),
+			(4, counterparty, required),
+			(5, outbound_scid_alias, option),
+			(6, funding_txo, option),
+			(7, config, option),
+			(8, short_channel_id, option),
+			(10, channel_value_satoshis, required),
+			(12, unspendable_punishment_reserve, option),
+			(14, user_channel_id_low, required),
+			(16, balance_msat, required),
+			(18, outbound_capacity_msat, required),
+			// Note that by the time we get past the required read above, outbound_capacity_msat will be
+			// filled in, so we can safely unwrap it here.
+			(19, next_outbound_htlc_limit_msat, (default_value, outbound_capacity_msat.0.unwrap() as u64)),
+			(20, inbound_capacity_msat, required),
+			(22, confirmations_required, option),
+			(24, force_close_spend_delay, option),
+			(26, is_outbound, required),
+			(28, is_channel_ready, required),
+			(30, is_usable, required),
+			(32, is_public, required),
+			(33, inbound_htlc_minimum_msat, option),
+			(35, inbound_htlc_maximum_msat, option),
+			(37, user_channel_id_high_opt, option),
+		});
+
+		// `user_channel_id` used to be a single u64 value. In order to remain backwards compatible with
+		// versions prior to 0.0.113, the u128 is serialized as two separate u64 values.
+		let user_channel_id_low: u64 = user_channel_id_low.0.unwrap();
+		let user_channel_id = user_channel_id_low as u128 +
+			((user_channel_id_high_opt.unwrap_or(0 as u64) as u128) << 64);
+
+		Ok(Self {
+			inbound_scid_alias,
+			channel_id: channel_id.0.unwrap(),
+			channel_type,
+			counterparty: counterparty.0.unwrap(),
+			outbound_scid_alias,
+			funding_txo,
+			config,
+			short_channel_id,
+			channel_value_satoshis: channel_value_satoshis.0.unwrap(),
+			unspendable_punishment_reserve,
+			user_channel_id,
+			balance_msat: balance_msat.0.unwrap(),
+			outbound_capacity_msat: outbound_capacity_msat.0.unwrap(),
+			next_outbound_htlc_limit_msat: next_outbound_htlc_limit_msat.0.unwrap(),
+			inbound_capacity_msat: inbound_capacity_msat.0.unwrap(),
+			confirmations_required,
+			force_close_spend_delay,
+			is_outbound: is_outbound.0.unwrap(),
+			is_channel_ready: is_channel_ready.0.unwrap(),
+			is_usable: is_usable.0.unwrap(),
+			is_public: is_public.0.unwrap(),
+			inbound_htlc_minimum_msat,
+			inbound_htlc_maximum_msat,
+		})
+	}
+}
 
 impl_writeable_tlv_based!(PhantomRouteHints, {
 	(2, channels, vec_type),
