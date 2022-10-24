@@ -1,6 +1,6 @@
 [package]
 name = "lightning-block-sync"
-version = "0.0.111"
+version = "0.0.112"
 authors = ["Jeffrey Czyz", "Matt Corallo"]
 license = "MIT OR Apache-2.0"
 repository = "http://github.com/lightningdevkit/rust-lightning"
@@ -19,7 +19,7 @@ rpc-client = [ "serde", "serde_json", "chunked_transfer" ]
 
 [dependencies]
 bitcoin = "0.29.0"
-lightning = { version = "0.0.111", path = "../lightning" }
+lightning = { version = "0.0.112", path = "../lightning" }
 futures-util = { version = "0.3" }
 tokio = { version = "1.0", features = [ "io-util", "net", "time" ], optional = true }
 serde = { version = "1.0", features = ["derive"], optional = true }
