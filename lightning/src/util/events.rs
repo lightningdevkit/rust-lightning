@@ -205,6 +205,7 @@ impl_writeable_tlv_based_enum_upgradable!(HTLCDestination,
 	}
 );
 
+#[cfg(anchors)]
 /// A descriptor used to sign for a commitment transaction's anchor output.
 #[derive(Clone, Debug)]
 pub struct AnchorDescriptor {
@@ -224,6 +225,7 @@ pub struct AnchorDescriptor {
 	pub outpoint: OutPoint,
 }
 
+#[cfg(anchors)]
 /// Represents the different types of transactions, originating from LDK, to be bumped.
 #[derive(Clone, Debug)]
 pub enum BumpTransactionEvent {

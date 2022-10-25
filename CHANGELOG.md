@@ -1,3 +1,64 @@
+# 0.0.112 - XXX, 2022 - "XXX"
+
+## API Updates
+ * `Result<(), ChannelMonitorUpdateErr>` return values have been replaced with
+   a `ChannelMonitorUpdateStatus` trinary enum. This better denotes that
+   `ChannelMonitorUpdateStatus::InProgress` is not an error, but asynchronous
+   persistence of a monitor update. Note that asynchronous persistence still
+   has some edge cases and is not yet recommended for production (#1106).
+ * `ChannelMonitor` persistence failure no longer automatically broadcasts the
+   latest commitment transaction. See the
+   `ChannelMonitorUpdateStatus::PermanentFailure` docs for more info (#1106).
+ * `*Features::known` has been replaced with individual
+   `*MessageHandler::provided_*_features` methods (#1707).
+ * `OnionMessenger` now takes a `CustomOnionMessageHandler` implementation,
+   allowing you to send and receive custom onion messages (#1748).
+ * `ProbabilisticScorer` now tracks the historical distribution of liquidity
+   estimates for channels. See new `historical_*` parameters in
+   `ProbabilisticScoringParameters` for more details (#1625).
+ * `lightning-block-sync`'s `BlockSource` trait now supports BIP 157/158
+   filtering clients by returning only header data for some blocks (#1706).
+ * `lightning-invoice`'s `Router` trait now accepts an `InFlightHtlcs` to
+   ensure we do not over-use a remote channel's funds during routing (#1694).
+   Note that this was previously backported to 0.0.111 for bindings users.
+ * `NetworkGraph::remove_stale_channels` has been renamed
+   `NetworkGraph::remove_stale_channels_and_tracking` as `NetworkGraph` now
+   refuses to re-add nodes and channels that were recently removed (#1649).
+ * The `lightning-rapid-gossip-sync` crate now supports `no-std` (#1708).
+ * The default `ProbabilisticScoringParameters::liquidity_offset_half_life` has
+   been increased to six hours from one (#1754).
+ * All commitment transaction building logic for anchor outputs now assumes the
+   no-HTLC-tx-fee variant (#1685).
+ * A number of missing `Eq` implementations were added (#1763).
+
+## Bug Fixes
+ * `lightning-background-processor` now builds without error with the `futures`
+   feature (#1744).
+ * `ChannelManager::get_persistable_update_future`'s returned `Future` has been
+   corrected to not fail to be awoken in some cases (#1758).
+ * Asynchronously performing the initial `ChannelMonitor` persistence is now
+   safe (#1678).
+ * Redundantly applying rapid gossip sync updates no longer `Err`s (#1764).
+ * Nodes which inform us via payment failures that they should no longer be
+   used are now removed from the network graph. Some lnd nodes spuriously
+   generate this error and may remove themselves from our graph (#1649).
+
+In total, this release features 134 files changed, 6598 insertions, 4370
+deletions in 109 commits from 13 authors, in alphabetical order:
+ * Duncan Dean
+ * Elias Rohrer
+ * Gabriel Comte
+ * Gursharan Singh
+ * Jeffrey Czyz
+ * Jurvis Tan
+ * Matt Corallo
+ * Max Fang
+ * Paul Miller
+ * Valentine Wallace
+ * Viktor Tigerström
+ * Wilmer Paulino
+ * acid-bit
+
 # 0.0.111 - Sep 12, 2022 - "Saturated with Messages"
 
 ## API Updates
