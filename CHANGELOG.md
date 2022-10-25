@@ -1,4 +1,4 @@
-# 0.0.112 - XXX, 2022 - "XXX"
+# 0.0.112 - Oct 25, 2022 - "History Matters"
 
 ## API Updates
  * `Result<(), ChannelMonitorUpdateErr>` return values have been replaced with
