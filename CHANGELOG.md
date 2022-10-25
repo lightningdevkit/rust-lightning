@@ -40,7 +40,7 @@
    safe (#1678).
  * Redundantly applying rapid gossip sync updates no longer `Err`s (#1764).
  * Nodes which inform us via payment failures that they should no longer be
-   used are now removed from the network graph. Some lnd nodes spuriously
+   used are now removed from the network graph. Some LND nodes spuriously
    generate this error and may remove themselves from our graph (#1649).
 
 In total, this release features 134 files changed, 6598 insertions, 4370
