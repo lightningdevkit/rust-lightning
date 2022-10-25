@@ -5507,9 +5507,9 @@ mod tests {
 		'load_endpoints: for _ in 0..10 {
 			loop {
 				seed = seed.overflowing_mul(0xdeadbeef).0;
-				let src = &PublicKey::from_slice(nodes.keys().skip(seed % nodes.len()).next().unwrap().as_slice()).unwrap();
+				let src = &PublicKey::from_slice(nodes.unordered_keys().skip(seed % nodes.len()).next().unwrap().as_slice()).unwrap();
 				seed = seed.overflowing_mul(0xdeadbeef).0;
-				let dst = PublicKey::from_slice(nodes.keys().skip(seed % nodes.len()).next().unwrap().as_slice()).unwrap();
+				let dst = PublicKey::from_slice(nodes.unordered_keys().skip(seed % nodes.len()).next().unwrap().as_slice()).unwrap();
 				let payment_params = PaymentParameters::from_node_id(dst);
 				let amt = seed as u64 % 200_000_000;
 				let params = ProbabilisticScoringParameters::default();
@@ -5545,9 +5545,9 @@ mod tests {
 		'load_endpoints: for _ in 0..10 {
 			loop {
 				seed = seed.overflowing_mul(0xdeadbeef).0;
-				let src = &PublicKey::from_slice(nodes.keys().skip(seed % nodes.len()).next().unwrap().as_slice()).unwrap();
+				let src = &PublicKey::from_slice(nodes.unordered_keys().skip(seed % nodes.len()).next().unwrap().as_slice()).unwrap();
 				seed = seed.overflowing_mul(0xdeadbeef).0;
-				let dst = PublicKey::from_slice(nodes.keys().skip(seed % nodes.len()).next().unwrap().as_slice()).unwrap();
+				let dst = PublicKey::from_slice(nodes.unordered_keys().skip(seed % nodes.len()).next().unwrap().as_slice()).unwrap();
 				let payment_params = PaymentParameters::from_node_id(dst).with_features(channelmanager::provided_invoice_features(&config));
 				let amt = seed as u64 % 200_000_000;
 				let params = ProbabilisticScoringParameters::default();
@@ -5745,9 +5745,9 @@ mod benches {
 		'load_endpoints: for _ in 0..150 {
 			loop {
 				seed *= 0xdeadbeef;
-				let src = PublicKey::from_slice(nodes.keys().skip(seed % nodes.len()).next().unwrap().as_slice()).unwrap();
+				let src = PublicKey::from_slice(nodes.unordered_keys().skip(seed % nodes.len()).next().unwrap().as_slice()).unwrap();
 				seed *= 0xdeadbeef;
-				let dst = PublicKey::from_slice(nodes.keys().skip(seed % nodes.len()).next().unwrap().as_slice()).unwrap();
+				let dst = PublicKey::from_slice(nodes.unordered_keys().skip(seed % nodes.len()).next().unwrap().as_slice()).unwrap();
 				let params = PaymentParameters::from_node_id(dst).with_features(features.clone());
 				let first_hop = first_hop(src);
 				let amt = seed as u64 % 1_000_000;
