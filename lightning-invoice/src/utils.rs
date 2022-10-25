@@ -552,8 +552,8 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, S: Deref> Router for DefaultR
 	S::Target: for <'a> LockableScore<'a>,
 {
 	fn find_route(
-		&self, payer: &PublicKey, params: &RouteParameters, _payment_hash: &PaymentHash,
-		first_hops: Option<&[&ChannelDetails]>, inflight_htlcs: InFlightHtlcs
+		&self, payer: &PublicKey, params: &RouteParameters, first_hops: Option<&[&ChannelDetails]>,
+		inflight_htlcs: InFlightHtlcs
 	) -> Result<Route, LightningError> {
 		let random_seed_bytes = {
 			let mut locked_random_seed_bytes = self.random_seed_bytes.lock().unwrap();

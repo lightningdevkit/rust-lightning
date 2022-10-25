@@ -73,7 +73,7 @@
 //! # struct FakeRouter {}
 //! # impl Router for FakeRouter {
 //! #     fn find_route(
-//! #         &self, payer: &PublicKey, params: &RouteParameters, payment_hash: &PaymentHash,
+//! #         &self, payer: &PublicKey, params: &RouteParameters,
 //! #         first_hops: Option<&[&ChannelDetails]>, _inflight_htlcs: InFlightHtlcs
 //! #     ) -> Result<Route, LightningError> { unimplemented!() }
 //! #
@@ -270,7 +270,7 @@ pub trait Payer {
 pub trait Router {
 	/// Finds a [`Route`] between `payer` and `payee` for a payment with the given values.
 	fn find_route(
-		&self, payer: &PublicKey, route_params: &RouteParameters, payment_hash: &PaymentHash,
+		&self, payer: &PublicKey, route_params: &RouteParameters,
 		first_hops: Option<&[&ChannelDetails]>, inflight_htlcs: InFlightHtlcs
 	) -> Result<Route, LightningError>;
 	/// Lets the router know that payment through a specific path has failed.
@@ -447,8 +447,7 @@ where
 		let first_hops = self.payer.first_hops();
 		let inflight_htlcs = self.create_inflight_map();
 		let route = self.router.find_route(
-			&payer, &params, &payment_hash, Some(&first_hops.iter().collect::<Vec<_>>()),
-			inflight_htlcs
+			&payer, &params, Some(&first_hops.iter().collect::<Vec<_>>()), inflight_htlcs
 		).map_err(|e| PaymentError::Routing(e))?;
 
 		match send_payment(&route) {
@@ -552,8 +551,7 @@ where
 		let inflight_htlcs = self.create_inflight_map();
 
 		let route = self.router.find_route(
-			&payer, &params, &payment_hash, Some(&first_hops.iter().collect::<Vec<_>>()),
-			inflight_htlcs
+			&payer, &params, Some(&first_hops.iter().collect::<Vec<_>>()), inflight_htlcs
 		);
 
 		if route.is_err() {
@@ -1812,7 +1810,7 @@ mod tests {
 
 	impl Router for TestRouter {
 		fn find_route(
-			&self, payer: &PublicKey, route_params: &RouteParameters, _payment_hash: &PaymentHash,
+			&self, payer: &PublicKey, route_params: &RouteParameters,
 			_first_hops: Option<&[&ChannelDetails]>, inflight_htlcs: InFlightHtlcs
 		) -> Result<Route, LightningError> {
 			// Simulate calling the Scorer just as you would in find_route
@@ -1865,8 +1863,8 @@ mod tests {
 
 	impl Router for FailingRouter {
 		fn find_route(
-			&self, _payer: &PublicKey, _params: &RouteParameters, _payment_hash: &PaymentHash,
-			_first_hops: Option<&[&ChannelDetails]>, _inflight_htlcs: InFlightHtlcs
+			&self, _payer: &PublicKey, _params: &RouteParameters, _first_hops: Option<&[&ChannelDetails]>,
+			_inflight_htlcs: InFlightHtlcs
 		) -> Result<Route, LightningError> {
 			Err(LightningError { err: String::new(), action: ErrorAction::IgnoreError })
 		}
@@ -2127,8 +2125,8 @@ mod tests {
 
 	impl Router for ManualRouter {
 		fn find_route(
-			&self, _payer: &PublicKey, _params: &RouteParameters, _payment_hash: &PaymentHash,
-			_first_hops: Option<&[&ChannelDetails]>, _inflight_htlcs: InFlightHtlcs
+			&self, _payer: &PublicKey, _params: &RouteParameters, _first_hops: Option<&[&ChannelDetails]>,
+			_inflight_htlcs: InFlightHtlcs
 		) -> Result<Route, LightningError> {
 			self.0.borrow_mut().pop_front().unwrap()
 		}
