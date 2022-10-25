@@ -582,7 +582,6 @@ impl_writeable_tlv_based!(RouteHintHop, {
 #[derive(Eq, PartialEq)]
 struct RouteGraphNode {
 	node_id: NodeId,
-	lowest_fee_to_peer_through_node: u64,
 	lowest_fee_to_node: u64,
 	total_cltv_delta: u32,
 	// The maximum value a yet-to-be-constructed payment path might flow through this node.
@@ -603,9 +602,9 @@ struct RouteGraphNode {
 
 impl cmp::Ord for RouteGraphNode {
 	fn cmp(&self, other: &RouteGraphNode) -> cmp::Ordering {
-		let other_score = cmp::max(other.lowest_fee_to_peer_through_node, other.path_htlc_minimum_msat)
+		let other_score = cmp::max(other.lowest_fee_to_node, other.path_htlc_minimum_msat)
 			.saturating_add(other.path_penalty_msat);
-		let self_score = cmp::max(self.lowest_fee_to_peer_through_node, self.path_htlc_minimum_msat)
+		let self_score = cmp::max(self.lowest_fee_to_node, self.path_htlc_minimum_msat)
 			.saturating_add(self.path_penalty_msat);
 		other_score.cmp(&self_score).then_with(|| other.node_id.cmp(&self.node_id))
 	}
@@ -729,8 +728,6 @@ struct PathBuildingHop<'a> {
 	candidate: CandidateRouteHop<'a>,
 	fee_msat: u64,
 
-	/// Minimal fees required to route to the source node of the current hop via any of its inbound channels.
-	src_lowest_inbound_fees: RoutingFees,
 	/// All the fees paid *after* this channel on the way to the destination
 	next_hops_fee_msat: u64,
 	/// Fee paid for the use of the current channel (see candidate.fees()).
@@ -1007,9 +1004,8 @@ where L::Target: Logger {
 	// 8. If our maximum channel saturation limit caused us to pick two identical paths, combine
 	//    them so that we're not sending two HTLCs along the same path.
 
-	// As for the actual search algorithm,
-	// we do a payee-to-payer pseudo-Dijkstra's sorting by each node's distance from the payee
-	// plus the minimum per-HTLC fee to get from it to another node (aka "shitty pseudo-A*").
+	// As for the actual search algorithm, we do a payee-to-payer Dijkstra's sorting by each node's
+	// distance from the payee
 	//
 	// We are not a faithful Dijkstra's implementation because we can change values which impact
 	// earlier nodes while processing later nodes. Specifically, if we reach a channel with a lower
@@ -1044,10 +1040,6 @@ where L::Target: Logger {
 	// runtime for little gain. Specifically, the current algorithm rather efficiently explores the
 	// graph for candidate paths, calculating the maximum value which can realistically be sent at
 	// the same time, remaining generic across different payment values.
-	//
-	// TODO: There are a few tweaks we could do, including possibly pre-calculating more stuff
-	// to use as the A* heuristic beyond just the cost to get one node further than the current
-	// one.
 
 	let network_channels = network_graph.channels();
 	let network_nodes = network_graph.nodes();
@@ -1097,7 +1089,7 @@ where L::Target: Logger {
 		}
 	}
 
-	// The main heap containing all candidate next-hops sorted by their score (max(A* fee,
+	// The main heap containing all candidate next-hops sorted by their score (max(fee,
 	// htlc_minimum)). Ideally this would be a heap which allowed cheap score reduction instead of
 	// adding duplicate entries when we find a better path to a given node.
 	let mut targets: BinaryHeap<RouteGraphNode> = BinaryHeap::new();
@@ -1273,20 +1265,10 @@ where L::Target: Logger {
 							// semi-dummy record just to compute the fees to reach the source node.
 							// This will affect our decision on selecting short_channel_id
 							// as a way to reach the $dest_node_id.
-							let mut fee_base_msat = 0;
-							let mut fee_proportional_millionths = 0;
-							if let Some(Some(fees)) = network_nodes.get(&$src_node_id).map(|node| node.lowest_inbound_channel_fees) {
-								fee_base_msat = fees.base_msat;
-								fee_proportional_millionths = fees.proportional_millionths;
-							}
 							PathBuildingHop {
 								node_id: $dest_node_id.clone(),
 								candidate: $candidate.clone(),
 								fee_msat: 0,
-								src_lowest_inbound_fees: RoutingFees {
-									base_msat: fee_base_msat,
-									proportional_millionths: fee_proportional_millionths,
-								},
 								next_hops_fee_msat: u64::max_value(),
 								hop_use_fee_msat: u64::max_value(),
 								total_fee_msat: u64::max_value(),
@@ -1321,24 +1303,6 @@ where L::Target: Logger {
 									Some(fee_msat) => {
 										hop_use_fee_msat = fee_msat;
 										total_fee_msat += hop_use_fee_msat;
-										// When calculating the lowest inbound fees to a node, we
-										// calculate fees here not based on the actual value we think
-										// will flow over this channel, but on the minimum value that
-										// we'll accept flowing over it. The minimum accepted value
-										// is a constant through each path collection run, ensuring
-										// consistent basis. Otherwise we may later find a
-										// different path to the source node that is more expensive,
-										// but which we consider to be cheaper because we are capacity
-										// constrained and the relative fee becomes lower.
-										match compute_fees(minimal_value_contribution_msat, old_entry.src_lowest_inbound_fees)
-												.map(|a| a.checked_add(total_fee_msat)) {
-											Some(Some(v)) => {
-												total_fee_msat = v;
-											},
-											_ => {
-												total_fee_msat = u64::max_value();
-											}
-										};
 									}
 								}
 							}
@@ -1355,8 +1319,7 @@ where L::Target: Logger {
 								.saturating_add(channel_penalty_msat);
 							let new_graph_node = RouteGraphNode {
 								node_id: $src_node_id,
-								lowest_fee_to_peer_through_node: total_fee_msat,
-								lowest_fee_to_node: $next_hops_fee_msat as u64 + hop_use_fee_msat,
+								lowest_fee_to_node: total_fee_msat,
 								total_cltv_delta: hop_total_cltv_delta,
 								value_contribution_msat,
 								path_htlc_minimum_msat,

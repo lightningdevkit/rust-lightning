@@ -1054,10 +1054,6 @@ impl Readable for NodeAlias {
 pub struct NodeInfo {
 	/// All valid channels a node has announced
 	pub channels: Vec<u64>,
-	/// Lowest fees enabling routing via any of the enabled, known channels to a node.
-	/// The two fields (flat and proportional fee) are independent,
-	/// meaning they don't have to refer to the same channel.
-	pub lowest_inbound_channel_fees: Option<RoutingFees>,
 	/// More information about a node from node_announcement.
 	/// Optional because we store a Node entry after learning about it from
 	/// a channel announcement, but before receiving a node announcement.
@@ -1066,8 +1062,8 @@ pub struct NodeInfo {
 
 impl fmt::Display for NodeInfo {
 	fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
-		write!(f, "lowest_inbound_channel_fees: {:?}, channels: {:?}, announcement_info: {:?}",
-		   self.lowest_inbound_channel_fees, &self.channels[..], self.announcement_info)?;
+		write!(f, " channels: {:?}, announcement_info: {:?}",
+			&self.channels[..], self.announcement_info)?;
 		Ok(())
 	}
 }
@@ -1075,7 +1071,7 @@ impl fmt::Display for NodeInfo {
 impl Writeable for NodeInfo {
 	fn write<W: crate::util::ser::Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		write_tlv_fields!(writer, {
-			(0, self.lowest_inbound_channel_fees, option),
+			// Note that older versions of LDK wrote the lowest inbound fees here at type 0
 			(2, self.announcement_info, option),
 			(4, self.channels, vec_type),
 		});
@@ -1103,18 +1099,22 @@ impl MaybeReadable for NodeAnnouncementInfoDeserWrapper {
 
 impl Readable for NodeInfo {
 	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
-		_init_tlv_field_var!(lowest_inbound_channel_fees, option);
+		// Historically, we tracked the lowest inbound fees for any node in order to use it as an
+		// A* heuristic when routing. Sadly, these days many, many nodes have at least one channel
+		// with zero inbound fees, causing that heuristic to provide little gain. Worse, because it
+		// requires additional complexity and lookups during routing, it ends up being a
+		// performance loss. Thus, we simply ignore the old field here and no longer track it.
+		let mut _lowest_inbound_channel_fees: Option<RoutingFees> = None;
 		let mut announcement_info_wrap: Option<NodeAnnouncementInfoDeserWrapper> = None;
 		_init_tlv_field_var!(channels, vec_type);
 
 		read_tlv_fields!(reader, {
-			(0, lowest_inbound_channel_fees, option),
+			(0, _lowest_inbound_channel_fees, option),
 			(2, announcement_info_wrap, ignorable),
 			(4, channels, vec_type),
 		});
 
 		Ok(NodeInfo {
-			lowest_inbound_channel_fees: _init_tlv_based_struct_field!(lowest_inbound_channel_fees, option),
 			announcement_info: announcement_info_wrap.map(|w| w.0),
 			channels: _init_tlv_based_struct_field!(channels, vec_type),
 		})
@@ -1174,22 +1174,6 @@ impl<L: Deref> ReadableArgs<L> for NetworkGraph<L> where L::Target: Logger {
 		read_tlv_fields!(reader, {
 			(1, last_rapid_gossip_sync_timestamp, option),
 		});
-
-		// Regenerate inbound fees for all channels. The live-updating of these has been broken in
-		// various ways historically, so this ensures that we have up-to-date limits.
-		for (node_id, node) in nodes.iter_mut() {
-			let mut best_fees = RoutingFees { base_msat: u32::MAX, proportional_millionths: u32::MAX };
-			for channel in node.channels.iter() {
-				if let Some(chan) = channels.get(channel) {
-					let dir_opt = if *node_id == chan.node_one { &chan.two_to_one } else { &chan.one_to_two };
-					if let Some(dir) = dir_opt {
-						best_fees.base_msat = cmp::min(best_fees.base_msat, dir.fees.base_msat);
-						best_fees.proportional_millionths = cmp::min(best_fees.proportional_millionths, dir.fees.proportional_millionths);
-					}
-				} else { return Err(DecodeError::InvalidValue); }
-			}
-			node.lowest_inbound_channel_fees = Some(best_fees);
-		}
 
 		Ok(NetworkGraph {
 			secp_ctx: Secp256k1::verification_only(),
@@ -1430,7 +1414,6 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 				BtreeEntry::Vacant(node_entry) => {
 					node_entry.insert(NodeInfo {
 						channels: vec!(short_channel_id),
-						lowest_inbound_channel_fees: None,
 						announcement_info: None,
 					});
 				}
@@ -1731,9 +1714,7 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 	}
 
 	fn update_channel_intern(&self, msg: &msgs::UnsignedChannelUpdate, full_msg: Option<&msgs::ChannelUpdate>, sig: Option<&secp256k1::ecdsa::Signature>) -> Result<(), LightningError> {
-		let dest_node_id;
 		let chan_enabled = msg.flags & (1 << 1) != (1 << 1);
-		let chan_was_enabled;
 
 		#[cfg(all(feature = "std", not(test), not(feature = "_test_utils")))]
 		{
@@ -1781,9 +1762,6 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 							} else if existing_chan_info.last_update == msg.timestamp {
 								return Err(LightningError{err: "Update had same timestamp as last processed update".to_owned(), action: ErrorAction::IgnoreDuplicateGossip});
 							}
-							chan_was_enabled = existing_chan_info.enabled;
-						} else {
-							chan_was_enabled = false;
 						}
 					}
 				}
@@ -1811,7 +1789,6 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 
 				let msg_hash = hash_to_message!(&Sha256dHash::hash(&msg.encode()[..])[..]);
 				if msg.flags & 1 == 1 {
-					dest_node_id = channel.node_one.clone();
 					check_update_latest!(channel.two_to_one);
 					if let Some(sig) = sig {
 						secp_verify_sig!(self.secp_ctx, &msg_hash, &sig, &PublicKey::from_slice(channel.node_two.as_slice()).map_err(|_| LightningError{
@@ -1821,7 +1798,6 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 					}
 					channel.two_to_one = get_new_channel_info!();
 				} else {
-					dest_node_id = channel.node_two.clone();
 					check_update_latest!(channel.one_to_two);
 					if let Some(sig) = sig {
 						secp_verify_sig!(self.secp_ctx, &msg_hash, &sig, &PublicKey::from_slice(channel.node_one.as_slice()).map_err(|_| LightningError{
@@ -1832,44 +1808,6 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 					channel.one_to_two = get_new_channel_info!();
 				}
 			}
-		}
-
-		let mut nodes = self.nodes.write().unwrap();
-		if chan_enabled {
-			let node = nodes.get_mut(&dest_node_id).unwrap();
-			let mut base_msat = msg.fee_base_msat;
-			let mut proportional_millionths = msg.fee_proportional_millionths;
-			if let Some(fees) = node.lowest_inbound_channel_fees {
-				base_msat = cmp::min(base_msat, fees.base_msat);
-				proportional_millionths = cmp::min(proportional_millionths, fees.proportional_millionths);
-			}
-			node.lowest_inbound_channel_fees = Some(RoutingFees {
-				base_msat,
-				proportional_millionths
-			});
-		} else if chan_was_enabled {
-			let node = nodes.get_mut(&dest_node_id).unwrap();
-			let mut lowest_inbound_channel_fees = None;
-
-			for chan_id in node.channels.iter() {
-				let chan = channels.get(chan_id).unwrap();
-				let chan_info_opt;
-				if chan.node_one == dest_node_id {
-					chan_info_opt = chan.two_to_one.as_ref();
-				} else {
-					chan_info_opt = chan.one_to_two.as_ref();
-				}
-				if let Some(chan_info) = chan_info_opt {
-					if chan_info.enabled {
-						let fees = lowest_inbound_channel_fees.get_or_insert(RoutingFees {
-							base_msat: u32::max_value(), proportional_millionths: u32::max_value() });
-						fees.base_msat = cmp::min(fees.base_msat, chan_info.fees.base_msat);
-						fees.proportional_millionths = cmp::min(fees.proportional_millionths, chan_info.fees.proportional_millionths);
-					}
-				}
-			}
-
-			node.lowest_inbound_channel_fees = lowest_inbound_channel_fees;
 		}
 
 		Ok(())
@@ -3291,7 +3229,6 @@ mod tests {
 		// 2. Check we can read a NodeInfo anyways, but set the NodeAnnouncementInfo to None if invalid
 		let valid_node_info = NodeInfo {
 			channels: Vec::new(),
-			lowest_inbound_channel_fees: None,
 			announcement_info: Some(valid_node_ann_info),
 		};
 
