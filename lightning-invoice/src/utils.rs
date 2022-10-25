@@ -1,7 +1,7 @@
 //! Convenient utilities to create an invoice.
 
 use crate::{CreationError, Currency, Invoice, InvoiceBuilder, SignOrCreationError};
-use crate::payment::{InFlightHtlcs, Payer, Router};
+use crate::payment::{Payer, Router};
 
 use crate::{prelude::*, Description, InvoiceDescription, Sha256};
 use bech32::ToBase32;
@@ -16,7 +16,7 @@ use lightning::ln::channelmanager::{PhantomRouteHints, MIN_CLTV_EXPIRY_DELTA};
 use lightning::ln::inbound_payment::{create, create_from_hash, ExpandedKey};
 use lightning::ln::msgs::LightningError;
 use lightning::routing::gossip::{NetworkGraph, NodeId, RoutingFees};
-use lightning::routing::router::{Route, RouteHint, RouteHintHop, RouteParameters, find_route, RouteHop};
+use lightning::routing::router::{InFlightHtlcs, Route, RouteHint, RouteHintHop, RouteParameters, find_route, RouteHop};
 use lightning::routing::scoring::{ChannelUsage, LockableScore, Score};
 use lightning::util::logger::Logger;
 use secp256k1::PublicKey;

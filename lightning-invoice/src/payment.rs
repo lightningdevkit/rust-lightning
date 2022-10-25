@@ -38,13 +38,13 @@
 //! # use lightning::ln::channelmanager::{ChannelDetails, PaymentId, PaymentSendFailure};
 //! # use lightning::ln::msgs::LightningError;
 //! # use lightning::routing::gossip::NodeId;
-//! # use lightning::routing::router::{Route, RouteHop, RouteParameters};
+//! # use lightning::routing::router::{InFlightHtlcs, Route, RouteHop, RouteParameters};
 //! # use lightning::routing::scoring::{ChannelUsage, Score};
 //! # use lightning::util::events::{Event, EventHandler, EventsProvider};
 //! # use lightning::util::logger::{Logger, Record};
 //! # use lightning::util::ser::{Writeable, Writer};
 //! # use lightning_invoice::Invoice;
-//! # use lightning_invoice::payment::{InFlightHtlcs, InvoicePayer, Payer, Retry, Router};
+//! # use lightning_invoice::payment::{InvoicePayer, Payer, Retry, Router};
 //! # use secp256k1::PublicKey;
 //! # use std::cell::RefCell;
 //! # use std::ops::Deref;
@@ -140,16 +140,14 @@ use bitcoin_hashes::Hash;
 use bitcoin_hashes::sha256::Hash as Sha256;
 
 use crate::prelude::*;
-use lightning::io;
 use lightning::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
 use lightning::ln::channelmanager::{ChannelDetails, PaymentId, PaymentSendFailure};
 use lightning::ln::msgs::LightningError;
 use lightning::routing::gossip::NodeId;
-use lightning::routing::router::{PaymentParameters, Route, RouteHop, RouteParameters};
+use lightning::routing::router::{InFlightHtlcs, PaymentParameters, Route, RouteHop, RouteParameters};
 use lightning::util::errors::APIError;
 use lightning::util::events::{Event, EventHandler};
 use lightning::util::logger::Logger;
-use lightning::util::ser::Writeable;
 use crate::time_utils::Time;
 use crate::sync::Mutex;
 
@@ -641,7 +639,7 @@ where
 			}
 		}
 
-		InFlightHtlcs(total_inflight_map)
+		InFlightHtlcs::new(total_inflight_map)
 	}
 }
 
@@ -730,31 +728,6 @@ where
 	}
 }
 
-/// A map with liquidity value (in msat) keyed by a short channel id and the direction the HTLC
-/// is traveling in. The direction boolean is determined by checking if the HTLC source's public
-/// key is less than its destination. See [`InFlightHtlcs::used_liquidity_msat`] for more
-/// details.
-pub struct InFlightHtlcs(HashMap<(u64, bool), u64>);
-
-impl InFlightHtlcs {
-	/// Returns liquidity in msat given the public key of the HTLC source, target, and short channel
-	/// id.
-	pub fn used_liquidity_msat(&self, source: &NodeId, target: &NodeId, channel_scid: u64) -> Option<u64> {
-		self.0.get(&(channel_scid, source < target)).map(|v| *v)
-	}
-}
-
-impl Writeable for InFlightHtlcs {
-	fn write<W: lightning::util::ser::Writer>(&self, writer: &mut W) -> Result<(), io::Error> { self.0.write(writer) }
-}
-
-impl lightning::util::ser::Readable for InFlightHtlcs {
-	fn read<R: io::Read>(reader: &mut R) -> Result<Self, lightning::ln::msgs::DecodeError> {
-		let infight_map: HashMap<(u64, bool), u64> = lightning::util::ser::Readable::read(reader)?;
-		Ok(Self(infight_map))
-	}
-}
-
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -767,7 +740,7 @@ mod tests {
 	use lightning::ln::functional_test_utils::*;
 	use lightning::ln::msgs::{ChannelMessageHandler, ErrorAction, LightningError};
 	use lightning::routing::gossip::{EffectiveCapacity, NodeId};
-	use lightning::routing::router::{PaymentParameters, Route, RouteHop};
+	use lightning::routing::router::{InFlightHtlcs, PaymentParameters, Route, RouteHop};
 	use lightning::routing::scoring::{ChannelUsage, LockableScore, Score};
 	use lightning::util::test_utils::TestLogger;
 	use lightning::util::errors::APIError;
@@ -1864,7 +1837,7 @@ mod tests {
 	impl Router for FailingRouter {
 		fn find_route(
 			&self, _payer: &PublicKey, _params: &RouteParameters, _first_hops: Option<&[&ChannelDetails]>,
-			_inflight_htlcs: InFlightHtlcs
+			_inflight_htlcs: InFlightHtlcs,
 		) -> Result<Route, LightningError> {
 			Err(LightningError { err: String::new(), action: ErrorAction::IgnoreError })
 		}
