@@ -357,6 +357,10 @@ pub enum Event {
 		/// Information for claiming this received payment, based on whether the purpose of the
 		/// payment is to pay an invoice or to send a spontaneous payment.
 		purpose: PaymentPurpose,
+		/// The `channel_id` indicating over which channel we received the payment.
+		via_channel_id: Option<[u8; 32]>,
+		/// The `user_channel_id` indicating over which channel we received the payment.
+		via_user_channel_id: Option<u128>,
 	},
 	/// Indicates a payment has been claimed and we've received money!
 	///
@@ -753,7 +757,7 @@ impl Writeable for Event {
 				// We never write out FundingGenerationReady events as, upon disconnection, peers
 				// drop any channels which have not yet exchanged funding_signed.
 			},
-			&Event::PaymentReceived { ref payment_hash, ref amount_msat, ref purpose, ref receiver_node_id } => {
+			&Event::PaymentReceived { ref payment_hash, ref amount_msat, ref purpose, ref receiver_node_id, ref via_channel_id, ref via_user_channel_id } => {
 				1u8.write(writer)?;
 				let mut payment_secret = None;
 				let payment_preimage;
@@ -770,7 +774,9 @@ impl Writeable for Event {
 					(0, payment_hash, required),
 					(1, receiver_node_id, option),
 					(2, payment_secret, option),
+					(3, via_channel_id, option),
 					(4, amount_msat, required),
+					(5, via_user_channel_id, option),
 					(6, 0u64, required), // user_payment_id required for compatibility with 0.0.103 and earlier
 					(8, payment_preimage, option),
 				});
@@ -941,11 +947,15 @@ impl MaybeReadable for Event {
 					let mut amount_msat = 0;
 					let mut receiver_node_id = None;
 					let mut _user_payment_id = None::<u64>; // For compatibility with 0.0.103 and earlier
+					let mut via_channel_id = None;
+					let mut via_user_channel_id = None;
 					read_tlv_fields!(reader, {
 						(0, payment_hash, required),
 						(1, receiver_node_id, option),
 						(2, payment_secret, option),
+						(3, via_channel_id, option),
 						(4, amount_msat, required),
+						(5, via_user_channel_id, option),
 						(6, _user_payment_id, option),
 						(8, payment_preimage, option),
 					});
@@ -962,6 +972,8 @@ impl MaybeReadable for Event {
 						payment_hash,
 						amount_msat,
 						purpose,
+						via_channel_id,
+						via_user_channel_id,
 					}))
 				};
 				f()

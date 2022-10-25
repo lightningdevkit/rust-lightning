@@ -1,0 +1,9 @@
+## API Updates
+- `PaymentReceived` events now have `via_channel_id` and `via_user_channel_id`
+  fields exposing the hop over which we received an inbound payment. Also,
+  `ChannelDetails` now expose the currently observed number of `confirmations`
+  on the funding transaction.
+
+## Backwards Compatibilty
+- Inbound payments with HTLCs pending on update to 0.0.113 will result
+  in a `PaymentReceived` event with `user_channel_id` 0.

@@ -1479,7 +1479,7 @@ macro_rules! expect_payment_received {
 		let events = $node.node.get_and_clear_pending_events();
 		assert_eq!(events.len(), 1);
 		match events[0] {
-			$crate::util::events::Event::PaymentReceived { ref payment_hash, ref purpose, amount_msat, receiver_node_id } => {
+			$crate::util::events::Event::PaymentReceived { ref payment_hash, ref purpose, amount_msat, receiver_node_id, via_channel_id: _, via_user_channel_id: _ } => {
 				assert_eq!($expected_payment_hash, *payment_hash);
 				assert_eq!($expected_recv_value, amount_msat);
 				assert_eq!($expected_receiver_node_id, receiver_node_id.unwrap());
@@ -1774,7 +1774,7 @@ pub fn do_pass_along_path<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_p
 			if payment_received_expected {
 				assert_eq!(events_2.len(), 1);
 				match events_2[0] {
-					Event::PaymentReceived { ref payment_hash, ref purpose, amount_msat, receiver_node_id } => {
+					Event::PaymentReceived { ref payment_hash, ref purpose, amount_msat, receiver_node_id, ref via_channel_id, ref via_user_channel_id } => {
 						assert_eq!(our_payment_hash, *payment_hash);
 						assert_eq!(node.node.get_our_node_id(), receiver_node_id.unwrap());
 						match &purpose {
@@ -1788,6 +1788,8 @@ pub fn do_pass_along_path<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_p
 							},
 						}
 						assert_eq!(amount_msat, recv_value);
+						assert!(node.node.list_channels().iter().any(|details| details.channel_id == via_channel_id.unwrap()));
+						assert!(node.node.list_channels().iter().any(|details| details.user_channel_id == via_user_channel_id.unwrap()));
 					},
 					_ => panic!("Unexpected event"),
 				}
