@@ -201,7 +201,7 @@ impl BaseSign for EnforcingSigner {
 	}
 
 	fn sign_holder_anchor_input(
-		&self, anchor_tx: &mut Transaction, input: usize, secp_ctx: &Secp256k1<secp256k1::All>,
+		&self, anchor_tx: &Transaction, input: usize, secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<Signature, ()> {
 		debug_assert!(MIN_CHAN_DUST_LIMIT_SATOSHIS > ANCHOR_OUTPUT_VALUE_SATOSHI);
 		// As long as our minimum dust limit is enforced and is greater than our anchor output
