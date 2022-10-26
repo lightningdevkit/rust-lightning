@@ -107,7 +107,7 @@ pub(super) enum Payload<T: CustomOnionMessageContents> {
 #[derive(Debug)]
 /// The contents of an onion message. In the context of offers, this would be the invoice, invoice
 /// request, or invoice error.
-pub enum OnionMessageContents<T: CustomOnionMessageContents> {
+pub(crate) enum OnionMessageContents<T: CustomOnionMessageContents> {
 	// Coming soon:
 	// Invoice,
 	// InvoiceRequest,
