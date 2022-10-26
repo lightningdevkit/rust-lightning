@@ -737,7 +737,7 @@ pub(crate) fn get_anchor_output<'a>(commitment_tx: &'a Transaction, funding_pubk
 }
 
 /// Returns the witness required to satisfy and spend an anchor input.
-pub fn build_anchor_input_witness(funding_key: &PublicKey, funding_sig: &Signature) -> Witness {
+pub(crate) fn build_anchor_input_witness(funding_key: &PublicKey, funding_sig: &Signature) -> Witness {
 	let anchor_redeem_script = chan_utils::get_anchor_redeemscript(funding_key);
 	let mut funding_sig = funding_sig.serialize_der().to_vec();
 	funding_sig.push(EcdsaSighashType::All as u8);
