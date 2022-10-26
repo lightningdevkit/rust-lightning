@@ -15,6 +15,7 @@
 //! few other things.
 
 use crate::chain::keysinterface::SpendableOutputDescriptor;
+#[cfg(anchors)]
 use crate::ln::chan_utils::HTLCOutputInCommitment;
 use crate::ln::channelmanager::PaymentId;
 use crate::ln::channel::FUNDING_CONF_DEADLINE_BLOCKS;
@@ -26,7 +27,9 @@ use crate::routing::gossip::NetworkUpdate;
 use crate::util::ser::{BigSize, FixedLengthReader, Writeable, Writer, MaybeReadable, Readable, VecReadWrapper, VecWriteWrapper, OptionDeserWrapper};
 use crate::routing::router::{RouteHop, RouteParameters};
 
-use bitcoin::{PackedLockTime, Transaction, OutPoint};
+use bitcoin::{PackedLockTime, Transaction};
+#[cfg(anchors)]
+use bitcoin::OutPoint;
 use bitcoin::blockdata::script::Script;
 use bitcoin::hashes::Hash;
 use bitcoin::hashes::sha256::Hash as Sha256;
