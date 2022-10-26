@@ -61,16 +61,15 @@ BlockSourceResult<ValidatedBlockHeader> where B::Target: BlockSource {
 ///
 /// async fn init_sync<
 /// 	B: BlockSource,
-/// 	K: KeysInterface<Signer = S>,
-/// 	S: keysinterface::Sign,
+/// 	K: KeysInterface,
 /// 	T: BroadcasterInterface,
 /// 	F: FeeEstimator,
 /// 	L: Logger,
 /// 	C: chain::Filter,
-/// 	P: chainmonitor::Persist<S>,
+/// 	P: chainmonitor::Persist<K::Signer>,
 /// >(
 /// 	block_source: &B,
-/// 	chain_monitor: &ChainMonitor<S, &C, &T, &F, &L, &P>,
+/// 	chain_monitor: &ChainMonitor<K::Signer, &C, &T, &F, &L, &P>,
 /// 	config: UserConfig,
 /// 	keys_manager: &K,
 /// 	tx_broadcaster: &T,
@@ -80,7 +79,7 @@ BlockSourceResult<ValidatedBlockHeader> where B::Target: BlockSource {
 /// ) {
 /// 	// Read a serialized channel monitor paired with the block hash when it was persisted.
 /// 	let serialized_monitor = "...";
-/// 	let (monitor_block_hash, mut monitor) = <(BlockHash, ChannelMonitor<S>)>::read(
+/// 	let (monitor_block_hash, mut monitor) = <(BlockHash, ChannelMonitor<K::Signer>)>::read(
 /// 		&mut Cursor::new(&serialized_monitor), keys_manager).unwrap();
 ///
 /// 	// Read the channel manager paired with the block hash when it was persisted.
@@ -95,7 +94,7 @@ BlockSourceResult<ValidatedBlockHeader> where B::Target: BlockSource {
 /// 			config,
 /// 			vec![&mut monitor],
 /// 		);
-/// 		<(BlockHash, ChannelManager<&ChainMonitor<S, &C, &T, &F, &L, &P>, &T, &K, &F, &L>)>::read(
+/// 		<(BlockHash, ChannelManager<&ChainMonitor<K::Signer, &C, &T, &F, &L, &P>, &T, &K, &F, &L>)>::read(
 /// 			&mut Cursor::new(&serialized_manager), read_args).unwrap()
 /// 	};
 ///

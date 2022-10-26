@@ -14,7 +14,7 @@ use bitcoin::hashes::{Hash, HashEngine};
 use bitcoin::hashes::cmp::fixed_time_eq;
 use bitcoin::hashes::hmac::{Hmac, HmacEngine};
 use bitcoin::hashes::sha256::Hash as Sha256;
-use crate::chain::keysinterface::{KeyMaterial, KeysInterface, Sign};
+use crate::chain::keysinterface::{KeyMaterial, KeysInterface};
 use crate::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
 use crate::ln::msgs;
 use crate::ln::msgs::MAX_VALUE_MSAT;
@@ -91,8 +91,8 @@ impl Method {
 /// `current_time` is a Unix timestamp representing the current time.
 ///
 /// [phantom node payments]: crate::chain::keysinterface::PhantomKeysManager
-pub fn create<Signer: Sign, K: Deref>(keys: &ExpandedKey, min_value_msat: Option<u64>, invoice_expiry_delta_secs: u32, keys_manager: &K, current_time: u64) -> Result<(PaymentHash, PaymentSecret), ()>
-	where K::Target: KeysInterface<Signer = Signer>
+pub fn create<K: Deref>(keys: &ExpandedKey, min_value_msat: Option<u64>, invoice_expiry_delta_secs: u32, keys_manager: &K, current_time: u64) -> Result<(PaymentHash, PaymentSecret), ()>
+	where K::Target: KeysInterface
 {
 	let metadata_bytes = construct_metadata_bytes(min_value_msat, Method::LdkPaymentHash, invoice_expiry_delta_secs, current_time)?;
 

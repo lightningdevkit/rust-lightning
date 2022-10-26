@@ -17,7 +17,7 @@ extern crate lightning_rapid_gossip_sync;
 use lightning::chain;
 use lightning::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use lightning::chain::chainmonitor::{ChainMonitor, Persist};
-use lightning::chain::keysinterface::{Sign, KeysInterface};
+use lightning::chain::keysinterface::KeysInterface;
 use lightning::ln::channelmanager::ChannelManager;
 use lightning::ln::msgs::{ChannelMessageHandler, OnionMessageHandler, RoutingMessageHandler};
 use lightning::ln::peer_handler::{CustomMessageHandler, PeerManager, SocketDescriptor};
@@ -365,7 +365,6 @@ macro_rules! define_run_body {
 #[cfg(feature = "futures")]
 pub async fn process_events_async<
 	'a,
-	Signer: 'static + Sign,
 	CA: 'static + Deref + Send + Sync,
 	CF: 'static + Deref + Send + Sync,
 	CW: 'static + Deref + Send + Sync,
@@ -381,7 +380,7 @@ pub async fn process_events_async<
 	OMH: 'static + Deref + Send + Sync,
 	EH: 'static + EventHandler + Send,
 	PS: 'static + Deref + Send,
-	M: 'static + Deref<Target = ChainMonitor<Signer, CF, T, F, L, P>> + Send + Sync,
+	M: 'static + Deref<Target = ChainMonitor<<K::Target as KeysInterface>::Signer, CF, T, F, L, P>> + Send + Sync,
 	CM: 'static + Deref<Target = ChannelManager<CW, T, K, F, L>> + Send + Sync,
 	PGS: 'static + Deref<Target = P2PGossipSync<G, CA, L>> + Send + Sync,
 	RGS: 'static + Deref<Target = RapidGossipSync<G, L>> + Send,
@@ -399,17 +398,17 @@ pub async fn process_events_async<
 where
 	CA::Target: 'static + chain::Access,
 	CF::Target: 'static + chain::Filter,
-	CW::Target: 'static + chain::Watch<Signer>,
+	CW::Target: 'static + chain::Watch<<K::Target as KeysInterface>::Signer>,
 	T::Target: 'static + BroadcasterInterface,
-	K::Target: 'static + KeysInterface<Signer = Signer>,
+	K::Target: 'static + KeysInterface,
 	F::Target: 'static + FeeEstimator,
 	L::Target: 'static + Logger,
-	P::Target: 'static + Persist<Signer>,
+	P::Target: 'static + Persist<<K::Target as KeysInterface>::Signer>,
 	CMH::Target: 'static + ChannelMessageHandler,
 	OMH::Target: 'static + OnionMessageHandler,
 	RMH::Target: 'static + RoutingMessageHandler,
 	UMH::Target: 'static + CustomMessageHandler,
-	PS::Target: 'static + Persister<'a, Signer, CW, T, K, F, L, SC>,
+	PS::Target: 'static + Persister<'a, CW, T, K, F, L, SC>,
 {
 	let mut should_continue = true;
 	define_run_body!(persister, event_handler, chain_monitor, channel_manager,
@@ -471,7 +470,6 @@ impl BackgroundProcessor {
 	/// [`NetworkGraph::write`]: lightning::routing::gossip::NetworkGraph#impl-Writeable
 	pub fn start<
 		'a,
-		Signer: 'static + Sign,
 		CA: 'static + Deref + Send + Sync,
 		CF: 'static + Deref + Send + Sync,
 		CW: 'static + Deref + Send + Sync,
@@ -487,7 +485,7 @@ impl BackgroundProcessor {
 		RMH: 'static + Deref + Send + Sync,
 		EH: 'static + EventHandler + Send,
 		PS: 'static + Deref + Send,
-		M: 'static + Deref<Target = ChainMonitor<Signer, CF, T, F, L, P>> + Send + Sync,
+		M: 'static + Deref<Target = ChainMonitor<<K::Target as KeysInterface>::Signer, CF, T, F, L, P>> + Send + Sync,
 		CM: 'static + Deref<Target = ChannelManager<CW, T, K, F, L>> + Send + Sync,
 		PGS: 'static + Deref<Target = P2PGossipSync<G, CA, L>> + Send + Sync,
 		RGS: 'static + Deref<Target = RapidGossipSync<G, L>> + Send,
@@ -502,17 +500,17 @@ impl BackgroundProcessor {
 	where
 		CA::Target: 'static + chain::Access,
 		CF::Target: 'static + chain::Filter,
-		CW::Target: 'static + chain::Watch<Signer>,
+		CW::Target: 'static + chain::Watch<<K::Target as KeysInterface>::Signer>,
 		T::Target: 'static + BroadcasterInterface,
-		K::Target: 'static + KeysInterface<Signer = Signer>,
+		K::Target: 'static + KeysInterface,
 		F::Target: 'static + FeeEstimator,
 		L::Target: 'static + Logger,
-		P::Target: 'static + Persist<Signer>,
+		P::Target: 'static + Persist<<K::Target as KeysInterface>::Signer>,
 		CMH::Target: 'static + ChannelMessageHandler,
 		OMH::Target: 'static + OnionMessageHandler,
 		RMH::Target: 'static + RoutingMessageHandler,
 		UMH::Target: 'static + CustomMessageHandler,
-		PS::Target: 'static + Persister<'a, Signer, CW, T, K, F, L, SC>,
+		PS::Target: 'static + Persister<'a, CW, T, K, F, L, SC>,
 	{
 		let stop_thread = Arc::new(AtomicBool::new(false));
 		let stop_thread_clone = stop_thread.clone();

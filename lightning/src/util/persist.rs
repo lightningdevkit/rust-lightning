@@ -26,10 +26,10 @@ pub trait KVStorePersister {
 }
 
 /// Trait that handles persisting a [`ChannelManager`], [`NetworkGraph`], and [`WriteableScore`] to disk.
-pub trait Persister<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref, S: WriteableScore<'a>>
-	where M::Target: 'static + chain::Watch<Signer>,
+pub trait Persister<'a, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref, S: WriteableScore<'a>>
+	where M::Target: 'static + chain::Watch<<K::Target as KeysInterface>::Signer>,
 		T::Target: 'static + BroadcasterInterface,
-		K::Target: 'static + KeysInterface<Signer = Signer>,
+		K::Target: 'static + KeysInterface,
 		F::Target: 'static + FeeEstimator,
 		L::Target: 'static + Logger,
 {
@@ -43,10 +43,10 @@ pub trait Persister<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L:
 	fn persist_scorer(&self, scorer: &S) -> Result<(), io::Error>;
 }
 
-impl<'a, A: KVStorePersister, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref, S: WriteableScore<'a>> Persister<'a, Signer, M, T, K, F, L, S> for A
-	where M::Target: 'static + chain::Watch<Signer>,
+impl<'a, A: KVStorePersister, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref, S: WriteableScore<'a>> Persister<'a, M, T, K, F, L, S> for A
+	where M::Target: 'static + chain::Watch<<K::Target as KeysInterface>::Signer>,
 		T::Target: 'static + BroadcasterInterface,
-		K::Target: 'static + KeysInterface<Signer = Signer>,
+		K::Target: 'static + KeysInterface,
 		F::Target: 'static + FeeEstimator,
 		L::Target: 'static + Logger,
 {

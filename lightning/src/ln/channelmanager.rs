@@ -6921,10 +6921,10 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Writeable for ChannelMana
 /// which you've already broadcasted the transaction.
 ///
 /// [`ChainMonitor`]: crate::chain::chainmonitor::ChainMonitor
-pub struct ChannelManagerReadArgs<'a, Signer: 'a + Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
-	where M::Target: chain::Watch<Signer>,
+pub struct ChannelManagerReadArgs<'a, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
+	where M::Target: chain::Watch<<K::Target as KeysInterface>::Signer>,
         T::Target: BroadcasterInterface,
-        K::Target: KeysInterface<Signer = Signer>,
+        K::Target: KeysInterface,
         F::Target: FeeEstimator,
         L::Target: Logger,
 {
@@ -6967,14 +6967,14 @@ pub struct ChannelManagerReadArgs<'a, Signer: 'a + Sign, M: Deref, T: Deref, K: 
 	/// this struct.
 	///
 	/// (C-not exported) because we have no HashMap bindings
-	pub channel_monitors: HashMap<OutPoint, &'a mut ChannelMonitor<Signer>>,
+	pub channel_monitors: HashMap<OutPoint, &'a mut ChannelMonitor<<K::Target as KeysInterface>::Signer>>,
 }
 
-impl<'a, Signer: 'a + Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
-		ChannelManagerReadArgs<'a, Signer, M, T, K, F, L>
-	where M::Target: chain::Watch<Signer>,
+impl<'a, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
+		ChannelManagerReadArgs<'a, M, T, K, F, L>
+	where M::Target: chain::Watch<<K::Target as KeysInterface>::Signer>,
 		T::Target: BroadcasterInterface,
-		K::Target: KeysInterface<Signer = Signer>,
+		K::Target: KeysInterface,
 		F::Target: FeeEstimator,
 		L::Target: Logger,
 	{
@@ -6982,7 +6982,7 @@ impl<'a, Signer: 'a + Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 	/// HashMap for you. This is primarily useful for C bindings where it is not practical to
 	/// populate a HashMap directly from C.
 	pub fn new(keys_manager: K, fee_estimator: F, chain_monitor: M, tx_broadcaster: T, logger: L, default_config: UserConfig,
-			mut channel_monitors: Vec<&'a mut ChannelMonitor<Signer>>) -> Self {
+			mut channel_monitors: Vec<&'a mut ChannelMonitor<<K::Target as KeysInterface>::Signer>>) -> Self {
 		Self {
 			keys_manager, fee_estimator, chain_monitor, tx_broadcaster, logger, default_config,
 			channel_monitors: channel_monitors.drain(..).map(|monitor| { (monitor.get_funding_txo().0, monitor) }).collect()
@@ -6993,28 +6993,28 @@ impl<'a, Signer: 'a + Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 // Implement ReadableArgs for an Arc'd ChannelManager to make it a bit easier to work with the
 // SipmleArcChannelManager type:
 impl<'a, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
-	ReadableArgs<ChannelManagerReadArgs<'a, <K::Target as KeysInterface>::Signer, M, T, K, F, L>> for (BlockHash, Arc<ChannelManager<M, T, K, F, L>>)
+	ReadableArgs<ChannelManagerReadArgs<'a, M, T, K, F, L>> for (BlockHash, Arc<ChannelManager<M, T, K, F, L>>)
 	where M::Target: chain::Watch<<K::Target as KeysInterface>::Signer>,
         T::Target: BroadcasterInterface,
         K::Target: KeysInterface,
         F::Target: FeeEstimator,
         L::Target: Logger,
 {
-	fn read<R: io::Read>(reader: &mut R, args: ChannelManagerReadArgs<'a, <K::Target as KeysInterface>::Signer, M, T, K, F, L>) -> Result<Self, DecodeError> {
+	fn read<R: io::Read>(reader: &mut R, args: ChannelManagerReadArgs<'a, M, T, K, F, L>) -> Result<Self, DecodeError> {
 		let (blockhash, chan_manager) = <(BlockHash, ChannelManager<M, T, K, F, L>)>::read(reader, args)?;
 		Ok((blockhash, Arc::new(chan_manager)))
 	}
 }
 
 impl<'a, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
-	ReadableArgs<ChannelManagerReadArgs<'a, <K::Target as KeysInterface>::Signer, M, T, K, F, L>> for (BlockHash, ChannelManager<M, T, K, F, L>)
+	ReadableArgs<ChannelManagerReadArgs<'a, M, T, K, F, L>> for (BlockHash, ChannelManager<M, T, K, F, L>)
 	where M::Target: chain::Watch<<K::Target as KeysInterface>::Signer>,
         T::Target: BroadcasterInterface,
         K::Target: KeysInterface,
         F::Target: FeeEstimator,
         L::Target: Logger,
 {
-	fn read<R: io::Read>(reader: &mut R, mut args: ChannelManagerReadArgs<'a, <K::Target as KeysInterface>::Signer, M, T, K, F, L>) -> Result<Self, DecodeError> {
+	fn read<R: io::Read>(reader: &mut R, mut args: ChannelManagerReadArgs<'a, M, T, K, F, L>) -> Result<Self, DecodeError> {
 		let _ver = read_ver_prefix!(reader, SERIALIZATION_VERSION);
 
 		let genesis_hash: BlockHash = Readable::read(reader)?;

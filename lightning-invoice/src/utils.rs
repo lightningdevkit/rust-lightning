@@ -8,7 +8,7 @@ use bech32::ToBase32;
 use bitcoin_hashes::{Hash, sha256};
 use lightning::chain;
 use lightning::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
-use lightning::chain::keysinterface::{Recipient, KeysInterface, Sign};
+use lightning::chain::keysinterface::{Recipient, KeysInterface};
 use lightning::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
 use lightning::ln::channelmanager::{ChannelDetails, ChannelManager, PaymentId, PaymentSendFailure, MIN_FINAL_CLTV_EXPIRY};
 #[cfg(feature = "std")]
@@ -54,7 +54,7 @@ use crate::sync::Mutex;
 /// [`ChannelManager::create_inbound_payment`]: lightning::ln::channelmanager::ChannelManager::create_inbound_payment
 /// [`ChannelManager::create_inbound_payment_for_hash`]: lightning::ln::channelmanager::ChannelManager::create_inbound_payment_for_hash
 /// [`PhantomRouteHints::channels`]: lightning::ln::channelmanager::PhantomRouteHints::channels
-pub fn create_phantom_invoice<Signer: Sign, K: Deref, L: Deref>(
+pub fn create_phantom_invoice<K: Deref, L: Deref>(
 	amt_msat: Option<u64>, payment_hash: Option<PaymentHash>, description: String,
 	invoice_expiry_delta_secs: u32, phantom_route_hints: Vec<PhantomRouteHints>, keys_manager: K,
 	logger: L, network: Currency,
@@ -65,7 +65,7 @@ where
 {
 	let description = Description::new(description).map_err(SignOrCreationError::CreationError)?;
 	let description = InvoiceDescription::Direct(&description,);
-	_create_phantom_invoice::<Signer, K, L>(
+	_create_phantom_invoice::<K, L>(
 		amt_msat, payment_hash, description, invoice_expiry_delta_secs, phantom_route_hints,
 		keys_manager, logger, network,
 	)
@@ -103,7 +103,7 @@ where
 /// [`ChannelManager::create_inbound_payment`]: lightning::ln::channelmanager::ChannelManager::create_inbound_payment
 /// [`ChannelManager::create_inbound_payment_for_hash`]: lightning::ln::channelmanager::ChannelManager::create_inbound_payment_for_hash
 /// [`PhantomRouteHints::channels`]: lightning::ln::channelmanager::PhantomRouteHints::channels
-pub fn create_phantom_invoice_with_description_hash<Signer: Sign, K: Deref, L: Deref>(
+pub fn create_phantom_invoice_with_description_hash<K: Deref, L: Deref>(
 	amt_msat: Option<u64>, payment_hash: Option<PaymentHash>, invoice_expiry_delta_secs: u32,
 	description_hash: Sha256, phantom_route_hints: Vec<PhantomRouteHints>, keys_manager: K,
 	logger: L, network: Currency
@@ -112,14 +112,14 @@ where
 	K::Target: KeysInterface,
 	L::Target: Logger,
 {
-	_create_phantom_invoice::<Signer, K, L>(
+	_create_phantom_invoice::<K, L>(
 		amt_msat, payment_hash, InvoiceDescription::Hash(&description_hash),
 		invoice_expiry_delta_secs, phantom_route_hints, keys_manager, logger, network,
 	)
 }
 
 #[cfg(feature = "std")]
-fn _create_phantom_invoice<Signer: Sign, K: Deref, L: Deref>(
+fn _create_phantom_invoice<K: Deref, L: Deref>(
 	amt_msat: Option<u64>, payment_hash: Option<PaymentHash>, description: InvoiceDescription,
 	invoice_expiry_delta_secs: u32, phantom_route_hints: Vec<PhantomRouteHints>, keys_manager: K,
 	logger: L, network: Currency,
@@ -690,7 +690,6 @@ mod test {
 	use lightning::ln::functional_test_utils::*;
 	use lightning::ln::msgs::ChannelMessageHandler;
 	use lightning::routing::router::{PaymentParameters, RouteParameters, find_route};
-	use lightning::util::enforcing_trait_impls::EnforcingSigner;
 	use lightning::util::events::{MessageSendEvent, MessageSendEventsProvider, Event};
 	use lightning::util::test_utils;
 	use lightning::util::config::UserConfig;
@@ -1016,7 +1015,7 @@ mod test {
 		let non_default_invoice_expiry_secs = 4200;
 
 		let invoice =
-			crate::utils::create_phantom_invoice::<EnforcingSigner, &test_utils::TestKeysInterface, &test_utils::TestLogger>(
+			crate::utils::create_phantom_invoice::<&test_utils::TestKeysInterface, &test_utils::TestLogger>(
 				Some(payment_amt), payment_hash, "test".to_string(), non_default_invoice_expiry_secs,
 				route_hints, &nodes[1].keys_manager, &nodes[1].logger, Currency::BitcoinTestnet
 			).unwrap();
@@ -1125,7 +1124,7 @@ mod test {
 			nodes[2].node.get_phantom_route_hints(),
 		];
 
-		let invoice = crate::utils::create_phantom_invoice::<EnforcingSigner, &test_utils::TestKeysInterface, &test_utils::TestLogger>(Some(payment_amt), Some(payment_hash), "test".to_string(), 3600, route_hints, &nodes[1].keys_manager, &nodes[1].logger, Currency::BitcoinTestnet).unwrap();
+		let invoice = crate::utils::create_phantom_invoice::<&test_utils::TestKeysInterface, &test_utils::TestLogger>(Some(payment_amt), Some(payment_hash), "test".to_string(), 3600, route_hints, &nodes[1].keys_manager, &nodes[1].logger, Currency::BitcoinTestnet).unwrap();
 
 		let chan_0_1 = &nodes[1].node.list_usable_channels()[0];
 		assert_eq!(invoice.route_hints()[0].0[0].htlc_minimum_msat, chan_0_1.inbound_htlc_minimum_msat);
@@ -1153,7 +1152,7 @@ mod test {
 		let description_hash = crate::Sha256(Hash::hash("Description hash phantom invoice".as_bytes()));
 		let non_default_invoice_expiry_secs = 4200;
 		let invoice = crate::utils::create_phantom_invoice_with_description_hash::<
-			EnforcingSigner, &test_utils::TestKeysInterface, &test_utils::TestLogger,
+			&test_utils::TestKeysInterface, &test_utils::TestLogger,
 		>(
 			Some(payment_amt), None, non_default_invoice_expiry_secs, description_hash,
 			route_hints, &nodes[1].keys_manager, &nodes[1].logger, Currency::BitcoinTestnet
@@ -1470,7 +1469,7 @@ mod test {
 			.map(|route_hint| route_hint.phantom_scid)
 			.collect::<HashSet<u64>>();
 
-		let invoice = crate::utils::create_phantom_invoice::<EnforcingSigner, &test_utils::TestKeysInterface, &test_utils::TestLogger>(invoice_amt, None, "test".to_string(), 3600, phantom_route_hints, &invoice_node.keys_manager, &invoice_node.logger, Currency::BitcoinTestnet).unwrap();
+		let invoice = crate::utils::create_phantom_invoice::<&test_utils::TestKeysInterface, &test_utils::TestLogger>(invoice_amt, None, "test".to_string(), 3600, phantom_route_hints, &invoice_node.keys_manager, &invoice_node.logger, Currency::BitcoinTestnet).unwrap();
 
 		let invoice_hints = invoice.private_routes();
 

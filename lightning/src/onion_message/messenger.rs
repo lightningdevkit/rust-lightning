@@ -15,7 +15,7 @@ use bitcoin::hashes::hmac::{Hmac, HmacEngine};
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::secp256k1::{self, PublicKey, Scalar, Secp256k1, SecretKey};
 
-use crate::chain::keysinterface::{InMemorySigner, KeysInterface, KeysManager, Recipient, Sign};
+use crate::chain::keysinterface::{KeysInterface, KeysManager, Recipient};
 use crate::ln::features::{InitFeatures, NodeFeatures};
 use crate::ln::msgs::{self, OnionMessageHandler};
 use crate::ln::onion_utils;
@@ -104,8 +104,8 @@ use crate::prelude::*;
 ///
 /// [offers]: <https://github.com/lightning/bolts/pull/798>
 /// [`OnionMessenger`]: crate::onion_message::OnionMessenger
-pub struct OnionMessenger<Signer: Sign, K: Deref, L: Deref, CMH: Deref>
-	where K::Target: KeysInterface<Signer = Signer>,
+pub struct OnionMessenger<K: Deref, L: Deref, CMH: Deref>
+	where K::Target: KeysInterface,
 	      L::Target: Logger,
 	      CMH:: Target: CustomOnionMessageHandler,
 {
@@ -186,8 +186,8 @@ pub trait CustomOnionMessageHandler {
 	fn read_custom_message<R: io::Read>(&self, message_type: u64, buffer: &mut R) -> Result<Option<Self::CustomMessage>, msgs::DecodeError>;
 }
 
-impl<Signer: Sign, K: Deref, L: Deref, CMH: Deref> OnionMessenger<Signer, K, L, CMH>
-	where K::Target: KeysInterface<Signer = Signer>,
+impl<K: Deref, L: Deref, CMH: Deref> OnionMessenger<K, L, CMH>
+	where K::Target: KeysInterface,
 	      L::Target: Logger,
 	      CMH::Target: CustomOnionMessageHandler,
 {
@@ -295,8 +295,8 @@ fn outbound_buffer_full(peer_node_id: &PublicKey, buffer: &HashMap<PublicKey, Ve
 	false
 }
 
-impl<Signer: Sign, K: Deref, L: Deref, CMH: Deref> OnionMessageHandler for OnionMessenger<Signer, K, L, CMH>
-	where K::Target: KeysInterface<Signer = Signer>,
+impl<K: Deref, L: Deref, CMH: Deref> OnionMessageHandler for OnionMessenger<K, L, CMH>
+	where K::Target: KeysInterface,
 	      L::Target: Logger,
 	      CMH::Target: CustomOnionMessageHandler + Sized,
 {
@@ -439,8 +439,8 @@ impl<Signer: Sign, K: Deref, L: Deref, CMH: Deref> OnionMessageHandler for Onion
 	}
 }
 
-impl<Signer: Sign, K: Deref, L: Deref, CMH: Deref> OnionMessageProvider for OnionMessenger<Signer, K, L, CMH>
-	where K::Target: KeysInterface<Signer = Signer>,
+impl<K: Deref, L: Deref, CMH: Deref> OnionMessageProvider for OnionMessenger<K, L, CMH>
+	where K::Target: KeysInterface,
 	      L::Target: Logger,
 	      CMH::Target: CustomOnionMessageHandler,
 {
@@ -462,7 +462,7 @@ impl<Signer: Sign, K: Deref, L: Deref, CMH: Deref> OnionMessageProvider for Onio
 ///
 /// [`SimpleArcChannelManager`]: crate::ln::channelmanager::SimpleArcChannelManager
 /// [`SimpleArcPeerManager`]: crate::ln::peer_handler::SimpleArcPeerManager
-pub type SimpleArcOnionMessenger<L> = OnionMessenger<InMemorySigner, Arc<KeysManager>, Arc<L>, IgnoringMessageHandler>;
+pub type SimpleArcOnionMessenger<L> = OnionMessenger<Arc<KeysManager>, Arc<L>, IgnoringMessageHandler>;
 /// Useful for simplifying the parameters of [`SimpleRefChannelManager`] and
 /// [`SimpleRefPeerManager`]. See their docs for more details.
 ///
@@ -470,7 +470,7 @@ pub type SimpleArcOnionMessenger<L> = OnionMessenger<InMemorySigner, Arc<KeysMan
 ///
 /// [`SimpleRefChannelManager`]: crate::ln::channelmanager::SimpleRefChannelManager
 /// [`SimpleRefPeerManager`]: crate::ln::peer_handler::SimpleRefPeerManager
-pub type SimpleRefOnionMessenger<'a, 'b, L> = OnionMessenger<InMemorySigner, &'a KeysManager, &'b L, IgnoringMessageHandler>;
+pub type SimpleRefOnionMessenger<'a, 'b, L> = OnionMessenger<&'a KeysManager, &'b L, IgnoringMessageHandler>;
 
 /// Construct onion packet payloads and keys for sending an onion message along the given
 /// `unblinded_path` to the given `destination`.

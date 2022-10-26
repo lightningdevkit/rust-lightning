@@ -3551,8 +3551,8 @@ where
 
 const MAX_ALLOC_SIZE: usize = 64*1024;
 
-impl<'a, Signer: Sign, K: KeysInterface<Signer = Signer>> ReadableArgs<&'a K>
-		for (BlockHash, ChannelMonitor<Signer>) {
+impl<'a, K: KeysInterface> ReadableArgs<&'a K>
+		for (BlockHash, ChannelMonitor<K::Signer>) {
 	fn read<R: io::Read>(reader: &mut R, keys_manager: &'a K) -> Result<Self, DecodeError> {
 		macro_rules! unwrap_obj {
 			($key: expr) => {
@@ -3736,7 +3736,7 @@ impl<'a, Signer: Sign, K: KeysInterface<Signer = Signer>> ReadableArgs<&'a K>
 				return Err(DecodeError::InvalidValue);
 			}
 		}
-		let onchain_tx_handler: OnchainTxHandler<Signer> = ReadableArgs::read(reader, keys_manager)?;
+		let onchain_tx_handler: OnchainTxHandler<K::Signer> = ReadableArgs::read(reader, keys_manager)?;
 
 		let lockdown_from_offchain = Readable::read(reader)?;
 		let holder_tx_signed = Readable::read(reader)?;
