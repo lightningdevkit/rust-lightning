@@ -21,7 +21,7 @@ use crate::ln::features::{InitFeatures, NodeFeatures};
 use crate::ln::msgs;
 use crate::ln::msgs::{ChannelMessageHandler, LightningError, NetAddress, OnionMessageHandler, RoutingMessageHandler};
 use crate::ln::channelmanager::{SimpleArcChannelManager, SimpleRefChannelManager};
-use crate::util::ser::{MaybeReadableArgs, VecWriter, Writeable, Writer};
+use crate::util::ser::{VecWriter, Writeable, Writer};
 use crate::ln::peer_channel_encryptor::{PeerChannelEncryptor,NextNoiseStep};
 use crate::ln::wire;
 use crate::ln::wire::Encode;
@@ -97,13 +97,11 @@ impl OnionMessageHandler for IgnoringMessageHandler {
 }
 impl CustomOnionMessageHandler for IgnoringMessageHandler {
 	type CustomMessage = Infallible;
-	fn handle_custom_message(&self, _msg: Self::CustomMessage) {
+	fn handle_custom_message(&self, _msg: Infallible) {
 		// Since we always return `None` in the read the handle method should never be called.
 		unreachable!();
 	}
-}
-impl MaybeReadableArgs<u64> for Infallible {
-	fn read<R: io::Read>(_buffer: &mut R, _msg_type: u64) -> Result<Option<Self>, msgs::DecodeError> where Self: Sized {
+	fn read_custom_message<R: io::Read>(&self, _msg_type: u64, _buffer: &mut R) -> Result<Option<Infallible>, msgs::DecodeError> where Self: Sized {
 		Ok(None)
 	}
 }
