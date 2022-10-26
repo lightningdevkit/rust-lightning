@@ -235,14 +235,14 @@ where
 ///
 /// `invoice_expiry_delta_secs` describes the number of seconds that the invoice is valid for
 /// in excess of the current time.
-pub fn create_invoice_from_channelmanager<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>(
-	channelmanager: &ChannelManager<Signer, M, T, K, F, L>, keys_manager: K, logger: L,
+pub fn create_invoice_from_channelmanager<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>(
+	channelmanager: &ChannelManager<M, T, K, F, L>, keys_manager: K, logger: L,
 	network: Currency, amt_msat: Option<u64>, description: String, invoice_expiry_delta_secs: u32
 ) -> Result<Invoice, SignOrCreationError<()>>
 where
-	M::Target: chain::Watch<Signer>,
+	M::Target: chain::Watch<<K::Target as KeysInterface>::Signer>,
 	T::Target: BroadcasterInterface,
-	K::Target: KeysInterface<Signer = Signer>,
+	K::Target: KeysInterface,
 	F::Target: FeeEstimator,
 	L::Target: Logger,
 {
@@ -265,15 +265,15 @@ where
 ///
 /// `invoice_expiry_delta_secs` describes the number of seconds that the invoice is valid for
 /// in excess of the current time.
-pub fn create_invoice_from_channelmanager_with_description_hash<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>(
-	channelmanager: &ChannelManager<Signer, M, T, K, F, L>, keys_manager: K, logger: L,
+pub fn create_invoice_from_channelmanager_with_description_hash<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>(
+	channelmanager: &ChannelManager<M, T, K, F, L>, keys_manager: K, logger: L,
 	network: Currency, amt_msat: Option<u64>, description_hash: Sha256,
 	invoice_expiry_delta_secs: u32
 ) -> Result<Invoice, SignOrCreationError<()>>
 where
-	M::Target: chain::Watch<Signer>,
+	M::Target: chain::Watch<<K::Target as KeysInterface>::Signer>,
 	T::Target: BroadcasterInterface,
-	K::Target: KeysInterface<Signer = Signer>,
+	K::Target: KeysInterface,
 	F::Target: FeeEstimator,
 	L::Target: Logger,
 {
@@ -292,15 +292,15 @@ where
 /// See [`create_invoice_from_channelmanager_with_description_hash`]
 /// This version can be used in a `no_std` environment, where [`std::time::SystemTime`] is not
 /// available and the current time is supplied by the caller.
-pub fn create_invoice_from_channelmanager_with_description_hash_and_duration_since_epoch<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>(
-	channelmanager: &ChannelManager<Signer, M, T, K, F, L>, keys_manager: K, logger: L,
+pub fn create_invoice_from_channelmanager_with_description_hash_and_duration_since_epoch<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>(
+	channelmanager: &ChannelManager<M, T, K, F, L>, keys_manager: K, logger: L,
 	network: Currency, amt_msat: Option<u64>, description_hash: Sha256,
 	duration_since_epoch: Duration, invoice_expiry_delta_secs: u32
 ) -> Result<Invoice, SignOrCreationError<()>>
 where
-	M::Target: chain::Watch<Signer>,
+	M::Target: chain::Watch<<K::Target as KeysInterface>::Signer>,
 	T::Target: BroadcasterInterface,
-	K::Target: KeysInterface<Signer = Signer>,
+	K::Target: KeysInterface,
 	F::Target: FeeEstimator,
 	L::Target: Logger,
 {
@@ -314,15 +314,15 @@ where
 /// See [`create_invoice_from_channelmanager`]
 /// This version can be used in a `no_std` environment, where [`std::time::SystemTime`] is not
 /// available and the current time is supplied by the caller.
-pub fn create_invoice_from_channelmanager_and_duration_since_epoch<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>(
-	channelmanager: &ChannelManager<Signer, M, T, K, F, L>, keys_manager: K, logger: L,
+pub fn create_invoice_from_channelmanager_and_duration_since_epoch<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>(
+	channelmanager: &ChannelManager<M, T, K, F, L>, keys_manager: K, logger: L,
 	network: Currency, amt_msat: Option<u64>, description: String, duration_since_epoch: Duration,
 	invoice_expiry_delta_secs: u32
 ) -> Result<Invoice, SignOrCreationError<()>>
 where
-	M::Target: chain::Watch<Signer>,
+	M::Target: chain::Watch<<K::Target as KeysInterface>::Signer>,
 	T::Target: BroadcasterInterface,
-	K::Target: KeysInterface<Signer = Signer>,
+	K::Target: KeysInterface,
 	F::Target: FeeEstimator,
 	L::Target: Logger,
 {
@@ -335,15 +335,15 @@ where
 	)
 }
 
-fn _create_invoice_from_channelmanager_and_duration_since_epoch<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>(
-	channelmanager: &ChannelManager<Signer, M, T, K, F, L>, keys_manager: K, logger: L,
+fn _create_invoice_from_channelmanager_and_duration_since_epoch<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>(
+	channelmanager: &ChannelManager<M, T, K, F, L>, keys_manager: K, logger: L,
 	network: Currency, amt_msat: Option<u64>, description: InvoiceDescription,
 	duration_since_epoch: Duration, invoice_expiry_delta_secs: u32
 ) -> Result<Invoice, SignOrCreationError<()>>
 where
-	M::Target: chain::Watch<Signer>,
+	M::Target: chain::Watch<<K::Target as KeysInterface>::Signer>,
 	T::Target: BroadcasterInterface,
-	K::Target: KeysInterface<Signer = Signer>,
+	K::Target: KeysInterface,
 	F::Target: FeeEstimator,
 	L::Target: Logger,
 {
@@ -585,11 +585,11 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, S: Deref> Router for DefaultR
 	}
 }
 
-impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Payer for ChannelManager<Signer, M, T, K, F, L>
+impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Payer for ChannelManager<M, T, K, F, L>
 where
-	M::Target: chain::Watch<Signer>,
+	M::Target: chain::Watch<<K::Target as KeysInterface>::Signer>,
 	T::Target: BroadcasterInterface,
-	K::Target: KeysInterface<Signer = Signer>,
+	K::Target: KeysInterface,
 	F::Target: FeeEstimator,
 	L::Target: Logger,
 {
