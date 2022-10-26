@@ -29,6 +29,7 @@ use crate::util::logger::Logger;
 use crate::util::ser::Writeable;
 
 use core::ops::Deref;
+use crate::io;
 use crate::sync::{Arc, Mutex};
 use crate::prelude::*;
 
@@ -47,7 +48,7 @@ use crate::prelude::*;
 /// # use lightning::ln::peer_handler::IgnoringMessageHandler;
 /// # use lightning::onion_message::{BlindedRoute, CustomOnionMessageContents, Destination, OnionMessageContents, OnionMessenger};
 /// # use lightning::util::logger::{Logger, Record};
-/// # use lightning::util::ser::{MaybeReadableArgs, Writeable, Writer};
+/// # use lightning::util::ser::{Writeable, Writer};
 /// # use lightning::io;
 /// # use std::sync::Arc;
 /// # struct FakeLogger {};
@@ -79,13 +80,6 @@ use crate::prelude::*;
 /// 	fn tlv_type(&self) -> u64 {
 /// 		# let your_custom_message_type = 42;
 /// 		your_custom_message_type
-/// 	}
-/// }
-/// impl MaybeReadableArgs<u64> for YourCustomMessage {
-/// 	fn read<R: io::Read>(r: &mut R, message_type: u64) -> Result<Option<Self>, DecodeError> {
-/// 		# unreachable!()
-/// 		// Read your custom onion message of type `message_type` from `r`, or return `None`
-/// 		// if the message type is unknown
 /// 	}
 /// }
 /// // Send a custom onion message to a node id.
@@ -178,6 +172,9 @@ pub trait CustomOnionMessageHandler {
 	type CustomMessage: CustomOnionMessageContents;
 	/// Called with the custom message that was received.
 	fn handle_custom_message(&self, msg: Self::CustomMessage);
+	/// Read a custom message of type `message_type` from `buffer`, returning `Ok(None)` if the
+	/// message type is unknown.
+	fn read_custom_message<R: io::Read>(&self, message_type: u64, buffer: &mut R) -> Result<Option<Self::CustomMessage>, msgs::DecodeError>;
 }
 
 impl<Signer: Sign, K: Deref, L: Deref, CMH: Deref> OnionMessenger<Signer, K, L, CMH>
@@ -279,7 +276,7 @@ fn outbound_buffer_full(peer_node_id: &PublicKey, buffer: &HashMap<PublicKey, Ve
 impl<Signer: Sign, K: Deref, L: Deref, CMH: Deref> OnionMessageHandler for OnionMessenger<Signer, K, L, CMH>
 	where K::Target: KeysInterface<Signer = Signer>,
 	      L::Target: Logger,
-	      CMH::Target: CustomOnionMessageHandler,
+	      CMH::Target: CustomOnionMessageHandler + Sized,
 {
 	/// Handle an incoming onion message. Currently, if a message was destined for us we will log, but
 	/// soon we'll delegate the onion message to a handler that can generate invoices or send
@@ -308,8 +305,8 @@ impl<Signer: Sign, K: Deref, L: Deref, CMH: Deref> OnionMessageHandler for Onion
 				}
 			}
 		};
-		match onion_utils::decode_next_hop(onion_decode_ss, &msg.onion_routing_packet.hop_data[..],
-			msg.onion_routing_packet.hmac, control_tlvs_ss)
+		match onion_utils::decode_next_untagged_hop(onion_decode_ss, &msg.onion_routing_packet.hop_data[..],
+			msg.onion_routing_packet.hmac, (control_tlvs_ss, &*self.custom_handler))
 		{
 			Ok((Payload::Receive::<<<CMH as Deref>::Target as CustomOnionMessageHandler>::CustomMessage> {
 				message, control_tlvs: ReceiveControlTlvs::Unblinded(ReceiveTlvs { path_id }), reply_path,
