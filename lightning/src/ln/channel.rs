@@ -244,9 +244,9 @@ enum HTLCUpdateAwaitingACK {
 /// There are a few "states" and then a number of flags which can be applied:
 /// We first move through init with OurInitSent -> TheirInitSent -> FundingCreated -> FundingSent.
 /// TheirChannelReady and OurChannelReady then get set on FundingSent, and when both are set we
-/// move on to ChannelFunded.
-/// Note that PeerDisconnected can be set on both ChannelFunded and FundingSent.
-/// ChannelFunded can then get all remaining flags set on it, until we finish shutdown, then we
+/// move on to ChannelReady.
+/// Note that PeerDisconnected can be set on both ChannelReady and FundingSent.
+/// ChannelReady can then get all remaining flags set on it, until we finish shutdown, then we
 /// move on to ShutdownComplete, at which point most calls into this channel are disallowed.
 enum ChannelState {
 	/// Implies we have (or are prepared to) send our open_channel/accept_channel message
@@ -262,17 +262,17 @@ enum ChannelState {
 	/// and our counterparty consider the funding transaction confirmed.
 	FundingSent = 8,
 	/// Flag which can be set on FundingSent to indicate they sent us a channel_ready message.
-	/// Once both TheirChannelReady and OurChannelReady are set, state moves on to ChannelFunded.
+	/// Once both TheirChannelReady and OurChannelReady are set, state moves on to ChannelReady.
 	TheirChannelReady = 1 << 4,
 	/// Flag which can be set on FundingSent to indicate we sent them a channel_ready message.
-	/// Once both TheirChannelReady and OurChannelReady are set, state moves on to ChannelFunded.
+	/// Once both TheirChannelReady and OurChannelReady are set, state moves on to ChannelReady.
 	OurChannelReady = 1 << 5,
-	ChannelFunded = 64,
-	/// Flag which is set on ChannelFunded and FundingSent indicating remote side is considered
+	ChannelReady = 64,
+	/// Flag which is set on ChannelReady and FundingSent indicating remote side is considered
 	/// "disconnected" and no updates are allowed until after we've done a channel_reestablish
 	/// dance.
 	PeerDisconnected = 1 << 7,
-	/// Flag which is set on ChannelFunded, FundingCreated, and FundingSent indicating the user has
+	/// Flag which is set on ChannelReady, FundingCreated, and FundingSent indicating the user has
 	/// told us a ChannelMonitor update is pending async persistence somewhere and we should pause
 	/// sending any outbound messages until they've managed to finish.
 	MonitorUpdateInProgress = 1 << 8,
@@ -281,13 +281,13 @@ enum ChannelState {
 	/// messages as then we will be unable to determine which HTLCs they included in their
 	/// revoke_and_ack implicit ACK, so instead we have to hold them away temporarily to be sent
 	/// later.
-	/// Flag is set on ChannelFunded.
+	/// Flag is set on ChannelReady.
 	AwaitingRemoteRevoke = 1 << 9,
-	/// Flag which is set on ChannelFunded or FundingSent after receiving a shutdown message from
+	/// Flag which is set on ChannelReady or FundingSent after receiving a shutdown message from
 	/// the remote end. If set, they may not add any new HTLCs to the channel, and we are expected
 	/// to respond with our own shutdown message when possible.
 	RemoteShutdownSent = 1 << 10,
-	/// Flag which is set on ChannelFunded or FundingSent after sending a shutdown message. At this
+	/// Flag which is set on ChannelReady or FundingSent after sending a shutdown message. At this
 	/// point, we may not add any new HTLCs to the channel.
 	LocalShutdownSent = 1 << 11,
 	/// We've successfully negotiated a closing_signed dance. At this point ChannelManager is about
@@ -1793,11 +1793,11 @@ impl<Signer: Sign> Channel<Signer> {
 	}
 
 	fn get_update_fulfill_htlc<L: Deref>(&mut self, htlc_id_arg: u64, payment_preimage_arg: PaymentPreimage, logger: &L) -> UpdateFulfillFetch where L::Target: Logger {
-		// Either ChannelFunded got set (which means it won't be unset) or there is no way any
+		// Either ChannelReady got set (which means it won't be unset) or there is no way any
 		// caller thought we could have something claimed (cause we wouldn't have accepted in an
 		// incoming HTLC anyway). If we got to ShutdownComplete, callers aren't allowed to call us,
 		// either.
-		if (self.channel_state & (ChannelState::ChannelFunded as u32)) != (ChannelState::ChannelFunded as u32) {
+		if (self.channel_state & (ChannelState::ChannelReady as u32)) != (ChannelState::ChannelReady as u32) {
 			panic!("Was asked to fulfill an HTLC when channel was not in an operational state");
 		}
 		assert_eq!(self.channel_state & ChannelState::ShutdownComplete as u32, 0);
@@ -1940,7 +1940,7 @@ impl<Signer: Sign> Channel<Signer> {
 	/// If we do fail twice, we debug_assert!(false) and return Ok(None). Thus, will always return
 	/// Ok(_) if debug assertions are turned on or preconditions are met.
 	pub fn get_update_fail_htlc<L: Deref>(&mut self, htlc_id_arg: u64, err_packet: msgs::OnionErrorPacket, logger: &L) -> Result<Option<msgs::UpdateFailHTLC>, ChannelError> where L::Target: Logger {
-		if (self.channel_state & (ChannelState::ChannelFunded as u32)) != (ChannelState::ChannelFunded as u32) {
+		if (self.channel_state & (ChannelState::ChannelReady as u32)) != (ChannelState::ChannelReady as u32) {
 			panic!("Was asked to fail an HTLC when channel was not in an operational state");
 		}
 		assert_eq!(self.channel_state & ChannelState::ShutdownComplete as u32, 0);
@@ -2356,9 +2356,9 @@ impl<Signer: Sign> Channel<Signer> {
 		if non_shutdown_state == ChannelState::FundingSent as u32 {
 			self.channel_state |= ChannelState::TheirChannelReady as u32;
 		} else if non_shutdown_state == (ChannelState::FundingSent as u32 | ChannelState::OurChannelReady as u32) {
-			self.channel_state = ChannelState::ChannelFunded as u32 | (self.channel_state & MULTI_STATE_FLAGS);
+			self.channel_state = ChannelState::ChannelReady as u32 | (self.channel_state & MULTI_STATE_FLAGS);
 			self.update_time_counter += 1;
-		} else if self.channel_state & (ChannelState::ChannelFunded as u32) != 0 ||
+		} else if self.channel_state & (ChannelState::ChannelReady as u32) != 0 ||
 			// If we reconnected before sending our `channel_ready` they may still resend theirs:
 			(self.channel_state & (ChannelState::FundingSent as u32 | ChannelState::TheirChannelReady as u32) ==
 			                      (ChannelState::FundingSent as u32 | ChannelState::TheirChannelReady as u32))
@@ -2719,12 +2719,12 @@ impl<Signer: Sign> Channel<Signer> {
 	pub fn update_add_htlc<F, L: Deref>(&mut self, msg: &msgs::UpdateAddHTLC, mut pending_forward_status: PendingHTLCStatus, create_pending_htlc_status: F, logger: &L) -> Result<(), ChannelError>
 	where F: for<'a> Fn(&'a Self, PendingHTLCStatus, u16) -> PendingHTLCStatus, L::Target: Logger {
 		// We can't accept HTLCs sent after we've sent a shutdown.
-		let local_sent_shutdown = (self.channel_state & (ChannelState::ChannelFunded as u32 | ChannelState::LocalShutdownSent as u32)) != (ChannelState::ChannelFunded as u32);
+		let local_sent_shutdown = (self.channel_state & (ChannelState::ChannelReady as u32 | ChannelState::LocalShutdownSent as u32)) != (ChannelState::ChannelReady as u32);
 		if local_sent_shutdown {
 			pending_forward_status = create_pending_htlc_status(self, pending_forward_status, 0x4000|8);
 		}
 		// If the remote has sent a shutdown prior to adding this HTLC, then they are in violation of the spec.
-		let remote_sent_shutdown = (self.channel_state & (ChannelState::ChannelFunded as u32 | ChannelState::RemoteShutdownSent as u32)) != (ChannelState::ChannelFunded as u32);
+		let remote_sent_shutdown = (self.channel_state & (ChannelState::ChannelReady as u32 | ChannelState::RemoteShutdownSent as u32)) != (ChannelState::ChannelReady as u32);
 		if remote_sent_shutdown {
 			return Err(ChannelError::Close("Got add HTLC message when channel was not in an operational state".to_owned()));
 		}
@@ -2901,7 +2901,7 @@ impl<Signer: Sign> Channel<Signer> {
 	}
 
 	pub fn update_fulfill_htlc(&mut self, msg: &msgs::UpdateFulfillHTLC) -> Result<(HTLCSource, u64), ChannelError> {
-		if (self.channel_state & (ChannelState::ChannelFunded as u32)) != (ChannelState::ChannelFunded as u32) {
+		if (self.channel_state & (ChannelState::ChannelReady as u32)) != (ChannelState::ChannelReady as u32) {
 			return Err(ChannelError::Close("Got fulfill HTLC message when channel was not in an operational state".to_owned()));
 		}
 		if self.channel_state & (ChannelState::PeerDisconnected as u32) == ChannelState::PeerDisconnected as u32 {
@@ -2912,7 +2912,7 @@ impl<Signer: Sign> Channel<Signer> {
 	}
 
 	pub fn update_fail_htlc(&mut self, msg: &msgs::UpdateFailHTLC, fail_reason: HTLCFailReason) -> Result<(), ChannelError> {
-		if (self.channel_state & (ChannelState::ChannelFunded as u32)) != (ChannelState::ChannelFunded as u32) {
+		if (self.channel_state & (ChannelState::ChannelReady as u32)) != (ChannelState::ChannelReady as u32) {
 			return Err(ChannelError::Close("Got fail HTLC message when channel was not in an operational state".to_owned()));
 		}
 		if self.channel_state & (ChannelState::PeerDisconnected as u32) == ChannelState::PeerDisconnected as u32 {
@@ -2924,7 +2924,7 @@ impl<Signer: Sign> Channel<Signer> {
 	}
 
 	pub fn update_fail_malformed_htlc(&mut self, msg: &msgs::UpdateFailMalformedHTLC, fail_reason: HTLCFailReason) -> Result<(), ChannelError> {
-		if (self.channel_state & (ChannelState::ChannelFunded as u32)) != (ChannelState::ChannelFunded as u32) {
+		if (self.channel_state & (ChannelState::ChannelReady as u32)) != (ChannelState::ChannelReady as u32) {
 			return Err(ChannelError::Close("Got fail malformed HTLC message when channel was not in an operational state".to_owned()));
 		}
 		if self.channel_state & (ChannelState::PeerDisconnected as u32) == ChannelState::PeerDisconnected as u32 {
@@ -2938,7 +2938,7 @@ impl<Signer: Sign> Channel<Signer> {
 	pub fn commitment_signed<L: Deref>(&mut self, msg: &msgs::CommitmentSigned, logger: &L) -> Result<(msgs::RevokeAndACK, Option<msgs::CommitmentSigned>, ChannelMonitorUpdate), (Option<ChannelMonitorUpdate>, ChannelError)>
 		where L::Target: Logger
 	{
-		if (self.channel_state & (ChannelState::ChannelFunded as u32)) != (ChannelState::ChannelFunded as u32) {
+		if (self.channel_state & (ChannelState::ChannelReady as u32)) != (ChannelState::ChannelReady as u32) {
 			return Err((None, ChannelError::Close("Got commitment signed message when channel was not in an operational state".to_owned())));
 		}
 		if self.channel_state & (ChannelState::PeerDisconnected as u32) == ChannelState::PeerDisconnected as u32 {
@@ -3131,7 +3131,7 @@ impl<Signer: Sign> Channel<Signer> {
 	/// If we're not in a state where freeing the holding cell makes sense, this is a no-op and
 	/// returns `(None, Vec::new())`.
 	pub fn maybe_free_holding_cell_htlcs<L: Deref>(&mut self, logger: &L) -> Result<(Option<(msgs::CommitmentUpdate, ChannelMonitorUpdate)>, Vec<(HTLCSource, PaymentHash)>), ChannelError> where L::Target: Logger {
-		if self.channel_state >= ChannelState::ChannelFunded as u32 &&
+		if self.channel_state >= ChannelState::ChannelReady as u32 &&
 		   (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32 | ChannelState::PeerDisconnected as u32 | ChannelState::MonitorUpdateInProgress as u32)) == 0 {
 			self.free_holding_cell_htlcs(logger)
 		} else { Ok((None, Vec::new())) }
@@ -3259,7 +3259,7 @@ impl<Signer: Sign> Channel<Signer> {
 	pub fn revoke_and_ack<L: Deref>(&mut self, msg: &msgs::RevokeAndACK, logger: &L) -> Result<RAAUpdates, ChannelError>
 		where L::Target: Logger,
 	{
-		if (self.channel_state & (ChannelState::ChannelFunded as u32)) != (ChannelState::ChannelFunded as u32) {
+		if (self.channel_state & (ChannelState::ChannelReady as u32)) != (ChannelState::ChannelReady as u32) {
 			return Err(ChannelError::Close("Got revoke/ACK message when channel was not in an operational state".to_owned()));
 		}
 		if self.channel_state & (ChannelState::PeerDisconnected as u32) == ChannelState::PeerDisconnected as u32 {
@@ -3703,7 +3703,7 @@ impl<Signer: Sign> Channel<Signer> {
 			} else { None };
 		// That said, if the funding transaction is already confirmed (ie we're active with a
 		// minimum_depth over 0) don't bother re-broadcasting the confirmed funding tx.
-		if self.channel_state & !MULTI_STATE_FLAGS >= ChannelState::ChannelFunded as u32 && self.minimum_depth != Some(0) {
+		if self.channel_state & !MULTI_STATE_FLAGS >= ChannelState::ChannelReady as u32 && self.minimum_depth != Some(0) {
 			funding_broadcastable = None;
 		}
 
@@ -4783,8 +4783,8 @@ impl<Signer: Sign> Channel<Signer> {
 	/// Returns true if this channel is fully established and not known to be closing.
 	/// Allowed in any state (including after shutdown)
 	pub fn is_usable(&self) -> bool {
-		let mask = ChannelState::ChannelFunded as u32 | BOTH_SIDES_SHUTDOWN_MASK;
-		(self.channel_state & mask) == (ChannelState::ChannelFunded as u32) && !self.monitor_pending_channel_ready
+		let mask = ChannelState::ChannelReady as u32 | BOTH_SIDES_SHUTDOWN_MASK;
+		(self.channel_state & mask) == (ChannelState::ChannelReady as u32) && !self.monitor_pending_channel_ready
 	}
 
 	/// Returns true if this channel is currently available for use. This is a superset of
@@ -4843,7 +4843,7 @@ impl<Signer: Sign> Channel<Signer> {
 
 	/// Returns true if our channel_ready has been sent
 	pub fn is_our_channel_ready(&self) -> bool {
-		(self.channel_state & ChannelState::OurChannelReady as u32) != 0 || self.channel_state >= ChannelState::ChannelFunded as u32
+		(self.channel_state & ChannelState::OurChannelReady as u32) != 0 || self.channel_state >= ChannelState::ChannelReady as u32
 	}
 
 	/// Returns true if our peer has either initiated or agreed to shut down the channel.
@@ -4897,14 +4897,14 @@ impl<Signer: Sign> Channel<Signer> {
 			self.channel_state |= ChannelState::OurChannelReady as u32;
 			true
 		} else if non_shutdown_state == (ChannelState::FundingSent as u32 | ChannelState::TheirChannelReady as u32) {
-			self.channel_state = ChannelState::ChannelFunded as u32 | (self.channel_state & MULTI_STATE_FLAGS);
+			self.channel_state = ChannelState::ChannelReady as u32 | (self.channel_state & MULTI_STATE_FLAGS);
 			self.update_time_counter += 1;
 			true
 		} else if non_shutdown_state == (ChannelState::FundingSent as u32 | ChannelState::OurChannelReady as u32) {
 			// We got a reorg but not enough to trigger a force close, just ignore.
 			false
 		} else {
-			if self.funding_tx_confirmation_height != 0 && self.channel_state < ChannelState::ChannelFunded as u32 {
+			if self.funding_tx_confirmation_height != 0 && self.channel_state < ChannelState::ChannelReady as u32 {
 				// We should never see a funding transaction on-chain until we've received
 				// funding_signed (if we're an outbound channel), or seen funding_generated (if we're
 				// an inbound channel - before that we have no known funding TXID). The fuzzer,
@@ -5048,7 +5048,7 @@ impl<Signer: Sign> Channel<Signer> {
 		}
 
 		let non_shutdown_state = self.channel_state & (!MULTI_STATE_FLAGS);
-		if non_shutdown_state >= ChannelState::ChannelFunded as u32 ||
+		if non_shutdown_state >= ChannelState::ChannelReady as u32 ||
 		   (non_shutdown_state & ChannelState::OurChannelReady as u32) == ChannelState::OurChannelReady as u32 {
 			let mut funding_tx_confirmations = height as i64 - self.funding_tx_confirmation_height as i64 + 1;
 			if self.funding_tx_confirmation_height == 0 {
@@ -5076,7 +5076,7 @@ impl<Signer: Sign> Channel<Signer> {
 				height >= self.channel_creation_height + FUNDING_CONF_DEADLINE_BLOCKS {
 			log_info!(logger, "Closing channel {} due to funding timeout", log_bytes!(self.channel_id));
 			// If funding_tx_confirmed_in is unset, the channel must not be active
-			assert!(non_shutdown_state <= ChannelState::ChannelFunded as u32);
+			assert!(non_shutdown_state <= ChannelState::ChannelReady as u32);
 			assert_eq!(non_shutdown_state & ChannelState::OurChannelReady as u32, 0);
 			return Err(ClosureReason::FundingTimedOut);
 		}
@@ -5501,7 +5501,7 @@ impl<Signer: Sign> Channel<Signer> {
 	///
 	/// If an Err is returned, it's a ChannelError::Ignore!
 	pub fn send_htlc<L: Deref>(&mut self, amount_msat: u64, payment_hash: PaymentHash, cltv_expiry: u32, source: HTLCSource, onion_routing_packet: msgs::OnionPacket, logger: &L) -> Result<Option<msgs::UpdateAddHTLC>, ChannelError> where L::Target: Logger {
-		if (self.channel_state & (ChannelState::ChannelFunded as u32 | BOTH_SIDES_SHUTDOWN_MASK)) != (ChannelState::ChannelFunded as u32) {
+		if (self.channel_state & (ChannelState::ChannelReady as u32 | BOTH_SIDES_SHUTDOWN_MASK)) != (ChannelState::ChannelReady as u32) {
 			return Err(ChannelError::Ignore("Cannot send HTLC until channel is fully established and we haven't started shutting down".to_owned()));
 		}
 		let channel_total_msat = self.channel_value_satoshis * 1000;
@@ -5634,7 +5634,7 @@ impl<Signer: Sign> Channel<Signer> {
 	/// last call to this Channel) send_htlc returned Ok(Some(_)) and there is an Err.
 	/// May panic if called except immediately after a successful, Ok(Some(_))-returning send_htlc.
 	pub fn send_commitment<L: Deref>(&mut self, logger: &L) -> Result<(msgs::CommitmentSigned, ChannelMonitorUpdate), ChannelError> where L::Target: Logger {
-		if (self.channel_state & (ChannelState::ChannelFunded as u32)) != (ChannelState::ChannelFunded as u32) {
+		if (self.channel_state & (ChannelState::ChannelReady as u32)) != (ChannelState::ChannelReady as u32) {
 			panic!("Cannot create commitment tx until channel is fully established");
 		}
 		if (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32)) == (ChannelState::AwaitingRemoteRevoke as u32) {
@@ -5923,7 +5923,7 @@ impl<Signer: Sign> Channel<Signer> {
 			// funding transaction, don't return a funding txo (which prevents providing the
 			// monitor update to the user, even if we return one).
 			// See test_duplicate_chan_id and test_pre_lockin_no_chan_closed_update for more.
-			if self.channel_state & (ChannelState::FundingSent as u32 | ChannelState::ChannelFunded as u32 | ChannelState::ShutdownComplete as u32) != 0 {
+			if self.channel_state & (ChannelState::FundingSent as u32 | ChannelState::ChannelReady as u32 | ChannelState::ShutdownComplete as u32) != 0 {
 				self.latest_monitor_update_id += 1;
 				Some((funding_txo, ChannelMonitorUpdate {
 					update_id: self.latest_monitor_update_id,
