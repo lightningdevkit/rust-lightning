@@ -606,9 +606,8 @@ where
 		self.payment_cache.lock().unwrap().remove(payment_hash);
 	}
 
-	/// Given a [`PaymentHash`], this function looks up inflight path attempts in the payment_cache.
-	/// Then, it uses the path information inside the cache to construct a HashMap mapping a channel's
-	/// short channel id and direction to the amount being sent through it.
+	/// Use path information in the payment_cache to construct a HashMap mapping a channel's short
+	/// channel id and direction to the amount being sent through it.
 	///
 	/// This function should be called whenever we need information about currently used up liquidity
 	/// across payments.
