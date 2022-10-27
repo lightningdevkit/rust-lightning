@@ -1667,6 +1667,7 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 			for scid in scids_to_remove {
 				let info = channels.remove(&scid).expect("We just accessed this scid, it should be present");
 				Self::remove_channel_in_nodes(&mut nodes, &info, scid);
+				self.removed_channels.lock().unwrap().insert(scid, Some(current_time_unix));
 			}
 		}
 
@@ -2546,6 +2547,13 @@ mod tests {
 		assert_eq!(network_graph.read_only().nodes().len(), 2);
 
 		network_graph.remove_stale_channels_and_tracking_with_time(101 + STALE_CHANNEL_UPDATE_AGE_LIMIT_SECS);
+		#[cfg(not(feature = "std"))] {
+			// Make sure removed channels are tracked.
+			assert_eq!(network_graph.removed_channels.lock().unwrap().len(), 1);
+		}
+		network_graph.remove_stale_channels_and_tracking_with_time(101 + STALE_CHANNEL_UPDATE_AGE_LIMIT_SECS +
+			REMOVED_ENTRIES_TRACKING_AGE_LIMIT_SECS);
+
 		#[cfg(feature = "std")]
 		{
 			// In std mode, a further check is performed before fully removing the channel -
@@ -2566,10 +2574,16 @@ mod tests {
 			assert!(gossip_sync.handle_channel_update(&valid_channel_update).is_ok());
 			assert!(network_graph.read_only().channels().get(&short_channel_id).unwrap().one_to_two.is_some());
 			network_graph.remove_stale_channels_and_tracking_with_time(announcement_time + 1 + STALE_CHANNEL_UPDATE_AGE_LIMIT_SECS);
+			// Make sure removed channels are tracked.
+			assert_eq!(network_graph.removed_channels.lock().unwrap().len(), 1);
+			// Provide a later time so that sufficient time has passed
+			network_graph.remove_stale_channels_and_tracking_with_time(announcement_time + 1 + STALE_CHANNEL_UPDATE_AGE_LIMIT_SECS +
+				REMOVED_ENTRIES_TRACKING_AGE_LIMIT_SECS);
 		}
 
 		assert_eq!(network_graph.read_only().channels().len(), 0);
 		assert_eq!(network_graph.read_only().nodes().len(), 0);
+		assert!(network_graph.removed_channels.lock().unwrap().is_empty());
 
 		#[cfg(feature = "std")]
 		{
