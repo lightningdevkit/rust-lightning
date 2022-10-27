@@ -352,7 +352,7 @@ pub trait BaseSign {
 	/// Computes the signature for a commitment transaction's anchor output used as an
 	/// input within `anchor_tx`, which spends the commitment transaction, at index `input`.
 	fn sign_holder_anchor_input(
-		&self, anchor_tx: &mut Transaction, input: usize, secp_ctx: &Secp256k1<secp256k1::All>,
+		&self, anchor_tx: &Transaction, input: usize, secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<Signature, ()>;
 
 	/// Signs a channel announcement message with our funding key and our node secret key (aka
@@ -790,7 +790,7 @@ impl BaseSign for InMemorySigner {
 	}
 
 	fn sign_holder_anchor_input(
-		&self, anchor_tx: &mut Transaction, input: usize, secp_ctx: &Secp256k1<secp256k1::All>,
+		&self, anchor_tx: &Transaction, input: usize, secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<Signature, ()> {
 		let witness_script = chan_utils::get_anchor_redeemscript(&self.holder_channel_pubkeys.funding_pubkey);
 		let sighash = sighash::SighashCache::new(&*anchor_tx).segwit_signature_hash(
