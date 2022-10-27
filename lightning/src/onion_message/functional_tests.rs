@@ -12,7 +12,9 @@
 use crate::chain::keysinterface::{KeysInterface, Recipient};
 use crate::ln::features::InitFeatures;
 use crate::ln::msgs::{self, DecodeError, OnionMessageHandler};
-use super::{BlindedRoute, CustomOnionMessageContents, CustomOnionMessageHandler, Destination, OnionMessageContents, OnionMessenger, SendError};
+use super::blinded_route::BlindedRoute;
+use super::messenger::{CustomOnionMessageHandler, Destination, OnionMessenger, SendError};
+use super::packet::{CustomOnionMessageContents, OnionMessageContents};
 use crate::util::enforcing_trait_impls::EnforcingSigner;
 use crate::util::ser::{ Writeable, Writer};
 use crate::util::test_utils;
