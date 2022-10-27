@@ -29,6 +29,15 @@ use alloc::collections::BinaryHeap;
 use core::cmp;
 use core::ops::Deref;
 
+/// A trait defining behavior for routing a payment.
+pub trait Router {
+	/// Finds a [`Route`] between `payer` and `payee` for a payment with the given values.
+	fn find_route(
+		&self, payer: &PublicKey, route_params: &RouteParameters,
+		first_hops: Option<&[&ChannelDetails]>, inflight_htlcs: InFlightHtlcs
+	) -> Result<Route, LightningError>;
+}
+
 /// A map with liquidity value (in msat) keyed by a short channel id and the direction the HTLC
 /// is traveling in. The direction boolean is determined by checking if the HTLC source's public
 /// key is less than its destination. See [`InFlightHtlcs::used_liquidity_msat`] for more
