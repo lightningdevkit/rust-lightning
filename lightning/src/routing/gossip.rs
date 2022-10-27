@@ -1653,7 +1653,7 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 			if info.two_to_one.is_some() && info.two_to_one.as_ref().unwrap().last_update < min_time_unix {
 				info.two_to_one = None;
 			}
-			if info.one_to_two.is_none() && info.two_to_one.is_none() {
+			if info.one_to_two.is_none() || info.two_to_one.is_none() {
 				// We check the announcement_received_time here to ensure we don't drop
 				// announcements that we just received and are just waiting for our peer to send a
 				// channel_update for.
@@ -2550,14 +2550,21 @@ mod tests {
 		{
 			// In std mode, a further check is performed before fully removing the channel -
 			// the channel_announcement must have been received at least two weeks ago. We
-			// fudge that here by indicating the time has jumped two weeks. Note that the
-			// directional channel information will have been removed already..
+			// fudge that here by indicating the time has jumped two weeks.
 			assert_eq!(network_graph.read_only().channels().len(), 1);
 			assert_eq!(network_graph.read_only().nodes().len(), 2);
-			assert!(network_graph.read_only().channels().get(&short_channel_id).unwrap().one_to_two.is_none());
 
+			// Note that the directional channel information will have been removed already..
+			// We want to check that this will work even if *one* of the channel updates is recent,
+			// so we should add it with a recent timestamp.
+			assert!(network_graph.read_only().channels().get(&short_channel_id).unwrap().one_to_two.is_none());
 			use std::time::{SystemTime, UNIX_EPOCH};
 			let announcement_time = SystemTime::now().duration_since(UNIX_EPOCH).expect("Time must be > 1970").as_secs();
+			let valid_channel_update = get_signed_channel_update(|unsigned_channel_update| {
+				unsigned_channel_update.timestamp = (announcement_time + 1 + STALE_CHANNEL_UPDATE_AGE_LIMIT_SECS) as u32;
+			}, node_1_privkey, &secp_ctx);
+			assert!(gossip_sync.handle_channel_update(&valid_channel_update).is_ok());
+			assert!(network_graph.read_only().channels().get(&short_channel_id).unwrap().one_to_two.is_some());
 			network_graph.remove_stale_channels_and_tracking_with_time(announcement_time + 1 + STALE_CHANNEL_UPDATE_AGE_LIMIT_SECS);
 		}
 
