@@ -66,8 +66,7 @@ pub enum DecodeError {
 	/// A length descriptor in the packet didn't describe the later data correctly
 	BadLengthDescriptor,
 	/// Error from std::io
-	Io(/// (C-not exported) as ErrorKind doesn't have a reasonable mapping
-        io::ErrorKind),
+	Io(io::ErrorKind),
 	/// The message included zlib-compressed values, which we don't support.
 	UnsupportedCompression,
 }
