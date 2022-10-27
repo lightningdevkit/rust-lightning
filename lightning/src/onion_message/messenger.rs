@@ -21,7 +21,7 @@ use crate::ln::msgs::{self, OnionMessageHandler};
 use crate::ln::onion_utils;
 use crate::ln::peer_handler::IgnoringMessageHandler;
 use super::blinded_route::{BlindedRoute, ForwardTlvs, ReceiveTlvs};
-pub use super::packet::{CustomOnionMessageContents, OnionMessageContents};
+use super::packet::{CustomOnionMessageContents, OnionMessageContents};
 use super::packet::{BIG_PACKET_HOP_DATA_LEN, ForwardControlTlvs, Packet, Payload, ReceiveControlTlvs, SMALL_PACKET_HOP_DATA_LEN};
 use super::utils;
 use crate::util::events::OnionMessageProvider;
@@ -29,6 +29,7 @@ use crate::util::logger::Logger;
 use crate::util::ser::Writeable;
 
 use core::ops::Deref;
+use crate::io;
 use crate::sync::{Arc, Mutex};
 use crate::prelude::*;
 
@@ -45,9 +46,11 @@ use crate::prelude::*;
 /// # use lightning::chain::keysinterface::{InMemorySigner, KeysManager, KeysInterface};
 /// # use lightning::ln::msgs::DecodeError;
 /// # use lightning::ln::peer_handler::IgnoringMessageHandler;
-/// # use lightning::onion_message::{BlindedRoute, CustomOnionMessageContents, Destination, OnionMessageContents, OnionMessenger};
+/// # use lightning::onion_message::messenger::{Destination, OnionMessenger};
+/// # use lightning::onion_message::packet::CustomOnionMessageContents;
+/// # use lightning::onion_message::blinded_route::BlindedRoute;
 /// # use lightning::util::logger::{Logger, Record};
-/// # use lightning::util::ser::{MaybeReadableArgs, Writeable, Writer};
+/// # use lightning::util::ser::{Writeable, Writer};
 /// # use lightning::io;
 /// # use std::sync::Arc;
 /// # struct FakeLogger {};
@@ -81,19 +84,11 @@ use crate::prelude::*;
 /// 		your_custom_message_type
 /// 	}
 /// }
-/// impl MaybeReadableArgs<u64> for YourCustomMessage {
-/// 	fn read<R: io::Read>(r: &mut R, message_type: u64) -> Result<Option<Self>, DecodeError> {
-/// 		# unreachable!()
-/// 		// Read your custom onion message of type `message_type` from `r`, or return `None`
-/// 		// if the message type is unknown
-/// 	}
-/// }
 /// // Send a custom onion message to a node id.
 /// let intermediate_hops = [hop_node_id1, hop_node_id2];
 /// let reply_path = None;
 /// # let your_custom_message = YourCustomMessage {};
-/// let message = OnionMessageContents::Custom(your_custom_message);
-/// onion_messenger.send_onion_message(&intermediate_hops, Destination::Node(destination_node_id), message, reply_path);
+/// onion_messenger.send_custom_onion_message(&intermediate_hops, Destination::Node(destination_node_id), your_custom_message, reply_path);
 ///
 /// // Create a blinded route to yourself, for someone to send an onion message to.
 /// # let your_node_id = hop_node_id1;
@@ -104,8 +99,7 @@ use crate::prelude::*;
 /// # let intermediate_hops = [hop_node_id1, hop_node_id2];
 /// let reply_path = None;
 /// # let your_custom_message = YourCustomMessage {};
-/// let message = OnionMessageContents::Custom(your_custom_message);
-/// onion_messenger.send_onion_message(&intermediate_hops, Destination::BlindedRoute(blinded_route), message, reply_path);
+/// onion_messenger.send_custom_onion_message(&intermediate_hops, Destination::BlindedRoute(blinded_route), your_custom_message, reply_path);
 /// ```
 ///
 /// [offers]: <https://github.com/lightning/bolts/pull/798>
@@ -143,7 +137,7 @@ impl Destination {
 
 /// Errors that may occur when [sending an onion message].
 ///
-/// [sending an onion message]: OnionMessenger::send_onion_message
+/// [sending an onion message]: OnionMessenger::send_custom_onion_message
 #[derive(Debug, PartialEq, Eq)]
 pub enum SendError {
 	/// Errored computing onion message packet keys.
@@ -178,6 +172,9 @@ pub trait CustomOnionMessageHandler {
 	type CustomMessage: CustomOnionMessageContents;
 	/// Called with the custom message that was received.
 	fn handle_custom_message(&self, msg: Self::CustomMessage);
+	/// Read a custom message of type `message_type` from `buffer`, returning `Ok(None)` if the
+	/// message type is unknown.
+	fn read_custom_message<R: io::Read>(&self, message_type: u64, buffer: &mut R) -> Result<Option<Self::CustomMessage>, msgs::DecodeError>;
 }
 
 impl<Signer: Sign, K: Deref, L: Deref, CMH: Deref> OnionMessenger<Signer, K, L, CMH>
@@ -201,13 +198,19 @@ impl<Signer: Sign, K: Deref, L: Deref, CMH: Deref> OnionMessenger<Signer, K, L, 
 
 	/// Send an onion message with contents `message` to `destination`, routing it through `intermediate_nodes`.
 	/// See [`OnionMessenger`] for example usage.
-	pub fn send_onion_message<T: CustomOnionMessageContents>(&self, intermediate_nodes: &[PublicKey], destination: Destination, message: OnionMessageContents<T>, reply_path: Option<BlindedRoute>) -> Result<(), SendError> {
+	pub(crate) fn send_onion_message<T: CustomOnionMessageContents>(&self, intermediate_nodes: &[PublicKey], destination: Destination, msg: OnionMessageContents<T>, reply_path: Option<BlindedRoute>) -> Result<(), SendError> {
+		let OnionMessageContents::Custom(message) = msg;
+		self.send_custom_onion_message(intermediate_nodes, destination, message, reply_path)
+	}
+
+	/// Send an onion message with contents `message` to `destination`, routing it through `intermediate_nodes`.
+	/// See [`OnionMessenger`] for example usage.
+	pub fn send_custom_onion_message<T: CustomOnionMessageContents>(&self, intermediate_nodes: &[PublicKey], destination: Destination, msg: T, reply_path: Option<BlindedRoute>) -> Result<(), SendError> {
 		if let Destination::BlindedRoute(BlindedRoute { ref blinded_hops, .. }) = destination {
 			if blinded_hops.len() < 2 {
 				return Err(SendError::TooFewBlindedHops);
 			}
 		}
-		let OnionMessageContents::Custom(ref msg) = message;
 		if msg.tlv_type() < 64 { return Err(SendError::InvalidMessage) }
 
 		let blinding_secret_bytes = self.keys_manager.get_secure_random_bytes();
@@ -222,7 +225,7 @@ impl<Signer: Sign, K: Deref, L: Deref, CMH: Deref> OnionMessenger<Signer, K, L, 
 			}
 		};
 		let (packet_payloads, packet_keys) = packet_payloads_and_keys(
-			&self.secp_ctx, intermediate_nodes, destination, message, reply_path, &blinding_secret)
+			&self.secp_ctx, intermediate_nodes, destination, OnionMessageContents::Custom(msg), reply_path, &blinding_secret)
 			.map_err(|e| SendError::Secp256k1(e))?;
 
 		let prng_seed = self.keys_manager.get_secure_random_bytes();
@@ -279,7 +282,7 @@ fn outbound_buffer_full(peer_node_id: &PublicKey, buffer: &HashMap<PublicKey, Ve
 impl<Signer: Sign, K: Deref, L: Deref, CMH: Deref> OnionMessageHandler for OnionMessenger<Signer, K, L, CMH>
 	where K::Target: KeysInterface<Signer = Signer>,
 	      L::Target: Logger,
-	      CMH::Target: CustomOnionMessageHandler,
+	      CMH::Target: CustomOnionMessageHandler + Sized,
 {
 	/// Handle an incoming onion message. Currently, if a message was destined for us we will log, but
 	/// soon we'll delegate the onion message to a handler that can generate invoices or send
@@ -308,8 +311,8 @@ impl<Signer: Sign, K: Deref, L: Deref, CMH: Deref> OnionMessageHandler for Onion
 				}
 			}
 		};
-		match onion_utils::decode_next_hop(onion_decode_ss, &msg.onion_routing_packet.hop_data[..],
-			msg.onion_routing_packet.hmac, control_tlvs_ss)
+		match onion_utils::decode_next_untagged_hop(onion_decode_ss, &msg.onion_routing_packet.hop_data[..],
+			msg.onion_routing_packet.hmac, (control_tlvs_ss, &*self.custom_handler))
 		{
 			Ok((Payload::Receive::<<<CMH as Deref>::Target as CustomOnionMessageHandler>::CustomMessage> {
 				message, control_tlvs: ReceiveControlTlvs::Unblinded(ReceiveTlvs { path_id }), reply_path,

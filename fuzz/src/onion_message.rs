@@ -10,8 +10,9 @@ use lightning::ln::msgs::{self, DecodeError, OnionMessageHandler};
 use lightning::ln::script::ShutdownScript;
 use lightning::util::enforcing_trait_impls::EnforcingSigner;
 use lightning::util::logger::Logger;
-use lightning::util::ser::{MaybeReadableArgs, Readable, Writeable, Writer};
-use lightning::onion_message::{CustomOnionMessageContents, CustomOnionMessageHandler, OnionMessenger};
+use lightning::util::ser::{Readable, Writeable, Writer};
+use lightning::onion_message::packet::CustomOnionMessageContents;
+use lightning::onion_message::messenger::{OnionMessenger, CustomOnionMessageHandler};
 
 use crate::utils::test_logger;
 
@@ -67,19 +68,16 @@ impl Writeable for TestCustomMessage {
 	}
 }
 
-impl MaybeReadableArgs<u64> for TestCustomMessage {
-	fn read<R: io::Read>(buffer: &mut R, _message_type: u64,) -> Result<Option<Self>, DecodeError> where Self: Sized {
-		let mut buf = Vec::new();
-		buffer.read_to_end(&mut buf)?;
-		return Ok(Some(TestCustomMessage {}))
-	}
-}
-
 struct TestCustomMessageHandler {}
 
 impl CustomOnionMessageHandler for TestCustomMessageHandler {
 	type CustomMessage = TestCustomMessage;
 	fn handle_custom_message(&self, _msg: Self::CustomMessage) {}
+	fn read_custom_message<R: io::Read>(&self, _message_type: u64, buffer: &mut R) -> Result<Option<Self::CustomMessage>, msgs::DecodeError> {
+		let mut buf = Vec::new();
+		buffer.read_to_end(&mut buf)?;
+		return Ok(Some(TestCustomMessage {}))
+	}
 }
 
 pub struct VecWriter(pub Vec<u8>);

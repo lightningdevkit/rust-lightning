@@ -18,16 +18,12 @@
 //! information on its usage.
 //!
 //! [offers]: <https://github.com/lightning/bolts/pull/798>
-//! [blinded routes]: crate::onion_message::BlindedRoute
+//! [blinded routes]: crate::onion_message::blinded_route::BlindedRoute
+//! [`OnionMessenger`]: crate::onion_message::messenger::OnionMessenger
 
-mod blinded_route;
-mod messenger;
-mod packet;
+pub mod blinded_route;
+pub mod messenger;
+pub mod packet;
 mod utils;
 #[cfg(test)]
 mod functional_tests;
-
-// Re-export structs so they can be imported with just the `onion_message::` module prefix.
-pub use self::blinded_route::{BlindedRoute, BlindedHop};
-pub use self::messenger::{CustomOnionMessageContents, CustomOnionMessageHandler, Destination, OnionMessageContents, OnionMessenger, SendError, SimpleArcOnionMessenger, SimpleRefOnionMessenger};
-pub(crate) use self::packet::Packet;

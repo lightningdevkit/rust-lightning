@@ -12,9 +12,11 @@
 use crate::chain::keysinterface::{KeysInterface, Recipient};
 use crate::ln::features::InitFeatures;
 use crate::ln::msgs::{self, DecodeError, OnionMessageHandler};
-use super::{BlindedRoute, CustomOnionMessageContents, CustomOnionMessageHandler, Destination, OnionMessageContents, OnionMessenger, SendError};
+use super::blinded_route::BlindedRoute;
+use super::messenger::{CustomOnionMessageHandler, Destination, OnionMessenger, SendError};
+use super::packet::{CustomOnionMessageContents, OnionMessageContents};
 use crate::util::enforcing_trait_impls::EnforcingSigner;
-use crate::util::ser::{MaybeReadableArgs, Writeable, Writer};
+use crate::util::ser::{ Writeable, Writer};
 use crate::util::test_utils;
 
 use bitcoin::network::constants::Network;
@@ -54,8 +56,12 @@ impl Writeable for TestCustomMessage {
 	}
 }
 
-impl MaybeReadableArgs<u64> for TestCustomMessage {
-	fn read<R: io::Read>(buffer: &mut R, message_type: u64) -> Result<Option<Self>, DecodeError> where Self: Sized {
+struct TestCustomMessageHandler {}
+
+impl CustomOnionMessageHandler for TestCustomMessageHandler {
+	type CustomMessage = TestCustomMessage;
+	fn handle_custom_message(&self, _msg: Self::CustomMessage) {}
+	fn read_custom_message<R: io::Read>(&self, message_type: u64, buffer: &mut R) -> Result<Option<Self::CustomMessage>, DecodeError> where Self: Sized {
 		if message_type == CUSTOM_MESSAGE_TYPE {
 			let mut buf = Vec::new();
 			buffer.read_to_end(&mut buf)?;
@@ -64,13 +70,6 @@ impl MaybeReadableArgs<u64> for TestCustomMessage {
 		}
 		Ok(None)
 	}
-}
-
-struct TestCustomMessageHandler {}
-
-impl CustomOnionMessageHandler for TestCustomMessageHandler {
-	type CustomMessage = TestCustomMessage;
-	fn handle_custom_message(&self, _msg: Self::CustomMessage) {}
 }
 
 fn create_nodes(num_messengers: u8) -> Vec<MessengerNode> {
@@ -231,12 +230,6 @@ fn invalid_custom_message_type() {
 
 	impl Writeable for InvalidCustomMessage {
 		fn write<W: Writer>(&self, _w: &mut W) -> Result<(), io::Error> { unreachable!() }
-	}
-
-	impl MaybeReadableArgs<u64> for InvalidCustomMessage {
-		fn read<R: io::Read>(_buffer: &mut R, _message_type: u64) -> Result<Option<Self>, DecodeError> where Self: Sized {
-			unreachable!()
-		}
 	}
 
 	let test_msg = OnionMessageContents::Custom(InvalidCustomMessage {});
