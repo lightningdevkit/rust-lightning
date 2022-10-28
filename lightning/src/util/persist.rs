@@ -20,6 +20,7 @@ use crate::chain::keysinterface::{Sign, KeysInterface, SignerProvider};
 use crate::chain::transaction::OutPoint;
 use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate};
 use crate::ln::channelmanager::ChannelManager;
+use crate::routing::router::Router;
 use crate::routing::gossip::NetworkGraph;
 use super::{logger::Logger, ser::Writeable};
 
@@ -33,15 +34,16 @@ pub trait KVStorePersister {
 }
 
 /// Trait that handles persisting a [`ChannelManager`], [`NetworkGraph`], and [`WriteableScore`] to disk.
-pub trait Persister<'a, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref, S: WriteableScore<'a>>
+pub trait Persister<'a, M: Deref, T: Deref, K: Deref, F: Deref, R: Deref, L: Deref, S: WriteableScore<'a>>
 	where M::Target: 'static + chain::Watch<<K::Target as SignerProvider>::Signer>,
 		T::Target: 'static + BroadcasterInterface,
 		K::Target: 'static + KeysInterface,
 		F::Target: 'static + FeeEstimator,
+		R::Target: 'static + Router,
 		L::Target: 'static + Logger,
 {
 	/// Persist the given ['ChannelManager'] to disk, returning an error if persistence failed.
-	fn persist_manager(&self, channel_manager: &ChannelManager<M, T, K, F, L>) -> Result<(), io::Error>;
+	fn persist_manager(&self, channel_manager: &ChannelManager<M, T, K, F, R, L>) -> Result<(), io::Error>;
 
 	/// Persist the given [`NetworkGraph`] to disk, returning an error if persistence failed.
 	fn persist_graph(&self, network_graph: &NetworkGraph<L>) -> Result<(), io::Error>;
@@ -50,15 +52,16 @@ pub trait Persister<'a, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref, S: Wri
 	fn persist_scorer(&self, scorer: &S) -> Result<(), io::Error>;
 }
 
-impl<'a, A: KVStorePersister, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref, S: WriteableScore<'a>> Persister<'a, M, T, K, F, L, S> for A
+impl<'a, A: KVStorePersister, M: Deref, T: Deref, K: Deref, F: Deref, R: Deref, L: Deref, S: WriteableScore<'a>> Persister<'a, M, T, K, F, R, L, S> for A
 	where M::Target: 'static + chain::Watch<<K::Target as SignerProvider>::Signer>,
 		T::Target: 'static + BroadcasterInterface,
 		K::Target: 'static + KeysInterface,
 		F::Target: 'static + FeeEstimator,
+		R::Target: 'static + Router,
 		L::Target: 'static + Logger,
 {
 	/// Persist the given ['ChannelManager'] to disk with the name "manager", returning an error if persistence failed.
-	fn persist_manager(&self, channel_manager: &ChannelManager<M, T, K, F, L>) -> Result<(), io::Error> {
+	fn persist_manager(&self, channel_manager: &ChannelManager<M, T, K, F, R, L>) -> Result<(), io::Error> {
 		self.persist("manager", channel_manager)
 	}
 

@@ -35,12 +35,12 @@ use lightning::chain::chainmonitor;
 use lightning::chain::transaction::OutPoint;
 use lightning::chain::keysinterface::{InMemorySigner, Recipient, KeyMaterial, KeysInterface, EntropySource, NodeSigner, SignerProvider};
 use lightning::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
-use lightning::ln::channelmanager::{ChainParameters, ChannelManager, PaymentId};
+use lightning::ln::channelmanager::{ChainParameters, ChannelDetails, ChannelManager, PaymentId};
 use lightning::ln::peer_handler::{MessageHandler,PeerManager,SocketDescriptor,IgnoringMessageHandler};
-use lightning::ln::msgs::DecodeError;
+use lightning::ln::msgs::{self, DecodeError};
 use lightning::ln::script::ShutdownScript;
 use lightning::routing::gossip::{P2PGossipSync, NetworkGraph};
-use lightning::routing::router::{find_route, PaymentParameters, RouteParameters};
+use lightning::routing::router::{find_route, InFlightHtlcs, PaymentParameters, Route, RouteHop, RouteParameters, Router};
 use lightning::routing::scoring::FixedPenaltyScorer;
 use lightning::util::config::UserConfig;
 use lightning::util::errors::APIError;
@@ -127,6 +127,24 @@ impl FeeEstimator for FuzzEstimator {
 	}
 }
 
+struct FuzzRouter {}
+
+impl Router for FuzzRouter {
+	fn find_route(
+		&self, _payer: &PublicKey, _params: &RouteParameters, _first_hops: Option<&[&ChannelDetails]>,
+		_inflight_htlcs: InFlightHtlcs
+	) -> Result<Route, msgs::LightningError> {
+		Err(msgs::LightningError {
+			err: String::from("Not implemented"),
+			action: msgs::ErrorAction::IgnoreError
+		})
+	}
+	fn notify_payment_path_failed(&self, _path: &[&RouteHop], _short_channel_id: u64) {}
+	fn notify_payment_path_successful(&self, _path: &[&RouteHop]) {}
+	fn notify_payment_probe_successful(&self, _path: &[&RouteHop]) {}
+	fn notify_payment_probe_failed(&self, _path: &[&RouteHop], _short_channel_id: u64) {}
+}
+
 struct TestBroadcaster {
 	txn_broadcasted: Mutex<Vec<Transaction>>,
 }
@@ -162,13 +180,13 @@ impl<'a> std::hash::Hash for Peer<'a> {
 	}
 }
 
-type ChannelMan = ChannelManager<
+type ChannelMan<'a> = ChannelManager<
 	Arc<chainmonitor::ChainMonitor<EnforcingSigner, Arc<dyn chain::Filter>, Arc<TestBroadcaster>, Arc<FuzzEstimator>, Arc<dyn Logger>, Arc<TestPersister>>>,
-	Arc<TestBroadcaster>, Arc<KeyProvider>, Arc<FuzzEstimator>, Arc<dyn Logger>>;
-type PeerMan<'a> = PeerManager<Peer<'a>, Arc<ChannelMan>, Arc<P2PGossipSync<Arc<NetworkGraph<Arc<dyn Logger>>>, Arc<dyn chain::Access>, Arc<dyn Logger>>>, IgnoringMessageHandler, Arc<dyn Logger>, IgnoringMessageHandler>;
+	Arc<TestBroadcaster>, Arc<KeyProvider>, Arc<FuzzEstimator>, &'a FuzzRouter, Arc<dyn Logger>>;
+type PeerMan<'a> = PeerManager<Peer<'a>, Arc<ChannelMan<'a>>, Arc<P2PGossipSync<Arc<NetworkGraph<Arc<dyn Logger>>>, Arc<dyn chain::Access>, Arc<dyn Logger>>>, IgnoringMessageHandler, Arc<dyn Logger>, IgnoringMessageHandler>;
 
 struct MoneyLossDetector<'a> {
-	manager: Arc<ChannelMan>,
+	manager: Arc<ChannelMan<'a>>,
 	monitor: Arc<chainmonitor::ChainMonitor<EnforcingSigner, Arc<dyn chain::Filter>, Arc<TestBroadcaster>, Arc<FuzzEstimator>, Arc<dyn Logger>, Arc<TestPersister>>>,
 	handler: PeerMan<'a>,
 
@@ -182,7 +200,7 @@ struct MoneyLossDetector<'a> {
 }
 impl<'a> MoneyLossDetector<'a> {
 	pub fn new(peers: &'a RefCell<[bool; 256]>,
-	           manager: Arc<ChannelMan>,
+	           manager: Arc<ChannelMan<'a>>,
 	           monitor: Arc<chainmonitor::ChainMonitor<EnforcingSigner, Arc<dyn chain::Filter>, Arc<TestBroadcaster>, Arc<FuzzEstimator>, Arc<dyn Logger>, Arc<TestPersister>>>,
 	           handler: PeerMan<'a>) -> Self {
 		MoneyLossDetector {
@@ -380,6 +398,7 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 	let fee_est = Arc::new(FuzzEstimator {
 		input: input.clone(),
 	});
+	let router = FuzzRouter {};
 
 	macro_rules! get_slice {
 		($len: expr) => {
@@ -424,7 +443,7 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 		network,
 		best_block: BestBlock::from_genesis(network),
 	};
-	let channelmanager = Arc::new(ChannelManager::new(fee_est.clone(), monitor.clone(), broadcast.clone(), Arc::clone(&logger), keys_manager.clone(), config, params));
+	let channelmanager = Arc::new(ChannelManager::new(fee_est.clone(), monitor.clone(), broadcast.clone(), &router, Arc::clone(&logger), keys_manager.clone(), config, params));
 	// Adding new calls to `KeysInterface::get_secure_random_bytes` during startup can change all the
 	// keys subsequently generated in this test. Rather than regenerating all the messages manually,
 	// it's easier to just increment the counter here so the keys don't change.
