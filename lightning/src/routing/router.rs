@@ -494,10 +494,8 @@ fn max_htlc_from_capacity(capacity: EffectiveCapacity, max_channel_saturation_po
 		EffectiveCapacity::Unknown => EffectiveCapacity::Unknown.as_msat(),
 		EffectiveCapacity::MaximumHTLC { amount_msat } =>
 			amount_msat.checked_shr(saturation_shift).unwrap_or(0),
-		EffectiveCapacity::Total { capacity_msat, htlc_maximum_msat: None } =>
-			capacity_msat.checked_shr(saturation_shift).unwrap_or(0),
-		EffectiveCapacity::Total { capacity_msat, htlc_maximum_msat: Some(htlc_max) } =>
-			cmp::min(capacity_msat.checked_shr(saturation_shift).unwrap_or(0), htlc_max),
+		EffectiveCapacity::Total { capacity_msat, htlc_maximum_msat } =>
+			cmp::min(capacity_msat.checked_shr(saturation_shift).unwrap_or(0), htlc_maximum_msat),
 	}
 }
 
@@ -5391,7 +5389,7 @@ mod tests {
 		let usage = ChannelUsage {
 			amount_msat: 0,
 			inflight_htlc_msat: 0,
-			effective_capacity: EffectiveCapacity::Total { capacity_msat: 1_024_000, htlc_maximum_msat: Some(1_000) },
+			effective_capacity: EffectiveCapacity::Total { capacity_msat: 1_024_000, htlc_maximum_msat: 1_000 },
 		};
 		scorer.set_manual_penalty(&NodeId::from_pubkey(&nodes[3]), 123);
 		scorer.set_manual_penalty(&NodeId::from_pubkey(&nodes[4]), 456);

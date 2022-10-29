@@ -874,7 +874,7 @@ impl<'a> DirectedChannelInfo<'a> {
 		let effective_capacity = match capacity_msat {
 			Some(capacity_msat) => {
 				htlc_maximum_msat = cmp::min(htlc_maximum_msat, capacity_msat);
-				EffectiveCapacity::Total { capacity_msat, htlc_maximum_msat: Some(htlc_maximum_msat) }
+				EffectiveCapacity::Total { capacity_msat, htlc_maximum_msat: htlc_maximum_msat }
 			},
 			None => EffectiveCapacity::MaximumHTLC { amount_msat: htlc_maximum_msat },
 		};
@@ -939,7 +939,7 @@ pub enum EffectiveCapacity {
 		/// The funding amount denominated in millisatoshi.
 		capacity_msat: u64,
 		/// The maximum HTLC amount denominated in millisatoshi.
-		htlc_maximum_msat: Option<u64>
+		htlc_maximum_msat: u64
 	},
 	/// A capacity sufficient to route any payment, typically used for private channels provided by
 	/// an invoice.
