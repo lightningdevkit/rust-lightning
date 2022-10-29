@@ -750,7 +750,7 @@ impl ChannelInfo {
 				return None;
 			}
 		};
-		Some((DirectedChannelInfo::new(self, direction), source))
+		direction.map(|dir| (DirectedChannelInfo::new(self, dir), source))
 	}
 
 	/// Returns a [`DirectedChannelInfo`] for the channel directed from the given `source` to a
@@ -765,7 +765,7 @@ impl ChannelInfo {
 				return None;
 			}
 		};
-		Some((DirectedChannelInfo::new(self, direction), target))
+		direction.map(|dir| (DirectedChannelInfo::new(self, dir), target))
 	}
 
 	/// Returns a [`ChannelUpdateInfo`] based on the direction implied by the channel_flag.
@@ -860,29 +860,23 @@ impl Readable for ChannelInfo {
 #[derive(Clone)]
 pub struct DirectedChannelInfo<'a> {
 	channel: &'a ChannelInfo,
-	direction: Option<&'a ChannelUpdateInfo>,
+	direction: &'a ChannelUpdateInfo,
 	htlc_maximum_msat: u64,
 	effective_capacity: EffectiveCapacity,
 }
 
 impl<'a> DirectedChannelInfo<'a> {
 	#[inline]
-	fn new(channel: &'a ChannelInfo, direction: Option<&'a ChannelUpdateInfo>) -> Self {
-		let htlc_maximum_msat = direction.map(|direction| direction.htlc_maximum_msat);
+	fn new(channel: &'a ChannelInfo, direction: &'a ChannelUpdateInfo) -> Self {
+		let mut htlc_maximum_msat = direction.htlc_maximum_msat;
 		let capacity_msat = channel.capacity_sats.map(|capacity_sats| capacity_sats * 1000);
 
-		let (htlc_maximum_msat, effective_capacity) = match (htlc_maximum_msat, capacity_msat) {
-			(Some(amount_msat), Some(capacity_msat)) => {
-				let htlc_maximum_msat = cmp::min(amount_msat, capacity_msat);
-				(htlc_maximum_msat, EffectiveCapacity::Total { capacity_msat, htlc_maximum_msat: Some(htlc_maximum_msat) })
+		let effective_capacity = match capacity_msat {
+			Some(capacity_msat) => {
+				htlc_maximum_msat = cmp::min(htlc_maximum_msat, capacity_msat);
+				EffectiveCapacity::Total { capacity_msat, htlc_maximum_msat: Some(htlc_maximum_msat) }
 			},
-			(Some(amount_msat), None) => {
-				(amount_msat, EffectiveCapacity::MaximumHTLC { amount_msat })
-			},
-			(None, Some(capacity_msat)) => {
-				(capacity_msat, EffectiveCapacity::Total { capacity_msat, htlc_maximum_msat: None })
-			},
-			(None, None) => (EffectiveCapacity::Unknown.as_msat(), EffectiveCapacity::Unknown),
+			None => EffectiveCapacity::MaximumHTLC { amount_msat: htlc_maximum_msat },
 		};
 
 		Self {
@@ -891,12 +885,11 @@ impl<'a> DirectedChannelInfo<'a> {
 	}
 
 	/// Returns information for the channel.
+	#[inline]
 	pub fn channel(&self) -> &'a ChannelInfo { self.channel }
 
-	/// Returns information for the direction.
-	pub fn direction(&self) -> Option<&'a ChannelUpdateInfo> { self.direction }
-
 	/// Returns the maximum HTLC amount allowed over the channel in the direction.
+	#[inline]
 	pub fn htlc_maximum_msat(&self) -> u64 {
 		self.htlc_maximum_msat
 	}
@@ -910,13 +903,9 @@ impl<'a> DirectedChannelInfo<'a> {
 		self.effective_capacity
 	}
 
-	/// Returns `Some` if [`ChannelUpdateInfo`] is available in the direction.
-	pub(super) fn with_update(self) -> Option<DirectedChannelInfoWithUpdate<'a>> {
-		match self.direction {
-			Some(_) => Some(DirectedChannelInfoWithUpdate { inner: self }),
-			None => None,
-		}
-	}
+	/// Returns information for the direction.
+	#[inline]
+	pub(super) fn direction(&self) -> &'a ChannelUpdateInfo { self.direction }
 }
 
 impl<'a> fmt::Debug for DirectedChannelInfo<'a> {
@@ -924,32 +913,6 @@ impl<'a> fmt::Debug for DirectedChannelInfo<'a> {
 		f.debug_struct("DirectedChannelInfo")
 			.field("channel", &self.channel)
 			.finish()
-	}
-}
-
-/// A [`DirectedChannelInfo`] with [`ChannelUpdateInfo`] available in its direction.
-#[derive(Clone)]
-pub(super) struct DirectedChannelInfoWithUpdate<'a> {
-	inner: DirectedChannelInfo<'a>,
-}
-
-impl<'a> DirectedChannelInfoWithUpdate<'a> {
-	/// Returns information for the channel.
-	#[inline]
-	pub(super) fn channel(&self) -> &'a ChannelInfo { &self.inner.channel }
-
-	/// Returns information for the direction.
-	#[inline]
-	pub(super) fn direction(&self) -> &'a ChannelUpdateInfo { self.inner.direction.unwrap() }
-
-	/// Returns the [`EffectiveCapacity`] of the channel in the direction.
-	#[inline]
-	pub(super) fn effective_capacity(&self) -> EffectiveCapacity { self.inner.effective_capacity() }
-}
-
-impl<'a> fmt::Debug for DirectedChannelInfoWithUpdate<'a> {
-	fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
-		self.inner.fmt(f)
 	}
 }
 
