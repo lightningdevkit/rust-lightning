@@ -1326,3 +1326,62 @@ fn claimed_send_payment_idempotent() {
 	pass_along_route(&nodes[0], &[&[&nodes[1]]], 100_000, second_payment_hash, second_payment_secret);
 	claim_payment(&nodes[0], &[&nodes[1]], second_payment_preimage);
 }
+
+#[test]
+fn abandoned_send_payment_idempotent() {
+	// Tests that `send_payment` (and friends) allow duplicate PaymentIds immediately after
+	// abandon_payment.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	create_announced_chan_between_nodes(&nodes, 0, 1, channelmanager::provided_init_features(), channelmanager::provided_init_features()).2;
+
+	let (route, second_payment_hash, second_payment_preimage, second_payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], 100_000);
+	let (_, first_payment_hash, _, payment_id) = send_along_route(&nodes[0], route.clone(), &[&nodes[1]], 100_000);
+
+	macro_rules! check_send_rejected {
+		() => {
+			// If we try to resend a new payment with a different payment_hash but with the same
+			// payment_id, it should be rejected.
+			let send_result = nodes[0].node.send_payment(&route, second_payment_hash, &Some(second_payment_secret), payment_id);
+			match send_result {
+				Err(PaymentSendFailure::ParameterError(APIError::RouteError { err: "Payment already in progress" })) => {},
+				_ => panic!("Unexpected send result: {:?}", send_result),
+			}
+
+			// Further, if we try to send a spontaneous payment with the same payment_id it should
+			// also be rejected.
+			let send_result = nodes[0].node.send_spontaneous_payment(&route, None, payment_id);
+			match send_result {
+				Err(PaymentSendFailure::ParameterError(APIError::RouteError { err: "Payment already in progress" })) => {},
+				_ => panic!("Unexpected send result: {:?}", send_result),
+			}
+		}
+	}
+
+	check_send_rejected!();
+
+	nodes[1].node.fail_htlc_backwards(&first_payment_hash);
+	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[1], [HTLCDestination::FailedPayment { payment_hash: first_payment_hash }]);
+
+	pass_failed_payment_back_no_abandon(&nodes[0], &[&[&nodes[1]]], false, first_payment_hash);
+	check_send_rejected!();
+
+	// Until we abandon the payment, no matter how many timer ticks pass, we still cannot reuse the
+	// PaymentId.
+	for _ in 0..=IDEMPOTENCY_TIMEOUT_TICKS {
+		nodes[0].node.timer_tick_occurred();
+	}
+	check_send_rejected!();
+
+	nodes[0].node.abandon_payment(payment_id);
+	get_event!(nodes[0], Event::PaymentFailed);
+
+	// However, we can reuse the PaymentId immediately after we `abandon_payment`.
+	nodes[0].node.send_payment(&route, second_payment_hash, &Some(second_payment_secret), payment_id).unwrap();
+	check_added_monitors!(nodes[0], 1);
+	pass_along_route(&nodes[0], &[&[&nodes[1]]], 100_000, second_payment_hash, second_payment_secret);
+	claim_payment(&nodes[0], &[&nodes[1]], second_payment_preimage);
+}
