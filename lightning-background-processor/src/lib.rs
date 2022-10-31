@@ -227,7 +227,7 @@ impl<
 	L: Deref,
 > EventHandler for DecoratingEventHandler<'a, E, PGS, RGS, G, A, L>
 where A::Target: chain::Access, L::Target: Logger {
-	fn handle_event(&self, event: &Event) {
+	fn handle_event(&self, event: Event) {
 		if let Some(network_graph) = self.gossip_sync.network_graph() {
 			handle_network_graph_update(network_graph, &event)
 		}
@@ -779,7 +779,7 @@ mod tests {
 			begin_open_channel!($node_a, $node_b, $channel_value);
 			let events = $node_a.node.get_and_clear_pending_events();
 			assert_eq!(events.len(), 1);
-			let (temporary_channel_id, tx) = handle_funding_generation_ready!(&events[0], $channel_value);
+			let (temporary_channel_id, tx) = handle_funding_generation_ready!(events[0], $channel_value);
 			end_open_channel!($node_a, $node_b, temporary_channel_id, tx);
 			tx
 		}}
@@ -796,7 +796,7 @@ mod tests {
 	macro_rules! handle_funding_generation_ready {
 		($event: expr, $channel_value: expr) => {{
 			match $event {
-				&Event::FundingGenerationReady { temporary_channel_id, channel_value_satoshis, ref output_script, user_channel_id, .. } => {
+				Event::FundingGenerationReady { temporary_channel_id, channel_value_satoshis, ref output_script, user_channel_id, .. } => {
 					assert_eq!(channel_value_satoshis, $channel_value);
 					assert_eq!(user_channel_id, 42);
 
@@ -857,7 +857,7 @@ mod tests {
 		// Initiate the background processors to watch each node.
 		let data_dir = nodes[0].persister.get_data_dir();
 		let persister = Arc::new(Persister::new(data_dir));
-		let event_handler = |_: &_| {};
+		let event_handler = |_: _| {};
 		let bg_processor = BackgroundProcessor::start(persister, event_handler, nodes[0].chain_monitor.clone(), nodes[0].node.clone(), nodes[0].p2p_gossip_sync(), nodes[0].peer_manager.clone(), nodes[0].logger.clone(), Some(nodes[0].scorer.clone()));
 
 		macro_rules! check_persisted_data {
@@ -919,7 +919,7 @@ mod tests {
 		let nodes = create_nodes(1, "test_timer_tick_called".to_string());
 		let data_dir = nodes[0].persister.get_data_dir();
 		let persister = Arc::new(Persister::new(data_dir));
-		let event_handler = |_: &_| {};
+		let event_handler = |_: _| {};
 		let bg_processor = BackgroundProcessor::start(persister, event_handler, nodes[0].chain_monitor.clone(), nodes[0].node.clone(), nodes[0].no_gossip_sync(), nodes[0].peer_manager.clone(), nodes[0].logger.clone(), Some(nodes[0].scorer.clone()));
 		loop {
 			let log_entries = nodes[0].logger.lines.lock().unwrap();
@@ -942,7 +942,7 @@ mod tests {
 
 		let data_dir = nodes[0].persister.get_data_dir();
 		let persister = Arc::new(Persister::new(data_dir).with_manager_error(std::io::ErrorKind::Other, "test"));
-		let event_handler = |_: &_| {};
+		let event_handler = |_: _| {};
 		let bg_processor = BackgroundProcessor::start(persister, event_handler, nodes[0].chain_monitor.clone(), nodes[0].node.clone(), nodes[0].no_gossip_sync(), nodes[0].peer_manager.clone(), nodes[0].logger.clone(), Some(nodes[0].scorer.clone()));
 		match bg_processor.join() {
 			Ok(_) => panic!("Expected error persisting manager"),
@@ -959,7 +959,7 @@ mod tests {
 		let nodes = create_nodes(2, "test_persist_network_graph_error".to_string());
 		let data_dir = nodes[0].persister.get_data_dir();
 		let persister = Arc::new(Persister::new(data_dir).with_graph_error(std::io::ErrorKind::Other, "test"));
-		let event_handler = |_: &_| {};
+		let event_handler = |_: _| {};
 		let bg_processor = BackgroundProcessor::start(persister, event_handler, nodes[0].chain_monitor.clone(), nodes[0].node.clone(), nodes[0].p2p_gossip_sync(), nodes[0].peer_manager.clone(), nodes[0].logger.clone(), Some(nodes[0].scorer.clone()));
 
 		match bg_processor.stop() {
@@ -977,7 +977,7 @@ mod tests {
 		let nodes = create_nodes(2, "test_persist_scorer_error".to_string());
 		let data_dir = nodes[0].persister.get_data_dir();
 		let persister = Arc::new(Persister::new(data_dir).with_scorer_error(std::io::ErrorKind::Other, "test"));
-		let event_handler = |_: &_| {};
+		let event_handler = |_: _| {};
 		let bg_processor = BackgroundProcessor::start(persister, event_handler, nodes[0].chain_monitor.clone(), nodes[0].node.clone(), nodes[0].no_gossip_sync(), nodes[0].peer_manager.clone(),  nodes[0].logger.clone(), Some(nodes[0].scorer.clone()));
 
 		match bg_processor.stop() {
@@ -998,7 +998,7 @@ mod tests {
 
 		// Set up a background event handler for FundingGenerationReady events.
 		let (sender, receiver) = std::sync::mpsc::sync_channel(1);
-		let event_handler = move |event: &Event| match event {
+		let event_handler = move |event: Event| match event {
 			Event::FundingGenerationReady { .. } => sender.send(handle_funding_generation_ready!(event, channel_value)).unwrap(),
 			Event::ChannelReady { .. } => {},
 			_ => panic!("Unexpected event: {:?}", event),
@@ -1027,7 +1027,7 @@ mod tests {
 
 		// Set up a background event handler for SpendableOutputs events.
 		let (sender, receiver) = std::sync::mpsc::sync_channel(1);
-		let event_handler = move |event: &Event| match event {
+		let event_handler = move |event: Event| match event {
 			Event::SpendableOutputs { .. } => sender.send(event.clone()).unwrap(),
 			Event::ChannelReady { .. } => {},
 			Event::ChannelClosed { .. } => {},
@@ -1057,7 +1057,7 @@ mod tests {
 		let nodes = create_nodes(2, "test_scorer_persistence".to_string());
 		let data_dir = nodes[0].persister.get_data_dir();
 		let persister = Arc::new(Persister::new(data_dir));
-		let event_handler = |_: &_| {};
+		let event_handler = |_: _| {};
 		let bg_processor = BackgroundProcessor::start(persister, event_handler, nodes[0].chain_monitor.clone(), nodes[0].node.clone(), nodes[0].no_gossip_sync(), nodes[0].peer_manager.clone(), nodes[0].logger.clone(), Some(nodes[0].scorer.clone()));
 
 		loop {
@@ -1085,7 +1085,7 @@ mod tests {
 		assert!(original_graph_description.contains("42: features: 0000, node_one:"));
 		assert_eq!(network_graph.read_only().channels().len(), 1);
 
-		let event_handler = |_: &_| {};
+		let event_handler = |_: _| {};
 		let background_processor = BackgroundProcessor::start(persister, event_handler, nodes[0].chain_monitor.clone(), nodes[0].node.clone(), nodes[0].rapid_gossip_sync(), nodes[0].peer_manager.clone(), nodes[0].logger.clone(), Some(nodes[0].scorer.clone()));
 
 		loop {
@@ -1138,7 +1138,7 @@ mod tests {
 		let data_dir = nodes[0].persister.get_data_dir();
 		let persister = Arc::new(Persister::new(data_dir));
 		let router = DefaultRouter::new(Arc::clone(&nodes[0].network_graph), Arc::clone(&nodes[0].logger), random_seed_bytes, Arc::clone(&nodes[0].scorer));
-		let invoice_payer = Arc::new(InvoicePayer::new(Arc::clone(&nodes[0].node), router, Arc::clone(&nodes[0].logger), |_: &_| {}, Retry::Attempts(2)));
+		let invoice_payer = Arc::new(InvoicePayer::new(Arc::clone(&nodes[0].node), router, Arc::clone(&nodes[0].logger), |_: _| {}, Retry::Attempts(2)));
 		let event_handler = Arc::clone(&invoice_payer);
 		let bg_processor = BackgroundProcessor::start(persister, event_handler, nodes[0].chain_monitor.clone(), nodes[0].node.clone(), nodes[0].no_gossip_sync(), nodes[0].peer_manager.clone(), nodes[0].logger.clone(), Some(nodes[0].scorer.clone()));
 		assert!(bg_processor.stop().is_ok());

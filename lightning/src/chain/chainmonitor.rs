@@ -492,7 +492,7 @@ where C::Target: chain::Filter,
 	pub fn get_and_clear_pending_events(&self) -> Vec<events::Event> {
 		use crate::util::events::EventsProvider;
 		let events = core::cell::RefCell::new(Vec::new());
-		let event_handler = |event: &events::Event| events.borrow_mut().push(event.clone());
+		let event_handler = |event: events::Event| events.borrow_mut().push(event);
 		self.process_pending_events(&event_handler);
 		events.into_inner()
 	}
@@ -736,8 +736,8 @@ impl<ChannelSigner: Sign, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref> even
 		for monitor_state in self.monitors.read().unwrap().values() {
 			pending_events.append(&mut monitor_state.monitor.get_and_clear_pending_events());
 		}
-		for event in pending_events.drain(..) {
-			handler.handle_event(&event);
+		for event in pending_events {
+			handler.handle_event(event);
 		}
 	}
 	#[cfg(anchors)]
@@ -759,8 +759,8 @@ impl<ChannelSigner: Sign, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref> even
 		for monitor_state in self.monitors.read().unwrap().values() {
 			pending_events.append(&mut monitor_state.monitor.get_and_clear_pending_events());
 		}
-		for event in pending_events.drain(..) {
-			handler.handle_event(&event);
+		for event in pending_events {
+			handler.handle_event(event);
 		}
 	}
 }

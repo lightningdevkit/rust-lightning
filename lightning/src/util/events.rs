@@ -1438,17 +1438,17 @@ pub trait EventHandler {
 	/// Handles the given [`Event`].
 	///
 	/// See [`EventsProvider`] for details that must be considered when implementing this method.
-	fn handle_event(&self, event: &Event);
+	fn handle_event(&self, event: Event);
 }
 
-impl<F> EventHandler for F where F: Fn(&Event) {
-	fn handle_event(&self, event: &Event) {
+impl<F> EventHandler for F where F: Fn(Event) {
+	fn handle_event(&self, event: Event) {
 		self(event)
 	}
 }
 
 impl<T: EventHandler> EventHandler for Arc<T> {
-	fn handle_event(&self, event: &Event) {
+	fn handle_event(&self, event: Event) {
 		self.deref().handle_event(event)
 	}
 }

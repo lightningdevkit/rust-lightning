@@ -105,7 +105,7 @@
 //! # }
 //! #
 //! # fn main() {
-//! let event_handler = |event: &Event| {
+//! let event_handler = |event: Event| {
 //!     match event {
 //!         Event::PaymentPathFailed { .. } => println!("payment failed after retries"),
 //!         Event::PaymentSent { .. } => println!("payment successful"),
@@ -841,10 +841,10 @@ where
 	P::Target: Payer,
 	L::Target: Logger,
 {
-	fn handle_event(&self, event: &Event) {
+	fn handle_event(&self, event: Event) {
 		let should_forward = self.handle_event_internal(&event);
 		if should_forward {
-			self.event_handler.handle_event(&event)
+			self.event_handler.handle_event(event)
 		}
 	}
 }
@@ -960,7 +960,7 @@ mod tests {
 	#[test]
 	fn pays_invoice_on_first_attempt() {
 		let event_handled = core::cell::RefCell::new(false);
-		let event_handler = |_: &Event| { *event_handled.borrow_mut() = true; };
+		let event_handler = |_: Event| { *event_handled.borrow_mut() = true; };
 
 		let payment_preimage = PaymentPreimage([1; 32]);
 		let invoice = invoice(payment_preimage);
@@ -976,7 +976,7 @@ mod tests {
 		let payment_id = Some(invoice_payer.pay_invoice(&invoice).unwrap());
 		assert_eq!(*payer.attempts.borrow(), 1);
 
-		invoice_payer.handle_event(&Event::PaymentSent {
+		invoice_payer.handle_event(Event::PaymentSent {
 			payment_id, payment_preimage, payment_hash, fee_paid_msat: None
 		});
 		assert_eq!(*event_handled.borrow(), true);
@@ -986,7 +986,7 @@ mod tests {
 	#[test]
 	fn pays_invoice_on_retry() {
 		let event_handled = core::cell::RefCell::new(false);
-		let event_handler = |_: &Event| { *event_handled.borrow_mut() = true; };
+		let event_handler = |_: Event| { *event_handled.borrow_mut() = true; };
 
 		let payment_preimage = PaymentPreimage([1; 32]);
 		let invoice = invoice(payment_preimage);
@@ -1014,11 +1014,11 @@ mod tests {
 			short_channel_id: None,
 			retry: Some(TestRouter::retry_for_invoice(&invoice)),
 		};
-		invoice_payer.handle_event(&event);
+		invoice_payer.handle_event(event);
 		assert_eq!(*event_handled.borrow(), false);
 		assert_eq!(*payer.attempts.borrow(), 2);
 
-		invoice_payer.handle_event(&Event::PaymentSent {
+		invoice_payer.handle_event(Event::PaymentSent {
 			payment_id, payment_preimage, payment_hash, fee_paid_msat: None
 		});
 		assert_eq!(*event_handled.borrow(), true);
@@ -1027,7 +1027,7 @@ mod tests {
 
 	#[test]
 	fn pays_invoice_on_partial_failure() {
-		let event_handler = |_: &Event| { panic!() };
+		let event_handler = |_: Event| { panic!() };
 
 		let payment_preimage = PaymentPreimage([1; 32]);
 		let invoice = invoice(payment_preimage);
@@ -1051,7 +1051,7 @@ mod tests {
 	#[test]
 	fn retries_payment_path_for_unknown_payment() {
 		let event_handled = core::cell::RefCell::new(false);
-		let event_handler = |_: &Event| { *event_handled.borrow_mut() = true; };
+		let event_handler = |_: Event| { *event_handled.borrow_mut() = true; };
 
 		let payment_preimage = PaymentPreimage([1; 32]);
 		let invoice = invoice(payment_preimage);
@@ -1077,15 +1077,15 @@ mod tests {
 			short_channel_id: None,
 			retry: Some(TestRouter::retry_for_invoice(&invoice)),
 		};
-		invoice_payer.handle_event(&event);
+		invoice_payer.handle_event(event.clone());
 		assert_eq!(*event_handled.borrow(), false);
 		assert_eq!(*payer.attempts.borrow(), 1);
 
-		invoice_payer.handle_event(&event);
+		invoice_payer.handle_event(event.clone());
 		assert_eq!(*event_handled.borrow(), false);
 		assert_eq!(*payer.attempts.borrow(), 2);
 
-		invoice_payer.handle_event(&Event::PaymentSent {
+		invoice_payer.handle_event(Event::PaymentSent {
 			payment_id, payment_preimage, payment_hash, fee_paid_msat: None
 		});
 		assert_eq!(*event_handled.borrow(), true);
@@ -1095,7 +1095,7 @@ mod tests {
 	#[test]
 	fn fails_paying_invoice_after_max_retry_counts() {
 		let event_handled = core::cell::RefCell::new(false);
-		let event_handler = |_: &Event| { *event_handled.borrow_mut() = true; };
+		let event_handler = |_: Event| { *event_handled.borrow_mut() = true; };
 
 		let payment_preimage = PaymentPreimage([1; 32]);
 		let invoice = invoice(payment_preimage);
@@ -1123,7 +1123,7 @@ mod tests {
 			short_channel_id: None,
 			retry: Some(TestRouter::retry_for_invoice(&invoice)),
 		};
-		invoice_payer.handle_event(&event);
+		invoice_payer.handle_event(event);
 		assert_eq!(*event_handled.borrow(), false);
 		assert_eq!(*payer.attempts.borrow(), 2);
 
@@ -1139,11 +1139,11 @@ mod tests {
 				final_value_msat: final_value_msat / 2, ..TestRouter::retry_for_invoice(&invoice)
 			}),
 		};
-		invoice_payer.handle_event(&event);
+		invoice_payer.handle_event(event.clone());
 		assert_eq!(*event_handled.borrow(), false);
 		assert_eq!(*payer.attempts.borrow(), 3);
 
-		invoice_payer.handle_event(&event);
+		invoice_payer.handle_event(event.clone());
 		assert_eq!(*event_handled.borrow(), true);
 		assert_eq!(*payer.attempts.borrow(), 3);
 	}
@@ -1152,7 +1152,7 @@ mod tests {
 	#[test]
 	fn fails_paying_invoice_after_max_retry_timeout() {
 		let event_handled = core::cell::RefCell::new(false);
-		let event_handler = |_: &Event| { *event_handled.borrow_mut() = true; };
+		let event_handler = |_: Event| { *event_handled.borrow_mut() = true; };
 
 		let payment_preimage = PaymentPreimage([1; 32]);
 		let invoice = invoice(payment_preimage);
@@ -1182,13 +1182,13 @@ mod tests {
 			short_channel_id: None,
 			retry: Some(TestRouter::retry_for_invoice(&invoice)),
 		};
-		invoice_payer.handle_event(&event);
+		invoice_payer.handle_event(event.clone());
 		assert_eq!(*event_handled.borrow(), false);
 		assert_eq!(*payer.attempts.borrow(), 2);
 
 		SinceEpoch::advance(Duration::from_secs(121));
 
-		invoice_payer.handle_event(&event);
+		invoice_payer.handle_event(event.clone());
 		assert_eq!(*event_handled.borrow(), true);
 		assert_eq!(*payer.attempts.borrow(), 2);
 	}
@@ -1196,7 +1196,7 @@ mod tests {
 	#[test]
 	fn fails_paying_invoice_with_missing_retry_params() {
 		let event_handled = core::cell::RefCell::new(false);
-		let event_handler = |_: &Event| { *event_handled.borrow_mut() = true; };
+		let event_handler = |_: Event| { *event_handled.borrow_mut() = true; };
 
 		let payment_preimage = PaymentPreimage([1; 32]);
 		let invoice = invoice(payment_preimage);
@@ -1221,7 +1221,7 @@ mod tests {
 			short_channel_id: None,
 			retry: None,
 		};
-		invoice_payer.handle_event(&event);
+		invoice_payer.handle_event(event);
 		assert_eq!(*event_handled.borrow(), true);
 		assert_eq!(*payer.attempts.borrow(), 1);
 	}
@@ -1231,7 +1231,7 @@ mod tests {
 	#[test]
 	fn fails_paying_invoice_after_expiration() {
 		let event_handled = core::cell::RefCell::new(false);
-		let event_handler = |_: &Event| { *event_handled.borrow_mut() = true; };
+		let event_handler = |_: Event| { *event_handled.borrow_mut() = true; };
 
 		let payer = TestPayer::new();
 		let router = TestRouter::new(TestScorer::new());
@@ -1251,7 +1251,7 @@ mod tests {
 	#[test]
 	fn fails_retrying_invoice_after_expiration() {
 		let event_handled = core::cell::RefCell::new(false);
-		let event_handler = |_: &Event| { *event_handled.borrow_mut() = true; };
+		let event_handler = |_: Event| { *event_handled.borrow_mut() = true; };
 
 		let payment_preimage = PaymentPreimage([1; 32]);
 		let invoice = invoice(payment_preimage);
@@ -1280,7 +1280,7 @@ mod tests {
 			short_channel_id: None,
 			retry: Some(retry_data),
 		};
-		invoice_payer.handle_event(&event);
+		invoice_payer.handle_event(event);
 		assert_eq!(*event_handled.borrow(), true);
 		assert_eq!(*payer.attempts.borrow(), 1);
 	}
@@ -1288,7 +1288,7 @@ mod tests {
 	#[test]
 	fn fails_paying_invoice_after_retry_error() {
 		let event_handled = core::cell::RefCell::new(false);
-		let event_handler = |_: &Event| { *event_handled.borrow_mut() = true; };
+		let event_handler = |_: Event| { *event_handled.borrow_mut() = true; };
 
 		let payment_preimage = PaymentPreimage([1; 32]);
 		let invoice = invoice(payment_preimage);
@@ -1316,7 +1316,7 @@ mod tests {
 			short_channel_id: None,
 			retry: Some(TestRouter::retry_for_invoice(&invoice)),
 		};
-		invoice_payer.handle_event(&event);
+		invoice_payer.handle_event(event);
 		assert_eq!(*event_handled.borrow(), true);
 		assert_eq!(*payer.attempts.borrow(), 2);
 	}
@@ -1324,7 +1324,7 @@ mod tests {
 	#[test]
 	fn fails_paying_invoice_after_rejected_by_payee() {
 		let event_handled = core::cell::RefCell::new(false);
-		let event_handler = |_: &Event| { *event_handled.borrow_mut() = true; };
+		let event_handler = |_: Event| { *event_handled.borrow_mut() = true; };
 
 		let payment_preimage = PaymentPreimage([1; 32]);
 		let invoice = invoice(payment_preimage);
@@ -1349,7 +1349,7 @@ mod tests {
 			short_channel_id: None,
 			retry: Some(TestRouter::retry_for_invoice(&invoice)),
 		};
-		invoice_payer.handle_event(&event);
+		invoice_payer.handle_event(event);
 		assert_eq!(*event_handled.borrow(), true);
 		assert_eq!(*payer.attempts.borrow(), 1);
 	}
@@ -1357,7 +1357,7 @@ mod tests {
 	#[test]
 	fn fails_repaying_invoice_with_pending_payment() {
 		let event_handled = core::cell::RefCell::new(false);
-		let event_handler = |_: &Event| { *event_handled.borrow_mut() = true; };
+		let event_handler = |_: Event| { *event_handled.borrow_mut() = true; };
 
 		let payment_preimage = PaymentPreimage([1; 32]);
 		let invoice = invoice(payment_preimage);
@@ -1397,7 +1397,7 @@ mod tests {
 			short_channel_id: None,
 			retry: Some(TestRouter::retry_for_invoice(&invoice)),
 		};
-		invoice_payer.handle_event(&event);
+		invoice_payer.handle_event(event);
 		assert_eq!(*event_handled.borrow(), true);
 	}
 
@@ -1407,7 +1407,7 @@ mod tests {
 		let router = FailingRouter {};
 		let logger = TestLogger::new();
 		let invoice_payer =
-			InvoicePayer::new(&payer, router, &logger, |_: &Event| {}, Retry::Attempts(0));
+			InvoicePayer::new(&payer, router, &logger, |_: Event| {}, Retry::Attempts(0));
 
 		let payment_preimage = PaymentPreimage([1; 32]);
 		let invoice = invoice(payment_preimage);
@@ -1430,7 +1430,7 @@ mod tests {
 		let router = TestRouter::new(TestScorer::new());
 		let logger = TestLogger::new();
 		let invoice_payer =
-			InvoicePayer::new(&payer, router, &logger, |_: &Event| {}, Retry::Attempts(0));
+			InvoicePayer::new(&payer, router, &logger, |_: Event| {}, Retry::Attempts(0));
 
 		match invoice_payer.pay_invoice(&invoice) {
 			Err(PaymentError::Sending(_)) => {},
@@ -1442,7 +1442,7 @@ mod tests {
 	#[test]
 	fn pays_zero_value_invoice_using_amount() {
 		let event_handled = core::cell::RefCell::new(false);
-		let event_handler = |_: &Event| { *event_handled.borrow_mut() = true; };
+		let event_handler = |_: Event| { *event_handled.borrow_mut() = true; };
 
 		let payment_preimage = PaymentPreimage([1; 32]);
 		let invoice = zero_value_invoice(payment_preimage);
@@ -1459,7 +1459,7 @@ mod tests {
 			Some(invoice_payer.pay_zero_value_invoice(&invoice, final_value_msat).unwrap());
 		assert_eq!(*payer.attempts.borrow(), 1);
 
-		invoice_payer.handle_event(&Event::PaymentSent {
+		invoice_payer.handle_event(Event::PaymentSent {
 			payment_id, payment_preimage, payment_hash, fee_paid_msat: None
 		});
 		assert_eq!(*event_handled.borrow(), true);
@@ -1469,7 +1469,7 @@ mod tests {
 	#[test]
 	fn fails_paying_zero_value_invoice_with_amount() {
 		let event_handled = core::cell::RefCell::new(false);
-		let event_handler = |_: &Event| { *event_handled.borrow_mut() = true; };
+		let event_handler = |_: Event| { *event_handled.borrow_mut() = true; };
 
 		let payer = TestPayer::new();
 		let router = TestRouter::new(TestScorer::new());
@@ -1491,7 +1491,7 @@ mod tests {
 	#[test]
 	fn pays_pubkey_with_amount() {
 		let event_handled = core::cell::RefCell::new(false);
-		let event_handler = |_: &Event| { *event_handled.borrow_mut() = true; };
+		let event_handler = |_: Event| { *event_handled.borrow_mut() = true; };
 
 		let pubkey = pubkey();
 		let payment_preimage = PaymentPreimage([1; 32]);
@@ -1527,11 +1527,11 @@ mod tests {
 			short_channel_id: None,
 			retry: Some(retry),
 		};
-		invoice_payer.handle_event(&event);
+		invoice_payer.handle_event(event);
 		assert_eq!(*event_handled.borrow(), false);
 		assert_eq!(*payer.attempts.borrow(), 2);
 
-		invoice_payer.handle_event(&Event::PaymentSent {
+		invoice_payer.handle_event(Event::PaymentSent {
 			payment_id, payment_preimage, payment_hash, fee_paid_msat: None
 		});
 		assert_eq!(*event_handled.borrow(), true);
@@ -1541,7 +1541,7 @@ mod tests {
 	#[test]
 	fn scores_failed_channel() {
 		let event_handled = core::cell::RefCell::new(false);
-		let event_handler = |_: &Event| { *event_handled.borrow_mut() = true; };
+		let event_handler = |_: Event| { *event_handled.borrow_mut() = true; };
 
 		let payment_preimage = PaymentPreimage([1; 32]);
 		let invoice = invoice(payment_preimage);
@@ -1573,13 +1573,13 @@ mod tests {
 			short_channel_id,
 			retry: Some(TestRouter::retry_for_invoice(&invoice)),
 		};
-		invoice_payer.handle_event(&event);
+		invoice_payer.handle_event(event);
 	}
 
 	#[test]
 	fn scores_successful_channels() {
 		let event_handled = core::cell::RefCell::new(false);
-		let event_handler = |_: &Event| { *event_handled.borrow_mut() = true; };
+		let event_handler = |_: Event| { *event_handled.borrow_mut() = true; };
 
 		let payment_preimage = PaymentPreimage([1; 32]);
 		let invoice = invoice(payment_preimage);
@@ -1601,17 +1601,17 @@ mod tests {
 		let event = Event::PaymentPathSuccessful {
 			payment_id, payment_hash, path: route.paths[0].clone()
 		};
-		invoice_payer.handle_event(&event);
+		invoice_payer.handle_event(event);
 		let event = Event::PaymentPathSuccessful {
 			payment_id, payment_hash, path: route.paths[1].clone()
 		};
-		invoice_payer.handle_event(&event);
+		invoice_payer.handle_event(event);
 	}
 
 	#[test]
 	fn generates_correct_inflight_map_data() {
 		let event_handled = core::cell::RefCell::new(false);
-		let event_handler = |_: &Event| { *event_handled.borrow_mut() = true; };
+		let event_handler = |_: Event| { *event_handled.borrow_mut() = true; };
 
 		let payment_preimage = PaymentPreimage([1; 32]);
 		let invoice = invoice(payment_preimage);
@@ -1638,7 +1638,7 @@ mod tests {
 		assert_eq!(inflight_map.0.get(&(3, false)).unwrap().clone(), 74);
 		assert_eq!(inflight_map.0.get(&(4, false)).unwrap().clone(), 64);
 
-		invoice_payer.handle_event(&Event::PaymentPathSuccessful {
+		invoice_payer.handle_event(Event::PaymentPathSuccessful {
 			payment_id, payment_hash, path: route.paths[0].clone()
 		});
 
@@ -1657,7 +1657,7 @@ mod tests {
 	fn considers_inflight_htlcs_between_invoice_payments_when_path_succeeds() {
 		// First, let's just send a payment through, but only make sure one of the path completes
 		let event_handled = core::cell::RefCell::new(false);
-		let event_handler = |_: &Event| { *event_handled.borrow_mut() = true; };
+		let event_handler = |_: Event| { *event_handled.borrow_mut() = true; };
 
 		let payment_preimage = PaymentPreimage([1; 32]);
 		let payment_invoice = invoice(payment_preimage);
@@ -1691,7 +1691,7 @@ mod tests {
 
 		// Succeed 1st path, leave 2nd path inflight
 		let payment_id = invoice_payer.pay_invoice(&payment_invoice).unwrap();
-		invoice_payer.handle_event(&Event::PaymentPathSuccessful {
+		invoice_payer.handle_event(Event::PaymentPathSuccessful {
 			payment_id, payment_hash, path: route.paths[0].clone()
 		});
 
@@ -1708,7 +1708,7 @@ mod tests {
 	fn considers_inflight_htlcs_between_retries() {
 		// First, let's just send a payment through, but only make sure one of the path completes
 		let event_handled = core::cell::RefCell::new(false);
-		let event_handler = |_: &Event| { *event_handled.borrow_mut() = true; };
+		let event_handler = |_: Event| { *event_handled.borrow_mut() = true; };
 
 		let payment_preimage = PaymentPreimage([1; 32]);
 		let payment_invoice = invoice(payment_preimage);
@@ -1749,7 +1749,7 @@ mod tests {
 
 		// Fail 1st path, leave 2nd path inflight
 		let payment_id = Some(invoice_payer.pay_invoice(&payment_invoice).unwrap());
-		invoice_payer.handle_event(&Event::PaymentPathFailed {
+		invoice_payer.handle_event(Event::PaymentPathFailed {
 			payment_id,
 			payment_hash,
 			network_update: None,
@@ -1761,7 +1761,7 @@ mod tests {
 		});
 
 		// Fails again the 1st path of our retry
-		invoice_payer.handle_event(&Event::PaymentPathFailed {
+		invoice_payer.handle_event(Event::PaymentPathFailed {
 			payment_id,
 			payment_hash,
 			network_update: None,
@@ -1779,7 +1779,7 @@ mod tests {
 	#[test]
 	fn accounts_for_some_inflight_htlcs_sent_during_partial_failure() {
 		let event_handled = core::cell::RefCell::new(false);
-		let event_handler = |_: &Event| { *event_handled.borrow_mut() = true; };
+		let event_handler = |_: Event| { *event_handled.borrow_mut() = true; };
 
 		let payment_preimage = PaymentPreimage([1; 32]);
 		let invoice_to_pay = invoice(payment_preimage);
@@ -1810,7 +1810,7 @@ mod tests {
 	#[test]
 	fn accounts_for_all_inflight_htlcs_sent_during_partial_failure() {
 		let event_handled = core::cell::RefCell::new(false);
-		let event_handler = |_: &Event| { *event_handled.borrow_mut() = true; };
+		let event_handler = |_: Event| { *event_handled.borrow_mut() = true; };
 
 		let payment_preimage = PaymentPreimage([1; 32]);
 		let invoice_to_pay = invoice(payment_preimage);
@@ -2307,7 +2307,7 @@ mod tests {
 		route.paths[1][0].fee_msat = 50_000_000;
 		router.expect_find_route(Ok(route.clone()));
 
-		let event_handler = |_: &Event| { panic!(); };
+		let event_handler = |_: Event| { panic!(); };
 		let invoice_payer = InvoicePayer::new(nodes[0].node, router, nodes[0].logger, event_handler, Retry::Attempts(1));
 
 		assert!(invoice_payer.pay_invoice(&create_invoice_from_channelmanager_and_duration_since_epoch(
@@ -2352,7 +2352,7 @@ mod tests {
 		route.paths[1][0].fee_msat = 50_000_001;
 		router.expect_find_route(Ok(route.clone()));
 
-		let event_handler = |_: &Event| { panic!(); };
+		let event_handler = |_: Event| { panic!(); };
 		let invoice_payer = InvoicePayer::new(nodes[0].node, router, nodes[0].logger, event_handler, Retry::Attempts(1));
 
 		assert!(invoice_payer.pay_invoice(&create_invoice_from_channelmanager_and_duration_since_epoch(
@@ -2429,8 +2429,8 @@ mod tests {
 		route.paths.remove(1);
 		router.expect_find_route(Ok(route.clone()));
 
-		let expected_events: RefCell<VecDeque<&dyn Fn(&Event)>> = RefCell::new(VecDeque::new());
-		let event_handler = |event: &Event| {
+		let expected_events: RefCell<VecDeque<&dyn Fn(Event)>> = RefCell::new(VecDeque::new());
+		let event_handler = |event: Event| {
 			let event_checker = expected_events.borrow_mut().pop_front().unwrap();
 			event_checker(event);
 		};
@@ -2505,7 +2505,7 @@ mod tests {
 		// `PaymentPathFailed` being passed up to the user (us, in this case). Previously, we'd
 		// treated this as "HTLC complete" and dropped the retry counter, causing us to retry again
 		// if the final HTLC failed.
-		expected_events.borrow_mut().push_back(&|ev: &Event| {
+		expected_events.borrow_mut().push_back(&|ev: Event| {
 			if let Event::PaymentPathFailed { payment_failed_permanently, all_paths_failed, .. } = ev {
 				assert!(!payment_failed_permanently);
 				assert!(all_paths_failed);
@@ -2523,13 +2523,13 @@ mod tests {
 		nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &bs_fail_update.update_fail_htlcs[0]);
 		commitment_signed_dance!(nodes[0], nodes[1], &bs_fail_update.commitment_signed, false, true);
 
-		expected_events.borrow_mut().push_back(&|ev: &Event| {
+		expected_events.borrow_mut().push_back(&|ev: Event| {
 			if let Event::PaymentPathFailed { payment_failed_permanently, all_paths_failed, .. } = ev {
 				assert!(!payment_failed_permanently);
 				assert!(all_paths_failed);
 			} else { panic!("Unexpected event"); }
 		});
-		expected_events.borrow_mut().push_back(&|ev: &Event| {
+		expected_events.borrow_mut().push_back(&|ev: Event| {
 			if let Event::PaymentFailed { .. } = ev {
 			} else { panic!("Unexpected event"); }
 		});

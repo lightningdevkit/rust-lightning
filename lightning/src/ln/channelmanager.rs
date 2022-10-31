@@ -5714,7 +5714,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 	#[cfg(any(test, fuzzing, feature = "_test_utils"))]
 	pub fn get_and_clear_pending_events(&self) -> Vec<events::Event> {
 		let events = core::cell::RefCell::new(Vec::new());
-		let event_handler = |event: &events::Event| events.borrow_mut().push(event.clone());
+		let event_handler = |event: events::Event| events.borrow_mut().push(event);
 		self.process_pending_events(&event_handler);
 		events.into_inner()
 	}
@@ -5791,13 +5791,13 @@ where
 				result = NotifyOption::DoPersist;
 			}
 
-			let mut pending_events = mem::replace(&mut *self.pending_events.lock().unwrap(), vec![]);
+			let pending_events = mem::replace(&mut *self.pending_events.lock().unwrap(), vec![]);
 			if !pending_events.is_empty() {
 				result = NotifyOption::DoPersist;
 			}
 
-			for event in pending_events.drain(..) {
-				handler.handle_event(&event);
+			for event in pending_events {
+				handler.handle_event(event);
 			}
 
 			result
