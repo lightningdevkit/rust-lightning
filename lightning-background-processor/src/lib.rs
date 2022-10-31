@@ -192,6 +192,16 @@ where
 	}
 }
 
+fn handle_network_graph_update<L: Deref>(
+	network_graph: &NetworkGraph<L>, event: &Event
+) where L::Target: Logger {
+	if let Event::PaymentPathFailed { ref network_update, .. } = event {
+		if let Some(network_update) = network_update {
+			network_graph.handle_network_update(&network_update);
+		}
+	}
+}
+
 /// Decorates an [`EventHandler`] with common functionality provided by standard [`EventHandler`]s.
 struct DecoratingEventHandler<
 	'a,
@@ -219,7 +229,7 @@ impl<
 where A::Target: chain::Access, L::Target: Logger {
 	fn handle_event(&self, event: &Event) {
 		if let Some(network_graph) = self.gossip_sync.network_graph() {
-			network_graph.handle_event(event);
+			handle_network_graph_update(network_graph, &event)
 		}
 		self.event_handler.handle_event(event);
 	}

@@ -29,7 +29,7 @@ use crate::ln::msgs::{QueryChannelRange, ReplyChannelRange, QueryShortChannelIds
 use crate::ln::msgs;
 use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer, MaybeReadable};
 use crate::util::logger::{Logger, Level};
-use crate::util::events::{Event, EventHandler, MessageSendEvent, MessageSendEventsProvider};
+use crate::util::events::{MessageSendEvent, MessageSendEventsProvider};
 use crate::util::scid_utils::{block_from_scid, scid_from_parts, MAX_SCID_BLOCK};
 use crate::util::string::PrintableString;
 
@@ -213,9 +213,6 @@ impl_writeable_tlv_based_enum_upgradable!(NetworkUpdate,
 /// This network graph is then used for routing payments.
 /// Provides interface to help with initial routing sync by
 /// serving historical announcements.
-///
-/// Serves as an [`EventHandler`] for applying updates from [`Event::PaymentPathFailed`] to the
-/// [`NetworkGraph`].
 pub struct P2PGossipSync<G: Deref<Target=NetworkGraph<L>>, C: Deref, L: Deref>
 where C::Target: chain::Access, L::Target: Logger
 {
@@ -275,32 +272,31 @@ where C::Target: chain::Access, L::Target: Logger
 	}
 }
 
-impl<L: Deref> EventHandler for NetworkGraph<L> where L::Target: Logger {
-	fn handle_event(&self, event: &Event) {
-		if let Event::PaymentPathFailed { network_update, .. } = event {
-			if let Some(network_update) = network_update {
-				match *network_update {
-					NetworkUpdate::ChannelUpdateMessage { ref msg } => {
-						let short_channel_id = msg.contents.short_channel_id;
-						let is_enabled = msg.contents.flags & (1 << 1) != (1 << 1);
-						let status = if is_enabled { "enabled" } else { "disabled" };
-						log_debug!(self.logger, "Updating channel with channel_update from a payment failure. Channel {} is {}.", short_channel_id, status);
-						let _ = self.update_channel(msg);
-					},
-					NetworkUpdate::ChannelFailure { short_channel_id, is_permanent } => {
-						let action = if is_permanent { "Removing" } else { "Disabling" };
-						log_debug!(self.logger, "{} channel graph entry for {} due to a payment failure.", action, short_channel_id);
-						self.channel_failed(short_channel_id, is_permanent);
-					},
-					NetworkUpdate::NodeFailure { ref node_id, is_permanent } => {
-						if is_permanent {
-							log_debug!(self.logger,
-								"Removed node graph entry for {} due to a payment failure.", log_pubkey!(node_id));
-							self.node_failed_permanent(node_id);
-						};
-					},
-				}
-			}
+impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
+	/// Handles any network updates originating from [`Event`]s.
+	///
+	/// [`Event`]: crate::util::events::Event
+	pub fn handle_network_update(&self, network_update: &NetworkUpdate) {
+		match *network_update {
+			NetworkUpdate::ChannelUpdateMessage { ref msg } => {
+				let short_channel_id = msg.contents.short_channel_id;
+				let is_enabled = msg.contents.flags & (1 << 1) != (1 << 1);
+				let status = if is_enabled { "enabled" } else { "disabled" };
+				log_debug!(self.logger, "Updating channel with channel_update from a payment failure. Channel {} is {}.", short_channel_id, status);
+				let _ = self.update_channel(msg);
+			},
+			NetworkUpdate::ChannelFailure { short_channel_id, is_permanent } => {
+				let action = if is_permanent { "Removing" } else { "Disabling" };
+				log_debug!(self.logger, "{} channel graph entry for {} due to a payment failure.", action, short_channel_id);
+				self.channel_failed(short_channel_id, is_permanent);
+			},
+			NetworkUpdate::NodeFailure { ref node_id, is_permanent } => {
+				if is_permanent {
+					log_debug!(self.logger,
+						"Removed node graph entry for {} due to a payment failure.", log_pubkey!(node_id));
+					self.node_failed_permanent(node_id);
+				};
+			},
 		}
 	}
 }
@@ -1931,7 +1927,6 @@ mod tests {
 	use crate::chain;
 	use crate::ln::channelmanager;
 	use crate::ln::chan_utils::make_funding_redeemscript;
-	use crate::ln::PaymentHash;
 	use crate::ln::features::InitFeatures;
 	use crate::routing::gossip::{P2PGossipSync, NetworkGraph, NetworkUpdate, NodeAlias, MAX_EXCESS_BYTES_FOR_RELAY, NodeId, RoutingFees, ChannelUpdateInfo, ChannelInfo, NodeAnnouncementInfo, NodeInfo};
 	use crate::ln::msgs::{RoutingMessageHandler, UnsignedNodeAnnouncement, NodeAnnouncement,
@@ -1939,7 +1934,7 @@ mod tests {
 		ReplyChannelRange, QueryChannelRange, QueryShortChannelIds, MAX_VALUE_MSAT};
 	use crate::util::test_utils;
 	use crate::util::ser::{ReadableArgs, Writeable};
-	use crate::util::events::{Event, EventHandler, MessageSendEvent, MessageSendEventsProvider};
+	use crate::util::events::{MessageSendEvent, MessageSendEventsProvider};
 	use crate::util::scid_utils::scid_from_parts;
 
 	use crate::routing::gossip::REMOVED_ENTRIES_TRACKING_AGE_LIMIT_SECS;
@@ -2383,19 +2378,8 @@ mod tests {
 			let valid_channel_update = get_signed_channel_update(|_| {}, node_1_privkey, &secp_ctx);
 			assert!(network_graph.read_only().channels().get(&short_channel_id).unwrap().one_to_two.is_none());
 
-			network_graph.handle_event(&Event::PaymentPathFailed {
-				payment_id: None,
-				payment_hash: PaymentHash([0; 32]),
-				payment_failed_permanently: false,
-				all_paths_failed: true,
-				path: vec![],
-				network_update: Some(NetworkUpdate::ChannelUpdateMessage {
-					msg: valid_channel_update,
-				}),
-				short_channel_id: None,
-				retry: None,
-				error_code: None,
-				error_data: None,
+			network_graph.handle_network_update(&NetworkUpdate::ChannelUpdateMessage {
+				msg: valid_channel_update,
 			});
 
 			assert!(network_graph.read_only().channels().get(&short_channel_id).unwrap().one_to_two.is_some());
@@ -2410,20 +2394,9 @@ mod tests {
 				}
 			};
 
-			network_graph.handle_event(&Event::PaymentPathFailed {
-				payment_id: None,
-				payment_hash: PaymentHash([0; 32]),
-				payment_failed_permanently: false,
-				all_paths_failed: true,
-				path: vec![],
-				network_update: Some(NetworkUpdate::ChannelFailure {
-					short_channel_id,
-					is_permanent: false,
-				}),
-				short_channel_id: None,
-				retry: None,
-				error_code: None,
-				error_data: None,
+			network_graph.handle_network_update(&NetworkUpdate::ChannelFailure {
+				short_channel_id,
+				is_permanent: false,
 			});
 
 			match network_graph.read_only().channels().get(&short_channel_id) {
@@ -2435,20 +2408,9 @@ mod tests {
 		}
 
 		// Permanent closing deletes a channel
-		network_graph.handle_event(&Event::PaymentPathFailed {
-			payment_id: None,
-			payment_hash: PaymentHash([0; 32]),
-			payment_failed_permanently: false,
-			all_paths_failed: true,
-			path: vec![],
-			network_update: Some(NetworkUpdate::ChannelFailure {
-				short_channel_id,
-				is_permanent: true,
-			}),
-			short_channel_id: None,
-			retry: None,
-			error_code: None,
-			error_data: None,
+		network_graph.handle_network_update(&NetworkUpdate::ChannelFailure {
+			short_channel_id,
+			is_permanent: true,
 		});
 
 		assert_eq!(network_graph.read_only().channels().len(), 0);
@@ -2467,40 +2429,18 @@ mod tests {
 			assert!(network_graph.read_only().channels().get(&short_channel_id).is_some());
 
 			// Non-permanent node failure does not delete any nodes or channels
-			network_graph.handle_event(&Event::PaymentPathFailed {
-				payment_id: None,
-				payment_hash: PaymentHash([0; 32]),
-				payment_failed_permanently: false,
-				all_paths_failed: true,
-				path: vec![],
-				network_update: Some(NetworkUpdate::NodeFailure {
-					node_id: node_2_id,
-					is_permanent: false,
-				}),
-				short_channel_id: None,
-				retry: None,
-				error_code: None,
-				error_data: None,
+			network_graph.handle_network_update(&NetworkUpdate::NodeFailure {
+				node_id: node_2_id,
+				is_permanent: false,
 			});
 
 			assert!(network_graph.read_only().channels().get(&short_channel_id).is_some());
 			assert!(network_graph.read_only().nodes().get(&NodeId::from_pubkey(&node_2_id)).is_some());
 
 			// Permanent node failure deletes node and its channels
-			network_graph.handle_event(&Event::PaymentPathFailed {
-				payment_id: None,
-				payment_hash: PaymentHash([0; 32]),
-				payment_failed_permanently: false,
-				all_paths_failed: true,
-				path: vec![],
-				network_update: Some(NetworkUpdate::NodeFailure {
-					node_id: node_2_id,
-					is_permanent: true,
-				}),
-				short_channel_id: None,
-				retry: None,
-				error_code: None,
-				error_data: None,
+			network_graph.handle_network_update(&NetworkUpdate::NodeFailure {
+				node_id: node_2_id,
+				is_permanent: true,
 			});
 
 			assert_eq!(network_graph.read_only().nodes().len(), 0);
