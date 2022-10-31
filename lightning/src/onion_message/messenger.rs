@@ -513,12 +513,8 @@ fn packet_payloads_and_keys<T: CustomOnionMessageContents, S: secp256k1::Signing
 					next_blinding_override: Some(blinding_pt),
 				})), control_tlvs_ss));
 			}
-			if let Some(encrypted_payload) = enc_payload_opt {
-				payloads.push((Payload::Forward(ForwardControlTlvs::Blinded(encrypted_payload)),
-					control_tlvs_ss));
-			} else { debug_assert!(false); }
-			blinded_path_idx += 1;
-		} else if blinded_path_idx < num_blinded_hops - 1 && enc_payload_opt.is_some() {
+		}
+		if blinded_path_idx < num_blinded_hops.saturating_sub(1) && enc_payload_opt.is_some() {
 			payloads.push((Payload::Forward(ForwardControlTlvs::Blinded(enc_payload_opt.unwrap())),
 				control_tlvs_ss));
 			blinded_path_idx += 1;
