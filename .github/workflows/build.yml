@@ -228,7 +228,7 @@ jobs:
   benchmark:
     runs-on: ubuntu-latest
     env:
-      TOOLCHAIN: nightly
+      TOOLCHAIN: stable
     steps:
       - name: Checkout source code
         uses: actions/checkout@v3
@@ -273,7 +273,7 @@ jobs:
           cd ..
       - name: Run benchmarks on Rust ${{ matrix.toolchain }}
         run: |
-          cargo bench --features _bench_unstable
+          RUSTC_BOOTSTRAP=1 cargo bench --features _bench_unstable
 
   check_commits:
     runs-on: ubuntu-latest
