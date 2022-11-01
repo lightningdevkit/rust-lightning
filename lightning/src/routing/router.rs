@@ -17,7 +17,7 @@ use bitcoin::secp256k1::PublicKey;
 use crate::ln::channelmanager::ChannelDetails;
 use crate::ln::features::{ChannelFeatures, InvoiceFeatures, NodeFeatures};
 use crate::ln::msgs::{DecodeError, ErrorAction, LightningError, MAX_VALUE_MSAT};
-use crate::routing::gossip::{DirectedChannelInfoWithUpdate, EffectiveCapacity, ReadOnlyNetworkGraph, NetworkGraph, NodeId, RoutingFees};
+use crate::routing::gossip::{DirectedChannelInfo, EffectiveCapacity, ReadOnlyNetworkGraph, NetworkGraph, NodeId, RoutingFees};
 use crate::routing::scoring::{ChannelUsage, Score};
 use crate::util::ser::{Writeable, Readable, Writer};
 use crate::util::logger::{Level, Logger};
@@ -421,7 +421,7 @@ enum CandidateRouteHop<'a> {
 	},
 	/// A hop found in the [`ReadOnlyNetworkGraph`], where the channel capacity may be unknown.
 	PublicHop {
-		info: DirectedChannelInfoWithUpdate<'a>,
+		info: DirectedChannelInfo<'a>,
 		short_channel_id: u64,
 	},
 	/// A hop to the payee found in the payment invoice, though not necessarily a direct channel.
@@ -494,10 +494,8 @@ fn max_htlc_from_capacity(capacity: EffectiveCapacity, max_channel_saturation_po
 		EffectiveCapacity::Unknown => EffectiveCapacity::Unknown.as_msat(),
 		EffectiveCapacity::MaximumHTLC { amount_msat } =>
 			amount_msat.checked_shr(saturation_shift).unwrap_or(0),
-		EffectiveCapacity::Total { capacity_msat, htlc_maximum_msat: None } =>
-			capacity_msat.checked_shr(saturation_shift).unwrap_or(0),
-		EffectiveCapacity::Total { capacity_msat, htlc_maximum_msat: Some(htlc_max) } =>
-			cmp::min(capacity_msat.checked_shr(saturation_shift).unwrap_or(0), htlc_max),
+		EffectiveCapacity::Total { capacity_msat, htlc_maximum_msat } =>
+			cmp::min(capacity_msat.checked_shr(saturation_shift).unwrap_or(0), htlc_maximum_msat),
 	}
 }
 
@@ -1276,13 +1274,11 @@ where L::Target: Logger {
 					for chan_id in $node.channels.iter() {
 						let chan = network_channels.get(chan_id).unwrap();
 						if !chan.features.requires_unknown_bits() {
-							let (directed_channel, source) =
-								chan.as_directed_to(&$node_id).expect("inconsistent NetworkGraph");
-							if first_hops.is_none() || *source != our_node_id {
-								if let Some(direction) = directed_channel.direction() {
-									if direction.enabled {
+							if let Some((directed_channel, source)) = chan.as_directed_to(&$node_id) {
+								if first_hops.is_none() || *source != our_node_id {
+									if directed_channel.direction().enabled {
 										let candidate = CandidateRouteHop::PublicHop {
-											info: directed_channel.with_update().unwrap(),
+											info: directed_channel,
 											short_channel_id: *chan_id,
 										};
 										add_entry!(candidate, *source, $node_id,
@@ -1367,8 +1363,7 @@ where L::Target: Logger {
 					let candidate = network_channels
 						.get(&hop.short_channel_id)
 						.and_then(|channel| channel.as_directed_to(&target))
-						.and_then(|(channel, _)| channel.with_update())
-						.map(|info| CandidateRouteHop::PublicHop {
+						.map(|(info, _)| CandidateRouteHop::PublicHop {
 							info,
 							short_channel_id: hop.short_channel_id,
 						})
@@ -1816,10 +1811,8 @@ fn add_random_cltv_offset(route: &mut Route, payment_params: &PaymentParameters,
 							random_channel.as_directed_from(&cur_node_id).map(|(dir_info, next_id)| {
 								if !nodes_to_avoid.iter().any(|x| x == next_id) {
 									nodes_to_avoid[random_hop] = *next_id;
-									dir_info.direction().map(|channel_update_info| {
-										random_hop_offset = channel_update_info.cltv_expiry_delta.into();
-										cur_hop = Some(*next_id);
-									});
+									random_hop_offset = dir_info.direction().cltv_expiry_delta.into();
+									cur_hop = Some(*next_id);
 								}
 							});
 						}
@@ -5214,14 +5207,12 @@ mod tests {
 					for channel_id in &cur_node.channels {
 						if let Some(channel_info) = network_channels.get(&channel_id) {
 							if let Some((dir_info, next_id)) = channel_info.as_directed_from(&cur_node_id) {
-								if let Some(channel_update_info) = dir_info.direction() {
-									let next_cltv_expiry_delta = channel_update_info.cltv_expiry_delta as u32;
-									if cur_path_cltv_deltas.iter().sum::<u32>()
-										.saturating_add(next_cltv_expiry_delta) <= observed_cltv_expiry_delta {
-										let mut new_path_cltv_deltas = cur_path_cltv_deltas.clone();
-										new_path_cltv_deltas.push(next_cltv_expiry_delta);
-										candidates.push_back((*next_id, new_path_cltv_deltas));
-									}
+								let next_cltv_expiry_delta = dir_info.direction().cltv_expiry_delta as u32;
+								if cur_path_cltv_deltas.iter().sum::<u32>()
+									.saturating_add(next_cltv_expiry_delta) <= observed_cltv_expiry_delta {
+									let mut new_path_cltv_deltas = cur_path_cltv_deltas.clone();
+									new_path_cltv_deltas.push(next_cltv_expiry_delta);
+									candidates.push_back((*next_id, new_path_cltv_deltas));
 								}
 							}
 						}
@@ -5398,7 +5389,7 @@ mod tests {
 		let usage = ChannelUsage {
 			amount_msat: 0,
 			inflight_htlc_msat: 0,
-			effective_capacity: EffectiveCapacity::Total { capacity_msat: 1_024_000, htlc_maximum_msat: Some(1_000) },
+			effective_capacity: EffectiveCapacity::Total { capacity_msat: 1_024_000, htlc_maximum_msat: 1_000 },
 		};
 		scorer.set_manual_penalty(&NodeId::from_pubkey(&nodes[3]), 123);
 		scorer.set_manual_penalty(&NodeId::from_pubkey(&nodes[4]), 456);
