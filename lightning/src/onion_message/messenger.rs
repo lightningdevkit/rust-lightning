@@ -154,6 +154,15 @@ pub enum SendError {
 	InvalidMessage,
 	/// Our next-hop peer's buffer was full or our total outbound buffer was full.
 	BufferFull,
+	/// Failed to retrieve our node id from the provided [`KeysInterface`].
+	///
+	/// [`KeysInterface`]: crate::chain::keysinterface::KeysInterface
+	GetNodeIdFailed,
+	/// We attempted to send to a blinded route where we are the introduction node, and failed to
+	/// advance the blinded route to make the second hop the new introduction node. Either
+	/// [`KeysInterface::ecdh`] failed, we failed to tweak the current blinding point to get the
+	/// new blinding point, or we were attempting to send to ourselves.
+	BlindedRouteAdvanceFailed,
 }
 
 /// Handler for custom onion messages. If you are using [`SimpleArcOnionMessenger`],
@@ -198,7 +207,7 @@ impl<Signer: Sign, K: Deref, L: Deref, CMH: Deref> OnionMessenger<Signer, K, L, 
 
 	/// Send an onion message with contents `message` to `destination`, routing it through `intermediate_nodes`.
 	/// See [`OnionMessenger`] for example usage.
-	pub fn send_onion_message<T: CustomOnionMessageContents>(&self, intermediate_nodes: &[PublicKey], destination: Destination, message: OnionMessageContents<T>, reply_path: Option<BlindedRoute>) -> Result<(), SendError> {
+	pub fn send_onion_message<T: CustomOnionMessageContents>(&self, intermediate_nodes: &[PublicKey], mut destination: Destination, message: OnionMessageContents<T>, reply_path: Option<BlindedRoute>) -> Result<(), SendError> {
 		if let Destination::BlindedRoute(BlindedRoute { ref blinded_hops, .. }) = destination {
 			if blinded_hops.len() < 2 {
 				return Err(SendError::TooFewBlindedHops);
@@ -206,6 +215,19 @@ impl<Signer: Sign, K: Deref, L: Deref, CMH: Deref> OnionMessenger<Signer, K, L, 
 		}
 		let OnionMessageContents::Custom(ref msg) = message;
 		if msg.tlv_type() < 64 { return Err(SendError::InvalidMessage) }
+
+		// If we are sending straight to a blinded route and we are the introduction node, we need to
+		// advance the blinded route by 1 hop so the second hop is the new introduction node.
+		if intermediate_nodes.len() == 0 {
+			if let Destination::BlindedRoute(ref mut blinded_route) = destination {
+				let our_node_id = self.keys_manager.get_node_id(Recipient::Node)
+					.map_err(|()| SendError::GetNodeIdFailed)?;
+				if blinded_route.introduction_node_id == our_node_id {
+					blinded_route.advance_by_one(&self.keys_manager, &self.secp_ctx)
+						.map_err(|()| SendError::BlindedRouteAdvanceFailed)?;
+				}
+			}
+		}
 
 		let blinding_secret_bytes = self.keys_manager.get_secure_random_bytes();
 		let blinding_secret = SecretKey::from_slice(&blinding_secret_bytes[..]).expect("RNG is busted");
@@ -488,12 +510,8 @@ fn packet_payloads_and_keys<T: CustomOnionMessageContents, S: secp256k1::Signing
 					next_blinding_override: Some(blinding_pt),
 				})), control_tlvs_ss));
 			}
-			if let Some(encrypted_payload) = enc_payload_opt {
-				payloads.push((Payload::Forward(ForwardControlTlvs::Blinded(encrypted_payload)),
-					control_tlvs_ss));
-			} else { debug_assert!(false); }
-			blinded_path_idx += 1;
-		} else if blinded_path_idx < num_blinded_hops - 1 && enc_payload_opt.is_some() {
+		}
+		if blinded_path_idx < num_blinded_hops.saturating_sub(1) && enc_payload_opt.is_some() {
 			payloads.push((Payload::Forward(ForwardControlTlvs::Blinded(enc_payload_opt.unwrap())),
 				control_tlvs_ss));
 			blinded_path_idx += 1;

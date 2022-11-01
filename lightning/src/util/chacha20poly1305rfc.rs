@@ -228,7 +228,6 @@ impl<'a, T: Writeable> Writeable for ChaChaPolyWriteAdapter<'a, T> {
 /// Enables the use of the serialization macros for objects that need to be simultaneously decrypted and
 /// deserialized. This allows us to avoid an intermediate Vec allocation.
 pub(crate) struct ChaChaPolyReadAdapter<R: Readable> {
-	#[allow(unused)] // This will be used soon for onion messages
 	pub readable: R,
 }
 

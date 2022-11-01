@@ -168,6 +168,26 @@ fn too_big_packet_error() {
 }
 
 #[test]
+fn we_are_intro_node() {
+	// If we are sending straight to a blinded route and we are the introduction node, we need to
+	// advance the blinded route by 1 hop so the second hop is the new introduction node.
+	let mut nodes = create_nodes(3);
+	let test_msg = TestCustomMessage {};
+
+	let secp_ctx = Secp256k1::new();
+	let blinded_route = BlindedRoute::new(&[nodes[0].get_node_pk(), nodes[1].get_node_pk(), nodes[2].get_node_pk()], &*nodes[2].keys_manager, &secp_ctx).unwrap();
+
+	nodes[0].messenger.send_onion_message(&[], Destination::BlindedRoute(blinded_route), OnionMessageContents::Custom(test_msg.clone()), None).unwrap();
+	pass_along_path(&nodes, None);
+
+	// Try with a two-hop blinded route where we are the introduction node.
+	let blinded_route = BlindedRoute::new(&[nodes[0].get_node_pk(), nodes[1].get_node_pk()], &*nodes[1].keys_manager, &secp_ctx).unwrap();
+	nodes[0].messenger.send_onion_message(&[], Destination::BlindedRoute(blinded_route), OnionMessageContents::Custom(test_msg), None).unwrap();
+	nodes.remove(2);
+	pass_along_path(&nodes, None);
+}
+
+#[test]
 fn invalid_blinded_route_error() {
 	// Make sure we error as expected if a provided blinded route has 0 or 1 hops.
 	let nodes = create_nodes(3);
