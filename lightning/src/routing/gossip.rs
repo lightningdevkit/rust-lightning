@@ -2532,9 +2532,14 @@ mod tests {
 		assert!(network_graph.update_channel_from_announcement(&valid_channel_announcement, &chain_source).is_ok());
 		assert!(network_graph.read_only().channels().get(&short_channel_id).is_some());
 
+		// Submit two channel updates for each channel direction (update.flags bit).
 		let valid_channel_update = get_signed_channel_update(|_| {}, node_1_privkey, &secp_ctx);
 		assert!(gossip_sync.handle_channel_update(&valid_channel_update).is_ok());
 		assert!(network_graph.read_only().channels().get(&short_channel_id).unwrap().one_to_two.is_some());
+
+		let valid_channel_update_2 = get_signed_channel_update(|update| {update.flags |=1;}, node_2_privkey, &secp_ctx);
+		gossip_sync.handle_channel_update(&valid_channel_update_2).unwrap();
+		assert!(network_graph.read_only().channels().get(&short_channel_id).unwrap().two_to_one.is_some());
 
 		network_graph.remove_stale_channels_and_tracking_with_time(100 + STALE_CHANNEL_UPDATE_AGE_LIMIT_SECS);
 		assert_eq!(network_graph.read_only().channels().len(), 1);
