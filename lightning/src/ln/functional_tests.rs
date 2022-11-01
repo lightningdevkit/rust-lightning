@@ -558,6 +558,7 @@ fn do_test_sanity_on_in_flight_opens(steps: u8) {
 	confirm_transaction_at(&nodes[0], &tx, 2);
 	connect_blocks(&nodes[0], CHAN_CONFIRM_DEPTH);
 	create_chan_between_nodes_with_value_confirm_second(&nodes[1], &nodes[0]);
+	expect_channel_ready_event(&nodes[0], &nodes[1].node.get_our_node_id());
 }
 
 #[test]
@@ -3711,11 +3712,23 @@ fn do_test_drop_messages_peer_disconnect(messages_delivered: u8, simulate_broken
 	}
 
 	let events_1 = nodes[1].node.get_and_clear_pending_events();
-	assert_eq!(events_1.len(), 1);
-	match events_1[0] {
-		Event::PendingHTLCsForwardable { .. } => { },
-		_ => panic!("Unexpected event"),
-	};
+	if messages_delivered == 0 {
+		assert_eq!(events_1.len(), 2);
+		match events_1[0] {
+			Event::ChannelReady { .. } => { },
+			_ => panic!("Unexpected event"),
+		};
+		match events_1[1] {
+			Event::PendingHTLCsForwardable { .. } => { },
+			_ => panic!("Unexpected event"),
+		};
+	} else {
+		assert_eq!(events_1.len(), 1);
+		match events_1[0] {
+			Event::PendingHTLCsForwardable { .. } => { },
+			_ => panic!("Unexpected event"),
+		};
+	}
 
 	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
 	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
@@ -3952,6 +3965,8 @@ fn test_funding_peer_disconnect() {
 		},
 		_ => panic!("Unexpected event {:?}", events_6[0]),
 	};
+	expect_channel_ready_event(&nodes[0], &nodes[1].node.get_our_node_id());
+	expect_channel_ready_event(&nodes[1], &nodes[0].node.get_our_node_id());
 
 	// When we deliver nodes[1]'s announcement_signatures to nodes[0], nodes[0] should immediately
 	// broadcast the channel announcement globally, as well as re-send its (now-public)
@@ -9429,6 +9444,7 @@ fn test_duplicate_chan_id() {
 	let (channel_ready, _) = create_chan_between_nodes_with_value_confirm(&nodes[0], &nodes[1], &tx);
 	let (announcement, as_update, bs_update) = create_chan_between_nodes_with_value_b(&nodes[0], &nodes[1], &channel_ready);
 	update_nodes_with_chan_announce(&nodes, 0, 1, &announcement, &as_update, &bs_update);
+
 	send_payment(&nodes[0], &[&nodes[1]], 8000000);
 }
 

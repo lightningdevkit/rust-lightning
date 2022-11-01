@@ -872,6 +872,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 							// looking like probes.
 						},
 						events::Event::PaymentForwarded { .. } if $node == 1 => {},
+						events::Event::ChannelReady { .. } => {},
 						events::Event::PendingHTLCsForwardable { .. } => {
 							nodes[$node].process_pending_htlc_forwards();
 						},

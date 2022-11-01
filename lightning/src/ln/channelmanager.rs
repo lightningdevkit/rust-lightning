@@ -1466,6 +1466,23 @@ macro_rules! send_channel_ready {
 	}
 }
 
+macro_rules! emit_channel_ready_event {
+	($self: expr, $channel: expr) => {
+		if $channel.should_emit_channel_ready_event() {
+			{
+				let mut pending_events = $self.pending_events.lock().unwrap();
+				pending_events.push(events::Event::ChannelReady {
+					channel_id: $channel.channel_id(),
+					user_channel_id: $channel.get_user_id(),
+					counterparty_node_id: $channel.get_counterparty_node_id(),
+					channel_type: $channel.get_channel_type().clone(),
+				});
+			}
+			$channel.set_channel_ready_event_emitted();
+		}
+	}
+}
+
 macro_rules! handle_chan_restoration_locked {
 	($self: ident, $channel_lock: expr, $channel_state: expr, $channel_entry: expr,
 	 $raa: expr, $commitment_update: expr, $order: expr, $chanmon_update: expr,
@@ -1508,6 +1525,8 @@ macro_rules! handle_chan_restoration_locked {
 					msg,
 				});
 			}
+
+			emit_channel_ready_event!($self, $channel_entry.get_mut());
 
 			let funding_broadcastable: Option<Transaction> = $funding_broadcastable; // Force type-checking to resolve
 			if let Some(monitor_update) = chanmon_update {
@@ -4672,6 +4691,9 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 						});
 					}
 				}
+
+				emit_channel_ready_event!(self, chan.get_mut());
+
 				Ok(())
 			},
 			hash_map::Entry::Vacant(_) => Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))
@@ -5829,6 +5851,9 @@ where
 							log_trace!(self.logger, "Sending channel_ready WITHOUT channel_update for {}", log_bytes!(channel.channel_id()));
 						}
 					}
+
+					emit_channel_ready_event!(self, channel);
+
 					if let Some(announcement_sigs) = announcement_sigs {
 						log_trace!(self.logger, "Sending announcement_signatures for channel {}", log_bytes!(channel.channel_id()));
 						pending_msg_events.push(events::MessageSendEvent::SendAnnouncementSignatures {
@@ -7979,6 +8004,24 @@ pub mod bench {
 		match msg_events[1] {
 			MessageSendEvent::SendChannelUpdate { .. } => {},
 			_ => panic!(),
+		}
+
+		let events_a = node_a.get_and_clear_pending_events();
+		assert_eq!(events_a.len(), 1);
+		match events_a[0] {
+			Event::ChannelReady{ ref counterparty_node_id, .. } => {
+				assert_eq!(*counterparty_node_id, node_b.get_our_node_id());
+			},
+			_ => panic!("Unexpected event"),
+		}
+
+		let events_b = node_b.get_and_clear_pending_events();
+		assert_eq!(events_b.len(), 1);
+		match events_b[0] {
+			Event::ChannelReady{ ref counterparty_node_id, .. } => {
+				assert_eq!(*counterparty_node_id, node_a.get_our_node_id());
+			},
+			_ => panic!("Unexpected event"),
 		}
 
 		let dummy_graph = NetworkGraph::new(genesis_hash, &logger_a);

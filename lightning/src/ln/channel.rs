@@ -736,6 +736,9 @@ pub(super) struct Channel<Signer: Sign> {
 	// don't currently support node id aliases and eventually privacy should be provided with
 	// blinded paths instead of simple scid+node_id aliases.
 	outbound_scid_alias: u64,
+
+	// We track whether we already emitted a `ChannelReady` event.
+	channel_ready_event_emitted: bool,
 }
 
 #[cfg(any(test, fuzzing))]
@@ -1062,6 +1065,8 @@ impl<Signer: Sign> Channel<Signer> {
 
 			latest_inbound_scid_alias: None,
 			outbound_scid_alias,
+
+			channel_ready_event_emitted: false,
 
 			#[cfg(any(test, fuzzing))]
 			historical_inbound_htlc_fulfills: HashSet::new(),
@@ -1396,6 +1401,8 @@ impl<Signer: Sign> Channel<Signer> {
 
 			latest_inbound_scid_alias: None,
 			outbound_scid_alias,
+
+			channel_ready_event_emitted: false,
 
 			#[cfg(any(test, fuzzing))]
 			historical_inbound_htlc_fulfills: HashSet::new(),
@@ -4598,6 +4605,16 @@ impl<Signer: Sign> Channel<Signer> {
 		self.prev_config.map(|prev_config| prev_config.0)
 	}
 
+	// Checks whether we should emit a `ChannelReady` event.
+	pub(crate) fn should_emit_channel_ready_event(&mut self) -> bool {
+		self.is_usable() && !self.channel_ready_event_emitted
+	}
+
+	// Remembers that we already emitted a `ChannelReady` event.
+	pub(crate) fn set_channel_ready_event_emitted(&mut self) {
+		self.channel_ready_event_emitted = true;
+	}
+
 	/// Tracks the number of ticks elapsed since the previous [`ChannelConfig`] was updated. Once
 	/// [`EXPIRE_PREV_CONFIG_TICKS`] is reached, the previous config is considered expired and will
 	/// no longer be considered when forwarding HTLCs.
@@ -6230,6 +6247,8 @@ impl<Signer: Sign> Writeable for Channel<Signer> {
 			if self.holder_max_htlc_value_in_flight_msat != Self::get_holder_max_htlc_value_in_flight_msat(self.channel_value_satoshis, &old_max_in_flight_percent_config)
 			{ Some(self.holder_max_htlc_value_in_flight_msat) } else { None };
 
+		let channel_ready_event_emitted = Some(self.channel_ready_event_emitted);
+
 		write_tlv_fields!(writer, {
 			(0, self.announcement_sigs, option),
 			// minimum_depth and counterparty_selected_channel_reserve_satoshis used to have a
@@ -6252,6 +6271,7 @@ impl<Signer: Sign> Writeable for Channel<Signer> {
 			(17, self.announcement_sigs_state, required),
 			(19, self.latest_inbound_scid_alias, option),
 			(21, self.outbound_scid_alias, required),
+			(23, channel_ready_event_emitted, option),
 		});
 
 		Ok(())
@@ -6509,6 +6529,7 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<(&'a K, u32)> for Channel<Signer>
 		let mut announcement_sigs_state = Some(AnnouncementSigsState::NotSent);
 		let mut latest_inbound_scid_alias = None;
 		let mut outbound_scid_alias = None;
+		let mut channel_ready_event_emitted = None;
 
 		read_tlv_fields!(reader, {
 			(0, announcement_sigs, option),
@@ -6526,6 +6547,7 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<(&'a K, u32)> for Channel<Signer>
 			(17, announcement_sigs_state, option),
 			(19, latest_inbound_scid_alias, option),
 			(21, outbound_scid_alias, option),
+			(23, channel_ready_event_emitted, option),
 		});
 
 		if let Some(preimages) = preimages_opt {
@@ -6665,6 +6687,8 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<(&'a K, u32)> for Channel<Signer>
 			latest_inbound_scid_alias,
 			// Later in the ChannelManager deserialization phase we scan for channels and assign scid aliases if its missing
 			outbound_scid_alias: outbound_scid_alias.unwrap_or(0),
+
+			channel_ready_event_emitted: channel_ready_event_emitted.unwrap_or(true),
 
 			#[cfg(any(test, fuzzing))]
 			historical_inbound_htlc_fulfills,

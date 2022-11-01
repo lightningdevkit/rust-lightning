@@ -741,6 +741,9 @@ pub fn open_zero_conf_channel<'a, 'b, 'c, 'd>(initiator: &'a Node<'b, 'c, 'd>, r
 	assert_eq!(initiator.node.list_usable_channels().len(), initiator_channels + 1);
 	assert_eq!(receiver.node.list_usable_channels().len(), receiver_channels + 1);
 
+	expect_channel_ready_event(&initiator, &receiver.node.get_our_node_id());
+	expect_channel_ready_event(&receiver, &initiator.node.get_our_node_id());
+
 	(tx, as_channel_ready.channel_id)
 }
 
@@ -794,6 +797,7 @@ pub fn create_chan_between_nodes_with_value_confirm<'a, 'b, 'c, 'd>(node_a: &'a 
 	create_chan_between_nodes_with_value_confirm_first(node_a, node_b, tx, conf_height);
 	confirm_transaction_at(node_a, tx, conf_height);
 	connect_blocks(node_a, CHAN_CONFIRM_DEPTH - 1);
+	expect_channel_ready_event(&node_a, &node_b.node.get_our_node_id());
 	create_chan_between_nodes_with_value_confirm_second(node_b, node_a)
 }
 
@@ -832,6 +836,7 @@ pub fn create_chan_between_nodes_with_value_b<'a, 'b, 'c>(node_a: &Node<'a, 'b, 
 
 	*node_a.network_chan_count.borrow_mut() += 1;
 
+	expect_channel_ready_event(&node_b, &node_a.node.get_our_node_id());
 	((*announcement).clone(), (*as_update).clone(), (*bs_update).clone())
 }
 
@@ -870,8 +875,10 @@ pub fn create_unannounced_chan_between_nodes_with_value<'a, 'b, 'c, 'd>(nodes: &
 	connect_blocks(&nodes[b], CHAN_CONFIRM_DEPTH - 1);
 	let as_channel_ready = get_event_msg!(nodes[a], MessageSendEvent::SendChannelReady, nodes[b].node.get_our_node_id());
 	nodes[a].node.handle_channel_ready(&nodes[b].node.get_our_node_id(), &get_event_msg!(nodes[b], MessageSendEvent::SendChannelReady, nodes[a].node.get_our_node_id()));
+	expect_channel_ready_event(&nodes[a], &nodes[b].node.get_our_node_id());
 	let as_update = get_event_msg!(nodes[a], MessageSendEvent::SendChannelUpdate, nodes[b].node.get_our_node_id());
 	nodes[b].node.handle_channel_ready(&nodes[a].node.get_our_node_id(), &as_channel_ready);
+	expect_channel_ready_event(&nodes[b], &nodes[a].node.get_our_node_id());
 	let bs_update = get_event_msg!(nodes[b], MessageSendEvent::SendChannelUpdate, nodes[a].node.get_our_node_id());
 
 	nodes[a].node.handle_channel_update(&nodes[b].node.get_our_node_id(), &bs_update);
@@ -1502,6 +1509,19 @@ macro_rules! expect_payment_forwarded {
 		}
 	}
 }
+
+#[cfg(any(test, feature = "_bench_unstable", feature = "_test_utils"))]
+pub fn expect_channel_ready_event<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, expected_counterparty_node_id: &PublicKey) {
+	let events = node.node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	match events[0] {
+		crate::util::events::Event::ChannelReady{ ref counterparty_node_id, .. } => {
+			assert_eq!(*expected_counterparty_node_id, *counterparty_node_id);
+		},
+		_ => panic!("Unexpected event"),
+	}
+}
+
 
 pub struct PaymentFailedConditions<'a> {
 	pub(crate) expected_htlc_error_data: Option<(u16, &'a [u8])>,

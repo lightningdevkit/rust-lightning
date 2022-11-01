@@ -23,7 +23,7 @@ use crate::ln::msgs;
 use crate::ln::msgs::DecodeError;
 use crate::ln::{PaymentPreimage, PaymentHash, PaymentSecret};
 use crate::routing::gossip::NetworkUpdate;
-use crate::util::ser::{BigSize, FixedLengthReader, Writeable, Writer, MaybeReadable, Readable, VecReadWrapper, VecWriteWrapper};
+use crate::util::ser::{BigSize, FixedLengthReader, Writeable, Writer, MaybeReadable, Readable, VecReadWrapper, VecWriteWrapper, OptionDeserWrapper};
 use crate::routing::router::{RouteHop, RouteParameters};
 
 use bitcoin::{PackedLockTime, Transaction, OutPoint};
@@ -594,6 +594,27 @@ pub enum Event {
 		/// transaction.
 		claim_from_onchain_tx: bool,
 	},
+	/// Used to indicate that a channel with the given `channel_id` is ready to
+	/// be used. This event is emitted either when the funding transaction has been confirmed
+	/// on-chain, or, in case of a 0conf channel, when both parties have confirmed the channel
+	/// establishment.
+	ChannelReady {
+		/// The channel_id of the channel that is ready.
+		channel_id: [u8; 32],
+		/// The `user_channel_id` value passed in to [`ChannelManager::create_channel`] for outbound
+		/// channels, or to [`ChannelManager::accept_inbound_channel`] for inbound channels if
+		/// [`UserConfig::manually_accept_inbound_channels`] config flag is set to true. Otherwise
+		/// `user_channel_id` will be 0 for an inbound channel.
+		///
+		/// [`ChannelManager::create_channel`]: crate::ln::channelmanager::ChannelManager::create_channel
+		/// [`ChannelManager::accept_inbound_channel`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel
+		/// [`UserConfig::manually_accept_inbound_channels`]: crate::util::config::UserConfig::manually_accept_inbound_channels
+		user_channel_id: u64,
+		/// The node_id of the channel counterparty.
+		counterparty_node_id: PublicKey,
+		/// The features that this channel will operate with.
+		channel_type: ChannelTypeFeatures,
+	},
 	/// Used to indicate that a previously opened channel with the given `channel_id` is in the
 	/// process of closure.
 	ChannelClosed  {
@@ -858,6 +879,15 @@ impl Writeable for Event {
 					BumpTransactionEvent::ChannelClose { .. } => {}
 				}
 			}
+			&Event::ChannelReady { ref channel_id, ref user_channel_id, ref counterparty_node_id, ref channel_type } => {
+				29u8.write(writer)?;
+				write_tlv_fields!(writer, {
+					(0, channel_id, required),
+					(2, user_channel_id, required),
+					(4, counterparty_node_id, required),
+					(6, channel_type, required),
+				});
+			},
 			// Note that, going forward, all new events must only write data inside of
 			// `write_tlv_fields`. Versions 0.0.101+ will ignore odd-numbered events that write
 			// data via `write_tlv_fields`.
@@ -1135,6 +1165,29 @@ impl MaybeReadable for Event {
 						// were simply missing the field.
 						Ok(None)
 					}
+				};
+				f()
+			},
+			27u8 => Ok(None),
+			29u8 => {
+				let f = || {
+					let mut channel_id = [0; 32];
+					let mut user_channel_id: u64 = 0;
+					let mut counterparty_node_id = OptionDeserWrapper(None);
+					let mut channel_type = OptionDeserWrapper(None);
+					read_tlv_fields!(reader, {
+						(0, channel_id, required),
+						(2, user_channel_id, required),
+						(4, counterparty_node_id, required),
+						(6, channel_type, required),
+					});
+
+					Ok(Some(Event::ChannelReady {
+						channel_id,
+						user_channel_id,
+						counterparty_node_id: counterparty_node_id.0.unwrap(),
+						channel_type: channel_type.0.unwrap()
+					}))
 				};
 				f()
 			},
