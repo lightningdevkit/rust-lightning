@@ -529,6 +529,17 @@ mod tests {
 		fn handle_update_fee(&self, _their_node_id: &PublicKey, _msg: &UpdateFee) {}
 		fn handle_announcement_signatures(&self, _their_node_id: &PublicKey, _msg: &AnnouncementSignatures) {}
 		fn handle_channel_update(&self, _their_node_id: &PublicKey, _msg: &ChannelUpdate) {}
+		fn handle_open_channel_v2(&self, _their_node_id: &PublicKey, _msg: &OpenChannelV2) {}
+		fn handle_accept_channel_v2(&self, _their_node_id: &PublicKey, _msg: &AcceptChannelV2) {}
+		fn handle_tx_add_input(&self, _their_node_id: &PublicKey, _msg: &TxAddInput) {}
+		fn handle_tx_add_output(&self, _their_node_id: &PublicKey, _msg: &TxAddOutput) {}
+		fn handle_tx_remove_input(&self, _their_node_id: &PublicKey, _msg: &TxRemoveInput) {}
+		fn handle_tx_remove_output(&self, _their_node_id: &PublicKey, _msg: &TxRemoveOutput) {}
+		fn handle_tx_complete(&self, _their_node_id: &PublicKey, _msg: &TxComplete) {}
+		fn handle_tx_signatures(&self, _their_node_id: &PublicKey, _msg: &TxSignatures) {}
+		fn handle_tx_init_rbf(&self, _their_node_id: &PublicKey, _msg: &TxInitRbf) {}
+		fn handle_tx_ack_rbf(&self, _their_node_id: &PublicKey, _msg: &TxAckRbf) {}
+		fn handle_tx_abort(&self, _their_node_id: &PublicKey, _msg: &TxAbort) {}
 		fn peer_disconnected(&self, their_node_id: &PublicKey) {
 			if *their_node_id == self.expected_pubkey {
 				self.disconnected_flag.store(true, Ordering::SeqCst);

@@ -1237,8 +1237,12 @@ pub trait ChannelMessageHandler : MessageSendEventsProvider {
 	// Channel init:
 	/// Handle an incoming `open_channel` message from the given peer.
 	fn handle_open_channel(&self, their_node_id: &PublicKey, msg: &OpenChannel);
+	/// Handle an incoming `open_channel2` message from the given peer.
+	fn handle_open_channel_v2(&self, their_node_id: &PublicKey, msg: &OpenChannelV2);
 	/// Handle an incoming `accept_channel` message from the given peer.
 	fn handle_accept_channel(&self, their_node_id: &PublicKey, msg: &AcceptChannel);
+	/// Handle an incoming `accept_channel2` message from the given peer.
+	fn handle_accept_channel_v2(&self, their_node_id: &PublicKey, msg: &AcceptChannelV2);
 	/// Handle an incoming `funding_created` message from the given peer.
 	fn handle_funding_created(&self, their_node_id: &PublicKey, msg: &FundingCreated);
 	/// Handle an incoming `funding_signed` message from the given peer.
@@ -1251,6 +1255,26 @@ pub trait ChannelMessageHandler : MessageSendEventsProvider {
 	fn handle_shutdown(&self, their_node_id: &PublicKey, msg: &Shutdown);
 	/// Handle an incoming `closing_signed` message from the given peer.
 	fn handle_closing_signed(&self, their_node_id: &PublicKey, msg: &ClosingSigned);
+
+	// Interactive channel construction
+	/// Handle an incoming `tx_add_input message` from the given peer.
+	fn handle_tx_add_input(&self, their_node_id: &PublicKey, msg: &TxAddInput);
+	/// Handle an incoming `tx_add_output` message from the given peer.
+	fn handle_tx_add_output(&self, their_node_id: &PublicKey, msg: &TxAddOutput);
+	/// Handle an incoming `tx_remove_input` message from the given peer.
+	fn handle_tx_remove_input(&self, their_node_id: &PublicKey, msg: &TxRemoveInput);
+	/// Handle an incoming `tx_remove_output` message from the given peer.
+	fn handle_tx_remove_output(&self, their_node_id: &PublicKey, msg: &TxRemoveOutput);
+	/// Handle an incoming `tx_complete message` from the given peer.
+	fn handle_tx_complete(&self, their_node_id: &PublicKey, msg: &TxComplete);
+	/// Handle an incoming `tx_signatures` message from the given peer.
+	fn handle_tx_signatures(&self, their_node_id: &PublicKey, msg: &TxSignatures);
+	/// Handle an incoming `tx_init_rbf` message from the given peer.
+	fn handle_tx_init_rbf(&self, their_node_id: &PublicKey, msg: &TxInitRbf);
+	/// Handle an incoming `tx_ack_rbf` message from the given peer.
+	fn handle_tx_ack_rbf(&self, their_node_id: &PublicKey, msg: &TxAckRbf);
+	/// Handle an incoming `tx_abort message` from the given peer.
+	fn handle_tx_abort(&self, their_node_id: &PublicKey, msg: &TxAbort);
 
 	// HTLC handling:
 	/// Handle an incoming `update_add_htlc` message from the given peer.

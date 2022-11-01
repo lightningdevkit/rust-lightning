@@ -252,7 +252,52 @@ impl ChannelMessageHandler for ErroringMessageHandler {
 		features.set_zero_conf_optional();
 		features
 	}
+
+	fn handle_open_channel_v2(&self, their_node_id: &PublicKey, msg: &msgs::OpenChannelV2) {
+		ErroringMessageHandler::push_error(self, their_node_id, msg.temporary_channel_id);
+	}
+
+	fn handle_accept_channel_v2(&self, their_node_id: &PublicKey, msg: &msgs::AcceptChannelV2) {
+		ErroringMessageHandler::push_error(self, their_node_id, msg.temporary_channel_id);
+	}
+
+	fn handle_tx_add_input(&self, their_node_id: &PublicKey, msg: &msgs::TxAddInput) {
+		ErroringMessageHandler::push_error(self, their_node_id, msg.channel_id);
+	}
+
+	fn handle_tx_add_output(&self, their_node_id: &PublicKey, msg: &msgs::TxAddOutput) {
+		ErroringMessageHandler::push_error(self, their_node_id, msg.channel_id);
+	}
+
+	fn handle_tx_remove_input(&self, their_node_id: &PublicKey, msg: &msgs::TxRemoveInput) {
+		ErroringMessageHandler::push_error(self, their_node_id, msg.channel_id);
+	}
+
+	fn handle_tx_remove_output(&self, their_node_id: &PublicKey, msg: &msgs::TxRemoveOutput) {
+		ErroringMessageHandler::push_error(self, their_node_id, msg.channel_id);
+	}
+
+	fn handle_tx_complete(&self, their_node_id: &PublicKey, msg: &msgs::TxComplete) {
+		ErroringMessageHandler::push_error(self, their_node_id, msg.channel_id);
+	}
+
+	fn handle_tx_signatures(&self, their_node_id: &PublicKey, msg: &msgs::TxSignatures) {
+		ErroringMessageHandler::push_error(self, their_node_id, msg.channel_id);
+	}
+
+	fn handle_tx_init_rbf(&self, their_node_id: &PublicKey, msg: &msgs::TxInitRbf) {
+		ErroringMessageHandler::push_error(self, their_node_id, msg.channel_id);
+	}
+
+	fn handle_tx_ack_rbf(&self, their_node_id: &PublicKey, msg: &msgs::TxAckRbf) {
+		ErroringMessageHandler::push_error(self, their_node_id, msg.channel_id);
+	}
+
+	fn handle_tx_abort(&self, their_node_id: &PublicKey, msg: &msgs::TxAbort) {
+		ErroringMessageHandler::push_error(self, their_node_id, msg.channel_id);
+	}
 }
+
 impl Deref for ErroringMessageHandler {
 	type Target = ErroringMessageHandler;
 	fn deref(&self) -> &Self { self }
@@ -1497,8 +1542,14 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 			wire::Message::OpenChannel(msg) => {
 				self.message_handler.chan_handler.handle_open_channel(&their_node_id, &msg);
 			},
+			wire::Message::OpenChannelV2(msg) => {
+				self.message_handler.chan_handler.handle_open_channel_v2(&their_node_id, &msg);
+			},
 			wire::Message::AcceptChannel(msg) => {
 				self.message_handler.chan_handler.handle_accept_channel(&their_node_id, &msg);
+			},
+			wire::Message::AcceptChannelV2(msg) => {
+				self.message_handler.chan_handler.handle_accept_channel_v2(&their_node_id, &msg);
 			},
 
 			wire::Message::FundingCreated(msg) => {
@@ -1510,6 +1561,35 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 			wire::Message::ChannelReady(msg) => {
 				self.message_handler.chan_handler.handle_channel_ready(&their_node_id, &msg);
 			},
+
+			// Interactive transaction construction messages:
+			wire::Message::TxAddInput(msg) => {
+				self.message_handler.chan_handler.handle_tx_add_input(&their_node_id, &msg);
+			},
+			wire::Message::TxAddOutput(msg) => {
+				self.message_handler.chan_handler.handle_tx_add_output(&their_node_id, &msg);
+			},
+			wire::Message::TxRemoveInput(msg) => {
+				self.message_handler.chan_handler.handle_tx_remove_input(&their_node_id, &msg);
+			},
+			wire::Message::TxRemoveOutput(msg) => {
+				self.message_handler.chan_handler.handle_tx_remove_output(&their_node_id, &msg);
+			},
+			wire::Message::TxComplete(msg) => {
+				self.message_handler.chan_handler.handle_tx_complete(&their_node_id, &msg);
+			},
+			wire::Message::TxSignatures(msg) => {
+				self.message_handler.chan_handler.handle_tx_signatures(&their_node_id, &msg);
+			},
+			wire::Message::TxInitRbf(msg) => {
+				self.message_handler.chan_handler.handle_tx_init_rbf(&their_node_id, &msg);
+			},
+			wire::Message::TxAckRbf(msg) => {
+				self.message_handler.chan_handler.handle_tx_ack_rbf(&their_node_id, &msg);
+			},
+			wire::Message::TxAbort(msg) => {
+				self.message_handler.chan_handler.handle_tx_abort(&their_node_id, &msg);
+			}
 
 			wire::Message::Shutdown(msg) => {
 				self.message_handler.chan_handler.handle_shutdown(&their_node_id, &msg);
@@ -1776,8 +1856,20 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 								log_bytes!(msg.temporary_channel_id));
 						self.enqueue_message(&mut *get_peer_for_forwarding!(node_id), msg);
 					},
+					MessageSendEvent::SendAcceptChannelV2 { ref node_id, ref msg } => {
+						log_debug!(self.logger, "Handling SendAcceptChannelV2 event in peer_handler for node {} for channel {}",
+								log_pubkey!(node_id),
+								log_bytes!(msg.temporary_channel_id));
+						self.enqueue_message(&mut *get_peer_for_forwarding!(node_id), msg);
+					},
 					MessageSendEvent::SendOpenChannel { ref node_id, ref msg } => {
 						log_debug!(self.logger, "Handling SendOpenChannel event in peer_handler for node {} for channel {}",
+								log_pubkey!(node_id),
+								log_bytes!(msg.temporary_channel_id));
+						self.enqueue_message(&mut *get_peer_for_forwarding!(node_id), msg);
+					},
+					MessageSendEvent::SendOpenChannelV2 { ref node_id, ref msg } => {
+						log_debug!(self.logger, "Handling SendOpenChannelV2 event in peer_handler for node {} for channel {}",
 								log_pubkey!(node_id),
 								log_bytes!(msg.temporary_channel_id));
 						self.enqueue_message(&mut *get_peer_for_forwarding!(node_id), msg);
@@ -1799,6 +1891,60 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 					},
 					MessageSendEvent::SendChannelReady { ref node_id, ref msg } => {
 						log_debug!(self.logger, "Handling SendChannelReady event in peer_handler for node {} for channel {}",
+								log_pubkey!(node_id),
+								log_bytes!(msg.channel_id));
+						self.enqueue_message(&mut *get_peer_for_forwarding!(node_id), msg);
+					},
+					MessageSendEvent::SendTxAddInput { ref node_id, ref msg } => {
+						log_debug!(self.logger, "Handling SendTxAddInput event in peer_handler for node {} for channel {}",
+								log_pubkey!(node_id),
+								log_bytes!(msg.channel_id));
+						self.enqueue_message(&mut *get_peer_for_forwarding!(node_id), msg);
+					},
+					MessageSendEvent::SendTxAddOutput { ref node_id, ref msg } => {
+						log_debug!(self.logger, "Handling SendTxAddOutput event in peer_handler for node {} for channel {}",
+								log_pubkey!(node_id),
+								log_bytes!(msg.channel_id));
+						self.enqueue_message(&mut *get_peer_for_forwarding!(node_id), msg);
+					},
+					MessageSendEvent::SendTxRemoveInput { ref node_id, ref msg } => {
+						log_debug!(self.logger, "Handling SendTxRemoveInput event in peer_handler for node {} for channel {}",
+								log_pubkey!(node_id),
+								log_bytes!(msg.channel_id));
+						self.enqueue_message(&mut *get_peer_for_forwarding!(node_id), msg);
+					},
+					MessageSendEvent::SendTxRemoveOutput { ref node_id, ref msg } => {
+						log_debug!(self.logger, "Handling SendTxRemoveOutput event in peer_handler for node {} for channel {}",
+								log_pubkey!(node_id),
+								log_bytes!(msg.channel_id));
+						self.enqueue_message(&mut *get_peer_for_forwarding!(node_id), msg);
+					},
+					MessageSendEvent::SendTxComplete { ref node_id, ref msg } => {
+						log_debug!(self.logger, "Handling SendTxComplete event in peer_handler for node {} for channel {}",
+								log_pubkey!(node_id),
+								log_bytes!(msg.channel_id));
+						self.enqueue_message(&mut *get_peer_for_forwarding!(node_id), msg);
+					},
+					MessageSendEvent::SendTxSignatures { ref node_id, ref msg } => {
+						log_debug!(self.logger, "Handling SendTxSignatures event in peer_handler for node {} for channel {}",
+								log_pubkey!(node_id),
+								log_bytes!(msg.channel_id));
+						self.enqueue_message(&mut *get_peer_for_forwarding!(node_id), msg);
+					},
+					MessageSendEvent::SendTxInitRbf { ref node_id, ref msg } => {
+						log_debug!(self.logger, "Handling SendTxInitRbf event in peer_handler for node {} for channel {}",
+								log_pubkey!(node_id),
+								log_bytes!(msg.channel_id));
+						self.enqueue_message(&mut *get_peer_for_forwarding!(node_id), msg);
+					},
+					MessageSendEvent::SendTxAckRbf { ref node_id, ref msg } => {
+						log_debug!(self.logger, "Handling SendTxAckRbf event in peer_handler for node {} for channel {}",
+								log_pubkey!(node_id),
+								log_bytes!(msg.channel_id));
+						self.enqueue_message(&mut *get_peer_for_forwarding!(node_id), msg);
+					},
+					MessageSendEvent::SendTxAbort { ref node_id, ref msg } => {
+						log_debug!(self.logger, "Handling SendTxAbort event in peer_handler for node {} for channel {}",
 								log_pubkey!(node_id),
 								log_bytes!(msg.channel_id));
 						self.enqueue_message(&mut *get_peer_for_forwarding!(node_id), msg);
