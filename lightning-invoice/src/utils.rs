@@ -602,18 +602,16 @@ where
 	}
 
 	fn send_payment(
-		&self, route: &Route, payment_hash: PaymentHash, payment_secret: &Option<PaymentSecret>
-	) -> Result<PaymentId, PaymentSendFailure> {
-		let payment_id = PaymentId(payment_hash.0);
-		self.send_payment(route, payment_hash, payment_secret, payment_id).map(|()| payment_id)
+		&self, route: &Route, payment_hash: PaymentHash, payment_secret: &Option<PaymentSecret>,
+		payment_id: PaymentId
+	) -> Result<(), PaymentSendFailure> {
+		self.send_payment(route, payment_hash, payment_secret, payment_id)
 	}
 
 	fn send_spontaneous_payment(
-		&self, route: &Route, payment_preimage: PaymentPreimage,
-	) -> Result<PaymentId, PaymentSendFailure> {
-		let payment_id = PaymentId(sha256::Hash::hash(&payment_preimage.0).into_inner());
-		self.send_spontaneous_payment(route, Some(payment_preimage), payment_id)
-			.map(|_| payment_id)
+		&self, route: &Route, payment_preimage: PaymentPreimage, payment_id: PaymentId,
+	) -> Result<(), PaymentSendFailure> {
+		self.send_spontaneous_payment(route, Some(payment_preimage), payment_id).map(|_| ())
 	}
 
 	fn retry_payment(

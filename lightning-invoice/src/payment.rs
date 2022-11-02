@@ -59,11 +59,12 @@
 //! #     fn node_id(&self) -> PublicKey { unimplemented!() }
 //! #     fn first_hops(&self) -> Vec<ChannelDetails> { unimplemented!() }
 //! #     fn send_payment(
-//! #         &self, route: &Route, payment_hash: PaymentHash, payment_secret: &Option<PaymentSecret>
-//! #     ) -> Result<PaymentId, PaymentSendFailure> { unimplemented!() }
+//! #         &self, route: &Route, payment_hash: PaymentHash, payment_secret: &Option<PaymentSecret>,
+//! #         payment_id: PaymentId
+//! #     ) -> Result<(), PaymentSendFailure> { unimplemented!() }
 //! #     fn send_spontaneous_payment(
-//! #         &self, route: &Route, payment_preimage: PaymentPreimage
-//! #     ) -> Result<PaymentId, PaymentSendFailure> { unimplemented!() }
+//! #         &self, route: &Route, payment_preimage: PaymentPreimage, payment_id: PaymentId,
+//! #     ) -> Result<(), PaymentSendFailure> { unimplemented!() }
 //! #     fn retry_payment(
 //! #         &self, route: &Route, payment_id: PaymentId
 //! #     ) -> Result<(), PaymentSendFailure> { unimplemented!() }
@@ -242,6 +243,18 @@ impl<T: Time> Display for PaymentAttempts<T> {
 }
 
 /// A trait defining behavior of an [`Invoice`] payer.
+///
+/// While the behavior of [`InvoicePayer`] provides idempotency of duplicate `send_*payment` calls
+/// with the same [`PaymentHash`], it is up to the `Payer` to provide idempotency across restarts.
+///
+/// [`ChannelManager`] provides idempotency for duplicate payments with the same [`PaymentId`].
+///
+/// In order to trivially ensure idempotency for payments, the default `Payer` implementation
+/// reuses the [`PaymentHash`] bytes as the [`PaymentId`]. Custom implementations wishing to
+/// provide payment idempotency with a different idempotency key (i.e. [`PaymentId`]) should map
+/// the [`Invoice`] or spontaneous payment target pubkey to their own idempotency key.
+///
+/// [`ChannelManager`]: lightning::ln::channelmanager::ChannelManager
 pub trait Payer {
 	/// Returns the payer's node id.
 	fn node_id(&self) -> PublicKey;
@@ -251,13 +264,14 @@ pub trait Payer {
 
 	/// Sends a payment over the Lightning Network using the given [`Route`].
 	fn send_payment(
-		&self, route: &Route, payment_hash: PaymentHash, payment_secret: &Option<PaymentSecret>
-	) -> Result<PaymentId, PaymentSendFailure>;
+		&self, route: &Route, payment_hash: PaymentHash, payment_secret: &Option<PaymentSecret>,
+		payment_id: PaymentId
+	) -> Result<(), PaymentSendFailure>;
 
 	/// Sends a spontaneous payment over the Lightning Network using the given [`Route`].
 	fn send_spontaneous_payment(
-		&self, route: &Route, payment_preimage: PaymentPreimage
-	) -> Result<PaymentId, PaymentSendFailure>;
+		&self, route: &Route, payment_preimage: PaymentPreimage, payment_id: PaymentId
+	) -> Result<(), PaymentSendFailure>;
 
 	/// Retries a failed payment path for the [`PaymentId`] using the given [`Route`].
 	fn retry_payment(&self, route: &Route, payment_id: PaymentId) -> Result<(), PaymentSendFailure>;
@@ -346,36 +360,76 @@ where
 
 	/// Pays the given [`Invoice`], caching it for later use in case a retry is needed.
 	///
-	/// You should ensure that the `invoice.payment_hash()` is unique and the same payment_hash has
-	/// never been paid before. Because [`InvoicePayer`] is stateless no effort is made to do so
-	/// for you.
+	/// [`Invoice::payment_hash`] is used as the [`PaymentId`], which ensures idempotency as long
+	/// as the payment is still pending. Once the payment completes or fails, you must ensure that
+	/// a second payment with the same [`PaymentHash`] is never sent.
+	///
+	/// If you wish to use a different payment idempotency token, see
+	/// [`Self::pay_invoice_with_id`].
 	pub fn pay_invoice(&self, invoice: &Invoice) -> Result<PaymentId, PaymentError> {
+		let payment_id = PaymentId(invoice.payment_hash().into_inner());
+		self.pay_invoice_with_id(invoice, payment_id).map(|()| payment_id)
+	}
+
+	/// Pays the given [`Invoice`] with a custom idempotency key, caching the invoice for later use
+	/// in case a retry is needed.
+	///
+	/// Note that idempotency is only guaranteed as long as the payment is still pending. Once the
+	/// payment completes or fails, no idempotency guarantees are made.
+	///
+	/// You should ensure that the [`Invoice::payment_hash`] is unique and the same [`PaymentHash`]
+	/// has never been paid before.
+	///
+	/// See [`Self::pay_invoice`] for a variant which uses the [`PaymentHash`] for the idempotency
+	/// token.
+	pub fn pay_invoice_with_id(&self, invoice: &Invoice, payment_id: PaymentId) -> Result<(), PaymentError> {
 		if invoice.amount_milli_satoshis().is_none() {
 			Err(PaymentError::Invoice("amount missing"))
 		} else {
-			self.pay_invoice_using_amount(invoice, None)
+			self.pay_invoice_using_amount(invoice, None, payment_id)
 		}
 	}
 
 	/// Pays the given zero-value [`Invoice`] using the given amount, caching it for later use in
 	/// case a retry is needed.
 	///
-	/// You should ensure that the `invoice.payment_hash()` is unique and the same payment_hash has
-	/// never been paid before. Because [`InvoicePayer`] is stateless no effort is made to do so
-	/// for you.
+	/// [`Invoice::payment_hash`] is used as the [`PaymentId`], which ensures idempotency as long
+	/// as the payment is still pending. Once the payment completes or fails, you must ensure that
+	/// a second payment with the same [`PaymentHash`] is never sent.
+	///
+	/// If you wish to use a different payment idempotency token, see
+	/// [`Self::pay_zero_value_invoice_with_id`].
 	pub fn pay_zero_value_invoice(
 		&self, invoice: &Invoice, amount_msats: u64
 	) -> Result<PaymentId, PaymentError> {
+		let payment_id = PaymentId(invoice.payment_hash().into_inner());
+		self.pay_zero_value_invoice_with_id(invoice, amount_msats, payment_id).map(|()| payment_id)
+	}
+
+	/// Pays the given zero-value [`Invoice`] using the given amount and custom idempotency key,
+	/// caching the invoice for later use in case a retry is needed.
+	///
+	/// Note that idempotency is only guaranteed as long as the payment is still pending. Once the
+	/// payment completes or fails, no idempotency guarantees are made.
+	///
+	/// You should ensure that the [`Invoice::payment_hash`] is unique and the same [`PaymentHash`]
+	/// has never been paid before.
+	///
+	/// See [`Self::pay_zero_value_invoice`] for a variant which uses the [`PaymentHash`] for the
+	/// idempotency token.
+	pub fn pay_zero_value_invoice_with_id(
+		&self, invoice: &Invoice, amount_msats: u64, payment_id: PaymentId
+	) -> Result<(), PaymentError> {
 		if invoice.amount_milli_satoshis().is_some() {
 			Err(PaymentError::Invoice("amount unexpected"))
 		} else {
-			self.pay_invoice_using_amount(invoice, Some(amount_msats))
+			self.pay_invoice_using_amount(invoice, Some(amount_msats), payment_id)
 		}
 	}
 
 	fn pay_invoice_using_amount(
-		&self, invoice: &Invoice, amount_msats: Option<u64>
-	) -> Result<PaymentId, PaymentError> {
+		&self, invoice: &Invoice, amount_msats: Option<u64>, payment_id: PaymentId
+	) -> Result<(), PaymentError> {
 		debug_assert!(invoice.amount_milli_satoshis().is_some() ^ amount_msats.is_some());
 
 		let payment_hash = PaymentHash(invoice.payment_hash().clone().into_inner());
@@ -398,7 +452,7 @@ where
 		};
 
 		let send_payment = |route: &Route| {
-			self.payer.send_payment(route, payment_hash, &payment_secret)
+			self.payer.send_payment(route, payment_hash, &payment_secret, payment_id)
 		};
 
 		self.pay_internal(&route_params, payment_hash, send_payment)
@@ -408,13 +462,41 @@ where
 	/// Pays `pubkey` an amount using the hash of the given preimage, caching it for later use in
 	/// case a retry is needed.
 	///
-	/// You should ensure that `payment_preimage` is unique and that its `payment_hash` has never
-	/// been paid before. Because [`InvoicePayer`] is stateless no effort is made to do so for you.
+	/// The hash of the [`PaymentPreimage`] is used as the [`PaymentId`], which ensures idempotency
+	/// as long as the payment is still pending. Once the payment completes or fails, you must
+	/// ensure that a second payment with the same [`PaymentPreimage`] is never sent.
 	pub fn pay_pubkey(
 		&self, pubkey: PublicKey, payment_preimage: PaymentPreimage, amount_msats: u64,
 		final_cltv_expiry_delta: u32
 	) -> Result<PaymentId, PaymentError> {
 		let payment_hash = PaymentHash(Sha256::hash(&payment_preimage.0).into_inner());
+		let payment_id = PaymentId(payment_hash.0);
+		self.do_pay_pubkey(pubkey, payment_preimage, payment_hash, payment_id, amount_msats,
+				final_cltv_expiry_delta)
+			.map(|()| payment_id)
+	}
+
+	/// Pays `pubkey` an amount using the hash of the given preimage and a custom idempotency key,
+	/// caching the invoice for later use in case a retry is needed.
+	///
+	/// Note that idempotency is only guaranteed as long as the payment is still pending. Once the
+	/// payment completes or fails, no idempotency guarantees are made.
+	///
+	/// You should ensure that the [`PaymentPreimage`] is unique and the corresponding
+	/// [`PaymentHash`] has never been paid before.
+	pub fn pay_pubkey_with_id(
+		&self, pubkey: PublicKey, payment_preimage: PaymentPreimage, payment_id: PaymentId,
+		amount_msats: u64, final_cltv_expiry_delta: u32
+	) -> Result<(), PaymentError> {
+		let payment_hash = PaymentHash(Sha256::hash(&payment_preimage.0).into_inner());
+		self.do_pay_pubkey(pubkey, payment_preimage, payment_hash, payment_id, amount_msats,
+				final_cltv_expiry_delta)
+	}
+
+	fn do_pay_pubkey(
+		&self, pubkey: PublicKey, payment_preimage: PaymentPreimage, payment_hash: PaymentHash,
+		payment_id: PaymentId, amount_msats: u64, final_cltv_expiry_delta: u32
+	) -> Result<(), PaymentError> {
 		match self.payment_cache.lock().unwrap().entry(payment_hash) {
 			hash_map::Entry::Occupied(_) => return Err(PaymentError::Invoice("payment pending")),
 			hash_map::Entry::Vacant(entry) => entry.insert(PaymentInfo::new()),
@@ -427,15 +509,15 @@ where
 		};
 
 		let send_payment = |route: &Route| {
-			self.payer.send_spontaneous_payment(route, payment_preimage)
+			self.payer.send_spontaneous_payment(route, payment_preimage, payment_id)
 		};
 		self.pay_internal(&route_params, payment_hash, send_payment)
 			.map_err(|e| { self.payment_cache.lock().unwrap().remove(&payment_hash); e })
 	}
 
-	fn pay_internal<F: FnOnce(&Route) -> Result<PaymentId, PaymentSendFailure> + Copy>(
+	fn pay_internal<F: FnOnce(&Route) -> Result<(), PaymentSendFailure> + Copy>(
 		&self, params: &RouteParameters, payment_hash: PaymentHash, send_payment: F,
-	) -> Result<PaymentId, PaymentError> {
+	) -> Result<(), PaymentError> {
 		#[cfg(feature = "std")] {
 			if has_expired(params) {
 				log_trace!(self.logger, "Invoice expired prior to send for payment {}", log_bytes!(payment_hash.0));
@@ -452,11 +534,11 @@ where
 		).map_err(|e| PaymentError::Routing(e))?;
 
 		match send_payment(&route) {
-			Ok(payment_id) => {
+			Ok(()) => {
 				for path in route.paths {
 					self.process_path_inflight_htlcs(payment_hash, path);
 				}
-				Ok(payment_id)
+				Ok(())
 			},
 			Err(e) => match e {
 				PaymentSendFailure::ParameterError(_) => Err(e),
@@ -491,13 +573,13 @@ where
 						// consider the payment sent, so return `Ok()` here, ignoring any retry
 						// errors.
 						let _ = self.retry_payment(payment_id, payment_hash, &retry_data);
-						Ok(payment_id)
+						Ok(())
 					} else {
 						// This may happen if we send a payment and some paths fail, but
 						// only due to a temporary monitor failure or the like, implying
 						// they're really in-flight, but we haven't sent the initial
 						// HTLC-Add messages yet.
-						Ok(payment_id)
+						Ok(())
 					}
 				},
 			},
@@ -2056,13 +2138,13 @@ mod tests {
 			self
 		}
 
-		fn check_attempts(&self) -> Result<PaymentId, PaymentSendFailure> {
+		fn check_attempts(&self) -> Result<(), PaymentSendFailure> {
 			let mut attempts = self.attempts.borrow_mut();
 			*attempts += 1;
 
 			match self.failing_on_attempt.borrow_mut().remove(&*attempts) {
 				Some(failure) => Err(failure),
-				None => Ok(PaymentId([1; 32])),
+				None => Ok(())
 			}
 		}
 
@@ -2100,15 +2182,15 @@ mod tests {
 
 		fn send_payment(
 			&self, route: &Route, _payment_hash: PaymentHash,
-			_payment_secret: &Option<PaymentSecret>
-		) -> Result<PaymentId, PaymentSendFailure> {
+			_payment_secret: &Option<PaymentSecret>, _payment_id: PaymentId,
+		) -> Result<(), PaymentSendFailure> {
 			self.check_value_msats(Amount::ForInvoice(route.get_total_amount()));
 			self.check_attempts()
 		}
 
 		fn send_spontaneous_payment(
-			&self, route: &Route, _payment_preimage: PaymentPreimage,
-		) -> Result<PaymentId, PaymentSendFailure> {
+			&self, route: &Route, _payment_preimage: PaymentPreimage, _payment_id: PaymentId,
+		) -> Result<(), PaymentSendFailure> {
 			self.check_value_msats(Amount::Spontaneous(route.get_total_amount()));
 			self.check_attempts()
 		}
@@ -2117,7 +2199,7 @@ mod tests {
 			&self, route: &Route, _payment_id: PaymentId
 		) -> Result<(), PaymentSendFailure> {
 			self.check_value_msats(Amount::OnRetry(route.get_total_amount()));
-			self.check_attempts().map(|_| ())
+			self.check_attempts()
 		}
 
 		fn abandon_payment(&self, _payment_id: PaymentId) { }
