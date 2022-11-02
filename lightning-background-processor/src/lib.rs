@@ -202,39 +202,6 @@ fn handle_network_graph_update<L: Deref>(
 	}
 }
 
-/// Decorates an [`EventHandler`] with common functionality provided by standard [`EventHandler`]s.
-struct DecoratingEventHandler<
-	'a,
-	E: EventHandler,
-	PGS: Deref<Target = P2PGossipSync<G, A, L>>,
-	RGS: Deref<Target = RapidGossipSync<G, L>>,
-	G: Deref<Target = NetworkGraph<L>>,
-	A: Deref,
-	L: Deref,
->
-where A::Target: chain::Access, L::Target: Logger {
-	event_handler: E,
-	gossip_sync: &'a GossipSync<PGS, RGS, G, A, L>,
-}
-
-impl<
-	'a,
-	E: EventHandler,
-	PGS: Deref<Target = P2PGossipSync<G, A, L>>,
-	RGS: Deref<Target = RapidGossipSync<G, L>>,
-	G: Deref<Target = NetworkGraph<L>>,
-	A: Deref,
-	L: Deref,
-> EventHandler for DecoratingEventHandler<'a, E, PGS, RGS, G, A, L>
-where A::Target: chain::Access, L::Target: Logger {
-	fn handle_event(&self, event: Event) {
-		if let Some(network_graph) = self.gossip_sync.network_graph() {
-			handle_network_graph_update(network_graph, &event)
-		}
-		self.event_handler.handle_event(event);
-	}
-}
-
 macro_rules! define_run_body {
 	($persister: ident, $chain_monitor: ident, $process_chain_monitor_events: expr,
 	 $channel_manager: ident, $process_channel_manager_events: expr,
@@ -536,9 +503,12 @@ impl BackgroundProcessor {
 		let stop_thread = Arc::new(AtomicBool::new(false));
 		let stop_thread_clone = stop_thread.clone();
 		let handle = thread::spawn(move || -> Result<(), std::io::Error> {
-			let event_handler = DecoratingEventHandler {
-				event_handler,
-				gossip_sync: &gossip_sync,
+			let event_handler = |event| {
+				let network_graph = gossip_sync.network_graph();
+				if let Some(network_graph) = network_graph {
+					handle_network_graph_update(network_graph, &event)
+				}
+				event_handler.handle_event(event);
 			};
 			define_run_body!(persister, chain_monitor, chain_monitor.process_pending_events(&event_handler),
 				channel_manager, channel_manager.process_pending_events(&event_handler),
