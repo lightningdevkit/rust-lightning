@@ -289,6 +289,7 @@ fn check_payment_err(send_err: PaymentSendFailure) {
 		PaymentSendFailure::PartialFailure { results, .. } => {
 			for res in results { if let Err(api_err) = res { check_api_err(api_err); } }
 		},
+		PaymentSendFailure::DuplicatePayment => panic!(),
 	}
 }
 

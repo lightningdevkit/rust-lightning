@@ -1188,16 +1188,25 @@ impl ChannelDetails {
 #[derive(Clone, Debug)]
 pub enum PaymentSendFailure {
 	/// A parameter which was passed to send_payment was invalid, preventing us from attempting to
-	/// send the payment at all. No channel state has been changed or messages sent to peers, and
-	/// once you've changed the parameter at error, you can freely retry the payment in full.
+	/// send the payment at all.
+	///
+	/// You can freely resend the payment in full (with the parameter error fixed).
+	///
+	/// Because the payment failed outright, no payment tracking is done, you do not need to call
+	/// [`ChannelManager::abandon_payment`] and [`ChannelManager::retry_payment`] will *not* work
+	/// for this payment.
 	ParameterError(APIError),
 	/// A parameter in a single path which was passed to send_payment was invalid, preventing us
-	/// from attempting to send the payment at all. No channel state has been changed or messages
-	/// sent to peers, and once you've changed the parameter at error, you can freely retry the
-	/// payment in full.
+	/// from attempting to send the payment at all.
+	///
+	/// You can freely resend the payment in full (with the parameter error fixed).
 	///
 	/// The results here are ordered the same as the paths in the route object which was passed to
 	/// send_payment.
+	///
+	/// Because the payment failed outright, no payment tracking is done, you do not need to call
+	/// [`ChannelManager::abandon_payment`] and [`ChannelManager::retry_payment`] will *not* work
+	/// for this payment.
 	PathParameterError(Vec<Result<(), APIError>>),
 	/// All paths which were attempted failed to send, with no channel state change taking place.
 	/// You can freely resend the payment in full (though you probably want to do so over different
@@ -1207,6 +1216,12 @@ pub enum PaymentSendFailure {
 	/// [`ChannelManager::abandon_payment`] and [`ChannelManager::retry_payment`] will *not* work
 	/// for this payment.
 	AllFailedResendSafe(Vec<APIError>),
+	/// Indicates that a payment for the provided [`PaymentId`] is already in-flight and has not
+	/// yet completed (i.e. generated an [`Event::PaymentSent`]) or been abandoned (via
+	/// [`ChannelManager::abandon_payment`]).
+	///
+	/// [`Event::PaymentSent`]: events::Event::PaymentSent
+	DuplicatePayment,
 	/// Some paths which were attempted failed to send, though possibly not all. At least some
 	/// paths have irrevocably committed to the HTLC and retrying the payment in full would result
 	/// in over-/re-payment.
@@ -2611,9 +2626,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 
 		let mut pending_outbounds = self.pending_outbound_payments.lock().unwrap();
 		match pending_outbounds.entry(payment_id) {
-			hash_map::Entry::Occupied(_) => Err(PaymentSendFailure::ParameterError(APIError::RouteError {
-				err: "Payment already in progress"
-			})),
+			hash_map::Entry::Occupied(_) => Err(PaymentSendFailure::DuplicatePayment),
 			hash_map::Entry::Vacant(entry) => {
 				let payment = entry.insert(PendingOutboundPayment::Retryable {
 					session_privs: HashSet::new(),

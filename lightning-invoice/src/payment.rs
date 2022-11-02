@@ -543,6 +543,7 @@ where
 			Err(e) => match e {
 				PaymentSendFailure::ParameterError(_) => Err(e),
 				PaymentSendFailure::PathParameterError(_) => Err(e),
+				PaymentSendFailure::DuplicatePayment => Err(e),
 				PaymentSendFailure::AllFailedResendSafe(_) => {
 					let mut payment_cache = self.payment_cache.lock().unwrap();
 					let payment_info = payment_cache.get_mut(&payment_hash).unwrap();
@@ -658,6 +659,10 @@ where
 			Err(PaymentSendFailure::AllFailedResendSafe(_)) => {
 				self.retry_payment(payment_id, payment_hash, params)
 			},
+			Err(PaymentSendFailure::DuplicatePayment) => {
+				log_error!(self.logger, "Got a DuplicatePayment error when attempting to retry a payment, this shouldn't happen.");
+				Err(())
+			}
 			Err(PaymentSendFailure::PartialFailure { failed_paths_retry, results, .. }) => {
 				// If a `PartialFailure` error contains a result that is an `Ok()`, it means that
 				// part of our payment is retried. When we receive `MonitorUpdateInProgress`, it
