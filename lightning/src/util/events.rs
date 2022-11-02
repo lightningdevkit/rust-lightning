@@ -1400,6 +1400,10 @@ pub trait OnionMessageProvider {
 ///
 /// Events are processed by passing an [`EventHandler`] to [`process_pending_events`].
 ///
+/// Implementations of this trait may also feature an async version of event handling, as shown with
+/// [`ChannelManager::process_pending_events_async`] and
+/// [`ChainMonitor::process_pending_events_async`].
+///
 /// # Requirements
 ///
 /// When using this trait, [`process_pending_events`] will call [`handle_event`] for each pending
@@ -1426,6 +1430,8 @@ pub trait OnionMessageProvider {
 /// [`handle_event`]: EventHandler::handle_event
 /// [`ChannelManager::process_pending_events`]: crate::ln::channelmanager::ChannelManager#method.process_pending_events
 /// [`ChainMonitor::process_pending_events`]: crate::chain::chainmonitor::ChainMonitor#method.process_pending_events
+/// [`ChannelManager::process_pending_events_async`]: crate::ln::channelmanager::ChannelManager::process_pending_events_async
+/// [`ChainMonitor::process_pending_events_async`]: crate::chain::chainmonitor::ChainMonitor::process_pending_events_async
 pub trait EventsProvider {
 	/// Processes any events generated since the last call using the given event handler.
 	///
@@ -1434,6 +1440,10 @@ pub trait EventsProvider {
 }
 
 /// A trait implemented for objects handling events from [`EventsProvider`].
+///
+/// An async variation also exists for implementations of [`EventsProvider`] that support async
+/// event handling. The async event handler should satisfy the generic bounds: `F:
+/// core::future::Future, H: Fn(Event) -> F`.
 pub trait EventHandler {
 	/// Handles the given [`Event`].
 	///
