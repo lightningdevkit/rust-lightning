@@ -430,7 +430,43 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 		where F::Target: FeeEstimator,
 					L::Target: Logger,
 	{
-		if cached_request.outpoints().len() == 0 { return None } // But don't prune pending claiming request yet, we may have to resurrect HTLCs
+		let request_outpoints = cached_request.outpoints();
+		if request_outpoints.is_empty() {
+			// Don't prune pending claiming request yet, we may have to resurrect HTLCs. Untractable
+			// packages cannot be aggregated and will never be split, so we cannot end up with an
+			// empty claim.
+			debug_assert!(cached_request.is_malleable());
+			return None;
+		}
+		// If we've seen transaction inclusion in the chain for all outpoints in our request, we
+		// don't need to continue generating more claims. We'll keep tracking the request to fully
+		// remove it once it reaches the confirmation threshold, or to generate a new claim if the
+		// transaction is reorged out.
+		let mut all_inputs_have_confirmed_spend = true;
+		for outpoint in &request_outpoints {
+			if let Some(first_claim_txid_height) = self.claimable_outpoints.get(outpoint) {
+				// We check for outpoint spends within claims individually rather than as a set
+				// since requests can have outpoints split off.
+				if !self.onchain_events_awaiting_threshold_conf.iter()
+					.any(|event_entry| if let OnchainEvent::Claim { claim_request } = event_entry.event {
+						first_claim_txid_height.0 == claim_request
+					} else {
+						// The onchain event is not a claim, keep seeking until we find one.
+						false
+					})
+				{
+					// Either we had no `OnchainEvent::Claim`, or we did but none matched the
+					// outpoint's registered spend.
+					all_inputs_have_confirmed_spend = false;
+				}
+			} else {
+				// The request's outpoint spend does not exist yet.
+				all_inputs_have_confirmed_spend = false;
+			}
+		}
+		if all_inputs_have_confirmed_spend {
+			return None;
+		}
 
 		// Compute new height timer to decide when we need to regenerate a new bumped version of the claim tx (if we
 		// didn't receive confirmation of it before, or not enough reorg-safe depth on top of it).
