@@ -36,7 +36,7 @@ use crate::util::atomic_counter::AtomicCounter;
 use crate::util::logger::Logger;
 use crate::util::errors::APIError;
 use crate::util::events;
-use crate::util::events::EventHandler;
+use crate::util::events::{Event, EventHandler};
 use crate::ln::channelmanager::ChannelDetails;
 
 use crate::prelude::*;
@@ -495,6 +495,24 @@ where C::Target: chain::Filter,
 		let event_handler = |event: events::Event| events.borrow_mut().push(event);
 		self.process_pending_events(&event_handler);
 		events.into_inner()
+	}
+
+	/// Processes any events asynchronously in the order they were generated since the last call
+	/// using the given event handler.
+	///
+	/// See the trait-level documentation of [`EventsProvider`] for requirements.
+	///
+	/// [`EventsProvider`]: crate::util::events::EventsProvider
+	pub async fn process_pending_events_async<Future: core::future::Future, H: Fn(Event) -> Future>(
+		&self, handler: H
+	) {
+		let mut pending_events = Vec::new();
+		for monitor_state in self.monitors.read().unwrap().values() {
+			pending_events.append(&mut monitor_state.monitor.get_and_clear_pending_events());
+		}
+		for event in pending_events {
+			handler(event).await;
+		}
 	}
 }
 
