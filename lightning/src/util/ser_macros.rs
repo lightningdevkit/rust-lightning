@@ -55,7 +55,8 @@ macro_rules! _check_encoded_tlv_order {
 	($last_type: expr, $type: expr, (static_value, $value: expr)) => { };
 	($last_type: expr, $type: expr, $fieldty: tt) => {
 		if let Some(t) = $last_type {
-			debug_assert!(t <= $type);
+			#[allow(unused_comparisons)] // Note that $type may be 0 making the following comparison always false
+			(debug_assert!(t < $type))
 		}
 		$last_type = Some($type);
 	};
