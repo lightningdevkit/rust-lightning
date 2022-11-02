@@ -1200,12 +1200,13 @@ pub enum PaymentSendFailure {
 	/// send_payment.
 	PathParameterError(Vec<Result<(), APIError>>),
 	/// All paths which were attempted failed to send, with no channel state change taking place.
-	/// You can freely retry the payment in full (though you probably want to do so over different
+	/// You can freely resend the payment in full (though you probably want to do so over different
 	/// paths than the ones selected).
 	///
-	/// [`ChannelManager::abandon_payment`] does *not* need to be called for this payment and
-	/// [`ChannelManager::retry_payment`] will *not* work for this payment.
-	AllFailedRetrySafe(Vec<APIError>),
+	/// Because the payment failed outright, no payment tracking is done, you do not need to call
+	/// [`ChannelManager::abandon_payment`] and [`ChannelManager::retry_payment`] will *not* work
+	/// for this payment.
+	AllFailedResendSafe(Vec<APIError>),
 	/// Some paths which were attempted failed to send, though possibly not all. At least some
 	/// paths have irrevocably committed to the HTLC and retrying the payment in full would result
 	/// in over-/re-payment.
@@ -2726,7 +2727,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 			// `pending_outbound_payments` map, as the user isn't expected to `abandon_payment`.
 			let removed = self.pending_outbound_payments.lock().unwrap().remove(&payment_id).is_some();
 			debug_assert!(removed, "We should always have a pending payment to remove here");
-			Err(PaymentSendFailure::AllFailedRetrySafe(results.drain(..).map(|r| r.unwrap_err()).collect()))
+			Err(PaymentSendFailure::AllFailedResendSafe(results.drain(..).map(|r| r.unwrap_err()).collect()))
 		} else {
 			Ok(())
 		}

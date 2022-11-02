@@ -587,7 +587,7 @@ macro_rules! get_local_commitment_txn {
 macro_rules! unwrap_send_err {
 	($res: expr, $all_failed: expr, $type: pat, $check: expr) => {
 		match &$res {
-			&Err(PaymentSendFailure::AllFailedRetrySafe(ref fails)) if $all_failed => {
+			&Err(PaymentSendFailure::AllFailedResendSafe(ref fails)) if $all_failed => {
 				assert_eq!(fails.len(), 1);
 				match fails[0] {
 					$type => { $check },

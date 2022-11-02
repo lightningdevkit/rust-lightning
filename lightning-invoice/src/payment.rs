@@ -543,7 +543,7 @@ where
 			Err(e) => match e {
 				PaymentSendFailure::ParameterError(_) => Err(e),
 				PaymentSendFailure::PathParameterError(_) => Err(e),
-				PaymentSendFailure::AllFailedRetrySafe(_) => {
+				PaymentSendFailure::AllFailedResendSafe(_) => {
 					let mut payment_cache = self.payment_cache.lock().unwrap();
 					let payment_info = payment_cache.get_mut(&payment_hash).unwrap();
 					payment_info.attempts.count += 1;
@@ -655,7 +655,7 @@ where
 				log_trace!(self.logger, "Failed to retry for payment {} due to bogus route/payment data, not retrying.", log_bytes!(payment_hash.0));
 				Err(())
 			},
-			Err(PaymentSendFailure::AllFailedRetrySafe(_)) => {
+			Err(PaymentSendFailure::AllFailedResendSafe(_)) => {
 				self.retry_payment(payment_id, payment_hash, params)
 			},
 			Err(PaymentSendFailure::PartialFailure { failed_paths_retry, results, .. }) => {
