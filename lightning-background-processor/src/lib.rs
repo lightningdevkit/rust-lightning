@@ -988,9 +988,12 @@ mod tests {
 
 		// Set up a background event handler for FundingGenerationReady events.
 		let (sender, receiver) = std::sync::mpsc::sync_channel(1);
-		let event_handler = move |event: &Event| {
-			sender.send(handle_funding_generation_ready!(event, channel_value)).unwrap();
+		let event_handler = move |event: &Event| match event {
+			Event::FundingGenerationReady { .. } => sender.send(handle_funding_generation_ready!(event, channel_value)).unwrap(),
+			Event::ChannelReady { .. } => {},
+			_ => panic!("Unexpected event: {:?}", event),
 		};
+
 		let bg_processor = BackgroundProcessor::start(persister, event_handler, nodes[0].chain_monitor.clone(), nodes[0].node.clone(), nodes[0].no_gossip_sync(), nodes[0].peer_manager.clone(), nodes[0].logger.clone(), Some(nodes[0].scorer.clone()));
 
 		// Open a channel and check that the FundingGenerationReady event was handled.
@@ -1014,7 +1017,12 @@ mod tests {
 
 		// Set up a background event handler for SpendableOutputs events.
 		let (sender, receiver) = std::sync::mpsc::sync_channel(1);
-		let event_handler = move |event: &Event| sender.send(event.clone()).unwrap();
+		let event_handler = move |event: &Event| match event {
+			Event::SpendableOutputs { .. } => sender.send(event.clone()).unwrap(),
+			Event::ChannelReady { .. } => {},
+			Event::ChannelClosed { .. } => {},
+			_ => panic!("Unexpected event: {:?}", event),
+		};
 		let persister = Arc::new(Persister::new(data_dir));
 		let bg_processor = BackgroundProcessor::start(persister, event_handler, nodes[0].chain_monitor.clone(), nodes[0].node.clone(), nodes[0].no_gossip_sync(), nodes[0].peer_manager.clone(), nodes[0].logger.clone(), Some(nodes[0].scorer.clone()));
 
@@ -1022,12 +1030,12 @@ mod tests {
 		nodes[0].node.force_close_broadcasting_latest_txn(&nodes[0].node.list_channels()[0].channel_id, &nodes[1].node.get_our_node_id()).unwrap();
 		let commitment_tx = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().pop().unwrap();
 		confirm_transaction_depth(&mut nodes[0], &commitment_tx, BREAKDOWN_TIMEOUT as u32);
+
 		let event = receiver
 			.recv_timeout(Duration::from_secs(EVENT_DEADLINE))
-			.expect("SpendableOutputs not handled within deadline");
+			.expect("Events not handled within deadline");
 		match event {
 			Event::SpendableOutputs { .. } => {},
-			Event::ChannelClosed { .. } => {},
 			_ => panic!("Unexpected event: {:?}", event),
 		}
 

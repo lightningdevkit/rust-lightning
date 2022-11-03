@@ -202,6 +202,8 @@ fn do_test_1_conf_open(connect_style: ConnectStyle) {
 	} else { panic!("Unexpected event"); }
 
 	nodes[1].node.handle_channel_ready(&nodes[0].node.get_our_node_id(), &as_channel_ready);
+	expect_channel_ready_event(&nodes[0], &nodes[1].node.get_our_node_id());
+	expect_channel_ready_event(&nodes[1], &nodes[0].node.get_our_node_id());
 	let bs_msg_events = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(bs_msg_events.len(), 1);
 	if let MessageSendEvent::SendChannelUpdate { ref node_id, msg: _ } = bs_msg_events[0] {
@@ -407,8 +409,10 @@ fn test_inbound_scid_privacy() {
 	connect_blocks(&nodes[2], CHAN_CONFIRM_DEPTH - 1);
 	let bs_channel_ready = get_event_msg!(nodes[1], MessageSendEvent::SendChannelReady, nodes[2].node.get_our_node_id());
 	nodes[1].node.handle_channel_ready(&nodes[2].node.get_our_node_id(), &get_event_msg!(nodes[2], MessageSendEvent::SendChannelReady, nodes[1].node.get_our_node_id()));
+	expect_channel_ready_event(&nodes[1], &nodes[2].node.get_our_node_id());
 	let bs_update = get_event_msg!(nodes[1], MessageSendEvent::SendChannelUpdate, nodes[2].node.get_our_node_id());
 	nodes[2].node.handle_channel_ready(&nodes[1].node.get_our_node_id(), &bs_channel_ready);
+	expect_channel_ready_event(&nodes[2], &nodes[1].node.get_our_node_id());
 	let cs_update = get_event_msg!(nodes[2], MessageSendEvent::SendChannelUpdate, nodes[1].node.get_our_node_id());
 
 	nodes[1].node.handle_channel_update(&nodes[2].node.get_our_node_id(), &cs_update);
@@ -672,6 +676,9 @@ fn test_0conf_channel_with_async_monitor() {
 		}
 		_ => panic!("Unexpected event"),
 	}
+	expect_channel_ready_event(&nodes[0], &nodes[1].node.get_our_node_id());
+	expect_channel_ready_event(&nodes[1], &nodes[0].node.get_our_node_id());
+
 	let bs_channel_update = get_event_msg!(nodes[1], MessageSendEvent::SendChannelUpdate, nodes[0].node.get_our_node_id());
 
 	let as_channel_update = match &as_locked_update[1] {

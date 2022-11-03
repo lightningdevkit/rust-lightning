@@ -869,6 +869,8 @@ mod test {
 		get_event_msg!(nodes[2], MessageSendEvent::SendChannelUpdate, nodes[0].node.get_our_node_id());
 		nodes[0].node.handle_channel_ready(&nodes[2].node.get_our_node_id(), &as_channel_ready);
 		get_event_msg!(nodes[0], MessageSendEvent::SendChannelUpdate, nodes[2].node.get_our_node_id());
+		expect_channel_ready_event(&nodes[0], &nodes[2].node.get_our_node_id());
+		expect_channel_ready_event(&nodes[2], &nodes[0].node.get_our_node_id());
 
 		// As `msgs::ChannelUpdate` was never handled for the participating node(s) of the second
 		// channel, the channel will never be assigned any `counterparty.forwarding_info`.
@@ -1257,6 +1259,8 @@ mod test {
 		get_event_msg!(nodes[1], MessageSendEvent::SendChannelUpdate, nodes[3].node.get_our_node_id());
 		nodes[3].node.handle_channel_ready(&nodes[1].node.get_our_node_id(), &as_channel_ready);
 		get_event_msg!(nodes[3], MessageSendEvent::SendChannelUpdate, nodes[1].node.get_our_node_id());
+		expect_channel_ready_event(&nodes[1], &nodes[3].node.get_our_node_id());
+		expect_channel_ready_event(&nodes[3], &nodes[1].node.get_our_node_id());
 
 		// As `msgs::ChannelUpdate` was never handled for the participating node(s) of the third
 		// channel, the channel will never be assigned any `counterparty.forwarding_info`.

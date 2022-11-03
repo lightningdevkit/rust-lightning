@@ -483,6 +483,7 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 	nodes[1].node.handle_update_fulfill_htlc(&nodes[2].node.get_our_node_id(), &htlc_fulfill_updates.update_fulfill_htlcs[0]);
 	check_added_monitors!(nodes[1], 1);
 	commitment_signed_dance!(nodes[1], nodes[2], htlc_fulfill_updates.commitment_signed, false);
+	expect_payment_forwarded!(nodes[1], nodes[0], nodes[2], None, false, false);
 
 	if confirm_before_reload {
 		let best_block = nodes[0].blocks.lock().unwrap().last().unwrap().clone();
@@ -499,7 +500,6 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 	let bs_htlc_claim_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 	assert_eq!(bs_htlc_claim_txn.len(), 1);
 	check_spends!(bs_htlc_claim_txn[0], as_commitment_tx);
-	expect_payment_forwarded!(nodes[1], nodes[0], nodes[2], None, false, false);
 
 	if !confirm_before_reload {
 		mine_transaction(&nodes[0], &as_commitment_tx);

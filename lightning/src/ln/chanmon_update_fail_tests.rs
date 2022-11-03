@@ -1916,6 +1916,13 @@ fn do_during_funding_monitor_fail(confirm_a_first: bool, restore_b_before_conf: 
 		node.gossip_sync.handle_channel_update(&bs_update).unwrap();
 	}
 
+	if !restore_b_before_lock {
+		expect_channel_ready_event(&nodes[1], &nodes[0].node.get_our_node_id());
+	} else {
+		expect_channel_ready_event(&nodes[0], &nodes[1].node.get_our_node_id());
+	}
+
+
 	send_payment(&nodes[0], &[&nodes[1]], 8000000);
 	close_channel(&nodes[0], &nodes[1], &channel_id, funding_tx, true);
 	check_closed_event!(nodes[0], 1, ClosureReason::CooperativeClosure);
