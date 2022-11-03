@@ -4044,7 +4044,7 @@ mod tests {
 			SecretKey::from_slice(&[41; 32]).unwrap(),
 			[41; 32],
 			0,
-			[0; 32]
+			[0; 32],
 		);
 
 		let counterparty_pubkeys = ChannelPublicKeys {
@@ -4065,6 +4065,7 @@ mod tests {
 			}),
 			funding_outpoint: Some(funding_outpoint),
 			opt_anchors: None,
+			opt_non_zero_fee_anchors: None,
 		};
 		// Prune with one old state and a holder commitment tx holding a few overlaps with the
 		// old state.

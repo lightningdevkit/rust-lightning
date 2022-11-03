@@ -533,7 +533,8 @@ impl InMemorySigner {
 		htlc_base_key: SecretKey,
 		commitment_seed: [u8; 32],
 		channel_value_satoshis: u64,
-		channel_keys_id: [u8; 32]) -> InMemorySigner {
+		channel_keys_id: [u8; 32],
+	) -> InMemorySigner {
 		let holder_channel_pubkeys =
 			InMemorySigner::make_holder_keys(secp_ctx, &funding_key, &revocation_base_key,
 			                                     &payment_key, &delayed_payment_base_key,
@@ -704,7 +705,8 @@ impl BaseSign for InMemorySigner {
 
 		let mut htlc_sigs = Vec::with_capacity(commitment_tx.htlcs().len());
 		for htlc in commitment_tx.htlcs() {
-			let htlc_tx = chan_utils::build_htlc_transaction(&commitment_txid, commitment_tx.feerate_per_kw(), self.holder_selected_contest_delay(), htlc, self.opt_anchors(), &keys.broadcaster_delayed_payment_key, &keys.revocation_key);
+			let channel_parameters = self.get_channel_parameters();
+			let htlc_tx = chan_utils::build_htlc_transaction(&commitment_txid, commitment_tx.feerate_per_kw(), self.holder_selected_contest_delay(), htlc, self.opt_anchors(), channel_parameters.opt_non_zero_fee_anchors.is_some(), &keys.broadcaster_delayed_payment_key, &keys.revocation_key);
 			let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, self.opt_anchors(), &keys);
 			let htlc_sighashtype = if self.opt_anchors() { EcdsaSighashType::SinglePlusAnyoneCanPay } else { EcdsaSighashType::All };
 			let htlc_sighash = hash_to_message!(&sighash::SighashCache::new(&htlc_tx).segwit_signature_hash(0, &htlc_redeemscript, htlc.amount_msat / 1000, htlc_sighashtype).unwrap()[..]);
@@ -1035,7 +1037,7 @@ impl KeysManager {
 			htlc_base_key,
 			commitment_seed,
 			channel_value_satoshis,
-			params.clone()
+			params.clone(),
 		)
 	}
 
