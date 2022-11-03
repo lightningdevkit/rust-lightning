@@ -35,7 +35,7 @@ use lightning::chain::chainmonitor;
 use lightning::chain::transaction::OutPoint;
 use lightning::chain::keysinterface::{InMemorySigner, Recipient, KeyMaterial, KeysInterface};
 use lightning::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
-use lightning::ln::channelmanager::{ChainParameters, ChannelManager};
+use lightning::ln::channelmanager::{ChainParameters, ChannelManager, PaymentId};
 use lightning::ln::peer_handler::{MessageHandler,PeerManager,SocketDescriptor,IgnoringMessageHandler};
 use lightning::ln::msgs::DecodeError;
 use lightning::ln::script::ShutdownScript;
@@ -481,7 +481,7 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 				sha.input(&payment_hash.0[..]);
 				payment_hash.0 = Sha256::from_engine(sha).into_inner();
 				payments_sent += 1;
-				match channelmanager.send_payment(&route, payment_hash, &None) {
+				match channelmanager.send_payment(&route, payment_hash, &None, PaymentId(payment_hash.0)) {
 					Ok(_) => {},
 					Err(_) => return,
 				}
@@ -509,7 +509,7 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 				let mut payment_secret = PaymentSecret([0; 32]);
 				payment_secret.0[0..8].copy_from_slice(&be64_to_array(payments_sent));
 				payments_sent += 1;
-				match channelmanager.send_payment(&route, payment_hash, &Some(payment_secret)) {
+				match channelmanager.send_payment(&route, payment_hash, &Some(payment_secret), PaymentId(payment_hash.0)) {
 					Ok(_) => {},
 					Err(_) => return,
 				}

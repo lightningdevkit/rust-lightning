@@ -16,7 +16,7 @@ use crate::chain::channelmonitor::{ANTI_REORG_DELAY, ChannelMonitor, LATENCY_GRA
 use crate::chain::transaction::OutPoint;
 use crate::chain::keysinterface::KeysInterface;
 use crate::ln::channel::EXPIRE_PREV_CONFIG_TICKS;
-use crate::ln::channelmanager::{self, BREAKDOWN_TIMEOUT, ChannelManager, ChannelManagerReadArgs, MPP_TIMEOUT_TICKS, MIN_CLTV_EXPIRY_DELTA, PaymentId, PaymentSendFailure};
+use crate::ln::channelmanager::{self, BREAKDOWN_TIMEOUT, ChannelManager, ChannelManagerReadArgs, MPP_TIMEOUT_TICKS, MIN_CLTV_EXPIRY_DELTA, PaymentId, PaymentSendFailure, IDEMPOTENCY_TIMEOUT_TICKS};
 use crate::ln::msgs;
 use crate::ln::msgs::ChannelMessageHandler;
 use crate::routing::router::{PaymentParameters, get_route};
@@ -53,7 +53,8 @@ fn retry_single_path_payment() {
 	send_payment(&nodes[1], &vec!(&nodes[2])[..], 2_000_000);
 
 	// Make sure the payment fails on the first hop.
-	let payment_id = nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret)).unwrap();
+	let payment_id = PaymentId(payment_hash.0);
+	nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret), payment_id).unwrap();
 	check_added_monitors!(nodes[0], 1);
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
@@ -138,7 +139,8 @@ fn mpp_retry() {
 	route.paths[1][1].short_channel_id = chan_4_update.contents.short_channel_id;
 
 	// Initiate the MPP payment.
-	let payment_id = nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret)).unwrap();
+	let payment_id = PaymentId(payment_hash.0);
+	nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret), payment_id).unwrap();
 	check_added_monitors!(nodes[0], 2); // one monitor per path
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 2);
@@ -222,7 +224,7 @@ fn do_mpp_receive_timeout(send_partial_mpp: bool) {
 	route.paths[1][1].short_channel_id = chan_4_update.contents.short_channel_id;
 
 	// Initiate the MPP payment.
-	let _ = nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret)).unwrap();
+	nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret), PaymentId(payment_hash.0)).unwrap();
 	check_added_monitors!(nodes[0], 2); // one monitor per path
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 2);
@@ -290,7 +292,7 @@ fn retry_expired_payment() {
 	send_payment(&nodes[1], &vec!(&nodes[2])[..], 2_000_000);
 
 	// Make sure the payment fails on the first hop.
-	let payment_id = nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret)).unwrap();
+	nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret), PaymentId(payment_hash.0)).unwrap();
 	check_added_monitors!(nodes[0], 1);
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
@@ -314,7 +316,7 @@ fn retry_expired_payment() {
 	connect_blocks(&nodes[0], 3);
 
 	// Retry the payment and make sure it errors as expected.
-	if let Err(PaymentSendFailure::ParameterError(APIError::APIMisuseError { err })) = nodes[0].node.retry_payment(&route, payment_id) {
+	if let Err(PaymentSendFailure::ParameterError(APIError::APIMisuseError { err })) = nodes[0].node.retry_payment(&route, PaymentId(payment_hash.0)) {
 		assert!(err.contains("not found"));
 	} else {
 		panic!("Unexpected error");
@@ -341,7 +343,7 @@ fn no_pending_leak_on_initial_send_failure() {
 	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
 	nodes[1].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
 
-	unwrap_send_err!(nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret)),
+	unwrap_send_err!(nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret), PaymentId(payment_hash.0)),
 		true, APIError::ChannelUnavailable { ref err },
 		assert_eq!(err, "Peer for first hop currently disconnected/pending monitor update!"));
 
@@ -378,7 +380,7 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 	// out and retry.
 	let (route, payment_hash, payment_preimage, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], 1_000_000);
 	let (payment_preimage_1, payment_hash_1, _, payment_id_1) = send_along_route(&nodes[0], route.clone(), &[&nodes[1], &nodes[2]], 1_000_000);
-	let payment_id = nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret)).unwrap();
+	nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret), PaymentId(payment_hash.0)).unwrap();
 	check_added_monitors!(nodes[0], 1);
 
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
@@ -543,7 +545,7 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 	}
 
 	assert!(nodes[0].node.retry_payment(&new_route, payment_id_1).is_err()); // Shouldn't be allowed to retry a fulfilled payment
-	nodes[0].node.retry_payment(&new_route, payment_id).unwrap();
+	nodes[0].node.retry_payment(&new_route, PaymentId(payment_hash.0)).unwrap();
 	check_added_monitors!(nodes[0], 1);
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
@@ -1060,7 +1062,7 @@ fn get_ldk_payment_preimage() {
 		&nodes[0].node.get_our_node_id(), &payment_params, &nodes[0].network_graph.read_only(),
 		Some(&nodes[0].node.list_usable_channels().iter().collect::<Vec<_>>()),
 		amt_msat, TEST_FINAL_CLTV, nodes[0].logger, &scorer, &random_seed_bytes).unwrap();
-	let _payment_id = nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret)).unwrap();
+	nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret), PaymentId(payment_hash.0)).unwrap();
 	check_added_monitors!(nodes[0], 1);
 
 	// Make sure to use `get_payment_preimage`
@@ -1252,4 +1254,134 @@ fn onchain_failed_probe_yields_event() {
 		}
 	}
 	assert!(found_probe_failed);
+}
+
+#[test]
+fn claimed_send_payment_idempotent() {
+	// Tests that `send_payment` (and friends) are (reasonably) idempotent.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	create_announced_chan_between_nodes(&nodes, 0, 1, channelmanager::provided_init_features(), channelmanager::provided_init_features()).2;
+
+	let (route, second_payment_hash, second_payment_preimage, second_payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], 100_000);
+	let (first_payment_preimage, _, _, payment_id) = send_along_route(&nodes[0], route.clone(), &[&nodes[1]], 100_000);
+
+	macro_rules! check_send_rejected {
+		() => {
+			// If we try to resend a new payment with a different payment_hash but with the same
+			// payment_id, it should be rejected.
+			let send_result = nodes[0].node.send_payment(&route, second_payment_hash, &Some(second_payment_secret), payment_id);
+			match send_result {
+				Err(PaymentSendFailure::ParameterError(APIError::RouteError { err: "Payment already in progress" })) => {},
+				_ => panic!("Unexpected send result: {:?}", send_result),
+			}
+
+			// Further, if we try to send a spontaneous payment with the same payment_id it should
+			// also be rejected.
+			let send_result = nodes[0].node.send_spontaneous_payment(&route, None, payment_id);
+			match send_result {
+				Err(PaymentSendFailure::ParameterError(APIError::RouteError { err: "Payment already in progress" })) => {},
+				_ => panic!("Unexpected send result: {:?}", send_result),
+			}
+		}
+	}
+
+	check_send_rejected!();
+
+	// Claim the payment backwards, but note that the PaymentSent event is still pending and has
+	// not been seen by the user. At this point, from the user perspective nothing has changed, so
+	// we must remain just as idempotent as we were before.
+	do_claim_payment_along_route(&nodes[0], &[&[&nodes[1]]], false, first_payment_preimage);
+
+	for _ in 0..=IDEMPOTENCY_TIMEOUT_TICKS {
+		nodes[0].node.timer_tick_occurred();
+	}
+
+	check_send_rejected!();
+
+	// Once the user sees and handles the `PaymentSent` event, we expect them to no longer call
+	// `send_payment`, and our idempotency guarantees are off - they should have atomically marked
+	// the payment complete. However, they could have called `send_payment` while the event was
+	// being processed, leading to a race in our idempotency guarantees. Thus, even immediately
+	// after the event is handled a duplicate payment should sitll be rejected.
+	expect_payment_sent!(&nodes[0], first_payment_preimage, Some(0));
+	check_send_rejected!();
+
+	// If relatively little time has passed, a duplicate payment should still fail.
+	nodes[0].node.timer_tick_occurred();
+	check_send_rejected!();
+
+	// However, after some time has passed (at least more than the one timer tick above), a
+	// duplicate payment should go through, as ChannelManager should no longer have any remaining
+	// references to the old payment data.
+	for _ in 0..IDEMPOTENCY_TIMEOUT_TICKS {
+		nodes[0].node.timer_tick_occurred();
+	}
+
+	nodes[0].node.send_payment(&route, second_payment_hash, &Some(second_payment_secret), payment_id).unwrap();
+	check_added_monitors!(nodes[0], 1);
+	pass_along_route(&nodes[0], &[&[&nodes[1]]], 100_000, second_payment_hash, second_payment_secret);
+	claim_payment(&nodes[0], &[&nodes[1]], second_payment_preimage);
+}
+
+#[test]
+fn abandoned_send_payment_idempotent() {
+	// Tests that `send_payment` (and friends) allow duplicate PaymentIds immediately after
+	// abandon_payment.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	create_announced_chan_between_nodes(&nodes, 0, 1, channelmanager::provided_init_features(), channelmanager::provided_init_features()).2;
+
+	let (route, second_payment_hash, second_payment_preimage, second_payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], 100_000);
+	let (_, first_payment_hash, _, payment_id) = send_along_route(&nodes[0], route.clone(), &[&nodes[1]], 100_000);
+
+	macro_rules! check_send_rejected {
+		() => {
+			// If we try to resend a new payment with a different payment_hash but with the same
+			// payment_id, it should be rejected.
+			let send_result = nodes[0].node.send_payment(&route, second_payment_hash, &Some(second_payment_secret), payment_id);
+			match send_result {
+				Err(PaymentSendFailure::ParameterError(APIError::RouteError { err: "Payment already in progress" })) => {},
+				_ => panic!("Unexpected send result: {:?}", send_result),
+			}
+
+			// Further, if we try to send a spontaneous payment with the same payment_id it should
+			// also be rejected.
+			let send_result = nodes[0].node.send_spontaneous_payment(&route, None, payment_id);
+			match send_result {
+				Err(PaymentSendFailure::ParameterError(APIError::RouteError { err: "Payment already in progress" })) => {},
+				_ => panic!("Unexpected send result: {:?}", send_result),
+			}
+		}
+	}
+
+	check_send_rejected!();
+
+	nodes[1].node.fail_htlc_backwards(&first_payment_hash);
+	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[1], [HTLCDestination::FailedPayment { payment_hash: first_payment_hash }]);
+
+	pass_failed_payment_back_no_abandon(&nodes[0], &[&[&nodes[1]]], false, first_payment_hash);
+	check_send_rejected!();
+
+	// Until we abandon the payment, no matter how many timer ticks pass, we still cannot reuse the
+	// PaymentId.
+	for _ in 0..=IDEMPOTENCY_TIMEOUT_TICKS {
+		nodes[0].node.timer_tick_occurred();
+	}
+	check_send_rejected!();
+
+	nodes[0].node.abandon_payment(payment_id);
+	get_event!(nodes[0], Event::PaymentFailed);
+
+	// However, we can reuse the PaymentId immediately after we `abandon_payment`.
+	nodes[0].node.send_payment(&route, second_payment_hash, &Some(second_payment_secret), payment_id).unwrap();
+	check_added_monitors!(nodes[0], 1);
+	pass_along_route(&nodes[0], &[&[&nodes[1]]], 100_000, second_payment_hash, second_payment_secret);
+	claim_payment(&nodes[0], &[&nodes[1]], second_payment_preimage);
 }

@@ -11,7 +11,7 @@
 
 use crate::chain::keysinterface::KeysInterface;
 use crate::chain::transaction::OutPoint;
-use crate::ln::channelmanager::{self, PaymentSendFailure};
+use crate::ln::channelmanager::{self, PaymentSendFailure, PaymentId};
 use crate::routing::router::{PaymentParameters, get_route};
 use crate::ln::msgs;
 use crate::ln::msgs::{ChannelMessageHandler, ErrorAction};
@@ -97,8 +97,8 @@ fn updates_shutdown_wait() {
 	let route_1 = get_route(&nodes[0].node.get_our_node_id(), &payment_params_1, &nodes[0].network_graph.read_only(), None, 100000, TEST_FINAL_CLTV, &logger, &scorer, &random_seed_bytes).unwrap();
 	let payment_params_2 = PaymentParameters::from_node_id(nodes[0].node.get_our_node_id()).with_features(channelmanager::provided_invoice_features());
 	let route_2 = get_route(&nodes[1].node.get_our_node_id(), &payment_params_2, &nodes[1].network_graph.read_only(), None, 100000, TEST_FINAL_CLTV, &logger, &scorer, &random_seed_bytes).unwrap();
-	unwrap_send_err!(nodes[0].node.send_payment(&route_1, payment_hash, &Some(payment_secret)), true, APIError::ChannelUnavailable {..}, {});
-	unwrap_send_err!(nodes[1].node.send_payment(&route_2, payment_hash, &Some(payment_secret)), true, APIError::ChannelUnavailable {..}, {});
+	unwrap_send_err!(nodes[0].node.send_payment(&route_1, payment_hash, &Some(payment_secret), PaymentId(payment_hash.0)), true, APIError::ChannelUnavailable {..}, {});
+	unwrap_send_err!(nodes[1].node.send_payment(&route_2, payment_hash, &Some(payment_secret), PaymentId(payment_hash.0)), true, APIError::ChannelUnavailable {..}, {});
 
 	nodes[2].node.claim_funds(payment_preimage_0);
 	check_added_monitors!(nodes[2], 1);
@@ -158,7 +158,7 @@ fn htlc_fail_async_shutdown() {
 	let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2, channelmanager::provided_init_features(), channelmanager::provided_init_features());
 
 	let (route, our_payment_hash, _, our_payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], 100000);
-	nodes[0].node.send_payment(&route, our_payment_hash, &Some(our_payment_secret)).unwrap();
+	nodes[0].node.send_payment(&route, our_payment_hash, &Some(our_payment_secret), PaymentId(our_payment_hash.0)).unwrap();
 	check_added_monitors!(nodes[0], 1);
 	let updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
 	assert_eq!(updates.update_add_htlcs.len(), 1);

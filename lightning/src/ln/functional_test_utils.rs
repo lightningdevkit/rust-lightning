@@ -1656,7 +1656,8 @@ pub fn expect_payment_failed_conditions<'a, 'b, 'c, 'd, 'e>(
 }
 
 pub fn send_along_route_with_secret<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, route: Route, expected_paths: &[&[&Node<'a, 'b, 'c>]], recv_value: u64, our_payment_hash: PaymentHash, our_payment_secret: PaymentSecret) -> PaymentId {
-	let payment_id = origin_node.node.send_payment(&route, our_payment_hash, &Some(our_payment_secret)).unwrap();
+	let payment_id = PaymentId(origin_node.keys_manager.backing.get_secure_random_bytes());
+	origin_node.node.send_payment(&route, our_payment_hash, &Some(our_payment_secret), payment_id).unwrap();
 	check_added_monitors!(origin_node, expected_paths.len());
 	pass_along_route(origin_node, expected_paths, recv_value, our_payment_hash, our_payment_secret);
 	payment_id
@@ -1903,7 +1904,7 @@ pub fn route_over_limit<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_rou
 	}
 
 	let (_, our_payment_hash, our_payment_preimage) = get_payment_preimage_hash!(expected_route.last().unwrap());
-	unwrap_send_err!(origin_node.node.send_payment(&route, our_payment_hash, &Some(our_payment_preimage)), true, APIError::ChannelUnavailable { ref err },
+	unwrap_send_err!(origin_node.node.send_payment(&route, our_payment_hash, &Some(our_payment_preimage), PaymentId(our_payment_hash.0)), true, APIError::ChannelUnavailable { ref err },
 		assert!(err.contains("Cannot send value that would put us over the max HTLC value in flight our peer will accept")));
 }
 
@@ -1924,6 +1925,22 @@ pub fn fail_payment_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expe
 }
 
 pub fn pass_failed_payment_back<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_paths_slice: &[&[&Node<'a, 'b, 'c>]], skip_last: bool, our_payment_hash: PaymentHash) {
+	let expected_payment_id = pass_failed_payment_back_no_abandon(origin_node, expected_paths_slice, skip_last, our_payment_hash);
+	if !skip_last {
+		origin_node.node.abandon_payment(expected_payment_id.unwrap());
+		let events = origin_node.node.get_and_clear_pending_events();
+		assert_eq!(events.len(), 1);
+		match events[0] {
+			Event::PaymentFailed { ref payment_hash, ref payment_id } => {
+				assert_eq!(*payment_hash, our_payment_hash, "unexpected second payment_hash");
+				assert_eq!(*payment_id, expected_payment_id.unwrap());
+			}
+			_ => panic!("Unexpected second event"),
+		}
+	}
+}
+
+pub fn pass_failed_payment_back_no_abandon<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_paths_slice: &[&[&Node<'a, 'b, 'c>]], skip_last: bool, our_payment_hash: PaymentHash) -> Option<PaymentId> {
 	let mut expected_paths: Vec<_> = expected_paths_slice.iter().collect();
 	check_added_monitors!(expected_paths[0].last().unwrap(), expected_paths.len());
 
@@ -1946,6 +1963,8 @@ pub fn pass_failed_payment_back<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expe
 	}
 	per_path_msgs.sort_unstable_by(|(_, node_id_a), (_, node_id_b)| node_id_a.cmp(node_id_b));
 	expected_paths.sort_unstable_by(|path_a, path_b| path_a[path_a.len() - 2].node.get_our_node_id().cmp(&path_b[path_b.len() - 2].node.get_our_node_id()));
+
+	let mut expected_payment_id = None;
 
 	for (i, (expected_route, (path_msgs, next_hop))) in expected_paths.iter().zip(per_path_msgs.drain(..)).enumerate() {
 		let mut next_msgs = Some(path_msgs);
@@ -1995,7 +2014,7 @@ pub fn pass_failed_payment_back<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expe
 			commitment_signed_dance!(origin_node, prev_node, next_msgs.as_ref().unwrap().1, false);
 			let events = origin_node.node.get_and_clear_pending_events();
 			assert_eq!(events.len(), 1);
-			let expected_payment_id = match events[0] {
+			expected_payment_id = Some(match events[0] {
 				Event::PaymentPathFailed { payment_hash, payment_failed_permanently, all_paths_failed, ref path, ref payment_id, .. } => {
 					assert_eq!(payment_hash, our_payment_hash);
 					assert!(payment_failed_permanently);
@@ -2006,19 +2025,7 @@ pub fn pass_failed_payment_back<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expe
 					payment_id.unwrap()
 				},
 				_ => panic!("Unexpected event"),
-			};
-			if i == expected_paths.len() - 1 {
-				origin_node.node.abandon_payment(expected_payment_id);
-				let events = origin_node.node.get_and_clear_pending_events();
-				assert_eq!(events.len(), 1);
-				match events[0] {
-					Event::PaymentFailed { ref payment_hash, ref payment_id } => {
-						assert_eq!(*payment_hash, our_payment_hash, "unexpected second payment_hash");
-						assert_eq!(*payment_id, expected_payment_id);
-					}
-					_ => panic!("Unexpected second event"),
-				}
-			}
+			});
 		}
 	}
 
@@ -2027,6 +2034,8 @@ pub fn pass_failed_payment_back<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expe
 	assert!(expected_paths[0].last().unwrap().node.get_and_clear_pending_events().is_empty());
 	assert!(expected_paths[0].last().unwrap().node.get_and_clear_pending_msg_events().is_empty());
 	check_added_monitors!(expected_paths[0].last().unwrap(), 0);
+
+	expected_payment_id
 }
 
 pub fn fail_payment<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_path: &[&Node<'a, 'b, 'c>], our_payment_hash: PaymentHash)  {

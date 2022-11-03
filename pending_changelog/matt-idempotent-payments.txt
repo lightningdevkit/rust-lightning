@@ -1,0 +1,16 @@
+API Changes
+===========
+
+ * Payment sending methods now take an explicit `PaymentId`, which acts as an
+   idempotency token. You may use the PaymentHash for this, which existing
+   `InvoicePayer` send methods do, new `_with_id` variants were added (#XXXX).
+ * Pending outbound payments are no longer automatically timed-out a few blocks
+   after failure. Thus, in order to avoid leaking memory, you MUST call
+   `ChannelManager::abandon_payment` when you no longer wish to retry (#XXXX).
+
+Serialization Compatibility
+===========================
+
+ * When downgrading to a version of LDK prior to THIS_VERSION_XXX when there are
+   resolved payments waiting for a small timeout, the payments may not be
+   removed, preventing payments with the same `PaymentId`.
