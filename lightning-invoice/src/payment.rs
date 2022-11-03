@@ -38,13 +38,13 @@
 //! # use lightning::ln::channelmanager::{ChannelDetails, PaymentId, PaymentSendFailure};
 //! # use lightning::ln::msgs::LightningError;
 //! # use lightning::routing::gossip::NodeId;
-//! # use lightning::routing::router::{Route, RouteHop, RouteParameters};
+//! # use lightning::routing::router::{InFlightHtlcs, Route, RouteHop, RouteParameters, Router};
 //! # use lightning::routing::scoring::{ChannelUsage, Score};
 //! # use lightning::util::events::{Event, EventHandler, EventsProvider};
 //! # use lightning::util::logger::{Logger, Record};
 //! # use lightning::util::ser::{Writeable, Writer};
 //! # use lightning_invoice::Invoice;
-//! # use lightning_invoice::payment::{InFlightHtlcs, InvoicePayer, Payer, Retry, Router};
+//! # use lightning_invoice::payment::{InvoicePayer, Payer, Retry, ScoringRouter};
 //! # use secp256k1::PublicKey;
 //! # use std::cell::RefCell;
 //! # use std::ops::Deref;
@@ -74,10 +74,11 @@
 //! # struct FakeRouter {}
 //! # impl Router for FakeRouter {
 //! #     fn find_route(
-//! #         &self, payer: &PublicKey, params: &RouteParameters, payment_hash: &PaymentHash,
+//! #         &self, payer: &PublicKey, params: &RouteParameters,
 //! #         first_hops: Option<&[&ChannelDetails]>, _inflight_htlcs: InFlightHtlcs
 //! #     ) -> Result<Route, LightningError> { unimplemented!() }
-//! #
+//! # }
+//! # impl ScoringRouter for FakeRouter {
 //! #     fn notify_payment_path_failed(&self, path: &[&RouteHop], short_channel_id: u64) {  unimplemented!() }
 //! #     fn notify_payment_path_successful(&self, path: &[&RouteHop]) {  unimplemented!() }
 //! #     fn notify_payment_probe_successful(&self, path: &[&RouteHop]) {  unimplemented!() }
@@ -141,16 +142,14 @@ use bitcoin_hashes::Hash;
 use bitcoin_hashes::sha256::Hash as Sha256;
 
 use crate::prelude::*;
-use lightning::io;
 use lightning::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
 use lightning::ln::channelmanager::{ChannelDetails, PaymentId, PaymentSendFailure};
 use lightning::ln::msgs::LightningError;
 use lightning::routing::gossip::NodeId;
-use lightning::routing::router::{PaymentParameters, Route, RouteHop, RouteParameters};
+use lightning::routing::router::{InFlightHtlcs, PaymentParameters, Route, RouteHop, RouteParameters, Router};
 use lightning::util::errors::APIError;
 use lightning::util::events::{Event, EventHandler};
 use lightning::util::logger::Logger;
-use lightning::util::ser::Writeable;
 use crate::time_utils::Time;
 use crate::sync::Mutex;
 
@@ -178,7 +177,7 @@ use crate::time_utils;
 type ConfiguredTime = time_utils::Eternity;
 
 /// (C-not exported) generally all users should use the [`InvoicePayer`] type alias.
-pub struct InvoicePayerUsingTime<P: Deref, R: Router, L: Deref, E: EventHandler, T: Time>
+pub struct InvoicePayerUsingTime<P: Deref, R: ScoringRouter, L: Deref, E: EventHandler, T: Time>
 where
 	P::Target: Payer,
 	L::Target: Logger,
@@ -280,13 +279,20 @@ pub trait Payer {
 	fn abandon_payment(&self, payment_id: PaymentId);
 }
 
-/// A trait defining behavior for routing an [`Invoice`] payment.
-pub trait Router {
-	/// Finds a [`Route`] between `payer` and `payee` for a payment with the given values.
-	fn find_route(
-		&self, payer: &PublicKey, route_params: &RouteParameters, payment_hash: &PaymentHash,
-		first_hops: Option<&[&ChannelDetails]>, inflight_htlcs: InFlightHtlcs
-	) -> Result<Route, LightningError>;
+/// A trait defining behavior for a [`Router`] implementation that also supports scoring channels
+/// based on payment and probe success/failure.
+///
+/// [`Router`]: lightning::routing::router::Router
+pub trait ScoringRouter: Router {
+	/// Finds a [`Route`] between `payer` and `payee` for a payment with the given values. Includes
+	/// `PaymentHash` and `PaymentId` to be able to correlate the request with a specific payment.
+	fn find_route_with_id(
+		&self, payer: &PublicKey, route_params: &RouteParameters,
+		first_hops: Option<&[&ChannelDetails]>, inflight_htlcs: InFlightHtlcs,
+		_payment_hash: PaymentHash, _payment_id: PaymentId
+	) -> Result<Route, LightningError> {
+		self.find_route(payer, route_params, first_hops, inflight_htlcs)
+	}
 	/// Lets the router know that payment through a specific path has failed.
 	fn notify_payment_path_failed(&self, path: &[&RouteHop], short_channel_id: u64);
 	/// Lets the router know that payment through a specific path was successful.
@@ -336,7 +342,7 @@ pub enum PaymentError {
 	Sending(PaymentSendFailure),
 }
 
-impl<P: Deref, R: Router, L: Deref, E: EventHandler, T: Time> InvoicePayerUsingTime<P, R, L, E, T>
+impl<P: Deref, R: ScoringRouter, L: Deref, E: EventHandler, T: Time> InvoicePayerUsingTime<P, R, L, E, T>
 where
 	P::Target: Payer,
 	L::Target: Logger,
@@ -529,8 +535,7 @@ where
 		let first_hops = self.payer.first_hops();
 		let inflight_htlcs = self.create_inflight_map();
 		let route = self.router.find_route(
-			&payer, &params, &payment_hash, Some(&first_hops.iter().collect::<Vec<_>>()),
-			inflight_htlcs
+			&payer, &params, Some(&first_hops.iter().collect::<Vec<_>>()), inflight_htlcs
 		).map_err(|e| PaymentError::Routing(e))?;
 
 		match send_payment(&route) {
@@ -634,8 +639,7 @@ where
 		let inflight_htlcs = self.create_inflight_map();
 
 		let route = self.router.find_route(
-			&payer, &params, &payment_hash, Some(&first_hops.iter().collect::<Vec<_>>()),
-			inflight_htlcs
+			&payer, &params, Some(&first_hops.iter().collect::<Vec<_>>()), inflight_htlcs
 		);
 
 		if route.is_err() {
@@ -688,9 +692,8 @@ where
 		self.payment_cache.lock().unwrap().remove(payment_hash);
 	}
 
-	/// Given a [`PaymentHash`], this function looks up inflight path attempts in the payment_cache.
-	/// Then, it uses the path information inside the cache to construct a HashMap mapping a channel's
-	/// short channel id and direction to the amount being sent through it.
+	/// Use path information in the payment_cache to construct a HashMap mapping a channel's short
+	/// channel id and direction to the amount being sent through it.
 	///
 	/// This function should be called whenever we need information about currently used up liquidity
 	/// across payments.
@@ -726,7 +729,7 @@ where
 			}
 		}
 
-		InFlightHtlcs(total_inflight_map)
+		InFlightHtlcs::new(total_inflight_map)
 	}
 }
 
@@ -741,7 +744,7 @@ fn has_expired(route_params: &RouteParameters) -> bool {
 	} else { false }
 }
 
-impl<P: Deref, R: Router, L: Deref, E: EventHandler, T: Time> EventHandler for InvoicePayerUsingTime<P, R, L, E, T>
+impl<P: Deref, R: ScoringRouter, L: Deref, E: EventHandler, T: Time> EventHandler for InvoicePayerUsingTime<P, R, L, E, T>
 where
 	P::Target: Payer,
 	L::Target: Logger,
@@ -815,31 +818,6 @@ where
 	}
 }
 
-/// A map with liquidity value (in msat) keyed by a short channel id and the direction the HTLC
-/// is traveling in. The direction boolean is determined by checking if the HTLC source's public
-/// key is less than its destination. See [`InFlightHtlcs::used_liquidity_msat`] for more
-/// details.
-pub struct InFlightHtlcs(HashMap<(u64, bool), u64>);
-
-impl InFlightHtlcs {
-	/// Returns liquidity in msat given the public key of the HTLC source, target, and short channel
-	/// id.
-	pub fn used_liquidity_msat(&self, source: &NodeId, target: &NodeId, channel_scid: u64) -> Option<u64> {
-		self.0.get(&(channel_scid, source < target)).map(|v| *v)
-	}
-}
-
-impl Writeable for InFlightHtlcs {
-	fn write<W: lightning::util::ser::Writer>(&self, writer: &mut W) -> Result<(), io::Error> { self.0.write(writer) }
-}
-
-impl lightning::util::ser::Readable for InFlightHtlcs {
-	fn read<R: io::Read>(reader: &mut R) -> Result<Self, lightning::ln::msgs::DecodeError> {
-		let infight_map: HashMap<(u64, bool), u64> = lightning::util::ser::Readable::read(reader)?;
-		Ok(Self(infight_map))
-	}
-}
-
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -852,7 +830,7 @@ mod tests {
 	use lightning::ln::functional_test_utils::*;
 	use lightning::ln::msgs::{ChannelMessageHandler, ErrorAction, LightningError};
 	use lightning::routing::gossip::{EffectiveCapacity, NodeId};
-	use lightning::routing::router::{PaymentParameters, Route, RouteHop};
+	use lightning::routing::router::{InFlightHtlcs, PaymentParameters, Route, RouteHop, Router};
 	use lightning::routing::scoring::{ChannelUsage, LockableScore, Score};
 	use lightning::util::test_utils::TestLogger;
 	use lightning::util::errors::APIError;
@@ -1895,7 +1873,7 @@ mod tests {
 
 	impl Router for TestRouter {
 		fn find_route(
-			&self, payer: &PublicKey, route_params: &RouteParameters, _payment_hash: &PaymentHash,
+			&self, payer: &PublicKey, route_params: &RouteParameters,
 			_first_hops: Option<&[&ChannelDetails]>, inflight_htlcs: InFlightHtlcs
 		) -> Result<Route, LightningError> {
 			// Simulate calling the Scorer just as you would in find_route
@@ -1926,7 +1904,9 @@ mod tests {
 				payment_params: Some(route_params.payment_params.clone()), ..Self::route_for_value(route_params.final_value_msat)
 			})
 		}
+	}
 
+	impl ScoringRouter for TestRouter {
 		fn notify_payment_path_failed(&self, path: &[&RouteHop], short_channel_id: u64) {
 			self.scorer.lock().payment_path_failed(path, short_channel_id);
 		}
@@ -1948,12 +1928,14 @@ mod tests {
 
 	impl Router for FailingRouter {
 		fn find_route(
-			&self, _payer: &PublicKey, _params: &RouteParameters, _payment_hash: &PaymentHash,
-			_first_hops: Option<&[&ChannelDetails]>, _inflight_htlcs: InFlightHtlcs
+			&self, _payer: &PublicKey, _params: &RouteParameters, _first_hops: Option<&[&ChannelDetails]>,
+			_inflight_htlcs: InFlightHtlcs,
 		) -> Result<Route, LightningError> {
 			Err(LightningError { err: String::new(), action: ErrorAction::IgnoreError })
 		}
+	}
 
+	impl ScoringRouter for FailingRouter {
 		fn notify_payment_path_failed(&self, _path: &[&RouteHop], _short_channel_id: u64) {}
 
 		fn notify_payment_path_successful(&self, _path: &[&RouteHop]) {}
@@ -2210,12 +2192,13 @@ mod tests {
 
 	impl Router for ManualRouter {
 		fn find_route(
-			&self, _payer: &PublicKey, _params: &RouteParameters, _payment_hash: &PaymentHash,
-			_first_hops: Option<&[&ChannelDetails]>, _inflight_htlcs: InFlightHtlcs
+			&self, _payer: &PublicKey, _params: &RouteParameters, _first_hops: Option<&[&ChannelDetails]>,
+			_inflight_htlcs: InFlightHtlcs
 		) -> Result<Route, LightningError> {
 			self.0.borrow_mut().pop_front().unwrap()
 		}
-
+	}
+	impl ScoringRouter for ManualRouter {
 		fn notify_payment_path_failed(&self, _path: &[&RouteHop], _short_channel_id: u64) {}
 
 		fn notify_payment_path_successful(&self, _path: &[&RouteHop]) {}

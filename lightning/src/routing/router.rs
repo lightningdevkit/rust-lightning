@@ -29,6 +29,49 @@ use alloc::collections::BinaryHeap;
 use core::cmp;
 use core::ops::Deref;
 
+/// A trait defining behavior for routing a payment.
+pub trait Router {
+	/// Finds a [`Route`] between `payer` and `payee` for a payment with the given values.
+	fn find_route(
+		&self, payer: &PublicKey, route_params: &RouteParameters,
+		first_hops: Option<&[&ChannelDetails]>, inflight_htlcs: InFlightHtlcs
+	) -> Result<Route, LightningError>;
+}
+
+/// A map with liquidity value (in msat) keyed by a short channel id and the direction the HTLC
+/// is traveling in. The direction boolean is determined by checking if the HTLC source's public
+/// key is less than its destination. See [`InFlightHtlcs::used_liquidity_msat`] for more
+/// details.
+#[cfg(not(any(test, feature = "_test_utils")))]
+pub struct InFlightHtlcs(HashMap<(u64, bool), u64>);
+#[cfg(any(test, feature = "_test_utils"))]
+pub struct InFlightHtlcs(pub HashMap<(u64, bool), u64>);
+
+impl InFlightHtlcs {
+	/// Create a new `InFlightHtlcs` via a mapping from:
+	/// (short_channel_id, source_pubkey < target_pubkey) -> used_liquidity_msat
+	pub fn new(inflight_map: HashMap<(u64, bool), u64>) -> Self {
+		InFlightHtlcs(inflight_map)
+	}
+
+	/// Returns liquidity in msat given the public key of the HTLC source, target, and short channel
+	/// id.
+	pub fn used_liquidity_msat(&self, source: &NodeId, target: &NodeId, channel_scid: u64) -> Option<u64> {
+		self.0.get(&(channel_scid, source < target)).map(|v| *v)
+	}
+}
+
+impl Writeable for InFlightHtlcs {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> { self.0.write(writer) }
+}
+
+impl Readable for InFlightHtlcs {
+	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
+		let infight_map: HashMap<(u64, bool), u64> = Readable::read(reader)?;
+		Ok(Self(infight_map))
+	}
+}
+
 /// A hop in a route
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct RouteHop {
