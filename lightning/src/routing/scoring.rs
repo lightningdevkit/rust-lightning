@@ -1143,31 +1143,32 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> Score for Probabilis
 				.get(&hop.short_channel_id)
 				.and_then(|channel| channel.as_directed_to(&target));
 
-			if hop.short_channel_id == short_channel_id && hop_idx == 0 {
+			let at_failed_channel = hop.short_channel_id == short_channel_id;
+			if at_failed_channel && hop_idx == 0 {
 				log_warn!(self.logger, "Payment failed at the first hop - we do not attempt to learn channel info in such cases as we can directly observe local state.\n\tBecause we know the local state, we should generally not see failures here - this may be an indication that your channel peer on channel {} is broken and you may wish to close the channel.", hop.short_channel_id);
 			}
 
 			// Only score announced channels.
 			if let Some((channel, source)) = channel_directed_from_source {
 				let capacity_msat = channel.effective_capacity().as_msat();
-				if hop.short_channel_id == short_channel_id {
+				if at_failed_channel {
 					self.channel_liquidities
 						.entry(hop.short_channel_id)
 						.or_insert_with(ChannelLiquidity::new)
 						.as_directed_mut(source, &target, capacity_msat, &self.params)
 						.failed_at_channel(amount_msat, format_args!("SCID {}, towards {:?}", hop.short_channel_id, target), &self.logger);
-					break;
+				} else {
+					self.channel_liquidities
+						.entry(hop.short_channel_id)
+						.or_insert_with(ChannelLiquidity::new)
+						.as_directed_mut(source, &target, capacity_msat, &self.params)
+						.failed_downstream(amount_msat, format_args!("SCID {}, towards {:?}", hop.short_channel_id, target), &self.logger);
 				}
-
-				self.channel_liquidities
-					.entry(hop.short_channel_id)
-					.or_insert_with(ChannelLiquidity::new)
-					.as_directed_mut(source, &target, capacity_msat, &self.params)
-					.failed_downstream(amount_msat, format_args!("SCID {}, towards {:?}", hop.short_channel_id, target), &self.logger);
 			} else {
 				log_debug!(self.logger, "Not able to penalize channel with SCID {} as we do not have graph info for it (likely a route-hint last-hop).",
 					hop.short_channel_id);
 			}
+			if at_failed_channel { break; }
 		}
 	}
 
@@ -1745,32 +1746,22 @@ mod tests {
 		network_graph.update_channel(&signed_update).unwrap();
 	}
 
+	fn path_hop(pubkey: PublicKey, short_channel_id: u64, fee_msat: u64) -> RouteHop {
+		RouteHop {
+			pubkey,
+			node_features: channelmanager::provided_node_features(),
+			short_channel_id,
+			channel_features: channelmanager::provided_channel_features(),
+			fee_msat,
+			cltv_expiry_delta: 18,
+		}
+	}
+
 	fn payment_path_for_amount(amount_msat: u64) -> Vec<RouteHop> {
 		vec![
-			RouteHop {
-				pubkey: source_pubkey(),
-				node_features: channelmanager::provided_node_features(),
-				short_channel_id: 41,
-				channel_features: channelmanager::provided_channel_features(),
-				fee_msat: 1,
-				cltv_expiry_delta: 18,
-			},
-			RouteHop {
-				pubkey: target_pubkey(),
-				node_features: channelmanager::provided_node_features(),
-				short_channel_id: 42,
-				channel_features: channelmanager::provided_channel_features(),
-				fee_msat: 2,
-				cltv_expiry_delta: 18,
-			},
-			RouteHop {
-				pubkey: recipient_pubkey(),
-				node_features: channelmanager::provided_node_features(),
-				short_channel_id: 43,
-				channel_features: channelmanager::provided_channel_features(),
-				fee_msat: amount_msat,
-				cltv_expiry_delta: 18,
-			},
+			path_hop(source_pubkey(), 41, 1),
+			path_hop(target_pubkey(), 42, 2),
+			path_hop(recipient_pubkey(), 43, amount_msat),
 		]
 	}
 
@@ -2143,6 +2134,65 @@ mod tests {
 		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), u64::max_value());
 		let usage = ChannelUsage { amount_msat: 750, ..usage };
 		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), u64::max_value());
+	}
+
+	#[test]
+	fn ignores_channels_after_removed_failed_channel() {
+		// Previously, if we'd tried to send over a channel which was removed from the network
+		// graph before we call `payment_path_failed` (which is the default if the we get a "no
+		// such channel" error in the `InvoicePayer`), we would call `failed_downstream` on all
+		// channels in the route, even ones which they payment never reached. This tests to ensure
+		// we do not score such channels.
+		let secp_ctx = Secp256k1::new();
+		let logger = TestLogger::new();
+		let genesis_hash = genesis_block(Network::Testnet).header.block_hash();
+		let mut network_graph = NetworkGraph::new(genesis_hash, &logger);
+		let secret_a = SecretKey::from_slice(&[42; 32]).unwrap();
+		let secret_b = SecretKey::from_slice(&[43; 32]).unwrap();
+		let secret_c = SecretKey::from_slice(&[44; 32]).unwrap();
+		let secret_d = SecretKey::from_slice(&[45; 32]).unwrap();
+		add_channel(&mut network_graph, 42, secret_a, secret_b);
+		// Don't add the channel from B -> C.
+		add_channel(&mut network_graph, 44, secret_c, secret_d);
+
+		let pub_a = PublicKey::from_secret_key(&secp_ctx, &secret_a);
+		let pub_b = PublicKey::from_secret_key(&secp_ctx, &secret_b);
+		let pub_c = PublicKey::from_secret_key(&secp_ctx, &secret_c);
+		let pub_d = PublicKey::from_secret_key(&secp_ctx, &secret_d);
+
+		let path = vec![
+			path_hop(pub_b, 42, 1),
+			path_hop(pub_c, 43, 2),
+			path_hop(pub_d, 44, 100),
+		];
+
+		let node_a = NodeId::from_pubkey(&pub_a);
+		let node_b = NodeId::from_pubkey(&pub_b);
+		let node_c = NodeId::from_pubkey(&pub_c);
+		let node_d = NodeId::from_pubkey(&pub_d);
+
+		let params = ProbabilisticScoringParameters {
+			liquidity_penalty_multiplier_msat: 1_000,
+			..ProbabilisticScoringParameters::zero_penalty()
+		};
+		let mut scorer = ProbabilisticScorer::new(params, &network_graph, &logger);
+
+		let usage = ChannelUsage {
+			amount_msat: 250,
+			inflight_htlc_msat: 0,
+			effective_capacity: EffectiveCapacity::Total { capacity_msat: 1_000, htlc_maximum_msat: 1_000 },
+		};
+		assert_eq!(scorer.channel_penalty_msat(42, &node_a, &node_b, usage), 128);
+		// Note that a default liquidity bound is used for B -> C as no channel exists
+		assert_eq!(scorer.channel_penalty_msat(43, &node_b, &node_c, usage), 128);
+		assert_eq!(scorer.channel_penalty_msat(44, &node_c, &node_d, usage), 128);
+
+		scorer.payment_path_failed(&path.iter().collect::<Vec<_>>(), 43);
+
+		assert_eq!(scorer.channel_penalty_msat(42, &node_a, &node_b, usage), 80);
+		// Note that a default liquidity bound is used for B -> C as no channel exists
+		assert_eq!(scorer.channel_penalty_msat(43, &node_b, &node_c, usage), 128);
+		assert_eq!(scorer.channel_penalty_msat(44, &node_c, &node_d, usage), 128);
 	}
 
 	#[test]
