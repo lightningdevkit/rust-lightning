@@ -15,7 +15,7 @@ use crate::chain::channelmonitor::{ChannelMonitor, CLTV_CLAIM_BUFFER, LATENCY_GR
 use crate::chain::keysinterface::{KeysInterface, Recipient};
 use crate::ln::{PaymentHash, PaymentSecret};
 use crate::ln::channel::EXPIRE_PREV_CONFIG_TICKS;
-use crate::ln::channelmanager::{self, ChannelManager, ChannelManagerReadArgs, HTLCForwardInfo, CLTV_FAR_FAR_AWAY, MIN_CLTV_EXPIRY_DELTA, PendingHTLCInfo, PendingHTLCRouting, PaymentId};
+use crate::ln::channelmanager::{self, ChannelManager, ChannelManagerReadArgs, HTLCForwardInfo, CLTV_FAR_FAR_AWAY, MIN_CLTV_EXPIRY_DELTA, PendingAddHTLCInfo, PendingHTLCInfo, PendingHTLCRouting, PaymentId};
 use crate::ln::onion_utils;
 use crate::routing::gossip::{NetworkUpdate, RoutingFees, NodeId};
 use crate::routing::router::{get_route, PaymentParameters, Route, RouteHint, RouteHintHop};
@@ -554,7 +554,7 @@ fn test_onion_failure() {
 		for (_, pending_forwards) in nodes[1].node.forward_htlcs.lock().unwrap().iter_mut() {
 			for f in pending_forwards.iter_mut() {
 				match f {
-					&mut HTLCForwardInfo::AddHTLC { ref mut forward_info, .. } =>
+					&mut HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo { ref mut forward_info, .. }) =>
 						forward_info.outgoing_cltv_value += 1,
 					_ => {},
 				}
@@ -567,7 +567,7 @@ fn test_onion_failure() {
 		for (_, pending_forwards) in nodes[1].node.forward_htlcs.lock().unwrap().iter_mut() {
 			for f in pending_forwards.iter_mut() {
 				match f {
-					&mut HTLCForwardInfo::AddHTLC { ref mut forward_info, .. } =>
+					&mut HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo { ref mut forward_info, .. }) =>
 						forward_info.amt_to_forward -= 1,
 					_ => {},
 				}
@@ -1035,12 +1035,12 @@ fn test_phantom_onion_hmac_failure() {
 		let mut forward_htlcs = nodes[1].node.forward_htlcs.lock().unwrap();
 		let mut pending_forward = forward_htlcs.get_mut(&phantom_scid).unwrap();
 		match pending_forward[0] {
-			HTLCForwardInfo::AddHTLC {
+			HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo {
 				forward_info: PendingHTLCInfo {
 					routing: PendingHTLCRouting::Forward { ref mut onion_packet, .. },
 					..
 				}, ..
-			} => {
+			}) => {
 				onion_packet.hmac[onion_packet.hmac.len() - 1] ^= 1;
 				Sha256::hash(&onion_packet.hop_data).into_inner().to_vec()
 			},
@@ -1095,12 +1095,12 @@ fn test_phantom_invalid_onion_payload() {
 	for (_, pending_forwards) in nodes[1].node.forward_htlcs.lock().unwrap().iter_mut() {
 		for f in pending_forwards.iter_mut() {
 			match f {
-				&mut HTLCForwardInfo::AddHTLC {
+				&mut HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo {
 					forward_info: PendingHTLCInfo {
 						routing: PendingHTLCRouting::Forward { ref mut onion_packet, .. },
 						..
 					}, ..
-				} => {
+				}) => {
 					// Construct the onion payloads for the entire route and an invalid amount.
 					let height = nodes[0].best_block_info().1;
 					let session_priv = SecretKey::from_slice(&session_priv).unwrap();
@@ -1166,9 +1166,9 @@ fn test_phantom_final_incorrect_cltv_expiry() {
 	for (_, pending_forwards) in nodes[1].node.forward_htlcs.lock().unwrap().iter_mut() {
 		for f in pending_forwards.iter_mut() {
 			match f {
-				&mut HTLCForwardInfo::AddHTLC {
+				&mut HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo {
 					forward_info: PendingHTLCInfo { ref mut outgoing_cltv_value, .. }, ..
-				} => {
+				}) => {
 					*outgoing_cltv_value += 1;
 				},
 				_ => panic!("Unexpected forward"),

@@ -129,20 +129,22 @@ pub(super) enum PendingHTLCStatus {
 	Fail(HTLCFailureMsg),
 }
 
-pub(super) enum HTLCForwardInfo {
-	AddHTLC {
-		forward_info: PendingHTLCInfo,
+pub(super) struct PendingAddHTLCInfo {
+	pub(super) forward_info: PendingHTLCInfo,
 
-		// These fields are produced in `forward_htlcs()` and consumed in
-		// `process_pending_htlc_forwards()` for constructing the
-		// `HTLCSource::PreviousHopData` for failed and forwarded
-		// HTLCs.
-		//
-		// Note that this may be an outbound SCID alias for the associated channel.
-		prev_short_channel_id: u64,
-		prev_htlc_id: u64,
-		prev_funding_outpoint: OutPoint,
-	},
+	// These fields are produced in `forward_htlcs()` and consumed in
+	// `process_pending_htlc_forwards()` for constructing the
+	// `HTLCSource::PreviousHopData` for failed and forwarded
+	// HTLCs.
+	//
+	// Note that this may be an outbound SCID alias for the associated channel.
+	prev_short_channel_id: u64,
+	prev_htlc_id: u64,
+	prev_funding_outpoint: OutPoint,
+}
+
+pub(super) enum HTLCForwardInfo {
+	AddHTLC(PendingAddHTLCInfo),
 	FailHTLC {
 		htlc_id: u64,
 		err_packet: msgs::OnionErrorPacket,
@@ -3149,9 +3151,13 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 						() => {
 							for forward_info in pending_forwards.drain(..) {
 								match forward_info {
-									HTLCForwardInfo::AddHTLC { prev_short_channel_id, prev_htlc_id, forward_info: PendingHTLCInfo {
-										routing, incoming_shared_secret, payment_hash, amt_to_forward, outgoing_cltv_value },
-										prev_funding_outpoint } => {
+									HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo {
+										prev_short_channel_id, prev_htlc_id, prev_funding_outpoint,
+										forward_info: PendingHTLCInfo {
+											routing, incoming_shared_secret, payment_hash, amt_to_forward,
+											outgoing_cltv_value
+										}
+									}) => {
 											macro_rules! failure_handler {
 												($msg: expr, $err_code: expr, $err_data: expr, $phantom_ss: expr, $next_hop_unknown: expr) => {
 													log_info!(self.logger, "Failed to accept/forward incoming HTLC: {}", $msg);
@@ -3252,11 +3258,13 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 							let mut fail_htlc_msgs = Vec::new();
 							for forward_info in pending_forwards.drain(..) {
 								match forward_info {
-									HTLCForwardInfo::AddHTLC { prev_short_channel_id, prev_htlc_id, forward_info: PendingHTLCInfo {
-											routing: PendingHTLCRouting::Forward {
-												onion_packet, ..
-											}, incoming_shared_secret, payment_hash, amt_to_forward, outgoing_cltv_value },
-											prev_funding_outpoint } => {
+									HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo {
+										prev_short_channel_id, prev_htlc_id, prev_funding_outpoint ,
+										forward_info: PendingHTLCInfo {
+											incoming_shared_secret, payment_hash, amt_to_forward, outgoing_cltv_value,
+											routing: PendingHTLCRouting::Forward { onion_packet, .. },
+										},
+									}) => {
 										log_trace!(self.logger, "Adding HTLC from short id {} with payment_hash {} to channel with short id {} after delay", prev_short_channel_id, log_bytes!(payment_hash.0), short_chan_id);
 										let htlc_source = HTLCSource::PreviousHopData(HTLCPreviousHopData {
 											short_channel_id: prev_short_channel_id,
@@ -3377,9 +3385,12 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 				} else {
 					for forward_info in pending_forwards.drain(..) {
 						match forward_info {
-							HTLCForwardInfo::AddHTLC { prev_short_channel_id, prev_htlc_id, forward_info: PendingHTLCInfo {
-									routing, incoming_shared_secret, payment_hash, amt_to_forward, .. },
-									prev_funding_outpoint } => {
+							HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo {
+								prev_short_channel_id, prev_htlc_id, prev_funding_outpoint,
+								forward_info: PendingHTLCInfo {
+									routing, incoming_shared_secret, payment_hash, amt_to_forward, ..
+								}
+							}) => {
 								let (cltv_expiry, onion_payload, payment_data, phantom_shared_secret) = match routing {
 									PendingHTLCRouting::Receive { payment_data, incoming_cltv_expiry, phantom_shared_secret } => {
 										let _legacy_hop_data = Some(payment_data.clone());
@@ -5089,12 +5100,12 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 							PendingHTLCRouting::ReceiveKeysend { .. } => 0,
 					}) {
 						hash_map::Entry::Occupied(mut entry) => {
-							entry.get_mut().push(HTLCForwardInfo::AddHTLC { prev_short_channel_id, prev_funding_outpoint,
-							                                                prev_htlc_id, forward_info });
+							entry.get_mut().push(HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo {
+								prev_short_channel_id, prev_funding_outpoint, prev_htlc_id, forward_info }));
 						},
 						hash_map::Entry::Vacant(entry) => {
-							entry.insert(vec!(HTLCForwardInfo::AddHTLC { prev_short_channel_id, prev_funding_outpoint,
-							                                             prev_htlc_id, forward_info }));
+							entry.insert(vec!(HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo {
+								prev_short_channel_id, prev_funding_outpoint, prev_htlc_id, forward_info })));
 						}
 					}
 				}
@@ -6681,18 +6692,20 @@ impl_writeable_tlv_based_enum!(HTLCFailReason,
 	},
 ;);
 
+impl_writeable_tlv_based!(PendingAddHTLCInfo, {
+	(0, forward_info, required),
+	(2, prev_short_channel_id, required),
+	(4, prev_htlc_id, required),
+	(6, prev_funding_outpoint, required),
+});
+
 impl_writeable_tlv_based_enum!(HTLCForwardInfo,
-	(0, AddHTLC) => {
-		(0, forward_info, required),
-		(2, prev_short_channel_id, required),
-		(4, prev_htlc_id, required),
-		(6, prev_funding_outpoint, required),
-	},
 	(1, FailHTLC) => {
 		(0, htlc_id, required),
 		(2, err_packet, required),
-	},
-;);
+	};
+	(0, AddHTLC)
+);
 
 impl_writeable_tlv_based!(PendingInboundPayment, {
 	(0, payment_secret, required),
