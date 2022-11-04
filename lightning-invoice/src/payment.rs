@@ -145,7 +145,6 @@ use crate::prelude::*;
 use lightning::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
 use lightning::ln::channelmanager::{ChannelDetails, PaymentId, PaymentSendFailure};
 use lightning::ln::msgs::LightningError;
-use lightning::routing::gossip::NodeId;
 use lightning::routing::router::{InFlightHtlcs, PaymentParameters, Route, RouteHop, RouteParameters, Router};
 use lightning::util::errors::APIError;
 use lightning::util::events::{Event, EventHandler};
@@ -717,38 +716,15 @@ where
 	/// This function should be called whenever we need information about currently used up liquidity
 	/// across payments.
 	fn create_inflight_map(&self) -> InFlightHtlcs {
-		let mut total_inflight_map: HashMap<(u64, bool), u64> = HashMap::new();
-		// Make an attempt at finding existing payment information from `payment_cache`. If it
-		// does not exist, it probably is a fresh payment and we can just return an empty
-		// HashMap.
+		let mut total_inflight_map = InFlightHtlcs::new();
+		// Make an attempt at finding existing payment information from `payment_cache`.
 		for payment_info in self.payment_cache.lock().unwrap().values() {
 			for path in &payment_info.paths {
-				if path.is_empty() { break };
-				// total_inflight_map needs to be direction-sensitive when keeping track of the HTLC value
-				// that is held up. However, the `hops` array, which is a path returned by `find_route` in
-				// the router excludes the payer node. In the following lines, the payer's information is
-				// hardcoded with an inflight value of 0 so that we can correctly represent the first hop
-				// in our sliding window of two.
-				let our_node_id: PublicKey = self.payer.node_id();
-				let reversed_hops_with_payer = path.iter().rev().skip(1)
-					.map(|hop| hop.pubkey)
-					.chain(core::iter::once(our_node_id));
-				let mut cumulative_msat = 0;
-
-				// Taking the reversed vector from above, we zip it with just the reversed hops list to
-				// work "backwards" of the given path, since the last hop's `fee_msat` actually represents
-				// the total amount sent.
-				for (next_hop, prev_hop) in path.iter().rev().zip(reversed_hops_with_payer) {
-					cumulative_msat += next_hop.fee_msat;
-					total_inflight_map
-						.entry((next_hop.short_channel_id, NodeId::from_pubkey(&prev_hop) < NodeId::from_pubkey(&next_hop.pubkey)))
-						.and_modify(|used_liquidity_msat| *used_liquidity_msat += cumulative_msat)
-						.or_insert(cumulative_msat);
-				}
+				total_inflight_map.process_path(path, self.payer.node_id());
 			}
 		}
 
-		InFlightHtlcs::new(total_inflight_map)
+		total_inflight_map
 	}
 }
 
