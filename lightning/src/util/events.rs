@@ -17,7 +17,7 @@
 use crate::chain::keysinterface::SpendableOutputDescriptor;
 #[cfg(anchors)]
 use crate::ln::chan_utils::HTLCOutputInCommitment;
-use crate::ln::channelmanager::PaymentId;
+use crate::ln::channelmanager::{InterceptId, PaymentId};
 use crate::ln::channel::FUNDING_CONF_DEADLINE_BLOCKS;
 use crate::ln::features::ChannelTypeFeatures;
 use crate::ln::msgs;
@@ -566,6 +566,20 @@ pub enum Event {
 		/// now + 5*time_forwardable).
 		time_forwardable: Duration,
 	},
+	/// Used to indicate that we've received a forwardable payment that should be intercepted.
+	PaymentIntercepted {
+		/// The scid that indicated this payment should be intercepted
+		short_channel_id: u64,
+		/// The payment hash used for this payment
+		payment_hash: PaymentHash,
+		/// How many msats are to be received on the inbound edge of this payment
+		inbound_amount_msat: u64,
+		/// How many msats the payer intended to route to the next node. Depending on the reason you are
+		/// intercepting this payment, you might take a fee by forwarding less than this amount
+		expected_outbound_amount_msat: u64,
+		/// A id to help LDK identify which payment is being forwarded or failed
+		intercept_id: InterceptId
+	},
 	/// Used to indicate that an output which you should know how to spend was confirmed on chain
 	/// and is now spendable.
 	/// Such an output will *not* ever be spent by rust-lightning, and are not at risk of your
@@ -896,6 +910,16 @@ impl Writeable for Event {
 					(6, channel_type, required),
 				});
 			},
+			&Event::PaymentIntercepted { short_channel_id, payment_hash, inbound_amount_msat: inbound_amount_msats, expected_outbound_amount_msat: expected_outbound_amount_msats, intercept_id } => {
+				31u8.write(writer)?;
+				write_tlv_fields!(writer, {
+					(0, short_channel_id, required),
+					(2, payment_hash, required),
+					(4, inbound_amount_msats, required),
+					(6, expected_outbound_amount_msats, required),
+					(8, intercept_id, required)
+				});
+			}
 			// Note that, going forward, all new events must only write data inside of
 			// `write_tlv_fields`. Versions 0.0.101+ will ignore odd-numbered events that write
 			// data via `write_tlv_fields`.
@@ -1198,6 +1222,27 @@ impl MaybeReadable for Event {
 					}))
 				};
 				f()
+			},
+			31u8 => {
+				let mut payment_hash = PaymentHash([0; 32]);
+				let mut intercept_id = InterceptId([0; 32]);
+				let mut short_channel_id = 0;
+				let mut inbound_amount_msats = 0;
+				let mut expected_outbound_amount_msats = 0;
+				read_tlv_fields!(reader, {
+					(0, short_channel_id, required),
+					(2, payment_hash, required),
+					(4, inbound_amount_msats, required),
+					(6, expected_outbound_amount_msats, required),
+					(8, intercept_id, required)
+				});
+				Ok(Some(Event::PaymentIntercepted {
+					payment_hash,
+					short_channel_id,
+					inbound_amount_msat: inbound_amount_msats,
+					expected_outbound_amount_msat: expected_outbound_amount_msats,
+					intercept_id,
+				}))
 			},
 			// Versions prior to 0.0.100 did not ignore odd types, instead returning InvalidValue.
 			// Version 0.0.100 failed to properly ignore odd types, possibly resulting in corrupt
