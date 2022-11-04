@@ -696,6 +696,8 @@ pub type SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, M, T, F, L> = ChannelManage
 //  |   |__`id_to_peer`
 //  |   |
 //  |   |__`short_to_chan_info`
+//  |   |   |
+//  |   |   |__`pending_intercepted_payments`
 //  |   |
 //  |   |__`per_peer_state`
 //  |       |
@@ -2334,8 +2336,10 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 					let forwarding_id_opt = match id_option {
 						None => { // unknown_next_peer
 							// Note that this is likely a timing oracle for detecting whether an scid is a
-							// phantom.
-							if fake_scid::is_valid_phantom(&self.fake_scid_rand_bytes, *short_channel_id) {
+							// phantom or an intercept.
+							if fake_scid::is_valid_phantom(&self.fake_scid_rand_bytes, *short_channel_id) ||
+							   fake_scid::is_valid_intercept(&self.fake_scid_rand_bytes, *short_channel_id)
+							{
 								None
 							} else {
 								break Some(("Don't have available channel for forwarding as requested.", 0x4000 | 10, None));
@@ -5115,28 +5119,81 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 	fn forward_htlcs(&self, per_source_pending_forwards: &mut [(u64, OutPoint, Vec<(PendingHTLCInfo, u64)>)]) {
 		for &mut (prev_short_channel_id, prev_funding_outpoint, ref mut pending_forwards) in per_source_pending_forwards {
 			let mut forward_event = None;
+			let mut new_intercept_events = Vec::new();
+			let mut failed_intercept_forwards = Vec::new();
 			if !pending_forwards.is_empty() {
 				let mut forward_htlcs = self.forward_htlcs.lock().unwrap();
-				if forward_htlcs.is_empty() {
-					forward_event = Some(Duration::from_millis(MIN_HTLC_RELAY_HOLDING_CELL_MILLIS))
-				}
+				let short_to_chan_info = self.short_to_chan_info.read().unwrap();
 				for (forward_info, prev_htlc_id) in pending_forwards.drain(..) {
-					match forward_htlcs.entry(match forward_info.routing {
-							PendingHTLCRouting::Forward { short_channel_id, .. } => short_channel_id,
-							PendingHTLCRouting::Receive { .. } => 0,
-							PendingHTLCRouting::ReceiveKeysend { .. } => 0,
-					}) {
+					let scid = match forward_info.routing {
+						PendingHTLCRouting::Forward { short_channel_id, .. } => short_channel_id,
+						PendingHTLCRouting::Receive { .. } => 0,
+						PendingHTLCRouting::ReceiveKeysend { .. } => 0,
+					};
+					let forward_htlcs_empty = forward_htlcs.is_empty();
+					match forward_htlcs.entry(scid) {
 						hash_map::Entry::Occupied(mut entry) => {
 							entry.get_mut().push(HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo {
 								prev_short_channel_id, prev_funding_outpoint, prev_htlc_id, forward_info }));
 						},
 						hash_map::Entry::Vacant(entry) => {
-							entry.insert(vec!(HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo {
-								prev_short_channel_id, prev_funding_outpoint, prev_htlc_id, forward_info })));
+							if !short_to_chan_info.contains_key(&scid) &&
+							   forward_info.amt_incoming.is_some() &&
+							   fake_scid::is_valid_intercept(&self.fake_scid_rand_bytes, scid)
+							{
+								let intercept_id = InterceptId(Sha256::hash(&forward_info.incoming_shared_secret).into_inner());
+								let mut pending_intercepts = self.pending_intercepted_payments.lock().unwrap();
+								match pending_intercepts.entry(intercept_id) {
+									hash_map::Entry::Vacant(entry) => {
+										new_intercept_events.push(events::Event::PaymentIntercepted {
+											short_channel_id: scid,
+											payment_hash: forward_info.payment_hash,
+											inbound_amount_msat: forward_info.amt_incoming.unwrap(),
+											expected_outbound_amount_msat: forward_info.amt_to_forward,
+											intercept_id
+										});
+										entry.insert(PendingAddHTLCInfo {
+											prev_short_channel_id, prev_funding_outpoint, prev_htlc_id, forward_info });
+									},
+									hash_map::Entry::Occupied(_) => {
+										log_info!(self.logger, "Failed to forward incoming HTLC: detected duplicate intercepted payment over short channel id {}", scid);
+										let htlc_source = HTLCSource::PreviousHopData(HTLCPreviousHopData {
+											short_channel_id: prev_short_channel_id,
+											outpoint: prev_funding_outpoint,
+											htlc_id: prev_htlc_id,
+											incoming_packet_shared_secret: forward_info.incoming_shared_secret,
+											phantom_shared_secret: None,
+										});
+
+										failed_intercept_forwards.push((htlc_source, forward_info.payment_hash,
+												HTLCFailReason::Reason { failure_code: 0x4000 | 10, data: Vec::new() },
+												HTLCDestination::UnknownNextHop { requested_forward_scid: scid },
+										));
+									}
+								}
+							} else {
+								// We don't want to generate a PendingHTLCsForwardable event if only intercepted
+								// payments are being forwarded.
+								if forward_htlcs_empty {
+									forward_event = Some(Duration::from_millis(MIN_HTLC_RELAY_HOLDING_CELL_MILLIS));
+								}
+								entry.insert(vec!(HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo {
+									prev_short_channel_id, prev_funding_outpoint, prev_htlc_id, forward_info })));
+							}
 						}
 					}
 				}
 			}
+
+			for (htlc_source, payment_hash, failure_reason, destination) in failed_intercept_forwards.drain(..) {
+				self.fail_htlc_backwards_internal(htlc_source, &payment_hash, failure_reason, destination);
+			}
+
+			if !new_intercept_events.is_empty() {
+				let mut events = self.pending_events.lock().unwrap();
+				events.append(&mut new_intercept_events);
+			}
+
 			match forward_event {
 				Some(time) => {
 					let mut pending_events = self.pending_events.lock().unwrap();
