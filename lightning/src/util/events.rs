@@ -17,7 +17,7 @@
 use crate::chain::keysinterface::SpendableOutputDescriptor;
 #[cfg(anchors)]
 use crate::ln::chan_utils::HTLCOutputInCommitment;
-use crate::ln::channelmanager::PaymentId;
+use crate::ln::channelmanager::{InterceptId, PaymentId};
 use crate::ln::channel::FUNDING_CONF_DEADLINE_BLOCKS;
 use crate::ln::features::ChannelTypeFeatures;
 use crate::ln::msgs;
@@ -287,6 +287,22 @@ pub enum BumpTransactionEvent {
 		pending_htlcs: Vec<HTLCOutputInCommitment>,
 	},
 }
+
+/// Will be used in [`Event::HTLCIntercepted`] to identify the next hop in the HTLC's path.
+/// Currently only used in serialization for the sake of maintaining compatibility. More variants
+/// will be added for general-purpose HTLC forward intercepts as well as trampoline forward
+/// intercepts in upcoming work.
+enum InterceptNextHop {
+	FakeScid {
+		requested_next_hop_scid: u64,
+	},
+}
+
+impl_writeable_tlv_based_enum!(InterceptNextHop,
+	(0, FakeScid) => {
+		(0, requested_next_hop_scid, required),
+	};
+);
 
 /// An Event which you should probably take some action in response to.
 ///
@@ -585,6 +601,24 @@ pub enum Event {
 		/// now + 5*time_forwardable).
 		time_forwardable: Duration,
 	},
+	/// Used to indicate that we've intercepted an HTLC forward.
+	HTLCIntercepted {
+		/// An id to help LDK identify which HTLC is being forwarded or failed.
+		intercept_id: InterceptId,
+		/// The fake scid that was programmed as the next hop's scid.
+		requested_next_hop_scid: u64,
+		/// The payment hash used for this HTLC.
+		payment_hash: PaymentHash,
+		/// How many msats were received on the inbound edge of this HTLC.
+		inbound_amount_msat: u64,
+		/// How many msats the payer intended to route to the next node. Depending on the reason you are
+		/// intercepting this payment, you might take a fee by forwarding less than this amount.
+		///
+		/// Note that LDK will NOT check that expected fees were factored into this value. You MUST
+		/// check that whatever fee you want has been included here or subtract it as required. Further,
+		/// LDK will not stop you from forwarding more than you received.
+		expected_outbound_amount_msat: u64,
+	},
 	/// Used to indicate that an output which you should know how to spend was confirmed on chain
 	/// and is now spendable.
 	/// Such an output will *not* ever be spent by rust-lightning, and are not at risk of your
@@ -825,6 +859,17 @@ impl Writeable for Event {
 					(0, WithoutLength(outputs), required),
 				});
 			},
+			&Event::HTLCIntercepted { requested_next_hop_scid, payment_hash, inbound_amount_msat, expected_outbound_amount_msat, intercept_id } => {
+				6u8.write(writer)?;
+				let intercept_scid = InterceptNextHop::FakeScid { requested_next_hop_scid };
+				write_tlv_fields!(writer, {
+					(0, intercept_id, required),
+					(2, intercept_scid, required),
+					(4, payment_hash, required),
+					(6, inbound_amount_msat, required),
+					(8, expected_outbound_amount_msat, required),
+				});
+			}
 			&Event::PaymentForwarded { fee_earned_msat, prev_channel_id, claim_from_onchain_tx, next_channel_id } => {
 				7u8.write(writer)?;
 				write_tlv_fields!(writer, {
@@ -1053,6 +1098,30 @@ impl MaybeReadable for Event {
 					Ok(Some(Event::SpendableOutputs { outputs: outputs.0 }))
 				};
 				f()
+			},
+			6u8 => {
+				let mut payment_hash = PaymentHash([0; 32]);
+				let mut intercept_id = InterceptId([0; 32]);
+				let mut requested_next_hop_scid = InterceptNextHop::FakeScid { requested_next_hop_scid: 0 };
+				let mut inbound_amount_msat = 0;
+				let mut expected_outbound_amount_msat = 0;
+				read_tlv_fields!(reader, {
+					(0, intercept_id, required),
+					(2, requested_next_hop_scid, required),
+					(4, payment_hash, required),
+					(6, inbound_amount_msat, required),
+					(8, expected_outbound_amount_msat, required),
+				});
+				let next_scid = match requested_next_hop_scid {
+					InterceptNextHop::FakeScid { requested_next_hop_scid: scid } => scid
+				};
+				Ok(Some(Event::HTLCIntercepted {
+					payment_hash,
+					requested_next_hop_scid: next_scid,
+					inbound_amount_msat,
+					expected_outbound_amount_msat,
+					intercept_id,
+				}))
 			},
 			7u8 => {
 				let f = || {
