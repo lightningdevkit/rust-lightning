@@ -182,6 +182,12 @@ pub enum HTLCDestination {
 		/// Short channel id we are requesting to forward an HTLC to.
 		requested_forward_scid: u64,
 	},
+	/// We couldn't forward to the outgoing scid. An example would be attempting to send a duplicate
+	/// intercept HTLC.
+	InvalidForward {
+		/// Short channel id we are requesting to forward an HTLC to.
+		requested_forward_scid: u64
+	},
 	/// Failure scenario where an HTLC may have been forwarded to be intended for us,
 	/// but is invalid for some reason, so we reject it.
 	///
@@ -200,12 +206,15 @@ impl_writeable_tlv_based_enum_upgradable!(HTLCDestination,
 		(0, node_id, required),
 		(2, channel_id, required),
 	},
+	(1, InvalidForward) => {
+		(0, requested_forward_scid, required),
+	},
 	(2, UnknownNextHop) => {
 		(0, requested_forward_scid, required),
 	},
 	(4, FailedPayment) => {
 		(0, payment_hash, required),
-	}
+	},
 );
 
 #[cfg(anchors)]
