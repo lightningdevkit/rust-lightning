@@ -63,6 +63,8 @@ pub fn scid_from_parts(block: u64, tx_index: u64, vout_index: u64) -> Result<u64
 /// LDK has multiple reasons to generate fake short channel ids:
 /// 1) outbound SCID aliases we use for private channels
 /// 2) phantom node payments, to get an scid for the phantom node's phantom channel
+/// 3) payments intended to be intercepted will route using a fake scid (this is typically used so
+///    the forwarding node can open a JIT channel to the next hop)
 pub(crate) mod fake_scid {
 	use bitcoin::hash_types::BlockHash;
 	use bitcoin::hashes::hex::FromHex;
@@ -91,6 +93,7 @@ pub(crate) mod fake_scid {
 	pub(crate) enum Namespace {
 		Phantom,
 		OutboundAlias,
+		Intercept
 	}
 
 	impl Namespace {
@@ -150,7 +153,7 @@ pub(crate) mod fake_scid {
 		}
 	}
 
-	/// Returns whether the given fake scid falls into the given namespace.
+	/// Returns whether the given fake scid falls into the phantom namespace.
 	pub fn is_valid_phantom(fake_scid_rand_bytes: &[u8; 32], scid: u64, genesis_hash: &BlockHash) -> bool {
 		let block_height = scid_utils::block_from_scid(&scid);
 		let tx_index = scid_utils::tx_index_from_scid(&scid);
@@ -160,11 +163,21 @@ pub(crate) mod fake_scid {
 			&& valid_vout == scid_utils::vout_from_scid(&scid) as u8
 	}
 
+	/// Returns whether the given fake scid falls into the intercept namespace.
+	pub fn is_valid_intercept(fake_scid_rand_bytes: &[u8; 32], scid: u64, genesis_hash: &BlockHash) -> bool {
+		let block_height = scid_utils::block_from_scid(&scid);
+		let tx_index = scid_utils::tx_index_from_scid(&scid);
+		let namespace = Namespace::Intercept;
+		let valid_vout = namespace.get_encrypted_vout(block_height, tx_index, fake_scid_rand_bytes);
+		block_height >= segwit_activation_height(genesis_hash)
+			&& valid_vout == scid_utils::vout_from_scid(&scid) as u8
+	}
+
 	#[cfg(test)]
 	mod tests {
 		use bitcoin::blockdata::constants::genesis_block;
 		use bitcoin::network::constants::Network;
-		use crate::util::scid_utils::fake_scid::{is_valid_phantom, MAINNET_SEGWIT_ACTIVATION_HEIGHT, MAX_TX_INDEX, MAX_NAMESPACES, Namespace, NAMESPACE_ID_BITMASK, segwit_activation_height, TEST_SEGWIT_ACTIVATION_HEIGHT};
+		use crate::util::scid_utils::fake_scid::{is_valid_intercept, is_valid_phantom, MAINNET_SEGWIT_ACTIVATION_HEIGHT, MAX_TX_INDEX, MAX_NAMESPACES, Namespace, NAMESPACE_ID_BITMASK, segwit_activation_height, TEST_SEGWIT_ACTIVATION_HEIGHT};
 		use crate::util::scid_utils;
 		use crate::util::test_utils;
 		use crate::sync::Arc;
@@ -174,6 +187,10 @@ pub(crate) mod fake_scid {
 			let phantom_namespace = Namespace::Phantom;
 			assert!((phantom_namespace as u8) < MAX_NAMESPACES);
 			assert!((phantom_namespace as u8) <= NAMESPACE_ID_BITMASK);
+
+			let intercept_namespace = Namespace::Intercept;
+			assert!((intercept_namespace as u8) < MAX_NAMESPACES);
+			assert!((intercept_namespace as u8) <= NAMESPACE_ID_BITMASK);
 		}
 
 		#[test]
@@ -201,6 +218,18 @@ pub(crate) mod fake_scid {
 			assert!(is_valid_phantom(&fake_scid_rand_bytes, valid_fake_scid, &testnet_genesis));
 			let invalid_fake_scid = scid_utils::scid_from_parts(1, 0, 12).unwrap();
 			assert!(!is_valid_phantom(&fake_scid_rand_bytes, invalid_fake_scid, &testnet_genesis));
+		}
+
+		#[test]
+		fn test_is_valid_intercept() {
+			let namespace = Namespace::Intercept;
+			let fake_scid_rand_bytes = [0; 32];
+			let testnet_genesis = genesis_block(Network::Testnet).header.block_hash();
+			let valid_encrypted_vout = namespace.get_encrypted_vout(0, 0, &fake_scid_rand_bytes);
+			let valid_fake_scid = scid_utils::scid_from_parts(1, 0, valid_encrypted_vout as u64).unwrap();
+			assert!(is_valid_intercept(&fake_scid_rand_bytes, valid_fake_scid, &testnet_genesis));
+			let invalid_fake_scid = scid_utils::scid_from_parts(1, 0, 12).unwrap();
+			assert!(!is_valid_intercept(&fake_scid_rand_bytes, invalid_fake_scid, &testnet_genesis));
 		}
 
 		#[test]
