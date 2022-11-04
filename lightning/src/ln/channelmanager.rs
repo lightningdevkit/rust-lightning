@@ -113,6 +113,7 @@ pub(super) struct PendingHTLCInfo {
 	pub(super) incoming_shared_secret: [u8; 32],
 	payment_hash: PaymentHash,
 	pub(super) amt_to_forward: u64,
+	pub(super) amt_incoming: Option<u64>, // Added in 0.0.113
 	pub(super) outgoing_cltv_value: u32,
 }
 
@@ -2196,6 +2197,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 			routing,
 			payment_hash,
 			incoming_shared_secret: shared_secret,
+			amt_incoming: Some(amt_msat),
 			amt_to_forward: amt_msat,
 			outgoing_cltv_value: hop_data.outgoing_cltv_value,
 		})
@@ -2292,6 +2294,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 					},
 					payment_hash: msg.payment_hash.clone(),
 					incoming_shared_secret: shared_secret,
+					amt_incoming: Some(msg.amount_msat),
 					amt_to_forward: next_hop_data.amt_to_forward,
 					outgoing_cltv_value: next_hop_data.outgoing_cltv_value,
 				})
@@ -3155,7 +3158,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 										prev_short_channel_id, prev_htlc_id, prev_funding_outpoint,
 										forward_info: PendingHTLCInfo {
 											routing, incoming_shared_secret, payment_hash, amt_to_forward,
-											outgoing_cltv_value
+											outgoing_cltv_value, amt_incoming: _
 										}
 									}) => {
 										macro_rules! failure_handler {
@@ -3262,7 +3265,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 										prev_short_channel_id, prev_htlc_id, prev_funding_outpoint ,
 										forward_info: PendingHTLCInfo {
 											incoming_shared_secret, payment_hash, amt_to_forward, outgoing_cltv_value,
-											routing: PendingHTLCRouting::Forward { onion_packet, .. },
+											routing: PendingHTLCRouting::Forward { onion_packet, .. }, amt_incoming: _,
 										},
 									}) => {
 										log_trace!(self.logger, "Adding HTLC from short id {} with payment_hash {} to channel with short id {} after delay", prev_short_channel_id, log_bytes!(payment_hash.0), short_chan_id);
@@ -6470,7 +6473,8 @@ impl_writeable_tlv_based!(PendingHTLCInfo, {
 	(2, incoming_shared_secret, required),
 	(4, payment_hash, required),
 	(6, amt_to_forward, required),
-	(8, outgoing_cltv_value, required)
+	(8, outgoing_cltv_value, required),
+	(9, amt_incoming, option),
 });
 
 
