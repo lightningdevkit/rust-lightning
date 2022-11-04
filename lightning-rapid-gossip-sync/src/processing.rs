@@ -37,12 +37,9 @@ impl<NG: Deref<Target=NetworkGraph<L>>, L: Deref> RapidGossipSync<NG, L> where L
 		let mut prefix = [0u8; 4];
 		read_cursor.read_exact(&mut prefix)?;
 
-		match prefix {
-			GOSSIP_PREFIX => {}
-			_ => {
-				return Err(DecodeError::UnknownVersion.into());
-			}
-		};
+		if prefix != GOSSIP_PREFIX {
+			return Err(DecodeError::UnknownVersion.into());
+		}
 
 		let chain_hash: BlockHash = Readable::read(read_cursor)?;
 		let latest_seen_timestamp: u32 = Readable::read(read_cursor)?;
@@ -533,5 +530,40 @@ mod tests {
 		);
 		assert!(after.contains("619737530008010752"));
 		assert!(after.contains("783241506229452801"));
+	}
+
+	#[test]
+	pub fn update_fails_with_unknown_version() {
+		let unknown_version_input = vec![
+			76, 68, 75, 2, 111, 226, 140, 10, 182, 241, 179, 114, 193, 166, 162, 70, 174, 99, 247,
+			79, 147, 30, 131, 101, 225, 90, 8, 156, 104, 214, 25, 0, 0, 0, 0, 0, 97, 227, 98, 218,
+			0, 0, 0, 4, 2, 22, 7, 207, 206, 25, 164, 197, 231, 230, 231, 56, 102, 61, 250, 251,
+			187, 172, 38, 46, 79, 247, 108, 44, 155, 48, 219, 238, 252, 53, 192, 6, 67, 2, 36, 125,
+			157, 176, 223, 175, 234, 116, 94, 248, 201, 225, 97, 235, 50, 47, 115, 172, 63, 136,
+			88, 216, 115, 11, 111, 217, 114, 84, 116, 124, 231, 107, 2, 158, 1, 242, 121, 152, 106,
+			204, 131, 186, 35, 93, 70, 216, 10, 237, 224, 183, 89, 95, 65, 3, 83, 185, 58, 138,
+			181, 64, 187, 103, 127, 68, 50, 2, 201, 19, 17, 138, 136, 149, 185, 226, 156, 137, 175,
+			110, 32, 237, 0, 217, 90, 31, 100, 228, 149, 46, 219, 175, 168, 77, 4, 143, 38, 128,
+			76, 97, 0, 0, 0, 2, 0, 0, 255, 8, 153, 192, 0, 2, 27, 0, 0, 0, 1, 0, 0, 255, 2, 68,
+			226, 0, 6, 11, 0, 1, 2, 3, 0, 0, 0, 4, 0, 40, 0, 0, 0, 0, 0, 0, 3, 232, 0, 0, 3, 232,
+			0, 0, 0, 1, 0, 0, 0, 0, 29, 129, 25, 192, 255, 8, 153, 192, 0, 2, 27, 0, 0, 60, 0, 0,
+			0, 0, 0, 0, 0, 1, 0, 0, 0, 100, 0, 0, 2, 224, 0, 0, 0, 0, 58, 85, 116, 216, 0, 29, 0,
+			0, 0, 1, 0, 0, 0, 125, 0, 0, 0, 0, 58, 85, 116, 216, 255, 2, 68, 226, 0, 6, 11, 0, 1,
+			0, 0, 1,
+		];
+
+		let block_hash = genesis_block(Network::Bitcoin).block_hash();
+		let logger = TestLogger::new();
+		let network_graph = NetworkGraph::new(block_hash, &logger);
+		let rapid_sync = RapidGossipSync::new(&network_graph);
+		let update_result = rapid_sync.update_network_graph(&unknown_version_input[..]);
+
+		assert!(update_result.is_err());
+
+		if let Err(GraphSyncError::DecodeError(DecodeError::UnknownVersion)) = update_result {
+			// this is the expected error type
+		} else {
+			panic!("Unexpected update result: {:?}", update_result)
+		}
 	}
 }
