@@ -207,6 +207,24 @@ impl Readable for PaymentId {
 		Ok(PaymentId(buf))
 	}
 }
+
+/// An identifier used to uniquely identify an intercepted HTLC to LDK.
+/// (C-not exported) as we just use [u8; 32] directly
+#[derive(Hash, Copy, Clone, PartialEq, Eq, Debug)]
+pub struct InterceptId(pub [u8; 32]);
+
+impl Writeable for InterceptId {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		self.0.write(w)
+	}
+}
+
+impl Readable for InterceptId {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let buf: [u8; 32] = Readable::read(r)?;
+		Ok(InterceptId(buf))
+	}
+}
 /// Tracks the inbound corresponding to an outbound HTLC
 #[allow(clippy::derive_hash_xor_eq)] // Our Hash is faithful to the data, we just don't have SecretKey::hash
 #[derive(Clone, PartialEq, Eq)]
@@ -751,6 +769,11 @@ pub struct ChannelManager<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 	pub(super) forward_htlcs: Mutex<HashMap<u64, Vec<HTLCForwardInfo>>>,
 	#[cfg(not(test))]
 	forward_htlcs: Mutex<HashMap<u64, Vec<HTLCForwardInfo>>>,
+	/// Storage for HTLCs that have been intercepted and bubbled up to the user. We hold them here
+	/// until the user tells us what we should do with them.
+	///
+	/// See `ChannelManager` struct-level documentation for lock order requirements.
+	pending_intercepted_htlcs: Mutex<HashMap<InterceptId, PendingAddHTLCInfo>>,
 
 	/// Map from payment hash to the payment data and any HTLCs which are to us and can be
 	/// failed/claimed by the user.
@@ -1566,6 +1589,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 			pending_outbound_payments: Mutex::new(HashMap::new()),
 			forward_htlcs: Mutex::new(HashMap::new()),
 			claimable_htlcs: Mutex::new(HashMap::new()),
+			pending_intercepted_htlcs: Mutex::new(HashMap::new()),
 			id_to_peer: Mutex::new(HashMap::new()),
 			short_to_chan_info: FairRwLock::new(HashMap::new()),
 
@@ -6991,8 +7015,15 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Writeable for ChannelMana
 				_ => {},
 			}
 		}
+
+		let mut pending_intercepted_htlcs = None;
+		let our_pending_intercepts = self.pending_intercepted_htlcs.lock().unwrap();
+		if our_pending_intercepts.len() != 0 {
+			pending_intercepted_htlcs = Some(our_pending_intercepts);
+		}
 		write_tlv_fields!(writer, {
 			(1, pending_outbound_payments_no_retry, required),
+			(2, pending_intercepted_htlcs, option),
 			(3, pending_outbound_payments, required),
 			(5, self.our_network_pubkey, required),
 			(7, self.fake_scid_rand_bytes, required),
@@ -7306,12 +7337,14 @@ impl<'a, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 		// pending_outbound_payments_no_retry is for compatibility with 0.0.101 clients.
 		let mut pending_outbound_payments_no_retry: Option<HashMap<PaymentId, HashSet<[u8; 32]>>> = None;
 		let mut pending_outbound_payments = None;
+		let mut pending_intercepted_htlcs: Option<HashMap<InterceptId, PendingAddHTLCInfo>> = Some(HashMap::new());
 		let mut received_network_pubkey: Option<PublicKey> = None;
 		let mut fake_scid_rand_bytes: Option<[u8; 32]> = None;
 		let mut probing_cookie_secret: Option<[u8; 32]> = None;
 		let mut claimable_htlc_purposes = None;
 		read_tlv_fields!(reader, {
 			(1, pending_outbound_payments_no_retry, option),
+			(2, pending_intercepted_htlcs, option),
 			(3, pending_outbound_payments, option),
 			(5, received_network_pubkey, option),
 			(7, fake_scid_rand_bytes, option),
@@ -7534,6 +7567,7 @@ impl<'a, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 			inbound_payment_key: expanded_inbound_key,
 			pending_inbound_payments: Mutex::new(pending_inbound_payments),
 			pending_outbound_payments: Mutex::new(pending_outbound_payments.unwrap()),
+			pending_intercepted_htlcs: Mutex::new(pending_intercepted_htlcs.unwrap()),
 
 			forward_htlcs: Mutex::new(forward_htlcs),
 			claimable_htlcs: Mutex::new(claimable_htlcs),
