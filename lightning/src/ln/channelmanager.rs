@@ -3158,79 +3158,79 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 											outgoing_cltv_value
 										}
 									}) => {
-											macro_rules! failure_handler {
-												($msg: expr, $err_code: expr, $err_data: expr, $phantom_ss: expr, $next_hop_unknown: expr) => {
-													log_info!(self.logger, "Failed to accept/forward incoming HTLC: {}", $msg);
+										macro_rules! failure_handler {
+											($msg: expr, $err_code: expr, $err_data: expr, $phantom_ss: expr, $next_hop_unknown: expr) => {
+												log_info!(self.logger, "Failed to accept/forward incoming HTLC: {}", $msg);
 
-													let htlc_source = HTLCSource::PreviousHopData(HTLCPreviousHopData {
-														short_channel_id: prev_short_channel_id,
-														outpoint: prev_funding_outpoint,
-														htlc_id: prev_htlc_id,
-														incoming_packet_shared_secret: incoming_shared_secret,
-														phantom_shared_secret: $phantom_ss,
-													});
+												let htlc_source = HTLCSource::PreviousHopData(HTLCPreviousHopData {
+													short_channel_id: prev_short_channel_id,
+													outpoint: prev_funding_outpoint,
+													htlc_id: prev_htlc_id,
+													incoming_packet_shared_secret: incoming_shared_secret,
+													phantom_shared_secret: $phantom_ss,
+												});
 
-													let reason = if $next_hop_unknown {
-														HTLCDestination::UnknownNextHop { requested_forward_scid: short_chan_id }
-													} else {
-														HTLCDestination::FailedPayment{ payment_hash }
-													};
-
-													failed_forwards.push((htlc_source, payment_hash,
-														HTLCFailReason::Reason { failure_code: $err_code, data: $err_data },
-														reason
-													));
-													continue;
-												}
-											}
-											macro_rules! fail_forward {
-												($msg: expr, $err_code: expr, $err_data: expr, $phantom_ss: expr) => {
-													{
-														failure_handler!($msg, $err_code, $err_data, $phantom_ss, true);
-													}
-												}
-											}
-											macro_rules! failed_payment {
-												($msg: expr, $err_code: expr, $err_data: expr, $phantom_ss: expr) => {
-													{
-														failure_handler!($msg, $err_code, $err_data, $phantom_ss, false);
-													}
-												}
-											}
-											if let PendingHTLCRouting::Forward { onion_packet, .. } = routing {
-												let phantom_secret_res = self.keys_manager.get_node_secret(Recipient::PhantomNode);
-												if phantom_secret_res.is_ok() && fake_scid::is_valid_phantom(&self.fake_scid_rand_bytes, short_chan_id) {
-													let phantom_shared_secret = SharedSecret::new(&onion_packet.public_key.unwrap(), &phantom_secret_res.unwrap()).secret_bytes();
-													let next_hop = match onion_utils::decode_next_payment_hop(phantom_shared_secret, &onion_packet.hop_data, onion_packet.hmac, payment_hash) {
-														Ok(res) => res,
-														Err(onion_utils::OnionDecodeErr::Malformed { err_msg, err_code }) => {
-															let sha256_of_onion = Sha256::hash(&onion_packet.hop_data).into_inner();
-															// In this scenario, the phantom would have sent us an
-															// `update_fail_malformed_htlc`, meaning here we encrypt the error as
-															// if it came from us (the second-to-last hop) but contains the sha256
-															// of the onion.
-															failed_payment!(err_msg, err_code, sha256_of_onion.to_vec(), None);
-														},
-														Err(onion_utils::OnionDecodeErr::Relay { err_msg, err_code }) => {
-															failed_payment!(err_msg, err_code, Vec::new(), Some(phantom_shared_secret));
-														},
-													};
-													match next_hop {
-														onion_utils::Hop::Receive(hop_data) => {
-															match self.construct_recv_pending_htlc_info(hop_data, incoming_shared_secret, payment_hash, amt_to_forward, outgoing_cltv_value, Some(phantom_shared_secret)) {
-																Ok(info) => phantom_receives.push((prev_short_channel_id, prev_funding_outpoint, vec![(info, prev_htlc_id)])),
-																Err(ReceiveError { err_code, err_data, msg }) => failed_payment!(msg, err_code, err_data, Some(phantom_shared_secret))
-															}
-														},
-														_ => panic!(),
-													}
+												let reason = if $next_hop_unknown {
+													HTLCDestination::UnknownNextHop { requested_forward_scid: short_chan_id }
 												} else {
-													fail_forward!(format!("Unknown short channel id {} for forward HTLC", short_chan_id), 0x4000 | 10, Vec::new(), None);
+													HTLCDestination::FailedPayment{ payment_hash }
+												};
+
+												failed_forwards.push((htlc_source, payment_hash,
+													HTLCFailReason::Reason { failure_code: $err_code, data: $err_data },
+													reason
+												));
+												continue;
+											}
+										}
+										macro_rules! fail_forward {
+											($msg: expr, $err_code: expr, $err_data: expr, $phantom_ss: expr) => {
+												{
+													failure_handler!($msg, $err_code, $err_data, $phantom_ss, true);
+												}
+											}
+										}
+										macro_rules! failed_payment {
+											($msg: expr, $err_code: expr, $err_data: expr, $phantom_ss: expr) => {
+												{
+													failure_handler!($msg, $err_code, $err_data, $phantom_ss, false);
+												}
+											}
+										}
+										if let PendingHTLCRouting::Forward { onion_packet, .. } = routing {
+											let phantom_secret_res = self.keys_manager.get_node_secret(Recipient::PhantomNode);
+											if phantom_secret_res.is_ok() && fake_scid::is_valid_phantom(&self.fake_scid_rand_bytes, short_chan_id) {
+												let phantom_shared_secret = SharedSecret::new(&onion_packet.public_key.unwrap(), &phantom_secret_res.unwrap()).secret_bytes();
+												let next_hop = match onion_utils::decode_next_payment_hop(phantom_shared_secret, &onion_packet.hop_data, onion_packet.hmac, payment_hash) {
+													Ok(res) => res,
+													Err(onion_utils::OnionDecodeErr::Malformed { err_msg, err_code }) => {
+														let sha256_of_onion = Sha256::hash(&onion_packet.hop_data).into_inner();
+														// In this scenario, the phantom would have sent us an
+														// `update_fail_malformed_htlc`, meaning here we encrypt the error as
+														// if it came from us (the second-to-last hop) but contains the sha256
+														// of the onion.
+														failed_payment!(err_msg, err_code, sha256_of_onion.to_vec(), None);
+													},
+													Err(onion_utils::OnionDecodeErr::Relay { err_msg, err_code }) => {
+														failed_payment!(err_msg, err_code, Vec::new(), Some(phantom_shared_secret));
+													},
+												};
+												match next_hop {
+													onion_utils::Hop::Receive(hop_data) => {
+														match self.construct_recv_pending_htlc_info(hop_data, incoming_shared_secret, payment_hash, amt_to_forward, outgoing_cltv_value, Some(phantom_shared_secret)) {
+															Ok(info) => phantom_receives.push((prev_short_channel_id, prev_funding_outpoint, vec![(info, prev_htlc_id)])),
+															Err(ReceiveError { err_code, err_data, msg }) => failed_payment!(msg, err_code, err_data, Some(phantom_shared_secret))
+														}
+													},
+													_ => panic!(),
 												}
 											} else {
 												fail_forward!(format!("Unknown short channel id {} for forward HTLC", short_chan_id), 0x4000 | 10, Vec::new(), None);
 											}
-										},
+										} else {
+											fail_forward!(format!("Unknown short channel id {} for forward HTLC", short_chan_id), 0x4000 | 10, Vec::new(), None);
+										}
+									},
 									HTLCForwardInfo::FailHTLC { .. } => {
 										// Channel went away before we could fail it. This implies
 										// the channel is now on chain and our counterparty is
