@@ -275,7 +275,7 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool, use_funding_
 
 	let channel_state = nodes[0].node.channel_state.lock().unwrap();
 	assert_eq!(channel_state.by_id.len(), 1);
-	assert_eq!(channel_state.short_to_chan_info.len(), 2);
+	assert_eq!(nodes[0].node.short_to_chan_info.read().unwrap().len(), 2);
 	mem::drop(channel_state);
 
 	if !reorg_after_reload {
@@ -295,7 +295,7 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool, use_funding_
 		{
 			let channel_state = nodes[0].node.channel_state.lock().unwrap();
 			assert_eq!(channel_state.by_id.len(), 0);
-			assert_eq!(channel_state.short_to_chan_info.len(), 0);
+			assert_eq!(nodes[0].node.short_to_chan_info.read().unwrap().len(), 0);
 		}
 	}
 
@@ -364,7 +364,7 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool, use_funding_
 		{
 			let channel_state = nodes[0].node.channel_state.lock().unwrap();
 			assert_eq!(channel_state.by_id.len(), 0);
-			assert_eq!(channel_state.short_to_chan_info.len(), 0);
+			assert_eq!(nodes[0].node.short_to_chan_info.read().unwrap().len(), 0);
 		}
 	}
 	// With expect_channel_force_closed set the TestChainMonitor will enforce that the next update
