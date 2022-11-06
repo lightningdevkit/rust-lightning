@@ -3051,6 +3051,57 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 		Ok(())
 	}
 
+	/// Attempts to forward an intercepted HTLC over the provided channel id and with the provided
+	/// amount to forward. Should only be called in response to an [`HTLCIntercepted`] event.
+	///
+	/// Intercepted HTLCs can be useful for Lightning Service Providers (LSPs) to open a just-in-time
+	/// channel to a receiving node if the node lacks sufficient inbound liquidity.
+	///
+	/// To make use of intercepted HTLCs, use [`ChannelManager::get_intercept_scid`] to generate short
+	/// channel id(s) to put in the receiver's invoice route hints. These route hints will signal to
+	/// LDK to generate an [`HTLCIntercepted`] event when it receives the forwarded HTLC.
+	///
+	/// Note that LDK does not enforce fee requirements in `amt_to_forward_msat`, and will not stop
+	/// you from forwarding more than you received.
+	///
+	/// [`HTLCIntercepted`]: events::Event::HTLCIntercepted
+	// TODO: when we move to deciding the best outbound channel at forward time, only take
+	// `next_node_id` and not `next_hop_channel_id`
+	pub fn forward_intercepted_htlc(&self, intercept_id: InterceptId, next_hop_channel_id: &[u8; 32], _next_node_id: PublicKey, amt_to_forward_msat: u64) -> Result<(), APIError> {
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
+
+		let next_hop_scid = match self.channel_state.lock().unwrap().by_id.get(next_hop_channel_id) {
+			Some(chan) => chan.get_short_channel_id().unwrap_or(chan.outbound_scid_alias()),
+			None => return Err(APIError::APIMisuseError {
+				err: format!("Channel with id {:?} not found", next_hop_channel_id)
+			})
+		};
+
+		let payment = self.pending_intercepted_htlcs.lock().unwrap().remove(&intercept_id)
+			.ok_or_else(|| APIError::APIMisuseError {
+				err: format!("Payment with intercept id {:?} not found", intercept_id.0)
+			})?;
+
+		let routing = match payment.forward_info.routing {
+			PendingHTLCRouting::Forward { onion_packet, .. } => {
+				PendingHTLCRouting::Forward { onion_packet, short_channel_id: next_hop_scid }
+			},
+			_ => unreachable!() // Only `PendingHTLCRouting::Forward`s are intercepted
+		};
+		let pending_htlc_info = PendingHTLCInfo {
+			outgoing_amt_msat: amt_to_forward_msat, routing, ..payment.forward_info
+		};
+
+		let mut per_source_pending_forward = [(
+			payment.prev_short_channel_id,
+			payment.prev_funding_outpoint,
+			payment.prev_user_channel_id,
+			vec![(pending_htlc_info, payment.prev_htlc_id)]
+		)];
+		self.forward_htlcs(&mut per_source_pending_forward);
+		Ok(())
+	}
+
 	/// Processes HTLCs which are pending waiting on random forward delay.
 	///
 	/// Should only really ever be called in response to a PendingHTLCsForwardable event.
@@ -5769,6 +5820,23 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 			channels: self.list_usable_channels(),
 			phantom_scid: self.get_phantom_scid(),
 			real_node_pubkey: self.get_our_node_id(),
+		}
+	}
+
+	/// Gets a fake short channel id for use in receiving intercepted payments. These fake scids are
+	/// used when constructing the route hints for HTLCs intended to be intercepted. See
+	/// [`ChannelManager::forward_intercepted_htlc`].
+	///
+	/// Note that this method is not guaranteed to return unique values, you may need to call it a few
+	/// times to get a unique scid.
+	pub fn get_intercept_scid(&self) -> u64 {
+		let best_block_height = self.best_block.read().unwrap().height();
+		let short_to_chan_info = self.short_to_chan_info.read().unwrap();
+		loop {
+			let scid_candidate = fake_scid::Namespace::Intercept.get_fake_scid(best_block_height, &self.genesis_hash, &self.fake_scid_rand_bytes, &self.keys_manager);
+			// Ensure the generated scid doesn't conflict with a real channel.
+			if short_to_chan_info.contains_key(&scid_candidate) { continue }
+			return scid_candidate
 		}
 	}
 

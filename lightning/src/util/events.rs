@@ -610,11 +610,18 @@ pub enum Event {
 		/// now + 5*time_forwardable).
 		time_forwardable: Duration,
 	},
-	/// Used to indicate that we've intercepted an HTLC forward.
+	/// Used to indicate that we've intercepted an HTLC forward. This event will only be generated if
+	/// you've encoded an intercept scid in the receiver's invoice route hints using
+	/// [`ChannelManager::get_intercept_scid`].
+	///
+	/// [`ChannelManager::get_intercept_scid`]: crate::ln::channelmanager::ChannelManager::get_intercept_scid
 	HTLCIntercepted {
 		/// An id to help LDK identify which HTLC is being forwarded or failed.
 		intercept_id: InterceptId,
-		/// The fake scid that was programmed as the next hop's scid.
+		/// The fake scid that was programmed as the next hop's scid, generated using
+		/// [`ChannelManager::get_intercept_scid`].
+		///
+		/// [`ChannelManager::get_intercept_scid`]: crate::ln::channelmanager::ChannelManager::get_intercept_scid
 		requested_next_hop_scid: u64,
 		/// The payment hash used for this HTLC.
 		payment_hash: PaymentHash,
