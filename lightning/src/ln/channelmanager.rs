@@ -3157,6 +3157,40 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 		Ok(())
 	}
 
+	/// Attempts to forward an intercepted payment over the provided scid and with the provided
+	/// amt_to_forward. Should only be called in response to a PaymentIntercepted event.
+	// TODO expand docs
+	pub fn forward_intercepted_payment(&self, intercept_id: InterceptId, short_channel_id: u64, amt_to_forward: u64) -> Result<(), APIError> {
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
+
+		let payment = self.pending_intercepted_payments.lock().unwrap().remove(&intercept_id)
+			.ok_or_else(|| APIError::APIMisuseError {
+				err: format!("Payment with InterceptId {:?} not found", intercept_id)
+			})?;
+
+		if self.short_to_chan_info.read().unwrap().get(&short_channel_id).is_none() {
+			return Err(APIError::APIMisuseError {
+				err: format!("Channel with short channel id {:?} not found", short_channel_id)
+			})
+		}
+
+		let routing = match payment.forward_info.routing {
+			PendingHTLCRouting::Forward { onion_packet, .. } => {
+				PendingHTLCRouting::Forward { onion_packet, short_channel_id }
+			},
+			_ => unreachable!()
+		};
+		let pending_htlc_info = PendingHTLCInfo { amt_to_forward, routing, ..payment.forward_info };
+
+		let mut per_source_pending_forward = [(
+			payment.prev_short_channel_id,
+			payment.prev_funding_outpoint,
+			vec![(pending_htlc_info, payment.prev_htlc_id)]
+		)];
+		self.forward_htlcs(&mut per_source_pending_forward);
+		Ok(())
+	}
+
 	/// Processes HTLCs which are pending waiting on random forward delay.
 	///
 	/// Should only really ever be called in response to a PendingHTLCsForwardable event.
@@ -5789,6 +5823,20 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 			channels: self.list_usable_channels(),
 			phantom_scid: self.get_phantom_scid(),
 			real_node_pubkey: self.get_our_node_id(),
+		}
+	}
+
+	/// Gets a fake short channel id for use in receiving intercepted payments. These fake scids
+	/// are used when constructing the route hints for payments intended to be intercepted.
+	// TODO doc links
+	pub fn get_intercept_scid(&self) -> u64 {
+		let short_to_chan_info = self.short_to_chan_info.read().unwrap();
+		let best_block = self.best_block.read().unwrap();
+		loop {
+			let scid_candidate = fake_scid::Namespace::Intercept.get_fake_scid(best_block.height(), &self.genesis_hash, &self.fake_scid_rand_bytes, &self.keys_manager);
+			// Ensure the generated scid doesn't conflict with a real channel.
+			if short_to_chan_info.contains_key(&scid_candidate) { continue }
+			return scid_candidate
 		}
 	}
 

@@ -19,7 +19,8 @@ use crate::ln::channel::EXPIRE_PREV_CONFIG_TICKS;
 use crate::ln::channelmanager::{self, BREAKDOWN_TIMEOUT, ChannelManager, ChannelManagerReadArgs, MPP_TIMEOUT_TICKS, MIN_CLTV_EXPIRY_DELTA, PaymentId, PaymentSendFailure, IDEMPOTENCY_TIMEOUT_TICKS};
 use crate::ln::msgs;
 use crate::ln::msgs::ChannelMessageHandler;
-use crate::routing::router::{PaymentParameters, get_route};
+use crate::routing::gossip::RoutingFees;
+use crate::routing::router::{find_route, get_route, PaymentParameters, RouteHint, RouteHintHop, RouteParameters};
 use crate::util::events::{ClosureReason, Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider};
 use crate::util::test_utils;
 use crate::util::errors::APIError;
@@ -1384,4 +1385,116 @@ fn abandoned_send_payment_idempotent() {
 	check_added_monitors!(nodes[0], 1);
 	pass_along_route(&nodes[0], &[&[&nodes[1]]], 100_000, second_payment_hash, second_payment_secret);
 	claim_payment(&nodes[0], &[&nodes[1]], second_payment_preimage);
+}
+
+#[test]
+fn forward_intercepted_payment() {
+	// Test that detecting an intercept scid on payment forward will signal LDK to generate an
+	// intercept event, which the LSP can then use to open a JIT channel to forward the payment.
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	let scorer = test_utils::TestScorer::with_penalty(0);
+	let random_seed_bytes = chanmon_cfgs[0].keys_manager.get_secure_random_bytes();
+
+	let _ = create_announced_chan_between_nodes(&nodes, 0, 1, channelmanager::provided_init_features(), channelmanager::provided_init_features()).2;
+
+	let amt_msat = 100_000;
+	let intercept_scid = nodes[1].node.get_intercept_scid();
+	let payment_params = PaymentParameters::from_node_id(nodes[2].node.get_our_node_id())
+		.with_route_hints(vec![
+			RouteHint(vec![RouteHintHop {
+				src_node_id: nodes[1].node.get_our_node_id(),
+				short_channel_id: intercept_scid,
+				fees: RoutingFees {
+					base_msat: 1000,
+					proportional_millionths: 0,
+				},
+				cltv_expiry_delta: 130,
+				htlc_minimum_msat: None,
+				htlc_maximum_msat: None,
+			}])
+		])
+		.with_features(channelmanager::provided_invoice_features());
+	let route_params = RouteParameters {
+		payment_params,
+		final_value_msat: amt_msat,
+		final_cltv_expiry_delta: TEST_FINAL_CLTV,
+	};
+	let route = find_route(
+		&nodes[0].node.get_our_node_id(), &route_params, &nodes[0].network_graph, None, nodes[0].logger,
+		&scorer, &random_seed_bytes
+	).unwrap();
+
+	let (payment_hash, payment_secret) = nodes[2].node.create_inbound_payment(Some(amt_msat), 60 * 60).unwrap();
+	nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret), PaymentId(payment_hash.0)).unwrap();
+	let payment_event = {
+		{
+			let mut added_monitors = nodes[0].chain_monitor.added_monitors.lock().unwrap();
+			assert_eq!(added_monitors.len(), 1);
+			added_monitors.clear();
+		}
+		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+		SendEvent::from_event(events.remove(0))
+	};
+	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
+	commitment_signed_dance!(nodes[1], nodes[0], &payment_event.commitment_msg, false, true);
+
+	// Check that we generate the PaymentIntercepted event when an intercept forward is detected.
+	let events = nodes[1].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	let (intercept_id, expected_outbound_amount_msat) = match events[0] {
+		crate::util::events::Event::PaymentIntercepted {
+			intercept_id, expected_outbound_amount_msat, payment_hash: pmt_hash, inbound_amount_msat, short_channel_id
+		} => {
+			assert_eq!(pmt_hash, payment_hash);
+			assert_eq!(inbound_amount_msat, route.get_total_amount() + route.get_total_fees());
+			assert_eq!(short_channel_id, intercept_scid);
+			(intercept_id, expected_outbound_amount_msat)
+		},
+		_ => panic!()
+	};
+
+	// Open the just-in-time channel so the payment can then be forwarded.
+	let scid = create_announced_chan_between_nodes(&nodes, 1, 2, channelmanager::provided_init_features(), channelmanager::provided_init_features()).0.contents.short_channel_id;
+
+	// Finally, forward the intercepted payment through and claim it.
+	nodes[1].node.forward_intercepted_payment(intercept_id, scid, expected_outbound_amount_msat).unwrap();
+	expect_pending_htlcs_forwardable!(nodes[1]);
+
+	let payment_event = {
+		{
+			let mut added_monitors = nodes[1].chain_monitor.added_monitors.lock().unwrap();
+			assert_eq!(added_monitors.len(), 1);
+			added_monitors.clear();
+		}
+		let mut events = nodes[1].node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+		SendEvent::from_event(events.remove(0))
+	};
+	nodes[2].node.handle_update_add_htlc(&nodes[1].node.get_our_node_id(), &payment_event.msgs[0]);
+	commitment_signed_dance!(nodes[2], nodes[1], &payment_event.commitment_msg, false, true);
+	expect_pending_htlcs_forwardable!(nodes[2]);
+
+	let payment_preimage = nodes[2].node.get_payment_preimage(payment_hash, payment_secret).unwrap();
+	expect_payment_received!(&nodes[2], payment_hash, payment_secret, amt_msat, Some(payment_preimage));
+	do_claim_payment_along_route(&nodes[0], &vec!(&vec!(&nodes[1], &nodes[2])[..]), false, payment_preimage);
+	let events = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 2);
+	match events[0] {
+		Event::PaymentSent { payment_preimage: ref ev_preimage, payment_hash: ref ev_hash, ref fee_paid_msat, .. } => {
+			assert_eq!(payment_preimage, *ev_preimage);
+			assert_eq!(payment_hash, *ev_hash);
+			assert_eq!(fee_paid_msat, &Some(1000));
+		},
+		_ => panic!("Unexpected event")
+	}
+	match events[1] {
+		Event::PaymentPathSuccessful { payment_hash: hash, .. } => {
+			assert_eq!(hash, Some(payment_hash));
+		},
+		_ => panic!("Unexpected event")
+	}
 }
