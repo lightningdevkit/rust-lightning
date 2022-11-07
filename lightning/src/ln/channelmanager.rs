@@ -1906,14 +1906,16 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 					if *counterparty_node_id != chan_entry.get().get_counterparty_node_id(){
 						return Err(APIError::APIMisuseError { err: "The passed counterparty_node_id doesn't match the channel's counterparty node_id".to_owned() });
 					}
-					let per_peer_state = self.per_peer_state.read().unwrap();
-					let (shutdown_msg, monitor_update, htlcs) = match per_peer_state.get(&counterparty_node_id) {
-						Some(peer_state) => {
-							let peer_state = peer_state.lock().unwrap();
-							let their_features = &peer_state.latest_features;
-							chan_entry.get_mut().get_shutdown(&self.keys_manager, their_features, target_feerate_sats_per_1000_weight)?
-						},
-						None => return Err(APIError::ChannelUnavailable { err: format!("Not connected to node: {}", counterparty_node_id) }),
+					let (shutdown_msg, monitor_update, htlcs) = {
+						let per_peer_state = self.per_peer_state.read().unwrap();
+						match per_peer_state.get(&counterparty_node_id) {
+							Some(peer_state) => {
+								let peer_state = peer_state.lock().unwrap();
+								let their_features = &peer_state.latest_features;
+								chan_entry.get_mut().get_shutdown(&self.keys_manager, their_features, target_feerate_sats_per_1000_weight)?
+							},
+							None => return Err(APIError::ChannelUnavailable { err: format!("Not connected to node: {}", counterparty_node_id) }),
+						}
 					};
 					failed_htlcs = htlcs;
 
