@@ -3059,7 +3059,8 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 	///
 	/// To make use of intercepted HTLCs, use [`ChannelManager::get_intercept_scid`] to generate short
 	/// channel id(s) to put in the receiver's invoice route hints. These route hints will signal to
-	/// LDK to generate an [`HTLCIntercepted`] event when it receives the forwarded HTLC.
+	/// LDK to generate an [`HTLCIntercepted`] event when it receives the forwarded HTLC, and this
+	/// method or [`ChannelManager::fail_intercepted_htlc`] MUST be called in response to the event.
 	///
 	/// Note that LDK does not enforce fee requirements in `amt_to_forward_msat`, and will not stop
 	/// you from forwarding more than you received.
@@ -3099,6 +3100,35 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 			vec![(pending_htlc_info, payment.prev_htlc_id)]
 		)];
 		self.forward_htlcs(&mut per_source_pending_forward);
+		Ok(())
+	}
+
+	/// Fails the intercepted HTLC indicated by intercept_id. Should only be called in response to
+	/// an [`HTLCIntercepted`] event. See [`ChannelManager::forward_intercepted_htlc`].
+	///
+	/// [`HTLCIntercepted`]: events::Event::HTLCIntercepted
+	pub fn fail_intercepted_htlc(&self, intercept_id: InterceptId) -> Result<(), APIError> {
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
+
+		let payment = self.pending_intercepted_htlcs.lock().unwrap().remove(&intercept_id)
+			.ok_or_else(|| APIError::APIMisuseError {
+				err: format!("Payment with InterceptId {:?} not found", intercept_id)
+			})?;
+
+		if let PendingHTLCRouting::Forward { short_channel_id, .. } = payment.forward_info.routing {
+			let htlc_source = HTLCSource::PreviousHopData(HTLCPreviousHopData {
+				short_channel_id: payment.prev_short_channel_id,
+				outpoint: payment.prev_funding_outpoint,
+				htlc_id: payment.prev_htlc_id,
+				incoming_packet_shared_secret: payment.forward_info.incoming_shared_secret,
+				phantom_shared_secret: None,
+			});
+
+			let failure_reason = HTLCFailReason::Reason { failure_code: 0x4000 | 10, data: Vec::new() };
+			let destination = HTLCDestination::UnknownNextHop { requested_forward_scid: short_channel_id };
+			self.fail_htlc_backwards_internal(htlc_source, &payment.forward_info.payment_hash, failure_reason, destination);
+		} else { unreachable!() } // Only `PendingHTLCRouting::Forward`s are intercepted
+
 		Ok(())
 	}
 

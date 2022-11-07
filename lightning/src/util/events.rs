@@ -614,7 +614,13 @@ pub enum Event {
 	/// you've encoded an intercept scid in the receiver's invoice route hints using
 	/// [`ChannelManager::get_intercept_scid`].
 	///
+	/// [`ChannelManager::forward_intercepted_htlc`] or
+	/// [`ChannelManager::fail_intercepted_htlc`] MUST be called in response to this event. See
+	/// their docs for more information.
+	///
 	/// [`ChannelManager::get_intercept_scid`]: crate::ln::channelmanager::ChannelManager::get_intercept_scid
+	/// [`ChannelManager::forward_intercepted_htlc`]: crate::ln::channelmanager::ChannelManager::forward_intercepted_htlc
+	/// [`ChannelManager::fail_intercepted_htlc`]: crate::ln::channelmanager::ChannelManager::fail_intercepted_htlc
 	HTLCIntercepted {
 		/// An id to help LDK identify which HTLC is being forwarded or failed.
 		intercept_id: InterceptId,
