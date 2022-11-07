@@ -3191,6 +3191,34 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 		Ok(())
 	}
 
+	/// Fails the intercepted payment indicated by intercept_id. Should only be called in response to
+	/// a PaymentIntercepted event.
+	// TODO expand docs
+	pub fn fail_intercepted_payment(&self, intercept_id: InterceptId) -> Result<(), APIError> {
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
+
+		let payment = self.pending_intercepted_payments.lock().unwrap().remove(&intercept_id)
+			.ok_or_else(|| APIError::APIMisuseError {
+				err: format!("Payment with InterceptId {:?} not found", intercept_id)
+			})?;
+
+		if let PendingHTLCRouting::Forward { short_channel_id, .. } = payment.forward_info.routing {
+			let htlc_source = HTLCSource::PreviousHopData(HTLCPreviousHopData {
+				short_channel_id: payment.prev_short_channel_id,
+				outpoint: payment.prev_funding_outpoint,
+				htlc_id: payment.prev_htlc_id,
+				incoming_packet_shared_secret: payment.forward_info.incoming_shared_secret,
+				phantom_shared_secret: None,
+			});
+
+			let failure_reason = HTLCFailReason::Reason { failure_code: 0x4000 | 10, data: Vec::new() };
+			let destination = HTLCDestination::UnknownNextHop { requested_forward_scid: short_channel_id };
+			self.fail_htlc_backwards_internal(htlc_source, &payment.forward_info.payment_hash, failure_reason, destination);
+		} else { unreachable!() }
+
+		Ok(())
+	}
+
 	/// Processes HTLCs which are pending waiting on random forward delay.
 	///
 	/// Should only really ever be called in response to a PendingHTLCsForwardable event.

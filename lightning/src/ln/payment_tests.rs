@@ -1388,9 +1388,15 @@ fn abandoned_send_payment_idempotent() {
 }
 
 #[test]
-fn forward_intercepted_payment() {
+fn intercepted_payment() {
 	// Test that detecting an intercept scid on payment forward will signal LDK to generate an
-	// intercept event, which the LSP can then use to open a JIT channel to forward the payment.
+	// intercept event, which the LSP can then use to either (a) open a JIT channel to forward the
+	// payment or (b) fail the payment.
+	do_test_intercepted_payment(false);
+	do_test_intercepted_payment(true);
+}
+
+fn do_test_intercepted_payment(fail_intercept: bool) {
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
@@ -1457,44 +1463,64 @@ fn forward_intercepted_payment() {
 		_ => panic!()
 	};
 
-	// Open the just-in-time channel so the payment can then be forwarded.
-	let scid = create_announced_chan_between_nodes(&nodes, 1, 2, channelmanager::provided_init_features(), channelmanager::provided_init_features()).0.contents.short_channel_id;
+	if fail_intercept {
+		// Ensure we can fail the intercepted payment back.
+		nodes[1].node.fail_intercepted_payment(intercept_id).unwrap();
+		expect_pending_htlcs_forwardable_and_htlc_handling_failed_ignore!(nodes[1], vec![HTLCDestination::UnknownNextHop { requested_forward_scid: intercept_scid }]);
+		nodes[1].node.process_pending_htlc_forwards();
+		let update_fail = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+		check_added_monitors!(&nodes[1], 1);
+		assert!(update_fail.update_fail_htlcs.len() == 1);
+		let fail_msg = update_fail.update_fail_htlcs[0].clone();
+		nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &fail_msg);
+		commitment_signed_dance!(nodes[0], nodes[1], update_fail.commitment_signed, false);
 
-	// Finally, forward the intercepted payment through and claim it.
-	nodes[1].node.forward_intercepted_payment(intercept_id, scid, expected_outbound_amount_msat).unwrap();
-	expect_pending_htlcs_forwardable!(nodes[1]);
+		// Ensure the payment fails with the expected error.
+		let mut fail_conditions = PaymentFailedConditions::new()
+			.blamed_scid(intercept_scid)
+			.blamed_chan_closed(true)
+			.expected_htlc_error_data(0x4000 | 10, &[]);
+			expect_payment_failed_conditions(&nodes[0], payment_hash, false, fail_conditions);
+	} else {
+		// Open the just-in-time channel so the payment can then be forwarded.
+		let scid = create_announced_chan_between_nodes(&nodes, 1, 2, channelmanager::provided_init_features(), channelmanager::provided_init_features()).0.contents.short_channel_id;
 
-	let payment_event = {
-		{
-			let mut added_monitors = nodes[1].chain_monitor.added_monitors.lock().unwrap();
-			assert_eq!(added_monitors.len(), 1);
-			added_monitors.clear();
+		// Finally, forward the intercepted payment through and claim it.
+		nodes[1].node.forward_intercepted_payment(intercept_id, scid, expected_outbound_amount_msat).unwrap();
+		expect_pending_htlcs_forwardable!(nodes[1]);
+
+		let payment_event = {
+			{
+				let mut added_monitors = nodes[1].chain_monitor.added_monitors.lock().unwrap();
+				assert_eq!(added_monitors.len(), 1);
+				added_monitors.clear();
+			}
+			let mut events = nodes[1].node.get_and_clear_pending_msg_events();
+			assert_eq!(events.len(), 1);
+			SendEvent::from_event(events.remove(0))
+		};
+		nodes[2].node.handle_update_add_htlc(&nodes[1].node.get_our_node_id(), &payment_event.msgs[0]);
+		commitment_signed_dance!(nodes[2], nodes[1], &payment_event.commitment_msg, false, true);
+		expect_pending_htlcs_forwardable!(nodes[2]);
+
+		let payment_preimage = nodes[2].node.get_payment_preimage(payment_hash, payment_secret).unwrap();
+		expect_payment_received!(&nodes[2], payment_hash, payment_secret, amt_msat, Some(payment_preimage));
+		do_claim_payment_along_route(&nodes[0], &vec!(&vec!(&nodes[1], &nodes[2])[..]), false, payment_preimage);
+		let events = nodes[0].node.get_and_clear_pending_events();
+		assert_eq!(events.len(), 2);
+		match events[0] {
+			Event::PaymentSent { payment_preimage: ref ev_preimage, payment_hash: ref ev_hash, ref fee_paid_msat, .. } => {
+				assert_eq!(payment_preimage, *ev_preimage);
+				assert_eq!(payment_hash, *ev_hash);
+				assert_eq!(fee_paid_msat, &Some(1000));
+			},
+			_ => panic!("Unexpected event")
 		}
-		let mut events = nodes[1].node.get_and_clear_pending_msg_events();
-		assert_eq!(events.len(), 1);
-		SendEvent::from_event(events.remove(0))
-	};
-	nodes[2].node.handle_update_add_htlc(&nodes[1].node.get_our_node_id(), &payment_event.msgs[0]);
-	commitment_signed_dance!(nodes[2], nodes[1], &payment_event.commitment_msg, false, true);
-	expect_pending_htlcs_forwardable!(nodes[2]);
-
-	let payment_preimage = nodes[2].node.get_payment_preimage(payment_hash, payment_secret).unwrap();
-	expect_payment_received!(&nodes[2], payment_hash, payment_secret, amt_msat, Some(payment_preimage));
-	do_claim_payment_along_route(&nodes[0], &vec!(&vec!(&nodes[1], &nodes[2])[..]), false, payment_preimage);
-	let events = nodes[0].node.get_and_clear_pending_events();
-	assert_eq!(events.len(), 2);
-	match events[0] {
-		Event::PaymentSent { payment_preimage: ref ev_preimage, payment_hash: ref ev_hash, ref fee_paid_msat, .. } => {
-			assert_eq!(payment_preimage, *ev_preimage);
-			assert_eq!(payment_hash, *ev_hash);
-			assert_eq!(fee_paid_msat, &Some(1000));
-		},
-		_ => panic!("Unexpected event")
-	}
-	match events[1] {
-		Event::PaymentPathSuccessful { payment_hash: hash, .. } => {
-			assert_eq!(hash, Some(payment_hash));
-		},
-		_ => panic!("Unexpected event")
+		match events[1] {
+			Event::PaymentPathSuccessful { payment_hash: hash, .. } => {
+				assert_eq!(hash, Some(payment_hash));
+			},
+			_ => panic!("Unexpected event")
+		}
 	}
 }
