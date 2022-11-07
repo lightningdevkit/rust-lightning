@@ -73,7 +73,7 @@ pub(crate) mod fake_scid {
 	use core::convert::TryInto;
 	use core::ops::Deref;
 
-	const TEST_SEGWIT_ACTIVATION_HEIGHT: u32 = 0;
+	const TEST_SEGWIT_ACTIVATION_HEIGHT: u32 = 1;
 	const MAINNET_SEGWIT_ACTIVATION_HEIGHT: u32 = 481_824;
 	const MAX_TX_INDEX: u32 = 2_500;
 	const MAX_NAMESPACES: u8 = 8; // We allocate 3 bits for the namespace identifier.
@@ -151,12 +151,13 @@ pub(crate) mod fake_scid {
 	}
 
 	/// Returns whether the given fake scid falls into the given namespace.
-	pub fn is_valid_phantom(fake_scid_rand_bytes: &[u8; 32], scid: u64) -> bool {
+	pub fn is_valid_phantom(fake_scid_rand_bytes: &[u8; 32], scid: u64, genesis_hash: &BlockHash) -> bool {
 		let block_height = scid_utils::block_from_scid(&scid);
 		let tx_index = scid_utils::tx_index_from_scid(&scid);
 		let namespace = Namespace::Phantom;
 		let valid_vout = namespace.get_encrypted_vout(block_height, tx_index, fake_scid_rand_bytes);
-		valid_vout == scid_utils::vout_from_scid(&scid) as u8
+		block_height >= segwit_activation_height(genesis_hash)
+			&& valid_vout == scid_utils::vout_from_scid(&scid) as u8
 	}
 
 	#[cfg(test)]
@@ -194,11 +195,12 @@ pub(crate) mod fake_scid {
 		fn test_is_valid_phantom() {
 			let namespace = Namespace::Phantom;
 			let fake_scid_rand_bytes = [0; 32];
+			let testnet_genesis = genesis_block(Network::Testnet).header.block_hash();
 			let valid_encrypted_vout = namespace.get_encrypted_vout(0, 0, &fake_scid_rand_bytes);
-			let valid_fake_scid = scid_utils::scid_from_parts(0, 0, valid_encrypted_vout as u64).unwrap();
-			assert!(is_valid_phantom(&fake_scid_rand_bytes, valid_fake_scid));
-			let invalid_fake_scid = scid_utils::scid_from_parts(0, 0, 12).unwrap();
-			assert!(!is_valid_phantom(&fake_scid_rand_bytes, invalid_fake_scid));
+			let valid_fake_scid = scid_utils::scid_from_parts(1, 0, valid_encrypted_vout as u64).unwrap();
+			assert!(is_valid_phantom(&fake_scid_rand_bytes, valid_fake_scid, &testnet_genesis));
+			let invalid_fake_scid = scid_utils::scid_from_parts(1, 0, 12).unwrap();
+			assert!(!is_valid_phantom(&fake_scid_rand_bytes, invalid_fake_scid, &testnet_genesis));
 		}
 
 		#[test]

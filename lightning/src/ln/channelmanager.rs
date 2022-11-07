@@ -2313,7 +2313,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 						None => { // unknown_next_peer
 							// Note that this is likely a timing oracle for detecting whether an scid is a
 							// phantom.
-							if fake_scid::is_valid_phantom(&self.fake_scid_rand_bytes, *short_channel_id) {
+							if fake_scid::is_valid_phantom(&self.fake_scid_rand_bytes, *short_channel_id, &self.genesis_hash) {
 								None
 							} else {
 								break Some(("Don't have available channel for forwarding as requested.", 0x4000 | 10, None));
@@ -3202,7 +3202,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 										}
 										if let PendingHTLCRouting::Forward { onion_packet, .. } = routing {
 											let phantom_secret_res = self.keys_manager.get_node_secret(Recipient::PhantomNode);
-											if phantom_secret_res.is_ok() && fake_scid::is_valid_phantom(&self.fake_scid_rand_bytes, short_chan_id) {
+											if phantom_secret_res.is_ok() && fake_scid::is_valid_phantom(&self.fake_scid_rand_bytes, short_chan_id, &self.genesis_hash) {
 												let phantom_shared_secret = SharedSecret::new(&onion_packet.public_key.unwrap(), &phantom_secret_res.unwrap()).secret_bytes();
 												let next_hop = match onion_utils::decode_next_payment_hop(phantom_shared_secret, &onion_packet.hop_data, onion_packet.hmac, payment_hash) {
 													Ok(res) => res,
