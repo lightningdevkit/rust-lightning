@@ -158,7 +158,7 @@ pub(crate) mod fake_scid {
 		let tx_index = scid_utils::tx_index_from_scid(&scid);
 		let namespace = Namespace::Phantom;
 		let valid_vout = namespace.get_encrypted_vout(block_height, tx_index, fake_scid_rand_bytes);
-		valid_vout == scid_utils::vout_from_scid(&scid) as u8
+		scid != 0 && valid_vout == scid_utils::vout_from_scid(&scid) as u8
 	}
 
 	/// Returns whether the given fake scid falls into the intercept namespace.
@@ -167,7 +167,7 @@ pub(crate) mod fake_scid {
 		let tx_index = scid_utils::tx_index_from_scid(&scid);
 		let namespace = Namespace::Intercept;
 		let valid_vout = namespace.get_encrypted_vout(block_height, tx_index, fake_scid_rand_bytes);
-		valid_vout == scid_utils::vout_from_scid(&scid) as u8
+		scid != 0 && valid_vout == scid_utils::vout_from_scid(&scid) as u8
 	}
 
 	#[cfg(test)]
