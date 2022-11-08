@@ -16,7 +16,7 @@ use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::blockdata::transaction::OutPoint as BitcoinOutPoint;
 use bitcoin::blockdata::script::Script;
 
-use bitcoin::hash_types::Txid;
+use bitcoin::hash_types::{Txid, BlockHash};
 
 use bitcoin::secp256k1::{Secp256k1, ecdsa::Signature};
 use bitcoin::secp256k1;
@@ -58,6 +58,7 @@ const MAX_ALLOC_SIZE: usize = 64*1024;
 struct OnchainEventEntry {
 	txid: Txid,
 	height: u32,
+	block_hash: Option<BlockHash>, // Added as optional, will be filled in for any entry generated on 0.0.113 or after
 	event: OnchainEvent,
 }
 
@@ -92,6 +93,7 @@ impl Writeable for OnchainEventEntry {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		write_tlv_fields!(writer, {
 			(0, self.txid, required),
+			(1, self.block_hash, option),
 			(2, self.height, required),
 			(4, self.event, required),
 		});
@@ -103,14 +105,16 @@ impl MaybeReadable for OnchainEventEntry {
 	fn read<R: io::Read>(reader: &mut R) -> Result<Option<Self>, DecodeError> {
 		let mut txid = Txid::all_zeros();
 		let mut height = 0;
+		let mut block_hash = None;
 		let mut event = None;
 		read_tlv_fields!(reader, {
 			(0, txid, required),
+			(1, block_hash, option),
 			(2, height, required),
 			(4, event, ignorable),
 		});
 		if let Some(ev) = event {
-			Ok(Some(Self { txid, height, event: ev }))
+			Ok(Some(Self { txid, height, block_hash, event: ev }))
 		} else {
 			Ok(None)
 		}
@@ -543,17 +547,22 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 
 	/// Upon channelmonitor.block_connected(..) or upon provision of a preimage on the forward link
 	/// for this channel, provide new relevant on-chain transactions and/or new claim requests.
-	/// Formerly this was named `block_connected`, but it is now also used for claiming an HTLC output
-	/// if we receive a preimage after force-close.
-	/// `conf_height` represents the height at which the transactions in `txn_matched` were
-	/// confirmed. This does not need to equal the current blockchain tip height, which should be
-	/// provided via `cur_height`, however it must never be higher than `cur_height`.
-	pub(crate) fn update_claims_view<B: Deref, F: Deref, L: Deref>(&mut self, txn_matched: &[&Transaction], requests: Vec<PackageTemplate>, conf_height: u32, cur_height: u32, broadcaster: &B, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L)
-		where B::Target: BroadcasterInterface,
-		      F::Target: FeeEstimator,
-					L::Target: Logger,
+	/// Together with `update_claims_view_from_matched_txn` this used to be named
+	/// `block_connected`, but it is now also used for claiming an HTLC output if we receive a
+	/// preimage after force-close.
+	///
+	/// `conf_height` represents the height at which the request was generated. This
+	/// does not need to equal the current blockchain tip height, which should be provided via
+	/// `cur_height`, however it must never be higher than `cur_height`.
+	pub(crate) fn update_claims_view_from_requests<B: Deref, F: Deref, L: Deref>(
+		&mut self, requests: Vec<PackageTemplate>, conf_height: u32, cur_height: u32,
+		broadcaster: &B, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L
+	) where
+		B::Target: BroadcasterInterface,
+		F::Target: FeeEstimator,
+		L::Target: Logger,
 	{
-		log_debug!(logger, "Updating claims view at height {} with {} matched transactions in block {} and {} claim requests", cur_height, txn_matched.len(), conf_height, requests.len());
+		log_debug!(logger, "Updating claims view at height {} with {} claim requests", cur_height, requests.len());
 		let mut preprocessed_requests = Vec::with_capacity(requests.len());
 		let mut aggregated_request = None;
 
@@ -633,7 +642,25 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 				self.pending_claim_requests.insert(txid, req);
 			}
 		}
+	}
 
+	/// Upon channelmonitor.block_connected(..) or upon provision of a preimage on the forward link
+	/// for this channel, provide new relevant on-chain transactions and/or new claim requests.
+	/// Together with `update_claims_view_from_requests` this used to be named `block_connected`,
+	/// but it is now also used for claiming an HTLC output if we receive a preimage after force-close.
+	///
+	/// `conf_height` represents the height at which the transactions in `txn_matched` were
+	/// confirmed. This does not need to equal the current blockchain tip height, which should be
+	/// provided via `cur_height`, however it must never be higher than `cur_height`.
+	pub(crate) fn update_claims_view_from_matched_txn<B: Deref, F: Deref, L: Deref>(
+		&mut self, txn_matched: &[&Transaction], conf_height: u32, conf_hash: BlockHash,
+		cur_height: u32, broadcaster: &B, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L
+	) where
+		B::Target: BroadcasterInterface,
+		F::Target: FeeEstimator,
+		L::Target: Logger,
+	{
+		log_debug!(logger, "Updating claims view at height {} with {} matched transactions in block {}", cur_height, txn_matched.len(), conf_height);
 		let mut bump_candidates = HashMap::new();
 		for tx in txn_matched {
 			// Scan all input to verify is one of the outpoint spent is of interest for us
@@ -661,6 +688,7 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 								let entry = OnchainEventEntry {
 									txid: tx.txid(),
 									height: conf_height,
+									block_hash: Some(conf_hash),
 									event: OnchainEvent::Claim { claim_request: first_claim_txid_height.0.clone() }
 								};
 								if !self.onchain_events_awaiting_threshold_conf.contains(&entry) {
@@ -701,6 +729,7 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 				let entry = OnchainEventEntry {
 					txid: tx.txid(),
 					height: conf_height,
+					block_hash: Some(conf_hash),
 					event: OnchainEvent::ContentiousOutpoint { package },
 				};
 				if !self.onchain_events_awaiting_threshold_conf.contains(&entry) {
@@ -860,12 +889,12 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 		self.claimable_outpoints.get(outpoint).is_some()
 	}
 
-	pub(crate) fn get_relevant_txids(&self) -> Vec<Txid> {
-		let mut txids: Vec<Txid> = self.onchain_events_awaiting_threshold_conf
+	pub(crate) fn get_relevant_txids(&self) -> Vec<(Txid, Option<BlockHash>)> {
+		let mut txids: Vec<(Txid, Option<BlockHash>)> = self.onchain_events_awaiting_threshold_conf
 			.iter()
-			.map(|entry| entry.txid)
+			.map(|entry| (entry.txid, entry.block_hash))
 			.collect();
-		txids.sort_unstable();
+		txids.sort_unstable_by_key(|(txid, _)| *txid);
 		txids.dedup();
 		txids
 	}

@@ -171,7 +171,8 @@ pub trait Confirm {
 	/// if they become available at the same time.
 	fn best_block_updated(&self, header: &BlockHeader, height: u32);
 
-	/// Returns transactions that should be monitored for reorganization out of the chain.
+	/// Returns transactions that should be monitored for reorganization out of the chain along
+	/// with the hash of the block as part of which had been previously confirmed.
 	///
 	/// Will include any transactions passed to [`transactions_confirmed`] that have insufficient
 	/// confirmations to be safe from a chain reorganization. Will not include any transactions
@@ -180,11 +181,13 @@ pub trait Confirm {
 	/// May be called to determine the subset of transactions that must still be monitored for
 	/// reorganization. Will be idempotent between calls but may change as a result of calls to the
 	/// other interface methods. Thus, this is useful to determine which transactions may need to be
-	/// given to [`transaction_unconfirmed`].
+	/// given to [`transaction_unconfirmed`]. If any of the returned transactions are confirmed in
+	/// a block other than the one with the given hash, they need to be unconfirmed and reconfirmed
+	/// via [`transaction_unconfirmed`] and [`transactions_confirmed`], respectively.
 	///
 	/// [`transactions_confirmed`]: Self::transactions_confirmed
 	/// [`transaction_unconfirmed`]: Self::transaction_unconfirmed
-	fn get_relevant_txids(&self) -> Vec<Txid>;
+	fn get_relevant_txids(&self) -> Vec<(Txid, Option<BlockHash>)>;
 }
 
 /// An enum representing the status of a channel monitor update persistence.

@@ -24,7 +24,7 @@
 //! servicing [`ChannelMonitor`] updates from the client.
 
 use bitcoin::blockdata::block::BlockHeader;
-use bitcoin::hash_types::Txid;
+use bitcoin::hash_types::{Txid, BlockHash};
 
 use crate::chain;
 use crate::chain::{ChannelMonitorUpdateStatus, Filter, WatchedOutput};
@@ -544,7 +544,7 @@ where
 		});
 	}
 
-	fn get_relevant_txids(&self) -> Vec<Txid> {
+	fn get_relevant_txids(&self) -> Vec<(Txid, Option<BlockHash>)> {
 		let mut txids = Vec::new();
 		let monitor_states = self.monitors.read().unwrap();
 		for monitor_state in monitor_states.values() {
