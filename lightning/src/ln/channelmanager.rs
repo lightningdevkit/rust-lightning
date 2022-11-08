@@ -60,6 +60,7 @@ use crate::util::scid_utils::fake_scid;
 use crate::util::ser::{BigSize, FixedLengthReader, Readable, ReadableArgs, MaybeReadable, Writeable, Writer, VecWriter};
 use crate::util::logger::{Level, Logger};
 use crate::util::errors::APIError;
+use crate::util::credentials_utils::SignedCredential;
 
 use crate::io;
 use crate::prelude::*;
@@ -115,6 +116,7 @@ pub(super) struct PendingHTLCInfo {
 	pub(super) amt_to_forward: u64,
 	pub(super) amt_incoming: Option<u64>, // Added in 0.0.113
 	pub(super) outgoing_cltv_value: u32,
+	pub(super) forward_credentials: Vec<SignedCredential>,
 }
 
 #[derive(Clone)] // See Channel::revoke_and_ack for why, tl;dr: Rust bug
@@ -2216,6 +2218,13 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 					});
 				}
 			},
+			msgs::OnionHopDataFormat::NonFinalNodeAndCredentials { .. } => {
+				return Err(ReceiveError {
+					err_code: 0x4000|22,
+					err_data: Vec::new(),
+					msg: "Got non final data with an HMAC of 0",
+				});
+			}
 		};
 		Ok(PendingHTLCInfo {
 			routing,
@@ -2224,6 +2233,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 			amt_incoming: Some(amt_msat),
 			amt_to_forward: amt_msat,
 			outgoing_cltv_value: hop_data.outgoing_cltv_value,
+			forward_credentials: vec![],
 		})
 	}
 
@@ -2303,12 +2313,13 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 					hmac: next_hop_hmac.clone(),
 				};
 
-				let short_channel_id = match next_hop_data.format {
-					msgs::OnionHopDataFormat::Legacy { short_channel_id } => short_channel_id,
-					msgs::OnionHopDataFormat::NonFinalNode { short_channel_id } => short_channel_id,
+				let (short_channel_id, credentials) = match next_hop_data.format {
+					msgs::OnionHopDataFormat::Legacy { short_channel_id } => (short_channel_id, vec![]),
+					msgs::OnionHopDataFormat::NonFinalNode { short_channel_id } => (short_channel_id, vec![]),
 					msgs::OnionHopDataFormat::FinalNode { .. } => {
 						return_err!("Final Node OnionHopData provided for us as an intermediary node", 0x4000 | 22, &[0;0]);
 					},
+					msgs::OnionHopDataFormat::NonFinalNodeAndCredentials { short_channel_id, .. } => (short_channel_id, vec![]),
 				};
 
 				PendingHTLCStatus::Forward(PendingHTLCInfo {
@@ -2321,8 +2332,9 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 					amt_incoming: Some(msg.amount_msat),
 					amt_to_forward: next_hop_data.amt_to_forward,
 					outgoing_cltv_value: next_hop_data.outgoing_cltv_value,
+					forward_credentials: credentials,
 				})
-			}
+			},
 		};
 
 		if let &PendingHTLCStatus::Forward(PendingHTLCInfo { ref routing, ref amt_to_forward, ref outgoing_cltv_value, .. }) = &pending_forward_info {
@@ -3246,7 +3258,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 										prev_short_channel_id, prev_htlc_id, prev_funding_outpoint,
 										forward_info: PendingHTLCInfo {
 											routing, incoming_shared_secret, payment_hash, amt_to_forward,
-											outgoing_cltv_value, amt_incoming: _
+											outgoing_cltv_value, amt_incoming: _, forward_credentials,
 										}
 									}) => {
 										macro_rules! failure_handler {
@@ -3355,7 +3367,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 											routing: PendingHTLCRouting::Forward {
 												onion_packet, ..
 											}, incoming_shared_secret, payment_hash, amt_to_forward, outgoing_cltv_value,
-											amt_incoming: _
+											amt_incoming: _, forward_credentials
 										},
 									}) => {
 										log_trace!(self.logger, "Adding HTLC from short id {} with payment_hash {} to channel with short id {} after delay", prev_short_channel_id, log_bytes!(payment_hash.0), short_chan_id);
@@ -5212,7 +5224,10 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 											payment_hash: forward_info.payment_hash,
 											inbound_amount_msat: forward_info.amt_incoming.unwrap(),
 											expected_outbound_amount_msat: forward_info.amt_to_forward,
-											intercept_id
+											intercept_id,
+											outbound_block_value: forward_info.outgoing_cltv_value,
+											forward_credentials: forward_info.forward_credentials.clone(), //TODO: fetch them from onion
+											backward_credentials: vec![], //TODO: should be present too
 										});
 										entry.insert(PendingAddHTLCInfo {
 											prev_short_channel_id, prev_funding_outpoint, prev_htlc_id, forward_info });
@@ -6632,6 +6647,7 @@ impl_writeable_tlv_based!(PendingHTLCInfo, {
 	(6, amt_to_forward, required),
 	(8, outgoing_cltv_value, required),
 	(9, amt_incoming, option),
+	(11, forward_credentials, vec_type),
 });
 
 

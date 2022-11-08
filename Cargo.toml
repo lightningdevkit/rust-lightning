@@ -7,7 +7,8 @@ members = [
     "lightning-net-tokio",
     "lightning-persister",
     "lightning-background-processor",
-    "lightning-rapid-gossip-sync"
+    "lightning-rapid-gossip-sync",
+    "lightning-htlc-scorer"
 ]
 
 exclude = [

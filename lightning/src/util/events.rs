@@ -25,6 +25,7 @@ use crate::ln::msgs::DecodeError;
 use crate::ln::{PaymentPreimage, PaymentHash, PaymentSecret};
 use crate::routing::gossip::NetworkUpdate;
 use crate::util::ser::{BigSize, FixedLengthReader, Writeable, Writer, MaybeReadable, Readable, VecReadWrapper, VecWriteWrapper, OptionDeserWrapper};
+use crate::util::credentials_utils::SignedCredential;
 use crate::routing::router::{RouteHop, RouteParameters};
 
 use bitcoin::{PackedLockTime, Transaction};
@@ -578,8 +579,21 @@ pub enum Event {
 		/// intercepting this payment, you might take a fee by forwarding less than this amount
 		expected_outbound_amount_msat: u64,
 		/// A id to help LDK identify which payment is being forwarded or failed
-		intercept_id: InterceptId
+		intercept_id: InterceptId,
+		/// How many blocks the payment is expected to be locked in the worst-case
+		outbound_block_value: u32,
+		/// "Forward" credentials payload to verify the HTLC score against node's routing policy.
+		forward_credentials: Vec<SignedCredential>,
+		/// "Backward" credentials payload to grant the payer with "fresh" credentials for next HTLC forwards.
+		backward_credentials: Vec<SignedCredential>
 	},
+	/// Used to indicate that we've received a HTLC in settlement that should be intercepted.
+	HTLCBackwardIntercepted {
+		/// A id to help LDK identify which payment is failed
+		intercept_id: InterceptId,
+		/// Either HTLC `update_fulfill_htlc` / `update_fail_htlc`
+		result: bool,
+	}, //TODO: finish to cover all events
 	/// Used to indicate that an output which you should know how to spend was confirmed on chain
 	/// and is now spendable.
 	/// Such an output will *not* ever be spent by rust-lightning, and are not at risk of your
@@ -910,14 +924,24 @@ impl Writeable for Event {
 					(6, channel_type, required),
 				});
 			},
-			&Event::PaymentIntercepted { short_channel_id, payment_hash, inbound_amount_msat: inbound_amount_msats, expected_outbound_amount_msat: expected_outbound_amount_msats, intercept_id } => {
+			&Event::PaymentIntercepted { short_channel_id, payment_hash, inbound_amount_msat: inbound_amount_msats, expected_outbound_amount_msat: expected_outbound_amount_msats, intercept_id, outbound_block_value, ref forward_credentials, ref backward_credentials } => {
 				31u8.write(writer)?;
 				write_tlv_fields!(writer, {
 					(0, short_channel_id, required),
 					(2, payment_hash, required),
 					(4, inbound_amount_msats, required),
 					(6, expected_outbound_amount_msats, required),
-					(8, intercept_id, required)
+					(8, intercept_id, required),
+					(10, outbound_block_value, required),
+					(12, VecWriteWrapper(forward_credentials), required),
+					(14, VecWriteWrapper(backward_credentials), required),
+				});
+			},
+			&Event::HTLCBackwardIntercepted { intercept_id, result } => {
+				33u8.write(writer)?;
+				write_tlv_fields!(writer, {
+					(0, intercept_id, required),
+					(2, result, required),
 				});
 			}
 			// Note that, going forward, all new events must only write data inside of
@@ -1229,12 +1253,18 @@ impl MaybeReadable for Event {
 				let mut short_channel_id = 0;
 				let mut inbound_amount_msats = 0;
 				let mut expected_outbound_amount_msats = 0;
+				let mut outbound_block_value = 0;
+				let mut forward_credentials = VecReadWrapper(Vec::new());
+				let mut backward_credentials = VecReadWrapper(Vec::new());
 				read_tlv_fields!(reader, {
 					(0, short_channel_id, required),
 					(2, payment_hash, required),
 					(4, inbound_amount_msats, required),
 					(6, expected_outbound_amount_msats, required),
-					(8, intercept_id, required)
+					(8, intercept_id, required),
+					(10, outbound_block_value, required),
+					(12, forward_credentials, required),
+					(14, backward_credentials, required),
 				});
 				Ok(Some(Event::PaymentIntercepted {
 					payment_hash,
@@ -1242,8 +1272,23 @@ impl MaybeReadable for Event {
 					inbound_amount_msat: inbound_amount_msats,
 					expected_outbound_amount_msat: expected_outbound_amount_msats,
 					intercept_id,
+					outbound_block_value,
+					forward_credentials: forward_credentials.0,
+					backward_credentials: backward_credentials.0,
 				}))
 			},
+			33u8 => {
+				let mut intercept_id = InterceptId([0; 32]);
+				let mut result = false;
+				read_tlv_fields!(reader, {
+					(0, intercept_id, required),
+					(2, result, required),
+				});
+				Ok(Some(Event::HTLCBackwardIntercepted {
+					intercept_id,
+					result,
+				}))
+			}
 			// Versions prior to 0.0.100 did not ignore odd types, instead returning InvalidValue.
 			// Version 0.0.100 failed to properly ignore odd types, possibly resulting in corrupt
 			// reads.

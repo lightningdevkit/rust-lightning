@@ -42,7 +42,7 @@ use crate::io_extras::read_to_end;
 
 use crate::util::events::{MessageSendEventsProvider, OnionMessageProvider};
 use crate::util::logger;
-use crate::util::ser::{BigSize, LengthReadable, Readable, ReadableArgs, Writeable, Writer, FixedLengthReader, HighZeroBytesDroppedBigSize, Hostname};
+use crate::util::ser::{BigSize, LengthReadable, Readable, ReadableArgs, Writeable, Writer, VecWriteWrapper, FixedLengthReader, HighZeroBytesDroppedBigSize, Hostname};
 
 use crate::ln::{PaymentPreimage, PaymentHash, PaymentSecret};
 
@@ -1014,6 +1014,7 @@ pub trait OnionMessageHandler : OnionMessageProvider {
 
 mod fuzzy_internal_msgs {
 	use crate::prelude::*;
+	use crate::util::credentials_utils::SignedCredential;
 	use crate::ln::{PaymentPreimage, PaymentSecret};
 
 	// These types aren't intended to be pub, but are exposed for direct fuzzing (as we deserialize
@@ -1037,6 +1038,10 @@ mod fuzzy_internal_msgs {
 			payment_data: Option<FinalOnionHopData>,
 			keysend_preimage: Option<PaymentPreimage>,
 		},
+		NonFinalNodeAndCredentials {
+			short_channel_id: u64,
+			credentials: Vec<SignedCredential>,
+		}
 	}
 
 	pub struct OnionHopData {
@@ -1478,6 +1483,14 @@ impl Writeable for OnionHopData {
 					(4, HighZeroBytesDroppedBigSize(self.outgoing_cltv_value), required),
 					(8, payment_data, option),
 					(5482373484, keysend_preimage, option)
+				});
+			},
+			OnionHopDataFormat::NonFinalNodeAndCredentials { short_channel_id, ref credentials } => {
+				encode_varint_length_prefixed_tlv!(w, {
+					(2, HighZeroBytesDroppedBigSize(self.amt_to_forward), required),
+					(4, HighZeroBytesDroppedBigSize(self.outgoing_cltv_value), required),
+					(6, short_channel_id, required),
+					(54823733684, VecWriteWrapper(&credentials), required)
 				});
 			},
 		}

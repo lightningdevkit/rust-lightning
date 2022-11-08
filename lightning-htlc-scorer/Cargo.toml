@@ -1,0 +1,21 @@
+[package]
+name = "lightning-htlc-scorer"
+description = "Process the jamming risk of forward HTLC"
+version = "0.1.0"
+authors = ["Antoine Riard <dev@ariard.me>"]
+documentation = "https://docs.rs/lightning-htlc-scorer"
+license = "MIT OR Apache-2.0"
+keyswords = [ "lightning", "bitcoin", "jamming" ]
+readme = "README.md"
+repository = "https://github.com/lightningdevkit/rust-lightning/"
+edition = "2018"
+
+[features]
+default = ["std"]
+no-std = ["hashbrown", "lightning/no-std"]
+std = ["lightning/std"]
+
+[dependencies]
+bitcoin = { version = "0.29.0", default-features = false, features = ["secp-recovery"] }
+lightning = { version = "0.0.112", path = "../lightning", default-features = false }
+hashbrown = { version = "0.8", optional = true }
