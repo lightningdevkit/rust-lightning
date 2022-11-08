@@ -17,8 +17,8 @@ Communication Channels
 
 Communication about the development of LDK and `rust-lightning` happens
 primarily on the [LDK Discord](https://discord.gg/5AcknnMfBw) in the `#ldk-dev`
-channel. Additionally, live LDK devevelopment meetings are held every other
-Monday 19:00 UTC in the [LDK Dev Jitsi Meeting
+channel. Additionally, live LDK development meetings are held every other
+Monday 17:00 UTC in the [LDK Dev Jitsi Meeting
 Room](https://meet.jit.si/ldkdevmeeting). Upcoming events can be found in the
 [LDK calendar](https://calendar.google.com/calendar/embed?src=c_e6fv6vlshbpoob2mmbvblkkoj4%40group.calendar.google.com).
 
