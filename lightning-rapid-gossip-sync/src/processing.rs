@@ -37,12 +37,9 @@ impl<NG: Deref<Target=NetworkGraph<L>>, L: Deref> RapidGossipSync<NG, L> where L
 		let mut prefix = [0u8; 4];
 		read_cursor.read_exact(&mut prefix)?;
 
-		match prefix {
-			GOSSIP_PREFIX => {}
-			_ => {
-				return Err(DecodeError::UnknownVersion.into());
-			}
-		};
+		if prefix != GOSSIP_PREFIX {
+			return Err(DecodeError::UnknownVersion.into());
+		}
 
 		let chain_hash: BlockHash = Readable::read(read_cursor)?;
 		let latest_seen_timestamp: u32 = Readable::read(read_cursor)?;
@@ -75,6 +72,7 @@ impl<NG: Deref<Target=NetworkGraph<L>>, L: Deref> RapidGossipSync<NG, L> where L
 
 			let node_id_1_index: BigSize = Readable::read(read_cursor)?;
 			let node_id_2_index: BigSize = Readable::read(read_cursor)?;
+
 			if max(node_id_1_index.0, node_id_2_index.0) >= node_id_count as u64 {
 				return Err(DecodeError::InvalidValue.into());
 			};
@@ -123,49 +121,43 @@ impl<NG: Deref<Target=NetworkGraph<L>>, L: Deref> RapidGossipSync<NG, L> where L
 			// flags are always sent in full, and hence always need updating
 			let standard_channel_flags = channel_flags & 0b_0000_0011;
 
-			let mut synthetic_update = if channel_flags & 0b_1000_0000 == 0 {
-				// full update, field flags will indicate deviations from the default
-				UnsignedChannelUpdate {
-					chain_hash,
-					short_channel_id,
-					timestamp: backdated_timestamp,
-					flags: standard_channel_flags,
-					cltv_expiry_delta: default_cltv_expiry_delta,
-					htlc_minimum_msat: default_htlc_minimum_msat,
-					htlc_maximum_msat: default_htlc_maximum_msat,
-					fee_base_msat: default_fee_base_msat,
-					fee_proportional_millionths: default_fee_proportional_millionths,
-					excess_data: Vec::new(),
-				}
-			} else {
+			let mut synthetic_update = UnsignedChannelUpdate {
+				chain_hash,
+				short_channel_id,
+				timestamp: backdated_timestamp,
+				flags: standard_channel_flags,
+				cltv_expiry_delta: default_cltv_expiry_delta,
+				htlc_minimum_msat: default_htlc_minimum_msat,
+				htlc_maximum_msat: default_htlc_maximum_msat,
+				fee_base_msat: default_fee_base_msat,
+				fee_proportional_millionths: default_fee_proportional_millionths,
+				excess_data: Vec::new(),
+			};
+
+			let mut skip_update_for_unknown_channel = false;
+
+			if (channel_flags & 0b_1000_0000) != 0 {
 				// incremental update, field flags will indicate mutated values
 				let read_only_network_graph = network_graph.read_only();
-				let channel = read_only_network_graph
+				if let Some(channel) = read_only_network_graph
 					.channels()
-					.get(&short_channel_id)
-					.ok_or(LightningError {
-						err: "Couldn't find channel for update".to_owned(),
-						action: ErrorAction::IgnoreError,
-					})?;
+					.get(&short_channel_id) {
 
-				let directional_info = channel
-					.get_directional_info(channel_flags)
-					.ok_or(LightningError {
-						err: "Couldn't find previous directional data for update".to_owned(),
-						action: ErrorAction::IgnoreError,
-					})?;
+					let directional_info = channel
+						.get_directional_info(channel_flags)
+						.ok_or(LightningError {
+							err: "Couldn't find previous directional data for update".to_owned(),
+							action: ErrorAction::IgnoreError,
+						})?;
 
-				UnsignedChannelUpdate {
-					chain_hash,
-					short_channel_id,
-					timestamp: backdated_timestamp,
-					flags: standard_channel_flags,
-					cltv_expiry_delta: directional_info.cltv_expiry_delta,
-					htlc_minimum_msat: directional_info.htlc_minimum_msat,
-					htlc_maximum_msat: directional_info.htlc_maximum_msat,
-					fee_base_msat: directional_info.fees.base_msat,
-					fee_proportional_millionths: directional_info.fees.proportional_millionths,
-					excess_data: Vec::new(),
+					synthetic_update.cltv_expiry_delta = directional_info.cltv_expiry_delta;
+					synthetic_update.htlc_minimum_msat = directional_info.htlc_minimum_msat;
+					synthetic_update.htlc_maximum_msat = directional_info.htlc_maximum_msat;
+					synthetic_update.fee_base_msat = directional_info.fees.base_msat;
+					synthetic_update.fee_proportional_millionths = directional_info.fees.proportional_millionths;
+
+				} else {
+					skip_update_for_unknown_channel = true;
 				}
 			};
 
@@ -192,6 +184,10 @@ impl<NG: Deref<Target=NetworkGraph<L>>, L: Deref> RapidGossipSync<NG, L> where L
 			if channel_flags & 0b_0000_0100 > 0 {
 				let htlc_maximum_msat: u64 = Readable::read(read_cursor)?;
 				synthetic_update.htlc_maximum_msat = htlc_maximum_msat;
+			}
+
+			if skip_update_for_unknown_channel {
+				continue;
 			}
 
 			match network_graph.update_channel_unsigned(&synthetic_update) {
@@ -254,7 +250,7 @@ mod tests {
 	}
 
 	#[test]
-	fn incremental_only_update_fails_without_prior_announcements() {
+	fn incremental_only_update_ignores_missing_channel() {
 		let incremental_update_input = vec![
 			76, 68, 75, 1, 111, 226, 140, 10, 182, 241, 179, 114, 193, 166, 162, 70, 174, 99, 247,
 			79, 147, 30, 131, 101, 225, 90, 8, 156, 104, 214, 25, 0, 0, 0, 0, 0, 97, 229, 183, 167,
@@ -271,12 +267,7 @@ mod tests {
 
 		let rapid_sync = RapidGossipSync::new(&network_graph);
 		let update_result = rapid_sync.update_network_graph(&incremental_update_input[..]);
-		assert!(update_result.is_err());
-		if let Err(GraphSyncError::LightningError(lightning_error)) = update_result {
-			assert_eq!(lightning_error.err, "Couldn't find channel for update");
-		} else {
-			panic!("Unexpected update result: {:?}", update_result)
-		}
+		assert!(update_result.is_ok());
 	}
 
 	#[test]
@@ -533,5 +524,40 @@ mod tests {
 		);
 		assert!(after.contains("619737530008010752"));
 		assert!(after.contains("783241506229452801"));
+	}
+
+	#[test]
+	pub fn update_fails_with_unknown_version() {
+		let unknown_version_input = vec![
+			76, 68, 75, 2, 111, 226, 140, 10, 182, 241, 179, 114, 193, 166, 162, 70, 174, 99, 247,
+			79, 147, 30, 131, 101, 225, 90, 8, 156, 104, 214, 25, 0, 0, 0, 0, 0, 97, 227, 98, 218,
+			0, 0, 0, 4, 2, 22, 7, 207, 206, 25, 164, 197, 231, 230, 231, 56, 102, 61, 250, 251,
+			187, 172, 38, 46, 79, 247, 108, 44, 155, 48, 219, 238, 252, 53, 192, 6, 67, 2, 36, 125,
+			157, 176, 223, 175, 234, 116, 94, 248, 201, 225, 97, 235, 50, 47, 115, 172, 63, 136,
+			88, 216, 115, 11, 111, 217, 114, 84, 116, 124, 231, 107, 2, 158, 1, 242, 121, 152, 106,
+			204, 131, 186, 35, 93, 70, 216, 10, 237, 224, 183, 89, 95, 65, 3, 83, 185, 58, 138,
+			181, 64, 187, 103, 127, 68, 50, 2, 201, 19, 17, 138, 136, 149, 185, 226, 156, 137, 175,
+			110, 32, 237, 0, 217, 90, 31, 100, 228, 149, 46, 219, 175, 168, 77, 4, 143, 38, 128,
+			76, 97, 0, 0, 0, 2, 0, 0, 255, 8, 153, 192, 0, 2, 27, 0, 0, 0, 1, 0, 0, 255, 2, 68,
+			226, 0, 6, 11, 0, 1, 2, 3, 0, 0, 0, 4, 0, 40, 0, 0, 0, 0, 0, 0, 3, 232, 0, 0, 3, 232,
+			0, 0, 0, 1, 0, 0, 0, 0, 29, 129, 25, 192, 255, 8, 153, 192, 0, 2, 27, 0, 0, 60, 0, 0,
+			0, 0, 0, 0, 0, 1, 0, 0, 0, 100, 0, 0, 2, 224, 0, 0, 0, 0, 58, 85, 116, 216, 0, 29, 0,
+			0, 0, 1, 0, 0, 0, 125, 0, 0, 0, 0, 58, 85, 116, 216, 255, 2, 68, 226, 0, 6, 11, 0, 1,
+			0, 0, 1,
+		];
+
+		let block_hash = genesis_block(Network::Bitcoin).block_hash();
+		let logger = TestLogger::new();
+		let network_graph = NetworkGraph::new(block_hash, &logger);
+		let rapid_sync = RapidGossipSync::new(&network_graph);
+		let update_result = rapid_sync.update_network_graph(&unknown_version_input[..]);
+
+		assert!(update_result.is_err());
+
+		if let Err(GraphSyncError::DecodeError(DecodeError::UnknownVersion)) = update_result {
+			// this is the expected error type
+		} else {
+			panic!("Unexpected update result: {:?}", update_result)
+		}
 	}
 }
