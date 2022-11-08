@@ -157,6 +157,7 @@ mod sealed {
 		// Byte 2
 		BasicMPP,
 	]);
+	define_context!(OfferContext, []);
 	// This isn't a "real" feature context, and is only used in the channel_type field in an
 	// `OpenChannel` message.
 	define_context!(ChannelTypeContext, [
@@ -366,7 +367,7 @@ mod sealed {
 		supports_keysend, requires_keysend);
 
 	#[cfg(test)]
-	define_feature!(123456789, UnknownFeature, [NodeContext, ChannelContext, InvoiceContext],
+	define_feature!(123456789, UnknownFeature, [NodeContext, ChannelContext, InvoiceContext, OfferContext],
 		"Feature flags for an unknown feature used in testing.", set_unknown_feature_optional,
 		set_unknown_feature_required, supports_unknown_test_feature, requires_unknown_test_feature);
 }
@@ -425,6 +426,8 @@ pub type NodeFeatures = Features<sealed::NodeContext>;
 pub type ChannelFeatures = Features<sealed::ChannelContext>;
 /// Features used within an invoice.
 pub type InvoiceFeatures = Features<sealed::InvoiceContext>;
+/// Features used within an offer.
+pub type OfferFeatures = Features<sealed::OfferContext>;
 
 /// Features used within the channel_type field in an OpenChannel message.
 ///
@@ -684,6 +687,15 @@ impl<T: sealed::Wumbo> Features<T> {
 	}
 }
 
+#[cfg(test)]
+impl<T: sealed::UnknownFeature> Features<T> {
+	pub(crate) fn unknown() -> Self {
+		let mut features = Self::empty();
+		features.set_unknown_feature_required();
+		features
+	}
+}
+
 macro_rules! impl_feature_len_prefixed_write {
 	($features: ident) => {
 		impl Writeable for $features {
@@ -704,20 +716,25 @@ impl_feature_len_prefixed_write!(ChannelFeatures);
 impl_feature_len_prefixed_write!(NodeFeatures);
 impl_feature_len_prefixed_write!(InvoiceFeatures);
 
-// Because ChannelTypeFeatures only appears inside of TLVs, it doesn't have a length prefix when
-// serialized. Thus, we can't use `impl_feature_len_prefixed_write`, above, and have to write our
-// own serialization.
-impl Writeable for ChannelTypeFeatures {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		self.write_be(w)
+// Some features only appear inside of TLVs, so they don't have a length prefix when serialized.
+macro_rules! impl_feature_tlv_write {
+	($features: ident) => {
+		impl Writeable for $features {
+			fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+				self.write_be(w)
+			}
+		}
+		impl Readable for $features {
+			fn read<R: io::Read>(r: &mut R) -> Result<Self, DecodeError> {
+				let v = io_extras::read_to_end(r)?;
+				Ok(Self::from_be_bytes(v))
+			}
+		}
 	}
 }
-impl Readable for ChannelTypeFeatures {
-	fn read<R: io::Read>(r: &mut R) -> Result<Self, DecodeError> {
-		let v = io_extras::read_to_end(r)?;
-		Ok(Self::from_be_bytes(v))
-	}
-}
+
+impl_feature_tlv_write!(ChannelTypeFeatures);
+impl_feature_tlv_write!(OfferFeatures);
 
 #[cfg(test)]
 mod tests {

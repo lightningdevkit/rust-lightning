@@ -22,6 +22,7 @@ use core::ops::Deref;
 use bitcoin::secp256k1::{PublicKey, SecretKey};
 use bitcoin::secp256k1::constants::{PUBLIC_KEY_SIZE, SECRET_KEY_SIZE, COMPACT_SIGNATURE_SIZE};
 use bitcoin::secp256k1::ecdsa::Signature;
+use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::blockdata::script::Script;
 use bitcoin::blockdata::transaction::{OutPoint, Transaction, TxOut};
 use bitcoin::consensus;
@@ -283,39 +284,6 @@ impl<T: Readable> From<T> for OptionDeserWrapper<T> {
 	fn from(t: T) -> OptionDeserWrapper<T> { OptionDeserWrapper(Some(t)) }
 }
 
-/// Wrapper to write each element of a Vec with no length prefix
-pub(crate) struct VecWriteWrapper<'a, T: Writeable>(pub &'a Vec<T>);
-impl<'a, T: Writeable> Writeable for VecWriteWrapper<'a, T> {
-	#[inline]
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
-		for ref v in self.0.iter() {
-			v.write(writer)?;
-		}
-		Ok(())
-	}
-}
-
-/// Wrapper to read elements from a given stream until it reaches the end of the stream.
-pub(crate) struct VecReadWrapper<T>(pub Vec<T>);
-impl<T: MaybeReadable> Readable for VecReadWrapper<T> {
-	#[inline]
-	fn read<R: Read>(mut reader: &mut R) -> Result<Self, DecodeError> {
-		let mut values = Vec::new();
-		loop {
-			let mut track_read = ReadTrackingReader::new(&mut reader);
-			match MaybeReadable::read(&mut track_read) {
-				Ok(Some(v)) => { values.push(v); },
-				Ok(None) => { },
-				// If we failed to read any bytes at all, we reached the end of our TLV
-				// stream and have simply exhausted all entries.
-				Err(ref e) if e == &DecodeError::ShortRead && !track_read.have_read => break,
-				Err(e) => return Err(e),
-			}
-		}
-		Ok(Self(values))
-	}
-}
-
 pub(crate) struct U48(pub u64);
 impl Writeable for U48 {
 	#[inline]
@@ -451,6 +419,9 @@ macro_rules! impl_writeable_primitive {
 				}
 			}
 		}
+		impl From<$val_type> for HighZeroBytesDroppedBigSize<$val_type> {
+			fn from(val: $val_type) -> Self { Self(val) }
+		}
 	}
 }
 
@@ -514,7 +485,7 @@ macro_rules! impl_array {
 	);
 }
 
-impl_array!(3); // for rgb
+impl_array!(3); // for rgb, ISO 4712 code
 impl_array!(4); // for IPv4
 impl_array!(12); // for OnionV2
 impl_array!(16); // for IPv6
@@ -544,6 +515,59 @@ impl Readable for [u16; 8] {
 		}
 		Ok(res)
 	}
+}
+
+/// For variable-length values within TLV record where the length is encoded as part of the record.
+/// Used to prevent encoding the length twice.
+pub(crate) struct WithoutLength<T>(pub T);
+
+impl Writeable for WithoutLength<&String> {
+	#[inline]
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		w.write_all(self.0.as_bytes())
+	}
+}
+impl Readable for WithoutLength<String> {
+	#[inline]
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let v: WithoutLength<Vec<u8>> = Readable::read(r)?;
+		Ok(Self(String::from_utf8(v.0).map_err(|_| DecodeError::InvalidValue)?))
+	}
+}
+impl<'a> From<&'a String> for WithoutLength<&'a String> {
+	fn from(s: &'a String) -> Self { Self(s) }
+}
+
+impl<'a, T: Writeable> Writeable for WithoutLength<&'a Vec<T>> {
+	#[inline]
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		for ref v in self.0.iter() {
+			v.write(writer)?;
+		}
+		Ok(())
+	}
+}
+
+impl<T: MaybeReadable> Readable for WithoutLength<Vec<T>> {
+	#[inline]
+	fn read<R: Read>(mut reader: &mut R) -> Result<Self, DecodeError> {
+		let mut values = Vec::new();
+		loop {
+			let mut track_read = ReadTrackingReader::new(&mut reader);
+			match MaybeReadable::read(&mut track_read) {
+				Ok(Some(v)) => { values.push(v); },
+				Ok(None) => { },
+				// If we failed to read any bytes at all, we reached the end of our TLV
+				// stream and have simply exhausted all entries.
+				Err(ref e) if e == &DecodeError::ShortRead && !track_read.have_read => break,
+				Err(e) => return Err(e),
+			}
+		}
+		Ok(Self(values))
+	}
+}
+impl<'a, T> From<&'a Vec<T>> for WithoutLength<&'a Vec<T>> {
+	fn from(v: &'a Vec<T>) -> Self { Self(v) }
 }
 
 // HashMap
@@ -857,6 +881,19 @@ impl Readable for BlockHash {
 
 		let buf: [u8; 32] = Readable::read(r)?;
 		Ok(BlockHash::from_slice(&buf[..]).unwrap())
+	}
+}
+
+impl Writeable for ChainHash {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		w.write_all(self.as_bytes())
+	}
+}
+
+impl Readable for ChainHash {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let buf: [u8; 32] = Readable::read(r)?;
+		Ok(ChainHash::from(&buf[..]))
 	}
 }
 

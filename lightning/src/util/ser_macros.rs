@@ -17,7 +17,7 @@ macro_rules! encode_tlv {
 		$field.write($stream)?;
 	};
 	($stream: expr, $type: expr, $field: expr, vec_type) => {
-		encode_tlv!($stream, $type, $crate::util::ser::VecWriteWrapper(&$field), required);
+		encode_tlv!($stream, $type, $crate::util::ser::WithoutLength(&$field), required);
 	};
 	($stream: expr, $optional_type: expr, $optional_field: expr, option) => {
 		if let Some(ref field) = $optional_field {
@@ -25,6 +25,12 @@ macro_rules! encode_tlv {
 			BigSize(field.serialized_length() as u64).write($stream)?;
 			field.write($stream)?;
 		}
+	};
+	($stream: expr, $type: expr, $field: expr, (option, encoding: ($fieldty: ty, $encoding: ident))) => {
+		encode_tlv!($stream, $type, $field.map(|f| $encoding(f)), option);
+	};
+	($stream: expr, $type: expr, $field: expr, (option, encoding: $fieldty: ty)) => {
+		encode_tlv!($stream, $type, $field, option);
 	};
 }
 
@@ -66,7 +72,7 @@ macro_rules! get_varint_length_prefixed_tlv_length {
 		$len.0 += field_len;
 	};
 	($len: expr, $type: expr, $field: expr, vec_type) => {
-		get_varint_length_prefixed_tlv_length!($len, $type, $crate::util::ser::VecWriteWrapper(&$field), required);
+		get_varint_length_prefixed_tlv_length!($len, $type, $crate::util::ser::WithoutLength(&$field), required);
 	};
 	($len: expr, $optional_type: expr, $optional_field: expr, option) => {
 		if let Some(ref field) = $optional_field {
@@ -121,6 +127,9 @@ macro_rules! check_tlv_order {
 	($last_seen_type: expr, $typ: expr, $type: expr, $field: ident, (option: $trait: ident $(, $read_arg: expr)?)) => {{
 		// no-op
 	}};
+	($last_seen_type: expr, $typ: expr, $type: expr, $field: ident, (option, encoding: $encoding: tt)) => {{
+		// no-op
+	}};
 }
 
 macro_rules! check_missing_tlv {
@@ -150,6 +159,9 @@ macro_rules! check_missing_tlv {
 	($last_seen_type: expr, $type: expr, $field: ident, (option: $trait: ident $(, $read_arg: expr)?)) => {{
 		// no-op
 	}};
+	($last_seen_type: expr, $type: expr, $field: ident, (option, encoding: $encoding: tt)) => {{
+		// no-op
+	}};
 }
 
 macro_rules! decode_tlv {
@@ -160,7 +172,7 @@ macro_rules! decode_tlv {
 		$field = $crate::util::ser::Readable::read(&mut $reader)?;
 	}};
 	($reader: expr, $field: ident, vec_type) => {{
-		let f: $crate::util::ser::VecReadWrapper<_> = $crate::util::ser::Readable::read(&mut $reader)?;
+		let f: $crate::util::ser::WithoutLength<Vec<_>> = $crate::util::ser::Readable::read(&mut $reader)?;
 		$field = Some(f.0);
 	}};
 	($reader: expr, $field: ident, option) => {{
@@ -171,6 +183,15 @@ macro_rules! decode_tlv {
 	}};
 	($reader: expr, $field: ident, (option: $trait: ident $(, $read_arg: expr)?)) => {{
 		$field = Some($trait::read(&mut $reader $(, $read_arg)*)?);
+	}};
+	($reader: expr, $field: ident, (option, encoding: ($fieldty: ty, $encoding: ident))) => {{
+		$field = {
+			let field: $encoding<$fieldty> = ser::Readable::read(&mut $reader)?;
+			Some(field.0)
+		};
+	}};
+	($reader: expr, $field: ident, (option, encoding: $fieldty: ty)) => {{
+		decode_tlv!($reader, $field, option);
 	}};
 }
 
@@ -441,6 +462,75 @@ macro_rules! impl_writeable_tlv_based {
 	}
 }
 
+/// Defines a struct for a TLV stream and a similar struct using references for non-primitive types,
+/// implementing [`Readable`] for the former and [`Writeable`] for the latter. Useful as an
+/// intermediary format when reading or writing a type encoded as a TLV stream. Note that each field
+/// representing a TLV record has its type wrapped with an [`Option`]. A tuple consisting of a type
+/// and a serialization wrapper may be given in place of a type when custom serialization is
+/// required.
+///
+/// [`Readable`]: crate::util::ser::Readable
+/// [`Writeable`]: crate::util::ser::Writeable
+macro_rules! tlv_stream {
+	($name:ident, $nameref:ident, {
+		$(($type:expr, $field:ident : $fieldty:tt)),* $(,)*
+	}) => {
+		#[derive(Debug)]
+		struct $name {
+			$(
+				$field: Option<tlv_record_type!($fieldty)>,
+			)*
+		}
+
+		pub(crate) struct $nameref<'a> {
+			$(
+				pub(crate) $field: Option<tlv_record_ref_type!($fieldty)>,
+			)*
+		}
+
+		impl<'a> $crate::util::ser::Writeable for $nameref<'a> {
+			fn write<W: $crate::util::ser::Writer>(&self, writer: &mut W) -> Result<(), $crate::io::Error> {
+				encode_tlv_stream!(writer, {
+					$(($type, self.$field, (option, encoding: $fieldty))),*
+				});
+				Ok(())
+			}
+		}
+
+		impl $crate::util::ser::Readable for $name {
+			fn read<R: $crate::io::Read>(reader: &mut R) -> Result<Self, $crate::ln::msgs::DecodeError> {
+				$(
+					init_tlv_field_var!($field, option);
+				)*
+				decode_tlv_stream!(reader, {
+					$(($type, $field, (option, encoding: $fieldty))),*
+				});
+
+				Ok(Self {
+					$(
+						$field: $field
+					),*
+				})
+			}
+		}
+	}
+}
+
+macro_rules! tlv_record_type {
+	(($type:ty, $wrapper:ident)) => { $type };
+	($type:ty) => { $type };
+}
+
+macro_rules! tlv_record_ref_type {
+	(char) => { char };
+	(u8) => { u8 };
+	((u16, $wrapper: ident)) => { u16 };
+	((u32, $wrapper: ident)) => { u32 };
+	((u64, $wrapper: ident)) => { u64 };
+	(($type:ty, $wrapper:ident)) => { &'a $type };
+	($type:ty) => { &'a $type };
+}
+
 macro_rules! _impl_writeable_tlv_based_enum_common {
 	($st: ident, $(($variant_id: expr, $variant_name: ident) =>
 		{$(($type: expr, $field: ident, $fieldty: tt)),* $(,)*}
@@ -453,7 +543,7 @@ macro_rules! _impl_writeable_tlv_based_enum_common {
 						let id: u8 = $variant_id;
 						id.write(writer)?;
 						write_tlv_fields!(writer, {
-							$(($type, $field, $fieldty)),*
+							$(($type, *$field, $fieldty)),*
 						});
 					}),*
 					$($st::$tuple_variant_name (ref field) => {

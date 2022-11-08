@@ -31,6 +31,7 @@ use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer, MaybeReadable}
 use crate::util::logger::{Logger, Level};
 use crate::util::events::{Event, EventHandler, MessageSendEvent, MessageSendEventsProvider};
 use crate::util::scid_utils::{block_from_scid, scid_from_parts, MAX_SCID_BLOCK};
+use crate::util::string::PrintableString;
 
 use crate::io;
 use crate::io_extras::{copy, sink};
@@ -1022,23 +1023,17 @@ pub struct NodeAlias(pub [u8; 32]);
 
 impl fmt::Display for NodeAlias {
 	fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
-		let control_symbol = core::char::REPLACEMENT_CHARACTER;
 		let first_null = self.0.iter().position(|b| *b == 0).unwrap_or(self.0.len());
 		let bytes = self.0.split_at(first_null).0;
 		match core::str::from_utf8(bytes) {
-			Ok(alias) => {
-				for c in alias.chars() {
-					let mut bytes = [0u8; 4];
-					let c = if !c.is_control() { c } else { control_symbol };
-					f.write_str(c.encode_utf8(&mut bytes))?;
-				}
-			},
+			Ok(alias) => PrintableString(alias).fmt(f)?,
 			Err(_) => {
+				use core::fmt::Write;
 				for c in bytes.iter().map(|b| *b as char) {
 					// Display printable ASCII characters
-					let mut bytes = [0u8; 4];
+					let control_symbol = core::char::REPLACEMENT_CHARACTER;
 					let c = if c >= '\x20' && c <= '\x7e' { c } else { control_symbol };
-					f.write_str(c.encode_utf8(&mut bytes))?;
+					f.write_char(c)?;
 				}
 			},
 		};
