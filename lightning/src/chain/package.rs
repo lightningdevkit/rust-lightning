@@ -98,10 +98,11 @@ pub(crate) struct RevokedOutput {
 	weight: u64,
 	amount: u64,
 	on_counterparty_tx_csv: u16,
+	is_counterparty_balance_on_anchors: Option<()>,
 }
 
 impl RevokedOutput {
-	pub(crate) fn build(per_commitment_point: PublicKey, counterparty_delayed_payment_base_key: PublicKey, counterparty_htlc_base_key: PublicKey, per_commitment_key: SecretKey, amount: u64, on_counterparty_tx_csv: u16) -> Self {
+	pub(crate) fn build(per_commitment_point: PublicKey, counterparty_delayed_payment_base_key: PublicKey, counterparty_htlc_base_key: PublicKey, per_commitment_key: SecretKey, amount: u64, on_counterparty_tx_csv: u16, is_counterparty_balance_on_anchors: bool) -> Self {
 		RevokedOutput {
 			per_commitment_point,
 			counterparty_delayed_payment_base_key,
@@ -109,7 +110,8 @@ impl RevokedOutput {
 			per_commitment_key,
 			weight: WEIGHT_REVOKED_OUTPUT,
 			amount,
-			on_counterparty_tx_csv
+			on_counterparty_tx_csv,
+			is_counterparty_balance_on_anchors: if is_counterparty_balance_on_anchors { Some(()) } else { None }
 		}
 	}
 }
@@ -122,6 +124,7 @@ impl_writeable_tlv_based!(RevokedOutput, {
 	(8, weight, required),
 	(10, amount, required),
 	(12, on_counterparty_tx_csv, required),
+	(14, is_counterparty_balance_on_anchors, option)
 });
 
 /// A struct to describe a revoked offered output and corresponding information to generate a
@@ -827,18 +830,7 @@ impl PackageTemplate {
 	}
 
 	pub (crate) fn build_package(txid: Txid, vout: u32, input_solving_data: PackageSolvingData, soonest_conf_deadline: u32, aggregable: bool, height_original: u32) -> Self {
-		let malleability = match input_solving_data {
-			PackageSolvingData::RevokedOutput(..) => PackageMalleability::Malleable,
-			PackageSolvingData::RevokedHTLCOutput(..) => PackageMalleability::Malleable,
-			PackageSolvingData::CounterpartyOfferedHTLCOutput(..) => PackageMalleability::Malleable,
-			PackageSolvingData::CounterpartyReceivedHTLCOutput(..) => PackageMalleability::Malleable,
-			PackageSolvingData::HolderHTLCOutput(ref outp) => if outp.opt_anchors() {
-				PackageMalleability::Malleable
-			} else {
-				PackageMalleability::Untractable
-			},
-			PackageSolvingData::HolderFundingOutput(..) => PackageMalleability::Untractable,
-		};
+		let (malleability, aggregable) = Self::map_output_type_flags(&input_solving_data);
 		let mut inputs = Vec::with_capacity(1);
 		inputs.push((BitcoinOutPoint { txid, vout }, input_solving_data));
 		PackageTemplate {
@@ -850,6 +842,19 @@ impl PackageTemplate {
 			height_timer: height_original,
 			height_original,
 		}
+	}
+
+	fn map_output_type_flags(input_solving_data: &PackageSolvingData) -> (PackageMalleability, bool) {
+		let (malleability, aggregable) = match input_solving_data {
+			PackageSolvingData::RevokedOutput(RevokedOutput { is_counterparty_balance_on_anchors: Some(()), .. }) => { (PackageMalleability::Malleable, false) },
+			PackageSolvingData::RevokedOutput(RevokedOutput { is_counterparty_balance_on_anchors: None, .. }) => { (PackageMalleability::Malleable, true) },
+			PackageSolvingData::RevokedHTLCOutput(..) => { (PackageMalleability::Malleable, true) },
+			PackageSolvingData::CounterpartyOfferedHTLCOutput(..) => { (PackageMalleability::Malleable, true) },
+			PackageSolvingData::CounterpartyReceivedHTLCOutput(..) => { (PackageMalleability::Malleable, false) },
+			PackageSolvingData::HolderHTLCOutput(..) => { (PackageMalleability::Untractable, false) },
+			PackageSolvingData::HolderFundingOutput(..) => { (PackageMalleability::Untractable, false) },
+		};
+		(malleability, aggregable)
 	}
 }
 
@@ -880,18 +885,7 @@ impl Readable for PackageTemplate {
 			inputs.push((outpoint, rev_outp));
 		}
 		let (malleability, aggregable) = if let Some((_, lead_input)) = inputs.first() {
-			match lead_input {
-				PackageSolvingData::RevokedOutput(..) => { (PackageMalleability::Malleable, true) },
-				PackageSolvingData::RevokedHTLCOutput(..) => { (PackageMalleability::Malleable, true) },
-				PackageSolvingData::CounterpartyOfferedHTLCOutput(..) => { (PackageMalleability::Malleable, true) },
-				PackageSolvingData::CounterpartyReceivedHTLCOutput(..) => { (PackageMalleability::Malleable, false) },
-				PackageSolvingData::HolderHTLCOutput(ref outp) => if outp.opt_anchors() {
-					(PackageMalleability::Malleable, outp.preimage.is_some())
-				} else {
-					(PackageMalleability::Untractable, false)
-				},
-				PackageSolvingData::HolderFundingOutput(..) => { (PackageMalleability::Untractable, false) },
-			}
+			Self::map_output_type_flags(&lead_input)
 		} else { return Err(DecodeError::InvalidValue); };
 		let mut soonest_conf_deadline = 0;
 		let mut feerate_previous = 0;
@@ -1029,11 +1023,11 @@ mod tests {
 	use bitcoin::secp256k1::Secp256k1;
 
 	macro_rules! dumb_revk_output {
-		($secp_ctx: expr) => {
+		($secp_ctx: expr, $is_counterparty_balance_on_anchors: expr) => {
 			{
 				let dumb_scalar = SecretKey::from_slice(&hex::decode("0101010101010101010101010101010101010101010101010101010101010101").unwrap()[..]).unwrap();
 				let dumb_point = PublicKey::from_secret_key(&$secp_ctx, &dumb_scalar);
-				PackageSolvingData::RevokedOutput(RevokedOutput::build(dumb_point, dumb_point, dumb_point, dumb_scalar, 0, 0))
+				PackageSolvingData::RevokedOutput(RevokedOutput::build(dumb_point, dumb_point, dumb_point, dumb_scalar, 0, 0, $is_counterparty_balance_on_anchors))
 			}
 		}
 	}
@@ -1077,7 +1071,7 @@ mod tests {
 	fn test_package_differing_heights() {
 		let txid = Txid::from_hex("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
 		let secp_ctx = Secp256k1::new();
-		let revk_outp = dumb_revk_output!(secp_ctx);
+		let revk_outp = dumb_revk_output!(secp_ctx, false);
 
 		let mut package_one_hundred = PackageTemplate::build_package(txid, 0, revk_outp.clone(), 1000, true, 100);
 		let package_two_hundred = PackageTemplate::build_package(txid, 1, revk_outp.clone(), 1000, true, 200);
@@ -1089,7 +1083,7 @@ mod tests {
 	fn test_package_untractable_merge_to() {
 		let txid = Txid::from_hex("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
 		let secp_ctx = Secp256k1::new();
-		let revk_outp = dumb_revk_output!(secp_ctx);
+		let revk_outp = dumb_revk_output!(secp_ctx, false);
 		let htlc_outp = dumb_htlc_output!();
 
 		let mut untractable_package = PackageTemplate::build_package(txid, 0, revk_outp.clone(), 1000, true, 100);
@@ -1103,7 +1097,7 @@ mod tests {
 		let txid = Txid::from_hex("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
 		let secp_ctx = Secp256k1::new();
 		let htlc_outp = dumb_htlc_output!();
-		let revk_outp = dumb_revk_output!(secp_ctx);
+		let revk_outp = dumb_revk_output!(secp_ctx, false);
 
 		let mut malleable_package = PackageTemplate::build_package(txid, 0, htlc_outp.clone(), 1000, true, 100);
 		let untractable_package = PackageTemplate::build_package(txid, 1, revk_outp.clone(), 1000, true, 100);
@@ -1115,7 +1109,7 @@ mod tests {
 	fn test_package_noaggregation_to() {
 		let txid = Txid::from_hex("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
 		let secp_ctx = Secp256k1::new();
-		let revk_outp = dumb_revk_output!(secp_ctx);
+		let revk_outp = dumb_revk_output!(secp_ctx, true);
 
 		let mut noaggregation_package = PackageTemplate::build_package(txid, 0, revk_outp.clone(), 1000, false, 100);
 		let aggregation_package = PackageTemplate::build_package(txid, 1, revk_outp.clone(), 1000, true, 100);
@@ -1127,7 +1121,7 @@ mod tests {
 	fn test_package_noaggregation_from() {
 		let txid = Txid::from_hex("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
 		let secp_ctx = Secp256k1::new();
-		let revk_outp = dumb_revk_output!(secp_ctx);
+		let revk_outp = dumb_revk_output!(secp_ctx, true);
 
 		let mut aggregation_package = PackageTemplate::build_package(txid, 0, revk_outp.clone(), 1000, true, 100);
 		let noaggregation_package = PackageTemplate::build_package(txid, 1, revk_outp.clone(), 1000, false, 100);
@@ -1139,7 +1133,7 @@ mod tests {
 	fn test_package_empty() {
 		let txid = Txid::from_hex("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
 		let secp_ctx = Secp256k1::new();
-		let revk_outp = dumb_revk_output!(secp_ctx);
+		let revk_outp = dumb_revk_output!(secp_ctx, false);
 
 		let mut empty_package = PackageTemplate::build_package(txid, 0, revk_outp.clone(), 1000, true, 100);
 		empty_package.inputs = vec![];
@@ -1152,7 +1146,7 @@ mod tests {
 	fn test_package_differing_categories() {
 		let txid = Txid::from_hex("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
 		let secp_ctx = Secp256k1::new();
-		let revk_outp = dumb_revk_output!(secp_ctx);
+		let revk_outp = dumb_revk_output!(secp_ctx, false);
 		let counterparty_outp = dumb_counterparty_output!(secp_ctx, 0, false);
 
 		let mut revoked_package = PackageTemplate::build_package(txid, 0, revk_outp, 1000, true, 100);
@@ -1164,9 +1158,9 @@ mod tests {
 	fn test_package_split_malleable() {
 		let txid = Txid::from_hex("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
 		let secp_ctx = Secp256k1::new();
-		let revk_outp_one = dumb_revk_output!(secp_ctx);
-		let revk_outp_two = dumb_revk_output!(secp_ctx);
-		let revk_outp_three = dumb_revk_output!(secp_ctx);
+		let revk_outp_one = dumb_revk_output!(secp_ctx, false);
+		let revk_outp_two = dumb_revk_output!(secp_ctx, false);
+		let revk_outp_three = dumb_revk_output!(secp_ctx, false);
 
 		let mut package_one = PackageTemplate::build_package(txid, 0, revk_outp_one, 1000, true, 100);
 		let package_two = PackageTemplate::build_package(txid, 1, revk_outp_two, 1000, true, 100);
@@ -1202,7 +1196,7 @@ mod tests {
 	fn test_package_timer() {
 		let txid = Txid::from_hex("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
 		let secp_ctx = Secp256k1::new();
-		let revk_outp = dumb_revk_output!(secp_ctx);
+		let revk_outp = dumb_revk_output!(secp_ctx, false);
 
 		let mut package = PackageTemplate::build_package(txid, 0, revk_outp, 1000, true, 100);
 		assert_eq!(package.timer(), 100);
@@ -1229,7 +1223,7 @@ mod tests {
 		let weight_sans_output = (4 + 4 + 1 + 36 + 4 + 1 + 1 + 8 + 1) * WITNESS_SCALE_FACTOR + 2;
 
 		{
-			let revk_outp = dumb_revk_output!(secp_ctx);
+			let revk_outp = dumb_revk_output!(secp_ctx, false);
 			let package = PackageTemplate::build_package(txid, 0, revk_outp, 0, true, 100);
 			assert_eq!(package.package_weight(&Script::new()),  weight_sans_output + WEIGHT_REVOKED_OUTPUT as usize);
 		}
