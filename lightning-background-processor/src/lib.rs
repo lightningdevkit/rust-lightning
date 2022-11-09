@@ -358,8 +358,8 @@ macro_rules! define_run_body {
 /// Processes background events in a future.
 ///
 /// `sleeper` should return a future which completes in the given amount of time and returns a
-/// boolean indicating whether the background processing should continue. Once `sleeper` returns a
-/// future which outputs false, the loop will exit and this function's future will complete.
+/// boolean indicating whether the background processing should exit. Once `sleeper` returns a
+/// future which outputs true, the loop will exit and this function's future will complete.
 ///
 /// See [`BackgroundProcessor::start`] for information on which actions this handles.
 #[cfg(feature = "futures")]
@@ -411,13 +411,13 @@ where
 	UMH::Target: 'static + CustomMessageHandler,
 	PS::Target: 'static + Persister<'a, Signer, CW, T, K, F, L, SC>,
 {
-	let mut should_continue = true;
+	let mut should_break = true;
 	define_run_body!(persister, event_handler, chain_monitor, channel_manager,
-		gossip_sync, peer_manager, logger, scorer, should_continue, {
+		gossip_sync, peer_manager, logger, scorer, should_break, {
 			select_biased! {
 				_ = channel_manager.get_persistable_update_future().fuse() => true,
-				cont = sleeper(Duration::from_millis(100)).fuse() => {
-					should_continue = cont;
+				exit = sleeper(Duration::from_millis(100)).fuse() => {
+					should_break = exit;
 					false
 				}
 			}
