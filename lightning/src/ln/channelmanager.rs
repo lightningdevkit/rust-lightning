@@ -112,8 +112,8 @@ pub(super) struct PendingHTLCInfo {
 	pub(super) routing: PendingHTLCRouting,
 	pub(super) incoming_shared_secret: [u8; 32],
 	payment_hash: PaymentHash,
-	pub(super) amt_to_forward: u64,
-	pub(super) amt_incoming: Option<u64>, // Added in 0.0.113
+	pub(super) incoming_amt_msat: Option<u64>, // Added in 0.0.113
+	pub(super) outgoing_amt_msat: u64,
 	pub(super) outgoing_cltv_value: u32,
 }
 
@@ -2197,8 +2197,8 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 			routing,
 			payment_hash,
 			incoming_shared_secret: shared_secret,
-			amt_incoming: Some(amt_msat),
-			amt_to_forward: amt_msat,
+			incoming_amt_msat: Some(amt_msat),
+			outgoing_amt_msat: amt_msat,
 			outgoing_cltv_value: hop_data.outgoing_cltv_value,
 		})
 	}
@@ -2294,14 +2294,14 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 					},
 					payment_hash: msg.payment_hash.clone(),
 					incoming_shared_secret: shared_secret,
-					amt_incoming: Some(msg.amount_msat),
-					amt_to_forward: next_hop_data.amt_to_forward,
+					incoming_amt_msat: Some(msg.amount_msat),
+					outgoing_amt_msat: next_hop_data.amt_to_forward,
 					outgoing_cltv_value: next_hop_data.outgoing_cltv_value,
 				})
 			}
 		};
 
-		if let &PendingHTLCStatus::Forward(PendingHTLCInfo { ref routing, ref amt_to_forward, ref outgoing_cltv_value, .. }) = &pending_forward_info {
+		if let &PendingHTLCStatus::Forward(PendingHTLCInfo { ref routing, ref outgoing_amt_msat, ref outgoing_cltv_value, .. }) = &pending_forward_info {
 			// If short_channel_id is 0 here, we'll reject the HTLC as there cannot be a channel
 			// with a short_channel_id of 0. This is important as various things later assume
 			// short_channel_id is non-0 in any ::Forward.
@@ -2352,10 +2352,10 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 						if !chan.is_live() { // channel_disabled
 							break Some(("Forwarding channel is not in a ready state.", 0x1000 | 20, chan_update_opt));
 						}
-						if *amt_to_forward < chan.get_counterparty_htlc_minimum_msat() { // amount_below_minimum
+						if *outgoing_amt_msat < chan.get_counterparty_htlc_minimum_msat() { // amount_below_minimum
 							break Some(("HTLC amount was below the htlc_minimum_msat", 0x1000 | 11, chan_update_opt));
 						}
-						if let Err((err, code)) = chan.htlc_satisfies_config(&msg, *amt_to_forward, *outgoing_cltv_value) {
+						if let Err((err, code)) = chan.htlc_satisfies_config(&msg, *outgoing_amt_msat, *outgoing_cltv_value) {
 							break Some((err, code, chan_update_opt));
 						}
 						chan_update_opt
@@ -3157,8 +3157,8 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 									HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo {
 										prev_short_channel_id, prev_htlc_id, prev_funding_outpoint,
 										forward_info: PendingHTLCInfo {
-											routing, incoming_shared_secret, payment_hash, amt_to_forward,
-											outgoing_cltv_value, amt_incoming: _
+											routing, incoming_shared_secret, payment_hash, outgoing_amt_msat,
+											outgoing_cltv_value, incoming_amt_msat: _
 										}
 									}) => {
 										macro_rules! failure_handler {
@@ -3220,7 +3220,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 												};
 												match next_hop {
 													onion_utils::Hop::Receive(hop_data) => {
-														match self.construct_recv_pending_htlc_info(hop_data, incoming_shared_secret, payment_hash, amt_to_forward, outgoing_cltv_value, Some(phantom_shared_secret)) {
+														match self.construct_recv_pending_htlc_info(hop_data, incoming_shared_secret, payment_hash, outgoing_amt_msat, outgoing_cltv_value, Some(phantom_shared_secret)) {
 															Ok(info) => phantom_receives.push((prev_short_channel_id, prev_funding_outpoint, vec![(info, prev_htlc_id)])),
 															Err(ReceiveError { err_code, err_data, msg }) => failed_payment!(msg, err_code, err_data, Some(phantom_shared_secret))
 														}
@@ -3264,8 +3264,8 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 									HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo {
 										prev_short_channel_id, prev_htlc_id, prev_funding_outpoint ,
 										forward_info: PendingHTLCInfo {
-											incoming_shared_secret, payment_hash, amt_to_forward, outgoing_cltv_value,
-											routing: PendingHTLCRouting::Forward { onion_packet, .. }, amt_incoming: _,
+											incoming_shared_secret, payment_hash, outgoing_amt_msat, outgoing_cltv_value,
+											routing: PendingHTLCRouting::Forward { onion_packet, .. }, incoming_amt_msat: _,
 										},
 									}) => {
 										log_trace!(self.logger, "Adding HTLC from short id {} with payment_hash {} to channel with short id {} after delay", prev_short_channel_id, log_bytes!(payment_hash.0), short_chan_id);
@@ -3277,7 +3277,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 											// Phantom payments are only PendingHTLCRouting::Receive.
 											phantom_shared_secret: None,
 										});
-										match chan.get_mut().send_htlc(amt_to_forward, payment_hash, outgoing_cltv_value, htlc_source.clone(), onion_packet, &self.logger) {
+										match chan.get_mut().send_htlc(outgoing_amt_msat, payment_hash, outgoing_cltv_value, htlc_source.clone(), onion_packet, &self.logger) {
 											Err(e) => {
 												if let ChannelError::Ignore(msg) = e {
 													log_trace!(self.logger, "Failed to forward HTLC with payment_hash {}: {}", log_bytes!(payment_hash.0), msg);
@@ -3391,7 +3391,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 							HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo {
 								prev_short_channel_id, prev_htlc_id, prev_funding_outpoint,
 								forward_info: PendingHTLCInfo {
-									routing, incoming_shared_secret, payment_hash, amt_to_forward, ..
+									routing, incoming_shared_secret, payment_hash, outgoing_amt_msat, ..
 								}
 							}) => {
 								let (cltv_expiry, onion_payload, payment_data, phantom_shared_secret) = match routing {
@@ -3413,9 +3413,9 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 										incoming_packet_shared_secret: incoming_shared_secret,
 										phantom_shared_secret,
 									},
-									value: amt_to_forward,
+									value: outgoing_amt_msat,
 									timer_ticks: 0,
-									total_msat: if let Some(data) = &payment_data { data.total_msat } else { amt_to_forward },
+									total_msat: if let Some(data) = &payment_data { data.total_msat } else { outgoing_amt_msat },
 									cltv_expiry,
 									onion_payload,
 								};
@@ -3522,7 +3522,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 														e.insert((purpose.clone(), vec![claimable_htlc]));
 														new_events.push(events::Event::PaymentReceived {
 															payment_hash,
-															amount_msat: amt_to_forward,
+															amount_msat: outgoing_amt_msat,
 															purpose,
 														});
 													},
@@ -6472,9 +6472,9 @@ impl_writeable_tlv_based!(PendingHTLCInfo, {
 	(0, routing, required),
 	(2, incoming_shared_secret, required),
 	(4, payment_hash, required),
-	(6, amt_to_forward, required),
+	(6, outgoing_amt_msat, required),
 	(8, outgoing_cltv_value, required),
-	(9, amt_incoming, option),
+	(9, incoming_amt_msat, option),
 });
 
 
