@@ -5906,12 +5906,12 @@ where
 		});
 	}
 
-	fn get_relevant_txids(&self) -> Vec<Txid> {
+	fn get_relevant_txids(&self) -> Vec<(Txid, Option<BlockHash>)> {
 		let channel_state = self.channel_state.lock().unwrap();
 		let mut res = Vec::with_capacity(channel_state.by_id.len());
 		for chan in channel_state.by_id.values() {
-			if let Some(funding_txo) = chan.get_funding_txo() {
-				res.push(funding_txo.txid);
+			if let (Some(funding_txo), block_hash) = (chan.get_funding_txo(), chan.get_funding_tx_confirmed_in()) {
+				res.push((funding_txo.txid, block_hash));
 			}
 		}
 		res

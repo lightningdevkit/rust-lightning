@@ -332,14 +332,15 @@ impl Readable for CounterpartyCommitmentParameters {
 	}
 }
 
-/// An entry for an [`OnchainEvent`], stating the block height when the event was observed and the
-/// transaction causing it.
+/// An entry for an [`OnchainEvent`], stating the block height and hash when the event was
+/// observed, as well as the transaction causing it.
 ///
 /// Used to determine when the on-chain event can be considered safe from a chain reorganization.
 #[derive(PartialEq, Eq)]
 struct OnchainEventEntry {
 	txid: Txid,
 	height: u32,
+	block_hash: Option<BlockHash>, // Added as optional, will be filled in for any entry generated on 0.0.113 or after
 	event: OnchainEvent,
 	transaction: Option<Transaction>, // Added as optional, but always filled in, in LDK 0.0.110
 }
@@ -440,6 +441,7 @@ impl Writeable for OnchainEventEntry {
 			(0, self.txid, required),
 			(1, self.transaction, option),
 			(2, self.height, required),
+			(3, self.block_hash, option),
 			(4, self.event, required),
 		});
 		Ok(())
@@ -450,16 +452,18 @@ impl MaybeReadable for OnchainEventEntry {
 	fn read<R: io::Read>(reader: &mut R) -> Result<Option<Self>, DecodeError> {
 		let mut txid = Txid::all_zeros();
 		let mut transaction = None;
+		let mut block_hash = None;
 		let mut height = 0;
 		let mut event = None;
 		read_tlv_fields!(reader, {
 			(0, txid, required),
 			(1, transaction, option),
 			(2, height, required),
+			(3, block_hash, option),
 			(4, event, ignorable),
 		});
 		if let Some(ev) = event {
-			Ok(Some(Self { txid, transaction, height, event: ev }))
+			Ok(Some(Self { txid, transaction, height, block_hash, event: ev }))
 		} else {
 			Ok(None)
 		}
@@ -1484,11 +1488,11 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 	}
 
 	/// Returns the set of txids that should be monitored for re-organization out of the chain.
-	pub fn get_relevant_txids(&self) -> Vec<Txid> {
+	pub fn get_relevant_txids(&self) -> Vec<(Txid, Option<BlockHash>)> {
 		let inner = self.inner.lock().unwrap();
-		let mut txids: Vec<Txid> = inner.onchain_events_awaiting_threshold_conf
+		let mut txids: Vec<(Txid, Option<BlockHash>)> = inner.onchain_events_awaiting_threshold_conf
 			.iter()
-			.map(|entry| entry.txid)
+			.map(|entry| (entry.txid, entry.block_hash))
 			.chain(inner.onchain_tx_handler.get_relevant_txids().into_iter())
 			.collect();
 		txids.sort_unstable();
@@ -1941,7 +1945,7 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 /// been revoked yet, the previous one, we we will never "forget" to resolve an HTLC.
 macro_rules! fail_unbroadcast_htlcs {
 	($self: expr, $commitment_tx_type: expr, $commitment_txid_confirmed: expr, $commitment_tx_confirmed: expr,
-	 $commitment_tx_conf_height: expr, $confirmed_htlcs_list: expr, $logger: expr) => { {
+	 $commitment_tx_conf_height: expr, $commitment_tx_conf_hash: expr, $confirmed_htlcs_list: expr, $logger: expr) => { {
 		debug_assert_eq!($commitment_tx_confirmed.txid(), $commitment_txid_confirmed);
 
 		macro_rules! check_htlc_fails {
@@ -1985,6 +1989,7 @@ macro_rules! fail_unbroadcast_htlcs {
 								txid: $commitment_txid_confirmed,
 								transaction: Some($commitment_tx_confirmed.clone()),
 								height: $commitment_tx_conf_height,
+								block_hash: Some(*$commitment_tx_conf_hash),
 								event: OnchainEvent::HTLCUpdate {
 									source: (**source).clone(),
 									payment_hash: htlc.payment_hash.clone(),
@@ -2172,7 +2177,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		macro_rules! claim_htlcs {
 			($commitment_number: expr, $txid: expr) => {
 				let (htlc_claim_reqs, _) = self.get_counterparty_output_claim_info($commitment_number, $txid, None);
-				self.onchain_tx_handler.update_claims_view(&Vec::new(), htlc_claim_reqs, self.best_block.height(), self.best_block.height(), broadcaster, fee_estimator, logger);
+				self.onchain_tx_handler.update_claims_view_from_requests(htlc_claim_reqs, self.best_block.height(), self.best_block.height(), broadcaster, fee_estimator, logger);
 			}
 		}
 		if let Some(txid) = self.current_counterparty_commitment_txid {
@@ -2198,10 +2203,10 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 			// block. Even if not, its a reasonable metric for the bump criteria on the HTLC
 			// transactions.
 			let (claim_reqs, _) = self.get_broadcasted_holder_claims(&self.current_holder_commitment_tx, self.best_block.height());
-			self.onchain_tx_handler.update_claims_view(&Vec::new(), claim_reqs, self.best_block.height(), self.best_block.height(), broadcaster, fee_estimator, logger);
+			self.onchain_tx_handler.update_claims_view_from_requests(claim_reqs, self.best_block.height(), self.best_block.height(), broadcaster, fee_estimator, logger);
 			if let Some(ref tx) = self.prev_holder_signed_commitment_tx {
 				let (claim_reqs, _) = self.get_broadcasted_holder_claims(&tx, self.best_block.height());
-				self.onchain_tx_handler.update_claims_view(&Vec::new(), claim_reqs, self.best_block.height(), self.best_block.height(), broadcaster, fee_estimator, logger);
+				self.onchain_tx_handler.update_claims_view_from_requests(claim_reqs, self.best_block.height(), self.best_block.height(), broadcaster, fee_estimator, logger);
 			}
 		}
 	}
@@ -2288,8 +2293,8 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 								PackageSolvingData::HolderFundingOutput(funding_output),
 								best_block_height, false, best_block_height,
 							);
-							self.onchain_tx_handler.update_claims_view(
-								&[], vec![commitment_package], best_block_height, best_block_height,
+							self.onchain_tx_handler.update_claims_view_from_requests(
+								vec![commitment_package], best_block_height, best_block_height,
 								broadcaster, &bounded_fee_estimator, logger,
 							);
 						}
@@ -2403,7 +2408,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 	/// Returns packages to claim the revoked output(s), as well as additional outputs to watch and
 	/// general information about the output that is to the counterparty in the commitment
 	/// transaction.
-	fn check_spend_counterparty_transaction<L: Deref>(&mut self, tx: &Transaction, height: u32, logger: &L)
+	fn check_spend_counterparty_transaction<L: Deref>(&mut self, tx: &Transaction, height: u32, block_hash: &BlockHash, logger: &L)
 		-> (Vec<PackageTemplate>, TransactionOutputs, CommitmentTxCounterpartyOutputInfo)
 	where L::Target: Logger {
 		// Most secp and related errors trying to create keys means we have no hope of constructing
@@ -2474,13 +2479,13 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 
 				if let Some(per_commitment_data) = per_commitment_option {
 					fail_unbroadcast_htlcs!(self, "revoked_counterparty", commitment_txid, tx, height,
-						per_commitment_data.iter().map(|(htlc, htlc_source)|
+						block_hash, per_commitment_data.iter().map(|(htlc, htlc_source)|
 							(htlc, htlc_source.as_ref().map(|htlc_source| htlc_source.as_ref()))
 						), logger);
 				} else {
 					debug_assert!(false, "We should have per-commitment option for any recognized old commitment txn");
 					fail_unbroadcast_htlcs!(self, "revoked counterparty", commitment_txid, tx, height,
-						[].iter().map(|reference| *reference), logger);
+						block_hash, [].iter().map(|reference| *reference), logger);
 				}
 			}
 		} else if let Some(per_commitment_data) = per_commitment_option {
@@ -2497,7 +2502,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 			self.counterparty_commitment_txn_on_chain.insert(commitment_txid, commitment_number);
 
 			log_info!(logger, "Got broadcast of non-revoked counterparty commitment transaction {}", commitment_txid);
-			fail_unbroadcast_htlcs!(self, "counterparty", commitment_txid, tx, height,
+			fail_unbroadcast_htlcs!(self, "counterparty", commitment_txid, tx, height, block_hash,
 				per_commitment_data.iter().map(|(htlc, htlc_source)|
 					(htlc, htlc_source.as_ref().map(|htlc_source| htlc_source.as_ref()))
 				), logger);
@@ -2633,7 +2638,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		(claimable_outpoints, Some((htlc_txid, outputs)))
 	}
 
-	// Returns (1) `PackageTemplate`s that can be given to the OnChainTxHandler, so that the handler can
+	// Returns (1) `PackageTemplate`s that can be given to the OnchainTxHandler, so that the handler can
 	// broadcast transactions claiming holder HTLC commitment outputs and (2) a holder revokable
 	// script so we can detect whether a holder transaction has been seen on-chain.
 	fn get_broadcasted_holder_claims(&self, holder_tx: &HolderSignedTx, conf_height: u32) -> (Vec<PackageTemplate>, Option<(Script, PublicKey, PublicKey)>) {
@@ -2678,7 +2683,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 	/// revoked using data in holder_claimable_outpoints.
 	/// Should not be used if check_spend_revoked_transaction succeeds.
 	/// Returns None unless the transaction is definitely one of our commitment transactions.
-	fn check_spend_holder_transaction<L: Deref>(&mut self, tx: &Transaction, height: u32, logger: &L) -> Option<(Vec<PackageTemplate>, TransactionOutputs)> where L::Target: Logger {
+	fn check_spend_holder_transaction<L: Deref>(&mut self, tx: &Transaction, height: u32, block_hash: &BlockHash, logger: &L) -> Option<(Vec<PackageTemplate>, TransactionOutputs)> where L::Target: Logger {
 		let commitment_txid = tx.txid();
 		let mut claim_requests = Vec::new();
 		let mut watch_outputs = Vec::new();
@@ -2701,7 +2706,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 			let mut to_watch = self.get_broadcasted_holder_watch_outputs(&self.current_holder_commitment_tx, tx);
 			append_onchain_update!(res, to_watch);
 			fail_unbroadcast_htlcs!(self, "latest holder", commitment_txid, tx, height,
-				self.current_holder_commitment_tx.htlc_outputs.iter()
+				block_hash, self.current_holder_commitment_tx.htlc_outputs.iter()
 				.map(|(htlc, _, htlc_source)| (htlc, htlc_source.as_ref())), logger);
 		} else if let &Some(ref holder_tx) = &self.prev_holder_signed_commitment_tx {
 			if holder_tx.txid == commitment_txid {
@@ -2710,7 +2715,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 				let res = self.get_broadcasted_holder_claims(holder_tx, height);
 				let mut to_watch = self.get_broadcasted_holder_watch_outputs(holder_tx, tx);
 				append_onchain_update!(res, to_watch);
-				fail_unbroadcast_htlcs!(self, "previous holder", commitment_txid, tx, height,
+				fail_unbroadcast_htlcs!(self, "previous holder", commitment_txid, tx, height, block_hash,
 					holder_tx.htlc_outputs.iter().map(|(htlc, _, htlc_source)| (htlc, htlc_source.as_ref())),
 					logger);
 			}
@@ -2818,7 +2823,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 
 		if height > self.best_block.height() {
 			self.best_block = BestBlock::new(block_hash, height);
-			self.block_confirmed(height, vec![], vec![], vec![], &broadcaster, &fee_estimator, &logger)
+			self.block_confirmed(height, block_hash, vec![], vec![], vec![], &broadcaster, &fee_estimator, &logger)
 		} else if block_hash != self.best_block.block_hash() {
 			self.best_block = BestBlock::new(block_hash, height);
 			self.onchain_events_awaiting_threshold_conf.retain(|ref entry| entry.height <= height);
@@ -2870,14 +2875,14 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 					let mut commitment_tx_to_counterparty_output = None;
 					if (tx.input[0].sequence.0 >> 8*3) as u8 == 0x80 && (tx.lock_time.0 >> 8*3) as u8 == 0x20 {
 						let (mut new_outpoints, new_outputs, counterparty_output_idx_sats) =
-							self.check_spend_counterparty_transaction(&tx, height, &logger);
+							self.check_spend_counterparty_transaction(&tx, height, &block_hash, &logger);
 						commitment_tx_to_counterparty_output = counterparty_output_idx_sats;
 						if !new_outputs.1.is_empty() {
 							watch_outputs.push(new_outputs);
 						}
 						claimable_outpoints.append(&mut new_outpoints);
 						if new_outpoints.is_empty() {
-							if let Some((mut new_outpoints, new_outputs)) = self.check_spend_holder_transaction(&tx, height, &logger) {
+							if let Some((mut new_outpoints, new_outputs)) = self.check_spend_holder_transaction(&tx, height, &block_hash, &logger) {
 								debug_assert!(commitment_tx_to_counterparty_output.is_none(),
 									"A commitment transaction matched as both a counterparty and local commitment tx?");
 								if !new_outputs.1.is_empty() {
@@ -2893,6 +2898,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 						txid,
 						transaction: Some((*tx).clone()),
 						height,
+						block_hash: Some(block_hash),
 						event: OnchainEvent::FundingSpendConfirmation {
 							on_local_output_csv: balance_spendable_csv,
 							commitment_tx_to_counterparty_output,
@@ -2911,28 +2917,30 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 			// While all commitment/HTLC-Success/HTLC-Timeout transactions have one input, HTLCs
 			// can also be resolved in a few other ways which can have more than one output. Thus,
 			// we call is_resolving_htlc_output here outside of the tx.input.len() == 1 check.
-			self.is_resolving_htlc_output(&tx, height, &logger);
+			self.is_resolving_htlc_output(&tx, height, &block_hash, &logger);
 
-			self.is_paying_spendable_output(&tx, height, &logger);
+			self.is_paying_spendable_output(&tx, height, &block_hash, &logger);
 		}
 
 		if height > self.best_block.height() {
 			self.best_block = BestBlock::new(block_hash, height);
 		}
 
-		self.block_confirmed(height, txn_matched, watch_outputs, claimable_outpoints, &broadcaster, &fee_estimator, &logger)
+		self.block_confirmed(height, block_hash, txn_matched, watch_outputs, claimable_outpoints, &broadcaster, &fee_estimator, &logger)
 	}
 
 	/// Update state for new block(s)/transaction(s) confirmed. Note that the caller must update
 	/// `self.best_block` before calling if a new best blockchain tip is available. More
 	/// concretely, `self.best_block` must never be at a lower height than `conf_height`, avoiding
-	/// complexity especially in `OnchainTx::update_claims_view`.
+	/// complexity especially in
+	/// `OnchainTx::update_claims_view_from_requests`/`OnchainTx::update_claims_view_from_matched_txn`.
 	///
 	/// `conf_height` should be set to the height at which any new transaction(s)/block(s) were
 	/// confirmed at, even if it is not the current best height.
 	fn block_confirmed<B: Deref, F: Deref, L: Deref>(
 		&mut self,
 		conf_height: u32,
+		conf_hash: BlockHash,
 		txn_matched: Vec<&Transaction>,
 		mut watch_outputs: Vec<TransactionOutputs>,
 		mut claimable_outpoints: Vec<PackageTemplate>,
@@ -3048,7 +3056,8 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 			}
 		}
 
-		self.onchain_tx_handler.update_claims_view(&txn_matched, claimable_outpoints, conf_height, self.best_block.height(), broadcaster, fee_estimator, logger);
+		self.onchain_tx_handler.update_claims_view_from_requests(claimable_outpoints, conf_height, self.best_block.height(), broadcaster, fee_estimator, logger);
+		self.onchain_tx_handler.update_claims_view_from_matched_txn(&txn_matched, conf_height, conf_hash, self.best_block.height(), broadcaster, fee_estimator, logger);
 
 		// Determine new outputs to watch by comparing against previously known outputs to watch,
 		// updating the latter in the process.
@@ -3237,7 +3246,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 
 	/// Check if any transaction broadcasted is resolving HTLC output by a success or timeout on a holder
 	/// or counterparty commitment tx, if so send back the source, preimage if found and payment_hash of resolved HTLC
-	fn is_resolving_htlc_output<L: Deref>(&mut self, tx: &Transaction, height: u32, logger: &L) where L::Target: Logger {
+	fn is_resolving_htlc_output<L: Deref>(&mut self, tx: &Transaction, height: u32, block_hash: &BlockHash, logger: &L) where L::Target: Logger {
 		'outer_loop: for input in &tx.input {
 			let mut payment_data = None;
 			let htlc_claim = HTLCClaim::from_witness(&input.witness);
@@ -3322,7 +3331,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 								log_claim!($tx_info, $holder_tx, htlc_output, false);
 								let outbound_htlc = $holder_tx == htlc_output.offered;
 								self.onchain_events_awaiting_threshold_conf.push(OnchainEventEntry {
-									txid: tx.txid(), height, transaction: Some(tx.clone()),
+									txid: tx.txid(), height, block_hash: Some(*block_hash), transaction: Some(tx.clone()),
 									event: OnchainEvent::HTLCSpendConfirmation {
 										commitment_tx_output_idx: input.previous_output.vout,
 										preimage: if accepted_preimage_claim || offered_preimage_claim {
@@ -3366,6 +3375,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 						self.onchain_events_awaiting_threshold_conf.push(OnchainEventEntry {
 							txid: tx.txid(),
 							height,
+							block_hash: Some(*block_hash),
 							transaction: Some(tx.clone()),
 							event: OnchainEvent::HTLCSpendConfirmation {
 								commitment_tx_output_idx: input.previous_output.vout,
@@ -3389,6 +3399,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 							txid: tx.txid(),
 							transaction: Some(tx.clone()),
 							height,
+							block_hash: Some(*block_hash),
 							event: OnchainEvent::HTLCSpendConfirmation {
 								commitment_tx_output_idx: input.previous_output.vout,
 								preimage: Some(payment_preimage),
@@ -3416,6 +3427,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 						txid: tx.txid(),
 						transaction: Some(tx.clone()),
 						height,
+						block_hash: Some(*block_hash),
 						event: OnchainEvent::HTLCUpdate {
 							source, payment_hash,
 							htlc_value_satoshis: Some(amount_msat / 1000),
@@ -3430,7 +3442,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 	}
 
 	/// Check if any transaction broadcasted is paying fund back to some address we can assume to own
-	fn is_paying_spendable_output<L: Deref>(&mut self, tx: &Transaction, height: u32, logger: &L) where L::Target: Logger {
+	fn is_paying_spendable_output<L: Deref>(&mut self, tx: &Transaction, height: u32, block_hash: &BlockHash, logger: &L) where L::Target: Logger {
 		let mut spendable_output = None;
 		for (i, outp) in tx.output.iter().enumerate() { // There is max one spendable output for any channel tx, including ones generated by us
 			if i > ::core::u16::MAX as usize {
@@ -3490,6 +3502,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 				txid: tx.txid(),
 				transaction: Some(tx.clone()),
 				height,
+				block_hash: Some(*block_hash),
 				event: OnchainEvent::MaturingOutput { descriptor: spendable_output.clone() },
 			};
 			log_info!(logger, "Received spendable output {}, spendable at height {}", log_spendable!(spendable_output), entry.confirmation_threshold());
@@ -3531,7 +3544,7 @@ where
 		self.0.best_block_updated(header, height, &*self.1, &*self.2, &*self.3);
 	}
 
-	fn get_relevant_txids(&self) -> Vec<Txid> {
+	fn get_relevant_txids(&self) -> Vec<(Txid, Option<BlockHash>)> {
 		self.0.get_relevant_txids()
 	}
 }

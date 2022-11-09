@@ -271,6 +271,7 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool, use_funding_
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	*nodes[0].connect_style.borrow_mut() = connect_style;
 
+	let chan_conf_height = core::cmp::max(nodes[0].best_block_info().1 + 1, nodes[1].best_block_info().1 + 1);
 	let chan = create_announced_chan_between_nodes(&nodes, 0, 1, channelmanager::provided_init_features(), channelmanager::provided_init_features());
 
 	let channel_state = nodes[0].node.channel_state.lock().unwrap();
@@ -281,8 +282,13 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool, use_funding_
 	if !reorg_after_reload {
 		if use_funding_unconfirmed {
 			let relevant_txids = nodes[0].node.get_relevant_txids();
-			assert_eq!(&relevant_txids[..], &[chan.3.txid()]);
-			nodes[0].node.transaction_unconfirmed(&relevant_txids[0]);
+			assert_eq!(relevant_txids.len(), 1);
+			let block_hash_opt = relevant_txids[0].1;
+			let expected_hash = nodes[0].get_block_header(chan_conf_height).block_hash();
+			assert_eq!(block_hash_opt, Some(expected_hash));
+			let txid = relevant_txids[0].0;
+			assert_eq!(txid, chan.3.txid());
+			nodes[0].node.transaction_unconfirmed(&txid);
 		} else if connect_style == ConnectStyle::FullBlockViaListen {
 			disconnect_blocks(&nodes[0], CHAN_CONFIRM_DEPTH - 1);
 			assert_eq!(nodes[0].node.list_usable_channels().len(), 1);
@@ -290,6 +296,10 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool, use_funding_
 		} else {
 			disconnect_all_blocks(&nodes[0]);
 		}
+
+		let relevant_txids = nodes[0].node.get_relevant_txids();
+		assert_eq!(relevant_txids.len(), 0);
+
 		handle_announce_close_broadcast_events(&nodes, 0, 1, true, "Channel closed because of an exception: Funding transaction was un-confirmed. Locked at 6 confs, now have 0 confs.");
 		check_added_monitors!(nodes[1], 1);
 		{
@@ -350,8 +360,13 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool, use_funding_
 	if reorg_after_reload {
 		if use_funding_unconfirmed {
 			let relevant_txids = nodes[0].node.get_relevant_txids();
-			assert_eq!(&relevant_txids[..], &[chan.3.txid()]);
-			nodes[0].node.transaction_unconfirmed(&relevant_txids[0]);
+			assert_eq!(relevant_txids.len(), 1);
+			let block_hash_opt = relevant_txids[0].1;
+			let expected_hash = nodes[0].get_block_header(chan_conf_height).block_hash();
+			assert_eq!(block_hash_opt, Some(expected_hash));
+			let txid = relevant_txids[0].0;
+			assert_eq!(txid, chan.3.txid());
+			nodes[0].node.transaction_unconfirmed(&txid);
 		} else if connect_style == ConnectStyle::FullBlockViaListen {
 			disconnect_blocks(&nodes[0], CHAN_CONFIRM_DEPTH - 1);
 			assert_eq!(nodes[0].node.list_channels().len(), 1);
@@ -359,6 +374,10 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool, use_funding_
 		} else {
 			disconnect_all_blocks(&nodes[0]);
 		}
+
+		let relevant_txids = nodes[0].node.get_relevant_txids();
+		assert_eq!(relevant_txids.len(), 0);
+
 		handle_announce_close_broadcast_events(&nodes, 0, 1, true, "Channel closed because of an exception: Funding transaction was un-confirmed. Locked at 6 confs, now have 0 confs.");
 		check_added_monitors!(nodes[1], 1);
 		{

@@ -4520,6 +4520,11 @@ impl<Signer: Sign> Channel<Signer> {
 		self.channel_transaction_parameters.funding_outpoint
 	}
 
+	/// Returns the block hash in which our funding transaction was confirmed.
+	pub fn get_funding_tx_confirmed_in(&self) -> Option<BlockHash> {
+		self.funding_tx_confirmed_in
+	}
+
 	fn get_holder_selected_contest_delay(&self) -> u16 {
 		self.channel_transaction_parameters.holder_selected_contest_delay
 	}
