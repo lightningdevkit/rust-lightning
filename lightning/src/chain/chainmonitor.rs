@@ -395,6 +395,23 @@ where C::Target: chain::Filter,
 		self.monitors.read().unwrap().keys().map(|outpoint| *outpoint).collect()
 	}
 
+	#[cfg(not(c_bindings))]
+	/// Lists the pending updates for each [`ChannelMonitor`] (by `OutPoint` being monitored).
+	pub fn list_pending_monitor_updates(&self) -> HashMap<OutPoint, Vec<MonitorUpdateId>> {
+		self.monitors.read().unwrap().iter().map(|(outpoint, holder)| {
+			(*outpoint, holder.pending_monitor_updates.lock().unwrap().clone())
+		}).collect()
+	}
+
+	#[cfg(c_bindings)]
+	/// Lists the pending updates for each [`ChannelMonitor`] (by `OutPoint` being monitored).
+	pub fn list_pending_monitor_updates(&self) -> Vec<(OutPoint, Vec<MonitorUpdateId>)> {
+		self.monitors.read().unwrap().iter().map(|(outpoint, holder)| {
+			(*outpoint, holder.pending_monitor_updates.lock().unwrap().clone())
+		}).collect()
+	}
+
+
 	#[cfg(test)]
 	pub fn remove_monitor(&self, funding_txo: &OutPoint) -> ChannelMonitor<ChannelSigner> {
 		self.monitors.write().unwrap().remove(funding_txo).unwrap().monitor
@@ -798,7 +815,22 @@ mod tests {
 		// Note that updates is a HashMap so the ordering here is actually random. This shouldn't
 		// fail either way but if it fails intermittently it's depending on the ordering of updates.
 		let mut update_iter = updates.iter();
-		nodes[1].chain_monitor.chain_monitor.channel_monitor_updated(*funding_txo, update_iter.next().unwrap().clone()).unwrap();
+		let next_update = update_iter.next().unwrap().clone();
+		// Should contain next_update when pending updates listed.
+		#[cfg(not(c_bindings))]
+		assert!(nodes[1].chain_monitor.chain_monitor.list_pending_monitor_updates().get(funding_txo)
+			.unwrap().contains(&next_update));
+		#[cfg(c_bindings)]
+		assert!(nodes[1].chain_monitor.chain_monitor.list_pending_monitor_updates().iter()
+			.find(|(txo, _)| txo == funding_txo).unwrap().1.contains(&next_update));
+		nodes[1].chain_monitor.chain_monitor.channel_monitor_updated(*funding_txo, next_update.clone()).unwrap();
+		// Should not contain the previously pending next_update when pending updates listed.
+		#[cfg(not(c_bindings))]
+		assert!(!nodes[1].chain_monitor.chain_monitor.list_pending_monitor_updates().get(funding_txo)
+			.unwrap().contains(&next_update));
+		#[cfg(c_bindings)]
+		assert!(!nodes[1].chain_monitor.chain_monitor.list_pending_monitor_updates().iter()
+			.find(|(txo, _)| txo == funding_txo).unwrap().1.contains(&next_update));
 		assert!(nodes[1].chain_monitor.release_pending_monitor_events().is_empty());
 		assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 		nodes[1].chain_monitor.chain_monitor.channel_monitor_updated(*funding_txo, update_iter.next().unwrap().clone()).unwrap();
