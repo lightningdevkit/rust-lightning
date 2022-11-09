@@ -113,6 +113,7 @@ pub(super) struct PendingHTLCInfo {
 	pub(super) incoming_shared_secret: [u8; 32],
 	payment_hash: PaymentHash,
 	pub(super) amt_to_forward: u64,
+	pub(super) amt_incoming: Option<u64>, // Added in 0.0.113
 	pub(super) outgoing_cltv_value: u32,
 }
 
@@ -129,20 +130,22 @@ pub(super) enum PendingHTLCStatus {
 	Fail(HTLCFailureMsg),
 }
 
-pub(super) enum HTLCForwardInfo {
-	AddHTLC {
-		forward_info: PendingHTLCInfo,
+pub(super) struct PendingAddHTLCInfo {
+	pub(super) forward_info: PendingHTLCInfo,
 
-		// These fields are produced in `forward_htlcs()` and consumed in
-		// `process_pending_htlc_forwards()` for constructing the
-		// `HTLCSource::PreviousHopData` for failed and forwarded
-		// HTLCs.
-		//
-		// Note that this may be an outbound SCID alias for the associated channel.
-		prev_short_channel_id: u64,
-		prev_htlc_id: u64,
-		prev_funding_outpoint: OutPoint,
-	},
+	// These fields are produced in `forward_htlcs()` and consumed in
+	// `process_pending_htlc_forwards()` for constructing the
+	// `HTLCSource::PreviousHopData` for failed and forwarded
+	// HTLCs.
+	//
+	// Note that this may be an outbound SCID alias for the associated channel.
+	prev_short_channel_id: u64,
+	prev_htlc_id: u64,
+	prev_funding_outpoint: OutPoint,
+}
+
+pub(super) enum HTLCForwardInfo {
+	AddHTLC(PendingAddHTLCInfo),
 	FailHTLC {
 		htlc_id: u64,
 		err_packet: msgs::OnionErrorPacket,
@@ -2194,6 +2197,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 			routing,
 			payment_hash,
 			incoming_shared_secret: shared_secret,
+			amt_incoming: Some(amt_msat),
 			amt_to_forward: amt_msat,
 			outgoing_cltv_value: hop_data.outgoing_cltv_value,
 		})
@@ -2290,6 +2294,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 					},
 					payment_hash: msg.payment_hash.clone(),
 					incoming_shared_secret: shared_secret,
+					amt_incoming: Some(msg.amount_msat),
 					amt_to_forward: next_hop_data.amt_to_forward,
 					outgoing_cltv_value: next_hop_data.outgoing_cltv_value,
 				})
@@ -2308,7 +2313,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 						None => { // unknown_next_peer
 							// Note that this is likely a timing oracle for detecting whether an scid is a
 							// phantom.
-							if fake_scid::is_valid_phantom(&self.fake_scid_rand_bytes, *short_channel_id) {
+							if fake_scid::is_valid_phantom(&self.fake_scid_rand_bytes, *short_channel_id, &self.genesis_hash) {
 								None
 							} else {
 								break Some(("Don't have available channel for forwarding as requested.", 0x4000 | 10, None));
@@ -3149,82 +3154,86 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 						() => {
 							for forward_info in pending_forwards.drain(..) {
 								match forward_info {
-									HTLCForwardInfo::AddHTLC { prev_short_channel_id, prev_htlc_id, forward_info: PendingHTLCInfo {
-										routing, incoming_shared_secret, payment_hash, amt_to_forward, outgoing_cltv_value },
-										prev_funding_outpoint } => {
-											macro_rules! failure_handler {
-												($msg: expr, $err_code: expr, $err_data: expr, $phantom_ss: expr, $next_hop_unknown: expr) => {
-													log_info!(self.logger, "Failed to accept/forward incoming HTLC: {}", $msg);
+									HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo {
+										prev_short_channel_id, prev_htlc_id, prev_funding_outpoint,
+										forward_info: PendingHTLCInfo {
+											routing, incoming_shared_secret, payment_hash, amt_to_forward,
+											outgoing_cltv_value, amt_incoming: _
+										}
+									}) => {
+										macro_rules! failure_handler {
+											($msg: expr, $err_code: expr, $err_data: expr, $phantom_ss: expr, $next_hop_unknown: expr) => {
+												log_info!(self.logger, "Failed to accept/forward incoming HTLC: {}", $msg);
 
-													let htlc_source = HTLCSource::PreviousHopData(HTLCPreviousHopData {
-														short_channel_id: prev_short_channel_id,
-														outpoint: prev_funding_outpoint,
-														htlc_id: prev_htlc_id,
-														incoming_packet_shared_secret: incoming_shared_secret,
-														phantom_shared_secret: $phantom_ss,
-													});
+												let htlc_source = HTLCSource::PreviousHopData(HTLCPreviousHopData {
+													short_channel_id: prev_short_channel_id,
+													outpoint: prev_funding_outpoint,
+													htlc_id: prev_htlc_id,
+													incoming_packet_shared_secret: incoming_shared_secret,
+													phantom_shared_secret: $phantom_ss,
+												});
 
-													let reason = if $next_hop_unknown {
-														HTLCDestination::UnknownNextHop { requested_forward_scid: short_chan_id }
-													} else {
-														HTLCDestination::FailedPayment{ payment_hash }
-													};
-
-													failed_forwards.push((htlc_source, payment_hash,
-														HTLCFailReason::Reason { failure_code: $err_code, data: $err_data },
-														reason
-													));
-													continue;
-												}
-											}
-											macro_rules! fail_forward {
-												($msg: expr, $err_code: expr, $err_data: expr, $phantom_ss: expr) => {
-													{
-														failure_handler!($msg, $err_code, $err_data, $phantom_ss, true);
-													}
-												}
-											}
-											macro_rules! failed_payment {
-												($msg: expr, $err_code: expr, $err_data: expr, $phantom_ss: expr) => {
-													{
-														failure_handler!($msg, $err_code, $err_data, $phantom_ss, false);
-													}
-												}
-											}
-											if let PendingHTLCRouting::Forward { onion_packet, .. } = routing {
-												let phantom_secret_res = self.keys_manager.get_node_secret(Recipient::PhantomNode);
-												if phantom_secret_res.is_ok() && fake_scid::is_valid_phantom(&self.fake_scid_rand_bytes, short_chan_id) {
-													let phantom_shared_secret = SharedSecret::new(&onion_packet.public_key.unwrap(), &phantom_secret_res.unwrap()).secret_bytes();
-													let next_hop = match onion_utils::decode_next_payment_hop(phantom_shared_secret, &onion_packet.hop_data, onion_packet.hmac, payment_hash) {
-														Ok(res) => res,
-														Err(onion_utils::OnionDecodeErr::Malformed { err_msg, err_code }) => {
-															let sha256_of_onion = Sha256::hash(&onion_packet.hop_data).into_inner();
-															// In this scenario, the phantom would have sent us an
-															// `update_fail_malformed_htlc`, meaning here we encrypt the error as
-															// if it came from us (the second-to-last hop) but contains the sha256
-															// of the onion.
-															failed_payment!(err_msg, err_code, sha256_of_onion.to_vec(), None);
-														},
-														Err(onion_utils::OnionDecodeErr::Relay { err_msg, err_code }) => {
-															failed_payment!(err_msg, err_code, Vec::new(), Some(phantom_shared_secret));
-														},
-													};
-													match next_hop {
-														onion_utils::Hop::Receive(hop_data) => {
-															match self.construct_recv_pending_htlc_info(hop_data, incoming_shared_secret, payment_hash, amt_to_forward, outgoing_cltv_value, Some(phantom_shared_secret)) {
-																Ok(info) => phantom_receives.push((prev_short_channel_id, prev_funding_outpoint, vec![(info, prev_htlc_id)])),
-																Err(ReceiveError { err_code, err_data, msg }) => failed_payment!(msg, err_code, err_data, Some(phantom_shared_secret))
-															}
-														},
-														_ => panic!(),
-													}
+												let reason = if $next_hop_unknown {
+													HTLCDestination::UnknownNextHop { requested_forward_scid: short_chan_id }
 												} else {
-													fail_forward!(format!("Unknown short channel id {} for forward HTLC", short_chan_id), 0x4000 | 10, Vec::new(), None);
+													HTLCDestination::FailedPayment{ payment_hash }
+												};
+
+												failed_forwards.push((htlc_source, payment_hash,
+													HTLCFailReason::Reason { failure_code: $err_code, data: $err_data },
+													reason
+												));
+												continue;
+											}
+										}
+										macro_rules! fail_forward {
+											($msg: expr, $err_code: expr, $err_data: expr, $phantom_ss: expr) => {
+												{
+													failure_handler!($msg, $err_code, $err_data, $phantom_ss, true);
+												}
+											}
+										}
+										macro_rules! failed_payment {
+											($msg: expr, $err_code: expr, $err_data: expr, $phantom_ss: expr) => {
+												{
+													failure_handler!($msg, $err_code, $err_data, $phantom_ss, false);
+												}
+											}
+										}
+										if let PendingHTLCRouting::Forward { onion_packet, .. } = routing {
+											let phantom_secret_res = self.keys_manager.get_node_secret(Recipient::PhantomNode);
+											if phantom_secret_res.is_ok() && fake_scid::is_valid_phantom(&self.fake_scid_rand_bytes, short_chan_id, &self.genesis_hash) {
+												let phantom_shared_secret = SharedSecret::new(&onion_packet.public_key.unwrap(), &phantom_secret_res.unwrap()).secret_bytes();
+												let next_hop = match onion_utils::decode_next_payment_hop(phantom_shared_secret, &onion_packet.hop_data, onion_packet.hmac, payment_hash) {
+													Ok(res) => res,
+													Err(onion_utils::OnionDecodeErr::Malformed { err_msg, err_code }) => {
+														let sha256_of_onion = Sha256::hash(&onion_packet.hop_data).into_inner();
+														// In this scenario, the phantom would have sent us an
+														// `update_fail_malformed_htlc`, meaning here we encrypt the error as
+														// if it came from us (the second-to-last hop) but contains the sha256
+														// of the onion.
+														failed_payment!(err_msg, err_code, sha256_of_onion.to_vec(), None);
+													},
+													Err(onion_utils::OnionDecodeErr::Relay { err_msg, err_code }) => {
+														failed_payment!(err_msg, err_code, Vec::new(), Some(phantom_shared_secret));
+													},
+												};
+												match next_hop {
+													onion_utils::Hop::Receive(hop_data) => {
+														match self.construct_recv_pending_htlc_info(hop_data, incoming_shared_secret, payment_hash, amt_to_forward, outgoing_cltv_value, Some(phantom_shared_secret)) {
+															Ok(info) => phantom_receives.push((prev_short_channel_id, prev_funding_outpoint, vec![(info, prev_htlc_id)])),
+															Err(ReceiveError { err_code, err_data, msg }) => failed_payment!(msg, err_code, err_data, Some(phantom_shared_secret))
+														}
+													},
+													_ => panic!(),
 												}
 											} else {
 												fail_forward!(format!("Unknown short channel id {} for forward HTLC", short_chan_id), 0x4000 | 10, Vec::new(), None);
 											}
-										},
+										} else {
+											fail_forward!(format!("Unknown short channel id {} for forward HTLC", short_chan_id), 0x4000 | 10, Vec::new(), None);
+										}
+									},
 									HTLCForwardInfo::FailHTLC { .. } => {
 										// Channel went away before we could fail it. This implies
 										// the channel is now on chain and our counterparty is
@@ -3252,11 +3261,13 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 							let mut fail_htlc_msgs = Vec::new();
 							for forward_info in pending_forwards.drain(..) {
 								match forward_info {
-									HTLCForwardInfo::AddHTLC { prev_short_channel_id, prev_htlc_id, forward_info: PendingHTLCInfo {
-											routing: PendingHTLCRouting::Forward {
-												onion_packet, ..
-											}, incoming_shared_secret, payment_hash, amt_to_forward, outgoing_cltv_value },
-											prev_funding_outpoint } => {
+									HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo {
+										prev_short_channel_id, prev_htlc_id, prev_funding_outpoint ,
+										forward_info: PendingHTLCInfo {
+											incoming_shared_secret, payment_hash, amt_to_forward, outgoing_cltv_value,
+											routing: PendingHTLCRouting::Forward { onion_packet, .. }, amt_incoming: _,
+										},
+									}) => {
 										log_trace!(self.logger, "Adding HTLC from short id {} with payment_hash {} to channel with short id {} after delay", prev_short_channel_id, log_bytes!(payment_hash.0), short_chan_id);
 										let htlc_source = HTLCSource::PreviousHopData(HTLCPreviousHopData {
 											short_channel_id: prev_short_channel_id,
@@ -3377,9 +3388,12 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 				} else {
 					for forward_info in pending_forwards.drain(..) {
 						match forward_info {
-							HTLCForwardInfo::AddHTLC { prev_short_channel_id, prev_htlc_id, forward_info: PendingHTLCInfo {
-									routing, incoming_shared_secret, payment_hash, amt_to_forward, .. },
-									prev_funding_outpoint } => {
+							HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo {
+								prev_short_channel_id, prev_htlc_id, prev_funding_outpoint,
+								forward_info: PendingHTLCInfo {
+									routing, incoming_shared_secret, payment_hash, amt_to_forward, ..
+								}
+							}) => {
 								let (cltv_expiry, onion_payload, payment_data, phantom_shared_secret) = match routing {
 									PendingHTLCRouting::Receive { payment_data, incoming_cltv_expiry, phantom_shared_secret } => {
 										let _legacy_hop_data = Some(payment_data.clone());
@@ -5089,12 +5103,12 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 							PendingHTLCRouting::ReceiveKeysend { .. } => 0,
 					}) {
 						hash_map::Entry::Occupied(mut entry) => {
-							entry.get_mut().push(HTLCForwardInfo::AddHTLC { prev_short_channel_id, prev_funding_outpoint,
-							                                                prev_htlc_id, forward_info });
+							entry.get_mut().push(HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo {
+								prev_short_channel_id, prev_funding_outpoint, prev_htlc_id, forward_info }));
 						},
 						hash_map::Entry::Vacant(entry) => {
-							entry.insert(vec!(HTLCForwardInfo::AddHTLC { prev_short_channel_id, prev_funding_outpoint,
-							                                             prev_htlc_id, forward_info }));
+							entry.insert(vec!(HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo {
+								prev_short_channel_id, prev_funding_outpoint, prev_htlc_id, forward_info })));
 						}
 					}
 				}
@@ -6459,7 +6473,8 @@ impl_writeable_tlv_based!(PendingHTLCInfo, {
 	(2, incoming_shared_secret, required),
 	(4, payment_hash, required),
 	(6, amt_to_forward, required),
-	(8, outgoing_cltv_value, required)
+	(8, outgoing_cltv_value, required),
+	(9, amt_incoming, option),
 });
 
 
@@ -6681,18 +6696,20 @@ impl_writeable_tlv_based_enum!(HTLCFailReason,
 	},
 ;);
 
+impl_writeable_tlv_based!(PendingAddHTLCInfo, {
+	(0, forward_info, required),
+	(2, prev_short_channel_id, required),
+	(4, prev_htlc_id, required),
+	(6, prev_funding_outpoint, required),
+});
+
 impl_writeable_tlv_based_enum!(HTLCForwardInfo,
-	(0, AddHTLC) => {
-		(0, forward_info, required),
-		(2, prev_short_channel_id, required),
-		(4, prev_htlc_id, required),
-		(6, prev_funding_outpoint, required),
-	},
 	(1, FailHTLC) => {
 		(0, htlc_id, required),
 		(2, err_packet, required),
-	},
-;);
+	};
+	(0, AddHTLC)
+);
 
 impl_writeable_tlv_based!(PendingInboundPayment, {
 	(0, payment_secret, required),
