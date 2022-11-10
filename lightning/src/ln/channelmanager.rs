@@ -53,7 +53,7 @@ use crate::ln::msgs::{ChannelMessageHandler, DecodeError, LightningError, MAX_VA
 use crate::ln::wire::Encode;
 use crate::chain::keysinterface::{Sign, KeysInterface, KeysManager, Recipient};
 use crate::util::config::{UserConfig, ChannelConfig};
-use crate::util::events::{EventHandler, EventsProvider, MessageSendEvent, MessageSendEventsProvider, ClosureReason, HTLCDestination};
+use crate::util::events::{Event, EventHandler, EventsProvider, MessageSendEvent, MessageSendEventsProvider, ClosureReason, HTLCDestination};
 use crate::util::{byte_utils, events};
 use crate::util::wakers::{Future, Notifier};
 use crate::util::scid_utils::fake_scid;
@@ -5714,7 +5714,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 	#[cfg(any(test, fuzzing, feature = "_test_utils"))]
 	pub fn get_and_clear_pending_events(&self) -> Vec<events::Event> {
 		let events = core::cell::RefCell::new(Vec::new());
-		let event_handler = |event: &events::Event| events.borrow_mut().push(event.clone());
+		let event_handler = |event: events::Event| events.borrow_mut().push(event);
 		self.process_pending_events(&event_handler);
 		events.into_inner()
 	}
@@ -5727,6 +5727,39 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 	#[cfg(test)]
 	pub fn clear_pending_payments(&self) {
 		self.pending_outbound_payments.lock().unwrap().clear()
+	}
+
+	/// Processes any events asynchronously in the order they were generated since the last call
+	/// using the given event handler.
+	///
+	/// See the trait-level documentation of [`EventsProvider`] for requirements.
+	pub async fn process_pending_events_async<Future: core::future::Future, H: Fn(Event) -> Future>(
+		&self, handler: H
+	) {
+		// We'll acquire our total consistency lock until the returned future completes so that
+		// we can be sure no other persists happen while processing events.
+		let _read_guard = self.total_consistency_lock.read().unwrap();
+
+		let mut result = NotifyOption::SkipPersist;
+
+		// TODO: This behavior should be documented. It's unintuitive that we query
+		// ChannelMonitors when clearing other events.
+		if self.process_pending_monitor_events() {
+			result = NotifyOption::DoPersist;
+		}
+
+		let pending_events = mem::replace(&mut *self.pending_events.lock().unwrap(), vec![]);
+		if !pending_events.is_empty() {
+			result = NotifyOption::DoPersist;
+		}
+
+		for event in pending_events {
+			handler(event).await;
+		}
+
+		if result == NotifyOption::DoPersist {
+			self.persistence_notifier.notify();
+		}
 	}
 }
 
@@ -5791,13 +5824,13 @@ where
 				result = NotifyOption::DoPersist;
 			}
 
-			let mut pending_events = mem::replace(&mut *self.pending_events.lock().unwrap(), vec![]);
+			let pending_events = mem::replace(&mut *self.pending_events.lock().unwrap(), vec![]);
 			if !pending_events.is_empty() {
 				result = NotifyOption::DoPersist;
 			}
 
-			for event in pending_events.drain(..) {
-				handler.handle_event(&event);
+			for event in pending_events {
+				handler.handle_event(event);
 			}
 
 			result

@@ -43,7 +43,7 @@
 //! async fn connect_to_node(peer_manager: PeerManager, chain_monitor: Arc<ChainMonitor>, channel_manager: ChannelManager, their_node_id: PublicKey, addr: SocketAddr) {
 //! 	lightning_net_tokio::connect_outbound(peer_manager, their_node_id, addr).await;
 //! 	loop {
-//! 		let event_handler = |event: &Event| {
+//! 		let event_handler = |event: Event| {
 //! 			// Handle the event!
 //! 		};
 //! 		channel_manager.await_persistable_update();
@@ -56,7 +56,7 @@
 //! async fn accept_socket(peer_manager: PeerManager, chain_monitor: Arc<ChainMonitor>, channel_manager: ChannelManager, socket: TcpStream) {
 //! 	lightning_net_tokio::setup_inbound(peer_manager, socket);
 //! 	loop {
-//! 		let event_handler = |event: &Event| {
+//! 		let event_handler = |event: Event| {
 //! 			// Handle the event!
 //! 		};
 //! 		channel_manager.await_persistable_update();
