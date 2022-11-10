@@ -3111,10 +3111,24 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		F::Target: FeeEstimator,
 		L::Target: Logger,
 	{
-		self.onchain_events_awaiting_threshold_conf.retain(|ref entry| if entry.txid == *txid {
-			log_info!(logger, "Removing onchain event with txid {}", txid);
-			false
-		} else { true });
+		let mut removed_height = None;
+		for entry in self.onchain_events_awaiting_threshold_conf.iter() {
+			if entry.txid == *txid {
+				removed_height = Some(entry.height);
+				break;
+			}
+		}
+
+		if let Some(removed_height) = removed_height {
+			log_info!(logger, "transaction_unconfirmed of txid {} implies height {} was reorg'd out", txid, removed_height);
+			self.onchain_events_awaiting_threshold_conf.retain(|ref entry| if entry.height >= removed_height {
+				log_info!(logger, "Transaction {} reorg'd out", entry.txid);
+				false
+			} else { true });
+		}
+
+		debug_assert!(!self.onchain_events_awaiting_threshold_conf.iter().any(|ref entry| entry.txid == *txid));
+
 		self.onchain_tx_handler.transaction_unconfirmed(txid, broadcaster, fee_estimator, logger);
 	}
 
