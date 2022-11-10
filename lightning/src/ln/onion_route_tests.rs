@@ -568,7 +568,7 @@ fn test_onion_failure() {
 			for f in pending_forwards.iter_mut() {
 				match f {
 					&mut HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo { ref mut forward_info, .. }) =>
-						forward_info.amt_to_forward -= 1,
+						forward_info.outgoing_amt_msat -= 1,
 					_ => {},
 				}
 			}
