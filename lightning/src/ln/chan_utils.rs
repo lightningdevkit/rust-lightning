@@ -713,7 +713,7 @@ pub fn build_htlc_transaction(commitment_txid: &Txid, feerate_per_kw: u32, conte
 
 /// Gets the witnessScript for the to_remote output when anchors are enabled.
 #[inline]
-pub(crate) fn get_to_countersignatory_with_anchors_redeemscript(payment_point: &PublicKey) -> Script {
+pub fn get_to_countersignatory_with_anchors_redeemscript(payment_point: &PublicKey) -> Script {
 	Builder::new()
 		.push_slice(&payment_point.serialize()[..])
 		.push_opcode(opcodes::all::OP_CHECKSIGVERIFY)
