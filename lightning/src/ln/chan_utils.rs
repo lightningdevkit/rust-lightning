@@ -41,13 +41,20 @@ use core::ops::Deref;
 use crate::chain;
 use crate::util::crypto::sign;
 
-pub(crate) const MAX_HTLCS: u16 = 483;
-pub(crate) const OFFERED_HTLC_SCRIPT_WEIGHT: usize = 133;
-pub(crate) const OFFERED_HTLC_SCRIPT_WEIGHT_ANCHORS: usize = 136;
-// The weight of `accepted_htlc_script` can vary in function of its CLTV argument value. We define a
-// range that encompasses both its non-anchors and anchors variants.
+/// Maximum number of one-way in-flight HTLC (protocol-level value).
+pub const MAX_HTLCS: u16 = 483;
+/// The weight of a BIP141 witnessScript for a BOLT3's "offered HTLC output" on a commitment transaction, non-anchor variant.
+pub const OFFERED_HTLC_SCRIPT_WEIGHT: usize = 133;
+/// The weight of a BIP141 witnessScript for a BOLT3's "offered HTLC output" on a commitment transaction, anchor variant.
+pub const OFFERED_HTLC_SCRIPT_WEIGHT_ANCHORS: usize = 136;
+
+/// The weight of a BIP141 witnessScript for a BOLT3's "received HTLC output" can vary in function of its CLTV argument value.
+/// We define a range that encompasses both its non-anchors and anchors variants.
 pub(crate) const MIN_ACCEPTED_HTLC_SCRIPT_WEIGHT: usize = 136;
-pub(crate) const MAX_ACCEPTED_HTLC_SCRIPT_WEIGHT: usize = 143;
+/// The weight of a BIP141 witnessScript for a BOLT3's "received HTLC output" can vary in function of its CLTV argument value.
+/// We define a range that encompasses both its non-anchors and anchors variants.
+/// This is the maximum post-anchor value.
+pub const MAX_ACCEPTED_HTLC_SCRIPT_WEIGHT: usize = 143;
 
 /// Gets the weight for an HTLC-Success transaction.
 #[inline]
@@ -65,18 +72,24 @@ pub fn htlc_timeout_tx_weight(opt_anchors: bool) -> u64 {
 	if opt_anchors { HTLC_TIMEOUT_ANCHOR_TX_WEIGHT } else { HTLC_TIMEOUT_TX_WEIGHT }
 }
 
+/// Describes the type of HTLC claim as determined by analyzing the witness.
 #[derive(PartialEq, Eq)]
-pub(crate) enum HTLCClaim {
+pub enum HTLCClaim {
+	/// Claims an offered output on a commitment transaction through the timeout path.
 	OfferedTimeout,
+	/// Claims an offered output on a commitment transaction through the success path.
 	OfferedPreimage,
+	/// Claims an accepted output on a commitment transaction through the timeout path.
 	AcceptedTimeout,
+	/// Claims an accepted output on a commitment transaction through the success path.
 	AcceptedPreimage,
+	/// Claims an offered/accepted output on a commitment transaction through the revocation path.
 	Revocation,
 }
 
 impl HTLCClaim {
 	/// Check if a given input witness attempts to claim a HTLC.
-	pub(crate) fn from_witness(witness: &Witness) -> Option<Self> {
+	pub fn from_witness(witness: &Witness) -> Option<Self> {
 		debug_assert_eq!(OFFERED_HTLC_SCRIPT_WEIGHT_ANCHORS, MIN_ACCEPTED_HTLC_SCRIPT_WEIGHT);
 		if witness.len() < 2 {
 			return None;
