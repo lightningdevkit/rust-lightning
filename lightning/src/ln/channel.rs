@@ -4205,7 +4205,7 @@ impl<Signer: Sign> Channel<Signer> {
 	pub fn shutdown<K: Deref>(
 		&mut self, keys_provider: &K, their_features: &InitFeatures, msg: &msgs::Shutdown
 	) -> Result<(Option<msgs::Shutdown>, Option<ChannelMonitorUpdate>, Vec<(HTLCSource, PaymentHash)>), ChannelError>
-	where K::Target: KeysInterface<Signer = Signer>
+	where K::Target: KeysInterface
 	{
 		if self.channel_state & (ChannelState::PeerDisconnected as u32) == ChannelState::PeerDisconnected as u32 {
 			return Err(ChannelError::Close("Peer sent shutdown when we needed a channel_reestablish".to_owned()));
@@ -5825,7 +5825,7 @@ impl<Signer: Sign> Channel<Signer> {
 	/// holding cell HTLCs for payment failure.
 	pub fn get_shutdown<K: Deref>(&mut self, keys_provider: &K, their_features: &InitFeatures, target_feerate_sats_per_kw: Option<u32>)
 	-> Result<(msgs::Shutdown, Option<ChannelMonitorUpdate>, Vec<(HTLCSource, PaymentHash)>), APIError>
-	where K::Target: KeysInterface<Signer = Signer> {
+	where K::Target: KeysInterface {
 		for htlc in self.pending_outbound_htlcs.iter() {
 			if let OutboundHTLCState::LocalAnnounced(_) = htlc.state {
 				return Err(APIError::APIMisuseError{err: "Cannot begin shutdown with pending HTLCs. Process pending events first".to_owned()});
@@ -6284,8 +6284,8 @@ impl<Signer: Sign> Writeable for Channel<Signer> {
 }
 
 const MAX_ALLOC_SIZE: usize = 64*1024;
-impl<'a, Signer: Sign, K: Deref> ReadableArgs<(&'a K, u32)> for Channel<Signer>
-		where K::Target: KeysInterface<Signer = Signer> {
+impl<'a, K: Deref> ReadableArgs<(&'a K, u32)> for Channel<<K::Target as KeysInterface>::Signer>
+		where K::Target: KeysInterface {
 	fn read<R : io::Read>(reader: &mut R, args: (&'a K, u32)) -> Result<Self, DecodeError> {
 		let (keys_source, serialized_height) = args;
 		let ver = read_ver_prefix!(reader, SERIALIZATION_VERSION);

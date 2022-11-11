@@ -25,7 +25,7 @@ use crate::sync::Arc;
 
 struct MessengerNode {
 	keys_manager: Arc<test_utils::TestKeysInterface>,
-	messenger: OnionMessenger<EnforcingSigner, Arc<test_utils::TestKeysInterface>, Arc<test_utils::TestLogger>, Arc<TestCustomMessageHandler>>,
+	messenger: OnionMessenger<Arc<test_utils::TestKeysInterface>, Arc<test_utils::TestLogger>, Arc<TestCustomMessageHandler>>,
 	logger: Arc<test_utils::TestLogger>,
 }
 

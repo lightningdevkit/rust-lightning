@@ -66,7 +66,7 @@ pub fn scid_from_parts(block: u64, tx_index: u64, vout_index: u64) -> Result<u64
 pub(crate) mod fake_scid {
 	use bitcoin::hash_types::BlockHash;
 	use bitcoin::hashes::hex::FromHex;
-	use crate::chain::keysinterface::{Sign, KeysInterface};
+	use crate::chain::keysinterface::KeysInterface;
 	use crate::util::chacha20::ChaCha20;
 	use crate::util::scid_utils;
 
@@ -98,8 +98,8 @@ pub(crate) mod fake_scid {
 		/// between segwit activation and the current best known height, and the tx index and output
 		/// index are also selected from a "reasonable" range. We add this logic because it makes it
 		/// non-obvious at a glance that the scid is fake, e.g. if it appears in invoice route hints.
-		pub(crate) fn get_fake_scid<Signer: Sign, K: Deref>(&self, highest_seen_blockheight: u32, genesis_hash: &BlockHash, fake_scid_rand_bytes: &[u8; 32], keys_manager: &K) -> u64
-			where K::Target: KeysInterface<Signer = Signer>,
+		pub(crate) fn get_fake_scid<K: Deref>(&self, highest_seen_blockheight: u32, genesis_hash: &BlockHash, fake_scid_rand_bytes: &[u8; 32], keys_manager: &K) -> u64
+			where K::Target: KeysInterface,
 		{
 			// Ensure we haven't created a namespace that doesn't fit into the 3 bits we've allocated for
 			// namespaces.
