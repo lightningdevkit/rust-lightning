@@ -82,6 +82,15 @@ pub(super) fn gen_ammag_from_shared_secret(shared_secret: &[u8]) -> [u8; 32] {
 	Hmac::from_engine(hmac).into_inner()
 }
 
+#[cfg(test)]
+#[inline]
+pub(super) fn gen_pad_from_shared_secret(shared_secret: &[u8]) -> [u8; 32] {
+	assert_eq!(shared_secret.len(), 32);
+	let mut hmac = HmacEngine::<Sha256>::new(&[0x70, 0x61, 0x64]); // pad
+	hmac.input(&shared_secret);
+	Hmac::from_engine(hmac).into_inner()
+}
+
 pub(crate) fn next_hop_packet_pubkey<T: secp256k1::Signing + secp256k1::Verification>(secp_ctx: &Secp256k1<T>, packet_pubkey: PublicKey, packet_shared_secret: &[u8; 32]) -> Result<PublicKey, secp256k1::Error> {
 	let blinding_factor = {
 		let mut sha = Sha256::engine();
@@ -153,24 +162,18 @@ pub(super) fn build_onion_payloads(path: &Vec<RouteHop>, total_msat: u64, paymen
 		let value_msat = if cur_value_msat == 0 { hop.fee_msat } else { cur_value_msat };
 		let cltv = if cur_cltv == starting_htlc_offset { hop.cltv_expiry_delta + starting_htlc_offset } else { cur_cltv };
 		res.insert(0, msgs::OnionHopData {
-			format: if hop.node_features.supports_variable_length_onion() {
-				if idx == 0 {
-					msgs::OnionHopDataFormat::FinalNode {
-						payment_data: if let &Some(ref payment_secret) = payment_secret_option {
-							Some(msgs::FinalOnionHopData {
-								payment_secret: payment_secret.clone(),
-								total_msat,
-							})
-						} else { None },
-						keysend_preimage: *keysend_preimage,
-					}
-				} else {
-					msgs::OnionHopDataFormat::NonFinalNode {
-						short_channel_id: last_short_channel_id,
-					}
+			format: if idx == 0 {
+				msgs::OnionHopDataFormat::FinalNode {
+					payment_data: if let &Some(ref payment_secret) = payment_secret_option {
+						Some(msgs::FinalOnionHopData {
+							payment_secret: payment_secret.clone(),
+							total_msat,
+						})
+					} else { None },
+					keysend_preimage: *keysend_preimage,
 				}
 			} else {
-				msgs::OnionHopDataFormat::Legacy {
+				msgs::OnionHopDataFormat::NonFinalNode {
 					short_channel_id: last_short_channel_id,
 				}
 			},
@@ -230,9 +233,9 @@ pub(super) fn construct_onion_packet(payloads: Vec<msgs::OnionHopData>, onion_ke
 }
 
 #[cfg(test)]
-// Used in testing to write bogus OnionHopDatas, which is otherwise not representable in
-// msgs::OnionHopData.
-pub(super) fn construct_onion_packet_bogus_hopdata<HD: Writeable>(payloads: Vec<HD>, onion_keys: Vec<OnionKeys>, prng_seed: [u8; 32], associated_data: &PaymentHash) -> msgs::OnionPacket {
+/// Used in testing to write bogus `BogusOnionHopData` as well as `RawOnionHopData`, which is
+/// otherwise not representable in `msgs::OnionHopData`.
+pub(super) fn construct_onion_packet_with_writable_hopdata<HD: Writeable>(payloads: Vec<HD>, onion_keys: Vec<OnionKeys>, prng_seed: [u8; 32], associated_data: &PaymentHash) -> msgs::OnionPacket {
 	let mut packet_data = [0; ONION_DATA_LEN];
 
 	let mut chacha = ChaCha20::new(&prng_seed, &[0; 8]);
@@ -741,7 +744,7 @@ mod tests {
 	use crate::ln::features::{ChannelFeatures, NodeFeatures};
 	use crate::routing::router::{Route, RouteHop};
 	use crate::ln::msgs;
-	use crate::util::ser::{Writeable, Writer};
+	use crate::util::ser::{Writeable, Writer, VecWriter};
 
 	use hex;
 
@@ -749,6 +752,10 @@ mod tests {
 	use bitcoin::secp256k1::{PublicKey,SecretKey};
 
 	use super::OnionKeys;
+
+	fn get_test_session_key() -> SecretKey {
+		SecretKey::from_slice(&hex::decode("4141414141414141414141414141414141414141414141414141414141414141").unwrap()[..]).unwrap()
+	}
 
 	fn build_test_onion_keys() -> Vec<OnionKeys> {
 		// Keys from BOLT 4, used in both test vector tests
@@ -759,44 +766,43 @@ mod tests {
 					RouteHop {
 						pubkey: PublicKey::from_slice(&hex::decode("02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619").unwrap()[..]).unwrap(),
 						channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
-						short_channel_id: 0, fee_msat: 0, cltv_expiry_delta: 0 // Test vectors are garbage and not generateble from a RouteHop, we fill in payloads manually
+						short_channel_id: 0, fee_msat: 0, cltv_expiry_delta: 0 // We fill in the payloads manually instead of generating them from RouteHops.
 					},
 					RouteHop {
 						pubkey: PublicKey::from_slice(&hex::decode("0324653eac434488002cc06bbfb7f10fe18991e35f9fe4302dbea6d2353dc0ab1c").unwrap()[..]).unwrap(),
 						channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
-						short_channel_id: 0, fee_msat: 0, cltv_expiry_delta: 0 // Test vectors are garbage and not generateble from a RouteHop, we fill in payloads manually
+						short_channel_id: 0, fee_msat: 0, cltv_expiry_delta: 0 // We fill in the payloads manually instead of generating them from RouteHops.
 					},
 					RouteHop {
 						pubkey: PublicKey::from_slice(&hex::decode("027f31ebc5462c1fdce1b737ecff52d37d75dea43ce11c74d25aa297165faa2007").unwrap()[..]).unwrap(),
 						channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
-						short_channel_id: 0, fee_msat: 0, cltv_expiry_delta: 0 // Test vectors are garbage and not generateble from a RouteHop, we fill in payloads manually
+						short_channel_id: 0, fee_msat: 0, cltv_expiry_delta: 0 // We fill in the payloads manually instead of generating them from RouteHops.
 					},
 					RouteHop {
 						pubkey: PublicKey::from_slice(&hex::decode("032c0b7cf95324a07d05398b240174dc0c2be444d96b159aa6c7f7b1e668680991").unwrap()[..]).unwrap(),
 						channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
-						short_channel_id: 0, fee_msat: 0, cltv_expiry_delta: 0 // Test vectors are garbage and not generateble from a RouteHop, we fill in payloads manually
+						short_channel_id: 0, fee_msat: 0, cltv_expiry_delta: 0 // We fill in the payloads manually instead of generating them from RouteHops.
 					},
 					RouteHop {
 						pubkey: PublicKey::from_slice(&hex::decode("02edabbd16b41c8371b92ef2f04c1185b4f03b6dcd52ba9b78d9d7c89c8f221145").unwrap()[..]).unwrap(),
 						channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
-						short_channel_id: 0, fee_msat: 0, cltv_expiry_delta: 0 // Test vectors are garbage and not generateble from a RouteHop, we fill in payloads manually
+						short_channel_id: 0, fee_msat: 0, cltv_expiry_delta: 0 // We fill in the payloads manually instead of generating them from RouteHops.
 					},
 			]],
 			payment_params: None,
 		};
 
-		let session_priv = SecretKey::from_slice(&hex::decode("4141414141414141414141414141414141414141414141414141414141414141").unwrap()[..]).unwrap();
-
-		let onion_keys = super::construct_onion_keys(&secp_ctx, &route.paths[0], &session_priv).unwrap();
+		let onion_keys = super::construct_onion_keys(&secp_ctx, &route.paths[0], &get_test_session_key()).unwrap();
 		assert_eq!(onion_keys.len(), route.paths[0].len());
 		onion_keys
 	}
 
 	#[test]
 	fn onion_vectors() {
-		// Legacy packet creation test vectors from BOLT 4
 		let onion_keys = build_test_onion_keys();
 
+		// Test generation of ephemeral keys and secrets. These values used to be part of the BOLT4
+		// test vectors, but have since been removed. We keep them as they provide test coverage.
 		assert_eq!(onion_keys[0].shared_secret.secret_bytes(), hex::decode("53eb63ea8a3fec3b3cd433b85cd62a4b145e1dda09391b348c4e1cd36a03ea66").unwrap()[..]);
 		assert_eq!(onion_keys[0].blinding_factor[..], hex::decode("2ec2e5da605776054187180343287683aa6a51b4b1c04d6dd49c45d8cffb3c36").unwrap()[..]);
 		assert_eq!(onion_keys[0].ephemeral_pubkey.serialize()[..], hex::decode("02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619").unwrap()[..]);
@@ -827,49 +833,95 @@ mod tests {
 		assert_eq!(onion_keys[4].rho, hex::decode("034e18b8cc718e8af6339106e706c52d8df89e2b1f7e9142d996acf88df8799b").unwrap()[..]);
 		assert_eq!(onion_keys[4].mu, hex::decode("8e45e5c61c2b24cb6382444db6698727afb063adecd72aada233d4bf273d975a").unwrap()[..]);
 
-		// Test vectors below are flat-out wrong: they claim to set outgoing_cltv_value to non-0 :/
+		// Packet creation test vectors from BOLT 4 (see
+		// https://github.com/lightning/bolts/blob/16973e2b857e853308cafd59e42fa830d75b1642/bolt04/onion-test.json).
+		// Note that we represent the test vector payloads 2 and 5 through RawOnionHopData::data
+		// with raw hex instead of our in-memory enums, as the payloads contains custom types, and
+		// we have no way of representing that with our enums.
 		let payloads = vec!(
-			msgs::OnionHopData {
-				format: msgs::OnionHopDataFormat::Legacy {
-					short_channel_id: 0,
+			RawOnionHopData::new(msgs::OnionHopData {
+				format: msgs::OnionHopDataFormat::NonFinalNode {
+					short_channel_id: 1,
 				},
-				amt_to_forward: 0,
-				outgoing_cltv_value: 0,
+				amt_to_forward: 15000,
+				outgoing_cltv_value: 1500,
+			}),
+			/*
+			The second payload is represented by raw hex as it contains custom type data. Content:
+			1. length "52" (payload_length 82).
+
+			The first part of the payload has the `NonFinalNode` format, with content as follows:
+			2. amt_to_forward "020236b0"
+			   02 (type amt_to_forward) 02 (length 2) 36b0 (value 14000)
+			3. outgoing_cltv_value "04020578"
+			   04 (type outgoing_cltv_value) 02 (length 2) 0578 (value 1400)
+			4. short_channel_id "06080000000000000002"
+			   06 (type short_channel_id) 08 (length 8) 0000000000000002 (value 2)
+
+			The rest of the payload is custom type data:
+			5. custom_record "fd02013c0102030405060708090a0b0c0d0e0f0102030405060708090a0b0c0d0e0f0102030405060708090a0b0c0d0e0f0102030405060708090a0b0c0d0e0f"
+			*/
+			RawOnionHopData {
+				data: hex::decode("52020236b00402057806080000000000000002fd02013c0102030405060708090a0b0c0d0e0f0102030405060708090a0b0c0d0e0f0102030405060708090a0b0c0d0e0f0102030405060708090a0b0c0d0e0f").unwrap(),
 			},
-			msgs::OnionHopData {
-				format: msgs::OnionHopDataFormat::Legacy {
-					short_channel_id: 0x0101010101010101,
+			RawOnionHopData::new(msgs::OnionHopData {
+				format: msgs::OnionHopDataFormat::NonFinalNode {
+					short_channel_id: 3,
 				},
-				amt_to_forward: 0x0100000001,
-				outgoing_cltv_value: 0,
-			},
-			msgs::OnionHopData {
-				format: msgs::OnionHopDataFormat::Legacy {
-					short_channel_id: 0x0202020202020202,
+				amt_to_forward: 12500,
+				outgoing_cltv_value: 1250,
+			}),
+			RawOnionHopData::new(msgs::OnionHopData {
+				format: msgs::OnionHopDataFormat::NonFinalNode {
+					short_channel_id: 4,
 				},
-				amt_to_forward: 0x0200000002,
-				outgoing_cltv_value: 0,
-			},
-			msgs::OnionHopData {
-				format: msgs::OnionHopDataFormat::Legacy {
-					short_channel_id: 0x0303030303030303,
-				},
-				amt_to_forward: 0x0300000003,
-				outgoing_cltv_value: 0,
-			},
-			msgs::OnionHopData {
-				format: msgs::OnionHopDataFormat::Legacy {
-					short_channel_id: 0x0404040404040404,
-				},
-				amt_to_forward: 0x0400000004,
-				outgoing_cltv_value: 0,
+				amt_to_forward: 10000,
+				outgoing_cltv_value: 1000,
+			}),
+			/*
+			The fifth payload is represented by raw hex as it contains custom type data. Content:
+			1. length "fd0110" (payload_length 272).
+
+			The first part of the payload has the `FinalNode` format, with content as follows:
+			1. amt_to_forward "02022710"
+			   02 (type amt_to_forward) 02 (length 2) 2710 (value 10000)
+			2. outgoing_cltv_value "040203e8"
+			   04 (type outgoing_cltv_value) 02 (length 2) 03e8 (value 1000)
+			3. payment_data "082224a33562c54507a9334e79f0dc4f17d407e6d7c61f0e2f3d0d38599502f617042710"
+			   08 (type short_channel_id) 22 (length 34) 24a33562c54507a9334e79f0dc4f17d407e6d7c61f0e2f3d0d38599502f61704 (payment_secret) 2710 (total_msat value 10000)
+
+			The rest of the payload is custom type data:
+			4. custom_record "fd012de02a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a"
+			*/
+			RawOnionHopData {
+				data: hex::decode("fd011002022710040203e8082224a33562c54507a9334e79f0dc4f17d407e6d7c61f0e2f3d0d38599502f617042710fd012de02a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a").unwrap(),
 			},
 		);
 
-		let packet: msgs::OnionPacket = super::construct_onion_packet_with_init_noise::<_, _>(payloads, onion_keys, super::FixedSizeOnionPacket([0; super::ONION_DATA_LEN]), Some(&PaymentHash([0x42; 32])));
-		// Just check the final packet encoding, as it includes all the per-hop vectors in it
-		// anyway...
-		assert_eq!(packet.encode(), hex::decode("0002eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619e5f14350c2a76fc232b5e46d421e9615471ab9e0bc887beff8c95fdb878f7b3a716a996c7845c93d90e4ecbb9bde4ece2f69425c99e4bc820e44485455f135edc0d10f7d61ab590531cf08000179a333a347f8b4072f216400406bdf3bf038659793d4a1fd7b246979e3150a0a4cb052c9ec69acf0f48c3d39cd55675fe717cb7d80ce721caad69320c3a469a202f1e468c67eaf7a7cd8226d0fd32f7b48084dca885d56047694762b67021713ca673929c163ec36e04e40ca8e1c6d17569419d3039d9a1ec866abe044a9ad635778b961fc0776dc832b3a451bd5d35072d2269cf9b040f6b7a7dad84fb114ed413b1426cb96ceaf83825665ed5a1d002c1687f92465b49ed4c7f0218ff8c6c7dd7221d589c65b3b9aaa71a41484b122846c7c7b57e02e679ea8469b70e14fe4f70fee4d87b910cf144be6fe48eef24da475c0b0bcc6565ae82cd3f4e3b24c76eaa5616c6111343306ab35c1fe5ca4a77c0e314ed7dba39d6f1e0de791719c241a939cc493bea2bae1c1e932679ea94d29084278513c77b899cc98059d06a27d171b0dbdf6bee13ddc4fc17a0c4d2827d488436b57baa167544138ca2e64a11b43ac8a06cd0c2fba2d4d900ed2d9205305e2d7383cc98dacb078133de5f6fb6bed2ef26ba92cea28aafc3b9948dd9ae5559e8bd6920b8cea462aa445ca6a95e0e7ba52961b181c79e73bd581821df2b10173727a810c92b83b5ba4a0403eb710d2ca10689a35bec6c3a708e9e92f7d78ff3c5d9989574b00c6736f84c199256e76e19e78f0c98a9d580b4a658c84fc8f2096c2fbea8f5f8c59d0fdacb3be2802ef802abbecb3aba4acaac69a0e965abd8981e9896b1f6ef9d60f7a164b371af869fd0e48073742825e9434fc54da837e120266d53302954843538ea7c6c3dbfb4ff3b2fdbe244437f2a153ccf7bdb4c92aa08102d4f3cff2ae5ef86fab4653595e6a5837fa2f3e29f27a9cde5966843fb847a4a61f1e76c281fe8bb2b0a181d096100db5a1a5ce7a910238251a43ca556712eaadea167fb4d7d75825e440f3ecd782036d7574df8bceacb397abefc5f5254d2722215c53ff54af8299aaaad642c6d72a14d27882d9bbd539e1cc7a527526ba89b8c037ad09120e98ab042d3e8652b31ae0e478516bfaf88efca9f3676ffe99d2819dcaeb7610a626695f53117665d267d3f7abebd6bbd6733f645c72c389f03855bdf1e4b8075b516569b118233a0f0971d24b83113c0b096f5216a207ca99a7cddc81c130923fe3d91e7508c9ac5f2e914ff5dccab9e558566fa14efb34ac98d878580814b94b73acbfde9072f30b881f7f0fff42d4045d1ace6322d86a97d164aa84d93a60498065cc7c20e636f5862dc81531a88c60305a2e59a985be327a6902e4bed986dbf4a0b50c217af0ea7fdf9ab37f9ea1a1aaa72f54cf40154ea9b269f1a7c09f9f43245109431a175d50e2db0132337baa0ef97eed0fcf20489da36b79a1172faccc2f7ded7c60e00694282d93359c4682135642bc81f433574aa8ef0c97b4ade7ca372c5ffc23c7eddd839bab4e0f14d6df15c9dbeab176bec8b5701cf054eb3072f6dadc98f88819042bf10c407516ee58bce33fbe3b3d86a54255e577db4598e30a135361528c101683a5fcde7e8ba53f3456254be8f45fe3a56120ae96ea3773631fcb3873aa3abd91bcff00bd38bd43697a2e789e00da6077482e7b1b1a677b5afae4c54e6cbdf7377b694eb7d7a5b913476a5be923322d3de06060fd5e819635232a2cf4f0731da13b8546d1d6d4f8d75b9fce6c2341a71b0ea6f780df54bfdb0dd5cd9855179f602f9172307c7268724c3618e6817abd793adc214a0dc0bc616816632f27ea336fb56dfd").unwrap());
+		// Verify that the serialized OnionHopDataFormat::NonFinalNode tlv payloads matches the test vectors
+		let mut w = VecWriter(Vec::new());
+		payloads[0].write(&mut w).unwrap();
+		let hop_1_serialized_payload = w.0;
+		let expected_serialized_hop_1_payload = &hex::decode("1202023a98040205dc06080000000000000001").unwrap()[..];
+		assert_eq!(hop_1_serialized_payload, expected_serialized_hop_1_payload);
+
+		w = VecWriter(Vec::new());
+		payloads[2].write(&mut w).unwrap();
+		let hop_3_serialized_payload = w.0;
+		let expected_serialized_hop_3_payload = &hex::decode("12020230d4040204e206080000000000000003").unwrap()[..];
+		assert_eq!(hop_3_serialized_payload, expected_serialized_hop_3_payload);
+
+		w = VecWriter(Vec::new());
+		payloads[3].write(&mut w).unwrap();
+		let hop_4_serialized_payload = w.0;
+		let expected_serialized_hop_4_payload = &hex::decode("1202022710040203e806080000000000000004").unwrap()[..];
+		assert_eq!(hop_4_serialized_payload, expected_serialized_hop_4_payload);
+
+		let pad_keytype_seed = super::gen_pad_from_shared_secret(&get_test_session_key().secret_bytes());
+
+		let packet: msgs::OnionPacket = super::construct_onion_packet_with_writable_hopdata::<_>(payloads, onion_keys, pad_keytype_seed, &PaymentHash([0x42; 32]));
+
+		assert_eq!(packet.encode(), hex::decode("0002EEC7245D6B7D2CCB30380BFBE2A3648CD7A942653F5AA340EDCEA1F283686619F7F3416A5AA36DC7EEB3EC6D421E9615471AB870A33AC07FA5D5A51DF0A8823AABE3FEA3F90D387529D4F72837F9E687230371CCD8D263072206DBED0234F6505E21E282ABD8C0E4F5B9FF8042800BBAB065036EADD0149B37F27DDE664725A49866E052E809D2B0198AB9610FAA656BBF4EC516763A59F8F42C171B179166BA38958D4F51B39B3E98706E2D14A2DAFD6A5DF808093ABFCA5AEAACA16EDED5DB7D21FB0294DD1A163EDF0FB445D5C8D7D688D6DD9C541762BF5A5123BF9939D957FE648416E88F1B0928BFA034982B22548E1A4D922690EECF546275AFB233ACF4323974680779F1A964CFE687456035CC0FBA8A5428430B390F0057B6D1FE9A8875BFA89693EEB838CE59F09D207A503EE6F6299C92D6361BC335FCBF9B5CD44747AADCE2CE6069CFDC3D671DAEF9F8AE590CF93D957C9E873E9A1BC62D9640DC8FC39C14902D49A1C80239B6C5B7FD91D05878CBF5FFC7DB2569F47C43D6C0D27C438ABFF276E87364DEB8858A37E5A62C446AF95D8B786EAF0B5FCF78D98B41496794F8DCAAC4EEF34B2ACFB94C7E8C32A9E9866A8FA0B6F2A06F00A1CCDE569F97EEC05C803BA7500ACC96691D8898D73D8E6A47B8F43C3D5DE74458D20EDA61474C426359677001FBD75A74D7D5DB6CB4FEB83122F133206203E4E2D293F838BF8C8B3A29ACB321315100B87E80E0EDB272EE80FDA944E3FB6084ED4D7F7C7D21C69D9DA43D31A90B70693F9B0CC3EAC74C11AB8FF655905688916CFA4EF0BD04135F2E50B7C689A21D04E8E981E74C6058188B9B1F9DFC3EEC6838E9FFBCF22CE738D8A177C19318DFFEF090CEE67E12DE1A3E2A39F61247547BA5257489CBC11D7D91ED34617FCC42F7A9DA2E3CF31A94A210A1018143173913C38F60E62B24BF0D7518F38B5BAB3E6A1F8AEB35E31D6442C8ABB5178EFC892D2E787D79C6AD9E2FC271792983FA9955AC4D1D84A36C024071BC6E431B625519D556AF38185601F70E29035EA6A09C8B676C9D88CF7E05E0F17098B584C4168735940263F940033A220F40BE4C85344128B14BEB9E75696DB37014107801A59B13E89CD9D2258C169D523BE6D31552C44C82FF4BB18EC9F099F3BF0E5B1BB2BA9A87D7E26F98D294927B600B5529C47E04D98956677CBCEE8FA2B60F49776D8B8C367465B7C626DA53700684FB6C918EAD0EAB8360E4F60EDD25B4F43816A75ECF70F909301825B512469F8389D79402311D8AECB7B3EF8599E79485A4388D87744D899F7C47EE644361E17040A7958C8911BE6F463AB6A9B2AFACD688EC55EF517B38F1339EFC54487232798BB25522FF4572FF68567FE830F92F7B8113EFCE3E98C3FFFBAEDCE4FD8B50E41DA97C0C08E423A72689CC68E68F752A5E3A9003E64E35C957CA2E1C48BB6F64B05F56B70B575AD2F278D57850A7AD568C24A4D32A3D74B29F03DC125488BC7C637DA582357F40B0A52D16B3B40BB2C2315D03360BC24209E20972C200566BCF3BBE5C5B0AEDD83132A8A4D5B4242BA370B6D67D9B67EB01052D132C7866B9CB502E44796D9D356E4E3CB47CC527322CD24976FE7C9257A2864151A38E568EF7A79F10D6EF27CC04CE382347A2488B1F404FDBF407FE1CA1C9D0D5649E34800E25E18951C98CAE9F43555EEF65FEE1EA8F15828807366C3B612CD5753BF9FB8FCED08855F742CDDD6F765F74254F03186683D646E6F09AC2805586C7CF11998357CAFC5DF3F285329366F475130C928B2DCEBA4AA383758E7A9D20705C4BB9DB619E2992F608A1BA65DB254BB389468741D0502E2588AEB54390AC600C19AF5C8E61383FC1BEBE0029E4474051E4EF908828DB9CCA13277EF65DB3FD47CCC2179126AAEFB627719F421E20").unwrap());
 	}
 
 	#[test]
@@ -908,46 +960,5 @@ mod tests {
 		fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 			writer.write_all(&self.data[..])
 		}
-	}
-
-	#[test]
-	fn variable_length_onion_vectors() {
-		// Packet creation test vectors from BOLT 4 (as of this writing at
-		// bolt04/onion-test-multi-frame.json in the spec repo).
-		// Note that we use he RawOnionHopData for everything except Legacy hops, as even the hops
-		// with "type": "tlv" are not valid TLV (they were for a previous version of TLV that
-		// didn't move forward), and, thus, cannot be directly represented in our in-memory enums.
-		let onion_keys = build_test_onion_keys();
-
-		let payloads = vec!(
-			RawOnionHopData::new(msgs::OnionHopData {
-				format: msgs::OnionHopDataFormat::Legacy {
-					short_channel_id: 0,
-				},
-				amt_to_forward: 0,
-				outgoing_cltv_value: 0,
-			}),
-			RawOnionHopData {
-				data: hex::decode("140101010101010101000000000000000100000001").unwrap(),
-			},
-			RawOnionHopData {
-				data: hex::decode("fd0100000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff").unwrap(),
-			},
-			RawOnionHopData {
-				data: hex::decode("140303030303030303000000000000000300000003").unwrap(),
-			},
-			RawOnionHopData::new(msgs::OnionHopData {
-				format: msgs::OnionHopDataFormat::Legacy {
-					short_channel_id: 0x0404040404040404,
-				},
-				amt_to_forward: 4,
-				outgoing_cltv_value: 4,
-			}),
-		);
-
-		let packet: msgs::OnionPacket = super::construct_onion_packet_with_init_noise::<_, _>(payloads, onion_keys, super::FixedSizeOnionPacket([0; super::ONION_DATA_LEN]), Some(&PaymentHash([0x42; 32])));
-		// Just check the final packet encoding, as it includes all the per-hop vectors in it
-		// anyway...
-		assert_eq!(packet.encode(), hex::decode("0002eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619e5f14350c2a76fc232b5e46d421e9615471ab9e0bc887beff8c95fdb878f7b3a71a060daf367132b378b3a3883c0e2c0e026b8900b2b5cdbc784e1a3bb913f88a9c50f7d61ab590531cf08000178a333a347f8b4072ed056f820f77774345e183a342ec4729f3d84accf515e88adddb85ecc08daba68404bae9a8e8d7178977d7094a1ae549f89338c0777551f874159eb42d3a59fb9285ad4e24883f27de23942ec966611e99bee1cee503455be9e8e642cef6cef7b9864130f692283f8a973d47a8f1c1726b6e59969385975c766e35737c8d76388b64f748ee7943ffb0e2ee45c57a1abc40762ae598723d21bd184e2b338f68ebff47219357bd19cd7e01e2337b806ef4d717888e129e59cd3dc31e6201ccb2fd6d7499836f37a993262468bcb3a4dcd03a22818aca49c6b7b9b8e9e870045631d8e039b066ff86e0d1b7291f71cefa7264c70404a8e538b566c17ccc5feab231401e6c08a01bd5edfc1aa8e3e533b96e82d1f91118d508924b923531929aea889fcdf050597c681185f336b1da63b0939aa2b7c50b21b5eb7b6ad66c81fab98a3cdf73f658149e7e9ced4edde5d38c9b8f92e16f6b4ab13d7fca6a0e4ecc9f9de611a90da6e99c39551094c56e3196f282c5dffd9fc4b2fc12f3bca8e6fe47eb45fbdd3be21a8a8d200797eae3c9a0497132f92410d804977408494dff49dd3d8bce248e0b74fd9e6f0f7102c25ddfa02bd9ad9f746abbfa337ef811d5345a9e16b60de1767b209645ba40bd1f9a5f75bc04feca9b27c5554be4fe83fac2cb83aa447a817bb85ae966c68b420063833fada375e2f515965e687a45699632902672c654d1d18d7bcbf55e8fa57f63f2da449f8e1e606e8722df081e5f193fc4179feb99ad22819afdeef211f7c54afdba92aeef0c00b7bc2b65a4813c01f907a8377585708f2d4c940a25328e585714c8ded0a9a4d7a6de1027c1cb7a0198cd3db68b58c0704dfd0cfbe624e9cd18cc0ae5d96697bb476708b9ee0403d211e64e0d5a7683a7a9a140c02f0ff1c6e67a302941b4052bdea8a63e70a3ad62c5b89c698f1fd3c7685cb49705096cad702d02d93bcb1c27a409f4c9bddec001205ca4a2740f19b50900be81c7e847f1a863deea8d35701f1355cad8db57b1d4eb2ab4e29587734785abfb46ddede71928213d7d089dfdeda052827f459f1688cc0935bd47e7bcec27427c8376dcce7e22699567c0d145f8a7db33f6758815f1f15f9f7a9760dec4f34ae095edda4c64e9735bdd029c4e32c2ee31ba47ec5e6bdb97813d52dbd15b4e0b7a2c7f790ae64104d99f38c127f0a093288fa34144adb16b8968d4fa7656fcec99de8503dd46d3b03620a71c7cd085364abd30dccf7fbda25a1cdc102600149c9af1c97aa0372cd2e1909f28ac5c686f432b310e79528c9b8b9e8f314c1e74621ce6308ad2278b81d460892e0d9dd38b7c76d58be6dfd10ae7583ee1e7ef5b3f6f78dc60af0950df1b00cc55b6d178ba2e476bea0eaeef49323b83f05804159e7aef4eed4cc60dd07be76f067dfd0bcfb0b806b69ba921336a20c43c832d0cab8fa3ddeb29e3bf07b0d98a112eb07802756235a49d44a8b82a950d84e95e01971f0e106ccb337f07384e21620e0ad39e16ed9edca123226cf55ac44f449eeb53e38a7f27d101806e4823e4efcc887414240ee6826c4a5cb1c6443ad36ebf905a435c1d9054e54173911b17b5b40f60b3d9fd5f12eac54ca1e20191f5f18544d5fd3d665e9bcef96fb44b76110aa64d9db4c86c9513cbdad546538e8aec521fbe83ceac5e74a15629f1ed0b870a1d0d1e5680b6d6100d1bd3f3b9043bd35b8919c4088f1949b8be89e4701eb870f8ed64fafa446c78df3ea").unwrap());
 	}
 }

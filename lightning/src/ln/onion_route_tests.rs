@@ -17,9 +17,9 @@ use crate::ln::{PaymentHash, PaymentSecret};
 use crate::ln::channel::EXPIRE_PREV_CONFIG_TICKS;
 use crate::ln::channelmanager::{self, ChannelManager, ChannelManagerReadArgs, HTLCForwardInfo, CLTV_FAR_FAR_AWAY, MIN_CLTV_EXPIRY_DELTA, PendingAddHTLCInfo, PendingHTLCInfo, PendingHTLCRouting, PaymentId};
 use crate::ln::onion_utils;
-use crate::routing::gossip::{NetworkUpdate, RoutingFees, NodeId};
+use crate::routing::gossip::{NetworkUpdate, RoutingFees};
 use crate::routing::router::{get_route, PaymentParameters, Route, RouteHint, RouteHintHop};
-use crate::ln::features::{InitFeatures, InvoiceFeatures, NodeFeatures};
+use crate::ln::features::{InitFeatures, InvoiceFeatures};
 use crate::ln::msgs;
 use crate::ln::msgs::{ChannelMessageHandler, ChannelUpdate};
 use crate::ln::wire::Encode;
@@ -355,7 +355,7 @@ fn test_onion_failure() {
 		// break the first (non-final) hop payload by swapping the realm (0) byte for a byte
 		// describing a length-1 TLV payload, which is obviously bogus.
 		new_payloads[0].data[0] = 1;
-		msg.onion_routing_packet = onion_utils::construct_onion_packet_bogus_hopdata(new_payloads, onion_keys, [0; 32], &payment_hash);
+		msg.onion_routing_packet = onion_utils::construct_onion_packet_with_writable_hopdata(new_payloads, onion_keys, [0; 32], &payment_hash);
 	}, ||{}, true, Some(PERM|22), Some(NetworkUpdate::ChannelFailure{short_channel_id, is_permanent: true}), Some(short_channel_id));
 
 	// final node failure
@@ -372,7 +372,7 @@ fn test_onion_failure() {
 		// break the last-hop payload by swapping the realm (0) byte for a byte describing a
 		// length-1 TLV payload, which is obviously bogus.
 		new_payloads[1].data[0] = 1;
-		msg.onion_routing_packet = onion_utils::construct_onion_packet_bogus_hopdata(new_payloads, onion_keys, [0; 32], &payment_hash);
+		msg.onion_routing_packet = onion_utils::construct_onion_packet_with_writable_hopdata(new_payloads, onion_keys, [0; 32], &payment_hash);
 	}, ||{}, false, Some(PERM|22), Some(NetworkUpdate::ChannelFailure{short_channel_id, is_permanent: true}), Some(short_channel_id));
 
 	// the following three with run_onion_failure_test_with_fail_intercept() test only the origin node
@@ -802,166 +802,52 @@ fn test_onion_failure_stale_channel_update() {
 }
 
 #[test]
-fn test_default_to_onion_payload_tlv_format() {
-	// Tests that we default to creating tlv format onion payloads when no `NodeAnnouncementInfo`
-	// `features` for a node in the `network_graph` exists, or when the node isn't in the
-	// `network_graph`, and no other known `features` for the node exists.
-	let mut priv_channels_conf = UserConfig::default();
-	priv_channels_conf.channel_handshake_config.announced_channel = false;
-	let chanmon_cfgs = create_chanmon_cfgs(5);
-	let node_cfgs = create_node_cfgs(5, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(5, &node_cfgs, &[None, None, None, None, Some(priv_channels_conf)]);
-	let mut nodes = create_network(5, &node_cfgs, &node_chanmgrs);
+fn test_always_create_tlv_format_onion_payloads() {
+	// Verify that we always generate tlv onion format payloads, even if the features specifically
+	// specifies no support for variable length onions, as the legacy payload format has been
+	// deprecated in BOLT4.
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let mut node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 
-	create_announced_chan_between_nodes(&nodes, 0, 1, channelmanager::provided_init_features(), channelmanager::provided_init_features());
-	create_announced_chan_between_nodes(&nodes, 1, 2, channelmanager::provided_init_features(), channelmanager::provided_init_features());
-	create_announced_chan_between_nodes(&nodes, 2, 3, channelmanager::provided_init_features(), channelmanager::provided_init_features());
-	create_unannounced_chan_between_nodes_with_value(&nodes, 3, 4, 100000, 10001, channelmanager::provided_init_features(), channelmanager::provided_init_features());
-
-	let payment_params = PaymentParameters::from_node_id(nodes[3].node.get_our_node_id());
-	let origin_node = &nodes[0];
-	let network_graph = origin_node.network_graph;
-
-	// Clears all the `NodeAnnouncementInfo` for all nodes of `nodes[0]`'s `network_graph`, so that
-	// their `features` aren't used when creating the `route`.
-	network_graph.clear_nodes_announcement_info();
-
-	let (announced_route, _, _, _) = get_route_and_payment_hash!(
-		origin_node, nodes[3], payment_params, 10_000, TEST_FINAL_CLTV);
-
-	let hops = &announced_route.paths[0];
-	// Assert that the hop between `nodes[1]` and `nodes[2]` defaults to supporting variable length
-	// onions, as `nodes[0]` has no `NodeAnnouncementInfo` `features` for `node[2]`
-	assert!(hops[1].node_features.supports_variable_length_onion());
-	// Assert that the hop between `nodes[2]` and `nodes[3]` defaults to supporting variable length
-	// onions, as `nodes[0]` has no `NodeAnnouncementInfo` `features` for `node[3]`, and no `InvoiceFeatures`
-	// for the `payment_params`, which would otherwise have been used.
-	assert!(hops[2].node_features.supports_variable_length_onion());
-	// Note that we do not assert that `hops[0]` (the channel between `nodes[0]` and `nodes[1]`)
-	// supports variable length onions, as the `InitFeatures` exchanged in the init message
-	// between the nodes will be used when creating the route. We therefore do not default to
-	// supporting variable length onions for that hop, as the `InitFeatures` in this case are
-	// `channelmanager::provided_init_features()`.
-
-	let unannounced_chan = &nodes[4].node.list_usable_channels()[0];
-
-	let last_hop = RouteHint(vec![RouteHintHop {
-		src_node_id: nodes[3].node.get_our_node_id(),
-		short_channel_id: unannounced_chan.short_channel_id.unwrap(),
-		fees: RoutingFees {
-			base_msat: 0,
-			proportional_millionths: 0,
-		},
-		cltv_expiry_delta: 42,
-		htlc_minimum_msat: None,
-		htlc_maximum_msat: None,
-	}]);
-
-	let unannounced_chan_params = PaymentParameters::from_node_id(nodes[4].node.get_our_node_id()).with_route_hints(vec![last_hop]);
-	let (unannounced_route, _, _, _) = get_route_and_payment_hash!(
-		origin_node, nodes[4], unannounced_chan_params, 10_000, TEST_FINAL_CLTV);
-
-	let unannounced_chan_hop = &unannounced_route.paths[0][3];
-	// Ensure that `nodes[4]` doesn't exist in `nodes[0]`'s `network_graph`, as it's not public.
-	assert!(&network_graph.read_only().nodes().get(&NodeId::from_pubkey(&nodes[4].node.get_our_node_id())).is_none());
-	// Assert that the hop between `nodes[3]` and `nodes[4]` defaults to supporting variable length
-	// onions, even though `nodes[4]` as `nodes[0]` doesn't exists in `nodes[0]`'s `network_graph`,
-	// and no `InvoiceFeatures` for the `payment_params` exists, which would otherwise have been
-	// used.
-	assert!(unannounced_chan_hop.node_features.supports_variable_length_onion());
-
-	let cur_height = nodes[0].best_block_info().1 + 1;
-	let (announced_route_payloads, _htlc_msat, _htlc_cltv) = onion_utils::build_onion_payloads(&announced_route.paths[0], 40000, &None, cur_height, &None).unwrap();
-	let (unannounced_route_paylods, _htlc_msat, _htlc_cltv) = onion_utils::build_onion_payloads(&unannounced_route.paths[0], 40000, &None, cur_height, &None).unwrap();
-
-	for onion_payloads in vec![announced_route_payloads, unannounced_route_paylods] {
-		for onion_payload in onion_payloads.iter() {
-			match onion_payload.format {
-				msgs::OnionHopDataFormat::Legacy {..} => {
-					panic!("Generated a `msgs::OnionHopDataFormat::Legacy` payload, even though that shouldn't have happend.");
-				}
-				_ => {}
-			}
-		}
-	}
-}
-
-#[test]
-fn test_do_not_default_to_onion_payload_tlv_format_when_unsupported() {
-	// Tests that we do not default to creating tlv onions if either of these types features
-	// exists, which specifies no support for variable length onions for a specific hop, when
-	// creating a route:
-	// 1. `InitFeatures` to the counterparty node exchanged with the init message to the node.
-	// 2. `NodeFeatures` in the `NodeAnnouncementInfo` of a node in sender node's `network_graph`.
-	// 3. `InvoiceFeatures` specified by the receiving node, when no `NodeAnnouncementInfo`
-	// `features` exists for the receiver in the sender's `network_graph`.
-	let chanmon_cfgs = create_chanmon_cfgs(4);
-	let mut node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
-
-	// Set `node[1]` config to `InitFeatures::empty()` + `static_remote_key` which implies
-	// `!supports_variable_length_onion()` but still supports the required static-remote-key
-	// feature.
+	// Set `node[1]`'s config features to features which return `false` for
+	// `supports_variable_length_onion()`
+	let mut no_variable_length_onion_features = InitFeatures::empty();
+	no_variable_length_onion_features.set_static_remote_key_required();
 	let mut node_1_cfg = &mut node_cfgs[1];
-	node_1_cfg.features = InitFeatures::empty();
-	node_1_cfg.features.set_static_remote_key_required();
+	node_1_cfg.features = no_variable_length_onion_features;
 
-	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, None, None, None]);
-	let mut nodes = create_network(4, &node_cfgs, &node_chanmgrs);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
-	create_announced_chan_between_nodes(&nodes, 0, 1, channelmanager::provided_init_features(), channelmanager::provided_init_features());
-	create_announced_chan_between_nodes(&nodes, 1, 2, channelmanager::provided_init_features(), channelmanager::provided_init_features());
-	create_announced_chan_between_nodes(&nodes, 2, 3, channelmanager::provided_init_features(), channelmanager::provided_init_features());
+	create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::empty(), InitFeatures::empty());
+	create_announced_chan_between_nodes(&nodes, 1, 2, InitFeatures::empty(), InitFeatures::empty());
 
-	let payment_params = PaymentParameters::from_node_id(nodes[3].node.get_our_node_id())
+	let payment_params = PaymentParameters::from_node_id(nodes[2].node.get_our_node_id())
 		.with_features(InvoiceFeatures::empty());
-	let origin_node = &nodes[0];
-	let network_graph = origin_node.network_graph;
-	network_graph.clear_nodes_announcement_info();
-
-	// Set `NodeAnnouncementInfo` `features` which do not support variable length onions for
-	// `nodes[2]` in `nodes[0]`'s `network_graph`.
-	let nodes_2_unsigned_node_announcement = msgs::UnsignedNodeAnnouncement {
-		features: NodeFeatures::empty(),
-		timestamp: 0,
-		node_id: nodes[2].node.get_our_node_id(),
-		rgb: [32; 3],
-		alias: [16;32],
-		addresses: Vec::new(),
-		excess_address_data: Vec::new(),
-		excess_data: Vec::new(),
-	};
-	let _res = network_graph.update_node_from_unsigned_announcement(&nodes_2_unsigned_node_announcement);
-
-	let (route, _, _, _) = get_route_and_payment_hash!(
-		origin_node, nodes[3], payment_params, 10_000, TEST_FINAL_CLTV);
+	let (route, _payment_hash, _payment_preimage, _payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], payment_params, 40000, TEST_FINAL_CLTV);
 
 	let hops = &route.paths[0];
-
-	// Assert that the hop between `nodes[0]` and `nodes[1]` doesn't support variable length
-	// onions, as as the `InitFeatures` exchanged (`InitFeatures::empty()`) in the init message
-	// between the nodes when setting up the channel is used when creating the `route` and that we
-	// therefore do not default to supporting variable length onions. Despite `nodes[0]` having no
-	// `NodeAnnouncementInfo` `features` for `node[1]`.
+	// Asserts that the first hop to `node[1]` signals no support for variable length onions.
 	assert!(!hops[0].node_features.supports_variable_length_onion());
-	// Assert that the hop between `nodes[1]` and `nodes[2]` uses the `features` from
-	// `nodes_2_unsigned_node_announcement` that doesn't support variable length onions.
+	// Asserts that the first hop to `node[1]` signals no support for variable length onions.
 	assert!(!hops[1].node_features.supports_variable_length_onion());
-	// Assert that the hop between `nodes[2]` and `nodes[3]` uses the `InvoiceFeatures` set to the
-	// `payment_params`, that doesn't support variable length onions. We therefore do not end up
-	// defaulting to supporting variable length onions, despite `nodes[0]` having no
-	// `NodeAnnouncementInfo` `features` for `node[3]`.
-	assert!(!hops[2].node_features.supports_variable_length_onion());
 
 	let cur_height = nodes[0].best_block_info().1 + 1;
 	let (onion_payloads, _htlc_msat, _htlc_cltv) = onion_utils::build_onion_payloads(&route.paths[0], 40000, &None, cur_height, &None).unwrap();
 
-	for onion_payload in onion_payloads.iter() {
-		match onion_payload.format {
-			msgs::OnionHopDataFormat::Legacy {..} => {}
-			_ => {
-				panic!("Should have only have generated `msgs::OnionHopDataFormat::Legacy` payloads");
-			}
-		}
+	match onion_payloads[0].format {
+		msgs::OnionHopDataFormat::NonFinalNode {..} => {},
+		_ => { panic!(
+			"Should have generated a `msgs::OnionHopDataFormat::NonFinalNode` payload for `hops[0]`,
+			despite that the features signals no support for variable length onions"
+		)}
+	}
+	match onion_payloads[1].format {
+		msgs::OnionHopDataFormat::FinalNode {..} => {},
+		_ => {panic!(
+			"Should have generated a `msgs::OnionHopDataFormat::FinalNode` payload for `hops[1]`,
+			despite that the features signals no support for variable length onions"
+		)}
 	}
 }
 
