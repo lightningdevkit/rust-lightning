@@ -171,6 +171,14 @@ impl<'a> InvoiceRequestBuilder<'a> {
 	}
 }
 
+#[cfg(test)]
+impl<'a> InvoiceRequestBuilder<'a> {
+	fn features_unchecked(mut self, features: InvoiceRequestFeatures) -> Self {
+		self.invoice_request.features = features;
+		self
+	}
+}
+
 /// A semantically valid [`InvoiceRequest`] that hasn't been signed.
 pub struct UnsignedInvoiceRequest<'a> {
 	offer: &'a Offer,
@@ -285,6 +293,16 @@ impl InvoiceRequest {
 	pub fn signature(&self) -> Option<Signature> {
 		self.signature
 	}
+
+	#[cfg(test)]
+	fn as_tlv_stream(&self) -> FullInvoiceRequestTlvStreamRef {
+		let (payer_tlv_stream, offer_tlv_stream, invoice_request_tlv_stream) =
+			self.contents.as_tlv_stream();
+		let signature_tlv_stream = SignatureTlvStreamRef {
+			signature: self.signature.as_ref(),
+		};
+		(payer_tlv_stream, offer_tlv_stream, invoice_request_tlv_stream, signature_tlv_stream)
+	}
 }
 
 impl InvoiceRequestContents {
@@ -340,6 +358,14 @@ tlv_stream!(InvoiceRequestTlvStream, InvoiceRequestTlvStreamRef, 80..160, {
 
 type FullInvoiceRequestTlvStream =
 	(PayerTlvStream, OfferTlvStream, InvoiceRequestTlvStream, SignatureTlvStream);
+
+#[cfg(test)]
+type FullInvoiceRequestTlvStreamRef<'a> = (
+	PayerTlvStreamRef<'a>,
+	OfferTlvStreamRef<'a>,
+	InvoiceRequestTlvStreamRef<'a>,
+	SignatureTlvStreamRef<'a>,
+);
 
 impl SeekReadable for FullInvoiceRequestTlvStream {
 	fn read<R: io::Read + io::Seek>(r: &mut R) -> Result<Self, DecodeError> {
@@ -426,12 +452,446 @@ impl TryFrom<PartialInvoiceRequestTlvStream> for InvoiceRequestContents {
 mod tests {
 	use super::InvoiceRequest;
 
-	use bitcoin::secp256k1::{KeyPair, Secp256k1, SecretKey};
+	use bitcoin::blockdata::constants::ChainHash;
+	use bitcoin::network::constants::Network;
+	use bitcoin::secp256k1::{KeyPair, Message, PublicKey, Secp256k1, SecretKey, self};
+	use bitcoin::secp256k1::schnorr::Signature;
 	use core::convert::{Infallible, TryFrom};
-	use crate::ln::msgs::DecodeError;
-	use crate::offers::offer::OfferBuilder;
-	use crate::offers::parse::ParseError;
+	use core::num::NonZeroU64;
+	#[cfg(feature = "std")]
+	use core::time::Duration;
+	use crate::ln::features::InvoiceRequestFeatures;
+	use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
+	use crate::offers::merkle::SignError;
+	use crate::offers::offer::{OfferBuilder, Quantity};
+	use crate::offers::parse::{ParseError, SemanticError};
 	use crate::util::ser::{BigSize, Writeable};
+	use crate::util::string::PrintableString;
+
+	fn payer_keys() -> KeyPair {
+		let secp_ctx = Secp256k1::new();
+		KeyPair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap())
+	}
+
+	fn payer_sign(digest: &Message) -> Result<Signature, Infallible> {
+		let secp_ctx = Secp256k1::new();
+		let keys = KeyPair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
+		Ok(secp_ctx.sign_schnorr_no_aux_rand(digest, &keys))
+	}
+
+	fn payer_pubkey() -> PublicKey {
+		payer_keys().public_key()
+	}
+
+	fn recipient_sign(digest: &Message) -> Result<Signature, Infallible> {
+		let secp_ctx = Secp256k1::new();
+		let keys = KeyPair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[43; 32]).unwrap());
+		Ok(secp_ctx.sign_schnorr_no_aux_rand(digest, &keys))
+	}
+
+	fn recipient_pubkey() -> PublicKey {
+		let secp_ctx = Secp256k1::new();
+		KeyPair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[43; 32]).unwrap()).public_key()
+	}
+
+	#[test]
+	fn builds_invoice_request_with_defaults() {
+		let offer = OfferBuilder::new("foo".into(), recipient_pubkey())
+			.amount_msats(1000)
+			.build().unwrap();
+		let invoice_request = offer.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.build().unwrap().sign(payer_sign).unwrap();
+
+		let (payer_tlv_stream, offer_tlv_stream, invoice_request_tlv_stream, signature_tlv_stream) =
+			invoice_request.as_tlv_stream();
+		let mut buffer = Vec::new();
+		invoice_request.write(&mut buffer).unwrap();
+
+		assert_eq!(invoice_request.bytes, buffer.as_slice());
+		assert_eq!(invoice_request.metadata(), &[1; 32]);
+		assert_eq!(invoice_request.chain(), ChainHash::using_genesis_block(Network::Bitcoin));
+		assert_eq!(invoice_request.amount_msats(), None);
+		assert_eq!(invoice_request.features(), &InvoiceRequestFeatures::empty());
+		assert_eq!(invoice_request.quantity(), None);
+		assert_eq!(invoice_request.payer_id(), payer_pubkey());
+		assert_eq!(invoice_request.payer_note(), None);
+		assert!(invoice_request.signature().is_some());
+
+		assert_eq!(payer_tlv_stream.metadata, Some(&vec![1; 32]));
+		assert_eq!(offer_tlv_stream.chains, None);
+		assert_eq!(offer_tlv_stream.metadata, None);
+		assert_eq!(offer_tlv_stream.currency, None);
+		assert_eq!(offer_tlv_stream.amount, Some(1000));
+		assert_eq!(offer_tlv_stream.description, Some(&String::from("foo")));
+		assert_eq!(offer_tlv_stream.features, None);
+		assert_eq!(offer_tlv_stream.absolute_expiry, None);
+		assert_eq!(offer_tlv_stream.paths, None);
+		assert_eq!(offer_tlv_stream.issuer, None);
+		assert_eq!(offer_tlv_stream.quantity_max, None);
+		assert_eq!(offer_tlv_stream.node_id, Some(&recipient_pubkey()));
+		assert_eq!(invoice_request_tlv_stream.chain, None);
+		assert_eq!(invoice_request_tlv_stream.amount, None);
+		assert_eq!(invoice_request_tlv_stream.features, None);
+		assert_eq!(invoice_request_tlv_stream.quantity, None);
+		assert_eq!(invoice_request_tlv_stream.payer_id, Some(&payer_pubkey()));
+		assert_eq!(invoice_request_tlv_stream.payer_note, None);
+		assert!(signature_tlv_stream.signature.is_some());
+
+		if let Err(e) = InvoiceRequest::try_from(buffer) {
+			panic!("error parsing invoice request: {:?}", e);
+		}
+	}
+
+	#[cfg(feature = "std")]
+	#[test]
+	fn builds_invoice_request_from_offer_with_expiration() {
+		let future_expiry = Duration::from_secs(u64::max_value());
+		let past_expiry = Duration::from_secs(0);
+
+		if let Err(e) = OfferBuilder::new("foo".into(), recipient_pubkey())
+			.amount_msats(1000)
+			.absolute_expiry(future_expiry)
+			.build().unwrap()
+			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.build()
+		{
+			panic!("error building invoice_request: {:?}", e);
+		}
+
+		match OfferBuilder::new("foo".into(), recipient_pubkey())
+			.amount_msats(1000)
+			.absolute_expiry(past_expiry)
+			.build().unwrap()
+			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.build()
+		{
+			Ok(_) => panic!("expected error"),
+			Err(e) => assert_eq!(e, SemanticError::AlreadyExpired),
+		}
+	}
+
+	#[test]
+	fn builds_invoice_request_with_chain() {
+		let mainnet = ChainHash::using_genesis_block(Network::Bitcoin);
+		let testnet = ChainHash::using_genesis_block(Network::Testnet);
+
+		let invoice_request = OfferBuilder::new("foo".into(), recipient_pubkey())
+			.amount_msats(1000)
+			.build().unwrap()
+			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.chain(Network::Bitcoin).unwrap()
+			.build().unwrap()
+			.sign(payer_sign).unwrap();
+		let (_, _, tlv_stream, _) = invoice_request.as_tlv_stream();
+		assert_eq!(invoice_request.chain(), mainnet);
+		assert_eq!(tlv_stream.chain, None);
+
+		let invoice_request = OfferBuilder::new("foo".into(), recipient_pubkey())
+			.amount_msats(1000)
+			.chain(Network::Testnet)
+			.build().unwrap()
+			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.chain(Network::Testnet).unwrap()
+			.build().unwrap()
+			.sign(payer_sign).unwrap();
+		let (_, _, tlv_stream, _) = invoice_request.as_tlv_stream();
+		assert_eq!(invoice_request.chain(), testnet);
+		assert_eq!(tlv_stream.chain, Some(&testnet));
+
+		let invoice_request = OfferBuilder::new("foo".into(), recipient_pubkey())
+			.amount_msats(1000)
+			.chain(Network::Bitcoin)
+			.chain(Network::Testnet)
+			.build().unwrap()
+			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.chain(Network::Bitcoin).unwrap()
+			.build().unwrap()
+			.sign(payer_sign).unwrap();
+		let (_, _, tlv_stream, _) = invoice_request.as_tlv_stream();
+		assert_eq!(invoice_request.chain(), mainnet);
+		assert_eq!(tlv_stream.chain, None);
+
+		let invoice_request = OfferBuilder::new("foo".into(), recipient_pubkey())
+			.amount_msats(1000)
+			.chain(Network::Bitcoin)
+			.chain(Network::Testnet)
+			.build().unwrap()
+			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.chain(Network::Bitcoin).unwrap()
+			.chain(Network::Testnet).unwrap()
+			.build().unwrap()
+			.sign(payer_sign).unwrap();
+		let (_, _, tlv_stream, _) = invoice_request.as_tlv_stream();
+		assert_eq!(invoice_request.chain(), testnet);
+		assert_eq!(tlv_stream.chain, Some(&testnet));
+
+		match OfferBuilder::new("foo".into(), recipient_pubkey())
+			.amount_msats(1000)
+			.chain(Network::Testnet)
+			.build().unwrap()
+			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.chain(Network::Bitcoin)
+		{
+			Ok(_) => panic!("expected error"),
+			Err(e) => assert_eq!(e, SemanticError::UnsupportedChain),
+		}
+
+		match OfferBuilder::new("foo".into(), recipient_pubkey())
+			.amount_msats(1000)
+			.chain(Network::Testnet)
+			.build().unwrap()
+			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.build()
+		{
+			Ok(_) => panic!("expected error"),
+			Err(e) => assert_eq!(e, SemanticError::UnsupportedChain),
+		}
+	}
+
+	#[test]
+	fn builds_invoice_request_with_amount() {
+		let invoice_request = OfferBuilder::new("foo".into(), recipient_pubkey())
+			.amount_msats(1000)
+			.build().unwrap()
+			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.amount_msats(1000).unwrap()
+			.build().unwrap()
+			.sign(payer_sign).unwrap();
+		let (_, _, tlv_stream, _) = invoice_request.as_tlv_stream();
+		assert_eq!(invoice_request.amount_msats(), Some(1000));
+		assert_eq!(tlv_stream.amount, Some(1000));
+
+		let invoice_request = OfferBuilder::new("foo".into(), recipient_pubkey())
+			.amount_msats(1000)
+			.build().unwrap()
+			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.amount_msats(1001).unwrap()
+			.amount_msats(1000).unwrap()
+			.build().unwrap()
+			.sign(payer_sign).unwrap();
+		let (_, _, tlv_stream, _) = invoice_request.as_tlv_stream();
+		assert_eq!(invoice_request.amount_msats(), Some(1000));
+		assert_eq!(tlv_stream.amount, Some(1000));
+
+		let invoice_request = OfferBuilder::new("foo".into(), recipient_pubkey())
+			.amount_msats(1000)
+			.build().unwrap()
+			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.amount_msats(1001).unwrap()
+			.build().unwrap()
+			.sign(payer_sign).unwrap();
+		let (_, _, tlv_stream, _) = invoice_request.as_tlv_stream();
+		assert_eq!(invoice_request.amount_msats(), Some(1001));
+		assert_eq!(tlv_stream.amount, Some(1001));
+
+		match OfferBuilder::new("foo".into(), recipient_pubkey())
+			.amount_msats(1000)
+			.build().unwrap()
+			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.amount_msats(999)
+		{
+			Ok(_) => panic!("expected error"),
+			Err(e) => assert_eq!(e, SemanticError::InsufficientAmount),
+		}
+
+		match OfferBuilder::new("foo".into(), recipient_pubkey())
+			.amount_msats(1000)
+			.supported_quantity(Quantity::Unbounded)
+			.build().unwrap()
+			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.quantity(2).unwrap()
+			.amount_msats(1000)
+		{
+			Ok(_) => panic!("expected error"),
+			Err(e) => assert_eq!(e, SemanticError::InsufficientAmount),
+		}
+
+		match OfferBuilder::new("foo".into(), recipient_pubkey())
+			.amount_msats(1000)
+			.build().unwrap()
+			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.amount_msats(MAX_VALUE_MSAT + 1)
+		{
+			Ok(_) => panic!("expected error"),
+			Err(e) => assert_eq!(e, SemanticError::InvalidAmount),
+		}
+
+		match OfferBuilder::new("foo".into(), recipient_pubkey())
+			.amount_msats(1000)
+			.supported_quantity(Quantity::Unbounded)
+			.build().unwrap()
+			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.amount_msats(1000).unwrap()
+			.quantity(2).unwrap()
+			.build()
+		{
+			Ok(_) => panic!("expected error"),
+			Err(e) => assert_eq!(e, SemanticError::InsufficientAmount),
+		}
+
+		match OfferBuilder::new("foo".into(), recipient_pubkey())
+			.build().unwrap()
+			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.build()
+		{
+			Ok(_) => panic!("expected error"),
+			Err(e) => assert_eq!(e, SemanticError::MissingAmount),
+		}
+	}
+
+	#[test]
+	fn builds_invoice_request_with_features() {
+		let invoice_request = OfferBuilder::new("foo".into(), recipient_pubkey())
+			.amount_msats(1000)
+			.build().unwrap()
+			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.features_unchecked(InvoiceRequestFeatures::unknown())
+			.build().unwrap()
+			.sign(payer_sign).unwrap();
+		let (_, _, tlv_stream, _) = invoice_request.as_tlv_stream();
+		assert_eq!(invoice_request.features(), &InvoiceRequestFeatures::unknown());
+		assert_eq!(tlv_stream.features, Some(&InvoiceRequestFeatures::unknown()));
+
+		let invoice_request = OfferBuilder::new("foo".into(), recipient_pubkey())
+			.amount_msats(1000)
+			.build().unwrap()
+			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.features_unchecked(InvoiceRequestFeatures::unknown())
+			.features_unchecked(InvoiceRequestFeatures::empty())
+			.build().unwrap()
+			.sign(payer_sign).unwrap();
+		let (_, _, tlv_stream, _) = invoice_request.as_tlv_stream();
+		assert_eq!(invoice_request.features(), &InvoiceRequestFeatures::empty());
+		assert_eq!(tlv_stream.features, None);
+	}
+
+	#[test]
+	fn builds_invoice_request_with_quantity() {
+		let ten = NonZeroU64::new(10).unwrap();
+
+		let invoice_request = OfferBuilder::new("foo".into(), recipient_pubkey())
+			.amount_msats(1000)
+			.supported_quantity(Quantity::one())
+			.build().unwrap()
+			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.build().unwrap()
+			.sign(payer_sign).unwrap();
+		let (_, _, tlv_stream, _) = invoice_request.as_tlv_stream();
+		assert_eq!(invoice_request.quantity(), None);
+		assert_eq!(tlv_stream.quantity, None);
+
+		match OfferBuilder::new("foo".into(), recipient_pubkey())
+			.amount_msats(1000)
+			.supported_quantity(Quantity::one())
+			.build().unwrap()
+			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.amount_msats(2_000).unwrap()
+			.quantity(2)
+		{
+			Ok(_) => panic!("expected error"),
+			Err(e) => assert_eq!(e, SemanticError::UnexpectedQuantity),
+		}
+
+		let invoice_request = OfferBuilder::new("foo".into(), recipient_pubkey())
+			.amount_msats(1000)
+			.supported_quantity(Quantity::Bounded(ten))
+			.build().unwrap()
+			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.amount_msats(10_000).unwrap()
+			.quantity(10).unwrap()
+			.build().unwrap()
+			.sign(payer_sign).unwrap();
+		let (_, _, tlv_stream, _) = invoice_request.as_tlv_stream();
+		assert_eq!(invoice_request.amount_msats(), Some(10_000));
+		assert_eq!(tlv_stream.amount, Some(10_000));
+
+		match OfferBuilder::new("foo".into(), recipient_pubkey())
+			.amount_msats(1000)
+			.supported_quantity(Quantity::Bounded(ten))
+			.build().unwrap()
+			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.amount_msats(11_000).unwrap()
+			.quantity(11)
+		{
+			Ok(_) => panic!("expected error"),
+			Err(e) => assert_eq!(e, SemanticError::InvalidQuantity),
+		}
+
+		let invoice_request = OfferBuilder::new("foo".into(), recipient_pubkey())
+			.amount_msats(1000)
+			.supported_quantity(Quantity::Unbounded)
+			.build().unwrap()
+			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.amount_msats(2_000).unwrap()
+			.quantity(2).unwrap()
+			.build().unwrap()
+			.sign(payer_sign).unwrap();
+		let (_, _, tlv_stream, _) = invoice_request.as_tlv_stream();
+		assert_eq!(invoice_request.amount_msats(), Some(2_000));
+		assert_eq!(tlv_stream.amount, Some(2_000));
+
+		match OfferBuilder::new("foo".into(), recipient_pubkey())
+			.amount_msats(1000)
+			.supported_quantity(Quantity::Unbounded)
+			.build().unwrap()
+			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.build()
+		{
+			Ok(_) => panic!("expected error"),
+			Err(e) => assert_eq!(e, SemanticError::MissingQuantity),
+		}
+	}
+
+	#[test]
+	fn builds_invoice_request_with_payer_note() {
+		let invoice_request = OfferBuilder::new("foo".into(), recipient_pubkey())
+			.amount_msats(1000)
+			.build().unwrap()
+			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.payer_note("bar".into())
+			.build().unwrap()
+			.sign(payer_sign).unwrap();
+		let (_, _, tlv_stream, _) = invoice_request.as_tlv_stream();
+		assert_eq!(invoice_request.payer_note(), Some(PrintableString("bar")));
+		assert_eq!(tlv_stream.payer_note, Some(&String::from("bar")));
+
+		let invoice_request = OfferBuilder::new("foo".into(), recipient_pubkey())
+			.amount_msats(1000)
+			.build().unwrap()
+			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.payer_note("bar".into())
+			.payer_note("baz".into())
+			.build().unwrap()
+			.sign(payer_sign).unwrap();
+		let (_, _, tlv_stream, _) = invoice_request.as_tlv_stream();
+		assert_eq!(invoice_request.payer_note(), Some(PrintableString("baz")));
+		assert_eq!(tlv_stream.payer_note, Some(&String::from("baz")));
+	}
+
+	#[test]
+	fn fails_signing_invoice_request() {
+		match OfferBuilder::new("foo".into(), recipient_pubkey())
+			.amount_msats(1000)
+			.build().unwrap()
+			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.build().unwrap()
+			.sign(|_| Err(()))
+		{
+			Ok(_) => panic!("expected error"),
+			Err(e) => assert_eq!(e, SignError::Signing(())),
+		}
+
+		match OfferBuilder::new("foo".into(), recipient_pubkey())
+			.amount_msats(1000)
+			.build().unwrap()
+			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.build().unwrap()
+			.sign(recipient_sign)
+		{
+			Ok(_) => panic!("expected error"),
+			Err(e) => assert_eq!(e, SignError::Verification(secp256k1::Error::InvalidSignature)),
+		}
+	}
 
 	#[test]
 	fn fails_parsing_invoice_request_with_extra_tlv_records() {

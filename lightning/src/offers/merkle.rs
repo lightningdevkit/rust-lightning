@@ -25,7 +25,7 @@ tlv_stream!(SignatureTlvStream, SignatureTlvStreamRef, SIGNATURE_TYPES, {
 });
 
 /// Error when signing messages.
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum SignError<E> {
 	/// User-defined error when signing the message.
 	Signing(E),
