@@ -14,6 +14,7 @@ use bitcoin::blockdata::script::{Script,Builder};
 use bitcoin::blockdata::opcodes;
 use bitcoin::blockdata::transaction::{TxIn,TxOut,OutPoint,Transaction, EcdsaSighashType};
 use bitcoin::util::sighash;
+use bitcoin::util::address::Payload;
 
 use bitcoin::hashes::{Hash, HashEngine};
 use bitcoin::hashes::sha256::Hash as Sha256;
@@ -25,11 +26,11 @@ use crate::ln::msgs::DecodeError;
 use crate::util::ser::{Readable, Writeable, Writer};
 use crate::util::{byte_utils, transaction_utils};
 
-use bitcoin::hash_types::WPubkeyHash;
 use bitcoin::secp256k1::{SecretKey, PublicKey, Scalar};
 use bitcoin::secp256k1::{Secp256k1, ecdsa::Signature, Message};
 use bitcoin::secp256k1::Error as SecpError;
 use bitcoin::{PackedLockTime, secp256k1, Sequence, Witness};
+use bitcoin::PublicKey as BitcoinPublicKey;
 
 use crate::io;
 use crate::prelude::*;
@@ -1279,7 +1280,7 @@ impl CommitmentTransaction {
 			let script = if opt_anchors {
 			    get_to_countersignatory_with_anchors_redeemscript(&countersignatory_pubkeys.payment_point).to_v0_p2wsh()
 			} else {
-			    get_p2wpkh_redeemscript(&countersignatory_pubkeys.payment_point)
+			    Payload::p2wpkh(&BitcoinPublicKey::new(countersignatory_pubkeys.payment_point)).unwrap().script_pubkey()
 			};
 			txouts.push((
 				TxOut {
@@ -1585,18 +1586,12 @@ pub fn get_commitment_transaction_number_obscure_factor(
 		| ((res[31] as u64) << 0 * 8)
 }
 
-fn get_p2wpkh_redeemscript(key: &PublicKey) -> Script {
-	Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0)
-		.push_slice(&WPubkeyHash::hash(&key.serialize())[..])
-		.into_script()
-}
-
 #[cfg(test)]
 mod tests {
 	use super::CounterpartyCommitmentSecrets;
 	use crate::{hex, chain};
 	use crate::prelude::*;
-	use crate::ln::chan_utils::{get_htlc_redeemscript, get_to_countersignatory_with_anchors_redeemscript, get_p2wpkh_redeemscript, CommitmentTransaction, TxCreationKeys, ChannelTransactionParameters, CounterpartyChannelTransactionParameters, HTLCOutputInCommitment};
+	use crate::ln::chan_utils::{get_htlc_redeemscript, get_to_countersignatory_with_anchors_redeemscript, CommitmentTransaction, TxCreationKeys, ChannelTransactionParameters, CounterpartyChannelTransactionParameters, HTLCOutputInCommitment};
 	use bitcoin::secp256k1::{PublicKey, SecretKey, Secp256k1};
 	use crate::util::test_utils;
 	use crate::chain::keysinterface::{KeysInterface, BaseSign};
@@ -1604,6 +1599,8 @@ mod tests {
 	use bitcoin::hashes::Hash;
 	use crate::ln::PaymentHash;
 	use bitcoin::hashes::hex::ToHex;
+	use bitcoin::util::address::Payload;
+	use bitcoin::PublicKey as BitcoinPublicKey;
 
 	#[test]
 	fn test_anchors() {
@@ -1642,7 +1639,7 @@ mod tests {
 			&mut htlcs_with_aux, &channel_parameters.as_holder_broadcastable()
 		);
 		assert_eq!(tx.built.transaction.output.len(), 2);
-		assert_eq!(tx.built.transaction.output[1].script_pubkey, get_p2wpkh_redeemscript(&counterparty_pubkeys.payment_point));
+		assert_eq!(tx.built.transaction.output[1].script_pubkey, Payload::p2wpkh(&BitcoinPublicKey::new(counterparty_pubkeys.payment_point)).unwrap().script_pubkey());
 
 		// Generate broadcaster and counterparty outputs as well as two anchors
 		let tx = CommitmentTransaction::new_with_auxiliary_htlc_data(
