@@ -185,7 +185,8 @@ impl OfferBuilder {
 		self
 	}
 
-	/// Sets the quantity of items for [`Offer::supported_quantity`].
+	/// Sets the quantity of items for [`Offer::supported_quantity`]. If not called, defaults to
+	/// [`Quantity::one`].
 	///
 	/// Successive calls to this method will override the previous setting.
 	pub fn supported_quantity(mut self, quantity: Quantity) -> Self {
@@ -425,7 +426,8 @@ pub enum Quantity {
 }
 
 impl Quantity {
-	fn one() -> Self {
+	/// The default quantity of one.
+	pub fn one() -> Self {
 		Quantity::Bounded(NonZeroU64::new(1).unwrap())
 	}
 
