@@ -88,10 +88,19 @@ impl Notifier {
 	/// Wake waiters, tracking that wake needs to occur even if there are currently no waiters.
 	pub(crate) fn notify(&self) {
 		let mut lock = self.notify_pending.lock().unwrap();
-		lock.0 = true;
+		let mut future_probably_generated_calls = false;
 		if let Some(future_state) = lock.1.take() {
-			future_state.lock().unwrap().complete();
+			future_probably_generated_calls |= future_state.lock().unwrap().complete();
+			future_probably_generated_calls |= Arc::strong_count(&future_state) > 1;
 		}
+		if future_probably_generated_calls {
+			// If a future made some callbacks or has not yet been drop'd (i.e. the state has more
+			// than the one reference we hold), assume the user was notified and skip setting the
+			// notification-required flag. This will not cause the `wait` functions above to return
+			// and avoid any future `Future`s starting in a completed state.
+			return;
+		}
+		lock.0 = true;
 		mem::drop(lock);
 		self.condvar.notify_all();
 	}
@@ -147,11 +156,14 @@ pub(crate) struct FutureState {
 }
 
 impl FutureState {
-	fn complete(&mut self) {
+	fn complete(&mut self) -> bool {
+		let mut made_calls = false;
 		for callback in self.callbacks.drain(..) {
 			callback.call();
+			made_calls = true;
 		}
 		self.complete = true;
+		made_calls
 	}
 }
 
@@ -229,6 +241,48 @@ mod tests {
 		let callback_ref = Arc::clone(&callback);
 		notifier.get_future().register_callback(Box::new(move || assert!(!callback_ref.fetch_or(true, Ordering::SeqCst))));
 		assert!(callback.load(Ordering::SeqCst));
+	}
+
+	#[test]
+	fn notifier_future_completes_wake() {
+		// Previously, if we were only using the `Future` interface to learn when a `Notifier` has
+		// been notified, we'd never mark the notifier as not-awaiting-notify. This caused the
+		// `lightning-background-processor` to persist in a tight loop.
+		let notifier = Notifier::new();
+
+		// First check the simple case, ensuring if we get notified a new future isn't woken until
+		// a second `notify`.
+		let callback = Arc::new(AtomicBool::new(false));
+		let callback_ref = Arc::clone(&callback);
+		notifier.get_future().register_callback(Box::new(move || assert!(!callback_ref.fetch_or(true, Ordering::SeqCst))));
+		assert!(!callback.load(Ordering::SeqCst));
+
+		notifier.notify();
+		assert!(callback.load(Ordering::SeqCst));
+
+		let callback = Arc::new(AtomicBool::new(false));
+		let callback_ref = Arc::clone(&callback);
+		notifier.get_future().register_callback(Box::new(move || assert!(!callback_ref.fetch_or(true, Ordering::SeqCst))));
+		assert!(!callback.load(Ordering::SeqCst));
+
+		notifier.notify();
+		assert!(callback.load(Ordering::SeqCst));
+
+		// Then check the case where the future is fetched before the notification, but a callback
+		// is only registered after the `notify`, ensuring that it is still sufficient to ensure we
+		// don't get an instant-wake when we get a new future.
+		let future = notifier.get_future();
+		notifier.notify();
+
+		let callback = Arc::new(AtomicBool::new(false));
+		let callback_ref = Arc::clone(&callback);
+		future.register_callback(Box::new(move || assert!(!callback_ref.fetch_or(true, Ordering::SeqCst))));
+		assert!(callback.load(Ordering::SeqCst));
+
+		let callback = Arc::new(AtomicBool::new(false));
+		let callback_ref = Arc::clone(&callback);
+		notifier.get_future().register_callback(Box::new(move || assert!(!callback_ref.fetch_or(true, Ordering::SeqCst))));
+		assert!(!callback.load(Ordering::SeqCst));
 	}
 
 	#[cfg(feature = "std")]

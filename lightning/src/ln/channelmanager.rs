@@ -6091,18 +6091,25 @@ where
 
 	/// Blocks until ChannelManager needs to be persisted or a timeout is reached. It returns a bool
 	/// indicating whether persistence is necessary. Only one listener on
-	/// `await_persistable_update` or `await_persistable_update_timeout` is guaranteed to be woken
-	/// up.
+	/// [`await_persistable_update`], [`await_persistable_update_timeout`], or a future returned by
+	/// [`get_persistable_update_future`] is guaranteed to be woken up.
 	///
 	/// Note that this method is not available with the `no-std` feature.
+	///
+	/// [`await_persistable_update`]: Self::await_persistable_update
+	/// [`await_persistable_update_timeout`]: Self::await_persistable_update_timeout
+	/// [`get_persistable_update_future`]: Self::get_persistable_update_future
 	#[cfg(any(test, feature = "std"))]
 	pub fn await_persistable_update_timeout(&self, max_wait: Duration) -> bool {
 		self.persistence_notifier.wait_timeout(max_wait)
 	}
 
 	/// Blocks until ChannelManager needs to be persisted. Only one listener on
-	/// `await_persistable_update` or `await_persistable_update_timeout` is guaranteed to be woken
-	/// up.
+	/// [`await_persistable_update`], `await_persistable_update_timeout`, or a future returned by
+	/// [`get_persistable_update_future`] is guaranteed to be woken up.
+	///
+	/// [`await_persistable_update`]: Self::await_persistable_update
+	/// [`get_persistable_update_future`]: Self::get_persistable_update_future
 	pub fn await_persistable_update(&self) {
 		self.persistence_notifier.wait()
 	}
