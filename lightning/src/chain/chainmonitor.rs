@@ -144,7 +144,7 @@ pub trait Persist<ChannelSigner: Sign> {
 	/// [`ChannelMonitorUpdateStatus`] for requirements when returning errors.
 	///
 	/// [`Writeable::write`]: crate::util::ser::Writeable::write
-	fn update_persisted_channel(&self, channel_id: OutPoint, update: &Option<ChannelMonitorUpdate>, data: &ChannelMonitor<ChannelSigner>, update_id: MonitorUpdateId) -> ChannelMonitorUpdateStatus;
+	fn update_persisted_channel(&self, channel_id: OutPoint, update: Option<&ChannelMonitorUpdate>, data: &ChannelMonitor<ChannelSigner>, update_id: MonitorUpdateId) -> ChannelMonitorUpdateStatus;
 }
 
 struct MonitorHolder<ChannelSigner: Sign> {
@@ -294,7 +294,7 @@ where C::Target: chain::Filter,
 				}
 
 				log_trace!(self.logger, "Syncing Channel Monitor for channel {}", log_funding_info!(monitor));
-				match self.persister.update_persisted_channel(*funding_outpoint, &None, monitor, update_id) {
+				match self.persister.update_persisted_channel(*funding_outpoint, None, monitor, update_id) {
 					ChannelMonitorUpdateStatus::Completed =>
 						log_trace!(self.logger, "Finished syncing Channel Monitor for channel {}", log_funding_info!(monitor)),
 					ChannelMonitorUpdateStatus::PermanentFailure => {
@@ -646,7 +646,7 @@ where C::Target: chain::Filter,
 
 	/// Note that we persist the given `ChannelMonitor` update while holding the
 	/// `ChainMonitor` monitors lock.
-	fn update_channel(&self, funding_txo: OutPoint, update: ChannelMonitorUpdate) -> ChannelMonitorUpdateStatus {
+	fn update_channel(&self, funding_txo: OutPoint, update: &ChannelMonitorUpdate) -> ChannelMonitorUpdateStatus {
 		// Update the monitor that watches the channel referred to by the given outpoint.
 		let monitors = self.monitors.read().unwrap();
 		match monitors.get(&funding_txo) {
@@ -664,15 +664,15 @@ where C::Target: chain::Filter,
 			Some(monitor_state) => {
 				let monitor = &monitor_state.monitor;
 				log_trace!(self.logger, "Updating ChannelMonitor for channel {}", log_funding_info!(monitor));
-				let update_res = monitor.update_monitor(&update, &self.broadcaster, &*self.fee_estimator, &self.logger);
+				let update_res = monitor.update_monitor(update, &self.broadcaster, &*self.fee_estimator, &self.logger);
 				if update_res.is_err() {
 					log_error!(self.logger, "Failed to update ChannelMonitor for channel {}.", log_funding_info!(monitor));
 				}
 				// Even if updating the monitor returns an error, the monitor's state will
 				// still be changed. So, persist the updated monitor despite the error.
-				let update_id = MonitorUpdateId::from_monitor_update(&update);
+				let update_id = MonitorUpdateId::from_monitor_update(update);
 				let mut pending_monitor_updates = monitor_state.pending_monitor_updates.lock().unwrap();
-				let persist_res = self.persister.update_persisted_channel(funding_txo, &Some(update), monitor, update_id);
+				let persist_res = self.persister.update_persisted_channel(funding_txo, Some(update), monitor, update_id);
 				match persist_res {
 					ChannelMonitorUpdateStatus::InProgress => {
 						pending_monitor_updates.push(update_id);

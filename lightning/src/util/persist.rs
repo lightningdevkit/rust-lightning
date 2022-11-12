@@ -94,7 +94,7 @@ impl<ChannelSigner: Sign, K: KVStorePersister> Persist<ChannelSigner> for K {
 		}
 	}
 
-	fn update_persisted_channel(&self, funding_txo: OutPoint, _update: &Option<ChannelMonitorUpdate>, monitor: &ChannelMonitor<ChannelSigner>, _update_id: MonitorUpdateId) -> chain::ChannelMonitorUpdateStatus {
+	fn update_persisted_channel(&self, funding_txo: OutPoint, _update: Option<&ChannelMonitorUpdate>, monitor: &ChannelMonitor<ChannelSigner>, _update_id: MonitorUpdateId) -> chain::ChannelMonitorUpdateStatus {
 		let key = format!("monitors/{}_{}", funding_txo.txid.to_hex(), funding_txo.index);
 		match self.persist(&key, monitor) {
 			Ok(()) => chain::ChannelMonitorUpdateStatus::Completed,
