@@ -5941,6 +5941,17 @@ impl<Signer: Sign> Channel<Signer> {
 		self.update_time_counter += 1;
 		(monitor_update, dropped_outbound_htlcs)
 	}
+
+	pub fn inflight_htlc_sources(&self) -> impl Iterator<Item=&HTLCSource> {
+		self.holding_cell_htlc_updates.iter()
+			.flat_map(|htlc_update| {
+				match htlc_update {
+					HTLCUpdateAwaitingACK::AddHTLC { source, .. } => { Some(source) }
+					_ => None
+				}
+			})
+			.chain(self.pending_outbound_htlcs.iter().map(|htlc| &htlc.source))
+	}
 }
 
 const SERIALIZATION_VERSION: u8 = 2;

@@ -628,6 +628,8 @@ where
 	fn abandon_payment(&self, payment_id: PaymentId) {
 		self.abandon_payment(payment_id)
 	}
+
+	fn inflight_htlcs(&self) -> InFlightHtlcs { self.compute_inflight_htlcs() }
 }
 
 

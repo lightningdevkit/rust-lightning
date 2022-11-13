@@ -69,6 +69,7 @@
 //! #         &self, route: &Route, payment_id: PaymentId
 //! #     ) -> Result<(), PaymentSendFailure> { unimplemented!() }
 //! #     fn abandon_payment(&self, payment_id: PaymentId) { unimplemented!() }
+//! #     fn inflight_htlcs(&self) -> InFlightHtlcs { unimplemented!() }
 //! # }
 //! #
 //! # struct FakeRouter {}
@@ -289,6 +290,10 @@ pub trait Payer {
 
 	/// Signals that no further retries for the given payment will occur.
 	fn abandon_payment(&self, payment_id: PaymentId);
+
+	/// Construct an [`InFlightHtlcs`] containing information about currently used up liquidity
+	/// across payments.
+	fn inflight_htlcs(&self) -> InFlightHtlcs;
 }
 
 /// A trait defining behavior for a [`Router`] implementation that also supports scoring channels
@@ -546,7 +551,7 @@ where
 
 		let payer = self.payer.node_id();
 		let first_hops = self.payer.first_hops();
-		let inflight_htlcs = self.create_inflight_map();
+		let inflight_htlcs = self.payer.inflight_htlcs();
 		let route = self.router.find_route(
 			&payer, &params, Some(&first_hops.iter().collect::<Vec<_>>()), inflight_htlcs
 		).map_err(|e| PaymentError::Routing(e))?;
@@ -650,7 +655,7 @@ where
 
 		let payer = self.payer.node_id();
 		let first_hops = self.payer.first_hops();
-		let inflight_htlcs = self.create_inflight_map();
+		let inflight_htlcs = self.payer.inflight_htlcs();
 
 		let route = self.router.find_route(
 			&payer, &params, Some(&first_hops.iter().collect::<Vec<_>>()), inflight_htlcs
@@ -708,23 +713,6 @@ where
 	/// [`EventHandler`]. Otherwise, calling this method is unnecessary.
 	pub fn remove_cached_payment(&self, payment_hash: &PaymentHash) {
 		self.payment_cache.lock().unwrap().remove(payment_hash);
-	}
-
-	/// Use path information in the payment_cache to construct a HashMap mapping a channel's short
-	/// channel id and direction to the amount being sent through it.
-	///
-	/// This function should be called whenever we need information about currently used up liquidity
-	/// across payments.
-	fn create_inflight_map(&self) -> InFlightHtlcs {
-		let mut total_inflight_map = InFlightHtlcs::new();
-		// Make an attempt at finding existing payment information from `payment_cache`.
-		for payment_info in self.payment_cache.lock().unwrap().values() {
-			for path in &payment_info.paths {
-				total_inflight_map.process_path(path, self.payer.node_id());
-			}
-		}
-
-		total_inflight_map
 	}
 }
 
@@ -870,7 +858,6 @@ mod tests {
 	use std::time::{SystemTime, Duration};
 	use crate::time_utils::tests::SinceEpoch;
 	use crate::DEFAULT_EXPIRY_TIME;
-	use lightning::util::errors::APIError::{ChannelUnavailable, MonitorUpdateInProgress};
 
 	fn invoice(payment_preimage: PaymentPreimage) -> Invoice {
 		let payment_hash = Sha256::hash(&payment_preimage.0);
@@ -1590,66 +1577,17 @@ mod tests {
 	}
 
 	#[test]
-	fn generates_correct_inflight_map_data() {
-		let event_handled = core::cell::RefCell::new(false);
-		let event_handler = |_: Event| { *event_handled.borrow_mut() = true; };
-
-		let payment_preimage = PaymentPreimage([1; 32]);
-		let invoice = invoice(payment_preimage);
-		let payment_hash = Some(PaymentHash(invoice.payment_hash().clone().into_inner()));
-		let final_value_msat = invoice.amount_milli_satoshis().unwrap();
-
-		let payer = TestPayer::new().expect_send(Amount::ForInvoice(final_value_msat));
-		let final_value_msat = invoice.amount_milli_satoshis().unwrap();
-		let route = TestRouter::route_for_value(final_value_msat);
-		let router = TestRouter::new(TestScorer::new());
-		let logger = TestLogger::new();
-		let invoice_payer =
-			InvoicePayer::new(&payer, router, &logger, event_handler, Retry::Attempts(0));
-
-		let payment_id = invoice_payer.pay_invoice(&invoice).unwrap();
-
-		let inflight_map = invoice_payer.create_inflight_map();
-		// First path check
-		assert_eq!(inflight_map.0.get(&(0, false)).unwrap().clone(), 94);
-		assert_eq!(inflight_map.0.get(&(1, true)).unwrap().clone(), 84);
-		assert_eq!(inflight_map.0.get(&(2, false)).unwrap().clone(), 64);
-
-		// Second path check
-		assert_eq!(inflight_map.0.get(&(3, false)).unwrap().clone(), 74);
-		assert_eq!(inflight_map.0.get(&(4, false)).unwrap().clone(), 64);
-
-		invoice_payer.handle_event(Event::PaymentPathSuccessful {
-			payment_id, payment_hash, path: route.paths[0].clone()
-		});
-
-		let inflight_map = invoice_payer.create_inflight_map();
-
-		assert_eq!(inflight_map.0.get(&(0, false)), None);
-		assert_eq!(inflight_map.0.get(&(1, true)), None);
-		assert_eq!(inflight_map.0.get(&(2, false)), None);
-
-		// Second path should still be inflight
-		assert_eq!(inflight_map.0.get(&(3, false)).unwrap().clone(), 74);
-		assert_eq!(inflight_map.0.get(&(4, false)).unwrap().clone(), 64)
-	}
-
-	#[test]
-	fn considers_inflight_htlcs_between_invoice_payments_when_path_succeeds() {
-		// First, let's just send a payment through, but only make sure one of the path completes
+	fn considers_inflight_htlcs_between_invoice_payments() {
 		let event_handled = core::cell::RefCell::new(false);
 		let event_handler = |_: Event| { *event_handled.borrow_mut() = true; };
 
 		let payment_preimage = PaymentPreimage([1; 32]);
 		let payment_invoice = invoice(payment_preimage);
-		let payment_hash = Some(PaymentHash(payment_invoice.payment_hash().clone().into_inner()));
 		let final_value_msat = payment_invoice.amount_milli_satoshis().unwrap();
 
 		let payer = TestPayer::new()
 			.expect_send(Amount::ForInvoice(final_value_msat))
 			.expect_send(Amount::ForInvoice(final_value_msat));
-		let final_value_msat = payment_invoice.amount_milli_satoshis().unwrap();
-		let route = TestRouter::route_for_value(final_value_msat);
 		let scorer = TestScorer::new()
 			// 1st invoice, 1st path
 			.expect_usage(ChannelUsage { amount_msat: 64, inflight_htlc_msat: 0, effective_capacity: EffectiveCapacity::Unknown } )
@@ -1659,9 +1597,9 @@ mod tests {
 			.expect_usage(ChannelUsage { amount_msat: 64, inflight_htlc_msat: 0, effective_capacity: EffectiveCapacity::Unknown } )
 			.expect_usage(ChannelUsage { amount_msat: 74, inflight_htlc_msat: 0, effective_capacity: EffectiveCapacity::Unknown } )
 			// 2nd invoice, 1st path
-			.expect_usage(ChannelUsage { amount_msat: 64, inflight_htlc_msat: 0, effective_capacity: EffectiveCapacity::Unknown } )
-			.expect_usage(ChannelUsage { amount_msat: 84, inflight_htlc_msat: 0, effective_capacity: EffectiveCapacity::Unknown } )
-			.expect_usage(ChannelUsage { amount_msat: 94, inflight_htlc_msat: 0, effective_capacity: EffectiveCapacity::Unknown } )
+			.expect_usage(ChannelUsage { amount_msat: 64, inflight_htlc_msat: 64, effective_capacity: EffectiveCapacity::Unknown } )
+			.expect_usage(ChannelUsage { amount_msat: 84, inflight_htlc_msat: 84, effective_capacity: EffectiveCapacity::Unknown } )
+			.expect_usage(ChannelUsage { amount_msat: 94, inflight_htlc_msat: 94, effective_capacity: EffectiveCapacity::Unknown } )
 			// 2nd invoice, 2nd path
 			.expect_usage(ChannelUsage { amount_msat: 64, inflight_htlc_msat: 64, effective_capacity: EffectiveCapacity::Unknown } )
 			.expect_usage(ChannelUsage { amount_msat: 74, inflight_htlc_msat: 74, effective_capacity: EffectiveCapacity::Unknown } );
@@ -1670,16 +1608,12 @@ mod tests {
 		let invoice_payer =
 			InvoicePayer::new(&payer, router, &logger, event_handler, Retry::Attempts(0));
 
-		// Succeed 1st path, leave 2nd path inflight
-		let payment_id = invoice_payer.pay_invoice(&payment_invoice).unwrap();
-		invoice_payer.handle_event(Event::PaymentPathSuccessful {
-			payment_id, payment_hash, path: route.paths[0].clone()
-		});
+		// Make first invoice payment.
+		invoice_payer.pay_invoice(&payment_invoice).unwrap();
 
 		// Let's pay a second invoice that will be using the same path. This should trigger the
-		// assertions that expect the last 4 ChannelUsage values above where TestScorer is initialized.
-		// Particularly, the 2nd path of the 1st payment, since it is not yet complete, should still
-		// have 64 msats inflight for paths considering the channel with scid of 1.
+		// assertions that expect `ChannelUsage` values of the first invoice payment that is still
+		// in-flight.
 		let payment_preimage_2 = PaymentPreimage([2; 32]);
 		let payment_invoice_2 = invoice(payment_preimage_2);
 		invoice_payer.pay_invoice(&payment_invoice_2).unwrap();
@@ -1730,6 +1664,7 @@ mod tests {
 
 		// Fail 1st path, leave 2nd path inflight
 		let payment_id = Some(invoice_payer.pay_invoice(&payment_invoice).unwrap());
+		invoice_payer.payer.fail_path(&TestRouter::path_for_value(final_value_msat));
 		invoice_payer.handle_event(Event::PaymentPathFailed {
 			payment_id,
 			payment_hash,
@@ -1742,6 +1677,7 @@ mod tests {
 		});
 
 		// Fails again the 1st path of our retry
+		invoice_payer.payer.fail_path(&TestRouter::path_for_value(final_value_msat / 2));
 		invoice_payer.handle_event(Event::PaymentPathFailed {
 			payment_id,
 			payment_hash,
@@ -1755,67 +1691,6 @@ mod tests {
 				..TestRouter::retry_for_invoice(&payment_invoice)
 			}),
 		});
-	}
-
-	#[test]
-	fn accounts_for_some_inflight_htlcs_sent_during_partial_failure() {
-		let event_handled = core::cell::RefCell::new(false);
-		let event_handler = |_: Event| { *event_handled.borrow_mut() = true; };
-
-		let payment_preimage = PaymentPreimage([1; 32]);
-		let invoice_to_pay = invoice(payment_preimage);
-		let final_value_msat = invoice_to_pay.amount_milli_satoshis().unwrap();
-
-		let retry = TestRouter::retry_for_invoice(&invoice_to_pay);
-		let payer = TestPayer::new()
-			.fails_with_partial_failure(
-				retry.clone(), OnAttempt(1),
-				Some(vec![
-					Err(ChannelUnavailable { err: "abc".to_string() }), Err(MonitorUpdateInProgress)
-				]))
-			.expect_send(Amount::ForInvoice(final_value_msat));
-
-		let router = TestRouter::new(TestScorer::new());
-		let logger = TestLogger::new();
-		let invoice_payer =
-			InvoicePayer::new(&payer, router, &logger, event_handler, Retry::Attempts(0));
-
-		invoice_payer.pay_invoice(&invoice_to_pay).unwrap();
-		let inflight_map = invoice_payer.create_inflight_map();
-
-		// Only the second path, which failed with `MonitorUpdateInProgress` should be added to our
-		// inflight map because retries are disabled.
-		assert_eq!(inflight_map.0.len(), 2);
-	}
-
-	#[test]
-	fn accounts_for_all_inflight_htlcs_sent_during_partial_failure() {
-		let event_handled = core::cell::RefCell::new(false);
-		let event_handler = |_: Event| { *event_handled.borrow_mut() = true; };
-
-		let payment_preimage = PaymentPreimage([1; 32]);
-		let invoice_to_pay = invoice(payment_preimage);
-		let final_value_msat = invoice_to_pay.amount_milli_satoshis().unwrap();
-
-		let retry = TestRouter::retry_for_invoice(&invoice_to_pay);
-		let payer = TestPayer::new()
-			.fails_with_partial_failure(
-				retry.clone(), OnAttempt(1),
-				Some(vec![
-					Ok(()), Err(MonitorUpdateInProgress)
-				]))
-			.expect_send(Amount::ForInvoice(final_value_msat));
-
-		let router = TestRouter::new(TestScorer::new());
-		let logger = TestLogger::new();
-		let invoice_payer =
-			InvoicePayer::new(&payer, router, &logger, event_handler, Retry::Attempts(0));
-
-		invoice_payer.pay_invoice(&invoice_to_pay).unwrap();
-		let inflight_map = invoice_payer.create_inflight_map();
-
-		// All paths successful, hence we check of the existence of all 5 hops.
-		assert_eq!(inflight_map.0.len(), 5);
 	}
 
 	struct TestRouter {
@@ -2105,6 +1980,7 @@ mod tests {
 		expectations: core::cell::RefCell<VecDeque<Amount>>,
 		attempts: core::cell::RefCell<usize>,
 		failing_on_attempt: core::cell::RefCell<HashMap<usize, PaymentSendFailure>>,
+		inflight_htlcs_paths: core::cell::RefCell<Vec<Vec<RouteHop>>>,
 	}
 
 	#[derive(Clone, Debug, PartialEq, Eq)]
@@ -2122,6 +1998,7 @@ mod tests {
 				expectations: core::cell::RefCell::new(VecDeque::new()),
 				attempts: core::cell::RefCell::new(0),
 				failing_on_attempt: core::cell::RefCell::new(HashMap::new()),
+				inflight_htlcs_paths: core::cell::RefCell::new(Vec::new()),
 			}
 		}
 
@@ -2166,6 +2043,20 @@ mod tests {
 				panic!("Unexpected amount: {:?}", actual_value_msats);
 			}
 		}
+
+		fn track_inflight_htlcs(&self, route: &Route) {
+			for path in &route.paths {
+				self.inflight_htlcs_paths.borrow_mut().push(path.clone());
+			}
+		}
+
+		fn fail_path(&self, path: &Vec<RouteHop>) {
+			let path_idx = self.inflight_htlcs_paths.borrow().iter().position(|p| p == path);
+
+			if let Some(idx) = path_idx {
+				self.inflight_htlcs_paths.borrow_mut().swap_remove(idx);
+			}
+		}
 	}
 
 	impl Drop for TestPayer {
@@ -2195,6 +2086,7 @@ mod tests {
 			_payment_secret: &Option<PaymentSecret>, _payment_id: PaymentId,
 		) -> Result<(), PaymentSendFailure> {
 			self.check_value_msats(Amount::ForInvoice(route.get_total_amount()));
+			self.track_inflight_htlcs(route);
 			self.check_attempts()
 		}
 
@@ -2209,10 +2101,19 @@ mod tests {
 			&self, route: &Route, _payment_id: PaymentId
 		) -> Result<(), PaymentSendFailure> {
 			self.check_value_msats(Amount::OnRetry(route.get_total_amount()));
+			self.track_inflight_htlcs(route);
 			self.check_attempts()
 		}
 
 		fn abandon_payment(&self, _payment_id: PaymentId) { }
+
+		fn inflight_htlcs(&self) -> InFlightHtlcs {
+			let mut inflight_htlcs = InFlightHtlcs::new();
+			for path in self.inflight_htlcs_paths.clone().into_inner() {
+				inflight_htlcs.process_path(&path, self.node_id());
+			}
+			inflight_htlcs
+		}
 	}
 
 	// *** Full Featured Functional Tests with a Real ChannelManager ***
