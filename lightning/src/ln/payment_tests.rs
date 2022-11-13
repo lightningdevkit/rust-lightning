@@ -32,6 +32,7 @@ use bitcoin::network::constants::Network;
 use crate::prelude::*;
 
 use crate::ln::functional_test_utils::*;
+use crate::routing::gossip::NodeId;
 
 #[test]
 fn retry_single_path_payment() {
@@ -1238,4 +1239,134 @@ fn abandoned_send_payment_idempotent() {
 	check_added_monitors!(nodes[0], 1);
 	pass_along_route(&nodes[0], &[&[&nodes[1]]], 100_000, second_payment_hash, second_payment_secret);
 	claim_payment(&nodes[0], &[&nodes[1]], second_payment_preimage);
+}
+
+#[test]
+fn test_trivial_inflight_htlc_tracking(){
+	// In this test, we test three scenarios:
+	// (1) Sending + claiming a payment successfully should return `None` when querying InFlightHtlcs
+	// (2) Sending a payment without claiming it should return the payment's value (500000) when querying InFlightHtlcs
+	// (3) After we claim the payment sent in (2), InFlightHtlcs should return `None` for the query.
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+	let (_, _, chan_1_id, _) = create_announced_chan_between_nodes(&nodes, 0, 1, channelmanager::provided_init_features(), channelmanager::provided_init_features());
+	let (_, _, chan_2_id, _) = create_announced_chan_between_nodes(&nodes, 1, 2, channelmanager::provided_init_features(), channelmanager::provided_init_features());
+
+	// Send and claim the payment. Inflight HTLCs should be empty.
+	send_payment(&nodes[0], &vec!(&nodes[1], &nodes[2])[..], 500000);
+	{
+		let inflight_htlcs = node_chanmgrs[0].compute_inflight_htlcs();
+
+		let node_0_channel_lock = nodes[0].node.channel_state.lock().unwrap();
+		let node_1_channel_lock = nodes[1].node.channel_state.lock().unwrap();
+		let channel_1 = node_0_channel_lock.by_id.get(&chan_1_id).unwrap();
+		let channel_2 = node_1_channel_lock.by_id.get(&chan_2_id).unwrap();
+
+		let chan_1_used_liquidity = inflight_htlcs.used_liquidity_msat(
+			&NodeId::from_pubkey(&nodes[0].node.get_our_node_id()) ,
+			&NodeId::from_pubkey(&nodes[1].node.get_our_node_id()),
+			channel_1.get_short_channel_id().unwrap()
+		);
+		let chan_2_used_liquidity = inflight_htlcs.used_liquidity_msat(
+			&NodeId::from_pubkey(&nodes[1].node.get_our_node_id()) ,
+			&NodeId::from_pubkey(&nodes[2].node.get_our_node_id()),
+			channel_2.get_short_channel_id().unwrap()
+		);
+
+		assert_eq!(chan_1_used_liquidity, None);
+		assert_eq!(chan_2_used_liquidity, None);
+	}
+
+	// Send the payment, but do not claim it. Our inflight HTLCs should contain the pending payment.
+	let (payment_preimage, _,  _) = route_payment(&nodes[0], &vec!(&nodes[1], &nodes[2])[..], 500000);
+	{
+		let inflight_htlcs = node_chanmgrs[0].compute_inflight_htlcs();
+
+		let node_0_channel_lock = nodes[0].node.channel_state.lock().unwrap();
+		let node_1_channel_lock = nodes[1].node.channel_state.lock().unwrap();
+		let channel_1 = node_0_channel_lock.by_id.get(&chan_1_id).unwrap();
+		let channel_2 = node_1_channel_lock.by_id.get(&chan_2_id).unwrap();
+
+		let chan_1_used_liquidity = inflight_htlcs.used_liquidity_msat(
+			&NodeId::from_pubkey(&nodes[0].node.get_our_node_id()) ,
+			&NodeId::from_pubkey(&nodes[1].node.get_our_node_id()),
+			channel_1.get_short_channel_id().unwrap()
+		);
+		let chan_2_used_liquidity = inflight_htlcs.used_liquidity_msat(
+			&NodeId::from_pubkey(&nodes[1].node.get_our_node_id()) ,
+			&NodeId::from_pubkey(&nodes[2].node.get_our_node_id()),
+			channel_2.get_short_channel_id().unwrap()
+		);
+
+		// First hop accounts for expected 1000 msat fee
+		assert_eq!(chan_1_used_liquidity, Some(501000));
+		assert_eq!(chan_2_used_liquidity, Some(500000));
+	}
+
+	// Now, let's claim the payment. This should result in the used liquidity to return `None`.
+	claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_preimage);
+	{
+		let inflight_htlcs = node_chanmgrs[0].compute_inflight_htlcs();
+
+		let node_0_channel_lock = nodes[0].node.channel_state.lock().unwrap();
+		let node_1_channel_lock = nodes[1].node.channel_state.lock().unwrap();
+		let channel_1 = node_0_channel_lock.by_id.get(&chan_1_id).unwrap();
+		let channel_2 = node_1_channel_lock.by_id.get(&chan_2_id).unwrap();
+
+		let chan_1_used_liquidity = inflight_htlcs.used_liquidity_msat(
+			&NodeId::from_pubkey(&nodes[0].node.get_our_node_id()) ,
+			&NodeId::from_pubkey(&nodes[1].node.get_our_node_id()),
+			channel_1.get_short_channel_id().unwrap()
+		);
+		let chan_2_used_liquidity = inflight_htlcs.used_liquidity_msat(
+			&NodeId::from_pubkey(&nodes[1].node.get_our_node_id()) ,
+			&NodeId::from_pubkey(&nodes[2].node.get_our_node_id()),
+			channel_2.get_short_channel_id().unwrap()
+		);
+
+		assert_eq!(chan_1_used_liquidity, None);
+		assert_eq!(chan_2_used_liquidity, None);
+	}
+}
+
+#[test]
+fn test_holding_cell_inflight_htlcs() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let channel_id = create_announced_chan_between_nodes(&nodes, 0, 1, channelmanager::provided_init_features(), channelmanager::provided_init_features()).2;
+
+	let (route, payment_hash_1, _, payment_secret_1) = get_route_and_payment_hash!(nodes[0], nodes[1], 1000000);
+	let (_, payment_hash_2, payment_secret_2) = get_payment_preimage_hash!(nodes[1]);
+
+	// Queue up two payments - one will be delivered right away, one immediately goes into the
+	// holding cell as nodes[0] is AwaitingRAA.
+	{
+		nodes[0].node.send_payment(&route, payment_hash_1, &Some(payment_secret_1), PaymentId(payment_hash_1.0)).unwrap();
+		check_added_monitors!(nodes[0], 1);
+		nodes[0].node.send_payment(&route, payment_hash_2, &Some(payment_secret_2), PaymentId(payment_hash_2.0)).unwrap();
+		check_added_monitors!(nodes[0], 0);
+	}
+
+	let inflight_htlcs = node_chanmgrs[0].compute_inflight_htlcs();
+
+	{
+		let channel_lock = nodes[0].node.channel_state.lock().unwrap();
+		let channel = channel_lock.by_id.get(&channel_id).unwrap();
+
+		let used_liquidity = inflight_htlcs.used_liquidity_msat(
+			&NodeId::from_pubkey(&nodes[0].node.get_our_node_id()) ,
+			&NodeId::from_pubkey(&nodes[1].node.get_our_node_id()),
+			channel.get_short_channel_id().unwrap()
+		);
+
+		assert_eq!(used_liquidity, Some(2000000));
+	}
+
+	// Clear pending events so test doesn't throw a "Had excess message on node..." error
+	nodes[0].node.get_and_clear_pending_msg_events();
 }
