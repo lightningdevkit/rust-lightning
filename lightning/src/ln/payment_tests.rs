@@ -1385,9 +1385,13 @@ fn intercepted_payment() {
 fn do_test_intercepted_payment(fail_intercept: bool) {
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
-	let mut chan_config = test_default_channel_config();
-	chan_config.manually_accept_inbound_channels = true;
-	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, Some(chan_config)]);
+
+	let mut zero_conf_chan_config = test_default_channel_config();
+	zero_conf_chan_config.manually_accept_inbound_channels = true;
+	let mut intercept_forwards_config = test_default_channel_config();
+	intercept_forwards_config.accept_intercept_htlcs = true;
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, Some(intercept_forwards_config), Some(zero_conf_chan_config)]);
+
 	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 	let scorer = test_utils::TestScorer::with_penalty(0);
 	let random_seed_bytes = chanmon_cfgs[0].keys_manager.get_secure_random_bytes();

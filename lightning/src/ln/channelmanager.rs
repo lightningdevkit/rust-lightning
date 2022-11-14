@@ -2233,8 +2233,9 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 						None => { // unknown_next_peer
 							// Note that this is likely a timing oracle for detecting whether an scid is a
 							// phantom or an intercept.
-							if fake_scid::is_valid_phantom(&self.fake_scid_rand_bytes, *short_channel_id, &self.genesis_hash) ||
-							   fake_scid::is_valid_intercept(&self.fake_scid_rand_bytes, *short_channel_id, &self.genesis_hash)
+							if (self.default_configuration.accept_intercept_htlcs &&
+							   fake_scid::is_valid_intercept(&self.fake_scid_rand_bytes, *short_channel_id, &self.genesis_hash)) ||
+							   fake_scid::is_valid_phantom(&self.fake_scid_rand_bytes, *short_channel_id, &self.genesis_hash)
 							{
 								None
 							} else {
@@ -3057,14 +3058,16 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 	/// Intercepted HTLCs can be useful for Lightning Service Providers (LSPs) to open a just-in-time
 	/// channel to a receiving node if the node lacks sufficient inbound liquidity.
 	///
-	/// To make use of intercepted HTLCs, use [`ChannelManager::get_intercept_scid`] to generate short
-	/// channel id(s) to put in the receiver's invoice route hints. These route hints will signal to
-	/// LDK to generate an [`HTLCIntercepted`] event when it receives the forwarded HTLC, and this
-	/// method or [`ChannelManager::fail_intercepted_htlc`] MUST be called in response to the event.
+	/// To make use of intercepted HTLCs, set [`UserConfig::accept_intercept_htlcs`] and use
+	/// [`ChannelManager::get_intercept_scid`] to generate short channel id(s) to put in the
+	/// receiver's invoice route hints. These route hints will signal to LDK to generate an
+	/// [`HTLCIntercepted`] event when it receives the forwarded HTLC, and this method or
+	/// [`ChannelManager::fail_intercepted_htlc`] MUST be called in response to the event.
 	///
 	/// Note that LDK does not enforce fee requirements in `amt_to_forward_msat`, and will not stop
 	/// you from forwarding more than you received.
 	///
+	/// [`UserConfig::accept_intercept_htlcs`]: crate::util::config::UserConfig::accept_intercept_htlcs
 	/// [`HTLCIntercepted`]: events::Event::HTLCIntercepted
 	// TODO: when we move to deciding the best outbound channel at forward time, only take
 	// `next_node_id` and not `next_hop_channel_id`

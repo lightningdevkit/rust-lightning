@@ -505,6 +505,17 @@ pub struct UserConfig {
 	/// [`msgs::OpenChannel`]: crate::ln::msgs::OpenChannel
 	/// [`msgs::AcceptChannel`]: crate::ln::msgs::AcceptChannel
 	pub manually_accept_inbound_channels: bool,
+	///  If this is set to true, LDK will intercept HTLCs that are attempting to be forwarded over
+	///  fake short channel ids generated via [`ChannelManager::get_intercept_scid`]. Upon HTLC
+	///  intercept, LDK will generate an [`Event::HTLCIntercepted`] which MUST be handled by the user.
+	///
+	///  Setting this to true may break backwards compatibility with LDK versions < 0.0.113.
+	///
+	///  Default value: false.
+	///
+	/// [`ChannelManager::get_intercept_scid`]: crate::ln::channelmanager::ChannelManager::get_intercept_scid
+	/// [`Event::HTLCIntercepted`]: crate::util::events::Event::HTLCIntercepted
+	pub accept_intercept_htlcs: bool,
 }
 
 impl Default for UserConfig {
@@ -516,6 +527,7 @@ impl Default for UserConfig {
 			accept_forwards_to_priv_channels: false,
 			accept_inbound_channels: true,
 			manually_accept_inbound_channels: false,
+			accept_intercept_htlcs: false,
 		}
 	}
 }

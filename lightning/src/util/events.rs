@@ -612,13 +612,14 @@ pub enum Event {
 	},
 	/// Used to indicate that we've intercepted an HTLC forward. This event will only be generated if
 	/// you've encoded an intercept scid in the receiver's invoice route hints using
-	/// [`ChannelManager::get_intercept_scid`].
+	/// [`ChannelManager::get_intercept_scid`] and have set [`UserConfig::accept_intercept_htlcs`].
 	///
 	/// [`ChannelManager::forward_intercepted_htlc`] or
 	/// [`ChannelManager::fail_intercepted_htlc`] MUST be called in response to this event. See
 	/// their docs for more information.
 	///
 	/// [`ChannelManager::get_intercept_scid`]: crate::ln::channelmanager::ChannelManager::get_intercept_scid
+	/// [`UserConfig::accept_intercept_htlcs`]: crate::util::config::UserConfig::accept_intercept_htlcs
 	/// [`ChannelManager::forward_intercepted_htlc`]: crate::ln::channelmanager::ChannelManager::forward_intercepted_htlc
 	/// [`ChannelManager::fail_intercepted_htlc`]: crate::ln::channelmanager::ChannelManager::fail_intercepted_htlc
 	HTLCIntercepted {
