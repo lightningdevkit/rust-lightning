@@ -16,7 +16,7 @@ use crate::chain::channelmonitor::{ANTI_REORG_DELAY, LATENCY_GRACE_PERIOD_BLOCKS
 use crate::chain::transaction::OutPoint;
 use crate::chain::keysinterface::KeysInterface;
 use crate::ln::channel::EXPIRE_PREV_CONFIG_TICKS;
-use crate::ln::channelmanager::{self, BREAKDOWN_TIMEOUT, ChannelManager, InterceptId, MPP_TIMEOUT_TICKS, MIN_CLTV_EXPIRY_DELTA, PaymentId, PaymentSendFailure, IDEMPOTENCY_TIMEOUT_TICKS};
+use crate::ln::channelmanager::{self, BREAKDOWN_TIMEOUT, ChannelManager, MPP_TIMEOUT_TICKS, MIN_CLTV_EXPIRY_DELTA, PaymentId, PaymentSendFailure, IDEMPOTENCY_TIMEOUT_TICKS};
 use crate::ln::msgs;
 use crate::ln::msgs::ChannelMessageHandler;
 use crate::routing::gossip::RoutingFees;
@@ -1243,6 +1243,13 @@ fn abandoned_send_payment_idempotent() {
 	claim_payment(&nodes[0], &[&nodes[1]], second_payment_preimage);
 }
 
+#[derive(PartialEq)]
+enum InterceptTest {
+	Forward,
+	Fail,
+	Timeout,
+}
+
 #[test]
 fn test_trivial_inflight_htlc_tracking(){
 	// In this test, we test three scenarios:
@@ -1378,11 +1385,13 @@ fn intercepted_payment() {
 	// Test that detecting an intercept scid on payment forward will signal LDK to generate an
 	// intercept event, which the LSP can then use to either (a) open a JIT channel to forward the
 	// payment or (b) fail the payment.
-	do_test_intercepted_payment(false);
-	do_test_intercepted_payment(true);
+	do_test_intercepted_payment(InterceptTest::Forward);
+	do_test_intercepted_payment(InterceptTest::Fail);
+	// Make sure that intercepted payments will be automatically failed back if too many blocks pass.
+	do_test_intercepted_payment(InterceptTest::Timeout);
 }
 
-fn do_test_intercepted_payment(fail_intercept: bool) {
+fn do_test_intercepted_payment(test: InterceptTest) {
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 
@@ -1459,7 +1468,7 @@ fn do_test_intercepted_payment(fail_intercept: bool) {
 	let unknown_chan_id_err = nodes[1].node.forward_intercepted_htlc(intercept_id, &[42; 32], nodes[2].node.get_our_node_id(), expected_outbound_amount_msat).unwrap_err();
 	assert_eq!(unknown_chan_id_err , APIError::APIMisuseError { err: format!("Channel with id {:?} not found", [42; 32]) });
 
-	if fail_intercept {
+	if test == InterceptTest::Fail {
 		// Ensure we can fail the intercepted payment back.
 		nodes[1].node.fail_intercepted_htlc(intercept_id).unwrap();
 		expect_pending_htlcs_forwardable_and_htlc_handling_failed_ignore!(nodes[1], vec![HTLCDestination::UnknownNextHop { requested_forward_scid: intercept_scid }]);
@@ -1477,14 +1486,9 @@ fn do_test_intercepted_payment(fail_intercept: bool) {
 			.blamed_chan_closed(true)
 			.expected_htlc_error_data(0x4000 | 10, &[]);
 		expect_payment_failed_conditions(&nodes[0], payment_hash, false, fail_conditions);
-	} else {
+	} else if test == InterceptTest::Forward {
 		// Open the just-in-time channel so the payment can then be forwarded.
 		let (_, channel_id) = open_zero_conf_channel(&nodes[1], &nodes[2], None);
-
-		// Check for unknown intercept id error.
-		let unknown_intercept_id = InterceptId([42; 32]);
-		let unknown_intercept_id_err = nodes[1].node.forward_intercepted_htlc(unknown_intercept_id, &channel_id, nodes[2].node.get_our_node_id(), expected_outbound_amount_msat).unwrap_err();
-		assert_eq!(unknown_intercept_id_err , APIError::APIMisuseError { err: format!("Payment with intercept id {:?} not found", unknown_intercept_id.0) });
 
 		// Finally, forward the intercepted payment through and claim it.
 		nodes[1].node.forward_intercepted_htlc(intercept_id, &channel_id, nodes[2].node.get_our_node_id(), expected_outbound_amount_msat).unwrap();
@@ -1523,5 +1527,34 @@ fn do_test_intercepted_payment(fail_intercept: bool) {
 			},
 			_ => panic!("Unexpected event")
 		}
+	} else if test == InterceptTest::Timeout {
+		let mut block = Block {
+			header: BlockHeader { version: 0x20000000, prev_blockhash: nodes[0].best_block_hash(), merkle_root: TxMerkleNode::all_zeros(), time: 42, bits: 42, nonce: 42 },
+			txdata: vec![],
+		};
+		connect_block(&nodes[0], &block);
+		connect_block(&nodes[1], &block);
+		let block_count = 183; // find_route adds a random CLTV offset, so hardcode rather than summing consts
+		for _ in 0..block_count {
+			block.header.prev_blockhash = block.block_hash();
+			connect_block(&nodes[0], &block);
+			connect_block(&nodes[1], &block);
+		}
+		expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[1], vec![HTLCDestination::InvalidForward { requested_forward_scid: intercept_scid }]);
+		check_added_monitors!(nodes[1], 1);
+		let htlc_timeout_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+		assert!(htlc_timeout_updates.update_add_htlcs.is_empty());
+		assert_eq!(htlc_timeout_updates.update_fail_htlcs.len(), 1);
+		assert!(htlc_timeout_updates.update_fail_malformed_htlcs.is_empty());
+		assert!(htlc_timeout_updates.update_fee.is_none());
+
+		nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &htlc_timeout_updates.update_fail_htlcs[0]);
+		commitment_signed_dance!(nodes[0], nodes[1], htlc_timeout_updates.commitment_signed, false);
+		expect_payment_failed!(nodes[0], payment_hash, false, 0x2000 | 2, []);
+
+		// Check for unknown intercept id error.
+		let (_, channel_id) = open_zero_conf_channel(&nodes[1], &nodes[2], None);
+		let unknown_intercept_id_err = nodes[1].node.forward_intercepted_htlc(intercept_id, &channel_id, nodes[2].node.get_our_node_id(), expected_outbound_amount_msat).unwrap_err();
+		assert_eq!(unknown_intercept_id_err , APIError::APIMisuseError { err: format!("Payment with intercept id {:?} not found", intercept_id.0) });
 	}
 }

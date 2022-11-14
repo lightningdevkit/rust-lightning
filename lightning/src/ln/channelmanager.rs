@@ -3067,6 +3067,9 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 	/// Note that LDK does not enforce fee requirements in `amt_to_forward_msat`, and will not stop
 	/// you from forwarding more than you received.
 	///
+	/// Errors if the event was not handled in time, in which case the HTLC was automatically failed
+	/// backwards.
+	///
 	/// [`UserConfig::accept_intercept_htlcs`]: crate::util::config::UserConfig::accept_intercept_htlcs
 	/// [`HTLCIntercepted`]: events::Event::HTLCIntercepted
 	// TODO: when we move to deciding the best outbound channel at forward time, only take
@@ -3108,6 +3111,9 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 
 	/// Fails the intercepted HTLC indicated by intercept_id. Should only be called in response to
 	/// an [`HTLCIntercepted`] event. See [`ChannelManager::forward_intercepted_htlc`].
+	///
+	/// Errors if the event was not handled in time, in which case the HTLC was automatically failed
+	/// backwards.
 	///
 	/// [`HTLCIntercepted`]: events::Event::HTLCIntercepted
 	pub fn fail_intercepted_htlc(&self, intercept_id: InterceptId) -> Result<(), APIError> {
@@ -6256,7 +6262,6 @@ where
 					if height >= htlc.cltv_expiry - HTLC_FAIL_BACK_BUFFER {
 						let mut htlc_msat_height_data = byte_utils::be64_to_array(htlc.value).to_vec();
 						htlc_msat_height_data.extend_from_slice(&byte_utils::be32_to_array(height));
-
 						timed_out_htlcs.push((HTLCSource::PreviousHopData(htlc.prev_hop.clone()), payment_hash.clone(), HTLCFailReason::Reason {
 							failure_code: 0x4000 | 15,
 							data: htlc_msat_height_data
@@ -6265,6 +6270,29 @@ where
 					} else { true }
 				});
 				!htlcs.is_empty() // Only retain this entry if htlcs has at least one entry.
+			});
+
+			let mut intercepted_htlcs = self.pending_intercepted_htlcs.lock().unwrap();
+			intercepted_htlcs.retain(|_, htlc| {
+				if height >= htlc.forward_info.outgoing_cltv_value - HTLC_FAIL_BACK_BUFFER {
+					let prev_hop_data = HTLCSource::PreviousHopData(HTLCPreviousHopData {
+						short_channel_id: htlc.prev_short_channel_id,
+						htlc_id: htlc.prev_htlc_id,
+						incoming_packet_shared_secret: htlc.forward_info.incoming_shared_secret,
+						phantom_shared_secret: None,
+						outpoint: htlc.prev_funding_outpoint,
+					});
+
+					let requested_forward_scid /* intercept scid */ = match htlc.forward_info.routing {
+						PendingHTLCRouting::Forward { short_channel_id, .. } => short_channel_id,
+						_ => unreachable!(),
+					};
+					timed_out_htlcs.push((prev_hop_data, htlc.forward_info.payment_hash,
+							HTLCFailReason::Reason { failure_code: 0x2000 | 2, data: Vec::new() },
+							HTLCDestination::InvalidForward { requested_forward_scid }));
+					log_trace!(self.logger, "Timing out intercepted HTLC with requested forward scid {}", requested_forward_scid);
+					false
+				} else { true }
 			});
 		}
 
