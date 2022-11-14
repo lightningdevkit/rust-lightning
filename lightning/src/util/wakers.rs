@@ -198,12 +198,10 @@ impl Future {
 	}
 }
 
-mod std_future {
-	use core::task::Waker;
-	pub struct StdWaker(pub Waker);
-	impl super::FutureCallback for StdWaker {
-		fn call(&self) { self.0.wake_by_ref() }
-	}
+use core::task::Waker;
+struct StdWaker(pub Waker);
+impl FutureCallback for StdWaker {
+	fn call(&self) { self.0.wake_by_ref() }
 }
 
 /// (C-not exported) as Rust Futures aren't usable in language bindings.
@@ -216,7 +214,7 @@ impl<'a> StdFuture for Future {
 			Poll::Ready(())
 		} else {
 			let waker = cx.waker().clone();
-			state.callbacks.push(Box::new(std_future::StdWaker(waker)));
+			state.callbacks.push(Box::new(StdWaker(waker)));
 			Poll::Pending
 		}
 	}
