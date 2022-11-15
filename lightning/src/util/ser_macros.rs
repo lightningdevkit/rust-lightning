@@ -391,6 +391,18 @@ macro_rules! init_tlv_field_var {
 	};
 }
 
+macro_rules! init_and_read_tlv_fields {
+	($reader: ident, {$(($type: expr, $field: ident, $fieldty: tt)),* $(,)*}) => {
+		$(
+			init_tlv_field_var!($field, $fieldty);
+		)*
+
+		read_tlv_fields!($reader, {
+			$(($type, $field, $fieldty)),*
+		});
+	}
+}
+
 /// Implements Readable/Writeable for a struct storing it as a set of TLVs
 /// If $fieldty is `required`, then $field is a required field that is not an Option nor a Vec.
 /// If $fieldty is `option`, then $field is optional field.
@@ -425,10 +437,7 @@ macro_rules! impl_writeable_tlv_based {
 
 		impl $crate::util::ser::Readable for $st {
 			fn read<R: $crate::io::Read>(reader: &mut R) -> Result<Self, $crate::ln::msgs::DecodeError> {
-				$(
-					init_tlv_field_var!($field, $fieldty);
-				)*
-				read_tlv_fields!(reader, {
+				init_and_read_tlv_fields!(reader, {
 					$(($type, $field, $fieldty)),*
 				});
 				Ok(Self {
@@ -493,10 +502,7 @@ macro_rules! impl_writeable_tlv_based_enum_upgradable {
 						// Because read_tlv_fields creates a labeled loop, we cannot call it twice
 						// in the same function body. Instead, we define a closure and call it.
 						let f = || {
-							$(
-								init_tlv_field_var!($field, $fieldty);
-							)*
-							read_tlv_fields!(reader, {
+							init_and_read_tlv_fields!(reader, {
 								$(($type, $field, $fieldty)),*
 							});
 							Ok(Some($st::$variant_name {
@@ -546,10 +552,7 @@ macro_rules! impl_writeable_tlv_based_enum {
 						// Because read_tlv_fields creates a labeled loop, we cannot call it twice
 						// in the same function body. Instead, we define a closure and call it.
 						let f = || {
-							$(
-								init_tlv_field_var!($field, $fieldty);
-							)*
-							read_tlv_fields!(reader, {
+							init_and_read_tlv_fields!(reader, {
 								$(($type, $field, $fieldty)),*
 							});
 							Ok($st::$variant_name {
