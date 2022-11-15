@@ -425,6 +425,7 @@ macro_rules! impl_writeable_primitive {
 	}
 }
 
+impl_writeable_primitive!(u128, 16);
 impl_writeable_primitive!(u64, 8);
 impl_writeable_primitive!(u32, 4);
 impl_writeable_primitive!(u16, 2);

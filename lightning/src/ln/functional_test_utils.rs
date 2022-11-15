@@ -618,7 +618,7 @@ macro_rules! check_added_monitors {
 	}
 }
 
-pub fn create_funding_transaction<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, expected_counterparty_node_id: &PublicKey, expected_chan_value: u64, expected_user_chan_id: u64) -> ([u8; 32], Transaction, OutPoint) {
+pub fn create_funding_transaction<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, expected_counterparty_node_id: &PublicKey, expected_chan_value: u64, expected_user_chan_id: u128) -> ([u8; 32], Transaction, OutPoint) {
 	let chan_id = *node.network_chan_count.borrow();
 
 	let events = node.node.get_and_clear_pending_events();

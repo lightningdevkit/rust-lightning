@@ -509,7 +509,7 @@ pub(super) struct Channel<Signer: Sign> {
 
 	inbound_handshake_limits_override: Option<ChannelHandshakeLimits>,
 
-	user_id: u64,
+	user_id: u128,
 
 	channel_id: [u8; 32],
 	channel_state: u32,
@@ -902,7 +902,7 @@ impl<Signer: Sign> Channel<Signer> {
 	// Constructors:
 	pub fn new_outbound<K: Deref, F: Deref>(
 		fee_estimator: &LowerBoundedFeeEstimator<F>, keys_provider: &K, counterparty_node_id: PublicKey, their_features: &InitFeatures,
-		channel_value_satoshis: u64, push_msat: u64, user_id: u64, config: &UserConfig, current_chain_height: u32,
+		channel_value_satoshis: u64, push_msat: u64, user_id: u128, config: &UserConfig, current_chain_height: u32,
 		outbound_scid_alias: u64
 	) -> Result<Channel<Signer>, APIError>
 	where K::Target: KeysInterface<Signer = Signer>,
@@ -1102,7 +1102,7 @@ impl<Signer: Sign> Channel<Signer> {
 	/// Assumes chain_hash has already been checked and corresponds with what we expect!
 	pub fn new_from_req<K: Deref, F: Deref, L: Deref>(
 		fee_estimator: &LowerBoundedFeeEstimator<F>, keys_provider: &K, counterparty_node_id: PublicKey, their_features: &InitFeatures,
-		msg: &msgs::OpenChannel, user_id: u64, config: &UserConfig, current_chain_height: u32, logger: &L,
+		msg: &msgs::OpenChannel, user_id: u128, config: &UserConfig, current_chain_height: u32, logger: &L,
 		outbound_scid_alias: u64
 	) -> Result<Channel<Signer>, ChannelError>
 		where K::Target: KeysInterface<Signer = Signer>,
@@ -4482,7 +4482,7 @@ impl<Signer: Sign> Channel<Signer> {
 
 	/// Gets the "user_id" value passed into the construction of this channel. It has no special
 	/// meaning and exists only to allow users to have a persistent identifier of a channel.
-	pub fn get_user_id(&self) -> u64 {
+	pub fn get_user_id(&self) -> u128 {
 		self.user_id
 	}
 
@@ -5178,7 +5178,7 @@ impl<Signer: Sign> Channel<Signer> {
 	/// should be sent back to the counterparty node.
 	///
 	/// [`msgs::AcceptChannel`]: crate::ln::msgs::AcceptChannel
-	pub fn accept_inbound_channel(&mut self, user_id: u64) -> msgs::AcceptChannel {
+	pub fn accept_inbound_channel(&mut self, user_id: u128) -> msgs::AcceptChannel {
 		if self.is_outbound() {
 			panic!("Tried to send accept_channel for an outbound channel?");
 		}
@@ -6007,7 +6007,11 @@ impl<Signer: Sign> Writeable for Channel<Signer> {
 
 		write_ver_prefix!(writer, SERIALIZATION_VERSION, MIN_SERIALIZATION_VERSION);
 
-		self.user_id.write(writer)?;
+		// `user_id` used to be a single u64 value. In order to remain backwards compatible with
+		// versions prior to 0.0.113, the u128 is serialized as two separate u64 values. We write
+		// the low bytes now and the optional high bytes later.
+		let user_id_low = self.user_id as u64;
+		user_id_low.write(writer)?;
 
 		// Version 1 deserializers expected to read parts of the config object here. Version 2
 		// deserializers (0.0.99) now read config through TLVs, and as we now require them for
@@ -6254,6 +6258,11 @@ impl<Signer: Sign> Writeable for Channel<Signer> {
 
 		let channel_ready_event_emitted = Some(self.channel_ready_event_emitted);
 
+		// `user_id` used to be a single u64 value. In order to remain backwards compatible with
+		// versions prior to 0.0.113, the u128 is serialized as two separate u64 values. Therefore,
+		// we write the high bytes as an option here.
+		let user_id_high_opt = Some((self.user_id >> 64) as u64);
+
 		write_tlv_fields!(writer, {
 			(0, self.announcement_sigs, option),
 			// minimum_depth and counterparty_selected_channel_reserve_satoshis used to have a
@@ -6277,6 +6286,7 @@ impl<Signer: Sign> Writeable for Channel<Signer> {
 			(19, self.latest_inbound_scid_alias, option),
 			(21, self.outbound_scid_alias, required),
 			(23, channel_ready_event_emitted, option),
+			(25, user_id_high_opt, option),
 		});
 
 		Ok(())
@@ -6290,7 +6300,10 @@ impl<'a, K: Deref> ReadableArgs<(&'a K, u32)> for Channel<<K::Target as KeysInte
 		let (keys_source, serialized_height) = args;
 		let ver = read_ver_prefix!(reader, SERIALIZATION_VERSION);
 
-		let user_id = Readable::read(reader)?;
+		// `user_id` used to be a single u64 value. In order to remain backwards compatible with
+		// versions prior to 0.0.113, the u128 is serialized as two separate u64 values. We read
+		// the low bytes now and the high bytes later.
+		let user_id_low: u64 = Readable::read(reader)?;
 
 		let mut config = Some(LegacyChannelConfig::default());
 		if ver == 1 {
@@ -6536,6 +6549,8 @@ impl<'a, K: Deref> ReadableArgs<(&'a K, u32)> for Channel<<K::Target as KeysInte
 		let mut outbound_scid_alias = None;
 		let mut channel_ready_event_emitted = None;
 
+		let mut user_id_high_opt: Option<u64> = None;
+
 		read_tlv_fields!(reader, {
 			(0, announcement_sigs, option),
 			(1, minimum_depth, option),
@@ -6553,6 +6568,7 @@ impl<'a, K: Deref> ReadableArgs<(&'a K, u32)> for Channel<<K::Target as KeysInte
 			(19, latest_inbound_scid_alias, option),
 			(21, outbound_scid_alias, option),
 			(23, channel_ready_event_emitted, option),
+			(25, user_id_high_opt, option),
 		});
 
 		if let Some(preimages) = preimages_opt {
@@ -6588,6 +6604,11 @@ impl<'a, K: Deref> ReadableArgs<(&'a K, u32)> for Channel<<K::Target as KeysInte
 
 		let mut secp_ctx = Secp256k1::new();
 		secp_ctx.seeded_randomize(&keys_source.get_secure_random_bytes());
+
+		// `user_id` used to be a single u64 value. In order to remain backwards
+		// compatible with versions prior to 0.0.113, the u128 is serialized as two
+		// separate u64 values.
+		let user_id = user_id_low as u128 + ((user_id_high_opt.unwrap_or(0) as u128) << 64);
 
 		Ok(Channel {
 			user_id,
