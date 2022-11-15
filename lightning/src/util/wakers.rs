@@ -33,6 +33,20 @@ pub(crate) struct Notifier {
 	condvar: Condvar,
 }
 
+macro_rules! check_woken {
+	($guard: expr, $retval: expr) => { {
+		if $guard.0 {
+			$guard.0 = false;
+			if $guard.1.as_ref().map(|l| l.lock().unwrap().complete).unwrap_or(false) {
+				// If we're about to return as woken, and the future state is marked complete, wipe
+				// the future state and let the next future wait until we get a new notify.
+				$guard.1.take();
+			}
+			return $retval;
+		}
+	} }
+}
+
 impl Notifier {
 	pub(crate) fn new() -> Self {
 		Self {
@@ -57,16 +71,9 @@ impl Notifier {
 	pub(crate) fn wait(&self) {
 		loop {
 			let mut guard = self.propagate_future_state_to_notify_flag();
-			if guard.0 {
-				guard.0 = false;
-				return;
-			}
+			check_woken!(guard, ());
 			guard = self.condvar.wait(guard).unwrap();
-			let result = guard.0;
-			if result {
-				guard.0 = false;
-				return
-			}
+			check_woken!(guard, ());
 		}
 	}
 
@@ -75,24 +82,20 @@ impl Notifier {
 		let current_time = Instant::now();
 		loop {
 			let mut guard = self.propagate_future_state_to_notify_flag();
-			if guard.0 {
-				guard.0 = false;
-				return true;
-			}
+			check_woken!(guard, true);
 			guard = self.condvar.wait_timeout(guard, max_wait).unwrap().0;
+			check_woken!(guard, true);
 			// Due to spurious wakeups that can happen on `wait_timeout`, here we need to check if the
 			// desired wait time has actually passed, and if not then restart the loop with a reduced wait
 			// time. Note that this logic can be highly simplified through the use of
 			// `Condvar::wait_while` and `Condvar::wait_timeout_while`, if and when our MSRV is raised to
 			// 1.42.0.
 			let elapsed = current_time.elapsed();
-			let result = guard.0;
-			if result || elapsed >= max_wait {
-				guard.0 = false;
-				return result;
+			if elapsed >= max_wait {
+				return false;
 			}
 			match max_wait.checked_sub(elapsed) {
-				None => return result,
+				None => return false,
 				Some(_) => continue
 			}
 		}
