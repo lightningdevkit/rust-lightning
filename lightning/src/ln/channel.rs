@@ -1075,8 +1075,9 @@ impl<Signer: Sign> Channel<Signer> {
 		})
 	}
 
-	fn check_remote_fee<F: Deref>(fee_estimator: &LowerBoundedFeeEstimator<F>, feerate_per_kw: u32) -> Result<(), ChannelError>
-		where F::Target: FeeEstimator
+	fn check_remote_fee<F: Deref, L: Deref>(fee_estimator: &LowerBoundedFeeEstimator<F>,
+		feerate_per_kw: u32, cur_feerate_per_kw: Option<u32>, logger: &L)
+		-> Result<(), ChannelError> where F::Target: FeeEstimator, L::Target: Logger,
 	{
 		// We only bound the fee updates on the upper side to prevent completely absurd feerates,
 		// always accepting up to 25 sat/vByte or 10x our fee estimator's "High Priority" fee.
@@ -1093,6 +1094,14 @@ impl<Signer: Sign> Channel<Signer> {
 		// of 1.1 sat/vbyte and a receiver that wants 1.1 rounded up to 2. Thus, we always add 250
 		// sat/kw before the comparison here.
 		if feerate_per_kw + 250 < lower_limit {
+			if let Some(cur_feerate) = cur_feerate_per_kw {
+				if feerate_per_kw > cur_feerate {
+					log_warn!(logger,
+						"Accepting feerate that may prevent us from closing this channel because it's higher than what we have now. Had {} s/kW, now {} s/kW.",
+						cur_feerate, feerate_per_kw);
+					return Ok(());
+				}
+			}
 			return Err(ChannelError::Close(format!("Peer's feerate much too low. Actual: {}. Our expected lower limit: {} (- 250)", feerate_per_kw, lower_limit)));
 		}
 		Ok(())
@@ -1179,7 +1188,7 @@ impl<Signer: Sign> Channel<Signer> {
 		if msg.htlc_minimum_msat >= full_channel_value_msat {
 			return Err(ChannelError::Close(format!("Minimum htlc value ({}) was larger than full channel value ({})", msg.htlc_minimum_msat, full_channel_value_msat)));
 		}
-		Channel::<Signer>::check_remote_fee(fee_estimator, msg.feerate_per_kw)?;
+		Channel::<Signer>::check_remote_fee(fee_estimator, msg.feerate_per_kw, None, logger)?;
 
 		let max_counterparty_selected_contest_delay = u16::min(config.channel_handshake_limits.their_to_self_delay, MAX_LOCAL_BREAKDOWN_TIMEOUT);
 		if msg.to_self_delay > max_counterparty_selected_contest_delay {
@@ -3762,8 +3771,8 @@ impl<Signer: Sign> Channel<Signer> {
 		}
 	}
 
-	pub fn update_fee<F: Deref>(&mut self, fee_estimator: &LowerBoundedFeeEstimator<F>, msg: &msgs::UpdateFee) -> Result<(), ChannelError>
-		where F::Target: FeeEstimator
+	pub fn update_fee<F: Deref, L: Deref>(&mut self, fee_estimator: &LowerBoundedFeeEstimator<F>, msg: &msgs::UpdateFee, logger: &L) -> Result<(), ChannelError>
+		where F::Target: FeeEstimator, L::Target: Logger
 	{
 		if self.is_outbound() {
 			return Err(ChannelError::Close("Non-funding remote tried to update channel fee".to_owned()));
@@ -3771,7 +3780,7 @@ impl<Signer: Sign> Channel<Signer> {
 		if self.channel_state & (ChannelState::PeerDisconnected as u32) == ChannelState::PeerDisconnected as u32 {
 			return Err(ChannelError::Close("Peer sent update_fee when we needed a channel_reestablish".to_owned()));
 		}
-		Channel::<Signer>::check_remote_fee(fee_estimator, msg.feerate_per_kw)?;
+		Channel::<Signer>::check_remote_fee(fee_estimator, msg.feerate_per_kw, Some(self.feerate_per_kw), logger)?;
 		let feerate_over_dust_buffer = msg.feerate_per_kw > self.get_dust_buffer_feerate(None);
 
 		self.pending_update_fee = Some((msg.feerate_per_kw, FeeUpdateState::RemoteAnnounced));
@@ -6765,7 +6774,8 @@ mod tests {
 		// arithmetic, causing a panic with debug assertions enabled.
 		let fee_est = TestFeeEstimator { fee_est: 42 };
 		let bounded_fee_estimator = LowerBoundedFeeEstimator::new(&fee_est);
-		assert!(Channel::<InMemorySigner>::check_remote_fee(&bounded_fee_estimator, u32::max_value()).is_err());
+		assert!(Channel::<InMemorySigner>::check_remote_fee(&bounded_fee_estimator,
+			u32::max_value(), None, &&test_utils::TestLogger::new()).is_err());
 	}
 
 	struct Keys {
