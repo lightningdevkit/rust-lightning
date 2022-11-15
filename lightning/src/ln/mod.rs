@@ -67,6 +67,9 @@ mod chanmon_update_fail_tests;
 mod reorg_tests;
 #[cfg(test)]
 #[allow(unused_mut)]
+mod reload_tests;
+#[cfg(test)]
+#[allow(unused_mut)]
 mod onion_route_tests;
 #[cfg(test)]
 #[allow(unused_mut)]
