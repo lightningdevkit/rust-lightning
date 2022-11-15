@@ -152,16 +152,19 @@ impl<F: Fn() + Send> FutureCallback for F {
 }
 
 pub(crate) struct FutureState {
-	callbacks: Vec<Box<dyn FutureCallback>>,
+	// When we're tracking whether a callback counts as having woken the user's code, we check the
+	// first bool - set to false if we're just calling a Waker, and true if we're calling an actual
+	// user-provided function.
+	callbacks: Vec<(bool, Box<dyn FutureCallback>)>,
 	complete: bool,
 	callbacks_made: bool,
 }
 
 impl FutureState {
 	fn complete(&mut self) {
-		for callback in self.callbacks.drain(..) {
+		for (counts_as_call, callback) in self.callbacks.drain(..) {
 			callback.call();
-			self.callbacks_made = true;
+			self.callbacks_made |= counts_as_call;
 		}
 		self.complete = true;
 	}
@@ -184,7 +187,7 @@ impl Future {
 			mem::drop(state);
 			callback.call();
 		} else {
-			state.callbacks.push(callback);
+			state.callbacks.push((true, callback));
 		}
 	}
 
@@ -212,10 +215,11 @@ impl<'a> StdFuture for Future {
 	fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
 		let mut state = self.state.lock().unwrap();
 		if state.complete {
+			state.callbacks_made = true;
 			Poll::Ready(())
 		} else {
 			let waker = cx.waker().clone();
-			state.callbacks.push(Box::new(StdWaker(waker)));
+			state.callbacks.push((false, Box::new(StdWaker(waker))));
 			Poll::Pending
 		}
 	}
@@ -432,5 +436,37 @@ mod tests {
 		assert!(second_woken.load(Ordering::SeqCst));
 		assert_eq!(Pin::new(&mut future).poll(&mut Context::from_waker(&waker)), Poll::Ready(()));
 		assert_eq!(Pin::new(&mut second_future).poll(&mut Context::from_waker(&second_waker)), Poll::Ready(()));
+	}
+
+	#[test]
+	fn test_dropped_future_doesnt_count() {
+		// Tests that if a Future gets drop'd before it is poll()ed `Ready` it doesn't count as
+		// having been woken, leaving the notify-required flag set.
+		let notifier = Notifier::new();
+		notifier.notify();
+
+		// If we get a future and don't touch it we're definitely still notify-required.
+		notifier.get_future();
+		assert!(notifier.wait_timeout(Duration::from_millis(1)));
+		assert!(!notifier.wait_timeout(Duration::from_millis(1)));
+
+		// Even if we poll'd once but didn't observe a `Ready`, we should be notify-required.
+		let mut future = notifier.get_future();
+		let (woken, waker) = create_waker();
+		assert_eq!(Pin::new(&mut future).poll(&mut Context::from_waker(&waker)), Poll::Pending);
+
+		notifier.notify();
+		assert!(woken.load(Ordering::SeqCst));
+		assert!(notifier.wait_timeout(Duration::from_millis(1)));
+
+		// However, once we do poll `Ready` it should wipe the notify-required flag.
+		let mut future = notifier.get_future();
+		let (woken, waker) = create_waker();
+		assert_eq!(Pin::new(&mut future).poll(&mut Context::from_waker(&waker)), Poll::Pending);
+
+		notifier.notify();
+		assert!(woken.load(Ordering::SeqCst));
+		assert_eq!(Pin::new(&mut future).poll(&mut Context::from_waker(&waker)), Poll::Ready(()));
+		assert!(!notifier.wait_timeout(Duration::from_millis(1)));
 	}
 }
