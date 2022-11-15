@@ -12,22 +12,20 @@
 //! payments thereafter.
 
 use crate::chain::{ChannelMonitorUpdateStatus, Confirm, Listen, Watch};
-use crate::chain::channelmonitor::{ANTI_REORG_DELAY, ChannelMonitor, LATENCY_GRACE_PERIOD_BLOCKS};
+use crate::chain::channelmonitor::{ANTI_REORG_DELAY, LATENCY_GRACE_PERIOD_BLOCKS};
 use crate::chain::transaction::OutPoint;
 use crate::chain::keysinterface::KeysInterface;
 use crate::ln::channel::EXPIRE_PREV_CONFIG_TICKS;
-use crate::ln::channelmanager::{self, BREAKDOWN_TIMEOUT, ChannelManager, ChannelManagerReadArgs, MPP_TIMEOUT_TICKS, MIN_CLTV_EXPIRY_DELTA, PaymentId, PaymentSendFailure, IDEMPOTENCY_TIMEOUT_TICKS};
+use crate::ln::channelmanager::{self, BREAKDOWN_TIMEOUT, ChannelManager, MPP_TIMEOUT_TICKS, MIN_CLTV_EXPIRY_DELTA, PaymentId, PaymentSendFailure, IDEMPOTENCY_TIMEOUT_TICKS};
 use crate::ln::msgs;
 use crate::ln::msgs::ChannelMessageHandler;
 use crate::routing::router::{PaymentParameters, get_route};
 use crate::util::events::{ClosureReason, Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider};
 use crate::util::test_utils;
 use crate::util::errors::APIError;
-use crate::util::enforcing_trait_impls::EnforcingSigner;
-use crate::util::ser::{ReadableArgs, Writeable};
-use crate::io;
+use crate::util::ser::Writeable;
 
-use bitcoin::{Block, BlockHeader, BlockHash, TxMerkleNode};
+use bitcoin::{Block, BlockHeader, TxMerkleNode};
 use bitcoin::hashes::Hash;
 use bitcoin::network::constants::Network;
 
@@ -409,39 +407,8 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 
 	// The ChannelMonitor should always be the latest version, as we're required to persist it
 	// during the `commitment_signed_dance!()`.
-	let mut chan_0_monitor_serialized = test_utils::TestVecWriter(Vec::new());
-	get_monitor!(nodes[0], chan_id).write(&mut chan_0_monitor_serialized).unwrap();
-
-	persister = test_utils::TestPersister::new();
-	let keys_manager = &chanmon_cfgs[0].keys_manager;
-	new_chain_monitor = test_utils::TestChainMonitor::new(Some(nodes[0].chain_source), nodes[0].tx_broadcaster.clone(), nodes[0].logger, node_cfgs[0].fee_estimator, &persister, keys_manager);
-	nodes[0].chain_monitor = &new_chain_monitor;
-	let mut chan_0_monitor_read = &chan_0_monitor_serialized.0[..];
-	let (_, mut chan_0_monitor) = <(BlockHash, ChannelMonitor<EnforcingSigner>)>::read(
-		&mut chan_0_monitor_read, keys_manager).unwrap();
-	assert!(chan_0_monitor_read.is_empty());
-
-	let mut nodes_0_read = &nodes_0_serialized[..];
-	let (_, nodes_0_deserialized_tmp) = {
-		let mut channel_monitors = HashMap::new();
-		channel_monitors.insert(chan_0_monitor.get_funding_txo().0, &mut chan_0_monitor);
-		<(BlockHash, ChannelManager<&test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>)>::read(&mut nodes_0_read, ChannelManagerReadArgs {
-			default_config: test_default_channel_config(),
-			keys_manager,
-			fee_estimator: node_cfgs[0].fee_estimator,
-			chain_monitor: nodes[0].chain_monitor,
-			tx_broadcaster: nodes[0].tx_broadcaster.clone(),
-			logger: nodes[0].logger,
-			channel_monitors,
-		}).unwrap()
-	};
-	nodes_0_deserialized = nodes_0_deserialized_tmp;
-	assert!(nodes_0_read.is_empty());
-
-	assert_eq!(nodes[0].chain_monitor.watch_channel(chan_0_monitor.get_funding_txo().0, chan_0_monitor),
-		ChannelMonitorUpdateStatus::Completed);
-	nodes[0].node = &nodes_0_deserialized;
-	check_added_monitors!(nodes[0], 1);
+	let chan_0_monitor_serialized = get_monitor!(nodes[0], chan_id).encode();
+	reload_node!(nodes[0], test_default_channel_config(), &nodes_0_serialized, &[&chan_0_monitor_serialized], persister, new_chain_monitor, nodes_0_deserialized);
 
 	// On reload, the ChannelManager should realize it is stale compared to the ChannelMonitor and
 	// force-close the channel.
@@ -603,64 +570,10 @@ fn do_test_completed_payment_not_retryable_on_reload(use_dust: bool) {
 
 	// The ChannelMonitor should always be the latest version, as we're required to persist it
 	// during the `commitment_signed_dance!()`.
-	let mut chan_0_monitor_serialized = test_utils::TestVecWriter(Vec::new());
-	get_monitor!(nodes[0], chan_id).write(&mut chan_0_monitor_serialized).unwrap();
+	let chan_0_monitor_serialized = get_monitor!(nodes[0], chan_id).encode();
 
-	let mut chan_1_monitor_serialized = test_utils::TestVecWriter(Vec::new());
-
-	macro_rules! reload_node {
-		($chain_monitor: ident, $chan_manager: ident, $persister: ident) => { {
-			$persister = test_utils::TestPersister::new();
-			let keys_manager = &chanmon_cfgs[0].keys_manager;
-			$chain_monitor = test_utils::TestChainMonitor::new(Some(nodes[0].chain_source), nodes[0].tx_broadcaster.clone(), nodes[0].logger, node_cfgs[0].fee_estimator, &$persister, keys_manager);
-			nodes[0].chain_monitor = &$chain_monitor;
-			let mut chan_0_monitor_read = &chan_0_monitor_serialized.0[..];
-			let (_, mut chan_0_monitor) = <(BlockHash, ChannelMonitor<EnforcingSigner>)>::read(
-				&mut chan_0_monitor_read, keys_manager).unwrap();
-			assert!(chan_0_monitor_read.is_empty());
-
-			let mut chan_1_monitor = None;
-			let mut channel_monitors = HashMap::new();
-			channel_monitors.insert(chan_0_monitor.get_funding_txo().0, &mut chan_0_monitor);
-
-			if !chan_1_monitor_serialized.0.is_empty() {
-				let mut chan_1_monitor_read = &chan_1_monitor_serialized.0[..];
-				chan_1_monitor = Some(<(BlockHash, ChannelMonitor<EnforcingSigner>)>::read(
-					&mut chan_1_monitor_read, keys_manager).unwrap().1);
-				assert!(chan_1_monitor_read.is_empty());
-				channel_monitors.insert(chan_1_monitor.as_ref().unwrap().get_funding_txo().0, chan_1_monitor.as_mut().unwrap());
-			}
-
-			let mut nodes_0_read = &nodes_0_serialized[..];
-			let (_, nodes_0_deserialized_tmp) = {
-				<(BlockHash, ChannelManager<&test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>)>::read(&mut nodes_0_read, ChannelManagerReadArgs {
-					default_config: test_default_channel_config(),
-					keys_manager,
-					fee_estimator: node_cfgs[0].fee_estimator,
-					chain_monitor: nodes[0].chain_monitor,
-					tx_broadcaster: nodes[0].tx_broadcaster.clone(),
-					logger: nodes[0].logger,
-					channel_monitors,
-				}).unwrap()
-			};
-			$chan_manager = nodes_0_deserialized_tmp;
-			assert!(nodes_0_read.is_empty());
-
-			assert_eq!(nodes[0].chain_monitor.watch_channel(chan_0_monitor.get_funding_txo().0, chan_0_monitor),
-				ChannelMonitorUpdateStatus::Completed);
-			if !chan_1_monitor_serialized.0.is_empty() {
-				let funding_txo = chan_1_monitor.as_ref().unwrap().get_funding_txo().0;
-				assert_eq!(nodes[0].chain_monitor.watch_channel(funding_txo, chan_1_monitor.unwrap()),
-					ChannelMonitorUpdateStatus::Completed);
-			}
-			nodes[0].node = &$chan_manager;
-			check_added_monitors!(nodes[0], if !chan_1_monitor_serialized.0.is_empty() { 2 } else { 1 });
-
-			nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
-		} }
-	}
-
-	reload_node!(first_new_chain_monitor, first_nodes_0_deserialized, first_persister);
+	reload_node!(nodes[0], test_default_channel_config(), nodes_0_serialized, &[&chan_0_monitor_serialized], first_persister, first_new_chain_monitor, first_nodes_0_deserialized);
+	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
 
 	// On reload, the ChannelManager should realize it is stale compared to the ChannelMonitor and
 	// force-close the channel.
@@ -744,16 +657,16 @@ fn do_test_completed_payment_not_retryable_on_reload(use_dust: bool) {
 	// We set mpp_parts_remain to avoid having abandon_payment called
 	expect_payment_failed_conditions(&nodes[0], payment_hash, false, PaymentFailedConditions::new().mpp_parts_remain());
 
-	chan_0_monitor_serialized = test_utils::TestVecWriter(Vec::new());
-	get_monitor!(nodes[0], chan_id).write(&mut chan_0_monitor_serialized).unwrap();
-	chan_1_monitor_serialized = test_utils::TestVecWriter(Vec::new());
-	get_monitor!(nodes[0], chan_id_3).write(&mut chan_1_monitor_serialized).unwrap();
+	let chan_0_monitor_serialized = get_monitor!(nodes[0], chan_id).encode();
+	let chan_1_monitor_serialized = get_monitor!(nodes[0], chan_id_3).encode();
 	nodes_0_serialized = nodes[0].node.encode();
 
 	assert!(nodes[0].node.retry_payment(&new_route, payment_id).is_ok());
 	assert!(!nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 
-	reload_node!(second_new_chain_monitor, second_nodes_0_deserialized, second_persister);
+	reload_node!(nodes[0], test_default_channel_config(), nodes_0_serialized, &[&chan_0_monitor_serialized, &chan_1_monitor_serialized], second_persister, second_new_chain_monitor, second_nodes_0_deserialized);
+	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+
 	reconnect_nodes(&nodes[0], &nodes[1], (true, true), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
 
 	// Now resend the payment, delivering the HTLC and actually claiming it this time. This ensures
@@ -766,14 +679,14 @@ fn do_test_completed_payment_not_retryable_on_reload(use_dust: bool) {
 	assert!(nodes[0].node.retry_payment(&new_route, payment_id).is_err());
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 
-	chan_0_monitor_serialized = test_utils::TestVecWriter(Vec::new());
-	get_monitor!(nodes[0], chan_id).write(&mut chan_0_monitor_serialized).unwrap();
-	chan_1_monitor_serialized = test_utils::TestVecWriter(Vec::new());
-	get_monitor!(nodes[0], chan_id_3).write(&mut chan_1_monitor_serialized).unwrap();
+	let chan_0_monitor_serialized = get_monitor!(nodes[0], chan_id).encode();
+	let chan_1_monitor_serialized = get_monitor!(nodes[0], chan_id_3).encode();
 	nodes_0_serialized = nodes[0].node.encode();
 
 	// Ensure that after reload we cannot retry the payment.
-	reload_node!(third_new_chain_monitor, third_nodes_0_deserialized, third_persister);
+	reload_node!(nodes[0], test_default_channel_config(), nodes_0_serialized, &[&chan_0_monitor_serialized, &chan_1_monitor_serialized], third_persister, third_new_chain_monitor, third_nodes_0_deserialized);
+	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+
 	reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
 
 	assert!(nodes[0].node.retry_payment(&new_route, payment_id).is_err());
@@ -879,16 +792,15 @@ fn do_test_dup_htlc_onchain_fails_on_reload(persist_manager_post_event: bool, co
 
 	// If we persist the ChannelManager here, we should get the PaymentSent event after
 	// deserialization.
-	let mut chan_manager_serialized = test_utils::TestVecWriter(Vec::new());
+	let mut chan_manager_serialized = Vec::new();
 	if !persist_manager_post_event {
-		nodes[0].node.write(&mut chan_manager_serialized).unwrap();
+		chan_manager_serialized = nodes[0].node.encode();
 	}
 
 	// Now persist the ChannelMonitor and inform the ChainMonitor that we're done, generating the
 	// payment sent event.
 	chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
-	let mut chan_0_monitor_serialized = test_utils::TestVecWriter(Vec::new());
-	get_monitor!(nodes[0], chan_id).write(&mut chan_0_monitor_serialized).unwrap();
+	let chan_0_monitor_serialized = get_monitor!(nodes[0], chan_id).encode();
 	for update in mon_updates {
 		nodes[0].chain_monitor.chain_monitor.channel_monitor_updated(funding_txo, update).unwrap();
 	}
@@ -901,39 +813,11 @@ fn do_test_dup_htlc_onchain_fails_on_reload(persist_manager_post_event: bool, co
 	// If we persist the ChannelManager after we get the PaymentSent event, we shouldn't get it
 	// twice.
 	if persist_manager_post_event {
-		nodes[0].node.write(&mut chan_manager_serialized).unwrap();
+		chan_manager_serialized = nodes[0].node.encode();
 	}
 
 	// Now reload nodes[0]...
-	persister = test_utils::TestPersister::new();
-	let keys_manager = &chanmon_cfgs[0].keys_manager;
-	new_chain_monitor = test_utils::TestChainMonitor::new(Some(nodes[0].chain_source), nodes[0].tx_broadcaster.clone(), nodes[0].logger, node_cfgs[0].fee_estimator, &persister, keys_manager);
-	nodes[0].chain_monitor = &new_chain_monitor;
-	let mut chan_0_monitor_read = &chan_0_monitor_serialized.0[..];
-	let (_, mut chan_0_monitor) = <(BlockHash, ChannelMonitor<EnforcingSigner>)>::read(
-		&mut chan_0_monitor_read, keys_manager).unwrap();
-	assert!(chan_0_monitor_read.is_empty());
-
-	let (_, nodes_0_deserialized_tmp) = {
-		let mut channel_monitors = HashMap::new();
-		channel_monitors.insert(chan_0_monitor.get_funding_txo().0, &mut chan_0_monitor);
-		<(BlockHash, ChannelManager<&test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>)>
-			::read(&mut io::Cursor::new(&chan_manager_serialized.0[..]), ChannelManagerReadArgs {
-				default_config: Default::default(),
-				keys_manager,
-				fee_estimator: node_cfgs[0].fee_estimator,
-				chain_monitor: nodes[0].chain_monitor,
-				tx_broadcaster: nodes[0].tx_broadcaster.clone(),
-				logger: nodes[0].logger,
-				channel_monitors,
-			}).unwrap()
-	};
-	nodes_0_deserialized = nodes_0_deserialized_tmp;
-
-	assert_eq!(nodes[0].chain_monitor.watch_channel(chan_0_monitor.get_funding_txo().0, chan_0_monitor),
-		ChannelMonitorUpdateStatus::Completed);
-	check_added_monitors!(nodes[0], 1);
-	nodes[0].node = &nodes_0_deserialized;
+	reload_node!(nodes[0], &chan_manager_serialized, &[&chan_0_monitor_serialized], persister, new_chain_monitor, nodes_0_deserialized);
 
 	if persist_manager_post_event {
 		assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
@@ -982,10 +866,8 @@ fn test_fulfill_restart_failure() {
 
 	// The simplest way to get a failure after a fulfill is to reload nodes[1] from a state
 	// pre-fulfill, which we do by serializing it here.
-	let mut chan_manager_serialized = test_utils::TestVecWriter(Vec::new());
-	nodes[1].node.write(&mut chan_manager_serialized).unwrap();
-	let mut chan_0_monitor_serialized = test_utils::TestVecWriter(Vec::new());
-	get_monitor!(nodes[1], chan_id).write(&mut chan_0_monitor_serialized).unwrap();
+	let chan_manager_serialized = nodes[1].node.encode();
+	let chan_0_monitor_serialized = get_monitor!(nodes[1], chan_id).encode();
 
 	nodes[1].node.claim_funds(payment_preimage);
 	check_added_monitors!(nodes[1], 1);
@@ -996,35 +878,7 @@ fn test_fulfill_restart_failure() {
 	expect_payment_sent_without_paths!(nodes[0], payment_preimage);
 
 	// Now reload nodes[1]...
-	persister = test_utils::TestPersister::new();
-	let keys_manager = &chanmon_cfgs[1].keys_manager;
-	new_chain_monitor = test_utils::TestChainMonitor::new(Some(nodes[1].chain_source), nodes[1].tx_broadcaster.clone(), nodes[1].logger, node_cfgs[1].fee_estimator, &persister, keys_manager);
-	nodes[1].chain_monitor = &new_chain_monitor;
-	let mut chan_0_monitor_read = &chan_0_monitor_serialized.0[..];
-	let (_, mut chan_0_monitor) = <(BlockHash, ChannelMonitor<EnforcingSigner>)>::read(
-		&mut chan_0_monitor_read, keys_manager).unwrap();
-	assert!(chan_0_monitor_read.is_empty());
-
-	let (_, nodes_1_deserialized_tmp) = {
-		let mut channel_monitors = HashMap::new();
-		channel_monitors.insert(chan_0_monitor.get_funding_txo().0, &mut chan_0_monitor);
-		<(BlockHash, ChannelManager<&test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>)>
-			::read(&mut io::Cursor::new(&chan_manager_serialized.0[..]), ChannelManagerReadArgs {
-				default_config: Default::default(),
-				keys_manager,
-				fee_estimator: node_cfgs[1].fee_estimator,
-				chain_monitor: nodes[1].chain_monitor,
-				tx_broadcaster: nodes[1].tx_broadcaster.clone(),
-				logger: nodes[1].logger,
-				channel_monitors,
-			}).unwrap()
-	};
-	nodes_1_deserialized = nodes_1_deserialized_tmp;
-
-	assert_eq!(nodes[1].chain_monitor.watch_channel(chan_0_monitor.get_funding_txo().0, chan_0_monitor),
-		ChannelMonitorUpdateStatus::Completed);
-	check_added_monitors!(nodes[1], 1);
-	nodes[1].node = &nodes_1_deserialized;
+	reload_node!(nodes[1], &chan_manager_serialized, &[&chan_0_monitor_serialized], persister, new_chain_monitor, nodes_1_deserialized);
 
 	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
 	reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));

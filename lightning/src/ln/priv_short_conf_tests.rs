@@ -11,20 +11,18 @@
 //! other behavior that exists only on private channels or with a semi-trusted counterparty (eg
 //! LSP).
 
-use crate::chain::{ChannelMonitorUpdateStatus, Watch};
-use crate::chain::channelmonitor::ChannelMonitor;
+use crate::chain::ChannelMonitorUpdateStatus;
 use crate::chain::keysinterface::{Recipient, KeysInterface};
-use crate::ln::channelmanager::{self, ChannelManager, ChannelManagerReadArgs, MIN_CLTV_EXPIRY_DELTA, PaymentId};
+use crate::ln::channelmanager::{self, ChannelManager, MIN_CLTV_EXPIRY_DELTA, PaymentId};
 use crate::routing::gossip::RoutingFees;
 use crate::routing::router::{PaymentParameters, RouteHint, RouteHintHop};
 use crate::ln::features::ChannelTypeFeatures;
 use crate::ln::msgs;
 use crate::ln::msgs::{ChannelMessageHandler, RoutingMessageHandler, ChannelUpdate, ErrorAction};
 use crate::ln::wire::Encode;
-use crate::util::enforcing_trait_impls::EnforcingSigner;
 use crate::util::events::{ClosureReason, Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider};
 use crate::util::config::UserConfig;
-use crate::util::ser::{Writeable, ReadableArgs};
+use crate::util::ser::Writeable;
 use crate::util::test_utils;
 
 use crate::prelude::*;
@@ -33,7 +31,6 @@ use core::default::Default;
 use crate::ln::functional_test_utils::*;
 
 use bitcoin::blockdata::constants::genesis_block;
-use bitcoin::hash_types::BlockHash;
 use bitcoin::hashes::Hash;
 use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::network::constants::Network;
@@ -100,49 +97,11 @@ fn test_priv_forwarding_rejection() {
 	nodes[2].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
 
 	let nodes_1_serialized = nodes[1].node.encode();
-	let mut monitor_a_serialized = test_utils::TestVecWriter(Vec::new());
-	let mut monitor_b_serialized = test_utils::TestVecWriter(Vec::new());
-	get_monitor!(nodes[1], chan_id_1).write(&mut monitor_a_serialized).unwrap();
-	get_monitor!(nodes[1], chan_id_2).write(&mut monitor_b_serialized).unwrap();
-
-	persister = test_utils::TestPersister::new();
-	let keys_manager = &chanmon_cfgs[1].keys_manager;
-	new_chain_monitor = test_utils::TestChainMonitor::new(Some(nodes[1].chain_source), nodes[1].tx_broadcaster.clone(), nodes[1].logger, node_cfgs[1].fee_estimator, &persister, keys_manager);
-	nodes[1].chain_monitor = &new_chain_monitor;
-
-	let mut monitor_a_read = &monitor_a_serialized.0[..];
-	let mut monitor_b_read = &monitor_b_serialized.0[..];
-	let (_, mut monitor_a) = <(BlockHash, ChannelMonitor<EnforcingSigner>)>::read(&mut monitor_a_read, keys_manager).unwrap();
-	let (_, mut monitor_b) = <(BlockHash, ChannelMonitor<EnforcingSigner>)>::read(&mut monitor_b_read, keys_manager).unwrap();
-	assert!(monitor_a_read.is_empty());
-	assert!(monitor_b_read.is_empty());
+	let monitor_a_serialized = get_monitor!(nodes[1], chan_id_1).encode();
+	let monitor_b_serialized = get_monitor!(nodes[1], chan_id_2).encode();
 
 	no_announce_cfg.accept_forwards_to_priv_channels = true;
-
-	let mut nodes_1_read = &nodes_1_serialized[..];
-	let (_, nodes_1_deserialized_tmp) = {
-		let mut channel_monitors = HashMap::new();
-		channel_monitors.insert(monitor_a.get_funding_txo().0, &mut monitor_a);
-		channel_monitors.insert(monitor_b.get_funding_txo().0, &mut monitor_b);
-		<(BlockHash, ChannelManager<&test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>)>::read(&mut nodes_1_read, ChannelManagerReadArgs {
-			default_config: no_announce_cfg,
-			keys_manager,
-			fee_estimator: node_cfgs[1].fee_estimator,
-			chain_monitor: nodes[1].chain_monitor,
-			tx_broadcaster: nodes[1].tx_broadcaster.clone(),
-			logger: nodes[1].logger,
-			channel_monitors,
-		}).unwrap()
-	};
-	assert!(nodes_1_read.is_empty());
-	nodes_1_deserialized = nodes_1_deserialized_tmp;
-
-	assert_eq!(nodes[1].chain_monitor.watch_channel(monitor_a.get_funding_txo().0, monitor_a),
-		ChannelMonitorUpdateStatus::Completed);
-	assert_eq!(nodes[1].chain_monitor.watch_channel(monitor_b.get_funding_txo().0, monitor_b),
-		ChannelMonitorUpdateStatus::Completed);
-	check_added_monitors!(nodes[1], 2);
-	nodes[1].node = &nodes_1_deserialized;
+	reload_node!(nodes[1], no_announce_cfg, &nodes_1_serialized, &[&monitor_a_serialized, &monitor_b_serialized], persister, new_chain_monitor, nodes_1_deserialized);
 
 	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init { features: channelmanager::provided_init_features(), remote_network_address: None }).unwrap();
 	nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id(), &msgs::Init { features: channelmanager::provided_init_features(), remote_network_address: None }).unwrap();

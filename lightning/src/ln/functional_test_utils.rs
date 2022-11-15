@@ -276,6 +276,7 @@ pub struct NodeCfg<'a> {
 pub struct Node<'a, 'b: 'a, 'c: 'b> {
 	pub chain_source: &'c test_utils::TestChainSource,
 	pub tx_broadcaster: &'c test_utils::TestBroadcaster,
+	pub fee_estimator: &'c test_utils::TestFeeEstimator,
 	pub chain_monitor: &'b test_utils::TestChainMonitor<'c>,
 	pub keys_manager: &'b test_utils::TestKeysInterface,
 	pub node: &'a ChannelManager<&'b TestChainMonitor<'c>, &'c test_utils::TestBroadcaster, &'b test_utils::TestKeysInterface, &'c test_utils::TestFeeEstimator, &'c test_utils::TestLogger>,
@@ -616,6 +617,60 @@ macro_rules! check_added_monitors {
 			added_monitors.clear();
 		}
 	}
+}
+
+pub fn _reload_node<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, default_config: UserConfig, chanman_encoded: &[u8], monitors_encoded: &[&[u8]]) -> ChannelManager<&'b TestChainMonitor<'c>, &'c test_utils::TestBroadcaster, &'b test_utils::TestKeysInterface, &'c test_utils::TestFeeEstimator, &'c test_utils::TestLogger> {
+	let mut monitors_read = Vec::with_capacity(monitors_encoded.len());
+	for encoded in monitors_encoded {
+		let mut monitor_read = &encoded[..];
+		let (_, monitor) = <(BlockHash, ChannelMonitor<EnforcingSigner>)>
+			::read(&mut monitor_read, node.keys_manager).unwrap();
+		assert!(monitor_read.is_empty());
+		monitors_read.push(monitor);
+	}
+
+	let mut node_read = &chanman_encoded[..];
+	let (_, node_deserialized) = {
+		let mut channel_monitors = HashMap::new();
+		for monitor in monitors_read.iter_mut() {
+			assert!(channel_monitors.insert(monitor.get_funding_txo().0, monitor).is_none());
+		}
+		<(BlockHash, ChannelManager<&test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>)>::read(&mut node_read, ChannelManagerReadArgs {
+			default_config,
+			keys_manager: node.keys_manager,
+			fee_estimator: node.fee_estimator,
+			chain_monitor: node.chain_monitor,
+			tx_broadcaster: node.tx_broadcaster,
+			logger: node.logger,
+			channel_monitors,
+		}).unwrap()
+	};
+	assert!(node_read.is_empty());
+
+	for monitor in monitors_read.drain(..) {
+		assert_eq!(node.chain_monitor.watch_channel(monitor.get_funding_txo().0, monitor),
+			ChannelMonitorUpdateStatus::Completed);
+		check_added_monitors!(node, 1);
+	}
+
+	node_deserialized
+}
+
+#[cfg(test)]
+macro_rules! reload_node {
+	($node: expr, $new_config: expr, $chanman_encoded: expr, $monitors_encoded: expr, $persister: ident, $new_chain_monitor: ident, $new_channelmanager: ident) => {
+		let chanman_encoded = $chanman_encoded;
+
+		$persister = test_utils::TestPersister::new();
+		$new_chain_monitor = test_utils::TestChainMonitor::new(Some($node.chain_source), $node.tx_broadcaster.clone(), $node.logger, $node.fee_estimator, &$persister, &$node.keys_manager);
+		$node.chain_monitor = &$new_chain_monitor;
+
+		$new_channelmanager = _reload_node(&$node, $new_config, &chanman_encoded, $monitors_encoded);
+		$node.node = &$new_channelmanager;
+	};
+	($node: expr, $chanman_encoded: expr, $monitors_encoded: expr, $persister: ident, $new_chain_monitor: ident, $new_channelmanager: ident) => {
+		reload_node!($node, $crate::util::config::UserConfig::default(), $chanman_encoded, $monitors_encoded, $persister, $new_chain_monitor, $new_channelmanager);
+	};
 }
 
 pub fn create_funding_transaction<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, expected_counterparty_node_id: &PublicKey, expected_chan_value: u64, expected_user_chan_id: u128) -> ([u8; 32], Transaction, OutPoint) {
@@ -2126,6 +2181,7 @@ pub fn create_network<'a, 'b: 'a, 'c: 'b>(node_count: usize, cfgs: &'b Vec<NodeC
 		let gossip_sync = P2PGossipSync::new(&cfgs[i].network_graph, None, cfgs[i].logger);
 		nodes.push(Node{
 			chain_source: cfgs[i].chain_source, tx_broadcaster: cfgs[i].tx_broadcaster,
+			fee_estimator: cfgs[i].fee_estimator,
 			chain_monitor: &cfgs[i].chain_monitor, keys_manager: &cfgs[i].keys_manager,
 			node: &chan_mgrs[i], network_graph: &cfgs[i].network_graph, gossip_sync,
 			node_seed: cfgs[i].node_seed, network_chan_count: chan_count.clone(),

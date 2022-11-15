@@ -56,7 +56,7 @@ use alloc::collections::BTreeSet;
 use core::default::Default;
 use core::iter::repeat;
 use bitcoin::hashes::Hash;
-use crate::sync::{Arc, Mutex};
+use crate::sync::Mutex;
 
 use crate::ln::functional_test_utils::*;
 use crate::ln::chan_utils::CommitmentTransaction;
@@ -3991,40 +3991,9 @@ fn test_funding_peer_disconnect() {
 	// channel_announcement from the cached signatures.
 	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
 
-	let nodes_0_serialized = nodes[0].node.encode();
-	let mut chan_0_monitor_serialized = test_utils::TestVecWriter(Vec::new());
-	get_monitor!(nodes[0], chan_id).write(&mut chan_0_monitor_serialized).unwrap();
+	let chan_0_monitor_serialized = get_monitor!(nodes[0], chan_id).encode();
 
-	persister = test_utils::TestPersister::new();
-	let keys_manager = &chanmon_cfgs[0].keys_manager;
-	new_chain_monitor = test_utils::TestChainMonitor::new(Some(nodes[0].chain_source), nodes[0].tx_broadcaster.clone(), nodes[0].logger, node_cfgs[0].fee_estimator, &persister, keys_manager);
-	nodes[0].chain_monitor = &new_chain_monitor;
-	let mut chan_0_monitor_read = &chan_0_monitor_serialized.0[..];
-	let (_, mut chan_0_monitor) = <(BlockHash, ChannelMonitor<EnforcingSigner>)>::read(
-		&mut chan_0_monitor_read, keys_manager).unwrap();
-	assert!(chan_0_monitor_read.is_empty());
-
-	let mut nodes_0_read = &nodes_0_serialized[..];
-	let (_, nodes_0_deserialized_tmp) = {
-		let mut channel_monitors = HashMap::new();
-		channel_monitors.insert(chan_0_monitor.get_funding_txo().0, &mut chan_0_monitor);
-		<(BlockHash, ChannelManager<&test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>)>::read(&mut nodes_0_read, ChannelManagerReadArgs {
-			default_config: UserConfig::default(),
-			keys_manager,
-			fee_estimator: node_cfgs[0].fee_estimator,
-			chain_monitor: nodes[0].chain_monitor,
-			tx_broadcaster: nodes[0].tx_broadcaster.clone(),
-			logger: nodes[0].logger,
-			channel_monitors,
-		}).unwrap()
-	};
-	nodes_0_deserialized = nodes_0_deserialized_tmp;
-	assert!(nodes_0_read.is_empty());
-
-	assert_eq!(nodes[0].chain_monitor.watch_channel(chan_0_monitor.get_funding_txo().0, chan_0_monitor),
-		ChannelMonitorUpdateStatus::Completed);
-	nodes[0].node = &nodes_0_deserialized;
-	check_added_monitors!(nodes[0], 1);
+	reload_node!(nodes[0], &nodes[0].node.encode(), &[&chan_0_monitor_serialized], persister, new_chain_monitor, nodes_0_deserialized);
 
 	reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
 }
@@ -4339,8 +4308,6 @@ fn test_no_txn_manager_serialize_deserialize() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	let logger: test_utils::TestLogger;
-	let fee_estimator: test_utils::TestFeeEstimator;
 	let persister: test_utils::TestPersister;
 	let new_chain_monitor: test_utils::TestChainMonitor;
 	let nodes_0_deserialized: ChannelManager<&test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>;
@@ -4350,45 +4317,9 @@ fn test_no_txn_manager_serialize_deserialize() {
 
 	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
 
-	let nodes_0_serialized = nodes[0].node.encode();
-	let mut chan_0_monitor_serialized = test_utils::TestVecWriter(Vec::new());
-	get_monitor!(nodes[0], OutPoint { txid: tx.txid(), index: 0 }.to_channel_id())
-		.write(&mut chan_0_monitor_serialized).unwrap();
-
-	logger = test_utils::TestLogger::new();
-	fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) };
-	persister = test_utils::TestPersister::new();
-	let keys_manager = &chanmon_cfgs[0].keys_manager;
-	new_chain_monitor = test_utils::TestChainMonitor::new(Some(nodes[0].chain_source), nodes[0].tx_broadcaster.clone(), &logger, &fee_estimator, &persister, keys_manager);
-	nodes[0].chain_monitor = &new_chain_monitor;
-	let mut chan_0_monitor_read = &chan_0_monitor_serialized.0[..];
-	let (_, mut chan_0_monitor) = <(BlockHash, ChannelMonitor<EnforcingSigner>)>::read(
-		&mut chan_0_monitor_read, keys_manager).unwrap();
-	assert!(chan_0_monitor_read.is_empty());
-
-	let mut nodes_0_read = &nodes_0_serialized[..];
-	let config = UserConfig::default();
-	let (_, nodes_0_deserialized_tmp) = {
-		let mut channel_monitors = HashMap::new();
-		channel_monitors.insert(chan_0_monitor.get_funding_txo().0, &mut chan_0_monitor);
-		<(BlockHash, ChannelManager<&test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>)>::read(&mut nodes_0_read, ChannelManagerReadArgs {
-			default_config: config,
-			keys_manager,
-			fee_estimator: &fee_estimator,
-			chain_monitor: nodes[0].chain_monitor,
-			tx_broadcaster: nodes[0].tx_broadcaster.clone(),
-			logger: &logger,
-			channel_monitors,
-		}).unwrap()
-	};
-	nodes_0_deserialized = nodes_0_deserialized_tmp;
-	assert!(nodes_0_read.is_empty());
-
-	assert_eq!(nodes[0].chain_monitor.watch_channel(chan_0_monitor.get_funding_txo().0, chan_0_monitor),
-		ChannelMonitorUpdateStatus::Completed);
-	nodes[0].node = &nodes_0_deserialized;
-	assert_eq!(nodes[0].node.list_channels().len(), 1);
-	check_added_monitors!(nodes[0], 1);
+	let chan_0_monitor_serialized =
+		get_monitor!(nodes[0], OutPoint { txid: tx.txid(), index: 0 }.to_channel_id()).encode();
+	reload_node!(nodes[0], nodes[0].node.encode(), &[&chan_0_monitor_serialized], persister, new_chain_monitor, nodes_0_deserialized);
 
 	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init { features: channelmanager::provided_init_features(), remote_network_address: None }).unwrap();
 	let reestablish_1 = get_chan_reestablish_msgs!(nodes[0], nodes[1]);
@@ -4417,9 +4348,7 @@ fn test_manager_serialize_deserialize_events() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	let fee_estimator: test_utils::TestFeeEstimator;
 	let persister: test_utils::TestPersister;
-	let logger: test_utils::TestLogger;
 	let new_chain_monitor: test_utils::TestChainMonitor;
 	let nodes_0_deserialized: ChannelManager<&test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>;
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
@@ -4462,44 +4391,10 @@ fn test_manager_serialize_deserialize_events() {
 	nodes.push(node_b);
 
 	// Start the de/seriailization process mid-channel creation to check that the channel manager will hold onto events that are serialized
-	let nodes_0_serialized = nodes[0].node.encode();
-	let mut chan_0_monitor_serialized = test_utils::TestVecWriter(Vec::new());
-	get_monitor!(nodes[0], bs_funding_signed.channel_id).write(&mut chan_0_monitor_serialized).unwrap();
-
-	fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) };
-	logger = test_utils::TestLogger::new();
-	persister = test_utils::TestPersister::new();
-	let keys_manager = &chanmon_cfgs[0].keys_manager;
-	new_chain_monitor = test_utils::TestChainMonitor::new(Some(nodes[0].chain_source), nodes[0].tx_broadcaster.clone(), &logger, &fee_estimator, &persister, keys_manager);
-	nodes[0].chain_monitor = &new_chain_monitor;
-	let mut chan_0_monitor_read = &chan_0_monitor_serialized.0[..];
-	let (_, mut chan_0_monitor) = <(BlockHash, ChannelMonitor<EnforcingSigner>)>::read(
-		&mut chan_0_monitor_read, keys_manager).unwrap();
-	assert!(chan_0_monitor_read.is_empty());
-
-	let mut nodes_0_read = &nodes_0_serialized[..];
-	let config = UserConfig::default();
-	let (_, nodes_0_deserialized_tmp) = {
-		let mut channel_monitors = HashMap::new();
-		channel_monitors.insert(chan_0_monitor.get_funding_txo().0, &mut chan_0_monitor);
-		<(BlockHash, ChannelManager<&test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>)>::read(&mut nodes_0_read, ChannelManagerReadArgs {
-			default_config: config,
-			keys_manager,
-			fee_estimator: &fee_estimator,
-			chain_monitor: nodes[0].chain_monitor,
-			tx_broadcaster: nodes[0].tx_broadcaster.clone(),
-			logger: &logger,
-			channel_monitors,
-		}).unwrap()
-	};
-	nodes_0_deserialized = nodes_0_deserialized_tmp;
-	assert!(nodes_0_read.is_empty());
+	let chan_0_monitor_serialized = get_monitor!(nodes[0], bs_funding_signed.channel_id).encode();
+	reload_node!(nodes[0], nodes[0].node.encode(), &[&chan_0_monitor_serialized], persister, new_chain_monitor, nodes_0_deserialized);
 
 	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
-
-	assert_eq!(nodes[0].chain_monitor.watch_channel(chan_0_monitor.get_funding_txo().0, chan_0_monitor),
-		ChannelMonitorUpdateStatus::Completed);
-	nodes[0].node = &nodes_0_deserialized;
 
 	// After deserializing, make sure the funding_transaction is still held by the channel manager
 	let events_4 = nodes[0].node.get_and_clear_pending_events();
@@ -4509,7 +4404,6 @@ fn test_manager_serialize_deserialize_events() {
 
 	// Make sure the channel is functioning as though the de/serialization never happened
 	assert_eq!(nodes[0].node.list_channels().len(), 1);
-	check_added_monitors!(nodes[0], 1);
 
 	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init { features: channelmanager::provided_init_features(), remote_network_address: None }).unwrap();
 	let reestablish_1 = get_chan_reestablish_msgs!(nodes[0], nodes[1]);
@@ -4537,8 +4431,6 @@ fn test_simple_manager_serialize_deserialize() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	let logger: test_utils::TestLogger;
-	let fee_estimator: test_utils::TestFeeEstimator;
 	let persister: test_utils::TestPersister;
 	let new_chain_monitor: test_utils::TestChainMonitor;
 	let nodes_0_deserialized: ChannelManager<&test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>;
@@ -4550,42 +4442,8 @@ fn test_simple_manager_serialize_deserialize() {
 
 	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
 
-	let nodes_0_serialized = nodes[0].node.encode();
-	let mut chan_0_monitor_serialized = test_utils::TestVecWriter(Vec::new());
-	get_monitor!(nodes[0], chan_id).write(&mut chan_0_monitor_serialized).unwrap();
-
-	logger = test_utils::TestLogger::new();
-	fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) };
-	persister = test_utils::TestPersister::new();
-	let keys_manager = &chanmon_cfgs[0].keys_manager;
-	new_chain_monitor = test_utils::TestChainMonitor::new(Some(nodes[0].chain_source), nodes[0].tx_broadcaster.clone(), &logger, &fee_estimator, &persister, keys_manager);
-	nodes[0].chain_monitor = &new_chain_monitor;
-	let mut chan_0_monitor_read = &chan_0_monitor_serialized.0[..];
-	let (_, mut chan_0_monitor) = <(BlockHash, ChannelMonitor<EnforcingSigner>)>::read(
-		&mut chan_0_monitor_read, keys_manager).unwrap();
-	assert!(chan_0_monitor_read.is_empty());
-
-	let mut nodes_0_read = &nodes_0_serialized[..];
-	let (_, nodes_0_deserialized_tmp) = {
-		let mut channel_monitors = HashMap::new();
-		channel_monitors.insert(chan_0_monitor.get_funding_txo().0, &mut chan_0_monitor);
-		<(BlockHash, ChannelManager<&test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>)>::read(&mut nodes_0_read, ChannelManagerReadArgs {
-			default_config: UserConfig::default(),
-			keys_manager,
-			fee_estimator: &fee_estimator,
-			chain_monitor: nodes[0].chain_monitor,
-			tx_broadcaster: nodes[0].tx_broadcaster.clone(),
-			logger: &logger,
-			channel_monitors,
-		}).unwrap()
-	};
-	nodes_0_deserialized = nodes_0_deserialized_tmp;
-	assert!(nodes_0_read.is_empty());
-
-	assert_eq!(nodes[0].chain_monitor.watch_channel(chan_0_monitor.get_funding_txo().0, chan_0_monitor),
-		ChannelMonitorUpdateStatus::Completed);
-	nodes[0].node = &nodes_0_deserialized;
-	check_added_monitors!(nodes[0], 1);
+	let chan_0_monitor_serialized = get_monitor!(nodes[0], chan_id).encode();
+	reload_node!(nodes[0], nodes[0].node.encode(), &[&chan_0_monitor_serialized], persister, new_chain_monitor, nodes_0_deserialized);
 
 	reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
 
@@ -4630,9 +4488,7 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 	// nodes[3])
 	let mut node_0_monitors_serialized = Vec::new();
 	for chan_id_iter in &[chan_id_1, chan_id_2, channel_id] {
-		let mut writer = test_utils::TestVecWriter(Vec::new());
-		get_monitor!(nodes[0], chan_id_iter).write(&mut writer).unwrap();
-		node_0_monitors_serialized.push(writer.0);
+		node_0_monitors_serialized.push(get_monitor!(nodes[0], chan_id_iter).encode());
 	}
 
 	logger = test_utils::TestLogger::new();
@@ -7475,18 +7331,13 @@ fn do_test_data_loss_protect(reconnect_panicing: bool) {
 	// chain::Watch API requirements have been violated (e.g. the user restored from a backup). The
 	// panic message informs the user they should force-close without broadcasting, which is tested
 	// if `reconnect_panicing` is not set.
-	let persister;
-	let logger;
-	let fee_estimator;
-	let tx_broadcaster;
-	let chain_source;
 	let mut chanmon_cfgs = create_chanmon_cfgs(2);
 	// We broadcast during Drop because chanmon is out of sync with chanmgr, which would cause a panic
 	// during signing due to revoked tx
 	chanmon_cfgs[0].keys_manager.disable_revocation_policy_check = true;
-	let keys_manager = &chanmon_cfgs[0].keys_manager;
-	let monitor;
-	let node_state_0;
+	let persister;
+	let new_chain_monitor;
+	let nodes_0_deserialized;
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
@@ -7495,8 +7346,7 @@ fn do_test_data_loss_protect(reconnect_panicing: bool) {
 
 	// Cache node A state before any channel update
 	let previous_node_state = nodes[0].node.encode();
-	let mut previous_chain_monitor_state = test_utils::TestVecWriter(Vec::new());
-	get_monitor!(nodes[0], chan.2).write(&mut previous_chain_monitor_state).unwrap();
+	let previous_chain_monitor_state = get_monitor!(nodes[0], chan.2).encode();
 
 	send_payment(&nodes[0], &vec!(&nodes[1])[..], 8000000);
 	send_payment(&nodes[0], &vec!(&nodes[1])[..], 8000000);
@@ -7504,34 +7354,7 @@ fn do_test_data_loss_protect(reconnect_panicing: bool) {
 	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
 	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
 
-	// Restore node A from previous state
-	logger = test_utils::TestLogger::with_id(format!("node {}", 0));
-	let mut chain_monitor = <(BlockHash, ChannelMonitor<EnforcingSigner>)>::read(&mut io::Cursor::new(previous_chain_monitor_state.0), keys_manager).unwrap().1;
-	chain_source = test_utils::TestChainSource::new(Network::Testnet);
-	tx_broadcaster = test_utils::TestBroadcaster { txn_broadcasted: Mutex::new(Vec::new()), blocks: Arc::new(Mutex::new(Vec::new())) };
-	fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) };
-	persister = test_utils::TestPersister::new();
-	monitor = test_utils::TestChainMonitor::new(Some(&chain_source), &tx_broadcaster, &logger, &fee_estimator, &persister, keys_manager);
-	node_state_0 = {
-		let mut channel_monitors = HashMap::new();
-		channel_monitors.insert(OutPoint { txid: chan.3.txid(), index: 0 }, &mut chain_monitor);
-		<(BlockHash, ChannelManager<&test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>)>::read(&mut io::Cursor::new(previous_node_state), ChannelManagerReadArgs {
-			keys_manager: keys_manager,
-			fee_estimator: &fee_estimator,
-			chain_monitor: &monitor,
-			logger: &logger,
-			tx_broadcaster: &tx_broadcaster,
-			default_config: UserConfig::default(),
-			channel_monitors,
-		}).unwrap().1
-	};
-	nodes[0].node = &node_state_0;
-	assert_eq!(monitor.watch_channel(OutPoint { txid: chan.3.txid(), index: 0 }, chain_monitor),
-		ChannelMonitorUpdateStatus::Completed);
-	nodes[0].chain_monitor = &monitor;
-	nodes[0].chain_source = &chain_source;
-
-	check_added_monitors!(nodes[0], 1);
+	reload_node!(nodes[0], previous_node_state, &[&previous_chain_monitor_state], persister, new_chain_monitor, nodes_0_deserialized);
 
 	if reconnect_panicing {
 		nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init { features: channelmanager::provided_init_features(), remote_network_address: None }).unwrap();
@@ -9688,50 +9511,9 @@ fn test_forwardable_regen() {
 	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
 	nodes[2].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
 
-	let nodes_1_serialized = nodes[1].node.encode();
-	let mut chan_0_monitor_serialized = test_utils::TestVecWriter(Vec::new());
-	let mut chan_1_monitor_serialized = test_utils::TestVecWriter(Vec::new());
-	get_monitor!(nodes[1], chan_id_1).write(&mut chan_0_monitor_serialized).unwrap();
-	get_monitor!(nodes[1], chan_id_2).write(&mut chan_1_monitor_serialized).unwrap();
-
-	persister = test_utils::TestPersister::new();
-	let keys_manager = &chanmon_cfgs[1].keys_manager;
-	new_chain_monitor = test_utils::TestChainMonitor::new(Some(nodes[1].chain_source), nodes[1].tx_broadcaster.clone(), nodes[1].logger, node_cfgs[1].fee_estimator, &persister, keys_manager);
-	nodes[1].chain_monitor = &new_chain_monitor;
-
-	let mut chan_0_monitor_read = &chan_0_monitor_serialized.0[..];
-	let (_, mut chan_0_monitor) = <(BlockHash, ChannelMonitor<EnforcingSigner>)>::read(
-		&mut chan_0_monitor_read, keys_manager).unwrap();
-	assert!(chan_0_monitor_read.is_empty());
-	let mut chan_1_monitor_read = &chan_1_monitor_serialized.0[..];
-	let (_, mut chan_1_monitor) = <(BlockHash, ChannelMonitor<EnforcingSigner>)>::read(
-		&mut chan_1_monitor_read, keys_manager).unwrap();
-	assert!(chan_1_monitor_read.is_empty());
-
-	let mut nodes_1_read = &nodes_1_serialized[..];
-	let (_, nodes_1_deserialized_tmp) = {
-		let mut channel_monitors = HashMap::new();
-		channel_monitors.insert(chan_0_monitor.get_funding_txo().0, &mut chan_0_monitor);
-		channel_monitors.insert(chan_1_monitor.get_funding_txo().0, &mut chan_1_monitor);
-		<(BlockHash, ChannelManager<&test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>)>::read(&mut nodes_1_read, ChannelManagerReadArgs {
-			default_config: UserConfig::default(),
-			keys_manager,
-			fee_estimator: node_cfgs[1].fee_estimator,
-			chain_monitor: nodes[1].chain_monitor,
-			tx_broadcaster: nodes[1].tx_broadcaster.clone(),
-			logger: nodes[1].logger,
-			channel_monitors,
-		}).unwrap()
-	};
-	nodes_1_deserialized = nodes_1_deserialized_tmp;
-	assert!(nodes_1_read.is_empty());
-
-	assert_eq!(nodes[1].chain_monitor.watch_channel(chan_0_monitor.get_funding_txo().0, chan_0_monitor),
-		ChannelMonitorUpdateStatus::Completed);
-	assert_eq!(nodes[1].chain_monitor.watch_channel(chan_1_monitor.get_funding_txo().0, chan_1_monitor),
-		ChannelMonitorUpdateStatus::Completed);
-	nodes[1].node = &nodes_1_deserialized;
-	check_added_monitors!(nodes[1], 2);
+	let chan_0_monitor_serialized = get_monitor!(nodes[1], chan_id_1).encode();
+	let chan_1_monitor_serialized = get_monitor!(nodes[1], chan_id_2).encode();
+	reload_node!(nodes[1], nodes[1].node.encode(), &[&chan_0_monitor_serialized, &chan_1_monitor_serialized], persister, new_chain_monitor, nodes_1_deserialized);
 
 	reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
 	// Note that nodes[1] and nodes[2] resend their channel_ready here since they haven't updated
@@ -10141,8 +9923,7 @@ fn do_test_partial_claim_before_restart(persist_both_monitors: bool) {
 		}
 	}
 
-	let mut original_manager = test_utils::TestVecWriter(Vec::new());
-	nodes[3].node.write(&mut original_manager).unwrap();
+	let original_manager = nodes[3].node.encode();
 
 	expect_payment_received!(nodes[3], payment_hash, payment_secret, 15_000_000);
 
@@ -10171,41 +9952,11 @@ fn do_test_partial_claim_before_restart(persist_both_monitors: bool) {
 	}
 
 	// Now restart nodes[3].
-	persister = test_utils::TestPersister::new();
-	let keys_manager = &chanmon_cfgs[3].keys_manager;
-	new_chain_monitor = test_utils::TestChainMonitor::new(Some(nodes[3].chain_source), nodes[3].tx_broadcaster.clone(), nodes[3].logger, node_cfgs[3].fee_estimator, &persister, keys_manager);
-	nodes[3].chain_monitor = &new_chain_monitor;
-	let mut monitors = Vec::new();
-	for mut monitor_data in [original_monitor, updated_monitor].iter() {
-		let (_, mut deserialized_monitor) = <(BlockHash, ChannelMonitor<EnforcingSigner>)>::read(&mut &monitor_data.0[..], keys_manager).unwrap();
-		monitors.push(deserialized_monitor);
-	}
+	reload_node!(nodes[3], original_manager, &[&updated_monitor.0, &original_monitor.0], persister, new_chain_monitor, nodes_3_deserialized);
 
-	let config = UserConfig::default();
-	nodes_3_deserialized = {
-		let mut channel_monitors = HashMap::new();
-		for monitor in monitors.iter_mut() {
-			channel_monitors.insert(monitor.get_funding_txo().0, monitor);
-		}
-		<(BlockHash, ChannelManager<&test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>)>::read(&mut &original_manager.0[..], ChannelManagerReadArgs {
-			default_config: config,
-			keys_manager,
-			fee_estimator: node_cfgs[3].fee_estimator,
-			chain_monitor: nodes[3].chain_monitor,
-			tx_broadcaster: nodes[3].tx_broadcaster.clone(),
-			logger: nodes[3].logger,
-			channel_monitors,
-		}).unwrap().1
-	};
-	nodes[3].node = &nodes_3_deserialized;
-
-	for monitor in monitors {
-		// On startup the preimage should have been copied into the non-persisted monitor:
-		assert!(monitor.get_stored_preimages().contains_key(&payment_hash));
-		assert_eq!(nodes[3].chain_monitor.watch_channel(monitor.get_funding_txo().0.clone(), monitor),
-			ChannelMonitorUpdateStatus::Completed);
-	}
-	check_added_monitors!(nodes[3], 2);
+	// On startup the preimage should have been copied into the non-persisted monitor:
+	assert!(get_monitor!(nodes[3], chan_id_persisted).get_stored_preimages().contains_key(&payment_hash));
+	assert!(get_monitor!(nodes[3], chan_id_not_persisted).get_stored_preimages().contains_key(&payment_hash));
 
 	nodes[1].node.peer_disconnected(&nodes[3].node.get_our_node_id(), false);
 	nodes[2].node.peer_disconnected(&nodes[3].node.get_our_node_id(), false);
