@@ -4639,7 +4639,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 					}
 					channel_state.pending_msg_events.push(events::MessageSendEvent::SendAcceptChannel {
 						node_id: counterparty_node_id.clone(),
-						msg: channel.accept_inbound_channel(0),
+						msg: channel.accept_inbound_channel(user_channel_id),
 					});
 				} else {
 					let mut pending_events = self.pending_events.lock().unwrap();
