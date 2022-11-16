@@ -13,8 +13,7 @@ use crate::chain::keysinterface::{KeysInterface, Recipient};
 use crate::ln::features::InitFeatures;
 use crate::ln::msgs::{self, DecodeError, OnionMessageHandler};
 use super::{BlindedRoute, CustomOnionMessageContents, CustomOnionMessageHandler, Destination, OnionMessageContents, OnionMessenger, SendError};
-use crate::util::enforcing_trait_impls::EnforcingSigner;
-use crate::util::ser::{ Writeable, Writer};
+use crate::util::ser::{Writeable, Writer};
 use crate::util::test_utils;
 
 use bitcoin::network::constants::Network;
