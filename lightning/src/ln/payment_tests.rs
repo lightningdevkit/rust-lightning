@@ -1129,7 +1129,7 @@ fn claimed_send_payment_idempotent() {
 			// payment_id, it should be rejected.
 			let send_result = nodes[0].node.send_payment(&route, second_payment_hash, &Some(second_payment_secret), payment_id);
 			match send_result {
-				Err(PaymentSendFailure::ParameterError(APIError::RouteError { err: "Payment already in progress" })) => {},
+				Err(PaymentSendFailure::DuplicatePayment) => {},
 				_ => panic!("Unexpected send result: {:?}", send_result),
 			}
 
@@ -1137,7 +1137,7 @@ fn claimed_send_payment_idempotent() {
 			// also be rejected.
 			let send_result = nodes[0].node.send_spontaneous_payment(&route, None, payment_id);
 			match send_result {
-				Err(PaymentSendFailure::ParameterError(APIError::RouteError { err: "Payment already in progress" })) => {},
+				Err(PaymentSendFailure::DuplicatePayment) => {},
 				_ => panic!("Unexpected send result: {:?}", send_result),
 			}
 		}
@@ -1201,7 +1201,7 @@ fn abandoned_send_payment_idempotent() {
 			// payment_id, it should be rejected.
 			let send_result = nodes[0].node.send_payment(&route, second_payment_hash, &Some(second_payment_secret), payment_id);
 			match send_result {
-				Err(PaymentSendFailure::ParameterError(APIError::RouteError { err: "Payment already in progress" })) => {},
+				Err(PaymentSendFailure::DuplicatePayment) => {},
 				_ => panic!("Unexpected send result: {:?}", send_result),
 			}
 
@@ -1209,7 +1209,7 @@ fn abandoned_send_payment_idempotent() {
 			// also be rejected.
 			let send_result = nodes[0].node.send_spontaneous_payment(&route, None, payment_id);
 			match send_result {
-				Err(PaymentSendFailure::ParameterError(APIError::RouteError { err: "Payment already in progress" })) => {},
+				Err(PaymentSendFailure::DuplicatePayment) => {},
 				_ => panic!("Unexpected send result: {:?}", send_result),
 			}
 		}

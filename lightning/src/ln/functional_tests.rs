@@ -1333,7 +1333,7 @@ fn test_basic_channel_reserve() {
 	let (route, our_payment_hash, _, our_payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], max_can_send + 1);
 	let err = nodes[0].node.send_payment(&route, our_payment_hash, &Some(our_payment_secret), PaymentId(our_payment_hash.0)).err().unwrap();
 	match err {
-		PaymentSendFailure::AllFailedRetrySafe(ref fails) => {
+		PaymentSendFailure::AllFailedResendSafe(ref fails) => {
 			match &fails[0] {
 				&APIError::ChannelUnavailable{ref err} =>
 					assert!(regex::Regex::new(r"Cannot send value that would put our balance under counterparty-announced channel reserve value \(\d+\)").unwrap().is_match(err)),
