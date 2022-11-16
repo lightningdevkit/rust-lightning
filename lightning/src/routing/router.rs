@@ -14,7 +14,8 @@
 
 use bitcoin::secp256k1::PublicKey;
 
-use crate::ln::channelmanager::ChannelDetails;
+use crate::ln::PaymentHash;
+use crate::ln::channelmanager::{ChannelDetails, PaymentId};
 use crate::ln::features::{ChannelFeatures, InvoiceFeatures, NodeFeatures};
 use crate::ln::msgs::{DecodeError, ErrorAction, LightningError, MAX_VALUE_MSAT};
 use crate::routing::gossip::{DirectedChannelInfo, EffectiveCapacity, ReadOnlyNetworkGraph, NetworkGraph, NodeId, RoutingFees};
@@ -36,6 +37,23 @@ pub trait Router {
 		&self, payer: &PublicKey, route_params: &RouteParameters,
 		first_hops: Option<&[&ChannelDetails]>, inflight_htlcs: InFlightHtlcs
 	) -> Result<Route, LightningError>;
+	/// Finds a [`Route`] between `payer` and `payee` for a payment with the given values. Includes
+	/// `PaymentHash` and `PaymentId` to be able to correlate the request with a specific payment.
+	fn find_route_with_id(
+		&self, payer: &PublicKey, route_params: &RouteParameters,
+		first_hops: Option<&[&ChannelDetails]>, inflight_htlcs: InFlightHtlcs,
+		_payment_hash: PaymentHash, _payment_id: PaymentId
+	) -> Result<Route, LightningError> {
+		self.find_route(payer, route_params, first_hops, inflight_htlcs)
+	}
+	/// Lets the router know that payment through a specific path has failed.
+	fn notify_payment_path_failed(&self, path: &[&RouteHop], short_channel_id: u64);
+	/// Lets the router know that payment through a specific path was successful.
+	fn notify_payment_path_successful(&self, path: &[&RouteHop]);
+	/// Lets the router know that a payment probe was successful.
+	fn notify_payment_probe_successful(&self, path: &[&RouteHop]);
+	/// Lets the router know that a payment probe failed.
+	fn notify_payment_probe_failed(&self, path: &[&RouteHop], short_channel_id: u64);
 }
 
 /// A data structure for tracking in-flight HTLCs. May be used during pathfinding to account for

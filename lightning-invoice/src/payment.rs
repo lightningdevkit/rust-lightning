@@ -44,7 +44,7 @@
 //! # use lightning::util::logger::{Logger, Record};
 //! # use lightning::util::ser::{Writeable, Writer};
 //! # use lightning_invoice::Invoice;
-//! # use lightning_invoice::payment::{InvoicePayer, Payer, Retry, ScoringRouter};
+//! # use lightning_invoice::payment::{InvoicePayer, Payer, Retry};
 //! # use secp256k1::PublicKey;
 //! # use std::cell::RefCell;
 //! # use std::ops::Deref;
@@ -78,8 +78,6 @@
 //! #         &self, payer: &PublicKey, params: &RouteParameters,
 //! #         first_hops: Option<&[&ChannelDetails]>, _inflight_htlcs: InFlightHtlcs
 //! #     ) -> Result<Route, LightningError> { unimplemented!() }
-//! # }
-//! # impl ScoringRouter for FakeRouter {
 //! #     fn notify_payment_path_failed(&self, path: &[&RouteHop], short_channel_id: u64) {  unimplemented!() }
 //! #     fn notify_payment_path_successful(&self, path: &[&RouteHop]) {  unimplemented!() }
 //! #     fn notify_payment_probe_successful(&self, path: &[&RouteHop]) {  unimplemented!() }
@@ -146,7 +144,7 @@ use crate::prelude::*;
 use lightning::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
 use lightning::ln::channelmanager::{ChannelDetails, PaymentId, PaymentSendFailure};
 use lightning::ln::msgs::LightningError;
-use lightning::routing::router::{InFlightHtlcs, PaymentParameters, Route, RouteHop, RouteParameters, Router};
+use lightning::routing::router::{InFlightHtlcs, PaymentParameters, Route, RouteParameters, Router};
 use lightning::util::events::{Event, EventHandler};
 use lightning::util::logger::Logger;
 use crate::time_utils::Time;
@@ -186,7 +184,7 @@ mod sealed {
 /// (C-not exported) generally all users should use the [`InvoicePayer`] type alias.
 pub struct InvoicePayerUsingTime<
 	P: Deref,
-	R: ScoringRouter,
+	R: Router,
 	L: Deref,
 	E: sealed::BaseEventHandler,
 	T: Time
@@ -279,30 +277,6 @@ pub trait Payer {
 	fn inflight_htlcs(&self) -> InFlightHtlcs;
 }
 
-/// A trait defining behavior for a [`Router`] implementation that also supports scoring channels
-/// based on payment and probe success/failure.
-///
-/// [`Router`]: lightning::routing::router::Router
-pub trait ScoringRouter: Router {
-	/// Finds a [`Route`] between `payer` and `payee` for a payment with the given values. Includes
-	/// `PaymentHash` and `PaymentId` to be able to correlate the request with a specific payment.
-	fn find_route_with_id(
-		&self, payer: &PublicKey, route_params: &RouteParameters,
-		first_hops: Option<&[&ChannelDetails]>, inflight_htlcs: InFlightHtlcs,
-		_payment_hash: PaymentHash, _payment_id: PaymentId
-	) -> Result<Route, LightningError> {
-		self.find_route(payer, route_params, first_hops, inflight_htlcs)
-	}
-	/// Lets the router know that payment through a specific path has failed.
-	fn notify_payment_path_failed(&self, path: &[&RouteHop], short_channel_id: u64);
-	/// Lets the router know that payment through a specific path was successful.
-	fn notify_payment_path_successful(&self, path: &[&RouteHop]);
-	/// Lets the router know that a payment probe was successful.
-	fn notify_payment_probe_successful(&self, path: &[&RouteHop]);
-	/// Lets the router know that a payment probe failed.
-	fn notify_payment_probe_failed(&self, path: &[&RouteHop], short_channel_id: u64);
-}
-
 /// Strategies available to retry payment path failures for an [`Invoice`].
 ///
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -342,7 +316,7 @@ pub enum PaymentError {
 	Sending(PaymentSendFailure),
 }
 
-impl<P: Deref, R: ScoringRouter, L: Deref, E: sealed::BaseEventHandler, T: Time>
+impl<P: Deref, R: Router, L: Deref, E: sealed::BaseEventHandler, T: Time>
 	InvoicePayerUsingTime<P, R, L, E, T>
 where
 	P::Target: Payer,
@@ -656,7 +630,7 @@ fn has_expired(route_params: &RouteParameters) -> bool {
 	} else { false }
 }
 
-impl<P: Deref, R: ScoringRouter, L: Deref, E: sealed::BaseEventHandler, T: Time>
+impl<P: Deref, R: Router, L: Deref, E: sealed::BaseEventHandler, T: Time>
 	InvoicePayerUsingTime<P, R, L, E, T>
 where
 	P::Target: Payer,
@@ -723,7 +697,7 @@ where
 	}
 }
 
-impl<P: Deref, R: ScoringRouter, L: Deref, E: EventHandler, T: Time>
+impl<P: Deref, R: Router, L: Deref, E: EventHandler, T: Time>
 	EventHandler for InvoicePayerUsingTime<P, R, L, E, T>
 where
 	P::Target: Payer,
@@ -737,7 +711,7 @@ where
 	}
 }
 
-impl<P: Deref, R: ScoringRouter, L: Deref, T: Time, F: Future, H: Fn(Event) -> F>
+impl<P: Deref, R: Router, L: Deref, T: Time, F: Future, H: Fn(Event) -> F>
 	InvoicePayerUsingTime<P, R, L, H, T>
 where
 	P::Target: Payer,
@@ -1726,9 +1700,7 @@ mod tests {
 				payment_params: Some(route_params.payment_params.clone()), ..Self::route_for_value(route_params.final_value_msat)
 			})
 		}
-	}
 
-	impl ScoringRouter for TestRouter {
 		fn notify_payment_path_failed(&self, path: &[&RouteHop], short_channel_id: u64) {
 			self.scorer.lock().payment_path_failed(path, short_channel_id);
 		}
@@ -1755,9 +1727,7 @@ mod tests {
 		) -> Result<Route, LightningError> {
 			Err(LightningError { err: String::new(), action: ErrorAction::IgnoreError })
 		}
-	}
 
-	impl ScoringRouter for FailingRouter {
 		fn notify_payment_path_failed(&self, _path: &[&RouteHop], _short_channel_id: u64) {}
 
 		fn notify_payment_path_successful(&self, _path: &[&RouteHop]) {}
@@ -2045,8 +2015,7 @@ mod tests {
 		) -> Result<Route, LightningError> {
 			self.0.borrow_mut().pop_front().unwrap()
 		}
-	}
-	impl ScoringRouter for ManualRouter {
+
 		fn notify_payment_path_failed(&self, _path: &[&RouteHop], _short_channel_id: u64) {}
 
 		fn notify_payment_path_successful(&self, _path: &[&RouteHop]) {}

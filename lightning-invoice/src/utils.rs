@@ -1,7 +1,7 @@
 //! Convenient utilities to create an invoice.
 
 use crate::{CreationError, Currency, Invoice, InvoiceBuilder, SignOrCreationError};
-use crate::payment::{Payer, ScoringRouter};
+use crate::payment::Payer;
 
 use crate::{prelude::*, Description, InvoiceDescription, Sha256};
 use bech32::ToBase32;
@@ -567,12 +567,7 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, S: Deref> Router for DefaultR
 			&random_seed_bytes
 		)
 	}
-}
 
-impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, S: Deref> ScoringRouter for DefaultRouter<G, L, S> where
-	L::Target: Logger,
-	S::Target: for <'a> LockableScore<'a>,
-{
 	fn notify_payment_path_failed(&self, path: &[&RouteHop], short_channel_id: u64) {
 		self.scorer.lock().payment_path_failed(path, short_channel_id);
 	}
