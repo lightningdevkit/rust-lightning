@@ -1087,7 +1087,8 @@ pub struct ChannelDetails {
 	/// [`outbound_capacity_msat`]: ChannelDetails::outbound_capacity_msat
 	pub unspendable_punishment_reserve: Option<u64>,
 	/// The `user_channel_id` passed in to create_channel, or a random value if the channel was
-	/// inbound.
+	/// inbound. This may be zero for inbound channels serialized with LDK versions prior to
+	/// 0.0.113.
 	pub user_channel_id: u128,
 	/// Our total balance.  This is the amount we would get if we close the channel.
 	/// This value is not exact. Due to various in-flight changes and feerate changes, exactly this
