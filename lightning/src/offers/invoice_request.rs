@@ -173,9 +173,30 @@ impl<'a> InvoiceRequestBuilder<'a> {
 
 #[cfg(test)]
 impl<'a> InvoiceRequestBuilder<'a> {
+	fn chain_unchecked(mut self, network: Network) -> Self {
+		let chain = ChainHash::using_genesis_block(network);
+		self.invoice_request.chain = Some(chain);
+		self
+	}
+
+	fn amount_msats_unchecked(mut self, amount_msats: u64) -> Self {
+		self.invoice_request.amount_msats = Some(amount_msats);
+		self
+	}
+
 	fn features_unchecked(mut self, features: InvoiceRequestFeatures) -> Self {
 		self.invoice_request.features = features;
 		self
+	}
+
+	fn quantity_unchecked(mut self, quantity: u64) -> Self {
+		self.invoice_request.quantity = Some(quantity);
+		self
+	}
+
+	fn build_unchecked(self) -> UnsignedInvoiceRequest<'a> {
+		let InvoiceRequestBuilder { offer, invoice_request } = self;
+		UnsignedInvoiceRequest { offer, invoice_request }
 	}
 }
 
@@ -463,7 +484,7 @@ mod tests {
 	use crate::ln::features::InvoiceRequestFeatures;
 	use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
 	use crate::offers::merkle::SignError;
-	use crate::offers::offer::{OfferBuilder, Quantity};
+	use crate::offers::offer::{Amount, OfferBuilder, Quantity};
 	use crate::offers::parse::{ParseError, SemanticError};
 	use crate::util::ser::{BigSize, Writeable};
 	use crate::util::string::PrintableString;
@@ -890,6 +911,342 @@ mod tests {
 		{
 			Ok(_) => panic!("expected error"),
 			Err(e) => assert_eq!(e, SignError::Verification(secp256k1::Error::InvalidSignature)),
+		}
+	}
+
+	#[test]
+	fn parses_invoice_request_with_metadata() {
+		let invoice_request = OfferBuilder::new("foo".into(), recipient_pubkey())
+			.amount_msats(1000)
+			.build().unwrap()
+			.request_invoice(vec![42; 32], payer_pubkey()).unwrap()
+			.build().unwrap()
+			.sign(payer_sign).unwrap();
+
+		let mut buffer = Vec::new();
+		invoice_request.write(&mut buffer).unwrap();
+
+		if let Err(e) = InvoiceRequest::try_from(buffer) {
+			panic!("error parsing invoice_request: {:?}", e);
+		}
+	}
+
+	#[test]
+	fn parses_invoice_request_with_chain() {
+		let invoice_request = OfferBuilder::new("foo".into(), recipient_pubkey())
+			.amount_msats(1000)
+			.build().unwrap()
+			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.chain(Network::Bitcoin).unwrap()
+			.build().unwrap()
+			.sign(payer_sign).unwrap();
+
+		let mut buffer = Vec::new();
+		invoice_request.write(&mut buffer).unwrap();
+
+		if let Err(e) = InvoiceRequest::try_from(buffer) {
+			panic!("error parsing invoice_request: {:?}", e);
+		}
+
+		let invoice_request = OfferBuilder::new("foo".into(), recipient_pubkey())
+			.amount_msats(1000)
+			.build().unwrap()
+			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.chain_unchecked(Network::Testnet)
+			.build_unchecked()
+			.sign(payer_sign).unwrap();
+
+		let mut buffer = Vec::new();
+		invoice_request.write(&mut buffer).unwrap();
+
+		match InvoiceRequest::try_from(buffer) {
+			Ok(_) => panic!("expected error"),
+			Err(e) => assert_eq!(e, ParseError::InvalidSemantics(SemanticError::UnsupportedChain)),
+		}
+	}
+
+	#[test]
+	fn parses_invoice_request_with_amount() {
+		let invoice_request = OfferBuilder::new("foo".into(), recipient_pubkey())
+			.amount_msats(1000)
+			.build().unwrap()
+			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.build().unwrap()
+			.sign(payer_sign).unwrap();
+
+		let mut buffer = Vec::new();
+		invoice_request.write(&mut buffer).unwrap();
+
+		if let Err(e) = InvoiceRequest::try_from(buffer) {
+			panic!("error parsing invoice_request: {:?}", e);
+		}
+
+		let invoice_request = OfferBuilder::new("foo".into(), recipient_pubkey())
+			.build().unwrap()
+			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.amount_msats(1000).unwrap()
+			.build().unwrap()
+			.sign(payer_sign).unwrap();
+
+		let mut buffer = Vec::new();
+		invoice_request.write(&mut buffer).unwrap();
+
+		if let Err(e) = InvoiceRequest::try_from(buffer) {
+			panic!("error parsing invoice_request: {:?}", e);
+		}
+
+		let invoice_request = OfferBuilder::new("foo".into(), recipient_pubkey())
+			.build().unwrap()
+			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.build_unchecked()
+			.sign(payer_sign).unwrap();
+
+		let mut buffer = Vec::new();
+		invoice_request.write(&mut buffer).unwrap();
+
+		match InvoiceRequest::try_from(buffer) {
+			Ok(_) => panic!("expected error"),
+			Err(e) => assert_eq!(e, ParseError::InvalidSemantics(SemanticError::MissingAmount)),
+		}
+
+		let invoice_request = OfferBuilder::new("foo".into(), recipient_pubkey())
+			.amount_msats(1000)
+			.build().unwrap()
+			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.amount_msats_unchecked(999)
+			.build_unchecked()
+			.sign(payer_sign).unwrap();
+
+		let mut buffer = Vec::new();
+		invoice_request.write(&mut buffer).unwrap();
+
+		match InvoiceRequest::try_from(buffer) {
+			Ok(_) => panic!("expected error"),
+			Err(e) => assert_eq!(e, ParseError::InvalidSemantics(SemanticError::InsufficientAmount)),
+		}
+
+		let invoice_request = OfferBuilder::new("foo".into(), recipient_pubkey())
+			.amount(Amount::Currency { iso4217_code: *b"USD", amount: 1000 })
+			.build_unchecked()
+			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.build_unchecked()
+			.sign(payer_sign).unwrap();
+
+		let mut buffer = Vec::new();
+		invoice_request.write(&mut buffer).unwrap();
+
+		match InvoiceRequest::try_from(buffer) {
+			Ok(_) => panic!("expected error"),
+			Err(e) => {
+				assert_eq!(e, ParseError::InvalidSemantics(SemanticError::UnsupportedCurrency));
+			},
+		}
+	}
+
+	#[test]
+	fn parses_invoice_request_with_quantity() {
+		let ten = NonZeroU64::new(10).unwrap();
+
+		let invoice_request = OfferBuilder::new("foo".into(), recipient_pubkey())
+			.amount_msats(1000)
+			.supported_quantity(Quantity::one())
+			.build().unwrap()
+			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.build().unwrap()
+			.sign(payer_sign).unwrap();
+
+		let mut buffer = Vec::new();
+		invoice_request.write(&mut buffer).unwrap();
+
+		if let Err(e) = InvoiceRequest::try_from(buffer) {
+			panic!("error parsing invoice_request: {:?}", e);
+		}
+
+		let invoice_request = OfferBuilder::new("foo".into(), recipient_pubkey())
+			.amount_msats(1000)
+			.supported_quantity(Quantity::one())
+			.build().unwrap()
+			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.amount_msats(2_000).unwrap()
+			.quantity_unchecked(2)
+			.build_unchecked()
+			.sign(payer_sign).unwrap();
+
+		let mut buffer = Vec::new();
+		invoice_request.write(&mut buffer).unwrap();
+
+		match InvoiceRequest::try_from(buffer) {
+			Ok(_) => panic!("expected error"),
+			Err(e) => {
+				assert_eq!(e, ParseError::InvalidSemantics(SemanticError::UnexpectedQuantity));
+			},
+		}
+
+		let invoice_request = OfferBuilder::new("foo".into(), recipient_pubkey())
+			.amount_msats(1000)
+			.supported_quantity(Quantity::Bounded(ten))
+			.build().unwrap()
+			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.amount_msats(10_000).unwrap()
+			.quantity(10).unwrap()
+			.build().unwrap()
+			.sign(payer_sign).unwrap();
+
+		let mut buffer = Vec::new();
+		invoice_request.write(&mut buffer).unwrap();
+
+		if let Err(e) = InvoiceRequest::try_from(buffer) {
+			panic!("error parsing invoice_request: {:?}", e);
+		}
+
+		let invoice_request = OfferBuilder::new("foo".into(), recipient_pubkey())
+			.amount_msats(1000)
+			.supported_quantity(Quantity::Bounded(ten))
+			.build().unwrap()
+			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.amount_msats(11_000).unwrap()
+			.quantity_unchecked(11)
+			.build_unchecked()
+			.sign(payer_sign).unwrap();
+
+		let mut buffer = Vec::new();
+		invoice_request.write(&mut buffer).unwrap();
+
+		match InvoiceRequest::try_from(buffer) {
+			Ok(_) => panic!("expected error"),
+			Err(e) => assert_eq!(e, ParseError::InvalidSemantics(SemanticError::InvalidQuantity)),
+		}
+
+		let invoice_request = OfferBuilder::new("foo".into(), recipient_pubkey())
+			.amount_msats(1000)
+			.supported_quantity(Quantity::Unbounded)
+			.build().unwrap()
+			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.amount_msats(2_000).unwrap()
+			.quantity(2).unwrap()
+			.build().unwrap()
+			.sign(payer_sign).unwrap();
+
+		let mut buffer = Vec::new();
+		invoice_request.write(&mut buffer).unwrap();
+
+		if let Err(e) = InvoiceRequest::try_from(buffer) {
+			panic!("error parsing invoice_request: {:?}", e);
+		}
+
+		let invoice_request = OfferBuilder::new("foo".into(), recipient_pubkey())
+			.amount_msats(1000)
+			.supported_quantity(Quantity::Unbounded)
+			.build().unwrap()
+			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.build_unchecked()
+			.sign(payer_sign).unwrap();
+
+		let mut buffer = Vec::new();
+		invoice_request.write(&mut buffer).unwrap();
+
+		match InvoiceRequest::try_from(buffer) {
+			Ok(_) => panic!("expected error"),
+			Err(e) => assert_eq!(e, ParseError::InvalidSemantics(SemanticError::MissingQuantity)),
+		}
+	}
+
+	#[test]
+	fn fails_parsing_invoice_request_without_metadata() {
+		let offer = OfferBuilder::new("foo".into(), recipient_pubkey())
+			.amount_msats(1000)
+			.build().unwrap();
+		let unsigned_invoice_request = offer.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.build().unwrap();
+		let mut tlv_stream = unsigned_invoice_request.invoice_request.as_tlv_stream();
+		tlv_stream.0.metadata = None;
+
+		let mut buffer = Vec::new();
+		tlv_stream.write(&mut buffer).unwrap();
+
+		match InvoiceRequest::try_from(buffer) {
+			Ok(_) => panic!("expected error"),
+			Err(e) => {
+				assert_eq!(e, ParseError::InvalidSemantics(SemanticError::MissingPayerMetadata));
+			},
+		}
+	}
+
+	#[test]
+	fn fails_parsing_invoice_request_without_payer_id() {
+		let offer = OfferBuilder::new("foo".into(), recipient_pubkey())
+			.amount_msats(1000)
+			.build().unwrap();
+		let unsigned_invoice_request = offer.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.build().unwrap();
+		let mut tlv_stream = unsigned_invoice_request.invoice_request.as_tlv_stream();
+		tlv_stream.2.payer_id = None;
+
+		let mut buffer = Vec::new();
+		tlv_stream.write(&mut buffer).unwrap();
+
+		match InvoiceRequest::try_from(buffer) {
+			Ok(_) => panic!("expected error"),
+			Err(e) => assert_eq!(e, ParseError::InvalidSemantics(SemanticError::MissingPayerId)),
+		}
+	}
+
+	#[test]
+	fn fails_parsing_invoice_request_without_node_id() {
+		let offer = OfferBuilder::new("foo".into(), recipient_pubkey())
+			.amount_msats(1000)
+			.build().unwrap();
+		let unsigned_invoice_request = offer.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.build().unwrap();
+		let mut tlv_stream = unsigned_invoice_request.invoice_request.as_tlv_stream();
+		tlv_stream.1.node_id = None;
+
+		let mut buffer = Vec::new();
+		tlv_stream.write(&mut buffer).unwrap();
+
+		match InvoiceRequest::try_from(buffer) {
+			Ok(_) => panic!("expected error"),
+			Err(e) => {
+				assert_eq!(e, ParseError::InvalidSemantics(SemanticError::MissingSigningPubkey));
+			},
+		}
+	}
+
+	#[test]
+	fn parses_invoice_request_without_signature() {
+		let mut buffer = Vec::new();
+		OfferBuilder::new("foo".into(), recipient_pubkey())
+			.amount_msats(1000)
+			.build().unwrap()
+			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.build().unwrap()
+			.invoice_request
+			.write(&mut buffer).unwrap();
+
+		if let Err(e) = InvoiceRequest::try_from(buffer) {
+			panic!("error parsing invoice_request: {:?}", e);
+		}
+	}
+
+	#[test]
+	fn fails_parsing_invoice_request_with_invalid_signature() {
+		let mut invoice_request = OfferBuilder::new("foo".into(), recipient_pubkey())
+			.amount_msats(1000)
+			.build().unwrap()
+			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.build().unwrap()
+			.sign(payer_sign).unwrap();
+		let last_signature_byte = invoice_request.bytes.last_mut().unwrap();
+		*last_signature_byte = last_signature_byte.wrapping_add(1);
+
+		let mut buffer = Vec::new();
+		invoice_request.write(&mut buffer).unwrap();
+
+		match InvoiceRequest::try_from(buffer) {
+			Ok(_) => panic!("expected error"),
+			Err(e) => {
+				assert_eq!(e, ParseError::InvalidSignature(secp256k1::Error::InvalidSignature));
+			},
 		}
 	}
 

@@ -145,7 +145,7 @@ impl OfferBuilder {
 	/// Sets the [`Offer::amount`].
 	///
 	/// Successive calls to this method will override the previous setting.
-	fn amount(mut self, amount: Amount) -> Self {
+	pub(super) fn amount(mut self, amount: Amount) -> Self {
 		self.offer.amount = Some(amount);
 		self
 	}
@@ -219,6 +219,13 @@ impl OfferBuilder {
 	fn features_unchecked(mut self, features: OfferFeatures) -> Self {
 		self.offer.features = features;
 		self
+	}
+
+	pub(super) fn build_unchecked(self) -> Offer {
+		let mut bytes = Vec::new();
+		self.offer.write(&mut bytes).unwrap();
+
+		Offer { bytes, contents: self.offer }
 	}
 }
 
@@ -379,7 +386,7 @@ impl Offer {
 	}
 
 	#[cfg(test)]
-	fn as_tlv_stream(&self) -> OfferTlvStreamRef {
+	pub(super) fn as_tlv_stream(&self) -> OfferTlvStreamRef {
 		self.contents.as_tlv_stream()
 	}
 }
