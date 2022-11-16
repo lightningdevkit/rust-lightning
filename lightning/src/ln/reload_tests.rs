@@ -933,3 +933,72 @@ fn forwarded_payment_no_manager_persistence() {
 	do_forwarded_payment_no_manager_persistence(true, false);
 	do_forwarded_payment_no_manager_persistence(false, false);
 }
+
+#[test]
+fn removed_payment_no_manager_persistence() {
+	// If an HTLC is failed to us on a channel, and the ChannelMonitor persistence completes, but
+	// the corresponding ChannelManager persistence does not, we need to ensure that the HTLC is
+	// still failed back to the previous hop even though the ChannelMonitor now no longer is aware
+	// of the HTLC. This was previously broken as no attempt was made to figure out which HTLCs
+	// were left dangling when a channel was force-closed due to a stale ChannelManager.
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+
+	let persister;
+	let new_chain_monitor;
+	let nodes_1_deserialized;
+
+	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+	let chan_id_1 = create_announced_chan_between_nodes(&nodes, 0, 1, channelmanager::provided_init_features(), channelmanager::provided_init_features()).2;
+	let chan_id_2 = create_announced_chan_between_nodes(&nodes, 1, 2, channelmanager::provided_init_features(), channelmanager::provided_init_features()).2;
+
+	let (_, payment_hash, _) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 1_000_000);
+
+	let node_encoded = nodes[1].node.encode();
+
+	nodes[2].node.fail_htlc_backwards(&payment_hash);
+	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[2], [HTLCDestination::FailedPayment { payment_hash }]);
+	check_added_monitors!(nodes[2], 1);
+	let events = nodes[2].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	match &events[0] {
+		MessageSendEvent::UpdateHTLCs { updates: msgs::CommitmentUpdate { update_fail_htlcs, commitment_signed, .. }, .. } => {
+			nodes[1].node.handle_update_fail_htlc(&nodes[2].node.get_our_node_id(), &update_fail_htlcs[0]);
+			commitment_signed_dance!(nodes[1], nodes[2], commitment_signed, false);
+		},
+		_ => panic!("Unexpected event"),
+	}
+
+	let chan_0_monitor_serialized = get_monitor!(nodes[1], chan_id_1).encode();
+	let chan_1_monitor_serialized = get_monitor!(nodes[1], chan_id_2).encode();
+	reload_node!(nodes[1], node_encoded, &[&chan_0_monitor_serialized, &chan_1_monitor_serialized], persister, new_chain_monitor, nodes_1_deserialized);
+
+	match nodes[1].node.pop_pending_event().unwrap() {
+		Event::ChannelClosed { ref reason, .. } => {
+			assert_eq!(*reason, ClosureReason::OutdatedChannelManager);
+		},
+		_ => panic!("Unexpected event"),
+	}
+
+	// Now that the ChannelManager has force-closed the channel which had the HTLC removed, it is
+	// now forgotten everywhere. The ChannelManager should have, as a side-effect of reload,
+	// learned that the HTLC is gone from the ChannelMonitor and added it to the to-fail-back set.
+	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), true);
+	reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+
+	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[1], [HTLCDestination::NextHopChannel { node_id: Some(nodes[2].node.get_our_node_id()), channel_id: chan_id_2 }]);
+	check_added_monitors!(nodes[1], 1);
+	let events = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	match &events[0] {
+		MessageSendEvent::UpdateHTLCs { updates: msgs::CommitmentUpdate { update_fail_htlcs, commitment_signed, .. }, .. } => {
+			nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &update_fail_htlcs[0]);
+			commitment_signed_dance!(nodes[0], nodes[1], commitment_signed, false);
+		},
+		_ => panic!("Unexpected event"),
+	}
+
+	expect_payment_failed!(nodes[0], payment_hash, false);
+}

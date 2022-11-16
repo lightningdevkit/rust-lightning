@@ -5728,7 +5728,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 		let mut inflight_htlcs = InFlightHtlcs::new();
 
 		for chan in self.channel_state.lock().unwrap().by_id.values() {
-			for htlc_source in chan.inflight_htlc_sources() {
+			for (htlc_source, _) in chan.inflight_htlc_sources() {
 				if let HTLCSource::OutboundRoute { path, .. } = htlc_source {
 					inflight_htlcs.process_path(path, self.get_our_node_id());
 				}
@@ -5744,6 +5744,12 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 		let event_handler = |event: events::Event| events.borrow_mut().push(event);
 		self.process_pending_events(&event_handler);
 		events.into_inner()
+	}
+
+	#[cfg(test)]
+	pub fn pop_pending_event(&self) -> Option<events::Event> {
+		let mut events = self.pending_events.lock().unwrap();
+		if events.is_empty() { None } else { Some(events.remove(0)) }
 	}
 
 	#[cfg(test)]
@@ -7206,6 +7212,25 @@ impl<'a, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 						user_channel_id: channel.get_user_id(),
 						reason: ClosureReason::OutdatedChannelManager
 					});
+					for (channel_htlc_source, payment_hash) in channel.inflight_htlc_sources() {
+						let mut found_htlc = false;
+						for (monitor_htlc_source, _) in monitor.get_all_current_outbound_htlcs() {
+							if *channel_htlc_source == monitor_htlc_source { found_htlc = true; break; }
+						}
+						if !found_htlc {
+							// If we have some HTLCs in the channel which are not present in the newer
+							// ChannelMonitor, they have been removed and should be failed back to
+							// ensure we don't forget them entirely. Note that if the missing HTLC(s)
+							// were actually claimed we'd have generated and ensured the previous-hop
+							// claim update ChannelMonitor updates were persisted prior to persising
+							// the ChannelMonitor update for the forward leg, so attempting to fail the
+							// backwards leg of the HTLC will simply be rejected.
+							log_info!(args.logger,
+								"Failing HTLC with hash {} as it is missing in the ChannelMonitor for channel {} but was present in the (stale) ChannelManager",
+								log_bytes!(channel.channel_id()), log_bytes!(payment_hash.0));
+							failed_htlcs.push((channel_htlc_source.clone(), *payment_hash, channel.get_counterparty_node_id(), channel.channel_id()));
+						}
+					}
 				} else {
 					log_info!(args.logger, "Successfully loaded channel {}", log_bytes!(channel.channel_id()));
 					if let Some(short_channel_id) = channel.get_short_channel_id() {
