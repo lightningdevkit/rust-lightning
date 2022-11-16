@@ -19,11 +19,10 @@ use bitcoin::network::constants::Network;
 use crate::chain::channelmonitor::{ANTI_REORG_DELAY, ChannelMonitor};
 use crate::chain::transaction::OutPoint;
 use crate::chain::{ChannelMonitorUpdateStatus, Listen, Watch};
-use crate::ln::channelmanager::{self, ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, PaymentSendFailure, PaymentId};
+use crate::ln::channelmanager::{self, ChannelManager, RAACommitmentOrder, PaymentSendFailure, PaymentId};
 use crate::ln::channel::AnnouncementSigsState;
 use crate::ln::msgs;
 use crate::ln::msgs::{ChannelMessageHandler, RoutingMessageHandler};
-use crate::util::config::UserConfig;
 use crate::util::enforcing_trait_impls::EnforcingSigner;
 use crate::util::events::{Event, MessageSendEvent, MessageSendEventsProvider, PaymentPurpose, ClosureReason, HTLCDestination};
 use crate::util::errors::APIError;
@@ -2294,40 +2293,8 @@ fn do_channel_holding_cell_serialize(disconnect: bool, reload_a: bool) {
 		// disconnect the peers. Note that the fuzzer originally found this issue because
 		// deserializing a ChannelManager in this state causes an assertion failure.
 		if reload_a {
-			let nodes_0_serialized = nodes[0].node.encode();
-			let mut chan_0_monitor_serialized = test_utils::TestVecWriter(Vec::new());
-			get_monitor!(nodes[0], chan_id).write(&mut chan_0_monitor_serialized).unwrap();
-
-			persister = test_utils::TestPersister::new();
-			let keys_manager = &chanmon_cfgs[0].keys_manager;
-			new_chain_monitor = test_utils::TestChainMonitor::new(Some(nodes[0].chain_source), nodes[0].tx_broadcaster.clone(), nodes[0].logger, node_cfgs[0].fee_estimator, &persister, keys_manager);
-			nodes[0].chain_monitor = &new_chain_monitor;
-			let mut chan_0_monitor_read = &chan_0_monitor_serialized.0[..];
-			let (_, mut chan_0_monitor) = <(BlockHash, ChannelMonitor<EnforcingSigner>)>::read(
-				&mut chan_0_monitor_read, keys_manager).unwrap();
-			assert!(chan_0_monitor_read.is_empty());
-
-			let mut nodes_0_read = &nodes_0_serialized[..];
-			let config = UserConfig::default();
-			nodes_0_deserialized = {
-				let mut channel_monitors = HashMap::new();
-				channel_monitors.insert(chan_0_monitor.get_funding_txo().0, &mut chan_0_monitor);
-				<(BlockHash, ChannelManager<&test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>)>::read(&mut nodes_0_read, ChannelManagerReadArgs {
-					default_config: config,
-					keys_manager,
-					fee_estimator: node_cfgs[0].fee_estimator,
-					chain_monitor: nodes[0].chain_monitor,
-					tx_broadcaster: nodes[0].tx_broadcaster.clone(),
-					logger: nodes[0].logger,
-					channel_monitors,
-				}).unwrap().1
-			};
-			nodes[0].node = &nodes_0_deserialized;
-			assert!(nodes_0_read.is_empty());
-
-			assert_eq!(nodes[0].chain_monitor.watch_channel(chan_0_monitor.get_funding_txo().0.clone(), chan_0_monitor),
-				ChannelMonitorUpdateStatus::Completed);
-			check_added_monitors!(nodes[0], 1);
+			let chan_0_monitor_serialized = get_monitor!(nodes[0], chan_id).encode();
+			reload_node!(nodes[0], &nodes[0].node.encode(), &[&chan_0_monitor_serialized], persister, new_chain_monitor, nodes_0_deserialized);
 		} else {
 			nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
 		}
@@ -2832,28 +2799,7 @@ fn do_test_outbound_reload_without_init_mon(use_0conf: bool) {
 	nodes[0].chain_source.watched_txn.lock().unwrap().clear();
 	nodes[0].chain_source.watched_outputs.lock().unwrap().clear();
 
-	let nodes_0_serialized = nodes[0].node.encode();
-	persister = test_utils::TestPersister::new();
-	let keys_manager = &chanmon_cfgs[0].keys_manager;
-	new_chain_monitor = test_utils::TestChainMonitor::new(Some(nodes[0].chain_source), nodes[0].tx_broadcaster.clone(), nodes[0].logger, node_cfgs[0].fee_estimator, &persister, keys_manager);
-	nodes[0].chain_monitor = &new_chain_monitor;
-
-	let mut nodes_0_read = &nodes_0_serialized[..];
-	let config = UserConfig::default();
-	nodes_0_deserialized = {
-		<(BlockHash, ChannelManager<&test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>)>::read(&mut nodes_0_read, ChannelManagerReadArgs {
-			default_config: config,
-			keys_manager,
-			fee_estimator: node_cfgs[0].fee_estimator,
-			chain_monitor: nodes[0].chain_monitor,
-			tx_broadcaster: nodes[0].tx_broadcaster.clone(),
-			logger: nodes[0].logger,
-			channel_monitors: HashMap::new(),
-		}).unwrap().1
-	};
-	nodes[0].node = &nodes_0_deserialized;
-	assert!(nodes_0_read.is_empty());
-
+	reload_node!(nodes[0], &nodes[0].node.encode(), &[], persister, new_chain_monitor, nodes_0_deserialized);
 	check_closed_event!(nodes[0], 1, ClosureReason::DisconnectedPeer);
 	assert!(nodes[0].node.list_channels().is_empty());
 }
@@ -2938,27 +2884,7 @@ fn do_test_inbound_reload_without_init_mon(use_0conf: bool, lock_commitment: boo
 	nodes[1].chain_source.watched_txn.lock().unwrap().clear();
 	nodes[1].chain_source.watched_outputs.lock().unwrap().clear();
 
-	let nodes_1_serialized = nodes[1].node.encode();
-	persister = test_utils::TestPersister::new();
-	let keys_manager = &chanmon_cfgs[1].keys_manager;
-	new_chain_monitor = test_utils::TestChainMonitor::new(Some(nodes[1].chain_source), nodes[1].tx_broadcaster.clone(), nodes[1].logger, node_cfgs[1].fee_estimator, &persister, keys_manager);
-	nodes[1].chain_monitor = &new_chain_monitor;
-
-	let mut nodes_1_read = &nodes_1_serialized[..];
-	let config = UserConfig::default();
-	nodes_1_deserialized = {
-		<(BlockHash, ChannelManager<&test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestLogger>)>::read(&mut nodes_1_read, ChannelManagerReadArgs {
-			default_config: config,
-			keys_manager,
-			fee_estimator: node_cfgs[1].fee_estimator,
-			chain_monitor: nodes[1].chain_monitor,
-			tx_broadcaster: nodes[1].tx_broadcaster.clone(),
-			logger: nodes[1].logger,
-			channel_monitors: HashMap::new(),
-		}).unwrap().1
-	};
-	nodes[1].node = &nodes_1_deserialized;
-	assert!(nodes_1_read.is_empty());
+	reload_node!(nodes[1], &nodes[1].node.encode(), &[], persister, new_chain_monitor, nodes_1_deserialized);
 
 	check_closed_event!(nodes[1], 1, ClosureReason::DisconnectedPeer);
 	assert!(nodes[1].node.list_channels().is_empty());

@@ -11,11 +11,11 @@
 //! These tests work by standing up full nodes and route payments across the network, checking the
 //! returned errors decode to the correct thing.
 
-use crate::chain::channelmonitor::{ChannelMonitor, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS};
+use crate::chain::channelmonitor::{CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS};
 use crate::chain::keysinterface::{KeysInterface, Recipient};
 use crate::ln::{PaymentHash, PaymentSecret};
 use crate::ln::channel::EXPIRE_PREV_CONFIG_TICKS;
-use crate::ln::channelmanager::{self, ChannelManager, ChannelManagerReadArgs, HTLCForwardInfo, CLTV_FAR_FAR_AWAY, MIN_CLTV_EXPIRY_DELTA, PendingAddHTLCInfo, PendingHTLCInfo, PendingHTLCRouting, PaymentId};
+use crate::ln::channelmanager::{self, HTLCForwardInfo, CLTV_FAR_FAR_AWAY, MIN_CLTV_EXPIRY_DELTA, PendingAddHTLCInfo, PendingHTLCInfo, PendingHTLCRouting, PaymentId};
 use crate::ln::onion_utils;
 use crate::routing::gossip::{NetworkUpdate, RoutingFees};
 use crate::routing::router::{get_route, PaymentParameters, Route, RouteHint, RouteHintHop};
@@ -24,7 +24,7 @@ use crate::ln::msgs;
 use crate::ln::msgs::{ChannelMessageHandler, ChannelUpdate};
 use crate::ln::wire::Encode;
 use crate::util::events::{Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider};
-use crate::util::ser::{ReadableArgs, Writeable, Writer};
+use crate::util::ser::{Writeable, Writer};
 use crate::util::{byte_utils, test_utils};
 use crate::util::config::{UserConfig, ChannelConfig};
 use crate::util::errors::APIError;
@@ -613,6 +613,9 @@ fn do_test_onion_failure_stale_channel_update(announced_channel: bool) {
 	config.channel_handshake_limits.force_announced_channel_preference = false;
 	config.accept_forwards_to_priv_channels = !announced_channel;
 	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let persister;
+	let chain_monitor;
+	let channel_manager_1_deserialized;
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, Some(config), None]);
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
@@ -761,34 +764,11 @@ fn do_test_onion_failure_stale_channel_update(announced_channel: bool) {
 
 	// To test persistence of the updated config, we'll re-initialize the ChannelManager.
 	let config_after_restart = {
-		let persister = test_utils::TestPersister::new();
-		let chain_monitor = test_utils::TestChainMonitor::new(
-			Some(nodes[1].chain_source), nodes[1].tx_broadcaster.clone(), nodes[1].logger,
-			node_cfgs[1].fee_estimator, &persister, nodes[1].keys_manager,
-		);
-
-		let mut chanmon_1 = <(_, ChannelMonitor<_>)>::read(
-			&mut &get_monitor!(nodes[1], other_channel.3).encode()[..], nodes[1].keys_manager,
-		).unwrap().1;
-		let mut chanmon_2 = <(_, ChannelMonitor<_>)>::read(
-			&mut &get_monitor!(nodes[1], channel_to_update.0).encode()[..], nodes[1].keys_manager,
-		).unwrap().1;
-		let mut channel_monitors = HashMap::new();
-		channel_monitors.insert(chanmon_1.get_funding_txo().0, &mut chanmon_1);
-		channel_monitors.insert(chanmon_2.get_funding_txo().0, &mut chanmon_2);
-
-		let chanmgr = <(_, ChannelManager<_, _, _, _, _>)>::read(
-			&mut &nodes[1].node.encode()[..], ChannelManagerReadArgs {
-				default_config: *nodes[1].node.get_current_default_configuration(),
-				keys_manager: nodes[1].keys_manager,
-				fee_estimator: node_cfgs[1].fee_estimator,
-				chain_monitor: &chain_monitor,
-				tx_broadcaster: nodes[1].tx_broadcaster.clone(),
-				logger: nodes[1].logger,
-				channel_monitors: channel_monitors,
-			},
-		).unwrap().1;
-		chanmgr.list_channels().iter()
+		let chan_1_monitor_serialized = get_monitor!(nodes[1], other_channel.3).encode();
+		let chan_2_monitor_serialized = get_monitor!(nodes[1], channel_to_update.0).encode();
+		reload_node!(nodes[1], *nodes[1].node.get_current_default_configuration(), &nodes[1].node.encode(),
+			&[&chan_1_monitor_serialized, &chan_2_monitor_serialized], persister, chain_monitor, channel_manager_1_deserialized);
+		nodes[1].node.list_channels().iter()
 			.find(|channel| channel.channel_id == channel_to_update.0).unwrap()
 			.config.unwrap()
 	};
