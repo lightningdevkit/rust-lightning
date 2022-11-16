@@ -1087,7 +1087,8 @@ pub struct ChannelDetails {
 	/// [`outbound_capacity_msat`]: ChannelDetails::outbound_capacity_msat
 	pub unspendable_punishment_reserve: Option<u64>,
 	/// The `user_channel_id` passed in to create_channel, or a random value if the channel was
-	/// inbound.
+	/// inbound. This may be zero for inbound channels serialized with LDK versions prior to
+	/// 0.0.113.
 	pub user_channel_id: u128,
 	/// Our total balance.  This is the amount we would get if we close the channel.
 	/// This value is not exact. Due to various in-flight changes and feerate changes, exactly this
@@ -4653,7 +4654,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 					}
 					channel_state.pending_msg_events.push(events::MessageSendEvent::SendAcceptChannel {
 						node_id: counterparty_node_id.clone(),
-						msg: channel.accept_inbound_channel(0),
+						msg: channel.accept_inbound_channel(user_channel_id),
 					});
 				} else {
 					let mut pending_events = self.pending_events.lock().unwrap();
