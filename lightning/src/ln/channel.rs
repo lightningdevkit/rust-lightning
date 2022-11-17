@@ -4495,6 +4495,16 @@ impl<Signer: Sign> Channel<Signer> {
 		self.funding_tx_confirmed_in
 	}
 
+	/// Returns the current number of confirmations on the funding transaction.
+	pub fn get_funding_tx_confirmations(&self, height: u32) -> u32 {
+		if self.funding_tx_confirmation_height == 0 {
+			// We either haven't seen any confirmation yet, or observed a reorg.
+			return 0;
+		}
+
+		height.checked_sub(self.funding_tx_confirmation_height).map_or(0, |c| c + 1)
+	}
+
 	fn get_holder_selected_contest_delay(&self) -> u16 {
 		self.channel_transaction_parameters.holder_selected_contest_delay
 	}

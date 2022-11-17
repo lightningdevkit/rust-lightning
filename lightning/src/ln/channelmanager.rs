@@ -1146,6 +1146,10 @@ pub struct ChannelDetails {
 	/// [`ChannelHandshakeConfig::minimum_depth`]: crate::util::config::ChannelHandshakeConfig::minimum_depth
 	/// [`ChannelHandshakeLimits::max_minimum_depth`]: crate::util::config::ChannelHandshakeLimits::max_minimum_depth
 	pub confirmations_required: Option<u32>,
+	/// The current number of confirmations on the funding transaction.
+	///
+	/// This value will be `None` for objects serialized with LDK versions prior to 0.0.113.
+	pub confirmations: Option<u32>,
 	/// The number of blocks (after our commitment transaction confirms) that we will need to wait
 	/// until we can claim our funds after we force-close the channel. During this time our
 	/// counterparty is allowed to punish us if we broadcasted a stale state. If our counterparty
@@ -1694,6 +1698,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 		let mut res = Vec::new();
 		{
 			let channel_state = self.channel_state.lock().unwrap();
+			let best_block_height = self.best_block.read().unwrap().height();
 			res.reserve(channel_state.by_id.len());
 			for (channel_id, channel) in channel_state.by_id.iter().filter(f) {
 				let balance = channel.get_available_balances();
@@ -1730,6 +1735,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 					next_outbound_htlc_limit_msat: balance.next_outbound_htlc_limit_msat,
 					user_channel_id: channel.get_user_id(),
 					confirmations_required: channel.minimum_depth(),
+					confirmations: Some(channel.get_funding_tx_confirmations(best_block_height)),
 					force_close_spend_delay: channel.get_counterparty_selected_contest_delay(),
 					is_outbound: channel.is_outbound(),
 					is_channel_ready: channel.is_usable(),
@@ -6467,6 +6473,7 @@ impl Writeable for ChannelDetails {
 			(6, self.funding_txo, option),
 			(7, self.config, option),
 			(8, self.short_channel_id, option),
+			(9, self.confirmations, option),
 			(10, self.channel_value_satoshis, required),
 			(12, self.unspendable_punishment_reserve, option),
 			(14, user_channel_id_low, required),
@@ -6501,6 +6508,7 @@ impl Readable for ChannelDetails {
 			(6, funding_txo, option),
 			(7, config, option),
 			(8, short_channel_id, option),
+			(9, confirmations, option),
 			(10, channel_value_satoshis, required),
 			(12, unspendable_punishment_reserve, option),
 			(14, user_channel_id_low, required),
@@ -6544,6 +6552,7 @@ impl Readable for ChannelDetails {
 			next_outbound_htlc_limit_msat: next_outbound_htlc_limit_msat.0.unwrap(),
 			inbound_capacity_msat: inbound_capacity_msat.0.unwrap(),
 			confirmations_required,
+			confirmations,
 			force_close_spend_delay,
 			is_outbound: is_outbound.0.unwrap(),
 			is_channel_ready: is_channel_ready.0.unwrap(),

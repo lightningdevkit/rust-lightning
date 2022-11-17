@@ -277,6 +277,9 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool, use_funding_
 	assert_eq!(nodes[0].node.short_to_chan_info.read().unwrap().len(), 2);
 	mem::drop(channel_state);
 
+	assert_eq!(nodes[0].node.list_channels()[0].confirmations, Some(10));
+	assert_eq!(nodes[1].node.list_channels()[0].confirmations, Some(10));
+
 	if !reorg_after_reload {
 		if use_funding_unconfirmed {
 			let relevant_txids = nodes[0].node.get_relevant_txids();
@@ -287,12 +290,16 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool, use_funding_
 			let txid = relevant_txids[0].0;
 			assert_eq!(txid, chan.3.txid());
 			nodes[0].node.transaction_unconfirmed(&txid);
+			assert_eq!(nodes[0].node.list_usable_channels().len(), 0);
 		} else if connect_style == ConnectStyle::FullBlockViaListen {
 			disconnect_blocks(&nodes[0], CHAN_CONFIRM_DEPTH - 1);
 			assert_eq!(nodes[0].node.list_usable_channels().len(), 1);
+			assert_eq!(nodes[0].node.list_channels()[0].confirmations, Some(1));
 			disconnect_blocks(&nodes[0], 1);
+			assert_eq!(nodes[0].node.list_usable_channels().len(), 0);
 		} else {
 			disconnect_all_blocks(&nodes[0]);
+			assert_eq!(nodes[0].node.list_usable_channels().len(), 0);
 		}
 
 		let relevant_txids = nodes[0].node.get_relevant_txids();
@@ -334,12 +341,16 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool, use_funding_
 			let txid = relevant_txids[0].0;
 			assert_eq!(txid, chan.3.txid());
 			nodes[0].node.transaction_unconfirmed(&txid);
+			assert_eq!(nodes[0].node.list_channels().len(), 0);
 		} else if connect_style == ConnectStyle::FullBlockViaListen {
 			disconnect_blocks(&nodes[0], CHAN_CONFIRM_DEPTH - 1);
 			assert_eq!(nodes[0].node.list_channels().len(), 1);
+			assert_eq!(nodes[0].node.list_channels()[0].confirmations, Some(1));
 			disconnect_blocks(&nodes[0], 1);
+			assert_eq!(nodes[0].node.list_usable_channels().len(), 0);
 		} else {
 			disconnect_all_blocks(&nodes[0]);
+			assert_eq!(nodes[0].node.list_usable_channels().len(), 0);
 		}
 
 		let relevant_txids = nodes[0].node.get_relevant_txids();
