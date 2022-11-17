@@ -651,11 +651,11 @@ impl<'a, S:Score> lightning::util::ser::Writeable for ScorerAccountingForInFligh
 
 impl<'a, S: Score> Score for ScorerAccountingForInFlightHtlcs<'a, S> {
 	fn channel_penalty_msat(&self, short_channel_id: u64, source: &NodeId, target: &NodeId, usage: ChannelUsage) -> u64 {
-		if let Some(used_liqudity) = self.inflight_htlcs.used_liquidity_msat(
+		if let Some(used_liquidity) = self.inflight_htlcs.used_liquidity_msat(
 			source, target, short_channel_id
 		) {
 			let usage = ChannelUsage {
-				inflight_htlc_msat: usage.inflight_htlc_msat + used_liqudity,
+				inflight_htlc_msat: usage.inflight_htlc_msat + used_liquidity,
 				..usage
 			};
 
