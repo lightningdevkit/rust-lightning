@@ -1128,6 +1128,7 @@ fn test_monitor_update_fail_reestablish() {
 		get_event_msg!(nodes[0], MessageSendEvent::SendChannelUpdate, nodes[1].node.get_our_node_id())
 			.contents.flags & 2, 0); // The "disabled" bit should be unset as we just reconnected
 
+	nodes[1].node.get_and_clear_pending_msg_events(); // Free the holding cell
 	check_added_monitors!(nodes[1], 1);
 
 	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);

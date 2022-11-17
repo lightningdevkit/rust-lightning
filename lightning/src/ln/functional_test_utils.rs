@@ -2413,6 +2413,14 @@ macro_rules! handle_chan_reestablish_msgs {
 				assert_eq!(*node_id, $dst_node.node.get_our_node_id());
 			}
 
+			let mut had_channel_update = false; // ChannelUpdate may be now or later, but not both
+			if let Some(&MessageSendEvent::SendChannelUpdate { ref node_id, ref msg }) = msg_events.get(idx) {
+				assert_eq!(*node_id, $dst_node.node.get_our_node_id());
+				idx += 1;
+				assert_eq!(msg.contents.flags & 2, 0); // "disabled" flag must not be set as we just reconnected.
+				had_channel_update = true;
+			}
+
 			let mut revoke_and_ack = None;
 			let mut commitment_update = None;
 			let order = if let Some(ev) = msg_events.get(idx) {
@@ -2457,6 +2465,7 @@ macro_rules! handle_chan_reestablish_msgs {
 				assert_eq!(*node_id, $dst_node.node.get_our_node_id());
 				idx += 1;
 				assert_eq!(msg.contents.flags & 2, 0); // "disabled" flag must not be set as we just reconnected.
+				assert!(!had_channel_update);
 			}
 
 			assert_eq!(msg_events.len(), idx);

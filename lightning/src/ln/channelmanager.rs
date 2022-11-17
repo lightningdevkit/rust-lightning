@@ -1518,13 +1518,11 @@ macro_rules! emit_channel_ready_event {
 }
 
 macro_rules! handle_chan_restoration_locked {
-	($self: ident, $channel_lock: expr, $channel_state: expr, $channel_entry: expr,
-	 $raa: expr, $commitment_update: expr, $order: expr, $chanmon_update: expr,
+	($self: ident, $channel_state: expr, $channel_entry: expr,
+	 $raa: expr, $commitment_update: expr, $order: expr,
 	 $pending_forwards: expr, $funding_broadcastable: expr, $channel_ready: expr, $announcement_sigs: expr) => { {
 		let mut htlc_forwards = None;
 
-		let chanmon_update: Option<ChannelMonitorUpdate> = $chanmon_update; // Force type-checking to resolve
-		let chanmon_update_is_none = chanmon_update.is_none();
 		let counterparty_node_id = $channel_entry.get().get_counterparty_node_id();
 		let res = loop {
 			let forwards: Vec<(PendingHTLCInfo, u64)> = $pending_forwards; // Force type-checking to resolve
@@ -1533,24 +1531,7 @@ macro_rules! handle_chan_restoration_locked {
 					$channel_entry.get().get_funding_txo().unwrap(), forwards));
 			}
 
-			if chanmon_update.is_some() {
-				// On reconnect, we, by definition, only resend a channel_ready if there have been
-				// no commitment updates, so the only channel monitor update which could also be
-				// associated with a channel_ready would be the funding_created/funding_signed
-				// monitor update. That monitor update failing implies that we won't send
-				// channel_ready until it's been updated, so we can't have a channel_ready and a
-				// monitor update here (so we don't bother to handle it correctly below).
-				assert!($channel_ready.is_none());
-				// A channel monitor update makes no sense without either a channel_ready or a
-				// commitment update to process after it. Since we can't have a channel_ready, we
-				// only bother to handle the monitor-update + commitment_update case below.
-				assert!($commitment_update.is_some());
-			}
-
 			if let Some(msg) = $channel_ready {
-				// Similar to the above, this implies that we're letting the channel_ready fly
-				// before it should be allowed to.
-				assert!(chanmon_update.is_none());
 				send_channel_ready!($self, $channel_state.pending_msg_events, $channel_entry.get(), msg);
 			}
 			if let Some(msg) = $announcement_sigs {
@@ -1561,33 +1542,6 @@ macro_rules! handle_chan_restoration_locked {
 			}
 
 			emit_channel_ready_event!($self, $channel_entry.get_mut());
-
-			let funding_broadcastable: Option<Transaction> = $funding_broadcastable; // Force type-checking to resolve
-			if let Some(monitor_update) = chanmon_update {
-				// We only ever broadcast a funding transaction in response to a funding_signed
-				// message and the resulting monitor update. Thus, on channel_reestablish
-				// message handling we can't have a funding transaction to broadcast. When
-				// processing a monitor update finishing resulting in a funding broadcast, we
-				// cannot have a second monitor update, thus this case would indicate a bug.
-				assert!(funding_broadcastable.is_none());
-				// Given we were just reconnected or finished updating a channel monitor, the
-				// only case where we can get a new ChannelMonitorUpdate would be if we also
-				// have some commitment updates to send as well.
-				assert!($commitment_update.is_some());
-				match $self.chain_monitor.update_channel($channel_entry.get().get_funding_txo().unwrap(), monitor_update) {
-					ChannelMonitorUpdateStatus::Completed => {},
-					e => {
-						// channel_reestablish doesn't guarantee the order it returns is sensical
-						// for the messages it returns, but if we're setting what messages to
-						// re-transmit on monitor update success, we need to make sure it is sane.
-						let mut order = $order;
-						if $raa.is_none() {
-							order = RAACommitmentOrder::CommitmentFirst;
-						}
-						break handle_monitor_update_res!($self, e, $channel_entry, order, $raa.is_some(), true);
-					}
-				}
-			}
 
 			macro_rules! handle_cs { () => {
 				if let Some(update) = $commitment_update {
@@ -1615,19 +1569,14 @@ macro_rules! handle_chan_restoration_locked {
 					handle_cs!();
 				},
 			}
+
+			let funding_broadcastable: Option<Transaction> = $funding_broadcastable; // Force type-checking to resolve
 			if let Some(tx) = funding_broadcastable {
 				log_info!($self.logger, "Broadcasting funding transaction with txid {}", tx.txid());
 				$self.tx_broadcaster.broadcast_transaction(&tx);
 			}
 			break Ok(());
 		};
-
-		if chanmon_update_is_none {
-			// If there was no ChannelMonitorUpdate, we should never generate an Err in the res loop
-			// above. Doing so would imply calling handle_err!() from channel_monitor_updated() which
-			// should *never* end up calling back to `chain_monitor.update_channel()`.
-			assert!(res.is_ok());
-		}
 
 		(htlc_forwards, res, counterparty_node_id)
 	} }
@@ -4520,7 +4469,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 					})
 				} else { None }
 			} else { None };
-			chan_restoration_res = handle_chan_restoration_locked!(self, channel_lock, channel_state, channel, updates.raa, updates.commitment_update, updates.order, None, updates.accepted_htlcs, updates.funding_broadcastable, updates.channel_ready, updates.announcement_sigs);
+			chan_restoration_res = handle_chan_restoration_locked!(self, channel_state, channel, updates.raa, updates.commitment_update, updates.order, updates.accepted_htlcs, updates.funding_broadcastable, updates.channel_ready, updates.announcement_sigs);
 			if let Some(upd) = channel_update {
 				channel_state.pending_msg_events.push(upd);
 			}
@@ -5279,7 +5228,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 
 	fn internal_channel_reestablish(&self, counterparty_node_id: &PublicKey, msg: &msgs::ChannelReestablish) -> Result<(), MsgHandleErrInternal> {
 		let chan_restoration_res;
-		let (htlcs_failed_forward, need_lnd_workaround) = {
+		let need_lnd_workaround = {
 			let mut channel_state_lock = self.channel_state.lock().unwrap();
 			let channel_state = &mut *channel_state_lock;
 
@@ -5314,18 +5263,17 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 					}
 					let need_lnd_workaround = chan.get_mut().workaround_lnd_bug_4006.take();
 					chan_restoration_res = handle_chan_restoration_locked!(
-						self, channel_state_lock, channel_state, chan, responses.raa, responses.commitment_update, responses.order,
-						responses.mon_update, Vec::new(), None, responses.channel_ready, responses.announcement_sigs);
+						self, channel_state, chan, responses.raa, responses.commitment_update, responses.order,
+						Vec::new(), None, responses.channel_ready, responses.announcement_sigs);
 					if let Some(upd) = channel_update {
 						channel_state.pending_msg_events.push(upd);
 					}
-					(responses.holding_cell_failed_htlcs, need_lnd_workaround)
+					need_lnd_workaround
 				},
 				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))
 			}
 		};
 		post_handle_chan_restoration!(self, chan_restoration_res);
-		self.fail_holding_cell_htlcs(htlcs_failed_forward, msg.channel_id, counterparty_node_id);
 
 		if let Some(channel_ready_msg) = need_lnd_workaround {
 			self.internal_channel_ready(counterparty_node_id, &channel_ready_msg)?;
