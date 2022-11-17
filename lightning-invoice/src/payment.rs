@@ -147,7 +147,6 @@ use lightning::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
 use lightning::ln::channelmanager::{ChannelDetails, PaymentId, PaymentSendFailure};
 use lightning::ln::msgs::LightningError;
 use lightning::routing::router::{InFlightHtlcs, PaymentParameters, Route, RouteHop, RouteParameters, Router};
-use lightning::util::errors::APIError;
 use lightning::util::events::{Event, EventHandler};
 use lightning::util::logger::Logger;
 use crate::time_utils::Time;
@@ -200,24 +199,8 @@ pub struct InvoicePayerUsingTime<
 	logger: L,
 	event_handler: E,
 	/// Caches the overall attempts at making a payment, which is updated prior to retrying.
-	payment_cache: Mutex<HashMap<PaymentHash, PaymentInfo<T>>>,
+	payment_cache: Mutex<HashMap<PaymentHash, PaymentAttempts<T>>>,
 	retry: Retry,
-}
-
-/// Used by [`InvoicePayerUsingTime::payment_cache`] to track the payments that are either
-/// currently being made, or have outstanding paths that need retrying.
-struct PaymentInfo<T: Time> {
-	attempts: PaymentAttempts<T>,
-	paths: Vec<Vec<RouteHop>>,
-}
-
-impl<T: Time> PaymentInfo<T> {
-	fn new() -> Self {
-		PaymentInfo {
-			attempts: PaymentAttempts::new(),
-			paths: vec![],
-		}
-	}
 }
 
 /// Storing minimal payment attempts information required for determining if a outbound payment can
@@ -459,7 +442,7 @@ where
 		let payment_hash = PaymentHash(invoice.payment_hash().clone().into_inner());
 		match self.payment_cache.lock().unwrap().entry(payment_hash) {
 			hash_map::Entry::Occupied(_) => return Err(PaymentError::Invoice("payment pending")),
-			hash_map::Entry::Vacant(entry) => entry.insert(PaymentInfo::new()),
+			hash_map::Entry::Vacant(entry) => entry.insert(PaymentAttempts::new()),
 		};
 
 		let payment_secret = Some(invoice.payment_secret().clone());
@@ -523,7 +506,7 @@ where
 	) -> Result<(), PaymentError> {
 		match self.payment_cache.lock().unwrap().entry(payment_hash) {
 			hash_map::Entry::Occupied(_) => return Err(PaymentError::Invoice("payment pending")),
-			hash_map::Entry::Vacant(entry) => entry.insert(PaymentInfo::new()),
+			hash_map::Entry::Vacant(entry) => entry.insert(PaymentAttempts::new()),
 		};
 
 		let route_params = RouteParameters {
@@ -557,40 +540,23 @@ where
 		).map_err(|e| PaymentError::Routing(e))?;
 
 		match send_payment(&route) {
-			Ok(()) => {
-				for path in route.paths {
-					self.process_path_inflight_htlcs(payment_hash, path);
-				}
-				Ok(())
-			},
+			Ok(()) => Ok(()),
 			Err(e) => match e {
 				PaymentSendFailure::ParameterError(_) => Err(e),
 				PaymentSendFailure::PathParameterError(_) => Err(e),
 				PaymentSendFailure::DuplicatePayment => Err(e),
 				PaymentSendFailure::AllFailedResendSafe(_) => {
 					let mut payment_cache = self.payment_cache.lock().unwrap();
-					let payment_info = payment_cache.get_mut(&payment_hash).unwrap();
-					payment_info.attempts.count += 1;
-					if self.retry.is_retryable_now(&payment_info.attempts) {
+					let payment_attempts = payment_cache.get_mut(&payment_hash).unwrap();
+					payment_attempts.count += 1;
+					if self.retry.is_retryable_now(payment_attempts) {
 						core::mem::drop(payment_cache);
 						Ok(self.pay_internal(params, payment_hash, send_payment)?)
 					} else {
 						Err(e)
 					}
 				},
-				PaymentSendFailure::PartialFailure { failed_paths_retry, payment_id, results } => {
-					// If a `PartialFailure` event returns a result that is an `Ok()`, it means that
-					// part of our payment is retried. When we receive `MonitorUpdateInProgress`, it
-					// means that we are still waiting for our channel monitor update to be completed.
-					for (result, path) in results.iter().zip(route.paths.into_iter()) {
-						match result {
-							Ok(_) | Err(APIError::MonitorUpdateInProgress) => {
-								self.process_path_inflight_htlcs(payment_hash, path);
-							},
-							_ => {},
-						}
-					}
-
+				PaymentSendFailure::PartialFailure { failed_paths_retry, payment_id, .. } => {
 					if let Some(retry_data) = failed_paths_retry {
 						// Some paths were sent, even if we failed to send the full MPP value our
 						// recipient may misbehave and claim the funds, at which point we have to
@@ -610,36 +576,16 @@ where
 		}.map_err(|e| PaymentError::Sending(e))
 	}
 
-	// Takes in a path to have its information stored in `payment_cache`. This is done for paths
-	// that are pending retry.
-	fn process_path_inflight_htlcs(&self, payment_hash: PaymentHash, path: Vec<RouteHop>) {
-		self.payment_cache.lock().unwrap().entry(payment_hash)
-			.or_insert_with(|| PaymentInfo::new())
-			.paths.push(path);
-	}
-
-	// Find the path we want to remove in `payment_cache`. If it doesn't exist, do nothing.
-	fn remove_path_inflight_htlcs(&self, payment_hash: PaymentHash, path: &Vec<RouteHop>) {
-		self.payment_cache.lock().unwrap().entry(payment_hash)
-			.and_modify(|payment_info| {
-				if let Some(idx) = payment_info.paths.iter().position(|p| p == path) {
-					payment_info.paths.swap_remove(idx);
-				}
-			});
-	}
-
 	fn retry_payment(
 		&self, payment_id: PaymentId, payment_hash: PaymentHash, params: &RouteParameters
 	) -> Result<(), ()> {
-		let attempts = self.payment_cache.lock().unwrap().entry(payment_hash)
-			.and_modify(|info| info.attempts.count += 1 )
-			.or_insert_with(|| PaymentInfo {
-				attempts: PaymentAttempts {
+		let attempts =
+			*self.payment_cache.lock().unwrap().entry(payment_hash)
+				.and_modify(|attempts| attempts.count += 1)
+				.or_insert(PaymentAttempts {
 					count: 1,
-					first_attempted_at: T::now(),
-				},
-				paths: vec![],
-			}).attempts;
+					first_attempted_at: T::now()
+				});
 
 		if !self.retry.is_retryable_now(&attempts) {
 			log_trace!(self.logger, "Payment {} exceeded maximum attempts; not retrying ({})", log_bytes!(payment_hash.0), attempts);
@@ -667,12 +613,7 @@ where
 		}
 
 		match self.payer.retry_payment(&route.as_ref().unwrap(), payment_id) {
-			Ok(()) => {
-				for path in route.unwrap().paths.into_iter() {
-					self.process_path_inflight_htlcs(payment_hash, path);
-				}
-				Ok(())
-			},
+			Ok(()) => Ok(()),
 			Err(PaymentSendFailure::ParameterError(_)) |
 			Err(PaymentSendFailure::PathParameterError(_)) => {
 				log_trace!(self.logger, "Failed to retry for payment {} due to bogus route/payment data, not retrying.", log_bytes!(payment_hash.0));
@@ -685,19 +626,7 @@ where
 				log_error!(self.logger, "Got a DuplicatePayment error when attempting to retry a payment, this shouldn't happen.");
 				Err(())
 			}
-			Err(PaymentSendFailure::PartialFailure { failed_paths_retry, results, .. }) => {
-				// If a `PartialFailure` error contains a result that is an `Ok()`, it means that
-				// part of our payment is retried. When we receive `MonitorUpdateInProgress`, it
-				// means that we are still waiting for our channel monitor update to complete.
-				for (result, path) in results.iter().zip(route.unwrap().paths.into_iter()) {
-					match result {
-						Ok(_) | Err(APIError::MonitorUpdateInProgress) => {
-							self.process_path_inflight_htlcs(payment_hash, path);
-						},
-						_ => {},
-					}
-				}
-
+			Err(PaymentSendFailure::PartialFailure { failed_paths_retry, .. }) => {
 				if let Some(retry) = failed_paths_retry {
 					// Always return Ok for the same reason as noted in pay_internal.
 					let _ = self.retry_payment(payment_id, payment_hash, &retry);
@@ -737,16 +666,6 @@ where
 	/// event handler.
 	fn handle_event_internal(&self, event: &Event) -> bool {
 		match event {
-			Event::PaymentPathFailed { payment_hash, path, ..  }
-			| Event::PaymentPathSuccessful { path, payment_hash: Some(payment_hash), .. }
-			| Event::ProbeSuccessful { payment_hash, path, .. }
-			| Event::ProbeFailed { payment_hash, path, .. } => {
-				self.remove_path_inflight_htlcs(*payment_hash, path);
-			},
-			_ => {},
-		}
-
-		match event {
 			Event::PaymentPathFailed {
 				payment_id, payment_hash, payment_failed_permanently, path, short_channel_id, retry, ..
 			} => {
@@ -781,7 +700,7 @@ where
 				let mut payment_cache = self.payment_cache.lock().unwrap();
 				let attempts = payment_cache
 					.remove(payment_hash)
-					.map_or(1, |payment_info| payment_info.attempts.count + 1);
+					.map_or(1, |attempts| attempts.count + 1);
 				log_trace!(self.logger, "Payment {} succeeded (attempts: {})", log_bytes!(payment_hash.0), attempts);
 			},
 			Event::ProbeSuccessful { payment_hash, path, .. } => {
