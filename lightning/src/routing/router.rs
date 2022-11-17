@@ -38,14 +38,15 @@ pub trait Router {
 	) -> Result<Route, LightningError>;
 }
 
-/// A map with liquidity value (in msat) keyed by a short channel id and the direction the HTLC
-/// is traveling in. The direction boolean is determined by checking if the HTLC source's public
-/// key is less than its destination. See [`InFlightHtlcs::used_liquidity_msat`] for more
-/// details.
-#[cfg(not(any(test, feature = "_test_utils")))]
-pub struct InFlightHtlcs(HashMap<(u64, bool), u64>);
-#[cfg(any(test, feature = "_test_utils"))]
-pub struct InFlightHtlcs(pub HashMap<(u64, bool), u64>);
+/// A data structure for tracking in-flight HTLCs. May be used during pathfinding to account for
+/// in-use channel liquidity.
+pub struct InFlightHtlcs(
+	// A map with liquidity value (in msat) keyed by a short channel id and the direction the HTLC
+	// is traveling in. The direction boolean is determined by checking if the HTLC source's public
+	// key is less than its destination. See `InFlightHtlcs::used_liquidity_msat` for more
+	// details.
+	HashMap<(u64, bool), u64>
+);
 
 impl InFlightHtlcs {
 	/// Constructs an empty `InFlightHtlcs`.
