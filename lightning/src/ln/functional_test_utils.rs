@@ -1091,7 +1091,7 @@ macro_rules! check_closed_event {
 		use $crate::util::events::Event;
 
 		let events = $node.node.get_and_clear_pending_events();
-		assert_eq!(events.len(), $events);
+		assert_eq!(events.len(), $events, "{:?}", events);
 		let expected_reason = $reason;
 		let mut issues_discard_funding = false;
 		for event in events {
@@ -1350,7 +1350,7 @@ macro_rules! expect_pending_htlcs_forwardable_conditions {
 		let events = $node.node.get_and_clear_pending_events();
 		match events[0] {
 			$crate::util::events::Event::PendingHTLCsForwardable { .. } => { },
-			_ => panic!("Unexpected event"),
+			_ => panic!("Unexpected event {:?}", events),
 		};
 
 		let count = expected_failures.len() + 1;
@@ -1560,7 +1560,7 @@ macro_rules! expect_payment_forwarded {
 				if !$downstream_force_closed {
 					assert!($node.node.list_channels().iter().any(|x| x.counterparty.node_id == $next_node.node.get_our_node_id() && x.channel_id == next_channel_id.unwrap()));
 				}
-				assert_eq!(claim_from_onchain_tx, $upstream_force_closed);
+				assert_eq!(claim_from_onchain_tx, $downstream_force_closed);
 			},
 			_ => panic!("Unexpected event"),
 		}

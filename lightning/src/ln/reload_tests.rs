@@ -10,14 +10,16 @@
 //! Functional tests which test for correct behavior across node restarts.
 
 use crate::chain::{ChannelMonitorUpdateStatus, Watch};
+use crate::chain::chaininterface::LowerBoundedFeeEstimator;
 use crate::chain::channelmonitor::ChannelMonitor;
+use crate::chain::keysinterface::KeysInterface;
 use crate::chain::transaction::OutPoint;
 use crate::ln::channelmanager::{self, ChannelManager, ChannelManagerReadArgs, PaymentId};
 use crate::ln::msgs;
 use crate::ln::msgs::{ChannelMessageHandler, RoutingMessageHandler, ErrorAction};
 use crate::util::enforcing_trait_impls::EnforcingSigner;
 use crate::util::test_utils;
-use crate::util::events::{Event, MessageSendEvent, MessageSendEventsProvider, ClosureReason};
+use crate::util::events::{ClosureReason, Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider};
 use crate::util::ser::{Writeable, ReadableArgs};
 use crate::util::config::UserConfig;
 
@@ -810,4 +812,124 @@ fn do_test_partial_claim_before_restart(persist_both_monitors: bool) {
 fn test_partial_claim_before_restart() {
 	do_test_partial_claim_before_restart(false);
 	do_test_partial_claim_before_restart(true);
+}
+
+fn do_forwarded_payment_no_manager_persistence(use_cs_commitment: bool, claim_htlc: bool) {
+	if !use_cs_commitment { assert!(!claim_htlc); }
+	// If we go to forward a payment, and the ChannelMonitor persistence completes, but the
+	// ChannelManager does not, we shouldn't try to forward the payment again, nor should we fail
+	// it back until the ChannelMonitor decides the fate of the HTLC.
+	// This was never an issue, but it may be easy to regress here going forward.
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+
+	let persister;
+	let new_chain_monitor;
+	let nodes_1_deserialized;
+
+	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+	let chan_id_1 = create_announced_chan_between_nodes(&nodes, 0, 1, channelmanager::provided_init_features(), channelmanager::provided_init_features()).2;
+	let chan_id_2 = create_announced_chan_between_nodes(&nodes, 1, 2, channelmanager::provided_init_features(), channelmanager::provided_init_features()).2;
+
+	let (route, payment_hash, payment_preimage, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], 1_000_000);
+	let payment_id = PaymentId(nodes[0].keys_manager.backing.get_secure_random_bytes());
+	let htlc_expiry = nodes[0].best_block_info().1 + TEST_FINAL_CLTV;
+	nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret), payment_id).unwrap();
+	check_added_monitors!(nodes[0], 1);
+
+	let payment_event = SendEvent::from_node(&nodes[0]);
+	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
+	commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, false);
+
+	let node_encoded = nodes[1].node.encode();
+
+	expect_pending_htlcs_forwardable!(nodes[1]);
+
+	let payment_event = SendEvent::from_node(&nodes[1]);
+	nodes[2].node.handle_update_add_htlc(&nodes[1].node.get_our_node_id(), &payment_event.msgs[0]);
+	nodes[2].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &payment_event.commitment_msg);
+	check_added_monitors!(nodes[2], 1);
+
+	if claim_htlc {
+		get_monitor!(nodes[2], chan_id_2).provide_payment_preimage(&payment_hash, &payment_preimage,
+			&nodes[2].tx_broadcaster, &LowerBoundedFeeEstimator(nodes[2].fee_estimator), &nodes[2].logger);
+	}
+	assert!(nodes[2].tx_broadcaster.txn_broadcasted.lock().unwrap().is_empty());
+
+	let _ = nodes[2].node.get_and_clear_pending_msg_events();
+
+	nodes[2].node.force_close_broadcasting_latest_txn(&chan_id_2, &nodes[1].node.get_our_node_id()).unwrap();
+	let cs_commitment_tx = nodes[2].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
+	assert_eq!(cs_commitment_tx.len(), if claim_htlc { 2 } else { 1 });
+
+	check_added_monitors!(nodes[2], 1);
+	check_closed_event!(nodes[2], 1, ClosureReason::HolderForceClosed);
+	check_closed_broadcast!(nodes[2], true);
+
+	let chan_0_monitor_serialized = get_monitor!(nodes[1], chan_id_1).encode();
+	let chan_1_monitor_serialized = get_monitor!(nodes[1], chan_id_2).encode();
+	reload_node!(nodes[1], node_encoded, &[&chan_0_monitor_serialized, &chan_1_monitor_serialized], persister, new_chain_monitor, nodes_1_deserialized);
+
+	check_closed_event!(nodes[1], 1, ClosureReason::OutdatedChannelManager);
+
+	let bs_commitment_tx = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
+	assert_eq!(bs_commitment_tx.len(), 1);
+
+	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), true);
+	reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+
+	if use_cs_commitment {
+		// If we confirm a commitment transaction that has the HTLC on-chain, nodes[1] should wait
+		// for an HTLC-spending transaction before it does anything with the HTLC upstream.
+		confirm_transaction(&nodes[1], &cs_commitment_tx[0]);
+		assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
+		assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+
+		if claim_htlc {
+			confirm_transaction(&nodes[1], &cs_commitment_tx[1]);
+		} else {
+			connect_blocks(&nodes[1], htlc_expiry - nodes[1].best_block_info().1);
+			let bs_htlc_timeout_tx = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
+			assert_eq!(bs_htlc_timeout_tx.len(), 1);
+			confirm_transaction(&nodes[1], &bs_htlc_timeout_tx[0]);
+		}
+	} else {
+		confirm_transaction(&nodes[1], &bs_commitment_tx[0]);
+	}
+
+	if !claim_htlc {
+		expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[1], [HTLCDestination::NextHopChannel { node_id: Some(nodes[2].node.get_our_node_id()), channel_id: chan_id_2 }]);
+	} else {
+		expect_payment_forwarded!(nodes[1], nodes[0], nodes[2], Some(1000), false, true);
+	}
+	check_added_monitors!(nodes[1], 1);
+
+	let events = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	match &events[0] {
+		MessageSendEvent::UpdateHTLCs { updates: msgs::CommitmentUpdate { update_fulfill_htlcs, update_fail_htlcs, commitment_signed, .. }, .. } => {
+			if claim_htlc {
+				nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &update_fulfill_htlcs[0]);
+			} else {
+				nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &update_fail_htlcs[0]);
+			}
+			commitment_signed_dance!(nodes[0], nodes[1], commitment_signed, false);
+		},
+		_ => panic!("Unexpected event"),
+	}
+
+	if claim_htlc {
+		expect_payment_sent!(nodes[0], payment_preimage);
+	} else {
+		expect_payment_failed!(nodes[0], payment_hash, false);
+	}
+}
+
+#[test]
+fn forwarded_payment_no_manager_persistence() {
+	do_forwarded_payment_no_manager_persistence(true, true);
+	do_forwarded_payment_no_manager_persistence(true, false);
+	do_forwarded_payment_no_manager_persistence(false, false);
 }

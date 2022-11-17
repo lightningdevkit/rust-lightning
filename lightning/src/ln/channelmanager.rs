@@ -7286,16 +7286,6 @@ impl<'a, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 				None => continue,
 			}
 		}
-		if forward_htlcs_count > 0 {
-			// If we have pending HTLCs to forward, assume we either dropped a
-			// `PendingHTLCsForwardable` or the user received it but never processed it as they
-			// shut down before the timer hit. Either way, set the time_forwardable to a small
-			// constant as enough time has likely passed that we should simply handle the forwards
-			// now, or at least after the user gets a chance to reconnect to our peers.
-			pending_events_read.push(events::Event::PendingHTLCsForwardable {
-				time_forwardable: Duration::from_secs(2),
-			});
-		}
 
 		let background_event_count: u64 = Readable::read(reader)?;
 		let mut pending_background_events_read: Vec<BackgroundEvent> = Vec::with_capacity(cmp::min(background_event_count as usize, MAX_ALLOC_SIZE/mem::size_of::<BackgroundEvent>()));
@@ -7404,8 +7394,42 @@ impl<'a, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 							}
 						}
 					}
+					for (htlc_source, htlc) in monitor.get_all_current_outbound_htlcs() {
+						if let HTLCSource::PreviousHopData(prev_hop_data) = htlc_source {
+							// The ChannelMonitor is now responsible for this HTLC's
+							// failure/success and will let us know what its outcome is. If we
+							// still have an entry for this HTLC in `forward_htlcs`, we were
+							// apparently not persisted after the monitor was when forwarding
+							// the payment.
+							forward_htlcs.retain(|_, forwards| {
+								forwards.retain(|forward| {
+									if let HTLCForwardInfo::AddHTLC(htlc_info) = forward {
+										if htlc_info.prev_short_channel_id == prev_hop_data.short_channel_id &&
+											htlc_info.prev_htlc_id == prev_hop_data.htlc_id
+										{
+											log_info!(args.logger, "Removing pending to-forward HTLC with hash {} as it was forwarded to the closed channel {}",
+												log_bytes!(htlc.payment_hash.0), log_bytes!(monitor.get_funding_txo().0.to_channel_id()));
+											false
+										} else { true }
+									} else { true }
+								});
+								!forwards.is_empty()
+							})
+						}
+					}
 				}
 			}
+		}
+
+		if !forward_htlcs.is_empty() {
+			// If we have pending HTLCs to forward, assume we either dropped a
+			// `PendingHTLCsForwardable` or the user received it but never processed it as they
+			// shut down before the timer hit. Either way, set the time_forwardable to a small
+			// constant as enough time has likely passed that we should simply handle the forwards
+			// now, or at least after the user gets a chance to reconnect to our peers.
+			pending_events_read.push(events::Event::PendingHTLCsForwardable {
+				time_forwardable: Duration::from_secs(2),
+			});
 		}
 
 		let inbound_pmt_key_material = args.keys_manager.get_inbound_payment_key_material();
