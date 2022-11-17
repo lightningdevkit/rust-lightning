@@ -324,7 +324,6 @@ fn do_test_monitor_temporary_update_fail(disconnect_count: usize) {
 				nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), commitment_signed);
 				check_added_monitors!(nodes[0], 1);
 				assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
-				nodes[0].logger.assert_log("lightning::ln::channelmanager".to_string(), "Previous monitor update failure prevented generation of RAA".to_string(), 1);
 			}
 
 			(update_fulfill_htlcs[0].clone(), commitment_signed.clone())
@@ -633,7 +632,6 @@ fn test_monitor_update_fail_cs() {
 	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
 	nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &send_event.commitment_msg);
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
-	nodes[1].logger.assert_log("lightning::ln::channelmanager".to_string(), "Failed to update ChannelMonitor".to_string(), 1);
 	check_added_monitors!(nodes[1], 1);
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 
@@ -664,7 +662,6 @@ fn test_monitor_update_fail_cs() {
 			chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
 			nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &updates.commitment_signed);
 			assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
-			nodes[0].logger.assert_log("lightning::ln::channelmanager".to_string(), "Failed to update ChannelMonitor".to_string(), 1);
 			check_added_monitors!(nodes[0], 1);
 			assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 		},
@@ -726,7 +723,6 @@ fn test_monitor_update_fail_no_rebroadcast() {
 	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
 	nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &bs_raa);
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
-	nodes[1].logger.assert_log("lightning::ln::channelmanager".to_string(), "Failed to update ChannelMonitor".to_string(), 1);
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 	assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
 	check_added_monitors!(nodes[1], 1);
@@ -784,12 +780,11 @@ fn test_monitor_update_raa_while_paused() {
 	nodes[0].node.handle_update_add_htlc(&nodes[1].node.get_our_node_id(), &send_event_2.msgs[0]);
 	nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &send_event_2.commitment_msg);
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
-	nodes[0].logger.assert_log("lightning::ln::channelmanager".to_string(), "Failed to update ChannelMonitor".to_string(), 1);
 	check_added_monitors!(nodes[0], 1);
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 
 	nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &bs_raa);
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
-	nodes[0].logger.assert_log("lightning::ln::channelmanager".to_string(), "Existing pending monitor update prevented responses to RAA".to_string(), 1);
 	check_added_monitors!(nodes[0], 1);
 
 	chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
@@ -875,7 +870,6 @@ fn do_test_monitor_update_fail_raa(test_ignore_second_cs: bool) {
 	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
 	nodes[1].node.handle_revoke_and_ack(&nodes[2].node.get_our_node_id(), &bs_revoke_and_ack);
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
-	nodes[1].logger.assert_log("lightning::ln::channelmanager".to_string(), "Failed to update ChannelMonitor".to_string(), 1);
 	assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 	check_added_monitors!(nodes[1], 1);
@@ -910,8 +904,6 @@ fn do_test_monitor_update_fail_raa(test_ignore_second_cs: bool) {
 		nodes[1].node.handle_update_add_htlc(&nodes[2].node.get_our_node_id(), &send_event.msgs[0]);
 		nodes[1].node.handle_commitment_signed(&nodes[2].node.get_our_node_id(), &send_event.commitment_msg);
 		check_added_monitors!(nodes[1], 1);
-		assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
-		nodes[1].logger.assert_log("lightning::ln::channelmanager".to_string(), "Previous monitor update failure prevented generation of RAA".to_string(), 1);
 		assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 		(Some(payment_preimage_4), Some(payment_hash_4))
 	} else { (None, None) };
@@ -1136,7 +1128,6 @@ fn test_monitor_update_fail_reestablish() {
 		get_event_msg!(nodes[0], MessageSendEvent::SendChannelUpdate, nodes[1].node.get_our_node_id())
 			.contents.flags & 2, 0); // The "disabled" bit should be unset as we just reconnected
 
-	nodes[1].logger.assert_log("lightning::ln::channelmanager".to_string(), "Failed to update ChannelMonitor".to_string(), 1);
 	check_added_monitors!(nodes[1], 1);
 
 	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
@@ -1228,12 +1219,11 @@ fn raa_no_response_awaiting_raa_state() {
 	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
 	nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &payment_event.commitment_msg);
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
-	nodes[1].logger.assert_log("lightning::ln::channelmanager".to_string(), "Failed to update ChannelMonitor".to_string(), 1);
 	check_added_monitors!(nodes[1], 1);
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 
 	nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &as_raa);
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
-	nodes[1].logger.assert_log("lightning::ln::channelmanager".to_string(), "Existing pending monitor update prevented responses to RAA".to_string(), 1);
 	check_added_monitors!(nodes[1], 1);
 
 	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
@@ -1331,7 +1321,6 @@ fn claim_while_disconnected_monitor_update_fail() {
 
 	nodes[1].node.handle_channel_reestablish(&nodes[0].node.get_our_node_id(), &as_reconnect);
 	let _bs_channel_update = get_event_msg!(nodes[1], MessageSendEvent::SendChannelUpdate, nodes[0].node.get_our_node_id());
-	nodes[1].logger.assert_log("lightning::ln::channelmanager".to_string(), "Failed to update ChannelMonitor".to_string(), 1);
 	check_added_monitors!(nodes[1], 1);
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 
@@ -1348,7 +1337,6 @@ fn claim_while_disconnected_monitor_update_fail() {
 	nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &as_updates.commitment_signed);
 	check_added_monitors!(nodes[1], 1);
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
-	nodes[1].logger.assert_log("lightning::ln::channelmanager".to_string(), "Previous monitor update failure prevented generation of RAA".to_string(), 1);
 	// Note that nodes[1] not updating monitor here is OK - it wont take action on the new HTLC
 	// until we've channel_monitor_update'd and updated for the new commitment transaction.
 
@@ -1440,7 +1428,6 @@ fn monitor_failed_no_reestablish_response() {
 	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
 	nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &payment_event.commitment_msg);
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
-	nodes[1].logger.assert_log("lightning::ln::channelmanager".to_string(), "Failed to update ChannelMonitor".to_string(), 1);
 	check_added_monitors!(nodes[1], 1);
 
 	// Now disconnect and immediately reconnect, delivering the channel_reestablish while nodes[1]
@@ -1540,7 +1527,6 @@ fn first_message_on_recv_ordering() {
 	// to the next message also tests resetting the delivery order.
 	nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &as_raa);
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
-	nodes[1].logger.assert_log("lightning::ln::channelmanager".to_string(), "Failed to update ChannelMonitor".to_string(), 1);
 	check_added_monitors!(nodes[1], 1);
 
 	// Now deliver the update_add_htlc/commitment_signed for the second payment, which does need an
@@ -1550,7 +1536,6 @@ fn first_message_on_recv_ordering() {
 	nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &payment_event.commitment_msg);
 	check_added_monitors!(nodes[1], 1);
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
-	nodes[1].logger.assert_log("lightning::ln::channelmanager".to_string(), "Previous monitor update failure prevented generation of RAA".to_string(), 1);
 
 	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
 	let (outpoint, latest_update, _) = nodes[1].chain_monitor.latest_monitor_update_id.lock().unwrap().get(&channel_id).unwrap().clone();
@@ -1599,7 +1584,7 @@ fn test_monitor_update_fail_claim() {
 	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
 	nodes[1].node.claim_funds(payment_preimage_1);
 	expect_payment_claimed!(nodes[1], payment_hash_1, 1_000_000);
-	nodes[1].logger.assert_log("lightning::ln::channelmanager".to_string(), "Temporary failure claiming HTLC, treating as success: Failed to update ChannelMonitor".to_string(), 1);
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 	check_added_monitors!(nodes[1], 1);
 
 	// Note that at this point there is a pending commitment transaction update for A being held by
@@ -1730,7 +1715,6 @@ fn test_monitor_update_on_pending_forwards() {
 	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[1], vec![HTLCDestination::NextHopChannel { node_id: Some(nodes[2].node.get_our_node_id()), channel_id: chan_2.2 }]);
 	check_added_monitors!(nodes[1], 1);
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
-	nodes[1].logger.assert_log("lightning::ln::channelmanager".to_string(), "Failed to update ChannelMonitor".to_string(), 1);
 
 	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
 	let (outpoint, latest_update, _) = nodes[1].chain_monitor.latest_monitor_update_id.lock().unwrap().get(&chan_1.2).unwrap().clone();
@@ -1791,9 +1775,7 @@ fn monitor_update_claim_fail_no_response() {
 	expect_payment_claimed!(nodes[1], payment_hash_1, 1_000_000);
 	check_added_monitors!(nodes[1], 1);
 
-	let events = nodes[1].node.get_and_clear_pending_msg_events();
-	assert_eq!(events.len(), 0);
-	nodes[1].logger.assert_log("lightning::ln::channelmanager".to_string(), "Temporary failure claiming HTLC, treating as success: Failed to update ChannelMonitor".to_string(), 1);
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 
 	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
 	let (outpoint, latest_update, _) = nodes[1].chain_monitor.latest_monitor_update_id.lock().unwrap().get(&channel_id).unwrap().clone();
@@ -1841,9 +1823,8 @@ fn do_during_funding_monitor_fail(confirm_a_first: bool, restore_b_before_conf: 
 
 	chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
 	nodes[0].node.handle_funding_signed(&nodes[1].node.get_our_node_id(), &get_event_msg!(nodes[1], MessageSendEvent::SendFundingSigned, nodes[0].node.get_our_node_id()));
-	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
-	nodes[0].logger.assert_log("lightning::ln::channelmanager".to_string(), "Failed to update ChannelMonitor".to_string(), 1);
 	check_added_monitors!(nodes[0], 1);
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 	assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
 	chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
 	let (outpoint, latest_update, _) = nodes[0].chain_monitor.latest_monitor_update_id.lock().unwrap().get(&channel_id).unwrap().clone();
