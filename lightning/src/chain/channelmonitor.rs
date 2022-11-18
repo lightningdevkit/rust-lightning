@@ -826,6 +826,13 @@ pub(crate) struct ChannelMonitorImpl<Signer: Sign> {
 	/// spending CSV for revocable outputs).
 	htlcs_resolved_on_chain: Vec<IrrevocablyResolvedHTLC>,
 
+	/// The set of `SpendableOutput` events which we have already passed upstream to be claimed.
+	/// These are tracked explicitly to ensure that we don't generate the same events redundantly
+	/// if users duplicatively confirm old transactions. Specifically for transactions claiming a
+	/// revoked remote outpoint we otherwise have no tracking at all once they've reached
+	/// [`ANTI_REORG_DELAY`], so we have to track them here.
+	spendable_txids_confirmed: Vec<Txid>,
+
 	// We simply modify best_block in Channel's block_connected so that serialization is
 	// consistent but hopefully the users' copy handles block_connected in a consistent way.
 	// (we do *not*, however, update them in update_monitor to ensure any local user copies keep
@@ -1071,6 +1078,7 @@ impl<Signer: Sign> Writeable for ChannelMonitorImpl<Signer> {
 			(7, self.funding_spend_seen, required),
 			(9, self.counterparty_node_id, option),
 			(11, self.confirmed_commitment_tx_counterparty_output, option),
+			(13, self.spendable_txids_confirmed, vec_type),
 		});
 
 		Ok(())
@@ -1179,6 +1187,7 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 			funding_spend_confirmed: None,
 			confirmed_commitment_tx_counterparty_output: None,
 			htlcs_resolved_on_chain: Vec::new(),
+			spendable_txids_confirmed: Vec::new(),
 
 			best_block,
 			counterparty_node_id: Some(counterparty_node_id),
@@ -3042,6 +3051,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 					self.pending_events.push(Event::SpendableOutputs {
 						outputs: vec![descriptor]
 					});
+					self.spendable_txids_confirmed.push(entry.txid);
 				},
 				OnchainEvent::HTLCSpendConfirmation { commitment_tx_output_idx, preimage, .. } => {
 					self.htlcs_resolved_on_chain.push(IrrevocablyResolvedHTLC {
@@ -3763,6 +3773,7 @@ impl<'a, K: KeysInterface> ReadableArgs<&'a K>
 		let mut funding_spend_seen = Some(false);
 		let mut counterparty_node_id = None;
 		let mut confirmed_commitment_tx_counterparty_output = None;
+		let mut spendable_txids_confirmed = Some(Vec::new());
 		read_tlv_fields!(reader, {
 			(1, funding_spend_confirmed, option),
 			(3, htlcs_resolved_on_chain, vec_type),
@@ -3770,6 +3781,7 @@ impl<'a, K: KeysInterface> ReadableArgs<&'a K>
 			(7, funding_spend_seen, option),
 			(9, counterparty_node_id, option),
 			(11, confirmed_commitment_tx_counterparty_output, option),
+			(13, spendable_txids_confirmed, vec_type),
 		});
 
 		let mut secp_ctx = Secp256k1::new();
@@ -3822,6 +3834,7 @@ impl<'a, K: KeysInterface> ReadableArgs<&'a K>
 			funding_spend_confirmed,
 			confirmed_commitment_tx_counterparty_output,
 			htlcs_resolved_on_chain: htlcs_resolved_on_chain.unwrap(),
+			spendable_txids_confirmed: spendable_txids_confirmed.unwrap(),
 
 			best_block,
 			counterparty_node_id,
