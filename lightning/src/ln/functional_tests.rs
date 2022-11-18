@@ -3370,6 +3370,12 @@ fn test_htlc_ignore_latest_remote_commitment() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	if *nodes[1].connect_style.borrow() == ConnectStyle::FullBlockViaListen {
+		// We rely on the ability to connect a block redundantly, which isn't allowed via
+		// `chain::Listen`, so we never run the test if we randomly get assigned that
+		// connect_style.
+		return;
+	}
 	create_announced_chan_between_nodes(&nodes, 0, 1, channelmanager::provided_init_features(), channelmanager::provided_init_features());
 
 	route_payment(&nodes[0], &[&nodes[1]], 10000000);
@@ -3391,7 +3397,6 @@ fn test_htlc_ignore_latest_remote_commitment() {
 
 	// Duplicate the connect_block call since this may happen due to other listeners
 	// registering new transactions
-	header.prev_blockhash = header.block_hash();
 	connect_block(&nodes[1], &Block { header, txdata: vec![node_txn[0].clone(), node_txn[2].clone()]});
 }
 
