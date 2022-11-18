@@ -785,8 +785,9 @@ fn do_test_dup_htlc_onchain_fails_on_reload(persist_manager_post_event: bool, co
 	let funding_txo = OutPoint { txid: funding_tx.txid(), index: 0 };
 	let mon_updates: Vec<_> = chanmon_cfgs[0].persister.chain_sync_monitor_persistences.lock().unwrap()
 		.get_mut(&funding_txo).unwrap().drain().collect();
-	// If we are using chain::Confirm instead of chain::Listen, we will get the same update twice
-	assert!(mon_updates.len() == 1 || mon_updates.len() == 2);
+	// If we are using chain::Confirm instead of chain::Listen, we will get the same update twice.
+	// If we're testing connection idempotency we may get substantially more.
+	assert!(mon_updates.len() >= 1);
 	assert!(nodes[0].chain_monitor.release_pending_monitor_events().is_empty());
 	assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
 

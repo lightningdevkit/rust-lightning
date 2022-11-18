@@ -2869,7 +2869,37 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 
 		let mut watch_outputs = Vec::new();
 		let mut claimable_outpoints = Vec::new();
-		for tx in &txn_matched {
+		'tx_iter: for tx in &txn_matched {
+			let txid = tx.txid();
+			// If a transaction has already been confirmed, ensure we don't bother processing it duplicatively.
+			if Some(txid) == self.funding_spend_confirmed {
+				log_debug!(logger, "Skipping redundant processing of funding-spend tx {} as it was previously confirmed", txid);
+				continue 'tx_iter;
+			}
+			for ev in self.onchain_events_awaiting_threshold_conf.iter() {
+				if ev.txid == txid {
+					if let Some(conf_hash) = ev.block_hash {
+						assert_eq!(header.block_hash(), conf_hash,
+							"Transaction {} was already confirmed and is being re-confirmed in a different block.\n\
+							This indicates a severe bug in the transaction connection logic - a reorg should have been processed first!", ev.txid);
+					}
+					log_debug!(logger, "Skipping redundant processing of confirming tx {} as it was previously confirmed", txid);
+					continue 'tx_iter;
+				}
+			}
+			for htlc in self.htlcs_resolved_on_chain.iter() {
+				if Some(txid) == htlc.resolving_txid {
+					log_debug!(logger, "Skipping redundant processing of HTLC resolution tx {} as it was previously confirmed", txid);
+					continue 'tx_iter;
+				}
+			}
+			for spendable_txid in self.spendable_txids_confirmed.iter() {
+				if txid == *spendable_txid {
+					log_debug!(logger, "Skipping redundant processing of spendable tx {} as it was previously confirmed", txid);
+					continue 'tx_iter;
+				}
+			}
+
 			if tx.input.len() == 1 {
 				// Assuming our keys were not leaked (in which case we're screwed no matter what),
 				// commitment transactions and HTLC transactions will all only ever have one input,
@@ -2879,7 +2909,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 				if prevout.txid == self.funding_info.0.txid && prevout.vout == self.funding_info.0.index as u32 {
 					let mut balance_spendable_csv = None;
 					log_info!(logger, "Channel {} closed by funding output spend in txid {}.",
-						log_bytes!(self.funding_info.0.to_channel_id()), tx.txid());
+						log_bytes!(self.funding_info.0.to_channel_id()), txid);
 					self.funding_spend_seen = true;
 					let mut commitment_tx_to_counterparty_output = None;
 					if (tx.input[0].sequence.0 >> 8*3) as u8 == 0x80 && (tx.lock_time.0 >> 8*3) as u8 == 0x20 {
@@ -2902,7 +2932,6 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 							}
 						}
 					}
-					let txid = tx.txid();
 					self.onchain_events_awaiting_threshold_conf.push(OnchainEventEntry {
 						txid,
 						transaction: Some((*tx).clone()),
