@@ -18,13 +18,15 @@
 //! extern crate core;
 //! extern crate lightning;
 //!
+//! use core::convert::TryFrom;
 //! use core::num::NonZeroU64;
 //! use core::time::Duration;
 //!
 //! use bitcoin::secp256k1::{KeyPair, PublicKey, Secp256k1, SecretKey};
-//! use lightning::offers::offer::{OfferBuilder, Quantity};
+//! use lightning::offers::offer::{Offer, OfferBuilder, Quantity};
+//! use lightning::offers::parse::ParseError;
+//! use lightning::util::ser::{Readable, Writeable};
 //!
-//! # use bitcoin::secp256k1;
 //! # use lightning::onion_message::BlindedPath;
 //! # #[cfg(feature = "std")]
 //! # use std::time::SystemTime;
@@ -33,9 +35,9 @@
 //! # fn create_another_blinded_path() -> BlindedPath { unimplemented!() }
 //! #
 //! # #[cfg(feature = "std")]
-//! # fn build() -> Result<(), secp256k1::Error> {
+//! # fn build() -> Result<(), ParseError> {
 //! let secp_ctx = Secp256k1::new();
-//! let keys = KeyPair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32])?);
+//! let keys = KeyPair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 //! let pubkey = PublicKey::from(keys);
 //!
 //! let expiration = SystemTime::now() + Duration::from_secs(24 * 60 * 60);
@@ -46,8 +48,20 @@
 //!     .issuer("Foo Bar".to_string())
 //!     .path(create_blinded_path())
 //!     .path(create_another_blinded_path())
-//!     .build()
-//!     .unwrap();
+//!     .build()?;
+//!
+//! // Encode as a bech32 string for use in a QR code.
+//! let encoded_offer = offer.to_string();
+//!
+//! // Parse from a bech32 string after scanning from a QR code.
+//! let offer = encoded_offer.parse::<Offer>()?;
+//!
+//! // Encode offer as raw bytes.
+//! let mut bytes = Vec::new();
+//! offer.write(&mut bytes).unwrap();
+//!
+//! // Decode raw bytes into an offer.
+//! let offer = Offer::try_from(bytes)?;
 //! # Ok(())
 //! # }
 //! ```
@@ -55,11 +69,14 @@
 use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::network::constants::Network;
 use bitcoin::secp256k1::PublicKey;
+use core::convert::TryFrom;
 use core::num::NonZeroU64;
+use core::str::FromStr;
 use core::time::Duration;
 use crate::io;
 use crate::ln::features::OfferFeatures;
 use crate::ln::msgs::MAX_VALUE_MSAT;
+use crate::offers::parse::{Bech32Encode, ParseError, ParsedMessage, SemanticError};
 use crate::onion_message::BlindedPath;
 use crate::util::ser::{HighZeroBytesDroppedBigSize, WithoutLength, Writeable, Writer};
 use crate::util::string::PrintableString;
@@ -168,7 +185,8 @@ impl OfferBuilder {
 		self
 	}
 
-	/// Sets the quantity of items for [`Offer::supported_quantity`].
+	/// Sets the quantity of items for [`Offer::supported_quantity`]. If not called, defaults to
+	/// [`Quantity::one`].
 	///
 	/// Successive calls to this method will override the previous setting.
 	pub fn supported_quantity(mut self, quantity: Quantity) -> Self {
@@ -177,14 +195,14 @@ impl OfferBuilder {
 	}
 
 	/// Builds an [`Offer`] from the builder's settings.
-	pub fn build(mut self) -> Result<Offer, ()> {
+	pub fn build(mut self) -> Result<Offer, SemanticError> {
 		match self.offer.amount {
 			Some(Amount::Bitcoin { amount_msats }) => {
 				if amount_msats > MAX_VALUE_MSAT {
-					return Err(());
+					return Err(SemanticError::InvalidAmount);
 				}
 			},
-			Some(Amount::Currency { .. }) => unreachable!(),
+			Some(Amount::Currency { .. }) => return Err(SemanticError::UnsupportedCurrency),
 			None => {},
 		}
 
@@ -321,6 +339,12 @@ impl Offer {
 	}
 }
 
+impl AsRef<[u8]> for Offer {
+	fn as_ref(&self) -> &[u8] {
+		&self.bytes
+	}
+}
+
 impl OfferContents {
 	pub fn implied_chain(&self) -> ChainHash {
 		ChainHash::using_genesis_block(Network::Bitcoin)
@@ -356,6 +380,12 @@ impl OfferContents {
 			quantity_max: self.supported_quantity.to_tlv_record(),
 			node_id: self.signing_pubkey.as_ref(),
 		}
+	}
+}
+
+impl Writeable for Offer {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		WithoutLength(&self.bytes).write(writer)
 	}
 }
 
@@ -396,7 +426,8 @@ pub enum Quantity {
 }
 
 impl Quantity {
-	fn one() -> Self {
+	/// The default quantity of one.
+	pub fn one() -> Self {
 		Quantity::Bounded(NonZeroU64::new(1).unwrap())
 	}
 
@@ -411,7 +442,7 @@ impl Quantity {
 	}
 }
 
-tlv_stream!(OfferTlvStream, OfferTlvStreamRef, {
+tlv_stream!(OfferTlvStream, OfferTlvStreamRef, 1..80, {
 	(2, chains: (Vec<ChainHash>, WithoutLength)),
 	(4, metadata: (Vec<u8>, WithoutLength)),
 	(6, currency: CurrencyCode),
@@ -425,19 +456,97 @@ tlv_stream!(OfferTlvStream, OfferTlvStreamRef, {
 	(22, node_id: PublicKey),
 });
 
+impl Bech32Encode for Offer {
+	const BECH32_HRP: &'static str = "lno";
+}
+
+impl FromStr for Offer {
+	type Err = ParseError;
+
+	fn from_str(s: &str) -> Result<Self, <Self as FromStr>::Err> {
+		Self::from_bech32_str(s)
+	}
+}
+
+impl TryFrom<Vec<u8>> for Offer {
+	type Error = ParseError;
+
+	fn try_from(bytes: Vec<u8>) -> Result<Self, Self::Error> {
+		let offer = ParsedMessage::<OfferTlvStream>::try_from(bytes)?;
+		let ParsedMessage { bytes, tlv_stream } = offer;
+		let contents = OfferContents::try_from(tlv_stream)?;
+		Ok(Offer { bytes, contents })
+	}
+}
+
+impl TryFrom<OfferTlvStream> for OfferContents {
+	type Error = SemanticError;
+
+	fn try_from(tlv_stream: OfferTlvStream) -> Result<Self, Self::Error> {
+		let OfferTlvStream {
+			chains, metadata, currency, amount, description, features, absolute_expiry, paths,
+			issuer, quantity_max, node_id,
+		} = tlv_stream;
+
+		let amount = match (currency, amount) {
+			(None, None) => None,
+			(None, Some(amount_msats)) if amount_msats > MAX_VALUE_MSAT => {
+				return Err(SemanticError::InvalidAmount);
+			},
+			(None, Some(amount_msats)) => Some(Amount::Bitcoin { amount_msats }),
+			(Some(_), None) => return Err(SemanticError::MissingAmount),
+			(Some(iso4217_code), Some(amount)) => Some(Amount::Currency { iso4217_code, amount }),
+		};
+
+		let description = match description {
+			None => return Err(SemanticError::MissingDescription),
+			Some(description) => description,
+		};
+
+		let features = features.unwrap_or_else(OfferFeatures::empty);
+
+		let absolute_expiry = absolute_expiry
+			.map(|seconds_from_epoch| Duration::from_secs(seconds_from_epoch));
+
+		let supported_quantity = match quantity_max {
+			None => Quantity::one(),
+			Some(0) => Quantity::Unbounded,
+			Some(1) => return Err(SemanticError::InvalidQuantity),
+			Some(n) => Quantity::Bounded(NonZeroU64::new(n).unwrap()),
+		};
+
+		if node_id.is_none() {
+			return Err(SemanticError::MissingSigningPubkey);
+		}
+
+		Ok(OfferContents {
+			chains, metadata, amount, description, features, absolute_expiry, issuer, paths,
+			supported_quantity, signing_pubkey: node_id,
+		})
+	}
+}
+
+impl core::fmt::Display for Offer {
+	fn fmt(&self, f: &mut core::fmt::Formatter) -> Result<(), core::fmt::Error> {
+		self.fmt_bech32_str(f)
+	}
+}
+
 #[cfg(test)]
 mod tests {
-	use super::{Amount, OfferBuilder, Quantity};
+	use super::{Amount, Offer, OfferBuilder, Quantity};
 
 	use bitcoin::blockdata::constants::ChainHash;
 	use bitcoin::network::constants::Network;
 	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
+	use core::convert::TryFrom;
 	use core::num::NonZeroU64;
 	use core::time::Duration;
 	use crate::ln::features::OfferFeatures;
-	use crate::ln::msgs::MAX_VALUE_MSAT;
+	use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
+	use crate::offers::parse::{ParseError, SemanticError};
 	use crate::onion_message::{BlindedHop, BlindedPath};
-	use crate::util::ser::Writeable;
+	use crate::util::ser::{BigSize, Writeable};
 	use crate::util::string::PrintableString;
 
 	fn pubkey(byte: u8) -> PublicKey {
@@ -454,7 +563,7 @@ mod tests {
 		let offer = OfferBuilder::new("foo".into(), pubkey(42)).build().unwrap();
 		let tlv_stream = offer.as_tlv_stream();
 		let mut buffer = Vec::new();
-		offer.contents.write(&mut buffer).unwrap();
+		offer.write(&mut buffer).unwrap();
 
 		assert_eq!(offer.bytes, buffer.as_slice());
 		assert_eq!(offer.chains(), vec![ChainHash::using_genesis_block(Network::Bitcoin)]);
@@ -481,6 +590,10 @@ mod tests {
 		assert_eq!(tlv_stream.issuer, None);
 		assert_eq!(tlv_stream.quantity_max, None);
 		assert_eq!(tlv_stream.node_id, Some(&pubkey(42)));
+
+		if let Err(e) = Offer::try_from(buffer) {
+			panic!("error parsing offer: {:?}", e);
+		}
 	}
 
 	#[test]
@@ -557,6 +670,10 @@ mod tests {
 		assert_eq!(builder.offer.amount, Some(currency_amount.clone()));
 		assert_eq!(tlv_stream.amount, Some(10));
 		assert_eq!(tlv_stream.currency, Some(b"USD"));
+		match builder.build() {
+			Ok(_) => panic!("expected error"),
+			Err(e) => assert_eq!(e, SemanticError::UnsupportedCurrency),
+		}
 
 		let offer = OfferBuilder::new("foo".into(), pubkey(42))
 			.amount(currency_amount.clone())
@@ -570,7 +687,7 @@ mod tests {
 		let invalid_amount = Amount::Bitcoin { amount_msats: MAX_VALUE_MSAT + 1 };
 		match OfferBuilder::new("foo".into(), pubkey(42)).amount(invalid_amount).build() {
 			Ok(_) => panic!("expected error"),
-			Err(e) => assert_eq!(e, ()),
+			Err(e) => assert_eq!(e, SemanticError::InvalidAmount),
 		}
 	}
 
@@ -705,5 +822,278 @@ mod tests {
 		let tlv_stream = offer.as_tlv_stream();
 		assert_eq!(offer.supported_quantity(), Quantity::one());
 		assert_eq!(tlv_stream.quantity_max, None);
+	}
+
+	#[test]
+	fn parses_offer_with_chains() {
+		let offer = OfferBuilder::new("foo".into(), pubkey(42))
+			.chain(Network::Bitcoin)
+			.chain(Network::Testnet)
+			.build()
+			.unwrap();
+		if let Err(e) = offer.to_string().parse::<Offer>() {
+			panic!("error parsing offer: {:?}", e);
+		}
+	}
+
+	#[test]
+	fn parses_offer_with_amount() {
+		let offer = OfferBuilder::new("foo".into(), pubkey(42))
+			.amount(Amount::Bitcoin { amount_msats: 1000 })
+			.build()
+			.unwrap();
+		if let Err(e) = offer.to_string().parse::<Offer>() {
+			panic!("error parsing offer: {:?}", e);
+		}
+
+		let mut tlv_stream = offer.as_tlv_stream();
+		tlv_stream.amount = Some(1000);
+		tlv_stream.currency = Some(b"USD");
+
+		let mut encoded_offer = Vec::new();
+		tlv_stream.write(&mut encoded_offer).unwrap();
+
+		if let Err(e) = Offer::try_from(encoded_offer) {
+			panic!("error parsing offer: {:?}", e);
+		}
+
+		let mut tlv_stream = offer.as_tlv_stream();
+		tlv_stream.amount = None;
+		tlv_stream.currency = Some(b"USD");
+
+		let mut encoded_offer = Vec::new();
+		tlv_stream.write(&mut encoded_offer).unwrap();
+
+		match Offer::try_from(encoded_offer) {
+			Ok(_) => panic!("expected error"),
+			Err(e) => assert_eq!(e, ParseError::InvalidSemantics(SemanticError::MissingAmount)),
+		}
+
+		let mut tlv_stream = offer.as_tlv_stream();
+		tlv_stream.amount = Some(MAX_VALUE_MSAT + 1);
+		tlv_stream.currency = None;
+
+		let mut encoded_offer = Vec::new();
+		tlv_stream.write(&mut encoded_offer).unwrap();
+
+		match Offer::try_from(encoded_offer) {
+			Ok(_) => panic!("expected error"),
+			Err(e) => assert_eq!(e, ParseError::InvalidSemantics(SemanticError::InvalidAmount)),
+		}
+	}
+
+	#[test]
+	fn parses_offer_with_description() {
+		let offer = OfferBuilder::new("foo".into(), pubkey(42)).build().unwrap();
+		if let Err(e) = offer.to_string().parse::<Offer>() {
+			panic!("error parsing offer: {:?}", e);
+		}
+
+		let mut tlv_stream = offer.as_tlv_stream();
+		tlv_stream.description = None;
+
+		let mut encoded_offer = Vec::new();
+		tlv_stream.write(&mut encoded_offer).unwrap();
+
+		match Offer::try_from(encoded_offer) {
+			Ok(_) => panic!("expected error"),
+			Err(e) => {
+				assert_eq!(e, ParseError::InvalidSemantics(SemanticError::MissingDescription));
+			},
+		}
+	}
+
+	#[test]
+	fn parses_offer_with_paths() {
+		let offer = OfferBuilder::new("foo".into(), pubkey(42))
+			.path(BlindedPath {
+				introduction_node_id: pubkey(40),
+				blinding_point: pubkey(41),
+				blinded_hops: vec![
+					BlindedHop { blinded_node_id: pubkey(43), encrypted_payload: vec![0; 43] },
+					BlindedHop { blinded_node_id: pubkey(44), encrypted_payload: vec![0; 44] },
+				],
+			})
+			.path(BlindedPath {
+				introduction_node_id: pubkey(40),
+				blinding_point: pubkey(41),
+				blinded_hops: vec![
+					BlindedHop { blinded_node_id: pubkey(45), encrypted_payload: vec![0; 45] },
+					BlindedHop { blinded_node_id: pubkey(46), encrypted_payload: vec![0; 46] },
+				],
+			})
+			.build()
+			.unwrap();
+		if let Err(e) = offer.to_string().parse::<Offer>() {
+			panic!("error parsing offer: {:?}", e);
+		}
+
+		let mut builder = OfferBuilder::new("foo".into(), pubkey(42));
+		builder.offer.paths = Some(vec![]);
+
+		let offer = builder.build().unwrap();
+		if let Err(e) = offer.to_string().parse::<Offer>() {
+			panic!("error parsing offer: {:?}", e);
+		}
+	}
+
+	#[test]
+	fn parses_offer_with_quantity() {
+		let offer = OfferBuilder::new("foo".into(), pubkey(42))
+			.supported_quantity(Quantity::one())
+			.build()
+			.unwrap();
+		if let Err(e) = offer.to_string().parse::<Offer>() {
+			panic!("error parsing offer: {:?}", e);
+		}
+
+		let offer = OfferBuilder::new("foo".into(), pubkey(42))
+			.supported_quantity(Quantity::Unbounded)
+			.build()
+			.unwrap();
+		if let Err(e) = offer.to_string().parse::<Offer>() {
+			panic!("error parsing offer: {:?}", e);
+		}
+
+		let offer = OfferBuilder::new("foo".into(), pubkey(42))
+			.supported_quantity(Quantity::Bounded(NonZeroU64::new(10).unwrap()))
+			.build()
+			.unwrap();
+		if let Err(e) = offer.to_string().parse::<Offer>() {
+			panic!("error parsing offer: {:?}", e);
+		}
+
+		let mut tlv_stream = offer.as_tlv_stream();
+		tlv_stream.quantity_max = Some(1);
+
+		let mut encoded_offer = Vec::new();
+		tlv_stream.write(&mut encoded_offer).unwrap();
+
+		match Offer::try_from(encoded_offer) {
+			Ok(_) => panic!("expected error"),
+			Err(e) => {
+				assert_eq!(e, ParseError::InvalidSemantics(SemanticError::InvalidQuantity));
+			},
+		}
+	}
+
+	#[test]
+	fn parses_offer_with_node_id() {
+		let offer = OfferBuilder::new("foo".into(), pubkey(42)).build().unwrap();
+		if let Err(e) = offer.to_string().parse::<Offer>() {
+			panic!("error parsing offer: {:?}", e);
+		}
+
+		let mut builder = OfferBuilder::new("foo".into(), pubkey(42));
+		builder.offer.signing_pubkey = None;
+
+		let offer = builder.build().unwrap();
+		match offer.to_string().parse::<Offer>() {
+			Ok(_) => panic!("expected error"),
+			Err(e) => {
+				assert_eq!(e, ParseError::InvalidSemantics(SemanticError::MissingSigningPubkey));
+			},
+		}
+	}
+
+	#[test]
+	fn fails_parsing_offer_with_extra_tlv_records() {
+		let offer = OfferBuilder::new("foo".into(), pubkey(42)).build().unwrap();
+
+		let mut encoded_offer = Vec::new();
+		offer.write(&mut encoded_offer).unwrap();
+		BigSize(80).write(&mut encoded_offer).unwrap();
+		BigSize(32).write(&mut encoded_offer).unwrap();
+		[42u8; 32].write(&mut encoded_offer).unwrap();
+
+		match Offer::try_from(encoded_offer) {
+			Ok(_) => panic!("expected error"),
+			Err(e) => assert_eq!(e, ParseError::Decode(DecodeError::InvalidValue)),
+		}
+	}
+}
+
+#[cfg(test)]
+mod bech32_tests {
+	use super::{Offer, ParseError};
+	use bitcoin::bech32;
+	use crate::ln::msgs::DecodeError;
+
+	// TODO: Remove once test vectors are updated.
+	#[ignore]
+	#[test]
+	fn encodes_offer_as_bech32_without_checksum() {
+		let encoded_offer = "lno1qcp4256ypqpq86q2pucnq42ngssx2an9wfujqerp0y2pqun4wd68jtn00fkxzcnn9ehhyec6qgqsz83qfwdpl28qqmc78ymlvhmxcsywdk5wrjnj36jryg488qwlrnzyjczlqsp9nyu4phcg6dqhlhzgxagfu7zh3d9re0sqp9ts2yfugvnnm9gxkcnnnkdpa084a6t520h5zhkxsdnghvpukvd43lastpwuh73k29qsy";
+		let offer = dbg!(encoded_offer.parse::<Offer>().unwrap());
+		let reencoded_offer = offer.to_string();
+		dbg!(reencoded_offer.parse::<Offer>().unwrap());
+		assert_eq!(reencoded_offer, encoded_offer);
+	}
+
+	// TODO: Remove once test vectors are updated.
+	#[ignore]
+	#[test]
+	fn parses_bech32_encoded_offers() {
+		let offers = [
+			// BOLT 12 test vectors
+			"lno1qcp4256ypqpq86q2pucnq42ngssx2an9wfujqerp0y2pqun4wd68jtn00fkxzcnn9ehhyec6qgqsz83qfwdpl28qqmc78ymlvhmxcsywdk5wrjnj36jryg488qwlrnzyjczlqsp9nyu4phcg6dqhlhzgxagfu7zh3d9re0sqp9ts2yfugvnnm9gxkcnnnkdpa084a6t520h5zhkxsdnghvpukvd43lastpwuh73k29qsy",
+			"l+no1qcp4256ypqpq86q2pucnq42ngssx2an9wfujqerp0y2pqun4wd68jtn00fkxzcnn9ehhyec6qgqsz83qfwdpl28qqmc78ymlvhmxcsywdk5wrjnj36jryg488qwlrnzyjczlqsp9nyu4phcg6dqhlhzgxagfu7zh3d9re0sqp9ts2yfugvnnm9gxkcnnnkdpa084a6t520h5zhkxsdnghvpukvd43lastpwuh73k29qsy",
+			"l+no1qcp4256ypqpq86q2pucnq42ngssx2an9wfujqerp0y2pqun4wd68jtn00fkxzcnn9ehhyec6qgqsz83qfwdpl28qqmc78ymlvhmxcsywdk5wrjnj36jryg488qwlrnzyjczlqsp9nyu4phcg6dqhlhzgxagfu7zh3d9re0sqp9ts2yfugvnnm9gxkcnnnkdpa084a6t520h5zhkxsdnghvpukvd43lastpwuh73k29qsy",
+			"lno1qcp4256ypqpq+86q2pucnq42ngssx2an9wfujqerp0y2pqun4wd68jtn0+0fkxzcnn9ehhyec6qgqsz83qfwdpl28qqmc78ymlvhmxcsywdk5wrjnj36jryg488qwlrnzyjczlqsp9nyu4phcg6dqhlhzgxagfu7zh3d9re0+sqp9ts2yfugvnnm9gxkcnnnkdpa084a6t520h5zhkxsdnghvpukvd43lastpwuh73k29qs+y",
+			"lno1qcp4256ypqpq+ 86q2pucnq42ngssx2an9wfujqerp0y2pqun4wd68jtn0+  0fkxzcnn9ehhyec6qgqsz83qfwdpl28qqmc78ymlvhmxcsywdk5wrjnj36jryg488qwlrnzyjczlqsp9nyu4phcg6dqhlhzgxagfu7zh3d9re0+\nsqp9ts2yfugvnnm9gxkcnnnkdpa084a6t520h5zhkxsdnghvpukvd43l+\r\nastpwuh73k29qs+\r  y",
+			// Two blinded paths
+			"lno1qcp4256ypqpq86q2pucnq42ngssx2an9wfujqerp0yg06qg2qdd7t628sgykwj5kuc837qmlv9m9gr7sq8ap6erfgacv26nhp8zzcqgzhdvttlk22pw8fmwqqrvzst792mj35ypylj886ljkcmug03wg6heqqsqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq6muh550qsfva9fdes0ruph7ctk2s8aqq06r4jxj3msc448wzwy9sqs9w6ckhlv55zuwnkuqqxc9qhu24h9rggzflyw04l9d3hcslzu340jqpqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq2pqun4wd68jtn00fkxzcnn9ehhyec6qgqsz83qfwdpl28qqmc78ymlvhmxcsywdk5wrjnj36jryg488qwlrnzyjczlqsp9nyu4phcg6dqhlhzgxagfu7zh3d9re0sqp9ts2yfugvnnm9gxkcnnnkdpa084a6t520h5zhkxsdnghvpukvd43lastpwuh73k29qsy",
+		];
+		for encoded_offer in &offers {
+			if let Err(e) = encoded_offer.parse::<Offer>() {
+				panic!("Invalid offer ({:?}): {}", e, encoded_offer);
+			}
+		}
+	}
+
+	#[test]
+	fn fails_parsing_bech32_encoded_offers_with_invalid_continuations() {
+		let offers = [
+			// BOLT 12 test vectors
+			"lno1qcp4256ypqpq86q2pucnq42ngssx2an9wfujqerp0y2pqun4wd68jtn00fkxzcnn9ehhyec6qgqsz83qfwdpl28qqmc78ymlvhmxcsywdk5wrjnj36jryg488qwlrnzyjczlqsp9nyu4phcg6dqhlhzgxagfu7zh3d9re0sqp9ts2yfugvnnm9gxkcnnnkdpa084a6t520h5zhkxsdnghvpukvd43lastpwuh73k29qsy+",
+			"lno1qcp4256ypqpq86q2pucnq42ngssx2an9wfujqerp0y2pqun4wd68jtn00fkxzcnn9ehhyec6qgqsz83qfwdpl28qqmc78ymlvhmxcsywdk5wrjnj36jryg488qwlrnzyjczlqsp9nyu4phcg6dqhlhzgxagfu7zh3d9re0sqp9ts2yfugvnnm9gxkcnnnkdpa084a6t520h5zhkxsdnghvpukvd43lastpwuh73k29qsy+ ",
+			"+lno1qcp4256ypqpq86q2pucnq42ngssx2an9wfujqerp0y2pqun4wd68jtn00fkxzcnn9ehhyec6qgqsz83qfwdpl28qqmc78ymlvhmxcsywdk5wrjnj36jryg488qwlrnzyjczlqsp9nyu4phcg6dqhlhzgxagfu7zh3d9re0sqp9ts2yfugvnnm9gxkcnnnkdpa084a6t520h5zhkxsdnghvpukvd43lastpwuh73k29qsy",
+			"+ lno1qcp4256ypqpq86q2pucnq42ngssx2an9wfujqerp0y2pqun4wd68jtn00fkxzcnn9ehhyec6qgqsz83qfwdpl28qqmc78ymlvhmxcsywdk5wrjnj36jryg488qwlrnzyjczlqsp9nyu4phcg6dqhlhzgxagfu7zh3d9re0sqp9ts2yfugvnnm9gxkcnnnkdpa084a6t520h5zhkxsdnghvpukvd43lastpwuh73k29qsy",
+			"ln++o1qcp4256ypqpq86q2pucnq42ngssx2an9wfujqerp0y2pqun4wd68jtn00fkxzcnn9ehhyec6qgqsz83qfwdpl28qqmc78ymlvhmxcsywdk5wrjnj36jryg488qwlrnzyjczlqsp9nyu4phcg6dqhlhzgxagfu7zh3d9re0sqp9ts2yfugvnnm9gxkcnnnkdpa084a6t520h5zhkxsdnghvpukvd43lastpwuh73k29qsy",
+		];
+		for encoded_offer in &offers {
+			match encoded_offer.parse::<Offer>() {
+				Ok(_) => panic!("Valid offer: {}", encoded_offer),
+				Err(e) => assert_eq!(e, ParseError::InvalidContinuation),
+			}
+		}
+
+	}
+
+	#[test]
+	fn fails_parsing_bech32_encoded_offer_with_invalid_hrp() {
+		let encoded_offer = "lni1qcp4256ypqpq86q2pucnq42ngssx2an9wfujqerp0y2pqun4wd68jtn00fkxzcnn9ehhyec6qgqsz83qfwdpl28qqmc78ymlvhmxcsywdk5wrjnj36jryg488qwlrnzyjczlqsp9nyu4phcg6dqhlhzgxagfu7zh3d9re0sqp9ts2yfugvnnm9gxkcnnnkdpa084a6t520h5zhkxsdnghvpukvd43lastpwuh73k29qsy";
+		match encoded_offer.parse::<Offer>() {
+			Ok(_) => panic!("Valid offer: {}", encoded_offer),
+			Err(e) => assert_eq!(e, ParseError::InvalidBech32Hrp),
+		}
+	}
+
+	#[test]
+	fn fails_parsing_bech32_encoded_offer_with_invalid_bech32_data() {
+		let encoded_offer = "lno1qcp4256ypqpq86q2pucnq42ngssx2an9wfujqerp0y2pqun4wd68jtn00fkxzcnn9ehhyec6qgqsz83qfwdpl28qqmc78ymlvhmxcsywdk5wrjnj36jryg488qwlrnzyjczlqsp9nyu4phcg6dqhlhzgxagfu7zh3d9re0sqp9ts2yfugvnnm9gxkcnnnkdpa084a6t520h5zhkxsdnghvpukvd43lastpwuh73k29qso";
+		match encoded_offer.parse::<Offer>() {
+			Ok(_) => panic!("Valid offer: {}", encoded_offer),
+			Err(e) => assert_eq!(e, ParseError::Bech32(bech32::Error::InvalidChar('o'))),
+		}
+	}
+
+	#[test]
+	fn fails_parsing_bech32_encoded_offer_with_invalid_tlv_data() {
+		let encoded_offer = "lno1qcp4256ypqpq86q2pucnq42ngssx2an9wfujqerp0y2pqun4wd68jtn00fkxzcnn9ehhyec6qgqsz83qfwdpl28qqmc78ymlvhmxcsywdk5wrjnj36jryg488qwlrnzyjczlqsp9nyu4phcg6dqhlhzgxagfu7zh3d9re0sqp9ts2yfugvnnm9gxkcnnnkdpa084a6t520h5zhkxsdnghvpukvd43lastpwuh73k29qsyqqqqq";
+		match encoded_offer.parse::<Offer>() {
+			Ok(_) => panic!("Valid offer: {}", encoded_offer),
+			Err(e) => assert_eq!(e, ParseError::Decode(DecodeError::InvalidValue)),
+		}
 	}
 }
