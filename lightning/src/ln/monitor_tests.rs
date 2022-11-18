@@ -567,6 +567,16 @@ fn do_test_claim_value_force_close(prev_commitment_tx: bool) {
 	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
 	assert_eq!(Vec::<Balance>::new(),
 		nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances());
+
+	// Ensure that even if we connect more blocks, potentially replaying the entire chain if we're
+	// using `ConnectStyle::HighlyRedundantTransactionsFirstSkippingBlocks`, we don't get new
+	// monitor events or claimable balances.
+	for node in nodes.iter() {
+		connect_blocks(node, 6);
+		connect_blocks(node, 6);
+		assert!(node.chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());
+		assert!(node.chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances().is_empty());
+	}
 }
 
 #[test]
@@ -750,6 +760,14 @@ fn test_balances_on_local_commitment_htlcs() {
 	connect_blocks(&nodes[0], node_a_htlc_claimable - nodes[0].best_block_info().1);
 	assert!(nodes[0].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances().is_empty());
 	test_spendable_output(&nodes[0], &as_txn[1]);
+
+	// Ensure that even if we connect more blocks, potentially replaying the entire chain if we're
+	// using `ConnectStyle::HighlyRedundantTransactionsFirstSkippingBlocks`, we don't get new
+	// monitor events or claimable balances.
+	connect_blocks(&nodes[0], 6);
+	connect_blocks(&nodes[0], 6);
+	assert!(nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());
+	assert!(nodes[0].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances().is_empty());
 }
 
 #[test]
@@ -981,6 +999,14 @@ fn test_no_preimage_inbound_htlc_balances() {
 	test_spendable_output(&nodes[1], &bs_htlc_timeout_claim[0]);
 
 	connect_blocks(&nodes[1], 1);
+	assert!(nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances().is_empty());
+
+	// Ensure that even if we connect more blocks, potentially replaying the entire chain if we're
+	// using `ConnectStyle::HighlyRedundantTransactionsFirstSkippingBlocks`, we don't get new
+	// monitor events or claimable balances.
+	connect_blocks(&nodes[1], 6);
+	connect_blocks(&nodes[1], 6);
+	assert!(nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());
 	assert!(nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances().is_empty());
 }
 
@@ -1231,6 +1257,14 @@ fn do_test_revoked_counterparty_commitment_balances(confirm_htlc_spend_first: bo
 	test_spendable_output(&nodes[1], &claim_txn[1]);
 	expect_payment_failed!(nodes[1], timeout_payment_hash, false);
 	assert_eq!(nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances(), Vec::new());
+
+	// Ensure that even if we connect more blocks, potentially replaying the entire chain if we're
+	// using `ConnectStyle::HighlyRedundantTransactionsFirstSkippingBlocks`, we don't get new
+	// monitor events or claimable balances.
+	connect_blocks(&nodes[1], 6);
+	connect_blocks(&nodes[1], 6);
+	assert!(nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());
+	assert!(nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances().is_empty());
 }
 
 #[test]
@@ -1437,6 +1471,14 @@ fn test_revoked_counterparty_htlc_tx_balances() {
 	test_spendable_output(&nodes[0], &as_second_htlc_claim_tx[1]);
 
 	assert_eq!(nodes[0].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances(), Vec::new());
+
+	// Ensure that even if we connect more blocks, potentially replaying the entire chain if we're
+	// using `ConnectStyle::HighlyRedundantTransactionsFirstSkippingBlocks`, we don't get new
+	// monitor events or claimable balances.
+	connect_blocks(&nodes[0], 6);
+	connect_blocks(&nodes[0], 6);
+	assert!(nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());
+	assert!(nodes[0].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances().is_empty());
 }
 
 #[test]
@@ -1627,5 +1669,13 @@ fn test_revoked_counterparty_aggregated_claims() {
 	connect_blocks(&nodes[1], 5);
 	expect_payment_failed!(nodes[1], revoked_payment_hash, false);
 	test_spendable_output(&nodes[1], &claim_txn_2[0]);
+	assert!(nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances().is_empty());
+
+	// Ensure that even if we connect more blocks, potentially replaying the entire chain if we're
+	// using `ConnectStyle::HighlyRedundantTransactionsFirstSkippingBlocks`, we don't get new
+	// monitor events or claimable balances.
+	connect_blocks(&nodes[1], 6);
+	connect_blocks(&nodes[1], 6);
+	assert!(nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());
 	assert!(nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances().is_empty());
 }
