@@ -9458,3 +9458,81 @@ fn test_non_final_funding_tx() {
 	assert!(nodes[0].node.funding_transaction_generated(&temp_channel_id, &nodes[1].node.get_our_node_id(), tx.clone()).is_ok());
 	get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, nodes[1].node.get_our_node_id());
 }
+
+#[test]
+fn accept_busted_but_better_fee() {
+	// If a peer sends us a fee update that is too low, but higher than our previous channel
+	// feerate, we should accept it. In the future we may want to consider closing the channel
+	// later, but for now we only accept the update.
+	let mut chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	create_chan_between_nodes(&nodes[0], &nodes[1], channelmanager::provided_init_features(), channelmanager::provided_init_features());
+
+	// Set nodes[1] to expect 5,000 sat/kW.
+	{
+		let mut feerate_lock = chanmon_cfgs[1].fee_estimator.sat_per_kw.lock().unwrap();
+		*feerate_lock = 5000;
+	}
+
+	// If nodes[0] increases their feerate, even if its not enough, nodes[1] should accept it.
+	{
+		let mut feerate_lock = chanmon_cfgs[0].fee_estimator.sat_per_kw.lock().unwrap();
+		*feerate_lock = 1000;
+	}
+	nodes[0].node.timer_tick_occurred();
+	check_added_monitors!(nodes[0], 1);
+
+	let events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	match events[0] {
+		MessageSendEvent::UpdateHTLCs { updates: msgs::CommitmentUpdate { ref update_fee, ref commitment_signed, .. }, .. } => {
+			nodes[1].node.handle_update_fee(&nodes[0].node.get_our_node_id(), update_fee.as_ref().unwrap());
+			commitment_signed_dance!(nodes[1], nodes[0], commitment_signed, false);
+		},
+		_ => panic!("Unexpected event"),
+	};
+
+	// If nodes[0] increases their feerate further, even if its not enough, nodes[1] should accept
+	// it.
+	{
+		let mut feerate_lock = chanmon_cfgs[0].fee_estimator.sat_per_kw.lock().unwrap();
+		*feerate_lock = 2000;
+	}
+	nodes[0].node.timer_tick_occurred();
+	check_added_monitors!(nodes[0], 1);
+
+	let events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	match events[0] {
+		MessageSendEvent::UpdateHTLCs { updates: msgs::CommitmentUpdate { ref update_fee, ref commitment_signed, .. }, .. } => {
+			nodes[1].node.handle_update_fee(&nodes[0].node.get_our_node_id(), update_fee.as_ref().unwrap());
+			commitment_signed_dance!(nodes[1], nodes[0], commitment_signed, false);
+		},
+		_ => panic!("Unexpected event"),
+	};
+
+	// However, if nodes[0] decreases their feerate, nodes[1] should reject it and close the
+	// channel.
+	{
+		let mut feerate_lock = chanmon_cfgs[0].fee_estimator.sat_per_kw.lock().unwrap();
+		*feerate_lock = 1000;
+	}
+	nodes[0].node.timer_tick_occurred();
+	check_added_monitors!(nodes[0], 1);
+
+	let events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	match events[0] {
+		MessageSendEvent::UpdateHTLCs { updates: msgs::CommitmentUpdate { ref update_fee, .. }, .. } => {
+			nodes[1].node.handle_update_fee(&nodes[0].node.get_our_node_id(), update_fee.as_ref().unwrap());
+			check_closed_event!(nodes[1], 1, ClosureReason::ProcessingError {
+				err: "Peer's feerate much too low. Actual: 1000. Our expected lower limit: 5000 (- 250)".to_owned() });
+			check_closed_broadcast!(nodes[1], true);
+			check_added_monitors!(nodes[1], 1);
+		},
+		_ => panic!("Unexpected event"),
+	};
+}
