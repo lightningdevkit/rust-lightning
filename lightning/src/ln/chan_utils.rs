@@ -1627,8 +1627,8 @@ mod tests {
 		let seed = [42; 32];
 		let network = Network::Testnet;
 		let keys_provider = test_utils::TestKeysInterface::new(&seed, network);
-		let signer = keys_provider.get_channel_signer(false, 3000);
-		let counterparty_signer = keys_provider.get_channel_signer(false, 3000);
+		let signer = keys_provider.derive_channel_signer(3000, keys_provider.generate_channel_keys_id(false, 1_000_000, 0));
+		let counterparty_signer = keys_provider.derive_channel_signer(3000, keys_provider.generate_channel_keys_id(true, 1_000_000, 1));
 		let delayed_payment_base = &signer.pubkeys().delayed_payment_basepoint;
 		let per_commitment_secret = SecretKey::from_slice(&hex::decode("1f1e1d1c1b1a191817161514131211100f0e0d0c0b0a09080706050403020100").unwrap()[..]).unwrap();
 		let per_commitment_point = PublicKey::from_secret_key(&secp_ctx, &per_commitment_secret);
@@ -1724,9 +1724,9 @@ mod tests {
 		assert_eq!(tx.built.transaction.output[0].script_pubkey, get_htlc_redeemscript(&received_htlc, false, &keys).to_v0_p2wsh());
 		assert_eq!(tx.built.transaction.output[1].script_pubkey, get_htlc_redeemscript(&offered_htlc, false, &keys).to_v0_p2wsh());
 		assert_eq!(get_htlc_redeemscript(&received_htlc, false, &keys).to_v0_p2wsh().to_hex(),
-				   "002085cf52e41ba7c099a39df504e7b61f6de122971ceb53b06731876eaeb85e8dc5");
+				   "0020e43a7c068553003fe68fcae424fb7b28ec5ce48cd8b6744b3945631389bad2fb");
 		assert_eq!(get_htlc_redeemscript(&offered_htlc, false, &keys).to_v0_p2wsh().to_hex(),
-				   "002049f0736bb335c61a04d2623a24df878a7592a3c51fa7258d41b2c85318265e73");
+				   "0020215d61bba56b19e9eadb6107f5a85d7f99c40f65992443f69229c290165bc00d");
 
 		// Generate broadcaster output and received and offered HTLC outputs,  with anchors
 		channel_parameters.opt_anchors = Some(());
@@ -1743,9 +1743,9 @@ mod tests {
 		assert_eq!(tx.built.transaction.output[2].script_pubkey, get_htlc_redeemscript(&received_htlc, true, &keys).to_v0_p2wsh());
 		assert_eq!(tx.built.transaction.output[3].script_pubkey, get_htlc_redeemscript(&offered_htlc, true, &keys).to_v0_p2wsh());
 		assert_eq!(get_htlc_redeemscript(&received_htlc, true, &keys).to_v0_p2wsh().to_hex(),
-				   "002067114123af3f95405bae4fd930fc95de03e3c86baaee8b2dd29b43dd26cf613c");
+				   "0020b70d0649c72b38756885c7a30908d912a7898dd5d79457a7280b8e9a20f3f2bc");
 		assert_eq!(get_htlc_redeemscript(&offered_htlc, true, &keys).to_v0_p2wsh().to_hex(),
-				   "0020a06e3b0d4fcf704f2b9c41e16a70099e39989466c3142b8573a1154542f28f57");
+				   "002087a3faeb1950a469c0e2db4a79b093a41b9526e5a6fc6ef5cb949bde3be379c7");
 	}
 
 	#[test]

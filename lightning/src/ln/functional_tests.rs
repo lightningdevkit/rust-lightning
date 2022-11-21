@@ -4803,7 +4803,7 @@ fn test_duplicate_payment_hash_one_failure_one_success() {
 	assert_eq!(htlc_success_txn[2], commitment_txn[0]);
 	assert_eq!(htlc_success_txn[3], htlc_success_txn[0]);
 	assert_eq!(htlc_success_txn[4], htlc_success_txn[1]);
-	assert_ne!(htlc_success_txn[0].input[0].previous_output, htlc_timeout_tx.input[0].previous_output);
+	assert_ne!(htlc_success_txn[1].input[0].previous_output, htlc_timeout_tx.input[0].previous_output);
 
 	mine_transaction(&nodes[1], &htlc_timeout_tx);
 	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
@@ -4826,7 +4826,7 @@ fn test_duplicate_payment_hash_one_failure_one_success() {
 	// Solve 2nd HTLC by broadcasting on B's chain HTLC-Success Tx from C
 	// Note that the fee paid is effectively double as the HTLC value (including the nodes[1] fee
 	// and nodes[2] fee) is rounded down and then claimed in full.
-	mine_transaction(&nodes[1], &htlc_success_txn[0]);
+	mine_transaction(&nodes[1], &htlc_success_txn[1]);
 	expect_payment_forwarded!(nodes[1], nodes[0], nodes[2], Some(196*2), true, true);
 	let updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 	assert!(updates.update_add_htlcs.is_empty());

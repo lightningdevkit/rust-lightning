@@ -111,7 +111,9 @@ impl KeysInterface for KeyProvider {
 
 	fn get_shutdown_scriptpubkey(&self) -> ShutdownScript { unreachable!() }
 
-	fn get_channel_signer(&self, _inbound: bool, _channel_value_satoshis: u64) -> EnforcingSigner {
+	fn generate_channel_keys_id(&self, _inbound: bool, _channel_value_satoshis: u64, _user_channel_id: u128) -> [u8; 32] { unreachable!() }
+
+	fn derive_channel_signer(&self, _channel_value_satoshis: u64, _channel_keys_id: [u8; 32]) -> Self::Signer {
 		unreachable!()
 	}
 

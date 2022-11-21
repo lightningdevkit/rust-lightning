@@ -909,7 +909,8 @@ impl<Signer: Sign> Channel<Signer> {
 		let opt_anchors = false; // TODO - should be based on features
 
 		let holder_selected_contest_delay = config.channel_handshake_config.our_to_self_delay;
-		let holder_signer = keys_provider.get_channel_signer(false, channel_value_satoshis);
+		let channel_keys_id = keys_provider.generate_channel_keys_id(false, channel_value_satoshis, user_id);
+		let holder_signer = keys_provider.derive_channel_signer(channel_value_satoshis, channel_keys_id);
 		let pubkeys = holder_signer.pubkeys().clone();
 
 		if !their_features.supports_wumbo() && channel_value_satoshis > MAX_FUNDING_SATOSHIS_NO_WUMBO {
@@ -1153,7 +1154,8 @@ impl<Signer: Sign> Channel<Signer> {
 			return Err(ChannelError::Close("Channel Type was not understood - we require static remote key".to_owned()));
 		}
 
-		let holder_signer = keys_provider.get_channel_signer(true, msg.funding_satoshis);
+		let channel_keys_id = keys_provider.generate_channel_keys_id(true, msg.funding_satoshis, user_id);
+		let holder_signer = keys_provider.derive_channel_signer(msg.funding_satoshis, channel_keys_id);
 		let pubkeys = holder_signer.pubkeys().clone();
 		let counterparty_pubkeys = ChannelPublicKeys {
 			funding_pubkey: msg.funding_pubkey,
@@ -6735,7 +6737,7 @@ mod tests {
 	use crate::ln::chan_utils::{htlc_success_tx_weight, htlc_timeout_tx_weight};
 	use crate::chain::BestBlock;
 	use crate::chain::chaininterface::{FeeEstimator, LowerBoundedFeeEstimator, ConfirmationTarget};
-	use crate::chain::keysinterface::{InMemorySigner, Recipient, KeyMaterial, KeysInterface};
+	use crate::chain::keysinterface::{BaseSign, InMemorySigner, Recipient, KeyMaterial, KeysInterface};
 	use crate::chain::transaction::OutPoint;
 	use crate::util::config::UserConfig;
 	use crate::util::enforcing_trait_impls::EnforcingSigner;
@@ -6803,7 +6805,10 @@ mod tests {
 			ShutdownScript::new_p2wpkh_from_pubkey(PublicKey::from_secret_key(&secp_ctx, &channel_close_key))
 		}
 
-		fn get_channel_signer(&self, _inbound: bool, _channel_value_satoshis: u64) -> InMemorySigner {
+		fn generate_channel_keys_id(&self, _inbound: bool, _channel_value_satoshis: u64, _user_channel_id: u128) -> [u8; 32] {
+			self.signer.channel_keys_id()
+		}
+		fn derive_channel_signer(&self, _channel_value_satoshis: u64, _channel_keys_id: [u8; 32]) -> Self::Signer {
 			self.signer.clone()
 		}
 		fn get_secure_random_bytes(&self) -> [u8; 32] { [0; 32] }

@@ -193,9 +193,14 @@ impl KeysInterface for KeyProvider {
 		ShutdownScript::new_p2wpkh(&pubkey_hash)
 	}
 
-	fn get_channel_signer(&self, _inbound: bool, channel_value_satoshis: u64) -> EnforcingSigner {
+	fn generate_channel_keys_id(&self, _inbound: bool, _channel_value_satoshis: u64, _user_channel_id: u128) -> [u8; 32] {
+		let id = self.rand_bytes_id.fetch_add(1, atomic::Ordering::Relaxed) as u8;
+		[id; 32]
+	}
+
+	fn derive_channel_signer(&self, channel_value_satoshis: u64, channel_keys_id: [u8; 32]) -> Self::Signer {
 		let secp_ctx = Secp256k1::signing_only();
-		let id = self.rand_bytes_id.fetch_add(1, atomic::Ordering::Relaxed);
+		let id = channel_keys_id[0];
 		let keys = InMemorySigner::new(
 			&secp_ctx,
 			self.get_node_secret(Recipient::Node).unwrap(),
@@ -204,9 +209,9 @@ impl KeysInterface for KeyProvider {
 			SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 6, self.node_id]).unwrap(),
 			SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7, self.node_id]).unwrap(),
 			SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, self.node_id]).unwrap(),
-			[id as u8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9, self.node_id],
+			[id, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9, self.node_id],
 			channel_value_satoshis,
-			[0; 32],
+			channel_keys_id,
 		);
 		let revoked_commitment = self.make_enforcement_state_cell(keys.commitment_seed);
 		EnforcingSigner::new_with_revoked(keys, revoked_commitment, false)

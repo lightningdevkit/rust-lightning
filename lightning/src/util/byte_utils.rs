@@ -73,7 +73,7 @@ pub fn be64_to_array(u: u64) -> [u8; 8] {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	
+
 	#[test]
 	fn test_all() {
 		assert_eq!(slice_to_be48(&[0xde, 0xad, 0xbe, 0xef, 0x1b, 0xad]), 0xdeadbeef1bad);
