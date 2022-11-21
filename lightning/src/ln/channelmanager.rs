@@ -3729,7 +3729,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 						htlc.timer_ticks += 1;
 						return htlc.timer_ticks >= MPP_TIMEOUT_TICKS
 					}) {
-						timed_out_mpp_htlcs.extend(htlcs.into_iter().map(|htlc| (htlc.prev_hop.clone(), payment_hash.clone())));
+						timed_out_mpp_htlcs.extend(htlcs.drain(..).map(|htlc: ClaimableHTLC| (htlc.prev_hop, *payment_hash)));
 						return false;
 					}
 				}
