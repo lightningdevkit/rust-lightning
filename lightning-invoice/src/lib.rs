@@ -1448,6 +1448,11 @@ pub enum CreationError {
 	///
 	/// [phantom invoices]: crate::utils::create_phantom_invoice
 	MissingRouteHints,
+
+	/// The provided `min_final_cltv_expiry_delta` was less than [`MIN_FINAL_CLTV_EXPIRY_DELTA`].
+	///
+	/// [`MIN_FINAL_CLTV_EXPIRY_DELTA`]: lightning::ln::channelmanager::MIN_FINAL_CLTV_EXPIRY_DELTA
+	MinFinalCltvExpiryDeltaTooShort,
 }
 
 impl Display for CreationError {
@@ -1458,6 +1463,8 @@ impl Display for CreationError {
 			CreationError::TimestampOutOfBounds => f.write_str("The Unix timestamp of the supplied date is less than zero or greater than 35-bits"),
 			CreationError::InvalidAmount => f.write_str("The supplied millisatoshi amount was greater than the total bitcoin supply"),
 			CreationError::MissingRouteHints => f.write_str("The invoice required route hints and they weren't provided"),
+			CreationError::MinFinalCltvExpiryDeltaTooShort => f.write_str(
+				"The supplied final CLTV expiry delta was less than LDK's `MIN_FINAL_CLTV_EXPIRY_DELTA`"),
 		}
 	}
 }

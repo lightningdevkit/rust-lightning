@@ -2085,7 +2085,7 @@ mod tests {
 
 		assert!(invoice_payer.pay_invoice(&create_invoice_from_channelmanager_and_duration_since_epoch(
 			&nodes[1].node, nodes[1].keys_manager, nodes[1].logger, Currency::Bitcoin,
-			Some(100_010_000), "Invoice".to_string(), duration_since_epoch(), 3600).unwrap())
+			Some(100_010_000), "Invoice".to_string(), duration_since_epoch(), 3600, None).unwrap())
 			.is_ok());
 		let htlc_msgs = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(htlc_msgs.len(), 2);
@@ -2130,7 +2130,7 @@ mod tests {
 
 		assert!(invoice_payer.pay_invoice(&create_invoice_from_channelmanager_and_duration_since_epoch(
 			&nodes[1].node, nodes[1].keys_manager, nodes[1].logger, Currency::Bitcoin,
-			Some(100_010_000), "Invoice".to_string(), duration_since_epoch(), 3600).unwrap())
+			Some(100_010_000), "Invoice".to_string(), duration_since_epoch(), 3600, None).unwrap())
 			.is_ok());
 		let htlc_msgs = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(htlc_msgs.len(), 2);
@@ -2211,7 +2211,7 @@ mod tests {
 
 		assert!(invoice_payer.pay_invoice(&create_invoice_from_channelmanager_and_duration_since_epoch(
 			&nodes[1].node, nodes[1].keys_manager, nodes[1].logger, Currency::Bitcoin,
-			Some(100_010_000), "Invoice".to_string(), duration_since_epoch(), 3600).unwrap())
+			Some(100_010_000), "Invoice".to_string(), duration_since_epoch(), 3600, None).unwrap())
 			.is_ok());
 		let htlc_updates = SendEvent::from_node(&nodes[0]);
 		check_added_monitors!(nodes[0], 1);

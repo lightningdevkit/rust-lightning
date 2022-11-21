@@ -879,7 +879,7 @@ pub(super) const CLTV_FAR_FAR_AWAY: u32 = 14 * 24 * 6;
 // Note that we fail if exactly HTLC_FAIL_BACK_BUFFER + 1 was used, so we need to add one for
 // any payments to succeed. Further, we don't want payments to fail if a block was found while
 // a payment was being routed, so we add an extra block to be safe.
-pub const MIN_FINAL_CLTV_EXPIRY_DELTA: u32 = HTLC_FAIL_BACK_BUFFER + 3;
+pub const MIN_FINAL_CLTV_EXPIRY_DELTA: u16 = HTLC_FAIL_BACK_BUFFER as u16 + 3;
 
 // Check that our CLTV_EXPIRY is at least CLTV_CLAIM_BUFFER + ANTI_REORG_DELAY + LATENCY_GRACE_PERIOD_BLOCKS,
 // ie that if the next-hop peer fails the HTLC within
