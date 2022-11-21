@@ -161,7 +161,7 @@ use core::future::Future;
 use core::ops::Deref;
 use core::time::Duration;
 #[cfg(feature = "std")]
-use std::time::SystemTime;
+use instant::SystemTime;
 
 /// A utility for paying [`Invoice`]s and sending spontaneous payments.
 ///
@@ -171,7 +171,7 @@ use std::time::SystemTime;
 pub type InvoicePayer<P, R, L, E> = InvoicePayerUsingTime::<P, R, L, E, ConfiguredTime>;
 
 #[cfg(not(feature = "no-std"))]
-type ConfiguredTime = std::time::Instant;
+type ConfiguredTime = instant::Instant;
 #[cfg(feature = "no-std")]
 use crate::time_utils;
 #[cfg(feature = "no-std")]
@@ -891,7 +891,7 @@ mod tests {
 	use std::cell::RefCell;
 	use std::collections::VecDeque;
 	use std::ops::DerefMut;
-	use std::time::{SystemTime, Duration};
+	use instant::{SystemTime, Duration};
 	use crate::time_utils::tests::SinceEpoch;
 	use crate::DEFAULT_EXPIRY_TIME;
 	use lightning::util::errors::APIError::{ChannelUnavailable, MonitorUpdateInProgress};

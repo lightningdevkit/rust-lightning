@@ -31,7 +31,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant};
+use instant::{Duration, Instant};
 use std::ops::Deref;
 
 #[cfg(feature = "futures")]

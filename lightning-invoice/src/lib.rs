@@ -42,7 +42,7 @@ extern crate core;
 extern crate serde;
 
 #[cfg(feature = "std")]
-use std::time::SystemTime;
+use instant::SystemTime;
 
 use bech32::u5;
 use bitcoin_hashes::Hash;
@@ -1850,7 +1850,7 @@ mod test {
 		use lightning::routing::router::RouteHintHop;
 		use secp256k1::Secp256k1;
 		use secp256k1::{SecretKey, PublicKey};
-		use std::time::{UNIX_EPOCH, Duration};
+		use instant::{SystemTime, Duration};
 
 		let secp_ctx = Secp256k1::new();
 
@@ -1939,7 +1939,7 @@ mod test {
 		assert_eq!(invoice.currency(), Currency::BitcoinTestnet);
 		#[cfg(feature = "std")]
 		assert_eq!(
-			invoice.timestamp().duration_since(UNIX_EPOCH).unwrap().as_secs(),
+			invoice.timestamp().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs(),
 			1234567
 		);
 		assert_eq!(invoice.payee_pub_key(), Some(&public_key));

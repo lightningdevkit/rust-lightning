@@ -21,6 +21,7 @@ bitcoin = "0.29.0"
 lightning = { version = "0.0.112", path = "../lightning", features = ["std"] }
 lightning-rapid-gossip-sync = { version = "0.0.112", path = "../lightning-rapid-gossip-sync" }
 futures-util = { version = "0.3", default-features = false, features = ["async-await-macro"], optional = true }
+instant = { version = "0.1", features = ["wasm-bindgen"] }
 
 [dev-dependencies]
 lightning = { version = "0.0.112", path = "../lightning", features = ["_test_utils"] }

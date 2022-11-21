@@ -51,7 +51,7 @@ use bitcoin::bech32::u5;
 use crate::chain::keysinterface::{InMemorySigner, Recipient, KeyMaterial};
 
 #[cfg(feature = "std")]
-use std::time::{SystemTime, UNIX_EPOCH};
+use instant::SystemTime;
 use bitcoin::Sequence;
 
 pub struct TestVecWriter(pub Vec<u8>);
@@ -476,7 +476,7 @@ impl msgs::RoutingMessageHandler for TestRoutingMessageHandler {
 		let mut gossip_start_time = 0;
 		#[cfg(feature = "std")]
 		{
-			gossip_start_time = SystemTime::now().duration_since(UNIX_EPOCH).expect("Time must be > 1970").as_secs();
+			gossip_start_time = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).expect("Time must be > 1970").as_secs();
 			if self.request_full_sync.load(Ordering::Acquire) {
 				gossip_start_time -= 60 * 60 * 24 * 7 * 2; // 2 weeks ago
 			} else {

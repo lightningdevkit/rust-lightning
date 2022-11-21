@@ -29,7 +29,7 @@
 //!
 //! # use lightning::onion_message::BlindedPath;
 //! # #[cfg(feature = "std")]
-//! # use std::time::SystemTime;
+//! # use instant::SystemTime;
 //! #
 //! # fn create_blinded_path() -> BlindedPath { unimplemented!() }
 //! # fn create_another_blinded_path() -> BlindedPath { unimplemented!() }
@@ -84,7 +84,7 @@ use crate::util::string::PrintableString;
 use crate::prelude::*;
 
 #[cfg(feature = "std")]
-use std::time::SystemTime;
+use instant::SystemTime;
 
 /// Builds an [`Offer`] for the "offer to be paid" flow.
 ///

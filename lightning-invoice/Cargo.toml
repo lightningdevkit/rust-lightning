@@ -27,6 +27,7 @@ num-traits = { version = "0.2.8", default-features = false }
 bitcoin_hashes = { version = "0.11", default-features = false }
 hashbrown = { version = "0.8", optional = true }
 serde = { version = "1.0.118", optional = true }
+instant = { version = "0.1", features = ["wasm-bindgen"] }
 
 [dev-dependencies]
 lightning = { version = "0.0.112", path = "../lightning", default-features = false, features = ["_test_utils"] }

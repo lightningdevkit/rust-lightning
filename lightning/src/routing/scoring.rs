@@ -317,7 +317,7 @@ impl ReadableArgs<u64> for FixedPenaltyScorer {
 }
 
 #[cfg(not(feature = "no-std"))]
-type ConfiguredTime = std::time::Instant;
+type ConfiguredTime = instant::Instant;
 #[cfg(feature = "no-std")]
 use crate::util::time::Eternity;
 #[cfg(feature = "no-std")]

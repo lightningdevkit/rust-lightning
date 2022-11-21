@@ -46,7 +46,7 @@ use core::ops::{Bound, Deref};
 use bitcoin::hashes::hex::ToHex;
 
 #[cfg(feature = "std")]
-use std::time::{SystemTime, UNIX_EPOCH};
+use instant::SystemTime;
 
 /// We remove stale channel directional info two weeks after the last update, per BOLT 7's
 /// suggestion.
@@ -452,7 +452,7 @@ where C::Target: chain::Access, L::Target: Logger
 		let mut gossip_start_time = 0;
 		#[cfg(feature = "std")]
 		{
-			gossip_start_time = SystemTime::now().duration_since(UNIX_EPOCH).expect("Time must be > 1970").as_secs();
+			gossip_start_time = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).expect("Time must be > 1970").as_secs();
 			if self.should_request_full_sync(&their_node_id) {
 				gossip_start_time -= 60 * 60 * 24 * 7 * 2; // 2 weeks ago
 			} else {
@@ -1513,7 +1513,7 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 		let mut announcement_received_time = 0;
 		#[cfg(feature = "std")]
 		{
-			announcement_received_time = SystemTime::now().duration_since(UNIX_EPOCH).expect("Time must be > 1970").as_secs();
+			announcement_received_time = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).expect("Time must be > 1970").as_secs();
 		}
 
 		let chan_info = ChannelInfo {
@@ -1537,7 +1537,7 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 	/// If not permanent, makes channels unavailable for routing.
 	pub fn channel_failed(&self, short_channel_id: u64, is_permanent: bool) {
 		#[cfg(feature = "std")]
-		let current_time_unix = Some(SystemTime::now().duration_since(UNIX_EPOCH).expect("Time must be > 1970").as_secs());
+		let current_time_unix = Some(SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).expect("Time must be > 1970").as_secs());
 		#[cfg(not(feature = "std"))]
 		let current_time_unix = None;
 
@@ -1564,7 +1564,7 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 	/// from local storage.
 	pub fn node_failed_permanent(&self, node_id: &PublicKey) {
 		#[cfg(feature = "std")]
-		let current_time_unix = Some(SystemTime::now().duration_since(UNIX_EPOCH).expect("Time must be > 1970").as_secs());
+		let current_time_unix = Some(SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).expect("Time must be > 1970").as_secs());
 		#[cfg(not(feature = "std"))]
 		let current_time_unix = None;
 
@@ -1611,7 +1611,7 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 	/// This method is only available with the `std` feature. See
 	/// [`NetworkGraph::remove_stale_channels_and_tracking_with_time`] for `no-std` use.
 	pub fn remove_stale_channels_and_tracking(&self) {
-		let time = SystemTime::now().duration_since(UNIX_EPOCH).expect("Time must be > 1970").as_secs();
+		let time = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).expect("Time must be > 1970").as_secs();
 		self.remove_stale_channels_and_tracking_with_time(time);
 	}
 
@@ -1715,7 +1715,7 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 		{
 			// Note that many tests rely on being able to set arbitrarily old timestamps, thus we
 			// disable this check during tests!
-			let time = SystemTime::now().duration_since(UNIX_EPOCH).expect("Time must be > 1970").as_secs();
+			let time = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).expect("Time must be > 1970").as_secs();
 			if (msg.timestamp as u64) < time - STALE_CHANNEL_UPDATE_AGE_LIMIT_SECS {
 				return Err(LightningError{err: "channel_update is older than two weeks old".to_owned(), action: ErrorAction::IgnoreAndLog(Level::Gossip)});
 			}
@@ -2198,9 +2198,9 @@ mod tests {
 
 		#[cfg(feature = "std")]
 		{
-			use std::time::{SystemTime, UNIX_EPOCH};
+			use instant::SystemTime;
 
-			let tracking_time = SystemTime::now().duration_since(UNIX_EPOCH).expect("Time must be > 1970").as_secs();
+			let tracking_time = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).expect("Time must be > 1970").as_secs();
 			// Mark a node as permanently failed so it's tracked as removed.
 			gossip_sync.network_graph().node_failed_permanent(&PublicKey::from_secret_key(&secp_ctx, node_1_privkey));
 
@@ -2501,8 +2501,8 @@ mod tests {
 			// We want to check that this will work even if *one* of the channel updates is recent,
 			// so we should add it with a recent timestamp.
 			assert!(network_graph.read_only().channels().get(&short_channel_id).unwrap().one_to_two.is_none());
-			use std::time::{SystemTime, UNIX_EPOCH};
-			let announcement_time = SystemTime::now().duration_since(UNIX_EPOCH).expect("Time must be > 1970").as_secs();
+			use instant::SystemTime;
+			let announcement_time = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).expect("Time must be > 1970").as_secs();
 			let valid_channel_update = get_signed_channel_update(|unsigned_channel_update| {
 				unsigned_channel_update.timestamp = (announcement_time + 1 + STALE_CHANNEL_UPDATE_AGE_LIMIT_SECS) as u32;
 			}, node_1_privkey, &secp_ctx);
@@ -2522,9 +2522,9 @@ mod tests {
 
 		#[cfg(feature = "std")]
 		{
-			use std::time::{SystemTime, UNIX_EPOCH};
+			use instant::SystemTime;
 
-			let tracking_time = SystemTime::now().duration_since(UNIX_EPOCH).expect("Time must be > 1970").as_secs();
+			let tracking_time = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).expect("Time must be > 1970").as_secs();
 
 			// Clear tracked nodes and channels for clean slate
 			network_graph.removed_channels.lock().unwrap().clear();
@@ -2773,7 +2773,7 @@ mod tests {
 	#[test]
 	#[cfg(feature = "std")]
 	fn calling_sync_routing_table() {
-		use std::time::{SystemTime, UNIX_EPOCH};
+		use instant::SystemTime;
 		use crate::ln::msgs::Init;
 
 		let network_graph = create_network_graph();
@@ -2803,7 +2803,7 @@ mod tests {
 				MessageSendEvent::SendGossipTimestampFilter{ node_id, msg } => {
 					assert_eq!(node_id, &node_id_1);
 					assert_eq!(msg.chain_hash, chain_hash);
-					let expected_timestamp = SystemTime::now().duration_since(UNIX_EPOCH).expect("Time must be > 1970").as_secs();
+					let expected_timestamp = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).expect("Time must be > 1970").as_secs();
 					assert!((msg.first_timestamp as u64) >= expected_timestamp - 60*60*24*7*2);
 					assert!((msg.first_timestamp as u64) < expected_timestamp - 60*60*24*7*2 + 10);
 					assert_eq!(msg.timestamp_range, u32::max_value());

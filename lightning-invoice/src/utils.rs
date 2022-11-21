@@ -128,7 +128,7 @@ where
 	K::Target: KeysInterface,
 	L::Target: Logger,
 {
-	use std::time::{SystemTime, UNIX_EPOCH};
+	use instant::SystemTime;
 
 	if phantom_route_hints.len() == 0 {
 		return Err(SignOrCreationError::CreationError(
@@ -152,7 +152,7 @@ where
 			payment_hash,
 			invoice_expiry_delta_secs,
 			SystemTime::now()
-				.duration_since(UNIX_EPOCH)
+				.duration_since(SystemTime::UNIX_EPOCH)
 				.expect("Time must be > 1970")
 				.as_secs(),
 		)
@@ -165,7 +165,7 @@ where
 			invoice_expiry_delta_secs,
 			&keys_manager,
 			SystemTime::now()
-				.duration_since(UNIX_EPOCH)
+				.duration_since(SystemTime::UNIX_EPOCH)
 				.expect("Time must be > 1970")
 				.as_secs(),
 		)
@@ -246,7 +246,7 @@ where
 	F::Target: FeeEstimator,
 	L::Target: Logger,
 {
-	use std::time::SystemTime;
+	use instant::SystemTime;
 	let duration = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)
 		.expect("for the foreseeable future this shouldn't happen");
 	create_invoice_from_channelmanager_and_duration_since_epoch(
@@ -277,7 +277,7 @@ where
 	F::Target: FeeEstimator,
 	L::Target: Logger,
 {
-	use std::time::SystemTime;
+	use instant::SystemTime;
 
 	let duration = SystemTime::now()
 		.duration_since(SystemTime::UNIX_EPOCH)

@@ -20,7 +20,7 @@ use crate::sync::{Condvar, Mutex, MutexGuard};
 use crate::prelude::*;
 
 #[cfg(any(test, feature = "std"))]
-use std::time::{Duration, Instant};
+use instant::{Duration, Instant};
 
 use core::future::Future as StdFuture;
 use core::task::{Context, Poll};

@@ -59,9 +59,9 @@ impl Sub<Duration> for Eternity {
 }
 
 #[cfg(not(feature = "no-std"))]
-impl Time for std::time::Instant {
+impl Time for instant::Instant {
 	fn now() -> Self {
-		std::time::Instant::now()
+		instant::Instant::now()
 	}
 
 	fn duration_since(&self, earlier: Self) -> Duration {
@@ -74,11 +74,11 @@ impl Time for std::time::Instant {
 	}
 
 	fn duration_since_epoch() -> Duration {
-		use std::time::SystemTime;
+		use instant::SystemTime;
 		SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap()
 	}
 	fn elapsed(&self) -> Duration {
-		std::time::Instant::elapsed(self)
+		instant::Instant::elapsed(self)
 	}
 }
 
