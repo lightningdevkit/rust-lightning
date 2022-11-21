@@ -13,22 +13,85 @@
 //! interrogate it to get routes for your own payments.
 
 use bitcoin::secp256k1::PublicKey;
+use bitcoin::hashes::Hash;
+use bitcoin::hashes::sha256::Hash as Sha256;
 
 use crate::ln::PaymentHash;
 use crate::ln::channelmanager::{ChannelDetails, PaymentId};
 use crate::ln::features::{ChannelFeatures, InvoiceFeatures, NodeFeatures};
 use crate::ln::msgs::{DecodeError, ErrorAction, LightningError, MAX_VALUE_MSAT};
 use crate::routing::gossip::{DirectedChannelInfo, EffectiveCapacity, ReadOnlyNetworkGraph, NetworkGraph, NodeId, RoutingFees};
-use crate::routing::scoring::{ChannelUsage, Score};
+use crate::routing::scoring::{ChannelUsage, LockableScore, Score};
 use crate::util::ser::{Writeable, Readable, Writer};
 use crate::util::logger::{Level, Logger};
 use crate::util::chacha20::ChaCha20;
 
 use crate::io;
 use crate::prelude::*;
+use crate::sync::Mutex;
 use alloc::collections::BinaryHeap;
 use core::cmp;
 use core::ops::Deref;
+
+/// A [`Router`] implemented using [`find_route`].
+pub struct DefaultRouter<G: Deref<Target = NetworkGraph<L>>, L: Deref, S: Deref> where
+	L::Target: Logger,
+	S::Target: for <'a> LockableScore<'a>,
+{
+	network_graph: G,
+	logger: L,
+	random_seed_bytes: Mutex<[u8; 32]>,
+	scorer: S
+}
+
+impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, S: Deref> DefaultRouter<G, L, S> where
+	L::Target: Logger,
+	S::Target: for <'a> LockableScore<'a>,
+{
+	/// Creates a new router.
+	pub fn new(network_graph: G, logger: L, random_seed_bytes: [u8; 32], scorer: S) -> Self {
+		let random_seed_bytes = Mutex::new(random_seed_bytes);
+		Self { network_graph, logger, random_seed_bytes, scorer }
+	}
+}
+
+impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, S: Deref> Router for DefaultRouter<G, L, S> where
+	L::Target: Logger,
+	S::Target: for <'a> LockableScore<'a>,
+{
+	fn find_route(
+		&self, payer: &PublicKey, params: &RouteParameters, first_hops: Option<&[&ChannelDetails]>,
+		inflight_htlcs: InFlightHtlcs
+	) -> Result<Route, LightningError> {
+		let random_seed_bytes = {
+			let mut locked_random_seed_bytes = self.random_seed_bytes.lock().unwrap();
+			*locked_random_seed_bytes = Sha256::hash(&*locked_random_seed_bytes).into_inner();
+			*locked_random_seed_bytes
+		};
+
+		find_route(
+			payer, params, &self.network_graph, first_hops, &*self.logger,
+			&ScorerAccountingForInFlightHtlcs::new(&mut self.scorer.lock(), inflight_htlcs),
+			&random_seed_bytes
+		)
+	}
+
+	fn notify_payment_path_failed(&self, path: &[&RouteHop], short_channel_id: u64) {
+		self.scorer.lock().payment_path_failed(path, short_channel_id);
+	}
+
+	fn notify_payment_path_successful(&self, path: &[&RouteHop]) {
+		self.scorer.lock().payment_path_successful(path);
+	}
+
+	fn notify_payment_probe_successful(&self, path: &[&RouteHop]) {
+		self.scorer.lock().probe_successful(path);
+	}
+
+	fn notify_payment_probe_failed(&self, path: &[&RouteHop], short_channel_id: u64) {
+		self.scorer.lock().probe_failed(path, short_channel_id);
+	}
+}
 
 /// A trait defining behavior for routing a payment.
 pub trait Router {

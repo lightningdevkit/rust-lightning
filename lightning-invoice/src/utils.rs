@@ -5,7 +5,7 @@ use crate::payment::Payer;
 
 use crate::{prelude::*, Description, InvoiceDescription, Sha256};
 use bech32::ToBase32;
-use bitcoin_hashes::{Hash, sha256};
+use bitcoin_hashes::Hash;
 use lightning::chain;
 use lightning::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use lightning::chain::keysinterface::{Recipient, KeysInterface};
@@ -14,15 +14,12 @@ use lightning::ln::channelmanager::{ChannelDetails, ChannelManager, PaymentId, P
 #[cfg(feature = "std")]
 use lightning::ln::channelmanager::{PhantomRouteHints, MIN_CLTV_EXPIRY_DELTA};
 use lightning::ln::inbound_payment::{create, create_from_hash, ExpandedKey};
-use lightning::ln::msgs::LightningError;
-use lightning::routing::gossip::{NetworkGraph, RoutingFees};
-use lightning::routing::router::{InFlightHtlcs, Route, RouteHint, RouteHintHop, RouteParameters, find_route, RouteHop, Router, ScorerAccountingForInFlightHtlcs};
-use lightning::routing::scoring::{LockableScore, Score};
+use lightning::routing::gossip::RoutingFees;
+use lightning::routing::router::{InFlightHtlcs, Route, RouteHint, RouteHintHop};
 use lightning::util::logger::Logger;
 use secp256k1::PublicKey;
 use core::ops::Deref;
 use core::time::Duration;
-use crate::sync::Mutex;
 
 #[cfg(feature = "std")]
 /// Utility to create an invoice that can be paid to one of multiple nodes, or a "phantom invoice."
@@ -522,67 +519,6 @@ fn filter_channels<L: Deref>(
 		})
 		.map(route_hint_from_channel)
 		.collect::<Vec<RouteHint>>()
-}
-
-/// A [`Router`] implemented using [`find_route`].
-pub struct DefaultRouter<G: Deref<Target = NetworkGraph<L>>, L: Deref, S: Deref> where
-	L::Target: Logger,
-	S::Target: for <'a> LockableScore<'a>,
-{
-	network_graph: G,
-	logger: L,
-	random_seed_bytes: Mutex<[u8; 32]>,
-	scorer: S
-}
-
-impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, S: Deref> DefaultRouter<G, L, S> where
-	L::Target: Logger,
-	S::Target: for <'a> LockableScore<'a>,
-{
-	/// Creates a new router using the given [`NetworkGraph`], a [`Logger`], and a randomness source
-	/// `random_seed_bytes`.
-	pub fn new(network_graph: G, logger: L, random_seed_bytes: [u8; 32], scorer: S) -> Self {
-		let random_seed_bytes = Mutex::new(random_seed_bytes);
-		Self { network_graph, logger, random_seed_bytes, scorer }
-	}
-}
-
-impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, S: Deref> Router for DefaultRouter<G, L, S> where
-	L::Target: Logger,
-	S::Target: for <'a> LockableScore<'a>,
-{
-	fn find_route(
-		&self, payer: &PublicKey, params: &RouteParameters, first_hops: Option<&[&ChannelDetails]>,
-		inflight_htlcs: InFlightHtlcs
-	) -> Result<Route, LightningError> {
-		let random_seed_bytes = {
-			let mut locked_random_seed_bytes = self.random_seed_bytes.lock().unwrap();
-			*locked_random_seed_bytes = sha256::Hash::hash(&*locked_random_seed_bytes).into_inner();
-			*locked_random_seed_bytes
-		};
-
-		find_route(
-			payer, params, &self.network_graph, first_hops, &*self.logger,
-			&ScorerAccountingForInFlightHtlcs::new(&mut self.scorer.lock(), inflight_htlcs),
-			&random_seed_bytes
-		)
-	}
-
-	fn notify_payment_path_failed(&self, path: &[&RouteHop], short_channel_id: u64) {
-		self.scorer.lock().payment_path_failed(path, short_channel_id);
-	}
-
-	fn notify_payment_path_successful(&self, path: &[&RouteHop]) {
-		self.scorer.lock().payment_path_successful(path);
-	}
-
-	fn notify_payment_probe_successful(&self, path: &[&RouteHop]) {
-		self.scorer.lock().probe_successful(path);
-	}
-
-	fn notify_payment_probe_failed(&self, path: &[&RouteHop], short_channel_id: u64) {
-		self.scorer.lock().probe_failed(path, short_channel_id);
-	}
 }
 
 impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Payer for ChannelManager<M, T, K, F, L>
