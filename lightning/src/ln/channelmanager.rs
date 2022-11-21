@@ -3817,6 +3817,13 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 
 			self.remove_stale_resolved_payments();
 
+			// Technically we don't need to do this here, but if we have holding cell entries in a
+			// channel that need freeing, it's better to do that here and block a background task
+			// than block the message queueing pipeline.
+			if self.check_free_holding_cells() {
+				should_persist = NotifyOption::DoPersist;
+			}
+
 			should_persist
 		});
 	}
