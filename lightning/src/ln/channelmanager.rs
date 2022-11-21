@@ -3586,59 +3586,24 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 		self.process_background_events();
 	}
 
-	fn update_channel_fee(&self, pending_msg_events: &mut Vec<events::MessageSendEvent>, chan_id: &[u8; 32], chan: &mut Channel<<K::Target as KeysInterface>::Signer>, new_feerate: u32) -> (bool, NotifyOption, Result<(), MsgHandleErrInternal>) {
-		if !chan.is_outbound() { return (true, NotifyOption::SkipPersist, Ok(())); }
+	fn update_channel_fee(&self, chan_id: &[u8; 32], chan: &mut Channel<<K::Target as KeysInterface>::Signer>, new_feerate: u32) -> NotifyOption {
+		if !chan.is_outbound() { return NotifyOption::SkipPersist; }
 		// If the feerate has decreased by less than half, don't bother
 		if new_feerate <= chan.get_feerate() && new_feerate * 2 > chan.get_feerate() {
 			log_trace!(self.logger, "Channel {} does not qualify for a feerate change from {} to {}.",
 				log_bytes!(chan_id[..]), chan.get_feerate(), new_feerate);
-			return (true, NotifyOption::SkipPersist, Ok(()));
+			return NotifyOption::SkipPersist;
 		}
 		if !chan.is_live() {
 			log_trace!(self.logger, "Channel {} does not qualify for a feerate change from {} to {} as it cannot currently be updated (probably the peer is disconnected).",
 				log_bytes!(chan_id[..]), chan.get_feerate(), new_feerate);
-			return (true, NotifyOption::SkipPersist, Ok(()));
+			return NotifyOption::SkipPersist;
 		}
 		log_trace!(self.logger, "Channel {} qualifies for a feerate change from {} to {}.",
 			log_bytes!(chan_id[..]), chan.get_feerate(), new_feerate);
 
-		let mut retain_channel = true;
-		let res = match chan.send_update_fee_and_commit(new_feerate, &self.logger) {
-			Ok(res) => Ok(res),
-			Err(e) => {
-				let (drop, res) = convert_chan_err!(self, e, chan, chan_id);
-				if drop { retain_channel = false; }
-				Err(res)
-			}
-		};
-		let ret_err = match res {
-			Ok(Some((update_fee, commitment_signed, monitor_update))) => {
-				match self.chain_monitor.update_channel(chan.get_funding_txo().unwrap(), monitor_update) {
-					ChannelMonitorUpdateStatus::Completed => {
-						pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
-							node_id: chan.get_counterparty_node_id(),
-							updates: msgs::CommitmentUpdate {
-								update_add_htlcs: Vec::new(),
-								update_fulfill_htlcs: Vec::new(),
-								update_fail_htlcs: Vec::new(),
-								update_fail_malformed_htlcs: Vec::new(),
-								update_fee: Some(update_fee),
-								commitment_signed,
-							},
-						});
-						Ok(())
-					},
-					e => {
-						let (res, drop) = handle_monitor_update_res!(self, e, chan, RAACommitmentOrder::CommitmentFirst, chan_id, COMMITMENT_UPDATE_ONLY);
-						if drop { retain_channel = false; }
-						res
-					}
-				}
-			},
-			Ok(None) => Ok(()),
-			Err(e) => Err(e),
-		};
-		(retain_channel, NotifyOption::DoPersist, ret_err)
+		chan.queue_update_fee(new_feerate, &self.logger);
+		NotifyOption::DoPersist
 	}
 
 	#[cfg(fuzzing)]
@@ -3652,19 +3617,10 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 
 			let new_feerate = self.fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::Normal);
 
-			let mut handle_errors = Vec::new();
-			{
-				let mut channel_state_lock = self.channel_state.lock().unwrap();
-				let channel_state = &mut *channel_state_lock;
-				let pending_msg_events = &mut channel_state.pending_msg_events;
-				channel_state.by_id.retain(|chan_id, chan| {
-					let (retain_channel, chan_needs_persist, err) = self.update_channel_fee(pending_msg_events, chan_id, chan, new_feerate);
-					if chan_needs_persist == NotifyOption::DoPersist { should_persist = NotifyOption::DoPersist; }
-					if err.is_err() {
-						handle_errors.push(err);
-					}
-					retain_channel
-				});
+			let mut channel_state = self.channel_state.lock().unwrap();
+			for (chan_id, chan) in channel_state.by_id.iter_mut() {
+				let chan_needs_persist = self.update_channel_fee(chan_id, chan, new_feerate);
+				if chan_needs_persist == NotifyOption::DoPersist { should_persist = NotifyOption::DoPersist; }
 			}
 
 			should_persist
@@ -3729,20 +3685,15 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 
 			let new_feerate = self.fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::Normal);
 
-			let mut handle_errors = Vec::new();
+			let mut handle_errors: Vec<(Result<(), _>, _)> = Vec::new();
 			let mut timed_out_mpp_htlcs = Vec::new();
 			{
 				let mut channel_state_lock = self.channel_state.lock().unwrap();
 				let channel_state = &mut *channel_state_lock;
 				let pending_msg_events = &mut channel_state.pending_msg_events;
 				channel_state.by_id.retain(|chan_id, chan| {
-					let counterparty_node_id = chan.get_counterparty_node_id();
-					let (retain_channel, chan_needs_persist, err) = self.update_channel_fee(pending_msg_events, chan_id, chan, new_feerate);
+					let chan_needs_persist = self.update_channel_fee(chan_id, chan, new_feerate);
 					if chan_needs_persist == NotifyOption::DoPersist { should_persist = NotifyOption::DoPersist; }
-					if err.is_err() {
-						handle_errors.push((err, counterparty_node_id));
-					}
-					if !retain_channel { return false; }
 
 					if let Err(e) = chan.timer_check_closing_negotiation_progress() {
 						let (needs_close, err) = convert_chan_err!(self, e, chan, chan_id);
