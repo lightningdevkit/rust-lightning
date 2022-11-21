@@ -8131,7 +8131,7 @@ fn test_update_err_monitor_lockdown() {
 		let mut w = test_utils::TestVecWriter(Vec::new());
 		monitor.write(&mut w).unwrap();
 		let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingSigner>)>::read(
-				&mut io::Cursor::new(&w.0), &test_utils::OnlyReadsKeysInterface {}).unwrap().1;
+				&mut io::Cursor::new(&w.0), nodes[0].keys_manager).unwrap().1;
 		assert!(new_monitor == *monitor);
 		let watchtower = test_utils::TestChainMonitor::new(Some(&chain_source), &chanmon_cfgs[0].tx_broadcaster, &logger, &chanmon_cfgs[0].fee_estimator, &persister, &node_cfgs[0].keys_manager);
 		assert_eq!(watchtower.watch_channel(outpoint, new_monitor), ChannelMonitorUpdateStatus::Completed);
@@ -8195,7 +8195,7 @@ fn test_concurrent_monitor_claim() {
 		let mut w = test_utils::TestVecWriter(Vec::new());
 		monitor.write(&mut w).unwrap();
 		let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingSigner>)>::read(
-				&mut io::Cursor::new(&w.0), &test_utils::OnlyReadsKeysInterface {}).unwrap().1;
+				&mut io::Cursor::new(&w.0), nodes[0].keys_manager).unwrap().1;
 		assert!(new_monitor == *monitor);
 		let watchtower = test_utils::TestChainMonitor::new(Some(&chain_source), &chanmon_cfgs[0].tx_broadcaster, &logger, &chanmon_cfgs[0].fee_estimator, &persister, &node_cfgs[0].keys_manager);
 		assert_eq!(watchtower.watch_channel(outpoint, new_monitor), ChannelMonitorUpdateStatus::Completed);
@@ -8224,7 +8224,7 @@ fn test_concurrent_monitor_claim() {
 		let mut w = test_utils::TestVecWriter(Vec::new());
 		monitor.write(&mut w).unwrap();
 		let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingSigner>)>::read(
-				&mut io::Cursor::new(&w.0), &test_utils::OnlyReadsKeysInterface {}).unwrap().1;
+				&mut io::Cursor::new(&w.0), nodes[0].keys_manager).unwrap().1;
 		assert!(new_monitor == *monitor);
 		let watchtower = test_utils::TestChainMonitor::new(Some(&chain_source), &chanmon_cfgs[0].tx_broadcaster, &logger, &chanmon_cfgs[0].fee_estimator, &persister, &node_cfgs[0].keys_manager);
 		assert_eq!(watchtower.watch_channel(outpoint, new_monitor), ChannelMonitorUpdateStatus::Completed);
