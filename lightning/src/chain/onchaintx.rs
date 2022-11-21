@@ -21,6 +21,7 @@ use bitcoin::hash_types::{Txid, BlockHash};
 use bitcoin::secp256k1::{Secp256k1, ecdsa::Signature};
 use bitcoin::secp256k1;
 
+use crate::chain::keysinterface::BaseSign;
 use crate::ln::msgs::DecodeError;
 use crate::ln::PaymentPreimage;
 #[cfg(anchors)]
@@ -303,8 +304,12 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 	}
 }
 
-impl<'a, K: KeysInterface> ReadableArgs<&'a K> for OnchainTxHandler<K::Signer> {
-	fn read<R: io::Read>(reader: &mut R, keys_manager: &'a K) -> Result<Self, DecodeError> {
+impl<'a, K: KeysInterface> ReadableArgs<(&'a K, u64, [u8; 32])> for OnchainTxHandler<K::Signer> {
+	fn read<R: io::Read>(reader: &mut R, args: (&'a K, u64, [u8; 32])) -> Result<Self, DecodeError> {
+		let keys_manager = args.0;
+		let channel_value_satoshis = args.1;
+		let channel_keys_id = args.2;
+
 		let _ver = read_ver_prefix!(reader, SERIALIZATION_VERSION);
 
 		let destination_script = Readable::read(reader)?;
@@ -316,16 +321,21 @@ impl<'a, K: KeysInterface> ReadableArgs<&'a K> for OnchainTxHandler<K::Signer> {
 
 		let channel_parameters = Readable::read(reader)?;
 
+		// Read the serialized signer bytes, but don't deserialize them, as we'll obtain our signer
+		// by re-deriving the private key material.
 		let keys_len: u32 = Readable::read(reader)?;
-		let mut keys_data = Vec::with_capacity(cmp::min(keys_len as usize, MAX_ALLOC_SIZE));
-		while keys_data.len() != keys_len as usize {
+		let mut bytes_read = 0;
+		while bytes_read != keys_len as usize {
 			// Read 1KB at a time to avoid accidentally allocating 4GB on corrupted channel keys
 			let mut data = [0; 1024];
-			let read_slice = &mut data[0..cmp::min(1024, keys_len as usize - keys_data.len())];
+			let bytes_to_read = cmp::min(1024, keys_len as usize - bytes_read);
+			let read_slice = &mut data[0..bytes_to_read];
 			reader.read_exact(read_slice)?;
-			keys_data.extend_from_slice(read_slice);
+			bytes_read += bytes_to_read;
 		}
-		let signer = keys_manager.read_chan_signer(&keys_data)?;
+
+		let mut signer = keys_manager.derive_channel_signer(channel_value_satoshis, channel_keys_id);
+		signer.provide_channel_parameters(&channel_parameters);
 
 		let pending_claim_requests_len: u64 = Readable::read(reader)?;
 		let mut pending_claim_requests = HashMap::with_capacity(cmp::min(pending_claim_requests_len as usize, MAX_ALLOC_SIZE / 128));

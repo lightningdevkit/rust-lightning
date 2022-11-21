@@ -3789,7 +3789,9 @@ impl<'a, K: KeysInterface> ReadableArgs<&'a K>
 				return Err(DecodeError::InvalidValue);
 			}
 		}
-		let onchain_tx_handler: OnchainTxHandler<K::Signer> = ReadableArgs::read(reader, keys_manager)?;
+		let onchain_tx_handler: OnchainTxHandler<K::Signer> = ReadableArgs::read(
+			reader, (keys_manager, channel_value_satoshis, channel_keys_id)
+		)?;
 
 		let lockdown_from_offchain = Readable::read(reader)?;
 		let holder_tx_signed = Readable::read(reader)?;
