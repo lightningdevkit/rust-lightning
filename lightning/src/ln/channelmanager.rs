@@ -1517,18 +1517,6 @@ macro_rules! emit_channel_ready_event {
 	}
 }
 
-macro_rules! post_handle_chan_restoration {
-	($self: ident, $locked_res: expr, $counterparty_node_id: expr) => { {
-		let (htlc_forwards, res) = $locked_res;
-
-		let _ = handle_error!($self, res, *$counterparty_node_id);
-
-		if let Some(forwards) = htlc_forwards {
-			$self.forward_htlcs(&mut [forwards][..]);
-		}
-	} }
-}
-
 impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F, L>
 	where M::Target: chain::Watch<<K::Target as KeysInterface>::Signer>,
         T::Target: BroadcasterInterface,
@@ -4381,69 +4369,66 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 		commitment_update: Option<msgs::CommitmentUpdate>, order: RAACommitmentOrder,
 		pending_forwards: Vec<(PendingHTLCInfo, u64)>, funding_broadcastable: Option<Transaction>,
 		channel_ready: Option<msgs::ChannelReady>, announcement_sigs: Option<msgs::AnnouncementSignatures>)
-	-> (Option<(u64, OutPoint, Vec<(PendingHTLCInfo, u64)>)>, Result<(), MsgHandleErrInternal>) {
+	-> Option<(u64, OutPoint, Vec<(PendingHTLCInfo, u64)>)> {
 		let mut htlc_forwards = None;
 
 		let counterparty_node_id = channel.get_counterparty_node_id();
-		let res = loop {
-			if !pending_forwards.is_empty() {
-				htlc_forwards = Some((channel.get_short_channel_id().unwrap_or(channel.outbound_scid_alias()),
-					channel.get_funding_txo().unwrap(), pending_forwards));
-			}
+		if !pending_forwards.is_empty() {
+			htlc_forwards = Some((channel.get_short_channel_id().unwrap_or(channel.outbound_scid_alias()),
+				channel.get_funding_txo().unwrap(), pending_forwards));
+		}
 
-			if let Some(msg) = channel_ready {
-				send_channel_ready!(self, pending_msg_events, channel, msg);
-			}
-			if let Some(msg) = announcement_sigs {
-				pending_msg_events.push(events::MessageSendEvent::SendAnnouncementSignatures {
+		if let Some(msg) = channel_ready {
+			send_channel_ready!(self, pending_msg_events, channel, msg);
+		}
+		if let Some(msg) = announcement_sigs {
+			pending_msg_events.push(events::MessageSendEvent::SendAnnouncementSignatures {
+				node_id: counterparty_node_id,
+				msg,
+			});
+		}
+
+		emit_channel_ready_event!(self, channel);
+
+		macro_rules! handle_cs { () => {
+			if let Some(update) = commitment_update {
+				pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
 					node_id: counterparty_node_id,
-					msg,
+					updates: update,
 				});
 			}
-
-			emit_channel_ready_event!(self, channel);
-
-			macro_rules! handle_cs { () => {
-				if let Some(update) = commitment_update {
-					pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
-						node_id: counterparty_node_id,
-						updates: update,
-					});
-				}
-			} }
-			macro_rules! handle_raa { () => {
-				if let Some(revoke_and_ack) = raa {
-					pending_msg_events.push(events::MessageSendEvent::SendRevokeAndACK {
-						node_id: counterparty_node_id,
-						msg: revoke_and_ack,
-					});
-				}
-			} }
-			match order {
-				RAACommitmentOrder::CommitmentFirst => {
-					handle_cs!();
-					handle_raa!();
-				},
-				RAACommitmentOrder::RevokeAndACKFirst => {
-					handle_raa!();
-					handle_cs!();
-				},
+		} }
+		macro_rules! handle_raa { () => {
+			if let Some(revoke_and_ack) = raa {
+				pending_msg_events.push(events::MessageSendEvent::SendRevokeAndACK {
+					node_id: counterparty_node_id,
+					msg: revoke_and_ack,
+				});
 			}
+		} }
+		match order {
+			RAACommitmentOrder::CommitmentFirst => {
+				handle_cs!();
+				handle_raa!();
+			},
+			RAACommitmentOrder::RevokeAndACKFirst => {
+				handle_raa!();
+				handle_cs!();
+			},
+		}
 
-			if let Some(tx) = funding_broadcastable {
-				log_info!(self.logger, "Broadcasting funding transaction with txid {}", tx.txid());
-				self.tx_broadcaster.broadcast_transaction(&tx);
-			}
-			break Ok(());
-		};
+		if let Some(tx) = funding_broadcastable {
+			log_info!(self.logger, "Broadcasting funding transaction with txid {}", tx.txid());
+			self.tx_broadcaster.broadcast_transaction(&tx);
+		}
 
-		(htlc_forwards, res)
+		htlc_forwards
 	}
 
 	fn channel_monitor_updated(&self, funding_txo: &OutPoint, highest_applied_update_id: u64) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 
-		let chan_restoration_res;
+		let htlc_forwards;
 		let (mut pending_failures, finalized_claims, counterparty_node_id) = {
 			let mut channel_lock = self.channel_state.lock().unwrap();
 			let channel_state = &mut *channel_lock;
@@ -4470,14 +4455,16 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 					})
 				} else { None }
 			} else { None };
-			chan_restoration_res = self.handle_channel_resumption(&mut channel_state.pending_msg_events, channel.get_mut(), updates.raa, updates.commitment_update, updates.order, updates.accepted_htlcs, updates.funding_broadcastable, updates.channel_ready, updates.announcement_sigs);
+			htlc_forwards = self.handle_channel_resumption(&mut channel_state.pending_msg_events, channel.get_mut(), updates.raa, updates.commitment_update, updates.order, updates.accepted_htlcs, updates.funding_broadcastable, updates.channel_ready, updates.announcement_sigs);
 			if let Some(upd) = channel_update {
 				channel_state.pending_msg_events.push(upd);
 			}
 
 			(updates.failed_htlcs, updates.finalized_claimed_htlcs, counterparty_node_id)
 		};
-		post_handle_chan_restoration!(self, chan_restoration_res, &counterparty_node_id);
+		if let Some(forwards) = htlc_forwards {
+			self.forward_htlcs(&mut [forwards][..]);
+		}
 		self.finalize_claims(finalized_claims);
 		for failure in pending_failures.drain(..) {
 			let receiver = HTLCDestination::NextHopChannel { node_id: Some(counterparty_node_id), channel_id: funding_txo.to_channel_id() };
@@ -5228,7 +5215,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 	}
 
 	fn internal_channel_reestablish(&self, counterparty_node_id: &PublicKey, msg: &msgs::ChannelReestablish) -> Result<(), MsgHandleErrInternal> {
-		let chan_restoration_res;
+		let htlc_forwards;
 		let need_lnd_workaround = {
 			let mut channel_state_lock = self.channel_state.lock().unwrap();
 			let channel_state = &mut *channel_state_lock;
@@ -5263,7 +5250,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 						}
 					}
 					let need_lnd_workaround = chan.get_mut().workaround_lnd_bug_4006.take();
-					chan_restoration_res = self.handle_channel_resumption(
+					htlc_forwards = self.handle_channel_resumption(
 						&mut channel_state.pending_msg_events, chan.get_mut(), responses.raa, responses.commitment_update, responses.order,
 						Vec::new(), None, responses.channel_ready, responses.announcement_sigs);
 					if let Some(upd) = channel_update {
@@ -5274,7 +5261,10 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))
 			}
 		};
-		post_handle_chan_restoration!(self, chan_restoration_res, counterparty_node_id);
+
+		if let Some(forwards) = htlc_forwards {
+			self.forward_htlcs(&mut [forwards][..]);
+		}
 
 		if let Some(channel_ready_msg) = need_lnd_workaround {
 			self.internal_channel_ready(counterparty_node_id, &channel_ready_msg)?;
