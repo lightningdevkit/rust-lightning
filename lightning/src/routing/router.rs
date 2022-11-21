@@ -38,20 +38,43 @@ pub trait Router {
 	) -> Result<Route, LightningError>;
 }
 
-/// A map with liquidity value (in msat) keyed by a short channel id and the direction the HTLC
-/// is traveling in. The direction boolean is determined by checking if the HTLC source's public
-/// key is less than its destination. See [`InFlightHtlcs::used_liquidity_msat`] for more
-/// details.
-#[cfg(not(any(test, feature = "_test_utils")))]
-pub struct InFlightHtlcs(HashMap<(u64, bool), u64>);
-#[cfg(any(test, feature = "_test_utils"))]
-pub struct InFlightHtlcs(pub HashMap<(u64, bool), u64>);
+/// A data structure for tracking in-flight HTLCs. May be used during pathfinding to account for
+/// in-use channel liquidity.
+pub struct InFlightHtlcs(
+	// A map with liquidity value (in msat) keyed by a short channel id and the direction the HTLC
+	// is traveling in. The direction boolean is determined by checking if the HTLC source's public
+	// key is less than its destination. See `InFlightHtlcs::used_liquidity_msat` for more
+	// details.
+	HashMap<(u64, bool), u64>
+);
 
 impl InFlightHtlcs {
-	/// Create a new `InFlightHtlcs` via a mapping from:
-	/// (short_channel_id, source_pubkey < target_pubkey) -> used_liquidity_msat
-	pub fn new(inflight_map: HashMap<(u64, bool), u64>) -> Self {
-		InFlightHtlcs(inflight_map)
+	/// Constructs an empty `InFlightHtlcs`.
+	pub fn new() -> Self { InFlightHtlcs(HashMap::new()) }
+
+	/// Takes in a path with payer's node id and adds the path's details to `InFlightHtlcs`.
+	pub fn process_path(&mut self, path: &[RouteHop], payer_node_id: PublicKey) {
+		if path.is_empty() { return };
+		// total_inflight_map needs to be direction-sensitive when keeping track of the HTLC value
+		// that is held up. However, the `hops` array, which is a path returned by `find_route` in
+		// the router excludes the payer node. In the following lines, the payer's information is
+		// hardcoded with an inflight value of 0 so that we can correctly represent the first hop
+		// in our sliding window of two.
+		let reversed_hops_with_payer = path.iter().rev().skip(1)
+			.map(|hop| hop.pubkey)
+			.chain(core::iter::once(payer_node_id));
+		let mut cumulative_msat = 0;
+
+		// Taking the reversed vector from above, we zip it with just the reversed hops list to
+		// work "backwards" of the given path, since the last hop's `fee_msat` actually represents
+		// the total amount sent.
+		for (next_hop, prev_hop) in path.iter().rev().zip(reversed_hops_with_payer) {
+			cumulative_msat += next_hop.fee_msat;
+			self.0
+				.entry((next_hop.short_channel_id, NodeId::from_pubkey(&prev_hop) < NodeId::from_pubkey(&next_hop.pubkey)))
+				.and_modify(|used_liquidity_msat| *used_liquidity_msat += cumulative_msat)
+				.or_insert(cumulative_msat);
+		}
 	}
 
 	/// Returns liquidity in msat given the public key of the HTLC source, target, and short channel

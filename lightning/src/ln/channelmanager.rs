@@ -46,7 +46,7 @@ use crate::ln::channel::{Channel, ChannelError, ChannelUpdateStatus, UpdateFulfi
 use crate::ln::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
 #[cfg(any(feature = "_test_utils", test))]
 use crate::ln::features::InvoiceFeatures;
-use crate::routing::router::{PaymentParameters, Route, RouteHop, RoutePath, RouteParameters};
+use crate::routing::router::{InFlightHtlcs, PaymentParameters, Route, RouteHop, RoutePath, RouteParameters};
 use crate::ln::msgs;
 use crate::ln::onion_utils;
 use crate::ln::msgs::{ChannelMessageHandler, DecodeError, LightningError, MAX_VALUE_MSAT};
@@ -5720,6 +5720,22 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 			phantom_scid: self.get_phantom_scid(),
 			real_node_pubkey: self.get_our_node_id(),
 		}
+	}
+
+	/// Gets inflight HTLC information by processing pending outbound payments that are in
+	/// our channels. May be used during pathfinding to account for in-use channel liquidity.
+	pub fn compute_inflight_htlcs(&self) -> InFlightHtlcs {
+		let mut inflight_htlcs = InFlightHtlcs::new();
+
+		for chan in self.channel_state.lock().unwrap().by_id.values() {
+			for htlc_source in chan.inflight_htlc_sources() {
+				if let HTLCSource::OutboundRoute { path, .. } = htlc_source {
+					inflight_htlcs.process_path(path, self.get_our_node_id());
+				}
+			}
+		}
+
+		inflight_htlcs
 	}
 
 	#[cfg(any(test, fuzzing, feature = "_test_utils"))]
