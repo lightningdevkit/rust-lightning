@@ -34,7 +34,7 @@ use crate::chain::BestBlock;
 use crate::chain::chaininterface::{FeeEstimator, ConfirmationTarget, LowerBoundedFeeEstimator};
 use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, LATENCY_GRACE_PERIOD_BLOCKS};
 use crate::chain::transaction::{OutPoint, TransactionData};
-use crate::chain::keysinterface::{Sign, KeysInterface};
+use crate::chain::keysinterface::{Sign, KeysInterface, BaseSign};
 use crate::util::events::ClosureReason;
 use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer, VecWriter};
 use crate::util::logger::Logger;
@@ -737,6 +737,10 @@ pub(super) struct Channel<Signer: Sign> {
 
 	// We track whether we already emitted a `ChannelReady` event.
 	channel_ready_event_emitted: bool,
+
+	/// The unique identifier used to re-derive the private key material for the channel through
+	/// [`KeysInterface::derive_channel_signer`].
+	channel_keys_id: [u8; 32],
 }
 
 #[cfg(any(test, fuzzing))]
@@ -1072,6 +1076,7 @@ impl<Signer: Sign> Channel<Signer> {
 			historical_inbound_htlc_fulfills: HashSet::new(),
 
 			channel_type: Self::get_initial_channel_type(&config),
+			channel_keys_id,
 		})
 	}
 
@@ -1419,6 +1424,7 @@ impl<Signer: Sign> Channel<Signer> {
 			historical_inbound_htlc_fulfills: HashSet::new(),
 
 			channel_type,
+			channel_keys_id,
 		};
 
 		Ok(chan)
@@ -5936,7 +5942,7 @@ impl<Signer: Sign> Channel<Signer> {
 	}
 }
 
-const SERIALIZATION_VERSION: u8 = 2;
+const SERIALIZATION_VERSION: u8 = 3;
 const MIN_SERIALIZATION_VERSION: u8 = 2;
 
 impl_writeable_tlv_based_enum!(InboundHTLCRemovalReason,;
@@ -5998,7 +6004,7 @@ impl<Signer: Sign> Writeable for Channel<Signer> {
 		// Note that we write out as if remove_uncommitted_htlcs_and_mark_paused had just been
 		// called.
 
-		write_ver_prefix!(writer, SERIALIZATION_VERSION, MIN_SERIALIZATION_VERSION);
+		write_ver_prefix!(writer, MIN_SERIALIZATION_VERSION, MIN_SERIALIZATION_VERSION);
 
 		// `user_id` used to be a single u64 value. In order to remain backwards compatible with
 		// versions prior to 0.0.113, the u128 is serialized as two separate u64 values. We write
@@ -6280,6 +6286,7 @@ impl<Signer: Sign> Writeable for Channel<Signer> {
 			(21, self.outbound_scid_alias, required),
 			(23, channel_ready_event_emitted, option),
 			(25, user_id_high_opt, option),
+			(27, self.channel_keys_id, required),
 		});
 
 		Ok(())
@@ -6316,16 +6323,20 @@ impl<'a, K: Deref> ReadableArgs<(&'a K, u32)> for Channel<<K::Target as KeysInte
 
 		let latest_monitor_update_id = Readable::read(reader)?;
 
-		let keys_len: u32 = Readable::read(reader)?;
-		let mut keys_data = Vec::with_capacity(cmp::min(keys_len as usize, MAX_ALLOC_SIZE));
-		while keys_data.len() != keys_len as usize {
-			// Read 1KB at a time to avoid accidentally allocating 4GB on corrupted channel keys
-			let mut data = [0; 1024];
-			let read_slice = &mut data[0..cmp::min(1024, keys_len as usize - keys_data.len())];
-			reader.read_exact(read_slice)?;
-			keys_data.extend_from_slice(read_slice);
+		let mut keys_data = None;
+		if ver <= 2 {
+			// Read the serialize signer bytes. We'll choose to deserialize them or not based on whether
+			// the `channel_keys_id` TLV is present below.
+			let keys_len: u32 = Readable::read(reader)?;
+			keys_data = Some(Vec::with_capacity(cmp::min(keys_len as usize, MAX_ALLOC_SIZE)));
+			while keys_data.as_ref().unwrap().len() != keys_len as usize {
+				// Read 1KB at a time to avoid accidentally allocating 4GB on corrupted channel keys
+				let mut data = [0; 1024];
+				let read_slice = &mut data[0..cmp::min(1024, keys_len as usize - keys_data.as_ref().unwrap().len())];
+				reader.read_exact(read_slice)?;
+				keys_data.as_mut().unwrap().extend_from_slice(read_slice);
+			}
 		}
-		let holder_signer = keys_source.read_chan_signer(&keys_data)?;
 
 		// Read the old serialization for shutdown_pubkey, preferring the TLV field later if set.
 		let mut shutdown_scriptpubkey = match <PublicKey as Readable>::read(reader) {
@@ -6543,6 +6554,7 @@ impl<'a, K: Deref> ReadableArgs<(&'a K, u32)> for Channel<<K::Target as KeysInte
 		let mut channel_ready_event_emitted = None;
 
 		let mut user_id_high_opt: Option<u64> = None;
+		let mut channel_keys_id: Option<[u8; 32]> = None;
 
 		read_tlv_fields!(reader, {
 			(0, announcement_sigs, option),
@@ -6562,7 +6574,24 @@ impl<'a, K: Deref> ReadableArgs<(&'a K, u32)> for Channel<<K::Target as KeysInte
 			(21, outbound_scid_alias, option),
 			(23, channel_ready_event_emitted, option),
 			(25, user_id_high_opt, option),
+			(27, channel_keys_id, option),
 		});
+
+		let (channel_keys_id, holder_signer) = if let Some(channel_keys_id) = channel_keys_id {
+			let mut holder_signer = keys_source.derive_channel_signer(channel_value_satoshis, channel_keys_id);
+			// If we've gotten to the funding stage of the channel, populate the signer with its
+			// required channel parameters.
+			let non_shutdown_state = channel_state & (!MULTI_STATE_FLAGS);
+			if non_shutdown_state >= (ChannelState::FundingCreated as u32) {
+				holder_signer.provide_channel_parameters(&channel_parameters);
+			}
+			(channel_keys_id, holder_signer)
+		} else {
+			// `keys_data` can be `None` if we had corrupted data.
+			let keys_data = keys_data.ok_or(DecodeError::InvalidValue)?;
+			let holder_signer = keys_source.read_chan_signer(&keys_data)?;
+			(holder_signer.channel_keys_id(), holder_signer)
+		};
 
 		if let Some(preimages) = preimages_opt {
 			let mut iter = preimages.into_iter();
@@ -6713,6 +6742,7 @@ impl<'a, K: Deref> ReadableArgs<(&'a K, u32)> for Channel<<K::Target as KeysInte
 			historical_inbound_htlc_fulfills,
 
 			channel_type: channel_type.unwrap(),
+			channel_keys_id,
 		})
 	}
 }
