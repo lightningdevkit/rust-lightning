@@ -283,8 +283,8 @@ macro_rules! define_run_body {
 			// continuing our normal cadence.
 			if last_prune_call.elapsed().as_secs() > if have_pruned { NETWORK_PRUNE_TIMER } else { FIRST_NETWORK_PRUNE_TIMER } {
 				// The network graph must not be pruned while rapid sync completion is pending
-				log_trace!($logger, "Assessing prunability of network graph");
 				if let Some(network_graph) = $gossip_sync.prunable_network_graph() {
+					log_trace!($logger, "Pruning and persisting network graph.");
 					network_graph.remove_stale_channels_and_tracking();
 
 					if let Err(e) = $persister.persist_graph(network_graph) {
@@ -293,8 +293,6 @@ macro_rules! define_run_body {
 
 					last_prune_call = Instant::now();
 					have_pruned = true;
-				} else {
-					log_trace!($logger, "Not pruning network graph, either due to pending rapid gossip sync or absence of a prunable graph.");
 				}
 			}
 
@@ -1072,10 +1070,11 @@ mod tests {
 
 		loop {
 			let log_entries = nodes[0].logger.lines.lock().unwrap();
-			let expected_log_a = "Assessing prunability of network graph".to_string();
-			let expected_log_b = "Not pruning network graph, either due to pending rapid gossip sync or absence of a prunable graph.".to_string();
-			if log_entries.get(&("lightning_background_processor".to_string(), expected_log_a)).is_some() &&
-				log_entries.get(&("lightning_background_processor".to_string(), expected_log_b)).is_some() {
+			let loop_counter = "Calling ChannelManager's timer_tick_occurred".to_string();
+			if *log_entries.get(&("lightning_background_processor".to_string(), loop_counter))
+				.unwrap_or(&0) > 1
+			{
+				// Wait until the loop has gone around at least twice.
 				break
 			}
 		}
