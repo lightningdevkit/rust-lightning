@@ -56,6 +56,66 @@ pub trait Router {
 	fn notify_payment_probe_failed(&self, path: &[&RouteHop], short_channel_id: u64);
 }
 
+/// [`Score`] implementation that factors in in-flight HTLC liquidity.
+///
+/// Useful for custom [`Router`] implementations to wrap their [`Score`] on-the-fly when calling
+/// [`find_route`].
+///
+/// [`Score`]: crate::routing::scoring::Score
+pub struct ScorerAccountingForInFlightHtlcs<'a, S: Score> {
+	scorer: &'a mut S,
+	// Maps a channel's short channel id and its direction to the liquidity used up.
+	inflight_htlcs: InFlightHtlcs,
+}
+
+impl<'a, S: Score> ScorerAccountingForInFlightHtlcs<'a, S> {
+	/// Initialize a new `ScorerAccountingForInFlightHtlcs`.
+	pub fn new(scorer: &'a mut S, inflight_htlcs: InFlightHtlcs) -> Self {
+		ScorerAccountingForInFlightHtlcs {
+			scorer,
+			inflight_htlcs
+		}
+	}
+}
+
+#[cfg(c_bindings)]
+impl<'a, S:Score> Writeable for ScorerAccountingForInFlightHtlcs<'a, S> {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> { self.scorer.write(writer) }
+}
+
+impl<'a, S: Score> Score for ScorerAccountingForInFlightHtlcs<'a, S> {
+	fn channel_penalty_msat(&self, short_channel_id: u64, source: &NodeId, target: &NodeId, usage: ChannelUsage) -> u64 {
+		if let Some(used_liquidity) = self.inflight_htlcs.used_liquidity_msat(
+			source, target, short_channel_id
+		) {
+			let usage = ChannelUsage {
+				inflight_htlc_msat: usage.inflight_htlc_msat + used_liquidity,
+				..usage
+			};
+
+			self.scorer.channel_penalty_msat(short_channel_id, source, target, usage)
+		} else {
+			self.scorer.channel_penalty_msat(short_channel_id, source, target, usage)
+		}
+	}
+
+	fn payment_path_failed(&mut self, path: &[&RouteHop], short_channel_id: u64) {
+		self.scorer.payment_path_failed(path, short_channel_id)
+	}
+
+	fn payment_path_successful(&mut self, path: &[&RouteHop]) {
+		self.scorer.payment_path_successful(path)
+	}
+
+	fn probe_failed(&mut self, path: &[&RouteHop], short_channel_id: u64) {
+		self.scorer.probe_failed(path, short_channel_id)
+	}
+
+	fn probe_successful(&mut self, path: &[&RouteHop]) {
+		self.scorer.probe_successful(path)
+	}
+}
+
 /// A data structure for tracking in-flight HTLCs. May be used during pathfinding to account for
 /// in-use channel liquidity.
 pub struct InFlightHtlcs(

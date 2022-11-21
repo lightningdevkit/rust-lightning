@@ -731,7 +731,7 @@ where
 mod tests {
 	use super::*;
 	use crate::{InvoiceBuilder, Currency};
-	use crate::utils::{ScorerAccountingForInFlightHtlcs, create_invoice_from_channelmanager_and_duration_since_epoch};
+	use crate::utils::create_invoice_from_channelmanager_and_duration_since_epoch;
 	use bitcoin_hashes::sha256::Hash as Sha256;
 	use lightning::ln::PaymentPreimage;
 	use lightning::ln::channelmanager;
@@ -739,7 +739,7 @@ mod tests {
 	use lightning::ln::functional_test_utils::*;
 	use lightning::ln::msgs::{ChannelMessageHandler, ErrorAction, LightningError};
 	use lightning::routing::gossip::{EffectiveCapacity, NodeId};
-	use lightning::routing::router::{InFlightHtlcs, PaymentParameters, Route, RouteHop, Router};
+	use lightning::routing::router::{InFlightHtlcs, PaymentParameters, Route, RouteHop, Router, ScorerAccountingForInFlightHtlcs};
 	use lightning::routing::scoring::{ChannelUsage, LockableScore, Score};
 	use lightning::util::test_utils::TestLogger;
 	use lightning::util::errors::APIError;

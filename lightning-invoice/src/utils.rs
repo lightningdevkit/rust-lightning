@@ -15,9 +15,9 @@ use lightning::ln::channelmanager::{ChannelDetails, ChannelManager, PaymentId, P
 use lightning::ln::channelmanager::{PhantomRouteHints, MIN_CLTV_EXPIRY_DELTA};
 use lightning::ln::inbound_payment::{create, create_from_hash, ExpandedKey};
 use lightning::ln::msgs::LightningError;
-use lightning::routing::gossip::{NetworkGraph, NodeId, RoutingFees};
-use lightning::routing::router::{InFlightHtlcs, Route, RouteHint, RouteHintHop, RouteParameters, find_route, RouteHop, Router};
-use lightning::routing::scoring::{ChannelUsage, LockableScore, Score};
+use lightning::routing::gossip::{NetworkGraph, RoutingFees};
+use lightning::routing::router::{InFlightHtlcs, Route, RouteHint, RouteHintHop, RouteParameters, find_route, RouteHop, Router, ScorerAccountingForInFlightHtlcs};
+use lightning::routing::scoring::{LockableScore, Score};
 use lightning::util::logger::Logger;
 use secp256k1::PublicKey;
 use core::ops::Deref;
@@ -626,54 +626,6 @@ where
 
 	fn inflight_htlcs(&self) -> InFlightHtlcs { self.compute_inflight_htlcs() }
 }
-
-
-/// Used to store information about all the HTLCs that are inflight across all payment attempts.
-pub(crate) struct ScorerAccountingForInFlightHtlcs<'a, S: Score> {
-	scorer: &'a mut S,
-	/// Maps a channel's short channel id and its direction to the liquidity used up.
-	inflight_htlcs: InFlightHtlcs,
-}
-
-impl<'a, S: Score> ScorerAccountingForInFlightHtlcs<'a, S> {
-	pub(crate) fn new(scorer: &'a mut S, inflight_htlcs: InFlightHtlcs) -> Self {
-		ScorerAccountingForInFlightHtlcs {
-			scorer,
-			inflight_htlcs
-		}
-	}
-}
-
-#[cfg(c_bindings)]
-impl<'a, S:Score> lightning::util::ser::Writeable for ScorerAccountingForInFlightHtlcs<'a, S> {
-	fn write<W: lightning::util::ser::Writer>(&self, writer: &mut W) -> Result<(), lightning::io::Error> { self.scorer.write(writer) }
-}
-
-impl<'a, S: Score> Score for ScorerAccountingForInFlightHtlcs<'a, S> {
-	fn channel_penalty_msat(&self, short_channel_id: u64, source: &NodeId, target: &NodeId, usage: ChannelUsage) -> u64 {
-		if let Some(used_liquidity) = self.inflight_htlcs.used_liquidity_msat(
-			source, target, short_channel_id
-		) {
-			let usage = ChannelUsage {
-				inflight_htlc_msat: usage.inflight_htlc_msat + used_liquidity,
-				..usage
-			};
-
-			self.scorer.channel_penalty_msat(short_channel_id, source, target, usage)
-		} else {
-			self.scorer.channel_penalty_msat(short_channel_id, source, target, usage)
-		}
-	}
-
-	fn payment_path_failed(&mut self, _path: &[&RouteHop], _short_channel_id: u64) { unreachable!() }
-
-	fn payment_path_successful(&mut self, _path: &[&RouteHop]) { unreachable!() }
-
-	fn probe_failed(&mut self, _path: &[&RouteHop], _short_channel_id: u64) { unreachable!() }
-
-	fn probe_successful(&mut self, _path: &[&RouteHop]) { unreachable!() }
-}
-
 
 #[cfg(test)]
 mod test {
