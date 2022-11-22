@@ -439,8 +439,6 @@ pub(super) struct ReestablishResponses {
 	pub raa: Option<msgs::RevokeAndACK>,
 	pub commitment_update: Option<msgs::CommitmentUpdate>,
 	pub order: RAACommitmentOrder,
-	pub mon_update: Option<ChannelMonitorUpdate>,
-	pub holding_cell_failed_htlcs: Vec<(HTLCSource, PaymentHash)>,
 	pub announcement_sigs: Option<msgs::AnnouncementSignatures>,
 	pub shutdown_msg: Option<msgs::Shutdown>,
 }
@@ -3964,9 +3962,8 @@ impl<Signer: Sign> Channel<Signer> {
 				// Short circuit the whole handler as there is nothing we can resend them
 				return Ok(ReestablishResponses {
 					channel_ready: None,
-					raa: None, commitment_update: None, mon_update: None,
+					raa: None, commitment_update: None,
 					order: RAACommitmentOrder::CommitmentFirst,
-					holding_cell_failed_htlcs: Vec::new(),
 					shutdown_msg, announcement_sigs,
 				});
 			}
@@ -3979,9 +3976,8 @@ impl<Signer: Sign> Channel<Signer> {
 					next_per_commitment_point,
 					short_channel_id_alias: Some(self.outbound_scid_alias),
 				}),
-				raa: None, commitment_update: None, mon_update: None,
+				raa: None, commitment_update: None,
 				order: RAACommitmentOrder::CommitmentFirst,
-				holding_cell_failed_htlcs: Vec::new(),
 				shutdown_msg, announcement_sigs,
 			});
 		}
@@ -4024,46 +4020,12 @@ impl<Signer: Sign> Channel<Signer> {
 				log_debug!(logger, "Reconnected channel {} with no loss", log_bytes!(self.channel_id()));
 			}
 
-			if (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32 | ChannelState::MonitorUpdateInProgress as u32)) == 0 {
-				// We're up-to-date and not waiting on a remote revoke (if we are our
-				// channel_reestablish should result in them sending a revoke_and_ack), but we may
-				// have received some updates while we were disconnected. Free the holding cell
-				// now!
-				match self.free_holding_cell_htlcs(logger) {
-					Err(ChannelError::Close(msg)) => Err(ChannelError::Close(msg)),
-					Err(ChannelError::Warn(_)) | Err(ChannelError::Ignore(_)) =>
-						panic!("Got non-channel-failing result from free_holding_cell_htlcs"),
-					Ok((Some((commitment_update, monitor_update)), holding_cell_failed_htlcs)) => {
-						Ok(ReestablishResponses {
-							channel_ready, shutdown_msg, announcement_sigs,
-							raa: required_revoke,
-							commitment_update: Some(commitment_update),
-							order: self.resend_order.clone(),
-							mon_update: Some(monitor_update),
-							holding_cell_failed_htlcs,
-						})
-					},
-					Ok((None, holding_cell_failed_htlcs)) => {
-						Ok(ReestablishResponses {
-							channel_ready, shutdown_msg, announcement_sigs,
-							raa: required_revoke,
-							commitment_update: None,
-							order: self.resend_order.clone(),
-							mon_update: None,
-							holding_cell_failed_htlcs,
-						})
-					},
-				}
-			} else {
-				Ok(ReestablishResponses {
-					channel_ready, shutdown_msg, announcement_sigs,
-					raa: required_revoke,
-					commitment_update: None,
-					order: self.resend_order.clone(),
-					mon_update: None,
-					holding_cell_failed_htlcs: Vec::new(),
-				})
-			}
+			Ok(ReestablishResponses {
+				channel_ready, shutdown_msg, announcement_sigs,
+				raa: required_revoke,
+				commitment_update: None,
+				order: self.resend_order.clone(),
+			})
 		} else if msg.next_local_commitment_number == next_counterparty_commitment_number - 1 {
 			if required_revoke.is_some() {
 				log_debug!(logger, "Reconnected channel {} with lost outbound RAA and lost remote commitment tx", log_bytes!(self.channel_id()));
@@ -4075,9 +4037,8 @@ impl<Signer: Sign> Channel<Signer> {
 				self.monitor_pending_commitment_signed = true;
 				Ok(ReestablishResponses {
 					channel_ready, shutdown_msg, announcement_sigs,
-					commitment_update: None, raa: None, mon_update: None,
+					commitment_update: None, raa: None,
 					order: self.resend_order.clone(),
-					holding_cell_failed_htlcs: Vec::new(),
 				})
 			} else {
 				Ok(ReestablishResponses {
@@ -4085,8 +4046,6 @@ impl<Signer: Sign> Channel<Signer> {
 					raa: required_revoke,
 					commitment_update: Some(self.get_last_commitment_update(logger)),
 					order: self.resend_order.clone(),
-					mon_update: None,
-					holding_cell_failed_htlcs: Vec::new(),
 				})
 			}
 		} else {

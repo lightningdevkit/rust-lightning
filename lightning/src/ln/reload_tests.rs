@@ -786,9 +786,9 @@ fn do_test_partial_claim_before_restart(persist_both_monitors: bool) {
 		let ds_msgs = nodes[3].node.get_and_clear_pending_msg_events();
 		check_added_monitors!(nodes[3], 1);
 		assert_eq!(ds_msgs.len(), 2);
-		if let MessageSendEvent::SendChannelUpdate { .. } = ds_msgs[1] {} else { panic!(); }
+		if let MessageSendEvent::SendChannelUpdate { .. } = ds_msgs[0] {} else { panic!(); }
 
-		let cs_updates = match ds_msgs[0] {
+		let cs_updates = match ds_msgs[1] {
 			MessageSendEvent::UpdateHTLCs { ref updates, .. } => {
 				nodes[2].node.handle_update_fulfill_htlc(&nodes[3].node.get_our_node_id(), &updates.update_fulfill_htlcs[0]);
 				check_added_monitors!(nodes[2], 1);
