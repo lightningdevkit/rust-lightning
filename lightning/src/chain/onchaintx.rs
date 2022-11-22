@@ -732,17 +732,17 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 						//... we need to verify equality between transaction outpoints and claim request
 						// outpoints to know if transaction is the original claim or a bumped one issued
 						// by us.
-						let mut set_equality = true;
+						let mut are_sets_equal = true;
 						if !request.requires_external_funding() || !request.is_malleable() {
 							// If the claim does not require external funds to be allocated through
 							// additional inputs we can simply check the inputs in order as they
 							// cannot change under us.
 							if request.outpoints().len() != tx.input.len() {
-								set_equality = false;
+								are_sets_equal = false;
 							} else {
 								for (claim_inp, tx_inp) in request.outpoints().iter().zip(tx.input.iter()) {
 									if **claim_inp != tx_inp.previous_output {
-										set_equality = false;
+										are_sets_equal = false;
 									}
 								}
 							}
@@ -757,7 +757,7 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 									break;
 								}
 							}
-							set_equality = spends_all_inputs;
+							are_sets_equal = spends_all_inputs;
 						}
 
 						macro_rules! clean_claim_request_after_safety_delay {
@@ -777,7 +777,7 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 						// If this is our transaction (or our counterparty spent all the outputs
 						// before we could anyway with same inputs order than us), wait for
 						// ANTI_REORG_DELAY and clean the RBF tracking map.
-						if set_equality {
+						if are_sets_equal {
 							clean_claim_request_after_safety_delay!();
 						} else { // If false, generate new claim request with update outpoint set
 							let mut at_least_one_drop = false;
