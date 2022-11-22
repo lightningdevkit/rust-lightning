@@ -398,13 +398,6 @@ pub(super) enum RAACommitmentOrder {
 // Note this is only exposed in cfg(test):
 pub(super) struct ChannelHolder<Signer: Sign> {
 	pub(super) by_id: HashMap<[u8; 32], Channel<Signer>>,
-	/// Map from payment hash to the payment data and any HTLCs which are to us and can be
-	/// failed/claimed by the user.
-	///
-	/// Note that while this is held in the same mutex as the channels themselves, no consistency
-	/// guarantees are made about the channels given here actually existing anymore by the time you
-	/// go to read them!
-	claimable_htlcs: HashMap<PaymentHash, (events::PaymentPurpose, Vec<ClaimableHTLC>)>,
 	/// Messages to send to peers - pushed to in the same lock that they are generated in (except
 	/// for broadcast messages, where ordering isn't as strict).
 	pub(super) pending_msg_events: Vec<MessageSendEvent>,
@@ -673,19 +666,21 @@ pub type SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, M, T, F, L> = ChannelManage
 //  |
 //  |__`forward_htlcs`
 //  |
-//  |__`channel_state`
+//  |__`pending_inbound_payments`
 //  |   |
-//  |   |__`id_to_peer`
+//  |   |__`claimable_htlcs`
 //  |   |
-//  |   |__`short_to_chan_info`
-//  |   |
-//  |   |__`per_peer_state`
+//  |   |__`pending_outbound_payments`
 //  |       |
-//  |       |__`outbound_scid_aliases`
-//  |       |
-//  |       |__`pending_inbound_payments`
+//  |       |__`channel_state`
 //  |           |
-//  |           |__`pending_outbound_payments`
+//  |           |__`id_to_peer`
+//  |           |
+//  |           |__`short_to_chan_info`
+//  |           |
+//  |           |__`per_peer_state`
+//  |               |
+//  |               |__`outbound_scid_aliases`
 //  |               |
 //  |               |__`best_block`
 //  |               |
@@ -755,6 +750,15 @@ pub struct ChannelManager<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 	pub(super) forward_htlcs: Mutex<HashMap<u64, Vec<HTLCForwardInfo>>>,
 	#[cfg(not(test))]
 	forward_htlcs: Mutex<HashMap<u64, Vec<HTLCForwardInfo>>>,
+
+	/// Map from payment hash to the payment data and any HTLCs which are to us and can be
+	/// failed/claimed by the user.
+	///
+	/// Note that, no consistency guarantees are made about the channels given here actually
+	/// existing anymore by the time you go to read them!
+	///
+	/// See `ChannelManager` struct-level documentation for lock order requirements.
+	claimable_htlcs: Mutex<HashMap<PaymentHash, (events::PaymentPurpose, Vec<ClaimableHTLC>)>>,
 
 	/// The set of outbound SCID aliases across all our channels, including unconfirmed channels
 	/// and some closed channels which reached a usable state prior to being closed. This is used
@@ -1678,13 +1682,13 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 
 			channel_state: Mutex::new(ChannelHolder{
 				by_id: HashMap::new(),
-				claimable_htlcs: HashMap::new(),
 				pending_msg_events: Vec::new(),
 			}),
 			outbound_scid_aliases: Mutex::new(HashSet::new()),
 			pending_inbound_payments: Mutex::new(HashMap::new()),
 			pending_outbound_payments: Mutex::new(HashMap::new()),
 			forward_htlcs: Mutex::new(HashMap::new()),
+			claimable_htlcs: Mutex::new(HashMap::new()),
 			id_to_peer: Mutex::new(HashMap::new()),
 			short_to_chan_info: FairRwLock::new(HashMap::new()),
 
@@ -1922,14 +1926,16 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 					if *counterparty_node_id != chan_entry.get().get_counterparty_node_id(){
 						return Err(APIError::APIMisuseError { err: "The passed counterparty_node_id doesn't match the channel's counterparty node_id".to_owned() });
 					}
-					let per_peer_state = self.per_peer_state.read().unwrap();
-					let (shutdown_msg, monitor_update, htlcs) = match per_peer_state.get(&counterparty_node_id) {
-						Some(peer_state) => {
-							let peer_state = peer_state.lock().unwrap();
-							let their_features = &peer_state.latest_features;
-							chan_entry.get_mut().get_shutdown(&self.keys_manager, their_features, target_feerate_sats_per_1000_weight)?
-						},
-						None => return Err(APIError::ChannelUnavailable { err: format!("Not connected to node: {}", counterparty_node_id) }),
+					let (shutdown_msg, monitor_update, htlcs) = {
+						let per_peer_state = self.per_peer_state.read().unwrap();
+						match per_peer_state.get(&counterparty_node_id) {
+							Some(peer_state) => {
+								let peer_state = peer_state.lock().unwrap();
+								let their_features = &peer_state.latest_features;
+								chan_entry.get_mut().get_shutdown(&self.keys_manager, their_features, target_feerate_sats_per_1000_weight)?
+							},
+							None => return Err(APIError::ChannelUnavailable { err: format!("Not connected to node: {}", counterparty_node_id) }),
+						}
 					};
 					failed_htlcs = htlcs;
 
@@ -3154,8 +3160,6 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 			mem::swap(&mut forward_htlcs, &mut self.forward_htlcs.lock().unwrap());
 
 			for (short_chan_id, mut pending_forwards) in forward_htlcs {
-				let mut channel_state_lock = self.channel_state.lock().unwrap();
-				let channel_state = &mut *channel_state_lock;
 				if short_chan_id != 0 {
 					macro_rules! forwarding_channel_not_found {
 						() => {
@@ -3258,6 +3262,8 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 							continue;
 						}
 					};
+					let mut channel_state_lock = self.channel_state.lock().unwrap();
+					let channel_state = &mut *channel_state_lock;
 					match channel_state.by_id.entry(forward_chan_id) {
 						hash_map::Entry::Vacant(_) => {
 							forwarding_channel_not_found!();
@@ -3455,7 +3461,8 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 												payment_secret: $payment_data.payment_secret,
 											}
 										};
-										let (_, htlcs) = channel_state.claimable_htlcs.entry(payment_hash)
+										let mut claimable_htlcs = self.claimable_htlcs.lock().unwrap();
+										let (_, htlcs) = claimable_htlcs.entry(payment_hash)
 											.or_insert_with(|| (purpose(), Vec::new()));
 										if htlcs.len() == 1 {
 											if let OnionPayload::Spontaneous(_) = htlcs[0].onion_payload {
@@ -3523,7 +3530,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 												check_total_value!(payment_data, payment_preimage);
 											},
 											OnionPayload::Spontaneous(preimage) => {
-												match channel_state.claimable_htlcs.entry(payment_hash) {
+												match self.claimable_htlcs.lock().unwrap().entry(payment_hash) {
 													hash_map::Entry::Vacant(e) => {
 														let purpose = events::PaymentPurpose::SpontaneousPayment(preimage);
 														e.insert((purpose.clone(), vec![claimable_htlc]));
@@ -3812,29 +3819,29 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 
 					true
 				});
+			}
 
-				channel_state.claimable_htlcs.retain(|payment_hash, (_, htlcs)| {
-					if htlcs.is_empty() {
-						// This should be unreachable
-						debug_assert!(false);
+			self.claimable_htlcs.lock().unwrap().retain(|payment_hash, (_, htlcs)| {
+				if htlcs.is_empty() {
+					// This should be unreachable
+					debug_assert!(false);
+					return false;
+				}
+				if let OnionPayload::Invoice { .. } = htlcs[0].onion_payload {
+					// Check if we've received all the parts we need for an MPP (the value of the parts adds to total_msat).
+					// In this case we're not going to handle any timeouts of the parts here.
+					if htlcs[0].total_msat == htlcs.iter().fold(0, |total, htlc| total + htlc.value) {
+						return true;
+					} else if htlcs.into_iter().any(|htlc| {
+						htlc.timer_ticks += 1;
+						return htlc.timer_ticks >= MPP_TIMEOUT_TICKS
+					}) {
+						timed_out_mpp_htlcs.extend(htlcs.into_iter().map(|htlc| (htlc.prev_hop.clone(), payment_hash.clone())));
 						return false;
 					}
-					if let OnionPayload::Invoice { .. } = htlcs[0].onion_payload {
-						// Check if we've received all the parts we need for an MPP (the value of the parts adds to total_msat).
-						// In this case we're not going to handle any timeouts of the parts here.
-						if htlcs[0].total_msat == htlcs.iter().fold(0, |total, htlc| total + htlc.value) {
-							return true;
-						} else if htlcs.into_iter().any(|htlc| {
-							htlc.timer_ticks += 1;
-							return htlc.timer_ticks >= MPP_TIMEOUT_TICKS
-						}) {
-							timed_out_mpp_htlcs.extend(htlcs.into_iter().map(|htlc| (htlc.prev_hop.clone(), payment_hash.clone())));
-							return false;
-						}
-					}
-					true
-				});
-			}
+				}
+				true
+			});
 
 			for htlc_source in timed_out_mpp_htlcs.drain(..) {
 				let receiver = HTLCDestination::FailedPayment { payment_hash: htlc_source.1 };
@@ -3867,10 +3874,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 	pub fn fail_htlc_backwards(&self, payment_hash: &PaymentHash) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 
-		let removed_source = {
-			let mut channel_state = self.channel_state.lock().unwrap();
-			channel_state.claimable_htlcs.remove(payment_hash)
-		};
+		let removed_source = self.claimable_htlcs.lock().unwrap().remove(payment_hash);
 		if let Some((_, mut sources)) = removed_source {
 			for htlc in sources.drain(..) {
 				let mut htlc_msat_height_data = byte_utils::be64_to_array(htlc.value).to_vec();
@@ -4172,7 +4176,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 
-		let removed_source = self.channel_state.lock().unwrap().claimable_htlcs.remove(&payment_hash);
+		let removed_source = self.claimable_htlcs.lock().unwrap().remove(&payment_hash);
 		if let Some((payment_purpose, mut sources)) = removed_source {
 			assert!(!sources.is_empty());
 
@@ -6093,28 +6097,28 @@ where
 				}
 				true
 			});
+		}
 
-			if let Some(height) = height_opt {
-				channel_state.claimable_htlcs.retain(|payment_hash, (_, htlcs)| {
-					htlcs.retain(|htlc| {
-						// If height is approaching the number of blocks we think it takes us to get
-						// our commitment transaction confirmed before the HTLC expires, plus the
-						// number of blocks we generally consider it to take to do a commitment update,
-						// just give up on it and fail the HTLC.
-						if height >= htlc.cltv_expiry - HTLC_FAIL_BACK_BUFFER {
-							let mut htlc_msat_height_data = byte_utils::be64_to_array(htlc.value).to_vec();
-							htlc_msat_height_data.extend_from_slice(&byte_utils::be32_to_array(height));
+		if let Some(height) = height_opt {
+			self.claimable_htlcs.lock().unwrap().retain(|payment_hash, (_, htlcs)| {
+				htlcs.retain(|htlc| {
+					// If height is approaching the number of blocks we think it takes us to get
+					// our commitment transaction confirmed before the HTLC expires, plus the
+					// number of blocks we generally consider it to take to do a commitment update,
+					// just give up on it and fail the HTLC.
+					if height >= htlc.cltv_expiry - HTLC_FAIL_BACK_BUFFER {
+						let mut htlc_msat_height_data = byte_utils::be64_to_array(htlc.value).to_vec();
+						htlc_msat_height_data.extend_from_slice(&byte_utils::be32_to_array(height));
 
-							timed_out_htlcs.push((HTLCSource::PreviousHopData(htlc.prev_hop.clone()), payment_hash.clone(), HTLCFailReason::Reason {
-								failure_code: 0x4000 | 15,
-								data: htlc_msat_height_data
-							}, HTLCDestination::FailedPayment { payment_hash: payment_hash.clone() }));
-							false
-						} else { true }
-					});
-					!htlcs.is_empty() // Only retain this entry if htlcs has at least one entry.
+						timed_out_htlcs.push((HTLCSource::PreviousHopData(htlc.prev_hop.clone()), payment_hash.clone(), HTLCFailReason::Reason {
+							failure_code: 0x4000 | 15,
+							data: htlc_msat_height_data
+						}, HTLCDestination::FailedPayment { payment_hash: payment_hash.clone() }));
+						false
+					} else { true }
 				});
-			}
+				!htlcs.is_empty() // Only retain this entry if htlcs has at least one entry.
+			});
 		}
 
 		self.handle_init_event_channel_failures(failed_channels);
@@ -6934,10 +6938,13 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Writeable for ChannelMana
 			}
 		}
 
-		let channel_state = self.channel_state.lock().unwrap();
+		let pending_inbound_payments = self.pending_inbound_payments.lock().unwrap();
+		let claimable_htlcs = self.claimable_htlcs.lock().unwrap();
+		let pending_outbound_payments = self.pending_outbound_payments.lock().unwrap();
+
 		let mut htlc_purposes: Vec<&events::PaymentPurpose> = Vec::new();
-		(channel_state.claimable_htlcs.len() as u64).write(writer)?;
-		for (payment_hash, (purpose, previous_hops)) in channel_state.claimable_htlcs.iter() {
+		(claimable_htlcs.len() as u64).write(writer)?;
+		for (payment_hash, (purpose, previous_hops)) in claimable_htlcs.iter() {
 			payment_hash.write(writer)?;
 			(previous_hops.len() as u64).write(writer)?;
 			for htlc in previous_hops.iter() {
@@ -6954,8 +6961,6 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Writeable for ChannelMana
 			peer_state.latest_features.write(writer)?;
 		}
 
-		let pending_inbound_payments = self.pending_inbound_payments.lock().unwrap();
-		let pending_outbound_payments = self.pending_outbound_payments.lock().unwrap();
 		let events = self.pending_events.lock().unwrap();
 		(events.len() as u64).write(writer)?;
 		for event in events.iter() {
@@ -7548,7 +7553,6 @@ impl<'a, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 
 			channel_state: Mutex::new(ChannelHolder {
 				by_id,
-				claimable_htlcs,
 				pending_msg_events: Vec::new(),
 			}),
 			inbound_payment_key: expanded_inbound_key,
@@ -7556,6 +7560,7 @@ impl<'a, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 			pending_outbound_payments: Mutex::new(pending_outbound_payments.unwrap()),
 
 			forward_htlcs: Mutex::new(forward_htlcs),
+			claimable_htlcs: Mutex::new(claimable_htlcs),
 			outbound_scid_aliases: Mutex::new(outbound_scid_aliases),
 			id_to_peer: Mutex::new(id_to_peer),
 			short_to_chan_info: FairRwLock::new(short_to_chan_info),
