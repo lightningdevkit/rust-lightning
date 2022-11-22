@@ -22,6 +22,8 @@ use core::cmp;
 use core::convert::TryFrom;
 use core::ops::Deref;
 
+use alloc::collections::BTreeMap;
+
 use bitcoin::secp256k1::{PublicKey, SecretKey};
 use bitcoin::secp256k1::constants::{PUBLIC_KEY_SIZE, SECRET_KEY_SIZE, COMPACT_SIGNATURE_SIZE, SCHNORR_SIGNATURE_SIZE};
 use bitcoin::secp256k1::ecdsa;
@@ -588,42 +590,46 @@ impl<'a, T> From<&'a Vec<T>> for WithoutLength<&'a Vec<T>> {
 	fn from(v: &'a Vec<T>) -> Self { Self(v) }
 }
 
-// HashMap
-impl<K, V> Writeable for HashMap<K, V>
-	where K: Writeable + Eq + Hash,
-	      V: Writeable
-{
-	#[inline]
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-	(self.len() as u16).write(w)?;
-		for (key, value) in self.iter() {
-			key.write(w)?;
-			value.write(w)?;
+macro_rules! impl_for_map {
+	($ty: ident, $keybound: ident, $constr: expr) => {
+		impl<K, V> Writeable for $ty<K, V>
+			where K: Writeable + Eq + $keybound, V: Writeable
+		{
+			#[inline]
+			fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+				(self.len() as u16).write(w)?;
+				for (key, value) in self.iter() {
+					key.write(w)?;
+					value.write(w)?;
+				}
+				Ok(())
+			}
 		}
-		Ok(())
+
+		impl<K, V> Readable for $ty<K, V>
+			where K: Readable + Eq + $keybound, V: MaybeReadable
+		{
+			#[inline]
+			fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+				let len: u16 = Readable::read(r)?;
+				let mut ret = $constr(len as usize);
+				for _ in 0..len {
+					let k = K::read(r)?;
+					let v_opt = V::read(r)?;
+					if let Some(v) = v_opt {
+						if ret.insert(k, v).is_some() {
+							return Err(DecodeError::InvalidValue);
+						}
+					}
+				}
+				Ok(ret)
+			}
+		}
 	}
 }
 
-impl<K, V> Readable for HashMap<K, V>
-	where K: Readable + Eq + Hash,
-	      V: MaybeReadable
-{
-	#[inline]
-	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
-		let len: u16 = Readable::read(r)?;
-		let mut ret = HashMap::with_capacity(len as usize);
-		for _ in 0..len {
-			let k = K::read(r)?;
-			let v_opt = V::read(r)?;
-			if let Some(v) = v_opt {
-				if ret.insert(k, v).is_some() {
-					return Err(DecodeError::InvalidValue);
-				}
-			}
-		}
-		Ok(ret)
-	}
-}
+impl_for_map!(BTreeMap, Ord, |_| BTreeMap::new());
+impl_for_map!(HashMap, Hash, |len| HashMap::with_capacity(len));
 
 // HashSet
 impl<T> Writeable for HashSet<T>
