@@ -660,7 +660,7 @@ pub fn make_funding_redeemscript(broadcaster: &PublicKey, countersignatory: &Pub
 ///
 /// Panics if htlc.transaction_output_index.is_none() (as such HTLCs do not appear in the
 /// commitment transaction).
-pub fn build_htlc_transaction(commitment_txid: &Txid, feerate_per_kw: u32, contest_delay: u16, htlc: &HTLCOutputInCommitment, opt_anchors: bool, broadcaster_delayed_payment_key: &PublicKey, revocation_key: &PublicKey) -> Transaction {
+pub fn build_htlc_transaction(commitment_txid: &Txid, feerate_per_kw: u32, contest_delay: u16, htlc: &HTLCOutputInCommitment, opt_anchors: bool, use_non_zero_fee_anchors: bool, broadcaster_delayed_payment_key: &PublicKey, revocation_key: &PublicKey) -> Transaction {
 	let mut txins: Vec<TxIn> = Vec::new();
 	txins.push(TxIn {
 		previous_output: OutPoint {
@@ -677,7 +677,7 @@ pub fn build_htlc_transaction(commitment_txid: &Txid, feerate_per_kw: u32, conte
 	} else {
 		htlc_success_tx_weight(opt_anchors)
 	};
-	let output_value = if opt_anchors {
+	let output_value = if opt_anchors && !use_non_zero_fee_anchors {
 		htlc.amount_msat / 1000
 	} else {
 		let total_fee = feerate_per_kw as u64 * weight / 1000;
@@ -765,7 +765,11 @@ pub struct ChannelTransactionParameters {
 	pub funding_outpoint: Option<chain::transaction::OutPoint>,
 	/// Are anchors (zero fee HTLC transaction variant) used for this channel. Boolean is
 	/// serialization backwards-compatible.
-	pub opt_anchors: Option<()>
+	pub opt_anchors: Option<()>,
+	/// Are non-zero-fee anchors are enabled (used in conjuction with opt_anchors)
+	/// It is intended merely for backwards compatibility with signers that need it.
+	/// There is no support for this feature in LDK channel negotiation.
+	pub opt_non_zero_fee_anchors: Option<()>,
 }
 
 /// Late-bound per-channel counterparty data used to build transactions.
@@ -820,6 +824,7 @@ impl_writeable_tlv_based!(ChannelTransactionParameters, {
 	(6, counterparty_parameters, option),
 	(8, funding_outpoint, option),
 	(10, opt_anchors, option),
+	(12, opt_non_zero_fee_anchors, option),
 });
 
 /// Static channel fields used to build transactions given per-commitment fields, organized by
@@ -942,7 +947,8 @@ impl HolderCommitmentTransaction {
 			is_outbound_from_holder: false,
 			counterparty_parameters: Some(CounterpartyChannelTransactionParameters { pubkeys: channel_pubkeys.clone(), selected_contest_delay: 0 }),
 			funding_outpoint: Some(chain::transaction::OutPoint { txid: Txid::all_zeros(), index: 0 }),
-			opt_anchors: None
+			opt_anchors: None,
+			opt_non_zero_fee_anchors: None,
 		};
 		let mut htlcs_with_aux: Vec<(_, ())> = Vec::new();
 		let inner = CommitmentTransaction::new_with_auxiliary_htlc_data(0, 0, 0, false, dummy_key.clone(), dummy_key.clone(), keys, 0, &mut htlcs_with_aux, &channel_parameters.as_counterparty_broadcastable());
@@ -1160,6 +1166,8 @@ pub struct CommitmentTransaction {
 	htlcs: Vec<HTLCOutputInCommitment>,
 	// A boolean that is serialization backwards-compatible
 	opt_anchors: Option<()>,
+	// Whether non-zero-fee anchors should be used
+	opt_non_zero_fee_anchors: Option<()>,
 	// A cache of the parties' pubkeys required to construct the transaction, see doc for trust()
 	keys: TxCreationKeys,
 	// For access to the pre-built transaction, see doc for trust()
@@ -1193,6 +1201,7 @@ impl_writeable_tlv_based!(CommitmentTransaction, {
 	(10, built, required),
 	(12, htlcs, vec_type),
 	(14, opt_anchors, option),
+	(16, opt_non_zero_fee_anchors, option),
 });
 
 impl CommitmentTransaction {
@@ -1225,7 +1234,16 @@ impl CommitmentTransaction {
 				transaction,
 				txid
 			},
+			opt_non_zero_fee_anchors: None,
 		}
+	}
+
+	/// Use non-zero fee anchors
+	///
+	/// (C-not exported) due to move, and also not likely to be useful for binding users
+	pub fn with_non_zero_fee_anchors(mut self) -> Self {
+		self.opt_non_zero_fee_anchors = Some(());
+		self
 	}
 
 	fn internal_rebuild_transaction(&self, keys: &TxCreationKeys, channel_parameters: &DirectedChannelTransactionParameters, broadcaster_funding_key: &PublicKey, countersignatory_funding_key: &PublicKey) -> Result<BuiltCommitmentTransaction, ()> {
@@ -1492,7 +1510,7 @@ impl<'a> TrustedCommitmentTransaction<'a> {
 
 		for this_htlc in inner.htlcs.iter() {
 			assert!(this_htlc.transaction_output_index.is_some());
-			let htlc_tx = build_htlc_transaction(&txid, inner.feerate_per_kw, channel_parameters.contest_delay(), &this_htlc, self.opt_anchors(), &keys.broadcaster_delayed_payment_key, &keys.revocation_key);
+			let htlc_tx = build_htlc_transaction(&txid, inner.feerate_per_kw, channel_parameters.contest_delay(), &this_htlc, self.opt_anchors(), self.opt_non_zero_fee_anchors.is_some(), &keys.broadcaster_delayed_payment_key, &keys.revocation_key);
 
 			let htlc_redeemscript = get_htlc_redeemscript_with_explicit_keys(&this_htlc, self.opt_anchors(), &keys.broadcaster_htlc_key, &keys.countersignatory_htlc_key, &keys.revocation_key);
 
@@ -1514,7 +1532,7 @@ impl<'a> TrustedCommitmentTransaction<'a> {
 		// Further, we should never be provided the preimage for an HTLC-Timeout transaction.
 		if  this_htlc.offered && preimage.is_some() { unreachable!(); }
 
-		let mut htlc_tx = build_htlc_transaction(&txid, inner.feerate_per_kw, channel_parameters.contest_delay(), &this_htlc, self.opt_anchors(), &keys.broadcaster_delayed_payment_key, &keys.revocation_key);
+		let mut htlc_tx = build_htlc_transaction(&txid, inner.feerate_per_kw, channel_parameters.contest_delay(), &this_htlc, self.opt_anchors(), self.opt_non_zero_fee_anchors.is_some(), &keys.broadcaster_delayed_payment_key, &keys.revocation_key);
 
 		let htlc_redeemscript = get_htlc_redeemscript_with_explicit_keys(&this_htlc, self.opt_anchors(), &keys.broadcaster_htlc_key, &keys.countersignatory_htlc_key, &keys.revocation_key);
 
@@ -1614,7 +1632,8 @@ mod tests {
 			is_outbound_from_holder: false,
 			counterparty_parameters: Some(CounterpartyChannelTransactionParameters { pubkeys: counterparty_pubkeys.clone(), selected_contest_delay: 0 }),
 			funding_outpoint: Some(chain::transaction::OutPoint { txid: Txid::all_zeros(), index: 0 }),
-			opt_anchors: None
+			opt_anchors: None,
+			opt_non_zero_fee_anchors: None,
 		};
 
 		let mut htlcs_with_aux: Vec<(_, ())> = Vec::new();
