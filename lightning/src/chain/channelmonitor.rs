@@ -2645,31 +2645,49 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 	}
 
 	/// Attempts to claim a counterparty HTLC-Success/HTLC-Timeout's outputs using the revocation key
-	fn check_spend_counterparty_htlc<L: Deref>(&mut self, tx: &Transaction, commitment_number: u64, height: u32, logger: &L) -> (Vec<PackageTemplate>, Option<TransactionOutputs>) where L::Target: Logger {
-		let htlc_txid = tx.txid();
-		if tx.input.len() != 1 || tx.output.len() != 1 || tx.input[0].witness.len() != 5 {
-			return (Vec::new(), None)
-		}
-
-		macro_rules! ignore_error {
-			( $thing : expr ) => {
-				match $thing {
-					Ok(a) => a,
-					Err(_) => return (Vec::new(), None)
-				}
-			};
-		}
-
+	fn check_spend_counterparty_htlc<L: Deref>(
+		&mut self, tx: &Transaction, commitment_number: u64, commitment_txid: &Txid, height: u32, logger: &L
+	) -> (Vec<PackageTemplate>, Option<TransactionOutputs>) where L::Target: Logger {
 		let secret = if let Some(secret) = self.get_secret(commitment_number) { secret } else { return (Vec::new(), None); };
-		let per_commitment_key = ignore_error!(SecretKey::from_slice(&secret));
+		let per_commitment_key = match SecretKey::from_slice(&secret) {
+			Ok(key) => key,
+			Err(_) => return (Vec::new(), None)
+		};
 		let per_commitment_point = PublicKey::from_secret_key(&self.secp_ctx, &per_commitment_key);
 
-		log_error!(logger, "Got broadcast of revoked counterparty HTLC transaction, spending {}:{}", htlc_txid, 0);
-		let revk_outp = RevokedOutput::build(per_commitment_point, self.counterparty_commitment_params.counterparty_delayed_payment_base_key, self.counterparty_commitment_params.counterparty_htlc_base_key, per_commitment_key, tx.output[0].value, self.counterparty_commitment_params.on_counterparty_tx_csv);
-		let justice_package = PackageTemplate::build_package(htlc_txid, 0, PackageSolvingData::RevokedOutput(revk_outp), height + self.counterparty_commitment_params.on_counterparty_tx_csv as u32, true, height);
-		let claimable_outpoints = vec!(justice_package);
-		let outputs = vec![(0, tx.output[0].clone())];
-		(claimable_outpoints, Some((htlc_txid, outputs)))
+		let htlc_txid = tx.txid();
+		let mut claimable_outpoints = vec![];
+		let mut outputs_to_watch = None;
+		// Previously, we would only claim HTLCs from revoked HTLC transactions if they had 1 input
+		// with a witness of 5 elements and 1 output. This wasn't enough for anchor outputs, as the
+		// counterparty can now aggregate multiple HTLCs into a single transaction thanks to
+		// `SIGHASH_SINGLE` remote signatures, leading us to not claim any HTLCs upon seeing a
+		// confirmed revoked HTLC transaction (for more details, see
+		// https://lists.linuxfoundation.org/pipermail/lightning-dev/2022-April/003561.html).
+		//
+		// We make sure we're not vulnerable to this case by checking all inputs of the transaction,
+		// and claim those which spend the commitment transaction, have a witness of 5 elements, and
+		// have a corresponding output at the same index within the transaction.
+		for (idx, input) in tx.input.iter().enumerate() {
+			if input.previous_output.txid == *commitment_txid && input.witness.len() == 5 && tx.output.get(idx).is_some() {
+				log_error!(logger, "Got broadcast of revoked counterparty HTLC transaction, spending {}:{}", htlc_txid, idx);
+				let revk_outp = RevokedOutput::build(
+					per_commitment_point, self.counterparty_commitment_params.counterparty_delayed_payment_base_key,
+					self.counterparty_commitment_params.counterparty_htlc_base_key, per_commitment_key,
+					tx.output[idx].value, self.counterparty_commitment_params.on_counterparty_tx_csv
+				);
+				let justice_package = PackageTemplate::build_package(
+					htlc_txid, idx as u32, PackageSolvingData::RevokedOutput(revk_outp),
+					height + self.counterparty_commitment_params.on_counterparty_tx_csv as u32, true, height
+				);
+				claimable_outpoints.push(justice_package);
+				if outputs_to_watch.is_none() {
+					outputs_to_watch = Some((htlc_txid, vec![]));
+				}
+				outputs_to_watch.as_mut().unwrap().1.push((idx as u32, tx.output[idx].clone()));
+			}
+		}
+		(claimable_outpoints, outputs_to_watch)
 	}
 
 	// Returns (1) `PackageTemplate`s that can be given to the OnchainTxHandler, so that the handler can
@@ -2927,9 +2945,9 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 
 			if tx.input.len() == 1 {
 				// Assuming our keys were not leaked (in which case we're screwed no matter what),
-				// commitment transactions and HTLC transactions will all only ever have one input,
-				// which is an easy way to filter out any potential non-matching txn for lazy
-				// filters.
+				// commitment transactions and HTLC transactions will all only ever have one input
+				// (except for HTLC transactions for channels with anchor outputs), which is an easy
+				// way to filter out any potential non-matching txn for lazy filters.
 				let prevout = &tx.input[0].previous_output;
 				if prevout.txid == self.funding_info.0.txid && prevout.vout == self.funding_info.0.index as u32 {
 					let mut balance_spendable_csv = None;
@@ -2967,22 +2985,33 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 							commitment_tx_to_counterparty_output,
 						},
 					});
-				} else {
-					if let Some(&commitment_number) = self.counterparty_commitment_txn_on_chain.get(&prevout.txid) {
-						let (mut new_outpoints, new_outputs_option) = self.check_spend_counterparty_htlc(&tx, commitment_number, height, &logger);
+				}
+			}
+			if tx.input.len() >= 1 {
+				// While all commitment transactions have one input, HTLC transactions may have more
+				// if the HTLC was present in an anchor channel. HTLCs can also be resolved in a few
+				// other ways which can have more than one output.
+				for tx_input in &tx.input {
+					let commitment_txid = tx_input.previous_output.txid;
+					if let Some(&commitment_number) = self.counterparty_commitment_txn_on_chain.get(&commitment_txid) {
+						let (mut new_outpoints, new_outputs_option) = self.check_spend_counterparty_htlc(
+							&tx, commitment_number, &commitment_txid, height, &logger
+						);
 						claimable_outpoints.append(&mut new_outpoints);
 						if let Some(new_outputs) = new_outputs_option {
 							watch_outputs.push(new_outputs);
 						}
+						// Since there may be multiple HTLCs (all from the same commitment) being
+						// claimed by the counterparty within the same transaction, and
+						// `check_spend_counterparty_htlc` already checks for all of them, we can
+						// safely break from our loop.
+						break;
 					}
 				}
-			}
-			// While all commitment/HTLC-Success/HTLC-Timeout transactions have one input, HTLCs
-			// can also be resolved in a few other ways which can have more than one output. Thus,
-			// we call is_resolving_htlc_output here outside of the tx.input.len() == 1 check.
-			self.is_resolving_htlc_output(&tx, height, &block_hash, &logger);
+				self.is_resolving_htlc_output(&tx, height, &block_hash, &logger);
 
-			self.is_paying_spendable_output(&tx, height, &block_hash, &logger);
+				self.is_paying_spendable_output(&tx, height, &block_hash, &logger);
+			}
 		}
 
 		if height > self.best_block.height() {
