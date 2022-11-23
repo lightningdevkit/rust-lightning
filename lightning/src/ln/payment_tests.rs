@@ -1487,6 +1487,12 @@ fn do_test_intercepted_payment(test: InterceptTest) {
 			.expected_htlc_error_data(0x4000 | 10, &[]);
 		expect_payment_failed_conditions(&nodes[0], payment_hash, false, fail_conditions);
 	} else if test == InterceptTest::Forward {
+		// Check that we'll fail as expected when sending to a channel that isn't in `ChannelReady` yet.
+		let temp_chan_id = nodes[1].node.create_channel(nodes[2].node.get_our_node_id(), 100_000, 0, 42, None).unwrap();
+		let unusable_chan_err = nodes[1].node.forward_intercepted_htlc(intercept_id, &temp_chan_id, nodes[2].node.get_our_node_id(), expected_outbound_amount_msat).unwrap_err();
+		assert_eq!(unusable_chan_err , APIError::APIMisuseError { err: format!("Channel with id {:?} not fully established", temp_chan_id) });
+		assert_eq!(nodes[1].node.get_and_clear_pending_msg_events().len(), 1);
+
 		// Open the just-in-time channel so the payment can then be forwarded.
 		let (_, channel_id) = open_zero_conf_channel(&nodes[1], &nodes[2], None);
 

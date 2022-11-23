@@ -3078,7 +3078,14 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 
 		let next_hop_scid = match self.channel_state.lock().unwrap().by_id.get(next_hop_channel_id) {
-			Some(chan) => chan.get_short_channel_id().unwrap_or(chan.outbound_scid_alias()),
+			Some(chan) => {
+				if !chan.is_usable() {
+					return Err(APIError::APIMisuseError {
+						err: format!("Channel with id {:?} not fully established", next_hop_channel_id)
+					})
+				}
+				chan.get_short_channel_id().unwrap_or(chan.outbound_scid_alias())
+			},
 			None => return Err(APIError::APIMisuseError {
 				err: format!("Channel with id {:?} not found", next_hop_channel_id)
 			})
