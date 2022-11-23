@@ -3,6 +3,7 @@
 members = [
     "lightning",
     "lightning-block-sync",
+    "lightning-transaction-sync",
     "lightning-invoice",
     "lightning-net-tokio",
     "lightning-persister",
