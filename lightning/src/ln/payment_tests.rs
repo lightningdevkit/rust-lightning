@@ -910,7 +910,7 @@ fn get_ldk_payment_preimage() {
 
 	let amt_msat = 60_000;
 	let expiry_secs = 60 * 60;
-	let (payment_hash, payment_secret) = nodes[1].node.create_inbound_payment(Some(amt_msat), expiry_secs).unwrap();
+	let (payment_hash, payment_secret) = nodes[1].node.create_inbound_payment(Some(amt_msat), expiry_secs, None).unwrap();
 
 	let payment_params = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id())
 		.with_features(nodes[1].node.invoice_features());
@@ -1444,7 +1444,7 @@ fn do_test_intercepted_payment(test: InterceptTest) {
 		route_params.final_cltv_expiry_delta, nodes[0].logger, &scorer, &random_seed_bytes
 	).unwrap();
 
-	let (payment_hash, payment_secret) = nodes[2].node.create_inbound_payment(Some(amt_msat), 60 * 60).unwrap();
+	let (payment_hash, payment_secret) = nodes[2].node.create_inbound_payment(Some(amt_msat), 60 * 60, None).unwrap();
 	nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret), PaymentId(payment_hash.0)).unwrap();
 	let payment_event = {
 		{

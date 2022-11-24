@@ -1448,16 +1448,21 @@ macro_rules! get_payment_preimage_hash {
 	};
 	($dest_node: expr, $min_value_msat: expr) => {
 		{
+			crate::get_payment_preimage_hash!($dest_node, $min_value_msat, None)
+		}
+	};
+	($dest_node: expr, $min_value_msat: expr, $min_final_cltv_expiry_delta: expr) => {
+		{
 			use bitcoin::hashes::Hash as _;
 			let mut payment_count = $dest_node.network_payment_count.borrow_mut();
 			let payment_preimage = $crate::ln::PaymentPreimage([*payment_count; 32]);
 			*payment_count += 1;
 			let payment_hash = $crate::ln::PaymentHash(
 				bitcoin::hashes::sha256::Hash::hash(&payment_preimage.0[..]).into_inner());
-			let payment_secret = $dest_node.node.create_inbound_payment_for_hash(payment_hash, $min_value_msat, 7200).unwrap();
+			let payment_secret = $dest_node.node.create_inbound_payment_for_hash(payment_hash, $min_value_msat, 7200, $min_final_cltv_expiry_delta).unwrap();
 			(payment_preimage, payment_hash, payment_secret)
 		}
-	}
+	};
 }
 
 #[macro_export]

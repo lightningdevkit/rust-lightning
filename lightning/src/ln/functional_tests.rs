@@ -1246,7 +1246,7 @@ fn test_duplicate_htlc_different_direction_onchain() {
 	let (payment_preimage, payment_hash, _) = route_payment(&nodes[0], &vec!(&nodes[1])[..], 900_000);
 
 	let (route, _, _, _) = get_route_and_payment_hash!(nodes[1], nodes[0], 800_000);
-	let node_a_payment_secret = nodes[0].node.create_inbound_payment_for_hash(payment_hash, None, 7200).unwrap();
+	let node_a_payment_secret = nodes[0].node.create_inbound_payment_for_hash(payment_hash, None, 7200, None).unwrap();
 	send_along_route_with_secret(&nodes[1], route, &[&[&nodes[0]]], 800_000, payment_hash, node_a_payment_secret);
 
 	// Provide preimage to node 0 by claiming payment
@@ -4712,7 +4712,7 @@ fn test_duplicate_payment_hash_one_failure_one_success() {
 
 	let (our_payment_preimage, duplicate_payment_hash, _) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 900_000);
 
-	let payment_secret = nodes[3].node.create_inbound_payment_for_hash(duplicate_payment_hash, None, 7200).unwrap();
+	let payment_secret = nodes[3].node.create_inbound_payment_for_hash(duplicate_payment_hash, None, 7200, None).unwrap();
 	// We reduce the final CLTV here by a somewhat arbitrary constant to keep it under the one-byte
 	// script push size limit so that the below script length checks match
 	// ACCEPTED_HTLC_SCRIPT_WEIGHT.
@@ -4925,30 +4925,30 @@ fn do_test_fail_backwards_unrevoked_remote_announce(deliver_last_raa: bool, anno
 	let (_, payment_hash_2, _) = route_payment(&nodes[0], &[&nodes[2], &nodes[3], &nodes[4]], ds_dust_limit*1000); // not added < dust limit + HTLC tx fee
 	let (route, _, _, _) = get_route_and_payment_hash!(nodes[1], nodes[5], ds_dust_limit*1000);
 	// 2nd HTLC:
-	send_along_route_with_secret(&nodes[1], route.clone(), &[&[&nodes[2], &nodes[3], &nodes[5]]], ds_dust_limit*1000, payment_hash_1, nodes[5].node.create_inbound_payment_for_hash(payment_hash_1, None, 7200).unwrap()); // not added < dust limit + HTLC tx fee
+	send_along_route_with_secret(&nodes[1], route.clone(), &[&[&nodes[2], &nodes[3], &nodes[5]]], ds_dust_limit*1000, payment_hash_1, nodes[5].node.create_inbound_payment_for_hash(payment_hash_1, None, 7200, None).unwrap()); // not added < dust limit + HTLC tx fee
 	// 3rd HTLC:
-	send_along_route_with_secret(&nodes[1], route, &[&[&nodes[2], &nodes[3], &nodes[5]]], ds_dust_limit*1000, payment_hash_2, nodes[5].node.create_inbound_payment_for_hash(payment_hash_2, None, 7200).unwrap()); // not added < dust limit + HTLC tx fee
+	send_along_route_with_secret(&nodes[1], route, &[&[&nodes[2], &nodes[3], &nodes[5]]], ds_dust_limit*1000, payment_hash_2, nodes[5].node.create_inbound_payment_for_hash(payment_hash_2, None, 7200, None).unwrap()); // not added < dust limit + HTLC tx fee
 	// 4th HTLC:
 	let (_, payment_hash_3, _) = route_payment(&nodes[0], &[&nodes[2], &nodes[3], &nodes[4]], 1000000);
 	// 5th HTLC:
 	let (_, payment_hash_4, _) = route_payment(&nodes[0], &[&nodes[2], &nodes[3], &nodes[4]], 1000000);
 	let (route, _, _, _) = get_route_and_payment_hash!(nodes[1], nodes[5], 1000000);
 	// 6th HTLC:
-	send_along_route_with_secret(&nodes[1], route.clone(), &[&[&nodes[2], &nodes[3], &nodes[5]]], 1000000, payment_hash_3, nodes[5].node.create_inbound_payment_for_hash(payment_hash_3, None, 7200).unwrap());
+	send_along_route_with_secret(&nodes[1], route.clone(), &[&[&nodes[2], &nodes[3], &nodes[5]]], 1000000, payment_hash_3, nodes[5].node.create_inbound_payment_for_hash(payment_hash_3, None, 7200, None).unwrap());
 	// 7th HTLC:
-	send_along_route_with_secret(&nodes[1], route, &[&[&nodes[2], &nodes[3], &nodes[5]]], 1000000, payment_hash_4, nodes[5].node.create_inbound_payment_for_hash(payment_hash_4, None, 7200).unwrap());
+	send_along_route_with_secret(&nodes[1], route, &[&[&nodes[2], &nodes[3], &nodes[5]]], 1000000, payment_hash_4, nodes[5].node.create_inbound_payment_for_hash(payment_hash_4, None, 7200, None).unwrap());
 
 	// 8th HTLC:
 	let (_, payment_hash_5, _) = route_payment(&nodes[0], &[&nodes[2], &nodes[3], &nodes[4]], 1000000);
 	// 9th HTLC:
 	let (route, _, _, _) = get_route_and_payment_hash!(nodes[1], nodes[5], ds_dust_limit*1000);
-	send_along_route_with_secret(&nodes[1], route, &[&[&nodes[2], &nodes[3], &nodes[5]]], ds_dust_limit*1000, payment_hash_5, nodes[5].node.create_inbound_payment_for_hash(payment_hash_5, None, 7200).unwrap()); // not added < dust limit + HTLC tx fee
+	send_along_route_with_secret(&nodes[1], route, &[&[&nodes[2], &nodes[3], &nodes[5]]], ds_dust_limit*1000, payment_hash_5, nodes[5].node.create_inbound_payment_for_hash(payment_hash_5, None, 7200, None).unwrap()); // not added < dust limit + HTLC tx fee
 
 	// 10th HTLC:
 	let (_, payment_hash_6, _) = route_payment(&nodes[0], &[&nodes[2], &nodes[3], &nodes[4]], ds_dust_limit*1000); // not added < dust limit + HTLC tx fee
 	// 11th HTLC:
 	let (route, _, _, _) = get_route_and_payment_hash!(nodes[1], nodes[5], 1000000);
-	send_along_route_with_secret(&nodes[1], route, &[&[&nodes[2], &nodes[3], &nodes[5]]], 1000000, payment_hash_6, nodes[5].node.create_inbound_payment_for_hash(payment_hash_6, None, 7200).unwrap());
+	send_along_route_with_secret(&nodes[1], route, &[&[&nodes[2], &nodes[3], &nodes[5]]], 1000000, payment_hash_6, nodes[5].node.create_inbound_payment_for_hash(payment_hash_6, None, 7200, None).unwrap());
 
 	// Double-check that six of the new HTLC were added
 	// We now have six HTLCs pending over the dust limit and six HTLCs under the dust limit (ie,
@@ -6922,7 +6922,7 @@ fn test_check_htlc_underpaying() {
 	let payment_params = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id()).with_features(nodes[1].node.invoice_features());
 	let route = get_route(&nodes[0].node.get_our_node_id(), &payment_params, &nodes[0].network_graph.read_only(), None, 10_000, TEST_FINAL_CLTV, nodes[0].logger, &scorer, &random_seed_bytes).unwrap();
 	let (_, our_payment_hash, _) = get_payment_preimage_hash!(nodes[0]);
-	let our_payment_secret = nodes[1].node.create_inbound_payment_for_hash(our_payment_hash, Some(100_000), 7200).unwrap();
+	let our_payment_secret = nodes[1].node.create_inbound_payment_for_hash(our_payment_hash, Some(100_000), 7200, None).unwrap();
 	nodes[0].node.send_payment(&route, our_payment_hash, &Some(our_payment_secret), PaymentId(our_payment_hash.0)).unwrap();
 	check_added_monitors!(nodes[0], 1);
 
@@ -7917,7 +7917,7 @@ fn test_preimage_storage() {
 	create_announced_chan_between_nodes(&nodes, 0, 1).0.contents.short_channel_id;
 
 	{
-		let (payment_hash, payment_secret) = nodes[1].node.create_inbound_payment(Some(100_000), 7200).unwrap();
+		let (payment_hash, payment_secret) = nodes[1].node.create_inbound_payment(Some(100_000), 7200, None).unwrap();
 		let (route, _, _, _) = get_route_and_payment_hash!(nodes[0], nodes[1], 100_000);
 		nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret), PaymentId(payment_hash.0)).unwrap();
 		check_added_monitors!(nodes[0], 1);
@@ -8023,7 +8023,7 @@ fn test_bad_secret_hash() {
 
 	let random_payment_hash = PaymentHash([42; 32]);
 	let random_payment_secret = PaymentSecret([43; 32]);
-	let (our_payment_hash, our_payment_secret) = nodes[1].node.create_inbound_payment(Some(100_000), 2).unwrap();
+	let (our_payment_hash, our_payment_secret) = nodes[1].node.create_inbound_payment(Some(100_000), 2, None).unwrap();
 	let (route, _, _, _) = get_route_and_payment_hash!(nodes[0], nodes[1], 100_000);
 
 	// All the below cases should end up being handled exactly identically, so we macro the
@@ -9581,4 +9581,61 @@ fn accept_busted_but_better_fee() {
 		},
 		_ => panic!("Unexpected event"),
 	};
+}
+
+fn do_payment_with_custom_min_final_cltv_expiry(valid_delta: bool, use_user_hash: bool) {
+	let mut chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let min_final_cltv_expiry_delta = 120;
+	let final_cltv_expiry_delta = if valid_delta { min_final_cltv_expiry_delta + 2 } else {
+		min_final_cltv_expiry_delta - 2 };
+	let recv_value = 100_000;
+
+	create_chan_between_nodes(&nodes[0], &nodes[1]);
+
+	let payment_parameters = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id());
+	let (payment_hash, payment_preimage, payment_secret) = if use_user_hash {
+		let (payment_preimage, payment_hash, payment_secret) = get_payment_preimage_hash!(nodes[1],
+			Some(recv_value), Some(min_final_cltv_expiry_delta));
+		(payment_hash, payment_preimage, payment_secret)
+	} else {
+		let (payment_hash, payment_secret) = nodes[1].node.create_inbound_payment(Some(recv_value), 7200, Some(min_final_cltv_expiry_delta)).unwrap();
+		(payment_hash, nodes[1].node.get_payment_preimage(payment_hash, payment_secret).unwrap(), payment_secret)
+	};
+	let route = get_route!(nodes[0], payment_parameters, recv_value, final_cltv_expiry_delta as u32).unwrap();
+	nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret), PaymentId(payment_hash.0)).unwrap();
+	check_added_monitors!(nodes[0], 1);
+	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	let mut payment_event = SendEvent::from_event(events.pop().unwrap());
+	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
+	commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, false);
+	expect_pending_htlcs_forwardable!(nodes[1]);
+
+	if valid_delta {
+		expect_payment_claimable!(nodes[1], payment_hash, payment_secret, recv_value, if use_user_hash {
+			None } else { Some(payment_preimage) }, nodes[1].node.get_our_node_id());
+
+		claim_payment(&nodes[0], &vec!(&nodes[1])[..], payment_preimage);
+	} else {
+		expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[1], vec![HTLCDestination::FailedPayment { payment_hash }]);
+
+		check_added_monitors!(nodes[1], 1);
+
+		let fail_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+		nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &fail_updates.update_fail_htlcs[0]);
+		commitment_signed_dance!(nodes[0], nodes[1], fail_updates.commitment_signed, false, true);
+
+		expect_payment_failed!(nodes[0], payment_hash, true);
+	}
+}
+
+#[test]
+fn test_payment_with_custom_min_cltv_expiry_delta() {
+	do_payment_with_custom_min_final_cltv_expiry(false, false);
+	do_payment_with_custom_min_final_cltv_expiry(false, true);
+	do_payment_with_custom_min_final_cltv_expiry(true, false);
+	do_payment_with_custom_min_final_cltv_expiry(true, true);
 }

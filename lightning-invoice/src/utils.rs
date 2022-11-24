@@ -166,6 +166,7 @@ where
 				.duration_since(UNIX_EPOCH)
 				.expect("Time must be > 1970")
 				.as_secs(),
+			min_final_cltv_expiry_delta,
 		)
 		.map_err(|_| SignOrCreationError::CreationError(CreationError::InvalidAmount))?;
 		(payment_hash, payment_secret)
@@ -179,6 +180,7 @@ where
 				.duration_since(UNIX_EPOCH)
 				.expect("Time must be > 1970")
 				.as_secs(),
+			min_final_cltv_expiry_delta,
 		)
 		.map_err(|_| SignOrCreationError::CreationError(CreationError::InvalidAmount))?
 	};
@@ -397,7 +399,7 @@ fn _create_invoice_from_channelmanager_and_duration_since_epoch<M: Deref, T: Der
 	// `create_inbound_payment` only returns an error if the amount is greater than the total bitcoin
 	// supply.
 	let (payment_hash, payment_secret) = channelmanager
-		.create_inbound_payment(amt_msat, invoice_expiry_delta_secs)
+		.create_inbound_payment(amt_msat, invoice_expiry_delta_secs, min_final_cltv_expiry_delta)
 		.map_err(|()| SignOrCreationError::CreationError(CreationError::InvalidAmount))?;
 	_create_invoice_from_channelmanager_and_duration_since_epoch_with_payment_hash(
 		channelmanager, node_signer, logger, network, amt_msat, description, duration_since_epoch,
@@ -424,7 +426,8 @@ pub fn create_invoice_from_channelmanager_and_duration_since_epoch_with_payment_
 		L::Target: Logger,
 {
 	let payment_secret = channelmanager
-		.create_inbound_payment_for_hash(payment_hash,amt_msat, invoice_expiry_delta_secs)
+		.create_inbound_payment_for_hash(payment_hash, amt_msat, invoice_expiry_delta_secs,
+			min_final_cltv_expiry_delta)
 		.map_err(|()| SignOrCreationError::CreationError(CreationError::InvalidAmount))?;
 	_create_invoice_from_channelmanager_and_duration_since_epoch_with_payment_hash(
 		channelmanager, node_signer, logger, network, amt_msat,
@@ -1170,7 +1173,7 @@ mod test {
 		create_unannounced_chan_between_nodes_with_value(&nodes, 0, 2, 100000, 10001);
 
 		let payment_amt = 20_000;
-		let (payment_hash, _payment_secret) = nodes[1].node.create_inbound_payment(Some(payment_amt), 3600).unwrap();
+		let (payment_hash, _payment_secret) = nodes[1].node.create_inbound_payment(Some(payment_amt), 3600, None).unwrap();
 		let route_hints = vec![
 			nodes[1].node.get_phantom_route_hints(),
 			nodes[2].node.get_phantom_route_hints(),
