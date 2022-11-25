@@ -2814,12 +2814,17 @@ fn test_htlc_on_chain_success() {
 	check_added_monitors!(nodes[1], 1);
 	check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed);
 	let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().clone();
-	assert_eq!(node_txn.len(), 6); // ChannelManager : 3 (commitment tx + HTLC-Sucess * 2), ChannelMonitor : 3 (HTLC-Success, 2* RBF bumps of above HTLC txn)
+	assert!(node_txn.len() == 4 || node_txn.len() == 6); // ChannelManager : 3 (commitment tx + HTLC-Sucess * 2), ChannelMonitor : 3 (HTLC-Success, 2* RBF bumps of above HTLC txn)
 	let commitment_spend =
 		if node_txn[0].input[0].previous_output.txid == node_a_commitment_tx[0].txid() {
-			check_spends!(node_txn[1], commitment_tx[0]);
-			check_spends!(node_txn[2], commitment_tx[0]);
-			assert_ne!(node_txn[1].input[0].previous_output.vout, node_txn[2].input[0].previous_output.vout);
+			if node_txn.len() == 6 {
+				// In some block `ConnectionStyle`s we may avoid broadcasting the double-spending
+				// transactions spending the HTLC outputs of C's commitment transaction. Otherwise,
+				// check that the extra broadcasts (double-)spend those here.
+				check_spends!(node_txn[1], commitment_tx[0]);
+				check_spends!(node_txn[2], commitment_tx[0]);
+				assert_ne!(node_txn[1].input[0].previous_output.vout, node_txn[2].input[0].previous_output.vout);
+			}
 			&node_txn[0]
 		} else {
 			check_spends!(node_txn[0], commitment_tx[0]);
@@ -2834,10 +2839,11 @@ fn test_htlc_on_chain_success() {
 	assert_eq!(commitment_spend.input[1].witness.last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT);
 	assert_eq!(commitment_spend.lock_time.0, 0);
 	assert!(commitment_spend.output[0].script_pubkey.is_v0_p2wpkh()); // direct payment
-	check_spends!(node_txn[3], chan_1.3);
-	assert_eq!(node_txn[3].input[0].witness.clone().last().unwrap().len(), 71);
-	check_spends!(node_txn[4], node_txn[3]);
-	check_spends!(node_txn[5], node_txn[3]);
+	let funding_spend_offset = if node_txn.len() == 6 { 3 } else { 1 };
+	check_spends!(node_txn[funding_spend_offset], chan_1.3);
+	assert_eq!(node_txn[funding_spend_offset].input[0].witness.clone().last().unwrap().len(), 71);
+	check_spends!(node_txn[funding_spend_offset + 1], node_txn[funding_spend_offset]);
+	check_spends!(node_txn[funding_spend_offset + 2], node_txn[funding_spend_offset]);
 	// We don't bother to check that B can claim the HTLC output on its commitment tx here as
 	// we already checked the same situation with A.
 
@@ -3370,6 +3376,12 @@ fn test_htlc_ignore_latest_remote_commitment() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	if *nodes[1].connect_style.borrow() == ConnectStyle::FullBlockViaListen {
+		// We rely on the ability to connect a block redundantly, which isn't allowed via
+		// `chain::Listen`, so we never run the test if we randomly get assigned that
+		// connect_style.
+		return;
+	}
 	create_announced_chan_between_nodes(&nodes, 0, 1, channelmanager::provided_init_features(), channelmanager::provided_init_features());
 
 	route_payment(&nodes[0], &[&nodes[1]], 10000000);
@@ -3391,7 +3403,6 @@ fn test_htlc_ignore_latest_remote_commitment() {
 
 	// Duplicate the connect_block call since this may happen due to other listeners
 	// registering new transactions
-	header.prev_blockhash = header.block_hash();
 	connect_block(&nodes[1], &Block { header, txdata: vec![node_txn[0].clone(), node_txn[2].clone()]});
 }
 

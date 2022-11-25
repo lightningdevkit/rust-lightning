@@ -107,6 +107,14 @@ pub enum ConnectStyle {
 	/// The same as `TransactionsFirst`, however when we have multiple blocks to connect, we only
 	/// make a single `best_block_updated` call.
 	TransactionsFirstSkippingBlocks,
+	/// The same as `TransactionsFirst`, however when we have multiple blocks to connect, we only
+	/// make a single `best_block_updated` call. Further, we call `transactions_confirmed` multiple
+	/// times to ensure it's idempotent.
+	TransactionsDuplicativelyFirstSkippingBlocks,
+	/// The same as `TransactionsFirst`, however when we have multiple blocks to connect, we only
+	/// make a single `best_block_updated` call. Further, we call `transactions_confirmed` multiple
+	/// times to ensure it's idempotent.
+	HighlyRedundantTransactionsFirstSkippingBlocks,
 	/// The same as `TransactionsFirst` when connecting blocks. During disconnection only
 	/// `transaction_unconfirmed` is called.
 	TransactionsFirstReorgsOnlyTip,
@@ -121,14 +129,16 @@ impl ConnectStyle {
 			use core::hash::{BuildHasher, Hasher};
 			// Get a random value using the only std API to do so - the DefaultHasher
 			let rand_val = std::collections::hash_map::RandomState::new().build_hasher().finish();
-			let res = match rand_val % 7 {
+			let res = match rand_val % 9 {
 				0 => ConnectStyle::BestBlockFirst,
 				1 => ConnectStyle::BestBlockFirstSkippingBlocks,
 				2 => ConnectStyle::BestBlockFirstReorgsOnlyTip,
 				3 => ConnectStyle::TransactionsFirst,
 				4 => ConnectStyle::TransactionsFirstSkippingBlocks,
-				5 => ConnectStyle::TransactionsFirstReorgsOnlyTip,
-				6 => ConnectStyle::FullBlockViaListen,
+				5 => ConnectStyle::TransactionsDuplicativelyFirstSkippingBlocks,
+				6 => ConnectStyle::HighlyRedundantTransactionsFirstSkippingBlocks,
+				7 => ConnectStyle::TransactionsFirstReorgsOnlyTip,
+				8 => ConnectStyle::FullBlockViaListen,
 				_ => unreachable!(),
 			};
 			eprintln!("Using Block Connection Style: {:?}", res);
@@ -143,6 +153,7 @@ impl ConnectStyle {
 pub fn connect_blocks<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, depth: u32) -> BlockHash {
 	let skip_intermediaries = match *node.connect_style.borrow() {
 		ConnectStyle::BestBlockFirstSkippingBlocks|ConnectStyle::TransactionsFirstSkippingBlocks|
+			ConnectStyle::TransactionsDuplicativelyFirstSkippingBlocks|ConnectStyle::HighlyRedundantTransactionsFirstSkippingBlocks|
 			ConnectStyle::BestBlockFirstReorgsOnlyTip|ConnectStyle::TransactionsFirstReorgsOnlyTip => true,
 		_ => false,
 	};
@@ -193,8 +204,32 @@ fn do_connect_block<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, block: Block, sk
 				node.node.best_block_updated(&block.header, height);
 				node.node.transactions_confirmed(&block.header, &txdata, height);
 			},
-			ConnectStyle::TransactionsFirst|ConnectStyle::TransactionsFirstSkippingBlocks|ConnectStyle::TransactionsFirstReorgsOnlyTip => {
+			ConnectStyle::TransactionsFirst|ConnectStyle::TransactionsFirstSkippingBlocks|
+			ConnectStyle::TransactionsDuplicativelyFirstSkippingBlocks|ConnectStyle::HighlyRedundantTransactionsFirstSkippingBlocks|
+			ConnectStyle::TransactionsFirstReorgsOnlyTip => {
+				if *node.connect_style.borrow() == ConnectStyle::HighlyRedundantTransactionsFirstSkippingBlocks {
+					let mut connections = Vec::new();
+					for (block, height) in node.blocks.lock().unwrap().iter() {
+						if !block.txdata.is_empty() {
+							// Reconnect all transactions we've ever seen to ensure transaction connection
+							// is *really* idempotent. This is a somewhat likely deployment for some
+							// esplora implementations of chain sync which try to reduce state and
+							// complexity as much as possible.
+							//
+							// Sadly we have to clone the block here to maintain lockorder. In the
+							// future we should consider Arc'ing the blocks to avoid this.
+							connections.push((block.clone(), *height));
+						}
+					}
+					for (old_block, height) in connections {
+						node.chain_monitor.chain_monitor.transactions_confirmed(&old_block.header,
+							&old_block.txdata.iter().enumerate().collect::<Vec<_>>(), height);
+					}
+				}
 				node.chain_monitor.chain_monitor.transactions_confirmed(&block.header, &txdata, height);
+				if *node.connect_style.borrow() == ConnectStyle::TransactionsDuplicativelyFirstSkippingBlocks {
+					node.chain_monitor.chain_monitor.transactions_confirmed(&block.header, &txdata, height);
+				}
 				call_claimable_balances(node);
 				node.chain_monitor.chain_monitor.best_block_updated(&block.header, height);
 				node.node.transactions_confirmed(&block.header, &txdata, height);
@@ -226,7 +261,8 @@ pub fn disconnect_blocks<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, count: u32)
 				node.chain_monitor.chain_monitor.block_disconnected(&orig.0.header, orig.1);
 				Listen::block_disconnected(node.node, &orig.0.header, orig.1);
 			},
-			ConnectStyle::BestBlockFirstSkippingBlocks|ConnectStyle::TransactionsFirstSkippingBlocks => {
+			ConnectStyle::BestBlockFirstSkippingBlocks|ConnectStyle::TransactionsFirstSkippingBlocks|
+			ConnectStyle::HighlyRedundantTransactionsFirstSkippingBlocks|ConnectStyle::TransactionsDuplicativelyFirstSkippingBlocks => {
 				if i == count - 1 {
 					node.chain_monitor.chain_monitor.best_block_updated(&prev.0.header, prev.1);
 					node.node.best_block_updated(&prev.0.header, prev.1);
