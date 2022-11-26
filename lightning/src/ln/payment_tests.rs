@@ -500,8 +500,10 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 	// and not the original fee. We also update node[1]'s relevant config as
 	// do_claim_payment_along_route expects us to never overpay.
 	{
-		let mut channel_state = nodes[1].node.channel_state.lock().unwrap();
-		let mut channel = channel_state.by_id.get_mut(&chan_id_2).unwrap();
+		let per_peer_state = nodes[1].node.per_peer_state.read().unwrap();
+		let mut peer_state = per_peer_state.get(&nodes[2].node.get_our_node_id())
+			.unwrap().lock().unwrap();
+		let mut channel = peer_state.channel_by_id.get_mut(&chan_id_2).unwrap();
 		let mut new_config = channel.config();
 		new_config.forwarding_fee_base_msat += 100_000;
 		channel.update_config(&new_config);
@@ -1267,10 +1269,12 @@ fn test_trivial_inflight_htlc_tracking(){
 	{
 		let inflight_htlcs = node_chanmgrs[0].compute_inflight_htlcs();
 
-		let node_0_channel_lock = nodes[0].node.channel_state.lock().unwrap();
-		let node_1_channel_lock = nodes[1].node.channel_state.lock().unwrap();
-		let channel_1 = node_0_channel_lock.by_id.get(&chan_1_id).unwrap();
-		let channel_2 = node_1_channel_lock.by_id.get(&chan_2_id).unwrap();
+		let mut node_0_per_peer_lock;
+		let mut node_0_peer_state_lock;
+		let mut node_1_per_peer_lock;
+		let mut node_1_peer_state_lock;
+		let channel_1 =  get_channel_ref!(&nodes[0], nodes[1], node_0_per_peer_lock, node_0_peer_state_lock, chan_1_id);
+		let channel_2 =  get_channel_ref!(&nodes[1], nodes[2], node_1_per_peer_lock, node_1_peer_state_lock, chan_2_id);
 
 		let chan_1_used_liquidity = inflight_htlcs.used_liquidity_msat(
 			&NodeId::from_pubkey(&nodes[0].node.get_our_node_id()) ,
@@ -1292,10 +1296,12 @@ fn test_trivial_inflight_htlc_tracking(){
 	{
 		let inflight_htlcs = node_chanmgrs[0].compute_inflight_htlcs();
 
-		let node_0_channel_lock = nodes[0].node.channel_state.lock().unwrap();
-		let node_1_channel_lock = nodes[1].node.channel_state.lock().unwrap();
-		let channel_1 = node_0_channel_lock.by_id.get(&chan_1_id).unwrap();
-		let channel_2 = node_1_channel_lock.by_id.get(&chan_2_id).unwrap();
+		let mut node_0_per_peer_lock;
+		let mut node_0_peer_state_lock;
+		let mut node_1_per_peer_lock;
+		let mut node_1_peer_state_lock;
+		let channel_1 =  get_channel_ref!(&nodes[0], nodes[1], node_0_per_peer_lock, node_0_peer_state_lock, chan_1_id);
+		let channel_2 =  get_channel_ref!(&nodes[1], nodes[2], node_1_per_peer_lock, node_1_peer_state_lock, chan_2_id);
 
 		let chan_1_used_liquidity = inflight_htlcs.used_liquidity_msat(
 			&NodeId::from_pubkey(&nodes[0].node.get_our_node_id()) ,
@@ -1318,10 +1324,12 @@ fn test_trivial_inflight_htlc_tracking(){
 	{
 		let inflight_htlcs = node_chanmgrs[0].compute_inflight_htlcs();
 
-		let node_0_channel_lock = nodes[0].node.channel_state.lock().unwrap();
-		let node_1_channel_lock = nodes[1].node.channel_state.lock().unwrap();
-		let channel_1 = node_0_channel_lock.by_id.get(&chan_1_id).unwrap();
-		let channel_2 = node_1_channel_lock.by_id.get(&chan_2_id).unwrap();
+		let mut node_0_per_peer_lock;
+		let mut node_0_peer_state_lock;
+		let mut node_1_per_peer_lock;
+		let mut node_1_peer_state_lock;
+		let channel_1 =  get_channel_ref!(&nodes[0], nodes[1], node_0_per_peer_lock, node_0_peer_state_lock, chan_1_id);
+		let channel_2 =  get_channel_ref!(&nodes[1], nodes[2], node_1_per_peer_lock, node_1_peer_state_lock, chan_2_id);
 
 		let chan_1_used_liquidity = inflight_htlcs.used_liquidity_msat(
 			&NodeId::from_pubkey(&nodes[0].node.get_our_node_id()) ,
@@ -1362,8 +1370,9 @@ fn test_holding_cell_inflight_htlcs() {
 	let inflight_htlcs = node_chanmgrs[0].compute_inflight_htlcs();
 
 	{
-		let channel_lock = nodes[0].node.channel_state.lock().unwrap();
-		let channel = channel_lock.by_id.get(&channel_id).unwrap();
+		let mut node_0_per_peer_lock;
+		let mut node_0_peer_state_lock;
+		let channel =  get_channel_ref!(&nodes[0], nodes[1], node_0_per_peer_lock, node_0_peer_state_lock, channel_id);
 
 		let used_liquidity = inflight_htlcs.used_liquidity_msat(
 			&NodeId::from_pubkey(&nodes[0].node.get_our_node_id()) ,

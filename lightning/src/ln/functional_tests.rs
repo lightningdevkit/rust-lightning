@@ -175,8 +175,11 @@ fn do_test_counterparty_no_reserve(send_from_initiator: bool) {
 	}
 	nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), channelmanager::provided_init_features(), &accept_channel_message);
 	{
-		let mut lock;
-		let mut chan = get_channel_ref!(if send_from_initiator { &nodes[1] } else { &nodes[0] }, lock, temp_channel_id);
+		let sender_node = if send_from_initiator { &nodes[1] } else { &nodes[0] };
+		let counterparty_node = if send_from_initiator { &nodes[0] } else { &nodes[1] };
+		let mut sender_node_per_peer_lock;
+		let mut sender_node_peer_state_lock;
+		let mut chan = get_channel_ref!(sender_node, counterparty_node, sender_node_per_peer_lock, sender_node_peer_state_lock, temp_channel_id);
 		chan.holder_selected_channel_reserve_satoshis = 0;
 		chan.holder_max_htlc_value_in_flight_msat = 100_000_000;
 	}
@@ -686,16 +689,18 @@ fn test_update_fee_that_funder_cannot_afford() {
 	// Get the EnforcingSigner for each channel, which will be used to (1) get the keys
 	// needed to sign the new commitment tx and (2) sign the new commitment tx.
 	let (local_revocation_basepoint, local_htlc_basepoint, local_funding) = {
-		let chan_lock = nodes[0].node.channel_state.lock().unwrap();
-		let local_chan = chan_lock.by_id.get(&chan.2).unwrap();
+		let per_peer_state = nodes[0].node.per_peer_state.read().unwrap();
+		let chan_lock = per_peer_state.get(&nodes[1].node.get_our_node_id()).unwrap().lock().unwrap();
+		let local_chan = chan_lock.channel_by_id.get(&chan.2).unwrap();
 		let chan_signer = local_chan.get_signer();
 		let pubkeys = chan_signer.pubkeys();
 		(pubkeys.revocation_basepoint, pubkeys.htlc_basepoint,
 		 pubkeys.funding_pubkey)
 	};
 	let (remote_delayed_payment_basepoint, remote_htlc_basepoint,remote_point, remote_funding) = {
-		let chan_lock = nodes[1].node.channel_state.lock().unwrap();
-		let remote_chan = chan_lock.by_id.get(&chan.2).unwrap();
+		let per_peer_state = nodes[1].node.per_peer_state.read().unwrap();
+		let chan_lock = per_peer_state.get(&nodes[0].node.get_our_node_id()).unwrap().lock().unwrap();
+		let remote_chan = chan_lock.channel_by_id.get(&chan.2).unwrap();
 		let chan_signer = remote_chan.get_signer();
 		let pubkeys = chan_signer.pubkeys();
 		(pubkeys.delayed_payment_basepoint, pubkeys.htlc_basepoint,
@@ -708,8 +713,9 @@ fn test_update_fee_that_funder_cannot_afford() {
 		&remote_htlc_basepoint, &local_revocation_basepoint, &local_htlc_basepoint);
 
 	let res = {
-		let local_chan_lock = nodes[0].node.channel_state.lock().unwrap();
-		let local_chan = local_chan_lock.by_id.get(&chan.2).unwrap();
+		let per_peer_state = nodes[0].node.per_peer_state.read().unwrap();
+		let local_chan_lock = per_peer_state.get(&nodes[1].node.get_our_node_id()).unwrap().lock().unwrap();
+		let local_chan = local_chan_lock.channel_by_id.get(&chan.2).unwrap();
 		let local_chan_signer = local_chan.get_signer();
 		let mut htlcs: Vec<(HTLCOutputInCommitment, ())> = vec![];
 		let commitment_tx = CommitmentTransaction::new_with_auxiliary_htlc_data(
@@ -1385,8 +1391,9 @@ fn test_fee_spike_violation_fails_htlc() {
 	// Get the EnforcingSigner for each channel, which will be used to (1) get the keys
 	// needed to sign the new commitment tx and (2) sign the new commitment tx.
 	let (local_revocation_basepoint, local_htlc_basepoint, local_secret, next_local_point, local_funding) = {
-		let chan_lock = nodes[0].node.channel_state.lock().unwrap();
-		let local_chan = chan_lock.by_id.get(&chan.2).unwrap();
+		let per_peer_state = nodes[0].node.per_peer_state.read().unwrap();
+		let chan_lock = per_peer_state.get(&nodes[1].node.get_our_node_id()).unwrap().lock().unwrap();
+		let local_chan = chan_lock.channel_by_id.get(&chan.2).unwrap();
 		let chan_signer = local_chan.get_signer();
 		// Make the signer believe we validated another commitment, so we can release the secret
 		chan_signer.get_enforcement_state().last_holder_commitment -= 1;
@@ -1398,8 +1405,9 @@ fn test_fee_spike_violation_fails_htlc() {
 		 chan_signer.pubkeys().funding_pubkey)
 	};
 	let (remote_delayed_payment_basepoint, remote_htlc_basepoint, remote_point, remote_funding) = {
-		let chan_lock = nodes[1].node.channel_state.lock().unwrap();
-		let remote_chan = chan_lock.by_id.get(&chan.2).unwrap();
+		let per_peer_state = nodes[1].node.per_peer_state.read().unwrap();
+		let chan_lock = per_peer_state.get(&nodes[0].node.get_our_node_id()).unwrap().lock().unwrap();
+		let remote_chan = chan_lock.channel_by_id.get(&chan.2).unwrap();
 		let chan_signer = remote_chan.get_signer();
 		let pubkeys = chan_signer.pubkeys();
 		(pubkeys.delayed_payment_basepoint, pubkeys.htlc_basepoint,
@@ -1426,8 +1434,9 @@ fn test_fee_spike_violation_fails_htlc() {
 	let commitment_number = INITIAL_COMMITMENT_NUMBER - 1;
 
 	let res = {
-		let local_chan_lock = nodes[0].node.channel_state.lock().unwrap();
-		let local_chan = local_chan_lock.by_id.get(&chan.2).unwrap();
+		let per_peer_state = nodes[0].node.per_peer_state.read().unwrap();
+		let local_chan_lock = per_peer_state.get(&nodes[1].node.get_our_node_id()).unwrap().lock().unwrap();
+		let local_chan = local_chan_lock.channel_by_id.get(&chan.2).unwrap();
 		let local_chan_signer = local_chan.get_signer();
 		let commitment_tx = CommitmentTransaction::new_with_auxiliary_htlc_data(
 			commitment_number,
@@ -3062,7 +3071,8 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(deliver_bs_raa: bool, use
 	let value = if use_dust {
 		// The dust limit applied to HTLC outputs considers the fee of the HTLC transaction as
 		// well, so HTLCs at exactly the dust limit will not be included in commitment txn.
-		nodes[2].node.channel_state.lock().unwrap().by_id.get(&chan_2.2).unwrap().holder_dust_limit_satoshis * 1000
+		nodes[2].node.per_peer_state.read().unwrap().get(&nodes[1].node.get_our_node_id())
+			.unwrap().lock().unwrap().channel_by_id.get(&chan_2.2).unwrap().holder_dust_limit_satoshis * 1000
 	} else { 3000000 };
 
 	let (_, first_payment_hash, _) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], value);
@@ -4884,7 +4894,8 @@ fn do_test_fail_backwards_unrevoked_remote_announce(deliver_last_raa: bool, anno
 	send_payment(&nodes[1], &[&nodes[2], &nodes[3], &nodes[5]], 500000);
 	assert_eq!(get_local_commitment_txn!(nodes[3], chan_2_3.2)[0].output.len(), 2);
 
-	let ds_dust_limit = nodes[3].node.channel_state.lock().unwrap().by_id.get(&chan_2_3.2).unwrap().holder_dust_limit_satoshis;
+	let ds_dust_limit = nodes[3].node.per_peer_state.read().unwrap().get(&nodes[2].node.get_our_node_id())
+		.unwrap().lock().unwrap().channel_by_id.get(&chan_2_3.2).unwrap().holder_dust_limit_satoshis;
 	// 0th HTLC:
 	let (_, payment_hash_1, _) = route_payment(&nodes[0], &[&nodes[2], &nodes[3], &nodes[4]], ds_dust_limit*1000); // not added < dust limit + HTLC tx fee
 	// 1st HTLC:
@@ -5985,7 +5996,8 @@ fn test_update_add_htlc_bolt2_sender_exceed_max_htlc_num_and_htlc_id_increment()
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1000000, 0, channelmanager::provided_init_features(), channelmanager::provided_init_features());
-	let max_accepted_htlcs = nodes[1].node.channel_state.lock().unwrap().by_id.get(&chan.2).unwrap().counterparty_max_accepted_htlcs as u64;
+	let max_accepted_htlcs = nodes[1].node.per_peer_state.read().unwrap().get(&nodes[0].node.get_our_node_id())
+		.unwrap().lock().unwrap().channel_by_id.get(&chan.2).unwrap().counterparty_max_accepted_htlcs as u64;
 
 	for i in 0..max_accepted_htlcs {
 		let (route, our_payment_hash, _, our_payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], 100000);
@@ -6054,8 +6066,9 @@ fn test_update_add_htlc_bolt2_receiver_check_amount_received_more_than_min() {
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 95000000, channelmanager::provided_init_features(), channelmanager::provided_init_features());
 	let htlc_minimum_msat: u64;
 	{
-		let chan_lock = nodes[0].node.channel_state.lock().unwrap();
-		let channel = chan_lock.by_id.get(&chan.2).unwrap();
+		let per_peer_state = nodes[0].node.per_peer_state.read().unwrap();
+		let chan_lock = per_peer_state.get(&nodes[1].node.get_our_node_id()).unwrap().lock().unwrap();
+		let channel = chan_lock.channel_by_id.get(&chan.2).unwrap();
 		htlc_minimum_msat = channel.get_holder_htlc_minimum_msat();
 	}
 
@@ -6633,7 +6646,8 @@ fn do_test_failure_delay_dust_htlc_local_commitment(announce_latest: bool) {
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let chan =create_announced_chan_between_nodes(&nodes, 0, 1, channelmanager::provided_init_features(), channelmanager::provided_init_features());
 
-	let bs_dust_limit = nodes[1].node.channel_state.lock().unwrap().by_id.get(&chan.2).unwrap().holder_dust_limit_satoshis;
+	let bs_dust_limit = nodes[1].node.per_peer_state.read().unwrap().get(&nodes[0].node.get_our_node_id())
+		.unwrap().lock().unwrap().channel_by_id.get(&chan.2).unwrap().holder_dust_limit_satoshis;
 
 	// We route 2 dust-HTLCs between A and B
 	let (_, payment_hash_1, _) = route_payment(&nodes[0], &[&nodes[1]], bs_dust_limit*1000);
@@ -6724,7 +6738,8 @@ fn do_test_sweep_outbound_htlc_failure_update(revoked: bool, local: bool) {
 	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 	let chan = create_announced_chan_between_nodes(&nodes, 0, 1, channelmanager::provided_init_features(), channelmanager::provided_init_features());
 
-	let bs_dust_limit = nodes[1].node.channel_state.lock().unwrap().by_id.get(&chan.2).unwrap().holder_dust_limit_satoshis;
+	let bs_dust_limit = nodes[1].node.per_peer_state.read().unwrap().get(&nodes[0].node.get_our_node_id())
+		.unwrap().lock().unwrap().channel_by_id.get(&chan.2).unwrap().holder_dust_limit_satoshis;
 
 	let (_payment_preimage_1, dust_hash, _payment_secret_1) = route_payment(&nodes[0], &[&nodes[1]], bs_dust_limit*1000);
 	let (_payment_preimage_2, non_dust_hash, _payment_secret_2) = route_payment(&nodes[0], &[&nodes[1]], 1000000);
@@ -7387,8 +7402,9 @@ fn test_counterparty_raa_skip_no_crash() {
 	let per_commitment_secret;
 	let next_per_commitment_point;
 	{
-		let mut guard = nodes[0].node.channel_state.lock().unwrap();
-		let keys = guard.by_id.get_mut(&channel_id).unwrap().get_signer();
+		let per_peer_state = nodes[0].node.per_peer_state.read().unwrap();
+		let mut guard = per_peer_state.get(&nodes[1].node.get_our_node_id()).unwrap().lock().unwrap();
+		let keys = guard.channel_by_id.get_mut(&channel_id).unwrap().get_signer();
 
 		const INITIAL_COMMITMENT_NUMBER: u64 = (1 << 48) - 1;
 
@@ -7746,8 +7762,9 @@ fn test_reject_funding_before_inbound_channel_accepted() {
 	// `handle_accept_channel`, which is required in order for `create_funding_transaction` to
 	// succeed when `nodes[0]` is passed to it.
 	let accept_chan_msg = {
-		let mut lock;
-		let channel = get_channel_ref!(&nodes[1], lock, temp_channel_id);
+		let mut node_1_per_peer_lock;
+		let mut node_1_peer_state_lock;
+		let channel =  get_channel_ref!(&nodes[1], nodes[0], node_1_per_peer_lock, node_1_peer_state_lock, temp_channel_id);
 		channel.get_accept_channel_message()
 	};
 	nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), channelmanager::provided_init_features(), &accept_chan_msg);
@@ -8090,12 +8107,15 @@ fn test_update_err_monitor_lockdown() {
 	let updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 	assert_eq!(updates.update_fulfill_htlcs.len(), 1);
 	nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &updates.update_fulfill_htlcs[0]);
-	if let Some(ref mut channel) = nodes[0].node.channel_state.lock().unwrap().by_id.get_mut(&chan_1.2) {
+	{
+		let mut node_0_per_peer_lock;
+		let mut node_0_peer_state_lock;
+		let mut channel = get_channel_ref!(nodes[0], nodes[1], node_0_per_peer_lock, node_0_peer_state_lock, chan_1.2);
 		if let Ok((_, _, update)) = channel.commitment_signed(&updates.commitment_signed, &node_cfgs[0].logger) {
 			assert_eq!(watchtower.chain_monitor.update_channel(outpoint, update.clone()), ChannelMonitorUpdateStatus::PermanentFailure);
 			assert_eq!(nodes[0].chain_monitor.update_channel(outpoint, update), ChannelMonitorUpdateStatus::Completed);
 		} else { assert!(false); }
-	} else { assert!(false); };
+	}
 	// Our local monitor is in-sync and hasn't processed yet timeout
 	check_added_monitors!(nodes[0], 1);
 	let events = nodes[0].node.get_and_clear_pending_events();
@@ -8181,14 +8201,17 @@ fn test_concurrent_monitor_claim() {
 	let updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 	assert_eq!(updates.update_add_htlcs.len(), 1);
 	nodes[0].node.handle_update_add_htlc(&nodes[1].node.get_our_node_id(), &updates.update_add_htlcs[0]);
-	if let Some(ref mut channel) = nodes[0].node.channel_state.lock().unwrap().by_id.get_mut(&chan_1.2) {
+	{
+		let mut node_0_per_peer_lock;
+		let mut node_0_peer_state_lock;
+		let mut channel = get_channel_ref!(nodes[0], nodes[1], node_0_per_peer_lock, node_0_peer_state_lock, chan_1.2);
 		if let Ok((_, _, update)) = channel.commitment_signed(&updates.commitment_signed, &node_cfgs[0].logger) {
 			// Watchtower Alice should already have seen the block and reject the update
 			assert_eq!(watchtower_alice.chain_monitor.update_channel(outpoint, update.clone()), ChannelMonitorUpdateStatus::PermanentFailure);
 			assert_eq!(watchtower_bob.chain_monitor.update_channel(outpoint, update.clone()), ChannelMonitorUpdateStatus::Completed);
 			assert_eq!(nodes[0].chain_monitor.update_channel(outpoint, update), ChannelMonitorUpdateStatus::Completed);
 		} else { assert!(false); }
-	} else { assert!(false); };
+	}
 	// Our local monitor is in-sync and hasn't processed yet timeout
 	check_added_monitors!(nodes[0], 1);
 
@@ -8576,12 +8599,13 @@ fn test_duplicate_chan_id() {
 	create_funding_transaction(&nodes[0], &nodes[1].node.get_our_node_id(), 100000, 42); // Get and check the FundingGenerationReady event
 
 	let funding_created = {
-		let mut a_channel_lock = nodes[0].node.channel_state.lock().unwrap();
+		let per_peer_state = nodes[0].node.per_peer_state.read().unwrap();
+		let mut a_peer_state = per_peer_state.get(&nodes[1].node.get_our_node_id()).unwrap().lock().unwrap();
 		// Once we call `get_outbound_funding_created` the channel has a duplicate channel_id as
 		// another channel in the ChannelManager - an invalid state. Thus, we'd panic later when we
 		// try to create another channel. Instead, we drop the channel entirely here (leaving the
 		// channelmanager in a possibly nonsense state instead).
-		let mut as_chan = a_channel_lock.by_id.remove(&open_chan_2_msg.temporary_channel_id).unwrap();
+		let mut as_chan = a_peer_state.channel_by_id.remove(&open_chan_2_msg.temporary_channel_id).unwrap();
 		let logger = test_utils::TestLogger::new();
 		as_chan.get_outbound_funding_created(tx.clone(), funding_outpoint, &&logger).unwrap()
 	};
@@ -9236,9 +9260,10 @@ fn do_test_max_dust_htlc_exposure(dust_outbound_balance: bool, exposure_breach_e
 	let (temporary_channel_id, tx, _) = create_funding_transaction(&nodes[0], &nodes[1].node.get_our_node_id(), 1_000_000, 42);
 
 	if on_holder_tx {
-		if let Some(mut chan) = nodes[0].node.channel_state.lock().unwrap().by_id.get_mut(&temporary_channel_id) {
-			chan.holder_dust_limit_satoshis = 546;
-		}
+		let mut node_0_per_peer_lock;
+		let mut node_0_peer_state_lock;
+		let mut chan = get_channel_ref!(nodes[0], nodes[1], node_0_per_peer_lock, node_0_peer_state_lock, temporary_channel_id);
+		chan.holder_dust_limit_satoshis = 546;
 	}
 
 	nodes[0].node.funding_transaction_generated(&temporary_channel_id, &nodes[1].node.get_our_node_id(), tx.clone()).unwrap();
@@ -9253,8 +9278,9 @@ fn do_test_max_dust_htlc_exposure(dust_outbound_balance: bool, exposure_breach_e
 	update_nodes_with_chan_announce(&nodes, 0, 1, &announcement, &as_update, &bs_update);
 
 	let dust_buffer_feerate = {
-		let chan_lock = nodes[0].node.channel_state.lock().unwrap();
-		let chan = chan_lock.by_id.get(&channel_id).unwrap();
+		let per_peer_state = nodes[0].node.per_peer_state.read().unwrap();
+		let chan_lock = per_peer_state.get(&nodes[1].node.get_our_node_id()).unwrap().lock().unwrap();
+		let chan = chan_lock.channel_by_id.get(&channel_id).unwrap();
 		chan.get_dust_buffer_feerate(None) as u64
 	};
 	let dust_outbound_htlc_on_holder_tx_msat: u64 = (dust_buffer_feerate * htlc_timeout_tx_weight(opt_anchors) / 1000 + open_channel.dust_limit_satoshis - 1) * 1000;

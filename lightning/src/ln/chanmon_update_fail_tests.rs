@@ -139,7 +139,10 @@ fn test_monitor_and_persister_update_fail() {
 	let updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 	assert_eq!(updates.update_fulfill_htlcs.len(), 1);
 	nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &updates.update_fulfill_htlcs[0]);
-	if let Some(ref mut channel) = nodes[0].node.channel_state.lock().unwrap().by_id.get_mut(&chan.2) {
+	{
+		let mut node_0_per_peer_lock;
+		let mut node_0_peer_state_lock;
+		let mut channel = get_channel_ref!(nodes[0], nodes[1], node_0_per_peer_lock, node_0_peer_state_lock, chan.2);
 		if let Ok((_, _, update)) = channel.commitment_signed(&updates.commitment_signed, &node_cfgs[0].logger) {
 			// Check that even though the persister is returning a InProgress,
 			// because the update is bogus, ultimately the error that's returned
@@ -148,7 +151,7 @@ fn test_monitor_and_persister_update_fail() {
 			logger.assert_log_regex("lightning::chain::chainmonitor".to_string(), regex::Regex::new("Persistence of ChannelMonitorUpdate for channel [0-9a-f]* in progress").unwrap(), 1);
 			assert_eq!(nodes[0].chain_monitor.update_channel(outpoint, update), ChannelMonitorUpdateStatus::Completed);
 		} else { assert!(false); }
-	} else { assert!(false); };
+	}
 
 	check_added_monitors!(nodes[0], 1);
 	let events = nodes[0].node.get_and_clear_pending_events();
@@ -1415,9 +1418,12 @@ fn monitor_failed_no_reestablish_response() {
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let channel_id = create_announced_chan_between_nodes(&nodes, 0, 1, channelmanager::provided_init_features(), channelmanager::provided_init_features()).2;
 	{
-		let mut lock;
-		get_channel_ref!(nodes[0], lock, channel_id).announcement_sigs_state = AnnouncementSigsState::PeerReceived;
-		get_channel_ref!(nodes[1], lock, channel_id).announcement_sigs_state = AnnouncementSigsState::PeerReceived;
+		let mut node_0_per_peer_lock;
+		let mut node_0_peer_state_lock;
+		let mut node_1_per_peer_lock;
+		let mut node_1_peer_state_lock;
+		get_channel_ref!(nodes[0], nodes[1], node_0_per_peer_lock, node_0_peer_state_lock, channel_id).announcement_sigs_state = AnnouncementSigsState::PeerReceived;
+		get_channel_ref!(nodes[1], nodes[0], node_1_per_peer_lock, node_1_peer_state_lock, channel_id).announcement_sigs_state = AnnouncementSigsState::PeerReceived;
 	}
 
 	// Route the payment and deliver the initial commitment_signed (with a monitor update failure
