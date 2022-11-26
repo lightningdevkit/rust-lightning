@@ -464,6 +464,7 @@ pub(crate) enum MonitorUpdateCompletionAction {
 /// State we hold per-peer. In the future we should put channels in here, but for now we only hold
 /// the latest Init features we heard from the peer.
 struct PeerState {
+	/// The latest `InitFeatures` we heard from the peer.
 	latest_features: InitFeatures,
 }
 
