@@ -5,7 +5,7 @@ Rust-Lightning
 [![Documentation](https://img.shields.io/static/v1?logo=read-the-docs&label=docs.rs&message=lightning&color=informational)](https://docs.rs/lightning/)
 [![Safety Dance](https://img.shields.io/badge/unsafe-forbidden-success.svg)](https://github.com/rust-secure-code/safety-dance/)
 
-[LDK](https://lightningdevkit.org)/`rust-lightning` is a highly performant and flexible 
+[LDK](https://lightningdevkit.org)/`rust-lightning` is a highly performant and very flexible 
 implementation of the Lightning Network protocol.
 
 The primary crate, `lightning`, is runtime-agnostic. Data persistence, chain interactions,
