@@ -105,8 +105,8 @@ https://vimeo.com/showcase/8372504/video/412818125
 
 Design Goal
 -----------
-The goal is to provide a full-featured but also incredibly flexible Lightning
-implementation, allowing the user to decide how they wish to use it. With that
+The goal is to provide a fully-featured and incredibly flexible Lightning
+implementation, allowing users to decide how they wish to use it. With that
 in mind, everything should be exposed via simple, composable APIs. More
 information about `rust-lightning`'s flexibility is provided in the `About`
 section above.
