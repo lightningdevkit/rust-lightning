@@ -1947,8 +1947,9 @@ impl<Signer: Sign> Channel<Signer> {
 	/// however, fail more than once as we wait for an upstream failure to be irrevocably committed
 	/// before we fail backwards.
 	///
-	/// If we do fail twice, we debug_assert!(false) and return Ok(()). Thus, will always return
-	/// Ok(()) if debug assertions are turned on or preconditions are met.
+	/// If we do fail twice, we `debug_assert!(false)` and return `Ok(None)`. Thus, this will always
+	/// return `Ok(_)` if preconditions are met. In any case, `Err`s will only be
+	/// [`ChannelError::Ignore`].
 	pub fn queue_fail_htlc<L: Deref>(&mut self, htlc_id_arg: u64, err_packet: msgs::OnionErrorPacket, logger: &L)
 	-> Result<(), ChannelError> where L::Target: Logger {
 		self.fail_htlc(htlc_id_arg, err_packet, true, logger)
@@ -1959,8 +1960,10 @@ impl<Signer: Sign> Channel<Signer> {
 	/// an HTLC more than once or fulfill once and then attempt to fail after reconnect. We cannot,
 	/// however, fail more than once as we wait for an upstream failure to be irrevocably committed
 	/// before we fail backwards.
-	/// If we do fail twice, we debug_assert!(false) and return Ok(None). Thus, will always return
-	/// Ok(_) if debug assertions are turned on or preconditions are met.
+	///
+	/// If we do fail twice, we `debug_assert!(false)` and return `Ok(None)`. Thus, this will always
+	/// return `Ok(_)` if preconditions are met. In any case, `Err`s will only be
+	/// [`ChannelError::Ignore`].
 	fn fail_htlc<L: Deref>(&mut self, htlc_id_arg: u64, err_packet: msgs::OnionErrorPacket, mut force_holding_cell: bool, logger: &L)
 	-> Result<Option<msgs::UpdateFailHTLC>, ChannelError> where L::Target: Logger {
 		if (self.channel_state & (ChannelState::ChannelReady as u32)) != (ChannelState::ChannelReady as u32) {
@@ -2001,7 +2004,7 @@ impl<Signer: Sign> Channel<Signer> {
 		}
 
 		if (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32 | ChannelState::PeerDisconnected as u32 | ChannelState::MonitorUpdateInProgress as u32)) != 0 {
-			debug_assert!(force_holding_cell, "We don't expect to need to use the holding cell if we weren't trying to");
+			debug_assert!(force_holding_cell, "!force_holding_cell is only called when emptying the holding cell, so we shouldn't end up back in it!");
 			force_holding_cell = true;
 		}
 
@@ -5501,8 +5504,14 @@ impl<Signer: Sign> Channel<Signer> {
 	pub fn queue_add_htlc<L: Deref>(&mut self, amount_msat: u64, payment_hash: PaymentHash, cltv_expiry: u32, source: HTLCSource,
 		onion_routing_packet: msgs::OnionPacket, logger: &L)
 	-> Result<(), ChannelError> where L::Target: Logger {
-		self.send_htlc(amount_msat, payment_hash, cltv_expiry, source, onion_routing_packet, true, logger)
+		self
+			.send_htlc(amount_msat, payment_hash, cltv_expiry, source, onion_routing_packet, true, logger)
 			.map(|msg_opt| assert!(msg_opt.is_none(), "We forced holding cell?"))
+			.map_err(|err| {
+				if let ChannelError::Ignore(_) = err { /* fine */ }
+				else { debug_assert!(false, "Queueing cannot trigger channel failure"); }
+				err
+			})
 	}
 
 	/// Adds a pending outbound HTLC to this channel, note that you probably want
