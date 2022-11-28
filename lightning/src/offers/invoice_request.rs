@@ -194,7 +194,7 @@ impl<'a> InvoiceRequestBuilder<'a> {
 		self
 	}
 
-	fn build_unchecked(self) -> UnsignedInvoiceRequest<'a> {
+	pub(super) fn build_unchecked(self) -> UnsignedInvoiceRequest<'a> {
 		let InvoiceRequestBuilder { offer, invoice_request } = self;
 		UnsignedInvoiceRequest { offer, invoice_request }
 	}
@@ -247,7 +247,7 @@ impl<'a> UnsignedInvoiceRequest<'a> {
 /// [`Offer`]: crate::offers::offer::Offer
 #[derive(Clone, Debug)]
 pub struct InvoiceRequest {
-	bytes: Vec<u8>,
+	pub(super) bytes: Vec<u8>,
 	contents: InvoiceRequestContents,
 	signature: Option<Signature>,
 }

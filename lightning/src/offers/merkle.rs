@@ -198,6 +198,11 @@ impl<'a> Iterator for TlvStream<'a> {
 #[cfg(test)]
 mod tests {
 	use bitcoin::hashes::{Hash, sha256};
+	use bitcoin::secp256k1::{KeyPair, Secp256k1, SecretKey};
+	use core::convert::Infallible;
+	use crate::offers::offer::{Amount, OfferBuilder};
+	use crate::offers::invoice_request::InvoiceRequest;
+	use crate::offers::parse::Bech32Encode;
 
 	#[test]
 	fn calculates_merkle_root_hash() {
@@ -217,5 +222,51 @@ mod tests {
 			super::root_hash(&hex::decode(concat!(tlv1!(), tlv2!(), tlv3!())).unwrap()),
 			sha256::Hash::from_slice(&hex::decode("ab2e79b1283b0b31e0b035258de23782df6b89a38cfa7237bde69aed1a658c5d").unwrap()).unwrap(),
 		);
+	}
+
+	#[test]
+	fn calculates_merkle_root_hash_from_invoice_request() {
+		let secp_ctx = Secp256k1::new();
+		let recipient_pubkey = {
+			let secret_key = SecretKey::from_slice(&hex::decode("4141414141414141414141414141414141414141414141414141414141414141").unwrap()).unwrap();
+			KeyPair::from_secret_key(&secp_ctx, &secret_key).public_key()
+		};
+		let payer_keys = {
+			let secret_key = SecretKey::from_slice(&hex::decode("4242424242424242424242424242424242424242424242424242424242424242").unwrap()).unwrap();
+			KeyPair::from_secret_key(&secp_ctx, &secret_key)
+		};
+
+		// BOLT 12 test vectors
+		let invoice_request = OfferBuilder::new("A Mathematical Treatise".into(), recipient_pubkey)
+			.amount(Amount::Currency { iso4217_code: *b"USD", amount: 100 })
+			.build_unchecked()
+			.request_invoice(vec![0; 8], payer_keys.public_key()).unwrap()
+			.build_unchecked()
+			.sign::<_, Infallible>(|digest| Ok(secp_ctx.sign_schnorr_no_aux_rand(digest, &payer_keys)))
+			.unwrap();
+		assert_eq!(
+			invoice_request.to_string(),
+			"lnr1qqyqqqqqqqqqqqqqqcp4256ypqqkgzshgysy6ct5dpjk6ct5d93kzmpq23ex2ct5d9ek293pqthvwfzadd7jejes8q9lhc4rvjxd022zv5l44g6qah82ru5rdpnpjkppqvjx204vgdzgsqpvcp4mldl3plscny0rt707gvpdh6ndydfacz43euzqhrurageg3n7kafgsek6gz3e9w52parv8gs2hlxzk95tzeswywffxlkeyhml0hh46kndmwf4m6xma3tkq2lu04qz3slje2rfthc89vss",
+		);
+		assert_eq!(
+			super::root_hash(&invoice_request.bytes[..]),
+			sha256::Hash::from_slice(&hex::decode("608407c18ad9a94d9ea2bcdbe170b6c20c462a7833a197621c916f78cf18e624").unwrap()).unwrap(),
+		);
+	}
+
+	impl AsRef<[u8]> for InvoiceRequest {
+		fn as_ref(&self) -> &[u8] {
+			&self.bytes
+		}
+	}
+
+	impl Bech32Encode for InvoiceRequest {
+		const BECH32_HRP: &'static str = "lnr";
+	}
+
+	impl core::fmt::Display for InvoiceRequest {
+		fn fmt(&self, f: &mut core::fmt::Formatter) -> Result<(), core::fmt::Error> {
+			self.fmt_bech32_str(f)
+		}
 	}
 }
