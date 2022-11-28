@@ -198,6 +198,9 @@ pub(crate) enum OnchainClaim {
 	Event(ClaimEvent),
 }
 
+/// An internal identifier to track pending package claims within the `OnchainTxHandler`.
+type PackageID = [u8; 32];
+
 /// OnchainTxHandler receives claiming requests, aggregates them if it's sound, broadcast and
 /// do RBF bumping if possible.
 pub struct OnchainTxHandler<ChannelSigner: Sign> {
@@ -225,11 +228,11 @@ pub struct OnchainTxHandler<ChannelSigner: Sign> {
 	// us and is immutable until all outpoint of the claimable set are post-anti-reorg-delay solved.
 	// Entry is cache of elements need to generate a bumped claiming transaction (see ClaimTxBumpMaterial)
 	#[cfg(test)] // Used in functional_test to verify sanitization
-	pub(crate) pending_claim_requests: HashMap<Txid, PackageTemplate>,
+	pub(crate) pending_claim_requests: HashMap<PackageID, PackageTemplate>,
 	#[cfg(not(test))]
-	pending_claim_requests: HashMap<Txid, PackageTemplate>,
+	pending_claim_requests: HashMap<PackageID, PackageTemplate>,
 	#[cfg(anchors)]
-	pending_claim_events: HashMap<Txid, ClaimEvent>,
+	pending_claim_events: HashMap<PackageID, ClaimEvent>,
 
 	// Used to link outpoints claimed in a connected block to a pending claim request.
 	// Key is outpoint than monitor parsing has detected we have keys/scripts to claim
@@ -238,9 +241,9 @@ pub struct OnchainTxHandler<ChannelSigner: Sign> {
 	// post-anti-reorg-delay solved, confirmaiton_block is used to erase entry if
 	// block with output gets disconnected.
 	#[cfg(test)] // Used in functional_test to verify sanitization
-	pub claimable_outpoints: HashMap<BitcoinOutPoint, (Txid, u32)>,
+	pub claimable_outpoints: HashMap<BitcoinOutPoint, (PackageID, u32)>,
 	#[cfg(not(test))]
-	claimable_outpoints: HashMap<BitcoinOutPoint, (Txid, u32)>,
+	claimable_outpoints: HashMap<BitcoinOutPoint, (PackageID, u32)>,
 
 	locktimed_packages: BTreeMap<u32, Vec<PackageTemplate>>,
 
@@ -462,7 +465,7 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 				// since requests can have outpoints split off.
 				if !self.onchain_events_awaiting_threshold_conf.iter()
 					.any(|event_entry| if let OnchainEvent::Claim { claim_request } = event_entry.event {
-						first_claim_txid_height.0 == claim_request
+						first_claim_txid_height.0 == claim_request.into_inner()
 					} else {
 						// The onchain event is not a claim, keep seeking until we find one.
 						false
@@ -628,11 +631,11 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 			if let Some((new_timer, new_feerate, claim)) = self.generate_claim(cur_height, &req, &*fee_estimator, &*logger) {
 				req.set_timer(new_timer);
 				req.set_feerate(new_feerate);
-				let txid = match claim {
+				let package_id = match claim {
 					OnchainClaim::Tx(tx) => {
 						log_info!(logger, "Broadcasting onchain {}", log_tx!(tx));
 						broadcaster.broadcast_transaction(&tx);
-						tx.txid()
+						tx.txid().into_inner()
 					},
 					#[cfg(anchors)]
 					OnchainClaim::Event(claim_event) => {
@@ -640,15 +643,16 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 						let txid = match claim_event {
 							ClaimEvent::BumpCommitment { ref commitment_tx, .. } => commitment_tx.txid(),
 						};
-						self.pending_claim_events.insert(txid, claim_event);
-						txid
+						let package_id = txid.into_inner();
+						self.pending_claim_events.insert(package_id, claim_event);
+						package_id
 					},
 				};
 				for k in req.outpoints() {
 					log_info!(logger, "Registering claiming request for {}:{}", k.txid, k.vout);
-					self.claimable_outpoints.insert(k.clone(), (txid, conf_height));
+					self.claimable_outpoints.insert(k.clone(), (package_id, conf_height));
 				}
-				self.pending_claim_requests.insert(txid, req);
+				self.pending_claim_requests.insert(package_id, req);
 			}
 		}
 	}
@@ -698,7 +702,7 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 									txid: tx.txid(),
 									height: conf_height,
 									block_hash: Some(conf_hash),
-									event: OnchainEvent::Claim { claim_request: first_claim_txid_height.0.clone() }
+									event: OnchainEvent::Claim { claim_request: Txid::from_inner(first_claim_txid_height.0) }
 								};
 								if !self.onchain_events_awaiting_threshold_conf.contains(&entry) {
 									self.onchain_events_awaiting_threshold_conf.push(entry);
@@ -754,14 +758,15 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 			if entry.has_reached_confirmation_threshold(cur_height) {
 				match entry.event {
 					OnchainEvent::Claim { claim_request } => {
+						let package_id = claim_request.into_inner();
 						// We may remove a whole set of claim outpoints here, as these one may have
 						// been aggregated in a single tx and claimed so atomically
-						if let Some(request) = self.pending_claim_requests.remove(&claim_request) {
+						if let Some(request) = self.pending_claim_requests.remove(&package_id) {
 							for outpoint in request.outpoints() {
 								log_debug!(logger, "Removing claim tracking for {} due to maturation of claim tx {}.", outpoint, claim_request);
 								self.claimable_outpoints.remove(&outpoint);
 								#[cfg(anchors)]
-								self.pending_claim_events.remove(&claim_request);
+								self.pending_claim_events.remove(&package_id);
 							}
 						}
 					},
