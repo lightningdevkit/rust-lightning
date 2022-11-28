@@ -662,6 +662,35 @@ where T: Readable + Eq + Hash
 }
 
 // Vectors
+macro_rules! impl_for_vec {
+	($ty: ty $(, $name: ident)*) => {
+		impl<$($name : Writeable),*> Writeable for Vec<$ty> {
+			#[inline]
+			fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+				(self.len() as u16).write(w)?;
+				for elem in self.iter() {
+					elem.write(w)?;
+				}
+				Ok(())
+			}
+		}
+
+		impl<$($name : Readable),*> Readable for Vec<$ty> {
+			#[inline]
+			fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+				let len: u16 = Readable::read(r)?;
+				let mut ret = Vec::with_capacity(cmp::min(len as usize, MAX_BUF_SIZE / core::mem::size_of::<$ty>()));
+				for _ in 0..len {
+					if let Some(val) = MaybeReadable::read(r)? {
+						ret.push(val);
+					}
+				}
+				Ok(ret)
+			}
+		}
+	}
+}
+
 impl Writeable for Vec<u8> {
 	#[inline]
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
@@ -680,32 +709,9 @@ impl Readable for Vec<u8> {
 		Ok(ret)
 	}
 }
-impl Writeable for Vec<ecdsa::Signature> {
-	#[inline]
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		(self.len() as u16).write(w)?;
-		for e in self.iter() {
-			e.write(w)?;
-		}
-		Ok(())
-	}
-}
 
-impl Readable for Vec<ecdsa::Signature> {
-	#[inline]
-	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
-		let len: u16 = Readable::read(r)?;
-		let byte_size = (len as usize)
-		                .checked_mul(COMPACT_SIGNATURE_SIZE)
-		                .ok_or(DecodeError::BadLengthDescriptor)?;
-		if byte_size > MAX_BUF_SIZE {
-			return Err(DecodeError::BadLengthDescriptor);
-		}
-		let mut ret = Vec::with_capacity(len as usize);
-		for _ in 0..len { ret.push(Readable::read(r)?); }
-		Ok(ret)
-	}
-}
+impl_for_vec!(ecdsa::Signature);
+impl_for_vec!((A, B), A, B);
 
 impl Writeable for Script {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
