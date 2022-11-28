@@ -137,7 +137,7 @@ impl OfferBuilder {
 	/// Sets the [`Offer::amount`] as an [`Amount::Bitcoin`].
 	///
 	/// Successive calls to this method will override the previous setting.
-	pub fn amount_msats(mut self, amount_msats: u64) -> Self {
+	pub fn amount_msats(self, amount_msats: u64) -> Self {
 		self.amount(Amount::Bitcoin { amount_msats })
 	}
 
