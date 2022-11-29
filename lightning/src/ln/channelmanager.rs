@@ -142,6 +142,7 @@ pub(super) struct PendingAddHTLCInfo {
 	prev_short_channel_id: u64,
 	prev_htlc_id: u64,
 	prev_funding_outpoint: OutPoint,
+	prev_user_channel_id: u128,
 }
 
 pub(super) enum HTLCForwardInfo {
@@ -1145,6 +1146,10 @@ pub struct ChannelDetails {
 	/// [`ChannelHandshakeConfig::minimum_depth`]: crate::util::config::ChannelHandshakeConfig::minimum_depth
 	/// [`ChannelHandshakeLimits::max_minimum_depth`]: crate::util::config::ChannelHandshakeLimits::max_minimum_depth
 	pub confirmations_required: Option<u32>,
+	/// The current number of confirmations on the funding transaction.
+	///
+	/// This value will be `None` for objects serialized with LDK versions prior to 0.0.113.
+	pub confirmations: Option<u32>,
 	/// The number of blocks (after our commitment transaction confirms) that we will need to wait
 	/// until we can claim our funds after we force-close the channel. During this time our
 	/// counterparty is allowed to punish us if we broadcasted a stale state. If our counterparty
@@ -1693,6 +1698,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 		let mut res = Vec::new();
 		{
 			let channel_state = self.channel_state.lock().unwrap();
+			let best_block_height = self.best_block.read().unwrap().height();
 			res.reserve(channel_state.by_id.len());
 			for (channel_id, channel) in channel_state.by_id.iter().filter(f) {
 				let balance = channel.get_available_balances();
@@ -1729,6 +1735,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 					next_outbound_htlc_limit_msat: balance.next_outbound_htlc_limit_msat,
 					user_channel_id: channel.get_user_id(),
 					confirmations_required: channel.minimum_depth(),
+					confirmations: Some(channel.get_funding_tx_confirmations(best_block_height)),
 					force_close_spend_delay: channel.get_counterparty_selected_contest_delay(),
 					is_outbound: channel.is_outbound(),
 					is_channel_ready: channel.is_usable(),
@@ -3025,7 +3032,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 
 		let mut new_events = Vec::new();
 		let mut failed_forwards = Vec::new();
-		let mut phantom_receives: Vec<(u64, OutPoint, Vec<(PendingHTLCInfo, u64)>)> = Vec::new();
+		let mut phantom_receives: Vec<(u64, OutPoint, u128, Vec<(PendingHTLCInfo, u64)>)> = Vec::new();
 		let mut handle_errors = Vec::new();
 		{
 			let mut forward_htlcs = HashMap::new();
@@ -3038,7 +3045,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 							for forward_info in pending_forwards.drain(..) {
 								match forward_info {
 									HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo {
-										prev_short_channel_id, prev_htlc_id, prev_funding_outpoint,
+										prev_short_channel_id, prev_htlc_id, prev_funding_outpoint, prev_user_channel_id,
 										forward_info: PendingHTLCInfo {
 											routing, incoming_shared_secret, payment_hash, outgoing_amt_msat,
 											outgoing_cltv_value, incoming_amt_msat: _
@@ -3104,7 +3111,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 												match next_hop {
 													onion_utils::Hop::Receive(hop_data) => {
 														match self.construct_recv_pending_htlc_info(hop_data, incoming_shared_secret, payment_hash, outgoing_amt_msat, outgoing_cltv_value, Some(phantom_shared_secret)) {
-															Ok(info) => phantom_receives.push((prev_short_channel_id, prev_funding_outpoint, vec![(info, prev_htlc_id)])),
+															Ok(info) => phantom_receives.push((prev_short_channel_id, prev_funding_outpoint, prev_user_channel_id, vec![(info, prev_htlc_id)])),
 															Err(ReceiveError { err_code, err_data, msg }) => failed_payment!(msg, err_code, err_data, Some(phantom_shared_secret))
 														}
 													},
@@ -3147,7 +3154,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 							for forward_info in pending_forwards.drain(..) {
 								match forward_info {
 									HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo {
-										prev_short_channel_id, prev_htlc_id, prev_funding_outpoint ,
+										prev_short_channel_id, prev_htlc_id, prev_funding_outpoint, prev_user_channel_id: _,
 										forward_info: PendingHTLCInfo {
 											incoming_shared_secret, payment_hash, outgoing_amt_msat, outgoing_cltv_value,
 											routing: PendingHTLCRouting::Forward { onion_packet, .. }, incoming_amt_msat: _,
@@ -3274,7 +3281,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 					for forward_info in pending_forwards.drain(..) {
 						match forward_info {
 							HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo {
-								prev_short_channel_id, prev_htlc_id, prev_funding_outpoint,
+								prev_short_channel_id, prev_htlc_id, prev_funding_outpoint, prev_user_channel_id,
 								forward_info: PendingHTLCInfo {
 									routing, incoming_shared_secret, payment_hash, outgoing_amt_msat, ..
 								}
@@ -3369,12 +3376,15 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 												log_bytes!(payment_hash.0), total_value, $payment_data.total_msat);
 											fail_htlc!(claimable_htlc, payment_hash);
 										} else if total_value == $payment_data.total_msat {
+											let prev_channel_id = prev_funding_outpoint.to_channel_id();
 											htlcs.push(claimable_htlc);
 											new_events.push(events::Event::PaymentReceived {
 												receiver_node_id: Some(receiver_node_id),
 												payment_hash,
 												purpose: purpose(),
 												amount_msat: total_value,
+												via_channel_id: Some(prev_channel_id),
+												via_user_channel_id: Some(prev_user_channel_id),
 											});
 											payment_received_generated = true;
 										} else {
@@ -3413,11 +3423,14 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 													hash_map::Entry::Vacant(e) => {
 														let purpose = events::PaymentPurpose::SpontaneousPayment(preimage);
 														e.insert((purpose.clone(), vec![claimable_htlc]));
+														let prev_channel_id = prev_funding_outpoint.to_channel_id();
 														new_events.push(events::Event::PaymentReceived {
 															receiver_node_id: Some(receiver_node_id),
 															payment_hash,
 															amount_msat: outgoing_amt_msat,
 															purpose,
+															via_channel_id: Some(prev_channel_id),
+															via_user_channel_id: Some(prev_user_channel_id),
 														});
 													},
 													hash_map::Entry::Occupied(_) => {
@@ -4389,13 +4402,13 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 		commitment_update: Option<msgs::CommitmentUpdate>, order: RAACommitmentOrder,
 		pending_forwards: Vec<(PendingHTLCInfo, u64)>, funding_broadcastable: Option<Transaction>,
 		channel_ready: Option<msgs::ChannelReady>, announcement_sigs: Option<msgs::AnnouncementSignatures>)
-	-> Option<(u64, OutPoint, Vec<(PendingHTLCInfo, u64)>)> {
+	-> Option<(u64, OutPoint, u128, Vec<(PendingHTLCInfo, u64)>)> {
 		let mut htlc_forwards = None;
 
 		let counterparty_node_id = channel.get_counterparty_node_id();
 		if !pending_forwards.is_empty() {
 			htlc_forwards = Some((channel.get_short_channel_id().unwrap_or(channel.outbound_scid_alias()),
-				channel.get_funding_txo().unwrap(), pending_forwards));
+				channel.get_funding_txo().unwrap(), channel.get_user_id(), pending_forwards));
 		}
 
 		if let Some(msg) = channel_ready {
@@ -5056,8 +5069,8 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 	}
 
 	#[inline]
-	fn forward_htlcs(&self, per_source_pending_forwards: &mut [(u64, OutPoint, Vec<(PendingHTLCInfo, u64)>)]) {
-		for &mut (prev_short_channel_id, prev_funding_outpoint, ref mut pending_forwards) in per_source_pending_forwards {
+	fn forward_htlcs(&self, per_source_pending_forwards: &mut [(u64, OutPoint, u128, Vec<(PendingHTLCInfo, u64)>)]) {
+		for &mut (prev_short_channel_id, prev_funding_outpoint, prev_user_channel_id, ref mut pending_forwards) in per_source_pending_forwards {
 			let mut forward_event = None;
 			if !pending_forwards.is_empty() {
 				let mut forward_htlcs = self.forward_htlcs.lock().unwrap();
@@ -5072,11 +5085,11 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 					}) {
 						hash_map::Entry::Occupied(mut entry) => {
 							entry.get_mut().push(HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo {
-								prev_short_channel_id, prev_funding_outpoint, prev_htlc_id, forward_info }));
+								prev_short_channel_id, prev_funding_outpoint, prev_htlc_id, prev_user_channel_id, forward_info }));
 						},
 						hash_map::Entry::Vacant(entry) => {
 							entry.insert(vec!(HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo {
-								prev_short_channel_id, prev_funding_outpoint, prev_htlc_id, forward_info })));
+								prev_short_channel_id, prev_funding_outpoint, prev_htlc_id, prev_user_channel_id, forward_info })));
 						}
 					}
 				}
@@ -5135,7 +5148,8 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 							raa_updates.finalized_claimed_htlcs,
 							chan.get().get_short_channel_id()
 								.unwrap_or(chan.get().outbound_scid_alias()),
-							chan.get().get_funding_txo().unwrap()))
+							chan.get().get_funding_txo().unwrap(),
+							chan.get().get_user_id()))
 				},
 				hash_map::Entry::Vacant(_) => break Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))
 			}
@@ -5143,13 +5157,13 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 		self.fail_holding_cell_htlcs(htlcs_to_fail, msg.channel_id, counterparty_node_id);
 		match res {
 			Ok((pending_forwards, mut pending_failures, finalized_claim_htlcs,
-				short_channel_id, channel_outpoint)) =>
+				short_channel_id, channel_outpoint, user_channel_id)) =>
 			{
 				for failure in pending_failures.drain(..) {
 					let receiver = HTLCDestination::NextHopChannel { node_id: Some(*counterparty_node_id), channel_id: channel_outpoint.to_channel_id() };
 					self.fail_htlc_backwards_internal(failure.0, &failure.1, failure.2, receiver);
 				}
-				self.forward_htlcs(&mut [(short_channel_id, channel_outpoint, pending_forwards)]);
+				self.forward_htlcs(&mut [(short_channel_id, channel_outpoint, user_channel_id, pending_forwards)]);
 				self.finalize_claims(finalized_claim_htlcs);
 				Ok(())
 			},
@@ -6127,7 +6141,7 @@ where
 	}
 }
 
-impl<M: Deref , T: Deref , K: Deref , F: Deref , L: Deref >
+impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref >
 	ChannelMessageHandler for ChannelManager<M, T, K, F, L>
 	where M::Target: chain::Watch<<K::Target as KeysInterface>::Signer>,
         T::Target: BroadcasterInterface,
@@ -6459,6 +6473,7 @@ impl Writeable for ChannelDetails {
 			(6, self.funding_txo, option),
 			(7, self.config, option),
 			(8, self.short_channel_id, option),
+			(9, self.confirmations, option),
 			(10, self.channel_value_satoshis, required),
 			(12, self.unspendable_punishment_reserve, option),
 			(14, user_channel_id_low, required),
@@ -6493,6 +6508,7 @@ impl Readable for ChannelDetails {
 			(6, funding_txo, option),
 			(7, config, option),
 			(8, short_channel_id, option),
+			(9, confirmations, option),
 			(10, channel_value_satoshis, required),
 			(12, unspendable_punishment_reserve, option),
 			(14, user_channel_id_low, required),
@@ -6536,6 +6552,7 @@ impl Readable for ChannelDetails {
 			next_outbound_htlc_limit_msat: next_outbound_htlc_limit_msat.0.unwrap(),
 			inbound_capacity_msat: inbound_capacity_msat.0.unwrap(),
 			confirmations_required,
+			confirmations,
 			force_close_spend_delay,
 			is_outbound: is_outbound.0.unwrap(),
 			is_channel_ready: is_channel_ready.0.unwrap(),
@@ -6799,6 +6816,7 @@ impl_writeable_tlv_based_enum!(HTLCFailReason,
 
 impl_writeable_tlv_based!(PendingAddHTLCInfo, {
 	(0, forward_info, required),
+	(1, prev_user_channel_id, (default_value, 0)),
 	(2, prev_short_channel_id, required),
 	(4, prev_htlc_id, required),
 	(6, prev_funding_outpoint, required),

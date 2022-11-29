@@ -225,6 +225,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 								user_channel_id: 0, inbound_capacity_msat: 0,
 								unspendable_punishment_reserve: None,
 								confirmations_required: None,
+								confirmations: None,
 								force_close_spend_delay: None,
 								is_outbound: true, is_channel_ready: true,
 								is_usable: true, is_public: true,
