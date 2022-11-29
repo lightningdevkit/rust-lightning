@@ -1886,8 +1886,9 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 		};
 
 		for htlc_source in failed_htlcs.drain(..) {
+			let reason = HTLCFailReason::from_failure_code(0x4000 | 8);
 			let receiver = HTLCDestination::NextHopChannel { node_id: Some(*counterparty_node_id), channel_id: *channel_id };
-			self.fail_htlc_backwards_internal(htlc_source.0, &htlc_source.1, HTLCFailReason::from_failure_code(0x4000 | 8), receiver);
+			self.fail_htlc_backwards_internal(&htlc_source.0, &htlc_source.1, &reason, receiver);
 		}
 
 		let _ = handle_error!(self, result, *counterparty_node_id);
@@ -1944,8 +1945,9 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 		log_debug!(self.logger, "Finishing force-closure of channel with {} HTLCs to fail", failed_htlcs.len());
 		for htlc_source in failed_htlcs.drain(..) {
 			let (source, payment_hash, counterparty_node_id, channel_id) = htlc_source;
+			let reason = HTLCFailReason::from_failure_code(0x4000 | 8);
 			let receiver = HTLCDestination::NextHopChannel { node_id: Some(counterparty_node_id), channel_id };
-			self.fail_htlc_backwards_internal(source, &payment_hash, HTLCFailReason::from_failure_code(0x4000 | 8), receiver);
+			self.fail_htlc_backwards_internal(&source, &payment_hash, &reason, receiver);
 		}
 		if let Some((funding_txo, monitor_update)) = monitor_update_option {
 			// There isn't anything we can do if we get an update failure - we're already
@@ -3152,7 +3154,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 
 			let failure_reason = HTLCFailReason::from_failure_code(0x4000 | 10);
 			let destination = HTLCDestination::UnknownNextHop { requested_forward_scid: short_channel_id };
-			self.fail_htlc_backwards_internal(htlc_source, &payment.forward_info.payment_hash, failure_reason, destination);
+			self.fail_htlc_backwards_internal(&htlc_source, &payment.forward_info.payment_hash, &failure_reason, destination);
 		} else { unreachable!() } // Only `PendingHTLCRouting::Forward`s are intercepted
 
 		Ok(())
@@ -3609,7 +3611,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 		}
 
 		for (htlc_source, payment_hash, failure_reason, destination) in failed_forwards.drain(..) {
-			self.fail_htlc_backwards_internal(htlc_source, &payment_hash, failure_reason, destination);
+			self.fail_htlc_backwards_internal(&htlc_source, &payment_hash, &failure_reason, destination);
 		}
 		self.forward_htlcs(&mut phantom_receives);
 
@@ -3872,8 +3874,10 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 			});
 
 			for htlc_source in timed_out_mpp_htlcs.drain(..) {
+				let source = HTLCSource::PreviousHopData(htlc_source.0.clone());
+				let reason = HTLCFailReason::from_failure_code(23);
 				let receiver = HTLCDestination::FailedPayment { payment_hash: htlc_source.1 };
-				self.fail_htlc_backwards_internal(HTLCSource::PreviousHopData(htlc_source.0.clone()), &htlc_source.1, HTLCFailReason::from_failure_code(23), receiver);
+				self.fail_htlc_backwards_internal(&source, &htlc_source.1, &reason, receiver);
 			}
 
 			for (err, counterparty_node_id) in handle_errors.drain(..) {
@@ -3908,10 +3912,10 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 				let mut htlc_msat_height_data = byte_utils::be64_to_array(htlc.value).to_vec();
 				htlc_msat_height_data.extend_from_slice(&byte_utils::be32_to_array(
 						self.best_block.read().unwrap().height()));
-				self.fail_htlc_backwards_internal(
-						HTLCSource::PreviousHopData(htlc.prev_hop), payment_hash,
-						HTLCFailReason::reason(0x4000 | 15, htlc_msat_height_data),
-						HTLCDestination::FailedPayment { payment_hash: *payment_hash });
+				let source = HTLCSource::PreviousHopData(htlc.prev_hop);
+				let reason = HTLCFailReason::reason(0x4000 | 15, htlc_msat_height_data);
+				let receiver = HTLCDestination::FailedPayment { payment_hash: *payment_hash };
+				self.fail_htlc_backwards_internal(&source, &payment_hash, &reason, receiver);
 			}
 		}
 	}
@@ -3979,14 +3983,15 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 					hash_map::Entry::Vacant(_) => (0x4000|10, Vec::new())
 				};
 
+			let reason = HTLCFailReason::reason(failure_code, onion_failure_data);
 			let receiver = HTLCDestination::NextHopChannel { node_id: Some(counterparty_node_id.clone()), channel_id };
-			self.fail_htlc_backwards_internal(htlc_src, &payment_hash, HTLCFailReason::reason(failure_code, onion_failure_data), receiver);
+			self.fail_htlc_backwards_internal(&htlc_src, &payment_hash, &reason, receiver);
 		}
 	}
 
 	/// Fails an HTLC backwards to the sender of it to us.
 	/// Note that we do not assume that channels corresponding to failed HTLCs are still available.
-	fn fail_htlc_backwards_internal(&self, source: HTLCSource, payment_hash: &PaymentHash, onion_error: HTLCFailReason,destination: HTLCDestination) {
+	fn fail_htlc_backwards_internal(&self, source: &HTLCSource, payment_hash: &PaymentHash, onion_error: &HTLCFailReason, destination: HTLCDestination) {
 		#[cfg(debug_assertions)]
 		{
 			// Ensure that the `channel_state` lock is not held when calling this function.
@@ -4005,13 +4010,13 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 		// from block_connected which may run during initialization prior to the chain_monitor
 		// being fully configured. See the docs for `ChannelManagerReadArgs` for more.
 		match source {
-			HTLCSource::OutboundRoute { ref path, session_priv, payment_id, ref payment_params, .. } => {
+			HTLCSource::OutboundRoute { ref path, ref session_priv, ref payment_id, ref payment_params, .. } => {
 				let mut session_priv_bytes = [0; 32];
 				session_priv_bytes.copy_from_slice(&session_priv[..]);
 				let mut outbounds = self.pending_outbound_payments.lock().unwrap();
 				let mut all_paths_failed = false;
 				let mut full_failure_ev = None;
-				if let hash_map::Entry::Occupied(mut payment) = outbounds.entry(payment_id) {
+				if let hash_map::Entry::Occupied(mut payment) = outbounds.entry(*payment_id) {
 					if !payment.get_mut().remove(&session_priv_bytes, Some(&path)) {
 						log_trace!(self.logger, "Received duplicative fail for HTLC with payment_hash {}", log_bytes!(payment_hash.0));
 						return;
@@ -4024,7 +4029,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 						all_paths_failed = true;
 						if payment.get().abandoned() {
 							full_failure_ev = Some(events::Event::PaymentFailed {
-								payment_id,
+								payment_id: *payment_id,
 								payment_hash: payment.get().payment_hash().expect("PendingOutboundPayments::RetriesExceeded always has a payment hash set"),
 							});
 							payment.remove();
@@ -4054,13 +4059,13 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 						if self.payment_is_probe(payment_hash, &payment_id) {
 							if !payment_retryable {
 								events::Event::ProbeSuccessful {
-									payment_id,
+									payment_id: *payment_id,
 									payment_hash: payment_hash.clone(),
 									path: path.clone(),
 								}
 							} else {
 								events::Event::ProbeFailed {
-									payment_id,
+									payment_id: *payment_id,
 									payment_hash: payment_hash.clone(),
 									path: path.clone(),
 									short_channel_id,
@@ -4074,7 +4079,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 								retry.as_mut().map(|r| r.payment_params.previously_failed_channels.push(scid));
 							}
 							events::Event::PaymentPathFailed {
-								payment_id: Some(payment_id),
+								payment_id: Some(*payment_id),
 								payment_hash: payment_hash.clone(),
 								payment_failed_permanently: !payment_retryable,
 								network_update,
@@ -4107,14 +4112,14 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 
 						if self.payment_is_probe(payment_hash, &payment_id) {
 							events::Event::ProbeFailed {
-								payment_id,
+								payment_id: *payment_id,
 								payment_hash: payment_hash.clone(),
 								path: path.clone(),
 								short_channel_id: Some(scid),
 							}
 						} else {
 							events::Event::PaymentPathFailed {
-								payment_id: Some(payment_id),
+								payment_id: Some(*payment_id),
 								payment_hash: payment_hash.clone(),
 								payment_failed_permanently: false,
 								network_update: None,
@@ -4134,22 +4139,22 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 				pending_events.push(path_failure);
 				if let Some(ev) = full_failure_ev { pending_events.push(ev); }
 			},
-			HTLCSource::PreviousHopData(HTLCPreviousHopData { short_channel_id, htlc_id, incoming_packet_shared_secret, phantom_shared_secret, outpoint }) => {
+			HTLCSource::PreviousHopData(HTLCPreviousHopData { ref short_channel_id, ref htlc_id, ref incoming_packet_shared_secret, ref phantom_shared_secret, ref outpoint }) => {
 				let err_packet = match onion_error {
-					HTLCFailReason::Reason { failure_code, data } => {
+					HTLCFailReason::Reason { ref failure_code, ref data } => {
 						log_trace!(self.logger, "Failing HTLC with payment_hash {} backwards from us with code {}", log_bytes!(payment_hash.0), failure_code);
 						if let Some(phantom_ss) = phantom_shared_secret {
-							let phantom_packet = onion_utils::build_failure_packet(&phantom_ss, failure_code, &data[..]).encode();
-							let encrypted_phantom_packet = onion_utils::encrypt_failure_packet(&phantom_ss, &phantom_packet);
-							onion_utils::encrypt_failure_packet(&incoming_packet_shared_secret, &encrypted_phantom_packet.data[..])
+							let phantom_packet = onion_utils::build_failure_packet(phantom_ss, *failure_code, &data[..]).encode();
+							let encrypted_phantom_packet = onion_utils::encrypt_failure_packet(phantom_ss, &phantom_packet);
+							onion_utils::encrypt_failure_packet(incoming_packet_shared_secret, &encrypted_phantom_packet.data[..])
 						} else {
-							let packet = onion_utils::build_failure_packet(&incoming_packet_shared_secret, failure_code, &data[..]).encode();
-							onion_utils::encrypt_failure_packet(&incoming_packet_shared_secret, &packet)
+							let packet = onion_utils::build_failure_packet(incoming_packet_shared_secret, *failure_code, &data[..]).encode();
+							onion_utils::encrypt_failure_packet(incoming_packet_shared_secret, &packet)
 						}
 					},
 					HTLCFailReason::LightningError { err } => {
 						log_trace!(self.logger, "Failing HTLC with payment_hash {} backwards with pre-built LightningError", log_bytes!(payment_hash.0));
-						onion_utils::encrypt_failure_packet(&incoming_packet_shared_secret, &err.data)
+						onion_utils::encrypt_failure_packet(incoming_packet_shared_secret, &err.data)
 					}
 				};
 
@@ -4158,12 +4163,12 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 				if forward_htlcs.is_empty() {
 					forward_event = Some(Duration::from_millis(MIN_HTLC_RELAY_HOLDING_CELL_MILLIS));
 				}
-				match forward_htlcs.entry(short_channel_id) {
+				match forward_htlcs.entry(*short_channel_id) {
 					hash_map::Entry::Occupied(mut entry) => {
-						entry.get_mut().push(HTLCForwardInfo::FailHTLC { htlc_id, err_packet });
+						entry.get_mut().push(HTLCForwardInfo::FailHTLC { htlc_id: *htlc_id, err_packet });
 					},
 					hash_map::Entry::Vacant(entry) => {
-						entry.insert(vec!(HTLCForwardInfo::FailHTLC { htlc_id, err_packet }));
+						entry.insert(vec!(HTLCForwardInfo::FailHTLC { htlc_id: *htlc_id, err_packet }));
 					}
 				}
 				mem::drop(forward_htlcs);
@@ -4175,7 +4180,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 				}
 				pending_events.push(events::Event::HTLCHandlingFailed {
 					prev_channel_id: outpoint.to_channel_id(),
-					failed_next_destination: destination
+					failed_next_destination: destination,
 				});
 			},
 		}
@@ -4304,10 +4309,10 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 					let mut htlc_msat_height_data = byte_utils::be64_to_array(htlc.value).to_vec();
 					htlc_msat_height_data.extend_from_slice(&byte_utils::be32_to_array(
 						self.best_block.read().unwrap().height()));
-					self.fail_htlc_backwards_internal(
-						HTLCSource::PreviousHopData(htlc.prev_hop), &payment_hash,
-						HTLCFailReason::reason(0x4000 | 15, htlc_msat_height_data),
-						HTLCDestination::FailedPayment { payment_hash } );
+					let source = HTLCSource::PreviousHopData(htlc.prev_hop);
+					let reason = HTLCFailReason::reason(0x4000 | 15, htlc_msat_height_data);
+					let receiver = HTLCDestination::FailedPayment { payment_hash };
+					self.fail_htlc_backwards_internal(&source, &payment_hash, &reason, receiver);
 				}
 			}
 
@@ -4631,7 +4636,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 		self.finalize_claims(finalized_claims);
 		for failure in pending_failures.drain(..) {
 			let receiver = HTLCDestination::NextHopChannel { node_id: Some(counterparty_node_id), channel_id: funding_txo.to_channel_id() };
-			self.fail_htlc_backwards_internal(failure.0, &failure.1, failure.2, receiver);
+			self.fail_htlc_backwards_internal(&failure.0, &failure.1, &failure.2, receiver);
 		}
 	}
 
@@ -4999,7 +5004,8 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 		};
 		for htlc_source in dropped_htlcs.drain(..) {
 			let receiver = HTLCDestination::NextHopChannel { node_id: Some(counterparty_node_id.clone()), channel_id: msg.channel_id };
-			self.fail_htlc_backwards_internal(htlc_source.0, &htlc_source.1, HTLCFailReason::from_failure_code(0x4000 | 8), receiver);
+			let reason = HTLCFailReason::from_failure_code(0x4000 | 8);
+			self.fail_htlc_backwards_internal(&htlc_source.0, &htlc_source.1, &reason, receiver);
 		}
 
 		let _ = handle_error!(self, result, *counterparty_node_id);
@@ -5270,7 +5276,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 			}
 
 			for (htlc_source, payment_hash, failure_reason, destination) in failed_intercept_forwards.drain(..) {
-				self.fail_htlc_backwards_internal(htlc_source, &payment_hash, failure_reason, destination);
+				self.fail_htlc_backwards_internal(&htlc_source, &payment_hash, &failure_reason, destination);
 			}
 
 			if !new_intercept_events.is_empty() {
@@ -5345,7 +5351,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 			{
 				for failure in pending_failures.drain(..) {
 					let receiver = HTLCDestination::NextHopChannel { node_id: Some(*counterparty_node_id), channel_id: channel_outpoint.to_channel_id() };
-					self.fail_htlc_backwards_internal(failure.0, &failure.1, failure.2, receiver);
+					self.fail_htlc_backwards_internal(&failure.0, &failure.1, &failure.2, receiver);
 				}
 				self.forward_htlcs(&mut [(short_channel_id, channel_outpoint, user_channel_id, pending_forwards)]);
 				self.finalize_claims(finalized_claim_htlcs);
@@ -5505,7 +5511,8 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 						} else {
 							log_trace!(self.logger, "Failing HTLC with hash {} from our monitor", log_bytes!(htlc_update.payment_hash.0));
 							let receiver = HTLCDestination::NextHopChannel { node_id: counterparty_node_id, channel_id: funding_outpoint.to_channel_id() };
-							self.fail_htlc_backwards_internal(htlc_update.source, &htlc_update.payment_hash, HTLCFailReason::from_failure_code(0x4000 | 8), receiver);
+							let reason = HTLCFailReason::from_failure_code(0x4000 | 8);
+							self.fail_htlc_backwards_internal(&htlc_update.source, &htlc_update.payment_hash, &reason, receiver);
 						}
 					},
 					MonitorEvent::CommitmentTxConfirmed(funding_outpoint) |
@@ -6315,7 +6322,7 @@ where
 		self.handle_init_event_channel_failures(failed_channels);
 
 		for (source, payment_hash, reason, destination) in timed_out_htlcs.drain(..) {
-			self.fail_htlc_backwards_internal(source, &payment_hash, reason, destination);
+			self.fail_htlc_backwards_internal(&source, &payment_hash, &reason, destination);
 		}
 	}
 
@@ -7802,7 +7809,8 @@ impl<'a, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 		for htlc_source in failed_htlcs.drain(..) {
 			let (source, payment_hash, counterparty_node_id, channel_id) = htlc_source;
 			let receiver = HTLCDestination::NextHopChannel { node_id: Some(counterparty_node_id), channel_id };
-			channel_manager.fail_htlc_backwards_internal(source, &payment_hash, HTLCFailReason::from_failure_code(0x4000 | 8), receiver);
+			let reason = HTLCFailReason::from_failure_code(0x4000 | 8);
+			channel_manager.fail_htlc_backwards_internal(&source, &payment_hash, &reason, receiver);
 		}
 
 		//TODO: Broadcast channel update for closed channels, but only after we've made a
