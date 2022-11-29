@@ -9266,7 +9266,7 @@ mod tests {
 	}
 }
 
-#[cfg(all(any(test, feature = "_test_utils"), feature = "_bench_unstable"))]
+#[cfg(bench)]
 pub mod bench {
 	use crate::chain::Listen;
 	use crate::chain::chainmonitor::{ChainMonitor, Persist};

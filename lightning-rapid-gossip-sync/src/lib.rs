@@ -64,10 +64,8 @@
 
 #![cfg_attr(all(not(feature = "std"), not(test)), no_std)]
 
-// Allow and import test features for benching
-#![cfg_attr(all(test, feature = "_bench_unstable"), feature(test))]
-#[cfg(all(test, feature = "_bench_unstable"))]
-extern crate test;
+#![cfg_attr(bench, feature(test))]
+#[cfg(bench)] extern crate test;
 
 #[cfg(not(feature = "std"))]
 extern crate alloc;
@@ -287,7 +285,7 @@ mod tests {
 	}
 }
 
-#[cfg(all(test, feature = "_bench_unstable"))]
+#[cfg(bench)]
 pub mod bench {
 	use test::Bencher;
 

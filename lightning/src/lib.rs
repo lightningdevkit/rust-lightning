@@ -54,8 +54,8 @@
 
 #![cfg_attr(all(not(feature = "std"), not(test)), no_std)]
 
-#![cfg_attr(all(any(test, feature = "_test_utils"), feature = "_bench_unstable"), feature(test))]
-#[cfg(all(any(test, feature = "_test_utils"), feature = "_bench_unstable"))] extern crate test;
+#![cfg_attr(bench, feature(test))]
+#[cfg(bench)] extern crate test;
 
 #[cfg(not(any(feature = "std", feature = "no-std")))]
 compile_error!("at least one of the `std` or `no-std` features must be enabled");
@@ -177,7 +177,7 @@ mod prelude {
 	pub use alloc::string::ToString;
 }
 
-#[cfg(all(not(feature = "_bench_unstable"), feature = "backtrace", feature = "std", test))]
+#[cfg(all(not(bench), feature = "backtrace", feature = "std", test))]
 extern crate backtrace;
 
 mod sync;

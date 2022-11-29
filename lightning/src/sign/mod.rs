@@ -1628,7 +1628,7 @@ pub fn dyn_sign() {
 	let _signer: Box<dyn EcdsaChannelSigner>;
 }
 
-#[cfg(all(test, feature = "_bench_unstable", not(feature = "no-std")))]
+#[cfg(all(test, bench, not(feature = "no-std")))]
 mod benches {
 	use std::sync::{Arc, mpsc};
 	use std::sync::mpsc::TryRecvError;

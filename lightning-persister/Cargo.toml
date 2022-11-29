@@ -14,7 +14,6 @@ all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
-_bench_unstable = ["lightning/_bench_unstable"]
 
 [dependencies]
 bitcoin = "0.29.0"

@@ -167,6 +167,14 @@ Fuzzing is heavily encouraged: you will find all related material under `fuzz/`
 Mutation testing is work-in-progress; any contribution there would be warmly
 welcomed.
 
+Benchmarks
+----------
+
+We use a custom Rust compiler configuration conditional to guard the bench mark
+code. To run the bench marks use `RUSTFLAGS='--cfg=bench' cargo +nightly bench`.
+
+
+
 C/C++ Bindings
 --------------
 

@@ -1015,7 +1015,7 @@ struct PathBuildingHop<'a> {
 	/// decrease as well. Thus, we have to explicitly track which nodes have been processed and
 	/// avoid processing them again.
 	was_processed: bool,
-	#[cfg(all(not(feature = "_bench_unstable"), any(test, fuzzing)))]
+	#[cfg(all(not(bench), any(test, fuzzing)))]
 	// In tests, we apply further sanity checks on cases where we skip nodes we already processed
 	// to ensure it is specifically in cases where the fee has gone down because of a decrease in
 	// value_contribution_msat, which requires tracking it here. See comments below where it is
@@ -1036,7 +1036,7 @@ impl<'a> core::fmt::Debug for PathBuildingHop<'a> {
 			.field("path_penalty_msat", &self.path_penalty_msat)
 			.field("path_htlc_minimum_msat", &self.path_htlc_minimum_msat)
 			.field("cltv_expiry_delta", &self.candidate.cltv_expiry_delta());
-		#[cfg(all(not(feature = "_bench_unstable"), any(test, fuzzing)))]
+		#[cfg(all(not(bench), any(test, fuzzing)))]
 		let debug_struct = debug_struct
 			.field("value_contribution_msat", &self.value_contribution_msat);
 		debug_struct.finish()
@@ -1570,14 +1570,14 @@ where L::Target: Logger {
 								path_htlc_minimum_msat,
 								path_penalty_msat: u64::max_value(),
 								was_processed: false,
-								#[cfg(all(not(feature = "_bench_unstable"), any(test, fuzzing)))]
+								#[cfg(all(not(bench), any(test, fuzzing)))]
 								value_contribution_msat,
 							}
 						});
 
 						#[allow(unused_mut)] // We only use the mut in cfg(test)
 						let mut should_process = !old_entry.was_processed;
-						#[cfg(all(not(feature = "_bench_unstable"), any(test, fuzzing)))]
+						#[cfg(all(not(bench), any(test, fuzzing)))]
 						{
 							// In test/fuzzing builds, we do extra checks to make sure the skipping
 							// of already-seen nodes only happens in cases we expect (see below).
@@ -1648,13 +1648,13 @@ where L::Target: Logger {
 								old_entry.fee_msat = 0; // This value will be later filled with hop_use_fee_msat of the following channel
 								old_entry.path_htlc_minimum_msat = path_htlc_minimum_msat;
 								old_entry.path_penalty_msat = path_penalty_msat;
-								#[cfg(all(not(feature = "_bench_unstable"), any(test, fuzzing)))]
+								#[cfg(all(not(bench), any(test, fuzzing)))]
 								{
 									old_entry.value_contribution_msat = value_contribution_msat;
 								}
 								did_add_update_path_to_src_node = true;
 							} else if old_entry.was_processed && new_cost < old_cost {
-								#[cfg(all(not(feature = "_bench_unstable"), any(test, fuzzing)))]
+								#[cfg(all(not(bench), any(test, fuzzing)))]
 								{
 									// If we're skipping processing a node which was previously
 									// processed even though we found another path to it with a
@@ -6079,7 +6079,7 @@ pub(crate) mod bench_utils {
 	}
 }
 
-#[cfg(all(test, feature = "_bench_unstable", not(feature = "no-std")))]
+#[cfg(all(bench, not(features = "no-std")))]
 mod benches {
 	use super::*;
 	use bitcoin::hashes::Hash;

@@ -3,7 +3,7 @@
 pub(crate) enum LockHeldState {
 	HeldByThread,
 	NotHeldByThread,
-	#[cfg(any(feature = "_bench_unstable", not(test)))]
+	#[cfg(any(bench, not(test)))]
 	Unsupported,
 }
 
@@ -20,20 +20,20 @@ pub(crate) trait LockTestExt<'a> {
 	fn unsafe_well_ordered_double_lock_self(&'a self) -> Self::ExclLock;
 }
 
-#[cfg(all(feature = "std", not(feature = "_bench_unstable"), test))]
+#[cfg(all(feature = "std", not(bench), test))]
 mod debug_sync;
-#[cfg(all(feature = "std", not(feature = "_bench_unstable"), test))]
+#[cfg(all(feature = "std", not(bench), test))]
 pub use debug_sync::*;
-#[cfg(all(feature = "std", not(feature = "_bench_unstable"), test))]
+#[cfg(all(feature = "std", not(bench), test))]
 // Note that to make debug_sync's regex work this must not contain `debug_string` in the module name
 mod test_lockorder_checks;
 
-#[cfg(all(feature = "std", any(feature = "_bench_unstable", not(test))))]
+#[cfg(all(feature = "std", any(bench, not(test))))]
 pub(crate) mod fairrwlock;
-#[cfg(all(feature = "std", any(feature = "_bench_unstable", not(test))))]
+#[cfg(all(feature = "std", any(bench, not(test))))]
 pub use {std::sync::{Arc, Mutex, Condvar, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard}, fairrwlock::FairRwLock};
 
-#[cfg(all(feature = "std", any(feature = "_bench_unstable", not(test))))]
+#[cfg(all(feature = "std", any(bench, not(test))))]
 mod ext_impl {
 	use super::*;
 	impl<'a, T: 'a> LockTestExt<'a> for Mutex<T> {

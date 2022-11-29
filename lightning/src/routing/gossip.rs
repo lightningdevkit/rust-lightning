@@ -3388,7 +3388,7 @@ pub(crate) mod tests {
 	}
 }
 
-#[cfg(all(test, feature = "_bench_unstable"))]
+#[cfg(bench)]
 mod benches {
 	use super::*;
 

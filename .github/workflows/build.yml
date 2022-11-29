@@ -141,7 +141,8 @@ jobs:
           cd ..
       - name: Run benchmarks on Rust ${{ matrix.toolchain }}
         run: |
-          RUSTC_BOOTSTRAP=1 cargo bench --features _bench_unstable
+
+          RUSTC_BOOTSTRAP=1 RUSTFLAGS='--cfg=bench' cargo bench
 
   check_commits:
     runs-on: ubuntu-latest

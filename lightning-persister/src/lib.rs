@@ -8,8 +8,8 @@
 
 #![cfg_attr(docsrs, feature(doc_auto_cfg))]
 
-#![cfg_attr(all(test, feature = "_bench_unstable"), feature(test))]
-#[cfg(all(test, feature = "_bench_unstable"))] extern crate test;
+#![cfg_attr(bench, feature(test))]
+#[cfg(bench)] extern crate test;
 
 mod util;
 
@@ -338,7 +338,7 @@ mod tests {
 	}
 }
 
-#[cfg(all(test, feature = "_bench_unstable"))]
+#[cfg(bench)]
 pub mod bench {
 	use test::Bencher;
 
