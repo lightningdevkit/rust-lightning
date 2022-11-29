@@ -431,7 +431,7 @@ where
 		let route_params = RouteParameters {
 			payment_params,
 			final_value_msat: invoice.amount_milli_satoshis().or(amount_msats).unwrap(),
-			final_cltv_expiry_delta: invoice.min_final_cltv_expiry() as u32,
+			final_cltv_expiry_delta: invoice.min_final_cltv_expiry_delta() as u32,
 		};
 
 		let send_payment = |route: &Route| {
@@ -764,7 +764,7 @@ mod tests {
 			.payment_hash(payment_hash)
 			.payment_secret(PaymentSecret([0; 32]))
 			.duration_since_epoch(duration_since_epoch())
-			.min_final_cltv_expiry(144)
+			.min_final_cltv_expiry_delta(144)
 			.amount_milli_satoshis(128)
 			.build_signed(|hash| {
 				Secp256k1::new().sign_ecdsa_recoverable(hash, &private_key)
@@ -790,7 +790,7 @@ mod tests {
 			.payment_hash(payment_hash)
 			.payment_secret(PaymentSecret([0; 32]))
 			.duration_since_epoch(duration_since_epoch())
-			.min_final_cltv_expiry(144)
+			.min_final_cltv_expiry_delta(144)
 			.build_signed(|hash| {
 				Secp256k1::new().sign_ecdsa_recoverable(hash, &private_key)
 			})
@@ -809,7 +809,7 @@ mod tests {
 			.payment_hash(payment_hash)
 			.payment_secret(PaymentSecret([0; 32]))
 			.duration_since_epoch(duration)
-			.min_final_cltv_expiry(144)
+			.min_final_cltv_expiry_delta(144)
 			.amount_milli_satoshis(128)
 			.build_signed(|hash| {
 				Secp256k1::new().sign_ecdsa_recoverable(hash, &private_key)
@@ -1665,7 +1665,7 @@ mod tests {
 			RouteParameters {
 				payment_params,
 				final_value_msat,
-				final_cltv_expiry_delta: invoice.min_final_cltv_expiry() as u32,
+				final_cltv_expiry_delta: invoice.min_final_cltv_expiry_delta() as u32,
 			}
 		}
 	}

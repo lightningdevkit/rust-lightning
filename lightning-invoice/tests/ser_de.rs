@@ -246,7 +246,7 @@ fn get_test_tuples() -> Vec<(String, SignedRawInvoice, bool, bool)> {
 					"462264ede7e14047e9b249da94fefc47f41f7d02ee9b091815a5506bc8abf75f"
 				).unwrap())
 				.expiry_time(Duration::from_secs(604800))
-				.min_final_cltv_expiry(10)
+				.min_final_cltv_expiry_delta(10)
 				.description("Blockstream Store: 88.85 USD for Blockstream Ledger Nano S x 1, \"Back In My Day\" Sticker x 2, \"I Got Lightning Working\" Sticker x 2 and 1 more items".to_owned())
 				.private_route(RouteHint(vec![RouteHintHop {
 					src_node_id: PublicKey::from_slice(&hex::decode(

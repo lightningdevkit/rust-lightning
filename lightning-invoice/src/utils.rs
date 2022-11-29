@@ -10,7 +10,7 @@ use lightning::chain;
 use lightning::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use lightning::chain::keysinterface::{Recipient, NodeSigner, SignerProvider, EntropySource};
 use lightning::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
-use lightning::ln::channelmanager::{ChannelDetails, ChannelManager, PaymentId, PaymentSendFailure, MIN_FINAL_CLTV_EXPIRY};
+use lightning::ln::channelmanager::{ChannelDetails, ChannelManager, PaymentId, PaymentSendFailure, MIN_FINAL_CLTV_EXPIRY_DELTA};
 #[cfg(feature = "std")]
 use lightning::ln::channelmanager::{PhantomRouteHints, MIN_CLTV_EXPIRY_DELTA};
 use lightning::ln::inbound_payment::{create, create_from_hash, ExpandedKey};
@@ -179,7 +179,7 @@ where
 		.current_timestamp()
 		.payment_hash(Hash::from_slice(&payment_hash.0).unwrap())
 		.payment_secret(payment_secret)
-		.min_final_cltv_expiry(MIN_FINAL_CLTV_EXPIRY.into())
+		.min_final_cltv_expiry_delta(MIN_FINAL_CLTV_EXPIRY_DELTA.into())
 		.expiry_time(Duration::from_secs(invoice_expiry_delta_secs.into()));
 	if let Some(amt) = amt_msat {
 		invoice = invoice.amount_milli_satoshis(amt);
@@ -435,7 +435,7 @@ fn _create_invoice_from_channelmanager_and_duration_since_epoch_with_payment_has
 		.payment_hash(Hash::from_slice(&payment_hash.0).unwrap())
 		.payment_secret(payment_secret)
 		.basic_mpp()
-		.min_final_cltv_expiry(MIN_FINAL_CLTV_EXPIRY.into())
+		.min_final_cltv_expiry_delta(MIN_FINAL_CLTV_EXPIRY_DELTA.into())
 		.expiry_time(Duration::from_secs(invoice_expiry_delta_secs.into()));
 	if let Some(amt) = amt_msat {
 		invoice = invoice.amount_milli_satoshis(amt);
@@ -642,7 +642,7 @@ mod test {
 	use bitcoin_hashes::sha256::Hash as Sha256;
 	use lightning::chain::keysinterface::{EntropySource, PhantomKeysManager};
 	use lightning::ln::{PaymentPreimage, PaymentHash};
-	use lightning::ln::channelmanager::{PhantomRouteHints, MIN_FINAL_CLTV_EXPIRY, PaymentId};
+	use lightning::ln::channelmanager::{PhantomRouteHints, MIN_FINAL_CLTV_EXPIRY_DELTA, PaymentId};
 	use lightning::ln::functional_test_utils::*;
 	use lightning::ln::msgs::ChannelMessageHandler;
 	use lightning::routing::router::{PaymentParameters, RouteParameters, find_route};
@@ -665,7 +665,7 @@ mod test {
 			Some(10_000), "test".to_string(), Duration::from_secs(1234567),
 			non_default_invoice_expiry_secs).unwrap();
 		assert_eq!(invoice.amount_pico_btc(), Some(100_000));
-		assert_eq!(invoice.min_final_cltv_expiry(), MIN_FINAL_CLTV_EXPIRY as u64);
+		assert_eq!(invoice.min_final_cltv_expiry_delta(), MIN_FINAL_CLTV_EXPIRY_DELTA as u64);
 		assert_eq!(invoice.description(), InvoiceDescription::Direct(&Description("test".to_string())));
 		assert_eq!(invoice.expiry_time(), Duration::from_secs(non_default_invoice_expiry_secs.into()));
 
@@ -685,7 +685,7 @@ mod test {
 		let route_params = RouteParameters {
 			payment_params,
 			final_value_msat: invoice.amount_milli_satoshis().unwrap(),
-			final_cltv_expiry_delta: invoice.min_final_cltv_expiry() as u32,
+			final_cltv_expiry_delta: invoice.min_final_cltv_expiry_delta() as u32,
 		};
 		let first_hops = nodes[0].node.list_usable_channels();
 		let network_graph = &node_cfgs[0].network_graph;
@@ -731,7 +731,7 @@ mod test {
 			Some(10_000), description_hash, Duration::from_secs(1234567), 3600
 		).unwrap();
 		assert_eq!(invoice.amount_pico_btc(), Some(100_000));
-		assert_eq!(invoice.min_final_cltv_expiry(), MIN_FINAL_CLTV_EXPIRY as u64);
+		assert_eq!(invoice.min_final_cltv_expiry_delta(), MIN_FINAL_CLTV_EXPIRY_DELTA as u64);
 		assert_eq!(invoice.description(), InvoiceDescription::Hash(&crate::Sha256(Sha256::hash("Testing description_hash".as_bytes()))));
 	}
 
@@ -748,7 +748,7 @@ mod test {
 			payment_hash
 		).unwrap();
 		assert_eq!(invoice.amount_pico_btc(), Some(100_000));
-		assert_eq!(invoice.min_final_cltv_expiry(), MIN_FINAL_CLTV_EXPIRY as u64);
+		assert_eq!(invoice.min_final_cltv_expiry_delta(), MIN_FINAL_CLTV_EXPIRY_DELTA as u64);
 		assert_eq!(invoice.description(), InvoiceDescription::Direct(&Description("test".to_string())));
 		assert_eq!(invoice.payment_hash(), &sha256::Hash::from_slice(&payment_hash.0[..]).unwrap());
 	}
@@ -997,7 +997,7 @@ mod test {
 			nodes[1].node.get_payment_preimage(payment_hash, payment_secret).unwrap()
 		};
 
-		assert_eq!(invoice.min_final_cltv_expiry(), MIN_FINAL_CLTV_EXPIRY as u64);
+		assert_eq!(invoice.min_final_cltv_expiry_delta(), MIN_FINAL_CLTV_EXPIRY_DELTA as u64);
 		assert_eq!(invoice.description(), InvoiceDescription::Direct(&Description("test".to_string())));
 		assert_eq!(invoice.route_hints().len(), 2);
 		assert_eq!(invoice.expiry_time(), Duration::from_secs(non_default_invoice_expiry_secs.into()));
@@ -1009,7 +1009,7 @@ mod test {
 		let params = RouteParameters {
 			payment_params,
 			final_value_msat: invoice.amount_milli_satoshis().unwrap(),
-			final_cltv_expiry_delta: invoice.min_final_cltv_expiry() as u32,
+			final_cltv_expiry_delta: invoice.min_final_cltv_expiry_delta() as u32,
 		};
 		let first_hops = nodes[0].node.list_usable_channels();
 		let network_graph = &node_cfgs[0].network_graph;
@@ -1130,7 +1130,7 @@ mod test {
 		)
 		.unwrap();
 		assert_eq!(invoice.amount_pico_btc(), Some(200_000));
-		assert_eq!(invoice.min_final_cltv_expiry(), MIN_FINAL_CLTV_EXPIRY as u64);
+		assert_eq!(invoice.min_final_cltv_expiry_delta(), MIN_FINAL_CLTV_EXPIRY_DELTA as u64);
 		assert_eq!(invoice.expiry_time(), Duration::from_secs(non_default_invoice_expiry_secs.into()));
 		assert_eq!(invoice.description(), InvoiceDescription::Hash(&crate::Sha256(Sha256::hash("Description hash phantom invoice".as_bytes()))));
 	}

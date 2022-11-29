@@ -874,12 +874,12 @@ pub const MIN_CLTV_EXPIRY_DELTA: u16 = 6*7;
 pub(super) const CLTV_FAR_FAR_AWAY: u32 = 14 * 24 * 6;
 
 /// Minimum CLTV difference between the current block height and received inbound payments.
-/// Invoices generated for payment to us must set their `min_final_cltv_expiry` field to at least
+/// Invoices generated for payment to us must set their `min_final_cltv_expiry_delta` field to at least
 /// this value.
 // Note that we fail if exactly HTLC_FAIL_BACK_BUFFER + 1 was used, so we need to add one for
 // any payments to succeed. Further, we don't want payments to fail if a block was found while
 // a payment was being routed, so we add an extra block to be safe.
-pub const MIN_FINAL_CLTV_EXPIRY: u32 = HTLC_FAIL_BACK_BUFFER + 3;
+pub const MIN_FINAL_CLTV_EXPIRY_DELTA: u32 = HTLC_FAIL_BACK_BUFFER + 3;
 
 // Check that our CLTV_EXPIRY is at least CLTV_CLAIM_BUFFER + ANTI_REORG_DELAY + LATENCY_GRACE_PERIOD_BLOCKS,
 // ie that if the next-hop peer fails the HTLC within
@@ -5326,8 +5326,8 @@ where
 	/// If you need exact expiry semantics, you should enforce them upon receipt of
 	/// [`PaymentClaimable`].
 	///
-	/// Note that invoices generated for inbound payments should have their `min_final_cltv_expiry`
-	/// set to at least [`MIN_FINAL_CLTV_EXPIRY`].
+	/// Note that invoices generated for inbound payments should have their `min_final_cltv_expiry_delta`
+	/// set to at least [`MIN_FINAL_CLTV_EXPIRY_DELTA`].
 	///
 	/// Note that a malicious eavesdropper can intuit whether an inbound payment was created by
 	/// `create_inbound_payment` or `create_inbound_payment_for_hash` based on runtime.
