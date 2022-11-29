@@ -16,6 +16,59 @@
 //!
 //! [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 //! [`Offer`]: crate::offers::offer::Offer
+//!
+//! ```ignore
+//! extern crate bitcoin;
+//! extern crate core;
+//! extern crate lightning;
+//!
+//! use core::convert::TryFrom;
+//! use core::time::Duration;
+//!
+//! use bitcoin::network::constants::Network;
+//! use bitcoin::secp256k1::{KeyPair, PublicKey, Secp256k1, SecretKey};
+//! use lightning::offers::parse::ParseError;
+//! use lightning::offers::refund::{Refund, RefundBuilder};
+//! use lightning::util::ser::{Readable, Writeable};
+//!
+//! # use lightning::onion_message::BlindedPath;
+//! # #[cfg(feature = "std")]
+//! # use std::time::SystemTime;
+//! #
+//! # fn create_blinded_path() -> BlindedPath { unimplemented!() }
+//! # fn create_another_blinded_path() -> BlindedPath { unimplemented!() }
+//! #
+//! # #[cfg(feature = "std")]
+//! # fn build() -> Result<(), ParseError> {
+//! let secp_ctx = Secp256k1::new();
+//! let keys = KeyPair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
+//! let pubkey = PublicKey::from(keys);
+//!
+//! let expiration = SystemTime::now() + Duration::from_secs(24 * 60 * 60);
+//! let refund = RefundBuilder::new("coffee, large".to_string(), vec![1; 32], pubkey, 20_000)?
+//!     .absolute_expiry(expiration.duration_since(SystemTime::UNIX_EPOCH).unwrap())
+//!     .issuer("Foo Bar".to_string())
+//!     .path(create_blinded_path())
+//!     .path(create_another_blinded_path())
+//!     .chain(Network::Bitcoin)
+//!     .payer_note("refund for order #12345".to_string())
+//!     .build()?;
+//!
+//! // Encode as a bech32 string for use in a QR code.
+//! let encoded_refund = refund.to_string();
+//!
+//! // Parse from a bech32 string after scanning from a QR code.
+//! let refund = encoded_refund.parse::<Refund>()?;
+//!
+//! // Encode refund as raw bytes.
+//! let mut bytes = Vec::new();
+//! refund.write(&mut bytes).unwrap();
+//!
+//! // Decode raw bytes into an refund.
+//! let refund = Refund::try_from(bytes)?;
+//! # Ok(())
+//! # }
+//! ```
 
 use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::network::constants::Network;
@@ -26,10 +79,10 @@ use core::time::Duration;
 use crate::io;
 use crate::ln::features::InvoiceRequestFeatures;
 use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
-use crate::offers::invoice_request::InvoiceRequestTlvStream;
-use crate::offers::offer::OfferTlvStream;
+use crate::offers::invoice_request::{InvoiceRequestTlvStream, InvoiceRequestTlvStreamRef};
+use crate::offers::offer::{OfferTlvStream, OfferTlvStreamRef};
 use crate::offers::parse::{Bech32Encode, ParseError, ParsedMessage, SemanticError};
-use crate::offers::payer::{PayerContents, PayerTlvStream};
+use crate::offers::payer::{PayerContents, PayerTlvStream, PayerTlvStreamRef};
 use crate::onion_message::BlindedPath;
 use crate::util::ser::{SeekReadable, WithoutLength, Writeable, Writer};
 use crate::util::string::PrintableString;
@@ -38,6 +91,97 @@ use crate::prelude::*;
 
 #[cfg(feature = "std")]
 use std::time::SystemTime;
+
+/// Builds a [`Refund`] for the "offer for money" flow.
+///
+/// See [module-level documentation] for usage.
+///
+/// [module-level documentation]: self
+pub struct RefundBuilder {
+	refund: RefundContents,
+}
+
+impl RefundBuilder {
+	/// Creates a new builder for a refund using the [`Refund::payer_id`] for signing invoices. Use
+	/// a different pubkey per refund to avoid correlating refunds.
+	///
+	/// Additionally, sets the required [`Refund::description`], [`Refund::metadata`], and
+	/// [`Refund::amount_msats`].
+	pub fn new(
+		description: String, metadata: Vec<u8>, payer_id: PublicKey, amount_msats: u64
+	) -> Result<Self, SemanticError> {
+		if amount_msats > MAX_VALUE_MSAT {
+			return Err(SemanticError::InvalidAmount);
+		}
+
+		let refund = RefundContents {
+			payer: PayerContents(metadata), metadata: None, description, absolute_expiry: None,
+			issuer: None, paths: None, chain: None, amount_msats,
+			features: InvoiceRequestFeatures::empty(), payer_id, payer_note: None,
+		};
+
+		Ok(RefundBuilder { refund })
+	}
+
+	/// Sets the [`Refund::absolute_expiry`] as seconds since the Unix epoch. Any expiry that has
+	/// already passed is valid and can be checked for using [`Refund::is_expired`].
+	///
+	/// Successive calls to this method will override the previous setting.
+	pub fn absolute_expiry(mut self, absolute_expiry: Duration) -> Self {
+		self.refund.absolute_expiry = Some(absolute_expiry);
+		self
+	}
+
+	/// Sets the [`Refund::issuer`].
+	///
+	/// Successive calls to this method will override the previous setting.
+	pub fn issuer(mut self, issuer: String) -> Self {
+		self.refund.issuer = Some(issuer);
+		self
+	}
+
+	/// Adds a blinded path to [`Refund::paths`]. Must include at least one path if only connected
+	/// by private channels or if [`Refund::payer_id`] is not a public node id.
+	///
+	/// Successive calls to this method will add another blinded path. Caller is responsible for not
+	/// adding duplicate paths.
+	pub fn path(mut self, path: BlindedPath) -> Self {
+		self.refund.paths.get_or_insert_with(Vec::new).push(path);
+		self
+	}
+
+	/// Sets the [`Refund::chain`] of the given [`Network`] for paying an invoice. If not
+	/// called, [`Network::Bitcoin`] is assumed.
+	///
+	/// Successive calls to this method will override the previous setting.
+	pub fn chain(mut self, network: Network) -> Self {
+		self.refund.chain = Some(ChainHash::using_genesis_block(network));
+		self
+	}
+
+	/// Sets the [`Refund::payer_note`].
+	///
+	/// Successive calls to this method will override the previous setting.
+	pub fn payer_note(mut self, payer_note: String) -> Self {
+		self.refund.payer_note = Some(payer_note);
+		self
+	}
+
+	/// Builds a [`Refund`] after checking for valid semantics.
+	pub fn build(mut self) -> Result<Refund, SemanticError> {
+		if self.refund.chain() == self.refund.implied_chain() {
+			self.refund.chain = None;
+		}
+
+		let mut bytes = Vec::new();
+		self.refund.write(&mut bytes).unwrap();
+
+		Ok(Refund {
+			bytes,
+			contents: self.refund,
+		})
+	}
+}
 
 /// A `Refund` is a request to send an `Invoice` without a preceding [`Offer`].
 ///
@@ -118,7 +262,7 @@ impl Refund {
 
 	/// A chain that the refund is valid for.
 	pub fn chain(&self) -> ChainHash {
-		self.contents.chain.unwrap_or_else(|| ChainHash::using_genesis_block(Network::Bitcoin))
+		self.contents.chain.unwrap_or_else(|| self.contents.implied_chain())
 	}
 
 	/// The amount to refund in msats (i.e., the minimum lightning-payable unit for [`chain`]).
@@ -150,13 +294,71 @@ impl AsRef<[u8]> for Refund {
 	}
 }
 
+impl RefundContents {
+	fn chain(&self) -> ChainHash {
+		self.chain.unwrap_or_else(|| self.implied_chain())
+	}
+
+	pub fn implied_chain(&self) -> ChainHash {
+		ChainHash::using_genesis_block(Network::Bitcoin)
+	}
+
+	pub(super) fn as_tlv_stream(&self) -> RefundTlvStreamRef {
+		let payer = PayerTlvStreamRef {
+			metadata: Some(&self.payer.0),
+		};
+
+		let offer = OfferTlvStreamRef {
+			chains: None,
+			metadata: self.metadata.as_ref(),
+			currency: None,
+			amount: None,
+			description: Some(&self.description),
+			features: None,
+			absolute_expiry: self.absolute_expiry.map(|duration| duration.as_secs()),
+			paths: self.paths.as_ref(),
+			issuer: self.issuer.as_ref(),
+			quantity_max: None,
+			node_id: None,
+		};
+
+		let features = {
+			if self.features == InvoiceRequestFeatures::empty() { None }
+			else { Some(&self.features) }
+		};
+
+		let invoice_request = InvoiceRequestTlvStreamRef {
+			chain: self.chain.as_ref(),
+			amount: Some(self.amount_msats),
+			features,
+			quantity: None,
+			payer_id: Some(&self.payer_id),
+			payer_note: self.payer_note.as_ref(),
+		};
+
+		(payer, offer, invoice_request)
+	}
+}
+
 impl Writeable for Refund {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		WithoutLength(&self.bytes).write(writer)
 	}
 }
 
+impl Writeable for RefundContents {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		self.as_tlv_stream().write(writer)
+	}
+}
+
 type RefundTlvStream = (PayerTlvStream, OfferTlvStream, InvoiceRequestTlvStream);
+
+type RefundTlvStreamRef<'a> = (
+	PayerTlvStreamRef<'a>,
+	OfferTlvStreamRef<'a>,
+	InvoiceRequestTlvStreamRef<'a>,
+);
 
 impl SeekReadable for RefundTlvStream {
 	fn read<R: io::Read + io::Seek>(r: &mut R) -> Result<Self, DecodeError> {
