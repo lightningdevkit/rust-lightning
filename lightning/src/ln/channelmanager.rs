@@ -3974,16 +3974,16 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 		&self, mut htlcs_to_fail: Vec<(HTLCSource, PaymentHash)>, channel_id: [u8; 32],
 		counterparty_node_id: &PublicKey
 	) {
-		for (htlc_src, payment_hash) in htlcs_to_fail.drain(..) {
-			let (failure_code, onion_failure_data) =
-				match self.channel_state.lock().unwrap().by_id.entry(channel_id) {
-					hash_map::Entry::Occupied(chan_entry) => {
-						self.get_htlc_inbound_temp_fail_err_and_data(0x1000|7, &chan_entry.get())
-					},
-					hash_map::Entry::Vacant(_) => (0x4000|10, Vec::new())
-				};
+		let (failure_code, onion_failure_data) =
+			match self.channel_state.lock().unwrap().by_id.entry(channel_id) {
+				hash_map::Entry::Occupied(chan_entry) => {
+					self.get_htlc_inbound_temp_fail_err_and_data(0x1000|7, &chan_entry.get())
+				},
+				hash_map::Entry::Vacant(_) => (0x4000|10, Vec::new())
+			};
 
-			let reason = HTLCFailReason::reason(failure_code, onion_failure_data);
+		for (htlc_src, payment_hash) in htlcs_to_fail.drain(..) {
+			let reason = HTLCFailReason::reason(failure_code, onion_failure_data.clone());
 			let receiver = HTLCDestination::NextHopChannel { node_id: Some(counterparty_node_id.clone()), channel_id };
 			self.fail_htlc_backwards_internal(&htlc_src, &payment_hash, &reason, receiver);
 		}
