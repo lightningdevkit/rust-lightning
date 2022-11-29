@@ -376,12 +376,14 @@ pub trait BaseSign {
 	fn provide_channel_parameters(&mut self, channel_parameters: &ChannelTransactionParameters);
 }
 
-/// A cloneable signer.
+/// A writeable signer.
 ///
-/// Although we require signers to be cloneable, it may be useful for developers to be able to use
-/// signers in an un-sized way, for example as `dyn BaseSign`. Therefore we separate the Clone trait,
-/// which implies Sized, into this derived trait.
-pub trait Sign: BaseSign + Writeable + Clone {
+/// There will always be two instances of a signer per channel, one occupied by the
+/// [`ChannelManager`] and another by the channel's [`ChannelMonitor`].
+///
+/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
+/// [`ChannelMonitor`]: crate::chain::channelmonitor::ChannelMonitor
+pub trait Sign: BaseSign + Writeable {
 }
 
 /// Specifies the recipient of an invoice, to indicate to [`KeysInterface::sign_invoice`] what node

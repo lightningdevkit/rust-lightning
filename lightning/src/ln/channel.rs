@@ -2198,7 +2198,13 @@ impl<Signer: Sign> Channel<Signer> {
 		&self.get_counterparty_pubkeys().funding_pubkey
 	}
 
-	pub fn funding_created<L: Deref>(&mut self, msg: &msgs::FundingCreated, best_block: BestBlock, logger: &L) -> Result<(msgs::FundingSigned, ChannelMonitor<Signer>, Option<msgs::ChannelReady>), ChannelError> where L::Target: Logger {
+	pub fn funding_created<K: Deref, L: Deref>(
+		&mut self, msg: &msgs::FundingCreated, best_block: BestBlock, keys_source: &K, logger: &L
+	) -> Result<(msgs::FundingSigned, ChannelMonitor<<K::Target as KeysInterface>::Signer>, Option<msgs::ChannelReady>), ChannelError>
+	where
+		K::Target: KeysInterface,
+		L::Target: Logger
+	{
 		if self.is_outbound() {
 			return Err(ChannelError::Close("Received funding_created for an outbound channel?".to_owned()));
 		}
@@ -2253,7 +2259,9 @@ impl<Signer: Sign> Channel<Signer> {
 		let funding_txo_script = funding_redeemscript.to_v0_p2wsh();
 		let obscure_factor = get_commitment_transaction_number_obscure_factor(&self.get_holder_pubkeys().payment_point, &self.get_counterparty_pubkeys().payment_point, self.is_outbound());
 		let shutdown_script = self.shutdown_scriptpubkey.clone().map(|script| script.into_inner());
-		let channel_monitor = ChannelMonitor::new(self.secp_ctx.clone(), self.holder_signer.clone(),
+		let mut monitor_signer = keys_source.derive_channel_signer(self.channel_value_satoshis, self.channel_keys_id);
+		monitor_signer.provide_channel_parameters(&self.channel_transaction_parameters);
+		let channel_monitor = ChannelMonitor::new(self.secp_ctx.clone(), monitor_signer,
 		                                          shutdown_script, self.get_holder_selected_contest_delay(),
 		                                          &self.destination_script, (funding_txo, funding_txo_script.clone()),
 		                                          &self.channel_transaction_parameters,
@@ -2278,7 +2286,13 @@ impl<Signer: Sign> Channel<Signer> {
 
 	/// Handles a funding_signed message from the remote end.
 	/// If this call is successful, broadcast the funding transaction (and not before!)
-	pub fn funding_signed<L: Deref>(&mut self, msg: &msgs::FundingSigned, best_block: BestBlock, logger: &L) -> Result<(ChannelMonitor<Signer>, Transaction, Option<msgs::ChannelReady>), ChannelError> where L::Target: Logger {
+	pub fn funding_signed<K: Deref, L: Deref>(
+		&mut self, msg: &msgs::FundingSigned, best_block: BestBlock, keys_source: &K, logger: &L
+	) -> Result<(ChannelMonitor<<K::Target as KeysInterface>::Signer>, Transaction, Option<msgs::ChannelReady>), ChannelError>
+	where
+		K::Target: KeysInterface,
+		L::Target: Logger
+	{
 		if !self.is_outbound() {
 			return Err(ChannelError::Close("Received funding_signed for an inbound channel?".to_owned()));
 		}
@@ -2330,7 +2344,9 @@ impl<Signer: Sign> Channel<Signer> {
 		let funding_txo_script = funding_redeemscript.to_v0_p2wsh();
 		let obscure_factor = get_commitment_transaction_number_obscure_factor(&self.get_holder_pubkeys().payment_point, &self.get_counterparty_pubkeys().payment_point, self.is_outbound());
 		let shutdown_script = self.shutdown_scriptpubkey.clone().map(|script| script.into_inner());
-		let channel_monitor = ChannelMonitor::new(self.secp_ctx.clone(), self.holder_signer.clone(),
+		let mut monitor_signer = keys_source.derive_channel_signer(self.channel_value_satoshis, self.channel_keys_id);
+		monitor_signer.provide_channel_parameters(&self.channel_transaction_parameters);
+		let channel_monitor = ChannelMonitor::new(self.secp_ctx.clone(), monitor_signer,
 		                                          shutdown_script, self.get_holder_selected_contest_delay(),
 		                                          &self.destination_script, (funding_txo, funding_txo_script),
 		                                          &self.channel_transaction_parameters,
@@ -7053,10 +7069,10 @@ mod tests {
 		}]};
 		let funding_outpoint = OutPoint{ txid: tx.txid(), index: 0 };
 		let funding_created_msg = node_a_chan.get_outbound_funding_created(tx.clone(), funding_outpoint, &&logger).unwrap();
-		let (funding_signed_msg, _, _) = node_b_chan.funding_created(&funding_created_msg, best_block, &&logger).unwrap();
+		let (funding_signed_msg, _, _) = node_b_chan.funding_created(&funding_created_msg, best_block, &&keys_provider, &&logger).unwrap();
 
 		// Node B --> Node A: funding signed
-		let _ = node_a_chan.funding_signed(&funding_signed_msg, best_block, &&logger);
+		let _ = node_a_chan.funding_signed(&funding_signed_msg, best_block, &&keys_provider, &&logger);
 
 		// Now disconnect the two nodes and check that the commitment point in
 		// Node B's channel_reestablish message is sane.

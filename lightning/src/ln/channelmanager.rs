@@ -4816,7 +4816,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 					if chan.get().get_counterparty_node_id() != *counterparty_node_id {
 						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.temporary_channel_id));
 					}
-					(try_chan_entry!(self, chan.get_mut().funding_created(msg, best_block, &self.logger), chan), chan.remove())
+					(try_chan_entry!(self, chan.get_mut().funding_created(msg, best_block, &self.keys_manager, &self.logger), chan), chan.remove())
 				},
 				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.temporary_channel_id))
 			}
@@ -4887,7 +4887,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 					if chan.get().get_counterparty_node_id() != *counterparty_node_id {
 						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
 					}
-					let (monitor, funding_tx, channel_ready) = match chan.get_mut().funding_signed(&msg, best_block, &self.logger) {
+					let (monitor, funding_tx, channel_ready) = match chan.get_mut().funding_signed(&msg, best_block, &self.keys_manager, &self.logger) {
 						Ok(update) => update,
 						Err(e) => try_chan_entry!(self, Err(e), chan),
 					};
