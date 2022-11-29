@@ -215,8 +215,8 @@ impl BaseSign for EnforcingSigner {
 		self.inner.sign_channel_announcement(msg, secp_ctx)
 	}
 
-	fn ready_channel(&mut self, channel_parameters: &ChannelTransactionParameters) {
-		self.inner.ready_channel(channel_parameters)
+	fn provide_channel_parameters(&mut self, channel_parameters: &ChannelTransactionParameters) {
+		self.inner.provide_channel_parameters(channel_parameters)
 	}
 }
 

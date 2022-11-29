@@ -2215,7 +2215,7 @@ impl<Signer: Sign> Channel<Signer> {
 		self.channel_transaction_parameters.funding_outpoint = Some(funding_txo);
 		// This is an externally observable change before we finish all our checks.  In particular
 		// funding_created_signature may fail.
-		self.holder_signer.ready_channel(&self.channel_transaction_parameters);
+		self.holder_signer.provide_channel_parameters(&self.channel_transaction_parameters);
 
 		let (counterparty_initial_commitment_txid, initial_commitment_tx, signature) = match self.funding_created_signature(&msg.signature, logger) {
 			Ok(res) => res,
@@ -5250,7 +5250,7 @@ impl<Signer: Sign> Channel<Signer> {
 		}
 
 		self.channel_transaction_parameters.funding_outpoint = Some(funding_txo);
-		self.holder_signer.ready_channel(&self.channel_transaction_parameters);
+		self.holder_signer.provide_channel_parameters(&self.channel_transaction_parameters);
 
 		let signature = match self.get_outbound_funding_created_signature(logger) {
 			Ok(res) => res,
@@ -7296,7 +7296,7 @@ mod tests {
 				selected_contest_delay: 144
 			});
 		chan.channel_transaction_parameters.funding_outpoint = Some(funding_info);
-		signer.ready_channel(&chan.channel_transaction_parameters);
+		signer.provide_channel_parameters(&chan.channel_transaction_parameters);
 
 		assert_eq!(counterparty_pubkeys.payment_point.serialize()[..],
 		           hex::decode("032c0b7cf95324a07d05398b240174dc0c2be444d96b159aa6c7f7b1e668680991").unwrap()[..]);

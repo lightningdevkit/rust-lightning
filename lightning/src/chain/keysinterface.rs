@@ -161,7 +161,7 @@ pub enum SpendableOutputDescriptor {
 	///
 	/// To derive the revocation_pubkey provided here (which is used in the witness
 	/// script generation), you must pass the counterparty revocation_basepoint (which appears in the
-	/// call to Sign::ready_channel) and the provided per_commitment point
+	/// call to Sign::provide_channel_parameters) and the provided per_commitment point
 	/// to chan_utils::derive_public_revocation_key.
 	///
 	/// The witness script which is hashed and included in the output script_pubkey may be
@@ -368,16 +368,12 @@ pub trait BaseSign {
 		-> Result<(Signature, Signature), ()>;
 
 	/// Set the counterparty static channel data, including basepoints,
-	/// counterparty_selected/holder_selected_contest_delay and funding outpoint.
-	/// This is done as soon as the funding outpoint is known.  Since these are static channel data,
-	/// they MUST NOT be allowed to change to different values once set.
+	/// counterparty_selected/holder_selected_contest_delay and funding outpoint. Since these are
+	/// static channel data, they MUST NOT be allowed to change to different values once set, as LDK
+	/// may call this method more than once.
 	///
 	/// channel_parameters.is_populated() MUST be true.
-	///
-	/// We bind holder_selected_contest_delay late here for API convenience.
-	///
-	/// Will be called before any signatures are applied.
-	fn ready_channel(&mut self, channel_parameters: &ChannelTransactionParameters);
+	fn provide_channel_parameters(&mut self, channel_parameters: &ChannelTransactionParameters);
 }
 
 /// A cloneable signer.
@@ -583,39 +579,39 @@ impl InMemorySigner {
 	}
 
 	/// Counterparty pubkeys.
-	/// Will panic if ready_channel wasn't called.
+	/// Will panic if provide_channel_parameters wasn't called.
 	pub fn counterparty_pubkeys(&self) -> &ChannelPublicKeys { &self.get_channel_parameters().counterparty_parameters.as_ref().unwrap().pubkeys }
 
 	/// The contest_delay value specified by our counterparty and applied on holder-broadcastable
 	/// transactions, ie the amount of time that we have to wait to recover our funds if we
 	/// broadcast a transaction.
-	/// Will panic if ready_channel wasn't called.
+	/// Will panic if provide_channel_parameters wasn't called.
 	pub fn counterparty_selected_contest_delay(&self) -> u16 { self.get_channel_parameters().counterparty_parameters.as_ref().unwrap().selected_contest_delay }
 
 	/// The contest_delay value specified by us and applied on transactions broadcastable
 	/// by our counterparty, ie the amount of time that they have to wait to recover their funds
 	/// if they broadcast a transaction.
-	/// Will panic if ready_channel wasn't called.
+	/// Will panic if provide_channel_parameters wasn't called.
 	pub fn holder_selected_contest_delay(&self) -> u16 { self.get_channel_parameters().holder_selected_contest_delay }
 
 	/// Whether the holder is the initiator
-	/// Will panic if ready_channel wasn't called.
+	/// Will panic if provide_channel_parameters wasn't called.
 	pub fn is_outbound(&self) -> bool { self.get_channel_parameters().is_outbound_from_holder }
 
 	/// Funding outpoint
-	/// Will panic if ready_channel wasn't called.
+	/// Will panic if provide_channel_parameters wasn't called.
 	pub fn funding_outpoint(&self) -> &OutPoint { self.get_channel_parameters().funding_outpoint.as_ref().unwrap() }
 
 	/// Obtain a ChannelTransactionParameters for this channel, to be used when verifying or
 	/// building transactions.
 	///
-	/// Will panic if ready_channel wasn't called.
+	/// Will panic if provide_channel_parameters wasn't called.
 	pub fn get_channel_parameters(&self) -> &ChannelTransactionParameters {
 		self.channel_parameters.as_ref().unwrap()
 	}
 
 	/// Whether anchors should be used.
-	/// Will panic if ready_channel wasn't called.
+	/// Will panic if provide_channel_parameters wasn't called.
 	pub fn opt_anchors(&self) -> bool {
 		self.get_channel_parameters().opt_anchors.is_some()
 	}
@@ -819,8 +815,12 @@ impl BaseSign for InMemorySigner {
 		Ok((sign(secp_ctx, &msghash, &self.node_secret), sign(secp_ctx, &msghash, &self.funding_key)))
 	}
 
-	fn ready_channel(&mut self, channel_parameters: &ChannelTransactionParameters) {
-		assert!(self.channel_parameters.is_none(), "Acceptance already noted");
+	fn provide_channel_parameters(&mut self, channel_parameters: &ChannelTransactionParameters) {
+		assert!(self.channel_parameters.is_none() || self.channel_parameters.as_ref().unwrap() == channel_parameters);
+		if self.channel_parameters.is_some() {
+			// The channel parameters were already set and they match, return early.
+			return;
+		}
 		assert!(channel_parameters.is_populated(), "Channel parameters must be fully populated");
 		self.channel_parameters = Some(channel_parameters.clone());
 	}
