@@ -7512,7 +7512,7 @@ mod tests {
 			final_value_msat: 10_000,
 			final_cltv_expiry_delta: 40,
 		};
-		let network_graph = nodes[0].network_graph;
+		let network_graph = nodes[0].network_graph.clone();
 		let first_hops = nodes[0].node.list_usable_channels();
 		let scorer = test_utils::TestScorer::with_penalty(0);
 		let random_seed_bytes = chanmon_cfgs[1].keys_manager.get_secure_random_bytes();
@@ -7557,7 +7557,7 @@ mod tests {
 			final_value_msat: 10_000,
 			final_cltv_expiry_delta: 40,
 		};
-		let network_graph = nodes[0].network_graph;
+		let network_graph = nodes[0].network_graph.clone();
 		let first_hops = nodes[0].node.list_usable_channels();
 		let scorer = test_utils::TestScorer::with_penalty(0);
 		let random_seed_bytes = chanmon_cfgs[1].keys_manager.get_secure_random_bytes();
@@ -7785,7 +7785,7 @@ pub mod bench {
 				&'a test_utils::TestBroadcaster, &'a test_utils::TestFeeEstimator,
 				&'a test_utils::TestLogger, &'a P>,
 			&'a test_utils::TestBroadcaster, &'a KeysManager,
-			&'a test_utils::TestFeeEstimator, &'a test_utils::TestRouter,
+			&'a test_utils::TestFeeEstimator, &'a test_utils::TestRouter<'a>,
 			&'a test_utils::TestLogger>,
 	}
 
@@ -7804,12 +7804,12 @@ pub mod bench {
 
 		let tx_broadcaster = test_utils::TestBroadcaster{txn_broadcasted: Mutex::new(Vec::new()), blocks: Arc::new(Mutex::new(Vec::new()))};
 		let fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) };
-		let router = test_utils::TestRouter {};
+		let logger_a = test_utils::TestLogger::with_id("node a".to_owned());
+		let router = test_utils::TestRouter::new(Arc::new(NetworkGraph::new(genesis_hash, &logger_a)));
 
 		let mut config: UserConfig = Default::default();
 		config.channel_handshake_config.minimum_depth = 1;
 
-		let logger_a = test_utils::TestLogger::with_id("node a".to_owned());
 		let chain_monitor_a = ChainMonitor::new(None, &tx_broadcaster, &logger_a, &fee_estimator, &persister_a);
 		let seed_a = [1u8; 32];
 		let keys_manager_a = KeysManager::new(&seed_a, 42, 42);
