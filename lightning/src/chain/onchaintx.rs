@@ -12,14 +12,19 @@
 //! OnchainTxHandler objects are fully-part of ChannelMonitor and encapsulates all
 //! building, tracking, bumping and notifications functions.
 
-use bitcoin::blockdata::transaction::Transaction;
+use alloc::collections::BTreeMap;
+use core::cmp;
+use core::ops::Deref;
+use core::mem::replace;
+#[cfg(anchors)]
+use core::mem::swap;
+
+use bitcoin::hashes::Hash;
+
+use bitcoin::secp256k1::{self, Secp256k1, ecdsa::Signature};
+
 use bitcoin::blockdata::transaction::OutPoint as BitcoinOutPoint;
-use bitcoin::blockdata::script::Script;
-
-use bitcoin::hash_types::{Txid, BlockHash};
-
-use bitcoin::secp256k1::{Secp256k1, ecdsa::Signature};
-use bitcoin::secp256k1;
+use bitcoin::{Script, Transaction, Txid, BlockHash};
 
 use crate::ln::msgs::DecodeError;
 use crate::ln::PaymentPreimage;
@@ -40,13 +45,6 @@ use crate::util::byte_utils;
 
 use crate::io;
 use crate::prelude::*;
-use alloc::collections::BTreeMap;
-use core::cmp;
-use core::ops::Deref;
-use core::mem::replace;
-#[cfg(anchors)]
-use core::mem::swap;
-use bitcoin::hashes::Hash;
 
 const MAX_ALLOC_SIZE: usize = 64*1024;
 

@@ -9,13 +9,10 @@
 
 //! Structs and traits which allow other parts of rust-lightning to interact with the blockchain.
 
-use bitcoin::blockdata::block::{Block, BlockHeader};
-use bitcoin::blockdata::constants::genesis_block;
-use bitcoin::blockdata::script::Script;
-use bitcoin::blockdata::transaction::TxOut;
-use bitcoin::hash_types::{BlockHash, Txid};
-use bitcoin::network::constants::Network;
 use bitcoin::secp256k1::PublicKey;
+
+use bitcoin::blockdata::constants::genesis_block;
+use bitcoin::{Block, BlockHash, BlockHeader, Network, Script, Txid, TxOut};
 
 use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, MonitorEvent};
 use crate::chain::keysinterface::Sign;

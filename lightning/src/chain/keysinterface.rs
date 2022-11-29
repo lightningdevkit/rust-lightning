@@ -11,42 +11,42 @@
 //! spendable on-chain outputs which the user owns and is responsible for using just as any other
 //! on-chain output which is theirs.
 
-use bitcoin::blockdata::transaction::{Transaction, TxOut, TxIn, EcdsaSighashType};
-use bitcoin::blockdata::script::{Script, Builder};
-use bitcoin::blockdata::opcodes;
-use bitcoin::network::constants::Network;
-use bitcoin::util::bip32::{ExtendedPrivKey, ExtendedPubKey, ChildNumber};
-use bitcoin::util::sighash;
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 use bitcoin::bech32::u5;
-use bitcoin::hashes::{Hash, HashEngine};
+
 use bitcoin::hashes::sha256::HashEngine as Sha256State;
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::sha256d::Hash as Sha256dHash;
-use bitcoin::hash_types::WPubkeyHash;
+use bitcoin::hashes::{Hash, HashEngine};
 
-use bitcoin::secp256k1::{SecretKey, PublicKey, Scalar};
-use bitcoin::secp256k1::{Secp256k1, ecdsa::Signature, Signing};
 use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1::ecdsa::RecoverableSignature;
-use bitcoin::{PackedLockTime, secp256k1, Sequence, Witness};
+use bitcoin::secp256k1::{self, SecretKey, PublicKey, Scalar, Secp256k1, ecdsa::Signature, Signing};
+
+use bitcoin::blockdata::opcodes;
+use bitcoin::blockdata::script::{Script, Builder};
+use bitcoin::blockdata::transaction::{Transaction, TxOut, TxIn, EcdsaSighashType};
+use bitcoin::util::bip32::{ExtendedPrivKey, ExtendedPubKey, ChildNumber};
+use bitcoin::util::sighash;
+use bitcoin::{Network, PackedLockTime, Sequence, Witness, WPubkeyHash};
 
 use crate::util::{byte_utils, transaction_utils};
 use crate::util::crypto::{hkdf_extract_expand_twice, sign};
+use crate::util::invoice::construct_invoice_preimage;
 use crate::util::ser::{Writeable, Writer, Readable, ReadableArgs};
 
 use crate::chain::transaction::OutPoint;
 use crate::ln::channel::ANCHOR_OUTPUT_VALUE_SATOSHI;
 use crate::ln::{chan_utils, PaymentPreimage};
 use crate::ln::chan_utils::{HTLCOutputInCommitment, make_funding_redeemscript, ChannelPublicKeys, HolderCommitmentTransaction, ChannelTransactionParameters, CommitmentTransaction, ClosingTransaction};
-use crate::ln::msgs::UnsignedChannelAnnouncement;
+use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT, UnsignedChannelAnnouncement};
 use crate::ln::script::ShutdownScript;
 
 use crate::prelude::*;
-use core::sync::atomic::{AtomicUsize, Ordering};
 use crate::io::{self, Error};
-use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
-use crate::util::invoice::construct_invoice_preimage;
+
+
 
 /// Used as initial key material, to be expanded into multiple secret keys (but not to be used
 /// directly). This is used within LDK to encrypt/decrypt inbound payment data.

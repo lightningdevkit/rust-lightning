@@ -11,14 +11,17 @@
 //! packages are attached metadata, guiding their aggregable or fee-bumping re-schedule. This file
 //! also includes witness weight computation and fee computation methods.
 
-use bitcoin::blockdata::constants::WITNESS_SCALE_FACTOR;
-use bitcoin::blockdata::transaction::{TxOut,TxIn, Transaction, EcdsaSighashType};
-use bitcoin::blockdata::transaction::OutPoint as BitcoinOutPoint;
-use bitcoin::blockdata::script::Script;
-
-use bitcoin::hash_types::Txid;
+use core::cmp;
+#[cfg(anchors)]
+use core::convert::TryInto;
+use core::mem;
+use core::ops::Deref;
 
 use bitcoin::secp256k1::{SecretKey,PublicKey};
+
+use bitcoin::blockdata::constants::WITNESS_SCALE_FACTOR;
+use bitcoin::blockdata::transaction::{EcdsaSighashType, OutPoint as BitcoinOutPoint};
+use bitcoin::{PackedLockTime, Script, Sequence, Txid, TxIn, Transaction, TxOut, Witness};
 
 use crate::ln::PaymentPreimage;
 use crate::ln::chan_utils::{TxCreationKeys, HTLCOutputInCommitment};
@@ -33,12 +36,6 @@ use crate::util::ser::{Readable, Writer, Writeable};
 
 use crate::io;
 use crate::prelude::*;
-use core::cmp;
-#[cfg(anchors)]
-use core::convert::TryInto;
-use core::mem;
-use core::ops::Deref;
-use bitcoin::{PackedLockTime, Sequence, Witness};
 
 use super::chaininterface::LowerBoundedFeeEstimator;
 

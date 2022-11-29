@@ -23,8 +23,12 @@
 //! events. The remote server would make use of [`ChainMonitor`] for block processing and for
 //! servicing [`ChannelMonitor`] updates from the client.
 
-use bitcoin::blockdata::block::BlockHeader;
-use bitcoin::hash_types::{Txid, BlockHash};
+use core::ops::Deref;
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+use bitcoin::secp256k1::PublicKey;
+
+use bitcoin::{Txid, BlockHash, BlockHeader};
 
 use crate::chain;
 use crate::chain::{ChannelMonitorUpdateStatus, Filter, WatchedOutput};
@@ -41,9 +45,6 @@ use crate::ln::channelmanager::ChannelDetails;
 
 use crate::prelude::*;
 use crate::sync::{RwLock, RwLockReadGuard, Mutex, MutexGuard};
-use core::ops::Deref;
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use bitcoin::secp256k1::PublicKey;
 
 #[derive(Clone, Copy, Hash, PartialEq, Eq)]
 /// A specific update's ID stored in a `MonitorUpdateId`, separated out to make the contents

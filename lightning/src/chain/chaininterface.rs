@@ -13,9 +13,10 @@
 //! Includes traits for monitoring and receiving notifications of new blocks and block
 //! disconnections, transaction broadcasting, and feerate information requests.
 
-use core::{cmp, ops::Deref};
+use core::cmp;
+use core::ops::Deref;
 
-use bitcoin::blockdata::transaction::Transaction;
+use bitcoin::Transaction;
 
 /// An interface to send a transaction to the Bitcoin network.
 pub trait BroadcasterInterface {

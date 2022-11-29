@@ -9,9 +9,8 @@
 
 //! Types describing on-chain transactions.
 
-use bitcoin::hash_types::Txid;
 use bitcoin::blockdata::transaction::OutPoint as BitcoinOutPoint;
-use bitcoin::blockdata::transaction::Transaction;
+use bitcoin::{Txid, Transaction};
 
 /// Transaction data where each item consists of a transaction reference paired with the index of
 /// the transaction within a block.
