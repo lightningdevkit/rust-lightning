@@ -4195,14 +4195,9 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 
 	fn claim_funds_from_hop(&self, channel_state_lock: &mut MutexGuard<ChannelHolder<<K::Target as KeysInterface>::Signer>>, prev_hop: HTLCPreviousHopData, payment_preimage: PaymentPreimage) -> ClaimFundsFromHop {
 		//TODO: Delay the claimed_funds relaying just like we do outbound relay!
-		let channel_state = &mut **channel_state_lock;
-		let chan_id = match self.short_to_chan_info.read().unwrap().get(&prev_hop.short_channel_id) {
-			Some((_cp_id, chan_id)) => chan_id.clone(),
-			None => {
-				return ClaimFundsFromHop::PrevHopForceClosed
-			}
-		};
 
+		let chan_id = prev_hop.outpoint.to_channel_id();
+		let channel_state = &mut **channel_state_lock;
 		if let hash_map::Entry::Occupied(mut chan) = channel_state.by_id.entry(chan_id) {
 			match chan.get_mut().get_update_fulfill_htlc_and_commit(prev_hop.htlc_id, payment_preimage, &self.logger) {
 				Ok(msgs_monitor_option) => {
