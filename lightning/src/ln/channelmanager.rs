@@ -471,6 +471,16 @@ enum BackgroundEvent {
 	ClosingMonitorUpdate((OutPoint, ChannelMonitorUpdate)),
 }
 
+pub(crate) enum MonitorUpdateCompletionAction {
+	/// Indicates that a payment ultimately destined for us was claimed and we should emit an
+	/// [`events::Event::PaymentClaimed`] to the user if we haven't yet generated such an event for
+	/// this payment. Note that this is only best-effort. On restart it's possible such a duplicate
+	/// event can be generated.
+	PaymentClaimed { payment_hash: PaymentHash },
+	/// Indicates an [`events::Event`] should be surfaced to the user.
+	EmitEvent { event: events::Event },
+}
+
 /// State we hold per-peer. In the future we should put channels in here, but for now we only hold
 /// the latest Init features we heard from the peer.
 struct PeerState {
@@ -4580,6 +4590,24 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 	/// Gets the node_id held by this ChannelManager
 	pub fn get_our_node_id(&self) -> PublicKey {
 		self.our_network_pubkey.clone()
+	}
+
+	fn handle_monitor_update_completion_actions<I: IntoIterator<Item=MonitorUpdateCompletionAction>>(&self, actions: I) {
+		for action in actions.into_iter() {
+			match action {
+				MonitorUpdateCompletionAction::PaymentClaimed { payment_hash } => {
+					let payment = self.claimable_payments.lock().unwrap().pending_claiming_payments.remove(&payment_hash);
+					if let Some(ClaimingPayment { amount_msat, payment_purpose: purpose, receiver_node_id }) = payment {
+						self.pending_events.lock().unwrap().push(events::Event::PaymentClaimed {
+							payment_hash, purpose, amount_msat, receiver_node_id: Some(receiver_node_id),
+						});
+					}
+				},
+				MonitorUpdateCompletionAction::EmitEvent { event } => {
+					self.pending_events.lock().unwrap().push(event);
+				},
+			}
+		}
 	}
 
 	/// Handles a channel reentering a functional state, either due to reconnect or a monitor
