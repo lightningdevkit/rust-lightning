@@ -45,8 +45,11 @@ pub struct ChannelHandshakeConfig {
 	/// case of an honest unilateral channel close, which implicitly decrease the economic value of
 	/// our channel.
 	///
-	/// Default value: [`BREAKDOWN_TIMEOUT`], we enforce it as a minimum at channel opening so you
-	/// can tweak config to ask for more security, not less.
+	/// Default value: [`BREAKDOWN_TIMEOUT`], we enforce [`BREAKDOWN_TIMEOUT`] * 7 as a minimum at
+	/// channel opening so you can tweak config to ask for less security than the default of 7 days
+	/// of block. When setting this value, consider how long it may take to upgrade node(s) after
+	/// a bug was discovered a patch releaaed. While not all potential sources of error can be
+	/// recovered, some classes of bugs may allow this much time to react.
 	pub our_to_self_delay: u16,
 	/// Set to the smallest value HTLC we will accept to process.
 	///
@@ -197,7 +200,7 @@ impl Default for ChannelHandshakeConfig {
 	fn default() -> ChannelHandshakeConfig {
 		ChannelHandshakeConfig {
 			minimum_depth: 6,
-			our_to_self_delay: BREAKDOWN_TIMEOUT,
+			our_to_self_delay: BREAKDOWN_TIMEOUT * 7,
 			our_htlc_minimum_msat: 1,
 			max_inbound_htlc_value_in_flight_percent_of_channel: 10,
 			negotiate_scid_privacy: false,

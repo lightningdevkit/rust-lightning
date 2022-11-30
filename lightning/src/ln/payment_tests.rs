@@ -887,7 +887,7 @@ fn do_test_dup_htlc_onchain_fails_on_reload(persist_manager_post_event: bool, co
 	connect_block(&nodes[0], &create_dummy_block(nodes[0].best_block_hash(), 42, vec![node_txn[1].clone()]));
 
 	if confirm_commitment_tx {
-		connect_blocks(&nodes[0], BREAKDOWN_TIMEOUT as u32 - 1);
+		connect_blocks(&nodes[0], (BREAKDOWN_TIMEOUT * 7) as u32 - 1);
 	}
 
 	let claim_block = create_dummy_block(nodes[0].best_block_hash(), 42, if payment_timeout { timeout_txn } else { vec![claim_txn[0].clone()] });

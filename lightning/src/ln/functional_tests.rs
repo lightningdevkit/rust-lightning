@@ -2402,11 +2402,11 @@ fn test_justice_tx_htlc_timeout() {
 	let mut alice_config = UserConfig::default();
 	alice_config.channel_handshake_config.announced_channel = true;
 	alice_config.channel_handshake_limits.force_announced_channel_preference = false;
-	alice_config.channel_handshake_config.our_to_self_delay = 6 * 24 * 5;
+	alice_config.channel_handshake_config.our_to_self_delay = 1008 + 288;
 	let mut bob_config = UserConfig::default();
 	bob_config.channel_handshake_config.announced_channel = true;
 	bob_config.channel_handshake_limits.force_announced_channel_preference = false;
-	bob_config.channel_handshake_config.our_to_self_delay = 6 * 24 * 3;
+	bob_config.channel_handshake_config.our_to_self_delay = 1008 + 144;
 	let user_cfgs = [Some(alice_config), Some(bob_config)];
 	let mut chanmon_cfgs = create_chanmon_cfgs(2);
 	chanmon_cfgs[0].keys_manager.disable_revocation_policy_check = true;
@@ -2465,11 +2465,11 @@ fn test_justice_tx_htlc_success() {
 	let mut alice_config = UserConfig::default();
 	alice_config.channel_handshake_config.announced_channel = true;
 	alice_config.channel_handshake_limits.force_announced_channel_preference = false;
-	alice_config.channel_handshake_config.our_to_self_delay = 6 * 24 * 5;
+	alice_config.channel_handshake_config.our_to_self_delay = 1008 + 288;
 	let mut bob_config = UserConfig::default();
 	bob_config.channel_handshake_config.announced_channel = true;
 	bob_config.channel_handshake_limits.force_announced_channel_preference = false;
-	bob_config.channel_handshake_config.our_to_self_delay = 6 * 24 * 3;
+	bob_config.channel_handshake_config.our_to_self_delay = 1008 + 144;
 	let user_cfgs = [Some(alice_config), Some(bob_config)];
 	let mut chanmon_cfgs = create_chanmon_cfgs(2);
 	chanmon_cfgs[0].keys_manager.disable_revocation_policy_check = true;
@@ -4306,13 +4306,13 @@ fn test_claim_sizeable_push_msat() {
 	assert_eq!(node_txn[0].output.len(), 2); // We can't force trimming of to_remote output as channel_reserve_satoshis block us to do so at channel opening
 
 	mine_transaction(&nodes[1], &node_txn[0]);
-	connect_blocks(&nodes[1], BREAKDOWN_TIMEOUT as u32 - 1);
+	connect_blocks(&nodes[1], (BREAKDOWN_TIMEOUT * 7) as u32 - 1);
 
 	let spend_txn = check_spendable_outputs!(nodes[1], node_cfgs[1].keys_manager);
 	assert_eq!(spend_txn.len(), 1);
 	assert_eq!(spend_txn[0].input.len(), 1);
 	check_spends!(spend_txn[0], node_txn[0]);
-	assert_eq!(spend_txn[0].input[0].sequence.0, BREAKDOWN_TIMEOUT as u32);
+	assert_eq!(spend_txn[0].input[0].sequence.0, (BREAKDOWN_TIMEOUT * 7) as u32);
 }
 
 #[test]
@@ -4955,14 +4955,14 @@ fn test_dynamic_spendable_outputs_local_htlc_success_tx() {
 	};
 
 	mine_transaction(&nodes[1], &node_tx);
-	connect_blocks(&nodes[1], BREAKDOWN_TIMEOUT as u32 - 1);
+	connect_blocks(&nodes[1], (BREAKDOWN_TIMEOUT * 7) as u32 - 1);
 
 	// Verify that B is able to spend its own HTLC-Success tx thanks to spendable output event given back by its ChannelMonitor
 	let spend_txn = check_spendable_outputs!(nodes[1], node_cfgs[1].keys_manager);
 	assert_eq!(spend_txn.len(), 1);
 	assert_eq!(spend_txn[0].input.len(), 1);
 	check_spends!(spend_txn[0], node_tx);
-	assert_eq!(spend_txn[0].input[0].sequence.0, BREAKDOWN_TIMEOUT as u32);
+	assert_eq!(spend_txn[0].input[0].sequence.0, (BREAKDOWN_TIMEOUT * 7) as u32);
 }
 
 fn do_test_fail_backwards_unrevoked_remote_announce(deliver_last_raa: bool, announce_latest: bool) {
@@ -5303,7 +5303,7 @@ fn test_dynamic_spendable_outputs_local_htlc_timeout_tx() {
 	};
 
 	mine_transaction(&nodes[0], &htlc_timeout);
-	connect_blocks(&nodes[0], BREAKDOWN_TIMEOUT as u32 - 1);
+	connect_blocks(&nodes[0], (BREAKDOWN_TIMEOUT * 7) as u32 - 1);
 	expect_payment_failed!(nodes[0], our_payment_hash, false);
 
 	// Verify that A is able to spend its own HTLC-Timeout tx thanks to spendable output event given back by its ChannelMonitor
@@ -5312,11 +5312,11 @@ fn test_dynamic_spendable_outputs_local_htlc_timeout_tx() {
 	check_spends!(spend_txn[0], local_txn[0]);
 	assert_eq!(spend_txn[1].input.len(), 1);
 	check_spends!(spend_txn[1], htlc_timeout);
-	assert_eq!(spend_txn[1].input[0].sequence.0, BREAKDOWN_TIMEOUT as u32);
+	assert_eq!(spend_txn[1].input[0].sequence.0, (BREAKDOWN_TIMEOUT * 7) as u32);
 	assert_eq!(spend_txn[2].input.len(), 2);
 	check_spends!(spend_txn[2], local_txn[0], htlc_timeout);
-	assert!(spend_txn[2].input[0].sequence.0 == BREAKDOWN_TIMEOUT as u32 ||
-	        spend_txn[2].input[1].sequence.0 == BREAKDOWN_TIMEOUT as u32);
+	assert!(spend_txn[2].input[0].sequence.0 == (BREAKDOWN_TIMEOUT * 7) as u32 ||
+	        spend_txn[2].input[1].sequence.0 == (BREAKDOWN_TIMEOUT * 7) as u32);
 }
 
 #[test]
@@ -5389,7 +5389,7 @@ fn test_key_derivation_params() {
 	};
 
 	mine_transaction(&nodes[0], &htlc_timeout);
-	connect_blocks(&nodes[0], BREAKDOWN_TIMEOUT as u32 - 1);
+	connect_blocks(&nodes[0], (BREAKDOWN_TIMEOUT * 7) as u32 - 1);
 	expect_payment_failed!(nodes[0], our_payment_hash, false);
 
 	// Verify that A is able to spend its own HTLC-Timeout tx thanks to spendable output event given back by its ChannelMonitor
@@ -5399,11 +5399,11 @@ fn test_key_derivation_params() {
 	check_spends!(spend_txn[0], local_txn_1[0]);
 	assert_eq!(spend_txn[1].input.len(), 1);
 	check_spends!(spend_txn[1], htlc_timeout);
-	assert_eq!(spend_txn[1].input[0].sequence.0, BREAKDOWN_TIMEOUT as u32);
+	assert_eq!(spend_txn[1].input[0].sequence.0, (BREAKDOWN_TIMEOUT * 7) as u32);
 	assert_eq!(spend_txn[2].input.len(), 2);
 	check_spends!(spend_txn[2], local_txn_1[0], htlc_timeout);
-	assert!(spend_txn[2].input[0].sequence.0 == BREAKDOWN_TIMEOUT as u32 ||
-	        spend_txn[2].input[1].sequence.0 == BREAKDOWN_TIMEOUT as u32);
+	assert!(spend_txn[2].input[0].sequence.0 == (BREAKDOWN_TIMEOUT * 7) as u32 ||
+	        spend_txn[2].input[1].sequence.0 == (BREAKDOWN_TIMEOUT * 7) as u32);
 }
 
 #[test]
@@ -5635,8 +5635,8 @@ fn bolt2_open_channel_sending_node_checks_part2() {
 	assert!(node0_to_1_send_open_channel.channel_flags<=1);
 
 	// BOLT #2 spec: Sending node should set to_self_delay sufficient to ensure the sender can irreversibly spend a commitment transaction output, in case of misbehaviour by the receiver.
-	assert!(BREAKDOWN_TIMEOUT>0);
-	assert!(node0_to_1_send_open_channel.to_self_delay==BREAKDOWN_TIMEOUT);
+	assert!((BREAKDOWN_TIMEOUT*7)>0);
+	assert!(node0_to_1_send_open_channel.to_self_delay==(BREAKDOWN_TIMEOUT*7));
 
 	// BOLT #2 spec: Sending node must ensure the chain_hash value identifies the chain it wishes to open the channel within.
 	let chain_hash=genesis_block(Network::Testnet).header.block_hash();
@@ -9122,7 +9122,7 @@ fn do_test_tx_confirmed_skipping_blocks_immediate_broadcast(test_height_before_t
 
 	let conf_height = nodes[1].best_block_info().1;
 	if !test_height_before_timelock {
-		connect_blocks(&nodes[1], 24 * 6);
+		connect_blocks(&nodes[1], (BREAKDOWN_TIMEOUT*7)  as u32);
 	}
 	nodes[1].chain_monitor.chain_monitor.transactions_confirmed(
 		&nodes[1].get_block_header(conf_height), &[(0, &node_txn[0])], conf_height);
