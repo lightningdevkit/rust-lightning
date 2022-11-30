@@ -1749,27 +1749,27 @@ impl<Signer: Sign> Channel<Signer> {
 	/// our counterparty!)
 	/// The result is a transaction which we can revoke broadcastership of (ie a "local" transaction)
 	/// TODO Some magic rust shit to compile-time check this?
-	fn build_holder_transaction_keys(&self, commitment_number: u64) -> Result<TxCreationKeys, ChannelError> {
+	fn build_holder_transaction_keys(&self, commitment_number: u64) -> TxCreationKeys {
 		let per_commitment_point = self.holder_signer.get_per_commitment_point(commitment_number, &self.secp_ctx);
 		let delayed_payment_base = &self.get_holder_pubkeys().delayed_payment_basepoint;
 		let htlc_basepoint = &self.get_holder_pubkeys().htlc_basepoint;
 		let counterparty_pubkeys = self.get_counterparty_pubkeys();
 
-		Ok(secp_check!(TxCreationKeys::derive_new(&self.secp_ctx, &per_commitment_point, delayed_payment_base, htlc_basepoint, &counterparty_pubkeys.revocation_basepoint, &counterparty_pubkeys.htlc_basepoint), "Local tx keys generation got bogus keys".to_owned()))
+		TxCreationKeys::derive_new(&self.secp_ctx, &per_commitment_point, delayed_payment_base, htlc_basepoint, &counterparty_pubkeys.revocation_basepoint, &counterparty_pubkeys.htlc_basepoint)
 	}
 
 	#[inline]
 	/// Creates a set of keys for build_commitment_transaction to generate a transaction which we
 	/// will sign and send to our counterparty.
 	/// If an Err is returned, it is a ChannelError::Close (for get_outbound_funding_created)
-	fn build_remote_transaction_keys(&self) -> Result<TxCreationKeys, ChannelError> {
+	fn build_remote_transaction_keys(&self) -> TxCreationKeys {
 		//TODO: Ensure that the payment_key derived here ends up in the library users' wallet as we
 		//may see payments to it!
 		let revocation_basepoint = &self.get_holder_pubkeys().revocation_basepoint;
 		let htlc_basepoint = &self.get_holder_pubkeys().htlc_basepoint;
 		let counterparty_pubkeys = self.get_counterparty_pubkeys();
 
-		Ok(secp_check!(TxCreationKeys::derive_new(&self.secp_ctx, &self.counterparty_cur_commitment_point.unwrap(), &counterparty_pubkeys.delayed_payment_basepoint, &counterparty_pubkeys.htlc_basepoint, revocation_basepoint, htlc_basepoint), "Remote tx keys generation got bogus keys".to_owned()))
+		TxCreationKeys::derive_new(&self.secp_ctx, &self.counterparty_cur_commitment_point.unwrap(), &counterparty_pubkeys.delayed_payment_basepoint, &counterparty_pubkeys.htlc_basepoint, revocation_basepoint, htlc_basepoint)
 	}
 
 	/// Gets the redeemscript for the funding transaction output (ie the funding transaction output
@@ -2157,7 +2157,7 @@ impl<Signer: Sign> Channel<Signer> {
 	fn funding_created_signature<L: Deref>(&mut self, sig: &Signature, logger: &L) -> Result<(Txid, CommitmentTransaction, Signature), ChannelError> where L::Target: Logger {
 		let funding_script = self.get_funding_redeemscript();
 
-		let keys = self.build_holder_transaction_keys(self.cur_holder_commitment_transaction_number)?;
+		let keys = self.build_holder_transaction_keys(self.cur_holder_commitment_transaction_number);
 		let initial_commitment_tx = self.build_commitment_transaction(self.cur_holder_commitment_transaction_number, &keys, true, false, logger).tx;
 		{
 			let trusted_tx = initial_commitment_tx.trust();
@@ -2171,7 +2171,7 @@ impl<Signer: Sign> Channel<Signer> {
 			secp_check!(self.secp_ctx.verify_ecdsa(&sighash, &sig, self.counterparty_funding_pubkey()), "Invalid funding_created signature from peer".to_owned());
 		}
 
-		let counterparty_keys = self.build_remote_transaction_keys()?;
+		let counterparty_keys = self.build_remote_transaction_keys();
 		let counterparty_initial_commitment_tx = self.build_commitment_transaction(self.cur_counterparty_commitment_transaction_number, &counterparty_keys, false, false, logger).tx;
 
 		let counterparty_trusted_tx = counterparty_initial_commitment_tx.trust();
@@ -2285,7 +2285,7 @@ impl<Signer: Sign> Channel<Signer> {
 
 		let funding_script = self.get_funding_redeemscript();
 
-		let counterparty_keys = self.build_remote_transaction_keys()?;
+		let counterparty_keys = self.build_remote_transaction_keys();
 		let counterparty_initial_commitment_tx = self.build_commitment_transaction(self.cur_counterparty_commitment_transaction_number, &counterparty_keys, false, false, logger).tx;
 		let counterparty_trusted_tx = counterparty_initial_commitment_tx.trust();
 		let counterparty_initial_bitcoin_tx = counterparty_trusted_tx.built_transaction();
@@ -2293,7 +2293,7 @@ impl<Signer: Sign> Channel<Signer> {
 		log_trace!(logger, "Initial counterparty tx for channel {} is: txid {} tx {}",
 			log_bytes!(self.channel_id()), counterparty_initial_bitcoin_tx.txid, encode::serialize_hex(&counterparty_initial_bitcoin_tx.transaction));
 
-		let holder_signer = self.build_holder_transaction_keys(self.cur_holder_commitment_transaction_number)?;
+		let holder_signer = self.build_holder_transaction_keys(self.cur_holder_commitment_transaction_number);
 		let initial_commitment_tx = self.build_commitment_transaction(self.cur_holder_commitment_transaction_number, &holder_signer, true, false, logger).tx;
 		{
 			let trusted_tx = initial_commitment_tx.trust();
@@ -2959,7 +2959,7 @@ impl<Signer: Sign> Channel<Signer> {
 
 		let funding_script = self.get_funding_redeemscript();
 
-		let keys = self.build_holder_transaction_keys(self.cur_holder_commitment_transaction_number).map_err(|e| (None, e))?;
+		let keys = self.build_holder_transaction_keys(self.cur_holder_commitment_transaction_number);
 
 		let commitment_stats = self.build_commitment_transaction(self.cur_holder_commitment_transaction_number, &keys, true, false, logger);
 		let commitment_txid = {
@@ -3551,7 +3551,7 @@ impl<Signer: Sign> Channel<Signer> {
 		// Before proposing a feerate update, check that we can actually afford the new fee.
 		let inbound_stats = self.get_inbound_pending_htlc_stats(Some(feerate_per_kw));
 		let outbound_stats = self.get_outbound_pending_htlc_stats(Some(feerate_per_kw));
-		let keys = if let Ok(keys) = self.build_holder_transaction_keys(self.cur_holder_commitment_transaction_number) { keys } else { return None; };
+		let keys = self.build_holder_transaction_keys(self.cur_holder_commitment_transaction_number);
 		let commitment_stats = self.build_commitment_transaction(self.cur_holder_commitment_transaction_number, &keys, true, true, logger);
 		let buffer_fee_msat = Channel::<Signer>::commit_tx_fee_sat(feerate_per_kw, commitment_stats.num_nondust_htlcs + outbound_stats.on_holder_tx_holding_cell_htlcs_count as usize + CONCURRENT_INBOUND_HTLC_FEE_BUFFER as usize, self.opt_anchors()) * 1000;
 		let holder_balance_msat = commitment_stats.local_balance_msat - outbound_stats.holding_cell_msat;
@@ -5221,7 +5221,7 @@ impl<Signer: Sign> Channel<Signer> {
 
 	/// If an Err is returned, it is a ChannelError::Close (for get_outbound_funding_created)
 	fn get_outbound_funding_created_signature<L: Deref>(&mut self, logger: &L) -> Result<Signature, ChannelError> where L::Target: Logger {
-		let counterparty_keys = self.build_remote_transaction_keys()?;
+		let counterparty_keys = self.build_remote_transaction_keys();
 		let counterparty_initial_commitment_tx = self.build_commitment_transaction(self.cur_counterparty_commitment_transaction_number, &counterparty_keys, false, false, logger).tx;
 		Ok(self.holder_signer.sign_counterparty_commitment(&counterparty_initial_commitment_tx, Vec::new(), &self.secp_ctx)
 				.map_err(|_| ChannelError::Close("Failed to get signatures for new commitment_signed".to_owned()))?.0)
@@ -5522,7 +5522,7 @@ impl<Signer: Sign> Channel<Signer> {
 			return Err(ChannelError::Ignore(format!("Cannot send value that would put us over the max HTLC value in flight our peer will accept ({})", self.counterparty_max_htlc_value_in_flight_msat)));
 		}
 
-		let keys = self.build_holder_transaction_keys(self.cur_holder_commitment_transaction_number)?;
+		let keys = self.build_holder_transaction_keys(self.cur_holder_commitment_transaction_number);
 		let commitment_stats = self.build_commitment_transaction(self.cur_holder_commitment_transaction_number, &keys, true, true, logger);
 		if !self.is_outbound() {
 			// Check that we won't violate the remote channel reserve by adding this HTLC.
@@ -5714,7 +5714,7 @@ impl<Signer: Sign> Channel<Signer> {
 	/// Only fails in case of bad keys. Used for channel_reestablish commitment_signed generation
 	/// when we shouldn't change HTLC/channel state.
 	fn send_commitment_no_state_update<L: Deref>(&self, logger: &L) -> Result<(msgs::CommitmentSigned, (Txid, Vec<(HTLCOutputInCommitment, Option<&HTLCSource>)>)), ChannelError> where L::Target: Logger {
-		let counterparty_keys = self.build_remote_transaction_keys()?;
+		let counterparty_keys = self.build_remote_transaction_keys();
 		let commitment_stats = self.build_commitment_transaction(self.cur_counterparty_commitment_transaction_number, &counterparty_keys, false, true, logger);
 		let counterparty_commitment_txid = commitment_stats.tx.trust().txid();
 		let (signature, htlc_signatures);
@@ -7309,7 +7309,7 @@ mod tests {
 		let per_commitment_secret = SecretKey::from_slice(&hex::decode("1f1e1d1c1b1a191817161514131211100f0e0d0c0b0a09080706050403020100").unwrap()[..]).unwrap();
 		let per_commitment_point = PublicKey::from_secret_key(&secp_ctx, &per_commitment_secret);
 		let htlc_basepoint = &chan.holder_signer.pubkeys().htlc_basepoint;
-		let keys = TxCreationKeys::derive_new(&secp_ctx, &per_commitment_point, delayed_payment_base, htlc_basepoint, &counterparty_pubkeys.revocation_basepoint, &counterparty_pubkeys.htlc_basepoint).unwrap();
+		let keys = TxCreationKeys::derive_new(&secp_ctx, &per_commitment_point, delayed_payment_base, htlc_basepoint, &counterparty_pubkeys.revocation_basepoint, &counterparty_pubkeys.htlc_basepoint);
 
 		macro_rules! test_commitment {
 			( $counterparty_sig_hex: expr, $sig_hex: expr, $tx_hex: expr, $($remain:tt)* ) => {

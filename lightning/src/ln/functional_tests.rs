@@ -705,7 +705,7 @@ fn test_update_fee_that_funder_cannot_afford() {
 
 	// Assemble the set of keys we can use for signatures for our commitment_signed message.
 	let commit_tx_keys = chan_utils::TxCreationKeys::derive_new(&secp_ctx, &remote_point, &remote_delayed_payment_basepoint,
-		&remote_htlc_basepoint, &local_revocation_basepoint, &local_htlc_basepoint).unwrap();
+		&remote_htlc_basepoint, &local_revocation_basepoint, &local_htlc_basepoint);
 
 	let res = {
 		let local_chan_lock = nodes[0].node.channel_state.lock().unwrap();
@@ -1412,7 +1412,7 @@ fn test_fee_spike_violation_fails_htlc() {
 
 	// Assemble the set of keys we can use for signatures for our commitment_signed message.
 	let commit_tx_keys = chan_utils::TxCreationKeys::derive_new(&secp_ctx, &remote_point, &remote_delayed_payment_basepoint,
-		&remote_htlc_basepoint, &local_revocation_basepoint, &local_htlc_basepoint).unwrap();
+		&remote_htlc_basepoint, &local_revocation_basepoint, &local_htlc_basepoint);
 
 	// Build the remote commitment transaction so we can sign it, and then later use the
 	// signature for the commitment_signed message.
