@@ -303,14 +303,6 @@ struct ReceiveError {
 	msg: &'static str,
 }
 
-/// Return value for claim_funds_from_hop
-enum ClaimFundsFromHop {
-	PrevHopForceClosed,
-	MonitorUpdateFail(PublicKey, MsgHandleErrInternal, Option<u64>),
-	Success(u64),
-	DuplicateClaim,
-}
-
 type ShutdownResult = (Option<(OutPoint, ChannelMonitorUpdate)>, Vec<(HTLCSource, PaymentHash, PublicKey, [u8; 32])>);
 
 /// Error type returned across the channel_state mutex boundary. When an Err is generated for a
@@ -4351,29 +4343,15 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 		if valid_mpp {
 			for htlc in sources.drain(..) {
 				if channel_state.is_none() { channel_state = Some(self.channel_state.lock().unwrap()); }
-				match self.claim_funds_from_hop(channel_state.take().unwrap(), htlc.prev_hop, payment_preimage,
+				if let Err((pk, err)) = self.claim_funds_from_hop(channel_state.take().unwrap(), htlc.prev_hop,
+					payment_preimage,
 					|_| Some(MonitorUpdateCompletionAction::PaymentClaimed { payment_hash }))
 				{
-					ClaimFundsFromHop::MonitorUpdateFail(pk, err, _) => {
-						if let msgs::ErrorAction::IgnoreError = err.err.action {
-							// We got a temporary failure updating monitor, but will claim the
-							// HTLC when the monitor updating is restored (or on chain).
-							log_error!(self.logger, "Temporary failure claiming HTLC, treating as success: {}", err.err.err);
-						} else { errs.push((pk, err)); }
-					},
-					ClaimFundsFromHop::PrevHopForceClosed => {
-						// This should be incredibly rare - we checked that all the channels were
-						// open above, though as we release the lock at each loop iteration it's
-						// still possible. We should still claim the HTLC on-chain through the
-						// closed-channel-update generated in claim_funds_from_hop.
-					},
-					ClaimFundsFromHop::DuplicateClaim => {
-						// While we should never get here in most cases, if we do, it likely
-						// indicates that the HTLC was timed out some time ago and is no longer
-						// available to be claimed. Thus, it does not make sense to set
-						// `claimed_any_htlcs`.
-					},
-					ClaimFundsFromHop::Success(_) => {},
+					if let msgs::ErrorAction::IgnoreError = err.err.action {
+						// We got a temporary failure updating monitor, but will claim the
+						// HTLC when the monitor updating is restored (or on chain).
+						log_error!(self.logger, "Temporary failure claiming HTLC, treating as success: {}", err.err.err);
+					} else { errs.push((pk, err)); }
 				}
 			}
 		}
@@ -4400,7 +4378,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 	fn claim_funds_from_hop<ComplFunc: FnOnce(Option<u64>) -> Option<MonitorUpdateCompletionAction>>(&self,
 		mut channel_state_lock: MutexGuard<ChannelHolder<<K::Target as KeysInterface>::Signer>>,
 		prev_hop: HTLCPreviousHopData, payment_preimage: PaymentPreimage, completion_action: ComplFunc)
-	-> ClaimFundsFromHop {
+	-> Result<(), (PublicKey, MsgHandleErrInternal)> {
 		//TODO: Delay the claimed_funds relaying just like we do outbound relay!
 
 		let chan_id = prev_hop.outpoint.to_channel_id();
@@ -4419,9 +4397,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 								let err = handle_monitor_update_res!(self, e, chan, RAACommitmentOrder::CommitmentFirst, false, msgs.is_some()).unwrap_err();
 								mem::drop(channel_state_lock);
 								self.handle_monitor_update_completion_actions(completion_action(Some(htlc_value_msat)));
-								return ClaimFundsFromHop::MonitorUpdateFail(
-									counterparty_node_id, err, Some(htlc_value_msat)
-								);
+								return Err((counterparty_node_id, err));
 							}
 						}
 						if let Some((msg, commitment_signed)) = msgs {
@@ -4441,9 +4417,9 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 						}
 						mem::drop(channel_state_lock);
 						self.handle_monitor_update_completion_actions(completion_action(Some(htlc_value_msat)));
-						return ClaimFundsFromHop::Success(htlc_value_msat);
+						Ok(())
 					} else {
-						return ClaimFundsFromHop::DuplicateClaim;
+						Ok(())
 					}
 				},
 				Err((e, monitor_update)) => {
@@ -4461,7 +4437,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 					}
 					mem::drop(channel_state_lock);
 					self.handle_monitor_update_completion_actions(completion_action(None));
-					return ClaimFundsFromHop::MonitorUpdateFail(counterparty_node_id, res, None);
+					Err((counterparty_node_id, res))
 				},
 			}
 		} else {
@@ -4489,7 +4465,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 			// generally always allowed to be duplicative (and it's specifically noted in
 			// `PaymentForwarded`).
 			self.handle_monitor_update_completion_actions(completion_action(None));
-			return ClaimFundsFromHop::PrevHopForceClosed
+			Ok(())
 		}
 	}
 
@@ -4581,7 +4557,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 							}})
 						} else { None }
 					});
-				if let ClaimFundsFromHop::MonitorUpdateFail(pk, err, _) = res {
+				if let Err((pk, err)) = res {
 					let result: Result<(), _> = Err(err);
 					let _ = handle_error!(self, result, pk);
 				}
