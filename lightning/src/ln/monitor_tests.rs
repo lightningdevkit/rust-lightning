@@ -2185,21 +2185,20 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 	// revoked outputs.
 	{
 		let txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
-		assert_eq!(txn.len(), 2);
+		assert_eq!(txn.len(), 4);
 
-		let (revoked_claim_a, revoked_claim_b) = if txn[0].input[0].previous_output.txid == revoked_commitment_a.txid() {
-			(&txn[0], &txn[1])
+		let (revoked_htlc_claim_a, revoked_htlc_claim_b) = if txn[0].input[0].previous_output.txid == revoked_commitment_a.txid() {
+			(if txn[0].input.len() == 2 { &txn[0] } else { &txn[1] }, if txn[2].input.len() == 2 { &txn[2] } else { &txn[3] })
 		} else {
-			(&txn[1], &txn[0])
+			(if txn[2].input.len() == 2 { &txn[2] } else { &txn[3] }, if txn[0].input.len() == 2 { &txn[0] } else { &txn[1] })
 		};
 
-		// TODO: to_self claim must be separate from HTLC claims
-		assert_eq!(revoked_claim_a.input.len(), 3); // Spends both HTLC outputs and to_self output
-		assert_eq!(revoked_claim_a.output.len(), 1);
-		check_spends!(revoked_claim_a, revoked_commitment_a);
-		assert_eq!(revoked_claim_b.input.len(), 3); // Spends both HTLC outputs and to_self output
-		assert_eq!(revoked_claim_b.output.len(), 1);
-		check_spends!(revoked_claim_b, revoked_commitment_b);
+		assert_eq!(revoked_htlc_claim_a.input.len(), 2); // Spends both HTLC outputs
+		assert_eq!(revoked_htlc_claim_a.output.len(), 1);
+		check_spends!(revoked_htlc_claim_a, revoked_commitment_a);
+		assert_eq!(revoked_htlc_claim_b.input.len(), 2); // Spends both HTLC outputs
+		assert_eq!(revoked_htlc_claim_b.output.len(), 1);
+		check_spends!(revoked_htlc_claim_b, revoked_commitment_b);
 	}
 
 	// Since Bob was able to confirm his revoked commitment, he'll now try to claim the HTLCs
@@ -2296,21 +2295,7 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 	// the second level instead.
 	let revoked_claims = {
 		let txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
-		assert_eq!(txn.len(), 4);
-
-		let revoked_to_self_claim_a = txn.iter().find(|tx|
-			tx.input.len() == 1 &&
-			tx.output.len() == 1 &&
-			tx.input[0].previous_output.txid == revoked_commitment_a.txid()
-		).unwrap();
-		check_spends!(revoked_to_self_claim_a, revoked_commitment_a);
-
-		let revoked_to_self_claim_b = txn.iter().find(|tx|
-			tx.input.len() == 1 &&
-			tx.output.len() == 1 &&
-			tx.input[0].previous_output.txid == revoked_commitment_b.txid()
-		).unwrap();
-		check_spends!(revoked_to_self_claim_b, revoked_commitment_b);
+		assert_eq!(txn.len(), 2);
 
 		let revoked_htlc_claims = txn.iter().filter(|tx|
 			tx.input.len() == 2 &&
@@ -2343,7 +2328,7 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 
 	assert!(nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());
 	let spendable_output_events = nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events();
-	assert_eq!(spendable_output_events.len(), 4);
+	assert_eq!(spendable_output_events.len(), 2);
 	for (idx, event) in spendable_output_events.iter().enumerate() {
 		if let Event::SpendableOutputs { outputs } = event {
 			assert_eq!(outputs.len(), 1);
@@ -2358,7 +2343,8 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 
 	assert!(nodes[0].node.list_channels().is_empty());
 	assert!(nodes[1].node.list_channels().is_empty());
-	assert!(nodes[0].chain_monitor.chain_monitor.get_claimable_balances(&[]).is_empty());
+	// On the Alice side, the individual to_self_claim are still pending confirmation.
+	assert_eq!(nodes[0].chain_monitor.chain_monitor.get_claimable_balances(&[]).len(), 2);
 	// TODO: From Bob's PoV, he still thinks he can claim the outputs from his revoked commitment.
 	// This needs to be fixed before we enable pruning `ChannelMonitor`s once they don't have any
 	// balances to claim.

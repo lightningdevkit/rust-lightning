@@ -2422,7 +2422,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 							let commitment_package = PackageTemplate::build_package(
 								self.funding_info.0.txid.clone(), self.funding_info.0.index as u32,
 								PackageSolvingData::HolderFundingOutput(funding_output),
-								best_block_height, false, best_block_height,
+								best_block_height, best_block_height
 							);
 							self.onchain_tx_handler.update_claims_view_from_requests(
 								vec![commitment_package], best_block_height, best_block_height,
@@ -2604,9 +2604,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			for (idx, outp) in tx.output.iter().enumerate() {
 				if outp.script_pubkey == revokeable_p2wsh {
 					let revk_outp = RevokedOutput::build(per_commitment_point, self.counterparty_commitment_params.counterparty_delayed_payment_base_key, self.counterparty_commitment_params.counterparty_htlc_base_key, per_commitment_key, outp.value, self.counterparty_commitment_params.on_counterparty_tx_csv, self.onchain_tx_handler.opt_anchors());
-					// Post-anchor, aggregation of outputs of different types is unsafe. See https://github.com/lightning/bolts/pull/803.
-					let aggregation = if self.onchain_tx_handler.opt_anchors() { false } else { true };
-					let justice_package = PackageTemplate::build_package(commitment_txid, idx as u32, PackageSolvingData::RevokedOutput(revk_outp), height + self.counterparty_commitment_params.on_counterparty_tx_csv as u32, aggregation, height);
+					let justice_package = PackageTemplate::build_package(commitment_txid, idx as u32, PackageSolvingData::RevokedOutput(revk_outp), height + self.counterparty_commitment_params.on_counterparty_tx_csv as u32, height);
 					claimable_outpoints.push(justice_package);
 					to_counterparty_output_info =
 						Some((idx.try_into().expect("Txn can't have more than 2^32 outputs"), outp.value));
@@ -2624,7 +2622,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 								to_counterparty_output_info);
 						}
 						let revk_htlc_outp = RevokedHTLCOutput::build(per_commitment_point, self.counterparty_commitment_params.counterparty_delayed_payment_base_key, self.counterparty_commitment_params.counterparty_htlc_base_key, per_commitment_key, htlc.amount_msat / 1000, htlc.clone(), self.onchain_tx_handler.channel_transaction_parameters.opt_anchors.is_some());
-						let justice_package = PackageTemplate::build_package(commitment_txid, transaction_output_index, PackageSolvingData::RevokedHTLCOutput(revk_htlc_outp), htlc.cltv_expiry, true, height);
+						let justice_package = PackageTemplate::build_package(commitment_txid, transaction_output_index, PackageSolvingData::RevokedHTLCOutput(revk_htlc_outp), htlc.cltv_expiry, height);
 						claimable_outpoints.push(justice_package);
 					}
 				}
@@ -2749,8 +2747,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 								self.counterparty_commitment_params.counterparty_htlc_base_key,
 								htlc.clone(), self.onchain_tx_handler.opt_anchors()))
 					};
-					let aggregation = if !htlc.offered { false } else { true };
-					let counterparty_package = PackageTemplate::build_package(commitment_txid, transaction_output_index, counterparty_htlc_outp, htlc.cltv_expiry,aggregation, 0);
+					let counterparty_package = PackageTemplate::build_package(commitment_txid, transaction_output_index, counterparty_htlc_outp, htlc.cltv_expiry, 0);
 					claimable_outpoints.push(counterparty_package);
 				}
 			}
@@ -2794,7 +2791,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				);
 				let justice_package = PackageTemplate::build_package(
 					htlc_txid, idx as u32, PackageSolvingData::RevokedOutput(revk_outp),
-					height + self.counterparty_commitment_params.on_counterparty_tx_csv as u32, true, height
+					height + self.counterparty_commitment_params.on_counterparty_tx_csv as u32, height
 				);
 				claimable_outpoints.push(justice_package);
 				if outputs_to_watch.is_none() {
@@ -2817,11 +2814,11 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 
 		for &(ref htlc, _, _) in holder_tx.htlc_outputs.iter() {
 			if let Some(transaction_output_index) = htlc.transaction_output_index {
-				let (htlc_output, aggregable) = if htlc.offered {
+				let htlc_output = if htlc.offered {
 					let htlc_output = HolderHTLCOutput::build_offered(
 						htlc.amount_msat, htlc.cltv_expiry, self.onchain_tx_handler.opt_anchors()
 					);
-					(htlc_output, false)
+					htlc_output
 				} else {
 					let payment_preimage = if let Some(preimage) = self.payment_preimages.get(&htlc.payment_hash) {
 						preimage.clone()
@@ -2832,12 +2829,12 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					let htlc_output = HolderHTLCOutput::build_accepted(
 						payment_preimage, htlc.amount_msat, self.onchain_tx_handler.opt_anchors()
 					);
-					(htlc_output, self.onchain_tx_handler.opt_anchors())
+					htlc_output
 				};
 				let htlc_package = PackageTemplate::build_package(
 					holder_tx.txid, transaction_output_index,
 					PackageSolvingData::HolderHTLCOutput(htlc_output),
-					htlc.cltv_expiry, aggregable, conf_height
+					htlc.cltv_expiry, conf_height
 				);
 				claim_requests.push(htlc_package);
 			}
@@ -3177,7 +3174,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		let should_broadcast = self.should_broadcast_holder_commitment_txn(logger);
 		if should_broadcast {
 			let funding_outp = HolderFundingOutput::build(self.funding_redeemscript.clone(), self.channel_value_satoshis, self.onchain_tx_handler.opt_anchors());
-			let commitment_package = PackageTemplate::build_package(self.funding_info.0.txid.clone(), self.funding_info.0.index as u32, PackageSolvingData::HolderFundingOutput(funding_outp), self.best_block.height(), false, self.best_block.height());
+			let commitment_package = PackageTemplate::build_package(self.funding_info.0.txid.clone(), self.funding_info.0.index as u32, PackageSolvingData::HolderFundingOutput(funding_outp), self.best_block.height(), self.best_block.height());
 			claimable_outpoints.push(commitment_package);
 			self.pending_monitor_events.push(MonitorEvent::CommitmentTxConfirmed(self.funding_info.0));
 			let commitment_tx = self.onchain_tx_handler.get_fully_signed_holder_tx(&self.funding_redeemscript);
