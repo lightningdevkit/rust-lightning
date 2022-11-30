@@ -2425,6 +2425,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 						pending_htlcs,
 					}));
 				},
+				_ => {},
 			}
 		}
 		ret

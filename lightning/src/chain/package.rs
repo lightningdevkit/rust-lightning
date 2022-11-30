@@ -26,6 +26,8 @@ use crate::ln::chan_utils;
 use crate::ln::msgs::DecodeError;
 use crate::chain::chaininterface::{FeeEstimator, ConfirmationTarget, MIN_RELAY_FEE_SAT_PER_1000_WEIGHT};
 use crate::chain::keysinterface::Sign;
+#[cfg(anchors)]
+use crate::chain::onchaintx::ExternalHTLCClaim;
 use crate::chain::onchaintx::OnchainTxHandler;
 use crate::util::logger::Logger;
 use crate::util::ser::{Readable, Writer, Writeable};
@@ -448,8 +450,13 @@ impl PackageSolvingData {
 	}
 	fn get_finalized_tx<Signer: Sign>(&self, outpoint: &BitcoinOutPoint, onchain_handler: &mut OnchainTxHandler<Signer>) -> Option<Transaction> {
 		match self {
-			PackageSolvingData::HolderHTLCOutput(ref outp) => { return onchain_handler.get_fully_signed_htlc_tx(outpoint, &outp.preimage); }
-			PackageSolvingData::HolderFundingOutput(ref outp) => { return Some(onchain_handler.get_fully_signed_holder_tx(&outp.funding_redeemscript)); }
+			PackageSolvingData::HolderHTLCOutput(ref outp) => {
+				debug_assert!(!outp.opt_anchors());
+				return onchain_handler.get_fully_signed_htlc_tx(outpoint, &outp.preimage);
+			}
+			PackageSolvingData::HolderFundingOutput(ref outp) => {
+				return Some(onchain_handler.get_fully_signed_holder_tx(&outp.funding_redeemscript));
+			}
 			_ => { panic!("API Error!"); }
 		}
 	}
@@ -648,6 +655,25 @@ impl PackageTemplate {
 		// value: 8 bytes ; var_int: 1 byte ; pk_script: `destination_script.len()`
 		let output_weight = (8 + 1 + destination_script.len()) * WITNESS_SCALE_FACTOR;
 		inputs_weight + witnesses_weight + transaction_weight + output_weight
+	}
+	#[cfg(anchors)]
+	pub(crate) fn construct_malleable_package_with_external_funding<Signer: Sign>(
+		&self, onchain_handler: &mut OnchainTxHandler<Signer>,
+	) -> Option<Vec<ExternalHTLCClaim>> {
+		debug_assert!(self.requires_external_funding());
+		let mut htlcs: Option<Vec<ExternalHTLCClaim>> = None;
+		for (previous_output, input) in &self.inputs {
+			match input {
+				PackageSolvingData::HolderHTLCOutput(ref outp) => {
+					debug_assert!(outp.opt_anchors());
+					onchain_handler.generate_external_htlc_claim(&previous_output, &outp.preimage).map(|htlc| {
+						htlcs.get_or_insert_with(|| Vec::with_capacity(self.inputs.len())).push(htlc);
+					});
+				}
+				_ => debug_assert!(false, "Expected HolderHTLCOutputs to not be aggregated with other input types"),
+			}
+		}
+		htlcs
 	}
 	pub(crate) fn finalize_malleable_package<L: Deref, Signer: Sign>(
 		&self, onchain_handler: &mut OnchainTxHandler<Signer>, value: u64, destination_script: Script, logger: &L
