@@ -65,6 +65,8 @@ use crate::util::ser::{BigSize, FixedLengthReader, Readable, ReadableArgs, Maybe
 use crate::util::logger::{Level, Logger};
 use crate::util::errors::APIError;
 
+use alloc::collections::BTreeMap;
+
 use crate::io;
 use crate::prelude::*;
 use core::{cmp, mem};
@@ -474,6 +476,11 @@ pub(crate) enum MonitorUpdateCompletionAction {
 	EmitEvent { event: events::Event },
 }
 
+impl_writeable_tlv_based_enum_upgradable!(MonitorUpdateCompletionAction,
+	(0, PaymentClaimed) => { (0, payment_hash, required) },
+	(2, EmitEvent) => { (0, event, ignorable) },
+);
+
 /// State we hold per-peer.
 pub(super) struct PeerState<Signer: ChannelSigner> {
 	/// `temporary_channel_id` or `channel_id` -> `channel`.
@@ -487,6 +494,21 @@ pub(super) struct PeerState<Signer: ChannelSigner> {
 	/// Messages to send to the peer - pushed to in the same lock that they are generated in (except
 	/// for broadcast messages, where ordering isn't as strict).
 	pub(super) pending_msg_events: Vec<MessageSendEvent>,
+	/// Map from a specific channel to some action(s) that should be taken when all pending
+	/// [`ChannelMonitorUpdate`]s for the channel complete updating.
+	///
+	/// Note that because we generally only have one entry here a HashMap is pretty overkill. A
+	/// BTreeMap currently stores more than ten elements per leaf node, so even up to a few
+	/// channels with a peer this will just be one allocation and will amount to a linear list of
+	/// channels to walk, avoiding the whole hashing rigmarole.
+	///
+	/// Note that the channel may no longer exist. For example, if a channel was closed but we
+	/// later needed to claim an HTLC which is pending on-chain, we may generate a monitor update
+	/// for a missing channel. While a malicious peer could construct a second channel with the
+	/// same `temporary_channel_id` (or final `channel_id` in the case of 0conf channels or prior
+	/// to funding appearing on-chain), the downstream `ChannelMonitor` set is required to ensure
+	/// duplicates do not occur, so such channels should fail without a monitor update completing.
+	monitor_update_blocked_actions: BTreeMap<[u8; 32], Vec<MonitorUpdateCompletionAction>>,
 	/// The peer is currently connected (i.e. we've seen a
 	/// [`ChannelMessageHandler::peer_connected`] and no corresponding
 	/// [`ChannelMessageHandler::peer_disconnected`].
@@ -501,7 +523,7 @@ impl <Signer: ChannelSigner> PeerState<Signer> {
 		if require_disconnected && self.is_connected {
 			return false
 		}
-		self.channel_by_id.len() == 0
+		self.channel_by_id.is_empty() && self.monitor_update_blocked_actions.is_empty()
 	}
 }
 
@@ -6319,6 +6341,7 @@ where
 						channel_by_id: HashMap::new(),
 						latest_features: init_msg.features.clone(),
 						pending_msg_events: Vec::new(),
+						monitor_update_blocked_actions: BTreeMap::new(),
 						is_connected: true,
 					}));
 				},
@@ -6946,10 +6969,14 @@ where
 			htlc_purposes.push(purpose);
 		}
 
+		let mut monitor_update_blocked_actions_per_peer = None;
+		let mut peer_states = Vec::new();
+		for (_, peer_state_mutex) in per_peer_state.iter() {
+			peer_states.push(peer_state_mutex.lock().unwrap());
+		}
+
 		(serializable_peer_count).write(writer)?;
-		for (peer_pubkey, peer_state_mutex) in per_peer_state.iter() {
-			let peer_state_lock = peer_state_mutex.lock().unwrap();
-			let peer_state = &*peer_state_lock;
+		for ((peer_pubkey, _), peer_state) in per_peer_state.iter().zip(peer_states.iter()) {
 			// Peers which we have no channels to should be dropped once disconnected. As we
 			// disconnect all peers when shutting down and serializing the ChannelManager, we
 			// consider all peers as disconnected here. There's therefore no need write peers with
@@ -6957,6 +6984,11 @@ where
 			if !peer_state.ok_to_remove(false) {
 				peer_pubkey.write(writer)?;
 				peer_state.latest_features.write(writer)?;
+				if !peer_state.monitor_update_blocked_actions.is_empty() {
+					monitor_update_blocked_actions_per_peer
+						.get_or_insert_with(Vec::new)
+						.push((*peer_pubkey, &peer_state.monitor_update_blocked_actions));
+				}
 			}
 		}
 
@@ -7044,6 +7076,7 @@ where
 			(3, pending_outbound_payments, required),
 			(4, pending_claiming_payments, option),
 			(5, self.our_network_pubkey, required),
+			(6, monitor_update_blocked_actions_per_peer, option),
 			(7, self.fake_scid_rand_bytes, required),
 			(9, htlc_purposes, vec_type),
 			(11, self.probing_cookie_secret, required),
@@ -7356,6 +7389,7 @@ where
 				channel_by_id: peer_channels.remove(&peer_pubkey).unwrap_or(HashMap::new()),
 				latest_features: Readable::read(reader)?,
 				pending_msg_events: Vec::new(),
+				monitor_update_blocked_actions: BTreeMap::new(),
 				is_connected: false,
 			};
 			per_peer_state.insert(peer_pubkey, Mutex::new(peer_state));
@@ -7412,12 +7446,14 @@ where
 		let mut probing_cookie_secret: Option<[u8; 32]> = None;
 		let mut claimable_htlc_purposes = None;
 		let mut pending_claiming_payments = Some(HashMap::new());
+		let mut monitor_update_blocked_actions_per_peer = Some(Vec::new());
 		read_tlv_fields!(reader, {
 			(1, pending_outbound_payments_no_retry, option),
 			(2, pending_intercepted_htlcs, option),
 			(3, pending_outbound_payments, option),
 			(4, pending_claiming_payments, option),
 			(5, received_network_pubkey, option),
+			(6, monitor_update_blocked_actions_per_peer, option),
 			(7, fake_scid_rand_bytes, option),
 			(9, claimable_htlc_purposes, vec_type),
 			(11, probing_cookie_secret, option),
@@ -7680,6 +7716,15 @@ where
 						amount_msat: claimable_amt_msat,
 					});
 				}
+			}
+		}
+
+		for (node_id, monitor_update_blocked_actions) in monitor_update_blocked_actions_per_peer.unwrap() {
+			if let Some(peer_state) = per_peer_state.get_mut(&node_id) {
+				peer_state.lock().unwrap().monitor_update_blocked_actions = monitor_update_blocked_actions;
+			} else {
+				log_error!(args.logger, "Got blocked actions without a per-peer-state for {}", node_id);
+				return Err(DecodeError::InvalidValue);
 			}
 		}
 
