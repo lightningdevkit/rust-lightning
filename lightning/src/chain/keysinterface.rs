@@ -34,7 +34,8 @@ use bitcoin::{PackedLockTime, secp256k1, Sequence, Witness};
 use crate::util::transaction_utils;
 use crate::util::crypto::{hkdf_extract_expand_twice, sign};
 use crate::util::ser::{Writeable, Writer, Readable, ReadableArgs};
-
+#[cfg(anchors)]
+use crate::util::events::HTLCDescriptor;
 use crate::chain::transaction::OutPoint;
 use crate::ln::channel::ANCHOR_OUTPUT_VALUE_SATOSHI;
 use crate::ln::{chan_utils, PaymentPreimage};
@@ -324,6 +325,19 @@ pub trait BaseSign {
 	/// htlc holds HTLC elements (hash, timelock), thus changing the format of the witness script
 	/// (which is committed to in the BIP 143 signatures).
 	fn sign_justice_revoked_htlc(&self, justice_tx: &Transaction, input: usize, amount: u64, per_commitment_key: &SecretKey, htlc: &HTLCOutputInCommitment, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()>;
+
+	#[cfg(anchors)]
+	/// Computes the signature for a commitment transaction's HTLC output used as an input within
+	/// `htlc_tx`, which spends the commitment transaction, at index `input`. The signature returned
+	/// must be be computed using [`EcdsaSighashType::All`]. Note that this should only be used to
+	/// sign HTLC transactions from channels supporting anchor outputs after all additional
+	/// inputs/outputs have been added to the transaction.
+	///
+	/// [`EcdsaSighashType::All`]: bitcoin::blockdata::transaction::EcdsaSighashType::All
+	fn sign_holder_htlc_transaction(
+		&self, htlc_tx: &Transaction, input: usize, htlc_descriptor: &HTLCDescriptor,
+		secp_ctx: &Secp256k1<secp256k1::All>
+	) -> Result<Signature, ()>;
 
 	/// Create a signature for a claiming transaction for a HTLC output on a counterparty's commitment
 	/// transaction, either offered or received.
@@ -682,7 +696,6 @@ impl InMemorySigner {
 		witness.push(witness_script.clone().into_bytes());
 		Ok(witness)
 	}
-
 }
 
 impl BaseSign for InMemorySigner {
@@ -777,6 +790,24 @@ impl BaseSign for InMemorySigner {
 		let mut sighash_parts = sighash::SighashCache::new(justice_tx);
 		let sighash = hash_to_message!(&sighash_parts.segwit_signature_hash(input, &witness_script, amount, EcdsaSighashType::All).unwrap()[..]);
 		return Ok(sign(secp_ctx, &sighash, &revocation_key))
+	}
+
+	#[cfg(anchors)]
+	fn sign_holder_htlc_transaction(
+		&self, htlc_tx: &Transaction, input: usize, htlc_descriptor: &HTLCDescriptor,
+		secp_ctx: &Secp256k1<secp256k1::All>
+	) -> Result<Signature, ()> {
+		let per_commitment_point = self.get_per_commitment_point(
+			htlc_descriptor.per_commitment_number, &secp_ctx
+		);
+		let witness_script = htlc_descriptor.witness_script(&per_commitment_point, secp_ctx);
+		let sighash = &sighash::SighashCache::new(&*htlc_tx).segwit_signature_hash(
+			input, &witness_script, htlc_descriptor.htlc.amount_msat / 1000, EcdsaSighashType::All
+		).map_err(|_| ())?;
+		let our_htlc_private_key = chan_utils::derive_private_key(
+			&secp_ctx, &per_commitment_point, &self.htlc_base_key
+		);
+		Ok(sign(&secp_ctx, &hash_to_message!(sighash), &our_htlc_private_key))
 	}
 
 	fn sign_counterparty_htlc_transaction(&self, htlc_tx: &Transaction, input: usize, amount: u64, per_commitment_point: &PublicKey, htlc: &HTLCOutputInCommitment, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()> {
