@@ -382,7 +382,7 @@ pub(super) fn build_failure_packet(shared_secret: &[u8], failure_type: u16, fail
 	packet
 }
 
-#[inline]
+#[cfg(test)]
 pub(super) fn build_first_hop_failure_packet(shared_secret: &[u8], failure_type: u16, failure_data: &[u8]) -> msgs::OnionErrorPacket {
 	let failure_packet = build_failure_packet(shared_secret, failure_type, failure_data);
 	encrypt_failure_packet(shared_secret, &failure_packet.encode()[..])

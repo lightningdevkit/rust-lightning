@@ -2156,7 +2156,8 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 					return PendingHTLCStatus::Fail(HTLCFailureMsg::Relay(msgs::UpdateFailHTLC {
 						channel_id: msg.channel_id,
 						htlc_id: msg.htlc_id,
-						reason: onion_utils::build_first_hop_failure_packet(&shared_secret, $err_code, $data),
+						reason: HTLCFailReason::reason($err_code, $data.to_vec())
+							.get_encrypted_failure_packet(&shared_secret, &None),
 					}));
 				}
 			}
@@ -5013,10 +5014,10 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 						PendingHTLCStatus::Forward(PendingHTLCInfo { ref incoming_shared_secret, .. }) => {
 							let reason = if (error_code & 0x1000) != 0 {
 								let (real_code, error_data) = self.get_htlc_inbound_temp_fail_err_and_data(error_code, chan);
-								onion_utils::build_first_hop_failure_packet(incoming_shared_secret, real_code, &error_data)
+								HTLCFailReason::reason(real_code, error_data)
 							} else {
-								onion_utils::build_first_hop_failure_packet(incoming_shared_secret, error_code, &[])
-							};
+								HTLCFailReason::from_failure_code(error_code)
+							}.get_encrypted_failure_packet(incoming_shared_secret, &None);
 							let msg = msgs::UpdateFailHTLC {
 								channel_id: msg.channel_id,
 								htlc_id: msg.htlc_id,
