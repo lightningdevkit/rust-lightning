@@ -287,6 +287,19 @@ pub(super) enum HTLCFailReason {
 	}
 }
 
+impl core::fmt::Debug for HTLCFailReason {
+	fn fmt(&self, f: &mut core::fmt::Formatter) -> Result<(), core::fmt::Error> {
+		match self {
+			HTLCFailReason::Reason { ref failure_code, .. } => {
+				write!(f, "HTLC error code {}", failure_code)
+			},
+			HTLCFailReason::LightningError { .. } => {
+				write!(f, "pre-built LightningError")
+			}
+		}
+	}
+}
+
 impl HTLCFailReason {
 	pub(super) fn reason(failure_code: u16, data: Vec<u8>) -> Self {
 		Self::Reason { failure_code, data }
@@ -294,6 +307,24 @@ impl HTLCFailReason {
 
 	pub(super) fn from_failure_code(failure_code: u16) -> Self {
 		Self::Reason { failure_code, data: Vec::new() }
+	}
+
+	fn get_encrypted_failure_packet(&self, incoming_packet_shared_secret: &[u8; 32], phantom_shared_secret: &Option<[u8; 32]>) -> msgs::OnionErrorPacket {
+		match self {
+			HTLCFailReason::Reason { ref failure_code, ref data } => {
+				if let Some(phantom_ss) = phantom_shared_secret {
+					let phantom_packet = onion_utils::build_failure_packet(phantom_ss, *failure_code, &data[..]).encode();
+					let encrypted_phantom_packet = onion_utils::encrypt_failure_packet(phantom_ss, &phantom_packet);
+					onion_utils::encrypt_failure_packet(incoming_packet_shared_secret, &encrypted_phantom_packet.data[..])
+				} else {
+					let packet = onion_utils::build_failure_packet(incoming_packet_shared_secret, *failure_code, &data[..]).encode();
+					onion_utils::encrypt_failure_packet(incoming_packet_shared_secret, &packet)
+				}
+			},
+			HTLCFailReason::LightningError { err } => {
+				onion_utils::encrypt_failure_packet(incoming_packet_shared_secret, &err.data)
+			}
+		}
 	}
 }
 
@@ -4140,23 +4171,8 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 				if let Some(ev) = full_failure_ev { pending_events.push(ev); }
 			},
 			HTLCSource::PreviousHopData(HTLCPreviousHopData { ref short_channel_id, ref htlc_id, ref incoming_packet_shared_secret, ref phantom_shared_secret, ref outpoint }) => {
-				let err_packet = match onion_error {
-					HTLCFailReason::Reason { ref failure_code, ref data } => {
-						log_trace!(self.logger, "Failing HTLC with payment_hash {} backwards from us with code {}", log_bytes!(payment_hash.0), failure_code);
-						if let Some(phantom_ss) = phantom_shared_secret {
-							let phantom_packet = onion_utils::build_failure_packet(phantom_ss, *failure_code, &data[..]).encode();
-							let encrypted_phantom_packet = onion_utils::encrypt_failure_packet(phantom_ss, &phantom_packet);
-							onion_utils::encrypt_failure_packet(incoming_packet_shared_secret, &encrypted_phantom_packet.data[..])
-						} else {
-							let packet = onion_utils::build_failure_packet(incoming_packet_shared_secret, *failure_code, &data[..]).encode();
-							onion_utils::encrypt_failure_packet(incoming_packet_shared_secret, &packet)
-						}
-					},
-					HTLCFailReason::LightningError { err } => {
-						log_trace!(self.logger, "Failing HTLC with payment_hash {} backwards with pre-built LightningError", log_bytes!(payment_hash.0));
-						onion_utils::encrypt_failure_packet(incoming_packet_shared_secret, &err.data)
-					}
-				};
+				log_trace!(self.logger, "Failing HTLC with payment_hash {} backwards from us with {:?}", log_bytes!(payment_hash.0), onion_error);
+				let err_packet = onion_error.get_encrypted_failure_packet(incoming_packet_shared_secret, phantom_shared_secret);
 
 				let mut forward_event = None;
 				let mut forward_htlcs = self.forward_htlcs.lock().unwrap();
