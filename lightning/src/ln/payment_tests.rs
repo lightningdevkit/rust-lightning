@@ -20,7 +20,7 @@ use crate::ln::channelmanager::{self, BREAKDOWN_TIMEOUT, ChannelManager, MPP_TIM
 use crate::ln::msgs;
 use crate::ln::msgs::ChannelMessageHandler;
 use crate::routing::gossip::RoutingFees;
-use crate::routing::router::{find_route, get_route, PaymentParameters, RouteHint, RouteHintHop, RouteParameters};
+use crate::routing::router::{get_route, PaymentParameters, RouteHint, RouteHintHop, RouteParameters};
 use crate::util::events::{ClosureReason, Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider};
 use crate::util::test_utils;
 use crate::util::errors::APIError;
@@ -1429,9 +1429,10 @@ fn do_test_intercepted_payment(test: InterceptTest) {
 		final_value_msat: amt_msat,
 		final_cltv_expiry_delta: TEST_FINAL_CLTV,
 	};
-	let route = find_route(
-		&nodes[0].node.get_our_node_id(), &route_params, &nodes[0].network_graph, None, nodes[0].logger,
-		&scorer, &random_seed_bytes
+	let route = get_route(
+		&nodes[0].node.get_our_node_id(), &route_params.payment_params,
+		&nodes[0].network_graph.read_only(), None, route_params.final_value_msat,
+		route_params.final_cltv_expiry_delta, nodes[0].logger, &scorer, &random_seed_bytes
 	).unwrap();
 
 	let (payment_hash, payment_secret) = nodes[2].node.create_inbound_payment(Some(amt_msat), 60 * 60).unwrap();
@@ -1466,7 +1467,7 @@ fn do_test_intercepted_payment(test: InterceptTest) {
 
 	// Check for unknown channel id error.
 	let unknown_chan_id_err = nodes[1].node.forward_intercepted_htlc(intercept_id, &[42; 32], nodes[2].node.get_our_node_id(), expected_outbound_amount_msat).unwrap_err();
-	assert_eq!(unknown_chan_id_err , APIError::APIMisuseError { err: format!("Channel with id {:?} not found", [42; 32]) });
+	assert_eq!(unknown_chan_id_err , APIError::ChannelUnavailable  { err: format!("Channel with id {} not found", log_bytes!([42; 32])) });
 
 	if test == InterceptTest::Fail {
 		// Ensure we can fail the intercepted payment back.
@@ -1490,7 +1491,7 @@ fn do_test_intercepted_payment(test: InterceptTest) {
 		// Check that we'll fail as expected when sending to a channel that isn't in `ChannelReady` yet.
 		let temp_chan_id = nodes[1].node.create_channel(nodes[2].node.get_our_node_id(), 100_000, 0, 42, None).unwrap();
 		let unusable_chan_err = nodes[1].node.forward_intercepted_htlc(intercept_id, &temp_chan_id, nodes[2].node.get_our_node_id(), expected_outbound_amount_msat).unwrap_err();
-		assert_eq!(unusable_chan_err , APIError::APIMisuseError { err: format!("Channel with id {:?} not fully established", temp_chan_id) });
+		assert_eq!(unusable_chan_err , APIError::ChannelUnavailable { err: format!("Channel with id {} not fully established", log_bytes!(temp_chan_id)) });
 		assert_eq!(nodes[1].node.get_and_clear_pending_msg_events().len(), 1);
 
 		// Open the just-in-time channel so the payment can then be forwarded.
@@ -1540,8 +1541,7 @@ fn do_test_intercepted_payment(test: InterceptTest) {
 		};
 		connect_block(&nodes[0], &block);
 		connect_block(&nodes[1], &block);
-		let block_count = 183; // find_route adds a random CLTV offset, so hardcode rather than summing consts
-		for _ in 0..block_count {
+		for _ in 0..TEST_FINAL_CLTV {
 			block.header.prev_blockhash = block.block_hash();
 			connect_block(&nodes[0], &block);
 			connect_block(&nodes[1], &block);
@@ -1561,6 +1561,8 @@ fn do_test_intercepted_payment(test: InterceptTest) {
 		// Check for unknown intercept id error.
 		let (_, channel_id) = open_zero_conf_channel(&nodes[1], &nodes[2], None);
 		let unknown_intercept_id_err = nodes[1].node.forward_intercepted_htlc(intercept_id, &channel_id, nodes[2].node.get_our_node_id(), expected_outbound_amount_msat).unwrap_err();
-		assert_eq!(unknown_intercept_id_err , APIError::APIMisuseError { err: format!("Payment with intercept id {:?} not found", intercept_id.0) });
+		assert_eq!(unknown_intercept_id_err , APIError::APIMisuseError { err: format!("Payment with intercept id {} not found", log_bytes!(intercept_id.0)) });
+		let unknown_intercept_id_err = nodes[1].node.fail_intercepted_htlc(intercept_id).unwrap_err();
+		assert_eq!(unknown_intercept_id_err , APIError::APIMisuseError { err: format!("Payment with intercept id {} not found", log_bytes!(intercept_id.0)) });
 	}
 }

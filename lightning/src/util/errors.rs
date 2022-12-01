@@ -35,7 +35,7 @@ pub enum APIError {
 	},
 	/// A malformed Route was provided (eg overflowed value, node id mismatch, overly-looped route,
 	/// too-many-hops, etc).
-	RouteError {
+	InvalidRoute {
 		/// A human-readable error message
 		err: &'static str
 	},
@@ -74,7 +74,7 @@ impl fmt::Debug for APIError {
 		match *self {
 			APIError::APIMisuseError {ref err} => write!(f, "Misuse error: {}", err),
 			APIError::FeeRateTooHigh {ref err, ref feerate} => write!(f, "{} feerate: {}", err, feerate),
-			APIError::RouteError {ref err} => write!(f, "Route error: {}", err),
+			APIError::InvalidRoute {ref err} => write!(f, "Invalid route provided: {}", err),
 			APIError::ChannelUnavailable {ref err} => write!(f, "Channel unavailable: {}", err),
 			APIError::MonitorUpdateInProgress => f.write_str("Client indicated a channel monitor update is in progress but not yet complete"),
 			APIError::IncompatibleShutdownScript { ref script } => {

@@ -10,10 +10,17 @@
 
 use core::ops::Deref;
 use bitcoin::hashes::hex::ToHex;
-use crate::io::{self};
+use crate::io;
 use crate::routing::scoring::WriteableScore;
 
-use crate::{chain::{keysinterface::{Sign, KeysInterface}, self, transaction::{OutPoint}, chaininterface::{BroadcasterInterface, FeeEstimator}, chainmonitor::{Persist, MonitorUpdateId}, channelmonitor::{ChannelMonitor, ChannelMonitorUpdate}}, ln::channelmanager::ChannelManager, routing::gossip::NetworkGraph};
+use crate::chain;
+use crate::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
+use crate::chain::chainmonitor::{Persist, MonitorUpdateId};
+use crate::chain::keysinterface::{Sign, KeysInterface};
+use crate::chain::transaction::OutPoint;
+use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate};
+use crate::ln::channelmanager::ChannelManager;
+use crate::routing::gossip::NetworkGraph;
 use super::{logger::Logger, ser::Writeable};
 
 /// Trait for a key-value store for persisting some writeable object at some key

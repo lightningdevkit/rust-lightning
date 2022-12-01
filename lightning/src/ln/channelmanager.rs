@@ -2419,10 +2419,10 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 		let session_priv = SecretKey::from_slice(&session_priv_bytes[..]).expect("RNG is busted");
 
 		let onion_keys = onion_utils::construct_onion_keys(&self.secp_ctx, &path, &session_priv)
-			.map_err(|_| APIError::RouteError{err: "Pubkey along hop was maliciously selected"})?;
+			.map_err(|_| APIError::InvalidRoute{err: "Pubkey along hop was maliciously selected"})?;
 		let (onion_payloads, htlc_msat, htlc_cltv) = onion_utils::build_onion_payloads(path, total_value, payment_secret, cur_height, keysend_preimage)?;
 		if onion_utils::route_size_insane(&onion_payloads) {
-			return Err(APIError::RouteError{err: "Route size too large considering onion data"});
+			return Err(APIError::InvalidRoute{err: "Route size too large considering onion data"});
 		}
 		let onion_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, prng_seed, payment_hash);
 
@@ -2439,7 +2439,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 			if let hash_map::Entry::Occupied(mut chan) = channel_state.by_id.entry(id) {
 				match {
 					if chan.get().get_counterparty_node_id() != path.first().unwrap().pubkey {
-						return Err(APIError::RouteError{err: "Node ID mismatch on first hop!"});
+						return Err(APIError::InvalidRoute{err: "Node ID mismatch on first hop!"});
 					}
 					if !chan.get().is_live() {
 						return Err(APIError::ChannelUnavailable{err: "Peer for first hop currently disconnected/pending monitor update!".to_owned()});
@@ -2514,7 +2514,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 	/// fields for more info.
 	///
 	/// If a pending payment is currently in-flight with the same [`PaymentId`] provided, this
-	/// method will error with an [`APIError::RouteError`]. Note, however, that once a payment
+	/// method will error with an [`APIError::InvalidRoute`]. Note, however, that once a payment
 	/// is no longer pending (either via [`ChannelManager::abandon_payment`], or handling of an
 	/// [`Event::PaymentSent`]) LDK will not stop you from sending a second payment with the same
 	/// [`PaymentId`].
@@ -2533,7 +2533,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 	/// PaymentSendFailure for more info.
 	///
 	/// In general, a path may raise:
-	///  * [`APIError::RouteError`] when an invalid route or forwarding parameter (cltv_delta, fee,
+	///  * [`APIError::InvalidRoute`] when an invalid route or forwarding parameter (cltv_delta, fee,
 	///    node public key) is specified.
 	///  * [`APIError::ChannelUnavailable`] if the next-hop channel is not available for updates
 	///    (including due to previous monitor update failure or new permanent monitor update
@@ -2598,7 +2598,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 
 	fn send_payment_internal(&self, route: &Route, payment_hash: PaymentHash, payment_secret: &Option<PaymentSecret>, keysend_preimage: Option<PaymentPreimage>, payment_id: PaymentId, recv_value_msat: Option<u64>, onion_session_privs: Vec<[u8; 32]>) -> Result<(), PaymentSendFailure> {
 		if route.paths.len() < 1 {
-			return Err(PaymentSendFailure::ParameterError(APIError::RouteError{err: "There must be at least one path to send over"}));
+			return Err(PaymentSendFailure::ParameterError(APIError::InvalidRoute{err: "There must be at least one path to send over"}));
 		}
 		if payment_secret.is_none() && route.paths.len() > 1 {
 			return Err(PaymentSendFailure::ParameterError(APIError::APIMisuseError{err: "Payment secret is required for multi-path payments".to_string()}));
@@ -2608,12 +2608,12 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 		let mut path_errs = Vec::with_capacity(route.paths.len());
 		'path_check: for path in route.paths.iter() {
 			if path.len() < 1 || path.len() > 20 {
-				path_errs.push(Err(APIError::RouteError{err: "Path didn't go anywhere/had bogus size"}));
+				path_errs.push(Err(APIError::InvalidRoute{err: "Path didn't go anywhere/had bogus size"}));
 				continue 'path_check;
 			}
 			for (idx, hop) in path.iter().enumerate() {
 				if idx != path.len() - 1 && hop.pubkey == our_node_id {
-					path_errs.push(Err(APIError::RouteError{err: "Path went through us but wasn't a simple rebalance loop to us"}));
+					path_errs.push(Err(APIError::InvalidRoute{err: "Path went through us but wasn't a simple rebalance loop to us"}));
 					continue 'path_check;
 				}
 			}
@@ -3092,20 +3092,20 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 		let next_hop_scid = match self.channel_state.lock().unwrap().by_id.get(next_hop_channel_id) {
 			Some(chan) => {
 				if !chan.is_usable() {
-					return Err(APIError::APIMisuseError {
-						err: format!("Channel with id {:?} not fully established", next_hop_channel_id)
+					return Err(APIError::ChannelUnavailable {
+						err: format!("Channel with id {} not fully established", log_bytes!(*next_hop_channel_id))
 					})
 				}
 				chan.get_short_channel_id().unwrap_or(chan.outbound_scid_alias())
 			},
-			None => return Err(APIError::APIMisuseError {
-				err: format!("Channel with id {:?} not found", next_hop_channel_id)
+			None => return Err(APIError::ChannelUnavailable {
+				err: format!("Channel with id {} not found", log_bytes!(*next_hop_channel_id))
 			})
 		};
 
 		let payment = self.pending_intercepted_htlcs.lock().unwrap().remove(&intercept_id)
 			.ok_or_else(|| APIError::APIMisuseError {
-				err: format!("Payment with intercept id {:?} not found", intercept_id.0)
+				err: format!("Payment with intercept id {} not found", log_bytes!(intercept_id.0))
 			})?;
 
 		let routing = match payment.forward_info.routing {
@@ -3140,7 +3140,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 
 		let payment = self.pending_intercepted_htlcs.lock().unwrap().remove(&intercept_id)
 			.ok_or_else(|| APIError::APIMisuseError {
-				err: format!("Payment with InterceptId {:?} not found", intercept_id)
+				err: format!("Payment with intercept id {} not found", log_bytes!(intercept_id.0))
 			})?;
 
 		if let PendingHTLCRouting::Forward { short_channel_id, .. } = payment.forward_info.routing {
