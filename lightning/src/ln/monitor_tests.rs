@@ -616,7 +616,7 @@ fn test_balances_on_local_commitment_htlcs() {
 	commitment_signed_dance!(nodes[1], nodes[0], updates.commitment_signed, false);
 
 	expect_pending_htlcs_forwardable!(nodes[1]);
-	expect_payment_received!(nodes[1], payment_hash, payment_secret, 10_000_000);
+	expect_payment_claimable!(nodes[1], payment_hash, payment_secret, 10_000_000);
 
 	let (route_2, payment_hash_2, payment_preimage_2, payment_secret_2) = get_route_and_payment_hash!(nodes[0], nodes[1], 20_000_000);
 	nodes[0].node.send_payment(&route_2, payment_hash_2, &Some(payment_secret_2), PaymentId(payment_hash_2.0)).unwrap();
@@ -627,7 +627,7 @@ fn test_balances_on_local_commitment_htlcs() {
 	commitment_signed_dance!(nodes[1], nodes[0], updates.commitment_signed, false);
 
 	expect_pending_htlcs_forwardable!(nodes[1]);
-	expect_payment_received!(nodes[1], payment_hash_2, payment_secret_2, 20_000_000);
+	expect_payment_claimable!(nodes[1], payment_hash_2, payment_secret_2, 20_000_000);
 	nodes[1].node.claim_funds(payment_preimage_2);
 	get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 	check_added_monitors!(nodes[1], 1);

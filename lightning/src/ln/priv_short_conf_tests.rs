@@ -694,7 +694,7 @@ fn test_0conf_channel_with_async_monitor() {
 	nodes[2].node.handle_update_add_htlc(&nodes[1].node.get_our_node_id(), &bs_send.msgs[0]);
 	commitment_signed_dance!(nodes[2], nodes[1], bs_send.commitment_msg, false);
 	expect_pending_htlcs_forwardable!(nodes[2]);
-	expect_payment_received!(nodes[2], payment_hash, payment_secret, 1_000_000);
+	expect_payment_claimable!(nodes[2], payment_hash, payment_secret, 1_000_000);
 	claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_preimage);
 
 	confirm_transaction(&nodes[0], &tx);
