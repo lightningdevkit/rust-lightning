@@ -642,11 +642,49 @@ impl_writeable_tlv_based_enum!(HTLCFailReasonRepr,
 
 impl HTLCFailReason {
 	pub(super) fn reason(failure_code: u16, data: Vec<u8>) -> Self {
+		const BADONION: u16 = 0x8000;
+		const PERM: u16 = 0x4000;
+		const NODE: u16 = 0x2000;
+		const UPDATE: u16 = 0x1000;
+
+		     if failure_code == 1  | PERM { debug_assert!(data.is_empty()) }
+		else if failure_code == 2  | NODE { debug_assert!(data.is_empty()) }
+		else if failure_code == 2  | PERM | NODE { debug_assert!(data.is_empty()) }
+		else if failure_code == 3  | PERM | NODE { debug_assert!(data.is_empty()) }
+		else if failure_code == 4  | BADONION | PERM { debug_assert_eq!(data.len(), 32) }
+		else if failure_code == 5  | BADONION | PERM { debug_assert_eq!(data.len(), 32) }
+		else if failure_code == 6  | BADONION | PERM { debug_assert_eq!(data.len(), 32) }
+		else if failure_code == 7  | UPDATE {
+			debug_assert_eq!(data.len() - 2, u16::from_be_bytes(data[0..2].try_into().unwrap()) as usize) }
+		else if failure_code == 8  | PERM { debug_assert!(data.is_empty()) }
+		else if failure_code == 9  | PERM { debug_assert!(data.is_empty()) }
+		else if failure_code == 10 | PERM { debug_assert!(data.is_empty()) }
+		else if failure_code == 11 | UPDATE {
+			debug_assert_eq!(data.len() - 2 - 8, u16::from_be_bytes(data[8..10].try_into().unwrap()) as usize) }
+		else if failure_code == 12 | UPDATE {
+			debug_assert_eq!(data.len() - 2 - 8, u16::from_be_bytes(data[8..10].try_into().unwrap()) as usize) }
+		else if failure_code == 13 | UPDATE {
+			debug_assert_eq!(data.len() - 2 - 4, u16::from_be_bytes(data[4..6].try_into().unwrap()) as usize) }
+		else if failure_code == 14 | UPDATE {
+			debug_assert_eq!(data.len() - 2, u16::from_be_bytes(data[0..2].try_into().unwrap()) as usize) }
+		else if failure_code == 15 | PERM { debug_assert_eq!(data.len(), 12) }
+		else if failure_code == 18 { debug_assert_eq!(data.len(), 4) }
+		else if failure_code == 19 { debug_assert_eq!(data.len(), 8) }
+		else if failure_code == 20 | UPDATE {
+			debug_assert_eq!(data.len() - 2 - 2, u16::from_be_bytes(data[2..4].try_into().unwrap()) as usize) }
+		else if failure_code == 21 { debug_assert!(data.is_empty()) }
+		else if failure_code == 22 | PERM { debug_assert!(data.len() <= 11) }
+		else if failure_code == 23 { debug_assert!(data.is_empty()) }
+		else if failure_code & BADONION != 0 {
+			// We set some bogus BADONION failure codes in test, so ignore unknown ones.
+		}
+		else { debug_assert!(false, "Unknown failure code: {}", failure_code) }
+
 		Self(HTLCFailReasonRepr::Reason { failure_code, data })
 	}
 
 	pub(super) fn from_failure_code(failure_code: u16) -> Self {
-		Self(HTLCFailReasonRepr::Reason { failure_code, data: Vec::new() })
+		Self::reason(failure_code, Vec::new())
 	}
 
 	pub(super) fn from_msg(msg: &msgs::UpdateFailHTLC) -> Self {
