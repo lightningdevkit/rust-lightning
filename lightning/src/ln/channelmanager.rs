@@ -49,6 +49,7 @@ use crate::ln::features::InvoiceFeatures;
 use crate::routing::router::{InFlightHtlcs, PaymentParameters, Route, RouteHop, RoutePath, RouteParameters};
 use crate::ln::msgs;
 use crate::ln::onion_utils;
+use crate::ln::onion_utils::HTLCFailReason;
 use crate::ln::msgs::{ChannelMessageHandler, DecodeError, LightningError, MAX_VALUE_MSAT};
 use crate::ln::wire::Encode;
 use crate::chain::keysinterface::{Sign, KeysInterface, KeysManager, Recipient};
@@ -272,82 +273,6 @@ impl HTLCSource {
 			payment_id: PaymentId([2; 32]),
 			payment_secret: None,
 			payment_params: None,
-		}
-	}
-}
-
-#[derive(Clone)] // See Channel::revoke_and_ack for why, tl;dr: Rust bug
-pub(super) enum HTLCFailReason {
-	LightningError {
-		err: msgs::OnionErrorPacket,
-	},
-	Reason {
-		failure_code: u16,
-		data: Vec<u8>,
-	}
-}
-
-impl core::fmt::Debug for HTLCFailReason {
-	fn fmt(&self, f: &mut core::fmt::Formatter) -> Result<(), core::fmt::Error> {
-		match self {
-			HTLCFailReason::Reason { ref failure_code, .. } => {
-				write!(f, "HTLC error code {}", failure_code)
-			},
-			HTLCFailReason::LightningError { .. } => {
-				write!(f, "pre-built LightningError")
-			}
-		}
-	}
-}
-
-impl HTLCFailReason {
-	pub(super) fn reason(failure_code: u16, data: Vec<u8>) -> Self {
-		Self::Reason { failure_code, data }
-	}
-
-	pub(super) fn from_failure_code(failure_code: u16) -> Self {
-		Self::Reason { failure_code, data: Vec::new() }
-	}
-
-	pub(super) fn from_msg(msg: &msgs::UpdateFailHTLC) -> Self {
-		Self::LightningError { err: msg.reason.clone() }
-	}
-
-	fn get_encrypted_failure_packet(&self, incoming_packet_shared_secret: &[u8; 32], phantom_shared_secret: &Option<[u8; 32]>) -> msgs::OnionErrorPacket {
-		match self {
-			HTLCFailReason::Reason { ref failure_code, ref data } => {
-				if let Some(phantom_ss) = phantom_shared_secret {
-					let phantom_packet = onion_utils::build_failure_packet(phantom_ss, *failure_code, &data[..]).encode();
-					let encrypted_phantom_packet = onion_utils::encrypt_failure_packet(phantom_ss, &phantom_packet);
-					onion_utils::encrypt_failure_packet(incoming_packet_shared_secret, &encrypted_phantom_packet.data[..])
-				} else {
-					let packet = onion_utils::build_failure_packet(incoming_packet_shared_secret, *failure_code, &data[..]).encode();
-					onion_utils::encrypt_failure_packet(incoming_packet_shared_secret, &packet)
-				}
-			},
-			HTLCFailReason::LightningError { err } => {
-				onion_utils::encrypt_failure_packet(incoming_packet_shared_secret, &err.data)
-			}
-		}
-	}
-
-	fn decode_onion_failure<T: secp256k1::Signing, L: Deref>(&self, secp_ctx: &Secp256k1<T>, logger: &L, htlc_source: &HTLCSource) -> (Option<crate::routing::gossip::NetworkUpdate>, Option<u64>, bool, Option<u16>, Option<Vec<u8>>) where L::Target: Logger {
-		match self {
-			HTLCFailReason::LightningError { ref err } => {
-				onion_utils::process_onion_failure(secp_ctx, logger, &htlc_source, err.data.clone())
-			},
-			HTLCFailReason::Reason { ref failure_code, ref data, .. } => {
-				// we get a fail_malformed_htlc from the first hop
-				// TODO: We'd like to generate a NetworkUpdate for temporary
-				// failures here, but that would be insufficient as find_route
-				// generally ignores its view of our own channels as we provide them via
-				// ChannelDetails.
-				// TODO: For non-temporary failures, we really should be closing the
-				// channel here as we apparently can't relay through them anyway.
-				if let &HTLCSource::OutboundRoute { ref path, .. } = htlc_source {
-					(None, Some(path.first().unwrap().short_channel_id), true, Some(*failure_code), Some(data.clone()))
-				} else { unreachable!(); }
-			}
 		}
 	}
 }
@@ -7030,16 +6955,6 @@ impl Writeable for HTLCSource {
 		Ok(())
 	}
 }
-
-impl_writeable_tlv_based_enum!(HTLCFailReason,
-	(0, LightningError) => {
-		(0, err, required),
-	},
-	(1, Reason) => {
-		(0, failure_code, required),
-		(2, data, vec_type),
-	},
-;);
 
 impl_writeable_tlv_based!(PendingAddHTLCInfo, {
 	(0, forward_info, required),

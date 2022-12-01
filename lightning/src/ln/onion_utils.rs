@@ -592,6 +592,94 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(secp_ctx: &
 	} else { unreachable!(); }
 }
 
+#[derive(Clone)] // See Channel::revoke_and_ack for why, tl;dr: Rust bug
+pub(super) enum HTLCFailReason {
+	LightningError {
+		err: msgs::OnionErrorPacket,
+	},
+	Reason {
+		failure_code: u16,
+		data: Vec<u8>,
+	}
+}
+
+impl core::fmt::Debug for HTLCFailReason {
+	fn fmt(&self, f: &mut core::fmt::Formatter) -> Result<(), core::fmt::Error> {
+		match self {
+			HTLCFailReason::Reason { ref failure_code, .. } => {
+				write!(f, "HTLC error code {}", failure_code)
+			},
+			HTLCFailReason::LightningError { .. } => {
+				write!(f, "pre-built LightningError")
+			}
+		}
+	}
+}
+
+impl_writeable_tlv_based_enum!(HTLCFailReason,
+	(0, LightningError) => {
+		(0, err, required),
+	},
+	(1, Reason) => {
+		(0, failure_code, required),
+		(2, data, vec_type),
+	},
+;);
+
+impl HTLCFailReason {
+	pub(super) fn reason(failure_code: u16, data: Vec<u8>) -> Self {
+		Self::Reason { failure_code, data }
+	}
+
+	pub(super) fn from_failure_code(failure_code: u16) -> Self {
+		Self::Reason { failure_code, data: Vec::new() }
+	}
+
+	pub(super) fn from_msg(msg: &msgs::UpdateFailHTLC) -> Self {
+		Self::LightningError { err: msg.reason.clone() }
+	}
+
+	pub(super) fn get_encrypted_failure_packet(&self, incoming_packet_shared_secret: &[u8; 32], phantom_shared_secret: &Option<[u8; 32]>)
+	-> msgs::OnionErrorPacket {
+		match self {
+			HTLCFailReason::Reason { ref failure_code, ref data } => {
+				if let Some(phantom_ss) = phantom_shared_secret {
+					let phantom_packet = build_failure_packet(phantom_ss, *failure_code, &data[..]).encode();
+					let encrypted_phantom_packet = encrypt_failure_packet(phantom_ss, &phantom_packet);
+					encrypt_failure_packet(incoming_packet_shared_secret, &encrypted_phantom_packet.data[..])
+				} else {
+					let packet = build_failure_packet(incoming_packet_shared_secret, *failure_code, &data[..]).encode();
+					encrypt_failure_packet(incoming_packet_shared_secret, &packet)
+				}
+			},
+			HTLCFailReason::LightningError { err } => {
+				encrypt_failure_packet(incoming_packet_shared_secret, &err.data)
+			}
+		}
+	}
+
+	pub(super) fn decode_onion_failure<T: secp256k1::Signing, L: Deref>(
+		&self, secp_ctx: &Secp256k1<T>, logger: &L, htlc_source: &HTLCSource
+	) -> (Option<NetworkUpdate>, Option<u64>, bool, Option<u16>, Option<Vec<u8>>)
+	where L::Target: Logger {
+		match self {
+			HTLCFailReason::LightningError { ref err } => {
+				process_onion_failure(secp_ctx, logger, &htlc_source, err.data.clone())
+			},
+			HTLCFailReason::Reason { ref failure_code, ref data, .. } => {
+				// we get a fail_malformed_htlc from the first hop
+				// TODO: We'd like to generate a NetworkUpdate for temporary
+				// failures here, but that would be insufficient as find_route
+				// generally ignores its view of our own channels as we provide them via
+				// ChannelDetails.
+				if let &HTLCSource::OutboundRoute { ref path, .. } = htlc_source {
+					(None, Some(path.first().unwrap().short_channel_id), true, Some(*failure_code), Some(data.clone()))
+				} else { unreachable!(); }
+			}
+		}
+	}
+}
+
 /// Allows `decode_next_hop` to return the next hop packet bytes for either payments or onion
 /// message forwards.
 pub(crate) trait NextPacketBytes: AsMut<[u8]> {
