@@ -5258,9 +5258,10 @@ fn test_dynamic_spendable_outputs_local_htlc_timeout_tx() {
 
 #[test]
 fn test_key_derivation_params() {
-	// This test is a copy of test_dynamic_spendable_outputs_local_htlc_timeout_tx, with
-	// a key manager rotation to test that key_derivation_params returned in DynamicOutputP2WSH
-	// let us re-derive the channel key set to then derive a delayed_payment_key.
+	// This test is a copy of test_dynamic_spendable_outputs_local_htlc_timeout_tx, with a key
+	// manager rotation to test that `channel_keys_id` returned in
+	// [`SpendableOutputDescriptor::DelayedPaymentOutput`] let us re-derive the channel key set to
+	// then derive a `delayed_payment_key`.
 
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 
