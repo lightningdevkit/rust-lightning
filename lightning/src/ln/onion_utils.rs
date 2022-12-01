@@ -15,7 +15,7 @@ use crate::routing::gossip::NetworkUpdate;
 use crate::routing::router::RouteHop;
 use crate::util::chacha20::{ChaCha20, ChaChaReader};
 use crate::util::errors::{self, APIError};
-use crate::util::ser::{Readable, ReadableArgs, Writeable, LengthCalculatingWriter};
+use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer, LengthCalculatingWriter};
 use crate::util::logger::Logger;
 
 use bitcoin::hashes::{Hash, HashEngine};
@@ -593,7 +593,10 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(secp_ctx: &
 }
 
 #[derive(Clone)] // See Channel::revoke_and_ack for why, tl;dr: Rust bug
-pub(super) enum HTLCFailReason {
+pub(super) struct HTLCFailReason(HTLCFailReasonRepr);
+
+#[derive(Clone)] // See Channel::revoke_and_ack for why, tl;dr: Rust bug
+enum HTLCFailReasonRepr {
 	LightningError {
 		err: msgs::OnionErrorPacket,
 	},
@@ -605,18 +608,29 @@ pub(super) enum HTLCFailReason {
 
 impl core::fmt::Debug for HTLCFailReason {
 	fn fmt(&self, f: &mut core::fmt::Formatter) -> Result<(), core::fmt::Error> {
-		match self {
-			HTLCFailReason::Reason { ref failure_code, .. } => {
+		match self.0 {
+			HTLCFailReasonRepr::Reason { ref failure_code, .. } => {
 				write!(f, "HTLC error code {}", failure_code)
 			},
-			HTLCFailReason::LightningError { .. } => {
+			HTLCFailReasonRepr::LightningError { .. } => {
 				write!(f, "pre-built LightningError")
 			}
 		}
 	}
 }
 
-impl_writeable_tlv_based_enum!(HTLCFailReason,
+impl Writeable for HTLCFailReason {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), crate::io::Error> {
+		self.0.write(writer)
+	}
+}
+impl Readable for HTLCFailReason {
+	fn read<R: Read>(reader: &mut R) -> Result<Self, msgs::DecodeError> {
+		Ok(Self(Readable::read(reader)?))
+	}
+}
+
+impl_writeable_tlv_based_enum!(HTLCFailReasonRepr,
 	(0, LightningError) => {
 		(0, err, required),
 	},
@@ -628,21 +642,21 @@ impl_writeable_tlv_based_enum!(HTLCFailReason,
 
 impl HTLCFailReason {
 	pub(super) fn reason(failure_code: u16, data: Vec<u8>) -> Self {
-		Self::Reason { failure_code, data }
+		Self(HTLCFailReasonRepr::Reason { failure_code, data })
 	}
 
 	pub(super) fn from_failure_code(failure_code: u16) -> Self {
-		Self::Reason { failure_code, data: Vec::new() }
+		Self(HTLCFailReasonRepr::Reason { failure_code, data: Vec::new() })
 	}
 
 	pub(super) fn from_msg(msg: &msgs::UpdateFailHTLC) -> Self {
-		Self::LightningError { err: msg.reason.clone() }
+		Self(HTLCFailReasonRepr::LightningError { err: msg.reason.clone() })
 	}
 
 	pub(super) fn get_encrypted_failure_packet(&self, incoming_packet_shared_secret: &[u8; 32], phantom_shared_secret: &Option<[u8; 32]>)
 	-> msgs::OnionErrorPacket {
-		match self {
-			HTLCFailReason::Reason { ref failure_code, ref data } => {
+		match self.0 {
+			HTLCFailReasonRepr::Reason { ref failure_code, ref data } => {
 				if let Some(phantom_ss) = phantom_shared_secret {
 					let phantom_packet = build_failure_packet(phantom_ss, *failure_code, &data[..]).encode();
 					let encrypted_phantom_packet = encrypt_failure_packet(phantom_ss, &phantom_packet);
@@ -652,7 +666,7 @@ impl HTLCFailReason {
 					encrypt_failure_packet(incoming_packet_shared_secret, &packet)
 				}
 			},
-			HTLCFailReason::LightningError { err } => {
+			HTLCFailReasonRepr::LightningError { ref err } => {
 				encrypt_failure_packet(incoming_packet_shared_secret, &err.data)
 			}
 		}
@@ -662,11 +676,11 @@ impl HTLCFailReason {
 		&self, secp_ctx: &Secp256k1<T>, logger: &L, htlc_source: &HTLCSource
 	) -> (Option<NetworkUpdate>, Option<u64>, bool, Option<u16>, Option<Vec<u8>>)
 	where L::Target: Logger {
-		match self {
-			HTLCFailReason::LightningError { ref err } => {
+		match self.0 {
+			HTLCFailReasonRepr::LightningError { ref err } => {
 				process_onion_failure(secp_ctx, logger, &htlc_source, err.data.clone())
 			},
-			HTLCFailReason::Reason { ref failure_code, ref data, .. } => {
+			HTLCFailReasonRepr::Reason { ref failure_code, ref data, .. } => {
 				// we get a fail_malformed_htlc from the first hop
 				// TODO: We'd like to generate a NetworkUpdate for temporary
 				// failures here, but that would be insufficient as find_route
