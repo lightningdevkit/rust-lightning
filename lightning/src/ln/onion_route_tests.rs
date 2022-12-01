@@ -548,7 +548,7 @@ fn test_onion_failure() {
 		connect_blocks(&nodes[0], height - nodes[0].best_block_info().1);
 		connect_blocks(&nodes[1], height - nodes[1].best_block_info().1);
 		connect_blocks(&nodes[2], height - nodes[2].best_block_info().1);
-	}, || {}, true, Some(17), None, None);
+	}, || {}, false, Some(0x4000 | 15), None, None);
 
 	run_onion_failure_test("final_incorrect_cltv_expiry", 1, &nodes, &route, &payment_hash, &payment_secret, |_| {}, || {
 		for (_, pending_forwards) in nodes[1].node.forward_htlcs.lock().unwrap().iter_mut() {
@@ -1099,11 +1099,14 @@ fn test_phantom_failure_too_low_cltv() {
 	commitment_signed_dance!(nodes[0], nodes[1], update_1.commitment_signed, false);
 
 	// Ensure the payment fails with the expected error.
-	let error_data = Vec::new();
+	let mut error_data = recv_value_msat.to_be_bytes().to_vec();
+	error_data.extend_from_slice(
+		&nodes[0].node.best_block.read().unwrap().height().to_be_bytes(),
+	);
 	let mut fail_conditions = PaymentFailedConditions::new()
 		.blamed_scid(phantom_scid)
-		.expected_htlc_error_data(17, &error_data);
-	expect_payment_failed_conditions(&nodes[0], payment_hash, false, fail_conditions);
+		.expected_htlc_error_data(0x4000 | 15, &error_data);
+	expect_payment_failed_conditions(&nodes[0], payment_hash, true, fail_conditions);
 }
 
 #[test]
