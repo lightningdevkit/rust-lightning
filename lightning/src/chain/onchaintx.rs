@@ -37,7 +37,6 @@ use crate::chain::package::PackageSolvingData;
 use crate::chain::package::PackageTemplate;
 use crate::util::logger::Logger;
 use crate::util::ser::{Readable, ReadableArgs, MaybeReadable, Writer, Writeable, VecWriter};
-use crate::util::byte_utils;
 
 use crate::io;
 use crate::prelude::*;
@@ -272,29 +271,29 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 		(key_data.0.len() as u32).write(writer)?;
 		writer.write_all(&key_data.0[..])?;
 
-		writer.write_all(&byte_utils::be64_to_array(self.pending_claim_requests.len() as u64))?;
+		writer.write_all(&(self.pending_claim_requests.len() as u64).to_be_bytes())?;
 		for (ref ancestor_claim_txid, request) in self.pending_claim_requests.iter() {
 			ancestor_claim_txid.write(writer)?;
 			request.write(writer)?;
 		}
 
-		writer.write_all(&byte_utils::be64_to_array(self.claimable_outpoints.len() as u64))?;
+		writer.write_all(&(self.claimable_outpoints.len() as u64).to_be_bytes())?;
 		for (ref outp, ref claim_and_height) in self.claimable_outpoints.iter() {
 			outp.write(writer)?;
 			claim_and_height.0.write(writer)?;
 			claim_and_height.1.write(writer)?;
 		}
 
-		writer.write_all(&byte_utils::be64_to_array(self.locktimed_packages.len() as u64))?;
+		writer.write_all(&(self.locktimed_packages.len() as u64).to_be_bytes())?;
 		for (ref locktime, ref packages) in self.locktimed_packages.iter() {
 			locktime.write(writer)?;
-			writer.write_all(&byte_utils::be64_to_array(packages.len() as u64))?;
+			writer.write_all(&(packages.len() as u64).to_be_bytes())?;
 			for ref package in packages.iter() {
 				package.write(writer)?;
 			}
 		}
 
-		writer.write_all(&byte_utils::be64_to_array(self.onchain_events_awaiting_threshold_conf.len() as u64))?;
+		writer.write_all(&(self.onchain_events_awaiting_threshold_conf.len() as u64).to_be_bytes())?;
 		for ref entry in self.onchain_events_awaiting_threshold_conf.iter() {
 			entry.write(writer)?;
 		}

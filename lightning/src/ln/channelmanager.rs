@@ -54,7 +54,7 @@ use crate::ln::wire::Encode;
 use crate::chain::keysinterface::{Sign, KeysInterface, KeysManager, Recipient};
 use crate::util::config::{UserConfig, ChannelConfig};
 use crate::util::events::{Event, EventHandler, EventsProvider, MessageSendEvent, MessageSendEventsProvider, ClosureReason, HTLCDestination};
-use crate::util::{byte_utils, events};
+use crate::util::events;
 use crate::util::wakers::{Future, Notifier};
 use crate::util::scid_utils::fake_scid;
 use crate::util::ser::{BigSize, FixedLengthReader, Readable, ReadableArgs, MaybeReadable, Writeable, Writer, VecWriter};
@@ -2053,7 +2053,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 			return Err(ReceiveError {
 				msg: "Upstream node set CLTV to the wrong value",
 				err_code: 18,
-				err_data: byte_utils::be32_to_array(cltv_expiry).to_vec()
+				err_data: cltv_expiry.to_be_bytes().to_vec()
 			})
 		}
 		// final_expiry_too_soon
@@ -2072,7 +2072,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 		if hop_data.amt_to_forward > amt_msat {
 			return Err(ReceiveError {
 				err_code: 19,
-				err_data: byte_utils::be64_to_array(amt_msat).to_vec(),
+				err_data: amt_msat.to_be_bytes().to_vec(),
 				msg: "Upstream node sent less than we were supposed to receive in payment",
 			});
 		}
@@ -3451,9 +3451,9 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 
 								macro_rules! fail_htlc {
 									($htlc: expr, $payment_hash: expr) => {
-										let mut htlc_msat_height_data = byte_utils::be64_to_array($htlc.value).to_vec();
+										let mut htlc_msat_height_data = $htlc.value.to_be_bytes().to_vec();
 										htlc_msat_height_data.extend_from_slice(
-											&byte_utils::be32_to_array(self.best_block.read().unwrap().height()),
+											&self.best_block.read().unwrap().height().to_be_bytes(),
 										);
 										failed_forwards.push((HTLCSource::PreviousHopData(HTLCPreviousHopData {
 												short_channel_id: $htlc.prev_hop.short_channel_id,
@@ -3909,9 +3909,8 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 		let removed_source = self.claimable_htlcs.lock().unwrap().remove(payment_hash);
 		if let Some((_, mut sources)) = removed_source {
 			for htlc in sources.drain(..) {
-				let mut htlc_msat_height_data = byte_utils::be64_to_array(htlc.value).to_vec();
-				htlc_msat_height_data.extend_from_slice(&byte_utils::be32_to_array(
-						self.best_block.read().unwrap().height()));
+				let mut htlc_msat_height_data = htlc.value.to_be_bytes().to_vec();
+				htlc_msat_height_data.extend_from_slice(&self.best_block.read().unwrap().height().to_be_bytes());
 				let source = HTLCSource::PreviousHopData(htlc.prev_hop);
 				let reason = HTLCFailReason::reason(0x4000 | 15, htlc_msat_height_data);
 				let receiver = HTLCDestination::FailedPayment { payment_hash: *payment_hash };
@@ -4306,9 +4305,8 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 			mem::drop(channel_state_lock);
 			if !valid_mpp {
 				for htlc in sources.drain(..) {
-					let mut htlc_msat_height_data = byte_utils::be64_to_array(htlc.value).to_vec();
-					htlc_msat_height_data.extend_from_slice(&byte_utils::be32_to_array(
-						self.best_block.read().unwrap().height()));
+					let mut htlc_msat_height_data = htlc.value.to_be_bytes().to_vec();
+					htlc_msat_height_data.extend_from_slice(&self.best_block.read().unwrap().height().to_be_bytes());
 					let source = HTLCSource::PreviousHopData(htlc.prev_hop);
 					let reason = HTLCFailReason::reason(0x4000 | 15, htlc_msat_height_data);
 					let receiver = HTLCDestination::FailedPayment { payment_hash };
@@ -6283,8 +6281,8 @@ where
 					// number of blocks we generally consider it to take to do a commitment update,
 					// just give up on it and fail the HTLC.
 					if height >= htlc.cltv_expiry - HTLC_FAIL_BACK_BUFFER {
-						let mut htlc_msat_height_data = byte_utils::be64_to_array(htlc.value).to_vec();
-						htlc_msat_height_data.extend_from_slice(&byte_utils::be32_to_array(height));
+						let mut htlc_msat_height_data = htlc.value.to_be_bytes().to_vec();
+						htlc_msat_height_data.extend_from_slice(&height.to_be_bytes());
 
 						timed_out_htlcs.push((HTLCSource::PreviousHopData(htlc.prev_hop.clone()), payment_hash.clone(),
 							HTLCFailReason::reason(0x4000 | 15, htlc_msat_height_data),

@@ -31,7 +31,7 @@ use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1::ecdsa::RecoverableSignature;
 use bitcoin::{PackedLockTime, secp256k1, Sequence, Witness};
 
-use crate::util::{byte_utils, transaction_utils};
+use crate::util::transaction_utils;
 use crate::util::crypto::{hkdf_extract_expand_twice, sign};
 use crate::util::ser::{Writeable, Writer, Readable, ReadableArgs};
 
@@ -43,6 +43,7 @@ use crate::ln::msgs::UnsignedChannelAnnouncement;
 use crate::ln::script::ShutdownScript;
 
 use crate::prelude::*;
+use core::convert::TryInto;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use crate::io::{self, Error};
 use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
@@ -969,8 +970,8 @@ impl KeysManager {
 				inbound_pmt_key_bytes.copy_from_slice(&inbound_payment_key[..]);
 
 				let mut rand_bytes_unique_start = Sha256::engine();
-				rand_bytes_unique_start.input(&byte_utils::be64_to_array(starting_time_secs));
-				rand_bytes_unique_start.input(&byte_utils::be32_to_array(starting_time_nanos));
+				rand_bytes_unique_start.input(&starting_time_secs.to_be_bytes());
+				rand_bytes_unique_start.input(&starting_time_nanos.to_be_bytes());
 				rand_bytes_unique_start.input(seed);
 
 				let mut res = KeysManager {
@@ -1002,7 +1003,7 @@ impl KeysManager {
 	}
 	/// Derive an old Sign containing per-channel secrets based on a key derivation parameters.
 	pub fn derive_channel_keys(&self, channel_value_satoshis: u64, params: &[u8; 32]) -> InMemorySigner {
-		let chan_id = byte_utils::slice_to_be64(&params[0..8]);
+		let chan_id = u64::from_be_bytes(params[0..8].try_into().unwrap());
 		let mut unique_start = Sha256::engine();
 		unique_start.input(params);
 		unique_start.input(&self.seed);

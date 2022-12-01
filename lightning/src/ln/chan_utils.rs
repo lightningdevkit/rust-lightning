@@ -24,7 +24,7 @@ use bitcoin::hash_types::{Txid, PubkeyHash};
 use crate::ln::{PaymentHash, PaymentPreimage};
 use crate::ln::msgs::DecodeError;
 use crate::util::ser::{Readable, Writeable, Writer};
-use crate::util::{byte_utils, transaction_utils};
+use crate::util::transaction_utils;
 
 use bitcoin::secp256k1::{SecretKey, PublicKey, Scalar};
 use bitcoin::secp256k1::{Secp256k1, ecdsa::Signature, Message};
@@ -310,7 +310,7 @@ impl Writeable for CounterpartyCommitmentSecrets {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		for &(ref secret, ref idx) in self.old_secrets.iter() {
 			writer.write_all(secret)?;
-			writer.write_all(&byte_utils::be64_to_array(*idx))?;
+			writer.write_all(&idx.to_be_bytes())?;
 		}
 		write_tlv_fields!(writer, {});
 		Ok(())
