@@ -2278,10 +2278,13 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 						}
 						chan_update_opt
 					} else {
-						if (msg.cltv_expiry as u64) < (*outgoing_cltv_value) as u64 + MIN_CLTV_EXPIRY_DELTA as u64 { // incorrect_cltv_expiry
+						if (msg.cltv_expiry as u64) < (*outgoing_cltv_value) as u64 + MIN_CLTV_EXPIRY_DELTA as u64 {
+							// We really should set `incorrect_cltv_expiry` here but as we're not
+							// forwarding over a real channel we can't generate a channel_update
+							// for it. Instead we just return a generic temporary_node_failure.
 							break Some((
 								"Forwarding node has tampered with the intended HTLC values or origin node has an obsolete cltv_expiry_delta",
-								0x1000 | 13, None,
+								0x2000 | 2, None,
 							));
 						}
 						None
