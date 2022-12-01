@@ -326,6 +326,26 @@ impl HTLCFailReason {
 			}
 		}
 	}
+
+	fn decode_onion_failure<T: secp256k1::Signing, L: Deref>(&self, secp_ctx: &Secp256k1<T>, logger: &L, htlc_source: &HTLCSource) -> (Option<crate::routing::gossip::NetworkUpdate>, Option<u64>, bool, Option<u16>, Option<Vec<u8>>) where L::Target: Logger {
+		match self {
+			HTLCFailReason::LightningError { ref err } => {
+				onion_utils::process_onion_failure(secp_ctx, logger, &htlc_source, err.data.clone())
+			},
+			HTLCFailReason::Reason { ref failure_code, ref data, .. } => {
+				// we get a fail_malformed_htlc from the first hop
+				// TODO: We'd like to generate a NetworkUpdate for temporary
+				// failures here, but that would be insufficient as find_route
+				// generally ignores its view of our own channels as we provide them via
+				// ChannelDetails.
+				// TODO: For non-temporary failures, we really should be closing the
+				// channel here as we apparently can't relay through them anyway.
+				if let &HTLCSource::OutboundRoute { ref path, .. } = htlc_source {
+					(None, Some(path.first().unwrap().short_channel_id), true, Some(*failure_code), Some(data.clone()))
+				} else { unreachable!(); }
+			}
+		}
+	}
 }
 
 struct ReceiveError {
@@ -4080,89 +4100,47 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 				} else { None };
 				log_trace!(self.logger, "Failing outbound payment HTLC with payment_hash {}", log_bytes!(payment_hash.0));
 
-				let path_failure = match &onion_error {
-					&HTLCFailReason::LightningError { ref err } => {
+				let path_failure = {
 #[cfg(test)]
-						let (network_update, short_channel_id, payment_retryable, onion_error_code, onion_error_data) = onion_utils::process_onion_failure(&self.secp_ctx, &self.logger, &source, err.data.clone());
+					let (network_update, short_channel_id, payment_retryable, onion_error_code, onion_error_data) = onion_error.decode_onion_failure(&self.secp_ctx, &self.logger, &source);
 #[cfg(not(test))]
-						let (network_update, short_channel_id, payment_retryable, _, _) = onion_utils::process_onion_failure(&self.secp_ctx, &self.logger, &source, err.data.clone());
+					let (network_update, short_channel_id, payment_retryable, _, _) = onion_error.decode_onion_failure(&self.secp_ctx, &self.logger, &source);
 
-						if self.payment_is_probe(payment_hash, &payment_id) {
-							if !payment_retryable {
-								events::Event::ProbeSuccessful {
-									payment_id: *payment_id,
-									payment_hash: payment_hash.clone(),
-									path: path.clone(),
-								}
-							} else {
-								events::Event::ProbeFailed {
-									payment_id: *payment_id,
-									payment_hash: payment_hash.clone(),
-									path: path.clone(),
-									short_channel_id,
-								}
+					if self.payment_is_probe(payment_hash, &payment_id) {
+						if !payment_retryable {
+							events::Event::ProbeSuccessful {
+								payment_id: *payment_id,
+								payment_hash: payment_hash.clone(),
+								path: path.clone(),
 							}
 						} else {
-							// TODO: If we decided to blame ourselves (or one of our channels) in
-							// process_onion_failure we should close that channel as it implies our
-							// next-hop is needlessly blaming us!
-							if let Some(scid) = short_channel_id {
-								retry.as_mut().map(|r| r.payment_params.previously_failed_channels.push(scid));
-							}
-							events::Event::PaymentPathFailed {
-								payment_id: Some(*payment_id),
-								payment_hash: payment_hash.clone(),
-								payment_failed_permanently: !payment_retryable,
-								network_update,
-								all_paths_failed,
-								path: path.clone(),
-								short_channel_id,
-								retry,
-								#[cfg(test)]
-								error_code: onion_error_code,
-								#[cfg(test)]
-								error_data: onion_error_data
-							}
-						}
-					},
-					&HTLCFailReason::Reason {
-#[cfg(test)]
-							ref failure_code,
-#[cfg(test)]
-							ref data,
-							.. } => {
-						// we get a fail_malformed_htlc from the first hop
-						// TODO: We'd like to generate a NetworkUpdate for temporary
-						// failures here, but that would be insufficient as find_route
-						// generally ignores its view of our own channels as we provide them via
-						// ChannelDetails.
-						// TODO: For non-temporary failures, we really should be closing the
-						// channel here as we apparently can't relay through them anyway.
-						let scid = path.first().unwrap().short_channel_id;
-						retry.as_mut().map(|r| r.payment_params.previously_failed_channels.push(scid));
-
-						if self.payment_is_probe(payment_hash, &payment_id) {
 							events::Event::ProbeFailed {
 								payment_id: *payment_id,
 								payment_hash: payment_hash.clone(),
 								path: path.clone(),
-								short_channel_id: Some(scid),
+								short_channel_id,
 							}
-						} else {
-							events::Event::PaymentPathFailed {
-								payment_id: Some(*payment_id),
-								payment_hash: payment_hash.clone(),
-								payment_failed_permanently: false,
-								network_update: None,
-								all_paths_failed,
-								path: path.clone(),
-								short_channel_id: Some(scid),
-								retry,
-#[cfg(test)]
-								error_code: Some(*failure_code),
-#[cfg(test)]
-								error_data: Some(data.clone()),
-							}
+						}
+					} else {
+						// TODO: If we decided to blame ourselves (or one of our channels) in
+						// process_onion_failure we should close that channel as it implies our
+						// next-hop is needlessly blaming us!
+						if let Some(scid) = short_channel_id {
+							retry.as_mut().map(|r| r.payment_params.previously_failed_channels.push(scid));
+						}
+						events::Event::PaymentPathFailed {
+							payment_id: Some(*payment_id),
+							payment_hash: payment_hash.clone(),
+							payment_failed_permanently: !payment_retryable,
+							network_update,
+							all_paths_failed,
+							path: path.clone(),
+							short_channel_id,
+							retry,
+							#[cfg(test)]
+							error_code: onion_error_code,
+							#[cfg(test)]
+							error_data: onion_error_data
 						}
 					}
 				};
