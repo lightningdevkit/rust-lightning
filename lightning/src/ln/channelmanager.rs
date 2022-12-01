@@ -309,6 +309,10 @@ impl HTLCFailReason {
 		Self::Reason { failure_code, data: Vec::new() }
 	}
 
+	pub(super) fn from_msg(msg: &msgs::UpdateFailHTLC) -> Self {
+		Self::LightningError { err: msg.reason.clone() }
+	}
+
 	fn get_encrypted_failure_packet(&self, incoming_packet_shared_secret: &[u8; 32], phantom_shared_secret: &Option<[u8; 32]>) -> msgs::OnionErrorPacket {
 		match self {
 			HTLCFailReason::Reason { ref failure_code, ref data } => {
@@ -5125,7 +5129,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 				if chan.get().get_counterparty_node_id() != *counterparty_node_id {
 					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
 				}
-				try_chan_entry!(self, chan.get_mut().update_fail_htlc(&msg, HTLCFailReason::LightningError { err: msg.reason.clone() }), chan);
+				try_chan_entry!(self, chan.get_mut().update_fail_htlc(&msg, HTLCFailReason::from_msg(msg)), chan);
 			},
 			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))
 		}
