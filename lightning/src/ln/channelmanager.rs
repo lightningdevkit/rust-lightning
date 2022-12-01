@@ -3080,20 +3080,20 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 		let next_hop_scid = match self.channel_state.lock().unwrap().by_id.get(next_hop_channel_id) {
 			Some(chan) => {
 				if !chan.is_usable() {
-					return Err(APIError::APIMisuseError {
-						err: format!("Channel with id {:?} not fully established", next_hop_channel_id)
+					return Err(APIError::ChannelUnavailable {
+						err: format!("Channel with id {} not fully established", log_bytes!(*next_hop_channel_id))
 					})
 				}
 				chan.get_short_channel_id().unwrap_or(chan.outbound_scid_alias())
 			},
-			None => return Err(APIError::APIMisuseError {
-				err: format!("Channel with id {:?} not found", next_hop_channel_id)
+			None => return Err(APIError::ChannelUnavailable {
+				err: format!("Channel with id {} not found", log_bytes!(*next_hop_channel_id))
 			})
 		};
 
 		let payment = self.pending_intercepted_htlcs.lock().unwrap().remove(&intercept_id)
 			.ok_or_else(|| APIError::APIMisuseError {
-				err: format!("Payment with intercept id {:?} not found", intercept_id.0)
+				err: format!("Payment with intercept id {} not found", log_bytes!(intercept_id.0))
 			})?;
 
 		let routing = match payment.forward_info.routing {
@@ -3128,7 +3128,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 
 		let payment = self.pending_intercepted_htlcs.lock().unwrap().remove(&intercept_id)
 			.ok_or_else(|| APIError::APIMisuseError {
-				err: format!("Payment with InterceptId {:?} not found", intercept_id)
+				err: format!("Payment with intercept id {} not found", log_bytes!(intercept_id.0))
 			})?;
 
 		if let PendingHTLCRouting::Forward { short_channel_id, .. } = payment.forward_info.routing {
