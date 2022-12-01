@@ -578,13 +578,13 @@ mod tests {
 	use lightning::ln::msgs::{ChannelMessageHandler, Init};
 	use lightning::ln::peer_handler::{PeerManager, MessageHandler, SocketDescriptor, IgnoringMessageHandler};
 	use lightning::routing::gossip::{NetworkGraph, P2PGossipSync};
+	use lightning::routing::router::DefaultRouter;
 	use lightning::util::config::UserConfig;
 	use lightning::util::events::{Event, MessageSendEventsProvider, MessageSendEvent};
 	use lightning::util::ser::Writeable;
 	use lightning::util::test_utils;
 	use lightning::util::persist::KVStorePersister;
 	use lightning_invoice::payment::{InvoicePayer, Retry};
-	use lightning_invoice::utils::DefaultRouter;
 	use lightning_persister::FilesystemPersister;
 	use std::fs;
 	use std::path::PathBuf;
