@@ -253,7 +253,7 @@ fn check_api_err(api_err: APIError) {
 	match api_err {
 		APIError::APIMisuseError { .. } => panic!("We can't misuse the API"),
 		APIError::FeeRateTooHigh { .. } => panic!("We can't send too much fee?"),
-		APIError::RouteError { .. } => panic!("Our routes should work"),
+		APIError::InvalidRoute { .. } => panic!("Our routes should work"),
 		APIError::ChannelUnavailable { err } => {
 			// Test the error against a list of errors we can hit, and reject
 			// all others. If you hit this panic, the list of acceptable errors
