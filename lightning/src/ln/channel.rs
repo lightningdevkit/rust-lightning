@@ -5791,8 +5791,16 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		Ok(Some(res))
 	}
 
-	/// Only fails in case of bad keys
+	/// Only fails in case of signer rejection.
 	fn send_commitment_no_status_check<L: Deref>(&mut self, logger: &L) -> Result<(msgs::CommitmentSigned, ChannelMonitorUpdate), ChannelError> where L::Target: Logger {
+		let monitor_update = self.build_commitment_no_status_check(logger);
+		match self.send_commitment_no_state_update(logger) {
+			Ok((commitment_signed, _)) => Ok((commitment_signed, monitor_update)),
+			Err(e) => Err(e),
+		}
+	}
+
+	fn build_commitment_no_status_check<L: Deref>(&mut self, logger: &L) -> ChannelMonitorUpdate where L::Target: Logger {
 		log_trace!(logger, "Updating HTLC state for a newly-sent commitment_signed...");
 		// We can upgrade the status of some HTLCs that are waiting on a commitment, even if we
 		// fail to generate this, we still are at least at a position where upgrading their status
@@ -5825,15 +5833,9 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		}
 		self.resend_order = RAACommitmentOrder::RevokeAndACKFirst;
 
-		let (res, counterparty_commitment_txid, htlcs) = match self.send_commitment_no_state_update(logger) {
-			Ok((res, (counterparty_commitment_tx, mut htlcs))) => {
-				// Update state now that we've passed all the can-fail calls...
-				let htlcs_no_ref: Vec<(HTLCOutputInCommitment, Option<Box<HTLCSource>>)> =
-					htlcs.drain(..).map(|(htlc, htlc_source)| (htlc, htlc_source.map(|source_ref| Box::new(source_ref.clone())))).collect();
-				(res, counterparty_commitment_tx, htlcs_no_ref)
-			},
-			Err(e) => return Err(e),
-		};
+		let (counterparty_commitment_txid, mut htlcs_ref) = self.build_commitment_no_state_update(logger);
+		let htlcs: Vec<(HTLCOutputInCommitment, Option<Box<HTLCSource>>)> =
+			htlcs_ref.drain(..).map(|(htlc, htlc_source)| (htlc, htlc_source.map(|source_ref| Box::new(source_ref.clone())))).collect();
 
 		if self.announcement_sigs_state == AnnouncementSigsState::MessageSent {
 			self.announcement_sigs_state = AnnouncementSigsState::Committed;
@@ -5850,16 +5852,13 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			}]
 		};
 		self.channel_state |= ChannelState::AwaitingRemoteRevoke as u32;
-		Ok((res, monitor_update))
+		monitor_update
 	}
 
-	/// Only fails in case of bad keys. Used for channel_reestablish commitment_signed generation
-	/// when we shouldn't change HTLC/channel state.
-	fn send_commitment_no_state_update<L: Deref>(&self, logger: &L) -> Result<(msgs::CommitmentSigned, (Txid, Vec<(HTLCOutputInCommitment, Option<&HTLCSource>)>)), ChannelError> where L::Target: Logger {
+	fn build_commitment_no_state_update<L: Deref>(&self, logger: &L) -> (Txid, Vec<(HTLCOutputInCommitment, Option<&HTLCSource>)>) where L::Target: Logger {
 		let counterparty_keys = self.build_remote_transaction_keys();
 		let commitment_stats = self.build_commitment_transaction(self.cur_counterparty_commitment_transaction_number, &counterparty_keys, false, true, logger);
 		let counterparty_commitment_txid = commitment_stats.tx.trust().txid();
-		let (signature, htlc_signatures);
 
 		#[cfg(any(test, fuzzing))]
 		{
@@ -5878,6 +5877,21 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 				}
 			}
 		}
+
+		(counterparty_commitment_txid, commitment_stats.htlcs_included)
+	}
+
+	/// Only fails in case of signer rejection. Used for channel_reestablish commitment_signed
+	/// generation when we shouldn't change HTLC/channel state.
+	fn send_commitment_no_state_update<L: Deref>(&self, logger: &L) -> Result<(msgs::CommitmentSigned, (Txid, Vec<(HTLCOutputInCommitment, Option<&HTLCSource>)>)), ChannelError> where L::Target: Logger {
+		// Get the fee tests from `build_commitment_no_state_update`
+		#[cfg(any(test, fuzzing))]
+		self.build_commitment_no_state_update(logger);
+
+		let counterparty_keys = self.build_remote_transaction_keys();
+		let commitment_stats = self.build_commitment_transaction(self.cur_counterparty_commitment_transaction_number, &counterparty_keys, false, true, logger);
+		let counterparty_commitment_txid = commitment_stats.tx.trust().txid();
+		let (signature, htlc_signatures);
 
 		{
 			let mut htlcs = Vec::with_capacity(commitment_stats.htlcs_included.len());
