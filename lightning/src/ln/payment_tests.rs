@@ -20,7 +20,7 @@ use crate::ln::channelmanager::{self, BREAKDOWN_TIMEOUT, ChannelManager, MPP_TIM
 use crate::ln::msgs;
 use crate::ln::msgs::ChannelMessageHandler;
 use crate::routing::gossip::RoutingFees;
-use crate::routing::router::{find_route, get_route, PaymentParameters, RouteHint, RouteHintHop, RouteParameters};
+use crate::routing::router::{get_route, PaymentParameters, RouteHint, RouteHintHop, RouteParameters};
 use crate::util::events::{ClosureReason, Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider};
 use crate::util::test_utils;
 use crate::util::errors::APIError;
@@ -1429,9 +1429,10 @@ fn do_test_intercepted_payment(test: InterceptTest) {
 		final_value_msat: amt_msat,
 		final_cltv_expiry_delta: TEST_FINAL_CLTV,
 	};
-	let route = find_route(
-		&nodes[0].node.get_our_node_id(), &route_params, &nodes[0].network_graph, None, nodes[0].logger,
-		&scorer, &random_seed_bytes
+	let route = get_route(
+		&nodes[0].node.get_our_node_id(), &route_params.payment_params,
+		&nodes[0].network_graph.read_only(), None, route_params.final_value_msat,
+		route_params.final_cltv_expiry_delta, nodes[0].logger, &scorer, &random_seed_bytes
 	).unwrap();
 
 	let (payment_hash, payment_secret) = nodes[2].node.create_inbound_payment(Some(amt_msat), 60 * 60).unwrap();
@@ -1540,8 +1541,7 @@ fn do_test_intercepted_payment(test: InterceptTest) {
 		};
 		connect_block(&nodes[0], &block);
 		connect_block(&nodes[1], &block);
-		let block_count = 183; // find_route adds a random CLTV offset, so hardcode rather than summing consts
-		for _ in 0..block_count {
+		for _ in 0..TEST_FINAL_CLTV {
 			block.header.prev_blockhash = block.block_hash();
 			connect_block(&nodes[0], &block);
 			connect_block(&nodes[1], &block);
