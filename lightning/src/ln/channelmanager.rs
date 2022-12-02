@@ -2222,7 +2222,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 			// with a short_channel_id of 0. This is important as various things later assume
 			// short_channel_id is non-0 in any ::Forward.
 			if let &PendingHTLCRouting::Forward { ref short_channel_id, .. } = routing {
-				if let Some((err, code, chan_update)) = loop {
+				if let Some((err, mut code, chan_update)) = loop {
 					let id_option = self.short_to_chan_info.read().unwrap().get(&short_channel_id).cloned();
 					let mut channel_state = self.channel_state.lock().unwrap();
 					let forwarding_id_opt = match id_option {
@@ -2331,6 +2331,12 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 						(chan_update.serialized_length() as u16 + 2).write(&mut res).expect("Writes cannot fail");
 						msgs::ChannelUpdate::TYPE.write(&mut res).expect("Writes cannot fail");
 						chan_update.write(&mut res).expect("Writes cannot fail");
+					} else if code & 0x1000 == 0x1000 {
+						// If we're trying to return an error that requires a `channel_update` but
+						// we're forwarding to a phantom or intercept "channel" (i.e. cannot
+						// generate an update), just use the generic "temporary_node_failure"
+						// instead.
+						code = 0x2000 | 2;
 					}
 					return_err!(err, code, &res.0[..]);
 				}
