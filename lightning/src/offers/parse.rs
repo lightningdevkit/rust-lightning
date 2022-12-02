@@ -20,7 +20,7 @@ use crate::util::ser::SeekReadable;
 use crate::prelude::*;
 
 /// Indicates a message can be encoded using bech32.
-pub(crate) trait Bech32Encode: AsRef<[u8]> + TryFrom<Vec<u8>, Error=ParseError> {
+pub(super) trait Bech32Encode: AsRef<[u8]> + TryFrom<Vec<u8>, Error=ParseError> {
 	/// Human readable part of the message's bech32 encoding.
 	const BECH32_HRP: &'static str;
 
@@ -78,7 +78,7 @@ impl<'a> AsRef<str> for Bech32String<'a> {
 
 /// A wrapper for reading a message as a TLV stream `T` from a byte sequence, while still
 /// maintaining ownership of the bytes for later use.
-pub(crate) struct ParsedMessage<T: SeekReadable> {
+pub(super) struct ParsedMessage<T: SeekReadable> {
 	pub bytes: Vec<u8>,
 	pub tlv_stream: T,
 }

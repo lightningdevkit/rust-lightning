@@ -504,15 +504,15 @@ macro_rules! tlv_stream {
 		$(($type:expr, $field:ident : $fieldty:tt)),* $(,)*
 	}) => {
 		#[derive(Debug)]
-		pub(crate) struct $name {
+		pub(super) struct $name {
 			$(
 				$field: Option<tlv_record_type!($fieldty)>,
 			)*
 		}
 
-		pub(crate) struct $nameref<'a> {
+		pub(super) struct $nameref<'a> {
 			$(
-				pub(crate) $field: Option<tlv_record_ref_type!($fieldty)>,
+				pub(super) $field: Option<tlv_record_ref_type!($fieldty)>,
 			)*
 		}
 

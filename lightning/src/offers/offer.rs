@@ -242,7 +242,7 @@ pub struct Offer {
 
 /// The contents of an [`Offer`], which may be shared with an `InvoiceRequest` or an `Invoice`.
 #[derive(Clone, Debug)]
-pub(crate) struct OfferContents {
+pub(super) struct OfferContents {
 	chains: Option<Vec<ChainHash>>,
 	metadata: Option<Vec<u8>>,
 	amount: Option<Amount>,
