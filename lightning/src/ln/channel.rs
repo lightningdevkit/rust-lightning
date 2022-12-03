@@ -558,6 +558,11 @@ pub(super) struct Channel<Signer: ChannelSigner> {
 	monitor_pending_channel_ready: bool,
 	monitor_pending_revoke_and_ack: bool,
 	monitor_pending_commitment_signed: bool,
+
+	// TODO: If a channel is drop'd, we don't know whether the `ChannelMonitor` is ultimately
+	// responsible for some of the HTLCs here or not - we don't know whether the update in question
+	// completed or not. We currently ignore these fields entirely when force-closing a channel,
+	// but need to handle this somehow or we run the risk of losing HTLCs!
 	monitor_pending_forwards: Vec<(PendingHTLCInfo, u64)>,
 	monitor_pending_failures: Vec<(HTLCSource, PaymentHash, HTLCFailReason)>,
 	monitor_pending_finalized_fulfills: Vec<HTLCSource>,

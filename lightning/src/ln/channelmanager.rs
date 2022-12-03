@@ -1374,15 +1374,6 @@ macro_rules! handle_monitor_update_res {
 			ChannelMonitorUpdateStatus::PermanentFailure => {
 				log_error!($self.logger, "Closing channel {} due to monitor update ChannelMonitorUpdateStatus::PermanentFailure", log_bytes!($chan_id[..]));
 				update_maps_on_chan_removal!($self, $chan);
-				// TODO: $failed_fails is dropped here, which will cause other channels to hit the
-				// chain in a confused state! We need to move them into the ChannelMonitor which
-				// will be responsible for failing backwards once things confirm on-chain.
-				// It's ok that we drop $failed_forwards here - at this point we'd rather they
-				// broadcast HTLC-Timeout and pay the associated fees to get their funds back than
-				// us bother trying to claim it just to forward on to another peer. If we're
-				// splitting hairs we'd prefer to claim payments that were to us, but we haven't
-				// given up the preimage yet, so might as well just wait until the payment is
-				// retried, avoiding the on-chain fees.
 				let res: Result<(), _> = Err(MsgHandleErrInternal::from_finish_shutdown("ChannelMonitor storage failure".to_owned(), *$chan_id, $chan.get_user_id(),
 						$chan.force_shutdown(false), $self.get_channel_update_for_broadcast(&$chan).ok() ));
 				(res, true)
