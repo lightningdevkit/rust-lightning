@@ -381,57 +381,53 @@ impl PackageSolvingData {
 	fn finalize_input<Signer: Sign>(&self, bumped_tx: &mut Transaction, i: usize, onchain_handler: &mut OnchainTxHandler<Signer>) -> bool {
 		match self {
 			PackageSolvingData::RevokedOutput(ref outp) => {
-				if let Ok(chan_keys) = TxCreationKeys::derive_new(&onchain_handler.secp_ctx, &outp.per_commitment_point, &outp.counterparty_delayed_payment_base_key, &outp.counterparty_htlc_base_key, &onchain_handler.signer.pubkeys().revocation_basepoint, &onchain_handler.signer.pubkeys().htlc_basepoint) {
-					let witness_script = chan_utils::get_revokeable_redeemscript(&chan_keys.revocation_key, outp.on_counterparty_tx_csv, &chan_keys.broadcaster_delayed_payment_key);
-					//TODO: should we panic on signer failure ?
-					if let Ok(sig) = onchain_handler.signer.sign_justice_revoked_output(&bumped_tx, i, outp.amount, &outp.per_commitment_key, &onchain_handler.secp_ctx) {
-						let mut ser_sig = sig.serialize_der().to_vec();
-						ser_sig.push(EcdsaSighashType::All as u8);
-						bumped_tx.input[i].witness.push(ser_sig);
-						bumped_tx.input[i].witness.push(vec!(1));
-						bumped_tx.input[i].witness.push(witness_script.clone().into_bytes());
-					} else { return false; }
-				}
+				let chan_keys = TxCreationKeys::derive_new(&onchain_handler.secp_ctx, &outp.per_commitment_point, &outp.counterparty_delayed_payment_base_key, &outp.counterparty_htlc_base_key, &onchain_handler.signer.pubkeys().revocation_basepoint, &onchain_handler.signer.pubkeys().htlc_basepoint);
+				let witness_script = chan_utils::get_revokeable_redeemscript(&chan_keys.revocation_key, outp.on_counterparty_tx_csv, &chan_keys.broadcaster_delayed_payment_key);
+				//TODO: should we panic on signer failure ?
+				if let Ok(sig) = onchain_handler.signer.sign_justice_revoked_output(&bumped_tx, i, outp.amount, &outp.per_commitment_key, &onchain_handler.secp_ctx) {
+					let mut ser_sig = sig.serialize_der().to_vec();
+					ser_sig.push(EcdsaSighashType::All as u8);
+					bumped_tx.input[i].witness.push(ser_sig);
+					bumped_tx.input[i].witness.push(vec!(1));
+					bumped_tx.input[i].witness.push(witness_script.clone().into_bytes());
+				} else { return false; }
 			},
 			PackageSolvingData::RevokedHTLCOutput(ref outp) => {
-				if let Ok(chan_keys) = TxCreationKeys::derive_new(&onchain_handler.secp_ctx, &outp.per_commitment_point, &outp.counterparty_delayed_payment_base_key, &outp.counterparty_htlc_base_key, &onchain_handler.signer.pubkeys().revocation_basepoint, &onchain_handler.signer.pubkeys().htlc_basepoint) {
-					let witness_script = chan_utils::get_htlc_redeemscript_with_explicit_keys(&outp.htlc, onchain_handler.opt_anchors(), &chan_keys.broadcaster_htlc_key, &chan_keys.countersignatory_htlc_key, &chan_keys.revocation_key);
-					//TODO: should we panic on signer failure ?
-					if let Ok(sig) = onchain_handler.signer.sign_justice_revoked_htlc(&bumped_tx, i, outp.amount, &outp.per_commitment_key, &outp.htlc, &onchain_handler.secp_ctx) {
-						let mut ser_sig = sig.serialize_der().to_vec();
-						ser_sig.push(EcdsaSighashType::All as u8);
-						bumped_tx.input[i].witness.push(ser_sig);
-						bumped_tx.input[i].witness.push(chan_keys.revocation_key.clone().serialize().to_vec());
-						bumped_tx.input[i].witness.push(witness_script.clone().into_bytes());
-					} else { return false; }
-				}
+				let chan_keys = TxCreationKeys::derive_new(&onchain_handler.secp_ctx, &outp.per_commitment_point, &outp.counterparty_delayed_payment_base_key, &outp.counterparty_htlc_base_key, &onchain_handler.signer.pubkeys().revocation_basepoint, &onchain_handler.signer.pubkeys().htlc_basepoint);
+				let witness_script = chan_utils::get_htlc_redeemscript_with_explicit_keys(&outp.htlc, onchain_handler.opt_anchors(), &chan_keys.broadcaster_htlc_key, &chan_keys.countersignatory_htlc_key, &chan_keys.revocation_key);
+				//TODO: should we panic on signer failure ?
+				if let Ok(sig) = onchain_handler.signer.sign_justice_revoked_htlc(&bumped_tx, i, outp.amount, &outp.per_commitment_key, &outp.htlc, &onchain_handler.secp_ctx) {
+					let mut ser_sig = sig.serialize_der().to_vec();
+					ser_sig.push(EcdsaSighashType::All as u8);
+					bumped_tx.input[i].witness.push(ser_sig);
+					bumped_tx.input[i].witness.push(chan_keys.revocation_key.clone().serialize().to_vec());
+					bumped_tx.input[i].witness.push(witness_script.clone().into_bytes());
+				} else { return false; }
 			},
 			PackageSolvingData::CounterpartyOfferedHTLCOutput(ref outp) => {
-				if let Ok(chan_keys) = TxCreationKeys::derive_new(&onchain_handler.secp_ctx, &outp.per_commitment_point, &outp.counterparty_delayed_payment_base_key, &outp.counterparty_htlc_base_key, &onchain_handler.signer.pubkeys().revocation_basepoint, &onchain_handler.signer.pubkeys().htlc_basepoint) {
-					let witness_script = chan_utils::get_htlc_redeemscript_with_explicit_keys(&outp.htlc, onchain_handler.opt_anchors(), &chan_keys.broadcaster_htlc_key, &chan_keys.countersignatory_htlc_key, &chan_keys.revocation_key);
+				let chan_keys = TxCreationKeys::derive_new(&onchain_handler.secp_ctx, &outp.per_commitment_point, &outp.counterparty_delayed_payment_base_key, &outp.counterparty_htlc_base_key, &onchain_handler.signer.pubkeys().revocation_basepoint, &onchain_handler.signer.pubkeys().htlc_basepoint);
+				let witness_script = chan_utils::get_htlc_redeemscript_with_explicit_keys(&outp.htlc, onchain_handler.opt_anchors(), &chan_keys.broadcaster_htlc_key, &chan_keys.countersignatory_htlc_key, &chan_keys.revocation_key);
 
-					if let Ok(sig) = onchain_handler.signer.sign_counterparty_htlc_transaction(&bumped_tx, i, &outp.htlc.amount_msat / 1000, &outp.per_commitment_point, &outp.htlc, &onchain_handler.secp_ctx) {
-						let mut ser_sig = sig.serialize_der().to_vec();
-						ser_sig.push(EcdsaSighashType::All as u8);
-						bumped_tx.input[i].witness.push(ser_sig);
-						bumped_tx.input[i].witness.push(outp.preimage.0.to_vec());
-						bumped_tx.input[i].witness.push(witness_script.clone().into_bytes());
-					}
+				if let Ok(sig) = onchain_handler.signer.sign_counterparty_htlc_transaction(&bumped_tx, i, &outp.htlc.amount_msat / 1000, &outp.per_commitment_point, &outp.htlc, &onchain_handler.secp_ctx) {
+					let mut ser_sig = sig.serialize_der().to_vec();
+					ser_sig.push(EcdsaSighashType::All as u8);
+					bumped_tx.input[i].witness.push(ser_sig);
+					bumped_tx.input[i].witness.push(outp.preimage.0.to_vec());
+					bumped_tx.input[i].witness.push(witness_script.clone().into_bytes());
 				}
 			},
 			PackageSolvingData::CounterpartyReceivedHTLCOutput(ref outp) => {
-				if let Ok(chan_keys) = TxCreationKeys::derive_new(&onchain_handler.secp_ctx, &outp.per_commitment_point, &outp.counterparty_delayed_payment_base_key, &outp.counterparty_htlc_base_key, &onchain_handler.signer.pubkeys().revocation_basepoint, &onchain_handler.signer.pubkeys().htlc_basepoint) {
-					let witness_script = chan_utils::get_htlc_redeemscript_with_explicit_keys(&outp.htlc, onchain_handler.opt_anchors(), &chan_keys.broadcaster_htlc_key, &chan_keys.countersignatory_htlc_key, &chan_keys.revocation_key);
+				let chan_keys = TxCreationKeys::derive_new(&onchain_handler.secp_ctx, &outp.per_commitment_point, &outp.counterparty_delayed_payment_base_key, &outp.counterparty_htlc_base_key, &onchain_handler.signer.pubkeys().revocation_basepoint, &onchain_handler.signer.pubkeys().htlc_basepoint);
+				let witness_script = chan_utils::get_htlc_redeemscript_with_explicit_keys(&outp.htlc, onchain_handler.opt_anchors(), &chan_keys.broadcaster_htlc_key, &chan_keys.countersignatory_htlc_key, &chan_keys.revocation_key);
 
-					bumped_tx.lock_time = PackedLockTime(outp.htlc.cltv_expiry); // Right now we don't aggregate time-locked transaction, if we do we should set lock_time before to avoid breaking hash computation
-					if let Ok(sig) = onchain_handler.signer.sign_counterparty_htlc_transaction(&bumped_tx, i, &outp.htlc.amount_msat / 1000, &outp.per_commitment_point, &outp.htlc, &onchain_handler.secp_ctx) {
-						let mut ser_sig = sig.serialize_der().to_vec();
-						ser_sig.push(EcdsaSighashType::All as u8);
-						bumped_tx.input[i].witness.push(ser_sig);
-						// Due to BIP146 (MINIMALIF) this must be a zero-length element to relay.
-						bumped_tx.input[i].witness.push(vec![]);
-						bumped_tx.input[i].witness.push(witness_script.clone().into_bytes());
-					}
+				bumped_tx.lock_time = PackedLockTime(outp.htlc.cltv_expiry); // Right now we don't aggregate time-locked transaction, if we do we should set lock_time before to avoid breaking hash computation
+				if let Ok(sig) = onchain_handler.signer.sign_counterparty_htlc_transaction(&bumped_tx, i, &outp.htlc.amount_msat / 1000, &outp.per_commitment_point, &outp.htlc, &onchain_handler.secp_ctx) {
+					let mut ser_sig = sig.serialize_der().to_vec();
+					ser_sig.push(EcdsaSighashType::All as u8);
+					bumped_tx.input[i].witness.push(ser_sig);
+					// Due to BIP146 (MINIMALIF) this must be a zero-length element to relay.
+					bumped_tx.input[i].witness.push(vec![]);
+					bumped_tx.input[i].witness.push(witness_script.clone().into_bytes());
 				}
 			},
 			_ => { panic!("API Error!"); }

@@ -2443,8 +2443,8 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 			let secret = self.get_secret(commitment_number).unwrap();
 			let per_commitment_key = ignore_error!(SecretKey::from_slice(&secret));
 			let per_commitment_point = PublicKey::from_secret_key(&self.secp_ctx, &per_commitment_key);
-			let revocation_pubkey = ignore_error!(chan_utils::derive_public_revocation_key(&self.secp_ctx, &per_commitment_point, &self.holder_revocation_basepoint));
-			let delayed_key = ignore_error!(chan_utils::derive_public_key(&self.secp_ctx, &PublicKey::from_secret_key(&self.secp_ctx, &per_commitment_key), &self.counterparty_commitment_params.counterparty_delayed_payment_base_key));
+			let revocation_pubkey = chan_utils::derive_public_revocation_key(&self.secp_ctx, &per_commitment_point, &self.holder_revocation_basepoint);
+			let delayed_key = chan_utils::derive_public_key(&self.secp_ctx, &PublicKey::from_secret_key(&self.secp_ctx, &per_commitment_key), &self.counterparty_commitment_params.counterparty_delayed_payment_base_key);
 
 			let revokeable_redeemscript = chan_utils::get_revokeable_redeemscript(&revocation_pubkey, self.counterparty_commitment_params.on_counterparty_tx_csv, &delayed_key);
 			let revokeable_p2wsh = revokeable_redeemscript.to_v0_p2wsh();
@@ -2556,31 +2556,18 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 			} else { return (claimable_outpoints, to_counterparty_output_info); };
 
 		if let Some(transaction) = tx {
-			let revokeable_p2wsh_opt =
-				if let Ok(revocation_pubkey) = chan_utils::derive_public_revocation_key(
-					&self.secp_ctx, &per_commitment_point, &self.holder_revocation_basepoint)
-				{
-					if let Ok(delayed_key) = chan_utils::derive_public_key(&self.secp_ctx,
-						&per_commitment_point,
-						&self.counterparty_commitment_params.counterparty_delayed_payment_base_key)
-					{
-						Some(chan_utils::get_revokeable_redeemscript(&revocation_pubkey,
-							self.counterparty_commitment_params.on_counterparty_tx_csv,
-							&delayed_key).to_v0_p2wsh())
-					} else {
-						debug_assert!(false, "Failed to derive a delayed payment key for a commitment state we accepted");
-						None
-					}
-				} else {
-					debug_assert!(false, "Failed to derive a revocation pubkey key for a commitment state we accepted");
-					None
-				};
-			if let Some(revokeable_p2wsh) = revokeable_p2wsh_opt {
-				for (idx, outp) in transaction.output.iter().enumerate() {
-					if outp.script_pubkey == revokeable_p2wsh {
-						to_counterparty_output_info =
-							Some((idx.try_into().expect("Can't have > 2^32 outputs"), outp.value));
-					}
+			let revocation_pubkey = chan_utils::derive_public_revocation_key(
+				&self.secp_ctx, &per_commitment_point, &self.holder_revocation_basepoint);
+			let delayed_key = chan_utils::derive_public_key(&self.secp_ctx,
+				&per_commitment_point,
+				&self.counterparty_commitment_params.counterparty_delayed_payment_base_key);
+			let revokeable_p2wsh = chan_utils::get_revokeable_redeemscript(&revocation_pubkey,
+				self.counterparty_commitment_params.on_counterparty_tx_csv,
+				&delayed_key).to_v0_p2wsh();
+			for (idx, outp) in transaction.output.iter().enumerate() {
+				if outp.script_pubkey == revokeable_p2wsh {
+					to_counterparty_output_info =
+						Some((idx.try_into().expect("Can't have > 2^32 outputs"), outp.value));
 				}
 			}
 		}

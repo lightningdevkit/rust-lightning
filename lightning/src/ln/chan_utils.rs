@@ -28,7 +28,6 @@ use crate::util::{byte_utils, transaction_utils};
 
 use bitcoin::secp256k1::{SecretKey, PublicKey, Scalar};
 use bitcoin::secp256k1::{Secp256k1, ecdsa::Signature, Message};
-use bitcoin::secp256k1::Error as SecpError;
 use bitcoin::{PackedLockTime, secp256k1, Sequence, Witness};
 use bitcoin::PublicKey as BitcoinPublicKey;
 
@@ -330,32 +329,29 @@ impl Readable for CounterpartyCommitmentSecrets {
 
 /// Derives a per-commitment-transaction private key (eg an htlc key or delayed_payment key)
 /// from the base secret and the per_commitment_point.
-///
-/// Note that this is infallible iff we trust that at least one of the two input keys are randomly
-/// generated (ie our own).
-pub fn derive_private_key<T: secp256k1::Signing>(secp_ctx: &Secp256k1<T>, per_commitment_point: &PublicKey, base_secret: &SecretKey) -> Result<SecretKey, SecpError> {
+pub fn derive_private_key<T: secp256k1::Signing>(secp_ctx: &Secp256k1<T>, per_commitment_point: &PublicKey, base_secret: &SecretKey) -> SecretKey {
 	let mut sha = Sha256::engine();
 	sha.input(&per_commitment_point.serialize());
 	sha.input(&PublicKey::from_secret_key(&secp_ctx, &base_secret).serialize());
 	let res = Sha256::from_engine(sha).into_inner();
 
 	base_secret.clone().add_tweak(&Scalar::from_be_bytes(res).unwrap())
+		.expect("Addition only fails if the tweak is the inverse of the key. This is not possible when the tweak contains the hash of the key.")
 }
 
 /// Derives a per-commitment-transaction public key (eg an htlc key or a delayed_payment key)
 /// from the base point and the per_commitment_key. This is the public equivalent of
 /// derive_private_key - using only public keys to derive a public key instead of private keys.
-///
-/// Note that this is infallible iff we trust that at least one of the two input keys are randomly
-/// generated (ie our own).
-pub fn derive_public_key<T: secp256k1::Signing>(secp_ctx: &Secp256k1<T>, per_commitment_point: &PublicKey, base_point: &PublicKey) -> Result<PublicKey, SecpError> {
+pub fn derive_public_key<T: secp256k1::Signing>(secp_ctx: &Secp256k1<T>, per_commitment_point: &PublicKey, base_point: &PublicKey) -> PublicKey {
 	let mut sha = Sha256::engine();
 	sha.input(&per_commitment_point.serialize());
 	sha.input(&base_point.serialize());
 	let res = Sha256::from_engine(sha).into_inner();
 
-	let hashkey = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&res)?);
+	let hashkey = PublicKey::from_secret_key(&secp_ctx,
+		&SecretKey::from_slice(&res).expect("Hashes should always be valid keys unless SHA-256 is broken"));
 	base_point.combine(&hashkey)
+		.expect("Addition only fails if the tweak is the inverse of the key. This is not possible when the tweak contains the hash of the key.")
 }
 
 /// Derives a per-commitment-transaction revocation key from its constituent parts.
@@ -364,10 +360,9 @@ pub fn derive_public_key<T: secp256k1::Signing>(secp_ctx: &Secp256k1<T>, per_com
 /// commitment transaction, thus per_commitment_secret always come from cheater
 /// and revocation_base_secret always come from punisher, which is the broadcaster
 /// of the transaction spending with this key knowledge.
-///
-/// Note that this is infallible iff we trust that at least one of the two input keys are randomly
-/// generated (ie our own).
-pub fn derive_private_revocation_key<T: secp256k1::Signing>(secp_ctx: &Secp256k1<T>, per_commitment_secret: &SecretKey, countersignatory_revocation_base_secret: &SecretKey) -> Result<SecretKey, SecpError> {
+pub fn derive_private_revocation_key<T: secp256k1::Signing>(secp_ctx: &Secp256k1<T>,
+	per_commitment_secret: &SecretKey, countersignatory_revocation_base_secret: &SecretKey)
+-> SecretKey {
 	let countersignatory_revocation_base_point = PublicKey::from_secret_key(&secp_ctx, &countersignatory_revocation_base_secret);
 	let per_commitment_point = PublicKey::from_secret_key(&secp_ctx, &per_commitment_secret);
 
@@ -386,9 +381,12 @@ pub fn derive_private_revocation_key<T: secp256k1::Signing>(secp_ctx: &Secp256k1
 		Sha256::from_engine(sha).into_inner()
 	};
 
-	let countersignatory_contrib = countersignatory_revocation_base_secret.clone().mul_tweak(&Scalar::from_be_bytes(rev_append_commit_hash_key).unwrap())?;
-	let broadcaster_contrib = per_commitment_secret.clone().mul_tweak(&Scalar::from_be_bytes(commit_append_rev_hash_key).unwrap())?;
+	let countersignatory_contrib = countersignatory_revocation_base_secret.clone().mul_tweak(&Scalar::from_be_bytes(rev_append_commit_hash_key).unwrap())
+		.expect("Multiplying a secret key by a hash is expected to never fail per secp256k1 docs");
+	let broadcaster_contrib = per_commitment_secret.clone().mul_tweak(&Scalar::from_be_bytes(commit_append_rev_hash_key).unwrap())
+		.expect("Multiplying a secret key by a hash is expected to never fail per secp256k1 docs");
 	countersignatory_contrib.add_tweak(&Scalar::from_be_bytes(broadcaster_contrib.secret_bytes()).unwrap())
+		.expect("Addition only fails if the tweak is the inverse of the key. This is not possible when the tweak commits to the key.")
 }
 
 /// Derives a per-commitment-transaction revocation public key from its constituent parts. This is
@@ -402,7 +400,9 @@ pub fn derive_private_revocation_key<T: secp256k1::Signing>(secp_ctx: &Secp256k1
 ///
 /// Note that this is infallible iff we trust that at least one of the two input keys are randomly
 /// generated (ie our own).
-pub fn derive_public_revocation_key<T: secp256k1::Verification>(secp_ctx: &Secp256k1<T>, per_commitment_point: &PublicKey, countersignatory_revocation_base_point: &PublicKey) -> Result<PublicKey, SecpError> {
+pub fn derive_public_revocation_key<T: secp256k1::Verification>(secp_ctx: &Secp256k1<T>,
+	per_commitment_point: &PublicKey, countersignatory_revocation_base_point: &PublicKey)
+-> PublicKey {
 	let rev_append_commit_hash_key = {
 		let mut sha = Sha256::engine();
 		sha.input(&countersignatory_revocation_base_point.serialize());
@@ -418,9 +418,12 @@ pub fn derive_public_revocation_key<T: secp256k1::Verification>(secp_ctx: &Secp2
 		Sha256::from_engine(sha).into_inner()
 	};
 
-	let countersignatory_contrib = countersignatory_revocation_base_point.clone().mul_tweak(&secp_ctx, &Scalar::from_be_bytes(rev_append_commit_hash_key).unwrap())?;
-	let broadcaster_contrib = per_commitment_point.clone().mul_tweak(&secp_ctx, &Scalar::from_be_bytes(commit_append_rev_hash_key).unwrap())?;
+	let countersignatory_contrib = countersignatory_revocation_base_point.clone().mul_tweak(&secp_ctx, &Scalar::from_be_bytes(rev_append_commit_hash_key).unwrap())
+		.expect("Multiplying a valid public key by a hash is expected to never fail per secp256k1 docs");
+	let broadcaster_contrib = per_commitment_point.clone().mul_tweak(&secp_ctx, &Scalar::from_be_bytes(commit_append_rev_hash_key).unwrap())
+		.expect("Multiplying a valid public key by a hash is expected to never fail per secp256k1 docs");
 	countersignatory_contrib.combine(&broadcaster_contrib)
+		.expect("Addition only fails if the tweak is the inverse of the key. This is not possible when the tweak commits to the key.")
 }
 
 /// The set of public keys which are used in the creation of one commitment transaction.
@@ -493,19 +496,19 @@ impl_writeable_tlv_based!(ChannelPublicKeys, {
 impl TxCreationKeys {
 	/// Create per-state keys from channel base points and the per-commitment point.
 	/// Key set is asymmetric and can't be used as part of counter-signatory set of transactions.
-	pub fn derive_new<T: secp256k1::Signing + secp256k1::Verification>(secp_ctx: &Secp256k1<T>, per_commitment_point: &PublicKey, broadcaster_delayed_payment_base: &PublicKey, broadcaster_htlc_base: &PublicKey, countersignatory_revocation_base: &PublicKey, countersignatory_htlc_base: &PublicKey) -> Result<TxCreationKeys, SecpError> {
-		Ok(TxCreationKeys {
+	pub fn derive_new<T: secp256k1::Signing + secp256k1::Verification>(secp_ctx: &Secp256k1<T>, per_commitment_point: &PublicKey, broadcaster_delayed_payment_base: &PublicKey, broadcaster_htlc_base: &PublicKey, countersignatory_revocation_base: &PublicKey, countersignatory_htlc_base: &PublicKey) -> TxCreationKeys {
+		TxCreationKeys {
 			per_commitment_point: per_commitment_point.clone(),
-			revocation_key: derive_public_revocation_key(&secp_ctx, &per_commitment_point, &countersignatory_revocation_base)?,
-			broadcaster_htlc_key: derive_public_key(&secp_ctx, &per_commitment_point, &broadcaster_htlc_base)?,
-			countersignatory_htlc_key: derive_public_key(&secp_ctx, &per_commitment_point, &countersignatory_htlc_base)?,
-			broadcaster_delayed_payment_key: derive_public_key(&secp_ctx, &per_commitment_point, &broadcaster_delayed_payment_base)?,
-		})
+			revocation_key: derive_public_revocation_key(&secp_ctx, &per_commitment_point, &countersignatory_revocation_base),
+			broadcaster_htlc_key: derive_public_key(&secp_ctx, &per_commitment_point, &broadcaster_htlc_base),
+			countersignatory_htlc_key: derive_public_key(&secp_ctx, &per_commitment_point, &countersignatory_htlc_base),
+			broadcaster_delayed_payment_key: derive_public_key(&secp_ctx, &per_commitment_point, &broadcaster_delayed_payment_base),
+		}
 	}
 
 	/// Generate per-state keys from channel static keys.
 	/// Key set is asymmetric and can't be used as part of counter-signatory set of transactions.
-	pub fn from_channel_static_keys<T: secp256k1::Signing + secp256k1::Verification>(per_commitment_point: &PublicKey, broadcaster_keys: &ChannelPublicKeys, countersignatory_keys: &ChannelPublicKeys, secp_ctx: &Secp256k1<T>) -> Result<TxCreationKeys, SecpError> {
+	pub fn from_channel_static_keys<T: secp256k1::Signing + secp256k1::Verification>(per_commitment_point: &PublicKey, broadcaster_keys: &ChannelPublicKeys, countersignatory_keys: &ChannelPublicKeys, secp_ctx: &Secp256k1<T>) -> TxCreationKeys {
 		TxCreationKeys::derive_new(
 			&secp_ctx,
 			&per_commitment_point,
@@ -1460,7 +1463,7 @@ impl CommitmentTransaction {
 	pub fn verify<T: secp256k1::Signing + secp256k1::Verification>(&self, channel_parameters: &DirectedChannelTransactionParameters, broadcaster_keys: &ChannelPublicKeys, countersignatory_keys: &ChannelPublicKeys, secp_ctx: &Secp256k1<T>) -> Result<TrustedCommitmentTransaction, ()> {
 		// This is the only field of the key cache that we trust
 		let per_commitment_point = self.keys.per_commitment_point;
-		let keys = TxCreationKeys::from_channel_static_keys(&per_commitment_point, broadcaster_keys, countersignatory_keys, secp_ctx).unwrap();
+		let keys = TxCreationKeys::from_channel_static_keys(&per_commitment_point, broadcaster_keys, countersignatory_keys, secp_ctx);
 		if keys != self.keys {
 			return Err(());
 		}
@@ -1520,7 +1523,7 @@ impl<'a> TrustedCommitmentTransaction<'a> {
 		let keys = &inner.keys;
 		let txid = inner.built.txid;
 		let mut ret = Vec::with_capacity(inner.htlcs.len());
-		let holder_htlc_key = derive_private_key(secp_ctx, &inner.keys.per_commitment_point, htlc_base_key).map_err(|_| ())?;
+		let holder_htlc_key = derive_private_key(secp_ctx, &inner.keys.per_commitment_point, htlc_base_key);
 
 		for this_htlc in inner.htlcs.iter() {
 			assert!(this_htlc.transaction_output_index.is_some());
@@ -1635,7 +1638,7 @@ mod tests {
 		let htlc_basepoint = &signer.pubkeys().htlc_basepoint;
 		let holder_pubkeys = signer.pubkeys();
 		let counterparty_pubkeys = counterparty_signer.pubkeys();
-		let keys = TxCreationKeys::derive_new(&secp_ctx, &per_commitment_point, delayed_payment_base, htlc_basepoint, &counterparty_pubkeys.revocation_basepoint, &counterparty_pubkeys.htlc_basepoint).unwrap();
+		let keys = TxCreationKeys::derive_new(&secp_ctx, &per_commitment_point, delayed_payment_base, htlc_basepoint, &counterparty_pubkeys.revocation_basepoint, &counterparty_pubkeys.htlc_basepoint);
 		let mut channel_parameters = ChannelTransactionParameters {
 			holder_pubkeys: holder_pubkeys.clone(),
 			holder_selected_contest_delay: 0,
