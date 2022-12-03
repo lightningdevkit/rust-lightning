@@ -8736,9 +8736,9 @@ fn test_duplicate_chan_id() {
 	};
 	check_added_monitors!(nodes[0], 0);
 	nodes[1].node.handle_funding_created(&nodes[0].node.get_our_node_id(), &funding_created);
-	// At this point we'll try to add a duplicate channel monitor, which will be rejected, but
-	// still needs to be cleared here.
-	check_added_monitors!(nodes[1], 1);
+	// At this point we'll look up if the channel_id is present and immediately fail the channel
+	// without trying to persist the `ChannelMonitor`.
+	check_added_monitors!(nodes[1], 0);
 
 	// ...still, nodes[1] will reject the duplicate channel.
 	{

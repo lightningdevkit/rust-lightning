@@ -4352,60 +4352,31 @@ where
 	}
 
 	fn internal_funding_created(&self, counterparty_node_id: &PublicKey, msg: &msgs::FundingCreated) -> Result<(), MsgHandleErrInternal> {
+		let best_block = *self.best_block.read().unwrap();
+
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
 			.ok_or_else(|| {
 				debug_assert!(false);
 				MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id), msg.temporary_channel_id)
 			})?;
-		let ((funding_msg, monitor, mut channel_ready), mut chan) = {
-			let best_block = *self.best_block.read().unwrap();
-			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
-			let peer_state = &mut *peer_state_lock;
+
+		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+		let peer_state = &mut *peer_state_lock;
+		let ((funding_msg, monitor), chan) =
 			match peer_state.channel_by_id.entry(msg.temporary_channel_id) {
 				hash_map::Entry::Occupied(mut chan) => {
 					(try_chan_entry!(self, chan.get_mut().funding_created(msg, best_block, &self.signer_provider, &self.logger), chan), chan.remove())
 				},
 				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.temporary_channel_id))
-			}
-		};
-		// Because we have exclusive ownership of the channel here we can release the peer_state
-		// lock before watch_channel
-		match self.chain_monitor.watch_channel(monitor.get_funding_txo().0, monitor) {
-			ChannelMonitorUpdateStatus::Completed => {},
-			ChannelMonitorUpdateStatus::PermanentFailure => {
-				// Note that we reply with the new channel_id in error messages if we gave up on the
-				// channel, not the temporary_channel_id. This is compatible with ourselves, but the
-				// spec is somewhat ambiguous here. Not a huge deal since we'll send error messages for
-				// any messages referencing a previously-closed channel anyway.
-				// We do not propagate the monitor update to the user as it would be for a monitor
-				// that we didn't manage to store (and that we don't care about - we don't respond
-				// with the funding_signed so the channel can never go on chain).
-				let (_monitor_update, failed_htlcs) = chan.force_shutdown(false);
-				assert!(failed_htlcs.is_empty());
-				return Err(MsgHandleErrInternal::send_err_msg_no_close("ChannelMonitor storage failure".to_owned(), funding_msg.channel_id));
-			},
-			ChannelMonitorUpdateStatus::InProgress => {
-				// There's no problem signing a counterparty's funding transaction if our monitor
-				// hasn't persisted to disk yet - we can't lose money on a transaction that we haven't
-				// accepted payment from yet. We do, however, need to wait to send our channel_ready
-				// until we have persisted our monitor.
-				chan.monitor_updating_paused(false, false, channel_ready.is_some(), Vec::new(), Vec::new(), Vec::new());
-				channel_ready = None; // Don't send the channel_ready now
-			},
-		}
-		// It's safe to unwrap as we've held the `per_peer_state` read lock since checking that the
-		// peer exists, despite the inner PeerState potentially having no channels after removing
-		// the channel above.
-		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
-		let peer_state = &mut *peer_state_lock;
+			};
+
 		match peer_state.channel_by_id.entry(funding_msg.channel_id) {
 			hash_map::Entry::Occupied(_) => {
-				return Err(MsgHandleErrInternal::send_err_msg_no_close("Already had channel with the new channel_id".to_owned(), funding_msg.channel_id))
+				Err(MsgHandleErrInternal::send_err_msg_no_close("Already had channel with the new channel_id".to_owned(), funding_msg.channel_id))
 			},
 			hash_map::Entry::Vacant(e) => {
-				let mut id_to_peer = self.id_to_peer.lock().unwrap();
-				match id_to_peer.entry(chan.channel_id()) {
+				match self.id_to_peer.lock().unwrap().entry(chan.channel_id()) {
 					hash_map::Entry::Occupied(_) => {
 						return Err(MsgHandleErrInternal::send_err_msg_no_close(
 							"The funding_created message had the same funding_txid as an existing channel - funding is not possible".to_owned(),
@@ -4415,17 +4386,35 @@ where
 						i_e.insert(chan.get_counterparty_node_id());
 					}
 				}
+
+				// There's no problem signing a counterparty's funding transaction if our monitor
+				// hasn't persisted to disk yet - we can't lose money on a transaction that we haven't
+				// accepted payment from yet. We do, however, need to wait to send our channel_ready
+				// until we have persisted our monitor.
+				let new_channel_id = funding_msg.channel_id;
 				peer_state.pending_msg_events.push(events::MessageSendEvent::SendFundingSigned {
 					node_id: counterparty_node_id.clone(),
 					msg: funding_msg,
 				});
-				if let Some(msg) = channel_ready {
-					send_channel_ready!(self, peer_state.pending_msg_events, chan, msg);
+
+				let monitor_res = self.chain_monitor.watch_channel(monitor.get_funding_txo().0, monitor);
+
+				let chan = e.insert(chan);
+				let mut res = handle_new_monitor_update!(self, monitor_res, 0, peer_state_lock, peer_state, chan, MANUALLY_REMOVING, { peer_state.channel_by_id.remove(&new_channel_id) });
+
+				// Note that we reply with the new channel_id in error messages if we gave up on the
+				// channel, not the temporary_channel_id. This is compatible with ourselves, but the
+				// spec is somewhat ambiguous here. Not a huge deal since we'll send error messages for
+				// any messages referencing a previously-closed channel anyway.
+				// We do not propagate the monitor update to the user as it would be for a monitor
+				// that we didn't manage to store (and that we don't care about - we don't respond
+				// with the funding_signed so the channel can never go on chain).
+				if let Err(MsgHandleErrInternal { shutdown_finish: Some((res, _)), .. }) = &mut res {
+					res.0 = None;
 				}
-				e.insert(chan);
+				res
 			}
 		}
-		Ok(())
 	}
 
 	fn internal_funding_signed(&self, counterparty_node_id: &PublicKey, msg: &msgs::FundingSigned) -> Result<(), MsgHandleErrInternal> {

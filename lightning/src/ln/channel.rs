@@ -2268,9 +2268,9 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 
 	pub fn funding_created<SP: Deref, L: Deref>(
 		&mut self, msg: &msgs::FundingCreated, best_block: BestBlock, signer_provider: &SP, logger: &L
-	) -> Result<(msgs::FundingSigned, ChannelMonitor<<SP::Target as SignerProvider>::Signer>, Option<msgs::ChannelReady>), ChannelError>
+	) -> Result<(msgs::FundingSigned, ChannelMonitor<Signer>), ChannelError>
 	where
-		SP::Target: SignerProvider,
+		SP::Target: SignerProvider<Signer = Signer>,
 		L::Target: Logger
 	{
 		if self.is_outbound() {
@@ -2346,10 +2346,13 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 
 		log_info!(logger, "Generated funding_signed for peer for channel {}", log_bytes!(self.channel_id()));
 
+		let need_channel_ready = self.check_get_channel_ready(0).is_some();
+		self.monitor_updating_paused(false, false, need_channel_ready, Vec::new(), Vec::new(), Vec::new());
+
 		Ok((msgs::FundingSigned {
 			channel_id: self.channel_id,
 			signature
-		}, channel_monitor, self.check_get_channel_ready(0)))
+		}, channel_monitor))
 	}
 
 	/// Handles a funding_signed message from the remote end.
@@ -3740,15 +3743,17 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 	}
 
 	/// Indicates that a ChannelMonitor update is in progress and has not yet been fully persisted.
-	/// This must be called immediately after the [`chain::Watch`] call which returned
-	/// [`ChannelMonitorUpdateStatus::InProgress`].
+	/// This must be called before we return the [`ChannelMonitorUpdate`] back to the
+	/// [`ChannelManager`], which will call [`Self::monitor_updating_restored`] once the monitor
+	/// update completes (potentially immediately).
 	/// The messages which were generated with the monitor update must *not* have been sent to the
 	/// remote end, and must instead have been dropped. They will be regenerated when
 	/// [`Self::monitor_updating_restored`] is called.
 	///
+	/// [`ChannelManager`]: super::channelmanager::ChannelManager
 	/// [`chain::Watch`]: crate::chain::Watch
 	/// [`ChannelMonitorUpdateStatus::InProgress`]: crate::chain::ChannelMonitorUpdateStatus::InProgress
-	pub fn monitor_updating_paused(&mut self, resend_raa: bool, resend_commitment: bool,
+	fn monitor_updating_paused(&mut self, resend_raa: bool, resend_commitment: bool,
 		resend_channel_ready: bool, mut pending_forwards: Vec<(PendingHTLCInfo, u64)>,
 		mut pending_fails: Vec<(HTLCSource, PaymentHash, HTLCFailReason)>,
 		mut pending_finalized_claimed_htlcs: Vec<HTLCSource>
@@ -7189,7 +7194,7 @@ mod tests {
 		}]};
 		let funding_outpoint = OutPoint{ txid: tx.txid(), index: 0 };
 		let funding_created_msg = node_a_chan.get_outbound_funding_created(tx.clone(), funding_outpoint, &&logger).unwrap();
-		let (funding_signed_msg, _, _) = node_b_chan.funding_created(&funding_created_msg, best_block, &&keys_provider, &&logger).unwrap();
+		let (funding_signed_msg, _) = node_b_chan.funding_created(&funding_created_msg, best_block, &&keys_provider, &&logger).unwrap();
 
 		// Node B --> Node A: funding signed
 		let _ = node_a_chan.funding_signed(&funding_signed_msg, best_block, &&keys_provider, &&logger);
