@@ -834,7 +834,7 @@ fn test_update_fee_with_fundee_update_add_htlc() {
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match events[0] {
-		Event::PaymentReceived { .. } => { },
+		Event::PaymentClaimable { .. } => { },
 		_ => panic!("Unexpected event"),
 	};
 
@@ -1179,7 +1179,7 @@ fn holding_cell_htlc_counting() {
 	assert_eq!(events.len(), payments.len());
 	for (event, &(_, ref hash)) in events.iter().zip(payments.iter()) {
 		match event {
-			&Event::PaymentReceived { ref payment_hash, .. } => {
+			&Event::PaymentClaimable { ref payment_hash, .. } => {
 				assert_eq!(*payment_hash, *hash);
 			},
 			_ => panic!("Unexpected event"),
@@ -1936,7 +1936,7 @@ fn test_channel_reserve_holding_cell_htlcs() {
 	commitment_signed_dance!(nodes[2], nodes[1], payment_event_11.commitment_msg, false);
 
 	expect_pending_htlcs_forwardable!(nodes[2]);
-	expect_payment_received!(nodes[2], our_payment_hash_1, our_payment_secret_1, recv_value_1);
+	expect_payment_claimable!(nodes[2], our_payment_hash_1, our_payment_secret_1, recv_value_1);
 
 	// flush the htlcs in the holding cell
 	assert_eq!(commitment_update_2.update_add_htlcs.len(), 2);
@@ -1956,7 +1956,7 @@ fn test_channel_reserve_holding_cell_htlcs() {
 	let events = nodes[2].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 2);
 	match events[0] {
-		Event::PaymentReceived { ref payment_hash, ref purpose, amount_msat, receiver_node_id, via_channel_id, via_user_channel_id: _ } => {
+		Event::PaymentClaimable { ref payment_hash, ref purpose, amount_msat, receiver_node_id, via_channel_id, via_user_channel_id: _ } => {
 			assert_eq!(our_payment_hash_21, *payment_hash);
 			assert_eq!(recv_value_21, amount_msat);
 			assert_eq!(nodes[2].node.get_our_node_id(), receiver_node_id.unwrap());
@@ -1972,7 +1972,7 @@ fn test_channel_reserve_holding_cell_htlcs() {
 		_ => panic!("Unexpected event"),
 	}
 	match events[1] {
-		Event::PaymentReceived { ref payment_hash, ref purpose, amount_msat, receiver_node_id, via_channel_id, via_user_channel_id: _ } => {
+		Event::PaymentClaimable { ref payment_hash, ref purpose, amount_msat, receiver_node_id, via_channel_id, via_user_channel_id: _ } => {
 			assert_eq!(our_payment_hash_22, *payment_hash);
 			assert_eq!(recv_value_22, amount_msat);
 			assert_eq!(nodes[2].node.get_our_node_id(), receiver_node_id.unwrap());
@@ -2106,7 +2106,7 @@ fn channel_reserve_in_flight_removes() {
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 
 	expect_pending_htlcs_forwardable!(nodes[1]);
-	expect_payment_received!(nodes[1], payment_hash_3, payment_secret_3, 100000);
+	expect_payment_claimable!(nodes[1], payment_hash_3, payment_secret_3, 100000);
 
 	// Note that as this RAA was generated before the delivery of the update_fulfill it shouldn't
 	// resolve the second HTLC from A's point of view.
@@ -2153,7 +2153,7 @@ fn channel_reserve_in_flight_removes() {
 	check_added_monitors!(nodes[0], 1);
 
 	expect_pending_htlcs_forwardable!(nodes[0]);
-	expect_payment_received!(nodes[0], payment_hash_4, payment_secret_4, 10000);
+	expect_payment_claimable!(nodes[0], payment_hash_4, payment_secret_4, 10000);
 
 	claim_payment(&nodes[1], &[&nodes[0]], payment_preimage_4);
 	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_3);
@@ -3739,7 +3739,7 @@ fn do_test_drop_messages_peer_disconnect(messages_delivered: u8, simulate_broken
 	let events_2 = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(events_2.len(), 1);
 	match events_2[0] {
-		Event::PaymentReceived { ref payment_hash, ref purpose, amount_msat, receiver_node_id, via_channel_id, via_user_channel_id: _ } => {
+		Event::PaymentClaimable { ref payment_hash, ref purpose, amount_msat, receiver_node_id, via_channel_id, via_user_channel_id: _ } => {
 			assert_eq!(payment_hash_1, *payment_hash);
 			assert_eq!(amount_msat, 1_000_000);
 			assert_eq!(receiver_node_id.unwrap(), nodes[1].node.get_our_node_id());
@@ -4025,7 +4025,7 @@ fn test_drop_messages_peer_disconnect_dual_htlc() {
 	let events_5 = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(events_5.len(), 1);
 	match events_5[0] {
-		Event::PaymentReceived { ref payment_hash, ref purpose, .. } => {
+		Event::PaymentClaimable { ref payment_hash, ref purpose, .. } => {
 			assert_eq!(payment_hash_2, *payment_hash);
 			match &purpose {
 				PaymentPurpose::InvoicePayment { payment_preimage, payment_secret, .. } => {
@@ -4068,7 +4068,7 @@ fn do_test_htlc_timeout(send_partial_mpp: bool) {
 		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1);
 		// Now do the relevant commitment_signed/RAA dances along the path, noting that the final
-		// hop should *not* yet generate any PaymentReceived event(s).
+		// hop should *not* yet generate any PaymentClaimable event(s).
 		pass_along_path(&nodes[0], &[&nodes[1]], 100000, our_payment_hash, Some(payment_secret), events.drain(..).next().unwrap(), false, None);
 		our_payment_hash
 	} else {
@@ -5800,7 +5800,7 @@ fn test_free_and_fail_holding_cell_htlcs() {
 	let events = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match events[0] {
-		Event::PaymentReceived { .. } => {},
+		Event::PaymentClaimable { .. } => {},
 		_ => panic!("Unexpected event"),
 	}
 	nodes[1].node.claim_funds(payment_preimage_1);
@@ -6059,7 +6059,7 @@ fn test_update_add_htlc_bolt2_sender_exceed_max_htlc_num_and_htlc_id_increment()
 		commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, false);
 
 		expect_pending_htlcs_forwardable!(nodes[1]);
-		expect_payment_received!(nodes[1], our_payment_hash, our_payment_secret, 100000);
+		expect_payment_claimable!(nodes[1], our_payment_hash, our_payment_secret, 100000);
 	}
 	let (route, our_payment_hash, _, our_payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], 100000);
 	unwrap_send_err!(nodes[0].node.send_payment(&route, our_payment_hash, &Some(our_payment_secret), PaymentId(our_payment_hash.0)), true, APIError::ChannelUnavailable { ref err },
@@ -7954,7 +7954,7 @@ fn test_preimage_storage() {
 	let events = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match events[0] {
-		Event::PaymentReceived { ref purpose, .. } => {
+		Event::PaymentClaimable { ref purpose, .. } => {
 			match &purpose {
 				PaymentPurpose::InvoicePayment { payment_preimage, .. } => {
 					claim_payment(&nodes[0], &[&nodes[1]], payment_preimage.unwrap());
@@ -8024,7 +8024,7 @@ fn test_secret_timeout() {
 	let events = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match events[0] {
-		Event::PaymentReceived { purpose: PaymentPurpose::InvoicePayment { payment_preimage, payment_secret }, .. } => {
+		Event::PaymentClaimable { purpose: PaymentPurpose::InvoicePayment { payment_preimage, payment_secret }, .. } => {
 			assert!(payment_preimage.is_none());
 			assert_eq!(payment_secret, our_payment_secret);
 			// We don't actually have the payment preimage with which to claim this payment!
@@ -8959,7 +8959,7 @@ fn do_test_dup_htlc_second_rejected(test_for_second_fail_panic: bool) {
 		commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, false);
 	}
 	expect_pending_htlcs_forwardable!(nodes[1]);
-	expect_payment_received!(nodes[1], our_payment_hash, our_payment_secret, 10_000);
+	expect_payment_claimable!(nodes[1], our_payment_hash, our_payment_secret, 10_000);
 
 	{
 		// Note that we use a different PaymentId here to allow us to duplicativly pay
@@ -9021,7 +9021,7 @@ fn do_test_dup_htlc_second_rejected(test_for_second_fail_panic: bool) {
 #[test]
 fn test_dup_htlc_second_fail_panic() {
 	// Previously, if we received two HTLCs back-to-back, where the second overran the expected
-	// value for the payment, we'd fail back both HTLCs after generating a `PaymentReceived` event.
+	// value for the payment, we'd fail back both HTLCs after generating a `PaymentClaimable` event.
 	// Then, if the user failed the second payment, they'd hit a "tried to fail an already failed
 	// HTLC" debug panic. This tests for this behavior, checking that only one HTLC is auto-failed.
 	do_test_dup_htlc_second_rejected(true);
@@ -9208,9 +9208,9 @@ fn test_keysend_payments_to_private_node() {
 
 #[test]
 fn test_double_partial_claim() {
-	// Test what happens if a node receives a payment, generates a PaymentReceived event, the HTLCs
+	// Test what happens if a node receives a payment, generates a PaymentClaimable event, the HTLCs
 	// time out, the sender resends only some of the MPP parts, then the user processes the
-	// PaymentReceived event, ensuring they don't inadvertently claim only part of the full payment
+	// PaymentClaimable event, ensuring they don't inadvertently claim only part of the full payment
 	// amount.
 	let chanmon_cfgs = create_chanmon_cfgs(4);
 	let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
@@ -9231,7 +9231,7 @@ fn test_double_partial_claim() {
 	});
 
 	send_along_route_with_secret(&nodes[0], route.clone(), &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]], 15_000_000, payment_hash, payment_secret);
-	// nodes[3] has now received a PaymentReceived event...which it will take some (exorbitant)
+	// nodes[3] has now received a PaymentClaimable event...which it will take some (exorbitant)
 	// amount of time to respond to.
 
 	// Connect some blocks to time out the payment
@@ -9255,7 +9255,7 @@ fn test_double_partial_claim() {
 	pass_along_path(&nodes[0], &[&nodes[1], &nodes[3]], 15_000_000, payment_hash, Some(payment_secret), events.drain(..).next().unwrap(), false, None);
 
 	// At this point nodes[3] has received one half of the payment, and the user goes to handle
-	// that PaymentReceived event they got hours ago and never handled...we should refuse to claim.
+	// that PaymentClaimable event they got hours ago and never handled...we should refuse to claim.
 	nodes[3].node.claim_funds(payment_preimage);
 	check_added_monitors!(nodes[3], 0);
 	assert!(nodes[3].node.get_and_clear_pending_msg_events().is_empty());

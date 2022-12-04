@@ -1,0 +1,5 @@
+## API Updates
+
+## Backwards Compatibilty
+- The event formerly known as `PaymentReceived` is now called
+  `PaymentClaimable`.

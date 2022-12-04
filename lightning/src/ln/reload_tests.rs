@@ -635,7 +635,7 @@ fn test_forwardable_regen() {
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 
 	expect_pending_htlcs_forwardable!(nodes[1]);
-	expect_payment_received!(nodes[1], payment_hash, payment_secret, 100_000);
+	expect_payment_claimable!(nodes[1], payment_hash, payment_secret, 100_000);
 	check_added_monitors!(nodes[1], 1);
 
 	let mut events = nodes[1].node.get_and_clear_pending_msg_events();
@@ -644,7 +644,7 @@ fn test_forwardable_regen() {
 	nodes[2].node.handle_update_add_htlc(&nodes[1].node.get_our_node_id(), &payment_event.msgs[0]);
 	commitment_signed_dance!(nodes[2], nodes[1], payment_event.commitment_msg, false);
 	expect_pending_htlcs_forwardable!(nodes[2]);
-	expect_payment_received!(nodes[2], payment_hash_2, payment_secret_2, 200_000);
+	expect_payment_claimable!(nodes[2], payment_hash_2, payment_secret_2, 200_000);
 
 	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage);
 	claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_preimage_2);
@@ -654,7 +654,7 @@ fn do_test_partial_claim_before_restart(persist_both_monitors: bool) {
 	// Test what happens if a node receives an MPP payment, claims it, but crashes before
 	// persisting the ChannelManager. If `persist_both_monitors` is false, also crash after only
 	// updating one of the two channels' ChannelMonitors. As a result, on startup, we'll (a) still
-	// have the PaymentReceived event, (b) have one (or two) channel(s) that goes on chain with the
+	// have the PaymentClaimable event, (b) have one (or two) channel(s) that goes on chain with the
 	// HTLC preimage in them, and (c) optionally have one channel that is live off-chain but does
 	// not have the preimage tied to the still-pending HTLC.
 	//
@@ -691,7 +691,7 @@ fn do_test_partial_claim_before_restart(persist_both_monitors: bool) {
 	nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret), PaymentId(payment_hash.0)).unwrap();
 	check_added_monitors!(nodes[0], 2);
 
-	// Send the payment through to nodes[3] *without* clearing the PaymentReceived event
+	// Send the payment through to nodes[3] *without* clearing the PaymentClaimable event
 	let mut send_events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(send_events.len(), 2);
 	do_pass_along_path(&nodes[0], &[&nodes[1], &nodes[3]], 15_000_000, payment_hash, Some(payment_secret), send_events[0].clone(), true, false, None);
@@ -711,7 +711,7 @@ fn do_test_partial_claim_before_restart(persist_both_monitors: bool) {
 
 	let original_manager = nodes[3].node.encode();
 
-	expect_payment_received!(nodes[3], payment_hash, payment_secret, 15_000_000);
+	expect_payment_claimable!(nodes[3], payment_hash, payment_secret, 15_000_000);
 
 	nodes[3].node.claim_funds(payment_preimage);
 	check_added_monitors!(nodes[3], 2);
@@ -748,11 +748,11 @@ fn do_test_partial_claim_before_restart(persist_both_monitors: bool) {
 	nodes[2].node.peer_disconnected(&nodes[3].node.get_our_node_id(), false);
 
 	// During deserialization, we should have closed one channel and broadcast its latest
-	// commitment transaction. We should also still have the original PaymentReceived event we
+	// commitment transaction. We should also still have the original PaymentClaimable event we
 	// never finished processing.
 	let events = nodes[3].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), if persist_both_monitors { 4 } else { 3 });
-	if let Event::PaymentReceived { amount_msat: 15_000_000, .. } = events[0] { } else { panic!(); }
+	if let Event::PaymentClaimable { amount_msat: 15_000_000, .. } = events[0] { } else { panic!(); }
 	if let Event::ChannelClosed { reason: ClosureReason::OutdatedChannelManager, .. } = events[1] { } else { panic!(); }
 	if persist_both_monitors {
 		if let Event::ChannelClosed { reason: ClosureReason::OutdatedChannelManager, .. } = events[2] { } else { panic!(); }

@@ -843,16 +843,16 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 				let mut events = nodes[$node].get_and_clear_pending_events();
 				// Sort events so that PendingHTLCsForwardable get processed last. This avoids a
 				// case where we first process a PendingHTLCsForwardable, then claim/fail on a
-				// PaymentReceived, claiming/failing two HTLCs, but leaving a just-generated
-				// PaymentReceived event for the second HTLC in our pending_events (and breaking
+				// PaymentClaimable, claiming/failing two HTLCs, but leaving a just-generated
+				// PaymentClaimable event for the second HTLC in our pending_events (and breaking
 				// our claim_set deduplication).
 				events.sort_by(|a, b| {
-					if let events::Event::PaymentReceived { .. } = a {
+					if let events::Event::PaymentClaimable { .. } = a {
 						if let events::Event::PendingHTLCsForwardable { .. } = b {
 							Ordering::Less
 						} else { Ordering::Equal }
 					} else if let events::Event::PendingHTLCsForwardable { .. } = a {
-						if let events::Event::PaymentReceived { .. } = b {
+						if let events::Event::PaymentClaimable { .. } = b {
 							Ordering::Greater
 						} else { Ordering::Equal }
 					} else { Ordering::Equal }
@@ -860,7 +860,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 				let had_events = !events.is_empty();
 				for event in events.drain(..) {
 					match event {
-						events::Event::PaymentReceived { payment_hash, .. } => {
+						events::Event::PaymentClaimable { payment_hash, .. } => {
 							if claim_set.insert(payment_hash.0) {
 								if $fail {
 									nodes[$node].fail_htlc_backwards(&payment_hash);

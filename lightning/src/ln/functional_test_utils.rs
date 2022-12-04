@@ -1471,15 +1471,15 @@ macro_rules! expect_pending_htlcs_forwardable_from_events {
 }
 #[macro_export]
 #[cfg(any(test, feature = "_bench_unstable", feature = "_test_utils"))]
-macro_rules! expect_payment_received {
+macro_rules! expect_payment_claimable {
 	($node: expr, $expected_payment_hash: expr, $expected_payment_secret: expr, $expected_recv_value: expr) => {
-		expect_payment_received!($node, $expected_payment_hash, $expected_payment_secret, $expected_recv_value, None, $node.node.get_our_node_id())
+		expect_payment_claimable!($node, $expected_payment_hash, $expected_payment_secret, $expected_recv_value, None, $node.node.get_our_node_id())
 	};
 	($node: expr, $expected_payment_hash: expr, $expected_payment_secret: expr, $expected_recv_value: expr, $expected_payment_preimage: expr, $expected_receiver_node_id: expr) => {
 		let events = $node.node.get_and_clear_pending_events();
 		assert_eq!(events.len(), 1);
 		match events[0] {
-			$crate::util::events::Event::PaymentReceived { ref payment_hash, ref purpose, amount_msat, receiver_node_id, via_channel_id: _, via_user_channel_id: _ } => {
+			$crate::util::events::Event::PaymentClaimable { ref payment_hash, ref purpose, amount_msat, receiver_node_id, via_channel_id: _, via_user_channel_id: _ } => {
 				assert_eq!($expected_payment_hash, *payment_hash);
 				assert_eq!($expected_recv_value, amount_msat);
 				assert_eq!($expected_receiver_node_id, receiver_node_id.unwrap());
@@ -1774,7 +1774,7 @@ pub fn do_pass_along_path<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_p
 			if payment_received_expected {
 				assert_eq!(events_2.len(), 1);
 				match events_2[0] {
-					Event::PaymentReceived { ref payment_hash, ref purpose, amount_msat, receiver_node_id, ref via_channel_id, ref via_user_channel_id } => {
+					Event::PaymentClaimable { ref payment_hash, ref purpose, amount_msat, receiver_node_id, ref via_channel_id, ref via_user_channel_id } => {
 						assert_eq!(our_payment_hash, *payment_hash);
 						assert_eq!(node.node.get_our_node_id(), receiver_node_id.unwrap());
 						match &purpose {
@@ -1817,7 +1817,7 @@ pub fn pass_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_rou
 	assert_eq!(events.len(), expected_route.len());
 	for (path_idx, (ev, expected_path)) in events.drain(..).zip(expected_route.iter()).enumerate() {
 		// Once we've gotten through all the HTLCs, the last one should result in a
-		// PaymentReceived (but each previous one should not!), .
+		// PaymentClaimable (but each previous one should not!), .
 		let expect_payment = path_idx == expected_route.len() - 1;
 		pass_along_path(origin_node, expected_path, recv_value, our_payment_hash.clone(), Some(our_payment_secret), ev, expect_payment, None);
 	}

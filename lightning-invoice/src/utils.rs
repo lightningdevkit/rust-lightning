@@ -957,7 +957,7 @@ mod test {
 		nodes[fwd_idx].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
 		commitment_signed_dance!(nodes[fwd_idx], nodes[0], &payment_event.commitment_msg, false, true);
 
-		// Note that we have to "forward pending HTLCs" twice before we see the PaymentReceived as
+		// Note that we have to "forward pending HTLCs" twice before we see the PaymentClaimable as
 		// this "emulates" the payment taking two hops, providing some privacy to make phantom node
 		// payments "look real" by taking more time.
 		expect_pending_htlcs_forwardable_ignore!(nodes[fwd_idx]);
@@ -966,7 +966,7 @@ mod test {
 		nodes[fwd_idx].node.process_pending_htlc_forwards();
 
 		let payment_preimage_opt = if user_generated_pmt_hash { None } else { Some(payment_preimage) };
-		expect_payment_received!(&nodes[fwd_idx], payment_hash, payment_secret, payment_amt, payment_preimage_opt, route.paths[0].last().unwrap().pubkey);
+		expect_payment_claimable!(&nodes[fwd_idx], payment_hash, payment_secret, payment_amt, payment_preimage_opt, route.paths[0].last().unwrap().pubkey);
 		do_claim_payment_along_route(&nodes[0], &vec!(&vec!(&nodes[fwd_idx])[..]), false, payment_preimage);
 		let events = nodes[0].node.get_and_clear_pending_events();
 		assert_eq!(events.len(), 2);

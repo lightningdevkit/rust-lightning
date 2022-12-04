@@ -125,7 +125,7 @@ fn run_onion_failure_test_with_fail_intercept<F1,F2,F3>(_name: &str, test_case: 
 
 			if test_case == 2 || test_case == 200 {
 				expect_htlc_forward!(&nodes[2]);
-				expect_event!(&nodes[2], Event::PaymentReceived);
+				expect_event!(&nodes[2], Event::PaymentClaimable);
 				callback_node();
 				expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[2], vec![HTLCDestination::FailedPayment { payment_hash: payment_hash.clone() }]);
 			}
@@ -1229,7 +1229,7 @@ fn test_phantom_failure_reject_payment() {
 	nodes[1].node.process_pending_htlc_forwards();
 	expect_pending_htlcs_forwardable_ignore!(nodes[1]);
 	nodes[1].node.process_pending_htlc_forwards();
-	expect_payment_received!(nodes[1], payment_hash, payment_secret, recv_amt_msat, None, route.paths[0].last().unwrap().pubkey);
+	expect_payment_claimable!(nodes[1], payment_hash, payment_secret, recv_amt_msat, None, route.paths[0].last().unwrap().pubkey);
 	nodes[1].node.fail_htlc_backwards(&payment_hash);
 	expect_pending_htlcs_forwardable_and_htlc_handling_failed_ignore!(nodes[1], vec![HTLCDestination::FailedPayment { payment_hash }]);
 	nodes[1].node.process_pending_htlc_forwards();

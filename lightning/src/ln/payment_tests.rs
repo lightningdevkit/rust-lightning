@@ -1516,7 +1516,7 @@ fn do_test_intercepted_payment(test: InterceptTest) {
 		expect_pending_htlcs_forwardable!(nodes[2]);
 
 		let payment_preimage = nodes[2].node.get_payment_preimage(payment_hash, payment_secret).unwrap();
-		expect_payment_received!(&nodes[2], payment_hash, payment_secret, amt_msat, Some(payment_preimage), nodes[2].node.get_our_node_id());
+		expect_payment_claimable!(&nodes[2], payment_hash, payment_secret, amt_msat, Some(payment_preimage), nodes[2].node.get_our_node_id());
 		do_claim_payment_along_route(&nodes[0], &vec!(&vec!(&nodes[1], &nodes[2])[..]), false, payment_preimage);
 		let events = nodes[0].node.get_and_clear_pending_events();
 		assert_eq!(events.len(), 2);

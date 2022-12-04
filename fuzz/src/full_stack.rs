@@ -646,7 +646,7 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 				Event::FundingGenerationReady { temporary_channel_id, counterparty_node_id, channel_value_satoshis, output_script, .. } => {
 					pending_funding_generation.push((temporary_channel_id, counterparty_node_id, channel_value_satoshis, output_script));
 				},
-				Event::PaymentReceived { payment_hash, .. } => {
+				Event::PaymentClaimable { payment_hash, .. } => {
 					//TODO: enhance by fetching random amounts from fuzz input?
 					payments_received.push(payment_hash);
 				},

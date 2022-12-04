@@ -200,7 +200,7 @@ fn do_test_simple_monitor_temporary_update_fail(disconnect: bool) {
 	let events_3 = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(events_3.len(), 1);
 	match events_3[0] {
-		Event::PaymentReceived { ref payment_hash, ref purpose, amount_msat, receiver_node_id, via_channel_id, via_user_channel_id: _ } => {
+		Event::PaymentClaimable { ref payment_hash, ref purpose, amount_msat, receiver_node_id, via_channel_id, via_user_channel_id: _ } => {
 			assert_eq!(payment_hash_1, *payment_hash);
 			assert_eq!(amount_msat, 1_000_000);
 			assert_eq!(receiver_node_id.unwrap(), nodes[1].node.get_our_node_id());
@@ -569,7 +569,7 @@ fn do_test_monitor_temporary_update_fail(disconnect_count: usize) {
 	let events_5 = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(events_5.len(), 1);
 	match events_5[0] {
-		Event::PaymentReceived { ref payment_hash, ref purpose, amount_msat, receiver_node_id, via_channel_id, via_user_channel_id: _ } => {
+		Event::PaymentClaimable { ref payment_hash, ref purpose, amount_msat, receiver_node_id, via_channel_id, via_user_channel_id: _ } => {
 			assert_eq!(payment_hash_2, *payment_hash);
 			assert_eq!(amount_msat, 1_000_000);
 			assert_eq!(receiver_node_id.unwrap(), nodes[1].node.get_our_node_id());
@@ -686,7 +686,7 @@ fn test_monitor_update_fail_cs() {
 	let events = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match events[0] {
-		Event::PaymentReceived { payment_hash, ref purpose, amount_msat, receiver_node_id, via_channel_id, via_user_channel_id: _ } => {
+		Event::PaymentClaimable { payment_hash, ref purpose, amount_msat, receiver_node_id, via_channel_id, via_user_channel_id: _ } => {
 			assert_eq!(payment_hash, our_payment_hash);
 			assert_eq!(amount_msat, 1_000_000);
 			assert_eq!(receiver_node_id.unwrap(), nodes[1].node.get_our_node_id());
@@ -743,7 +743,7 @@ fn test_monitor_update_fail_no_rebroadcast() {
 	let events = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match events[0] {
-		Event::PaymentReceived { payment_hash, .. } => {
+		Event::PaymentClaimable { payment_hash, .. } => {
 			assert_eq!(payment_hash, our_payment_hash);
 		},
 		_ => panic!("Unexpected event"),
@@ -814,12 +814,12 @@ fn test_monitor_update_raa_while_paused() {
 	nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &bs_second_raa);
 	check_added_monitors!(nodes[0], 1);
 	expect_pending_htlcs_forwardable!(nodes[0]);
-	expect_payment_received!(nodes[0], our_payment_hash_2, our_payment_secret_2, 1000000);
+	expect_payment_claimable!(nodes[0], our_payment_hash_2, our_payment_secret_2, 1000000);
 
 	nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &as_second_raa);
 	check_added_monitors!(nodes[1], 1);
 	expect_pending_htlcs_forwardable!(nodes[1]);
-	expect_payment_received!(nodes[1], our_payment_hash_1, our_payment_secret_1, 1000000);
+	expect_payment_claimable!(nodes[1], our_payment_hash_1, our_payment_secret_1, 1000000);
 
 	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_1);
 	claim_payment(&nodes[1], &[&nodes[0]], payment_preimage_2);
@@ -1049,11 +1049,11 @@ fn do_test_monitor_update_fail_raa(test_ignore_second_cs: bool) {
 	let events_6 = nodes[2].node.get_and_clear_pending_events();
 	assert_eq!(events_6.len(), 2);
 	match events_6[0] {
-		Event::PaymentReceived { payment_hash, .. } => { assert_eq!(payment_hash, payment_hash_2); },
+		Event::PaymentClaimable { payment_hash, .. } => { assert_eq!(payment_hash, payment_hash_2); },
 		_ => panic!("Unexpected event"),
 	};
 	match events_6[1] {
-		Event::PaymentReceived { payment_hash, .. } => { assert_eq!(payment_hash, payment_hash_3); },
+		Event::PaymentClaimable { payment_hash, .. } => { assert_eq!(payment_hash, payment_hash_3); },
 		_ => panic!("Unexpected event"),
 	};
 
@@ -1072,7 +1072,7 @@ fn do_test_monitor_update_fail_raa(test_ignore_second_cs: bool) {
 		let events_9 = nodes[0].node.get_and_clear_pending_events();
 		assert_eq!(events_9.len(), 1);
 		match events_9[0] {
-			Event::PaymentReceived { payment_hash, .. } => assert_eq!(payment_hash, payment_hash_4.unwrap()),
+			Event::PaymentClaimable { payment_hash, .. } => assert_eq!(payment_hash, payment_hash_4.unwrap()),
 			_ => panic!("Unexpected event"),
 		};
 		claim_payment(&nodes[2], &[&nodes[1], &nodes[0]], payment_preimage_4.unwrap());
@@ -1240,7 +1240,7 @@ fn raa_no_response_awaiting_raa_state() {
 	check_added_monitors!(nodes[1], 0);
 	let bs_responses = get_revoke_commit_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 	expect_pending_htlcs_forwardable!(nodes[1]);
-	expect_payment_received!(nodes[1], payment_hash_1, payment_secret_1, 1000000);
+	expect_payment_claimable!(nodes[1], payment_hash_1, payment_secret_1, 1000000);
 
 	// We send a third payment here, which is somewhat of a redundant test, but the
 	// chanmon_fail_consistency test required it to actually find the bug (by seeing out-of-sync
@@ -1269,7 +1269,7 @@ fn raa_no_response_awaiting_raa_state() {
 	nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &as_raa);
 	check_added_monitors!(nodes[1], 1);
 	expect_pending_htlcs_forwardable!(nodes[1]);
-	expect_payment_received!(nodes[1], payment_hash_2, payment_secret_2, 1000000);
+	expect_payment_claimable!(nodes[1], payment_hash_2, payment_secret_2, 1000000);
 	let bs_update = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 
 	nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &bs_raa);
@@ -1282,7 +1282,7 @@ fn raa_no_response_awaiting_raa_state() {
 	nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &as_raa);
 	check_added_monitors!(nodes[1], 1);
 	expect_pending_htlcs_forwardable!(nodes[1]);
-	expect_payment_received!(nodes[1], payment_hash_3, payment_secret_3, 1000000);
+	expect_payment_claimable!(nodes[1], payment_hash_3, payment_secret_3, 1000000);
 
 	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_1);
 	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_2);
@@ -1394,7 +1394,7 @@ fn claim_while_disconnected_monitor_update_fail() {
 	check_added_monitors!(nodes[1], 1);
 
 	expect_pending_htlcs_forwardable!(nodes[1]);
-	expect_payment_received!(nodes[1], payment_hash_2, payment_secret_2, 1000000);
+	expect_payment_claimable!(nodes[1], payment_hash_2, payment_secret_2, 1000000);
 
 	nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &bs_raa);
 	check_added_monitors!(nodes[0], 1);
@@ -1469,7 +1469,7 @@ fn monitor_failed_no_reestablish_response() {
 	check_added_monitors!(nodes[1], 1);
 
 	expect_pending_htlcs_forwardable!(nodes[1]);
-	expect_payment_received!(nodes[1], payment_hash_1, payment_secret_1, 1000000);
+	expect_payment_claimable!(nodes[1], payment_hash_1, payment_secret_1, 1000000);
 
 	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_1);
 }
@@ -1550,7 +1550,7 @@ fn first_message_on_recv_ordering() {
 	check_added_monitors!(nodes[1], 0);
 
 	expect_pending_htlcs_forwardable!(nodes[1]);
-	expect_payment_received!(nodes[1], payment_hash_1, payment_secret_1, 1000000);
+	expect_payment_claimable!(nodes[1], payment_hash_1, payment_secret_1, 1000000);
 
 	let bs_responses = get_revoke_commit_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 	nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &bs_responses.0);
@@ -1563,7 +1563,7 @@ fn first_message_on_recv_ordering() {
 	check_added_monitors!(nodes[1], 1);
 
 	expect_pending_htlcs_forwardable!(nodes[1]);
-	expect_payment_received!(nodes[1], payment_hash_2, payment_secret_2, 1000000);
+	expect_payment_claimable!(nodes[1], payment_hash_2, payment_secret_2, 1000000);
 
 	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_1);
 	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_2);
@@ -1652,7 +1652,7 @@ fn test_monitor_update_fail_claim() {
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 2);
 	match events[0] {
-		Event::PaymentReceived { ref payment_hash, ref purpose, amount_msat, receiver_node_id, via_channel_id, via_user_channel_id } => {
+		Event::PaymentClaimable { ref payment_hash, ref purpose, amount_msat, receiver_node_id, via_channel_id, via_user_channel_id } => {
 			assert_eq!(payment_hash_2, *payment_hash);
 			assert_eq!(1_000_000, amount_msat);
 			assert_eq!(receiver_node_id.unwrap(), nodes[0].node.get_our_node_id());
@@ -1669,7 +1669,7 @@ fn test_monitor_update_fail_claim() {
 		_ => panic!("Unexpected event"),
 	}
 	match events[1] {
-		Event::PaymentReceived { ref payment_hash, ref purpose, amount_msat, receiver_node_id, via_channel_id, via_user_channel_id: _ } => {
+		Event::PaymentClaimable { ref payment_hash, ref purpose, amount_msat, receiver_node_id, via_channel_id, via_user_channel_id: _ } => {
 			assert_eq!(payment_hash_3, *payment_hash);
 			assert_eq!(1_000_000, amount_msat);
 			assert_eq!(receiver_node_id.unwrap(), nodes[0].node.get_our_node_id());
@@ -1750,7 +1750,7 @@ fn test_monitor_update_on_pending_forwards() {
 		_ => panic!("Unexpected event"),
 	};
 	nodes[0].node.process_pending_htlc_forwards();
-	expect_payment_received!(nodes[0], payment_hash_2, payment_secret_2, 1000000);
+	expect_payment_claimable!(nodes[0], payment_hash_2, payment_secret_2, 1000000);
 
 	claim_payment(&nodes[2], &[&nodes[1], &nodes[0]], payment_preimage_2);
 }
@@ -1799,7 +1799,7 @@ fn monitor_update_claim_fail_no_response() {
 	nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &as_raa);
 	check_added_monitors!(nodes[1], 1);
 	expect_pending_htlcs_forwardable!(nodes[1]);
-	expect_payment_received!(nodes[1], payment_hash_2, payment_secret_2, 1000000);
+	expect_payment_claimable!(nodes[1], payment_hash_2, payment_secret_2, 1000000);
 
 	let bs_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 	nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &bs_updates.update_fulfill_htlcs[0]);
@@ -2073,7 +2073,7 @@ fn test_pending_update_fee_ack_on_reconnect() {
 	check_added_monitors!(nodes[1], 1);
 
 	expect_pending_htlcs_forwardable!(nodes[0]);
-	expect_payment_received!(nodes[0], payment_hash, payment_secret, 1_000_000);
+	expect_payment_claimable!(nodes[0], payment_hash, payment_secret, 1_000_000);
 
 	claim_payment(&nodes[1], &[&nodes[0]], payment_preimage);
 }
@@ -2368,7 +2368,7 @@ fn do_channel_holding_cell_serialize(disconnect: bool, reload_a: bool) {
 	let as_revoke_and_ack = get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, nodes[1].node.get_our_node_id());
 	nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &as_revoke_and_ack);
 	expect_pending_htlcs_forwardable!(nodes[1]);
-	expect_payment_received!(nodes[1], payment_hash_1, payment_secret_1, 100000);
+	expect_payment_claimable!(nodes[1], payment_hash_1, payment_secret_1, 100000);
 	check_added_monitors!(nodes[1], 1);
 
 	commitment_signed_dance!(nodes[1], nodes[0], (), false, true, false);
@@ -2385,7 +2385,7 @@ fn do_channel_holding_cell_serialize(disconnect: bool, reload_a: bool) {
 	};
 
 	nodes[1].node.process_pending_htlc_forwards();
-	expect_payment_received!(nodes[1], payment_hash_2, payment_secret_2, 100000);
+	expect_payment_claimable!(nodes[1], payment_hash_2, payment_secret_2, 100000);
 
 	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_1);
 	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_2);
