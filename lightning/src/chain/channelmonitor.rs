@@ -1837,12 +1837,60 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 		res
 	}
 
+	/// Gets the set of outbound HTLCs which can be (or have been) resolved by this
+	/// `ChannelMonitor`. This is used to determine if an HTLC was removed from the channel prior
+	/// to the `ChannelManager` having been persisted.
+	///
+	/// This is similar to [`Self::get_pending_outbound_htlcs`] except it includes HTLCs which were
+	/// resolved by this `ChannelMonitor`.
+	pub(crate) fn get_all_current_outbound_htlcs(&self) -> HashMap<HTLCSource, HTLCOutputInCommitment> {
+		let mut res = HashMap::new();
+		// Just examine the available counterparty commitment transactions. See docs on
+		// `fail_unbroadcast_htlcs`, below, for justification.
+		let us = self.inner.lock().unwrap();
+		macro_rules! walk_counterparty_commitment {
+			($txid: expr) => {
+				if let Some(ref latest_outpoints) = us.counterparty_claimable_outpoints.get($txid) {
+					for &(ref htlc, ref source_option) in latest_outpoints.iter() {
+						if let &Some(ref source) = source_option {
+							res.insert((**source).clone(), htlc.clone());
+						}
+					}
+				}
+			}
+		}
+		if let Some(ref txid) = us.current_counterparty_commitment_txid {
+			walk_counterparty_commitment!(txid);
+		}
+		if let Some(ref txid) = us.prev_counterparty_commitment_txid {
+			walk_counterparty_commitment!(txid);
+		}
+		res
+	}
+
 	/// Gets the set of outbound HTLCs which are pending resolution in this channel.
 	/// This is used to reconstruct pending outbound payments on restart in the ChannelManager.
 	pub(crate) fn get_pending_outbound_htlcs(&self) -> HashMap<HTLCSource, HTLCOutputInCommitment> {
-		let mut res = HashMap::new();
 		let us = self.inner.lock().unwrap();
+		// We're only concerned with the confirmation count of HTLC transactions, and don't
+		// actually care how many confirmations a commitment transaction may or may not have. Thus,
+		// we look for either a FundingSpendConfirmation event or a funding_spend_confirmed.
+		let confirmed_txid = us.funding_spend_confirmed.or_else(|| {
+			us.onchain_events_awaiting_threshold_conf.iter().find_map(|event| {
+				if let OnchainEvent::FundingSpendConfirmation { .. } = event.event {
+					Some(event.txid)
+				} else { None }
+			})
+		});
 
+		if confirmed_txid.is_none() {
+			// If we have not seen a commitment transaction on-chain (ie the channel is not yet
+			// closed), just get the full set.
+			mem::drop(us);
+			return self.get_all_current_outbound_htlcs();
+		}
+
+		let mut res = HashMap::new();
 		macro_rules! walk_htlcs {
 			($holder_commitment: expr, $htlc_iter: expr) => {
 				for (htlc, source) in $htlc_iter {
@@ -1878,54 +1926,22 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 			}
 		}
 
-		// We're only concerned with the confirmation count of HTLC transactions, and don't
-		// actually care how many confirmations a commitment transaction may or may not have. Thus,
-		// we look for either a FundingSpendConfirmation event or a funding_spend_confirmed.
-		let confirmed_txid = us.funding_spend_confirmed.or_else(|| {
-			us.onchain_events_awaiting_threshold_conf.iter().find_map(|event| {
-				if let OnchainEvent::FundingSpendConfirmation { .. } = event.event {
-					Some(event.txid)
+		let txid = confirmed_txid.unwrap();
+		if Some(txid) == us.current_counterparty_commitment_txid || Some(txid) == us.prev_counterparty_commitment_txid {
+			walk_htlcs!(false, us.counterparty_claimable_outpoints.get(&txid).unwrap().iter().filter_map(|(a, b)| {
+				if let &Some(ref source) = b {
+					Some((a, &**source))
 				} else { None }
-			})
-		});
-		if let Some(txid) = confirmed_txid {
-			if Some(txid) == us.current_counterparty_commitment_txid || Some(txid) == us.prev_counterparty_commitment_txid {
-				walk_htlcs!(false, us.counterparty_claimable_outpoints.get(&txid).unwrap().iter().filter_map(|(a, b)| {
-					if let &Some(ref source) = b {
-						Some((a, &**source))
-					} else { None }
-				}));
-			} else if txid == us.current_holder_commitment_tx.txid {
-				walk_htlcs!(true, us.current_holder_commitment_tx.htlc_outputs.iter().filter_map(|(a, _, c)| {
+			}));
+		} else if txid == us.current_holder_commitment_tx.txid {
+			walk_htlcs!(true, us.current_holder_commitment_tx.htlc_outputs.iter().filter_map(|(a, _, c)| {
+				if let Some(source) = c { Some((a, source)) } else { None }
+			}));
+		} else if let Some(prev_commitment) = &us.prev_holder_signed_commitment_tx {
+			if txid == prev_commitment.txid {
+				walk_htlcs!(true, prev_commitment.htlc_outputs.iter().filter_map(|(a, _, c)| {
 					if let Some(source) = c { Some((a, source)) } else { None }
 				}));
-			} else if let Some(prev_commitment) = &us.prev_holder_signed_commitment_tx {
-				if txid == prev_commitment.txid {
-					walk_htlcs!(true, prev_commitment.htlc_outputs.iter().filter_map(|(a, _, c)| {
-						if let Some(source) = c { Some((a, source)) } else { None }
-					}));
-				}
-			}
-		} else {
-			// If we have not seen a commitment transaction on-chain (ie the channel is not yet
-			// closed), just examine the available counterparty commitment transactions. See docs
-			// on `fail_unbroadcast_htlcs`, below, for justification.
-			macro_rules! walk_counterparty_commitment {
-				($txid: expr) => {
-					if let Some(ref latest_outpoints) = us.counterparty_claimable_outpoints.get($txid) {
-						for &(ref htlc, ref source_option) in latest_outpoints.iter() {
-							if let &Some(ref source) = source_option {
-								res.insert((**source).clone(), htlc.clone());
-							}
-						}
-					}
-				}
-			}
-			if let Some(ref txid) = us.current_counterparty_commitment_txid {
-				walk_counterparty_commitment!(txid);
-			}
-			if let Some(ref txid) = us.prev_counterparty_commitment_txid {
-				walk_counterparty_commitment!(txid);
 			}
 		}
 

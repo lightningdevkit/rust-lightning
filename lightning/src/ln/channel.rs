@@ -5922,15 +5922,16 @@ impl<Signer: Sign> Channel<Signer> {
 		(monitor_update, dropped_outbound_htlcs)
 	}
 
-	pub fn inflight_htlc_sources(&self) -> impl Iterator<Item=&HTLCSource> {
+	pub fn inflight_htlc_sources(&self) -> impl Iterator<Item=(&HTLCSource, &PaymentHash)> {
 		self.holding_cell_htlc_updates.iter()
 			.flat_map(|htlc_update| {
 				match htlc_update {
-					HTLCUpdateAwaitingACK::AddHTLC { source, .. } => { Some(source) }
-					_ => None
+					HTLCUpdateAwaitingACK::AddHTLC { source, payment_hash, .. }
+						=> Some((source, payment_hash)),
+					_ => None,
 				}
 			})
-			.chain(self.pending_outbound_htlcs.iter().map(|htlc| &htlc.source))
+			.chain(self.pending_outbound_htlcs.iter().map(|htlc| (&htlc.source, &htlc.payment_hash)))
 	}
 }
 

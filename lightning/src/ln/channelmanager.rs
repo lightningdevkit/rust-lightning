@@ -5909,7 +5909,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 		let mut inflight_htlcs = InFlightHtlcs::new();
 
 		for chan in self.channel_state.lock().unwrap().by_id.values() {
-			for htlc_source in chan.inflight_htlc_sources() {
+			for (htlc_source, _) in chan.inflight_htlc_sources() {
 				if let HTLCSource::OutboundRoute { path, .. } = htlc_source {
 					inflight_htlcs.process_path(path, self.get_our_node_id());
 				}
@@ -5925,6 +5925,12 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 		let event_handler = |event: events::Event| events.borrow_mut().push(event);
 		self.process_pending_events(&event_handler);
 		events.into_inner()
+	}
+
+	#[cfg(test)]
+	pub fn pop_pending_event(&self) -> Option<events::Event> {
+		let mut events = self.pending_events.lock().unwrap();
+		if events.is_empty() { None } else { Some(events.remove(0)) }
 	}
 
 	#[cfg(test)]
@@ -7420,6 +7426,25 @@ impl<'a, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 						user_channel_id: channel.get_user_id(),
 						reason: ClosureReason::OutdatedChannelManager
 					});
+					for (channel_htlc_source, payment_hash) in channel.inflight_htlc_sources() {
+						let mut found_htlc = false;
+						for (monitor_htlc_source, _) in monitor.get_all_current_outbound_htlcs() {
+							if *channel_htlc_source == monitor_htlc_source { found_htlc = true; break; }
+						}
+						if !found_htlc {
+							// If we have some HTLCs in the channel which are not present in the newer
+							// ChannelMonitor, they have been removed and should be failed back to
+							// ensure we don't forget them entirely. Note that if the missing HTLC(s)
+							// were actually claimed we'd have generated and ensured the previous-hop
+							// claim update ChannelMonitor updates were persisted prior to persising
+							// the ChannelMonitor update for the forward leg, so attempting to fail the
+							// backwards leg of the HTLC will simply be rejected.
+							log_info!(args.logger,
+								"Failing HTLC with hash {} as it is missing in the ChannelMonitor for channel {} but was present in the (stale) ChannelManager",
+								log_bytes!(channel.channel_id()), log_bytes!(payment_hash.0));
+							failed_htlcs.push((channel_htlc_source.clone(), *payment_hash, channel.get_counterparty_node_id(), channel.channel_id()));
+						}
+					}
 				} else {
 					log_info!(args.logger, "Successfully loaded channel {}", log_bytes!(channel.channel_id()));
 					if let Some(short_channel_id) = channel.get_short_channel_id() {
@@ -7499,16 +7524,6 @@ impl<'a, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 				Some(event) => pending_events_read.push(event),
 				None => continue,
 			}
-		}
-		if forward_htlcs_count > 0 {
-			// If we have pending HTLCs to forward, assume we either dropped a
-			// `PendingHTLCsForwardable` or the user received it but never processed it as they
-			// shut down before the timer hit. Either way, set the time_forwardable to a small
-			// constant as enough time has likely passed that we should simply handle the forwards
-			// now, or at least after the user gets a chance to reconnect to our peers.
-			pending_events_read.push(events::Event::PendingHTLCsForwardable {
-				time_forwardable: Duration::from_secs(2),
-			});
 		}
 
 		let background_event_count: u64 = Readable::read(reader)?;
@@ -7620,8 +7635,42 @@ impl<'a, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 							}
 						}
 					}
+					for (htlc_source, htlc) in monitor.get_all_current_outbound_htlcs() {
+						if let HTLCSource::PreviousHopData(prev_hop_data) = htlc_source {
+							// The ChannelMonitor is now responsible for this HTLC's
+							// failure/success and will let us know what its outcome is. If we
+							// still have an entry for this HTLC in `forward_htlcs`, we were
+							// apparently not persisted after the monitor was when forwarding
+							// the payment.
+							forward_htlcs.retain(|_, forwards| {
+								forwards.retain(|forward| {
+									if let HTLCForwardInfo::AddHTLC(htlc_info) = forward {
+										if htlc_info.prev_short_channel_id == prev_hop_data.short_channel_id &&
+											htlc_info.prev_htlc_id == prev_hop_data.htlc_id
+										{
+											log_info!(args.logger, "Removing pending to-forward HTLC with hash {} as it was forwarded to the closed channel {}",
+												log_bytes!(htlc.payment_hash.0), log_bytes!(monitor.get_funding_txo().0.to_channel_id()));
+											false
+										} else { true }
+									} else { true }
+								});
+								!forwards.is_empty()
+							})
+						}
+					}
 				}
 			}
+		}
+
+		if !forward_htlcs.is_empty() {
+			// If we have pending HTLCs to forward, assume we either dropped a
+			// `PendingHTLCsForwardable` or the user received it but never processed it as they
+			// shut down before the timer hit. Either way, set the time_forwardable to a small
+			// constant as enough time has likely passed that we should simply handle the forwards
+			// now, or at least after the user gets a chance to reconnect to our peers.
+			pending_events_read.push(events::Event::PendingHTLCsForwardable {
+				time_forwardable: Duration::from_secs(2),
+			});
 		}
 
 		let inbound_pmt_key_material = args.keys_manager.get_inbound_payment_key_material();
