@@ -4417,7 +4417,7 @@ impl<Signer: Sign> Channel<Signer> {
 					} else if last_fee < our_max_fee {
 						propose_fee!(our_max_fee);
 					} else {
-						return Err(ChannelError::Close(format!("Unable to come to consensus about closing feerate, remote wants something ({} sat) higher than our max fee ({} sat)", msg.fee_satoshis, our_max_fee)));
+						return Err(ChannelError::Warn(format!("Unable to come to consensus about closing feerate, remote wants something ({} sat) higher than our max fee ({} sat)", msg.fee_satoshis, our_max_fee)));
 					}
 				} else {
 					if msg.fee_satoshis > our_min_fee {
@@ -4425,7 +4425,7 @@ impl<Signer: Sign> Channel<Signer> {
 					} else if last_fee > our_min_fee {
 						propose_fee!(our_min_fee);
 					} else {
-						return Err(ChannelError::Close(format!("Unable to come to consensus about closing feerate, remote wants something ({} sat) lower than our min fee ({} sat)", msg.fee_satoshis, our_min_fee)));
+						return Err(ChannelError::Warn(format!("Unable to come to consensus about closing feerate, remote wants something ({} sat) lower than our min fee ({} sat)", msg.fee_satoshis, our_min_fee)));
 					}
 				}
 			} else {
