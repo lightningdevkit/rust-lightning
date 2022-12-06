@@ -3476,7 +3476,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 
 								macro_rules! check_total_value {
 									($payment_data: expr, $payment_preimage: expr) => {{
-										let mut payment_received_generated = false;
+										let mut payment_claimable_generated = false;
 										let purpose = || {
 											events::PaymentPurpose::InvoicePayment {
 												payment_preimage: $payment_preimage,
@@ -3523,14 +3523,14 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 												via_channel_id: Some(prev_channel_id),
 												via_user_channel_id: Some(prev_user_channel_id),
 											});
-											payment_received_generated = true;
+											payment_claimable_generated = true;
 										} else {
 											// Nothing to do - we haven't reached the total
 											// payment value yet, wait until we receive more
 											// MPP parts.
 											htlcs.push(claimable_htlc);
 										}
-										payment_received_generated
+										payment_claimable_generated
 									}}
 								}
 
@@ -3593,8 +3593,8 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 												log_bytes!(payment_hash.0), payment_data.total_msat, inbound_payment.get().min_value_msat.unwrap());
 											fail_htlc!(claimable_htlc, payment_hash);
 										} else {
-											let payment_received_generated = check_total_value!(payment_data, inbound_payment.get().payment_preimage);
-											if payment_received_generated {
+											let payment_claimable_generated = check_total_value!(payment_data, inbound_payment.get().payment_preimage);
+											if payment_claimable_generated {
 												inbound_payment.remove_entry();
 											}
 										}
