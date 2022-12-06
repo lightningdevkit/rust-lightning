@@ -4425,6 +4425,10 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 					match self.chain_monitor.update_channel(chan.get().get_funding_txo().unwrap(), monitor_update) {
 						ChannelMonitorUpdateStatus::Completed => {},
 						e => {
+							// TODO: This needs to be handled somehow - if we receive a monitor update
+							// with a preimage we *must* somehow manage to propagate it to the upstream
+							// channel, or we must have an ability to receive the same update and try
+							// again on restart.
 							log_given_level!(self.logger, if e == ChannelMonitorUpdateStatus::PermanentFailure { Level::Error } else { Level::Info },
 								"Failed to update channel monitor with preimage {:?} immediately prior to force-close: {:?}",
 								payment_preimage, e);
