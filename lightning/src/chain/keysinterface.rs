@@ -395,9 +395,12 @@ pub trait BaseSign {
 	fn sign_channel_announcement(&self, msg: &UnsignedChannelAnnouncement, secp_ctx: &Secp256k1<secp256k1::All>)
 		-> Result<(Signature, Signature), ()>;
 	/// Set the counterparty static channel data, including basepoints,
-	/// `counterparty_selected`/`holder_selected_contest_delay` and funding outpoint. Since these
-	/// are static channel data, they MUST NOT be allowed to change to different values once set,
-	/// as LDK may call this method more than once.
+	/// `counterparty_selected`/`holder_selected_contest_delay` and funding outpoint.
+	///
+	/// This data is static, and will never change for a channel once set. For a given [`BaseSign`]
+	/// instance, LDK will call this method exactly once - either immediately after construction
+	/// (not including if done via [`KeysInterface::read_chan_signer`]) or when the funding
+	/// information has been generated.
 	///
 	/// channel_parameters.is_populated() MUST be true.
 	fn provide_channel_parameters(&mut self, channel_parameters: &ChannelTransactionParameters);
