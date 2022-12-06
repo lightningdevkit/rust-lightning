@@ -49,6 +49,7 @@ use crate::ln::features::InvoiceFeatures;
 use crate::routing::router::{InFlightHtlcs, PaymentParameters, Route, RouteHop, RoutePath, RouteParameters};
 use crate::ln::msgs;
 use crate::ln::onion_utils;
+use crate::ln::onion_utils::HTLCFailReason;
 use crate::ln::msgs::{ChannelMessageHandler, DecodeError, LightningError, MAX_VALUE_MSAT};
 use crate::ln::wire::Encode;
 use crate::chain::keysinterface::{Sign, KeysInterface, KeysManager, Recipient};
@@ -273,27 +274,6 @@ impl HTLCSource {
 			payment_secret: None,
 			payment_params: None,
 		}
-	}
-}
-
-#[derive(Clone)] // See Channel::revoke_and_ack for why, tl;dr: Rust bug
-pub(super) enum HTLCFailReason {
-	LightningError {
-		err: msgs::OnionErrorPacket,
-	},
-	Reason {
-		failure_code: u16,
-		data: Vec<u8>,
-	}
-}
-
-impl HTLCFailReason {
-	pub(super) fn reason(failure_code: u16, data: Vec<u8>) -> Self {
-		Self::Reason { failure_code, data }
-	}
-
-	pub(super) fn from_failure_code(failure_code: u16) -> Self {
-		Self::Reason { failure_code, data: Vec::new() }
 	}
 }
 
@@ -2062,10 +2042,13 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 		// Also, ensure that, in the case of an unknown preimage for the received payment hash, our
 		// payment logic has enough time to fail the HTLC backward before our onchain logic triggers a
 		// channel closure (see HTLC_FAIL_BACK_BUFFER rationale).
-		if (hop_data.outgoing_cltv_value as u64) <= self.best_block.read().unwrap().height() as u64 + HTLC_FAIL_BACK_BUFFER as u64 + 1	{
+		let current_height: u32 = self.best_block.read().unwrap().height();
+		if (hop_data.outgoing_cltv_value as u64) <= current_height as u64 + HTLC_FAIL_BACK_BUFFER as u64 + 1 {
+			let mut err_data = Vec::with_capacity(12);
+			err_data.extend_from_slice(&amt_msat.to_be_bytes());
+			err_data.extend_from_slice(&current_height.to_be_bytes());
 			return Err(ReceiveError {
-				err_code: 17,
-				err_data: Vec::new(),
+				err_code: 0x4000 | 15, err_data,
 				msg: "The final CLTV expiry is too soon to handle",
 			});
 		}
@@ -2173,7 +2156,8 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 					return PendingHTLCStatus::Fail(HTLCFailureMsg::Relay(msgs::UpdateFailHTLC {
 						channel_id: msg.channel_id,
 						htlc_id: msg.htlc_id,
-						reason: onion_utils::build_first_hop_failure_packet(&shared_secret, $err_code, $data),
+						reason: HTLCFailReason::reason($err_code, $data.to_vec())
+							.get_encrypted_failure_packet(&shared_secret, &None),
 					}));
 				}
 			}
@@ -2238,7 +2222,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 			// with a short_channel_id of 0. This is important as various things later assume
 			// short_channel_id is non-0 in any ::Forward.
 			if let &PendingHTLCRouting::Forward { ref short_channel_id, .. } = routing {
-				if let Some((err, code, chan_update)) = loop {
+				if let Some((err, mut code, chan_update)) = loop {
 					let id_option = self.short_to_chan_info.read().unwrap().get(&short_channel_id).cloned();
 					let mut channel_state = self.channel_state.lock().unwrap();
 					let forwarding_id_opt = match id_option {
@@ -2295,10 +2279,13 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 						}
 						chan_update_opt
 					} else {
-						if (msg.cltv_expiry as u64) < (*outgoing_cltv_value) as u64 + MIN_CLTV_EXPIRY_DELTA as u64 { // incorrect_cltv_expiry
+						if (msg.cltv_expiry as u64) < (*outgoing_cltv_value) as u64 + MIN_CLTV_EXPIRY_DELTA as u64 {
+							// We really should set `incorrect_cltv_expiry` here but as we're not
+							// forwarding over a real channel we can't generate a channel_update
+							// for it. Instead we just return a generic temporary_node_failure.
 							break Some((
 								"Forwarding node has tampered with the intended HTLC values or origin node has an obsolete cltv_expiry_delta",
-								0x1000 | 13, None,
+								0x2000 | 2, None,
 							));
 						}
 						None
@@ -2344,6 +2331,12 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 						(chan_update.serialized_length() as u16 + 2).write(&mut res).expect("Writes cannot fail");
 						msgs::ChannelUpdate::TYPE.write(&mut res).expect("Writes cannot fail");
 						chan_update.write(&mut res).expect("Writes cannot fail");
+					} else if code & 0x1000 == 0x1000 {
+						// If we're trying to return an error that requires a `channel_update` but
+						// we're forwarding to a phantom or intercept "channel" (i.e. cannot
+						// generate an update), just use the generic "temporary_node_failure"
+						// instead.
+						code = 0x2000 | 2;
 					}
 					return_err!(err, code, &res.0[..]);
 				}
@@ -4048,89 +4041,47 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 				} else { None };
 				log_trace!(self.logger, "Failing outbound payment HTLC with payment_hash {}", log_bytes!(payment_hash.0));
 
-				let path_failure = match &onion_error {
-					&HTLCFailReason::LightningError { ref err } => {
+				let path_failure = {
 #[cfg(test)]
-						let (network_update, short_channel_id, payment_retryable, onion_error_code, onion_error_data) = onion_utils::process_onion_failure(&self.secp_ctx, &self.logger, &source, err.data.clone());
+					let (network_update, short_channel_id, payment_retryable, onion_error_code, onion_error_data) = onion_error.decode_onion_failure(&self.secp_ctx, &self.logger, &source);
 #[cfg(not(test))]
-						let (network_update, short_channel_id, payment_retryable, _, _) = onion_utils::process_onion_failure(&self.secp_ctx, &self.logger, &source, err.data.clone());
+					let (network_update, short_channel_id, payment_retryable, _, _) = onion_error.decode_onion_failure(&self.secp_ctx, &self.logger, &source);
 
-						if self.payment_is_probe(payment_hash, &payment_id) {
-							if !payment_retryable {
-								events::Event::ProbeSuccessful {
-									payment_id: *payment_id,
-									payment_hash: payment_hash.clone(),
-									path: path.clone(),
-								}
-							} else {
-								events::Event::ProbeFailed {
-									payment_id: *payment_id,
-									payment_hash: payment_hash.clone(),
-									path: path.clone(),
-									short_channel_id,
-								}
+					if self.payment_is_probe(payment_hash, &payment_id) {
+						if !payment_retryable {
+							events::Event::ProbeSuccessful {
+								payment_id: *payment_id,
+								payment_hash: payment_hash.clone(),
+								path: path.clone(),
 							}
 						} else {
-							// TODO: If we decided to blame ourselves (or one of our channels) in
-							// process_onion_failure we should close that channel as it implies our
-							// next-hop is needlessly blaming us!
-							if let Some(scid) = short_channel_id {
-								retry.as_mut().map(|r| r.payment_params.previously_failed_channels.push(scid));
-							}
-							events::Event::PaymentPathFailed {
-								payment_id: Some(*payment_id),
-								payment_hash: payment_hash.clone(),
-								payment_failed_permanently: !payment_retryable,
-								network_update,
-								all_paths_failed,
-								path: path.clone(),
-								short_channel_id,
-								retry,
-								#[cfg(test)]
-								error_code: onion_error_code,
-								#[cfg(test)]
-								error_data: onion_error_data
-							}
-						}
-					},
-					&HTLCFailReason::Reason {
-#[cfg(test)]
-							ref failure_code,
-#[cfg(test)]
-							ref data,
-							.. } => {
-						// we get a fail_malformed_htlc from the first hop
-						// TODO: We'd like to generate a NetworkUpdate for temporary
-						// failures here, but that would be insufficient as find_route
-						// generally ignores its view of our own channels as we provide them via
-						// ChannelDetails.
-						// TODO: For non-temporary failures, we really should be closing the
-						// channel here as we apparently can't relay through them anyway.
-						let scid = path.first().unwrap().short_channel_id;
-						retry.as_mut().map(|r| r.payment_params.previously_failed_channels.push(scid));
-
-						if self.payment_is_probe(payment_hash, &payment_id) {
 							events::Event::ProbeFailed {
 								payment_id: *payment_id,
 								payment_hash: payment_hash.clone(),
 								path: path.clone(),
-								short_channel_id: Some(scid),
+								short_channel_id,
 							}
-						} else {
-							events::Event::PaymentPathFailed {
-								payment_id: Some(*payment_id),
-								payment_hash: payment_hash.clone(),
-								payment_failed_permanently: false,
-								network_update: None,
-								all_paths_failed,
-								path: path.clone(),
-								short_channel_id: Some(scid),
-								retry,
-#[cfg(test)]
-								error_code: Some(*failure_code),
-#[cfg(test)]
-								error_data: Some(data.clone()),
-							}
+						}
+					} else {
+						// TODO: If we decided to blame ourselves (or one of our channels) in
+						// process_onion_failure we should close that channel as it implies our
+						// next-hop is needlessly blaming us!
+						if let Some(scid) = short_channel_id {
+							retry.as_mut().map(|r| r.payment_params.previously_failed_channels.push(scid));
+						}
+						events::Event::PaymentPathFailed {
+							payment_id: Some(*payment_id),
+							payment_hash: payment_hash.clone(),
+							payment_failed_permanently: !payment_retryable,
+							network_update,
+							all_paths_failed,
+							path: path.clone(),
+							short_channel_id,
+							retry,
+							#[cfg(test)]
+							error_code: onion_error_code,
+							#[cfg(test)]
+							error_data: onion_error_data
 						}
 					}
 				};
@@ -4139,23 +4090,8 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 				if let Some(ev) = full_failure_ev { pending_events.push(ev); }
 			},
 			HTLCSource::PreviousHopData(HTLCPreviousHopData { ref short_channel_id, ref htlc_id, ref incoming_packet_shared_secret, ref phantom_shared_secret, ref outpoint }) => {
-				let err_packet = match onion_error {
-					HTLCFailReason::Reason { ref failure_code, ref data } => {
-						log_trace!(self.logger, "Failing HTLC with payment_hash {} backwards from us with code {}", log_bytes!(payment_hash.0), failure_code);
-						if let Some(phantom_ss) = phantom_shared_secret {
-							let phantom_packet = onion_utils::build_failure_packet(phantom_ss, *failure_code, &data[..]).encode();
-							let encrypted_phantom_packet = onion_utils::encrypt_failure_packet(phantom_ss, &phantom_packet);
-							onion_utils::encrypt_failure_packet(incoming_packet_shared_secret, &encrypted_phantom_packet.data[..])
-						} else {
-							let packet = onion_utils::build_failure_packet(incoming_packet_shared_secret, *failure_code, &data[..]).encode();
-							onion_utils::encrypt_failure_packet(incoming_packet_shared_secret, &packet)
-						}
-					},
-					HTLCFailReason::LightningError { err } => {
-						log_trace!(self.logger, "Failing HTLC with payment_hash {} backwards with pre-built LightningError", log_bytes!(payment_hash.0));
-						onion_utils::encrypt_failure_packet(incoming_packet_shared_secret, &err.data)
-					}
-				};
+				log_trace!(self.logger, "Failing HTLC with payment_hash {} backwards from us with {:?}", log_bytes!(payment_hash.0), onion_error);
+				let err_packet = onion_error.get_encrypted_failure_packet(incoming_packet_shared_secret, phantom_shared_secret);
 
 				let mut forward_event = None;
 				let mut forward_htlcs = self.forward_htlcs.lock().unwrap();
@@ -5082,10 +5018,10 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 						PendingHTLCStatus::Forward(PendingHTLCInfo { ref incoming_shared_secret, .. }) => {
 							let reason = if (error_code & 0x1000) != 0 {
 								let (real_code, error_data) = self.get_htlc_inbound_temp_fail_err_and_data(error_code, chan);
-								onion_utils::build_first_hop_failure_packet(incoming_shared_secret, real_code, &error_data)
+								HTLCFailReason::reason(real_code, error_data)
 							} else {
-								onion_utils::build_first_hop_failure_packet(incoming_shared_secret, error_code, &[])
-							};
+								HTLCFailReason::from_failure_code(error_code)
+							}.get_encrypted_failure_packet(incoming_shared_secret, &None);
 							let msg = msgs::UpdateFailHTLC {
 								channel_id: msg.channel_id,
 								htlc_id: msg.htlc_id,
@@ -5129,7 +5065,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 				if chan.get().get_counterparty_node_id() != *counterparty_node_id {
 					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
 				}
-				try_chan_entry!(self, chan.get_mut().update_fail_htlc(&msg, HTLCFailReason::LightningError { err: msg.reason.clone() }), chan);
+				try_chan_entry!(self, chan.get_mut().update_fail_htlc(&msg, HTLCFailReason::from_msg(msg)), chan);
 			},
 			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))
 		}
@@ -5148,7 +5084,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 					let chan_err: ChannelError = ChannelError::Close("Got update_fail_malformed_htlc with BADONION not set".to_owned());
 					try_chan_entry!(self, Err(chan_err), chan);
 				}
-				try_chan_entry!(self, chan.get_mut().update_fail_malformed_htlc(&msg, HTLCFailReason::from_failure_code(msg.failure_code)), chan);
+				try_chan_entry!(self, chan.get_mut().update_fail_malformed_htlc(&msg, HTLCFailReason::reason(msg.failure_code, msg.sha256_of_onion.to_vec())), chan);
 				Ok(())
 			},
 			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))
@@ -7036,16 +6972,6 @@ impl Writeable for HTLCSource {
 		Ok(())
 	}
 }
-
-impl_writeable_tlv_based_enum!(HTLCFailReason,
-	(0, LightningError) => {
-		(0, err, required),
-	},
-	(1, Reason) => {
-		(0, failure_code, required),
-		(2, data, vec_type),
-	},
-;);
 
 impl_writeable_tlv_based!(PendingAddHTLCInfo, {
 	(0, forward_info, required),
