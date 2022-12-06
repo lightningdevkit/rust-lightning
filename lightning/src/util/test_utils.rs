@@ -80,7 +80,8 @@ impl keysinterface::KeysInterface for OnlyReadsKeysInterface {
 	fn get_inbound_payment_key_material(&self) -> KeyMaterial { unreachable!(); }
 	fn get_destination_script(&self) -> Script { unreachable!(); }
 	fn get_shutdown_scriptpubkey(&self) -> ShutdownScript { unreachable!(); }
-	fn get_channel_signer(&self, _inbound: bool, _channel_value_satoshis: u64) -> EnforcingSigner { unreachable!(); }
+	fn generate_channel_keys_id(&self, _inbound: bool, _channel_value_satoshis: u64, _user_channel_id: u128) -> [u8; 32] { unreachable!(); }
+	fn derive_channel_signer(&self, _channel_value_satoshis: u64, _channel_keys_id: [u8; 32]) -> Self::Signer { unreachable!(); }
 	fn get_secure_random_bytes(&self) -> [u8; 32] { [0; 32] }
 
 	fn read_chan_signer(&self, mut reader: &[u8]) -> Result<Self::Signer, msgs::DecodeError> {
@@ -629,8 +630,12 @@ impl keysinterface::KeysInterface for TestKeysInterface {
 		}
 	}
 
-	fn get_channel_signer(&self, inbound: bool, channel_value_satoshis: u64) -> EnforcingSigner {
-		let keys = self.backing.get_channel_signer(inbound, channel_value_satoshis);
+	fn generate_channel_keys_id(&self, inbound: bool, channel_value_satoshis: u64, user_channel_id: u128) -> [u8; 32] {
+		self.backing.generate_channel_keys_id(inbound, channel_value_satoshis, user_channel_id)
+	}
+
+	fn derive_channel_signer(&self, channel_value_satoshis: u64, channel_keys_id: [u8; 32]) -> EnforcingSigner {
+		let keys = self.backing.derive_channel_signer(channel_value_satoshis, channel_keys_id);
 		let state = self.make_enforcement_state_cell(keys.commitment_seed);
 		EnforcingSigner::new_with_revoked(keys, state, self.disable_revocation_policy_check)
 	}

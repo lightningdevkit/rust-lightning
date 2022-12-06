@@ -25,7 +25,7 @@ use crate::ln::msgs::{ChannelMessageHandler, ChannelUpdate};
 use crate::ln::wire::Encode;
 use crate::util::events::{Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider};
 use crate::util::ser::{Writeable, Writer};
-use crate::util::{byte_utils, test_utils};
+use crate::util::test_utils;
 use crate::util::config::{UserConfig, ChannelConfig};
 use crate::util::errors::APIError;
 
@@ -1053,8 +1053,8 @@ fn test_phantom_final_incorrect_cltv_expiry() {
 	commitment_signed_dance!(nodes[0], nodes[1], update_1.commitment_signed, false);
 
 	// Ensure the payment fails with the expected error.
-	let expected_cltv = 82;
-	let error_data = byte_utils::be32_to_array(expected_cltv).to_vec();
+	let expected_cltv: u32 = 82;
+	let error_data = expected_cltv.to_be_bytes().to_vec();
 	let mut fail_conditions = PaymentFailedConditions::new()
 		.blamed_scid(phantom_scid)
 		.expected_htlc_error_data(18, &error_data);
@@ -1144,10 +1144,8 @@ fn test_phantom_failure_too_low_recv_amt() {
 	commitment_signed_dance!(nodes[0], nodes[1], update_1.commitment_signed, false);
 
 	// Ensure the payment fails with the expected error.
-	let mut error_data = byte_utils::be64_to_array(bad_recv_amt_msat).to_vec();
-	error_data.extend_from_slice(
-		&byte_utils::be32_to_array(nodes[1].node.best_block.read().unwrap().height()),
-	);
+	let mut error_data = bad_recv_amt_msat.to_be_bytes().to_vec();
+	error_data.extend_from_slice(&nodes[1].node.best_block.read().unwrap().height().to_be_bytes());
 	let mut fail_conditions = PaymentFailedConditions::new()
 		.blamed_scid(phantom_scid)
 		.expected_htlc_error_data(0x4000 | 15, &error_data);
@@ -1242,10 +1240,8 @@ fn test_phantom_failure_reject_payment() {
 	commitment_signed_dance!(nodes[0], nodes[1], update_1.commitment_signed, false);
 
 	// Ensure the payment fails with the expected error.
-	let mut error_data = byte_utils::be64_to_array(recv_amt_msat).to_vec();
-	error_data.extend_from_slice(
-		&byte_utils::be32_to_array(nodes[1].node.best_block.read().unwrap().height()),
-	);
+	let mut error_data = recv_amt_msat.to_be_bytes().to_vec();
+	error_data.extend_from_slice(&nodes[1].node.best_block.read().unwrap().height().to_be_bytes());
 	let mut fail_conditions = PaymentFailedConditions::new()
 		.blamed_scid(phantom_scid)
 		.expected_htlc_error_data(0x4000 | 15, &error_data);

@@ -263,6 +263,7 @@ struct KeyProvider {
 	node_secret: SecretKey,
 	inbound_payment_key: KeyMaterial,
 	counter: AtomicU64,
+	signer_state: RefCell<HashMap<u8, (bool, Arc<Mutex<EnforcementState>>)>>
 }
 impl KeysInterface for KeyProvider {
 	type Signer = EnforcingSigner;
@@ -297,10 +298,17 @@ impl KeysInterface for KeyProvider {
 		ShutdownScript::new_p2wpkh(&pubkey_hash)
 	}
 
-	fn get_channel_signer(&self, inbound: bool, channel_value_satoshis: u64) -> EnforcingSigner {
+	fn generate_channel_keys_id(&self, inbound: bool, _channel_value_satoshis: u64, _user_channel_id: u128) -> [u8; 32] {
 		let ctr = self.counter.fetch_add(1, Ordering::Relaxed) as u8;
+		self.signer_state.borrow_mut().insert(ctr, (inbound, Arc::new(Mutex::new(EnforcementState::new()))));
+		[ctr; 32]
+	}
+
+	fn derive_channel_signer(&self, channel_value_satoshis: u64, channel_keys_id: [u8; 32]) -> Self::Signer {
 		let secp_ctx = Secp256k1::signing_only();
-		EnforcingSigner::new(if inbound {
+		let ctr = channel_keys_id[0];
+		let (inbound, state) = self.signer_state.borrow().get(&ctr).unwrap().clone();
+		EnforcingSigner::new_with_revoked(if inbound {
 			InMemorySigner::new(
 				&secp_ctx,
 				self.node_secret.clone(),
@@ -311,7 +319,7 @@ impl KeysInterface for KeyProvider {
 				SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, ctr]).unwrap(),
 				[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 6, ctr],
 				channel_value_satoshis,
-				[0; 32],
+				channel_keys_id,
 			)
 		} else {
 			InMemorySigner::new(
@@ -324,9 +332,9 @@ impl KeysInterface for KeyProvider {
 				SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 11, ctr]).unwrap(),
 				[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 12, ctr],
 				channel_value_satoshis,
-				[0; 32],
+				channel_keys_id,
 			)
-		})
+		}, state, false)
 	}
 
 	fn get_secure_random_bytes(&self) -> [u8; 32] {
@@ -390,7 +398,12 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 	let monitor = Arc::new(chainmonitor::ChainMonitor::new(None, broadcast.clone(), Arc::clone(&logger), fee_est.clone(),
 		Arc::new(TestPersister { update_ret: Mutex::new(ChannelMonitorUpdateStatus::Completed) })));
 
-	let keys_manager = Arc::new(KeyProvider { node_secret: our_network_key.clone(), inbound_payment_key: KeyMaterial(inbound_payment_key.try_into().unwrap()), counter: AtomicU64::new(0) });
+	let keys_manager = Arc::new(KeyProvider {
+		node_secret: our_network_key.clone(),
+		inbound_payment_key: KeyMaterial(inbound_payment_key.try_into().unwrap()),
+		counter: AtomicU64::new(0),
+		signer_state: RefCell::new(HashMap::new())
+	});
 	let mut config = UserConfig::default();
 	config.channel_config.forwarding_fee_proportional_millionths =  slice_to_be32(get_slice!(4));
 	config.channel_handshake_config.announced_channel = get_slice!(1)[0] != 0;

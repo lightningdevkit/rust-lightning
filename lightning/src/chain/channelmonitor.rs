@@ -291,7 +291,7 @@ struct CounterpartyCommitmentParameters {
 
 impl Writeable for CounterpartyCommitmentParameters {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		w.write_all(&byte_utils::be64_to_array(0))?;
+		w.write_all(&(0 as u64).to_be_bytes())?;
 		write_tlv_fields!(w, {
 			(0, self.counterparty_delayed_payment_base_key, required),
 			(2, self.counterparty_htlc_base_key, required),
@@ -945,7 +945,7 @@ impl<Signer: Sign> Writeable for ChannelMonitorImpl<Signer> {
 		self.channel_keys_id.write(writer)?;
 		self.holder_revocation_basepoint.write(writer)?;
 		writer.write_all(&self.funding_info.0.txid[..])?;
-		writer.write_all(&byte_utils::be16_to_array(self.funding_info.0.index))?;
+		writer.write_all(&self.funding_info.0.index.to_be_bytes())?;
 		self.funding_info.1.write(writer)?;
 		self.current_counterparty_commitment_txid.write(writer)?;
 		self.prev_counterparty_commitment_txid.write(writer)?;
@@ -972,24 +972,24 @@ impl<Signer: Sign> Writeable for ChannelMonitorImpl<Signer> {
 			},
 		}
 
-		writer.write_all(&byte_utils::be16_to_array(self.on_holder_tx_csv))?;
+		writer.write_all(&self.on_holder_tx_csv.to_be_bytes())?;
 
 		self.commitment_secrets.write(writer)?;
 
 		macro_rules! serialize_htlc_in_commitment {
 			($htlc_output: expr) => {
 				writer.write_all(&[$htlc_output.offered as u8; 1])?;
-				writer.write_all(&byte_utils::be64_to_array($htlc_output.amount_msat))?;
-				writer.write_all(&byte_utils::be32_to_array($htlc_output.cltv_expiry))?;
+				writer.write_all(&$htlc_output.amount_msat.to_be_bytes())?;
+				writer.write_all(&$htlc_output.cltv_expiry.to_be_bytes())?;
 				writer.write_all(&$htlc_output.payment_hash.0[..])?;
 				$htlc_output.transaction_output_index.write(writer)?;
 			}
 		}
 
-		writer.write_all(&byte_utils::be64_to_array(self.counterparty_claimable_outpoints.len() as u64))?;
+		writer.write_all(&(self.counterparty_claimable_outpoints.len() as u64).to_be_bytes())?;
 		for (ref txid, ref htlc_infos) in self.counterparty_claimable_outpoints.iter() {
 			writer.write_all(&txid[..])?;
-			writer.write_all(&byte_utils::be64_to_array(htlc_infos.len() as u64))?;
+			writer.write_all(&(htlc_infos.len() as u64).to_be_bytes())?;
 			for &(ref htlc_output, ref htlc_source) in htlc_infos.iter() {
 				debug_assert!(htlc_source.is_none() || Some(**txid) == self.current_counterparty_commitment_txid
 						|| Some(**txid) == self.prev_counterparty_commitment_txid,
@@ -999,13 +999,13 @@ impl<Signer: Sign> Writeable for ChannelMonitorImpl<Signer> {
 			}
 		}
 
-		writer.write_all(&byte_utils::be64_to_array(self.counterparty_commitment_txn_on_chain.len() as u64))?;
+		writer.write_all(&(self.counterparty_commitment_txn_on_chain.len() as u64).to_be_bytes())?;
 		for (ref txid, commitment_number) in self.counterparty_commitment_txn_on_chain.iter() {
 			writer.write_all(&txid[..])?;
 			writer.write_all(&byte_utils::be48_to_array(*commitment_number))?;
 		}
 
-		writer.write_all(&byte_utils::be64_to_array(self.counterparty_hash_commitment_number.len() as u64))?;
+		writer.write_all(&(self.counterparty_hash_commitment_number.len() as u64).to_be_bytes())?;
 		for (ref payment_hash, commitment_number) in self.counterparty_hash_commitment_number.iter() {
 			writer.write_all(&payment_hash.0[..])?;
 			writer.write_all(&byte_utils::be48_to_array(*commitment_number))?;
@@ -1023,7 +1023,7 @@ impl<Signer: Sign> Writeable for ChannelMonitorImpl<Signer> {
 		writer.write_all(&byte_utils::be48_to_array(self.current_counterparty_commitment_number))?;
 		writer.write_all(&byte_utils::be48_to_array(self.current_holder_commitment_number))?;
 
-		writer.write_all(&byte_utils::be64_to_array(self.payment_preimages.len() as u64))?;
+		writer.write_all(&(self.payment_preimages.len() as u64).to_be_bytes())?;
 		for payment_preimage in self.payment_preimages.values() {
 			writer.write_all(&payment_preimage.0[..])?;
 		}
@@ -1044,15 +1044,15 @@ impl<Signer: Sign> Writeable for ChannelMonitorImpl<Signer> {
 			}
 		}
 
-		writer.write_all(&byte_utils::be64_to_array(self.pending_events.len() as u64))?;
+		writer.write_all(&(self.pending_events.len() as u64).to_be_bytes())?;
 		for event in self.pending_events.iter() {
 			event.write(writer)?;
 		}
 
 		self.best_block.block_hash().write(writer)?;
-		writer.write_all(&byte_utils::be32_to_array(self.best_block.height()))?;
+		writer.write_all(&self.best_block.height().to_be_bytes())?;
 
-		writer.write_all(&byte_utils::be64_to_array(self.onchain_events_awaiting_threshold_conf.len() as u64))?;
+		writer.write_all(&(self.onchain_events_awaiting_threshold_conf.len() as u64).to_be_bytes())?;
 		for ref entry in self.onchain_events_awaiting_threshold_conf.iter() {
 			entry.write(writer)?;
 		}
@@ -3792,7 +3792,9 @@ impl<'a, K: KeysInterface> ReadableArgs<&'a K>
 				return Err(DecodeError::InvalidValue);
 			}
 		}
-		let onchain_tx_handler: OnchainTxHandler<K::Signer> = ReadableArgs::read(reader, keys_manager)?;
+		let onchain_tx_handler: OnchainTxHandler<K::Signer> = ReadableArgs::read(
+			reader, (keys_manager, channel_value_satoshis, channel_keys_id)
+		)?;
 
 		let lockdown_from_offchain = Readable::read(reader)?;
 		let holder_tx_signed = Readable::read(reader)?;

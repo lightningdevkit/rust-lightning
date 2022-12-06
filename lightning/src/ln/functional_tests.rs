@@ -30,7 +30,7 @@ use crate::ln::features::{ChannelFeatures, NodeFeatures};
 use crate::ln::msgs;
 use crate::ln::msgs::{ChannelMessageHandler, RoutingMessageHandler, ErrorAction};
 use crate::util::enforcing_trait_impls::EnforcingSigner;
-use crate::util::{byte_utils, test_utils};
+use crate::util::test_utils;
 use crate::util::events::{Event, MessageSendEvent, MessageSendEventsProvider, PaymentPurpose, ClosureReason, HTLCDestination};
 use crate::util::errors::APIError;
 use crate::util::ser::{Writeable, ReadableArgs};
@@ -4100,8 +4100,8 @@ fn do_test_htlc_timeout(send_partial_mpp: bool) {
 	nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &htlc_timeout_updates.update_fail_htlcs[0]);
 	commitment_signed_dance!(nodes[0], nodes[1], htlc_timeout_updates.commitment_signed, false);
 	// 100_000 msat as u64, followed by the height at which we failed back above
-	let mut expected_failure_data = byte_utils::be64_to_array(100_000).to_vec();
-	expected_failure_data.extend_from_slice(&byte_utils::be32_to_array(block_count - 1));
+	let mut expected_failure_data = (100_000 as u64).to_be_bytes().to_vec();
+	expected_failure_data.extend_from_slice(&(block_count - 1).to_be_bytes());
 	expect_payment_failed!(nodes[0], our_payment_hash, true, 0x4000 | 15, &expected_failure_data[..]);
 }
 
@@ -4803,7 +4803,7 @@ fn test_duplicate_payment_hash_one_failure_one_success() {
 	assert_eq!(htlc_success_txn[2], commitment_txn[0]);
 	assert_eq!(htlc_success_txn[3], htlc_success_txn[0]);
 	assert_eq!(htlc_success_txn[4], htlc_success_txn[1]);
-	assert_ne!(htlc_success_txn[0].input[0].previous_output, htlc_timeout_tx.input[0].previous_output);
+	assert_ne!(htlc_success_txn[1].input[0].previous_output, htlc_timeout_tx.input[0].previous_output);
 
 	mine_transaction(&nodes[1], &htlc_timeout_tx);
 	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
@@ -4826,7 +4826,7 @@ fn test_duplicate_payment_hash_one_failure_one_success() {
 	// Solve 2nd HTLC by broadcasting on B's chain HTLC-Success Tx from C
 	// Note that the fee paid is effectively double as the HTLC value (including the nodes[1] fee
 	// and nodes[2] fee) is rounded down and then claimed in full.
-	mine_transaction(&nodes[1], &htlc_success_txn[0]);
+	mine_transaction(&nodes[1], &htlc_success_txn[1]);
 	expect_payment_forwarded!(nodes[1], nodes[0], nodes[2], Some(196*2), true, true);
 	let updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 	assert!(updates.update_add_htlcs.is_empty());
@@ -6974,8 +6974,8 @@ fn test_check_htlc_underpaying() {
 	commitment_signed_dance!(nodes[0], nodes[1], commitment_signed, false, true);
 
 	// 10_000 msat as u64, followed by a height of CHAN_CONFIRM_DEPTH as u32
-	let mut expected_failure_data = byte_utils::be64_to_array(10_000).to_vec();
-	expected_failure_data.extend_from_slice(&byte_utils::be32_to_array(CHAN_CONFIRM_DEPTH));
+	let mut expected_failure_data = (10_000 as u64).to_be_bytes().to_vec();
+	expected_failure_data.extend_from_slice(&CHAN_CONFIRM_DEPTH.to_be_bytes());
 	expect_payment_failed!(nodes[0], our_payment_hash, true, 0x4000|15, &expected_failure_data[..]);
 }
 
@@ -8131,7 +8131,7 @@ fn test_update_err_monitor_lockdown() {
 		let mut w = test_utils::TestVecWriter(Vec::new());
 		monitor.write(&mut w).unwrap();
 		let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingSigner>)>::read(
-				&mut io::Cursor::new(&w.0), &test_utils::OnlyReadsKeysInterface {}).unwrap().1;
+				&mut io::Cursor::new(&w.0), nodes[0].keys_manager).unwrap().1;
 		assert!(new_monitor == *monitor);
 		let watchtower = test_utils::TestChainMonitor::new(Some(&chain_source), &chanmon_cfgs[0].tx_broadcaster, &logger, &chanmon_cfgs[0].fee_estimator, &persister, &node_cfgs[0].keys_manager);
 		assert_eq!(watchtower.watch_channel(outpoint, new_monitor), ChannelMonitorUpdateStatus::Completed);
@@ -8195,7 +8195,7 @@ fn test_concurrent_monitor_claim() {
 		let mut w = test_utils::TestVecWriter(Vec::new());
 		monitor.write(&mut w).unwrap();
 		let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingSigner>)>::read(
-				&mut io::Cursor::new(&w.0), &test_utils::OnlyReadsKeysInterface {}).unwrap().1;
+				&mut io::Cursor::new(&w.0), nodes[0].keys_manager).unwrap().1;
 		assert!(new_monitor == *monitor);
 		let watchtower = test_utils::TestChainMonitor::new(Some(&chain_source), &chanmon_cfgs[0].tx_broadcaster, &logger, &chanmon_cfgs[0].fee_estimator, &persister, &node_cfgs[0].keys_manager);
 		assert_eq!(watchtower.watch_channel(outpoint, new_monitor), ChannelMonitorUpdateStatus::Completed);
@@ -8224,7 +8224,7 @@ fn test_concurrent_monitor_claim() {
 		let mut w = test_utils::TestVecWriter(Vec::new());
 		monitor.write(&mut w).unwrap();
 		let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingSigner>)>::read(
-				&mut io::Cursor::new(&w.0), &test_utils::OnlyReadsKeysInterface {}).unwrap().1;
+				&mut io::Cursor::new(&w.0), nodes[0].keys_manager).unwrap().1;
 		assert!(new_monitor == *monitor);
 		let watchtower = test_utils::TestChainMonitor::new(Some(&chain_source), &chanmon_cfgs[0].tx_broadcaster, &logger, &chanmon_cfgs[0].fee_estimator, &persister, &node_cfgs[0].keys_manager);
 		assert_eq!(watchtower.watch_channel(outpoint, new_monitor), ChannelMonitorUpdateStatus::Completed);

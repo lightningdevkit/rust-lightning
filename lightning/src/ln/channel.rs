@@ -34,7 +34,7 @@ use crate::chain::BestBlock;
 use crate::chain::chaininterface::{FeeEstimator, ConfirmationTarget, LowerBoundedFeeEstimator};
 use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, LATENCY_GRACE_PERIOD_BLOCKS};
 use crate::chain::transaction::{OutPoint, TransactionData};
-use crate::chain::keysinterface::{Sign, KeysInterface};
+use crate::chain::keysinterface::{Sign, KeysInterface, BaseSign};
 use crate::util::events::ClosureReason;
 use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer, VecWriter};
 use crate::util::logger::Logger;
@@ -737,6 +737,10 @@ pub(super) struct Channel<Signer: Sign> {
 
 	// We track whether we already emitted a `ChannelReady` event.
 	channel_ready_event_emitted: bool,
+
+	/// The unique identifier used to re-derive the private key material for the channel through
+	/// [`KeysInterface::derive_channel_signer`].
+	channel_keys_id: [u8; 32],
 }
 
 #[cfg(any(test, fuzzing))]
@@ -909,7 +913,8 @@ impl<Signer: Sign> Channel<Signer> {
 		let opt_anchors = false; // TODO - should be based on features
 
 		let holder_selected_contest_delay = config.channel_handshake_config.our_to_self_delay;
-		let holder_signer = keys_provider.get_channel_signer(false, channel_value_satoshis);
+		let channel_keys_id = keys_provider.generate_channel_keys_id(false, channel_value_satoshis, user_id);
+		let holder_signer = keys_provider.derive_channel_signer(channel_value_satoshis, channel_keys_id);
 		let pubkeys = holder_signer.pubkeys().clone();
 
 		if !their_features.supports_wumbo() && channel_value_satoshis > MAX_FUNDING_SATOSHIS_NO_WUMBO {
@@ -1071,6 +1076,7 @@ impl<Signer: Sign> Channel<Signer> {
 			historical_inbound_htlc_fulfills: HashSet::new(),
 
 			channel_type: Self::get_initial_channel_type(&config),
+			channel_keys_id,
 		})
 	}
 
@@ -1153,7 +1159,8 @@ impl<Signer: Sign> Channel<Signer> {
 			return Err(ChannelError::Close("Channel Type was not understood - we require static remote key".to_owned()));
 		}
 
-		let holder_signer = keys_provider.get_channel_signer(true, msg.funding_satoshis);
+		let channel_keys_id = keys_provider.generate_channel_keys_id(true, msg.funding_satoshis, user_id);
+		let holder_signer = keys_provider.derive_channel_signer(msg.funding_satoshis, channel_keys_id);
 		let pubkeys = holder_signer.pubkeys().clone();
 		let counterparty_pubkeys = ChannelPublicKeys {
 			funding_pubkey: msg.funding_pubkey,
@@ -1417,6 +1424,7 @@ impl<Signer: Sign> Channel<Signer> {
 			historical_inbound_htlc_fulfills: HashSet::new(),
 
 			channel_type,
+			channel_keys_id,
 		};
 
 		Ok(chan)
@@ -2190,7 +2198,13 @@ impl<Signer: Sign> Channel<Signer> {
 		&self.get_counterparty_pubkeys().funding_pubkey
 	}
 
-	pub fn funding_created<L: Deref>(&mut self, msg: &msgs::FundingCreated, best_block: BestBlock, logger: &L) -> Result<(msgs::FundingSigned, ChannelMonitor<Signer>, Option<msgs::ChannelReady>), ChannelError> where L::Target: Logger {
+	pub fn funding_created<K: Deref, L: Deref>(
+		&mut self, msg: &msgs::FundingCreated, best_block: BestBlock, keys_source: &K, logger: &L
+	) -> Result<(msgs::FundingSigned, ChannelMonitor<<K::Target as KeysInterface>::Signer>, Option<msgs::ChannelReady>), ChannelError>
+	where
+		K::Target: KeysInterface,
+		L::Target: Logger
+	{
 		if self.is_outbound() {
 			return Err(ChannelError::Close("Received funding_created for an outbound channel?".to_owned()));
 		}
@@ -2213,7 +2227,7 @@ impl<Signer: Sign> Channel<Signer> {
 		self.channel_transaction_parameters.funding_outpoint = Some(funding_txo);
 		// This is an externally observable change before we finish all our checks.  In particular
 		// funding_created_signature may fail.
-		self.holder_signer.ready_channel(&self.channel_transaction_parameters);
+		self.holder_signer.provide_channel_parameters(&self.channel_transaction_parameters);
 
 		let (counterparty_initial_commitment_txid, initial_commitment_tx, signature) = match self.funding_created_signature(&msg.signature, logger) {
 			Ok(res) => res,
@@ -2245,7 +2259,9 @@ impl<Signer: Sign> Channel<Signer> {
 		let funding_txo_script = funding_redeemscript.to_v0_p2wsh();
 		let obscure_factor = get_commitment_transaction_number_obscure_factor(&self.get_holder_pubkeys().payment_point, &self.get_counterparty_pubkeys().payment_point, self.is_outbound());
 		let shutdown_script = self.shutdown_scriptpubkey.clone().map(|script| script.into_inner());
-		let channel_monitor = ChannelMonitor::new(self.secp_ctx.clone(), self.holder_signer.clone(),
+		let mut monitor_signer = keys_source.derive_channel_signer(self.channel_value_satoshis, self.channel_keys_id);
+		monitor_signer.provide_channel_parameters(&self.channel_transaction_parameters);
+		let channel_monitor = ChannelMonitor::new(self.secp_ctx.clone(), monitor_signer,
 		                                          shutdown_script, self.get_holder_selected_contest_delay(),
 		                                          &self.destination_script, (funding_txo, funding_txo_script.clone()),
 		                                          &self.channel_transaction_parameters,
@@ -2270,7 +2286,13 @@ impl<Signer: Sign> Channel<Signer> {
 
 	/// Handles a funding_signed message from the remote end.
 	/// If this call is successful, broadcast the funding transaction (and not before!)
-	pub fn funding_signed<L: Deref>(&mut self, msg: &msgs::FundingSigned, best_block: BestBlock, logger: &L) -> Result<(ChannelMonitor<Signer>, Transaction, Option<msgs::ChannelReady>), ChannelError> where L::Target: Logger {
+	pub fn funding_signed<K: Deref, L: Deref>(
+		&mut self, msg: &msgs::FundingSigned, best_block: BestBlock, keys_source: &K, logger: &L
+	) -> Result<(ChannelMonitor<<K::Target as KeysInterface>::Signer>, Transaction, Option<msgs::ChannelReady>), ChannelError>
+	where
+		K::Target: KeysInterface,
+		L::Target: Logger
+	{
 		if !self.is_outbound() {
 			return Err(ChannelError::Close("Received funding_signed for an inbound channel?".to_owned()));
 		}
@@ -2322,7 +2344,9 @@ impl<Signer: Sign> Channel<Signer> {
 		let funding_txo_script = funding_redeemscript.to_v0_p2wsh();
 		let obscure_factor = get_commitment_transaction_number_obscure_factor(&self.get_holder_pubkeys().payment_point, &self.get_counterparty_pubkeys().payment_point, self.is_outbound());
 		let shutdown_script = self.shutdown_scriptpubkey.clone().map(|script| script.into_inner());
-		let channel_monitor = ChannelMonitor::new(self.secp_ctx.clone(), self.holder_signer.clone(),
+		let mut monitor_signer = keys_source.derive_channel_signer(self.channel_value_satoshis, self.channel_keys_id);
+		monitor_signer.provide_channel_parameters(&self.channel_transaction_parameters);
+		let channel_monitor = ChannelMonitor::new(self.secp_ctx.clone(), monitor_signer,
 		                                          shutdown_script, self.get_holder_selected_contest_delay(),
 		                                          &self.destination_script, (funding_txo, funding_txo_script),
 		                                          &self.channel_transaction_parameters,
@@ -5248,7 +5272,7 @@ impl<Signer: Sign> Channel<Signer> {
 		}
 
 		self.channel_transaction_parameters.funding_outpoint = Some(funding_txo);
-		self.holder_signer.ready_channel(&self.channel_transaction_parameters);
+		self.holder_signer.provide_channel_parameters(&self.channel_transaction_parameters);
 
 		let signature = match self.get_outbound_funding_created_signature(logger) {
 			Ok(res) => res,
@@ -5935,7 +5959,7 @@ impl<Signer: Sign> Channel<Signer> {
 	}
 }
 
-const SERIALIZATION_VERSION: u8 = 2;
+const SERIALIZATION_VERSION: u8 = 3;
 const MIN_SERIALIZATION_VERSION: u8 = 2;
 
 impl_writeable_tlv_based_enum!(InboundHTLCRemovalReason,;
@@ -5997,7 +6021,7 @@ impl<Signer: Sign> Writeable for Channel<Signer> {
 		// Note that we write out as if remove_uncommitted_htlcs_and_mark_paused had just been
 		// called.
 
-		write_ver_prefix!(writer, SERIALIZATION_VERSION, MIN_SERIALIZATION_VERSION);
+		write_ver_prefix!(writer, MIN_SERIALIZATION_VERSION, MIN_SERIALIZATION_VERSION);
 
 		// `user_id` used to be a single u64 value. In order to remain backwards compatible with
 		// versions prior to 0.0.113, the u128 is serialized as two separate u64 values. We write
@@ -6279,6 +6303,7 @@ impl<Signer: Sign> Writeable for Channel<Signer> {
 			(21, self.outbound_scid_alias, required),
 			(23, channel_ready_event_emitted, option),
 			(25, user_id_high_opt, option),
+			(27, self.channel_keys_id, required),
 		});
 
 		Ok(())
@@ -6315,16 +6340,20 @@ impl<'a, K: Deref> ReadableArgs<(&'a K, u32)> for Channel<<K::Target as KeysInte
 
 		let latest_monitor_update_id = Readable::read(reader)?;
 
-		let keys_len: u32 = Readable::read(reader)?;
-		let mut keys_data = Vec::with_capacity(cmp::min(keys_len as usize, MAX_ALLOC_SIZE));
-		while keys_data.len() != keys_len as usize {
-			// Read 1KB at a time to avoid accidentally allocating 4GB on corrupted channel keys
-			let mut data = [0; 1024];
-			let read_slice = &mut data[0..cmp::min(1024, keys_len as usize - keys_data.len())];
-			reader.read_exact(read_slice)?;
-			keys_data.extend_from_slice(read_slice);
+		let mut keys_data = None;
+		if ver <= 2 {
+			// Read the serialize signer bytes. We'll choose to deserialize them or not based on whether
+			// the `channel_keys_id` TLV is present below.
+			let keys_len: u32 = Readable::read(reader)?;
+			keys_data = Some(Vec::with_capacity(cmp::min(keys_len as usize, MAX_ALLOC_SIZE)));
+			while keys_data.as_ref().unwrap().len() != keys_len as usize {
+				// Read 1KB at a time to avoid accidentally allocating 4GB on corrupted channel keys
+				let mut data = [0; 1024];
+				let read_slice = &mut data[0..cmp::min(1024, keys_len as usize - keys_data.as_ref().unwrap().len())];
+				reader.read_exact(read_slice)?;
+				keys_data.as_mut().unwrap().extend_from_slice(read_slice);
+			}
 		}
-		let holder_signer = keys_source.read_chan_signer(&keys_data)?;
 
 		// Read the old serialization for shutdown_pubkey, preferring the TLV field later if set.
 		let mut shutdown_scriptpubkey = match <PublicKey as Readable>::read(reader) {
@@ -6542,6 +6571,7 @@ impl<'a, K: Deref> ReadableArgs<(&'a K, u32)> for Channel<<K::Target as KeysInte
 		let mut channel_ready_event_emitted = None;
 
 		let mut user_id_high_opt: Option<u64> = None;
+		let mut channel_keys_id: Option<[u8; 32]> = None;
 
 		read_tlv_fields!(reader, {
 			(0, announcement_sigs, option),
@@ -6561,7 +6591,24 @@ impl<'a, K: Deref> ReadableArgs<(&'a K, u32)> for Channel<<K::Target as KeysInte
 			(21, outbound_scid_alias, option),
 			(23, channel_ready_event_emitted, option),
 			(25, user_id_high_opt, option),
+			(27, channel_keys_id, option),
 		});
+
+		let (channel_keys_id, holder_signer) = if let Some(channel_keys_id) = channel_keys_id {
+			let mut holder_signer = keys_source.derive_channel_signer(channel_value_satoshis, channel_keys_id);
+			// If we've gotten to the funding stage of the channel, populate the signer with its
+			// required channel parameters.
+			let non_shutdown_state = channel_state & (!MULTI_STATE_FLAGS);
+			if non_shutdown_state >= (ChannelState::FundingCreated as u32) {
+				holder_signer.provide_channel_parameters(&channel_parameters);
+			}
+			(channel_keys_id, holder_signer)
+		} else {
+			// `keys_data` can be `None` if we had corrupted data.
+			let keys_data = keys_data.ok_or(DecodeError::InvalidValue)?;
+			let holder_signer = keys_source.read_chan_signer(&keys_data)?;
+			(holder_signer.channel_keys_id(), holder_signer)
+		};
 
 		if let Some(preimages) = preimages_opt {
 			let mut iter = preimages.into_iter();
@@ -6712,6 +6759,7 @@ impl<'a, K: Deref> ReadableArgs<(&'a K, u32)> for Channel<<K::Target as KeysInte
 			historical_inbound_htlc_fulfills,
 
 			channel_type: channel_type.unwrap(),
+			channel_keys_id,
 		})
 	}
 }
@@ -6736,7 +6784,7 @@ mod tests {
 	use crate::ln::chan_utils::{htlc_success_tx_weight, htlc_timeout_tx_weight};
 	use crate::chain::BestBlock;
 	use crate::chain::chaininterface::{FeeEstimator, LowerBoundedFeeEstimator, ConfirmationTarget};
-	use crate::chain::keysinterface::{InMemorySigner, Recipient, KeyMaterial, KeysInterface};
+	use crate::chain::keysinterface::{BaseSign, InMemorySigner, Recipient, KeyMaterial, KeysInterface};
 	use crate::chain::transaction::OutPoint;
 	use crate::util::config::UserConfig;
 	use crate::util::enforcing_trait_impls::EnforcingSigner;
@@ -6804,7 +6852,10 @@ mod tests {
 			ShutdownScript::new_p2wpkh_from_pubkey(PublicKey::from_secret_key(&secp_ctx, &channel_close_key))
 		}
 
-		fn get_channel_signer(&self, _inbound: bool, _channel_value_satoshis: u64) -> InMemorySigner {
+		fn generate_channel_keys_id(&self, _inbound: bool, _channel_value_satoshis: u64, _user_channel_id: u128) -> [u8; 32] {
+			self.signer.channel_keys_id()
+		}
+		fn derive_channel_signer(&self, _channel_value_satoshis: u64, _channel_keys_id: [u8; 32]) -> Self::Signer {
 			self.signer.clone()
 		}
 		fn get_secure_random_bytes(&self) -> [u8; 32] { [0; 32] }
@@ -7019,10 +7070,10 @@ mod tests {
 		}]};
 		let funding_outpoint = OutPoint{ txid: tx.txid(), index: 0 };
 		let funding_created_msg = node_a_chan.get_outbound_funding_created(tx.clone(), funding_outpoint, &&logger).unwrap();
-		let (funding_signed_msg, _, _) = node_b_chan.funding_created(&funding_created_msg, best_block, &&logger).unwrap();
+		let (funding_signed_msg, _, _) = node_b_chan.funding_created(&funding_created_msg, best_block, &&keys_provider, &&logger).unwrap();
 
 		// Node B --> Node A: funding signed
-		let _ = node_a_chan.funding_signed(&funding_signed_msg, best_block, &&logger);
+		let _ = node_a_chan.funding_signed(&funding_signed_msg, best_block, &&keys_provider, &&logger);
 
 		// Now disconnect the two nodes and check that the commitment point in
 		// Node B's channel_reestablish message is sane.
@@ -7292,7 +7343,7 @@ mod tests {
 				selected_contest_delay: 144
 			});
 		chan.channel_transaction_parameters.funding_outpoint = Some(funding_info);
-		signer.ready_channel(&chan.channel_transaction_parameters);
+		signer.provide_channel_parameters(&chan.channel_transaction_parameters);
 
 		assert_eq!(counterparty_pubkeys.payment_point.serialize()[..],
 		           hex::decode("032c0b7cf95324a07d05398b240174dc0c2be444d96b159aa6c7f7b1e668680991").unwrap()[..]);

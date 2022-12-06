@@ -27,7 +27,6 @@ use crate::ln::msgs::DecodeError;
 use crate::chain::chaininterface::{FeeEstimator, ConfirmationTarget, MIN_RELAY_FEE_SAT_PER_1000_WEIGHT};
 use crate::chain::keysinterface::Sign;
 use crate::chain::onchaintx::OnchainTxHandler;
-use crate::util::byte_utils;
 use crate::util::logger::Logger;
 use crate::util::ser::{Readable, Writer, Writeable};
 
@@ -770,7 +769,7 @@ impl PackageTemplate {
 
 impl Writeable for PackageTemplate {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
-		writer.write_all(&byte_utils::be64_to_array(self.inputs.len() as u64))?;
+		writer.write_all(&(self.inputs.len() as u64).to_be_bytes())?;
 		for (ref outpoint, ref rev_outp) in self.inputs.iter() {
 			outpoint.write(writer)?;
 			rev_outp.write(writer)?;

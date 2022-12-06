@@ -31,7 +31,7 @@ use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1::ecdsa::RecoverableSignature;
 use bitcoin::{PackedLockTime, secp256k1, Sequence, Witness};
 
-use crate::util::{byte_utils, transaction_utils};
+use crate::util::transaction_utils;
 use crate::util::crypto::{hkdf_extract_expand_twice, sign};
 use crate::util::ser::{Writeable, Writer, Readable, ReadableArgs};
 
@@ -43,6 +43,7 @@ use crate::ln::msgs::UnsignedChannelAnnouncement;
 use crate::ln::script::ShutdownScript;
 
 use crate::prelude::*;
+use core::convert::TryInto;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use crate::io::{self, Error};
 use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
@@ -161,7 +162,7 @@ pub enum SpendableOutputDescriptor {
 	///
 	/// To derive the revocation_pubkey provided here (which is used in the witness
 	/// script generation), you must pass the counterparty revocation_basepoint (which appears in the
-	/// call to Sign::ready_channel) and the provided per_commitment point
+	/// call to Sign::provide_channel_parameters) and the provided per_commitment point
 	/// to chan_utils::derive_public_revocation_key.
 	///
 	/// The witness script which is hashed and included in the output script_pubkey may be
@@ -368,24 +369,22 @@ pub trait BaseSign {
 		-> Result<(Signature, Signature), ()>;
 
 	/// Set the counterparty static channel data, including basepoints,
-	/// counterparty_selected/holder_selected_contest_delay and funding outpoint.
-	/// This is done as soon as the funding outpoint is known.  Since these are static channel data,
-	/// they MUST NOT be allowed to change to different values once set.
+	/// counterparty_selected/holder_selected_contest_delay and funding outpoint. Since these are
+	/// static channel data, they MUST NOT be allowed to change to different values once set, as LDK
+	/// may call this method more than once.
 	///
 	/// channel_parameters.is_populated() MUST be true.
-	///
-	/// We bind holder_selected_contest_delay late here for API convenience.
-	///
-	/// Will be called before any signatures are applied.
-	fn ready_channel(&mut self, channel_parameters: &ChannelTransactionParameters);
+	fn provide_channel_parameters(&mut self, channel_parameters: &ChannelTransactionParameters);
 }
 
-/// A cloneable signer.
+/// A writeable signer.
 ///
-/// Although we require signers to be cloneable, it may be useful for developers to be able to use
-/// signers in an un-sized way, for example as `dyn BaseSign`. Therefore we separate the Clone trait,
-/// which implies Sized, into this derived trait.
-pub trait Sign: BaseSign + Writeable + Clone {
+/// There will always be two instances of a signer per channel, one occupied by the
+/// [`ChannelManager`] and another by the channel's [`ChannelMonitor`].
+///
+/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
+/// [`ChannelMonitor`]: crate::chain::channelmonitor::ChannelMonitor
+pub trait Sign: BaseSign + Writeable {
 }
 
 /// Specifies the recipient of an invoice, to indicate to [`KeysInterface::sign_invoice`] what node
@@ -402,7 +401,7 @@ pub enum Recipient {
 
 /// A trait to describe an object which can get user secrets and key material.
 pub trait KeysInterface {
-	/// A type which implements Sign which will be returned by get_channel_signer.
+	/// A type which implements Sign which will be returned by derive_channel_signer.
 	type Signer : Sign;
 
 	/// Get node secret key based on the provided [`Recipient`].
@@ -445,11 +444,20 @@ pub trait KeysInterface {
 	/// This method should return a different value each time it is called, to avoid linking
 	/// on-chain funds across channels as controlled to the same user.
 	fn get_shutdown_scriptpubkey(&self) -> ShutdownScript;
-	/// Get a new set of Sign for per-channel secrets. These MUST be unique even if you
-	/// restarted with some stale data!
+	/// Generates a unique `channel_keys_id` that can be used to obtain a `Signer` through
+	/// [`KeysInterface::derive_channel_signer`]. The `user_channel_id` is provided to allow
+	/// implementations of `KeysInterface` to maintain a mapping between it and the generated
+	/// `channel_keys_id`.
 	///
 	/// This method must return a different value each time it is called.
-	fn get_channel_signer(&self, inbound: bool, channel_value_satoshis: u64) -> Self::Signer;
+	fn generate_channel_keys_id(&self, inbound: bool, channel_value_satoshis: u64, user_channel_id: u128) -> [u8; 32];
+	/// Derives the private key material backing a `Signer`.
+	///
+	/// To derive a new `Signer`, a fresh `channel_keys_id` should be obtained through
+	/// [`KeysInterface::generate_channel_keys_id`]. Otherwise, an existing `Signer` can be
+	/// re-derived from its `channel_keys_id`, which can be obtained through its trait method
+	/// [`BaseSign::channel_keys_id`].
+	fn derive_channel_signer(&self, channel_value_satoshis: u64, channel_keys_id: [u8; 32]) -> Self::Signer;
 	/// Gets a unique, cryptographically-secure, random 32 byte value. This is used for encrypting
 	/// onion packets and for temporary channel IDs. There is no requirement that these be
 	/// persisted anywhere, though they must be unique across restarts.
@@ -463,6 +471,9 @@ pub trait KeysInterface {
 	/// The bytes are exactly those which `<Self::Signer as Writeable>::write()` writes, and
 	/// contain no versioning scheme. You may wish to include your own version prefix and ensure
 	/// you've read all of the provided bytes to ensure no corruption occurred.
+	///
+	/// This method is slowly being phased out -- it will only be called when reading objects
+	/// written by LDK versions prior to 0.0.113.
 	fn read_chan_signer(&self, reader: &[u8]) -> Result<Self::Signer, DecodeError>;
 
 	/// Sign an invoice.
@@ -571,39 +582,39 @@ impl InMemorySigner {
 	}
 
 	/// Counterparty pubkeys.
-	/// Will panic if ready_channel wasn't called.
+	/// Will panic if provide_channel_parameters wasn't called.
 	pub fn counterparty_pubkeys(&self) -> &ChannelPublicKeys { &self.get_channel_parameters().counterparty_parameters.as_ref().unwrap().pubkeys }
 
 	/// The contest_delay value specified by our counterparty and applied on holder-broadcastable
 	/// transactions, ie the amount of time that we have to wait to recover our funds if we
 	/// broadcast a transaction.
-	/// Will panic if ready_channel wasn't called.
+	/// Will panic if provide_channel_parameters wasn't called.
 	pub fn counterparty_selected_contest_delay(&self) -> u16 { self.get_channel_parameters().counterparty_parameters.as_ref().unwrap().selected_contest_delay }
 
 	/// The contest_delay value specified by us and applied on transactions broadcastable
 	/// by our counterparty, ie the amount of time that they have to wait to recover their funds
 	/// if they broadcast a transaction.
-	/// Will panic if ready_channel wasn't called.
+	/// Will panic if provide_channel_parameters wasn't called.
 	pub fn holder_selected_contest_delay(&self) -> u16 { self.get_channel_parameters().holder_selected_contest_delay }
 
 	/// Whether the holder is the initiator
-	/// Will panic if ready_channel wasn't called.
+	/// Will panic if provide_channel_parameters wasn't called.
 	pub fn is_outbound(&self) -> bool { self.get_channel_parameters().is_outbound_from_holder }
 
 	/// Funding outpoint
-	/// Will panic if ready_channel wasn't called.
+	/// Will panic if provide_channel_parameters wasn't called.
 	pub fn funding_outpoint(&self) -> &OutPoint { self.get_channel_parameters().funding_outpoint.as_ref().unwrap() }
 
 	/// Obtain a ChannelTransactionParameters for this channel, to be used when verifying or
 	/// building transactions.
 	///
-	/// Will panic if ready_channel wasn't called.
+	/// Will panic if provide_channel_parameters wasn't called.
 	pub fn get_channel_parameters(&self) -> &ChannelTransactionParameters {
 		self.channel_parameters.as_ref().unwrap()
 	}
 
 	/// Whether anchors should be used.
-	/// Will panic if ready_channel wasn't called.
+	/// Will panic if provide_channel_parameters wasn't called.
 	pub fn opt_anchors(&self) -> bool {
 		self.get_channel_parameters().opt_anchors.is_some()
 	}
@@ -801,8 +812,12 @@ impl BaseSign for InMemorySigner {
 		Ok((sign(secp_ctx, &msghash, &self.node_secret), sign(secp_ctx, &msghash, &self.funding_key)))
 	}
 
-	fn ready_channel(&mut self, channel_parameters: &ChannelTransactionParameters) {
-		assert!(self.channel_parameters.is_none(), "Acceptance already noted");
+	fn provide_channel_parameters(&mut self, channel_parameters: &ChannelTransactionParameters) {
+		assert!(self.channel_parameters.is_none() || self.channel_parameters.as_ref().unwrap() == channel_parameters);
+		if self.channel_parameters.is_some() {
+			// The channel parameters were already set and they match, return early.
+			return;
+		}
 		assert!(channel_parameters.is_populated(), "Channel parameters must be fully populated");
 		self.channel_parameters = Some(channel_parameters.clone());
 	}
@@ -949,8 +964,8 @@ impl KeysManager {
 				inbound_pmt_key_bytes.copy_from_slice(&inbound_payment_key[..]);
 
 				let mut rand_bytes_unique_start = Sha256::engine();
-				rand_bytes_unique_start.input(&byte_utils::be64_to_array(starting_time_secs));
-				rand_bytes_unique_start.input(&byte_utils::be32_to_array(starting_time_nanos));
+				rand_bytes_unique_start.input(&starting_time_secs.to_be_bytes());
+				rand_bytes_unique_start.input(&starting_time_nanos.to_be_bytes());
 				rand_bytes_unique_start.input(seed);
 
 				let mut res = KeysManager {
@@ -981,13 +996,8 @@ impl KeysManager {
 		}
 	}
 	/// Derive an old Sign containing per-channel secrets based on a key derivation parameters.
-	///
-	/// Key derivation parameters are accessible through a per-channel secrets
-	/// Sign::channel_keys_id and is provided inside DynamicOuputP2WSH in case of
-	/// onchain output detection for which a corresponding delayed_payment_key must be derived.
 	pub fn derive_channel_keys(&self, channel_value_satoshis: u64, params: &[u8; 32]) -> InMemorySigner {
-		let chan_id = byte_utils::slice_to_be64(&params[0..8]);
-		assert!(chan_id <= core::u32::MAX as u64); // Otherwise the params field wasn't created by us
+		let chan_id = u64::from_be_bytes(params[0..8].try_into().unwrap());
 		let mut unique_start = Sha256::engine();
 		unique_start.input(params);
 		unique_start.input(&self.seed);
@@ -1203,14 +1213,19 @@ impl KeysInterface for KeysManager {
 		ShutdownScript::new_p2wpkh_from_pubkey(self.shutdown_pubkey.clone())
 	}
 
-	fn get_channel_signer(&self, _inbound: bool, channel_value_satoshis: u64) -> Self::Signer {
-		let child_ix = self.channel_child_index.fetch_add(1, Ordering::AcqRel);
-		assert!(child_ix <= core::u32::MAX as usize);
+	fn generate_channel_keys_id(&self, _inbound: bool, _channel_value_satoshis: u64, user_channel_id: u128) -> [u8; 32] {
+		let child_idx = self.channel_child_index.fetch_add(1, Ordering::AcqRel);
+		assert!(child_idx <= core::u32::MAX as usize);
 		let mut id = [0; 32];
-		id[0..8].copy_from_slice(&byte_utils::be64_to_array(child_ix as u64));
-		id[8..16].copy_from_slice(&byte_utils::be64_to_array(self.starting_time_nanos as u64));
-		id[16..24].copy_from_slice(&byte_utils::be64_to_array(self.starting_time_secs));
-		self.derive_channel_keys(channel_value_satoshis, &id)
+		id[0..4].copy_from_slice(&(child_idx as u32).to_be_bytes());
+		id[4..8].copy_from_slice(&self.starting_time_nanos.to_be_bytes());
+		id[8..16].copy_from_slice(&self.starting_time_secs.to_be_bytes());
+		id[16..32].copy_from_slice(&user_channel_id.to_be_bytes());
+		id
+	}
+
+	fn derive_channel_signer(&self, channel_value_satoshis: u64, channel_keys_id: [u8; 32]) -> Self::Signer {
+		self.derive_channel_keys(channel_value_satoshis, &channel_keys_id)
 	}
 
 	fn get_secure_random_bytes(&self) -> [u8; 32] {
@@ -1303,8 +1318,12 @@ impl KeysInterface for PhantomKeysManager {
 		self.inner.get_shutdown_scriptpubkey()
 	}
 
-	fn get_channel_signer(&self, inbound: bool, channel_value_satoshis: u64) -> Self::Signer {
-		self.inner.get_channel_signer(inbound, channel_value_satoshis)
+	fn generate_channel_keys_id(&self, inbound: bool, channel_value_satoshis: u64, user_channel_id: u128) -> [u8; 32] {
+		self.inner.generate_channel_keys_id(inbound, channel_value_satoshis, user_channel_id)
+	}
+
+	fn derive_channel_signer(&self, channel_value_satoshis: u64, channel_keys_id: [u8; 32]) -> Self::Signer {
+		self.inner.derive_channel_signer(channel_value_satoshis, channel_keys_id)
 	}
 
 	fn get_secure_random_bytes(&self) -> [u8; 32] {
