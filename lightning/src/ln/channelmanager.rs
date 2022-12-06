@@ -424,6 +424,16 @@ pub(super) enum RAACommitmentOrder {
 	RevokeAndACKFirst,
 }
 
+/// Information about claimable or being-claimed payments
+struct ClaimablePayments {
+	/// Map from payment hash to the payment data and any HTLCs which are to us and can be
+	/// failed/claimed by the user.
+	///
+	/// Note that, no consistency guarantees are made about the channels given here actually
+	/// existing anymore by the time you go to read them!
+	claimable_htlcs: HashMap<PaymentHash, (events::PaymentPurpose, Vec<ClaimableHTLC>)>,
+}
+
 // Note this is only exposed in cfg(test):
 pub(super) struct ChannelHolder<Signer: Sign> {
 	pub(super) by_id: HashMap<[u8; 32], Channel<Signer>>,
@@ -699,7 +709,7 @@ pub type SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, M, T, F, L> = ChannelManage
 //  |
 //  |__`pending_inbound_payments`
 //  |   |
-//  |   |__`claimable_htlcs`
+//  |   |__`claimable_payments`
 //  |   |
 //  |   |__`pending_outbound_payments`
 //  |       |
@@ -787,14 +797,11 @@ pub struct ChannelManager<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 	/// See `ChannelManager` struct-level documentation for lock order requirements.
 	pending_intercepted_htlcs: Mutex<HashMap<InterceptId, PendingAddHTLCInfo>>,
 
-	/// Map from payment hash to the payment data and any HTLCs which are to us and can be
-	/// failed/claimed by the user.
-	///
-	/// Note that, no consistency guarantees are made about the channels given here actually
-	/// existing anymore by the time you go to read them!
+	/// The sets of payments which are claimable or currently being claimed. See
+	/// [`ClaimablePayments`]' individual field docs for more info.
 	///
 	/// See `ChannelManager` struct-level documentation for lock order requirements.
-	claimable_htlcs: Mutex<HashMap<PaymentHash, (events::PaymentPurpose, Vec<ClaimableHTLC>)>>,
+	claimable_payments: Mutex<ClaimablePayments>,
 
 	/// The set of outbound SCID aliases across all our channels, including unconfirmed channels
 	/// and some closed channels which reached a usable state prior to being closed. This is used
@@ -1600,7 +1607,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 			pending_inbound_payments: Mutex::new(HashMap::new()),
 			pending_outbound_payments: Mutex::new(HashMap::new()),
 			forward_htlcs: Mutex::new(HashMap::new()),
-			claimable_htlcs: Mutex::new(HashMap::new()),
+			claimable_payments: Mutex::new(ClaimablePayments { claimable_htlcs: HashMap::new() }),
 			pending_intercepted_htlcs: Mutex::new(HashMap::new()),
 			id_to_peer: Mutex::new(HashMap::new()),
 			short_to_chan_info: FairRwLock::new(HashMap::new()),
@@ -3483,8 +3490,8 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 												payment_secret: $payment_data.payment_secret,
 											}
 										};
-										let mut claimable_htlcs = self.claimable_htlcs.lock().unwrap();
-										let (_, htlcs) = claimable_htlcs.entry(payment_hash)
+										let mut claimable_payments = self.claimable_payments.lock().unwrap();
+										let (_, htlcs) = claimable_payments.claimable_htlcs.entry(payment_hash)
 											.or_insert_with(|| (purpose(), Vec::new()));
 										if htlcs.len() == 1 {
 											if let OnionPayload::Spontaneous(_) = htlcs[0].onion_payload {
@@ -3556,7 +3563,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 												check_total_value!(payment_data, payment_preimage);
 											},
 											OnionPayload::Spontaneous(preimage) => {
-												match self.claimable_htlcs.lock().unwrap().entry(payment_hash) {
+												match self.claimable_payments.lock().unwrap().claimable_htlcs.entry(payment_hash) {
 													hash_map::Entry::Vacant(e) => {
 														let purpose = events::PaymentPurpose::SpontaneousPayment(preimage);
 														e.insert((purpose.clone(), vec![claimable_htlc]));
@@ -3851,7 +3858,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 				});
 			}
 
-			self.claimable_htlcs.lock().unwrap().retain(|payment_hash, (_, htlcs)| {
+			self.claimable_payments.lock().unwrap().claimable_htlcs.retain(|payment_hash, (_, htlcs)| {
 				if htlcs.is_empty() {
 					// This should be unreachable
 					debug_assert!(false);
@@ -3906,7 +3913,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 	pub fn fail_htlc_backwards(&self, payment_hash: &PaymentHash) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 
-		let removed_source = self.claimable_htlcs.lock().unwrap().remove(payment_hash);
+		let removed_source = self.claimable_payments.lock().unwrap().claimable_htlcs.remove(payment_hash);
 		if let Some((_, mut sources)) = removed_source {
 			for htlc in sources.drain(..) {
 				let mut htlc_msat_height_data = htlc.value.to_be_bytes().to_vec();
@@ -4208,7 +4215,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 
-		let removed_source = self.claimable_htlcs.lock().unwrap().remove(&payment_hash);
+		let removed_source = self.claimable_payments.lock().unwrap().claimable_htlcs.remove(&payment_hash);
 		if let Some((payment_purpose, mut sources)) = removed_source {
 			assert!(!sources.is_empty());
 
@@ -6280,7 +6287,7 @@ where
 		}
 
 		if let Some(height) = height_opt {
-			self.claimable_htlcs.lock().unwrap().retain(|payment_hash, (_, htlcs)| {
+			self.claimable_payments.lock().unwrap().claimable_htlcs.retain(|payment_hash, (_, htlcs)| {
 				htlcs.retain(|htlc| {
 					// If height is approaching the number of blocks we think it takes us to get
 					// our commitment transaction confirmed before the HTLC expires, plus the
@@ -7145,12 +7152,12 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Writeable for ChannelMana
 		}
 
 		let pending_inbound_payments = self.pending_inbound_payments.lock().unwrap();
-		let claimable_htlcs = self.claimable_htlcs.lock().unwrap();
+		let claimable_payments = self.claimable_payments.lock().unwrap();
 		let pending_outbound_payments = self.pending_outbound_payments.lock().unwrap();
 
 		let mut htlc_purposes: Vec<&events::PaymentPurpose> = Vec::new();
-		(claimable_htlcs.len() as u64).write(writer)?;
-		for (payment_hash, (purpose, previous_hops)) in claimable_htlcs.iter() {
+		(claimable_payments.claimable_htlcs.len() as u64).write(writer)?;
+		for (payment_hash, (purpose, previous_hops)) in claimable_payments.claimable_htlcs.iter() {
 			payment_hash.write(writer)?;
 			(previous_hops.len() as u64).write(writer)?;
 			for htlc in previous_hops.iter() {
@@ -7827,7 +7834,7 @@ impl<'a, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 			pending_intercepted_htlcs: Mutex::new(pending_intercepted_htlcs.unwrap()),
 
 			forward_htlcs: Mutex::new(forward_htlcs),
-			claimable_htlcs: Mutex::new(claimable_htlcs),
+			claimable_payments: Mutex::new(ClaimablePayments { claimable_htlcs }),
 			outbound_scid_aliases: Mutex::new(outbound_scid_aliases),
 			id_to_peer: Mutex::new(id_to_peer),
 			short_to_chan_info: FairRwLock::new(short_to_chan_info),
