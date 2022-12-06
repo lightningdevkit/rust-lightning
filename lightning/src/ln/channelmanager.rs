@@ -4454,7 +4454,26 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 					return ClaimFundsFromHop::MonitorUpdateFail(counterparty_node_id, res, None);
 				},
 			}
-		} else { return ClaimFundsFromHop::PrevHopForceClosed }
+		} else {
+			let preimage_update = ChannelMonitorUpdate {
+				update_id: CLOSED_CHANNEL_UPDATE_ID,
+				updates: vec![ChannelMonitorUpdateStep::PaymentPreimage {
+					payment_preimage,
+				}],
+			};
+			// We update the ChannelMonitor on the backward link, after
+			// receiving an `update_fulfill_htlc` from the forward link.
+			let update_res = self.chain_monitor.update_channel(prev_hop.outpoint, preimage_update);
+			if update_res != ChannelMonitorUpdateStatus::Completed {
+				// TODO: This needs to be handled somehow - if we receive a monitor update
+				// with a preimage we *must* somehow manage to propagate it to the upstream
+				// channel, or we must have an ability to receive the same event and try
+				// again on restart.
+				log_error!(self.logger, "Critical error: failed to update channel monitor with preimage {:?}: {:?}",
+					payment_preimage, update_res);
+			}
+			return ClaimFundsFromHop::PrevHopForceClosed
+		}
 	}
 
 	fn finalize_claims(&self, mut sources: Vec<HTLCSource>) {
@@ -4535,24 +4554,6 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 					_ => None,
 				};
 				if let ClaimFundsFromHop::PrevHopForceClosed = res {
-					let preimage_update = ChannelMonitorUpdate {
-						update_id: CLOSED_CHANNEL_UPDATE_ID,
-						updates: vec![ChannelMonitorUpdateStep::PaymentPreimage {
-							payment_preimage: payment_preimage.clone(),
-						}],
-					};
-					// We update the ChannelMonitor on the backward link, after
-					// receiving an offchain preimage event from the forward link (the
-					// event being update_fulfill_htlc).
-					let update_res = self.chain_monitor.update_channel(prev_outpoint, preimage_update);
-					if update_res != ChannelMonitorUpdateStatus::Completed {
-						// TODO: This needs to be handled somehow - if we receive a monitor update
-						// with a preimage we *must* somehow manage to propagate it to the upstream
-						// channel, or we must have an ability to receive the same event and try
-						// again on restart.
-						log_error!(self.logger, "Critical error: failed to update channel monitor with preimage {:?}: {:?}",
-							payment_preimage, update_res);
-					}
 					// Note that we do *not* set `claimed_htlc` to false here. In fact, this
 					// totally could be a duplicate claim, but we have no way of knowing
 					// without interrogating the `ChannelMonitor` we've provided the above
