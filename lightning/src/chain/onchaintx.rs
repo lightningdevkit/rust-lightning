@@ -733,31 +733,13 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 						// outpoints to know if transaction is the original claim or a bumped one issued
 						// by us.
 						let mut are_sets_equal = true;
-						if !request.requires_external_funding() || !request.is_malleable() {
-							// If the claim does not require external funds to be allocated through
-							// additional inputs we can simply check the inputs in order as they
-							// cannot change under us.
-							if request.outpoints().len() != tx.input.len() {
+						let mut tx_inputs = tx.input.iter().map(|input| &input.previous_output).collect::<Vec<_>>();
+						tx_inputs.sort_unstable();
+						for request_input in request.outpoints() {
+							if tx_inputs.binary_search(&request_input).is_err() {
 								are_sets_equal = false;
-							} else {
-								for (claim_inp, tx_inp) in request.outpoints().iter().zip(tx.input.iter()) {
-									if **claim_inp != tx_inp.previous_output {
-										are_sets_equal = false;
-									}
-								}
+								break;
 							}
-						} else {
-							// Otherwise, we'll do a linear search for each input (we don't expect
-							// large input sets to exist) to ensure the request's input set is fully
-							// spent to be resilient against the external claim reordering inputs.
-							let mut spends_all_inputs = true;
-							for request_input in request.outpoints() {
-								if tx.input.iter().find(|input| input.previous_output == *request_input).is_none() {
-									spends_all_inputs = false;
-									break;
-								}
-							}
-							are_sets_equal = spends_all_inputs;
 						}
 
 						macro_rules! clean_claim_request_after_safety_delay {
