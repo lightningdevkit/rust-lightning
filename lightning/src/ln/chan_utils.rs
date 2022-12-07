@@ -462,7 +462,7 @@ impl_writeable_tlv_based!(TxCreationKeys, {
 });
 
 /// One counterparty's public keys which do not change over the life of a channel.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChannelPublicKeys {
 	/// The public key which is used to sign all commitment transactions, as it appears in the
 	/// on-chain channel lock-in 2-of-2 multisig output.
@@ -679,7 +679,24 @@ pub fn make_funding_redeemscript(broadcaster: &PublicKey, countersignatory: &Pub
 /// commitment transaction).
 pub fn build_htlc_transaction(commitment_txid: &Txid, feerate_per_kw: u32, contest_delay: u16, htlc: &HTLCOutputInCommitment, opt_anchors: bool, use_non_zero_fee_anchors: bool, broadcaster_delayed_payment_key: &PublicKey, revocation_key: &PublicKey) -> Transaction {
 	let mut txins: Vec<TxIn> = Vec::new();
-	txins.push(TxIn {
+	txins.push(build_htlc_input(commitment_txid, htlc, opt_anchors));
+
+	let mut txouts: Vec<TxOut> = Vec::new();
+	txouts.push(build_htlc_output(
+		feerate_per_kw, contest_delay, htlc, opt_anchors, use_non_zero_fee_anchors,
+		broadcaster_delayed_payment_key, revocation_key
+	));
+
+	Transaction {
+		version: 2,
+		lock_time: PackedLockTime(if htlc.offered { htlc.cltv_expiry } else { 0 }),
+		input: txins,
+		output: txouts,
+	}
+}
+
+pub(crate) fn build_htlc_input(commitment_txid: &Txid, htlc: &HTLCOutputInCommitment, opt_anchors: bool) -> TxIn {
+	TxIn {
 		previous_output: OutPoint {
 			txid: commitment_txid.clone(),
 			vout: htlc.transaction_output_index.expect("Can't build an HTLC transaction for a dust output"),
@@ -687,8 +704,13 @@ pub fn build_htlc_transaction(commitment_txid: &Txid, feerate_per_kw: u32, conte
 		script_sig: Script::new(),
 		sequence: Sequence(if opt_anchors { 1 } else { 0 }),
 		witness: Witness::new(),
-	});
+	}
+}
 
+pub(crate) fn build_htlc_output(
+	feerate_per_kw: u32, contest_delay: u16, htlc: &HTLCOutputInCommitment, opt_anchors: bool,
+	use_non_zero_fee_anchors: bool, broadcaster_delayed_payment_key: &PublicKey, revocation_key: &PublicKey
+) -> TxOut {
 	let weight = if htlc.offered {
 		htlc_timeout_tx_weight(opt_anchors)
 	} else {
@@ -701,18 +723,41 @@ pub fn build_htlc_transaction(commitment_txid: &Txid, feerate_per_kw: u32, conte
 		htlc.amount_msat / 1000 - total_fee
 	};
 
-	let mut txouts: Vec<TxOut> = Vec::new();
-	txouts.push(TxOut {
+	TxOut {
 		script_pubkey: get_revokeable_redeemscript(revocation_key, contest_delay, broadcaster_delayed_payment_key).to_v0_p2wsh(),
 		value: output_value,
-	});
-
-	Transaction {
-		version: 2,
-		lock_time: PackedLockTime(if htlc.offered { htlc.cltv_expiry } else { 0 }),
-		input: txins,
-		output: txouts,
 	}
+}
+
+/// Returns the witness required to satisfy and spend a HTLC input.
+pub fn build_htlc_input_witness(
+	local_sig: &Signature, remote_sig: &Signature, preimage: &Option<PaymentPreimage>,
+	redeem_script: &Script, opt_anchors: bool,
+) -> Witness {
+	let remote_sighash_type = if opt_anchors {
+		EcdsaSighashType::SinglePlusAnyoneCanPay
+	} else {
+		EcdsaSighashType::All
+	};
+	let mut remote_sig = remote_sig.serialize_der().to_vec();
+	remote_sig.push(remote_sighash_type as u8);
+
+	let mut local_sig = local_sig.serialize_der().to_vec();
+	local_sig.push(EcdsaSighashType::All as u8);
+
+	let mut witness = Witness::new();
+	// First push the multisig dummy, note that due to BIP147 (NULLDUMMY) it must be a zero-length element.
+	witness.push(vec![]);
+	witness.push(remote_sig);
+	witness.push(local_sig);
+	if let Some(preimage) = preimage {
+		witness.push(preimage.0.to_vec());
+	} else {
+		// Due to BIP146 (MINIMALIF) this must be a zero-length element to relay.
+		witness.push(vec![]);
+	}
+	witness.push(redeem_script.to_bytes());
+	witness
 }
 
 /// Gets the witnessScript for the to_remote output when anchors are enabled.
@@ -766,7 +811,7 @@ pub fn build_anchor_input_witness(funding_key: &PublicKey, funding_sig: &Signatu
 ///
 /// Normally, this is converted to the broadcaster/countersignatory-organized DirectedChannelTransactionParameters
 /// before use, via the as_holder_broadcastable and as_counterparty_broadcastable functions.
-#[derive(Clone, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ChannelTransactionParameters {
 	/// Holder public keys
 	pub holder_pubkeys: ChannelPublicKeys,
@@ -790,7 +835,7 @@ pub struct ChannelTransactionParameters {
 }
 
 /// Late-bound per-channel counterparty data used to build transactions.
-#[derive(Clone, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct CounterpartyChannelTransactionParameters {
 	/// Counter-party public keys
 	pub pubkeys: ChannelPublicKeys,
@@ -1553,26 +1598,9 @@ impl<'a> TrustedCommitmentTransaction<'a> {
 
 		let htlc_redeemscript = get_htlc_redeemscript_with_explicit_keys(&this_htlc, self.opt_anchors(), &keys.broadcaster_htlc_key, &keys.countersignatory_htlc_key, &keys.revocation_key);
 
-		let sighashtype = if self.opt_anchors() { EcdsaSighashType::SinglePlusAnyoneCanPay } else { EcdsaSighashType::All };
-
-		// First push the multisig dummy, note that due to BIP147 (NULLDUMMY) it must be a zero-length element.
-		htlc_tx.input[0].witness.push(Vec::new());
-
-		let mut cp_sig_ser = counterparty_signature.serialize_der().to_vec();
-		cp_sig_ser.push(sighashtype as u8);
-		htlc_tx.input[0].witness.push(cp_sig_ser);
-		let mut holder_sig_ser = signature.serialize_der().to_vec();
-		holder_sig_ser.push(EcdsaSighashType::All as u8);
-		htlc_tx.input[0].witness.push(holder_sig_ser);
-
-		if this_htlc.offered {
-			// Due to BIP146 (MINIMALIF) this must be a zero-length element to relay.
-			htlc_tx.input[0].witness.push(Vec::new());
-		} else {
-			htlc_tx.input[0].witness.push(preimage.unwrap().0.to_vec());
-		}
-
-		htlc_tx.input[0].witness.push(htlc_redeemscript.as_bytes().to_vec());
+		htlc_tx.input[0].witness = chan_utils::build_htlc_input_witness(
+			signature, counterparty_signature, preimage, &htlc_redeemscript, self.opt_anchors(),
+		);
 		htlc_tx
 	}
 }

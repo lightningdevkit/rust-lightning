@@ -23,6 +23,8 @@ use bitcoin::util::sighash;
 use bitcoin::secp256k1;
 use bitcoin::secp256k1::{SecretKey, PublicKey};
 use bitcoin::secp256k1::{Secp256k1, ecdsa::Signature};
+#[cfg(anchors)]
+use crate::util::events::HTLCDescriptor;
 use crate::util::ser::{Writeable, Writer};
 use crate::io::Error;
 
@@ -188,6 +190,17 @@ impl BaseSign for EnforcingSigner {
 
 	fn sign_justice_revoked_htlc(&self, justice_tx: &Transaction, input: usize, amount: u64, per_commitment_key: &SecretKey, htlc: &HTLCOutputInCommitment, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()> {
 		Ok(self.inner.sign_justice_revoked_htlc(justice_tx, input, amount, per_commitment_key, htlc, secp_ctx).unwrap())
+	}
+
+	#[cfg(anchors)]
+	fn sign_holder_htlc_transaction(
+		&self, htlc_tx: &Transaction, input: usize, htlc_descriptor: &HTLCDescriptor,
+		secp_ctx: &Secp256k1<secp256k1::All>
+	) -> Result<Signature, ()> {
+		let per_commitment_point = self.get_per_commitment_point(htlc_descriptor.per_commitment_number, secp_ctx);
+		assert_eq!(htlc_tx.input[input], htlc_descriptor.unsigned_tx_input());
+		assert_eq!(htlc_tx.output[input], htlc_descriptor.tx_output(&per_commitment_point, secp_ctx));
+		Ok(self.inner.sign_holder_htlc_transaction(htlc_tx, input, htlc_descriptor, secp_ctx).unwrap())
 	}
 
 	fn sign_counterparty_htlc_transaction(&self, htlc_tx: &Transaction, input: usize, amount: u64, per_commitment_point: &PublicKey, htlc: &HTLCOutputInCommitment, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()> {
