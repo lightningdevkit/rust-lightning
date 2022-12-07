@@ -3032,10 +3032,10 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 						if let Some(new_outputs) = new_outputs_option {
 							watch_outputs.push(new_outputs);
 						}
-						// Since there may be multiple HTLCs (all from the same commitment) being
-						// claimed by the counterparty within the same transaction, and
-						// `check_spend_counterparty_htlc` already checks for all of them, we can
-						// safely break from our loop.
+						// Since there may be multiple HTLCs for this channel (all spending the
+						// same commitment tx) being claimed by the counterparty within the same
+						// transaction, and `check_spend_counterparty_htlc` already checks all the
+						// ones relevant to this channel, we can safely break from our loop.
 						break;
 					}
 				}
