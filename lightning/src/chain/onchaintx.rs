@@ -1047,7 +1047,7 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 
 	#[cfg(anchors)]
 	pub(crate) fn generate_external_htlc_claim(
-		&mut self, outp: &::bitcoin::OutPoint, preimage: &Option<PaymentPreimage>
+		&self, outp: &::bitcoin::OutPoint, preimage: &Option<PaymentPreimage>
 	) -> Option<ExternalHTLCClaim> {
 		let find_htlc = |holder_commitment: &HolderCommitmentTransaction| -> Option<ExternalHTLCClaim> {
 			let trusted_tx = holder_commitment.trust();
