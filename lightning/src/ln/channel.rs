@@ -1955,9 +1955,26 @@ impl<Signer: Sign> Channel<Signer> {
 	/// an HTLC more than once or fulfill once and then attempt to fail after reconnect. We cannot,
 	/// however, fail more than once as we wait for an upstream failure to be irrevocably committed
 	/// before we fail backwards.
-	/// If we do fail twice, we debug_assert!(false) and return Ok(None). Thus, will always return
-	/// Ok(_) if debug assertions are turned on or preconditions are met.
-	pub fn get_update_fail_htlc<L: Deref>(&mut self, htlc_id_arg: u64, err_packet: msgs::OnionErrorPacket, logger: &L) -> Result<Option<msgs::UpdateFailHTLC>, ChannelError> where L::Target: Logger {
+	///
+	/// If we do fail twice, we `debug_assert!(false)` and return `Ok(None)`. Thus, this will always
+	/// return `Ok(_)` if preconditions are met. In any case, `Err`s will only be
+	/// [`ChannelError::Ignore`].
+	pub fn queue_fail_htlc<L: Deref>(&mut self, htlc_id_arg: u64, err_packet: msgs::OnionErrorPacket, logger: &L)
+	-> Result<(), ChannelError> where L::Target: Logger {
+		self.fail_htlc(htlc_id_arg, err_packet, true, logger)
+			.map(|msg_opt| assert!(msg_opt.is_none(), "We forced holding cell?"))
+	}
+
+	/// We can only have one resolution per HTLC. In some cases around reconnect, we may fulfill
+	/// an HTLC more than once or fulfill once and then attempt to fail after reconnect. We cannot,
+	/// however, fail more than once as we wait for an upstream failure to be irrevocably committed
+	/// before we fail backwards.
+	///
+	/// If we do fail twice, we `debug_assert!(false)` and return `Ok(None)`. Thus, this will always
+	/// return `Ok(_)` if preconditions are met. In any case, `Err`s will only be
+	/// [`ChannelError::Ignore`].
+	fn fail_htlc<L: Deref>(&mut self, htlc_id_arg: u64, err_packet: msgs::OnionErrorPacket, mut force_holding_cell: bool, logger: &L)
+	-> Result<Option<msgs::UpdateFailHTLC>, ChannelError> where L::Target: Logger {
 		if (self.channel_state & (ChannelState::ChannelReady as u32)) != (ChannelState::ChannelReady as u32) {
 			panic!("Was asked to fail an HTLC when channel was not in an operational state");
 		}
@@ -1995,8 +2012,13 @@ impl<Signer: Sign> Channel<Signer> {
 			return Ok(None);
 		}
 
-		// Now update local state:
 		if (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32 | ChannelState::PeerDisconnected as u32 | ChannelState::MonitorUpdateInProgress as u32)) != 0 {
+			debug_assert!(force_holding_cell, "!force_holding_cell is only called when emptying the holding cell, so we shouldn't end up back in it!");
+			force_holding_cell = true;
+		}
+
+		// Now update local state:
+		if force_holding_cell {
 			for pending_update in self.holding_cell_htlc_updates.iter() {
 				match pending_update {
 					&HTLCUpdateAwaitingACK::ClaimHTLC { htlc_id, .. } => {
@@ -3171,8 +3193,8 @@ impl<Signer: Sign> Channel<Signer> {
 		} else { Ok((None, Vec::new())) }
 	}
 
-	/// Used to fulfill holding_cell_htlcs when we get a remote ack (or implicitly get it by them
-	/// fulfilling or failing the last pending HTLC)
+	/// Frees any pending commitment updates in the holding cell, generating the relevant messages
+	/// for our counterparty.
 	fn free_holding_cell_htlcs<L: Deref>(&mut self, logger: &L) -> Result<(Option<(msgs::CommitmentUpdate, ChannelMonitorUpdate)>, Vec<(HTLCSource, PaymentHash)>), ChannelError> where L::Target: Logger {
 		assert_eq!(self.channel_state & ChannelState::MonitorUpdateInProgress as u32, 0);
 		if self.holding_cell_htlc_updates.len() != 0 || self.holding_cell_update_fee.is_some() {
@@ -3198,7 +3220,7 @@ impl<Signer: Sign> Channel<Signer> {
 				// to rebalance channels.
 				match &htlc_update {
 					&HTLCUpdateAwaitingACK::AddHTLC {amount_msat, cltv_expiry, ref payment_hash, ref source, ref onion_routing_packet, ..} => {
-						match self.send_htlc(amount_msat, *payment_hash, cltv_expiry, source.clone(), onion_routing_packet.clone(), logger) {
+						match self.send_htlc(amount_msat, *payment_hash, cltv_expiry, source.clone(), onion_routing_packet.clone(), false, logger) {
 							Ok(update_add_msg_option) => update_add_htlcs.push(update_add_msg_option.unwrap()),
 							Err(e) => {
 								match e {
@@ -3234,13 +3256,13 @@ impl<Signer: Sign> Channel<Signer> {
 						monitor_update.updates.append(&mut additional_monitor_update.updates);
 					},
 					&HTLCUpdateAwaitingACK::FailHTLC { htlc_id, ref err_packet } => {
-						match self.get_update_fail_htlc(htlc_id, err_packet.clone(), logger) {
+						match self.fail_htlc(htlc_id, err_packet.clone(), false, logger) {
 							Ok(update_fail_msg_option) => {
 								// If an HTLC failure was previously added to the holding cell (via
-								// `get_update_fail_htlc`) then generating the fail message itself
-								// must not fail - we should never end up in a state where we
-								// double-fail an HTLC or fail-then-claim an HTLC as it indicates
-								// we didn't wait for a full revocation before failing.
+								// `queue_fail_htlc`) then generating the fail message itself must
+								// not fail - we should never end up in a state where we double-fail
+								// an HTLC or fail-then-claim an HTLC as it indicates we didn't wait
+								// for a full revocation before failing.
 								update_fail_htlcs.push(update_fail_msg_option.unwrap())
 							},
 							Err(e) => {
@@ -3257,7 +3279,7 @@ impl<Signer: Sign> Channel<Signer> {
 				return Ok((None, htlcs_to_fail));
 			}
 			let update_fee = if let Some(feerate) = self.holding_cell_update_fee.take() {
-				self.send_update_fee(feerate, logger)
+				self.send_update_fee(feerate, false, logger)
 			} else {
 				None
 			};
@@ -3557,12 +3579,22 @@ impl<Signer: Sign> Channel<Signer> {
 		}
 	}
 
+	/// Queues up an outbound update fee by placing it in the holding cell. You should call
+	/// [`Self::maybe_free_holding_cell_htlcs`] in order to actually generate and send the
+	/// commitment update.
+	pub fn queue_update_fee<L: Deref>(&mut self, feerate_per_kw: u32, logger: &L) where L::Target: Logger {
+		let msg_opt = self.send_update_fee(feerate_per_kw, true, logger);
+		assert!(msg_opt.is_none(), "We forced holding cell?");
+	}
+
 	/// Adds a pending update to this channel. See the doc for send_htlc for
 	/// further details on the optionness of the return value.
 	/// If our balance is too low to cover the cost of the next commitment transaction at the
 	/// new feerate, the update is cancelled.
-	/// You MUST call send_commitment prior to any other calls on this Channel
-	fn send_update_fee<L: Deref>(&mut self, feerate_per_kw: u32, logger: &L) -> Option<msgs::UpdateFee> where L::Target: Logger {
+	///
+	/// You MUST call [`Self::send_commitment_no_state_update`] prior to any other calls on this
+	/// [`Channel`] if `force_holding_cell` is false.
+	fn send_update_fee<L: Deref>(&mut self, feerate_per_kw: u32, mut force_holding_cell: bool, logger: &L) -> Option<msgs::UpdateFee> where L::Target: Logger {
 		if !self.is_outbound() {
 			panic!("Cannot send fee from inbound channel");
 		}
@@ -3599,6 +3631,10 @@ impl<Signer: Sign> Channel<Signer> {
 		}
 
 		if (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32 | ChannelState::MonitorUpdateInProgress as u32)) != 0 {
+			force_holding_cell = true;
+		}
+
+		if force_holding_cell {
 			self.holding_cell_update_fee = Some(feerate_per_kw);
 			return None;
 		}
@@ -3610,16 +3646,6 @@ impl<Signer: Sign> Channel<Signer> {
 			channel_id: self.channel_id,
 			feerate_per_kw,
 		})
-	}
-
-	pub fn send_update_fee_and_commit<L: Deref>(&mut self, feerate_per_kw: u32, logger: &L) -> Result<Option<(msgs::UpdateFee, msgs::CommitmentSigned, ChannelMonitorUpdate)>, ChannelError> where L::Target: Logger {
-		match self.send_update_fee(feerate_per_kw, logger) {
-			Some(update_fee) => {
-				let (commitment_signed, monitor_update) = self.send_commitment_no_status_check(logger)?;
-				Ok(Some((update_fee, commitment_signed, monitor_update)))
-			},
-			None => Ok(None)
-		}
 	}
 
 	/// Removes any uncommitted inbound HTLCs and resets the state of uncommitted outbound HTLC
@@ -5495,8 +5521,26 @@ impl<Signer: Sign> Channel<Signer> {
 
 	// Send stuff to our remote peers:
 
+	/// Queues up an outbound HTLC to send by placing it in the holding cell. You should call
+	/// [`Self::maybe_free_holding_cell_htlcs`] in order to actually generate and send the
+	/// commitment update.
+	///
+	/// `Err`s will only be [`ChannelError::Ignore`].
+	pub fn queue_add_htlc<L: Deref>(&mut self, amount_msat: u64, payment_hash: PaymentHash, cltv_expiry: u32, source: HTLCSource,
+		onion_routing_packet: msgs::OnionPacket, logger: &L)
+	-> Result<(), ChannelError> where L::Target: Logger {
+		self
+			.send_htlc(amount_msat, payment_hash, cltv_expiry, source, onion_routing_packet, true, logger)
+			.map(|msg_opt| assert!(msg_opt.is_none(), "We forced holding cell?"))
+			.map_err(|err| {
+				if let ChannelError::Ignore(_) = err { /* fine */ }
+				else { debug_assert!(false, "Queueing cannot trigger channel failure"); }
+				err
+			})
+	}
+
 	/// Adds a pending outbound HTLC to this channel, note that you probably want
-	/// send_htlc_and_commit instead cause you'll want both messages at once.
+	/// [`Self::send_htlc_and_commit`] instead cause you'll want both messages at once.
 	///
 	/// This returns an optional UpdateAddHTLC as we may be in a state where we cannot add HTLCs on
 	/// the wire:
@@ -5507,10 +5551,13 @@ impl<Signer: Sign> Channel<Signer> {
 	///   we may not yet have sent the previous commitment update messages and will need to
 	///   regenerate them.
 	///
-	/// You MUST call send_commitment prior to calling any other methods on this Channel!
+	/// You MUST call [`Self::send_commitment_no_state_update`] prior to calling any other methods
+	/// on this [`Channel`] if `force_holding_cell` is false.
 	///
-	/// If an Err is returned, it's a ChannelError::Ignore!
-	pub fn send_htlc<L: Deref>(&mut self, amount_msat: u64, payment_hash: PaymentHash, cltv_expiry: u32, source: HTLCSource, onion_routing_packet: msgs::OnionPacket, logger: &L) -> Result<Option<msgs::UpdateAddHTLC>, ChannelError> where L::Target: Logger {
+	/// `Err`s will only be [`ChannelError::Ignore`].
+	fn send_htlc<L: Deref>(&mut self, amount_msat: u64, payment_hash: PaymentHash, cltv_expiry: u32, source: HTLCSource,
+		onion_routing_packet: msgs::OnionPacket, mut force_holding_cell: bool, logger: &L)
+	-> Result<Option<msgs::UpdateAddHTLC>, ChannelError> where L::Target: Logger {
 		if (self.channel_state & (ChannelState::ChannelReady as u32 | BOTH_SIDES_SHUTDOWN_MASK)) != (ChannelState::ChannelReady as u32) {
 			return Err(ChannelError::Ignore("Cannot send HTLC until channel is fully established and we haven't started shutting down".to_owned()));
 		}
@@ -5605,8 +5652,12 @@ impl<Signer: Sign> Channel<Signer> {
 			return Err(ChannelError::Ignore(format!("Cannot send value that would put our balance under counterparty-announced channel reserve value ({})", chan_reserve_msat)));
 		}
 
-		// Now update local state:
 		if (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32 | ChannelState::MonitorUpdateInProgress as u32)) != 0 {
+			force_holding_cell = true;
+		}
+
+		// Now update local state:
+		if force_holding_cell {
 			self.holding_cell_htlc_updates.push(HTLCUpdateAwaitingACK::AddHTLC {
 				amount_msat,
 				payment_hash,
@@ -5639,41 +5690,6 @@ impl<Signer: Sign> Channel<Signer> {
 		Ok(Some(res))
 	}
 
-	/// Creates a signed commitment transaction to send to the remote peer.
-	/// Always returns a ChannelError::Close if an immediately-preceding (read: the
-	/// last call to this Channel) send_htlc returned Ok(Some(_)) and there is an Err.
-	/// May panic if called except immediately after a successful, Ok(Some(_))-returning send_htlc.
-	pub fn send_commitment<L: Deref>(&mut self, logger: &L) -> Result<(msgs::CommitmentSigned, ChannelMonitorUpdate), ChannelError> where L::Target: Logger {
-		if (self.channel_state & (ChannelState::ChannelReady as u32)) != (ChannelState::ChannelReady as u32) {
-			panic!("Cannot create commitment tx until channel is fully established");
-		}
-		if (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32)) == (ChannelState::AwaitingRemoteRevoke as u32) {
-			panic!("Cannot create commitment tx until remote revokes their previous commitment");
-		}
-		if (self.channel_state & (ChannelState::PeerDisconnected as u32)) == (ChannelState::PeerDisconnected as u32) {
-			panic!("Cannot create commitment tx while disconnected, as send_htlc will have returned an Err so a send_commitment precondition has been violated");
-		}
-		if (self.channel_state & (ChannelState::MonitorUpdateInProgress as u32)) == (ChannelState::MonitorUpdateInProgress as u32) {
-			panic!("Cannot create commitment tx while awaiting monitor update unfreeze, as send_htlc will have returned an Err so a send_commitment precondition has been violated");
-		}
-		let mut have_updates = self.is_outbound() && self.pending_update_fee.is_some();
-		for htlc in self.pending_outbound_htlcs.iter() {
-			if let OutboundHTLCState::LocalAnnounced(_) = htlc.state {
-				have_updates = true;
-			}
-			if have_updates { break; }
-		}
-		for htlc in self.pending_inbound_htlcs.iter() {
-			if let InboundHTLCState::LocalRemoved(_) = htlc.state {
-				have_updates = true;
-			}
-			if have_updates { break; }
-		}
-		if !have_updates {
-			panic!("Cannot create commitment tx until we have some updates to send");
-		}
-		self.send_commitment_no_status_check(logger)
-	}
 	/// Only fails in case of bad keys
 	fn send_commitment_no_status_check<L: Deref>(&mut self, logger: &L) -> Result<(msgs::CommitmentSigned, ChannelMonitorUpdate), ChannelError> where L::Target: Logger {
 		log_trace!(logger, "Updating HTLC state for a newly-sent commitment_signed...");
@@ -5796,10 +5812,11 @@ impl<Signer: Sign> Channel<Signer> {
 
 	/// Adds a pending outbound HTLC to this channel, and creates a signed commitment transaction
 	/// to send to the remote peer in one go.
-	/// Shorthand for calling send_htlc() followed by send_commitment(), see docs on those for
-	/// more info.
+	///
+	/// Shorthand for calling [`Self::send_htlc`] followed by a commitment update, see docs on
+	/// [`Self::send_htlc`] and [`Self::send_commitment_no_state_update`] for more info.
 	pub fn send_htlc_and_commit<L: Deref>(&mut self, amount_msat: u64, payment_hash: PaymentHash, cltv_expiry: u32, source: HTLCSource, onion_routing_packet: msgs::OnionPacket, logger: &L) -> Result<Option<(msgs::UpdateAddHTLC, msgs::CommitmentSigned, ChannelMonitorUpdate)>, ChannelError> where L::Target: Logger {
-		match self.send_htlc(amount_msat, payment_hash, cltv_expiry, source, onion_routing_packet, logger)? {
+		match self.send_htlc(amount_msat, payment_hash, cltv_expiry, source, onion_routing_packet, false, logger)? {
 			Some(update_add_htlc) => {
 				let (commitment_signed, monitor_update) = self.send_commitment_no_status_check(logger)?;
 				Ok(Some((update_add_htlc, commitment_signed, monitor_update)))
