@@ -79,7 +79,7 @@ enum OnchainEvent {
 	/// Outpoint under claim process by our own tx, once this one get enough confirmations, we remove it from
 	/// bump-txn candidate buffer.
 	Claim {
-		claim_request: Txid,
+		package_id: PackageID,
 	},
 	/// Claim tx aggregate multiple claimable outpoints. One of the outpoint may be claimed by a counterparty party tx.
 	/// In this case, we need to drop the outpoint and regenerate a new claim tx. By safety, we keep tracking
@@ -123,7 +123,7 @@ impl MaybeReadable for OnchainEventEntry {
 
 impl_writeable_tlv_based_enum_upgradable!(OnchainEvent,
 	(0, Claim) => {
-		(0, claim_request, required),
+		(0, package_id, required),
 	},
 	(1, ContentiousOutpoint) => {
 		(0, package, required),
@@ -480,8 +480,8 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 				// We check for outpoint spends within claims individually rather than as a set
 				// since requests can have outpoints split off.
 				if !self.onchain_events_awaiting_threshold_conf.iter()
-					.any(|event_entry| if let OnchainEvent::Claim { claim_request } = event_entry.event {
-						first_claim_txid_height.0 == claim_request.into_inner()
+					.any(|event_entry| if let OnchainEvent::Claim { package_id } = event_entry.event {
+						first_claim_txid_height.0 == package_id
 					} else {
 						// The onchain event is not a claim, keep seeking until we find one.
 						false
@@ -766,7 +766,7 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 									txid: tx.txid(),
 									height: conf_height,
 									block_hash: Some(conf_hash),
-									event: OnchainEvent::Claim { claim_request: Txid::from_inner(first_claim_txid_height.0) }
+									event: OnchainEvent::Claim { package_id: first_claim_txid_height.0 }
 								};
 								if !self.onchain_events_awaiting_threshold_conf.contains(&entry) {
 									self.onchain_events_awaiting_threshold_conf.push(entry);
@@ -821,13 +821,13 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 		for entry in onchain_events_awaiting_threshold_conf {
 			if entry.has_reached_confirmation_threshold(cur_height) {
 				match entry.event {
-					OnchainEvent::Claim { claim_request } => {
-						let package_id = claim_request.into_inner();
+					OnchainEvent::Claim { package_id } => {
 						// We may remove a whole set of claim outpoints here, as these one may have
 						// been aggregated in a single tx and claimed so atomically
 						if let Some(request) = self.pending_claim_requests.remove(&package_id) {
 							for outpoint in request.outpoints() {
-								log_debug!(logger, "Removing claim tracking for {} due to maturation of claim tx {}.", outpoint, claim_request);
+								log_debug!(logger, "Removing claim tracking for {} due to maturation of claim package {}.",
+									outpoint, log_bytes!(package_id));
 								self.claimable_outpoints.remove(&outpoint);
 								#[cfg(anchors)]
 								self.pending_claim_events.remove(&package_id);
