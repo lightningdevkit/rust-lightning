@@ -35,7 +35,7 @@ use crate::chain::BestBlock;
 use crate::chain::chaininterface::{FeeEstimator, ConfirmationTarget, LowerBoundedFeeEstimator};
 use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, LATENCY_GRACE_PERIOD_BLOCKS};
 use crate::chain::transaction::{OutPoint, TransactionData};
-use crate::chain::keysinterface::{Sign, KeysInterface, BaseSign};
+use crate::chain::keysinterface::{Sign, EntropySource, KeysInterface, BaseSign, SignerProvider};
 use crate::util::events::ClosureReason;
 use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer, VecWriter};
 use crate::util::logger::Logger;
@@ -740,7 +740,7 @@ pub(super) struct Channel<Signer: Sign> {
 	channel_ready_event_emitted: bool,
 
 	/// The unique identifier used to re-derive the private key material for the channel through
-	/// [`KeysInterface::derive_channel_signer`].
+	/// [`SignerProvider::derive_channel_signer`].
 	channel_keys_id: [u8; 32],
 }
 
@@ -2223,7 +2223,7 @@ impl<Signer: Sign> Channel<Signer> {
 
 	pub fn funding_created<K: Deref, L: Deref>(
 		&mut self, msg: &msgs::FundingCreated, best_block: BestBlock, keys_source: &K, logger: &L
-	) -> Result<(msgs::FundingSigned, ChannelMonitor<<K::Target as KeysInterface>::Signer>, Option<msgs::ChannelReady>), ChannelError>
+	) -> Result<(msgs::FundingSigned, ChannelMonitor<<K::Target as SignerProvider>::Signer>, Option<msgs::ChannelReady>), ChannelError>
 	where
 		K::Target: KeysInterface,
 		L::Target: Logger
@@ -2311,7 +2311,7 @@ impl<Signer: Sign> Channel<Signer> {
 	/// If this call is successful, broadcast the funding transaction (and not before!)
 	pub fn funding_signed<K: Deref, L: Deref>(
 		&mut self, msg: &msgs::FundingSigned, best_block: BestBlock, keys_source: &K, logger: &L
-	) -> Result<(ChannelMonitor<<K::Target as KeysInterface>::Signer>, Transaction, Option<msgs::ChannelReady>), ChannelError>
+	) -> Result<(ChannelMonitor<<K::Target as SignerProvider>::Signer>, Transaction, Option<msgs::ChannelReady>), ChannelError>
 	where
 		K::Target: KeysInterface,
 		L::Target: Logger
@@ -6329,7 +6329,7 @@ impl<Signer: Sign> Writeable for Channel<Signer> {
 }
 
 const MAX_ALLOC_SIZE: usize = 64*1024;
-impl<'a, K: Deref> ReadableArgs<(&'a K, u32)> for Channel<<K::Target as KeysInterface>::Signer>
+impl<'a, K: Deref> ReadableArgs<(&'a K, u32)> for Channel<<K::Target as SignerProvider>::Signer>
 		where K::Target: KeysInterface {
 	fn read<R : io::Read>(reader: &mut R, args: (&'a K, u32)) -> Result<Self, DecodeError> {
 		let (keys_source, serialized_height) = args;
@@ -6802,7 +6802,7 @@ mod tests {
 	use crate::ln::chan_utils::{htlc_success_tx_weight, htlc_timeout_tx_weight};
 	use crate::chain::BestBlock;
 	use crate::chain::chaininterface::{FeeEstimator, LowerBoundedFeeEstimator, ConfirmationTarget};
-	use crate::chain::keysinterface::{BaseSign, InMemorySigner, Recipient, KeyMaterial, KeysInterface};
+	use crate::chain::keysinterface::{BaseSign, InMemorySigner, Recipient, KeyMaterial, KeysInterface, EntropySource, NodeSigner, SignerProvider};
 	use crate::chain::transaction::OutPoint;
 	use crate::util::config::UserConfig;
 	use crate::util::enforcing_trait_impls::EnforcingSigner;
@@ -6851,12 +6851,39 @@ mod tests {
 	struct Keys {
 		signer: InMemorySigner,
 	}
-	impl KeysInterface for Keys {
+
+	impl EntropySource for Keys {
+		fn get_secure_random_bytes(&self) -> [u8; 32] { [0; 32] }
+	}
+
+	impl NodeSigner for Keys {
+		fn get_node_secret(&self, _recipient: Recipient) -> Result<SecretKey, ()> { panic!(); }
+
+		fn get_node_id(&self, recipient: Recipient) -> Result<PublicKey, ()> {
+			let secp_ctx = Secp256k1::signing_only();
+			Ok(PublicKey::from_secret_key(&secp_ctx, &self.get_node_secret(recipient)?))
+		}
+
+		fn ecdh(&self, _recipient: Recipient, _other_key: &PublicKey, _tweak: Option<&Scalar>) -> Result<SharedSecret, ()> { panic!(); }
+
+		fn get_inbound_payment_key_material(&self) -> KeyMaterial { panic!(); }
+
+		fn sign_invoice(&self, _hrp_bytes: &[u8], _invoice_data: &[u5], _recipient: Recipient) -> Result<RecoverableSignature, ()> { panic!(); }
+	}
+
+	impl SignerProvider for Keys {
 		type Signer = InMemorySigner;
 
-		fn get_node_secret(&self, _recipient: Recipient) -> Result<SecretKey, ()> { panic!(); }
-		fn ecdh(&self, _recipient: Recipient, _other_key: &PublicKey, _tweak: Option<&Scalar>) -> Result<SharedSecret, ()> { panic!(); }
-		fn get_inbound_payment_key_material(&self) -> KeyMaterial { panic!(); }
+		fn generate_channel_keys_id(&self, _inbound: bool, _channel_value_satoshis: u64, _user_channel_id: u128) -> [u8; 32] {
+			self.signer.channel_keys_id()
+		}
+
+		fn derive_channel_signer(&self, _channel_value_satoshis: u64, _channel_keys_id: [u8; 32]) -> Self::Signer {
+			self.signer.clone()
+		}
+
+		fn read_chan_signer(&self, _data: &[u8]) -> Result<Self::Signer, DecodeError> { panic!(); }
+
 		fn get_destination_script(&self) -> Script {
 			let secp_ctx = Secp256k1::signing_only();
 			let channel_monitor_claim_key = SecretKey::from_slice(&hex::decode("0fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff").unwrap()[..]).unwrap();
@@ -6869,17 +6896,9 @@ mod tests {
 			let channel_close_key = SecretKey::from_slice(&hex::decode("0fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff").unwrap()[..]).unwrap();
 			ShutdownScript::new_p2wpkh_from_pubkey(PublicKey::from_secret_key(&secp_ctx, &channel_close_key))
 		}
-
-		fn generate_channel_keys_id(&self, _inbound: bool, _channel_value_satoshis: u64, _user_channel_id: u128) -> [u8; 32] {
-			self.signer.channel_keys_id()
-		}
-		fn derive_channel_signer(&self, _channel_value_satoshis: u64, _channel_keys_id: [u8; 32]) -> Self::Signer {
-			self.signer.clone()
-		}
-		fn get_secure_random_bytes(&self) -> [u8; 32] { [0; 32] }
-		fn read_chan_signer(&self, _data: &[u8]) -> Result<Self::Signer, DecodeError> { panic!(); }
-		fn sign_invoice(&self, _hrp_bytes: &[u8], _invoice_data: &[u5], _recipient: Recipient) -> Result<RecoverableSignature, ()> { panic!(); }
 	}
+
+	impl KeysInterface for Keys {}
 
 	#[cfg(not(feature = "grind_signatures"))]
 	fn public_from_secret_hex(secp_ctx: &Secp256k1<bitcoin::secp256k1::All>, hex: &str) -> PublicKey {

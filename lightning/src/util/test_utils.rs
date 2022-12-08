@@ -36,7 +36,6 @@ use bitcoin::network::constants::Network;
 use bitcoin::hash_types::{BlockHash, Txid};
 
 use bitcoin::secp256k1::{SecretKey, PublicKey, Secp256k1, ecdsa::Signature, Scalar};
-use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1::ecdsa::RecoverableSignature;
 
 use regex;
@@ -48,10 +47,11 @@ use crate::sync::{Mutex, Arc};
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use core::mem;
 use bitcoin::bech32::u5;
-use crate::chain::keysinterface::{InMemorySigner, Recipient, KeyMaterial};
+use crate::chain::keysinterface::{InMemorySigner, Recipient, KeyMaterial, EntropySource, NodeSigner, SignerProvider};
 
 #[cfg(feature = "std")]
 use std::time::{SystemTime, UNIX_EPOCH};
+use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::Sequence;
 
 pub struct TestVecWriter(pub Vec<u8>);
@@ -72,17 +72,27 @@ impl chaininterface::FeeEstimator for TestFeeEstimator {
 }
 
 pub struct OnlyReadsKeysInterface {}
-impl keysinterface::KeysInterface for OnlyReadsKeysInterface {
-	type Signer = EnforcingSigner;
 
+impl EntropySource for OnlyReadsKeysInterface {
+	fn get_secure_random_bytes(&self) -> [u8; 32] { [0; 32] }}
+
+impl NodeSigner for OnlyReadsKeysInterface {
 	fn get_node_secret(&self, _recipient: Recipient) -> Result<SecretKey, ()> { unreachable!(); }
+	fn get_node_id(&self, recipient: Recipient) -> Result<PublicKey, ()> {
+		let secp_ctx = Secp256k1::signing_only();
+		Ok(PublicKey::from_secret_key(&secp_ctx, &self.get_node_secret(recipient)?))
+	}
 	fn ecdh(&self, _recipient: Recipient, _other_key: &PublicKey, _tweak: Option<&Scalar>) -> Result<SharedSecret, ()> { unreachable!(); }
 	fn get_inbound_payment_key_material(&self) -> KeyMaterial { unreachable!(); }
-	fn get_destination_script(&self) -> Script { unreachable!(); }
-	fn get_shutdown_scriptpubkey(&self) -> ShutdownScript { unreachable!(); }
+	fn sign_invoice(&self, _hrp_bytes: &[u8], _invoice_data: &[u5], _recipient: Recipient) -> Result<RecoverableSignature, ()> { unreachable!(); }
+}
+
+impl SignerProvider for OnlyReadsKeysInterface {
+	type Signer = EnforcingSigner;
+
 	fn generate_channel_keys_id(&self, _inbound: bool, _channel_value_satoshis: u64, _user_channel_id: u128) -> [u8; 32] { unreachable!(); }
+
 	fn derive_channel_signer(&self, _channel_value_satoshis: u64, _channel_keys_id: [u8; 32]) -> Self::Signer { unreachable!(); }
-	fn get_secure_random_bytes(&self) -> [u8; 32] { [0; 32] }
 
 	fn read_chan_signer(&self, mut reader: &[u8]) -> Result<Self::Signer, msgs::DecodeError> {
 		let dummy_sk = SecretKey::from_slice(&[42; 32]).unwrap();
@@ -95,7 +105,12 @@ impl keysinterface::KeysInterface for OnlyReadsKeysInterface {
 			false
 		))
 	}
-	fn sign_invoice(&self, _hrp_bytes: &[u8], _invoice_data: &[u5], _recipient: Recipient) -> Result<RecoverableSignature, ()> { unreachable!(); }
+
+	fn get_destination_script(&self) -> Script { unreachable!(); }
+	fn get_shutdown_scriptpubkey(&self) -> ShutdownScript { unreachable!(); }
+}
+
+impl keysinterface::KeysInterface for OnlyReadsKeysInterface {
 }
 
 pub struct TestChainMonitor<'a> {
@@ -603,32 +618,40 @@ pub struct TestKeysInterface {
 	expectations: Mutex<Option<VecDeque<OnGetShutdownScriptpubkey>>>,
 }
 
-impl keysinterface::KeysInterface for TestKeysInterface {
-	type Signer = EnforcingSigner;
+impl EntropySource for TestKeysInterface {
+	fn get_secure_random_bytes(&self) -> [u8; 32] {
+		let override_random_bytes = self.override_random_bytes.lock().unwrap();
+		if let Some(bytes) = &*override_random_bytes {
+			return *bytes;
+		}
+		self.backing.get_secure_random_bytes()
+	}
+}
 
+impl NodeSigner for TestKeysInterface {
 	fn get_node_secret(&self, recipient: Recipient) -> Result<SecretKey, ()> {
 		self.backing.get_node_secret(recipient)
 	}
+
 	fn get_node_id(&self, recipient: Recipient) -> Result<PublicKey, ()> {
 		self.backing.get_node_id(recipient)
 	}
+
 	fn ecdh(&self, recipient: Recipient, other_key: &PublicKey, tweak: Option<&Scalar>) -> Result<SharedSecret, ()> {
 		self.backing.ecdh(recipient, other_key, tweak)
 	}
+
 	fn get_inbound_payment_key_material(&self) -> keysinterface::KeyMaterial {
 		self.backing.get_inbound_payment_key_material()
 	}
-	fn get_destination_script(&self) -> Script { self.backing.get_destination_script() }
 
-	fn get_shutdown_scriptpubkey(&self) -> ShutdownScript {
-		match &mut *self.expectations.lock().unwrap() {
-			None => self.backing.get_shutdown_scriptpubkey(),
-			Some(expectations) => match expectations.pop_front() {
-				None => panic!("Unexpected get_shutdown_scriptpubkey"),
-				Some(expectation) => expectation.returns,
-			},
-		}
+	fn sign_invoice(&self, hrp_bytes: &[u8], invoice_data: &[u5], recipient: Recipient) -> Result<RecoverableSignature, ()> {
+		self.backing.sign_invoice(hrp_bytes, invoice_data, recipient)
 	}
+}
+
+impl SignerProvider for TestKeysInterface {
+	type Signer = EnforcingSigner;
 
 	fn generate_channel_keys_id(&self, inbound: bool, channel_value_satoshis: u64, user_channel_id: u128) -> [u8; 32] {
 		self.backing.generate_channel_keys_id(inbound, channel_value_satoshis, user_channel_id)
@@ -638,14 +661,6 @@ impl keysinterface::KeysInterface for TestKeysInterface {
 		let keys = self.backing.derive_channel_signer(channel_value_satoshis, channel_keys_id);
 		let state = self.make_enforcement_state_cell(keys.commitment_seed);
 		EnforcingSigner::new_with_revoked(keys, state, self.disable_revocation_policy_check)
-	}
-
-	fn get_secure_random_bytes(&self) -> [u8; 32] {
-		let override_random_bytes = self.override_random_bytes.lock().unwrap();
-		if let Some(bytes) = &*override_random_bytes {
-			return *bytes;
-		}
-		self.backing.get_secure_random_bytes()
 	}
 
 	fn read_chan_signer(&self, buffer: &[u8]) -> Result<Self::Signer, msgs::DecodeError> {
@@ -661,10 +676,20 @@ impl keysinterface::KeysInterface for TestKeysInterface {
 		))
 	}
 
-	fn sign_invoice(&self, hrp_bytes: &[u8], invoice_data: &[u5], recipient: Recipient) -> Result<RecoverableSignature, ()> {
-		self.backing.sign_invoice(hrp_bytes, invoice_data, recipient)
+	fn get_destination_script(&self) -> Script { self.backing.get_destination_script() }
+
+	fn get_shutdown_scriptpubkey(&self) -> ShutdownScript {
+		match &mut *self.expectations.lock().unwrap() {
+			None => self.backing.get_shutdown_scriptpubkey(),
+			Some(expectations) => match expectations.pop_front() {
+				None => panic!("Unexpected get_shutdown_scriptpubkey"),
+				Some(expectation) => expectation.returns,
+			},
+		}
 	}
 }
+
+impl keysinterface::KeysInterface for TestKeysInterface {}
 
 impl TestKeysInterface {
 	pub fn new(seed: &[u8; 32], network: Network) -> Self {
@@ -678,7 +703,7 @@ impl TestKeysInterface {
 		}
 	}
 
-	/// Sets an expectation that [`keysinterface::KeysInterface::get_shutdown_scriptpubkey`] is
+	/// Sets an expectation that [`keysinterface::SignerProvider::get_shutdown_scriptpubkey`] is
 	/// called.
 	pub fn expect(&self, expectation: OnGetShutdownScriptpubkey) -> &Self {
 		self.expectations.lock().unwrap()
@@ -726,7 +751,7 @@ impl Drop for TestKeysInterface {
 	}
 }
 
-/// An expectation that [`keysinterface::KeysInterface::get_shutdown_scriptpubkey`] was called and
+/// An expectation that [`keysinterface::SignerProvider::get_shutdown_scriptpubkey`] was called and
 /// returns a [`ShutdownScript`].
 pub struct OnGetShutdownScriptpubkey {
 	/// A shutdown script used to close a channel.

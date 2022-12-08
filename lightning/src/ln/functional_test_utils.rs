@@ -10,7 +10,7 @@
 //! A bunch of useful utilities for building networks of nodes and exchanging messages between
 //! nodes for functional tests.
 
-use crate::chain::{BestBlock, ChannelMonitorUpdateStatus, Confirm, Listen, Watch, keysinterface::KeysInterface};
+use crate::chain::{BestBlock, ChannelMonitorUpdateStatus, Confirm, Listen, Watch, keysinterface::EntropySource};
 use crate::chain::channelmonitor::ChannelMonitor;
 use crate::chain::transaction::OutPoint;
 use crate::ln::{PaymentPreimage, PaymentHash, PaymentSecret};
@@ -1352,7 +1352,7 @@ macro_rules! get_payment_preimage_hash {
 #[macro_export]
 macro_rules! get_route {
 	($send_node: expr, $payment_params: expr, $recv_value: expr, $cltv: expr) => {{
-		use $crate::chain::keysinterface::KeysInterface;
+		use $crate::chain::keysinterface::EntropySource;
 		let scorer = $crate::util::test_utils::TestScorer::with_penalty(0);
 		let keys_manager = $crate::util::test_utils::TestKeysInterface::new(&[0u8; 32], bitcoin::network::constants::Network::Testnet);
 		let random_seed_bytes = keys_manager.get_secure_random_bytes();

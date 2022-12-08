@@ -20,7 +20,7 @@ extern crate libc;
 use bitcoin::hash_types::{BlockHash, Txid};
 use bitcoin::hashes::hex::FromHex;
 use lightning::chain::channelmonitor::ChannelMonitor;
-use lightning::chain::keysinterface::KeysInterface;
+use lightning::chain::keysinterface::{KeysInterface, SignerProvider};
 use lightning::util::ser::{ReadableArgs, Writeable};
 use lightning::util::persist::KVStorePersister;
 use std::fs;
@@ -61,7 +61,7 @@ impl FilesystemPersister {
 	/// Read `ChannelMonitor`s from disk.
 	pub fn read_channelmonitors<K: Deref> (
 		&self, keys_manager: K
-	) -> Result<Vec<(BlockHash, ChannelMonitor<<K::Target as KeysInterface>::Signer>)>, std::io::Error>
+	) -> Result<Vec<(BlockHash, ChannelMonitor<<K::Target as SignerProvider>::Signer>)>, std::io::Error>
 		where K::Target: KeysInterface + Sized,
 	{
 		let mut path = PathBuf::from(&self.path_to_channel_data);
@@ -105,7 +105,7 @@ impl FilesystemPersister {
 
 			let contents = fs::read(&file.path())?;
 			let mut buffer = Cursor::new(&contents);
-			match <(BlockHash, ChannelMonitor<<K::Target as KeysInterface>::Signer>)>::read(&mut buffer, &*keys_manager) {
+			match <(BlockHash, ChannelMonitor<<K::Target as SignerProvider>::Signer>)>::read(&mut buffer, &*keys_manager) {
 				Ok((blockhash, channel_monitor)) => {
 					if channel_monitor.get_funding_txo().0.txid != txid.unwrap() || channel_monitor.get_funding_txo().0.index != index.unwrap() {
 						return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "ChannelMonitor was stored in the wrong file"));

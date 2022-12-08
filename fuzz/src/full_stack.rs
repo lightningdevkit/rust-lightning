@@ -33,7 +33,7 @@ use lightning::chain::{BestBlock, ChannelMonitorUpdateStatus, Confirm, Listen};
 use lightning::chain::chaininterface::{BroadcasterInterface, ConfirmationTarget, FeeEstimator};
 use lightning::chain::chainmonitor;
 use lightning::chain::transaction::OutPoint;
-use lightning::chain::keysinterface::{InMemorySigner, Recipient, KeyMaterial, KeysInterface};
+use lightning::chain::keysinterface::{InMemorySigner, Recipient, KeyMaterial, KeysInterface, EntropySource, NodeSigner, SignerProvider};
 use lightning::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
 use lightning::ln::channelmanager::{ChainParameters, ChannelManager, PaymentId};
 use lightning::ln::peer_handler::{MessageHandler,PeerManager,SocketDescriptor,IgnoringMessageHandler};
@@ -265,11 +265,23 @@ struct KeyProvider {
 	counter: AtomicU64,
 	signer_state: RefCell<HashMap<u8, (bool, Arc<Mutex<EnforcementState>>)>>
 }
-impl KeysInterface for KeyProvider {
-	type Signer = EnforcingSigner;
 
+impl EntropySource for KeyProvider {
+	fn get_secure_random_bytes(&self) -> [u8; 32] {
+		let ctr = self.counter.fetch_add(1, Ordering::Relaxed);
+		[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+			(ctr >> 8*7) as u8, (ctr >> 8*6) as u8, (ctr >> 8*5) as u8, (ctr >> 8*4) as u8, (ctr >> 8*3) as u8, (ctr >> 8*2) as u8, (ctr >> 8*1) as u8, 14, (ctr >> 8*0) as u8]
+	}
+}
+
+impl NodeSigner for KeyProvider {
 	fn get_node_secret(&self, _recipient: Recipient) -> Result<SecretKey, ()> {
 		Ok(self.node_secret.clone())
+	}
+
+	fn get_node_id(&self, recipient: Recipient) -> Result<PublicKey, ()> {
+		let secp_ctx = Secp256k1::signing_only();
+		Ok(PublicKey::from_secret_key(&secp_ctx, &self.get_node_secret(recipient)?))
 	}
 
 	fn ecdh(&self, recipient: Recipient, other_key: &PublicKey, tweak: Option<&Scalar>) -> Result<SharedSecret, ()> {
@@ -284,19 +296,13 @@ impl KeysInterface for KeyProvider {
 		self.inbound_payment_key.clone()
 	}
 
-	fn get_destination_script(&self) -> Script {
-		let secp_ctx = Secp256k1::signing_only();
-		let channel_monitor_claim_key = SecretKey::from_slice(&hex::decode("0fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff").unwrap()[..]).unwrap();
-		let our_channel_monitor_claim_key_hash = WPubkeyHash::hash(&PublicKey::from_secret_key(&secp_ctx, &channel_monitor_claim_key).serialize());
-		Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0).push_slice(&our_channel_monitor_claim_key_hash[..]).into_script()
+	fn sign_invoice(&self, _hrp_bytes: &[u8], _invoice_data: &[u5], _recipient: Recipient) -> Result<RecoverableSignature, ()> {
+		unreachable!()
 	}
+}
 
-	fn get_shutdown_scriptpubkey(&self) -> ShutdownScript {
-		let secp_ctx = Secp256k1::signing_only();
-		let secret_key = SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]).unwrap();
-		let pubkey_hash = WPubkeyHash::hash(&PublicKey::from_secret_key(&secp_ctx, &secret_key).serialize());
-		ShutdownScript::new_p2wpkh(&pubkey_hash)
-	}
+impl SignerProvider for KeyProvider {
+	type Signer = EnforcingSigner;
 
 	fn generate_channel_keys_id(&self, inbound: bool, _channel_value_satoshis: u64, _user_channel_id: u128) -> [u8; 32] {
 		let ctr = self.counter.fetch_add(1, Ordering::Relaxed) as u8;
@@ -337,12 +343,6 @@ impl KeysInterface for KeyProvider {
 		}, state, false)
 	}
 
-	fn get_secure_random_bytes(&self) -> [u8; 32] {
-		let ctr = self.counter.fetch_add(1, Ordering::Relaxed);
-		[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-		(ctr >> 8*7) as u8, (ctr >> 8*6) as u8, (ctr >> 8*5) as u8, (ctr >> 8*4) as u8, (ctr >> 8*3) as u8, (ctr >> 8*2) as u8, (ctr >> 8*1) as u8, 14, (ctr >> 8*0) as u8]
-	}
-
 	fn read_chan_signer(&self, mut data: &[u8]) -> Result<EnforcingSigner, DecodeError> {
 		let inner: InMemorySigner = ReadableArgs::read(&mut data, self.node_secret.clone())?;
 		let state = Arc::new(Mutex::new(EnforcementState::new()));
@@ -354,10 +354,22 @@ impl KeysInterface for KeyProvider {
 		))
 	}
 
-	fn sign_invoice(&self, _hrp_bytes: &[u8], _invoice_data: &[u5], _recipient: Recipient) -> Result<RecoverableSignature, ()> {
-		unreachable!()
+	fn get_destination_script(&self) -> Script {
+		let secp_ctx = Secp256k1::signing_only();
+		let channel_monitor_claim_key = SecretKey::from_slice(&hex::decode("0fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff").unwrap()[..]).unwrap();
+		let our_channel_monitor_claim_key_hash = WPubkeyHash::hash(&PublicKey::from_secret_key(&secp_ctx, &channel_monitor_claim_key).serialize());
+		Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0).push_slice(&our_channel_monitor_claim_key_hash[..]).into_script()
+	}
+
+	fn get_shutdown_scriptpubkey(&self) -> ShutdownScript {
+		let secp_ctx = Secp256k1::signing_only();
+		let secret_key = SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]).unwrap();
+		let pubkey_hash = WPubkeyHash::hash(&PublicKey::from_secret_key(&secp_ctx, &secret_key).serialize());
+		ShutdownScript::new_p2wpkh(&pubkey_hash)
 	}
 }
+
+impl KeysInterface for KeyProvider {}
 
 #[inline]
 pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {

@@ -55,13 +55,13 @@ pub enum APIError {
 	/// [`chain::Watch::update_channel`]: crate::chain::Watch::update_channel
 	/// [`ChannelMonitorUpdateStatus::InProgress`]: crate::chain::ChannelMonitorUpdateStatus::InProgress
 	MonitorUpdateInProgress,
-	/// [`KeysInterface::get_shutdown_scriptpubkey`] returned a shutdown scriptpubkey incompatible
+	/// [`SignerProvider::get_shutdown_scriptpubkey`] returned a shutdown scriptpubkey incompatible
 	/// with the channel counterparty as negotiated in [`InitFeatures`].
 	///
 	/// Using a SegWit v0 script should resolve this issue. If you cannot, you won't be able to open
 	/// a channel or cooperatively close one with this peer (and will have to force-close instead).
 	///
-	/// [`KeysInterface::get_shutdown_scriptpubkey`]: crate::chain::keysinterface::KeysInterface::get_shutdown_scriptpubkey
+	/// [`SignerProvider::get_shutdown_scriptpubkey`]: crate::chain::keysinterface::SignerProvider::get_shutdown_scriptpubkey
 	/// [`InitFeatures`]: crate::ln::features::InitFeatures
 	IncompatibleShutdownScript {
 		/// The incompatible shutdown script.

@@ -143,8 +143,8 @@ pub enum SpendableOutputDescriptor {
 	/// These may include outputs from a transaction punishing our counterparty or claiming an HTLC
 	/// on-chain using the payment preimage or after it has timed out.
 	///
-	/// [`get_shutdown_scriptpubkey`]: KeysInterface::get_shutdown_scriptpubkey
-	/// [`get_destination_script`]: KeysInterface::get_shutdown_scriptpubkey
+	/// [`get_shutdown_scriptpubkey`]: SignerProvider::get_shutdown_scriptpubkey
+	/// [`get_destination_script`]: SignerProvider::get_shutdown_scriptpubkey
 	StaticOutput {
 		/// The outpoint which is spendable.
 		outpoint: OutPoint,
@@ -399,7 +399,7 @@ pub trait BaseSign {
 	///
 	/// This data is static, and will never change for a channel once set. For a given [`BaseSign`]
 	/// instance, LDK will call this method exactly once - either immediately after construction
-	/// (not including if done via [`KeysInterface::read_chan_signer`]) or when the funding
+	/// (not including if done via [`SignerProvider::read_chan_signer`]) or when the funding
 	/// information has been generated.
 	///
 	/// channel_parameters.is_populated() MUST be true.
@@ -417,7 +417,7 @@ pub trait Sign: BaseSign + Writeable {}
 
 /// Specifies the recipient of an invoice.
 ///
-/// This indicates to [`KeysInterface::sign_invoice`] what node secret key should be used to sign
+/// This indicates to [`NodeSigner::sign_invoice`] what node secret key should be used to sign
 /// the invoice.
 pub enum Recipient {
 	/// The invoice should be signed with the local node secret key.
@@ -429,10 +429,15 @@ pub enum Recipient {
 	PhantomNode,
 }
 
-/// A trait to describe an object which can get user secrets and key material.
-pub trait KeysInterface {
-	/// A type which implements [`Sign`] which will be returned by [`Self::derive_channel_signer`].
-	type Signer : Sign;
+/// A trait that describes a source of entropy.
+pub trait EntropySource {
+	/// Gets a unique, cryptographically-secure, random 32-byte value. This method must return a
+	/// different value each time it is called.
+	fn get_secure_random_bytes(&self) -> [u8; 32];
+}
+
+/// A trait that can handle cryptographic operations at the scope level of a node.
+pub trait NodeSigner {
 	/// Get node secret key based on the provided [`Recipient`].
 	///
 	/// The `node_id`/`network_key` is the public key that corresponds to this secret key.
@@ -442,6 +447,21 @@ pub trait KeysInterface {
 	///
 	/// Errors if the [`Recipient`] variant is not supported by the implementation.
 	fn get_node_secret(&self, recipient: Recipient) -> Result<SecretKey, ()>;
+
+	/// Get secret key material as bytes for use in encrypting and decrypting inbound payment data.
+	///
+	/// If the implementor of this trait supports [phantom node payments], then every node that is
+	/// intended to be included in the phantom invoice route hints must return the same value from
+	/// this method.
+	// This is because LDK avoids storing inbound payment data by encrypting payment data in the
+	// payment hash and/or payment secret, therefore for a payment to be receivable by multiple
+	// nodes, they must share the key that encrypts this payment data.
+	///
+	/// This method must return the same value each time it is called.
+	///
+	/// [phantom node payments]: PhantomKeysManager
+	fn get_inbound_payment_key_material(&self) -> KeyMaterial;
+
 	/// Get node id based on the provided [`Recipient`]. This public key corresponds to the secret in
 	/// [`get_node_secret`].
 	///
@@ -451,10 +471,8 @@ pub trait KeysInterface {
 	/// Errors if the [`Recipient`] variant is not supported by the implementation.
 	///
 	/// [`get_node_secret`]: Self::get_node_secret
-	fn get_node_id(&self, recipient: Recipient) -> Result<PublicKey, ()> {
-		let secp_ctx = Secp256k1::signing_only();
-		Ok(PublicKey::from_secret_key(&secp_ctx, &self.get_node_secret(recipient)?))
-	}
+	fn get_node_id(&self, recipient: Recipient) -> Result<PublicKey, ()>;
+
 	/// Gets the ECDH shared secret of our [`node secret`] and `other_key`, multiplying by `tweak` if
 	/// one is provided. Note that this tweak can be applied to `other_key` instead of our node
 	/// secret, though this is less efficient.
@@ -463,36 +481,40 @@ pub trait KeysInterface {
 	///
 	/// [`node secret`]: Self::get_node_secret
 	fn ecdh(&self, recipient: Recipient, other_key: &PublicKey, tweak: Option<&Scalar>) -> Result<SharedSecret, ()>;
-	/// Get a script pubkey which we send funds to when claiming on-chain contestable outputs.
+
+	/// Sign an invoice.
+	/// By parameterizing by the raw invoice bytes instead of the hash, we allow implementors of
+	/// this trait to parse the invoice and make sure they're signing what they expect, rather than
+	/// blindly signing the hash.
+	/// The hrp is ascii bytes, while the invoice data is base32.
 	///
-	/// This method should return a different value each time it is called, to avoid linking
-	/// on-chain funds across channels as controlled to the same user.
-	fn get_destination_script(&self) -> Script;
-	/// Get a script pubkey which we will send funds to when closing a channel.
+	/// The secret key used to sign the invoice is dependent on the [`Recipient`].
 	///
-	/// This method should return a different value each time it is called, to avoid linking
-	/// on-chain funds across channels as controlled to the same user.
-	fn get_shutdown_scriptpubkey(&self) -> ShutdownScript;
+	/// Errors if the [`Recipient`] variant is not supported by the implementation.
+	fn sign_invoice(&self, hrp_bytes: &[u8], invoice_data: &[u5], recipient: Recipient) -> Result<RecoverableSignature, ()>;
+}
+
+/// A trait that can return signer instances for individual channels.
+pub trait SignerProvider {
+	/// A type which implements [`Sign`] which will be returned by [`Self::derive_channel_signer`].
+	type Signer : Sign;
+
 	/// Generates a unique `channel_keys_id` that can be used to obtain a [`Self::Signer`] through
-	/// [`KeysInterface::derive_channel_signer`]. The `user_channel_id` is provided to allow
-	/// implementations of [`KeysInterface`] to maintain a mapping between it and the generated
+	/// [`SignerProvider::derive_channel_signer`]. The `user_channel_id` is provided to allow
+	/// implementations of [`SignerProvider`] to maintain a mapping between itself and the generated
 	/// `channel_keys_id`.
 	///
 	/// This method must return a different value each time it is called.
 	fn generate_channel_keys_id(&self, inbound: bool, channel_value_satoshis: u64, user_channel_id: u128) -> [u8; 32];
+
 	/// Derives the private key material backing a `Signer`.
 	///
 	/// To derive a new `Signer`, a fresh `channel_keys_id` should be obtained through
-	/// [`KeysInterface::generate_channel_keys_id`]. Otherwise, an existing `Signer` can be
+	/// [`SignerProvider::generate_channel_keys_id`]. Otherwise, an existing `Signer` can be
 	/// re-derived from its `channel_keys_id`, which can be obtained through its trait method
 	/// [`BaseSign::channel_keys_id`].
 	fn derive_channel_signer(&self, channel_value_satoshis: u64, channel_keys_id: [u8; 32]) -> Self::Signer;
-	/// Gets a unique, cryptographically-secure, random 32 byte value. This is used for encrypting
-	/// onion packets and for temporary channel IDs. There is no requirement that these be
-	/// persisted anywhere, though they must be unique across restarts.
-	///
-	/// This method must return a different value each time it is called.
-	fn get_secure_random_bytes(&self) -> [u8; 32];
+
 	/// Reads a [`Signer`] for this [`KeysInterface`] from the given input stream.
 	/// This is only called during deserialization of other objects which contain
 	/// [`Sign`]-implementing objects (i.e., [`ChannelMonitor`]s and [`ChannelManager`]s).
@@ -507,30 +529,22 @@ pub trait KeysInterface {
 	/// [`ChannelMonitor`]: crate::chain::channelmonitor::ChannelMonitor
 	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 	fn read_chan_signer(&self, reader: &[u8]) -> Result<Self::Signer, DecodeError>;
-	/// Sign an invoice.
-	/// By parameterizing by the raw invoice bytes instead of the hash, we allow implementors of
-	/// this trait to parse the invoice and make sure they're signing what they expect, rather than
-	/// blindly signing the hash.
-	/// The `hrp` is ASCII bytes, while the invoice data is base32-encoded.
+
+	/// Get a script pubkey which we send funds to when claiming on-chain contestable outputs.
 	///
-	/// The secret key used to sign the invoice is dependent on the [`Recipient`].
+	/// This method should return a different value each time it is called, to avoid linking
+	/// on-chain funds across channels as controlled to the same user.
+	fn get_destination_script(&self) -> Script;
+
+	/// Get a script pubkey which we will send funds to when closing a channel.
 	///
-	/// Errors if the [`Recipient`] variant is not supported by the implementation.
-	fn sign_invoice(&self, hrp_bytes: &[u8], invoice_data: &[u5], receipient: Recipient) -> Result<RecoverableSignature, ()>;
-	/// Get secret key material as bytes for use in encrypting and decrypting inbound payment data.
-	///
-	/// If the implementor of this trait supports [phantom node payments], then every node that is
-	/// intended to be included in the phantom invoice route hints must return the same value from
-	/// this method.
-	// This is because LDK avoids storing inbound payment data by encrypting payment data in the
-	// payment hash and/or payment secret, therefore for a payment to be receivable by multiple
-	// nodes, they must share the key that encrypts this payment data.
-	///
-	/// This method must return the same value each time it is called.
-	///
-	/// [phantom node payments]: PhantomKeysManager
-	fn get_inbound_payment_key_material(&self) -> KeyMaterial;
+	/// This method should return a different value each time it is called, to avoid linking
+	/// on-chain funds across channels as controlled to the same user.
+	fn get_shutdown_scriptpubkey(&self) -> ShutdownScript;
 }
+
+/// A trait to describe an object which can get user secrets and key material.
+pub trait KeysInterface: EntropySource + NodeSigner + SignerProvider {}
 
 #[derive(Clone)]
 /// A simple implementation of [`Sign`] that just keeps the private keys in memory.
@@ -1227,9 +1241,20 @@ impl KeysManager {
 	}
 }
 
-impl KeysInterface for KeysManager {
-	type Signer = InMemorySigner;
+impl EntropySource for KeysManager {
+	fn get_secure_random_bytes(&self) -> [u8; 32] {
+		let mut sha = self.rand_bytes_unique_start.clone();
 
+		let child_ix = self.rand_bytes_child_index.fetch_add(1, Ordering::AcqRel);
+		let child_privkey = self.rand_bytes_master_key.ckd_priv(&self.secp_ctx, ChildNumber::from_hardened_idx(child_ix as u32).expect("key space exhausted")).expect("Your RNG is busted");
+		sha.input(&child_privkey.private_key[..]);
+
+		sha.input(b"Unique Secure Random Bytes Salt");
+		Sha256::from_engine(sha).into_inner()
+	}
+}
+
+impl NodeSigner for KeysManager {
 	fn get_node_secret(&self, recipient: Recipient) -> Result<SecretKey, ()> {
 		match recipient {
 			Recipient::Node => Ok(self.node_secret.clone()),
@@ -1256,13 +1281,18 @@ impl KeysInterface for KeysManager {
 		self.inbound_payment_key.clone()
 	}
 
-	fn get_destination_script(&self) -> Script {
-		self.destination_script.clone()
+	fn sign_invoice(&self, hrp_bytes: &[u8], invoice_data: &[u5], recipient: Recipient) -> Result<RecoverableSignature, ()> {
+		let preimage = construct_invoice_preimage(&hrp_bytes, &invoice_data);
+		let secret = match recipient {
+			Recipient::Node => self.get_node_secret(Recipient::Node)?,
+			Recipient::PhantomNode => return Err(()),
+		};
+		Ok(self.secp_ctx.sign_ecdsa_recoverable(&hash_to_message!(&Sha256::hash(&preimage)), &secret))
 	}
+}
 
-	fn get_shutdown_scriptpubkey(&self) -> ShutdownScript {
-		ShutdownScript::new_p2wpkh_from_pubkey(self.shutdown_pubkey.clone())
-	}
+impl SignerProvider for KeysManager {
+	type Signer = InMemorySigner;
 
 	fn generate_channel_keys_id(&self, _inbound: bool, _channel_value_satoshis: u64, user_channel_id: u128) -> [u8; 32] {
 		let child_idx = self.channel_child_index.fetch_add(1, Ordering::AcqRel);
@@ -1279,30 +1309,20 @@ impl KeysInterface for KeysManager {
 		self.derive_channel_keys(channel_value_satoshis, &channel_keys_id)
 	}
 
-	fn get_secure_random_bytes(&self) -> [u8; 32] {
-		let mut sha = self.rand_bytes_unique_start.clone();
-
-		let child_ix = self.rand_bytes_child_index.fetch_add(1, Ordering::AcqRel);
-		let child_privkey = self.rand_bytes_master_key.ckd_priv(&self.secp_ctx, ChildNumber::from_hardened_idx(child_ix as u32).expect("key space exhausted")).expect("Your RNG is busted");
-		sha.input(&child_privkey.private_key[..]);
-
-		sha.input(b"Unique Secure Random Bytes Salt");
-		Sha256::from_engine(sha).into_inner()
-	}
-
 	fn read_chan_signer(&self, reader: &[u8]) -> Result<Self::Signer, DecodeError> {
 		InMemorySigner::read(&mut io::Cursor::new(reader), self.node_secret.clone())
 	}
 
-	fn sign_invoice(&self, hrp_bytes: &[u8], invoice_data: &[u5], recipient: Recipient) -> Result<RecoverableSignature, ()> {
-		let preimage = construct_invoice_preimage(&hrp_bytes, &invoice_data);
-		let secret = match recipient {
-			Recipient::Node => self.get_node_secret(Recipient::Node)?,
-			Recipient::PhantomNode => return Err(()),
-		};
-		Ok(self.secp_ctx.sign_ecdsa_recoverable(&hash_to_message!(&Sha256::hash(&preimage)), &secret))
+	fn get_destination_script(&self) -> Script {
+		self.destination_script.clone()
+	}
+
+	fn get_shutdown_scriptpubkey(&self) -> ShutdownScript {
+		ShutdownScript::new_p2wpkh_from_pubkey(self.shutdown_pubkey.clone())
 	}
 }
+
+impl KeysInterface for KeysManager {}
 
 /// Similar to [`KeysManager`], but allows the node using this struct to receive phantom node
 /// payments.
@@ -1332,9 +1352,13 @@ pub struct PhantomKeysManager {
 	phantom_node_id: PublicKey,
 }
 
-impl KeysInterface for PhantomKeysManager {
-	type Signer = InMemorySigner;
+impl EntropySource for PhantomKeysManager {
+	fn get_secure_random_bytes(&self) -> [u8; 32] {
+		self.inner.get_secure_random_bytes()
+	}
+}
 
+impl NodeSigner for PhantomKeysManager {
 	fn get_node_secret(&self, recipient: Recipient) -> Result<SecretKey, ()> {
 		match recipient {
 			Recipient::Node => self.inner.get_node_secret(Recipient::Node),
@@ -1361,13 +1385,15 @@ impl KeysInterface for PhantomKeysManager {
 		self.inbound_payment_key.clone()
 	}
 
-	fn get_destination_script(&self) -> Script {
-		self.inner.get_destination_script()
+	fn sign_invoice(&self, hrp_bytes: &[u8], invoice_data: &[u5], recipient: Recipient) -> Result<RecoverableSignature, ()> {
+		let preimage = construct_invoice_preimage(&hrp_bytes, &invoice_data);
+		let secret = self.get_node_secret(recipient)?;
+		Ok(self.inner.secp_ctx.sign_ecdsa_recoverable(&hash_to_message!(&Sha256::hash(&preimage)), &secret))
 	}
+}
 
-	fn get_shutdown_scriptpubkey(&self) -> ShutdownScript {
-		self.inner.get_shutdown_scriptpubkey()
-	}
+impl SignerProvider for PhantomKeysManager {
+	type Signer = InMemorySigner;
 
 	fn generate_channel_keys_id(&self, inbound: bool, channel_value_satoshis: u64, user_channel_id: u128) -> [u8; 32] {
 		self.inner.generate_channel_keys_id(inbound, channel_value_satoshis, user_channel_id)
@@ -1377,20 +1403,20 @@ impl KeysInterface for PhantomKeysManager {
 		self.inner.derive_channel_signer(channel_value_satoshis, channel_keys_id)
 	}
 
-	fn get_secure_random_bytes(&self) -> [u8; 32] {
-		self.inner.get_secure_random_bytes()
-	}
-
 	fn read_chan_signer(&self, reader: &[u8]) -> Result<Self::Signer, DecodeError> {
 		self.inner.read_chan_signer(reader)
 	}
 
-	fn sign_invoice(&self, hrp_bytes: &[u8], invoice_data: &[u5], recipient: Recipient) -> Result<RecoverableSignature, ()> {
-		let preimage = construct_invoice_preimage(&hrp_bytes, &invoice_data);
-		let secret = self.get_node_secret(recipient)?;
-		Ok(self.inner.secp_ctx.sign_ecdsa_recoverable(&hash_to_message!(&Sha256::hash(&preimage)), &secret))
+	fn get_destination_script(&self) -> Script {
+		self.inner.get_destination_script()
+	}
+
+	fn get_shutdown_scriptpubkey(&self) -> ShutdownScript {
+		self.inner.get_shutdown_scriptpubkey()
 	}
 }
+
+impl KeysInterface for PhantomKeysManager {}
 
 impl PhantomKeysManager {
 	/// Constructs a [`PhantomKeysManager`] given a 32-byte seed and an additional `cross_node_seed`
