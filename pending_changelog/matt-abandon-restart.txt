@@ -1,0 +1,4 @@
+## API Updates
+- `ChannelManager::abandon_payment` docs have been updated to note that the
+  payment may return to pending after a restart if no persistence occurs. This
+  is not a change in behavior - ensure your existing code is safe.
