@@ -471,7 +471,7 @@ impl TryFrom<PartialInvoiceRequestTlvStream> for InvoiceRequestContents {
 
 #[cfg(test)]
 mod tests {
-	use super::InvoiceRequest;
+	use super::{InvoiceRequest, InvoiceRequestTlvStreamRef};
 
 	use bitcoin::blockdata::constants::ChainHash;
 	use bitcoin::network::constants::Network;
@@ -483,9 +483,10 @@ mod tests {
 	use core::time::Duration;
 	use crate::ln::features::InvoiceRequestFeatures;
 	use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
-	use crate::offers::merkle::SignError;
-	use crate::offers::offer::{Amount, OfferBuilder, Quantity};
+	use crate::offers::merkle::{SignError, SignatureTlvStreamRef};
+	use crate::offers::offer::{Amount, OfferBuilder, OfferTlvStreamRef, Quantity};
 	use crate::offers::parse::{ParseError, SemanticError};
+	use crate::offers::payer::PayerTlvStreamRef;
 	use crate::util::ser::{BigSize, Writeable};
 	use crate::util::string::PrintableString;
 
@@ -517,14 +518,13 @@ mod tests {
 
 	#[test]
 	fn builds_invoice_request_with_defaults() {
-		let offer = OfferBuilder::new("foo".into(), recipient_pubkey())
+		let invoice_request = OfferBuilder::new("foo".into(), recipient_pubkey())
 			.amount_msats(1000)
-			.build().unwrap();
-		let invoice_request = offer.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
-			.build().unwrap().sign(payer_sign).unwrap();
+			.build().unwrap()
+			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.build().unwrap()
+			.sign(payer_sign).unwrap();
 
-		let (payer_tlv_stream, offer_tlv_stream, invoice_request_tlv_stream, signature_tlv_stream) =
-			invoice_request.as_tlv_stream();
 		let mut buffer = Vec::new();
 		invoice_request.write(&mut buffer).unwrap();
 
@@ -538,25 +538,34 @@ mod tests {
 		assert_eq!(invoice_request.payer_note(), None);
 		assert!(invoice_request.signature().is_some());
 
-		assert_eq!(payer_tlv_stream.metadata, Some(&vec![1; 32]));
-		assert_eq!(offer_tlv_stream.chains, None);
-		assert_eq!(offer_tlv_stream.metadata, None);
-		assert_eq!(offer_tlv_stream.currency, None);
-		assert_eq!(offer_tlv_stream.amount, Some(1000));
-		assert_eq!(offer_tlv_stream.description, Some(&String::from("foo")));
-		assert_eq!(offer_tlv_stream.features, None);
-		assert_eq!(offer_tlv_stream.absolute_expiry, None);
-		assert_eq!(offer_tlv_stream.paths, None);
-		assert_eq!(offer_tlv_stream.issuer, None);
-		assert_eq!(offer_tlv_stream.quantity_max, None);
-		assert_eq!(offer_tlv_stream.node_id, Some(&recipient_pubkey()));
-		assert_eq!(invoice_request_tlv_stream.chain, None);
-		assert_eq!(invoice_request_tlv_stream.amount, None);
-		assert_eq!(invoice_request_tlv_stream.features, None);
-		assert_eq!(invoice_request_tlv_stream.quantity, None);
-		assert_eq!(invoice_request_tlv_stream.payer_id, Some(&payer_pubkey()));
-		assert_eq!(invoice_request_tlv_stream.payer_note, None);
-		assert!(signature_tlv_stream.signature.is_some());
+		assert_eq!(
+			invoice_request.as_tlv_stream(),
+			(
+				PayerTlvStreamRef { metadata: Some(&vec![1; 32]) },
+				OfferTlvStreamRef {
+					chains: None,
+					metadata: None,
+					currency: None,
+					amount: Some(1000),
+					description: Some(&String::from("foo")),
+					features: None,
+					absolute_expiry: None,
+					paths: None,
+					issuer: None,
+					quantity_max: None,
+					node_id: Some(&recipient_pubkey()),
+				},
+				InvoiceRequestTlvStreamRef {
+					chain: None,
+					amount: None,
+					features: None,
+					quantity: None,
+					payer_id: Some(&payer_pubkey()),
+					payer_note: None,
+				},
+				SignatureTlvStreamRef { signature: invoice_request.signature().as_ref() },
+			),
+		);
 
 		if let Err(e) = InvoiceRequest::try_from(buffer) {
 			panic!("error parsing invoice request: {:?}", e);

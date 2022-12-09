@@ -653,7 +653,7 @@ impl core::fmt::Display for Offer {
 
 #[cfg(test)]
 mod tests {
-	use super::{Amount, Offer, OfferBuilder, Quantity};
+	use super::{Amount, Offer, OfferBuilder, OfferTlvStreamRef, Quantity};
 
 	use bitcoin::blockdata::constants::ChainHash;
 	use bitcoin::network::constants::Network;
@@ -680,7 +680,7 @@ mod tests {
 	#[test]
 	fn builds_offer_with_defaults() {
 		let offer = OfferBuilder::new("foo".into(), pubkey(42)).build().unwrap();
-		let tlv_stream = offer.as_tlv_stream();
+
 		let mut buffer = Vec::new();
 		offer.write(&mut buffer).unwrap();
 
@@ -699,17 +699,22 @@ mod tests {
 		assert_eq!(offer.supported_quantity(), Quantity::one());
 		assert_eq!(offer.signing_pubkey(), pubkey(42));
 
-		assert_eq!(tlv_stream.chains, None);
-		assert_eq!(tlv_stream.metadata, None);
-		assert_eq!(tlv_stream.currency, None);
-		assert_eq!(tlv_stream.amount, None);
-		assert_eq!(tlv_stream.description, Some(&String::from("foo")));
-		assert_eq!(tlv_stream.features, None);
-		assert_eq!(tlv_stream.absolute_expiry, None);
-		assert_eq!(tlv_stream.paths, None);
-		assert_eq!(tlv_stream.issuer, None);
-		assert_eq!(tlv_stream.quantity_max, None);
-		assert_eq!(tlv_stream.node_id, Some(&pubkey(42)));
+		assert_eq!(
+			offer.as_tlv_stream(),
+			OfferTlvStreamRef {
+				chains: None,
+				metadata: None,
+				currency: None,
+				amount: None,
+				description: Some(&String::from("foo")),
+				features: None,
+				absolute_expiry: None,
+				paths: None,
+				issuer: None,
+				quantity_max: None,
+				node_id: Some(&pubkey(42)),
+			},
+		);
 
 		if let Err(e) = Offer::try_from(buffer) {
 			panic!("error parsing offer: {:?}", e);
