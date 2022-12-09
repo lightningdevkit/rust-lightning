@@ -286,6 +286,11 @@ impl Refund {
 	pub fn payer_note(&self) -> Option<PrintableString> {
 		self.contents.payer_note.as_ref().map(|payer_note| PrintableString(payer_note.as_str()))
 	}
+
+	#[cfg(test)]
+	fn as_tlv_stream(&self) -> RefundTlvStreamRef {
+		self.contents.as_tlv_stream()
+	}
 }
 
 impl AsRef<[u8]> for Refund {
@@ -470,5 +475,229 @@ impl TryFrom<RefundTlvStream> for RefundContents {
 impl core::fmt::Display for Refund {
 	fn fmt(&self, f: &mut core::fmt::Formatter) -> Result<(), core::fmt::Error> {
 		self.fmt_bech32_str(f)
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::{Refund, RefundBuilder};
+
+	use bitcoin::blockdata::constants::ChainHash;
+	use bitcoin::network::constants::Network;
+	use bitcoin::secp256k1::{KeyPair, PublicKey, Secp256k1, SecretKey};
+	use core::convert::TryFrom;
+	use core::time::Duration;
+	use crate::ln::features::InvoiceRequestFeatures;
+	use crate::ln::msgs::MAX_VALUE_MSAT;
+	use crate::offers::invoice_request::InvoiceRequestTlvStreamRef;
+	use crate::offers::offer::OfferTlvStreamRef;
+	use crate::offers::parse::SemanticError;
+	use crate::offers::payer::PayerTlvStreamRef;
+	use crate::onion_message::{BlindedHop, BlindedPath};
+	use crate::util::ser::Writeable;
+	use crate::util::string::PrintableString;
+
+	fn payer_pubkey() -> PublicKey {
+		let secp_ctx = Secp256k1::new();
+		KeyPair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap()).public_key()
+	}
+
+	fn pubkey(byte: u8) -> PublicKey {
+		let secp_ctx = Secp256k1::new();
+		PublicKey::from_secret_key(&secp_ctx, &privkey(byte))
+	}
+
+	fn privkey(byte: u8) -> SecretKey {
+		SecretKey::from_slice(&[byte; 32]).unwrap()
+	}
+
+	#[test]
+	fn builds_refund_with_defaults() {
+		let refund = RefundBuilder::new("foo".into(), vec![1; 32], payer_pubkey(), 1000).unwrap()
+			.build().unwrap();
+
+		let mut buffer = Vec::new();
+		refund.write(&mut buffer).unwrap();
+
+		assert_eq!(refund.bytes, buffer.as_slice());
+		assert_eq!(refund.metadata(), &[1; 32]);
+		assert_eq!(refund.description(), PrintableString("foo"));
+		assert_eq!(refund.absolute_expiry(), None);
+		#[cfg(feature = "std")]
+		assert!(!refund.is_expired());
+		assert_eq!(refund.paths(), &[]);
+		assert_eq!(refund.issuer(), None);
+		assert_eq!(refund.chain(), ChainHash::using_genesis_block(Network::Bitcoin));
+		assert_eq!(refund.amount_msats(), 1000);
+		assert_eq!(refund.features(), &InvoiceRequestFeatures::empty());
+		assert_eq!(refund.payer_id(), payer_pubkey());
+		assert_eq!(refund.payer_note(), None);
+
+		assert_eq!(
+			refund.as_tlv_stream(),
+			(
+				PayerTlvStreamRef { metadata: Some(&vec![1; 32]) },
+				OfferTlvStreamRef {
+					chains: None,
+					metadata: None,
+					currency: None,
+					amount: None,
+					description: Some(&String::from("foo")),
+					features: None,
+					absolute_expiry: None,
+					paths: None,
+					issuer: None,
+					quantity_max: None,
+					node_id: None,
+				},
+				InvoiceRequestTlvStreamRef {
+					chain: None,
+					amount: Some(1000),
+					features: None,
+					quantity: None,
+					payer_id: Some(&payer_pubkey()),
+					payer_note: None,
+				},
+			),
+		);
+
+		if let Err(e) = Refund::try_from(buffer) {
+			panic!("error parsing refund: {:?}", e);
+		}
+	}
+
+	#[test]
+	fn fails_building_refund_with_invalid_amount() {
+		match RefundBuilder::new("foo".into(), vec![1; 32], payer_pubkey(), MAX_VALUE_MSAT + 1) {
+			Ok(_) => panic!("expected error"),
+			Err(e) => assert_eq!(e, SemanticError::InvalidAmount),
+		}
+	}
+
+	#[test]
+	fn builds_refund_with_absolute_expiry() {
+		let future_expiry = Duration::from_secs(u64::max_value());
+		let past_expiry = Duration::from_secs(0);
+
+		let refund = RefundBuilder::new("foo".into(), vec![1; 32], payer_pubkey(), 1000).unwrap()
+			.absolute_expiry(future_expiry)
+			.build()
+			.unwrap();
+		let (_, tlv_stream, _) = refund.as_tlv_stream();
+		#[cfg(feature = "std")]
+		assert!(!refund.is_expired());
+		assert_eq!(refund.absolute_expiry(), Some(future_expiry));
+		assert_eq!(tlv_stream.absolute_expiry, Some(future_expiry.as_secs()));
+
+		let refund = RefundBuilder::new("foo".into(), vec![1; 32], payer_pubkey(), 1000).unwrap()
+			.absolute_expiry(future_expiry)
+			.absolute_expiry(past_expiry)
+			.build()
+			.unwrap();
+		let (_, tlv_stream, _) = refund.as_tlv_stream();
+		#[cfg(feature = "std")]
+		assert!(refund.is_expired());
+		assert_eq!(refund.absolute_expiry(), Some(past_expiry));
+		assert_eq!(tlv_stream.absolute_expiry, Some(past_expiry.as_secs()));
+	}
+
+	#[test]
+	fn builds_refund_with_paths() {
+		let paths = vec![
+			BlindedPath {
+				introduction_node_id: pubkey(40),
+				blinding_point: pubkey(41),
+				blinded_hops: vec![
+					BlindedHop { blinded_node_id: pubkey(43), encrypted_payload: vec![0; 43] },
+					BlindedHop { blinded_node_id: pubkey(44), encrypted_payload: vec![0; 44] },
+				],
+			},
+			BlindedPath {
+				introduction_node_id: pubkey(40),
+				blinding_point: pubkey(41),
+				blinded_hops: vec![
+					BlindedHop { blinded_node_id: pubkey(45), encrypted_payload: vec![0; 45] },
+					BlindedHop { blinded_node_id: pubkey(46), encrypted_payload: vec![0; 46] },
+				],
+			},
+		];
+
+		let refund = RefundBuilder::new("foo".into(), vec![1; 32], payer_pubkey(), 1000).unwrap()
+			.path(paths[0].clone())
+			.path(paths[1].clone())
+			.build()
+			.unwrap();
+		let (_, offer_tlv_stream, invoice_request_tlv_stream) = refund.as_tlv_stream();
+		assert_eq!(refund.paths(), paths.as_slice());
+		assert_eq!(refund.payer_id(), pubkey(42));
+		assert_ne!(pubkey(42), pubkey(44));
+		assert_eq!(offer_tlv_stream.paths, Some(&paths));
+		assert_eq!(invoice_request_tlv_stream.payer_id, Some(&pubkey(42)));
+	}
+
+	#[test]
+	fn builds_refund_with_issuer() {
+		let refund = RefundBuilder::new("foo".into(), vec![1; 32], payer_pubkey(), 1000).unwrap()
+			.issuer("bar".into())
+			.build()
+			.unwrap();
+		let (_, tlv_stream, _) = refund.as_tlv_stream();
+		assert_eq!(refund.issuer(), Some(PrintableString("bar")));
+		assert_eq!(tlv_stream.issuer, Some(&String::from("bar")));
+
+		let refund = RefundBuilder::new("foo".into(), vec![1; 32], payer_pubkey(), 1000).unwrap()
+			.issuer("bar".into())
+			.issuer("baz".into())
+			.build()
+			.unwrap();
+		let (_, tlv_stream, _) = refund.as_tlv_stream();
+		assert_eq!(refund.issuer(), Some(PrintableString("baz")));
+		assert_eq!(tlv_stream.issuer, Some(&String::from("baz")));
+	}
+
+	#[test]
+	fn builds_refund_with_chain() {
+		let mainnet = ChainHash::using_genesis_block(Network::Bitcoin);
+		let testnet = ChainHash::using_genesis_block(Network::Testnet);
+
+		let refund = RefundBuilder::new("foo".into(), vec![1; 32], payer_pubkey(), 1000).unwrap()
+			.chain(Network::Bitcoin)
+			.build().unwrap();
+		let (_, _, tlv_stream) = refund.as_tlv_stream();
+		assert_eq!(refund.chain(), mainnet);
+		assert_eq!(tlv_stream.chain, None);
+
+		let refund = RefundBuilder::new("foo".into(), vec![1; 32], payer_pubkey(), 1000).unwrap()
+			.chain(Network::Testnet)
+			.build().unwrap();
+		let (_, _, tlv_stream) = refund.as_tlv_stream();
+		assert_eq!(refund.chain(), testnet);
+		assert_eq!(tlv_stream.chain, Some(&testnet));
+
+		let refund = RefundBuilder::new("foo".into(), vec![1; 32], payer_pubkey(), 1000).unwrap()
+			.chain(Network::Regtest)
+			.chain(Network::Testnet)
+			.build().unwrap();
+		let (_, _, tlv_stream) = refund.as_tlv_stream();
+		assert_eq!(refund.chain(), testnet);
+		assert_eq!(tlv_stream.chain, Some(&testnet));
+	}
+
+	#[test]
+	fn builds_refund_with_payer_note() {
+		let refund = RefundBuilder::new("foo".into(), vec![1; 32], payer_pubkey(), 1000).unwrap()
+			.payer_note("bar".into())
+			.build().unwrap();
+		let (_, _, tlv_stream) = refund.as_tlv_stream();
+		assert_eq!(refund.payer_note(), Some(PrintableString("bar")));
+		assert_eq!(tlv_stream.payer_note, Some(&String::from("bar")));
+
+		let refund = RefundBuilder::new("foo".into(), vec![1; 32], payer_pubkey(), 1000).unwrap()
+			.payer_note("bar".into())
+			.payer_note("baz".into())
+			.build().unwrap();
+		let (_, _, tlv_stream) = refund.as_tlv_stream();
+		assert_eq!(refund.payer_note(), Some(PrintableString("baz")));
+		assert_eq!(tlv_stream.payer_note, Some(&String::from("baz")));
 	}
 }
