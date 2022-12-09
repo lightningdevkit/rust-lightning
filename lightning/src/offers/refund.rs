@@ -183,6 +183,14 @@ impl RefundBuilder {
 	}
 }
 
+#[cfg(test)]
+impl RefundBuilder {
+	fn features_unchecked(mut self, features: InvoiceRequestFeatures) -> Self {
+		self.refund.features = features;
+		self
+	}
+}
+
 /// A `Refund` is a request to send an `Invoice` without a preceding [`Offer`].
 ///
 /// Typically, after an invoice is paid, the recipient may publish a refund allowing the sender to
@@ -480,21 +488,21 @@ impl core::fmt::Display for Refund {
 
 #[cfg(test)]
 mod tests {
-	use super::{Refund, RefundBuilder};
+	use super::{Refund, RefundBuilder, RefundTlvStreamRef};
 
 	use bitcoin::blockdata::constants::ChainHash;
 	use bitcoin::network::constants::Network;
 	use bitcoin::secp256k1::{KeyPair, PublicKey, Secp256k1, SecretKey};
 	use core::convert::TryFrom;
 	use core::time::Duration;
-	use crate::ln::features::InvoiceRequestFeatures;
-	use crate::ln::msgs::MAX_VALUE_MSAT;
+	use crate::ln::features::{InvoiceRequestFeatures, OfferFeatures};
+	use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
 	use crate::offers::invoice_request::InvoiceRequestTlvStreamRef;
 	use crate::offers::offer::OfferTlvStreamRef;
-	use crate::offers::parse::SemanticError;
+	use crate::offers::parse::{ParseError, SemanticError};
 	use crate::offers::payer::PayerTlvStreamRef;
 	use crate::onion_message::{BlindedHop, BlindedPath};
-	use crate::util::ser::Writeable;
+	use crate::util::ser::{BigSize, Writeable};
 	use crate::util::string::PrintableString;
 
 	fn payer_pubkey() -> PublicKey {
@@ -509,6 +517,18 @@ mod tests {
 
 	fn privkey(byte: u8) -> SecretKey {
 		SecretKey::from_slice(&[byte; 32]).unwrap()
+	}
+
+	trait ToBytes {
+		fn to_bytes(&self) -> Vec<u8>;
+	}
+
+	impl<'a> ToBytes for RefundTlvStreamRef<'a> {
+		fn to_bytes(&self) -> Vec<u8> {
+			let mut buffer = Vec::new();
+			self.write(&mut buffer).unwrap();
+			buffer
+		}
 	}
 
 	#[test]
@@ -699,5 +719,230 @@ mod tests {
 		let (_, _, tlv_stream) = refund.as_tlv_stream();
 		assert_eq!(refund.payer_note(), Some(PrintableString("baz")));
 		assert_eq!(tlv_stream.payer_note, Some(&String::from("baz")));
+	}
+
+	#[test]
+	fn parses_refund_with_metadata() {
+		let refund = RefundBuilder::new("foo".into(), vec![1; 32], payer_pubkey(), 1000).unwrap()
+			.build().unwrap();
+		if let Err(e) = refund.to_string().parse::<Refund>() {
+			panic!("error parsing refund: {:?}", e);
+		}
+
+		let mut tlv_stream = refund.as_tlv_stream();
+		tlv_stream.0.metadata = None;
+
+		match Refund::try_from(tlv_stream.to_bytes()) {
+			Ok(_) => panic!("expected error"),
+			Err(e) => {
+				assert_eq!(e, ParseError::InvalidSemantics(SemanticError::MissingPayerMetadata));
+			},
+		}
+	}
+
+	#[test]
+	fn parses_refund_with_description() {
+		let refund = RefundBuilder::new("foo".into(), vec![1; 32], payer_pubkey(), 1000).unwrap()
+			.build().unwrap();
+		if let Err(e) = refund.to_string().parse::<Refund>() {
+			panic!("error parsing refund: {:?}", e);
+		}
+
+		let mut tlv_stream = refund.as_tlv_stream();
+		tlv_stream.1.description = None;
+
+		match Refund::try_from(tlv_stream.to_bytes()) {
+			Ok(_) => panic!("expected error"),
+			Err(e) => {
+				assert_eq!(e, ParseError::InvalidSemantics(SemanticError::MissingDescription));
+			},
+		}
+	}
+
+	#[test]
+	fn parses_refund_with_amount() {
+		let refund = RefundBuilder::new("foo".into(), vec![1; 32], payer_pubkey(), 1000).unwrap()
+			.build().unwrap();
+		if let Err(e) = refund.to_string().parse::<Refund>() {
+			panic!("error parsing refund: {:?}", e);
+		}
+
+		let mut tlv_stream = refund.as_tlv_stream();
+		tlv_stream.2.amount = None;
+
+		match Refund::try_from(tlv_stream.to_bytes()) {
+			Ok(_) => panic!("expected error"),
+			Err(e) => {
+				assert_eq!(e, ParseError::InvalidSemantics(SemanticError::MissingAmount));
+			},
+		}
+
+		let mut tlv_stream = refund.as_tlv_stream();
+		tlv_stream.2.amount = Some(MAX_VALUE_MSAT + 1);
+
+		match Refund::try_from(tlv_stream.to_bytes()) {
+			Ok(_) => panic!("expected error"),
+			Err(e) => {
+				assert_eq!(e, ParseError::InvalidSemantics(SemanticError::InvalidAmount));
+			},
+		}
+	}
+
+	#[test]
+	fn parses_refund_with_payer_id() {
+		let refund = RefundBuilder::new("foo".into(), vec![1; 32], payer_pubkey(), 1000).unwrap()
+			.build().unwrap();
+		if let Err(e) = refund.to_string().parse::<Refund>() {
+			panic!("error parsing refund: {:?}", e);
+		}
+
+		let mut tlv_stream = refund.as_tlv_stream();
+		tlv_stream.2.payer_id = None;
+
+		match Refund::try_from(tlv_stream.to_bytes()) {
+			Ok(_) => panic!("expected error"),
+			Err(e) => {
+				assert_eq!(e, ParseError::InvalidSemantics(SemanticError::MissingPayerId));
+			},
+		}
+	}
+
+	#[test]
+	fn parses_refund_with_optional_fields() {
+		let past_expiry = Duration::from_secs(0);
+		let paths = vec![
+			BlindedPath {
+				introduction_node_id: pubkey(40),
+				blinding_point: pubkey(41),
+				blinded_hops: vec![
+					BlindedHop { blinded_node_id: pubkey(43), encrypted_payload: vec![0; 43] },
+					BlindedHop { blinded_node_id: pubkey(44), encrypted_payload: vec![0; 44] },
+				],
+			},
+			BlindedPath {
+				introduction_node_id: pubkey(40),
+				blinding_point: pubkey(41),
+				blinded_hops: vec![
+					BlindedHop { blinded_node_id: pubkey(45), encrypted_payload: vec![0; 45] },
+					BlindedHop { blinded_node_id: pubkey(46), encrypted_payload: vec![0; 46] },
+				],
+			},
+		];
+
+		let refund = RefundBuilder::new("foo".into(), vec![1; 32], payer_pubkey(), 1000).unwrap()
+			.absolute_expiry(past_expiry)
+			.issuer("bar".into())
+			.path(paths[0].clone())
+			.path(paths[1].clone())
+			.chain(Network::Testnet)
+			.features_unchecked(InvoiceRequestFeatures::unknown())
+			.payer_note("baz".into())
+			.build()
+			.unwrap();
+		match refund.to_string().parse::<Refund>() {
+			Ok(refund) => {
+				assert_eq!(refund.absolute_expiry(), Some(past_expiry));
+				#[cfg(feature = "std")]
+				assert!(refund.is_expired());
+				assert_eq!(refund.paths(), &paths[..]);
+				assert_eq!(refund.issuer(), Some(PrintableString("bar")));
+				assert_eq!(refund.chain(), ChainHash::using_genesis_block(Network::Testnet));
+				assert_eq!(refund.features(), &InvoiceRequestFeatures::unknown());
+				assert_eq!(refund.payer_note(), Some(PrintableString("baz")));
+			},
+			Err(e) => panic!("error parsing refund: {:?}", e),
+		}
+	}
+
+	#[test]
+	fn fails_parsing_refund_with_unexpected_fields() {
+		let refund = RefundBuilder::new("foo".into(), vec![1; 32], payer_pubkey(), 1000).unwrap()
+			.build().unwrap();
+		if let Err(e) = refund.to_string().parse::<Refund>() {
+			panic!("error parsing refund: {:?}", e);
+		}
+
+		let chains = vec![ChainHash::using_genesis_block(Network::Testnet)];
+		let mut tlv_stream = refund.as_tlv_stream();
+		tlv_stream.1.chains = Some(&chains);
+
+		match Refund::try_from(tlv_stream.to_bytes()) {
+			Ok(_) => panic!("expected error"),
+			Err(e) => {
+				assert_eq!(e, ParseError::InvalidSemantics(SemanticError::UnexpectedChain));
+			},
+		}
+
+		let mut tlv_stream = refund.as_tlv_stream();
+		tlv_stream.1.currency = Some(&b"USD");
+		tlv_stream.1.amount = Some(1000);
+
+		match Refund::try_from(tlv_stream.to_bytes()) {
+			Ok(_) => panic!("expected error"),
+			Err(e) => {
+				assert_eq!(e, ParseError::InvalidSemantics(SemanticError::UnexpectedAmount));
+			},
+		}
+
+		let features = OfferFeatures::unknown();
+		let mut tlv_stream = refund.as_tlv_stream();
+		tlv_stream.1.features = Some(&features);
+
+		match Refund::try_from(tlv_stream.to_bytes()) {
+			Ok(_) => panic!("expected error"),
+			Err(e) => {
+				assert_eq!(e, ParseError::InvalidSemantics(SemanticError::UnexpectedFeatures));
+			},
+		}
+
+		let mut tlv_stream = refund.as_tlv_stream();
+		tlv_stream.1.quantity_max = Some(10);
+
+		match Refund::try_from(tlv_stream.to_bytes()) {
+			Ok(_) => panic!("expected error"),
+			Err(e) => {
+				assert_eq!(e, ParseError::InvalidSemantics(SemanticError::UnexpectedQuantity));
+			},
+		}
+
+		let node_id = payer_pubkey();
+		let mut tlv_stream = refund.as_tlv_stream();
+		tlv_stream.1.node_id = Some(&node_id);
+
+		match Refund::try_from(tlv_stream.to_bytes()) {
+			Ok(_) => panic!("expected error"),
+			Err(e) => {
+				assert_eq!(e, ParseError::InvalidSemantics(SemanticError::UnexpectedSigningPubkey));
+			},
+		}
+
+		let mut tlv_stream = refund.as_tlv_stream();
+		tlv_stream.2.quantity = Some(10);
+
+		match Refund::try_from(tlv_stream.to_bytes()) {
+			Ok(_) => panic!("expected error"),
+			Err(e) => {
+				assert_eq!(e, ParseError::InvalidSemantics(SemanticError::UnexpectedQuantity));
+			},
+		}
+	}
+
+	#[test]
+	fn fails_parsing_refund_with_extra_tlv_records() {
+		let secp_ctx = Secp256k1::new();
+		let keys = KeyPair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
+		let refund = RefundBuilder::new("foo".into(), vec![1; 32], keys.public_key(), 1000).unwrap()
+			.build().unwrap();
+
+		let mut encoded_refund = Vec::new();
+		refund.write(&mut encoded_refund).unwrap();
+		BigSize(1002).write(&mut encoded_refund).unwrap();
+		BigSize(32).write(&mut encoded_refund).unwrap();
+		[42u8; 32].write(&mut encoded_refund).unwrap();
+
+		match Refund::try_from(encoded_refund) {
+			Ok(_) => panic!("expected error"),
+			Err(e) => assert_eq!(e, ParseError::Decode(DecodeError::InvalidValue)),
+		}
 	}
 }
