@@ -699,6 +699,9 @@ where
 	/// the corresponding channel for the event, as we only have access to the `channel_id` during
 	/// the handling of the events.
 	///
+	/// Note that no consistency guarantees are made about the existence of a peer with the
+	/// `counterparty_node_id` in our other maps.
+	///
 	/// TODO:
 	/// The `counterparty_node_id` isn't passed with `MonitorEvent`s currently. To pass it, we need
 	/// to make `counterparty_node_id`'s a required field in `ChannelMonitor`s, which unfortunately
