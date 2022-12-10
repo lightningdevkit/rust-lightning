@@ -6160,11 +6160,17 @@ where
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 
 		if msg.channel_id == [0; 32] {
-			for chan in self.list_channels() {
-				if chan.counterparty.node_id == *counterparty_node_id {
-					// Untrusted messages from peer, we throw away the error if id points to a non-existent channel
-					let _ = self.force_close_channel_with_peer(&chan.channel_id, counterparty_node_id, Some(&msg.data), true);
-				}
+			let channel_ids: Vec<[u8; 32]> = {
+				let per_peer_state = self.per_peer_state.read().unwrap();
+				let peer_state_mutex_opt = per_peer_state.get(counterparty_node_id);
+				if let None = peer_state_mutex_opt { return; }
+				let mut peer_state_lock = peer_state_mutex_opt.unwrap().lock().unwrap();
+				let peer_state = &mut *peer_state_lock;
+				peer_state.channel_by_id.keys().cloned().collect()
+			};
+			for channel_id in channel_ids {
+				// Untrusted messages from peer, we throw away the error if id points to a non-existent channel
+				let _ = self.force_close_channel_with_peer(&channel_id, counterparty_node_id, Some(&msg.data), true);
 			}
 		} else {
 			{
