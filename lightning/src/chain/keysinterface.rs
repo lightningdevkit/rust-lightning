@@ -7,9 +7,10 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-//! keysinterface provides keys into rust-lightning and defines some useful enums which describe
-//! spendable on-chain outputs which the user owns and is responsible for using just as any other
-//! on-chain output which is theirs.
+//! Provides keys to LDK and defines some useful objects describing spendable on-chain outputs.
+//!
+//! The provided output descriptors follow a custom LDK data format and are currently not fully
+//! compatible with Bitcoin Core output descriptors.
 
 use bitcoin::blockdata::transaction::{Transaction, TxOut, TxIn, EcdsaSighashType};
 use bitcoin::blockdata::script::{Script, Builder};
@@ -52,29 +53,30 @@ use crate::util::invoice::construct_invoice_preimage;
 
 /// Used as initial key material, to be expanded into multiple secret keys (but not to be used
 /// directly). This is used within LDK to encrypt/decrypt inbound payment data.
-/// (C-not exported) as we just use [u8; 32] directly
+///
+/// (C-not exported) as we just use `[u8; 32]` directly
 #[derive(Hash, Copy, Clone, PartialEq, Eq, Debug)]
 pub struct KeyMaterial(pub [u8; 32]);
 
-/// Information about a spendable output to a P2WSH script. See
-/// SpendableOutputDescriptor::DelayedPaymentOutput for more details on how to spend this.
+/// Information about a spendable output to a P2WSH script.
+///
+/// See [`SpendableOutputDescriptor::DelayedPaymentOutput`] for more details on how to spend this.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DelayedPaymentOutputDescriptor {
-	/// The outpoint which is spendable
+	/// The outpoint which is spendable.
 	pub outpoint: OutPoint,
-	/// Per commitment point to derive delayed_payment_key by key holder
+	/// Per commitment point to derive the delayed payment key by key holder.
 	pub per_commitment_point: PublicKey,
-	/// The nSequence value which must be set in the spending input to satisfy the OP_CSV in
+	/// The `nSequence` value which must be set in the spending input to satisfy the `OP_CSV` in
 	/// the witness_script.
 	pub to_self_delay: u16,
-	/// The output which is referenced by the given outpoint
+	/// The output which is referenced by the given outpoint.
 	pub output: TxOut,
 	/// The revocation point specific to the commitment transaction which was broadcast. Used to
 	/// derive the witnessScript for this output.
 	pub revocation_pubkey: PublicKey,
-	/// Arbitrary identification information returned by a call to
-	/// `Sign::channel_keys_id()`. This may be useful in re-deriving keys used in
-	/// the channel to spend the output.
+	/// Arbitrary identification information returned by a call to [`BaseSign::channel_keys_id`].
+	/// This may be useful in re-deriving keys used in the channel to spend the output.
 	pub channel_keys_id: [u8; 32],
 	/// The value of the channel which this output originated from, possibly indirectly.
 	pub channel_value_satoshis: u64,
@@ -96,17 +98,17 @@ impl_writeable_tlv_based!(DelayedPaymentOutputDescriptor, {
 	(12, channel_value_satoshis, required),
 });
 
-/// Information about a spendable output to our "payment key". See
-/// SpendableOutputDescriptor::StaticPaymentOutput for more details on how to spend this.
+/// Information about a spendable output to our "payment key".
+///
+/// See [`SpendableOutputDescriptor::StaticPaymentOutput`] for more details on how to spend this.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StaticPaymentOutputDescriptor {
-	/// The outpoint which is spendable
+	/// The outpoint which is spendable.
 	pub outpoint: OutPoint,
-	/// The output which is referenced by the given outpoint
+	/// The output which is referenced by the given outpoint.
 	pub output: TxOut,
-	/// Arbitrary identification information returned by a call to
-	/// `Sign::channel_keys_id()`. This may be useful in re-deriving keys used in
-	/// the channel to spend the output.
+	/// Arbitrary identification information returned by a call to [`BaseSign::channel_keys_id`].
+	/// This may be useful in re-deriving keys used in the channel to spend the output.
 	pub channel_keys_id: [u8; 32],
 	/// The value of the channel which this transactions spends.
 	pub channel_value_satoshis: u64,
@@ -124,57 +126,76 @@ impl_writeable_tlv_based!(StaticPaymentOutputDescriptor, {
 	(6, channel_value_satoshis, required),
 });
 
-/// When on-chain outputs are created by rust-lightning (which our counterparty is not able to
-/// claim at any point in the future) an event is generated which you must track and be able to
-/// spend on-chain. The information needed to do this is provided in this enum, including the
-/// outpoint describing which txid and output index is available, the full output which exists at
-/// that txid/index, and any keys or other information required to sign.
+/// Describes the necessary information to spend a spendable output.
+///
+/// When on-chain outputs are created by LDK (which our counterparty is not able to claim at any
+/// point in the future) a [`SpendableOutputs`] event is generated which you must track and be able
+/// to spend on-chain. The information needed to do this is provided in this enum, including the
+/// outpoint describing which `txid` and output `index` is available, the full output which exists
+/// at that `txid`/`index`, and any keys or other information required to sign.
+///
+/// [`SpendableOutputs`]: crate::util::events::Event::SpendableOutputs
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SpendableOutputDescriptor {
-	/// An output to a script which was provided via KeysInterface directly, either from
-	/// `get_destination_script()` or `get_shutdown_scriptpubkey()`, thus you should already know
-	/// how to spend it. No secret keys are provided as rust-lightning was never given any key.
+	/// An output to a script which was provided via [`KeysInterface`] directly, either from
+	/// [`get_destination_script`] or [`get_shutdown_scriptpubkey`], thus you should already
+	/// know how to spend it. No secret keys are provided as LDK was never given any key.
 	/// These may include outputs from a transaction punishing our counterparty or claiming an HTLC
 	/// on-chain using the payment preimage or after it has timed out.
+	///
+	/// [`get_shutdown_scriptpubkey`]: KeysInterface::get_shutdown_scriptpubkey
+	/// [`get_destination_script`]: KeysInterface::get_shutdown_scriptpubkey
 	StaticOutput {
-		/// The outpoint which is spendable
+		/// The outpoint which is spendable.
 		outpoint: OutPoint,
 		/// The output which is referenced by the given outpoint.
 		output: TxOut,
 	},
-	/// An output to a P2WSH script which can be spent with a single signature after a CSV delay.
+	/// An output to a P2WSH script which can be spent with a single signature after an `OP_CSV`
+	/// delay.
 	///
 	/// The witness in the spending input should be:
+	/// ```bitcoin
 	/// <BIP 143 signature> <empty vector> (MINIMALIF standard rule) <provided witnessScript>
+	/// ```
 	///
-	/// Note that the nSequence field in the spending input must be set to to_self_delay
-	/// (which means the transaction is not broadcastable until at least to_self_delay
-	/// blocks after the outpoint confirms).
+	/// Note that the `nSequence` field in the spending input must be set to
+	/// [`DelayedPaymentOutputDescriptor::to_self_delay`] (which means the transaction is not
+	/// broadcastable until at least [`DelayedPaymentOutputDescriptor::to_self_delay`] blocks after
+	/// the outpoint confirms, see [BIP
+	/// 68](https://github.com/bitcoin/bips/blob/master/bip-0068.mediawiki)). Also note that LDK
+	/// won't generate a [`SpendableOutputDescriptor`] until the corresponding block height
+	/// is reached.
 	///
 	/// These are generally the result of a "revocable" output to us, spendable only by us unless
 	/// it is an output from an old state which we broadcast (which should never happen).
 	///
-	/// To derive the delayed_payment key which is used to sign for this input, you must pass the
-	/// holder delayed_payment_base_key (ie the private key which corresponds to the pubkey in
-	/// Sign::pubkeys().delayed_payment_basepoint) and the provided per_commitment_point to
-	/// chan_utils::derive_private_key. The public key can be generated without the secret key
-	/// using chan_utils::derive_public_key and only the delayed_payment_basepoint which appears in
-	/// Sign::pubkeys().
+	/// To derive the delayed payment key which is used to sign this input, you must pass the
+	/// holder [`InMemorySigner::delayed_payment_base_key`] (i.e., the private key which corresponds to the
+	/// [`ChannelPublicKeys::delayed_payment_basepoint`] in [`BaseSign::pubkeys`]) and the provided
+	/// [`DelayedPaymentOutputDescriptor::per_commitment_point`] to [`chan_utils::derive_private_key`]. The public key can be
+	/// generated without the secret key using [`chan_utils::derive_public_key`] and only the
+	/// [`ChannelPublicKeys::delayed_payment_basepoint`] which appears in [`BaseSign::pubkeys`].
 	///
-	/// To derive the revocation_pubkey provided here (which is used in the witness
-	/// script generation), you must pass the counterparty revocation_basepoint (which appears in the
-	/// call to Sign::provide_channel_parameters) and the provided per_commitment point
-	/// to chan_utils::derive_public_revocation_key.
+	/// To derive the [`DelayedPaymentOutputDescriptor::revocation_pubkey`] provided here (which is
+	/// used in the witness script generation), you must pass the counterparty
+	/// [`ChannelPublicKeys::revocation_basepoint`] (which appears in the call to
+	/// [`BaseSign::provide_channel_parameters`]) and the provided
+	/// [`DelayedPaymentOutputDescriptor::per_commitment_point`] to
+	/// [`chan_utils::derive_public_revocation_key`].
 	///
-	/// The witness script which is hashed and included in the output script_pubkey may be
-	/// regenerated by passing the revocation_pubkey (derived as above), our delayed_payment pubkey
-	/// (derived as above), and the to_self_delay contained here to
-	/// chan_utils::get_revokeable_redeemscript.
+	/// The witness script which is hashed and included in the output `script_pubkey` may be
+	/// regenerated by passing the [`DelayedPaymentOutputDescriptor::revocation_pubkey`] (derived
+	/// as explained above), our delayed payment pubkey (derived as explained above), and the
+	/// [`DelayedPaymentOutputDescriptor::to_self_delay`] contained here to
+	/// [`chan_utils::get_revokeable_redeemscript`].
 	DelayedPaymentOutput(DelayedPaymentOutputDescriptor),
-	/// An output to a P2WPKH, spendable exclusively by our payment key (ie the private key which
-	/// corresponds to the public key in Sign::pubkeys().payment_point).
-	/// The witness in the spending input, is, thus, simply:
+	/// An output to a P2WPKH, spendable exclusively by our payment key (i.e., the private key
+	/// which corresponds to the `payment_point` in [`BaseSign::pubkeys`]). The witness
+	/// in the spending input is, thus, simply:
+	/// ```bitcoin
 	/// <BIP 143 signature> <payment key>
+	/// ```
 	///
 	/// These are generally the result of our counterparty having broadcast the current state,
 	/// allowing us to claim the non-HTLC-encumbered outputs immediately.
@@ -191,29 +212,17 @@ impl_writeable_tlv_based_enum!(SpendableOutputDescriptor,
 	(2, StaticPaymentOutput),
 );
 
-/// A trait to sign lightning channel transactions as described in BOLT 3.
+/// A trait to sign Lightning channel transactions as described in
+/// [BOLT 3](https://github.com/lightning/bolts/blob/master/03-transactions.md).
 ///
-/// Signing services could be implemented on a hardware wallet. In this case,
-/// the current Sign would be a front-end on top of a communication
-/// channel connected to your secure device and lightning key material wouldn't
-/// reside on a hot server. Nevertheless, a this deployment would still need
-/// to trust the ChannelManager to avoid loss of funds as this latest component
-/// could ask to sign commitment transaction with HTLCs paying to attacker pubkeys.
-///
-/// A more secure iteration would be to use hashlock (or payment points) to pair
-/// invoice/incoming HTLCs with outgoing HTLCs to implement a no-trust-ChannelManager
-/// at the price of more state and computation on the hardware wallet side. In the future,
-/// we are looking forward to design such interface.
-///
-/// In any case, ChannelMonitor or fallback watchtowers are always going to be trusted
-/// to act, as liveness and breach reply correctness are always going to be hard requirements
-/// of LN security model, orthogonal of key management issues.
-// TODO: We should remove Clone by instead requesting a new Sign copy when we create
-// ChannelMonitors instead of expecting to clone the one out of the Channel into the monitors.
+/// Signing services could be implemented on a hardware wallet and should implement signing
+/// policies in order to be secure. Please refer to the [VLS Policy
+/// Controls](https://gitlab.com/lightning-signer/validating-lightning-signer/-/blob/main/docs/policy-controls.md)
+/// for an example of such policies.
 pub trait BaseSign {
 	/// Gets the per-commitment point for a specific commitment number
 	///
-	/// Note that the commitment number starts at (1 << 48) - 1 and counts backwards.
+	/// Note that the commitment number starts at `(1 << 48) - 1` and counts backwards.
 	fn get_per_commitment_point(&self, idx: u64, secp_ctx: &Secp256k1<secp256k1::All>) -> PublicKey;
 	/// Gets the commitment secret for a specific commitment number as part of the revocation process
 	///
@@ -222,7 +231,7 @@ pub trait BaseSign {
 	///
 	/// May be called more than once for the same index.
 	///
-	/// Note that the commitment number starts at (1 << 48) - 1 and counts backwards.
+	/// Note that the commitment number starts at `(1 << 48) - 1` and counts backwards.
 	// TODO: return a Result so we can signal a validation error
 	fn release_commitment_secret(&self, idx: u64) -> [u8; 32];
 	/// Validate the counterparty's signatures on the holder commitment transaction and HTLCs.
@@ -236,16 +245,16 @@ pub trait BaseSign {
 	/// A validating signer should ensure that an HTLC output is removed only when the matching
 	/// preimage is provided, or when the value to holder is restored.
 	///
-	/// NOTE: all the relevant preimages will be provided, but there may also be additional
+	/// Note that all the relevant preimages will be provided, but there may also be additional
 	/// irrelevant or duplicate preimages.
-	fn validate_holder_commitment(&self, holder_tx: &HolderCommitmentTransaction, preimages: Vec<PaymentPreimage>) -> Result<(), ()>;
-	/// Gets the holder's channel public keys and basepoints
+	fn validate_holder_commitment(&self, holder_tx: &HolderCommitmentTransaction,
+		preimages: Vec<PaymentPreimage>) -> Result<(), ()>;
+	/// Returns the holder's channel public keys and basepoints.
 	fn pubkeys(&self) -> &ChannelPublicKeys;
-	/// Gets an arbitrary identifier describing the set of keys which are provided back to you in
-	/// some SpendableOutputDescriptor types. This should be sufficient to identify this
-	/// Sign object uniquely and lookup or re-derive its keys.
+	/// Returns an arbitrary identifier describing the set of keys which are provided back to you in
+	/// some [`SpendableOutputDescriptor`] types. This should be sufficient to identify this
+	/// [`BaseSign`] object uniquely and lookup or re-derive its keys.
 	fn channel_keys_id(&self) -> [u8; 32];
-
 	/// Create a signature for a counterparty's commitment transaction and associated HTLC transactions.
 	///
 	/// Note that if signing fails or is rejected, the channel will be force-closed.
@@ -257,40 +266,43 @@ pub trait BaseSign {
 	/// A validating signer should ensure that an HTLC output is removed only when the matching
 	/// preimage is provided, or when the value to holder is restored.
 	///
-	/// NOTE: all the relevant preimages will be provided, but there may also be additional
+	/// Note that all the relevant preimages will be provided, but there may also be additional
 	/// irrelevant or duplicate preimages.
 	//
 	// TODO: Document the things someone using this interface should enforce before signing.
-	fn sign_counterparty_commitment(&self, commitment_tx: &CommitmentTransaction, preimages: Vec<PaymentPreimage>, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<(Signature, Vec<Signature>), ()>;
+	fn sign_counterparty_commitment(&self, commitment_tx: &CommitmentTransaction,
+		preimages: Vec<PaymentPreimage>, secp_ctx: &Secp256k1<secp256k1::All>
+	) -> Result<(Signature, Vec<Signature>), ()>;
 	/// Validate the counterparty's revocation.
 	///
 	/// This is required in order for the signer to make sure that the state has moved
 	/// forward and it is safe to sign the next counterparty commitment.
 	fn validate_counterparty_revocation(&self, idx: u64, secret: &SecretKey) -> Result<(), ()>;
-
-	/// Create a signatures for a holder's commitment transaction and its claiming HTLC transactions.
-	/// This will only ever be called with a non-revoked commitment_tx.  This will be called with the
-	/// latest commitment_tx when we initiate a force-close.
-	/// This will be called with the previous latest, just to get claiming HTLC signatures, if we are
-	/// reacting to a ChannelMonitor replica that decided to broadcast before it had been updated to
-	/// the latest.
+	/// Creates a signature for a holder's commitment transaction and its claiming HTLC transactions.
+	///
+	/// This will be called
+	/// - with a non-revoked `commitment_tx`.
+	/// - with the latest `commitment_tx` when we initiate a force-close.
+	/// - with the previous `commitment_tx`, just to get claiming HTLC
+	///   signatures, if we are reacting to a [`ChannelMonitor`]
+	///   [replica](https://github.com/lightningdevkit/rust-lightning/blob/main/GLOSSARY.md#monitor-replicas)
+	///   that decided to broadcast before it had been updated to the latest `commitment_tx`.
+	///
 	/// This may be called multiple times for the same transaction.
 	///
 	/// An external signer implementation should check that the commitment has not been revoked.
 	///
-	/// May return Err if key derivation fails.  Callers, such as ChannelMonitor, will panic in such a case.
-	//
+	/// [`ChannelMonitor`]: crate::chain::channelmonitor::ChannelMonitor
 	// TODO: Document the things someone using this interface should enforce before signing.
-	// TODO: Key derivation failure should panic rather than Err
-	fn sign_holder_commitment_and_htlcs(&self, commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<(Signature, Vec<Signature>), ()>;
-
-	/// Same as sign_holder_commitment, but exists only for tests to get access to holder commitment
-	/// transactions which will be broadcasted later, after the channel has moved on to a newer
-	/// state. Thus, needs its own method as sign_holder_commitment may enforce that we only ever
-	/// get called once.
+	fn sign_holder_commitment_and_htlcs(&self, commitment_tx: &HolderCommitmentTransaction,
+		secp_ctx: &Secp256k1<secp256k1::All>) -> Result<(Signature, Vec<Signature>), ()>;
+	/// Same as [`sign_holder_commitment_and_htlcs`], but exists only for tests to get access to
+	/// holder commitment transactions which will be broadcasted later, after the channel has moved
+	/// on to a newer state. Thus, needs its own method as [`sign_holder_commitment_and_htlcs`] may
+	/// enforce that we only ever get called once.
 	#[cfg(any(test,feature = "unsafe_revoked_tx_signing"))]
-	fn unsafe_sign_holder_commitment_and_htlcs(&self, commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<(Signature, Vec<Signature>), ()>;
-
+	fn unsafe_sign_holder_commitment_and_htlcs(&self, commitment_tx: &HolderCommitmentTransaction,
+		secp_ctx: &Secp256k1<secp256k1::All>) -> Result<(Signature, Vec<Signature>), ()>;
 	/// Create a signature for the given input in a transaction spending an HTLC transaction output
 	/// or a commitment transaction `to_local` output when our counterparty broadcasts an old state.
 	///
@@ -301,12 +313,13 @@ pub trait BaseSign {
 	///
 	/// Amount is value of the output spent by this input, committed to in the BIP 143 signature.
 	///
-	/// per_commitment_key is revocation secret which was provided by our counterparty when they
+	/// `per_commitment_key` is revocation secret which was provided by our counterparty when they
 	/// revoked the state which they eventually broadcast. It's not a _holder_ secret key and does
-	/// not allow the spending of any funds by itself (you need our holder revocation_secret to do
+	/// not allow the spending of any funds by itself (you need our holder `revocation_secret` to do
 	/// so).
-	fn sign_justice_revoked_output(&self, justice_tx: &Transaction, input: usize, amount: u64, per_commitment_key: &SecretKey, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()>;
-
+	fn sign_justice_revoked_output(&self, justice_tx: &Transaction, input: usize, amount: u64,
+		per_commitment_key: &SecretKey, secp_ctx: &Secp256k1<secp256k1::All>
+	) -> Result<Signature, ()>;
 	/// Create a signature for the given input in a transaction spending a commitment transaction
 	/// HTLC output when our counterparty broadcasts an old state.
 	///
@@ -315,30 +328,30 @@ pub trait BaseSign {
 	/// It may be called multiple times for same output(s) if a fee-bump is needed with regards
 	/// to an upcoming timelock expiration.
 	///
-	/// Amount is value of the output spent by this input, committed to in the BIP 143 signature.
+	/// `amount` is the value of the output spent by this input, committed to in the BIP 143
+	/// signature.
 	///
-	/// per_commitment_key is revocation secret which was provided by our counterparty when they
+	/// `per_commitment_key` is revocation secret which was provided by our counterparty when they
 	/// revoked the state which they eventually broadcast. It's not a _holder_ secret key and does
 	/// not allow the spending of any funds by itself (you need our holder revocation_secret to do
 	/// so).
 	///
-	/// htlc holds HTLC elements (hash, timelock), thus changing the format of the witness script
+	/// `htlc` holds HTLC elements (hash, timelock), thus changing the format of the witness script
 	/// (which is committed to in the BIP 143 signatures).
-	fn sign_justice_revoked_htlc(&self, justice_tx: &Transaction, input: usize, amount: u64, per_commitment_key: &SecretKey, htlc: &HTLCOutputInCommitment, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()>;
-
+	fn sign_justice_revoked_htlc(&self, justice_tx: &Transaction, input: usize, amount: u64,
+		per_commitment_key: &SecretKey, htlc: &HTLCOutputInCommitment,
+		secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()>;
 	#[cfg(anchors)]
 	/// Computes the signature for a commitment transaction's HTLC output used as an input within
-	/// `htlc_tx`, which spends the commitment transaction, at index `input`. The signature returned
+	/// `htlc_tx`, which spends the commitment transaction at index `input`. The signature returned
 	/// must be be computed using [`EcdsaSighashType::All`]. Note that this should only be used to
 	/// sign HTLC transactions from channels supporting anchor outputs after all additional
 	/// inputs/outputs have been added to the transaction.
 	///
 	/// [`EcdsaSighashType::All`]: bitcoin::blockdata::transaction::EcdsaSighashType::All
-	fn sign_holder_htlc_transaction(
-		&self, htlc_tx: &Transaction, input: usize, htlc_descriptor: &HTLCDescriptor,
-		secp_ctx: &Secp256k1<secp256k1::All>
+	fn sign_holder_htlc_transaction(&self, htlc_tx: &Transaction, input: usize,
+		htlc_descriptor: &HTLCDescriptor, secp_ctx: &Secp256k1<secp256k1::All>
 	) -> Result<Signature, ()>;
-
 	/// Create a signature for a claiming transaction for a HTLC output on a counterparty's commitment
 	/// transaction, either offered or received.
 	///
@@ -347,29 +360,29 @@ pub trait BaseSign {
 	/// signed for here. It may be called multiple times for same output(s) if a fee-bump is
 	/// needed with regards to an upcoming timelock expiration.
 	///
-	/// Witness_script is either a offered or received script as defined in BOLT3 for HTLC
+	/// `witness_script` is either an offered or received script as defined in BOLT3 for HTLC
 	/// outputs.
 	///
-	/// Amount is value of the output spent by this input, committed to in the BIP 143 signature.
+	/// `amount` is value of the output spent by this input, committed to in the BIP 143 signature.
 	///
-	/// Per_commitment_point is the dynamic point corresponding to the channel state
+	/// `per_commitment_point` is the dynamic point corresponding to the channel state
 	/// detected onchain. It has been generated by our counterparty and is used to derive
 	/// channel state keys, which are then included in the witness script and committed to in the
 	/// BIP 143 signature.
-	fn sign_counterparty_htlc_transaction(&self, htlc_tx: &Transaction, input: usize, amount: u64, per_commitment_point: &PublicKey, htlc: &HTLCOutputInCommitment, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()>;
-
+	fn sign_counterparty_htlc_transaction(&self, htlc_tx: &Transaction, input: usize, amount: u64,
+		per_commitment_point: &PublicKey, htlc: &HTLCOutputInCommitment,
+		secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()>;
 	/// Create a signature for a (proposed) closing transaction.
 	///
 	/// Note that, due to rounding, there may be one "missing" satoshi, and either party may have
 	/// chosen to forgo their output as dust.
-	fn sign_closing_transaction(&self, closing_tx: &ClosingTransaction, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()>;
-
+	fn sign_closing_transaction(&self, closing_tx: &ClosingTransaction,
+		secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()>;
 	/// Computes the signature for a commitment transaction's anchor output used as an
 	/// input within `anchor_tx`, which spends the commitment transaction, at index `input`.
 	fn sign_holder_anchor_input(
 		&self, anchor_tx: &Transaction, input: usize, secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<Signature, ()>;
-
 	/// Signs a channel announcement message with our funding key and our node secret key (aka
 	/// node_id or network_key), proving it comes from one of the channel participants.
 	///
@@ -381,11 +394,10 @@ pub trait BaseSign {
 	/// protocol.
 	fn sign_channel_announcement(&self, msg: &UnsignedChannelAnnouncement, secp_ctx: &Secp256k1<secp256k1::All>)
 		-> Result<(Signature, Signature), ()>;
-
 	/// Set the counterparty static channel data, including basepoints,
-	/// counterparty_selected/holder_selected_contest_delay and funding outpoint. Since these are
-	/// static channel data, they MUST NOT be allowed to change to different values once set, as LDK
-	/// may call this method more than once.
+	/// `counterparty_selected`/`holder_selected_contest_delay` and funding outpoint. Since these
+	/// are static channel data, they MUST NOT be allowed to change to different values once set,
+	/// as LDK may call this method more than once.
 	///
 	/// channel_parameters.is_populated() MUST be true.
 	fn provide_channel_parameters(&mut self, channel_parameters: &ChannelTransactionParameters);
@@ -398,11 +410,12 @@ pub trait BaseSign {
 ///
 /// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 /// [`ChannelMonitor`]: crate::chain::channelmonitor::ChannelMonitor
-pub trait Sign: BaseSign + Writeable {
-}
+pub trait Sign: BaseSign + Writeable {}
 
-/// Specifies the recipient of an invoice, to indicate to [`KeysInterface::sign_invoice`] what node
-/// secret key should be used to sign the invoice.
+/// Specifies the recipient of an invoice.
+///
+/// This indicates to [`KeysInterface::sign_invoice`] what node secret key should be used to sign
+/// the invoice.
 pub enum Recipient {
 	/// The invoice should be signed with the local node secret key.
 	Node,
@@ -415,27 +428,26 @@ pub enum Recipient {
 
 /// A trait to describe an object which can get user secrets and key material.
 pub trait KeysInterface {
-	/// A type which implements Sign which will be returned by derive_channel_signer.
+	/// A type which implements [`Sign`] which will be returned by [`Self::derive_channel_signer`].
 	type Signer : Sign;
-
 	/// Get node secret key based on the provided [`Recipient`].
 	///
-	/// The node_id/network_key is the public key that corresponds to this secret key.
+	/// The `node_id`/`network_key` is the public key that corresponds to this secret key.
 	///
-	/// This method must return the same value each time it is called with a given `Recipient`
+	/// This method must return the same value each time it is called with a given [`Recipient`]
 	/// parameter.
 	///
-	/// Errors if the `Recipient` variant is not supported by the implementation.
+	/// Errors if the [`Recipient`] variant is not supported by the implementation.
 	fn get_node_secret(&self, recipient: Recipient) -> Result<SecretKey, ()>;
 	/// Get node id based on the provided [`Recipient`]. This public key corresponds to the secret in
 	/// [`get_node_secret`].
 	///
-	/// This method must return the same value each time it is called with a given `Recipient`
+	/// This method must return the same value each time it is called with a given [`Recipient`]
 	/// parameter.
 	///
-	/// Errors if the `Recipient` variant is not supported by the implementation.
+	/// Errors if the [`Recipient`] variant is not supported by the implementation.
 	///
-	/// [`get_node_secret`]: KeysInterface::get_node_secret
+	/// [`get_node_secret`]: Self::get_node_secret
 	fn get_node_id(&self, recipient: Recipient) -> Result<PublicKey, ()> {
 		let secp_ctx = Secp256k1::signing_only();
 		Ok(PublicKey::from_secret_key(&secp_ctx, &self.get_node_secret(recipient)?))
@@ -444,7 +456,7 @@ pub trait KeysInterface {
 	/// one is provided. Note that this tweak can be applied to `other_key` instead of our node
 	/// secret, though this is less efficient.
 	///
-	/// Errors if the `Recipient` variant is not supported by the implementation.
+	/// Errors if the [`Recipient`] variant is not supported by the implementation.
 	///
 	/// [`node secret`]: Self::get_node_secret
 	fn ecdh(&self, recipient: Recipient, other_key: &PublicKey, tweak: Option<&Scalar>) -> Result<SharedSecret, ()>;
@@ -458,10 +470,8 @@ pub trait KeysInterface {
 	/// This method should return a different value each time it is called, to avoid linking
 	/// on-chain funds across channels as controlled to the same user.
 	fn get_shutdown_scriptpubkey(&self) -> ShutdownScript;
-	/// Generates a unique `channel_keys_id` that can be used to obtain a `Signer` through
-	/// [`KeysInterface::derive_channel_signer`]. The `user_channel_id` is provided to allow
-	/// implementations of `KeysInterface` to maintain a mapping between it and the generated
-	/// `channel_keys_id`.
+	/// Get a new set of [`Sign`] for per-channel secrets. These MUST be unique even if you
+	/// restarted with some stale data!
 	///
 	/// This method must return a different value each time it is called.
 	fn generate_channel_keys_id(&self, inbound: bool, channel_value_satoshis: u64, user_channel_id: u128) -> [u8; 32];
@@ -478,37 +488,38 @@ pub trait KeysInterface {
 	///
 	/// This method must return a different value each time it is called.
 	fn get_secure_random_bytes(&self) -> [u8; 32];
-
-	/// Reads a `Signer` for this `KeysInterface` from the given input stream.
+	/// Reads a [`Signer`] for this [`KeysInterface`] from the given input stream.
 	/// This is only called during deserialization of other objects which contain
-	/// `Sign`-implementing objects (ie `ChannelMonitor`s and `ChannelManager`s).
+	/// [`Sign`]-implementing objects (i.e., [`ChannelMonitor`]s and [`ChannelManager`]s).
 	/// The bytes are exactly those which `<Self::Signer as Writeable>::write()` writes, and
 	/// contain no versioning scheme. You may wish to include your own version prefix and ensure
 	/// you've read all of the provided bytes to ensure no corruption occurred.
 	///
 	/// This method is slowly being phased out -- it will only be called when reading objects
 	/// written by LDK versions prior to 0.0.113.
+	///
+	/// [`Signer`]: Self::Signer
+	/// [`ChannelMonitor`]: crate::chain::channelmonitor::ChannelMonitor
+	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 	fn read_chan_signer(&self, reader: &[u8]) -> Result<Self::Signer, DecodeError>;
-
 	/// Sign an invoice.
 	/// By parameterizing by the raw invoice bytes instead of the hash, we allow implementors of
 	/// this trait to parse the invoice and make sure they're signing what they expect, rather than
 	/// blindly signing the hash.
-	/// The hrp is ascii bytes, while the invoice data is base32.
+	/// The `hrp` is ASCII bytes, while the invoice data is base32-encoded.
 	///
 	/// The secret key used to sign the invoice is dependent on the [`Recipient`].
 	///
-	/// Errors if the `Recipient` variant is not supported by the implementation.
+	/// Errors if the [`Recipient`] variant is not supported by the implementation.
 	fn sign_invoice(&self, hrp_bytes: &[u8], invoice_data: &[u5], receipient: Recipient) -> Result<RecoverableSignature, ()>;
-
 	/// Get secret key material as bytes for use in encrypting and decrypting inbound payment data.
 	///
 	/// If the implementor of this trait supports [phantom node payments], then every node that is
 	/// intended to be included in the phantom invoice route hints must return the same value from
 	/// this method.
-	//  This is because LDK avoids storing inbound payment data by encrypting payment data in the
-	//  payment hash and/or payment secret, therefore for a payment to be receivable by multiple
-	//  nodes, they must share the key that encrypts this payment data.
+	// This is because LDK avoids storing inbound payment data by encrypting payment data in the
+	// payment hash and/or payment secret, therefore for a payment to be receivable by multiple
+	// nodes, they must share the key that encrypts this payment data.
 	///
 	/// This method must return the same value each time it is called.
 	///
@@ -517,37 +528,38 @@ pub trait KeysInterface {
 }
 
 #[derive(Clone)]
-/// A simple implementation of Sign that just keeps the private keys in memory.
+/// A simple implementation of [`Sign`] that just keeps the private keys in memory.
 ///
 /// This implementation performs no policy checks and is insufficient by itself as
 /// a secure external signer.
 pub struct InMemorySigner {
-	/// Private key of anchor tx
+	/// Holder secret key in the 2-of-2 multisig script of a channel. This key also backs the
+	/// holder's anchor output in a commitment transaction, if one is present.
 	pub funding_key: SecretKey,
-	/// Holder secret key for blinded revocation pubkey
+	/// Holder secret key for blinded revocation pubkey.
 	pub revocation_base_key: SecretKey,
-	/// Holder secret key used for our balance in counterparty-broadcasted commitment transactions
+	/// Holder secret key used for our balance in counterparty-broadcasted commitment transactions.
 	pub payment_key: SecretKey,
-	/// Holder secret key used in HTLC tx
+	/// Holder secret key used in an HTLC transaction.
 	pub delayed_payment_base_key: SecretKey,
-	/// Holder htlc secret key used in commitment tx htlc outputs
+	/// Holder HTLC secret key used in commitment transaction HTLC outputs.
 	pub htlc_base_key: SecretKey,
-	/// Commitment seed
+	/// Commitment seed.
 	pub commitment_seed: [u8; 32],
-	/// Holder public keys and basepoints
+	/// Holder public keys and basepoints.
 	pub(crate) holder_channel_pubkeys: ChannelPublicKeys,
-	/// Private key of our node secret, used for signing channel announcements
+	/// Private key of our node secret, used for signing channel announcements.
 	node_secret: SecretKey,
-	/// Counterparty public keys and counterparty/holder selected_contest_delay, populated on channel acceptance
+	/// Counterparty public keys and counterparty/holder `selected_contest_delay`, populated on channel acceptance.
 	channel_parameters: Option<ChannelTransactionParameters>,
-	/// The total value of this channel
+	/// The total value of this channel.
 	channel_value_satoshis: u64,
-	/// Key derivation parameters
+	/// Key derivation parameters.
 	channel_keys_id: [u8; 32],
 }
 
 impl InMemorySigner {
-	/// Create a new InMemorySigner
+	/// Creates a new [`InMemorySigner`].
 	pub fn new<C: Signing>(
 		secp_ctx: &Secp256k1<C>,
 		node_secret: SecretKey,
@@ -562,8 +574,8 @@ impl InMemorySigner {
 	) -> InMemorySigner {
 		let holder_channel_pubkeys =
 			InMemorySigner::make_holder_keys(secp_ctx, &funding_key, &revocation_base_key,
-			                                     &payment_key, &delayed_payment_base_key,
-			                                     &htlc_base_key);
+				&payment_key, &delayed_payment_base_key,
+				&htlc_base_key);
 		InMemorySigner {
 			funding_key,
 			revocation_base_key,
@@ -580,11 +592,11 @@ impl InMemorySigner {
 	}
 
 	fn make_holder_keys<C: Signing>(secp_ctx: &Secp256k1<C>,
-	                               funding_key: &SecretKey,
-	                               revocation_base_key: &SecretKey,
-	                               payment_key: &SecretKey,
-	                               delayed_payment_base_key: &SecretKey,
-	                               htlc_base_key: &SecretKey) -> ChannelPublicKeys {
+			funding_key: &SecretKey,
+			revocation_base_key: &SecretKey,
+			payment_key: &SecretKey,
+			delayed_payment_base_key: &SecretKey,
+			htlc_base_key: &SecretKey) -> ChannelPublicKeys {
 		let from_secret = |s: &SecretKey| PublicKey::from_secret_key(secp_ctx, s);
 		ChannelPublicKeys {
 			funding_pubkey: from_secret(&funding_key),
@@ -595,50 +607,51 @@ impl InMemorySigner {
 		}
 	}
 
-	/// Counterparty pubkeys.
-	/// Will panic if provide_channel_parameters wasn't called.
+	/// Returns the counterparty's pubkeys.
+	///
+	/// Will panic if [`BaseSign::provide_channel_parameters`] has not been called before.
 	pub fn counterparty_pubkeys(&self) -> &ChannelPublicKeys { &self.get_channel_parameters().counterparty_parameters.as_ref().unwrap().pubkeys }
-
-	/// The contest_delay value specified by our counterparty and applied on holder-broadcastable
-	/// transactions, ie the amount of time that we have to wait to recover our funds if we
+	/// Returns the `contest_delay` value specified by our counterparty and applied on holder-broadcastable
+	/// transactions, i.e., the amount of time that we have to wait to recover our funds if we
 	/// broadcast a transaction.
-	/// Will panic if provide_channel_parameters wasn't called.
+	///
+	/// Will panic if [`BaseSign::provide_channel_parameters`] has not been called before.
 	pub fn counterparty_selected_contest_delay(&self) -> u16 { self.get_channel_parameters().counterparty_parameters.as_ref().unwrap().selected_contest_delay }
-
-	/// The contest_delay value specified by us and applied on transactions broadcastable
-	/// by our counterparty, ie the amount of time that they have to wait to recover their funds
+	/// Returns the `contest_delay` value specified by us and applied on transactions broadcastable
+	/// by our counterparty, i.e., the amount of time that they have to wait to recover their funds
 	/// if they broadcast a transaction.
-	/// Will panic if provide_channel_parameters wasn't called.
+	///
+	/// Will panic if [`BaseSign::provide_channel_parameters`] has not been called before.
 	pub fn holder_selected_contest_delay(&self) -> u16 { self.get_channel_parameters().holder_selected_contest_delay }
-
-	/// Whether the holder is the initiator
-	/// Will panic if provide_channel_parameters wasn't called.
+	/// Returns whether the holder is the initiator.
+	///
+	/// Will panic if [`BaseSign::provide_channel_parameters`] has not been called before.
 	pub fn is_outbound(&self) -> bool { self.get_channel_parameters().is_outbound_from_holder }
-
 	/// Funding outpoint
-	/// Will panic if provide_channel_parameters wasn't called.
+	///
+	/// Will panic if [`BaseSign::provide_channel_parameters`] has not been called before.
 	pub fn funding_outpoint(&self) -> &OutPoint { self.get_channel_parameters().funding_outpoint.as_ref().unwrap() }
-
-	/// Obtain a ChannelTransactionParameters for this channel, to be used when verifying or
+	/// Returns a [`ChannelTransactionParameters`] for this channel, to be used when verifying or
 	/// building transactions.
 	///
-	/// Will panic if provide_channel_parameters wasn't called.
+	/// Will panic if [`BaseSign::provide_channel_parameters`] has not been called before.
 	pub fn get_channel_parameters(&self) -> &ChannelTransactionParameters {
 		self.channel_parameters.as_ref().unwrap()
 	}
-
-	/// Whether anchors should be used.
-	/// Will panic if provide_channel_parameters wasn't called.
+	/// Returns whether anchors should be used.
+	///
+	/// Will panic if [`BaseSign::provide_channel_parameters`] has not been called before.
 	pub fn opt_anchors(&self) -> bool {
 		self.get_channel_parameters().opt_anchors.is_some()
 	}
-
-	/// Sign the single input of spend_tx at index `input_idx` which spends the output
-	/// described by descriptor, returning the witness stack for the input.
+	/// Sign the single input of `spend_tx` at index `input_idx`, which spends the output described
+	/// by `descriptor`, returning the witness stack for the input.
 	///
-	/// Returns an Err if the input at input_idx does not exist, has a non-empty script_sig,
-	/// is not spending the outpoint described by `descriptor.outpoint`,
-	/// or if an output descriptor script_pubkey does not match the one we can spend.
+	/// Returns an error if the input at `input_idx` does not exist, has a non-empty `script_sig`,
+	/// is not spending the outpoint described by [`descriptor.outpoint`],
+	/// or if an output descriptor `script_pubkey` does not match the one we can spend.
+	///
+	/// [`descriptor.outpoint`]: StaticPaymentOutputDescriptor::outpoint
 	pub fn sign_counterparty_payment_input<C: Signing>(&self, spend_tx: &Transaction, input_idx: usize, descriptor: &StaticPaymentOutputDescriptor, secp_ctx: &Secp256k1<C>) -> Result<Vec<Vec<u8>>, ()> {
 		// TODO: We really should be taking the SigHashCache as a parameter here instead of
 		// spend_tx, but ideally the SigHashCache would expose the transaction's inputs read-only
@@ -654,7 +667,7 @@ impl InMemorySigner {
 		let remotesig = sign(secp_ctx, &sighash, &self.payment_key);
 		let payment_script = bitcoin::Address::p2wpkh(&::bitcoin::PublicKey{compressed: true, inner: remotepubkey}, Network::Bitcoin).unwrap().script_pubkey();
 
-		if payment_script != descriptor.output.script_pubkey  { return Err(()); }
+		if payment_script != descriptor.output.script_pubkey { return Err(()); }
 
 		let mut witness = Vec::with_capacity(2);
 		witness.push(remotesig.serialize_der().to_vec());
@@ -663,13 +676,16 @@ impl InMemorySigner {
 		Ok(witness)
 	}
 
-	/// Sign the single input of spend_tx at index `input_idx` which spends the output
-	/// described by descriptor, returning the witness stack for the input.
+	/// Sign the single input of `spend_tx` at index `input_idx` which spends the output
+	/// described by `descriptor`, returning the witness stack for the input.
 	///
-	/// Returns an Err if the input at input_idx does not exist, has a non-empty script_sig,
-	/// is not spending the outpoint described by `descriptor.outpoint`, does not have a
-	/// sequence set to `descriptor.to_self_delay`, or if an output descriptor
-	/// script_pubkey does not match the one we can spend.
+	/// Returns an error if the input at `input_idx` does not exist, has a non-empty `script_sig`,
+	/// is not spending the outpoint described by [`descriptor.outpoint`], does not have a
+	/// sequence set to [`descriptor.to_self_delay`], or if an output descriptor
+	/// `script_pubkey` does not match the one we can spend.
+	///
+	/// [`descriptor.outpoint`]: DelayedPaymentOutputDescriptor::outpoint
+	/// [`descriptor.to_self_delay`]: DelayedPaymentOutputDescriptor::to_self_delay
 	pub fn sign_dynamic_p2wsh_input<C: Signing>(&self, spend_tx: &Transaction, input_idx: usize, descriptor: &DelayedPaymentOutputDescriptor, secp_ctx: &Secp256k1<C>) -> Result<Vec<Vec<u8>>, ()> {
 		// TODO: We really should be taking the SigHashCache as a parameter here instead of
 		// spend_tx, but ideally the SigHashCache would expose the transaction's inputs read-only
@@ -713,6 +729,7 @@ impl BaseSign for InMemorySigner {
 	}
 
 	fn pubkeys(&self) -> &ChannelPublicKeys { &self.holder_channel_pubkeys }
+
 	fn channel_keys_id(&self) -> [u8; 32] { self.channel_keys_id }
 
 	fn sign_counterparty_commitment(&self, commitment_tx: &CommitmentTransaction, _preimages: Vec<PaymentPreimage>, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<(Signature, Vec<Signature>), ()> {
@@ -855,6 +872,7 @@ impl BaseSign for InMemorySigner {
 }
 
 const SERIALIZATION_VERSION: u8 = 1;
+
 const MIN_SERIALIZATION_VERSION: u8 = 1;
 
 impl Sign for InMemorySigner {}
@@ -894,8 +912,7 @@ impl ReadableArgs<SecretKey> for InMemorySigner {
 		let secp_ctx = Secp256k1::signing_only();
 		let holder_channel_pubkeys =
 			InMemorySigner::make_holder_keys(&secp_ctx, &funding_key, &revocation_base_key,
-			                                     &payment_key, &delayed_payment_base_key,
-			                                     &htlc_base_key);
+				 &payment_key, &delayed_payment_base_key, &htlc_base_key);
 		let keys_id = Readable::read(reader)?;
 
 		read_tlv_fields!(reader, {});
@@ -916,12 +933,12 @@ impl ReadableArgs<SecretKey> for InMemorySigner {
 	}
 }
 
-/// Simple KeysInterface implementor that takes a 32-byte seed for use as a BIP 32 extended key
-/// and derives keys from that.
+/// Simple [`KeysInterface`] implementation that takes a 32-byte seed for use as a BIP 32 extended
+/// key and derives keys from that.
 ///
-/// Your node_id is seed/0'
-/// ChannelMonitor closes may use seed/1'
-/// Cooperative closes may use seed/2'
+/// Your `node_id` is seed/0'.
+/// Unilateral closes may use seed/1'.
+/// Cooperative closes may use seed/2'.
 /// The two close keys may be needed to claim on-chain funds!
 ///
 /// This struct cannot be used for nodes that wish to support receiving phantom payments;
@@ -949,25 +966,23 @@ pub struct KeysManager {
 }
 
 impl KeysManager {
-	/// Constructs a KeysManager from a 32-byte seed. If the seed is in some way biased (eg your
-	/// CSRNG is busted) this may panic (but more importantly, you will possibly lose funds).
-	/// starting_time isn't strictly required to actually be a time, but it must absolutely,
+	/// Constructs a [`KeysManager`] from a 32-byte seed. If the seed is in some way biased (e.g.,
+	/// your CSRNG is busted) this may panic (but more importantly, you will possibly lose funds).
+	/// `starting_time` isn't strictly required to actually be a time, but it must absolutely,
 	/// without a doubt, be unique to this instance. ie if you start multiple times with the same
-	/// seed, starting_time must be unique to each run. Thus, the easiest way to achieve this is to
-	/// simply use the current time (with very high precision).
+	/// `seed`, `starting_time` must be unique to each run. Thus, the easiest way to achieve this
+	/// is to simply use the current time (with very high precision).
 	///
-	/// The seed MUST be backed up safely prior to use so that the keys can be re-created, however,
-	/// obviously, starting_time should be unique every time you reload the library - it is only
+	/// The `seed` MUST be backed up safely prior to use so that the keys can be re-created, however,
+	/// obviously, `starting_time` should be unique every time you reload the library - it is only
 	/// used to generate new ephemeral key data (which will be stored by the individual channel if
 	/// necessary).
 	///
 	/// Note that the seed is required to recover certain on-chain funds independent of
-	/// ChannelMonitor data, though a current copy of ChannelMonitor data is also required for any
-	/// channel, and some on-chain during-closing funds.
+	/// [`ChannelMonitor`] data, though a current copy of [`ChannelMonitor`] data is also required
+	/// for any channel, and some on-chain during-closing funds.
 	///
-	/// Note that until the 0.1 release there is no guarantee of backward compatibility between
-	/// versions. Once the library is more fully supported, the docs will be updated to include a
-	/// detailed description of the guarantee.
+	/// [`ChannelMonitor`]: crate::chain::channelmonitor::ChannelMonitor
 	pub fn new(seed: &[u8; 32], starting_time_secs: u64, starting_time_nanos: u32) -> Self {
 		let secp_ctx = Secp256k1::new();
 		// Note that when we aren't serializing the key, network doesn't matter
@@ -979,8 +994,8 @@ impl KeysManager {
 					Ok(destination_key) => {
 						let wpubkey_hash = WPubkeyHash::hash(&ExtendedPubKey::from_priv(&secp_ctx, &destination_key).to_pub().to_bytes());
 						Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0)
-						              .push_slice(&wpubkey_hash.into_inner())
-						              .into_script()
+							.push_slice(&wpubkey_hash.into_inner())
+							.into_script()
 					},
 					Err(_) => panic!("Your RNG is busted"),
 				};
@@ -1026,7 +1041,7 @@ impl KeysManager {
 			Err(_) => panic!("Your rng is busted"),
 		}
 	}
-	/// Derive an old Sign containing per-channel secrets based on a key derivation parameters.
+	/// Derive an old [`Sign`] containing per-channel secrets based on a key derivation parameters.
 	pub fn derive_channel_keys(&self, channel_value_satoshis: u64, params: &[u8; 32]) -> InMemorySigner {
 		let chan_id = u64::from_be_bytes(params[0..8].try_into().unwrap());
 		let mut unique_start = Sha256::engine();
@@ -1076,7 +1091,7 @@ impl KeysManager {
 		)
 	}
 
-	/// Creates a Transaction which spends the given descriptors to the given outputs, plus an
+	/// Creates a [`Transaction`] which spends the given descriptors to the given outputs, plus an
 	/// output to the given change destination (if sufficient change value remains). The
 	/// transaction will have a feerate, at least, of the given value.
 	///
@@ -1086,8 +1101,8 @@ impl KeysManager {
 	///
 	/// We do not enforce that outputs meet the dust limit or that any output scripts are standard.
 	///
-	/// May panic if the `SpendableOutputDescriptor`s were not generated by Channels which used
-	/// this KeysManager or one of the `InMemorySigner` created by this KeysManager.
+	/// May panic if the [`SpendableOutputDescriptor`]s were not generated by channels which used
+	/// this [`KeysManager`] or one of the [`InMemorySigner`] created by this [`KeysManager`].
 	pub fn spend_spendable_outputs<C: Signing>(&self, descriptors: &[&SpendableOutputDescriptor], outputs: Vec<TxOut>, change_destination_script: Script, feerate_sat_per_1000_weight: u32, secp_ctx: &Secp256k1<C>) -> Result<Transaction, ()> {
 		let mut input = Vec::new();
 		let mut input_value = 0;
@@ -1297,11 +1312,11 @@ impl KeysInterface for KeysManager {
 /// nodes in the case that one node goes down.
 ///
 /// Note that multi-path payments are not supported in phantom invoices for security reasons.
-//  In the hypothetical case that we did support MPP phantom payments, there would be no way for
-//  nodes to know when the full payment has been received (and the preimage can be released) without
-//  significantly compromising on our safety guarantees. I.e., if we expose the ability for the user
-//  to tell LDK when the preimage can be released, we open ourselves to attacks where the preimage
-//  is released too early.
+// In the hypothetical case that we did support MPP phantom payments, there would be no way for
+// nodes to know when the full payment has been received (and the preimage can be released) without
+// significantly compromising on our safety guarantees. I.e., if we expose the ability for the user
+// to tell LDK when the preimage can be released, we open ourselves to attacks where the preimage
+// is released too early.
 //
 /// Switching between this struct and [`KeysManager`] will invalidate any previously issued
 /// invoices and attempts to pay previous invoices will fail.
@@ -1373,8 +1388,9 @@ impl KeysInterface for PhantomKeysManager {
 }
 
 impl PhantomKeysManager {
-	/// Constructs a `PhantomKeysManager` given a 32-byte seed and an additional `cross_node_seed`
-	/// that is shared across all nodes that intend to participate in [phantom node payments] together.
+	/// Constructs a [`PhantomKeysManager`] given a 32-byte seed and an additional `cross_node_seed`
+	/// that is shared across all nodes that intend to participate in [phantom node payments]
+	/// together.
 	///
 	/// See [`KeysManager::new`] for more information on `seed`, `starting_time_secs`, and
 	/// `starting_time_nanos`.
