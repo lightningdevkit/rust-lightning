@@ -2790,15 +2790,21 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 
 	/// Signals that no further retries for the given payment will occur.
 	///
-	/// After this method returns, any future calls to [`retry_payment`] for the given `payment_id`
-	/// will fail with [`PaymentSendFailure::ParameterError`]. If no such event has been generated,
-	/// an [`Event::PaymentFailed`] event will be generated as soon as there are no remaining
-	/// pending HTLCs for this payment.
+	/// After this method returns, no future calls to [`retry_payment`] for the given `payment_id`
+	/// are allowed. If no [`Event::PaymentFailed`] event had been generated before, one will be
+	/// generated as soon as there are no remaining pending HTLCs for this payment.
 	///
 	/// Note that calling this method does *not* prevent a payment from succeeding. You must still
 	/// wait until you receive either a [`Event::PaymentFailed`] or [`Event::PaymentSent`] event to
 	/// determine the ultimate status of a payment.
 	///
+	/// If an [`Event::PaymentFailed`] event is generated and we restart without this
+	/// [`ChannelManager`] having been persisted, the payment may still be in the pending state
+	/// upon restart. This allows further calls to [`retry_payment`] (and requiring a second call
+	/// to [`abandon_payment`] to mark the payment as failed again). Otherwise, future calls to
+	/// [`retry_payment`] will fail with [`PaymentSendFailure::ParameterError`].
+	///
+	/// [`abandon_payment`]: Self::abandon_payment
 	/// [`retry_payment`]: Self::retry_payment
 	/// [`Event::PaymentFailed`]: events::Event::PaymentFailed
 	/// [`Event::PaymentSent`]: events::Event::PaymentSent
