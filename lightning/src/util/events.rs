@@ -257,10 +257,10 @@ pub struct HTLCDescriptor {
 	/// [`InMemorySigner`]: crate::chain::keysinterface::InMemorySigner
 	pub channel_value_satoshis: u64,
 	/// The necessary channel parameters that need to be provided to the re-derived
-	/// [`InMemorySigner`] through [`BaseSign::ready_channel`].
+	/// [`InMemorySigner`] through [`BaseSign::provide_channel_parameters`].
 	///
 	/// [`InMemorySigner`]: crate::chain::keysinterface::InMemorySigner
-	/// [`BaseSign::ready_channel`]: crate::chain::keysinterface::BaseSign::ready_channel
+	/// [`BaseSign::provide_channel_parameters`]: crate::chain::keysinterface::BaseSign::provide_channel_parameters
 	pub channel_parameters: ChannelTransactionParameters,
 	/// The txid of the commitment transaction in which the HTLC output lives.
 	pub commitment_txid: Txid,
