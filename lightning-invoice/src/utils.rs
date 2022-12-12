@@ -294,12 +294,12 @@ pub fn create_invoice_from_channelmanager_with_description_hash_and_duration_sin
 	network: Currency, amt_msat: Option<u64>, description_hash: Sha256,
 	duration_since_epoch: Duration, invoice_expiry_delta_secs: u32
 ) -> Result<Invoice, SignOrCreationError<()>>
-where
-	M::Target: chain::Watch<<K::Target as KeysInterface>::Signer>,
-	T::Target: BroadcasterInterface,
-	K::Target: KeysInterface,
-	F::Target: FeeEstimator,
-	L::Target: Logger,
+		where
+			M::Target: chain::Watch<<K::Target as KeysInterface>::Signer>,
+			T::Target: BroadcasterInterface,
+			K::Target: KeysInterface,
+			F::Target: FeeEstimator,
+			L::Target: Logger,
 {
 	_create_invoice_from_channelmanager_and_duration_since_epoch(
 		channelmanager, keys_manager, logger, network, amt_msat,
@@ -316,12 +316,12 @@ pub fn create_invoice_from_channelmanager_and_duration_since_epoch<M: Deref, T: 
 	network: Currency, amt_msat: Option<u64>, description: String, duration_since_epoch: Duration,
 	invoice_expiry_delta_secs: u32
 ) -> Result<Invoice, SignOrCreationError<()>>
-where
-	M::Target: chain::Watch<<K::Target as KeysInterface>::Signer>,
-	T::Target: BroadcasterInterface,
-	K::Target: KeysInterface,
-	F::Target: FeeEstimator,
-	L::Target: Logger,
+		where
+			M::Target: chain::Watch<<K::Target as KeysInterface>::Signer>,
+			T::Target: BroadcasterInterface,
+			K::Target: KeysInterface,
+			F::Target: FeeEstimator,
+			L::Target: Logger,
 {
 	_create_invoice_from_channelmanager_and_duration_since_epoch(
 		channelmanager, keys_manager, logger, network, amt_msat,
@@ -337,18 +337,62 @@ fn _create_invoice_from_channelmanager_and_duration_since_epoch<M: Deref, T: Der
 	network: Currency, amt_msat: Option<u64>, description: InvoiceDescription,
 	duration_since_epoch: Duration, invoice_expiry_delta_secs: u32
 ) -> Result<Invoice, SignOrCreationError<()>>
-where
-	M::Target: chain::Watch<<K::Target as KeysInterface>::Signer>,
-	T::Target: BroadcasterInterface,
-	K::Target: KeysInterface,
-	F::Target: FeeEstimator,
-	L::Target: Logger,
+		where
+			M::Target: chain::Watch<<K::Target as KeysInterface>::Signer>,
+			T::Target: BroadcasterInterface,
+			K::Target: KeysInterface,
+			F::Target: FeeEstimator,
+			L::Target: Logger,
 {
 	// `create_inbound_payment` only returns an error if the amount is greater than the total bitcoin
 	// supply.
 	let (payment_hash, payment_secret) = channelmanager
 		.create_inbound_payment(amt_msat, invoice_expiry_delta_secs)
 		.map_err(|()| SignOrCreationError::CreationError(CreationError::InvalidAmount))?;
+	_create_invoice_from_channelmanager_and_duration_since_epoch_with_payment_hash(
+		channelmanager, keys_manager, logger, network, amt_msat, description, duration_since_epoch, invoice_expiry_delta_secs, payment_hash, payment_secret)
+}
+
+/// See [`create_invoice_from_channelmanager_and_duration_since_epoch`]
+/// This version allows for providing a custom [`PaymentHash`] for the invoice.
+/// This may be useful if you're building an on-chain swap or involving another protocol where
+/// the payment hash is also involved outside the scope of lightning.
+pub fn create_invoice_from_channelmanager_and_duration_since_epoch_with_payment_hash<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>(
+	channelmanager: &ChannelManager<M, T, K, F, L>, keys_manager: K, logger: L,
+	network: Currency, amt_msat: Option<u64>, description: String, duration_since_epoch: Duration,
+	invoice_expiry_delta_secs: u32, payment_hash: PaymentHash
+) -> Result<Invoice, SignOrCreationError<()>>
+	where
+		M::Target: chain::Watch<<K::Target as KeysInterface>::Signer>,
+		T::Target: BroadcasterInterface,
+		K::Target: KeysInterface,
+		F::Target: FeeEstimator,
+		L::Target: Logger,
+{
+	let payment_secret = channelmanager
+		.create_inbound_payment_for_hash(payment_hash,amt_msat, invoice_expiry_delta_secs)
+		.map_err(|()| SignOrCreationError::CreationError(CreationError::InvalidAmount))?;
+	_create_invoice_from_channelmanager_and_duration_since_epoch_with_payment_hash(
+		channelmanager, keys_manager, logger, network, amt_msat,
+		InvoiceDescription::Direct(
+			&Description::new(description).map_err(SignOrCreationError::CreationError)?,
+		),
+		duration_since_epoch, invoice_expiry_delta_secs, payment_hash, payment_secret
+	)
+}
+
+fn _create_invoice_from_channelmanager_and_duration_since_epoch_with_payment_hash<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>(
+	channelmanager: &ChannelManager<M, T, K, F, L>, keys_manager: K, logger: L,
+	network: Currency, amt_msat: Option<u64>, description: InvoiceDescription, duration_since_epoch: Duration,
+	invoice_expiry_delta_secs: u32, payment_hash: PaymentHash, payment_secret: PaymentSecret
+) -> Result<Invoice, SignOrCreationError<()>>
+	where
+		M::Target: chain::Watch<<K::Target as KeysInterface>::Signer>,
+		T::Target: BroadcasterInterface,
+		K::Target: KeysInterface,
+		F::Target: FeeEstimator,
+		L::Target: Logger,
+{
 	let our_node_pubkey = channelmanager.get_our_node_id();
 	let channels = channelmanager.list_channels();
 
@@ -567,7 +611,7 @@ where
 mod test {
 	use core::time::Duration;
 	use crate::{Currency, Description, InvoiceDescription};
-	use bitcoin_hashes::Hash;
+	use bitcoin_hashes::{Hash, sha256};
 	use bitcoin_hashes::sha256::Hash as Sha256;
 	use lightning::chain::keysinterface::PhantomKeysManager;
 	use lightning::ln::{PaymentPreimage, PaymentHash};
@@ -666,6 +710,25 @@ mod test {
 	}
 
 	#[test]
+	fn test_create_invoice_from_channelmanager_and_duration_since_epoch_with_payment_hash() {
+		let chanmon_cfgs = create_chanmon_cfgs(2);
+		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+		let payment_hash = PaymentHash([0; 32]);
+		let payment_secret = &nodes[1].node.create_inbound_payment_for_hash(payment_hash, Some(10_000), 3600);
+		let invoice = crate::utils::create_invoice_from_channelmanager_and_duration_since_epoch_with_payment_hash(
+			&nodes[1].node, nodes[1].keys_manager, nodes[1].logger, Currency::BitcoinTestnet,
+			Some(10_000), "test".to_string(), Duration::from_secs(1234567), 3600,
+			payment_hash
+		).unwrap();
+		assert_eq!(invoice.amount_pico_btc(), Some(100_000));
+		assert_eq!(invoice.min_final_cltv_expiry(), MIN_FINAL_CLTV_EXPIRY as u64);
+		assert_eq!(invoice.description(), InvoiceDescription::Direct(&Description("test".to_string())));
+		assert_eq!(invoice.payment_hash(), &sha256::Hash::from_slice(&payment_hash.0[..]).unwrap());
+	}
+
+	#[test]
 	fn test_hints_includes_single_channels_to_nodes() {
 		let chanmon_cfgs = create_chanmon_cfgs(3);
 		let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
@@ -691,10 +754,8 @@ mod test {
 		let _chan_1_0_low_inbound_capacity = create_unannounced_chan_between_nodes_with_value(&nodes, 1, 0, 100_000, 0, channelmanager::provided_init_features(), channelmanager::provided_init_features());
 		let chan_1_0_high_inbound_capacity = create_unannounced_chan_between_nodes_with_value(&nodes, 1, 0, 10_000_000, 0, channelmanager::provided_init_features(), channelmanager::provided_init_features());
 		let _chan_1_0_medium_inbound_capacity = create_unannounced_chan_between_nodes_with_value(&nodes, 1, 0, 1_000_000, 0, channelmanager::provided_init_features(), channelmanager::provided_init_features());
-
 		let mut scid_aliases = HashSet::new();
 		scid_aliases.insert(chan_1_0_high_inbound_capacity.0.short_channel_id_alias.unwrap());
-
 		match_invoice_routes(Some(5000), &nodes[0], scid_aliases);
 	}
 
