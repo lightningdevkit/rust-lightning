@@ -739,17 +739,12 @@ pub fn build_htlc_input_witness(
 	} else {
 		EcdsaSighashType::All
 	};
-	let mut remote_sig = remote_sig.serialize_der().to_vec();
-	remote_sig.push(remote_sighash_type as u8);
-
-	let mut local_sig = local_sig.serialize_der().to_vec();
-	local_sig.push(EcdsaSighashType::All as u8);
 
 	let mut witness = Witness::new();
 	// First push the multisig dummy, note that due to BIP147 (NULLDUMMY) it must be a zero-length element.
 	witness.push(vec![]);
-	witness.push(remote_sig);
-	witness.push(local_sig);
+	witness.push_bitcoin_signature(&remote_sig.serialize_der(), remote_sighash_type);
+	witness.push_bitcoin_signature(&local_sig.serialize_der(), EcdsaSighashType::All);
 	if let Some(preimage) = preimage {
 		witness.push(preimage.0.to_vec());
 	} else {
@@ -801,9 +796,10 @@ pub(crate) fn get_anchor_output<'a>(commitment_tx: &'a Transaction, funding_pubk
 /// Returns the witness required to satisfy and spend an anchor input.
 pub fn build_anchor_input_witness(funding_key: &PublicKey, funding_sig: &Signature) -> Witness {
 	let anchor_redeem_script = chan_utils::get_anchor_redeemscript(funding_key);
-	let mut funding_sig = funding_sig.serialize_der().to_vec();
-	funding_sig.push(EcdsaSighashType::All as u8);
-	Witness::from_vec(vec![funding_sig, anchor_redeem_script.to_bytes()])
+	let mut ret = Witness::new();
+	ret.push_bitcoin_signature(&funding_sig.serialize_der(), EcdsaSighashType::All);
+	ret.push(anchor_redeem_script.as_bytes());
+	ret
 }
 
 /// Per-channel data used to build transactions in conjunction with the per-commitment data (CommitmentTransaction).
@@ -1037,17 +1033,13 @@ impl HolderCommitmentTransaction {
 		// First push the multisig dummy, note that due to BIP147 (NULLDUMMY) it must be a zero-length element.
 		let mut tx = self.inner.built.transaction.clone();
 		tx.input[0].witness.push(Vec::new());
-		let mut ser_holder_sig = holder_sig.serialize_der().to_vec();
-		ser_holder_sig.push(EcdsaSighashType::All as u8);
-		let mut ser_cp_sig = self.counterparty_sig.serialize_der().to_vec();
-		ser_cp_sig.push(EcdsaSighashType::All as u8);
 
 		if self.holder_sig_first {
-			tx.input[0].witness.push(ser_holder_sig);
-			tx.input[0].witness.push(ser_cp_sig);
+			tx.input[0].witness.push_bitcoin_signature(&holder_sig.serialize_der(), EcdsaSighashType::All);
+			tx.input[0].witness.push_bitcoin_signature(&self.counterparty_sig.serialize_der(), EcdsaSighashType::All);
 		} else {
-			tx.input[0].witness.push(ser_cp_sig);
-			tx.input[0].witness.push(ser_holder_sig);
+			tx.input[0].witness.push_bitcoin_signature(&self.counterparty_sig.serialize_der(), EcdsaSighashType::All);
+			tx.input[0].witness.push_bitcoin_signature(&holder_sig.serialize_der(), EcdsaSighashType::All);
 		}
 
 		tx.input[0].witness.push(funding_redeemscript.as_bytes().to_vec());

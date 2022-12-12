@@ -1125,6 +1125,7 @@ impl Writeable for Event {
 					BumpTransactionEvent::ChannelClose { .. } => {}
 					BumpTransactionEvent::HTLCResolution { .. } => {}
 				}
+				write_tlv_fields!(writer, {}); // Write a length field for forwards compat
 			}
 			&Event::ChannelReady { ref channel_id, ref user_channel_id, ref counterparty_node_id, ref channel_type } => {
 				29u8.write(writer)?;
