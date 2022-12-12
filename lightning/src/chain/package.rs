@@ -203,11 +203,11 @@ impl CounterpartyOfferedHTLCOutput {
 
 impl_writeable_tlv_based!(CounterpartyOfferedHTLCOutput, {
 	(0, per_commitment_point, required),
-	(1, opt_anchors, option),
 	(2, counterparty_delayed_payment_base_key, required),
 	(4, counterparty_htlc_base_key, required),
 	(6, preimage, required),
 	(8, htlc, required),
+	(10, opt_anchors, option),
 });
 
 /// A struct to describe a HTLC output on a counterparty commitment transaction.
@@ -241,10 +241,10 @@ impl CounterpartyReceivedHTLCOutput {
 
 impl_writeable_tlv_based!(CounterpartyReceivedHTLCOutput, {
 	(0, per_commitment_point, required),
-	(1, opt_anchors, option),
 	(2, counterparty_delayed_payment_base_key, required),
 	(4, counterparty_htlc_base_key, required),
 	(6, htlc, required),
+	(8, opt_anchors, option),
 });
 
 /// A struct to describe a HTLC output on holder commitment transaction.
@@ -318,7 +318,7 @@ impl HolderFundingOutput {
 
 impl_writeable_tlv_based!(HolderFundingOutput, {
 	(0, funding_redeemscript, required),
-	(1, opt_anchors, option),
+	(2, opt_anchors, option),
 	(3, funding_amount, option),
 });
 
