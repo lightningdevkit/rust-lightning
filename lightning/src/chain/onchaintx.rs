@@ -254,7 +254,7 @@ pub struct OnchainTxHandler<ChannelSigner: Sign> {
 	// Key is outpoint than monitor parsing has detected we have keys/scripts to claim
 	// Value is (pending claim request identifier, confirmation_block), identifier
 	// is txid of the initial claiming transaction and is immutable until outpoint is
-	// post-anti-reorg-delay solved, confirmaiton_block is used to erase entry if
+	// post-anti-reorg-delay solved, confirmation_block is used to erase entry if
 	// block with output gets disconnected.
 	#[cfg(test)] // Used in functional_test to verify sanitization
 	pub claimable_outpoints: HashMap<BitcoinOutPoint, (PackageID, u32)>,
@@ -291,20 +291,26 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 		writer.write_all(&key_data.0[..])?;
 
 		writer.write_all(&(self.pending_claim_requests.len() as u64).to_be_bytes())?;
-		for (ref ancestor_claim_txid, request) in self.pending_claim_requests.iter() {
+		let mut sorted_pending_claim_requests: Vec<(&PackageID, &PackageTemplate)> = self.pending_claim_requests.iter().collect();
+		sorted_pending_claim_requests.sort_by(|&a, &b| b.0.cmp(a.0));
+		for (ref ancestor_claim_txid, request) in sorted_pending_claim_requests {
 			ancestor_claim_txid.write(writer)?;
 			request.write(writer)?;
 		}
 
 		writer.write_all(&(self.claimable_outpoints.len() as u64).to_be_bytes())?;
-		for (ref outp, ref claim_and_height) in self.claimable_outpoints.iter() {
+		let mut sorted_claimable_outpoints: Vec<(&BitcoinOutPoint, &(PackageID, u32))> = self.claimable_outpoints.iter().collect();
+		sorted_claimable_outpoints.sort_by(|&a, &b| b.0.cmp(a.0));
+		for (ref outp, ref claim_and_height) in sorted_claimable_outpoints {
 			outp.write(writer)?;
 			claim_and_height.0.write(writer)?;
 			claim_and_height.1.write(writer)?;
 		}
 
 		writer.write_all(&(self.locktimed_packages.len() as u64).to_be_bytes())?;
-		for (ref locktime, ref packages) in self.locktimed_packages.iter() {
+		let mut sorted_locktimed_packages: Vec<(&u32, &Vec<PackageTemplate>)> = self.locktimed_packages.iter().collect();
+		sorted_locktimed_packages.sort_by(|&a, &b| b.0.cmp(a.0));
+		for (ref locktime, ref packages) in sorted_locktimed_packages {
 			locktime.write(writer)?;
 			writer.write_all(&(packages.len() as u64).to_be_bytes())?;
 			for ref package in packages.iter() {

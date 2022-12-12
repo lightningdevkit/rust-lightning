@@ -1005,13 +1005,17 @@ impl<Signer: Sign> Writeable for ChannelMonitorImpl<Signer> {
 		}
 
 		writer.write_all(&(self.counterparty_commitment_txn_on_chain.len() as u64).to_be_bytes())?;
-		for (ref txid, commitment_number) in self.counterparty_commitment_txn_on_chain.iter() {
+		let mut sorted_counterparty_commitment_txn_on_chain: Vec<(&Txid, &u64)> = self.counterparty_commitment_txn_on_chain.iter().collect();
+		sorted_counterparty_commitment_txn_on_chain.sort_by(|&a, &b| b.0.cmp(a.0));
+		for (ref txid, commitment_number) in sorted_counterparty_commitment_txn_on_chain {
 			writer.write_all(&txid[..])?;
 			writer.write_all(&byte_utils::be48_to_array(*commitment_number))?;
 		}
 
 		writer.write_all(&(self.counterparty_hash_commitment_number.len() as u64).to_be_bytes())?;
-		for (ref payment_hash, commitment_number) in self.counterparty_hash_commitment_number.iter() {
+		let mut sorted_counterparty_hash_commitment_number: Vec<(&PaymentHash, &u64)> = self.counterparty_hash_commitment_number.iter().collect();
+		sorted_counterparty_hash_commitment_number.sort_by(|&a, &b| b.0.cmp(a.0));
+		for (ref payment_hash, commitment_number) in sorted_counterparty_hash_commitment_number {
 			writer.write_all(&payment_hash.0[..])?;
 			writer.write_all(&byte_utils::be48_to_array(*commitment_number))?;
 		}
@@ -1029,7 +1033,9 @@ impl<Signer: Sign> Writeable for ChannelMonitorImpl<Signer> {
 		writer.write_all(&byte_utils::be48_to_array(self.current_holder_commitment_number))?;
 
 		writer.write_all(&(self.payment_preimages.len() as u64).to_be_bytes())?;
-		for payment_preimage in self.payment_preimages.values() {
+		let mut sorted_preimages: Vec<&PaymentPreimage> = self.payment_preimages.values().collect();
+		sorted_preimages.sort();
+		for payment_preimage in sorted_preimages {
 			writer.write_all(&payment_preimage.0[..])?;
 		}
 
@@ -1063,7 +1069,9 @@ impl<Signer: Sign> Writeable for ChannelMonitorImpl<Signer> {
 		}
 
 		(self.outputs_to_watch.len() as u64).write(writer)?;
-		for (txid, idx_scripts) in self.outputs_to_watch.iter() {
+		let mut sorted_outputs_to_watch: Vec<(&Txid, &Vec<(u32, Script)>)> = self.outputs_to_watch.iter().collect();
+		sorted_outputs_to_watch.sort_by(|&a, &b| b.0.cmp(a.0));
+		for (txid, idx_scripts) in sorted_outputs_to_watch {
 			txid.write(writer)?;
 			(idx_scripts.len() as u64).write(writer)?;
 			for (idx, script) in idx_scripts.iter() {
