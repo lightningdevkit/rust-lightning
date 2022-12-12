@@ -76,6 +76,7 @@ use core::time::Duration;
 use crate::io;
 use crate::ln::features::OfferFeatures;
 use crate::ln::msgs::MAX_VALUE_MSAT;
+use crate::offers::invoice_request::InvoiceRequestBuilder;
 use crate::offers::parse::{Bech32Encode, ParseError, ParsedMessage, SemanticError};
 use crate::onion_message::BlindedPath;
 use crate::util::ser::{HighZeroBytesDroppedBigSize, WithoutLength, Writeable, Writer};
@@ -137,24 +138,15 @@ impl OfferBuilder {
 	/// Sets the [`Offer::amount`] as an [`Amount::Bitcoin`].
 	///
 	/// Successive calls to this method will override the previous setting.
-	pub fn amount_msats(mut self, amount_msats: u64) -> Self {
+	pub fn amount_msats(self, amount_msats: u64) -> Self {
 		self.amount(Amount::Bitcoin { amount_msats })
 	}
 
 	/// Sets the [`Offer::amount`].
 	///
 	/// Successive calls to this method will override the previous setting.
-	fn amount(mut self, amount: Amount) -> Self {
+	pub(super) fn amount(mut self, amount: Amount) -> Self {
 		self.offer.amount = Some(amount);
-		self
-	}
-
-	/// Sets the [`Offer::features`].
-	///
-	/// Successive calls to this method will override the previous setting.
-	#[cfg(test)]
-	pub fn features(mut self, features: OfferFeatures) -> Self {
-		self.offer.features = features;
 		self
 	}
 
@@ -222,9 +214,24 @@ impl OfferBuilder {
 	}
 }
 
+#[cfg(test)]
+impl OfferBuilder {
+	fn features_unchecked(mut self, features: OfferFeatures) -> Self {
+		self.offer.features = features;
+		self
+	}
+
+	pub(super) fn build_unchecked(self) -> Offer {
+		let mut bytes = Vec::new();
+		self.offer.write(&mut bytes).unwrap();
+
+		Offer { bytes, contents: self.offer }
+	}
+}
+
 /// An `Offer` is a potentially long-lived proposal for payment of a good or service.
 ///
-/// An offer is a precursor to an `InvoiceRequest`. A merchant publishes an offer from which a
+/// An offer is a precursor to an [`InvoiceRequest`]. A merchant publishes an offer from which a
 /// customer may request an `Invoice` for a specific quantity and using an amount sufficient to
 /// cover that quantity (i.e., at least `quantity * amount`). See [`Offer::amount`].
 ///
@@ -232,17 +239,21 @@ impl OfferBuilder {
 /// latter.
 ///
 /// Through the use of [`BlindedPath`]s, offers provide recipient privacy.
+///
+/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 #[derive(Clone, Debug)]
 pub struct Offer {
 	// The serialized offer. Needed when creating an `InvoiceRequest` if the offer contains unknown
 	// fields.
-	bytes: Vec<u8>,
-	contents: OfferContents,
+	pub(super) bytes: Vec<u8>,
+	pub(super) contents: OfferContents,
 }
 
-/// The contents of an [`Offer`], which may be shared with an `InvoiceRequest` or an `Invoice`.
+/// The contents of an [`Offer`], which may be shared with an [`InvoiceRequest`] or an `Invoice`.
+///
+/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 #[derive(Clone, Debug)]
-pub(crate) struct OfferContents {
+pub(super) struct OfferContents {
 	chains: Option<Vec<ChainHash>>,
 	metadata: Option<Vec<u8>>,
 	amount: Option<Amount>,
@@ -263,10 +274,16 @@ impl Offer {
 	/// Payments must be denominated in units of the minimal lightning-payable unit (e.g., msats)
 	/// for the selected chain.
 	pub fn chains(&self) -> Vec<ChainHash> {
-		self.contents.chains
-			.as_ref()
-			.cloned()
-			.unwrap_or_else(|| vec![self.contents.implied_chain()])
+		self.contents.chains()
+	}
+
+	pub(super) fn implied_chain(&self) -> ChainHash {
+		self.contents.implied_chain()
+	}
+
+	/// Returns whether the given chain is supported by the offer.
+	pub fn supports_chain(&self, chain: ChainHash) -> bool {
+		self.contents.supports_chain(chain)
 	}
 
 	// TODO: Link to corresponding method in `InvoiceRequest`.
@@ -278,7 +295,7 @@ impl Offer {
 
 	/// The minimum amount required for a successful payment of a single item.
 	pub fn amount(&self) -> Option<&Amount> {
-		self.contents.amount.as_ref()
+		self.contents.amount()
 	}
 
 	/// A complete description of the purpose of the payment. Intended to be displayed to the user
@@ -328,13 +345,48 @@ impl Offer {
 		self.contents.supported_quantity()
 	}
 
+	/// Returns whether the given quantity is valid for the offer.
+	pub fn is_valid_quantity(&self, quantity: u64) -> bool {
+		self.contents.is_valid_quantity(quantity)
+	}
+
+	/// Returns whether a quantity is expected in an [`InvoiceRequest`] for the offer.
+	///
+	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
+	pub fn expects_quantity(&self) -> bool {
+		self.contents.expects_quantity()
+	}
+
 	/// The public key used by the recipient to sign invoices.
 	pub fn signing_pubkey(&self) -> PublicKey {
 		self.contents.signing_pubkey.unwrap()
 	}
 
+	/// Creates an [`InvoiceRequest`] for the offer with the given `metadata` and `payer_id`, which
+	/// will be reflected in the `Invoice` response.
+	///
+	/// The `metadata` is useful for including information about the derivation of `payer_id` such
+	/// that invoice response handling can be stateless. Also serves as payer-provided entropy while
+	/// hashing in the signature calculation.
+	///
+	/// This should not leak any information such as by using a simple BIP-32 derivation path.
+	/// Otherwise, payments may be correlated.
+	///
+	/// Errors if the offer contains unknown required features.
+	///
+	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
+	pub fn request_invoice(
+		&self, metadata: Vec<u8>, payer_id: PublicKey
+	) -> Result<InvoiceRequestBuilder, SemanticError> {
+		if self.features().requires_unknown_bits() {
+			return Err(SemanticError::UnknownRequiredFeatures);
+		}
+
+		Ok(InvoiceRequestBuilder::new(self, metadata, payer_id))
+	}
+
 	#[cfg(test)]
-	fn as_tlv_stream(&self) -> OfferTlvStreamRef {
+	pub(super) fn as_tlv_stream(&self) -> OfferTlvStreamRef {
 		self.contents.as_tlv_stream()
 	}
 }
@@ -346,15 +398,82 @@ impl AsRef<[u8]> for Offer {
 }
 
 impl OfferContents {
+	pub fn chains(&self) -> Vec<ChainHash> {
+		self.chains.as_ref().cloned().unwrap_or_else(|| vec![self.implied_chain()])
+	}
+
 	pub fn implied_chain(&self) -> ChainHash {
 		ChainHash::using_genesis_block(Network::Bitcoin)
+	}
+
+	pub fn supports_chain(&self, chain: ChainHash) -> bool {
+		self.chains().contains(&chain)
+	}
+
+	pub fn amount(&self) -> Option<&Amount> {
+		self.amount.as_ref()
+	}
+
+	pub(super) fn check_amount_msats_for_quantity(
+		&self, amount_msats: Option<u64>, quantity: Option<u64>
+	) -> Result<(), SemanticError> {
+		let offer_amount_msats = match self.amount {
+			None => 0,
+			Some(Amount::Bitcoin { amount_msats }) => amount_msats,
+			Some(Amount::Currency { .. }) => return Err(SemanticError::UnsupportedCurrency),
+		};
+
+		if !self.expects_quantity() || quantity.is_some() {
+			let expected_amount_msats = offer_amount_msats * quantity.unwrap_or(1);
+			let amount_msats = amount_msats.unwrap_or(expected_amount_msats);
+
+			if amount_msats < expected_amount_msats {
+				return Err(SemanticError::InsufficientAmount);
+			}
+
+			if amount_msats > MAX_VALUE_MSAT {
+				return Err(SemanticError::InvalidAmount);
+			}
+		}
+
+		Ok(())
 	}
 
 	pub fn supported_quantity(&self) -> Quantity {
 		self.supported_quantity
 	}
 
-	fn as_tlv_stream(&self) -> OfferTlvStreamRef {
+	pub(super) fn check_quantity(&self, quantity: Option<u64>) -> Result<(), SemanticError> {
+		let expects_quantity = self.expects_quantity();
+		match quantity {
+			None if expects_quantity => Err(SemanticError::MissingQuantity),
+			Some(_) if !expects_quantity => Err(SemanticError::UnexpectedQuantity),
+			Some(quantity) if !self.is_valid_quantity(quantity) => {
+				Err(SemanticError::InvalidQuantity)
+			},
+			_ => Ok(()),
+		}
+	}
+
+	fn is_valid_quantity(&self, quantity: u64) -> bool {
+		match self.supported_quantity {
+			Quantity::Bounded(n) => {
+				let n = n.get();
+				if n == 1 { false }
+				else { quantity > 0 && quantity <= n }
+			},
+			Quantity::Unbounded => quantity > 0,
+		}
+	}
+
+	fn expects_quantity(&self) -> bool {
+		match self.supported_quantity {
+			Quantity::Bounded(n) => n.get() != 1,
+			Quantity::Unbounded => true,
+		}
+	}
+
+	pub(super) fn as_tlv_stream(&self) -> OfferTlvStreamRef {
 		let (currency, amount) = match &self.amount {
 			None => (None, None),
 			Some(Amount::Bitcoin { amount_msats }) => (None, Some(*amount_msats)),
@@ -567,6 +686,7 @@ mod tests {
 
 		assert_eq!(offer.bytes, buffer.as_slice());
 		assert_eq!(offer.chains(), vec![ChainHash::using_genesis_block(Network::Bitcoin)]);
+		assert!(offer.supports_chain(ChainHash::using_genesis_block(Network::Bitcoin)));
 		assert_eq!(offer.metadata(), None);
 		assert_eq!(offer.amount(), None);
 		assert_eq!(offer.description(), PrintableString("foo"));
@@ -605,6 +725,7 @@ mod tests {
 			.chain(Network::Bitcoin)
 			.build()
 			.unwrap();
+		assert!(offer.supports_chain(mainnet));
 		assert_eq!(offer.chains(), vec![mainnet]);
 		assert_eq!(offer.as_tlv_stream().chains, None);
 
@@ -612,6 +733,7 @@ mod tests {
 			.chain(Network::Testnet)
 			.build()
 			.unwrap();
+		assert!(offer.supports_chain(testnet));
 		assert_eq!(offer.chains(), vec![testnet]);
 		assert_eq!(offer.as_tlv_stream().chains, Some(&vec![testnet]));
 
@@ -620,6 +742,7 @@ mod tests {
 			.chain(Network::Testnet)
 			.build()
 			.unwrap();
+		assert!(offer.supports_chain(testnet));
 		assert_eq!(offer.chains(), vec![testnet]);
 		assert_eq!(offer.as_tlv_stream().chains, Some(&vec![testnet]));
 
@@ -628,6 +751,8 @@ mod tests {
 			.chain(Network::Testnet)
 			.build()
 			.unwrap();
+		assert!(offer.supports_chain(mainnet));
+		assert!(offer.supports_chain(testnet));
 		assert_eq!(offer.chains(), vec![mainnet, testnet]);
 		assert_eq!(offer.as_tlv_stream().chains, Some(&vec![mainnet, testnet]));
 	}
@@ -694,15 +819,15 @@ mod tests {
 	#[test]
 	fn builds_offer_with_features() {
 		let offer = OfferBuilder::new("foo".into(), pubkey(42))
-			.features(OfferFeatures::unknown())
+			.features_unchecked(OfferFeatures::unknown())
 			.build()
 			.unwrap();
 		assert_eq!(offer.features(), &OfferFeatures::unknown());
 		assert_eq!(offer.as_tlv_stream().features, Some(&OfferFeatures::unknown()));
 
 		let offer = OfferBuilder::new("foo".into(), pubkey(42))
-			.features(OfferFeatures::unknown())
-			.features(OfferFeatures::empty())
+			.features_unchecked(OfferFeatures::unknown())
+			.features_unchecked(OfferFeatures::empty())
 			.build()
 			.unwrap();
 		assert_eq!(offer.features(), &OfferFeatures::empty());
@@ -822,6 +947,18 @@ mod tests {
 		let tlv_stream = offer.as_tlv_stream();
 		assert_eq!(offer.supported_quantity(), Quantity::one());
 		assert_eq!(tlv_stream.quantity_max, None);
+	}
+
+	#[test]
+	fn fails_requesting_invoice_with_unknown_required_features() {
+		match OfferBuilder::new("foo".into(), pubkey(42))
+			.features_unchecked(OfferFeatures::unknown())
+			.build().unwrap()
+			.request_invoice(vec![1; 32], pubkey(43))
+		{
+			Ok(_) => panic!("expected error"),
+			Err(e) => assert_eq!(e, SemanticError::UnknownRequiredFeatures),
+		}
 	}
 
 	#[test]

@@ -11,6 +11,7 @@
 
 use bitcoin::bech32;
 use bitcoin::bech32::{FromBase32, ToBase32};
+use bitcoin::secp256k1;
 use core::convert::TryFrom;
 use core::fmt;
 use crate::io;
@@ -20,7 +21,7 @@ use crate::util::ser::SeekReadable;
 use crate::prelude::*;
 
 /// Indicates a message can be encoded using bech32.
-pub(crate) trait Bech32Encode: AsRef<[u8]> + TryFrom<Vec<u8>, Error=ParseError> {
+pub(super) trait Bech32Encode: AsRef<[u8]> + TryFrom<Vec<u8>, Error=ParseError> {
 	/// Human readable part of the message's bech32 encoding.
 	const BECH32_HRP: &'static str;
 
@@ -78,7 +79,7 @@ impl<'a> AsRef<str> for Bech32String<'a> {
 
 /// A wrapper for reading a message as a TLV stream `T` from a byte sequence, while still
 /// maintaining ownership of the bytes for later use.
-pub(crate) struct ParsedMessage<T: SeekReadable> {
+pub(super) struct ParsedMessage<T: SeekReadable> {
 	pub bytes: Vec<u8>,
 	pub tlv_stream: T,
 }
@@ -115,23 +116,41 @@ pub enum ParseError {
 	Decode(DecodeError),
 	/// The parsed message has invalid semantics.
 	InvalidSemantics(SemanticError),
+	/// The parsed message has an invalid signature.
+	InvalidSignature(secp256k1::Error),
 }
 
 /// Error when interpreting a TLV stream as a specific type.
 #[derive(Debug, PartialEq)]
 pub enum SemanticError {
+	/// The current [`std::time::SystemTime`] is past the offer or invoice's expiration.
+	AlreadyExpired,
+	/// The provided chain hash does not correspond to a supported chain.
+	UnsupportedChain,
 	/// An amount was expected but was missing.
 	MissingAmount,
 	/// The amount exceeded the total bitcoin supply.
 	InvalidAmount,
+	/// An amount was provided but was not sufficient in value.
+	InsufficientAmount,
 	/// A currency was provided that is not supported.
 	UnsupportedCurrency,
+	/// A feature was required but is unknown.
+	UnknownRequiredFeatures,
 	/// A required description was not provided.
 	MissingDescription,
 	/// A signing pubkey was not provided.
 	MissingSigningPubkey,
+	/// A quantity was expected but was missing.
+	MissingQuantity,
 	/// An unsupported quantity was provided.
 	InvalidQuantity,
+	/// A quantity or quantity bounds was provided but was not expected.
+	UnexpectedQuantity,
+	/// Payer metadata was expected but was missing.
+	MissingPayerMetadata,
+	/// A payer id was expected but was missing.
+	MissingPayerId,
 }
 
 impl From<bech32::Error> for ParseError {
@@ -149,5 +168,11 @@ impl From<DecodeError> for ParseError {
 impl From<SemanticError> for ParseError {
 	fn from(error: SemanticError) -> Self {
 		Self::InvalidSemantics(error)
+	}
+}
+
+impl From<secp256k1::Error> for ParseError {
+	fn from(error: secp256k1::Error) -> Self {
+		Self::InvalidSignature(error)
 	}
 }
