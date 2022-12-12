@@ -854,9 +854,6 @@ pub(crate) struct ChannelMonitorImpl<Signer: Sign> {
 /// Transaction outputs to watch for on-chain spends.
 pub type TransactionOutputs = (Txid, Vec<(u32, TxOut)>);
 
-#[cfg(any(test, fuzzing, feature = "_test_utils"))]
-/// Used only in testing and fuzzing to check serialization roundtrips don't change the underlying
-/// object
 impl<Signer: Sign> PartialEq for ChannelMonitor<Signer> {
 	fn eq(&self, other: &Self) -> bool {
 		let inner = self.inner.lock().unwrap();
@@ -865,9 +862,6 @@ impl<Signer: Sign> PartialEq for ChannelMonitor<Signer> {
 	}
 }
 
-#[cfg(any(test, fuzzing, feature = "_test_utils"))]
-/// Used only in testing and fuzzing to check serialization roundtrips don't change the underlying
-/// object
 impl<Signer: Sign> PartialEq for ChannelMonitorImpl<Signer> {
 	fn eq(&self, other: &Self) -> bool {
 		if self.latest_update_id != other.latest_update_id ||
