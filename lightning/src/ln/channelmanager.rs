@@ -7527,17 +7527,19 @@ impl<'a, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 					}
 					for (htlc_source, htlc) in monitor.get_all_current_outbound_htlcs() {
 						if let HTLCSource::PreviousHopData(prev_hop_data) = htlc_source {
+							let pending_forward_matches_htlc = |info: &PendingAddHTLCInfo| {
+								info.prev_funding_outpoint == prev_hop_data.outpoint &&
+									info.prev_htlc_id == prev_hop_data.htlc_id
+							};
 							// The ChannelMonitor is now responsible for this HTLC's
 							// failure/success and will let us know what its outcome is. If we
-							// still have an entry for this HTLC in `forward_htlcs`, we were
-							// apparently not persisted after the monitor was when forwarding
-							// the payment.
+							// still have an entry for this HTLC in `forward_htlcs` or
+							// `pending_intercepted_htlcs`, we were apparently not persisted after
+							// the monitor was when forwarding the payment.
 							forward_htlcs.retain(|_, forwards| {
 								forwards.retain(|forward| {
 									if let HTLCForwardInfo::AddHTLC(htlc_info) = forward {
-										if htlc_info.prev_short_channel_id == prev_hop_data.short_channel_id &&
-											htlc_info.prev_htlc_id == prev_hop_data.htlc_id
-										{
+										if pending_forward_matches_htlc(&htlc_info) {
 											log_info!(args.logger, "Removing pending to-forward HTLC with hash {} as it was forwarded to the closed channel {}",
 												log_bytes!(htlc.payment_hash.0), log_bytes!(monitor.get_funding_txo().0.to_channel_id()));
 											false
@@ -7545,7 +7547,19 @@ impl<'a, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 									} else { true }
 								});
 								!forwards.is_empty()
-							})
+							});
+							pending_intercepted_htlcs.as_mut().unwrap().retain(|intercepted_id, htlc_info| {
+								if pending_forward_matches_htlc(&htlc_info) {
+									log_info!(args.logger, "Removing pending intercepted HTLC with hash {} as it was forwarded to the closed channel {}",
+										log_bytes!(htlc.payment_hash.0), log_bytes!(monitor.get_funding_txo().0.to_channel_id()));
+									pending_events_read.retain(|event| {
+										if let Event::HTLCIntercepted { intercept_id: ev_id, .. } = event {
+											intercepted_id != ev_id
+										} else { true }
+									});
+									false
+								} else { true }
+							});
 						}
 					}
 				}
