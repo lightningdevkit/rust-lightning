@@ -19,6 +19,7 @@ use crate::ln::msgs;
 use crate::ln::msgs::{ChannelMessageHandler, RoutingMessageHandler, ErrorAction};
 use crate::util::enforcing_trait_impls::EnforcingSigner;
 use crate::util::test_utils;
+use crate::util::errors::APIError;
 use crate::util::events::{ClosureReason, Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider};
 use crate::util::ser::{Writeable, ReadableArgs};
 use crate::util::config::UserConfig;
@@ -814,7 +815,7 @@ fn test_partial_claim_before_restart() {
 	do_test_partial_claim_before_restart(true);
 }
 
-fn do_forwarded_payment_no_manager_persistence(use_cs_commitment: bool, claim_htlc: bool) {
+fn do_forwarded_payment_no_manager_persistence(use_cs_commitment: bool, claim_htlc: bool, use_intercept: bool) {
 	if !use_cs_commitment { assert!(!claim_htlc); }
 	// If we go to forward a payment, and the ChannelMonitor persistence completes, but the
 	// ChannelManager does not, we shouldn't try to forward the payment again, nor should we fail
@@ -822,7 +823,9 @@ fn do_forwarded_payment_no_manager_persistence(use_cs_commitment: bool, claim_ht
 	// This was never an issue, but it may be easy to regress here going forward.
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let mut intercept_forwards_config = test_default_channel_config();
+	intercept_forwards_config.accept_intercept_htlcs = true;
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, Some(intercept_forwards_config), None]);
 
 	let persister;
 	let new_chain_monitor;
@@ -833,7 +836,13 @@ fn do_forwarded_payment_no_manager_persistence(use_cs_commitment: bool, claim_ht
 	let chan_id_1 = create_announced_chan_between_nodes(&nodes, 0, 1, channelmanager::provided_init_features(), channelmanager::provided_init_features()).2;
 	let chan_id_2 = create_announced_chan_between_nodes(&nodes, 1, 2, channelmanager::provided_init_features(), channelmanager::provided_init_features()).2;
 
-	let (route, payment_hash, payment_preimage, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], 1_000_000);
+	let intercept_scid = nodes[1].node.get_intercept_scid();
+
+	let (mut route, payment_hash, payment_preimage, payment_secret) =
+		get_route_and_payment_hash!(nodes[0], nodes[2], 1_000_000);
+	if use_intercept {
+		route.paths[0][1].short_channel_id = intercept_scid;
+	}
 	let payment_id = PaymentId(nodes[0].keys_manager.backing.get_secure_random_bytes());
 	let htlc_expiry = nodes[0].best_block_info().1 + TEST_FINAL_CLTV;
 	nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret), payment_id).unwrap();
@@ -843,7 +852,26 @@ fn do_forwarded_payment_no_manager_persistence(use_cs_commitment: bool, claim_ht
 	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
 	commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, false);
 
+	// Store the `ChannelManager` before handling the `PendingHTLCsForwardable`/`HTLCIntercepted`
+	// events, expecting either event (and the HTLC itself) to be missing on reload even though its
+	// present when we serialized.
 	let node_encoded = nodes[1].node.encode();
+
+	let mut intercept_id = None;
+	let mut expected_outbound_amount_msat = None;
+	if use_intercept {
+		let events = nodes[1].node.get_and_clear_pending_events();
+		assert_eq!(events.len(), 1);
+		match events[0] {
+			Event::HTLCIntercepted { intercept_id: ev_id, expected_outbound_amount_msat: ev_amt, .. } => {
+				intercept_id = Some(ev_id);
+				expected_outbound_amount_msat = Some(ev_amt);
+			},
+			_ => panic!()
+		}
+		nodes[1].node.forward_intercepted_htlc(intercept_id.unwrap(), &chan_id_2,
+			nodes[2].node.get_our_node_id(), expected_outbound_amount_msat.unwrap()).unwrap();
+	}
 
 	expect_pending_htlcs_forwardable!(nodes[1]);
 
@@ -872,7 +900,19 @@ fn do_forwarded_payment_no_manager_persistence(use_cs_commitment: bool, claim_ht
 	let chan_1_monitor_serialized = get_monitor!(nodes[1], chan_id_2).encode();
 	reload_node!(nodes[1], node_encoded, &[&chan_0_monitor_serialized, &chan_1_monitor_serialized], persister, new_chain_monitor, nodes_1_deserialized);
 
+	// Note that this checks that this is the only event on nodes[1], implying the
+	// `HTLCIntercepted` event has been removed in the `use_intercept` case.
 	check_closed_event!(nodes[1], 1, ClosureReason::OutdatedChannelManager);
+
+	if use_intercept {
+		// Attempt to forward the HTLC back out over nodes[1]' still-open channel, ensuring we get
+		// a intercept-doesn't-exist error.
+		let forward_err = nodes[1].node.forward_intercepted_htlc(intercept_id.unwrap(), &chan_id_1,
+			nodes[0].node.get_our_node_id(), expected_outbound_amount_msat.unwrap()).unwrap_err();
+		assert_eq!(forward_err, APIError::APIMisuseError {
+			err: format!("Payment with intercept id {} not found", log_bytes!(intercept_id.unwrap().0))
+		});
+	}
 
 	let bs_commitment_tx = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 	assert_eq!(bs_commitment_tx.len(), 1);
@@ -929,9 +969,16 @@ fn do_forwarded_payment_no_manager_persistence(use_cs_commitment: bool, claim_ht
 
 #[test]
 fn forwarded_payment_no_manager_persistence() {
-	do_forwarded_payment_no_manager_persistence(true, true);
-	do_forwarded_payment_no_manager_persistence(true, false);
-	do_forwarded_payment_no_manager_persistence(false, false);
+	do_forwarded_payment_no_manager_persistence(true, true, false);
+	do_forwarded_payment_no_manager_persistence(true, false, false);
+	do_forwarded_payment_no_manager_persistence(false, false, false);
+}
+
+#[test]
+fn intercepted_payment_no_manager_persistence() {
+	do_forwarded_payment_no_manager_persistence(true, true, true);
+	do_forwarded_payment_no_manager_persistence(true, false, true);
+	do_forwarded_payment_no_manager_persistence(false, false, true);
 }
 
 #[test]
