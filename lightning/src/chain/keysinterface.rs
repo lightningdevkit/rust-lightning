@@ -473,8 +473,10 @@ pub trait KeysInterface {
 	/// This method should return a different value each time it is called, to avoid linking
 	/// on-chain funds across channels as controlled to the same user.
 	fn get_shutdown_scriptpubkey(&self) -> ShutdownScript;
-	/// Get a new set of [`Sign`] for per-channel secrets. These MUST be unique even if you
-	/// restarted with some stale data!
+	/// Generates a unique `channel_keys_id` that can be used to obtain a [`Self::Signer`] through
+	/// [`KeysInterface::derive_channel_signer`]. The `user_channel_id` is provided to allow
+	/// implementations of [`KeysInterface`] to maintain a mapping between it and the generated
+	/// `channel_keys_id`.
 	///
 	/// This method must return a different value each time it is called.
 	fn generate_channel_keys_id(&self, inbound: bool, channel_value_satoshis: u64, user_channel_id: u128) -> [u8; 32];
