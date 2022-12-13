@@ -716,7 +716,6 @@ mod test {
 		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 		let payment_hash = PaymentHash([0; 32]);
-		let payment_secret = &nodes[1].node.create_inbound_payment_for_hash(payment_hash, Some(10_000), 3600);
 		let invoice = crate::utils::create_invoice_from_channelmanager_and_duration_since_epoch_with_payment_hash(
 			&nodes[1].node, nodes[1].keys_manager, nodes[1].logger, Currency::BitcoinTestnet,
 			Some(10_000), "test".to_string(), Duration::from_secs(1234567), 3600,
