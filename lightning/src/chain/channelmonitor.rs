@@ -2325,6 +2325,17 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 					log_trace!(logger, "Updating ChannelMonitor: channel force closed, should broadcast: {}", should_broadcast);
 					self.lockdown_from_offchain = true;
 					if *should_broadcast {
+						// There's no need to broadcast our commitment transaction if we've seen one
+						// confirmed (even with 1 confirmation) as it'll be rejected as
+						// duplicate/conflicting.
+						let detected_funding_spend = self.funding_spend_confirmed.is_some() ||
+							self.onchain_events_awaiting_threshold_conf.iter().find(|event| match event.event {
+								OnchainEvent::FundingSpendConfirmation { .. } => true,
+								_ => false,
+							}).is_some();
+						if detected_funding_spend {
+							continue;
+						}
 						self.broadcast_latest_holder_commitment_txn(broadcaster, logger);
 						// If the channel supports anchor outputs, we'll need to emit an external
 						// event to be consumed such that a child transaction is broadcast with a

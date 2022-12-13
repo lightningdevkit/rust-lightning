@@ -82,10 +82,7 @@ fn do_test_onchain_htlc_reorg(local_commitment: bool, claim: bool) {
 		check_closed_broadcast!(nodes[2], true); // We should get a BroadcastChannelUpdate (and *only* a BroadcstChannelUpdate)
 		check_closed_event!(nodes[2], 1, ClosureReason::CommitmentTxConfirmed);
 		let node_2_commitment_txn = nodes[2].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
-		assert_eq!(node_2_commitment_txn.len(), 3); // ChannelMonitor: 1 offered HTLC-Claim, ChannelManger: 1 local commitment tx, 1 Received HTLC-Claim
-		assert_eq!(node_2_commitment_txn[1].output.len(), 2); // to-remote and Received HTLC (to-self is dust)
-		check_spends!(node_2_commitment_txn[1], chan_2.3);
-		check_spends!(node_2_commitment_txn[2], node_2_commitment_txn[1]);
+		assert_eq!(node_2_commitment_txn.len(), 1); // ChannelMonitor: 1 offered HTLC-Claim
 		check_spends!(node_2_commitment_txn[0], node_1_commitment_txn[0]);
 
 		// Make sure node 1's height is the same as the !local_commitment case
@@ -108,13 +105,11 @@ fn do_test_onchain_htlc_reorg(local_commitment: bool, claim: bool) {
 		mine_transaction(&nodes[1], &node_2_commitment_txn[0]);
 		connect_blocks(&nodes[1], TEST_FINAL_CLTV - 1); // Confirm blocks until the HTLC expires
 		let node_1_commitment_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().clone();
-		assert_eq!(node_1_commitment_txn.len(), 2); // ChannelMonitor: 1 offered HTLC-Timeout, ChannelManger: 1 local commitment tx
-		assert_eq!(node_1_commitment_txn[0].output.len(), 2); // to-local and Offered HTLC (to-remote is dust)
-		check_spends!(node_1_commitment_txn[0], chan_2.3);
-		check_spends!(node_1_commitment_txn[1], node_2_commitment_txn[0]);
+		assert_eq!(node_1_commitment_txn.len(), 1); // ChannelMonitor: 1 offered HTLC-Timeout
+		check_spends!(node_1_commitment_txn[0], node_2_commitment_txn[0]);
 
 		// Confirm node 1's HTLC-Timeout on node 1
-		mine_transaction(&nodes[1], &node_1_commitment_txn[1]);
+		mine_transaction(&nodes[1], &node_1_commitment_txn[0]);
 		// ...but return node 2's commitment tx (and claim) in case claim is set and we're preparing to reorg
 		vec![node_2_commitment_txn.pop().unwrap()]
 	};
@@ -459,12 +454,9 @@ fn test_set_outpoints_partial_claiming() {
 	// Verify node A broadcast tx claiming both HTLCs
 	{
 		let mut node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
-		// ChannelMonitor: claim tx, ChannelManager: local commitment tx + HTLC-Success*2
-		assert_eq!(node_txn.len(), 4);
+		// ChannelMonitor: claim tx
+		assert_eq!(node_txn.len(), 1);
 		check_spends!(node_txn[0], remote_txn[0]);
-		check_spends!(node_txn[1], chan.3);
-		check_spends!(node_txn[2], node_txn[1]);
-		check_spends!(node_txn[3], node_txn[1]);
 		assert_eq!(node_txn[0].input.len(), 2);
 		node_txn.clear();
 	}
@@ -552,11 +544,6 @@ fn do_test_to_remote_after_local_detection(style: ConnectStyle) {
 	check_closed_broadcast!(nodes[1], true);
 	check_added_monitors!(nodes[1], 1);
 	check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed);
-
-	// Drop transactions broadcasted in response to the first commitment transaction (we have good
-	// test coverage of these things already elsewhere).
-	assert_eq!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0).len(), 1);
-	assert_eq!(nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0).len(), 1);
 
 	assert!(nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());
 	assert!(nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());
