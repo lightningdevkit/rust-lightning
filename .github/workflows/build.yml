@@ -109,7 +109,7 @@ jobs:
           RUSTFLAGS="-C link-dead-code" cargo build --verbose --color always --features rpc-client,rest-client
           RUSTFLAGS="-C link-dead-code" cargo build --verbose --color always --features rpc-client,rest-client,tokio
       - name: Test backtrace-debug builds on Rust ${{ matrix.toolchain }}
-        if: "matrix.build-no-std"
+        if: "matrix.toolchain == 'stable'"
         run: |
           cd lightning && cargo test --verbose --color always --features backtrace
       - name: Test on Rust ${{ matrix.toolchain }} with net-tokio
