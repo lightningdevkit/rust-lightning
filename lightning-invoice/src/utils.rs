@@ -562,6 +562,7 @@ fn filter_channels<L: Deref>(
 			include_channel
 		})
 		.map(route_hint_from_channel)
+		.take(3)
 		.collect::<Vec<RouteHint>>()
 }
 
