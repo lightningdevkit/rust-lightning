@@ -16,7 +16,7 @@ use bitcoin::secp256k1::{self, PublicKey, Secp256k1, SecretKey, Scalar};
 use bitcoin::secp256k1::ecdh::SharedSecret;
 
 use crate::ln::onion_utils;
-use super::blinded_route::BlindedRoute;
+use super::blinded_route::BlindedPath;
 use super::messenger::Destination;
 
 use crate::prelude::*;
@@ -87,7 +87,7 @@ pub(super) fn construct_keys_callback<T: secp256k1::Signing + secp256k1::Verific
 			Destination::Node(pk) => {
 				build_keys!(pk, false, None);
 			},
-			Destination::BlindedRoute(BlindedRoute { blinded_hops, .. }) => {
+			Destination::BlindedPath(BlindedPath { blinded_hops, .. }) => {
 				for hop in blinded_hops {
 					build_keys_in_loop!(hop.blinded_node_id, true, Some(hop.encrypted_payload));
 				}

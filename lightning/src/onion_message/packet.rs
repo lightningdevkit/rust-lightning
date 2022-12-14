@@ -14,7 +14,7 @@ use bitcoin::secp256k1::ecdh::SharedSecret;
 
 use crate::ln::msgs::DecodeError;
 use crate::ln::onion_utils;
-use super::blinded_route::{BlindedRoute, ForwardTlvs, ReceiveTlvs};
+use super::blinded_route::{BlindedPath, ForwardTlvs, ReceiveTlvs};
 use super::messenger::CustomOnionMessageHandler;
 use crate::util::chacha20poly1305rfc::{ChaChaPolyReadAdapter, ChaChaPolyWriteAdapter};
 use crate::util::ser::{BigSize, FixedLengthReader, LengthRead, LengthReadable, LengthReadableArgs, Readable, ReadableArgs, Writeable, Writer};
@@ -99,7 +99,7 @@ pub(super) enum Payload<T: CustomOnionMessageContents> {
 	/// This payload is for the final hop.
 	Receive {
 		control_tlvs: ReceiveControlTlvs,
-		reply_path: Option<BlindedRoute>,
+		reply_path: Option<BlindedPath>,
 		message: OnionMessageContents<T>,
 	}
 }
@@ -204,7 +204,7 @@ impl<H: CustomOnionMessageHandler> ReadableArgs<(SharedSecret, &H)> for Payload<
 
 		let v: BigSize = Readable::read(r)?;
 		let mut rd = FixedLengthReader::new(r, v.0);
-		let mut reply_path: Option<BlindedRoute> = None;
+		let mut reply_path: Option<BlindedPath> = None;
 		let mut read_adapter: Option<ChaChaPolyReadAdapter<ControlTlvs>> = None;
 		let rho = onion_utils::gen_rho_from_shared_secret(&encrypted_tlvs_ss.secret_bytes());
 		let mut message_type: Option<u64> = None;

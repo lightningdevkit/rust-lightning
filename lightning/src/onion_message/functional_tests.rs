@@ -12,7 +12,7 @@
 use crate::chain::keysinterface::{KeysInterface, Recipient};
 use crate::ln::features::InitFeatures;
 use crate::ln::msgs::{self, DecodeError, OnionMessageHandler};
-use super::{BlindedRoute, CustomOnionMessageContents, CustomOnionMessageHandler, Destination, OnionMessageContents, OnionMessenger, SendError};
+use super::{BlindedPath, CustomOnionMessageContents, CustomOnionMessageHandler, Destination, OnionMessageContents, OnionMessenger, SendError};
 use crate::util::ser::{Writeable, Writer};
 use crate::util::test_utils;
 
@@ -136,9 +136,9 @@ fn two_unblinded_two_blinded() {
 	let test_msg = OnionMessageContents::Custom(TestCustomMessage {});
 
 	let secp_ctx = Secp256k1::new();
-	let blinded_route = BlindedRoute::new(&[nodes[3].get_node_pk(), nodes[4].get_node_pk()], &*nodes[4].keys_manager, &secp_ctx).unwrap();
+	let blinded_route = BlindedPath::new(&[nodes[3].get_node_pk(), nodes[4].get_node_pk()], &*nodes[4].keys_manager, &secp_ctx).unwrap();
 
-	nodes[0].messenger.send_onion_message(&[nodes[1].get_node_pk(), nodes[2].get_node_pk()], Destination::BlindedRoute(blinded_route), test_msg, None).unwrap();
+	nodes[0].messenger.send_onion_message(&[nodes[1].get_node_pk(), nodes[2].get_node_pk()], Destination::BlindedPath(blinded_route), test_msg, None).unwrap();
 	pass_along_path(&nodes, None);
 }
 
@@ -148,9 +148,9 @@ fn three_blinded_hops() {
 	let test_msg = OnionMessageContents::Custom(TestCustomMessage {});
 
 	let secp_ctx = Secp256k1::new();
-	let blinded_route = BlindedRoute::new(&[nodes[1].get_node_pk(), nodes[2].get_node_pk(), nodes[3].get_node_pk()], &*nodes[3].keys_manager, &secp_ctx).unwrap();
+	let blinded_route = BlindedPath::new(&[nodes[1].get_node_pk(), nodes[2].get_node_pk(), nodes[3].get_node_pk()], &*nodes[3].keys_manager, &secp_ctx).unwrap();
 
-	nodes[0].messenger.send_onion_message(&[], Destination::BlindedRoute(blinded_route), test_msg, None).unwrap();
+	nodes[0].messenger.send_onion_message(&[], Destination::BlindedPath(blinded_route), test_msg, None).unwrap();
 	pass_along_path(&nodes, None);
 }
 
@@ -174,14 +174,14 @@ fn we_are_intro_node() {
 	let test_msg = TestCustomMessage {};
 
 	let secp_ctx = Secp256k1::new();
-	let blinded_route = BlindedRoute::new(&[nodes[0].get_node_pk(), nodes[1].get_node_pk(), nodes[2].get_node_pk()], &*nodes[2].keys_manager, &secp_ctx).unwrap();
+	let blinded_route = BlindedPath::new(&[nodes[0].get_node_pk(), nodes[1].get_node_pk(), nodes[2].get_node_pk()], &*nodes[2].keys_manager, &secp_ctx).unwrap();
 
-	nodes[0].messenger.send_onion_message(&[], Destination::BlindedRoute(blinded_route), OnionMessageContents::Custom(test_msg.clone()), None).unwrap();
+	nodes[0].messenger.send_onion_message(&[], Destination::BlindedPath(blinded_route), OnionMessageContents::Custom(test_msg.clone()), None).unwrap();
 	pass_along_path(&nodes, None);
 
 	// Try with a two-hop blinded route where we are the introduction node.
-	let blinded_route = BlindedRoute::new(&[nodes[0].get_node_pk(), nodes[1].get_node_pk()], &*nodes[1].keys_manager, &secp_ctx).unwrap();
-	nodes[0].messenger.send_onion_message(&[], Destination::BlindedRoute(blinded_route), OnionMessageContents::Custom(test_msg), None).unwrap();
+	let blinded_route = BlindedPath::new(&[nodes[0].get_node_pk(), nodes[1].get_node_pk()], &*nodes[1].keys_manager, &secp_ctx).unwrap();
+	nodes[0].messenger.send_onion_message(&[], Destination::BlindedPath(blinded_route), OnionMessageContents::Custom(test_msg), None).unwrap();
 	nodes.remove(2);
 	pass_along_path(&nodes, None);
 }
@@ -194,16 +194,16 @@ fn invalid_blinded_route_error() {
 
 	// 0 hops
 	let secp_ctx = Secp256k1::new();
-	let mut blinded_route = BlindedRoute::new(&[nodes[1].get_node_pk(), nodes[2].get_node_pk()], &*nodes[2].keys_manager, &secp_ctx).unwrap();
+	let mut blinded_route = BlindedPath::new(&[nodes[1].get_node_pk(), nodes[2].get_node_pk()], &*nodes[2].keys_manager, &secp_ctx).unwrap();
 	blinded_route.blinded_hops.clear();
-	let err = nodes[0].messenger.send_onion_message(&[], Destination::BlindedRoute(blinded_route), OnionMessageContents::Custom(test_msg.clone()), None).unwrap_err();
+	let err = nodes[0].messenger.send_onion_message(&[], Destination::BlindedPath(blinded_route), OnionMessageContents::Custom(test_msg.clone()), None).unwrap_err();
 	assert_eq!(err, SendError::TooFewBlindedHops);
 
 	// 1 hop
-	let mut blinded_route = BlindedRoute::new(&[nodes[1].get_node_pk(), nodes[2].get_node_pk()], &*nodes[2].keys_manager, &secp_ctx).unwrap();
+	let mut blinded_route = BlindedPath::new(&[nodes[1].get_node_pk(), nodes[2].get_node_pk()], &*nodes[2].keys_manager, &secp_ctx).unwrap();
 	blinded_route.blinded_hops.remove(0);
 	assert_eq!(blinded_route.blinded_hops.len(), 1);
-	let err = nodes[0].messenger.send_onion_message(&[], Destination::BlindedRoute(blinded_route), OnionMessageContents::Custom(test_msg), None).unwrap_err();
+	let err = nodes[0].messenger.send_onion_message(&[], Destination::BlindedPath(blinded_route), OnionMessageContents::Custom(test_msg), None).unwrap_err();
 	assert_eq!(err, SendError::TooFewBlindedHops);
 }
 
@@ -214,7 +214,7 @@ fn reply_path() {
 	let secp_ctx = Secp256k1::new();
 
 	// Destination::Node
-	let reply_path = BlindedRoute::new(&[nodes[2].get_node_pk(), nodes[1].get_node_pk(), nodes[0].get_node_pk()], &*nodes[0].keys_manager, &secp_ctx).unwrap();
+	let reply_path = BlindedPath::new(&[nodes[2].get_node_pk(), nodes[1].get_node_pk(), nodes[0].get_node_pk()], &*nodes[0].keys_manager, &secp_ctx).unwrap();
 	nodes[0].messenger.send_onion_message(&[nodes[1].get_node_pk(), nodes[2].get_node_pk()], Destination::Node(nodes[3].get_node_pk()), OnionMessageContents::Custom(test_msg.clone()), Some(reply_path)).unwrap();
 	pass_along_path(&nodes, None);
 	// Make sure the last node successfully decoded the reply path.
@@ -222,11 +222,11 @@ fn reply_path() {
 		"lightning::onion_message::messenger".to_string(),
 		format!("Received an onion message with path_id None and a reply_path").to_string(), 1);
 
-	// Destination::BlindedRoute
-	let blinded_route = BlindedRoute::new(&[nodes[1].get_node_pk(), nodes[2].get_node_pk(), nodes[3].get_node_pk()], &*nodes[3].keys_manager, &secp_ctx).unwrap();
-	let reply_path = BlindedRoute::new(&[nodes[2].get_node_pk(), nodes[1].get_node_pk(), nodes[0].get_node_pk()], &*nodes[0].keys_manager, &secp_ctx).unwrap();
+	// Destination::BlindedPath
+	let blinded_route = BlindedPath::new(&[nodes[1].get_node_pk(), nodes[2].get_node_pk(), nodes[3].get_node_pk()], &*nodes[3].keys_manager, &secp_ctx).unwrap();
+	let reply_path = BlindedPath::new(&[nodes[2].get_node_pk(), nodes[1].get_node_pk(), nodes[0].get_node_pk()], &*nodes[0].keys_manager, &secp_ctx).unwrap();
 
-	nodes[0].messenger.send_onion_message(&[], Destination::BlindedRoute(blinded_route), OnionMessageContents::Custom(test_msg), Some(reply_path)).unwrap();
+	nodes[0].messenger.send_onion_message(&[], Destination::BlindedPath(blinded_route), OnionMessageContents::Custom(test_msg), Some(reply_path)).unwrap();
 	pass_along_path(&nodes, None);
 	nodes[3].logger.assert_log_contains(
 		"lightning::onion_message::messenger".to_string(),

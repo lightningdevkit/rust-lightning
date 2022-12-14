@@ -29,7 +29,7 @@ use crate::prelude::*;
 /// Onion messages can be sent and received to blinded routes, which serve to hide the identity of
 /// the recipient.
 #[derive(Clone, Debug, PartialEq)]
-pub struct BlindedRoute {
+pub struct BlindedPath {
 	/// To send to a blinded route, the sender first finds a route to the unblinded
 	/// `introduction_node_id`, which can unblind its [`encrypted_payload`] to find out the onion
 	/// message's next hop and forward it along.
@@ -57,7 +57,7 @@ pub struct BlindedHop {
 	pub(crate) encrypted_payload: Vec<u8>,
 }
 
-impl BlindedRoute {
+impl BlindedPath {
 	/// Create a blinded route to be forwarded along `node_pks`. The last node pubkey in `node_pks`
 	/// will be the destination node.
 	///
@@ -71,7 +71,7 @@ impl BlindedRoute {
 		let blinding_secret = SecretKey::from_slice(&blinding_secret_bytes[..]).expect("RNG is busted");
 		let introduction_node_id = node_pks[0];
 
-		Ok(BlindedRoute {
+		Ok(BlindedPath {
 			introduction_node_id,
 			blinding_point: PublicKey::from_secret_key(secp_ctx, &blinding_secret),
 			blinded_hops: blinded_hops(secp_ctx, node_pks, &blinding_secret).map_err(|_| ())?,
@@ -156,7 +156,7 @@ fn encrypt_payload<P: Writeable>(payload: P, encrypted_tlvs_ss: [u8; 32]) -> Vec
 	writer.0
 }
 
-impl Writeable for BlindedRoute {
+impl Writeable for BlindedPath {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		self.introduction_node_id.write(w)?;
 		self.blinding_point.write(w)?;
@@ -168,7 +168,7 @@ impl Writeable for BlindedRoute {
 	}
 }
 
-impl Readable for BlindedRoute {
+impl Readable for BlindedPath {
 	fn read<R: io::Read>(r: &mut R) -> Result<Self, DecodeError> {
 		let introduction_node_id = Readable::read(r)?;
 		let blinding_point = Readable::read(r)?;
@@ -178,7 +178,7 @@ impl Readable for BlindedRoute {
 		for _ in 0..num_hops {
 			blinded_hops.push(Readable::read(r)?);
 		}
-		Ok(BlindedRoute {
+		Ok(BlindedPath {
 			introduction_node_id,
 			blinding_point,
 			blinded_hops,

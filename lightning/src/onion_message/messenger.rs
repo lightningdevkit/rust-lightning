@@ -20,7 +20,7 @@ use crate::ln::features::{InitFeatures, NodeFeatures};
 use crate::ln::msgs::{self, OnionMessageHandler};
 use crate::ln::onion_utils;
 use crate::ln::peer_handler::IgnoringMessageHandler;
-use super::blinded_route::{BlindedRoute, ForwardTlvs, ReceiveTlvs};
+use super::blinded_route::{BlindedPath, ForwardTlvs, ReceiveTlvs};
 pub use super::packet::{CustomOnionMessageContents, OnionMessageContents};
 use super::packet::{BIG_PACKET_HOP_DATA_LEN, ForwardControlTlvs, Packet, Payload, ReceiveControlTlvs, SMALL_PACKET_HOP_DATA_LEN};
 use super::utils;
@@ -46,7 +46,7 @@ use crate::prelude::*;
 /// # use lightning::chain::keysinterface::{InMemorySigner, KeysManager, KeysInterface};
 /// # use lightning::ln::msgs::DecodeError;
 /// # use lightning::ln::peer_handler::IgnoringMessageHandler;
-/// # use lightning::onion_message::{BlindedRoute, CustomOnionMessageContents, Destination, OnionMessageContents, OnionMessenger};
+/// # use lightning::onion_message::{BlindedPath, CustomOnionMessageContents, Destination, OnionMessageContents, OnionMessenger};
 /// # use lightning::util::logger::{Logger, Record};
 /// # use lightning::util::ser::{Writeable, Writer};
 /// # use lightning::io;
@@ -92,14 +92,14 @@ use crate::prelude::*;
 /// // Create a blinded route to yourself, for someone to send an onion message to.
 /// # let your_node_id = hop_node_id1;
 /// let hops = [hop_node_id3, hop_node_id4, your_node_id];
-/// let blinded_route = BlindedRoute::new(&hops, &keys_manager, &secp_ctx).unwrap();
+/// let blinded_route = BlindedPath::new(&hops, &keys_manager, &secp_ctx).unwrap();
 ///
 /// // Send a custom onion message to a blinded route.
 /// # let intermediate_hops = [hop_node_id1, hop_node_id2];
 /// let reply_path = None;
 /// # let your_custom_message = YourCustomMessage {};
 /// let message = OnionMessageContents::Custom(your_custom_message);
-/// onion_messenger.send_onion_message(&intermediate_hops, Destination::BlindedRoute(blinded_route), message, reply_path);
+/// onion_messenger.send_onion_message(&intermediate_hops, Destination::BlindedPath(blinded_route), message, reply_path);
 /// ```
 ///
 /// [offers]: <https://github.com/lightning/bolts/pull/798>
@@ -123,14 +123,14 @@ pub enum Destination {
 	/// We're sending this onion message to a node.
 	Node(PublicKey),
 	/// We're sending this onion message to a blinded route.
-	BlindedRoute(BlindedRoute),
+	BlindedPath(BlindedPath),
 }
 
 impl Destination {
 	pub(super) fn num_hops(&self) -> usize {
 		match self {
 			Destination::Node(_) => 1,
-			Destination::BlindedRoute(BlindedRoute { blinded_hops, .. }) => blinded_hops.len(),
+			Destination::BlindedPath(BlindedPath { blinded_hops, .. }) => blinded_hops.len(),
 		}
 	}
 }
@@ -145,7 +145,7 @@ pub enum SendError {
 	/// Because implementations such as Eclair will drop onion messages where the message packet
 	/// exceeds 32834 bytes, we refuse to send messages where the packet exceeds this size.
 	TooBigPacket,
-	/// The provided [`Destination`] was an invalid [`BlindedRoute`], due to having fewer than two
+	/// The provided [`Destination`] was an invalid [`BlindedPath`], due to having fewer than two
 	/// blinded hops.
 	TooFewBlindedHops,
 	/// Our next-hop peer was offline or does not support onion message forwarding.
@@ -162,7 +162,7 @@ pub enum SendError {
 	/// advance the blinded route to make the second hop the new introduction node. Either
 	/// [`KeysInterface::ecdh`] failed, we failed to tweak the current blinding point to get the
 	/// new blinding point, or we were attempting to send to ourselves.
-	BlindedRouteAdvanceFailed,
+	BlindedPathAdvanceFailed,
 }
 
 /// Handler for custom onion messages. If you are using [`SimpleArcOnionMessenger`],
@@ -207,8 +207,8 @@ impl<K: Deref, L: Deref, CMH: Deref> OnionMessenger<K, L, CMH>
 
 	/// Send an onion message with contents `message` to `destination`, routing it through `intermediate_nodes`.
 	/// See [`OnionMessenger`] for example usage.
-	pub fn send_onion_message<T: CustomOnionMessageContents>(&self, intermediate_nodes: &[PublicKey], mut destination: Destination, message: OnionMessageContents<T>, reply_path: Option<BlindedRoute>) -> Result<(), SendError> {
-		if let Destination::BlindedRoute(BlindedRoute { ref blinded_hops, .. }) = destination {
+	pub fn send_onion_message<T: CustomOnionMessageContents>(&self, intermediate_nodes: &[PublicKey], mut destination: Destination, message: OnionMessageContents<T>, reply_path: Option<BlindedPath>) -> Result<(), SendError> {
+		if let Destination::BlindedPath(BlindedPath { ref blinded_hops, .. }) = destination {
 			if blinded_hops.len() < 2 {
 				return Err(SendError::TooFewBlindedHops);
 			}
@@ -219,12 +219,12 @@ impl<K: Deref, L: Deref, CMH: Deref> OnionMessenger<K, L, CMH>
 		// If we are sending straight to a blinded route and we are the introduction node, we need to
 		// advance the blinded route by 1 hop so the second hop is the new introduction node.
 		if intermediate_nodes.len() == 0 {
-			if let Destination::BlindedRoute(ref mut blinded_route) = destination {
+			if let Destination::BlindedPath(ref mut blinded_route) = destination {
 				let our_node_id = self.keys_manager.get_node_id(Recipient::Node)
 					.map_err(|()| SendError::GetNodeIdFailed)?;
 				if blinded_route.introduction_node_id == our_node_id {
 					blinded_route.advance_by_one(&self.keys_manager, &self.secp_ctx)
-						.map_err(|()| SendError::BlindedRouteAdvanceFailed)?;
+						.map_err(|()| SendError::BlindedPathAdvanceFailed)?;
 				}
 			}
 		}
@@ -236,7 +236,7 @@ impl<K: Deref, L: Deref, CMH: Deref> OnionMessenger<K, L, CMH>
 		} else {
 			match destination {
 				Destination::Node(pk) => (pk, PublicKey::from_secret_key(&self.secp_ctx, &blinding_secret)),
-				Destination::BlindedRoute(BlindedRoute { introduction_node_id, blinding_point, .. }) =>
+				Destination::BlindedPath(BlindedPath { introduction_node_id, blinding_point, .. }) =>
 					(introduction_node_id, blinding_point),
 			}
 		};
@@ -476,13 +476,13 @@ pub type SimpleRefOnionMessenger<'a, 'b, L> = OnionMessenger<&'a KeysManager, &'
 /// `unblinded_path` to the given `destination`.
 fn packet_payloads_and_keys<T: CustomOnionMessageContents, S: secp256k1::Signing + secp256k1::Verification>(
 	secp_ctx: &Secp256k1<S>, unblinded_path: &[PublicKey], destination: Destination,
-	message: OnionMessageContents<T>, mut reply_path: Option<BlindedRoute>, session_priv: &SecretKey
+	message: OnionMessageContents<T>, mut reply_path: Option<BlindedPath>, session_priv: &SecretKey
 ) -> Result<(Vec<(Payload<T>, [u8; 32])>, Vec<onion_utils::OnionKeys>), secp256k1::Error> {
 	let num_hops = unblinded_path.len() + destination.num_hops();
 	let mut payloads = Vec::with_capacity(num_hops);
 	let mut onion_packet_keys = Vec::with_capacity(num_hops);
 
-	let (mut intro_node_id_blinding_pt, num_blinded_hops) = if let Destination::BlindedRoute(BlindedRoute {
+	let (mut intro_node_id_blinding_pt, num_blinded_hops) = if let Destination::BlindedPath(BlindedPath {
 		introduction_node_id, blinding_point, blinded_hops }) = &destination {
 		(Some((*introduction_node_id, *blinding_point)), blinded_hops.len()) } else { (None, 0) };
 	let num_unblinded_hops = num_hops - num_blinded_hops;
