@@ -141,7 +141,7 @@ pub trait CustomOnionMessageContents: Writeable {
 
 /// Forward control TLVs in their blinded and unblinded form.
 pub(super) enum ForwardControlTlvs {
-	/// If we're sending to a blinded route, the node that constructed the blinded route has provided
+	/// If we're sending to a blinded path, the node that constructed the blinded path has provided
 	/// this hop's control TLVs, already encrypted into bytes.
 	Blinded(Vec<u8>),
 	/// If we're constructing an onion message hop through an intermediate unblinded node, we'll need

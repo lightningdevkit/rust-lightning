@@ -89,12 +89,12 @@ use crate::prelude::*;
 /// let message = OnionMessageContents::Custom(your_custom_message);
 /// onion_messenger.send_onion_message(&intermediate_hops, Destination::Node(destination_node_id), message, reply_path);
 ///
-/// // Create a blinded route to yourself, for someone to send an onion message to.
+/// // Create a blinded path to yourself, for someone to send an onion message to.
 /// # let your_node_id = hop_node_id1;
 /// let hops = [hop_node_id3, hop_node_id4, your_node_id];
 /// let blinded_path = BlindedPath::new(&hops, &keys_manager, &secp_ctx).unwrap();
 ///
-/// // Send a custom onion message to a blinded route.
+/// // Send a custom onion message to a blinded path.
 /// # let intermediate_hops = [hop_node_id1, hop_node_id2];
 /// let reply_path = None;
 /// # let your_custom_message = YourCustomMessage {};
@@ -122,7 +122,7 @@ pub struct OnionMessenger<K: Deref, L: Deref, CMH: Deref>
 pub enum Destination {
 	/// We're sending this onion message to a node.
 	Node(PublicKey),
-	/// We're sending this onion message to a blinded route.
+	/// We're sending this onion message to a blinded path.
 	BlindedPath(BlindedPath),
 }
 
@@ -158,8 +158,8 @@ pub enum SendError {
 	///
 	/// [`KeysInterface`]: crate::chain::keysinterface::KeysInterface
 	GetNodeIdFailed,
-	/// We attempted to send to a blinded route where we are the introduction node, and failed to
-	/// advance the blinded route to make the second hop the new introduction node. Either
+	/// We attempted to send to a blinded path where we are the introduction node, and failed to
+	/// advance the blinded path to make the second hop the new introduction node. Either
 	/// [`KeysInterface::ecdh`] failed, we failed to tweak the current blinding point to get the
 	/// new blinding point, or we were attempting to send to ourselves.
 	BlindedPathAdvanceFailed,
@@ -216,8 +216,8 @@ impl<K: Deref, L: Deref, CMH: Deref> OnionMessenger<K, L, CMH>
 		let OnionMessageContents::Custom(ref msg) = message;
 		if msg.tlv_type() < 64 { return Err(SendError::InvalidMessage) }
 
-		// If we are sending straight to a blinded route and we are the introduction node, we need to
-		// advance the blinded route by 1 hop so the second hop is the new introduction node.
+		// If we are sending straight to a blinded path and we are the introduction node, we need to
+		// advance the blinded path by 1 hop so the second hop is the new introduction node.
 		if intermediate_nodes.len() == 0 {
 			if let Destination::BlindedPath(ref mut blinded_path) = destination {
 				let our_node_id = self.keys_manager.get_node_id(Recipient::Node)
@@ -346,7 +346,7 @@ impl<K: Deref, L: Deref, CMH: Deref> OnionMessageHandler for OnionMessenger<K, L
 				// TODO: we need to check whether `next_node_id` is our node, in which case this is a dummy
 				// blinded hop and this onion message is destined for us. In this situation, we should keep
 				// unwrapping the onion layers to get to the final payload. Since we don't have the option
-				// of creating blinded routes with dummy hops currently, we should be ok to not handle this
+				// of creating blinded paths with dummy hops currently, we should be ok to not handle this
 				// for now.
 				let new_pubkey = match onion_utils::next_hop_packet_pubkey(&self.secp_ctx, msg.onion_routing_packet.public_key, &onion_decode_ss) {
 					Ok(pk) => pk,
