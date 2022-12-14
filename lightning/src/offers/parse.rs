@@ -159,6 +159,8 @@ pub enum SemanticError {
 	MissingPayerMetadata,
 	/// A payer id was expected but was missing.
 	MissingPayerId,
+	/// A signature was expected but was missing.
+	MissingSignature,
 }
 
 impl From<bech32::Error> for ParseError {

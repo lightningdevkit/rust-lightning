@@ -223,11 +223,11 @@ impl<'a> UnsignedInvoiceRequest<'a> {
 		unsigned_tlv_stream.write(&mut bytes).unwrap();
 
 		let pubkey = self.invoice_request.payer_id;
-		let signature = Some(merkle::sign_message(sign, SIGNATURE_TAG, &bytes, pubkey)?);
+		let signature = merkle::sign_message(sign, SIGNATURE_TAG, &bytes, pubkey)?;
 
 		// Append the signature TLV record to the bytes.
 		let signature_tlv_stream = SignatureTlvStreamRef {
-			signature: signature.as_ref(),
+			signature: Some(&signature),
 		};
 		signature_tlv_stream.write(&mut bytes).unwrap();
 
@@ -249,7 +249,7 @@ impl<'a> UnsignedInvoiceRequest<'a> {
 pub struct InvoiceRequest {
 	pub(super) bytes: Vec<u8>,
 	contents: InvoiceRequestContents,
-	signature: Option<Signature>,
+	signature: Signature,
 }
 
 /// The contents of an [`InvoiceRequest`], which may be shared with an `Invoice`.
@@ -311,7 +311,7 @@ impl InvoiceRequest {
 	/// Signature of the invoice request using [`payer_id`].
 	///
 	/// [`payer_id`]: Self::payer_id
-	pub fn signature(&self) -> Option<Signature> {
+	pub fn signature(&self) -> Signature {
 		self.signature
 	}
 
@@ -320,7 +320,7 @@ impl InvoiceRequest {
 		let (payer_tlv_stream, offer_tlv_stream, invoice_request_tlv_stream) =
 			self.contents.as_tlv_stream();
 		let signature_tlv_stream = SignatureTlvStreamRef {
-			signature: self.signature.as_ref(),
+			signature: Some(&self.signature),
 		};
 		(payer_tlv_stream, offer_tlv_stream, invoice_request_tlv_stream, signature_tlv_stream)
 	}
@@ -421,9 +421,11 @@ impl TryFrom<Vec<u8>> for InvoiceRequest {
 			(payer_tlv_stream, offer_tlv_stream, invoice_request_tlv_stream)
 		)?;
 
-		if let Some(signature) = &signature {
-			merkle::verify_signature(signature, SIGNATURE_TAG, &bytes, contents.payer_id)?;
-		}
+		let signature = match signature {
+			None => return Err(ParseError::InvalidSemantics(SemanticError::MissingSignature)),
+			Some(signature) => signature,
+		};
+		merkle::verify_signature(&signature, SIGNATURE_TAG, &bytes, contents.payer_id)?;
 
 		Ok(InvoiceRequest { bytes, contents, signature })
 	}
@@ -471,7 +473,7 @@ impl TryFrom<PartialInvoiceRequestTlvStream> for InvoiceRequestContents {
 
 #[cfg(test)]
 mod tests {
-	use super::{InvoiceRequest, InvoiceRequestTlvStreamRef};
+	use super::{InvoiceRequest, InvoiceRequestTlvStreamRef, SIGNATURE_TAG};
 
 	use bitcoin::blockdata::constants::ChainHash;
 	use bitcoin::network::constants::Network;
@@ -483,7 +485,7 @@ mod tests {
 	use core::time::Duration;
 	use crate::ln::features::InvoiceRequestFeatures;
 	use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
-	use crate::offers::merkle::{SignError, SignatureTlvStreamRef};
+	use crate::offers::merkle::{SignError, SignatureTlvStreamRef, self};
 	use crate::offers::offer::{Amount, OfferBuilder, OfferTlvStreamRef, Quantity};
 	use crate::offers::parse::{ParseError, SemanticError};
 	use crate::offers::payer::PayerTlvStreamRef;
@@ -536,7 +538,11 @@ mod tests {
 		assert_eq!(invoice_request.quantity(), None);
 		assert_eq!(invoice_request.payer_id(), payer_pubkey());
 		assert_eq!(invoice_request.payer_note(), None);
-		assert!(invoice_request.signature().is_some());
+		assert!(
+			merkle::verify_signature(
+				&invoice_request.signature, SIGNATURE_TAG, &invoice_request.bytes, payer_pubkey()
+			).is_ok()
+		);
 
 		assert_eq!(
 			invoice_request.as_tlv_stream(),
@@ -563,7 +569,7 @@ mod tests {
 					payer_id: Some(&payer_pubkey()),
 					payer_note: None,
 				},
-				SignatureTlvStreamRef { signature: invoice_request.signature().as_ref() },
+				SignatureTlvStreamRef { signature: Some(&invoice_request.signature()) },
 			),
 		);
 
@@ -1222,7 +1228,7 @@ mod tests {
 	}
 
 	#[test]
-	fn parses_invoice_request_without_signature() {
+	fn fails_parsing_invoice_request_without_signature() {
 		let mut buffer = Vec::new();
 		OfferBuilder::new("foo".into(), recipient_pubkey())
 			.amount_msats(1000)
@@ -1232,8 +1238,9 @@ mod tests {
 			.invoice_request
 			.write(&mut buffer).unwrap();
 
-		if let Err(e) = InvoiceRequest::try_from(buffer) {
-			panic!("error parsing invoice_request: {:?}", e);
+		match InvoiceRequest::try_from(buffer) {
+			Ok(_) => panic!("expected error"),
+			Err(e) => assert_eq!(e, ParseError::InvalidSemantics(SemanticError::MissingSignature)),
 		}
 	}
 
