@@ -1,7 +1,0 @@
-## API Updates
-- A new `ChannelReady` event is generated whenever a channel becomes ready to
-  be used, i.e., after both sides sent the `channel_ready` message.
-
-## Backwards Compatibilty
-- No `ChannelReady` events will be generated for previously existing channels, including
-  those which become ready after upgrading 0.0.113.
