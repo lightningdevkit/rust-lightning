@@ -20,7 +20,7 @@ use crate::ln::features::{InitFeatures, NodeFeatures};
 use crate::ln::msgs::{self, OnionMessageHandler};
 use crate::ln::onion_utils;
 use crate::ln::peer_handler::IgnoringMessageHandler;
-use super::blinded_route::{BlindedPath, ForwardTlvs, ReceiveTlvs};
+use super::blinded_path::{BlindedPath, ForwardTlvs, ReceiveTlvs};
 pub use super::packet::{CustomOnionMessageContents, OnionMessageContents};
 use super::packet::{BIG_PACKET_HOP_DATA_LEN, ForwardControlTlvs, Packet, Payload, ReceiveControlTlvs, SMALL_PACKET_HOP_DATA_LEN};
 use super::utils;
@@ -92,14 +92,14 @@ use crate::prelude::*;
 /// // Create a blinded route to yourself, for someone to send an onion message to.
 /// # let your_node_id = hop_node_id1;
 /// let hops = [hop_node_id3, hop_node_id4, your_node_id];
-/// let blinded_route = BlindedPath::new(&hops, &keys_manager, &secp_ctx).unwrap();
+/// let blinded_path = BlindedPath::new(&hops, &keys_manager, &secp_ctx).unwrap();
 ///
 /// // Send a custom onion message to a blinded route.
 /// # let intermediate_hops = [hop_node_id1, hop_node_id2];
 /// let reply_path = None;
 /// # let your_custom_message = YourCustomMessage {};
 /// let message = OnionMessageContents::Custom(your_custom_message);
-/// onion_messenger.send_onion_message(&intermediate_hops, Destination::BlindedPath(blinded_route), message, reply_path);
+/// onion_messenger.send_onion_message(&intermediate_hops, Destination::BlindedPath(blinded_path), message, reply_path);
 /// ```
 ///
 /// [offers]: <https://github.com/lightning/bolts/pull/798>
@@ -219,11 +219,11 @@ impl<K: Deref, L: Deref, CMH: Deref> OnionMessenger<K, L, CMH>
 		// If we are sending straight to a blinded route and we are the introduction node, we need to
 		// advance the blinded route by 1 hop so the second hop is the new introduction node.
 		if intermediate_nodes.len() == 0 {
-			if let Destination::BlindedPath(ref mut blinded_route) = destination {
+			if let Destination::BlindedPath(ref mut blinded_path) = destination {
 				let our_node_id = self.keys_manager.get_node_id(Recipient::Node)
 					.map_err(|()| SendError::GetNodeIdFailed)?;
-				if blinded_route.introduction_node_id == our_node_id {
-					blinded_route.advance_by_one(&self.keys_manager, &self.secp_ctx)
+				if blinded_path.introduction_node_id == our_node_id {
+					blinded_path.advance_by_one(&self.keys_manager, &self.secp_ctx)
 						.map_err(|()| SendError::BlindedPathAdvanceFailed)?;
 				}
 			}

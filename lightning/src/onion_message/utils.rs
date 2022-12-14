@@ -16,7 +16,7 @@ use bitcoin::secp256k1::{self, PublicKey, Secp256k1, SecretKey, Scalar};
 use bitcoin::secp256k1::ecdh::SharedSecret;
 
 use crate::ln::onion_utils;
-use super::blinded_route::BlindedPath;
+use super::blinded_path::BlindedPath;
 use super::messenger::Destination;
 
 use crate::prelude::*;
