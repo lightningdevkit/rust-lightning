@@ -159,6 +159,14 @@ mod sealed {
 	]);
 	define_context!(OfferContext, []);
 	define_context!(InvoiceRequestContext, []);
+	define_context!(Bolt12InvoiceContext, [
+		// Byte 0
+		,
+		// Byte 1
+		,
+		// Byte 2
+		BasicMPP,
+	]);
 	// This isn't a "real" feature context, and is only used in the channel_type field in an
 	// `OpenChannel` message.
 	define_context!(ChannelTypeContext, [
@@ -342,7 +350,7 @@ mod sealed {
 	define_feature!(15, PaymentSecret, [InitContext, NodeContext, InvoiceContext],
 		"Feature flags for `payment_secret`.", set_payment_secret_optional, set_payment_secret_required,
 		supports_payment_secret, requires_payment_secret);
-	define_feature!(17, BasicMPP, [InitContext, NodeContext, InvoiceContext],
+	define_feature!(17, BasicMPP, [InitContext, NodeContext, InvoiceContext, Bolt12InvoiceContext],
 		"Feature flags for `basic_mpp`.", set_basic_mpp_optional, set_basic_mpp_required,
 		supports_basic_mpp, requires_basic_mpp);
 	define_feature!(19, Wumbo, [InitContext, NodeContext],
@@ -369,7 +377,7 @@ mod sealed {
 
 	#[cfg(test)]
 	define_feature!(123456789, UnknownFeature,
-		[NodeContext, ChannelContext, InvoiceContext, OfferContext, InvoiceRequestContext],
+		[NodeContext, ChannelContext, InvoiceContext, OfferContext, InvoiceRequestContext, Bolt12InvoiceContext],
 		"Feature flags for an unknown feature used in testing.", set_unknown_feature_optional,
 		set_unknown_feature_required, supports_unknown_test_feature, requires_unknown_test_feature);
 }
@@ -432,6 +440,8 @@ pub type InvoiceFeatures = Features<sealed::InvoiceContext>;
 pub type OfferFeatures = Features<sealed::OfferContext>;
 /// Features used within an `invoice_request`.
 pub type InvoiceRequestFeatures = Features<sealed::InvoiceRequestContext>;
+/// Features used within an `invoice`.
+pub type Bolt12InvoiceFeatures = Features<sealed::Bolt12InvoiceContext>;
 
 /// Features used within the channel_type field in an OpenChannel message.
 ///
