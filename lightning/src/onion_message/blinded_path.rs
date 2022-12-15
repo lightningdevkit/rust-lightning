@@ -7,7 +7,7 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-//! Creating blinded routes and related utilities live here.
+//! Creating blinded paths and related utilities live here.
 
 use bitcoin::hashes::{Hash, HashEngine};
 use bitcoin::hashes::sha256::Hash as Sha256;
@@ -26,11 +26,11 @@ use core::ops::Deref;
 use crate::io::{self, Cursor};
 use crate::prelude::*;
 
-/// Onion messages can be sent and received to blinded routes, which serve to hide the identity of
+/// Onion messages can be sent and received to blinded paths, which serve to hide the identity of
 /// the recipient.
 #[derive(Clone, Debug, PartialEq)]
-pub struct BlindedRoute {
-	/// To send to a blinded route, the sender first finds a route to the unblinded
+pub struct BlindedPath {
+	/// To send to a blinded path, the sender first finds a route to the unblinded
 	/// `introduction_node_id`, which can unblind its [`encrypted_payload`] to find out the onion
 	/// message's next hop and forward it along.
 	///
@@ -41,24 +41,24 @@ pub struct BlindedRoute {
 	///
 	/// [`encrypted_payload`]: BlindedHop::encrypted_payload
 	pub(crate) blinding_point: PublicKey,
-	/// The hops composing the blinded route.
+	/// The hops composing the blinded path.
 	pub(crate) blinded_hops: Vec<BlindedHop>,
 }
 
-/// Used to construct the blinded hops portion of a blinded route. These hops cannot be identified
+/// Used to construct the blinded hops portion of a blinded path. These hops cannot be identified
 /// by outside observers and thus can be used to hide the identity of the recipient.
 #[derive(Clone, Debug, PartialEq)]
 pub struct BlindedHop {
-	/// The blinded node id of this hop in a blinded route.
+	/// The blinded node id of this hop in a blinded path.
 	pub(crate) blinded_node_id: PublicKey,
-	/// The encrypted payload intended for this hop in a blinded route.
-	// The node sending to this blinded route will later encode this payload into the onion packet for
+	/// The encrypted payload intended for this hop in a blinded path.
+	// The node sending to this blinded path will later encode this payload into the onion packet for
 	// this hop.
 	pub(crate) encrypted_payload: Vec<u8>,
 }
 
-impl BlindedRoute {
-	/// Create a blinded route to be forwarded along `node_pks`. The last node pubkey in `node_pks`
+impl BlindedPath {
+	/// Create a blinded path to be forwarded along `node_pks`. The last node pubkey in `node_pks`
 	/// will be the destination node.
 	///
 	/// Errors if less than two hops are provided or if `node_pk`(s) are invalid.
@@ -71,14 +71,14 @@ impl BlindedRoute {
 		let blinding_secret = SecretKey::from_slice(&blinding_secret_bytes[..]).expect("RNG is busted");
 		let introduction_node_id = node_pks[0];
 
-		Ok(BlindedRoute {
+		Ok(BlindedPath {
 			introduction_node_id,
 			blinding_point: PublicKey::from_secret_key(secp_ctx, &blinding_secret),
 			blinded_hops: blinded_hops(secp_ctx, node_pks, &blinding_secret).map_err(|_| ())?,
 		})
 	}
 
-	// Advance the blinded route by one hop, so make the second hop into the new introduction node.
+	// Advance the blinded path by one hop, so make the second hop into the new introduction node.
 	pub(super) fn advance_by_one<K: Deref, T: secp256k1::Signing + secp256k1::Verification>
 		(&mut self, keys_manager: &K, secp_ctx: &Secp256k1<T>) -> Result<(), ()>
 		where K::Target: KeysInterface
@@ -156,7 +156,7 @@ fn encrypt_payload<P: Writeable>(payload: P, encrypted_tlvs_ss: [u8; 32]) -> Vec
 	writer.0
 }
 
-impl Writeable for BlindedRoute {
+impl Writeable for BlindedPath {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		self.introduction_node_id.write(w)?;
 		self.blinding_point.write(w)?;
@@ -168,7 +168,7 @@ impl Writeable for BlindedRoute {
 	}
 }
 
-impl Readable for BlindedRoute {
+impl Readable for BlindedPath {
 	fn read<R: io::Read>(r: &mut R) -> Result<Self, DecodeError> {
 		let introduction_node_id = Readable::read(r)?;
 		let blinding_point = Readable::read(r)?;
@@ -178,7 +178,7 @@ impl Readable for BlindedRoute {
 		for _ in 0..num_hops {
 			blinded_hops.push(Readable::read(r)?);
 		}
-		Ok(BlindedRoute {
+		Ok(BlindedPath {
 			introduction_node_id,
 			blinding_point,
 			blinded_hops,
@@ -196,15 +196,15 @@ impl_writeable!(BlindedHop, {
 pub(crate) struct ForwardTlvs {
 	/// The node id of the next hop in the onion message's path.
 	pub(super) next_node_id: PublicKey,
-	/// Senders to a blinded route use this value to concatenate the route they find to the
-	/// introduction node with the blinded route.
+	/// Senders to a blinded path use this value to concatenate the route they find to the
+	/// introduction node with the blinded path.
 	pub(super) next_blinding_override: Option<PublicKey>,
 }
 
 /// Similar to [`ForwardTlvs`], but these TLVs are for the final node.
 pub(crate) struct ReceiveTlvs {
-	/// If `path_id` is `Some`, it is used to identify the blinded route that this onion message is
-	/// sending to. This is useful for receivers to check that said blinded route is being used in
+	/// If `path_id` is `Some`, it is used to identify the blinded path that this onion message is
+	/// sending to. This is useful for receivers to check that said blinded path is being used in
 	/// the right context.
 	pub(super) path_id: Option<[u8; 32]>,
 }

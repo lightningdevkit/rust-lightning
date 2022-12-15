@@ -14,7 +14,7 @@ use bitcoin::secp256k1::ecdh::SharedSecret;
 
 use crate::ln::msgs::DecodeError;
 use crate::ln::onion_utils;
-use super::blinded_route::{BlindedRoute, ForwardTlvs, ReceiveTlvs};
+use super::blinded_path::{BlindedPath, ForwardTlvs, ReceiveTlvs};
 use super::messenger::CustomOnionMessageHandler;
 use crate::util::chacha20poly1305rfc::{ChaChaPolyReadAdapter, ChaChaPolyWriteAdapter};
 use crate::util::ser::{BigSize, FixedLengthReader, LengthRead, LengthReadable, LengthReadableArgs, Readable, ReadableArgs, Writeable, Writer};
@@ -99,7 +99,7 @@ pub(super) enum Payload<T: CustomOnionMessageContents> {
 	/// This payload is for the final hop.
 	Receive {
 		control_tlvs: ReceiveControlTlvs,
-		reply_path: Option<BlindedRoute>,
+		reply_path: Option<BlindedPath>,
 		message: OnionMessageContents<T>,
 	}
 }
@@ -141,12 +141,12 @@ pub trait CustomOnionMessageContents: Writeable {
 
 /// Forward control TLVs in their blinded and unblinded form.
 pub(super) enum ForwardControlTlvs {
-	/// If we're sending to a blinded route, the node that constructed the blinded route has provided
+	/// If we're sending to a blinded path, the node that constructed the blinded path has provided
 	/// this hop's control TLVs, already encrypted into bytes.
 	Blinded(Vec<u8>),
 	/// If we're constructing an onion message hop through an intermediate unblinded node, we'll need
 	/// to construct the intermediate hop's control TLVs in their unblinded state to avoid encoding
-	/// them into an intermediate Vec. See [`super::blinded_route::ForwardTlvs`] for more info.
+	/// them into an intermediate Vec. See [`super::blinded_path::ForwardTlvs`] for more info.
 	Unblinded(ForwardTlvs),
 }
 
@@ -154,7 +154,7 @@ pub(super) enum ForwardControlTlvs {
 pub(super) enum ReceiveControlTlvs {
 	/// See [`ForwardControlTlvs::Blinded`].
 	Blinded(Vec<u8>),
-	/// See [`ForwardControlTlvs::Unblinded`] and [`super::blinded_route::ReceiveTlvs`].
+	/// See [`ForwardControlTlvs::Unblinded`] and [`super::blinded_path::ReceiveTlvs`].
 	Unblinded(ReceiveTlvs),
 }
 
@@ -204,7 +204,7 @@ impl<H: CustomOnionMessageHandler> ReadableArgs<(SharedSecret, &H)> for Payload<
 
 		let v: BigSize = Readable::read(r)?;
 		let mut rd = FixedLengthReader::new(r, v.0);
-		let mut reply_path: Option<BlindedRoute> = None;
+		let mut reply_path: Option<BlindedPath> = None;
 		let mut read_adapter: Option<ChaChaPolyReadAdapter<ControlTlvs>> = None;
 		let rho = onion_utils::gen_rho_from_shared_secret(&encrypted_tlvs_ss.secret_bytes());
 		let mut message_type: Option<u64> = None;
