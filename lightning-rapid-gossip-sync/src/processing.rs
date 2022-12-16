@@ -16,6 +16,9 @@ use lightning::io;
 use crate::error::GraphSyncError;
 use crate::RapidGossipSync;
 
+#[cfg(all(feature = "std", not(test)))]
+use std::time::{SystemTime, UNIX_EPOCH};
+
 #[cfg(not(feature = "std"))]
 use alloc::{vec::Vec, borrow::ToOwned};
 
@@ -29,10 +32,30 @@ const GOSSIP_PREFIX: [u8; 4] = [76, 68, 75, 1];
 /// avoid malicious updates being able to trigger excessive memory allocation.
 const MAX_INITIAL_NODE_ID_VECTOR_CAPACITY: u32 = 50_000;
 
+/// We disallow gossip data that's more than two weeks old, per BOLT 7's
+/// suggestion.
+const STALE_RGS_UPDATE_AGE_LIMIT_SECS: u64 = 60 * 60 * 24 * 14;
+
 impl<NG: Deref<Target=NetworkGraph<L>>, L: Deref> RapidGossipSync<NG, L> where L::Target: Logger {
 	pub(crate) fn update_network_graph_from_byte_stream<R: io::Read>(
 		&self,
+		read_cursor: &mut R,
+	) -> Result<u32, GraphSyncError> {
+		#[allow(unused_mut)]
+		let mut current_time_unix = None;
+		#[cfg(all(feature = "std", not(test)))]
+		{
+			// Note that many tests rely on being able to set arbitrarily old timestamps, thus we
+			// disable this check during tests!
+			current_time_unix = Some(SystemTime::now().duration_since(UNIX_EPOCH).expect("Time must be > 1970").as_secs());
+		}
+		self.update_network_graph_from_byte_stream_no_std(read_cursor, current_time_unix)
+	}
+
+	pub(crate) fn update_network_graph_from_byte_stream_no_std<R: io::Read>(
+		&self,
 		mut read_cursor: &mut R,
+		current_time_unix: Option<u64>
 	) -> Result<u32, GraphSyncError> {
 		let mut prefix = [0u8; 4];
 		read_cursor.read_exact(&mut prefix)?;
@@ -43,6 +66,13 @@ impl<NG: Deref<Target=NetworkGraph<L>>, L: Deref> RapidGossipSync<NG, L> where L
 
 		let chain_hash: BlockHash = Readable::read(read_cursor)?;
 		let latest_seen_timestamp: u32 = Readable::read(read_cursor)?;
+
+		if let Some(time) = current_time_unix {
+			if (latest_seen_timestamp as u64) < time.saturating_sub(STALE_RGS_UPDATE_AGE_LIMIT_SECS) {
+				return Err(LightningError{err: "Rapid Gossip Sync data is more than two weeks old".to_owned(), action: ErrorAction::IgnoreError}.into());
+			}
+		}
+
 		// backdate the applied timestamp by a week
 		let backdated_timestamp = latest_seen_timestamp.saturating_sub(24 * 3600 * 7);
 
@@ -215,7 +245,27 @@ mod tests {
 	use lightning::util::test_utils::TestLogger;
 
 	use crate::error::GraphSyncError;
+	use crate::processing::STALE_RGS_UPDATE_AGE_LIMIT_SECS;
 	use crate::RapidGossipSync;
+
+	const VALID_RGS_BINARY: [u8; 300] = [
+		76, 68, 75, 1, 111, 226, 140, 10, 182, 241, 179, 114, 193, 166, 162, 70, 174, 99, 247,
+		79, 147, 30, 131, 101, 225, 90, 8, 156, 104, 214, 25, 0, 0, 0, 0, 0, 97, 227, 98, 218,
+		0, 0, 0, 4, 2, 22, 7, 207, 206, 25, 164, 197, 231, 230, 231, 56, 102, 61, 250, 251,
+		187, 172, 38, 46, 79, 247, 108, 44, 155, 48, 219, 238, 252, 53, 192, 6, 67, 2, 36, 125,
+		157, 176, 223, 175, 234, 116, 94, 248, 201, 225, 97, 235, 50, 47, 115, 172, 63, 136,
+		88, 216, 115, 11, 111, 217, 114, 84, 116, 124, 231, 107, 2, 158, 1, 242, 121, 152, 106,
+		204, 131, 186, 35, 93, 70, 216, 10, 237, 224, 183, 89, 95, 65, 3, 83, 185, 58, 138,
+		181, 64, 187, 103, 127, 68, 50, 2, 201, 19, 17, 138, 136, 149, 185, 226, 156, 137, 175,
+		110, 32, 237, 0, 217, 90, 31, 100, 228, 149, 46, 219, 175, 168, 77, 4, 143, 38, 128,
+		76, 97, 0, 0, 0, 2, 0, 0, 255, 8, 153, 192, 0, 2, 27, 0, 0, 0, 1, 0, 0, 255, 2, 68,
+		226, 0, 6, 11, 0, 1, 2, 3, 0, 0, 0, 4, 0, 40, 0, 0, 0, 0, 0, 0, 3, 232, 0, 0, 3, 232,
+		0, 0, 0, 1, 0, 0, 0, 0, 29, 129, 25, 192, 255, 8, 153, 192, 0, 2, 27, 0, 0, 60, 0, 0,
+		0, 0, 0, 0, 0, 1, 0, 0, 0, 100, 0, 0, 2, 224, 0, 0, 0, 0, 58, 85, 116, 216, 0, 29, 0,
+		0, 0, 1, 0, 0, 0, 125, 0, 0, 0, 0, 58, 85, 116, 216, 255, 2, 68, 226, 0, 6, 11, 0, 1,
+		0, 0, 1,
+	];
+	const VALID_BINARY_TIMESTAMP: u64 = 1642291930;
 
 	#[test]
 	fn network_graph_fails_to_update_from_clipped_input() {
@@ -478,24 +528,6 @@ mod tests {
 
 	#[test]
 	fn full_update_succeeds() {
-		let valid_input = vec![
-			76, 68, 75, 1, 111, 226, 140, 10, 182, 241, 179, 114, 193, 166, 162, 70, 174, 99, 247,
-			79, 147, 30, 131, 101, 225, 90, 8, 156, 104, 214, 25, 0, 0, 0, 0, 0, 97, 227, 98, 218,
-			0, 0, 0, 4, 2, 22, 7, 207, 206, 25, 164, 197, 231, 230, 231, 56, 102, 61, 250, 251,
-			187, 172, 38, 46, 79, 247, 108, 44, 155, 48, 219, 238, 252, 53, 192, 6, 67, 2, 36, 125,
-			157, 176, 223, 175, 234, 116, 94, 248, 201, 225, 97, 235, 50, 47, 115, 172, 63, 136,
-			88, 216, 115, 11, 111, 217, 114, 84, 116, 124, 231, 107, 2, 158, 1, 242, 121, 152, 106,
-			204, 131, 186, 35, 93, 70, 216, 10, 237, 224, 183, 89, 95, 65, 3, 83, 185, 58, 138,
-			181, 64, 187, 103, 127, 68, 50, 2, 201, 19, 17, 138, 136, 149, 185, 226, 156, 137, 175,
-			110, 32, 237, 0, 217, 90, 31, 100, 228, 149, 46, 219, 175, 168, 77, 4, 143, 38, 128,
-			76, 97, 0, 0, 0, 2, 0, 0, 255, 8, 153, 192, 0, 2, 27, 0, 0, 0, 1, 0, 0, 255, 2, 68,
-			226, 0, 6, 11, 0, 1, 2, 3, 0, 0, 0, 4, 0, 40, 0, 0, 0, 0, 0, 0, 3, 232, 0, 0, 3, 232,
-			0, 0, 0, 1, 0, 0, 0, 0, 29, 129, 25, 192, 255, 8, 153, 192, 0, 2, 27, 0, 0, 60, 0, 0,
-			0, 0, 0, 0, 0, 1, 0, 0, 0, 100, 0, 0, 2, 224, 0, 0, 0, 0, 58, 85, 116, 216, 0, 29, 0,
-			0, 0, 1, 0, 0, 0, 125, 0, 0, 0, 0, 58, 85, 116, 216, 255, 2, 68, 226, 0, 6, 11, 0, 1,
-			0, 0, 1,
-		];
-
 		let block_hash = genesis_block(Network::Bitcoin).block_hash();
 		let logger = TestLogger::new();
 		let network_graph = NetworkGraph::new(block_hash, &logger);
@@ -503,7 +535,7 @@ mod tests {
 		assert_eq!(network_graph.read_only().channels().len(), 0);
 
 		let rapid_sync = RapidGossipSync::new(&network_graph);
-		let update_result = rapid_sync.update_network_graph(&valid_input[..]);
+		let update_result = rapid_sync.update_network_graph(&VALID_RGS_BINARY);
 		if update_result.is_err() {
 			panic!("Unexpected update result: {:?}", update_result)
 		}
@@ -524,6 +556,58 @@ mod tests {
 		);
 		assert!(after.contains("619737530008010752"));
 		assert!(after.contains("783241506229452801"));
+	}
+
+	#[test]
+	fn full_update_succeeds_at_the_beginning_of_the_unix_era() {
+		let block_hash = genesis_block(Network::Bitcoin).block_hash();
+		let logger = TestLogger::new();
+		let network_graph = NetworkGraph::new(block_hash, &logger);
+
+		assert_eq!(network_graph.read_only().channels().len(), 0);
+
+		let rapid_sync = RapidGossipSync::new(&network_graph);
+		// this is mostly for checking uint underflow issues before the fuzzer does
+		let update_result = rapid_sync.update_network_graph_no_std(&VALID_RGS_BINARY, Some(0));
+		assert!(update_result.is_ok());
+		assert_eq!(network_graph.read_only().channels().len(), 2);
+	}
+
+	#[test]
+	fn timestamp_edge_cases_are_handled_correctly() {
+		// this is the timestamp encoded in the binary data of valid_input below
+		let block_hash = genesis_block(Network::Bitcoin).block_hash();
+		let logger = TestLogger::new();
+
+		let latest_succeeding_time = VALID_BINARY_TIMESTAMP + STALE_RGS_UPDATE_AGE_LIMIT_SECS;
+		let earliest_failing_time = latest_succeeding_time + 1;
+
+		{
+			let network_graph = NetworkGraph::new(block_hash, &logger);
+			assert_eq!(network_graph.read_only().channels().len(), 0);
+
+			let rapid_sync = RapidGossipSync::new(&network_graph);
+			let update_result = rapid_sync.update_network_graph_no_std(&VALID_RGS_BINARY, Some(latest_succeeding_time));
+			assert!(update_result.is_ok());
+			assert_eq!(network_graph.read_only().channels().len(), 2);
+		}
+
+		{
+			let network_graph = NetworkGraph::new(block_hash, &logger);
+			assert_eq!(network_graph.read_only().channels().len(), 0);
+
+			let rapid_sync = RapidGossipSync::new(&network_graph);
+			let update_result = rapid_sync.update_network_graph_no_std(&VALID_RGS_BINARY, Some(earliest_failing_time));
+			assert!(update_result.is_err());
+			if let Err(GraphSyncError::LightningError(lightning_error)) = update_result {
+				assert_eq!(
+					lightning_error.err,
+					"Rapid Gossip Sync data is more than two weeks old"
+				);
+			} else {
+				panic!("Unexpected update result: {:?}", update_result)
+			}
+		}
 	}
 
 	#[test]
