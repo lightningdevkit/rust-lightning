@@ -10,8 +10,10 @@
 //! Utilities to send payments and manage outbound payment information.
 
 use crate::ln::{PaymentHash, PaymentSecret};
+use crate::ln::channelmanager::PaymentId;
 use crate::ln::msgs::DecodeError;
-use crate::routing::router::{RouteHop, RoutePath};
+use crate::routing::router::{RouteHop, RouteParameters, RoutePath};
+use crate::util::errors::APIError;
 use crate::prelude::*;
 
 /// Stores the session_priv for each part of a payment that is still pending. For versions 0.0.102
@@ -166,6 +168,84 @@ impl PendingOutboundPayment {
 				}
 		}
 	}
+}
+
+/// If a payment fails to send, it can be in one of several states. This enum is returned as the
+/// Err() type describing which state the payment is in, see the description of individual enum
+/// states for more.
+#[derive(Clone, Debug)]
+pub enum PaymentSendFailure {
+	/// A parameter which was passed to send_payment was invalid, preventing us from attempting to
+	/// send the payment at all.
+	///
+	/// You can freely resend the payment in full (with the parameter error fixed).
+	///
+	/// Because the payment failed outright, no payment tracking is done, you do not need to call
+	/// [`ChannelManager::abandon_payment`] and [`ChannelManager::retry_payment`] will *not* work
+	/// for this payment.
+	///
+	/// [`ChannelManager::abandon_payment`]: crate::ln::channelmanager::ChannelManager::abandon_payment
+	/// [`ChannelManager::retry_payment`]: crate::ln::channelmanager::ChannelManager::retry_payment
+	ParameterError(APIError),
+	/// A parameter in a single path which was passed to send_payment was invalid, preventing us
+	/// from attempting to send the payment at all.
+	///
+	/// You can freely resend the payment in full (with the parameter error fixed).
+	///
+	/// The results here are ordered the same as the paths in the route object which was passed to
+	/// send_payment.
+	///
+	/// Because the payment failed outright, no payment tracking is done, you do not need to call
+	/// [`ChannelManager::abandon_payment`] and [`ChannelManager::retry_payment`] will *not* work
+	/// for this payment.
+	///
+	/// [`ChannelManager::abandon_payment`]: crate::ln::channelmanager::ChannelManager::abandon_payment
+	/// [`ChannelManager::retry_payment`]: crate::ln::channelmanager::ChannelManager::retry_payment
+	PathParameterError(Vec<Result<(), APIError>>),
+	/// All paths which were attempted failed to send, with no channel state change taking place.
+	/// You can freely resend the payment in full (though you probably want to do so over different
+	/// paths than the ones selected).
+	///
+	/// Because the payment failed outright, no payment tracking is done, you do not need to call
+	/// [`ChannelManager::abandon_payment`] and [`ChannelManager::retry_payment`] will *not* work
+	/// for this payment.
+	///
+	/// [`ChannelManager::abandon_payment`]: crate::ln::channelmanager::ChannelManager::abandon_payment
+	/// [`ChannelManager::retry_payment`]: crate::ln::channelmanager::ChannelManager::retry_payment
+	AllFailedResendSafe(Vec<APIError>),
+	/// Indicates that a payment for the provided [`PaymentId`] is already in-flight and has not
+	/// yet completed (i.e. generated an [`Event::PaymentSent`]) or been abandoned (via
+	/// [`ChannelManager::abandon_payment`]).
+	///
+	/// [`PaymentId`]: crate::ln::channelmanager::PaymentId
+	/// [`Event::PaymentSent`]: crate::util::events::Event::PaymentSent
+	/// [`ChannelManager::abandon_payment`]: crate::ln::channelmanager::ChannelManager::abandon_payment
+	DuplicatePayment,
+	/// Some paths which were attempted failed to send, though possibly not all. At least some
+	/// paths have irrevocably committed to the HTLC and retrying the payment in full would result
+	/// in over-/re-payment.
+	///
+	/// The results here are ordered the same as the paths in the route object which was passed to
+	/// send_payment, and any `Err`s which are not [`APIError::MonitorUpdateInProgress`] can be
+	/// safely retried via [`ChannelManager::retry_payment`].
+	///
+	/// Any entries which contain `Err(APIError::MonitorUpdateInprogress)` or `Ok(())` MUST NOT be
+	/// retried as they will result in over-/re-payment. These HTLCs all either successfully sent
+	/// (in the case of `Ok(())`) or will send once a [`MonitorEvent::Completed`] is provided for
+	/// the next-hop channel with the latest update_id.
+	///
+	/// [`ChannelManager::retry_payment`]: crate::ln::channelmanager::ChannelManager::retry_payment
+	/// [`MonitorEvent::Completed`]: crate::chain::channelmonitor::MonitorEvent::Completed
+	PartialFailure {
+		/// The errors themselves, in the same order as the route hops.
+		results: Vec<Result<(), APIError>>,
+		/// If some paths failed without irrevocably committing to the new HTLC(s), this will
+		/// contain a [`RouteParameters`] object which can be used to calculate a new route that
+		/// will pay all remaining unpaid balance.
+		failed_paths_retry: Option<RouteParameters>,
+		/// The payment id for the payment, which is now at least partially pending.
+		payment_id: PaymentId,
+	},
 }
 
 impl_writeable_tlv_based_enum_upgradable!(PendingOutboundPayment,

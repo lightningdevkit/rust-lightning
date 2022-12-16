@@ -73,6 +73,9 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 use core::time::Duration;
 use core::ops::Deref;
 
+// Re-export this for use in the public API.
+pub use crate::ln::outbound_payment::PaymentSendFailure;
+
 // We hold various information about HTLC relay in the HTLC objects in Channel itself:
 //
 // Upon receipt of an HTLC from a peer, we'll give it a PendingHTLCStatus indicating if it should
@@ -1097,70 +1100,6 @@ impl ChannelDetails {
 	pub fn get_outbound_payment_scid(&self) -> Option<u64> {
 		self.short_channel_id.or(self.outbound_scid_alias)
 	}
-}
-
-/// If a payment fails to send, it can be in one of several states. This enum is returned as the
-/// Err() type describing which state the payment is in, see the description of individual enum
-/// states for more.
-#[derive(Clone, Debug)]
-pub enum PaymentSendFailure {
-	/// A parameter which was passed to send_payment was invalid, preventing us from attempting to
-	/// send the payment at all.
-	///
-	/// You can freely resend the payment in full (with the parameter error fixed).
-	///
-	/// Because the payment failed outright, no payment tracking is done, you do not need to call
-	/// [`ChannelManager::abandon_payment`] and [`ChannelManager::retry_payment`] will *not* work
-	/// for this payment.
-	ParameterError(APIError),
-	/// A parameter in a single path which was passed to send_payment was invalid, preventing us
-	/// from attempting to send the payment at all.
-	///
-	/// You can freely resend the payment in full (with the parameter error fixed).
-	///
-	/// The results here are ordered the same as the paths in the route object which was passed to
-	/// send_payment.
-	///
-	/// Because the payment failed outright, no payment tracking is done, you do not need to call
-	/// [`ChannelManager::abandon_payment`] and [`ChannelManager::retry_payment`] will *not* work
-	/// for this payment.
-	PathParameterError(Vec<Result<(), APIError>>),
-	/// All paths which were attempted failed to send, with no channel state change taking place.
-	/// You can freely resend the payment in full (though you probably want to do so over different
-	/// paths than the ones selected).
-	///
-	/// Because the payment failed outright, no payment tracking is done, you do not need to call
-	/// [`ChannelManager::abandon_payment`] and [`ChannelManager::retry_payment`] will *not* work
-	/// for this payment.
-	AllFailedResendSafe(Vec<APIError>),
-	/// Indicates that a payment for the provided [`PaymentId`] is already in-flight and has not
-	/// yet completed (i.e. generated an [`Event::PaymentSent`]) or been abandoned (via
-	/// [`ChannelManager::abandon_payment`]).
-	///
-	/// [`Event::PaymentSent`]: events::Event::PaymentSent
-	DuplicatePayment,
-	/// Some paths which were attempted failed to send, though possibly not all. At least some
-	/// paths have irrevocably committed to the HTLC and retrying the payment in full would result
-	/// in over-/re-payment.
-	///
-	/// The results here are ordered the same as the paths in the route object which was passed to
-	/// send_payment, and any `Err`s which are not [`APIError::MonitorUpdateInProgress`] can be
-	/// safely retried via [`ChannelManager::retry_payment`].
-	///
-	/// Any entries which contain `Err(APIError::MonitorUpdateInprogress)` or `Ok(())` MUST NOT be
-	/// retried as they will result in over-/re-payment. These HTLCs all either successfully sent
-	/// (in the case of `Ok(())`) or will send once a [`MonitorEvent::Completed`] is provided for
-	/// the next-hop channel with the latest update_id.
-	PartialFailure {
-		/// The errors themselves, in the same order as the route hops.
-		results: Vec<Result<(), APIError>>,
-		/// If some paths failed without irrevocably committing to the new HTLC(s), this will
-		/// contain a [`RouteParameters`] object which can be used to calculate a new route that
-		/// will pay all remaining unpaid balance.
-		failed_paths_retry: Option<RouteParameters>,
-		/// The payment id for the payment, which is now at least partially pending.
-		payment_id: PaymentId,
-	},
 }
 
 /// Route hints used in constructing invoices for [phantom node payents].
