@@ -1,3 +1,90 @@
+# 0.0.113 - Dec 15, 2022 - "Big Movement Intercepted"
+
+## API Updates
+ * `ChannelManager::send_payment` now takes an explicit `PaymentId` which is a
+   loose idempotency token. See `send_payment` docs for more (#1761, #1826).
+ * HTLCs bound for SCIDs from `ChannelManager::get_intercept_scid` are now
+   intercepted and can be forwarded manually over any channel (#1835, #1893).
+ * `Confirm::get_relevant_txids` now returns a `BlockHash`, expanding the set
+   of cases where `transaction_unconfirmed` must be called, see docs (#1796).
+ * Pending outbound payments are no longer automatically timed-out a few blocks
+   after failure. Thus, in order to avoid leaking memory, you MUST call
+   `ChannelManager::abandon_payment` when you no longer wish to retry (#1761).
+ * `ChannelManager::abandon_payment` docs were updated to note that the payment
+   may return to pending after a restart if no persistence occurs (#1907).
+ * `Event::PaymentReceived` has been renamed `Event::PaymentClaimable` (#1891).
+ * `Event` handling is now optionally async for Rust users (#1787).
+ * `user_channel_id` is now a `u128` and random for inbound channels (#1790).
+ * A new `ChannelReady` event is generated whenever a channel becomes ready to
+   be used, i.e., after both sides sent the `channel_ready` message (#1743).
+ * `NetworkGraph` now prunes channels where either node is offline for 2 weeks
+   and refuses to accept re-announcements of pruned channels (#1735).
+ * Onion messages are now read in `CustomOnionMessageHandler` rather than via
+   `MaybeReadableArgs` (#1809).
+ * Added a new util to generate an invoice with a custom hash (#1894) -
+`create_invoice_from_channelmanager_and_duration_since_epoch_with_payment_hash`
+ * `Sign`ers are now by default re-derived using `KeysInterface`'s new
+   `derive_channel_signer` rather than `read_chan_signer` (#1867).
+ * `Confirm::transactions_confirmed` is now idempotent (#1861).
+ * `ChannelManager::compute_inflight_htlcs` has been added to fetch in-flight
+   HTLCs for scoring. Note that `InvoicePayer` does this for you (#1830).
+ * Added `PaymentClaimable::via_channel_id` (#1856).
+ * Added the `node_id` (phantom or regular) to payment events (#1766).
+ * Added the funding transaction `confirmations` to `ChannelDetails` (#1856).
+ * `BlindedRoute` has been renamed `BlindedPath` (#1918).
+ * Support for the BOLT 4 "legacy" onion format has been removed, in line with
+   its removal in the spec and vanishingly rare use (#1413).
+ * `ChainMonitor::list_pending_monitor_updates` was added (#1834).
+ * Signing for non-zero-fee anchor commitments is supported again (#1828).
+ * Several helpers for transaction matching and generation are now pub (#1839).
+
+## Bug Fixes
+ * Fixed a rare race where a crash may result in a pending HTLC not being
+   failed backwards, leading to a force-closure by our counterparty (#1857).
+ * Avoid incorrectly assigning a lower-bound on channel liquidity when routing
+   fails due to a closed channel earlier in the path (#1817).
+ * If a counterparty increases the channel fee, but not enough per our own fee
+   estimator, we no longer force-close the channel (#1852).
+ * Several bugs in the `lightning-background-processor` `future` feature were
+   fixed, including requirements doc corrections (#1843, #1845, #1851).
+ * Some failure messages sent back when failing an HTLC were corrected (#1895).
+ * `rapid-gossip-sync` no longer errors if an update is applied duplicatively
+   or in rare cases when the graph is updated from payment failures (#1833).
+ * Sending onion messages to a blinded path in which we're the introduction
+   node no longer fails (#1791).
+
+## Backwards Compatibility
+ * No `ChannelReady` events will be generated for previously existing channels,
+   including those which become ready after upgrading to 0.0.113 (#1743).
+ * Once `UserConfig::accept_intercept_htlcs` is set, downgrades to LDK versions
+   prior to 0.0.113 are not supported (#1835).
+ * Existing payments may see a `PaymentClaimable::user_channel_id` of 0 (#1856)
+ * When downgrading to a version of LDK prior to 0.0.113 when there are
+   resolved payments waiting for a small timeout, the payments may not be
+   removed, preventing payments with the same `PaymentId` (#1761).
+
+In total, this release features 76 files changed, 11639 insertions, 6067
+deletions in 210 commits from 18 authors, in alphabetical order:
+ * Antoine Riard
+ * Arik Sosman
+ * Devrandom
+ * Duncan Dean
+ * Elias Rohrer
+ * Gleb Naumenko
+ * Jeffrey Czyz
+ * John Cantrell
+ * Matt Corallo
+ * Tee8z
+ * Tobin C. Harding
+ * Tristan F
+ * Valentine Wallace
+ * Viktor Tigerström
+ * Wilmer Paulino
+ * benthecarman
+ * jurvis
+ * ssbright
+
+
 # 0.0.112 - Oct 25, 2022 - "History Matters"
 
 ## API Updates
