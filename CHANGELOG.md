@@ -1,4 +1,4 @@
-# 0.0.113 - Dec 15, 2022 - "Big Movement Intercepted"
+# 0.0.113 - Dec 16, 2022 - "Big Movement Intercepted"
 
 ## API Updates
  * `ChannelManager::send_payment` now takes an explicit `PaymentId` which is a
