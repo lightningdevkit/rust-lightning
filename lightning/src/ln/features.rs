@@ -167,6 +167,7 @@ mod sealed {
 		// Byte 2
 		BasicMPP,
 	]);
+	define_context!(BlindedHopContext, []);
 	// This isn't a "real" feature context, and is only used in the channel_type field in an
 	// `OpenChannel` message.
 	define_context!(ChannelTypeContext, [
@@ -377,7 +378,7 @@ mod sealed {
 
 	#[cfg(test)]
 	define_feature!(123456789, UnknownFeature,
-		[NodeContext, ChannelContext, InvoiceContext, OfferContext, InvoiceRequestContext, Bolt12InvoiceContext],
+		[NodeContext, ChannelContext, InvoiceContext, OfferContext, InvoiceRequestContext, Bolt12InvoiceContext, BlindedHopContext],
 		"Feature flags for an unknown feature used in testing.", set_unknown_feature_optional,
 		set_unknown_feature_required, supports_unknown_test_feature, requires_unknown_test_feature);
 }
@@ -442,6 +443,8 @@ pub type OfferFeatures = Features<sealed::OfferContext>;
 pub type InvoiceRequestFeatures = Features<sealed::InvoiceRequestContext>;
 /// Features used within an `invoice`.
 pub type Bolt12InvoiceFeatures = Features<sealed::Bolt12InvoiceContext>;
+/// Features used within BOLT 4 encrypted_data_tlv and BOLT 12 blinded_payinfo
+pub type BlindedHopFeatures = Features<sealed::BlindedHopContext>;
 
 /// Features used within the channel_type field in an OpenChannel message.
 ///
@@ -729,6 +732,7 @@ impl_feature_len_prefixed_write!(InitFeatures);
 impl_feature_len_prefixed_write!(ChannelFeatures);
 impl_feature_len_prefixed_write!(NodeFeatures);
 impl_feature_len_prefixed_write!(InvoiceFeatures);
+impl_feature_len_prefixed_write!(BlindedHopFeatures);
 
 // Some features only appear inside of TLVs, so they don't have a length prefix when serialized.
 macro_rules! impl_feature_tlv_write {
