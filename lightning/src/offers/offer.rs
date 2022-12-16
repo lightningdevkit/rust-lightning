@@ -106,7 +106,7 @@ impl OfferBuilder {
 		let offer = OfferContents {
 			chains: None, metadata: None, amount: None, description,
 			features: OfferFeatures::empty(), absolute_expiry: None, issuer: None, paths: None,
-			supported_quantity: Quantity::one(), signing_pubkey: Some(signing_pubkey),
+			supported_quantity: Quantity::one(), signing_pubkey,
 		};
 		OfferBuilder { offer }
 	}
@@ -263,7 +263,7 @@ pub(super) struct OfferContents {
 	issuer: Option<String>,
 	paths: Option<Vec<BlindedPath>>,
 	supported_quantity: Quantity,
-	signing_pubkey: Option<PublicKey>,
+	signing_pubkey: PublicKey,
 }
 
 impl Offer {
@@ -359,7 +359,7 @@ impl Offer {
 
 	/// The public key used by the recipient to sign invoices.
 	pub fn signing_pubkey(&self) -> PublicKey {
-		self.contents.signing_pubkey.unwrap()
+		self.contents.signing_pubkey
 	}
 
 	/// Creates an [`InvoiceRequest`] for the offer with the given `metadata` and `payer_id`, which
@@ -497,7 +497,7 @@ impl OfferContents {
 			paths: self.paths.as_ref(),
 			issuer: self.issuer.as_ref(),
 			quantity_max: self.supported_quantity.to_tlv_record(),
-			node_id: self.signing_pubkey.as_ref(),
+			node_id: Some(&self.signing_pubkey),
 		}
 	}
 }
@@ -634,13 +634,14 @@ impl TryFrom<OfferTlvStream> for OfferContents {
 			Some(n) => Quantity::Bounded(NonZeroU64::new(n).unwrap()),
 		};
 
-		if node_id.is_none() {
-			return Err(SemanticError::MissingSigningPubkey);
-		}
+		let signing_pubkey = match node_id {
+			None => return Err(SemanticError::MissingSigningPubkey),
+			Some(node_id) => node_id,
+		};
 
 		Ok(OfferContents {
 			chains, metadata, amount, description, features, absolute_expiry, issuer, paths,
-			supported_quantity, signing_pubkey: node_id,
+			supported_quantity, signing_pubkey,
 		})
 	}
 }
@@ -653,7 +654,7 @@ impl core::fmt::Display for Offer {
 
 #[cfg(test)]
 mod tests {
-	use super::{Amount, Offer, OfferBuilder, Quantity};
+	use super::{Amount, Offer, OfferBuilder, OfferTlvStreamRef, Quantity};
 
 	use bitcoin::blockdata::constants::ChainHash;
 	use bitcoin::network::constants::Network;
@@ -680,7 +681,7 @@ mod tests {
 	#[test]
 	fn builds_offer_with_defaults() {
 		let offer = OfferBuilder::new("foo".into(), pubkey(42)).build().unwrap();
-		let tlv_stream = offer.as_tlv_stream();
+
 		let mut buffer = Vec::new();
 		offer.write(&mut buffer).unwrap();
 
@@ -699,17 +700,22 @@ mod tests {
 		assert_eq!(offer.supported_quantity(), Quantity::one());
 		assert_eq!(offer.signing_pubkey(), pubkey(42));
 
-		assert_eq!(tlv_stream.chains, None);
-		assert_eq!(tlv_stream.metadata, None);
-		assert_eq!(tlv_stream.currency, None);
-		assert_eq!(tlv_stream.amount, None);
-		assert_eq!(tlv_stream.description, Some(&String::from("foo")));
-		assert_eq!(tlv_stream.features, None);
-		assert_eq!(tlv_stream.absolute_expiry, None);
-		assert_eq!(tlv_stream.paths, None);
-		assert_eq!(tlv_stream.issuer, None);
-		assert_eq!(tlv_stream.quantity_max, None);
-		assert_eq!(tlv_stream.node_id, Some(&pubkey(42)));
+		assert_eq!(
+			offer.as_tlv_stream(),
+			OfferTlvStreamRef {
+				chains: None,
+				metadata: None,
+				currency: None,
+				amount: None,
+				description: Some(&String::from("foo")),
+				features: None,
+				absolute_expiry: None,
+				paths: None,
+				issuer: None,
+				quantity_max: None,
+				node_id: Some(&pubkey(42)),
+			},
+		);
 
 		if let Err(e) = Offer::try_from(buffer) {
 			panic!("error parsing offer: {:?}", e);
@@ -1121,11 +1127,13 @@ mod tests {
 			panic!("error parsing offer: {:?}", e);
 		}
 
-		let mut builder = OfferBuilder::new("foo".into(), pubkey(42));
-		builder.offer.signing_pubkey = None;
+		let mut tlv_stream = offer.as_tlv_stream();
+		tlv_stream.node_id = None;
 
-		let offer = builder.build().unwrap();
-		match offer.to_string().parse::<Offer>() {
+		let mut encoded_offer = Vec::new();
+		tlv_stream.write(&mut encoded_offer).unwrap();
+
+		match Offer::try_from(encoded_offer) {
 			Ok(_) => panic!("expected error"),
 			Err(e) => {
 				assert_eq!(e, ParseError::InvalidSemantics(SemanticError::MissingSigningPubkey));

@@ -510,6 +510,7 @@ macro_rules! tlv_stream {
 			)*
 		}
 
+		#[derive(Debug, PartialEq)]
 		pub(super) struct $nameref<'a> {
 			$(
 				pub(super) $field: Option<tlv_record_ref_type!($fieldty)>,
