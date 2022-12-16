@@ -371,7 +371,7 @@ impl Writeable for InvoiceRequestContents {
 tlv_stream!(InvoiceRequestTlvStream, InvoiceRequestTlvStreamRef, 80..160, {
 	(80, chain: ChainHash),
 	(82, amount: (u64, HighZeroBytesDroppedBigSize)),
-	(84, features: InvoiceRequestFeatures),
+	(84, features: (InvoiceRequestFeatures, WithoutLength)),
 	(86, quantity: (u64, HighZeroBytesDroppedBigSize)),
 	(88, payer_id: PublicKey),
 	(89, payer_note: (String, WithoutLength)),

@@ -65,7 +65,7 @@ use core::marker::PhantomData;
 use bitcoin::bech32;
 use bitcoin::bech32::{Base32Len, FromBase32, ToBase32, u5, WriteBase32};
 use crate::ln::msgs::DecodeError;
-use crate::util::ser::{Readable, Writeable, Writer};
+use crate::util::ser::{Readable, WithoutLength, Writeable, Writer};
 
 mod sealed {
 	use crate::prelude::*;
@@ -725,26 +725,40 @@ macro_rules! impl_feature_tlv_write {
 	($features: ident) => {
 		impl Writeable for $features {
 			fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-				self.write_be(w)
+				WithoutLength(self).write(w)
 			}
 		}
 		impl Readable for $features {
 			fn read<R: io::Read>(r: &mut R) -> Result<Self, DecodeError> {
-				let v = io_extras::read_to_end(r)?;
-				Ok(Self::from_be_bytes(v))
+				Ok(WithoutLength::<Self>::read(r)?.0)
 			}
 		}
 	}
 }
 
 impl_feature_tlv_write!(ChannelTypeFeatures);
-impl_feature_tlv_write!(OfferFeatures);
-impl_feature_tlv_write!(InvoiceRequestFeatures);
+
+// Some features may appear both in a TLV record and as part of a TLV subtype sequence. The latter
+// requires a length but the former does not.
+
+impl<T: sealed::Context> Writeable for WithoutLength<&Features<T>> {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		self.0.write_be(w)
+	}
+}
+
+impl<T: sealed::Context> Readable for WithoutLength<Features<T>> {
+	fn read<R: io::Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let v = io_extras::read_to_end(r)?;
+		Ok(WithoutLength(Features::<T>::from_be_bytes(v)))
+	}
+}
 
 #[cfg(test)]
 mod tests {
-	use super::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, InvoiceFeatures, NodeFeatures, sealed};
+	use super::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, InvoiceFeatures, NodeFeatures, OfferFeatures, sealed};
 	use bitcoin::bech32::{Base32Len, FromBase32, ToBase32, u5};
+	use crate::util::ser::{Readable, WithoutLength, Writeable};
 
 	#[test]
 	fn sanity_test_unknown_bits() {
@@ -836,6 +850,20 @@ mod tests {
 		assert!(!features.requires_basic_mpp());
 		assert!(features.requires_payment_secret());
 		assert!(features.supports_payment_secret());
+	}
+
+	#[test]
+	fn encodes_features_without_length() {
+		let features = OfferFeatures::from_le_bytes(vec![1, 2, 3, 4, 5, 42, 100, 101]);
+		assert_eq!(features.flags.len(), 8);
+
+		let mut serialized_features = Vec::new();
+		WithoutLength(&features).write(&mut serialized_features).unwrap();
+		assert_eq!(serialized_features.len(), 8);
+
+		let deserialized_features =
+			WithoutLength::<OfferFeatures>::read(&mut &serialized_features[..]).unwrap().0;
+		assert_eq!(features, deserialized_features);
 	}
 
 	#[test]
