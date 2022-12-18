@@ -53,7 +53,7 @@ use crate::ln::onion_utils::HTLCFailReason;
 use crate::ln::msgs::{ChannelMessageHandler, DecodeError, LightningError, MAX_VALUE_MSAT};
 #[cfg(test)]
 use crate::ln::outbound_payment;
-use crate::ln::outbound_payment::{OutboundPayments, PendingOutboundPayment};
+use crate::ln::outbound_payment::{OutboundPayments, PendingOutboundPayment, Retry};
 use crate::ln::wire::Encode;
 use crate::chain::keysinterface::{EntropySource, KeysManager, NodeSigner, Recipient, Sign, SignerProvider};
 use crate::util::config::{UserConfig, ChannelConfig};
@@ -2457,7 +2457,7 @@ where
 	#[cfg(test)]
 	pub(crate) fn test_add_new_pending_payment(&self, payment_hash: PaymentHash, payment_secret: Option<PaymentSecret>, payment_id: PaymentId, route: &Route) -> Result<Vec<[u8; 32]>, PaymentSendFailure> {
 		let best_block_height = self.best_block.read().unwrap().height();
-		self.pending_outbound_payments.test_add_new_pending_payment(payment_hash, payment_secret, payment_id, route, &self.entropy_source, best_block_height)
+		self.pending_outbound_payments.test_add_new_pending_payment(payment_hash, payment_secret, payment_id, route, Retry::Attempts(0), &self.entropy_source, best_block_height)
 	}
 
 

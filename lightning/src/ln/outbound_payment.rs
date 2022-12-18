@@ -359,7 +359,7 @@ impl OutboundPayments {
 		F: Fn(&Vec<RouteHop>, &Option<PaymentParameters>, &PaymentHash, &Option<PaymentSecret>, u64,
 		   u32, PaymentId, &Option<PaymentPreimage>, [u8; 32]) -> Result<(), APIError>
 	{
-		let onion_session_privs = self.add_new_pending_payment(payment_hash, *payment_secret, payment_id, route, entropy_source, best_block_height)?;
+		let onion_session_privs = self.add_new_pending_payment(payment_hash, *payment_secret, payment_id, route, Retry::Attempts(0), None, entropy_source, best_block_height)?;
 		self.send_payment_internal(route, payment_hash, payment_secret, None, payment_id, None, onion_session_privs, node_signer, best_block_height, send_payment_along_path)
 	}
 
@@ -378,7 +378,7 @@ impl OutboundPayments {
 			None => PaymentPreimage(entropy_source.get_secure_random_bytes()),
 		};
 		let payment_hash = PaymentHash(Sha256::hash(&preimage.0).into_inner());
-		let onion_session_privs = self.add_new_pending_payment(payment_hash, None, payment_id, &route, entropy_source, best_block_height)?;
+		let onion_session_privs = self.add_new_pending_payment(payment_hash, None, payment_id, &route, Retry::Attempts(0), None, entropy_source, best_block_height)?;
 
 		match self.send_payment_internal(route, payment_hash, &None, Some(preimage), payment_id, None, onion_session_privs, node_signer, best_block_height, send_payment_along_path) {
 			Ok(()) => Ok(payment_hash),
@@ -477,7 +477,7 @@ impl OutboundPayments {
 		}
 
 		let route = Route { paths: vec![hops], payment_params: None };
-		let onion_session_privs = self.add_new_pending_payment(payment_hash, None, payment_id, &route, entropy_source, best_block_height)?;
+		let onion_session_privs = self.add_new_pending_payment(payment_hash, None, payment_id, &route, Retry::Attempts(0), None, entropy_source, best_block_height)?;
 
 		match self.send_payment_internal(&route, payment_hash, &None, None, payment_id, None, onion_session_privs, node_signer, best_block_height, send_payment_along_path) {
 			Ok(()) => Ok((payment_hash, payment_id)),
@@ -488,14 +488,15 @@ impl OutboundPayments {
 	#[cfg(test)]
 	pub(super) fn test_add_new_pending_payment<ES: Deref>(
 		&self, payment_hash: PaymentHash, payment_secret: Option<PaymentSecret>, payment_id: PaymentId,
-		route: &Route, entropy_source: &ES, best_block_height: u32
+		route: &Route, retry_strategy: Retry, entropy_source: &ES, best_block_height: u32
 	) -> Result<Vec<[u8; 32]>, PaymentSendFailure> where ES::Target: EntropySource {
-		self.add_new_pending_payment(payment_hash, payment_secret, payment_id, route, entropy_source, best_block_height)
+		self.add_new_pending_payment(payment_hash, payment_secret, payment_id, route, retry_strategy, None, entropy_source, best_block_height)
 	}
 
 	pub(super) fn add_new_pending_payment<ES: Deref>(
 		&self, payment_hash: PaymentHash, payment_secret: Option<PaymentSecret>, payment_id: PaymentId,
-		route: &Route, entropy_source: &ES, best_block_height: u32
+		route: &Route, retry_strategy: Retry, route_params: Option<RouteParameters>,
+		entropy_source: &ES, best_block_height: u32
 	) -> Result<Vec<[u8; 32]>, PaymentSendFailure> where ES::Target: EntropySource {
 		let mut onion_session_privs = Vec::with_capacity(route.paths.len());
 		for _ in 0..route.paths.len() {
