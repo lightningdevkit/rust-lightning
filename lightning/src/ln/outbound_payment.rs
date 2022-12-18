@@ -80,14 +80,14 @@ impl PendingOutboundPayment {
 			_ => false,
 		}
 	}
-	pub(super) fn get_pending_fee_msat(&self) -> Option<u64> {
+	fn get_pending_fee_msat(&self) -> Option<u64> {
 		match self {
 			PendingOutboundPayment::Retryable { pending_fee_msat, .. } => pending_fee_msat.clone(),
 			_ => None,
 		}
 	}
 
-	pub(super) fn payment_hash(&self) -> Option<PaymentHash> {
+	fn payment_hash(&self) -> Option<PaymentHash> {
 		match self {
 			PendingOutboundPayment::Legacy { .. } => None,
 			PendingOutboundPayment::Retryable { payment_hash, .. } => Some(*payment_hash),
@@ -96,7 +96,7 @@ impl PendingOutboundPayment {
 		}
 	}
 
-	pub(super) fn mark_fulfilled(&mut self) {
+	fn mark_fulfilled(&mut self) {
 		let mut session_privs = HashSet::new();
 		core::mem::swap(&mut session_privs, match self {
 			PendingOutboundPayment::Legacy { session_privs } |
@@ -109,7 +109,7 @@ impl PendingOutboundPayment {
 		*self = PendingOutboundPayment::Fulfilled { session_privs, payment_hash, timer_ticks_without_htlcs: 0 };
 	}
 
-	pub(super) fn mark_abandoned(&mut self) -> Result<(), ()> {
+	fn mark_abandoned(&mut self) -> Result<(), ()> {
 		let mut session_privs = HashSet::new();
 		let our_payment_hash;
 		core::mem::swap(&mut session_privs, match self {
@@ -127,7 +127,7 @@ impl PendingOutboundPayment {
 	}
 
 	/// panics if path is None and !self.is_fulfilled
-	pub(super) fn remove(&mut self, session_priv: &[u8; 32], path: Option<&Vec<RouteHop>>) -> bool {
+	fn remove(&mut self, session_priv: &[u8; 32], path: Option<&Vec<RouteHop>>) -> bool {
 		let remove_res = match self {
 			PendingOutboundPayment::Legacy { session_privs } |
 				PendingOutboundPayment::Retryable { session_privs, .. } |
