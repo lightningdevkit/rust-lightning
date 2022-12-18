@@ -53,7 +53,7 @@ use crate::ln::onion_utils::HTLCFailReason;
 use crate::ln::msgs::{ChannelMessageHandler, DecodeError, LightningError, MAX_VALUE_MSAT};
 #[cfg(test)]
 use crate::ln::outbound_payment;
-use crate::ln::outbound_payment::{OutboundPayments, PendingOutboundPayment, Retry};
+use crate::ln::outbound_payment::{OutboundPayments, PaymentAttempts, PendingOutboundPayment, Retry};
 use crate::ln::wire::Encode;
 use crate::chain::keysinterface::{EntropySource, KeysManager, NodeSigner, Recipient, Sign, SignerProvider};
 use crate::util::config::{UserConfig, ChannelConfig};
@@ -7278,6 +7278,9 @@ where
 								hash_map::Entry::Vacant(entry) => {
 									let path_fee = path.get_path_fees();
 									entry.insert(PendingOutboundPayment::Retryable {
+										retry_strategy: Retry::Attempts(0),
+										attempts: PaymentAttempts::new(),
+										route_params: None,
 										session_privs: [session_priv_bytes].iter().map(|a| *a).collect(),
 										payment_hash: htlc.payment_hash,
 										payment_secret,
