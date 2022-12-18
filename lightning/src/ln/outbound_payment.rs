@@ -22,9 +22,14 @@ use crate::routing::router::{PaymentParameters, Route, RouteHop, RouteParameters
 use crate::util::errors::APIError;
 use crate::util::events;
 use crate::util::logger::Logger;
+use crate::util::time::Time;
+#[cfg(all(not(feature = "no-std"), test))]
+use crate::util::time::tests::SinceEpoch;
 
 use core::cmp;
+use core::fmt::{self, Display, Formatter};
 use core::ops::Deref;
+
 use crate::prelude::*;
 use crate::sync::Mutex;
 
@@ -179,6 +184,48 @@ impl PendingOutboundPayment {
 					session_privs.len()
 				}
 		}
+	}
+}
+
+pub(crate) type PaymentAttempts = PaymentAttemptsUsingTime<ConfiguredTime>;
+
+/// Storing minimal payment attempts information required for determining if a outbound payment can
+/// be retried.
+pub(crate) struct PaymentAttemptsUsingTime<T: Time> {
+	/// This count will be incremented only after the result of the attempt is known. When it's 0,
+	/// it means the result of the first attempt is not known yet.
+	pub(crate) count: usize,
+	/// This field is only used when retry is `Retry::Timeout` which is only build with feature std
+	first_attempted_at: T
+}
+
+#[cfg(not(any(feature = "no-std", test)))]
+type ConfiguredTime = std::time::Instant;
+#[cfg(feature = "no-std")]
+type ConfiguredTime = crate::util::time::Eternity;
+#[cfg(all(not(feature = "no-std"), test))]
+type ConfiguredTime = SinceEpoch;
+
+impl<T: Time> PaymentAttemptsUsingTime<T> {
+	pub(crate) fn new() -> Self {
+		PaymentAttemptsUsingTime {
+			count: 0,
+			first_attempted_at: T::now()
+		}
+	}
+}
+
+impl<T: Time> Display for PaymentAttemptsUsingTime<T> {
+	fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
+		#[cfg(feature = "no-std")]
+		return write!(f, "attempts: {}", self.count);
+		#[cfg(not(feature = "no-std"))]
+		return write!(
+			f,
+			"attempts: {}, duration: {}s",
+			self.count,
+			T::now().duration_since(self.first_attempted_at).as_secs()
+		);
 	}
 }
 
