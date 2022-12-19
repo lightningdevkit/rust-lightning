@@ -20,13 +20,13 @@
 //! [offers]: <https://github.com/lightning/bolts/pull/798>
 //! [blinded paths]: crate::blinded_path::BlindedPath
 
-mod messenger;
-mod offers;
-mod packet;
+pub mod messenger;
+pub mod offers;
+pub mod packet;
 #[cfg(test)]
 mod functional_tests;
 
 // Re-export structs so they can be imported with just the `onion_message::` module prefix.
-pub use self::messenger::{CustomOnionMessageContents, CustomOnionMessageHandler, DefaultMessageRouter, Destination, MessageRouter, OnionMessageContents, OnionMessagePath, OnionMessenger, SendError, SimpleArcOnionMessenger, SimpleRefOnionMessenger};
-pub use self::offers::{OffersMessage, OffersMessageHandler};
+pub(crate) use self::messenger::{CustomOnionMessageContents, CustomOnionMessageHandler, DefaultMessageRouter, Destination, MessageRouter, OnionMessageContents, OnionMessagePath, OnionMessenger, SendError, SimpleArcOnionMessenger, SimpleRefOnionMessenger};
+pub(crate) use self::offers::{OffersMessage, OffersMessageHandler};
 pub(crate) use self::packet::{ControlTlvs, Packet};

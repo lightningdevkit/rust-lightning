@@ -11,7 +11,9 @@ use lightning::ln::script::ShutdownScript;
 use lightning::util::enforcing_trait_impls::EnforcingSigner;
 use lightning::util::logger::Logger;
 use lightning::util::ser::{Readable, Writeable, Writer};
-use lightning::onion_message::{CustomOnionMessageContents, CustomOnionMessageHandler, Destination, MessageRouter, OffersMessage, OffersMessageHandler, OnionMessagePath, OnionMessenger};
+use lightning::onion_message::messenger::{CustomOnionMessageHandler, MessageRouter, OnionMessenger, Destination, OnionMessagePath};
+use lightning::onion_message::offers::{OffersMessage, OffersMessageHandler};
+use lightning::onion_message::packet::CustomOnionMessageContents;
 
 use crate::utils::test_logger;
 
