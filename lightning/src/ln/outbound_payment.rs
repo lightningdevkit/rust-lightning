@@ -603,10 +603,10 @@ impl OutboundPayments {
 		}
 	}
 
-	pub(super) fn finalize_claims(&self, mut sources: Vec<HTLCSource>, pending_events: &Mutex<Vec<events::Event>>) {
+	pub(super) fn finalize_claims(&self, sources: Vec<HTLCSource>, pending_events: &Mutex<Vec<events::Event>>) {
 		let mut outbounds = self.pending_outbound_payments.lock().unwrap();
 		let mut pending_events = pending_events.lock().unwrap();
-		for source in sources.drain(..) {
+		for source in sources {
 			if let HTLCSource::OutboundRoute { session_priv, payment_id, path, .. } = source {
 				let mut session_priv_bytes = [0; 32];
 				session_priv_bytes.copy_from_slice(&session_priv[..]);
