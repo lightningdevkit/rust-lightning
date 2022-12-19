@@ -378,6 +378,25 @@ impl OutboundPayments {
 		}
 	}
 
+	pub(super) fn send_payment<R: Deref, ES: Deref, NS: Deref, F>(
+		&self, payment_hash: PaymentHash, payment_secret: &Option<PaymentSecret>, payment_id: PaymentId,
+		retry_strategy: Retry, route_params: RouteParameters, router: &R,
+		first_hops: Vec<ChannelDetails>, inflight_htlcs: InFlightHtlcs, entropy_source: &ES,
+		node_signer: &NS, best_block_height: u32, send_payment_along_path: F
+	) -> Result<(), PaymentSendFailure>
+	where
+		R::Target: Router,
+		ES::Target: EntropySource,
+		NS::Target: NodeSigner,
+		F: Fn(&Vec<RouteHop>, &Option<PaymentParameters>, &PaymentHash, &Option<PaymentSecret>, u64,
+			 u32, PaymentId, &Option<PaymentPreimage>, [u8; 32]) -> Result<(), APIError>,
+	{
+		self.pay_internal(payment_id, Some((payment_hash, payment_secret, retry_strategy)),
+			route_params, router, first_hops, inflight_htlcs, entropy_source, node_signer,
+			best_block_height, &send_payment_along_path)
+			.map_err(|e| { self.remove_outbound_if_all_failed(payment_id, &e); e })
+	}
+
 	pub(super) fn send_payment_with_route<ES: Deref, NS: Deref, F>(
 		&self, route: &Route, payment_hash: PaymentHash, payment_secret: &Option<PaymentSecret>,
 		payment_id: PaymentId, entropy_source: &ES, node_signer: &NS, best_block_height: u32,
@@ -391,7 +410,7 @@ impl OutboundPayments {
 	{
 		let onion_session_privs = self.add_new_pending_payment(payment_hash, *payment_secret, payment_id, route, Retry::Attempts(0), None, entropy_source, best_block_height)?;
 		self.send_payment_internal(route, payment_hash, payment_secret, None, payment_id, None,
-			onion_session_privs, node_signer, best_block_height, send_payment_along_path)
+			onion_session_privs, node_signer, best_block_height, &send_payment_along_path)
 			.map_err(|e| { self.remove_outbound_if_all_failed(payment_id, &e); e })
 	}
 
@@ -412,7 +431,7 @@ impl OutboundPayments {
 		let payment_hash = PaymentHash(Sha256::hash(&preimage.0).into_inner());
 		let onion_session_privs = self.add_new_pending_payment(payment_hash, None, payment_id, &route, Retry::Attempts(0), None, entropy_source, best_block_height)?;
 
-		match self.send_payment_internal(route, payment_hash, &None, Some(preimage), payment_id, None, onion_session_privs, node_signer, best_block_height, send_payment_along_path) {
+		match self.send_payment_internal(route, payment_hash, &None, Some(preimage), payment_id, None, onion_session_privs, node_signer, best_block_height, &send_payment_along_path) {
 			Ok(()) => Ok(payment_hash),
 			Err(e) => {
 				self.remove_outbound_if_all_failed(payment_id, &e);
@@ -451,7 +470,7 @@ impl OutboundPayments {
 			}
 			if let Some((payment_id, route_params)) = retry_id_route_params {
 				core::mem::drop(outbounds);
-				if let Err(e) = self.pay_internal(payment_id, route_params, router, first_hops(), inflight_htlcs(), entropy_source, node_signer, best_block_height, &send_payment_along_path) {
+				if let Err(e) = self.pay_internal(payment_id, None, route_params, router, first_hops(), inflight_htlcs(), entropy_source, node_signer, best_block_height, &send_payment_along_path) {
 					log_trace!(logger, "Errored retrying payment: {:?}", e);
 				}
 			} else { break }
@@ -459,9 +478,11 @@ impl OutboundPayments {
 	}
 
 	fn pay_internal<R: Deref, NS: Deref, ES: Deref, F>(
-		&self, payment_id: PaymentId, route_params: RouteParameters, router: &R,
-		first_hops: Vec<ChannelDetails>, inflight_htlcs: InFlightHtlcs, entropy_source: &ES,
-		node_signer: &NS, best_block_height: u32, send_payment_along_path: &F
+		&self, payment_id: PaymentId,
+		initial_send_info: Option<(PaymentHash, &Option<PaymentSecret>, Retry)>,
+		route_params: RouteParameters, router: &R, first_hops: Vec<ChannelDetails>,
+		inflight_htlcs: InFlightHtlcs, entropy_source: &ES, node_signer: &NS, best_block_height: u32,
+		send_payment_along_path: &F
 	) -> Result<(), PaymentSendFailure>
 	where
 		R::Target: Router,
@@ -485,7 +506,12 @@ impl OutboundPayments {
 			err: format!("Failed to find a route for payment {}: {:?}", log_bytes!(payment_id.0), e), // TODO: add APIError::RouteNotFound
 		}))?;
 
-		let res = self.retry_payment_with_route(&route, payment_id, entropy_source, node_signer, best_block_height, send_payment_along_path);
+		let res = if let Some((payment_hash, payment_secret, retry_strategy)) = initial_send_info {
+			let onion_session_privs = self.add_new_pending_payment(payment_hash, *payment_secret, payment_id, &route, retry_strategy, Some(route_params.clone()), entropy_source, best_block_height)?;
+			self.send_payment_internal(&route, payment_hash, payment_secret, None, payment_id, None, onion_session_privs, node_signer, best_block_height, send_payment_along_path)
+		} else {
+			self.retry_payment_with_route(&route, payment_id, entropy_source, node_signer, best_block_height, send_payment_along_path)
+		};
 		match res {
 			Err(PaymentSendFailure::AllFailedResendSafe(_)) => {
 				let mut outbounds = self.pending_outbound_payments.lock().unwrap();
@@ -496,7 +522,7 @@ impl OutboundPayments {
 					} else { return res }
 				} else { return res }
 				core::mem::drop(outbounds);
-				self.pay_internal(payment_id, route_params, router, first_hops, inflight_htlcs, entropy_source, node_signer, best_block_height, send_payment_along_path)
+				self.pay_internal(payment_id, None, route_params, router, first_hops, inflight_htlcs, entropy_source, node_signer, best_block_height, send_payment_along_path)
 			},
 			Err(PaymentSendFailure::PartialFailure { failed_paths_retry: Some(retry), results, .. }) => {
 				let mut outbounds = self.pending_outbound_payments.lock().unwrap();
@@ -511,7 +537,7 @@ impl OutboundPayments {
 				// Some paths were sent, even if we failed to send the full MPP value our recipient may
 				// misbehave and claim the funds, at which point we have to consider the payment sent, so
 				// return `Ok()` here, ignoring any retry errors.
-				let _ = self.pay_internal(payment_id, retry, router, first_hops, inflight_htlcs, entropy_source, node_signer, best_block_height, send_payment_along_path);
+				let _ = self.pay_internal(payment_id, None, retry, router, first_hops, inflight_htlcs, entropy_source, node_signer, best_block_height, send_payment_along_path);
 				Ok(())
 			},
 			Err(PaymentSendFailure::PartialFailure { failed_paths_retry: None, .. }) => {
@@ -591,7 +617,7 @@ impl OutboundPayments {
 					})),
 			}
 		};
-		self.send_payment_internal(route, payment_hash, &payment_secret, None, payment_id, Some(total_msat), onion_session_privs, node_signer, best_block_height, send_payment_along_path)
+		self.send_payment_internal(route, payment_hash, &payment_secret, None, payment_id, Some(total_msat), onion_session_privs, node_signer, best_block_height, &send_payment_along_path)
 	}
 
 	pub(super) fn send_probe<ES: Deref, NS: Deref, F>(
@@ -617,7 +643,7 @@ impl OutboundPayments {
 		let route = Route { paths: vec![hops], payment_params: None };
 		let onion_session_privs = self.add_new_pending_payment(payment_hash, None, payment_id, &route, Retry::Attempts(0), None, entropy_source, best_block_height)?;
 
-		match self.send_payment_internal(&route, payment_hash, &None, None, payment_id, None, onion_session_privs, node_signer, best_block_height, send_payment_along_path) {
+		match self.send_payment_internal(&route, payment_hash, &None, None, payment_id, None, onion_session_privs, node_signer, best_block_height, &send_payment_along_path) {
 			Ok(()) => Ok((payment_hash, payment_id)),
 			Err(e) => {
 				self.remove_outbound_if_all_failed(payment_id, &e);
@@ -674,7 +700,7 @@ impl OutboundPayments {
 		&self, route: &Route, payment_hash: PaymentHash, payment_secret: &Option<PaymentSecret>,
 		keysend_preimage: Option<PaymentPreimage>, payment_id: PaymentId, recv_value_msat: Option<u64>,
 		onion_session_privs: Vec<[u8; 32]>, node_signer: &NS, best_block_height: u32,
-		send_payment_along_path: F
+		send_payment_along_path: &F
 	) -> Result<(), PaymentSendFailure>
 	where
 		NS::Target: NodeSigner,
@@ -789,7 +815,7 @@ impl OutboundPayments {
 	{
 		self.send_payment_internal(route, payment_hash, payment_secret, keysend_preimage, payment_id,
 			recv_value_msat, onion_session_privs, node_signer, best_block_height,
-			send_payment_along_path)
+			&send_payment_along_path)
 			.map_err(|e| { self.remove_outbound_if_all_failed(payment_id, &e); e })
 	}
 
