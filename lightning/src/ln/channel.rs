@@ -743,6 +743,12 @@ pub(super) struct Channel<Signer: ChannelSigner> {
 	/// The unique identifier used to re-derive the private key material for the channel through
 	/// [`SignerProvider::derive_channel_signer`].
 	channel_keys_id: [u8; 32],
+
+	/// When we generate [`ChannelMonitorUpdate`]s to persist, they may not be persisted immediately.
+	/// If we then persist the [`channelmanager::ChannelManager`] and crash before the persistence
+	/// completes we still need to be able to complete the persistence. Thus, we have to keep a
+	/// copy of the [`ChannelMonitorUpdate`] here until it is complete.
+	pending_monitor_updates: Vec<ChannelMonitorUpdate>,
 }
 
 #[cfg(any(test, fuzzing))]
@@ -1112,6 +1118,8 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 
 			channel_type,
 			channel_keys_id,
+
+			pending_monitor_updates: Vec::new(),
 		})
 	}
 
@@ -1458,6 +1466,8 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 
 			channel_type,
 			channel_keys_id,
+
+			pending_monitor_updates: Vec::new(),
 		};
 
 		Ok(chan)
@@ -4891,6 +4901,10 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		(self.channel_state & ChannelState::MonitorUpdateInProgress as u32) != 0
 	}
 
+	pub fn get_next_monitor_update(&self) -> Option<&ChannelMonitorUpdate> {
+		self.pending_monitor_updates.first()
+	}
+
 	/// Returns true if funding_created was sent/received.
 	pub fn is_funding_initiated(&self) -> bool {
 		self.channel_state >= ChannelState::FundingSent as u32
@@ -6891,6 +6905,8 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 
 			channel_type: channel_type.unwrap(),
 			channel_keys_id,
+
+			pending_monitor_updates: Vec::new(),
 		})
 	}
 }
