@@ -1114,3 +1114,99 @@ impl_writeable_tlv_based_enum_upgradable!(PendingOutboundPayment,
 		(2, payment_hash, required),
 	},
 );
+
+#[cfg(test)]
+mod tests {
+	use bitcoin::blockdata::constants::genesis_block;
+	use bitcoin::network::constants::Network;
+	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
+
+	use crate::ln::PaymentHash;
+	use crate::ln::channelmanager::{PaymentId, PaymentSendFailure};
+	use crate::ln::msgs::{ErrorAction, LightningError};
+	use crate::ln::outbound_payment::{OutboundPayments, Retry};
+	use crate::routing::gossip::NetworkGraph;
+	use crate::routing::router::{InFlightHtlcs, PaymentParameters, Route, RouteParameters};
+	use crate::sync::Arc;
+	use crate::util::errors::APIError;
+	use crate::util::test_utils;
+
+	#[test]
+	#[cfg(feature = "std")]
+	fn fails_paying_after_expiration() {
+		do_fails_paying_after_expiration(false);
+		do_fails_paying_after_expiration(true);
+	}
+	#[cfg(feature = "std")]
+	fn do_fails_paying_after_expiration(on_retry: bool) {
+		let outbound_payments = OutboundPayments::new();
+		let logger = test_utils::TestLogger::new();
+		let genesis_hash = genesis_block(Network::Testnet).header.block_hash();
+		let network_graph = Arc::new(NetworkGraph::new(genesis_hash, &logger));
+		let router = test_utils::TestRouter::new(network_graph);
+		let secp_ctx = Secp256k1::new();
+		let keys_manager = test_utils::TestKeysInterface::new(&[0; 32], Network::Testnet);
+
+		let past_expiry_time = std::time::SystemTime::UNIX_EPOCH.elapsed().unwrap().as_secs() - 2;
+		let payment_params = PaymentParameters::from_node_id(
+			PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap()))
+			.with_expiry_time(past_expiry_time);
+		let expired_route_params = RouteParameters {
+			payment_params,
+			final_value_msat: 0,
+			final_cltv_expiry_delta: 0,
+		};
+		let err = if on_retry {
+			outbound_payments.pay_internal(
+				PaymentId([0; 32]), None, expired_route_params, &&router, vec![], InFlightHtlcs::new(),
+				&&keys_manager, &&keys_manager, 0, &|_, _, _, _, _, _, _, _, _| Ok(())).unwrap_err()
+		} else {
+			outbound_payments.send_payment(
+				PaymentHash([0; 32]), &None, PaymentId([0; 32]), Retry::Attempts(0), expired_route_params,
+				&&router, vec![], InFlightHtlcs::new(), &&keys_manager, &&keys_manager, 0, |_, _, _, _, _, _, _, _, _| Ok(())).unwrap_err()
+		};
+		if let PaymentSendFailure::ParameterError(APIError::APIMisuseError { err }) = err {
+			assert!(err.contains("Invoice expired"));
+		} else { panic!("Unexpected error"); }
+	}
+
+	#[test]
+	fn find_route_error() {
+		do_find_route_error(false);
+		do_find_route_error(true);
+	}
+	fn do_find_route_error(on_retry: bool) {
+		let outbound_payments = OutboundPayments::new();
+		let logger = test_utils::TestLogger::new();
+		let genesis_hash = genesis_block(Network::Testnet).header.block_hash();
+		let network_graph = Arc::new(NetworkGraph::new(genesis_hash, &logger));
+		let router = test_utils::TestRouter::new(network_graph);
+		let secp_ctx = Secp256k1::new();
+		let keys_manager = test_utils::TestKeysInterface::new(&[0; 32], Network::Testnet);
+
+		router.expect_find_route(Err(LightningError { err: String::new(), action: ErrorAction::IgnoreError }));
+
+		let payment_params = PaymentParameters::from_node_id(
+			PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap()));
+		let route_params = RouteParameters {
+			payment_params,
+			final_value_msat: 0,
+			final_cltv_expiry_delta: 0,
+		};
+		let err = if on_retry {
+			outbound_payments.add_new_pending_payment(PaymentHash([0; 32]), None, PaymentId([0; 32]),
+			&Route { paths: vec![], payment_params: None }, Retry::Attempts(1), Some(route_params.clone()),
+			&&keys_manager, 0).unwrap();
+			outbound_payments.pay_internal(
+				PaymentId([0; 32]), None, route_params, &&router, vec![], InFlightHtlcs::new(),
+				&&keys_manager, &&keys_manager, 0, &|_, _, _, _, _, _, _, _, _| Ok(())).unwrap_err()
+		} else {
+			outbound_payments.send_payment(
+				PaymentHash([0; 32]), &None, PaymentId([0; 32]), Retry::Attempts(0), route_params,
+				&&router, vec![], InFlightHtlcs::new(), &&keys_manager, &&keys_manager, 0, |_, _, _, _, _, _, _, _, _| Ok(())).unwrap_err()
+		};
+		if let PaymentSendFailure::ParameterError(APIError::APIMisuseError { err }) = err {
+			assert!(err.contains("Failed to find a route"));
+		} else { panic!("Unexpected error"); }
+	}
+}
