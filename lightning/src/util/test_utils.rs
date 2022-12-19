@@ -86,12 +86,12 @@ impl<'a> TestRouter<'a> {
 impl<'a> Router for TestRouter<'a> {
 	fn find_route(
 		&self, payer: &PublicKey, params: &RouteParameters, first_hops: Option<&[&channelmanager::ChannelDetails]>,
-		inflight_htlcs: InFlightHtlcs
+		inflight_htlcs: &InFlightHtlcs
 	) -> Result<Route, msgs::LightningError> {
 		let logger = TestLogger::new();
 		find_route(
 			payer, params, &self.network_graph, first_hops, &logger,
-			&ScorerAccountingForInFlightHtlcs::new(TestScorer::with_penalty(0), inflight_htlcs),
+			&ScorerAccountingForInFlightHtlcs::new(TestScorer::with_penalty(0), &inflight_htlcs),
 			&[42; 32]
 		)
 	}
