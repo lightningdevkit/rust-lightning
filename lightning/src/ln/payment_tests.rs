@@ -751,10 +751,8 @@ fn do_test_dup_htlc_onchain_fails_on_reload(persist_manager_post_event: bool, co
 	check_added_monitors!(nodes[1], 1);
 	check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed);
 	let claim_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
-	assert_eq!(claim_txn.len(), 3);
+	assert_eq!(claim_txn.len(), 1);
 	check_spends!(claim_txn[0], node_txn[1]);
-	check_spends!(claim_txn[1], funding_tx);
-	check_spends!(claim_txn[2], claim_txn[1]);
 
 	header.prev_blockhash = nodes[0].best_block_hash();
 	connect_block(&nodes[0], &Block { header, txdata: vec![node_txn[1].clone()]});

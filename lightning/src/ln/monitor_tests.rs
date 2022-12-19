@@ -124,9 +124,8 @@ fn revoked_output_htlc_resolution_timing() {
 	check_closed_broadcast!(nodes[1], true);
 
 	let bs_spend_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
-	assert_eq!(bs_spend_txn.len(), 2);
+	assert_eq!(bs_spend_txn.len(), 1);
 	check_spends!(bs_spend_txn[0], revoked_local_txn[0]);
-	check_spends!(bs_spend_txn[1], chan.3);
 
 	// After the commitment transaction confirms, we should still wait on the HTLC spend
 	// transaction to confirm before resolving the HTLC.
@@ -364,21 +363,14 @@ fn do_test_claim_value_force_close(prev_commitment_tx: bool) {
 	mine_transaction(&nodes[1], &remote_txn[0]);
 
 	let b_broadcast_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
-	assert_eq!(b_broadcast_txn.len(), if prev_commitment_tx { 4 } else { 5 });
-	if prev_commitment_tx {
-		check_spends!(b_broadcast_txn[3], b_broadcast_txn[2]);
-	} else {
-		assert_eq!(b_broadcast_txn[0], b_broadcast_txn[3]);
-		assert_eq!(b_broadcast_txn[1], b_broadcast_txn[4]);
-	}
-	// b_broadcast_txn[0] should spend the HTLC output of the commitment tx for 3_000 sats
+	assert_eq!(b_broadcast_txn.len(), 2);
+	// b_broadcast_txn should spend the HTLCs output of the commitment tx for 3_000 and 4_000 sats
 	check_spends!(b_broadcast_txn[0], remote_txn[0]);
 	check_spends!(b_broadcast_txn[1], remote_txn[0]);
 	assert_eq!(b_broadcast_txn[0].input.len(), 1);
 	assert_eq!(b_broadcast_txn[1].input.len(), 1);
 	assert_eq!(remote_txn[0].output[b_broadcast_txn[0].input[0].previous_output.vout as usize].value, 3_000);
 	assert_eq!(remote_txn[0].output[b_broadcast_txn[1].input[0].previous_output.vout as usize].value, 4_000);
-	check_spends!(b_broadcast_txn[2], funding_tx);
 
 	assert!(nodes[0].node.list_channels().is_empty());
 	check_closed_broadcast!(nodes[0], true);
@@ -482,21 +474,20 @@ fn do_test_claim_value_force_close(prev_commitment_tx: bool) {
 	// When the HTLC timeout output is spendable in the next block, A should broadcast it
 	connect_blocks(&nodes[0], htlc_cltv_timeout - nodes[0].best_block_info().1 - 1);
 	let a_broadcast_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
-	assert_eq!(a_broadcast_txn.len(), 3);
-	check_spends!(a_broadcast_txn[0], funding_tx);
+	assert_eq!(a_broadcast_txn.len(), 2);
+	assert_eq!(a_broadcast_txn[0].input.len(), 1);
+	check_spends!(a_broadcast_txn[0], remote_txn[0]);
 	assert_eq!(a_broadcast_txn[1].input.len(), 1);
 	check_spends!(a_broadcast_txn[1], remote_txn[0]);
-	assert_eq!(a_broadcast_txn[2].input.len(), 1);
-	check_spends!(a_broadcast_txn[2], remote_txn[0]);
-	assert_ne!(a_broadcast_txn[1].input[0].previous_output.vout,
-	           a_broadcast_txn[2].input[0].previous_output.vout);
-	// a_broadcast_txn [1] and [2] should spend the HTLC outputs of the commitment tx
-	assert_eq!(remote_txn[0].output[a_broadcast_txn[1].input[0].previous_output.vout as usize].value, 3_000);
-	assert_eq!(remote_txn[0].output[a_broadcast_txn[2].input[0].previous_output.vout as usize].value, 4_000);
+	assert_ne!(a_broadcast_txn[0].input[0].previous_output.vout,
+	           a_broadcast_txn[1].input[0].previous_output.vout);
+	// a_broadcast_txn [0] and [1] should spend the HTLC outputs of the commitment tx
+	assert_eq!(remote_txn[0].output[a_broadcast_txn[0].input[0].previous_output.vout as usize].value, 3_000);
+	assert_eq!(remote_txn[0].output[a_broadcast_txn[1].input[0].previous_output.vout as usize].value, 4_000);
 
 	// Once the HTLC-Timeout transaction confirms, A will no longer consider the HTLC
 	// "MaybeClaimable", but instead move it to "AwaitingConfirmations".
-	mine_transaction(&nodes[0], &a_broadcast_txn[2]);
+	mine_transaction(&nodes[0], &a_broadcast_txn[1]);
 	assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
 	assert_eq!(vec![Balance::ClaimableAwaitingConfirmations {
 			claimable_amount_satoshis: 4_000,
@@ -510,7 +501,7 @@ fn do_test_claim_value_force_close(prev_commitment_tx: bool) {
 		nodes[0].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances());
 	expect_payment_failed!(nodes[0], timeout_payment_hash, false);
 
-	test_spendable_output(&nodes[0], &a_broadcast_txn[2]);
+	test_spendable_output(&nodes[0], &a_broadcast_txn[1]);
 
 	// Node B will no longer consider the HTLC "contentious" after the HTLC claim transaction
 	// confirms, and consider it simply "awaiting confirmations". Note that it has to wait for the
@@ -558,7 +549,7 @@ fn do_test_claim_value_force_close(prev_commitment_tx: bool) {
 	// Finally, mine the HTLC timeout transaction that A broadcasted (even though B should be able
 	// to claim this HTLC with the preimage it knows!). It will remain listed as a claimable HTLC
 	// until ANTI_REORG_DELAY confirmations on the spend.
-	mine_transaction(&nodes[1], &a_broadcast_txn[2]);
+	mine_transaction(&nodes[1], &a_broadcast_txn[1]);
 	assert_eq!(vec![Balance::ContentiousClaimable {
 			claimable_amount_satoshis: 4_000,
 			timeout_height: htlc_cltv_timeout,
@@ -670,10 +661,8 @@ fn test_balances_on_local_commitment_htlcs() {
 	check_closed_broadcast!(nodes[1], true);
 	check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed);
 	let bs_htlc_claim_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
-	assert_eq!(bs_htlc_claim_txn.len(), 3);
+	assert_eq!(bs_htlc_claim_txn.len(), 1);
 	check_spends!(bs_htlc_claim_txn[0], as_txn[0]);
-	check_spends!(bs_htlc_claim_txn[1], funding_tx);
-	check_spends!(bs_htlc_claim_txn[2], bs_htlc_claim_txn[1]);
 
 	// Connect blocks until the HTLCs expire, allowing us to (validly) broadcast the HTLC-Timeout
 	// transaction.
@@ -1309,11 +1298,10 @@ fn test_revoked_counterparty_htlc_tx_balances() {
 	check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed);
 	let revoked_htlc_success_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 
-	assert_eq!(revoked_htlc_success_txn.len(), 2);
+	assert_eq!(revoked_htlc_success_txn.len(), 1);
 	assert_eq!(revoked_htlc_success_txn[0].input.len(), 1);
 	assert_eq!(revoked_htlc_success_txn[0].input[0].witness.last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT);
 	check_spends!(revoked_htlc_success_txn[0], revoked_local_txn[0]);
-	check_spends!(revoked_htlc_success_txn[1], funding_tx);
 
 	connect_blocks(&nodes[1], TEST_FINAL_CLTV);
 	let revoked_htlc_timeout_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
@@ -1331,9 +1319,8 @@ fn test_revoked_counterparty_htlc_tx_balances() {
 	let to_remote_conf_height = nodes[0].best_block_info().1 + ANTI_REORG_DELAY - 1;
 
 	let as_commitment_claim_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
-	assert_eq!(as_commitment_claim_txn.len(), 2);
+	assert_eq!(as_commitment_claim_txn.len(), 1);
 	check_spends!(as_commitment_claim_txn[0], revoked_local_txn[0]);
-	check_spends!(as_commitment_claim_txn[1], funding_tx);
 
 	// The next two checks have the same balance set for A - even though we confirm a revoked HTLC
 	// transaction our balance tracking doesn't use the on-chain value so the
