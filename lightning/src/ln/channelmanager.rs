@@ -2370,7 +2370,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 	pub fn send_payment(&self, route: &Route, payment_hash: PaymentHash, payment_secret: &Option<PaymentSecret>, payment_id: PaymentId) -> Result<(), PaymentSendFailure> {
 		let best_block_height = self.best_block.read().unwrap().height();
 		self.pending_outbound_payments
-			.send_payment(route, payment_hash, payment_secret, payment_id, &self.keys_manager, best_block_height,
+			.send_payment_with_route(route, payment_hash, payment_secret, payment_id, &self.keys_manager, best_block_height,
 				|path, payment_params, payment_hash, payment_secret, total_value, cur_height, payment_id, keysend_preimage, session_priv|
 				self.send_payment_along_path(path, payment_params, payment_hash, payment_secret, total_value, cur_height, payment_id, keysend_preimage, session_priv))
 	}
@@ -2402,7 +2402,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 	/// [`abandon_payment`]: [`ChannelManager::abandon_payment`]
 	pub fn retry_payment(&self, route: &Route, payment_id: PaymentId) -> Result<(), PaymentSendFailure> {
 		let best_block_height = self.best_block.read().unwrap().height();
-		self.pending_outbound_payments.retry_payment(route, payment_id, &self.keys_manager, best_block_height,
+		self.pending_outbound_payments.retry_payment_with_route(route, payment_id, &self.keys_manager, best_block_height,
 			|path, payment_params, payment_hash, payment_secret, total_value, cur_height, payment_id, keysend_preimage, session_priv|
 			self.send_payment_along_path(path, payment_params, payment_hash, payment_secret, total_value, cur_height, payment_id, keysend_preimage, session_priv))
 	}

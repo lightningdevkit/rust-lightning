@@ -271,7 +271,7 @@ impl OutboundPayments {
 		}
 	}
 
-	pub(super) fn send_payment<K: Deref, F>(
+	pub(super) fn send_payment_with_route<K: Deref, F>(
 		&self, route: &Route, payment_hash: PaymentHash, payment_secret: &Option<PaymentSecret>,
 		payment_id: PaymentId, keys_manager: &K, best_block_height: u32, send_payment_along_path: F
 	) -> Result<(), PaymentSendFailure>
@@ -306,7 +306,7 @@ impl OutboundPayments {
 		}
 	}
 
-	pub(super) fn retry_payment<K: Deref, F>(
+	pub(super) fn retry_payment_with_route<K: Deref, F>(
 		&self, route: &Route, payment_id: PaymentId, keys_manager: &K, best_block_height: u32,
 		send_payment_along_path: F
 	) -> Result<(), PaymentSendFailure>
