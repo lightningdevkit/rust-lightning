@@ -3561,11 +3561,13 @@ where
 	pub fn funding_transaction_generated(&self, temporary_channel_id: &ChannelId, counterparty_node_id: &PublicKey, funding_transaction: Transaction) -> Result<(), APIError> {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 
-		for inp in funding_transaction.input.iter() {
-			if inp.witness.is_empty() {
-				return Err(APIError::APIMisuseError {
-					err: "Funding transaction must be fully signed and spend Segwit outputs".to_owned()
-				});
+		if !funding_transaction.is_coin_base() {
+			for inp in funding_transaction.input.iter() {
+				if inp.witness.is_empty() {
+					return Err(APIError::APIMisuseError {
+						err: "Funding transaction must be fully signed and spend Segwit outputs".to_owned()
+					});
+				}
 			}
 		}
 		{
