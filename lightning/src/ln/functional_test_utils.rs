@@ -1324,10 +1324,20 @@ macro_rules! commitment_signed_dance {
 				check_added_monitors!($node_a, 1);
 
 				let channel_state = $node_a.node.channel_state.lock().unwrap();
-				assert_eq!(channel_state.pending_msg_events.len(), 1);
-				if let MessageSendEvent::UpdateHTLCs { ref node_id, .. } = channel_state.pending_msg_events[0] {
-					assert_ne!(*node_id, $node_b.node.get_our_node_id());
-				} else { panic!("Unexpected event"); }
+				let node_a_per_peer_state = $node_a.node.per_peer_state.read().unwrap();
+				let mut number_of_msg_events = 0;
+				for (cp_id, peer_state_mutex) in node_a_per_peer_state.iter() {
+					let peer_state = peer_state_mutex.lock().unwrap();
+					let cp_pending_msg_events = &peer_state.pending_msg_events;
+					number_of_msg_events += cp_pending_msg_events.len();
+					if cp_pending_msg_events.len() == 1 {
+						if let MessageSendEvent::UpdateHTLCs { .. } = cp_pending_msg_events[0] {
+							assert_ne!(*cp_id, $node_b.node.get_our_node_id());
+						} else { panic!("Unexpected event"); }
+					}
+				}
+				// Expecting the failure backwards event to the previous hop (not `node_b`)
+				assert_eq!(number_of_msg_events, 1);
 			} else {
 				assert!($node_a.node.get_and_clear_pending_msg_events().is_empty());
 			}
