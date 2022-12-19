@@ -14,7 +14,9 @@ use lightning::offers::invoice_request::UnsignedInvoiceRequest;
 use lightning::util::test_channel_signer::TestChannelSigner;
 use lightning::util::logger::Logger;
 use lightning::util::ser::{Readable, Writeable, Writer};
-use lightning::onion_message::{CustomOnionMessageHandler, Destination, MessageRouter, OffersMessage, OffersMessageHandler, OnionMessageContents, OnionMessagePath, OnionMessenger, PendingOnionMessage};
+use lightning::onion_message::messenger::{CustomOnionMessageHandler, MessageRouter, OnionMessenger, Destination, OnionMessagePath};
+use lightning::onion_message::offers::{OffersMessage, OffersMessageHandler};
+use lightning::onion_message::packet::CustomOnionMessageContents;
 
 use crate::utils::test_logger;
 
