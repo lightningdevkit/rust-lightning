@@ -380,7 +380,9 @@ impl OutboundPayments {
 		   u32, PaymentId, &Option<PaymentPreimage>, [u8; 32]) -> Result<(), APIError>
 	{
 		let onion_session_privs = self.add_new_pending_payment(payment_hash, *payment_secret, payment_id, route, Retry::Attempts(0), None, entropy_source, best_block_height)?;
-		self.send_payment_internal(route, payment_hash, payment_secret, None, payment_id, None, onion_session_privs, node_signer, best_block_height, send_payment_along_path)
+		self.send_payment_internal(route, payment_hash, payment_secret, None, payment_id, None,
+			onion_session_privs, node_signer, best_block_height, send_payment_along_path)
+			.map_err(|e| { self.remove_outbound_if_all_failed(payment_id, &e); e })
 	}
 
 	pub(super) fn send_spontaneous_payment<ES: Deref, NS: Deref, F>(
@@ -402,7 +404,10 @@ impl OutboundPayments {
 
 		match self.send_payment_internal(route, payment_hash, &None, Some(preimage), payment_id, None, onion_session_privs, node_signer, best_block_height, send_payment_along_path) {
 			Ok(()) => Ok(payment_hash),
-			Err(e) => Err(e)
+			Err(e) => {
+				self.remove_outbound_if_all_failed(payment_id, &e);
+				Err(e)
+			}
 		}
 	}
 
@@ -501,7 +506,10 @@ impl OutboundPayments {
 
 		match self.send_payment_internal(&route, payment_hash, &None, None, payment_id, None, onion_session_privs, node_signer, best_block_height, send_payment_along_path) {
 			Ok(()) => Ok((payment_hash, payment_id)),
-			Err(e) => Err(e)
+			Err(e) => {
+				self.remove_outbound_if_all_failed(payment_id, &e);
+				Err(e)
+			}
 		}
 	}
 
@@ -648,10 +656,6 @@ impl OutboundPayments {
 				} else { None },
 			})
 		} else if has_err {
-			// If we failed to send any paths, we should remove the new PaymentId from the
-			// `pending_outbound_payments` map, as the user isn't expected to `abandon_payment`.
-			let removed = self.pending_outbound_payments.lock().unwrap().remove(&payment_id).is_some();
-			debug_assert!(removed, "We should always have a pending payment to remove here");
 			Err(PaymentSendFailure::AllFailedResendSafe(results.drain(..).map(|r| r.unwrap_err()).collect()))
 		} else {
 			Ok(())
@@ -673,6 +677,16 @@ impl OutboundPayments {
 		self.send_payment_internal(route, payment_hash, payment_secret, keysend_preimage, payment_id,
 			recv_value_msat, onion_session_privs, node_signer, best_block_height,
 			send_payment_along_path)
+			.map_err(|e| { self.remove_outbound_if_all_failed(payment_id, &e); e })
+	}
+
+	// If we failed to send any paths, we should remove the new PaymentId from the
+	// `pending_outbound_payments` map, as the user isn't expected to `abandon_payment`.
+	fn remove_outbound_if_all_failed(&self, payment_id: PaymentId, err: &PaymentSendFailure) {
+		if let &PaymentSendFailure::AllFailedResendSafe(_) = err {
+			let removed = self.pending_outbound_payments.lock().unwrap().remove(&payment_id).is_some();
+			debug_assert!(removed, "We should always have a pending payment to remove here");
+		}
 	}
 
 	pub(super) fn claim_htlc<L: Deref>(
