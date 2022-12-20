@@ -720,9 +720,9 @@ impl OutboundPayments {
 		log_trace!(logger, "Failing outbound payment HTLC with payment_hash {}", log_bytes!(payment_hash.0));
 
 		let path_failure = {
-	#[cfg(test)]
+			#[cfg(test)]
 			let (network_update, short_channel_id, payment_retryable, onion_error_code, onion_error_data) = onion_error.decode_onion_failure(secp_ctx, logger, &source);
-	#[cfg(not(test))]
+			#[cfg(not(test))]
 			let (network_update, short_channel_id, payment_retryable, _, _) = onion_error.decode_onion_failure(secp_ctx, logger, &source);
 
 			if payment_is_probe(payment_hash, &payment_id, probing_cookie_secret) {
