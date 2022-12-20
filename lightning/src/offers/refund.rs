@@ -102,8 +102,8 @@ pub struct RefundBuilder {
 }
 
 impl RefundBuilder {
-	/// Creates a new builder for a refund using the [`Refund::payer_id`] for signing invoices. Use
-	/// a different pubkey per refund to avoid correlating refunds.
+	/// Creates a new builder for a refund using the [`Refund::payer_id`] for the public node id to
+	/// send to if no [`Refund::paths`] are set. Otherwise, it may be a transient pubkey.
 	///
 	/// Additionally, sets the required [`Refund::description`], [`Refund::metadata`], and
 	/// [`Refund::amount_msats`].
@@ -285,7 +285,10 @@ impl Refund {
 		&self.contents.features
 	}
 
-	/// A possibly transient pubkey used to sign the refund.
+	/// A public node id to send to in the case where there are no [`paths`]. Otherwise, a possibly
+	/// transient pubkey.
+	///
+	/// [`paths`]: Self::paths
 	pub fn payer_id(&self) -> PublicKey {
 		self.contents.payer_id
 	}
