@@ -447,7 +447,8 @@ impl OutboundPayments {
 		&self, route: &Route, payment_hash: PaymentHash, payment_secret: &Option<PaymentSecret>,
 		keysend_preimage: Option<PaymentPreimage>, payment_id: PaymentId, recv_value_msat: Option<u64>,
 		onion_session_privs: Vec<[u8; 32]>, keys_manager: &K, best_block_height: u32,
-		send_payment_along_path: F) -> Result<(), PaymentSendFailure>
+		send_payment_along_path: F
+	) -> Result<(), PaymentSendFailure>
 	where
 		K::Target: KeysInterface,
 		F: Fn(&Vec<RouteHop>, &Option<PaymentParameters>, &PaymentHash, &Option<PaymentSecret>, u64,
@@ -556,7 +557,8 @@ impl OutboundPayments {
 		&self, route: &Route, payment_hash: PaymentHash, payment_secret: &Option<PaymentSecret>,
 		keysend_preimage: Option<PaymentPreimage>, payment_id: PaymentId, recv_value_msat: Option<u64>,
 		onion_session_privs: Vec<[u8; 32]>, keys_manager: &K, best_block_height: u32,
-		send_payment_along_path: F) -> Result<(), PaymentSendFailure>
+		send_payment_along_path: F
+	) -> Result<(), PaymentSendFailure>
 	where
 		K::Target: KeysInterface,
 		F: Fn(&Vec<RouteHop>, &Option<PaymentParameters>, &PaymentHash, &Option<PaymentSecret>, u64,
@@ -569,8 +571,8 @@ impl OutboundPayments {
 
 	pub(super) fn claim_htlc<L: Deref>(
 		&self, payment_id: PaymentId, payment_preimage: PaymentPreimage, session_priv: SecretKey,
-		path: Vec<RouteHop>, from_onchain: bool, pending_events: &Mutex<Vec<events::Event>>, logger: &L)
-	 where L::Target: Logger {
+		path: Vec<RouteHop>, from_onchain: bool, pending_events: &Mutex<Vec<events::Event>>, logger: &L
+	) where L::Target: Logger {
 		let mut session_priv_bytes = [0; 32];
 		session_priv_bytes.copy_from_slice(&session_priv[..]);
 		let mut outbounds = self.pending_outbound_payments.lock().unwrap();
@@ -679,8 +681,8 @@ impl OutboundPayments {
 		&self, source: &HTLCSource, payment_hash: &PaymentHash, onion_error: &HTLCFailReason,
 		path: &Vec<RouteHop>, session_priv: &SecretKey, payment_id: &PaymentId,
 		payment_params: &Option<PaymentParameters>, probing_cookie_secret: [u8; 32],
-		secp_ctx: &Secp256k1<secp256k1::All>, pending_events: &Mutex<Vec<events::Event>>, logger: &L)
-	where L::Target: Logger {
+		secp_ctx: &Secp256k1<secp256k1::All>, pending_events: &Mutex<Vec<events::Event>>, logger: &L
+	) where L::Target: Logger {
 		let mut session_priv_bytes = [0; 32];
 		session_priv_bytes.copy_from_slice(&session_priv[..]);
 		let mut outbounds = self.pending_outbound_payments.lock().unwrap();
