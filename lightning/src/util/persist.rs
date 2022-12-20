@@ -16,7 +16,7 @@ use crate::routing::scoring::WriteableScore;
 use crate::chain;
 use crate::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use crate::chain::chainmonitor::{Persist, MonitorUpdateId};
-use crate::chain::keysinterface::{Sign, KeysInterface, SignerProvider};
+use crate::chain::keysinterface::{Sign, SignerProvider};
 use crate::chain::transaction::OutPoint;
 use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate};
 use crate::ln::channelmanager::ChannelManager;
@@ -37,7 +37,7 @@ pub trait KVStorePersister {
 pub trait Persister<'a, M: Deref, T: Deref, K: Deref, F: Deref, R: Deref, L: Deref, S: WriteableScore<'a>>
 	where M::Target: 'static + chain::Watch<<K::Target as SignerProvider>::Signer>,
 		T::Target: 'static + BroadcasterInterface,
-		K::Target: 'static + KeysInterface,
+		K::Target: 'static + SignerProvider,
 		F::Target: 'static + FeeEstimator,
 		R::Target: 'static + Router,
 		L::Target: 'static + Logger,
@@ -55,7 +55,7 @@ pub trait Persister<'a, M: Deref, T: Deref, K: Deref, F: Deref, R: Deref, L: Der
 impl<'a, A: KVStorePersister, M: Deref, T: Deref, K: Deref, F: Deref, R: Deref, L: Deref, S: WriteableScore<'a>> Persister<'a, M, T, K, F, R, L, S> for A
 	where M::Target: 'static + chain::Watch<<K::Target as SignerProvider>::Signer>,
 		T::Target: 'static + BroadcasterInterface,
-		K::Target: 'static + KeysInterface,
+		K::Target: 'static + SignerProvider,
 		F::Target: 'static + FeeEstimator,
 		R::Target: 'static + Router,
 		L::Target: 'static + Logger,

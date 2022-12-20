@@ -35,7 +35,7 @@ use crate::chain::BestBlock;
 use crate::chain::chaininterface::{FeeEstimator, ConfirmationTarget, LowerBoundedFeeEstimator};
 use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, LATENCY_GRACE_PERIOD_BLOCKS};
 use crate::chain::transaction::{OutPoint, TransactionData};
-use crate::chain::keysinterface::{Sign, EntropySource, KeysInterface, BaseSign, SignerProvider};
+use crate::chain::keysinterface::{Sign, EntropySource, BaseSign, SignerProvider};
 use crate::util::events::ClosureReason;
 use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer, VecWriter};
 use crate::util::logger::Logger;
@@ -908,7 +908,7 @@ impl<Signer: Sign> Channel<Signer> {
 		channel_value_satoshis: u64, push_msat: u64, user_id: u128, config: &UserConfig, current_chain_height: u32,
 		outbound_scid_alias: u64
 	) -> Result<Channel<Signer>, APIError>
-	where K::Target: KeysInterface<Signer = Signer>,
+	where K::Target: EntropySource + SignerProvider<Signer = Signer>,
 	      F::Target: FeeEstimator,
 	{
 		let opt_anchors = false; // TODO - should be based on features
@@ -1120,7 +1120,7 @@ impl<Signer: Sign> Channel<Signer> {
 		msg: &msgs::OpenChannel, user_id: u128, config: &UserConfig, current_chain_height: u32, logger: &L,
 		outbound_scid_alias: u64
 	) -> Result<Channel<Signer>, ChannelError>
-		where K::Target: KeysInterface<Signer = Signer>,
+		where K::Target: EntropySource + SignerProvider<Signer = Signer>,
 		      F::Target: FeeEstimator,
 		      L::Target: Logger,
 	{
@@ -2225,7 +2225,7 @@ impl<Signer: Sign> Channel<Signer> {
 		&mut self, msg: &msgs::FundingCreated, best_block: BestBlock, keys_source: &K, logger: &L
 	) -> Result<(msgs::FundingSigned, ChannelMonitor<<K::Target as SignerProvider>::Signer>, Option<msgs::ChannelReady>), ChannelError>
 	where
-		K::Target: KeysInterface,
+		K::Target: SignerProvider,
 		L::Target: Logger
 	{
 		if self.is_outbound() {
@@ -2313,7 +2313,7 @@ impl<Signer: Sign> Channel<Signer> {
 		&mut self, msg: &msgs::FundingSigned, best_block: BestBlock, keys_source: &K, logger: &L
 	) -> Result<(ChannelMonitor<<K::Target as SignerProvider>::Signer>, Transaction, Option<msgs::ChannelReady>), ChannelError>
 	where
-		K::Target: KeysInterface,
+		K::Target: SignerProvider,
 		L::Target: Logger
 	{
 		if !self.is_outbound() {
@@ -4226,7 +4226,7 @@ impl<Signer: Sign> Channel<Signer> {
 	pub fn shutdown<K: Deref>(
 		&mut self, keys_provider: &K, their_features: &InitFeatures, msg: &msgs::Shutdown
 	) -> Result<(Option<msgs::Shutdown>, Option<ChannelMonitorUpdate>, Vec<(HTLCSource, PaymentHash)>), ChannelError>
-	where K::Target: KeysInterface
+	where K::Target: SignerProvider
 	{
 		if self.channel_state & (ChannelState::PeerDisconnected as u32) == ChannelState::PeerDisconnected as u32 {
 			return Err(ChannelError::Close("Peer sent shutdown when we needed a channel_reestablish".to_owned()));
@@ -5847,7 +5847,7 @@ impl<Signer: Sign> Channel<Signer> {
 	/// holding cell HTLCs for payment failure.
 	pub fn get_shutdown<K: Deref>(&mut self, keys_provider: &K, their_features: &InitFeatures, target_feerate_sats_per_kw: Option<u32>)
 	-> Result<(msgs::Shutdown, Option<ChannelMonitorUpdate>, Vec<(HTLCSource, PaymentHash)>), APIError>
-	where K::Target: KeysInterface {
+	where K::Target: SignerProvider {
 		for htlc in self.pending_outbound_htlcs.iter() {
 			if let OutboundHTLCState::LocalAnnounced(_) = htlc.state {
 				return Err(APIError::APIMisuseError{err: "Cannot begin shutdown with pending HTLCs. Process pending events first".to_owned()});
@@ -6330,7 +6330,7 @@ impl<Signer: Sign> Writeable for Channel<Signer> {
 
 const MAX_ALLOC_SIZE: usize = 64*1024;
 impl<'a, K: Deref> ReadableArgs<(&'a K, u32)> for Channel<<K::Target as SignerProvider>::Signer>
-		where K::Target: KeysInterface {
+		where K::Target: EntropySource + SignerProvider {
 	fn read<R : io::Read>(reader: &mut R, args: (&'a K, u32)) -> Result<Self, DecodeError> {
 		let (keys_source, serialized_height) = args;
 		let ver = read_ver_prefix!(reader, SERIALIZATION_VERSION);
@@ -6802,7 +6802,7 @@ mod tests {
 	use crate::ln::chan_utils::{htlc_success_tx_weight, htlc_timeout_tx_weight};
 	use crate::chain::BestBlock;
 	use crate::chain::chaininterface::{FeeEstimator, LowerBoundedFeeEstimator, ConfirmationTarget};
-	use crate::chain::keysinterface::{BaseSign, InMemorySigner, Recipient, KeyMaterial, KeysInterface, EntropySource, NodeSigner, SignerProvider};
+	use crate::chain::keysinterface::{BaseSign, InMemorySigner, Recipient, KeyMaterial, EntropySource, NodeSigner, SignerProvider};
 	use crate::chain::transaction::OutPoint;
 	use crate::util::config::UserConfig;
 	use crate::util::enforcing_trait_impls::EnforcingSigner;
@@ -6897,8 +6897,6 @@ mod tests {
 			ShutdownScript::new_p2wpkh_from_pubkey(PublicKey::from_secret_key(&secp_ctx, &channel_close_key))
 		}
 	}
-
-	impl KeysInterface for Keys {}
 
 	#[cfg(not(feature = "grind_signatures"))]
 	fn public_from_secret_hex(secp_ctx: &Secp256k1<bitcoin::secp256k1::All>, hex: &str) -> PublicKey {

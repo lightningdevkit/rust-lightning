@@ -15,7 +15,7 @@ use bitcoin::hashes::hmac::{Hmac, HmacEngine};
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::secp256k1::{self, PublicKey, Scalar, Secp256k1, SecretKey};
 
-use crate::chain::keysinterface::{EntropySource, KeysInterface, KeysManager, NodeSigner, Recipient};
+use crate::chain::keysinterface::{EntropySource, KeysManager, NodeSigner, Recipient};
 use crate::ln::features::{InitFeatures, NodeFeatures};
 use crate::ln::msgs::{self, OnionMessageHandler};
 use crate::ln::onion_utils;
@@ -43,7 +43,7 @@ use crate::prelude::*;
 /// # extern crate bitcoin;
 /// # use bitcoin::hashes::_export::_core::time::Duration;
 /// # use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
-/// # use lightning::chain::keysinterface::{InMemorySigner, KeysManager, KeysInterface};
+/// # use lightning::chain::keysinterface::{InMemorySigner, KeysManager};
 /// # use lightning::ln::msgs::DecodeError;
 /// # use lightning::ln::peer_handler::IgnoringMessageHandler;
 /// # use lightning::onion_message::{BlindedPath, CustomOnionMessageContents, Destination, OnionMessageContents, OnionMessenger};
@@ -105,7 +105,7 @@ use crate::prelude::*;
 /// [offers]: <https://github.com/lightning/bolts/pull/798>
 /// [`OnionMessenger`]: crate::onion_message::OnionMessenger
 pub struct OnionMessenger<K: Deref, L: Deref, CMH: Deref>
-	where K::Target: KeysInterface,
+	where K::Target: NodeSigner,
 	      L::Target: Logger,
 	      CMH:: Target: CustomOnionMessageHandler,
 {
@@ -154,9 +154,9 @@ pub enum SendError {
 	InvalidMessage,
 	/// Our next-hop peer's buffer was full or our total outbound buffer was full.
 	BufferFull,
-	/// Failed to retrieve our node id from the provided [`KeysInterface`].
+	/// Failed to retrieve our node id from the provided [`NodeSigner`].
 	///
-	/// [`KeysInterface`]: crate::chain::keysinterface::KeysInterface
+	/// [`NodeSigner`]: crate::chain::keysinterface::NodeSigner
 	GetNodeIdFailed,
 	/// We attempted to send to a blinded path where we are the introduction node, and failed to
 	/// advance the blinded path to make the second hop the new introduction node. Either
@@ -187,7 +187,7 @@ pub trait CustomOnionMessageHandler {
 }
 
 impl<K: Deref, L: Deref, CMH: Deref> OnionMessenger<K, L, CMH>
-	where K::Target: KeysInterface,
+	where K::Target: EntropySource + NodeSigner,
 	      L::Target: Logger,
 	      CMH::Target: CustomOnionMessageHandler,
 {
@@ -296,7 +296,7 @@ fn outbound_buffer_full(peer_node_id: &PublicKey, buffer: &HashMap<PublicKey, Ve
 }
 
 impl<K: Deref, L: Deref, CMH: Deref> OnionMessageHandler for OnionMessenger<K, L, CMH>
-	where K::Target: KeysInterface,
+	where K::Target: NodeSigner,
 	      L::Target: Logger,
 	      CMH::Target: CustomOnionMessageHandler + Sized,
 {
@@ -440,7 +440,7 @@ impl<K: Deref, L: Deref, CMH: Deref> OnionMessageHandler for OnionMessenger<K, L
 }
 
 impl<K: Deref, L: Deref, CMH: Deref> OnionMessageProvider for OnionMessenger<K, L, CMH>
-	where K::Target: KeysInterface,
+	where K::Target: NodeSigner,
 	      L::Target: Logger,
 	      CMH::Target: CustomOnionMessageHandler,
 {

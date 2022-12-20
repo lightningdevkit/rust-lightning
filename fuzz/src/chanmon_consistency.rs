@@ -36,7 +36,7 @@ use lightning::chain::{BestBlock, ChannelMonitorUpdateStatus, chainmonitor, chan
 use lightning::chain::channelmonitor::{ChannelMonitor, MonitorEvent};
 use lightning::chain::transaction::OutPoint;
 use lightning::chain::chaininterface::{BroadcasterInterface, ConfirmationTarget, FeeEstimator};
-use lightning::chain::keysinterface::{KeyMaterial, KeysInterface, InMemorySigner, Recipient, EntropySource, NodeSigner, SignerProvider};
+use lightning::chain::keysinterface::{KeyMaterial, InMemorySigner, Recipient, EntropySource, NodeSigner, SignerProvider};
 use lightning::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
 use lightning::ln::channelmanager::{self, ChainParameters, ChannelDetails, ChannelManager, PaymentSendFailure, ChannelManagerReadArgs, PaymentId};
 use lightning::ln::channel::FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE;
@@ -269,8 +269,6 @@ impl SignerProvider for KeyProvider {
 		ShutdownScript::new_p2wpkh(&pubkey_hash)
 	}
 }
-
-impl KeysInterface for KeyProvider {}
 
 impl KeyProvider {
 	fn make_enforcement_state_cell(&self, commitment_seed: [u8; 32]) -> Arc<Mutex<EnforcementState>> {

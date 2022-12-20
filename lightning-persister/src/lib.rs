@@ -20,7 +20,7 @@ extern crate libc;
 use bitcoin::hash_types::{BlockHash, Txid};
 use bitcoin::hashes::hex::FromHex;
 use lightning::chain::channelmonitor::ChannelMonitor;
-use lightning::chain::keysinterface::{KeysInterface, SignerProvider};
+use lightning::chain::keysinterface::{EntropySource, SignerProvider};
 use lightning::util::ser::{ReadableArgs, Writeable};
 use lightning::util::persist::KVStorePersister;
 use std::fs;
@@ -62,7 +62,7 @@ impl FilesystemPersister {
 	pub fn read_channelmonitors<K: Deref> (
 		&self, keys_manager: K
 	) -> std::io::Result<Vec<(BlockHash, ChannelMonitor<<K::Target as SignerProvider>::Signer>)>>
-		where K::Target: KeysInterface + Sized,
+		where K::Target: EntropySource + SignerProvider + Sized,
 	{
 		let mut path = PathBuf::from(&self.path_to_channel_data);
 		path.push("monitors");

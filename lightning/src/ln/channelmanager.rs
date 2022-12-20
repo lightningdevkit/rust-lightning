@@ -57,7 +57,7 @@ use crate::ln::msgs::{ChannelMessageHandler, DecodeError, LightningError, MAX_VA
 use crate::ln::outbound_payment;
 use crate::ln::outbound_payment::{OutboundPayments, PendingOutboundPayment};
 use crate::ln::wire::Encode;
-use crate::chain::keysinterface::{EntropySource, KeysInterface, KeysManager, NodeSigner, Recipient, Sign, SignerProvider};
+use crate::chain::keysinterface::{EntropySource, KeysManager, NodeSigner, Recipient, Sign, SignerProvider};
 use crate::util::config::{UserConfig, ChannelConfig};
 use crate::util::events::{Event, EventHandler, EventsProvider, MessageSendEvent, MessageSendEventsProvider, ClosureReason, HTLCDestination};
 use crate::util::events;
@@ -601,7 +601,7 @@ pub struct ChannelManager<M: Deref, T: Deref, K: Deref, F: Deref, R: Deref, L: D
 where
 	M::Target: chain::Watch<<K::Target as SignerProvider>::Signer>,
 	T::Target: BroadcasterInterface,
-	K::Target: KeysInterface,
+	K::Target: SignerProvider,
 	F::Target: FeeEstimator,
 	R::Target: Router,
 	L::Target: Logger,
@@ -1410,7 +1410,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, R: Deref, L: Deref> ChannelManager<
 where
 	M::Target: chain::Watch<<K::Target as SignerProvider>::Signer>,
 	T::Target: BroadcasterInterface,
-	K::Target: KeysInterface,
+	K::Target: EntropySource + NodeSigner + SignerProvider,
 	F::Target: FeeEstimator,
 	R::Target: Router,
 	L::Target: Logger,
@@ -5480,7 +5480,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, R: Deref, L: Deref> MessageSendEven
 where
 	M::Target: chain::Watch<<K::Target as SignerProvider>::Signer>,
 	T::Target: BroadcasterInterface,
-	K::Target: KeysInterface,
+	K::Target: EntropySource + NodeSigner + SignerProvider,
 	F::Target: FeeEstimator,
 	R::Target: Router,
 	L::Target: Logger,
@@ -5542,7 +5542,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, R: Deref, L: Deref> EventsProvider 
 where
 	M::Target: chain::Watch<<K::Target as SignerProvider>::Signer>,
 	T::Target: BroadcasterInterface,
-	K::Target: KeysInterface,
+	K::Target: EntropySource + NodeSigner + SignerProvider,
 	F::Target: FeeEstimator,
 	R::Target: Router,
 	L::Target: Logger,
@@ -5579,7 +5579,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, R: Deref, L: Deref> chain::Listen f
 where
 	M::Target: chain::Watch<<K::Target as SignerProvider>::Signer>,
 	T::Target: BroadcasterInterface,
-	K::Target: KeysInterface,
+	K::Target: EntropySource + NodeSigner + SignerProvider,
 	F::Target: FeeEstimator,
 	R::Target: Router,
 	L::Target: Logger,
@@ -5617,7 +5617,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, R: Deref, L: Deref> chain::Confirm 
 where
 	M::Target: chain::Watch<<K::Target as SignerProvider>::Signer>,
 	T::Target: BroadcasterInterface,
-	K::Target: KeysInterface,
+	K::Target: EntropySource + NodeSigner + SignerProvider,
 	F::Target: FeeEstimator,
 	R::Target: Router,
 	L::Target: Logger,
@@ -5708,7 +5708,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, R: Deref, L: Deref> ChannelManager<
 where
 	M::Target: chain::Watch<<K::Target as SignerProvider>::Signer>,
 	T::Target: BroadcasterInterface,
-	K::Target: KeysInterface,
+	K::Target: EntropySource + NodeSigner + SignerProvider,
 	F::Target: FeeEstimator,
 	R::Target: Router,
 	L::Target: Logger,
@@ -5913,7 +5913,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, R: Deref, L: Deref>
 where
 	M::Target: chain::Watch<<K::Target as SignerProvider>::Signer>,
 	T::Target: BroadcasterInterface,
-	K::Target: KeysInterface,
+	K::Target: EntropySource + NodeSigner + SignerProvider,
 	F::Target: FeeEstimator,
 	R::Target: Router,
 	L::Target: Logger,
@@ -6616,7 +6616,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, R: Deref, L: Deref> Writeable for C
 where
 	M::Target: chain::Watch<<K::Target as SignerProvider>::Signer>,
 	T::Target: BroadcasterInterface,
-	K::Target: KeysInterface,
+	K::Target: SignerProvider,
 	F::Target: FeeEstimator,
 	R::Target: Router,
 	L::Target: Logger,
@@ -6825,7 +6825,7 @@ pub struct ChannelManagerReadArgs<'a, M: Deref, T: Deref, K: Deref, F: Deref, R:
 where
 	M::Target: chain::Watch<<K::Target as SignerProvider>::Signer>,
 	T::Target: BroadcasterInterface,
-	K::Target: KeysInterface,
+	K::Target: SignerProvider,
 	F::Target: FeeEstimator,
 	R::Target: Router,
 	L::Target: Logger,
@@ -6882,7 +6882,7 @@ impl<'a, M: Deref, T: Deref, K: Deref, F: Deref, R: Deref, L: Deref>
 where
 	M::Target: chain::Watch<<K::Target as SignerProvider>::Signer>,
 	T::Target: BroadcasterInterface,
-	K::Target: KeysInterface,
+	K::Target: SignerProvider,
 	F::Target: FeeEstimator,
 	R::Target: Router,
 	L::Target: Logger,
@@ -6906,7 +6906,7 @@ impl<'a, M: Deref, T: Deref, K: Deref, F: Deref, R: Deref, L: Deref>
 where
 	M::Target: chain::Watch<<K::Target as SignerProvider>::Signer>,
 	T::Target: BroadcasterInterface,
-	K::Target: KeysInterface,
+	K::Target: EntropySource + NodeSigner + SignerProvider,
 	F::Target: FeeEstimator,
 	R::Target: Router,
 	L::Target: Logger,
@@ -6922,7 +6922,7 @@ impl<'a, M: Deref, T: Deref, K: Deref, F: Deref, R: Deref, L: Deref>
 where
 	M::Target: chain::Watch<<K::Target as SignerProvider>::Signer>,
 	T::Target: BroadcasterInterface,
-	K::Target: KeysInterface,
+	K::Target: EntropySource + NodeSigner + SignerProvider,
 	F::Target: FeeEstimator,
 	R::Target: Router,
 	L::Target: Logger,
@@ -7476,7 +7476,7 @@ mod tests {
 	use crate::util::events::{Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, ClosureReason};
 	use crate::util::test_utils;
 	use crate::util::config::ChannelConfig;
-	use crate::chain::keysinterface::{EntropySource, KeysInterface};
+	use crate::chain::keysinterface::EntropySource;
 
 	#[test]
 	fn test_notify_limits() {
@@ -8230,7 +8230,7 @@ mod tests {
 pub mod bench {
 	use crate::chain::Listen;
 	use crate::chain::chainmonitor::{ChainMonitor, Persist};
-	use crate::chain::keysinterface::{EntropySource, KeysManager, KeysInterface, InMemorySigner};
+	use crate::chain::keysinterface::{EntropySource, KeysManager, InMemorySigner};
 	use crate::ln::channelmanager::{self, BestBlock, ChainParameters, ChannelManager, PaymentHash, PaymentPreimage, PaymentId};
 	use crate::ln::functional_test_utils::*;
 	use crate::ln::msgs::{ChannelMessageHandler, Init};

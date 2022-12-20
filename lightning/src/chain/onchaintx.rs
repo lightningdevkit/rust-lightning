@@ -21,7 +21,7 @@ use bitcoin::hash_types::{Txid, BlockHash};
 use bitcoin::secp256k1::{Secp256k1, ecdsa::Signature};
 use bitcoin::secp256k1;
 
-use crate::chain::keysinterface::BaseSign;
+use crate::chain::keysinterface::{BaseSign, EntropySource, SignerProvider};
 use crate::ln::msgs::DecodeError;
 use crate::ln::PaymentPreimage;
 #[cfg(anchors)]
@@ -31,7 +31,7 @@ use crate::ln::chan_utils::{ChannelTransactionParameters, HolderCommitmentTransa
 use crate::chain::chaininterface::ConfirmationTarget;
 use crate::chain::chaininterface::{FeeEstimator, BroadcasterInterface, LowerBoundedFeeEstimator};
 use crate::chain::channelmonitor::{ANTI_REORG_DELAY, CLTV_SHARED_CLAIM_BUFFER};
-use crate::chain::keysinterface::{Sign, KeysInterface};
+use crate::chain::keysinterface::Sign;
 #[cfg(anchors)]
 use crate::chain::package::PackageSolvingData;
 use crate::chain::package::PackageTemplate;
@@ -322,7 +322,7 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 	}
 }
 
-impl<'a, K: KeysInterface> ReadableArgs<(&'a K, u64, [u8; 32])> for OnchainTxHandler<K::Signer> {
+impl<'a, K: EntropySource + SignerProvider> ReadableArgs<(&'a K, u64, [u8; 32])> for OnchainTxHandler<K::Signer> {
 	fn read<R: io::Read>(reader: &mut R, args: (&'a K, u64, [u8; 32])) -> Result<Self, DecodeError> {
 		let keys_manager = args.0;
 		let channel_value_satoshis = args.1;

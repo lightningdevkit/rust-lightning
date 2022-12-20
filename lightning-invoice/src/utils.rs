@@ -8,7 +8,7 @@ use bech32::ToBase32;
 use bitcoin_hashes::Hash;
 use lightning::chain;
 use lightning::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
-use lightning::chain::keysinterface::{Recipient, KeysInterface, NodeSigner, SignerProvider};
+use lightning::chain::keysinterface::{Recipient, NodeSigner, SignerProvider, EntropySource};
 use lightning::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
 use lightning::ln::channelmanager::{ChannelDetails, ChannelManager, PaymentId, PaymentSendFailure, MIN_FINAL_CLTV_EXPIRY};
 #[cfg(feature = "std")]
@@ -42,7 +42,7 @@ use core::time::Duration;
 /// `invoice_expiry_delta_secs` describes the number of seconds that the invoice is valid for
 /// in excess of the current time.
 ///
-/// Note that the provided `keys_manager`'s `KeysInterface` implementation must support phantom
+/// Note that the provided `keys_manager`'s `NodeSigner` implementation must support phantom
 /// invoices in its `sign_invoice` implementation ([`PhantomKeysManager`] satisfies this
 /// requirement).
 ///
@@ -57,7 +57,7 @@ pub fn create_phantom_invoice<K: Deref, L: Deref>(
 	logger: L, network: Currency,
 ) -> Result<Invoice, SignOrCreationError<()>>
 where
-	K::Target: KeysInterface,
+	K::Target: EntropySource + NodeSigner,
 	L::Target: Logger,
 {
 	let description = Description::new(description).map_err(SignOrCreationError::CreationError)?;
@@ -91,7 +91,7 @@ where
 /// `invoice_expiry_delta_secs` describes the number of seconds that the invoice is valid for
 /// in excess of the current time.
 ///
-/// Note that the provided `keys_manager`'s `KeysInterface` implementation must support phantom
+/// Note that the provided `keys_manager`'s `NodeSigner` implementation must support phantom
 /// invoices in its `sign_invoice` implementation ([`PhantomKeysManager`] satisfies this
 /// requirement).
 ///
@@ -106,7 +106,7 @@ pub fn create_phantom_invoice_with_description_hash<K: Deref, L: Deref>(
 	logger: L, network: Currency
 ) -> Result<Invoice, SignOrCreationError<()>>
 where
-	K::Target: KeysInterface,
+	K::Target: EntropySource + NodeSigner,
 	L::Target: Logger,
 {
 	_create_phantom_invoice::<K, L>(
@@ -122,7 +122,7 @@ fn _create_phantom_invoice<K: Deref, L: Deref>(
 	logger: L, network: Currency,
 ) -> Result<Invoice, SignOrCreationError<()>>
 where
-	K::Target: KeysInterface,
+	K::Target: EntropySource + NodeSigner,
 	L::Target: Logger,
 {
 	use std::time::{SystemTime, UNIX_EPOCH};
@@ -239,7 +239,7 @@ pub fn create_invoice_from_channelmanager<M: Deref, T: Deref, K: Deref, F: Deref
 where
 	M::Target: chain::Watch<<K::Target as SignerProvider>::Signer>,
 	T::Target: BroadcasterInterface,
-	K::Target: KeysInterface,
+	K::Target: EntropySource + NodeSigner + SignerProvider,
 	F::Target: FeeEstimator,
 	R::Target: Router,
 	L::Target: Logger,
@@ -271,7 +271,7 @@ pub fn create_invoice_from_channelmanager_with_description_hash<M: Deref, T: Der
 where
 	M::Target: chain::Watch<<K::Target as SignerProvider>::Signer>,
 	T::Target: BroadcasterInterface,
-	K::Target: KeysInterface,
+	K::Target: EntropySource + NodeSigner + SignerProvider,
 	F::Target: FeeEstimator,
 	R::Target: Router,
 	L::Target: Logger,
@@ -299,7 +299,7 @@ pub fn create_invoice_from_channelmanager_with_description_hash_and_duration_sin
 		where
 			M::Target: chain::Watch<<K::Target as SignerProvider>::Signer>,
 			T::Target: BroadcasterInterface,
-			K::Target: KeysInterface,
+			K::Target: EntropySource + NodeSigner + SignerProvider,
 			F::Target: FeeEstimator,
 			R::Target: Router,
 			L::Target: Logger,
@@ -322,7 +322,7 @@ pub fn create_invoice_from_channelmanager_and_duration_since_epoch<M: Deref, T: 
 		where
 			M::Target: chain::Watch<<K::Target as SignerProvider>::Signer>,
 			T::Target: BroadcasterInterface,
-			K::Target: KeysInterface,
+			K::Target: EntropySource + NodeSigner + SignerProvider,
 			F::Target: FeeEstimator,
 			R::Target: Router,
 			L::Target: Logger,
@@ -344,7 +344,7 @@ fn _create_invoice_from_channelmanager_and_duration_since_epoch<M: Deref, T: Der
 		where
 			M::Target: chain::Watch<<K::Target as SignerProvider>::Signer>,
 			T::Target: BroadcasterInterface,
-			K::Target: KeysInterface,
+			K::Target: EntropySource + NodeSigner + SignerProvider,
 			F::Target: FeeEstimator,
 			R::Target: Router,
 			L::Target: Logger,
@@ -370,7 +370,7 @@ pub fn create_invoice_from_channelmanager_and_duration_since_epoch_with_payment_
 	where
 		M::Target: chain::Watch<<K::Target as SignerProvider>::Signer>,
 		T::Target: BroadcasterInterface,
-		K::Target: KeysInterface,
+		K::Target: EntropySource + NodeSigner + SignerProvider,
 		F::Target: FeeEstimator,
 		R::Target: Router,
 		L::Target: Logger,
@@ -395,7 +395,7 @@ fn _create_invoice_from_channelmanager_and_duration_since_epoch_with_payment_has
 	where
 		M::Target: chain::Watch<<K::Target as SignerProvider>::Signer>,
 		T::Target: BroadcasterInterface,
-		K::Target: KeysInterface,
+		K::Target: EntropySource + NodeSigner + SignerProvider,
 		F::Target: FeeEstimator,
 		R::Target: Router,
 		L::Target: Logger,
@@ -576,7 +576,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, R: Deref, L: Deref> Payer for Chann
 where
 	M::Target: chain::Watch<<K::Target as SignerProvider>::Signer>,
 	T::Target: BroadcasterInterface,
-	K::Target: KeysInterface,
+	K::Target: EntropySource + NodeSigner + SignerProvider,
 	F::Target: FeeEstimator,
 	R::Target: Router,
 	L::Target: Logger,
@@ -630,7 +630,6 @@ mod test {
 	use lightning::util::events::{MessageSendEvent, MessageSendEventsProvider, Event};
 	use lightning::util::test_utils;
 	use lightning::util::config::UserConfig;
-	use lightning::chain::keysinterface::KeysInterface;
 	use crate::utils::create_invoice_from_channelmanager_and_duration_since_epoch;
 	use std::collections::HashSet;
 

@@ -42,7 +42,7 @@ use crate::chain;
 use crate::chain::{BestBlock, WatchedOutput};
 use crate::chain::chaininterface::{BroadcasterInterface, FeeEstimator, LowerBoundedFeeEstimator};
 use crate::chain::transaction::{OutPoint, TransactionData};
-use crate::chain::keysinterface::{SpendableOutputDescriptor, StaticPaymentOutputDescriptor, DelayedPaymentOutputDescriptor, Sign, KeysInterface};
+use crate::chain::keysinterface::{SpendableOutputDescriptor, StaticPaymentOutputDescriptor, DelayedPaymentOutputDescriptor, Sign, SignerProvider, EntropySource};
 #[cfg(anchors)]
 use crate::chain::onchaintx::ClaimEvent;
 use crate::chain::onchaintx::OnchainTxHandler;
@@ -3704,7 +3704,7 @@ where
 
 const MAX_ALLOC_SIZE: usize = 64*1024;
 
-impl<'a, K: KeysInterface> ReadableArgs<&'a K>
+impl<'a, K: EntropySource + SignerProvider> ReadableArgs<&'a K>
 		for (BlockHash, ChannelMonitor<K::Signer>) {
 	fn read<R: io::Read>(reader: &mut R, keys_manager: &'a K) -> Result<Self, DecodeError> {
 		macro_rules! unwrap_obj {

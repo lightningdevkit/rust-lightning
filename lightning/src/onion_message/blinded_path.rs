@@ -13,7 +13,7 @@ use bitcoin::hashes::{Hash, HashEngine};
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::secp256k1::{self, PublicKey, Scalar, Secp256k1, SecretKey};
 
-use crate::chain::keysinterface::{KeysInterface, NodeSigner, Recipient};
+use crate::chain::keysinterface::{EntropySource, NodeSigner, Recipient};
 use super::packet::ControlTlvs;
 use super::utils;
 use crate::ln::msgs::DecodeError;
@@ -63,7 +63,7 @@ impl BlindedPath {
 	///
 	/// Errors if less than two hops are provided or if `node_pk`(s) are invalid.
 	//  TODO: make all payloads the same size with padding + add dummy hops
-	pub fn new<K: KeysInterface, T: secp256k1::Signing + secp256k1::Verification>
+	pub fn new<K: EntropySource, T: secp256k1::Signing + secp256k1::Verification>
 		(node_pks: &[PublicKey], keys_manager: &K, secp_ctx: &Secp256k1<T>) -> Result<Self, ()>
 	{
 		if node_pks.len() < 2 { return Err(()) }
@@ -81,7 +81,7 @@ impl BlindedPath {
 	// Advance the blinded path by one hop, so make the second hop into the new introduction node.
 	pub(super) fn advance_by_one<K: Deref, T: secp256k1::Signing + secp256k1::Verification>
 		(&mut self, keys_manager: &K, secp_ctx: &Secp256k1<T>) -> Result<(), ()>
-		where K::Target: KeysInterface
+		where K::Target: NodeSigner
 	{
 		let control_tlvs_ss = keys_manager.ecdh(Recipient::Node, &self.blinding_point, None)?;
 		let rho = onion_utils::gen_rho_from_shared_secret(&control_tlvs_ss.secret_bytes());

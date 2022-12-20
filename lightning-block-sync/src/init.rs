@@ -48,7 +48,7 @@ BlockSourceResult<ValidatedBlockHeader> where B::Target: BlockSource {
 /// use lightning::chain::chaininterface::BroadcasterInterface;
 /// use lightning::chain::chaininterface::FeeEstimator;
 /// use lightning::chain::keysinterface;
-/// use lightning::chain::keysinterface::KeysInterface;
+/// use lightning::chain::keysinterface::{EntropySource, NodeSigner, SignerProvider};
 /// use lightning::ln::channelmanager::{ChannelManager, ChannelManagerReadArgs};
 /// use lightning::routing::router::Router;
 /// use lightning::util::config::UserConfig;
@@ -61,7 +61,7 @@ BlockSourceResult<ValidatedBlockHeader> where B::Target: BlockSource {
 ///
 /// async fn init_sync<
 /// 	B: BlockSource,
-/// 	K: KeysInterface,
+/// 	K: EntropySource + NodeSigner + SignerProvider,
 /// 	T: BroadcasterInterface,
 /// 	F: FeeEstimator,
 /// 	R: Router,

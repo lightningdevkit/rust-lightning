@@ -12,7 +12,7 @@
 use crate::chain::{ChannelMonitorUpdateStatus, Watch};
 use crate::chain::chaininterface::LowerBoundedFeeEstimator;
 use crate::chain::channelmonitor::ChannelMonitor;
-use crate::chain::keysinterface::{EntropySource, KeysInterface};
+use crate::chain::keysinterface::EntropySource;
 use crate::chain::transaction::OutPoint;
 use crate::ln::channelmanager::{self, ChannelManager, ChannelManagerReadArgs, PaymentId};
 use crate::ln::msgs;

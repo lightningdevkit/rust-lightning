@@ -13,7 +13,7 @@ use bitcoin::hashes::Hash;
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::secp256k1::{self, Secp256k1, SecretKey};
 
-use crate::chain::keysinterface::{EntropySource, KeysInterface, NodeSigner, Recipient};
+use crate::chain::keysinterface::{EntropySource, NodeSigner, Recipient};
 use crate::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
 use crate::ln::channelmanager::{HTLCSource, IDEMPOTENCY_TIMEOUT_TICKS, PaymentId};
 use crate::ln::msgs::DecodeError;
@@ -276,7 +276,7 @@ impl OutboundPayments {
 		payment_id: PaymentId, keys_manager: &K, best_block_height: u32, send_payment_along_path: F
 	) -> Result<(), PaymentSendFailure>
 	where
-		K::Target: KeysInterface,
+		K::Target: EntropySource + NodeSigner,
 		F: Fn(&Vec<RouteHop>, &Option<PaymentParameters>, &PaymentHash, &Option<PaymentSecret>, u64,
 		   u32, PaymentId, &Option<PaymentPreimage>, [u8; 32]) -> Result<(), APIError>
 	{
@@ -289,7 +289,7 @@ impl OutboundPayments {
 		keys_manager: &K, best_block_height: u32, send_payment_along_path: F
 	) -> Result<PaymentHash, PaymentSendFailure>
 	where
-		K::Target: KeysInterface,
+		K::Target: EntropySource + NodeSigner,
 		F: Fn(&Vec<RouteHop>, &Option<PaymentParameters>, &PaymentHash, &Option<PaymentSecret>, u64,
 		   u32, PaymentId, &Option<PaymentPreimage>, [u8; 32]) -> Result<(), APIError>
 	{
@@ -311,7 +311,7 @@ impl OutboundPayments {
 		send_payment_along_path: F
 	) -> Result<(), PaymentSendFailure>
 	where
-		K::Target: KeysInterface,
+		K::Target: EntropySource + NodeSigner,
 		F: Fn(&Vec<RouteHop>, &Option<PaymentParameters>, &PaymentHash, &Option<PaymentSecret>, u64,
 		   u32, PaymentId, &Option<PaymentPreimage>, [u8; 32]) -> Result<(), APIError>
 	{
@@ -380,7 +380,7 @@ impl OutboundPayments {
 		best_block_height: u32, send_payment_along_path: F
 	) -> Result<(PaymentHash, PaymentId), PaymentSendFailure>
 	where
-		K::Target: KeysInterface,
+		K::Target: EntropySource + NodeSigner,
 		F: Fn(&Vec<RouteHop>, &Option<PaymentParameters>, &PaymentHash, &Option<PaymentSecret>, u64,
 		   u32, PaymentId, &Option<PaymentPreimage>, [u8; 32]) -> Result<(), APIError>
 	{
@@ -414,7 +414,7 @@ impl OutboundPayments {
 	fn add_new_pending_payment<K: Deref>(
 		&self, payment_hash: PaymentHash, payment_secret: Option<PaymentSecret>, payment_id: PaymentId,
 		route: &Route, keys_manager: &K, best_block_height: u32
-	) -> Result<Vec<[u8; 32]>, PaymentSendFailure> where K::Target: KeysInterface {
+	) -> Result<Vec<[u8; 32]>, PaymentSendFailure> where K::Target: EntropySource + NodeSigner {
 		let mut onion_session_privs = Vec::with_capacity(route.paths.len());
 		for _ in 0..route.paths.len() {
 			onion_session_privs.push(keys_manager.get_secure_random_bytes());
@@ -450,7 +450,7 @@ impl OutboundPayments {
 		send_payment_along_path: F
 	) -> Result<(), PaymentSendFailure>
 	where
-		K::Target: KeysInterface,
+		K::Target: NodeSigner,
 		F: Fn(&Vec<RouteHop>, &Option<PaymentParameters>, &PaymentHash, &Option<PaymentSecret>, u64,
 		   u32, PaymentId, &Option<PaymentPreimage>, [u8; 32]) -> Result<(), APIError>
 	{
@@ -560,7 +560,7 @@ impl OutboundPayments {
 		send_payment_along_path: F
 	) -> Result<(), PaymentSendFailure>
 	where
-		K::Target: KeysInterface,
+		K::Target: NodeSigner,
 		F: Fn(&Vec<RouteHop>, &Option<PaymentParameters>, &PaymentHash, &Option<PaymentSecret>, u64,
 		   u32, PaymentId, &Option<PaymentPreimage>, [u8; 32]) -> Result<(), APIError>
 	{

@@ -33,7 +33,7 @@ use lightning::chain::{BestBlock, ChannelMonitorUpdateStatus, Confirm, Listen};
 use lightning::chain::chaininterface::{BroadcasterInterface, ConfirmationTarget, FeeEstimator};
 use lightning::chain::chainmonitor;
 use lightning::chain::transaction::OutPoint;
-use lightning::chain::keysinterface::{InMemorySigner, Recipient, KeyMaterial, KeysInterface, EntropySource, NodeSigner, SignerProvider};
+use lightning::chain::keysinterface::{InMemorySigner, Recipient, KeyMaterial, EntropySource, NodeSigner, SignerProvider};
 use lightning::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
 use lightning::ln::channelmanager::{ChainParameters, ChannelDetails, ChannelManager, PaymentId};
 use lightning::ln::peer_handler::{MessageHandler,PeerManager,SocketDescriptor,IgnoringMessageHandler};
@@ -387,8 +387,6 @@ impl SignerProvider for KeyProvider {
 	}
 }
 
-impl KeysInterface for KeyProvider {}
-
 #[inline]
 pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 	let input = Arc::new(InputData {
@@ -444,7 +442,7 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 		best_block: BestBlock::from_genesis(network),
 	};
 	let channelmanager = Arc::new(ChannelManager::new(fee_est.clone(), monitor.clone(), broadcast.clone(), &router, Arc::clone(&logger), keys_manager.clone(), config, params));
-	// Adding new calls to `KeysInterface::get_secure_random_bytes` during startup can change all the
+	// Adding new calls to `EntropySource::get_secure_random_bytes` during startup can change all the
 	// keys subsequently generated in this test. Rather than regenerating all the messages manually,
 	// it's easier to just increment the counter here so the keys don't change.
 	keys_manager.counter.fetch_sub(3, Ordering::AcqRel);
