@@ -624,6 +624,26 @@ impl<'a, T> From<&'a Vec<T>> for WithoutLength<&'a Vec<T>> {
 	fn from(v: &'a Vec<T>) -> Self { Self(v) }
 }
 
+#[derive(Debug)]
+pub(crate) struct Iterable<'a, I: Iterator<Item = &'a T> + Clone, T: 'a>(pub I);
+
+impl<'a, I: Iterator<Item = &'a T> + Clone, T: 'a + Writeable> Writeable for Iterable<'a, I, T> {
+	#[inline]
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		for ref v in self.0.clone() {
+			v.write(writer)?;
+		}
+		Ok(())
+	}
+}
+
+#[cfg(test)]
+impl<'a, I: Iterator<Item = &'a T> + Clone, T: 'a + PartialEq> PartialEq for Iterable<'a, I, T> {
+	fn eq(&self, other: &Self) -> bool {
+		self.0.clone().collect::<Vec<_>>() == other.0.clone().collect::<Vec<_>>()
+	}
+}
+
 macro_rules! impl_for_map {
 	($ty: ident, $keybound: ident, $constr: expr) => {
 		impl<K, V> Writeable for $ty<K, V>

@@ -10,24 +10,27 @@
 //! Data structures and encoding for `invoice` messages.
 
 use bitcoin::blockdata::constants::ChainHash;
+use bitcoin::hash_types::{WPubkeyHash, WScriptHash};
+use bitcoin::hashes::Hash;
 use bitcoin::network::constants::Network;
-use bitcoin::secp256k1::PublicKey;
+use bitcoin::secp256k1::{Message, PublicKey};
 use bitcoin::secp256k1::schnorr::Signature;
 use bitcoin::util::address::{Address, Payload, WitnessVersion};
+use bitcoin::util::schnorr::TweakedPublicKey;
 use core::convert::TryFrom;
 use core::time::Duration;
 use crate::io;
 use crate::ln::PaymentHash;
 use crate::ln::features::{BlindedHopFeatures, Bolt12InvoiceFeatures};
 use crate::ln::msgs::DecodeError;
-use crate::offers::invoice_request::{InvoiceRequestContents, InvoiceRequestTlvStream};
-use crate::offers::merkle::{SignatureTlvStream, self};
-use crate::offers::offer::OfferTlvStream;
+use crate::offers::invoice_request::{InvoiceRequest, InvoiceRequestContents, InvoiceRequestTlvStream, InvoiceRequestTlvStreamRef};
+use crate::offers::merkle::{SignError, SignatureTlvStream, SignatureTlvStreamRef, WithoutSignatures, self};
+use crate::offers::offer::{Amount, OfferTlvStream, OfferTlvStreamRef};
 use crate::offers::parse::{ParseError, ParsedMessage, SemanticError};
-use crate::offers::payer::PayerTlvStream;
+use crate::offers::payer::{PayerTlvStream, PayerTlvStreamRef};
 use crate::offers::refund::RefundContents;
 use crate::onion_message::BlindedPath;
-use crate::util::ser::{HighZeroBytesDroppedBigSize, SeekReadable, WithoutLength, Writeable, Writer};
+use crate::util::ser::{HighZeroBytesDroppedBigSize, Iterable, SeekReadable, WithoutLength, Writeable, Writer};
 
 use crate::prelude::*;
 
@@ -37,6 +40,161 @@ use std::time::SystemTime;
 const DEFAULT_RELATIVE_EXPIRY: Duration = Duration::from_secs(7200);
 
 const SIGNATURE_TAG: &'static str = concat!("lightning", "invoice", "signature");
+
+/// Builds an [`Invoice`] from either:
+/// - an [`InvoiceRequest`] for the "offer to be paid" flow or
+/// - a [`Refund`] for the "offer for money" flow.
+///
+/// See [module-level documentation] for usage.
+///
+/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
+/// [`Refund`]: crate::offers::refund::Refund
+/// [module-level documentation]: self
+pub struct InvoiceBuilder<'a> {
+	invreq_bytes: &'a Vec<u8>,
+	invoice: InvoiceContents,
+}
+
+impl<'a> InvoiceBuilder<'a> {
+	pub(super) fn for_offer(
+		invoice_request: &'a InvoiceRequest, payment_paths: Vec<(BlindedPath, BlindedPayInfo)>,
+		created_at: Duration, payment_hash: PaymentHash
+	) -> Result<Self, SemanticError> {
+		if payment_paths.is_empty() {
+			return Err(SemanticError::MissingPaths);
+		}
+
+		let amount_msats = match invoice_request.amount_msats() {
+			Some(amount_msats) => amount_msats,
+			None => match invoice_request.contents.offer.amount() {
+				Some(Amount::Bitcoin { amount_msats }) => {
+					amount_msats * invoice_request.quantity().unwrap_or(1)
+				},
+				Some(Amount::Currency { .. }) => return Err(SemanticError::UnsupportedCurrency),
+				None => return Err(SemanticError::MissingAmount),
+			},
+		};
+
+		Ok(Self {
+			invreq_bytes: &invoice_request.bytes,
+			invoice: InvoiceContents::ForOffer {
+				invoice_request: invoice_request.contents.clone(),
+				fields: InvoiceFields {
+					payment_paths, created_at, relative_expiry: None, payment_hash, amount_msats,
+					fallbacks: None, features: Bolt12InvoiceFeatures::empty(),
+					signing_pubkey: invoice_request.contents.offer.signing_pubkey(),
+				},
+			},
+		})
+	}
+
+	/// Sets the [`Invoice::relative_expiry`] as seconds since [`Invoice::created_at`]. Any expiry
+	/// that has already passed is valid and can be checked for using [`Invoice::is_expired`].
+	///
+	/// Successive calls to this method will override the previous setting.
+	pub fn relative_expiry(mut self, relative_expiry_secs: u32) -> Self {
+		let relative_expiry = Duration::from_secs(relative_expiry_secs as u64);
+		self.invoice.fields_mut().relative_expiry = Some(relative_expiry);
+		self
+	}
+
+	/// Adds a P2WSH address to [`Invoice::fallbacks`].
+	///
+	/// Successive calls to this method will add another address. Caller is responsible for not
+	/// adding duplicate addresses and only calling if capable of receiving to P2WSH addresses.
+	pub fn fallback_v0_p2wsh(mut self, script_hash: &WScriptHash) -> Self {
+		let address = FallbackAddress {
+			version: WitnessVersion::V0.to_num(),
+			program: Vec::from(&script_hash.into_inner()[..]),
+		};
+		self.invoice.fields_mut().fallbacks.get_or_insert_with(Vec::new).push(address);
+		self
+	}
+
+	/// Adds a P2WPKH address to [`Invoice::fallbacks`].
+	///
+	/// Successive calls to this method will add another address. Caller is responsible for not
+	/// adding duplicate addresses and only calling if capable of receiving to P2WPKH addresses.
+	pub fn fallback_v0_p2wpkh(mut self, pubkey_hash: &WPubkeyHash) -> Self {
+		let address = FallbackAddress {
+			version: WitnessVersion::V0.to_num(),
+			program: Vec::from(&pubkey_hash.into_inner()[..]),
+		};
+		self.invoice.fields_mut().fallbacks.get_or_insert_with(Vec::new).push(address);
+		self
+	}
+
+	/// Adds a P2TR address to [`Invoice::fallbacks`].
+	///
+	/// Successive calls to this method will add another address. Caller is responsible for not
+	/// adding duplicate addresses and only calling if capable of receiving to P2TR addresses.
+	pub fn fallback_v1_p2tr_tweaked(mut self, output_key: &TweakedPublicKey) -> Self {
+		let address = FallbackAddress {
+			version: WitnessVersion::V1.to_num(),
+			program: Vec::from(&output_key.serialize()[..]),
+		};
+		self.invoice.fields_mut().fallbacks.get_or_insert_with(Vec::new).push(address);
+		self
+	}
+
+	/// Sets [`Invoice::features`] to indicate MPP may be used. Otherwise, MPP is disallowed.
+	pub fn allow_mpp(mut self) -> Self {
+		self.invoice.fields_mut().features.set_basic_mpp_optional();
+		self
+	}
+
+	/// Builds an unsigned [`Invoice`] after checking for valid semantics. It can be signed by
+	/// [`UnsignedInvoice::sign`].
+	pub fn build(self) -> Result<UnsignedInvoice<'a>, SemanticError> {
+		#[cfg(feature = "std")] {
+			if self.invoice.is_offer_or_refund_expired() {
+				return Err(SemanticError::AlreadyExpired);
+			}
+		}
+
+		let InvoiceBuilder { invreq_bytes, invoice } = self;
+		Ok(UnsignedInvoice { invreq_bytes, invoice })
+	}
+}
+
+/// A semantically valid [`Invoice`] that hasn't been signed.
+pub struct UnsignedInvoice<'a> {
+	invreq_bytes: &'a Vec<u8>,
+	invoice: InvoiceContents,
+}
+
+impl<'a> UnsignedInvoice<'a> {
+	/// Signs the invoice using the given function.
+	pub fn sign<F, E>(self, sign: F) -> Result<Invoice, SignError<E>>
+	where
+		F: FnOnce(&Message) -> Result<Signature, E>
+	{
+		// Use the invoice_request bytes instead of the invoice_request TLV stream as the latter may
+		// have contained unknown TLV records, which are not stored in `InvoiceRequestContents` or
+		// `RefundContents`.
+		let (_, _, _, invoice_tlv_stream) = self.invoice.as_tlv_stream();
+		let invoice_request_bytes = WithoutSignatures(self.invreq_bytes);
+		let unsigned_tlv_stream = (invoice_request_bytes, invoice_tlv_stream);
+
+		let mut bytes = Vec::new();
+		unsigned_tlv_stream.write(&mut bytes).unwrap();
+
+		let pubkey = self.invoice.fields().signing_pubkey;
+		let signature = merkle::sign_message(sign, SIGNATURE_TAG, &bytes, pubkey)?;
+
+		// Append the signature TLV record to the bytes.
+		let signature_tlv_stream = SignatureTlvStreamRef {
+			signature: Some(&signature),
+		};
+		signature_tlv_stream.write(&mut bytes).unwrap();
+
+		Ok(Invoice {
+			bytes,
+			contents: self.invoice,
+			signature,
+		})
+	}
+}
 
 /// An `Invoice` is a payment request, typically corresponding to an [`Offer`] or a [`Refund`].
 ///
@@ -199,6 +357,15 @@ impl Invoice {
 }
 
 impl InvoiceContents {
+	/// Whether the original offer or refund has expired.
+	#[cfg(feature = "std")]
+	fn is_offer_or_refund_expired(&self) -> bool {
+		match self {
+			InvoiceContents::ForOffer { invoice_request, .. } => invoice_request.offer.is_expired(),
+			InvoiceContents::ForRefund { refund, .. } => refund.is_expired(),
+		}
+	}
+
 	fn chain(&self) -> ChainHash {
 		match self {
 			InvoiceContents::ForOffer { invoice_request, .. } => invoice_request.chain(),
@@ -210,6 +377,44 @@ impl InvoiceContents {
 		match self {
 			InvoiceContents::ForOffer { fields, .. } => fields,
 			InvoiceContents::ForRefund { fields, .. } => fields,
+		}
+	}
+
+	fn fields_mut(&mut self) -> &mut InvoiceFields {
+		match self {
+			InvoiceContents::ForOffer { fields, .. } => fields,
+			InvoiceContents::ForRefund { fields, .. } => fields,
+		}
+	}
+
+	fn as_tlv_stream(&self) -> PartialInvoiceTlvStreamRef {
+		let (payer, offer, invoice_request) = match self {
+			InvoiceContents::ForOffer { invoice_request, .. } => invoice_request.as_tlv_stream(),
+			InvoiceContents::ForRefund { refund, .. } => refund.as_tlv_stream(),
+		};
+		let invoice = self.fields().as_tlv_stream();
+
+		(payer, offer, invoice_request, invoice)
+	}
+}
+
+impl InvoiceFields {
+	fn as_tlv_stream(&self) -> InvoiceTlvStreamRef {
+		let features = {
+			if self.features == Bolt12InvoiceFeatures::empty() { None }
+			else { Some(&self.features) }
+		};
+
+		InvoiceTlvStreamRef {
+			paths: Some(Iterable(self.payment_paths.iter().map(|(path, _)| path))),
+			blindedpay: Some(Iterable(self.payment_paths.iter().map(|(_, payinfo)| payinfo))),
+			created_at: Some(self.created_at.as_secs()),
+			relative_expiry: self.relative_expiry.map(|duration| duration.as_secs() as u32),
+			payment_hash: Some(&self.payment_hash),
+			amount: Some(self.amount_msats),
+			fallbacks: self.fallbacks.as_ref(),
+			features,
+			node_id: Some(&self.signing_pubkey),
 		}
 	}
 }
@@ -230,8 +435,8 @@ impl TryFrom<Vec<u8>> for Invoice {
 }
 
 tlv_stream!(InvoiceTlvStream, InvoiceTlvStreamRef, 160..240, {
-	(160, paths: (Vec<BlindedPath>, WithoutLength)),
-	(162, blindedpay: (Vec<BlindedPayInfo>, WithoutLength)),
+	(160, paths: (Vec<BlindedPath>, WithoutLength, Iterable<'a, BlindedPathIter<'a>, BlindedPath>)),
+	(162, blindedpay: (Vec<BlindedPayInfo>, WithoutLength, Iterable<'a, BlindedPayInfoIter<'a>, BlindedPayInfo>)),
 	(164, created_at: (u64, HighZeroBytesDroppedBigSize)),
 	(166, relative_expiry: (u32, HighZeroBytesDroppedBigSize)),
 	(168, payment_hash: PaymentHash),
@@ -241,7 +446,17 @@ tlv_stream!(InvoiceTlvStream, InvoiceTlvStreamRef, 160..240, {
 	(176, node_id: PublicKey),
 });
 
-/// Information needed to route a payment across a [`BlindedPath`] hop.
+type BlindedPathIter<'a> = core::iter::Map<
+	core::slice::Iter<'a, (BlindedPath, BlindedPayInfo)>,
+	for<'r> fn(&'r (BlindedPath, BlindedPayInfo)) -> &'r BlindedPath,
+>;
+
+type BlindedPayInfoIter<'a> = core::iter::Map<
+	core::slice::Iter<'a, (BlindedPath, BlindedPayInfo)>,
+	for<'r> fn(&'r (BlindedPath, BlindedPayInfo)) -> &'r BlindedPayInfo,
+>;
+
+/// Information needed to route a payment across a [`BlindedPath`].
 #[derive(Debug, PartialEq)]
 pub struct BlindedPayInfo {
 	fee_base_msat: u32,
@@ -287,6 +502,13 @@ impl SeekReadable for FullInvoiceTlvStream {
 
 type PartialInvoiceTlvStream =
 	(PayerTlvStream, OfferTlvStream, InvoiceRequestTlvStream, InvoiceTlvStream);
+
+type PartialInvoiceTlvStreamRef<'a> = (
+	PayerTlvStreamRef<'a>,
+	OfferTlvStreamRef<'a>,
+	InvoiceRequestTlvStreamRef<'a>,
+	InvoiceTlvStreamRef<'a>,
+);
 
 impl TryFrom<ParsedMessage<FullInvoiceTlvStream>> for Invoice {
 	type Error = ParseError;

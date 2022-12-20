@@ -243,13 +243,7 @@ impl Refund {
 	/// Whether the refund has expired.
 	#[cfg(feature = "std")]
 	pub fn is_expired(&self) -> bool {
-		match self.absolute_expiry() {
-			Some(seconds_from_epoch) => match SystemTime::UNIX_EPOCH.elapsed() {
-				Ok(elapsed) => elapsed > seconds_from_epoch,
-				Err(_) => false,
-			},
-			None => false,
-		}
+		self.contents.is_expired()
 	}
 
 	/// The issuer of the refund, possibly beginning with `user@domain` or `domain`. Intended to be
@@ -315,6 +309,17 @@ impl AsRef<[u8]> for Refund {
 }
 
 impl RefundContents {
+	#[cfg(feature = "std")]
+	pub(super) fn is_expired(&self) -> bool {
+		match self.absolute_expiry {
+			Some(seconds_from_epoch) => match SystemTime::UNIX_EPOCH.elapsed() {
+				Ok(elapsed) => elapsed > seconds_from_epoch,
+				Err(_) => false,
+			},
+			None => false,
+		}
+	}
+
 	pub(super) fn chain(&self) -> ChainHash {
 		self.chain.unwrap_or_else(|| self.implied_chain())
 	}

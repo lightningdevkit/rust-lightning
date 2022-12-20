@@ -57,13 +57,17 @@ use bitcoin::network::constants::Network;
 use bitcoin::secp256k1::{Message, PublicKey};
 use bitcoin::secp256k1::schnorr::Signature;
 use core::convert::TryFrom;
+use core::time::Duration;
 use crate::io;
+use crate::ln::PaymentHash;
 use crate::ln::features::InvoiceRequestFeatures;
 use crate::ln::msgs::DecodeError;
+use crate::offers::invoice::{BlindedPayInfo, InvoiceBuilder};
 use crate::offers::merkle::{SignError, SignatureTlvStream, SignatureTlvStreamRef, self};
 use crate::offers::offer::{Offer, OfferContents, OfferTlvStream, OfferTlvStreamRef};
 use crate::offers::parse::{ParseError, ParsedMessage, SemanticError};
 use crate::offers::payer::{PayerContents, PayerTlvStream, PayerTlvStreamRef};
+use crate::onion_message::BlindedPath;
 use crate::util::ser::{HighZeroBytesDroppedBigSize, SeekReadable, WithoutLength, Writeable, Writer};
 use crate::util::string::PrintableString;
 
@@ -250,7 +254,7 @@ impl<'a> UnsignedInvoiceRequest<'a> {
 #[derive(Clone, Debug)]
 pub struct InvoiceRequest {
 	pub(super) bytes: Vec<u8>,
-	contents: InvoiceRequestContents,
+	pub(super) contents: InvoiceRequestContents,
 	signature: Signature,
 }
 
@@ -317,6 +321,29 @@ impl InvoiceRequest {
 	/// [`payer_id`]: Self::payer_id
 	pub fn signature(&self) -> Signature {
 		self.signature
+	}
+
+	/// Creates an [`Invoice`] for the request with the given required fields.
+	///
+	/// Unless [`InvoiceBuilder::relative_expiry`] is set, the invoice will expire two hours after
+	/// `created_at`. The caller is expected to remember the preimage of `payment_hash` in order to
+	/// claim a payment for the invoice.
+	///
+	/// The `payment_paths` parameter is useful for maintaining the payment recipient's privacy. It
+	/// must contain one or more elements.
+	///
+	/// Errors if the request contains unknown required features.
+	///
+	/// [`Invoice`]: crate::offers::invoice::Invoice
+	pub fn respond_with(
+		&self, payment_paths: Vec<(BlindedPath, BlindedPayInfo)>, created_at: Duration,
+		payment_hash: PaymentHash
+	) -> Result<InvoiceBuilder, SemanticError> {
+		if self.features().requires_unknown_bits() {
+			return Err(SemanticError::UnknownRequiredFeatures);
+		}
+
+		InvoiceBuilder::for_offer(self, payment_paths, created_at, payment_hash)
 	}
 
 	#[cfg(test)]

@@ -321,13 +321,7 @@ impl Offer {
 	/// Whether the offer has expired.
 	#[cfg(feature = "std")]
 	pub fn is_expired(&self) -> bool {
-		match self.absolute_expiry() {
-			Some(seconds_from_epoch) => match SystemTime::UNIX_EPOCH.elapsed() {
-				Ok(elapsed) => elapsed > seconds_from_epoch,
-				Err(_) => false,
-			},
-			None => false,
-		}
+		self.contents.is_expired()
 	}
 
 	/// The issuer of the offer, possibly beginning with `user@domain` or `domain`. Intended to be
@@ -410,6 +404,17 @@ impl OfferContents {
 
 	pub fn supports_chain(&self, chain: ChainHash) -> bool {
 		self.chains().contains(&chain)
+	}
+
+	#[cfg(feature = "std")]
+	pub(super) fn is_expired(&self) -> bool {
+		match self.absolute_expiry {
+			Some(seconds_from_epoch) => match SystemTime::UNIX_EPOCH.elapsed() {
+				Ok(elapsed) => elapsed > seconds_from_epoch,
+				Err(_) => false,
+			},
+			None => false,
+		}
 	}
 
 	pub fn amount(&self) -> Option<&Amount> {
