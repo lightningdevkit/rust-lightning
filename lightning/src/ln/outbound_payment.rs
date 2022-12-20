@@ -403,7 +403,15 @@ impl OutboundPayments {
 		}
 	}
 
-	pub(super) fn add_new_pending_payment<K: Deref>(
+	#[cfg(test)]
+	pub(super) fn test_add_new_pending_payment<K: Deref>(
+		&self, payment_hash: PaymentHash, payment_secret: Option<PaymentSecret>, payment_id: PaymentId,
+		route: &Route, keys_manager: &K, best_block_height: u32
+	) -> Result<Vec<[u8; 32]>, PaymentSendFailure> where K::Target: KeysInterface {
+		self.add_new_pending_payment(payment_hash, payment_secret, payment_id, route, keys_manager, best_block_height)
+	}
+
+	fn add_new_pending_payment<K: Deref>(
 		&self, payment_hash: PaymentHash, payment_secret: Option<PaymentSecret>, payment_id: PaymentId,
 		route: &Route, keys_manager: &K, best_block_height: u32
 	) -> Result<Vec<[u8; 32]>, PaymentSendFailure> where K::Target: KeysInterface {
