@@ -12,7 +12,7 @@
 //! LSP).
 
 use crate::chain::ChannelMonitorUpdateStatus;
-use crate::chain::keysinterface::{Recipient, KeysInterface};
+use crate::chain::keysinterface::{Recipient, KeysInterface, NodeSigner};
 use crate::ln::channelmanager::{self, ChannelManager, MIN_CLTV_EXPIRY_DELTA, PaymentId};
 use crate::routing::gossip::RoutingFees;
 use crate::routing::router::{PaymentParameters, RouteHint, RouteHintHop};

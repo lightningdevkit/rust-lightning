@@ -1,11 +1,11 @@
 // Imports that need to be added manually
 use bitcoin::bech32::u5;
 use bitcoin::blockdata::script::Script;
-use bitcoin::secp256k1::{PublicKey, Scalar, SecretKey};
+use bitcoin::secp256k1::{PublicKey, Scalar, Secp256k1, SecretKey};
 use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1::ecdsa::RecoverableSignature;
 
-use lightning::chain::keysinterface::{Recipient, KeyMaterial, KeysInterface};
+use lightning::chain::keysinterface::{Recipient, KeyMaterial, KeysInterface, EntropySource, NodeSigner, SignerProvider};
 use lightning::ln::msgs::{self, DecodeError, OnionMessageHandler};
 use lightning::ln::script::ShutdownScript;
 use lightning::util::enforcing_trait_impls::EnforcingSigner;
@@ -90,11 +90,23 @@ struct KeyProvider {
 	node_secret: SecretKey,
 	counter: AtomicU64,
 }
-impl KeysInterface for KeyProvider {
-	type Signer = EnforcingSigner;
 
+impl EntropySource for KeyProvider {
+	fn get_secure_random_bytes(&self) -> [u8; 32] {
+		let ctr = self.counter.fetch_add(1, Ordering::Relaxed);
+		[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+			(ctr >> 8*7) as u8, (ctr >> 8*6) as u8, (ctr >> 8*5) as u8, (ctr >> 8*4) as u8, (ctr >> 8*3) as u8, (ctr >> 8*2) as u8, (ctr >> 8*1) as u8, 14, (ctr >> 8*0) as u8]
+	}
+}
+
+impl NodeSigner for KeyProvider {
 	fn get_node_secret(&self, _recipient: Recipient) -> Result<SecretKey, ()> {
 		Ok(self.node_secret.clone())
+	}
+
+	fn get_node_id(&self, recipient: Recipient) -> Result<PublicKey, ()> {
+		let secp_ctx = Secp256k1::signing_only();
+		Ok(PublicKey::from_secret_key(&secp_ctx, &self.get_node_secret(recipient)?))
 	}
 
 	fn ecdh(&self, recipient: Recipient, other_key: &PublicKey, tweak: Option<&Scalar>) -> Result<SharedSecret, ()> {
@@ -107,9 +119,13 @@ impl KeysInterface for KeyProvider {
 
 	fn get_inbound_payment_key_material(&self) -> KeyMaterial { unreachable!() }
 
-	fn get_destination_script(&self) -> Script { unreachable!() }
+	fn sign_invoice(&self, _hrp_bytes: &[u8], _invoice_data: &[u5], _recipient: Recipient) -> Result<RecoverableSignature, ()> {
+		unreachable!()
+	}
+}
 
-	fn get_shutdown_scriptpubkey(&self) -> ShutdownScript { unreachable!() }
+impl SignerProvider for KeyProvider {
+	type Signer = EnforcingSigner;
 
 	fn generate_channel_keys_id(&self, _inbound: bool, _channel_value_satoshis: u64, _user_channel_id: u128) -> [u8; 32] { unreachable!() }
 
@@ -117,18 +133,14 @@ impl KeysInterface for KeyProvider {
 		unreachable!()
 	}
 
-	fn get_secure_random_bytes(&self) -> [u8; 32] {
-		let ctr = self.counter.fetch_add(1, Ordering::Relaxed);
-		[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-		(ctr >> 8*7) as u8, (ctr >> 8*6) as u8, (ctr >> 8*5) as u8, (ctr >> 8*4) as u8, (ctr >> 8*3) as u8, (ctr >> 8*2) as u8, (ctr >> 8*1) as u8, 14, (ctr >> 8*0) as u8]
-	}
-
 	fn read_chan_signer(&self, _data: &[u8]) -> Result<EnforcingSigner, DecodeError> { unreachable!() }
 
-	fn sign_invoice(&self, _hrp_bytes: &[u8], _invoice_data: &[u5], _recipient: Recipient) -> Result<RecoverableSignature, ()> {
-		unreachable!()
-	}
+	fn get_destination_script(&self) -> Script { unreachable!() }
+
+	fn get_shutdown_scriptpubkey(&self) -> ShutdownScript { unreachable!() }
 }
+
+impl KeysInterface for KeyProvider {}
 
 #[cfg(test)]
 mod tests {

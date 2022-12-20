@@ -9,7 +9,7 @@
 
 //! Tests of our shutdown and closing_signed negotiation logic.
 
-use crate::chain::keysinterface::KeysInterface;
+use crate::chain::keysinterface::{EntropySource, KeysInterface, SignerProvider};
 use crate::chain::transaction::OutPoint;
 use crate::ln::channelmanager::{self, PaymentSendFailure, PaymentId};
 use crate::routing::router::{PaymentParameters, get_route};

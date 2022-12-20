@@ -16,7 +16,7 @@ use crate::routing::scoring::WriteableScore;
 use crate::chain;
 use crate::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use crate::chain::chainmonitor::{Persist, MonitorUpdateId};
-use crate::chain::keysinterface::{Sign, KeysInterface};
+use crate::chain::keysinterface::{Sign, KeysInterface, SignerProvider};
 use crate::chain::transaction::OutPoint;
 use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate};
 use crate::ln::channelmanager::ChannelManager;
@@ -34,7 +34,7 @@ pub trait KVStorePersister {
 
 /// Trait that handles persisting a [`ChannelManager`], [`NetworkGraph`], and [`WriteableScore`] to disk.
 pub trait Persister<'a, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref, S: WriteableScore<'a>>
-	where M::Target: 'static + chain::Watch<<K::Target as KeysInterface>::Signer>,
+	where M::Target: 'static + chain::Watch<<K::Target as SignerProvider>::Signer>,
 		T::Target: 'static + BroadcasterInterface,
 		K::Target: 'static + KeysInterface,
 		F::Target: 'static + FeeEstimator,
@@ -51,7 +51,7 @@ pub trait Persister<'a, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref, S: Wri
 }
 
 impl<'a, A: KVStorePersister, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref, S: WriteableScore<'a>> Persister<'a, M, T, K, F, L, S> for A
-	where M::Target: 'static + chain::Watch<<K::Target as KeysInterface>::Signer>,
+	where M::Target: 'static + chain::Watch<<K::Target as SignerProvider>::Signer>,
 		T::Target: 'static + BroadcasterInterface,
 		K::Target: 'static + KeysInterface,
 		F::Target: 'static + FeeEstimator,

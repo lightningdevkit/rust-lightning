@@ -15,7 +15,7 @@ use bitcoin::hashes::hmac::{Hmac, HmacEngine};
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::secp256k1::{self, PublicKey, Scalar, Secp256k1, SecretKey};
 
-use crate::chain::keysinterface::{KeysInterface, KeysManager, Recipient};
+use crate::chain::keysinterface::{EntropySource, KeysInterface, KeysManager, NodeSigner, Recipient};
 use crate::ln::features::{InitFeatures, NodeFeatures};
 use crate::ln::msgs::{self, OnionMessageHandler};
 use crate::ln::onion_utils;
@@ -160,7 +160,7 @@ pub enum SendError {
 	GetNodeIdFailed,
 	/// We attempted to send to a blinded path where we are the introduction node, and failed to
 	/// advance the blinded path to make the second hop the new introduction node. Either
-	/// [`KeysInterface::ecdh`] failed, we failed to tweak the current blinding point to get the
+	/// [`NodeSigner::ecdh`] failed, we failed to tweak the current blinding point to get the
 	/// new blinding point, or we were attempting to send to ourselves.
 	BlindedPathAdvanceFailed,
 }

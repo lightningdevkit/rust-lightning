@@ -17,7 +17,7 @@ extern crate lightning_rapid_gossip_sync;
 use lightning::chain;
 use lightning::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use lightning::chain::chainmonitor::{ChainMonitor, Persist};
-use lightning::chain::keysinterface::KeysInterface;
+use lightning::chain::keysinterface::{KeysInterface, SignerProvider};
 use lightning::ln::channelmanager::ChannelManager;
 use lightning::ln::msgs::{ChannelMessageHandler, OnionMessageHandler, RoutingMessageHandler};
 use lightning::ln::peer_handler::{CustomMessageHandler, PeerManager, SocketDescriptor};
@@ -352,7 +352,7 @@ pub async fn process_events_async<
 	EventHandlerFuture: core::future::Future<Output = ()>,
 	EventHandler: Fn(Event) -> EventHandlerFuture,
 	PS: 'static + Deref + Send,
-	M: 'static + Deref<Target = ChainMonitor<<K::Target as KeysInterface>::Signer, CF, T, F, L, P>> + Send + Sync,
+	M: 'static + Deref<Target = ChainMonitor<<K::Target as SignerProvider>::Signer, CF, T, F, L, P>> + Send + Sync,
 	CM: 'static + Deref<Target = ChannelManager<CW, T, K, F, L>> + Send + Sync,
 	PGS: 'static + Deref<Target = P2PGossipSync<G, CA, L>> + Send + Sync,
 	RGS: 'static + Deref<Target = RapidGossipSync<G, L>> + Send,
@@ -370,12 +370,12 @@ pub async fn process_events_async<
 where
 	CA::Target: 'static + chain::Access,
 	CF::Target: 'static + chain::Filter,
-	CW::Target: 'static + chain::Watch<<K::Target as KeysInterface>::Signer>,
+	CW::Target: 'static + chain::Watch<<K::Target as SignerProvider>::Signer>,
 	T::Target: 'static + BroadcasterInterface,
 	K::Target: 'static + KeysInterface,
 	F::Target: 'static + FeeEstimator,
 	L::Target: 'static + Logger,
-	P::Target: 'static + Persist<<K::Target as KeysInterface>::Signer>,
+	P::Target: 'static + Persist<<K::Target as SignerProvider>::Signer>,
 	CMH::Target: 'static + ChannelMessageHandler,
 	OMH::Target: 'static + OnionMessageHandler,
 	RMH::Target: 'static + RoutingMessageHandler,
@@ -469,7 +469,7 @@ impl BackgroundProcessor {
 		RMH: 'static + Deref + Send + Sync,
 		EH: 'static + EventHandler + Send,
 		PS: 'static + Deref + Send,
-		M: 'static + Deref<Target = ChainMonitor<<K::Target as KeysInterface>::Signer, CF, T, F, L, P>> + Send + Sync,
+		M: 'static + Deref<Target = ChainMonitor<<K::Target as SignerProvider>::Signer, CF, T, F, L, P>> + Send + Sync,
 		CM: 'static + Deref<Target = ChannelManager<CW, T, K, F, L>> + Send + Sync,
 		PGS: 'static + Deref<Target = P2PGossipSync<G, CA, L>> + Send + Sync,
 		RGS: 'static + Deref<Target = RapidGossipSync<G, L>> + Send,
@@ -484,12 +484,12 @@ impl BackgroundProcessor {
 	where
 		CA::Target: 'static + chain::Access,
 		CF::Target: 'static + chain::Filter,
-		CW::Target: 'static + chain::Watch<<K::Target as KeysInterface>::Signer>,
+		CW::Target: 'static + chain::Watch<<K::Target as SignerProvider>::Signer>,
 		T::Target: 'static + BroadcasterInterface,
 		K::Target: 'static + KeysInterface,
 		F::Target: 'static + FeeEstimator,
 		L::Target: 'static + Logger,
-		P::Target: 'static + Persist<<K::Target as KeysInterface>::Signer>,
+		P::Target: 'static + Persist<<K::Target as SignerProvider>::Signer>,
 		CMH::Target: 'static + ChannelMessageHandler,
 		OMH::Target: 'static + OnionMessageHandler,
 		RMH::Target: 'static + RoutingMessageHandler,
@@ -570,7 +570,7 @@ mod tests {
 	use bitcoin::network::constants::Network;
 	use lightning::chain::{BestBlock, Confirm, chainmonitor};
 	use lightning::chain::channelmonitor::ANTI_REORG_DELAY;
-	use lightning::chain::keysinterface::{InMemorySigner, Recipient, KeysInterface, KeysManager};
+	use lightning::chain::keysinterface::{InMemorySigner, Recipient, EntropySource, KeysInterface, KeysManager, NodeSigner};
 	use lightning::chain::transaction::OutPoint;
 	use lightning::get_event_msg;
 	use lightning::ln::channelmanager::{self, BREAKDOWN_TIMEOUT, ChainParameters, ChannelManager, SimpleArcChannelManager};

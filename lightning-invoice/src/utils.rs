@@ -8,7 +8,7 @@ use bech32::ToBase32;
 use bitcoin_hashes::Hash;
 use lightning::chain;
 use lightning::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
-use lightning::chain::keysinterface::{Recipient, KeysInterface};
+use lightning::chain::keysinterface::{Recipient, KeysInterface, NodeSigner, SignerProvider};
 use lightning::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
 use lightning::ln::channelmanager::{ChannelDetails, ChannelManager, PaymentId, PaymentSendFailure, MIN_FINAL_CLTV_EXPIRY};
 #[cfg(feature = "std")]
@@ -237,7 +237,7 @@ pub fn create_invoice_from_channelmanager<M: Deref, T: Deref, K: Deref, F: Deref
 	network: Currency, amt_msat: Option<u64>, description: String, invoice_expiry_delta_secs: u32
 ) -> Result<Invoice, SignOrCreationError<()>>
 where
-	M::Target: chain::Watch<<K::Target as KeysInterface>::Signer>,
+	M::Target: chain::Watch<<K::Target as SignerProvider>::Signer>,
 	T::Target: BroadcasterInterface,
 	K::Target: KeysInterface,
 	F::Target: FeeEstimator,
@@ -268,7 +268,7 @@ pub fn create_invoice_from_channelmanager_with_description_hash<M: Deref, T: Der
 	invoice_expiry_delta_secs: u32
 ) -> Result<Invoice, SignOrCreationError<()>>
 where
-	M::Target: chain::Watch<<K::Target as KeysInterface>::Signer>,
+	M::Target: chain::Watch<<K::Target as SignerProvider>::Signer>,
 	T::Target: BroadcasterInterface,
 	K::Target: KeysInterface,
 	F::Target: FeeEstimator,
@@ -295,7 +295,7 @@ pub fn create_invoice_from_channelmanager_with_description_hash_and_duration_sin
 	duration_since_epoch: Duration, invoice_expiry_delta_secs: u32
 ) -> Result<Invoice, SignOrCreationError<()>>
 		where
-			M::Target: chain::Watch<<K::Target as KeysInterface>::Signer>,
+			M::Target: chain::Watch<<K::Target as SignerProvider>::Signer>,
 			T::Target: BroadcasterInterface,
 			K::Target: KeysInterface,
 			F::Target: FeeEstimator,
@@ -317,7 +317,7 @@ pub fn create_invoice_from_channelmanager_and_duration_since_epoch<M: Deref, T: 
 	invoice_expiry_delta_secs: u32
 ) -> Result<Invoice, SignOrCreationError<()>>
 		where
-			M::Target: chain::Watch<<K::Target as KeysInterface>::Signer>,
+			M::Target: chain::Watch<<K::Target as SignerProvider>::Signer>,
 			T::Target: BroadcasterInterface,
 			K::Target: KeysInterface,
 			F::Target: FeeEstimator,
@@ -338,7 +338,7 @@ fn _create_invoice_from_channelmanager_and_duration_since_epoch<M: Deref, T: Der
 	duration_since_epoch: Duration, invoice_expiry_delta_secs: u32
 ) -> Result<Invoice, SignOrCreationError<()>>
 		where
-			M::Target: chain::Watch<<K::Target as KeysInterface>::Signer>,
+			M::Target: chain::Watch<<K::Target as SignerProvider>::Signer>,
 			T::Target: BroadcasterInterface,
 			K::Target: KeysInterface,
 			F::Target: FeeEstimator,
@@ -363,7 +363,7 @@ pub fn create_invoice_from_channelmanager_and_duration_since_epoch_with_payment_
 	invoice_expiry_delta_secs: u32, payment_hash: PaymentHash
 ) -> Result<Invoice, SignOrCreationError<()>>
 	where
-		M::Target: chain::Watch<<K::Target as KeysInterface>::Signer>,
+		M::Target: chain::Watch<<K::Target as SignerProvider>::Signer>,
 		T::Target: BroadcasterInterface,
 		K::Target: KeysInterface,
 		F::Target: FeeEstimator,
@@ -387,7 +387,7 @@ fn _create_invoice_from_channelmanager_and_duration_since_epoch_with_payment_has
 	invoice_expiry_delta_secs: u32, payment_hash: PaymentHash, payment_secret: PaymentSecret
 ) -> Result<Invoice, SignOrCreationError<()>>
 	where
-		M::Target: chain::Watch<<K::Target as KeysInterface>::Signer>,
+		M::Target: chain::Watch<<K::Target as SignerProvider>::Signer>,
 		T::Target: BroadcasterInterface,
 		K::Target: KeysInterface,
 		F::Target: FeeEstimator,
@@ -567,7 +567,7 @@ fn filter_channels<L: Deref>(
 
 impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Payer for ChannelManager<M, T, K, F, L>
 where
-	M::Target: chain::Watch<<K::Target as KeysInterface>::Signer>,
+	M::Target: chain::Watch<<K::Target as SignerProvider>::Signer>,
 	T::Target: BroadcasterInterface,
 	K::Target: KeysInterface,
 	F::Target: FeeEstimator,
@@ -613,7 +613,7 @@ mod test {
 	use crate::{Currency, Description, InvoiceDescription};
 	use bitcoin_hashes::{Hash, sha256};
 	use bitcoin_hashes::sha256::Hash as Sha256;
-	use lightning::chain::keysinterface::PhantomKeysManager;
+	use lightning::chain::keysinterface::{EntropySource, PhantomKeysManager};
 	use lightning::ln::{PaymentPreimage, PaymentHash};
 	use lightning::ln::channelmanager::{self, PhantomRouteHints, MIN_FINAL_CLTV_EXPIRY, PaymentId};
 	use lightning::ln::functional_test_utils::*;
