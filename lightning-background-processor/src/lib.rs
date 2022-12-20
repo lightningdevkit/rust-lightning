@@ -341,7 +341,9 @@ pub async fn process_events_async<
 	CF: 'static + Deref + Send + Sync,
 	CW: 'static + Deref + Send + Sync,
 	T: 'static + Deref + Send + Sync,
-	K: 'static + Deref + Send + Sync,
+	ES: 'static + Deref + Send + Sync,
+	NS: 'static + Deref + Send + Sync,
+	SP: 'static + Deref + Send + Sync,
 	F: 'static + Deref + Send + Sync,
 	R: 'static + Deref + Send + Sync,
 	G: 'static + Deref<Target = NetworkGraph<L>> + Send + Sync,
@@ -354,8 +356,8 @@ pub async fn process_events_async<
 	EventHandlerFuture: core::future::Future<Output = ()>,
 	EventHandler: Fn(Event) -> EventHandlerFuture,
 	PS: 'static + Deref + Send,
-	M: 'static + Deref<Target = ChainMonitor<<K::Target as SignerProvider>::Signer, CF, T, F, L, P>> + Send + Sync,
-	CM: 'static + Deref<Target = ChannelManager<CW, T, K, F, R, L>> + Send + Sync,
+	M: 'static + Deref<Target = ChainMonitor<<SP::Target as SignerProvider>::Signer, CF, T, F, L, P>> + Send + Sync,
+	CM: 'static + Deref<Target = ChannelManager<CW, T, ES, NS, SP, F, R, L>> + Send + Sync,
 	PGS: 'static + Deref<Target = P2PGossipSync<G, CA, L>> + Send + Sync,
 	RGS: 'static + Deref<Target = RapidGossipSync<G, L>> + Send,
 	UMH: 'static + Deref + Send + Sync,
@@ -372,18 +374,20 @@ pub async fn process_events_async<
 where
 	CA::Target: 'static + chain::Access,
 	CF::Target: 'static + chain::Filter,
-	CW::Target: 'static + chain::Watch<<K::Target as SignerProvider>::Signer>,
+	CW::Target: 'static + chain::Watch<<SP::Target as SignerProvider>::Signer>,
 	T::Target: 'static + BroadcasterInterface,
-	K::Target: 'static + EntropySource + NodeSigner + SignerProvider,
+	ES::Target: 'static + EntropySource,
+	NS::Target: 'static + NodeSigner,
+	SP::Target: 'static + SignerProvider,
 	F::Target: 'static + FeeEstimator,
 	R::Target: 'static + Router,
 	L::Target: 'static + Logger,
-	P::Target: 'static + Persist<<K::Target as SignerProvider>::Signer>,
+	P::Target: 'static + Persist<<SP::Target as SignerProvider>::Signer>,
 	CMH::Target: 'static + ChannelMessageHandler,
 	OMH::Target: 'static + OnionMessageHandler,
 	RMH::Target: 'static + RoutingMessageHandler,
 	UMH::Target: 'static + CustomMessageHandler,
-	PS::Target: 'static + Persister<'a, CW, T, K, F, R, L, SC>,
+	PS::Target: 'static + Persister<'a, CW, T, ES, NS, SP, F, R, L, SC>,
 {
 	let mut should_break = true;
 	let async_event_handler = |event| {
@@ -461,7 +465,9 @@ impl BackgroundProcessor {
 		CF: 'static + Deref + Send + Sync,
 		CW: 'static + Deref + Send + Sync,
 		T: 'static + Deref + Send + Sync,
-		K: 'static + Deref + Send + Sync,
+		ES: 'static + Deref + Send + Sync,
+		NS: 'static + Deref + Send + Sync,
+		SP: 'static + Deref + Send + Sync,
 		F: 'static + Deref + Send + Sync,
 		R: 'static + Deref + Send + Sync,
 		G: 'static + Deref<Target = NetworkGraph<L>> + Send + Sync,
@@ -473,8 +479,8 @@ impl BackgroundProcessor {
 		RMH: 'static + Deref + Send + Sync,
 		EH: 'static + EventHandler + Send,
 		PS: 'static + Deref + Send,
-		M: 'static + Deref<Target = ChainMonitor<<K::Target as SignerProvider>::Signer, CF, T, F, L, P>> + Send + Sync,
-		CM: 'static + Deref<Target = ChannelManager<CW, T, K, F, R, L>> + Send + Sync,
+		M: 'static + Deref<Target = ChainMonitor<<SP::Target as SignerProvider>::Signer, CF, T, F, L, P>> + Send + Sync,
+		CM: 'static + Deref<Target = ChannelManager<CW, T, ES, NS, SP, F, R, L>> + Send + Sync,
 		PGS: 'static + Deref<Target = P2PGossipSync<G, CA, L>> + Send + Sync,
 		RGS: 'static + Deref<Target = RapidGossipSync<G, L>> + Send,
 		UMH: 'static + Deref + Send + Sync,
@@ -488,18 +494,20 @@ impl BackgroundProcessor {
 	where
 		CA::Target: 'static + chain::Access,
 		CF::Target: 'static + chain::Filter,
-		CW::Target: 'static + chain::Watch<<K::Target as SignerProvider>::Signer>,
+		CW::Target: 'static + chain::Watch<<SP::Target as SignerProvider>::Signer>,
 		T::Target: 'static + BroadcasterInterface,
-		K::Target: 'static + EntropySource + NodeSigner + SignerProvider,
+		ES::Target: 'static + EntropySource,
+		NS::Target: 'static + NodeSigner,
+		SP::Target: 'static + SignerProvider,
 		F::Target: 'static + FeeEstimator,
 		R::Target: 'static + Router,
 		L::Target: 'static + Logger,
-		P::Target: 'static + Persist<<K::Target as SignerProvider>::Signer>,
+		P::Target: 'static + Persist<<SP::Target as SignerProvider>::Signer>,
 		CMH::Target: 'static + ChannelMessageHandler,
 		OMH::Target: 'static + OnionMessageHandler,
 		RMH::Target: 'static + RoutingMessageHandler,
 		UMH::Target: 'static + CustomMessageHandler,
-		PS::Target: 'static + Persister<'a, CW, T, K, F, R, L, SC>,
+		PS::Target: 'static + Persister<'a, CW, T, ES, NS, SP, F, R, L, SC>,
 	{
 		let stop_thread = Arc::new(AtomicBool::new(false));
 		let stop_thread_clone = stop_thread.clone();
@@ -742,7 +750,7 @@ mod tests {
 			let chain_monitor = Arc::new(chainmonitor::ChainMonitor::new(Some(chain_source.clone()), tx_broadcaster.clone(), logger.clone(), fee_estimator.clone(), persister.clone()));
 			let best_block = BestBlock::from_genesis(network);
 			let params = ChainParameters { network, best_block };
-			let manager = Arc::new(ChannelManager::new(fee_estimator.clone(), chain_monitor.clone(), tx_broadcaster.clone(), router.clone(), logger.clone(), keys_manager.clone(), UserConfig::default(), params));
+			let manager = Arc::new(ChannelManager::new(fee_estimator.clone(), chain_monitor.clone(), tx_broadcaster.clone(), router.clone(), logger.clone(), keys_manager.clone(), keys_manager.clone(), keys_manager.clone(), UserConfig::default(), params));
 			let p2p_gossip_sync = Arc::new(P2PGossipSync::new(network_graph.clone(), Some(chain_source.clone()), logger.clone()));
 			let rapid_gossip_sync = Arc::new(RapidGossipSync::new(network_graph.clone()));
 			let msg_handler = MessageHandler { chan_handler: Arc::new(test_utils::TestChannelMessageHandler::new()), route_handler: Arc::new(test_utils::TestRoutingMessageHandler::new()), onion_message_handler: IgnoringMessageHandler{}};

@@ -63,11 +63,11 @@ impl BlindedPath {
 	///
 	/// Errors if less than two hops are provided or if `node_pk`(s) are invalid.
 	//  TODO: make all payloads the same size with padding + add dummy hops
-	pub fn new<K: EntropySource, T: secp256k1::Signing + secp256k1::Verification>
-		(node_pks: &[PublicKey], keys_manager: &K, secp_ctx: &Secp256k1<T>) -> Result<Self, ()>
+	pub fn new<ES: EntropySource, T: secp256k1::Signing + secp256k1::Verification>
+		(node_pks: &[PublicKey], entropy_source: &ES, secp_ctx: &Secp256k1<T>) -> Result<Self, ()>
 	{
 		if node_pks.len() < 2 { return Err(()) }
-		let blinding_secret_bytes = keys_manager.get_secure_random_bytes();
+		let blinding_secret_bytes = entropy_source.get_secure_random_bytes();
 		let blinding_secret = SecretKey::from_slice(&blinding_secret_bytes[..]).expect("RNG is busted");
 		let introduction_node_id = node_pks[0];
 
@@ -79,11 +79,11 @@ impl BlindedPath {
 	}
 
 	// Advance the blinded path by one hop, so make the second hop into the new introduction node.
-	pub(super) fn advance_by_one<K: Deref, T: secp256k1::Signing + secp256k1::Verification>
-		(&mut self, keys_manager: &K, secp_ctx: &Secp256k1<T>) -> Result<(), ()>
-		where K::Target: NodeSigner
+	pub(super) fn advance_by_one<NS: Deref, T: secp256k1::Signing + secp256k1::Verification>
+		(&mut self, node_signer: &NS, secp_ctx: &Secp256k1<T>) -> Result<(), ()>
+		where NS::Target: NodeSigner
 	{
-		let control_tlvs_ss = keys_manager.ecdh(Recipient::Node, &self.blinding_point, None)?;
+		let control_tlvs_ss = node_signer.ecdh(Recipient::Node, &self.blinding_point, None)?;
 		let rho = onion_utils::gen_rho_from_shared_secret(&control_tlvs_ss.secret_bytes());
 		let encrypted_control_tlvs = self.blinded_hops.remove(0).encrypted_payload;
 		let mut s = Cursor::new(&encrypted_control_tlvs);

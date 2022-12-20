@@ -30,7 +30,7 @@ pub fn do_test<L: Logger>(data: &[u8], logger: &L) {
 			counter: AtomicU64::new(0),
 		};
 		let custom_msg_handler = TestCustomMessageHandler {};
-		let onion_messenger = OnionMessenger::new(&keys_manager, logger, &custom_msg_handler);
+		let onion_messenger = OnionMessenger::new(&keys_manager, &keys_manager, logger, &custom_msg_handler);
 		let mut pk = [2; 33]; pk[1] = 0xff;
 		let peer_node_id_not_used = PublicKey::from_slice(&pk).unwrap();
 		onion_messenger.handle_onion_message(&peer_node_id_not_used, &msg);

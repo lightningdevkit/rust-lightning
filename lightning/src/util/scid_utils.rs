@@ -101,13 +101,13 @@ pub(crate) mod fake_scid {
 		/// between segwit activation and the current best known height, and the tx index and output
 		/// index are also selected from a "reasonable" range. We add this logic because it makes it
 		/// non-obvious at a glance that the scid is fake, e.g. if it appears in invoice route hints.
-		pub(crate) fn get_fake_scid<K: Deref>(&self, highest_seen_blockheight: u32, genesis_hash: &BlockHash, fake_scid_rand_bytes: &[u8; 32], keys_manager: &K) -> u64
-			where K::Target: EntropySource,
+		pub(crate) fn get_fake_scid<ES: Deref>(&self, highest_seen_blockheight: u32, genesis_hash: &BlockHash, fake_scid_rand_bytes: &[u8; 32], entropy_source: &ES) -> u64
+			where ES::Target: EntropySource,
 		{
 			// Ensure we haven't created a namespace that doesn't fit into the 3 bits we've allocated for
 			// namespaces.
 			assert!((*self as u8) < MAX_NAMESPACES);
-			let rand_bytes = keys_manager.get_secure_random_bytes();
+			let rand_bytes = entropy_source.get_secure_random_bytes();
 
 			let segwit_activation_height = segwit_activation_height(genesis_hash);
 			let mut blocks_since_segwit_activation = highest_seen_blockheight.saturating_sub(segwit_activation_height);

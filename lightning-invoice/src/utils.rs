@@ -51,20 +51,21 @@ use core::time::Duration;
 /// [`ChannelManager::create_inbound_payment`]: lightning::ln::channelmanager::ChannelManager::create_inbound_payment
 /// [`ChannelManager::create_inbound_payment_for_hash`]: lightning::ln::channelmanager::ChannelManager::create_inbound_payment_for_hash
 /// [`PhantomRouteHints::channels`]: lightning::ln::channelmanager::PhantomRouteHints::channels
-pub fn create_phantom_invoice<K: Deref, L: Deref>(
+pub fn create_phantom_invoice<ES: Deref, NS: Deref, L: Deref>(
 	amt_msat: Option<u64>, payment_hash: Option<PaymentHash>, description: String,
-	invoice_expiry_delta_secs: u32, phantom_route_hints: Vec<PhantomRouteHints>, keys_manager: K,
-	logger: L, network: Currency,
+	invoice_expiry_delta_secs: u32, phantom_route_hints: Vec<PhantomRouteHints>, entropy_source: ES,
+	node_signer: NS, logger: L, network: Currency,
 ) -> Result<Invoice, SignOrCreationError<()>>
 where
-	K::Target: EntropySource + NodeSigner,
+	ES::Target: EntropySource,
+	NS::Target: NodeSigner,
 	L::Target: Logger,
 {
 	let description = Description::new(description).map_err(SignOrCreationError::CreationError)?;
 	let description = InvoiceDescription::Direct(&description,);
-	_create_phantom_invoice::<K, L>(
+	_create_phantom_invoice::<ES, NS, L>(
 		amt_msat, payment_hash, description, invoice_expiry_delta_secs, phantom_route_hints,
-		keys_manager, logger, network,
+		entropy_source, node_signer, logger, network,
 	)
 }
 
@@ -100,29 +101,31 @@ where
 /// [`ChannelManager::create_inbound_payment`]: lightning::ln::channelmanager::ChannelManager::create_inbound_payment
 /// [`ChannelManager::create_inbound_payment_for_hash`]: lightning::ln::channelmanager::ChannelManager::create_inbound_payment_for_hash
 /// [`PhantomRouteHints::channels`]: lightning::ln::channelmanager::PhantomRouteHints::channels
-pub fn create_phantom_invoice_with_description_hash<K: Deref, L: Deref>(
+pub fn create_phantom_invoice_with_description_hash<ES: Deref, NS: Deref, L: Deref>(
 	amt_msat: Option<u64>, payment_hash: Option<PaymentHash>, invoice_expiry_delta_secs: u32,
-	description_hash: Sha256, phantom_route_hints: Vec<PhantomRouteHints>, keys_manager: K,
-	logger: L, network: Currency
+	description_hash: Sha256, phantom_route_hints: Vec<PhantomRouteHints>, entropy_source: ES,
+	node_signer: NS, logger: L, network: Currency
 ) -> Result<Invoice, SignOrCreationError<()>>
 where
-	K::Target: EntropySource + NodeSigner,
+	ES::Target: EntropySource,
+	NS::Target: NodeSigner,
 	L::Target: Logger,
 {
-	_create_phantom_invoice::<K, L>(
+	_create_phantom_invoice::<ES, NS, L>(
 		amt_msat, payment_hash, InvoiceDescription::Hash(&description_hash),
-		invoice_expiry_delta_secs, phantom_route_hints, keys_manager, logger, network,
+		invoice_expiry_delta_secs, phantom_route_hints, entropy_source, node_signer, logger, network,
 	)
 }
 
 #[cfg(feature = "std")]
-fn _create_phantom_invoice<K: Deref, L: Deref>(
+fn _create_phantom_invoice<ES: Deref, NS: Deref, L: Deref>(
 	amt_msat: Option<u64>, payment_hash: Option<PaymentHash>, description: InvoiceDescription,
-	invoice_expiry_delta_secs: u32, phantom_route_hints: Vec<PhantomRouteHints>, keys_manager: K,
-	logger: L, network: Currency,
+	invoice_expiry_delta_secs: u32, phantom_route_hints: Vec<PhantomRouteHints>, entropy_source: ES,
+	node_signer: NS, logger: L, network: Currency,
 ) -> Result<Invoice, SignOrCreationError<()>>
 where
-	K::Target: EntropySource + NodeSigner,
+	ES::Target: EntropySource,
+	NS::Target: NodeSigner,
 	L::Target: Logger,
 {
 	use std::time::{SystemTime, UNIX_EPOCH};
@@ -141,7 +144,7 @@ where
 	};
 
 	// If we ever see performance here being too slow then we should probably take this ExpandedKey as a parameter instead.
-	let keys = ExpandedKey::new(&keys_manager.get_inbound_payment_key_material());
+	let keys = ExpandedKey::new(&node_signer.get_inbound_payment_key_material());
 	let (payment_hash, payment_secret) = if let Some(payment_hash) = payment_hash {
 		let payment_secret = create_from_hash(
 			&keys,
@@ -160,7 +163,7 @@ where
 			&keys,
 			amt_msat,
 			invoice_expiry_delta_secs,
-			&keys_manager,
+			&entropy_source,
 			SystemTime::now()
 				.duration_since(UNIX_EPOCH)
 				.expect("Time must be > 1970")
@@ -216,7 +219,7 @@ where
 	let hrp_str = raw_invoice.hrp.to_string();
 	let hrp_bytes = hrp_str.as_bytes();
 	let data_without_signature = raw_invoice.data.to_base32();
-	let signed_raw_invoice = raw_invoice.sign(|_| keys_manager.sign_invoice(hrp_bytes, &data_without_signature, Recipient::PhantomNode));
+	let signed_raw_invoice = raw_invoice.sign(|_| node_signer.sign_invoice(hrp_bytes, &data_without_signature, Recipient::PhantomNode));
 	match signed_raw_invoice {
 		Ok(inv) => Ok(Invoice::from_signed(inv).unwrap()),
 		Err(e) => Err(SignOrCreationError::SignError(e))
@@ -232,14 +235,16 @@ where
 ///
 /// `invoice_expiry_delta_secs` describes the number of seconds that the invoice is valid for
 /// in excess of the current time.
-pub fn create_invoice_from_channelmanager<M: Deref, T: Deref, K: Deref, F: Deref, R: Deref, L: Deref>(
-	channelmanager: &ChannelManager<M, T, K, F, R, L>, keys_manager: K, logger: L,
+pub fn create_invoice_from_channelmanager<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, L: Deref>(
+	channelmanager: &ChannelManager<M, T, ES, NS, SP, F, R, L>, node_signer: NS, logger: L,
 	network: Currency, amt_msat: Option<u64>, description: String, invoice_expiry_delta_secs: u32
 ) -> Result<Invoice, SignOrCreationError<()>>
 where
-	M::Target: chain::Watch<<K::Target as SignerProvider>::Signer>,
+	M::Target: chain::Watch<<SP::Target as SignerProvider>::Signer>,
 	T::Target: BroadcasterInterface,
-	K::Target: EntropySource + NodeSigner + SignerProvider,
+	ES::Target: EntropySource,
+	NS::Target: NodeSigner,
+	SP::Target: SignerProvider,
 	F::Target: FeeEstimator,
 	R::Target: Router,
 	L::Target: Logger,
@@ -248,8 +253,8 @@ where
 	let duration = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)
 		.expect("for the foreseeable future this shouldn't happen");
 	create_invoice_from_channelmanager_and_duration_since_epoch(
-		channelmanager, keys_manager, logger, network, amt_msat, description, duration,
-		invoice_expiry_delta_secs
+		channelmanager, node_signer, logger, network, amt_msat,
+		description, duration, invoice_expiry_delta_secs
 	)
 }
 
@@ -263,15 +268,17 @@ where
 ///
 /// `invoice_expiry_delta_secs` describes the number of seconds that the invoice is valid for
 /// in excess of the current time.
-pub fn create_invoice_from_channelmanager_with_description_hash<M: Deref, T: Deref, K: Deref, F: Deref, R: Deref, L: Deref>(
-	channelmanager: &ChannelManager<M, T, K, F, R, L>, keys_manager: K, logger: L,
+pub fn create_invoice_from_channelmanager_with_description_hash<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, L: Deref>(
+	channelmanager: &ChannelManager<M, T, ES, NS, SP, F, R, L>, node_signer: NS, logger: L,
 	network: Currency, amt_msat: Option<u64>, description_hash: Sha256,
 	invoice_expiry_delta_secs: u32
 ) -> Result<Invoice, SignOrCreationError<()>>
 where
-	M::Target: chain::Watch<<K::Target as SignerProvider>::Signer>,
+	M::Target: chain::Watch<<SP::Target as SignerProvider>::Signer>,
 	T::Target: BroadcasterInterface,
-	K::Target: EntropySource + NodeSigner + SignerProvider,
+	ES::Target: EntropySource,
+	NS::Target: NodeSigner,
+	SP::Target: SignerProvider,
 	F::Target: FeeEstimator,
 	R::Target: Router,
 	L::Target: Logger,
@@ -283,7 +290,7 @@ where
 		.expect("for the foreseeable future this shouldn't happen");
 
 	create_invoice_from_channelmanager_with_description_hash_and_duration_since_epoch(
-		channelmanager, keys_manager, logger, network, amt_msat,
+		channelmanager, node_signer, logger, network, amt_msat,
 		description_hash, duration, invoice_expiry_delta_secs
 	)
 }
@@ -291,21 +298,23 @@ where
 /// See [`create_invoice_from_channelmanager_with_description_hash`]
 /// This version can be used in a `no_std` environment, where [`std::time::SystemTime`] is not
 /// available and the current time is supplied by the caller.
-pub fn create_invoice_from_channelmanager_with_description_hash_and_duration_since_epoch<M: Deref, T: Deref, K: Deref, F: Deref, R: Deref, L: Deref>(
-	channelmanager: &ChannelManager<M, T, K, F, R, L>, keys_manager: K, logger: L,
+pub fn create_invoice_from_channelmanager_with_description_hash_and_duration_since_epoch<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, L: Deref>(
+	channelmanager: &ChannelManager<M, T, ES, NS, SP, F, R, L>, node_signer: NS, logger: L,
 	network: Currency, amt_msat: Option<u64>, description_hash: Sha256,
 	duration_since_epoch: Duration, invoice_expiry_delta_secs: u32
 ) -> Result<Invoice, SignOrCreationError<()>>
 		where
-			M::Target: chain::Watch<<K::Target as SignerProvider>::Signer>,
+			M::Target: chain::Watch<<SP::Target as SignerProvider>::Signer>,
 			T::Target: BroadcasterInterface,
-			K::Target: EntropySource + NodeSigner + SignerProvider,
+			ES::Target: EntropySource,
+			NS::Target: NodeSigner,
+			SP::Target: SignerProvider,
 			F::Target: FeeEstimator,
 			R::Target: Router,
 			L::Target: Logger,
 {
 	_create_invoice_from_channelmanager_and_duration_since_epoch(
-		channelmanager, keys_manager, logger, network, amt_msat,
+		channelmanager, node_signer, logger, network, amt_msat,
 		InvoiceDescription::Hash(&description_hash),
 		duration_since_epoch, invoice_expiry_delta_secs
 	)
@@ -314,21 +323,23 @@ pub fn create_invoice_from_channelmanager_with_description_hash_and_duration_sin
 /// See [`create_invoice_from_channelmanager`]
 /// This version can be used in a `no_std` environment, where [`std::time::SystemTime`] is not
 /// available and the current time is supplied by the caller.
-pub fn create_invoice_from_channelmanager_and_duration_since_epoch<M: Deref, T: Deref, K: Deref, F: Deref, R: Deref, L: Deref>(
-	channelmanager: &ChannelManager<M, T, K, F, R, L>, keys_manager: K, logger: L,
+pub fn create_invoice_from_channelmanager_and_duration_since_epoch<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, L: Deref>(
+	channelmanager: &ChannelManager<M, T, ES, NS, SP, F, R, L>, node_signer: NS, logger: L,
 	network: Currency, amt_msat: Option<u64>, description: String, duration_since_epoch: Duration,
 	invoice_expiry_delta_secs: u32
 ) -> Result<Invoice, SignOrCreationError<()>>
 		where
-			M::Target: chain::Watch<<K::Target as SignerProvider>::Signer>,
+			M::Target: chain::Watch<<SP::Target as SignerProvider>::Signer>,
 			T::Target: BroadcasterInterface,
-			K::Target: EntropySource + NodeSigner + SignerProvider,
+			ES::Target: EntropySource,
+			NS::Target: NodeSigner,
+			SP::Target: SignerProvider,
 			F::Target: FeeEstimator,
 			R::Target: Router,
 			L::Target: Logger,
 {
 	_create_invoice_from_channelmanager_and_duration_since_epoch(
-		channelmanager, keys_manager, logger, network, amt_msat,
+		channelmanager, node_signer, logger, network, amt_msat,
 		InvoiceDescription::Direct(
 			&Description::new(description).map_err(SignOrCreationError::CreationError)?,
 		),
@@ -336,15 +347,17 @@ pub fn create_invoice_from_channelmanager_and_duration_since_epoch<M: Deref, T: 
 	)
 }
 
-fn _create_invoice_from_channelmanager_and_duration_since_epoch<M: Deref, T: Deref, K: Deref, F: Deref, R: Deref, L: Deref>(
-	channelmanager: &ChannelManager<M, T, K, F, R, L>, keys_manager: K, logger: L,
+fn _create_invoice_from_channelmanager_and_duration_since_epoch<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, L: Deref>(
+	channelmanager: &ChannelManager<M, T, ES, NS, SP, F, R, L>, node_signer: NS, logger: L,
 	network: Currency, amt_msat: Option<u64>, description: InvoiceDescription,
 	duration_since_epoch: Duration, invoice_expiry_delta_secs: u32
 ) -> Result<Invoice, SignOrCreationError<()>>
 		where
-			M::Target: chain::Watch<<K::Target as SignerProvider>::Signer>,
+			M::Target: chain::Watch<<SP::Target as SignerProvider>::Signer>,
 			T::Target: BroadcasterInterface,
-			K::Target: EntropySource + NodeSigner + SignerProvider,
+			ES::Target: EntropySource,
+			NS::Target: NodeSigner,
+			SP::Target: SignerProvider,
 			F::Target: FeeEstimator,
 			R::Target: Router,
 			L::Target: Logger,
@@ -355,22 +368,24 @@ fn _create_invoice_from_channelmanager_and_duration_since_epoch<M: Deref, T: Der
 		.create_inbound_payment(amt_msat, invoice_expiry_delta_secs)
 		.map_err(|()| SignOrCreationError::CreationError(CreationError::InvalidAmount))?;
 	_create_invoice_from_channelmanager_and_duration_since_epoch_with_payment_hash(
-		channelmanager, keys_manager, logger, network, amt_msat, description, duration_since_epoch, invoice_expiry_delta_secs, payment_hash, payment_secret)
+		channelmanager, node_signer, logger, network, amt_msat, description, duration_since_epoch, invoice_expiry_delta_secs, payment_hash, payment_secret)
 }
 
 /// See [`create_invoice_from_channelmanager_and_duration_since_epoch`]
 /// This version allows for providing a custom [`PaymentHash`] for the invoice.
 /// This may be useful if you're building an on-chain swap or involving another protocol where
 /// the payment hash is also involved outside the scope of lightning.
-pub fn create_invoice_from_channelmanager_and_duration_since_epoch_with_payment_hash<M: Deref, T: Deref, K: Deref, F: Deref, R: Deref, L: Deref>(
-	channelmanager: &ChannelManager<M, T, K, F, R, L>, keys_manager: K, logger: L,
+pub fn create_invoice_from_channelmanager_and_duration_since_epoch_with_payment_hash<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, L: Deref>(
+	channelmanager: &ChannelManager<M, T, ES, NS, SP, F, R, L>, node_signer: NS, logger: L,
 	network: Currency, amt_msat: Option<u64>, description: String, duration_since_epoch: Duration,
 	invoice_expiry_delta_secs: u32, payment_hash: PaymentHash
 ) -> Result<Invoice, SignOrCreationError<()>>
 	where
-		M::Target: chain::Watch<<K::Target as SignerProvider>::Signer>,
+		M::Target: chain::Watch<<SP::Target as SignerProvider>::Signer>,
 		T::Target: BroadcasterInterface,
-		K::Target: EntropySource + NodeSigner + SignerProvider,
+		ES::Target: EntropySource,
+		NS::Target: NodeSigner,
+		SP::Target: SignerProvider,
 		F::Target: FeeEstimator,
 		R::Target: Router,
 		L::Target: Logger,
@@ -379,7 +394,7 @@ pub fn create_invoice_from_channelmanager_and_duration_since_epoch_with_payment_
 		.create_inbound_payment_for_hash(payment_hash,amt_msat, invoice_expiry_delta_secs)
 		.map_err(|()| SignOrCreationError::CreationError(CreationError::InvalidAmount))?;
 	_create_invoice_from_channelmanager_and_duration_since_epoch_with_payment_hash(
-		channelmanager, keys_manager, logger, network, amt_msat,
+		channelmanager, node_signer, logger, network, amt_msat,
 		InvoiceDescription::Direct(
 			&Description::new(description).map_err(SignOrCreationError::CreationError)?,
 		),
@@ -387,15 +402,17 @@ pub fn create_invoice_from_channelmanager_and_duration_since_epoch_with_payment_
 	)
 }
 
-fn _create_invoice_from_channelmanager_and_duration_since_epoch_with_payment_hash<M: Deref, T: Deref, K: Deref, F: Deref, R: Deref, L: Deref>(
-	channelmanager: &ChannelManager<M, T, K, F, R, L>, keys_manager: K, logger: L,
+fn _create_invoice_from_channelmanager_and_duration_since_epoch_with_payment_hash<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, L: Deref>(
+	channelmanager: &ChannelManager<M, T, ES, NS, SP, F, R, L>, node_signer: NS, logger: L,
 	network: Currency, amt_msat: Option<u64>, description: InvoiceDescription, duration_since_epoch: Duration,
 	invoice_expiry_delta_secs: u32, payment_hash: PaymentHash, payment_secret: PaymentSecret
 ) -> Result<Invoice, SignOrCreationError<()>>
 	where
-		M::Target: chain::Watch<<K::Target as SignerProvider>::Signer>,
+		M::Target: chain::Watch<<SP::Target as SignerProvider>::Signer>,
 		T::Target: BroadcasterInterface,
-		K::Target: EntropySource + NodeSigner + SignerProvider,
+		ES::Target: EntropySource,
+		NS::Target: NodeSigner,
+		SP::Target: SignerProvider,
 		F::Target: FeeEstimator,
 		R::Target: Router,
 		L::Target: Logger,
@@ -436,7 +453,7 @@ fn _create_invoice_from_channelmanager_and_duration_since_epoch_with_payment_has
 	let hrp_str = raw_invoice.hrp.to_string();
 	let hrp_bytes = hrp_str.as_bytes();
 	let data_without_signature = raw_invoice.data.to_base32();
-	let signed_raw_invoice = raw_invoice.sign(|_| keys_manager.sign_invoice(hrp_bytes, &data_without_signature, Recipient::Node));
+	let signed_raw_invoice = raw_invoice.sign(|_| node_signer.sign_invoice(hrp_bytes, &data_without_signature, Recipient::Node));
 	match signed_raw_invoice {
 		Ok(inv) => Ok(Invoice::from_signed(inv).unwrap()),
 		Err(e) => Err(SignOrCreationError::SignError(e))
@@ -572,11 +589,13 @@ fn filter_channels<L: Deref>(
 		.collect::<Vec<RouteHint>>()
 }
 
-impl<M: Deref, T: Deref, K: Deref, F: Deref, R: Deref, L: Deref> Payer for ChannelManager<M, T, K, F, R, L>
+impl<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, L: Deref> Payer for ChannelManager<M, T, ES, NS, SP, F, R, L>
 where
-	M::Target: chain::Watch<<K::Target as SignerProvider>::Signer>,
+	M::Target: chain::Watch<<SP::Target as SignerProvider>::Signer>,
 	T::Target: BroadcasterInterface,
-	K::Target: EntropySource + NodeSigner + SignerProvider,
+	ES::Target: EntropySource,
+	NS::Target: NodeSigner,
+	SP::Target: SignerProvider,
 	F::Target: FeeEstimator,
 	R::Target: Router,
 	L::Target: Logger,
@@ -967,9 +986,9 @@ mod test {
 		let non_default_invoice_expiry_secs = 4200;
 
 		let invoice =
-			crate::utils::create_phantom_invoice::<&test_utils::TestKeysInterface, &test_utils::TestLogger>(
+			crate::utils::create_phantom_invoice::<&test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestLogger>(
 				Some(payment_amt), payment_hash, "test".to_string(), non_default_invoice_expiry_secs,
-				route_hints, &nodes[1].keys_manager, &nodes[1].logger, Currency::BitcoinTestnet
+				route_hints, &nodes[1].keys_manager, &nodes[1].keys_manager, &nodes[1].logger, Currency::BitcoinTestnet
 			).unwrap();
 		let (payment_hash, payment_secret) = (PaymentHash(invoice.payment_hash().into_inner()), *invoice.payment_secret());
 		let payment_preimage = if user_generated_pmt_hash {
@@ -1076,7 +1095,7 @@ mod test {
 			nodes[2].node.get_phantom_route_hints(),
 		];
 
-		let invoice = crate::utils::create_phantom_invoice::<&test_utils::TestKeysInterface, &test_utils::TestLogger>(Some(payment_amt), Some(payment_hash), "test".to_string(), 3600, route_hints, &nodes[1].keys_manager, &nodes[1].logger, Currency::BitcoinTestnet).unwrap();
+		let invoice = crate::utils::create_phantom_invoice::<&test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestLogger>(Some(payment_amt), Some(payment_hash), "test".to_string(), 3600, route_hints, &nodes[1].keys_manager, &nodes[1].keys_manager, &nodes[1].logger, Currency::BitcoinTestnet).unwrap();
 
 		let chan_0_1 = &nodes[1].node.list_usable_channels()[0];
 		assert_eq!(invoice.route_hints()[0].0[0].htlc_minimum_msat, chan_0_1.inbound_htlc_minimum_msat);
@@ -1104,10 +1123,10 @@ mod test {
 		let description_hash = crate::Sha256(Hash::hash("Description hash phantom invoice".as_bytes()));
 		let non_default_invoice_expiry_secs = 4200;
 		let invoice = crate::utils::create_phantom_invoice_with_description_hash::<
-			&test_utils::TestKeysInterface, &test_utils::TestLogger,
+			&test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestLogger,
 		>(
 			Some(payment_amt), None, non_default_invoice_expiry_secs, description_hash,
-			route_hints, &nodes[1].keys_manager, &nodes[1].logger, Currency::BitcoinTestnet
+			route_hints, &nodes[1].keys_manager, &nodes[1].keys_manager, &nodes[1].logger, Currency::BitcoinTestnet
 		)
 		.unwrap();
 		assert_eq!(invoice.amount_pico_btc(), Some(200_000));
@@ -1421,7 +1440,7 @@ mod test {
 			.map(|route_hint| route_hint.phantom_scid)
 			.collect::<HashSet<u64>>();
 
-		let invoice = crate::utils::create_phantom_invoice::<&test_utils::TestKeysInterface, &test_utils::TestLogger>(invoice_amt, None, "test".to_string(), 3600, phantom_route_hints, &invoice_node.keys_manager, &invoice_node.logger, Currency::BitcoinTestnet).unwrap();
+		let invoice = crate::utils::create_phantom_invoice::<&test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestLogger>(invoice_amt, None, "test".to_string(), 3600, phantom_route_hints, &invoice_node.keys_manager, &invoice_node.keys_manager, &invoice_node.logger, Currency::BitcoinTestnet).unwrap();
 
 		let invoice_hints = invoice.private_routes();
 

@@ -322,11 +322,12 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 	}
 }
 
-impl<'a, K: EntropySource + SignerProvider> ReadableArgs<(&'a K, u64, [u8; 32])> for OnchainTxHandler<K::Signer> {
-	fn read<R: io::Read>(reader: &mut R, args: (&'a K, u64, [u8; 32])) -> Result<Self, DecodeError> {
-		let keys_manager = args.0;
-		let channel_value_satoshis = args.1;
-		let channel_keys_id = args.2;
+impl<'a, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'a SP, u64, [u8; 32])> for OnchainTxHandler<SP::Signer> {
+	fn read<R: io::Read>(reader: &mut R, args: (&'a ES, &'a SP, u64, [u8; 32])) -> Result<Self, DecodeError> {
+		let entropy_source = args.0;
+		let signer_provider = args.1;
+		let channel_value_satoshis = args.2;
+		let channel_keys_id = args.3;
 
 		let _ver = read_ver_prefix!(reader, SERIALIZATION_VERSION);
 
@@ -352,7 +353,7 @@ impl<'a, K: EntropySource + SignerProvider> ReadableArgs<(&'a K, u64, [u8; 32])>
 			bytes_read += bytes_to_read;
 		}
 
-		let mut signer = keys_manager.derive_channel_signer(channel_value_satoshis, channel_keys_id);
+		let mut signer = signer_provider.derive_channel_signer(channel_value_satoshis, channel_keys_id);
 		signer.provide_channel_parameters(&channel_parameters);
 
 		let pending_claim_requests_len: u64 = Readable::read(reader)?;
@@ -393,7 +394,7 @@ impl<'a, K: EntropySource + SignerProvider> ReadableArgs<(&'a K, u64, [u8; 32])>
 		read_tlv_fields!(reader, {});
 
 		let mut secp_ctx = Secp256k1::new();
-		secp_ctx.seeded_randomize(&keys_manager.get_secure_random_bytes());
+		secp_ctx.seeded_randomize(&entropy_source.get_secure_random_bytes());
 
 		Ok(OnchainTxHandler {
 			destination_script,

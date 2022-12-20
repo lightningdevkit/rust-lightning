@@ -502,6 +502,8 @@ pub type SimpleArcChannelManager<M, T, F, L> = ChannelManager<
 	Arc<M>,
 	Arc<T>,
 	Arc<KeysManager>,
+	Arc<KeysManager>,
+	Arc<KeysManager>,
 	Arc<F>,
 	Arc<DefaultRouter<
 		Arc<NetworkGraph<Arc<L>>>,
@@ -521,7 +523,7 @@ pub type SimpleArcChannelManager<M, T, F, L> = ChannelManager<
 /// type alias chooses the concrete types of KeysManager and DefaultRouter.
 ///
 /// (C-not exported) as Arcs don't make sense in bindings
-pub type SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, M, T, F, L> = ChannelManager<&'a M, &'b T, &'c KeysManager, &'d F, &'e DefaultRouter<&'f NetworkGraph<&'g L>, &'g L, &'h Mutex<ProbabilisticScorer<&'f NetworkGraph<&'g L>, &'g L>>>, &'g L>;
+pub type SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, M, T, F, L> = ChannelManager<&'a M, &'b T, &'c KeysManager, &'c KeysManager, &'c KeysManager, &'d F, &'e DefaultRouter<&'f NetworkGraph<&'g L>, &'g L, &'h Mutex<ProbabilisticScorer<&'f NetworkGraph<&'g L>, &'g L>>>, &'g L>;
 
 /// Manager which keeps track of a number of channels and sends messages to the appropriate
 /// channel, also tracking HTLC preimages and forwarding onion packets appropriately.
@@ -597,11 +599,13 @@ pub type SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, M, T, F, L> = C
 //  |                   |
 //  |                   |__`pending_background_events`
 //
-pub struct ChannelManager<M: Deref, T: Deref, K: Deref, F: Deref, R: Deref, L: Deref>
+pub struct ChannelManager<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, L: Deref>
 where
-	M::Target: chain::Watch<<K::Target as SignerProvider>::Signer>,
+	M::Target: chain::Watch<<SP::Target as SignerProvider>::Signer>,
 	T::Target: BroadcasterInterface,
-	K::Target: SignerProvider,
+	ES::Target: EntropySource,
+	NS::Target: NodeSigner,
+	SP::Target: SignerProvider,
 	F::Target: FeeEstimator,
 	R::Target: Router,
 	L::Target: Logger,
@@ -754,9 +758,9 @@ where
 	///
 	/// See `ChannelManager` struct-level documentation for lock order requirements.
 	#[cfg(not(any(test, feature = "_test_utils")))]
-	per_peer_state: FairRwLock<HashMap<PublicKey, Mutex<PeerState<<K::Target as SignerProvider>::Signer>>>>,
+	per_peer_state: FairRwLock<HashMap<PublicKey, Mutex<PeerState<<SP::Target as SignerProvider>::Signer>>>>,
 	#[cfg(any(test, feature = "_test_utils"))]
-	pub(super) per_peer_state: FairRwLock<HashMap<PublicKey, Mutex<PeerState<<K::Target as SignerProvider>::Signer>>>>,
+	pub(super) per_peer_state: FairRwLock<HashMap<PublicKey, Mutex<PeerState<<SP::Target as SignerProvider>::Signer>>>>,
 
 	/// See `ChannelManager` struct-level documentation for lock order requirements.
 	pending_events: Mutex<Vec<events::Event>>,
@@ -772,7 +776,9 @@ where
 
 	persistence_notifier: Notifier,
 
-	keys_manager: K,
+	entropy_source: ES,
+	node_signer: NS,
+	signer_provider: SP,
 
 	logger: L,
 }
@@ -1406,11 +1412,13 @@ macro_rules! emit_channel_ready_event {
 	}
 }
 
-impl<M: Deref, T: Deref, K: Deref, F: Deref, R: Deref, L: Deref> ChannelManager<M, T, K, F, R, L>
+impl<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, L: Deref> ChannelManager<M, T, ES, NS, SP, F, R, L>
 where
-	M::Target: chain::Watch<<K::Target as SignerProvider>::Signer>,
+	M::Target: chain::Watch<<SP::Target as SignerProvider>::Signer>,
 	T::Target: BroadcasterInterface,
-	K::Target: EntropySource + NodeSigner + SignerProvider,
+	ES::Target: EntropySource,
+	NS::Target: NodeSigner,
+	SP::Target: SignerProvider,
 	F::Target: FeeEstimator,
 	R::Target: Router,
 	L::Target: Logger,
@@ -1425,10 +1433,10 @@ where
 	/// Users need to notify the new ChannelManager when a new block is connected or
 	/// disconnected using its `block_connected` and `block_disconnected` methods, starting
 	/// from after `params.latest_hash`.
-	pub fn new(fee_est: F, chain_monitor: M, tx_broadcaster: T, router: R, logger: L, keys_manager: K, config: UserConfig, params: ChainParameters) -> Self {
+	pub fn new(fee_est: F, chain_monitor: M, tx_broadcaster: T, router: R, logger: L, entropy_source: ES, node_signer: NS, signer_provider: SP, config: UserConfig, params: ChainParameters) -> Self {
 		let mut secp_ctx = Secp256k1::new();
-		secp_ctx.seeded_randomize(&keys_manager.get_secure_random_bytes());
-		let inbound_pmt_key_material = keys_manager.get_inbound_payment_key_material();
+		secp_ctx.seeded_randomize(&entropy_source.get_secure_random_bytes());
+		let inbound_pmt_key_material = node_signer.get_inbound_payment_key_material();
 		let expanded_inbound_key = inbound_payment::ExpandedKey::new(&inbound_pmt_key_material);
 		ChannelManager {
 			default_configuration: config.clone(),
@@ -1449,14 +1457,14 @@ where
 			id_to_peer: Mutex::new(HashMap::new()),
 			short_to_chan_info: FairRwLock::new(HashMap::new()),
 
-			our_network_key: keys_manager.get_node_secret(Recipient::Node).unwrap(),
-			our_network_pubkey: PublicKey::from_secret_key(&secp_ctx, &keys_manager.get_node_secret(Recipient::Node).unwrap()),
+			our_network_key: node_signer.get_node_secret(Recipient::Node).unwrap(),
+			our_network_pubkey: PublicKey::from_secret_key(&secp_ctx, &node_signer.get_node_secret(Recipient::Node).unwrap()),
 			secp_ctx,
 
 			inbound_payment_key: expanded_inbound_key,
-			fake_scid_rand_bytes: keys_manager.get_secure_random_bytes(),
+			fake_scid_rand_bytes: entropy_source.get_secure_random_bytes(),
 
-			probing_cookie_secret: keys_manager.get_secure_random_bytes(),
+			probing_cookie_secret: entropy_source.get_secure_random_bytes(),
 
 			highest_seen_timestamp: AtomicUsize::new(0),
 
@@ -1467,7 +1475,9 @@ where
 			total_consistency_lock: RwLock::new(()),
 			persistence_notifier: Notifier::new(),
 
-			keys_manager,
+			entropy_source,
+			node_signer,
+			signer_provider,
 
 			logger,
 		}
@@ -1486,7 +1496,7 @@ where
 			if cfg!(fuzzing) { // fuzzing chacha20 doesn't use the key at all so we always get the same alias
 				outbound_scid_alias += 1;
 			} else {
-				outbound_scid_alias = fake_scid::Namespace::OutboundAlias.get_fake_scid(height, &self.genesis_hash, &self.fake_scid_rand_bytes, &self.keys_manager);
+				outbound_scid_alias = fake_scid::Namespace::OutboundAlias.get_fake_scid(height, &self.genesis_hash, &self.fake_scid_rand_bytes, &self.entropy_source);
 			}
 			if outbound_scid_alias != 0 && self.outbound_scid_aliases.lock().unwrap().insert(outbound_scid_alias) {
 				break;
@@ -1543,7 +1553,7 @@ where
 			let outbound_scid_alias = self.create_and_insert_outbound_scid_alias();
 			let their_features = &peer_state.latest_features;
 			let config = if override_config.is_some() { override_config.as_ref().unwrap() } else { &self.default_configuration };
-			match Channel::new_outbound(&self.fee_estimator, &self.keys_manager, their_network_key,
+			match Channel::new_outbound(&self.fee_estimator, &self.entropy_source, &self.signer_provider, their_network_key,
 				their_features, channel_value_satoshis, push_msat, user_channel_id, config,
 				self.best_block.read().unwrap().height(), outbound_scid_alias)
 			{
@@ -1575,7 +1585,7 @@ where
 		Ok(temporary_channel_id)
 	}
 
-	fn list_channels_with_filter<Fn: FnMut(&(&[u8; 32], &Channel<<K::Target as SignerProvider>::Signer>)) -> bool + Copy>(&self, f: Fn) -> Vec<ChannelDetails> {
+	fn list_channels_with_filter<Fn: FnMut(&(&[u8; 32], &Channel<<SP::Target as SignerProvider>::Signer>)) -> bool + Copy>(&self, f: Fn) -> Vec<ChannelDetails> {
 		let mut res = Vec::new();
 		// Allocate our best estimate of the number of channels we have in the `res`
 		// Vec. Sadly the `short_to_chan_info` map doesn't cover channels without
@@ -1663,7 +1673,7 @@ where
 	}
 
 	/// Helper function that issues the channel close events
-	fn issue_channel_close_events(&self, channel: &Channel<<K::Target as SignerProvider>::Signer>, closure_reason: ClosureReason) {
+	fn issue_channel_close_events(&self, channel: &Channel<<SP::Target as SignerProvider>::Signer>, closure_reason: ClosureReason) {
 		let mut pending_events_lock = self.pending_events.lock().unwrap();
 		match channel.unbroadcasted_funding() {
 			Some(transaction) => {
@@ -1694,7 +1704,7 @@ where
 			let peer_state = &mut *peer_state_lock;
 			match peer_state.channel_by_id.entry(channel_id.clone()) {
 				hash_map::Entry::Occupied(mut chan_entry) => {
-					let (shutdown_msg, monitor_update, htlcs) = chan_entry.get_mut().get_shutdown(&self.keys_manager, &peer_state.latest_features, target_feerate_sats_per_1000_weight)?;
+					let (shutdown_msg, monitor_update, htlcs) = chan_entry.get_mut().get_shutdown(&self.signer_provider, &peer_state.latest_features, target_feerate_sats_per_1000_weight)?;
 					failed_htlcs = htlcs;
 
 					// Update the monitor with the shutdown script if necessary.
@@ -2226,7 +2236,7 @@ where
 	/// [`MessageSendEvent::BroadcastChannelUpdate`] event.
 	///
 	/// May be called with peer_state already locked!
-	fn get_channel_update_for_broadcast(&self, chan: &Channel<<K::Target as SignerProvider>::Signer>) -> Result<msgs::ChannelUpdate, LightningError> {
+	fn get_channel_update_for_broadcast(&self, chan: &Channel<<SP::Target as SignerProvider>::Signer>) -> Result<msgs::ChannelUpdate, LightningError> {
 		if !chan.should_announce() {
 			return Err(LightningError {
 				err: "Cannot broadcast a channel_update for a private channel".to_owned(),
@@ -2245,7 +2255,7 @@ where
 	/// and thus MUST NOT be called unless the recipient of the resulting message has already
 	/// provided evidence that they know about the existence of the channel.
 	/// May be called with peer_state already locked!
-	fn get_channel_update_for_unicast(&self, chan: &Channel<<K::Target as SignerProvider>::Signer>) -> Result<msgs::ChannelUpdate, LightningError> {
+	fn get_channel_update_for_unicast(&self, chan: &Channel<<SP::Target as SignerProvider>::Signer>) -> Result<msgs::ChannelUpdate, LightningError> {
 		log_trace!(self.logger, "Attempting to generate channel update for channel {}", log_bytes!(chan.channel_id()));
 		let short_channel_id = match chan.get_short_channel_id().or(chan.latest_inbound_scid_alias()) {
 			None => return Err(LightningError{err: "Channel not yet established".to_owned(), action: msgs::ErrorAction::IgnoreError}),
@@ -2254,7 +2264,7 @@ where
 
 		self.get_channel_update_for_onion(short_channel_id, chan)
 	}
-	fn get_channel_update_for_onion(&self, short_channel_id: u64, chan: &Channel<<K::Target as SignerProvider>::Signer>) -> Result<msgs::ChannelUpdate, LightningError> {
+	fn get_channel_update_for_onion(&self, short_channel_id: u64, chan: &Channel<<SP::Target as SignerProvider>::Signer>) -> Result<msgs::ChannelUpdate, LightningError> {
 		log_trace!(self.logger, "Generating channel update for channel {}", log_bytes!(chan.channel_id()));
 		let were_node_one = PublicKey::from_secret_key(&self.secp_ctx, &self.our_network_key).serialize()[..] < chan.get_counterparty_node_id().serialize()[..];
 
@@ -2283,7 +2293,7 @@ where
 	// Only public for testing, this should otherwise never be called direcly
 	pub(crate) fn send_payment_along_path(&self, path: &Vec<RouteHop>, payment_params: &Option<PaymentParameters>, payment_hash: &PaymentHash, payment_secret: &Option<PaymentSecret>, total_value: u64, cur_height: u32, payment_id: PaymentId, keysend_preimage: &Option<PaymentPreimage>, session_priv_bytes: [u8; 32]) -> Result<(), APIError> {
 		log_trace!(self.logger, "Attempting to send payment for path with next hop {}", path.first().unwrap().short_channel_id);
-		let prng_seed = self.keys_manager.get_secure_random_bytes();
+		let prng_seed = self.entropy_source.get_secure_random_bytes();
 		let session_priv = SecretKey::from_slice(&session_priv_bytes[..]).expect("RNG is busted");
 
 		let onion_keys = onion_utils::construct_onion_keys(&self.secp_ctx, &path, &session_priv)
@@ -2431,7 +2441,7 @@ where
 	pub fn send_payment(&self, route: &Route, payment_hash: PaymentHash, payment_secret: &Option<PaymentSecret>, payment_id: PaymentId) -> Result<(), PaymentSendFailure> {
 		let best_block_height = self.best_block.read().unwrap().height();
 		self.pending_outbound_payments
-			.send_payment_with_route(route, payment_hash, payment_secret, payment_id, &self.keys_manager, best_block_height,
+			.send_payment_with_route(route, payment_hash, payment_secret, payment_id, &self.entropy_source, &self.node_signer, best_block_height,
 				|path, payment_params, payment_hash, payment_secret, total_value, cur_height, payment_id, keysend_preimage, session_priv|
 				self.send_payment_along_path(path, payment_params, payment_hash, payment_secret, total_value, cur_height, payment_id, keysend_preimage, session_priv))
 	}
@@ -2439,7 +2449,7 @@ where
 	#[cfg(test)]
 	fn test_send_payment_internal(&self, route: &Route, payment_hash: PaymentHash, payment_secret: &Option<PaymentSecret>, keysend_preimage: Option<PaymentPreimage>, payment_id: PaymentId, recv_value_msat: Option<u64>, onion_session_privs: Vec<[u8; 32]>) -> Result<(), PaymentSendFailure> {
 		let best_block_height = self.best_block.read().unwrap().height();
-		self.pending_outbound_payments.test_send_payment_internal(route, payment_hash, payment_secret, keysend_preimage, payment_id, recv_value_msat, onion_session_privs, &self.keys_manager, best_block_height,
+		self.pending_outbound_payments.test_send_payment_internal(route, payment_hash, payment_secret, keysend_preimage, payment_id, recv_value_msat, onion_session_privs, &self.node_signer, best_block_height,
 			|path, payment_params, payment_hash, payment_secret, total_value, cur_height, payment_id, keysend_preimage, session_priv|
 			self.send_payment_along_path(path, payment_params, payment_hash, payment_secret, total_value, cur_height, payment_id, keysend_preimage, session_priv))
 	}
@@ -2447,7 +2457,7 @@ where
 	#[cfg(test)]
 	pub(crate) fn test_add_new_pending_payment(&self, payment_hash: PaymentHash, payment_secret: Option<PaymentSecret>, payment_id: PaymentId, route: &Route) -> Result<Vec<[u8; 32]>, PaymentSendFailure> {
 		let best_block_height = self.best_block.read().unwrap().height();
-		self.pending_outbound_payments.test_add_new_pending_payment(payment_hash, payment_secret, payment_id, route, &self.keys_manager, best_block_height)
+		self.pending_outbound_payments.test_add_new_pending_payment(payment_hash, payment_secret, payment_id, route, &self.entropy_source, best_block_height)
 	}
 
 
@@ -2463,7 +2473,7 @@ where
 	/// [`abandon_payment`]: [`ChannelManager::abandon_payment`]
 	pub fn retry_payment(&self, route: &Route, payment_id: PaymentId) -> Result<(), PaymentSendFailure> {
 		let best_block_height = self.best_block.read().unwrap().height();
-		self.pending_outbound_payments.retry_payment_with_route(route, payment_id, &self.keys_manager, best_block_height,
+		self.pending_outbound_payments.retry_payment_with_route(route, payment_id, &self.entropy_source, &self.node_signer, best_block_height,
 			|path, payment_params, payment_hash, payment_secret, total_value, cur_height, payment_id, keysend_preimage, session_priv|
 			self.send_payment_along_path(path, payment_params, payment_hash, payment_secret, total_value, cur_height, payment_id, keysend_preimage, session_priv))
 	}
@@ -2512,7 +2522,7 @@ where
 	/// [`send_payment`]: Self::send_payment
 	pub fn send_spontaneous_payment(&self, route: &Route, payment_preimage: Option<PaymentPreimage>, payment_id: PaymentId) -> Result<PaymentHash, PaymentSendFailure> {
 		let best_block_height = self.best_block.read().unwrap().height();
-		self.pending_outbound_payments.send_spontaneous_payment(route, payment_preimage, payment_id, &self.keys_manager, best_block_height,
+		self.pending_outbound_payments.send_spontaneous_payment(route, payment_preimage, payment_id, &self.entropy_source, &self.node_signer, best_block_height,
 			|path, payment_params, payment_hash, payment_secret, total_value, cur_height, payment_id, keysend_preimage, session_priv|
 			self.send_payment_along_path(path, payment_params, payment_hash, payment_secret, total_value, cur_height, payment_id, keysend_preimage, session_priv))
 	}
@@ -2522,7 +2532,7 @@ where
 	/// us to easily discern them from real payments.
 	pub fn send_probe(&self, hops: Vec<RouteHop>) -> Result<(PaymentHash, PaymentId), PaymentSendFailure> {
 		let best_block_height = self.best_block.read().unwrap().height();
-		self.pending_outbound_payments.send_probe(hops, self.probing_cookie_secret, &self.keys_manager, best_block_height,
+		self.pending_outbound_payments.send_probe(hops, self.probing_cookie_secret, &self.entropy_source, &self.node_signer, best_block_height,
 			|path, payment_params, payment_hash, payment_secret, total_value, cur_height, payment_id, keysend_preimage, session_priv|
 			self.send_payment_along_path(path, payment_params, payment_hash, payment_secret, total_value, cur_height, payment_id, keysend_preimage, session_priv))
 	}
@@ -2536,7 +2546,7 @@ where
 
 	/// Handles the generation of a funding transaction, optionally (for tests) with a function
 	/// which checks the correctness of the funding transaction given the associated channel.
-	fn funding_transaction_generated_intern<FundingOutput: Fn(&Channel<<K::Target as SignerProvider>::Signer>, &Transaction) -> Result<OutPoint, APIError>>(
+	fn funding_transaction_generated_intern<FundingOutput: Fn(&Channel<<SP::Target as SignerProvider>::Signer>, &Transaction) -> Result<OutPoint, APIError>>(
 		&self, temporary_channel_id: &[u8; 32], counterparty_node_id: &PublicKey, funding_transaction: Transaction, find_funding_output: FundingOutput
 	) -> Result<(), APIError> {
 		let per_peer_state = self.per_peer_state.read().unwrap();
@@ -2913,7 +2923,7 @@ where
 											}
 										}
 										if let PendingHTLCRouting::Forward { onion_packet, .. } = routing {
-											let phantom_secret_res = self.keys_manager.get_node_secret(Recipient::PhantomNode);
+											let phantom_secret_res = self.node_signer.get_node_secret(Recipient::PhantomNode);
 											if phantom_secret_res.is_ok() && fake_scid::is_valid_phantom(&self.fake_scid_rand_bytes, short_chan_id, &self.genesis_hash) {
 												let phantom_shared_secret = SharedSecret::new(&onion_packet.public_key.unwrap(), &phantom_secret_res.unwrap()).secret_bytes();
 												let next_hop = match onion_utils::decode_next_payment_hop(phantom_shared_secret, &onion_packet.hop_data, onion_packet.hmac, payment_hash) {
@@ -3091,7 +3101,7 @@ where
 								let phantom_shared_secret = claimable_htlc.prev_hop.phantom_shared_secret;
 								let mut receiver_node_id = self.our_network_pubkey;
 								if phantom_shared_secret.is_some() {
-									receiver_node_id = self.keys_manager.get_node_id(Recipient::PhantomNode)
+									receiver_node_id = self.node_signer.get_node_id(Recipient::PhantomNode)
 										.expect("Failed to get node_id for phantom node recipient");
 								}
 
@@ -3287,7 +3297,7 @@ where
 		self.process_background_events();
 	}
 
-	fn update_channel_fee(&self, chan_id: &[u8; 32], chan: &mut Channel<<K::Target as SignerProvider>::Signer>, new_feerate: u32) -> NotifyOption {
+	fn update_channel_fee(&self, chan_id: &[u8; 32], chan: &mut Channel<<SP::Target as SignerProvider>::Signer>, new_feerate: u32) -> NotifyOption {
 		if !chan.is_outbound() { return NotifyOption::SkipPersist; }
 		// If the feerate has decreased by less than half, don't bother
 		if new_feerate <= chan.get_feerate() && new_feerate * 2 > chan.get_feerate() {
@@ -3482,7 +3492,7 @@ where
 	///
 	/// This is for failures on the channel on which the HTLC was *received*, not failures
 	/// forwarding
-	fn get_htlc_inbound_temp_fail_err_and_data(&self, desired_err_code: u16, chan: &Channel<<K::Target as SignerProvider>::Signer>) -> (u16, Vec<u8>) {
+	fn get_htlc_inbound_temp_fail_err_and_data(&self, desired_err_code: u16, chan: &Channel<<SP::Target as SignerProvider>::Signer>) -> (u16, Vec<u8>) {
 		// We can't be sure what SCID was used when relaying inbound towards us, so we have to
 		// guess somewhat. If its a public channel, we figure best to just use the real SCID (as
 		// we're not leaking that we have a channel with the counterparty), otherwise we try to use
@@ -3502,7 +3512,7 @@ where
 
 	/// Gets an HTLC onion failure code and error data for an `UPDATE` error, given the error code
 	/// that we want to return and a channel.
-	fn get_htlc_temp_fail_err_and_data(&self, desired_err_code: u16, scid: u64, chan: &Channel<<K::Target as SignerProvider>::Signer>) -> (u16, Vec<u8>) {
+	fn get_htlc_temp_fail_err_and_data(&self, desired_err_code: u16, scid: u64, chan: &Channel<<SP::Target as SignerProvider>::Signer>) -> (u16, Vec<u8>) {
 		debug_assert_eq!(desired_err_code & 0x1000, 0x1000);
 		if let Ok(upd) = self.get_channel_update_for_onion(scid, chan) {
 			let mut enc = VecWriter(Vec::with_capacity(upd.serialized_length() + 6));
@@ -3637,7 +3647,7 @@ where
 				let mut receiver_node_id = self.our_network_pubkey;
 				for htlc in sources.iter() {
 					if htlc.prev_hop.phantom_shared_secret.is_some() {
-						let phantom_pubkey = self.keys_manager.get_node_id(Recipient::PhantomNode)
+						let phantom_pubkey = self.node_signer.get_node_id(Recipient::PhantomNode)
 							.expect("Failed to get node_id for phantom node recipient");
 						receiver_node_id = phantom_pubkey;
 						break;
@@ -3771,7 +3781,7 @@ where
 	}
 
 	fn claim_funds_from_hop<ComplFunc: FnOnce(Option<u64>) -> Option<MonitorUpdateCompletionAction>>(&self,
-		per_peer_state_lock: RwLockReadGuard<HashMap<PublicKey, Mutex<PeerState<<K::Target as SignerProvider>::Signer>>>>,
+		per_peer_state_lock: RwLockReadGuard<HashMap<PublicKey, Mutex<PeerState<<SP::Target as SignerProvider>::Signer>>>>,
 		prev_hop: HTLCPreviousHopData, payment_preimage: PaymentPreimage, completion_action: ComplFunc)
 	-> Result<(), (PublicKey, MsgHandleErrInternal)> {
 		//TODO: Delay the claimed_funds relaying just like we do outbound relay!
@@ -3954,7 +3964,7 @@ where
 	/// Handles a channel reentering a functional state, either due to reconnect or a monitor
 	/// update completion.
 	fn handle_channel_resumption(&self, pending_msg_events: &mut Vec<MessageSendEvent>,
-		channel: &mut Channel<<K::Target as SignerProvider>::Signer>, raa: Option<msgs::RevokeAndACK>,
+		channel: &mut Channel<<SP::Target as SignerProvider>::Signer>, raa: Option<msgs::RevokeAndACK>,
 		commitment_update: Option<msgs::CommitmentUpdate>, order: RAACommitmentOrder,
 		pending_forwards: Vec<(PendingHTLCInfo, u64)>, funding_broadcastable: Option<Transaction>,
 		channel_ready: Option<msgs::ChannelReady>, announcement_sigs: Option<msgs::AnnouncementSignatures>)
@@ -4171,11 +4181,11 @@ where
 		}
 
 		let mut random_bytes = [0u8; 16];
-		random_bytes.copy_from_slice(&self.keys_manager.get_secure_random_bytes()[..16]);
+		random_bytes.copy_from_slice(&self.entropy_source.get_secure_random_bytes()[..16]);
 		let user_channel_id = u128::from_be_bytes(random_bytes);
 
 		let outbound_scid_alias = self.create_and_insert_outbound_scid_alias();
-		let mut channel = match Channel::new_from_req(&self.fee_estimator, &self.keys_manager,
+		let mut channel = match Channel::new_from_req(&self.fee_estimator, &self.entropy_source, &self.signer_provider,
 			counterparty_node_id.clone(), &their_features, msg, user_channel_id, &self.default_configuration,
 			self.best_block.read().unwrap().height(), &self.logger, outbound_scid_alias)
 		{
@@ -4265,7 +4275,7 @@ where
 			let peer_state = &mut *peer_state_lock;
 			match peer_state.channel_by_id.entry(msg.temporary_channel_id) {
 				hash_map::Entry::Occupied(mut chan) => {
-					(try_chan_entry!(self, chan.get_mut().funding_created(msg, best_block, &self.keys_manager, &self.logger), chan), chan.remove())
+					(try_chan_entry!(self, chan.get_mut().funding_created(msg, best_block, &self.signer_provider, &self.logger), chan), chan.remove())
 				},
 				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.temporary_channel_id))
 			}
@@ -4342,7 +4352,7 @@ where
 			let peer_state = &mut *peer_state_lock;
 			match peer_state.channel_by_id.entry(msg.channel_id) {
 				hash_map::Entry::Occupied(mut chan) => {
-					let (monitor, funding_tx, channel_ready) = match chan.get_mut().funding_signed(&msg, best_block, &self.keys_manager, &self.logger) {
+					let (monitor, funding_tx, channel_ready) = match chan.get_mut().funding_signed(&msg, best_block, &self.signer_provider, &self.logger) {
 						Ok(update) => update,
 						Err(e) => try_chan_entry!(self, Err(e), chan),
 					};
@@ -4434,7 +4444,7 @@ where
 							if chan_entry.get().sent_shutdown() { " after we initiated shutdown" } else { "" });
 					}
 
-					let (shutdown, monitor_update, htlcs) = try_chan_entry!(self, chan_entry.get_mut().shutdown(&self.keys_manager, &their_features, &msg), chan_entry);
+					let (shutdown, monitor_update, htlcs) = try_chan_entry!(self, chan_entry.get_mut().shutdown(&self.signer_provider, &their_features, &msg), chan_entry);
 					dropped_htlcs = htlcs;
 
 					// Update the monitor with the shutdown script if necessary.
@@ -4538,7 +4548,7 @@ where
 		match peer_state.channel_by_id.entry(msg.channel_id) {
 			hash_map::Entry::Occupied(mut chan) => {
 
-				let create_pending_htlc_status = |chan: &Channel<<K::Target as SignerProvider>::Signer>, pending_forward_info: PendingHTLCStatus, error_code: u16| {
+				let create_pending_htlc_status = |chan: &Channel<<SP::Target as SignerProvider>::Signer>, pending_forward_info: PendingHTLCStatus, error_code: u16| {
 					// If the update_add is completely bogus, the call will Err and we will close,
 					// but if we've sent a shutdown and they haven't acknowledged it yet, we just
 					// want to reject the new HTLC and fail it backwards instead of forwarding.
@@ -5212,7 +5222,7 @@ where
 			return Err(APIError::APIMisuseError { err: format!("min_value_msat of {} greater than total 21 million bitcoin supply", min_value_msat.unwrap()) });
 		}
 
-		let payment_secret = PaymentSecret(self.keys_manager.get_secure_random_bytes());
+		let payment_secret = PaymentSecret(self.entropy_source.get_secure_random_bytes());
 
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 		let mut payment_secrets = self.pending_inbound_payments.lock().unwrap();
@@ -5263,7 +5273,7 @@ where
 	/// [`PaymentClaimable::payment_preimage`]: events::Event::PaymentClaimable::payment_preimage
 	/// [`create_inbound_payment_for_hash`]: Self::create_inbound_payment_for_hash
 	pub fn create_inbound_payment(&self, min_value_msat: Option<u64>, invoice_expiry_delta_secs: u32) -> Result<(PaymentHash, PaymentSecret), ()> {
-		inbound_payment::create(&self.inbound_payment_key, min_value_msat, invoice_expiry_delta_secs, &self.keys_manager, self.highest_seen_timestamp.load(Ordering::Acquire) as u64)
+		inbound_payment::create(&self.inbound_payment_key, min_value_msat, invoice_expiry_delta_secs, &self.entropy_source, self.highest_seen_timestamp.load(Ordering::Acquire) as u64)
 	}
 
 	/// Legacy version of [`create_inbound_payment`]. Use this method if you wish to share
@@ -5277,7 +5287,7 @@ where
 	/// [`create_inbound_payment`]: Self::create_inbound_payment
 	#[deprecated]
 	pub fn create_inbound_payment_legacy(&self, min_value_msat: Option<u64>, invoice_expiry_delta_secs: u32) -> Result<(PaymentHash, PaymentSecret), APIError> {
-		let payment_preimage = PaymentPreimage(self.keys_manager.get_secure_random_bytes());
+		let payment_preimage = PaymentPreimage(self.entropy_source.get_secure_random_bytes());
 		let payment_hash = PaymentHash(Sha256::hash(&payment_preimage.0).into_inner());
 		let payment_secret = self.set_payment_hash_secret_map(payment_hash, Some(payment_preimage), min_value_msat, invoice_expiry_delta_secs)?;
 		Ok((payment_hash, payment_secret))
@@ -5360,7 +5370,7 @@ where
 		let best_block_height = self.best_block.read().unwrap().height();
 		let short_to_chan_info = self.short_to_chan_info.read().unwrap();
 		loop {
-			let scid_candidate = fake_scid::Namespace::Phantom.get_fake_scid(best_block_height, &self.genesis_hash, &self.fake_scid_rand_bytes, &self.keys_manager);
+			let scid_candidate = fake_scid::Namespace::Phantom.get_fake_scid(best_block_height, &self.genesis_hash, &self.fake_scid_rand_bytes, &self.entropy_source);
 			// Ensure the generated scid doesn't conflict with a real channel.
 			match short_to_chan_info.get(&scid_candidate) {
 				Some(_) => continue,
@@ -5390,7 +5400,7 @@ where
 		let best_block_height = self.best_block.read().unwrap().height();
 		let short_to_chan_info = self.short_to_chan_info.read().unwrap();
 		loop {
-			let scid_candidate = fake_scid::Namespace::Intercept.get_fake_scid(best_block_height, &self.genesis_hash, &self.fake_scid_rand_bytes, &self.keys_manager);
+			let scid_candidate = fake_scid::Namespace::Intercept.get_fake_scid(best_block_height, &self.genesis_hash, &self.fake_scid_rand_bytes, &self.entropy_source);
 			// Ensure the generated scid doesn't conflict with a real channel.
 			if short_to_chan_info.contains_key(&scid_candidate) { continue }
 			return scid_candidate
@@ -5476,11 +5486,13 @@ where
 	}
 }
 
-impl<M: Deref, T: Deref, K: Deref, F: Deref, R: Deref, L: Deref> MessageSendEventsProvider for ChannelManager<M, T, K, F, R, L>
+impl<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, L: Deref> MessageSendEventsProvider for ChannelManager<M, T, ES, NS, SP, F, R, L>
 where
-	M::Target: chain::Watch<<K::Target as SignerProvider>::Signer>,
+	M::Target: chain::Watch<<SP::Target as SignerProvider>::Signer>,
 	T::Target: BroadcasterInterface,
-	K::Target: EntropySource + NodeSigner + SignerProvider,
+	ES::Target: EntropySource,
+	NS::Target: NodeSigner,
+	SP::Target: SignerProvider,
 	F::Target: FeeEstimator,
 	R::Target: Router,
 	L::Target: Logger,
@@ -5538,11 +5550,13 @@ where
 	}
 }
 
-impl<M: Deref, T: Deref, K: Deref, F: Deref, R: Deref, L: Deref> EventsProvider for ChannelManager<M, T, K, F, R, L>
+impl<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, L: Deref> EventsProvider for ChannelManager<M, T, ES, NS, SP, F, R, L>
 where
-	M::Target: chain::Watch<<K::Target as SignerProvider>::Signer>,
+	M::Target: chain::Watch<<SP::Target as SignerProvider>::Signer>,
 	T::Target: BroadcasterInterface,
-	K::Target: EntropySource + NodeSigner + SignerProvider,
+	ES::Target: EntropySource,
+	NS::Target: NodeSigner,
+	SP::Target: SignerProvider,
 	F::Target: FeeEstimator,
 	R::Target: Router,
 	L::Target: Logger,
@@ -5575,11 +5589,13 @@ where
 	}
 }
 
-impl<M: Deref, T: Deref, K: Deref, F: Deref, R: Deref, L: Deref> chain::Listen for ChannelManager<M, T, K, F, R, L>
+impl<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, L: Deref> chain::Listen for ChannelManager<M, T, ES, NS, SP, F, R, L>
 where
-	M::Target: chain::Watch<<K::Target as SignerProvider>::Signer>,
+	M::Target: chain::Watch<<SP::Target as SignerProvider>::Signer>,
 	T::Target: BroadcasterInterface,
-	K::Target: EntropySource + NodeSigner + SignerProvider,
+	ES::Target: EntropySource,
+	NS::Target: NodeSigner,
+	SP::Target: SignerProvider,
 	F::Target: FeeEstimator,
 	R::Target: Router,
 	L::Target: Logger,
@@ -5613,11 +5629,13 @@ where
 	}
 }
 
-impl<M: Deref, T: Deref, K: Deref, F: Deref, R: Deref, L: Deref> chain::Confirm for ChannelManager<M, T, K, F, R, L>
+impl<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, L: Deref> chain::Confirm for ChannelManager<M, T, ES, NS, SP, F, R, L>
 where
-	M::Target: chain::Watch<<K::Target as SignerProvider>::Signer>,
+	M::Target: chain::Watch<<SP::Target as SignerProvider>::Signer>,
 	T::Target: BroadcasterInterface,
-	K::Target: EntropySource + NodeSigner + SignerProvider,
+	ES::Target: EntropySource,
+	NS::Target: NodeSigner,
+	SP::Target: SignerProvider,
 	F::Target: FeeEstimator,
 	R::Target: Router,
 	L::Target: Logger,
@@ -5704,11 +5722,13 @@ where
 	}
 }
 
-impl<M: Deref, T: Deref, K: Deref, F: Deref, R: Deref, L: Deref> ChannelManager<M, T, K, F, R, L>
+impl<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, L: Deref> ChannelManager<M, T, ES, NS, SP, F, R, L>
 where
-	M::Target: chain::Watch<<K::Target as SignerProvider>::Signer>,
+	M::Target: chain::Watch<<SP::Target as SignerProvider>::Signer>,
 	T::Target: BroadcasterInterface,
-	K::Target: EntropySource + NodeSigner + SignerProvider,
+	ES::Target: EntropySource,
+	NS::Target: NodeSigner,
+	SP::Target: SignerProvider,
 	F::Target: FeeEstimator,
 	R::Target: Router,
 	L::Target: Logger,
@@ -5716,7 +5736,7 @@ where
 	/// Calls a function which handles an on-chain event (blocks dis/connected, transactions
 	/// un/confirmed, etc) on each channel, handling any resulting errors or messages generated by
 	/// the function.
-	fn do_chain_event<FN: Fn(&mut Channel<<K::Target as SignerProvider>::Signer>) -> Result<(Option<msgs::ChannelReady>, Vec<(HTLCSource, PaymentHash)>, Option<msgs::AnnouncementSignatures>), ClosureReason>>
+	fn do_chain_event<FN: Fn(&mut Channel<<SP::Target as SignerProvider>::Signer>) -> Result<(Option<msgs::ChannelReady>, Vec<(HTLCSource, PaymentHash)>, Option<msgs::AnnouncementSignatures>), ClosureReason>>
 			(&self, height_opt: Option<u32>, f: FN) {
 		// Note that we MUST NOT end up calling methods on self.chain_monitor here - we're called
 		// during initialization prior to the chain_monitor being fully configured in some cases.
@@ -5908,12 +5928,14 @@ where
 	}
 }
 
-impl<M: Deref, T: Deref, K: Deref, F: Deref, R: Deref, L: Deref>
-	ChannelMessageHandler for ChannelManager<M, T, K, F, R, L>
+impl<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, L: Deref>
+	ChannelMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, L>
 where
-	M::Target: chain::Watch<<K::Target as SignerProvider>::Signer>,
+	M::Target: chain::Watch<<SP::Target as SignerProvider>::Signer>,
 	T::Target: BroadcasterInterface,
-	K::Target: EntropySource + NodeSigner + SignerProvider,
+	ES::Target: EntropySource,
+	NS::Target: NodeSigner,
+	SP::Target: SignerProvider,
 	F::Target: FeeEstimator,
 	R::Target: Router,
 	L::Target: Logger,
@@ -6612,11 +6634,13 @@ impl_writeable_tlv_based!(PendingInboundPayment, {
 	(8, min_value_msat, required),
 });
 
-impl<M: Deref, T: Deref, K: Deref, F: Deref, R: Deref, L: Deref> Writeable for ChannelManager<M, T, K, F, R, L>
+impl<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, L: Deref> Writeable for ChannelManager<M, T, ES, NS, SP, F, R, L>
 where
-	M::Target: chain::Watch<<K::Target as SignerProvider>::Signer>,
+	M::Target: chain::Watch<<SP::Target as SignerProvider>::Signer>,
 	T::Target: BroadcasterInterface,
-	K::Target: SignerProvider,
+	ES::Target: EntropySource,
+	NS::Target: NodeSigner,
+	SP::Target: SignerProvider,
 	F::Target: FeeEstimator,
 	R::Target: Router,
 	L::Target: Logger,
@@ -6821,19 +6845,27 @@ where
 /// which you've already broadcasted the transaction.
 ///
 /// [`ChainMonitor`]: crate::chain::chainmonitor::ChainMonitor
-pub struct ChannelManagerReadArgs<'a, M: Deref, T: Deref, K: Deref, F: Deref, R: Deref, L: Deref>
+pub struct ChannelManagerReadArgs<'a, M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, L: Deref>
 where
-	M::Target: chain::Watch<<K::Target as SignerProvider>::Signer>,
+	M::Target: chain::Watch<<SP::Target as SignerProvider>::Signer>,
 	T::Target: BroadcasterInterface,
-	K::Target: SignerProvider,
+	ES::Target: EntropySource,
+	NS::Target: NodeSigner,
+	SP::Target: SignerProvider,
 	F::Target: FeeEstimator,
 	R::Target: Router,
 	L::Target: Logger,
 {
+	/// A cryptographically secure source of entropy.
+	pub entropy_source: ES,
+
+	/// A signer that is able to perform node-scoped cryptographic operations.
+	pub node_signer: NS,
+
 	/// The keys provider which will give us relevant keys. Some keys will be loaded during
 	/// deserialization and KeysInterface::read_chan_signer will be used to read per-Channel
 	/// signing data.
-	pub keys_manager: K,
+	pub signer_provider: SP,
 
 	/// The fee_estimator for use in the ChannelManager in the future.
 	///
@@ -6874,15 +6906,17 @@ where
 	/// this struct.
 	///
 	/// (C-not exported) because we have no HashMap bindings
-	pub channel_monitors: HashMap<OutPoint, &'a mut ChannelMonitor<<K::Target as SignerProvider>::Signer>>,
+	pub channel_monitors: HashMap<OutPoint, &'a mut ChannelMonitor<<SP::Target as SignerProvider>::Signer>>,
 }
 
-impl<'a, M: Deref, T: Deref, K: Deref, F: Deref, R: Deref, L: Deref>
-		ChannelManagerReadArgs<'a, M, T, K, F, R, L>
+impl<'a, M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, L: Deref>
+		ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, L>
 where
-	M::Target: chain::Watch<<K::Target as SignerProvider>::Signer>,
+	M::Target: chain::Watch<<SP::Target as SignerProvider>::Signer>,
 	T::Target: BroadcasterInterface,
-	K::Target: SignerProvider,
+	ES::Target: EntropySource,
+	NS::Target: NodeSigner,
+	SP::Target: SignerProvider,
 	F::Target: FeeEstimator,
 	R::Target: Router,
 	L::Target: Logger,
@@ -6890,10 +6924,10 @@ where
 	/// Simple utility function to create a ChannelManagerReadArgs which creates the monitor
 	/// HashMap for you. This is primarily useful for C bindings where it is not practical to
 	/// populate a HashMap directly from C.
-	pub fn new(keys_manager: K, fee_estimator: F, chain_monitor: M, tx_broadcaster: T, router: R, logger: L, default_config: UserConfig,
-			mut channel_monitors: Vec<&'a mut ChannelMonitor<<K::Target as SignerProvider>::Signer>>) -> Self {
+	pub fn new(entropy_source: ES, node_signer: NS, signer_provider: SP, fee_estimator: F, chain_monitor: M, tx_broadcaster: T, router: R, logger: L, default_config: UserConfig,
+			mut channel_monitors: Vec<&'a mut ChannelMonitor<<SP::Target as SignerProvider>::Signer>>) -> Self {
 		Self {
-			keys_manager, fee_estimator, chain_monitor, tx_broadcaster, router, logger, default_config,
+			entropy_source, node_signer, signer_provider, fee_estimator, chain_monitor, tx_broadcaster, router, logger, default_config,
 			channel_monitors: channel_monitors.drain(..).map(|monitor| { (monitor.get_funding_txo().0, monitor) }).collect()
 		}
 	}
@@ -6901,33 +6935,37 @@ where
 
 // Implement ReadableArgs for an Arc'd ChannelManager to make it a bit easier to work with the
 // SipmleArcChannelManager type:
-impl<'a, M: Deref, T: Deref, K: Deref, F: Deref, R: Deref, L: Deref>
-	ReadableArgs<ChannelManagerReadArgs<'a, M, T, K, F, R, L>> for (BlockHash, Arc<ChannelManager<M, T, K, F, R, L>>)
+impl<'a, M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, L: Deref>
+	ReadableArgs<ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, L>> for (BlockHash, Arc<ChannelManager<M, T, ES, NS, SP, F, R, L>>)
 where
-	M::Target: chain::Watch<<K::Target as SignerProvider>::Signer>,
+	M::Target: chain::Watch<<SP::Target as SignerProvider>::Signer>,
 	T::Target: BroadcasterInterface,
-	K::Target: EntropySource + NodeSigner + SignerProvider,
+	ES::Target: EntropySource,
+	NS::Target: NodeSigner,
+	SP::Target: SignerProvider,
 	F::Target: FeeEstimator,
 	R::Target: Router,
 	L::Target: Logger,
 {
-	fn read<Reader: io::Read>(reader: &mut Reader, args: ChannelManagerReadArgs<'a, M, T, K, F, R, L>) -> Result<Self, DecodeError> {
-		let (blockhash, chan_manager) = <(BlockHash, ChannelManager<M, T, K, F, R, L>)>::read(reader, args)?;
+	fn read<Reader: io::Read>(reader: &mut Reader, args: ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, L>) -> Result<Self, DecodeError> {
+		let (blockhash, chan_manager) = <(BlockHash, ChannelManager<M, T, ES, NS, SP, F, R, L>)>::read(reader, args)?;
 		Ok((blockhash, Arc::new(chan_manager)))
 	}
 }
 
-impl<'a, M: Deref, T: Deref, K: Deref, F: Deref, R: Deref, L: Deref>
-	ReadableArgs<ChannelManagerReadArgs<'a, M, T, K, F, R, L>> for (BlockHash, ChannelManager<M, T, K, F, R, L>)
+impl<'a, M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, L: Deref>
+	ReadableArgs<ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, L>> for (BlockHash, ChannelManager<M, T, ES, NS, SP, F, R, L>)
 where
-	M::Target: chain::Watch<<K::Target as SignerProvider>::Signer>,
+	M::Target: chain::Watch<<SP::Target as SignerProvider>::Signer>,
 	T::Target: BroadcasterInterface,
-	K::Target: EntropySource + NodeSigner + SignerProvider,
+	ES::Target: EntropySource,
+	NS::Target: NodeSigner,
+	SP::Target: SignerProvider,
 	F::Target: FeeEstimator,
 	R::Target: Router,
 	L::Target: Logger,
 {
-	fn read<Reader: io::Read>(reader: &mut Reader, mut args: ChannelManagerReadArgs<'a, M, T, K, F, R, L>) -> Result<Self, DecodeError> {
+	fn read<Reader: io::Read>(reader: &mut Reader, mut args: ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, L>) -> Result<Self, DecodeError> {
 		let _ver = read_ver_prefix!(reader, SERIALIZATION_VERSION);
 
 		let genesis_hash: BlockHash = Readable::read(reader)?;
@@ -6938,12 +6976,12 @@ where
 
 		let channel_count: u64 = Readable::read(reader)?;
 		let mut funding_txo_set = HashSet::with_capacity(cmp::min(channel_count as usize, 128));
-		let mut peer_channels: HashMap<PublicKey, HashMap<[u8; 32], Channel<<K::Target as SignerProvider>::Signer>>> = HashMap::with_capacity(cmp::min(channel_count as usize, 128));
+		let mut peer_channels: HashMap<PublicKey, HashMap<[u8; 32], Channel<<SP::Target as SignerProvider>::Signer>>> = HashMap::with_capacity(cmp::min(channel_count as usize, 128));
 		let mut id_to_peer = HashMap::with_capacity(cmp::min(channel_count as usize, 128));
 		let mut short_to_chan_info = HashMap::with_capacity(cmp::min(channel_count as usize, 128));
 		let mut channel_closures = Vec::new();
 		for _ in 0..channel_count {
-			let mut channel: Channel<<K::Target as SignerProvider>::Signer> = Channel::read(reader, (&args.keys_manager, best_block_height))?;
+			let mut channel: Channel<<SP::Target as SignerProvider>::Signer> = Channel::read(reader, (&args.entropy_source, &args.signer_provider, best_block_height))?;
 			let funding_txo = channel.get_funding_txo().ok_or(DecodeError::InvalidValue)?;
 			funding_txo_set.insert(funding_txo.clone());
 			if let Some(ref mut monitor) = args.channel_monitors.get_mut(&funding_txo) {
@@ -7069,7 +7107,7 @@ where
 		}
 
 		let peer_count: u64 = Readable::read(reader)?;
-		let mut per_peer_state = HashMap::with_capacity(cmp::min(peer_count as usize, MAX_ALLOC_SIZE/mem::size_of::<(PublicKey, Mutex<PeerState<<K::Target as SignerProvider>::Signer>>)>()));
+		let mut per_peer_state = HashMap::with_capacity(cmp::min(peer_count as usize, MAX_ALLOC_SIZE/mem::size_of::<(PublicKey, Mutex<PeerState<<SP::Target as SignerProvider>::Signer>>)>()));
 		for _ in 0..peer_count {
 			let peer_pubkey = Readable::read(reader)?;
 			let peer_state = PeerState {
@@ -7142,11 +7180,11 @@ where
 			(11, probing_cookie_secret, option),
 		});
 		if fake_scid_rand_bytes.is_none() {
-			fake_scid_rand_bytes = Some(args.keys_manager.get_secure_random_bytes());
+			fake_scid_rand_bytes = Some(args.entropy_source.get_secure_random_bytes());
 		}
 
 		if probing_cookie_secret.is_none() {
-			probing_cookie_secret = Some(args.keys_manager.get_secure_random_bytes());
+			probing_cookie_secret = Some(args.entropy_source.get_secure_random_bytes());
 		}
 
 		if pending_outbound_payments.is_none() && pending_outbound_payments_no_retry.is_none() {
@@ -7252,7 +7290,7 @@ where
 			});
 		}
 
-		let inbound_pmt_key_material = args.keys_manager.get_inbound_payment_key_material();
+		let inbound_pmt_key_material = args.node_signer.get_inbound_payment_key_material();
 		let expanded_inbound_key = inbound_payment::ExpandedKey::new(&inbound_pmt_key_material);
 
 		let mut claimable_htlcs = HashMap::with_capacity(claimable_htlcs_list.len());
@@ -7296,13 +7334,13 @@ where
 		}
 
 		let mut secp_ctx = Secp256k1::new();
-		secp_ctx.seeded_randomize(&args.keys_manager.get_secure_random_bytes());
+		secp_ctx.seeded_randomize(&args.entropy_source.get_secure_random_bytes());
 
 		if !channel_closures.is_empty() {
 			pending_events_read.append(&mut channel_closures);
 		}
 
-		let our_network_key = match args.keys_manager.get_node_secret(Recipient::Node) {
+		let our_network_key = match args.node_signer.get_node_secret(Recipient::Node) {
 			Ok(key) => key,
 			Err(()) => return Err(DecodeError::InvalidValue)
 		};
@@ -7323,7 +7361,7 @@ where
 					let mut outbound_scid_alias;
 					loop {
 						outbound_scid_alias = fake_scid::Namespace::OutboundAlias
-							.get_fake_scid(best_block_height, &genesis_hash, fake_scid_rand_bytes.as_ref().unwrap(), &args.keys_manager);
+							.get_fake_scid(best_block_height, &genesis_hash, fake_scid_rand_bytes.as_ref().unwrap(), &args.entropy_source);
 						if outbound_scid_aliases.insert(outbound_scid_alias) { break; }
 					}
 					chan.set_outbound_scid_alias(outbound_scid_alias);
@@ -7354,7 +7392,7 @@ where
 					let mut receiver_node_id = Some(our_network_pubkey);
 					let phantom_shared_secret = claimable_htlcs[0].prev_hop.phantom_shared_secret;
 					if phantom_shared_secret.is_some() {
-						let phantom_pubkey = args.keys_manager.get_node_id(Recipient::PhantomNode)
+						let phantom_pubkey = args.node_signer.get_node_id(Recipient::PhantomNode)
 							.expect("Failed to get node_id for phantom node recipient");
 						receiver_node_id = Some(phantom_pubkey)
 					}
@@ -7435,7 +7473,10 @@ where
 			total_consistency_lock: RwLock::new(()),
 			persistence_notifier: Notifier::new(),
 
-			keys_manager: args.keys_manager,
+			entropy_source: args.entropy_source,
+			node_signer: args.node_signer,
+			signer_provider: args.signer_provider,
+
 			logger: args.logger,
 			default_configuration: args.default_config,
 		};
@@ -8253,7 +8294,7 @@ pub mod bench {
 			&'a ChainMonitor<InMemorySigner, &'a test_utils::TestChainSource,
 				&'a test_utils::TestBroadcaster, &'a test_utils::TestFeeEstimator,
 				&'a test_utils::TestLogger, &'a P>,
-			&'a test_utils::TestBroadcaster, &'a KeysManager,
+			&'a test_utils::TestBroadcaster, &'a KeysManager, &'a KeysManager, &'a KeysManager,
 			&'a test_utils::TestFeeEstimator, &'a test_utils::TestRouter<'a>,
 			&'a test_utils::TestLogger>,
 	}
@@ -8282,7 +8323,7 @@ pub mod bench {
 		let chain_monitor_a = ChainMonitor::new(None, &tx_broadcaster, &logger_a, &fee_estimator, &persister_a);
 		let seed_a = [1u8; 32];
 		let keys_manager_a = KeysManager::new(&seed_a, 42, 42);
-		let node_a = ChannelManager::new(&fee_estimator, &chain_monitor_a, &tx_broadcaster, &router, &logger_a, &keys_manager_a, config.clone(), ChainParameters {
+		let node_a = ChannelManager::new(&fee_estimator, &chain_monitor_a, &tx_broadcaster, &router, &logger_a, &keys_manager_a, &keys_manager_a, &keys_manager_a, config.clone(), ChainParameters {
 			network,
 			best_block: BestBlock::from_genesis(network),
 		});
@@ -8292,7 +8333,7 @@ pub mod bench {
 		let chain_monitor_b = ChainMonitor::new(None, &tx_broadcaster, &logger_a, &fee_estimator, &persister_b);
 		let seed_b = [2u8; 32];
 		let keys_manager_b = KeysManager::new(&seed_b, 42, 42);
-		let node_b = ChannelManager::new(&fee_estimator, &chain_monitor_b, &tx_broadcaster, &router, &logger_b, &keys_manager_b, config.clone(), ChainParameters {
+		let node_b = ChannelManager::new(&fee_estimator, &chain_monitor_b, &tx_broadcaster, &router, &logger_b, &keys_manager_b, &keys_manager_b, &keys_manager_b, config.clone(), ChainParameters {
 			network,
 			best_block: BestBlock::from_genesis(network),
 		});

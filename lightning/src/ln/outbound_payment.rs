@@ -271,47 +271,51 @@ impl OutboundPayments {
 		}
 	}
 
-	pub(super) fn send_payment_with_route<K: Deref, F>(
+	pub(super) fn send_payment_with_route<ES: Deref, NS: Deref, F>(
 		&self, route: &Route, payment_hash: PaymentHash, payment_secret: &Option<PaymentSecret>,
-		payment_id: PaymentId, keys_manager: &K, best_block_height: u32, send_payment_along_path: F
+		payment_id: PaymentId, entropy_source: &ES, node_signer: &NS, best_block_height: u32,
+		send_payment_along_path: F
 	) -> Result<(), PaymentSendFailure>
 	where
-		K::Target: EntropySource + NodeSigner,
+		ES::Target: EntropySource,
+		NS::Target: NodeSigner,
 		F: Fn(&Vec<RouteHop>, &Option<PaymentParameters>, &PaymentHash, &Option<PaymentSecret>, u64,
 		   u32, PaymentId, &Option<PaymentPreimage>, [u8; 32]) -> Result<(), APIError>
 	{
-		let onion_session_privs = self.add_new_pending_payment(payment_hash, *payment_secret, payment_id, route, keys_manager, best_block_height)?;
-		self.send_payment_internal(route, payment_hash, payment_secret, None, payment_id, None, onion_session_privs, keys_manager, best_block_height, send_payment_along_path)
+		let onion_session_privs = self.add_new_pending_payment(payment_hash, *payment_secret, payment_id, route, entropy_source, best_block_height)?;
+		self.send_payment_internal(route, payment_hash, payment_secret, None, payment_id, None, onion_session_privs, node_signer, best_block_height, send_payment_along_path)
 	}
 
-	pub(super) fn send_spontaneous_payment<K: Deref, F>(
+	pub(super) fn send_spontaneous_payment<ES: Deref, NS: Deref, F>(
 		&self, route: &Route, payment_preimage: Option<PaymentPreimage>, payment_id: PaymentId,
-		keys_manager: &K, best_block_height: u32, send_payment_along_path: F
+		entropy_source: &ES, node_signer: &NS, best_block_height: u32, send_payment_along_path: F
 	) -> Result<PaymentHash, PaymentSendFailure>
 	where
-		K::Target: EntropySource + NodeSigner,
+		ES::Target: EntropySource,
+		NS::Target: NodeSigner,
 		F: Fn(&Vec<RouteHop>, &Option<PaymentParameters>, &PaymentHash, &Option<PaymentSecret>, u64,
 		   u32, PaymentId, &Option<PaymentPreimage>, [u8; 32]) -> Result<(), APIError>
 	{
 		let preimage = match payment_preimage {
 			Some(p) => p,
-			None => PaymentPreimage(keys_manager.get_secure_random_bytes()),
+			None => PaymentPreimage(entropy_source.get_secure_random_bytes()),
 		};
 		let payment_hash = PaymentHash(Sha256::hash(&preimage.0).into_inner());
-		let onion_session_privs = self.add_new_pending_payment(payment_hash, None, payment_id, &route, keys_manager, best_block_height)?;
+		let onion_session_privs = self.add_new_pending_payment(payment_hash, None, payment_id, &route, entropy_source, best_block_height)?;
 
-		match self.send_payment_internal(route, payment_hash, &None, Some(preimage), payment_id, None, onion_session_privs, keys_manager, best_block_height, send_payment_along_path) {
+		match self.send_payment_internal(route, payment_hash, &None, Some(preimage), payment_id, None, onion_session_privs, node_signer, best_block_height, send_payment_along_path) {
 			Ok(()) => Ok(payment_hash),
 			Err(e) => Err(e)
 		}
 	}
 
-	pub(super) fn retry_payment_with_route<K: Deref, F>(
-		&self, route: &Route, payment_id: PaymentId, keys_manager: &K, best_block_height: u32,
+	pub(super) fn retry_payment_with_route<ES: Deref, NS: Deref, F>(
+		&self, route: &Route, payment_id: PaymentId, entropy_source: &ES, node_signer: &NS, best_block_height: u32,
 		send_payment_along_path: F
 	) -> Result<(), PaymentSendFailure>
 	where
-		K::Target: EntropySource + NodeSigner,
+		ES::Target: EntropySource,
+		NS::Target: NodeSigner,
 		F: Fn(&Vec<RouteHop>, &Option<PaymentParameters>, &PaymentHash, &Option<PaymentSecret>, u64,
 		   u32, PaymentId, &Option<PaymentPreimage>, [u8; 32]) -> Result<(), APIError>
 	{
@@ -326,7 +330,7 @@ impl OutboundPayments {
 
 		let mut onion_session_privs = Vec::with_capacity(route.paths.len());
 		for _ in 0..route.paths.len() {
-			onion_session_privs.push(keys_manager.get_secure_random_bytes());
+			onion_session_privs.push(entropy_source.get_secure_random_bytes());
 		}
 
 		let (total_msat, payment_hash, payment_secret) = {
@@ -372,19 +376,20 @@ impl OutboundPayments {
 					})),
 			}
 		};
-		self.send_payment_internal(route, payment_hash, &payment_secret, None, payment_id, Some(total_msat), onion_session_privs, keys_manager, best_block_height, send_payment_along_path)
+		self.send_payment_internal(route, payment_hash, &payment_secret, None, payment_id, Some(total_msat), onion_session_privs, node_signer, best_block_height, send_payment_along_path)
 	}
 
-	pub(super) fn send_probe<K: Deref, F>(
-		&self, hops: Vec<RouteHop>, probing_cookie_secret: [u8; 32], keys_manager: &K,
-		best_block_height: u32, send_payment_along_path: F
+	pub(super) fn send_probe<ES: Deref, NS: Deref, F>(
+		&self, hops: Vec<RouteHop>, probing_cookie_secret: [u8; 32], entropy_source: &ES,
+		node_signer: &NS, best_block_height: u32, send_payment_along_path: F
 	) -> Result<(PaymentHash, PaymentId), PaymentSendFailure>
 	where
-		K::Target: EntropySource + NodeSigner,
+		ES::Target: EntropySource,
+		NS::Target: NodeSigner,
 		F: Fn(&Vec<RouteHop>, &Option<PaymentParameters>, &PaymentHash, &Option<PaymentSecret>, u64,
 		   u32, PaymentId, &Option<PaymentPreimage>, [u8; 32]) -> Result<(), APIError>
 	{
-		let payment_id = PaymentId(keys_manager.get_secure_random_bytes());
+		let payment_id = PaymentId(entropy_source.get_secure_random_bytes());
 
 		let payment_hash = probing_cookie_from_id(&payment_id, probing_cookie_secret);
 
@@ -395,29 +400,29 @@ impl OutboundPayments {
 		}
 
 		let route = Route { paths: vec![hops], payment_params: None };
-		let onion_session_privs = self.add_new_pending_payment(payment_hash, None, payment_id, &route, keys_manager, best_block_height)?;
+		let onion_session_privs = self.add_new_pending_payment(payment_hash, None, payment_id, &route, entropy_source, best_block_height)?;
 
-		match self.send_payment_internal(&route, payment_hash, &None, None, payment_id, None, onion_session_privs, keys_manager, best_block_height, send_payment_along_path) {
+		match self.send_payment_internal(&route, payment_hash, &None, None, payment_id, None, onion_session_privs, node_signer, best_block_height, send_payment_along_path) {
 			Ok(()) => Ok((payment_hash, payment_id)),
 			Err(e) => Err(e)
 		}
 	}
 
 	#[cfg(test)]
-	pub(super) fn test_add_new_pending_payment<K: Deref>(
+	pub(super) fn test_add_new_pending_payment<ES: Deref>(
 		&self, payment_hash: PaymentHash, payment_secret: Option<PaymentSecret>, payment_id: PaymentId,
-		route: &Route, keys_manager: &K, best_block_height: u32
-	) -> Result<Vec<[u8; 32]>, PaymentSendFailure> where K::Target: KeysInterface {
-		self.add_new_pending_payment(payment_hash, payment_secret, payment_id, route, keys_manager, best_block_height)
+		route: &Route, entropy_source: &ES, best_block_height: u32
+	) -> Result<Vec<[u8; 32]>, PaymentSendFailure> where ES::Target: EntropySource {
+		self.add_new_pending_payment(payment_hash, payment_secret, payment_id, route, entropy_source, best_block_height)
 	}
 
-	fn add_new_pending_payment<K: Deref>(
+	pub(super) fn add_new_pending_payment<ES: Deref>(
 		&self, payment_hash: PaymentHash, payment_secret: Option<PaymentSecret>, payment_id: PaymentId,
-		route: &Route, keys_manager: &K, best_block_height: u32
-	) -> Result<Vec<[u8; 32]>, PaymentSendFailure> where K::Target: EntropySource + NodeSigner {
+		route: &Route, entropy_source: &ES, best_block_height: u32
+	) -> Result<Vec<[u8; 32]>, PaymentSendFailure> where ES::Target: EntropySource {
 		let mut onion_session_privs = Vec::with_capacity(route.paths.len());
 		for _ in 0..route.paths.len() {
-			onion_session_privs.push(keys_manager.get_secure_random_bytes());
+			onion_session_privs.push(entropy_source.get_secure_random_bytes());
 		}
 
 		let mut pending_outbounds = self.pending_outbound_payments.lock().unwrap();
@@ -443,14 +448,14 @@ impl OutboundPayments {
 		}
 	}
 
-	fn send_payment_internal<K: Deref, F>(
+	fn send_payment_internal<NS: Deref, F>(
 		&self, route: &Route, payment_hash: PaymentHash, payment_secret: &Option<PaymentSecret>,
 		keysend_preimage: Option<PaymentPreimage>, payment_id: PaymentId, recv_value_msat: Option<u64>,
-		onion_session_privs: Vec<[u8; 32]>, keys_manager: &K, best_block_height: u32,
+		onion_session_privs: Vec<[u8; 32]>, node_signer: &NS, best_block_height: u32,
 		send_payment_along_path: F
 	) -> Result<(), PaymentSendFailure>
 	where
-		K::Target: NodeSigner,
+		NS::Target: NodeSigner,
 		F: Fn(&Vec<RouteHop>, &Option<PaymentParameters>, &PaymentHash, &Option<PaymentSecret>, u64,
 		   u32, PaymentId, &Option<PaymentPreimage>, [u8; 32]) -> Result<(), APIError>
 	{
@@ -461,7 +466,7 @@ impl OutboundPayments {
 			return Err(PaymentSendFailure::ParameterError(APIError::APIMisuseError{err: "Payment secret is required for multi-path payments".to_string()}));
 		}
 		let mut total_value = 0;
-		let our_node_id = keys_manager.get_node_id(Recipient::Node).unwrap(); // TODO no unwrap
+		let our_node_id = node_signer.get_node_id(Recipient::Node).unwrap(); // TODO no unwrap
 		let mut path_errs = Vec::with_capacity(route.paths.len());
 		'path_check: for path in route.paths.iter() {
 			if path.len() < 1 || path.len() > 20 {
@@ -553,19 +558,19 @@ impl OutboundPayments {
 	}
 
 	#[cfg(test)]
-	pub(super) fn test_send_payment_internal<K: Deref, F>(
+	pub(super) fn test_send_payment_internal<NS: Deref, F>(
 		&self, route: &Route, payment_hash: PaymentHash, payment_secret: &Option<PaymentSecret>,
 		keysend_preimage: Option<PaymentPreimage>, payment_id: PaymentId, recv_value_msat: Option<u64>,
-		onion_session_privs: Vec<[u8; 32]>, keys_manager: &K, best_block_height: u32,
+		onion_session_privs: Vec<[u8; 32]>, node_signer: &NS, best_block_height: u32,
 		send_payment_along_path: F
 	) -> Result<(), PaymentSendFailure>
 	where
-		K::Target: NodeSigner,
+		NS::Target: NodeSigner,
 		F: Fn(&Vec<RouteHop>, &Option<PaymentParameters>, &PaymentHash, &Option<PaymentSecret>, u64,
 		   u32, PaymentId, &Option<PaymentPreimage>, [u8; 32]) -> Result<(), APIError>
 	{
 		self.send_payment_internal(route, payment_hash, payment_secret, keysend_preimage, payment_id,
-			recv_value_msat, onion_session_privs, keys_manager, best_block_height,
+			recv_value_msat, onion_session_privs, node_signer, best_block_height,
 			send_payment_along_path)
 	}
 
