@@ -28,7 +28,7 @@ use crate::offers::merkle::{SignError, SignatureTlvStream, SignatureTlvStreamRef
 use crate::offers::offer::{Amount, OfferTlvStream, OfferTlvStreamRef};
 use crate::offers::parse::{ParseError, ParsedMessage, SemanticError};
 use crate::offers::payer::{PayerTlvStream, PayerTlvStreamRef};
-use crate::offers::refund::RefundContents;
+use crate::offers::refund::{Refund, RefundContents};
 use crate::onion_message::BlindedPath;
 use crate::util::ser::{HighZeroBytesDroppedBigSize, Iterable, SeekReadable, WithoutLength, Writeable, Writer};
 
@@ -60,10 +60,6 @@ impl<'a> InvoiceBuilder<'a> {
 		invoice_request: &'a InvoiceRequest, payment_paths: Vec<(BlindedPath, BlindedPayInfo)>,
 		created_at: Duration, payment_hash: PaymentHash
 	) -> Result<Self, SemanticError> {
-		if payment_paths.is_empty() {
-			return Err(SemanticError::MissingPaths);
-		}
-
 		let amount_msats = match invoice_request.amount_msats() {
 			Some(amount_msats) => amount_msats,
 			None => match invoice_request.contents.offer.amount() {
@@ -75,17 +71,40 @@ impl<'a> InvoiceBuilder<'a> {
 			},
 		};
 
-		Ok(Self {
-			invreq_bytes: &invoice_request.bytes,
-			invoice: InvoiceContents::ForOffer {
-				invoice_request: invoice_request.contents.clone(),
-				fields: InvoiceFields {
-					payment_paths, created_at, relative_expiry: None, payment_hash, amount_msats,
-					fallbacks: None, features: Bolt12InvoiceFeatures::empty(),
-					signing_pubkey: invoice_request.contents.offer.signing_pubkey(),
-				},
+		let contents = InvoiceContents::ForOffer {
+			invoice_request: invoice_request.contents.clone(),
+			fields: InvoiceFields {
+				payment_paths, created_at, relative_expiry: None, payment_hash, amount_msats,
+				fallbacks: None, features: Bolt12InvoiceFeatures::empty(),
+				signing_pubkey: invoice_request.contents.offer.signing_pubkey(),
 			},
-		})
+		};
+
+		Self::new(&invoice_request.bytes, contents)
+	}
+
+	pub(super) fn for_refund(
+		refund: &'a Refund, payment_paths: Vec<(BlindedPath, BlindedPayInfo)>, created_at: Duration,
+		payment_hash: PaymentHash, signing_pubkey: PublicKey
+	) -> Result<Self, SemanticError> {
+		let contents = InvoiceContents::ForRefund {
+			refund: refund.contents.clone(),
+			fields: InvoiceFields {
+				payment_paths, created_at, relative_expiry: None, payment_hash,
+				amount_msats: refund.amount_msats(), fallbacks: None,
+				features: Bolt12InvoiceFeatures::empty(), signing_pubkey,
+			},
+		};
+
+		Self::new(&refund.bytes, contents)
+	}
+
+	fn new(invreq_bytes: &'a Vec<u8>, contents: InvoiceContents) -> Result<Self, SemanticError> {
+		if contents.fields().payment_paths.is_empty() {
+			return Err(SemanticError::MissingPaths);
+		}
+
+		Ok(Self { invreq_bytes, invoice: contents })
 	}
 
 	/// Sets the [`Invoice::relative_expiry`] as seconds since [`Invoice::created_at`]. Any expiry
