@@ -2386,7 +2386,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 	#[cfg(test)]
 	pub(crate) fn test_add_new_pending_payment(&self, payment_hash: PaymentHash, payment_secret: Option<PaymentSecret>, payment_id: PaymentId, route: &Route) -> Result<Vec<[u8; 32]>, PaymentSendFailure> {
 		let best_block_height = self.best_block.read().unwrap().height();
-		self.pending_outbound_payments.add_new_pending_payment(payment_hash, payment_secret, payment_id, route, &self.keys_manager, best_block_height)
+		self.pending_outbound_payments.test_add_new_pending_payment(payment_hash, payment_secret, payment_id, route, &self.keys_manager, best_block_height)
 	}
 
 
