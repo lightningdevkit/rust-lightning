@@ -224,10 +224,9 @@ impl<'a> chain::Watch<EnforcingSigner> for TestChainMonitor<'a> {
 }
 
 pub struct TestPersister {
-	pub update_ret: Mutex<chain::ChannelMonitorUpdateStatus>,
-	/// If this is set to Some(), after the next return, we'll always return this until update_ret
-	/// is changed:
-	pub next_update_ret: Mutex<Option<chain::ChannelMonitorUpdateStatus>>,
+	/// The queue of update statuses we'll return. If none are queued, ::Completed will always be
+	/// returned.
+	pub update_rets: Mutex<VecDeque<chain::ChannelMonitorUpdateStatus>>,
 	/// When we get an update_persisted_channel call with no ChannelMonitorUpdate, we insert the
 	/// MonitorUpdateId here.
 	pub chain_sync_monitor_persistences: Mutex<HashMap<OutPoint, HashSet<MonitorUpdateId>>>,
@@ -238,34 +237,29 @@ pub struct TestPersister {
 impl TestPersister {
 	pub fn new() -> Self {
 		Self {
-			update_ret: Mutex::new(chain::ChannelMonitorUpdateStatus::Completed),
-			next_update_ret: Mutex::new(None),
+			update_rets: Mutex::new(VecDeque::new()),
 			chain_sync_monitor_persistences: Mutex::new(HashMap::new()),
 			offchain_monitor_updates: Mutex::new(HashMap::new()),
 		}
 	}
 
-	pub fn set_update_ret(&self, ret: chain::ChannelMonitorUpdateStatus) {
-		*self.update_ret.lock().unwrap() = ret;
-	}
-
-	pub fn set_next_update_ret(&self, next_ret: Option<chain::ChannelMonitorUpdateStatus>) {
-		*self.next_update_ret.lock().unwrap() = next_ret;
+	/// Queue an update status to return.
+	pub fn set_update_ret(&self, next_ret: chain::ChannelMonitorUpdateStatus) {
+		self.update_rets.lock().unwrap().push_back(next_ret);
 	}
 }
 impl<Signer: keysinterface::Sign> chainmonitor::Persist<Signer> for TestPersister {
 	fn persist_new_channel(&self, _funding_txo: OutPoint, _data: &channelmonitor::ChannelMonitor<Signer>, _id: MonitorUpdateId) -> chain::ChannelMonitorUpdateStatus {
-		let ret = self.update_ret.lock().unwrap().clone();
-		if let Some(next_ret) = self.next_update_ret.lock().unwrap().take() {
-			*self.update_ret.lock().unwrap() = next_ret;
+		if let Some(update_ret) = self.update_rets.lock().unwrap().pop_front() {
+			return update_ret
 		}
-		ret
+		chain::ChannelMonitorUpdateStatus::Completed
 	}
 
 	fn update_persisted_channel(&self, funding_txo: OutPoint, update: &Option<channelmonitor::ChannelMonitorUpdate>, _data: &channelmonitor::ChannelMonitor<Signer>, update_id: MonitorUpdateId) -> chain::ChannelMonitorUpdateStatus {
-		let ret = self.update_ret.lock().unwrap().clone();
-		if let Some(next_ret) = self.next_update_ret.lock().unwrap().take() {
-			*self.update_ret.lock().unwrap() = next_ret;
+		let mut ret = chain::ChannelMonitorUpdateStatus::Completed;
+		if let Some(update_ret) = self.update_rets.lock().unwrap().pop_front() {
+			ret = update_ret;
 		}
 		if update.is_none() {
 			self.chain_sync_monitor_persistences.lock().unwrap().entry(funding_txo).or_insert(HashSet::new()).insert(update_id);
