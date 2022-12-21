@@ -483,10 +483,12 @@ pub trait NodeSigner {
 	fn ecdh(&self, recipient: Recipient, other_key: &PublicKey, tweak: Option<&Scalar>) -> Result<SharedSecret, ()>;
 
 	/// Sign an invoice.
+	///
 	/// By parameterizing by the raw invoice bytes instead of the hash, we allow implementors of
 	/// this trait to parse the invoice and make sure they're signing what they expect, rather than
 	/// blindly signing the hash.
-	/// The hrp is ascii bytes, while the invoice data is base32.
+	///
+	/// The `hrp_bytes` are ASCII bytes, while the `invoice_data` is base32.
 	///
 	/// The secret key used to sign the invoice is dependent on the [`Recipient`].
 	///
