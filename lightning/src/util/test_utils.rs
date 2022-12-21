@@ -36,6 +36,7 @@ use bitcoin::network::constants::Network;
 use bitcoin::hash_types::{BlockHash, Txid};
 
 use bitcoin::secp256k1::{SecretKey, PublicKey, Secp256k1, ecdsa::Signature, Scalar};
+use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1::ecdsa::RecoverableSignature;
 
 use regex;
@@ -51,7 +52,6 @@ use crate::chain::keysinterface::{InMemorySigner, Recipient, KeyMaterial, Entrop
 
 #[cfg(feature = "std")]
 use std::time::{SystemTime, UNIX_EPOCH};
-use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::Sequence;
 
 pub struct TestVecWriter(pub Vec<u8>);
