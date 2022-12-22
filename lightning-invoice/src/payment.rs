@@ -1674,8 +1674,8 @@ mod tests {
 		) -> Result<Route, LightningError> {
 			// Simulate calling the Scorer just as you would in find_route
 			let route = Self::route_for_value(route_params.final_value_msat);
-			let mut locked_scorer = self.scorer.lock();
-			let scorer = ScorerAccountingForInFlightHtlcs::new(locked_scorer.deref_mut(), inflight_htlcs);
+			let locked_scorer = self.scorer.lock();
+			let scorer = ScorerAccountingForInFlightHtlcs::new(locked_scorer, inflight_htlcs);
 			for path in route.paths {
 				let mut aggregate_msat = 0u64;
 				for (idx, hop) in path.iter().rev().enumerate() {
