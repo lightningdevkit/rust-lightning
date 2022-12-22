@@ -46,7 +46,9 @@ use crate::ln::channel::{Channel, ChannelError, ChannelUpdateStatus, UpdateFulfi
 use crate::ln::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
 #[cfg(any(feature = "_test_utils", test))]
 use crate::ln::features::InvoiceFeatures;
-use crate::routing::router::{InFlightHtlcs, PaymentParameters, Route, RouteHop, RoutePath, Router};
+use crate::routing::gossip::NetworkGraph;
+use crate::routing::router::{DefaultRouter, InFlightHtlcs, PaymentParameters, Route, RouteHop, RoutePath, Router};
+use crate::routing::scoring::ProbabilisticScorer;
 use crate::ln::msgs;
 use crate::ln::onion_utils;
 use crate::ln::onion_utils::HTLCFailReason;
@@ -490,24 +492,35 @@ struct PendingInboundPayment {
 /// when you're using lightning-net-tokio (since tokio::spawn requires parameters with static
 /// lifetimes). Other times you can afford a reference, which is more efficient, in which case
 /// SimpleRefChannelManager is the more appropriate type. Defining these type aliases prevents
-/// issues such as overly long function definitions. Note that the ChannelManager can take any
-/// type that implements KeysInterface for its keys manager, but this type alias chooses the
-/// concrete type of the KeysManager.
+/// issues such as overly long function definitions. Note that the ChannelManager can take any type
+/// that implements KeysInterface or Router for its keys manager and router, respectively, but this
+/// type alias chooses the concrete types of KeysManager and DefaultRouter.
 ///
 /// (C-not exported) as Arcs don't make sense in bindings
-pub type SimpleArcChannelManager<M, T, F, R, L> = ChannelManager<Arc<M>, Arc<T>, Arc<KeysManager>, Arc<F>, Arc<R>, Arc<L>>;
+pub type SimpleArcChannelManager<M, T, F, L> = ChannelManager<
+	Arc<M>,
+	Arc<T>,
+	Arc<KeysManager>,
+	Arc<F>,
+	Arc<DefaultRouter<
+		Arc<NetworkGraph<Arc<L>>>,
+		Arc<L>,
+		Arc<Mutex<ProbabilisticScorer<Arc<NetworkGraph<Arc<L>>>, Arc<L>>>>
+	>>,
+	Arc<L>
+>;
 
 /// SimpleRefChannelManager is a type alias for a ChannelManager reference, and is the reference
 /// counterpart to the SimpleArcChannelManager type alias. Use this type by default when you don't
 /// need a ChannelManager with a static lifetime. You'll need a static lifetime in cases such as
 /// usage of lightning-net-tokio (since tokio::spawn requires parameters with static lifetimes).
 /// But if this is not necessary, using a reference is more efficient. Defining these type aliases
-/// helps with issues such as long function definitions. Note that the ChannelManager can take any
-/// type that implements KeysInterface for its keys manager, but this type alias chooses the
-/// concrete type of the KeysManager.
+/// issues such as overly long function definitions. Note that the ChannelManager can take any type
+/// that implements KeysInterface or Router for its keys manager and router, respectively, but this
+/// type alias chooses the concrete types of KeysManager and DefaultRouter.
 ///
 /// (C-not exported) as Arcs don't make sense in bindings
-pub type SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, 'f, M, T, F, R, L> = ChannelManager<&'a M, &'b T, &'c KeysManager, &'d F, &'e R, &'f L>;
+pub type SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, M, T, F, L> = ChannelManager<&'a M, &'b T, &'c KeysManager, &'d F, &'e DefaultRouter<&'f NetworkGraph<&'g L>, &'g L, &'h Mutex<ProbabilisticScorer<&'f NetworkGraph<&'g L>, &'g L>>>, &'g L>;
 
 /// Manager which keeps track of a number of channels and sends messages to the appropriate
 /// channel, also tracking HTLC preimages and forwarding onion packets appropriately.

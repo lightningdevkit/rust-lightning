@@ -584,6 +584,7 @@ mod tests {
 	use lightning::ln::peer_handler::{PeerManager, MessageHandler, SocketDescriptor, IgnoringMessageHandler};
 	use lightning::routing::gossip::{NetworkGraph, P2PGossipSync};
 	use lightning::routing::router::DefaultRouter;
+	use lightning::routing::scoring::{ProbabilisticScoringParameters, ProbabilisticScorer};
 	use lightning::util::config::UserConfig;
 	use lightning::util::events::{Event, MessageSendEventsProvider, MessageSendEvent};
 	use lightning::util::ser::Writeable;
@@ -598,7 +599,6 @@ mod tests {
 	use std::time::Duration;
 	use bitcoin::hashes::Hash;
 	use bitcoin::TxMerkleNode;
-	use lightning::routing::scoring::{FixedPenaltyScorer};
 	use lightning_rapid_gossip_sync::RapidGossipSync;
 	use super::{BackgroundProcessor, GossipSync, FRESHNESS_TIMER};
 
@@ -620,7 +620,7 @@ mod tests {
 	type RGS = Arc<RapidGossipSync<Arc<NetworkGraph<Arc<test_utils::TestLogger>>>, Arc<test_utils::TestLogger>>>;
 
 	struct Node {
-		node: Arc<SimpleArcChannelManager<ChainMonitor, test_utils::TestBroadcaster, test_utils::TestFeeEstimator, DefaultRouter<Arc<NetworkGraph<Arc<test_utils::TestLogger>>>, Arc<test_utils::TestLogger>, Arc<Mutex<FixedPenaltyScorer>>>, test_utils::TestLogger>>,
+		node: Arc<SimpleArcChannelManager<ChainMonitor, test_utils::TestBroadcaster, test_utils::TestFeeEstimator, test_utils::TestLogger>>,
 		p2p_gossip_sync: PGS,
 		rapid_gossip_sync: RGS,
 		peer_manager: Arc<PeerManager<TestDescriptor, Arc<test_utils::TestChannelMessageHandler>, Arc<test_utils::TestRoutingMessageHandler>, IgnoringMessageHandler, Arc<test_utils::TestLogger>, IgnoringMessageHandler>>,
@@ -630,7 +630,7 @@ mod tests {
 		network_graph: Arc<NetworkGraph<Arc<test_utils::TestLogger>>>,
 		logger: Arc<test_utils::TestLogger>,
 		best_block: BestBlock,
-		scorer: Arc<Mutex<FixedPenaltyScorer>>,
+		scorer: Arc<Mutex<ProbabilisticScorer<Arc<NetworkGraph<Arc<test_utils::TestLogger>>>, Arc<test_utils::TestLogger>>>>,
 	}
 
 	impl Node {
@@ -731,7 +731,8 @@ mod tests {
 			let network = Network::Testnet;
 			let genesis_block = genesis_block(network);
 			let network_graph = Arc::new(NetworkGraph::new(genesis_block.header.block_hash(), logger.clone()));
-			let scorer = Arc::new(Mutex::new(test_utils::TestScorer::with_penalty(0)));
+			let params = ProbabilisticScoringParameters::default();
+			let scorer = Arc::new(Mutex::new(ProbabilisticScorer::new(params, network_graph.clone(), logger.clone())));
 			let seed = [i as u8; 32];
 			let router = Arc::new(DefaultRouter::new(network_graph.clone(), logger.clone(), seed, scorer.clone()));
 			let chain_source = Arc::new(test_utils::TestChainSource::new(Network::Testnet));
