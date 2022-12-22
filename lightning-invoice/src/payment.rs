@@ -174,19 +174,12 @@ use crate::time_utils;
 #[cfg(feature = "no-std")]
 type ConfiguredTime = time_utils::Eternity;
 
-/// Sealed trait with a blanket implementation to allow both sync and async implementations of event
-/// handling to exist within the InvoicePayer.
-mod sealed {
-	pub trait BaseEventHandler {}
-	impl<T> BaseEventHandler for T {}
-}
-
 /// (C-not exported) generally all users should use the [`InvoicePayer`] type alias.
 pub struct InvoicePayerUsingTime<
 	P: Deref,
 	R: Router,
 	L: Deref,
-	E: sealed::BaseEventHandler,
+	E: EventHandler,
 	T: Time
 > where
 	P::Target: Payer,
@@ -316,7 +309,7 @@ pub enum PaymentError {
 	Sending(PaymentSendFailure),
 }
 
-impl<P: Deref, R: Router, L: Deref, E: sealed::BaseEventHandler, T: Time>
+impl<P: Deref, R: Router, L: Deref, E: EventHandler, T: Time>
 	InvoicePayerUsingTime<P, R, L, E, T>
 where
 	P::Target: Payer,
@@ -630,7 +623,7 @@ fn has_expired(route_params: &RouteParameters) -> bool {
 	} else { false }
 }
 
-impl<P: Deref, R: Router, L: Deref, E: sealed::BaseEventHandler, T: Time>
+impl<P: Deref, R: Router, L: Deref, E: EventHandler, T: Time>
 	InvoicePayerUsingTime<P, R, L, E, T>
 where
 	P::Target: Payer,
@@ -711,6 +704,7 @@ where
 	}
 }
 
+#[cfg(not(c_bindings))]
 impl<P: Deref, R: Router, L: Deref, T: Time, F: Future, H: Fn(Event) -> F>
 	InvoicePayerUsingTime<P, R, L, H, T>
 where
