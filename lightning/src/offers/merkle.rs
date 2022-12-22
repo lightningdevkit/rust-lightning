@@ -13,7 +13,7 @@ use bitcoin::hashes::{Hash, HashEngine, sha256};
 use bitcoin::secp256k1::{Message, PublicKey, Secp256k1, self};
 use bitcoin::secp256k1::schnorr::Signature;
 use crate::io;
-use crate::util::ser::{BigSize, Readable};
+use crate::util::ser::{BigSize, Readable, Writeable, Writer};
 
 use crate::prelude::*;
 
@@ -194,14 +194,33 @@ impl<'a> Iterator for TlvStream<'a> {
 	}
 }
 
+/// Encoding for a pre-serialized TLV stream that excludes any signature TLV records.
+///
+/// Panics if the wrapped bytes are not a well-formed TLV stream.
+pub(super) struct WithoutSignatures<'a>(pub &'a Vec<u8>);
+
+impl<'a> Writeable for WithoutSignatures<'a> {
+	#[inline]
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		let tlv_stream = TlvStream::new(&self.0[..]);
+		for record in tlv_stream.skip_signatures() {
+			writer.write_all(record.record_bytes)?;
+		}
+		Ok(())
+	}
+}
+
 #[cfg(test)]
 mod tests {
+	use super::{TlvStream, WithoutSignatures};
+
 	use bitcoin::hashes::{Hash, sha256};
 	use bitcoin::secp256k1::{KeyPair, Secp256k1, SecretKey};
 	use core::convert::Infallible;
 	use crate::offers::offer::{Amount, OfferBuilder};
 	use crate::offers::invoice_request::InvoiceRequest;
 	use crate::offers::parse::Bech32Encode;
+	use crate::util::ser::Writeable;
 
 	#[test]
 	fn calculates_merkle_root_hash() {
@@ -250,6 +269,36 @@ mod tests {
 		assert_eq!(
 			super::root_hash(&invoice_request.bytes[..]),
 			sha256::Hash::from_slice(&hex::decode("608407c18ad9a94d9ea2bcdbe170b6c20c462a7833a197621c916f78cf18e624").unwrap()).unwrap(),
+		);
+	}
+
+	#[test]
+	fn skips_encoding_signature_tlv_records() {
+		let secp_ctx = Secp256k1::new();
+		let recipient_pubkey = {
+			let secret_key = SecretKey::from_slice(&[41; 32]).unwrap();
+			KeyPair::from_secret_key(&secp_ctx, &secret_key).public_key()
+		};
+		let payer_keys = {
+			let secret_key = SecretKey::from_slice(&[42; 32]).unwrap();
+			KeyPair::from_secret_key(&secp_ctx, &secret_key)
+		};
+
+		let invoice_request = OfferBuilder::new("foo".into(), recipient_pubkey)
+			.amount_msats(100)
+			.build_unchecked()
+			.request_invoice(vec![0; 8], payer_keys.public_key()).unwrap()
+			.build_unchecked()
+			.sign::<_, Infallible>(|digest| Ok(secp_ctx.sign_schnorr_no_aux_rand(digest, &payer_keys)))
+			.unwrap();
+
+		let mut bytes_without_signature = Vec::new();
+		WithoutSignatures(&invoice_request.bytes).write(&mut bytes_without_signature).unwrap();
+
+		assert_ne!(bytes_without_signature, invoice_request.bytes);
+		assert_eq!(
+			TlvStream::new(&bytes_without_signature).count(),
+			TlvStream::new(&invoice_request.bytes).count() - 1,
 		);
 	}
 
