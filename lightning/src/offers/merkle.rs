@@ -75,22 +75,21 @@ fn message_digest(tag: &str, bytes: &[u8]) -> Message {
 /// Computes a merkle root hash for the given data, which must be a well-formed TLV stream
 /// containing at least one TLV record.
 fn root_hash(data: &[u8]) -> sha256::Hash {
-	let mut tlv_stream = TlvStream::new(&data[..]).peekable();
 	let nonce_tag = tagged_hash_engine(sha256::Hash::from_engine({
+		let first_tlv_record = TlvStream::new(&data[..]).next().unwrap();
 		let mut engine = sha256::Hash::engine();
 		engine.input("LnNonce".as_bytes());
-		engine.input(tlv_stream.peek().unwrap().record_bytes);
+		engine.input(first_tlv_record.record_bytes);
 		engine
 	}));
 	let leaf_tag = tagged_hash_engine(sha256::Hash::hash("LnLeaf".as_bytes()));
 	let branch_tag = tagged_hash_engine(sha256::Hash::hash("LnBranch".as_bytes()));
 
 	let mut leaves = Vec::new();
-	for record in tlv_stream {
-		if !SIGNATURE_TYPES.contains(&record.r#type) {
-			leaves.push(tagged_hash_from_engine(leaf_tag.clone(), &record.record_bytes));
-			leaves.push(tagged_hash_from_engine(nonce_tag.clone(), &record.type_bytes));
-		}
+	let tlv_stream = TlvStream::new(&data[..]);
+	for record in tlv_stream.skip_signatures() {
+		leaves.push(tagged_hash_from_engine(leaf_tag.clone(), &record.record_bytes));
+		leaves.push(tagged_hash_from_engine(nonce_tag.clone(), &record.type_bytes));
 	}
 
 	// Calculate the merkle root hash in place.
@@ -153,6 +152,10 @@ impl<'a> TlvStream<'a> {
 		Self {
 			data: io::Cursor::new(data),
 		}
+	}
+
+	fn skip_signatures(self) -> core::iter::Filter<TlvStream<'a>, fn(&TlvRecord) -> bool> {
+		self.filter(|record| !SIGNATURE_TYPES.contains(&record.r#type))
 	}
 }
 
