@@ -88,7 +88,7 @@ fn root_hash(data: &[u8]) -> sha256::Hash {
 	let mut leaves = Vec::new();
 	for record in tlv_stream {
 		if !SIGNATURE_TYPES.contains(&record.r#type) {
-			leaves.push(tagged_hash_from_engine(leaf_tag.clone(), &record));
+			leaves.push(tagged_hash_from_engine(leaf_tag.clone(), &record.record_bytes));
 			leaves.push(tagged_hash_from_engine(nonce_tag.clone(), &record.type_bytes));
 		}
 	}
@@ -162,10 +162,6 @@ struct TlvRecord<'a> {
 	type_bytes: &'a [u8],
 	// The entire TLV record.
 	record_bytes: &'a [u8],
-}
-
-impl AsRef<[u8]> for TlvRecord<'_> {
-	fn as_ref(&self) -> &[u8] { &self.record_bytes }
 }
 
 impl<'a> Iterator for TlvStream<'a> {
