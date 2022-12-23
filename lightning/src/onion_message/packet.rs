@@ -118,6 +118,8 @@ pub enum OnionMessageContents<T: CustomOnionMessageContents> {
 
 impl<T: CustomOnionMessageContents> OnionMessageContents<T> {
 	/// Returns the type that was used to decode the message payload.
+	///
+	/// (C-not exported) as methods on non-cloneable enums are not currently exportable
 	pub fn tlv_type(&self) -> u64 {
 		match self {
 			&OnionMessageContents::Custom(ref msg) => msg.tlv_type(),
@@ -125,6 +127,7 @@ impl<T: CustomOnionMessageContents> OnionMessageContents<T> {
 	}
 }
 
+/// (C-not exported) as methods on non-cloneable enums are not currently exportable
 impl<T: CustomOnionMessageContents> Writeable for OnionMessageContents<T> {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		match self {
