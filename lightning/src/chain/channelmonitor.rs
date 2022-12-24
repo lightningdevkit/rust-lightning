@@ -6434,8 +6434,8 @@ where
 
 const MAX_ALLOC_SIZE: usize = 64 * 1024;
 
-impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP)>
-	for (BlockHash, ChannelMonitor<SP::EcdsaSigner>)
+impl<'a, 'b, ES: EntropySource, Signer: EcdsaChannelSigner, SP: SignerProvider<EcdsaSigner = Signer>> ReadableArgs<(&'a ES, &'b SP)>
+	for (BlockHash, ChannelMonitor<Signer>)
 {
 	fn read<R: io::Read>(reader: &mut R, args: (&'a ES, &'b SP)) -> Result<Self, DecodeError> {
 		match <Option<Self>>::read(reader, args) {
@@ -6446,8 +6446,8 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 	}
 }
 
-impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP)>
-	for Option<(BlockHash, ChannelMonitor<SP::EcdsaSigner>)>
+impl<'a, 'b, ES: EntropySource, Signer: EcdsaChannelSigner, SP: SignerProvider<EcdsaSigner = Signer>> ReadableArgs<(&'a ES, &'b SP)>
+	for Option<(BlockHash, ChannelMonitor<Signer>)>
 {
 	#[rustfmt::skip]
 	fn read<R: io::Read>(reader: &mut R, args: (&'a ES, &'b SP)) -> Result<Self, DecodeError> {
