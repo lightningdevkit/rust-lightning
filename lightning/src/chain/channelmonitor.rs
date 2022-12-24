@@ -3900,8 +3900,8 @@ where
 
 const MAX_ALLOC_SIZE: usize = 64*1024;
 
-impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP)>
-		for (BlockHash, ChannelMonitor<SP::Signer>) {
+impl<'a, 'b, ES: EntropySource, SP: SignerProvider<Signer=Signer>, Signer: WriteableEcdsaChannelSigner> ReadableArgs<(&'a ES, &'b SP)>
+		for (BlockHash, ChannelMonitor<Signer>) {
 	fn read<R: io::Read>(reader: &mut R, args: (&'a ES, &'b SP)) -> Result<Self, DecodeError> {
 		macro_rules! unwrap_obj {
 			($key: expr) => {

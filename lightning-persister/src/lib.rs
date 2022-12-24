@@ -19,7 +19,7 @@ extern crate libc;
 use bitcoin::hash_types::{BlockHash, Txid};
 use bitcoin::hashes::hex::FromHex;
 use lightning::chain::channelmonitor::ChannelMonitor;
-use lightning::sign::{EntropySource, SignerProvider};
+use lightning::sign::{EntropySource, SignerProvider, WriteableEcdsaChannelSigner};
 use lightning::util::ser::{ReadableArgs, Writeable};
 use lightning::util::persist::KVStorePersister;
 use std::fs;
@@ -58,12 +58,11 @@ impl FilesystemPersister {
 	}
 
 	/// Read `ChannelMonitor`s from disk.
-	pub fn read_channelmonitors<ES: Deref, SP: Deref> (
-		&self, entropy_source: ES, signer_provider: SP
-	) -> std::io::Result<Vec<(BlockHash, ChannelMonitor<<SP::Target as SignerProvider>::Signer>)>>
+	pub fn read_channelmonitors<ES: Deref, WES: WriteableEcdsaChannelSigner, SP: SignerProvider<Signer = WES> + Sized, SPD: Deref<Target=SP>> (
+		&self, entropy_source: ES, signer_provider: SPD
+	) -> Result<Vec<(BlockHash, ChannelMonitor<WES>)>, std::io::Error>
 		where
 			ES::Target: EntropySource + Sized,
-			SP::Target: SignerProvider + Sized
 	{
 		let mut path = PathBuf::from(&self.path_to_channel_data);
 		path.push("monitors");
@@ -104,7 +103,7 @@ impl FilesystemPersister {
 
 			let contents = fs::read(&file.path())?;
 			let mut buffer = Cursor::new(&contents);
-			match <(BlockHash, ChannelMonitor<<SP::Target as SignerProvider>::Signer>)>::read(&mut buffer, (&*entropy_source, &*signer_provider)) {
+			match <(BlockHash, ChannelMonitor<WES>)>::read(&mut buffer, (&*entropy_source, &*signer_provider)) {
 				Ok((blockhash, channel_monitor)) => {
 					if channel_monitor.get_funding_txo().0.txid != txid || channel_monitor.get_funding_txo().0.index != index {
 						return Err(std::io::Error::new(std::io::ErrorKind::InvalidData,
