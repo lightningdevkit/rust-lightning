@@ -195,7 +195,7 @@ impl InFlightHtlcs {
 	pub fn new() -> Self { InFlightHtlcs(HashMap::new()) }
 
 	/// Takes in a path with payer's node id and adds the path's details to `InFlightHtlcs`.
-	pub fn process_path(&mut self, path: &[RouteHop], payer_node_id: PublicKey) {
+	pub(crate) fn process_path(&mut self, path: &[RouteHop], payer_node_id: PublicKey) {
 		if path.is_empty() { return };
 		// total_inflight_map needs to be direction-sensitive when keeping track of the HTLC value
 		// that is held up. However, the `hops` array, which is a path returned by `find_route` in
