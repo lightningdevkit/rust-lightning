@@ -1051,7 +1051,9 @@ impl KeysManager {
 		// We only seriously intend to rely on the channel_master_key for true secure
 		// entropy, everything else just ensures uniqueness. We rely on the unique_start (ie
 		// starting_time provided in the constructor) to be unique.
-		let child_privkey = self.channel_master_key.ckd_priv(&self.secp_ctx, ChildNumber::from_hardened_idx(chan_id as u32).expect("key space exhausted")).expect("Your RNG is busted");
+		let child_privkey = self.channel_master_key.ckd_priv(&self.secp_ctx,
+				ChildNumber::from_hardened_idx((chan_id as u32) % (1 << 31)).expect("key space exhausted")
+			).expect("Your RNG is busted");
 		unique_start.input(&child_privkey.private_key[..]);
 
 		let seed = Sha256::from_engine(unique_start).into_inner();
