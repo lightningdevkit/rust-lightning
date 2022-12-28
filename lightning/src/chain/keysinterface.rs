@@ -1263,7 +1263,12 @@ impl KeysInterface for KeysManager {
 
 	fn generate_channel_keys_id(&self, _inbound: bool, _channel_value_satoshis: u64, user_channel_id: u128) -> [u8; 32] {
 		let child_idx = self.channel_child_index.fetch_add(1, Ordering::AcqRel);
-		assert!(child_idx <= core::u32::MAX as usize);
+		// `child_idx` is the only thing guaranteed to make each channel unique without a restart
+		// (though `user_channel_id` should help, depending on user behavior). If it manages to
+		// roll over, we may generate duplicate keys for two different channels, which could result
+		// in loss of funds. Because we only support 32-bit+ systems, assert that our `AtomicUsize`
+		// doesn't reach `u32::MAX`.
+		assert!(child_idx < core::u32::MAX as usize, "2^32 channels opened without restart");
 		let mut id = [0; 32];
 		id[0..4].copy_from_slice(&(child_idx as u32).to_be_bytes());
 		id[4..8].copy_from_slice(&self.starting_time_nanos.to_be_bytes());
