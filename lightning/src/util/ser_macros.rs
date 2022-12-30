@@ -113,7 +113,7 @@ macro_rules! encode_varint_length_prefixed_tlv {
 	} }
 }
 
-macro_rules! check_tlv_order {
+macro_rules! check_decoded_tlv_order {
 	($last_seen_type: expr, $typ: expr, $type: expr, $field: ident, (default_value, $default: expr)) => {{
 		#[allow(unused_comparisons)] // Note that $type may be 0 making the second comparison always true
 		let invalid_order = ($last_seen_type.is_none() || $last_seen_type.unwrap() < $type) && $typ.0 > $type;
@@ -281,7 +281,7 @@ macro_rules! decode_tlv_stream_range {
 			}
 			// As we read types, make sure we hit every required type:
 			$({
-				check_tlv_order!(last_seen_type, typ, $type, $field, $fieldty);
+				check_decoded_tlv_order!(last_seen_type, typ, $type, $field, $fieldty);
 			})*
 			last_seen_type = Some(typ.0);
 
