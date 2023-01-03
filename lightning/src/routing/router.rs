@@ -181,6 +181,7 @@ impl<'a, S: Score> Score for ScorerAccountingForInFlightHtlcs<'a, S> {
 
 /// A data structure for tracking in-flight HTLCs. May be used during pathfinding to account for
 /// in-use channel liquidity.
+#[derive(Clone)]
 pub struct InFlightHtlcs(
 	// A map with liquidity value (in msat) keyed by a short channel id and the direction the HTLC
 	// is traveling in. The direction boolean is determined by checking if the HTLC source's public
