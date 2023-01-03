@@ -935,7 +935,8 @@ fn do_test_monitor_update_fail_raa(test_ignore_second_cs: bool) {
 
 	// Note that the ordering of the events for different nodes is non-prescriptive, though the
 	// ordering of the two events that both go to nodes[2] have to stay in the same order.
-	let messages_a = match events_3.pop().unwrap() {
+	let (nodes_0_event, events_3) = remove_first_msg_event_to_node(&nodes[0].node.get_our_node_id(), &events_3);
+	let messages_a = match nodes_0_event {
 		MessageSendEvent::UpdateHTLCs { node_id, mut updates } => {
 			assert_eq!(node_id, nodes[0].node.get_our_node_id());
 			assert!(updates.update_fulfill_htlcs.is_empty());
@@ -947,8 +948,14 @@ fn do_test_monitor_update_fail_raa(test_ignore_second_cs: bool) {
 		},
 		_ => panic!("Unexpected event type!"),
 	};
+
+	let (nodes_2_event, events_3) = remove_first_msg_event_to_node(&nodes[2].node.get_our_node_id(), &events_3);
+	let send_event_b = SendEvent::from_event(nodes_2_event);
+	assert_eq!(send_event_b.node_id, nodes[2].node.get_our_node_id());
+
 	let raa = if test_ignore_second_cs {
-		match events_3.remove(1) {
+		let (nodes_2_event, _events_3) = remove_first_msg_event_to_node(&nodes[2].node.get_our_node_id(), &events_3);
+		match nodes_2_event {
 			MessageSendEvent::SendRevokeAndACK { node_id, msg } => {
 				assert_eq!(node_id, nodes[2].node.get_our_node_id());
 				Some(msg.clone())
@@ -956,8 +963,6 @@ fn do_test_monitor_update_fail_raa(test_ignore_second_cs: bool) {
 			_ => panic!("Unexpected event"),
 		}
 	} else { None };
-	let send_event_b = SendEvent::from_event(events_3.remove(0));
-	assert_eq!(send_event_b.node_id, nodes[2].node.get_our_node_id());
 
 	// Now deliver the new messages...
 
@@ -991,6 +996,7 @@ fn do_test_monitor_update_fail_raa(test_ignore_second_cs: bool) {
 		check_added_monitors!(nodes[2], 1);
 
 		let bs_revoke_and_commit = nodes[2].node.get_and_clear_pending_msg_events();
+		// As both messages are for nodes[1], they're in order.
 		assert_eq!(bs_revoke_and_commit.len(), 2);
 		match bs_revoke_and_commit[0] {
 			MessageSendEvent::SendRevokeAndACK { ref node_id, ref msg } => {

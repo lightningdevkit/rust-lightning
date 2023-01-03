@@ -558,6 +558,84 @@ macro_rules! get_htlc_update_msgs {
 	}
 }
 
+/// Fetches the first `msg_event` to the passed `node_id` in the passed `msg_events` vec.
+/// Returns the `msg_event`, along with an updated `msg_events` vec with the message removed.
+///
+/// Note that even though `BroadcastChannelAnnouncement` and `BroadcastChannelUpdate`
+/// `msg_events` are stored under specific peers, this function does not fetch such `msg_events` as
+/// such messages are intended to all peers.
+pub fn remove_first_msg_event_to_node(msg_node_id: &PublicKey, msg_events: &Vec<MessageSendEvent>) -> (MessageSendEvent, Vec<MessageSendEvent>) {
+	let ev_index = msg_events.iter().position(|e| { match e {
+		MessageSendEvent::SendAcceptChannel { node_id, .. } => {
+			node_id == msg_node_id
+		},
+		MessageSendEvent::SendOpenChannel { node_id, .. } => {
+			node_id == msg_node_id
+		},
+		MessageSendEvent::SendFundingCreated { node_id, .. } => {
+			node_id == msg_node_id
+		},
+		MessageSendEvent::SendFundingSigned { node_id, .. } => {
+			node_id == msg_node_id
+		},
+		MessageSendEvent::SendChannelReady { node_id, .. } => {
+			node_id == msg_node_id
+		},
+		MessageSendEvent::SendAnnouncementSignatures { node_id, .. } => {
+			node_id == msg_node_id
+		},
+		MessageSendEvent::UpdateHTLCs { node_id, .. } => {
+			node_id == msg_node_id
+		},
+		MessageSendEvent::SendRevokeAndACK { node_id, .. } => {
+			node_id == msg_node_id
+		},
+		MessageSendEvent::SendClosingSigned { node_id, .. } => {
+			node_id == msg_node_id
+		},
+		MessageSendEvent::SendShutdown { node_id, .. } => {
+			node_id == msg_node_id
+		},
+		MessageSendEvent::SendChannelReestablish { node_id, .. } => {
+			node_id == msg_node_id
+		},
+		MessageSendEvent::SendChannelAnnouncement { node_id, .. } => {
+			node_id == msg_node_id
+		},
+		MessageSendEvent::BroadcastChannelAnnouncement { .. } => {
+			false
+		},
+		MessageSendEvent::BroadcastChannelUpdate { .. } => {
+			false
+		},
+		MessageSendEvent::SendChannelUpdate { node_id, .. } => {
+			node_id == msg_node_id
+		},
+		MessageSendEvent::HandleError { node_id, .. } => {
+			node_id == msg_node_id
+		},
+		MessageSendEvent::SendChannelRangeQuery { node_id, .. } => {
+			node_id == msg_node_id
+		},
+		MessageSendEvent::SendShortIdsQuery { node_id, .. } => {
+			node_id == msg_node_id
+		},
+		MessageSendEvent::SendReplyChannelRange { node_id, .. } => {
+			node_id == msg_node_id
+		},
+		MessageSendEvent::SendGossipTimestampFilter { node_id, .. } => {
+			node_id == msg_node_id
+		},
+	}});
+	if ev_index.is_some() {
+		let mut updated_msg_events = msg_events.to_vec();
+		let ev = updated_msg_events.remove(ev_index.unwrap());
+		(ev, updated_msg_events)
+	} else {
+		panic!("Couldn't find any MessageSendEvent to the node!")
+	}
+}
+
 #[cfg(test)]
 macro_rules! get_channel_ref {
 	($node: expr, $counterparty_node: expr, $per_peer_state_lock: ident, $peer_state_lock: ident, $channel_id: expr) => {
@@ -1276,13 +1354,14 @@ macro_rules! commitment_signed_dance {
 			let (bs_revoke_and_ack, extra_msg_option) = {
 				let events = $node_b.node.get_and_clear_pending_msg_events();
 				assert!(events.len() <= 2);
-				(match events[0] {
+				let (node_a_event, events) = remove_first_msg_event_to_node(&$node_a.node.get_our_node_id(), &events);
+				(match node_a_event {
 					MessageSendEvent::SendRevokeAndACK { ref node_id, ref msg } => {
 						assert_eq!(*node_id, $node_a.node.get_our_node_id());
 						(*msg).clone()
 					},
 					_ => panic!("Unexpected event"),
-				}, events.get(1).map(|e| e.clone()))
+				}, events.get(0).map(|e| e.clone()))
 			};
 			check_added_monitors!($node_b, 1);
 			if $fail_backwards {
@@ -1833,7 +1912,9 @@ pub fn pass_along_path<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_path
 pub fn pass_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route: &[&[&Node<'a, 'b, 'c>]], recv_value: u64, our_payment_hash: PaymentHash, our_payment_secret: PaymentSecret) {
 	let mut events = origin_node.node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), expected_route.len());
-	for (path_idx, (ev, expected_path)) in events.drain(..).zip(expected_route.iter()).enumerate() {
+	for (path_idx, expected_path) in expected_route.iter().enumerate() {
+		let (ev, updated_events) = remove_first_msg_event_to_node(&expected_path[0].node.get_our_node_id(), &events);
+		events = updated_events;
 		// Once we've gotten through all the HTLCs, the last one should result in a
 		// PaymentClaimable (but each previous one should not!), .
 		let expect_payment = path_idx == expected_route.len() - 1;
@@ -1884,10 +1965,18 @@ pub fn do_claim_payment_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, 
 		}
 	}
 	let mut per_path_msgs: Vec<((msgs::UpdateFulfillHTLC, msgs::CommitmentSigned), PublicKey)> = Vec::with_capacity(expected_paths.len());
-	let events = expected_paths[0].last().unwrap().node.get_and_clear_pending_msg_events();
+	let mut events = expected_paths[0].last().unwrap().node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), expected_paths.len());
-	for ev in events.iter() {
-		per_path_msgs.push(msgs_from_ev!(ev));
+
+	if events.len() == 1 {
+		per_path_msgs.push(msgs_from_ev!(&events[0]));
+	} else {
+		for expected_path in expected_paths.iter() {
+			// For MPP payments, we always want the message to the first node in the path.
+			let (ev, updated_events) = remove_first_msg_event_to_node(&expected_path[0].node.get_our_node_id(), &events);
+			per_path_msgs.push(msgs_from_ev!(&ev));
+			events = updated_events;
+		}
 	}
 
 	for (expected_route, (path_msgs, next_hop)) in expected_paths.iter().zip(per_path_msgs.drain(..)) {
