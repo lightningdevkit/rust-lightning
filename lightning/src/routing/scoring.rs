@@ -702,6 +702,7 @@ struct DirectedChannelLiquidity<'a, L: Deref<Target = u64>, BRT: Deref<Target = 
 	max_liquidity_offset_msat: L,
 	min_liquidity_offset_history: BRT,
 	max_liquidity_offset_history: BRT,
+	inflight_htlc_msat: u64,
 	capacity_msat: u64,
 	last_updated: U,
 	now: T,
@@ -739,7 +740,7 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> ProbabilisticScorerU
 				let log_direction = |source, target| {
 					if let Some((directed_info, _)) = chan_debug.as_directed_to(target) {
 						let amt = directed_info.effective_capacity().as_msat();
-						let dir_liq = liq.as_directed(source, target, amt, &self.params);
+						let dir_liq = liq.as_directed(source, target, 0, amt, &self.params);
 
 						let buckets = HistoricalMinMaxBuckets {
 							min_liquidity_offset_history: &dir_liq.min_liquidity_offset_history,
@@ -781,7 +782,7 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> ProbabilisticScorerU
 			if let Some(liq) = self.channel_liquidities.get(&scid) {
 				if let Some((directed_info, source)) = chan.as_directed_to(target) {
 					let amt = directed_info.effective_capacity().as_msat();
-					let dir_liq = liq.as_directed(source, target, amt, &self.params);
+					let dir_liq = liq.as_directed(source, target, 0, amt, &self.params);
 					return Some((dir_liq.min_liquidity_msat(), dir_liq.max_liquidity_msat()));
 				}
 			}
@@ -818,7 +819,7 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> ProbabilisticScorerU
 			if let Some(liq) = self.channel_liquidities.get(&scid) {
 				if let Some((directed_info, source)) = chan.as_directed_to(target) {
 					let amt = directed_info.effective_capacity().as_msat();
-					let dir_liq = liq.as_directed(source, target, amt, &self.params);
+					let dir_liq = liq.as_directed(source, target, 0, amt, &self.params);
 
 					let buckets = HistoricalMinMaxBuckets {
 						min_liquidity_offset_history: &dir_liq.min_liquidity_offset_history,
@@ -923,7 +924,8 @@ impl<T: Time> ChannelLiquidity<T> {
 	/// Returns a view of the channel liquidity directed from `source` to `target` assuming
 	/// `capacity_msat`.
 	fn as_directed<'a>(
-		&self, source: &NodeId, target: &NodeId, capacity_msat: u64, params: &'a ProbabilisticScoringParameters
+		&self, source: &NodeId, target: &NodeId, inflight_htlc_msat: u64, capacity_msat: u64,
+		params: &'a ProbabilisticScoringParameters
 	) -> DirectedChannelLiquidity<'a, &u64, &HistoricalBucketRangeTracker, T, &T> {
 		let (min_liquidity_offset_msat, max_liquidity_offset_msat, min_liquidity_offset_history, max_liquidity_offset_history) =
 			if source < target {
@@ -939,6 +941,7 @@ impl<T: Time> ChannelLiquidity<T> {
 			max_liquidity_offset_msat,
 			min_liquidity_offset_history,
 			max_liquidity_offset_history,
+			inflight_htlc_msat,
 			capacity_msat,
 			last_updated: &self.last_updated,
 			now: T::now(),
@@ -949,7 +952,8 @@ impl<T: Time> ChannelLiquidity<T> {
 	/// Returns a mutable view of the channel liquidity directed from `source` to `target` assuming
 	/// `capacity_msat`.
 	fn as_directed_mut<'a>(
-		&mut self, source: &NodeId, target: &NodeId, capacity_msat: u64, params: &'a ProbabilisticScoringParameters
+		&mut self, source: &NodeId, target: &NodeId, inflight_htlc_msat: u64, capacity_msat: u64,
+		params: &'a ProbabilisticScoringParameters
 	) -> DirectedChannelLiquidity<'a, &mut u64, &mut HistoricalBucketRangeTracker, T, &mut T> {
 		let (min_liquidity_offset_msat, max_liquidity_offset_msat, min_liquidity_offset_history, max_liquidity_offset_history) =
 			if source < target {
@@ -965,6 +969,7 @@ impl<T: Time> ChannelLiquidity<T> {
 			max_liquidity_offset_msat,
 			min_liquidity_offset_history,
 			max_liquidity_offset_history,
+			inflight_htlc_msat,
 			capacity_msat,
 			last_updated: &mut self.last_updated,
 			now: T::now(),
@@ -1022,7 +1027,16 @@ impl<L: Deref<Target = u64>, BRT: Deref<Target = HistoricalBucketRangeTracker>, 
 
 		if params.historical_liquidity_penalty_multiplier_msat != 0 ||
 		   params.historical_liquidity_penalty_amount_multiplier_msat != 0 {
-			let payment_amt_64th_bucket = amount_msat * 64 / self.capacity_msat;
+			let payment_amt_64th_bucket = if amount_msat < u64::max_value() / 64 {
+				amount_msat * 64 / self.capacity_msat
+			} else {
+				// Only use 128-bit arithmetic when multiplication will overflow to avoid 128-bit
+				// division. This branch should only be hit in fuzz testing since the amount would
+				// need to be over 2.88 million BTC in practice.
+				((amount_msat as u128) * 64 / (self.capacity_msat as u128))
+					.try_into().unwrap_or(65)
+			};
+			#[cfg(not(fuzzing))]
 			debug_assert!(payment_amt_64th_bucket <= 64);
 			if payment_amt_64th_bucket > 64 { return res; }
 
@@ -1042,13 +1056,14 @@ impl<L: Deref<Target = u64>, BRT: Deref<Target = HistoricalBucketRangeTracker>, 
 				// If we don't have any valid points (or, once decayed, we have less than a full
 				// point), redo the non-historical calculation with no liquidity bounds tracked and
 				// the historical penalty multipliers.
-				let max_capacity = self.capacity_msat.saturating_sub(amount_msat).saturating_add(1);
+				let available_capacity = self.available_capacity();
+				let numerator = available_capacity.saturating_sub(amount_msat).saturating_add(1);
+				let denominator = available_capacity.saturating_add(1);
 				let negative_log10_times_2048 =
-					approx::negative_log10_times_2048(max_capacity, self.capacity_msat.saturating_add(1));
+					approx::negative_log10_times_2048(numerator, denominator);
 				res = res.saturating_add(Self::combined_penalty_msat(amount_msat, negative_log10_times_2048,
 					params.historical_liquidity_penalty_multiplier_msat,
 					params.historical_liquidity_penalty_amount_multiplier_msat));
-				return res;
 			}
 		}
 
@@ -1080,9 +1095,13 @@ impl<L: Deref<Target = u64>, BRT: Deref<Target = HistoricalBucketRangeTracker>, 
 
 	/// Returns the upper bound of the channel liquidity balance in this direction.
 	fn max_liquidity_msat(&self) -> u64 {
-		self.capacity_msat
-			.checked_sub(self.decayed_offset_msat(*self.max_liquidity_offset_msat))
-			.unwrap_or(0)
+		self.available_capacity()
+			.saturating_sub(self.decayed_offset_msat(*self.max_liquidity_offset_msat))
+	}
+
+	/// Returns the capacity minus the in-flight HTLCs in this direction.
+	fn available_capacity(&self) -> u64 {
+		self.capacity_msat.saturating_sub(self.inflight_htlc_msat)
 	}
 
 	fn decayed_offset_msat(&self, offset_msat: u64) -> u64 {
@@ -1201,12 +1220,12 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> Score for Probabilis
 		}
 
 		let amount_msat = usage.amount_msat;
-		let capacity_msat = usage.effective_capacity.as_msat()
-			.saturating_sub(usage.inflight_htlc_msat);
+		let capacity_msat = usage.effective_capacity.as_msat();
+		let inflight_htlc_msat = usage.inflight_htlc_msat;
 		self.channel_liquidities
 			.get(&short_channel_id)
 			.unwrap_or(&ChannelLiquidity::new())
-			.as_directed(source, target, capacity_msat, &self.params)
+			.as_directed(source, target, inflight_htlc_msat, capacity_msat, &self.params)
 			.penalty_msat(amount_msat, &self.params)
 			.saturating_add(anti_probing_penalty_msat)
 			.saturating_add(base_penalty_msat)
@@ -1234,13 +1253,13 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> Score for Probabilis
 					self.channel_liquidities
 						.entry(hop.short_channel_id)
 						.or_insert_with(ChannelLiquidity::new)
-						.as_directed_mut(source, &target, capacity_msat, &self.params)
+						.as_directed_mut(source, &target, 0, capacity_msat, &self.params)
 						.failed_at_channel(amount_msat, format_args!("SCID {}, towards {:?}", hop.short_channel_id, target), &self.logger);
 				} else {
 					self.channel_liquidities
 						.entry(hop.short_channel_id)
 						.or_insert_with(ChannelLiquidity::new)
-						.as_directed_mut(source, &target, capacity_msat, &self.params)
+						.as_directed_mut(source, &target, 0, capacity_msat, &self.params)
 						.failed_downstream(amount_msat, format_args!("SCID {}, towards {:?}", hop.short_channel_id, target), &self.logger);
 				}
 			} else {
@@ -1268,7 +1287,7 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> Score for Probabilis
 				self.channel_liquidities
 					.entry(hop.short_channel_id)
 					.or_insert_with(ChannelLiquidity::new)
-					.as_directed_mut(source, &target, capacity_msat, &self.params)
+					.as_directed_mut(source, &target, 0, capacity_msat, &self.params)
 					.successful(amount_msat, format_args!("SCID {}, towards {:?}", hop.short_channel_id, target), &self.logger);
 			} else {
 				log_debug!(self.logger, "Not able to learn for channel with SCID {} as we do not have graph info for it (likely a route-hint last-hop).",
@@ -1873,52 +1892,52 @@ mod tests {
 		// Update minimum liquidity.
 
 		let liquidity = scorer.channel_liquidities.get(&42).unwrap()
-			.as_directed(&source, &target, 1_000, &scorer.params);
+			.as_directed(&source, &target, 0, 1_000, &scorer.params);
 		assert_eq!(liquidity.min_liquidity_msat(), 100);
 		assert_eq!(liquidity.max_liquidity_msat(), 300);
 
 		let liquidity = scorer.channel_liquidities.get(&42).unwrap()
-			.as_directed(&target, &source, 1_000, &scorer.params);
+			.as_directed(&target, &source, 0, 1_000, &scorer.params);
 		assert_eq!(liquidity.min_liquidity_msat(), 700);
 		assert_eq!(liquidity.max_liquidity_msat(), 900);
 
 		scorer.channel_liquidities.get_mut(&42).unwrap()
-			.as_directed_mut(&source, &target, 1_000, &scorer.params)
+			.as_directed_mut(&source, &target, 0, 1_000, &scorer.params)
 			.set_min_liquidity_msat(200);
 
 		let liquidity = scorer.channel_liquidities.get(&42).unwrap()
-			.as_directed(&source, &target, 1_000, &scorer.params);
+			.as_directed(&source, &target, 0, 1_000, &scorer.params);
 		assert_eq!(liquidity.min_liquidity_msat(), 200);
 		assert_eq!(liquidity.max_liquidity_msat(), 300);
 
 		let liquidity = scorer.channel_liquidities.get(&42).unwrap()
-			.as_directed(&target, &source, 1_000, &scorer.params);
+			.as_directed(&target, &source, 0, 1_000, &scorer.params);
 		assert_eq!(liquidity.min_liquidity_msat(), 700);
 		assert_eq!(liquidity.max_liquidity_msat(), 800);
 
 		// Update maximum liquidity.
 
 		let liquidity = scorer.channel_liquidities.get(&43).unwrap()
-			.as_directed(&target, &recipient, 1_000, &scorer.params);
+			.as_directed(&target, &recipient, 0, 1_000, &scorer.params);
 		assert_eq!(liquidity.min_liquidity_msat(), 700);
 		assert_eq!(liquidity.max_liquidity_msat(), 900);
 
 		let liquidity = scorer.channel_liquidities.get(&43).unwrap()
-			.as_directed(&recipient, &target, 1_000, &scorer.params);
+			.as_directed(&recipient, &target, 0, 1_000, &scorer.params);
 		assert_eq!(liquidity.min_liquidity_msat(), 100);
 		assert_eq!(liquidity.max_liquidity_msat(), 300);
 
 		scorer.channel_liquidities.get_mut(&43).unwrap()
-			.as_directed_mut(&target, &recipient, 1_000, &scorer.params)
+			.as_directed_mut(&target, &recipient, 0, 1_000, &scorer.params)
 			.set_max_liquidity_msat(200);
 
 		let liquidity = scorer.channel_liquidities.get(&43).unwrap()
-			.as_directed(&target, &recipient, 1_000, &scorer.params);
+			.as_directed(&target, &recipient, 0, 1_000, &scorer.params);
 		assert_eq!(liquidity.min_liquidity_msat(), 0);
 		assert_eq!(liquidity.max_liquidity_msat(), 200);
 
 		let liquidity = scorer.channel_liquidities.get(&43).unwrap()
-			.as_directed(&recipient, &target, 1_000, &scorer.params);
+			.as_directed(&recipient, &target, 0, 1_000, &scorer.params);
 		assert_eq!(liquidity.min_liquidity_msat(), 800);
 		assert_eq!(liquidity.max_liquidity_msat(), 1000);
 	}
@@ -1942,42 +1961,42 @@ mod tests {
 
 		// Check initial bounds.
 		let liquidity = scorer.channel_liquidities.get(&42).unwrap()
-			.as_directed(&source, &target, 1_000, &scorer.params);
+			.as_directed(&source, &target, 0, 1_000, &scorer.params);
 		assert_eq!(liquidity.min_liquidity_msat(), 400);
 		assert_eq!(liquidity.max_liquidity_msat(), 800);
 
 		let liquidity = scorer.channel_liquidities.get(&42).unwrap()
-			.as_directed(&target, &source, 1_000, &scorer.params);
+			.as_directed(&target, &source, 0, 1_000, &scorer.params);
 		assert_eq!(liquidity.min_liquidity_msat(), 200);
 		assert_eq!(liquidity.max_liquidity_msat(), 600);
 
 		// Reset from source to target.
 		scorer.channel_liquidities.get_mut(&42).unwrap()
-			.as_directed_mut(&source, &target, 1_000, &scorer.params)
+			.as_directed_mut(&source, &target, 0, 1_000, &scorer.params)
 			.set_min_liquidity_msat(900);
 
 		let liquidity = scorer.channel_liquidities.get(&42).unwrap()
-			.as_directed(&source, &target, 1_000, &scorer.params);
+			.as_directed(&source, &target, 0, 1_000, &scorer.params);
 		assert_eq!(liquidity.min_liquidity_msat(), 900);
 		assert_eq!(liquidity.max_liquidity_msat(), 1_000);
 
 		let liquidity = scorer.channel_liquidities.get(&42).unwrap()
-			.as_directed(&target, &source, 1_000, &scorer.params);
+			.as_directed(&target, &source, 0, 1_000, &scorer.params);
 		assert_eq!(liquidity.min_liquidity_msat(), 0);
 		assert_eq!(liquidity.max_liquidity_msat(), 100);
 
 		// Reset from target to source.
 		scorer.channel_liquidities.get_mut(&42).unwrap()
-			.as_directed_mut(&target, &source, 1_000, &scorer.params)
+			.as_directed_mut(&target, &source, 0, 1_000, &scorer.params)
 			.set_min_liquidity_msat(400);
 
 		let liquidity = scorer.channel_liquidities.get(&42).unwrap()
-			.as_directed(&source, &target, 1_000, &scorer.params);
+			.as_directed(&source, &target, 0, 1_000, &scorer.params);
 		assert_eq!(liquidity.min_liquidity_msat(), 0);
 		assert_eq!(liquidity.max_liquidity_msat(), 600);
 
 		let liquidity = scorer.channel_liquidities.get(&42).unwrap()
-			.as_directed(&target, &source, 1_000, &scorer.params);
+			.as_directed(&target, &source, 0, 1_000, &scorer.params);
 		assert_eq!(liquidity.min_liquidity_msat(), 400);
 		assert_eq!(liquidity.max_liquidity_msat(), 1_000);
 	}
@@ -2001,42 +2020,42 @@ mod tests {
 
 		// Check initial bounds.
 		let liquidity = scorer.channel_liquidities.get(&42).unwrap()
-			.as_directed(&source, &target, 1_000, &scorer.params);
+			.as_directed(&source, &target, 0, 1_000, &scorer.params);
 		assert_eq!(liquidity.min_liquidity_msat(), 400);
 		assert_eq!(liquidity.max_liquidity_msat(), 800);
 
 		let liquidity = scorer.channel_liquidities.get(&42).unwrap()
-			.as_directed(&target, &source, 1_000, &scorer.params);
+			.as_directed(&target, &source, 0, 1_000, &scorer.params);
 		assert_eq!(liquidity.min_liquidity_msat(), 200);
 		assert_eq!(liquidity.max_liquidity_msat(), 600);
 
 		// Reset from source to target.
 		scorer.channel_liquidities.get_mut(&42).unwrap()
-			.as_directed_mut(&source, &target, 1_000, &scorer.params)
+			.as_directed_mut(&source, &target, 0, 1_000, &scorer.params)
 			.set_max_liquidity_msat(300);
 
 		let liquidity = scorer.channel_liquidities.get(&42).unwrap()
-			.as_directed(&source, &target, 1_000, &scorer.params);
+			.as_directed(&source, &target, 0, 1_000, &scorer.params);
 		assert_eq!(liquidity.min_liquidity_msat(), 0);
 		assert_eq!(liquidity.max_liquidity_msat(), 300);
 
 		let liquidity = scorer.channel_liquidities.get(&42).unwrap()
-			.as_directed(&target, &source, 1_000, &scorer.params);
+			.as_directed(&target, &source, 0, 1_000, &scorer.params);
 		assert_eq!(liquidity.min_liquidity_msat(), 700);
 		assert_eq!(liquidity.max_liquidity_msat(), 1_000);
 
 		// Reset from target to source.
 		scorer.channel_liquidities.get_mut(&42).unwrap()
-			.as_directed_mut(&target, &source, 1_000, &scorer.params)
+			.as_directed_mut(&target, &source, 0, 1_000, &scorer.params)
 			.set_max_liquidity_msat(600);
 
 		let liquidity = scorer.channel_liquidities.get(&42).unwrap()
-			.as_directed(&source, &target, 1_000, &scorer.params);
+			.as_directed(&source, &target, 0, 1_000, &scorer.params);
 		assert_eq!(liquidity.min_liquidity_msat(), 400);
 		assert_eq!(liquidity.max_liquidity_msat(), 1_000);
 
 		let liquidity = scorer.channel_liquidities.get(&42).unwrap()
-			.as_directed(&target, &source, 1_000, &scorer.params);
+			.as_directed(&target, &source, 0, 1_000, &scorer.params);
 		assert_eq!(liquidity.min_liquidity_msat(), 0);
 		assert_eq!(liquidity.max_liquidity_msat(), 600);
 	}
@@ -2774,6 +2793,14 @@ mod tests {
 		// data entirely instead.
 		assert_eq!(scorer.historical_estimated_channel_liquidity_probabilities(42, &target),
 			Some(([0; 8], [0; 8])));
+
+		let usage = ChannelUsage {
+			amount_msat: 100,
+			inflight_htlc_msat: 1024,
+			effective_capacity: EffectiveCapacity::Total { capacity_msat: 1_024, htlc_maximum_msat: 1_024 },
+		};
+		scorer.payment_path_failed(&payment_path_for_amount(1).iter().collect::<Vec<_>>(), 42);
+		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 2048);
 	}
 
 	#[test]
