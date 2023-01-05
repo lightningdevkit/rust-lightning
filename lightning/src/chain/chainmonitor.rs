@@ -815,6 +815,7 @@ mod tests {
 
 		chanmon_cfgs[1].persister.offchain_monitor_updates.lock().unwrap().clear();
 		chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
+		chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
 
 		nodes[1].node.claim_funds(payment_preimage_1);
 		check_added_monitors!(nodes[1], 1);
@@ -822,8 +823,6 @@ mod tests {
 		nodes[1].node.claim_funds(payment_preimage_2);
 		check_added_monitors!(nodes[1], 1);
 		expect_payment_claimed!(nodes[1], payment_hash_2, 1_000_000);
-
-		chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
 
 		let persistences = chanmon_cfgs[1].persister.offchain_monitor_updates.lock().unwrap().clone();
 		assert_eq!(persistences.len(), 1);

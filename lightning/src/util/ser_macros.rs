@@ -11,6 +11,9 @@ macro_rules! encode_tlv {
 	($stream: expr, $type: expr, $field: expr, (default_value, $default: expr)) => {
 		encode_tlv!($stream, $type, $field, required)
 	};
+	($stream: expr, $type: expr, $field: expr, (static_value, $value: expr)) => {
+		let _ = &$field; // Ensure we "use" the $field
+	};
 	($stream: expr, $type: expr, $field: expr, required) => {
 		BigSize($type).write($stream)?;
 		BigSize($field.serialized_length() as u64).write($stream)?;
@@ -34,6 +37,17 @@ macro_rules! encode_tlv {
 	};
 }
 
+
+macro_rules! check_encoded_tlv_order {
+	($last_type: expr, $type: expr, (static_value, $value: expr)) => { };
+	($last_type: expr, $type: expr, $fieldty: tt) => {
+		if let Some(t) = $last_type {
+			debug_assert!(t <= $type);
+		}
+		$last_type = Some($type);
+	};
+}
+
 macro_rules! encode_tlv_stream {
 	($stream: expr, {$(($type: expr, $field: expr, $fieldty: tt)),* $(,)*}) => { {
 		#[allow(unused_imports)]
@@ -52,10 +66,7 @@ macro_rules! encode_tlv_stream {
 		{
 			let mut last_seen: Option<u64> = None;
 			$(
-				if let Some(t) = last_seen {
-					debug_assert!(t <= $type);
-				}
-				last_seen = Some($type);
+				check_encoded_tlv_order!(last_seen, $type, $fieldty);
 			)*
 		}
 	} }
@@ -64,6 +75,8 @@ macro_rules! encode_tlv_stream {
 macro_rules! get_varint_length_prefixed_tlv_length {
 	($len: expr, $type: expr, $field: expr, (default_value, $default: expr)) => {
 		get_varint_length_prefixed_tlv_length!($len, $type, $field, required)
+	};
+	($len: expr, $type: expr, $field: expr, (static_value, $value: expr)) => {
 	};
 	($len: expr, $type: expr, $field: expr, required) => {
 		BigSize($type).write(&mut $len).expect("No in-memory data may fail to serialize");
@@ -100,7 +113,7 @@ macro_rules! encode_varint_length_prefixed_tlv {
 	} }
 }
 
-macro_rules! check_tlv_order {
+macro_rules! check_decoded_tlv_order {
 	($last_seen_type: expr, $typ: expr, $type: expr, $field: ident, (default_value, $default: expr)) => {{
 		#[allow(unused_comparisons)] // Note that $type may be 0 making the second comparison always true
 		let invalid_order = ($last_seen_type.is_none() || $last_seen_type.unwrap() < $type) && $typ.0 > $type;
@@ -108,6 +121,8 @@ macro_rules! check_tlv_order {
 			$field = $default.into();
 		}
 	}};
+	($last_seen_type: expr, $typ: expr, $type: expr, $field: ident, (static_value, $value: expr)) => {
+	};
 	($last_seen_type: expr, $typ: expr, $type: expr, $field: ident, required) => {{
 		#[allow(unused_comparisons)] // Note that $type may be 0 making the second comparison always true
 		let invalid_order = ($last_seen_type.is_none() || $last_seen_type.unwrap() < $type) && $typ.0 > $type;
@@ -140,6 +155,9 @@ macro_rules! check_missing_tlv {
 			$field = $default.into();
 		}
 	}};
+	($last_seen_type: expr, $type: expr, $field: expr, (static_value, $value: expr)) => {
+		$field = $value;
+	};
 	($last_seen_type: expr, $type: expr, $field: ident, required) => {{
 		#[allow(unused_comparisons)] // Note that $type may be 0 making the second comparison always true
 		let missing_req_type = $last_seen_type.is_none() || $last_seen_type.unwrap() < $type;
@@ -168,6 +186,8 @@ macro_rules! decode_tlv {
 	($reader: expr, $field: ident, (default_value, $default: expr)) => {{
 		decode_tlv!($reader, $field, required)
 	}};
+	($reader: expr, $field: ident, (static_value, $value: expr)) => {{
+	}};
 	($reader: expr, $field: ident, required) => {{
 		$field = $crate::util::ser::Readable::read(&mut $reader)?;
 	}};
@@ -193,6 +213,11 @@ macro_rules! decode_tlv {
 	($reader: expr, $field: ident, (option, encoding: $fieldty: ty)) => {{
 		decode_tlv!($reader, $field, option);
 	}};
+}
+
+macro_rules! _decode_tlv_stream_match_check {
+	($val: ident, $type: expr, (static_value, $value: expr)) => { false };
+	($val: ident, $type: expr, $fieldty: tt) => { $val == $type }
 }
 
 // `$decode_custom_tlv` is a closure that may be optionally provided to handle custom message types.
@@ -256,7 +281,7 @@ macro_rules! decode_tlv_stream_range {
 			}
 			// As we read types, make sure we hit every required type:
 			$({
-				check_tlv_order!(last_seen_type, typ, $type, $field, $fieldty);
+				check_decoded_tlv_order!(last_seen_type, typ, $type, $field, $fieldty);
 			})*
 			last_seen_type = Some(typ.0);
 
@@ -264,7 +289,7 @@ macro_rules! decode_tlv_stream_range {
 			let length: ser::BigSize = $crate::util::ser::Readable::read(&mut stream_ref)?;
 			let mut s = ser::FixedLengthReader::new(&mut stream_ref, length.0);
 			match typ.0 {
-				$($type => {
+				$(_t if _decode_tlv_stream_match_check!(_t, $type, $fieldty) => {
 					decode_tlv!(s, $field, $fieldty);
 					if s.bytes_remain() {
 						s.eat_remaining()?; // Return ShortRead if there's actually not enough bytes
@@ -405,6 +430,9 @@ macro_rules! init_tlv_based_struct_field {
 	($field: ident, (default_value, $default: expr)) => {
 		$field.0.unwrap()
 	};
+	($field: ident, (static_value, $value: expr)) => {
+		$field
+	};
 	($field: ident, option) => {
 		$field
 	};
@@ -419,6 +447,9 @@ macro_rules! init_tlv_based_struct_field {
 macro_rules! init_tlv_field_var {
 	($field: ident, (default_value, $default: expr)) => {
 		let mut $field = $crate::util::ser::OptionDeserWrapper(None);
+	};
+	($field: ident, (static_value, $value: expr)) => {
+		let $field;
 	};
 	($field: ident, required) => {
 		let mut $field = $crate::util::ser::OptionDeserWrapper(None);

@@ -61,7 +61,7 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, S: Deref> Router for DefaultR
 {
 	fn find_route(
 		&self, payer: &PublicKey, params: &RouteParameters, first_hops: Option<&[&ChannelDetails]>,
-		inflight_htlcs: InFlightHtlcs
+		inflight_htlcs: &InFlightHtlcs
 	) -> Result<Route, LightningError> {
 		let random_seed_bytes = {
 			let mut locked_random_seed_bytes = self.random_seed_bytes.lock().unwrap();
@@ -98,13 +98,13 @@ pub trait Router {
 	/// Finds a [`Route`] between `payer` and `payee` for a payment with the given values.
 	fn find_route(
 		&self, payer: &PublicKey, route_params: &RouteParameters,
-		first_hops: Option<&[&ChannelDetails]>, inflight_htlcs: InFlightHtlcs
+		first_hops: Option<&[&ChannelDetails]>, inflight_htlcs: &InFlightHtlcs
 	) -> Result<Route, LightningError>;
 	/// Finds a [`Route`] between `payer` and `payee` for a payment with the given values. Includes
 	/// `PaymentHash` and `PaymentId` to be able to correlate the request with a specific payment.
 	fn find_route_with_id(
 		&self, payer: &PublicKey, route_params: &RouteParameters,
-		first_hops: Option<&[&ChannelDetails]>, inflight_htlcs: InFlightHtlcs,
+		first_hops: Option<&[&ChannelDetails]>, inflight_htlcs: &InFlightHtlcs,
 		_payment_hash: PaymentHash, _payment_id: PaymentId
 	) -> Result<Route, LightningError> {
 		self.find_route(payer, route_params, first_hops, inflight_htlcs)
@@ -125,15 +125,15 @@ pub trait Router {
 /// [`find_route`].
 ///
 /// [`Score`]: crate::routing::scoring::Score
-pub struct ScorerAccountingForInFlightHtlcs<S: Score> {
+pub struct ScorerAccountingForInFlightHtlcs<'a, S: Score> {
 	scorer: S,
 	// Maps a channel's short channel id and its direction to the liquidity used up.
-	inflight_htlcs: InFlightHtlcs,
+	inflight_htlcs: &'a InFlightHtlcs,
 }
 
-impl<S: Score> ScorerAccountingForInFlightHtlcs<S> {
+impl<'a, S: Score> ScorerAccountingForInFlightHtlcs<'a, S> {
 	/// Initialize a new `ScorerAccountingForInFlightHtlcs`.
-	pub fn new(scorer: S, inflight_htlcs: InFlightHtlcs) -> Self {
+	pub fn new(scorer: S, inflight_htlcs: &'a InFlightHtlcs) -> Self {
 		ScorerAccountingForInFlightHtlcs {
 			scorer,
 			inflight_htlcs
@@ -142,11 +142,11 @@ impl<S: Score> ScorerAccountingForInFlightHtlcs<S> {
 }
 
 #[cfg(c_bindings)]
-impl<S: Score> Writeable for ScorerAccountingForInFlightHtlcs<S> {
+impl<'a, S: Score> Writeable for ScorerAccountingForInFlightHtlcs<'a, S> {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> { self.scorer.write(writer) }
 }
 
-impl<S: Score> Score for ScorerAccountingForInFlightHtlcs<S> {
+impl<'a, S: Score> Score for ScorerAccountingForInFlightHtlcs<'a, S> {
 	fn channel_penalty_msat(&self, short_channel_id: u64, source: &NodeId, target: &NodeId, usage: ChannelUsage) -> u64 {
 		if let Some(used_liquidity) = self.inflight_htlcs.used_liquidity_msat(
 			source, target, short_channel_id

@@ -56,7 +56,7 @@ use alloc::collections::BTreeSet;
 use core::default::Default;
 use core::iter::repeat;
 use bitcoin::hashes::Hash;
-use crate::sync::Mutex;
+use crate::sync::{Arc, Mutex};
 
 use crate::ln::functional_test_utils::*;
 use crate::ln::chan_utils::CommitmentTransaction;
@@ -5214,8 +5214,9 @@ fn test_key_derivation_params() {
 	let seed = [42; 32];
 	let keys_manager = test_utils::TestKeysInterface::new(&seed, Network::Testnet);
 	let chain_monitor = test_utils::TestChainMonitor::new(Some(&chanmon_cfgs[0].chain_source), &chanmon_cfgs[0].tx_broadcaster, &chanmon_cfgs[0].logger, &chanmon_cfgs[0].fee_estimator, &chanmon_cfgs[0].persister, &keys_manager);
-	let network_graph = NetworkGraph::new(chanmon_cfgs[0].chain_source.genesis_hash, &chanmon_cfgs[0].logger);
-	let node = NodeCfg { chain_source: &chanmon_cfgs[0].chain_source, logger: &chanmon_cfgs[0].logger, tx_broadcaster: &chanmon_cfgs[0].tx_broadcaster, fee_estimator: &chanmon_cfgs[0].fee_estimator, chain_monitor, keys_manager: &keys_manager, network_graph, node_seed: seed, features: channelmanager::provided_init_features() };
+	let network_graph = Arc::new(NetworkGraph::new(chanmon_cfgs[0].chain_source.genesis_hash, &chanmon_cfgs[0].logger));
+	let router = test_utils::TestRouter::new(network_graph.clone());
+	let node = NodeCfg { chain_source: &chanmon_cfgs[0].chain_source, logger: &chanmon_cfgs[0].logger, tx_broadcaster: &chanmon_cfgs[0].tx_broadcaster, fee_estimator: &chanmon_cfgs[0].fee_estimator, router, chain_monitor, keys_manager: &keys_manager, network_graph, node_seed: seed, features: channelmanager::provided_init_features() };
 	let mut node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	node_cfgs.remove(0);
 	node_cfgs.insert(0, node);
@@ -9072,7 +9073,7 @@ fn test_keysend_payments_to_public_node() {
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let _chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 10001, channelmanager::provided_init_features(), channelmanager::provided_init_features());
-	let network_graph = nodes[0].network_graph;
+	let network_graph = nodes[0].network_graph.clone();
 	let payer_pubkey = nodes[0].node.get_our_node_id();
 	let payee_pubkey = nodes[1].node.get_our_node_id();
 	let route_params = RouteParameters {
@@ -9113,7 +9114,7 @@ fn test_keysend_payments_to_private_node() {
 		final_value_msat: 10000,
 		final_cltv_expiry_delta: 40,
 	};
-	let network_graph = nodes[0].network_graph;
+	let network_graph = nodes[0].network_graph.clone();
 	let first_hops = nodes[0].node.list_usable_channels();
 	let scorer = test_utils::TestScorer::with_penalty(0);
 	let random_seed_bytes = chanmon_cfgs[1].keys_manager.get_secure_random_bytes();

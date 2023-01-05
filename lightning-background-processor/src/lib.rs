@@ -22,6 +22,7 @@ use lightning::ln::channelmanager::ChannelManager;
 use lightning::ln::msgs::{ChannelMessageHandler, OnionMessageHandler, RoutingMessageHandler};
 use lightning::ln::peer_handler::{CustomMessageHandler, PeerManager, SocketDescriptor};
 use lightning::routing::gossip::{NetworkGraph, P2PGossipSync};
+use lightning::routing::router::Router;
 use lightning::routing::scoring::WriteableScore;
 use lightning::util::events::{Event, EventHandler, EventsProvider};
 use lightning::util::logger::Logger;
@@ -342,6 +343,7 @@ pub async fn process_events_async<
 	T: 'static + Deref + Send + Sync,
 	K: 'static + Deref + Send + Sync,
 	F: 'static + Deref + Send + Sync,
+	R: 'static + Deref + Send + Sync,
 	G: 'static + Deref<Target = NetworkGraph<L>> + Send + Sync,
 	L: 'static + Deref + Send + Sync,
 	P: 'static + Deref + Send + Sync,
@@ -353,7 +355,7 @@ pub async fn process_events_async<
 	EventHandler: Fn(Event) -> EventHandlerFuture,
 	PS: 'static + Deref + Send,
 	M: 'static + Deref<Target = ChainMonitor<<K::Target as SignerProvider>::Signer, CF, T, F, L, P>> + Send + Sync,
-	CM: 'static + Deref<Target = ChannelManager<CW, T, K, F, L>> + Send + Sync,
+	CM: 'static + Deref<Target = ChannelManager<CW, T, K, F, R, L>> + Send + Sync,
 	PGS: 'static + Deref<Target = P2PGossipSync<G, CA, L>> + Send + Sync,
 	RGS: 'static + Deref<Target = RapidGossipSync<G, L>> + Send,
 	UMH: 'static + Deref + Send + Sync,
@@ -374,13 +376,14 @@ where
 	T::Target: 'static + BroadcasterInterface,
 	K::Target: 'static + KeysInterface,
 	F::Target: 'static + FeeEstimator,
+	R::Target: 'static + Router,
 	L::Target: 'static + Logger,
 	P::Target: 'static + Persist<<K::Target as SignerProvider>::Signer>,
 	CMH::Target: 'static + ChannelMessageHandler,
 	OMH::Target: 'static + OnionMessageHandler,
 	RMH::Target: 'static + RoutingMessageHandler,
 	UMH::Target: 'static + CustomMessageHandler,
-	PS::Target: 'static + Persister<'a, CW, T, K, F, L, SC>,
+	PS::Target: 'static + Persister<'a, CW, T, K, F, R, L, SC>,
 {
 	let mut should_break = true;
 	let async_event_handler = |event| {
@@ -460,6 +463,7 @@ impl BackgroundProcessor {
 		T: 'static + Deref + Send + Sync,
 		K: 'static + Deref + Send + Sync,
 		F: 'static + Deref + Send + Sync,
+		R: 'static + Deref + Send + Sync,
 		G: 'static + Deref<Target = NetworkGraph<L>> + Send + Sync,
 		L: 'static + Deref + Send + Sync,
 		P: 'static + Deref + Send + Sync,
@@ -470,7 +474,7 @@ impl BackgroundProcessor {
 		EH: 'static + EventHandler + Send,
 		PS: 'static + Deref + Send,
 		M: 'static + Deref<Target = ChainMonitor<<K::Target as SignerProvider>::Signer, CF, T, F, L, P>> + Send + Sync,
-		CM: 'static + Deref<Target = ChannelManager<CW, T, K, F, L>> + Send + Sync,
+		CM: 'static + Deref<Target = ChannelManager<CW, T, K, F, R, L>> + Send + Sync,
 		PGS: 'static + Deref<Target = P2PGossipSync<G, CA, L>> + Send + Sync,
 		RGS: 'static + Deref<Target = RapidGossipSync<G, L>> + Send,
 		UMH: 'static + Deref + Send + Sync,
@@ -488,13 +492,14 @@ impl BackgroundProcessor {
 		T::Target: 'static + BroadcasterInterface,
 		K::Target: 'static + KeysInterface,
 		F::Target: 'static + FeeEstimator,
+		R::Target: 'static + Router,
 		L::Target: 'static + Logger,
 		P::Target: 'static + Persist<<K::Target as SignerProvider>::Signer>,
 		CMH::Target: 'static + ChannelMessageHandler,
 		OMH::Target: 'static + OnionMessageHandler,
 		RMH::Target: 'static + RoutingMessageHandler,
 		UMH::Target: 'static + CustomMessageHandler,
-		PS::Target: 'static + Persister<'a, CW, T, K, F, L, SC>,
+		PS::Target: 'static + Persister<'a, CW, T, K, F, R, L, SC>,
 	{
 		let stop_thread = Arc::new(AtomicBool::new(false));
 		let stop_thread_clone = stop_thread.clone();
@@ -579,6 +584,7 @@ mod tests {
 	use lightning::ln::peer_handler::{PeerManager, MessageHandler, SocketDescriptor, IgnoringMessageHandler};
 	use lightning::routing::gossip::{NetworkGraph, P2PGossipSync};
 	use lightning::routing::router::DefaultRouter;
+	use lightning::routing::scoring::{ProbabilisticScoringParameters, ProbabilisticScorer};
 	use lightning::util::config::UserConfig;
 	use lightning::util::events::{Event, MessageSendEventsProvider, MessageSendEvent};
 	use lightning::util::ser::Writeable;
@@ -593,7 +599,6 @@ mod tests {
 	use std::time::Duration;
 	use bitcoin::hashes::Hash;
 	use bitcoin::TxMerkleNode;
-	use lightning::routing::scoring::{FixedPenaltyScorer};
 	use lightning_rapid_gossip_sync::RapidGossipSync;
 	use super::{BackgroundProcessor, GossipSync, FRESHNESS_TIMER};
 
@@ -625,7 +630,7 @@ mod tests {
 		network_graph: Arc<NetworkGraph<Arc<test_utils::TestLogger>>>,
 		logger: Arc<test_utils::TestLogger>,
 		best_block: BestBlock,
-		scorer: Arc<Mutex<FixedPenaltyScorer>>,
+		scorer: Arc<Mutex<ProbabilisticScorer<Arc<NetworkGraph<Arc<test_utils::TestLogger>>>, Arc<test_utils::TestLogger>>>>,
 	}
 
 	impl Node {
@@ -722,24 +727,26 @@ mod tests {
 		for i in 0..num_nodes {
 			let tx_broadcaster = Arc::new(test_utils::TestBroadcaster{txn_broadcasted: Mutex::new(Vec::new()), blocks: Arc::new(Mutex::new(Vec::new()))});
 			let fee_estimator = Arc::new(test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) });
-			let chain_source = Arc::new(test_utils::TestChainSource::new(Network::Testnet));
 			let logger = Arc::new(test_utils::TestLogger::with_id(format!("node {}", i)));
-			let persister = Arc::new(FilesystemPersister::new(format!("{}_persister_{}", persist_dir, i)));
-			let seed = [i as u8; 32];
 			let network = Network::Testnet;
 			let genesis_block = genesis_block(network);
+			let network_graph = Arc::new(NetworkGraph::new(genesis_block.header.block_hash(), logger.clone()));
+			let params = ProbabilisticScoringParameters::default();
+			let scorer = Arc::new(Mutex::new(ProbabilisticScorer::new(params, network_graph.clone(), logger.clone())));
+			let seed = [i as u8; 32];
+			let router = Arc::new(DefaultRouter::new(network_graph.clone(), logger.clone(), seed, scorer.clone()));
+			let chain_source = Arc::new(test_utils::TestChainSource::new(Network::Testnet));
+			let persister = Arc::new(FilesystemPersister::new(format!("{}_persister_{}", persist_dir, i)));
 			let now = Duration::from_secs(genesis_block.header.time as u64);
 			let keys_manager = Arc::new(KeysManager::new(&seed, now.as_secs(), now.subsec_nanos()));
 			let chain_monitor = Arc::new(chainmonitor::ChainMonitor::new(Some(chain_source.clone()), tx_broadcaster.clone(), logger.clone(), fee_estimator.clone(), persister.clone()));
 			let best_block = BestBlock::from_genesis(network);
 			let params = ChainParameters { network, best_block };
-			let manager = Arc::new(ChannelManager::new(fee_estimator.clone(), chain_monitor.clone(), tx_broadcaster.clone(), logger.clone(), keys_manager.clone(), UserConfig::default(), params));
-			let network_graph = Arc::new(NetworkGraph::new(genesis_block.header.block_hash(), logger.clone()));
+			let manager = Arc::new(ChannelManager::new(fee_estimator.clone(), chain_monitor.clone(), tx_broadcaster.clone(), router.clone(), logger.clone(), keys_manager.clone(), UserConfig::default(), params));
 			let p2p_gossip_sync = Arc::new(P2PGossipSync::new(network_graph.clone(), Some(chain_source.clone()), logger.clone()));
 			let rapid_gossip_sync = Arc::new(RapidGossipSync::new(network_graph.clone()));
 			let msg_handler = MessageHandler { chan_handler: Arc::new(test_utils::TestChannelMessageHandler::new()), route_handler: Arc::new(test_utils::TestRoutingMessageHandler::new()), onion_message_handler: IgnoringMessageHandler{}};
 			let peer_manager = Arc::new(PeerManager::new(msg_handler, keys_manager.get_node_secret(Recipient::Node).unwrap(), 0, &seed, logger.clone(), IgnoringMessageHandler{}));
-			let scorer = Arc::new(Mutex::new(test_utils::TestScorer::with_penalty(0)));
 			let node = Node { node: manager, p2p_gossip_sync, rapid_gossip_sync, peer_manager, chain_monitor, persister, tx_broadcaster, network_graph, logger, best_block, scorer };
 			nodes.push(node);
 		}

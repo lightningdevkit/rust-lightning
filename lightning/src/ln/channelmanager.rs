@@ -46,7 +46,9 @@ use crate::ln::channel::{Channel, ChannelError, ChannelUpdateStatus, UpdateFulfi
 use crate::ln::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
 #[cfg(any(feature = "_test_utils", test))]
 use crate::ln::features::InvoiceFeatures;
-use crate::routing::router::{InFlightHtlcs, PaymentParameters, Route, RouteHop, RoutePath};
+use crate::routing::gossip::NetworkGraph;
+use crate::routing::router::{DefaultRouter, InFlightHtlcs, PaymentParameters, Route, RouteHop, RoutePath, Router};
+use crate::routing::scoring::ProbabilisticScorer;
 use crate::ln::msgs;
 use crate::ln::onion_utils;
 use crate::ln::onion_utils::HTLCFailReason;
@@ -490,24 +492,35 @@ struct PendingInboundPayment {
 /// when you're using lightning-net-tokio (since tokio::spawn requires parameters with static
 /// lifetimes). Other times you can afford a reference, which is more efficient, in which case
 /// SimpleRefChannelManager is the more appropriate type. Defining these type aliases prevents
-/// issues such as overly long function definitions. Note that the ChannelManager can take any
-/// type that implements KeysInterface for its keys manager, but this type alias chooses the
-/// concrete type of the KeysManager.
+/// issues such as overly long function definitions. Note that the ChannelManager can take any type
+/// that implements KeysInterface or Router for its keys manager and router, respectively, but this
+/// type alias chooses the concrete types of KeysManager and DefaultRouter.
 ///
 /// (C-not exported) as Arcs don't make sense in bindings
-pub type SimpleArcChannelManager<M, T, F, L> = ChannelManager<Arc<M>, Arc<T>, Arc<KeysManager>, Arc<F>, Arc<L>>;
+pub type SimpleArcChannelManager<M, T, F, L> = ChannelManager<
+	Arc<M>,
+	Arc<T>,
+	Arc<KeysManager>,
+	Arc<F>,
+	Arc<DefaultRouter<
+		Arc<NetworkGraph<Arc<L>>>,
+		Arc<L>,
+		Arc<Mutex<ProbabilisticScorer<Arc<NetworkGraph<Arc<L>>>, Arc<L>>>>
+	>>,
+	Arc<L>
+>;
 
 /// SimpleRefChannelManager is a type alias for a ChannelManager reference, and is the reference
 /// counterpart to the SimpleArcChannelManager type alias. Use this type by default when you don't
 /// need a ChannelManager with a static lifetime. You'll need a static lifetime in cases such as
 /// usage of lightning-net-tokio (since tokio::spawn requires parameters with static lifetimes).
 /// But if this is not necessary, using a reference is more efficient. Defining these type aliases
-/// helps with issues such as long function definitions. Note that the ChannelManager can take any
-/// type that implements KeysInterface for its keys manager, but this type alias chooses the
-/// concrete type of the KeysManager.
+/// issues such as overly long function definitions. Note that the ChannelManager can take any type
+/// that implements KeysInterface or Router for its keys manager and router, respectively, but this
+/// type alias chooses the concrete types of KeysManager and DefaultRouter.
 ///
 /// (C-not exported) as Arcs don't make sense in bindings
-pub type SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, M, T, F, L> = ChannelManager<&'a M, &'b T, &'c KeysManager, &'d F, &'e L>;
+pub type SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, M, T, F, L> = ChannelManager<&'a M, &'b T, &'c KeysManager, &'d F, &'e DefaultRouter<&'f NetworkGraph<&'g L>, &'g L, &'h Mutex<ProbabilisticScorer<&'f NetworkGraph<&'g L>, &'g L>>>, &'g L>;
 
 /// Manager which keeps track of a number of channels and sends messages to the appropriate
 /// channel, also tracking HTLC preimages and forwarding onion packets appropriately.
@@ -583,18 +596,22 @@ pub type SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, M, T, F, L> = ChannelManage
 //  |                   |
 //  |                   |__`pending_background_events`
 //
-pub struct ChannelManager<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
-	where M::Target: chain::Watch<<K::Target as SignerProvider>::Signer>,
-        T::Target: BroadcasterInterface,
-        K::Target: KeysInterface,
-        F::Target: FeeEstimator,
-				L::Target: Logger,
+pub struct ChannelManager<M: Deref, T: Deref, K: Deref, F: Deref, R: Deref, L: Deref>
+where
+	M::Target: chain::Watch<<K::Target as SignerProvider>::Signer>,
+	T::Target: BroadcasterInterface,
+	K::Target: KeysInterface,
+	F::Target: FeeEstimator,
+	R::Target: Router,
+	L::Target: Logger,
 {
 	default_configuration: UserConfig,
 	genesis_hash: BlockHash,
 	fee_estimator: LowerBoundedFeeEstimator<F>,
 	chain_monitor: M,
 	tx_broadcaster: T,
+	#[allow(unused)]
+	router: R,
 
 	/// See `ChannelManager` struct-level documentation for lock order requirements.
 	#[cfg(test)]
@@ -1358,12 +1375,14 @@ macro_rules! emit_channel_ready_event {
 	}
 }
 
-impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F, L>
-	where M::Target: chain::Watch<<K::Target as SignerProvider>::Signer>,
-        T::Target: BroadcasterInterface,
-        K::Target: KeysInterface,
-        F::Target: FeeEstimator,
-        L::Target: Logger,
+impl<M: Deref, T: Deref, K: Deref, F: Deref, R: Deref, L: Deref> ChannelManager<M, T, K, F, R, L>
+where
+	M::Target: chain::Watch<<K::Target as SignerProvider>::Signer>,
+	T::Target: BroadcasterInterface,
+	K::Target: KeysInterface,
+	F::Target: FeeEstimator,
+	R::Target: Router,
+	L::Target: Logger,
 {
 	/// Constructs a new ChannelManager to hold several channels and route between them.
 	///
@@ -1375,7 +1394,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 	/// Users need to notify the new ChannelManager when a new block is connected or
 	/// disconnected using its `block_connected` and `block_disconnected` methods, starting
 	/// from after `params.latest_hash`.
-	pub fn new(fee_est: F, chain_monitor: M, tx_broadcaster: T, logger: L, keys_manager: K, config: UserConfig, params: ChainParameters) -> Self {
+	pub fn new(fee_est: F, chain_monitor: M, tx_broadcaster: T, router: R, logger: L, keys_manager: K, config: UserConfig, params: ChainParameters) -> Self {
 		let mut secp_ctx = Secp256k1::new();
 		secp_ctx.seeded_randomize(&keys_manager.get_secure_random_bytes());
 		let inbound_pmt_key_material = keys_manager.get_inbound_payment_key_material();
@@ -1386,6 +1405,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 			fee_estimator: LowerBoundedFeeEstimator::new(fee_est),
 			chain_monitor,
 			tx_broadcaster,
+			router,
 
 			best_block: RwLock::new(params.best_block),
 
@@ -5264,12 +5284,14 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 	}
 }
 
-impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> MessageSendEventsProvider for ChannelManager<M, T, K, F, L>
-	where M::Target: chain::Watch<<K::Target as SignerProvider>::Signer>,
-        T::Target: BroadcasterInterface,
-        K::Target: KeysInterface,
-        F::Target: FeeEstimator,
-				L::Target: Logger,
+impl<M: Deref, T: Deref, K: Deref, F: Deref, R: Deref, L: Deref> MessageSendEventsProvider for ChannelManager<M, T, K, F, R, L>
+where
+	M::Target: chain::Watch<<K::Target as SignerProvider>::Signer>,
+	T::Target: BroadcasterInterface,
+	K::Target: KeysInterface,
+	F::Target: FeeEstimator,
+	R::Target: Router,
+	L::Target: Logger,
 {
 	fn get_and_clear_pending_msg_events(&self) -> Vec<MessageSendEvent> {
 		let events = RefCell::new(Vec::new());
@@ -5303,12 +5325,13 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> MessageSendEventsProvider
 	}
 }
 
-impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> EventsProvider for ChannelManager<M, T, K, F, L>
+impl<M: Deref, T: Deref, K: Deref, F: Deref, R: Deref, L: Deref> EventsProvider for ChannelManager<M, T, K, F, R, L>
 where
 	M::Target: chain::Watch<<K::Target as SignerProvider>::Signer>,
 	T::Target: BroadcasterInterface,
 	K::Target: KeysInterface,
 	F::Target: FeeEstimator,
+	R::Target: Router,
 	L::Target: Logger,
 {
 	/// Processes events that must be periodically handled.
@@ -5339,12 +5362,13 @@ where
 	}
 }
 
-impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> chain::Listen for ChannelManager<M, T, K, F, L>
+impl<M: Deref, T: Deref, K: Deref, F: Deref, R: Deref, L: Deref> chain::Listen for ChannelManager<M, T, K, F, R, L>
 where
 	M::Target: chain::Watch<<K::Target as SignerProvider>::Signer>,
 	T::Target: BroadcasterInterface,
 	K::Target: KeysInterface,
 	F::Target: FeeEstimator,
+	R::Target: Router,
 	L::Target: Logger,
 {
 	fn filtered_block_connected(&self, header: &BlockHeader, txdata: &TransactionData, height: u32) {
@@ -5376,12 +5400,13 @@ where
 	}
 }
 
-impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> chain::Confirm for ChannelManager<M, T, K, F, L>
+impl<M: Deref, T: Deref, K: Deref, F: Deref, R: Deref, L: Deref> chain::Confirm for ChannelManager<M, T, K, F, R, L>
 where
 	M::Target: chain::Watch<<K::Target as SignerProvider>::Signer>,
 	T::Target: BroadcasterInterface,
 	K::Target: KeysInterface,
 	F::Target: FeeEstimator,
+	R::Target: Router,
 	L::Target: Logger,
 {
 	fn transactions_confirmed(&self, header: &BlockHeader, txdata: &TransactionData, height: u32) {
@@ -5463,12 +5488,13 @@ where
 	}
 }
 
-impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F, L>
+impl<M: Deref, T: Deref, K: Deref, F: Deref, R: Deref, L: Deref> ChannelManager<M, T, K, F, R, L>
 where
 	M::Target: chain::Watch<<K::Target as SignerProvider>::Signer>,
 	T::Target: BroadcasterInterface,
 	K::Target: KeysInterface,
 	F::Target: FeeEstimator,
+	R::Target: Router,
 	L::Target: Logger,
 {
 	/// Calls a function which handles an on-chain event (blocks dis/connected, transactions
@@ -5663,13 +5689,15 @@ where
 	}
 }
 
-impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref >
-	ChannelMessageHandler for ChannelManager<M, T, K, F, L>
-	where M::Target: chain::Watch<<K::Target as SignerProvider>::Signer>,
-        T::Target: BroadcasterInterface,
-        K::Target: KeysInterface,
-        F::Target: FeeEstimator,
-        L::Target: Logger,
+impl<M: Deref, T: Deref, K: Deref, F: Deref, R: Deref, L: Deref>
+	ChannelMessageHandler for ChannelManager<M, T, K, F, R, L>
+where
+	M::Target: chain::Watch<<K::Target as SignerProvider>::Signer>,
+	T::Target: BroadcasterInterface,
+	K::Target: KeysInterface,
+	F::Target: FeeEstimator,
+	R::Target: Router,
+	L::Target: Logger,
 {
 	fn handle_open_channel(&self, counterparty_node_id: &PublicKey, their_features: InitFeatures, msg: &msgs::OpenChannel) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
@@ -6350,12 +6378,14 @@ impl_writeable_tlv_based!(PendingInboundPayment, {
 	(8, min_value_msat, required),
 });
 
-impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Writeable for ChannelManager<M, T, K, F, L>
-	where M::Target: chain::Watch<<K::Target as SignerProvider>::Signer>,
-        T::Target: BroadcasterInterface,
-        K::Target: KeysInterface,
-        F::Target: FeeEstimator,
-        L::Target: Logger,
+impl<M: Deref, T: Deref, K: Deref, F: Deref, R: Deref, L: Deref> Writeable for ChannelManager<M, T, K, F, R, L>
+where
+	M::Target: chain::Watch<<K::Target as SignerProvider>::Signer>,
+	T::Target: BroadcasterInterface,
+	K::Target: KeysInterface,
+	F::Target: FeeEstimator,
+	R::Target: Router,
+	L::Target: Logger,
 {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		let _consistency_lock = self.total_consistency_lock.write().unwrap();
@@ -6547,12 +6577,14 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Writeable for ChannelMana
 /// which you've already broadcasted the transaction.
 ///
 /// [`ChainMonitor`]: crate::chain::chainmonitor::ChainMonitor
-pub struct ChannelManagerReadArgs<'a, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
-	where M::Target: chain::Watch<<K::Target as SignerProvider>::Signer>,
-        T::Target: BroadcasterInterface,
-        K::Target: KeysInterface,
-        F::Target: FeeEstimator,
-        L::Target: Logger,
+pub struct ChannelManagerReadArgs<'a, M: Deref, T: Deref, K: Deref, F: Deref, R: Deref, L: Deref>
+where
+	M::Target: chain::Watch<<K::Target as SignerProvider>::Signer>,
+	T::Target: BroadcasterInterface,
+	K::Target: KeysInterface,
+	F::Target: FeeEstimator,
+	R::Target: Router,
+	L::Target: Logger,
 {
 	/// The keys provider which will give us relevant keys. Some keys will be loaded during
 	/// deserialization and KeysInterface::read_chan_signer will be used to read per-Channel
@@ -6574,6 +6606,11 @@ pub struct ChannelManagerReadArgs<'a, M: Deref, T: Deref, K: Deref, F: Deref, L:
 	/// used to broadcast the latest local commitment transactions of channels which must be
 	/// force-closed during deserialization.
 	pub tx_broadcaster: T,
+	/// The router which will be used in the ChannelManager in the future for finding routes
+	/// on-the-fly for trampoline payments. Absent in private nodes that don't support forwarding.
+	///
+	/// No calls to the router will be made during deserialization.
+	pub router: R,
 	/// The Logger for use in the ChannelManager and which may be used to log information during
 	/// deserialization.
 	pub logger: L,
@@ -6596,21 +6633,23 @@ pub struct ChannelManagerReadArgs<'a, M: Deref, T: Deref, K: Deref, F: Deref, L:
 	pub channel_monitors: HashMap<OutPoint, &'a mut ChannelMonitor<<K::Target as SignerProvider>::Signer>>,
 }
 
-impl<'a, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
-		ChannelManagerReadArgs<'a, M, T, K, F, L>
-	where M::Target: chain::Watch<<K::Target as SignerProvider>::Signer>,
-		T::Target: BroadcasterInterface,
-		K::Target: KeysInterface,
-		F::Target: FeeEstimator,
-		L::Target: Logger,
-	{
+impl<'a, M: Deref, T: Deref, K: Deref, F: Deref, R: Deref, L: Deref>
+		ChannelManagerReadArgs<'a, M, T, K, F, R, L>
+where
+	M::Target: chain::Watch<<K::Target as SignerProvider>::Signer>,
+	T::Target: BroadcasterInterface,
+	K::Target: KeysInterface,
+	F::Target: FeeEstimator,
+	R::Target: Router,
+	L::Target: Logger,
+{
 	/// Simple utility function to create a ChannelManagerReadArgs which creates the monitor
 	/// HashMap for you. This is primarily useful for C bindings where it is not practical to
 	/// populate a HashMap directly from C.
-	pub fn new(keys_manager: K, fee_estimator: F, chain_monitor: M, tx_broadcaster: T, logger: L, default_config: UserConfig,
+	pub fn new(keys_manager: K, fee_estimator: F, chain_monitor: M, tx_broadcaster: T, router: R, logger: L, default_config: UserConfig,
 			mut channel_monitors: Vec<&'a mut ChannelMonitor<<K::Target as SignerProvider>::Signer>>) -> Self {
 		Self {
-			keys_manager, fee_estimator, chain_monitor, tx_broadcaster, logger, default_config,
+			keys_manager, fee_estimator, chain_monitor, tx_broadcaster, router, logger, default_config,
 			channel_monitors: channel_monitors.drain(..).map(|monitor| { (monitor.get_funding_txo().0, monitor) }).collect()
 		}
 	}
@@ -6618,29 +6657,33 @@ impl<'a, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 
 // Implement ReadableArgs for an Arc'd ChannelManager to make it a bit easier to work with the
 // SipmleArcChannelManager type:
-impl<'a, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
-	ReadableArgs<ChannelManagerReadArgs<'a, M, T, K, F, L>> for (BlockHash, Arc<ChannelManager<M, T, K, F, L>>)
-	where M::Target: chain::Watch<<K::Target as SignerProvider>::Signer>,
-        T::Target: BroadcasterInterface,
-        K::Target: KeysInterface,
-        F::Target: FeeEstimator,
-        L::Target: Logger,
+impl<'a, M: Deref, T: Deref, K: Deref, F: Deref, R: Deref, L: Deref>
+	ReadableArgs<ChannelManagerReadArgs<'a, M, T, K, F, R, L>> for (BlockHash, Arc<ChannelManager<M, T, K, F, R, L>>)
+where
+	M::Target: chain::Watch<<K::Target as SignerProvider>::Signer>,
+	T::Target: BroadcasterInterface,
+	K::Target: KeysInterface,
+	F::Target: FeeEstimator,
+	R::Target: Router,
+	L::Target: Logger,
 {
-	fn read<R: io::Read>(reader: &mut R, args: ChannelManagerReadArgs<'a, M, T, K, F, L>) -> Result<Self, DecodeError> {
-		let (blockhash, chan_manager) = <(BlockHash, ChannelManager<M, T, K, F, L>)>::read(reader, args)?;
+	fn read<Reader: io::Read>(reader: &mut Reader, args: ChannelManagerReadArgs<'a, M, T, K, F, R, L>) -> Result<Self, DecodeError> {
+		let (blockhash, chan_manager) = <(BlockHash, ChannelManager<M, T, K, F, R, L>)>::read(reader, args)?;
 		Ok((blockhash, Arc::new(chan_manager)))
 	}
 }
 
-impl<'a, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
-	ReadableArgs<ChannelManagerReadArgs<'a, M, T, K, F, L>> for (BlockHash, ChannelManager<M, T, K, F, L>)
-	where M::Target: chain::Watch<<K::Target as SignerProvider>::Signer>,
-        T::Target: BroadcasterInterface,
-        K::Target: KeysInterface,
-        F::Target: FeeEstimator,
-        L::Target: Logger,
+impl<'a, M: Deref, T: Deref, K: Deref, F: Deref, R: Deref, L: Deref>
+	ReadableArgs<ChannelManagerReadArgs<'a, M, T, K, F, R, L>> for (BlockHash, ChannelManager<M, T, K, F, R, L>)
+where
+	M::Target: chain::Watch<<K::Target as SignerProvider>::Signer>,
+	T::Target: BroadcasterInterface,
+	K::Target: KeysInterface,
+	F::Target: FeeEstimator,
+	R::Target: Router,
+	L::Target: Logger,
 {
-	fn read<R: io::Read>(reader: &mut R, mut args: ChannelManagerReadArgs<'a, M, T, K, F, L>) -> Result<Self, DecodeError> {
+	fn read<Reader: io::Read>(reader: &mut Reader, mut args: ChannelManagerReadArgs<'a, M, T, K, F, R, L>) -> Result<Self, DecodeError> {
 		let _ver = read_ver_prefix!(reader, SERIALIZATION_VERSION);
 
 		let genesis_hash: BlockHash = Readable::read(reader)?;
@@ -7096,6 +7139,7 @@ impl<'a, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 			fee_estimator: bounded_fee_estimator,
 			chain_monitor: args.chain_monitor,
 			tx_broadcaster: args.tx_broadcaster,
+			router: args.router,
 
 			best_block: RwLock::new(BestBlock::new(best_block_hash, best_block_height)),
 
@@ -7481,7 +7525,7 @@ mod tests {
 			final_value_msat: 10_000,
 			final_cltv_expiry_delta: 40,
 		};
-		let network_graph = nodes[0].network_graph;
+		let network_graph = nodes[0].network_graph.clone();
 		let first_hops = nodes[0].node.list_usable_channels();
 		let scorer = test_utils::TestScorer::with_penalty(0);
 		let random_seed_bytes = chanmon_cfgs[1].keys_manager.get_secure_random_bytes();
@@ -7526,7 +7570,7 @@ mod tests {
 			final_value_msat: 10_000,
 			final_cltv_expiry_delta: 40,
 		};
-		let network_graph = nodes[0].network_graph;
+		let network_graph = nodes[0].network_graph.clone();
 		let first_hops = nodes[0].node.list_usable_channels();
 		let scorer = test_utils::TestScorer::with_penalty(0);
 		let random_seed_bytes = chanmon_cfgs[1].keys_manager.get_secure_random_bytes();
@@ -7754,7 +7798,8 @@ pub mod bench {
 				&'a test_utils::TestBroadcaster, &'a test_utils::TestFeeEstimator,
 				&'a test_utils::TestLogger, &'a P>,
 			&'a test_utils::TestBroadcaster, &'a KeysManager,
-			&'a test_utils::TestFeeEstimator, &'a test_utils::TestLogger>,
+			&'a test_utils::TestFeeEstimator, &'a test_utils::TestRouter<'a>,
+			&'a test_utils::TestLogger>,
 	}
 
 	#[cfg(test)]
@@ -7772,15 +7817,16 @@ pub mod bench {
 
 		let tx_broadcaster = test_utils::TestBroadcaster{txn_broadcasted: Mutex::new(Vec::new()), blocks: Arc::new(Mutex::new(Vec::new()))};
 		let fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) };
+		let logger_a = test_utils::TestLogger::with_id("node a".to_owned());
+		let router = test_utils::TestRouter::new(Arc::new(NetworkGraph::new(genesis_hash, &logger_a)));
 
 		let mut config: UserConfig = Default::default();
 		config.channel_handshake_config.minimum_depth = 1;
 
-		let logger_a = test_utils::TestLogger::with_id("node a".to_owned());
 		let chain_monitor_a = ChainMonitor::new(None, &tx_broadcaster, &logger_a, &fee_estimator, &persister_a);
 		let seed_a = [1u8; 32];
 		let keys_manager_a = KeysManager::new(&seed_a, 42, 42);
-		let node_a = ChannelManager::new(&fee_estimator, &chain_monitor_a, &tx_broadcaster, &logger_a, &keys_manager_a, config.clone(), ChainParameters {
+		let node_a = ChannelManager::new(&fee_estimator, &chain_monitor_a, &tx_broadcaster, &router, &logger_a, &keys_manager_a, config.clone(), ChainParameters {
 			network,
 			best_block: BestBlock::from_genesis(network),
 		});
@@ -7790,7 +7836,7 @@ pub mod bench {
 		let chain_monitor_b = ChainMonitor::new(None, &tx_broadcaster, &logger_a, &fee_estimator, &persister_b);
 		let seed_b = [2u8; 32];
 		let keys_manager_b = KeysManager::new(&seed_b, 42, 42);
-		let node_b = ChannelManager::new(&fee_estimator, &chain_monitor_b, &tx_broadcaster, &logger_b, &keys_manager_b, config.clone(), ChainParameters {
+		let node_b = ChannelManager::new(&fee_estimator, &chain_monitor_b, &tx_broadcaster, &router, &logger_b, &keys_manager_b, config.clone(), ChainParameters {
 			network,
 			best_block: BestBlock::from_genesis(network),
 		});
