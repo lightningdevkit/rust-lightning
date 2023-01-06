@@ -388,7 +388,7 @@ impl MsgHandleErrInternal {
 /// Event::PendingHTLCsForwardable for the API guidelines indicating how long should be waited).
 /// This provides some limited amount of privacy. Ideally this would range from somewhere like one
 /// second to 30 seconds, but people expect lightning to be, you know, kinda fast, sadly.
-const MIN_HTLC_RELAY_HOLDING_CELL_MILLIS: u64 = 100;
+pub(super) const MIN_HTLC_RELAY_HOLDING_CELL_MILLIS: u64 = 100;
 
 /// For events which result in both a RevokeAndACK and a CommitmentUpdate, by default they should
 /// be sent in the order they appear in the return value, however sometimes the order needs to be
