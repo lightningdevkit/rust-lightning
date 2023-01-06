@@ -567,7 +567,7 @@ tlv_stream!(OfferTlvStream, OfferTlvStreamRef, 1..80, {
 	(6, currency: CurrencyCode),
 	(8, amount: (u64, HighZeroBytesDroppedBigSize)),
 	(10, description: (String, WithoutLength)),
-	(12, features: OfferFeatures),
+	(12, features: (OfferFeatures, WithoutLength)),
 	(14, absolute_expiry: (u64, HighZeroBytesDroppedBigSize)),
 	(16, paths: (Vec<BlindedPath>, WithoutLength)),
 	(18, issuer: (String, WithoutLength)),

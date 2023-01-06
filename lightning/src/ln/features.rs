@@ -65,7 +65,7 @@ use core::marker::PhantomData;
 use bitcoin::bech32;
 use bitcoin::bech32::{Base32Len, FromBase32, ToBase32, u5, WriteBase32};
 use crate::ln::msgs::DecodeError;
-use crate::util::ser::{Readable, Writeable, Writer};
+use crate::util::ser::{Readable, WithoutLength, Writeable, Writer};
 
 mod sealed {
 	use crate::prelude::*;
@@ -159,6 +159,15 @@ mod sealed {
 	]);
 	define_context!(OfferContext, []);
 	define_context!(InvoiceRequestContext, []);
+	define_context!(Bolt12InvoiceContext, [
+		// Byte 0
+		,
+		// Byte 1
+		,
+		// Byte 2
+		BasicMPP,
+	]);
+	define_context!(BlindedHopContext, []);
 	// This isn't a "real" feature context, and is only used in the channel_type field in an
 	// `OpenChannel` message.
 	define_context!(ChannelTypeContext, [
@@ -342,7 +351,7 @@ mod sealed {
 	define_feature!(15, PaymentSecret, [InitContext, NodeContext, InvoiceContext],
 		"Feature flags for `payment_secret`.", set_payment_secret_optional, set_payment_secret_required,
 		supports_payment_secret, requires_payment_secret);
-	define_feature!(17, BasicMPP, [InitContext, NodeContext, InvoiceContext],
+	define_feature!(17, BasicMPP, [InitContext, NodeContext, InvoiceContext, Bolt12InvoiceContext],
 		"Feature flags for `basic_mpp`.", set_basic_mpp_optional, set_basic_mpp_required,
 		supports_basic_mpp, requires_basic_mpp);
 	define_feature!(19, Wumbo, [InitContext, NodeContext],
@@ -369,7 +378,7 @@ mod sealed {
 
 	#[cfg(test)]
 	define_feature!(123456789, UnknownFeature,
-		[NodeContext, ChannelContext, InvoiceContext, OfferContext, InvoiceRequestContext],
+		[NodeContext, ChannelContext, InvoiceContext, OfferContext, InvoiceRequestContext, Bolt12InvoiceContext, BlindedHopContext],
 		"Feature flags for an unknown feature used in testing.", set_unknown_feature_optional,
 		set_unknown_feature_required, supports_unknown_test_feature, requires_unknown_test_feature);
 }
@@ -432,6 +441,10 @@ pub type InvoiceFeatures = Features<sealed::InvoiceContext>;
 pub type OfferFeatures = Features<sealed::OfferContext>;
 /// Features used within an `invoice_request`.
 pub type InvoiceRequestFeatures = Features<sealed::InvoiceRequestContext>;
+/// Features used within an `invoice`.
+pub type Bolt12InvoiceFeatures = Features<sealed::Bolt12InvoiceContext>;
+/// Features used within BOLT 4 encrypted_data_tlv and BOLT 12 blinded_payinfo
+pub type BlindedHopFeatures = Features<sealed::BlindedHopContext>;
 
 /// Features used within the channel_type field in an OpenChannel message.
 ///
@@ -719,32 +732,47 @@ impl_feature_len_prefixed_write!(InitFeatures);
 impl_feature_len_prefixed_write!(ChannelFeatures);
 impl_feature_len_prefixed_write!(NodeFeatures);
 impl_feature_len_prefixed_write!(InvoiceFeatures);
+impl_feature_len_prefixed_write!(BlindedHopFeatures);
 
 // Some features only appear inside of TLVs, so they don't have a length prefix when serialized.
 macro_rules! impl_feature_tlv_write {
 	($features: ident) => {
 		impl Writeable for $features {
 			fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-				self.write_be(w)
+				WithoutLength(self).write(w)
 			}
 		}
 		impl Readable for $features {
 			fn read<R: io::Read>(r: &mut R) -> Result<Self, DecodeError> {
-				let v = io_extras::read_to_end(r)?;
-				Ok(Self::from_be_bytes(v))
+				Ok(WithoutLength::<Self>::read(r)?.0)
 			}
 		}
 	}
 }
 
 impl_feature_tlv_write!(ChannelTypeFeatures);
-impl_feature_tlv_write!(OfferFeatures);
-impl_feature_tlv_write!(InvoiceRequestFeatures);
+
+// Some features may appear both in a TLV record and as part of a TLV subtype sequence. The latter
+// requires a length but the former does not.
+
+impl<T: sealed::Context> Writeable for WithoutLength<&Features<T>> {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		self.0.write_be(w)
+	}
+}
+
+impl<T: sealed::Context> Readable for WithoutLength<Features<T>> {
+	fn read<R: io::Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let v = io_extras::read_to_end(r)?;
+		Ok(WithoutLength(Features::<T>::from_be_bytes(v)))
+	}
+}
 
 #[cfg(test)]
 mod tests {
-	use super::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, InvoiceFeatures, NodeFeatures, sealed};
+	use super::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, InvoiceFeatures, NodeFeatures, OfferFeatures, sealed};
 	use bitcoin::bech32::{Base32Len, FromBase32, ToBase32, u5};
+	use crate::util::ser::{Readable, WithoutLength, Writeable};
 
 	#[test]
 	fn sanity_test_unknown_bits() {
@@ -836,6 +864,20 @@ mod tests {
 		assert!(!features.requires_basic_mpp());
 		assert!(features.requires_payment_secret());
 		assert!(features.supports_payment_secret());
+	}
+
+	#[test]
+	fn encodes_features_without_length() {
+		let features = OfferFeatures::from_le_bytes(vec![1, 2, 3, 4, 5, 42, 100, 101]);
+		assert_eq!(features.flags.len(), 8);
+
+		let mut serialized_features = Vec::new();
+		WithoutLength(&features).write(&mut serialized_features).unwrap();
+		assert_eq!(serialized_features.len(), 8);
+
+		let deserialized_features =
+			WithoutLength::<OfferFeatures>::read(&mut &serialized_features[..]).unwrap().0;
+		assert_eq!(features, deserialized_features);
 	}
 
 	#[test]
