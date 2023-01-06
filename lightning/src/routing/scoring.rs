@@ -575,7 +575,7 @@ impl HistoricalBucketRangeTracker {
 		// Ensure the bucket index is in the range [0, 7], even if the liquidity offset is zero or
 		// the channel's capacity, though the second should generally never happen.
 		debug_assert!(liquidity_offset_msat <= capacity_msat);
-		let bucket_idx: u8 = (liquidity_offset_msat.saturating_sub(1) * 8 / capacity_msat)
+		let bucket_idx: u8 = (liquidity_offset_msat * 8 / capacity_msat.saturating_add(1))
 			.try_into().unwrap_or(32); // 32 is bogus for 8 buckets, and will be ignored
 		debug_assert!(bucket_idx < 8);
 		if bucket_idx < 8 {
@@ -1034,12 +1034,12 @@ impl<L: Deref<Target = u64>, BRT: Deref<Target = HistoricalBucketRangeTracker>, 
 		if params.historical_liquidity_penalty_multiplier_msat != 0 ||
 		   params.historical_liquidity_penalty_amount_multiplier_msat != 0 {
 			let payment_amt_64th_bucket = if amount_msat < u64::max_value() / 64 {
-				amount_msat * 64 / self.capacity_msat
+				amount_msat * 64 / self.capacity_msat.saturating_add(1)
 			} else {
 				// Only use 128-bit arithmetic when multiplication will overflow to avoid 128-bit
 				// division. This branch should only be hit in fuzz testing since the amount would
 				// need to be over 2.88 million BTC in practice.
-				((amount_msat as u128) * 64 / (self.capacity_msat as u128))
+				((amount_msat as u128) * 64 / (self.capacity_msat as u128).saturating_add(1))
 					.try_into().unwrap_or(65)
 			};
 			#[cfg(not(fuzzing))]
@@ -1817,13 +1817,13 @@ mod tests {
 		let chain_source: Option<&crate::util::test_utils::TestChainSource> = None;
 		network_graph.update_channel_from_announcement(
 			&signed_announcement, &chain_source).unwrap();
-		update_channel(network_graph, short_channel_id, node_1_key, 0);
-		update_channel(network_graph, short_channel_id, node_2_key, 1);
+		update_channel(network_graph, short_channel_id, node_1_key, 0, 1_000);
+		update_channel(network_graph, short_channel_id, node_2_key, 1, 0);
 	}
 
 	fn update_channel(
 		network_graph: &mut NetworkGraph<&TestLogger>, short_channel_id: u64, node_key: SecretKey,
-		flags: u8
+		flags: u8, htlc_maximum_msat: u64
 	) {
 		let genesis_hash = genesis_block(Network::Testnet).header.block_hash();
 		let secp_ctx = Secp256k1::new();
@@ -1834,7 +1834,7 @@ mod tests {
 			flags,
 			cltv_expiry_delta: 18,
 			htlc_minimum_msat: 0,
-			htlc_maximum_msat: 1_000,
+			htlc_maximum_msat,
 			fee_base_msat: 1,
 			fee_proportional_millionths: 0,
 			excess_data: Vec::new(),
@@ -2754,6 +2754,7 @@ mod tests {
 		let logger = TestLogger::new();
 		let network_graph = network_graph(&logger);
 		let params = ProbabilisticScoringParameters {
+			liquidity_offset_half_life: Duration::from_secs(60 * 60),
 			historical_liquidity_penalty_multiplier_msat: 1024,
 			historical_liquidity_penalty_amount_multiplier_msat: 1024,
 			historical_no_updates_half_life: Duration::from_secs(10),
@@ -2804,6 +2805,25 @@ mod tests {
 		};
 		scorer.payment_path_failed(&payment_path_for_amount(1).iter().collect::<Vec<_>>(), 42);
 		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 409);
+
+		let usage = ChannelUsage {
+			amount_msat: 1,
+			inflight_htlc_msat: 0,
+			effective_capacity: EffectiveCapacity::MaximumHTLC { amount_msat: 0 },
+		};
+		assert_eq!(scorer.channel_penalty_msat(42, &target, &source, usage), 2048);
+
+		// Advance to decay all liquidity offsets to zero.
+		SinceEpoch::advance(Duration::from_secs(60 * 60 * 10));
+
+		// Use a path in the opposite direction, which have zero for htlc_maximum_msat. This will
+		// ensure that the effective capacity is zero to test division-by-zero edge cases.
+		let path = vec![
+			path_hop(target_pubkey(), 43, 2),
+			path_hop(source_pubkey(), 42, 1),
+			path_hop(sender_pubkey(), 41, 0),
+		];
+		scorer.payment_path_failed(&path.iter().collect::<Vec<_>>(), 42);
 	}
 
 	#[test]
