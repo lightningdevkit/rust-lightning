@@ -550,7 +550,7 @@ struct HistoricalBucketRangeTracker {
 
 impl HistoricalBucketRangeTracker {
 	fn new() -> Self { Self { buckets: [0; 8] } }
-	fn track_datapoint(&mut self, bucket_idx: u8) {
+	fn track_datapoint(&mut self, liquidity_offset_msat: u64, capacity_msat: u64) {
 		// We have 8 leaky buckets for min and max liquidity. Each bucket tracks the amount of time
 		// we spend in each bucket as a 16-bit fixed-point number with a 5 bit fractional part.
 		//
@@ -571,6 +571,12 @@ impl HistoricalBucketRangeTracker {
 		//
 		// The constants were picked experimentally, selecting a decay amount that restricts us
 		// from overflowing buckets without having to cap them manually.
+
+		// Ensure the bucket index is in the range [0, 7], even if the liquidity offset is zero or
+		// the channel's capacity, though the second should generally never happen.
+		debug_assert!(liquidity_offset_msat <= capacity_msat);
+		let bucket_idx: u8 = (liquidity_offset_msat.saturating_sub(1) * 8 / capacity_msat)
+			.try_into().unwrap_or(32); // 32 is bogus for 8 buckets, and will be ignored
 		debug_assert!(bucket_idx < 8);
 		if bucket_idx < 8 {
 			for e in self.buckets.iter_mut() {
@@ -1151,18 +1157,12 @@ impl<L: DerefMut<Target = u64>, BRT: DerefMut<Target = HistoricalBucketRangeTrac
 		self.min_liquidity_offset_history.time_decay_data(half_lives);
 		self.max_liquidity_offset_history.time_decay_data(half_lives);
 
-		debug_assert!(*self.min_liquidity_offset_msat <= self.capacity_msat);
 		self.min_liquidity_offset_history.track_datapoint(
-			// Ensure the bucket index we pass is in the range [0, 7], even if the liquidity offset
-			// is zero or the channel's capacity, though the second should generally never happen.
-			(self.min_liquidity_offset_msat.saturating_sub(1) * 8 / self.capacity_msat)
-			.try_into().unwrap_or(32)); // 32 is bogus for 8 buckets, and will be ignored
-		debug_assert!(*self.max_liquidity_offset_msat <= self.capacity_msat);
+			*self.min_liquidity_offset_msat, self.capacity_msat
+		);
 		self.max_liquidity_offset_history.track_datapoint(
-			// Ensure the bucket index we pass is in the range [0, 7], even if the liquidity offset
-			// is zero or the channel's capacity, though the second should generally never happen.
-			(self.max_liquidity_offset_msat.saturating_sub(1) * 8 / self.capacity_msat)
-			.try_into().unwrap_or(32)); // 32 is bogus for 8 buckets, and will be ignored
+			*self.max_liquidity_offset_msat, self.capacity_msat
+		);
 	}
 
 	/// Adjusts the lower bound of the channel liquidity balance in this direction.
