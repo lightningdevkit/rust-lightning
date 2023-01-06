@@ -1402,7 +1402,6 @@ macro_rules! commitment_signed_dance {
 				expect_pending_htlcs_forwardable_and_htlc_handling_failed!($node_a, vec![$crate::util::events::HTLCDestination::NextHopChannel{ node_id: Some($node_b.node.get_our_node_id()), channel_id: $commitment_signed.channel_id }]);
 				check_added_monitors!($node_a, 1);
 
-				let channel_state = $node_a.node.channel_state.lock().unwrap();
 				let node_a_per_peer_state = $node_a.node.per_peer_state.read().unwrap();
 				let mut number_of_msg_events = 0;
 				for (cp_id, peer_state_mutex) in node_a_per_peer_state.iter() {
