@@ -38,6 +38,8 @@ members = ["."]
 [profile.release]
 lto = true
 codegen-units = 1
+debug-assertions = true
+overflow-checks = true
 
 # When testing a large fuzz corpus, -O1 offers a nice speedup
 [profile.dev]
