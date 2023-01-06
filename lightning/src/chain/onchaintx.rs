@@ -476,8 +476,8 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 		// remove it once it reaches the confirmation threshold, or to generate a new claim if the
 		// transaction is reorged out.
 		let mut all_inputs_have_confirmed_spend = true;
-		for outpoint in &request_outpoints {
-			if let Some(first_claim_txid_height) = self.claimable_outpoints.get(outpoint) {
+		for outpoint in request_outpoints.iter() {
+			if let Some(first_claim_txid_height) = self.claimable_outpoints.get(*outpoint) {
 				// We check for outpoint spends within claims individually rather than as a set
 				// since requests can have outpoints split off.
 				if !self.onchain_events_awaiting_threshold_conf.iter()
@@ -811,7 +811,7 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 							for outpoint in request.outpoints() {
 								log_debug!(logger, "Removing claim tracking for {} due to maturation of claim package {}.",
 									outpoint, log_bytes!(package_id));
-								self.claimable_outpoints.remove(&outpoint);
+								self.claimable_outpoints.remove(outpoint);
 								#[cfg(anchors)]
 								self.pending_claim_events.remove(&package_id);
 							}
@@ -820,7 +820,7 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 					OnchainEvent::ContentiousOutpoint { package } => {
 						log_debug!(logger, "Removing claim tracking due to maturation of claim tx for outpoints:");
 						log_debug!(logger, " {:?}", package.outpoints());
-						self.claimable_outpoints.remove(&package.outpoints()[0]);
+						self.claimable_outpoints.remove(package.outpoints()[0]);
 					}
 				}
 			} else {
@@ -898,7 +898,7 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 				//- resurect outpoint back in its claimable set and regenerate tx
 				match entry.event {
 					OnchainEvent::ContentiousOutpoint { package } => {
-						if let Some(ancestor_claimable_txid) = self.claimable_outpoints.get(&package.outpoints()[0]) {
+						if let Some(ancestor_claimable_txid) = self.claimable_outpoints.get(package.outpoints()[0]) {
 							if let Some(request) = self.pending_claim_requests.get_mut(&ancestor_claimable_txid.0) {
 								request.merge_package(package);
 								// Using a HashMap guarantee us than if we have multiple outpoints getting
