@@ -411,7 +411,7 @@ mod tests {
 	#[test]
 	fn chacha_stream_adapters_ser_macros() {
 		// Test that our stream adapters work as expected with the TLV macros.
-		// This also serves to test the `option: $trait` variant of the `decode_tlv` ser macro.
+		// This also serves to test the `option: $trait` variant of the `_decode_tlv` ser macro.
 		do_chacha_stream_adapters_ser_macros().unwrap()
 	}
 }

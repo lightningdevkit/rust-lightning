@@ -6049,7 +6049,7 @@ impl Writeable for ChannelDetails {
 
 impl Readable for ChannelDetails {
 	fn read<R: Read>(reader: &mut R) -> Result<Self, DecodeError> {
-		init_and_read_tlv_fields!(reader, {
+		_init_and_read_tlv_fields!(reader, {
 			(1, inbound_scid_alias, option),
 			(2, channel_id, required),
 			(3, channel_type, option),

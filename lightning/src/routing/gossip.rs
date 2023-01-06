@@ -673,13 +673,13 @@ impl Writeable for ChannelUpdateInfo {
 
 impl Readable for ChannelUpdateInfo {
 	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
-		init_tlv_field_var!(last_update, required);
-		init_tlv_field_var!(enabled, required);
-		init_tlv_field_var!(cltv_expiry_delta, required);
-		init_tlv_field_var!(htlc_minimum_msat, required);
-		init_tlv_field_var!(htlc_maximum_msat, option);
-		init_tlv_field_var!(fees, required);
-		init_tlv_field_var!(last_update_message, required);
+		_init_tlv_field_var!(last_update, required);
+		_init_tlv_field_var!(enabled, required);
+		_init_tlv_field_var!(cltv_expiry_delta, required);
+		_init_tlv_field_var!(htlc_minimum_msat, required);
+		_init_tlv_field_var!(htlc_maximum_msat, option);
+		_init_tlv_field_var!(fees, required);
+		_init_tlv_field_var!(last_update_message, required);
 
 		read_tlv_fields!(reader, {
 			(0, last_update, required),
@@ -693,13 +693,13 @@ impl Readable for ChannelUpdateInfo {
 
 		if let Some(htlc_maximum_msat) = htlc_maximum_msat {
 			Ok(ChannelUpdateInfo {
-				last_update: init_tlv_based_struct_field!(last_update, required),
-				enabled: init_tlv_based_struct_field!(enabled, required),
-				cltv_expiry_delta: init_tlv_based_struct_field!(cltv_expiry_delta, required),
-				htlc_minimum_msat: init_tlv_based_struct_field!(htlc_minimum_msat, required),
+				last_update: _init_tlv_based_struct_field!(last_update, required),
+				enabled: _init_tlv_based_struct_field!(enabled, required),
+				cltv_expiry_delta: _init_tlv_based_struct_field!(cltv_expiry_delta, required),
+				htlc_minimum_msat: _init_tlv_based_struct_field!(htlc_minimum_msat, required),
 				htlc_maximum_msat,
-				fees: init_tlv_based_struct_field!(fees, required),
-				last_update_message: init_tlv_based_struct_field!(last_update_message, required),
+				fees: _init_tlv_based_struct_field!(fees, required),
+				last_update_message: _init_tlv_based_struct_field!(last_update_message, required),
 			})
 		} else {
 			Err(DecodeError::InvalidValue)
@@ -820,14 +820,14 @@ impl MaybeReadable for ChannelUpdateInfoDeserWrapper {
 
 impl Readable for ChannelInfo {
 	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
-		init_tlv_field_var!(features, required);
-		init_tlv_field_var!(announcement_received_time, (default_value, 0));
-		init_tlv_field_var!(node_one, required);
+		_init_tlv_field_var!(features, required);
+		_init_tlv_field_var!(announcement_received_time, (default_value, 0));
+		_init_tlv_field_var!(node_one, required);
 		let mut one_to_two_wrap: Option<ChannelUpdateInfoDeserWrapper> = None;
-		init_tlv_field_var!(node_two, required);
+		_init_tlv_field_var!(node_two, required);
 		let mut two_to_one_wrap: Option<ChannelUpdateInfoDeserWrapper> = None;
-		init_tlv_field_var!(capacity_sats, required);
-		init_tlv_field_var!(announcement_message, required);
+		_init_tlv_field_var!(capacity_sats, required);
+		_init_tlv_field_var!(announcement_message, required);
 		read_tlv_fields!(reader, {
 			(0, features, required),
 			(1, announcement_received_time, (default_value, 0)),
@@ -840,14 +840,14 @@ impl Readable for ChannelInfo {
 		});
 
 		Ok(ChannelInfo {
-			features: init_tlv_based_struct_field!(features, required),
-			node_one: init_tlv_based_struct_field!(node_one, required),
+			features: _init_tlv_based_struct_field!(features, required),
+			node_one: _init_tlv_based_struct_field!(node_one, required),
 			one_to_two: one_to_two_wrap.map(|w| w.0).unwrap_or(None),
-			node_two: init_tlv_based_struct_field!(node_two, required),
+			node_two: _init_tlv_based_struct_field!(node_two, required),
 			two_to_one: two_to_one_wrap.map(|w| w.0).unwrap_or(None),
-			capacity_sats: init_tlv_based_struct_field!(capacity_sats, required),
-			announcement_message: init_tlv_based_struct_field!(announcement_message, required),
-			announcement_received_time: init_tlv_based_struct_field!(announcement_received_time, (default_value, 0)),
+			capacity_sats: _init_tlv_based_struct_field!(capacity_sats, required),
+			announcement_message: _init_tlv_based_struct_field!(announcement_message, required),
+			announcement_received_time: _init_tlv_based_struct_field!(announcement_received_time, (default_value, 0)),
 		})
 	}
 }
@@ -1103,9 +1103,9 @@ impl MaybeReadable for NodeAnnouncementInfoDeserWrapper {
 
 impl Readable for NodeInfo {
 	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
-		init_tlv_field_var!(lowest_inbound_channel_fees, option);
+		_init_tlv_field_var!(lowest_inbound_channel_fees, option);
 		let mut announcement_info_wrap: Option<NodeAnnouncementInfoDeserWrapper> = None;
-		init_tlv_field_var!(channels, vec_type);
+		_init_tlv_field_var!(channels, vec_type);
 
 		read_tlv_fields!(reader, {
 			(0, lowest_inbound_channel_fees, option),
@@ -1114,9 +1114,9 @@ impl Readable for NodeInfo {
 		});
 
 		Ok(NodeInfo {
-			lowest_inbound_channel_fees: init_tlv_based_struct_field!(lowest_inbound_channel_fees, option),
+			lowest_inbound_channel_fees: _init_tlv_based_struct_field!(lowest_inbound_channel_fees, option),
 			announcement_info: announcement_info_wrap.map(|w| w.0),
-			channels: init_tlv_based_struct_field!(channels, vec_type),
+			channels: _init_tlv_based_struct_field!(channels, vec_type),
 		})
 	}
 }
