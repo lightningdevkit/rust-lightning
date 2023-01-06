@@ -29,7 +29,7 @@ use bitcoin::blockdata::constants::genesis_block;
 use crate::utils::test_logger;
 
 use std::convert::TryInto;
-use std::collections::HashSet;
+use hashbrown::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 

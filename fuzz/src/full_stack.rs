@@ -58,7 +58,7 @@ use bitcoin::secp256k1::ecdsa::RecoverableSignature;
 use bitcoin::secp256k1::Secp256k1;
 
 use std::cell::RefCell;
-use std::collections::{HashMap, hash_map};
+use hashbrown::{HashMap, hash_map};
 use std::convert::TryInto;
 use std::cmp;
 use std::sync::{Arc, Mutex};
