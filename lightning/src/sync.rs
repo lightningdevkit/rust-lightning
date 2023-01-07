@@ -109,8 +109,10 @@ impl<T> RwLock<T> {
 	}
 
 	pub fn try_write<'a>(&'a self) -> LockResult<RwLockWriteGuard<'a, T>> {
-		// There is no try, grasshopper - only used for tests and expected to fail
-		Err(())
+		match self.inner.try_borrow_mut() {
+			Ok(lock) => Ok(RwLockWriteGuard { lock }),
+			Err(_) => Err(())
+		}
 	}
 }
 
