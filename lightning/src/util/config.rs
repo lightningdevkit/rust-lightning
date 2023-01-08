@@ -292,6 +292,27 @@ pub struct ChannelConfig {
 	///
 	/// [`forwarding_fee_proportional_millionths`]: ChannelConfig::forwarding_fee_proportional_millionths
 	pub forwarding_fee_base_msat: u32,
+	/// Amount (in millionths of a satoshi) charged per satoshi for payments forwarded inbound
+	/// over the channel.
+	///
+	/// Note that if your peer does not support [`InitFeatures::supports_inbound_fees`] this value
+	/// will be silently reset to zero.
+	///
+	/// Default value: 0.
+	///
+	/// [`InitFeatures::supports_inbound_fees`]: crate::ln::features::InitFeatures::supports_inbound_fees
+	pub inbound_forwarding_fee_proportional_millionths: i32,
+	/// Amount (in milli-satoshi) charged for payments forwarded inbound over the channel, in
+	/// excess of [`inbound_forwarding_fee_proportional_millionths`].
+	///
+	/// Note that if your peer does not support [`InitFeatures::supports_inbound_fees`] this value
+	/// will be silently reset to zero.
+	///
+	/// Default value: 1000.
+	///
+	/// [`inbound_forwarding_fee_proportional_millionths`]: ChannelConfig::inbound_forwarding_fee_proportional_millionths
+	/// [`InitFeatures::supports_inbound_fees`]: crate::ln::features::InitFeatures::supports_inbound_fees
+	pub inbound_forwarding_fee_base_msat: i32,
 	/// The difference in the CLTV value between incoming HTLCs and an outbound HTLC forwarded over
 	/// the channel this config applies to.
 	///
@@ -365,6 +386,8 @@ impl Default for ChannelConfig {
 		ChannelConfig {
 			forwarding_fee_proportional_millionths: 0,
 			forwarding_fee_base_msat: 1000,
+			inbound_forwarding_fee_proportional_millionths: 0,
+			inbound_forwarding_fee_base_msat: 0,
 			cltv_expiry_delta: 6 * 12, // 6 blocks/hour * 12 hours
 			max_dust_htlc_exposure_msat: 5_000_000,
 			force_close_avoidance_max_fee_satoshis: 1000,
@@ -374,7 +397,9 @@ impl Default for ChannelConfig {
 
 impl_writeable_tlv_based!(ChannelConfig, {
 	(0, forwarding_fee_proportional_millionths, required),
+	(1, inbound_forwarding_fee_proportional_millionths, (default_value, 0)),
 	(2, forwarding_fee_base_msat, required),
+	(3, inbound_forwarding_fee_base_msat, (default_value, 0)),
 	(4, cltv_expiry_delta, required),
 	(6, max_dust_htlc_exposure_msat, required),
 	// ChannelConfig serialized this field with a required type of 8 prior to the introduction of
@@ -416,7 +441,9 @@ impl crate::util::ser::Writeable for LegacyChannelConfig {
 			(2, self.options.cltv_expiry_delta, required),
 			(3, self.options.force_close_avoidance_max_fee_satoshis, (default_value, 1000)),
 			(4, self.announced_channel, required),
+			(5, self.options.inbound_forwarding_fee_proportional_millionths, required),
 			(6, self.commit_upfront_shutdown_pubkey, required),
+			(7, self.options.inbound_forwarding_fee_base_msat, required),
 			(8, self.options.forwarding_fee_base_msat, required),
 		});
 		Ok(())
@@ -426,28 +453,34 @@ impl crate::util::ser::Writeable for LegacyChannelConfig {
 impl crate::util::ser::Readable for LegacyChannelConfig {
 	fn read<R: crate::io::Read>(reader: &mut R) -> Result<Self, crate::ln::msgs::DecodeError> {
 		let mut forwarding_fee_proportional_millionths = 0;
+		let mut inbound_forwarding_fee_proportional_millionths = 0;
 		let mut max_dust_htlc_exposure_msat = 5_000_000;
 		let mut cltv_expiry_delta = 0;
 		let mut force_close_avoidance_max_fee_satoshis = 1000;
 		let mut announced_channel = false;
 		let mut commit_upfront_shutdown_pubkey = false;
 		let mut forwarding_fee_base_msat = 0;
+		let mut inbound_forwarding_fee_base_msat = 0;
 		read_tlv_fields!(reader, {
 			(0, forwarding_fee_proportional_millionths, required),
 			(1, max_dust_htlc_exposure_msat, (default_value, 5_000_000u64)),
 			(2, cltv_expiry_delta, required),
 			(3, force_close_avoidance_max_fee_satoshis, (default_value, 1000u64)),
 			(4, announced_channel, required),
+			(5, inbound_forwarding_fee_proportional_millionths, (default_value, 0i32)),
 			(6, commit_upfront_shutdown_pubkey, required),
+			(7, inbound_forwarding_fee_base_msat, (default_value, 0i32)),
 			(8, forwarding_fee_base_msat, required),
 		});
 		Ok(Self {
 			options: ChannelConfig {
 				forwarding_fee_proportional_millionths,
+				forwarding_fee_base_msat,
+				inbound_forwarding_fee_proportional_millionths,
+				inbound_forwarding_fee_base_msat,
 				max_dust_htlc_exposure_msat,
 				cltv_expiry_delta,
 				force_close_avoidance_max_fee_satoshis,
-				forwarding_fee_base_msat,
 			},
 			announced_channel,
 			commit_upfront_shutdown_pubkey,
