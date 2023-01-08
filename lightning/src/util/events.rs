@@ -1627,6 +1627,14 @@ pub enum MessageSendEvent {
 		/// The channel_update which should be sent.
 		msg: msgs::ChannelUpdate,
 	},
+	/// Used to indicate that an `inbound_fees_update` should be sent to a single peer.
+	SendInboundFeesUpdate {
+		/// The node_id of the node which should receive this message
+		node_id: PublicKey,
+		/// The inbound_fees_update which should be sent.
+		msg: msgs::InboundFeesUpdate,
+	},
+
 	/// Broadcast an error downstream to be handled
 	HandleError {
 		/// The node_id of the node which should receive this message
