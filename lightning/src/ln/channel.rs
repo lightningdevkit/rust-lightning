@@ -905,7 +905,7 @@ impl<Signer: Sign> Channel<Signer> {
 	// Constructors:
 	pub fn new_outbound<K: Deref, F: Deref>(
 		fee_estimator: &LowerBoundedFeeEstimator<F>, keys_provider: &K, counterparty_node_id: PublicKey, their_features: &InitFeatures,
-		channel_value_satoshis: u64, push_msat: u64, user_id: u128, config: &UserConfig, current_chain_height: u32,
+		channel_value_satoshis: u64, push_msat: u64, user_id: u128, user_config: &UserConfig, current_chain_height: u32,
 		outbound_scid_alias: u64
 	) -> Result<Channel<Signer>, APIError>
 	where K::Target: KeysInterface<Signer = Signer>,
@@ -913,7 +913,7 @@ impl<Signer: Sign> Channel<Signer> {
 	{
 		let opt_anchors = false; // TODO - should be based on features
 
-		let holder_selected_contest_delay = config.channel_handshake_config.our_to_self_delay;
+		let holder_selected_contest_delay = user_config.channel_handshake_config.our_to_self_delay;
 		let channel_keys_id = keys_provider.generate_channel_keys_id(false, channel_value_satoshis, user_id);
 		let holder_signer = keys_provider.derive_channel_signer(channel_value_satoshis, channel_keys_id);
 		let pubkeys = holder_signer.pubkeys().clone();
@@ -931,7 +931,7 @@ impl<Signer: Sign> Channel<Signer> {
 		if holder_selected_contest_delay < BREAKDOWN_TIMEOUT {
 			return Err(APIError::APIMisuseError {err: format!("Configured with an unreasonable our_to_self_delay ({}) putting user funds at risks", holder_selected_contest_delay)});
 		}
-		let holder_selected_channel_reserve_satoshis = Channel::<Signer>::get_holder_selected_channel_reserve_satoshis(channel_value_satoshis, config);
+		let holder_selected_channel_reserve_satoshis = Channel::<Signer>::get_holder_selected_channel_reserve_satoshis(channel_value_satoshis, user_config);
 		if holder_selected_channel_reserve_satoshis < MIN_CHAN_DUST_LIMIT_SATOSHIS {
 			// Protocol level safety check in place, although it should never happen because
 			// of `MIN_THEIR_CHAN_RESERVE_SATOSHIS`
@@ -949,7 +949,7 @@ impl<Signer: Sign> Channel<Signer> {
 		let mut secp_ctx = Secp256k1::new();
 		secp_ctx.seeded_randomize(&keys_provider.get_secure_random_bytes());
 
-		let shutdown_scriptpubkey = if config.channel_handshake_config.commit_upfront_shutdown_pubkey {
+		let shutdown_scriptpubkey = if user_config.channel_handshake_config.commit_upfront_shutdown_pubkey {
 			Some(keys_provider.get_shutdown_scriptpubkey())
 		} else { None };
 
@@ -963,14 +963,14 @@ impl<Signer: Sign> Channel<Signer> {
 			user_id,
 
 			config: LegacyChannelConfig {
-				options: config.channel_config.clone(),
-				announced_channel: config.channel_handshake_config.announced_channel,
-				commit_upfront_shutdown_pubkey: config.channel_handshake_config.commit_upfront_shutdown_pubkey,
+				options: user_config.channel_config.clone(),
+				announced_channel: user_config.channel_handshake_config.announced_channel,
+				commit_upfront_shutdown_pubkey: user_config.channel_handshake_config.commit_upfront_shutdown_pubkey,
 			},
 
 			prev_config: None,
 
-			inbound_handshake_limits_override: Some(config.channel_handshake_limits.clone()),
+			inbound_handshake_limits_override: Some(user_config.channel_handshake_limits.clone()),
 
 			channel_id: keys_provider.get_secure_random_bytes(),
 			channel_state: ChannelState::OurInitSent as u32,
@@ -1027,11 +1027,13 @@ impl<Signer: Sign> Channel<Signer> {
 			counterparty_dust_limit_satoshis: 0,
 			holder_dust_limit_satoshis: MIN_CHAN_DUST_LIMIT_SATOSHIS,
 			counterparty_max_htlc_value_in_flight_msat: 0,
-			holder_max_htlc_value_in_flight_msat: Self::get_holder_max_htlc_value_in_flight_msat(channel_value_satoshis, &config.channel_handshake_config),
+			holder_max_htlc_value_in_flight_msat: Self::get_holder_max_htlc_value_in_flight_msat(channel_value_satoshis, &user_config.channel_handshake_config),
 			counterparty_selected_channel_reserve_satoshis: None, // Filled in in accept_channel
 			holder_selected_channel_reserve_satoshis,
 			counterparty_htlc_minimum_msat: 0,
-			holder_htlc_minimum_msat: if config.channel_handshake_config.our_htlc_minimum_msat == 0 { 1 } else { config.channel_handshake_config.our_htlc_minimum_msat },
+			holder_htlc_minimum_msat:
+				if user_config.channel_handshake_config.our_htlc_minimum_msat == 0 { 1 }
+				else { user_config.channel_handshake_config.our_htlc_minimum_msat },
 			counterparty_max_accepted_htlcs: 0,
 			minimum_depth: None, // Filled in in accept_channel
 
@@ -1039,7 +1041,7 @@ impl<Signer: Sign> Channel<Signer> {
 
 			channel_transaction_parameters: ChannelTransactionParameters {
 				holder_pubkeys: pubkeys,
-				holder_selected_contest_delay: config.channel_handshake_config.our_to_self_delay,
+				holder_selected_contest_delay: user_config.channel_handshake_config.our_to_self_delay,
 				is_outbound_from_holder: true,
 				counterparty_parameters: None,
 				funding_outpoint: None,
@@ -1076,7 +1078,7 @@ impl<Signer: Sign> Channel<Signer> {
 			#[cfg(any(test, fuzzing))]
 			historical_inbound_htlc_fulfills: HashSet::new(),
 
-			channel_type: Self::get_initial_channel_type(&config),
+			channel_type: Self::get_initial_channel_type(&user_config),
 			channel_keys_id,
 		})
 	}
@@ -1117,7 +1119,7 @@ impl<Signer: Sign> Channel<Signer> {
 	/// Assumes chain_hash has already been checked and corresponds with what we expect!
 	pub fn new_from_req<K: Deref, F: Deref, L: Deref>(
 		fee_estimator: &LowerBoundedFeeEstimator<F>, keys_provider: &K, counterparty_node_id: PublicKey, their_features: &InitFeatures,
-		msg: &msgs::OpenChannel, user_id: u128, config: &UserConfig, current_chain_height: u32, logger: &L,
+		msg: &msgs::OpenChannel, user_id: u128, user_config: &UserConfig, current_chain_height: u32, logger: &L,
 		outbound_scid_alias: u64
 	) -> Result<Channel<Signer>, ChannelError>
 		where K::Target: KeysInterface<Signer = Signer>,
@@ -1171,13 +1173,17 @@ impl<Signer: Sign> Channel<Signer> {
 			htlc_basepoint: msg.htlc_basepoint
 		};
 
-		if config.channel_handshake_config.our_to_self_delay < BREAKDOWN_TIMEOUT {
-			return Err(ChannelError::Close(format!("Configured with an unreasonable our_to_self_delay ({}) putting user funds at risks. It must be greater than {}", config.channel_handshake_config.our_to_self_delay, BREAKDOWN_TIMEOUT)));
+		if user_config.channel_handshake_config.our_to_self_delay < BREAKDOWN_TIMEOUT {
+			return Err(ChannelError::Close(format!(
+				"Configured with an unreasonable our_to_self_delay ({}) putting user funds at risks. It must be greater than {}",
+				user_config.channel_handshake_config.our_to_self_delay, BREAKDOWN_TIMEOUT)));
 		}
 
 		// Check sanity of message fields:
-		if msg.funding_satoshis > config.channel_handshake_limits.max_funding_satoshis {
-			return Err(ChannelError::Close(format!("Per our config, funding must be at most {}. It was {}", config.channel_handshake_limits.max_funding_satoshis, msg.funding_satoshis)));
+		if msg.funding_satoshis > user_config.channel_handshake_limits.max_funding_satoshis {
+			return Err(ChannelError::Close(format!(
+				"Per our config, funding must be at most {}. It was {}",
+				user_config.channel_handshake_limits.max_funding_satoshis, msg.funding_satoshis)));
 		}
 		if msg.funding_satoshis >= TOTAL_BITCOIN_SUPPLY_SATOSHIS {
 			return Err(ChannelError::Close(format!("Funding must be smaller than the total bitcoin supply. It was {}", msg.funding_satoshis)));
@@ -1197,7 +1203,7 @@ impl<Signer: Sign> Channel<Signer> {
 		}
 		Channel::<Signer>::check_remote_fee(fee_estimator, msg.feerate_per_kw, None, logger)?;
 
-		let max_counterparty_selected_contest_delay = u16::min(config.channel_handshake_limits.their_to_self_delay, MAX_LOCAL_BREAKDOWN_TIMEOUT);
+		let max_counterparty_selected_contest_delay = u16::min(user_config.channel_handshake_limits.their_to_self_delay, MAX_LOCAL_BREAKDOWN_TIMEOUT);
 		if msg.to_self_delay > max_counterparty_selected_contest_delay {
 			return Err(ChannelError::Close(format!("They wanted our payments to be delayed by a needlessly long period. Upper limit: {}. Actual: {}", max_counterparty_selected_contest_delay, msg.to_self_delay)));
 		}
@@ -1209,20 +1215,30 @@ impl<Signer: Sign> Channel<Signer> {
 		}
 
 		// Now check against optional parameters as set by config...
-		if msg.funding_satoshis < config.channel_handshake_limits.min_funding_satoshis {
-			return Err(ChannelError::Close(format!("Funding satoshis ({}) is less than the user specified limit ({})", msg.funding_satoshis, config.channel_handshake_limits.min_funding_satoshis)));
+		if msg.funding_satoshis < user_config.channel_handshake_limits.min_funding_satoshis {
+			return Err(ChannelError::Close(format!(
+				"Funding satoshis ({}) is less than the user specified limit ({})",
+				msg.funding_satoshis, user_config.channel_handshake_limits.min_funding_satoshis)));
 		}
-		if msg.htlc_minimum_msat > config.channel_handshake_limits.max_htlc_minimum_msat {
-			return Err(ChannelError::Close(format!("htlc_minimum_msat ({}) is higher than the user specified limit ({})", msg.htlc_minimum_msat,  config.channel_handshake_limits.max_htlc_minimum_msat)));
+		if msg.htlc_minimum_msat > user_config.channel_handshake_limits.max_htlc_minimum_msat {
+			return Err(ChannelError::Close(format!(
+				"htlc_minimum_msat ({}) is higher than the user specified limit ({})",
+				msg.htlc_minimum_msat,  user_config.channel_handshake_limits.max_htlc_minimum_msat)));
 		}
-		if msg.max_htlc_value_in_flight_msat < config.channel_handshake_limits.min_max_htlc_value_in_flight_msat {
-			return Err(ChannelError::Close(format!("max_htlc_value_in_flight_msat ({}) is less than the user specified limit ({})", msg.max_htlc_value_in_flight_msat, config.channel_handshake_limits.min_max_htlc_value_in_flight_msat)));
+		if msg.max_htlc_value_in_flight_msat < user_config.channel_handshake_limits.min_max_htlc_value_in_flight_msat {
+			return Err(ChannelError::Close(format!(
+				"max_htlc_value_in_flight_msat ({}) is less than the user specified limit ({})",
+				msg.max_htlc_value_in_flight_msat, user_config.channel_handshake_limits.min_max_htlc_value_in_flight_msat)));
 		}
-		if msg.channel_reserve_satoshis > config.channel_handshake_limits.max_channel_reserve_satoshis {
-			return Err(ChannelError::Close(format!("channel_reserve_satoshis ({}) is higher than the user specified limit ({})", msg.channel_reserve_satoshis, config.channel_handshake_limits.max_channel_reserve_satoshis)));
+		if msg.channel_reserve_satoshis > user_config.channel_handshake_limits.max_channel_reserve_satoshis {
+			return Err(ChannelError::Close(format!(
+				"channel_reserve_satoshis ({}) is higher than the user specified limit ({})",
+				msg.channel_reserve_satoshis, user_config.channel_handshake_limits.max_channel_reserve_satoshis)));
 		}
-		if msg.max_accepted_htlcs < config.channel_handshake_limits.min_max_accepted_htlcs {
-			return Err(ChannelError::Close(format!("max_accepted_htlcs ({}) is less than the user specified limit ({})", msg.max_accepted_htlcs, config.channel_handshake_limits.min_max_accepted_htlcs)));
+		if msg.max_accepted_htlcs < user_config.channel_handshake_limits.min_max_accepted_htlcs {
+			return Err(ChannelError::Close(format!(
+				"max_accepted_htlcs ({}) is less than the user specified limit ({})",
+				msg.max_accepted_htlcs, user_config.channel_handshake_limits.min_max_accepted_htlcs)));
 		}
 		if msg.dust_limit_satoshis < MIN_CHAN_DUST_LIMIT_SATOSHIS {
 			return Err(ChannelError::Close(format!("dust_limit_satoshis ({}) is less than the implementation limit ({})", msg.dust_limit_satoshis, MIN_CHAN_DUST_LIMIT_SATOSHIS)));
@@ -1233,13 +1249,13 @@ impl<Signer: Sign> Channel<Signer> {
 
 		// Convert things into internal flags and prep our state:
 
-		if config.channel_handshake_limits.force_announced_channel_preference {
-			if config.channel_handshake_config.announced_channel != announced_channel {
+		if user_config.channel_handshake_limits.force_announced_channel_preference {
+			if user_config.channel_handshake_config.announced_channel != announced_channel {
 				return Err(ChannelError::Close("Peer tried to open channel but their announcement preference is different from ours".to_owned()));
 			}
 		}
 
-		let holder_selected_channel_reserve_satoshis = Channel::<Signer>::get_holder_selected_channel_reserve_satoshis(msg.funding_satoshis, config);
+		let holder_selected_channel_reserve_satoshis = Channel::<Signer>::get_holder_selected_channel_reserve_satoshis(msg.funding_satoshis, user_config);
 		if holder_selected_channel_reserve_satoshis < MIN_CHAN_DUST_LIMIT_SATOSHIS {
 			// Protocol level safety check in place, although it should never happen because
 			// of `MIN_THEIR_CHAN_RESERVE_SATOSHIS`
@@ -1291,7 +1307,7 @@ impl<Signer: Sign> Channel<Signer> {
 			}
 		} else { None };
 
-		let shutdown_scriptpubkey = if config.channel_handshake_config.commit_upfront_shutdown_pubkey {
+		let shutdown_scriptpubkey = if user_config.channel_handshake_config.commit_upfront_shutdown_pubkey {
 			Some(keys_provider.get_shutdown_scriptpubkey())
 		} else { None };
 
@@ -1308,9 +1324,9 @@ impl<Signer: Sign> Channel<Signer> {
 			user_id,
 
 			config: LegacyChannelConfig {
-				options: config.channel_config.clone(),
+				options: user_config.channel_config.clone(),
 				announced_channel,
-				commit_upfront_shutdown_pubkey: config.channel_handshake_config.commit_upfront_shutdown_pubkey,
+				commit_upfront_shutdown_pubkey: user_config.channel_handshake_config.commit_upfront_shutdown_pubkey,
 			},
 
 			prev_config: None,
@@ -1372,19 +1388,21 @@ impl<Signer: Sign> Channel<Signer> {
 			counterparty_dust_limit_satoshis: msg.dust_limit_satoshis,
 			holder_dust_limit_satoshis: MIN_CHAN_DUST_LIMIT_SATOSHIS,
 			counterparty_max_htlc_value_in_flight_msat: cmp::min(msg.max_htlc_value_in_flight_msat, msg.funding_satoshis * 1000),
-			holder_max_htlc_value_in_flight_msat: Self::get_holder_max_htlc_value_in_flight_msat(msg.funding_satoshis, &config.channel_handshake_config),
+			holder_max_htlc_value_in_flight_msat: Self::get_holder_max_htlc_value_in_flight_msat(msg.funding_satoshis, &user_config.channel_handshake_config),
 			counterparty_selected_channel_reserve_satoshis: Some(msg.channel_reserve_satoshis),
 			holder_selected_channel_reserve_satoshis,
 			counterparty_htlc_minimum_msat: msg.htlc_minimum_msat,
-			holder_htlc_minimum_msat: if config.channel_handshake_config.our_htlc_minimum_msat == 0 { 1 } else { config.channel_handshake_config.our_htlc_minimum_msat },
+			holder_htlc_minimum_msat:
+				if user_config.channel_handshake_config.our_htlc_minimum_msat == 0 { 1 }
+				else { user_config.channel_handshake_config.our_htlc_minimum_msat },
 			counterparty_max_accepted_htlcs: msg.max_accepted_htlcs,
-			minimum_depth: Some(cmp::max(config.channel_handshake_config.minimum_depth, 1)),
+			minimum_depth: Some(cmp::max(user_config.channel_handshake_config.minimum_depth, 1)),
 
 			counterparty_forwarding_info: None,
 
 			channel_transaction_parameters: ChannelTransactionParameters {
 				holder_pubkeys: pubkeys,
-				holder_selected_contest_delay: config.channel_handshake_config.our_to_self_delay,
+				holder_selected_contest_delay: user_config.channel_handshake_config.our_to_self_delay,
 				is_outbound_from_holder: false,
 				counterparty_parameters: Some(CounterpartyChannelTransactionParameters {
 					selected_contest_delay: msg.to_self_delay,
