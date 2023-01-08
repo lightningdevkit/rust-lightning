@@ -278,15 +278,11 @@ impl Default for ChannelHandshakeLimits {
 pub struct ChannelConfig {
 	/// Amount (in millionths of a satoshi) charged per satoshi for payments forwarded outbound
 	/// over the channel.
-	/// This may be allowed to change at runtime in a later update, however doing so must result in
-	/// update messages sent to notify all nodes of our updated relay fee.
 	///
 	/// Default value: 0.
 	pub forwarding_fee_proportional_millionths: u32,
 	/// Amount (in milli-satoshi) charged for payments forwarded outbound over the channel, in
 	/// excess of [`forwarding_fee_proportional_millionths`].
-	/// This may be allowed to change at runtime in a later update, however doing so must result in
-	/// update messages sent to notify all nodes of our updated relay fee.
 	///
 	/// The default value of a single satoshi roughly matches the market rate on many routing nodes
 	/// as of July 2021. Adjusting it upwards or downwards may change whether nodes route through
