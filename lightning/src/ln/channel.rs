@@ -2426,6 +2426,11 @@ impl<Signer: Sign> Channel<Signer> {
 					// If they haven't ever sent an updated point, the point they send should match
 					// the current one.
 					self.counterparty_cur_commitment_point
+				} else if self.cur_counterparty_commitment_transaction_number == INITIAL_COMMITMENT_NUMBER - 2 {
+					// If we've advanced the commitment number once, the second commitment point is
+					// at `counterparty_prev_commitment_point`, which is not yet revoked.
+					debug_assert!(self.counterparty_prev_commitment_point.is_some());
+					self.counterparty_prev_commitment_point
 				} else {
 					// If they have sent updated points, channel_ready is always supposed to match
 					// their "first" point, which we re-derive here.
