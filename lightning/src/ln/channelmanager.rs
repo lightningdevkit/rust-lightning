@@ -1960,7 +1960,9 @@ where
 		})
 	}
 
-	fn decode_update_add_htlc_onion(&self, msg: &msgs::UpdateAddHTLC) -> PendingHTLCStatus {
+	fn decode_update_add_htlc_onion(&self, channel_state: &ChannelHolder<<K::Target as SignerProvider>::Signer>,
+		msg: &msgs::UpdateAddHTLC, inbound_channel: &Channel<<K::Target as SignerProvider>::Signer>
+	) -> PendingHTLCStatus {
 		macro_rules! return_malformed_err {
 			($msg: expr, $err_code: expr) => {
 				{
@@ -2065,7 +2067,6 @@ where
 			if let &PendingHTLCRouting::Forward { ref short_channel_id, .. } = routing {
 				if let Some((err, mut code, chan_update)) = loop {
 					let id_option = self.short_to_chan_info.read().unwrap().get(&short_channel_id).cloned();
-					let mut channel_state = self.channel_state.lock().unwrap();
 					let forwarding_id_opt = match id_option {
 						None => { // unknown_next_peer
 							// Note that this is likely a timing oracle for detecting whether an scid is a
@@ -2082,7 +2083,7 @@ where
 						Some((_cp_id, chan_id)) => Some(chan_id.clone()),
 					};
 					let chan_update_opt = if let Some(forwarding_id) = forwarding_id_opt {
-						let chan = match channel_state.by_id.get_mut(&forwarding_id) {
+						let chan = match channel_state.by_id.get(&forwarding_id) {
 							None => {
 								// Channel was removed. The short_to_chan_info and by_id maps have
 								// no consistency guarantees.
@@ -2115,7 +2116,7 @@ where
 						if *outgoing_amt_msat < chan.get_counterparty_htlc_minimum_msat() { // amount_below_minimum
 							break Some(("HTLC amount was below the htlc_minimum_msat", 0x1000 | 11, chan_update_opt));
 						}
-						match chan.htlc_satisfies_config(&msg, *outgoing_amt_msat, *outgoing_cltv_value) {
+						match chan.htlc_satisfies_config(&msg, *outgoing_amt_msat, *outgoing_cltv_value, inbound_channel) {
 							Err((err, code)) => break Some((err, code, chan_update_opt)),
 							Ok(amt_to_forward_msat) => *outgoing_amt_msat = amt_to_forward_msat,
 						}
@@ -4416,15 +4417,22 @@ where
 		//encrypted with the same key. It's not immediately obvious how to usefully exploit that,
 		//but we should prevent it anyway.
 
-		let pending_forward_info = self.decode_update_add_htlc_onion(msg);
 		let mut channel_state_lock = self.channel_state.lock().unwrap();
 		let channel_state = &mut *channel_state_lock;
+
+		let pending_forward_info;
+		if let Some(chan) = channel_state.by_id.get(&msg.channel_id) {
+			pending_forward_info = self.decode_update_add_htlc_onion(&*channel_state, msg, chan); // Post-1507 we should drop the double-lookup here.
+		} else {
+			return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id));
+		}
 
 		match channel_state.by_id.entry(msg.channel_id) {
 			hash_map::Entry::Occupied(mut chan) => {
 				if chan.get().get_counterparty_node_id() != *counterparty_node_id {
 					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
 				}
+
 
 				let create_pending_htlc_status = |chan: &Channel<<K::Target as SignerProvider>::Signer>, pending_forward_info: PendingHTLCStatus, error_code: u16| {
 					// If the update_add is completely bogus, the call will Err and we will close,

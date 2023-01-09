@@ -4750,6 +4750,7 @@ impl<Signer: Sign> Channel<Signer> {
 	/// Returns the amount we should actually forward to our counterparty.
 	pub fn htlc_satisfies_config(
 		&self, htlc: &msgs::UpdateAddHTLC, amt_to_forward: u64, outgoing_cltv_value: u32,
+		inbound_channel: &Self,
 	) -> Result<u64, (&'static str, u16)> {
 		self.internal_htlc_satisfies_config(&htlc, amt_to_forward, outgoing_cltv_value, &self.config())
 			.or_else(|err| {
