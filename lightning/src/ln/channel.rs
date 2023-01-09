@@ -44,6 +44,7 @@ use crate::util::config::{UserConfig, ChannelConfig, LegacyChannelConfig, Channe
 use crate::util::scid_utils::scid_from_parts;
 
 use crate::io;
+use core::convert::TryInto;
 use crate::prelude::*;
 use core::{cmp,mem,fmt};
 use core::ops::Deref;
@@ -4723,24 +4724,92 @@ impl<Signer: Sign> Channel<Signer> {
 	}
 
 	fn internal_htlc_satisfies_config(
-		&self, htlc: &msgs::UpdateAddHTLC, amt_to_forward: u64, outgoing_cltv_value: u32, config: &ChannelConfig,
+		&self, htlc: &msgs::UpdateAddHTLC, amt_to_forward: u64, outgoing_cltv_value: u32,
+		config: &ChannelConfig, inbound_chan_config: &ChannelConfig,
 	) -> Result<u64, (&'static str, u16)> {
-		let fee = amt_to_forward.checked_mul(config.forwarding_fee_proportional_millionths as u64)
+		if amt_to_forward > (core::i64::MAX as u64) || htlc.amount_msat > (core::i64::MAX as u64) {
+			// Return a fee_insufficient for lack of a better error
+			return Err(("HTLC requested we forward more than all available BTC", 0x1000 | 12));
+		}
+
+		let counterparty_fee_base_msat = self.counterparty_forwarding_info()
+			.map(|info| info.inbound_fee_base_msat).unwrap_or(0) as i64;
+		let fee_base_msat = (config.forwarding_fee_base_msat as i64) + counterparty_fee_base_msat;
+		let counterparty_fee_prop_millionths = self.counterparty_forwarding_info()
+				.map(|info| info.inbound_fee_proportional_millionths).unwrap_or(0) as i64;
+		let fee_prop_millionths = (config.forwarding_fee_proportional_millionths as i64) +
+			counterparty_fee_prop_millionths;
+		if fee_base_msat > core::u32::MAX.into() || fee_prop_millionths > core::u32::MAX.into() {
+			// Return a fee_insufficient for lack of a better error
+			return Err(("Total fee between us and our counterparty overflowed", 0x1000 | 12));
+		}
+
+		let total_outbound_fee = (amt_to_forward as i64).checked_mul(fee_prop_millionths)
+			.and_then(|prop_fee| (prop_fee / 1000000).checked_add(fee_base_msat));
+		let their_fee = (amt_to_forward as i64).checked_mul(counterparty_fee_prop_millionths)
+			.and_then(|prop_fee| (prop_fee / 1000000).checked_add(counterparty_fee_base_msat));
+		let our_outbound_fee = amt_to_forward.checked_mul(config.forwarding_fee_proportional_millionths as u64)
 			.and_then(|prop_fee| (prop_fee / 1000000).checked_add(config.forwarding_fee_base_msat as u64));
-		if fee.is_none() || htlc.amount_msat < fee.unwrap() ||
-			(htlc.amount_msat - fee.unwrap()) < amt_to_forward {
+
+		if total_outbound_fee.is_none() || their_fee.is_none() || our_outbound_fee.is_none() {
+			return Err((
+				"Fee calculation overflowed, some node is attempting to take substantial fees",
+				0x1000 | 12, // fee_insufficient
+			));
+		}
+		debug_assert_eq!(our_outbound_fee.unwrap() as i128 + their_fee.unwrap() as i128,
+			total_outbound_fee.unwrap() as i128);
+
+		let sender_expected_inbound_amt = (amt_to_forward as i64).checked_sub(total_outbound_fee.unwrap());
+		if sender_expected_inbound_amt.is_none() || sender_expected_inbound_amt.unwrap() < 0 {
+			return Err((
+				"Fee calculation overflowed, some node is attempting to take substantial fees",
+				0x1000 | 12, // fee_insufficient
+			));
+		}
+
+		let our_inbound_fee = sender_expected_inbound_amt.unwrap()
+			.checked_mul(inbound_chan_config.inbound_forwarding_fee_proportional_millionths.into())
+			.and_then(|prop_fee_millions| (prop_fee_millions / 1_000_000)
+				.checked_add(inbound_chan_config.inbound_forwarding_fee_base_msat.into()));
+
+		let our_total_fee = if let Some(inbound_fee) = our_inbound_fee {
+			if let Some(Ok(outbound_fee)) = our_outbound_fee.map(|fee| fee.try_into()) {
+				inbound_fee.checked_add(outbound_fee)
+			} else { None }
+		} else { None };
+
+		if our_total_fee.is_none() {
+			return Err((
+				"Fee calculation overflowed, some node is attempting to take substantial fees",
+				0x1000 | 12, // fee_insufficient
+			));
+		}
+
+		let real_amt_to_forward = match (amt_to_forward as i64).checked_add(their_fee.unwrap()) {
+			None => return Err((
+					"Forwarding amount calculation overflowed, some node is attempting to take substantial fees",
+					0x1000 | 12, // fee_insufficient
+				)),
+			Some(amt) => cmp::max(amt, 0i64),
+		};
+
+		if (htlc.amount_msat as i64) < our_total_fee.unwrap() ||
+			(htlc.amount_msat as i64 - our_total_fee.unwrap()) < real_amt_to_forward
+		{
 			return Err((
 				"Prior hop has deviated from specified fees parameters or origin node has obsolete ones",
 				0x1000 | 12, // fee_insufficient
 			));
 		}
+
 		if (htlc.cltv_expiry as u64) < outgoing_cltv_value as u64 + config.cltv_expiry_delta as u64 {
 			return Err((
 				"Forwarding node has tampered with the intended HTLC values or origin node has an obsolete cltv_expiry_delta",
 				0x1000 | 13, // incorrect_cltv_expiry
 			));
 		}
-		Ok(amt_to_forward)
+		Ok(real_amt_to_forward as u64)
 	}
 
 	/// Determines whether the parameters of an incoming HTLC to be forwarded satisfy the channel's
@@ -4752,13 +4821,23 @@ impl<Signer: Sign> Channel<Signer> {
 		&self, htlc: &msgs::UpdateAddHTLC, amt_to_forward: u64, outgoing_cltv_value: u32,
 		inbound_channel: &Self,
 	) -> Result<u64, (&'static str, u16)> {
-		self.internal_htlc_satisfies_config(&htlc, amt_to_forward, outgoing_cltv_value, &self.config())
+		self.internal_htlc_satisfies_config(&htlc, amt_to_forward, outgoing_cltv_value, &self.config(), &inbound_channel.config())
 			.or_else(|err| {
 				if let Some(prev_config) = self.prev_config() {
-					self.internal_htlc_satisfies_config(htlc, amt_to_forward, outgoing_cltv_value, &prev_config)
-				} else {
-					Err(err)
-				}
+					self.internal_htlc_satisfies_config(htlc, amt_to_forward, outgoing_cltv_value, &prev_config, &inbound_channel.config())
+				} else { Err(err) }
+			})
+			.or_else(|err| {
+				if let Some(prev_config) = inbound_channel.prev_config() {
+					self.internal_htlc_satisfies_config(htlc, amt_to_forward, outgoing_cltv_value, &self.config(), &prev_config)
+				} else { Err(err) }
+			})
+			.or_else(|err| {
+				if let Some(prev_inbound_config) = inbound_channel.prev_config() {
+					if let Some(prev_config) = self.prev_config() {
+						self.internal_htlc_satisfies_config(htlc, amt_to_forward, outgoing_cltv_value, &prev_config, &prev_inbound_config)
+					} else { Err(err) }
+				} else { Err(err) }
 			})
 	}
 
