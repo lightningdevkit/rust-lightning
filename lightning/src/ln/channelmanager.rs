@@ -2682,6 +2682,9 @@ where
 			for channel_id in channel_ids {
 				let channel = channel_state.by_id.get_mut(channel_id).unwrap();
 
+				let prev_inbound_fees = (channel.config().inbound_forwarding_fee_base_msat,
+					channel.config().inbound_forwarding_fee_proportional_millionths);
+
 				//XXX : do this in the same per_peer_state lock post-#1507
 				let per_peer_state = self.per_peer_state.read().unwrap();
 				if let Some(peer_state) = per_peer_state.get(counterparty_node_id) {
@@ -2689,10 +2692,25 @@ where
 						continue;
 					}
 				} else { return Err(APIError::APIMisuseError { err: format!("XXX: DROP THIS CODE") }); }
+
 				if let Ok(msg) = self.get_channel_update_for_broadcast(channel) {
 					channel_state.pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate { msg });
 				} else if let Ok(msg) = self.get_channel_update_for_unicast(channel) {
 					channel_state.pending_msg_events.push(events::MessageSendEvent::SendChannelUpdate {
+						node_id: channel.get_counterparty_node_id(),
+						msg,
+					});
+				}
+				let new_inbound_fees = (channel.config().inbound_forwarding_fee_base_msat,
+					channel.config().inbound_forwarding_fee_proportional_millionths);
+				if prev_inbound_fees != new_inbound_fees {
+					log_trace!(self.logger, "Inbound fees have changed, notifying peer");
+					let msg = msgs::InboundFeesUpdate {
+						channel_id: channel.channel_id(),
+						inbound_forwarding_fee_base_msat: new_inbound_fees.0,
+						inbound_forwarding_fee_proportional_millionths: new_inbound_fees.1,
+					};
+					channel_state.pending_msg_events.push(events::MessageSendEvent::SendInboundFeesUpdate {
 						node_id: channel.get_counterparty_node_id(),
 						msg,
 					});
@@ -4808,6 +4826,32 @@ where
 								node_id: chan.get().get_counterparty_node_id(),
 								msg,
 							});
+						}
+						let mut chan_config = chan.get().config();
+						if chan_config.inbound_forwarding_fee_base_msat != 0 ||
+							chan_config.inbound_forwarding_fee_proportional_millionths != 0
+						{
+							// Similarly, if we expect our counterparty to provide inbound fees, we
+							// should retransmit our inbound fees update.
+							// Note that the message is even, so we have to check that our
+							// counterparty currently supports inbound fees or they will disconnect
+							// us. If they do not, we reset the config knobs back to zero.
+							let per_peer_state = self.per_peer_state.read().unwrap(); // XXX: Post-1507 this should go away.
+							if per_peer_state.get(counterparty_node_id).unwrap().lock().unwrap().latest_features.supports_inbound_fees() { // XXX: The unwrap here too
+								let msg = msgs::InboundFeesUpdate {
+									channel_id: chan.get().channel_id(),
+									inbound_forwarding_fee_base_msat: chan_config.inbound_forwarding_fee_base_msat,
+									inbound_forwarding_fee_proportional_millionths: chan_config.inbound_forwarding_fee_proportional_millionths,
+								};
+								channel_state.pending_msg_events.push(events::MessageSendEvent::SendInboundFeesUpdate {
+									node_id: chan.get().get_counterparty_node_id(),
+									msg,
+								});
+							} else {
+								chan_config.inbound_forwarding_fee_base_msat = 0;
+								chan_config.inbound_forwarding_fee_proportional_millionths = 0;
+								chan.get_mut().update_config(&per_peer_state.get(counterparty_node_id).unwrap().lock().unwrap().latest_features, chan_config); // XXX: Post 1507 this should be cleaner
+							}
 						}
 					}
 					let need_lnd_workaround = chan.get_mut().workaround_lnd_bug_4006.take();
