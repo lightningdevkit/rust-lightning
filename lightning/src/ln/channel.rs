@@ -5871,9 +5871,22 @@ impl<Signer: Sign> Channel<Signer> {
 		}
 		self.counterparty_forwarding_info = Some(CounterpartyForwardingInfo {
 			fee_base_msat: msg.contents.fee_base_msat,
+			inbound_fee_base_msat: self.counterparty_forwarding_info.as_ref()
+				.map(|info| info.inbound_fee_base_msat).unwrap_or(0),
 			fee_proportional_millionths: msg.contents.fee_proportional_millionths,
+			inbound_fee_proportional_millionths: self.counterparty_forwarding_info.as_ref()
+				.map(|info| info.inbound_fee_proportional_millionths).unwrap_or(0),
 			cltv_expiry_delta: msg.contents.cltv_expiry_delta
 		});
+
+		Ok(())
+	}
+
+	pub fn inbound_fees_update(&mut self, msg: &msgs::InboundFeesUpdate) -> Result<(), ChannelError> {
+		if let Some(info) = &mut self.counterparty_forwarding_info {
+			info.inbound_fee_base_msat = msg.inbound_forwarding_fee_base_msat;
+			info.inbound_fee_proportional_millionths = msg.inbound_forwarding_fee_proportional_millionths;
+		}
 
 		Ok(())
 	}
@@ -6566,7 +6579,9 @@ impl<'a, K: Deref> ReadableArgs<(&'a K, u32)> for Channel<<K::Target as SignerPr
 			0 => None,
 			1 => Some(CounterpartyForwardingInfo {
 				fee_base_msat: Readable::read(reader)?,
+				inbound_fee_base_msat: 0,
 				fee_proportional_millionths: Readable::read(reader)?,
+				inbound_fee_proportional_millionths: 0,
 				cltv_expiry_delta: Readable::read(reader)?,
 			}),
 			_ => return Err(DecodeError::InvalidValue),
