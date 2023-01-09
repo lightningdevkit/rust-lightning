@@ -918,6 +918,17 @@ impl<Signer: Sign> Channel<Signer> {
 		let holder_signer = keys_provider.derive_channel_signer(channel_value_satoshis, channel_keys_id);
 		let pubkeys = holder_signer.pubkeys().clone();
 
+		let mut config = LegacyChannelConfig {
+			options: user_config.channel_config.clone(),
+			announced_channel: user_config.channel_handshake_config.announced_channel,
+			commit_upfront_shutdown_pubkey: user_config.channel_handshake_config.commit_upfront_shutdown_pubkey,
+		};
+
+		if !their_features.supports_inbound_fees() {
+			config.options.inbound_forwarding_fee_proportional_millionths = 0;
+			config.options.inbound_forwarding_fee_base_msat = 0;
+		}
+
 		if !their_features.supports_wumbo() && channel_value_satoshis > MAX_FUNDING_SATOSHIS_NO_WUMBO {
 			return Err(APIError::APIMisuseError{err: format!("funding_value must not exceed {}, it was {}", MAX_FUNDING_SATOSHIS_NO_WUMBO, channel_value_satoshis)});
 		}
@@ -962,12 +973,7 @@ impl<Signer: Sign> Channel<Signer> {
 		Ok(Channel {
 			user_id,
 
-			config: LegacyChannelConfig {
-				options: user_config.channel_config.clone(),
-				announced_channel: user_config.channel_handshake_config.announced_channel,
-				commit_upfront_shutdown_pubkey: user_config.channel_handshake_config.commit_upfront_shutdown_pubkey,
-			},
-
+			config,
 			prev_config: None,
 
 			inbound_handshake_limits_override: Some(user_config.channel_handshake_limits.clone()),
@@ -1128,6 +1134,17 @@ impl<Signer: Sign> Channel<Signer> {
 	{
 		let opt_anchors = false; // TODO - should be based on features
 		let announced_channel = if (msg.channel_flags & 1) == 1 { true } else { false };
+
+		let mut config = LegacyChannelConfig {
+			options: user_config.channel_config.clone(),
+			announced_channel,
+			commit_upfront_shutdown_pubkey: user_config.channel_handshake_config.commit_upfront_shutdown_pubkey,
+		};
+
+		if !their_features.supports_inbound_fees() {
+			config.options.inbound_forwarding_fee_proportional_millionths = 0;
+			config.options.inbound_forwarding_fee_base_msat = 0;
+		}
 
 		// First check the channel type is known, failing before we do anything else if we don't
 		// support this channel type.
@@ -1323,12 +1340,7 @@ impl<Signer: Sign> Channel<Signer> {
 		let chan = Channel {
 			user_id,
 
-			config: LegacyChannelConfig {
-				options: user_config.channel_config.clone(),
-				announced_channel,
-				commit_upfront_shutdown_pubkey: user_config.channel_handshake_config.commit_upfront_shutdown_pubkey,
-			},
-
+			config,
 			prev_config: None,
 
 			inbound_handshake_limits_override: None,
@@ -4690,7 +4702,12 @@ impl<Signer: Sign> Channel<Signer> {
 
 	/// Updates the channel's config. A bool is returned indicating whether the config update
 	/// applied resulted in a new ChannelUpdate message.
-	pub fn update_config(&mut self, config: &ChannelConfig) -> bool {
+	pub fn update_config(&mut self, their_features: &InitFeatures, mut config: ChannelConfig) -> bool {
+		if !their_features.supports_inbound_fees() {
+			config.inbound_forwarding_fee_proportional_millionths = 0;
+			config.inbound_forwarding_fee_base_msat = 0;
+		}
+
 		let did_channel_update =
 			self.config.options.forwarding_fee_proportional_millionths != config.forwarding_fee_proportional_millionths ||
 			self.config.options.forwarding_fee_base_msat != config.forwarding_fee_base_msat ||
@@ -4701,7 +4718,7 @@ impl<Signer: Sign> Channel<Signer> {
 			// policy change to propagate throughout the network.
 			self.update_time_counter += 1;
 		}
-		self.config.options = *config;
+		self.config.options = config;
 		did_channel_update
 	}
 

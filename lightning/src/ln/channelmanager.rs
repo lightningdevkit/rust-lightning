@@ -2649,7 +2649,7 @@ where
 	/// [`ChannelUnavailable`]: APIError::ChannelUnavailable
 	/// [`APIMisuseError`]: APIError::APIMisuseError
 	pub fn update_channel_config(
-		&self, counterparty_node_id: &PublicKey, channel_ids: &[[u8; 32]], config: &ChannelConfig,
+		&self, counterparty_node_id: &PublicKey, channel_ids: &[[u8; 32]], config: ChannelConfig,
 	) -> Result<(), APIError> {
 		if config.cltv_expiry_delta < MIN_CLTV_EXPIRY_DELTA {
 			return Err(APIError::APIMisuseError {
@@ -2677,9 +2677,14 @@ where
 			}
 			for channel_id in channel_ids {
 				let channel = channel_state.by_id.get_mut(channel_id).unwrap();
-				if !channel.update_config(config) {
-					continue;
-				}
+
+				//XXX : do this in the same per_peer_state lock post-#1507
+				let per_peer_state = self.per_peer_state.read().unwrap();
+				if let Some(peer_state) = per_peer_state.get(counterparty_node_id) {
+					if !channel.update_config(&peer_state.lock().unwrap().latest_features, config) {
+						continue;
+					}
+				} else { return Err(APIError::APIMisuseError { err: format!("XXX: DROP THIS CODE") }); }
 				if let Ok(msg) = self.get_channel_update_for_broadcast(channel) {
 					channel_state.pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate { msg });
 				} else if let Ok(msg) = self.get_channel_update_for_unicast(channel) {
