@@ -4724,7 +4724,7 @@ impl<Signer: Sign> Channel<Signer> {
 
 	fn internal_htlc_satisfies_config(
 		&self, htlc: &msgs::UpdateAddHTLC, amt_to_forward: u64, outgoing_cltv_value: u32, config: &ChannelConfig,
-	) -> Result<(), (&'static str, u16)> {
+	) -> Result<u64, (&'static str, u16)> {
 		let fee = amt_to_forward.checked_mul(config.forwarding_fee_proportional_millionths as u64)
 			.and_then(|prop_fee| (prop_fee / 1000000).checked_add(config.forwarding_fee_base_msat as u64));
 		if fee.is_none() || htlc.amount_msat < fee.unwrap() ||
@@ -4740,15 +4740,17 @@ impl<Signer: Sign> Channel<Signer> {
 				0x1000 | 13, // incorrect_cltv_expiry
 			));
 		}
-		Ok(())
+		Ok(amt_to_forward)
 	}
 
 	/// Determines whether the parameters of an incoming HTLC to be forwarded satisfy the channel's
 	/// [`ChannelConfig`]. This first looks at the channel's current [`ChannelConfig`], and if
 	/// unsuccessful, falls back to the previous one if one exists.
+	///
+	/// Returns the amount we should actually forward to our counterparty.
 	pub fn htlc_satisfies_config(
 		&self, htlc: &msgs::UpdateAddHTLC, amt_to_forward: u64, outgoing_cltv_value: u32,
-	) -> Result<(), (&'static str, u16)> {
+	) -> Result<u64, (&'static str, u16)> {
 		self.internal_htlc_satisfies_config(&htlc, amt_to_forward, outgoing_cltv_value, &self.config())
 			.or_else(|err| {
 				if let Some(prev_config) = self.prev_config() {

@@ -2014,7 +2014,7 @@ where
 			},
 		};
 
-		let pending_forward_info = match next_hop {
+		let mut pending_forward_info = match next_hop {
 			onion_utils::Hop::Receive(next_hop_data) => {
 				// OUR PAYMENT!
 				match self.construct_recv_pending_htlc_info(next_hop_data, shared_secret, msg.payment_hash, msg.amount_msat, msg.cltv_expiry, None) {
@@ -2058,7 +2058,7 @@ where
 			}
 		};
 
-		if let &PendingHTLCStatus::Forward(PendingHTLCInfo { ref routing, ref outgoing_amt_msat, ref outgoing_cltv_value, .. }) = &pending_forward_info {
+		if let &mut PendingHTLCStatus::Forward(PendingHTLCInfo { ref routing, ref mut outgoing_amt_msat, ref outgoing_cltv_value, .. }) = &mut pending_forward_info {
 			// If short_channel_id is 0 here, we'll reject the HTLC as there cannot be a channel
 			// with a short_channel_id of 0. This is important as various things later assume
 			// short_channel_id is non-0 in any ::Forward.
@@ -2115,8 +2115,9 @@ where
 						if *outgoing_amt_msat < chan.get_counterparty_htlc_minimum_msat() { // amount_below_minimum
 							break Some(("HTLC amount was below the htlc_minimum_msat", 0x1000 | 11, chan_update_opt));
 						}
-						if let Err((err, code)) = chan.htlc_satisfies_config(&msg, *outgoing_amt_msat, *outgoing_cltv_value) {
-							break Some((err, code, chan_update_opt));
+						match chan.htlc_satisfies_config(&msg, *outgoing_amt_msat, *outgoing_cltv_value) {
+							Err((err, code)) => break Some((err, code, chan_update_opt)),
+							Ok(amt_to_forward_msat) => *outgoing_amt_msat = amt_to_forward_msat,
 						}
 						chan_update_opt
 					} else {
