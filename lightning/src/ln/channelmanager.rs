@@ -2224,6 +2224,16 @@ where
 		log_trace!(self.logger, "Generating channel update for channel {}", log_bytes!(chan.channel_id()));
 		let were_node_one = PublicKey::from_secret_key(&self.secp_ctx, &self.our_network_key).serialize()[..] < chan.get_counterparty_node_id().serialize()[..];
 
+		let fee_base_msat = (chan.get_outbound_forwarding_fee_base_msat() as i64) +
+			(chan.counterparty_forwarding_info()
+				.map(|info| info.inbound_fee_base_msat).unwrap_or(0) as i64);
+		let fee_base_msat = cmp::min(cmp::max(0, fee_base_msat), u32::MAX as i64) as u32;
+		let fee_proportional_millionths = (chan.get_fee_proportional_millionths() as i64) +
+			(chan.counterparty_forwarding_info()
+				.map(|info| info.inbound_fee_proportional_millionths).unwrap_or(0) as i64);
+		let fee_proportional_millionths =
+			cmp::min(cmp::max(0, fee_proportional_millionths), u32::MAX as i64) as u32;
+
 		let unsigned = msgs::UnsignedChannelUpdate {
 			chain_hash: self.genesis_hash,
 			short_channel_id,
@@ -2232,8 +2242,8 @@ where
 			cltv_expiry_delta: chan.get_cltv_expiry_delta(),
 			htlc_minimum_msat: chan.get_counterparty_htlc_minimum_msat(),
 			htlc_maximum_msat: chan.get_announced_htlc_max_msat(),
-			fee_base_msat: chan.get_outbound_forwarding_fee_base_msat(),
-			fee_proportional_millionths: chan.get_fee_proportional_millionths(),
+			fee_base_msat,
+			fee_proportional_millionths,
 			excess_data: Vec::new(),
 		};
 
