@@ -73,42 +73,41 @@ impl FilesystemPersister {
 		for file_option in fs::read_dir(path).unwrap() {
 			let file = file_option.unwrap();
 			let owned_file_name = file.file_name();
-			let filename = owned_file_name.to_str();
-			if !filename.is_some() || !filename.unwrap().is_ascii() || filename.unwrap().len() < 65 {
+			let filename = owned_file_name.to_str()
+				.ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData,
+					"File name is not a valid utf8 string"))?;
+			if !filename.is_ascii() || filename.len() < 65 {
 				return Err(std::io::Error::new(
 					std::io::ErrorKind::InvalidData,
 					"Invalid ChannelMonitor file name",
 				));
 			}
-			if filename.unwrap().ends_with(".tmp") {
+			if filename.ends_with(".tmp") {
 				// If we were in the middle of committing an new update and crashed, it should be
 				// safe to ignore the update - we should never have returned to the caller and
 				// irrevocably committed to the new state in any way.
 				continue;
 			}
 
-			let txid = Txid::from_hex(filename.unwrap().split_at(64).0);
-			if txid.is_err() {
-				return Err(std::io::Error::new(
+			let txid = Txid::from_hex(filename.split_at(64).0)
+				.map_err(|_| std::io::Error::new(
 					std::io::ErrorKind::InvalidData,
 					"Invalid tx ID in filename",
-				));
-			}
+				))?;
 
-			let index = filename.unwrap().split_at(65).1.parse();
-			if index.is_err() {
-				return Err(std::io::Error::new(
+			let index = filename.split_at(65).1.parse()
+				.map_err(|_| std::io::Error::new(
 					std::io::ErrorKind::InvalidData,
 					"Invalid tx index in filename",
-				));
-			}
+				))?;
 
 			let contents = fs::read(&file.path())?;
 			let mut buffer = Cursor::new(&contents);
 			match <(BlockHash, ChannelMonitor<<K::Target as SignerProvider>::Signer>)>::read(&mut buffer, &*keys_manager) {
 				Ok((blockhash, channel_monitor)) => {
-					if channel_monitor.get_funding_txo().0.txid != txid.unwrap() || channel_monitor.get_funding_txo().0.index != index.unwrap() {
-						return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "ChannelMonitor was stored in the wrong file"));
+					if channel_monitor.get_funding_txo().0.txid != txid || channel_monitor.get_funding_txo().0.index != index {
+						return Err(std::io::Error::new(std::io::ErrorKind::InvalidData,
+									       "ChannelMonitor was stored in the wrong file"));
 					}
 					res.push((blockhash, channel_monitor));
 				}
