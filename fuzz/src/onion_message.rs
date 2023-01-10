@@ -11,7 +11,8 @@ use lightning::ln::script::ShutdownScript;
 use lightning::util::enforcing_trait_impls::EnforcingSigner;
 use lightning::util::logger::Logger;
 use lightning::util::ser::{Readable, Writeable, Writer};
-use lightning::onion_message::{CustomOnionMessageContents, CustomOnionMessageHandler, OnionMessenger};
+use lightning::onion_message::packet::CustomOnionMessageContents;
+use lightning::onion_message::messenger::{OnionMessenger, CustomOnionMessageHandler};
 
 use crate::utils::test_logger;
 

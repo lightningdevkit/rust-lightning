@@ -3693,8 +3693,8 @@ where
 
 const MAX_ALLOC_SIZE: usize = 64*1024;
 
-impl<'a, K: KeysInterface> ReadableArgs<&'a K>
-		for (BlockHash, ChannelMonitor<K::Signer>) {
+impl<'a, K: KeysInterface<Signer = Signer>, Signer: Sign> ReadableArgs<&'a K>
+		for (BlockHash, ChannelMonitor<Signer>) {
 	fn read<R: io::Read>(reader: &mut R, keys_manager: &'a K) -> Result<Self, DecodeError> {
 		macro_rules! unwrap_obj {
 			($key: expr) => {

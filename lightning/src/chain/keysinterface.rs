@@ -1051,7 +1051,9 @@ impl KeysManager {
 		// We only seriously intend to rely on the channel_master_key for true secure
 		// entropy, everything else just ensures uniqueness. We rely on the unique_start (ie
 		// starting_time provided in the constructor) to be unique.
-		let child_privkey = self.channel_master_key.ckd_priv(&self.secp_ctx, ChildNumber::from_hardened_idx(chan_id as u32).expect("key space exhausted")).expect("Your RNG is busted");
+		let child_privkey = self.channel_master_key.ckd_priv(&self.secp_ctx,
+				ChildNumber::from_hardened_idx((chan_id as u32) % (1 << 31)).expect("key space exhausted")
+			).expect("Your RNG is busted");
 		unique_start.input(&child_privkey.private_key[..]);
 
 		let seed = Sha256::from_engine(unique_start).into_inner();
@@ -1261,7 +1263,12 @@ impl KeysInterface for KeysManager {
 
 	fn generate_channel_keys_id(&self, _inbound: bool, _channel_value_satoshis: u64, user_channel_id: u128) -> [u8; 32] {
 		let child_idx = self.channel_child_index.fetch_add(1, Ordering::AcqRel);
-		assert!(child_idx <= core::u32::MAX as usize);
+		// `child_idx` is the only thing guaranteed to make each channel unique without a restart
+		// (though `user_channel_id` should help, depending on user behavior). If it manages to
+		// roll over, we may generate duplicate keys for two different channels, which could result
+		// in loss of funds. Because we only support 32-bit+ systems, assert that our `AtomicUsize`
+		// doesn't reach `u32::MAX`.
+		assert!(child_idx < core::u32::MAX as usize, "2^32 channels opened without restart");
 		let mut id = [0; 32];
 		id[0..4].copy_from_slice(&(child_idx as u32).to_be_bytes());
 		id[4..8].copy_from_slice(&self.starting_time_nanos.to_be_bytes());

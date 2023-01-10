@@ -71,7 +71,7 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, S: Deref> Router for DefaultR
 
 		find_route(
 			payer, params, &self.network_graph, first_hops, &*self.logger,
-			&ScorerAccountingForInFlightHtlcs::new(&mut self.scorer.lock(), inflight_htlcs),
+			&ScorerAccountingForInFlightHtlcs::new(self.scorer.lock(), inflight_htlcs),
 			&random_seed_bytes
 		)
 	}
@@ -125,15 +125,15 @@ pub trait Router {
 /// [`find_route`].
 ///
 /// [`Score`]: crate::routing::scoring::Score
-pub struct ScorerAccountingForInFlightHtlcs<'a, S: Score> {
-	scorer: &'a mut S,
+pub struct ScorerAccountingForInFlightHtlcs<S: Score> {
+	scorer: S,
 	// Maps a channel's short channel id and its direction to the liquidity used up.
 	inflight_htlcs: InFlightHtlcs,
 }
 
-impl<'a, S: Score> ScorerAccountingForInFlightHtlcs<'a, S> {
+impl<S: Score> ScorerAccountingForInFlightHtlcs<S> {
 	/// Initialize a new `ScorerAccountingForInFlightHtlcs`.
-	pub fn new(scorer: &'a mut S, inflight_htlcs: InFlightHtlcs) -> Self {
+	pub fn new(scorer: S, inflight_htlcs: InFlightHtlcs) -> Self {
 		ScorerAccountingForInFlightHtlcs {
 			scorer,
 			inflight_htlcs
@@ -142,11 +142,11 @@ impl<'a, S: Score> ScorerAccountingForInFlightHtlcs<'a, S> {
 }
 
 #[cfg(c_bindings)]
-impl<'a, S:Score> Writeable for ScorerAccountingForInFlightHtlcs<'a, S> {
+impl<S: Score> Writeable for ScorerAccountingForInFlightHtlcs<S> {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> { self.scorer.write(writer) }
 }
 
-impl<'a, S: Score> Score for ScorerAccountingForInFlightHtlcs<'a, S> {
+impl<S: Score> Score for ScorerAccountingForInFlightHtlcs<S> {
 	fn channel_penalty_msat(&self, short_channel_id: u64, source: &NodeId, target: &NodeId, usage: ChannelUsage) -> u64 {
 		if let Some(used_liquidity) = self.inflight_htlcs.used_liquidity_msat(
 			source, target, short_channel_id
@@ -181,6 +181,7 @@ impl<'a, S: Score> Score for ScorerAccountingForInFlightHtlcs<'a, S> {
 
 /// A data structure for tracking in-flight HTLCs. May be used during pathfinding to account for
 /// in-use channel liquidity.
+#[derive(Clone)]
 pub struct InFlightHtlcs(
 	// A map with liquidity value (in msat) keyed by a short channel id and the direction the HTLC
 	// is traveling in. The direction boolean is determined by checking if the HTLC source's public
@@ -194,7 +195,7 @@ impl InFlightHtlcs {
 	pub fn new() -> Self { InFlightHtlcs(HashMap::new()) }
 
 	/// Takes in a path with payer's node id and adds the path's details to `InFlightHtlcs`.
-	pub fn process_path(&mut self, path: &[RouteHop], payer_node_id: PublicKey) {
+	pub(crate) fn process_path(&mut self, path: &[RouteHop], payer_node_id: PublicKey) {
 		if path.is_empty() { return };
 		// total_inflight_map needs to be direction-sensitive when keeping track of the HTLC value
 		// that is held up. However, the `hops` array, which is a path returned by `find_route` in
