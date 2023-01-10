@@ -48,7 +48,7 @@ impl FilesystemPersister {
 	/// Initialize a new FilesystemPersister and set the path to the individual channels'
 	/// files.
 	pub fn new(path_to_channel_data: String) -> Self {
-		return Self {
+		Self {
 			path_to_channel_data,
 		}
 	}
@@ -61,7 +61,7 @@ impl FilesystemPersister {
 	/// Read `ChannelMonitor`s from disk.
 	pub fn read_channelmonitors<K: Deref> (
 		&self, keys_manager: K
-	) -> Result<Vec<(BlockHash, ChannelMonitor<<K::Target as SignerProvider>::Signer>)>, std::io::Error>
+	) -> std::io::Result<Vec<(BlockHash, ChannelMonitor<<K::Target as SignerProvider>::Signer>)>>
 		where K::Target: KeysInterface + Sized,
 	{
 		let mut path = PathBuf::from(&self.path_to_channel_data);
@@ -70,7 +70,7 @@ impl FilesystemPersister {
 			return Ok(Vec::new());
 		}
 		let mut res = Vec::new();
-		for file_option in fs::read_dir(path).unwrap() {
+		for file_option in fs::read_dir(path)? {
 			let file = file_option.unwrap();
 			let owned_file_name = file.file_name();
 			let filename = owned_file_name.to_str()
@@ -162,6 +162,27 @@ mod tests {
 				_ => {}
 			}
 		}
+	}
+
+	#[test]
+	fn test_if_monitors_is_not_dir() {
+		let persister = FilesystemPersister::new("test_monitors_is_not_dir".to_string());
+
+		fs::create_dir_all(&persister.path_to_channel_data).unwrap();
+		let mut path = std::path::PathBuf::from(&persister.path_to_channel_data);
+		path.push("monitors");
+		fs::File::create(path).unwrap();
+
+		let chanmon_cfgs = create_chanmon_cfgs(1);
+		let mut node_cfgs = create_node_cfgs(1, &chanmon_cfgs);
+		let chain_mon_0 = test_utils::TestChainMonitor::new(Some(&chanmon_cfgs[0].chain_source), &chanmon_cfgs[0].tx_broadcaster, &chanmon_cfgs[0].logger, &chanmon_cfgs[0].fee_estimator, &persister, &node_cfgs[0].keys_manager);
+		node_cfgs[0].chain_monitor = chain_mon_0;
+		let node_chanmgrs = create_node_chanmgrs(1, &node_cfgs, &[None]);
+		let nodes = create_network(1, &node_cfgs, &node_chanmgrs);
+
+		// Check that read_channelmonitors() returns error if monitors/ is not a
+		// directory.
+		assert!(persister.read_channelmonitors(nodes[0].keys_manager).is_err());
 	}
 
 	// Integration-test the FilesystemPersister. Test relaying a few payments
