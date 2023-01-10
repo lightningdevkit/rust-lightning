@@ -175,8 +175,6 @@ mod prelude {
 	pub use alloc::string::ToString;
 }
 
-#[cfg(all(not(feature = "_bench_unstable"), feature = "std", test))]
-mod debug_sync;
 #[cfg(all(not(feature = "_bench_unstable"), feature = "backtrace", feature = "std", test))]
 extern crate backtrace;
 
