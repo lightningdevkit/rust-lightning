@@ -73,6 +73,7 @@ pub(crate) enum Message<T> where T: core::fmt::Debug + Type + TestEq {
 	ChannelAnnouncement(msgs::ChannelAnnouncement),
 	NodeAnnouncement(msgs::NodeAnnouncement),
 	ChannelUpdate(msgs::ChannelUpdate),
+	InboundFeesUpdate(msgs::InboundFeesUpdate),
 	QueryShortChannelIds(msgs::QueryShortChannelIds),
 	ReplyShortChannelIdsEnd(msgs::ReplyShortChannelIdsEnd),
 	QueryChannelRange(msgs::QueryChannelRange),
@@ -114,6 +115,7 @@ impl<T> Message<T> where T: core::fmt::Debug + Type + TestEq {
 			&Message::ChannelAnnouncement(ref msg) => msg.type_id(),
 			&Message::NodeAnnouncement(ref msg) => msg.type_id(),
 			&Message::ChannelUpdate(ref msg) => msg.type_id(),
+			&Message::InboundFeesUpdate(ref msg) => msg.type_id(),
 			&Message::QueryShortChannelIds(ref msg) => msg.type_id(),
 			&Message::ReplyShortChannelIdsEnd(ref msg) => msg.type_id(),
 			&Message::QueryChannelRange(ref msg) => msg.type_id(),
@@ -225,6 +227,9 @@ fn do_read<R: io::Read, T, H: core::ops::Deref>(buffer: &mut R, message_type: u1
 		},
 		msgs::ChannelUpdate::TYPE => {
 			Ok(Message::ChannelUpdate(Readable::read(buffer)?))
+		},
+		msgs::InboundFeesUpdate::TYPE => {
+			Ok(Message::InboundFeesUpdate(Readable::read(buffer)?))
 		},
 		msgs::QueryShortChannelIds::TYPE => {
 			Ok(Message::QueryShortChannelIds(Readable::read(buffer)?))
@@ -419,6 +424,10 @@ impl Encode for msgs::ReplyChannelRange {
 
 impl Encode for msgs::GossipTimestampFilter {
 	const TYPE: u16 = 265;
+}
+
+impl Encode for msgs::InboundFeesUpdate {
+	const TYPE: u16 = 34242;
 }
 
 #[cfg(test)]

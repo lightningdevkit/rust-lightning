@@ -221,6 +221,9 @@ impl ChannelMessageHandler for ErroringMessageHandler {
 	fn handle_channel_reestablish(&self, their_node_id: &PublicKey, msg: &msgs::ChannelReestablish) {
 		ErroringMessageHandler::push_error(self, their_node_id, msg.channel_id);
 	}
+	fn handle_inbound_fees_update(&self, their_node_id: &PublicKey, msg: &msgs::InboundFeesUpdate) {
+		ErroringMessageHandler::push_error(self, their_node_id, msg.channel_id);
+	}
 	// msgs::ChannelUpdate does not contain the channel_id field, so we just drop them.
 	fn handle_channel_update(&self, _their_node_id: &PublicKey, _msg: &msgs::ChannelUpdate) {}
 	fn peer_disconnected(&self, _their_node_id: &PublicKey, _no_connection_possible: bool) {}
@@ -1363,6 +1366,10 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 				self.message_handler.chan_handler.handle_closing_signed(&their_node_id, &msg);
 			},
 
+			wire::Message::InboundFeesUpdate(msg) => {
+				self.message_handler.chan_handler.handle_inbound_fees_update(&their_node_id, &msg);
+			},
+
 			// Commitment messages:
 			wire::Message::UpdateAddHTLC(msg) => {
 				self.message_handler.chan_handler.handle_update_add_htlc(&their_node_id, &msg);
@@ -1722,6 +1729,12 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 								log_pubkey!(node_id), msg.contents.short_channel_id);
 						self.enqueue_message(&mut *get_peer_for_forwarding!(node_id), msg);
 					},
+					MessageSendEvent::SendInboundFeesUpdate { ref node_id, ref msg } => {
+						log_trace!(self.logger, "Handling SendInboundFeesUpdate event in peer_handler for node {} for channel {}",
+								log_pubkey!(node_id), log_bytes!(msg.channel_id));
+						self.enqueue_message(&mut *get_peer_for_forwarding!(node_id), msg);
+					},
+
 					MessageSendEvent::HandleError { ref node_id, ref action } => {
 						match *action {
 							msgs::ErrorAction::DisconnectPeer { ref msg } => {

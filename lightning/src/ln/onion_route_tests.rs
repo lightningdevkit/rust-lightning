@@ -671,7 +671,7 @@ fn do_test_onion_failure_stale_channel_update(announced_channel: bool) {
 	};
 
 	// Closure to update and retrieve the latest ChannelUpdate.
-	let update_and_get_channel_update = |config: &ChannelConfig, expect_new_update: bool,
+	let update_and_get_channel_update = |config: ChannelConfig, expect_new_update: bool,
 		prev_update: Option<&msgs::ChannelUpdate>, should_expire_prev_config: bool| -> Option<msgs::ChannelUpdate> {
 		nodes[1].node.update_channel_config(
 			channel_to_update_counterparty, &[channel_to_update.0], config,
@@ -718,7 +718,7 @@ fn do_test_onion_failure_stale_channel_update(announced_channel: bool) {
 	let mut invalid_config = default_config.clone();
 	invalid_config.cltv_expiry_delta = 0;
 	match nodes[1].node.update_channel_config(
-		channel_to_update_counterparty, &[channel_to_update.0], &invalid_config,
+		channel_to_update_counterparty, &[channel_to_update.0], invalid_config,
 	) {
 		Err(APIError::APIMisuseError{ .. }) => {},
 		_ => panic!("unexpected result applying invalid cltv_expiry_delta"),
@@ -729,7 +729,7 @@ fn do_test_onion_failure_stale_channel_update(announced_channel: bool) {
 		.find(|channel| channel.channel_id == channel_to_update.0).unwrap()
 		.config.unwrap();
 	config.forwarding_fee_base_msat = u32::max_value();
-	let msg = update_and_get_channel_update(&config, true, None, false).unwrap();
+	let msg = update_and_get_channel_update(config, true, None, false).unwrap();
 
 	// The old policy should still be in effect until a new block is connected.
 	send_along_route_with_secret(&nodes[0], route.clone(), &[&[&nodes[1], &nodes[2]]], PAYMENT_AMT,
@@ -742,24 +742,24 @@ fn do_test_onion_failure_stale_channel_update(announced_channel: bool) {
 	expect_onion_failure("fee_insufficient", UPDATE|12, &msg);
 
 	// Redundant updates should not trigger a new ChannelUpdate.
-	assert!(update_and_get_channel_update(&config, false, None, false).is_none());
+	assert!(update_and_get_channel_update(config, false, None, false).is_none());
 
 	// Similarly, updates that do not have an affect on ChannelUpdate should not trigger a new one.
 	config.force_close_avoidance_max_fee_satoshis *= 2;
-	assert!(update_and_get_channel_update(&config, false, None, false).is_none());
+	assert!(update_and_get_channel_update(config, false, None, false).is_none());
 
 	// Reset the base fee to the default and increase the proportional fee which should trigger a
 	// new ChannelUpdate.
 	config.forwarding_fee_base_msat = default_config.forwarding_fee_base_msat;
 	config.cltv_expiry_delta = u16::max_value();
-	let msg = update_and_get_channel_update(&config, true, Some(&msg), true).unwrap();
+	let msg = update_and_get_channel_update(config, true, Some(&msg), true).unwrap();
 	expect_onion_failure("incorrect_cltv_expiry", UPDATE|13, &msg);
 
 	// Reset the proportional fee and increase the CLTV expiry delta which should trigger a new
 	// ChannelUpdate.
 	config.cltv_expiry_delta = default_config.cltv_expiry_delta;
 	config.forwarding_fee_proportional_millionths = u32::max_value();
-	let msg = update_and_get_channel_update(&config, true, Some(&msg), true).unwrap();
+	let msg = update_and_get_channel_update(config, true, Some(&msg), true).unwrap();
 	expect_onion_failure("fee_insufficient", UPDATE|12, &msg);
 
 	// To test persistence of the updated config, we'll re-initialize the ChannelManager.

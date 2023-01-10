@@ -676,6 +676,19 @@ pub struct ChannelUpdate {
 	pub contents: UnsignedChannelUpdate,
 }
 
+/// A request to the peer to update the inbound fees used when forwarding. Note that the peer may
+/// continue to use the previous inbound fees (if they were lower) for some time to ensure HTLCs
+/// which were in-flight when the change was done are not interrupted.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InboundFeesUpdate {
+	/// The channel being updated
+	pub channel_id: [u8; 32],
+	/// The inbound fee to pay, in millionths of the payment amount.
+	pub inbound_forwarding_fee_proportional_millionths: i32,
+	/// The inbound fee to pay, as a static amount in millisatoshis.
+	pub inbound_forwarding_fee_base_msat: i32,
+}
+
 /// A query_channel_range message is used to query a peer for channel
 /// UTXOs in a range of blocks. The recipient of a query makes a best
 /// effort to reply to the query using one or more reply_channel_range
@@ -849,6 +862,9 @@ pub trait ChannelMessageHandler : MessageSendEventsProvider {
 	fn handle_funding_signed(&self, their_node_id: &PublicKey, msg: &FundingSigned);
 	/// Handle an incoming channel_ready message from the given peer.
 	fn handle_channel_ready(&self, their_node_id: &PublicKey, msg: &ChannelReady);
+
+	/// Handle an incoming update_fee message from the given peer.
+	fn handle_inbound_fees_update(&self, their_node_id: &PublicKey, msg: &InboundFeesUpdate);
 
 	// Channl close:
 	/// Handle an incoming shutdown message from the given peer.
@@ -1646,6 +1662,12 @@ impl Readable for UnsignedChannelUpdate {
 impl_writeable!(ChannelUpdate, {
 	signature,
 	contents
+});
+
+impl_writeable!(InboundFeesUpdate, {
+	channel_id,
+	inbound_forwarding_fee_proportional_millionths,
+	inbound_forwarding_fee_base_msat
 });
 
 impl Writeable for ErrorMessage {

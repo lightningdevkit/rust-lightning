@@ -384,6 +384,9 @@ impl msgs::ChannelMessageHandler for TestChannelMessageHandler {
 	fn handle_channel_update(&self, _their_node_id: &PublicKey, _msg: &msgs::ChannelUpdate) {
 		// Don't call `received_msg` here as `TestRoutingMessageHandler` generates these sometimes
 	}
+	fn handle_inbound_fees_update(&self, _their_node_id: &PublicKey, msg: &msgs::InboundFeesUpdate) {
+		self.received_msg(wire::Message::InboundFeesUpdate(msg.clone()));
+	}
 	fn handle_announcement_signatures(&self, _their_node_id: &PublicKey, msg: &msgs::AnnouncementSignatures) {
 		self.received_msg(wire::Message::AnnouncementSignatures(msg.clone()));
 	}

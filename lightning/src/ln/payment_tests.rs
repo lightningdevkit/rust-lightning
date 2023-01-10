@@ -504,7 +504,7 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 		let mut channel = channel_state.by_id.get_mut(&chan_id_2).unwrap();
 		let mut new_config = channel.config();
 		new_config.forwarding_fee_base_msat += 100_000;
-		channel.update_config(&new_config);
+		channel.update_config(&channelmanager::provided_init_features(), new_config);
 		new_route.paths[0][0].fee_msat += 100_000;
 	}
 

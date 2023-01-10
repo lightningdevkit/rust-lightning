@@ -898,10 +898,14 @@ pub(crate) const IDEMPOTENCY_TIMEOUT_TICKS: u8 = 7;
 /// Information needed for constructing an invoice route hint for this channel.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CounterpartyForwardingInfo {
-	/// Base routing fee in millisatoshis.
+	/// Base outbound routing fee in millisatoshis.
 	pub fee_base_msat: u32,
-	/// Amount in millionths of a satoshi the channel will charge per transferred satoshi.
+	/// Amount in millionths of a satoshi the channel will charge per outbound transferred satoshi.
 	pub fee_proportional_millionths: u32,
+	/// Base inbound routing fee in millisatoshis.
+	pub inbound_fee_base_msat: i32,
+	/// Amount in millionths of a satoshi the channel will charge per inbound transferred satoshi.
+	pub inbound_fee_proportional_millionths: i32,
 	/// The minimum difference in cltv_expiry between an ingoing HTLC and its outgoing counterpart,
 	/// such that the outgoing HTLC is forwardable to this counterparty. See `msgs::ChannelUpdate`'s
 	/// `cltv_expiry_delta` for more details.
@@ -1956,7 +1960,9 @@ where
 		})
 	}
 
-	fn decode_update_add_htlc_onion(&self, msg: &msgs::UpdateAddHTLC) -> PendingHTLCStatus {
+	fn decode_update_add_htlc_onion(&self, channel_state: &ChannelHolder<<K::Target as SignerProvider>::Signer>,
+		msg: &msgs::UpdateAddHTLC, inbound_channel: &Channel<<K::Target as SignerProvider>::Signer>
+	) -> PendingHTLCStatus {
 		macro_rules! return_malformed_err {
 			($msg: expr, $err_code: expr) => {
 				{
@@ -2010,7 +2016,7 @@ where
 			},
 		};
 
-		let pending_forward_info = match next_hop {
+		let mut pending_forward_info = match next_hop {
 			onion_utils::Hop::Receive(next_hop_data) => {
 				// OUR PAYMENT!
 				match self.construct_recv_pending_htlc_info(next_hop_data, shared_secret, msg.payment_hash, msg.amount_msat, msg.cltv_expiry, None) {
@@ -2054,14 +2060,13 @@ where
 			}
 		};
 
-		if let &PendingHTLCStatus::Forward(PendingHTLCInfo { ref routing, ref outgoing_amt_msat, ref outgoing_cltv_value, .. }) = &pending_forward_info {
+		if let &mut PendingHTLCStatus::Forward(PendingHTLCInfo { ref routing, ref mut outgoing_amt_msat, ref outgoing_cltv_value, .. }) = &mut pending_forward_info {
 			// If short_channel_id is 0 here, we'll reject the HTLC as there cannot be a channel
 			// with a short_channel_id of 0. This is important as various things later assume
 			// short_channel_id is non-0 in any ::Forward.
 			if let &PendingHTLCRouting::Forward { ref short_channel_id, .. } = routing {
 				if let Some((err, mut code, chan_update)) = loop {
 					let id_option = self.short_to_chan_info.read().unwrap().get(&short_channel_id).cloned();
-					let mut channel_state = self.channel_state.lock().unwrap();
 					let forwarding_id_opt = match id_option {
 						None => { // unknown_next_peer
 							// Note that this is likely a timing oracle for detecting whether an scid is a
@@ -2078,7 +2083,7 @@ where
 						Some((_cp_id, chan_id)) => Some(chan_id.clone()),
 					};
 					let chan_update_opt = if let Some(forwarding_id) = forwarding_id_opt {
-						let chan = match channel_state.by_id.get_mut(&forwarding_id) {
+						let chan = match channel_state.by_id.get(&forwarding_id) {
 							None => {
 								// Channel was removed. The short_to_chan_info and by_id maps have
 								// no consistency guarantees.
@@ -2111,8 +2116,9 @@ where
 						if *outgoing_amt_msat < chan.get_counterparty_htlc_minimum_msat() { // amount_below_minimum
 							break Some(("HTLC amount was below the htlc_minimum_msat", 0x1000 | 11, chan_update_opt));
 						}
-						if let Err((err, code)) = chan.htlc_satisfies_config(&msg, *outgoing_amt_msat, *outgoing_cltv_value) {
-							break Some((err, code, chan_update_opt));
+						match chan.htlc_satisfies_config(&msg, *outgoing_amt_msat, *outgoing_cltv_value, inbound_channel) {
+							Err((err, code)) => break Some((err, code, chan_update_opt)),
+							Ok(amt_to_forward_msat) => *outgoing_amt_msat = amt_to_forward_msat,
 						}
 						chan_update_opt
 					} else {
@@ -2220,6 +2226,16 @@ where
 		log_trace!(self.logger, "Generating channel update for channel {}", log_bytes!(chan.channel_id()));
 		let were_node_one = PublicKey::from_secret_key(&self.secp_ctx, &self.our_network_key).serialize()[..] < chan.get_counterparty_node_id().serialize()[..];
 
+		let fee_base_msat = (chan.get_outbound_forwarding_fee_base_msat() as i64) +
+			(chan.counterparty_forwarding_info()
+				.map(|info| info.inbound_fee_base_msat).unwrap_or(0) as i64);
+		let fee_base_msat = cmp::min(cmp::max(0, fee_base_msat), u32::MAX as i64) as u32;
+		let fee_proportional_millionths = (chan.get_fee_proportional_millionths() as i64) +
+			(chan.counterparty_forwarding_info()
+				.map(|info| info.inbound_fee_proportional_millionths).unwrap_or(0) as i64);
+		let fee_proportional_millionths =
+			cmp::min(cmp::max(0, fee_proportional_millionths), u32::MAX as i64) as u32;
+
 		let unsigned = msgs::UnsignedChannelUpdate {
 			chain_hash: self.genesis_hash,
 			short_channel_id,
@@ -2228,8 +2244,8 @@ where
 			cltv_expiry_delta: chan.get_cltv_expiry_delta(),
 			htlc_minimum_msat: chan.get_counterparty_htlc_minimum_msat(),
 			htlc_maximum_msat: chan.get_announced_htlc_max_msat(),
-			fee_base_msat: chan.get_outbound_forwarding_fee_base_msat(),
-			fee_proportional_millionths: chan.get_fee_proportional_millionths(),
+			fee_base_msat,
+			fee_proportional_millionths,
 			excess_data: Vec::new(),
 		};
 
@@ -2649,7 +2665,7 @@ where
 	/// [`ChannelUnavailable`]: APIError::ChannelUnavailable
 	/// [`APIMisuseError`]: APIError::APIMisuseError
 	pub fn update_channel_config(
-		&self, counterparty_node_id: &PublicKey, channel_ids: &[[u8; 32]], config: &ChannelConfig,
+		&self, counterparty_node_id: &PublicKey, channel_ids: &[[u8; 32]], config: ChannelConfig,
 	) -> Result<(), APIError> {
 		if config.cltv_expiry_delta < MIN_CLTV_EXPIRY_DELTA {
 			return Err(APIError::APIMisuseError {
@@ -2677,13 +2693,36 @@ where
 			}
 			for channel_id in channel_ids {
 				let channel = channel_state.by_id.get_mut(channel_id).unwrap();
-				if !channel.update_config(config) {
-					continue;
-				}
+
+				let prev_inbound_fees = (channel.config().inbound_forwarding_fee_base_msat,
+					channel.config().inbound_forwarding_fee_proportional_millionths);
+
+				//XXX : do this in the same per_peer_state lock post-#1507
+				let per_peer_state = self.per_peer_state.read().unwrap();
+				if let Some(peer_state) = per_peer_state.get(counterparty_node_id) {
+					if !channel.update_config(&peer_state.lock().unwrap().latest_features, config) {
+						continue;
+					}
+				} else { return Err(APIError::APIMisuseError { err: format!("XXX: DROP THIS CODE") }); }
+
 				if let Ok(msg) = self.get_channel_update_for_broadcast(channel) {
 					channel_state.pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate { msg });
 				} else if let Ok(msg) = self.get_channel_update_for_unicast(channel) {
 					channel_state.pending_msg_events.push(events::MessageSendEvent::SendChannelUpdate {
+						node_id: channel.get_counterparty_node_id(),
+						msg,
+					});
+				}
+				let new_inbound_fees = (channel.config().inbound_forwarding_fee_base_msat,
+					channel.config().inbound_forwarding_fee_proportional_millionths);
+				if prev_inbound_fees != new_inbound_fees {
+					log_trace!(self.logger, "Inbound fees have changed, notifying peer");
+					let msg = msgs::InboundFeesUpdate {
+						channel_id: channel.channel_id(),
+						inbound_forwarding_fee_base_msat: new_inbound_fees.0,
+						inbound_forwarding_fee_proportional_millionths: new_inbound_fees.1,
+					};
+					channel_state.pending_msg_events.push(events::MessageSendEvent::SendInboundFeesUpdate {
 						node_id: channel.get_counterparty_node_id(),
 						msg,
 					});
@@ -4378,15 +4417,22 @@ where
 		//encrypted with the same key. It's not immediately obvious how to usefully exploit that,
 		//but we should prevent it anyway.
 
-		let pending_forward_info = self.decode_update_add_htlc_onion(msg);
 		let mut channel_state_lock = self.channel_state.lock().unwrap();
 		let channel_state = &mut *channel_state_lock;
+
+		let pending_forward_info;
+		if let Some(chan) = channel_state.by_id.get(&msg.channel_id) {
+			pending_forward_info = self.decode_update_add_htlc_onion(&*channel_state, msg, chan); // Post-1507 we should drop the double-lookup here.
+		} else {
+			return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id));
+		}
 
 		match channel_state.by_id.entry(msg.channel_id) {
 			hash_map::Entry::Occupied(mut chan) => {
 				if chan.get().get_counterparty_node_id() != *counterparty_node_id {
 					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
 				}
+
 
 				let create_pending_htlc_status = |chan: &Channel<<K::Target as SignerProvider>::Signer>, pending_forward_info: PendingHTLCStatus, error_code: u16| {
 					// If the update_add is completely bogus, the call will Err and we will close,
@@ -4750,6 +4796,22 @@ where
 		Ok(NotifyOption::DoPersist)
 	}
 
+	fn internal_inbound_fees_update(&self, counterparty_node_id: &PublicKey, msg: &msgs::InboundFeesUpdate) -> Result<(), MsgHandleErrInternal> {
+		let mut channel_state_lock = self.channel_state.lock().unwrap();
+		let channel_state = &mut *channel_state_lock;
+		match channel_state.by_id.entry(msg.channel_id) {
+			hash_map::Entry::Occupied(mut chan) => {
+				if chan.get().get_counterparty_node_id() != *counterparty_node_id {
+					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a inbound_fees_update for a channel from the wrong node".to_owned(), msg.channel_id));
+				}
+				try_chan_entry!(self, chan.get_mut().inbound_fees_update(&msg), chan);
+				Ok(())
+			},
+			hash_map::Entry::Vacant(_) =>
+				Err(MsgHandleErrInternal::send_err_msg_no_close("Got a inbound_fees_update with no known channel".to_owned(), msg.channel_id))
+		}
+	}
+
 	fn internal_channel_reestablish(&self, counterparty_node_id: &PublicKey, msg: &msgs::ChannelReestablish) -> Result<(), MsgHandleErrInternal> {
 		let htlc_forwards;
 		let need_lnd_workaround = {
@@ -4783,6 +4845,32 @@ where
 								node_id: chan.get().get_counterparty_node_id(),
 								msg,
 							});
+						}
+						let mut chan_config = chan.get().config();
+						if chan_config.inbound_forwarding_fee_base_msat != 0 ||
+							chan_config.inbound_forwarding_fee_proportional_millionths != 0
+						{
+							// Similarly, if we expect our counterparty to provide inbound fees, we
+							// should retransmit our inbound fees update.
+							// Note that the message is even, so we have to check that our
+							// counterparty currently supports inbound fees or they will disconnect
+							// us. If they do not, we reset the config knobs back to zero.
+							let per_peer_state = self.per_peer_state.read().unwrap(); // XXX: Post-1507 this should go away.
+							if per_peer_state.get(counterparty_node_id).unwrap().lock().unwrap().latest_features.supports_inbound_fees() { // XXX: The unwrap here too
+								let msg = msgs::InboundFeesUpdate {
+									channel_id: chan.get().channel_id(),
+									inbound_forwarding_fee_base_msat: chan_config.inbound_forwarding_fee_base_msat,
+									inbound_forwarding_fee_proportional_millionths: chan_config.inbound_forwarding_fee_proportional_millionths,
+								};
+								channel_state.pending_msg_events.push(events::MessageSendEvent::SendInboundFeesUpdate {
+									node_id: chan.get().get_counterparty_node_id(),
+									msg,
+								});
+							} else {
+								chan_config.inbound_forwarding_fee_base_msat = 0;
+								chan_config.inbound_forwarding_fee_proportional_millionths = 0;
+								chan.get_mut().update_config(&per_peer_state.get(counterparty_node_id).unwrap().lock().unwrap().latest_features, chan_config); // XXX: Post 1507 this should be cleaner
+							}
 						}
 					}
 					let need_lnd_workaround = chan.get_mut().workaround_lnd_bug_4006.take();
@@ -5784,6 +5872,11 @@ where
 		});
 	}
 
+	fn handle_inbound_fees_update(&self, counterparty_node_id: &PublicKey, msg: &msgs::InboundFeesUpdate) {
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
+		let _ = handle_error!(self, self.internal_inbound_fees_update(counterparty_node_id, msg), *counterparty_node_id);
+	}
+
 	fn handle_channel_reestablish(&self, counterparty_node_id: &PublicKey, msg: &msgs::ChannelReestablish) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 		let _ = handle_error!(self, self.internal_channel_reestablish(counterparty_node_id, msg), *counterparty_node_id);
@@ -5829,6 +5922,7 @@ where
 					&events::MessageSendEvent::BroadcastChannelAnnouncement { .. } => true,
 					&events::MessageSendEvent::BroadcastChannelUpdate { .. } => true,
 					&events::MessageSendEvent::SendChannelUpdate { ref node_id, .. } => node_id != counterparty_node_id,
+					&events::MessageSendEvent::SendInboundFeesUpdate { ref node_id, .. } => node_id != counterparty_node_id,
 					&events::MessageSendEvent::HandleError { ref node_id, .. } => node_id != counterparty_node_id,
 					&events::MessageSendEvent::SendChannelRangeQuery { .. } => false,
 					&events::MessageSendEvent::SendShortIdsQuery { .. } => false,
@@ -5994,7 +6088,9 @@ const SERIALIZATION_VERSION: u8 = 1;
 const MIN_SERIALIZATION_VERSION: u8 = 1;
 
 impl_writeable_tlv_based!(CounterpartyForwardingInfo, {
+	(1, inbound_fee_base_msat, (default_value, 0)),
 	(2, fee_base_msat, required),
+	(3, inbound_fee_proportional_millionths, (default_value, 0)),
 	(4, fee_proportional_millionths, required),
 	(6, cltv_expiry_delta, required),
 });

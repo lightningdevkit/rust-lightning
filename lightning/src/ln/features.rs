@@ -131,6 +131,10 @@ mod sealed {
 		ChannelType | SCIDPrivacy,
 		// Byte 6
 		ZeroConf,
+		// Because bLIP features are required to start above 255, we need a lot of commas.
+		,,,,,,,,,,,,,,,,,,,,,,,,,,,,
+		// Byte 35
+		InboundFees,
 	]);
 	define_context!(NodeContext, [
 		// Byte 0
@@ -147,6 +151,10 @@ mod sealed {
 		ChannelType | SCIDPrivacy,
 		// Byte 6
 		ZeroConf | Keysend,
+		// Because bLIP features are required to start above 255, we need a lot of commas.
+		,,,,,,,,,,,,,,,,,,,,,,,,,,,,
+		// Byte 35
+		InboundFees,
 	]);
 	define_context!(ChannelContext, []);
 	define_context!(InvoiceContext, [
@@ -375,6 +383,10 @@ mod sealed {
 	define_feature!(55, Keysend, [NodeContext],
 		"Feature flags for keysend payments.", set_keysend_optional, set_keysend_required,
 		supports_keysend, requires_keysend);
+
+	define_feature!(283, InboundFees, [InitContext, NodeContext],
+		"Feature flags for inbound fees", set_inbound_fees_optional, set_inbound_fees_required,
+		supports_inbound_fees, requires_inbound_fees);
 
 	#[cfg(test)]
 	define_feature!(123456789, UnknownFeature,
