@@ -380,7 +380,7 @@ fn do_test_shutdown_rebroadcast(recv_count: u8) {
 		// closing_signed so we do it ourselves
 		check_closed_broadcast!(nodes[1], false);
 		check_added_monitors!(nodes[1], 1);
-		check_closed_event!(nodes[1], 1, ClosureReason::CounterpartyForceClosed { peer_msg: "Failed to find corresponding channel".to_string() });
+		check_closed_event!(nodes[1], 1, ClosureReason::CounterpartyForceClosed { peer_msg: format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", &nodes[1].node.get_our_node_id()) });
 	}
 
 	assert!(nodes[0].node.list_channels().is_empty());
@@ -557,13 +557,13 @@ fn test_invalid_upfront_shutdown_script() {
 	open_channel.shutdown_scriptpubkey = Present(Builder::new().push_int(0)
 		.push_slice(&[0, 0])
 		.into_script());
-	nodes[0].node.handle_open_channel(&nodes[0].node.get_our_node_id(), channelmanager::provided_init_features(), &open_channel);
+	nodes[0].node.handle_open_channel(&nodes[1].node.get_our_node_id(), channelmanager::provided_init_features(), &open_channel);
 
 	let events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
 	match events[0] {
 		MessageSendEvent::HandleError { action: ErrorAction::SendErrorMessage { ref msg }, node_id } => {
-			assert_eq!(node_id, nodes[0].node.get_our_node_id());
+			assert_eq!(node_id, nodes[1].node.get_our_node_id());
 			assert_eq!(msg.data, "Peer is signaling upfront_shutdown but has provided an unacceptable scriptpubkey format: Script(OP_0 OP_PUSHBYTES_2 0000)");
 		},
 		_ => panic!("Unexpected event"),
@@ -761,8 +761,9 @@ fn do_test_closing_signed_reinit_timeout(timeout_step: TimeoutStep) {
 		// nodes[1] should happily accept and respond to.
 		node_0_closing_signed.fee_range.as_mut().unwrap().max_fee_satoshis *= 10;
 		{
-			let mut lock;
-			get_channel_ref!(nodes[0], lock, chan_id).closing_fee_limits.as_mut().unwrap().1 *= 10;
+			let mut node_0_per_peer_lock;
+			let mut node_0_peer_state_lock;
+			get_channel_ref!(nodes[0], nodes[1], node_0_per_peer_lock, node_0_peer_state_lock, chan_id).closing_fee_limits.as_mut().unwrap().1 *= 10;
 		}
 		nodes[1].node.handle_closing_signed(&nodes[0].node.get_our_node_id(), &node_0_closing_signed);
 		let node_1_closing_signed = get_event_msg!(nodes[1], MessageSendEvent::SendClosingSigned, nodes[0].node.get_our_node_id());

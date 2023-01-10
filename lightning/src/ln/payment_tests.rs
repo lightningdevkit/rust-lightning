@@ -146,11 +146,11 @@ fn mpp_retry() {
 	assert_eq!(events.len(), 2);
 
 	// Pass half of the payment along the success path.
-	let success_path_msgs = events.remove(0);
+	let (success_path_msgs, mut events) = remove_first_msg_event_to_node(&nodes[1].node.get_our_node_id(), &events);
 	pass_along_path(&nodes[0], &[&nodes[1], &nodes[3]], 2_000_000, payment_hash, Some(payment_secret), success_path_msgs, false, None);
 
 	// Add the HTLC along the first hop.
-	let fail_path_msgs_1 = events.remove(0);
+	let (fail_path_msgs_1, _events) = remove_first_msg_event_to_node(&nodes[2].node.get_our_node_id(), &events);
 	let (update_add, commitment_signed) = match fail_path_msgs_1 {
 		MessageSendEvent::UpdateHTLCs { node_id: _, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref update_fee, ref commitment_signed } } => {
 			assert_eq!(update_add_htlcs.len(), 1);
@@ -230,7 +230,8 @@ fn do_mpp_receive_timeout(send_partial_mpp: bool) {
 	assert_eq!(events.len(), 2);
 
 	// Pass half of the payment along the first path.
-	pass_along_path(&nodes[0], &[&nodes[1], &nodes[3]], 200_000, payment_hash, Some(payment_secret), events.remove(0), false, None);
+	let (node_1_msgs, mut events) = remove_first_msg_event_to_node(&nodes[1].node.get_our_node_id(), &events);
+	pass_along_path(&nodes[0], &[&nodes[1], &nodes[3]], 200_000, payment_hash, Some(payment_secret), node_1_msgs, false, None);
 
 	if send_partial_mpp {
 		// Time out the partial MPP
@@ -257,7 +258,8 @@ fn do_mpp_receive_timeout(send_partial_mpp: bool) {
 		expect_payment_failed_conditions(&nodes[0], payment_hash, false, PaymentFailedConditions::new().mpp_parts_remain().expected_htlc_error_data(23, &[][..]));
 	} else {
 		// Pass half of the payment along the second path.
-		pass_along_path(&nodes[0], &[&nodes[2], &nodes[3]], 200_000, payment_hash, Some(payment_secret), events.remove(0), true, None);
+		let (node_2_msgs, _events) = remove_first_msg_event_to_node(&nodes[2].node.get_our_node_id(), &events);
+		pass_along_path(&nodes[0], &[&nodes[2], &nodes[3]], 200_000, payment_hash, Some(payment_secret), node_2_msgs, true, None);
 
 		// Even after MPP_TIMEOUT_TICKS we should not timeout the MPP if we have all the parts
 		for _ in 0..MPP_TIMEOUT_TICKS {
@@ -436,7 +438,7 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 		MessageSendEvent::HandleError { node_id, action: msgs::ErrorAction::SendErrorMessage { ref msg } } => {
 			assert_eq!(node_id, nodes[1].node.get_our_node_id());
 			nodes[1].node.handle_error(&nodes[0].node.get_our_node_id(), msg);
-			check_closed_event!(nodes[1], 1, ClosureReason::CounterpartyForceClosed { peer_msg: "Failed to find corresponding channel".to_string() });
+			check_closed_event!(nodes[1], 1, ClosureReason::CounterpartyForceClosed { peer_msg: format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", &nodes[1].node.get_our_node_id()) });
 			check_added_monitors!(nodes[1], 1);
 			assert_eq!(nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0).len(), 1);
 		},
@@ -500,8 +502,10 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 	// and not the original fee. We also update node[1]'s relevant config as
 	// do_claim_payment_along_route expects us to never overpay.
 	{
-		let mut channel_state = nodes[1].node.channel_state.lock().unwrap();
-		let mut channel = channel_state.by_id.get_mut(&chan_id_2).unwrap();
+		let per_peer_state = nodes[1].node.per_peer_state.read().unwrap();
+		let mut peer_state = per_peer_state.get(&nodes[2].node.get_our_node_id())
+			.unwrap().lock().unwrap();
+		let mut channel = peer_state.channel_by_id.get_mut(&chan_id_2).unwrap();
 		let mut new_config = channel.config();
 		new_config.forwarding_fee_base_msat += 100_000;
 		channel.update_config(&new_config);
@@ -599,7 +603,7 @@ fn do_test_completed_payment_not_retryable_on_reload(use_dust: bool) {
 		MessageSendEvent::HandleError { node_id, action: msgs::ErrorAction::SendErrorMessage { ref msg } } => {
 			assert_eq!(node_id, nodes[1].node.get_our_node_id());
 			nodes[1].node.handle_error(&nodes[0].node.get_our_node_id(), msg);
-			check_closed_event!(nodes[1], 1, ClosureReason::CounterpartyForceClosed { peer_msg: "Failed to find corresponding channel".to_string() });
+			check_closed_event!(nodes[1], 1, ClosureReason::CounterpartyForceClosed { peer_msg: format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", &nodes[1].node.get_our_node_id()) });
 			check_added_monitors!(nodes[1], 1);
 			bs_commitment_tx = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 		},
@@ -1267,10 +1271,12 @@ fn test_trivial_inflight_htlc_tracking(){
 	{
 		let inflight_htlcs = node_chanmgrs[0].compute_inflight_htlcs();
 
-		let node_0_channel_lock = nodes[0].node.channel_state.lock().unwrap();
-		let node_1_channel_lock = nodes[1].node.channel_state.lock().unwrap();
-		let channel_1 = node_0_channel_lock.by_id.get(&chan_1_id).unwrap();
-		let channel_2 = node_1_channel_lock.by_id.get(&chan_2_id).unwrap();
+		let mut node_0_per_peer_lock;
+		let mut node_0_peer_state_lock;
+		let mut node_1_per_peer_lock;
+		let mut node_1_peer_state_lock;
+		let channel_1 =  get_channel_ref!(&nodes[0], nodes[1], node_0_per_peer_lock, node_0_peer_state_lock, chan_1_id);
+		let channel_2 =  get_channel_ref!(&nodes[1], nodes[2], node_1_per_peer_lock, node_1_peer_state_lock, chan_2_id);
 
 		let chan_1_used_liquidity = inflight_htlcs.used_liquidity_msat(
 			&NodeId::from_pubkey(&nodes[0].node.get_our_node_id()) ,
@@ -1292,10 +1298,12 @@ fn test_trivial_inflight_htlc_tracking(){
 	{
 		let inflight_htlcs = node_chanmgrs[0].compute_inflight_htlcs();
 
-		let node_0_channel_lock = nodes[0].node.channel_state.lock().unwrap();
-		let node_1_channel_lock = nodes[1].node.channel_state.lock().unwrap();
-		let channel_1 = node_0_channel_lock.by_id.get(&chan_1_id).unwrap();
-		let channel_2 = node_1_channel_lock.by_id.get(&chan_2_id).unwrap();
+		let mut node_0_per_peer_lock;
+		let mut node_0_peer_state_lock;
+		let mut node_1_per_peer_lock;
+		let mut node_1_peer_state_lock;
+		let channel_1 =  get_channel_ref!(&nodes[0], nodes[1], node_0_per_peer_lock, node_0_peer_state_lock, chan_1_id);
+		let channel_2 =  get_channel_ref!(&nodes[1], nodes[2], node_1_per_peer_lock, node_1_peer_state_lock, chan_2_id);
 
 		let chan_1_used_liquidity = inflight_htlcs.used_liquidity_msat(
 			&NodeId::from_pubkey(&nodes[0].node.get_our_node_id()) ,
@@ -1318,10 +1326,12 @@ fn test_trivial_inflight_htlc_tracking(){
 	{
 		let inflight_htlcs = node_chanmgrs[0].compute_inflight_htlcs();
 
-		let node_0_channel_lock = nodes[0].node.channel_state.lock().unwrap();
-		let node_1_channel_lock = nodes[1].node.channel_state.lock().unwrap();
-		let channel_1 = node_0_channel_lock.by_id.get(&chan_1_id).unwrap();
-		let channel_2 = node_1_channel_lock.by_id.get(&chan_2_id).unwrap();
+		let mut node_0_per_peer_lock;
+		let mut node_0_peer_state_lock;
+		let mut node_1_per_peer_lock;
+		let mut node_1_peer_state_lock;
+		let channel_1 =  get_channel_ref!(&nodes[0], nodes[1], node_0_per_peer_lock, node_0_peer_state_lock, chan_1_id);
+		let channel_2 =  get_channel_ref!(&nodes[1], nodes[2], node_1_per_peer_lock, node_1_peer_state_lock, chan_2_id);
 
 		let chan_1_used_liquidity = inflight_htlcs.used_liquidity_msat(
 			&NodeId::from_pubkey(&nodes[0].node.get_our_node_id()) ,
@@ -1362,8 +1372,9 @@ fn test_holding_cell_inflight_htlcs() {
 	let inflight_htlcs = node_chanmgrs[0].compute_inflight_htlcs();
 
 	{
-		let channel_lock = nodes[0].node.channel_state.lock().unwrap();
-		let channel = channel_lock.by_id.get(&channel_id).unwrap();
+		let mut node_0_per_peer_lock;
+		let mut node_0_peer_state_lock;
+		let channel =  get_channel_ref!(&nodes[0], nodes[1], node_0_per_peer_lock, node_0_peer_state_lock, channel_id);
 
 		let used_liquidity = inflight_htlcs.used_liquidity_msat(
 			&NodeId::from_pubkey(&nodes[0].node.get_our_node_id()) ,
@@ -1465,7 +1476,7 @@ fn do_test_intercepted_payment(test: InterceptTest) {
 
 	// Check for unknown channel id error.
 	let unknown_chan_id_err = nodes[1].node.forward_intercepted_htlc(intercept_id, &[42; 32], nodes[2].node.get_our_node_id(), expected_outbound_amount_msat).unwrap_err();
-	assert_eq!(unknown_chan_id_err , APIError::ChannelUnavailable  { err: format!("Channel with id {} not found", log_bytes!([42; 32])) });
+	assert_eq!(unknown_chan_id_err , APIError::ChannelUnavailable  { err: format!("Channel with id {} not found for the passed counterparty node_id {}", log_bytes!([42; 32]), nodes[2].node.get_our_node_id()) });
 
 	if test == InterceptTest::Fail {
 		// Ensure we can fail the intercepted payment back.

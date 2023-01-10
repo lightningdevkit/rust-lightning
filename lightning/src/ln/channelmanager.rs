@@ -72,7 +72,7 @@ use crate::prelude::*;
 use core::{cmp, mem};
 use core::cell::RefCell;
 use crate::io::Read;
-use crate::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, FairRwLock};
+use crate::sync::{Arc, Mutex, RwLock, RwLockReadGuard, FairRwLock};
 use core::sync::atomic::{AtomicUsize, Ordering};
 use core::time::Duration;
 use core::ops::Deref;
@@ -293,10 +293,10 @@ struct ReceiveError {
 
 type ShutdownResult = (Option<(OutPoint, ChannelMonitorUpdate)>, Vec<(HTLCSource, PaymentHash, PublicKey, [u8; 32])>);
 
-/// Error type returned across the channel_state mutex boundary. When an Err is generated for a
+/// Error type returned across the peer_state mutex boundary. When an Err is generated for a
 /// Channel, we generally end up with a ChannelError::Close for which we have to close the channel
 /// immediately (ie with no further calls on it made). Thus, this step happens inside a
-/// channel_state lock. We then return the set of things that need to be done outside the lock in
+/// peer_state lock. We then return the set of things that need to be done outside the lock in
 /// this struct and call handle_error!() on it.
 
 struct MsgHandleErrInternal {
@@ -434,14 +434,6 @@ struct ClaimablePayments {
 	pending_claiming_payments: HashMap<PaymentHash, ClaimingPayment>,
 }
 
-// Note this is only exposed in cfg(test):
-pub(super) struct ChannelHolder<Signer: Sign> {
-	pub(super) by_id: HashMap<[u8; 32], Channel<Signer>>,
-	/// Messages to send to peers - pushed to in the same lock that they are generated in (except
-	/// for broadcast messages, where ordering isn't as strict).
-	pub(super) pending_msg_events: Vec<MessageSendEvent>,
-}
-
 /// Events which we process internally but cannot be procsesed immediately at the generation site
 /// for some reason. They are handled in timer_tick_occurred, so may be processed with
 /// quite some time lag.
@@ -461,10 +453,19 @@ pub(crate) enum MonitorUpdateCompletionAction {
 	EmitEvent { event: events::Event },
 }
 
-/// State we hold per-peer. In the future we should put channels in here, but for now we only hold
-/// the latest Init features we heard from the peer.
-struct PeerState {
+/// State we hold per-peer.
+pub(super) struct PeerState<Signer: Sign> {
+	/// `temporary_channel_id` or `channel_id` -> `channel`.
+	///
+	/// Holds all channels where the peer is the counterparty. Once a channel has been assigned a
+	/// `channel_id`, the `temporary_channel_id` key in the map is updated and is replaced by the
+	/// `channel_id`.
+	pub(super) channel_by_id: HashMap<[u8; 32], Channel<Signer>>,
+	/// The latest `InitFeatures` we heard from the peer.
 	latest_features: InitFeatures,
+	/// Messages to send to the peer - pushed to in the same lock that they are generated in (except
+	/// for broadcast messages, where ordering isn't as strict).
+	pub(super) pending_msg_events: Vec<MessageSendEvent>,
 }
 
 /// Stores a PaymentSecret and any other data we may need to validate an inbound payment is
@@ -580,13 +581,13 @@ pub type SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, M, T, F, L> = C
 //  |   |
 //  |   |__`pending_outbound_payments` // This field's struct contains a map of pending outbounds
 //  |       |
-//  |       |__`channel_state`
+//  |       |__`per_peer_state`
 //  |           |
-//  |           |__`id_to_peer`
-//  |           |
-//  |           |__`short_to_chan_info`
-//  |           |
-//  |           |__`per_peer_state`
+//  |           |__`peer_state`
+//  |               |
+//  |               |__`id_to_peer`
+//  |               |
+//  |               |__`short_to_chan_info`
 //  |               |
 //  |               |__`outbound_scid_aliases`
 //  |               |
@@ -619,12 +620,6 @@ where
 	#[cfg(not(test))]
 	best_block: RwLock<BestBlock>,
 	secp_ctx: Secp256k1<secp256k1::All>,
-
-	/// See `ChannelManager` struct-level documentation for lock order requirements.
-	#[cfg(any(test, feature = "_test_utils"))]
-	pub(super) channel_state: Mutex<ChannelHolder<<K::Target as SignerProvider>::Signer>>,
-	#[cfg(not(any(test, feature = "_test_utils")))]
-	channel_state: Mutex<ChannelHolder<<K::Target as SignerProvider>::Signer>>,
 
 	/// Storage for PaymentSecrets and any requirements on future inbound payments before we will
 	/// expose them to users via a PaymentClaimable event. HTLCs which do not meet the requirements
@@ -692,6 +687,9 @@ where
 	/// the corresponding channel for the event, as we only have access to the `channel_id` during
 	/// the handling of the events.
 	///
+	/// Note that no consistency guarantees are made about the existence of a peer with the
+	/// `counterparty_node_id` in our other maps.
+	///
 	/// TODO:
 	/// The `counterparty_node_id` isn't passed with `MonitorEvent`s currently. To pass it, we need
 	/// to make `counterparty_node_id`'s a required field in `ChannelMonitor`s, which unfortunately
@@ -741,15 +739,24 @@ where
 	/// very far in the past, and can only ever be up to two hours in the future.
 	highest_seen_timestamp: AtomicUsize,
 
-	/// The bulk of our storage will eventually be here (channels and message queues and the like).
+	/// The bulk of our storage will eventually be here (message queues and the like). Currently
+	/// the `per_peer_state` stores our channels on a per-peer basis, as well as the peer's latest
+	/// features.
+	///
 	/// If we are connected to a peer we always at least have an entry here, even if no channels
 	/// are currently open with that peer.
+	///
 	/// Because adding or removing an entry is rare, we usually take an outer read lock and then
-	/// operate on the inner value freely. Sadly, this prevents parallel operation when opening a
-	/// new channel.
+	/// operate on the inner value freely. This opens up for parallel per-peer operation for
+	/// channels.
+	///
+	/// Note that the same thread must never acquire two inner `PeerState` locks at the same time.
 	///
 	/// See `ChannelManager` struct-level documentation for lock order requirements.
-	per_peer_state: RwLock<HashMap<PublicKey, Mutex<PeerState>>>,
+	#[cfg(not(any(test, feature = "_test_utils")))]
+	per_peer_state: FairRwLock<HashMap<PublicKey, Mutex<PeerState<<K::Target as SignerProvider>::Signer>>>>,
+	#[cfg(any(test, feature = "_test_utils"))]
+	pub(super) per_peer_state: FairRwLock<HashMap<PublicKey, Mutex<PeerState<<K::Target as SignerProvider>::Signer>>>>,
 
 	/// See `ChannelManager` struct-level documentation for lock order requirements.
 	pending_events: Mutex<Vec<events::Event>>,
@@ -1144,8 +1151,8 @@ macro_rules! handle_error {
 				{
 					// In testing, ensure there are no deadlocks where the lock is already held upon
 					// entering the macro.
-					assert!($self.channel_state.try_lock().is_ok());
 					assert!($self.pending_events.try_lock().is_ok());
+					assert!($self.per_peer_state.try_write().is_ok());
 				}
 
 				let mut msg_events = Vec::with_capacity(2);
@@ -1175,7 +1182,31 @@ macro_rules! handle_error {
 				}
 
 				if !msg_events.is_empty() {
-					$self.channel_state.lock().unwrap().pending_msg_events.append(&mut msg_events);
+					let per_peer_state = $self.per_peer_state.read().unwrap();
+					if let Some(peer_state_mutex) = per_peer_state.get(&$counterparty_node_id) {
+						let mut peer_state = peer_state_mutex.lock().unwrap();
+						peer_state.pending_msg_events.append(&mut msg_events);
+					}
+					#[cfg(debug_assertions)]
+					{
+						if let None = per_peer_state.get(&$counterparty_node_id) {
+							// This shouldn't occour in tests unless an unkown counterparty_node_id
+							// has been passed to our message handling functions.
+							let expected_error_str = format!("Can't find a peer matching the passed counterparty node_id {}", $counterparty_node_id);
+							match err.action {
+								msgs::ErrorAction::SendErrorMessage {
+									msg: msgs::ErrorMessage { ref channel_id, ref data }
+								}
+								=> {
+									assert_eq!(*data, expected_error_str);
+									if let Some((err_channel_id, _user_channel_id)) = chan_id {
+										assert_eq!(*channel_id, err_channel_id);
+									}
+								}
+								_ => panic!("Unexpected event"),
+							}
+						}
+					}
 				}
 
 				// Return error in case higher-API need one
@@ -1409,10 +1440,6 @@ where
 
 			best_block: RwLock::new(params.best_block),
 
-			channel_state: Mutex::new(ChannelHolder{
-				by_id: HashMap::new(),
-				pending_msg_events: Vec::new(),
-			}),
 			outbound_scid_aliases: Mutex::new(HashSet::new()),
 			pending_inbound_payments: Mutex::new(HashMap::new()),
 			pending_outbound_payments: OutboundPayments::new(),
@@ -1433,7 +1460,7 @@ where
 
 			highest_seen_timestamp: AtomicUsize::new(0),
 
-			per_peer_state: RwLock::new(HashMap::new()),
+			per_peer_state: FairRwLock::new(HashMap::new()),
 
 			pending_events: Mutex::new(Vec::new()),
 			pending_background_events: Mutex::new(Vec::new()),
@@ -1500,37 +1527,37 @@ where
 			return Err(APIError::APIMisuseError { err: format!("Channel value must be at least 1000 satoshis. It was {}", channel_value_satoshis) });
 		}
 
-		let channel = {
-			let per_peer_state = self.per_peer_state.read().unwrap();
-			match per_peer_state.get(&their_network_key) {
-				Some(peer_state) => {
-					let outbound_scid_alias = self.create_and_insert_outbound_scid_alias();
-					let peer_state = peer_state.lock().unwrap();
-					let their_features = &peer_state.latest_features;
-					let config = if override_config.is_some() { override_config.as_ref().unwrap() } else { &self.default_configuration };
-					match Channel::new_outbound(&self.fee_estimator, &self.keys_manager, their_network_key,
-						their_features, channel_value_satoshis, push_msat, user_channel_id, config,
-						self.best_block.read().unwrap().height(), outbound_scid_alias)
-					{
-						Ok(res) => res,
-						Err(e) => {
-							self.outbound_scid_aliases.lock().unwrap().remove(&outbound_scid_alias);
-							return Err(e);
-						},
-					}
-				},
-				None => return Err(APIError::ChannelUnavailable { err: format!("Not connected to node: {}", their_network_key) }),
-			}
-		};
-		let res = channel.get_open_channel(self.genesis_hash.clone());
-
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 		// We want to make sure the lock is actually acquired by PersistenceNotifierGuard.
 		debug_assert!(&self.total_consistency_lock.try_write().is_err());
 
+		let per_peer_state = self.per_peer_state.read().unwrap();
+
+		let peer_state_mutex_opt = per_peer_state.get(&their_network_key);
+		if let None = peer_state_mutex_opt {
+			return Err(APIError::APIMisuseError { err: format!("Not connected to node: {}", their_network_key) });
+		}
+
+		let mut peer_state = peer_state_mutex_opt.unwrap().lock().unwrap();
+		let channel = {
+			let outbound_scid_alias = self.create_and_insert_outbound_scid_alias();
+			let their_features = &peer_state.latest_features;
+			let config = if override_config.is_some() { override_config.as_ref().unwrap() } else { &self.default_configuration };
+			match Channel::new_outbound(&self.fee_estimator, &self.keys_manager, their_network_key,
+				their_features, channel_value_satoshis, push_msat, user_channel_id, config,
+				self.best_block.read().unwrap().height(), outbound_scid_alias)
+			{
+				Ok(res) => res,
+				Err(e) => {
+					self.outbound_scid_aliases.lock().unwrap().remove(&outbound_scid_alias);
+					return Err(e);
+				},
+			}
+		};
+		let res = channel.get_open_channel(self.genesis_hash.clone());
+
 		let temporary_channel_id = channel.channel_id();
-		let mut channel_state = self.channel_state.lock().unwrap();
-		match channel_state.by_id.entry(temporary_channel_id) {
+		match peer_state.channel_by_id.entry(temporary_channel_id) {
 			hash_map::Entry::Occupied(_) => {
 				if cfg!(fuzzing) {
 					return Err(APIError::APIMisuseError { err: "Fuzzy bad RNG".to_owned() });
@@ -1540,70 +1567,75 @@ where
 			},
 			hash_map::Entry::Vacant(entry) => { entry.insert(channel); }
 		}
-		channel_state.pending_msg_events.push(events::MessageSendEvent::SendOpenChannel {
+
+		peer_state.pending_msg_events.push(events::MessageSendEvent::SendOpenChannel {
 			node_id: their_network_key,
 			msg: res,
 		});
 		Ok(temporary_channel_id)
 	}
 
-	fn list_channels_with_filter<Fn: FnMut(&(&[u8; 32], &Channel<<K::Target as SignerProvider>::Signer>)) -> bool>(&self, f: Fn) -> Vec<ChannelDetails> {
+	fn list_channels_with_filter<Fn: FnMut(&(&[u8; 32], &Channel<<K::Target as SignerProvider>::Signer>)) -> bool + Copy>(&self, f: Fn) -> Vec<ChannelDetails> {
 		let mut res = Vec::new();
+		// Allocate our best estimate of the number of channels we have in the `res`
+		// Vec. Sadly the `short_to_chan_info` map doesn't cover channels without
+		// a scid or a scid alias, and the `id_to_peer` shouldn't be used outside
+		// of the ChannelMonitor handling. Therefore reallocations may still occur, but is
+		// unlikely as the `short_to_chan_info` map often contains 2 entries for
+		// the same channel.
+		res.reserve(self.short_to_chan_info.read().unwrap().len());
 		{
-			let channel_state = self.channel_state.lock().unwrap();
 			let best_block_height = self.best_block.read().unwrap().height();
-			res.reserve(channel_state.by_id.len());
-			for (channel_id, channel) in channel_state.by_id.iter().filter(f) {
-				let balance = channel.get_available_balances();
-				let (to_remote_reserve_satoshis, to_self_reserve_satoshis) =
-					channel.get_holder_counterparty_selected_channel_reserve_satoshis();
-				res.push(ChannelDetails {
-					channel_id: (*channel_id).clone(),
-					counterparty: ChannelCounterparty {
-						node_id: channel.get_counterparty_node_id(),
-						features: InitFeatures::empty(),
-						unspendable_punishment_reserve: to_remote_reserve_satoshis,
-						forwarding_info: channel.counterparty_forwarding_info(),
-						// Ensures that we have actually received the `htlc_minimum_msat` value
-						// from the counterparty through the `OpenChannel` or `AcceptChannel`
-						// message (as they are always the first message from the counterparty).
-						// Else `Channel::get_counterparty_htlc_minimum_msat` could return the
-						// default `0` value set by `Channel::new_outbound`.
-						outbound_htlc_minimum_msat: if channel.have_received_message() {
-							Some(channel.get_counterparty_htlc_minimum_msat()) } else { None },
-						outbound_htlc_maximum_msat: channel.get_counterparty_htlc_maximum_msat(),
-					},
-					funding_txo: channel.get_funding_txo(),
-					// Note that accept_channel (or open_channel) is always the first message, so
-					// `have_received_message` indicates that type negotiation has completed.
-					channel_type: if channel.have_received_message() { Some(channel.get_channel_type().clone()) } else { None },
-					short_channel_id: channel.get_short_channel_id(),
-					outbound_scid_alias: if channel.is_usable() { Some(channel.outbound_scid_alias()) } else { None },
-					inbound_scid_alias: channel.latest_inbound_scid_alias(),
-					channel_value_satoshis: channel.get_value_satoshis(),
-					unspendable_punishment_reserve: to_self_reserve_satoshis,
-					balance_msat: balance.balance_msat,
-					inbound_capacity_msat: balance.inbound_capacity_msat,
-					outbound_capacity_msat: balance.outbound_capacity_msat,
-					next_outbound_htlc_limit_msat: balance.next_outbound_htlc_limit_msat,
-					user_channel_id: channel.get_user_id(),
-					confirmations_required: channel.minimum_depth(),
-					confirmations: Some(channel.get_funding_tx_confirmations(best_block_height)),
-					force_close_spend_delay: channel.get_counterparty_selected_contest_delay(),
-					is_outbound: channel.is_outbound(),
-					is_channel_ready: channel.is_usable(),
-					is_usable: channel.is_live(),
-					is_public: channel.should_announce(),
-					inbound_htlc_minimum_msat: Some(channel.get_holder_htlc_minimum_msat()),
-					inbound_htlc_maximum_msat: channel.get_holder_htlc_maximum_msat(),
-					config: Some(channel.config()),
-				});
-			}
-		}
-		let per_peer_state = self.per_peer_state.read().unwrap();
-		for chan in res.iter_mut() {
-			if let Some(peer_state) = per_peer_state.get(&chan.counterparty.node_id) {
-				chan.counterparty.features = peer_state.lock().unwrap().latest_features.clone();
+			let per_peer_state = self.per_peer_state.read().unwrap();
+			for (_cp_id, peer_state_mutex) in per_peer_state.iter() {
+				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+				let peer_state = &mut *peer_state_lock;
+				for (channel_id, channel) in peer_state.channel_by_id.iter().filter(f) {
+					let balance = channel.get_available_balances();
+					let (to_remote_reserve_satoshis, to_self_reserve_satoshis) =
+						channel.get_holder_counterparty_selected_channel_reserve_satoshis();
+					res.push(ChannelDetails {
+						channel_id: (*channel_id).clone(),
+						counterparty: ChannelCounterparty {
+							node_id: channel.get_counterparty_node_id(),
+							features: peer_state.latest_features.clone(),
+							unspendable_punishment_reserve: to_remote_reserve_satoshis,
+							forwarding_info: channel.counterparty_forwarding_info(),
+							// Ensures that we have actually received the `htlc_minimum_msat` value
+							// from the counterparty through the `OpenChannel` or `AcceptChannel`
+							// message (as they are always the first message from the counterparty).
+							// Else `Channel::get_counterparty_htlc_minimum_msat` could return the
+							// default `0` value set by `Channel::new_outbound`.
+							outbound_htlc_minimum_msat: if channel.have_received_message() {
+								Some(channel.get_counterparty_htlc_minimum_msat()) } else { None },
+							outbound_htlc_maximum_msat: channel.get_counterparty_htlc_maximum_msat(),
+						},
+						funding_txo: channel.get_funding_txo(),
+						// Note that accept_channel (or open_channel) is always the first message, so
+						// `have_received_message` indicates that type negotiation has completed.
+						channel_type: if channel.have_received_message() { Some(channel.get_channel_type().clone()) } else { None },
+						short_channel_id: channel.get_short_channel_id(),
+						outbound_scid_alias: if channel.is_usable() { Some(channel.outbound_scid_alias()) } else { None },
+						inbound_scid_alias: channel.latest_inbound_scid_alias(),
+						channel_value_satoshis: channel.get_value_satoshis(),
+						unspendable_punishment_reserve: to_self_reserve_satoshis,
+						balance_msat: balance.balance_msat,
+						inbound_capacity_msat: balance.inbound_capacity_msat,
+						outbound_capacity_msat: balance.outbound_capacity_msat,
+						next_outbound_htlc_limit_msat: balance.next_outbound_htlc_limit_msat,
+						user_channel_id: channel.get_user_id(),
+						confirmations_required: channel.minimum_depth(),
+						confirmations: Some(channel.get_funding_tx_confirmations(best_block_height)),
+						force_close_spend_delay: channel.get_counterparty_selected_contest_delay(),
+						is_outbound: channel.is_outbound(),
+						is_channel_ready: channel.is_usable(),
+						is_usable: channel.is_live(),
+						is_public: channel.should_announce(),
+						inbound_htlc_minimum_msat: Some(channel.get_holder_htlc_minimum_msat()),
+						inbound_htlc_maximum_msat: channel.get_holder_htlc_maximum_msat(),
+						config: Some(channel.config()),
+					});
+				}
 			}
 		}
 		res
@@ -1651,24 +1683,18 @@ where
 
 		let mut failed_htlcs: Vec<(HTLCSource, PaymentHash)>;
 		let result: Result<(), _> = loop {
-			let mut channel_state_lock = self.channel_state.lock().unwrap();
-			let channel_state = &mut *channel_state_lock;
-			match channel_state.by_id.entry(channel_id.clone()) {
+			let per_peer_state = self.per_peer_state.read().unwrap();
+
+			let peer_state_mutex_opt = per_peer_state.get(counterparty_node_id);
+			if let None = peer_state_mutex_opt {
+				return Err(APIError::APIMisuseError { err: format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id) });
+			}
+
+			let mut peer_state_lock = peer_state_mutex_opt.unwrap().lock().unwrap();
+			let peer_state = &mut *peer_state_lock;
+			match peer_state.channel_by_id.entry(channel_id.clone()) {
 				hash_map::Entry::Occupied(mut chan_entry) => {
-					if *counterparty_node_id != chan_entry.get().get_counterparty_node_id(){
-						return Err(APIError::APIMisuseError { err: "The passed counterparty_node_id doesn't match the channel's counterparty node_id".to_owned() });
-					}
-					let (shutdown_msg, monitor_update, htlcs) = {
-						let per_peer_state = self.per_peer_state.read().unwrap();
-						match per_peer_state.get(&counterparty_node_id) {
-							Some(peer_state) => {
-								let peer_state = peer_state.lock().unwrap();
-								let their_features = &peer_state.latest_features;
-								chan_entry.get_mut().get_shutdown(&self.keys_manager, their_features, target_feerate_sats_per_1000_weight)?
-							},
-							None => return Err(APIError::ChannelUnavailable { err: format!("Not connected to node: {}", counterparty_node_id) }),
-						}
-					};
+					let (shutdown_msg, monitor_update, htlcs) = chan_entry.get_mut().get_shutdown(&self.keys_manager, &peer_state.latest_features, target_feerate_sats_per_1000_weight)?;
 					failed_htlcs = htlcs;
 
 					// Update the monitor with the shutdown script if necessary.
@@ -1682,7 +1708,7 @@ where
 						}
 					}
 
-					channel_state.pending_msg_events.push(events::MessageSendEvent::SendShutdown {
+					peer_state.pending_msg_events.push(events::MessageSendEvent::SendShutdown {
 						node_id: *counterparty_node_id,
 						msg: shutdown_msg
 					});
@@ -1690,7 +1716,7 @@ where
 					if chan_entry.get().is_shutdown() {
 						let channel = remove_channel!(self, chan_entry);
 						if let Ok(channel_update) = self.get_channel_update_for_broadcast(&channel) {
-							channel_state.pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
+							peer_state.pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
 								msg: channel_update
 							});
 						}
@@ -1698,7 +1724,7 @@ where
 					}
 					break Ok(());
 				},
-				hash_map::Entry::Vacant(_) => return Err(APIError::ChannelUnavailable{err: "No such channel".to_owned()})
+				hash_map::Entry::Vacant(_) => return Err(APIError::ChannelUnavailable{err: format!("Channel with id {} not found for the passed counterparty node_id {}", log_bytes!(*channel_id), counterparty_node_id) })
 			}
 		};
 
@@ -1779,13 +1805,15 @@ where
 	/// user closes, which will be re-exposed as the `ChannelClosed` reason.
 	fn force_close_channel_with_peer(&self, channel_id: &[u8; 32], peer_node_id: &PublicKey, peer_msg: Option<&String>, broadcast: bool)
 	-> Result<PublicKey, APIError> {
+		let per_peer_state = self.per_peer_state.read().unwrap();
+		let peer_state_mutex_opt = per_peer_state.get(peer_node_id);
 		let mut chan = {
-			let mut channel_state_lock = self.channel_state.lock().unwrap();
-			let channel_state = &mut *channel_state_lock;
-			if let hash_map::Entry::Occupied(chan) = channel_state.by_id.entry(channel_id.clone()) {
-				if chan.get().get_counterparty_node_id() != *peer_node_id {
-					return Err(APIError::ChannelUnavailable{err: "No such channel".to_owned()});
-				}
+			if let None = peer_state_mutex_opt {
+				return Err(APIError::APIMisuseError{ err: format!("Can't find a peer matching the passed counterparty node_id {}", peer_node_id) });
+			}
+			let mut peer_state_lock = peer_state_mutex_opt.unwrap().lock().unwrap();
+			let peer_state = &mut *peer_state_lock;
+			if let hash_map::Entry::Occupied(chan) = peer_state.channel_by_id.entry(channel_id.clone()) {
 				if let Some(peer_msg) = peer_msg {
 					self.issue_channel_close_events(chan.get(),ClosureReason::CounterpartyForceClosed { peer_msg: peer_msg.to_string() });
 				} else {
@@ -1793,14 +1821,14 @@ where
 				}
 				remove_channel!(self, chan)
 			} else {
-				return Err(APIError::ChannelUnavailable{err: "No such channel".to_owned()});
+				return Err(APIError::ChannelUnavailable{ err: format!("Channel with id {} not found for the passed counterparty node_id {}", log_bytes!(*channel_id), peer_node_id) });
 			}
 		};
 		log_error!(self.logger, "Force-closing channel {}", log_bytes!(channel_id[..]));
 		self.finish_force_close_channel(chan.force_shutdown(broadcast));
 		if let Ok(update) = self.get_channel_update_for_broadcast(&chan) {
-			let mut channel_state = self.channel_state.lock().unwrap();
-			channel_state.pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
+			let mut peer_state = peer_state_mutex_opt.unwrap().lock().unwrap();
+			peer_state.pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
 				msg: update
 			});
 		}
@@ -1812,14 +1840,18 @@ where
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 		match self.force_close_channel_with_peer(channel_id, counterparty_node_id, None, broadcast) {
 			Ok(counterparty_node_id) => {
-				self.channel_state.lock().unwrap().pending_msg_events.push(
-					events::MessageSendEvent::HandleError {
-						node_id: counterparty_node_id,
-						action: msgs::ErrorAction::SendErrorMessage {
-							msg: msgs::ErrorMessage { channel_id: *channel_id, data: "Channel force-closed".to_owned() }
-						},
-					}
-				);
+				let per_peer_state = self.per_peer_state.read().unwrap();
+				if let Some(peer_state_mutex) = per_peer_state.get(&counterparty_node_id) {
+					let mut peer_state = peer_state_mutex.lock().unwrap();
+					peer_state.pending_msg_events.push(
+						events::MessageSendEvent::HandleError {
+							node_id: counterparty_node_id,
+							action: msgs::ErrorAction::SendErrorMessage {
+								msg: msgs::ErrorMessage { channel_id: *channel_id, data: "Channel force-closed".to_owned() }
+							},
+						}
+					);
+				}
 				Ok(())
 			},
 			Err(e) => Err(e)
@@ -2061,8 +2093,7 @@ where
 			if let &PendingHTLCRouting::Forward { ref short_channel_id, .. } = routing {
 				if let Some((err, mut code, chan_update)) = loop {
 					let id_option = self.short_to_chan_info.read().unwrap().get(&short_channel_id).cloned();
-					let mut channel_state = self.channel_state.lock().unwrap();
-					let forwarding_id_opt = match id_option {
+					let forwarding_chan_info_opt = match id_option {
 						None => { // unknown_next_peer
 							// Note that this is likely a timing oracle for detecting whether an scid is a
 							// phantom or an intercept.
@@ -2075,13 +2106,20 @@ where
 								break Some(("Don't have available channel for forwarding as requested.", 0x4000 | 10, None));
 							}
 						},
-						Some((_cp_id, chan_id)) => Some(chan_id.clone()),
+						Some((cp_id, id)) => Some((cp_id.clone(), id.clone())),
 					};
-					let chan_update_opt = if let Some(forwarding_id) = forwarding_id_opt {
-						let chan = match channel_state.by_id.get_mut(&forwarding_id) {
+					let chan_update_opt = if let Some((counterparty_node_id, forwarding_id)) = forwarding_chan_info_opt {
+						let per_peer_state = self.per_peer_state.read().unwrap();
+						let peer_state_mutex_opt = per_peer_state.get(&counterparty_node_id);
+						if let None = peer_state_mutex_opt {
+							break Some(("Don't have available channel for forwarding as requested.", 0x4000 | 10, None));
+						}
+						let mut peer_state_lock = peer_state_mutex_opt.unwrap().lock().unwrap();
+						let peer_state = &mut *peer_state_lock;
+						let chan = match peer_state.channel_by_id.get_mut(&forwarding_id) {
 							None => {
-								// Channel was removed. The short_to_chan_info and by_id maps have
-								// no consistency guarantees.
+								// Channel was removed. The short_to_chan_info and channel_by_id maps
+								// have no consistency guarantees.
 								break Some(("Don't have available channel for forwarding as requested.", 0x4000 | 10, None));
 							},
 							Some(chan) => chan
@@ -2187,7 +2225,7 @@ where
 	/// public, and thus should be called whenever the result is going to be passed out in a
 	/// [`MessageSendEvent::BroadcastChannelUpdate`] event.
 	///
-	/// May be called with channel_state already locked!
+	/// May be called with peer_state already locked!
 	fn get_channel_update_for_broadcast(&self, chan: &Channel<<K::Target as SignerProvider>::Signer>) -> Result<msgs::ChannelUpdate, LightningError> {
 		if !chan.should_announce() {
 			return Err(LightningError {
@@ -2206,7 +2244,7 @@ where
 	/// is public (only returning an Err if the channel does not yet have an assigned short_id),
 	/// and thus MUST NOT be called unless the recipient of the resulting message has already
 	/// provided evidence that they know about the existence of the channel.
-	/// May be called with channel_state already locked!
+	/// May be called with peer_state already locked!
 	fn get_channel_update_for_unicast(&self, chan: &Channel<<K::Target as SignerProvider>::Signer>) -> Result<msgs::ChannelUpdate, LightningError> {
 		log_trace!(self.logger, "Attempting to generate channel update for channel {}", log_bytes!(chan.channel_id()));
 		let short_channel_id = match chan.get_short_channel_id().or(chan.latest_inbound_scid_alias()) {
@@ -2259,18 +2297,20 @@ where
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 
 		let err: Result<(), _> = loop {
-			let id = match self.short_to_chan_info.read().unwrap().get(&path.first().unwrap().short_channel_id) {
+			let (counterparty_node_id, id) = match self.short_to_chan_info.read().unwrap().get(&path.first().unwrap().short_channel_id) {
 				None => return Err(APIError::ChannelUnavailable{err: "No channel available with first hop!".to_owned()}),
-				Some((_cp_id, chan_id)) => chan_id.clone(),
+				Some((cp_id, chan_id)) => (cp_id.clone(), chan_id.clone()),
 			};
 
-			let mut channel_lock = self.channel_state.lock().unwrap();
-			let channel_state = &mut *channel_lock;
-			if let hash_map::Entry::Occupied(mut chan) = channel_state.by_id.entry(id) {
+			let per_peer_state = self.per_peer_state.read().unwrap();
+			let peer_state_mutex_opt = per_peer_state.get(&counterparty_node_id);
+			if let None = peer_state_mutex_opt {
+				return Err(APIError::InvalidRoute{err: "No peer matching the path's first hop found!" });
+			}
+			let mut peer_state_lock = peer_state_mutex_opt.unwrap().lock().unwrap();
+			let peer_state = &mut *peer_state_lock;
+			if let hash_map::Entry::Occupied(mut chan) = peer_state.channel_by_id.entry(id) {
 				match {
-					if chan.get().get_counterparty_node_id() != path.first().unwrap().pubkey {
-						return Err(APIError::InvalidRoute{err: "Node ID mismatch on first hop!"});
-					}
 					if !chan.get().is_live() {
 						return Err(APIError::ChannelUnavailable{err: "Peer for first hop currently disconnected/pending monitor update!".to_owned()});
 					}
@@ -2307,7 +2347,7 @@ where
 						}
 
 						log_debug!(self.logger, "Sending payment along path resulted in a commitment_signed for channel {}", log_bytes!(chan_id));
-						channel_state.pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
+						peer_state.pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
 							node_id: path.first().unwrap().pubkey,
 							updates: msgs::CommitmentUpdate {
 								update_add_htlcs: vec![update_add],
@@ -2323,7 +2363,8 @@ where
 				}
 			} else {
 				// The channel was likely removed after we fetched the id from the
-				// `short_to_chan_info` map, but before we successfully locked the `by_id` map.
+				// `short_to_chan_info` map, but before we successfully locked the
+				// `channel_by_id` map.
 				// This can occur as no consistency guarantees exists between the two maps.
 				return Err(APIError::ChannelUnavailable{err: "No channel available with first hop!".to_owned()});
 			}
@@ -2496,20 +2537,30 @@ where
 	/// Handles the generation of a funding transaction, optionally (for tests) with a function
 	/// which checks the correctness of the funding transaction given the associated channel.
 	fn funding_transaction_generated_intern<FundingOutput: Fn(&Channel<<K::Target as SignerProvider>::Signer>, &Transaction) -> Result<OutPoint, APIError>>(
-		&self, temporary_channel_id: &[u8; 32], _counterparty_node_id: &PublicKey, funding_transaction: Transaction, find_funding_output: FundingOutput
+		&self, temporary_channel_id: &[u8; 32], counterparty_node_id: &PublicKey, funding_transaction: Transaction, find_funding_output: FundingOutput
 	) -> Result<(), APIError> {
-		let (chan, msg) = {
-			let (res, chan) = match self.channel_state.lock().unwrap().by_id.remove(temporary_channel_id) {
-				Some(mut chan) => {
-					let funding_txo = find_funding_output(&chan, &funding_transaction)?;
+		let per_peer_state = self.per_peer_state.read().unwrap();
+		let peer_state_mutex_opt = per_peer_state.get(counterparty_node_id);
+		if let None = peer_state_mutex_opt {
+			return Err(APIError::APIMisuseError { err: format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id) })
+		}
 
-					(chan.get_outbound_funding_created(funding_transaction, funding_txo, &self.logger)
-						.map_err(|e| if let ChannelError::Close(msg) = e {
-							MsgHandleErrInternal::from_finish_shutdown(msg, chan.channel_id(), chan.get_user_id(), chan.force_shutdown(true), None)
-						} else { unreachable!(); })
-					, chan)
-				},
-				None => { return Err(APIError::ChannelUnavailable { err: "No such channel".to_owned() }) },
+		let mut peer_state_lock = peer_state_mutex_opt.unwrap().lock().unwrap();
+		let peer_state = &mut *peer_state_lock;
+		let (chan, msg) = {
+			let (res, chan) = {
+				match peer_state.channel_by_id.remove(temporary_channel_id) {
+					Some(mut chan) => {
+						let funding_txo = find_funding_output(&chan, &funding_transaction)?;
+
+						(chan.get_outbound_funding_created(funding_transaction, funding_txo, &self.logger)
+							.map_err(|e| if let ChannelError::Close(msg) = e {
+								MsgHandleErrInternal::from_finish_shutdown(msg, chan.channel_id(), chan.get_user_id(), chan.force_shutdown(true), None)
+							} else { unreachable!(); })
+						, chan)
+					},
+					None => { return Err(APIError::ChannelUnavailable { err: format!("Channel with id {} not found for the passed counterparty node_id {}", log_bytes!(*temporary_channel_id), counterparty_node_id) }) },
+				}
 			};
 			match handle_error!(self, res, chan.get_counterparty_node_id()) {
 				Ok(funding_msg) => {
@@ -2521,12 +2572,11 @@ where
 			}
 		};
 
-		let mut channel_state = self.channel_state.lock().unwrap();
-		channel_state.pending_msg_events.push(events::MessageSendEvent::SendFundingCreated {
+		peer_state.pending_msg_events.push(events::MessageSendEvent::SendFundingCreated {
 			node_id: chan.get_counterparty_node_id(),
 			msg,
 		});
-		match channel_state.by_id.entry(chan.channel_id()) {
+		match peer_state.channel_by_id.entry(chan.channel_id()) {
 			hash_map::Entry::Occupied(_) => {
 				panic!("Generated duplicate funding txid?");
 			},
@@ -2660,34 +2710,32 @@ where
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(
 			&self.total_consistency_lock, &self.persistence_notifier,
 		);
-		{
-			let mut channel_state_lock = self.channel_state.lock().unwrap();
-			let channel_state = &mut *channel_state_lock;
-			for channel_id in channel_ids {
-				let channel_counterparty_node_id = channel_state.by_id.get(channel_id)
-					.ok_or(APIError::ChannelUnavailable {
-						err: format!("Channel with ID {} was not found", log_bytes!(*channel_id)),
-					})?
-					.get_counterparty_node_id();
-				if channel_counterparty_node_id != *counterparty_node_id {
-					return Err(APIError::APIMisuseError {
-						err: "counterparty node id mismatch".to_owned(),
-					});
-				}
+		let per_peer_state = self.per_peer_state.read().unwrap();
+		let peer_state_mutex_opt = per_peer_state.get(counterparty_node_id);
+		if let None = peer_state_mutex_opt {
+			return Err(APIError::APIMisuseError{ err: format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id) });
+		}
+		let mut peer_state_lock = peer_state_mutex_opt.unwrap().lock().unwrap();
+		let peer_state = &mut *peer_state_lock;
+		for channel_id in channel_ids {
+			if !peer_state.channel_by_id.contains_key(channel_id) {
+				return Err(APIError::ChannelUnavailable {
+					err: format!("Channel with ID {} was not found for the passed counterparty_node_id {}", log_bytes!(*channel_id), counterparty_node_id),
+				});
 			}
-			for channel_id in channel_ids {
-				let channel = channel_state.by_id.get_mut(channel_id).unwrap();
-				if !channel.update_config(config) {
-					continue;
-				}
-				if let Ok(msg) = self.get_channel_update_for_broadcast(channel) {
-					channel_state.pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate { msg });
-				} else if let Ok(msg) = self.get_channel_update_for_unicast(channel) {
-					channel_state.pending_msg_events.push(events::MessageSendEvent::SendChannelUpdate {
-						node_id: channel.get_counterparty_node_id(),
-						msg,
-					});
-				}
+		}
+		for channel_id in channel_ids {
+			let channel = peer_state.channel_by_id.get_mut(channel_id).unwrap();
+			if !channel.update_config(config) {
+				continue;
+			}
+			if let Ok(msg) = self.get_channel_update_for_broadcast(channel) {
+				peer_state.pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate { msg });
+			} else if let Ok(msg) = self.get_channel_update_for_unicast(channel) {
+				peer_state.pending_msg_events.push(events::MessageSendEvent::SendChannelUpdate {
+					node_id: channel.get_counterparty_node_id(),
+					msg,
+				});
 			}
 		}
 		Ok(())
@@ -2715,21 +2763,30 @@ where
 	/// [`HTLCIntercepted`]: events::Event::HTLCIntercepted
 	// TODO: when we move to deciding the best outbound channel at forward time, only take
 	// `next_node_id` and not `next_hop_channel_id`
-	pub fn forward_intercepted_htlc(&self, intercept_id: InterceptId, next_hop_channel_id: &[u8; 32], _next_node_id: PublicKey, amt_to_forward_msat: u64) -> Result<(), APIError> {
+	pub fn forward_intercepted_htlc(&self, intercept_id: InterceptId, next_hop_channel_id: &[u8; 32], next_node_id: PublicKey, amt_to_forward_msat: u64) -> Result<(), APIError> {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 
-		let next_hop_scid = match self.channel_state.lock().unwrap().by_id.get(next_hop_channel_id) {
-			Some(chan) => {
-				if !chan.is_usable() {
-					return Err(APIError::ChannelUnavailable {
-						err: format!("Channel with id {} not fully established", log_bytes!(*next_hop_channel_id))
+		let next_hop_scid = {
+			let peer_state_lock = self.per_peer_state.read().unwrap();
+			if let Some(peer_state_mutex) = peer_state_lock.get(&next_node_id) {
+				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+				let peer_state = &mut *peer_state_lock;
+				match peer_state.channel_by_id.get(next_hop_channel_id) {
+					Some(chan) => {
+						if !chan.is_usable() {
+							return Err(APIError::ChannelUnavailable {
+								err: format!("Channel with id {} not fully established", log_bytes!(*next_hop_channel_id))
+							})
+						}
+						chan.get_short_channel_id().unwrap_or(chan.outbound_scid_alias())
+					},
+					None => return Err(APIError::ChannelUnavailable {
+						err: format!("Channel with id {} not found for the passed counterparty node_id {}", log_bytes!(*next_hop_channel_id), next_node_id)
 					})
 				}
-				chan.get_short_channel_id().unwrap_or(chan.outbound_scid_alias())
-			},
-			None => return Err(APIError::ChannelUnavailable {
-				err: format!("Channel with id {} not found", log_bytes!(*next_hop_channel_id))
-			})
+			} else {
+				return Err(APIError::APIMisuseError{ err: format!("Can't find a peer matching the passed counterparty node_id {}", next_node_id) });
+			}
 		};
 
 		let payment = self.pending_intercepted_htlcs.lock().unwrap().remove(&intercept_id)
@@ -2899,16 +2956,22 @@ where
 							}
 						}
 					}
-					let forward_chan_id = match self.short_to_chan_info.read().unwrap().get(&short_chan_id) {
-						Some((_cp_id, chan_id)) => chan_id.clone(),
+					let (counterparty_node_id, forward_chan_id) = match self.short_to_chan_info.read().unwrap().get(&short_chan_id) {
+						Some((cp_id, chan_id)) => (cp_id.clone(), chan_id.clone()),
 						None => {
 							forwarding_channel_not_found!();
 							continue;
 						}
 					};
-					let mut channel_state_lock = self.channel_state.lock().unwrap();
-					let channel_state = &mut *channel_state_lock;
-					match channel_state.by_id.entry(forward_chan_id) {
+					let per_peer_state = self.per_peer_state.read().unwrap();
+					let peer_state_mutex_opt = per_peer_state.get(&counterparty_node_id);
+					if let None = peer_state_mutex_opt {
+						forwarding_channel_not_found!();
+						continue;
+					}
+					let mut peer_state_lock = peer_state_mutex_opt.unwrap().lock().unwrap();
+					let peer_state = &mut *peer_state_lock;
+					match peer_state.channel_by_id.entry(forward_chan_id) {
 						hash_map::Entry::Vacant(_) => {
 							forwarding_channel_not_found!();
 							continue;
@@ -3255,10 +3318,14 @@ where
 
 			let new_feerate = self.fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::Normal);
 
-			let mut channel_state = self.channel_state.lock().unwrap();
-			for (chan_id, chan) in channel_state.by_id.iter_mut() {
-				let chan_needs_persist = self.update_channel_fee(chan_id, chan, new_feerate);
-				if chan_needs_persist == NotifyOption::DoPersist { should_persist = NotifyOption::DoPersist; }
+			let per_peer_state = self.per_peer_state.read().unwrap();
+			for (_cp_id, peer_state_mutex) in per_peer_state.iter() {
+				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+				let peer_state = &mut *peer_state_lock;
+				for (chan_id, chan) in peer_state.channel_by_id.iter_mut() {
+					let chan_needs_persist = self.update_channel_fee(chan_id, chan, new_feerate);
+					if chan_needs_persist == NotifyOption::DoPersist { should_persist = NotifyOption::DoPersist; }
+				}
 			}
 
 			should_persist
@@ -3287,49 +3354,52 @@ where
 			let mut handle_errors: Vec<(Result<(), _>, _)> = Vec::new();
 			let mut timed_out_mpp_htlcs = Vec::new();
 			{
-				let mut channel_state_lock = self.channel_state.lock().unwrap();
-				let channel_state = &mut *channel_state_lock;
-				let pending_msg_events = &mut channel_state.pending_msg_events;
-				channel_state.by_id.retain(|chan_id, chan| {
-					let chan_needs_persist = self.update_channel_fee(chan_id, chan, new_feerate);
-					if chan_needs_persist == NotifyOption::DoPersist { should_persist = NotifyOption::DoPersist; }
+				let per_peer_state = self.per_peer_state.read().unwrap();
+				for (counterparty_node_id, peer_state_mutex) in per_peer_state.iter() {
+					let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+					let peer_state = &mut *peer_state_lock;
+					let pending_msg_events = &mut peer_state.pending_msg_events;
+					peer_state.channel_by_id.retain(|chan_id, chan| {
+						let chan_needs_persist = self.update_channel_fee(chan_id, chan, new_feerate);
+						if chan_needs_persist == NotifyOption::DoPersist { should_persist = NotifyOption::DoPersist; }
 
-					if let Err(e) = chan.timer_check_closing_negotiation_progress() {
-						let (needs_close, err) = convert_chan_err!(self, e, chan, chan_id);
-						handle_errors.push((Err(err), chan.get_counterparty_node_id()));
-						if needs_close { return false; }
-					}
+						if let Err(e) = chan.timer_check_closing_negotiation_progress() {
+							let (needs_close, err) = convert_chan_err!(self, e, chan, chan_id);
+							handle_errors.push((Err(err), *counterparty_node_id));
+							if needs_close { return false; }
+						}
 
-					match chan.channel_update_status() {
-						ChannelUpdateStatus::Enabled if !chan.is_live() => chan.set_channel_update_status(ChannelUpdateStatus::DisabledStaged),
-						ChannelUpdateStatus::Disabled if chan.is_live() => chan.set_channel_update_status(ChannelUpdateStatus::EnabledStaged),
-						ChannelUpdateStatus::DisabledStaged if chan.is_live() => chan.set_channel_update_status(ChannelUpdateStatus::Enabled),
-						ChannelUpdateStatus::EnabledStaged if !chan.is_live() => chan.set_channel_update_status(ChannelUpdateStatus::Disabled),
-						ChannelUpdateStatus::DisabledStaged if !chan.is_live() => {
-							if let Ok(update) = self.get_channel_update_for_broadcast(&chan) {
-								pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
-									msg: update
-								});
-							}
-							should_persist = NotifyOption::DoPersist;
-							chan.set_channel_update_status(ChannelUpdateStatus::Disabled);
-						},
-						ChannelUpdateStatus::EnabledStaged if chan.is_live() => {
-							if let Ok(update) = self.get_channel_update_for_broadcast(&chan) {
-								pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
-									msg: update
-								});
-							}
-							should_persist = NotifyOption::DoPersist;
-							chan.set_channel_update_status(ChannelUpdateStatus::Enabled);
-						},
-						_ => {},
-					}
+						match chan.channel_update_status() {
+							ChannelUpdateStatus::Enabled if !chan.is_live() => chan.set_channel_update_status(ChannelUpdateStatus::DisabledStaged),
+							ChannelUpdateStatus::Disabled if chan.is_live() => chan.set_channel_update_status(ChannelUpdateStatus::EnabledStaged),
+							ChannelUpdateStatus::DisabledStaged if chan.is_live() => chan.set_channel_update_status(ChannelUpdateStatus::Enabled),
+							ChannelUpdateStatus::EnabledStaged if !chan.is_live() => chan.set_channel_update_status(ChannelUpdateStatus::Disabled),
+							ChannelUpdateStatus::DisabledStaged if !chan.is_live() => {
+								if let Ok(update) = self.get_channel_update_for_broadcast(&chan) {
+									pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
+										msg: update
+									});
+								}
+								should_persist = NotifyOption::DoPersist;
+								chan.set_channel_update_status(ChannelUpdateStatus::Disabled);
+							},
+							ChannelUpdateStatus::EnabledStaged if chan.is_live() => {
+								if let Ok(update) = self.get_channel_update_for_broadcast(&chan) {
+									pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
+										msg: update
+									});
+								}
+								should_persist = NotifyOption::DoPersist;
+								chan.set_channel_update_status(ChannelUpdateStatus::Enabled);
+							},
+							_ => {},
+						}
 
-					chan.maybe_expire_prev_config();
+						chan.maybe_expire_prev_config();
 
-					true
-				});
+						true
+					});
+				}
 			}
 
 			self.claimable_payments.lock().unwrap().claimable_htlcs.retain(|payment_hash, (_, htlcs)| {
@@ -3461,13 +3531,19 @@ where
 		&self, mut htlcs_to_fail: Vec<(HTLCSource, PaymentHash)>, channel_id: [u8; 32],
 		counterparty_node_id: &PublicKey
 	) {
-		let (failure_code, onion_failure_data) =
-			match self.channel_state.lock().unwrap().by_id.entry(channel_id) {
-				hash_map::Entry::Occupied(chan_entry) => {
-					self.get_htlc_inbound_temp_fail_err_and_data(0x1000|7, &chan_entry.get())
-				},
-				hash_map::Entry::Vacant(_) => (0x4000|10, Vec::new())
-			};
+		let (failure_code, onion_failure_data) = {
+			let per_peer_state = self.per_peer_state.read().unwrap();
+			if let Some(peer_state_mutex) = per_peer_state.get(counterparty_node_id) {
+				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+				let peer_state = &mut *peer_state_lock;
+				match peer_state.channel_by_id.entry(channel_id) {
+					hash_map::Entry::Occupied(chan_entry) => {
+						self.get_htlc_inbound_temp_fail_err_and_data(0x1000|7, &chan_entry.get())
+					},
+					hash_map::Entry::Vacant(_) => (0x4000|10, Vec::new())
+				}
+			} else { (0x4000|10, Vec::new()) }
+		};
 
 		for (htlc_src, payment_hash) in htlcs_to_fail.drain(..) {
 			let reason = HTLCFailReason::reason(failure_code, onion_failure_data.clone());
@@ -3481,11 +3557,12 @@ where
 	fn fail_htlc_backwards_internal(&self, source: &HTLCSource, payment_hash: &PaymentHash, onion_error: &HTLCFailReason, destination: HTLCDestination) {
 		#[cfg(debug_assertions)]
 		{
-			// Ensure that the `channel_state` lock is not held when calling this function.
+			// Ensure that no peer state channel storage lock is not held when calling this
+			// function.
 			// This ensures that future code doesn't introduce a lock_order requirement for
-			// `forward_htlcs` to be locked after the `channel_state` lock, which calling this
-			// function with the `channel_state` locked would.
-			assert!(self.channel_state.try_lock().is_ok());
+			// `forward_htlcs` to be locked after the `per_peer_state` locks, which calling this
+			// function with the `per_peer_state` aquired would.
+			assert!(self.per_peer_state.try_write().is_ok());
 		}
 
 		//TODO: There is a timing attack here where if a node fails an HTLC back to us they can
@@ -3600,17 +3677,26 @@ where
 		let mut expected_amt_msat = None;
 		let mut valid_mpp = true;
 		let mut errs = Vec::new();
-		let mut channel_state = Some(self.channel_state.lock().unwrap());
+		let mut per_peer_state = Some(self.per_peer_state.read().unwrap());
 		for htlc in sources.iter() {
-			let chan_id = match self.short_to_chan_info.read().unwrap().get(&htlc.prev_hop.short_channel_id) {
-				Some((_cp_id, chan_id)) => chan_id.clone(),
+			let (counterparty_node_id, chan_id) = match self.short_to_chan_info.read().unwrap().get(&htlc.prev_hop.short_channel_id) {
+				Some((cp_id, chan_id)) => (cp_id.clone(), chan_id.clone()),
 				None => {
 					valid_mpp = false;
 					break;
 				}
 			};
 
-			if let None = channel_state.as_ref().unwrap().by_id.get(&chan_id) {
+			if let None = per_peer_state.as_ref().unwrap().get(&counterparty_node_id) {
+				valid_mpp = false;
+				break;
+			}
+
+			let peer_state_mutex = per_peer_state.as_ref().unwrap().get(&counterparty_node_id).unwrap();
+			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+			let peer_state = &mut *peer_state_lock;
+
+			if let None = peer_state.channel_by_id.get(&chan_id) {
 				valid_mpp = false;
 				break;
 			}
@@ -3621,6 +3707,7 @@ where
 				valid_mpp = false;
 				break;
 			}
+
 			expected_amt_msat = Some(htlc.total_msat);
 			if let OnionPayload::Spontaneous(_) = &htlc.onion_payload {
 				// We don't currently support MPP for spontaneous payments, so just check
@@ -3636,13 +3723,13 @@ where
 			claimable_amt_msat += htlc.value;
 		}
 		if sources.is_empty() || expected_amt_msat.is_none() {
-			mem::drop(channel_state);
+			mem::drop(per_peer_state);
 			self.claimable_payments.lock().unwrap().pending_claiming_payments.remove(&payment_hash);
 			log_info!(self.logger, "Attempted to claim an incomplete payment which no longer had any available HTLCs!");
 			return;
 		}
 		if claimable_amt_msat != expected_amt_msat.unwrap() {
-			mem::drop(channel_state);
+			mem::drop(per_peer_state);
 			self.claimable_payments.lock().unwrap().pending_claiming_payments.remove(&payment_hash);
 			log_info!(self.logger, "Attempted to claim an incomplete payment, expected {} msat, had {} available to claim.",
 				expected_amt_msat.unwrap(), claimable_amt_msat);
@@ -3650,9 +3737,9 @@ where
 		}
 		if valid_mpp {
 			for htlc in sources.drain(..) {
-				if channel_state.is_none() { channel_state = Some(self.channel_state.lock().unwrap()); }
-				if let Err((pk, err)) = self.claim_funds_from_hop(channel_state.take().unwrap(), htlc.prev_hop,
-					payment_preimage,
+				if per_peer_state.is_none() { per_peer_state = Some(self.per_peer_state.read().unwrap()); }
+				if let Err((pk, err)) = self.claim_funds_from_hop(per_peer_state.take().unwrap(),
+					htlc.prev_hop, payment_preimage,
 					|_| Some(MonitorUpdateCompletionAction::PaymentClaimed { payment_hash }))
 				{
 					if let msgs::ErrorAction::IgnoreError = err.err.action {
@@ -3663,7 +3750,7 @@ where
 				}
 			}
 		}
-		mem::drop(channel_state);
+		mem::drop(per_peer_state);
 		if !valid_mpp {
 			for htlc in sources.drain(..) {
 				let mut htlc_msat_height_data = htlc.value.to_be_bytes().to_vec();
@@ -3684,73 +3771,95 @@ where
 	}
 
 	fn claim_funds_from_hop<ComplFunc: FnOnce(Option<u64>) -> Option<MonitorUpdateCompletionAction>>(&self,
-		mut channel_state_lock: MutexGuard<ChannelHolder<<K::Target as SignerProvider>::Signer>>,
+		per_peer_state_lock: RwLockReadGuard<HashMap<PublicKey, Mutex<PeerState<<K::Target as SignerProvider>::Signer>>>>,
 		prev_hop: HTLCPreviousHopData, payment_preimage: PaymentPreimage, completion_action: ComplFunc)
 	-> Result<(), (PublicKey, MsgHandleErrInternal)> {
 		//TODO: Delay the claimed_funds relaying just like we do outbound relay!
 
 		let chan_id = prev_hop.outpoint.to_channel_id();
-		let channel_state = &mut *channel_state_lock;
-		if let hash_map::Entry::Occupied(mut chan) = channel_state.by_id.entry(chan_id) {
-			let counterparty_node_id = chan.get().get_counterparty_node_id();
-			match chan.get_mut().get_update_fulfill_htlc_and_commit(prev_hop.htlc_id, payment_preimage, &self.logger) {
-				Ok(msgs_monitor_option) => {
-					if let UpdateFulfillCommitFetch::NewClaim { msgs, htlc_value_msat, monitor_update } = msgs_monitor_option {
+
+		let counterparty_node_id_opt = match self.short_to_chan_info.read().unwrap().get(&prev_hop.short_channel_id) {
+			Some((cp_id, _dup_chan_id)) => Some(cp_id.clone()),
+			None => None
+		};
+
+		let (found_channel, mut peer_state_opt) = if counterparty_node_id_opt.is_some() && per_peer_state_lock.get(&counterparty_node_id_opt.unwrap()).is_some() {
+			let peer_mutex = per_peer_state_lock.get(&counterparty_node_id_opt.unwrap()).unwrap();
+			let peer_state = peer_mutex.lock().unwrap();
+			let found_channel = peer_state.channel_by_id.contains_key(&chan_id);
+			(found_channel, Some(peer_state))
+		}  else { (false, None) };
+
+		if found_channel {
+			let peer_state = &mut *peer_state_opt.as_mut().unwrap();
+			if let hash_map::Entry::Occupied(mut chan) = peer_state.channel_by_id.entry(chan_id) {
+				let counterparty_node_id = chan.get().get_counterparty_node_id();
+				match chan.get_mut().get_update_fulfill_htlc_and_commit(prev_hop.htlc_id, payment_preimage, &self.logger) {
+					Ok(msgs_monitor_option) => {
+						if let UpdateFulfillCommitFetch::NewClaim { msgs, htlc_value_msat, monitor_update } = msgs_monitor_option {
+							match self.chain_monitor.update_channel(chan.get().get_funding_txo().unwrap(), monitor_update) {
+								ChannelMonitorUpdateStatus::Completed => {},
+								e => {
+									log_given_level!(self.logger, if e == ChannelMonitorUpdateStatus::PermanentFailure { Level::Error } else { Level::Debug },
+										"Failed to update channel monitor with preimage {:?}: {:?}",
+										payment_preimage, e);
+									let err = handle_monitor_update_res!(self, e, chan, RAACommitmentOrder::CommitmentFirst, false, msgs.is_some()).unwrap_err();
+									mem::drop(peer_state_opt);
+									mem::drop(per_peer_state_lock);
+									self.handle_monitor_update_completion_actions(completion_action(Some(htlc_value_msat)));
+									return Err((counterparty_node_id, err));
+								}
+							}
+							if let Some((msg, commitment_signed)) = msgs {
+								log_debug!(self.logger, "Claiming funds for HTLC with preimage {} resulted in a commitment_signed for channel {}",
+									log_bytes!(payment_preimage.0), log_bytes!(chan.get().channel_id()));
+								peer_state.pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
+									node_id: counterparty_node_id,
+									updates: msgs::CommitmentUpdate {
+										update_add_htlcs: Vec::new(),
+										update_fulfill_htlcs: vec![msg],
+										update_fail_htlcs: Vec::new(),
+										update_fail_malformed_htlcs: Vec::new(),
+										update_fee: None,
+										commitment_signed,
+									}
+								});
+							}
+							mem::drop(peer_state_opt);
+							mem::drop(per_peer_state_lock);
+							self.handle_monitor_update_completion_actions(completion_action(Some(htlc_value_msat)));
+							Ok(())
+						} else {
+							Ok(())
+						}
+					},
+					Err((e, monitor_update)) => {
 						match self.chain_monitor.update_channel(chan.get().get_funding_txo().unwrap(), monitor_update) {
 							ChannelMonitorUpdateStatus::Completed => {},
 							e => {
-								log_given_level!(self.logger, if e == ChannelMonitorUpdateStatus::PermanentFailure { Level::Error } else { Level::Debug },
-									"Failed to update channel monitor with preimage {:?}: {:?}",
+								// TODO: This needs to be handled somehow - if we receive a monitor update
+								// with a preimage we *must* somehow manage to propagate it to the upstream
+								// channel, or we must have an ability to receive the same update and try
+								// again on restart.
+								log_given_level!(self.logger, if e == ChannelMonitorUpdateStatus::PermanentFailure { Level::Error } else { Level::Info },
+									"Failed to update channel monitor with preimage {:?} immediately prior to force-close: {:?}",
 									payment_preimage, e);
-								let err = handle_monitor_update_res!(self, e, chan, RAACommitmentOrder::CommitmentFirst, false, msgs.is_some()).unwrap_err();
-								mem::drop(channel_state_lock);
-								self.handle_monitor_update_completion_actions(completion_action(Some(htlc_value_msat)));
-								return Err((counterparty_node_id, err));
-							}
+							},
 						}
-						if let Some((msg, commitment_signed)) = msgs {
-							log_debug!(self.logger, "Claiming funds for HTLC with preimage {} resulted in a commitment_signed for channel {}",
-								log_bytes!(payment_preimage.0), log_bytes!(chan.get().channel_id()));
-							channel_state.pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
-								node_id: chan.get().get_counterparty_node_id(),
-								updates: msgs::CommitmentUpdate {
-									update_add_htlcs: Vec::new(),
-									update_fulfill_htlcs: vec![msg],
-									update_fail_htlcs: Vec::new(),
-									update_fail_malformed_htlcs: Vec::new(),
-									update_fee: None,
-									commitment_signed,
-								}
-							});
+						let (drop, res) = convert_chan_err!(self, e, chan.get_mut(), &chan_id);
+						if drop {
+							chan.remove_entry();
 						}
-						mem::drop(channel_state_lock);
-						self.handle_monitor_update_completion_actions(completion_action(Some(htlc_value_msat)));
-						Ok(())
-					} else {
-						Ok(())
-					}
-				},
-				Err((e, monitor_update)) => {
-					match self.chain_monitor.update_channel(chan.get().get_funding_txo().unwrap(), monitor_update) {
-						ChannelMonitorUpdateStatus::Completed => {},
-						e => {
-							// TODO: This needs to be handled somehow - if we receive a monitor update
-							// with a preimage we *must* somehow manage to propagate it to the upstream
-							// channel, or we must have an ability to receive the same update and try
-							// again on restart.
-							log_given_level!(self.logger, if e == ChannelMonitorUpdateStatus::PermanentFailure { Level::Error } else { Level::Info },
-								"Failed to update channel monitor with preimage {:?} immediately prior to force-close: {:?}",
-								payment_preimage, e);
-						},
-					}
-					let (drop, res) = convert_chan_err!(self, e, chan.get_mut(), &chan_id);
-					if drop {
-						chan.remove_entry();
-					}
-					mem::drop(channel_state_lock);
-					self.handle_monitor_update_completion_actions(completion_action(None));
-					Err((counterparty_node_id, res))
-				},
+						mem::drop(peer_state_opt);
+						mem::drop(per_peer_state_lock);
+						self.handle_monitor_update_completion_actions(completion_action(None));
+						Err((counterparty_node_id, res))
+					},
+				}
+			} else {
+				// We've held the peer_state mutex since finding the channel and setting
+				// found_channel to true, so the channel can't have been dropped.
+				unreachable!()
 			}
 		} else {
 			let preimage_update = ChannelMonitorUpdate {
@@ -3770,7 +3879,8 @@ where
 				log_error!(self.logger, "Critical error: failed to update channel monitor with preimage {:?}: {:?}",
 					payment_preimage, update_res);
 			}
-			mem::drop(channel_state_lock);
+			mem::drop(peer_state_opt);
+			mem::drop(per_peer_state_lock);
 			// Note that we do process the completion action here. This totally could be a
 			// duplicate claim, but we have no way of knowing without interrogating the
 			// `ChannelMonitor` we've provided the above update to. Instead, note that `Event`s are
@@ -3785,15 +3895,14 @@ where
 		self.pending_outbound_payments.finalize_claims(sources, &self.pending_events);
 	}
 
-	fn claim_funds_internal(&self, channel_state_lock: MutexGuard<ChannelHolder<<K::Target as SignerProvider>::Signer>>, source: HTLCSource, payment_preimage: PaymentPreimage, forwarded_htlc_value_msat: Option<u64>, from_onchain: bool, next_channel_id: [u8; 32]) {
+	fn claim_funds_internal(&self, source: HTLCSource, payment_preimage: PaymentPreimage, forwarded_htlc_value_msat: Option<u64>, from_onchain: bool, next_channel_id: [u8; 32]) {
 		match source {
 			HTLCSource::OutboundRoute { session_priv, payment_id, path, .. } => {
-				mem::drop(channel_state_lock);
 				self.pending_outbound_payments.claim_htlc(payment_id, payment_preimage, session_priv, path, from_onchain, &self.pending_events, &self.logger);
 			},
 			HTLCSource::PreviousHopData(hop_data) => {
 				let prev_outpoint = hop_data.outpoint;
-				let res = self.claim_funds_from_hop(channel_state_lock, hop_data, payment_preimage,
+				let res = self.claim_funds_from_hop(self.per_peer_state.read().unwrap(), hop_data, payment_preimage,
 					|htlc_claim_value_msat| {
 						if let Some(forwarded_htlc_value) = forwarded_htlc_value_msat {
 							let fee_earned_msat = if let Some(claimed_htlc_value) = htlc_claim_value_msat {
@@ -3905,22 +4014,39 @@ where
 		htlc_forwards
 	}
 
-	fn channel_monitor_updated(&self, funding_txo: &OutPoint, highest_applied_update_id: u64) {
+	fn channel_monitor_updated(&self, funding_txo: &OutPoint, highest_applied_update_id: u64, counterparty_node_id: Option<&PublicKey>) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 
 		let htlc_forwards;
 		let (mut pending_failures, finalized_claims, counterparty_node_id) = {
-			let mut channel_lock = self.channel_state.lock().unwrap();
-			let channel_state = &mut *channel_lock;
-			let mut channel = match channel_state.by_id.entry(funding_txo.to_channel_id()) {
-				hash_map::Entry::Occupied(chan) => chan,
-				hash_map::Entry::Vacant(_) => return,
+			let counterparty_node_id = match counterparty_node_id {
+				Some(cp_id) => cp_id.clone(),
+				None => {
+					// TODO: Once we can rely on the counterparty_node_id from the
+					// monitor event, this and the id_to_peer map should be removed.
+					let id_to_peer = self.id_to_peer.lock().unwrap();
+					match id_to_peer.get(&funding_txo.to_channel_id()) {
+						Some(cp_id) => cp_id.clone(),
+						None => return,
+					}
+				}
+			};
+			let per_peer_state = self.per_peer_state.read().unwrap();
+			let mut peer_state_lock;
+			let peer_state_mutex_opt = per_peer_state.get(&counterparty_node_id);
+			if let None = peer_state_mutex_opt { return }
+			peer_state_lock = peer_state_mutex_opt.unwrap().lock().unwrap();
+			let peer_state = &mut *peer_state_lock;
+			let mut channel = {
+				match peer_state.channel_by_id.entry(funding_txo.to_channel_id()){
+					hash_map::Entry::Occupied(chan) => chan,
+					hash_map::Entry::Vacant(_) => return,
+				}
 			};
 			if !channel.get().is_awaiting_monitor_update() || channel.get().get_latest_monitor_update_id() != highest_applied_update_id {
 				return;
 			}
 
-			let counterparty_node_id = channel.get().get_counterparty_node_id();
 			let updates = channel.get_mut().monitor_updating_restored(&self.logger, self.get_our_node_id(), self.genesis_hash, self.best_block.read().unwrap().height());
 			let channel_update = if updates.channel_ready.is_some() && channel.get().is_usable() {
 				// We only send a channel_update in the case where we are just now sending a
@@ -3935,9 +4061,9 @@ where
 					})
 				} else { None }
 			} else { None };
-			htlc_forwards = self.handle_channel_resumption(&mut channel_state.pending_msg_events, channel.get_mut(), updates.raa, updates.commitment_update, updates.order, updates.accepted_htlcs, updates.funding_broadcastable, updates.channel_ready, updates.announcement_sigs);
+			htlc_forwards = self.handle_channel_resumption(&mut peer_state.pending_msg_events, channel.get_mut(), updates.raa, updates.commitment_update, updates.order, updates.accepted_htlcs, updates.funding_broadcastable, updates.channel_ready, updates.announcement_sigs);
 			if let Some(upd) = channel_update {
-				channel_state.pending_msg_events.push(upd);
+				peer_state.pending_msg_events.push(upd);
 			}
 
 			(updates.failed_htlcs, updates.finalized_claimed_htlcs, counterparty_node_id)
@@ -3997,15 +4123,17 @@ where
 	fn do_accept_inbound_channel(&self, temporary_channel_id: &[u8; 32], counterparty_node_id: &PublicKey, accept_0conf: bool, user_channel_id: u128) -> Result<(), APIError> {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 
-		let mut channel_state_lock = self.channel_state.lock().unwrap();
-		let channel_state = &mut *channel_state_lock;
-		match channel_state.by_id.entry(temporary_channel_id.clone()) {
+		let per_peer_state = self.per_peer_state.read().unwrap();
+		let peer_state_mutex_opt = per_peer_state.get(counterparty_node_id);
+		if let None = peer_state_mutex_opt {
+			return Err(APIError::APIMisuseError { err: format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id) });
+		}
+		let mut peer_state_lock = peer_state_mutex_opt.unwrap().lock().unwrap();
+		let peer_state = &mut *peer_state_lock;
+		match peer_state.channel_by_id.entry(temporary_channel_id.clone()) {
 			hash_map::Entry::Occupied(mut channel) => {
 				if !channel.get().inbound_is_awaiting_accept() {
 					return Err(APIError::APIMisuseError { err: "The channel isn't currently awaiting to be accepted.".to_owned() });
-				}
-				if *counterparty_node_id != channel.get().get_counterparty_node_id() {
-					return Err(APIError::APIMisuseError { err: "The passed counterparty_node_id doesn't match the channel's counterparty node_id".to_owned() });
 				}
 				if accept_0conf {
 					channel.get_mut().set_0conf();
@@ -4016,18 +4144,18 @@ where
 							msg: msgs::ErrorMessage { channel_id: temporary_channel_id.clone(), data: "No zero confirmation channels accepted".to_owned(), }
 						}
 					};
-					channel_state.pending_msg_events.push(send_msg_err_event);
+					peer_state.pending_msg_events.push(send_msg_err_event);
 					let _ = remove_channel!(self, channel);
 					return Err(APIError::APIMisuseError { err: "Please use accept_inbound_channel_from_trusted_peer_0conf to accept channels with zero confirmations.".to_owned() });
 				}
 
-				channel_state.pending_msg_events.push(events::MessageSendEvent::SendAcceptChannel {
+				peer_state.pending_msg_events.push(events::MessageSendEvent::SendAcceptChannel {
 					node_id: channel.get().get_counterparty_node_id(),
 					msg: channel.get_mut().accept_inbound_channel(user_channel_id),
 				});
 			}
 			hash_map::Entry::Vacant(_) => {
-				return Err(APIError::ChannelUnavailable { err: "Can't accept a channel that doesn't exist".to_owned() });
+				return Err(APIError::ChannelUnavailable { err: format!("Channel with id {} not found for the passed counterparty node_id {}", log_bytes!(*temporary_channel_id), counterparty_node_id) });
 			}
 		}
 		Ok(())
@@ -4057,19 +4185,24 @@ where
 			},
 			Ok(res) => res
 		};
-		let mut channel_state_lock = self.channel_state.lock().unwrap();
-		let channel_state = &mut *channel_state_lock;
-		match channel_state.by_id.entry(channel.channel_id()) {
+		let per_peer_state = self.per_peer_state.read().unwrap();
+		let peer_state_mutex_opt = per_peer_state.get(counterparty_node_id);
+		if let None = peer_state_mutex_opt {
+			return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id), msg.temporary_channel_id.clone()))
+		}
+		let mut peer_state_lock = peer_state_mutex_opt.unwrap().lock().unwrap();
+		let peer_state = &mut *peer_state_lock;
+		match peer_state.channel_by_id.entry(channel.channel_id()) {
 			hash_map::Entry::Occupied(_) => {
 				self.outbound_scid_aliases.lock().unwrap().remove(&outbound_scid_alias);
-				return Err(MsgHandleErrInternal::send_err_msg_no_close("temporary_channel_id collision!".to_owned(), msg.temporary_channel_id.clone()))
+				return Err(MsgHandleErrInternal::send_err_msg_no_close("temporary_channel_id collision for the same peer!".to_owned(), msg.temporary_channel_id.clone()))
 			},
 			hash_map::Entry::Vacant(entry) => {
 				if !self.default_configuration.manually_accept_inbound_channels {
 					if channel.get_channel_type().requires_zero_conf() {
 						return Err(MsgHandleErrInternal::send_err_msg_no_close("No zero confirmation channels accepted".to_owned(), msg.temporary_channel_id.clone()));
 					}
-					channel_state.pending_msg_events.push(events::MessageSendEvent::SendAcceptChannel {
+					peer_state.pending_msg_events.push(events::MessageSendEvent::SendAcceptChannel {
 						node_id: counterparty_node_id.clone(),
 						msg: channel.accept_inbound_channel(user_channel_id),
 					});
@@ -4094,17 +4227,19 @@ where
 
 	fn internal_accept_channel(&self, counterparty_node_id: &PublicKey, their_features: InitFeatures, msg: &msgs::AcceptChannel) -> Result<(), MsgHandleErrInternal> {
 		let (value, output_script, user_id) = {
-			let mut channel_lock = self.channel_state.lock().unwrap();
-			let channel_state = &mut *channel_lock;
-			match channel_state.by_id.entry(msg.temporary_channel_id) {
+			let per_peer_state = self.per_peer_state.read().unwrap();
+			let peer_state_mutex_opt = per_peer_state.get(counterparty_node_id);
+			if let None = peer_state_mutex_opt {
+				return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id), msg.temporary_channel_id))
+			}
+			let mut peer_state_lock = peer_state_mutex_opt.unwrap().lock().unwrap();
+			let peer_state = &mut *peer_state_lock;
+			match peer_state.channel_by_id.entry(msg.temporary_channel_id) {
 				hash_map::Entry::Occupied(mut chan) => {
-					if chan.get().get_counterparty_node_id() != *counterparty_node_id {
-						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.temporary_channel_id));
-					}
 					try_chan_entry!(self, chan.get_mut().accept_channel(&msg, &self.default_configuration.channel_handshake_limits, &their_features), chan);
 					(chan.get().get_value_satoshis(), chan.get().get_funding_redeemscript().to_v0_p2wsh(), chan.get().get_user_id())
 				},
-				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.temporary_channel_id))
+				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.temporary_channel_id))
 			}
 		};
 		let mut pending_events = self.pending_events.lock().unwrap();
@@ -4119,21 +4254,23 @@ where
 	}
 
 	fn internal_funding_created(&self, counterparty_node_id: &PublicKey, msg: &msgs::FundingCreated) -> Result<(), MsgHandleErrInternal> {
+		let per_peer_state = self.per_peer_state.read().unwrap();
+		let peer_state_mutex_opt = per_peer_state.get(counterparty_node_id);
+		if let None = peer_state_mutex_opt {
+			return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id), msg.temporary_channel_id))
+		}
 		let ((funding_msg, monitor, mut channel_ready), mut chan) = {
 			let best_block = *self.best_block.read().unwrap();
-			let mut channel_lock = self.channel_state.lock().unwrap();
-			let channel_state = &mut *channel_lock;
-			match channel_state.by_id.entry(msg.temporary_channel_id.clone()) {
+			let mut peer_state_lock = peer_state_mutex_opt.unwrap().lock().unwrap();
+			let peer_state = &mut *peer_state_lock;
+			match peer_state.channel_by_id.entry(msg.temporary_channel_id) {
 				hash_map::Entry::Occupied(mut chan) => {
-					if chan.get().get_counterparty_node_id() != *counterparty_node_id {
-						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.temporary_channel_id));
-					}
 					(try_chan_entry!(self, chan.get_mut().funding_created(msg, best_block, &self.keys_manager, &self.logger), chan), chan.remove())
 				},
-				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.temporary_channel_id))
+				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.temporary_channel_id))
 			}
 		};
-		// Because we have exclusive ownership of the channel here we can release the channel_state
+		// Because we have exclusive ownership of the channel here we can release the peer_state
 		// lock before watch_channel
 		match self.chain_monitor.watch_channel(monitor.get_funding_txo().0, monitor) {
 			ChannelMonitorUpdateStatus::Completed => {},
@@ -4158,9 +4295,12 @@ where
 				channel_ready = None; // Don't send the channel_ready now
 			},
 		}
-		let mut channel_state_lock = self.channel_state.lock().unwrap();
-		let channel_state = &mut *channel_state_lock;
-		match channel_state.by_id.entry(funding_msg.channel_id) {
+		// It's safe to unwrap as we've held the `per_peer_state` read lock since checking that the
+		// peer exists, despite the inner PeerState potentially having no channels after removing
+		// the channel above.
+		let mut peer_state_lock = peer_state_mutex_opt.unwrap().lock().unwrap();
+		let peer_state = &mut *peer_state_lock;
+		match peer_state.channel_by_id.entry(funding_msg.channel_id) {
 			hash_map::Entry::Occupied(_) => {
 				return Err(MsgHandleErrInternal::send_err_msg_no_close("Already had channel with the new channel_id".to_owned(), funding_msg.channel_id))
 			},
@@ -4176,12 +4316,12 @@ where
 						i_e.insert(chan.get_counterparty_node_id());
 					}
 				}
-				channel_state.pending_msg_events.push(events::MessageSendEvent::SendFundingSigned {
+				peer_state.pending_msg_events.push(events::MessageSendEvent::SendFundingSigned {
 					node_id: counterparty_node_id.clone(),
 					msg: funding_msg,
 				});
 				if let Some(msg) = channel_ready {
-					send_channel_ready!(self, channel_state.pending_msg_events, chan, msg);
+					send_channel_ready!(self, peer_state.pending_msg_events, chan, msg);
 				}
 				e.insert(chan);
 			}
@@ -4192,13 +4332,16 @@ where
 	fn internal_funding_signed(&self, counterparty_node_id: &PublicKey, msg: &msgs::FundingSigned) -> Result<(), MsgHandleErrInternal> {
 		let funding_tx = {
 			let best_block = *self.best_block.read().unwrap();
-			let mut channel_lock = self.channel_state.lock().unwrap();
-			let channel_state = &mut *channel_lock;
-			match channel_state.by_id.entry(msg.channel_id) {
+			let per_peer_state = self.per_peer_state.read().unwrap();
+			let peer_state_mutex_opt = per_peer_state.get(counterparty_node_id);
+			if let None = peer_state_mutex_opt {
+				return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id), msg.channel_id))
+			}
+
+			let mut peer_state_lock = peer_state_mutex_opt.unwrap().lock().unwrap();
+			let peer_state = &mut *peer_state_lock;
+			match peer_state.channel_by_id.entry(msg.channel_id) {
 				hash_map::Entry::Occupied(mut chan) => {
-					if chan.get().get_counterparty_node_id() != *counterparty_node_id {
-						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
-					}
 					let (monitor, funding_tx, channel_ready) = match chan.get_mut().funding_signed(&msg, best_block, &self.keys_manager, &self.logger) {
 						Ok(update) => update,
 						Err(e) => try_chan_entry!(self, Err(e), chan),
@@ -4219,11 +4362,11 @@ where
 						},
 					}
 					if let Some(msg) = channel_ready {
-						send_channel_ready!(self, channel_state.pending_msg_events, chan.get(), msg);
+						send_channel_ready!(self, peer_state.pending_msg_events, chan.get(), msg);
 					}
 					funding_tx
 				},
-				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))
+				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
 			}
 		};
 		log_info!(self.logger, "Broadcasting funding transaction with txid {}", funding_tx.txid());
@@ -4232,18 +4375,20 @@ where
 	}
 
 	fn internal_channel_ready(&self, counterparty_node_id: &PublicKey, msg: &msgs::ChannelReady) -> Result<(), MsgHandleErrInternal> {
-		let mut channel_state_lock = self.channel_state.lock().unwrap();
-		let channel_state = &mut *channel_state_lock;
-		match channel_state.by_id.entry(msg.channel_id) {
+		let per_peer_state = self.per_peer_state.read().unwrap();
+		let peer_state_mutex_opt = per_peer_state.get(counterparty_node_id);
+		if let None = peer_state_mutex_opt {
+			return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id), msg.channel_id));
+		}
+		let mut peer_state_lock = peer_state_mutex_opt.unwrap().lock().unwrap();
+		let peer_state = &mut *peer_state_lock;
+		match peer_state.channel_by_id.entry(msg.channel_id) {
 			hash_map::Entry::Occupied(mut chan) => {
-				if chan.get().get_counterparty_node_id() != *counterparty_node_id {
-					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
-				}
 				let announcement_sigs_opt = try_chan_entry!(self, chan.get_mut().channel_ready(&msg, self.get_our_node_id(),
 					self.genesis_hash.clone(), &self.best_block.read().unwrap(), &self.logger), chan);
 				if let Some(announcement_sigs) = announcement_sigs_opt {
 					log_trace!(self.logger, "Sending announcement_signatures for channel {}", log_bytes!(chan.get().channel_id()));
-					channel_state.pending_msg_events.push(events::MessageSendEvent::SendAnnouncementSignatures {
+					peer_state.pending_msg_events.push(events::MessageSendEvent::SendAnnouncementSignatures {
 						node_id: counterparty_node_id.clone(),
 						msg: announcement_sigs,
 					});
@@ -4255,7 +4400,7 @@ where
 					// announcement_signatures.
 					log_trace!(self.logger, "Sending private initial channel_update for our counterparty on channel {}", log_bytes!(chan.get().channel_id()));
 					if let Ok(msg) = self.get_channel_update_for_unicast(chan.get()) {
-						channel_state.pending_msg_events.push(events::MessageSendEvent::SendChannelUpdate {
+						peer_state.pending_msg_events.push(events::MessageSendEvent::SendChannelUpdate {
 							node_id: counterparty_node_id.clone(),
 							msg,
 						});
@@ -4266,21 +4411,22 @@ where
 
 				Ok(())
 			},
-			hash_map::Entry::Vacant(_) => Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))
+			hash_map::Entry::Vacant(_) => Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
 		}
 	}
 
 	fn internal_shutdown(&self, counterparty_node_id: &PublicKey, their_features: &InitFeatures, msg: &msgs::Shutdown) -> Result<(), MsgHandleErrInternal> {
 		let mut dropped_htlcs: Vec<(HTLCSource, PaymentHash)>;
 		let result: Result<(), _> = loop {
-			let mut channel_state_lock = self.channel_state.lock().unwrap();
-			let channel_state = &mut *channel_state_lock;
-
-			match channel_state.by_id.entry(msg.channel_id.clone()) {
+			let per_peer_state = self.per_peer_state.read().unwrap();
+			let peer_state_mutex_opt = per_peer_state.get(counterparty_node_id);
+			if let None = peer_state_mutex_opt {
+				return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id), msg.channel_id))
+			}
+			let mut peer_state_lock = peer_state_mutex_opt.unwrap().lock().unwrap();
+			let peer_state = &mut *peer_state_lock;
+			match peer_state.channel_by_id.entry(msg.channel_id.clone()) {
 				hash_map::Entry::Occupied(mut chan_entry) => {
-					if chan_entry.get().get_counterparty_node_id() != *counterparty_node_id {
-						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
-					}
 
 					if !chan_entry.get().received_shutdown() {
 						log_info!(self.logger, "Received a shutdown message from our counterparty for channel {}{}.",
@@ -4303,7 +4449,7 @@ where
 					}
 
 					if let Some(msg) = shutdown {
-						channel_state.pending_msg_events.push(events::MessageSendEvent::SendShutdown {
+						peer_state.pending_msg_events.push(events::MessageSendEvent::SendShutdown {
 							node_id: *counterparty_node_id,
 							msg,
 						});
@@ -4311,7 +4457,7 @@ where
 
 					break Ok(());
 				},
-				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))
+				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
 			}
 		};
 		for htlc_source in dropped_htlcs.drain(..) {
@@ -4325,17 +4471,19 @@ where
 	}
 
 	fn internal_closing_signed(&self, counterparty_node_id: &PublicKey, msg: &msgs::ClosingSigned) -> Result<(), MsgHandleErrInternal> {
+		let per_peer_state = self.per_peer_state.read().unwrap();
+		let peer_state_mutex_opt = per_peer_state.get(counterparty_node_id);
+		if let None = peer_state_mutex_opt {
+			return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id), msg.channel_id))
+		}
 		let (tx, chan_option) = {
-			let mut channel_state_lock = self.channel_state.lock().unwrap();
-			let channel_state = &mut *channel_state_lock;
-			match channel_state.by_id.entry(msg.channel_id.clone()) {
+			let mut peer_state_lock = peer_state_mutex_opt.unwrap().lock().unwrap();
+			let peer_state = &mut *peer_state_lock;
+			match peer_state.channel_by_id.entry(msg.channel_id.clone()) {
 				hash_map::Entry::Occupied(mut chan_entry) => {
-					if chan_entry.get().get_counterparty_node_id() != *counterparty_node_id {
-						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
-					}
 					let (closing_signed, tx) = try_chan_entry!(self, chan_entry.get_mut().closing_signed(&self.fee_estimator, &msg), chan_entry);
 					if let Some(msg) = closing_signed {
-						channel_state.pending_msg_events.push(events::MessageSendEvent::SendClosingSigned {
+						peer_state.pending_msg_events.push(events::MessageSendEvent::SendClosingSigned {
 							node_id: counterparty_node_id.clone(),
 							msg,
 						});
@@ -4349,7 +4497,7 @@ where
 						(tx, Some(remove_channel!(self, chan_entry)))
 					} else { (tx, None) }
 				},
-				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))
+				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
 			}
 		};
 		if let Some(broadcast_tx) = tx {
@@ -4358,8 +4506,9 @@ where
 		}
 		if let Some(chan) = chan_option {
 			if let Ok(update) = self.get_channel_update_for_broadcast(&chan) {
-				let mut channel_state = self.channel_state.lock().unwrap();
-				channel_state.pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
+				let mut peer_state_lock = peer_state_mutex_opt.unwrap().lock().unwrap();
+				let peer_state = &mut *peer_state_lock;
+				peer_state.pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
 					msg: update
 				});
 			}
@@ -4379,14 +4528,15 @@ where
 		//but we should prevent it anyway.
 
 		let pending_forward_info = self.decode_update_add_htlc_onion(msg);
-		let mut channel_state_lock = self.channel_state.lock().unwrap();
-		let channel_state = &mut *channel_state_lock;
-
-		match channel_state.by_id.entry(msg.channel_id) {
+		let per_peer_state = self.per_peer_state.read().unwrap();
+		let peer_state_mutex_opt = per_peer_state.get(counterparty_node_id);
+		if let None = peer_state_mutex_opt {
+			return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id), msg.channel_id))
+		}
+		let mut peer_state_lock = peer_state_mutex_opt.unwrap().lock().unwrap();
+		let peer_state = &mut *peer_state_lock;
+		match peer_state.channel_by_id.entry(msg.channel_id) {
 			hash_map::Entry::Occupied(mut chan) => {
-				if chan.get().get_counterparty_node_id() != *counterparty_node_id {
-					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
-				}
 
 				let create_pending_htlc_status = |chan: &Channel<<K::Target as SignerProvider>::Signer>, pending_forward_info: PendingHTLCStatus, error_code: u16| {
 					// If the update_add is completely bogus, the call will Err and we will close,
@@ -4412,52 +4562,58 @@ where
 				};
 				try_chan_entry!(self, chan.get_mut().update_add_htlc(&msg, pending_forward_info, create_pending_htlc_status, &self.logger), chan);
 			},
-			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))
+			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
 		}
 		Ok(())
 	}
 
 	fn internal_update_fulfill_htlc(&self, counterparty_node_id: &PublicKey, msg: &msgs::UpdateFulfillHTLC) -> Result<(), MsgHandleErrInternal> {
-		let mut channel_lock = self.channel_state.lock().unwrap();
 		let (htlc_source, forwarded_htlc_value) = {
-			let channel_state = &mut *channel_lock;
-			match channel_state.by_id.entry(msg.channel_id) {
+			let per_peer_state = self.per_peer_state.read().unwrap();
+			let peer_state_mutex_opt = per_peer_state.get(counterparty_node_id);
+			if let None = peer_state_mutex_opt {
+				return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id), msg.channel_id));
+			}
+			let mut peer_state_lock = peer_state_mutex_opt.unwrap().lock().unwrap();
+			let peer_state = &mut *peer_state_lock;
+			match peer_state.channel_by_id.entry(msg.channel_id) {
 				hash_map::Entry::Occupied(mut chan) => {
-					if chan.get().get_counterparty_node_id() != *counterparty_node_id {
-						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
-					}
 					try_chan_entry!(self, chan.get_mut().update_fulfill_htlc(&msg), chan)
 				},
-				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))
+				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
 			}
 		};
-		self.claim_funds_internal(channel_lock, htlc_source, msg.payment_preimage.clone(), Some(forwarded_htlc_value), false, msg.channel_id);
+		self.claim_funds_internal(htlc_source, msg.payment_preimage.clone(), Some(forwarded_htlc_value), false, msg.channel_id);
 		Ok(())
 	}
 
 	fn internal_update_fail_htlc(&self, counterparty_node_id: &PublicKey, msg: &msgs::UpdateFailHTLC) -> Result<(), MsgHandleErrInternal> {
-		let mut channel_lock = self.channel_state.lock().unwrap();
-		let channel_state = &mut *channel_lock;
-		match channel_state.by_id.entry(msg.channel_id) {
+		let per_peer_state = self.per_peer_state.read().unwrap();
+		let peer_state_mutex_opt = per_peer_state.get(counterparty_node_id);
+		if let None = peer_state_mutex_opt {
+			return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id), msg.channel_id));
+		}
+		let mut peer_state_lock = peer_state_mutex_opt.unwrap().lock().unwrap();
+		let peer_state = &mut *peer_state_lock;
+		match peer_state.channel_by_id.entry(msg.channel_id) {
 			hash_map::Entry::Occupied(mut chan) => {
-				if chan.get().get_counterparty_node_id() != *counterparty_node_id {
-					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
-				}
 				try_chan_entry!(self, chan.get_mut().update_fail_htlc(&msg, HTLCFailReason::from_msg(msg)), chan);
 			},
-			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))
+			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
 		}
 		Ok(())
 	}
 
 	fn internal_update_fail_malformed_htlc(&self, counterparty_node_id: &PublicKey, msg: &msgs::UpdateFailMalformedHTLC) -> Result<(), MsgHandleErrInternal> {
-		let mut channel_lock = self.channel_state.lock().unwrap();
-		let channel_state = &mut *channel_lock;
-		match channel_state.by_id.entry(msg.channel_id) {
+		let per_peer_state = self.per_peer_state.read().unwrap();
+		let peer_state_mutex_opt = per_peer_state.get(counterparty_node_id);
+		if let None = peer_state_mutex_opt {
+			return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id), msg.channel_id))
+		}
+		let mut peer_state_lock = peer_state_mutex_opt.unwrap().lock().unwrap();
+		let peer_state = &mut *peer_state_lock;
+		match peer_state.channel_by_id.entry(msg.channel_id) {
 			hash_map::Entry::Occupied(mut chan) => {
-				if chan.get().get_counterparty_node_id() != *counterparty_node_id {
-					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
-				}
 				if (msg.failure_code & 0x8000) == 0 {
 					let chan_err: ChannelError = ChannelError::Close("Got update_fail_malformed_htlc with BADONION not set".to_owned());
 					try_chan_entry!(self, Err(chan_err), chan);
@@ -4465,18 +4621,20 @@ where
 				try_chan_entry!(self, chan.get_mut().update_fail_malformed_htlc(&msg, HTLCFailReason::reason(msg.failure_code, msg.sha256_of_onion.to_vec())), chan);
 				Ok(())
 			},
-			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))
+			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
 		}
 	}
 
 	fn internal_commitment_signed(&self, counterparty_node_id: &PublicKey, msg: &msgs::CommitmentSigned) -> Result<(), MsgHandleErrInternal> {
-		let mut channel_state_lock = self.channel_state.lock().unwrap();
-		let channel_state = &mut *channel_state_lock;
-		match channel_state.by_id.entry(msg.channel_id) {
+		let per_peer_state = self.per_peer_state.read().unwrap();
+		let peer_state_mutex_opt = per_peer_state.get(counterparty_node_id);
+		if let None = peer_state_mutex_opt {
+			return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id), msg.channel_id))
+		}
+		let mut peer_state_lock = peer_state_mutex_opt.unwrap().lock().unwrap();
+		let peer_state = &mut *peer_state_lock;
+		match peer_state.channel_by_id.entry(msg.channel_id) {
 			hash_map::Entry::Occupied(mut chan) => {
-				if chan.get().get_counterparty_node_id() != *counterparty_node_id {
-					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
-				}
 				let (revoke_and_ack, commitment_signed, monitor_update) =
 					match chan.get_mut().commitment_signed(&msg, &self.logger) {
 						Err((None, e)) => try_chan_entry!(self, Err(e), chan),
@@ -4493,12 +4651,12 @@ where
 					return Err(e);
 				}
 
-				channel_state.pending_msg_events.push(events::MessageSendEvent::SendRevokeAndACK {
+				peer_state.pending_msg_events.push(events::MessageSendEvent::SendRevokeAndACK {
 					node_id: counterparty_node_id.clone(),
 					msg: revoke_and_ack,
 				});
 				if let Some(msg) = commitment_signed {
-					channel_state.pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
+					peer_state.pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
 						node_id: counterparty_node_id.clone(),
 						updates: msgs::CommitmentUpdate {
 							update_add_htlcs: Vec::new(),
@@ -4512,7 +4670,7 @@ where
 				}
 				Ok(())
 			},
-			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))
+			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
 		}
 	}
 
@@ -4611,13 +4769,15 @@ where
 	fn internal_revoke_and_ack(&self, counterparty_node_id: &PublicKey, msg: &msgs::RevokeAndACK) -> Result<(), MsgHandleErrInternal> {
 		let mut htlcs_to_fail = Vec::new();
 		let res = loop {
-			let mut channel_state_lock = self.channel_state.lock().unwrap();
-			let channel_state = &mut *channel_state_lock;
-			match channel_state.by_id.entry(msg.channel_id) {
+			let per_peer_state = self.per_peer_state.read().unwrap();
+			let peer_state_mutex_opt = per_peer_state.get(counterparty_node_id);
+			if let None = peer_state_mutex_opt {
+				break Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id), msg.channel_id))
+			}
+			let mut peer_state_lock = peer_state_mutex_opt.unwrap().lock().unwrap();
+			let peer_state = &mut *peer_state_lock;
+			match peer_state.channel_by_id.entry(msg.channel_id) {
 				hash_map::Entry::Occupied(mut chan) => {
-					if chan.get().get_counterparty_node_id() != *counterparty_node_id {
-						break Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
-					}
 					let was_paused_for_mon_update = chan.get().is_awaiting_monitor_update();
 					let raa_updates = break_chan_entry!(self,
 						chan.get_mut().revoke_and_ack(&msg, &self.logger), chan);
@@ -4641,7 +4801,7 @@ where
 						} else { unreachable!(); }
 					}
 					if let Some(updates) = raa_updates.commitment_update {
-						channel_state.pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
+						peer_state.pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
 							node_id: counterparty_node_id.clone(),
 							updates,
 						});
@@ -4653,7 +4813,7 @@ where
 							chan.get().get_funding_txo().unwrap(),
 							chan.get().get_user_id()))
 				},
-				hash_map::Entry::Vacant(_) => break Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))
+				hash_map::Entry::Vacant(_) => break Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
 			}
 		};
 		self.fail_holding_cell_htlcs(htlcs_to_fail, msg.channel_id, counterparty_node_id);
@@ -4674,34 +4834,37 @@ where
 	}
 
 	fn internal_update_fee(&self, counterparty_node_id: &PublicKey, msg: &msgs::UpdateFee) -> Result<(), MsgHandleErrInternal> {
-		let mut channel_lock = self.channel_state.lock().unwrap();
-		let channel_state = &mut *channel_lock;
-		match channel_state.by_id.entry(msg.channel_id) {
+		let per_peer_state = self.per_peer_state.read().unwrap();
+		let peer_state_mutex_opt = per_peer_state.get(counterparty_node_id);
+		if let None = peer_state_mutex_opt {
+			return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id), msg.channel_id));
+		}
+		let mut peer_state_lock = peer_state_mutex_opt.unwrap().lock().unwrap();
+		let peer_state = &mut *peer_state_lock;
+		match peer_state.channel_by_id.entry(msg.channel_id) {
 			hash_map::Entry::Occupied(mut chan) => {
-				if chan.get().get_counterparty_node_id() != *counterparty_node_id {
-					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
-				}
 				try_chan_entry!(self, chan.get_mut().update_fee(&self.fee_estimator, &msg, &self.logger), chan);
 			},
-			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))
+			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
 		}
 		Ok(())
 	}
 
 	fn internal_announcement_signatures(&self, counterparty_node_id: &PublicKey, msg: &msgs::AnnouncementSignatures) -> Result<(), MsgHandleErrInternal> {
-		let mut channel_state_lock = self.channel_state.lock().unwrap();
-		let channel_state = &mut *channel_state_lock;
-
-		match channel_state.by_id.entry(msg.channel_id) {
+		let per_peer_state = self.per_peer_state.read().unwrap();
+		let peer_state_mutex_opt = per_peer_state.get(counterparty_node_id);
+		if let None = peer_state_mutex_opt {
+			return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id), msg.channel_id));
+		}
+		let mut peer_state_lock = peer_state_mutex_opt.unwrap().lock().unwrap();
+		let peer_state = &mut *peer_state_lock;
+		match peer_state.channel_by_id.entry(msg.channel_id) {
 			hash_map::Entry::Occupied(mut chan) => {
-				if chan.get().get_counterparty_node_id() != *counterparty_node_id {
-					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
-				}
 				if !chan.get().is_usable() {
 					return Err(MsgHandleErrInternal::from_no_close(LightningError{err: "Got an announcement_signatures before we were ready for it".to_owned(), action: msgs::ErrorAction::IgnoreError}));
 				}
 
-				channel_state.pending_msg_events.push(events::MessageSendEvent::BroadcastChannelAnnouncement {
+				peer_state.pending_msg_events.push(events::MessageSendEvent::BroadcastChannelAnnouncement {
 					msg: try_chan_entry!(self, chan.get_mut().announcement_signatures(
 						self.get_our_node_id(), self.genesis_hash.clone(), self.best_block.read().unwrap().height(), msg), chan),
 					// Note that announcement_signatures fails if the channel cannot be announced,
@@ -4709,23 +4872,28 @@ where
 					update_msg: self.get_channel_update_for_broadcast(chan.get()).unwrap(),
 				});
 			},
-			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))
+			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
 		}
 		Ok(())
 	}
 
 	/// Returns ShouldPersist if anything changed, otherwise either SkipPersist or an Err.
 	fn internal_channel_update(&self, counterparty_node_id: &PublicKey, msg: &msgs::ChannelUpdate) -> Result<NotifyOption, MsgHandleErrInternal> {
-		let chan_id = match self.short_to_chan_info.read().unwrap().get(&msg.contents.short_channel_id) {
-			Some((_cp_id, chan_id)) => chan_id.clone(),
+		let (chan_counterparty_node_id, chan_id) = match self.short_to_chan_info.read().unwrap().get(&msg.contents.short_channel_id) {
+			Some((cp_id, chan_id)) => (cp_id.clone(), chan_id.clone()),
 			None => {
 				// It's not a local channel
 				return Ok(NotifyOption::SkipPersist)
 			}
 		};
-		let mut channel_state_lock = self.channel_state.lock().unwrap();
-		let channel_state = &mut *channel_state_lock;
-		match channel_state.by_id.entry(chan_id) {
+		let per_peer_state = self.per_peer_state.read().unwrap();
+		let peer_state_mutex_opt = per_peer_state.get(&chan_counterparty_node_id);
+		if let None = peer_state_mutex_opt {
+			return Ok(NotifyOption::SkipPersist)
+		}
+		let mut peer_state_lock = peer_state_mutex_opt.unwrap().lock().unwrap();
+		let peer_state = &mut *peer_state_lock;
+		match peer_state.channel_by_id.entry(chan_id) {
 			hash_map::Entry::Occupied(mut chan) => {
 				if chan.get().get_counterparty_node_id() != *counterparty_node_id {
 					if chan.get().should_announce() {
@@ -4753,14 +4921,16 @@ where
 	fn internal_channel_reestablish(&self, counterparty_node_id: &PublicKey, msg: &msgs::ChannelReestablish) -> Result<(), MsgHandleErrInternal> {
 		let htlc_forwards;
 		let need_lnd_workaround = {
-			let mut channel_state_lock = self.channel_state.lock().unwrap();
-			let channel_state = &mut *channel_state_lock;
+			let per_peer_state = self.per_peer_state.read().unwrap();
 
-			match channel_state.by_id.entry(msg.channel_id) {
+			let peer_state_mutex_opt = per_peer_state.get(counterparty_node_id);
+			if let None = peer_state_mutex_opt {
+				return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id), msg.channel_id));
+			}
+			let mut peer_state_lock = peer_state_mutex_opt.unwrap().lock().unwrap();
+			let peer_state = &mut *peer_state_lock;
+			match peer_state.channel_by_id.entry(msg.channel_id) {
 				hash_map::Entry::Occupied(mut chan) => {
-					if chan.get().get_counterparty_node_id() != *counterparty_node_id {
-						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
-					}
 					// Currently, we expect all holding cell update_adds to be dropped on peer
 					// disconnect, so Channel's reestablish will never hand us any holding cell
 					// freed HTLCs to fail backwards. If in the future we no longer drop pending
@@ -4770,7 +4940,7 @@ where
 						&*self.best_block.read().unwrap()), chan);
 					let mut channel_update = None;
 					if let Some(msg) = responses.shutdown_msg {
-						channel_state.pending_msg_events.push(events::MessageSendEvent::SendShutdown {
+						peer_state.pending_msg_events.push(events::MessageSendEvent::SendShutdown {
 							node_id: counterparty_node_id.clone(),
 							msg,
 						});
@@ -4787,14 +4957,14 @@ where
 					}
 					let need_lnd_workaround = chan.get_mut().workaround_lnd_bug_4006.take();
 					htlc_forwards = self.handle_channel_resumption(
-						&mut channel_state.pending_msg_events, chan.get_mut(), responses.raa, responses.commitment_update, responses.order,
+						&mut peer_state.pending_msg_events, chan.get_mut(), responses.raa, responses.commitment_update, responses.order,
 						Vec::new(), None, responses.channel_ready, responses.announcement_sigs);
 					if let Some(upd) = channel_update {
-						channel_state.pending_msg_events.push(upd);
+						peer_state.pending_msg_events.push(upd);
 					}
 					need_lnd_workaround
 				},
-				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))
+				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
 			}
 		};
 
@@ -4819,7 +4989,7 @@ where
 					MonitorEvent::HTLCEvent(htlc_update) => {
 						if let Some(preimage) = htlc_update.payment_preimage {
 							log_trace!(self.logger, "Claiming HTLC with preimage {} from our monitor", log_bytes!(preimage.0));
-							self.claim_funds_internal(self.channel_state.lock().unwrap(), htlc_update.source, preimage, htlc_update.htlc_value_satoshis.map(|v| v * 1000), true, funding_outpoint.to_channel_id());
+							self.claim_funds_internal(htlc_update.source, preimage, htlc_update.htlc_value_satoshis.map(|v| v * 1000), true, funding_outpoint.to_channel_id());
 						} else {
 							log_trace!(self.logger, "Failing HTLC with hash {} from our monitor", log_bytes!(htlc_update.payment_hash.0));
 							let receiver = HTLCDestination::NextHopChannel { node_id: counterparty_node_id, channel_id: funding_outpoint.to_channel_id() };
@@ -4829,34 +4999,47 @@ where
 					},
 					MonitorEvent::CommitmentTxConfirmed(funding_outpoint) |
 					MonitorEvent::UpdateFailed(funding_outpoint) => {
-						let mut channel_lock = self.channel_state.lock().unwrap();
-						let channel_state = &mut *channel_lock;
-						let by_id = &mut channel_state.by_id;
-						let pending_msg_events = &mut channel_state.pending_msg_events;
-						if let hash_map::Entry::Occupied(chan_entry) = by_id.entry(funding_outpoint.to_channel_id()) {
-							let mut chan = remove_channel!(self, chan_entry);
-							failed_channels.push(chan.force_shutdown(false));
-							if let Ok(update) = self.get_channel_update_for_broadcast(&chan) {
-								pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
-									msg: update
-								});
+						let counterparty_node_id_opt = match counterparty_node_id {
+							Some(cp_id) => Some(cp_id),
+							None => {
+								// TODO: Once we can rely on the counterparty_node_id from the
+								// monitor event, this and the id_to_peer map should be removed.
+								let id_to_peer = self.id_to_peer.lock().unwrap();
+								id_to_peer.get(&funding_outpoint.to_channel_id()).cloned()
 							}
-							let reason = if let MonitorEvent::UpdateFailed(_) = monitor_event {
-								ClosureReason::ProcessingError { err: "Failed to persist ChannelMonitor update during chain sync".to_string() }
-							} else {
-								ClosureReason::CommitmentTxConfirmed
-							};
-							self.issue_channel_close_events(&chan, reason);
-							pending_msg_events.push(events::MessageSendEvent::HandleError {
-								node_id: chan.get_counterparty_node_id(),
-								action: msgs::ErrorAction::SendErrorMessage {
-									msg: msgs::ErrorMessage { channel_id: chan.channel_id(), data: "Channel force-closed".to_owned() }
-								},
-							});
+						};
+						if let Some(counterparty_node_id) = counterparty_node_id_opt {
+							let per_peer_state = self.per_peer_state.read().unwrap();
+							if let Some(peer_state_mutex) = per_peer_state.get(&counterparty_node_id) {
+								let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+								let peer_state = &mut *peer_state_lock;
+								let pending_msg_events = &mut peer_state.pending_msg_events;
+								if let hash_map::Entry::Occupied(chan_entry) = peer_state.channel_by_id.entry(funding_outpoint.to_channel_id()) {
+									let mut chan = remove_channel!(self, chan_entry);
+									failed_channels.push(chan.force_shutdown(false));
+									if let Ok(update) = self.get_channel_update_for_broadcast(&chan) {
+										pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
+											msg: update
+										});
+									}
+									let reason = if let MonitorEvent::UpdateFailed(_) = monitor_event {
+										ClosureReason::ProcessingError { err: "Failed to persist ChannelMonitor update during chain sync".to_string() }
+									} else {
+										ClosureReason::CommitmentTxConfirmed
+									};
+									self.issue_channel_close_events(&chan, reason);
+									pending_msg_events.push(events::MessageSendEvent::HandleError {
+										node_id: chan.get_counterparty_node_id(),
+										action: msgs::ErrorAction::SendErrorMessage {
+											msg: msgs::ErrorMessage { channel_id: chan.channel_id(), data: "Channel force-closed".to_owned() }
+										},
+									});
+								}
+							}
 						}
 					},
 					MonitorEvent::Completed { funding_txo, monitor_update_id } => {
-						self.channel_monitor_updated(&funding_txo, monitor_update_id);
+						self.channel_monitor_updated(&funding_txo, monitor_update_id, counterparty_node_id.as_ref());
 					},
 				}
 			}
@@ -4885,47 +5068,49 @@ where
 		let mut failed_htlcs = Vec::new();
 		let mut handle_errors = Vec::new();
 		{
-			let mut channel_state_lock = self.channel_state.lock().unwrap();
-			let channel_state = &mut *channel_state_lock;
-			let by_id = &mut channel_state.by_id;
-			let pending_msg_events = &mut channel_state.pending_msg_events;
+			let per_peer_state = self.per_peer_state.read().unwrap();
 
-			by_id.retain(|channel_id, chan| {
-				match chan.maybe_free_holding_cell_htlcs(&self.logger) {
-					Ok((commitment_opt, holding_cell_failed_htlcs)) => {
-						if !holding_cell_failed_htlcs.is_empty() {
-							failed_htlcs.push((
-								holding_cell_failed_htlcs,
-								*channel_id,
-								chan.get_counterparty_node_id()
-							));
-						}
-						if let Some((commitment_update, monitor_update)) = commitment_opt {
-							match self.chain_monitor.update_channel(chan.get_funding_txo().unwrap(), monitor_update) {
-								ChannelMonitorUpdateStatus::Completed => {
-									pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
-										node_id: chan.get_counterparty_node_id(),
-										updates: commitment_update,
-									});
-								},
-								e => {
-									has_monitor_update = true;
-									let (res, close_channel) = handle_monitor_update_res!(self, e, chan, RAACommitmentOrder::CommitmentFirst, channel_id, COMMITMENT_UPDATE_ONLY);
-									handle_errors.push((chan.get_counterparty_node_id(), res));
-									if close_channel { return false; }
-								},
+			for (_cp_id, peer_state_mutex) in per_peer_state.iter() {
+				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+				let peer_state = &mut *peer_state_lock;
+				let pending_msg_events = &mut peer_state.pending_msg_events;
+				peer_state.channel_by_id.retain(|channel_id, chan| {
+					match chan.maybe_free_holding_cell_htlcs(&self.logger) {
+						Ok((commitment_opt, holding_cell_failed_htlcs)) => {
+							if !holding_cell_failed_htlcs.is_empty() {
+								failed_htlcs.push((
+									holding_cell_failed_htlcs,
+									*channel_id,
+									chan.get_counterparty_node_id()
+								));
 							}
+							if let Some((commitment_update, monitor_update)) = commitment_opt {
+								match self.chain_monitor.update_channel(chan.get_funding_txo().unwrap(), monitor_update) {
+									ChannelMonitorUpdateStatus::Completed => {
+										pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
+											node_id: chan.get_counterparty_node_id(),
+											updates: commitment_update,
+										});
+									},
+									e => {
+										has_monitor_update = true;
+										let (res, close_channel) = handle_monitor_update_res!(self, e, chan, RAACommitmentOrder::CommitmentFirst, channel_id, COMMITMENT_UPDATE_ONLY);
+										handle_errors.push((chan.get_counterparty_node_id(), res));
+										if close_channel { return false; }
+									},
+								}
+							}
+							true
+						},
+						Err(e) => {
+							let (close_channel, res) = convert_chan_err!(self, e, chan, channel_id);
+							handle_errors.push((chan.get_counterparty_node_id(), Err(res)));
+							// ChannelClosed event is generated by handle_error for us
+							!close_channel
 						}
-						true
-					},
-					Err(e) => {
-						let (close_channel, res) = convert_chan_err!(self, e, chan, channel_id);
-						handle_errors.push((chan.get_counterparty_node_id(), Err(res)));
-						// ChannelClosed event is generated by handle_error for us
-						!close_channel
 					}
-				}
-			});
+				});
+			}
 		}
 
 		let has_update = has_monitor_update || !failed_htlcs.is_empty() || !handle_errors.is_empty();
@@ -4947,45 +5132,47 @@ where
 		let mut handle_errors: Vec<(PublicKey, Result<(), _>)> = Vec::new();
 		let mut has_update = false;
 		{
-			let mut channel_state_lock = self.channel_state.lock().unwrap();
-			let channel_state = &mut *channel_state_lock;
-			let by_id = &mut channel_state.by_id;
-			let pending_msg_events = &mut channel_state.pending_msg_events;
+			let per_peer_state = self.per_peer_state.read().unwrap();
 
-			by_id.retain(|channel_id, chan| {
-				match chan.maybe_propose_closing_signed(&self.fee_estimator, &self.logger) {
-					Ok((msg_opt, tx_opt)) => {
-						if let Some(msg) = msg_opt {
-							has_update = true;
-							pending_msg_events.push(events::MessageSendEvent::SendClosingSigned {
-								node_id: chan.get_counterparty_node_id(), msg,
-							});
-						}
-						if let Some(tx) = tx_opt {
-							// We're done with this channel. We got a closing_signed and sent back
-							// a closing_signed with a closing transaction to broadcast.
-							if let Ok(update) = self.get_channel_update_for_broadcast(&chan) {
-								pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
-									msg: update
+			for (_cp_id, peer_state_mutex) in per_peer_state.iter() {
+				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+				let peer_state = &mut *peer_state_lock;
+				let pending_msg_events = &mut peer_state.pending_msg_events;
+				peer_state.channel_by_id.retain(|channel_id, chan| {
+					match chan.maybe_propose_closing_signed(&self.fee_estimator, &self.logger) {
+						Ok((msg_opt, tx_opt)) => {
+							if let Some(msg) = msg_opt {
+								has_update = true;
+								pending_msg_events.push(events::MessageSendEvent::SendClosingSigned {
+									node_id: chan.get_counterparty_node_id(), msg,
 								});
 							}
+							if let Some(tx) = tx_opt {
+								// We're done with this channel. We got a closing_signed and sent back
+								// a closing_signed with a closing transaction to broadcast.
+								if let Ok(update) = self.get_channel_update_for_broadcast(&chan) {
+									pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
+										msg: update
+									});
+								}
 
-							self.issue_channel_close_events(chan, ClosureReason::CooperativeClosure);
+								self.issue_channel_close_events(chan, ClosureReason::CooperativeClosure);
 
-							log_info!(self.logger, "Broadcasting {}", log_tx!(tx));
-							self.tx_broadcaster.broadcast_transaction(&tx);
-							update_maps_on_chan_removal!(self, chan);
-							false
-						} else { true }
-					},
-					Err(e) => {
-						has_update = true;
-						let (close_channel, res) = convert_chan_err!(self, e, chan, channel_id);
-						handle_errors.push((chan.get_counterparty_node_id(), Err(res)));
-						!close_channel
+								log_info!(self.logger, "Broadcasting {}", log_tx!(tx));
+								self.tx_broadcaster.broadcast_transaction(&tx);
+								update_maps_on_chan_removal!(self, chan);
+								false
+							} else { true }
+						},
+						Err(e) => {
+							has_update = true;
+							let (close_channel, res) = convert_chan_err!(self, e, chan, channel_id);
+							handle_errors.push((chan.get_counterparty_node_id(), Err(res)));
+							!close_channel
+						}
 					}
-				}
-			});
+				});
+			}
 		}
 
 		for (counterparty_node_id, err) in handle_errors.drain(..) {
@@ -5215,10 +5402,15 @@ where
 	pub fn compute_inflight_htlcs(&self) -> InFlightHtlcs {
 		let mut inflight_htlcs = InFlightHtlcs::new();
 
-		for chan in self.channel_state.lock().unwrap().by_id.values() {
-			for (htlc_source, _) in chan.inflight_htlc_sources() {
-				if let HTLCSource::OutboundRoute { path, .. } = htlc_source {
-					inflight_htlcs.process_path(path, self.get_our_node_id());
+		let per_peer_state = self.per_peer_state.read().unwrap();
+		for (_cp_id, peer_state_mutex) in per_peer_state.iter() {
+			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+			let peer_state = &mut *peer_state_lock;
+			for chan in peer_state.channel_by_id.values() {
+				for (htlc_source, _) in chan.inflight_htlc_sources() {
+					if let HTLCSource::OutboundRoute { path, .. } = htlc_source {
+						inflight_htlcs.process_path(path, self.get_our_node_id());
+					}
 				}
 			}
 		}
@@ -5293,6 +5485,19 @@ where
 	R::Target: Router,
 	L::Target: Logger,
 {
+	/// Returns `MessageSendEvent`s strictly ordered per-peer, in the order they were generated.
+	/// The returned array will contain `MessageSendEvent`s for different peers if
+	/// `MessageSendEvent`s to more than one peer exists, but `MessageSendEvent`s to the same peer
+	/// is always placed next to each other.
+	///
+	/// Note that that while `MessageSendEvent`s are strictly ordered per-peer, the peer order for
+	/// the chunks of `MessageSendEvent`s for different peers is random. I.e. if the array contains
+	/// `MessageSendEvent`s  for both `node_a` and `node_b`, the `MessageSendEvent`s for `node_a`
+	/// will randomly be placed first or last in the returned array.
+	///
+	/// Note that even though `BroadcastChannelAnnouncement` and `BroadcastChannelUpdate`
+	/// `MessageSendEvent`s are intended to be broadcasted to all peers, they will be pleaced among
+	/// the `MessageSendEvent`s to the specific peer they were generated under.
 	fn get_and_clear_pending_msg_events(&self) -> Vec<MessageSendEvent> {
 		let events = RefCell::new(Vec::new());
 		PersistenceNotifierGuard::optionally_notify(&self.total_consistency_lock, &self.persistence_notifier, || {
@@ -5312,8 +5517,16 @@ where
 			}
 
 			let mut pending_events = Vec::new();
-			let mut channel_state = self.channel_state.lock().unwrap();
-			mem::swap(&mut pending_events, &mut channel_state.pending_msg_events);
+			let per_peer_state = self.per_peer_state.read().unwrap();
+			for (_cp_id, peer_state_mutex) in per_peer_state.iter() {
+				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+				let peer_state = &mut *peer_state_lock;
+				if peer_state.pending_msg_events.len() > 0 {
+					let mut peer_pending_events = Vec::new();
+					mem::swap(&mut peer_pending_events, &mut peer_state.pending_msg_events);
+					pending_events.append(&mut peer_pending_events);
+				}
+			}
 
 			if !pending_events.is_empty() {
 				events.replace(pending_events);
@@ -5466,11 +5679,14 @@ where
 	}
 
 	fn get_relevant_txids(&self) -> Vec<(Txid, Option<BlockHash>)> {
-		let channel_state = self.channel_state.lock().unwrap();
-		let mut res = Vec::with_capacity(channel_state.by_id.len());
-		for chan in channel_state.by_id.values() {
-			if let (Some(funding_txo), block_hash) = (chan.get_funding_txo(), chan.get_funding_tx_confirmed_in()) {
-				res.push((funding_txo.txid, block_hash));
+		let mut res = Vec::with_capacity(self.short_to_chan_info.read().unwrap().len());
+		for (_cp_id, peer_state_mutex) in self.per_peer_state.read().unwrap().iter() {
+			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+			let peer_state = &mut *peer_state_lock;
+			for chan in peer_state.channel_by_id.values() {
+				if let (Some(funding_txo), block_hash) = (chan.get_funding_txo(), chan.get_funding_tx_confirmed_in()) {
+					res.push((funding_txo.txid, block_hash));
+				}
 			}
 		}
 		res
@@ -5509,89 +5725,92 @@ where
 		let mut failed_channels = Vec::new();
 		let mut timed_out_htlcs = Vec::new();
 		{
-			let mut channel_lock = self.channel_state.lock().unwrap();
-			let channel_state = &mut *channel_lock;
-			let pending_msg_events = &mut channel_state.pending_msg_events;
-			channel_state.by_id.retain(|_, channel| {
-				let res = f(channel);
-				if let Ok((channel_ready_opt, mut timed_out_pending_htlcs, announcement_sigs)) = res {
-					for (source, payment_hash) in timed_out_pending_htlcs.drain(..) {
-						let (failure_code, data) = self.get_htlc_inbound_temp_fail_err_and_data(0x1000|14 /* expiry_too_soon */, &channel);
-						timed_out_htlcs.push((source, payment_hash, HTLCFailReason::reason(failure_code, data),
-							HTLCDestination::NextHopChannel { node_id: Some(channel.get_counterparty_node_id()), channel_id: channel.channel_id() }));
-					}
-					if let Some(channel_ready) = channel_ready_opt {
-						send_channel_ready!(self, pending_msg_events, channel, channel_ready);
-						if channel.is_usable() {
-							log_trace!(self.logger, "Sending channel_ready with private initial channel_update for our counterparty on channel {}", log_bytes!(channel.channel_id()));
-							if let Ok(msg) = self.get_channel_update_for_unicast(channel) {
-								pending_msg_events.push(events::MessageSendEvent::SendChannelUpdate {
-									node_id: channel.get_counterparty_node_id(),
-									msg,
-								});
-							}
-						} else {
-							log_trace!(self.logger, "Sending channel_ready WITHOUT channel_update for {}", log_bytes!(channel.channel_id()));
+			let per_peer_state = self.per_peer_state.read().unwrap();
+			for (_cp_id, peer_state_mutex) in per_peer_state.iter() {
+				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+				let peer_state = &mut *peer_state_lock;
+				let pending_msg_events = &mut peer_state.pending_msg_events;
+				peer_state.channel_by_id.retain(|_, channel| {
+					let res = f(channel);
+					if let Ok((channel_ready_opt, mut timed_out_pending_htlcs, announcement_sigs)) = res {
+						for (source, payment_hash) in timed_out_pending_htlcs.drain(..) {
+							let (failure_code, data) = self.get_htlc_inbound_temp_fail_err_and_data(0x1000|14 /* expiry_too_soon */, &channel);
+							timed_out_htlcs.push((source, payment_hash, HTLCFailReason::reason(failure_code, data),
+								HTLCDestination::NextHopChannel { node_id: Some(channel.get_counterparty_node_id()), channel_id: channel.channel_id() }));
 						}
-					}
+						if let Some(channel_ready) = channel_ready_opt {
+							send_channel_ready!(self, pending_msg_events, channel, channel_ready);
+							if channel.is_usable() {
+								log_trace!(self.logger, "Sending channel_ready with private initial channel_update for our counterparty on channel {}", log_bytes!(channel.channel_id()));
+								if let Ok(msg) = self.get_channel_update_for_unicast(channel) {
+									pending_msg_events.push(events::MessageSendEvent::SendChannelUpdate {
+										node_id: channel.get_counterparty_node_id(),
+										msg,
+									});
+								}
+							} else {
+								log_trace!(self.logger, "Sending channel_ready WITHOUT channel_update for {}", log_bytes!(channel.channel_id()));
+							}
+						}
 
-					emit_channel_ready_event!(self, channel);
+						emit_channel_ready_event!(self, channel);
 
-					if let Some(announcement_sigs) = announcement_sigs {
-						log_trace!(self.logger, "Sending announcement_signatures for channel {}", log_bytes!(channel.channel_id()));
-						pending_msg_events.push(events::MessageSendEvent::SendAnnouncementSignatures {
+						if let Some(announcement_sigs) = announcement_sigs {
+							log_trace!(self.logger, "Sending announcement_signatures for channel {}", log_bytes!(channel.channel_id()));
+							pending_msg_events.push(events::MessageSendEvent::SendAnnouncementSignatures {
+								node_id: channel.get_counterparty_node_id(),
+								msg: announcement_sigs,
+							});
+							if let Some(height) = height_opt {
+								if let Some(announcement) = channel.get_signed_channel_announcement(self.get_our_node_id(), self.genesis_hash, height) {
+									pending_msg_events.push(events::MessageSendEvent::BroadcastChannelAnnouncement {
+										msg: announcement,
+										// Note that announcement_signatures fails if the channel cannot be announced,
+										// so get_channel_update_for_broadcast will never fail by the time we get here.
+										update_msg: self.get_channel_update_for_broadcast(channel).unwrap(),
+									});
+								}
+							}
+						}
+						if channel.is_our_channel_ready() {
+							if let Some(real_scid) = channel.get_short_channel_id() {
+								// If we sent a 0conf channel_ready, and now have an SCID, we add it
+								// to the short_to_chan_info map here. Note that we check whether we
+								// can relay using the real SCID at relay-time (i.e.
+								// enforce option_scid_alias then), and if the funding tx is ever
+								// un-confirmed we force-close the channel, ensuring short_to_chan_info
+								// is always consistent.
+								let mut short_to_chan_info = self.short_to_chan_info.write().unwrap();
+								let scid_insert = short_to_chan_info.insert(real_scid, (channel.get_counterparty_node_id(), channel.channel_id()));
+								assert!(scid_insert.is_none() || scid_insert.unwrap() == (channel.get_counterparty_node_id(), channel.channel_id()),
+									"SCIDs should never collide - ensure you weren't behind by a full {} blocks when creating channels",
+									fake_scid::MAX_SCID_BLOCKS_FROM_NOW);
+							}
+						}
+					} else if let Err(reason) = res {
+						update_maps_on_chan_removal!(self, channel);
+						// It looks like our counterparty went on-chain or funding transaction was
+						// reorged out of the main chain. Close the channel.
+						failed_channels.push(channel.force_shutdown(true));
+						if let Ok(update) = self.get_channel_update_for_broadcast(&channel) {
+							pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
+								msg: update
+							});
+						}
+						let reason_message = format!("{}", reason);
+						self.issue_channel_close_events(channel, reason);
+						pending_msg_events.push(events::MessageSendEvent::HandleError {
 							node_id: channel.get_counterparty_node_id(),
-							msg: announcement_sigs,
+							action: msgs::ErrorAction::SendErrorMessage { msg: msgs::ErrorMessage {
+								channel_id: channel.channel_id(),
+								data: reason_message,
+							} },
 						});
-						if let Some(height) = height_opt {
-							if let Some(announcement) = channel.get_signed_channel_announcement(self.get_our_node_id(), self.genesis_hash, height) {
-								pending_msg_events.push(events::MessageSendEvent::BroadcastChannelAnnouncement {
-									msg: announcement,
-									// Note that announcement_signatures fails if the channel cannot be announced,
-									// so get_channel_update_for_broadcast will never fail by the time we get here.
-									update_msg: self.get_channel_update_for_broadcast(channel).unwrap(),
-								});
-							}
-						}
+						return false;
 					}
-					if channel.is_our_channel_ready() {
-						if let Some(real_scid) = channel.get_short_channel_id() {
-							// If we sent a 0conf channel_ready, and now have an SCID, we add it
-							// to the short_to_chan_info map here. Note that we check whether we
-							// can relay using the real SCID at relay-time (i.e.
-							// enforce option_scid_alias then), and if the funding tx is ever
-							// un-confirmed we force-close the channel, ensuring short_to_chan_info
-							// is always consistent.
-							let mut short_to_chan_info = self.short_to_chan_info.write().unwrap();
-							let scid_insert = short_to_chan_info.insert(real_scid, (channel.get_counterparty_node_id(), channel.channel_id()));
-							assert!(scid_insert.is_none() || scid_insert.unwrap() == (channel.get_counterparty_node_id(), channel.channel_id()),
-								"SCIDs should never collide - ensure you weren't behind by a full {} blocks when creating channels",
-								fake_scid::MAX_SCID_BLOCKS_FROM_NOW);
-						}
-					}
-				} else if let Err(reason) = res {
-					update_maps_on_chan_removal!(self, channel);
-					// It looks like our counterparty went on-chain or funding transaction was
-					// reorged out of the main chain. Close the channel.
-					failed_channels.push(channel.force_shutdown(true));
-					if let Ok(update) = self.get_channel_update_for_broadcast(&channel) {
-						pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
-							msg: update
-						});
-					}
-					let reason_message = format!("{}", reason);
-					self.issue_channel_close_events(channel, reason);
-					pending_msg_events.push(events::MessageSendEvent::HandleError {
-						node_id: channel.get_counterparty_node_id(),
-						action: msgs::ErrorAction::SendErrorMessage { msg: msgs::ErrorMessage {
-							channel_id: channel.channel_id(),
-							data: reason_message,
-						} },
-					});
-					return false;
-				}
-				true
-			});
+					true
+				});
+			}
 		}
 
 		if let Some(height) = height_opt {
@@ -5793,14 +6012,15 @@ where
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 		let mut failed_channels = Vec::new();
 		let mut no_channels_remain = true;
+		let mut per_peer_state = self.per_peer_state.write().unwrap();
 		{
-			let mut channel_state_lock = self.channel_state.lock().unwrap();
-			let channel_state = &mut *channel_state_lock;
-			let pending_msg_events = &mut channel_state.pending_msg_events;
 			log_debug!(self.logger, "Marking channels with {} disconnected and generating channel_updates. We believe we {} make future connections to this peer.",
 				log_pubkey!(counterparty_node_id), if no_connection_possible { "cannot" } else { "can" });
-			channel_state.by_id.retain(|_, chan| {
-				if chan.get_counterparty_node_id() == *counterparty_node_id {
+			if let Some(peer_state_mutex) = per_peer_state.get(counterparty_node_id) {
+				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+				let peer_state = &mut *peer_state_lock;
+				let pending_msg_events = &mut peer_state.pending_msg_events;
+				peer_state.channel_by_id.retain(|_, chan| {
 					chan.remove_uncommitted_htlcs_and_mark_paused(&self.logger);
 					if chan.is_shutdown() {
 						update_maps_on_chan_removal!(self, chan);
@@ -5809,37 +6029,38 @@ where
 					} else {
 						no_channels_remain = false;
 					}
-				}
-				true
-			});
-			pending_msg_events.retain(|msg| {
-				match msg {
-					&events::MessageSendEvent::SendAcceptChannel { ref node_id, .. } => node_id != counterparty_node_id,
-					&events::MessageSendEvent::SendOpenChannel { ref node_id, .. } => node_id != counterparty_node_id,
-					&events::MessageSendEvent::SendFundingCreated { ref node_id, .. } => node_id != counterparty_node_id,
-					&events::MessageSendEvent::SendFundingSigned { ref node_id, .. } => node_id != counterparty_node_id,
-					&events::MessageSendEvent::SendChannelReady { ref node_id, .. } => node_id != counterparty_node_id,
-					&events::MessageSendEvent::SendAnnouncementSignatures { ref node_id, .. } => node_id != counterparty_node_id,
-					&events::MessageSendEvent::UpdateHTLCs { ref node_id, .. } => node_id != counterparty_node_id,
-					&events::MessageSendEvent::SendRevokeAndACK { ref node_id, .. } => node_id != counterparty_node_id,
-					&events::MessageSendEvent::SendClosingSigned { ref node_id, .. } => node_id != counterparty_node_id,
-					&events::MessageSendEvent::SendShutdown { ref node_id, .. } => node_id != counterparty_node_id,
-					&events::MessageSendEvent::SendChannelReestablish { ref node_id, .. } => node_id != counterparty_node_id,
-					&events::MessageSendEvent::SendChannelAnnouncement { ref node_id, .. } => node_id != counterparty_node_id,
-					&events::MessageSendEvent::BroadcastChannelAnnouncement { .. } => true,
-					&events::MessageSendEvent::BroadcastChannelUpdate { .. } => true,
-					&events::MessageSendEvent::SendChannelUpdate { ref node_id, .. } => node_id != counterparty_node_id,
-					&events::MessageSendEvent::HandleError { ref node_id, .. } => node_id != counterparty_node_id,
-					&events::MessageSendEvent::SendChannelRangeQuery { .. } => false,
-					&events::MessageSendEvent::SendShortIdsQuery { .. } => false,
-					&events::MessageSendEvent::SendReplyChannelRange { .. } => false,
-					&events::MessageSendEvent::SendGossipTimestampFilter { .. } => false,
-				}
-			});
+					true
+				});
+				pending_msg_events.retain(|msg| {
+					match msg {
+						&events::MessageSendEvent::SendAcceptChannel { .. } => false,
+						&events::MessageSendEvent::SendOpenChannel { .. } => false,
+						&events::MessageSendEvent::SendFundingCreated { .. } => false,
+						&events::MessageSendEvent::SendFundingSigned { .. } => false,
+						&events::MessageSendEvent::SendChannelReady { .. } => false,
+						&events::MessageSendEvent::SendAnnouncementSignatures { .. } => false,
+						&events::MessageSendEvent::UpdateHTLCs { .. } => false,
+						&events::MessageSendEvent::SendRevokeAndACK { .. } => false,
+						&events::MessageSendEvent::SendClosingSigned { .. } => false,
+						&events::MessageSendEvent::SendShutdown { .. } => false,
+						&events::MessageSendEvent::SendChannelReestablish { .. } => false,
+						&events::MessageSendEvent::SendChannelAnnouncement { .. } => false,
+						&events::MessageSendEvent::BroadcastChannelAnnouncement { .. } => true,
+						&events::MessageSendEvent::BroadcastChannelUpdate { .. } => true,
+						&events::MessageSendEvent::SendChannelUpdate { .. } => false,
+						&events::MessageSendEvent::HandleError { .. } => false,
+						&events::MessageSendEvent::SendChannelRangeQuery { .. } => false,
+						&events::MessageSendEvent::SendShortIdsQuery { .. } => false,
+						&events::MessageSendEvent::SendReplyChannelRange { .. } => false,
+						&events::MessageSendEvent::SendGossipTimestampFilter { .. } => false,
+					}
+				});
+			}
 		}
 		if no_channels_remain {
-			self.per_peer_state.write().unwrap().remove(counterparty_node_id);
+			per_peer_state.remove(counterparty_node_id);
 		}
+		mem::drop(per_peer_state);
 
 		for failure in failed_channels.drain(..) {
 			self.finish_force_close_channel(failure);
@@ -5861,7 +6082,9 @@ where
 			match peer_state_lock.entry(counterparty_node_id.clone()) {
 				hash_map::Entry::Vacant(e) => {
 					e.insert(Mutex::new(PeerState {
+						channel_by_id: HashMap::new(),
 						latest_features: init_msg.features.clone(),
+						pending_msg_events: Vec::new(),
 					}));
 				},
 				hash_map::Entry::Occupied(e) => {
@@ -5870,37 +6093,41 @@ where
 			}
 		}
 
-		let mut channel_state_lock = self.channel_state.lock().unwrap();
-		let channel_state = &mut *channel_state_lock;
-		let pending_msg_events = &mut channel_state.pending_msg_events;
-		channel_state.by_id.retain(|_, chan| {
-			let retain = if chan.get_counterparty_node_id() == *counterparty_node_id {
-				if !chan.have_received_message() {
-					// If we created this (outbound) channel while we were disconnected from the
-					// peer we probably failed to send the open_channel message, which is now
-					// lost. We can't have had anything pending related to this channel, so we just
-					// drop it.
-					false
-				} else {
-					pending_msg_events.push(events::MessageSendEvent::SendChannelReestablish {
-						node_id: chan.get_counterparty_node_id(),
-						msg: chan.get_channel_reestablish(&self.logger),
-					});
-					true
-				}
-			} else { true };
-			if retain && chan.get_counterparty_node_id() != *counterparty_node_id {
-				if let Some(msg) = chan.get_signed_channel_announcement(self.get_our_node_id(), self.genesis_hash.clone(), self.best_block.read().unwrap().height()) {
-					if let Ok(update_msg) = self.get_channel_update_for_broadcast(chan) {
-						pending_msg_events.push(events::MessageSendEvent::SendChannelAnnouncement {
-							node_id: *counterparty_node_id,
-							msg, update_msg,
+		let per_peer_state = self.per_peer_state.read().unwrap();
+
+		for (_cp_id, peer_state_mutex) in per_peer_state.iter() {
+			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+			let peer_state = &mut *peer_state_lock;
+			let pending_msg_events = &mut peer_state.pending_msg_events;
+			peer_state.channel_by_id.retain(|_, chan| {
+				let retain = if chan.get_counterparty_node_id() == *counterparty_node_id {
+					if !chan.have_received_message() {
+						// If we created this (outbound) channel while we were disconnected from the
+						// peer we probably failed to send the open_channel message, which is now
+						// lost. We can't have had anything pending related to this channel, so we just
+						// drop it.
+						false
+					} else {
+						pending_msg_events.push(events::MessageSendEvent::SendChannelReestablish {
+							node_id: chan.get_counterparty_node_id(),
+							msg: chan.get_channel_reestablish(&self.logger),
 						});
+						true
+					}
+				} else { true };
+				if retain && chan.get_counterparty_node_id() != *counterparty_node_id {
+					if let Some(msg) = chan.get_signed_channel_announcement(self.get_our_node_id(), self.genesis_hash.clone(), self.best_block.read().unwrap().height()) {
+						if let Ok(update_msg) = self.get_channel_update_for_broadcast(chan) {
+							pending_msg_events.push(events::MessageSendEvent::SendChannelAnnouncement {
+								node_id: *counterparty_node_id,
+								msg, update_msg,
+							});
+						}
 					}
 				}
-			}
-			retain
-		});
+				retain
+			});
+		}
 		//TODO: Also re-broadcast announcement_signatures
 		Ok(())
 	}
@@ -5909,22 +6136,29 @@ where
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 
 		if msg.channel_id == [0; 32] {
-			for chan in self.list_channels() {
-				if chan.counterparty.node_id == *counterparty_node_id {
-					// Untrusted messages from peer, we throw away the error if id points to a non-existent channel
-					let _ = self.force_close_channel_with_peer(&chan.channel_id, counterparty_node_id, Some(&msg.data), true);
-				}
+			let channel_ids: Vec<[u8; 32]> = {
+				let per_peer_state = self.per_peer_state.read().unwrap();
+				let peer_state_mutex_opt = per_peer_state.get(counterparty_node_id);
+				if let None = peer_state_mutex_opt { return; }
+				let mut peer_state_lock = peer_state_mutex_opt.unwrap().lock().unwrap();
+				let peer_state = &mut *peer_state_lock;
+				peer_state.channel_by_id.keys().cloned().collect()
+			};
+			for channel_id in channel_ids {
+				// Untrusted messages from peer, we throw away the error if id points to a non-existent channel
+				let _ = self.force_close_channel_with_peer(&channel_id, counterparty_node_id, Some(&msg.data), true);
 			}
 		} else {
 			{
 				// First check if we can advance the channel type and try again.
-				let mut channel_state = self.channel_state.lock().unwrap();
-				if let Some(chan) = channel_state.by_id.get_mut(&msg.channel_id) {
-					if chan.get_counterparty_node_id() != *counterparty_node_id {
-						return;
-					}
+				let per_peer_state = self.per_peer_state.read().unwrap();
+				let peer_state_mutex_opt = per_peer_state.get(counterparty_node_id);
+				if let None = peer_state_mutex_opt { return; }
+				let mut peer_state_lock = peer_state_mutex_opt.unwrap().lock().unwrap();
+				let peer_state = &mut *peer_state_lock;
+				if let Some(chan) = peer_state.channel_by_id.get_mut(&msg.channel_id) {
 					if let Ok(msg) = chan.maybe_handle_error_without_close(self.genesis_hash) {
-						channel_state.pending_msg_events.push(events::MessageSendEvent::SendOpenChannel {
+						peer_state.pending_msg_events.push(events::MessageSendEvent::SendOpenChannel {
 							node_id: *counterparty_node_id,
 							msg,
 						});
@@ -6400,19 +6634,29 @@ where
 		}
 
 		{
-			// Take `channel_state` lock temporarily to avoid creating a lock order that requires
-			// that the `forward_htlcs` lock is taken after `channel_state`
-			let channel_state = self.channel_state.lock().unwrap();
+			let per_peer_state = self.per_peer_state.read().unwrap();
 			let mut unfunded_channels = 0;
-			for (_, channel) in channel_state.by_id.iter() {
-				if !channel.is_funding_initiated() {
-					unfunded_channels += 1;
+			let mut number_of_channels = 0;
+			for (_, peer_state_mutex) in per_peer_state.iter() {
+				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+				let peer_state = &mut *peer_state_lock;
+				number_of_channels += peer_state.channel_by_id.len();
+				for (_, channel) in peer_state.channel_by_id.iter() {
+					if !channel.is_funding_initiated() {
+						unfunded_channels += 1;
+					}
 				}
 			}
-			((channel_state.by_id.len() - unfunded_channels) as u64).write(writer)?;
-			for (_, channel) in channel_state.by_id.iter() {
-				if channel.is_funding_initiated() {
-					channel.write(writer)?;
+
+			((number_of_channels - unfunded_channels) as u64).write(writer)?;
+
+			for (_, peer_state_mutex) in per_peer_state.iter() {
+				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+				let peer_state = &mut *peer_state_lock;
+				for (_, channel) in peer_state.channel_by_id.iter() {
+					if channel.is_funding_initiated() {
+						channel.write(writer)?;
+					}
 				}
 			}
 		}
@@ -6694,7 +6938,7 @@ where
 
 		let channel_count: u64 = Readable::read(reader)?;
 		let mut funding_txo_set = HashSet::with_capacity(cmp::min(channel_count as usize, 128));
-		let mut by_id = HashMap::with_capacity(cmp::min(channel_count as usize, 128));
+		let mut peer_channels: HashMap<PublicKey, HashMap<[u8; 32], Channel<<K::Target as SignerProvider>::Signer>>> = HashMap::with_capacity(cmp::min(channel_count as usize, 128));
 		let mut id_to_peer = HashMap::with_capacity(cmp::min(channel_count as usize, 128));
 		let mut short_to_chan_info = HashMap::with_capacity(cmp::min(channel_count as usize, 128));
 		let mut channel_closures = Vec::new();
@@ -6760,7 +7004,17 @@ where
 					if channel.is_funding_initiated() {
 						id_to_peer.insert(channel.channel_id(), channel.get_counterparty_node_id());
 					}
-					by_id.insert(channel.channel_id(), channel);
+					match peer_channels.entry(channel.get_counterparty_node_id()) {
+						hash_map::Entry::Occupied(mut entry) => {
+							let by_id_map = entry.get_mut();
+							by_id_map.insert(channel.channel_id(), channel);
+						},
+						hash_map::Entry::Vacant(entry) => {
+							let mut by_id_map = HashMap::new();
+							by_id_map.insert(channel.channel_id(), channel);
+							entry.insert(by_id_map);
+						}
+					}
 				}
 			} else if channel.is_awaiting_initial_mon_persist() {
 				// If we were persisted and shut down while the initial ChannelMonitor persistence
@@ -6815,11 +7069,13 @@ where
 		}
 
 		let peer_count: u64 = Readable::read(reader)?;
-		let mut per_peer_state = HashMap::with_capacity(cmp::min(peer_count as usize, MAX_ALLOC_SIZE/mem::size_of::<(PublicKey, Mutex<PeerState>)>()));
+		let mut per_peer_state = HashMap::with_capacity(cmp::min(peer_count as usize, MAX_ALLOC_SIZE/mem::size_of::<(PublicKey, Mutex<PeerState<<K::Target as SignerProvider>::Signer>>)>()));
 		for _ in 0..peer_count {
 			let peer_pubkey = Readable::read(reader)?;
 			let peer_state = PeerState {
+				channel_by_id: peer_channels.remove(&peer_pubkey).unwrap_or(HashMap::new()),
 				latest_features: Readable::read(reader)?,
+				pending_msg_events: Vec::new(),
 			};
 			per_peer_state.insert(peer_pubkey, Mutex::new(peer_state));
 		}
@@ -6911,7 +7167,7 @@ where
 			// We only rebuild the pending payments map if we were most recently serialized by
 			// 0.0.102+
 			for (_, monitor) in args.channel_monitors.iter() {
-				if by_id.get(&monitor.get_funding_txo().0.to_channel_id()).is_none() {
+				if id_to_peer.get(&monitor.get_funding_txo().0.to_channel_id()).is_none() {
 					for (htlc_source, htlc) in monitor.get_pending_outbound_htlcs() {
 						if let HTLCSource::OutboundRoute { payment_id, session_priv, path, payment_secret, .. } = htlc_source {
 							if path.is_empty() {
@@ -7059,27 +7315,31 @@ where
 		}
 
 		let mut outbound_scid_aliases = HashSet::new();
-		for (chan_id, chan) in by_id.iter_mut() {
-			if chan.outbound_scid_alias() == 0 {
-				let mut outbound_scid_alias;
-				loop {
-					outbound_scid_alias = fake_scid::Namespace::OutboundAlias
-						.get_fake_scid(best_block_height, &genesis_hash, fake_scid_rand_bytes.as_ref().unwrap(), &args.keys_manager);
-					if outbound_scid_aliases.insert(outbound_scid_alias) { break; }
-				}
-				chan.set_outbound_scid_alias(outbound_scid_alias);
-			} else if !outbound_scid_aliases.insert(chan.outbound_scid_alias()) {
-				// Note that in rare cases its possible to hit this while reading an older
-				// channel if we just happened to pick a colliding outbound alias above.
-				log_error!(args.logger, "Got duplicate outbound SCID alias; {}", chan.outbound_scid_alias());
-				return Err(DecodeError::InvalidValue);
-			}
-			if chan.is_usable() {
-				if short_to_chan_info.insert(chan.outbound_scid_alias(), (chan.get_counterparty_node_id(), *chan_id)).is_some() {
+		for (_peer_node_id, peer_state_mutex) in per_peer_state.iter_mut() {
+			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+			let peer_state = &mut *peer_state_lock;
+			for (chan_id, chan) in peer_state.channel_by_id.iter_mut() {
+				if chan.outbound_scid_alias() == 0 {
+					let mut outbound_scid_alias;
+					loop {
+						outbound_scid_alias = fake_scid::Namespace::OutboundAlias
+							.get_fake_scid(best_block_height, &genesis_hash, fake_scid_rand_bytes.as_ref().unwrap(), &args.keys_manager);
+						if outbound_scid_aliases.insert(outbound_scid_alias) { break; }
+					}
+					chan.set_outbound_scid_alias(outbound_scid_alias);
+				} else if !outbound_scid_aliases.insert(chan.outbound_scid_alias()) {
 					// Note that in rare cases its possible to hit this while reading an older
 					// channel if we just happened to pick a colliding outbound alias above.
 					log_error!(args.logger, "Got duplicate outbound SCID alias; {}", chan.outbound_scid_alias());
 					return Err(DecodeError::InvalidValue);
+				}
+				if chan.is_usable() {
+					if short_to_chan_info.insert(chan.outbound_scid_alias(), (chan.get_counterparty_node_id(), *chan_id)).is_some() {
+						// Note that in rare cases its possible to hit this while reading an older
+						// channel if we just happened to pick a colliding outbound alias above.
+						log_error!(args.logger, "Got duplicate outbound SCID alias; {}", chan.outbound_scid_alias());
+						return Err(DecodeError::InvalidValue);
+					}
 				}
 			}
 		}
@@ -7117,8 +7377,13 @@ where
 						// without the new monitor persisted - we'll end up right back here on
 						// restart.
 						let previous_channel_id = claimable_htlc.prev_hop.outpoint.to_channel_id();
-						if let Some(channel) = by_id.get_mut(&previous_channel_id) {
-							channel.claim_htlc_while_disconnected_dropping_mon_update(claimable_htlc.prev_hop.htlc_id, payment_preimage, &args.logger);
+						if let Some(peer_node_id) = id_to_peer.get(&previous_channel_id){
+							let peer_state_mutex = per_peer_state.get(peer_node_id).unwrap();
+							let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+							let peer_state = &mut *peer_state_lock;
+							if let Some(channel) = peer_state.channel_by_id.get_mut(&previous_channel_id) {
+								channel.claim_htlc_while_disconnected_dropping_mon_update(claimable_htlc.prev_hop.htlc_id, payment_preimage, &args.logger);
+							}
 						}
 						if let Some(previous_hop_monitor) = args.channel_monitors.get(&claimable_htlc.prev_hop.outpoint) {
 							previous_hop_monitor.provide_payment_preimage(&payment_hash, &payment_preimage, &args.tx_broadcaster, &bounded_fee_estimator, &args.logger);
@@ -7143,10 +7408,6 @@ where
 
 			best_block: RwLock::new(BestBlock::new(best_block_hash, best_block_height)),
 
-			channel_state: Mutex::new(ChannelHolder {
-				by_id,
-				pending_msg_events: Vec::new(),
-			}),
 			inbound_payment_key: expanded_inbound_key,
 			pending_inbound_payments: Mutex::new(pending_inbound_payments),
 			pending_outbound_payments: OutboundPayments { pending_outbound_payments: Mutex::new(pending_outbound_payments.unwrap()) },
@@ -7167,7 +7428,7 @@ where
 
 			highest_seen_timestamp: AtomicUsize::new(highest_seen_timestamp as usize),
 
-			per_peer_state: RwLock::new(per_peer_state),
+			per_peer_state: FairRwLock::new(per_peer_state),
 
 			pending_events: Mutex::new(pending_events_read),
 			pending_background_events: Mutex::new(pending_background_events_read),
@@ -7197,17 +7458,24 @@ where
 mod tests {
 	use bitcoin::hashes::Hash;
 	use bitcoin::hashes::sha256::Hash as Sha256;
+	use bitcoin::hashes::hex::FromHex;
+	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
+	use bitcoin::secp256k1::ecdsa::Signature;
+	use bitcoin::secp256k1::ffi::Signature as FFISignature;
+	use bitcoin::blockdata::script::Script;
+	use bitcoin::Txid;
 	use core::time::Duration;
 	use core::sync::atomic::Ordering;
 	use crate::ln::{PaymentPreimage, PaymentHash, PaymentSecret};
-	use crate::ln::channelmanager::{self, inbound_payment, PaymentId, PaymentSendFailure};
+	use crate::ln::channelmanager::{self, inbound_payment, PaymentId, PaymentSendFailure, InterceptId};
 	use crate::ln::functional_test_utils::*;
 	use crate::ln::msgs;
-	use crate::ln::msgs::ChannelMessageHandler;
+	use crate::ln::msgs::{ChannelMessageHandler, OptionalField};
 	use crate::routing::router::{PaymentParameters, RouteParameters, find_route};
 	use crate::util::errors::APIError;
 	use crate::util::events::{Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, ClosureReason};
 	use crate::util::test_utils;
+	use crate::util::config::ChannelConfig;
 	use crate::chain::keysinterface::{EntropySource, KeysInterface};
 
 	#[test]
@@ -7767,6 +8035,194 @@ mod tests {
 
 		check_closed_event!(nodes[0], 1, ClosureReason::CooperativeClosure);
 		check_closed_event!(nodes[1], 1, ClosureReason::CooperativeClosure);
+	}
+
+	fn check_not_connected_to_peer_error<T>(res_err: Result<T, APIError>, expected_public_key: PublicKey) {
+		let expected_message = format!("Not connected to node: {}", expected_public_key);
+		check_api_misuse_error_message(expected_message, res_err)
+	}
+
+	fn check_unkown_peer_error<T>(res_err: Result<T, APIError>, expected_public_key: PublicKey) {
+		let expected_message = format!("Can't find a peer matching the passed counterparty node_id {}", expected_public_key);
+		check_api_misuse_error_message(expected_message, res_err)
+	}
+
+	fn check_api_misuse_error_message<T>(expected_err_message: String, res_err: Result<T, APIError>) {
+		match res_err {
+			Err(APIError::APIMisuseError { err }) => {
+				assert_eq!(err, expected_err_message);
+			},
+			Ok(_) => panic!("Unexpected Ok"),
+			Err(_) => panic!("Unexpected Error"),
+		}
+	}
+
+	#[test]
+	fn test_api_calls_with_unkown_counterparty_node() {
+		// Tests that our API functions and message handlers that expects a `counterparty_node_id`
+		// as input, behaves as expected if the `counterparty_node_id` is an unkown peer in the
+		// `ChannelManager::per_peer_state` map.
+		let chanmon_cfg = create_chanmon_cfgs(2);
+		let node_cfg = create_node_cfgs(2, &chanmon_cfg);
+		let node_chanmgr = create_node_chanmgrs(2, &node_cfg, &[None, None]);
+		let nodes = create_network(2, &node_cfg, &node_chanmgr);
+
+		// Boilerplate code to produce `open_channel` and `accept_channel` msgs more densly than
+		// creating dummy ones.
+		nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 1_000_000, 500_000_000, 42, None).unwrap();
+		let open_channel_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
+		nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), channelmanager::provided_init_features(), &open_channel_msg);
+		let accept_channel_msg = get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id());
+
+		// Dummy values
+		let channel_id = [4; 32];
+		let signature = Signature::from(unsafe { FFISignature::new() });
+		let unkown_public_key = PublicKey::from_secret_key(&Secp256k1::signing_only(), &SecretKey::from_slice(&[42; 32]).unwrap());
+		let intercept_id = InterceptId([0; 32]);
+
+		// Dummy msgs
+		let funding_created_msg = msgs::FundingCreated {
+			temporary_channel_id: open_channel_msg.temporary_channel_id,
+			funding_txid: Txid::from_hex("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff").unwrap(),
+			funding_output_index: 0,
+			signature: signature,
+		};
+
+		let funding_signed_msg = msgs::FundingSigned {
+			channel_id: channel_id,
+			signature: signature,
+		};
+
+		let channel_ready_msg = msgs::ChannelReady {
+			channel_id: channel_id,
+			next_per_commitment_point: unkown_public_key,
+			short_channel_id_alias: None,
+		};
+
+		let announcement_signatures_msg = msgs::AnnouncementSignatures {
+			channel_id: channel_id,
+			short_channel_id: 0,
+			node_signature: signature,
+			bitcoin_signature: signature,
+		};
+
+		let channel_reestablish_msg = msgs::ChannelReestablish {
+			channel_id: channel_id,
+			next_local_commitment_number: 0,
+			next_remote_commitment_number: 0,
+			data_loss_protect: OptionalField::Absent,
+		};
+
+		let closing_signed_msg = msgs::ClosingSigned {
+			channel_id: channel_id,
+			fee_satoshis: 1000,
+			signature: signature,
+			fee_range: None,
+		};
+
+		let shutdown_msg = msgs::Shutdown {
+			channel_id: channel_id,
+			scriptpubkey: Script::new(),
+		};
+
+		let onion_routing_packet = msgs::OnionPacket {
+			version: 255,
+			public_key: Ok(unkown_public_key),
+			hop_data: [1; 20*65],
+			hmac: [2; 32]
+		};
+
+		let update_add_htlc_msg = msgs::UpdateAddHTLC {
+			channel_id: channel_id,
+			htlc_id: 0,
+			amount_msat: 1000000,
+			payment_hash: PaymentHash([1; 32]),
+			cltv_expiry: 821716,
+			onion_routing_packet
+		};
+
+		let commitment_signed_msg = msgs::CommitmentSigned {
+			channel_id: channel_id,
+			signature: signature,
+			htlc_signatures: Vec::new(),
+		};
+
+		let update_fee_msg = msgs::UpdateFee {
+			channel_id: channel_id,
+			feerate_per_kw: 1000,
+		};
+
+		let malformed_update_msg = msgs::UpdateFailMalformedHTLC{
+			channel_id: channel_id,
+			htlc_id: 0,
+			sha256_of_onion: [1; 32],
+			failure_code: 0x8000,
+		};
+
+		let fulfill_update_msg = msgs::UpdateFulfillHTLC{
+			channel_id: channel_id,
+			htlc_id: 0,
+			payment_preimage: PaymentPreimage([1; 32]),
+		};
+
+		let fail_update_msg = msgs::UpdateFailHTLC{
+			channel_id: channel_id,
+			htlc_id: 0,
+			reason: msgs::OnionErrorPacket { data: Vec::new()},
+		};
+
+		let revoke_and_ack_msg = msgs::RevokeAndACK {
+			channel_id: channel_id,
+			per_commitment_secret: [1; 32],
+			next_per_commitment_point: unkown_public_key,
+		};
+
+		// Test the API functions and message handlers.
+		check_not_connected_to_peer_error(nodes[0].node.create_channel(unkown_public_key, 1_000_000, 500_000_000, 42, None), unkown_public_key);
+
+		nodes[1].node.handle_open_channel(&unkown_public_key, channelmanager::provided_init_features(), &open_channel_msg);
+
+		nodes[0].node.handle_accept_channel(&unkown_public_key, channelmanager::provided_init_features(), &accept_channel_msg);
+
+		check_unkown_peer_error(nodes[0].node.accept_inbound_channel(&open_channel_msg.temporary_channel_id, &unkown_public_key, 42), unkown_public_key);
+
+		nodes[1].node.handle_funding_created(&unkown_public_key, &funding_created_msg);
+
+		nodes[0].node.handle_funding_signed(&unkown_public_key, &funding_signed_msg);
+
+		nodes[0].node.handle_channel_ready(&unkown_public_key, &channel_ready_msg);
+
+		nodes[1].node.handle_announcement_signatures(&unkown_public_key, &announcement_signatures_msg);
+
+		check_unkown_peer_error(nodes[0].node.close_channel(&channel_id, &unkown_public_key), unkown_public_key);
+
+		check_unkown_peer_error(nodes[0].node.force_close_broadcasting_latest_txn(&channel_id, &unkown_public_key), unkown_public_key);
+
+		check_unkown_peer_error(nodes[0].node.force_close_without_broadcasting_txn(&channel_id, &unkown_public_key), unkown_public_key);
+
+		check_unkown_peer_error(nodes[0].node.forward_intercepted_htlc(intercept_id, &channel_id, unkown_public_key, 1_000_000), unkown_public_key);
+
+		check_unkown_peer_error(nodes[0].node.update_channel_config(&unkown_public_key, &[channel_id], &ChannelConfig::default()), unkown_public_key);
+
+		nodes[0].node.handle_shutdown(&unkown_public_key, &channelmanager::provided_init_features(), &shutdown_msg);
+
+		nodes[1].node.handle_closing_signed(&unkown_public_key, &closing_signed_msg);
+
+		nodes[0].node.handle_channel_reestablish(&unkown_public_key, &channel_reestablish_msg);
+
+		nodes[1].node.handle_update_add_htlc(&unkown_public_key, &update_add_htlc_msg);
+
+		nodes[1].node.handle_commitment_signed(&unkown_public_key, &commitment_signed_msg);
+
+		nodes[1].node.handle_update_fail_malformed_htlc(&unkown_public_key, &malformed_update_msg);
+
+		nodes[1].node.handle_update_fail_htlc(&unkown_public_key, &fail_update_msg);
+
+		nodes[1].node.handle_update_fulfill_htlc(&unkown_public_key, &fulfill_update_msg);
+
+		nodes[1].node.handle_revoke_and_ack(&unkown_public_key, &revoke_and_ack_msg);
+
+		nodes[1].node.handle_update_fee(&unkown_public_key, &update_fee_msg);
 	}
 }
 

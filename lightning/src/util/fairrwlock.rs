@@ -1,4 +1,4 @@
-use std::sync::{LockResult, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{LockResult, RwLock, RwLockReadGuard, RwLockWriteGuard, TryLockResult};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Rust libstd's RwLock does not provide any fairness guarantees (and, in fact, when used on
@@ -42,5 +42,9 @@ impl<T> FairRwLock<T> {
 		// struct-level documentation, it shouldn't pose a significant issue for our current
 		// codebase.
 		self.lock.read()
+	}
+
+	pub fn try_write(&self) -> TryLockResult<RwLockWriteGuard<'_, T>> {
+		self.lock.try_write()
 	}
 }

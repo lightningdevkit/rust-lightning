@@ -24,7 +24,6 @@ use bitcoin::blockdata::opcodes;
 use bitcoin::secp256k1::Secp256k1;
 
 use crate::prelude::*;
-use core::mem;
 use bitcoin::hashes::Hash;
 use bitcoin::TxMerkleNode;
 
@@ -267,10 +266,12 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool, use_funding_
 	let chan_conf_height = core::cmp::max(nodes[0].best_block_info().1 + 1, nodes[1].best_block_info().1 + 1);
 	let chan = create_announced_chan_between_nodes(&nodes, 0, 1, channelmanager::provided_init_features(), channelmanager::provided_init_features());
 
-	let channel_state = nodes[0].node.channel_state.lock().unwrap();
-	assert_eq!(channel_state.by_id.len(), 1);
-	assert_eq!(nodes[0].node.short_to_chan_info.read().unwrap().len(), 2);
-	mem::drop(channel_state);
+	{
+		let per_peer_state = nodes[0].node.per_peer_state.read().unwrap();
+		let peer_state = per_peer_state.get(&nodes[1].node.get_our_node_id()).unwrap().lock().unwrap();
+		assert_eq!(peer_state.channel_by_id.len(), 1);
+		assert_eq!(nodes[0].node.short_to_chan_info.read().unwrap().len(), 2);
+	}
 
 	assert_eq!(nodes[0].node.list_channels()[0].confirmations, Some(10));
 	assert_eq!(nodes[1].node.list_channels()[0].confirmations, Some(10));
@@ -303,8 +304,9 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool, use_funding_
 		handle_announce_close_broadcast_events(&nodes, 0, 1, true, "Channel closed because of an exception: Funding transaction was un-confirmed. Locked at 6 confs, now have 0 confs.");
 		check_added_monitors!(nodes[1], 1);
 		{
-			let channel_state = nodes[0].node.channel_state.lock().unwrap();
-			assert_eq!(channel_state.by_id.len(), 0);
+			let per_peer_state = nodes[0].node.per_peer_state.read().unwrap();
+			let peer_state = per_peer_state.get(&nodes[1].node.get_our_node_id()).unwrap().lock().unwrap();
+			assert_eq!(peer_state.channel_by_id.len(), 0);
 			assert_eq!(nodes[0].node.short_to_chan_info.read().unwrap().len(), 0);
 		}
 	}
@@ -354,8 +356,9 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool, use_funding_
 		handle_announce_close_broadcast_events(&nodes, 0, 1, true, "Channel closed because of an exception: Funding transaction was un-confirmed. Locked at 6 confs, now have 0 confs.");
 		check_added_monitors!(nodes[1], 1);
 		{
-			let channel_state = nodes[0].node.channel_state.lock().unwrap();
-			assert_eq!(channel_state.by_id.len(), 0);
+			let per_peer_state = nodes[0].node.per_peer_state.read().unwrap();
+			let peer_state = per_peer_state.get(&nodes[1].node.get_our_node_id()).unwrap().lock().unwrap();
+			assert_eq!(peer_state.channel_by_id.len(), 0);
 			assert_eq!(nodes[0].node.short_to_chan_info.read().unwrap().len(), 0);
 		}
 	}
