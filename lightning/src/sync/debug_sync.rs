@@ -77,7 +77,7 @@ fn get_construction_location(backtrace: &Backtrace) -> String {
 	// Find the first frame that is after `debug_sync` (or that is in our tests) and use
 	// that as the mutex construction site. Note that the first few frames may be in
 	// the `backtrace` crate, so we have to ignore those.
-	let sync_mutex_constr_regex = regex::Regex::new(r"lightning.*debug_sync.*new").unwrap();
+	let sync_mutex_constr_regex = regex::Regex::new(r"lightning.*debug_sync").unwrap();
 	let mut found_debug_sync = false;
 	for frame in backtrace.frames() {
 		for symbol in frame.symbols() {
