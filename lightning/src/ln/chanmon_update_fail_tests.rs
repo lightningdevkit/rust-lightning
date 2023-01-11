@@ -143,7 +143,7 @@ fn test_monitor_and_persister_update_fail() {
 		let mut node_0_per_peer_lock;
 		let mut node_0_peer_state_lock;
 		let mut channel = get_channel_ref!(nodes[0], nodes[1], node_0_per_peer_lock, node_0_peer_state_lock, chan.2);
-		if let Ok((_, _, update)) = channel.commitment_signed(&updates.commitment_signed, &node_cfgs[0].logger) {
+		if let Ok(update) = channel.commitment_signed(&updates.commitment_signed, &node_cfgs[0].logger) {
 			// Check that even though the persister is returning a InProgress,
 			// because the update is bogus, ultimately the error that's returned
 			// should be a PermanentFailure.
@@ -1602,7 +1602,6 @@ fn test_monitor_update_fail_claim() {
 
 	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
 	nodes[1].node.claim_funds(payment_preimage_1);
-	expect_payment_claimed!(nodes[1], payment_hash_1, 1_000_000);
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 	check_added_monitors!(nodes[1], 1);
 
@@ -1628,6 +1627,7 @@ fn test_monitor_update_fail_claim() {
 	let events = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 0);
 	commitment_signed_dance!(nodes[1], nodes[2], payment_event.commitment_msg, false, true);
+	expect_pending_htlcs_forwardable_ignore!(nodes[1]);
 
 	let (_, payment_hash_3, payment_secret_3) = get_payment_preimage_hash!(nodes[0]);
 	nodes[2].node.send_payment(&route, payment_hash_3, &Some(payment_secret_3), PaymentId(payment_hash_3.0)).unwrap();
@@ -1645,6 +1645,7 @@ fn test_monitor_update_fail_claim() {
 	let channel_id = chan_1.2;
 	let (outpoint, latest_update, _) = nodes[1].chain_monitor.latest_monitor_update_id.lock().unwrap().get(&channel_id).unwrap().clone();
 	nodes[1].chain_monitor.chain_monitor.force_channel_monitor_updated(outpoint, latest_update);
+	expect_payment_claimed!(nodes[1], payment_hash_1, 1_000_000);
 	check_added_monitors!(nodes[1], 0);
 
 	let bs_fulfill_update = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
@@ -1653,7 +1654,7 @@ fn test_monitor_update_fail_claim() {
 	expect_payment_sent!(nodes[0], payment_preimage_1);
 
 	// Get the payment forwards, note that they were batched into one commitment update.
-	expect_pending_htlcs_forwardable!(nodes[1]);
+	nodes[1].node.process_pending_htlc_forwards();
 	check_added_monitors!(nodes[1], 1);
 	let bs_forward_update = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 	nodes[0].node.handle_update_add_htlc(&nodes[1].node.get_our_node_id(), &bs_forward_update.update_add_htlcs[0]);
@@ -1739,7 +1740,6 @@ fn test_monitor_update_on_pending_forwards() {
 	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
 	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[1], vec![HTLCDestination::NextHopChannel { node_id: Some(nodes[2].node.get_our_node_id()), channel_id: chan_2.2 }]);
 	check_added_monitors!(nodes[1], 1);
-	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 
 	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
 	let (outpoint, latest_update, _) = nodes[1].chain_monitor.latest_monitor_update_id.lock().unwrap().get(&chan_1.2).unwrap().clone();
@@ -1753,17 +1753,17 @@ fn test_monitor_update_on_pending_forwards() {
 
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 3);
-	if let Event::PaymentPathFailed { payment_hash, payment_failed_permanently, .. } = events[0] {
+	if let Event::PaymentPathFailed { payment_hash, payment_failed_permanently, .. } = events[1] {
 		assert_eq!(payment_hash, payment_hash_1);
 		assert!(payment_failed_permanently);
 	} else { panic!("Unexpected event!"); }
-	match events[1] {
+	match events[2] {
 		Event::PaymentFailed { payment_hash, .. } => {
 			assert_eq!(payment_hash, payment_hash_1);
 		},
 		_ => panic!("Unexpected event"),
 	}
-	match events[2] {
+	match events[0] {
 		Event::PendingHTLCsForwardable { .. } => { },
 		_ => panic!("Unexpected event"),
 	};
@@ -1803,7 +1803,6 @@ fn monitor_update_claim_fail_no_response() {
 
 	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
 	nodes[1].node.claim_funds(payment_preimage_1);
-	expect_payment_claimed!(nodes[1], payment_hash_1, 1_000_000);
 	check_added_monitors!(nodes[1], 1);
 
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
@@ -1811,6 +1810,7 @@ fn monitor_update_claim_fail_no_response() {
 	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
 	let (outpoint, latest_update, _) = nodes[1].chain_monitor.latest_monitor_update_id.lock().unwrap().get(&channel_id).unwrap().clone();
 	nodes[1].chain_monitor.chain_monitor.force_channel_monitor_updated(outpoint, latest_update);
+	expect_payment_claimed!(nodes[1], payment_hash_1, 1_000_000);
 	check_added_monitors!(nodes[1], 0);
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 
@@ -2290,7 +2290,6 @@ fn do_channel_holding_cell_serialize(disconnect: bool, reload_a: bool) {
 	chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
 	nodes[0].node.claim_funds(payment_preimage_0);
 	check_added_monitors!(nodes[0], 1);
-	expect_payment_claimed!(nodes[0], payment_hash_0, 100_000);
 
 	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &send.msgs[0]);
 	nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &send.commitment_msg);
@@ -2353,6 +2352,7 @@ fn do_channel_holding_cell_serialize(disconnect: bool, reload_a: bool) {
 	chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
 	let (funding_txo, mon_id, _) = nodes[0].chain_monitor.latest_monitor_update_id.lock().unwrap().get(&chan_id).unwrap().clone();
 	nodes[0].chain_monitor.chain_monitor.force_channel_monitor_updated(funding_txo, mon_id);
+	expect_payment_claimed!(nodes[0], payment_hash_0, 100_000);
 
 	// New outbound messages should be generated immediately upon a call to
 	// get_and_clear_pending_msg_events (but not before).
@@ -2606,7 +2606,15 @@ fn test_permanent_error_during_sending_shutdown() {
 	chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::PermanentFailure);
 
 	assert!(nodes[0].node.close_channel(&channel_id, &nodes[1].node.get_our_node_id()).is_ok());
-	check_closed_broadcast!(nodes[0], true);
+
+	// We always send the `shutdown` response when initiating a shutdown, even if we immediately
+	// close the channel thereafter.
+	let msg_events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 3);
+	if let MessageSendEvent::SendShutdown { .. } = msg_events[0] {} else { panic!(); }
+	if let MessageSendEvent::BroadcastChannelUpdate { .. } = msg_events[1] {} else { panic!(); }
+	if let MessageSendEvent::HandleError { .. } =  msg_events[2] {} else { panic!(); }
+
 	check_added_monitors!(nodes[0], 2);
 	check_closed_event!(nodes[0], 1, ClosureReason::ProcessingError { err: "ChannelMonitor storage failure".to_string() });
 }
@@ -2629,7 +2637,15 @@ fn test_permanent_error_during_handling_shutdown() {
 	assert!(nodes[0].node.close_channel(&channel_id, &nodes[1].node.get_our_node_id()).is_ok());
 	let shutdown = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[1].node.get_our_node_id());
 	nodes[1].node.handle_shutdown(&nodes[0].node.get_our_node_id(), &shutdown);
-	check_closed_broadcast!(nodes[1], true);
+
+	// We always send the `shutdown` response when receiving a shutdown, even if we immediately
+	// close the channel thereafter.
+	let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 3);
+	if let MessageSendEvent::SendShutdown { .. } = msg_events[0] {} else { panic!(); }
+	if let MessageSendEvent::BroadcastChannelUpdate { .. } = msg_events[1] {} else { panic!(); }
+	if let MessageSendEvent::HandleError { .. } =  msg_events[2] {} else { panic!(); }
+
 	check_added_monitors!(nodes[1], 2);
 	check_closed_event!(nodes[1], 1, ClosureReason::ProcessingError { err: "ChannelMonitor storage failure".to_string() });
 }
@@ -2651,7 +2667,6 @@ fn double_temp_error() {
 	// `claim_funds` results in a ChannelMonitorUpdate.
 	nodes[1].node.claim_funds(payment_preimage_1);
 	check_added_monitors!(nodes[1], 1);
-	expect_payment_claimed!(nodes[1], payment_hash_1, 1_000_000);
 	let (funding_tx, latest_update_1, _) = nodes[1].chain_monitor.latest_monitor_update_id.lock().unwrap().get(&channel_id).unwrap().clone();
 
 	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
@@ -2659,7 +2674,6 @@ fn double_temp_error() {
 	// which had some asserts that prevented it from being called twice.
 	nodes[1].node.claim_funds(payment_preimage_2);
 	check_added_monitors!(nodes[1], 1);
-	expect_payment_claimed!(nodes[1], payment_hash_2, 1_000_000);
 	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
 
 	let (_, latest_update_2, _) = nodes[1].chain_monitor.latest_monitor_update_id.lock().unwrap().get(&channel_id).unwrap().clone();
@@ -2668,11 +2682,24 @@ fn double_temp_error() {
 	check_added_monitors!(nodes[1], 0);
 	nodes[1].chain_monitor.chain_monitor.force_channel_monitor_updated(funding_tx, latest_update_2);
 
-	// Complete the first HTLC.
-	let events = nodes[1].node.get_and_clear_pending_msg_events();
-	assert_eq!(events.len(), 1);
+	// Complete the first HTLC. Note that as a side-effect we handle the monitor update completions
+	// and get both PaymentClaimed events at once.
+	let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
+
+	let events = nodes[1].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 2);
+	match events[0] {
+		Event::PaymentClaimed { amount_msat: 1_000_000, payment_hash, .. } => assert_eq!(payment_hash, payment_hash_1),
+		_ => panic!("Unexpected Event: {:?}", events[0]),
+	}
+	match events[1] {
+		Event::PaymentClaimed { amount_msat: 1_000_000, payment_hash, .. } => assert_eq!(payment_hash, payment_hash_2),
+		_ => panic!("Unexpected Event: {:?}", events[1]),
+	}
+
+	assert_eq!(msg_events.len(), 1);
 	let (update_fulfill_1, commitment_signed_b1, node_id) = {
-		match &events[0] {
+		match &msg_events[0] {
 			&MessageSendEvent::UpdateHTLCs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref update_fee, ref commitment_signed } } => {
 				assert!(update_add_htlcs.is_empty());
 				assert_eq!(update_fulfill_htlcs.len(), 1);

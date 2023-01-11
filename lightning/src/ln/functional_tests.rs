@@ -3618,20 +3618,20 @@ fn test_simple_peer_disconnect() {
 			_ => panic!("Unexpected event"),
 		}
 		match events[1] {
+			Event::PaymentPathSuccessful { .. } => {},
+			_ => panic!("Unexpected event"),
+		}
+		match events[2] {
 			Event::PaymentPathFailed { payment_hash, payment_failed_permanently, .. } => {
 				assert_eq!(payment_hash, payment_hash_5);
 				assert!(payment_failed_permanently);
 			},
 			_ => panic!("Unexpected event"),
 		}
-		match events[2] {
+		match events[3] {
 			Event::PaymentFailed { payment_hash, .. } => {
 				assert_eq!(payment_hash, payment_hash_5);
 			},
-			_ => panic!("Unexpected event"),
-		}
-		match events[3] {
-			Event::PaymentPathSuccessful { .. } => {},
 			_ => panic!("Unexpected event"),
 		}
 	}
@@ -8186,7 +8186,7 @@ fn test_update_err_monitor_lockdown() {
 		let mut node_0_per_peer_lock;
 		let mut node_0_peer_state_lock;
 		let mut channel = get_channel_ref!(nodes[0], nodes[1], node_0_per_peer_lock, node_0_peer_state_lock, chan_1.2);
-		if let Ok((_, _, update)) = channel.commitment_signed(&updates.commitment_signed, &node_cfgs[0].logger) {
+		if let Ok(update) = channel.commitment_signed(&updates.commitment_signed, &node_cfgs[0].logger) {
 			assert_eq!(watchtower.chain_monitor.update_channel(outpoint, &update), ChannelMonitorUpdateStatus::PermanentFailure);
 			assert_eq!(nodes[0].chain_monitor.update_channel(outpoint, &update), ChannelMonitorUpdateStatus::Completed);
 		} else { assert!(false); }
@@ -8280,7 +8280,7 @@ fn test_concurrent_monitor_claim() {
 		let mut node_0_per_peer_lock;
 		let mut node_0_peer_state_lock;
 		let mut channel = get_channel_ref!(nodes[0], nodes[1], node_0_per_peer_lock, node_0_peer_state_lock, chan_1.2);
-		if let Ok((_, _, update)) = channel.commitment_signed(&updates.commitment_signed, &node_cfgs[0].logger) {
+		if let Ok(update) = channel.commitment_signed(&updates.commitment_signed, &node_cfgs[0].logger) {
 			// Watchtower Alice should already have seen the block and reject the update
 			assert_eq!(watchtower_alice.chain_monitor.update_channel(outpoint, &update), ChannelMonitorUpdateStatus::PermanentFailure);
 			assert_eq!(watchtower_bob.chain_monitor.update_channel(outpoint, &update), ChannelMonitorUpdateStatus::Completed);

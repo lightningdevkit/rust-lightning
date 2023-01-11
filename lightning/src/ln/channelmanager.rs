@@ -345,17 +345,6 @@ impl MsgHandleErrInternal {
 		}
 	}
 	#[inline]
-	fn ignore_no_close(err: String) -> Self {
-		Self {
-			err: LightningError {
-				err,
-				action: msgs::ErrorAction::IgnoreError,
-			},
-			chan_id: None,
-			shutdown_finish: None,
-		}
-	}
-	#[inline]
 	fn from_no_close(err: msgs::LightningError) -> Self {
 		Self { err, chan_id: None, shutdown_finish: None }
 	}
@@ -1869,24 +1858,26 @@ where
 			let peer_state = &mut *peer_state_lock;
 			match peer_state.channel_by_id.entry(channel_id.clone()) {
 				hash_map::Entry::Occupied(mut chan_entry) => {
-					let (shutdown_msg, monitor_update, htlcs) = chan_entry.get_mut().get_shutdown(&self.signer_provider, &peer_state.latest_features, target_feerate_sats_per_1000_weight)?;
+					let funding_txo_opt = chan_entry.get().get_funding_txo();
+					let their_features = &peer_state.latest_features;
+					let (shutdown_msg, mut monitor_update_opt, htlcs) = chan_entry.get_mut()
+						.get_shutdown(&self.signer_provider, their_features, target_feerate_sats_per_1000_weight)?;
 					failed_htlcs = htlcs;
 
-					// Update the monitor with the shutdown script if necessary.
-					if let Some(monitor_update) = monitor_update {
-						let update_res = self.chain_monitor.update_channel(chan_entry.get().get_funding_txo().unwrap(), &monitor_update);
-						let (result, is_permanent) =
-							handle_monitor_update_res!(self, update_res, chan_entry.get_mut(), RAACommitmentOrder::CommitmentFirst, chan_entry.key(), NO_UPDATE);
-						if is_permanent {
-							remove_channel!(self, chan_entry);
-							break result;
-						}
-					}
-
+					// We can send the `shutdown` message before updating the `ChannelMonitor`
+					// here as we don't need the monitor update to complete until we send a
+					// `shutdown_signed`, which we'll delay if we're pending a monitor update.
 					peer_state.pending_msg_events.push(events::MessageSendEvent::SendShutdown {
 						node_id: *counterparty_node_id,
-						msg: shutdown_msg
+						msg: shutdown_msg,
 					});
+
+					// Update the monitor with the shutdown script if necessary.
+					if let Some(monitor_update) = monitor_update_opt.take() {
+						let update_id = monitor_update.update_id;
+						let update_res = self.chain_monitor.update_channel(funding_txo_opt.unwrap(), monitor_update);
+						break handle_new_monitor_update!(self, update_res, update_id, peer_state_lock, peer_state, chan_entry);
+					}
 
 					if chan_entry.get().is_shutdown() {
 						let channel = remove_channel!(self, chan_entry);
@@ -2494,51 +2485,32 @@ where
 				if !chan.get().is_live() {
 					return Err(APIError::ChannelUnavailable{err: "Peer for first hop currently disconnected".to_owned()});
 				}
-				match {
-					break_chan_entry!(self, chan.get_mut().send_htlc_and_commit(
-						htlc_msat, payment_hash.clone(), htlc_cltv, HTLCSource::OutboundRoute {
-							path: path.clone(),
-							session_priv: session_priv.clone(),
-							first_hop_htlc_msat: htlc_msat,
-							payment_id,
-							payment_secret: payment_secret.clone(),
-							payment_params: payment_params.clone(),
-						}, onion_packet, &self.logger),
-						chan)
-				} {
-					Some((update_add, commitment_signed, monitor_update)) => {
-						let update_err = self.chain_monitor.update_channel(chan.get().get_funding_txo().unwrap(), &monitor_update);
-						let chan_id = chan.get().channel_id();
-						match (update_err,
-							handle_monitor_update_res!(self, update_err, chan,
-								RAACommitmentOrder::CommitmentFirst, false, true))
-						{
-							(ChannelMonitorUpdateStatus::PermanentFailure, Err(e)) => break Err(e),
-							(ChannelMonitorUpdateStatus::Completed, Ok(())) => {},
-							(ChannelMonitorUpdateStatus::InProgress, Err(_)) => {
-								// Note that MonitorUpdateInProgress here indicates (per function
-								// docs) that we will resend the commitment update once monitor
-								// updating completes. Therefore, we must return an error
-								// indicating that it is unsafe to retry the payment wholesale,
-								// which we do in the send_payment check for
-								// MonitorUpdateInProgress, below.
-								return Err(APIError::MonitorUpdateInProgress);
-							},
-							_ => unreachable!(),
+				let funding_txo = chan.get().get_funding_txo().unwrap();
+				let send_res = chan.get_mut().send_htlc_and_commit(htlc_msat, payment_hash.clone(),
+					htlc_cltv, HTLCSource::OutboundRoute {
+						path: path.clone(),
+						session_priv: session_priv.clone(),
+						first_hop_htlc_msat: htlc_msat,
+						payment_id,
+						payment_secret: payment_secret.clone(),
+						payment_params: payment_params.clone(),
+					}, onion_packet, &self.logger);
+				match break_chan_entry!(self, send_res, chan) {
+					Some(monitor_update) => {
+						let update_id = monitor_update.update_id;
+						let update_res = self.chain_monitor.update_channel(funding_txo, monitor_update);
+						if let Err(e) = handle_new_monitor_update!(self, update_res, update_id, peer_state_lock, peer_state, chan) {
+							break Err(e);
 						}
-
-						log_debug!(self.logger, "Sending payment along path resulted in a commitment_signed for channel {}", log_bytes!(chan_id));
-						peer_state.pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
-							node_id: path.first().unwrap().pubkey,
-							updates: msgs::CommitmentUpdate {
-								update_add_htlcs: vec![update_add],
-								update_fulfill_htlcs: Vec::new(),
-								update_fail_htlcs: Vec::new(),
-								update_fail_malformed_htlcs: Vec::new(),
-								update_fee: None,
-								commitment_signed,
-							},
-						});
+						if update_res == ChannelMonitorUpdateStatus::InProgress {
+							// Note that MonitorUpdateInProgress here indicates (per function
+							// docs) that we will resend the commitment update once monitor
+							// updating completes. Therefore, we must return an error
+							// indicating that it is unsafe to retry the payment wholesale,
+							// which we do in the send_payment check for
+							// MonitorUpdateInProgress, below.
+							return Err(APIError::MonitorUpdateInProgress);
+						}
 					},
 					None => { },
 				}
@@ -4037,7 +4009,6 @@ where
 
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		let chan_id = prev_hop.outpoint.to_channel_id();
-
 		let counterparty_node_id_opt = match self.short_to_chan_info.read().unwrap().get(&prev_hop.short_channel_id) {
 			Some((cp_id, _dup_chan_id)) => Some(cp_id.clone()),
 			None => None
@@ -4049,99 +4020,57 @@ where
 			)
 		).unwrap_or(None);
 
-		if let Some(hash_map::Entry::Occupied(mut chan)) = peer_state_opt.as_mut().map(|peer_state| peer_state.channel_by_id.entry(chan_id))
-		{
-			let counterparty_node_id = chan.get().get_counterparty_node_id();
-			match chan.get_mut().get_update_fulfill_htlc_and_commit(prev_hop.htlc_id, payment_preimage, &self.logger) {
-				Ok(msgs_monitor_option) => {
-					if let UpdateFulfillCommitFetch::NewClaim { msgs, htlc_value_msat, monitor_update } = msgs_monitor_option {
-						match self.chain_monitor.update_channel(chan.get().get_funding_txo().unwrap(), &monitor_update) {
-							ChannelMonitorUpdateStatus::Completed => {},
-							e => {
-								log_given_level!(self.logger, if e == ChannelMonitorUpdateStatus::PermanentFailure { Level::Error } else { Level::Debug },
-									"Failed to update channel monitor with preimage {:?}: {:?}",
-									payment_preimage, e);
-								let err = handle_monitor_update_res!(self, e, chan, RAACommitmentOrder::CommitmentFirst, false, msgs.is_some()).unwrap_err();
-								mem::drop(peer_state_opt);
-								mem::drop(per_peer_state);
-								self.handle_monitor_update_completion_actions(completion_action(Some(htlc_value_msat)));
-								return Err((counterparty_node_id, err));
-							}
-						}
-						if let Some((msg, commitment_signed)) = msgs {
-							log_debug!(self.logger, "Claiming funds for HTLC with preimage {} resulted in a commitment_signed for channel {}",
-								log_bytes!(payment_preimage.0), log_bytes!(chan.get().channel_id()));
-							peer_state_opt.as_mut().unwrap().pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
-								node_id: counterparty_node_id,
-								updates: msgs::CommitmentUpdate {
-									update_add_htlcs: Vec::new(),
-									update_fulfill_htlcs: vec![msg],
-									update_fail_htlcs: Vec::new(),
-									update_fail_malformed_htlcs: Vec::new(),
-									update_fee: None,
-									commitment_signed,
-								}
-							});
-						}
-						mem::drop(peer_state_opt);
-						mem::drop(per_peer_state);
-						self.handle_monitor_update_completion_actions(completion_action(Some(htlc_value_msat)));
-						Ok(())
-					} else {
-						Ok(())
+		if let Some(mut peer_state_lock) = peer_state_opt.take() {
+			let peer_state = &mut *peer_state_lock;
+			if let hash_map::Entry::Occupied(mut chan) = peer_state.channel_by_id.entry(chan_id) {
+				let counterparty_node_id = chan.get().get_counterparty_node_id();
+				let fulfill_res = chan.get_mut().get_update_fulfill_htlc_and_commit(prev_hop.htlc_id, payment_preimage, &self.logger);
+
+				if let UpdateFulfillCommitFetch::NewClaim { htlc_value_msat, monitor_update } = fulfill_res {
+					if let Some(action) = completion_action(Some(htlc_value_msat)) {
+						log_trace!(self.logger, "Tracking monitor update completion action for channel {}: {:?}",
+							log_bytes!(chan_id), action);
+						peer_state.monitor_update_blocked_actions.entry(chan_id).or_insert(Vec::new()).push(action);
 					}
-				},
-				Err((e, monitor_update)) => {
-					match self.chain_monitor.update_channel(chan.get().get_funding_txo().unwrap(), &monitor_update) {
-						ChannelMonitorUpdateStatus::Completed => {},
-						e => {
-							// TODO: This needs to be handled somehow - if we receive a monitor update
-							// with a preimage we *must* somehow manage to propagate it to the upstream
-							// channel, or we must have an ability to receive the same update and try
-							// again on restart.
-							log_given_level!(self.logger, if e == ChannelMonitorUpdateStatus::PermanentFailure { Level::Error } else { Level::Info },
-								"Failed to update channel monitor with preimage {:?} immediately prior to force-close: {:?}",
-								payment_preimage, e);
-						},
+					let update_id = monitor_update.update_id;
+					let update_res = self.chain_monitor.update_channel(prev_hop.outpoint, monitor_update);
+					let res = handle_new_monitor_update!(self, update_res, update_id, peer_state_lock,
+						peer_state, chan);
+					if let Err(e) = res {
+						// TODO: This is a *critical* error - we probably updated the outbound edge
+						// of the HTLC's monitor with a preimage. We should retry this monitor
+						// update over and over again until morale improves.
+						log_error!(self.logger, "Failed to update channel monitor with preimage {:?}", payment_preimage);
+						return Err((counterparty_node_id, e));
 					}
-					let (drop, res) = convert_chan_err!(self, e, chan.get_mut(), &chan_id);
-					if drop {
-						chan.remove_entry();
-					}
-					mem::drop(peer_state_opt);
-					mem::drop(per_peer_state);
-					self.handle_monitor_update_completion_actions(completion_action(None));
-					Err((counterparty_node_id, res))
-				},
+				}
+				return Ok(());
 			}
-		} else {
-			let preimage_update = ChannelMonitorUpdate {
-				update_id: CLOSED_CHANNEL_UPDATE_ID,
-				updates: vec![ChannelMonitorUpdateStep::PaymentPreimage {
-					payment_preimage,
-				}],
-			};
-			// We update the ChannelMonitor on the backward link, after
-			// receiving an `update_fulfill_htlc` from the forward link.
-			let update_res = self.chain_monitor.update_channel(prev_hop.outpoint, &preimage_update);
-			if update_res != ChannelMonitorUpdateStatus::Completed {
-				// TODO: This needs to be handled somehow - if we receive a monitor update
-				// with a preimage we *must* somehow manage to propagate it to the upstream
-				// channel, or we must have an ability to receive the same event and try
-				// again on restart.
-				log_error!(self.logger, "Critical error: failed to update channel monitor with preimage {:?}: {:?}",
-					payment_preimage, update_res);
-			}
-			mem::drop(peer_state_opt);
-			mem::drop(per_peer_state);
-			// Note that we do process the completion action here. This totally could be a
-			// duplicate claim, but we have no way of knowing without interrogating the
-			// `ChannelMonitor` we've provided the above update to. Instead, note that `Event`s are
-			// generally always allowed to be duplicative (and it's specifically noted in
-			// `PaymentForwarded`).
-			self.handle_monitor_update_completion_actions(completion_action(None));
-			Ok(())
 		}
+		let preimage_update = ChannelMonitorUpdate {
+			update_id: CLOSED_CHANNEL_UPDATE_ID,
+			updates: vec![ChannelMonitorUpdateStep::PaymentPreimage {
+				payment_preimage,
+			}],
+		};
+		// We update the ChannelMonitor on the backward link, after
+		// receiving an `update_fulfill_htlc` from the forward link.
+		let update_res = self.chain_monitor.update_channel(prev_hop.outpoint, &preimage_update);
+		if update_res != ChannelMonitorUpdateStatus::Completed {
+			// TODO: This needs to be handled somehow - if we receive a monitor update
+			// with a preimage we *must* somehow manage to propagate it to the upstream
+			// channel, or we must have an ability to receive the same event and try
+			// again on restart.
+			log_error!(self.logger, "Critical error: failed to update channel monitor with preimage {:?}: {:?}",
+				payment_preimage, update_res);
+		}
+		// Note that we do process the completion action here. This totally could be a
+		// duplicate claim, but we have no way of knowing without interrogating the
+		// `ChannelMonitor` we've provided the above update to. Instead, note that `Event`s are
+		// generally always allowed to be duplicative (and it's specifically noted in
+		// `PaymentForwarded`).
+		self.handle_monitor_update_completion_actions(completion_action(None));
+		Ok(())
 	}
 
 	fn finalize_claims(&self, sources: Vec<HTLCSource>) {
@@ -4670,27 +4599,27 @@ where
 							if chan_entry.get().sent_shutdown() { " after we initiated shutdown" } else { "" });
 					}
 
-					let (shutdown, monitor_update, htlcs) = try_chan_entry!(self, chan_entry.get_mut().shutdown(&self.signer_provider, &peer_state.latest_features, &msg), chan_entry);
+					let funding_txo_opt = chan_entry.get().get_funding_txo();
+					let (shutdown, monitor_update_opt, htlcs) = try_chan_entry!(self,
+						chan_entry.get_mut().shutdown(&self.signer_provider, &peer_state.latest_features, &msg), chan_entry);
 					dropped_htlcs = htlcs;
 
-					// Update the monitor with the shutdown script if necessary.
-					if let Some(monitor_update) = monitor_update {
-						let update_res = self.chain_monitor.update_channel(chan_entry.get().get_funding_txo().unwrap(), &monitor_update);
-						let (result, is_permanent) =
-							handle_monitor_update_res!(self, update_res, chan_entry.get_mut(), RAACommitmentOrder::CommitmentFirst, chan_entry.key(), NO_UPDATE);
-						if is_permanent {
-							remove_channel!(self, chan_entry);
-							break result;
-						}
-					}
-
 					if let Some(msg) = shutdown {
+						// We can send the `shutdown` message before updating the `ChannelMonitor`
+						// here as we don't need the monitor update to complete until we send a
+						// `shutdown_signed`, which we'll delay if we're pending a monitor update.
 						peer_state.pending_msg_events.push(events::MessageSendEvent::SendShutdown {
 							node_id: *counterparty_node_id,
 							msg,
 						});
 					}
 
+					// Update the monitor with the shutdown script if necessary.
+					if let Some(monitor_update) = monitor_update_opt {
+						let update_id = monitor_update.update_id;
+						let update_res = self.chain_monitor.update_channel(funding_txo_opt.unwrap(), monitor_update);
+						break handle_new_monitor_update!(self, update_res, update_id, peer_state_lock, peer_state, chan_entry);
+					}
 					break Ok(());
 				},
 				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
@@ -4702,8 +4631,7 @@ where
 			self.fail_htlc_backwards_internal(&htlc_source.0, &htlc_source.1, &reason, receiver);
 		}
 
-		let _ = handle_error!(self, result, *counterparty_node_id);
-		Ok(())
+		result
 	}
 
 	fn internal_closing_signed(&self, counterparty_node_id: &PublicKey, msg: &msgs::ClosingSigned) -> Result<(), MsgHandleErrInternal> {
@@ -4877,40 +4805,12 @@ where
 		let peer_state = &mut *peer_state_lock;
 		match peer_state.channel_by_id.entry(msg.channel_id) {
 			hash_map::Entry::Occupied(mut chan) => {
-				let (revoke_and_ack, commitment_signed, monitor_update) =
-					match chan.get_mut().commitment_signed(&msg, &self.logger) {
-						Err((None, e)) => try_chan_entry!(self, Err(e), chan),
-						Err((Some(update), e)) => {
-							assert!(chan.get().is_awaiting_monitor_update());
-							let _ = self.chain_monitor.update_channel(chan.get().get_funding_txo().unwrap(), &update);
-							try_chan_entry!(self, Err(e), chan);
-							unreachable!();
-						},
-						Ok(res) => res
-					};
-				let update_res = self.chain_monitor.update_channel(chan.get().get_funding_txo().unwrap(), &monitor_update);
-				if let Err(e) = handle_monitor_update_res!(self, update_res, chan, RAACommitmentOrder::RevokeAndACKFirst, true, commitment_signed.is_some()) {
-					return Err(e);
-				}
-
-				peer_state.pending_msg_events.push(events::MessageSendEvent::SendRevokeAndACK {
-					node_id: counterparty_node_id.clone(),
-					msg: revoke_and_ack,
-				});
-				if let Some(msg) = commitment_signed {
-					peer_state.pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
-						node_id: counterparty_node_id.clone(),
-						updates: msgs::CommitmentUpdate {
-							update_add_htlcs: Vec::new(),
-							update_fulfill_htlcs: Vec::new(),
-							update_fail_htlcs: Vec::new(),
-							update_fail_malformed_htlcs: Vec::new(),
-							update_fee: None,
-							commitment_signed: msg,
-						},
-					});
-				}
-				Ok(())
+				let funding_txo = chan.get().get_funding_txo();
+				let monitor_update = try_chan_entry!(self, chan.get_mut().commitment_signed(&msg, &self.logger), chan);
+				let update_res = self.chain_monitor.update_channel(funding_txo.unwrap(), monitor_update);
+				let update_id = monitor_update.update_id;
+				handle_new_monitor_update!(self, update_res, update_id, peer_state_lock,
+					peer_state, chan)
 			},
 			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
 		}
@@ -5009,8 +4909,7 @@ where
 	}
 
 	fn internal_revoke_and_ack(&self, counterparty_node_id: &PublicKey, msg: &msgs::RevokeAndACK) -> Result<(), MsgHandleErrInternal> {
-		let mut htlcs_to_fail = Vec::new();
-		let res = loop {
+		let (htlcs_to_fail, res) = {
 			let per_peer_state = self.per_peer_state.read().unwrap();
 			let peer_state_mutex = per_peer_state.get(counterparty_node_id)
 				.ok_or_else(|| {
@@ -5021,59 +4920,19 @@ where
 			let peer_state = &mut *peer_state_lock;
 			match peer_state.channel_by_id.entry(msg.channel_id) {
 				hash_map::Entry::Occupied(mut chan) => {
-					let was_paused_for_mon_update = chan.get().is_awaiting_monitor_update();
-					let raa_updates = break_chan_entry!(self,
-						chan.get_mut().revoke_and_ack(&msg, &self.logger), chan);
-					htlcs_to_fail = raa_updates.holding_cell_failed_htlcs;
-					let update_res = self.chain_monitor.update_channel(chan.get().get_funding_txo().unwrap(), &raa_updates.monitor_update);
-					if was_paused_for_mon_update {
-						assert!(update_res != ChannelMonitorUpdateStatus::Completed);
-						assert!(raa_updates.commitment_update.is_none());
-						assert!(raa_updates.accepted_htlcs.is_empty());
-						assert!(raa_updates.failed_htlcs.is_empty());
-						assert!(raa_updates.finalized_claimed_htlcs.is_empty());
-						break Err(MsgHandleErrInternal::ignore_no_close("Existing pending monitor update prevented responses to RAA".to_owned()));
-					}
-					if update_res != ChannelMonitorUpdateStatus::Completed {
-						if let Err(e) = handle_monitor_update_res!(self, update_res, chan,
-								RAACommitmentOrder::CommitmentFirst, false,
-								raa_updates.commitment_update.is_some(), false,
-								raa_updates.accepted_htlcs, raa_updates.failed_htlcs,
-								raa_updates.finalized_claimed_htlcs) {
-							break Err(e);
-						} else { unreachable!(); }
-					}
-					if let Some(updates) = raa_updates.commitment_update {
-						peer_state.pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
-							node_id: counterparty_node_id.clone(),
-							updates,
-						});
-					}
-					break Ok((raa_updates.accepted_htlcs, raa_updates.failed_htlcs,
-							raa_updates.finalized_claimed_htlcs,
-							chan.get().get_short_channel_id()
-								.unwrap_or(chan.get().outbound_scid_alias()),
-							chan.get().get_funding_txo().unwrap(),
-							chan.get().get_user_id()))
+					let funding_txo = chan.get().get_funding_txo();
+					let (htlcs_to_fail, monitor_update) = try_chan_entry!(self, chan.get_mut().revoke_and_ack(&msg, &self.logger), chan);
+					let update_res = self.chain_monitor.update_channel(funding_txo.unwrap(), monitor_update);
+					let update_id = monitor_update.update_id;
+					let res = handle_new_monitor_update!(self, update_res, update_id, peer_state_lock,
+						peer_state, chan);
+					(htlcs_to_fail, res)
 				},
-				hash_map::Entry::Vacant(_) => break Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
+				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
 			}
 		};
 		self.fail_holding_cell_htlcs(htlcs_to_fail, msg.channel_id, counterparty_node_id);
-		match res {
-			Ok((pending_forwards, mut pending_failures, finalized_claim_htlcs,
-				short_channel_id, channel_outpoint, user_channel_id)) =>
-			{
-				for failure in pending_failures.drain(..) {
-					let receiver = HTLCDestination::NextHopChannel { node_id: Some(*counterparty_node_id), channel_id: channel_outpoint.to_channel_id() };
-					self.fail_htlc_backwards_internal(&failure.0, &failure.1, &failure.2, receiver);
-				}
-				self.forward_htlcs(&mut [(short_channel_id, channel_outpoint, user_channel_id, pending_forwards)]);
-				self.finalize_claims(finalized_claim_htlcs);
-				Ok(())
-			},
-			Err(e) => Err(e)
-		}
+		res
 	}
 
 	fn internal_update_fee(&self, counterparty_node_id: &PublicKey, msg: &msgs::UpdateFee) -> Result<(), MsgHandleErrInternal> {
@@ -5315,49 +5174,37 @@ where
 		let mut has_monitor_update = false;
 		let mut failed_htlcs = Vec::new();
 		let mut handle_errors = Vec::new();
-		{
-			let per_peer_state = self.per_peer_state.read().unwrap();
+		let per_peer_state = self.per_peer_state.read().unwrap();
 
-			for (_cp_id, peer_state_mutex) in per_peer_state.iter() {
+		for (_cp_id, peer_state_mutex) in per_peer_state.iter() {
+			'chan_loop: loop {
 				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
-				let peer_state = &mut *peer_state_lock;
-				let pending_msg_events = &mut peer_state.pending_msg_events;
-				peer_state.channel_by_id.retain(|channel_id, chan| {
-					match chan.maybe_free_holding_cell_htlcs(&self.logger) {
-						Ok((commitment_opt, holding_cell_failed_htlcs)) => {
-							if !holding_cell_failed_htlcs.is_empty() {
-								failed_htlcs.push((
-									holding_cell_failed_htlcs,
-									*channel_id,
-									chan.get_counterparty_node_id()
-								));
-							}
-							if let Some((commitment_update, monitor_update)) = commitment_opt {
-								match self.chain_monitor.update_channel(chan.get_funding_txo().unwrap(), &monitor_update) {
-									ChannelMonitorUpdateStatus::Completed => {
-										pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
-											node_id: chan.get_counterparty_node_id(),
-											updates: commitment_update,
-										});
-									},
-									e => {
-										has_monitor_update = true;
-										let (res, close_channel) = handle_monitor_update_res!(self, e, chan, RAACommitmentOrder::CommitmentFirst, channel_id, COMMITMENT_UPDATE_ONLY);
-										handle_errors.push((chan.get_counterparty_node_id(), res));
-										if close_channel { return false; }
-									},
-								}
-							}
-							true
-						},
-						Err(e) => {
-							let (close_channel, res) = convert_chan_err!(self, e, chan, channel_id);
-							handle_errors.push((chan.get_counterparty_node_id(), Err(res)));
-							// ChannelClosed event is generated by handle_error for us
-							!close_channel
-						}
+				let peer_state: &mut PeerState<_> = &mut *peer_state_lock;
+				for (channel_id, chan) in peer_state.channel_by_id.iter_mut() {
+					let counterparty_node_id = chan.get_counterparty_node_id();
+					let funding_txo = chan.get_funding_txo();
+					let (monitor_opt, holding_cell_failed_htlcs) =
+						chan.maybe_free_holding_cell_htlcs(&self.logger);
+					if !holding_cell_failed_htlcs.is_empty() {
+						failed_htlcs.push((holding_cell_failed_htlcs, *channel_id, counterparty_node_id));
 					}
-				});
+					if let Some(monitor_update) = monitor_opt {
+						has_monitor_update = true;
+
+						let update_res = self.chain_monitor.update_channel(
+							funding_txo.expect("channel is live"), monitor_update);
+						let update_id = monitor_update.update_id;
+						let channel_id: [u8; 32] = *channel_id;
+						let res = handle_new_monitor_update!(self, update_res, update_id,
+							peer_state_lock, peer_state, chan, MANUALLY_REMOVING,
+							peer_state.channel_by_id.remove(&channel_id));
+						if res.is_err() {
+							handle_errors.push((counterparty_node_id, res));
+						}
+						continue 'chan_loop;
+					}
+				}
+				break 'chan_loop;
 			}
 		}
 
@@ -7124,8 +6971,6 @@ where
 			// LDK versions prior to 0.0.113 do not know how to read the pending claimed payments
 			// map. Thus, if there are no entries we skip writing a TLV for it.
 			pending_claiming_payments = None;
-		} else {
-			debug_assert!(false, "While we have code to serialize pending_claiming_payments, the map should always be empty until a later PR");
 		}
 
 		write_tlv_fields!(writer, {
