@@ -2143,6 +2143,7 @@ mod tests {
 	use crate::ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 	use crate::ln::msgs::{ErrorAction, LightningError, UnsignedChannelUpdate, MAX_VALUE_MSAT};
 	use crate::ln::channelmanager;
+	use crate::util::config::UserConfig;
 	use crate::util::test_utils as ln_test_utils;
 	use crate::util::chacha20::ChaCha20;
 	#[cfg(c_bindings)]
@@ -2386,7 +2387,8 @@ mod tests {
 	fn htlc_minimum_overpay_test() {
 		let (secp_ctx, network_graph, gossip_sync, _, logger) = build_graph();
 		let (our_privkey, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
-		let payment_params = PaymentParameters::from_node_id(nodes[2]).with_features(channelmanager::provided_invoice_features());
+		let config = UserConfig::default();
+		let payment_params = PaymentParameters::from_node_id(nodes[2]).with_features(channelmanager::provided_invoice_features(&config));
 		let scorer = ln_test_utils::TestScorer::with_penalty(0);
 		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
 		let random_seed_bytes = keys_manager.get_secure_random_bytes();
@@ -3359,7 +3361,8 @@ mod tests {
 		let scorer = ln_test_utils::TestScorer::with_penalty(0);
 		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
 		let random_seed_bytes = keys_manager.get_secure_random_bytes();
-		let payment_params = PaymentParameters::from_node_id(nodes[2]).with_features(channelmanager::provided_invoice_features());
+		let config = UserConfig::default();
+		let payment_params = PaymentParameters::from_node_id(nodes[2]).with_features(channelmanager::provided_invoice_features(&config));
 
 		// We will use a simple single-path route from
 		// our node to node2 via node0: channels {1, 3}.
@@ -3633,7 +3636,8 @@ mod tests {
 		let scorer = ln_test_utils::TestScorer::with_penalty(0);
 		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
 		let random_seed_bytes = keys_manager.get_secure_random_bytes();
-		let payment_params = PaymentParameters::from_node_id(nodes[3]).with_features(channelmanager::provided_invoice_features());
+		let config = UserConfig::default();
+		let payment_params = PaymentParameters::from_node_id(nodes[3]).with_features(channelmanager::provided_invoice_features(&config));
 
 		// Path via {node7, node2, node4} is channels {12, 13, 6, 11}.
 		// {12, 13, 11} have the capacities of 100, {6} has a capacity of 50.
@@ -3806,8 +3810,9 @@ mod tests {
 		let scorer = ln_test_utils::TestScorer::with_penalty(0);
 		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
 		let random_seed_bytes = keys_manager.get_secure_random_bytes();
+		let config = UserConfig::default();
 		let payment_params = PaymentParameters::from_node_id(nodes[2])
-			.with_features(channelmanager::provided_invoice_features());
+			.with_features(channelmanager::provided_invoice_features(&config));
 
 		// We need a route consisting of 3 paths:
 		// From our node to node2 via node0, node7, node1 (three paths one hop each).
@@ -3965,7 +3970,8 @@ mod tests {
 		let scorer = ln_test_utils::TestScorer::with_penalty(0);
 		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
 		let random_seed_bytes = keys_manager.get_secure_random_bytes();
-		let payment_params = PaymentParameters::from_node_id(nodes[3]).with_features(channelmanager::provided_invoice_features());
+		let config = UserConfig::default();
+		let payment_params = PaymentParameters::from_node_id(nodes[3]).with_features(channelmanager::provided_invoice_features(&config));
 
 		// We need a route consisting of 3 paths:
 		// From our node to node3 via {node0, node2}, {node7, node2, node4} and {node7, node2}.
@@ -4129,7 +4135,8 @@ mod tests {
 		let scorer = ln_test_utils::TestScorer::with_penalty(0);
 		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
 		let random_seed_bytes = keys_manager.get_secure_random_bytes();
-		let payment_params = PaymentParameters::from_node_id(nodes[3]).with_features(channelmanager::provided_invoice_features());
+		let config = UserConfig::default();
+		let payment_params = PaymentParameters::from_node_id(nodes[3]).with_features(channelmanager::provided_invoice_features(&config));
 
 		// This test checks that if we have two cheaper paths and one more expensive path,
 		// so that liquidity-wise any 2 of 3 combination is sufficient,
@@ -4298,7 +4305,8 @@ mod tests {
 		let scorer = ln_test_utils::TestScorer::with_penalty(0);
 		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
 		let random_seed_bytes = keys_manager.get_secure_random_bytes();
-		let payment_params = PaymentParameters::from_node_id(nodes[3]).with_features(channelmanager::provided_invoice_features());
+		let config = UserConfig::default();
+		let payment_params = PaymentParameters::from_node_id(nodes[3]).with_features(channelmanager::provided_invoice_features(&config));
 
 		// We need a route consisting of 2 paths:
 		// From our node to node3 via {node0, node2} and {node7, node2, node4}.
@@ -4479,7 +4487,8 @@ mod tests {
 		let scorer = ln_test_utils::TestScorer::with_penalty(0);
 		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
 		let random_seed_bytes = keys_manager.get_secure_random_bytes();
-		let payment_params = PaymentParameters::from_node_id(PublicKey::from_slice(&[02; 33]).unwrap()).with_features(channelmanager::provided_invoice_features())
+		let config = UserConfig::default();
+		let payment_params = PaymentParameters::from_node_id(PublicKey::from_slice(&[02; 33]).unwrap()).with_features(channelmanager::provided_invoice_features(&config))
 			.with_route_hints(vec![RouteHint(vec![RouteHintHop {
 				src_node_id: nodes[2],
 				short_channel_id: 42,
@@ -4570,7 +4579,8 @@ mod tests {
 		let scorer = ln_test_utils::TestScorer::with_penalty(0);
 		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
 		let random_seed_bytes = keys_manager.get_secure_random_bytes();
-		let payment_params = PaymentParameters::from_node_id(nodes[2]).with_features(channelmanager::provided_invoice_features())
+		let config = UserConfig::default();
+		let payment_params = PaymentParameters::from_node_id(nodes[2]).with_features(channelmanager::provided_invoice_features(&config))
 			.with_max_channel_saturation_power_of_half(0);
 
 		// We need a route consisting of 3 paths:
@@ -4926,7 +4936,8 @@ mod tests {
 		let scorer = ln_test_utils::TestScorer::with_penalty(0);
 		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
 		let random_seed_bytes = keys_manager.get_secure_random_bytes();
-		let payment_params = PaymentParameters::from_node_id(nodes[2]).with_features(channelmanager::provided_invoice_features());
+		let config = UserConfig::default();
+		let payment_params = PaymentParameters::from_node_id(nodes[2]).with_features(channelmanager::provided_invoice_features(&config));
 
 		// We modify the graph to set the htlc_minimum of channel 2 and 4 as needed - channel 2
 		// gets an htlc_maximum_msat of 80_000 and channel 4 an htlc_minimum_msat of 90_000. We
@@ -4975,7 +4986,7 @@ mod tests {
 			assert_eq!(route.paths[0][1].short_channel_id, 13);
 			assert_eq!(route.paths[0][1].fee_msat, 90_000);
 			assert_eq!(route.paths[0][1].cltv_expiry_delta, 42);
-			assert_eq!(route.paths[0][1].node_features.le_flags(), channelmanager::provided_invoice_features().le_flags());
+			assert_eq!(route.paths[0][1].node_features.le_flags(), channelmanager::provided_invoice_features(&config).le_flags());
 			assert_eq!(route.paths[0][1].channel_features.le_flags(), &id_to_feature_flags(13));
 		}
 	}
@@ -4994,14 +5005,15 @@ mod tests {
 		let logger = Arc::new(ln_test_utils::TestLogger::new());
 		let network_graph = NetworkGraph::new(genesis_hash, Arc::clone(&logger));
 		let scorer = ln_test_utils::TestScorer::with_penalty(0);
-		let payment_params = PaymentParameters::from_node_id(nodes[0]).with_features(channelmanager::provided_invoice_features());
+		let config = UserConfig::default();
+		let payment_params = PaymentParameters::from_node_id(nodes[0]).with_features(channelmanager::provided_invoice_features(&config));
 		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
 		let random_seed_bytes = keys_manager.get_secure_random_bytes();
 
 		{
 			let route = get_route(&our_id, &payment_params, &network_graph.read_only(), Some(&[
-				&get_channel_details(Some(3), nodes[0], channelmanager::provided_init_features(), 200_000),
-				&get_channel_details(Some(2), nodes[0], channelmanager::provided_init_features(), 10_000),
+				&get_channel_details(Some(3), nodes[0], channelmanager::provided_init_features(&config), 200_000),
+				&get_channel_details(Some(2), nodes[0], channelmanager::provided_init_features(&config), 10_000),
 			]), 100_000, 42, Arc::clone(&logger), &scorer, &random_seed_bytes).unwrap();
 			assert_eq!(route.paths.len(), 1);
 			assert_eq!(route.paths[0].len(), 1);
@@ -5012,8 +5024,8 @@ mod tests {
 		}
 		{
 			let route = get_route(&our_id, &payment_params, &network_graph.read_only(), Some(&[
-				&get_channel_details(Some(3), nodes[0], channelmanager::provided_init_features(), 50_000),
-				&get_channel_details(Some(2), nodes[0], channelmanager::provided_init_features(), 50_000),
+				&get_channel_details(Some(3), nodes[0], channelmanager::provided_init_features(&config), 50_000),
+				&get_channel_details(Some(2), nodes[0], channelmanager::provided_init_features(&config), 50_000),
 			]), 100_000, 42, Arc::clone(&logger), &scorer, &random_seed_bytes).unwrap();
 			assert_eq!(route.paths.len(), 2);
 			assert_eq!(route.paths[0].len(), 1);
@@ -5038,14 +5050,14 @@ mod tests {
 			// smallest of them, avoiding further fragmenting our available outbound balance to
 			// this node.
 			let route = get_route(&our_id, &payment_params, &network_graph.read_only(), Some(&[
-				&get_channel_details(Some(2), nodes[0], channelmanager::provided_init_features(), 50_000),
-				&get_channel_details(Some(3), nodes[0], channelmanager::provided_init_features(), 50_000),
-				&get_channel_details(Some(5), nodes[0], channelmanager::provided_init_features(), 50_000),
-				&get_channel_details(Some(6), nodes[0], channelmanager::provided_init_features(), 300_000),
-				&get_channel_details(Some(7), nodes[0], channelmanager::provided_init_features(), 50_000),
-				&get_channel_details(Some(8), nodes[0], channelmanager::provided_init_features(), 50_000),
-				&get_channel_details(Some(9), nodes[0], channelmanager::provided_init_features(), 50_000),
-				&get_channel_details(Some(4), nodes[0], channelmanager::provided_init_features(), 1_000_000),
+				&get_channel_details(Some(2), nodes[0], channelmanager::provided_init_features(&config), 50_000),
+				&get_channel_details(Some(3), nodes[0], channelmanager::provided_init_features(&config), 50_000),
+				&get_channel_details(Some(5), nodes[0], channelmanager::provided_init_features(&config), 50_000),
+				&get_channel_details(Some(6), nodes[0], channelmanager::provided_init_features(&config), 300_000),
+				&get_channel_details(Some(7), nodes[0], channelmanager::provided_init_features(&config), 50_000),
+				&get_channel_details(Some(8), nodes[0], channelmanager::provided_init_features(&config), 50_000),
+				&get_channel_details(Some(9), nodes[0], channelmanager::provided_init_features(&config), 50_000),
+				&get_channel_details(Some(4), nodes[0], channelmanager::provided_init_features(&config), 1_000_000),
 			]), 100_000, 42, Arc::clone(&logger), &scorer, &random_seed_bytes).unwrap();
 			assert_eq!(route.paths.len(), 1);
 			assert_eq!(route.paths[0].len(), 1);
@@ -5487,7 +5499,8 @@ mod tests {
 			excess_data: Vec::new()
 		});
 
-		let payment_params = PaymentParameters::from_node_id(nodes[2]).with_features(channelmanager::provided_invoice_features());
+		let config = UserConfig::default();
+		let payment_params = PaymentParameters::from_node_id(nodes[2]).with_features(channelmanager::provided_invoice_features(&config));
 		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
 		let random_seed_bytes = keys_manager.get_secure_random_bytes();
 		// 100,000 sats is less than the available liquidity on each channel, set above.
@@ -5561,6 +5574,7 @@ mod tests {
 		let graph = NetworkGraph::read(&mut d, &logger).unwrap();
 		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
 		let random_seed_bytes = keys_manager.get_secure_random_bytes();
+		let config = UserConfig::default();
 
 		// First, get 100 (source, destination) pairs for which route-getting actually succeeds...
 		let mut seed = random_init_seed() as usize;
@@ -5571,7 +5585,7 @@ mod tests {
 				let src = &PublicKey::from_slice(nodes.keys().skip(seed % nodes.len()).next().unwrap().as_slice()).unwrap();
 				seed = seed.overflowing_mul(0xdeadbeef).0;
 				let dst = PublicKey::from_slice(nodes.keys().skip(seed % nodes.len()).next().unwrap().as_slice()).unwrap();
-				let payment_params = PaymentParameters::from_node_id(dst).with_features(channelmanager::provided_invoice_features());
+				let payment_params = PaymentParameters::from_node_id(dst).with_features(channelmanager::provided_invoice_features(&config));
 				let amt = seed as u64 % 200_000_000;
 				let params = ProbabilisticScoringParameters::default();
 				let scorer = ProbabilisticScorer::new(params, &graph, &logger);
@@ -5658,6 +5672,7 @@ mod benches {
 	use crate::ln::features::InvoiceFeatures;
 	use crate::routing::gossip::NetworkGraph;
 	use crate::routing::scoring::{FixedPenaltyScorer, ProbabilisticScorer, ProbabilisticScoringParameters};
+	use crate::util::config::UserConfig;
 	use crate::util::logger::{Logger, Record};
 	use crate::util::ser::ReadableArgs;
 
@@ -5683,7 +5698,7 @@ mod benches {
 		ChannelDetails {
 			channel_id: [0; 32],
 			counterparty: ChannelCounterparty {
-				features: channelmanager::provided_init_features(),
+				features: channelmanager::provided_init_features(&UserConfig::default()),
 				node_id,
 				unspendable_punishment_reserve: 0,
 				forwarding_info: None,
@@ -5730,7 +5745,7 @@ mod benches {
 		let logger = DummyLogger {};
 		let network_graph = read_network_graph(&logger);
 		let scorer = FixedPenaltyScorer::with_penalty(0);
-		generate_routes(bench, &network_graph, scorer, channelmanager::provided_invoice_features());
+		generate_routes(bench, &network_graph, scorer, channelmanager::provided_invoice_features(&UserConfig::default()));
 	}
 
 	#[bench]
@@ -5748,7 +5763,7 @@ mod benches {
 		let network_graph = read_network_graph(&logger);
 		let params = ProbabilisticScoringParameters::default();
 		let scorer = ProbabilisticScorer::new(params, &network_graph, &logger);
-		generate_routes(bench, &network_graph, scorer, channelmanager::provided_invoice_features());
+		generate_routes(bench, &network_graph, scorer, channelmanager::provided_invoice_features(&UserConfig::default()));
 	}
 
 	fn generate_routes<S: Score>(

@@ -4057,7 +4057,7 @@ where
 				return;
 			}
 
-			let updates = channel.get_mut().monitor_updating_restored(&self.logger, self.get_our_node_id(), self.genesis_hash, self.best_block.read().unwrap().height());
+			let updates = channel.get_mut().monitor_updating_restored(&self.logger, self.get_our_node_id(), self.genesis_hash, &self.default_configuration, self.best_block.read().unwrap().height());
 			let channel_update = if updates.channel_ready.is_some() && channel.get().is_usable() {
 				// We only send a channel_update in the case where we are just now sending a
 				// channel_ready and the channel is in a usable state. We may re-send a
@@ -4395,7 +4395,7 @@ where
 		match peer_state.channel_by_id.entry(msg.channel_id) {
 			hash_map::Entry::Occupied(mut chan) => {
 				let announcement_sigs_opt = try_chan_entry!(self, chan.get_mut().channel_ready(&msg, self.get_our_node_id(),
-					self.genesis_hash.clone(), &self.best_block.read().unwrap(), &self.logger), chan);
+					self.genesis_hash.clone(), &self.default_configuration, &self.best_block.read().unwrap(), &self.logger), chan);
 				if let Some(announcement_sigs) = announcement_sigs_opt {
 					log_trace!(self.logger, "Sending announcement_signatures for channel {}", log_bytes!(chan.get().channel_id()));
 					peer_state.pending_msg_events.push(events::MessageSendEvent::SendAnnouncementSignatures {
@@ -4876,7 +4876,9 @@ where
 
 				peer_state.pending_msg_events.push(events::MessageSendEvent::BroadcastChannelAnnouncement {
 					msg: try_chan_entry!(self, chan.get_mut().announcement_signatures(
-						self.get_our_node_id(), self.genesis_hash.clone(), self.best_block.read().unwrap().height(), msg), chan),
+						self.get_our_node_id(), self.genesis_hash.clone(),
+						self.best_block.read().unwrap().height(), msg, &self.default_configuration
+					), chan),
 					// Note that announcement_signatures fails if the channel cannot be announced,
 					// so get_channel_update_for_broadcast will never fail by the time we get here.
 					update_msg: self.get_channel_update_for_broadcast(chan.get()).unwrap(),
@@ -4947,7 +4949,7 @@ where
 					// add-HTLCs on disconnect, we may be handed HTLCs to fail backwards here.
 					let responses = try_chan_entry!(self, chan.get_mut().channel_reestablish(
 						msg, &self.logger, self.our_network_pubkey.clone(), self.genesis_hash,
-						&*self.best_block.read().unwrap()), chan);
+						&self.default_configuration, &*self.best_block.read().unwrap()), chan);
 					let mut channel_update = None;
 					if let Some(msg) = responses.shutdown_msg {
 						peer_state.pending_msg_events.push(events::MessageSendEvent::SendShutdown {
@@ -5625,7 +5627,7 @@ where
 			*best_block = BestBlock::new(header.prev_blockhash, new_height)
 		}
 
-		self.do_chain_event(Some(new_height), |channel| channel.best_block_updated(new_height, header.time, self.genesis_hash.clone(), self.get_our_node_id(), &self.logger));
+		self.do_chain_event(Some(new_height), |channel| channel.best_block_updated(new_height, header.time, self.genesis_hash.clone(), self.get_our_node_id(), self.default_configuration.clone(), &self.logger));
 	}
 }
 
@@ -5649,13 +5651,13 @@ where
 		log_trace!(self.logger, "{} transactions included in block {} at height {} provided", txdata.len(), block_hash, height);
 
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
-		self.do_chain_event(Some(height), |channel| channel.transactions_confirmed(&block_hash, height, txdata, self.genesis_hash.clone(), self.get_our_node_id(), &self.logger)
+		self.do_chain_event(Some(height), |channel| channel.transactions_confirmed(&block_hash, height, txdata, self.genesis_hash.clone(), self.get_our_node_id(), &self.default_configuration, &self.logger)
 			.map(|(a, b)| (a, Vec::new(), b)));
 
 		let last_best_block_height = self.best_block.read().unwrap().height();
 		if height < last_best_block_height {
 			let timestamp = self.highest_seen_timestamp.load(Ordering::Acquire);
-			self.do_chain_event(Some(last_best_block_height), |channel| channel.best_block_updated(last_best_block_height, timestamp as u32, self.genesis_hash.clone(), self.get_our_node_id(), &self.logger));
+			self.do_chain_event(Some(last_best_block_height), |channel| channel.best_block_updated(last_best_block_height, timestamp as u32, self.genesis_hash.clone(), self.get_our_node_id(), self.default_configuration.clone(), &self.logger));
 		}
 	}
 
@@ -5671,7 +5673,7 @@ where
 
 		*self.best_block.write().unwrap() = BestBlock::new(block_hash, height);
 
-		self.do_chain_event(Some(height), |channel| channel.best_block_updated(height, header.time, self.genesis_hash.clone(), self.get_our_node_id(), &self.logger));
+		self.do_chain_event(Some(height), |channel| channel.best_block_updated(height, header.time, self.genesis_hash.clone(), self.get_our_node_id(), self.default_configuration.clone(), &self.logger));
 
 		macro_rules! max_time {
 			($timestamp: expr) => {
@@ -5782,7 +5784,7 @@ where
 								msg: announcement_sigs,
 							});
 							if let Some(height) = height_opt {
-								if let Some(announcement) = channel.get_signed_channel_announcement(self.get_our_node_id(), self.genesis_hash, height) {
+								if let Some(announcement) = channel.get_signed_channel_announcement(self.get_our_node_id(), self.genesis_hash, height, &self.default_configuration) {
 									pending_msg_events.push(events::MessageSendEvent::BroadcastChannelAnnouncement {
 										msg: announcement,
 										// Note that announcement_signatures fails if the channel cannot be announced,
@@ -5925,6 +5927,40 @@ where
 	/// [`chain::Confirm`] interfaces.
 	pub fn current_best_block(&self) -> BestBlock {
 		self.best_block.read().unwrap().clone()
+	}
+
+	/// Fetches the set of [`NodeFeatures`] flags which are provided by or required by
+	/// [`ChannelManager`].
+	pub fn node_features(&self) -> NodeFeatures {
+		provided_node_features(&self.default_configuration)
+	}
+
+	/// Fetches the set of [`InvoiceFeatures`] flags which are provided by or required by
+	/// [`ChannelManager`].
+	///
+	/// Note that the invoice feature flags can vary depending on if the invoice is a "phantom invoice"
+	/// or not. Thus, this method is not public.
+	#[cfg(any(feature = "_test_utils", test))]
+	pub fn invoice_features(&self) -> InvoiceFeatures {
+		provided_invoice_features(&self.default_configuration)
+	}
+
+	/// Fetches the set of [`ChannelFeatures`] flags which are provided by or required by
+	/// [`ChannelManager`].
+	pub fn channel_features(&self) -> ChannelFeatures {
+		provided_channel_features(&self.default_configuration)
+	}
+
+	/// Fetches the set of [`ChannelTypeFeatures`] flags which are provided by or required by
+	/// [`ChannelManager`].
+	pub fn channel_type_features(&self) -> ChannelTypeFeatures {
+		provided_channel_type_features(&self.default_configuration)
+	}
+
+	/// Fetches the set of [`InitFeatures`] flags which are provided by or required by
+	/// [`ChannelManager`].
+	pub fn init_features(&self) -> InitFeatures {
+		provided_init_features(&self.default_configuration)
 	}
 }
 
@@ -6138,7 +6174,7 @@ where
 					}
 				} else { true };
 				if retain && chan.get_counterparty_node_id() != *counterparty_node_id {
-					if let Some(msg) = chan.get_signed_channel_announcement(self.get_our_node_id(), self.genesis_hash.clone(), self.best_block.read().unwrap().height()) {
+					if let Some(msg) = chan.get_signed_channel_announcement(self.get_our_node_id(), self.genesis_hash.clone(), self.best_block.read().unwrap().height(), &self.default_configuration) {
 						if let Ok(update_msg) = self.get_channel_update_for_broadcast(chan) {
 							pending_msg_events.push(events::MessageSendEvent::SendChannelAnnouncement {
 								node_id: *counterparty_node_id,
@@ -6195,18 +6231,18 @@ where
 	}
 
 	fn provided_node_features(&self) -> NodeFeatures {
-		provided_node_features()
+		provided_node_features(&self.default_configuration)
 	}
 
 	fn provided_init_features(&self, _their_init_features: &PublicKey) -> InitFeatures {
-		provided_init_features()
+		provided_init_features(&self.default_configuration)
 	}
 }
 
 /// Fetches the set of [`NodeFeatures`] flags which are provided by or required by
 /// [`ChannelManager`].
-pub fn provided_node_features() -> NodeFeatures {
-	provided_init_features().to_context()
+pub(crate) fn provided_node_features(config: &UserConfig) -> NodeFeatures {
+	provided_init_features(config).to_context()
 }
 
 /// Fetches the set of [`InvoiceFeatures`] flags which are provided by or required by
@@ -6215,19 +6251,25 @@ pub fn provided_node_features() -> NodeFeatures {
 /// Note that the invoice feature flags can vary depending on if the invoice is a "phantom invoice"
 /// or not. Thus, this method is not public.
 #[cfg(any(feature = "_test_utils", test))]
-pub fn provided_invoice_features() -> InvoiceFeatures {
-	provided_init_features().to_context()
+pub(crate) fn provided_invoice_features(config: &UserConfig) -> InvoiceFeatures {
+	provided_init_features(config).to_context()
 }
 
 /// Fetches the set of [`ChannelFeatures`] flags which are provided by or required by
 /// [`ChannelManager`].
-pub fn provided_channel_features() -> ChannelFeatures {
-	provided_init_features().to_context()
+pub(crate) fn provided_channel_features(config: &UserConfig) -> ChannelFeatures {
+	provided_init_features(config).to_context()
+}
+
+/// Fetches the set of [`ChannelTypeFeatures`] flags which are provided by or required by
+/// [`ChannelManager`].
+pub(crate) fn provided_channel_type_features(config: &UserConfig) -> ChannelTypeFeatures {
+	ChannelTypeFeatures::from_counterparty_init(&provided_init_features(config))
 }
 
 /// Fetches the set of [`InitFeatures`] flags which are provided by or required by
 /// [`ChannelManager`].
-pub fn provided_init_features() -> InitFeatures {
+pub fn provided_init_features(_config: &UserConfig) -> InitFeatures {
 	// Note that if new features are added here which other peers may (eventually) require, we
 	// should also add the corresponding (optional) bit to the ChannelMessageHandler impl for
 	// ErroringMessageHandler.
@@ -7508,7 +7550,7 @@ mod tests {
 	use core::time::Duration;
 	use core::sync::atomic::Ordering;
 	use crate::ln::{PaymentPreimage, PaymentHash, PaymentSecret};
-	use crate::ln::channelmanager::{self, inbound_payment, PaymentId, PaymentSendFailure, InterceptId};
+	use crate::ln::channelmanager::{inbound_payment, PaymentId, PaymentSendFailure, InterceptId};
 	use crate::ln::functional_test_utils::*;
 	use crate::ln::msgs;
 	use crate::ln::msgs::{ChannelMessageHandler, OptionalField};
@@ -7534,7 +7576,7 @@ mod tests {
 		assert!(nodes[1].node.await_persistable_update_timeout(Duration::from_millis(1)));
 		assert!(nodes[2].node.await_persistable_update_timeout(Duration::from_millis(1)));
 
-		let mut chan = create_announced_chan_between_nodes(&nodes, 0, 1, channelmanager::provided_init_features(), channelmanager::provided_init_features());
+		let mut chan = create_announced_chan_between_nodes(&nodes, 0, 1);
 
 		// We check that the channel info nodes have doesn't change too early, even though we try
 		// to connect messages with new values
@@ -7605,7 +7647,7 @@ mod tests {
 		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-		create_announced_chan_between_nodes(&nodes, 0, 1, channelmanager::provided_init_features(), channelmanager::provided_init_features());
+		create_announced_chan_between_nodes(&nodes, 0, 1);
 
 		// First, send a partial MPP payment.
 		let (route, our_payment_hash, payment_preimage, payment_secret) = get_route_and_payment_hash!(&nodes[0], nodes[1], 100_000);
@@ -7727,7 +7769,7 @@ mod tests {
 		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-		create_announced_chan_between_nodes(&nodes, 0, 1, channelmanager::provided_init_features(), channelmanager::provided_init_features());
+		create_announced_chan_between_nodes(&nodes, 0, 1);
 		let scorer = test_utils::TestScorer::with_penalty(0);
 		let random_seed_bytes = chanmon_cfgs[1].keys_manager.get_secure_random_bytes();
 
@@ -7825,10 +7867,10 @@ mod tests {
 
 		let payer_pubkey = nodes[0].node.get_our_node_id();
 		let payee_pubkey = nodes[1].node.get_our_node_id();
-		nodes[0].node.peer_connected(&payee_pubkey, &msgs::Init { features: channelmanager::provided_init_features(), remote_network_address: None }).unwrap();
-		nodes[1].node.peer_connected(&payer_pubkey, &msgs::Init { features: channelmanager::provided_init_features(), remote_network_address: None }).unwrap();
+		nodes[0].node.peer_connected(&payee_pubkey, &msgs::Init { features: nodes[1].node.init_features(), remote_network_address: None }).unwrap();
+		nodes[1].node.peer_connected(&payer_pubkey, &msgs::Init { features: nodes[0].node.init_features(), remote_network_address: None }).unwrap();
 
-		let _chan = create_chan_between_nodes(&nodes[0], &nodes[1], channelmanager::provided_init_features(), channelmanager::provided_init_features());
+		let _chan = create_chan_between_nodes(&nodes[0], &nodes[1]);
 		let route_params = RouteParameters {
 			payment_params: PaymentParameters::for_keysend(payee_pubkey),
 			final_value_msat: 10_000,
@@ -7870,10 +7912,10 @@ mod tests {
 
 		let payer_pubkey = nodes[0].node.get_our_node_id();
 		let payee_pubkey = nodes[1].node.get_our_node_id();
-		nodes[0].node.peer_connected(&payee_pubkey, &msgs::Init { features: channelmanager::provided_init_features(), remote_network_address: None }).unwrap();
-		nodes[1].node.peer_connected(&payer_pubkey, &msgs::Init { features: channelmanager::provided_init_features(), remote_network_address: None }).unwrap();
+		nodes[0].node.peer_connected(&payee_pubkey, &msgs::Init { features: nodes[1].node.init_features(), remote_network_address: None }).unwrap();
+		nodes[1].node.peer_connected(&payer_pubkey, &msgs::Init { features: nodes[0].node.init_features(), remote_network_address: None }).unwrap();
 
-		let _chan = create_chan_between_nodes(&nodes[0], &nodes[1], channelmanager::provided_init_features(), channelmanager::provided_init_features());
+		let _chan = create_chan_between_nodes(&nodes[0], &nodes[1]);
 		let route_params = RouteParameters {
 			payment_params: PaymentParameters::for_keysend(payee_pubkey),
 			final_value_msat: 10_000,
@@ -7913,10 +7955,10 @@ mod tests {
 		let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, None, None, None]);
 		let nodes = create_network(4, &node_cfgs, &node_chanmgrs);
 
-		let chan_1_id = create_announced_chan_between_nodes(&nodes, 0, 1, channelmanager::provided_init_features(), channelmanager::provided_init_features()).0.contents.short_channel_id;
-		let chan_2_id = create_announced_chan_between_nodes(&nodes, 0, 2, channelmanager::provided_init_features(), channelmanager::provided_init_features()).0.contents.short_channel_id;
-		let chan_3_id = create_announced_chan_between_nodes(&nodes, 1, 3, channelmanager::provided_init_features(), channelmanager::provided_init_features()).0.contents.short_channel_id;
-		let chan_4_id = create_announced_chan_between_nodes(&nodes, 2, 3, channelmanager::provided_init_features(), channelmanager::provided_init_features()).0.contents.short_channel_id;
+		let chan_1_id = create_announced_chan_between_nodes(&nodes, 0, 1).0.contents.short_channel_id;
+		let chan_2_id = create_announced_chan_between_nodes(&nodes, 0, 2).0.contents.short_channel_id;
+		let chan_3_id = create_announced_chan_between_nodes(&nodes, 1, 3).0.contents.short_channel_id;
+		let chan_4_id = create_announced_chan_between_nodes(&nodes, 2, 3).0.contents.short_channel_id;
 
 		// Marshall an MPP route.
 		let (mut route, payment_hash, _, _) = get_route_and_payment_hash!(&nodes[0], nodes[3], 100000);
@@ -7977,9 +8019,9 @@ mod tests {
 
 		nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 1_000_000, 500_000_000, 42, None).unwrap();
 		let open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
-		nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), channelmanager::provided_init_features(), &open_channel);
+		nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), nodes[0].node.init_features(), &open_channel);
 		let accept_channel = get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id());
-		nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), channelmanager::provided_init_features(), &accept_channel);
+		nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), nodes[1].node.init_features(), &accept_channel);
 
 		let (temporary_channel_id, tx, _funding_output) = create_funding_transaction(&nodes[0], &nodes[1].node.get_our_node_id(), 1_000_000, 42);
 		let channel_id = &tx.txid().into_inner();
@@ -8024,9 +8066,9 @@ mod tests {
 		update_nodes_with_chan_announce(&nodes, 0, 1, &announcement, &nodes_0_update, &nodes_1_update);
 
 		nodes[0].node.close_channel(channel_id, &nodes[1].node.get_our_node_id()).unwrap();
-		nodes[1].node.handle_shutdown(&nodes[0].node.get_our_node_id(), &channelmanager::provided_init_features(), &get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[1].node.get_our_node_id()));
+		nodes[1].node.handle_shutdown(&nodes[0].node.get_our_node_id(), &nodes[0].node.init_features(), &get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[1].node.get_our_node_id()));
 		let nodes_1_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, nodes[0].node.get_our_node_id());
-		nodes[0].node.handle_shutdown(&nodes[1].node.get_our_node_id(), &channelmanager::provided_init_features(), &nodes_1_shutdown);
+		nodes[0].node.handle_shutdown(&nodes[1].node.get_our_node_id(), &nodes[1].node.init_features(), &nodes_1_shutdown);
 
 		let closing_signed_node_0 = get_event_msg!(nodes[0], MessageSendEvent::SendClosingSigned, nodes[1].node.get_our_node_id());
 		nodes[1].node.handle_closing_signed(&nodes[0].node.get_our_node_id(), &closing_signed_node_0);
@@ -8112,7 +8154,7 @@ mod tests {
 		// creating dummy ones.
 		nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 1_000_000, 500_000_000, 42, None).unwrap();
 		let open_channel_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
-		nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), channelmanager::provided_init_features(), &open_channel_msg);
+		nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), nodes[0].node.init_features(), &open_channel_msg);
 		let accept_channel_msg = get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id());
 
 		// Dummy values
@@ -8221,9 +8263,9 @@ mod tests {
 		// Test the API functions and message handlers.
 		check_not_connected_to_peer_error(nodes[0].node.create_channel(unkown_public_key, 1_000_000, 500_000_000, 42, None), unkown_public_key);
 
-		nodes[1].node.handle_open_channel(&unkown_public_key, channelmanager::provided_init_features(), &open_channel_msg);
+		nodes[1].node.handle_open_channel(&unkown_public_key, nodes[0].node.init_features(), &open_channel_msg);
 
-		nodes[0].node.handle_accept_channel(&unkown_public_key, channelmanager::provided_init_features(), &accept_channel_msg);
+		nodes[0].node.handle_accept_channel(&unkown_public_key, nodes[1].node.init_features(), &accept_channel_msg);
 
 		check_unkown_peer_error(nodes[0].node.accept_inbound_channel(&open_channel_msg.temporary_channel_id, &unkown_public_key, 42), unkown_public_key);
 
@@ -8245,7 +8287,7 @@ mod tests {
 
 		check_unkown_peer_error(nodes[0].node.update_channel_config(&unkown_public_key, &[channel_id], &ChannelConfig::default()), unkown_public_key);
 
-		nodes[0].node.handle_shutdown(&unkown_public_key, &channelmanager::provided_init_features(), &shutdown_msg);
+		nodes[0].node.handle_shutdown(&unkown_public_key, &nodes[1].node.init_features(), &shutdown_msg);
 
 		nodes[1].node.handle_closing_signed(&unkown_public_key, &closing_signed_msg);
 
@@ -8339,11 +8381,11 @@ pub mod bench {
 		});
 		let node_b_holder = NodeHolder { node: &node_b };
 
-		node_a.peer_connected(&node_b.get_our_node_id(), &Init { features: channelmanager::provided_init_features(), remote_network_address: None }).unwrap();
-		node_b.peer_connected(&node_a.get_our_node_id(), &Init { features: channelmanager::provided_init_features(), remote_network_address: None }).unwrap();
+		node_a.peer_connected(&node_b.get_our_node_id(), &Init { features: node_b.init_features(), remote_network_address: None }).unwrap();
+		node_b.peer_connected(&node_a.get_our_node_id(), &Init { features: node_a.init_features(), remote_network_address: None }).unwrap();
 		node_a.create_channel(node_b.get_our_node_id(), 8_000_000, 100_000_000, 42, None).unwrap();
-		node_b.handle_open_channel(&node_a.get_our_node_id(), channelmanager::provided_init_features(), &get_event_msg!(node_a_holder, MessageSendEvent::SendOpenChannel, node_b.get_our_node_id()));
-		node_a.handle_accept_channel(&node_b.get_our_node_id(), channelmanager::provided_init_features(), &get_event_msg!(node_b_holder, MessageSendEvent::SendAcceptChannel, node_a.get_our_node_id()));
+		node_b.handle_open_channel(&node_a.get_our_node_id(), node_a.init_features(), &get_event_msg!(node_a_holder, MessageSendEvent::SendOpenChannel, node_b.get_our_node_id()));
+		node_a.handle_accept_channel(&node_b.get_our_node_id(), node_b.init_features(), &get_event_msg!(node_b_holder, MessageSendEvent::SendAcceptChannel, node_a.get_our_node_id()));
 
 		let tx;
 		if let Event::FundingGenerationReady { temporary_channel_id, output_script, .. } = get_event!(node_a_holder, Event::FundingGenerationReady) {
@@ -8405,7 +8447,7 @@ pub mod bench {
 			($node_a: expr, $node_b: expr) => {
 				let usable_channels = $node_a.list_usable_channels();
 				let payment_params = PaymentParameters::from_node_id($node_b.get_our_node_id())
-					.with_features(channelmanager::provided_invoice_features());
+					.with_features($node_b.invoice_features());
 				let scorer = test_utils::TestScorer::with_penalty(0);
 				let seed = [3u8; 32];
 				let keys_manager = KeysManager::new(&seed, 42, 42);

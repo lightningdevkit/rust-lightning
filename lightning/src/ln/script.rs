@@ -135,7 +135,7 @@ impl TryFrom<Script> for ShutdownScript {
 	type Error = InvalidShutdownScript;
 
 	fn try_from(script: Script) -> Result<Self, Self::Error> {
-		Self::try_from((script, &channelmanager::provided_init_features()))
+		Self::try_from((script, &channelmanager::provided_init_features(&crate::util::config::UserConfig::default())))
 	}
 }
 

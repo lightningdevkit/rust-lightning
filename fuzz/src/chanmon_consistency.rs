@@ -38,7 +38,7 @@ use lightning::chain::transaction::OutPoint;
 use lightning::chain::chaininterface::{BroadcasterInterface, ConfirmationTarget, FeeEstimator};
 use lightning::chain::keysinterface::{KeyMaterial, InMemorySigner, Recipient, EntropySource, NodeSigner, SignerProvider};
 use lightning::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
-use lightning::ln::channelmanager::{self, ChainParameters, ChannelDetails, ChannelManager, PaymentSendFailure, ChannelManagerReadArgs, PaymentId};
+use lightning::ln::channelmanager::{ChainParameters, ChannelDetails, ChannelManager, PaymentSendFailure, ChannelManagerReadArgs, PaymentId};
 use lightning::ln::channel::FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE;
 use lightning::ln::msgs::{self, CommitmentUpdate, ChannelMessageHandler, DecodeError, UpdateAddHTLC, Init};
 use lightning::ln::script::ShutdownScript;
@@ -351,9 +351,9 @@ fn send_payment(source: &ChanMan, dest: &ChanMan, dest_chan_id: u64, amt: u64, p
 	if let Err(err) = source.send_payment(&Route {
 		paths: vec![vec![RouteHop {
 			pubkey: dest.get_our_node_id(),
-			node_features: channelmanager::provided_node_features(),
+			node_features: dest.node_features(),
 			short_channel_id: dest_chan_id,
-			channel_features: channelmanager::provided_channel_features(),
+			channel_features: dest.channel_features(),
 			fee_msat: amt,
 			cltv_expiry_delta: 200,
 		}]],
@@ -373,16 +373,16 @@ fn send_hop_payment(source: &ChanMan, middle: &ChanMan, middle_chan_id: u64, des
 	if let Err(err) = source.send_payment(&Route {
 		paths: vec![vec![RouteHop {
 			pubkey: middle.get_our_node_id(),
-			node_features: channelmanager::provided_node_features(),
+			node_features: middle.node_features(),
 			short_channel_id: middle_chan_id,
-			channel_features: channelmanager::provided_channel_features(),
+			channel_features: middle.channel_features(),
 			fee_msat: 50000,
 			cltv_expiry_delta: 100,
 		},RouteHop {
 			pubkey: dest.get_our_node_id(),
-			node_features: channelmanager::provided_node_features(),
+			node_features: dest.node_features(),
 			short_channel_id: dest_chan_id,
-			channel_features: channelmanager::provided_channel_features(),
+			channel_features: dest.channel_features(),
 			fee_msat: amt,
 			cltv_expiry_delta: 200,
 		}]],
@@ -470,8 +470,8 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 	let mut channel_txn = Vec::new();
 	macro_rules! make_channel {
 		($source: expr, $dest: expr, $chan_id: expr) => { {
-			$source.peer_connected(&$dest.get_our_node_id(), &Init { features: channelmanager::provided_init_features(), remote_network_address: None }).unwrap();
-			$dest.peer_connected(&$source.get_our_node_id(), &Init { features: channelmanager::provided_init_features(), remote_network_address: None }).unwrap();
+			$source.peer_connected(&$dest.get_our_node_id(), &Init { features: $dest.init_features(), remote_network_address: None }).unwrap();
+			$dest.peer_connected(&$source.get_our_node_id(), &Init { features: $source.init_features(), remote_network_address: None }).unwrap();
 
 			$source.create_channel($dest.get_our_node_id(), 100_000, 42, 0, None).unwrap();
 			let open_channel = {
@@ -482,7 +482,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 				} else { panic!("Wrong event type"); }
 			};
 
-			$dest.handle_open_channel(&$source.get_our_node_id(), channelmanager::provided_init_features(), &open_channel);
+			$dest.handle_open_channel(&$source.get_our_node_id(), $source.init_features(), &open_channel);
 			let accept_channel = {
 				let events = $dest.get_and_clear_pending_msg_events();
 				assert_eq!(events.len(), 1);
@@ -491,7 +491,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 				} else { panic!("Wrong event type"); }
 			};
 
-			$source.handle_accept_channel(&$dest.get_our_node_id(), channelmanager::provided_init_features(), &accept_channel);
+			$source.handle_accept_channel(&$dest.get_our_node_id(), $dest.init_features(), &accept_channel);
 			let funding_output;
 			{
 				let events = $source.get_and_clear_pending_events();
@@ -990,15 +990,15 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 			},
 			0x0e => {
 				if chan_a_disconnected {
-					nodes[0].peer_connected(&nodes[1].get_our_node_id(), &Init { features: channelmanager::provided_init_features(), remote_network_address: None }).unwrap();
-					nodes[1].peer_connected(&nodes[0].get_our_node_id(), &Init { features: channelmanager::provided_init_features(), remote_network_address: None }).unwrap();
+					nodes[0].peer_connected(&nodes[1].get_our_node_id(), &Init { features: nodes[1].init_features(), remote_network_address: None }).unwrap();
+					nodes[1].peer_connected(&nodes[0].get_our_node_id(), &Init { features: nodes[0].init_features(), remote_network_address: None }).unwrap();
 					chan_a_disconnected = false;
 				}
 			},
 			0x0f => {
 				if chan_b_disconnected {
-					nodes[1].peer_connected(&nodes[2].get_our_node_id(), &Init { features: channelmanager::provided_init_features(), remote_network_address: None }).unwrap();
-					nodes[2].peer_connected(&nodes[1].get_our_node_id(), &Init { features: channelmanager::provided_init_features(), remote_network_address: None }).unwrap();
+					nodes[1].peer_connected(&nodes[2].get_our_node_id(), &Init { features: nodes[2].init_features(), remote_network_address: None }).unwrap();
+					nodes[2].peer_connected(&nodes[1].get_our_node_id(), &Init { features: nodes[1].init_features(), remote_network_address: None }).unwrap();
 					chan_b_disconnected = false;
 				}
 			},
@@ -1193,13 +1193,13 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 
 				// Next, make sure peers are all connected to each other
 				if chan_a_disconnected {
-					nodes[0].peer_connected(&nodes[1].get_our_node_id(), &Init { features: channelmanager::provided_init_features(), remote_network_address: None }).unwrap();
-					nodes[1].peer_connected(&nodes[0].get_our_node_id(), &Init { features: channelmanager::provided_init_features(), remote_network_address: None }).unwrap();
+					nodes[0].peer_connected(&nodes[1].get_our_node_id(), &Init { features: nodes[1].init_features(), remote_network_address: None }).unwrap();
+					nodes[1].peer_connected(&nodes[0].get_our_node_id(), &Init { features: nodes[0].init_features(), remote_network_address: None }).unwrap();
 					chan_a_disconnected = false;
 				}
 				if chan_b_disconnected {
-					nodes[1].peer_connected(&nodes[2].get_our_node_id(), &Init { features: channelmanager::provided_init_features(), remote_network_address: None }).unwrap();
-					nodes[2].peer_connected(&nodes[1].get_our_node_id(), &Init { features: channelmanager::provided_init_features(), remote_network_address: None }).unwrap();
+					nodes[1].peer_connected(&nodes[2].get_our_node_id(), &Init { features: nodes[2].init_features(), remote_network_address: None }).unwrap();
+					nodes[2].peer_connected(&nodes[1].get_our_node_id(), &Init { features: nodes[1].init_features(), remote_network_address: None }).unwrap();
 					chan_b_disconnected = false;
 				}
 

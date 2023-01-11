@@ -13,7 +13,7 @@ use crate::chain::channelmonitor::{ANTI_REORG_DELAY, Balance};
 use crate::chain::transaction::OutPoint;
 use crate::chain::chaininterface::LowerBoundedFeeEstimator;
 use crate::ln::channel;
-use crate::ln::channelmanager::{self, BREAKDOWN_TIMEOUT, PaymentId};
+use crate::ln::channelmanager::{BREAKDOWN_TIMEOUT, PaymentId};
 use crate::ln::msgs::ChannelMessageHandler;
 use crate::util::events::{Event, MessageSendEvent, MessageSendEventsProvider, ClosureReason, HTLCDestination};
 
@@ -48,8 +48,8 @@ fn chanmon_fail_from_stale_commitment() {
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
-	create_announced_chan_between_nodes(&nodes, 0, 1, channelmanager::provided_init_features(), channelmanager::provided_init_features());
-	let (update_a, _, chan_id_2, _) = create_announced_chan_between_nodes(&nodes, 1, 2, channelmanager::provided_init_features(), channelmanager::provided_init_features());
+	create_announced_chan_between_nodes(&nodes, 0, 1);
+	let (update_a, _, chan_id_2, _) = create_announced_chan_between_nodes(&nodes, 1, 2);
 
 	let (route, payment_hash, _, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], 1_000_000);
 	nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret), PaymentId(payment_hash.0)).unwrap();
@@ -105,7 +105,7 @@ fn revoked_output_htlc_resolution_timing() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
-	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 500_000_000, channelmanager::provided_init_features(), channelmanager::provided_init_features());
+	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 500_000_000);
 
 	let payment_hash_1 = route_payment(&nodes[1], &[&nodes[0]], 1_000_000).1;
 
@@ -154,7 +154,7 @@ fn chanmon_claim_value_coop_close() {
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let (_, _, chan_id, funding_tx) =
-		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 1_000_000, channelmanager::provided_init_features(), channelmanager::provided_init_features());
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 1_000_000);
 	let funding_outpoint = OutPoint { txid: funding_tx.txid(), index: 0 };
 	assert_eq!(funding_outpoint.to_channel_id(), chan_id);
 
@@ -170,9 +170,9 @@ fn chanmon_claim_value_coop_close() {
 
 	nodes[0].node.close_channel(&chan_id, &nodes[1].node.get_our_node_id()).unwrap();
 	let node_0_shutdown = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[1].node.get_our_node_id());
-	nodes[1].node.handle_shutdown(&nodes[0].node.get_our_node_id(), &channelmanager::provided_init_features(), &node_0_shutdown);
+	nodes[1].node.handle_shutdown(&nodes[0].node.get_our_node_id(), &nodes[0].node.init_features(), &node_0_shutdown);
 	let node_1_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, nodes[0].node.get_our_node_id());
-	nodes[0].node.handle_shutdown(&nodes[1].node.get_our_node_id(), &channelmanager::provided_init_features(), &node_1_shutdown);
+	nodes[0].node.handle_shutdown(&nodes[1].node.get_our_node_id(), &nodes[1].node.init_features(), &node_1_shutdown);
 
 	let node_0_closing_signed = get_event_msg!(nodes[0], MessageSendEvent::SendClosingSigned, nodes[1].node.get_our_node_id());
 	nodes[1].node.handle_closing_signed(&nodes[0].node.get_our_node_id(), &node_0_closing_signed);
@@ -255,7 +255,7 @@ fn do_test_claim_value_force_close(prev_commitment_tx: bool) {
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let (_, _, chan_id, funding_tx) =
-		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 1_000_000, channelmanager::provided_init_features(), channelmanager::provided_init_features());
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 1_000_000);
 	let funding_outpoint = OutPoint { txid: funding_tx.txid(), index: 0 };
 	assert_eq!(funding_outpoint.to_channel_id(), chan_id);
 
@@ -594,7 +594,7 @@ fn test_balances_on_local_commitment_htlcs() {
 
 	// Create a single channel with two pending HTLCs from nodes[0] to nodes[1], one which nodes[1]
 	// knows the preimage for, one which it does not.
-	let (_, _, chan_id, funding_tx) = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0, channelmanager::provided_init_features(), channelmanager::provided_init_features());
+	let (_, _, chan_id, funding_tx) = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
 	let funding_outpoint = OutPoint { txid: funding_tx.txid(), index: 0 };
 
 	let (route, payment_hash, _, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], 10_000_000);
@@ -768,7 +768,7 @@ fn test_no_preimage_inbound_htlc_balances() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
-	let (_, _, chan_id, funding_tx) = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 500_000_000, channelmanager::provided_init_features(), channelmanager::provided_init_features());
+	let (_, _, chan_id, funding_tx) = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 500_000_000);
 	let funding_outpoint = OutPoint { txid: funding_tx.txid(), index: 0 };
 
 	// Send two HTLCs, one from A to B, and one from B to A.
@@ -1021,7 +1021,7 @@ fn do_test_revoked_counterparty_commitment_balances(confirm_htlc_spend_first: bo
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let (_, _, chan_id, funding_tx) =
-		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 100_000_000, channelmanager::provided_init_features(), channelmanager::provided_init_features());
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 100_000_000);
 	let funding_outpoint = OutPoint { txid: funding_tx.txid(), index: 0 };
 	assert_eq!(funding_outpoint.to_channel_id(), chan_id);
 
@@ -1273,7 +1273,7 @@ fn test_revoked_counterparty_htlc_tx_balances() {
 
 	// Create some initial channels
 	let (_, _, chan_id, funding_tx) =
-		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 11_000_000, channelmanager::provided_init_features(), channelmanager::provided_init_features());
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 11_000_000);
 	let funding_outpoint = OutPoint { txid: funding_tx.txid(), index: 0 };
 	assert_eq!(funding_outpoint.to_channel_id(), chan_id);
 
@@ -1483,7 +1483,7 @@ fn test_revoked_counterparty_aggregated_claims() {
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let (_, _, chan_id, funding_tx) =
-		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 100_000_000, channelmanager::provided_init_features(), channelmanager::provided_init_features());
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 100_000_000);
 	let funding_outpoint = OutPoint { txid: funding_tx.txid(), index: 0 };
 	assert_eq!(funding_outpoint.to_channel_id(), chan_id);
 

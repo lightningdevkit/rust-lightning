@@ -1932,6 +1932,7 @@ mod tests {
 	use crate::ln::msgs::{RoutingMessageHandler, UnsignedNodeAnnouncement, NodeAnnouncement,
 		UnsignedChannelAnnouncement, ChannelAnnouncement, UnsignedChannelUpdate, ChannelUpdate,
 		ReplyChannelRange, QueryChannelRange, QueryShortChannelIds, MAX_VALUE_MSAT};
+	use crate::util::config::UserConfig;
 	use crate::util::test_utils;
 	use crate::util::ser::{ReadableArgs, Writeable};
 	use crate::util::events::{MessageSendEvent, MessageSendEventsProvider};
@@ -1991,7 +1992,7 @@ mod tests {
 	fn get_signed_node_announcement<F: Fn(&mut UnsignedNodeAnnouncement)>(f: F, node_key: &SecretKey, secp_ctx: &Secp256k1<secp256k1::All>) -> NodeAnnouncement {
 		let node_id = PublicKey::from_secret_key(&secp_ctx, node_key);
 		let mut unsigned_announcement = UnsignedNodeAnnouncement {
-			features: channelmanager::provided_node_features(),
+			features: channelmanager::provided_node_features(&UserConfig::default()),
 			timestamp: 100,
 			node_id: node_id,
 			rgb: [0; 3],
@@ -2015,7 +2016,7 @@ mod tests {
 		let node_2_btckey = &SecretKey::from_slice(&[39; 32]).unwrap();
 
 		let mut unsigned_announcement = UnsignedChannelAnnouncement {
-			features: channelmanager::provided_channel_features(),
+			features: channelmanager::provided_channel_features(&UserConfig::default()),
 			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
 			short_channel_id: 0,
 			node_id_1,
@@ -3149,6 +3150,7 @@ mod tests {
 		let node_cfgs = crate::ln::functional_test_utils::create_node_cfgs(2, &chanmon_cfgs);
 		let node_chanmgrs = crate::ln::functional_test_utils::create_node_chanmgrs(2, &node_cfgs, &[None, None, None, None]);
 		let nodes = crate::ln::functional_test_utils::create_network(2, &node_cfgs, &node_chanmgrs);
+		let config = crate::ln::functional_test_utils::test_default_channel_config();
 
 		// 1. Test encoding/decoding of ChannelUpdateInfo
 		let chan_update_info = ChannelUpdateInfo {
@@ -3185,7 +3187,7 @@ mod tests {
 		// 2. Test encoding/decoding of ChannelInfo
 		// Check we can encode/decode ChannelInfo without ChannelUpdateInfo fields present.
 		let chan_info_none_updates = ChannelInfo {
-			features: channelmanager::provided_channel_features(),
+			features: channelmanager::provided_channel_features(&config),
 			node_one: NodeId::from_pubkey(&nodes[0].node.get_our_node_id()),
 			one_to_two: None,
 			node_two: NodeId::from_pubkey(&nodes[1].node.get_our_node_id()),
@@ -3203,7 +3205,7 @@ mod tests {
 
 		// Check we can encode/decode ChannelInfo with ChannelUpdateInfo fields present.
 		let chan_info_some_updates = ChannelInfo {
-			features: channelmanager::provided_channel_features(),
+			features: channelmanager::provided_channel_features(&config),
 			node_one: NodeId::from_pubkey(&nodes[0].node.get_our_node_id()),
 			one_to_two: Some(chan_update_info.clone()),
 			node_two: NodeId::from_pubkey(&nodes[1].node.get_our_node_id()),
@@ -3245,7 +3247,7 @@ mod tests {
 		// 1. Check we can read a valid NodeAnnouncementInfo and fail on an invalid one
 		let valid_netaddr = crate::ln::msgs::NetAddress::Hostname { hostname: crate::util::ser::Hostname::try_from("A".to_string()).unwrap(), port: 1234 };
 		let valid_node_ann_info = NodeAnnouncementInfo {
-			features: channelmanager::provided_node_features(),
+			features: channelmanager::provided_node_features(&UserConfig::default()),
 			last_update: 0,
 			rgb: [0u8; 3],
 			alias: NodeAlias([0u8; 32]),
