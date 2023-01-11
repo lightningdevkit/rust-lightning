@@ -821,8 +821,8 @@ pub struct CommitmentUpdate {
 }
 
 /// Messages could have optional fields to use with extended features
-/// As we wish to serialize these differently from Option<T>s (Options get a tag byte, but
-/// OptionalFeild simply gets Present if there are enough bytes to read into it), we have a
+/// As we wish to serialize these differently from `Option<T>`s (`Options` get a tag byte, but
+/// [`OptionalField`] simply gets `Present` if there are enough bytes to read into it), we have a
 /// separate enum type for them.
 /// (C-not exported) due to a free generic in T
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1455,14 +1455,14 @@ impl Writeable for OnionHopData {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		match self.format {
 			OnionHopDataFormat::NonFinalNode { short_channel_id } => {
-				encode_varint_length_prefixed_tlv!(w, {
+				_encode_varint_length_prefixed_tlv!(w, {
 					(2, HighZeroBytesDroppedBigSize(self.amt_to_forward), required),
 					(4, HighZeroBytesDroppedBigSize(self.outgoing_cltv_value), required),
 					(6, short_channel_id, required)
 				});
 			},
 			OnionHopDataFormat::FinalNode { ref payment_data, ref keysend_preimage } => {
-				encode_varint_length_prefixed_tlv!(w, {
+				_encode_varint_length_prefixed_tlv!(w, {
 					(2, HighZeroBytesDroppedBigSize(self.amt_to_forward), required),
 					(4, HighZeroBytesDroppedBigSize(self.outgoing_cltv_value), required),
 					(8, payment_data, option),
@@ -2875,7 +2875,7 @@ mod tests {
 		let mut encoded_payload = Vec::new();
 		let test_bytes = vec![42u8; 1000];
 		if let OnionHopDataFormat::NonFinalNode { short_channel_id } = payload.format {
-			encode_varint_length_prefixed_tlv!(&mut encoded_payload, {
+			_encode_varint_length_prefixed_tlv!(&mut encoded_payload, {
 				(1, test_bytes, vec_type),
 				(2, HighZeroBytesDroppedBigSize(payload.amt_to_forward), required),
 				(4, HighZeroBytesDroppedBigSize(payload.outgoing_cltv_value), required),

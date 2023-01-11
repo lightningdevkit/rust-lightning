@@ -84,7 +84,7 @@ impl Writer for VecWriter {
 
 /// Writer that only tracks the amount of data written - useful if you need to calculate the length
 /// of some data when serialized but don't yet need the full data.
-pub(crate) struct LengthCalculatingWriter(pub usize);
+pub struct LengthCalculatingWriter(pub usize);
 impl Writer for LengthCalculatingWriter {
 	#[inline]
 	fn write_all(&mut self, buf: &[u8]) -> Result<(), io::Error> {
@@ -93,23 +93,26 @@ impl Writer for LengthCalculatingWriter {
 	}
 }
 
-/// Essentially std::io::Take but a bit simpler and with a method to walk the underlying stream
+/// Essentially [`std::io::Take`] but a bit simpler and with a method to walk the underlying stream
 /// forward to ensure we always consume exactly the fixed length specified.
-pub(crate) struct FixedLengthReader<R: Read> {
+pub struct FixedLengthReader<R: Read> {
 	read: R,
 	bytes_read: u64,
 	total_bytes: u64,
 }
 impl<R: Read> FixedLengthReader<R> {
+	/// Returns a new [`FixedLengthReader`].
 	pub fn new(read: R, total_bytes: u64) -> Self {
 		Self { read, bytes_read: 0, total_bytes }
 	}
 
+	/// Returns whether some bytes are remaining or not.
 	#[inline]
 	pub fn bytes_remain(&mut self) -> bool {
 		self.bytes_read != self.total_bytes
 	}
 
+	/// Consumes the remaining bytes.
 	#[inline]
 	pub fn eat_remaining(&mut self) -> Result<(), DecodeError> {
 		copy(self, &mut sink()).unwrap();
@@ -145,13 +148,15 @@ impl<R: Read> LengthRead for FixedLengthReader<R> {
 	}
 }
 
-/// A Read which tracks whether any bytes have been read at all. This allows us to distinguish
+/// A [`Read`] implementation which tracks whether any bytes have been read at all. This allows us to distinguish
 /// between "EOF reached before we started" and "EOF reached mid-read".
-pub(crate) struct ReadTrackingReader<R: Read> {
+pub struct ReadTrackingReader<R: Read> {
 	read: R,
+	/// Returns whether we have read from this reader or not yet.
 	pub have_read: bool,
 }
 impl<R: Read> ReadTrackingReader<R> {
+	/// Returns a new [`ReadTrackingReader`].
 	pub fn new(read: R) -> Self {
 		Self { read, have_read: false }
 	}
@@ -278,7 +283,8 @@ impl<T: Readable> MaybeReadable for T {
 	}
 }
 
-pub(crate) struct OptionDeserWrapper<T: Readable>(pub Option<T>);
+/// Wrapper to read a required (non-optional) TLV record.
+pub struct OptionDeserWrapper<T: Readable>(pub Option<T>);
 impl<T: Readable> Readable for OptionDeserWrapper<T> {
 	#[inline]
 	fn read<R: Read>(reader: &mut R) -> Result<Self, DecodeError> {
@@ -528,7 +534,7 @@ impl Readable for [u16; 8] {
 
 /// For variable-length values within TLV record where the length is encoded as part of the record.
 /// Used to prevent encoding the length twice.
-pub(crate) struct WithoutLength<T>(pub T);
+pub struct WithoutLength<T>(pub T);
 
 impl Writeable for WithoutLength<&String> {
 	#[inline]

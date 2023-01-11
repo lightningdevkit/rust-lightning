@@ -13,7 +13,7 @@
 pub(crate) mod fuzz_wrappers;
 
 #[macro_use]
-pub(crate) mod ser_macros;
+pub mod ser_macros;
 
 pub mod events;
 pub mod errors;
