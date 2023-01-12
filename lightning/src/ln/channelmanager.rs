@@ -577,13 +577,13 @@ pub type SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, M, T, F, L> = C
 //  |   |
 //  |   |__`pending_intercepted_htlcs`
 //  |
-//  |__`pending_inbound_payments`
+//  |__`per_peer_state`
 //  |   |
-//  |   |__`claimable_payments`
-//  |   |
-//  |   |__`pending_outbound_payments` // This field's struct contains a map of pending outbounds
+//  |   |__`pending_inbound_payments`
 //  |       |
-//  |       |__`per_peer_state`
+//  |       |__`claimable_payments`
+//  |       |
+//  |       |__`pending_outbound_payments` // This field's struct contains a map of pending outbounds
 //  |           |
 //  |           |__`peer_state`
 //  |               |
@@ -3570,9 +3570,12 @@ where
 			// Ensure that no peer state channel storage lock is not held when calling this
 			// function.
 			// This ensures that future code doesn't introduce a lock_order requirement for
-			// `forward_htlcs` to be locked after the `per_peer_state` locks, which calling this
-			// function with the `per_peer_state` aquired would.
-			assert!(self.per_peer_state.try_write().is_ok());
+			// `forward_htlcs` to be locked after the `per_peer_state` peer locks, which calling
+			// this function with any `per_peer_state` peer lock aquired would.
+			let per_peer_state = self.per_peer_state.read().unwrap();
+			for (_, peer) in per_peer_state.iter() {
+				assert!(peer.try_lock().is_ok());
+			}
 		}
 
 		//TODO: There is a timing attack here where if a node fails an HTLC back to us they can
@@ -6739,6 +6742,8 @@ where
 			}
 		}
 
+		let per_peer_state = self.per_peer_state.write().unwrap();
+
 		let pending_inbound_payments = self.pending_inbound_payments.lock().unwrap();
 		let claimable_payments = self.claimable_payments.lock().unwrap();
 		let pending_outbound_payments = self.pending_outbound_payments.pending_outbound_payments.lock().unwrap();
@@ -6754,7 +6759,6 @@ where
 			htlc_purposes.push(purpose);
 		}
 
-		let per_peer_state = self.per_peer_state.write().unwrap();
 		(per_peer_state.len() as u64).write(writer)?;
 		for (peer_pubkey, peer_state_mutex) in per_peer_state.iter() {
 			peer_pubkey.write(writer)?;
