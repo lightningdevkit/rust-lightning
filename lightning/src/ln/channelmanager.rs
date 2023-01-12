@@ -5706,9 +5706,7 @@ where
 				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 				let peer_state = &mut *peer_state_lock;
 				if peer_state.pending_msg_events.len() > 0 {
-					let mut peer_pending_events = Vec::new();
-					mem::swap(&mut peer_pending_events, &mut peer_state.pending_msg_events);
-					pending_events.append(&mut peer_pending_events);
+					pending_events.append(&mut peer_state.pending_msg_events);
 				}
 			}
 
