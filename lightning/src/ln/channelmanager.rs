@@ -3849,7 +3849,7 @@ where
 		let mut expected_amt_msat = None;
 		let mut valid_mpp = true;
 		let mut errs = Vec::new();
-		let mut per_peer_state = Some(self.per_peer_state.read().unwrap());
+		let per_peer_state = self.per_peer_state.read().unwrap();
 		for htlc in sources.iter() {
 			let (counterparty_node_id, chan_id) = match self.short_to_chan_info.read().unwrap().get(&htlc.prev_hop.short_channel_id) {
 				Some((cp_id, chan_id)) => (cp_id.clone(), chan_id.clone()),
@@ -3859,12 +3859,12 @@ where
 				}
 			};
 
-			if let None = per_peer_state.as_ref().unwrap().get(&counterparty_node_id) {
+			if let None = per_peer_state.get(&counterparty_node_id) {
 				valid_mpp = false;
 				break;
 			}
 
-			let peer_state_mutex = per_peer_state.as_ref().unwrap().get(&counterparty_node_id).unwrap();
+			let peer_state_mutex = per_peer_state.get(&counterparty_node_id).unwrap();
 			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 			let peer_state = &mut *peer_state_lock;
 
@@ -3894,14 +3894,13 @@ where
 
 			claimable_amt_msat += htlc.value;
 		}
+		mem::drop(per_peer_state);
 		if sources.is_empty() || expected_amt_msat.is_none() {
-			mem::drop(per_peer_state);
 			self.claimable_payments.lock().unwrap().pending_claiming_payments.remove(&payment_hash);
 			log_info!(self.logger, "Attempted to claim an incomplete payment which no longer had any available HTLCs!");
 			return;
 		}
 		if claimable_amt_msat != expected_amt_msat.unwrap() {
-			mem::drop(per_peer_state);
 			self.claimable_payments.lock().unwrap().pending_claiming_payments.remove(&payment_hash);
 			log_info!(self.logger, "Attempted to claim an incomplete payment, expected {} msat, had {} available to claim.",
 				expected_amt_msat.unwrap(), claimable_amt_msat);
@@ -3909,8 +3908,7 @@ where
 		}
 		if valid_mpp {
 			for htlc in sources.drain(..) {
-				if per_peer_state.is_none() { per_peer_state = Some(self.per_peer_state.read().unwrap()); }
-				if let Err((pk, err)) = self.claim_funds_from_hop(per_peer_state.take().unwrap(),
+				if let Err((pk, err)) = self.claim_funds_from_hop(
 					htlc.prev_hop, payment_preimage,
 					|_| Some(MonitorUpdateCompletionAction::PaymentClaimed { payment_hash }))
 				{
@@ -3922,7 +3920,6 @@ where
 				}
 			}
 		}
-		mem::drop(per_peer_state);
 		if !valid_mpp {
 			for htlc in sources.drain(..) {
 				let mut htlc_msat_height_data = htlc.value.to_be_bytes().to_vec();
@@ -3943,11 +3940,11 @@ where
 	}
 
 	fn claim_funds_from_hop<ComplFunc: FnOnce(Option<u64>) -> Option<MonitorUpdateCompletionAction>>(&self,
-		per_peer_state_lock: RwLockReadGuard<HashMap<PublicKey, Mutex<PeerState<<SP::Target as SignerProvider>::Signer>>>>,
 		prev_hop: HTLCPreviousHopData, payment_preimage: PaymentPreimage, completion_action: ComplFunc)
 	-> Result<(), (PublicKey, MsgHandleErrInternal)> {
 		//TODO: Delay the claimed_funds relaying just like we do outbound relay!
 
+		let per_peer_state = self.per_peer_state.read().unwrap();
 		let chan_id = prev_hop.outpoint.to_channel_id();
 
 		let counterparty_node_id_opt = match self.short_to_chan_info.read().unwrap().get(&prev_hop.short_channel_id) {
@@ -3955,8 +3952,8 @@ where
 			None => None
 		};
 
-		let (found_channel, mut peer_state_opt) = if counterparty_node_id_opt.is_some() && per_peer_state_lock.get(&counterparty_node_id_opt.unwrap()).is_some() {
-			let peer_mutex = per_peer_state_lock.get(&counterparty_node_id_opt.unwrap()).unwrap();
+		let (found_channel, mut peer_state_opt) = if counterparty_node_id_opt.is_some() && per_peer_state.get(&counterparty_node_id_opt.unwrap()).is_some() {
+			let peer_mutex = per_peer_state.get(&counterparty_node_id_opt.unwrap()).unwrap();
 			let peer_state = peer_mutex.lock().unwrap();
 			let found_channel = peer_state.channel_by_id.contains_key(&chan_id);
 			(found_channel, Some(peer_state))
@@ -3977,7 +3974,7 @@ where
 										payment_preimage, e);
 									let err = handle_monitor_update_res!(self, e, chan, RAACommitmentOrder::CommitmentFirst, false, msgs.is_some()).unwrap_err();
 									mem::drop(peer_state_opt);
-									mem::drop(per_peer_state_lock);
+									mem::drop(per_peer_state);
 									self.handle_monitor_update_completion_actions(completion_action(Some(htlc_value_msat)));
 									return Err((counterparty_node_id, err));
 								}
@@ -3998,7 +3995,7 @@ where
 								});
 							}
 							mem::drop(peer_state_opt);
-							mem::drop(per_peer_state_lock);
+							mem::drop(per_peer_state);
 							self.handle_monitor_update_completion_actions(completion_action(Some(htlc_value_msat)));
 							Ok(())
 						} else {
@@ -4023,7 +4020,7 @@ where
 							chan.remove_entry();
 						}
 						mem::drop(peer_state_opt);
-						mem::drop(per_peer_state_lock);
+						mem::drop(per_peer_state);
 						self.handle_monitor_update_completion_actions(completion_action(None));
 						Err((counterparty_node_id, res))
 					},
@@ -4052,7 +4049,7 @@ where
 					payment_preimage, update_res);
 			}
 			mem::drop(peer_state_opt);
-			mem::drop(per_peer_state_lock);
+			mem::drop(per_peer_state);
 			// Note that we do process the completion action here. This totally could be a
 			// duplicate claim, but we have no way of knowing without interrogating the
 			// `ChannelMonitor` we've provided the above update to. Instead, note that `Event`s are
@@ -4074,7 +4071,7 @@ where
 			},
 			HTLCSource::PreviousHopData(hop_data) => {
 				let prev_outpoint = hop_data.outpoint;
-				let res = self.claim_funds_from_hop(self.per_peer_state.read().unwrap(), hop_data, payment_preimage,
+				let res = self.claim_funds_from_hop(hop_data, payment_preimage,
 					|htlc_claim_value_msat| {
 						if let Some(forwarded_htlc_value) = forwarded_htlc_value_msat {
 							let fee_earned_msat = if let Some(claimed_htlc_value) = htlc_claim_value_msat {
