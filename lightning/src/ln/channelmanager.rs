@@ -3859,13 +3859,13 @@ where
 				}
 			};
 
-			if let None = per_peer_state.get(&counterparty_node_id) {
+			let peer_state_mutex_opt = per_peer_state.get(&counterparty_node_id);
+			if let None = peer_state_mutex_opt {
 				valid_mpp = false;
 				break;
 			}
 
-			let peer_state_mutex = per_peer_state.get(&counterparty_node_id).unwrap();
-			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+			let mut peer_state_lock = peer_state_mutex_opt.unwrap().lock().unwrap();
 			let peer_state = &mut *peer_state_lock;
 
 			if let None = peer_state.channel_by_id.get(&chan_id) {
@@ -3952,83 +3952,76 @@ where
 			None => None
 		};
 
-		let (found_channel, mut peer_state_opt) = if counterparty_node_id_opt.is_some() && per_peer_state.get(&counterparty_node_id_opt.unwrap()).is_some() {
-			let peer_mutex = per_peer_state.get(&counterparty_node_id_opt.unwrap()).unwrap();
-			let peer_state = peer_mutex.lock().unwrap();
-			let found_channel = peer_state.channel_by_id.contains_key(&chan_id);
-			(found_channel, Some(peer_state))
-		}  else { (false, None) };
+		let mut peer_state_opt = counterparty_node_id_opt.as_ref().map(
+			|counterparty_node_id| per_peer_state.get(counterparty_node_id).map(
+				|peer_mutex| peer_mutex.lock().unwrap()
+			)
+		).unwrap_or(None);
 
-		if found_channel {
-			let peer_state = &mut *peer_state_opt.as_mut().unwrap();
-			if let hash_map::Entry::Occupied(mut chan) = peer_state.channel_by_id.entry(chan_id) {
-				let counterparty_node_id = chan.get().get_counterparty_node_id();
-				match chan.get_mut().get_update_fulfill_htlc_and_commit(prev_hop.htlc_id, payment_preimage, &self.logger) {
-					Ok(msgs_monitor_option) => {
-						if let UpdateFulfillCommitFetch::NewClaim { msgs, htlc_value_msat, monitor_update } = msgs_monitor_option {
-							match self.chain_monitor.update_channel(chan.get().get_funding_txo().unwrap(), &monitor_update) {
-								ChannelMonitorUpdateStatus::Completed => {},
-								e => {
-									log_given_level!(self.logger, if e == ChannelMonitorUpdateStatus::PermanentFailure { Level::Error } else { Level::Debug },
-										"Failed to update channel monitor with preimage {:?}: {:?}",
-										payment_preimage, e);
-									let err = handle_monitor_update_res!(self, e, chan, RAACommitmentOrder::CommitmentFirst, false, msgs.is_some()).unwrap_err();
-									mem::drop(peer_state_opt);
-									mem::drop(per_peer_state);
-									self.handle_monitor_update_completion_actions(completion_action(Some(htlc_value_msat)));
-									return Err((counterparty_node_id, err));
-								}
-							}
-							if let Some((msg, commitment_signed)) = msgs {
-								log_debug!(self.logger, "Claiming funds for HTLC with preimage {} resulted in a commitment_signed for channel {}",
-									log_bytes!(payment_preimage.0), log_bytes!(chan.get().channel_id()));
-								peer_state.pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
-									node_id: counterparty_node_id,
-									updates: msgs::CommitmentUpdate {
-										update_add_htlcs: Vec::new(),
-										update_fulfill_htlcs: vec![msg],
-										update_fail_htlcs: Vec::new(),
-										update_fail_malformed_htlcs: Vec::new(),
-										update_fee: None,
-										commitment_signed,
-									}
-								});
-							}
-							mem::drop(peer_state_opt);
-							mem::drop(per_peer_state);
-							self.handle_monitor_update_completion_actions(completion_action(Some(htlc_value_msat)));
-							Ok(())
-						} else {
-							Ok(())
-						}
-					},
-					Err((e, monitor_update)) => {
+		if let Some(hash_map::Entry::Occupied(mut chan)) = peer_state_opt.as_mut().map(|peer_state| peer_state.channel_by_id.entry(chan_id))
+		{
+			let counterparty_node_id = chan.get().get_counterparty_node_id();
+			match chan.get_mut().get_update_fulfill_htlc_and_commit(prev_hop.htlc_id, payment_preimage, &self.logger) {
+				Ok(msgs_monitor_option) => {
+					if let UpdateFulfillCommitFetch::NewClaim { msgs, htlc_value_msat, monitor_update } = msgs_monitor_option {
 						match self.chain_monitor.update_channel(chan.get().get_funding_txo().unwrap(), &monitor_update) {
 							ChannelMonitorUpdateStatus::Completed => {},
 							e => {
-								// TODO: This needs to be handled somehow - if we receive a monitor update
-								// with a preimage we *must* somehow manage to propagate it to the upstream
-								// channel, or we must have an ability to receive the same update and try
-								// again on restart.
-								log_given_level!(self.logger, if e == ChannelMonitorUpdateStatus::PermanentFailure { Level::Error } else { Level::Info },
-									"Failed to update channel monitor with preimage {:?} immediately prior to force-close: {:?}",
+								log_given_level!(self.logger, if e == ChannelMonitorUpdateStatus::PermanentFailure { Level::Error } else { Level::Debug },
+									"Failed to update channel monitor with preimage {:?}: {:?}",
 									payment_preimage, e);
-							},
+								let err = handle_monitor_update_res!(self, e, chan, RAACommitmentOrder::CommitmentFirst, false, msgs.is_some()).unwrap_err();
+								mem::drop(peer_state_opt);
+								mem::drop(per_peer_state);
+								self.handle_monitor_update_completion_actions(completion_action(Some(htlc_value_msat)));
+								return Err((counterparty_node_id, err));
+							}
 						}
-						let (drop, res) = convert_chan_err!(self, e, chan.get_mut(), &chan_id);
-						if drop {
-							chan.remove_entry();
+						if let Some((msg, commitment_signed)) = msgs {
+							log_debug!(self.logger, "Claiming funds for HTLC with preimage {} resulted in a commitment_signed for channel {}",
+								log_bytes!(payment_preimage.0), log_bytes!(chan.get().channel_id()));
+							peer_state_opt.as_mut().unwrap().pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
+								node_id: counterparty_node_id,
+								updates: msgs::CommitmentUpdate {
+									update_add_htlcs: Vec::new(),
+									update_fulfill_htlcs: vec![msg],
+									update_fail_htlcs: Vec::new(),
+									update_fail_malformed_htlcs: Vec::new(),
+									update_fee: None,
+									commitment_signed,
+								}
+							});
 						}
 						mem::drop(peer_state_opt);
 						mem::drop(per_peer_state);
-						self.handle_monitor_update_completion_actions(completion_action(None));
-						Err((counterparty_node_id, res))
-					},
-				}
-			} else {
-				// We've held the peer_state mutex since finding the channel and setting
-				// found_channel to true, so the channel can't have been dropped.
-				unreachable!()
+						self.handle_monitor_update_completion_actions(completion_action(Some(htlc_value_msat)));
+						Ok(())
+					} else {
+						Ok(())
+					}
+				},
+				Err((e, monitor_update)) => {
+					match self.chain_monitor.update_channel(chan.get().get_funding_txo().unwrap(), &monitor_update) {
+						ChannelMonitorUpdateStatus::Completed => {},
+						e => {
+							// TODO: This needs to be handled somehow - if we receive a monitor update
+							// with a preimage we *must* somehow manage to propagate it to the upstream
+							// channel, or we must have an ability to receive the same update and try
+							// again on restart.
+							log_given_level!(self.logger, if e == ChannelMonitorUpdateStatus::PermanentFailure { Level::Error } else { Level::Info },
+								"Failed to update channel monitor with preimage {:?} immediately prior to force-close: {:?}",
+								payment_preimage, e);
+						},
+					}
+					let (drop, res) = convert_chan_err!(self, e, chan.get_mut(), &chan_id);
+					if drop {
+						chan.remove_entry();
+					}
+					mem::drop(peer_state_opt);
+					mem::drop(per_peer_state);
+					self.handle_monitor_update_completion_actions(completion_action(None));
+					Err((counterparty_node_id, res))
+				},
 			}
 		} else {
 			let preimage_update = ChannelMonitorUpdate {
