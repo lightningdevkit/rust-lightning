@@ -57,7 +57,6 @@ use bitcoin::network::constants::Network;
 use bitcoin::secp256k1::{Message, PublicKey};
 use bitcoin::secp256k1::schnorr::Signature;
 use core::convert::TryFrom;
-use core::time::Duration;
 use crate::io;
 use crate::ln::PaymentHash;
 use crate::ln::features::InvoiceRequestFeatures;
@@ -326,22 +325,34 @@ impl InvoiceRequest {
 	/// Creates an [`Invoice`] for the request with the given required fields.
 	///
 	/// Unless [`InvoiceBuilder::relative_expiry`] is set, the invoice will expire two hours after
-	/// `created_at`. The caller is expected to remember the preimage of `payment_hash` in order to
-	/// claim a payment for the invoice.
+	/// calling this method in `std` builds. For `no-std` builds, a final [`Duration`] parameter
+	/// must be given, which is used to set [`Invoice::created_at`] since [`std::time::SystemTime`]
+	/// is not available.
+	///
+	/// The caller is expected to remember the preimage of `payment_hash` in order to claim a payment
+	/// for the invoice.
 	///
 	/// The `payment_paths` parameter is useful for maintaining the payment recipient's privacy. It
 	/// must contain one or more elements.
 	///
 	/// Errors if the request contains unknown required features.
 	///
+	/// [`Duration`]: core::time::Duration
 	/// [`Invoice`]: crate::offers::invoice::Invoice
+	/// [`Invoice::created_at`]: crate::offers::invoice::Invoice::created_at
 	pub fn respond_with(
-		&self, payment_paths: Vec<(BlindedPath, BlindedPayInfo)>, created_at: Duration,
-		payment_hash: PaymentHash
+		&self, payment_paths: Vec<(BlindedPath, BlindedPayInfo)>, payment_hash: PaymentHash,
+		#[cfg(not(feature = "std"))]
+		created_at: core::time::Duration
 	) -> Result<InvoiceBuilder, SemanticError> {
 		if self.features().requires_unknown_bits() {
 			return Err(SemanticError::UnknownRequiredFeatures);
 		}
+
+		#[cfg(feature = "std")]
+		let created_at = std::time::SystemTime::now()
+			.duration_since(std::time::SystemTime::UNIX_EPOCH)
+			.expect("SystemTime::now() should come after SystemTime::UNIX_EPOCH");
 
 		InvoiceBuilder::for_offer(self, payment_paths, created_at, payment_hash)
 	}

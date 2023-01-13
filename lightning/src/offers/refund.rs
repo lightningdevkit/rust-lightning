@@ -301,7 +301,11 @@ impl Refund {
 	/// Creates an [`Invoice`] for the refund with the given required fields.
 	///
 	/// Unless [`InvoiceBuilder::relative_expiry`] is set, the invoice will expire two hours after
-	/// `created_at`. The caller is expected to remember the preimage of `payment_hash` in order to
+	/// calling this method in `std` builds. For `no-std` builds, a final [`Duration`] parameter
+	/// must be given, which is used to set [`Invoice::created_at`] since [`std::time::SystemTime`]
+	/// is not available.
+	///
+	/// The caller is expected to remember the preimage of `payment_hash` in order to
 	/// claim a payment for the invoice.
 	///
 	/// The `signing_pubkey` is required to sign the invoice since refunds are not in response to an
@@ -313,13 +317,21 @@ impl Refund {
 	/// Errors if the request contains unknown required features.
 	///
 	/// [`Invoice`]: crate::offers::invoice::Invoice
+	/// [`Invoice::created_at`]: crate::offers::invoice::Invoice::created_at
 	pub fn respond_with(
-		&self, payment_paths: Vec<(BlindedPath, BlindedPayInfo)>, created_at: Duration,
-		payment_hash: PaymentHash, signing_pubkey: PublicKey
+		&self, payment_paths: Vec<(BlindedPath, BlindedPayInfo)>, payment_hash: PaymentHash,
+		signing_pubkey: PublicKey,
+		#[cfg(not(feature = "std"))]
+		created_at: Duration
 	) -> Result<InvoiceBuilder, SemanticError> {
 		if self.features().requires_unknown_bits() {
 			return Err(SemanticError::UnknownRequiredFeatures);
 		}
+
+		#[cfg(feature = "std")]
+		let created_at = std::time::SystemTime::now()
+			.duration_since(std::time::SystemTime::UNIX_EPOCH)
+			.expect("SystemTime::now() should come after SystemTime::UNIX_EPOCH");
 
 		InvoiceBuilder::for_refund(self, payment_paths, created_at, payment_hash, signing_pubkey)
 	}
