@@ -297,7 +297,7 @@ pub struct RawInvoice {
 
 /// Data of the `RawInvoice` that is encoded in the human readable part
 ///
-/// (C-not exported) As we don't yet support Option<Enum>
+/// (C-not exported) As we don't yet support `Option<Enum>`
 #[derive(Eq, PartialEq, Debug, Clone, Hash)]
 pub struct RawHrp {
 	/// The currency deferred from the 3rd and 4th character of the bech32 transaction
