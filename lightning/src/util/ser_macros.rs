@@ -501,13 +501,13 @@ macro_rules! impl_writeable {
 }
 
 /// Write out two bytes to indicate the version of an object.
+///
 /// $this_version represents a unique version of a type. Incremented whenever the type's
-///               serialization format has changed or has a new interpretation. Used by a type's
-///               reader to determine how to interpret fields or if it can understand a serialized
-///               object.
+/// serialization format has changed or has a new interpretation. Used by a type's reader to
+/// determine how to interpret fields or if it can understand a serialized object.
+///
 /// $min_version_that_can_read_this is the minimum reader version which can understand this
-///                                 serialized object. Previous versions will simply err with a
-///                                 [`DecodeError::UnknownVersion`].
+/// serialized object. Previous versions will simply err with a [`DecodeError::UnknownVersion`].
 ///
 /// Updates to either `$this_version` or `$min_version_that_can_read_this` should be included in
 /// release notes.
@@ -567,6 +567,7 @@ macro_rules! read_tlv_fields {
 }
 
 /// Initializes the struct fields.
+///
 /// This is exported for use by other exported macros, do not use directly.
 #[doc(hidden)]
 #[macro_export]
@@ -589,6 +590,7 @@ macro_rules! _init_tlv_based_struct_field {
 }
 
 /// Initializes the variable we are going to read the TLV into.
+///
 /// This is exported for use by other exported macros, do not use directly.
 #[doc(hidden)]
 #[macro_export]
@@ -611,6 +613,7 @@ macro_rules! _init_tlv_field_var {
 }
 
 /// Equivalent to running [`_init_tlv_field_var`] then [`read_tlv_fields`].
+///
 /// This is exported for use by other exported macros, do not use directly.
 #[doc(hidden)]
 #[macro_export]
@@ -795,73 +798,23 @@ macro_rules! _impl_writeable_tlv_based_enum_common {
 	}
 }
 
-/// Implement [`MaybeReadable`] and [`Writeable`] for an enum, with struct variants stored as TLVs and
-/// tuple variants stored directly.
-///
-/// This is largely identical to [`impl_writeable_tlv_based_enum`], except that odd variants will
-/// return `Ok(None)` instead of `Err(`[`DecodeError::UnknownRequiredFeature`]`)`. It should generally be preferred
-/// when [`MaybeReadable`] is practical instead of just [`Readable`] as it provides an upgrade path for
-/// new variants to be added which are simply ignored by existing clients.
-///
-/// [`MaybeReadable`]: crate::util::ser::MaybeReadable
-/// [`Writeable`]: crate::util::ser::Writeable
-/// [`DecodeError::UnknownRequiredFeature`]: crate::ln::msgs::DecodeError::UnknownRequiredFeature
-/// [`Readable`]: crate::util::ser::Readable
-macro_rules! impl_writeable_tlv_based_enum_upgradable {
-	($st: ident, $(($variant_id: expr, $variant_name: ident) =>
-		{$(($type: expr, $field: ident, $fieldty: tt)),* $(,)*}
-	),* $(,)*
-	$(;
-	$(($tuple_variant_id: expr, $tuple_variant_name: ident)),*  $(,)*)*) => {
-		_impl_writeable_tlv_based_enum_common!($st,
-			$(($variant_id, $variant_name) => {$(($type, $field, $fieldty)),*}),*;
-			$($(($tuple_variant_id, $tuple_variant_name)),*)*);
-
-		impl $crate::util::ser::MaybeReadable for $st {
-			fn read<R: $crate::io::Read>(reader: &mut R) -> Result<Option<Self>, $crate::ln::msgs::DecodeError> {
-				let id: u8 = $crate::util::ser::Readable::read(reader)?;
-				match id {
-					$($variant_id => {
-						// Because read_tlv_fields creates a labeled loop, we cannot call it twice
-						// in the same function body. Instead, we define a closure and call it.
-						let f = || {
-							_init_and_read_tlv_fields!(reader, {
-								$(($type, $field, $fieldty)),*
-							});
-							Ok(Some($st::$variant_name {
-								$(
-									$field: _init_tlv_based_struct_field!($field, $fieldty)
-								),*
-							}))
-						};
-						f()
-					}),*
-					$($($tuple_variant_id => {
-						Ok(Some($st::$tuple_variant_name(Readable::read(reader)?)))
-					}),*)*
-					_ if id % 2 == 1 => Ok(None),
-					_ => Err(DecodeError::UnknownRequiredFeature),
-				}
-			}
-		}
-
-	}
-}
-
 /// Implement [`Readable`] and [`Writeable`] for an enum, with struct variants stored as TLVs and tuple
 /// variants stored directly.
 /// The format is, for example
+/// ```ignore
 /// impl_writeable_tlv_based_enum!(EnumName,
 ///   (0, StructVariantA) => {(0, required_variant_field, required), (1, optional_variant_field, option)},
 ///   (1, StructVariantB) => {(0, variant_field_a, required), (1, variant_field_b, required), (2, variant_vec_field, vec_type)};
 ///   (2, TupleVariantA), (3, TupleVariantB),
 /// );
+/// ```
 /// The type is written as a single byte, followed by any variant data.
 /// Attempts to read an unknown type byte result in [`DecodeError::UnknownRequiredFeature`].
 ///
 /// [`Readable`]: crate::util::ser::Readable
 /// [`Writeable`]: crate::util::ser::Writeable
 /// [`DecodeError::UnknownRequiredFeature`]: crate::ln::msgs::DecodeError::UnknownRequiredFeature
+#[macro_export]
 macro_rules! impl_writeable_tlv_based_enum {
 	($st: ident, $(($variant_id: expr, $variant_name: ident) =>
 		{$(($type: expr, $field: ident, $fieldty: tt)),* $(,)*}
@@ -896,6 +849,59 @@ macro_rules! impl_writeable_tlv_based_enum {
 					_ => {
 						Err($crate::ln::msgs::DecodeError::UnknownRequiredFeature)
 					},
+				}
+			}
+		}
+	}
+}
+
+/// Implement [`MaybeReadable`] and [`Writeable`] for an enum, with struct variants stored as TLVs and
+/// tuple variants stored directly.
+///
+/// This is largely identical to [`impl_writeable_tlv_based_enum`], except that odd variants will
+/// return `Ok(None)` instead of `Err(`[`DecodeError::UnknownRequiredFeature`]`)`. It should generally be preferred
+/// when [`MaybeReadable`] is practical instead of just [`Readable`] as it provides an upgrade path for
+/// new variants to be added which are simply ignored by existing clients.
+///
+/// [`MaybeReadable`]: crate::util::ser::MaybeReadable
+/// [`Writeable`]: crate::util::ser::Writeable
+/// [`DecodeError::UnknownRequiredFeature`]: crate::ln::msgs::DecodeError::UnknownRequiredFeature
+/// [`Readable`]: crate::util::ser::Readable
+#[macro_export]
+macro_rules! impl_writeable_tlv_based_enum_upgradable {
+	($st: ident, $(($variant_id: expr, $variant_name: ident) =>
+		{$(($type: expr, $field: ident, $fieldty: tt)),* $(,)*}
+	),* $(,)*
+	$(;
+	$(($tuple_variant_id: expr, $tuple_variant_name: ident)),*  $(,)*)*) => {
+		_impl_writeable_tlv_based_enum_common!($st,
+			$(($variant_id, $variant_name) => {$(($type, $field, $fieldty)),*}),*;
+			$($(($tuple_variant_id, $tuple_variant_name)),*)*);
+
+		impl $crate::util::ser::MaybeReadable for $st {
+			fn read<R: $crate::io::Read>(reader: &mut R) -> Result<Option<Self>, $crate::ln::msgs::DecodeError> {
+				let id: u8 = $crate::util::ser::Readable::read(reader)?;
+				match id {
+					$($variant_id => {
+						// Because read_tlv_fields creates a labeled loop, we cannot call it twice
+						// in the same function body. Instead, we define a closure and call it.
+						let f = || {
+							_init_and_read_tlv_fields!(reader, {
+								$(($type, $field, $fieldty)),*
+							});
+							Ok(Some($st::$variant_name {
+								$(
+									$field: _init_tlv_based_struct_field!($field, $fieldty)
+								),*
+							}))
+						};
+						f()
+					}),*
+					$($($tuple_variant_id => {
+						Ok(Some($st::$tuple_variant_name(Readable::read(reader)?)))
+					}),*)*
+					_ if id % 2 == 1 => Ok(None),
+					_ => Err(DecodeError::UnknownRequiredFeature),
 				}
 			}
 		}
