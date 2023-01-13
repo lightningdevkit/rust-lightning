@@ -798,7 +798,7 @@ pub const MAX_CHAN_DUST_LIMIT_SATOSHIS: u64 = MAX_STD_OUTPUT_DUST_LIMIT_SATOSHIS
 /// In order to avoid having to concern ourselves with standardness during the closing process, we
 /// simply require our counterparty to use a dust limit which will leave any segwit output
 /// standard.
-/// See https://github.com/lightning/bolts/issues/905 for more details.
+/// See <https://github.com/lightning/bolts/issues/905> for more details.
 pub const MIN_CHAN_DUST_LIMIT_SATOSHIS: u64 = 354;
 
 // Just a reasonable implementation-specific safe lower bound, higher than the dust limit.

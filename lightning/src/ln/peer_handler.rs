@@ -644,7 +644,7 @@ impl<Descriptor: SocketDescriptor, RM: Deref, L: Deref> PeerManager<Descriptor, 
 	}
 }
 
-/// A simple wrapper that optionally prints " from <pubkey>" for an optional pubkey.
+/// A simple wrapper that optionally prints ` from <pubkey>` for an optional pubkey.
 /// This works around `format!()` taking a reference to each argument, preventing
 /// `if let Some(node_id) = peer.their_node_id { format!(.., node_id) } else { .. }` from compiling
 /// due to lifetime errors.
@@ -656,8 +656,8 @@ impl core::fmt::Display for OptionalFromDebugger<'_> {
 }
 
 /// A function used to filter out local or private addresses
-/// https://www.iana.org./assignments/ipv4-address-space/ipv4-address-space.xhtml
-/// https://www.iana.org/assignments/ipv6-address-space/ipv6-address-space.xhtml
+/// <https://www.iana.org./assignments/ipv4-address-space/ipv4-address-space.xhtml>
+/// <https://www.iana.org/assignments/ipv6-address-space/ipv6-address-space.xhtml>
 fn filter_addresses(ip_address: Option<NetAddress>) -> Option<NetAddress> {
 	match ip_address{
 		// For IPv4 range 10.0.0.0 - 10.255.255.255 (10/8)
