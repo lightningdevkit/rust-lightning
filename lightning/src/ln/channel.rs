@@ -6331,12 +6331,12 @@ impl<Signer: Sign> Writeable for Channel<Signer> {
 }
 
 const MAX_ALLOC_SIZE: usize = 64*1024;
-impl<'a, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'a SP, u32)> for Channel<<SP::Target as SignerProvider>::Signer>
+impl<'a, 'b, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32)> for Channel<<SP::Target as SignerProvider>::Signer>
 		where
 			ES::Target: EntropySource,
 			SP::Target: SignerProvider
 {
-	fn read<R : io::Read>(reader: &mut R, args: (&'a ES, &'a SP, u32)) -> Result<Self, DecodeError> {
+	fn read<R : io::Read>(reader: &mut R, args: (&'a ES, &'b SP, u32)) -> Result<Self, DecodeError> {
 		let (entropy_source, signer_provider, serialized_height) = args;
 		let ver = read_ver_prefix!(reader, SERIALIZATION_VERSION);
 

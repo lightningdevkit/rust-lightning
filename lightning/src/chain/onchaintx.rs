@@ -322,8 +322,8 @@ impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
 	}
 }
 
-impl<'a, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'a SP, u64, [u8; 32])> for OnchainTxHandler<SP::Signer> {
-	fn read<R: io::Read>(reader: &mut R, args: (&'a ES, &'a SP, u64, [u8; 32])) -> Result<Self, DecodeError> {
+impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP, u64, [u8; 32])> for OnchainTxHandler<SP::Signer> {
+	fn read<R: io::Read>(reader: &mut R, args: (&'a ES, &'b SP, u64, [u8; 32])) -> Result<Self, DecodeError> {
 		let entropy_source = args.0;
 		let signer_provider = args.1;
 		let channel_value_satoshis = args.2;
