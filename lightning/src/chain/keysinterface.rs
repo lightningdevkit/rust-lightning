@@ -137,7 +137,7 @@ impl_writeable_tlv_based!(StaticPaymentOutputDescriptor, {
 /// [`SpendableOutputs`]: crate::util::events::Event::SpendableOutputs
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SpendableOutputDescriptor {
-	/// An output to a script which was provided via [`KeysInterface`] directly, either from
+	/// An output to a script which was provided via [`SignerProvider`] directly, either from
 	/// [`get_destination_script`] or [`get_shutdown_scriptpubkey`], thus you should already
 	/// know how to spend it. No secret keys are provided as LDK was never given any key.
 	/// These may include outputs from a transaction punishing our counterparty or claiming an HTLC
@@ -517,7 +517,7 @@ pub trait SignerProvider {
 	/// [`BaseSign::channel_keys_id`].
 	fn derive_channel_signer(&self, channel_value_satoshis: u64, channel_keys_id: [u8; 32]) -> Self::Signer;
 
-	/// Reads a [`Signer`] for this [`KeysInterface`] from the given input stream.
+	/// Reads a [`Signer`] for this [`SignerProvider`] from the given input stream.
 	/// This is only called during deserialization of other objects which contain
 	/// [`Sign`]-implementing objects (i.e., [`ChannelMonitor`]s and [`ChannelManager`]s).
 	/// The bytes are exactly those which `<Self::Signer as Writeable>::write()` writes, and
@@ -544,9 +544,6 @@ pub trait SignerProvider {
 	/// on-chain funds across channels as controlled to the same user.
 	fn get_shutdown_scriptpubkey(&self) -> ShutdownScript;
 }
-
-/// A trait to describe an object which can get user secrets and key material.
-pub trait KeysInterface: EntropySource + NodeSigner + SignerProvider {}
 
 #[derive(Clone)]
 /// A simple implementation of [`Sign`] that just keeps the private keys in memory.
@@ -954,8 +951,8 @@ impl ReadableArgs<SecretKey> for InMemorySigner {
 	}
 }
 
-/// Simple [`KeysInterface`] implementation that takes a 32-byte seed for use as a BIP 32 extended
-/// key and derives keys from that.
+/// Simple implementation of [`EntropySource`], [`NodeSigner`], and [`SignerProvider`] that takes a
+/// 32-byte seed for use as a BIP 32 extended key and derives keys from that.
 ///
 /// Your `node_id` is seed/0'.
 /// Unilateral closes may use seed/1'.
@@ -1331,8 +1328,6 @@ impl SignerProvider for KeysManager {
 	}
 }
 
-impl KeysInterface for KeysManager {}
-
 /// Similar to [`KeysManager`], but allows the node using this struct to receive phantom node
 /// payments.
 ///
@@ -1424,8 +1419,6 @@ impl SignerProvider for PhantomKeysManager {
 		self.inner.get_shutdown_scriptpubkey()
 	}
 }
-
-impl KeysInterface for PhantomKeysManager {}
 
 impl PhantomKeysManager {
 	/// Constructs a [`PhantomKeysManager`] given a 32-byte seed and an additional `cross_node_seed`
