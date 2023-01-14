@@ -5,7 +5,7 @@ use bitcoin::secp256k1::{PublicKey, Scalar, Secp256k1, SecretKey};
 use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1::ecdsa::RecoverableSignature;
 
-use lightning::chain::keysinterface::{Recipient, KeyMaterial, KeysInterface, EntropySource, NodeSigner, SignerProvider};
+use lightning::chain::keysinterface::{Recipient, KeyMaterial, EntropySource, NodeSigner, SignerProvider};
 use lightning::ln::msgs::{self, DecodeError, OnionMessageHandler};
 use lightning::ln::script::ShutdownScript;
 use lightning::util::enforcing_trait_impls::EnforcingSigner;
@@ -30,7 +30,7 @@ pub fn do_test<L: Logger>(data: &[u8], logger: &L) {
 			counter: AtomicU64::new(0),
 		};
 		let custom_msg_handler = TestCustomMessageHandler {};
-		let onion_messenger = OnionMessenger::new(&keys_manager, logger, &custom_msg_handler);
+		let onion_messenger = OnionMessenger::new(&keys_manager, &keys_manager, logger, &custom_msg_handler);
 		let mut pk = [2; 33]; pk[1] = 0xff;
 		let peer_node_id_not_used = PublicKey::from_slice(&pk).unwrap();
 		onion_messenger.handle_onion_message(&peer_node_id_not_used, &msg);
@@ -139,8 +139,6 @@ impl SignerProvider for KeyProvider {
 
 	fn get_shutdown_scriptpubkey(&self) -> ShutdownScript { unreachable!() }
 }
-
-impl KeysInterface for KeyProvider {}
 
 #[cfg(test)]
 mod tests {

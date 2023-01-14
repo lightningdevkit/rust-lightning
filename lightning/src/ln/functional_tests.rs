@@ -6847,7 +6847,7 @@ fn test_user_configurable_csv_delay() {
 
 	// We test config.our_to_self > BREAKDOWN_TIMEOUT is enforced in Channel::new_outbound()
 	if let Err(error) = Channel::new_outbound(&LowerBoundedFeeEstimator::new(&test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) }),
-		&nodes[0].keys_manager, nodes[1].node.get_our_node_id(), &channelmanager::provided_init_features(), 1000000, 1000000, 0,
+		&nodes[0].keys_manager, &nodes[0].keys_manager, nodes[1].node.get_our_node_id(), &channelmanager::provided_init_features(), 1000000, 1000000, 0,
 		&low_our_to_self_config, 0, 42)
 	{
 		match error {
@@ -6861,7 +6861,7 @@ fn test_user_configurable_csv_delay() {
 	let mut open_channel = get_event_msg!(nodes[1], MessageSendEvent::SendOpenChannel, nodes[0].node.get_our_node_id());
 	open_channel.to_self_delay = 200;
 	if let Err(error) = Channel::new_from_req(&LowerBoundedFeeEstimator::new(&test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) }),
-		&nodes[0].keys_manager, nodes[1].node.get_our_node_id(), &channelmanager::provided_init_features(), &open_channel, 0,
+		&nodes[0].keys_manager, &nodes[0].keys_manager, nodes[1].node.get_our_node_id(), &channelmanager::provided_init_features(), &open_channel, 0,
 		&low_our_to_self_config, 0, &nodes[0].logger, 42)
 	{
 		match error {
@@ -6893,7 +6893,7 @@ fn test_user_configurable_csv_delay() {
 	let mut open_channel = get_event_msg!(nodes[1], MessageSendEvent::SendOpenChannel, nodes[0].node.get_our_node_id());
 	open_channel.to_self_delay = 200;
 	if let Err(error) = Channel::new_from_req(&LowerBoundedFeeEstimator::new(&test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) }),
-		&nodes[0].keys_manager, nodes[1].node.get_our_node_id(), &channelmanager::provided_init_features(), &open_channel, 0,
+		&nodes[0].keys_manager, &nodes[0].keys_manager, nodes[1].node.get_our_node_id(), &channelmanager::provided_init_features(), &open_channel, 0,
 		&high_their_to_self_config, 0, &nodes[0].logger, 42)
 	{
 		match error {

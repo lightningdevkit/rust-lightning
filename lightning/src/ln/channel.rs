@@ -35,7 +35,7 @@ use crate::chain::BestBlock;
 use crate::chain::chaininterface::{FeeEstimator, ConfirmationTarget, LowerBoundedFeeEstimator};
 use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, LATENCY_GRACE_PERIOD_BLOCKS};
 use crate::chain::transaction::{OutPoint, TransactionData};
-use crate::chain::keysinterface::{Sign, EntropySource, KeysInterface, BaseSign, SignerProvider};
+use crate::chain::keysinterface::{Sign, EntropySource, BaseSign, SignerProvider};
 use crate::util::events::ClosureReason;
 use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer, VecWriter};
 use crate::util::logger::Logger;
@@ -903,19 +903,20 @@ impl<Signer: Sign> Channel<Signer> {
 	}
 
 	// Constructors:
-	pub fn new_outbound<K: Deref, F: Deref>(
-		fee_estimator: &LowerBoundedFeeEstimator<F>, keys_provider: &K, counterparty_node_id: PublicKey, their_features: &InitFeatures,
+	pub fn new_outbound<ES: Deref, SP: Deref, F: Deref>(
+		fee_estimator: &LowerBoundedFeeEstimator<F>, entropy_source: &ES, signer_provider: &SP, counterparty_node_id: PublicKey, their_features: &InitFeatures,
 		channel_value_satoshis: u64, push_msat: u64, user_id: u128, config: &UserConfig, current_chain_height: u32,
 		outbound_scid_alias: u64
 	) -> Result<Channel<Signer>, APIError>
-	where K::Target: KeysInterface<Signer = Signer>,
+	where ES::Target: EntropySource,
+	      SP::Target: SignerProvider<Signer = Signer>,
 	      F::Target: FeeEstimator,
 	{
 		let opt_anchors = false; // TODO - should be based on features
 
 		let holder_selected_contest_delay = config.channel_handshake_config.our_to_self_delay;
-		let channel_keys_id = keys_provider.generate_channel_keys_id(false, channel_value_satoshis, user_id);
-		let holder_signer = keys_provider.derive_channel_signer(channel_value_satoshis, channel_keys_id);
+		let channel_keys_id = signer_provider.generate_channel_keys_id(false, channel_value_satoshis, user_id);
+		let holder_signer = signer_provider.derive_channel_signer(channel_value_satoshis, channel_keys_id);
 		let pubkeys = holder_signer.pubkeys().clone();
 
 		if !their_features.supports_wumbo() && channel_value_satoshis > MAX_FUNDING_SATOSHIS_NO_WUMBO {
@@ -947,10 +948,10 @@ impl<Signer: Sign> Channel<Signer> {
 		}
 
 		let mut secp_ctx = Secp256k1::new();
-		secp_ctx.seeded_randomize(&keys_provider.get_secure_random_bytes());
+		secp_ctx.seeded_randomize(&entropy_source.get_secure_random_bytes());
 
 		let shutdown_scriptpubkey = if config.channel_handshake_config.commit_upfront_shutdown_pubkey {
-			Some(keys_provider.get_shutdown_scriptpubkey())
+			Some(signer_provider.get_shutdown_scriptpubkey())
 		} else { None };
 
 		if let Some(shutdown_scriptpubkey) = &shutdown_scriptpubkey {
@@ -972,7 +973,7 @@ impl<Signer: Sign> Channel<Signer> {
 
 			inbound_handshake_limits_override: Some(config.channel_handshake_limits.clone()),
 
-			channel_id: keys_provider.get_secure_random_bytes(),
+			channel_id: entropy_source.get_secure_random_bytes(),
 			channel_state: ChannelState::OurInitSent as u32,
 			announcement_sigs_state: AnnouncementSigsState::NotSent,
 			secp_ctx,
@@ -982,7 +983,7 @@ impl<Signer: Sign> Channel<Signer> {
 
 			holder_signer,
 			shutdown_scriptpubkey,
-			destination_script: keys_provider.get_destination_script(),
+			destination_script: signer_provider.get_destination_script(),
 
 			cur_holder_commitment_transaction_number: INITIAL_COMMITMENT_NUMBER,
 			cur_counterparty_commitment_transaction_number: INITIAL_COMMITMENT_NUMBER,
@@ -1115,14 +1116,15 @@ impl<Signer: Sign> Channel<Signer> {
 
 	/// Creates a new channel from a remote sides' request for one.
 	/// Assumes chain_hash has already been checked and corresponds with what we expect!
-	pub fn new_from_req<K: Deref, F: Deref, L: Deref>(
-		fee_estimator: &LowerBoundedFeeEstimator<F>, keys_provider: &K, counterparty_node_id: PublicKey, their_features: &InitFeatures,
+	pub fn new_from_req<ES: Deref, SP: Deref, F: Deref, L: Deref>(
+		fee_estimator: &LowerBoundedFeeEstimator<F>, entropy_source: &ES, signer_provider: &SP, counterparty_node_id: PublicKey, their_features: &InitFeatures,
 		msg: &msgs::OpenChannel, user_id: u128, config: &UserConfig, current_chain_height: u32, logger: &L,
 		outbound_scid_alias: u64
 	) -> Result<Channel<Signer>, ChannelError>
-		where K::Target: KeysInterface<Signer = Signer>,
-		      F::Target: FeeEstimator,
-		      L::Target: Logger,
+		where ES::Target: EntropySource,
+			  SP::Target: SignerProvider<Signer = Signer>,
+			  F::Target: FeeEstimator,
+			  L::Target: Logger,
 	{
 		let opt_anchors = false; // TODO - should be based on features
 		let announced_channel = if (msg.channel_flags & 1) == 1 { true } else { false };
@@ -1160,8 +1162,8 @@ impl<Signer: Sign> Channel<Signer> {
 			return Err(ChannelError::Close("Channel Type was not understood - we require static remote key".to_owned()));
 		}
 
-		let channel_keys_id = keys_provider.generate_channel_keys_id(true, msg.funding_satoshis, user_id);
-		let holder_signer = keys_provider.derive_channel_signer(msg.funding_satoshis, channel_keys_id);
+		let channel_keys_id = signer_provider.generate_channel_keys_id(true, msg.funding_satoshis, user_id);
+		let holder_signer = signer_provider.derive_channel_signer(msg.funding_satoshis, channel_keys_id);
 		let pubkeys = holder_signer.pubkeys().clone();
 		let counterparty_pubkeys = ChannelPublicKeys {
 			funding_pubkey: msg.funding_pubkey,
@@ -1292,7 +1294,7 @@ impl<Signer: Sign> Channel<Signer> {
 		} else { None };
 
 		let shutdown_scriptpubkey = if config.channel_handshake_config.commit_upfront_shutdown_pubkey {
-			Some(keys_provider.get_shutdown_scriptpubkey())
+			Some(signer_provider.get_shutdown_scriptpubkey())
 		} else { None };
 
 		if let Some(shutdown_scriptpubkey) = &shutdown_scriptpubkey {
@@ -1302,7 +1304,7 @@ impl<Signer: Sign> Channel<Signer> {
 		}
 
 		let mut secp_ctx = Secp256k1::new();
-		secp_ctx.seeded_randomize(&keys_provider.get_secure_random_bytes());
+		secp_ctx.seeded_randomize(&entropy_source.get_secure_random_bytes());
 
 		let chan = Channel {
 			user_id,
@@ -1326,7 +1328,7 @@ impl<Signer: Sign> Channel<Signer> {
 
 			holder_signer,
 			shutdown_scriptpubkey,
-			destination_script: keys_provider.get_destination_script(),
+			destination_script: signer_provider.get_destination_script(),
 
 			cur_holder_commitment_transaction_number: INITIAL_COMMITMENT_NUMBER,
 			cur_counterparty_commitment_transaction_number: INITIAL_COMMITMENT_NUMBER,
@@ -2221,11 +2223,11 @@ impl<Signer: Sign> Channel<Signer> {
 		&self.get_counterparty_pubkeys().funding_pubkey
 	}
 
-	pub fn funding_created<K: Deref, L: Deref>(
-		&mut self, msg: &msgs::FundingCreated, best_block: BestBlock, keys_source: &K, logger: &L
-	) -> Result<(msgs::FundingSigned, ChannelMonitor<<K::Target as SignerProvider>::Signer>, Option<msgs::ChannelReady>), ChannelError>
+	pub fn funding_created<SP: Deref, L: Deref>(
+		&mut self, msg: &msgs::FundingCreated, best_block: BestBlock, signer_provider: &SP, logger: &L
+	) -> Result<(msgs::FundingSigned, ChannelMonitor<<SP::Target as SignerProvider>::Signer>, Option<msgs::ChannelReady>), ChannelError>
 	where
-		K::Target: KeysInterface,
+		SP::Target: SignerProvider,
 		L::Target: Logger
 	{
 		if self.is_outbound() {
@@ -2282,7 +2284,7 @@ impl<Signer: Sign> Channel<Signer> {
 		let funding_txo_script = funding_redeemscript.to_v0_p2wsh();
 		let obscure_factor = get_commitment_transaction_number_obscure_factor(&self.get_holder_pubkeys().payment_point, &self.get_counterparty_pubkeys().payment_point, self.is_outbound());
 		let shutdown_script = self.shutdown_scriptpubkey.clone().map(|script| script.into_inner());
-		let mut monitor_signer = keys_source.derive_channel_signer(self.channel_value_satoshis, self.channel_keys_id);
+		let mut monitor_signer = signer_provider.derive_channel_signer(self.channel_value_satoshis, self.channel_keys_id);
 		monitor_signer.provide_channel_parameters(&self.channel_transaction_parameters);
 		let channel_monitor = ChannelMonitor::new(self.secp_ctx.clone(), monitor_signer,
 		                                          shutdown_script, self.get_holder_selected_contest_delay(),
@@ -2309,11 +2311,11 @@ impl<Signer: Sign> Channel<Signer> {
 
 	/// Handles a funding_signed message from the remote end.
 	/// If this call is successful, broadcast the funding transaction (and not before!)
-	pub fn funding_signed<K: Deref, L: Deref>(
-		&mut self, msg: &msgs::FundingSigned, best_block: BestBlock, keys_source: &K, logger: &L
-	) -> Result<(ChannelMonitor<<K::Target as SignerProvider>::Signer>, Transaction, Option<msgs::ChannelReady>), ChannelError>
+	pub fn funding_signed<SP: Deref, L: Deref>(
+		&mut self, msg: &msgs::FundingSigned, best_block: BestBlock, signer_provider: &SP, logger: &L
+	) -> Result<(ChannelMonitor<<SP::Target as SignerProvider>::Signer>, Transaction, Option<msgs::ChannelReady>), ChannelError>
 	where
-		K::Target: KeysInterface,
+		SP::Target: SignerProvider,
 		L::Target: Logger
 	{
 		if !self.is_outbound() {
@@ -2367,7 +2369,7 @@ impl<Signer: Sign> Channel<Signer> {
 		let funding_txo_script = funding_redeemscript.to_v0_p2wsh();
 		let obscure_factor = get_commitment_transaction_number_obscure_factor(&self.get_holder_pubkeys().payment_point, &self.get_counterparty_pubkeys().payment_point, self.is_outbound());
 		let shutdown_script = self.shutdown_scriptpubkey.clone().map(|script| script.into_inner());
-		let mut monitor_signer = keys_source.derive_channel_signer(self.channel_value_satoshis, self.channel_keys_id);
+		let mut monitor_signer = signer_provider.derive_channel_signer(self.channel_value_satoshis, self.channel_keys_id);
 		monitor_signer.provide_channel_parameters(&self.channel_transaction_parameters);
 		let channel_monitor = ChannelMonitor::new(self.secp_ctx.clone(), monitor_signer,
 		                                          shutdown_script, self.get_holder_selected_contest_delay(),
@@ -4223,10 +4225,10 @@ impl<Signer: Sign> Channel<Signer> {
 		}), None))
 	}
 
-	pub fn shutdown<K: Deref>(
-		&mut self, keys_provider: &K, their_features: &InitFeatures, msg: &msgs::Shutdown
+	pub fn shutdown<SP: Deref>(
+		&mut self, signer_provider: &SP, their_features: &InitFeatures, msg: &msgs::Shutdown
 	) -> Result<(Option<msgs::Shutdown>, Option<ChannelMonitorUpdate>, Vec<(HTLCSource, PaymentHash)>), ChannelError>
-	where K::Target: KeysInterface
+	where SP::Target: SignerProvider
 	{
 		if self.channel_state & (ChannelState::PeerDisconnected as u32) == ChannelState::PeerDisconnected as u32 {
 			return Err(ChannelError::Close("Peer sent shutdown when we needed a channel_reestablish".to_owned()));
@@ -4265,7 +4267,7 @@ impl<Signer: Sign> Channel<Signer> {
 			Some(_) => false,
 			None => {
 				assert!(send_shutdown);
-				let shutdown_scriptpubkey = keys_provider.get_shutdown_scriptpubkey();
+				let shutdown_scriptpubkey = signer_provider.get_shutdown_scriptpubkey();
 				if !shutdown_scriptpubkey.is_compatible(their_features) {
 					return Err(ChannelError::Close(format!("Provided a scriptpubkey format not accepted by peer: {}", shutdown_scriptpubkey)));
 				}
@@ -5845,9 +5847,9 @@ impl<Signer: Sign> Channel<Signer> {
 
 	/// Begins the shutdown process, getting a message for the remote peer and returning all
 	/// holding cell HTLCs for payment failure.
-	pub fn get_shutdown<K: Deref>(&mut self, keys_provider: &K, their_features: &InitFeatures, target_feerate_sats_per_kw: Option<u32>)
+	pub fn get_shutdown<SP: Deref>(&mut self, signer_provider: &SP, their_features: &InitFeatures, target_feerate_sats_per_kw: Option<u32>)
 	-> Result<(msgs::Shutdown, Option<ChannelMonitorUpdate>, Vec<(HTLCSource, PaymentHash)>), APIError>
-	where K::Target: KeysInterface {
+	where SP::Target: SignerProvider {
 		for htlc in self.pending_outbound_htlcs.iter() {
 			if let OutboundHTLCState::LocalAnnounced(_) = htlc.state {
 				return Err(APIError::APIMisuseError{err: "Cannot begin shutdown with pending HTLCs. Process pending events first".to_owned()});
@@ -5869,7 +5871,7 @@ impl<Signer: Sign> Channel<Signer> {
 		let update_shutdown_script = match self.shutdown_scriptpubkey {
 			Some(_) => false,
 			None => {
-				let shutdown_scriptpubkey = keys_provider.get_shutdown_scriptpubkey();
+				let shutdown_scriptpubkey = signer_provider.get_shutdown_scriptpubkey();
 				if !shutdown_scriptpubkey.is_compatible(their_features) {
 					return Err(APIError::IncompatibleShutdownScript { script: shutdown_scriptpubkey.clone() });
 				}
@@ -6329,10 +6331,13 @@ impl<Signer: Sign> Writeable for Channel<Signer> {
 }
 
 const MAX_ALLOC_SIZE: usize = 64*1024;
-impl<'a, K: Deref> ReadableArgs<(&'a K, u32)> for Channel<<K::Target as SignerProvider>::Signer>
-		where K::Target: KeysInterface {
-	fn read<R : io::Read>(reader: &mut R, args: (&'a K, u32)) -> Result<Self, DecodeError> {
-		let (keys_source, serialized_height) = args;
+impl<'a, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'a SP, u32)> for Channel<<SP::Target as SignerProvider>::Signer>
+		where
+			ES::Target: EntropySource,
+			SP::Target: SignerProvider
+{
+	fn read<R : io::Read>(reader: &mut R, args: (&'a ES, &'a SP, u32)) -> Result<Self, DecodeError> {
+		let (entropy_source, signer_provider, serialized_height) = args;
 		let ver = read_ver_prefix!(reader, SERIALIZATION_VERSION);
 
 		// `user_id` used to be a single u64 value. In order to remain backwards compatible with
@@ -6613,7 +6618,7 @@ impl<'a, K: Deref> ReadableArgs<(&'a K, u32)> for Channel<<K::Target as SignerPr
 		});
 
 		let (channel_keys_id, holder_signer) = if let Some(channel_keys_id) = channel_keys_id {
-			let mut holder_signer = keys_source.derive_channel_signer(channel_value_satoshis, channel_keys_id);
+			let mut holder_signer = signer_provider.derive_channel_signer(channel_value_satoshis, channel_keys_id);
 			// If we've gotten to the funding stage of the channel, populate the signer with its
 			// required channel parameters.
 			let non_shutdown_state = channel_state & (!MULTI_STATE_FLAGS);
@@ -6624,7 +6629,7 @@ impl<'a, K: Deref> ReadableArgs<(&'a K, u32)> for Channel<<K::Target as SignerPr
 		} else {
 			// `keys_data` can be `None` if we had corrupted data.
 			let keys_data = keys_data.ok_or(DecodeError::InvalidValue)?;
-			let holder_signer = keys_source.read_chan_signer(&keys_data)?;
+			let holder_signer = signer_provider.read_chan_signer(&keys_data)?;
 			(holder_signer.channel_keys_id(), holder_signer)
 		};
 
@@ -6660,7 +6665,7 @@ impl<'a, K: Deref> ReadableArgs<(&'a K, u32)> for Channel<<K::Target as SignerPr
 		}
 
 		let mut secp_ctx = Secp256k1::new();
-		secp_ctx.seeded_randomize(&keys_source.get_secure_random_bytes());
+		secp_ctx.seeded_randomize(&entropy_source.get_secure_random_bytes());
 
 		// `user_id` used to be a single u64 value. In order to remain backwards
 		// compatible with versions prior to 0.0.113, the u128 is serialized as two
@@ -6802,7 +6807,7 @@ mod tests {
 	use crate::ln::chan_utils::{htlc_success_tx_weight, htlc_timeout_tx_weight};
 	use crate::chain::BestBlock;
 	use crate::chain::chaininterface::{FeeEstimator, LowerBoundedFeeEstimator, ConfirmationTarget};
-	use crate::chain::keysinterface::{BaseSign, InMemorySigner, Recipient, KeyMaterial, KeysInterface, EntropySource, NodeSigner, SignerProvider};
+	use crate::chain::keysinterface::{BaseSign, InMemorySigner, Recipient, KeyMaterial, EntropySource, NodeSigner, SignerProvider};
 	use crate::chain::transaction::OutPoint;
 	use crate::util::config::UserConfig;
 	use crate::util::enforcing_trait_impls::EnforcingSigner;
@@ -6898,8 +6903,6 @@ mod tests {
 		}
 	}
 
-	impl KeysInterface for Keys {}
-
 	#[cfg(not(feature = "grind_signatures"))]
 	fn public_from_secret_hex(secp_ctx: &Secp256k1<bitcoin::secp256k1::All>, hex: &str) -> PublicKey {
 		PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&hex::decode(hex).unwrap()[..]).unwrap())
@@ -6921,7 +6924,7 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let config = UserConfig::default();
-		match Channel::<EnforcingSigner>::new_outbound(&LowerBoundedFeeEstimator::new(&TestFeeEstimator { fee_est: 253 }), &&keys_provider, node_id, &features, 10000000, 100000, 42, &config, 0, 42) {
+		match Channel::<EnforcingSigner>::new_outbound(&LowerBoundedFeeEstimator::new(&TestFeeEstimator { fee_est: 253 }), &&keys_provider, &&keys_provider, node_id, &features, 10000000, 100000, 42, &config, 0, 42) {
 			Err(APIError::IncompatibleShutdownScript { script }) => {
 				assert_eq!(script.into_inner(), non_v0_segwit_shutdown_script.into_inner());
 			},
@@ -6944,7 +6947,7 @@ mod tests {
 
 		let node_a_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let config = UserConfig::default();
-		let node_a_chan = Channel::<EnforcingSigner>::new_outbound(&bounded_fee_estimator, &&keys_provider, node_a_node_id, &channelmanager::provided_init_features(), 10000000, 100000, 42, &config, 0, 42).unwrap();
+		let node_a_chan = Channel::<EnforcingSigner>::new_outbound(&bounded_fee_estimator, &&keys_provider, &&keys_provider, node_a_node_id, &channelmanager::provided_init_features(), 10000000, 100000, 42, &config, 0, 42).unwrap();
 
 		// Now change the fee so we can check that the fee in the open_channel message is the
 		// same as the old fee.
@@ -6970,13 +6973,13 @@ mod tests {
 		// Create Node A's channel pointing to Node B's pubkey
 		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let config = UserConfig::default();
-		let mut node_a_chan = Channel::<EnforcingSigner>::new_outbound(&feeest, &&keys_provider, node_b_node_id, &channelmanager::provided_init_features(), 10000000, 100000, 42, &config, 0, 42).unwrap();
+		let mut node_a_chan = Channel::<EnforcingSigner>::new_outbound(&feeest, &&keys_provider, &&keys_provider, node_b_node_id, &channelmanager::provided_init_features(), 10000000, 100000, 42, &config, 0, 42).unwrap();
 
 		// Create Node B's channel by receiving Node A's open_channel message
 		// Make sure A's dust limit is as we expect.
 		let open_channel_msg = node_a_chan.get_open_channel(genesis_block(network).header.block_hash());
 		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[7; 32]).unwrap());
-		let mut node_b_chan = Channel::<EnforcingSigner>::new_from_req(&feeest, &&keys_provider, node_b_node_id, &channelmanager::provided_init_features(), &open_channel_msg, 7, &config, 0, &&logger, 42).unwrap();
+		let mut node_b_chan = Channel::<EnforcingSigner>::new_from_req(&feeest, &&keys_provider, &&keys_provider, node_b_node_id, &channelmanager::provided_init_features(), &open_channel_msg, 7, &config, 0, &&logger, 42).unwrap();
 
 		// Node B --> Node A: accept channel, explicitly setting B's dust limit.
 		let mut accept_channel_msg = node_b_chan.accept_inbound_channel(0);
@@ -7040,7 +7043,7 @@ mod tests {
 
 		let node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let config = UserConfig::default();
-		let mut chan = Channel::<EnforcingSigner>::new_outbound(&fee_est, &&keys_provider, node_id, &channelmanager::provided_init_features(), 10000000, 100000, 42, &config, 0, 42).unwrap();
+		let mut chan = Channel::<EnforcingSigner>::new_outbound(&fee_est, &&keys_provider, &&keys_provider, node_id, &channelmanager::provided_init_features(), 10000000, 100000, 42, &config, 0, 42).unwrap();
 
 		let commitment_tx_fee_0_htlcs = Channel::<EnforcingSigner>::commit_tx_fee_msat(chan.feerate_per_kw, 0, chan.opt_anchors());
 		let commitment_tx_fee_1_htlc = Channel::<EnforcingSigner>::commit_tx_fee_msat(chan.feerate_per_kw, 1, chan.opt_anchors());
@@ -7089,12 +7092,12 @@ mod tests {
 		// Create Node A's channel pointing to Node B's pubkey
 		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let config = UserConfig::default();
-		let mut node_a_chan = Channel::<EnforcingSigner>::new_outbound(&feeest, &&keys_provider, node_b_node_id, &channelmanager::provided_init_features(), 10000000, 100000, 42, &config, 0, 42).unwrap();
+		let mut node_a_chan = Channel::<EnforcingSigner>::new_outbound(&feeest, &&keys_provider, &&keys_provider, node_b_node_id, &channelmanager::provided_init_features(), 10000000, 100000, 42, &config, 0, 42).unwrap();
 
 		// Create Node B's channel by receiving Node A's open_channel message
 		let open_channel_msg = node_a_chan.get_open_channel(chain_hash);
 		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[7; 32]).unwrap());
-		let mut node_b_chan = Channel::<EnforcingSigner>::new_from_req(&feeest, &&keys_provider, node_b_node_id, &channelmanager::provided_init_features(), &open_channel_msg, 7, &config, 0, &&logger, 42).unwrap();
+		let mut node_b_chan = Channel::<EnforcingSigner>::new_from_req(&feeest, &&keys_provider, &&keys_provider, node_b_node_id, &channelmanager::provided_init_features(), &open_channel_msg, 7, &config, 0, &&logger, 42).unwrap();
 
 		// Node B --> Node A: accept channel
 		let accept_channel_msg = node_b_chan.accept_inbound_channel(0);
@@ -7162,12 +7165,12 @@ mod tests {
 		// Test that `new_outbound` creates a channel with the correct value for
 		// `holder_max_htlc_value_in_flight_msat`, when configured with a valid percentage value,
 		// which is set to the lower bound + 1 (2%) of the `channel_value`.
-		let chan_1 = Channel::<EnforcingSigner>::new_outbound(&feeest, &&keys_provider, outbound_node_id, &channelmanager::provided_init_features(), 10000000, 100000, 42, &config_2_percent, 0, 42).unwrap();
+		let chan_1 = Channel::<EnforcingSigner>::new_outbound(&feeest, &&keys_provider, &&keys_provider, outbound_node_id, &channelmanager::provided_init_features(), 10000000, 100000, 42, &config_2_percent, 0, 42).unwrap();
 		let chan_1_value_msat = chan_1.channel_value_satoshis * 1000;
 		assert_eq!(chan_1.holder_max_htlc_value_in_flight_msat, (chan_1_value_msat as f64 * 0.02) as u64);
 
 		// Test with the upper bound - 1 of valid values (99%).
-		let chan_2 = Channel::<EnforcingSigner>::new_outbound(&feeest, &&keys_provider, outbound_node_id, &channelmanager::provided_init_features(), 10000000, 100000, 42, &config_99_percent, 0, 42).unwrap();
+		let chan_2 = Channel::<EnforcingSigner>::new_outbound(&feeest, &&keys_provider, &&keys_provider, outbound_node_id, &channelmanager::provided_init_features(), 10000000, 100000, 42, &config_99_percent, 0, 42).unwrap();
 		let chan_2_value_msat = chan_2.channel_value_satoshis * 1000;
 		assert_eq!(chan_2.holder_max_htlc_value_in_flight_msat, (chan_2_value_msat as f64 * 0.99) as u64);
 
@@ -7176,38 +7179,38 @@ mod tests {
 		// Test that `new_from_req` creates a channel with the correct value for
 		// `holder_max_htlc_value_in_flight_msat`, when configured with a valid percentage value,
 		// which is set to the lower bound - 1 (2%) of the `channel_value`.
-		let chan_3 = Channel::<EnforcingSigner>::new_from_req(&feeest, &&keys_provider, inbound_node_id, &channelmanager::provided_init_features(), &chan_1_open_channel_msg, 7, &config_2_percent, 0, &&logger, 42).unwrap();
+		let chan_3 = Channel::<EnforcingSigner>::new_from_req(&feeest, &&keys_provider, &&keys_provider, inbound_node_id, &channelmanager::provided_init_features(), &chan_1_open_channel_msg, 7, &config_2_percent, 0, &&logger, 42).unwrap();
 		let chan_3_value_msat = chan_3.channel_value_satoshis * 1000;
 		assert_eq!(chan_3.holder_max_htlc_value_in_flight_msat, (chan_3_value_msat as f64 * 0.02) as u64);
 
 		// Test with the upper bound - 1 of valid values (99%).
-		let chan_4 = Channel::<EnforcingSigner>::new_from_req(&feeest, &&keys_provider, inbound_node_id, &channelmanager::provided_init_features(), &chan_1_open_channel_msg, 7, &config_99_percent, 0, &&logger, 42).unwrap();
+		let chan_4 = Channel::<EnforcingSigner>::new_from_req(&feeest, &&keys_provider, &&keys_provider, inbound_node_id, &channelmanager::provided_init_features(), &chan_1_open_channel_msg, 7, &config_99_percent, 0, &&logger, 42).unwrap();
 		let chan_4_value_msat = chan_4.channel_value_satoshis * 1000;
 		assert_eq!(chan_4.holder_max_htlc_value_in_flight_msat, (chan_4_value_msat as f64 * 0.99) as u64);
 
 		// Test that `new_outbound` uses the lower bound of the configurable percentage values (1%)
 		// if `max_inbound_htlc_value_in_flight_percent_of_channel` is set to a value less than 1.
-		let chan_5 = Channel::<EnforcingSigner>::new_outbound(&feeest, &&keys_provider, outbound_node_id, &channelmanager::provided_init_features(), 10000000, 100000, 42, &config_0_percent, 0, 42).unwrap();
+		let chan_5 = Channel::<EnforcingSigner>::new_outbound(&feeest, &&keys_provider, &&keys_provider, outbound_node_id, &channelmanager::provided_init_features(), 10000000, 100000, 42, &config_0_percent, 0, 42).unwrap();
 		let chan_5_value_msat = chan_5.channel_value_satoshis * 1000;
 		assert_eq!(chan_5.holder_max_htlc_value_in_flight_msat, (chan_5_value_msat as f64 * 0.01) as u64);
 
 		// Test that `new_outbound` uses the upper bound of the configurable percentage values
 		// (100%) if `max_inbound_htlc_value_in_flight_percent_of_channel` is set to a larger value
 		// than 100.
-		let chan_6 = Channel::<EnforcingSigner>::new_outbound(&feeest, &&keys_provider, outbound_node_id, &channelmanager::provided_init_features(), 10000000, 100000, 42, &config_101_percent, 0, 42).unwrap();
+		let chan_6 = Channel::<EnforcingSigner>::new_outbound(&feeest, &&keys_provider, &&keys_provider, outbound_node_id, &channelmanager::provided_init_features(), 10000000, 100000, 42, &config_101_percent, 0, 42).unwrap();
 		let chan_6_value_msat = chan_6.channel_value_satoshis * 1000;
 		assert_eq!(chan_6.holder_max_htlc_value_in_flight_msat, chan_6_value_msat);
 
 		// Test that `new_from_req` uses the lower bound of the configurable percentage values (1%)
 		// if `max_inbound_htlc_value_in_flight_percent_of_channel` is set to a value less than 1.
-		let chan_7 = Channel::<EnforcingSigner>::new_from_req(&feeest, &&keys_provider, inbound_node_id, &channelmanager::provided_init_features(), &chan_1_open_channel_msg, 7, &config_0_percent, 0, &&logger, 42).unwrap();
+		let chan_7 = Channel::<EnforcingSigner>::new_from_req(&feeest, &&keys_provider, &&keys_provider, inbound_node_id, &channelmanager::provided_init_features(), &chan_1_open_channel_msg, 7, &config_0_percent, 0, &&logger, 42).unwrap();
 		let chan_7_value_msat = chan_7.channel_value_satoshis * 1000;
 		assert_eq!(chan_7.holder_max_htlc_value_in_flight_msat, (chan_7_value_msat as f64 * 0.01) as u64);
 
 		// Test that `new_from_req` uses the upper bound of the configurable percentage values
 		// (100%) if `max_inbound_htlc_value_in_flight_percent_of_channel` is set to a larger value
 		// than 100.
-		let chan_8 = Channel::<EnforcingSigner>::new_from_req(&feeest, &&keys_provider, inbound_node_id, &channelmanager::provided_init_features(), &chan_1_open_channel_msg, 7, &config_101_percent, 0, &&logger, 42).unwrap();
+		let chan_8 = Channel::<EnforcingSigner>::new_from_req(&feeest, &&keys_provider, &&keys_provider, inbound_node_id, &channelmanager::provided_init_features(), &chan_1_open_channel_msg, 7, &config_101_percent, 0, &&logger, 42).unwrap();
 		let chan_8_value_msat = chan_8.channel_value_satoshis * 1000;
 		assert_eq!(chan_8.holder_max_htlc_value_in_flight_msat, chan_8_value_msat);
 	}
@@ -7247,7 +7250,7 @@ mod tests {
 
 		let mut outbound_node_config = UserConfig::default();
 		outbound_node_config.channel_handshake_config.their_channel_reserve_proportional_millionths = (outbound_selected_channel_reserve_perc * 1_000_000.0) as u32;
-		let chan = Channel::<EnforcingSigner>::new_outbound(&&fee_est, &&keys_provider, outbound_node_id, &channelmanager::provided_init_features(), channel_value_satoshis, 100_000, 42, &outbound_node_config, 0, 42).unwrap();
+		let chan = Channel::<EnforcingSigner>::new_outbound(&&fee_est, &&keys_provider, &&keys_provider, outbound_node_id, &channelmanager::provided_init_features(), channel_value_satoshis, 100_000, 42, &outbound_node_config, 0, 42).unwrap();
 
 		let expected_outbound_selected_chan_reserve = cmp::max(MIN_THEIR_CHAN_RESERVE_SATOSHIS, (chan.channel_value_satoshis as f64 * outbound_selected_channel_reserve_perc) as u64);
 		assert_eq!(chan.holder_selected_channel_reserve_satoshis, expected_outbound_selected_chan_reserve);
@@ -7257,7 +7260,7 @@ mod tests {
 		inbound_node_config.channel_handshake_config.their_channel_reserve_proportional_millionths = (inbound_selected_channel_reserve_perc * 1_000_000.0) as u32;
 
 		if outbound_selected_channel_reserve_perc + inbound_selected_channel_reserve_perc < 1.0 {
-			let chan_inbound_node = Channel::<EnforcingSigner>::new_from_req(&&fee_est, &&keys_provider, inbound_node_id, &channelmanager::provided_init_features(), &chan_open_channel_msg, 7, &inbound_node_config, 0, &&logger, 42).unwrap();
+			let chan_inbound_node = Channel::<EnforcingSigner>::new_from_req(&&fee_est, &&keys_provider, &&keys_provider, inbound_node_id, &channelmanager::provided_init_features(), &chan_open_channel_msg, 7, &inbound_node_config, 0, &&logger, 42).unwrap();
 
 			let expected_inbound_selected_chan_reserve = cmp::max(MIN_THEIR_CHAN_RESERVE_SATOSHIS, (chan.channel_value_satoshis as f64 * inbound_selected_channel_reserve_perc) as u64);
 
@@ -7265,7 +7268,7 @@ mod tests {
 			assert_eq!(chan_inbound_node.counterparty_selected_channel_reserve_satoshis.unwrap(), expected_outbound_selected_chan_reserve);
 		} else {
 			// Channel Negotiations failed
-			let result = Channel::<EnforcingSigner>::new_from_req(&&fee_est, &&keys_provider, inbound_node_id, &channelmanager::provided_init_features(), &chan_open_channel_msg, 7, &inbound_node_config, 0, &&logger, 42);
+			let result = Channel::<EnforcingSigner>::new_from_req(&&fee_est, &&keys_provider, &&keys_provider, inbound_node_id, &channelmanager::provided_init_features(), &chan_open_channel_msg, 7, &inbound_node_config, 0, &&logger, 42);
 			assert!(result.is_err());
 		}
 	}
@@ -7282,7 +7285,7 @@ mod tests {
 		// Create a channel.
 		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let config = UserConfig::default();
-		let mut node_a_chan = Channel::<EnforcingSigner>::new_outbound(&feeest, &&keys_provider, node_b_node_id, &channelmanager::provided_init_features(), 10000000, 100000, 42, &config, 0, 42).unwrap();
+		let mut node_a_chan = Channel::<EnforcingSigner>::new_outbound(&feeest, &&keys_provider, &&keys_provider, node_b_node_id, &channelmanager::provided_init_features(), 10000000, 100000, 42, &config, 0, 42).unwrap();
 		assert!(node_a_chan.counterparty_forwarding_info.is_none());
 		assert_eq!(node_a_chan.holder_htlc_minimum_msat, 1); // the default
 		assert!(node_a_chan.counterparty_forwarding_info().is_none());
@@ -7361,7 +7364,7 @@ mod tests {
 		let counterparty_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let mut config = UserConfig::default();
 		config.channel_handshake_config.announced_channel = false;
-		let mut chan = Channel::<InMemorySigner>::new_outbound(&LowerBoundedFeeEstimator::new(&feeest), &&keys_provider, counterparty_node_id, &channelmanager::provided_init_features(), 10_000_000, 100000, 42, &config, 0, 42).unwrap(); // Nothing uses their network key in this test
+		let mut chan = Channel::<InMemorySigner>::new_outbound(&LowerBoundedFeeEstimator::new(&feeest), &&keys_provider, &&keys_provider, counterparty_node_id, &channelmanager::provided_init_features(), 10_000_000, 100000, 42, &config, 0, 42).unwrap(); // Nothing uses their network key in this test
 		chan.holder_dust_limit_satoshis = 546;
 		chan.counterparty_selected_channel_reserve_satoshis = Some(0); // Filled in in accept_channel
 
@@ -8075,7 +8078,7 @@ mod tests {
 
 		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let config = UserConfig::default();
-		let node_a_chan = Channel::<EnforcingSigner>::new_outbound(&feeest, &&keys_provider,
+		let node_a_chan = Channel::<EnforcingSigner>::new_outbound(&feeest, &&keys_provider, &&keys_provider,
 			node_b_node_id, &channelmanager::provided_init_features(), 10000000, 100000, 42, &config, 0, 42).unwrap();
 
 		let mut channel_type_features = ChannelTypeFeatures::only_static_remote_key();
@@ -8084,7 +8087,7 @@ mod tests {
 		let mut open_channel_msg = node_a_chan.get_open_channel(genesis_block(network).header.block_hash());
 		open_channel_msg.channel_type = Some(channel_type_features);
 		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[7; 32]).unwrap());
-		let res = Channel::<EnforcingSigner>::new_from_req(&feeest, &&keys_provider,
+		let res = Channel::<EnforcingSigner>::new_from_req(&feeest, &&keys_provider, &&keys_provider,
 			node_b_node_id, &channelmanager::provided_init_features(), &open_channel_msg, 7, &config, 0, &&logger, 42);
 		assert!(res.is_ok());
 	}

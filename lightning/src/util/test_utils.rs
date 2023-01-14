@@ -140,9 +140,6 @@ impl SignerProvider for OnlyReadsKeysInterface {
 	fn get_shutdown_scriptpubkey(&self) -> ShutdownScript { unreachable!(); }
 }
 
-impl keysinterface::KeysInterface for OnlyReadsKeysInterface {
-}
-
 pub struct TestChainMonitor<'a> {
 	pub added_monitors: Mutex<Vec<(OutPoint, channelmonitor::ChannelMonitor<EnforcingSigner>)>>,
 	pub monitor_updates: Mutex<HashMap<[u8; 32], Vec<channelmonitor::ChannelMonitorUpdate>>>,
@@ -712,8 +709,6 @@ impl SignerProvider for TestKeysInterface {
 		}
 	}
 }
-
-impl keysinterface::KeysInterface for TestKeysInterface {}
 
 impl TestKeysInterface {
 	pub fn new(seed: &[u8; 32], network: Network) -> Self {

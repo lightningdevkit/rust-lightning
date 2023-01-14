@@ -36,7 +36,7 @@ use lightning::chain::{BestBlock, ChannelMonitorUpdateStatus, chainmonitor, chan
 use lightning::chain::channelmonitor::{ChannelMonitor, MonitorEvent};
 use lightning::chain::transaction::OutPoint;
 use lightning::chain::chaininterface::{BroadcasterInterface, ConfirmationTarget, FeeEstimator};
-use lightning::chain::keysinterface::{KeyMaterial, KeysInterface, InMemorySigner, Recipient, EntropySource, NodeSigner, SignerProvider};
+use lightning::chain::keysinterface::{KeyMaterial, InMemorySigner, Recipient, EntropySource, NodeSigner, SignerProvider};
 use lightning::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
 use lightning::ln::channelmanager::{self, ChainParameters, ChannelDetails, ChannelManager, PaymentSendFailure, ChannelManagerReadArgs, PaymentId};
 use lightning::ln::channel::FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE;
@@ -270,8 +270,6 @@ impl SignerProvider for KeyProvider {
 	}
 }
 
-impl KeysInterface for KeyProvider {}
-
 impl KeyProvider {
 	fn make_enforcement_state_cell(&self, commitment_seed: [u8; 32]) -> Arc<Mutex<EnforcementState>> {
 		let mut revoked_commitments = self.enforcement_states.lock().unwrap();
@@ -328,7 +326,7 @@ fn check_payment_err(send_err: PaymentSendFailure) {
 	}
 }
 
-type ChanMan<'a> = ChannelManager<Arc<TestChainMonitor>, Arc<TestBroadcaster>, Arc<KeyProvider>, Arc<FuzzEstimator>, &'a FuzzRouter, Arc<dyn Logger>>;
+type ChanMan<'a> = ChannelManager<Arc<TestChainMonitor>, Arc<TestBroadcaster>, Arc<KeyProvider>, Arc<KeyProvider>, Arc<KeyProvider>, Arc<FuzzEstimator>, &'a FuzzRouter, Arc<dyn Logger>>;
 
 #[inline]
 fn get_payment_secret_hash(dest: &ChanMan, payment_id: &mut u8) -> Option<(PaymentSecret, PaymentHash)> {
@@ -418,7 +416,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 				network,
 				best_block: BestBlock::from_genesis(network),
 			};
-			(ChannelManager::new($fee_estimator.clone(), monitor.clone(), broadcast.clone(), &router, Arc::clone(&logger), keys_manager.clone(), config, params),
+			(ChannelManager::new($fee_estimator.clone(), monitor.clone(), broadcast.clone(), &router, Arc::clone(&logger), keys_manager.clone(), keys_manager.clone(), keys_manager.clone(), config, params),
 			monitor, keys_manager)
 		} }
 	}
@@ -448,7 +446,9 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 			}
 
 			let read_args = ChannelManagerReadArgs {
-				keys_manager,
+				entropy_source: keys_manager.clone(),
+				node_signer: keys_manager.clone(),
+				signer_provider: keys_manager.clone(),
 				fee_estimator: $fee_estimator.clone(),
 				chain_monitor: chain_monitor.clone(),
 				tx_broadcaster: broadcast.clone(),
