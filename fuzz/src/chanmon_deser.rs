@@ -22,10 +22,10 @@ impl Writer for VecWriter {
 
 #[inline]
 pub fn do_test<Out: test_logger::Output>(data: &[u8], _out: Out) {
-	if let Ok((latest_block_hash, monitor)) = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingSigner>)>::read(&mut Cursor::new(data), &OnlyReadsKeysInterface {}) {
+	if let Ok((latest_block_hash, monitor)) = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingSigner>)>::read(&mut Cursor::new(data), (&OnlyReadsKeysInterface {}, &OnlyReadsKeysInterface {})) {
 		let mut w = VecWriter(Vec::new());
 		monitor.write(&mut w).unwrap();
-		let deserialized_copy = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingSigner>)>::read(&mut Cursor::new(&w.0), &OnlyReadsKeysInterface {}).unwrap();
+		let deserialized_copy = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingSigner>)>::read(&mut Cursor::new(&w.0), (&OnlyReadsKeysInterface {}, &OnlyReadsKeysInterface {})).unwrap();
 		assert!(latest_block_hash == deserialized_copy.0);
 		assert!(monitor == deserialized_copy.1);
 	}

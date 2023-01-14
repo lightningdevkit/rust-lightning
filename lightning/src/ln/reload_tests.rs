@@ -12,7 +12,7 @@
 use crate::chain::{ChannelMonitorUpdateStatus, Watch};
 use crate::chain::chaininterface::LowerBoundedFeeEstimator;
 use crate::chain::channelmonitor::ChannelMonitor;
-use crate::chain::keysinterface::{EntropySource, KeysInterface};
+use crate::chain::keysinterface::EntropySource;
 use crate::chain::transaction::OutPoint;
 use crate::ln::channelmanager::{self, ChannelManager, ChannelManagerReadArgs, PaymentId};
 use crate::ln::msgs;
@@ -377,7 +377,7 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 	let mut node_0_stale_monitors = Vec::new();
 	for serialized in node_0_stale_monitors_serialized.iter() {
 		let mut read = &serialized[..];
-		let (_, monitor) = <(BlockHash, ChannelMonitor<EnforcingSigner>)>::read(&mut read, keys_manager).unwrap();
+		let (_, monitor) = <(BlockHash, ChannelMonitor<EnforcingSigner>)>::read(&mut read, (keys_manager, keys_manager)).unwrap();
 		assert!(read.is_empty());
 		node_0_stale_monitors.push(monitor);
 	}
@@ -385,7 +385,7 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 	let mut node_0_monitors = Vec::new();
 	for serialized in node_0_monitors_serialized.iter() {
 		let mut read = &serialized[..];
-		let (_, monitor) = <(BlockHash, ChannelMonitor<EnforcingSigner>)>::read(&mut read, keys_manager).unwrap();
+		let (_, monitor) = <(BlockHash, ChannelMonitor<EnforcingSigner>)>::read(&mut read, (keys_manager, keys_manager)).unwrap();
 		assert!(read.is_empty());
 		node_0_monitors.push(monitor);
 	}

@@ -398,7 +398,7 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 					let mut w = test_utils::TestVecWriter(Vec::new());
 					self.chain_monitor.chain_monitor.get_monitor(outpoint).unwrap().write(&mut w).unwrap();
 					let (_, deserialized_monitor) = <(BlockHash, ChannelMonitor<EnforcingSigner>)>::read(
-						&mut io::Cursor::new(&w.0), self.keys_manager).unwrap();
+						&mut io::Cursor::new(&w.0), (self.keys_manager, self.keys_manager)).unwrap();
 					deserialized_monitors.push(deserialized_monitor);
 				}
 			}
@@ -745,7 +745,7 @@ pub fn _reload_node<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, default_config: 
 	for encoded in monitors_encoded {
 		let mut monitor_read = &encoded[..];
 		let (_, monitor) = <(BlockHash, ChannelMonitor<EnforcingSigner>)>
-			::read(&mut monitor_read, node.keys_manager).unwrap();
+			::read(&mut monitor_read, (node.keys_manager, node.keys_manager)).unwrap();
 		assert!(monitor_read.is_empty());
 		monitors_read.push(monitor);
 	}

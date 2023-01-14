@@ -82,7 +82,7 @@ BlockSourceResult<ValidatedBlockHeader> where B::Target: BlockSource {
 /// 	// Read a serialized channel monitor paired with the block hash when it was persisted.
 /// 	let serialized_monitor = "...";
 /// 	let (monitor_block_hash, mut monitor) = <(BlockHash, ChannelMonitor<K::Signer>)>::read(
-/// 		&mut Cursor::new(&serialized_monitor), keys_manager).unwrap();
+/// 		&mut Cursor::new(&serialized_monitor), (keys_manager, keys_manager)).unwrap();
 ///
 /// 	// Read the channel manager paired with the block hash when it was persisted.
 /// 	let serialized_manager = "...";

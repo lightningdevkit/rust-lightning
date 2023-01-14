@@ -112,7 +112,7 @@ fn test_monitor_and_persister_update_fail() {
 		let mut w = test_utils::TestVecWriter(Vec::new());
 		monitor.write(&mut w).unwrap();
 		let new_monitor = <(BlockHash, ChannelMonitor<EnforcingSigner>)>::read(
-			&mut io::Cursor::new(&w.0), nodes[0].keys_manager).unwrap().1;
+			&mut io::Cursor::new(&w.0), (nodes[0].keys_manager, nodes[0].keys_manager)).unwrap().1;
 		assert!(new_monitor == *monitor);
 		let chain_mon = test_utils::TestChainMonitor::new(Some(&chain_source), &tx_broadcaster, &logger, &chanmon_cfgs[0].fee_estimator, &persister, &node_cfgs[0].keys_manager);
 		assert_eq!(chain_mon.watch_channel(outpoint, new_monitor), ChannelMonitorUpdateStatus::Completed);
