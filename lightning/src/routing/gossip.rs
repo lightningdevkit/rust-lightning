@@ -1541,6 +1541,14 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 		#[cfg(not(feature = "std"))]
 		let current_time_unix = None;
 
+		self.channel_failed_with_time(short_channel_id, is_permanent, current_time_unix)
+	}
+
+	/// Marks a channel in the graph as failed if a corresponding HTLC fail was sent.
+	/// If permanent, removes a channel from the local storage.
+	/// May cause the removal of nodes too, if this was their last channel.
+	/// If not permanent, makes channels unavailable for routing.
+	fn channel_failed_with_time(&self, short_channel_id: u64, is_permanent: bool, current_time_unix: Option<u64>) {
 		let mut channels = self.channels.write().unwrap();
 		if is_permanent {
 			if let Some(chan) = channels.remove(&short_channel_id) {
@@ -2537,7 +2545,7 @@ mod tests {
 
 			// Mark the channel as permanently failed. This will also remove the two nodes
 			// and all of the entries will be tracked as removed.
-			network_graph.channel_failed(short_channel_id, true);
+			network_graph.channel_failed_with_time(short_channel_id, true, Some(tracking_time));
 
 			// Should not remove from tracking if insufficient time has passed
 			network_graph.remove_stale_channels_and_tracking_with_time(
