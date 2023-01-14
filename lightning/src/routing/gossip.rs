@@ -2542,13 +2542,13 @@ mod tests {
 			// Should not remove from tracking if insufficient time has passed
 			network_graph.remove_stale_channels_and_tracking_with_time(
 				tracking_time + REMOVED_ENTRIES_TRACKING_AGE_LIMIT_SECS - 1);
-			assert_eq!(network_graph.removed_channels.lock().unwrap().len(), 1);
+			assert_eq!(network_graph.removed_channels.lock().unwrap().len(), 1, "Removed channel count ≠ 1 with tracking_time {}", tracking_time);
 
 			// Provide a later time so that sufficient time has passed
 			network_graph.remove_stale_channels_and_tracking_with_time(
 				tracking_time + REMOVED_ENTRIES_TRACKING_AGE_LIMIT_SECS);
-			assert!(network_graph.removed_channels.lock().unwrap().is_empty());
-			assert!(network_graph.removed_nodes.lock().unwrap().is_empty());
+			assert!(network_graph.removed_channels.lock().unwrap().is_empty(), "Unexpectedly removed channels with tracking_time {}", tracking_time);
+			assert!(network_graph.removed_nodes.lock().unwrap().is_empty(), "Unexpectedly removed nodes with tracking_time {}", tracking_time);
 		}
 
 		#[cfg(not(feature = "std"))]
