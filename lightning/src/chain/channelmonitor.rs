@@ -42,7 +42,7 @@ use crate::chain;
 use crate::chain::{BestBlock, WatchedOutput};
 use crate::chain::chaininterface::{BroadcasterInterface, FeeEstimator, LowerBoundedFeeEstimator};
 use crate::chain::transaction::{OutPoint, TransactionData};
-use crate::chain::keysinterface::{SpendableOutputDescriptor, StaticPaymentOutputDescriptor, DelayedPaymentOutputDescriptor, Sign, KeysInterface};
+use crate::chain::keysinterface::{SpendableOutputDescriptor, StaticPaymentOutputDescriptor, DelayedPaymentOutputDescriptor, Sign, SignerProvider, EntropySource};
 #[cfg(anchors)]
 use crate::chain::onchaintx::ClaimEvent;
 use crate::chain::onchaintx::OnchainTxHandler;
@@ -3704,9 +3704,9 @@ where
 
 const MAX_ALLOC_SIZE: usize = 64*1024;
 
-impl<'a, K: KeysInterface> ReadableArgs<&'a K>
-		for (BlockHash, ChannelMonitor<K::Signer>) {
-	fn read<R: io::Read>(reader: &mut R, keys_manager: &'a K) -> Result<Self, DecodeError> {
+impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP)>
+		for (BlockHash, ChannelMonitor<SP::Signer>) {
+	fn read<R: io::Read>(reader: &mut R, args: (&'a ES, &'b SP)) -> Result<Self, DecodeError> {
 		macro_rules! unwrap_obj {
 			($key: expr) => {
 				match $key {
@@ -3715,6 +3715,8 @@ impl<'a, K: KeysInterface> ReadableArgs<&'a K>
 				}
 			}
 		}
+
+		let (entropy_source, signer_provider) = args;
 
 		let _ver = read_ver_prefix!(reader, SERIALIZATION_VERSION);
 
@@ -3889,8 +3891,8 @@ impl<'a, K: KeysInterface> ReadableArgs<&'a K>
 				return Err(DecodeError::InvalidValue);
 			}
 		}
-		let onchain_tx_handler: OnchainTxHandler<K::Signer> = ReadableArgs::read(
-			reader, (keys_manager, channel_value_satoshis, channel_keys_id)
+		let onchain_tx_handler: OnchainTxHandler<SP::Signer> = ReadableArgs::read(
+			reader, (entropy_source, signer_provider, channel_value_satoshis, channel_keys_id)
 		)?;
 
 		let lockdown_from_offchain = Readable::read(reader)?;
@@ -3930,7 +3932,7 @@ impl<'a, K: KeysInterface> ReadableArgs<&'a K>
 		});
 
 		let mut secp_ctx = Secp256k1::new();
-		secp_ctx.seeded_randomize(&keys_manager.get_secure_random_bytes());
+		secp_ctx.seeded_randomize(&entropy_source.get_secure_random_bytes());
 
 		Ok((best_block.block_hash(), ChannelMonitor::from_impl(ChannelMonitorImpl {
 			latest_update_id,
@@ -4079,7 +4081,7 @@ mod tests {
 
 		let (_, pre_update_monitor) = <(BlockHash, ChannelMonitor<InMemorySigner>)>::read(
 						&mut io::Cursor::new(&get_monitor!(nodes[1], channel.2).encode()),
-						&nodes[1].keys_manager.backing).unwrap();
+						(&nodes[1].keys_manager.backing, &nodes[1].keys_manager.backing)).unwrap();
 
 		// If the ChannelManager tries to update the channel, however, the ChainMonitor will pass
 		// the update through to the ChannelMonitor which will refuse it (as the channel is closed).

@@ -9,7 +9,7 @@
 
 //! Onion message testing and test utilities live here.
 
-use crate::chain::keysinterface::{KeysInterface, NodeSigner, Recipient};
+use crate::chain::keysinterface::{NodeSigner, Recipient};
 use crate::ln::features::InitFeatures;
 use crate::ln::msgs::{self, DecodeError, OnionMessageHandler};
 use super::{BlindedPath, CustomOnionMessageContents, CustomOnionMessageHandler, Destination, OnionMessageContents, OnionMessenger, SendError};
@@ -24,7 +24,7 @@ use crate::sync::Arc;
 
 struct MessengerNode {
 	keys_manager: Arc<test_utils::TestKeysInterface>,
-	messenger: OnionMessenger<Arc<test_utils::TestKeysInterface>, Arc<test_utils::TestLogger>, Arc<TestCustomMessageHandler>>,
+	messenger: OnionMessenger<Arc<test_utils::TestKeysInterface>, Arc<test_utils::TestKeysInterface>, Arc<test_utils::TestLogger>, Arc<TestCustomMessageHandler>>,
 	logger: Arc<test_utils::TestLogger>,
 }
 
@@ -77,7 +77,7 @@ fn create_nodes(num_messengers: u8) -> Vec<MessengerNode> {
 		let keys_manager = Arc::new(test_utils::TestKeysInterface::new(&seed, Network::Testnet));
 		nodes.push(MessengerNode {
 			keys_manager: keys_manager.clone(),
-			messenger: OnionMessenger::new(keys_manager, logger.clone(), Arc::new(TestCustomMessageHandler {})),
+			messenger: OnionMessenger::new(keys_manager.clone(), keys_manager.clone(), logger.clone(), Arc::new(TestCustomMessageHandler {})),
 			logger,
 		});
 	}

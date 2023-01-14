@@ -2139,7 +2139,7 @@ mod tests {
 	use crate::routing::scoring::{ChannelUsage, Score, ProbabilisticScorer, ProbabilisticScoringParameters};
 	use crate::routing::test_utils::{add_channel, add_or_update_node, build_graph, build_line_graph, id_to_feature_flags, get_nodes, update_channel};
 	use crate::chain::transaction::OutPoint;
-	use crate::chain::keysinterface::{EntropySource, KeysInterface};
+	use crate::chain::keysinterface::EntropySource;
 	use crate::ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 	use crate::ln::msgs::{ErrorAction, LightningError, UnsignedChannelUpdate, MAX_VALUE_MSAT};
 	use crate::ln::channelmanager;
@@ -5653,7 +5653,7 @@ mod benches {
 	use bitcoin::hashes::Hash;
 	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 	use crate::chain::transaction::OutPoint;
-	use crate::chain::keysinterface::{EntropySource, KeysManager,KeysInterface};
+	use crate::chain::keysinterface::{EntropySource, KeysManager};
 	use crate::ln::channelmanager::{self, ChannelCounterparty, ChannelDetails};
 	use crate::ln::features::InvoiceFeatures;
 	use crate::routing::gossip::NetworkGraph;

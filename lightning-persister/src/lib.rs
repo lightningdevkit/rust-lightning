@@ -20,7 +20,7 @@ extern crate libc;
 use bitcoin::hash_types::{BlockHash, Txid};
 use bitcoin::hashes::hex::FromHex;
 use lightning::chain::channelmonitor::ChannelMonitor;
-use lightning::chain::keysinterface::{KeysInterface, SignerProvider};
+use lightning::chain::keysinterface::{EntropySource, SignerProvider};
 use lightning::util::ser::{ReadableArgs, Writeable};
 use lightning::util::persist::KVStorePersister;
 use std::fs;
@@ -59,10 +59,12 @@ impl FilesystemPersister {
 	}
 
 	/// Read `ChannelMonitor`s from disk.
-	pub fn read_channelmonitors<K: Deref> (
-		&self, keys_manager: K
-	) -> std::io::Result<Vec<(BlockHash, ChannelMonitor<<K::Target as SignerProvider>::Signer>)>>
-		where K::Target: KeysInterface + Sized,
+	pub fn read_channelmonitors<ES: Deref, SP: Deref> (
+		&self, entropy_source: ES, signer_provider: SP
+	) -> std::io::Result<Vec<(BlockHash, ChannelMonitor<<SP::Target as SignerProvider>::Signer>)>>
+		where
+			ES::Target: EntropySource + Sized,
+			SP::Target: SignerProvider + Sized
 	{
 		let mut path = PathBuf::from(&self.path_to_channel_data);
 		path.push("monitors");
@@ -103,7 +105,7 @@ impl FilesystemPersister {
 
 			let contents = fs::read(&file.path())?;
 			let mut buffer = Cursor::new(&contents);
-			match <(BlockHash, ChannelMonitor<<K::Target as SignerProvider>::Signer>)>::read(&mut buffer, &*keys_manager) {
+			match <(BlockHash, ChannelMonitor<<SP::Target as SignerProvider>::Signer>)>::read(&mut buffer, (&*entropy_source, &*signer_provider)) {
 				Ok((blockhash, channel_monitor)) => {
 					if channel_monitor.get_funding_txo().0.txid != txid || channel_monitor.get_funding_txo().0.index != index {
 						return Err(std::io::Error::new(std::io::ErrorKind::InvalidData,
@@ -182,7 +184,7 @@ mod tests {
 
 		// Check that read_channelmonitors() returns error if monitors/ is not a
 		// directory.
-		assert!(persister.read_channelmonitors(nodes[0].keys_manager).is_err());
+		assert!(persister.read_channelmonitors(nodes[0].keys_manager, nodes[0].keys_manager).is_err());
 	}
 
 	// Integration-test the FilesystemPersister. Test relaying a few payments
@@ -204,20 +206,20 @@ mod tests {
 
 		// Check that the persisted channel data is empty before any channels are
 		// open.
-		let mut persisted_chan_data_0 = persister_0.read_channelmonitors(nodes[0].keys_manager).unwrap();
+		let mut persisted_chan_data_0 = persister_0.read_channelmonitors(nodes[0].keys_manager, nodes[0].keys_manager).unwrap();
 		assert_eq!(persisted_chan_data_0.len(), 0);
-		let mut persisted_chan_data_1 = persister_1.read_channelmonitors(nodes[1].keys_manager).unwrap();
+		let mut persisted_chan_data_1 = persister_1.read_channelmonitors(nodes[1].keys_manager, nodes[1].keys_manager).unwrap();
 		assert_eq!(persisted_chan_data_1.len(), 0);
 
 		// Helper to make sure the channel is on the expected update ID.
 		macro_rules! check_persisted_data {
 			($expected_update_id: expr) => {
-				persisted_chan_data_0 = persister_0.read_channelmonitors(nodes[0].keys_manager).unwrap();
+				persisted_chan_data_0 = persister_0.read_channelmonitors(nodes[0].keys_manager, nodes[0].keys_manager).unwrap();
 				assert_eq!(persisted_chan_data_0.len(), 1);
 				for (_, mon) in persisted_chan_data_0.iter() {
 					assert_eq!(mon.get_latest_update_id(), $expected_update_id);
 				}
-				persisted_chan_data_1 = persister_1.read_channelmonitors(nodes[1].keys_manager).unwrap();
+				persisted_chan_data_1 = persister_1.read_channelmonitors(nodes[1].keys_manager, nodes[1].keys_manager).unwrap();
 				assert_eq!(persisted_chan_data_1.len(), 1);
 				for (_, mon) in persisted_chan_data_1.iter() {
 					assert_eq!(mon.get_latest_update_id(), $expected_update_id);

@@ -14,7 +14,7 @@ use bitcoin::hashes::{Hash, HashEngine};
 use bitcoin::hashes::cmp::fixed_time_eq;
 use bitcoin::hashes::hmac::{Hmac, HmacEngine};
 use bitcoin::hashes::sha256::Hash as Sha256;
-use crate::chain::keysinterface::{KeyMaterial, KeysInterface, EntropySource};
+use crate::chain::keysinterface::{KeyMaterial, EntropySource};
 use crate::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
 use crate::ln::msgs;
 use crate::ln::msgs::MAX_VALUE_MSAT;
@@ -92,13 +92,13 @@ impl Method {
 ///
 /// [phantom node payments]: crate::chain::keysinterface::PhantomKeysManager
 /// [`NodeSigner::get_inbound_payment_key_material`]: crate::chain::keysinterface::NodeSigner::get_inbound_payment_key_material
-pub fn create<K: Deref>(keys: &ExpandedKey, min_value_msat: Option<u64>, invoice_expiry_delta_secs: u32, keys_manager: &K, current_time: u64) -> Result<(PaymentHash, PaymentSecret), ()>
-	where K::Target: KeysInterface
+pub fn create<ES: Deref>(keys: &ExpandedKey, min_value_msat: Option<u64>, invoice_expiry_delta_secs: u32, entropy_source: &ES, current_time: u64) -> Result<(PaymentHash, PaymentSecret), ()>
+	where ES::Target: EntropySource
 {
 	let metadata_bytes = construct_metadata_bytes(min_value_msat, Method::LdkPaymentHash, invoice_expiry_delta_secs, current_time)?;
 
 	let mut iv_bytes = [0 as u8; IV_LEN];
-	let rand_bytes = keys_manager.get_secure_random_bytes();
+	let rand_bytes = entropy_source.get_secure_random_bytes();
 	iv_bytes.copy_from_slice(&rand_bytes[..IV_LEN]);
 
 	let mut hmac = HmacEngine::<Sha256>::new(&keys.ldk_pmt_hash_key);
