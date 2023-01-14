@@ -20,7 +20,7 @@
 //! # use lightning::routing::gossip::NetworkGraph;
 //! # use lightning::routing::router::{RouteParameters, find_route};
 //! # use lightning::routing::scoring::{ProbabilisticScorer, ProbabilisticScoringParameters};
-//! # use lightning::chain::keysinterface::{KeysManager, KeysInterface};
+//! # use lightning::chain::keysinterface::KeysManager;
 //! # use lightning::util::logger::{Logger, Record};
 //! # use bitcoin::secp256k1::PublicKey;
 //! #

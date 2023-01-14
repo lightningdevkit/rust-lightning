@@ -239,7 +239,7 @@ impl Writeable for EnforcingSigner {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), Error> {
 		// EnforcingSigner has two fields - `inner` ([`InMemorySigner`]) and `state`
 		// ([`EnforcementState`]). `inner` is serialized here and deserialized by
-		// [`KeysInterface::read_chan_signer`]. `state` is managed by [`KeysInterface`]
+		// [`SignerProvider::read_chan_signer`]. `state` is managed by [`SignerProvider`]
 		// and will be serialized as needed by the implementation of that trait.
 		self.inner.write(writer)?;
 		Ok(())
