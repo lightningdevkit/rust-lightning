@@ -767,9 +767,8 @@ where
 	/// very far in the past, and can only ever be up to two hours in the future.
 	highest_seen_timestamp: AtomicUsize,
 
-	/// The bulk of our storage will eventually be here (message queues and the like). Currently
-	/// the `per_peer_state` stores our channels on a per-peer basis, as well as the peer's latest
-	/// features.
+	/// The bulk of our storage. Currently the `per_peer_state` stores our channels on a per-peer
+	/// basis, as well as the peer's latest features.
 	///
 	/// If we are connected to a peer we always at least have an entry here, even if no channels
 	/// are currently open with that peer.
@@ -1250,7 +1249,7 @@ macro_rules! handle_error {
 					#[cfg(any(feature = "_test_utils", test))]
 					{
 						if per_peer_state.get(&$counterparty_node_id).is_none() {
-							// This shouldn't occour in tests unless an unkown counterparty_node_id
+							// This shouldn't occur in tests unless an unknown counterparty_node_id
 							// has been passed to our message handling functions.
 							let expected_error_str = format!("Can't find a peer matching the passed counterparty node_id {}", $counterparty_node_id);
 							match err.action {
@@ -2313,7 +2312,9 @@ where
 	/// public, and thus should be called whenever the result is going to be passed out in a
 	/// [`MessageSendEvent::BroadcastChannelUpdate`] event.
 	///
-	/// May be called with peer_state already locked!
+	/// Note that in `internal_closing_signed`, this function is called without the `peer_state`
+	/// corresponding to the channel's counterparty locked, as the channel been removed from the
+	/// storage and the `peer_state` lock has been dropped.
 	fn get_channel_update_for_broadcast(&self, chan: &Channel<<SP::Target as SignerProvider>::Signer>) -> Result<msgs::ChannelUpdate, LightningError> {
 		if !chan.should_announce() {
 			return Err(LightningError {
@@ -2332,7 +2333,10 @@ where
 	/// is public (only returning an Err if the channel does not yet have an assigned short_id),
 	/// and thus MUST NOT be called unless the recipient of the resulting message has already
 	/// provided evidence that they know about the existence of the channel.
-	/// May be called with peer_state already locked!
+	///
+	/// Note that through `internal_closing_signed`, this function is called without the
+	/// `peer_state`  corresponding to the channel's counterparty locked, as the channel been
+	/// removed from the storage and the `peer_state` lock has been dropped.
 	fn get_channel_update_for_unicast(&self, chan: &Channel<<SP::Target as SignerProvider>::Signer>) -> Result<msgs::ChannelUpdate, LightningError> {
 		log_trace!(self.logger, "Attempting to generate channel update for channel {}", log_bytes!(chan.channel_id()));
 		let short_channel_id = match chan.get_short_channel_id().or(chan.latest_inbound_scid_alias()) {
@@ -3712,7 +3716,7 @@ where
 	fn fail_htlc_backwards_internal(&self, source: &HTLCSource, payment_hash: &PaymentHash, onion_error: &HTLCFailReason, destination: HTLCDestination) {
 		#[cfg(any(feature = "_test_utils", test))]
 		{
-			// Ensure that no peer state channel storage lock is not held when calling this
+			// Ensure that the peer state channel storage lock is not held when calling this
 			// function.
 			// This ensures that future code doesn't introduce a lock_order requirement for
 			// `forward_htlcs` to be locked after the `per_peer_state` peer locks, which calling
