@@ -632,7 +632,9 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 						// It's possible the channel has been closed in the mean time, but any other
 						// failure may be a bug.
 						if let APIError::ChannelUnavailable { err } = e {
-							assert_eq!(err, "No such channel");
+							if !err.starts_with("Can't find a peer matching the passed counterparty node_id ") {
+								assert_eq!(err, "No such channel");
+							}
 						} else { panic!(); }
 					}
 					pending_funding_signatures.insert(funding_output, tx);

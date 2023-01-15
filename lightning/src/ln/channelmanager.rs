@@ -2552,7 +2552,7 @@ where
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		let peer_state_mutex_opt = per_peer_state.get(counterparty_node_id);
 		if let None = peer_state_mutex_opt {
-			return Err(APIError::APIMisuseError { err: format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id) })
+			return Err(APIError::ChannelUnavailable { err: format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id) })
 		}
 
 		let mut peer_state_lock = peer_state_mutex_opt.unwrap().lock().unwrap();
