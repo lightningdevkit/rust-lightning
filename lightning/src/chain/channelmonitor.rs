@@ -4021,7 +4021,7 @@ mod tests {
 	use crate::ln::{PaymentPreimage, PaymentHash};
 	use crate::ln::chan_utils;
 	use crate::ln::chan_utils::{HTLCOutputInCommitment, ChannelPublicKeys, ChannelTransactionParameters, HolderCommitmentTransaction, CounterpartyChannelTransactionParameters};
-	use crate::ln::channelmanager::{self, PaymentSendFailure, PaymentId};
+	use crate::ln::channelmanager::{PaymentSendFailure, PaymentId};
 	use crate::ln::functional_test_utils::*;
 	use crate::ln::script::ShutdownScript;
 	use crate::util::errors::APIError;
@@ -4049,10 +4049,8 @@ mod tests {
 		let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 		let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
 		let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
-		let channel = create_announced_chan_between_nodes(
-			&nodes, 0, 1, channelmanager::provided_init_features(), channelmanager::provided_init_features());
-		create_announced_chan_between_nodes(
-			&nodes, 1, 2, channelmanager::provided_init_features(), channelmanager::provided_init_features());
+		let channel = create_announced_chan_between_nodes(&nodes, 0, 1);
+		create_announced_chan_between_nodes(&nodes, 1, 2);
 
 		// Rebalance somewhat
 		send_payment(&nodes[0], &[&nodes[1]], 10_000_000);

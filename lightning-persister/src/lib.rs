@@ -143,7 +143,6 @@ mod tests {
 	use lightning::chain::chainmonitor::Persist;
 	use lightning::chain::transaction::OutPoint;
 	use lightning::{check_closed_broadcast, check_closed_event, check_added_monitors};
-	use lightning::ln::channelmanager;
 	use lightning::ln::functional_test_utils::*;
 	use lightning::util::events::{ClosureReason, MessageSendEventsProvider};
 	use lightning::util::test_utils;
@@ -228,7 +227,7 @@ mod tests {
 		}
 
 		// Create some initial channel and check that a channel was persisted.
-		let _ = create_announced_chan_between_nodes(&nodes, 0, 1, channelmanager::provided_init_features(), channelmanager::provided_init_features());
+		let _ = create_announced_chan_between_nodes(&nodes, 0, 1);
 		check_persisted_data!(0);
 
 		// Send a few payments and make sure the monitors are updated to the latest.
@@ -272,7 +271,7 @@ mod tests {
 		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-		let chan = create_announced_chan_between_nodes(&nodes, 0, 1, channelmanager::provided_init_features(), channelmanager::provided_init_features());
+		let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
 		nodes[1].node.force_close_broadcasting_latest_txn(&chan.2, &nodes[0].node.get_our_node_id()).unwrap();
 		check_closed_event!(nodes[1], 1, ClosureReason::HolderForceClosed);
 		let mut added_monitors = nodes[1].chain_monitor.added_monitors.lock().unwrap();
@@ -311,7 +310,7 @@ mod tests {
 		let mut node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-		let chan = create_announced_chan_between_nodes(&nodes, 0, 1, channelmanager::provided_init_features(), channelmanager::provided_init_features());
+		let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
 		nodes[1].node.force_close_broadcasting_latest_txn(&chan.2, &nodes[0].node.get_our_node_id()).unwrap();
 		check_closed_event!(nodes[1], 1, ClosureReason::HolderForceClosed);
 		let mut added_monitors = nodes[1].chain_monitor.added_monitors.lock().unwrap();

@@ -1602,6 +1602,7 @@ impl<T: Time> Readable for ChannelLiquidity<T> {
 #[cfg(test)]
 mod tests {
 	use super::{ChannelLiquidity, HistoricalBucketRangeTracker, ProbabilisticScoringParameters, ProbabilisticScorerUsingTime};
+	use crate::util::config::UserConfig;
 	use crate::util::time::Time;
 	use crate::util::time::tests::SinceEpoch;
 
@@ -1696,7 +1697,7 @@ mod tests {
 		let node_2_secret = &SecretKey::from_slice(&[40; 32]).unwrap();
 		let secp_ctx = Secp256k1::new();
 		let unsigned_announcement = UnsignedChannelAnnouncement {
-			features: channelmanager::provided_channel_features(),
+			features: channelmanager::provided_channel_features(&UserConfig::default()),
 			chain_hash: genesis_hash,
 			short_channel_id,
 			node_id_1: PublicKey::from_secret_key(&secp_ctx, &node_1_key),
@@ -1747,11 +1748,12 @@ mod tests {
 	}
 
 	fn path_hop(pubkey: PublicKey, short_channel_id: u64, fee_msat: u64) -> RouteHop {
+		let config = UserConfig::default();
 		RouteHop {
 			pubkey,
-			node_features: channelmanager::provided_node_features(),
+			node_features: channelmanager::provided_node_features(&config),
 			short_channel_id,
-			channel_features: channelmanager::provided_channel_features(),
+			channel_features: channelmanager::provided_channel_features(&config),
 			fee_msat,
 			cltv_expiry_delta: 18,
 		}

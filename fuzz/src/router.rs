@@ -18,6 +18,7 @@ use lightning::ln::msgs;
 use lightning::routing::gossip::{NetworkGraph, RoutingFees};
 use lightning::routing::router::{find_route, PaymentParameters, RouteHint, RouteHintHop, RouteParameters};
 use lightning::routing::scoring::FixedPenaltyScorer;
+use lightning::util::config::UserConfig;
 use lightning::util::ser::Readable;
 
 use bitcoin::hashes::Hash;
@@ -210,7 +211,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 								channel_id: [0; 32],
 								counterparty: ChannelCounterparty {
 									node_id: *rnid,
-									features: channelmanager::provided_init_features(),
+									features: channelmanager::provided_init_features(&UserConfig::default()),
 									unspendable_punishment_reserve: 0,
 									forwarding_info: None,
 									outbound_htlc_minimum_msat: None,

@@ -24,6 +24,7 @@ use crate::ln::script::ShutdownScript;
 use crate::routing::gossip::NetworkGraph;
 use crate::routing::router::{find_route, InFlightHtlcs, Route, RouteHop, RouteParameters, Router, ScorerAccountingForInFlightHtlcs};
 use crate::routing::scoring::FixedPenaltyScorer;
+use crate::util::config::UserConfig;
 use crate::util::enforcing_trait_impls::{EnforcingSigner, EnforcementState};
 use crate::util::events;
 use crate::util::logger::{Logger, Level, Record};
@@ -397,10 +398,10 @@ impl msgs::ChannelMessageHandler for TestChannelMessageHandler {
 		self.received_msg(wire::Message::Error(msg.clone()));
 	}
 	fn provided_node_features(&self) -> NodeFeatures {
-		channelmanager::provided_node_features()
+		channelmanager::provided_node_features(&UserConfig::default())
 	}
 	fn provided_init_features(&self, _their_init_features: &PublicKey) -> InitFeatures {
-		channelmanager::provided_init_features()
+		channelmanager::provided_init_features(&UserConfig::default())
 	}
 }
 
