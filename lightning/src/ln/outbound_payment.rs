@@ -60,7 +60,7 @@ pub(crate) enum PendingOutboundPayment {
 	/// `PaymentPathFailed` events with `all_paths_failed` can be pending at once, confusing a
 	/// downstream event handler as to when a payment has actually failed.
 	///
-	/// (1) https://github.com/lightningdevkit/rust-lightning/issues/1164
+	/// (1) <https://github.com/lightningdevkit/rust-lightning/issues/1164>
 	Abandoned {
 		session_privs: HashSet<[u8; 32]>,
 		payment_hash: PaymentHash,

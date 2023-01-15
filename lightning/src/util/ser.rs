@@ -8,7 +8,10 @@
 // licenses.
 
 //! A very simple serialization framework which is used to serialize/deserialize messages as well
-//! as ChannelsManagers and ChannelMonitors.
+//! as [`ChannelManager`]s and [`ChannelMonitor`]s.
+//!
+//! [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
+//! [`ChannelMonitor`]: crate::chain::channelmonitor::ChannelMonitor
 
 use crate::prelude::*;
 use crate::io::{self, Read, Seek, Write};
@@ -40,8 +43,8 @@ use crate::util::byte_utils::{be48_to_array, slice_to_be48};
 /// serialization buffer size
 pub const MAX_BUF_SIZE: usize = 64 * 1024;
 
-/// A simplified version of std::io::Write that exists largely for backwards compatibility.
-/// An impl is provided for any type that also impls std::io::Write.
+/// A simplified version of [`std::io::Write`] that exists largely for backwards compatibility.
+/// An impl is provided for any type that also impls [`std::io::Write`].
 ///
 /// (C-not exported) as we only export serialization to/from byte arrays instead
 pub trait Writer {
@@ -175,21 +178,21 @@ impl<R: Read> Read for ReadTrackingReader<R> {
 	}
 }
 
-/// A trait that various rust-lightning types implement allowing them to be written out to a Writer
+/// A trait that various LDK types implement allowing them to be written out to a [`Writer`].
 ///
 /// (C-not exported) as we only export serialization to/from byte arrays instead
 pub trait Writeable {
-	/// Writes self out to the given Writer
+	/// Writes `self` out to the given [`Writer`].
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error>;
 
-	/// Writes self out to a Vec<u8>
+	/// Writes `self` out to a `Vec<u8>`.
 	fn encode(&self) -> Vec<u8> {
 		let mut msg = VecWriter(Vec::new());
 		self.write(&mut msg).unwrap();
 		msg.0
 	}
 
-	/// Writes self out to a Vec<u8>
+	/// Writes `self` out to a `Vec<u8>`.
 	#[cfg(test)]
 	fn encode_with_len(&self) -> Vec<u8> {
 		let mut msg = VecWriter(Vec::new());
@@ -215,64 +218,64 @@ impl<'a, T: Writeable> Writeable for &'a T {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> { (*self).write(writer) }
 }
 
-/// A trait that various rust-lightning types implement allowing them to be read in from a Read
+/// A trait that various LDK types implement allowing them to be read in from a [`Read`].
 ///
 /// (C-not exported) as we only export serialization to/from byte arrays instead
 pub trait Readable
 	where Self: Sized
 {
-	/// Reads a Self in from the given Read
+	/// Reads a `Self` in from the given [`Read`].
 	fn read<R: Read>(reader: &mut R) -> Result<Self, DecodeError>;
 }
 
-/// A trait that various rust-lightning types implement allowing them to be read in from a
-/// `Read + Seek`.
+/// A trait that various LDK types implement allowing them to be read in from a
+/// [`Read`]` + `[`Seek`].
 pub(crate) trait SeekReadable where Self: Sized {
-	/// Reads a Self in from the given Read
+	/// Reads a `Self` in from the given [`Read`].
 	fn read<R: Read + Seek>(reader: &mut R) -> Result<Self, DecodeError>;
 }
 
-/// A trait that various higher-level rust-lightning types implement allowing them to be read in
-/// from a Read given some additional set of arguments which is required to deserialize.
+/// A trait that various higher-level LDK types implement allowing them to be read in
+/// from a [`Read`] given some additional set of arguments which is required to deserialize.
 ///
 /// (C-not exported) as we only export serialization to/from byte arrays instead
 pub trait ReadableArgs<P>
 	where Self: Sized
 {
-	/// Reads a Self in from the given Read
+	/// Reads a `Self` in from the given [`Read`].
 	fn read<R: Read>(reader: &mut R, params: P) -> Result<Self, DecodeError>;
 }
 
-/// A std::io::Read that also provides the total bytes available to read.
+/// A [`std::io::Read`] that also provides the total bytes available to be read.
 pub(crate) trait LengthRead: Read {
-	/// The total number of bytes available to read.
+	/// The total number of bytes available to be read.
 	fn total_bytes(&self) -> u64;
 }
 
-/// A trait that various higher-level rust-lightning types implement allowing them to be read in
+/// A trait that various higher-level LDK types implement allowing them to be read in
 /// from a Read given some additional set of arguments which is required to deserialize, requiring
 /// the implementer to provide the total length of the read.
 pub(crate) trait LengthReadableArgs<P> where Self: Sized
 {
-	/// Reads a Self in from the given LengthRead
+	/// Reads a `Self` in from the given [`LengthRead`].
 	fn read<R: LengthRead>(reader: &mut R, params: P) -> Result<Self, DecodeError>;
 }
 
-/// A trait that various higher-level rust-lightning types implement allowing them to be read in
-/// from a Read, requiring the implementer to provide the total length of the read.
+/// A trait that various higher-level LDK types implement allowing them to be read in
+/// from a [`Read`], requiring the implementer to provide the total length of the read.
 pub(crate) trait LengthReadable where Self: Sized
 {
-	/// Reads a Self in from the given LengthRead
+	/// Reads a `Self` in from the given [`LengthRead`].
 	fn read<R: LengthRead>(reader: &mut R) -> Result<Self, DecodeError>;
 }
 
-/// A trait that various rust-lightning types implement allowing them to (maybe) be read in from a Read
+/// A trait that various LDK types implement allowing them to (maybe) be read in from a [`Read`].
 ///
 /// (C-not exported) as we only export serialization to/from byte arrays instead
 pub trait MaybeReadable
 	where Self: Sized
 {
-	/// Reads a Self in from the given Read
+	/// Reads a `Self` in from the given [`Read`].
 	fn read<R: Read>(reader: &mut R) -> Result<Option<Self>, DecodeError>;
 }
 
@@ -291,8 +294,8 @@ impl<T: Readable> Readable for OptionDeserWrapper<T> {
 		Ok(Self(Some(Readable::read(reader)?)))
 	}
 }
-/// When handling default_values, we want to map the default-value T directly
-/// to a OptionDeserWrapper<T> in a way that works for `field: T = t;` as
+/// When handling `default_values`, we want to map the default-value T directly
+/// to a `OptionDeserWrapper<T>` in a way that works for `field: T = t;` as
 /// well. Thus, we assume `Into<T> for T` does nothing and use that.
 impl<T: Readable> From<T> for OptionDeserWrapper<T> {
 	fn from(t: T) -> OptionDeserWrapper<T> { OptionDeserWrapper(Some(t)) }
@@ -314,7 +317,7 @@ impl Readable for U48 {
 	}
 }
 
-/// Lightning TLV uses a custom variable-length integer called BigSize. It is similar to Bitcoin's
+/// Lightning TLV uses a custom variable-length integer called `BigSize`. It is similar to Bitcoin's
 /// variable-length integers except that it is serialized in big-endian instead of little-endian.
 ///
 /// Like Bitcoin's variable-length integer, it exhibits ambiguity in that certain values can be
@@ -380,7 +383,7 @@ impl Readable for BigSize {
 
 /// In TLV we occasionally send fields which only consist of, or potentially end with, a
 /// variable-length integer which is simply truncated by skipping high zero bytes. This type
-/// encapsulates such integers implementing Readable/Writeable for them.
+/// encapsulates such integers implementing [`Readable`]/[`Writeable`] for them.
 #[cfg_attr(test, derive(PartialEq, Eq, Debug))]
 pub(crate) struct HighZeroBytesDroppedBigSize<T>(pub T);
 
@@ -532,7 +535,7 @@ impl Readable for [u16; 8] {
 	}
 }
 
-/// For variable-length values within TLV record where the length is encoded as part of the record.
+/// A type for variable-length values within TLV record where the length is encoded as part of the record.
 /// Used to prevent encoding the length twice.
 pub struct WithoutLength<T>(pub T);
 
@@ -1042,7 +1045,9 @@ impl Readable for String {
 /// Only the character set and length will be validated.
 /// The character set consists of ASCII alphanumeric characters, hyphens, and periods.
 /// Its length is guaranteed to be representable by a single byte.
-/// This serialization is used by BOLT 7 hostnames.
+/// This serialization is used by [`BOLT 7`] hostnames.
+///
+/// [`BOLT 7`]: https://github.com/lightning/bolts/blob/master/07-routing-gossip.md
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Hostname(String);
 impl Hostname {

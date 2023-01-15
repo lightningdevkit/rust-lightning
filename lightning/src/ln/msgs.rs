@@ -12,12 +12,12 @@
 //! For a normal node you probably don't need to use anything here, however, if you wish to split a
 //! node into an internet-facing route/message socket handling daemon and a separate daemon (or
 //! server entirely) which handles only channel-related messages you may wish to implement
-//! ChannelMessageHandler yourself and use it to re-serialize messages and pass them across
+//! [`ChannelMessageHandler`] yourself and use it to re-serialize messages and pass them across
 //! daemons/servers.
 //!
 //! Note that if you go with such an architecture (instead of passing raw socket events to a
 //! non-internet-facing system) you trust the frontend internet-facing system to not lie about the
-//! source node_id of the message, however this does allow you to significantly reduce bandwidth
+//! source `node_id` of the message, however this does allow you to significantly reduce bandwidth
 //! between the systems as routing messages can represent a significant chunk of bandwidth usage
 //! (especially for non-channel-publicly-announcing nodes). As an alternate design which avoids
 //! this issue, if you have sufficient bidirectional bandwidth between your systems, you may send
@@ -53,37 +53,46 @@ pub(crate) const MAX_VALUE_MSAT: u64 = 21_000_000_0000_0000_000;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DecodeError {
 	/// A version byte specified something we don't know how to handle.
-	/// Includes unknown realm byte in an OnionHopData packet
+	///
+	/// Includes unknown realm byte in an onion hop data packet.
 	UnknownVersion,
-	/// Unknown feature mandating we fail to parse message (eg TLV with an even, unknown type)
+	/// Unknown feature mandating we fail to parse message (e.g., TLV with an even, unknown type)
 	UnknownRequiredFeature,
-	/// Value was invalid, eg a byte which was supposed to be a bool was something other than a 0
+	/// Value was invalid.
+	///
+	/// For example, a byte which was supposed to be a bool was something other than a 0
 	/// or 1, a public key/private key/signature was invalid, text wasn't UTF-8, TLV was
-	/// syntactically incorrect, etc
+	/// syntactically incorrect, etc.
 	InvalidValue,
-	/// Buffer too short
+	/// The buffer to be read was too short.
 	ShortRead,
-	/// A length descriptor in the packet didn't describe the later data correctly
+	/// A length descriptor in the packet didn't describe the later data correctly.
 	BadLengthDescriptor,
-	/// Error from std::io
+	/// Error from [`std::io`].
 	Io(io::ErrorKind),
 	/// The message included zlib-compressed values, which we don't support.
 	UnsupportedCompression,
 }
 
-/// An init message to be sent or received from a peer
+/// An [`init`] message to be sent to or received from a peer.
+///
+/// [`init`]: https://github.com/lightning/bolts/blob/master/01-messaging.md#the-init-message
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Init {
-	/// The relevant features which the sender supports
+	/// The relevant features which the sender supports.
 	pub features: InitFeatures,
-	/// The receipient's network address. This adds the option to report a remote IP address
-	/// back to a connecting peer using the init message. A node can decide to use that information
-	/// to discover a potential update to its public IPv4 address (NAT) and use
-	/// that for a node_announcement update message containing the new address.
+	/// The receipient's network address.
+	///
+	/// This adds the option to report a remote IP address back to a connecting peer using the init
+	/// message. A node can decide to use that information to discover a potential update to its
+	/// public IPv4 address (NAT) and use that for a [`NodeAnnouncement`] update message containing
+	/// the new address.
 	pub remote_network_address: Option<NetAddress>,
 }
 
-/// An error message to be sent or received from a peer
+/// An [`error`] message to be sent to or received from a peer.
+///
+/// [`error`]: https://github.com/lightning/bolts/blob/master/01-messaging.md#the-error-and-warning-messages
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ErrorMessage {
 	/// The channel ID involved in the error.
@@ -92,13 +101,16 @@ pub struct ErrorMessage {
 	/// with the sending peer should be closed.
 	pub channel_id: [u8; 32],
 	/// A possibly human-readable error description.
-	/// The string should be sanitized before it is used (e.g. emitted to logs or printed to
-	/// stdout). Otherwise, a well crafted error message may trigger a security vulnerability in
+	///
+	/// The string should be sanitized before it is used (e.g., emitted to logs or printed to
+	/// `stdout`). Otherwise, a well crafted error message may trigger a security vulnerability in
 	/// the terminal emulator or the logging subsystem.
 	pub data: String,
 }
 
-/// A warning message to be sent or received from a peer
+/// A [`warning`] message to be sent to or received from a peer.
+///
+/// [`warning`]: https://github.com/lightning/bolts/blob/master/01-messaging.md#the-error-and-warning-messages
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WarningMessage {
 	/// The channel ID involved in the warning.
@@ -106,31 +118,40 @@ pub struct WarningMessage {
 	/// All-0s indicates a warning unrelated to a specific channel.
 	pub channel_id: [u8; 32],
 	/// A possibly human-readable warning description.
+	///
 	/// The string should be sanitized before it is used (e.g. emitted to logs or printed to
 	/// stdout). Otherwise, a well crafted error message may trigger a security vulnerability in
 	/// the terminal emulator or the logging subsystem.
 	pub data: String,
 }
 
-/// A ping message to be sent or received from a peer
+/// A [`ping`] message to be sent to or received from a peer.
+///
+/// [`ping`]: https://github.com/lightning/bolts/blob/master/01-messaging.md#the-ping-and-pong-messages
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Ping {
-	/// The desired response length
+	/// The desired response length.
 	pub ponglen: u16,
 	/// The ping packet size.
+	///
 	/// This field is not sent on the wire. byteslen zeros are sent.
 	pub byteslen: u16,
 }
 
-/// A pong message to be sent or received from a peer
+/// A [`pong`] message to be sent to or received from a peer.
+///
+/// [`pong`]: https://github.com/lightning/bolts/blob/master/01-messaging.md#the-ping-and-pong-messages
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Pong {
 	/// The pong packet size.
+	///
 	/// This field is not sent on the wire. byteslen zeros are sent.
 	pub byteslen: u16,
 }
 
-/// An open_channel message to be sent or received from a peer
+/// An [`open_channel`] message to be sent to or received from a peer.
+///
+/// [`open_channel`]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#the-open_channel-message
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OpenChannel {
 	/// The genesis hash of the blockchain where the channel is to be opened
@@ -149,9 +170,11 @@ pub struct OpenChannel {
 	pub channel_reserve_satoshis: u64,
 	/// The minimum HTLC size incoming to sender, in milli-satoshi
 	pub htlc_minimum_msat: u64,
-	/// The feerate per 1000-weight of sender generated transactions, until updated by update_fee
+	/// The feerate per 1000-weight of sender generated transactions, until updated by
+	/// [`UpdateFee`]
 	pub feerate_per_kw: u32,
-	/// The number of blocks which the counterparty will have to wait to claim on-chain funds if they broadcast a commitment transaction
+	/// The number of blocks which the counterparty will have to wait to claim on-chain funds if
+	/// they broadcast a commitment transaction
 	pub to_self_delay: u16,
 	/// The maximum number of inbound HTLCs towards sender
 	pub max_accepted_htlcs: u16,
@@ -167,17 +190,20 @@ pub struct OpenChannel {
 	pub htlc_basepoint: PublicKey,
 	/// The first to-be-broadcast-by-sender transaction's per commitment point
 	pub first_per_commitment_point: PublicKey,
-	/// Channel flags
+	/// The channel flags to be used
 	pub channel_flags: u8,
-	/// Optionally, a request to pre-set the to-sender output's scriptPubkey for when we collaboratively close
+	/// Optionally, a request to pre-set the to-sender output's `scriptPubkey` for when we collaboratively close
 	pub shutdown_scriptpubkey: OptionalField<Script>,
-	/// The channel type that this channel will represent. If none is set, we derive the channel
-	/// type from the intersection of our feature bits with our counterparty's feature bits from
-	/// the Init message.
+	/// The channel type that this channel will represent
+	///
+	/// If this is `None`, we derive the channel type from the intersection of our
+	/// feature bits with our counterparty's feature bits from the [`Init`] message.
 	pub channel_type: Option<ChannelTypeFeatures>,
 }
 
-/// An accept_channel message to be sent or received from a peer
+/// An [`accept_channel`] message to be sent to or received from a peer.
+///
+/// [`accept_channel`]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#the-accept_channel-message
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AcceptChannel {
 	/// A temporary channel ID, until the funding outpoint is announced
@@ -210,15 +236,17 @@ pub struct AcceptChannel {
 	pub first_per_commitment_point: PublicKey,
 	/// Optionally, a request to pre-set the to-sender output's scriptPubkey for when we collaboratively close
 	pub shutdown_scriptpubkey: OptionalField<Script>,
-	/// The channel type that this channel will represent. If none is set, we derive the channel
-	/// type from the intersection of our feature bits with our counterparty's feature bits from
-	/// the Init message.
+	/// The channel type that this channel will represent.
 	///
+	/// If this is `None`, we derive the channel type from the intersection of
+	/// our feature bits with our counterparty's feature bits from the [`Init`] message.
 	/// This is required to match the equivalent field in [`OpenChannel::channel_type`].
 	pub channel_type: Option<ChannelTypeFeatures>,
 }
 
-/// A funding_created message to be sent or received from a peer
+/// A [`funding_created`] message to be sent to or received from a peer.
+///
+/// [`funding_created`]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#the-funding_created-message
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FundingCreated {
 	/// A temporary channel ID, until the funding is established
@@ -231,7 +259,9 @@ pub struct FundingCreated {
 	pub signature: Signature,
 }
 
-/// A funding_signed message to be sent or received from a peer
+/// A [`funding_signed`] message to be sent to or received from a peer.
+///
+/// [`funding_signed`]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#the-funding_signed-message
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FundingSigned {
 	/// The channel ID
@@ -240,29 +270,37 @@ pub struct FundingSigned {
 	pub signature: Signature,
 }
 
-/// A channel_ready message to be sent or received from a peer
+/// A [`channel_ready`] message to be sent to or received from a peer.
+///
+/// [`channel_ready`]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#the-channel_ready-message
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChannelReady {
 	/// The channel ID
 	pub channel_id: [u8; 32],
 	/// The per-commitment point of the second commitment transaction
 	pub next_per_commitment_point: PublicKey,
-	/// If set, provides a short_channel_id alias for this channel. The sender will accept payments
-	/// to be forwarded over this SCID and forward them to this messages' recipient.
+	/// If set, provides a `short_channel_id` alias for this channel.
+	///
+	/// The sender will accept payments to be forwarded over this SCID and forward them to this
+	/// messages' recipient.
 	pub short_channel_id_alias: Option<u64>,
 }
 
-/// A shutdown message to be sent or received from a peer
+/// A [`shutdown`] message to be sent to or received from a peer.
+///
+/// [`shutdown`]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#closing-initiation-shutdown
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Shutdown {
 	/// The channel ID
 	pub channel_id: [u8; 32],
 	/// The destination of this peer's funds on closing.
-	/// Must be in one of these forms: p2pkh, p2sh, p2wpkh, p2wsh.
+	///
+	/// Must be in one of these forms: P2PKH, P2SH, P2WPKH, P2WSH, P2TR.
 	pub scriptpubkey: Script,
 }
 
 /// The minimum and maximum fees which the sender is willing to place on the closing transaction.
+///
 /// This is provided in [`ClosingSigned`] by both sides to indicate the fee range they are willing
 /// to use.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -275,7 +313,9 @@ pub struct ClosingSignedFeeRange {
 	pub max_fee_satoshis: u64,
 }
 
-/// A closing_signed message to be sent or received from a peer
+/// A [`closing_signed`] message to be sent to or received from a peer.
+///
+/// [`closing_signed`]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#closing-negotiation-closing_signed
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ClosingSigned {
 	/// The channel ID
@@ -289,7 +329,9 @@ pub struct ClosingSigned {
 	pub fee_range: Option<ClosingSignedFeeRange>,
 }
 
-/// An update_add_htlc message to be sent or received from a peer
+/// An [`update_add_htlc`] message to be sent to or received from a peer.
+///
+/// [`update_add_htlc`]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#adding-an-htlc-update_add_htlc
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UpdateAddHTLC {
 	/// The channel ID
@@ -305,7 +347,9 @@ pub struct UpdateAddHTLC {
 	pub(crate) onion_routing_packet: OnionPacket,
 }
 
- /// An onion message to be sent or received from a peer
+ /// An onion message to be sent to or received from a peer.
+ ///
+ // TODO: update with link to OM when they are merged into the BOLTs
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OnionMessage {
 	/// Used in decrypting the onion packet's payload.
@@ -313,7 +357,9 @@ pub struct OnionMessage {
 	pub(crate) onion_routing_packet: onion_message::Packet,
 }
 
-/// An update_fulfill_htlc message to be sent or received from a peer
+/// An [`update_fulfill_htlc`] message to be sent to or received from a peer.
+///
+/// [`update_fulfill_htlc`]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#removing-an-htlc-update_fulfill_htlc-update_fail_htlc-and-update_fail_malformed_htlc
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UpdateFulfillHTLC {
 	/// The channel ID
@@ -324,7 +370,9 @@ pub struct UpdateFulfillHTLC {
 	pub payment_preimage: PaymentPreimage,
 }
 
-/// An update_fail_htlc message to be sent or received from a peer
+/// An [`update_fail_htlc`] message to be sent to or received from a peer.
+///
+/// [`update_fail_htlc`]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#removing-an-htlc-update_fulfill_htlc-update_fail_htlc-and-update_fail_malformed_htlc
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UpdateFailHTLC {
 	/// The channel ID
@@ -334,7 +382,9 @@ pub struct UpdateFailHTLC {
 	pub(crate) reason: OnionErrorPacket,
 }
 
-/// An update_fail_malformed_htlc message to be sent or received from a peer
+/// An [`update_fail_malformed_htlc`] message to be sent to or received from a peer.
+///
+/// [`update_fail_malformed_htlc`]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#removing-an-htlc-update_fulfill_htlc-update_fail_htlc-and-update_fail_malformed_htlc
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UpdateFailMalformedHTLC {
 	/// The channel ID
@@ -346,7 +396,9 @@ pub struct UpdateFailMalformedHTLC {
 	pub failure_code: u16,
 }
 
-/// A commitment_signed message to be sent or received from a peer
+/// A [`commitment_signed`] message to be sent to or received from a peer.
+///
+/// [`commitment_signed`]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#committing-updates-so-far-commitment_signed
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CommitmentSigned {
 	/// The channel ID
@@ -357,7 +409,9 @@ pub struct CommitmentSigned {
 	pub htlc_signatures: Vec<Signature>,
 }
 
-/// A revoke_and_ack message to be sent or received from a peer
+/// A [`revoke_and_ack`] message to be sent to or received from a peer.
+///
+/// [`revoke_and_ack`]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#completing-the-transition-to-the-updated-state-revoke_and_ack
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RevokeAndACK {
 	/// The channel ID
@@ -368,7 +422,9 @@ pub struct RevokeAndACK {
 	pub next_per_commitment_point: PublicKey,
 }
 
-/// An update_fee message to be sent or received from a peer
+/// An [`update_fee`] message to be sent to or received from a peer
+///
+/// [`update_fee`]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#updating-fees-update_fee
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UpdateFee {
 	/// The channel ID
@@ -379,8 +435,9 @@ pub struct UpdateFee {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 /// Proof that the sender knows the per-commitment secret of the previous commitment transaction.
+///
 /// This is used to convince the recipient that the channel is at a certain commitment
-/// number even if they lost that data due to a local failure.  Of course, the peer may lie
+/// number even if they lost that data due to a local failure. Of course, the peer may lie
 /// and even later commitments may have been revoked.
 pub struct DataLossProtect {
 	/// Proof that the sender knows the per-commitment secret of a specific commitment transaction
@@ -390,7 +447,9 @@ pub struct DataLossProtect {
 	pub my_current_per_commitment_point: PublicKey,
 }
 
-/// A channel_reestablish message to be sent or received from a peer
+/// A [`channel_reestablish`] message to be sent to or received from a peer.
+///
+/// [`channel_reestablish`]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#message-retransmission
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChannelReestablish {
 	/// The channel ID
@@ -403,7 +462,9 @@ pub struct ChannelReestablish {
 	pub data_loss_protect: OptionalField<DataLossProtect>,
 }
 
-/// An announcement_signatures message to be sent or received from a peer
+/// An [`announcement_signatures`] message to be sent to or received from a peer.
+///
+/// [`announcement_signatures`]: https://github.com/lightning/bolts/blob/master/07-routing-gossip.md#the-announcement_signatures-message
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AnnouncementSignatures {
 	/// The channel ID
@@ -416,7 +477,7 @@ pub struct AnnouncementSignatures {
 	pub bitcoin_signature: Signature,
 }
 
-/// An address which can be used to connect to a remote peer
+/// An address which can be used to connect to a remote peer.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NetAddress {
 	/// An IPv4 address/port on which the peer is listening.
@@ -439,7 +500,8 @@ pub enum NetAddress {
 	/// addresses. Thus, the details are not parsed here.
 	OnionV2([u8; 12]),
 	/// A new-style Tor onion address/port on which the peer is listening.
-	/// To create the human-readable "hostname", concatenate ed25519_pubkey, checksum, and version,
+	///
+	/// To create the human-readable "hostname", concatenate the ED25519 pubkey, checksum, and version,
 	/// wrap as base32 and append ".onion".
 	OnionV3 {
 		/// The ed25519 long-term public key of the peer
@@ -460,7 +522,7 @@ pub enum NetAddress {
 	},
 }
 impl NetAddress {
-	/// Gets the ID of this address type. Addresses in node_announcement messages should be sorted
+	/// Gets the ID of this address type. Addresses in [`NodeAnnouncement`] messages should be sorted
 	/// by this.
 	pub(crate) fn get_id(&self) -> u8 {
 		match self {
@@ -571,20 +633,23 @@ impl Readable for NetAddress {
 }
 
 
-/// The unsigned part of a node_announcement
+/// The unsigned part of a [`node_announcement`] message.
+///
+/// [`node_announcement`]: https://github.com/lightning/bolts/blob/master/07-routing-gossip.md#the-node_announcement-message
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UnsignedNodeAnnouncement {
 	/// The advertised features
 	pub features: NodeFeatures,
 	/// A strictly monotonic announcement counter, with gaps allowed
 	pub timestamp: u32,
-	/// The node_id this announcement originated from (don't rebroadcast the node_announcement back
+	/// The `node_id` this announcement originated from (don't rebroadcast the `node_announcement` back
 	/// to this node).
 	pub node_id: PublicKey,
 	/// An RGB color for UI purposes
 	pub rgb: [u8; 3],
-	/// An alias, for UI purposes.  This should be sanitized before use.  There is no guarantee
-	/// of uniqueness.
+	/// An alias, for UI purposes.
+	///
+	/// This should be sanitized before use. There is no guarantee of uniqueness.
 	pub alias: [u8; 32],
 	/// List of addresses on which this node is reachable
 	pub addresses: Vec<NetAddress>,
@@ -592,7 +657,9 @@ pub struct UnsignedNodeAnnouncement {
 	pub(crate) excess_data: Vec<u8>,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
-/// A node_announcement message to be sent or received from a peer
+/// A [`node_announcement`] message to be sent to or received from a peer.
+///
+/// [`node_announcement`]: https://github.com/lightning/bolts/blob/master/07-routing-gossip.md#the-node_announcement-message
 pub struct NodeAnnouncement {
 	/// The signature by the node key
 	pub signature: Signature,
@@ -600,7 +667,9 @@ pub struct NodeAnnouncement {
 	pub contents: UnsignedNodeAnnouncement,
 }
 
-/// The unsigned part of a channel_announcement
+/// The unsigned part of a [`channel_announcement`] message.
+///
+/// [`channel_announcement`]: https://github.com/lightning/bolts/blob/master/07-routing-gossip.md#the-channel_announcement-message
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UnsignedChannelAnnouncement {
 	/// The advertised channel features
@@ -609,9 +678,9 @@ pub struct UnsignedChannelAnnouncement {
 	pub chain_hash: BlockHash,
 	/// The short channel ID
 	pub short_channel_id: u64,
-	/// One of the two node_ids which are endpoints of this channel
+	/// One of the two `node_id`s which are endpoints of this channel
 	pub node_id_1: PublicKey,
-	/// The other of the two node_ids which are endpoints of this channel
+	/// The other of the two `node_id`s which are endpoints of this channel
 	pub node_id_2: PublicKey,
 	/// The funding key for the first node
 	pub bitcoin_key_1: PublicKey,
@@ -619,7 +688,9 @@ pub struct UnsignedChannelAnnouncement {
 	pub bitcoin_key_2: PublicKey,
 	pub(crate) excess_data: Vec<u8>,
 }
-/// A channel_announcement message to be sent or received from a peer
+/// A [`channel_announcement`] message to be sent to or received from a peer.
+///
+/// [`channel_announcement`]: https://github.com/lightning/bolts/blob/master/07-routing-gossip.md#the-channel_announcement-message
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChannelAnnouncement {
 	/// Authentication of the announcement by the first public node
@@ -634,7 +705,9 @@ pub struct ChannelAnnouncement {
 	pub contents: UnsignedChannelAnnouncement,
 }
 
-/// The unsigned part of a channel_update
+/// The unsigned part of a [`channel_update`] message.
+///
+/// [`channel_update`]: https://github.com/lightning/bolts/blob/master/07-routing-gossip.md#the-channel_update-message
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UnsignedChannelUpdate {
 	/// The genesis hash of the blockchain where the channel is to be opened
@@ -647,27 +720,32 @@ pub struct UnsignedChannelUpdate {
 	pub flags: u8,
 	/// The number of blocks such that if:
 	/// `incoming_htlc.cltv_expiry < outgoing_htlc.cltv_expiry + cltv_expiry_delta`
-	/// then we need to fail the HTLC backwards. When forwarding an HTLC, cltv_expiry_delta determines
-	/// the outgoing HTLC's minimum cltv_expiry value -- so, if an incoming HTLC comes in with a
-	/// cltv_expiry of 100000, and the node we're forwarding to has a cltv_expiry_delta value of 10,
-	/// then we'll check that the outgoing HTLC's cltv_expiry value is at least 100010 before
+	/// then we need to fail the HTLC backwards. When forwarding an HTLC, `cltv_expiry_delta` determines
+	/// the outgoing HTLC's minimum `cltv_expiry` value -- so, if an incoming HTLC comes in with a
+	/// `cltv_expiry` of 100000, and the node we're forwarding to has a `cltv_expiry_delta` value of 10,
+	/// then we'll check that the outgoing HTLC's `cltv_expiry` value is at least 100010 before
 	/// forwarding. Note that the HTLC sender is the one who originally sets this value when
 	/// constructing the route.
 	pub cltv_expiry_delta: u16,
 	/// The minimum HTLC size incoming to sender, in milli-satoshi
 	pub htlc_minimum_msat: u64,
-	/// The maximum HTLC value incoming to sender, in milli-satoshi. Used to be optional.
+	/// The maximum HTLC value incoming to sender, in milli-satoshi.
+	///
+	/// This used to be optional.
 	pub htlc_maximum_msat: u64,
 	/// The base HTLC fee charged by sender, in milli-satoshi
 	pub fee_base_msat: u32,
 	/// The amount to fee multiplier, in micro-satoshi
 	pub fee_proportional_millionths: u32,
 	/// Excess data which was signed as a part of the message which we do not (yet) understand how
-	/// to decode. This is stored to ensure forward-compatibility as new fields are added to the
-	/// lightning gossip
+	/// to decode.
+	///
+	/// This is stored to ensure forward-compatibility as new fields are added to the lightning gossip protocol.
 	pub excess_data: Vec<u8>,
 }
-/// A channel_update message to be sent or received from a peer
+/// A [`channel_update`] message to be sent to or received from a peer.
+///
+/// [`channel_update`]: https://github.com/lightning/bolts/blob/master/07-routing-gossip.md#the-channel_update-message
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChannelUpdate {
 	/// A signature of the channel update
@@ -676,10 +754,12 @@ pub struct ChannelUpdate {
 	pub contents: UnsignedChannelUpdate,
 }
 
-/// A query_channel_range message is used to query a peer for channel
+/// A [`query_channel_range`] message is used to query a peer for channel
 /// UTXOs in a range of blocks. The recipient of a query makes a best
-/// effort to reply to the query using one or more reply_channel_range
+/// effort to reply to the query using one or more [`ReplyChannelRange`]
 /// messages.
+///
+/// [`query_channel_range`]: https://github.com/lightning/bolts/blob/master/07-routing-gossip.md#the-query_channel_range-and-reply_channel_range-messages
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QueryChannelRange {
 	/// The genesis hash of the blockchain being queried
@@ -690,13 +770,17 @@ pub struct QueryChannelRange {
 	pub number_of_blocks: u32,
 }
 
-/// A reply_channel_range message is a reply to a query_channel_range
-/// message. Multiple reply_channel_range messages can be sent in reply
-/// to a single query_channel_range message. The query recipient makes a
+/// A [`reply_channel_range`] message is a reply to a [`QueryChannelRange`]
+/// message.
+///
+/// Multiple `reply_channel_range` messages can be sent in reply
+/// to a single [`QueryChannelRange`] message. The query recipient makes a
 /// best effort to respond based on their local network view which may
-/// not be a perfect view of the network. The short_channel_ids in the
-/// reply are encoded. We only support encoding_type=0 uncompressed
-/// serialization and do not support encoding_type=1 zlib serialization.
+/// not be a perfect view of the network. The `short_channel_id`s in the
+/// reply are encoded. We only support `encoding_type=0` uncompressed
+/// serialization and do not support `encoding_type=1` zlib serialization.
+///
+/// [`reply_channel_range`]: https://github.com/lightning/bolts/blob/master/07-routing-gossip.md#the-query_channel_range-and-reply_channel_range-messages
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReplyChannelRange {
 	/// The genesis hash of the blockchain being queried
@@ -707,18 +791,21 @@ pub struct ReplyChannelRange {
 	pub number_of_blocks: u32,
 	/// True when this is the final reply for a query
 	pub sync_complete: bool,
-	/// The short_channel_ids in the channel range
+	/// The `short_channel_id`s in the channel range
 	pub short_channel_ids: Vec<u64>,
 }
 
-/// A query_short_channel_ids message is used to query a peer for
-/// routing gossip messages related to one or more short_channel_ids.
+/// A [`query_short_channel_ids`] message is used to query a peer for
+/// routing gossip messages related to one or more `short_channel_id`s.
+///
 /// The query recipient will reply with the latest, if available,
-/// channel_announcement, channel_update and node_announcement messages
-/// it maintains for the requested short_channel_ids followed by a
-/// reply_short_channel_ids_end message. The short_channel_ids sent in
-/// this query are encoded. We only support encoding_type=0 uncompressed
-/// serialization and do not support encoding_type=1 zlib serialization.
+/// [`ChannelAnnouncement`], [`ChannelUpdate`] and [`NodeAnnouncement`] messages
+/// it maintains for the requested `short_channel_id`s followed by a
+/// [`ReplyShortChannelIdsEnd`] message. The `short_channel_id`s sent in
+/// this query are encoded. We only support `encoding_type=0` uncompressed
+/// serialization and do not support `encoding_type=1` zlib serialization.
+///
+/// [`query_short_channel_ids`]: https://github.com/lightning/bolts/blob/master/07-routing-gossip.md#the-query_short_channel_idsreply_short_channel_ids_end-messages
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QueryShortChannelIds {
 	/// The genesis hash of the blockchain being queried
@@ -727,22 +814,26 @@ pub struct QueryShortChannelIds {
 	pub short_channel_ids: Vec<u64>,
 }
 
-/// A reply_short_channel_ids_end message is sent as a reply to a
-/// query_short_channel_ids message. The query recipient makes a best
+/// A [`reply_short_channel_ids_end message`] is sent as a reply to a
+/// message. The query recipient makes a best
 /// effort to respond based on their local network view which may not be
 /// a perfect view of the network.
+///
+/// [`reply_short_channel_ids_end`]: https://github.com/lightning/bolts/blob/master/07-routing-gossip.md#the-query_short_channel_idsreply_short_channel_ids_end-messages
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReplyShortChannelIdsEnd {
 	/// The genesis hash of the blockchain that was queried
 	pub chain_hash: BlockHash,
 	/// Indicates if the query recipient maintains up-to-date channel
-	/// information for the chain_hash
+	/// information for the `chain_hash`
 	pub full_information: bool,
 }
 
-/// A gossip_timestamp_filter message is used by a node to request
+/// A [`gossip_timestamp_filter`] message is used by a node to request
 /// gossip relay for messages in the requested time range when the
-/// gossip_queries feature has been negotiated.
+/// `gossip_queries` feature has been negotiated.
+///
+/// [`gossip_timestamp_filter`]: https://github.com/lightning/bolts/blob/master/07-routing-gossip.md#the-gossip_timestamp_filter-message
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GossipTimestampFilter {
 	/// The genesis hash of the blockchain for channel and node information
@@ -754,12 +845,14 @@ pub struct GossipTimestampFilter {
 }
 
 /// Encoding type for data compression of collections in gossip queries.
-/// We do not support encoding_type=1 zlib serialization defined in BOLT #7.
+///
+/// We do not support `encoding_type=1` zlib serialization [defined in BOLT
+/// #7](https://github.com/lightning/bolts/blob/master/07-routing-gossip.md#query-messages).
 enum EncodingType {
 	Uncompressed = 0x00,
 }
 
-/// Used to put an error message in a LightningError
+/// Used to put an error message in a [`LightningError`].
 #[derive(Clone, Debug)]
 pub enum ErrorAction {
 	/// The peer took some action which made us think they were useless. Disconnect them.
@@ -802,21 +895,21 @@ pub struct LightningError {
 	pub action: ErrorAction,
 }
 
-/// Struct used to return values from revoke_and_ack messages, containing a bunch of commitment
+/// Struct used to return values from [`RevokeAndACK`] messages, containing a bunch of commitment
 /// transaction updates if they were pending.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CommitmentUpdate {
-	/// update_add_htlc messages which should be sent
+	/// `update_add_htlc` messages which should be sent
 	pub update_add_htlcs: Vec<UpdateAddHTLC>,
-	/// update_fulfill_htlc messages which should be sent
+	/// `update_fulfill_htlc` messages which should be sent
 	pub update_fulfill_htlcs: Vec<UpdateFulfillHTLC>,
-	/// update_fail_htlc messages which should be sent
+	/// `update_fail_htlc` messages which should be sent
 	pub update_fail_htlcs: Vec<UpdateFailHTLC>,
-	/// update_fail_malformed_htlc messages which should be sent
+	/// `update_fail_malformed_htlc` messages which should be sent
 	pub update_fail_malformed_htlcs: Vec<UpdateFailMalformedHTLC>,
-	/// An update_fee message which should be sent
+	/// An `update_fee` message which should be sent
 	pub update_fee: Option<UpdateFee>,
-	/// Finally, the commitment_signed message which should be sent
+	/// A `commitment_signed` message which should be sent
 	pub commitment_signed: CommitmentSigned,
 }
 
@@ -824,7 +917,8 @@ pub struct CommitmentUpdate {
 /// As we wish to serialize these differently from `Option<T>`s (`Options` get a tag byte, but
 /// [`OptionalField`] simply gets `Present` if there are enough bytes to read into it), we have a
 /// separate enum type for them.
-/// (C-not exported) due to a free generic in T
+///
+/// (C-not exported) due to a free generic in `T`
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OptionalField<T> {
 	/// Optional field is included in message
@@ -835,72 +929,72 @@ pub enum OptionalField<T> {
 
 /// A trait to describe an object which can receive channel messages.
 ///
-/// Messages MAY be called in parallel when they originate from different their_node_ids, however
-/// they MUST NOT be called in parallel when the two calls have the same their_node_id.
+/// Messages MAY be called in parallel when they originate from different `their_node_ids`, however
+/// they MUST NOT be called in parallel when the two calls have the same `their_node_id`.
 pub trait ChannelMessageHandler : MessageSendEventsProvider {
-	//Channel init:
-	/// Handle an incoming open_channel message from the given peer.
+	// Channel init:
+	/// Handle an incoming `open_channel` message from the given peer.
 	fn handle_open_channel(&self, their_node_id: &PublicKey, their_features: InitFeatures, msg: &OpenChannel);
-	/// Handle an incoming accept_channel message from the given peer.
+	/// Handle an incoming `accept_channel` message from the given peer.
 	fn handle_accept_channel(&self, their_node_id: &PublicKey, their_features: InitFeatures, msg: &AcceptChannel);
-	/// Handle an incoming funding_created message from the given peer.
+	/// Handle an incoming `funding_created` message from the given peer.
 	fn handle_funding_created(&self, their_node_id: &PublicKey, msg: &FundingCreated);
-	/// Handle an incoming funding_signed message from the given peer.
+	/// Handle an incoming `funding_signed` message from the given peer.
 	fn handle_funding_signed(&self, their_node_id: &PublicKey, msg: &FundingSigned);
-	/// Handle an incoming channel_ready message from the given peer.
+	/// Handle an incoming `channel_ready` message from the given peer.
 	fn handle_channel_ready(&self, their_node_id: &PublicKey, msg: &ChannelReady);
 
 	// Channl close:
-	/// Handle an incoming shutdown message from the given peer.
+	/// Handle an incoming `shutdown` message from the given peer.
 	fn handle_shutdown(&self, their_node_id: &PublicKey, their_features: &InitFeatures, msg: &Shutdown);
-	/// Handle an incoming closing_signed message from the given peer.
+	/// Handle an incoming `closing_signed` message from the given peer.
 	fn handle_closing_signed(&self, their_node_id: &PublicKey, msg: &ClosingSigned);
 
 	// HTLC handling:
-	/// Handle an incoming update_add_htlc message from the given peer.
+	/// Handle an incoming `update_add_htlc` message from the given peer.
 	fn handle_update_add_htlc(&self, their_node_id: &PublicKey, msg: &UpdateAddHTLC);
-	/// Handle an incoming update_fulfill_htlc message from the given peer.
+	/// Handle an incoming `update_fulfill_htlc` message from the given peer.
 	fn handle_update_fulfill_htlc(&self, their_node_id: &PublicKey, msg: &UpdateFulfillHTLC);
-	/// Handle an incoming update_fail_htlc message from the given peer.
+	/// Handle an incoming `update_fail_htlc` message from the given peer.
 	fn handle_update_fail_htlc(&self, their_node_id: &PublicKey, msg: &UpdateFailHTLC);
-	/// Handle an incoming update_fail_malformed_htlc message from the given peer.
+	/// Handle an incoming `update_fail_malformed_htlc` message from the given peer.
 	fn handle_update_fail_malformed_htlc(&self, their_node_id: &PublicKey, msg: &UpdateFailMalformedHTLC);
-	/// Handle an incoming commitment_signed message from the given peer.
+	/// Handle an incoming `commitment_signed` message from the given peer.
 	fn handle_commitment_signed(&self, their_node_id: &PublicKey, msg: &CommitmentSigned);
-	/// Handle an incoming revoke_and_ack message from the given peer.
+	/// Handle an incoming `revoke_and_ack` message from the given peer.
 	fn handle_revoke_and_ack(&self, their_node_id: &PublicKey, msg: &RevokeAndACK);
 
-	/// Handle an incoming update_fee message from the given peer.
+	/// Handle an incoming `update_fee` message from the given peer.
 	fn handle_update_fee(&self, their_node_id: &PublicKey, msg: &UpdateFee);
 
 	// Channel-to-announce:
-	/// Handle an incoming announcement_signatures message from the given peer.
+	/// Handle an incoming `announcement_signatures` message from the given peer.
 	fn handle_announcement_signatures(&self, their_node_id: &PublicKey, msg: &AnnouncementSignatures);
 
 	// Connection loss/reestablish:
 	/// Indicates a connection to the peer failed/an existing connection was lost. If no connection
 	/// is believed to be possible in the future (eg they're sending us messages we don't
-	/// understand or indicate they require unknown feature bits), no_connection_possible is set
+	/// understand or indicate they require unknown feature bits), `no_connection_possible` is set
 	/// and any outstanding channels should be failed.
 	///
 	/// Note that in some rare cases this may be called without a corresponding
 	/// [`Self::peer_connected`].
 	fn peer_disconnected(&self, their_node_id: &PublicKey, no_connection_possible: bool);
 
-	/// Handle a peer reconnecting, possibly generating channel_reestablish message(s).
+	/// Handle a peer reconnecting, possibly generating `channel_reestablish` message(s).
 	///
 	/// May return an `Err(())` if the features the peer supports are not sufficient to communicate
 	/// with us. Implementors should be somewhat conservative about doing so, however, as other
 	/// message handlers may still wish to communicate with this peer.
 	fn peer_connected(&self, their_node_id: &PublicKey, msg: &Init) -> Result<(), ()>;
-	/// Handle an incoming channel_reestablish message from the given peer.
+	/// Handle an incoming `channel_reestablish` message from the given peer.
 	fn handle_channel_reestablish(&self, their_node_id: &PublicKey, msg: &ChannelReestablish);
 
-	/// Handle an incoming channel update from the given peer.
+	/// Handle an incoming `channel_update` message from the given peer.
 	fn handle_channel_update(&self, their_node_id: &PublicKey, msg: &ChannelUpdate);
 
 	// Error:
-	/// Handle an incoming error message from the given peer.
+	/// Handle an incoming `error` message from the given peer.
 	fn handle_error(&self, their_node_id: &PublicKey, msg: &ErrorMessage);
 
 	// Handler information:
@@ -921,27 +1015,27 @@ pub trait ChannelMessageHandler : MessageSendEventsProvider {
 ///
 /// # Implementor DoS Warnings
 ///
-/// For `gossip_queries` messages there are potential DoS vectors when handling
-/// inbound queries. Implementors using an on-disk network graph should be aware of
+/// For messages enabled with the `gossip_queries` feature there are potential DoS vectors when
+/// handling inbound queries. Implementors using an on-disk network graph should be aware of
 /// repeated disk I/O for queries accessing different parts of the network graph.
 pub trait RoutingMessageHandler : MessageSendEventsProvider {
-	/// Handle an incoming node_announcement message, returning true if it should be forwarded on,
-	/// false or returning an Err otherwise.
+	/// Handle an incoming `node_announcement` message, returning `true` if it should be forwarded on,
+	/// `false` or returning an `Err` otherwise.
 	fn handle_node_announcement(&self, msg: &NodeAnnouncement) -> Result<bool, LightningError>;
-	/// Handle a channel_announcement message, returning true if it should be forwarded on, false
-	/// or returning an Err otherwise.
+	/// Handle a `channel_announcement` message, returning `true` if it should be forwarded on, `false`
+	/// or returning an `Err` otherwise.
 	fn handle_channel_announcement(&self, msg: &ChannelAnnouncement) -> Result<bool, LightningError>;
-	/// Handle an incoming channel_update message, returning true if it should be forwarded on,
-	/// false or returning an Err otherwise.
+	/// Handle an incoming `channel_update` message, returning true if it should be forwarded on,
+	/// `false` or returning an `Err` otherwise.
 	fn handle_channel_update(&self, msg: &ChannelUpdate) -> Result<bool, LightningError>;
 	/// Gets channel announcements and updates required to dump our routing table to a remote node,
-	/// starting at the short_channel_id indicated by starting_point and including announcements
+	/// starting at the `short_channel_id` indicated by `starting_point` and including announcements
 	/// for a single channel.
 	fn get_next_channel_announcement(&self, starting_point: u64) -> Option<(ChannelAnnouncement, Option<ChannelUpdate>, Option<ChannelUpdate>)>;
 	/// Gets a node announcement required to dump our routing table to a remote node, starting at
 	/// the node *after* the provided pubkey and including up to one announcement immediately
-	/// higher (as defined by <PublicKey as Ord>::cmp) than starting_point.
-	/// If None is provided for starting_point, we start at the first node.
+	/// higher (as defined by `<PublicKey as Ord>::cmp`) than `starting_point`.
+	/// If `None` is provided for `starting_point`, we start at the first node.
 	fn get_next_node_announcement(&self, starting_point: Option<&PublicKey>) -> Option<NodeAnnouncement>;
 	/// Called when a connection is established with a peer. This can be used to
 	/// perform routing table synchronization using a strategy defined by the
@@ -960,11 +1054,11 @@ pub trait RoutingMessageHandler : MessageSendEventsProvider {
 	/// a node has completed its best effort to send us the pertaining routing
 	/// gossip messages.
 	fn handle_reply_short_channel_ids_end(&self, their_node_id: &PublicKey, msg: ReplyShortChannelIdsEnd) -> Result<(), LightningError>;
-	/// Handles when a peer asks us to send a list of short_channel_ids
+	/// Handles when a peer asks us to send a list of `short_channel_id`s
 	/// for the requested range of blocks.
 	fn handle_query_channel_range(&self, their_node_id: &PublicKey, msg: QueryChannelRange) -> Result<(), LightningError>;
 	/// Handles when a peer asks us to send routing gossip messages for a
-	/// list of short_channel_ids.
+	/// list of `short_channel_id`s.
 	fn handle_query_short_channel_ids(&self, their_node_id: &PublicKey, msg: QueryShortChannelIds) -> Result<(), LightningError>;
 
 	// Handler information:
@@ -982,7 +1076,7 @@ pub trait RoutingMessageHandler : MessageSendEventsProvider {
 
 /// A trait to describe an object that can receive onion messages.
 pub trait OnionMessageHandler : OnionMessageProvider {
-	/// Handle an incoming onion_message message from the given peer.
+	/// Handle an incoming `onion_message` message from the given peer.
 	fn handle_onion_message(&self, peer_node_id: &PublicKey, msg: &OnionMessage);
 	/// Called when a connection is established with a peer. Can be used to track which peers
 	/// advertise onion message support and are online.
@@ -1058,9 +1152,11 @@ pub(crate) use self::fuzzy_internal_msgs::*;
 #[derive(Clone)]
 pub(crate) struct OnionPacket {
 	pub(crate) version: u8,
-	/// In order to ensure we always return an error on Onion decode in compliance with BOLT 4, we
-	/// have to deserialize OnionPackets contained in UpdateAddHTLCs even if the ephemeral public
-	/// key (here) is bogus, so we hold a Result instead of a PublicKey as we'd like.
+	/// In order to ensure we always return an error on onion decode in compliance with [BOLT
+	/// #4](https://github.com/lightning/bolts/blob/master/04-onion-routing.md), we have to
+	/// deserialize `OnionPacket`s contained in [`UpdateAddHTLC`] messages even if the ephemeral
+	/// public key (here) is bogus, so we hold a [`Result`] instead of a [`PublicKey`] as we'd
+	/// like.
 	pub(crate) public_key: Result<PublicKey, secp256k1::Error>,
 	pub(crate) hop_data: [u8; 20*65],
 	pub(crate) hmac: [u8; 32],
@@ -1850,10 +1946,9 @@ impl_writeable_msg!(ReplyShortChannelIdsEnd, {
 }, {});
 
 impl QueryChannelRange {
-	/**
-	 * Calculates the overflow safe ending block height for the query.
-	 * Overflow returns `0xffffffff`, otherwise returns `first_blocknum + number_of_blocks`
-	 */
+	/// Calculates the overflow safe ending block height for the query.
+	///
+	/// Overflow returns `0xffffffff`, otherwise returns `first_blocknum + number_of_blocks`.
 	pub fn end_blocknum(&self) -> u32 {
 		match self.first_blocknum.checked_add(self.number_of_blocks) {
 			Some(block) => block,

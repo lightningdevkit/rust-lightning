@@ -297,7 +297,7 @@ pub struct RawInvoice {
 
 /// Data of the `RawInvoice` that is encoded in the human readable part
 ///
-/// (C-not exported) As we don't yet support Option<Enum>
+/// (C-not exported) As we don't yet support `Option<Enum>`
 #[derive(Eq, PartialEq, Debug, Clone, Hash)]
 pub struct RawHrp {
 	/// The currency deferred from the 3rd and 4th character of the bech32 transaction
@@ -806,6 +806,7 @@ impl SignedRawInvoice {
 ///
 /// The following example would extract the first B.
 ///
+/// ```ignore
 /// enum Enum {
 /// 	A(u8),
 /// 	B(u16)
@@ -814,6 +815,7 @@ impl SignedRawInvoice {
 /// let elements = vec![Enum::A(1), Enum::A(2), Enum::B(3), Enum::A(4)];
 ///
 /// assert_eq!(find_extract!(elements.iter(), Enum::B(x), x), Some(3u16));
+/// ```
 macro_rules! find_extract {
 	($iter:expr, $enm:pat, $enm_var:ident) => {
 		find_all_extract!($iter, $enm, $enm_var).next()
@@ -825,6 +827,7 @@ macro_rules! find_extract {
 ///
 /// The following example would extract all A.
 ///
+/// ```ignore
 /// enum Enum {
 /// 	A(u8),
 /// 	B(u16)
@@ -836,6 +839,7 @@ macro_rules! find_extract {
 /// 	find_all_extract!(elements.iter(), Enum::A(x), x).collect::<Vec<u8>>(),
 /// 	vec![1u8, 2u8, 4u8]
 /// );
+/// ```
 macro_rules! find_all_extract {
 	($iter:expr, $enm:pat, $enm_var:ident) => {
 		$iter.filter_map(|tf| match *tf {
@@ -1276,7 +1280,7 @@ impl Invoice {
 		self.signed_invoice.amount_pico_btc().map(|v| v / 10)
 	}
 
-	/// Returns the amount if specified in the invoice as pico <currency>.
+	/// Returns the amount if specified in the invoice as pico BTC.
 	fn amount_pico_btc(&self) -> Option<u64> {
 		self.signed_invoice.amount_pico_btc()
 	}
