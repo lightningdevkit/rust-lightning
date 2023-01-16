@@ -342,14 +342,14 @@ impl InvoiceRequest {
 	/// [`Invoice::created_at`]: crate::offers::invoice::Invoice::created_at
 	pub fn respond_with(
 		&self, payment_paths: Vec<(BlindedPath, BlindedPayInfo)>, payment_hash: PaymentHash,
-		#[cfg(not(feature = "std"))]
+		#[cfg(any(test, not(feature = "std")))]
 		created_at: core::time::Duration
 	) -> Result<InvoiceBuilder, SemanticError> {
 		if self.features().requires_unknown_bits() {
 			return Err(SemanticError::UnknownRequiredFeatures);
 		}
 
-		#[cfg(feature = "std")]
+		#[cfg(all(not(test), feature = "std"))]
 		let created_at = std::time::SystemTime::now()
 			.duration_since(std::time::SystemTime::UNIX_EPOCH)
 			.expect("SystemTime::now() should come after SystemTime::UNIX_EPOCH");

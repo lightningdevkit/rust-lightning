@@ -321,14 +321,14 @@ impl Refund {
 	pub fn respond_with(
 		&self, payment_paths: Vec<(BlindedPath, BlindedPayInfo)>, payment_hash: PaymentHash,
 		signing_pubkey: PublicKey,
-		#[cfg(not(feature = "std"))]
+		#[cfg(any(test, not(feature = "std")))]
 		created_at: Duration
 	) -> Result<InvoiceBuilder, SemanticError> {
 		if self.features().requires_unknown_bits() {
 			return Err(SemanticError::UnknownRequiredFeatures);
 		}
 
-		#[cfg(feature = "std")]
+		#[cfg(all(not(test), feature = "std"))]
 		let created_at = std::time::SystemTime::now()
 			.duration_since(std::time::SystemTime::UNIX_EPOCH)
 			.expect("SystemTime::now() should come after SystemTime::UNIX_EPOCH");
