@@ -597,7 +597,22 @@ struct HistoricalMinMaxBuckets<'a> {
 
 impl HistoricalMinMaxBuckets<'_> {
 	#[inline]
-	fn calculate_success_probability_times_billion(&self, required_decays: u32, payment_amt_64th_bucket: u8) -> Option<u64> {
+	fn get_decayed_buckets<T: Time>(&self, now: T, last_updated: T, half_life: Duration)
+	-> ([u16; 8], [u16; 8], u32) {
+		let required_decays = now.duration_since(last_updated).as_secs()
+			.checked_div(half_life.as_secs())
+			.map_or(u32::max_value(), |decays| cmp::min(decays, u32::max_value() as u64) as u32);
+		let mut min_buckets = *self.min_liquidity_offset_history;
+		min_buckets.time_decay_data(required_decays);
+		let mut max_buckets = *self.max_liquidity_offset_history;
+		max_buckets.time_decay_data(required_decays);
+		(min_buckets.buckets, max_buckets.buckets, required_decays)
+	}
+
+	#[inline]
+	fn calculate_success_probability_times_billion<T: Time>(
+		&self, now: T, last_updated: T, half_life: Duration, payment_amt_64th_bucket: u8)
+	-> Option<u64> {
 		// If historical penalties are enabled, calculate the penalty by walking the set of
 		// historical liquidity bucket (min, max) combinations (where min_idx < max_idx) and, for
 		// each, calculate the probability of success given our payment amount, then total the
@@ -619,23 +634,22 @@ impl HistoricalMinMaxBuckets<'_> {
 		// less than 1/16th of a channel's capacity, or 1/8th if we used the top of the bucket.
 		let mut total_valid_points_tracked = 0;
 
-		// Rather than actually decaying the individual buckets, which would lose precision, we
-		// simply track whether all buckets would be decayed to zero, in which case we treat it as
-		// if we had no data.
-		let mut is_fully_decayed = true;
-		let mut check_track_bucket_contains_undecayed_points =
-			|bucket_val: u16| if bucket_val.checked_shr(required_decays).unwrap_or(0) > 0 { is_fully_decayed = false; };
+		// Check if all our buckets are zero, once decayed and treat it as if we had no data. We
+		// don't actually use the decayed buckets, though, as that would lose precision.
+		let (decayed_min_buckets, decayed_max_buckets, required_decays) =
+			self.get_decayed_buckets(now, last_updated, half_life);
+		if decayed_min_buckets.iter().all(|v| *v == 0) || decayed_max_buckets.iter().all(|v| *v == 0) {
+			return None;
+		}
 
 		for (min_idx, min_bucket) in self.min_liquidity_offset_history.buckets.iter().enumerate() {
-			check_track_bucket_contains_undecayed_points(*min_bucket);
 			for max_bucket in self.max_liquidity_offset_history.buckets.iter().take(8 - min_idx) {
 				total_valid_points_tracked += (*min_bucket as u64) * (*max_bucket as u64);
-				check_track_bucket_contains_undecayed_points(*max_bucket);
 			}
 		}
 		// If the total valid points is smaller than 1.0 (i.e. 32 in our fixed-point scheme), treat
 		// it as if we were fully decayed.
-		if total_valid_points_tracked.checked_shr(required_decays).unwrap_or(0) < 32*32 || is_fully_decayed {
+		if total_valid_points_tracked.checked_shr(required_decays).unwrap_or(0) < 32*32 {
 			return None;
 		}
 
@@ -942,9 +956,6 @@ impl<L: Deref<Target = u64>, BRT: Deref<Target = HistoricalBucketRangeTracker>, 
 
 		if params.historical_liquidity_penalty_multiplier_msat != 0 ||
 		   params.historical_liquidity_penalty_amount_multiplier_msat != 0 {
-			let required_decays = self.now.duration_since(*self.last_updated).as_secs()
-				.checked_div(params.historical_no_updates_half_life.as_secs())
-				.map_or(u32::max_value(), |decays| cmp::min(decays, u32::max_value() as u64) as u32);
 			let payment_amt_64th_bucket = amount_msat * 64 / self.capacity_msat;
 			debug_assert!(payment_amt_64th_bucket <= 64);
 			if payment_amt_64th_bucket > 64 { return res; }
@@ -954,7 +965,9 @@ impl<L: Deref<Target = u64>, BRT: Deref<Target = HistoricalBucketRangeTracker>, 
 				max_liquidity_offset_history: &self.max_liquidity_offset_history,
 			};
 			if let Some(cumulative_success_prob_times_billion) = buckets
-					.calculate_success_probability_times_billion(required_decays, payment_amt_64th_bucket as u8) {
+				.calculate_success_probability_times_billion(self.now, *self.last_updated,
+					params.historical_no_updates_half_life, payment_amt_64th_bucket as u8)
+			{
 				let historical_negative_log10_times_2048 = approx::negative_log10_times_2048(cumulative_success_prob_times_billion + 1, 1024 * 1024 * 1024);
 				res = res.saturating_add(Self::combined_penalty_msat(amount_msat,
 					historical_negative_log10_times_2048, params.historical_liquidity_penalty_multiplier_msat,
