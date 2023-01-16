@@ -731,6 +731,8 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> ProbabilisticScorerU
 	/// Note that this writes roughly one line per channel for which we have a liquidity estimate,
 	/// which may be a substantial amount of log output.
 	pub fn debug_log_liquidity_stats(&self) {
+		let now = T::now();
+
 		let graph = self.network_graph.read_only();
 		for (scid, liq) in self.channel_liquidities.iter() {
 			if let Some(chan_debug) = graph.channels().get(scid) {
@@ -738,8 +740,25 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> ProbabilisticScorerU
 					if let Some((directed_info, _)) = chan_debug.as_directed_to(target) {
 						let amt = directed_info.effective_capacity().as_msat();
 						let dir_liq = liq.as_directed(source, target, amt, &self.params);
-						log_debug!(self.logger, "Liquidity from {:?} to {:?} via {} is in the range ({}, {})",
-							source, target, scid, dir_liq.min_liquidity_msat(), dir_liq.max_liquidity_msat());
+
+						let buckets = HistoricalMinMaxBuckets {
+							min_liquidity_offset_history: &dir_liq.min_liquidity_offset_history,
+							max_liquidity_offset_history: &dir_liq.max_liquidity_offset_history,
+						};
+						let (min_buckets, max_buckets, _) = buckets.get_decayed_buckets(now,
+							*dir_liq.last_updated, self.params.historical_no_updates_half_life);
+
+						log_debug!(self.logger, core::concat!(
+							"Liquidity from {} to {} via {} is in the range ({}, {}).\n",
+							"\tHistorical min liquidity octile relative probabilities: {} {} {} {} {} {} {} {}\n",
+							"\tHistorical max liquidity octile relative probabilities: {} {} {} {} {} {} {} {}"),
+							source, target, scid, dir_liq.min_liquidity_msat(), dir_liq.max_liquidity_msat(),
+							min_buckets[0], min_buckets[1], min_buckets[2], min_buckets[3],
+							min_buckets[4], min_buckets[5], min_buckets[6], min_buckets[7],
+							// Note that the liquidity buckets are an offset from the edge, so we
+							// inverse the max order to get the probabilities from zero.
+							max_buckets[7], max_buckets[6], max_buckets[5], max_buckets[4],
+							max_buckets[3], max_buckets[2], max_buckets[1], max_buckets[0]);
 					} else {
 						log_debug!(self.logger, "No amount known for SCID {} from {:?} to {:?}", scid, source, target);
 					}
@@ -764,6 +783,53 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> ProbabilisticScorerU
 					let amt = directed_info.effective_capacity().as_msat();
 					let dir_liq = liq.as_directed(source, target, amt, &self.params);
 					return Some((dir_liq.min_liquidity_msat(), dir_liq.max_liquidity_msat()));
+				}
+			}
+		}
+		None
+	}
+
+	/// Query the historical estimated minimum and maximum liquidity available for sending a
+	/// payment over the channel with `scid` towards the given `target` node.
+	///
+	/// Returns two sets of 8 buckets. The first set describes the octiles for lower-bound
+	/// liquidity estimates, the second set describes the octiles for upper-bound liquidity
+	/// estimates. Each bucket describes the relative frequency at which we've seen a liquidity
+	/// bound in the octile relative to the channel's total capacity, on an arbitrary scale.
+	/// Because the values are slowly decayed, more recent data points are weighted more heavily
+	/// than older datapoints.
+	///
+	/// When scoring, the estimated probability that an upper-/lower-bound lies in a given octile
+	/// relative to the channel's total capacity is calculated by dividing that bucket's value with
+	/// the total of all buckets for the given bound.
+	///
+	/// For example, a value of `[0, 0, 0, 0, 0, 0, 32]` indicates that we believe the probability
+	/// of a bound being in the top octile to be 100%, and have never (recently) seen it in any
+	/// other octiles. A value of `[31, 0, 0, 0, 0, 0, 0, 32]` indicates we've seen the bound being
+	/// both in the top and bottom octile, and roughly with similar (recent) frequency.
+	///
+	/// Because the datapoints are decayed slowly over time, values will eventually return to
+	/// `Some(([0; 8], [0; 8]))`.
+	pub fn historical_estimated_channel_liquidity_probabilities(&self, scid: u64, target: &NodeId)
+	-> Option<([u16; 8], [u16; 8])> {
+		let graph = self.network_graph.read_only();
+
+		if let Some(chan) = graph.channels().get(&scid) {
+			if let Some(liq) = self.channel_liquidities.get(&scid) {
+				if let Some((directed_info, source)) = chan.as_directed_to(target) {
+					let amt = directed_info.effective_capacity().as_msat();
+					let dir_liq = liq.as_directed(source, target, amt, &self.params);
+
+					let buckets = HistoricalMinMaxBuckets {
+						min_liquidity_offset_history: &dir_liq.min_liquidity_offset_history,
+						max_liquidity_offset_history: &dir_liq.max_liquidity_offset_history,
+					};
+					let (min_buckets, mut max_buckets, _) = buckets.get_decayed_buckets(T::now(),
+						*dir_liq.last_updated, self.params.historical_no_updates_half_life);
+					// Note that the liquidity buckets are an offset from the edge, so we inverse
+					// the max order to get the probabilities from zero.
+					max_buckets.reverse();
+					return Some((min_buckets, max_buckets));
 				}
 			}
 		}
@@ -2684,19 +2750,32 @@ mod tests {
 		};
 		// With no historical data the normal liquidity penalty calculation is used.
 		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 47);
+		assert_eq!(scorer.historical_estimated_channel_liquidity_probabilities(42, &target),
+			None);
 
 		scorer.payment_path_failed(&payment_path_for_amount(1).iter().collect::<Vec<_>>(), 42);
 		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 2048);
+		// The "it failed" increment is 32, where the probability should lie fully in the first
+		// octile.
+		assert_eq!(scorer.historical_estimated_channel_liquidity_probabilities(42, &target),
+			Some(([32, 0, 0, 0, 0, 0, 0, 0], [32, 0, 0, 0, 0, 0, 0, 0])));
 
 		// Even after we tell the scorer we definitely have enough available liquidity, it will
 		// still remember that there was some failure in the past, and assign a non-0 penalty.
 		scorer.payment_path_failed(&payment_path_for_amount(1000).iter().collect::<Vec<_>>(), 43);
 		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 198);
+		// The first octile should be decayed just slightly and the last octile has a new point.
+		assert_eq!(scorer.historical_estimated_channel_liquidity_probabilities(42, &target),
+			Some(([31, 0, 0, 0, 0, 0, 0, 32], [31, 0, 0, 0, 0, 0, 0, 32])));
 
 		// Advance the time forward 16 half-lives (which the docs claim will ensure all data is
 		// gone), and check that we're back to where we started.
 		SinceEpoch::advance(Duration::from_secs(10 * 16));
 		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 47);
+		// Once fully decayed we still have data, but its all-0s. In the future we may remove the
+		// data entirely instead.
+		assert_eq!(scorer.historical_estimated_channel_liquidity_probabilities(42, &target),
+			Some(([0; 8], [0; 8])));
 	}
 
 	#[test]
