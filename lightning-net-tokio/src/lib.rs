@@ -586,12 +586,12 @@ mod tests {
 		fn provided_init_features(&self, _their_node_id: &PublicKey) -> InitFeatures { InitFeatures::empty() }
 	}
 	impl ChannelMessageHandler for MsgHandler {
-		fn handle_open_channel(&self, _their_node_id: &PublicKey, _their_features: InitFeatures, _msg: &OpenChannel) {}
-		fn handle_accept_channel(&self, _their_node_id: &PublicKey, _their_features: InitFeatures, _msg: &AcceptChannel) {}
+		fn handle_open_channel(&self, _their_node_id: &PublicKey, _msg: &OpenChannel) {}
+		fn handle_accept_channel(&self, _their_node_id: &PublicKey, _msg: &AcceptChannel) {}
 		fn handle_funding_created(&self, _their_node_id: &PublicKey, _msg: &FundingCreated) {}
 		fn handle_funding_signed(&self, _their_node_id: &PublicKey, _msg: &FundingSigned) {}
 		fn handle_channel_ready(&self, _their_node_id: &PublicKey, _msg: &ChannelReady) {}
-		fn handle_shutdown(&self, _their_node_id: &PublicKey, _their_features: &InitFeatures, _msg: &Shutdown) {}
+		fn handle_shutdown(&self, _their_node_id: &PublicKey, _msg: &Shutdown) {}
 		fn handle_closing_signed(&self, _their_node_id: &PublicKey, _msg: &ClosingSigned) {}
 		fn handle_update_add_htlc(&self, _their_node_id: &PublicKey, _msg: &UpdateAddHTLC) {}
 		fn handle_update_fulfill_htlc(&self, _their_node_id: &PublicKey, _msg: &UpdateFulfillHTLC) {}

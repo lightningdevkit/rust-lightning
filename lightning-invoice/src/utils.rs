@@ -828,9 +828,9 @@ mod test {
 		private_chan_cfg.channel_handshake_config.announced_channel = false;
 		let temporary_channel_id = nodes[2].node.create_channel(nodes[0].node.get_our_node_id(), 1_000_000, 500_000_000, 42, Some(private_chan_cfg)).unwrap();
 		let open_channel = get_event_msg!(nodes[2], MessageSendEvent::SendOpenChannel, nodes[0].node.get_our_node_id());
-		nodes[0].node.handle_open_channel(&nodes[2].node.get_our_node_id(), nodes[2].node.init_features(), &open_channel);
+		nodes[0].node.handle_open_channel(&nodes[2].node.get_our_node_id(), &open_channel);
 		let accept_channel = get_event_msg!(nodes[0], MessageSendEvent::SendAcceptChannel, nodes[2].node.get_our_node_id());
-		nodes[2].node.handle_accept_channel(&nodes[0].node.get_our_node_id(), nodes[0].node.init_features(), &accept_channel);
+		nodes[2].node.handle_accept_channel(&nodes[0].node.get_our_node_id(), &accept_channel);
 
 		let tx = sign_funding_transaction(&nodes[2], &nodes[0], 1_000_000, temporary_channel_id);
 
@@ -1218,9 +1218,9 @@ mod test {
 		private_chan_cfg.channel_handshake_config.announced_channel = false;
 		let temporary_channel_id = nodes[1].node.create_channel(nodes[3].node.get_our_node_id(), 1_000_000, 500_000_000, 42, Some(private_chan_cfg)).unwrap();
 		let open_channel = get_event_msg!(nodes[1], MessageSendEvent::SendOpenChannel, nodes[3].node.get_our_node_id());
-		nodes[3].node.handle_open_channel(&nodes[1].node.get_our_node_id(), nodes[1].node.init_features(), &open_channel);
+		nodes[3].node.handle_open_channel(&nodes[1].node.get_our_node_id(), &open_channel);
 		let accept_channel = get_event_msg!(nodes[3], MessageSendEvent::SendAcceptChannel, nodes[1].node.get_our_node_id());
-		nodes[1].node.handle_accept_channel(&nodes[3].node.get_our_node_id(), nodes[3].node.init_features(), &accept_channel);
+		nodes[1].node.handle_accept_channel(&nodes[3].node.get_our_node_id(), &accept_channel);
 
 		let tx = sign_funding_transaction(&nodes[1], &nodes[3], 1_000_000, temporary_channel_id);
 

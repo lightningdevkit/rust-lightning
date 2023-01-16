@@ -482,7 +482,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 				} else { panic!("Wrong event type"); }
 			};
 
-			$dest.handle_open_channel(&$source.get_our_node_id(), $source.init_features(), &open_channel);
+			$dest.handle_open_channel(&$source.get_our_node_id(), &open_channel);
 			let accept_channel = {
 				let events = $dest.get_and_clear_pending_msg_events();
 				assert_eq!(events.len(), 1);
@@ -491,7 +491,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 				} else { panic!("Wrong event type"); }
 			};
 
-			$source.handle_accept_channel(&$dest.get_our_node_id(), $dest.init_features(), &accept_channel);
+			$source.handle_accept_channel(&$dest.get_our_node_id(), &accept_channel);
 			let funding_output;
 			{
 				let events = $source.get_and_clear_pending_events();

@@ -337,10 +337,10 @@ impl Drop for TestChannelMessageHandler {
 }
 
 impl msgs::ChannelMessageHandler for TestChannelMessageHandler {
-	fn handle_open_channel(&self, _their_node_id: &PublicKey, _their_features: InitFeatures, msg: &msgs::OpenChannel) {
+	fn handle_open_channel(&self, _their_node_id: &PublicKey, msg: &msgs::OpenChannel) {
 		self.received_msg(wire::Message::OpenChannel(msg.clone()));
 	}
-	fn handle_accept_channel(&self, _their_node_id: &PublicKey, _their_features: InitFeatures, msg: &msgs::AcceptChannel) {
+	fn handle_accept_channel(&self, _their_node_id: &PublicKey, msg: &msgs::AcceptChannel) {
 		self.received_msg(wire::Message::AcceptChannel(msg.clone()));
 	}
 	fn handle_funding_created(&self, _their_node_id: &PublicKey, msg: &msgs::FundingCreated) {
@@ -352,7 +352,7 @@ impl msgs::ChannelMessageHandler for TestChannelMessageHandler {
 	fn handle_channel_ready(&self, _their_node_id: &PublicKey, msg: &msgs::ChannelReady) {
 		self.received_msg(wire::Message::ChannelReady(msg.clone()));
 	}
-	fn handle_shutdown(&self, _their_node_id: &PublicKey, _their_features: &InitFeatures, msg: &msgs::Shutdown) {
+	fn handle_shutdown(&self, _their_node_id: &PublicKey, msg: &msgs::Shutdown) {
 		self.received_msg(wire::Message::Shutdown(msg.clone()));
 	}
 	fn handle_closing_signed(&self, _their_node_id: &PublicKey, msg: &msgs::ClosingSigned) {

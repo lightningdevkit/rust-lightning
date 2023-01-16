@@ -173,10 +173,10 @@ impl MessageSendEventsProvider for ErroringMessageHandler {
 impl ChannelMessageHandler for ErroringMessageHandler {
 	// Any messages which are related to a specific channel generate an error message to let the
 	// peer know we don't care about channels.
-	fn handle_open_channel(&self, their_node_id: &PublicKey, _their_features: InitFeatures, msg: &msgs::OpenChannel) {
+	fn handle_open_channel(&self, their_node_id: &PublicKey, msg: &msgs::OpenChannel) {
 		ErroringMessageHandler::push_error(self, their_node_id, msg.temporary_channel_id);
 	}
-	fn handle_accept_channel(&self, their_node_id: &PublicKey, _their_features: InitFeatures, msg: &msgs::AcceptChannel) {
+	fn handle_accept_channel(&self, their_node_id: &PublicKey, msg: &msgs::AcceptChannel) {
 		ErroringMessageHandler::push_error(self, their_node_id, msg.temporary_channel_id);
 	}
 	fn handle_funding_created(&self, their_node_id: &PublicKey, msg: &msgs::FundingCreated) {
@@ -188,7 +188,7 @@ impl ChannelMessageHandler for ErroringMessageHandler {
 	fn handle_channel_ready(&self, their_node_id: &PublicKey, msg: &msgs::ChannelReady) {
 		ErroringMessageHandler::push_error(self, their_node_id, msg.channel_id);
 	}
-	fn handle_shutdown(&self, their_node_id: &PublicKey, _their_features: &InitFeatures, msg: &msgs::Shutdown) {
+	fn handle_shutdown(&self, their_node_id: &PublicKey, msg: &msgs::Shutdown) {
 		ErroringMessageHandler::push_error(self, their_node_id, msg.channel_id);
 	}
 	fn handle_closing_signed(&self, their_node_id: &PublicKey, msg: &msgs::ClosingSigned) {
@@ -1272,7 +1272,6 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 			return Ok(None);
 		}
 
-		let their_features = peer_lock.their_features.clone();
 		mem::drop(peer_lock);
 
 		if is_gossip_msg(message.type_id()) {
@@ -1340,10 +1339,10 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 
 			// Channel messages:
 			wire::Message::OpenChannel(msg) => {
-				self.message_handler.chan_handler.handle_open_channel(&their_node_id, their_features.clone().unwrap(), &msg);
+				self.message_handler.chan_handler.handle_open_channel(&their_node_id, &msg);
 			},
 			wire::Message::AcceptChannel(msg) => {
-				self.message_handler.chan_handler.handle_accept_channel(&their_node_id, their_features.clone().unwrap(), &msg);
+				self.message_handler.chan_handler.handle_accept_channel(&their_node_id, &msg);
 			},
 
 			wire::Message::FundingCreated(msg) => {
@@ -1357,7 +1356,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 			},
 
 			wire::Message::Shutdown(msg) => {
-				self.message_handler.chan_handler.handle_shutdown(&their_node_id, their_features.as_ref().unwrap(), &msg);
+				self.message_handler.chan_handler.handle_shutdown(&their_node_id, &msg);
 			},
 			wire::Message::ClosingSigned(msg) => {
 				self.message_handler.chan_handler.handle_closing_signed(&their_node_id, &msg);
