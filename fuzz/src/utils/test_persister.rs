@@ -14,7 +14,7 @@ impl chainmonitor::Persist<EnforcingSigner> for TestPersister {
 		self.update_ret.lock().unwrap().clone()
 	}
 
-	fn update_persisted_channel(&self, _funding_txo: OutPoint, _update: &Option<channelmonitor::ChannelMonitorUpdate>, _data: &channelmonitor::ChannelMonitor<EnforcingSigner>, _update_id: MonitorUpdateId) -> chain::ChannelMonitorUpdateStatus {
+	fn update_persisted_channel(&self, _funding_txo: OutPoint, _update: Option<&channelmonitor::ChannelMonitorUpdate>, _data: &channelmonitor::ChannelMonitor<EnforcingSigner>, _update_id: MonitorUpdateId) -> chain::ChannelMonitorUpdateStatus {
 		self.update_ret.lock().unwrap().clone()
 	}
 }

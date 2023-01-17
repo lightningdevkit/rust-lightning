@@ -152,7 +152,7 @@ impl chain::Watch<EnforcingSigner> for TestChainMonitor {
 		self.chain_monitor.watch_channel(funding_txo, monitor)
 	}
 
-	fn update_channel(&self, funding_txo: OutPoint, update: channelmonitor::ChannelMonitorUpdate) -> chain::ChannelMonitorUpdateStatus {
+	fn update_channel(&self, funding_txo: OutPoint, update: &channelmonitor::ChannelMonitorUpdate) -> chain::ChannelMonitorUpdateStatus {
 		let mut map_lock = self.latest_monitors.lock().unwrap();
 		let mut map_entry = match map_lock.entry(funding_txo) {
 			hash_map::Entry::Occupied(entry) => entry,
@@ -160,7 +160,7 @@ impl chain::Watch<EnforcingSigner> for TestChainMonitor {
 		};
 		let deserialized_monitor = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingSigner>)>::
 			read(&mut Cursor::new(&map_entry.get().1), (&*self.keys, &*self.keys)).unwrap().1;
-		deserialized_monitor.update_monitor(&update, &&TestBroadcaster{}, &FuzzEstimator { ret_val: atomic::AtomicU32::new(253) }, &self.logger).unwrap();
+		deserialized_monitor.update_monitor(update, &&TestBroadcaster{}, &FuzzEstimator { ret_val: atomic::AtomicU32::new(253) }, &self.logger).unwrap();
 		let mut ser = VecWriter(Vec::new());
 		deserialized_monitor.write(&mut ser).unwrap();
 		map_entry.insert((update.update_id, ser.0));

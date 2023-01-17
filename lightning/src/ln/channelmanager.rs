@@ -577,13 +577,13 @@ pub type SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, M, T, F, L> = C
 //  |   |
 //  |   |__`pending_intercepted_htlcs`
 //  |
-//  |__`pending_inbound_payments`
+//  |__`per_peer_state`
 //  |   |
-//  |   |__`claimable_payments`
-//  |   |
-//  |   |__`pending_outbound_payments` // This field's struct contains a map of pending outbounds
+//  |   |__`pending_inbound_payments`
 //  |       |
-//  |       |__`per_peer_state`
+//  |       |__`claimable_payments`
+//  |       |
+//  |       |__`pending_outbound_payments` // This field's struct contains a map of pending outbounds
 //  |           |
 //  |           |__`peer_state`
 //  |               |
@@ -1709,7 +1709,7 @@ where
 
 					// Update the monitor with the shutdown script if necessary.
 					if let Some(monitor_update) = monitor_update {
-						let update_res = self.chain_monitor.update_channel(chan_entry.get().get_funding_txo().unwrap(), monitor_update);
+						let update_res = self.chain_monitor.update_channel(chan_entry.get().get_funding_txo().unwrap(), &monitor_update);
 						let (result, is_permanent) =
 							handle_monitor_update_res!(self, update_res, chan_entry.get_mut(), RAACommitmentOrder::CommitmentFirst, chan_entry.key(), NO_UPDATE);
 						if is_permanent {
@@ -1807,7 +1807,7 @@ where
 			// force-closing. The monitor update on the required in-memory copy should broadcast
 			// the latest local state, which is the best we can do anyway. Thus, it is safe to
 			// ignore the result here.
-			let _ = self.chain_monitor.update_channel(funding_txo, monitor_update);
+			let _ = self.chain_monitor.update_channel(funding_txo, &monitor_update);
 		}
 	}
 
@@ -2336,7 +2336,7 @@ where
 						chan)
 				} {
 					Some((update_add, commitment_signed, monitor_update)) => {
-						let update_err = self.chain_monitor.update_channel(chan.get().get_funding_txo().unwrap(), monitor_update);
+						let update_err = self.chain_monitor.update_channel(chan.get().get_funding_txo().unwrap(), &monitor_update);
 						let chan_id = chan.get().channel_id();
 						match (update_err,
 							handle_monitor_update_res!(self, update_err, chan,
@@ -3284,7 +3284,7 @@ where
 				BackgroundEvent::ClosingMonitorUpdate((funding_txo, update)) => {
 					// The channel has already been closed, so no use bothering to care about the
 					// monitor updating completing.
-					let _ = self.chain_monitor.update_channel(funding_txo, update);
+					let _ = self.chain_monitor.update_channel(funding_txo, &update);
 				},
 			}
 		}
@@ -3570,9 +3570,12 @@ where
 			// Ensure that no peer state channel storage lock is not held when calling this
 			// function.
 			// This ensures that future code doesn't introduce a lock_order requirement for
-			// `forward_htlcs` to be locked after the `per_peer_state` locks, which calling this
-			// function with the `per_peer_state` aquired would.
-			assert!(self.per_peer_state.try_write().is_ok());
+			// `forward_htlcs` to be locked after the `per_peer_state` peer locks, which calling
+			// this function with any `per_peer_state` peer lock aquired would.
+			let per_peer_state = self.per_peer_state.read().unwrap();
+			for (_, peer) in per_peer_state.iter() {
+				assert!(peer.try_lock().is_ok());
+			}
 		}
 
 		//TODO: There is a timing attack here where if a node fails an HTLC back to us they can
@@ -3807,7 +3810,7 @@ where
 				match chan.get_mut().get_update_fulfill_htlc_and_commit(prev_hop.htlc_id, payment_preimage, &self.logger) {
 					Ok(msgs_monitor_option) => {
 						if let UpdateFulfillCommitFetch::NewClaim { msgs, htlc_value_msat, monitor_update } = msgs_monitor_option {
-							match self.chain_monitor.update_channel(chan.get().get_funding_txo().unwrap(), monitor_update) {
+							match self.chain_monitor.update_channel(chan.get().get_funding_txo().unwrap(), &monitor_update) {
 								ChannelMonitorUpdateStatus::Completed => {},
 								e => {
 									log_given_level!(self.logger, if e == ChannelMonitorUpdateStatus::PermanentFailure { Level::Error } else { Level::Debug },
@@ -3844,7 +3847,7 @@ where
 						}
 					},
 					Err((e, monitor_update)) => {
-						match self.chain_monitor.update_channel(chan.get().get_funding_txo().unwrap(), monitor_update) {
+						match self.chain_monitor.update_channel(chan.get().get_funding_txo().unwrap(), &monitor_update) {
 							ChannelMonitorUpdateStatus::Completed => {},
 							e => {
 								// TODO: This needs to be handled somehow - if we receive a monitor update
@@ -3880,7 +3883,7 @@ where
 			};
 			// We update the ChannelMonitor on the backward link, after
 			// receiving an `update_fulfill_htlc` from the forward link.
-			let update_res = self.chain_monitor.update_channel(prev_hop.outpoint, preimage_update);
+			let update_res = self.chain_monitor.update_channel(prev_hop.outpoint, &preimage_update);
 			if update_res != ChannelMonitorUpdateStatus::Completed {
 				// TODO: This needs to be handled somehow - if we receive a monitor update
 				// with a preimage we *must* somehow manage to propagate it to the upstream
@@ -4449,7 +4452,7 @@ where
 
 					// Update the monitor with the shutdown script if necessary.
 					if let Some(monitor_update) = monitor_update {
-						let update_res = self.chain_monitor.update_channel(chan_entry.get().get_funding_txo().unwrap(), monitor_update);
+						let update_res = self.chain_monitor.update_channel(chan_entry.get().get_funding_txo().unwrap(), &monitor_update);
 						let (result, is_permanent) =
 							handle_monitor_update_res!(self, update_res, chan_entry.get_mut(), RAACommitmentOrder::CommitmentFirst, chan_entry.key(), NO_UPDATE);
 						if is_permanent {
@@ -4650,13 +4653,13 @@ where
 						Err((None, e)) => try_chan_entry!(self, Err(e), chan),
 						Err((Some(update), e)) => {
 							assert!(chan.get().is_awaiting_monitor_update());
-							let _ = self.chain_monitor.update_channel(chan.get().get_funding_txo().unwrap(), update);
+							let _ = self.chain_monitor.update_channel(chan.get().get_funding_txo().unwrap(), &update);
 							try_chan_entry!(self, Err(e), chan);
 							unreachable!();
 						},
 						Ok(res) => res
 					};
-				let update_res = self.chain_monitor.update_channel(chan.get().get_funding_txo().unwrap(), monitor_update);
+				let update_res = self.chain_monitor.update_channel(chan.get().get_funding_txo().unwrap(), &monitor_update);
 				if let Err(e) = handle_monitor_update_res!(self, update_res, chan, RAACommitmentOrder::RevokeAndACKFirst, true, commitment_signed.is_some()) {
 					return Err(e);
 				}
@@ -4792,7 +4795,7 @@ where
 					let raa_updates = break_chan_entry!(self,
 						chan.get_mut().revoke_and_ack(&msg, &self.logger), chan);
 					htlcs_to_fail = raa_updates.holding_cell_failed_htlcs;
-					let update_res = self.chain_monitor.update_channel(chan.get().get_funding_txo().unwrap(), raa_updates.monitor_update);
+					let update_res = self.chain_monitor.update_channel(chan.get().get_funding_txo().unwrap(), &raa_updates.monitor_update);
 					if was_paused_for_mon_update {
 						assert!(update_res != ChannelMonitorUpdateStatus::Completed);
 						assert!(raa_updates.commitment_update.is_none());
@@ -5097,7 +5100,7 @@ where
 								));
 							}
 							if let Some((commitment_update, monitor_update)) = commitment_opt {
-								match self.chain_monitor.update_channel(chan.get_funding_txo().unwrap(), monitor_update) {
+								match self.chain_monitor.update_channel(chan.get_funding_txo().unwrap(), &monitor_update) {
 									ChannelMonitorUpdateStatus::Completed => {
 										pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
 											node_id: chan.get_counterparty_node_id(),
@@ -6739,6 +6742,8 @@ where
 			}
 		}
 
+		let per_peer_state = self.per_peer_state.write().unwrap();
+
 		let pending_inbound_payments = self.pending_inbound_payments.lock().unwrap();
 		let claimable_payments = self.claimable_payments.lock().unwrap();
 		let pending_outbound_payments = self.pending_outbound_payments.pending_outbound_payments.lock().unwrap();
@@ -6754,7 +6759,6 @@ where
 			htlc_purposes.push(purpose);
 		}
 
-		let per_peer_state = self.per_peer_state.write().unwrap();
 		(per_peer_state.len() as u64).write(writer)?;
 		for (peer_pubkey, peer_state_mutex) in per_peer_state.iter() {
 			peer_pubkey.write(writer)?;
