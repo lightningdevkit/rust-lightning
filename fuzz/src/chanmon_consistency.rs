@@ -61,7 +61,7 @@ use bitcoin::secp256k1::Secp256k1;
 
 use std::mem;
 use std::cmp::{self, Ordering};
-use std::collections::{HashSet, hash_map, HashMap};
+use hashbrown::{HashSet, hash_map, HashMap};
 use std::sync::{Arc,Mutex};
 use std::sync::atomic;
 use std::io::Cursor;

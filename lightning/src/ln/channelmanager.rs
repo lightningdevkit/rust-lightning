@@ -2102,7 +2102,7 @@ where
 			// short_channel_id is non-0 in any ::Forward.
 			if let &PendingHTLCRouting::Forward { ref short_channel_id, .. } = routing {
 				if let Some((err, mut code, chan_update)) = loop {
-					let id_option = self.short_to_chan_info.read().unwrap().get(&short_channel_id).cloned();
+					let id_option = self.short_to_chan_info.read().unwrap().get(short_channel_id).cloned();
 					let forwarding_chan_info_opt = match id_option {
 						None => { // unknown_next_peer
 							// Note that this is likely a timing oracle for detecting whether an scid is a
@@ -2552,7 +2552,7 @@ where
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		let peer_state_mutex_opt = per_peer_state.get(counterparty_node_id);
 		if let None = peer_state_mutex_opt {
-			return Err(APIError::APIMisuseError { err: format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id) })
+			return Err(APIError::ChannelUnavailable { err: format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id) })
 		}
 
 		let mut peer_state_lock = peer_state_mutex_opt.unwrap().lock().unwrap();
@@ -7116,7 +7116,7 @@ where
 			}
 		}
 
-		for (ref funding_txo, ref mut monitor) in args.channel_monitors.iter_mut() {
+		for (funding_txo, monitor) in args.channel_monitors.iter_mut() {
 			if !funding_txo_set.contains(funding_txo) {
 				log_info!(args.logger, "Broadcasting latest holder commitment transaction for closed channel {}", log_bytes!(funding_txo.to_channel_id()));
 				monitor.broadcast_latest_holder_commitment_txn(&args.tx_broadcaster, &args.logger);
