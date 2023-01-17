@@ -36,7 +36,7 @@ use std::time::{Duration, Instant};
 use std::ops::Deref;
 
 #[cfg(feature = "futures")]
-use futures_util::{select_biased, future::FutureExt};
+use futures_util::{select_biased, future::FutureExt, task};
 
 /// `BackgroundProcessor` takes care of tasks that (1) need to happen periodically to keep
 /// Rust-Lightning running properly, and (2) either can or should be run in the background. Its
@@ -364,7 +364,7 @@ pub async fn process_events_async<
 	PM: 'static + Deref<Target = PeerManager<Descriptor, CMH, RMH, OMH, L, UMH>> + Send + Sync,
 	S: 'static + Deref<Target = SC> + Send + Sync,
 	SC: WriteableScore<'a>,
-	SleepFuture: core::future::Future<Output = bool>,
+	SleepFuture: core::future::Future<Output = bool> + core::marker::Unpin,
 	Sleeper: Fn(Duration) -> SleepFuture
 >(
 	persister: PS, event_handler: EventHandler, chain_monitor: M, channel_manager: CM,
@@ -411,7 +411,12 @@ where
 					false
 				}
 			}
-		}, |_| Instant::now(), |time: &Instant, dur| time.elapsed().as_secs() > dur)
+		}, |t| sleeper(Duration::from_secs(t)),
+		|fut: &mut SleepFuture, _| {
+			let mut waker = task::noop_waker();
+			let mut ctx = task::Context::from_waker(&mut waker);
+			core::pin::Pin::new(fut).poll(&mut ctx).is_ready()
+		})
 }
 
 impl BackgroundProcessor {
