@@ -11,6 +11,11 @@
 
 #![cfg_attr(docsrs, feature(doc_auto_cfg))]
 
+#![cfg_attr(all(not(feature = "std"), not(test)), no_std)]
+
+#[cfg(any(test, feature = "std"))]
+extern crate core;
+
 #[macro_use] extern crate lightning;
 extern crate lightning_rapid_gossip_sync;
 
@@ -28,12 +33,19 @@ use lightning::util::events::{Event, EventHandler, EventsProvider};
 use lightning::util::logger::Logger;
 use lightning::util::persist::Persister;
 use lightning_rapid_gossip_sync::RapidGossipSync;
+use lightning::io;
+
+use core::ops::Deref;
+use core::time::Duration;
+
+#[cfg(feature = "std")]
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::thread;
-use std::thread::JoinHandle;
-use std::time::{Duration, Instant};
-use std::ops::Deref;
+#[cfg(feature = "std")]
+use core::sync::atomic::{AtomicBool, Ordering};
+#[cfg(feature = "std")]
+use std::thread::{self, JoinHandle};
+#[cfg(feature = "std")]
+use std::time::Instant;
 
 #[cfg(feature = "futures")]
 use futures_util::{select_biased, future::FutureExt, task};
@@ -62,6 +74,7 @@ use futures_util::{select_biased, future::FutureExt, task};
 ///
 /// [`ChannelMonitor`]: lightning::chain::channelmonitor::ChannelMonitor
 /// [`Event`]: lightning::util::events::Event
+#[cfg(feature = "std")]
 #[must_use = "BackgroundProcessor will immediately stop on drop. It should be stored until shutdown."]
 pub struct BackgroundProcessor {
 	stop_thread: Arc<AtomicBool>,
@@ -285,8 +298,14 @@ macro_rules! define_run_body {
 			if $timer_elapsed(&mut last_prune_call, if have_pruned { NETWORK_PRUNE_TIMER } else { FIRST_NETWORK_PRUNE_TIMER }) {
 				// The network graph must not be pruned while rapid sync completion is pending
 				if let Some(network_graph) = $gossip_sync.prunable_network_graph() {
-					log_trace!($logger, "Pruning and persisting network graph.");
-					network_graph.remove_stale_channels_and_tracking();
+					#[cfg(feature = "std")] {
+						log_trace!($logger, "Pruning and persisting network graph.");
+						network_graph.remove_stale_channels_and_tracking();
+					}
+					#[cfg(not(feature = "std"))] {
+						log_warn!($logger, "Not pruning network graph, consider enabling `std` or doing so manually with remove_stale_channels_and_tracking_with_time.");
+						log_trace!($logger, "Persisting network graph.");
+					}
 
 					if let Err(e) = $persister.persist_graph(network_graph) {
 						log_error!($logger, "Error: Failed to persist network graph, check your disk and permissions {}", e)
@@ -334,6 +353,11 @@ macro_rules! define_run_body {
 /// future which outputs true, the loop will exit and this function's future will complete.
 ///
 /// See [`BackgroundProcessor::start`] for information on which actions this handles.
+///
+/// Requires the `futures` feature. Note that while this method is available without the `std`
+/// feature, doing so will skip calling [`NetworkGraph::remove_stale_channels_and_tracking`],
+/// you should call [`NetworkGraph::remove_stale_channels_and_tracking_with_time`] regularly
+/// manually instead.
 #[cfg(feature = "futures")]
 pub async fn process_events_async<
 	'a,
@@ -370,7 +394,7 @@ pub async fn process_events_async<
 	persister: PS, event_handler: EventHandler, chain_monitor: M, channel_manager: CM,
 	gossip_sync: GossipSync<PGS, RGS, G, CA, L>, peer_manager: PM, logger: L, scorer: Option<S>,
 	sleeper: Sleeper,
-) -> Result<(), std::io::Error>
+) -> Result<(), io::Error>
 where
 	CA::Target: 'static + chain::Access,
 	CF::Target: 'static + chain::Filter,
@@ -419,6 +443,7 @@ where
 		})
 }
 
+#[cfg(feature = "std")]
 impl BackgroundProcessor {
 	/// Start a background thread that takes care of responsibilities enumerated in the [top-level
 	/// documentation].
@@ -574,13 +599,14 @@ impl BackgroundProcessor {
 	}
 }
 
+#[cfg(feature = "std")]
 impl Drop for BackgroundProcessor {
 	fn drop(&mut self) {
 		self.stop_and_join_thread().unwrap();
 	}
 }
 
-#[cfg(test)]
+#[cfg(all(feature = "std", test))]
 mod tests {
 	use bitcoin::blockdata::block::BlockHeader;
 	use bitcoin::blockdata::constants::genesis_block;

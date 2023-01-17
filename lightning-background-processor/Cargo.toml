@@ -15,11 +15,14 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 futures = [ "futures-util" ]
+std = ["lightning/std", "lightning-rapid-gossip-sync/std"]
+
+default = ["std"]
 
 [dependencies]
-bitcoin = "0.29.0"
-lightning = { version = "0.0.113", path = "../lightning", features = ["std"] }
-lightning-rapid-gossip-sync = { version = "0.0.113", path = "../lightning-rapid-gossip-sync" }
+bitcoin = { version = "0.29.0", default-features = false }
+lightning = { version = "0.0.113", path = "../lightning", default-features = false }
+lightning-rapid-gossip-sync = { version = "0.0.113", path = "../lightning-rapid-gossip-sync", default-features = false }
 futures-util = { version = "0.3", default-features = false, features = ["async-await-macro"], optional = true }
 
 [dev-dependencies]

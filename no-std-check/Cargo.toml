@@ -10,3 +10,4 @@ default = ["lightning/no-std", "lightning-invoice/no-std", "lightning-rapid-goss
 lightning = { path = "../lightning", default-features = false }
 lightning-invoice = { path = "../lightning-invoice", default-features = false }
 lightning-rapid-gossip-sync = { path = "../lightning-rapid-gossip-sync", default-features = false }
+lightning-background-processor = { path = "../lightning-background-processor", features = ["futures"], default-features = false }
