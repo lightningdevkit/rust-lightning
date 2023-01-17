@@ -868,7 +868,7 @@ pub fn open_zero_conf_channel<'a, 'b, 'c, 'd>(initiator: &'a Node<'b, 'c, 'd>, r
 	initiator.node.create_channel(receiver.node.get_our_node_id(), 100_000, 10_001, 42, initiator_config).unwrap();
 	let open_channel = get_event_msg!(initiator, MessageSendEvent::SendOpenChannel, receiver.node.get_our_node_id());
 
-	receiver.node.handle_open_channel(&initiator.node.get_our_node_id(), initiator.node.init_features(), &open_channel);
+	receiver.node.handle_open_channel(&initiator.node.get_our_node_id(), &open_channel);
 	let events = receiver.node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match events[0] {
@@ -880,7 +880,7 @@ pub fn open_zero_conf_channel<'a, 'b, 'c, 'd>(initiator: &'a Node<'b, 'c, 'd>, r
 
 	let accept_channel = get_event_msg!(receiver, MessageSendEvent::SendAcceptChannel, initiator.node.get_our_node_id());
 	assert_eq!(accept_channel.minimum_depth, 0);
-	initiator.node.handle_accept_channel(&receiver.node.get_our_node_id(), receiver.node.init_features(), &accept_channel);
+	initiator.node.handle_accept_channel(&receiver.node.get_our_node_id(), &accept_channel);
 
 	let (temporary_channel_id, tx, _) = create_funding_transaction(&initiator, &receiver.node.get_our_node_id(), 100_000, 42);
 	initiator.node.funding_transaction_generated(&temporary_channel_id, &receiver.node.get_our_node_id(), tx.clone()).unwrap();
@@ -934,12 +934,10 @@ pub fn create_chan_between_nodes_with_value_init<'a, 'b, 'c>(node_a: &Node<'a, '
 	let open_channel_msg = get_event_msg!(node_a, MessageSendEvent::SendOpenChannel, node_b.node.get_our_node_id());
 	assert_eq!(open_channel_msg.temporary_channel_id, create_chan_id);
 	assert_eq!(node_a.node.list_channels().iter().find(|channel| channel.channel_id == create_chan_id).unwrap().user_channel_id, 42);
-	let a_flags = node_a.override_init_features.borrow().clone().unwrap_or_else(|| node_a.node.init_features());
-	let b_flags = node_b.override_init_features.borrow().clone().unwrap_or_else(|| node_b.node.init_features());
-	node_b.node.handle_open_channel(&node_a.node.get_our_node_id(), a_flags, &open_channel_msg);
+	node_b.node.handle_open_channel(&node_a.node.get_our_node_id(), &open_channel_msg);
 	let accept_channel_msg = get_event_msg!(node_b, MessageSendEvent::SendAcceptChannel, node_a.node.get_our_node_id());
 	assert_eq!(accept_channel_msg.temporary_channel_id, create_chan_id);
-	node_a.node.handle_accept_channel(&node_b.node.get_our_node_id(), b_flags, &accept_channel_msg);
+	node_a.node.handle_accept_channel(&node_b.node.get_our_node_id(), &accept_channel_msg);
 	assert_ne!(node_b.node.list_channels().iter().find(|channel| channel.channel_id == create_chan_id).unwrap().user_channel_id, 0);
 
 	sign_funding_transaction(node_a, node_b, channel_value, create_chan_id)
@@ -1041,11 +1039,9 @@ pub fn create_unannounced_chan_between_nodes_with_value<'a, 'b, 'c, 'd>(nodes: &
 	no_announce_cfg.channel_handshake_config.announced_channel = false;
 	nodes[a].node.create_channel(nodes[b].node.get_our_node_id(), channel_value, push_msat, 42, Some(no_announce_cfg)).unwrap();
 	let open_channel = get_event_msg!(nodes[a], MessageSendEvent::SendOpenChannel, nodes[b].node.get_our_node_id());
-	let a_flags = nodes[a].override_init_features.borrow().clone().unwrap_or_else(|| nodes[a].node.init_features());
-	let b_flags = nodes[b].override_init_features.borrow().clone().unwrap_or_else(|| nodes[b].node.init_features());
-	nodes[b].node.handle_open_channel(&nodes[a].node.get_our_node_id(), a_flags, &open_channel);
+	nodes[b].node.handle_open_channel(&nodes[a].node.get_our_node_id(), &open_channel);
 	let accept_channel = get_event_msg!(nodes[b], MessageSendEvent::SendAcceptChannel, nodes[a].node.get_our_node_id());
-	nodes[a].node.handle_accept_channel(&nodes[b].node.get_our_node_id(), b_flags, &accept_channel);
+	nodes[a].node.handle_accept_channel(&nodes[b].node.get_our_node_id(), &accept_channel);
 
 	let (temporary_channel_id, tx, _) = create_funding_transaction(&nodes[a], &nodes[b].node.get_our_node_id(), channel_value, 42);
 	nodes[a].node.funding_transaction_generated(&temporary_channel_id, &nodes[b].node.get_our_node_id(), tx.clone()).unwrap();
@@ -1246,7 +1242,7 @@ pub fn close_channel<'a, 'b, 'c>(outbound_node: &Node<'a, 'b, 'c>, inbound_node:
 	let (tx_a, tx_b);
 
 	node_a.close_channel(channel_id, &node_b.get_our_node_id()).unwrap();
-	node_b.handle_shutdown(&node_a.get_our_node_id(), &node_a.init_features(), &get_event_msg!(struct_a, MessageSendEvent::SendShutdown, node_b.get_our_node_id()));
+	node_b.handle_shutdown(&node_a.get_our_node_id(), &get_event_msg!(struct_a, MessageSendEvent::SendShutdown, node_b.get_our_node_id()));
 
 	let events_1 = node_b.get_and_clear_pending_msg_events();
 	assert!(events_1.len() >= 1);
@@ -1271,7 +1267,7 @@ pub fn close_channel<'a, 'b, 'c>(outbound_node: &Node<'a, 'b, 'c>, inbound_node:
 		})
 	};
 
-	node_a.handle_shutdown(&node_b.get_our_node_id(), &node_b.init_features(), &shutdown_b);
+	node_a.handle_shutdown(&node_b.get_our_node_id(), &shutdown_b);
 	let (as_update, bs_update) = if close_inbound_first {
 		assert!(node_a.get_and_clear_pending_msg_events().is_empty());
 		node_a.handle_closing_signed(&node_b.get_our_node_id(), &closing_signed_b.unwrap());

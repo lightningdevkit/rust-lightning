@@ -934,9 +934,9 @@ pub enum OptionalField<T> {
 pub trait ChannelMessageHandler : MessageSendEventsProvider {
 	// Channel init:
 	/// Handle an incoming `open_channel` message from the given peer.
-	fn handle_open_channel(&self, their_node_id: &PublicKey, their_features: InitFeatures, msg: &OpenChannel);
+	fn handle_open_channel(&self, their_node_id: &PublicKey, msg: &OpenChannel);
 	/// Handle an incoming `accept_channel` message from the given peer.
-	fn handle_accept_channel(&self, their_node_id: &PublicKey, their_features: InitFeatures, msg: &AcceptChannel);
+	fn handle_accept_channel(&self, their_node_id: &PublicKey, msg: &AcceptChannel);
 	/// Handle an incoming `funding_created` message from the given peer.
 	fn handle_funding_created(&self, their_node_id: &PublicKey, msg: &FundingCreated);
 	/// Handle an incoming `funding_signed` message from the given peer.
@@ -946,7 +946,7 @@ pub trait ChannelMessageHandler : MessageSendEventsProvider {
 
 	// Channl close:
 	/// Handle an incoming `shutdown` message from the given peer.
-	fn handle_shutdown(&self, their_node_id: &PublicKey, their_features: &InitFeatures, msg: &Shutdown);
+	fn handle_shutdown(&self, their_node_id: &PublicKey, msg: &Shutdown);
 	/// Handle an incoming `closing_signed` message from the given peer.
 	fn handle_closing_signed(&self, their_node_id: &PublicKey, msg: &ClosingSigned);
 

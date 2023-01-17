@@ -280,7 +280,7 @@ fn test_scid_privacy_on_pub_channel() {
 	open_channel.channel_type.as_mut().unwrap().set_scid_privacy_required();
 	assert_eq!(open_channel.channel_flags & 1, 1); // The `announce_channel` bit is set.
 
-	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), nodes[0].node.init_features(), &open_channel);
+	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), &open_channel);
 	let err = get_err_msg!(nodes[1], nodes[0].node.get_our_node_id());
 	assert_eq!(err.data, "SCID Alias/Privacy Channel Type cannot be set on a public channel");
 }
@@ -313,8 +313,8 @@ fn test_scid_privacy_negotiation() {
 
 	let second_open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
 	assert!(!second_open_channel.channel_type.as_ref().unwrap().supports_scid_privacy());
-	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), nodes[0].node.init_features(), &second_open_channel);
-	nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), nodes[1].node.init_features(), &get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id()));
+	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), &second_open_channel);
+	nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), &get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id()));
 
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
@@ -348,9 +348,9 @@ fn test_inbound_scid_privacy() {
 
 	assert!(open_channel.channel_type.as_ref().unwrap().requires_scid_privacy());
 
-	nodes[2].node.handle_open_channel(&nodes[1].node.get_our_node_id(), nodes[1].node.init_features(), &open_channel);
+	nodes[2].node.handle_open_channel(&nodes[1].node.get_our_node_id(), &open_channel);
 	let accept_channel = get_event_msg!(nodes[2], MessageSendEvent::SendAcceptChannel, nodes[1].node.get_our_node_id());
-	nodes[1].node.handle_accept_channel(&nodes[2].node.get_our_node_id(), nodes[2].node.init_features(), &accept_channel);
+	nodes[1].node.handle_accept_channel(&nodes[2].node.get_our_node_id(), &accept_channel);
 
 	let (temporary_channel_id, tx, _) = create_funding_transaction(&nodes[1], &nodes[2].node.get_our_node_id(), 100_000, 42);
 	nodes[1].node.funding_transaction_generated(&temporary_channel_id, &nodes[2].node.get_our_node_id(), tx.clone()).unwrap();
@@ -571,7 +571,7 @@ fn test_0conf_channel_with_async_monitor() {
 	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100000, 10001, 42, Some(chan_config)).unwrap();
 	let open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
 
-	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), nodes[0].node.init_features(), &open_channel);
+	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), &open_channel);
 	let events = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match events[0] {
@@ -583,7 +583,7 @@ fn test_0conf_channel_with_async_monitor() {
 
 	let mut accept_channel = get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id());
 	assert_eq!(accept_channel.minimum_depth, 0);
-	nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), nodes[1].node.init_features(), &accept_channel);
+	nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), &accept_channel);
 
 	let (temporary_channel_id, tx, funding_output) = create_funding_transaction(&nodes[0], &nodes[1].node.get_our_node_id(), 100000, 42);
 	nodes[0].node.funding_transaction_generated(&temporary_channel_id, &nodes[1].node.get_our_node_id(), tx.clone()).unwrap();
@@ -844,7 +844,7 @@ fn test_zero_conf_accept_reject() {
 
 	open_channel_msg.channel_type = Some(channel_type_features.clone());
 
-	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), nodes[0].node.init_features(), &open_channel_msg);
+	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), &open_channel_msg);
 
 	let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
 	match msg_events[0] {
@@ -872,8 +872,7 @@ fn test_zero_conf_accept_reject() {
 
 	open_channel_msg.channel_type = Some(channel_type_features.clone());
 
-	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), nodes[0].node.init_features(),
-		&open_channel_msg);
+	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), &open_channel_msg);
 
 	// Assert that `nodes[1]` has no `MessageSendEvent::SendAcceptChannel` in the `msg_events`.
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
@@ -905,8 +904,7 @@ fn test_zero_conf_accept_reject() {
 
 	open_channel_msg.channel_type = Some(channel_type_features);
 
-	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), nodes[0].node.init_features(),
-		&open_channel_msg);
+	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), &open_channel_msg);
 
 	let events = nodes[1].node.get_and_clear_pending_events();
 
@@ -944,7 +942,7 @@ fn test_connect_before_funding() {
 	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100_000, 10_001, 42, None).unwrap();
 	let open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
 
-	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), nodes[0].node.init_features(), &open_channel);
+	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), &open_channel);
 	let events = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match events[0] {
@@ -956,7 +954,7 @@ fn test_connect_before_funding() {
 
 	let mut accept_channel = get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id());
 	assert_eq!(accept_channel.minimum_depth, 0);
-	nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), nodes[1].node.init_features(), &accept_channel);
+	nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), &accept_channel);
 
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
