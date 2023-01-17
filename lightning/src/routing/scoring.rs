@@ -1129,6 +1129,7 @@ impl<L: DerefMut<Target = u64>, BRT: DerefMut<Target = HistoricalBucketRangeTrac
 			log_trace!(logger, "Max liquidity of {} is {} (already less than or equal to {})",
 				chan_descr, existing_max_msat, amount_msat);
 		}
+		self.update_history_buckets();
 	}
 
 	/// Adjusts the channel liquidity balance bounds when failing to route `amount_msat` downstream.
@@ -1141,6 +1142,7 @@ impl<L: DerefMut<Target = u64>, BRT: DerefMut<Target = HistoricalBucketRangeTrac
 			log_trace!(logger, "Min liquidity of {} is {} (already greater than or equal to {})",
 				chan_descr, existing_min_msat, amount_msat);
 		}
+		self.update_history_buckets();
 	}
 
 	/// Adjusts the channel liquidity balance bounds when successfully routing `amount_msat`.
@@ -1148,6 +1150,7 @@ impl<L: DerefMut<Target = u64>, BRT: DerefMut<Target = HistoricalBucketRangeTrac
 		let max_liquidity_msat = self.max_liquidity_msat().checked_sub(amount_msat).unwrap_or(0);
 		log_debug!(logger, "Subtracting {} from max liquidity of {} (setting it to {})", amount_msat, chan_descr, max_liquidity_msat);
 		self.set_max_liquidity_msat(max_liquidity_msat);
+		self.update_history_buckets();
 	}
 
 	fn update_history_buckets(&mut self) {
@@ -1157,11 +1160,13 @@ impl<L: DerefMut<Target = u64>, BRT: DerefMut<Target = HistoricalBucketRangeTrac
 		self.min_liquidity_offset_history.time_decay_data(half_lives);
 		self.max_liquidity_offset_history.time_decay_data(half_lives);
 
+		let min_liquidity_offset_msat = self.decayed_offset_msat(*self.min_liquidity_offset_msat);
 		self.min_liquidity_offset_history.track_datapoint(
-			*self.min_liquidity_offset_msat, self.capacity_msat
+			min_liquidity_offset_msat, self.capacity_msat
 		);
+		let max_liquidity_offset_msat = self.decayed_offset_msat(*self.max_liquidity_offset_msat);
 		self.max_liquidity_offset_history.track_datapoint(
-			*self.max_liquidity_offset_msat, self.capacity_msat
+			max_liquidity_offset_msat, self.capacity_msat
 		);
 	}
 
@@ -1173,7 +1178,6 @@ impl<L: DerefMut<Target = u64>, BRT: DerefMut<Target = HistoricalBucketRangeTrac
 		} else {
 			self.decayed_offset_msat(*self.max_liquidity_offset_msat)
 		};
-		self.update_history_buckets();
 		*self.last_updated = self.now;
 	}
 
@@ -1185,7 +1189,6 @@ impl<L: DerefMut<Target = u64>, BRT: DerefMut<Target = HistoricalBucketRangeTrac
 		} else {
 			self.decayed_offset_msat(*self.min_liquidity_offset_msat)
 		};
-		self.update_history_buckets();
 		*self.last_updated = self.now;
 	}
 }
@@ -2800,7 +2803,7 @@ mod tests {
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 1_024, htlc_maximum_msat: 1_024 },
 		};
 		scorer.payment_path_failed(&payment_path_for_amount(1).iter().collect::<Vec<_>>(), 42);
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 2048);
+		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 409);
 	}
 
 	#[test]
