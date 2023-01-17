@@ -286,7 +286,7 @@ pub fn setup_inbound<CMH, RMH, OMH, L, UMH>(peer_manager: Arc<peer_handler::Peer
 {
 	let remote_addr = get_addr_from_stream(&stream);
 	let (reader, write_receiver, read_receiver, us) = Connection::new(stream);
-	#[cfg(debug_assertions)]
+	#[cfg(test)]
 	let last_us = Arc::clone(&us);
 
 	let handle_opt = if let Ok(_) = peer_manager.new_inbound_connection(SocketDescriptor::new(us.clone()), remote_addr) {
@@ -307,8 +307,8 @@ pub fn setup_inbound<CMH, RMH, OMH, L, UMH>(peer_manager: Arc<peer_handler::Peer
 				// socket shutdown(). Still, as a check during testing, to make sure tokio doesn't
 				// keep too many wakers around, this makes sense. The race should be rare (we do
 				// some work after shutdown()) and an error would be a major memory leak.
-				#[cfg(debug_assertions)]
-				assert!(Arc::try_unwrap(last_us).is_ok());
+				#[cfg(test)]
+				debug_assert!(Arc::try_unwrap(last_us).is_ok());
 			}
 		}
 	}
@@ -335,7 +335,7 @@ pub fn setup_outbound<CMH, RMH, OMH, L, UMH>(peer_manager: Arc<peer_handler::Pee
 {
 	let remote_addr = get_addr_from_stream(&stream);
 	let (reader, mut write_receiver, read_receiver, us) = Connection::new(stream);
-	#[cfg(debug_assertions)]
+	#[cfg(test)]
 	let last_us = Arc::clone(&us);
 	let handle_opt = if let Ok(initial_send) = peer_manager.new_outbound_connection(their_node_id, SocketDescriptor::new(us.clone()), remote_addr) {
 		Some(tokio::spawn(async move {
@@ -381,8 +381,8 @@ pub fn setup_outbound<CMH, RMH, OMH, L, UMH>(peer_manager: Arc<peer_handler::Pee
 				// socket shutdown(). Still, as a check during testing, to make sure tokio doesn't
 				// keep too many wakers around, this makes sense. The race should be rare (we do
 				// some work after shutdown()) and an error would be a major memory leak.
-				#[cfg(debug_assertions)]
-				assert!(Arc::try_unwrap(last_us).is_ok());
+				#[cfg(test)]
+				debug_assert!(Arc::try_unwrap(last_us).is_ok());
 			}
 		}
 	}
