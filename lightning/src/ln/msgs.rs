@@ -814,7 +814,7 @@ pub struct QueryShortChannelIds {
 	pub short_channel_ids: Vec<u64>,
 }
 
-/// A [`reply_short_channel_ids_end message`] is sent as a reply to a
+/// A [`reply_short_channel_ids_end`] message is sent as a reply to a
 /// message. The query recipient makes a best
 /// effort to respond based on their local network view which may not be
 /// a perfect view of the network.
