@@ -39,6 +39,9 @@ macro_rules! _encode_tlv {
 			field.write($stream)?;
 		}
 	};
+	($stream: expr, $type: expr, $field: expr, ignorable) => {
+		$crate::_encode_tlv!($stream, $type, $field, required);
+	};
 	($stream: expr, $type: expr, $field: expr, (option, encoding: ($fieldty: ty, $encoding: ident))) => {
 		$crate::_encode_tlv!($stream, $type, $field.map(|f| $encoding(f)), option);
 	};
@@ -154,6 +157,9 @@ macro_rules! _get_varint_length_prefixed_tlv_length {
 			BigSize(field_len as u64).write(&mut $len).expect("No in-memory data may fail to serialize");
 			$len.0 += field_len;
 		}
+	};
+	($len: expr, $type: expr, $field: expr, ignorable) => {
+		$crate::_get_varint_length_prefixed_tlv_length!($len, $type, $field, required);
 	};
 }
 
@@ -581,6 +587,9 @@ macro_rules! _init_tlv_based_struct_field {
 	($field: ident, option) => {
 		$field
 	};
+	($field: ident, ignorable) => {
+		if $field.is_none() { return Ok(None); } else { $field.unwrap() }
+	};
 	($field: ident, required) => {
 		$field.0.unwrap()
 	};
@@ -608,6 +617,9 @@ macro_rules! _init_tlv_field_var {
 		let mut $field = Some(Vec::new());
 	};
 	($field: ident, option) => {
+		let mut $field = None;
+	};
+	($field: ident, ignorable) => {
 		let mut $field = None;
 	};
 }

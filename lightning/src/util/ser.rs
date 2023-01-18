@@ -22,6 +22,8 @@ use core::cmp;
 use core::convert::TryFrom;
 use core::ops::Deref;
 
+use alloc::collections::BTreeMap;
+
 use bitcoin::secp256k1::{PublicKey, SecretKey};
 use bitcoin::secp256k1::constants::{PUBLIC_KEY_SIZE, SECRET_KEY_SIZE, COMPACT_SIGNATURE_SIZE, SCHNORR_SIGNATURE_SIZE};
 use bitcoin::secp256k1::ecdsa;
@@ -381,6 +383,40 @@ impl Readable for BigSize {
 	}
 }
 
+/// The lightning protocol uses u16s for lengths in most cases. As our serialization framework
+/// primarily targets that, we must as well. However, because we may serialize objects that have
+/// more than 65K entries, we need to be able to store larger values. Thus, we define a variable
+/// length integer here that is backwards-compatible for values < 0xffff. We treat 0xffff as
+/// "read eight more bytes".
+///
+/// To ensure we only have one valid encoding per value, we add 0xffff to values written as eight
+/// bytes. Thus, 0xfffe is serialized as 0xfffe, whereas 0xffff is serialized as
+/// 0xffff0000000000000000 (i.e. read-eight-bytes then zero).
+struct CollectionLength(pub u64);
+impl Writeable for CollectionLength {
+	#[inline]
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		if self.0 < 0xffff {
+			(self.0 as u16).write(writer)
+		} else {
+			0xffffu16.write(writer)?;
+			(self.0 - 0xffff).write(writer)
+		}
+	}
+}
+
+impl Readable for CollectionLength {
+	#[inline]
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let mut val: u64 = <u16 as Readable>::read(r)? as u64;
+		if val == 0xffff {
+			val = <u64 as Readable>::read(r)?
+				.checked_add(0xffff).ok_or(DecodeError::InvalidValue)?;
+		}
+		Ok(CollectionLength(val))
+	}
+}
+
 /// In TLV we occasionally send fields which only consist of, or potentially end with, a
 /// variable-length integer which is simply truncated by skipping high zero bytes. This type
 /// encapsulates such integers implementing [`Readable`]/[`Writeable`] for them.
@@ -588,42 +624,46 @@ impl<'a, T> From<&'a Vec<T>> for WithoutLength<&'a Vec<T>> {
 	fn from(v: &'a Vec<T>) -> Self { Self(v) }
 }
 
-// HashMap
-impl<K, V> Writeable for HashMap<K, V>
-	where K: Writeable + Eq + Hash,
-	      V: Writeable
-{
-	#[inline]
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-	(self.len() as u16).write(w)?;
-		for (key, value) in self.iter() {
-			key.write(w)?;
-			value.write(w)?;
+macro_rules! impl_for_map {
+	($ty: ident, $keybound: ident, $constr: expr) => {
+		impl<K, V> Writeable for $ty<K, V>
+			where K: Writeable + Eq + $keybound, V: Writeable
+		{
+			#[inline]
+			fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+				CollectionLength(self.len() as u64).write(w)?;
+				for (key, value) in self.iter() {
+					key.write(w)?;
+					value.write(w)?;
+				}
+				Ok(())
+			}
 		}
-		Ok(())
+
+		impl<K, V> Readable for $ty<K, V>
+			where K: Readable + Eq + $keybound, V: MaybeReadable
+		{
+			#[inline]
+			fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+				let len: CollectionLength = Readable::read(r)?;
+				let mut ret = $constr(len.0 as usize);
+				for _ in 0..len.0 {
+					let k = K::read(r)?;
+					let v_opt = V::read(r)?;
+					if let Some(v) = v_opt {
+						if ret.insert(k, v).is_some() {
+							return Err(DecodeError::InvalidValue);
+						}
+					}
+				}
+				Ok(ret)
+			}
+		}
 	}
 }
 
-impl<K, V> Readable for HashMap<K, V>
-	where K: Readable + Eq + Hash,
-	      V: MaybeReadable
-{
-	#[inline]
-	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
-		let len: u16 = Readable::read(r)?;
-		let mut ret = HashMap::with_capacity(len as usize);
-		for _ in 0..len {
-			let k = K::read(r)?;
-			let v_opt = V::read(r)?;
-			if let Some(v) = v_opt {
-				if ret.insert(k, v).is_some() {
-					return Err(DecodeError::InvalidValue);
-				}
-			}
-		}
-		Ok(ret)
-	}
-}
+impl_for_map!(BTreeMap, Ord, |_| BTreeMap::new());
+impl_for_map!(HashMap, Hash, |len| HashMap::with_capacity(len));
 
 // HashSet
 impl<T> Writeable for HashSet<T>
@@ -631,7 +671,7 @@ where T: Writeable + Eq + Hash
 {
 	#[inline]
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		(self.len() as u16).write(w)?;
+		CollectionLength(self.len() as u64).write(w)?;
 		for item in self.iter() {
 			item.write(w)?;
 		}
@@ -644,9 +684,9 @@ where T: Readable + Eq + Hash
 {
 	#[inline]
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
-		let len: u16 = Readable::read(r)?;
-		let mut ret = HashSet::with_capacity(len as usize);
-		for _ in 0..len {
+		let len: CollectionLength = Readable::read(r)?;
+		let mut ret = HashSet::with_capacity(cmp::min(len.0 as usize, MAX_BUF_SIZE / core::mem::size_of::<T>()));
+		for _ in 0..len.0 {
 			if !ret.insert(T::read(r)?) {
 				return Err(DecodeError::InvalidValue)
 			}
@@ -656,10 +696,39 @@ where T: Readable + Eq + Hash
 }
 
 // Vectors
+macro_rules! impl_for_vec {
+	($ty: ty $(, $name: ident)*) => {
+		impl<$($name : Writeable),*> Writeable for Vec<$ty> {
+			#[inline]
+			fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+				CollectionLength(self.len() as u64).write(w)?;
+				for elem in self.iter() {
+					elem.write(w)?;
+				}
+				Ok(())
+			}
+		}
+
+		impl<$($name : Readable),*> Readable for Vec<$ty> {
+			#[inline]
+			fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+				let len: CollectionLength = Readable::read(r)?;
+				let mut ret = Vec::with_capacity(cmp::min(len.0 as usize, MAX_BUF_SIZE / core::mem::size_of::<$ty>()));
+				for _ in 0..len.0 {
+					if let Some(val) = MaybeReadable::read(r)? {
+						ret.push(val);
+					}
+				}
+				Ok(ret)
+			}
+		}
+	}
+}
+
 impl Writeable for Vec<u8> {
 	#[inline]
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		(self.len() as u16).write(w)?;
+		CollectionLength(self.len() as u64).write(w)?;
 		w.write_all(&self)
 	}
 }
@@ -667,39 +736,21 @@ impl Writeable for Vec<u8> {
 impl Readable for Vec<u8> {
 	#[inline]
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
-		let len: u16 = Readable::read(r)?;
-		let mut ret = Vec::with_capacity(len as usize);
-		ret.resize(len as usize, 0);
-		r.read_exact(&mut ret)?;
-		Ok(ret)
-	}
-}
-impl Writeable for Vec<ecdsa::Signature> {
-	#[inline]
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		(self.len() as u16).write(w)?;
-		for e in self.iter() {
-			e.write(w)?;
+		let mut len: CollectionLength = Readable::read(r)?;
+		let mut ret = Vec::new();
+		while len.0 > 0 {
+			let readamt = cmp::min(len.0 as usize, MAX_BUF_SIZE);
+			let readstart = ret.len();
+			ret.resize(readstart + readamt, 0);
+			r.read_exact(&mut ret[readstart..])?;
+			len.0 -= readamt as u64;
 		}
-		Ok(())
+		Ok(ret)
 	}
 }
 
-impl Readable for Vec<ecdsa::Signature> {
-	#[inline]
-	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
-		let len: u16 = Readable::read(r)?;
-		let byte_size = (len as usize)
-		                .checked_mul(COMPACT_SIGNATURE_SIZE)
-		                .ok_or(DecodeError::BadLengthDescriptor)?;
-		if byte_size > MAX_BUF_SIZE {
-			return Err(DecodeError::BadLengthDescriptor);
-		}
-		let mut ret = Vec::with_capacity(len as usize);
-		for _ in 0..len { ret.push(Readable::read(r)?); }
-		Ok(ret)
-	}
-}
+impl_for_vec!(ecdsa::Signature);
+impl_for_vec!((A, B), A, B);
 
 impl Writeable for Script {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
@@ -1028,7 +1079,7 @@ impl Readable for () {
 impl Writeable for String {
 	#[inline]
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		(self.len() as u16).write(w)?;
+		CollectionLength(self.len() as u64).write(w)?;
 		w.write_all(self.as_bytes())
 	}
 }
