@@ -51,7 +51,7 @@ use crate::sync::{Mutex, Arc};
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use core::mem;
 use bitcoin::bech32::u5;
-use crate::chain::keysinterface::{InMemorySigner, Recipient, KeyMaterial, EntropySource, NodeSigner, SignerProvider};
+use crate::chain::keysinterface::{InMemorySigner, Recipient, EntropySource, NodeSigner, SignerProvider};
 
 #[cfg(feature = "std")]
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -106,17 +106,6 @@ pub struct OnlyReadsKeysInterface {}
 
 impl EntropySource for OnlyReadsKeysInterface {
 	fn get_secure_random_bytes(&self) -> [u8; 32] { [0; 32] }}
-
-impl NodeSigner for OnlyReadsKeysInterface {
-	fn get_node_secret(&self, _recipient: Recipient) -> Result<SecretKey, ()> { unreachable!(); }
-	fn get_node_id(&self, recipient: Recipient) -> Result<PublicKey, ()> {
-		let secp_ctx = Secp256k1::signing_only();
-		Ok(PublicKey::from_secret_key(&secp_ctx, &self.get_node_secret(recipient)?))
-	}
-	fn ecdh(&self, _recipient: Recipient, _other_key: &PublicKey, _tweak: Option<&Scalar>) -> Result<SharedSecret, ()> { unreachable!(); }
-	fn get_inbound_payment_key_material(&self) -> KeyMaterial { unreachable!(); }
-	fn sign_invoice(&self, _hrp_bytes: &[u8], _invoice_data: &[u5], _recipient: Recipient) -> Result<RecoverableSignature, ()> { unreachable!(); }
-}
 
 impl SignerProvider for OnlyReadsKeysInterface {
 	type Signer = EnforcingSigner;

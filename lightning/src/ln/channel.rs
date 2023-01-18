@@ -6807,22 +6807,19 @@ mod tests {
 	use crate::ln::chan_utils::{htlc_success_tx_weight, htlc_timeout_tx_weight};
 	use crate::chain::BestBlock;
 	use crate::chain::chaininterface::{FeeEstimator, LowerBoundedFeeEstimator, ConfirmationTarget};
-	use crate::chain::keysinterface::{BaseSign, InMemorySigner, Recipient, KeyMaterial, EntropySource, NodeSigner, SignerProvider};
+	use crate::chain::keysinterface::{BaseSign, InMemorySigner, EntropySource, SignerProvider};
 	use crate::chain::transaction::OutPoint;
 	use crate::util::config::UserConfig;
 	use crate::util::enforcing_trait_impls::EnforcingSigner;
 	use crate::util::errors::APIError;
 	use crate::util::test_utils;
 	use crate::util::test_utils::OnGetShutdownScriptpubkey;
-	use bitcoin::secp256k1::{Secp256k1, ecdsa::Signature, Scalar};
+	use bitcoin::secp256k1::{Secp256k1, ecdsa::Signature};
 	use bitcoin::secp256k1::ffi::Signature as FFISignature;
 	use bitcoin::secp256k1::{SecretKey,PublicKey};
-	use bitcoin::secp256k1::ecdh::SharedSecret;
-	use bitcoin::secp256k1::ecdsa::RecoverableSignature;
 	use bitcoin::hashes::sha256::Hash as Sha256;
 	use bitcoin::hashes::Hash;
 	use bitcoin::hash_types::WPubkeyHash;
-	use bitcoin::bech32::u5;
 	use bitcoin::PackedLockTime;
 	use bitcoin::util::address::WitnessVersion;
 	use crate::prelude::*;
@@ -6859,21 +6856,6 @@ mod tests {
 
 	impl EntropySource for Keys {
 		fn get_secure_random_bytes(&self) -> [u8; 32] { [0; 32] }
-	}
-
-	impl NodeSigner for Keys {
-		fn get_node_secret(&self, _recipient: Recipient) -> Result<SecretKey, ()> { panic!(); }
-
-		fn get_node_id(&self, recipient: Recipient) -> Result<PublicKey, ()> {
-			let secp_ctx = Secp256k1::signing_only();
-			Ok(PublicKey::from_secret_key(&secp_ctx, &self.get_node_secret(recipient)?))
-		}
-
-		fn ecdh(&self, _recipient: Recipient, _other_key: &PublicKey, _tweak: Option<&Scalar>) -> Result<SharedSecret, ()> { panic!(); }
-
-		fn get_inbound_payment_key_material(&self) -> KeyMaterial { panic!(); }
-
-		fn sign_invoice(&self, _hrp_bytes: &[u8], _invoice_data: &[u5], _recipient: Recipient) -> Result<RecoverableSignature, ()> { panic!(); }
 	}
 
 	impl SignerProvider for Keys {
