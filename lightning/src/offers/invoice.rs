@@ -8,6 +8,80 @@
 // licenses.
 
 //! Data structures and encoding for `invoice` messages.
+//!
+//! An [`Invoice`] can be built from a parsed [`InvoiceRequest`] for the "offer to be paid" flow or
+//! from a [`Refund`] as an "offer for money" flow. The expected recipient of the payment then sends
+//! the invoice to the intended payer, who will then pay it.
+//!
+//! The payment recipient must include a [`PaymentHash`], so as to reveal the preimage upon payment
+//! receipt, and one or more [`BlindedPath`]s for the payer to use when sending the payment.
+//!
+//! ```ignore
+//! extern crate bitcoin;
+//! extern crate lightning;
+//!
+//! use bitcoin::hashes::Hash;
+//! use bitcoin::secp256k1::{KeyPair, PublicKey, Secp256k1, SecretKey};
+//! use core::convert::{Infallible, TryFrom};
+//! use lightning::offers::invoice_request::InvoiceRequest;
+//! use lightning::offers::refund::Refund;
+//! use lightning::util::ser::Writeable;
+//!
+//! # use lightning::ln::PaymentHash;
+//! # use lightning::offers::invoice::BlindedPayInfo;
+//! # use lightning::onion_message::BlindedPath;
+//! #
+//! # fn create_payment_paths() -> Vec<(BlindedPath, BlindedPayInfo)> { unimplemented!() }
+//! # fn create_payment_hash() -> PaymentHash { unimplemented!() }
+//! #
+//! # fn parse_invoice_request(bytes: Vec<u8>) -> Result<(), lightning::offers::parse::ParseError> {
+//! let payment_paths = create_payment_paths();
+//! let payment_hash = create_payment_hash();
+//! let secp_ctx = Secp256k1::new();
+//! let keys = KeyPair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32])?);
+//! let pubkey = PublicKey::from(keys);
+//! let wpubkey_hash = bitcoin::util::key::PublicKey::new(pubkey).wpubkey_hash().unwrap();
+//! let mut buffer = Vec::new();
+//!
+//! // Invoice for the "offer to be paid" flow.
+//! InvoiceRequest::try_from(bytes)?
+//!     .respond_with(payment_paths, payment_hash)?
+//!     .relative_expiry(3600)
+//!     .allow_mpp()
+//!     .fallback_v0_p2wpkh(&wpubkey_hash)
+//!     .build()?
+//!     .sign::<_, Infallible>(|digest| Ok(secp_ctx.sign_schnorr_no_aux_rand(digest, &keys)))
+//!     .expect("failed verifying signature")
+//!     .write(&mut buffer)
+//!     .unwrap();
+//! # Ok(())
+//! # }
+//!
+//! # fn parse_refund(bytes: Vec<u8>) -> Result<(), lightning::offers::parse::ParseError> {
+//! # let payment_paths = create_payment_paths();
+//! # let payment_hash = create_payment_hash();
+//! # let secp_ctx = Secp256k1::new();
+//! # let keys = KeyPair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32])?);
+//! # let pubkey = PublicKey::from(keys);
+//! # let wpubkey_hash = bitcoin::util::key::PublicKey::new(pubkey).wpubkey_hash().unwrap();
+//! # let mut buffer = Vec::new();
+//!
+//! // Invoice for the "offer for money" flow.
+//! "lnr1qcp4256ypq"
+//!     .parse::<Refund>()?
+//!     .respond_with(payment_paths, payment_hash, pubkey)?
+//!     .relative_expiry(3600)
+//!     .allow_mpp()
+//!     .fallback_v0_p2wpkh(&wpubkey_hash)
+//!     .build()?
+//!     .sign::<_, Infallible>(|digest| Ok(secp_ctx.sign_schnorr_no_aux_rand(digest, &keys)))
+//!     .expect("failed verifying signature")
+//!     .write(&mut buffer)
+//!     .unwrap();
+//! # Ok(())
+//! # }
+//!
+//! ```
 
 use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::hash_types::{WPubkeyHash, WScriptHash};
