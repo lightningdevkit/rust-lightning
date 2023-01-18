@@ -123,7 +123,11 @@ struct Connection {
 	id: u64,
 }
 impl Connection {
-	async fn poll_event_process<CMH, RMH, OMH, L, UMH>(peer_manager: Arc<peer_handler::PeerManager<SocketDescriptor, CMH, RMH, OMH, L, UMH>>, mut event_receiver: mpsc::Receiver<()>) where
+	async fn poll_event_process<PM, CMH, RMH, OMH, L, UMH>(
+		peer_manager: PM,
+		mut event_receiver: mpsc::Receiver<()>,
+	) where
+			PM: Deref<Target = peer_handler::PeerManager<SocketDescriptor, CMH, RMH, OMH, L, UMH>> + 'static + Send + Sync,
 			CMH: Deref + 'static + Send + Sync,
 			RMH: Deref + 'static + Send + Sync,
 			OMH: Deref + 'static + Send + Sync,
@@ -134,7 +138,7 @@ impl Connection {
 			OMH::Target: OnionMessageHandler + Send + Sync,
 			L::Target: Logger + Send + Sync,
 			UMH::Target: CustomMessageHandler + Send + Sync,
-    {
+	{
 		loop {
 			if event_receiver.recv().await.is_none() {
 				return;
@@ -143,7 +147,14 @@ impl Connection {
 		}
 	}
 
-	async fn schedule_read<CMH, RMH, OMH, L, UMH>(peer_manager: Arc<peer_handler::PeerManager<SocketDescriptor, CMH, RMH, OMH, L, UMH>>, us: Arc<Mutex<Self>>, mut reader: io::ReadHalf<TcpStream>, mut read_wake_receiver: mpsc::Receiver<()>, mut write_avail_receiver: mpsc::Receiver<()>) where
+	async fn schedule_read<PM, CMH, RMH, OMH, L, UMH>(
+		peer_manager: PM,
+		us: Arc<Mutex<Self>>,
+		mut reader: io::ReadHalf<TcpStream>,
+		mut read_wake_receiver: mpsc::Receiver<()>,
+		mut write_avail_receiver: mpsc::Receiver<()>,
+	) where
+			PM: Deref<Target = peer_handler::PeerManager<SocketDescriptor, CMH, RMH, OMH, L, UMH>> + 'static + Send + Sync + Clone,
 			CMH: Deref + 'static + Send + Sync,
 			RMH: Deref + 'static + Send + Sync,
 			OMH: Deref + 'static + Send + Sync,
@@ -154,10 +165,10 @@ impl Connection {
 			OMH::Target: OnionMessageHandler + 'static + Send + Sync,
 			L::Target: Logger + 'static + Send + Sync,
 			UMH::Target: CustomMessageHandler + 'static + Send + Sync,
-        {
+		{
 		// Create a waker to wake up poll_event_process, above
 		let (event_waker, event_receiver) = mpsc::channel(1);
-		tokio::spawn(Self::poll_event_process(Arc::clone(&peer_manager), event_receiver));
+		tokio::spawn(Self::poll_event_process(peer_manager.clone(), event_receiver));
 
 		// 8KB is nice and big but also should never cause any issues with stack overflowing.
 		let mut buf = [0; 8192];
@@ -272,7 +283,11 @@ fn get_addr_from_stream(stream: &StdTcpStream) -> Option<NetAddress> {
 /// The returned future will complete when the peer is disconnected and associated handling
 /// futures are freed, though, because all processing futures are spawned with tokio::spawn, you do
 /// not need to poll the provided future in order to make progress.
-pub fn setup_inbound<CMH, RMH, OMH, L, UMH>(peer_manager: Arc<peer_handler::PeerManager<SocketDescriptor, CMH, RMH, OMH, L, UMH>>, stream: StdTcpStream) -> impl std::future::Future<Output=()> where
+pub fn setup_inbound<PM, CMH, RMH, OMH, L, UMH>(
+	peer_manager: PM,
+	stream: StdTcpStream,
+) -> impl std::future::Future<Output=()> where
+		PM: Deref<Target = peer_handler::PeerManager<SocketDescriptor, CMH, RMH, OMH, L, UMH>> + 'static + Send + Sync + Clone,
 		CMH: Deref + 'static + Send + Sync,
 		RMH: Deref + 'static + Send + Sync,
 		OMH: Deref + 'static + Send + Sync,
@@ -321,7 +336,12 @@ pub fn setup_inbound<CMH, RMH, OMH, L, UMH>(peer_manager: Arc<peer_handler::Peer
 /// The returned future will complete when the peer is disconnected and associated handling
 /// futures are freed, though, because all processing futures are spawned with tokio::spawn, you do
 /// not need to poll the provided future in order to make progress.
-pub fn setup_outbound<CMH, RMH, OMH, L, UMH>(peer_manager: Arc<peer_handler::PeerManager<SocketDescriptor, CMH, RMH, OMH, L, UMH>>, their_node_id: PublicKey, stream: StdTcpStream) -> impl std::future::Future<Output=()> where
+pub fn setup_outbound<PM, CMH, RMH, OMH, L, UMH>(
+	peer_manager: PM,
+	their_node_id: PublicKey,
+	stream: StdTcpStream,
+) -> impl std::future::Future<Output=()> where
+		PM: Deref<Target = peer_handler::PeerManager<SocketDescriptor, CMH, RMH, OMH, L, UMH>> + 'static + Send + Sync + Clone,
 		CMH: Deref + 'static + Send + Sync,
 		RMH: Deref + 'static + Send + Sync,
 		OMH: Deref + 'static + Send + Sync,
@@ -399,7 +419,12 @@ pub fn setup_outbound<CMH, RMH, OMH, L, UMH>(peer_manager: Arc<peer_handler::Pee
 /// disconnected and associated handling futures are freed, though, because all processing in said
 /// futures are spawned with tokio::spawn, you do not need to poll the second future in order to
 /// make progress.
-pub async fn connect_outbound<CMH, RMH, OMH, L, UMH>(peer_manager: Arc<peer_handler::PeerManager<SocketDescriptor, CMH, RMH, OMH, L, UMH>>, their_node_id: PublicKey, addr: SocketAddr) -> Option<impl std::future::Future<Output=()>> where
+pub async fn connect_outbound<PM, CMH, RMH, OMH, L, UMH>(
+	peer_manager: PM,
+	their_node_id: PublicKey,
+	addr: SocketAddr,
+) -> Option<impl std::future::Future<Output=()>> where
+		PM: Deref<Target = peer_handler::PeerManager<SocketDescriptor, CMH, RMH, OMH, L, UMH>> + 'static + Send + Sync + Clone,
 		CMH: Deref + 'static + Send + Sync,
 		RMH: Deref + 'static + Send + Sync,
 		OMH: Deref + 'static + Send + Sync,
