@@ -10,7 +10,7 @@
 use crate::ln::channel::{ANCHOR_OUTPUT_VALUE_SATOSHI, MIN_CHAN_DUST_LIMIT_SATOSHIS};
 use crate::ln::chan_utils::{HTLCOutputInCommitment, ChannelPublicKeys, HolderCommitmentTransaction, CommitmentTransaction, ChannelTransactionParameters, TrustedCommitmentTransaction, ClosingTransaction};
 use crate::ln::{chan_utils, msgs, PaymentPreimage};
-use crate::chain::keysinterface::{Sign, InMemorySigner, BaseSign};
+use crate::chain::keysinterface::{Sign, InMemorySigner, EcdsaChannelSigner};
 
 use crate::prelude::*;
 use core::cmp;
@@ -90,7 +90,7 @@ impl EnforcingSigner {
 	}
 }
 
-impl BaseSign for EnforcingSigner {
+impl EcdsaChannelSigner for EnforcingSigner {
 	fn get_per_commitment_point(&self, idx: u64, secp_ctx: &Secp256k1<secp256k1::All>) -> PublicKey {
 		self.inner.get_per_commitment_point(idx, secp_ctx)
 	}

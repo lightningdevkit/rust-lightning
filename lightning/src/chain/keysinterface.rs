@@ -75,7 +75,7 @@ pub struct DelayedPaymentOutputDescriptor {
 	/// The revocation point specific to the commitment transaction which was broadcast. Used to
 	/// derive the witnessScript for this output.
 	pub revocation_pubkey: PublicKey,
-	/// Arbitrary identification information returned by a call to [`BaseSign::channel_keys_id`].
+	/// Arbitrary identification information returned by a call to [`EcdsaChannelSigner::channel_keys_id`].
 	/// This may be useful in re-deriving keys used in the channel to spend the output.
 	pub channel_keys_id: [u8; 32],
 	/// The value of the channel which this output originated from, possibly indirectly.
@@ -107,7 +107,7 @@ pub struct StaticPaymentOutputDescriptor {
 	pub outpoint: OutPoint,
 	/// The output which is referenced by the given outpoint.
 	pub output: TxOut,
-	/// Arbitrary identification information returned by a call to [`BaseSign::channel_keys_id`].
+	/// Arbitrary identification information returned by a call to [`EcdsaChannelSigner::channel_keys_id`].
 	/// This may be useful in re-deriving keys used in the channel to spend the output.
 	pub channel_keys_id: [u8; 32],
 	/// The value of the channel which this transactions spends.
@@ -172,15 +172,15 @@ pub enum SpendableOutputDescriptor {
 	///
 	/// To derive the delayed payment key which is used to sign this input, you must pass the
 	/// holder [`InMemorySigner::delayed_payment_base_key`] (i.e., the private key which corresponds to the
-	/// [`ChannelPublicKeys::delayed_payment_basepoint`] in [`BaseSign::pubkeys`]) and the provided
+	/// [`ChannelPublicKeys::delayed_payment_basepoint`] in [`EcdsaChannelSigner::pubkeys`]) and the provided
 	/// [`DelayedPaymentOutputDescriptor::per_commitment_point`] to [`chan_utils::derive_private_key`]. The public key can be
 	/// generated without the secret key using [`chan_utils::derive_public_key`] and only the
-	/// [`ChannelPublicKeys::delayed_payment_basepoint`] which appears in [`BaseSign::pubkeys`].
+	/// [`ChannelPublicKeys::delayed_payment_basepoint`] which appears in [`EcdsaChannelSigner::pubkeys`].
 	///
 	/// To derive the [`DelayedPaymentOutputDescriptor::revocation_pubkey`] provided here (which is
 	/// used in the witness script generation), you must pass the counterparty
 	/// [`ChannelPublicKeys::revocation_basepoint`] (which appears in the call to
-	/// [`BaseSign::provide_channel_parameters`]) and the provided
+	/// [`EcdsaChannelSigner::provide_channel_parameters`]) and the provided
 	/// [`DelayedPaymentOutputDescriptor::per_commitment_point`] to
 	/// [`chan_utils::derive_public_revocation_key`].
 	///
@@ -191,7 +191,7 @@ pub enum SpendableOutputDescriptor {
 	/// [`chan_utils::get_revokeable_redeemscript`].
 	DelayedPaymentOutput(DelayedPaymentOutputDescriptor),
 	/// An output to a P2WPKH, spendable exclusively by our payment key (i.e., the private key
-	/// which corresponds to the `payment_point` in [`BaseSign::pubkeys`]). The witness
+	/// which corresponds to the `payment_point` in [`EcdsaChannelSigner::pubkeys`]). The witness
 	/// in the spending input is, thus, simply:
 	/// ```bitcoin
 	/// <BIP 143 signature> <payment key>
@@ -219,7 +219,7 @@ impl_writeable_tlv_based_enum!(SpendableOutputDescriptor,
 /// policies in order to be secure. Please refer to the [VLS Policy
 /// Controls](https://gitlab.com/lightning-signer/validating-lightning-signer/-/blob/main/docs/policy-controls.md)
 /// for an example of such policies.
-pub trait BaseSign {
+pub trait EcdsaChannelSigner {
 	/// Gets the per-commitment point for a specific commitment number
 	///
 	/// Note that the commitment number starts at `(1 << 48) - 1` and counts backwards.
@@ -253,7 +253,7 @@ pub trait BaseSign {
 	fn pubkeys(&self) -> &ChannelPublicKeys;
 	/// Returns an arbitrary identifier describing the set of keys which are provided back to you in
 	/// some [`SpendableOutputDescriptor`] types. This should be sufficient to identify this
-	/// [`BaseSign`] object uniquely and lookup or re-derive its keys.
+	/// [`EcdsaChannelSigner`] object uniquely and lookup or re-derive its keys.
 	fn channel_keys_id(&self) -> [u8; 32];
 	/// Create a signature for a counterparty's commitment transaction and associated HTLC transactions.
 	///
@@ -398,7 +398,7 @@ pub trait BaseSign {
 	/// Set the counterparty static channel data, including basepoints,
 	/// `counterparty_selected`/`holder_selected_contest_delay` and funding outpoint.
 	///
-	/// This data is static, and will never change for a channel once set. For a given [`BaseSign`]
+	/// This data is static, and will never change for a channel once set. For a given [`EcdsaChannelSigner`]
 	/// instance, LDK will call this method exactly once - either immediately after construction
 	/// (not including if done via [`SignerProvider::read_chan_signer`]) or when the funding
 	/// information has been generated.
@@ -414,7 +414,7 @@ pub trait BaseSign {
 ///
 /// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 /// [`ChannelMonitor`]: crate::chain::channelmonitor::ChannelMonitor
-pub trait Sign: BaseSign + Writeable {}
+pub trait Sign: EcdsaChannelSigner + Writeable {}
 
 /// Specifies the recipient of an invoice.
 ///
@@ -511,7 +511,7 @@ pub trait SignerProvider {
 	/// To derive a new `Signer`, a fresh `channel_keys_id` should be obtained through
 	/// [`SignerProvider::generate_channel_keys_id`]. Otherwise, an existing `Signer` can be
 	/// re-derived from its `channel_keys_id`, which can be obtained through its trait method
-	/// [`BaseSign::channel_keys_id`].
+	/// [`EcdsaChannelSigner::channel_keys_id`].
 	fn derive_channel_signer(&self, channel_value_satoshis: u64, channel_keys_id: [u8; 32]) -> Self::Signer;
 
 	/// Reads a [`Signer`] for this [`SignerProvider`] from the given input stream.
@@ -620,38 +620,38 @@ impl InMemorySigner {
 
 	/// Returns the counterparty's pubkeys.
 	///
-	/// Will panic if [`BaseSign::provide_channel_parameters`] has not been called before.
+	/// Will panic if [`EcdsaChannelSigner::provide_channel_parameters`] has not been called before.
 	pub fn counterparty_pubkeys(&self) -> &ChannelPublicKeys { &self.get_channel_parameters().counterparty_parameters.as_ref().unwrap().pubkeys }
 	/// Returns the `contest_delay` value specified by our counterparty and applied on holder-broadcastable
 	/// transactions, i.e., the amount of time that we have to wait to recover our funds if we
 	/// broadcast a transaction.
 	///
-	/// Will panic if [`BaseSign::provide_channel_parameters`] has not been called before.
+	/// Will panic if [`EcdsaChannelSigner::provide_channel_parameters`] has not been called before.
 	pub fn counterparty_selected_contest_delay(&self) -> u16 { self.get_channel_parameters().counterparty_parameters.as_ref().unwrap().selected_contest_delay }
 	/// Returns the `contest_delay` value specified by us and applied on transactions broadcastable
 	/// by our counterparty, i.e., the amount of time that they have to wait to recover their funds
 	/// if they broadcast a transaction.
 	///
-	/// Will panic if [`BaseSign::provide_channel_parameters`] has not been called before.
+	/// Will panic if [`EcdsaChannelSigner::provide_channel_parameters`] has not been called before.
 	pub fn holder_selected_contest_delay(&self) -> u16 { self.get_channel_parameters().holder_selected_contest_delay }
 	/// Returns whether the holder is the initiator.
 	///
-	/// Will panic if [`BaseSign::provide_channel_parameters`] has not been called before.
+	/// Will panic if [`EcdsaChannelSigner::provide_channel_parameters`] has not been called before.
 	pub fn is_outbound(&self) -> bool { self.get_channel_parameters().is_outbound_from_holder }
 	/// Funding outpoint
 	///
-	/// Will panic if [`BaseSign::provide_channel_parameters`] has not been called before.
+	/// Will panic if [`EcdsaChannelSigner::provide_channel_parameters`] has not been called before.
 	pub fn funding_outpoint(&self) -> &OutPoint { self.get_channel_parameters().funding_outpoint.as_ref().unwrap() }
 	/// Returns a [`ChannelTransactionParameters`] for this channel, to be used when verifying or
 	/// building transactions.
 	///
-	/// Will panic if [`BaseSign::provide_channel_parameters`] has not been called before.
+	/// Will panic if [`EcdsaChannelSigner::provide_channel_parameters`] has not been called before.
 	pub fn get_channel_parameters(&self) -> &ChannelTransactionParameters {
 		self.channel_parameters.as_ref().unwrap()
 	}
 	/// Returns whether anchors should be used.
 	///
-	/// Will panic if [`BaseSign::provide_channel_parameters`] has not been called before.
+	/// Will panic if [`EcdsaChannelSigner::provide_channel_parameters`] has not been called before.
 	pub fn opt_anchors(&self) -> bool {
 		self.get_channel_parameters().opt_anchors.is_some()
 	}
@@ -725,7 +725,7 @@ impl InMemorySigner {
 	}
 }
 
-impl BaseSign for InMemorySigner {
+impl EcdsaChannelSigner for InMemorySigner {
 	fn get_per_commitment_point(&self, idx: u64, secp_ctx: &Secp256k1<secp256k1::All>) -> PublicKey {
 		let commitment_secret = SecretKey::from_slice(&chan_utils::build_commitment_secret(&self.commitment_seed, idx)).unwrap();
 		PublicKey::from_secret_key(secp_ctx, &commitment_secret)
@@ -1452,8 +1452,8 @@ impl PhantomKeysManager {
 	}
 }
 
-// Ensure that BaseSign can have a vtable
+// Ensure that EcdsaChannelSigner can have a vtable
 #[test]
 pub fn dyn_sign() {
-	let _signer: Box<dyn BaseSign>;
+	let _signer: Box<dyn EcdsaChannelSigner>;
 }
