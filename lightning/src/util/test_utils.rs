@@ -115,8 +115,7 @@ impl SignerProvider for OnlyReadsKeysInterface {
 	fn derive_channel_signer(&self, _channel_value_satoshis: u64, _channel_keys_id: [u8; 32]) -> Self::Signer { unreachable!(); }
 
 	fn read_chan_signer(&self, mut reader: &[u8]) -> Result<Self::Signer, msgs::DecodeError> {
-		let dummy_sk = SecretKey::from_slice(&[42; 32]).unwrap();
-		let inner: InMemorySigner = ReadableArgs::read(&mut reader, dummy_sk)?;
+		let inner: InMemorySigner = Readable::read(&mut reader)?;
 		let state = Arc::new(Mutex::new(EnforcementState::new()));
 
 		Ok(EnforcingSigner::new_with_revoked(
@@ -632,14 +631,6 @@ impl TestNodeSigner {
 }
 
 impl NodeSigner for TestNodeSigner {
-	fn get_node_secret(&self, recipient: Recipient) -> Result<SecretKey, ()> {
-		let node_secret = match recipient {
-			Recipient::Node => Ok(self.node_secret.clone()),
-			Recipient::PhantomNode => Err(())
-		}?;
-		Ok(node_secret)
-	}
-
 	fn get_inbound_payment_key_material(&self) -> crate::chain::keysinterface::KeyMaterial {
 		unreachable!()
 	}
@@ -691,10 +682,6 @@ impl EntropySource for TestKeysInterface {
 }
 
 impl NodeSigner for TestKeysInterface {
-	fn get_node_secret(&self, recipient: Recipient) -> Result<SecretKey, ()> {
-		self.backing.get_node_secret(recipient)
-	}
-
 	fn get_node_id(&self, recipient: Recipient) -> Result<PublicKey, ()> {
 		self.backing.get_node_id(recipient)
 	}
@@ -732,7 +719,7 @@ impl SignerProvider for TestKeysInterface {
 	fn read_chan_signer(&self, buffer: &[u8]) -> Result<Self::Signer, msgs::DecodeError> {
 		let mut reader = io::Cursor::new(buffer);
 
-		let inner: InMemorySigner = ReadableArgs::read(&mut reader, self.get_node_secret(Recipient::Node).unwrap())?;
+		let inner: InMemorySigner = Readable::read(&mut reader)?;
 		let state = self.make_enforcement_state_cell(inner.commitment_seed);
 
 		Ok(EnforcingSigner::new_with_revoked(

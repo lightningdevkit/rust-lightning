@@ -615,7 +615,7 @@ mod tests {
 	use bitcoin::network::constants::Network;
 	use lightning::chain::{BestBlock, Confirm, chainmonitor};
 	use lightning::chain::channelmonitor::ANTI_REORG_DELAY;
-	use lightning::chain::keysinterface::{InMemorySigner, Recipient, EntropySource, KeysManager, NodeSigner};
+	use lightning::chain::keysinterface::{InMemorySigner, EntropySource, KeysManager};
 	use lightning::chain::transaction::OutPoint;
 	use lightning::get_event_msg;
 	use lightning::ln::channelmanager::{BREAKDOWN_TIMEOUT, ChainParameters, ChannelManager, SimpleArcChannelManager};
@@ -786,7 +786,7 @@ mod tests {
 			let p2p_gossip_sync = Arc::new(P2PGossipSync::new(network_graph.clone(), Some(chain_source.clone()), logger.clone()));
 			let rapid_gossip_sync = Arc::new(RapidGossipSync::new(network_graph.clone()));
 			let msg_handler = MessageHandler { chan_handler: Arc::new(test_utils::TestChannelMessageHandler::new()), route_handler: Arc::new(test_utils::TestRoutingMessageHandler::new()), onion_message_handler: IgnoringMessageHandler{}};
-			let peer_manager = Arc::new(PeerManager::new(msg_handler, keys_manager.get_node_secret(Recipient::Node).unwrap(), 0, &seed, logger.clone(), IgnoringMessageHandler{}, keys_manager.clone()));
+			let peer_manager = Arc::new(PeerManager::new(msg_handler, 0, &seed, logger.clone(), IgnoringMessageHandler{}, keys_manager.clone()));
 			let node = Node { node: manager, p2p_gossip_sync, rapid_gossip_sync, peer_manager, chain_monitor, persister, tx_broadcaster, network_graph, logger, best_block, scorer };
 			nodes.push(node);
 		}

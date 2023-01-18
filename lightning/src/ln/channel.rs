@@ -7390,7 +7390,6 @@ mod tests {
 
 		let mut signer = InMemorySigner::new(
 			&secp_ctx,
-			SecretKey::from_slice(&hex::decode("4242424242424242424242424242424242424242424242424242424242424242").unwrap()[..]).unwrap(),
 			SecretKey::from_slice(&hex::decode("30ff4956bbdd3222d44cc5e8a1261dab1e07957bdac5ae88fe3261ef321f3749").unwrap()[..]).unwrap(),
 			SecretKey::from_slice(&hex::decode("0fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff").unwrap()[..]).unwrap(),
 			SecretKey::from_slice(&hex::decode("1111111111111111111111111111111111111111111111111111111111111111").unwrap()[..]).unwrap(),

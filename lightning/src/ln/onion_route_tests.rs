@@ -35,8 +35,7 @@ use bitcoin::hashes::Hash;
 use bitcoin::hashes::sha256::Hash as Sha256;
 
 use bitcoin::secp256k1;
-use bitcoin::secp256k1::Secp256k1;
-use bitcoin::secp256k1::{PublicKey, SecretKey};
+use bitcoin::secp256k1::{Secp256k1, SecretKey};
 
 use crate::io;
 use crate::prelude::*;
@@ -834,9 +833,7 @@ fn test_always_create_tlv_format_onion_payloads() {
 
 macro_rules! get_phantom_route {
 	($nodes: expr, $amt: expr, $channel: expr) => {{
-		let secp_ctx = Secp256k1::new();
-		let phantom_secret = $nodes[1].keys_manager.get_node_secret(Recipient::PhantomNode).unwrap();
-		let phantom_pubkey = PublicKey::from_secret_key(&secp_ctx, &phantom_secret);
+		let phantom_pubkey = $nodes[1].keys_manager.get_node_id(Recipient::PhantomNode).unwrap();
 		let phantom_route_hint = $nodes[1].node.get_phantom_route_hints();
 		let payment_params = PaymentParameters::from_node_id(phantom_pubkey)
 			.with_features($nodes[1].node.invoice_features())

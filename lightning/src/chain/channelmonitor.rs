@@ -4185,7 +4185,6 @@ mod tests {
 			SecretKey::from_slice(&[41; 32]).unwrap(),
 			SecretKey::from_slice(&[41; 32]).unwrap(),
 			SecretKey::from_slice(&[41; 32]).unwrap(),
-			SecretKey::from_slice(&[41; 32]).unwrap(),
 			[41; 32],
 			0,
 			[0; 32],

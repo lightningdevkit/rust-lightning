@@ -719,7 +719,6 @@ where
 	#[cfg(not(test))]
 	short_to_chan_info: FairRwLock<HashMap<u64, (PublicKey, [u8; 32])>>,
 
-	our_network_key: SecretKey,
 	our_network_pubkey: PublicKey,
 
 	inbound_payment_key: inbound_payment::ExpandedKey,
@@ -1455,8 +1454,7 @@ where
 			id_to_peer: Mutex::new(HashMap::new()),
 			short_to_chan_info: FairRwLock::new(HashMap::new()),
 
-			our_network_key: node_signer.get_node_secret(Recipient::Node).unwrap(),
-			our_network_pubkey: PublicKey::from_secret_key(&secp_ctx, &node_signer.get_node_secret(Recipient::Node).unwrap()),
+			our_network_pubkey: node_signer.get_node_id(Recipient::Node).unwrap(),
 			secp_ctx,
 
 			inbound_payment_key: expanded_inbound_key,
@@ -2266,7 +2264,7 @@ where
 	}
 	fn get_channel_update_for_onion(&self, short_channel_id: u64, chan: &Channel<<SP::Target as SignerProvider>::Signer>) -> Result<msgs::ChannelUpdate, LightningError> {
 		log_trace!(self.logger, "Generating channel update for channel {}", log_bytes!(chan.channel_id()));
-		let were_node_one = PublicKey::from_secret_key(&self.secp_ctx, &self.our_network_key).serialize()[..] < chan.get_counterparty_node_id().serialize()[..];
+		let were_node_one = self.our_network_pubkey.serialize()[..] < chan.get_counterparty_node_id().serialize()[..];
 
 		let unsigned = msgs::UnsignedChannelUpdate {
 			chain_hash: self.genesis_hash,
@@ -7388,11 +7386,10 @@ where
 			pending_events_read.append(&mut channel_closures);
 		}
 
-		let our_network_key = match args.node_signer.get_node_secret(Recipient::Node) {
+		let our_network_pubkey = match args.node_signer.get_node_id(Recipient::Node) {
 			Ok(key) => key,
 			Err(()) => return Err(DecodeError::InvalidValue)
 		};
-		let our_network_pubkey = PublicKey::from_secret_key(&secp_ctx, &our_network_key);
 		if let Some(network_pubkey) = received_network_pubkey {
 			if network_pubkey != our_network_pubkey {
 				log_error!(args.logger, "Key that was generated does not match the existing key.");
@@ -7508,7 +7505,6 @@ where
 
 			probing_cookie_secret: probing_cookie_secret.unwrap(),
 
-			our_network_key,
 			our_network_pubkey,
 			secp_ctx,
 

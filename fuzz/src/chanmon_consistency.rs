@@ -189,19 +189,21 @@ impl EntropySource for KeyProvider {
 }
 
 impl NodeSigner for KeyProvider {
-	fn get_node_secret(&self, _recipient: Recipient) -> Result<SecretKey, ()> {
-		Ok(self.node_secret.clone())
-	}
-
 	fn get_node_id(&self, recipient: Recipient) -> Result<PublicKey, ()> {
-		let secp_ctx = Secp256k1::signing_only();
-		Ok(PublicKey::from_secret_key(&secp_ctx, &self.get_node_secret(recipient)?))
+		let node_secret = match recipient {
+			Recipient::Node => Ok(&self.node_secret),
+			Recipient::PhantomNode => Err(())
+		}?;
+		Ok(PublicKey::from_secret_key(&Secp256k1::signing_only(), node_secret))
 	}
 
 	fn ecdh(&self, recipient: Recipient, other_key: &PublicKey, tweak: Option<&Scalar>) -> Result<SharedSecret, ()> {
-		let mut node_secret = self.get_node_secret(recipient)?;
+		let mut node_secret = match recipient {
+			Recipient::Node => Ok(self.node_secret.clone()),
+			Recipient::PhantomNode => Err(())
+		}?;
 		if let Some(tweak) = tweak {
-			node_secret = node_secret.mul_tweak(tweak).unwrap();
+			node_secret = node_secret.mul_tweak(tweak).map_err(|_| ())?;
 		}
 		Ok(SharedSecret::new(other_key, &node_secret))
 	}
@@ -234,7 +236,6 @@ impl SignerProvider for KeyProvider {
 		let id = channel_keys_id[0];
 		let keys = InMemorySigner::new(
 			&secp_ctx,
-			self.get_node_secret(Recipient::Node).unwrap(),
 			SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, self.node_secret[31]]).unwrap(),
 			SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, self.node_secret[31]]).unwrap(),
 			SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 6, self.node_secret[31]]).unwrap(),
@@ -251,7 +252,7 @@ impl SignerProvider for KeyProvider {
 	fn read_chan_signer(&self, buffer: &[u8]) -> Result<Self::Signer, DecodeError> {
 		let mut reader = std::io::Cursor::new(buffer);
 
-		let inner: InMemorySigner = ReadableArgs::read(&mut reader, self.get_node_secret(Recipient::Node).unwrap())?;
+		let inner: InMemorySigner = Readable::read(&mut reader)?;
 		let state = self.make_enforcement_state_cell(inner.commitment_seed);
 
 		Ok(EnforcingSigner {

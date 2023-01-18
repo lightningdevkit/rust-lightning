@@ -557,7 +557,6 @@ pub struct PeerManager<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: D
 	/// value increases strictly since we don't assume access to a time source.
 	last_node_announcement_serial: AtomicU32,
 
-	our_node_secret: SecretKey,
 	ephemeral_key_midstate: Sha256Engine,
 	custom_message_handler: CMH,
 
@@ -612,12 +611,12 @@ impl<Descriptor: SocketDescriptor, CM: Deref, OM: Deref, L: Deref, NS: Deref> Pe
 	/// minute should suffice.
 	///
 	/// (C-not exported) as we can't export a PeerManager with a dummy route handler
-	pub fn new_channel_only(channel_message_handler: CM, onion_message_handler: OM, our_node_secret: SecretKey, current_time: u32, ephemeral_random_data: &[u8; 32], logger: L, node_signer: NS) -> Self {
+	pub fn new_channel_only(channel_message_handler: CM, onion_message_handler: OM, current_time: u32, ephemeral_random_data: &[u8; 32], logger: L, node_signer: NS) -> Self {
 		Self::new(MessageHandler {
 			chan_handler: channel_message_handler,
 			route_handler: IgnoringMessageHandler{},
 			onion_message_handler,
-		}, our_node_secret, current_time, ephemeral_random_data, logger, IgnoringMessageHandler{}, node_signer)
+		}, current_time, ephemeral_random_data, logger, IgnoringMessageHandler{}, node_signer)
 	}
 }
 
@@ -639,12 +638,12 @@ impl<Descriptor: SocketDescriptor, RM: Deref, L: Deref, NS: Deref> PeerManager<D
 	/// cryptographically secure random bytes.
 	///
 	/// (C-not exported) as we can't export a PeerManager with a dummy channel handler
-	pub fn new_routing_only(routing_message_handler: RM, our_node_secret: SecretKey, current_time: u32, ephemeral_random_data: &[u8; 32], logger: L, node_signer: NS) -> Self {
+	pub fn new_routing_only(routing_message_handler: RM, current_time: u32, ephemeral_random_data: &[u8; 32], logger: L, node_signer: NS) -> Self {
 		Self::new(MessageHandler {
 			chan_handler: ErroringMessageHandler::new(),
 			route_handler: routing_message_handler,
 			onion_message_handler: IgnoringMessageHandler{},
-		}, our_node_secret, current_time, ephemeral_random_data, logger, IgnoringMessageHandler{}, node_signer)
+		}, current_time, ephemeral_random_data, logger, IgnoringMessageHandler{}, node_signer)
 	}
 }
 
@@ -705,7 +704,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 	/// incremented irregularly internally. In general it is best to simply use the current UNIX
 	/// timestamp, however if it is not available a persistent counter that increases once per
 	/// minute should suffice.
-	pub fn new(message_handler: MessageHandler<CM, RM, OM>, our_node_secret: SecretKey, current_time: u32, ephemeral_random_data: &[u8; 32], logger: L, custom_message_handler: CMH, node_signer: NS) -> Self {
+	pub fn new(message_handler: MessageHandler<CM, RM, OM>, current_time: u32, ephemeral_random_data: &[u8; 32], logger: L, custom_message_handler: CMH, node_signer: NS) -> Self {
 		let mut ephemeral_key_midstate = Sha256::engine();
 		ephemeral_key_midstate.input(ephemeral_random_data);
 
@@ -719,7 +718,6 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 			node_id_to_descriptor: Mutex::new(HashMap::new()),
 			event_processing_lock: Mutex::new(()),
 			blocked_event_processors: AtomicBool::new(false),
-			our_node_secret,
 			ephemeral_key_midstate,
 			peer_counter: AtomicCounter::new(),
 			last_node_announcement_serial: AtomicU32::new(current_time),
@@ -2064,14 +2062,14 @@ fn is_gossip_msg(type_id: u16) -> bool {
 
 #[cfg(test)]
 mod tests {
+	use crate::chain::keysinterface::{NodeSigner, Recipient};
 	use crate::ln::peer_handler::{PeerManager, MessageHandler, SocketDescriptor, IgnoringMessageHandler, filter_addresses};
 	use crate::ln::{msgs, wire};
 	use crate::ln::msgs::NetAddress;
 	use crate::util::events;
 	use crate::util::test_utils;
 
-	use bitcoin::secp256k1::Secp256k1;
-	use bitcoin::secp256k1::{SecretKey, PublicKey};
+	use bitcoin::secp256k1::SecretKey;
 
 	use crate::prelude::*;
 	use crate::sync::{Arc, Mutex};
@@ -2130,10 +2128,9 @@ mod tests {
 	fn create_network<'a>(peer_count: usize, cfgs: &'a Vec<PeerManagerCfg>) -> Vec<PeerManager<FileDescriptor, &'a test_utils::TestChannelMessageHandler, &'a test_utils::TestRoutingMessageHandler, IgnoringMessageHandler, &'a test_utils::TestLogger, IgnoringMessageHandler, &'a test_utils::TestNodeSigner>> {
 		let mut peers = Vec::new();
 		for i in 0..peer_count {
-			let node_secret = SecretKey::from_slice(&[42 + i as u8; 32]).unwrap();
 			let ephemeral_bytes = [i as u8; 32];
 			let msg_handler = MessageHandler { chan_handler: &cfgs[i].chan_handler, route_handler: &cfgs[i].routing_handler, onion_message_handler: IgnoringMessageHandler {} };
-			let peer = PeerManager::new(msg_handler, node_secret, 0, &ephemeral_bytes, &cfgs[i].logger, IgnoringMessageHandler {}, &cfgs[i].node_signer);
+			let peer = PeerManager::new(msg_handler, 0, &ephemeral_bytes, &cfgs[i].logger, IgnoringMessageHandler {}, &cfgs[i].node_signer);
 			peers.push(peer);
 		}
 
@@ -2141,8 +2138,7 @@ mod tests {
 	}
 
 	fn establish_connection<'a>(peer_a: &PeerManager<FileDescriptor, &'a test_utils::TestChannelMessageHandler, &'a test_utils::TestRoutingMessageHandler, IgnoringMessageHandler, &'a test_utils::TestLogger, IgnoringMessageHandler, &'a test_utils::TestNodeSigner>, peer_b: &PeerManager<FileDescriptor, &'a test_utils::TestChannelMessageHandler, &'a test_utils::TestRoutingMessageHandler, IgnoringMessageHandler, &'a test_utils::TestLogger, IgnoringMessageHandler, &'a test_utils::TestNodeSigner>) -> (FileDescriptor, FileDescriptor) {
-		let secp_ctx = Secp256k1::new();
-		let a_id = PublicKey::from_secret_key(&secp_ctx, &peer_a.our_node_secret);
+		let a_id = peer_a.node_signer.get_node_id(Recipient::Node).unwrap();
 		let mut fd_a = FileDescriptor { fd: 1, outbound_data: Arc::new(Mutex::new(Vec::new())) };
 		let mut fd_b = FileDescriptor { fd: 1, outbound_data: Arc::new(Mutex::new(Vec::new())) };
 		let initial_data = peer_b.new_outbound_connection(a_id, fd_b.clone(), None).unwrap();
@@ -2174,8 +2170,7 @@ mod tests {
 		establish_connection(&peers[0], &peers[1]);
 		assert_eq!(peers[0].peers.read().unwrap().len(), 1);
 
-		let secp_ctx = Secp256k1::new();
-		let their_id = PublicKey::from_secret_key(&secp_ctx, &peers[1].our_node_secret);
+		let their_id = peers[1].node_signer.get_node_id(Recipient::Node).unwrap();
 
 		chan_handler.pending_events.lock().unwrap().push(events::MessageSendEvent::HandleError {
 			node_id: their_id,
@@ -2199,8 +2194,7 @@ mod tests {
 		let (fd_a, mut fd_b) = establish_connection(&peers[0], &peers[1]);
 		assert_eq!(peers[0].peers.read().unwrap().len(), 1);
 
-		let secp_ctx = Secp256k1::new();
-		let their_id = PublicKey::from_secret_key(&secp_ctx, &peers[1].our_node_secret);
+		let their_id = peers[1].node_signer.get_node_id(Recipient::Node).unwrap();
 
 		let msg = msgs::Shutdown { channel_id: [42; 32], scriptpubkey: bitcoin::Script::new() };
 		a_chan_handler.pending_events.lock().unwrap().push(events::MessageSendEvent::SendShutdown {
@@ -2300,8 +2294,7 @@ mod tests {
 		cfgs[1].routing_handler.request_full_sync.store(true, Ordering::Release);
 		let peers = create_network(2, &cfgs);
 
-		let secp_ctx = Secp256k1::new();
-		let a_id = PublicKey::from_secret_key(&secp_ctx, &peers[0].our_node_secret);
+		let a_id = peers[0].node_signer.get_node_id(Recipient::Node).unwrap();
 		let mut fd_a = FileDescriptor { fd: 1, outbound_data: Arc::new(Mutex::new(Vec::new())) };
 		let mut fd_b = FileDescriptor { fd: 1, outbound_data: Arc::new(Mutex::new(Vec::new())) };
 		let initial_data = peers[1].new_outbound_connection(a_id, fd_b.clone(), None).unwrap();
