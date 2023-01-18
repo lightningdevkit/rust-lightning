@@ -30,7 +30,6 @@ use bitcoin::hash_types::{BlockHash, Txid};
 
 use bitcoin::secp256k1::{SecretKey,PublicKey};
 use bitcoin::secp256k1::Secp256k1;
-use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::{LockTime, secp256k1, Sequence};
 
 use crate::chain;
@@ -2016,7 +2015,9 @@ where
 			return_malformed_err!("invalid ephemeral pubkey", 0x8000 | 0x4000 | 6);
 		}
 
-		let shared_secret = SharedSecret::new(&msg.onion_routing_packet.public_key.unwrap(), &self.our_network_key).secret_bytes();
+		let shared_secret = self.node_signer.ecdh(
+			Recipient::Node, &msg.onion_routing_packet.public_key.unwrap(), None
+		).unwrap().secret_bytes();
 
 		if msg.onion_routing_packet.version != 0 {
 			//TODO: Spec doesn't indicate if we should only hash hop_data here (and in other
@@ -2924,9 +2925,9 @@ where
 											}
 										}
 										if let PendingHTLCRouting::Forward { onion_packet, .. } = routing {
-											let phantom_secret_res = self.node_signer.get_node_secret(Recipient::PhantomNode);
-											if phantom_secret_res.is_ok() && fake_scid::is_valid_phantom(&self.fake_scid_rand_bytes, short_chan_id, &self.genesis_hash) {
-												let phantom_shared_secret = SharedSecret::new(&onion_packet.public_key.unwrap(), &phantom_secret_res.unwrap()).secret_bytes();
+											let phantom_pubkey_res = self.node_signer.get_node_id(Recipient::PhantomNode);
+											if phantom_pubkey_res.is_ok() && fake_scid::is_valid_phantom(&self.fake_scid_rand_bytes, short_chan_id, &self.genesis_hash) {
+												let phantom_shared_secret = self.node_signer.ecdh(Recipient::PhantomNode, &onion_packet.public_key.unwrap(), None).unwrap().secret_bytes();
 												let next_hop = match onion_utils::decode_next_payment_hop(phantom_shared_secret, &onion_packet.hop_data, onion_packet.hmac, payment_hash) {
 													Ok(res) => res,
 													Err(onion_utils::OnionDecodeErr::Malformed { err_msg, err_code }) => {

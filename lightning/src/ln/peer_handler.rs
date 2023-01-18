@@ -817,7 +817,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 	///
 	/// [`socket_disconnected()`]: PeerManager::socket_disconnected
 	pub fn new_inbound_connection(&self, descriptor: Descriptor, remote_network_address: Option<NetAddress>) -> Result<(), PeerHandleError> {
-		let peer_encryptor = PeerChannelEncryptor::new_inbound(&self.our_node_secret, &self.secp_ctx);
+		let peer_encryptor = PeerChannelEncryptor::new_inbound(&self.node_signer);
 		let pending_read_buffer = [0; 50].to_vec(); // Noise act one is 50 bytes
 
 		let mut peers = self.peers.write().unwrap();
@@ -1086,14 +1086,14 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 							NextNoiseStep::ActOne => {
 								let act_two = try_potential_handleerror!(peer, peer.channel_encryptor
 									.process_act_one_with_keys(&peer.pending_read_buffer[..],
-										&self.our_node_secret, self.get_ephemeral_key(), &self.secp_ctx)).to_vec();
+										&self.node_signer, self.get_ephemeral_key(), &self.secp_ctx)).to_vec();
 								peer.pending_outbound_buffer.push_back(act_two);
 								peer.pending_read_buffer = [0; 66].to_vec(); // act three is 66 bytes long
 							},
 							NextNoiseStep::ActTwo => {
 								let (act_three, their_node_id) = try_potential_handleerror!(peer,
 									peer.channel_encryptor.process_act_two(&peer.pending_read_buffer[..],
-										&self.our_node_secret, &self.secp_ctx));
+										&self.node_signer));
 								peer.pending_outbound_buffer.push_back(act_three.to_vec());
 								peer.pending_read_buffer = [0; 18].to_vec(); // Message length header is 18 bytes
 								peer.pending_read_is_header = true;
