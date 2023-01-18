@@ -35,7 +35,7 @@ use crate::chain::BestBlock;
 use crate::chain::chaininterface::{FeeEstimator, ConfirmationTarget, LowerBoundedFeeEstimator};
 use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, LATENCY_GRACE_PERIOD_BLOCKS};
 use crate::chain::transaction::{OutPoint, TransactionData};
-use crate::chain::keysinterface::{Sign, EntropySource, BaseSign, SignerProvider};
+use crate::chain::keysinterface::{Sign, EntropySource, BaseSign, NodeSigner, Recipient, SignerProvider};
 use crate::util::events::ClosureReason;
 use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer, VecWriter};
 use crate::util::logger::Logger;
@@ -2394,7 +2394,14 @@ impl<Signer: Sign> Channel<Signer> {
 	/// Handles a channel_ready message from our peer. If we've already sent our channel_ready
 	/// and the channel is now usable (and public), this may generate an announcement_signatures to
 	/// reply with.
-	pub fn channel_ready<L: Deref>(&mut self, msg: &msgs::ChannelReady, node_pk: PublicKey, genesis_block_hash: BlockHash, user_config: &UserConfig, best_block: &BestBlock, logger: &L) -> Result<Option<msgs::AnnouncementSignatures>, ChannelError> where L::Target: Logger {
+	pub fn channel_ready<NS: Deref, L: Deref>(
+		&mut self, msg: &msgs::ChannelReady, node_signer: &NS, genesis_block_hash: BlockHash,
+		user_config: &UserConfig, best_block: &BestBlock, logger: &L
+	) -> Result<Option<msgs::AnnouncementSignatures>, ChannelError>
+	where
+		NS::Target: NodeSigner,
+		L::Target: Logger
+	{
 		if self.channel_state & (ChannelState::PeerDisconnected as u32) == ChannelState::PeerDisconnected as u32 {
 			self.workaround_lnd_bug_4006 = Some(msg.clone());
 			return Err(ChannelError::Ignore("Peer sent channel_ready when we needed a channel_reestablish. The peer is likely lnd, see https://github.com/lightningnetwork/lnd/issues/4006".to_owned()));
@@ -2448,7 +2455,7 @@ impl<Signer: Sign> Channel<Signer> {
 
 		log_info!(logger, "Received channel_ready from peer for channel {}", log_bytes!(self.channel_id()));
 
-		Ok(self.get_announcement_sigs(node_pk, genesis_block_hash, user_config, best_block.height(), logger))
+		Ok(self.get_announcement_sigs(node_signer, genesis_block_hash, user_config, best_block.height(), logger))
 	}
 
 	/// Returns transaction if there is pending funding transaction that is yet to broadcast
@@ -3752,7 +3759,14 @@ impl<Signer: Sign> Channel<Signer> {
 	/// Indicates that the latest ChannelMonitor update has been committed by the client
 	/// successfully and we should restore normal operation. Returns messages which should be sent
 	/// to the remote side.
-	pub fn monitor_updating_restored<L: Deref>(&mut self, logger: &L, node_pk: PublicKey, genesis_block_hash: BlockHash, user_config: &UserConfig, best_block_height: u32) -> MonitorRestoreUpdates where L::Target: Logger {
+	pub fn monitor_updating_restored<L: Deref, NS: Deref>(
+		&mut self, logger: &L, node_signer: &NS, genesis_block_hash: BlockHash,
+		user_config: &UserConfig, best_block_height: u32
+	) -> MonitorRestoreUpdates
+	where
+		L::Target: Logger,
+		NS::Target: NodeSigner
+	{
 		assert_eq!(self.channel_state & ChannelState::MonitorUpdateInProgress as u32, ChannelState::MonitorUpdateInProgress as u32);
 		self.channel_state &= !(ChannelState::MonitorUpdateInProgress as u32);
 
@@ -3787,7 +3801,7 @@ impl<Signer: Sign> Channel<Signer> {
 			})
 		} else { None };
 
-		let announcement_sigs = self.get_announcement_sigs(node_pk, genesis_block_hash, user_config, best_block_height, logger);
+		let announcement_sigs = self.get_announcement_sigs(node_signer, genesis_block_hash, user_config, best_block_height, logger);
 
 		let mut accepted_htlcs = Vec::new();
 		mem::swap(&mut accepted_htlcs, &mut self.monitor_pending_forwards);
@@ -3939,9 +3953,14 @@ impl<Signer: Sign> Channel<Signer> {
 	/// `cargo doc --document-private-items`):
 	/// [`super::channelmanager::ChannelManager::force_close_without_broadcasting_txn`] and
 	/// [`super::channelmanager::ChannelManager::force_close_all_channels_without_broadcasting_txn`].
-	pub fn channel_reestablish<L: Deref>(&mut self, msg: &msgs::ChannelReestablish, logger: &L,
-		node_pk: PublicKey, genesis_block_hash: BlockHash, user_config: &UserConfig, best_block: &BestBlock)
-	-> Result<ReestablishResponses, ChannelError> where L::Target: Logger {
+	pub fn channel_reestablish<L: Deref, NS: Deref>(
+		&mut self, msg: &msgs::ChannelReestablish, logger: &L, node_signer: &NS,
+		genesis_block_hash: BlockHash, user_config: &UserConfig, best_block: &BestBlock
+	) -> Result<ReestablishResponses, ChannelError>
+	where
+		L::Target: Logger,
+		NS::Target: NodeSigner
+	{
 		if self.channel_state & (ChannelState::PeerDisconnected as u32) == 0 {
 			// While BOLT 2 doesn't indicate explicitly we should error this channel here, it
 			// almost certainly indicates we are going to end up out-of-sync in some way, so we
@@ -4005,7 +4024,7 @@ impl<Signer: Sign> Channel<Signer> {
 			})
 		} else { None };
 
-		let announcement_sigs = self.get_announcement_sigs(node_pk, genesis_block_hash, user_config, best_block.height(), logger);
+		let announcement_sigs = self.get_announcement_sigs(node_signer, genesis_block_hash, user_config, best_block.height(), logger);
 
 		if self.channel_state & (ChannelState::FundingSent as u32) == ChannelState::FundingSent as u32 {
 			// If we're waiting on a monitor update, we shouldn't re-send any channel_ready's.
@@ -4977,9 +4996,14 @@ impl<Signer: Sign> Channel<Signer> {
 	/// When a transaction is confirmed, we check whether it is or spends the funding transaction
 	/// In the first case, we store the confirmation height and calculating the short channel id.
 	/// In the second, we simply return an Err indicating we need to be force-closed now.
-	pub fn transactions_confirmed<L: Deref>(&mut self, block_hash: &BlockHash, height: u32,
-		txdata: &TransactionData, genesis_block_hash: BlockHash, node_pk: PublicKey, user_config: &UserConfig, logger: &L)
-	-> Result<(Option<msgs::ChannelReady>, Option<msgs::AnnouncementSignatures>), ClosureReason> where L::Target: Logger {
+	pub fn transactions_confirmed<NS: Deref, L: Deref>(
+		&mut self, block_hash: &BlockHash, height: u32, txdata: &TransactionData,
+		genesis_block_hash: BlockHash, node_signer: &NS, user_config: &UserConfig, logger: &L
+	) -> Result<(Option<msgs::ChannelReady>, Option<msgs::AnnouncementSignatures>), ClosureReason>
+	where
+		NS::Target: NodeSigner,
+		L::Target: Logger
+	{
 		if let Some(funding_txo) = self.get_funding_txo() {
 			for &(index_in_block, tx) in txdata.iter() {
 				// Check if the transaction is the expected funding transaction, and if it is,
@@ -5025,7 +5049,7 @@ impl<Signer: Sign> Channel<Signer> {
 					// may have already happened for this block).
 					if let Some(channel_ready) = self.check_get_channel_ready(height) {
 						log_info!(logger, "Sending a channel_ready to our peer for channel {}", log_bytes!(self.channel_id));
-						let announcement_sigs = self.get_announcement_sigs(node_pk, genesis_block_hash, user_config, height, logger);
+						let announcement_sigs = self.get_announcement_sigs(node_signer, genesis_block_hash, user_config, height, logger);
 						return Ok((Some(channel_ready), announcement_sigs));
 					}
 				}
@@ -5051,13 +5075,25 @@ impl<Signer: Sign> Channel<Signer> {
 	///
 	/// May return some HTLCs (and their payment_hash) which have timed out and should be failed
 	/// back.
-	pub fn best_block_updated<L: Deref>(&mut self, height: u32, highest_header_time: u32, genesis_block_hash: BlockHash, node_pk: PublicKey, user_config: UserConfig, logger: &L)
-	-> Result<(Option<msgs::ChannelReady>, Vec<(HTLCSource, PaymentHash)>, Option<msgs::AnnouncementSignatures>), ClosureReason> where L::Target: Logger {
-		self.do_best_block_updated(height, highest_header_time, Some((genesis_block_hash, node_pk, user_config)), logger)
+	pub fn best_block_updated<NS: Deref, L: Deref>(
+		&mut self, height: u32, highest_header_time: u32, genesis_block_hash: BlockHash,
+		node_signer: &NS, user_config: &UserConfig, logger: &L
+	) -> Result<(Option<msgs::ChannelReady>, Vec<(HTLCSource, PaymentHash)>, Option<msgs::AnnouncementSignatures>), ClosureReason>
+	where
+		NS::Target: NodeSigner,
+		L::Target: Logger
+	{
+		self.do_best_block_updated(height, highest_header_time, Some((genesis_block_hash, node_signer, user_config)), logger)
 	}
 
-	fn do_best_block_updated<L: Deref>(&mut self, height: u32, highest_header_time: u32, genesis_node_pk: Option<(BlockHash, PublicKey, UserConfig)>, logger: &L)
-	-> Result<(Option<msgs::ChannelReady>, Vec<(HTLCSource, PaymentHash)>, Option<msgs::AnnouncementSignatures>), ClosureReason> where L::Target: Logger {
+	fn do_best_block_updated<NS: Deref, L: Deref>(
+		&mut self, height: u32, highest_header_time: u32,
+		genesis_node_signer: Option<(BlockHash, &NS, &UserConfig)>, logger: &L
+	) -> Result<(Option<msgs::ChannelReady>, Vec<(HTLCSource, PaymentHash)>, Option<msgs::AnnouncementSignatures>), ClosureReason>
+	where
+		NS::Target: NodeSigner,
+		L::Target: Logger
+	{
 		let mut timed_out_htlcs = Vec::new();
 		// This mirrors the check in ChannelManager::decode_update_add_htlc_onion, refusing to
 		// forward an HTLC when our counterparty should almost certainly just fail it for expiring
@@ -5078,8 +5114,8 @@ impl<Signer: Sign> Channel<Signer> {
 		self.update_time_counter = cmp::max(self.update_time_counter, highest_header_time);
 
 		if let Some(channel_ready) = self.check_get_channel_ready(height) {
-			let announcement_sigs = if let Some((genesis_block_hash, node_pk, user_config)) = genesis_node_pk {
-				self.get_announcement_sigs(node_pk, genesis_block_hash, &user_config, height, logger)
+			let announcement_sigs = if let Some((genesis_block_hash, node_signer, user_config)) = genesis_node_signer {
+				self.get_announcement_sigs(node_signer, genesis_block_hash, user_config, height, logger)
 			} else { None };
 			log_info!(logger, "Sending a channel_ready to our peer for channel {}", log_bytes!(self.channel_id));
 			return Ok((Some(channel_ready), timed_out_htlcs, announcement_sigs));
@@ -5119,8 +5155,8 @@ impl<Signer: Sign> Channel<Signer> {
 			return Err(ClosureReason::FundingTimedOut);
 		}
 
-		let announcement_sigs = if let Some((genesis_block_hash, node_pk, user_config)) = genesis_node_pk {
-			self.get_announcement_sigs(node_pk, genesis_block_hash, &user_config, height, logger)
+		let announcement_sigs = if let Some((genesis_block_hash, node_signer, user_config)) = genesis_node_signer {
+			self.get_announcement_sigs(node_signer, genesis_block_hash, user_config, height, logger)
 		} else { None };
 		Ok((None, timed_out_htlcs, announcement_sigs))
 	}
@@ -5137,7 +5173,7 @@ impl<Signer: Sign> Channel<Signer> {
 			// larger. If we don't know that time has moved forward, we can just set it to the last
 			// time we saw and it will be ignored.
 			let best_time = self.update_time_counter;
-			match self.do_best_block_updated(reorg_height, best_time, None, logger) {
+			match self.do_best_block_updated(reorg_height, best_time, None::<(BlockHash, &&NodeSigner, &UserConfig)>, logger) {
 				Ok((channel_ready, timed_out_htlcs, announcement_sigs)) => {
 					assert!(channel_ready.is_none(), "We can't generate a funding with 0 confirmations?");
 					assert!(timed_out_htlcs.is_empty(), "We can't have accepted HTLCs with a timeout before our funding confirmation?");
@@ -5337,7 +5373,9 @@ impl<Signer: Sign> Channel<Signer> {
 	/// closing).
 	///
 	/// This will only return ChannelError::Ignore upon failure.
-	fn get_channel_announcement(&self, node_id: PublicKey, chain_hash: BlockHash, user_config: &UserConfig) -> Result<msgs::UnsignedChannelAnnouncement, ChannelError> {
+	fn get_channel_announcement<NS: Deref>(
+		&self, node_signer: &NS, chain_hash: BlockHash, user_config: &UserConfig,
+	) -> Result<msgs::UnsignedChannelAnnouncement, ChannelError> where NS::Target: NodeSigner {
 		if !self.config.announced_channel {
 			return Err(ChannelError::Ignore("Channel is not available for public announcements".to_owned()));
 		}
@@ -5345,6 +5383,8 @@ impl<Signer: Sign> Channel<Signer> {
 			return Err(ChannelError::Ignore("Cannot get a ChannelAnnouncement if the channel is not currently usable".to_owned()));
 		}
 
+		let node_id = node_signer.get_node_id(Recipient::Node)
+			.map_err(|_| ChannelError::Ignore("Failed to retrieve own public key".to_owned()))?;
 		let were_node_one = node_id.serialize()[..] < self.counterparty_node_id.serialize()[..];
 
 		let msg = msgs::UnsignedChannelAnnouncement {
@@ -5361,8 +5401,14 @@ impl<Signer: Sign> Channel<Signer> {
 		Ok(msg)
 	}
 
-	fn get_announcement_sigs<L: Deref>(&mut self, node_pk: PublicKey, genesis_block_hash: BlockHash, user_config: &UserConfig, best_block_height: u32, logger: &L)
-	-> Option<msgs::AnnouncementSignatures> where L::Target: Logger {
+	fn get_announcement_sigs<NS: Deref, L: Deref>(
+		&mut self, node_signer: &NS, genesis_block_hash: BlockHash, user_config: &UserConfig,
+		best_block_height: u32, logger: &L
+	) -> Option<msgs::AnnouncementSignatures>
+	where
+		NS::Target: NodeSigner,
+		L::Target: Logger
+	{
 		if self.funding_tx_confirmation_height == 0 || self.funding_tx_confirmation_height + 5 > best_block_height {
 			return None;
 		}
@@ -5381,14 +5427,21 @@ impl<Signer: Sign> Channel<Signer> {
 		}
 
 		log_trace!(logger, "Creating an announcement_signatures message for channel {}", log_bytes!(self.channel_id()));
-		let announcement = match self.get_channel_announcement(node_pk, genesis_block_hash, user_config) {
+		let announcement = match self.get_channel_announcement(node_signer, genesis_block_hash, user_config) {
 			Ok(a) => a,
-			Err(_) => {
-				log_trace!(logger, "Cannot create an announcement_signatures as channel is not public.");
+			Err(e) => {
+				log_trace!(logger, "{:?}", e);
 				return None;
 			}
 		};
-		let (our_node_sig, our_bitcoin_sig) = match self.holder_signer.sign_channel_announcement(&announcement, &self.secp_ctx) {
+		let our_node_sig = match node_signer.sign_gossip_message(msgs::UnsignedGossipMessage::ChannelAnnouncement(&announcement)) {
+			Err(_) => {
+				log_error!(logger, "Failed to generate node signature for channel_announcement. Channel will not be announced!");
+				return None;
+			},
+			Ok(v) => v
+		};
+		let our_bitcoin_sig = match self.holder_signer.sign_channel_announcement_with_funding_key(&announcement, &self.secp_ctx) {
 			Err(_) => {
 				log_error!(logger, "Signer rejected channel_announcement signing. Channel will not be announced!");
 				return None;
@@ -5407,11 +5460,17 @@ impl<Signer: Sign> Channel<Signer> {
 
 	/// Signs the given channel announcement, returning a ChannelError::Ignore if no keys are
 	/// available.
-	fn sign_channel_announcement(&self, our_node_id: PublicKey, announcement: msgs::UnsignedChannelAnnouncement) -> Result<msgs::ChannelAnnouncement, ChannelError> {
+	fn sign_channel_announcement<NS: Deref>(
+		&self, node_signer: &NS, announcement: msgs::UnsignedChannelAnnouncement
+	) -> Result<msgs::ChannelAnnouncement, ChannelError> where NS::Target: NodeSigner {
 		if let Some((their_node_sig, their_bitcoin_sig)) = self.announcement_sigs {
-			let were_node_one = announcement.node_id_1 == our_node_id;
+			let our_node_key = node_signer.get_node_id(Recipient::Node)
+				.map_err(|_| ChannelError::Ignore("Signer failed to retrieve own public key".to_owned()))?;
+			let were_node_one = announcement.node_id_1 == our_node_key;
 
-			let (our_node_sig, our_bitcoin_sig) = self.holder_signer.sign_channel_announcement(&announcement, &self.secp_ctx)
+			let our_node_sig = node_signer.sign_gossip_message(msgs::UnsignedGossipMessage::ChannelAnnouncement(&announcement))
+				.map_err(|_| ChannelError::Ignore("Failed to generate node signature for channel_announcement".to_owned()))?;
+			let our_bitcoin_sig = self.holder_signer.sign_channel_announcement_with_funding_key(&announcement, &self.secp_ctx)
 				.map_err(|_| ChannelError::Ignore("Signer rejected channel_announcement".to_owned()))?;
 			Ok(msgs::ChannelAnnouncement {
 				node_signature_1: if were_node_one { our_node_sig } else { their_node_sig },
@@ -5428,8 +5487,11 @@ impl<Signer: Sign> Channel<Signer> {
 	/// Processes an incoming announcement_signatures message, providing a fully-signed
 	/// channel_announcement message which we can broadcast and storing our counterparty's
 	/// signatures for later reconstruction/rebroadcast of the channel_announcement.
-	pub fn announcement_signatures(&mut self, our_node_id: PublicKey, chain_hash: BlockHash, best_block_height: u32, msg: &msgs::AnnouncementSignatures, user_config: &UserConfig) -> Result<msgs::ChannelAnnouncement, ChannelError> {
-		let announcement = self.get_channel_announcement(our_node_id.clone(), chain_hash, user_config)?;
+	pub fn announcement_signatures<NS: Deref>(
+		&mut self, node_signer: &NS, chain_hash: BlockHash, best_block_height: u32,
+		msg: &msgs::AnnouncementSignatures, user_config: &UserConfig
+	) -> Result<msgs::ChannelAnnouncement, ChannelError> where NS::Target: NodeSigner {
+		let announcement = self.get_channel_announcement(node_signer, chain_hash, user_config)?;
 
 		let msghash = hash_to_message!(&Sha256d::hash(&announcement.encode()[..])[..]);
 
@@ -5450,20 +5512,22 @@ impl<Signer: Sign> Channel<Signer> {
 				"Got announcement_signatures prior to the required six confirmations - we may not have received a block yet that our peer has".to_owned()));
 		}
 
-		self.sign_channel_announcement(our_node_id, announcement)
+		self.sign_channel_announcement(node_signer, announcement)
 	}
 
 	/// Gets a signed channel_announcement for this channel, if we previously received an
 	/// announcement_signatures from our counterparty.
-	pub fn get_signed_channel_announcement(&self, our_node_id: PublicKey, chain_hash: BlockHash, best_block_height: u32, user_config: &UserConfig) -> Option<msgs::ChannelAnnouncement> {
+	pub fn get_signed_channel_announcement<NS: Deref>(
+		&self, node_signer: &NS, chain_hash: BlockHash, best_block_height: u32, user_config: &UserConfig
+	) -> Option<msgs::ChannelAnnouncement> where NS::Target: NodeSigner {
 		if self.funding_tx_confirmation_height == 0 || self.funding_tx_confirmation_height + 5 > best_block_height {
 			return None;
 		}
-		let announcement = match self.get_channel_announcement(our_node_id.clone(), chain_hash, user_config) {
+		let announcement = match self.get_channel_announcement(node_signer, chain_hash, user_config) {
 			Ok(res) => res,
 			Err(_) => return None,
 		};
-		match self.sign_channel_announcement(our_node_id, announcement) {
+		match self.sign_channel_announcement(node_signer, announcement) {
 			Ok(res) => Some(res),
 			Err(_) => None,
 		}

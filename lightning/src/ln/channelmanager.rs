@@ -26,7 +26,6 @@ use bitcoin::network::constants::Network;
 
 use bitcoin::hashes::Hash;
 use bitcoin::hashes::sha256::Hash as Sha256;
-use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::hash_types::{BlockHash, Txid};
 
 use bitcoin::secp256k1::{SecretKey,PublicKey};
@@ -2280,9 +2279,11 @@ where
 			fee_proportional_millionths: chan.get_fee_proportional_millionths(),
 			excess_data: Vec::new(),
 		};
-
-		let msg_hash = Sha256dHash::hash(&unsigned.encode()[..]);
-		let sig = self.secp_ctx.sign_ecdsa(&hash_to_message!(&msg_hash[..]), &self.our_network_key);
+		// Panic on failure to signal LDK should be restarted to retry signing the `ChannelUpdate`.
+		// If we returned an error and the `node_signer` cannot provide a signature for whatever
+		// reason`, we wouldn't be able to receive inbound payments through the corresponding
+		// channel.
+		let sig = self.node_signer.sign_gossip_message(msgs::UnsignedGossipMessage::ChannelUpdate(&unsigned)).unwrap();
 
 		Ok(msgs::ChannelUpdate {
 			signature: sig,
@@ -4060,7 +4061,7 @@ where
 				return;
 			}
 
-			let updates = channel.get_mut().monitor_updating_restored(&self.logger, self.get_our_node_id(), self.genesis_hash, &self.default_configuration, self.best_block.read().unwrap().height());
+			let updates = channel.get_mut().monitor_updating_restored(&self.logger, &self.node_signer, self.genesis_hash, &self.default_configuration, self.best_block.read().unwrap().height());
 			let channel_update = if updates.channel_ready.is_some() && channel.get().is_usable() {
 				// We only send a channel_update in the case where we are just now sending a
 				// channel_ready and the channel is in a usable state. We may re-send a
@@ -4397,7 +4398,7 @@ where
 		let peer_state = &mut *peer_state_lock;
 		match peer_state.channel_by_id.entry(msg.channel_id) {
 			hash_map::Entry::Occupied(mut chan) => {
-				let announcement_sigs_opt = try_chan_entry!(self, chan.get_mut().channel_ready(&msg, self.get_our_node_id(),
+				let announcement_sigs_opt = try_chan_entry!(self, chan.get_mut().channel_ready(&msg, &self.node_signer,
 					self.genesis_hash.clone(), &self.default_configuration, &self.best_block.read().unwrap(), &self.logger), chan);
 				if let Some(announcement_sigs) = announcement_sigs_opt {
 					log_trace!(self.logger, "Sending announcement_signatures for channel {}", log_bytes!(chan.get().channel_id()));
@@ -4879,8 +4880,8 @@ where
 
 				peer_state.pending_msg_events.push(events::MessageSendEvent::BroadcastChannelAnnouncement {
 					msg: try_chan_entry!(self, chan.get_mut().announcement_signatures(
-						self.get_our_node_id(), self.genesis_hash.clone(),
-						self.best_block.read().unwrap().height(), msg, &self.default_configuration
+						&self.node_signer, self.genesis_hash.clone(), self.best_block.read().unwrap().height(),
+						msg, &self.default_configuration
 					), chan),
 					// Note that announcement_signatures fails if the channel cannot be announced,
 					// so get_channel_update_for_broadcast will never fail by the time we get here.
@@ -4951,7 +4952,7 @@ where
 					// freed HTLCs to fail backwards. If in the future we no longer drop pending
 					// add-HTLCs on disconnect, we may be handed HTLCs to fail backwards here.
 					let responses = try_chan_entry!(self, chan.get_mut().channel_reestablish(
-						msg, &self.logger, self.our_network_pubkey.clone(), self.genesis_hash,
+						msg, &self.logger, &self.node_signer, self.genesis_hash,
 						&self.default_configuration, &*self.best_block.read().unwrap()), chan);
 					let mut channel_update = None;
 					if let Some(msg) = responses.shutdown_msg {
@@ -5630,7 +5631,7 @@ where
 			*best_block = BestBlock::new(header.prev_blockhash, new_height)
 		}
 
-		self.do_chain_event(Some(new_height), |channel| channel.best_block_updated(new_height, header.time, self.genesis_hash.clone(), self.get_our_node_id(), self.default_configuration.clone(), &self.logger));
+		self.do_chain_event(Some(new_height), |channel| channel.best_block_updated(new_height, header.time, self.genesis_hash.clone(), &self.node_signer, &self.default_configuration, &self.logger));
 	}
 }
 
@@ -5654,13 +5655,13 @@ where
 		log_trace!(self.logger, "{} transactions included in block {} at height {} provided", txdata.len(), block_hash, height);
 
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
-		self.do_chain_event(Some(height), |channel| channel.transactions_confirmed(&block_hash, height, txdata, self.genesis_hash.clone(), self.get_our_node_id(), &self.default_configuration, &self.logger)
+		self.do_chain_event(Some(height), |channel| channel.transactions_confirmed(&block_hash, height, txdata, self.genesis_hash.clone(), &self.node_signer, &self.default_configuration, &self.logger)
 			.map(|(a, b)| (a, Vec::new(), b)));
 
 		let last_best_block_height = self.best_block.read().unwrap().height();
 		if height < last_best_block_height {
 			let timestamp = self.highest_seen_timestamp.load(Ordering::Acquire);
-			self.do_chain_event(Some(last_best_block_height), |channel| channel.best_block_updated(last_best_block_height, timestamp as u32, self.genesis_hash.clone(), self.get_our_node_id(), self.default_configuration.clone(), &self.logger));
+			self.do_chain_event(Some(last_best_block_height), |channel| channel.best_block_updated(last_best_block_height, timestamp as u32, self.genesis_hash.clone(), &self.node_signer, &self.default_configuration, &self.logger));
 		}
 	}
 
@@ -5676,7 +5677,7 @@ where
 
 		*self.best_block.write().unwrap() = BestBlock::new(block_hash, height);
 
-		self.do_chain_event(Some(height), |channel| channel.best_block_updated(height, header.time, self.genesis_hash.clone(), self.get_our_node_id(), self.default_configuration.clone(), &self.logger));
+		self.do_chain_event(Some(height), |channel| channel.best_block_updated(height, header.time, self.genesis_hash.clone(), &self.node_signer, &self.default_configuration, &self.logger));
 
 		macro_rules! max_time {
 			($timestamp: expr) => {
@@ -5787,7 +5788,7 @@ where
 								msg: announcement_sigs,
 							});
 							if let Some(height) = height_opt {
-								if let Some(announcement) = channel.get_signed_channel_announcement(self.get_our_node_id(), self.genesis_hash, height, &self.default_configuration) {
+								if let Some(announcement) = channel.get_signed_channel_announcement(&self.node_signer, self.genesis_hash, height, &self.default_configuration) {
 									pending_msg_events.push(events::MessageSendEvent::BroadcastChannelAnnouncement {
 										msg: announcement,
 										// Note that announcement_signatures fails if the channel cannot be announced,
@@ -6177,7 +6178,7 @@ where
 					}
 				} else { true };
 				if retain && chan.get_counterparty_node_id() != *counterparty_node_id {
-					if let Some(msg) = chan.get_signed_channel_announcement(self.get_our_node_id(), self.genesis_hash.clone(), self.best_block.read().unwrap().height(), &self.default_configuration) {
+					if let Some(msg) = chan.get_signed_channel_announcement(&self.node_signer, self.genesis_hash.clone(), self.best_block.read().unwrap().height(), &self.default_configuration) {
 						if let Ok(update_msg) = self.get_channel_update_for_broadcast(chan) {
 							pending_msg_events.push(events::MessageSendEvent::SendChannelAnnouncement {
 								node_id: *counterparty_node_id,

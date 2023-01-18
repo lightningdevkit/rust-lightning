@@ -223,9 +223,10 @@ impl BaseSign for EnforcingSigner {
 		self.inner.sign_holder_anchor_input(anchor_tx, input, secp_ctx)
 	}
 
-	fn sign_channel_announcement(&self, msg: &msgs::UnsignedChannelAnnouncement, secp_ctx: &Secp256k1<secp256k1::All>)
-	-> Result<(Signature, Signature), ()> {
-		self.inner.sign_channel_announcement(msg, secp_ctx)
+	fn sign_channel_announcement_with_funding_key(
+		&self, msg: &msgs::UnsignedChannelAnnouncement, secp_ctx: &Secp256k1<secp256k1::All>
+	) -> Result<Signature, ()> {
+		self.inner.sign_channel_announcement_with_funding_key(msg, secp_ctx)
 	}
 
 	fn provide_channel_parameters(&mut self, channel_parameters: &ChannelTransactionParameters) {

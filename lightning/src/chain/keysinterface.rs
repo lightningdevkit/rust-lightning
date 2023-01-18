@@ -383,17 +383,18 @@ pub trait BaseSign {
 	fn sign_holder_anchor_input(
 		&self, anchor_tx: &Transaction, input: usize, secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<Signature, ()>;
-	/// Signs a channel announcement message with our funding key and our node secret key (aka
-	/// node_id or network_key), proving it comes from one of the channel participants.
+	/// Signs a channel announcement message with our funding key proving it comes from one of the
+	/// channel participants.
 	///
-	/// The first returned signature should be from our node secret key, the second from our
-	/// funding key.
+	/// Channel announcements also require a signature from each node's network key. Our node
+	/// signature is computed through [`NodeSigner::sign_gossip_message`].
 	///
 	/// Note that if this fails or is rejected, the channel will not be publicly announced and
 	/// our counterparty may (though likely will not) close the channel on us for violating the
 	/// protocol.
-	fn sign_channel_announcement(&self, msg: &UnsignedChannelAnnouncement, secp_ctx: &Secp256k1<secp256k1::All>)
-		-> Result<(Signature, Signature), ()>;
+	fn sign_channel_announcement_with_funding_key(
+		&self, msg: &UnsignedChannelAnnouncement, secp_ctx: &Secp256k1<secp256k1::All>
+	) -> Result<Signature, ()>;
 	/// Set the counterparty static channel data, including basepoints,
 	/// `counterparty_selected`/`holder_selected_contest_delay` and funding outpoint.
 	///
@@ -880,10 +881,11 @@ impl BaseSign for InMemorySigner {
 		Ok(sign(secp_ctx, &hash_to_message!(&sighash[..]), &self.funding_key))
 	}
 
-	fn sign_channel_announcement(&self, msg: &UnsignedChannelAnnouncement, secp_ctx: &Secp256k1<secp256k1::All>)
-	-> Result<(Signature, Signature), ()> {
+	fn sign_channel_announcement_with_funding_key(
+		&self, msg: &UnsignedChannelAnnouncement, secp_ctx: &Secp256k1<secp256k1::All>
+	) -> Result<Signature, ()> {
 		let msghash = hash_to_message!(&Sha256dHash::hash(&msg.encode()[..])[..]);
-		Ok((sign(secp_ctx, &msghash, &self.node_secret), sign(secp_ctx, &msghash, &self.funding_key)))
+		Ok(sign(secp_ctx, &msghash, &self.funding_key))
 	}
 
 	fn provide_channel_parameters(&mut self, channel_parameters: &ChannelTransactionParameters) {

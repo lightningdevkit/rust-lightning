@@ -621,6 +621,57 @@ impl Logger for TestLogger {
 	}
 }
 
+pub struct TestNodeSigner {
+	node_secret: SecretKey,
+}
+
+impl TestNodeSigner {
+	pub fn new(node_secret: SecretKey) -> Self {
+		Self { node_secret }
+	}
+}
+
+impl NodeSigner for TestNodeSigner {
+	fn get_node_secret(&self, recipient: Recipient) -> Result<SecretKey, ()> {
+		let node_secret = match recipient {
+			Recipient::Node => Ok(self.node_secret.clone()),
+			Recipient::PhantomNode => Err(())
+		}?;
+		Ok(node_secret)
+	}
+
+	fn get_inbound_payment_key_material(&self) -> crate::chain::keysinterface::KeyMaterial {
+		unreachable!()
+	}
+
+	fn get_node_id(&self, recipient: Recipient) -> Result<PublicKey, ()> {
+		let node_secret = match recipient {
+			Recipient::Node => Ok(&self.node_secret),
+			Recipient::PhantomNode => Err(())
+		}?;
+		Ok(PublicKey::from_secret_key(&Secp256k1::signing_only(), node_secret))
+	}
+
+	fn ecdh(&self, recipient: Recipient, other_key: &PublicKey, tweak: Option<&bitcoin::secp256k1::Scalar>) -> Result<SharedSecret, ()> {
+		let mut node_secret = match recipient {
+			Recipient::Node => Ok(self.node_secret.clone()),
+			Recipient::PhantomNode => Err(())
+		}?;
+		if let Some(tweak) = tweak {
+			node_secret = node_secret.mul_tweak(tweak).map_err(|_| ())?;
+		}
+		Ok(SharedSecret::new(other_key, &node_secret))
+	}
+
+	fn sign_invoice(&self, _: &[u8], _: &[bitcoin::bech32::u5], _: Recipient) -> Result<bitcoin::secp256k1::ecdsa::RecoverableSignature, ()> {
+		unreachable!()
+	}
+
+	fn sign_gossip_message(&self, _msg: msgs::UnsignedGossipMessage) -> Result<Signature, ()> {
+		unreachable!()
+	}
+}
+
 pub struct TestKeysInterface {
 	pub backing: keysinterface::PhantomKeysManager,
 	pub override_random_bytes: Mutex<Option<[u8; 32]>>,
