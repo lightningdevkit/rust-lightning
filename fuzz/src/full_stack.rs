@@ -26,6 +26,7 @@ use bitcoin::network::constants::Network;
 use bitcoin::hashes::Hash as TraitImport;
 use bitcoin::hashes::HashEngine as TraitImportEngine;
 use bitcoin::hashes::sha256::Hash as Sha256;
+use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::hash_types::{Txid, BlockHash, WPubkeyHash};
 
 use lightning::chain;
@@ -47,15 +48,14 @@ use lightning::util::errors::APIError;
 use lightning::util::events::Event;
 use lightning::util::enforcing_trait_impls::{EnforcingSigner, EnforcementState};
 use lightning::util::logger::Logger;
-use lightning::util::ser::ReadableArgs;
+use lightning::util::ser::{ReadableArgs, Writeable};
 
 use crate::utils::test_logger;
 use crate::utils::test_persister::TestPersister;
 
-use bitcoin::secp256k1::{PublicKey, SecretKey, Scalar};
+use bitcoin::secp256k1::{Message, PublicKey, SecretKey, Scalar, Secp256k1};
 use bitcoin::secp256k1::ecdh::SharedSecret;
-use bitcoin::secp256k1::ecdsa::RecoverableSignature;
-use bitcoin::secp256k1::Secp256k1;
+use bitcoin::secp256k1::ecdsa::{RecoverableSignature, Signature};
 
 use std::cell::RefCell;
 use hashbrown::{HashMap, hash_map};
@@ -316,6 +316,12 @@ impl NodeSigner for KeyProvider {
 
 	fn sign_invoice(&self, _hrp_bytes: &[u8], _invoice_data: &[u5], _recipient: Recipient) -> Result<RecoverableSignature, ()> {
 		unreachable!()
+	}
+
+	fn sign_gossip_message(&self, msg: lightning::ln::msgs::UnsignedGossipMessage) -> Result<Signature, ()> {
+		let msg_hash = Message::from_slice(&Sha256dHash::hash(&msg.encode()[..])[..]).map_err(|_| ())?;
+		let secp_ctx = Secp256k1::signing_only();
+		Ok(secp_ctx.sign_ecdsa(&msg_hash, &self.node_secret))
 	}
 }
 

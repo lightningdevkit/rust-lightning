@@ -122,6 +122,10 @@ impl NodeSigner for KeyProvider {
 	fn sign_invoice(&self, _hrp_bytes: &[u8], _invoice_data: &[u5], _recipient: Recipient) -> Result<RecoverableSignature, ()> {
 		unreachable!()
 	}
+
+	fn sign_gossip_message(&self, _msg: lightning::ln::msgs::UnsignedGossipMessage) -> Result<bitcoin::secp256k1::ecdsa::Signature, ()> {
+		unreachable!()
+	}
 }
 
 impl SignerProvider for KeyProvider {

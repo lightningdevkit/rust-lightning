@@ -659,6 +659,10 @@ impl NodeSigner for TestKeysInterface {
 	fn sign_invoice(&self, hrp_bytes: &[u8], invoice_data: &[u5], recipient: Recipient) -> Result<RecoverableSignature, ()> {
 		self.backing.sign_invoice(hrp_bytes, invoice_data, recipient)
 	}
+
+	fn sign_gossip_message(&self, msg: msgs::UnsignedGossipMessage) -> Result<Signature, ()> {
+		self.backing.sign_gossip_message(msg)
+	}
 }
 
 impl SignerProvider for TestKeysInterface {

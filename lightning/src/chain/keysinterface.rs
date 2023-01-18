@@ -41,7 +41,7 @@ use crate::chain::transaction::OutPoint;
 use crate::ln::channel::ANCHOR_OUTPUT_VALUE_SATOSHI;
 use crate::ln::{chan_utils, PaymentPreimage};
 use crate::ln::chan_utils::{HTLCOutputInCommitment, make_funding_redeemscript, ChannelPublicKeys, HolderCommitmentTransaction, ChannelTransactionParameters, CommitmentTransaction, ClosingTransaction};
-use crate::ln::msgs::UnsignedChannelAnnouncement;
+use crate::ln::msgs::{UnsignedChannelAnnouncement, UnsignedGossipMessage};
 use crate::ln::script::ShutdownScript;
 
 use crate::prelude::*;
@@ -494,6 +494,14 @@ pub trait NodeSigner {
 	///
 	/// Errors if the [`Recipient`] variant is not supported by the implementation.
 	fn sign_invoice(&self, hrp_bytes: &[u8], invoice_data: &[u5], recipient: Recipient) -> Result<RecoverableSignature, ()>;
+
+	/// Sign a gossip message.
+	///
+	/// Note that if this fails, LDK may panic and the message will not be broadcast to the network
+	/// or a possible channel counterparty. If LDK panics, the error should be resolved to allow the
+	/// message to be broadcast, as otherwise it may prevent one from receiving funds over the
+	/// corresponding channel.
+	fn sign_gossip_message(&self, msg: UnsignedGossipMessage) -> Result<Signature, ()>;
 }
 
 /// A trait that can return signer instances for individual channels.
@@ -1290,6 +1298,11 @@ impl NodeSigner for KeysManager {
 		};
 		Ok(self.secp_ctx.sign_ecdsa_recoverable(&hash_to_message!(&Sha256::hash(&preimage)), &secret))
 	}
+
+	fn sign_gossip_message(&self, msg: UnsignedGossipMessage) -> Result<Signature, ()> {
+		let msg_hash = hash_to_message!(&Sha256dHash::hash(&msg.encode()[..])[..]);
+		Ok(sign(&self.secp_ctx, &msg_hash, &self.node_secret))
+	}
 }
 
 impl SignerProvider for KeysManager {
@@ -1393,6 +1406,10 @@ impl NodeSigner for PhantomKeysManager {
 		let preimage = construct_invoice_preimage(&hrp_bytes, &invoice_data);
 		let secret = self.get_node_secret(recipient)?;
 		Ok(self.inner.secp_ctx.sign_ecdsa_recoverable(&hash_to_message!(&Sha256::hash(&preimage)), &secret))
+	}
+
+	fn sign_gossip_message(&self, msg: UnsignedGossipMessage) -> Result<Signature, ()> {
+		self.inner.sign_gossip_message(msg)
 	}
 }
 

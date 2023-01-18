@@ -29,6 +29,7 @@ use bitcoin::network::constants::Network;
 
 use bitcoin::hashes::Hash as TraitImport;
 use bitcoin::hashes::sha256::Hash as Sha256;
+use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::hash_types::{BlockHash, WPubkeyHash};
 
 use lightning::chain;
@@ -54,10 +55,9 @@ use lightning::routing::router::{InFlightHtlcs, Route, RouteHop, RouteParameters
 use crate::utils::test_logger::{self, Output};
 use crate::utils::test_persister::TestPersister;
 
-use bitcoin::secp256k1::{PublicKey, SecretKey, Scalar};
+use bitcoin::secp256k1::{Message, PublicKey, SecretKey, Scalar, Secp256k1};
 use bitcoin::secp256k1::ecdh::SharedSecret;
-use bitcoin::secp256k1::ecdsa::RecoverableSignature;
-use bitcoin::secp256k1::Secp256k1;
+use bitcoin::secp256k1::ecdsa::{RecoverableSignature, Signature};
 
 use std::mem;
 use std::cmp::{self, Ordering};
@@ -174,7 +174,7 @@ impl chain::Watch<EnforcingSigner> for TestChainMonitor {
 }
 
 struct KeyProvider {
-	node_id: u8,
+	node_secret: SecretKey,
 	rand_bytes_id: atomic::AtomicU32,
 	enforcement_states: Mutex<HashMap<[u8;32], Arc<Mutex<EnforcementState>>>>,
 }
@@ -182,7 +182,7 @@ struct KeyProvider {
 impl EntropySource for KeyProvider {
 	fn get_secure_random_bytes(&self) -> [u8; 32] {
 		let id = self.rand_bytes_id.fetch_add(1, atomic::Ordering::Relaxed);
-		let mut res = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 11, self.node_id];
+		let mut res = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 11, self.node_secret[31]];
 		res[30-4..30].copy_from_slice(&id.to_le_bytes());
 		res
 	}
@@ -190,7 +190,7 @@ impl EntropySource for KeyProvider {
 
 impl NodeSigner for KeyProvider {
 	fn get_node_secret(&self, _recipient: Recipient) -> Result<SecretKey, ()> {
-		Ok(SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, self.node_id]).unwrap())
+		Ok(self.node_secret.clone())
 	}
 
 	fn get_node_id(&self, recipient: Recipient) -> Result<PublicKey, ()> {
@@ -207,11 +207,17 @@ impl NodeSigner for KeyProvider {
 	}
 
 	fn get_inbound_payment_key_material(&self) -> KeyMaterial {
-		KeyMaterial([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, self.node_id])
+		KeyMaterial([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, self.node_secret[31]])
 	}
 
 	fn sign_invoice(&self, _hrp_bytes: &[u8], _invoice_data: &[u5], _recipient: Recipient) -> Result<RecoverableSignature, ()> {
 		unreachable!()
+	}
+
+	fn sign_gossip_message(&self, msg: lightning::ln::msgs::UnsignedGossipMessage) -> Result<Signature, ()> {
+		let msg_hash = Message::from_slice(&Sha256dHash::hash(&msg.encode()[..])[..]).map_err(|_| ())?;
+		let secp_ctx = Secp256k1::signing_only();
+		Ok(secp_ctx.sign_ecdsa(&msg_hash, &self.node_secret))
 	}
 }
 
@@ -229,12 +235,12 @@ impl SignerProvider for KeyProvider {
 		let keys = InMemorySigner::new(
 			&secp_ctx,
 			self.get_node_secret(Recipient::Node).unwrap(),
-			SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, self.node_id]).unwrap(),
-			SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, self.node_id]).unwrap(),
-			SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 6, self.node_id]).unwrap(),
-			SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7, self.node_id]).unwrap(),
-			SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, self.node_id]).unwrap(),
-			[id, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9, self.node_id],
+			SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, self.node_secret[31]]).unwrap(),
+			SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, self.node_secret[31]]).unwrap(),
+			SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 6, self.node_secret[31]]).unwrap(),
+			SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7, self.node_secret[31]]).unwrap(),
+			SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, self.node_secret[31]]).unwrap(),
+			[id, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9, self.node_secret[31]],
 			channel_value_satoshis,
 			channel_keys_id,
 		);
@@ -257,14 +263,14 @@ impl SignerProvider for KeyProvider {
 
 	fn get_destination_script(&self) -> Script {
 		let secp_ctx = Secp256k1::signing_only();
-		let channel_monitor_claim_key = SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, self.node_id]).unwrap();
+		let channel_monitor_claim_key = SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, self.node_secret[31]]).unwrap();
 		let our_channel_monitor_claim_key_hash = WPubkeyHash::hash(&PublicKey::from_secret_key(&secp_ctx, &channel_monitor_claim_key).serialize());
 		Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0).push_slice(&our_channel_monitor_claim_key_hash[..]).into_script()
 	}
 
 	fn get_shutdown_scriptpubkey(&self) -> ShutdownScript {
 		let secp_ctx = Secp256k1::signing_only();
-		let secret_key = SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, self.node_id]).unwrap();
+		let secret_key = SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, self.node_secret[31]]).unwrap();
 		let pubkey_hash = WPubkeyHash::hash(&PublicKey::from_secret_key(&secp_ctx, &secret_key).serialize());
 		ShutdownScript::new_p2wpkh(&pubkey_hash)
 	}
@@ -402,7 +408,8 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 	macro_rules! make_node {
 		($node_id: expr, $fee_estimator: expr) => { {
 			let logger: Arc<dyn Logger> = Arc::new(test_logger::TestLogger::new($node_id.to_string(), out.clone()));
-			let keys_manager = Arc::new(KeyProvider { node_id: $node_id, rand_bytes_id: atomic::AtomicU32::new(0), enforcement_states: Mutex::new(HashMap::new()) });
+			let node_secret = SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, $node_id]).unwrap();
+			let keys_manager = Arc::new(KeyProvider { node_secret, rand_bytes_id: atomic::AtomicU32::new(0), enforcement_states: Mutex::new(HashMap::new()) });
 			let monitor = Arc::new(TestChainMonitor::new(broadcast.clone(), logger.clone(), $fee_estimator.clone(),
 				Arc::new(TestPersister {
 					update_ret: Mutex::new(ChannelMonitorUpdateStatus::Completed)
