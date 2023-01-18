@@ -106,7 +106,7 @@ impl OfferBuilder {
 		let offer = OfferContents {
 			chains: None, metadata: None, amount: None, description,
 			features: OfferFeatures::empty(), absolute_expiry: None, issuer: None, paths: None,
-			supported_quantity: Quantity::one(), signing_pubkey,
+			supported_quantity: Quantity::One, signing_pubkey,
 		};
 		OfferBuilder { offer }
 	}
@@ -178,7 +178,7 @@ impl OfferBuilder {
 	}
 
 	/// Sets the quantity of items for [`Offer::supported_quantity`]. If not called, defaults to
-	/// [`Quantity::one`].
+	/// [`Quantity::One`].
 	///
 	/// Successive calls to this method will override the previous setting.
 	pub fn supported_quantity(mut self, quantity: Quantity) -> Self {
@@ -464,19 +464,17 @@ impl OfferContents {
 
 	fn is_valid_quantity(&self, quantity: u64) -> bool {
 		match self.supported_quantity {
-			Quantity::Bounded(n) => {
-				let n = n.get();
-				if n == 1 { false }
-				else { quantity > 0 && quantity <= n }
-			},
+			Quantity::Bounded(n) => quantity <= n.get(),
 			Quantity::Unbounded => quantity > 0,
+			Quantity::One => quantity == 1,
 		}
 	}
 
 	fn expects_quantity(&self) -> bool {
 		match self.supported_quantity {
-			Quantity::Bounded(n) => n.get() != 1,
+			Quantity::Bounded(_) => true,
 			Quantity::Unbounded => true,
+			Quantity::One => false,
 		}
 	}
 
@@ -549,25 +547,24 @@ pub type CurrencyCode = [u8; 3];
 /// Quantity of items supported by an [`Offer`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Quantity {
-	/// Up to a specific number of items (inclusive).
+	/// Up to a specific number of items (inclusive). Use when more than one item can be requested
+	/// but is limited (e.g., because of per customer or inventory limits).
+	///
+	/// May be used with `NonZeroU64::new(1)` but prefer to use [`Quantity::One`] if only one item
+	/// is supported.
 	Bounded(NonZeroU64),
-	/// One or more items.
+	/// One or more items. Use when more than one item can be requested without any limit.
 	Unbounded,
+	/// Only one item. Use when only a single item can be requested.
+	One,
 }
 
 impl Quantity {
-	/// The default quantity of one.
-	pub fn one() -> Self {
-		Quantity::Bounded(NonZeroU64::new(1).unwrap())
-	}
-
 	fn to_tlv_record(&self) -> Option<u64> {
 		match self {
-			Quantity::Bounded(n) => {
-				let n = n.get();
-				if n == 1 { None } else { Some(n) }
-			},
+			Quantity::Bounded(n) => Some(n.get()),
 			Quantity::Unbounded => Some(0),
+			Quantity::One => None,
 		}
 	}
 }
@@ -639,9 +636,8 @@ impl TryFrom<OfferTlvStream> for OfferContents {
 			.map(|seconds_from_epoch| Duration::from_secs(seconds_from_epoch));
 
 		let supported_quantity = match quantity_max {
-			None => Quantity::one(),
+			None => Quantity::One,
 			Some(0) => Quantity::Unbounded,
-			Some(1) => return Err(SemanticError::InvalidQuantity),
 			Some(n) => Quantity::Bounded(NonZeroU64::new(n).unwrap()),
 		};
 
@@ -708,7 +704,7 @@ mod tests {
 		assert!(!offer.is_expired());
 		assert_eq!(offer.paths(), &[]);
 		assert_eq!(offer.issuer(), None);
-		assert_eq!(offer.supported_quantity(), Quantity::one());
+		assert_eq!(offer.supported_quantity(), Quantity::One);
 		assert_eq!(offer.signing_pubkey(), pubkey(42));
 
 		assert_eq!(
@@ -930,14 +926,15 @@ mod tests {
 
 	#[test]
 	fn builds_offer_with_supported_quantity() {
+		let one = NonZeroU64::new(1).unwrap();
 		let ten = NonZeroU64::new(10).unwrap();
 
 		let offer = OfferBuilder::new("foo".into(), pubkey(42))
-			.supported_quantity(Quantity::one())
+			.supported_quantity(Quantity::One)
 			.build()
 			.unwrap();
 		let tlv_stream = offer.as_tlv_stream();
-		assert_eq!(offer.supported_quantity(), Quantity::one());
+		assert_eq!(offer.supported_quantity(), Quantity::One);
 		assert_eq!(tlv_stream.quantity_max, None);
 
 		let offer = OfferBuilder::new("foo".into(), pubkey(42))
@@ -957,12 +954,20 @@ mod tests {
 		assert_eq!(tlv_stream.quantity_max, Some(10));
 
 		let offer = OfferBuilder::new("foo".into(), pubkey(42))
-			.supported_quantity(Quantity::Bounded(ten))
-			.supported_quantity(Quantity::one())
+			.supported_quantity(Quantity::Bounded(one))
 			.build()
 			.unwrap();
 		let tlv_stream = offer.as_tlv_stream();
-		assert_eq!(offer.supported_quantity(), Quantity::one());
+		assert_eq!(offer.supported_quantity(), Quantity::Bounded(one));
+		assert_eq!(tlv_stream.quantity_max, Some(1));
+
+		let offer = OfferBuilder::new("foo".into(), pubkey(42))
+			.supported_quantity(Quantity::Bounded(ten))
+			.supported_quantity(Quantity::One)
+			.build()
+			.unwrap();
+		let tlv_stream = offer.as_tlv_stream();
+		assert_eq!(offer.supported_quantity(), Quantity::One);
 		assert_eq!(tlv_stream.quantity_max, None);
 	}
 
@@ -1094,7 +1099,7 @@ mod tests {
 	#[test]
 	fn parses_offer_with_quantity() {
 		let offer = OfferBuilder::new("foo".into(), pubkey(42))
-			.supported_quantity(Quantity::one())
+			.supported_quantity(Quantity::One)
 			.build()
 			.unwrap();
 		if let Err(e) = offer.to_string().parse::<Offer>() {
@@ -1117,17 +1122,12 @@ mod tests {
 			panic!("error parsing offer: {:?}", e);
 		}
 
-		let mut tlv_stream = offer.as_tlv_stream();
-		tlv_stream.quantity_max = Some(1);
-
-		let mut encoded_offer = Vec::new();
-		tlv_stream.write(&mut encoded_offer).unwrap();
-
-		match Offer::try_from(encoded_offer) {
-			Ok(_) => panic!("expected error"),
-			Err(e) => {
-				assert_eq!(e, ParseError::InvalidSemantics(SemanticError::InvalidQuantity));
-			},
+		let offer = OfferBuilder::new("foo".into(), pubkey(42))
+			.supported_quantity(Quantity::Bounded(NonZeroU64::new(1).unwrap()))
+			.build()
+			.unwrap();
+		if let Err(e) = offer.to_string().parse::<Offer>() {
+			panic!("error parsing offer: {:?}", e);
 		}
 	}
 

@@ -845,11 +845,12 @@ mod tests {
 
 	#[test]
 	fn builds_invoice_request_with_quantity() {
+		let one = NonZeroU64::new(1).unwrap();
 		let ten = NonZeroU64::new(10).unwrap();
 
 		let invoice_request = OfferBuilder::new("foo".into(), recipient_pubkey())
 			.amount_msats(1000)
-			.supported_quantity(Quantity::one())
+			.supported_quantity(Quantity::One)
 			.build().unwrap()
 			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
 			.build().unwrap()
@@ -860,7 +861,7 @@ mod tests {
 
 		match OfferBuilder::new("foo".into(), recipient_pubkey())
 			.amount_msats(1000)
-			.supported_quantity(Quantity::one())
+			.supported_quantity(Quantity::One)
 			.build().unwrap()
 			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
 			.amount_msats(2_000).unwrap()
@@ -911,6 +912,17 @@ mod tests {
 		match OfferBuilder::new("foo".into(), recipient_pubkey())
 			.amount_msats(1000)
 			.supported_quantity(Quantity::Unbounded)
+			.build().unwrap()
+			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.build()
+		{
+			Ok(_) => panic!("expected error"),
+			Err(e) => assert_eq!(e, SemanticError::MissingQuantity),
+		}
+
+		match OfferBuilder::new("foo".into(), recipient_pubkey())
+			.amount_msats(1000)
+			.supported_quantity(Quantity::Bounded(one))
 			.build().unwrap()
 			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
 			.build()
@@ -1102,11 +1114,12 @@ mod tests {
 
 	#[test]
 	fn parses_invoice_request_with_quantity() {
+		let one = NonZeroU64::new(1).unwrap();
 		let ten = NonZeroU64::new(10).unwrap();
 
 		let invoice_request = OfferBuilder::new("foo".into(), recipient_pubkey())
 			.amount_msats(1000)
-			.supported_quantity(Quantity::one())
+			.supported_quantity(Quantity::One)
 			.build().unwrap()
 			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
 			.build().unwrap()
@@ -1121,7 +1134,7 @@ mod tests {
 
 		let invoice_request = OfferBuilder::new("foo".into(), recipient_pubkey())
 			.amount_msats(1000)
-			.supported_quantity(Quantity::one())
+			.supported_quantity(Quantity::One)
 			.build().unwrap()
 			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
 			.amount_msats(2_000).unwrap()
@@ -1194,6 +1207,22 @@ mod tests {
 		let invoice_request = OfferBuilder::new("foo".into(), recipient_pubkey())
 			.amount_msats(1000)
 			.supported_quantity(Quantity::Unbounded)
+			.build().unwrap()
+			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.build_unchecked()
+			.sign(payer_sign).unwrap();
+
+		let mut buffer = Vec::new();
+		invoice_request.write(&mut buffer).unwrap();
+
+		match InvoiceRequest::try_from(buffer) {
+			Ok(_) => panic!("expected error"),
+			Err(e) => assert_eq!(e, ParseError::InvalidSemantics(SemanticError::MissingQuantity)),
+		}
+
+		let invoice_request = OfferBuilder::new("foo".into(), recipient_pubkey())
+			.amount_msats(1000)
+			.supported_quantity(Quantity::Bounded(one))
 			.build().unwrap()
 			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
 			.build_unchecked()
