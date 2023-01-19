@@ -1,7 +1,8 @@
 //! This module has a map which can be iterated in a deterministic order. See the [`IndexedMap`].
 
-use crate::prelude::HashMap;
-use alloc::collections::{BTreeMap, btree_map};
+use crate::prelude::{HashMap, hash_map};
+use alloc::collections::{BTreeSet, btree_set};
+use core::hash::Hash;
 use core::cmp::Ord;
 use core::ops::RangeBounds;
 
@@ -20,16 +21,19 @@ use core::ops::RangeBounds;
 /// keys in the order defined by [`Ord`].
 ///
 /// [`BTreeMap`]: alloc::collections::BTreeMap
-#[derive(Clone, PartialEq, Eq)]
-pub struct IndexedMap<K: Ord, V> {
-	map: BTreeMap<K, V>,
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IndexedMap<K: Hash + Ord, V> {
+	map: HashMap<K, V>,
+	// TODO: Explore swapping this for a sorted vec (that is only sorted on first range() call)
+	keys: BTreeSet<K>,
 }
 
-impl<K: Ord, V> IndexedMap<K, V> {
+impl<K: Clone + Hash + Ord, V> IndexedMap<K, V> {
 	/// Constructs a new, empty map
 	pub fn new() -> Self {
 		Self {
-			map: BTreeMap::new(),
+			map: HashMap::new(),
+			keys: BTreeSet::new(),
 		}
 	}
 
@@ -52,26 +56,37 @@ impl<K: Ord, V> IndexedMap<K, V> {
 
 	/// Removes the element with the given `key`, returning it, if one exists.
 	pub fn remove(&mut self, key: &K) -> Option<V> {
-		self.map.remove(key)
+		let ret = self.map.remove(key);
+		if let Some(_) = ret {
+			assert!(self.keys.remove(key), "map and keys must be consistent");
+		}
+		ret
 	}
 
 	/// Inserts the given `key`/`value` pair into the map, returning the element that was
 	/// previously stored at the given `key`, if one exists.
 	pub fn insert(&mut self, key: K, value: V) -> Option<V> {
-		self.map.insert(key, value)
+		let ret = self.map.insert(key.clone(), value);
+		if ret.is_none() {
+			assert!(self.keys.insert(key), "map and keys must be consistent");
+		}
+		ret
 	}
 
 	/// Returns an [`Entry`] for the given `key` in the map, allowing access to the value.
 	pub fn entry(&mut self, key: K) -> Entry<'_, K, V> {
-		match self.map.entry(key) {
-			btree_map::Entry::Vacant(entry) => {
+		match self.map.entry(key.clone()) {
+			hash_map::Entry::Vacant(entry) => {
 				Entry::Vacant(VacantEntry {
-					underlying_entry: entry
+					underlying_entry: entry,
+					key,
+					keys: &mut self.keys,
 				})
 			},
-			btree_map::Entry::Occupied(entry) => {
+			hash_map::Entry::Occupied(entry) => {
 				Entry::Occupied(OccupiedEntry {
-					underlying_entry: entry
+					underlying_entry: entry,
+					keys: &mut self.keys,
 				})
 			}
 		}
@@ -94,8 +109,11 @@ impl<K: Ord, V> IndexedMap<K, V> {
 	}
 
 	/// Returns an iterator which iterates over the `key`/`value` pairs in a given range.
-	pub fn range<R: RangeBounds<K>>(&self, range: R) -> btree_map::Range<K, V> {
-		self.map.range(range)
+	pub fn range<R: RangeBounds<K>>(&self, range: R) -> Range<K, V> {
+		Range {
+			inner_range: self.keys.range(range),
+			map: &self.map,
+		}
 	}
 
 	/// Returns the number of `key`/`value` pairs in the map
@@ -109,36 +127,62 @@ impl<K: Ord, V> IndexedMap<K, V> {
 	}
 }
 
+/// An iterator over a range of values in an [`IndexedMap`]
+pub struct Range<'a, K: Hash + Ord, V> {
+	inner_range: btree_set::Range<'a, K>,
+	map: &'a HashMap<K, V>,
+}
+impl<'a, K: Hash + Ord, V: 'a> Iterator for Range<'a, K, V> {
+	type Item = (&'a K, &'a V);
+	fn next(&mut self) -> Option<(&'a K, &'a V)> {
+		self.inner_range.next().map(|k| {
+			(k, self.map.get(k).expect("map and keys must be consistent"))
+		})
+	}
+}
+
 /// An [`Entry`] for a key which currently has no value
-pub struct VacantEntry<'a, K: Ord, V> {
-	underlying_entry: btree_map::VacantEntry<'a, K, V>,
+pub struct VacantEntry<'a, K: Hash + Ord, V> {
+	#[cfg(feature = "hashbrown")]
+	underlying_entry: hash_map::VacantEntry<'a, K, V, hash_map::DefaultHashBuilder>,
+	#[cfg(not(feature = "hashbrown"))]
+	underlying_entry: hash_map::VacantEntry<'a, K, V>,
+	key: K,
+	keys: &'a mut BTreeSet<K>,
 }
 
 /// An [`Entry`] for an existing key-value pair
-pub struct OccupiedEntry<'a, K: Ord, V> {
-	underlying_entry: btree_map::OccupiedEntry<'a, K, V>,
+pub struct OccupiedEntry<'a, K: Hash + Ord, V> {
+	#[cfg(feature = "hashbrown")]
+	underlying_entry: hash_map::OccupiedEntry<'a, K, V, hash_map::DefaultHashBuilder>,
+	#[cfg(not(feature = "hashbrown"))]
+	underlying_entry: hash_map::OccupiedEntry<'a, K, V>,
+	keys: &'a mut BTreeSet<K>,
 }
 
 /// A mutable reference to a position in the map. This can be used to reference, add, or update the
 /// value at a fixed key.
-pub enum Entry<'a, K: Ord, V> {
+pub enum Entry<'a, K: Hash + Ord, V> {
 	/// A mutable reference to a position within the map where there is no value.
 	Vacant(VacantEntry<'a, K, V>),
 	/// A mutable reference to a position within the map where there is currently a value.
 	Occupied(OccupiedEntry<'a, K, V>),
 }
 
-impl<'a, K: Ord, V> VacantEntry<'a, K, V> {
+impl<'a, K: Hash + Ord, V> VacantEntry<'a, K, V> {
 	/// Insert a value into the position described by this entry.
 	pub fn insert(self, value: V) -> &'a mut V {
+		assert!(self.keys.insert(self.key), "map and keys must be consistent");
 		self.underlying_entry.insert(value)
 	}
 }
 
-impl<'a, K: Ord, V> OccupiedEntry<'a, K, V> {
+impl<'a, K: Hash + Ord, V> OccupiedEntry<'a, K, V> {
 	/// Remove the value at the position described by this entry.
 	pub fn remove_entry(self) -> (K, V) {
-		self.underlying_entry.remove_entry()
+		let res = self.underlying_entry.remove_entry();
+		assert!(self.keys.remove(&res.0), "map and keys must be consistent");
+		res
 	}
 
 	/// Get a reference to the value at the position described by this entry.
