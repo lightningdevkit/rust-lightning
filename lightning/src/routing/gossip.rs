@@ -1156,14 +1156,14 @@ impl<L: Deref> ReadableArgs<L> for NetworkGraph<L> where L::Target: Logger {
 
 		let genesis_hash: BlockHash = Readable::read(reader)?;
 		let channels_count: u64 = Readable::read(reader)?;
-		let mut channels = BTreeMap::new();
+		let mut channels: BTreeMap<u64, ChannelInfo> = BTreeMap::new();
 		for _ in 0..channels_count {
 			let chan_id: u64 = Readable::read(reader)?;
 			let chan_info = Readable::read(reader)?;
 			channels.insert(chan_id, chan_info);
 		}
 		let nodes_count: u64 = Readable::read(reader)?;
-		let mut nodes = BTreeMap::new();
+		let mut nodes: BTreeMap<NodeId, NodeInfo> = BTreeMap::new();
 		for _ in 0..nodes_count {
 			let node_id = Readable::read(reader)?;
 			let node_info = Readable::read(reader)?;
@@ -1174,6 +1174,22 @@ impl<L: Deref> ReadableArgs<L> for NetworkGraph<L> where L::Target: Logger {
 		read_tlv_fields!(reader, {
 			(1, last_rapid_gossip_sync_timestamp, option),
 		});
+
+		// Regenerate inbound fees for all channels. The live-updating of these has been broken in
+		// various ways historically, so this ensures that we have up-to-date limits.
+		for (node_id, node) in nodes.iter_mut() {
+			let mut best_fees = RoutingFees { base_msat: u32::MAX, proportional_millionths: u32::MAX };
+			for channel in node.channels.iter() {
+				if let Some(chan) = channels.get(channel) {
+					let dir_opt = if *node_id == chan.node_one { &chan.two_to_one } else { &chan.one_to_two };
+					if let Some(dir) = dir_opt {
+						best_fees.base_msat = cmp::min(best_fees.base_msat, dir.fees.base_msat);
+						best_fees.proportional_millionths = cmp::min(best_fees.proportional_millionths, dir.fees.proportional_millionths);
+					}
+				} else { return Err(DecodeError::InvalidValue); }
+			}
+			node.lowest_inbound_channel_fees = Some(best_fees);
+		}
 
 		Ok(NetworkGraph {
 			secp_ctx: Secp256k1::verification_only(),
