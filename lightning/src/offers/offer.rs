@@ -13,7 +13,7 @@
 //! published as a QR code to be scanned by a customer. The customer uses the offer to request an
 //! invoice from the merchant to be paid.
 //!
-//! ```ignore
+//! ```
 //! extern crate bitcoin;
 //! extern crate core;
 //! extern crate lightning;

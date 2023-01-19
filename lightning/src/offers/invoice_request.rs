@@ -19,7 +19,7 @@
 //! [`Invoice`]: crate::offers::invoice::Invoice
 //! [`Refund`]: crate::offers::refund::Refund
 //!
-//! ```ignore
+//! ```
 //! extern crate bitcoin;
 //! extern crate lightning;
 //!

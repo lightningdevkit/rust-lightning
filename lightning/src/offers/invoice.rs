@@ -16,7 +16,7 @@
 //! The payment recipient must include a [`PaymentHash`], so as to reveal the preimage upon payment
 //! receipt, and one or more [`BlindedPath`]s for the payer to use when sending the payment.
 //!
-//! ```ignore
+//! ```
 //! extern crate bitcoin;
 //! extern crate lightning;
 //!
@@ -1462,7 +1462,7 @@ mod tests {
 			.build().unwrap();
 
 		// Only standard addresses will be included.
-		let mut fallbacks = unsigned_invoice.invoice.fields_mut().fallbacks.as_mut().unwrap();
+		let fallbacks = unsigned_invoice.invoice.fields_mut().fallbacks.as_mut().unwrap();
 		// Non-standard addresses
 		fallbacks.push(FallbackAddress { version: 1, program: vec![0u8; 41] });
 		fallbacks.push(FallbackAddress { version: 2, program: vec![0u8; 1] });

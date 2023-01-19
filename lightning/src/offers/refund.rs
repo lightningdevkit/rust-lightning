@@ -18,7 +18,7 @@
 //! [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 //! [`Offer`]: crate::offers::offer::Offer
 //!
-//! ```ignore
+//! ```
 //! extern crate bitcoin;
 //! extern crate core;
 //! extern crate lightning;
