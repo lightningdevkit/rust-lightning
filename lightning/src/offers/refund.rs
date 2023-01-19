@@ -118,9 +118,9 @@ impl RefundBuilder {
 		}
 
 		let refund = RefundContents {
-			payer: PayerContents(metadata), metadata: None, description, absolute_expiry: None,
-			issuer: None, paths: None, chain: None, amount_msats,
-			features: InvoiceRequestFeatures::empty(), quantity: None, payer_id, payer_note: None,
+			payer: PayerContents(metadata), description, absolute_expiry: None, issuer: None,
+			paths: None, chain: None, amount_msats, features: InvoiceRequestFeatures::empty(),
+			quantity: None, payer_id, payer_note: None,
 		};
 
 		Ok(RefundBuilder { refund })
@@ -229,7 +229,6 @@ pub struct Refund {
 pub(super) struct RefundContents {
 	payer: PayerContents,
 	// offer fields
-	metadata: Option<Vec<u8>>,
 	description: String,
 	absolute_expiry: Option<Duration>,
 	issuer: Option<String>,
@@ -395,7 +394,7 @@ impl RefundContents {
 
 		let offer = OfferTlvStreamRef {
 			chains: None,
-			metadata: self.metadata.as_ref(),
+			metadata: None,
 			currency: None,
 			amount: None,
 			description: Some(&self.description),
@@ -497,6 +496,10 @@ impl TryFrom<RefundTlvStream> for RefundContents {
 			Some(metadata) => PayerContents(metadata),
 		};
 
+		if metadata.is_some() {
+			return Err(SemanticError::UnexpectedMetadata);
+		}
+
 		if chains.is_some() {
 			return Err(SemanticError::UnexpectedChain);
 		}
@@ -539,10 +542,9 @@ impl TryFrom<RefundTlvStream> for RefundContents {
 			Some(payer_id) => payer_id,
 		};
 
-		// TODO: Should metadata be included?
 		Ok(RefundContents {
-			payer, metadata, description, absolute_expiry, issuer, paths, chain, amount_msats,
-			features, quantity, payer_id, payer_note,
+			payer, description, absolute_expiry, issuer, paths, chain, amount_msats, features,
+			quantity, payer_id, payer_note,
 		})
 	}
 }
@@ -947,6 +949,17 @@ mod tests {
 			.build().unwrap();
 		if let Err(e) = refund.to_string().parse::<Refund>() {
 			panic!("error parsing refund: {:?}", e);
+		}
+
+		let metadata = vec![42; 32];
+		let mut tlv_stream = refund.as_tlv_stream();
+		tlv_stream.1.metadata = Some(&metadata);
+
+		match Refund::try_from(tlv_stream.to_bytes()) {
+			Ok(_) => panic!("expected error"),
+			Err(e) => {
+				assert_eq!(e, ParseError::InvalidSemantics(SemanticError::UnexpectedMetadata));
+			},
 		}
 
 		let chains = vec![ChainHash::using_genesis_block(Network::Testnet)];
