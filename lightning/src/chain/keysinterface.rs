@@ -34,14 +34,14 @@ use bitcoin::{PackedLockTime, secp256k1, Sequence, Witness};
 
 use crate::util::transaction_utils;
 use crate::util::crypto::{hkdf_extract_expand_twice, sign};
-use crate::util::ser::{Writeable, Writer, Readable, ReadableArgs};
+use crate::util::ser::{Writeable, Writer, Readable};
 #[cfg(anchors)]
 use crate::util::events::HTLCDescriptor;
 use crate::chain::transaction::OutPoint;
 use crate::ln::channel::ANCHOR_OUTPUT_VALUE_SATOSHI;
 use crate::ln::{chan_utils, PaymentPreimage};
 use crate::ln::chan_utils::{HTLCOutputInCommitment, make_funding_redeemscript, ChannelPublicKeys, HolderCommitmentTransaction, ChannelTransactionParameters, CommitmentTransaction, ClosingTransaction};
-use crate::ln::msgs::UnsignedChannelAnnouncement;
+use crate::ln::msgs::{UnsignedChannelAnnouncement, UnsignedGossipMessage};
 use crate::ln::script::ShutdownScript;
 
 use crate::prelude::*;
@@ -383,17 +383,18 @@ pub trait BaseSign {
 	fn sign_holder_anchor_input(
 		&self, anchor_tx: &Transaction, input: usize, secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<Signature, ()>;
-	/// Signs a channel announcement message with our funding key and our node secret key (aka
-	/// node_id or network_key), proving it comes from one of the channel participants.
+	/// Signs a channel announcement message with our funding key proving it comes from one of the
+	/// channel participants.
 	///
-	/// The first returned signature should be from our node secret key, the second from our
-	/// funding key.
+	/// Channel announcements also require a signature from each node's network key. Our node
+	/// signature is computed through [`NodeSigner::sign_gossip_message`].
 	///
 	/// Note that if this fails or is rejected, the channel will not be publicly announced and
 	/// our counterparty may (though likely will not) close the channel on us for violating the
 	/// protocol.
-	fn sign_channel_announcement(&self, msg: &UnsignedChannelAnnouncement, secp_ctx: &Secp256k1<secp256k1::All>)
-		-> Result<(Signature, Signature), ()>;
+	fn sign_channel_announcement_with_funding_key(
+		&self, msg: &UnsignedChannelAnnouncement, secp_ctx: &Secp256k1<secp256k1::All>
+	) -> Result<Signature, ()>;
 	/// Set the counterparty static channel data, including basepoints,
 	/// `counterparty_selected`/`holder_selected_contest_delay` and funding outpoint.
 	///
@@ -438,16 +439,6 @@ pub trait EntropySource {
 
 /// A trait that can handle cryptographic operations at the scope level of a node.
 pub trait NodeSigner {
-	/// Get node secret key based on the provided [`Recipient`].
-	///
-	/// The `node_id`/`network_key` is the public key that corresponds to this secret key.
-	///
-	/// This method must return the same value each time it is called with a given [`Recipient`]
-	/// parameter.
-	///
-	/// Errors if the [`Recipient`] variant is not supported by the implementation.
-	fn get_node_secret(&self, recipient: Recipient) -> Result<SecretKey, ()>;
-
 	/// Get secret key material as bytes for use in encrypting and decrypting inbound payment data.
 	///
 	/// If the implementor of this trait supports [phantom node payments], then every node that is
@@ -462,24 +453,22 @@ pub trait NodeSigner {
 	/// [phantom node payments]: PhantomKeysManager
 	fn get_inbound_payment_key_material(&self) -> KeyMaterial;
 
-	/// Get node id based on the provided [`Recipient`]. This public key corresponds to the secret in
-	/// [`get_node_secret`].
+	/// Get node id based on the provided [`Recipient`].
 	///
 	/// This method must return the same value each time it is called with a given [`Recipient`]
 	/// parameter.
 	///
 	/// Errors if the [`Recipient`] variant is not supported by the implementation.
-	///
-	/// [`get_node_secret`]: Self::get_node_secret
 	fn get_node_id(&self, recipient: Recipient) -> Result<PublicKey, ()>;
 
-	/// Gets the ECDH shared secret of our [`node secret`] and `other_key`, multiplying by `tweak` if
+	/// Gets the ECDH shared secret of our node secret and `other_key`, multiplying by `tweak` if
 	/// one is provided. Note that this tweak can be applied to `other_key` instead of our node
 	/// secret, though this is less efficient.
 	///
-	/// Errors if the [`Recipient`] variant is not supported by the implementation.
+	/// Note that if this fails while attempting to forward an HTLC, LDK will panic. The error
+	/// should be resolved to allow LDK to resume forwarding HTLCs.
 	///
-	/// [`node secret`]: Self::get_node_secret
+	/// Errors if the [`Recipient`] variant is not supported by the implementation.
 	fn ecdh(&self, recipient: Recipient, other_key: &PublicKey, tweak: Option<&Scalar>) -> Result<SharedSecret, ()>;
 
 	/// Sign an invoice.
@@ -494,6 +483,14 @@ pub trait NodeSigner {
 	///
 	/// Errors if the [`Recipient`] variant is not supported by the implementation.
 	fn sign_invoice(&self, hrp_bytes: &[u8], invoice_data: &[u5], recipient: Recipient) -> Result<RecoverableSignature, ()>;
+
+	/// Sign a gossip message.
+	///
+	/// Note that if this fails, LDK may panic and the message will not be broadcast to the network
+	/// or a possible channel counterparty. If LDK panics, the error should be resolved to allow the
+	/// message to be broadcast, as otherwise it may prevent one from receiving funds over the
+	/// corresponding channel.
+	fn sign_gossip_message(&self, msg: UnsignedGossipMessage) -> Result<Signature, ()>;
 }
 
 /// A trait that can return signer instances for individual channels.
@@ -566,8 +563,6 @@ pub struct InMemorySigner {
 	pub commitment_seed: [u8; 32],
 	/// Holder public keys and basepoints.
 	pub(crate) holder_channel_pubkeys: ChannelPublicKeys,
-	/// Private key of our node secret, used for signing channel announcements.
-	node_secret: SecretKey,
 	/// Counterparty public keys and counterparty/holder `selected_contest_delay`, populated on channel acceptance.
 	channel_parameters: Option<ChannelTransactionParameters>,
 	/// The total value of this channel.
@@ -580,7 +575,6 @@ impl InMemorySigner {
 	/// Creates a new [`InMemorySigner`].
 	pub fn new<C: Signing>(
 		secp_ctx: &Secp256k1<C>,
-		node_secret: SecretKey,
 		funding_key: SecretKey,
 		revocation_base_key: SecretKey,
 		payment_key: SecretKey,
@@ -601,7 +595,6 @@ impl InMemorySigner {
 			delayed_payment_base_key,
 			htlc_base_key,
 			commitment_seed,
-			node_secret,
 			channel_value_satoshis,
 			holder_channel_pubkeys,
 			channel_parameters: None,
@@ -872,10 +865,11 @@ impl BaseSign for InMemorySigner {
 		Ok(sign(secp_ctx, &hash_to_message!(&sighash[..]), &self.funding_key))
 	}
 
-	fn sign_channel_announcement(&self, msg: &UnsignedChannelAnnouncement, secp_ctx: &Secp256k1<secp256k1::All>)
-	-> Result<(Signature, Signature), ()> {
+	fn sign_channel_announcement_with_funding_key(
+		&self, msg: &UnsignedChannelAnnouncement, secp_ctx: &Secp256k1<secp256k1::All>
+	) -> Result<Signature, ()> {
 		let msghash = hash_to_message!(&Sha256dHash::hash(&msg.encode()[..])[..]);
-		Ok((sign(secp_ctx, &msghash, &self.node_secret), sign(secp_ctx, &msghash, &self.funding_key)))
+		Ok(sign(secp_ctx, &msghash, &self.funding_key))
 	}
 
 	fn provide_channel_parameters(&mut self, channel_parameters: &ChannelTransactionParameters) {
@@ -915,8 +909,8 @@ impl Writeable for InMemorySigner {
 	}
 }
 
-impl ReadableArgs<SecretKey> for InMemorySigner {
-	fn read<R: io::Read>(reader: &mut R, node_secret: SecretKey) -> Result<Self, DecodeError> {
+impl Readable for InMemorySigner {
+	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
 		let _ver = read_ver_prefix!(reader, SERIALIZATION_VERSION);
 
 		let funding_key = Readable::read(reader)?;
@@ -941,7 +935,6 @@ impl ReadableArgs<SecretKey> for InMemorySigner {
 			payment_key,
 			delayed_payment_base_key,
 			htlc_base_key,
-			node_secret,
 			commitment_seed,
 			channel_value_satoshis,
 			holder_channel_pubkeys,
@@ -1099,7 +1092,6 @@ impl KeysManager {
 
 		InMemorySigner::new(
 			&self.secp_ctx,
-			self.node_secret,
 			funding_key,
 			revocation_base_key,
 			payment_key,
@@ -1256,13 +1248,6 @@ impl EntropySource for KeysManager {
 }
 
 impl NodeSigner for KeysManager {
-	fn get_node_secret(&self, recipient: Recipient) -> Result<SecretKey, ()> {
-		match recipient {
-			Recipient::Node => Ok(self.node_secret.clone()),
-			Recipient::PhantomNode => Err(())
-		}
-	}
-
 	fn get_node_id(&self, recipient: Recipient) -> Result<PublicKey, ()> {
 		match recipient {
 			Recipient::Node => Ok(self.node_id.clone()),
@@ -1271,7 +1256,10 @@ impl NodeSigner for KeysManager {
 	}
 
 	fn ecdh(&self, recipient: Recipient, other_key: &PublicKey, tweak: Option<&Scalar>) -> Result<SharedSecret, ()> {
-		let mut node_secret = self.get_node_secret(recipient)?;
+		let mut node_secret = match recipient {
+			Recipient::Node => Ok(self.node_secret.clone()),
+			Recipient::PhantomNode => Err(())
+		}?;
 		if let Some(tweak) = tweak {
 			node_secret = node_secret.mul_tweak(tweak).map_err(|_| ())?;
 		}
@@ -1285,10 +1273,15 @@ impl NodeSigner for KeysManager {
 	fn sign_invoice(&self, hrp_bytes: &[u8], invoice_data: &[u5], recipient: Recipient) -> Result<RecoverableSignature, ()> {
 		let preimage = construct_invoice_preimage(&hrp_bytes, &invoice_data);
 		let secret = match recipient {
-			Recipient::Node => self.get_node_secret(Recipient::Node)?,
-			Recipient::PhantomNode => return Err(()),
-		};
-		Ok(self.secp_ctx.sign_ecdsa_recoverable(&hash_to_message!(&Sha256::hash(&preimage)), &secret))
+			Recipient::Node => Ok(&self.node_secret),
+			Recipient::PhantomNode => Err(())
+		}?;
+		Ok(self.secp_ctx.sign_ecdsa_recoverable(&hash_to_message!(&Sha256::hash(&preimage)), secret))
+	}
+
+	fn sign_gossip_message(&self, msg: UnsignedGossipMessage) -> Result<Signature, ()> {
+		let msg_hash = hash_to_message!(&Sha256dHash::hash(&msg.encode()[..])[..]);
+		Ok(sign(&self.secp_ctx, &msg_hash, &self.node_secret))
 	}
 }
 
@@ -1316,7 +1309,7 @@ impl SignerProvider for KeysManager {
 	}
 
 	fn read_chan_signer(&self, reader: &[u8]) -> Result<Self::Signer, DecodeError> {
-		InMemorySigner::read(&mut io::Cursor::new(reader), self.node_secret.clone())
+		InMemorySigner::read(&mut io::Cursor::new(reader))
 	}
 
 	fn get_destination_script(&self) -> Script {
@@ -1363,13 +1356,6 @@ impl EntropySource for PhantomKeysManager {
 }
 
 impl NodeSigner for PhantomKeysManager {
-	fn get_node_secret(&self, recipient: Recipient) -> Result<SecretKey, ()> {
-		match recipient {
-			Recipient::Node => self.inner.get_node_secret(Recipient::Node),
-			Recipient::PhantomNode => Ok(self.phantom_secret.clone()),
-		}
-	}
-
 	fn get_node_id(&self, recipient: Recipient) -> Result<PublicKey, ()> {
 		match recipient {
 			Recipient::Node => self.inner.get_node_id(Recipient::Node),
@@ -1378,7 +1364,10 @@ impl NodeSigner for PhantomKeysManager {
 	}
 
 	fn ecdh(&self, recipient: Recipient, other_key: &PublicKey, tweak: Option<&Scalar>) -> Result<SharedSecret, ()> {
-		let mut node_secret = self.get_node_secret(recipient)?;
+		let mut node_secret = match recipient {
+			Recipient::Node => self.inner.node_secret.clone(),
+			Recipient::PhantomNode => self.phantom_secret.clone(),
+		};
 		if let Some(tweak) = tweak {
 			node_secret = node_secret.mul_tweak(tweak).map_err(|_| ())?;
 		}
@@ -1391,8 +1380,15 @@ impl NodeSigner for PhantomKeysManager {
 
 	fn sign_invoice(&self, hrp_bytes: &[u8], invoice_data: &[u5], recipient: Recipient) -> Result<RecoverableSignature, ()> {
 		let preimage = construct_invoice_preimage(&hrp_bytes, &invoice_data);
-		let secret = self.get_node_secret(recipient)?;
-		Ok(self.inner.secp_ctx.sign_ecdsa_recoverable(&hash_to_message!(&Sha256::hash(&preimage)), &secret))
+		let secret = match recipient {
+			Recipient::Node => &self.inner.node_secret,
+			Recipient::PhantomNode => &self.phantom_secret,
+		};
+		Ok(self.inner.secp_ctx.sign_ecdsa_recoverable(&hash_to_message!(&Sha256::hash(&preimage)), secret))
+	}
+
+	fn sign_gossip_message(&self, msg: UnsignedGossipMessage) -> Result<Signature, ()> {
+		self.inner.sign_gossip_message(msg)
 	}
 }
 

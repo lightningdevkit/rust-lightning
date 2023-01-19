@@ -100,17 +100,19 @@ impl EntropySource for KeyProvider {
 }
 
 impl NodeSigner for KeyProvider {
-	fn get_node_secret(&self, _recipient: Recipient) -> Result<SecretKey, ()> {
-		Ok(self.node_secret.clone())
-	}
-
 	fn get_node_id(&self, recipient: Recipient) -> Result<PublicKey, ()> {
-		let secp_ctx = Secp256k1::signing_only();
-		Ok(PublicKey::from_secret_key(&secp_ctx, &self.get_node_secret(recipient)?))
+		let node_secret = match recipient {
+			Recipient::Node => Ok(&self.node_secret),
+			Recipient::PhantomNode => Err(())
+		}?;
+		Ok(PublicKey::from_secret_key(&Secp256k1::signing_only(), node_secret))
 	}
 
 	fn ecdh(&self, recipient: Recipient, other_key: &PublicKey, tweak: Option<&Scalar>) -> Result<SharedSecret, ()> {
-		let mut node_secret = self.get_node_secret(recipient)?;
+		let mut node_secret = match recipient {
+			Recipient::Node => Ok(self.node_secret.clone()),
+			Recipient::PhantomNode => Err(())
+		}?;
 		if let Some(tweak) = tweak {
 			node_secret = node_secret.mul_tweak(tweak).map_err(|_| ())?;
 		}
@@ -120,6 +122,10 @@ impl NodeSigner for KeyProvider {
 	fn get_inbound_payment_key_material(&self) -> KeyMaterial { unreachable!() }
 
 	fn sign_invoice(&self, _hrp_bytes: &[u8], _invoice_data: &[u5], _recipient: Recipient) -> Result<RecoverableSignature, ()> {
+		unreachable!()
+	}
+
+	fn sign_gossip_message(&self, _msg: lightning::ln::msgs::UnsignedGossipMessage) -> Result<bitcoin::secp256k1::ecdsa::Signature, ()> {
 		unreachable!()
 	}
 }

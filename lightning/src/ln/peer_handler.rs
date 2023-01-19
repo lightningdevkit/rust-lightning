@@ -17,6 +17,7 @@
 
 use bitcoin::secp256k1::{self, Secp256k1, SecretKey, PublicKey};
 
+use crate::chain::keysinterface::{KeysManager, NodeSigner, Recipient};
 use crate::ln::features::{InitFeatures, NodeFeatures};
 use crate::ln::msgs;
 use crate::ln::msgs::{ChannelMessageHandler, LightningError, NetAddress, OnionMessageHandler, RoutingMessageHandler};
@@ -28,7 +29,6 @@ use crate::ln::wire::Encode;
 use crate::onion_message::{CustomOnionMessageContents, CustomOnionMessageHandler, SimpleArcOnionMessenger, SimpleRefOnionMessenger};
 use crate::routing::gossip::{NetworkGraph, P2PGossipSync};
 use crate::util::atomic_counter::AtomicCounter;
-use crate::util::crypto::sign;
 use crate::util::events::{MessageSendEvent, MessageSendEventsProvider, OnionMessageProvider};
 use crate::util::logger::Logger;
 
@@ -43,7 +43,6 @@ use core::convert::Infallible;
 #[cfg(feature = "std")] use std::error;
 
 use bitcoin::hashes::sha256::Hash as Sha256;
-use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::hashes::sha256::HashEngine as Sha256Engine;
 use bitcoin::hashes::{HashEngine, Hash};
 
@@ -491,7 +490,7 @@ impl Peer {
 /// issues such as overly long function definitions.
 ///
 /// (C-not exported) as `Arc`s don't make sense in bindings.
-pub type SimpleArcPeerManager<SD, M, T, F, C, L> = PeerManager<SD, Arc<SimpleArcChannelManager<M, T, F, L>>, Arc<P2PGossipSync<Arc<NetworkGraph<Arc<L>>>, Arc<C>, Arc<L>>>, Arc<SimpleArcOnionMessenger<L>>, Arc<L>, IgnoringMessageHandler>;
+pub type SimpleArcPeerManager<SD, M, T, F, C, L> = PeerManager<SD, Arc<SimpleArcChannelManager<M, T, F, L>>, Arc<P2PGossipSync<Arc<NetworkGraph<Arc<L>>>, Arc<C>, Arc<L>>>, Arc<SimpleArcOnionMessenger<L>>, Arc<L>, IgnoringMessageHandler, Arc<KeysManager>>;
 
 /// SimpleRefPeerManager is a type alias for a PeerManager reference, and is the reference
 /// counterpart to the SimpleArcPeerManager type alias. Use this type by default when you don't
@@ -501,7 +500,7 @@ pub type SimpleArcPeerManager<SD, M, T, F, C, L> = PeerManager<SD, Arc<SimpleArc
 /// helps with issues such as long function definitions.
 ///
 /// (C-not exported) as general type aliases don't make sense in bindings.
-pub type SimpleRefPeerManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, 'i, 'j, 'k, 'l, 'm, SD, M, T, F, C, L> = PeerManager<SD, SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'm, M, T, F, L>, &'f P2PGossipSync<&'g NetworkGraph<&'f L>, &'h C, &'f L>, &'i SimpleRefOnionMessenger<'j, 'k, L>, &'f L, IgnoringMessageHandler>;
+pub type SimpleRefPeerManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, 'i, 'j, 'k, 'l, 'm, SD, M, T, F, C, L> = PeerManager<SD, SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'm, M, T, F, L>, &'f P2PGossipSync<&'g NetworkGraph<&'f L>, &'h C, &'f L>, &'i SimpleRefOnionMessenger<'j, 'k, L>, &'f L, IgnoringMessageHandler, &'c KeysManager>;
 
 /// A PeerManager manages a set of peers, described by their [`SocketDescriptor`] and marshalls
 /// socket events into messages which it passes on to its [`MessageHandler`].
@@ -522,12 +521,13 @@ pub type SimpleRefPeerManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, 'i, 'j, 'k, 'l, 'm
 /// you're using lightning-net-tokio.
 ///
 /// [`read_event`]: PeerManager::read_event
-pub struct PeerManager<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CMH: Deref> where
+pub struct PeerManager<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CMH: Deref, NS: Deref> where
 		CM::Target: ChannelMessageHandler,
 		RM::Target: RoutingMessageHandler,
 		OM::Target: OnionMessageHandler,
 		L::Target: Logger,
-		CMH::Target: CustomMessageHandler {
+		CMH::Target: CustomMessageHandler,
+		NS::Target: NodeSigner {
 	message_handler: MessageHandler<CM, RM, OM>,
 	/// Connection state for each connected peer - we have an outer read-write lock which is taken
 	/// as read while we're doing processing for a peer and taken write when a peer is being added
@@ -557,11 +557,12 @@ pub struct PeerManager<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: D
 	/// value increases strictly since we don't assume access to a time source.
 	last_node_announcement_serial: AtomicU32,
 
-	our_node_secret: SecretKey,
 	ephemeral_key_midstate: Sha256Engine,
 	custom_message_handler: CMH,
 
 	peer_counter: AtomicCounter,
+
+	node_signer: NS,
 
 	logger: L,
 	secp_ctx: Secp256k1<secp256k1::SignOnly>
@@ -592,10 +593,11 @@ macro_rules! encode_msg {
 	}}
 }
 
-impl<Descriptor: SocketDescriptor, CM: Deref, OM: Deref, L: Deref> PeerManager<Descriptor, CM, IgnoringMessageHandler, OM, L, IgnoringMessageHandler> where
+impl<Descriptor: SocketDescriptor, CM: Deref, OM: Deref, L: Deref, NS: Deref> PeerManager<Descriptor, CM, IgnoringMessageHandler, OM, L, IgnoringMessageHandler, NS> where
 		CM::Target: ChannelMessageHandler,
 		OM::Target: OnionMessageHandler,
-		L::Target: Logger {
+		L::Target: Logger,
+		NS::Target: NodeSigner {
 	/// Constructs a new `PeerManager` with the given `ChannelMessageHandler` and
 	/// `OnionMessageHandler`. No routing message handler is used and network graph messages are
 	/// ignored.
@@ -609,18 +611,19 @@ impl<Descriptor: SocketDescriptor, CM: Deref, OM: Deref, L: Deref> PeerManager<D
 	/// minute should suffice.
 	///
 	/// (C-not exported) as we can't export a PeerManager with a dummy route handler
-	pub fn new_channel_only(channel_message_handler: CM, onion_message_handler: OM, our_node_secret: SecretKey, current_time: u32, ephemeral_random_data: &[u8; 32], logger: L) -> Self {
+	pub fn new_channel_only(channel_message_handler: CM, onion_message_handler: OM, current_time: u32, ephemeral_random_data: &[u8; 32], logger: L, node_signer: NS) -> Self {
 		Self::new(MessageHandler {
 			chan_handler: channel_message_handler,
 			route_handler: IgnoringMessageHandler{},
 			onion_message_handler,
-		}, our_node_secret, current_time, ephemeral_random_data, logger, IgnoringMessageHandler{})
+		}, current_time, ephemeral_random_data, logger, IgnoringMessageHandler{}, node_signer)
 	}
 }
 
-impl<Descriptor: SocketDescriptor, RM: Deref, L: Deref> PeerManager<Descriptor, ErroringMessageHandler, RM, IgnoringMessageHandler, L, IgnoringMessageHandler> where
+impl<Descriptor: SocketDescriptor, RM: Deref, L: Deref, NS: Deref> PeerManager<Descriptor, ErroringMessageHandler, RM, IgnoringMessageHandler, L, IgnoringMessageHandler, NS> where
 		RM::Target: RoutingMessageHandler,
-		L::Target: Logger {
+		L::Target: Logger,
+		NS::Target: NodeSigner {
 	/// Constructs a new `PeerManager` with the given `RoutingMessageHandler`. No channel message
 	/// handler or onion message handler is used and onion and channel messages will be ignored (or
 	/// generate error messages). Note that some other lightning implementations time-out connections
@@ -635,12 +638,12 @@ impl<Descriptor: SocketDescriptor, RM: Deref, L: Deref> PeerManager<Descriptor, 
 	/// cryptographically secure random bytes.
 	///
 	/// (C-not exported) as we can't export a PeerManager with a dummy channel handler
-	pub fn new_routing_only(routing_message_handler: RM, our_node_secret: SecretKey, current_time: u32, ephemeral_random_data: &[u8; 32], logger: L) -> Self {
+	pub fn new_routing_only(routing_message_handler: RM, current_time: u32, ephemeral_random_data: &[u8; 32], logger: L, node_signer: NS) -> Self {
 		Self::new(MessageHandler {
 			chan_handler: ErroringMessageHandler::new(),
 			route_handler: routing_message_handler,
 			onion_message_handler: IgnoringMessageHandler{},
-		}, our_node_secret, current_time, ephemeral_random_data, logger, IgnoringMessageHandler{})
+		}, current_time, ephemeral_random_data, logger, IgnoringMessageHandler{}, node_signer)
 	}
 }
 
@@ -685,12 +688,14 @@ fn filter_addresses(ip_address: Option<NetAddress>) -> Option<NetAddress> {
 	}
 }
 
-impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CMH: Deref> PeerManager<Descriptor, CM, RM, OM, L, CMH> where
+impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CMH: Deref, NS: Deref> PeerManager<Descriptor, CM, RM, OM, L, CMH, NS> where
 		CM::Target: ChannelMessageHandler,
 		RM::Target: RoutingMessageHandler,
 		OM::Target: OnionMessageHandler,
 		L::Target: Logger,
-		CMH::Target: CustomMessageHandler {
+		CMH::Target: CustomMessageHandler,
+		NS::Target: NodeSigner
+{
 	/// Constructs a new PeerManager with the given message handlers and node_id secret key
 	/// ephemeral_random_data is used to derive per-connection ephemeral keys and must be
 	/// cryptographically secure random bytes.
@@ -699,7 +704,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 	/// incremented irregularly internally. In general it is best to simply use the current UNIX
 	/// timestamp, however if it is not available a persistent counter that increases once per
 	/// minute should suffice.
-	pub fn new(message_handler: MessageHandler<CM, RM, OM>, our_node_secret: SecretKey, current_time: u32, ephemeral_random_data: &[u8; 32], logger: L, custom_message_handler: CMH) -> Self {
+	pub fn new(message_handler: MessageHandler<CM, RM, OM>, current_time: u32, ephemeral_random_data: &[u8; 32], logger: L, custom_message_handler: CMH, node_signer: NS) -> Self {
 		let mut ephemeral_key_midstate = Sha256::engine();
 		ephemeral_key_midstate.input(ephemeral_random_data);
 
@@ -713,12 +718,12 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 			node_id_to_descriptor: Mutex::new(HashMap::new()),
 			event_processing_lock: Mutex::new(()),
 			blocked_event_processors: AtomicBool::new(false),
-			our_node_secret,
 			ephemeral_key_midstate,
 			peer_counter: AtomicCounter::new(),
 			last_node_announcement_serial: AtomicU32::new(current_time),
 			logger,
 			custom_message_handler,
+			node_signer,
 			secp_ctx,
 		}
 	}
@@ -810,7 +815,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 	///
 	/// [`socket_disconnected()`]: PeerManager::socket_disconnected
 	pub fn new_inbound_connection(&self, descriptor: Descriptor, remote_network_address: Option<NetAddress>) -> Result<(), PeerHandleError> {
-		let peer_encryptor = PeerChannelEncryptor::new_inbound(&self.our_node_secret, &self.secp_ctx);
+		let peer_encryptor = PeerChannelEncryptor::new_inbound(&self.node_signer);
 		let pending_read_buffer = [0; 50].to_vec(); // Noise act one is 50 bytes
 
 		let mut peers = self.peers.write().unwrap();
@@ -1079,14 +1084,14 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 							NextNoiseStep::ActOne => {
 								let act_two = try_potential_handleerror!(peer, peer.channel_encryptor
 									.process_act_one_with_keys(&peer.pending_read_buffer[..],
-										&self.our_node_secret, self.get_ephemeral_key(), &self.secp_ctx)).to_vec();
+										&self.node_signer, self.get_ephemeral_key(), &self.secp_ctx)).to_vec();
 								peer.pending_outbound_buffer.push_back(act_two);
 								peer.pending_read_buffer = [0; 66].to_vec(); // act three is 66 bytes long
 							},
 							NextNoiseStep::ActTwo => {
 								let (act_three, their_node_id) = try_potential_handleerror!(peer,
 									peer.channel_encryptor.process_act_two(&peer.pending_read_buffer[..],
-										&self.our_node_secret, &self.secp_ctx));
+										&self.node_signer));
 								peer.pending_outbound_buffer.push_back(act_three.to_vec());
 								peer.pending_read_buffer = [0; 18].to_vec(); // Message length header is 18 bytes
 								peer.pending_read_is_header = true;
@@ -2016,13 +2021,20 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 		let announcement = msgs::UnsignedNodeAnnouncement {
 			features,
 			timestamp: self.last_node_announcement_serial.fetch_add(1, Ordering::AcqRel),
-			node_id: PublicKey::from_secret_key(&self.secp_ctx, &self.our_node_secret),
+			node_id: self.node_signer.get_node_id(Recipient::Node).unwrap(),
 			rgb, alias, addresses,
 			excess_address_data: Vec::new(),
 			excess_data: Vec::new(),
 		};
-		let msghash = hash_to_message!(&Sha256dHash::hash(&announcement.encode()[..])[..]);
-		let node_announce_sig = sign(&self.secp_ctx, &msghash, &self.our_node_secret);
+		let node_announce_sig = match self.node_signer.sign_gossip_message(
+			msgs::UnsignedGossipMessage::NodeAnnouncement(&announcement)
+		) {
+			Ok(sig) => sig,
+			Err(_) => {
+				log_error!(self.logger, "Failed to generate signature for node_announcement");
+				return;
+			},
+		};
 
 		let msg = msgs::NodeAnnouncement {
 			signature: node_announce_sig,
@@ -2050,14 +2062,14 @@ fn is_gossip_msg(type_id: u16) -> bool {
 
 #[cfg(test)]
 mod tests {
+	use crate::chain::keysinterface::{NodeSigner, Recipient};
 	use crate::ln::peer_handler::{PeerManager, MessageHandler, SocketDescriptor, IgnoringMessageHandler, filter_addresses};
 	use crate::ln::{msgs, wire};
 	use crate::ln::msgs::NetAddress;
 	use crate::util::events;
 	use crate::util::test_utils;
 
-	use bitcoin::secp256k1::Secp256k1;
-	use bitcoin::secp256k1::{SecretKey, PublicKey};
+	use bitcoin::secp256k1::SecretKey;
 
 	use crate::prelude::*;
 	use crate::sync::{Arc, Mutex};
@@ -2093,16 +2105,19 @@ mod tests {
 		chan_handler: test_utils::TestChannelMessageHandler,
 		routing_handler: test_utils::TestRoutingMessageHandler,
 		logger: test_utils::TestLogger,
+		node_signer: test_utils::TestNodeSigner,
 	}
 
 	fn create_peermgr_cfgs(peer_count: usize) -> Vec<PeerManagerCfg> {
 		let mut cfgs = Vec::new();
-		for _ in 0..peer_count {
+		for i in 0..peer_count {
+			let node_secret = SecretKey::from_slice(&[42 + i as u8; 32]).unwrap();
 			cfgs.push(
 				PeerManagerCfg{
 					chan_handler: test_utils::TestChannelMessageHandler::new(),
 					logger: test_utils::TestLogger::new(),
 					routing_handler: test_utils::TestRoutingMessageHandler::new(),
+					node_signer: test_utils::TestNodeSigner::new(node_secret),
 				}
 			);
 		}
@@ -2110,22 +2125,20 @@ mod tests {
 		cfgs
 	}
 
-	fn create_network<'a>(peer_count: usize, cfgs: &'a Vec<PeerManagerCfg>) -> Vec<PeerManager<FileDescriptor, &'a test_utils::TestChannelMessageHandler, &'a test_utils::TestRoutingMessageHandler, IgnoringMessageHandler, &'a test_utils::TestLogger, IgnoringMessageHandler>> {
+	fn create_network<'a>(peer_count: usize, cfgs: &'a Vec<PeerManagerCfg>) -> Vec<PeerManager<FileDescriptor, &'a test_utils::TestChannelMessageHandler, &'a test_utils::TestRoutingMessageHandler, IgnoringMessageHandler, &'a test_utils::TestLogger, IgnoringMessageHandler, &'a test_utils::TestNodeSigner>> {
 		let mut peers = Vec::new();
 		for i in 0..peer_count {
-			let node_secret = SecretKey::from_slice(&[42 + i as u8; 32]).unwrap();
 			let ephemeral_bytes = [i as u8; 32];
 			let msg_handler = MessageHandler { chan_handler: &cfgs[i].chan_handler, route_handler: &cfgs[i].routing_handler, onion_message_handler: IgnoringMessageHandler {} };
-			let peer = PeerManager::new(msg_handler, node_secret, 0, &ephemeral_bytes, &cfgs[i].logger, IgnoringMessageHandler {});
+			let peer = PeerManager::new(msg_handler, 0, &ephemeral_bytes, &cfgs[i].logger, IgnoringMessageHandler {}, &cfgs[i].node_signer);
 			peers.push(peer);
 		}
 
 		peers
 	}
 
-	fn establish_connection<'a>(peer_a: &PeerManager<FileDescriptor, &'a test_utils::TestChannelMessageHandler, &'a test_utils::TestRoutingMessageHandler, IgnoringMessageHandler, &'a test_utils::TestLogger, IgnoringMessageHandler>, peer_b: &PeerManager<FileDescriptor, &'a test_utils::TestChannelMessageHandler, &'a test_utils::TestRoutingMessageHandler, IgnoringMessageHandler, &'a test_utils::TestLogger, IgnoringMessageHandler>) -> (FileDescriptor, FileDescriptor) {
-		let secp_ctx = Secp256k1::new();
-		let a_id = PublicKey::from_secret_key(&secp_ctx, &peer_a.our_node_secret);
+	fn establish_connection<'a>(peer_a: &PeerManager<FileDescriptor, &'a test_utils::TestChannelMessageHandler, &'a test_utils::TestRoutingMessageHandler, IgnoringMessageHandler, &'a test_utils::TestLogger, IgnoringMessageHandler, &'a test_utils::TestNodeSigner>, peer_b: &PeerManager<FileDescriptor, &'a test_utils::TestChannelMessageHandler, &'a test_utils::TestRoutingMessageHandler, IgnoringMessageHandler, &'a test_utils::TestLogger, IgnoringMessageHandler, &'a test_utils::TestNodeSigner>) -> (FileDescriptor, FileDescriptor) {
+		let a_id = peer_a.node_signer.get_node_id(Recipient::Node).unwrap();
 		let mut fd_a = FileDescriptor { fd: 1, outbound_data: Arc::new(Mutex::new(Vec::new())) };
 		let mut fd_b = FileDescriptor { fd: 1, outbound_data: Arc::new(Mutex::new(Vec::new())) };
 		let initial_data = peer_b.new_outbound_connection(a_id, fd_b.clone(), None).unwrap();
@@ -2157,8 +2170,7 @@ mod tests {
 		establish_connection(&peers[0], &peers[1]);
 		assert_eq!(peers[0].peers.read().unwrap().len(), 1);
 
-		let secp_ctx = Secp256k1::new();
-		let their_id = PublicKey::from_secret_key(&secp_ctx, &peers[1].our_node_secret);
+		let their_id = peers[1].node_signer.get_node_id(Recipient::Node).unwrap();
 
 		chan_handler.pending_events.lock().unwrap().push(events::MessageSendEvent::HandleError {
 			node_id: their_id,
@@ -2182,8 +2194,7 @@ mod tests {
 		let (fd_a, mut fd_b) = establish_connection(&peers[0], &peers[1]);
 		assert_eq!(peers[0].peers.read().unwrap().len(), 1);
 
-		let secp_ctx = Secp256k1::new();
-		let their_id = PublicKey::from_secret_key(&secp_ctx, &peers[1].our_node_secret);
+		let their_id = peers[1].node_signer.get_node_id(Recipient::Node).unwrap();
 
 		let msg = msgs::Shutdown { channel_id: [42; 32], scriptpubkey: bitcoin::Script::new() };
 		a_chan_handler.pending_events.lock().unwrap().push(events::MessageSendEvent::SendShutdown {
@@ -2283,8 +2294,7 @@ mod tests {
 		cfgs[1].routing_handler.request_full_sync.store(true, Ordering::Release);
 		let peers = create_network(2, &cfgs);
 
-		let secp_ctx = Secp256k1::new();
-		let a_id = PublicKey::from_secret_key(&secp_ctx, &peers[0].our_node_secret);
+		let a_id = peers[0].node_signer.get_node_id(Recipient::Node).unwrap();
 		let mut fd_a = FileDescriptor { fd: 1, outbound_data: Arc::new(Mutex::new(Vec::new())) };
 		let mut fd_b = FileDescriptor { fd: 1, outbound_data: Arc::new(Mutex::new(Vec::new())) };
 		let initial_data = peers[1].new_outbound_connection(a_id, fd_b.clone(), None).unwrap();

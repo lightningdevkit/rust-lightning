@@ -12,7 +12,7 @@
 //! LSP).
 
 use crate::chain::ChannelMonitorUpdateStatus;
-use crate::chain::keysinterface::{Recipient, NodeSigner};
+use crate::chain::keysinterface::NodeSigner;
 use crate::ln::channelmanager::{ChannelManager, MIN_CLTV_EXPIRY_DELTA, PaymentId};
 use crate::routing::gossip::RoutingFees;
 use crate::routing::router::{PaymentParameters, RouteHint, RouteHintHop};
@@ -31,10 +31,7 @@ use core::default::Default;
 use crate::ln::functional_test_utils::*;
 
 use bitcoin::blockdata::constants::genesis_block;
-use bitcoin::hashes::Hash;
-use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::network::constants::Network;
-use bitcoin::secp256k1::Secp256k1;
 
 #[test]
 fn test_priv_forwarding_rejection() {
@@ -493,8 +490,7 @@ fn test_scid_alias_returned() {
 		fee_proportional_millionths: last_hop[0].counterparty.forwarding_info.as_ref().unwrap().fee_proportional_millionths,
 		excess_data: Vec::new(),
 	};
-	let msg_hash = Sha256dHash::hash(&contents.encode()[..]);
-	let signature = Secp256k1::new().sign_ecdsa(&hash_to_message!(&msg_hash[..]), &nodes[1].keys_manager.get_node_secret(Recipient::Node).unwrap());
+	let signature = nodes[1].keys_manager.sign_gossip_message(msgs::UnsignedGossipMessage::ChannelUpdate(&contents)).unwrap();
 	let msg = msgs::ChannelUpdate { signature, contents };
 
 	let mut err_data = Vec::new();

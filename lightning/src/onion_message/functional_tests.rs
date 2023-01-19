@@ -30,8 +30,7 @@ struct MessengerNode {
 
 impl MessengerNode {
 	fn get_node_pk(&self) -> PublicKey {
-		let secp_ctx = Secp256k1::new();
-		PublicKey::from_secret_key(&secp_ctx, &self.keys_manager.get_node_secret(Recipient::Node).unwrap())
+		self.keys_manager.get_node_id(Recipient::Node).unwrap()
 	}
 }
 

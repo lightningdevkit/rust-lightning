@@ -51,7 +51,7 @@ use crate::sync::{Mutex, Arc};
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use core::mem;
 use bitcoin::bech32::u5;
-use crate::chain::keysinterface::{InMemorySigner, Recipient, KeyMaterial, EntropySource, NodeSigner, SignerProvider};
+use crate::chain::keysinterface::{InMemorySigner, Recipient, EntropySource, NodeSigner, SignerProvider};
 
 #[cfg(feature = "std")]
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -107,17 +107,6 @@ pub struct OnlyReadsKeysInterface {}
 impl EntropySource for OnlyReadsKeysInterface {
 	fn get_secure_random_bytes(&self) -> [u8; 32] { [0; 32] }}
 
-impl NodeSigner for OnlyReadsKeysInterface {
-	fn get_node_secret(&self, _recipient: Recipient) -> Result<SecretKey, ()> { unreachable!(); }
-	fn get_node_id(&self, recipient: Recipient) -> Result<PublicKey, ()> {
-		let secp_ctx = Secp256k1::signing_only();
-		Ok(PublicKey::from_secret_key(&secp_ctx, &self.get_node_secret(recipient)?))
-	}
-	fn ecdh(&self, _recipient: Recipient, _other_key: &PublicKey, _tweak: Option<&Scalar>) -> Result<SharedSecret, ()> { unreachable!(); }
-	fn get_inbound_payment_key_material(&self) -> KeyMaterial { unreachable!(); }
-	fn sign_invoice(&self, _hrp_bytes: &[u8], _invoice_data: &[u5], _recipient: Recipient) -> Result<RecoverableSignature, ()> { unreachable!(); }
-}
-
 impl SignerProvider for OnlyReadsKeysInterface {
 	type Signer = EnforcingSigner;
 
@@ -126,8 +115,7 @@ impl SignerProvider for OnlyReadsKeysInterface {
 	fn derive_channel_signer(&self, _channel_value_satoshis: u64, _channel_keys_id: [u8; 32]) -> Self::Signer { unreachable!(); }
 
 	fn read_chan_signer(&self, mut reader: &[u8]) -> Result<Self::Signer, msgs::DecodeError> {
-		let dummy_sk = SecretKey::from_slice(&[42; 32]).unwrap();
-		let inner: InMemorySigner = ReadableArgs::read(&mut reader, dummy_sk)?;
+		let inner: InMemorySigner = Readable::read(&mut reader)?;
 		let state = Arc::new(Mutex::new(EnforcementState::new()));
 
 		Ok(EnforcingSigner::new_with_revoked(
@@ -632,6 +620,49 @@ impl Logger for TestLogger {
 	}
 }
 
+pub struct TestNodeSigner {
+	node_secret: SecretKey,
+}
+
+impl TestNodeSigner {
+	pub fn new(node_secret: SecretKey) -> Self {
+		Self { node_secret }
+	}
+}
+
+impl NodeSigner for TestNodeSigner {
+	fn get_inbound_payment_key_material(&self) -> crate::chain::keysinterface::KeyMaterial {
+		unreachable!()
+	}
+
+	fn get_node_id(&self, recipient: Recipient) -> Result<PublicKey, ()> {
+		let node_secret = match recipient {
+			Recipient::Node => Ok(&self.node_secret),
+			Recipient::PhantomNode => Err(())
+		}?;
+		Ok(PublicKey::from_secret_key(&Secp256k1::signing_only(), node_secret))
+	}
+
+	fn ecdh(&self, recipient: Recipient, other_key: &PublicKey, tweak: Option<&bitcoin::secp256k1::Scalar>) -> Result<SharedSecret, ()> {
+		let mut node_secret = match recipient {
+			Recipient::Node => Ok(self.node_secret.clone()),
+			Recipient::PhantomNode => Err(())
+		}?;
+		if let Some(tweak) = tweak {
+			node_secret = node_secret.mul_tweak(tweak).map_err(|_| ())?;
+		}
+		Ok(SharedSecret::new(other_key, &node_secret))
+	}
+
+	fn sign_invoice(&self, _: &[u8], _: &[bitcoin::bech32::u5], _: Recipient) -> Result<bitcoin::secp256k1::ecdsa::RecoverableSignature, ()> {
+		unreachable!()
+	}
+
+	fn sign_gossip_message(&self, _msg: msgs::UnsignedGossipMessage) -> Result<Signature, ()> {
+		unreachable!()
+	}
+}
+
 pub struct TestKeysInterface {
 	pub backing: keysinterface::PhantomKeysManager,
 	pub override_random_bytes: Mutex<Option<[u8; 32]>>,
@@ -651,10 +682,6 @@ impl EntropySource for TestKeysInterface {
 }
 
 impl NodeSigner for TestKeysInterface {
-	fn get_node_secret(&self, recipient: Recipient) -> Result<SecretKey, ()> {
-		self.backing.get_node_secret(recipient)
-	}
-
 	fn get_node_id(&self, recipient: Recipient) -> Result<PublicKey, ()> {
 		self.backing.get_node_id(recipient)
 	}
@@ -669,6 +696,10 @@ impl NodeSigner for TestKeysInterface {
 
 	fn sign_invoice(&self, hrp_bytes: &[u8], invoice_data: &[u5], recipient: Recipient) -> Result<RecoverableSignature, ()> {
 		self.backing.sign_invoice(hrp_bytes, invoice_data, recipient)
+	}
+
+	fn sign_gossip_message(&self, msg: msgs::UnsignedGossipMessage) -> Result<Signature, ()> {
+		self.backing.sign_gossip_message(msg)
 	}
 }
 
@@ -688,7 +719,7 @@ impl SignerProvider for TestKeysInterface {
 	fn read_chan_signer(&self, buffer: &[u8]) -> Result<Self::Signer, msgs::DecodeError> {
 		let mut reader = io::Cursor::new(buffer);
 
-		let inner: InMemorySigner = ReadableArgs::read(&mut reader, self.get_node_secret(Recipient::Node).unwrap())?;
+		let inner: InMemorySigner = Readable::read(&mut reader)?;
 		let state = self.make_enforcement_state_cell(inner.commitment_seed);
 
 		Ok(EnforcingSigner::new_with_revoked(
