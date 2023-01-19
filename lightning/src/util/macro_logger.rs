@@ -107,7 +107,7 @@ impl<'a> core::fmt::Display for DebugTx<'a> {
 					}
 				}
 				if num_preimage > 0 || num_timeout > 0 || num_revoked > 0 {
-					write!(f, "HTLC claim tx ({} preimage, {} timeout, {} revoked)",
+					write!(f, "HTLC claim tx ({} preimage, {} timeout, {} revoked) ",
 						num_preimage, num_timeout, num_revoked)?;
 				}
 			}

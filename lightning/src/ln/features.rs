@@ -52,6 +52,10 @@
 //!     (see [BOLT-2](https://github.com/lightning/bolts/blob/master/02-peer-protocol.md) for more information).
 //! - `Keysend` - send funds to a node without an invoice
 //!     (see the [`Keysend` feature assignment proposal](https://github.com/lightning/bolts/issues/605#issuecomment-606679798) for more information).
+//! - `AnchorsZeroFeeHtlcTx` - requires/supports that commitment transactions include anchor outputs
+//!   and HTLC transactions are pre-signed with zero fee (see
+//!   [BOLT-3](https://github.com/lightning/bolts/blob/master/03-transactions.md) for more
+//!   information).
 //!
 //! [BOLT #9]: https://github.com/lightning/bolts/blob/master/09-features.md
 //! [messages]: crate::ln::msgs
@@ -122,7 +126,7 @@ mod sealed {
 		// Byte 1
 		VariableLengthOnion | StaticRemoteKey | PaymentSecret,
 		// Byte 2
-		BasicMPP | Wumbo,
+		BasicMPP | Wumbo | AnchorsZeroFeeHtlcTx,
 		// Byte 3
 		ShutdownAnySegwit,
 		// Byte 4
@@ -138,7 +142,7 @@ mod sealed {
 		// Byte 1
 		VariableLengthOnion | StaticRemoteKey | PaymentSecret,
 		// Byte 2
-		BasicMPP | Wumbo,
+		BasicMPP | Wumbo | AnchorsZeroFeeHtlcTx,
 		// Byte 3
 		ShutdownAnySegwit,
 		// Byte 4
@@ -176,7 +180,7 @@ mod sealed {
 		// Byte 1
 		StaticRemoteKey,
 		// Byte 2
-		,
+		AnchorsZeroFeeHtlcTx,
 		// Byte 3
 		,
 		// Byte 4
@@ -357,6 +361,9 @@ mod sealed {
 	define_feature!(19, Wumbo, [InitContext, NodeContext],
 		"Feature flags for `option_support_large_channel` (aka wumbo channels).", set_wumbo_optional, set_wumbo_required,
 		supports_wumbo, requires_wumbo);
+	define_feature!(23, AnchorsZeroFeeHtlcTx, [InitContext, NodeContext, ChannelTypeContext],
+		"Feature flags for `option_anchors_zero_fee_htlc_tx`.", set_anchors_zero_fee_htlc_tx_optional,
+		set_anchors_zero_fee_htlc_tx_required, supports_anchors_zero_fee_htlc_tx, requires_anchors_zero_fee_htlc_tx);
 	define_feature!(27, ShutdownAnySegwit, [InitContext, NodeContext],
 		"Feature flags for `opt_shutdown_anysegwit`.", set_shutdown_any_segwit_optional,
 		set_shutdown_any_segwit_required, supports_shutdown_anysegwit, requires_shutdown_anysegwit);
@@ -505,10 +512,10 @@ impl InvoiceFeatures {
 }
 
 impl ChannelTypeFeatures {
-	/// Constructs the implicit channel type based on the common supported types between us and our
-	/// counterparty
-	pub(crate) fn from_counterparty_init(counterparty_init: &InitFeatures) -> Self {
-		let mut ret = counterparty_init.to_context_internal();
+	// Maps the relevant `InitFeatures` to `ChannelTypeFeatures`. Any unknown features to
+	// `ChannelTypeFeatures` are not included in the result.
+	pub(crate) fn from_init(init: &InitFeatures) -> Self {
+		let mut ret = init.to_context_internal();
 		// ChannelTypeFeatures must only contain required bits, so we OR the required forms of all
 		// optional bits and then AND out the optional ones.
 		for byte in ret.flags.iter_mut() {
@@ -678,6 +685,24 @@ impl<T: sealed::Context> Features<T> {
 			(byte & unknown_features) != 0
 		})
 	}
+
+	// Returns true if the features within `self` are a subset of the features within `other`.
+	pub(crate) fn is_subset(&self, other: &Self) -> bool {
+		for (idx, byte) in self.flags.iter().enumerate() {
+			if let Some(other_byte) = other.flags.get(idx) {
+				if byte & other_byte != *byte {
+					// `self` has bits set that `other` doesn't.
+					return false;
+				}
+			} else {
+				if *byte > 0 {
+					// `self` has a non-zero byte that `other` doesn't.
+					return false;
+				}
+			}
+		}
+		true
+	}
 }
 
 impl<T: sealed::UpfrontShutdownScript> Features<T> {
@@ -701,6 +726,18 @@ impl<T: sealed::Wumbo> Features<T> {
 	pub(crate) fn clear_wumbo(mut self) -> Self {
 		<T as sealed::Wumbo>::clear_bits(&mut self.flags);
 		self
+	}
+}
+
+impl<T: sealed::SCIDPrivacy> Features<T> {
+	pub(crate) fn clear_scid_privacy(&mut self) {
+		<T as sealed::SCIDPrivacy>::clear_bits(&mut self.flags);
+	}
+}
+
+impl<T: sealed::AnchorsZeroFeeHtlcTx> Features<T> {
+	pub(crate) fn clear_anchors_zero_fee_htlc_tx(&mut self) {
+		<T as sealed::AnchorsZeroFeeHtlcTx>::clear_bits(&mut self.flags);
 	}
 }
 
@@ -808,6 +845,7 @@ mod tests {
 		init_features.set_channel_type_optional();
 		init_features.set_scid_privacy_optional();
 		init_features.set_zero_conf_optional();
+		init_features.set_anchors_zero_fee_htlc_tx_optional();
 
 		assert!(init_features.initial_routing_sync());
 		assert!(!init_features.supports_upfront_shutdown_script());
@@ -826,7 +864,7 @@ mod tests {
 			assert_eq!(node_features.flags.len(), 7);
 			assert_eq!(node_features.flags[0], 0b00000010);
 			assert_eq!(node_features.flags[1], 0b01010001);
-			assert_eq!(node_features.flags[2], 0b00001010);
+			assert_eq!(node_features.flags[2], 0b10001010);
 			assert_eq!(node_features.flags[3], 0b00001000);
 			assert_eq!(node_features.flags[4], 0b10000000);
 			assert_eq!(node_features.flags[5], 0b10100000);
@@ -917,7 +955,7 @@ mod tests {
 		// required-StaticRemoteKey ChannelTypeFeatures.
 		let mut init_features = InitFeatures::empty();
 		init_features.set_static_remote_key_optional();
-		let converted_features = ChannelTypeFeatures::from_counterparty_init(&init_features);
+		let converted_features = ChannelTypeFeatures::from_init(&init_features);
 		assert_eq!(converted_features, ChannelTypeFeatures::only_static_remote_key());
 		assert!(!converted_features.supports_any_optional_bits());
 		assert!(converted_features.requires_static_remote_key());

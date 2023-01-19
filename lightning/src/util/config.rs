@@ -126,7 +126,6 @@ pub struct ChannelHandshakeConfig {
 	///
 	/// [`SignerProvider::get_shutdown_scriptpubkey`]: crate::chain::keysinterface::SignerProvider::get_shutdown_scriptpubkey
 	pub commit_upfront_shutdown_pubkey: bool,
-
 	/// The Proportion of the channel value to configure as counterparty's channel reserve,
 	/// i.e., `their_channel_reserve_satoshis` for both outbound and inbound channels.
 	///
@@ -149,7 +148,28 @@ pub struct ChannelHandshakeConfig {
 	///                as 1000 sats instead, which is a safe implementation-specific lower bound.
 	/// Maximum value: 1,000,000, any values larger than 1 Million will be treated as 1 Million (or 100%)
 	///                instead, although channel negotiations will fail in that case.
-	pub their_channel_reserve_proportional_millionths: u32
+	pub their_channel_reserve_proportional_millionths: u32,
+	#[cfg(anchors)]
+	/// If set, we attempt to negotiate the `anchors_zero_fee_htlc_tx`option for outbound channels.
+	///
+	/// If this option is set, channels may be created that will not be readable by LDK versions
+	/// prior to 0.0.114, causing [`ChannelManager`]'s read method to return a
+	/// [`DecodeError::InvalidValue`].
+	///
+	/// Note that setting this to true does *not* prevent us from opening channels with
+	/// counterparties that do not support the `anchors_zero_fee_htlc_tx` option; we will simply
+	/// fall back to a `static_remote_key` channel.
+	///
+	/// LDK will not support the legacy `option_anchors` commitment version due to a discovered
+	/// vulnerability after its deployment. For more context, see the [`SIGHASH_SINGLE + update_fee
+	/// Considered Harmful`] mailing list post.
+	///
+	/// Default value: false. This value is likely to change to true in the future.
+	///
+	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
+	/// [`DecodeError::InvalidValue`]: crate::ln::msgs::DecodeError::InvalidValue
+	/// [`SIGHASH_SINGLE + update_fee Considered Harmful`]: https://lists.linuxfoundation.org/pipermail/lightning-dev/2020-September/002796.html
+	pub negotiate_anchors_zero_fee_htlc_tx: bool,
 }
 
 impl Default for ChannelHandshakeConfig {
@@ -163,6 +183,8 @@ impl Default for ChannelHandshakeConfig {
 			announced_channel: false,
 			commit_upfront_shutdown_pubkey: true,
 			their_channel_reserve_proportional_millionths: 10_000,
+			#[cfg(anchors)]
+			negotiate_anchors_zero_fee_htlc_tx: false,
 		}
 	}
 }

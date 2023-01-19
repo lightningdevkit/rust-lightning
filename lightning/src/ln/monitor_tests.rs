@@ -9,17 +9,29 @@
 
 //! Further functional tests which test blockchain reorganizations.
 
+#[cfg(anchors)]
+use crate::chain::keysinterface::BaseSign;
+#[cfg(anchors)]
+use crate::chain::channelmonitor::LATENCY_GRACE_PERIOD_BLOCKS;
 use crate::chain::channelmonitor::{ANTI_REORG_DELAY, Balance};
 use crate::chain::transaction::OutPoint;
 use crate::chain::chaininterface::LowerBoundedFeeEstimator;
 use crate::ln::channel;
+#[cfg(anchors)]
+use crate::ln::chan_utils;
 use crate::ln::channelmanager::{BREAKDOWN_TIMEOUT, PaymentId};
 use crate::ln::msgs::ChannelMessageHandler;
+#[cfg(anchors)]
+use crate::util::config::UserConfig;
+#[cfg(anchors)]
+use crate::util::events::BumpTransactionEvent;
 use crate::util::events::{Event, MessageSendEvent, MessageSendEventsProvider, ClosureReason, HTLCDestination};
 
 use bitcoin::blockdata::script::Builder;
 use bitcoin::blockdata::opcodes;
 use bitcoin::secp256k1::Secp256k1;
+#[cfg(anchors)]
+use bitcoin::{Amount, Script, TxIn, TxOut, PackedLockTime};
 use bitcoin::Transaction;
 
 use crate::prelude::*;
@@ -1665,4 +1677,142 @@ fn test_revoked_counterparty_aggregated_claims() {
 	connect_blocks(&nodes[1], 6);
 	assert!(nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());
 	assert!(nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances().is_empty());
+}
+
+#[cfg(anchors)]
+#[test]
+fn test_yield_anchors_events() {
+	// Tests that two parties supporting anchor outputs can open a channel, route payments over
+	// it, and finalize its resolution uncooperatively. Once the HTLCs are locked in, one side will
+	// force close once the HTLCs expire. The force close should stem from an event emitted by LDK,
+	// allowing the consumer to provide additional fees to the commitment transaction to be
+	// broadcast. Once the commitment transaction confirms, events for the HTLC resolution should be
+	// emitted by LDK, such that the consumer can attach fees to the zero fee HTLC transactions.
+	let secp = Secp256k1::new();
+	let mut chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let mut anchors_config = UserConfig::default();
+	anchors_config.channel_handshake_config.announced_channel = true;
+	anchors_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(anchors_config), Some(anchors_config)]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let chan_id = create_announced_chan_between_nodes_with_value(
+		&nodes, 0, 1, 1_000_000, 500_000_000
+	).2;
+	route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
+	let (payment_preimage, payment_hash, _) = route_payment(&nodes[1], &[&nodes[0]], 1_000_000);
+
+	assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
+
+	connect_blocks(&nodes[0], TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS + 1);
+	check_closed_broadcast!(&nodes[0], true);
+	assert!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().is_empty());
+
+	get_monitor!(nodes[0], chan_id).provide_payment_preimage(
+		&payment_hash, &payment_preimage, &node_cfgs[0].tx_broadcaster,
+		&LowerBoundedFeeEstimator::new(node_cfgs[0].fee_estimator), &nodes[0].logger
+	);
+
+	let mut holder_events = nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events();
+	assert_eq!(holder_events.len(), 1);
+	let (commitment_tx, anchor_tx) = match holder_events.pop().unwrap() {
+		Event::BumpTransaction(BumpTransactionEvent::ChannelClose { commitment_tx, anchor_descriptor, .. })  => {
+			assert_eq!(commitment_tx.input.len(), 1);
+			assert_eq!(commitment_tx.output.len(), 6);
+			let mut anchor_tx = Transaction {
+				version: 2,
+				lock_time: PackedLockTime::ZERO,
+				input: vec![
+					TxIn { previous_output: anchor_descriptor.outpoint, ..Default::default() },
+					TxIn { ..Default::default() },
+				],
+				output: vec![TxOut {
+					value: Amount::ONE_BTC.to_sat(),
+					script_pubkey: Script::new_op_return(&[]),
+				}],
+			};
+			let signer = nodes[0].keys_manager.derive_channel_keys(
+				anchor_descriptor.channel_value_satoshis, &anchor_descriptor.channel_keys_id,
+			);
+			let funding_sig = signer.sign_holder_anchor_input(&mut anchor_tx, 0, &secp).unwrap();
+			anchor_tx.input[0].witness = chan_utils::build_anchor_input_witness(
+				&signer.pubkeys().funding_pubkey, &funding_sig
+			);
+			(commitment_tx, anchor_tx)
+		},
+		_ => panic!("Unexpected event"),
+	};
+
+	mine_transactions(&nodes[0], &[&commitment_tx, &anchor_tx]);
+	check_added_monitors!(nodes[0], 1);
+
+	let mut holder_events = nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events();
+	// Certain block `ConnectStyle`s cause an extra `ChannelClose` event to be emitted since the
+	// best block is being updated prior to the confirmed transactions.
+	match *nodes[0].connect_style.borrow() {
+		ConnectStyle::BestBlockFirst|ConnectStyle::BestBlockFirstReorgsOnlyTip|ConnectStyle::BestBlockFirstSkippingBlocks => {
+			assert_eq!(holder_events.len(), 3);
+			if let Event::BumpTransaction(BumpTransactionEvent::ChannelClose { .. }) = holder_events.remove(0) {}
+			else { panic!("unexpected event"); }
+
+		},
+		_ => assert_eq!(holder_events.len(), 2),
+	};
+	let mut htlc_txs = Vec::with_capacity(2);
+	for event in holder_events {
+		match event {
+			Event::BumpTransaction(BumpTransactionEvent::HTLCResolution { htlc_descriptors, .. }) => {
+				assert_eq!(htlc_descriptors.len(), 1);
+				let htlc_descriptor = &htlc_descriptors[0];
+				let signer = nodes[0].keys_manager.derive_channel_keys(
+					htlc_descriptor.channel_value_satoshis, &htlc_descriptor.channel_keys_id
+				);
+				let per_commitment_point = signer.get_per_commitment_point(htlc_descriptor.per_commitment_number, &secp);
+				let mut htlc_tx = Transaction {
+					version: 2,
+					lock_time: if htlc_descriptor.htlc.offered {
+						PackedLockTime(htlc_descriptor.htlc.cltv_expiry)
+					} else {
+						PackedLockTime::ZERO
+					},
+					input: vec![
+						htlc_descriptor.unsigned_tx_input(), // HTLC input
+						TxIn { ..Default::default() } // Fee input
+					],
+					output: vec![
+						htlc_descriptor.tx_output(&per_commitment_point, &secp), // HTLC output
+						TxOut { // Fee input change
+							value: Amount::ONE_BTC.to_sat(),
+							script_pubkey: Script::new_op_return(&[]),
+						}
+					]
+				};
+				let our_sig = signer.sign_holder_htlc_transaction(&mut htlc_tx, 0, htlc_descriptor, &secp).unwrap();
+				let witness_script = htlc_descriptor.witness_script(&per_commitment_point, &secp);
+				htlc_tx.input[0].witness = htlc_descriptor.tx_input_witness(&our_sig, &witness_script);
+				htlc_txs.push(htlc_tx);
+			},
+			_ => panic!("Unexpected event"),
+		}
+	}
+
+	mine_transactions(&nodes[0], &[&htlc_txs[0], &htlc_txs[1]]);
+	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
+
+	assert!(nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());
+
+	connect_blocks(&nodes[0], BREAKDOWN_TIMEOUT as u32);
+
+	let holder_events = nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events();
+	assert_eq!(holder_events.len(), 3);
+	for event in holder_events {
+		match event {
+			Event::SpendableOutputs { .. } => {},
+			_ => panic!("Unexpected event"),
+		}
+	}
+
+	// Clear the remaining events as they're not relevant to what we're testing.
+	nodes[0].node.get_and_clear_pending_events();
 }
