@@ -1153,12 +1153,12 @@ macro_rules! handle_error {
 		match $internal {
 			Ok(msg) => Ok(msg),
 			Err(MsgHandleErrInternal { err, chan_id, shutdown_finish }) => {
-				#[cfg(debug_assertions)]
+				#[cfg(any(feature = "_test_utils", test))]
 				{
 					// In testing, ensure there are no deadlocks where the lock is already held upon
 					// entering the macro.
-					assert!($self.pending_events.try_lock().is_ok());
-					assert!($self.per_peer_state.try_write().is_ok());
+					debug_assert!($self.pending_events.try_lock().is_ok());
+					debug_assert!($self.per_peer_state.try_write().is_ok());
 				}
 
 				let mut msg_events = Vec::with_capacity(2);
@@ -1193,7 +1193,7 @@ macro_rules! handle_error {
 						let mut peer_state = peer_state_mutex.lock().unwrap();
 						peer_state.pending_msg_events.append(&mut msg_events);
 					}
-					#[cfg(debug_assertions)]
+					#[cfg(any(feature = "_test_utils", test))]
 					{
 						if let None = per_peer_state.get(&$counterparty_node_id) {
 							// This shouldn't occour in tests unless an unkown counterparty_node_id
@@ -1206,10 +1206,10 @@ macro_rules! handle_error {
 								=> {
 									assert_eq!(*data, expected_error_str);
 									if let Some((err_channel_id, _user_channel_id)) = chan_id {
-										assert_eq!(*channel_id, err_channel_id);
+										debug_assert_eq!(*channel_id, err_channel_id);
 									}
 								}
-								_ => panic!("Unexpected event"),
+								_ => debug_assert!(false, "Unexpected event"),
 							}
 						}
 					}
@@ -3565,7 +3565,7 @@ where
 	/// Fails an HTLC backwards to the sender of it to us.
 	/// Note that we do not assume that channels corresponding to failed HTLCs are still available.
 	fn fail_htlc_backwards_internal(&self, source: &HTLCSource, payment_hash: &PaymentHash, onion_error: &HTLCFailReason, destination: HTLCDestination) {
-		#[cfg(debug_assertions)]
+		#[cfg(any(feature = "_test_utils", test))]
 		{
 			// Ensure that no peer state channel storage lock is not held when calling this
 			// function.
@@ -3574,7 +3574,7 @@ where
 			// this function with any `per_peer_state` peer lock aquired would.
 			let per_peer_state = self.per_peer_state.read().unwrap();
 			for (_, peer) in per_peer_state.iter() {
-				assert!(peer.try_lock().is_ok());
+				debug_assert!(peer.try_lock().is_ok());
 			}
 		}
 
