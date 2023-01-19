@@ -35,7 +35,7 @@ use crate::chain::BestBlock;
 use crate::chain::chaininterface::{FeeEstimator, ConfirmationTarget, LowerBoundedFeeEstimator};
 use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, LATENCY_GRACE_PERIOD_BLOCKS};
 use crate::chain::transaction::{OutPoint, TransactionData};
-use crate::chain::keysinterface::{Sign, EntropySource, ChannelSigner, SignerProvider, NodeSigner, Recipient};
+use crate::chain::keysinterface::{WriteableEcdsaChannelSigner, EntropySource, ChannelSigner, SignerProvider, NodeSigner, Recipient};
 use crate::util::events::ClosureReason;
 use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer, VecWriter};
 use crate::util::logger::Logger;
@@ -498,7 +498,7 @@ pub(crate) const EXPIRE_PREV_CONFIG_TICKS: usize = 5;
 //
 // Holder designates channel data owned for the benefice of the user client.
 // Counterparty designates channel data owned by the another channel participant entity.
-pub(super) struct Channel<Signer: Sign> {
+pub(super) struct Channel<Signer: WriteableEcdsaChannelSigner> {
 	config: LegacyChannelConfig,
 
 	// Track the previous `ChannelConfig` so that we can continue forwarding HTLCs that were
@@ -832,7 +832,7 @@ macro_rules! secp_check {
 	};
 }
 
-impl<Signer: Sign> Channel<Signer> {
+impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 	/// Returns the value to use for `holder_max_htlc_value_in_flight_msat` as a percentage of the
 	/// `channel_value_satoshis` in msat, set through
 	/// [`ChannelHandshakeConfig::max_inbound_htlc_value_in_flight_percent_of_channel`]
@@ -6133,7 +6133,7 @@ impl Readable for AnnouncementSigsState {
 	}
 }
 
-impl<Signer: Sign> Writeable for Channel<Signer> {
+impl<Signer: WriteableEcdsaChannelSigner> Writeable for Channel<Signer> {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		// Note that we write out as if remove_uncommitted_htlcs_and_mark_paused had just been
 		// called.

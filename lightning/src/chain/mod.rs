@@ -18,7 +18,7 @@ use bitcoin::network::constants::Network;
 use bitcoin::secp256k1::PublicKey;
 
 use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, MonitorEvent};
-use crate::chain::keysinterface::Sign;
+use crate::chain::keysinterface::WriteableEcdsaChannelSigner;
 use crate::chain::transaction::{OutPoint, TransactionData};
 
 use crate::prelude::*;
@@ -291,7 +291,7 @@ pub enum ChannelMonitorUpdateStatus {
 /// multiple instances.
 ///
 /// [`PermanentFailure`]: ChannelMonitorUpdateStatus::PermanentFailure
-pub trait Watch<ChannelSigner: Sign> {
+pub trait Watch<ChannelSigner: WriteableEcdsaChannelSigner> {
 	/// Watches a channel identified by `funding_txo` using `monitor`.
 	///
 	/// Implementations are responsible for watching the chain for the funding transaction along

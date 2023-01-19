@@ -424,7 +424,7 @@ pub trait EcdsaChannelSigner: ChannelSigner {
 ///
 /// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 /// [`ChannelMonitor`]: crate::chain::channelmonitor::ChannelMonitor
-pub trait Sign: EcdsaChannelSigner + Writeable {}
+pub trait WriteableEcdsaChannelSigner: EcdsaChannelSigner + Writeable {}
 
 /// Specifies the recipient of an invoice.
 ///
@@ -505,8 +505,8 @@ pub trait NodeSigner {
 
 /// A trait that can return signer instances for individual channels.
 pub trait SignerProvider {
-	/// A type which implements [`Sign`] which will be returned by [`Self::derive_channel_signer`].
-	type Signer : Sign;
+	/// A type which implements [`WriteableEcdsaChannelSigner`] which will be returned by [`Self::derive_channel_signer`].
+	type Signer : WriteableEcdsaChannelSigner;
 
 	/// Generates a unique `channel_keys_id` that can be used to obtain a [`Self::Signer`] through
 	/// [`SignerProvider::derive_channel_signer`]. The `user_channel_id` is provided to allow
@@ -526,7 +526,7 @@ pub trait SignerProvider {
 
 	/// Reads a [`Signer`] for this [`SignerProvider`] from the given input stream.
 	/// This is only called during deserialization of other objects which contain
-	/// [`Sign`]-implementing objects (i.e., [`ChannelMonitor`]s and [`ChannelManager`]s).
+	/// [`WriteableEcdsaChannelSigner`]-implementing objects (i.e., [`ChannelMonitor`]s and [`ChannelManager`]s).
 	/// The bytes are exactly those which `<Self::Signer as Writeable>::write()` writes, and
 	/// contain no versioning scheme. You may wish to include your own version prefix and ensure
 	/// you've read all of the provided bytes to ensure no corruption occurred.
@@ -553,7 +553,7 @@ pub trait SignerProvider {
 }
 
 #[derive(Clone)]
-/// A simple implementation of [`Sign`] that just keeps the private keys in memory.
+/// A simple implementation of [`WriteableEcdsaChannelSigner`] that just keeps the private keys in memory.
 ///
 /// This implementation performs no policy checks and is insufficient by itself as
 /// a secure external signer.
@@ -899,7 +899,7 @@ const SERIALIZATION_VERSION: u8 = 1;
 
 const MIN_SERIALIZATION_VERSION: u8 = 1;
 
-impl Sign for InMemorySigner {}
+impl WriteableEcdsaChannelSigner for InMemorySigner {}
 
 impl Writeable for InMemorySigner {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), Error> {
@@ -1064,7 +1064,7 @@ impl KeysManager {
 			Err(_) => panic!("Your rng is busted"),
 		}
 	}
-	/// Derive an old [`Sign`] containing per-channel secrets based on a key derivation parameters.
+	/// Derive an old [`WriteableEcdsaChannelSigner`] containing per-channel secrets based on a key derivation parameters.
 	pub fn derive_channel_keys(&self, channel_value_satoshis: u64, params: &[u8; 32]) -> InMemorySigner {
 		let chan_id = u64::from_be_bytes(params[0..8].try_into().unwrap());
 		let mut unique_start = Sha256::engine();

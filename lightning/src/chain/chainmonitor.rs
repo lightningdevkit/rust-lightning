@@ -31,7 +31,7 @@ use crate::chain::{ChannelMonitorUpdateStatus, Filter, WatchedOutput};
 use crate::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, Balance, MonitorEvent, TransactionOutputs, LATENCY_GRACE_PERIOD_BLOCKS};
 use crate::chain::transaction::{OutPoint, TransactionData};
-use crate::chain::keysinterface::Sign;
+use crate::chain::keysinterface::WriteableEcdsaChannelSigner;
 use crate::util::atomic_counter::AtomicCounter;
 use crate::util::logger::Logger;
 use crate::util::errors::APIError;
@@ -68,7 +68,7 @@ impl MonitorUpdateId {
 	pub(crate) fn from_monitor_update(update: &ChannelMonitorUpdate) -> Self {
 		Self { contents: UpdateOrigin::OffChain(update.update_id) }
 	}
-	pub(crate) fn from_new_monitor<ChannelSigner: Sign>(monitor: &ChannelMonitor<ChannelSigner>) -> Self {
+	pub(crate) fn from_new_monitor<ChannelSigner: WriteableEcdsaChannelSigner>(monitor: &ChannelMonitor<ChannelSigner>) -> Self {
 		Self { contents: UpdateOrigin::OffChain(monitor.get_latest_update_id()) }
 	}
 }
@@ -93,7 +93,7 @@ impl MonitorUpdateId {
 ///    [`ChannelMonitorUpdateStatus::PermanentFailure`], in which case the channel will likely be
 ///    closed without broadcasting the latest state. See
 ///    [`ChannelMonitorUpdateStatus::PermanentFailure`] for more details.
-pub trait Persist<ChannelSigner: Sign> {
+pub trait Persist<ChannelSigner: WriteableEcdsaChannelSigner> {
 	/// Persist a new channel's data in response to a [`chain::Watch::watch_channel`] call. This is
 	/// called by [`ChannelManager`] for new channels, or may be called directly, e.g. on startup.
 	///
@@ -147,7 +147,7 @@ pub trait Persist<ChannelSigner: Sign> {
 	fn update_persisted_channel(&self, channel_id: OutPoint, update: Option<&ChannelMonitorUpdate>, data: &ChannelMonitor<ChannelSigner>, update_id: MonitorUpdateId) -> ChannelMonitorUpdateStatus;
 }
 
-struct MonitorHolder<ChannelSigner: Sign> {
+struct MonitorHolder<ChannelSigner: WriteableEcdsaChannelSigner> {
 	monitor: ChannelMonitor<ChannelSigner>,
 	/// The full set of pending monitor updates for this Channel.
 	///
@@ -182,7 +182,7 @@ struct MonitorHolder<ChannelSigner: Sign> {
 	last_chain_persist_height: AtomicUsize,
 }
 
-impl<ChannelSigner: Sign> MonitorHolder<ChannelSigner> {
+impl<ChannelSigner: WriteableEcdsaChannelSigner> MonitorHolder<ChannelSigner> {
 	fn has_pending_offchain_updates(&self, pending_monitor_updates_lock: &MutexGuard<Vec<MonitorUpdateId>>) -> bool {
 		pending_monitor_updates_lock.iter().any(|update_id|
 			if let UpdateOrigin::OffChain(_) = update_id.contents { true } else { false })
@@ -197,12 +197,12 @@ impl<ChannelSigner: Sign> MonitorHolder<ChannelSigner> {
 ///
 /// Note that this holds a mutex in [`ChainMonitor`] and may block other events until it is
 /// released.
-pub struct LockedChannelMonitor<'a, ChannelSigner: Sign> {
+pub struct LockedChannelMonitor<'a, ChannelSigner: WriteableEcdsaChannelSigner> {
 	lock: RwLockReadGuard<'a, HashMap<OutPoint, MonitorHolder<ChannelSigner>>>,
 	funding_txo: OutPoint,
 }
 
-impl<ChannelSigner: Sign> Deref for LockedChannelMonitor<'_, ChannelSigner> {
+impl<ChannelSigner: WriteableEcdsaChannelSigner> Deref for LockedChannelMonitor<'_, ChannelSigner> {
 	type Target = ChannelMonitor<ChannelSigner>;
 	fn deref(&self) -> &ChannelMonitor<ChannelSigner> {
 		&self.lock.get(&self.funding_txo).expect("Checked at construction").monitor
@@ -218,7 +218,7 @@ impl<ChannelSigner: Sign> Deref for LockedChannelMonitor<'_, ChannelSigner> {
 ///
 /// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 /// [module-level documentation]: crate::chain::chainmonitor
-pub struct ChainMonitor<ChannelSigner: Sign, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref>
+pub struct ChainMonitor<ChannelSigner: WriteableEcdsaChannelSigner, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref>
 	where C::Target: chain::Filter,
         T::Target: BroadcasterInterface,
         F::Target: FeeEstimator,
@@ -242,7 +242,7 @@ pub struct ChainMonitor<ChannelSigner: Sign, C: Deref, T: Deref, F: Deref, L: De
 	highest_chain_height: AtomicUsize,
 }
 
-impl<ChannelSigner: Sign, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref> ChainMonitor<ChannelSigner, C, T, F, L, P>
+impl<ChannelSigner: WriteableEcdsaChannelSigner, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref> ChainMonitor<ChannelSigner, C, T, F, L, P>
 where C::Target: chain::Filter,
 	    T::Target: BroadcasterInterface,
 	    F::Target: FeeEstimator,
@@ -516,7 +516,7 @@ where C::Target: chain::Filter,
 	}
 }
 
-impl<ChannelSigner: Sign, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref>
+impl<ChannelSigner: WriteableEcdsaChannelSigner, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref>
 chain::Listen for ChainMonitor<ChannelSigner, C, T, F, L, P>
 where
 	C::Target: chain::Filter,
@@ -543,7 +543,7 @@ where
 	}
 }
 
-impl<ChannelSigner: Sign, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref>
+impl<ChannelSigner: WriteableEcdsaChannelSigner, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref>
 chain::Confirm for ChainMonitor<ChannelSigner, C, T, F, L, P>
 where
 	C::Target: chain::Filter,
@@ -592,7 +592,7 @@ where
 	}
 }
 
-impl<ChannelSigner: Sign, C: Deref , T: Deref , F: Deref , L: Deref , P: Deref >
+impl<ChannelSigner: WriteableEcdsaChannelSigner, C: Deref , T: Deref , F: Deref , L: Deref , P: Deref >
 chain::Watch<ChannelSigner> for ChainMonitor<ChannelSigner, C, T, F, L, P>
 where C::Target: chain::Filter,
 	    T::Target: BroadcasterInterface,
@@ -735,7 +735,7 @@ where C::Target: chain::Filter,
 	}
 }
 
-impl<ChannelSigner: Sign, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref> events::EventsProvider for ChainMonitor<ChannelSigner, C, T, F, L, P>
+impl<ChannelSigner: WriteableEcdsaChannelSigner, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref> events::EventsProvider for ChainMonitor<ChannelSigner, C, T, F, L, P>
 	where C::Target: chain::Filter,
 	      T::Target: BroadcasterInterface,
 	      F::Target: FeeEstimator,
