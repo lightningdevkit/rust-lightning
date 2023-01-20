@@ -498,7 +498,7 @@ pub(crate) const EXPIRE_PREV_CONFIG_TICKS: usize = 5;
 //
 // Holder designates channel data owned for the benefice of the user client.
 // Counterparty designates channel data owned by the another channel participant entity.
-pub(super) struct Channel<Signer: WriteableEcdsaChannelSigner> {
+pub(super) struct Channel<Signer: ChannelSigner> {
 	config: LegacyChannelConfig,
 
 	// Track the previous `ChannelConfig` so that we can continue forwarding HTLCs that were
