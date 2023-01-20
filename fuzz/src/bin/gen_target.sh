@@ -9,6 +9,7 @@ GEN_TEST() {
 GEN_TEST chanmon_deser
 GEN_TEST chanmon_consistency
 GEN_TEST full_stack
+GEN_TEST invoice_deser
 GEN_TEST invoice_request_deser
 GEN_TEST offer_deser
 GEN_TEST onion_message
