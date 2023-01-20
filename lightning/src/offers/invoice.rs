@@ -267,6 +267,11 @@ pub struct UnsignedInvoice<'a> {
 }
 
 impl<'a> UnsignedInvoice<'a> {
+	/// The public key corresponding to the key needed to sign the invoice.
+	pub fn signing_pubkey(&self) -> PublicKey {
+		self.invoice.fields().signing_pubkey
+	}
+
 	/// Signs the invoice using the given function.
 	pub fn sign<F, E>(self, sign: F) -> Result<Invoice, SignError<E>>
 	where
@@ -453,12 +458,12 @@ impl Invoice {
 		&self.contents.fields().features
 	}
 
-	/// The public key used to sign invoices.
+	/// The public key corresponding to the key used to sign the invoice.
 	pub fn signing_pubkey(&self) -> PublicKey {
 		self.contents.fields().signing_pubkey
 	}
 
-	/// Signature of the invoice using [`Invoice::signing_pubkey`].
+	/// Signature of the invoice verified using [`Invoice::signing_pubkey`].
 	pub fn signature(&self) -> Signature {
 		self.signature
 	}
