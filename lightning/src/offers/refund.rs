@@ -216,7 +216,7 @@ impl RefundBuilder {
 ///
 /// [`Invoice`]: crate::offers::invoice::Invoice
 /// [`Offer`]: crate::offers::offer::Offer
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Refund {
 	pub(super) bytes: Vec<u8>,
 	pub(super) contents: RefundContents,
@@ -225,7 +225,7 @@ pub struct Refund {
 /// The contents of a [`Refund`], which may be shared with an [`Invoice`].
 ///
 /// [`Invoice`]: crate::offers::invoice::Invoice
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub(super) struct RefundContents {
 	payer: PayerContents,
 	// offer fields

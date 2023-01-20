@@ -22,6 +22,7 @@ pub mod offer_deser;
 pub mod onion_message;
 pub mod peer_crypt;
 pub mod process_network_graph;
+pub mod refund_deser;
 pub mod router;
 pub mod zbase32;
 

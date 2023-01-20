@@ -13,6 +13,7 @@ GEN_TEST offer_deser
 GEN_TEST onion_message
 GEN_TEST peer_crypt
 GEN_TEST process_network_graph
+GEN_TEST refund_deser
 GEN_TEST router
 GEN_TEST zbase32
 GEN_TEST indexedmap
