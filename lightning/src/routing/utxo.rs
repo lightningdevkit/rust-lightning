@@ -47,10 +47,10 @@ pub trait UtxoLookup {
 pub(crate) fn check_channel_announcement<U: Deref>(
 	utxo_lookup: &Option<U>, msg: &msgs::UnsignedChannelAnnouncement
 ) -> Result<Option<u64>, msgs::LightningError> where U::Target: UtxoLookup {
-	let utxo_value = match utxo_lookup {
+	match utxo_lookup {
 		&None => {
 			// Tentatively accept, potentially exposing us to DoS attacks
-			None
+			Ok(None)
 		},
 		&Some(ref utxo_lookup) => {
 			match utxo_lookup.get_utxo(&msg.chain_hash, msg.short_channel_id) {
@@ -58,20 +58,28 @@ pub(crate) fn check_channel_announcement<U: Deref>(
 					let expected_script =
 						make_funding_redeemscript_from_slices(msg.bitcoin_key_1.as_slice(), msg.bitcoin_key_2.as_slice()).to_v0_p2wsh();
 					if script_pubkey != expected_script {
-						return Err(LightningError{err: format!("Channel announcement key ({}) didn't match on-chain script ({})", expected_script.to_hex(), script_pubkey.to_hex()), action: ErrorAction::IgnoreError});
+						return Err(LightningError{
+							err: format!("Channel announcement key ({}) didn't match on-chain script ({})",
+								expected_script.to_hex(), script_pubkey.to_hex()),
+							action: ErrorAction::IgnoreError
+						});
 					}
-					//TODO: Check if value is worth storing, use it to inform routing, and compare it
-					//to the new HTLC max field in channel_update
-					Some(value)
+					Ok(Some(value))
 				},
 				Err(UtxoLookupError::UnknownChain) => {
-					return Err(LightningError{err: format!("Channel announced on an unknown chain ({})", msg.chain_hash.encode().to_hex()), action: ErrorAction::IgnoreError});
+					Err(LightningError {
+						err: format!("Channel announced on an unknown chain ({})",
+							msg.chain_hash.encode().to_hex()),
+						action: ErrorAction::IgnoreError
+					})
 				},
 				Err(UtxoLookupError::UnknownTx) => {
-					return Err(LightningError{err: "Channel announced without corresponding UTXO entry".to_owned(), action: ErrorAction::IgnoreError});
+					Err(LightningError {
+						err: "Channel announced without corresponding UTXO entry".to_owned(),
+						action: ErrorAction::IgnoreError
+					})
 				},
 			}
 		}
-	};
-	Ok(utxo_value)
+	}
 }
