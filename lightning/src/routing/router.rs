@@ -3530,7 +3530,7 @@ mod tests {
 		.push_opcode(opcodes::all::OP_CHECKMULTISIG).into_script().to_v0_p2wsh();
 
 		*chain_monitor.utxo_ret.lock().unwrap() = Ok(TxOut { value: 15, script_pubkey: good_script.clone() });
-		gossip_sync.add_chain_access(Some(chain_monitor));
+		gossip_sync.add_utxo_lookup(Some(chain_monitor));
 
 		add_channel(&gossip_sync, &secp_ctx, &privkeys[0], &privkeys[2], ChannelFeatures::from_le_bytes(id_to_feature_flags(3)), 333);
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[0], UnsignedChannelUpdate {

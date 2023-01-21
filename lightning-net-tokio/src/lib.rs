@@ -33,12 +33,12 @@
 //! type FeeEstimator = dyn lightning::chain::chaininterface::FeeEstimator + Send + Sync;
 //! type Logger = dyn lightning::util::logger::Logger + Send + Sync;
 //! type NodeSigner = dyn lightning::chain::keysinterface::NodeSigner + Send + Sync;
-//! type ChainAccess = dyn lightning::chain::Access + Send + Sync;
+//! type UtxoLookup = dyn lightning::routing::utxo::UtxoLookup + Send + Sync;
 //! type ChainFilter = dyn lightning::chain::Filter + Send + Sync;
 //! type DataPersister = dyn lightning::chain::chainmonitor::Persist<lightning::chain::keysinterface::InMemorySigner> + Send + Sync;
 //! type ChainMonitor = lightning::chain::chainmonitor::ChainMonitor<lightning::chain::keysinterface::InMemorySigner, Arc<ChainFilter>, Arc<TxBroadcaster>, Arc<FeeEstimator>, Arc<Logger>, Arc<DataPersister>>;
 //! type ChannelManager = Arc<lightning::ln::channelmanager::SimpleArcChannelManager<ChainMonitor, TxBroadcaster, FeeEstimator, Logger>>;
-//! type PeerManager = Arc<lightning::ln::peer_handler::SimpleArcPeerManager<lightning_net_tokio::SocketDescriptor, ChainMonitor, TxBroadcaster, FeeEstimator, ChainAccess, Logger>>;
+//! type PeerManager = Arc<lightning::ln::peer_handler::SimpleArcPeerManager<lightning_net_tokio::SocketDescriptor, ChainMonitor, TxBroadcaster, FeeEstimator, UtxoLookup, Logger>>;
 //!
 //! // Connect to node with pubkey their_node_id at addr:
 //! async fn connect_to_node(peer_manager: PeerManager, chain_monitor: Arc<ChainMonitor>, channel_manager: ChannelManager, their_node_id: PublicKey, addr: SocketAddr) {

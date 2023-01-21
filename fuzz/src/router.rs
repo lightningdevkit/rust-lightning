@@ -11,11 +11,11 @@ use bitcoin::blockdata::script::Builder;
 use bitcoin::blockdata::transaction::TxOut;
 use bitcoin::hash_types::BlockHash;
 
-use lightning::chain;
 use lightning::chain::transaction::OutPoint;
 use lightning::ln::channelmanager::{self, ChannelDetails, ChannelCounterparty};
 use lightning::ln::msgs;
 use lightning::routing::gossip::{NetworkGraph, RoutingFees};
+use lightning::routing::utxo::{UtxoLookup, UtxoLookupError};
 use lightning::routing::router::{find_route, PaymentParameters, RouteHint, RouteHintHop, RouteParameters};
 use lightning::routing::scoring::FixedPenaltyScorer;
 use lightning::util::config::UserConfig;
@@ -84,13 +84,13 @@ impl InputData {
 struct FuzzChainSource {
 	input: Arc<InputData>,
 }
-impl chain::Access for FuzzChainSource {
-	fn get_utxo(&self, _genesis_hash: &BlockHash, _short_channel_id: u64) -> Result<TxOut, chain::AccessError> {
+impl UtxoLookup for FuzzChainSource {
+	fn get_utxo(&self, _genesis_hash: &BlockHash, _short_channel_id: u64) -> Result<TxOut, UtxoLookupError> {
 		match self.input.get_slice(2) {
-			Some(&[0, _]) => Err(chain::AccessError::UnknownChain),
-			Some(&[1, _]) => Err(chain::AccessError::UnknownTx),
+			Some(&[0, _]) => Err(UtxoLookupError::UnknownChain),
+			Some(&[1, _]) => Err(UtxoLookupError::UnknownTx),
 			Some(&[_, x]) => Ok(TxOut { value: 0, script_pubkey: Builder::new().push_int(x as i64).into_script().to_v0_p2wsh() }),
-			None => Err(chain::AccessError::UnknownTx),
+			None => Err(UtxoLookupError::UnknownTx),
 			_ => unreachable!(),
 		}
 	}

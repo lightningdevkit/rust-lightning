@@ -12,7 +12,6 @@
 use bitcoin::blockdata::block::{Block, BlockHeader};
 use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::blockdata::script::Script;
-use bitcoin::blockdata::transaction::TxOut;
 use bitcoin::hash_types::{BlockHash, Txid};
 use bitcoin::network::constants::Network;
 use bitcoin::secp256k1::PublicKey;
@@ -60,26 +59,6 @@ impl BestBlock {
 	pub fn height(&self) -> u32 { self.height }
 }
 
-/// An error when accessing the chain via [`Access`].
-#[derive(Clone, Debug)]
-pub enum AccessError {
-	/// The requested chain is unknown.
-	UnknownChain,
-
-	/// The requested transaction doesn't exist or hasn't confirmed.
-	UnknownTx,
-}
-
-/// The `Access` trait defines behavior for accessing chain data and state, such as blocks and
-/// UTXOs.
-pub trait Access {
-	/// Returns the transaction output of a funding transaction encoded by [`short_channel_id`].
-	/// Returns an error if `genesis_hash` is for a different chain or if such a transaction output
-	/// is unknown.
-	///
-	/// [`short_channel_id`]: https://github.com/lightning/bolts/blob/master/07-routing-gossip.md#definition-of-short_channel_id
-	fn get_utxo(&self, genesis_hash: &BlockHash, short_channel_id: u64) -> Result<TxOut, AccessError>;
-}
 
 /// The `Listen` trait is used to notify when blocks have been connected or disconnected from the
 /// chain.

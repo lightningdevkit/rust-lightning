@@ -22,8 +22,8 @@ use crate::ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 use crate::ln::{msgs, wire};
 use crate::ln::msgs::LightningError;
 use crate::ln::script::ShutdownScript;
-use crate::routing::gossip::NetworkGraph;
-use crate::routing::gossip::NodeId;
+use crate::routing::gossip::{NetworkGraph, NodeId};
+use crate::routing::utxo::{UtxoLookup, UtxoLookupError};
 use crate::routing::router::{find_route, InFlightHtlcs, Route, RouteHop, RouteParameters, Router, ScorerAccountingForInFlightHtlcs};
 use crate::routing::scoring::FixedPenaltyScorer;
 use crate::util::config::UserConfig;
@@ -839,7 +839,7 @@ impl core::fmt::Debug for OnGetShutdownScriptpubkey {
 
 pub struct TestChainSource {
 	pub genesis_hash: BlockHash,
-	pub utxo_ret: Mutex<Result<TxOut, chain::AccessError>>,
+	pub utxo_ret: Mutex<Result<TxOut, UtxoLookupError>>,
 	pub watched_txn: Mutex<HashSet<(Txid, Script)>>,
 	pub watched_outputs: Mutex<HashSet<(OutPoint, Script)>>,
 }
@@ -856,10 +856,10 @@ impl TestChainSource {
 	}
 }
 
-impl chain::Access for TestChainSource {
-	fn get_utxo(&self, genesis_hash: &BlockHash, _short_channel_id: u64) -> Result<TxOut, chain::AccessError> {
+impl UtxoLookup for TestChainSource {
+	fn get_utxo(&self, genesis_hash: &BlockHash, _short_channel_id: u64) -> Result<TxOut, UtxoLookupError> {
 		if self.genesis_hash != *genesis_hash {
-			return Err(chain::AccessError::UnknownChain);
+			return Err(UtxoLookupError::UnknownChain);
 		}
 
 		self.utxo_ret.lock().unwrap().clone()
