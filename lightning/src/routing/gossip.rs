@@ -16,16 +16,14 @@ use bitcoin::secp256k1;
 
 use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::hashes::Hash;
-use bitcoin::blockdata::transaction::TxOut;
 use bitcoin::hash_types::BlockHash;
 
-use crate::ln::chan_utils::make_funding_redeemscript_from_slices;
 use crate::ln::features::{ChannelFeatures, NodeFeatures, InitFeatures};
 use crate::ln::msgs::{DecodeError, ErrorAction, Init, LightningError, RoutingMessageHandler, NetAddress, MAX_VALUE_MSAT};
 use crate::ln::msgs::{ChannelAnnouncement, ChannelUpdate, NodeAnnouncement, GossipTimestampFilter};
 use crate::ln::msgs::{QueryChannelRange, ReplyChannelRange, QueryShortChannelIds, ReplyShortChannelIdsEnd};
 use crate::ln::msgs;
-use crate::routing::utxo::{UtxoLookup, UtxoLookupError};
+use crate::routing::utxo::{self, UtxoLookup};
 use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer, MaybeReadable};
 use crate::util::logger::{Logger, Level};
 use crate::util::events::{MessageSendEvent, MessageSendEventsProvider};
@@ -42,7 +40,6 @@ use crate::sync::{RwLock, RwLockReadGuard};
 use core::sync::atomic::{AtomicUsize, Ordering};
 use crate::sync::Mutex;
 use core::ops::{Bound, Deref};
-use bitcoin::hashes::hex::ToHex;
 
 #[cfg(feature = "std")]
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -1497,32 +1494,7 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 			}
 		}
 
-		let utxo_value = match &utxo_lookup {
-			&None => {
-				// Tentatively accept, potentially exposing us to DoS attacks
-				None
-			},
-			&Some(ref utxo_lookup) => {
-				match utxo_lookup.get_utxo(&msg.chain_hash, msg.short_channel_id) {
-					Ok(TxOut { value, script_pubkey }) => {
-						let expected_script =
-							make_funding_redeemscript_from_slices(msg.bitcoin_key_1.as_slice(), msg.bitcoin_key_2.as_slice()).to_v0_p2wsh();
-						if script_pubkey != expected_script {
-							return Err(LightningError{err: format!("Channel announcement key ({}) didn't match on-chain script ({})", expected_script.to_hex(), script_pubkey.to_hex()), action: ErrorAction::IgnoreError});
-						}
-						//TODO: Check if value is worth storing, use it to inform routing, and compare it
-						//to the new HTLC max field in channel_update
-						Some(value)
-					},
-					Err(UtxoLookupError::UnknownChain) => {
-						return Err(LightningError{err: format!("Channel announced on an unknown chain ({})", msg.chain_hash.encode().to_hex()), action: ErrorAction::IgnoreError});
-					},
-					Err(UtxoLookupError::UnknownTx) => {
-						return Err(LightningError{err: "Channel announced without corresponding UTXO entry".to_owned(), action: ErrorAction::IgnoreError});
-					},
-				}
-			},
-		};
+		let utxo_value = utxo::check_channel_announcement(utxo_lookup, msg)?;
 
 		#[allow(unused_mut, unused_assignments)]
 		let mut announcement_received_time = 0;

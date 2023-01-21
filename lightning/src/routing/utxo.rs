@@ -14,6 +14,15 @@
 //! order to announce a channel. This module handles that checking.
 
 use bitcoin::{BlockHash, TxOut};
+use bitcoin::hashes::hex::ToHex;
+
+use crate::ln::chan_utils::make_funding_redeemscript_from_slices;
+use crate::ln::msgs::{self, LightningError, ErrorAction};
+use crate::util::ser::Writeable;
+
+use crate::prelude::*;
+
+use core::ops::Deref;
 
 /// An error when accessing the chain via [`UtxoLookup`].
 #[derive(Clone, Debug)]
@@ -33,4 +42,36 @@ pub trait UtxoLookup {
 	///
 	/// [`short_channel_id`]: https://github.com/lightning/bolts/blob/master/07-routing-gossip.md#definition-of-short_channel_id
 	fn get_utxo(&self, genesis_hash: &BlockHash, short_channel_id: u64) -> Result<TxOut, UtxoLookupError>;
+}
+
+pub(crate) fn check_channel_announcement<U: Deref>(
+	utxo_lookup: &Option<U>, msg: &msgs::UnsignedChannelAnnouncement
+) -> Result<Option<u64>, msgs::LightningError> where U::Target: UtxoLookup {
+	let utxo_value = match utxo_lookup {
+		&None => {
+			// Tentatively accept, potentially exposing us to DoS attacks
+			None
+		},
+		&Some(ref utxo_lookup) => {
+			match utxo_lookup.get_utxo(&msg.chain_hash, msg.short_channel_id) {
+				Ok(TxOut { value, script_pubkey }) => {
+					let expected_script =
+						make_funding_redeemscript_from_slices(msg.bitcoin_key_1.as_slice(), msg.bitcoin_key_2.as_slice()).to_v0_p2wsh();
+					if script_pubkey != expected_script {
+						return Err(LightningError{err: format!("Channel announcement key ({}) didn't match on-chain script ({})", expected_script.to_hex(), script_pubkey.to_hex()), action: ErrorAction::IgnoreError});
+					}
+					//TODO: Check if value is worth storing, use it to inform routing, and compare it
+					//to the new HTLC max field in channel_update
+					Some(value)
+				},
+				Err(UtxoLookupError::UnknownChain) => {
+					return Err(LightningError{err: format!("Channel announced on an unknown chain ({})", msg.chain_hash.encode().to_hex()), action: ErrorAction::IgnoreError});
+				},
+				Err(UtxoLookupError::UnknownTx) => {
+					return Err(LightningError{err: "Channel announced without corresponding UTXO entry".to_owned(), action: ErrorAction::IgnoreError});
+				},
+			}
+		}
+	};
+	Ok(utxo_value)
 }
