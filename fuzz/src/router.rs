@@ -99,12 +99,12 @@ impl<Out: test_logger::Output> UtxoLookup for FuzzChainSource<'_, '_, Out> {
 			&[1, _] => UtxoResult::Sync(Err(UtxoLookupError::UnknownTx)),
 			&[2, _] => {
 				let future = UtxoFuture::new();
-				future.resolve(self.net_graph, Ok(txo_res));
+				future.resolve_without_forwarding(self.net_graph, Ok(txo_res));
 				UtxoResult::Async(future.clone())
 			},
 			&[3, _] => {
 				let future = UtxoFuture::new();
-				future.resolve(self.net_graph, Err(UtxoLookupError::UnknownTx));
+				future.resolve_without_forwarding(self.net_graph, Err(UtxoLookupError::UnknownTx));
 				UtxoResult::Async(future.clone())
 			},
 			&[4, _] => {

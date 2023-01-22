@@ -272,6 +272,36 @@ where U::Target: UtxoLookup, L::Target: Logger
 			false
 		}
 	}
+
+	/// Used to broadcast forward gossip messages which were validated async.
+	///
+	/// Note that this will ignore events other than `Broadcast*` or messages with too much excess
+	/// data.
+	pub(super) fn forward_gossip_msg(&self, mut ev: MessageSendEvent) {
+		match &mut ev {
+			MessageSendEvent::BroadcastChannelAnnouncement { msg, ref mut update_msg } => {
+				if msg.contents.excess_data.len() > MAX_EXCESS_BYTES_FOR_RELAY { return; }
+				if update_msg.as_ref()
+					.map(|msg| msg.contents.excess_data.len()).unwrap_or(0) > MAX_EXCESS_BYTES_FOR_RELAY
+				{
+					*update_msg = None;
+				}
+			},
+			MessageSendEvent::BroadcastChannelUpdate { msg } => {
+				if msg.contents.excess_data.len() > MAX_EXCESS_BYTES_FOR_RELAY { return; }
+			},
+			MessageSendEvent::BroadcastNodeAnnouncement { msg } => {
+				if msg.contents.excess_data.len() >  MAX_EXCESS_BYTES_FOR_RELAY ||
+				   msg.contents.excess_address_data.len() > MAX_EXCESS_BYTES_FOR_RELAY ||
+				   msg.contents.excess_data.len() + msg.contents.excess_address_data.len() > MAX_EXCESS_BYTES_FOR_RELAY
+				{
+					return;
+				}
+			},
+			_ => return,
+		}
+		self.pending_events.lock().unwrap().push(ev);
+	}
 }
 
 impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
