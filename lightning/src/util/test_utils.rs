@@ -571,6 +571,8 @@ impl msgs::RoutingMessageHandler for TestRoutingMessageHandler {
 		features.set_gossip_queries_optional();
 		features
 	}
+
+	fn processing_queue_high(&self) -> bool { false }
 }
 
 impl events::MessageSendEventsProvider for TestRoutingMessageHandler {

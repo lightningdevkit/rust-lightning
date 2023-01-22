@@ -81,6 +81,7 @@ impl RoutingMessageHandler for IgnoringMessageHandler {
 	fn provided_init_features(&self, _their_node_id: &PublicKey) -> InitFeatures {
 		InitFeatures::empty()
 	}
+	fn processing_queue_high(&self) -> bool { false }
 }
 impl OnionMessageProvider for IgnoringMessageHandler {
 	fn next_onion_message_for_peer(&self, _peer_node_id: PublicKey) -> Option<msgs::OnionMessage> { None }

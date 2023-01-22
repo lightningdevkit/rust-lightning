@@ -623,6 +623,7 @@ mod tests {
 		fn handle_query_short_channel_ids(&self, _their_node_id: &PublicKey, _msg: QueryShortChannelIds) -> Result<(), LightningError> { Ok(()) }
 		fn provided_node_features(&self) -> NodeFeatures { NodeFeatures::empty() }
 		fn provided_init_features(&self, _their_node_id: &PublicKey) -> InitFeatures { InitFeatures::empty() }
+		fn processing_queue_high(&self) -> bool { false }
 	}
 	impl ChannelMessageHandler for MsgHandler {
 		fn handle_open_channel(&self, _their_node_id: &PublicKey, _msg: &OpenChannel) {}

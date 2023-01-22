@@ -148,6 +148,13 @@ impl UtxoFuture {
 	///
 	/// This is identical to calling [`UtxoFuture::resolve`] with a dummy `gossip`, disabling
 	/// forwarding the validated gossip message onwards to peers.
+	///
+	/// Because this may cause the [`NetworkGraph`]'s [`processing_queue_high`] to flip, in order
+	/// to allow us to interact with peers again, you should call [`PeerManager::process_events`]
+	/// after this.
+	///
+	/// [`processing_queue_high`]: crate::ln::msgs::RoutingMessageHandler::processing_queue_high
+	/// [`PeerManager::process_events`]: crate::ln::peer_handler::PeerManager::process_events
 	pub fn resolve_without_forwarding<L: Deref>(&self,
 		graph: &NetworkGraph<L>, result: Result<TxOut, UtxoLookupError>)
 	where L::Target: Logger {
@@ -158,6 +165,13 @@ impl UtxoFuture {
 	///
 	/// The given `gossip` is used to broadcast any validated messages onwards to all peers which
 	/// have available buffer space.
+	///
+	/// Because this may cause the [`NetworkGraph`]'s [`processing_queue_high`] to flip, in order
+	/// to allow us to interact with peers again, you should call [`PeerManager::process_events`]
+	/// after this.
+	///
+	/// [`processing_queue_high`]: crate::ln::msgs::RoutingMessageHandler::processing_queue_high
+	/// [`PeerManager::process_events`]: crate::ln::peer_handler::PeerManager::process_events
 	pub fn resolve<L: Deref, G: Deref<Target=NetworkGraph<L>>, U: Deref, GS: Deref<Target = P2PGossipSync<G, U, L>>>(&self,
 		graph: &NetworkGraph<L>, gossip: GS, result: Result<TxOut, UtxoLookupError>
 	) where L::Target: Logger, U::Target: UtxoLookup {
@@ -508,6 +522,38 @@ impl PendingChecks {
 					},
 				}
 			}
+		}
+	}
+
+	/// The maximum number of pending gossip checks before [`Self::too_many_checks_pending`]
+	/// returns `true`. Note that this isn't a strict upper-bound on the number of checks pending -
+	/// each peer may, at a minimum, read one more socket buffer worth of `channel_announcement`s
+	/// which we'll have to process. With a socket buffer of 4KB and a minimum
+	/// `channel_announcement` size of, roughly, 429 bytes, this may leave us with `10*our peer
+	/// count` messages to process beyond this limit. Because we'll probably have a few peers,
+	/// there's no reason for this constant to be materially less than 30 or so, and 32 in-flight
+	/// checks should be more than enough for decent parallelism.
+	const MAX_PENDING_LOOKUPS: usize = 32;
+
+	/// Returns true if there are a large number of async checks pending and future
+	/// `channel_announcement` messages should be delayed. Note that this is only a hint and
+	/// messages already in-flight may still have to be handled for various reasons.
+	pub(super) fn too_many_checks_pending(&self) -> bool {
+		let mut pending_checks = self.internal.lock().unwrap();
+		if pending_checks.channels.len() > Self::MAX_PENDING_LOOKUPS {
+			// If we have many channel checks pending, ensure we don't have any dangling checks
+			// (i.e. checks where the user told us they'd call back but drop'd the `AccessFuture`
+			// instead) before we commit to applying backpressure.
+			pending_checks.channels.retain(|_, chan| {
+				Weak::upgrade(&chan).is_some()
+			});
+			pending_checks.nodes.retain(|_, channels| {
+				channels.retain(|chan| Weak::upgrade(&chan).is_some());
+				!channels.is_empty()
+			});
+			pending_checks.channels.len() > Self::MAX_PENDING_LOOKUPS
+		} else {
+			false
 		}
 	}
 }

@@ -1082,6 +1082,13 @@ pub trait RoutingMessageHandler : MessageSendEventsProvider {
 	/// list of `short_channel_id`s.
 	fn handle_query_short_channel_ids(&self, their_node_id: &PublicKey, msg: QueryShortChannelIds) -> Result<(), LightningError>;
 
+	// Handler queueing status:
+	/// Indicates that there are a large number of [`ChannelAnnouncement`] (or other) messages
+	/// pending some async action. While there is no guarantee of the rate of future messages, the
+	/// caller should seek to reduce the rate of new gossip messages handled, especially
+	/// [`ChannelAnnouncement`]s.
+	fn processing_queue_high(&self) -> bool;
+
 	// Handler information:
 	/// Gets the node feature flags which this handler itself supports. All available handlers are
 	/// queried similarly and their feature flags are OR'd together to form the [`NodeFeatures`]

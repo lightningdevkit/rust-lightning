@@ -657,6 +657,10 @@ where U::Target: UtxoLookup, L::Target: Logger
 		features.set_gossip_queries_optional();
 		features
 	}
+
+	fn processing_queue_high(&self) -> bool {
+		self.network_graph.pending_checks.too_many_checks_pending()
+	}
 }
 
 impl<G: Deref<Target=NetworkGraph<L>>, U: Deref, L: Deref> MessageSendEventsProvider for P2PGossipSync<G, U, L>
