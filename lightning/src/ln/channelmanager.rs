@@ -5044,7 +5044,7 @@ where
 					), chan),
 					// Note that announcement_signatures fails if the channel cannot be announced,
 					// so get_channel_update_for_broadcast will never fail by the time we get here.
-					update_msg: self.get_channel_update_for_broadcast(chan.get()).unwrap(),
+					update_msg: Some(self.get_channel_update_for_broadcast(chan.get()).unwrap()),
 				});
 			},
 			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
@@ -5970,7 +5970,7 @@ where
 										msg: announcement,
 										// Note that announcement_signatures fails if the channel cannot be announced,
 										// so get_channel_update_for_broadcast will never fail by the time we get here.
-										update_msg: self.get_channel_update_for_broadcast(channel).unwrap(),
+										update_msg: Some(self.get_channel_update_for_broadcast(channel).unwrap()),
 									});
 								}
 							}
@@ -6286,6 +6286,7 @@ where
 						&events::MessageSendEvent::SendChannelAnnouncement { .. } => false,
 						&events::MessageSendEvent::BroadcastChannelAnnouncement { .. } => true,
 						&events::MessageSendEvent::BroadcastChannelUpdate { .. } => true,
+						&events::MessageSendEvent::BroadcastNodeAnnouncement { .. } => true,
 						&events::MessageSendEvent::SendChannelUpdate { .. } => false,
 						&events::MessageSendEvent::HandleError { .. } => false,
 						&events::MessageSendEvent::SendChannelRangeQuery { .. } => false,

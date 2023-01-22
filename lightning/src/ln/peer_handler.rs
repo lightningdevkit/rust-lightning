@@ -1711,10 +1711,12 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 								self.forward_broadcast_msg(peers, &wire::Message::ChannelAnnouncement(msg), None),
 							_ => {},
 						}
-						match self.message_handler.route_handler.handle_channel_update(&update_msg) {
-							Ok(_) | Err(LightningError { action: msgs::ErrorAction::IgnoreDuplicateGossip, .. }) =>
-								self.forward_broadcast_msg(peers, &wire::Message::ChannelUpdate(update_msg), None),
-							_ => {},
+						if let Some(msg) = update_msg {
+							match self.message_handler.route_handler.handle_channel_update(&msg) {
+								Ok(_) | Err(LightningError { action: msgs::ErrorAction::IgnoreDuplicateGossip, .. }) =>
+									self.forward_broadcast_msg(peers, &wire::Message::ChannelUpdate(msg), None),
+								_ => {},
+							}
 						}
 					},
 					MessageSendEvent::BroadcastChannelUpdate { msg } => {
@@ -1722,6 +1724,14 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 						match self.message_handler.route_handler.handle_channel_update(&msg) {
 							Ok(_) | Err(LightningError { action: msgs::ErrorAction::IgnoreDuplicateGossip, .. }) =>
 								self.forward_broadcast_msg(peers, &wire::Message::ChannelUpdate(msg), None),
+							_ => {},
+						}
+					},
+					MessageSendEvent::BroadcastNodeAnnouncement { msg } => {
+						log_debug!(self.logger, "Handling BroadcastNodeAnnouncement event in peer_handler for node {}", msg.contents.node_id);
+						match self.message_handler.route_handler.handle_node_announcement(&msg) {
+							Ok(_) | Err(LightningError { action: msgs::ErrorAction::IgnoreDuplicateGossip, .. }) =>
+								self.forward_broadcast_msg(peers, &wire::Message::NodeAnnouncement(msg), None),
 							_ => {},
 						}
 					},
