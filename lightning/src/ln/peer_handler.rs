@@ -563,6 +563,9 @@ pub struct PeerManager<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: D
 
 	peer_counter: AtomicCounter,
 
+	gossip_processing_backlogged: AtomicBool,
+	gossip_processing_backlog_lifted: AtomicBool,
+
 	node_signer: NS,
 
 	logger: L,
@@ -721,6 +724,8 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 			blocked_event_processors: AtomicBool::new(false),
 			ephemeral_key_midstate,
 			peer_counter: AtomicCounter::new(),
+			gossip_processing_backlogged: AtomicBool::new(false),
+			gossip_processing_backlog_lifted: AtomicBool::new(false),
 			last_node_announcement_serial: AtomicU32::new(current_time),
 			logger,
 			custom_message_handler,
@@ -847,7 +852,20 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 		Ok(())
 	}
 
-	fn do_attempt_write_data(&self, descriptor: &mut Descriptor, peer: &mut Peer) {
+	fn peer_should_read(&self, peer: &Peer) -> bool {
+		!self.gossip_processing_backlogged.load(Ordering::Relaxed) && peer.should_read()
+	}
+
+	fn update_gossip_backlogged(&self) {
+		let new_state = self.message_handler.route_handler.processing_queue_high();
+		let prev_state = self.gossip_processing_backlogged.swap(new_state, Ordering::Relaxed);
+		if prev_state && !new_state {
+			self.gossip_processing_backlog_lifted.store(true, Ordering::Relaxed);
+		}
+	}
+
+	fn do_attempt_write_data(&self, descriptor: &mut Descriptor, peer: &mut Peer, force_one_write: bool) {
+		let mut have_written = false;
 		while !peer.awaiting_write_event {
 			if peer.should_buffer_onion_message() {
 				if let Some(peer_node_id) = peer.their_node_id {
@@ -905,12 +923,22 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 			}
 
 			let next_buff = match peer.pending_outbound_buffer.front() {
-				None => return,
+				None => {
+					if force_one_write && !have_written {
+						let should_read = self.peer_should_read(&peer);
+						if should_read {
+							let data_sent = descriptor.send_data(&[], should_read);
+							debug_assert_eq!(data_sent, 0, "Can't write more than no data");
+						}
+					}
+					return
+				},
 				Some(buff) => buff,
 			};
 
 			let pending = &next_buff[peer.pending_outbound_buffer_first_msg_offset..];
-			let data_sent = descriptor.send_data(pending, peer.should_read());
+			let data_sent = descriptor.send_data(pending, self.peer_should_read(&peer));
+			have_written = true;
 			peer.pending_outbound_buffer_first_msg_offset += data_sent;
 			if peer.pending_outbound_buffer_first_msg_offset == next_buff.len() {
 				peer.pending_outbound_buffer_first_msg_offset = 0;
@@ -945,7 +973,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 			Some(peer_mutex) => {
 				let mut peer = peer_mutex.lock().unwrap();
 				peer.awaiting_write_event = false;
-				self.do_attempt_write_data(descriptor, &mut peer);
+				self.do_attempt_write_data(descriptor, &mut peer, false);
 			}
 		};
 		Ok(())
@@ -1192,7 +1220,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 							}
 						}
 					}
-					pause_read = !peer.should_read();
+					pause_read = !self.peer_should_read(&peer);
 
 					if let Some(message) = msg_to_handle {
 						match self.handle_message(&peer_mutex, peer_lock, message) {
@@ -1404,12 +1432,14 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 						.map_err(|e| -> MessageHandlingError { e.into() })? {
 					should_forward = Some(wire::Message::ChannelAnnouncement(msg));
 				}
+				self.update_gossip_backlogged();
 			},
 			wire::Message::NodeAnnouncement(msg) => {
 				if self.message_handler.route_handler.handle_node_announcement(&msg)
 						.map_err(|e| -> MessageHandlingError { e.into() })? {
 					should_forward = Some(wire::Message::NodeAnnouncement(msg));
 				}
+				self.update_gossip_backlogged();
 			},
 			wire::Message::ChannelUpdate(msg) => {
 				self.message_handler.chan_handler.handle_channel_update(&their_node_id, &msg);
@@ -1417,6 +1447,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 						.map_err(|e| -> MessageHandlingError { e.into() })? {
 					should_forward = Some(wire::Message::ChannelUpdate(msg));
 				}
+				self.update_gossip_backlogged();
 			},
 			wire::Message::QueryShortChannelIds(msg) => {
 				self.message_handler.route_handler.handle_query_short_channel_ids(&their_node_id, msg)?;
@@ -1567,6 +1598,9 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 				}
 			}
 		}
+
+		self.update_gossip_backlogged();
+		let flush_read_disabled = self.gossip_processing_backlog_lifted.swap(false, Ordering::Relaxed);
 
 		let mut peers_to_disconnect = HashMap::new();
 		let mut events_generated = self.message_handler.chan_handler.get_and_clear_pending_msg_events();
@@ -1797,7 +1831,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 			}
 
 			for (descriptor, peer_mutex) in peers.iter() {
-				self.do_attempt_write_data(&mut (*descriptor).clone(), &mut *peer_mutex.lock().unwrap());
+				self.do_attempt_write_data(&mut (*descriptor).clone(), &mut *peer_mutex.lock().unwrap(), flush_read_disabled);
 			}
 		}
 		if !peers_to_disconnect.is_empty() {
@@ -1819,7 +1853,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 							self.enqueue_message(&mut *peer, &msg);
 							// This isn't guaranteed to work, but if there is enough free
 							// room in the send buffer, put the error message there...
-							self.do_attempt_write_data(&mut descriptor, &mut *peer);
+							self.do_attempt_write_data(&mut descriptor, &mut *peer, false);
 						} else {
 							log_trace!(self.logger, "Handling DisconnectPeer HandleError event in peer_handler for node {} with no message", log_pubkey!(node_id));
 						}
@@ -1927,6 +1961,9 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 		{
 			let peers_lock = self.peers.read().unwrap();
 
+			self.update_gossip_backlogged();
+			let flush_read_disabled = self.gossip_processing_backlog_lifted.swap(false, Ordering::Relaxed);
+
 			for (descriptor, peer_mutex) in peers_lock.iter() {
 				let mut peer = peer_mutex.lock().unwrap();
 				if !peer.channel_encryptor.is_ready_for_encryption() || peer.their_node_id.is_none() {
@@ -1942,34 +1979,37 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 					continue;
 				}
 
-				if peer.awaiting_pong_timer_tick_intervals == -1 {
-					// Magic value set in `maybe_send_extra_ping`.
-					peer.awaiting_pong_timer_tick_intervals = 1;
+				loop { // Used as a `goto` to skip writing a Ping message.
+					if peer.awaiting_pong_timer_tick_intervals == -1 {
+						// Magic value set in `maybe_send_extra_ping`.
+						peer.awaiting_pong_timer_tick_intervals = 1;
+						peer.received_message_since_timer_tick = false;
+						break;
+					}
+
+					if (peer.awaiting_pong_timer_tick_intervals > 0 && !peer.received_message_since_timer_tick)
+						|| peer.awaiting_pong_timer_tick_intervals as u64 >
+							MAX_BUFFER_DRAIN_TICK_INTERVALS_PER_PEER as u64 * peers_lock.len() as u64
+					{
+						descriptors_needing_disconnect.push(descriptor.clone());
+						break;
+					}
 					peer.received_message_since_timer_tick = false;
-					continue;
-				}
 
-				if (peer.awaiting_pong_timer_tick_intervals > 0 && !peer.received_message_since_timer_tick)
-					|| peer.awaiting_pong_timer_tick_intervals as u64 >
-						MAX_BUFFER_DRAIN_TICK_INTERVALS_PER_PEER as u64 * peers_lock.len() as u64
-				{
-					descriptors_needing_disconnect.push(descriptor.clone());
-					continue;
-				}
-				peer.received_message_since_timer_tick = false;
+					if peer.awaiting_pong_timer_tick_intervals > 0 {
+						peer.awaiting_pong_timer_tick_intervals += 1;
+						break;
+					}
 
-				if peer.awaiting_pong_timer_tick_intervals > 0 {
-					peer.awaiting_pong_timer_tick_intervals += 1;
-					continue;
+					peer.awaiting_pong_timer_tick_intervals = 1;
+					let ping = msgs::Ping {
+						ponglen: 0,
+						byteslen: 64,
+					};
+					self.enqueue_message(&mut *peer, &ping);
+					break;
 				}
-
-				peer.awaiting_pong_timer_tick_intervals = 1;
-				let ping = msgs::Ping {
-					ponglen: 0,
-					byteslen: 64,
-				};
-				self.enqueue_message(&mut *peer, &ping);
-				self.do_attempt_write_data(&mut (descriptor.clone()), &mut *peer);
+				self.do_attempt_write_data(&mut (descriptor.clone()), &mut *peer, flush_read_disabled);
 			}
 		}
 
