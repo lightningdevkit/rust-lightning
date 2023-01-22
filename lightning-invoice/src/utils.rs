@@ -54,7 +54,7 @@ use core::time::Duration;
 pub fn create_phantom_invoice<ES: Deref, NS: Deref, L: Deref>(
 	amt_msat: Option<u64>, payment_hash: Option<PaymentHash>, description: String,
 	invoice_expiry_delta_secs: u32, phantom_route_hints: Vec<PhantomRouteHints>, entropy_source: ES,
-	node_signer: NS, logger: L, network: Currency,
+	node_signer: NS, logger: L, network: Currency, duration_since_epoch: Duration,
 ) -> Result<Invoice, SignOrCreationError<()>>
 where
 	ES::Target: EntropySource,
@@ -65,7 +65,7 @@ where
 	let description = InvoiceDescription::Direct(&description,);
 	_create_phantom_invoice::<ES, NS, L>(
 		amt_msat, payment_hash, description, invoice_expiry_delta_secs, phantom_route_hints,
-		entropy_source, node_signer, logger, network,
+		entropy_source, node_signer, logger, network, duration_since_epoch,
 	)
 }
 
@@ -104,7 +104,7 @@ where
 pub fn create_phantom_invoice_with_description_hash<ES: Deref, NS: Deref, L: Deref>(
 	amt_msat: Option<u64>, payment_hash: Option<PaymentHash>, invoice_expiry_delta_secs: u32,
 	description_hash: Sha256, phantom_route_hints: Vec<PhantomRouteHints>, entropy_source: ES,
-	node_signer: NS, logger: L, network: Currency
+	node_signer: NS, logger: L, network: Currency, duration_since_epoch: Duration,
 ) -> Result<Invoice, SignOrCreationError<()>>
 where
 	ES::Target: EntropySource,
@@ -113,7 +113,7 @@ where
 {
 	_create_phantom_invoice::<ES, NS, L>(
 		amt_msat, payment_hash, InvoiceDescription::Hash(&description_hash),
-		invoice_expiry_delta_secs, phantom_route_hints, entropy_source, node_signer, logger, network,
+		invoice_expiry_delta_secs, phantom_route_hints, entropy_source, node_signer, logger, network, duration_since_epoch,
 	)
 }
 
@@ -121,7 +121,7 @@ where
 fn _create_phantom_invoice<ES: Deref, NS: Deref, L: Deref>(
 	amt_msat: Option<u64>, payment_hash: Option<PaymentHash>, description: InvoiceDescription,
 	invoice_expiry_delta_secs: u32, phantom_route_hints: Vec<PhantomRouteHints>, entropy_source: ES,
-	node_signer: NS, logger: L, network: Currency,
+	node_signer: NS, logger: L, network: Currency, duration_since_epoch: Duration,
 ) -> Result<Invoice, SignOrCreationError<()>>
 where
 	ES::Target: EntropySource,
@@ -151,10 +151,7 @@ where
 			amt_msat,
 			payment_hash,
 			invoice_expiry_delta_secs,
-			SystemTime::now()
-				.duration_since(UNIX_EPOCH)
-				.expect("Time must be > 1970")
-				.as_secs(),
+			duration_since_epoch.as_secs(),
 		)
 		.map_err(|_| SignOrCreationError::CreationError(CreationError::InvalidAmount))?;
 		(payment_hash, payment_secret)
