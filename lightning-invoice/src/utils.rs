@@ -21,7 +21,6 @@ use secp256k1::PublicKey;
 use core::ops::Deref;
 use core::time::Duration;
 
-#[cfg(feature = "std")]
 /// Utility to create an invoice that can be paid to one of multiple nodes, or a "phantom invoice."
 /// See [`PhantomKeysManager`] for more information on phantom node payments.
 ///
@@ -128,7 +127,6 @@ where
 	NS::Target: NodeSigner,
 	L::Target: Logger,
 {
-	use std::time::{SystemTime, UNIX_EPOCH};
 
 	if phantom_route_hints.len() == 0 {
 		return Err(SignOrCreationError::CreationError(
@@ -161,10 +159,7 @@ where
 			amt_msat,
 			invoice_expiry_delta_secs,
 			&entropy_source,
-			SystemTime::now()
-				.duration_since(UNIX_EPOCH)
-				.expect("Time must be > 1970")
-				.as_secs(),
+			duration_since_epoch.as_secs(),
 		)
 		.map_err(|_| SignOrCreationError::CreationError(CreationError::InvalidAmount))?
 	};
