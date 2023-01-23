@@ -68,7 +68,6 @@ where
 	)
 }
 
-#[cfg(feature = "std")]
 /// Utility to create an invoice that can be paid to one of multiple nodes, or a "phantom invoice."
 /// See [`PhantomKeysManager`] for more information on phantom node payments.
 ///
@@ -116,7 +115,6 @@ where
 	)
 }
 
-#[cfg(feature = "std")]
 fn _create_phantom_invoice<ES: Deref, NS: Deref, L: Deref>(
 	amt_msat: Option<u64>, payment_hash: Option<PaymentHash>, description: InvoiceDescription, duration_since_epoch: Duration,
 	invoice_expiry_delta_secs: u32, phantom_route_hints: Vec<PhantomRouteHints>, entropy_source: ES,
@@ -1099,7 +1097,6 @@ mod test {
 	}
 
 	#[test]
-	#[cfg(feature = "std")]
 	fn create_phantom_invoice_with_description_hash() {
 		let chanmon_cfgs = create_chanmon_cfgs(3);
 		let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
