@@ -52,9 +52,9 @@ use core::time::Duration;
 /// [`ChannelManager::create_inbound_payment_for_hash`]: lightning::ln::channelmanager::ChannelManager::create_inbound_payment_for_hash
 /// [`PhantomRouteHints::channels`]: lightning::ln::channelmanager::PhantomRouteHints::channels
 pub fn create_phantom_invoice<ES: Deref, NS: Deref, L: Deref>(
-	amt_msat: Option<u64>, payment_hash: Option<PaymentHash>, description: String,
+	amt_msat: Option<u64>, payment_hash: Option<PaymentHash>, description: String, duration_since_epoch: Duration,
 	invoice_expiry_delta_secs: u32, phantom_route_hints: Vec<PhantomRouteHints>, entropy_source: ES,
-	node_signer: NS, logger: L, network: Currency, duration_since_epoch: Duration,
+	node_signer: NS, logger: L, network: Currency,
 ) -> Result<Invoice, SignOrCreationError<()>>
 where
 	ES::Target: EntropySource,
@@ -64,8 +64,8 @@ where
 	let description = Description::new(description).map_err(SignOrCreationError::CreationError)?;
 	let description = InvoiceDescription::Direct(&description,);
 	_create_phantom_invoice::<ES, NS, L>(
-		amt_msat, payment_hash, description, invoice_expiry_delta_secs, phantom_route_hints,
-		entropy_source, node_signer, logger, network, duration_since_epoch,
+		amt_msat, payment_hash, description, duration_since_epoch, invoice_expiry_delta_secs, phantom_route_hints,
+		entropy_source, node_signer, logger, network,
 	)
 }
 
@@ -103,8 +103,8 @@ where
 /// [`PhantomRouteHints::channels`]: lightning::ln::channelmanager::PhantomRouteHints::channels
 pub fn create_phantom_invoice_with_description_hash<ES: Deref, NS: Deref, L: Deref>(
 	amt_msat: Option<u64>, payment_hash: Option<PaymentHash>, invoice_expiry_delta_secs: u32,
-	description_hash: Sha256, phantom_route_hints: Vec<PhantomRouteHints>, entropy_source: ES,
-	node_signer: NS, logger: L, network: Currency, duration_since_epoch: Duration,
+	description_hash: Sha256, duration_since_epoch: Duration, phantom_route_hints: Vec<PhantomRouteHints>, entropy_source: ES,
+	node_signer: NS, logger: L, network: Currency,
 ) -> Result<Invoice, SignOrCreationError<()>>
 where
 	ES::Target: EntropySource,
@@ -112,16 +112,16 @@ where
 	L::Target: Logger,
 {
 	_create_phantom_invoice::<ES, NS, L>(
-		amt_msat, payment_hash, InvoiceDescription::Hash(&description_hash),
-		invoice_expiry_delta_secs, phantom_route_hints, entropy_source, node_signer, logger, network, duration_since_epoch,
+		amt_msat, payment_hash, InvoiceDescription::Hash(&description_hash), duration_since_epoch,
+		invoice_expiry_delta_secs, phantom_route_hints, entropy_source, node_signer, logger, network,
 	)
 }
 
 #[cfg(feature = "std")]
 fn _create_phantom_invoice<ES: Deref, NS: Deref, L: Deref>(
-	amt_msat: Option<u64>, payment_hash: Option<PaymentHash>, description: InvoiceDescription,
+	amt_msat: Option<u64>, payment_hash: Option<PaymentHash>, description: InvoiceDescription, duration_since_epoch: Duration,
 	invoice_expiry_delta_secs: u32, phantom_route_hints: Vec<PhantomRouteHints>, entropy_source: ES,
-	node_signer: NS, logger: L, network: Currency, duration_since_epoch: Duration,
+	node_signer: NS, logger: L, network: Currency,
 ) -> Result<Invoice, SignOrCreationError<()>>
 where
 	ES::Target: EntropySource,
@@ -984,8 +984,8 @@ mod test {
 
 		let invoice =
 			crate::utils::create_phantom_invoice::<&test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestLogger>(
-				Some(payment_amt), payment_hash, "test".to_string(), non_default_invoice_expiry_secs,
-				route_hints, &nodes[1].keys_manager, &nodes[1].keys_manager, &nodes[1].logger, Currency::BitcoinTestnet
+				Some(payment_amt), payment_hash, "test".to_string(), Duration::from_secs(1234567), non_default_invoice_expiry_secs,
+				route_hints, &nodes[1].keys_manager, &nodes[1].keys_manager, &nodes[1].logger, Currency::BitcoinTestnet,
 			).unwrap();
 		let (payment_hash, payment_secret) = (PaymentHash(invoice.payment_hash().into_inner()), *invoice.payment_secret());
 		let payment_preimage = if user_generated_pmt_hash {
@@ -1092,7 +1092,7 @@ mod test {
 			nodes[2].node.get_phantom_route_hints(),
 		];
 
-		let invoice = crate::utils::create_phantom_invoice::<&test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestLogger>(Some(payment_amt), Some(payment_hash), "test".to_string(), 3600, route_hints, &nodes[1].keys_manager, &nodes[1].keys_manager, &nodes[1].logger, Currency::BitcoinTestnet).unwrap();
+		let invoice = crate::utils::create_phantom_invoice::<&test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestLogger>(Some(payment_amt), Some(payment_hash), "test".to_string(), Duration::from_secs(1234567), 3600,  route_hints, &nodes[1].keys_manager, &nodes[1].keys_manager, &nodes[1].logger, Currency::BitcoinTestnet).unwrap();
 
 		let chan_0_1 = &nodes[1].node.list_usable_channels()[0];
 		assert_eq!(invoice.route_hints()[0].0[0].htlc_minimum_msat, chan_0_1.inbound_htlc_minimum_msat);
@@ -1123,7 +1123,7 @@ mod test {
 			&test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestLogger,
 		>(
 			Some(payment_amt), None, non_default_invoice_expiry_secs, description_hash,
-			route_hints, &nodes[1].keys_manager, &nodes[1].keys_manager, &nodes[1].logger, Currency::BitcoinTestnet
+			Duration::from_secs(1234567), route_hints, &nodes[1].keys_manager, &nodes[1].keys_manager, &nodes[1].logger, Currency::BitcoinTestnet
 		)
 		.unwrap();
 		assert_eq!(invoice.amount_pico_btc(), Some(200_000));
@@ -1437,7 +1437,7 @@ mod test {
 			.map(|route_hint| route_hint.phantom_scid)
 			.collect::<HashSet<u64>>();
 
-		let invoice = crate::utils::create_phantom_invoice::<&test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestLogger>(invoice_amt, None, "test".to_string(), 3600, phantom_route_hints, &invoice_node.keys_manager, &invoice_node.keys_manager, &invoice_node.logger, Currency::BitcoinTestnet).unwrap();
+		let invoice = crate::utils::create_phantom_invoice::<&test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestLogger>(invoice_amt, None, "test".to_string(), Duration::from_secs(1234567), 3600, phantom_route_hints, &invoice_node.keys_manager, &invoice_node.keys_manager, &invoice_node.logger, Currency::BitcoinTestnet).unwrap();
 
 		let invoice_hints = invoice.private_routes();
 
