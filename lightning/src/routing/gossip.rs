@@ -1921,7 +1921,7 @@ impl ReadOnlyNetworkGraph<'_> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
 	use crate::ln::channelmanager;
 	use crate::ln::chan_utils::make_funding_redeemscript;
 	#[cfg(feature = "std")]
@@ -1988,7 +1988,7 @@ mod tests {
 		assert!(!gossip_sync.should_request_full_sync(&node_id));
 	}
 
-	fn get_signed_node_announcement<F: Fn(&mut UnsignedNodeAnnouncement)>(f: F, node_key: &SecretKey, secp_ctx: &Secp256k1<secp256k1::All>) -> NodeAnnouncement {
+	pub(crate) fn get_signed_node_announcement<F: Fn(&mut UnsignedNodeAnnouncement)>(f: F, node_key: &SecretKey, secp_ctx: &Secp256k1<secp256k1::All>) -> NodeAnnouncement {
 		let node_id = NodeId::from_pubkey(&PublicKey::from_secret_key(&secp_ctx, node_key));
 		let mut unsigned_announcement = UnsignedNodeAnnouncement {
 			features: channelmanager::provided_node_features(&UserConfig::default()),
@@ -2008,7 +2008,7 @@ mod tests {
 		}
 	}
 
-	fn get_signed_channel_announcement<F: Fn(&mut UnsignedChannelAnnouncement)>(f: F, node_1_key: &SecretKey, node_2_key: &SecretKey, secp_ctx: &Secp256k1<secp256k1::All>) -> ChannelAnnouncement {
+	pub(crate) fn get_signed_channel_announcement<F: Fn(&mut UnsignedChannelAnnouncement)>(f: F, node_1_key: &SecretKey, node_2_key: &SecretKey, secp_ctx: &Secp256k1<secp256k1::All>) -> ChannelAnnouncement {
 		let node_id_1 = PublicKey::from_secret_key(&secp_ctx, node_1_key);
 		let node_id_2 = PublicKey::from_secret_key(&secp_ctx, node_2_key);
 		let node_1_btckey = &SecretKey::from_slice(&[40; 32]).unwrap();
@@ -2035,14 +2035,14 @@ mod tests {
 		}
 	}
 
-	fn get_channel_script(secp_ctx: &Secp256k1<secp256k1::All>) -> Script {
+	pub(crate) fn get_channel_script(secp_ctx: &Secp256k1<secp256k1::All>) -> Script {
 		let node_1_btckey = SecretKey::from_slice(&[40; 32]).unwrap();
 		let node_2_btckey = SecretKey::from_slice(&[39; 32]).unwrap();
 		make_funding_redeemscript(&PublicKey::from_secret_key(secp_ctx, &node_1_btckey),
 			&PublicKey::from_secret_key(secp_ctx, &node_2_btckey)).to_v0_p2wsh()
 	}
 
-	fn get_signed_channel_update<F: Fn(&mut UnsignedChannelUpdate)>(f: F, node_key: &SecretKey, secp_ctx: &Secp256k1<secp256k1::All>) -> ChannelUpdate {
+	pub(crate) fn get_signed_channel_update<F: Fn(&mut UnsignedChannelUpdate)>(f: F, node_key: &SecretKey, secp_ctx: &Secp256k1<secp256k1::All>) -> ChannelUpdate {
 		let mut unsigned_channel_update = UnsignedChannelUpdate {
 			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
 			short_channel_id: 0,
