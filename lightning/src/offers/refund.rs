@@ -10,10 +10,11 @@
 //! Data structures and encoding for refunds.
 //!
 //! A [`Refund`] is an "offer for money" and is typically constructed by a merchant and presented
-//! directly to the customer. The recipient responds with an `Invoice` to be paid.
+//! directly to the customer. The recipient responds with an [`Invoice`] to be paid.
 //!
 //! This is an [`InvoiceRequest`] produced *not* in response to an [`Offer`].
 //!
+//! [`Invoice`]: crate::offers::invoice::Invoice
 //! [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 //! [`Offer`]: crate::offers::offer::Offer
 //!
@@ -77,8 +78,10 @@ use core::convert::TryFrom;
 use core::str::FromStr;
 use core::time::Duration;
 use crate::io;
+use crate::ln::PaymentHash;
 use crate::ln::features::InvoiceRequestFeatures;
 use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
+use crate::offers::invoice::{BlindedPayInfo, InvoiceBuilder};
 use crate::offers::invoice_request::{InvoiceRequestTlvStream, InvoiceRequestTlvStreamRef};
 use crate::offers::offer::{OfferTlvStream, OfferTlvStreamRef};
 use crate::offers::parse::{Bech32Encode, ParseError, ParsedMessage, SemanticError};
@@ -191,22 +194,25 @@ impl RefundBuilder {
 	}
 }
 
-/// A `Refund` is a request to send an `Invoice` without a preceding [`Offer`].
+/// A `Refund` is a request to send an [`Invoice`] without a preceding [`Offer`].
 ///
 /// Typically, after an invoice is paid, the recipient may publish a refund allowing the sender to
 /// recoup their funds. A refund may be used more generally as an "offer for money", such as with a
 /// bitcoin ATM.
 ///
+/// [`Invoice`]: crate::offers::invoice::Invoice
 /// [`Offer`]: crate::offers::offer::Offer
 #[derive(Clone, Debug)]
 pub struct Refund {
-	bytes: Vec<u8>,
-	contents: RefundContents,
+	pub(super) bytes: Vec<u8>,
+	pub(super) contents: RefundContents,
 }
 
-/// The contents of a [`Refund`], which may be shared with an `Invoice`.
+/// The contents of a [`Refund`], which may be shared with an [`Invoice`].
+///
+/// [`Invoice`]: crate::offers::invoice::Invoice
 #[derive(Clone, Debug)]
-struct RefundContents {
+pub(super) struct RefundContents {
 	payer: PayerContents,
 	// offer fields
 	metadata: Option<Vec<u8>>,
@@ -239,13 +245,7 @@ impl Refund {
 	/// Whether the refund has expired.
 	#[cfg(feature = "std")]
 	pub fn is_expired(&self) -> bool {
-		match self.absolute_expiry() {
-			Some(seconds_from_epoch) => match SystemTime::UNIX_EPOCH.elapsed() {
-				Ok(elapsed) => elapsed > seconds_from_epoch,
-				Err(_) => false,
-			},
-			None => false,
-		}
+		self.contents.is_expired()
 	}
 
 	/// The issuer of the refund, possibly beginning with `user@domain` or `domain`. Intended to be
@@ -298,6 +298,44 @@ impl Refund {
 		self.contents.payer_note.as_ref().map(|payer_note| PrintableString(payer_note.as_str()))
 	}
 
+	/// Creates an [`Invoice`] for the refund with the given required fields.
+	///
+	/// Unless [`InvoiceBuilder::relative_expiry`] is set, the invoice will expire two hours after
+	/// calling this method in `std` builds. For `no-std` builds, a final [`Duration`] parameter
+	/// must be given, which is used to set [`Invoice::created_at`] since [`std::time::SystemTime`]
+	/// is not available.
+	///
+	/// The caller is expected to remember the preimage of `payment_hash` in order to
+	/// claim a payment for the invoice.
+	///
+	/// The `signing_pubkey` is required to sign the invoice since refunds are not in response to an
+	/// offer, which does have a `signing_pubkey`.
+	///
+	/// The `payment_paths` parameter is useful for maintaining the payment recipient's privacy. It
+	/// must contain one or more elements.
+	///
+	/// Errors if the request contains unknown required features.
+	///
+	/// [`Invoice`]: crate::offers::invoice::Invoice
+	/// [`Invoice::created_at`]: crate::offers::invoice::Invoice::created_at
+	pub fn respond_with(
+		&self, payment_paths: Vec<(BlindedPath, BlindedPayInfo)>, payment_hash: PaymentHash,
+		signing_pubkey: PublicKey,
+		#[cfg(any(test, not(feature = "std")))]
+		created_at: Duration
+	) -> Result<InvoiceBuilder, SemanticError> {
+		if self.features().requires_unknown_bits() {
+			return Err(SemanticError::UnknownRequiredFeatures);
+		}
+
+		#[cfg(all(not(test), feature = "std"))]
+		let created_at = std::time::SystemTime::now()
+			.duration_since(std::time::SystemTime::UNIX_EPOCH)
+			.expect("SystemTime::now() should come after SystemTime::UNIX_EPOCH");
+
+		InvoiceBuilder::for_refund(self, payment_paths, created_at, payment_hash, signing_pubkey)
+	}
+
 	#[cfg(test)]
 	fn as_tlv_stream(&self) -> RefundTlvStreamRef {
 		self.contents.as_tlv_stream()
@@ -311,7 +349,18 @@ impl AsRef<[u8]> for Refund {
 }
 
 impl RefundContents {
-	fn chain(&self) -> ChainHash {
+	#[cfg(feature = "std")]
+	pub(super) fn is_expired(&self) -> bool {
+		match self.absolute_expiry {
+			Some(seconds_from_epoch) => match SystemTime::UNIX_EPOCH.elapsed() {
+				Ok(elapsed) => elapsed > seconds_from_epoch,
+				Err(_) => false,
+			},
+			None => false,
+		}
+	}
+
+	pub(super) fn chain(&self) -> ChainHash {
 		self.chain.unwrap_or_else(|| self.implied_chain())
 	}
 

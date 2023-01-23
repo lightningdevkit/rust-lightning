@@ -147,6 +147,8 @@ pub enum SemanticError {
 	MissingDescription,
 	/// A signing pubkey was not provided.
 	MissingSigningPubkey,
+	/// A signing pubkey was provided but a different one was expected.
+	InvalidSigningPubkey,
 	/// A signing pubkey was provided but was not expected.
 	UnexpectedSigningPubkey,
 	/// A quantity was expected but was missing.
@@ -159,6 +161,14 @@ pub enum SemanticError {
 	MissingPayerMetadata,
 	/// A payer id was expected but was missing.
 	MissingPayerId,
+	/// Blinded paths were expected but were missing.
+	MissingPaths,
+	/// The blinded payinfo given does not match the number of blinded path hops.
+	InvalidPayInfo,
+	/// An invoice creation time was expected but was missing.
+	MissingCreationTime,
+	/// An invoice payment hash was expected but was missing.
+	MissingPaymentHash,
 	/// A signature was expected but was missing.
 	MissingSignature,
 }
