@@ -55,7 +55,7 @@ use crate::ln::msgs::{ChannelMessageHandler, DecodeError, LightningError, MAX_VA
 use crate::ln::outbound_payment;
 use crate::ln::outbound_payment::{OutboundPayments, PendingOutboundPayment};
 use crate::ln::wire::Encode;
-use crate::chain::keysinterface::{EntropySource, KeysManager, NodeSigner, Recipient, Sign, SignerProvider};
+use crate::chain::keysinterface::{EntropySource, KeysManager, NodeSigner, Recipient, SignerProvider, ChannelSigner};
 use crate::util::config::{UserConfig, ChannelConfig};
 use crate::util::events::{Event, EventHandler, EventsProvider, MessageSendEvent, MessageSendEventsProvider, ClosureReason, HTLCDestination};
 use crate::util::events;
@@ -452,7 +452,7 @@ pub(crate) enum MonitorUpdateCompletionAction {
 }
 
 /// State we hold per-peer.
-pub(super) struct PeerState<Signer: Sign> {
+pub(super) struct PeerState<Signer: ChannelSigner> {
 	/// `temporary_channel_id` or `channel_id` -> `channel`.
 	///
 	/// Holds all channels where the peer is the counterparty. Once a channel has been assigned a

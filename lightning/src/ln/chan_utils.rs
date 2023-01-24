@@ -1635,7 +1635,7 @@ mod tests {
 	use crate::ln::chan_utils::{get_htlc_redeemscript, get_to_countersignatory_with_anchors_redeemscript, CommitmentTransaction, TxCreationKeys, ChannelTransactionParameters, CounterpartyChannelTransactionParameters, HTLCOutputInCommitment};
 	use bitcoin::secp256k1::{PublicKey, SecretKey, Secp256k1};
 	use crate::util::test_utils;
-	use crate::chain::keysinterface::{BaseSign, SignerProvider};
+	use crate::chain::keysinterface::{ChannelSigner, SignerProvider};
 	use bitcoin::{Network, Txid};
 	use bitcoin::hashes::Hash;
 	use crate::ln::PaymentHash;

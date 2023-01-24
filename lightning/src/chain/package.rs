@@ -25,7 +25,7 @@ use crate::ln::chan_utils::{TxCreationKeys, HTLCOutputInCommitment};
 use crate::ln::chan_utils;
 use crate::ln::msgs::DecodeError;
 use crate::chain::chaininterface::{FeeEstimator, ConfirmationTarget, MIN_RELAY_FEE_SAT_PER_1000_WEIGHT};
-use crate::chain::keysinterface::Sign;
+use crate::chain::keysinterface::WriteableEcdsaChannelSigner;
 #[cfg(anchors)]
 use crate::chain::onchaintx::ExternalHTLCClaim;
 use crate::chain::onchaintx::OnchainTxHandler;
@@ -392,7 +392,7 @@ impl PackageSolvingData {
 			_ => { mem::discriminant(self) == mem::discriminant(&input) }
 		}
 	}
-	fn finalize_input<Signer: Sign>(&self, bumped_tx: &mut Transaction, i: usize, onchain_handler: &mut OnchainTxHandler<Signer>) -> bool {
+	fn finalize_input<Signer: WriteableEcdsaChannelSigner>(&self, bumped_tx: &mut Transaction, i: usize, onchain_handler: &mut OnchainTxHandler<Signer>) -> bool {
 		match self {
 			PackageSolvingData::RevokedOutput(ref outp) => {
 				let chan_keys = TxCreationKeys::derive_new(&onchain_handler.secp_ctx, &outp.per_commitment_point, &outp.counterparty_delayed_payment_base_key, &outp.counterparty_htlc_base_key, &onchain_handler.signer.pubkeys().revocation_basepoint, &onchain_handler.signer.pubkeys().htlc_basepoint);
@@ -448,7 +448,7 @@ impl PackageSolvingData {
 		}
 		true
 	}
-	fn get_finalized_tx<Signer: Sign>(&self, outpoint: &BitcoinOutPoint, onchain_handler: &mut OnchainTxHandler<Signer>) -> Option<Transaction> {
+	fn get_finalized_tx<Signer: WriteableEcdsaChannelSigner>(&self, outpoint: &BitcoinOutPoint, onchain_handler: &mut OnchainTxHandler<Signer>) -> Option<Transaction> {
 		match self {
 			PackageSolvingData::HolderHTLCOutput(ref outp) => {
 				debug_assert!(!outp.opt_anchors());
@@ -657,7 +657,7 @@ impl PackageTemplate {
 		inputs_weight + witnesses_weight + transaction_weight + output_weight
 	}
 	#[cfg(anchors)]
-	pub(crate) fn construct_malleable_package_with_external_funding<Signer: Sign>(
+	pub(crate) fn construct_malleable_package_with_external_funding<Signer: WriteableEcdsaChannelSigner>(
 		&self, onchain_handler: &mut OnchainTxHandler<Signer>,
 	) -> Option<Vec<ExternalHTLCClaim>> {
 		debug_assert!(self.requires_external_funding());
@@ -675,7 +675,7 @@ impl PackageTemplate {
 		}
 		htlcs
 	}
-	pub(crate) fn finalize_malleable_package<L: Deref, Signer: Sign>(
+	pub(crate) fn finalize_malleable_package<L: Deref, Signer: WriteableEcdsaChannelSigner>(
 		&self, onchain_handler: &mut OnchainTxHandler<Signer>, value: u64, destination_script: Script, logger: &L
 	) -> Option<Transaction> where L::Target: Logger {
 		debug_assert!(self.is_malleable());
@@ -703,7 +703,7 @@ impl PackageTemplate {
 		log_debug!(logger, "Finalized transaction {} ready to broadcast", bumped_tx.txid());
 		Some(bumped_tx)
 	}
-	pub(crate) fn finalize_untractable_package<L: Deref, Signer: Sign>(
+	pub(crate) fn finalize_untractable_package<L: Deref, Signer: WriteableEcdsaChannelSigner>(
 		&self, onchain_handler: &mut OnchainTxHandler<Signer>, logger: &L,
 	) -> Option<Transaction> where L::Target: Logger {
 		debug_assert!(!self.is_malleable());

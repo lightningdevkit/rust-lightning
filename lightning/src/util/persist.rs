@@ -16,7 +16,7 @@ use crate::routing::scoring::WriteableScore;
 use crate::chain;
 use crate::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use crate::chain::chainmonitor::{Persist, MonitorUpdateId};
-use crate::chain::keysinterface::{EntropySource, NodeSigner, Sign, SignerProvider};
+use crate::chain::keysinterface::{EntropySource, NodeSigner, WriteableEcdsaChannelSigner, SignerProvider};
 use crate::chain::transaction::OutPoint;
 use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate};
 use crate::ln::channelmanager::ChannelManager;
@@ -80,7 +80,7 @@ impl<'a, A: KVStorePersister, M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Dere
 	}
 }
 
-impl<ChannelSigner: Sign, K: KVStorePersister> Persist<ChannelSigner> for K {
+impl<ChannelSigner: WriteableEcdsaChannelSigner, K: KVStorePersister> Persist<ChannelSigner> for K {
 	// TODO: We really need a way for the persister to inform the user that its time to crash/shut
 	// down once these start returning failure.
 	// A PermanentFailure implies we should probably just shut down the node since we're

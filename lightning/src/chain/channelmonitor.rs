@@ -42,7 +42,7 @@ use crate::chain;
 use crate::chain::{BestBlock, WatchedOutput};
 use crate::chain::chaininterface::{BroadcasterInterface, FeeEstimator, LowerBoundedFeeEstimator};
 use crate::chain::transaction::{OutPoint, TransactionData};
-use crate::chain::keysinterface::{SpendableOutputDescriptor, StaticPaymentOutputDescriptor, DelayedPaymentOutputDescriptor, Sign, SignerProvider, EntropySource};
+use crate::chain::keysinterface::{SpendableOutputDescriptor, StaticPaymentOutputDescriptor, DelayedPaymentOutputDescriptor, WriteableEcdsaChannelSigner, SignerProvider, EntropySource};
 #[cfg(anchors)]
 use crate::chain::onchaintx::ClaimEvent;
 use crate::chain::onchaintx::OnchainTxHandler;
@@ -706,14 +706,14 @@ impl Readable for IrrevocablyResolvedHTLC {
 /// the "reorg path" (ie disconnecting blocks until you find a common ancestor from both the
 /// returned block hash and the the current chain and then reconnecting blocks to get to the
 /// best chain) upon deserializing the object!
-pub struct ChannelMonitor<Signer: Sign> {
+pub struct ChannelMonitor<Signer: WriteableEcdsaChannelSigner> {
 	#[cfg(test)]
 	pub(crate) inner: Mutex<ChannelMonitorImpl<Signer>>,
 	#[cfg(not(test))]
 	inner: Mutex<ChannelMonitorImpl<Signer>>,
 }
 
-pub(crate) struct ChannelMonitorImpl<Signer: Sign> {
+pub(crate) struct ChannelMonitorImpl<Signer: WriteableEcdsaChannelSigner> {
 	latest_update_id: u64,
 	commitment_transaction_number_obscure_factor: u64,
 
@@ -857,7 +857,7 @@ pub type TransactionOutputs = (Txid, Vec<(u32, TxOut)>);
 #[cfg(any(test, fuzzing, feature = "_test_utils"))]
 /// Used only in testing and fuzzing to check serialization roundtrips don't change the underlying
 /// object
-impl<Signer: Sign> PartialEq for ChannelMonitor<Signer> {
+impl<Signer: WriteableEcdsaChannelSigner> PartialEq for ChannelMonitor<Signer> {
 	fn eq(&self, other: &Self) -> bool {
 		let inner = self.inner.lock().unwrap();
 		let other = other.inner.lock().unwrap();
@@ -868,7 +868,7 @@ impl<Signer: Sign> PartialEq for ChannelMonitor<Signer> {
 #[cfg(any(test, fuzzing, feature = "_test_utils"))]
 /// Used only in testing and fuzzing to check serialization roundtrips don't change the underlying
 /// object
-impl<Signer: Sign> PartialEq for ChannelMonitorImpl<Signer> {
+impl<Signer: WriteableEcdsaChannelSigner> PartialEq for ChannelMonitorImpl<Signer> {
 	fn eq(&self, other: &Self) -> bool {
 		if self.latest_update_id != other.latest_update_id ||
 			self.commitment_transaction_number_obscure_factor != other.commitment_transaction_number_obscure_factor ||
@@ -912,7 +912,7 @@ impl<Signer: Sign> PartialEq for ChannelMonitorImpl<Signer> {
 	}
 }
 
-impl<Signer: Sign> Writeable for ChannelMonitor<Signer> {
+impl<Signer: WriteableEcdsaChannelSigner> Writeable for ChannelMonitor<Signer> {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), Error> {
 		self.inner.lock().unwrap().write(writer)
 	}
@@ -922,7 +922,7 @@ impl<Signer: Sign> Writeable for ChannelMonitor<Signer> {
 const SERIALIZATION_VERSION: u8 = 1;
 const MIN_SERIALIZATION_VERSION: u8 = 1;
 
-impl<Signer: Sign> Writeable for ChannelMonitorImpl<Signer> {
+impl<Signer: WriteableEcdsaChannelSigner> Writeable for ChannelMonitorImpl<Signer> {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), Error> {
 		write_ver_prefix!(writer, SERIALIZATION_VERSION, MIN_SERIALIZATION_VERSION);
 
@@ -1090,7 +1090,7 @@ impl<Signer: Sign> Writeable for ChannelMonitorImpl<Signer> {
 	}
 }
 
-impl<Signer: Sign> ChannelMonitor<Signer> {
+impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 	/// For lockorder enforcement purposes, we need to have a single site which constructs the
 	/// `inner` mutex, otherwise cases where we lock two monitors at the same time (eg in our
 	/// PartialEq implementation) we may decide a lockorder violation has occurred.
@@ -1521,7 +1521,7 @@ impl<Signer: Sign> ChannelMonitor<Signer> {
 	}
 }
 
-impl<Signer: Sign> ChannelMonitorImpl<Signer> {
+impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	/// Helper for get_claimable_balances which does the work for an individual HTLC, generating up
 	/// to one `Balance` for the HTLC.
 	fn get_htlc_balance(&self, htlc: &HTLCOutputInCommitment, holder_commitment: bool,
@@ -1684,7 +1684,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 	}
 }
 
-impl<Signer: Sign> ChannelMonitor<Signer> {
+impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 	/// Gets the balances in this channel which are either claimable by us if we were to
 	/// force-close the channel now or which are claimable on-chain (possibly awaiting
 	/// confirmation).
@@ -2082,7 +2082,7 @@ pub fn deliberately_bogus_accepted_htlc_witness() -> Vec<Vec<u8>> {
 	vec![Vec::new(), Vec::new(), Vec::new(), Vec::new(), deliberately_bogus_accepted_htlc_witness_program().into()].into()
 }
 
-impl<Signer: Sign> ChannelMonitorImpl<Signer> {
+impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	/// Inserts a revocation secret into this channel monitor. Prunes old preimages if neither
 	/// needed by holder commitment transactions HTCLs nor by counterparty ones. Unless we haven't already seen
 	/// counterparty commitment transaction's secret, they are de facto pruned (we can use revocation key).
@@ -3664,7 +3664,7 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 	}
 }
 
-impl<Signer: Sign, T: Deref, F: Deref, L: Deref> chain::Listen for (ChannelMonitor<Signer>, T, F, L)
+impl<Signer: WriteableEcdsaChannelSigner, T: Deref, F: Deref, L: Deref> chain::Listen for (ChannelMonitor<Signer>, T, F, L)
 where
 	T::Target: BroadcasterInterface,
 	F::Target: FeeEstimator,
@@ -3679,7 +3679,7 @@ where
 	}
 }
 
-impl<Signer: Sign, T: Deref, F: Deref, L: Deref> chain::Confirm for (ChannelMonitor<Signer>, T, F, L)
+impl<Signer: WriteableEcdsaChannelSigner, T: Deref, F: Deref, L: Deref> chain::Confirm for (ChannelMonitor<Signer>, T, F, L)
 where
 	T::Target: BroadcasterInterface,
 	F::Target: FeeEstimator,

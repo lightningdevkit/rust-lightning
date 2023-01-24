@@ -234,7 +234,7 @@ impl TestPersister {
 		self.update_rets.lock().unwrap().push_back(next_ret);
 	}
 }
-impl<Signer: keysinterface::Sign> chainmonitor::Persist<Signer> for TestPersister {
+impl<Signer: keysinterface::WriteableEcdsaChannelSigner> chainmonitor::Persist<Signer> for TestPersister {
 	fn persist_new_channel(&self, _funding_txo: OutPoint, _data: &channelmonitor::ChannelMonitor<Signer>, _id: MonitorUpdateId) -> chain::ChannelMonitorUpdateStatus {
 		if let Some(update_ret) = self.update_rets.lock().unwrap().pop_front() {
 			return update_ret

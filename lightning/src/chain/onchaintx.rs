@@ -21,7 +21,7 @@ use bitcoin::hash_types::{Txid, BlockHash};
 use bitcoin::secp256k1::{Secp256k1, ecdsa::Signature};
 use bitcoin::secp256k1;
 
-use crate::chain::keysinterface::{BaseSign, EntropySource, SignerProvider};
+use crate::chain::keysinterface::{ChannelSigner, EntropySource, SignerProvider};
 use crate::ln::msgs::DecodeError;
 use crate::ln::PaymentPreimage;
 #[cfg(anchors)]
@@ -31,7 +31,7 @@ use crate::ln::chan_utils::{ChannelTransactionParameters, HolderCommitmentTransa
 use crate::chain::chaininterface::ConfirmationTarget;
 use crate::chain::chaininterface::{FeeEstimator, BroadcasterInterface, LowerBoundedFeeEstimator};
 use crate::chain::channelmonitor::{ANTI_REORG_DELAY, CLTV_SHARED_CLAIM_BUFFER};
-use crate::chain::keysinterface::Sign;
+use crate::chain::keysinterface::WriteableEcdsaChannelSigner;
 #[cfg(anchors)]
 use crate::chain::package::PackageSolvingData;
 use crate::chain::package::PackageTemplate;
@@ -219,7 +219,7 @@ type PackageID = [u8; 32];
 
 /// OnchainTxHandler receives claiming requests, aggregates them if it's sound, broadcast and
 /// do RBF bumping if possible.
-pub struct OnchainTxHandler<ChannelSigner: Sign> {
+pub struct OnchainTxHandler<ChannelSigner: WriteableEcdsaChannelSigner> {
 	destination_script: Script,
 	holder_commitment: HolderCommitmentTransaction,
 	// holder_htlc_sigs and prev_holder_htlc_sigs are in the order as they appear in the commitment
@@ -271,7 +271,7 @@ pub struct OnchainTxHandler<ChannelSigner: Sign> {
 const SERIALIZATION_VERSION: u8 = 1;
 const MIN_SERIALIZATION_VERSION: u8 = 1;
 
-impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
+impl<ChannelSigner: WriteableEcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 	pub(crate) fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		write_ver_prefix!(writer, SERIALIZATION_VERSION, MIN_SERIALIZATION_VERSION);
 
@@ -415,7 +415,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 	}
 }
 
-impl<ChannelSigner: Sign> OnchainTxHandler<ChannelSigner> {
+impl<ChannelSigner: WriteableEcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 	pub(crate) fn new(destination_script: Script, signer: ChannelSigner, channel_parameters: ChannelTransactionParameters, holder_commitment: HolderCommitmentTransaction, secp_ctx: Secp256k1<secp256k1::All>) -> Self {
 		OnchainTxHandler {
 			destination_script,
