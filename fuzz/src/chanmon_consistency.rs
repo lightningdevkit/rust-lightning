@@ -340,7 +340,7 @@ fn get_payment_secret_hash(dest: &ChanMan, payment_id: &mut u8) -> Option<(Payme
 	let mut payment_hash;
 	for _ in 0..256 {
 		payment_hash = PaymentHash(Sha256::hash(&[*payment_id; 1]).into_inner());
-		if let Ok(payment_secret) = dest.create_inbound_payment_for_hash(payment_hash, None, 3600) {
+		if let Ok(payment_secret) = dest.create_inbound_payment_for_hash(payment_hash, None, 3600, None) {
 			return Some((payment_secret, payment_hash));
 		}
 		*payment_id = payment_id.wrapping_add(1);

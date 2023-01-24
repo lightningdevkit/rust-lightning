@@ -1,0 +1,11 @@
+## API Updates
+- The functions `inbound_payment::{create, create_from_hash}` and
+  `channelmanager::{create_inbound_payment, create_inbound_payment_for_hash}` now accept a
+  `min_final_cltv_expiry_delta` argument. This encodes the `min_final_cltv_expiry_delta` in the
+  payment secret metadata bytes to be validated on payment receipt.
+
+## Backwards Compatibility
+- If `min_final_cltv_expiry_delta` set for any of `inbound_payment::{create, create_from_hash}` or
+  `channelmanager::{create_inbound_payment, create_inbound_payment_for_hash}` then the payment will
+  not be receivable on versions of LDK prior to 0.0.114.
+

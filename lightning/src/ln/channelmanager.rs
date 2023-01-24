@@ -874,12 +874,12 @@ pub const MIN_CLTV_EXPIRY_DELTA: u16 = 6*7;
 pub(super) const CLTV_FAR_FAR_AWAY: u32 = 14 * 24 * 6;
 
 /// Minimum CLTV difference between the current block height and received inbound payments.
-/// Invoices generated for payment to us must set their `min_final_cltv_expiry` field to at least
+/// Invoices generated for payment to us must set their `min_final_cltv_expiry_delta` field to at least
 /// this value.
 // Note that we fail if exactly HTLC_FAIL_BACK_BUFFER + 1 was used, so we need to add one for
 // any payments to succeed. Further, we don't want payments to fail if a block was found while
 // a payment was being routed, so we add an extra block to be safe.
-pub const MIN_FINAL_CLTV_EXPIRY: u32 = HTLC_FAIL_BACK_BUFFER + 3;
+pub const MIN_FINAL_CLTV_EXPIRY_DELTA: u16 = HTLC_FAIL_BACK_BUFFER as u16 + 3;
 
 // Check that our CLTV_EXPIRY is at least CLTV_CLAIM_BUFFER + ANTI_REORG_DELAY + LATENCY_GRACE_PERIOD_BLOCKS,
 // ie that if the next-hop peer fails the HTLC within
@@ -1914,6 +1914,7 @@ where
 		// final_expiry_too_soon
 		// We have to have some headroom to broadcast on chain if we have the preimage, so make sure
 		// we have at least HTLC_FAIL_BACK_BUFFER blocks to go.
+		//
 		// Also, ensure that, in the case of an unknown preimage for the received payment hash, our
 		// payment logic has enough time to fail the HTLC backward before our onchain logic triggers a
 		// channel closure (see HTLC_FAIL_BACK_BUFFER rationale).
@@ -3181,13 +3182,23 @@ where
 										match claimable_htlc.onion_payload {
 											OnionPayload::Invoice { .. } => {
 												let payment_data = payment_data.unwrap();
-												let payment_preimage = match inbound_payment::verify(payment_hash, &payment_data, self.highest_seen_timestamp.load(Ordering::Acquire) as u64, &self.inbound_payment_key, &self.logger) {
-													Ok(payment_preimage) => payment_preimage,
+												let (payment_preimage, min_final_cltv_expiry_delta) = match inbound_payment::verify(payment_hash, &payment_data, self.highest_seen_timestamp.load(Ordering::Acquire) as u64, &self.inbound_payment_key, &self.logger) {
+													Ok(result) => result,
 													Err(()) => {
+														log_trace!(self.logger, "Failing new HTLC with payment_hash {} as payment verification failed", log_bytes!(payment_hash.0));
 														fail_htlc!(claimable_htlc, payment_hash);
 														continue
 													}
 												};
+												if let Some(min_final_cltv_expiry_delta) = min_final_cltv_expiry_delta {
+													let expected_min_expiry_height = (self.current_best_block().height() + min_final_cltv_expiry_delta as u32) as u64;
+													if (cltv_expiry as u64) < expected_min_expiry_height {
+														log_trace!(self.logger, "Failing new HTLC with payment_hash {} as its CLTV expiry was too soon (had {}, earliest expected {})",
+															log_bytes!(payment_hash.0), cltv_expiry, expected_min_expiry_height);
+														fail_htlc!(claimable_htlc, payment_hash);
+														continue;
+													}
+												}
 												check_total_value!(payment_data, payment_preimage);
 											},
 											OnionPayload::Spontaneous(preimage) => {
@@ -5273,12 +5284,18 @@ where
 	///
 	/// Errors if `min_value_msat` is greater than total bitcoin supply.
 	///
+	/// If `min_final_cltv_expiry_delta` is set to some value, then the payment will not be receivable
+	/// on versions of LDK prior to 0.0.114.
+	///
 	/// [`claim_funds`]: Self::claim_funds
 	/// [`PaymentClaimable`]: events::Event::PaymentClaimable
 	/// [`PaymentClaimable::payment_preimage`]: events::Event::PaymentClaimable::payment_preimage
 	/// [`create_inbound_payment_for_hash`]: Self::create_inbound_payment_for_hash
-	pub fn create_inbound_payment(&self, min_value_msat: Option<u64>, invoice_expiry_delta_secs: u32) -> Result<(PaymentHash, PaymentSecret), ()> {
-		inbound_payment::create(&self.inbound_payment_key, min_value_msat, invoice_expiry_delta_secs, &self.entropy_source, self.highest_seen_timestamp.load(Ordering::Acquire) as u64)
+	pub fn create_inbound_payment(&self, min_value_msat: Option<u64>, invoice_expiry_delta_secs: u32,
+		min_final_cltv_expiry_delta: Option<u16>) -> Result<(PaymentHash, PaymentSecret), ()> {
+		inbound_payment::create(&self.inbound_payment_key, min_value_msat, invoice_expiry_delta_secs,
+			&self.entropy_source, self.highest_seen_timestamp.load(Ordering::Acquire) as u64,
+			min_final_cltv_expiry_delta)
 	}
 
 	/// Legacy version of [`create_inbound_payment`]. Use this method if you wish to share
@@ -5326,8 +5343,8 @@ where
 	/// If you need exact expiry semantics, you should enforce them upon receipt of
 	/// [`PaymentClaimable`].
 	///
-	/// Note that invoices generated for inbound payments should have their `min_final_cltv_expiry`
-	/// set to at least [`MIN_FINAL_CLTV_EXPIRY`].
+	/// Note that invoices generated for inbound payments should have their `min_final_cltv_expiry_delta`
+	/// set to at least [`MIN_FINAL_CLTV_EXPIRY_DELTA`].
 	///
 	/// Note that a malicious eavesdropper can intuit whether an inbound payment was created by
 	/// `create_inbound_payment` or `create_inbound_payment_for_hash` based on runtime.
@@ -5339,10 +5356,16 @@ where
 	///
 	/// Errors if `min_value_msat` is greater than total bitcoin supply.
 	///
+	/// If `min_final_cltv_expiry_delta` is set to some value, then the payment will not be receivable
+	/// on versions of LDK prior to 0.0.114.
+	///
 	/// [`create_inbound_payment`]: Self::create_inbound_payment
 	/// [`PaymentClaimable`]: events::Event::PaymentClaimable
-	pub fn create_inbound_payment_for_hash(&self, payment_hash: PaymentHash, min_value_msat: Option<u64>, invoice_expiry_delta_secs: u32) -> Result<PaymentSecret, ()> {
-		inbound_payment::create_from_hash(&self.inbound_payment_key, min_value_msat, payment_hash, invoice_expiry_delta_secs, self.highest_seen_timestamp.load(Ordering::Acquire) as u64)
+	pub fn create_inbound_payment_for_hash(&self, payment_hash: PaymentHash, min_value_msat: Option<u64>,
+		invoice_expiry_delta_secs: u32, min_final_cltv_expiry: Option<u16>) -> Result<PaymentSecret, ()> {
+		inbound_payment::create_from_hash(&self.inbound_payment_key, min_value_msat, payment_hash,
+			invoice_expiry_delta_secs, self.highest_seen_timestamp.load(Ordering::Acquire) as u64,
+			min_final_cltv_expiry)
 	}
 
 	/// Legacy version of [`create_inbound_payment_for_hash`]. Use this method if you wish to share
@@ -7369,7 +7392,7 @@ where
 								payment_preimage: match pending_inbound_payments.get(&payment_hash) {
 									Some(inbound_payment) => inbound_payment.payment_preimage,
 									None => match inbound_payment::verify(payment_hash, &hop_data, 0, &expanded_inbound_key, &args.logger) {
-										Ok(payment_preimage) => payment_preimage,
+										Ok((payment_preimage, _)) => payment_preimage,
 										Err(()) => {
 											log_error!(args.logger, "Failed to read claimable payment data for HTLC with payment hash {} - was not a pending inbound payment and didn't match our payment key", log_bytes!(payment_hash.0));
 											return Err(DecodeError::InvalidValue);
@@ -8505,7 +8528,7 @@ pub mod bench {
 				payment_preimage.0[0..8].copy_from_slice(&payment_count.to_le_bytes());
 				payment_count += 1;
 				let payment_hash = PaymentHash(Sha256::hash(&payment_preimage.0[..]).into_inner());
-				let payment_secret = $node_b.create_inbound_payment_for_hash(payment_hash, None, 7200).unwrap();
+				let payment_secret = $node_b.create_inbound_payment_for_hash(payment_hash, None, 7200, None).unwrap();
 
 				$node_a.send_payment(&route, payment_hash, &Some(payment_secret), PaymentId(payment_hash.0)).unwrap();
 				let payment_event = SendEvent::from_event($node_a.get_and_clear_pending_msg_events().pop().unwrap());

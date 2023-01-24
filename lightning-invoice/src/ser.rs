@@ -3,7 +3,7 @@ use core::fmt::{Display, Formatter};
 use bech32::{ToBase32, u5, WriteBase32, Base32Len};
 use crate::prelude::*;
 
-use super::{Invoice, Sha256, TaggedField, ExpiryTime, MinFinalCltvExpiry, Fallback, PayeePubKey, InvoiceSignature, PositiveTimestamp,
+use super::{Invoice, Sha256, TaggedField, ExpiryTime, MinFinalCltvExpiryDelta, Fallback, PayeePubKey, InvoiceSignature, PositiveTimestamp,
 	PrivateRoute, Description, RawTaggedField, Currency, RawHrp, SiPrefix, constants, SignedRawInvoice, RawDataPart};
 
 /// Converts a stream of bytes written to it to base32. On finalization the according padding will
@@ -313,13 +313,13 @@ impl Base32Len for ExpiryTime {
 	}
 }
 
-impl ToBase32 for MinFinalCltvExpiry {
+impl ToBase32 for MinFinalCltvExpiryDelta {
 	fn write_base32<W: WriteBase32>(&self, writer: &mut W) -> Result<(), <W as WriteBase32>::Err> {
 		writer.write(&encode_int_be_base32(self.0))
 	}
 }
 
-impl Base32Len for MinFinalCltvExpiry {
+impl Base32Len for MinFinalCltvExpiryDelta {
 	fn base32_len(&self) -> usize {
 		encoded_int_be_base32_size(self.0)
 	}
@@ -434,8 +434,8 @@ impl ToBase32 for TaggedField {
 			TaggedField::ExpiryTime(ref duration) => {
 				write_tagged_field(writer, constants::TAG_EXPIRY_TIME, duration)
 			},
-			TaggedField::MinFinalCltvExpiry(ref expiry) => {
-				write_tagged_field(writer, constants::TAG_MIN_FINAL_CLTV_EXPIRY, expiry)
+			TaggedField::MinFinalCltvExpiryDelta(ref expiry) => {
+				write_tagged_field(writer, constants::TAG_MIN_FINAL_CLTV_EXPIRY_DELTA, expiry)
 			},
 			TaggedField::Fallback(ref fallback_address) => {
 				write_tagged_field(writer, constants::TAG_FALLBACK, fallback_address)

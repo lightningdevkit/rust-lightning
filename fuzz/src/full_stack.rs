@@ -605,7 +605,7 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 				let payment_hash = PaymentHash(Sha256::from_engine(sha).into_inner());
 				// Note that this may fail - our hashes may collide and we'll end up trying to
 				// double-register the same payment_hash.
-				let _ = channelmanager.create_inbound_payment_for_hash(payment_hash, None, 1);
+				let _ = channelmanager.create_inbound_payment_for_hash(payment_hash, None, 1, None);
 			},
 			9 => {
 				for payment in payments_received.drain(..) {

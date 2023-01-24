@@ -22,7 +22,7 @@ use secp256k1;
 use secp256k1::ecdsa::{RecoveryId, RecoverableSignature};
 use secp256k1::PublicKey;
 
-use super::{Invoice, Sha256, TaggedField, ExpiryTime, MinFinalCltvExpiry, Fallback, PayeePubKey, InvoiceSignature, PositiveTimestamp,
+use super::{Invoice, Sha256, TaggedField, ExpiryTime, MinFinalCltvExpiryDelta, Fallback, PayeePubKey, InvoiceSignature, PositiveTimestamp,
 	SemanticError, PrivateRoute, ParseError, ParseOrSemanticError, Description, RawTaggedField, Currency, RawHrp, SiPrefix, RawInvoice,
 	constants, SignedRawInvoice, RawDataPart, InvoiceFeatures};
 
@@ -451,8 +451,8 @@ impl FromBase32 for TaggedField {
 				Ok(TaggedField::DescriptionHash(Sha256::from_base32(field_data)?)),
 			constants::TAG_EXPIRY_TIME =>
 				Ok(TaggedField::ExpiryTime(ExpiryTime::from_base32(field_data)?)),
-			constants::TAG_MIN_FINAL_CLTV_EXPIRY =>
-				Ok(TaggedField::MinFinalCltvExpiry(MinFinalCltvExpiry::from_base32(field_data)?)),
+			constants::TAG_MIN_FINAL_CLTV_EXPIRY_DELTA =>
+				Ok(TaggedField::MinFinalCltvExpiryDelta(MinFinalCltvExpiryDelta::from_base32(field_data)?)),
 			constants::TAG_FALLBACK =>
 				Ok(TaggedField::Fallback(Fallback::from_base32(field_data)?)),
 			constants::TAG_PRIVATE_ROUTE =>
@@ -523,13 +523,13 @@ impl FromBase32 for ExpiryTime {
 	}
 }
 
-impl FromBase32 for MinFinalCltvExpiry {
+impl FromBase32 for MinFinalCltvExpiryDelta {
 	type Err = ParseError;
 
-	fn from_base32(field_data: &[u5]) -> Result<MinFinalCltvExpiry, ParseError> {
+	fn from_base32(field_data: &[u5]) -> Result<MinFinalCltvExpiryDelta, ParseError> {
 		let expiry = parse_int_be::<u64, u5>(field_data, 32);
 		if let Some(expiry) = expiry {
-			Ok(MinFinalCltvExpiry(expiry))
+			Ok(MinFinalCltvExpiryDelta(expiry))
 		} else {
 			Err(ParseError::IntegerOverflowError)
 		}
@@ -840,14 +840,14 @@ mod test {
 	}
 
 	#[test]
-	fn test_parse_min_final_cltv_expiry() {
-		use crate::MinFinalCltvExpiry;
+	fn test_parse_min_final_cltv_expiry_delta() {
+		use crate::MinFinalCltvExpiryDelta;
 		use bech32::FromBase32;
 
 		let input = from_bech32("pr".as_bytes());
-		let expected = Ok(MinFinalCltvExpiry(35));
+		let expected = Ok(MinFinalCltvExpiryDelta(35));
 
-		assert_eq!(MinFinalCltvExpiry::from_base32(&input), expected);
+		assert_eq!(MinFinalCltvExpiryDelta::from_base32(&input), expected);
 	}
 
 	#[test]

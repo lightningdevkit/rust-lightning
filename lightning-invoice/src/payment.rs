@@ -431,7 +431,7 @@ where
 		let route_params = RouteParameters {
 			payment_params,
 			final_value_msat: invoice.amount_milli_satoshis().or(amount_msats).unwrap(),
-			final_cltv_expiry_delta: invoice.min_final_cltv_expiry() as u32,
+			final_cltv_expiry_delta: invoice.min_final_cltv_expiry_delta() as u32,
 		};
 
 		let send_payment = |route: &Route| {
@@ -764,7 +764,7 @@ mod tests {
 			.payment_hash(payment_hash)
 			.payment_secret(PaymentSecret([0; 32]))
 			.duration_since_epoch(duration_since_epoch())
-			.min_final_cltv_expiry(144)
+			.min_final_cltv_expiry_delta(144)
 			.amount_milli_satoshis(128)
 			.build_signed(|hash| {
 				Secp256k1::new().sign_ecdsa_recoverable(hash, &private_key)
@@ -790,7 +790,7 @@ mod tests {
 			.payment_hash(payment_hash)
 			.payment_secret(PaymentSecret([0; 32]))
 			.duration_since_epoch(duration_since_epoch())
-			.min_final_cltv_expiry(144)
+			.min_final_cltv_expiry_delta(144)
 			.build_signed(|hash| {
 				Secp256k1::new().sign_ecdsa_recoverable(hash, &private_key)
 			})
@@ -809,7 +809,7 @@ mod tests {
 			.payment_hash(payment_hash)
 			.payment_secret(PaymentSecret([0; 32]))
 			.duration_since_epoch(duration)
-			.min_final_cltv_expiry(144)
+			.min_final_cltv_expiry_delta(144)
 			.amount_milli_satoshis(128)
 			.build_signed(|hash| {
 				Secp256k1::new().sign_ecdsa_recoverable(hash, &private_key)
@@ -1665,7 +1665,7 @@ mod tests {
 			RouteParameters {
 				payment_params,
 				final_value_msat,
-				final_cltv_expiry_delta: invoice.min_final_cltv_expiry() as u32,
+				final_cltv_expiry_delta: invoice.min_final_cltv_expiry_delta() as u32,
 			}
 		}
 	}
@@ -2085,7 +2085,7 @@ mod tests {
 
 		assert!(invoice_payer.pay_invoice(&create_invoice_from_channelmanager_and_duration_since_epoch(
 			&nodes[1].node, nodes[1].keys_manager, nodes[1].logger, Currency::Bitcoin,
-			Some(100_010_000), "Invoice".to_string(), duration_since_epoch(), 3600).unwrap())
+			Some(100_010_000), "Invoice".to_string(), duration_since_epoch(), 3600, None).unwrap())
 			.is_ok());
 		let htlc_msgs = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(htlc_msgs.len(), 2);
@@ -2130,7 +2130,7 @@ mod tests {
 
 		assert!(invoice_payer.pay_invoice(&create_invoice_from_channelmanager_and_duration_since_epoch(
 			&nodes[1].node, nodes[1].keys_manager, nodes[1].logger, Currency::Bitcoin,
-			Some(100_010_000), "Invoice".to_string(), duration_since_epoch(), 3600).unwrap())
+			Some(100_010_000), "Invoice".to_string(), duration_since_epoch(), 3600, None).unwrap())
 			.is_ok());
 		let htlc_msgs = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(htlc_msgs.len(), 2);
@@ -2211,7 +2211,7 @@ mod tests {
 
 		assert!(invoice_payer.pay_invoice(&create_invoice_from_channelmanager_and_duration_since_epoch(
 			&nodes[1].node, nodes[1].keys_manager, nodes[1].logger, Currency::Bitcoin,
-			Some(100_010_000), "Invoice".to_string(), duration_since_epoch(), 3600).unwrap())
+			Some(100_010_000), "Invoice".to_string(), duration_since_epoch(), 3600, None).unwrap())
 			.is_ok());
 		let htlc_updates = SendEvent::from_node(&nodes[0]);
 		check_added_monitors!(nodes[0], 1);
