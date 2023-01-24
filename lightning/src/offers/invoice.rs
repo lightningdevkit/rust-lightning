@@ -581,12 +581,30 @@ type BlindedPayInfoIter<'a> = core::iter::Map<
 /// Information needed to route a payment across a [`BlindedPath`].
 #[derive(Clone, Debug, PartialEq)]
 pub struct BlindedPayInfo {
-	fee_base_msat: u32,
-	fee_proportional_millionths: u32,
-	cltv_expiry_delta: u16,
-	htlc_minimum_msat: u64,
-	htlc_maximum_msat: u64,
-	features: BlindedHopFeatures,
+	/// Base fee charged (in millisatoshi) for the entire blinded path.
+	pub fee_base_msat: u32,
+
+	/// Liquidity fee charged (in millionths of the amount transferred) for the entire blinded path
+	/// (i.e., 10,000 is 1%).
+	pub fee_proportional_millionths: u32,
+
+	/// Number of blocks subtracted from an incoming HTLC's `cltv_expiry` for the entire blinded
+	/// path.
+	pub cltv_expiry_delta: u16,
+
+	/// The minimum HTLC value (in millisatoshi) that is acceptable to all channel peers on the
+	/// blinded path from the introduction node to the recipient, accounting for any fees, i.e., as
+	/// seen by the recipient.
+	pub htlc_minimum_msat: u64,
+
+	/// The maximum HTLC value (in millisatoshi) that is acceptable to all channel peers on the
+	/// blinded path from the introduction node to the recipient, accounting for any fees, i.e., as
+	/// seen by the recipient.
+	pub htlc_maximum_msat: u64,
+
+	/// Features set in `encrypted_data_tlv` for the `encrypted_recipient_data` TLV record in an
+	/// onion payload.
+	pub features: BlindedHopFeatures,
 }
 
 impl_writeable!(BlindedPayInfo, {
