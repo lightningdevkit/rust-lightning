@@ -12,6 +12,8 @@ testing and risk-minimization. Any bug may cost users real money. That being
 said, we deeply welcome people contributing for the first time to an open source
 project or pick up Rust while contributing. Don't be shy, you'll learn.
 
+For the project Code of Conduct, see our [website](https://lightningdevkit.org/code_of_conduct).
+
 Communication Channels
 -----------------------
 
@@ -41,7 +43,7 @@ This doesn't mean don't be ambitious with the breadth and depth of your
 contributions but rather understand the project culture before investing an
 asymmetric number of hours on development compared to your merged work.
 
-Browsing through the [meeting minutes](https://github.com/lightningdevkit/rust-lightning/wiki/Meetings)
+Browsing through the [meeting minutes](https://github.com/lightningdevkit/rust-lightning/wiki/Meeting-Notes)
 is a good first step. You will learn who is working on what, how releases are
 drafted, what are the pending tasks to deliver, where you can contribute review
 bandwidth, etc.
