@@ -7,10 +7,7 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-//! The top-level routing/network map tracking logic lives here.
-//!
-//! You probably want to create a P2PGossipSync and use that as your RoutingMessageHandler and then
-//! interrogate it to get routes for your own payments.
+//! The router finds paths within a [`NetworkGraph`] for a payment.
 
 use bitcoin::secp256k1::PublicKey;
 use bitcoin::hashes::Hash;
