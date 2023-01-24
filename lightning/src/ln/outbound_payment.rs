@@ -783,6 +783,11 @@ impl OutboundPayments {
 		payment_params: &Option<PaymentParameters>, probing_cookie_secret: [u8; 32],
 		secp_ctx: &Secp256k1<secp256k1::All>, pending_events: &Mutex<Vec<events::Event>>, logger: &L
 	) where L::Target: Logger {
+		#[cfg(test)]
+		let (network_update, short_channel_id, payment_retryable, onion_error_code, onion_error_data) = onion_error.decode_onion_failure(secp_ctx, logger, &source);
+		#[cfg(not(test))]
+		let (network_update, short_channel_id, payment_retryable, _, _) = onion_error.decode_onion_failure(secp_ctx, logger, &source);
+
 		let mut session_priv_bytes = [0; 32];
 		session_priv_bytes.copy_from_slice(&session_priv[..]);
 		let mut outbounds = self.pending_outbound_payments.lock().unwrap();
@@ -811,6 +816,7 @@ impl OutboundPayments {
 			log_trace!(logger, "Received duplicative fail for HTLC with payment_hash {}", log_bytes!(payment_hash.0));
 			return
 		}
+		core::mem::drop(outbounds);
 		let mut retry = if let Some(payment_params_data) = payment_params {
 			let path_last_hop = path.last().expect("Outbound payments must have had a valid path");
 			Some(RouteParameters {
@@ -822,11 +828,6 @@ impl OutboundPayments {
 		log_trace!(logger, "Failing outbound payment HTLC with payment_hash {}", log_bytes!(payment_hash.0));
 
 		let path_failure = {
-			#[cfg(test)]
-			let (network_update, short_channel_id, payment_retryable, onion_error_code, onion_error_data) = onion_error.decode_onion_failure(secp_ctx, logger, &source);
-			#[cfg(not(test))]
-			let (network_update, short_channel_id, payment_retryable, _, _) = onion_error.decode_onion_failure(secp_ctx, logger, &source);
-
 			if payment_is_probe(payment_hash, &payment_id, probing_cookie_secret) {
 				if !payment_retryable {
 					events::Event::ProbeSuccessful {
