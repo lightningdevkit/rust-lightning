@@ -11,11 +11,12 @@
 //!
 //! An [`InvoiceRequest`] can be built from a parsed [`Offer`] as an "offer to be paid". It is
 //! typically constructed by a customer and sent to the merchant who had published the corresponding
-//! offer. The recipient of the request responds with an `Invoice`.
+//! offer. The recipient of the request responds with an [`Invoice`].
 //!
 //! For an "offer for money" (e.g., refund, ATM withdrawal), where an offer doesn't exist as a
 //! precursor, see [`Refund`].
 //!
+//! [`Invoice`]: crate::offers::invoice::Invoice
 //! [`Refund`]: crate::offers::refund::Refund
 //!
 //! ```ignore
@@ -57,12 +58,15 @@ use bitcoin::secp256k1::{Message, PublicKey};
 use bitcoin::secp256k1::schnorr::Signature;
 use core::convert::TryFrom;
 use crate::io;
+use crate::ln::PaymentHash;
 use crate::ln::features::InvoiceRequestFeatures;
 use crate::ln::msgs::DecodeError;
+use crate::offers::invoice::{BlindedPayInfo, InvoiceBuilder};
 use crate::offers::merkle::{SignError, SignatureTlvStream, SignatureTlvStreamRef, self};
 use crate::offers::offer::{Offer, OfferContents, OfferTlvStream, OfferTlvStreamRef};
 use crate::offers::parse::{ParseError, ParsedMessage, SemanticError};
 use crate::offers::payer::{PayerContents, PayerTlvStream, PayerTlvStreamRef};
+use crate::onion_message::BlindedPath;
 use crate::util::ser::{HighZeroBytesDroppedBigSize, SeekReadable, WithoutLength, Writeable, Writer};
 use crate::util::string::PrintableString;
 
@@ -239,24 +243,27 @@ impl<'a> UnsignedInvoiceRequest<'a> {
 	}
 }
 
-/// An `InvoiceRequest` is a request for an `Invoice` formulated from an [`Offer`].
+/// An `InvoiceRequest` is a request for an [`Invoice`] formulated from an [`Offer`].
 ///
 /// An offer may provide choices such as quantity, amount, chain, features, etc. An invoice request
 /// specifies these such that its recipient can send an invoice for payment.
 ///
+/// [`Invoice`]: crate::offers::invoice::Invoice
 /// [`Offer`]: crate::offers::offer::Offer
 #[derive(Clone, Debug)]
 pub struct InvoiceRequest {
 	pub(super) bytes: Vec<u8>,
-	contents: InvoiceRequestContents,
+	pub(super) contents: InvoiceRequestContents,
 	signature: Signature,
 }
 
-/// The contents of an [`InvoiceRequest`], which may be shared with an `Invoice`.
+/// The contents of an [`InvoiceRequest`], which may be shared with an [`Invoice`].
+///
+/// [`Invoice`]: crate::offers::invoice::Invoice
 #[derive(Clone, Debug)]
 pub(super) struct InvoiceRequestContents {
 	payer: PayerContents,
-	offer: OfferContents,
+	pub(super) offer: OfferContents,
 	chain: Option<ChainHash>,
 	amount_msats: Option<u64>,
 	features: InvoiceRequestFeatures,
@@ -315,6 +322,41 @@ impl InvoiceRequest {
 		self.signature
 	}
 
+	/// Creates an [`Invoice`] for the request with the given required fields.
+	///
+	/// Unless [`InvoiceBuilder::relative_expiry`] is set, the invoice will expire two hours after
+	/// calling this method in `std` builds. For `no-std` builds, a final [`Duration`] parameter
+	/// must be given, which is used to set [`Invoice::created_at`] since [`std::time::SystemTime`]
+	/// is not available.
+	///
+	/// The caller is expected to remember the preimage of `payment_hash` in order to claim a payment
+	/// for the invoice.
+	///
+	/// The `payment_paths` parameter is useful for maintaining the payment recipient's privacy. It
+	/// must contain one or more elements.
+	///
+	/// Errors if the request contains unknown required features.
+	///
+	/// [`Duration`]: core::time::Duration
+	/// [`Invoice`]: crate::offers::invoice::Invoice
+	/// [`Invoice::created_at`]: crate::offers::invoice::Invoice::created_at
+	pub fn respond_with(
+		&self, payment_paths: Vec<(BlindedPath, BlindedPayInfo)>, payment_hash: PaymentHash,
+		#[cfg(any(test, not(feature = "std")))]
+		created_at: core::time::Duration
+	) -> Result<InvoiceBuilder, SemanticError> {
+		if self.features().requires_unknown_bits() {
+			return Err(SemanticError::UnknownRequiredFeatures);
+		}
+
+		#[cfg(all(not(test), feature = "std"))]
+		let created_at = std::time::SystemTime::now()
+			.duration_since(std::time::SystemTime::UNIX_EPOCH)
+			.expect("SystemTime::now() should come after SystemTime::UNIX_EPOCH");
+
+		InvoiceBuilder::for_offer(self, payment_paths, created_at, payment_hash)
+	}
+
 	#[cfg(test)]
 	fn as_tlv_stream(&self) -> FullInvoiceRequestTlvStreamRef {
 		let (payer_tlv_stream, offer_tlv_stream, invoice_request_tlv_stream) =
@@ -327,7 +369,7 @@ impl InvoiceRequest {
 }
 
 impl InvoiceRequestContents {
-	fn chain(&self) -> ChainHash {
+	pub(super) fn chain(&self) -> ChainHash {
 		self.chain.unwrap_or_else(|| self.offer.implied_chain())
 	}
 

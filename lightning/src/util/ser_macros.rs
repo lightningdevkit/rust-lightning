@@ -286,6 +286,9 @@ macro_rules! _decode_tlv {
 	($reader: expr, $field: ident, (option: $trait: ident $(, $read_arg: expr)?)) => {{
 		$field = Some($trait::read(&mut $reader $(, $read_arg)*)?);
 	}};
+	($reader: expr, $field: ident, (option, encoding: ($fieldty: ty, $encoding: ident, $encoder:ty))) => {{
+		$crate::_decode_tlv!($reader, $field, (option, encoding: ($fieldty, $encoding)));
+	}};
 	($reader: expr, $field: ident, (option, encoding: ($fieldty: ty, $encoding: ident))) => {{
 		$field = {
 			let field: $encoding<$fieldty> = ser::Readable::read(&mut $reader)?;
@@ -730,7 +733,8 @@ macro_rules! tlv_stream {
 			)*
 		}
 
-		#[derive(Debug, PartialEq)]
+		#[cfg_attr(test, derive(PartialEq))]
+		#[derive(Debug)]
 		pub(super) struct $nameref<'a> {
 			$(
 				pub(super) $field: Option<tlv_record_ref_type!($fieldty)>,
@@ -770,6 +774,7 @@ macro_rules! tlv_stream {
 
 macro_rules! tlv_record_type {
 	(($type:ty, $wrapper:ident)) => { $type };
+	(($type:ty, $wrapper:ident, $encoder:ty)) => { $type };
 	($type:ty) => { $type };
 }
 
@@ -780,6 +785,7 @@ macro_rules! tlv_record_ref_type {
 	((u32, $wrapper: ident)) => { u32 };
 	((u64, $wrapper: ident)) => { u64 };
 	(($type:ty, $wrapper:ident)) => { &'a $type };
+	(($type:ty, $wrapper:ident, $encoder:ty)) => { $encoder };
 	($type:ty) => { &'a $type };
 }
 

@@ -624,6 +624,26 @@ impl<'a, T> From<&'a Vec<T>> for WithoutLength<&'a Vec<T>> {
 	fn from(v: &'a Vec<T>) -> Self { Self(v) }
 }
 
+#[derive(Debug)]
+pub(crate) struct Iterable<'a, I: Iterator<Item = &'a T> + Clone, T: 'a>(pub I);
+
+impl<'a, I: Iterator<Item = &'a T> + Clone, T: 'a + Writeable> Writeable for Iterable<'a, I, T> {
+	#[inline]
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		for ref v in self.0.clone() {
+			v.write(writer)?;
+		}
+		Ok(())
+	}
+}
+
+#[cfg(test)]
+impl<'a, I: Iterator<Item = &'a T> + Clone, T: 'a + PartialEq> PartialEq for Iterable<'a, I, T> {
+	fn eq(&self, other: &Self) -> bool {
+		self.0.clone().collect::<Vec<_>>() == other.0.clone().collect::<Vec<_>>()
+	}
+}
+
 macro_rules! impl_for_map {
 	($ty: ident, $keybound: ident, $constr: expr) => {
 		impl<K, V> Writeable for $ty<K, V>
@@ -1062,6 +1082,24 @@ impl<A: Writeable, B: Writeable, C: Writeable> Writeable for (A, B, C) {
 		self.0.write(w)?;
 		self.1.write(w)?;
 		self.2.write(w)
+	}
+}
+
+impl<A: Readable, B: Readable, C: Readable, D: Readable> Readable for (A, B, C, D) {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let a: A = Readable::read(r)?;
+		let b: B = Readable::read(r)?;
+		let c: C = Readable::read(r)?;
+		let d: D = Readable::read(r)?;
+		Ok((a, b, c, d))
+	}
+}
+impl<A: Writeable, B: Writeable, C: Writeable, D: Writeable> Writeable for (A, B, C, D) {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		self.0.write(w)?;
+		self.1.write(w)?;
+		self.2.write(w)?;
+		self.3.write(w)
 	}
 }
 
