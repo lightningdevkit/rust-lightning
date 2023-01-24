@@ -2558,7 +2558,21 @@ where
 	/// [`send_payment`]: Self::send_payment
 	pub fn send_spontaneous_payment(&self, route: &Route, payment_preimage: Option<PaymentPreimage>, payment_id: PaymentId) -> Result<PaymentHash, PaymentSendFailure> {
 		let best_block_height = self.best_block.read().unwrap().height();
-		self.pending_outbound_payments.send_spontaneous_payment(route, payment_preimage, payment_id, &self.entropy_source, &self.node_signer, best_block_height,
+		self.pending_outbound_payments.send_spontaneous_payment_with_route(
+			route, payment_preimage, payment_id, &self.entropy_source, &self.node_signer,
+			best_block_height,
+			|path, payment_params, payment_hash, payment_secret, total_value, cur_height, payment_id, keysend_preimage, session_priv|
+			self.send_payment_along_path(path, payment_params, payment_hash, payment_secret, total_value, cur_height, payment_id, keysend_preimage, session_priv))
+	}
+
+	/// Similar to [`ChannelManager::send_spontaneous_payment`], but will automatically find a route
+	/// based on `route_params` and retry failed payment paths based on `retry_strategy`.
+	pub fn send_spontaneous_payment_with_retry(&self, payment_preimage: Option<PaymentPreimage>, payment_id: PaymentId, route_params: RouteParameters, retry_strategy: Retry) -> Result<PaymentHash, PaymentSendFailure> {
+		let best_block_height = self.best_block.read().unwrap().height();
+		self.pending_outbound_payments.send_spontaneous_payment(payment_preimage, payment_id,
+			retry_strategy, route_params, &self.router, self.list_usable_channels(),
+			self.compute_inflight_htlcs(),  &self.entropy_source, &self.node_signer, best_block_height,
+			&self.logger,
 			|path, payment_params, payment_hash, payment_secret, total_value, cur_height, payment_id, keysend_preimage, session_priv|
 			self.send_payment_along_path(path, payment_params, payment_hash, payment_secret, total_value, cur_height, payment_id, keysend_preimage, session_priv))
 	}

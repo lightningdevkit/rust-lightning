@@ -1586,6 +1586,7 @@ fn do_test_intercepted_payment(test: InterceptTest) {
 #[derive(PartialEq)]
 enum AutoRetry {
 	Success,
+	Spontaneous,
 	FailAttempts,
 	FailTimeout,
 	FailOnRestart,
@@ -1594,6 +1595,7 @@ enum AutoRetry {
 #[test]
 fn automatic_retries() {
 	do_automatic_retries(AutoRetry::Success);
+	do_automatic_retries(AutoRetry::Spontaneous);
 	do_automatic_retries(AutoRetry::FailAttempts);
 	do_automatic_retries(AutoRetry::FailTimeout);
 	do_automatic_retries(AutoRetry::FailOnRestart);
@@ -1691,6 +1693,21 @@ fn do_automatic_retries(test: AutoRetry) {
 		let mut msg_events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(msg_events.len(), 1);
 		pass_along_path(&nodes[0], &[&nodes[1], &nodes[2]], amt_msat, payment_hash, Some(payment_secret), msg_events.pop().unwrap(), true, None);
+		claim_payment_along_route(&nodes[0], &[&[&nodes[1], &nodes[2]]], false, payment_preimage);
+	} else if test == AutoRetry::Spontaneous {
+		nodes[0].node.send_spontaneous_payment_with_retry(Some(payment_preimage), PaymentId(payment_hash.0), route_params, Retry::Attempts(1)).unwrap();
+		pass_failed_attempt_with_retry_along_path!(channel_id_2, true);
+
+		// Open a new channel with liquidity on the second hop so we can find a route for the retry
+		// attempt, since the initial second hop channel will be excluded from pathfinding
+		create_announced_chan_between_nodes(&nodes, 1, 2);
+
+		// We retry payments in `process_pending_htlc_forwards`
+		nodes[0].node.process_pending_htlc_forwards();
+		check_added_monitors!(nodes[0], 1);
+		let mut msg_events = nodes[0].node.get_and_clear_pending_msg_events();
+		assert_eq!(msg_events.len(), 1);
+		pass_along_path(&nodes[0], &[&nodes[1], &nodes[2]], amt_msat, payment_hash, None, msg_events.pop().unwrap(), true, Some(payment_preimage));
 		claim_payment_along_route(&nodes[0], &[&[&nodes[1], &nodes[2]]], false, payment_preimage);
 	} else if test == AutoRetry::FailAttempts {
 		// Ensure ChannelManager will not retry a payment if it has run out of payment attempts.
