@@ -4718,8 +4718,8 @@ fn test_duplicate_payment_hash_one_failure_one_success() {
 	// ACCEPTED_HTLC_SCRIPT_WEIGHT.
 	let payment_params = PaymentParameters::from_node_id(nodes[3].node.get_our_node_id())
 		.with_features(nodes[3].node.invoice_features());
-	let (route, _, _, _) = get_route_and_payment_hash!(nodes[0], nodes[3], payment_params, 900000, TEST_FINAL_CLTV - 40);
-	send_along_route_with_secret(&nodes[0], route, &[&[&nodes[1], &nodes[2], &nodes[3]]], 900000, duplicate_payment_hash, payment_secret);
+	let (route, _, _, _) = get_route_and_payment_hash!(nodes[0], nodes[3], payment_params, 800_000, TEST_FINAL_CLTV - 40);
+	send_along_route_with_secret(&nodes[0], route, &[&[&nodes[1], &nodes[2], &nodes[3]]], 800_000, duplicate_payment_hash, payment_secret);
 
 	let commitment_txn = get_local_commitment_txn!(nodes[2], chan_2.2);
 	assert_eq!(commitment_txn[0].input.len(), 1);
@@ -4739,25 +4739,35 @@ fn test_duplicate_payment_hash_one_failure_one_success() {
 
 		check_spends!(node_txn[0], commitment_txn[0]);
 		assert_eq!(node_txn[0].input.len(), 1);
+		assert_eq!(node_txn[0].output.len(), 1);
 
 		if node_txn.len() > 2 {
 			check_spends!(node_txn[1], commitment_txn[0]);
 			assert_eq!(node_txn[1].input.len(), 1);
+			assert_eq!(node_txn[1].output.len(), 1);
 			assert_eq!(node_txn[0].input[0].previous_output, node_txn[1].input[0].previous_output);
 
 			check_spends!(node_txn[2], commitment_txn[0]);
+			assert_eq!(node_txn[2].input.len(), 1);
+			assert_eq!(node_txn[2].output.len(), 1);
 			assert_ne!(node_txn[0].input[0].previous_output, node_txn[2].input[0].previous_output);
 		} else {
 			check_spends!(node_txn[1], commitment_txn[0]);
+			assert_eq!(node_txn[1].input.len(), 1);
+			assert_eq!(node_txn[1].output.len(), 1);
 			assert_ne!(node_txn[0].input[0].previous_output, node_txn[1].input[0].previous_output);
 		}
 
 		assert_eq!(node_txn[0].input[0].witness.last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT);
 		assert_eq!(node_txn[1].input[0].witness.last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT);
+		// Assign htlc_timeout_tx to the forwarded HTLC (with value ~800 sats). The received HTLC
+		// (with value 900 sats) will be claimed in the below `claim_funds` call.
 		if node_txn.len() > 2 {
 			assert_eq!(node_txn[2].input[0].witness.last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT);
+			htlc_timeout_tx = if node_txn[2].output[0].value < 900 { node_txn[2].clone() } else { node_txn[0].clone() };
+		} else {
+			htlc_timeout_tx = if node_txn[0].output[0].value < 900 { node_txn[1].clone() } else { node_txn[0].clone() };
 		}
-		htlc_timeout_tx = node_txn[0].clone();
 	}
 
 	nodes[2].node.claim_funds(our_payment_preimage);
@@ -4808,7 +4818,7 @@ fn test_duplicate_payment_hash_one_failure_one_success() {
 	// Note that the fee paid is effectively double as the HTLC value (including the nodes[1] fee
 	// and nodes[2] fee) is rounded down and then claimed in full.
 	mine_transaction(&nodes[1], &htlc_success_txn[1]);
-	expect_payment_forwarded!(nodes[1], nodes[0], nodes[2], Some(196*2), true, true);
+	expect_payment_forwarded!(nodes[1], nodes[0], nodes[2], Some(196), true, true);
 	let updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 	assert!(updates.update_add_htlcs.is_empty());
 	assert!(updates.update_fail_htlcs.is_empty());
