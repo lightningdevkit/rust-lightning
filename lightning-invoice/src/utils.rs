@@ -11,7 +11,6 @@ use lightning::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use lightning::chain::keysinterface::{Recipient, NodeSigner, SignerProvider, EntropySource};
 use lightning::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
 use lightning::ln::channelmanager::{ChannelDetails, ChannelManager, PaymentId, PaymentSendFailure, MIN_FINAL_CLTV_EXPIRY_DELTA};
-#[cfg(feature = "std")]
 use lightning::ln::channelmanager::{PhantomRouteHints, MIN_CLTV_EXPIRY_DELTA};
 use lightning::ln::inbound_payment::{create, create_from_hash, ExpandedKey};
 use lightning::routing::gossip::RoutingFees;
@@ -21,7 +20,6 @@ use secp256k1::PublicKey;
 use core::ops::Deref;
 use core::time::Duration;
 
-#[cfg(feature = "std")]
 /// Utility to create an invoice that can be paid to one of multiple nodes, or a "phantom invoice."
 /// See [`PhantomKeysManager`] for more information on phantom node payments.
 ///
@@ -41,6 +39,11 @@ use core::time::Duration;
 ///
 /// `invoice_expiry_delta_secs` describes the number of seconds that the invoice is valid for
 /// in excess of the current time.
+/// 
+/// 'duration_since_epoch' is the current time since epoch in seconds.
+/// 
+/// ['std::time::SystemTime'] has been removed to allow this function to be used in a 'no_std' environment, 
+/// where [`std::time::SystemTime`] is not available and the current time is supplied by the caller.
 ///
 /// You can specify a custom `min_final_cltv_expiry_delta`, or let LDK default it to
 /// [`MIN_FINAL_CLTV_EXPIRY_DELTA`]. The provided expiry must be at least [`MIN_FINAL_CLTV_EXPIRY_DELTA`] - 3.
@@ -60,7 +63,7 @@ use core::time::Duration;
 pub fn create_phantom_invoice<ES: Deref, NS: Deref, L: Deref>(
 	amt_msat: Option<u64>, payment_hash: Option<PaymentHash>, description: String,
 	invoice_expiry_delta_secs: u32, phantom_route_hints: Vec<PhantomRouteHints>, entropy_source: ES,
-	node_signer: NS, logger: L, network: Currency, min_final_cltv_expiry_delta: Option<u16>,
+	node_signer: NS, logger: L, network: Currency, min_final_cltv_expiry_delta: Option<u16>, duration_since_epoch: Duration,
 ) -> Result<Invoice, SignOrCreationError<()>>
 where
 	ES::Target: EntropySource,
@@ -71,11 +74,10 @@ where
 	let description = InvoiceDescription::Direct(&description,);
 	_create_phantom_invoice::<ES, NS, L>(
 		amt_msat, payment_hash, description, invoice_expiry_delta_secs, phantom_route_hints,
-		entropy_source, node_signer, logger, network, min_final_cltv_expiry_delta,
+		entropy_source, node_signer, logger, network, min_final_cltv_expiry_delta, duration_since_epoch,
 	)
 }
 
-#[cfg(feature = "std")]
 /// Utility to create an invoice that can be paid to one of multiple nodes, or a "phantom invoice."
 /// See [`PhantomKeysManager`] for more information on phantom node payments.
 ///
@@ -97,6 +99,11 @@ where
 ///
 /// `invoice_expiry_delta_secs` describes the number of seconds that the invoice is valid for
 /// in excess of the current time.
+/// 
+/// 'duration_since_epoch' is the current time since epoch in seconds.
+/// 
+/// ['std::time::SystemTime'] has been removed to allow this function to be used in a 'no_std' environment, 
+/// where [`std::time::SystemTime`] is not available and the current time is supplied by the caller.
 ///
 /// Note that the provided `keys_manager`'s `NodeSigner` implementation must support phantom
 /// invoices in its `sign_invoice` implementation ([`PhantomKeysManager`] satisfies this
@@ -110,7 +117,7 @@ where
 pub fn create_phantom_invoice_with_description_hash<ES: Deref, NS: Deref, L: Deref>(
 	amt_msat: Option<u64>, payment_hash: Option<PaymentHash>, invoice_expiry_delta_secs: u32,
 	description_hash: Sha256, phantom_route_hints: Vec<PhantomRouteHints>, entropy_source: ES,
-	node_signer: NS, logger: L, network: Currency, min_final_cltv_expiry_delta: Option<u16>,
+	node_signer: NS, logger: L, network: Currency, min_final_cltv_expiry_delta: Option<u16>, duration_since_epoch: Duration,
 ) -> Result<Invoice, SignOrCreationError<()>>
 where
 	ES::Target: EntropySource,
@@ -120,22 +127,20 @@ where
 	_create_phantom_invoice::<ES, NS, L>(
 		amt_msat, payment_hash, InvoiceDescription::Hash(&description_hash),
 		invoice_expiry_delta_secs, phantom_route_hints, entropy_source, node_signer, logger, network,
-		min_final_cltv_expiry_delta,
+		min_final_cltv_expiry_delta, duration_since_epoch,
 	)
 }
 
-#[cfg(feature = "std")]
 fn _create_phantom_invoice<ES: Deref, NS: Deref, L: Deref>(
 	amt_msat: Option<u64>, payment_hash: Option<PaymentHash>, description: InvoiceDescription,
 	invoice_expiry_delta_secs: u32, phantom_route_hints: Vec<PhantomRouteHints>, entropy_source: ES,
-	node_signer: NS, logger: L, network: Currency, min_final_cltv_expiry_delta: Option<u16>,
+	node_signer: NS, logger: L, network: Currency, min_final_cltv_expiry_delta: Option<u16>, duration_since_epoch: Duration,
 ) -> Result<Invoice, SignOrCreationError<()>>
 where
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	L::Target: Logger,
 {
-	use std::time::{SystemTime, UNIX_EPOCH};
 
 	if phantom_route_hints.len() == 0 {
 		return Err(SignOrCreationError::CreationError(
@@ -162,9 +167,7 @@ where
 			amt_msat,
 			payment_hash,
 			invoice_expiry_delta_secs,
-			SystemTime::now()
-				.duration_since(UNIX_EPOCH)
-				.expect("Time must be > 1970")
+			duration_since_epoch
 				.as_secs(),
 			min_final_cltv_expiry_delta,
 		)
@@ -176,9 +179,7 @@ where
 			amt_msat,
 			invoice_expiry_delta_secs,
 			&entropy_source,
-			SystemTime::now()
-				.duration_since(UNIX_EPOCH)
-				.expect("Time must be > 1970")
+			duration_since_epoch
 				.as_secs(),
 			min_final_cltv_expiry_delta,
 		)
@@ -189,7 +190,7 @@ where
 		phantom_route_hints.len(), log_bytes!(payment_hash.0));
 
 	let mut invoice = invoice
-		.current_timestamp()
+		.duration_since_epoch(duration_since_epoch)
 		.payment_hash(Hash::from_slice(&payment_hash.0).unwrap())
 		.payment_secret(payment_secret)
 		.min_final_cltv_expiry_delta(
@@ -1072,7 +1073,7 @@ mod test {
 			crate::utils::create_phantom_invoice::<&test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestLogger>(
 				Some(payment_amt), payment_hash, "test".to_string(), non_default_invoice_expiry_secs,
 				route_hints, &nodes[1].keys_manager, &nodes[1].keys_manager, &nodes[1].logger,
-				Currency::BitcoinTestnet, None,
+				Currency::BitcoinTestnet, None, Duration::from_secs(1234567)
 			).unwrap();
 		let (payment_hash, payment_secret) = (PaymentHash(invoice.payment_hash().into_inner()), *invoice.payment_secret());
 		let payment_preimage = if user_generated_pmt_hash {
@@ -1182,7 +1183,7 @@ mod test {
 		let invoice = crate::utils::create_phantom_invoice::<&test_utils::TestKeysInterface,
 			&test_utils::TestKeysInterface, &test_utils::TestLogger>(Some(payment_amt), Some(payment_hash),
 				"test".to_string(), 3600, route_hints, &nodes[1].keys_manager, &nodes[1].keys_manager,
-				&nodes[1].logger, Currency::BitcoinTestnet, None).unwrap();
+				&nodes[1].logger, Currency::BitcoinTestnet, None, Duration::from_secs(1234567)).unwrap();
 
 		let chan_0_1 = &nodes[1].node.list_usable_channels()[0];
 		assert_eq!(invoice.route_hints()[0].0[0].htlc_minimum_msat, chan_0_1.inbound_htlc_minimum_msat);
@@ -1214,7 +1215,7 @@ mod test {
 		>(
 			Some(payment_amt), None, non_default_invoice_expiry_secs, description_hash,
 			route_hints, &nodes[1].keys_manager, &nodes[1].keys_manager, &nodes[1].logger,
-			Currency::BitcoinTestnet, None,
+			Currency::BitcoinTestnet, None, Duration::from_secs(1234567),
 		)
 		.unwrap();
 		assert_eq!(invoice.amount_pico_btc(), Some(200_000));
@@ -1240,10 +1241,11 @@ mod test {
 		let payment_hash = Some(PaymentHash(Sha256::hash(&user_payment_preimage.0[..]).into_inner()));
 		let non_default_invoice_expiry_secs = 4200;
 		let min_final_cltv_expiry_delta = Some(100);
+		let duration_since_epoch = Duration::from_secs(1234567);
 		let invoice = crate::utils::create_phantom_invoice::<&test_utils::TestKeysInterface,
 			&test_utils::TestKeysInterface, &test_utils::TestLogger>(Some(payment_amt), payment_hash,
 				"".to_string(), non_default_invoice_expiry_secs, route_hints, &nodes[1].keys_manager, &nodes[1].keys_manager,
-				&nodes[1].logger, Currency::BitcoinTestnet, min_final_cltv_expiry_delta).unwrap();
+				&nodes[1].logger, Currency::BitcoinTestnet, min_final_cltv_expiry_delta, duration_since_epoch).unwrap();
 		assert_eq!(invoice.amount_pico_btc(), Some(200_000));
 		assert_eq!(invoice.min_final_cltv_expiry_delta(), (min_final_cltv_expiry_delta.unwrap() + 3) as u64);
 		assert_eq!(invoice.expiry_time(), Duration::from_secs(non_default_invoice_expiry_secs.into()));
@@ -1557,7 +1559,7 @@ mod test {
 		let invoice = crate::utils::create_phantom_invoice::<&test_utils::TestKeysInterface,
 			&test_utils::TestKeysInterface, &test_utils::TestLogger>(invoice_amt, None, "test".to_string(),
 				3600, phantom_route_hints, &invoice_node.keys_manager, &invoice_node.keys_manager,
-				&invoice_node.logger, Currency::BitcoinTestnet, None).unwrap();
+				&invoice_node.logger, Currency::BitcoinTestnet, None, Duration::from_secs(1234567)).unwrap();
 
 		let invoice_hints = invoice.private_routes();
 
