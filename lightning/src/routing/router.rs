@@ -885,18 +885,20 @@ impl<'a> PaymentPath<'a> {
 	}
 }
 
+#[inline(always)]
+/// Calculate the fees required to route the given amount over a channel with the given fees.
 fn compute_fees(amount_msat: u64, channel_fees: RoutingFees) -> Option<u64> {
-	let proportional_fee_millions =
-		amount_msat.checked_mul(channel_fees.proportional_millionths as u64);
-	if let Some(new_fee) = proportional_fee_millions.and_then(|part| {
-			(channel_fees.base_msat as u64).checked_add(part / 1_000_000) }) {
+	amount_msat.checked_mul(channel_fees.proportional_millionths as u64)
+		.and_then(|part| (channel_fees.base_msat as u64).checked_add(part / 1_000_000))
+}
 
-		Some(new_fee)
-	} else {
-		// This function may be (indirectly) called without any verification,
-		// with channel_fees provided by a caller. We should handle it gracefully.
-		None
-	}
+#[inline(always)]
+/// Calculate the fees required to route the given amount over a channel with the given fees,
+/// saturating to [`u64::max_value`].
+fn compute_fees_saturating(amount_msat: u64, channel_fees: RoutingFees) -> u64 {
+	amount_msat.checked_mul(channel_fees.proportional_millionths as u64)
+		.map(|prop| prop / 1_000_000).unwrap_or(u64::max_value())
+		.saturating_add(channel_fees.base_msat as u64)
 }
 
 /// The default `features` we assume for a node in a route, when no `features` are known about that
@@ -1254,10 +1256,10 @@ where L::Target: Logger {
 						// might violate htlc_minimum_msat on the hops which are next along the
 						// payment path (upstream to the payee). To avoid that, we recompute
 						// path fees knowing the final path contribution after constructing it.
-						let path_htlc_minimum_msat = compute_fees($next_hops_path_htlc_minimum_msat, $candidate.fees())
-							.and_then(|fee_msat| fee_msat.checked_add($next_hops_path_htlc_minimum_msat))
-							.map(|fee_msat| cmp::max(fee_msat, $candidate.htlc_minimum_msat()))
-							.unwrap_or_else(|| u64::max_value());
+						let path_htlc_minimum_msat = cmp::max(
+							compute_fees_saturating($next_hops_path_htlc_minimum_msat, $candidate.fees())
+								.saturating_add($next_hops_path_htlc_minimum_msat),
+							$candidate.htlc_minimum_msat());
 						let hm_entry = dist.entry($src_node_id);
 						let old_entry = hm_entry.or_insert_with(|| {
 							// If there was previously no known way to access the source node
@@ -1291,20 +1293,15 @@ where L::Target: Logger {
 
 						if should_process {
 							let mut hop_use_fee_msat = 0;
-							let mut total_fee_msat = $next_hops_fee_msat;
+							let mut total_fee_msat: u64 = $next_hops_fee_msat;
 
 							// Ignore hop_use_fee_msat for channel-from-us as we assume all channels-from-us
 							// will have the same effective-fee
 							if $src_node_id != our_node_id {
-								match compute_fees(amount_to_transfer_over_msat, $candidate.fees()) {
-									// max_value means we'll always fail
-									// the old_entry.total_fee_msat > total_fee_msat check
-									None => total_fee_msat = u64::max_value(),
-									Some(fee_msat) => {
-										hop_use_fee_msat = fee_msat;
-										total_fee_msat += hop_use_fee_msat;
-									}
-								}
+								// Note that `u64::max_value` means we'll always fail the
+								// `old_entry.total_fee_msat > total_fee_msat` check below
+								hop_use_fee_msat = compute_fees_saturating(amount_to_transfer_over_msat, $candidate.fees());
+								total_fee_msat = total_fee_msat.saturating_add(hop_use_fee_msat);
 							}
 
 							let channel_usage = ChannelUsage {
