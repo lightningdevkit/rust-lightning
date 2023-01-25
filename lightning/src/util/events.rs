@@ -491,10 +491,10 @@ pub enum Event {
 	/// [`ChannelManager::claim_funds`] with the preimage given in [`PaymentPurpose`].
 	///
 	/// Note that if the preimage is not known, you should call
-	/// [`ChannelManager::fail_htlc_backwards`] to free up resources for this HTLC and avoid
-	/// network congestion.
-	/// If you fail to call either [`ChannelManager::claim_funds`] or
-	/// [`ChannelManager::fail_htlc_backwards`] within the HTLC's timeout, the HTLC will be
+	/// [`ChannelManager::fail_htlc_backwards`] or [`ChannelManager::fail_htlc_backwards_with_reason`]
+	/// to free up resources for this HTLC and avoid network congestion.
+	/// If you fail to call either [`ChannelManager::claim_funds`], [`ChannelManager::fail_htlc_backwards`],
+	/// or [`ChannelManager::fail_htlc_backwards_with_reason`] within the HTLC's timeout, the HTLC will be
 	/// automatically failed.
 	///
 	/// # Note
@@ -506,6 +506,7 @@ pub enum Event {
 	///
 	/// [`ChannelManager::claim_funds`]: crate::ln::channelmanager::ChannelManager::claim_funds
 	/// [`ChannelManager::fail_htlc_backwards`]: crate::ln::channelmanager::ChannelManager::fail_htlc_backwards
+	/// [`ChannelManager::fail_htlc_backwards_with_reason`]: crate::ln::channelmanager::ChannelManager::fail_htlc_backwards_with_reason
 	PaymentClaimable {
 		/// The node that will receive the payment after it has been claimed.
 		/// This is useful to identify payments received via [phantom nodes].

@@ -289,6 +289,25 @@ struct ReceiveError {
 	msg: &'static str,
 }
 
+/// This enum is used to specify which error data to send to peers when failing back an HTLC
+/// using [`ChannelManager::fail_htlc_backwards_with_reason`].
+///
+/// For more info on failure codes, see <https://github.com/lightning/bolts/blob/master/04-onion-routing.md#failure-messages>.
+#[derive(Clone, Copy)]
+pub enum FailureCode {
+	/// We had a temporary error processing the payment. Useful if no other error codes fit
+	/// and you want to indicate that the payer may want to retry.
+	TemporaryNodeFailure             = 0x2000 | 2,
+	/// We have a required feature which was not in this onion. For example, you may require
+	/// some additional metadata that was not provided with this payment.
+	RequiredNodeFeatureMissing       = 0x4000 | 0x2000 | 3,
+	/// You may wish to use this when a `payment_preimage` is unknown, or the CLTV expiry of
+	/// the HTLC is too close to the current block height for safe handling.
+	/// Using this failure code in [`ChannelManager::fail_htlc_backwards_with_reason`] is
+	/// equivalent to calling [`ChannelManager::fail_htlc_backwards`].
+	IncorrectOrUnknownPaymentDetails = 0x4000 | 15,
+}
+
 type ShutdownResult = (Option<(OutPoint, ChannelMonitorUpdate)>, Vec<(HTLCSource, PaymentHash, PublicKey, [u8; 32])>);
 
 /// Error type returned across the peer_state mutex boundary. When an Err is generated for a
@@ -3472,17 +3491,36 @@ where
 	/// [`events::Event::PaymentClaimed`] events even for payments you intend to fail, especially on
 	/// startup during which time claims that were in-progress at shutdown may be replayed.
 	pub fn fail_htlc_backwards(&self, payment_hash: &PaymentHash) {
+		self.fail_htlc_backwards_with_reason(payment_hash, &FailureCode::IncorrectOrUnknownPaymentDetails);
+	}
+
+	/// This is a variant of [`ChannelManager::fail_htlc_backwards`] that allows you to specify the
+	/// reason for the failure.
+	///
+	/// See [`FailureCode`] for valid failure codes.
+	pub fn fail_htlc_backwards_with_reason(&self, payment_hash: &PaymentHash, failure_code: &FailureCode) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 
 		let removed_source = self.claimable_payments.lock().unwrap().claimable_htlcs.remove(payment_hash);
 		if let Some((_, mut sources)) = removed_source {
 			for htlc in sources.drain(..) {
-				let mut htlc_msat_height_data = htlc.value.to_be_bytes().to_vec();
-				htlc_msat_height_data.extend_from_slice(&self.best_block.read().unwrap().height().to_be_bytes());
+				let reason = self.get_htlc_fail_reason_from_failure_code(failure_code, &htlc);
 				let source = HTLCSource::PreviousHopData(htlc.prev_hop);
-				let reason = HTLCFailReason::reason(0x4000 | 15, htlc_msat_height_data);
 				let receiver = HTLCDestination::FailedPayment { payment_hash: *payment_hash };
 				self.fail_htlc_backwards_internal(&source, &payment_hash, &reason, receiver);
+			}
+		}
+	}
+
+	/// Gets error data to form an [`HTLCFailReason`] given a [`FailureCode`] and [`ClaimableHTLC`].
+	fn get_htlc_fail_reason_from_failure_code(&self, failure_code: &FailureCode, htlc: &ClaimableHTLC) -> HTLCFailReason {
+		match failure_code {
+			FailureCode::TemporaryNodeFailure => HTLCFailReason::from_failure_code(*failure_code as u16),
+			FailureCode::RequiredNodeFeatureMissing => HTLCFailReason::from_failure_code(*failure_code as u16),
+			FailureCode::IncorrectOrUnknownPaymentDetails => {
+				let mut htlc_msat_height_data = htlc.value.to_be_bytes().to_vec();
+				htlc_msat_height_data.extend_from_slice(&self.best_block.read().unwrap().height().to_be_bytes());
+				HTLCFailReason::reason(*failure_code as u16, htlc_msat_height_data)
 			}
 		}
 	}
