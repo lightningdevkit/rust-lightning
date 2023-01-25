@@ -1469,3 +1469,58 @@ impl PhantomKeysManager {
 pub fn dyn_sign() {
 	let _signer: Box<dyn EcdsaChannelSigner>;
 }
+
+#[cfg(all(test, feature = "_bench_unstable", not(feature = "no-std")))]
+mod benches {
+	use std::sync::{Arc, mpsc};
+	use std::sync::mpsc::TryRecvError;
+	use std::thread;
+	use std::time::Duration;
+	use bitcoin::blockdata::constants::genesis_block;
+	use bitcoin::Network;
+	use crate::chain::keysinterface::{EntropySource, KeysManager};
+
+	use test::Bencher;
+
+	#[bench]
+	fn bench_get_secure_random_bytes(bench: &mut Bencher) {
+		let seed = [0u8; 32];
+		let now = Duration::from_secs(genesis_block(Network::Testnet).header.time as u64);
+		let keys_manager = Arc::new(KeysManager::new(&seed, now.as_secs(), now.subsec_micros()));
+
+		let mut handles = Vec::new();
+		let mut stops = Vec::new();
+		for _ in 1..5 {
+			let keys_manager_clone = Arc::clone(&keys_manager);
+			let (stop_sender, stop_receiver) = mpsc::channel();
+			let handle = thread::spawn(move || {
+				loop {
+					keys_manager_clone.get_secure_random_bytes();
+					match stop_receiver.try_recv() {
+						Ok(_) | Err(TryRecvError::Disconnected) => {
+							println!("Terminating.");
+							break;
+						}
+						Err(TryRecvError::Empty) => {}
+					}
+				}
+			});
+			handles.push(handle);
+			stops.push(stop_sender);
+		}
+
+		bench.iter(|| {
+			for _ in 1..100 {
+				keys_manager.get_secure_random_bytes();
+			}
+		});
+
+		for stop in stops {
+			let _ = stop.send(());
+		}
+		for handle in handles {
+			handle.join().unwrap();
+		}
+	}
+
+}
