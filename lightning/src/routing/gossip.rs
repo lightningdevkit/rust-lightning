@@ -32,11 +32,11 @@ use crate::util::logger::{Logger, Level};
 use crate::util::events::{MessageSendEvent, MessageSendEventsProvider};
 use crate::util::scid_utils::{block_from_scid, scid_from_parts, MAX_SCID_BLOCK};
 use crate::util::string::PrintableString;
+use crate::util::indexed_map::{IndexedMap, Entry as IndexedMapEntry};
 
 use crate::io;
 use crate::io_extras::{copy, sink};
 use crate::prelude::*;
-use alloc::collections::{BTreeMap, btree_map::Entry as BtreeEntry};
 use core::{cmp, fmt};
 use crate::sync::{RwLock, RwLockReadGuard};
 #[cfg(feature = "std")]
@@ -133,8 +133,8 @@ pub struct NetworkGraph<L: Deref> where L::Target: Logger {
 	genesis_hash: BlockHash,
 	logger: L,
 	// Lock order: channels -> nodes
-	channels: RwLock<BTreeMap<u64, ChannelInfo>>,
-	nodes: RwLock<BTreeMap<NodeId, NodeInfo>>,
+	channels: RwLock<IndexedMap<u64, ChannelInfo>>,
+	nodes: RwLock<IndexedMap<NodeId, NodeInfo>>,
 	// Lock order: removed_channels -> removed_nodes
 	//
 	// NOTE: In the following `removed_*` maps, we use seconds since UNIX epoch to track time instead
@@ -158,8 +158,8 @@ pub struct NetworkGraph<L: Deref> where L::Target: Logger {
 
 /// A read-only view of [`NetworkGraph`].
 pub struct ReadOnlyNetworkGraph<'a> {
-	channels: RwLockReadGuard<'a, BTreeMap<u64, ChannelInfo>>,
-	nodes: RwLockReadGuard<'a, BTreeMap<NodeId, NodeInfo>>,
+	channels: RwLockReadGuard<'a, IndexedMap<u64, ChannelInfo>>,
+	nodes: RwLockReadGuard<'a, IndexedMap<NodeId, NodeInfo>>,
 }
 
 /// Update to the [`NetworkGraph`] based on payment failure information conveyed via the Onion
@@ -1054,10 +1054,6 @@ impl Readable for NodeAlias {
 pub struct NodeInfo {
 	/// All valid channels a node has announced
 	pub channels: Vec<u64>,
-	/// Lowest fees enabling routing via any of the enabled, known channels to a node.
-	/// The two fields (flat and proportional fee) are independent,
-	/// meaning they don't have to refer to the same channel.
-	pub lowest_inbound_channel_fees: Option<RoutingFees>,
 	/// More information about a node from node_announcement.
 	/// Optional because we store a Node entry after learning about it from
 	/// a channel announcement, but before receiving a node announcement.
@@ -1066,8 +1062,8 @@ pub struct NodeInfo {
 
 impl fmt::Display for NodeInfo {
 	fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
-		write!(f, "lowest_inbound_channel_fees: {:?}, channels: {:?}, announcement_info: {:?}",
-		   self.lowest_inbound_channel_fees, &self.channels[..], self.announcement_info)?;
+		write!(f, " channels: {:?}, announcement_info: {:?}",
+			&self.channels[..], self.announcement_info)?;
 		Ok(())
 	}
 }
@@ -1075,7 +1071,7 @@ impl fmt::Display for NodeInfo {
 impl Writeable for NodeInfo {
 	fn write<W: crate::util::ser::Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		write_tlv_fields!(writer, {
-			(0, self.lowest_inbound_channel_fees, option),
+			// Note that older versions of LDK wrote the lowest inbound fees here at type 0
 			(2, self.announcement_info, option),
 			(4, self.channels, vec_type),
 		});
@@ -1103,18 +1099,22 @@ impl MaybeReadable for NodeAnnouncementInfoDeserWrapper {
 
 impl Readable for NodeInfo {
 	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
-		_init_tlv_field_var!(lowest_inbound_channel_fees, option);
+		// Historically, we tracked the lowest inbound fees for any node in order to use it as an
+		// A* heuristic when routing. Sadly, these days many, many nodes have at least one channel
+		// with zero inbound fees, causing that heuristic to provide little gain. Worse, because it
+		// requires additional complexity and lookups during routing, it ends up being a
+		// performance loss. Thus, we simply ignore the old field here and no longer track it.
+		let mut _lowest_inbound_channel_fees: Option<RoutingFees> = None;
 		let mut announcement_info_wrap: Option<NodeAnnouncementInfoDeserWrapper> = None;
 		_init_tlv_field_var!(channels, vec_type);
 
 		read_tlv_fields!(reader, {
-			(0, lowest_inbound_channel_fees, option),
+			(0, _lowest_inbound_channel_fees, option),
 			(2, announcement_info_wrap, ignorable),
 			(4, channels, vec_type),
 		});
 
 		Ok(NodeInfo {
-			lowest_inbound_channel_fees: _init_tlv_based_struct_field!(lowest_inbound_channel_fees, option),
 			announcement_info: announcement_info_wrap.map(|w| w.0),
 			channels: _init_tlv_based_struct_field!(channels, vec_type),
 		})
@@ -1131,13 +1131,13 @@ impl<L: Deref> Writeable for NetworkGraph<L> where L::Target: Logger {
 		self.genesis_hash.write(writer)?;
 		let channels = self.channels.read().unwrap();
 		(channels.len() as u64).write(writer)?;
-		for (ref chan_id, ref chan_info) in channels.iter() {
+		for (ref chan_id, ref chan_info) in channels.unordered_iter() {
 			(*chan_id).write(writer)?;
 			chan_info.write(writer)?;
 		}
 		let nodes = self.nodes.read().unwrap();
 		(nodes.len() as u64).write(writer)?;
-		for (ref node_id, ref node_info) in nodes.iter() {
+		for (ref node_id, ref node_info) in nodes.unordered_iter() {
 			node_id.write(writer)?;
 			node_info.write(writer)?;
 		}
@@ -1156,14 +1156,14 @@ impl<L: Deref> ReadableArgs<L> for NetworkGraph<L> where L::Target: Logger {
 
 		let genesis_hash: BlockHash = Readable::read(reader)?;
 		let channels_count: u64 = Readable::read(reader)?;
-		let mut channels = BTreeMap::new();
+		let mut channels = IndexedMap::new();
 		for _ in 0..channels_count {
 			let chan_id: u64 = Readable::read(reader)?;
 			let chan_info = Readable::read(reader)?;
 			channels.insert(chan_id, chan_info);
 		}
 		let nodes_count: u64 = Readable::read(reader)?;
-		let mut nodes = BTreeMap::new();
+		let mut nodes = IndexedMap::new();
 		for _ in 0..nodes_count {
 			let node_id = Readable::read(reader)?;
 			let node_info = Readable::read(reader)?;
@@ -1191,11 +1191,11 @@ impl<L: Deref> ReadableArgs<L> for NetworkGraph<L> where L::Target: Logger {
 impl<L: Deref> fmt::Display for NetworkGraph<L> where L::Target: Logger {
 	fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
 		writeln!(f, "Network map\n[Channels]")?;
-		for (key, val) in self.channels.read().unwrap().iter() {
+		for (key, val) in self.channels.read().unwrap().unordered_iter() {
 			writeln!(f, " {}: {}", key, val)?;
 		}
 		writeln!(f, "[Nodes]")?;
-		for (&node_id, val) in self.nodes.read().unwrap().iter() {
+		for (&node_id, val) in self.nodes.read().unwrap().unordered_iter() {
 			writeln!(f, " {}: {}", log_bytes!(node_id.as_slice()), val)?;
 		}
 		Ok(())
@@ -1218,8 +1218,8 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 			secp_ctx: Secp256k1::verification_only(),
 			genesis_hash,
 			logger,
-			channels: RwLock::new(BTreeMap::new()),
-			nodes: RwLock::new(BTreeMap::new()),
+			channels: RwLock::new(IndexedMap::new()),
+			nodes: RwLock::new(IndexedMap::new()),
 			last_rapid_gossip_sync_timestamp: Mutex::new(None),
 			removed_channels: Mutex::new(HashMap::new()),
 			removed_nodes: Mutex::new(HashMap::new()),
@@ -1252,7 +1252,7 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 	/// purposes.
 	#[cfg(test)]
 	pub fn clear_nodes_announcement_info(&self) {
-		for node in self.nodes.write().unwrap().iter_mut() {
+		for node in self.nodes.write().unwrap().unordered_iter_mut() {
 			node.1.announcement_info = None;
 		}
 	}
@@ -1382,7 +1382,7 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 		let node_id_b = channel_info.node_two.clone();
 
 		match channels.entry(short_channel_id) {
-			BtreeEntry::Occupied(mut entry) => {
+			IndexedMapEntry::Occupied(mut entry) => {
 				//TODO: because asking the blockchain if short_channel_id is valid is only optional
 				//in the blockchain API, we need to handle it smartly here, though it's unclear
 				//exactly how...
@@ -1401,20 +1401,19 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 					return Err(LightningError{err: "Already have knowledge of channel".to_owned(), action: ErrorAction::IgnoreDuplicateGossip});
 				}
 			},
-			BtreeEntry::Vacant(entry) => {
+			IndexedMapEntry::Vacant(entry) => {
 				entry.insert(channel_info);
 			}
 		};
 
 		for current_node_id in [node_id_a, node_id_b].iter() {
 			match nodes.entry(current_node_id.clone()) {
-				BtreeEntry::Occupied(node_entry) => {
+				IndexedMapEntry::Occupied(node_entry) => {
 					node_entry.into_mut().channels.push(short_channel_id);
 				},
-				BtreeEntry::Vacant(node_entry) => {
+				IndexedMapEntry::Vacant(node_entry) => {
 					node_entry.insert(NodeInfo {
 						channels: vec!(short_channel_id),
-						lowest_inbound_channel_fees: None,
 						announcement_info: None,
 					});
 				}
@@ -1586,7 +1585,7 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 			for scid in node.channels.iter() {
 				if let Some(chan_info) = channels.remove(scid) {
 					let other_node_id = if node_id == chan_info.node_one { chan_info.node_two } else { chan_info.node_one };
-					if let BtreeEntry::Occupied(mut other_node_entry) = nodes.entry(other_node_id) {
+					if let IndexedMapEntry::Occupied(mut other_node_entry) = nodes.entry(other_node_id) {
 						other_node_entry.get_mut().channels.retain(|chan_id| {
 							*scid != *chan_id
 						});
@@ -1645,7 +1644,7 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 		// Sadly BTreeMap::retain was only stabilized in 1.53 so we can't switch to it for some
 		// time.
 		let mut scids_to_remove = Vec::new();
-		for (scid, info) in channels.iter_mut() {
+		for (scid, info) in channels.unordered_iter_mut() {
 			if info.one_to_two.is_some() && info.one_to_two.as_ref().unwrap().last_update < min_time_unix {
 				info.one_to_two = None;
 			}
@@ -1715,9 +1714,7 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 	}
 
 	fn update_channel_intern(&self, msg: &msgs::UnsignedChannelUpdate, full_msg: Option<&msgs::ChannelUpdate>, sig: Option<&secp256k1::ecdsa::Signature>) -> Result<(), LightningError> {
-		let dest_node_id;
 		let chan_enabled = msg.flags & (1 << 1) != (1 << 1);
-		let chan_was_enabled;
 
 		#[cfg(all(feature = "std", not(test), not(feature = "_test_utils")))]
 		{
@@ -1765,9 +1762,6 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 							} else if existing_chan_info.last_update == msg.timestamp {
 								return Err(LightningError{err: "Update had same timestamp as last processed update".to_owned(), action: ErrorAction::IgnoreDuplicateGossip});
 							}
-							chan_was_enabled = existing_chan_info.enabled;
-						} else {
-							chan_was_enabled = false;
 						}
 					}
 				}
@@ -1795,7 +1789,6 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 
 				let msg_hash = hash_to_message!(&Sha256dHash::hash(&msg.encode()[..])[..]);
 				if msg.flags & 1 == 1 {
-					dest_node_id = channel.node_one.clone();
 					check_update_latest!(channel.two_to_one);
 					if let Some(sig) = sig {
 						secp_verify_sig!(self.secp_ctx, &msg_hash, &sig, &PublicKey::from_slice(channel.node_two.as_slice()).map_err(|_| LightningError{
@@ -1805,7 +1798,6 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 					}
 					channel.two_to_one = get_new_channel_info!();
 				} else {
-					dest_node_id = channel.node_two.clone();
 					check_update_latest!(channel.one_to_two);
 					if let Some(sig) = sig {
 						secp_verify_sig!(self.secp_ctx, &msg_hash, &sig, &PublicKey::from_slice(channel.node_one.as_slice()).map_err(|_| LightningError{
@@ -1818,51 +1810,13 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 			}
 		}
 
-		let mut nodes = self.nodes.write().unwrap();
-		if chan_enabled {
-			let node = nodes.get_mut(&dest_node_id).unwrap();
-			let mut base_msat = msg.fee_base_msat;
-			let mut proportional_millionths = msg.fee_proportional_millionths;
-			if let Some(fees) = node.lowest_inbound_channel_fees {
-				base_msat = cmp::min(base_msat, fees.base_msat);
-				proportional_millionths = cmp::min(proportional_millionths, fees.proportional_millionths);
-			}
-			node.lowest_inbound_channel_fees = Some(RoutingFees {
-				base_msat,
-				proportional_millionths
-			});
-		} else if chan_was_enabled {
-			let node = nodes.get_mut(&dest_node_id).unwrap();
-			let mut lowest_inbound_channel_fees = None;
-
-			for chan_id in node.channels.iter() {
-				let chan = channels.get(chan_id).unwrap();
-				let chan_info_opt;
-				if chan.node_one == dest_node_id {
-					chan_info_opt = chan.two_to_one.as_ref();
-				} else {
-					chan_info_opt = chan.one_to_two.as_ref();
-				}
-				if let Some(chan_info) = chan_info_opt {
-					if chan_info.enabled {
-						let fees = lowest_inbound_channel_fees.get_or_insert(RoutingFees {
-							base_msat: u32::max_value(), proportional_millionths: u32::max_value() });
-						fees.base_msat = cmp::min(fees.base_msat, chan_info.fees.base_msat);
-						fees.proportional_millionths = cmp::min(fees.proportional_millionths, chan_info.fees.proportional_millionths);
-					}
-				}
-			}
-
-			node.lowest_inbound_channel_fees = lowest_inbound_channel_fees;
-		}
-
 		Ok(())
 	}
 
-	fn remove_channel_in_nodes(nodes: &mut BTreeMap<NodeId, NodeInfo>, chan: &ChannelInfo, short_channel_id: u64) {
+	fn remove_channel_in_nodes(nodes: &mut IndexedMap<NodeId, NodeInfo>, chan: &ChannelInfo, short_channel_id: u64) {
 		macro_rules! remove_from_node {
 			($node_id: expr) => {
-				if let BtreeEntry::Occupied(mut entry) = nodes.entry($node_id) {
+				if let IndexedMapEntry::Occupied(mut entry) = nodes.entry($node_id) {
 					entry.get_mut().channels.retain(|chan_id| {
 						short_channel_id != *chan_id
 					});
@@ -1883,8 +1837,8 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 impl ReadOnlyNetworkGraph<'_> {
 	/// Returns all known valid channels' short ids along with announced channel info.
 	///
-	/// (C-not exported) because we have no mapping for `BTreeMap`s
-	pub fn channels(&self) -> &BTreeMap<u64, ChannelInfo> {
+	/// (C-not exported) because we don't want to return lifetime'd references
+	pub fn channels(&self) -> &IndexedMap<u64, ChannelInfo> {
 		&*self.channels
 	}
 
@@ -1896,13 +1850,13 @@ impl ReadOnlyNetworkGraph<'_> {
 	#[cfg(c_bindings)] // Non-bindings users should use `channels`
 	/// Returns the list of channels in the graph
 	pub fn list_channels(&self) -> Vec<u64> {
-		self.channels.keys().map(|c| *c).collect()
+		self.channels.unordered_keys().map(|c| *c).collect()
 	}
 
 	/// Returns all known nodes' public keys along with announced node info.
 	///
-	/// (C-not exported) because we have no mapping for `BTreeMap`s
-	pub fn nodes(&self) -> &BTreeMap<NodeId, NodeInfo> {
+	/// (C-not exported) because we don't want to return lifetime'd references
+	pub fn nodes(&self) -> &IndexedMap<NodeId, NodeInfo> {
 		&*self.nodes
 	}
 
@@ -1914,7 +1868,7 @@ impl ReadOnlyNetworkGraph<'_> {
 	#[cfg(c_bindings)] // Non-bindings users should use `nodes`
 	/// Returns the list of nodes in the graph
 	pub fn list_nodes(&self) -> Vec<NodeId> {
-		self.nodes.keys().map(|n| *n).collect()
+		self.nodes.unordered_keys().map(|n| *n).collect()
 	}
 
 	/// Get network addresses by node id.
@@ -3276,7 +3230,6 @@ mod tests {
 		// 2. Check we can read a NodeInfo anyways, but set the NodeAnnouncementInfo to None if invalid
 		let valid_node_info = NodeInfo {
 			channels: Vec::new(),
-			lowest_inbound_channel_fees: None,
 			announcement_info: Some(valid_node_ann_info),
 		};
 

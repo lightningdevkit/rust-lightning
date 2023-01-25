@@ -40,6 +40,8 @@ pub(crate) mod transaction_utils;
 pub(crate) mod scid_utils;
 pub(crate) mod time;
 
+pub mod indexed_map;
+
 /// Logging macro utilities.
 #[macro_use]
 pub(crate) mod macro_logger;
