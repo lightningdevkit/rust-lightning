@@ -15,7 +15,7 @@ use crate::chain::channelmonitor::{CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCK
 use crate::chain::keysinterface::{EntropySource, NodeSigner, Recipient};
 use crate::ln::{PaymentHash, PaymentSecret};
 use crate::ln::channel::EXPIRE_PREV_CONFIG_TICKS;
-use crate::ln::channelmanager::{HTLCForwardInfo, CLTV_FAR_FAR_AWAY, MIN_CLTV_EXPIRY_DELTA, PendingAddHTLCInfo, PendingHTLCInfo, PendingHTLCRouting, PaymentId};
+use crate::ln::channelmanager::{HTLCForwardInfo, FailureCode, CLTV_FAR_FAR_AWAY, MIN_CLTV_EXPIRY_DELTA, PendingAddHTLCInfo, PendingHTLCInfo, PendingHTLCRouting, PaymentId};
 use crate::ln::onion_utils;
 use crate::routing::gossip::{NetworkUpdate, RoutingFees};
 use crate::routing::router::{get_route, PaymentParameters, Route, RouteHint, RouteHintHop};
@@ -829,6 +829,73 @@ fn test_always_create_tlv_format_onion_payloads() {
 			despite that the features signals no support for variable length onions"
 		)}
 	}
+}
+
+fn do_test_fail_htlc_backwards_with_reason(failure_code: FailureCode) {
+
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	create_announced_chan_between_nodes(&nodes, 0, 1);
+
+	let payment_amount = 100_000;
+	let (route, payment_hash, _, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], payment_amount);
+	nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret), PaymentId(payment_hash.0)).unwrap();
+	check_added_monitors!(nodes[0], 1);
+
+	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+	let mut payment_event = SendEvent::from_event(events.pop().unwrap());
+	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
+	commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, false);
+
+	expect_pending_htlcs_forwardable!(nodes[1]);
+	expect_payment_claimable!(nodes[1], payment_hash, payment_secret, payment_amount);
+	nodes[1].node.fail_htlc_backwards_with_reason(&payment_hash, &failure_code);
+
+	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[1], vec![HTLCDestination::FailedPayment { payment_hash: payment_hash }]);
+	check_added_monitors!(nodes[1], 1);
+
+	let events = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	let (update_fail_htlc, commitment_signed) = match events[0] {
+		MessageSendEvent::UpdateHTLCs { node_id: _ , updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref update_fee, ref commitment_signed } } => {
+			assert!(update_add_htlcs.is_empty());
+			assert!(update_fulfill_htlcs.is_empty());
+			assert_eq!(update_fail_htlcs.len(), 1);
+			assert!(update_fail_malformed_htlcs.is_empty());
+			assert!(update_fee.is_none());
+			(update_fail_htlcs[0].clone(), commitment_signed)
+		},
+		_ => panic!("Unexpected event"),
+	};
+
+	nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &update_fail_htlc);
+	commitment_signed_dance!(nodes[0], nodes[1], commitment_signed, false, true);
+
+	let failure_data = match failure_code {
+		FailureCode::TemporaryNodeFailure => vec![],
+		FailureCode::RequiredNodeFeatureMissing => vec![],
+		FailureCode::IncorrectOrUnknownPaymentDetails => {
+			let mut htlc_msat_height_data = (payment_amount as u64).to_be_bytes().to_vec();
+			htlc_msat_height_data.extend_from_slice(&CHAN_CONFIRM_DEPTH.to_be_bytes());
+			htlc_msat_height_data
+		}
+	};
+
+	let failure_code = failure_code as u16;
+	let permanent_flag = 0x4000;
+	let permanent_fail = (failure_code & permanent_flag) != 0;
+	expect_payment_failed!(nodes[0], payment_hash, permanent_fail, failure_code, failure_data);
+
+}
+
+#[test]
+fn test_fail_htlc_backwards_with_reason() {
+	do_test_fail_htlc_backwards_with_reason(FailureCode::TemporaryNodeFailure);
+	do_test_fail_htlc_backwards_with_reason(FailureCode::RequiredNodeFeatureMissing);
+	do_test_fail_htlc_backwards_with_reason(FailureCode::IncorrectOrUnknownPaymentDetails);
 }
 
 macro_rules! get_phantom_route {
