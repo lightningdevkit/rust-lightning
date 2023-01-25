@@ -331,7 +331,9 @@ impl Refund {
 	/// offer, which does have a `signing_pubkey`.
 	///
 	/// The `payment_paths` parameter is useful for maintaining the payment recipient's privacy. It
-	/// must contain one or more elements.
+	/// must contain one or more elements ordered from most-preferred to least-preferred, if there's
+	/// a preference. Note, however, that any privacy is lost if a public node id is used for
+	/// `signing_pubkey`.
 	///
 	/// Errors if the request contains unknown required features.
 	///

@@ -333,7 +333,9 @@ impl InvoiceRequest {
 	/// for the invoice.
 	///
 	/// The `payment_paths` parameter is useful for maintaining the payment recipient's privacy. It
-	/// must contain one or more elements.
+	/// must contain one or more elements ordered from most-preferred to least-preferred, if there's
+	/// a preference. Note, however, that any privacy is lost if a public node id was used for
+	/// [`Offer::signing_pubkey`].
 	///
 	/// Errors if the request contains unknown required features.
 	///
