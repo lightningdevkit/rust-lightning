@@ -20,6 +20,7 @@ use crate::chain::keysinterface;
 use crate::ln::channelmanager;
 use crate::ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 use crate::ln::{msgs, wire};
+use crate::ln::msgs::LightningError;
 use crate::ln::script::ShutdownScript;
 use crate::routing::gossip::NetworkGraph;
 use crate::routing::router::{find_route, InFlightHtlcs, Route, RouteHop, RouteParameters, Router, ScorerAccountingForInFlightHtlcs};
@@ -76,11 +77,17 @@ impl chaininterface::FeeEstimator for TestFeeEstimator {
 
 pub struct TestRouter<'a> {
 	pub network_graph: Arc<NetworkGraph<&'a TestLogger>>,
+	pub next_routes: Mutex<VecDeque<Result<Route, LightningError>>>,
 }
 
 impl<'a> TestRouter<'a> {
 	pub fn new(network_graph: Arc<NetworkGraph<&'a TestLogger>>) -> Self {
-		Self { network_graph }
+		Self { network_graph, next_routes: Mutex::new(VecDeque::new()), }
+	}
+
+	pub fn expect_find_route(&self, result: Result<Route, LightningError>) {
+		let mut expected_routes = self.next_routes.lock().unwrap();
+		expected_routes.push_back(result);
 	}
 }
 
@@ -89,6 +96,9 @@ impl<'a> Router for TestRouter<'a> {
 		&self, payer: &PublicKey, params: &RouteParameters, first_hops: Option<&[&channelmanager::ChannelDetails]>,
 		inflight_htlcs: &InFlightHtlcs
 	) -> Result<Route, msgs::LightningError> {
+		if let Some(find_route_res) = self.next_routes.lock().unwrap().pop_front() {
+			return find_route_res
+		}
 		let logger = TestLogger::new();
 		find_route(
 			payer, params, &self.network_graph, first_hops, &logger,
@@ -100,6 +110,16 @@ impl<'a> Router for TestRouter<'a> {
 	fn notify_payment_path_successful(&self, _path: &[&RouteHop]) {}
 	fn notify_payment_probe_successful(&self, _path: &[&RouteHop]) {}
 	fn notify_payment_probe_failed(&self, _path: &[&RouteHop], _short_channel_id: u64) {}
+}
+
+#[cfg(feature = "std")] // If we put this on the `if`, we get "attributes are not yet allowed on `if` expressions" on 1.41.1
+impl<'a> Drop for TestRouter<'a> {
+	fn drop(&mut self) {
+		if std::thread::panicking() {
+			return;
+		}
+		assert!(self.next_routes.lock().unwrap().is_empty());
+	}
 }
 
 pub struct OnlyReadsKeysInterface {}

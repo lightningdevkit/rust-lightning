@@ -45,7 +45,7 @@ use crate::ln::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, No
 #[cfg(any(feature = "_test_utils", test))]
 use crate::ln::features::InvoiceFeatures;
 use crate::routing::gossip::NetworkGraph;
-use crate::routing::router::{DefaultRouter, InFlightHtlcs, PaymentParameters, Route, RouteHop, RoutePath, Router};
+use crate::routing::router::{DefaultRouter, InFlightHtlcs, PaymentParameters, Route, RouteHop, RouteParameters, RoutePath, Router};
 use crate::routing::scoring::ProbabilisticScorer;
 use crate::ln::msgs;
 use crate::ln::onion_utils;
@@ -53,7 +53,7 @@ use crate::ln::onion_utils::HTLCFailReason;
 use crate::ln::msgs::{ChannelMessageHandler, DecodeError, LightningError, MAX_VALUE_MSAT};
 #[cfg(test)]
 use crate::ln::outbound_payment;
-use crate::ln::outbound_payment::{OutboundPayments, PendingOutboundPayment};
+use crate::ln::outbound_payment::{OutboundPayments, PaymentAttempts, PendingOutboundPayment, Retry};
 use crate::ln::wire::Encode;
 use crate::chain::keysinterface::{EntropySource, KeysManager, NodeSigner, Recipient, SignerProvider, ChannelSigner};
 use crate::util::config::{UserConfig, ChannelConfig};
@@ -407,7 +407,7 @@ impl MsgHandleErrInternal {
 /// Event::PendingHTLCsForwardable for the API guidelines indicating how long should be waited).
 /// This provides some limited amount of privacy. Ideally this would range from somewhere like one
 /// second to 30 seconds, but people expect lightning to be, you know, kinda fast, sadly.
-const MIN_HTLC_RELAY_HOLDING_CELL_MILLIS: u64 = 100;
+pub(super) const MIN_HTLC_RELAY_HOLDING_CELL_MILLIS: u64 = 100;
 
 /// For events which result in both a RevokeAndACK and a CommitmentUpdate, by default they should
 /// be sent in the order they appear in the return value, however sometimes the order needs to be
@@ -2466,6 +2466,18 @@ where
 				self.send_payment_along_path(path, payment_params, payment_hash, payment_secret, total_value, cur_height, payment_id, keysend_preimage, session_priv))
 	}
 
+	/// Similar to [`ChannelManager::send_payment`], but will automatically find a route based on
+	/// `route_params` and retry failed payment paths based on `retry_strategy`.
+	pub fn send_payment_with_retry(&self, payment_hash: PaymentHash, payment_secret: &Option<PaymentSecret>, payment_id: PaymentId, route_params: RouteParameters, retry_strategy: Retry) -> Result<(), PaymentSendFailure> {
+		let best_block_height = self.best_block.read().unwrap().height();
+		self.pending_outbound_payments
+			.send_payment(payment_hash, payment_secret, payment_id, retry_strategy, route_params,
+				&self.router, self.list_usable_channels(), self.compute_inflight_htlcs(),
+				&self.entropy_source, &self.node_signer, best_block_height,
+				|path, payment_params, payment_hash, payment_secret, total_value, cur_height, payment_id, keysend_preimage, session_priv|
+				self.send_payment_along_path(path, payment_params, payment_hash, payment_secret, total_value, cur_height, payment_id, keysend_preimage, session_priv))
+	}
+
 	#[cfg(test)]
 	fn test_send_payment_internal(&self, route: &Route, payment_hash: PaymentHash, payment_secret: &Option<PaymentSecret>, keysend_preimage: Option<PaymentPreimage>, payment_id: PaymentId, recv_value_msat: Option<u64>, onion_session_privs: Vec<[u8; 32]>) -> Result<(), PaymentSendFailure> {
 		let best_block_height = self.best_block.read().unwrap().height();
@@ -2477,7 +2489,7 @@ where
 	#[cfg(test)]
 	pub(crate) fn test_add_new_pending_payment(&self, payment_hash: PaymentHash, payment_secret: Option<PaymentSecret>, payment_id: PaymentId, route: &Route) -> Result<Vec<[u8; 32]>, PaymentSendFailure> {
 		let best_block_height = self.best_block.read().unwrap().height();
-		self.pending_outbound_payments.test_add_new_pending_payment(payment_hash, payment_secret, payment_id, route, &self.entropy_source, best_block_height)
+		self.pending_outbound_payments.test_add_new_pending_payment(payment_hash, payment_secret, payment_id, route, Retry::Attempts(0), &self.entropy_source, best_block_height)
 	}
 
 
@@ -3279,6 +3291,12 @@ where
 				}
 			}
 		}
+
+		let best_block_height = self.best_block.read().unwrap().height();
+		self.pending_outbound_payments.check_retry_payments(&self.router, || self.list_usable_channels(),
+			|| self.compute_inflight_htlcs(), &self.entropy_source, &self.node_signer, best_block_height, &self.logger,
+			|path, payment_params, payment_hash, payment_secret, total_value, cur_height, payment_id, keysend_preimage, session_priv|
+			self.send_payment_along_path(path, payment_params, payment_hash, payment_secret, total_value, cur_height, payment_id, keysend_preimage, session_priv));
 
 		for (htlc_source, payment_hash, failure_reason, destination) in failed_forwards.drain(..) {
 			self.fail_htlc_backwards_internal(&htlc_source, &payment_hash, &failure_reason, destination);
@@ -7339,6 +7357,9 @@ where
 								hash_map::Entry::Vacant(entry) => {
 									let path_fee = path.get_path_fees();
 									entry.insert(PendingOutboundPayment::Retryable {
+										retry_strategy: Retry::Attempts(0),
+										attempts: PaymentAttempts::new(),
+										route_params: None,
 										session_privs: [session_priv_bytes].iter().map(|a| *a).collect(),
 										payment_hash: htlc.payment_hash,
 										payment_secret,
