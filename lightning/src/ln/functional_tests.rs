@@ -7250,8 +7250,8 @@ fn test_bump_penalty_txn_on_revoked_htlcs() {
 		assert_ne!(node_txn[0].input[0].previous_output, node_txn[2].input[0].previous_output);
 		assert_ne!(node_txn[1].input[0].previous_output, node_txn[2].input[0].previous_output);
 
-		assert_eq!(node_txn[0].input[0].previous_output, revoked_htlc_txn[0].input[0].previous_output);
-		assert_eq!(node_txn[1].input[0].previous_output, revoked_htlc_txn[1].input[0].previous_output);
+		assert_eq!(node_txn[0].input[0].previous_output, revoked_htlc_txn[1].input[0].previous_output);
+		assert_eq!(node_txn[1].input[0].previous_output, revoked_htlc_txn[0].input[0].previous_output);
 
 		// node_txn[3] spends the revoked outputs from the revoked_htlc_txn (which only have one
 		// output, checked above).
