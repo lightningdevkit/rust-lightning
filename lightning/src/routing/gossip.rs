@@ -381,7 +381,6 @@ where U::Target: UtxoLookup, L::Target: Logger
 
 	fn handle_channel_announcement(&self, msg: &msgs::ChannelAnnouncement) -> Result<bool, LightningError> {
 		self.network_graph.update_channel_from_announcement(msg, &self.utxo_lookup)?;
-		log_gossip!(self.logger, "Added channel_announcement for {}{}", msg.contents.short_channel_id, if !msg.contents.excess_data.is_empty() { " with excess uninterpreted data!" } else { "" });
 		Ok(msg.contents.excess_data.len() <= MAX_EXCESS_BYTES_FOR_RELAY)
 	}
 
@@ -1559,7 +1558,10 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 			announcement_received_time,
 		};
 
-		self.add_channel_between_nodes(msg.short_channel_id, chan_info, utxo_value)
+		self.add_channel_between_nodes(msg.short_channel_id, chan_info, utxo_value)?;
+
+		log_gossip!(self.logger, "Added channel_announcement for {}{}", msg.short_channel_id, if !msg.excess_data.is_empty() { " with excess uninterpreted data!" } else { "" });
+		Ok(())
 	}
 
 	/// Marks a channel in the graph as failed if a corresponding HTLC fail was sent.
