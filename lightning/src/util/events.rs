@@ -46,7 +46,7 @@ use crate::sync::Arc;
 
 /// Some information provided on receipt of payment depends on whether the payment received is a
 /// spontaneous payment or a "conventional" lightning payment that's paying an invoice.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PaymentPurpose {
 	/// Information for receiving a payment that we generated an invoice for.
 	InvoicePayment {
@@ -455,7 +455,7 @@ impl_writeable_tlv_based_enum!(InterceptNextHop,
 /// Note that while Writeable and Readable are implemented for Event, you probably shouldn't use
 /// them directly as they don't round-trip exactly (for example FundingGenerationReady is never
 /// written as it makes no sense to respond to it after reconnecting to peers).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Event {
 	/// Used to indicate that the client should generate a funding transaction with the given
 	/// parameters and then call [`ChannelManager::funding_transaction_generated`].
