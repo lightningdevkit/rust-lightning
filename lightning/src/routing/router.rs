@@ -363,7 +363,7 @@ impl Readable for Route {
 /// [`Event::PaymentPathFailed`] for retrying a failed payment path.
 ///
 /// [`Event::PaymentPathFailed`]: crate::util::events::Event::PaymentPathFailed
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RouteParameters {
 	/// The parameters of the failed payment path.
 	pub payment_params: PaymentParameters,

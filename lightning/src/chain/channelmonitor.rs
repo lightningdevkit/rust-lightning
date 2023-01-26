@@ -713,6 +713,7 @@ pub struct ChannelMonitor<Signer: WriteableEcdsaChannelSigner> {
 	inner: Mutex<ChannelMonitorImpl<Signer>>,
 }
 
+#[derive(PartialEq)]
 pub(crate) struct ChannelMonitorImpl<Signer: WriteableEcdsaChannelSigner> {
 	latest_update_id: u64,
 	commitment_transaction_number_obscure_factor: u64,
@@ -847,68 +848,16 @@ pub(crate) struct ChannelMonitorImpl<Signer: WriteableEcdsaChannelSigner> {
 
 	/// The node_id of our counterparty
 	counterparty_node_id: Option<PublicKey>,
-
-	secp_ctx: Secp256k1<secp256k1::All>, //TODO: dedup this a bit...
 }
 
 /// Transaction outputs to watch for on-chain spends.
 pub type TransactionOutputs = (Txid, Vec<(u32, TxOut)>);
 
-#[cfg(any(test, fuzzing, feature = "_test_utils"))]
-/// Used only in testing and fuzzing to check serialization roundtrips don't change the underlying
-/// object
-impl<Signer: WriteableEcdsaChannelSigner> PartialEq for ChannelMonitor<Signer> {
+impl<Signer: WriteableEcdsaChannelSigner> PartialEq for ChannelMonitor<Signer> where Signer: PartialEq {
 	fn eq(&self, other: &Self) -> bool {
 		let inner = self.inner.lock().unwrap();
 		let other = other.inner.lock().unwrap();
 		inner.eq(&other)
-	}
-}
-
-#[cfg(any(test, fuzzing, feature = "_test_utils"))]
-/// Used only in testing and fuzzing to check serialization roundtrips don't change the underlying
-/// object
-impl<Signer: WriteableEcdsaChannelSigner> PartialEq for ChannelMonitorImpl<Signer> {
-	fn eq(&self, other: &Self) -> bool {
-		if self.latest_update_id != other.latest_update_id ||
-			self.commitment_transaction_number_obscure_factor != other.commitment_transaction_number_obscure_factor ||
-			self.destination_script != other.destination_script ||
-			self.broadcasted_holder_revokable_script != other.broadcasted_holder_revokable_script ||
-			self.counterparty_payment_script != other.counterparty_payment_script ||
-			self.channel_keys_id != other.channel_keys_id ||
-			self.holder_revocation_basepoint != other.holder_revocation_basepoint ||
-			self.funding_info != other.funding_info ||
-			self.current_counterparty_commitment_txid != other.current_counterparty_commitment_txid ||
-			self.prev_counterparty_commitment_txid != other.prev_counterparty_commitment_txid ||
-			self.counterparty_commitment_params != other.counterparty_commitment_params ||
-			self.funding_redeemscript != other.funding_redeemscript ||
-			self.channel_value_satoshis != other.channel_value_satoshis ||
-			self.their_cur_per_commitment_points != other.their_cur_per_commitment_points ||
-			self.on_holder_tx_csv != other.on_holder_tx_csv ||
-			self.commitment_secrets != other.commitment_secrets ||
-			self.counterparty_claimable_outpoints != other.counterparty_claimable_outpoints ||
-			self.counterparty_commitment_txn_on_chain != other.counterparty_commitment_txn_on_chain ||
-			self.counterparty_hash_commitment_number != other.counterparty_hash_commitment_number ||
-			self.prev_holder_signed_commitment_tx != other.prev_holder_signed_commitment_tx ||
-			self.current_counterparty_commitment_number != other.current_counterparty_commitment_number ||
-			self.current_holder_commitment_number != other.current_holder_commitment_number ||
-			self.current_holder_commitment_tx != other.current_holder_commitment_tx ||
-			self.payment_preimages != other.payment_preimages ||
-			self.pending_monitor_events != other.pending_monitor_events ||
-			self.pending_events.len() != other.pending_events.len() || // We trust events to round-trip properly
-			self.onchain_events_awaiting_threshold_conf != other.onchain_events_awaiting_threshold_conf ||
-			self.outputs_to_watch != other.outputs_to_watch ||
-			self.lockdown_from_offchain != other.lockdown_from_offchain ||
-			self.holder_tx_signed != other.holder_tx_signed ||
-			self.funding_spend_seen != other.funding_spend_seen ||
-			self.funding_spend_confirmed != other.funding_spend_confirmed ||
-			self.confirmed_commitment_tx_counterparty_output != other.confirmed_commitment_tx_counterparty_output ||
-			self.htlcs_resolved_on_chain != other.htlcs_resolved_on_chain
-		{
-			false
-		} else {
-			true
-		}
 	}
 }
 
@@ -1140,7 +1089,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 
 		let onchain_tx_handler =
 			OnchainTxHandler::new(destination_script.clone(), keys,
-			channel_parameters.clone(), initial_holder_commitment_tx, secp_ctx.clone());
+			channel_parameters.clone(), initial_holder_commitment_tx, secp_ctx);
 
 		let mut outputs_to_watch = HashMap::new();
 		outputs_to_watch.insert(funding_info.0.txid, vec![(funding_info.0.index as u32, funding_info.1.clone())]);
@@ -1196,8 +1145,6 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 
 			best_block,
 			counterparty_node_id: Some(counterparty_node_id),
-
-			secp_ctx,
 		})
 	}
 
@@ -2512,9 +2459,9 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		if commitment_number >= self.get_min_seen_secret() {
 			let secret = self.get_secret(commitment_number).unwrap();
 			let per_commitment_key = ignore_error!(SecretKey::from_slice(&secret));
-			let per_commitment_point = PublicKey::from_secret_key(&self.secp_ctx, &per_commitment_key);
-			let revocation_pubkey = chan_utils::derive_public_revocation_key(&self.secp_ctx, &per_commitment_point, &self.holder_revocation_basepoint);
-			let delayed_key = chan_utils::derive_public_key(&self.secp_ctx, &PublicKey::from_secret_key(&self.secp_ctx, &per_commitment_key), &self.counterparty_commitment_params.counterparty_delayed_payment_base_key);
+			let per_commitment_point = PublicKey::from_secret_key(&self.onchain_tx_handler.secp_ctx, &per_commitment_key);
+			let revocation_pubkey = chan_utils::derive_public_revocation_key(&self.onchain_tx_handler.secp_ctx, &per_commitment_point, &self.holder_revocation_basepoint);
+			let delayed_key = chan_utils::derive_public_key(&self.onchain_tx_handler.secp_ctx, &PublicKey::from_secret_key(&self.onchain_tx_handler.secp_ctx, &per_commitment_key), &self.counterparty_commitment_params.counterparty_delayed_payment_base_key);
 
 			let revokeable_redeemscript = chan_utils::get_revokeable_redeemscript(&revocation_pubkey, self.counterparty_commitment_params.on_counterparty_tx_csv, &delayed_key);
 			let revokeable_p2wsh = revokeable_redeemscript.to_v0_p2wsh();
@@ -2627,8 +2574,8 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 
 		if let Some(transaction) = tx {
 			let revocation_pubkey = chan_utils::derive_public_revocation_key(
-				&self.secp_ctx, &per_commitment_point, &self.holder_revocation_basepoint);
-			let delayed_key = chan_utils::derive_public_key(&self.secp_ctx,
+				&self.onchain_tx_handler.secp_ctx, &per_commitment_point, &self.holder_revocation_basepoint);
+			let delayed_key = chan_utils::derive_public_key(&self.onchain_tx_handler.secp_ctx,
 				&per_commitment_point,
 				&self.counterparty_commitment_params.counterparty_delayed_payment_base_key);
 			let revokeable_p2wsh = chan_utils::get_revokeable_redeemscript(&revocation_pubkey,
@@ -2685,7 +2632,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			Ok(key) => key,
 			Err(_) => return (Vec::new(), None)
 		};
-		let per_commitment_point = PublicKey::from_secret_key(&self.secp_ctx, &per_commitment_key);
+		let per_commitment_point = PublicKey::from_secret_key(&self.onchain_tx_handler.secp_ctx, &per_commitment_key);
 
 		let htlc_txid = tx.txid();
 		let mut claimable_outpoints = vec![];
@@ -3931,9 +3878,6 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			(13, spendable_txids_confirmed, vec_type),
 		});
 
-		let mut secp_ctx = Secp256k1::new();
-		secp_ctx.seeded_randomize(&entropy_source.get_secure_random_bytes());
-
 		Ok((best_block.block_hash(), ChannelMonitor::from_impl(ChannelMonitorImpl {
 			latest_update_id,
 			commitment_transaction_number_obscure_factor,
@@ -3985,8 +3929,6 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 
 			best_block,
 			counterparty_node_id,
-
-			secp_ctx,
 		})))
 	}
 }
