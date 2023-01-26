@@ -219,6 +219,7 @@ type PackageID = [u8; 32];
 
 /// OnchainTxHandler receives claiming requests, aggregates them if it's sound, broadcast and
 /// do RBF bumping if possible.
+#[derive(PartialEq)]
 pub struct OnchainTxHandler<ChannelSigner: WriteableEcdsaChannelSigner> {
 	destination_script: Script,
 	holder_commitment: HolderCommitmentTransaction,

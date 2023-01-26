@@ -713,6 +713,7 @@ pub struct ChannelMonitor<Signer: WriteableEcdsaChannelSigner> {
 	inner: Mutex<ChannelMonitorImpl<Signer>>,
 }
 
+#[derive(PartialEq)]
 pub(crate) struct ChannelMonitorImpl<Signer: WriteableEcdsaChannelSigner> {
 	latest_update_id: u64,
 	commitment_transaction_number_obscure_factor: u64,
@@ -854,61 +855,11 @@ pub(crate) struct ChannelMonitorImpl<Signer: WriteableEcdsaChannelSigner> {
 /// Transaction outputs to watch for on-chain spends.
 pub type TransactionOutputs = (Txid, Vec<(u32, TxOut)>);
 
-#[cfg(any(test, fuzzing, feature = "_test_utils"))]
-/// Used only in testing and fuzzing to check serialization roundtrips don't change the underlying
-/// object
-impl<Signer: WriteableEcdsaChannelSigner> PartialEq for ChannelMonitor<Signer> {
+impl<Signer: WriteableEcdsaChannelSigner> PartialEq for ChannelMonitor<Signer> where Signer: PartialEq {
 	fn eq(&self, other: &Self) -> bool {
 		let inner = self.inner.lock().unwrap();
 		let other = other.inner.lock().unwrap();
 		inner.eq(&other)
-	}
-}
-
-#[cfg(any(test, fuzzing, feature = "_test_utils"))]
-/// Used only in testing and fuzzing to check serialization roundtrips don't change the underlying
-/// object
-impl<Signer: WriteableEcdsaChannelSigner> PartialEq for ChannelMonitorImpl<Signer> {
-	fn eq(&self, other: &Self) -> bool {
-		if self.latest_update_id != other.latest_update_id ||
-			self.commitment_transaction_number_obscure_factor != other.commitment_transaction_number_obscure_factor ||
-			self.destination_script != other.destination_script ||
-			self.broadcasted_holder_revokable_script != other.broadcasted_holder_revokable_script ||
-			self.counterparty_payment_script != other.counterparty_payment_script ||
-			self.channel_keys_id != other.channel_keys_id ||
-			self.holder_revocation_basepoint != other.holder_revocation_basepoint ||
-			self.funding_info != other.funding_info ||
-			self.current_counterparty_commitment_txid != other.current_counterparty_commitment_txid ||
-			self.prev_counterparty_commitment_txid != other.prev_counterparty_commitment_txid ||
-			self.counterparty_commitment_params != other.counterparty_commitment_params ||
-			self.funding_redeemscript != other.funding_redeemscript ||
-			self.channel_value_satoshis != other.channel_value_satoshis ||
-			self.their_cur_per_commitment_points != other.their_cur_per_commitment_points ||
-			self.on_holder_tx_csv != other.on_holder_tx_csv ||
-			self.commitment_secrets != other.commitment_secrets ||
-			self.counterparty_claimable_outpoints != other.counterparty_claimable_outpoints ||
-			self.counterparty_commitment_txn_on_chain != other.counterparty_commitment_txn_on_chain ||
-			self.counterparty_hash_commitment_number != other.counterparty_hash_commitment_number ||
-			self.prev_holder_signed_commitment_tx != other.prev_holder_signed_commitment_tx ||
-			self.current_counterparty_commitment_number != other.current_counterparty_commitment_number ||
-			self.current_holder_commitment_number != other.current_holder_commitment_number ||
-			self.current_holder_commitment_tx != other.current_holder_commitment_tx ||
-			self.payment_preimages != other.payment_preimages ||
-			self.pending_monitor_events != other.pending_monitor_events ||
-			self.pending_events.len() != other.pending_events.len() || // We trust events to round-trip properly
-			self.onchain_events_awaiting_threshold_conf != other.onchain_events_awaiting_threshold_conf ||
-			self.outputs_to_watch != other.outputs_to_watch ||
-			self.lockdown_from_offchain != other.lockdown_from_offchain ||
-			self.holder_tx_signed != other.holder_tx_signed ||
-			self.funding_spend_seen != other.funding_spend_seen ||
-			self.funding_spend_confirmed != other.funding_spend_confirmed ||
-			self.confirmed_commitment_tx_counterparty_output != other.confirmed_commitment_tx_counterparty_output ||
-			self.htlcs_resolved_on_chain != other.htlcs_resolved_on_chain
-		{
-			false
-		} else {
-			true
-		}
 	}
 }
 

@@ -58,6 +58,12 @@ pub struct EnforcingSigner {
 	pub disable_revocation_policy_check: bool,
 }
 
+impl PartialEq for EnforcingSigner {
+	fn eq(&self, o: &Self) -> bool {
+		Arc::ptr_eq(&self.state, &o.state)
+	}
+}
+
 impl EnforcingSigner {
 	/// Construct an EnforcingSigner
 	pub fn new(inner: InMemorySigner) -> Self {
