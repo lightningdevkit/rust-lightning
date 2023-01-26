@@ -848,8 +848,6 @@ pub(crate) struct ChannelMonitorImpl<Signer: WriteableEcdsaChannelSigner> {
 
 	/// The node_id of our counterparty
 	counterparty_node_id: Option<PublicKey>,
-
-	secp_ctx: Secp256k1<secp256k1::All>, //TODO: dedup this a bit...
 }
 
 /// Transaction outputs to watch for on-chain spends.
@@ -1091,7 +1089,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 
 		let onchain_tx_handler =
 			OnchainTxHandler::new(destination_script.clone(), keys,
-			channel_parameters.clone(), initial_holder_commitment_tx, secp_ctx.clone());
+			channel_parameters.clone(), initial_holder_commitment_tx, secp_ctx);
 
 		let mut outputs_to_watch = HashMap::new();
 		outputs_to_watch.insert(funding_info.0.txid, vec![(funding_info.0.index as u32, funding_info.1.clone())]);
@@ -1147,8 +1145,6 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 
 			best_block,
 			counterparty_node_id: Some(counterparty_node_id),
-
-			secp_ctx,
 		})
 	}
 
@@ -2463,9 +2459,9 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		if commitment_number >= self.get_min_seen_secret() {
 			let secret = self.get_secret(commitment_number).unwrap();
 			let per_commitment_key = ignore_error!(SecretKey::from_slice(&secret));
-			let per_commitment_point = PublicKey::from_secret_key(&self.secp_ctx, &per_commitment_key);
-			let revocation_pubkey = chan_utils::derive_public_revocation_key(&self.secp_ctx, &per_commitment_point, &self.holder_revocation_basepoint);
-			let delayed_key = chan_utils::derive_public_key(&self.secp_ctx, &PublicKey::from_secret_key(&self.secp_ctx, &per_commitment_key), &self.counterparty_commitment_params.counterparty_delayed_payment_base_key);
+			let per_commitment_point = PublicKey::from_secret_key(&self.onchain_tx_handler.secp_ctx, &per_commitment_key);
+			let revocation_pubkey = chan_utils::derive_public_revocation_key(&self.onchain_tx_handler.secp_ctx, &per_commitment_point, &self.holder_revocation_basepoint);
+			let delayed_key = chan_utils::derive_public_key(&self.onchain_tx_handler.secp_ctx, &PublicKey::from_secret_key(&self.onchain_tx_handler.secp_ctx, &per_commitment_key), &self.counterparty_commitment_params.counterparty_delayed_payment_base_key);
 
 			let revokeable_redeemscript = chan_utils::get_revokeable_redeemscript(&revocation_pubkey, self.counterparty_commitment_params.on_counterparty_tx_csv, &delayed_key);
 			let revokeable_p2wsh = revokeable_redeemscript.to_v0_p2wsh();
@@ -2578,8 +2574,8 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 
 		if let Some(transaction) = tx {
 			let revocation_pubkey = chan_utils::derive_public_revocation_key(
-				&self.secp_ctx, &per_commitment_point, &self.holder_revocation_basepoint);
-			let delayed_key = chan_utils::derive_public_key(&self.secp_ctx,
+				&self.onchain_tx_handler.secp_ctx, &per_commitment_point, &self.holder_revocation_basepoint);
+			let delayed_key = chan_utils::derive_public_key(&self.onchain_tx_handler.secp_ctx,
 				&per_commitment_point,
 				&self.counterparty_commitment_params.counterparty_delayed_payment_base_key);
 			let revokeable_p2wsh = chan_utils::get_revokeable_redeemscript(&revocation_pubkey,
@@ -2636,7 +2632,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			Ok(key) => key,
 			Err(_) => return (Vec::new(), None)
 		};
-		let per_commitment_point = PublicKey::from_secret_key(&self.secp_ctx, &per_commitment_key);
+		let per_commitment_point = PublicKey::from_secret_key(&self.onchain_tx_handler.secp_ctx, &per_commitment_key);
 
 		let htlc_txid = tx.txid();
 		let mut claimable_outpoints = vec![];
@@ -3882,9 +3878,6 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			(13, spendable_txids_confirmed, vec_type),
 		});
 
-		let mut secp_ctx = Secp256k1::new();
-		secp_ctx.seeded_randomize(&entropy_source.get_secure_random_bytes());
-
 		Ok((best_block.block_hash(), ChannelMonitor::from_impl(ChannelMonitorImpl {
 			latest_update_id,
 			commitment_transaction_number_obscure_factor,
@@ -3936,8 +3929,6 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 
 			best_block,
 			counterparty_node_id,
-
-			secp_ctx,
 		})))
 	}
 }
