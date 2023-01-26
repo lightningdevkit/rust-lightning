@@ -4815,8 +4815,6 @@ fn test_duplicate_payment_hash_one_failure_one_success() {
 	expect_payment_failed_with_update!(nodes[0], duplicate_payment_hash, false, chan_2.0.contents.short_channel_id, true);
 
 	// Solve 2nd HTLC by broadcasting on B's chain HTLC-Success Tx from C
-	// Note that the fee paid is effectively double as the HTLC value (including the nodes[1] fee
-	// and nodes[2] fee) is rounded down and then claimed in full.
 	mine_transaction(&nodes[1], &htlc_success_txn[1]);
 	expect_payment_forwarded!(nodes[1], nodes[0], nodes[2], Some(196), true, true);
 	let updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
