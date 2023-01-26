@@ -21,7 +21,6 @@ use bitcoin::util::sighash;
 
 use bitcoin::bech32::u5;
 use bitcoin::hashes::{Hash, HashEngine};
-use bitcoin::hashes::sha256::HashEngine as Sha256State;
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::hash_types::WPubkeyHash;
@@ -49,6 +48,8 @@ use core::convert::TryInto;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use crate::io::{self, Error};
 use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
+use crate::util::atomic_counter::AtomicCounter;
+use crate::util::chacha20::ChaCha20;
 use crate::util::invoice::construct_invoice_preimage;
 
 /// Used as initial key material, to be expanded into multiple secret keys (but not to be used
@@ -979,9 +980,8 @@ pub struct KeysManager {
 	channel_master_key: ExtendedPrivKey,
 	channel_child_index: AtomicUsize,
 
-	rand_bytes_master_key: ExtendedPrivKey,
-	rand_bytes_child_index: AtomicUsize,
-	rand_bytes_unique_start: Sha256State,
+	rand_bytes_unique_start: [u8; 32],
+	rand_bytes_index: AtomicCounter,
 
 	seed: [u8; 32],
 	starting_time_secs: u64,
@@ -1027,15 +1027,16 @@ impl KeysManager {
 					Err(_) => panic!("Your RNG is busted"),
 				};
 				let channel_master_key = master_key.ckd_priv(&secp_ctx, ChildNumber::from_hardened_idx(3).unwrap()).expect("Your RNG is busted");
-				let rand_bytes_master_key = master_key.ckd_priv(&secp_ctx, ChildNumber::from_hardened_idx(4).unwrap()).expect("Your RNG is busted");
 				let inbound_payment_key: SecretKey = master_key.ckd_priv(&secp_ctx, ChildNumber::from_hardened_idx(5).unwrap()).expect("Your RNG is busted").private_key;
 				let mut inbound_pmt_key_bytes = [0; 32];
 				inbound_pmt_key_bytes.copy_from_slice(&inbound_payment_key[..]);
 
-				let mut rand_bytes_unique_start = Sha256::engine();
-				rand_bytes_unique_start.input(&starting_time_secs.to_be_bytes());
-				rand_bytes_unique_start.input(&starting_time_nanos.to_be_bytes());
-				rand_bytes_unique_start.input(seed);
+				let mut rand_bytes_engine = Sha256::engine();
+				rand_bytes_engine.input(&starting_time_secs.to_be_bytes());
+				rand_bytes_engine.input(&starting_time_nanos.to_be_bytes());
+				rand_bytes_engine.input(seed);
+				rand_bytes_engine.input(b"LDK PRNG Seed");
+				let rand_bytes_unique_start = Sha256::from_engine(rand_bytes_engine).into_inner();
 
 				let mut res = KeysManager {
 					secp_ctx,
@@ -1049,9 +1050,8 @@ impl KeysManager {
 					channel_master_key,
 					channel_child_index: AtomicUsize::new(0),
 
-					rand_bytes_master_key,
-					rand_bytes_child_index: AtomicUsize::new(0),
 					rand_bytes_unique_start,
+					rand_bytes_index: AtomicCounter::new(),
 
 					seed: *seed,
 					starting_time_secs,
@@ -1248,14 +1248,10 @@ impl KeysManager {
 
 impl EntropySource for KeysManager {
 	fn get_secure_random_bytes(&self) -> [u8; 32] {
-		let mut sha = self.rand_bytes_unique_start.clone();
-
-		let child_ix = self.rand_bytes_child_index.fetch_add(1, Ordering::AcqRel);
-		let child_privkey = self.rand_bytes_master_key.ckd_priv(&self.secp_ctx, ChildNumber::from_hardened_idx(child_ix as u32).expect("key space exhausted")).expect("Your RNG is busted");
-		sha.input(&child_privkey.private_key[..]);
-
-		sha.input(b"Unique Secure Random Bytes Salt");
-		Sha256::from_engine(sha).into_inner()
+		let index = self.rand_bytes_index.get_increment();
+		let mut nonce = [0u8; 16];
+		nonce[..8].copy_from_slice(&index.to_be_bytes());
+		ChaCha20::get_single_block(&self.rand_bytes_unique_start, &nonce)
 	}
 }
 
