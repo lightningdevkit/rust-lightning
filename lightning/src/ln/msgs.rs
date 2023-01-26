@@ -1001,7 +1001,7 @@ pub trait ChannelMessageHandler : MessageSendEventsProvider {
 	/// May return an `Err(())` if the features the peer supports are not sufficient to communicate
 	/// with us. Implementors should be somewhat conservative about doing so, however, as other
 	/// message handlers may still wish to communicate with this peer.
-	fn peer_connected(&self, their_node_id: &PublicKey, msg: &Init) -> Result<(), ()>;
+	fn peer_connected(&self, their_node_id: &PublicKey, msg: &Init, inbound: bool) -> Result<(), ()>;
 	/// Handle an incoming `channel_reestablish` message from the given peer.
 	fn handle_channel_reestablish(&self, their_node_id: &PublicKey, msg: &ChannelReestablish);
 
@@ -1059,7 +1059,7 @@ pub trait RoutingMessageHandler : MessageSendEventsProvider {
 	/// May return an `Err(())` if the features the peer supports are not sufficient to communicate
 	/// with us. Implementors should be somewhat conservative about doing so, however, as other
 	/// message handlers may still wish to communicate with this peer.
-	fn peer_connected(&self, their_node_id: &PublicKey, init: &Init) -> Result<(), ()>;
+	fn peer_connected(&self, their_node_id: &PublicKey, init: &Init, inbound: bool) -> Result<(), ()>;
 	/// Handles the reply of a query we initiated to learn about channels
 	/// for a given range of blocks. We can expect to receive one or more
 	/// replies to a single query.
@@ -1106,7 +1106,7 @@ pub trait OnionMessageHandler : OnionMessageProvider {
 	/// May return an `Err(())` if the features the peer supports are not sufficient to communicate
 	/// with us. Implementors should be somewhat conservative about doing so, however, as other
 	/// message handlers may still wish to communicate with this peer.
-	fn peer_connected(&self, their_node_id: &PublicKey, init: &Init) -> Result<(), ()>;
+	fn peer_connected(&self, their_node_id: &PublicKey, init: &Init, inbound: bool) -> Result<(), ()>;
 	/// Indicates a connection to the peer failed/an existing connection was lost. Allows handlers to
 	/// drop and refuse to forward onion messages to this peer.
 	fn peer_disconnected(&self, their_node_id: &PublicKey);

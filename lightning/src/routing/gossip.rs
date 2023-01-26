@@ -437,7 +437,7 @@ where U::Target: UtxoLookup, L::Target: Logger
 	/// to request gossip messages for each channel. The sync is considered complete
 	/// when the final reply_scids_end message is received, though we are not
 	/// tracking this directly.
-	fn peer_connected(&self, their_node_id: &PublicKey, init_msg: &Init) -> Result<(), ()> {
+	fn peer_connected(&self, their_node_id: &PublicKey, init_msg: &Init, _inbound: bool) -> Result<(), ()> {
 		// We will only perform a sync with peers that support gossip_queries.
 		if !init_msg.features.supports_gossip_queries() {
 			// Don't disconnect peers for not supporting gossip queries. We may wish to have
@@ -2791,7 +2791,7 @@ pub(crate) mod tests {
 		// It should ignore if gossip_queries feature is not enabled
 		{
 			let init_msg = Init { features: InitFeatures::empty(), remote_network_address: None };
-			gossip_sync.peer_connected(&node_id_1, &init_msg).unwrap();
+			gossip_sync.peer_connected(&node_id_1, &init_msg, true).unwrap();
 			let events = gossip_sync.get_and_clear_pending_msg_events();
 			assert_eq!(events.len(), 0);
 		}
@@ -2801,7 +2801,7 @@ pub(crate) mod tests {
 			let mut features = InitFeatures::empty();
 			features.set_gossip_queries_optional();
 			let init_msg = Init { features, remote_network_address: None };
-			gossip_sync.peer_connected(&node_id_1, &init_msg).unwrap();
+			gossip_sync.peer_connected(&node_id_1, &init_msg, true).unwrap();
 			let events = gossip_sync.get_and_clear_pending_msg_events();
 			assert_eq!(events.len(), 1);
 			match &events[0] {

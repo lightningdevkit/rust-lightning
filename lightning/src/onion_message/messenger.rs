@@ -417,7 +417,7 @@ impl<ES: Deref, NS: Deref, L: Deref, CMH: Deref> OnionMessageHandler for OnionMe
 		};
 	}
 
-	fn peer_connected(&self, their_node_id: &PublicKey, init: &msgs::Init) -> Result<(), ()> {
+	fn peer_connected(&self, their_node_id: &PublicKey, init: &msgs::Init, _inbound: bool) -> Result<(), ()> {
 		if init.features.supports_onion_messages() {
 			let mut peers = self.pending_messages.lock().unwrap();
 			peers.insert(their_node_id.clone(), VecDeque::new());

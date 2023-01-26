@@ -341,12 +341,12 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 	assert_eq!(as_broadcasted_txn[0], as_commitment_tx);
 
 	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
-	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init { features: nodes[1].node.init_features(), remote_network_address: None }).unwrap();
+	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init { features: nodes[1].node.init_features(), remote_network_address: None }, true).unwrap();
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 
 	// Now nodes[1] should send a channel reestablish, which nodes[0] will respond to with an
 	// error, as the channel has hit the chain.
-	nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id(), &msgs::Init { features: nodes[0].node.init_features(), remote_network_address: None }).unwrap();
+	nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id(), &msgs::Init { features: nodes[0].node.init_features(), remote_network_address: None }, false).unwrap();
 	let bs_reestablish = get_chan_reestablish_msgs!(nodes[1], nodes[0]).pop().unwrap();
 	nodes[0].node.handle_channel_reestablish(&nodes[1].node.get_our_node_id(), &bs_reestablish);
 	let as_err = nodes[0].node.get_and_clear_pending_msg_events();
@@ -505,12 +505,12 @@ fn do_test_completed_payment_not_retryable_on_reload(use_dust: bool) {
 	assert!(nodes[0].node.has_pending_payments());
 	assert_eq!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0).len(), 1);
 
-	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init { features: nodes[1].node.init_features(), remote_network_address: None }).unwrap();
+	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init { features: nodes[1].node.init_features(), remote_network_address: None }, true).unwrap();
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 
 	// Now nodes[1] should send a channel reestablish, which nodes[0] will respond to with an
 	// error, as the channel has hit the chain.
-	nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id(), &msgs::Init { features: nodes[0].node.init_features(), remote_network_address: None }).unwrap();
+	nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id(), &msgs::Init { features: nodes[0].node.init_features(), remote_network_address: None }, false).unwrap();
 	let bs_reestablish = get_chan_reestablish_msgs!(nodes[1], nodes[0]).pop().unwrap();
 	nodes[0].node.handle_channel_reestablish(&nodes[1].node.get_our_node_id(), &bs_reestablish);
 	let as_err = nodes[0].node.get_and_clear_pending_msg_events();
