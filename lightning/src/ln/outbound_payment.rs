@@ -789,7 +789,9 @@ impl OutboundPayments {
 						Some(RouteParameters {
 							payment_params: payment_params.clone(),
 							final_value_msat: pending_amt_unsent,
-							final_cltv_expiry_delta: max_unsent_cltv_delta,
+							final_cltv_expiry_delta:
+								if let Some(delta) = payment_params.final_cltv_expiry_delta { delta }
+								else { max_unsent_cltv_delta },
 						})
 					} else { None }
 				} else { None },
@@ -987,7 +989,9 @@ impl OutboundPayments {
 			Some(RouteParameters {
 				payment_params: payment_params_data.clone(),
 				final_value_msat: path_last_hop.fee_msat,
-				final_cltv_expiry_delta: path_last_hop.cltv_expiry_delta,
+				final_cltv_expiry_delta:
+					if let Some(delta) = payment_params_data.final_cltv_expiry_delta { delta }
+					else { path_last_hop.cltv_expiry_delta },
 			})
 		} else { None };
 		log_trace!(logger, "Failing outbound payment HTLC with payment_hash {}", log_bytes!(payment_hash.0));

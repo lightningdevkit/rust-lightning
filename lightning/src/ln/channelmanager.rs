@@ -245,6 +245,10 @@ pub(crate) enum HTLCSource {
 		first_hop_htlc_msat: u64,
 		payment_id: PaymentId,
 		payment_secret: Option<PaymentSecret>,
+		/// Note that this is now "deprecated" - we write it for forwards (and read it for
+		/// backwards) compatibility reasons, but prefer to use the data in the
+		/// [`super::outbound_payment`] module, which stores per-payment data once instead of in
+		/// each HTLC.
 		payment_params: Option<PaymentParameters>,
 	},
 }
