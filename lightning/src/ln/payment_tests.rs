@@ -2251,7 +2251,7 @@ fn no_extra_retries_on_back_to_back_fail() {
 				node_features: nodes[1].node.node_features(),
 				short_channel_id: chan_1_scid,
 				channel_features: nodes[1].node.channel_features(),
-				fee_msat: 0,
+				fee_msat: 0, // nodes[1] will fail the payment as we don't pay its fee
 				cltv_expiry_delta: 100,
 			}, RouteHop {
 				pubkey: nodes[2].node.get_our_node_id(),
@@ -2266,7 +2266,7 @@ fn no_extra_retries_on_back_to_back_fail() {
 				node_features: nodes[1].node.node_features(),
 				short_channel_id: chan_1_scid,
 				channel_features: nodes[1].node.channel_features(),
-				fee_msat: 0,
+				fee_msat: 0, // nodes[1] will fail the payment as we don't pay its fee
 				cltv_expiry_delta: 100,
 			}, RouteHop {
 				pubkey: nodes[2].node.get_our_node_id(),
@@ -2280,10 +2280,11 @@ fn no_extra_retries_on_back_to_back_fail() {
 		payment_params: Some(PaymentParameters::from_node_id(nodes[2].node.get_our_node_id(), TEST_FINAL_CLTV)),
 	};
 	nodes[0].router.expect_find_route(route_params.clone(), Ok(route.clone()));
-	// On retry, we'll only be asked for one path
-	route.paths.remove(1);
 	let mut second_payment_params = route_params.payment_params.clone();
 	second_payment_params.previously_failed_channels = vec![chan_2_scid, chan_2_scid];
+	// On retry, we'll only return one path
+	route.paths.remove(1);
+	route.paths[0][1].fee_msat = amt_msat;
 	nodes[0].router.expect_find_route(RouteParameters {
 			payment_params: second_payment_params,
 			final_value_msat: amt_msat, final_cltv_expiry_delta: TEST_FINAL_CLTV,
@@ -2351,10 +2352,16 @@ fn no_extra_retries_on_back_to_back_fail() {
 
 	// At this point A has sent two HTLCs which both failed due to lack of fee. It now has two
 	// pending `PaymentPathFailed` events, one with `all_paths_failed` unset, and the second
-	// with it set. The first event will use up the only retry we are allowed, with the second
-	// `PaymentPathFailed` being passed up to the user (us, in this case). Previously, we'd
-	// treated this as "HTLC complete" and dropped the retry counter, causing us to retry again
-	// if the final HTLC failed.
+	// with it set.
+	//
+	// Previously, we retried payments in an event consumer, which would retry each
+	// `PaymentPathFailed` individually. In that setup, we had retried the payment in response to
+	// the first `PaymentPathFailed`, then seen the second `PaymentPathFailed` with
+	// `all_paths_failed` set and assumed the payment was completely failed. We ultimately fixed it
+	// by adding the `PaymentFailed` event.
+	//
+	// Because we now retry payments as a batch, we simply return a single-path route in the
+	// second, batched, request, have that fail, then complete the payment via `abandon_payment`.
 	let mut events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 4);
 	match events[0] {

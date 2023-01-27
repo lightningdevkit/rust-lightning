@@ -2493,7 +2493,7 @@ where
 	#[cfg(test)]
 	pub(crate) fn test_add_new_pending_payment(&self, payment_hash: PaymentHash, payment_secret: Option<PaymentSecret>, payment_id: PaymentId, route: &Route) -> Result<Vec<[u8; 32]>, PaymentSendFailure> {
 		let best_block_height = self.best_block.read().unwrap().height();
-		self.pending_outbound_payments.test_add_new_pending_payment(payment_hash, payment_secret, payment_id, route, Retry::Attempts(0), &self.entropy_source, best_block_height)
+		self.pending_outbound_payments.test_add_new_pending_payment(payment_hash, payment_secret, payment_id, route, None, &self.entropy_source, best_block_height)
 	}
 
 
@@ -7361,7 +7361,7 @@ where
 								hash_map::Entry::Vacant(entry) => {
 									let path_fee = path.get_path_fees();
 									entry.insert(PendingOutboundPayment::Retryable {
-										retry_strategy: Retry::Attempts(0),
+										retry_strategy: None,
 										attempts: PaymentAttempts::new(),
 										route_params: None,
 										session_privs: [session_priv_bytes].iter().map(|a| *a).collect(),
