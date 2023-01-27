@@ -1189,8 +1189,6 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let keys_manager = test_utils::TestKeysInterface::new(&[0; 32], Network::Testnet);
 
-		router.expect_find_route(Err(LightningError { err: String::new(), action: ErrorAction::IgnoreError }));
-
 		let payment_params = PaymentParameters::from_node_id(
 			PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap()), 0);
 		let route_params = RouteParameters {
@@ -1198,6 +1196,9 @@ mod tests {
 			final_value_msat: 0,
 			final_cltv_expiry_delta: 0,
 		};
+		router.expect_find_route(route_params.clone(),
+			Err(LightningError { err: String::new(), action: ErrorAction::IgnoreError }));
+
 		let err = if on_retry {
 			outbound_payments.add_new_pending_payment(PaymentHash([0; 32]), None, PaymentId([0; 32]),
 			&Route { paths: vec![], payment_params: None }, Retry::Attempts(1), Some(route_params.clone()),
