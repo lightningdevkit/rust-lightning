@@ -655,7 +655,7 @@ fn do_test_onion_failure_stale_channel_update(announced_channel: bool) {
 			htlc_maximum_msat: None,
 			htlc_minimum_msat: None,
 		}])];
-		let payment_params = PaymentParameters::from_node_id(*channel_to_update_counterparty)
+		let payment_params = PaymentParameters::from_node_id(*channel_to_update_counterparty, TEST_FINAL_CLTV)
 			.with_features(nodes[2].node.invoice_features())
 			.with_route_hints(hop_hints);
 		get_route_and_payment_hash!(nodes[0], nodes[2], payment_params, PAYMENT_AMT, TEST_FINAL_CLTV)
@@ -802,7 +802,7 @@ fn test_always_create_tlv_format_onion_payloads() {
 	create_announced_chan_between_nodes(&nodes, 0, 1);
 	create_announced_chan_between_nodes(&nodes, 1, 2);
 
-	let payment_params = PaymentParameters::from_node_id(nodes[2].node.get_our_node_id())
+	let payment_params = PaymentParameters::from_node_id(nodes[2].node.get_our_node_id(), TEST_FINAL_CLTV)
 		.with_features(InvoiceFeatures::empty());
 	let (route, _payment_hash, _payment_preimage, _payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], payment_params, 40000, TEST_FINAL_CLTV);
 
@@ -902,7 +902,7 @@ macro_rules! get_phantom_route {
 	($nodes: expr, $amt: expr, $channel: expr) => {{
 		let phantom_pubkey = $nodes[1].keys_manager.get_node_id(Recipient::PhantomNode).unwrap();
 		let phantom_route_hint = $nodes[1].node.get_phantom_route_hints();
-		let payment_params = PaymentParameters::from_node_id(phantom_pubkey)
+		let payment_params = PaymentParameters::from_node_id(phantom_pubkey, TEST_FINAL_CLTV)
 			.with_features($nodes[1].node.invoice_features())
 			.with_route_hints(vec![RouteHint(vec![
 					RouteHintHop {

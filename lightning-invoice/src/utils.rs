@@ -724,7 +724,8 @@ mod test {
 		assert_eq!(invoice.route_hints()[0].0[0].htlc_minimum_msat, chan.inbound_htlc_minimum_msat);
 		assert_eq!(invoice.route_hints()[0].0[0].htlc_maximum_msat, chan.inbound_htlc_maximum_msat);
 
-		let payment_params = PaymentParameters::from_node_id(invoice.recover_payee_pub_key())
+		let payment_params = PaymentParameters::from_node_id(invoice.recover_payee_pub_key(),
+				invoice.min_final_cltv_expiry_delta() as u32)
 			.with_features(invoice.features().unwrap().clone())
 			.with_route_hints(invoice.route_hints());
 		let route_params = RouteParameters {
@@ -1087,7 +1088,8 @@ mod test {
 		assert_eq!(invoice.expiry_time(), Duration::from_secs(non_default_invoice_expiry_secs.into()));
 		assert!(!invoice.features().unwrap().supports_basic_mpp());
 
-		let payment_params = PaymentParameters::from_node_id(invoice.recover_payee_pub_key())
+		let payment_params = PaymentParameters::from_node_id(invoice.recover_payee_pub_key(),
+				invoice.min_final_cltv_expiry_delta() as u32)
 			.with_features(invoice.features().unwrap().clone())
 			.with_route_hints(invoice.route_hints());
 		let params = RouteParameters {

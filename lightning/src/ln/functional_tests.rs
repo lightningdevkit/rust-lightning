@@ -1802,7 +1802,7 @@ fn test_channel_reserve_holding_cell_htlcs() {
 
 	// attempt to send amt_msat > their_max_htlc_value_in_flight_msat
 	{
-		let payment_params = PaymentParameters::from_node_id(nodes[2].node.get_our_node_id())
+		let payment_params = PaymentParameters::from_node_id(nodes[2].node.get_our_node_id(), TEST_FINAL_CLTV)
 			.with_features(nodes[2].node.invoice_features()).with_max_channel_saturation_power_of_half(0);
 		let (mut route, our_payment_hash, _, our_payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], payment_params, recv_value_0, TEST_FINAL_CLTV);
 		route.paths[0].last_mut().unwrap().fee_msat += 1;
@@ -1827,7 +1827,7 @@ fn test_channel_reserve_holding_cell_htlcs() {
 			break;
 		}
 
-		let payment_params = PaymentParameters::from_node_id(nodes[2].node.get_our_node_id())
+		let payment_params = PaymentParameters::from_node_id(nodes[2].node.get_our_node_id(), TEST_FINAL_CLTV)
 			.with_features(nodes[2].node.invoice_features()).with_max_channel_saturation_power_of_half(0);
 		let route = get_route!(nodes[0], payment_params, recv_value_0, TEST_FINAL_CLTV).unwrap();
 		let (payment_preimage, ..) = send_along_route(&nodes[0], route, &[&nodes[1], &nodes[2]], recv_value_0);
@@ -4716,7 +4716,7 @@ fn test_duplicate_payment_hash_one_failure_one_success() {
 	// We reduce the final CLTV here by a somewhat arbitrary constant to keep it under the one-byte
 	// script push size limit so that the below script length checks match
 	// ACCEPTED_HTLC_SCRIPT_WEIGHT.
-	let payment_params = PaymentParameters::from_node_id(nodes[3].node.get_our_node_id())
+	let payment_params = PaymentParameters::from_node_id(nodes[3].node.get_our_node_id(), TEST_FINAL_CLTV - 40)
 		.with_features(nodes[3].node.invoice_features());
 	let (route, _, _, _) = get_route_and_payment_hash!(nodes[0], nodes[3], payment_params, 800_000, TEST_FINAL_CLTV - 40);
 	send_along_route_with_secret(&nodes[0], route, &[&[&nodes[1], &nodes[2], &nodes[3]]], 800_000, duplicate_payment_hash, payment_secret);
@@ -6009,7 +6009,7 @@ fn test_update_add_htlc_bolt2_sender_cltv_expiry_too_high() {
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let _chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1000000, 0);
 
-	let payment_params = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id())
+	let payment_params = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id(), 0)
 		.with_features(nodes[1].node.invoice_features());
 	let (mut route, our_payment_hash, _, our_payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], payment_params, 100000000, 0);
 	route.paths[0].last_mut().unwrap().cltv_expiry_delta = 500000001;
@@ -6927,7 +6927,7 @@ fn test_check_htlc_underpaying() {
 
 	let scorer = test_utils::TestScorer::with_penalty(0);
 	let random_seed_bytes = chanmon_cfgs[1].keys_manager.get_secure_random_bytes();
-	let payment_params = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id()).with_features(nodes[1].node.invoice_features());
+	let payment_params = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id(), TEST_FINAL_CLTV).with_features(nodes[1].node.invoice_features());
 	let route = get_route(&nodes[0].node.get_our_node_id(), &payment_params, &nodes[0].network_graph.read_only(), None, 10_000, TEST_FINAL_CLTV, nodes[0].logger, &scorer, &random_seed_bytes).unwrap();
 	let (_, our_payment_hash, _) = get_payment_preimage_hash!(nodes[0]);
 	let our_payment_secret = nodes[1].node.create_inbound_payment_for_hash(our_payment_hash, Some(100_000), 7200, None).unwrap();
@@ -7068,7 +7068,7 @@ fn test_bump_penalty_txn_on_revoked_commitment() {
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1000000, 59000000);
 
 	let payment_preimage = route_payment(&nodes[0], &vec!(&nodes[1])[..], 3000000).0;
-	let payment_params = PaymentParameters::from_node_id(nodes[0].node.get_our_node_id())
+	let payment_params = PaymentParameters::from_node_id(nodes[0].node.get_our_node_id(), 30)
 		.with_features(nodes[0].node.invoice_features());
 	let (route,_, _, _) = get_route_and_payment_hash!(nodes[1], nodes[0], payment_params, 3000000, 30);
 	send_along_route(&nodes[1], route, &vec!(&nodes[0])[..], 3000000);
@@ -7174,13 +7174,13 @@ fn test_bump_penalty_txn_on_revoked_htlcs() {
 
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1000000, 59000000);
 	// Lock HTLC in both directions (using a slightly lower CLTV delay to provide timely RBF bumps)
-	let payment_params = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id()).with_features(nodes[1].node.invoice_features());
+	let payment_params = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id(), 50).with_features(nodes[1].node.invoice_features());
 	let scorer = test_utils::TestScorer::with_penalty(0);
 	let random_seed_bytes = chanmon_cfgs[1].keys_manager.get_secure_random_bytes();
 	let route = get_route(&nodes[0].node.get_our_node_id(), &payment_params, &nodes[0].network_graph.read_only(), None,
 		3_000_000, 50, nodes[0].logger, &scorer, &random_seed_bytes).unwrap();
 	let payment_preimage = send_along_route(&nodes[0], route, &[&nodes[1]], 3_000_000).0;
-	let payment_params = PaymentParameters::from_node_id(nodes[0].node.get_our_node_id()).with_features(nodes[0].node.invoice_features());
+	let payment_params = PaymentParameters::from_node_id(nodes[0].node.get_our_node_id(), 50).with_features(nodes[0].node.invoice_features());
 	let route = get_route(&nodes[1].node.get_our_node_id(), &payment_params, &nodes[1].network_graph.read_only(), None,
 		3_000_000, 50, nodes[0].logger, &scorer, &random_seed_bytes).unwrap();
 	send_along_route(&nodes[1], route, &[&nodes[0]], 3_000_000);
@@ -8976,7 +8976,7 @@ fn do_test_dup_htlc_second_rejected(test_for_second_fail_panic: bool) {
 
 	let _chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 10001);
 
-	let payment_params = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id())
+	let payment_params = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id(), TEST_FINAL_CLTV)
 		.with_features(nodes[1].node.invoice_features());
 	let route = get_route!(nodes[0], payment_params, 10_000, TEST_FINAL_CLTV).unwrap();
 
@@ -9081,7 +9081,7 @@ fn test_inconsistent_mpp_params() {
 	create_announced_chan_between_nodes_with_value(&nodes, 1, 3, 100_000, 0);
 	let chan_2_3 =create_announced_chan_between_nodes_with_value(&nodes, 2, 3, 100_000, 0);
 
-	let payment_params = PaymentParameters::from_node_id(nodes[3].node.get_our_node_id())
+	let payment_params = PaymentParameters::from_node_id(nodes[3].node.get_our_node_id(), TEST_FINAL_CLTV)
 		.with_features(nodes[3].node.invoice_features());
 	let mut route = get_route!(nodes[0], payment_params, 15_000_000, TEST_FINAL_CLTV).unwrap();
 	assert_eq!(route.paths.len(), 2);
@@ -9182,7 +9182,7 @@ fn test_keysend_payments_to_public_node() {
 	let payer_pubkey = nodes[0].node.get_our_node_id();
 	let payee_pubkey = nodes[1].node.get_our_node_id();
 	let route_params = RouteParameters {
-		payment_params: PaymentParameters::for_keysend(payee_pubkey),
+		payment_params: PaymentParameters::for_keysend(payee_pubkey, 40),
 		final_value_msat: 10000,
 		final_cltv_expiry_delta: 40,
 	};
@@ -9215,7 +9215,7 @@ fn test_keysend_payments_to_private_node() {
 
 	let _chan = create_chan_between_nodes(&nodes[0], &nodes[1]);
 	let route_params = RouteParameters {
-		payment_params: PaymentParameters::for_keysend(payee_pubkey),
+		payment_params: PaymentParameters::for_keysend(payee_pubkey, 40),
 		final_value_msat: 10000,
 		final_cltv_expiry_delta: 40,
 	};
@@ -9603,7 +9603,7 @@ fn do_payment_with_custom_min_final_cltv_expiry(valid_delta: bool, use_user_hash
 
 	create_chan_between_nodes(&nodes[0], &nodes[1]);
 
-	let payment_parameters = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id());
+	let payment_parameters = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id(), final_cltv_expiry_delta as u32);
 	let (payment_hash, payment_preimage, payment_secret) = if use_user_hash {
 		let (payment_preimage, payment_hash, payment_secret) = get_payment_preimage_hash!(nodes[1],
 			Some(recv_value), Some(min_final_cltv_expiry_delta));

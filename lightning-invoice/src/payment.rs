@@ -422,7 +422,8 @@ where
 		};
 
 		let payment_secret = Some(invoice.payment_secret().clone());
-		let mut payment_params = PaymentParameters::from_node_id(invoice.recover_payee_pub_key())
+		let mut payment_params = PaymentParameters::from_node_id(invoice.recover_payee_pub_key(),
+				invoice.min_final_cltv_expiry_delta() as u32)
 			.with_expiry_time(expiry_time_from_unix_epoch(&invoice).as_secs())
 			.with_route_hints(invoice.route_hints());
 		if let Some(features) = invoice.features() {
@@ -486,7 +487,7 @@ where
 		};
 
 		let route_params = RouteParameters {
-			payment_params: PaymentParameters::for_keysend(pubkey),
+			payment_params: PaymentParameters::for_keysend(pubkey, final_cltv_expiry_delta),
 			final_value_msat: amount_msats,
 			final_cltv_expiry_delta,
 		};
@@ -1377,7 +1378,7 @@ mod tests {
 		assert_eq!(*payer.attempts.borrow(), 1);
 
 		let retry = RouteParameters {
-			payment_params: PaymentParameters::for_keysend(pubkey),
+			payment_params: PaymentParameters::for_keysend(pubkey, final_cltv_expiry_delta),
 			final_value_msat,
 			final_cltv_expiry_delta,
 		};
@@ -1655,7 +1656,8 @@ mod tests {
 		}
 
 		fn retry_for_invoice(invoice: &Invoice) -> RouteParameters {
-			let mut payment_params = PaymentParameters::from_node_id(invoice.recover_payee_pub_key())
+			let mut payment_params = PaymentParameters::from_node_id(
+					invoice.recover_payee_pub_key(), invoice.min_final_cltv_expiry_delta() as u32)
 				.with_expiry_time(expiry_time_from_unix_epoch(invoice).as_secs())
 				.with_route_hints(invoice.route_hints());
 			if let Some(features) = invoice.features() {
@@ -2071,7 +2073,7 @@ mod tests {
 					cltv_expiry_delta: 100,
 				}],
 			],
-			payment_params: Some(PaymentParameters::from_node_id(nodes[1].node.get_our_node_id())),
+			payment_params: Some(PaymentParameters::from_node_id(nodes[1].node.get_our_node_id(), 100)),
 		};
 		let router = ManualRouter(RefCell::new(VecDeque::new()));
 		router.expect_find_route(Ok(route.clone()));
@@ -2114,7 +2116,7 @@ mod tests {
 					cltv_expiry_delta: 100,
 				}],
 			],
-			payment_params: Some(PaymentParameters::from_node_id(nodes[1].node.get_our_node_id())),
+			payment_params: Some(PaymentParameters::from_node_id(nodes[1].node.get_our_node_id(), 100)),
 		};
 		let router = ManualRouter(RefCell::new(VecDeque::new()));
 		router.expect_find_route(Ok(route.clone()));
@@ -2194,7 +2196,7 @@ mod tests {
 					cltv_expiry_delta: 100,
 				}]
 			],
-			payment_params: Some(PaymentParameters::from_node_id(nodes[2].node.get_our_node_id())),
+			payment_params: Some(PaymentParameters::from_node_id(nodes[2].node.get_our_node_id(), 100)),
 		};
 		let router = ManualRouter(RefCell::new(VecDeque::new()));
 		router.expect_find_route(Ok(route.clone()));

@@ -7871,7 +7871,7 @@ mod tests {
 
 		// Next, attempt a keysend payment and make sure it fails.
 		let route_params = RouteParameters {
-			payment_params: PaymentParameters::for_keysend(expected_route.last().unwrap().node.get_our_node_id()),
+			payment_params: PaymentParameters::for_keysend(expected_route.last().unwrap().node.get_our_node_id(), TEST_FINAL_CLTV),
 			final_value_msat: 100_000,
 			final_cltv_expiry_delta: TEST_FINAL_CLTV,
 		};
@@ -7964,7 +7964,7 @@ mod tests {
 
 		let _chan = create_chan_between_nodes(&nodes[0], &nodes[1]);
 		let route_params = RouteParameters {
-			payment_params: PaymentParameters::for_keysend(payee_pubkey),
+			payment_params: PaymentParameters::for_keysend(payee_pubkey, 40),
 			final_value_msat: 10_000,
 			final_cltv_expiry_delta: 40,
 		};
@@ -8009,7 +8009,7 @@ mod tests {
 
 		let _chan = create_chan_between_nodes(&nodes[0], &nodes[1]);
 		let route_params = RouteParameters {
-			payment_params: PaymentParameters::for_keysend(payee_pubkey),
+			payment_params: PaymentParameters::for_keysend(payee_pubkey, 40),
 			final_value_msat: 10_000,
 			final_cltv_expiry_delta: 40,
 		};
@@ -8574,7 +8574,7 @@ pub mod bench {
 		macro_rules! send_payment {
 			($node_a: expr, $node_b: expr) => {
 				let usable_channels = $node_a.list_usable_channels();
-				let payment_params = PaymentParameters::from_node_id($node_b.get_our_node_id())
+				let payment_params = PaymentParameters::from_node_id($node_b.get_our_node_id(), TEST_FINAL_CLTV)
 					.with_features($node_b.invoice_features());
 				let scorer = test_utils::TestScorer::with_penalty(0);
 				let seed = [3u8; 32];

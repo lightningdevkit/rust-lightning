@@ -1149,8 +1149,9 @@ mod tests {
 
 		let past_expiry_time = std::time::SystemTime::UNIX_EPOCH.elapsed().unwrap().as_secs() - 2;
 		let payment_params = PaymentParameters::from_node_id(
-			PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap()))
-			.with_expiry_time(past_expiry_time);
+				PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap()),
+				0
+			).with_expiry_time(past_expiry_time);
 		let expired_route_params = RouteParameters {
 			payment_params,
 			final_value_msat: 0,
@@ -1187,7 +1188,7 @@ mod tests {
 		router.expect_find_route(Err(LightningError { err: String::new(), action: ErrorAction::IgnoreError }));
 
 		let payment_params = PaymentParameters::from_node_id(
-			PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap()));
+			PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap()), 0);
 		let route_params = RouteParameters {
 			payment_params,
 			final_value_msat: 0,

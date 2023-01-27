@@ -1484,7 +1484,7 @@ macro_rules! get_route {
 #[macro_export]
 macro_rules! get_route_and_payment_hash {
 	($send_node: expr, $recv_node: expr, $recv_value: expr) => {{
-		let payment_params = $crate::routing::router::PaymentParameters::from_node_id($recv_node.node.get_our_node_id())
+		let payment_params = $crate::routing::router::PaymentParameters::from_node_id($recv_node.node.get_our_node_id(), TEST_FINAL_CLTV)
 			.with_features($recv_node.node.invoice_features());
 		$crate::get_route_and_payment_hash!($send_node, $recv_node, payment_params, $recv_value, TEST_FINAL_CLTV)
 	}};
@@ -2096,7 +2096,7 @@ pub fn claim_payment<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route:
 pub const TEST_FINAL_CLTV: u32 = 70;
 
 pub fn route_payment<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route: &[&Node<'a, 'b, 'c>], recv_value: u64) -> (PaymentPreimage, PaymentHash, PaymentSecret) {
-	let payment_params = PaymentParameters::from_node_id(expected_route.last().unwrap().node.get_our_node_id())
+	let payment_params = PaymentParameters::from_node_id(expected_route.last().unwrap().node.get_our_node_id(), TEST_FINAL_CLTV)
 		.with_features(expected_route.last().unwrap().node.invoice_features());
 	let route = get_route!(origin_node, payment_params, recv_value, TEST_FINAL_CLTV).unwrap();
 	assert_eq!(route.paths.len(), 1);
@@ -2110,7 +2110,7 @@ pub fn route_payment<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route:
 }
 
 pub fn route_over_limit<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route: &[&Node<'a, 'b, 'c>], recv_value: u64)  {
-	let payment_params = PaymentParameters::from_node_id(expected_route.last().unwrap().node.get_our_node_id())
+	let payment_params = PaymentParameters::from_node_id(expected_route.last().unwrap().node.get_our_node_id(), TEST_FINAL_CLTV)
 		.with_features(expected_route.last().unwrap().node.invoice_features());
 	let network_graph = origin_node.network_graph.read_only();
 	let scorer = test_utils::TestScorer::with_penalty(0);

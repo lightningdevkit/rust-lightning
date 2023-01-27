@@ -919,7 +919,7 @@ fn get_ldk_payment_preimage() {
 	let expiry_secs = 60 * 60;
 	let (payment_hash, payment_secret) = nodes[1].node.create_inbound_payment(Some(amt_msat), expiry_secs, None).unwrap();
 
-	let payment_params = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id())
+	let payment_params = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id(), TEST_FINAL_CLTV)
 		.with_features(nodes[1].node.invoice_features());
 	let scorer = test_utils::TestScorer::with_penalty(0);
 	let keys_manager = test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
@@ -1033,7 +1033,7 @@ fn failed_probe_yields_event() {
 	create_announced_chan_between_nodes(&nodes, 0, 1);
 	create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 100000, 90000000);
 
-	let payment_params = PaymentParameters::from_node_id(nodes[2].node.get_our_node_id());
+	let payment_params = PaymentParameters::from_node_id(nodes[2].node.get_our_node_id(), 42);
 
 	let (route, _, _, _) = get_route_and_payment_hash!(&nodes[0], nodes[2], &payment_params, 9_998_000, 42);
 
@@ -1080,7 +1080,7 @@ fn onchain_failed_probe_yields_event() {
 	let chan_id = create_announced_chan_between_nodes(&nodes, 0, 1).2;
 	create_announced_chan_between_nodes(&nodes, 1, 2);
 
-	let payment_params = PaymentParameters::from_node_id(nodes[2].node.get_our_node_id());
+	let payment_params = PaymentParameters::from_node_id(nodes[2].node.get_our_node_id(), 42);
 
 	// Send a dust HTLC, which will be treated as if it timed out once the channel hits the chain.
 	let (route, _, _, _) = get_route_and_payment_hash!(&nodes[0], nodes[2], &payment_params, 1_000, 42);
@@ -1425,7 +1425,7 @@ fn do_test_intercepted_payment(test: InterceptTest) {
 
 	let amt_msat = 100_000;
 	let intercept_scid = nodes[1].node.get_intercept_scid();
-	let payment_params = PaymentParameters::from_node_id(nodes[2].node.get_our_node_id())
+	let payment_params = PaymentParameters::from_node_id(nodes[2].node.get_our_node_id(), TEST_FINAL_CLTV)
 		.with_route_hints(vec![
 			RouteHint(vec![RouteHintHop {
 				src_node_id: nodes[1].node.get_our_node_id(),
@@ -1623,7 +1623,7 @@ fn do_automatic_retries(test: AutoRetry) {
 	invoice_features.set_variable_length_onion_required();
 	invoice_features.set_payment_secret_required();
 	invoice_features.set_basic_mpp_optional();
-	let payment_params = PaymentParameters::from_node_id(nodes[2].node.get_our_node_id())
+	let payment_params = PaymentParameters::from_node_id(nodes[2].node.get_our_node_id(), TEST_FINAL_CLTV)
 		.with_expiry_time(payment_expiry_secs as u64)
 		.with_features(invoice_features);
 	let route_params = RouteParameters {
@@ -1805,7 +1805,7 @@ fn auto_retry_partial_failure() {
 	invoice_features.set_variable_length_onion_required();
 	invoice_features.set_payment_secret_required();
 	invoice_features.set_basic_mpp_optional();
-	let payment_params = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id())
+	let payment_params = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id(), TEST_FINAL_CLTV)
 		.with_expiry_time(payment_expiry_secs as u64)
 		.with_features(invoice_features);
 	let route_params = RouteParameters {
@@ -1844,7 +1844,7 @@ fn auto_retry_partial_failure() {
 				cltv_expiry_delta: 100,
 			}],
 		],
-		payment_params: Some(PaymentParameters::from_node_id(nodes[1].node.get_our_node_id())),
+		payment_params: Some(PaymentParameters::from_node_id(nodes[1].node.get_our_node_id(), TEST_FINAL_CLTV)),
 	};
 	let retry_1_route = Route {
 		paths: vec![
@@ -1865,7 +1865,7 @@ fn auto_retry_partial_failure() {
 				cltv_expiry_delta: 100,
 			}],
 		],
-		payment_params: Some(PaymentParameters::from_node_id(nodes[1].node.get_our_node_id())),
+		payment_params: Some(PaymentParameters::from_node_id(nodes[1].node.get_our_node_id(), TEST_FINAL_CLTV)),
 	};
 	let retry_2_route = Route {
 		paths: vec![
@@ -1878,7 +1878,7 @@ fn auto_retry_partial_failure() {
 				cltv_expiry_delta: 100,
 			}],
 		],
-		payment_params: Some(PaymentParameters::from_node_id(nodes[1].node.get_our_node_id())),
+		payment_params: Some(PaymentParameters::from_node_id(nodes[1].node.get_our_node_id(), TEST_FINAL_CLTV)),
 	};
 	nodes[0].router.expect_find_route(Ok(send_route));
 	nodes[0].router.expect_find_route(Ok(retry_1_route));
@@ -2001,7 +2001,7 @@ fn auto_retry_zero_attempts_send_error() {
 	invoice_features.set_variable_length_onion_required();
 	invoice_features.set_payment_secret_required();
 	invoice_features.set_basic_mpp_optional();
-	let payment_params = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id())
+	let payment_params = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id(), TEST_FINAL_CLTV)
 		.with_expiry_time(payment_expiry_secs as u64)
 		.with_features(invoice_features);
 	let route_params = RouteParameters {
@@ -2039,7 +2039,7 @@ fn fails_paying_after_rejected_by_payee() {
 	invoice_features.set_variable_length_onion_required();
 	invoice_features.set_payment_secret_required();
 	invoice_features.set_basic_mpp_optional();
-	let payment_params = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id())
+	let payment_params = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id(), TEST_FINAL_CLTV)
 		.with_expiry_time(payment_expiry_secs as u64)
 		.with_features(invoice_features);
 	let route_params = RouteParameters {
@@ -2094,7 +2094,7 @@ fn retry_multi_path_single_failed_payment() {
 				cltv_expiry_delta: 100,
 			}],
 		],
-		payment_params: Some(PaymentParameters::from_node_id(nodes[1].node.get_our_node_id())),
+		payment_params: Some(PaymentParameters::from_node_id(nodes[1].node.get_our_node_id(), TEST_FINAL_CLTV)),
 	};
 	nodes[0].router.expect_find_route(Ok(route.clone()));
 	// On retry, split the payment across both channels.
@@ -2112,7 +2112,7 @@ fn retry_multi_path_single_failed_payment() {
 	invoice_features.set_variable_length_onion_required();
 	invoice_features.set_payment_secret_required();
 	invoice_features.set_basic_mpp_optional();
-	let payment_params = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id())
+	let payment_params = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id(), TEST_FINAL_CLTV)
 		.with_expiry_time(payment_expiry_secs as u64)
 		.with_features(invoice_features);
 	let route_params = RouteParameters {
@@ -2149,7 +2149,7 @@ fn immediate_retry_on_failure() {
 				cltv_expiry_delta: 100,
 			}],
 		],
-		payment_params: Some(PaymentParameters::from_node_id(nodes[1].node.get_our_node_id())),
+		payment_params: Some(PaymentParameters::from_node_id(nodes[1].node.get_our_node_id(), TEST_FINAL_CLTV)),
 	};
 	nodes[0].router.expect_find_route(Ok(route.clone()));
 	// On retry, split the payment across both channels.
@@ -2169,7 +2169,7 @@ fn immediate_retry_on_failure() {
 	invoice_features.set_variable_length_onion_required();
 	invoice_features.set_payment_secret_required();
 	invoice_features.set_basic_mpp_optional();
-	let payment_params = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id())
+	let payment_params = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id(), TEST_FINAL_CLTV)
 		.with_expiry_time(payment_expiry_secs as u64)
 		.with_features(invoice_features);
 	let route_params = RouteParameters {
@@ -2241,7 +2241,7 @@ fn no_extra_retries_on_back_to_back_fail() {
 				cltv_expiry_delta: 100,
 			}]
 		],
-		payment_params: Some(PaymentParameters::from_node_id(nodes[2].node.get_our_node_id())),
+		payment_params: Some(PaymentParameters::from_node_id(nodes[2].node.get_our_node_id(), TEST_FINAL_CLTV)),
 	};
 	nodes[0].router.expect_find_route(Ok(route.clone()));
 	// On retry, we'll only be asked for one path
@@ -2258,7 +2258,7 @@ fn no_extra_retries_on_back_to_back_fail() {
 	invoice_features.set_variable_length_onion_required();
 	invoice_features.set_payment_secret_required();
 	invoice_features.set_basic_mpp_optional();
-	let payment_params = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id())
+	let payment_params = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id(), TEST_FINAL_CLTV)
 		.with_expiry_time(payment_expiry_secs as u64)
 		.with_features(invoice_features);
 	let route_params = RouteParameters {
