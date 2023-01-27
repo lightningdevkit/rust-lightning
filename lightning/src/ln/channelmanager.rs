@@ -2477,7 +2477,7 @@ where
 		self.pending_outbound_payments
 			.send_payment(payment_hash, payment_secret, payment_id, retry_strategy, route_params,
 				&self.router, self.list_usable_channels(), self.compute_inflight_htlcs(),
-				&self.entropy_source, &self.node_signer, best_block_height,
+				&self.entropy_source, &self.node_signer, best_block_height, &self.logger,
 				|path, payment_params, payment_hash, payment_secret, total_value, cur_height, payment_id, keysend_preimage, session_priv|
 				self.send_payment_along_path(path, payment_params, payment_hash, payment_secret, total_value, cur_height, payment_id, keysend_preimage, session_priv))
 	}
