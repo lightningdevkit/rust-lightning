@@ -3839,9 +3839,10 @@ fn do_test_drop_messages_peer_disconnect(messages_delivered: u8, simulate_broken
 	if messages_delivered == 1 || messages_delivered == 2 {
 		expect_payment_path_successful!(nodes[0]);
 	}
-
-	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
-	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+	if messages_delivered <= 5 {
+		nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
+		nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+	}
 	reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
 
 	if messages_delivered > 2 {
@@ -9210,8 +9211,6 @@ fn test_keysend_payments_to_private_node() {
 
 	let payer_pubkey = nodes[0].node.get_our_node_id();
 	let payee_pubkey = nodes[1].node.get_our_node_id();
-	nodes[0].node.peer_connected(&payee_pubkey, &msgs::Init { features: nodes[1].node.init_features(), remote_network_address: None }).unwrap();
-	nodes[1].node.peer_connected(&payer_pubkey, &msgs::Init { features: nodes[0].node.init_features(), remote_network_address: None }).unwrap();
 
 	let _chan = create_chan_between_nodes(&nodes[0], &nodes[1]);
 	let route_params = RouteParameters {

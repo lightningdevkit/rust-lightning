@@ -487,6 +487,10 @@ pub(super) struct PeerState<Signer: ChannelSigner> {
 	/// Messages to send to the peer - pushed to in the same lock that they are generated in (except
 	/// for broadcast messages, where ordering isn't as strict).
 	pub(super) pending_msg_events: Vec<MessageSendEvent>,
+	/// The peer is currently connected (i.e. we've seen a
+	/// [`ChannelMessageHandler::peer_connected`] and no corresponding
+	/// [`ChannelMessageHandler::peer_disconnected`].
+	is_connected: bool,
 }
 
 /// Stores a PaymentSecret and any other data we may need to validate an inbound payment is
@@ -6289,6 +6293,8 @@ where
 						&events::MessageSendEvent::SendGossipTimestampFilter { .. } => false,
 					}
 				});
+				debug_assert!(peer_state.is_connected, "A disconnected peer cannot disconnect");
+				peer_state.is_connected = false;
 			}
 		}
 		if no_channels_remain {
@@ -6319,10 +6325,14 @@ where
 						channel_by_id: HashMap::new(),
 						latest_features: init_msg.features.clone(),
 						pending_msg_events: Vec::new(),
+						is_connected: true,
 					}));
 				},
 				hash_map::Entry::Occupied(e) => {
-					e.get().lock().unwrap().latest_features = init_msg.features.clone();
+					let mut peer_state = e.get().lock().unwrap();
+					peer_state.latest_features = init_msg.features.clone();
+					debug_assert!(!peer_state.is_connected, "A peer shouldn't be connected twice");
+					peer_state.is_connected = true;
 				},
 			}
 		}
@@ -7341,6 +7351,7 @@ where
 				channel_by_id: peer_channels.remove(&peer_pubkey).unwrap_or(HashMap::new()),
 				latest_features: Readable::read(reader)?,
 				pending_msg_events: Vec::new(),
+				is_connected: false,
 			};
 			per_peer_state.insert(peer_pubkey, Mutex::new(peer_state));
 		}
@@ -8054,8 +8065,6 @@ mod tests {
 
 		let payer_pubkey = nodes[0].node.get_our_node_id();
 		let payee_pubkey = nodes[1].node.get_our_node_id();
-		nodes[0].node.peer_connected(&payee_pubkey, &msgs::Init { features: nodes[1].node.init_features(), remote_network_address: None }).unwrap();
-		nodes[1].node.peer_connected(&payer_pubkey, &msgs::Init { features: nodes[0].node.init_features(), remote_network_address: None }).unwrap();
 
 		let _chan = create_chan_between_nodes(&nodes[0], &nodes[1]);
 		let route_params = RouteParameters {
@@ -8099,8 +8108,6 @@ mod tests {
 
 		let payer_pubkey = nodes[0].node.get_our_node_id();
 		let payee_pubkey = nodes[1].node.get_our_node_id();
-		nodes[0].node.peer_connected(&payee_pubkey, &msgs::Init { features: nodes[1].node.init_features(), remote_network_address: None }).unwrap();
-		nodes[1].node.peer_connected(&payer_pubkey, &msgs::Init { features: nodes[0].node.init_features(), remote_network_address: None }).unwrap();
 
 		let _chan = create_chan_between_nodes(&nodes[0], &nodes[1]);
 		let route_params = RouteParameters {
