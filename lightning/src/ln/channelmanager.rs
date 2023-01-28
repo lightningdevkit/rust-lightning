@@ -7363,7 +7363,7 @@ where
 									entry.insert(PendingOutboundPayment::Retryable {
 										retry_strategy: None,
 										attempts: PaymentAttempts::new(),
-										route_params: None,
+										payment_params: None,
 										session_privs: [session_priv_bytes].iter().map(|a| *a).collect(),
 										payment_hash: htlc.payment_hash,
 										payment_secret,
