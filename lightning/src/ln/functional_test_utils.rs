@@ -1345,157 +1345,6 @@ impl SendEvent {
 }
 
 #[macro_export]
-/// Performs the "commitment signed dance" - the series of message exchanges which occur after a
-/// commitment update.
-macro_rules! commitment_signed_dance {
-	($node_a: expr, $node_b: expr, $commitment_signed: expr, $fail_backwards: expr, true /* skip last step */) => {
-		{
-			check_added_monitors!($node_a, 0);
-			assert!($node_a.node.get_and_clear_pending_msg_events().is_empty());
-			$node_a.node.handle_commitment_signed(&$node_b.node.get_our_node_id(), &$commitment_signed);
-			check_added_monitors!($node_a, 1);
-			commitment_signed_dance!($node_a, $node_b, (), $fail_backwards, true, false);
-		}
-	};
-	($node_a: expr, $node_b: expr, (), $fail_backwards: expr, true /* skip last step */, true /* return extra message */, true /* return last RAA */) => {
-		{
-			let (as_revoke_and_ack, as_commitment_signed) = get_revoke_commit_msgs!($node_a, $node_b.node.get_our_node_id());
-			check_added_monitors!($node_b, 0);
-			assert!($node_b.node.get_and_clear_pending_msg_events().is_empty());
-			$node_b.node.handle_revoke_and_ack(&$node_a.node.get_our_node_id(), &as_revoke_and_ack);
-			assert!($node_b.node.get_and_clear_pending_msg_events().is_empty());
-			check_added_monitors!($node_b, 1);
-			$node_b.node.handle_commitment_signed(&$node_a.node.get_our_node_id(), &as_commitment_signed);
-			let (bs_revoke_and_ack, extra_msg_option) = {
-				let events = $node_b.node.get_and_clear_pending_msg_events();
-				assert!(events.len() <= 2);
-				let (node_a_event, events) = remove_first_msg_event_to_node(&$node_a.node.get_our_node_id(), &events);
-				(match node_a_event {
-					MessageSendEvent::SendRevokeAndACK { ref node_id, ref msg } => {
-						assert_eq!(*node_id, $node_a.node.get_our_node_id());
-						(*msg).clone()
-					},
-					_ => panic!("Unexpected event"),
-				}, events.get(0).map(|e| e.clone()))
-			};
-			check_added_monitors!($node_b, 1);
-			if $fail_backwards {
-				assert!($node_a.node.get_and_clear_pending_events().is_empty());
-				assert!($node_a.node.get_and_clear_pending_msg_events().is_empty());
-			}
-			(extra_msg_option, bs_revoke_and_ack)
-		}
-	};
-	($node_a: expr, $node_b: expr, $commitment_signed: expr, $fail_backwards: expr, true /* skip last step */, false /* return extra message */, true /* return last RAA */) => {
-		{
-			check_added_monitors!($node_a, 0);
-			assert!($node_a.node.get_and_clear_pending_msg_events().is_empty());
-			$node_a.node.handle_commitment_signed(&$node_b.node.get_our_node_id(), &$commitment_signed);
-			check_added_monitors!($node_a, 1);
-			let (extra_msg_option, bs_revoke_and_ack) = commitment_signed_dance!($node_a, $node_b, (), $fail_backwards, true, true, true);
-			assert!(extra_msg_option.is_none());
-			bs_revoke_and_ack
-		}
-	};
-	($node_a: expr, $node_b: expr, (), $fail_backwards: expr, true /* skip last step */, true /* return extra message */) => {
-		{
-			let (extra_msg_option, bs_revoke_and_ack) = commitment_signed_dance!($node_a, $node_b, (), $fail_backwards, true, true, true);
-			$node_a.node.handle_revoke_and_ack(&$node_b.node.get_our_node_id(), &bs_revoke_and_ack);
-			check_added_monitors!($node_a, 1);
-			extra_msg_option
-		}
-	};
-	($node_a: expr, $node_b: expr, (), $fail_backwards: expr, true /* skip last step */, false /* no extra message */) => {
-		{
-			assert!(commitment_signed_dance!($node_a, $node_b, (), $fail_backwards, true, true).is_none());
-		}
-	};
-	($node_a: expr, $node_b: expr, $commitment_signed: expr, $fail_backwards: expr) => {
-		{
-			commitment_signed_dance!($node_a, $node_b, $commitment_signed, $fail_backwards, true);
-			if $fail_backwards {
-				expect_pending_htlcs_forwardable_and_htlc_handling_failed!($node_a, vec![$crate::util::events::HTLCDestination::NextHopChannel{ node_id: Some($node_b.node.get_our_node_id()), channel_id: $commitment_signed.channel_id }]);
-				check_added_monitors!($node_a, 1);
-
-				let node_a_per_peer_state = $node_a.node.per_peer_state.read().unwrap();
-				let mut number_of_msg_events = 0;
-				for (cp_id, peer_state_mutex) in node_a_per_peer_state.iter() {
-					let peer_state = peer_state_mutex.lock().unwrap();
-					let cp_pending_msg_events = &peer_state.pending_msg_events;
-					number_of_msg_events += cp_pending_msg_events.len();
-					if cp_pending_msg_events.len() == 1 {
-						if let MessageSendEvent::UpdateHTLCs { .. } = cp_pending_msg_events[0] {
-							assert_ne!(*cp_id, $node_b.node.get_our_node_id());
-						} else { panic!("Unexpected event"); }
-					}
-				}
-				// Expecting the failure backwards event to the previous hop (not `node_b`)
-				assert_eq!(number_of_msg_events, 1);
-			} else {
-				assert!($node_a.node.get_and_clear_pending_msg_events().is_empty());
-			}
-		}
-	}
-}
-
-/// Get a payment preimage and hash.
-#[macro_export]
-macro_rules! get_payment_preimage_hash {
-	($dest_node: expr) => {
-		{
-			get_payment_preimage_hash!($dest_node, None)
-		}
-	};
-	($dest_node: expr, $min_value_msat: expr) => {
-		{
-			crate::get_payment_preimage_hash!($dest_node, $min_value_msat, None)
-		}
-	};
-	($dest_node: expr, $min_value_msat: expr, $min_final_cltv_expiry_delta: expr) => {
-		{
-			use bitcoin::hashes::Hash as _;
-			let mut payment_count = $dest_node.network_payment_count.borrow_mut();
-			let payment_preimage = $crate::ln::PaymentPreimage([*payment_count; 32]);
-			*payment_count += 1;
-			let payment_hash = $crate::ln::PaymentHash(
-				bitcoin::hashes::sha256::Hash::hash(&payment_preimage.0[..]).into_inner());
-			let payment_secret = $dest_node.node.create_inbound_payment_for_hash(payment_hash, $min_value_msat, 7200, $min_final_cltv_expiry_delta).unwrap();
-			(payment_preimage, payment_hash, payment_secret)
-		}
-	};
-}
-
-#[macro_export]
-macro_rules! get_route {
-	($send_node: expr, $payment_params: expr, $recv_value: expr, $cltv: expr) => {{
-		use $crate::chain::keysinterface::EntropySource;
-		let scorer = $crate::util::test_utils::TestScorer::with_penalty(0);
-		let keys_manager = $crate::util::test_utils::TestKeysInterface::new(&[0u8; 32], bitcoin::network::constants::Network::Testnet);
-		let random_seed_bytes = keys_manager.get_secure_random_bytes();
-		$crate::routing::router::get_route(
-			&$send_node.node.get_our_node_id(), &$payment_params, &$send_node.network_graph.read_only(),
-			Some(&$send_node.node.list_usable_channels().iter().collect::<Vec<_>>()),
-			$recv_value, $cltv, $send_node.logger, &scorer, &random_seed_bytes
-		)
-	}}
-}
-
-#[cfg(test)]
-#[macro_export]
-macro_rules! get_route_and_payment_hash {
-	($send_node: expr, $recv_node: expr, $recv_value: expr) => {{
-		let payment_params = $crate::routing::router::PaymentParameters::from_node_id($recv_node.node.get_our_node_id(), TEST_FINAL_CLTV)
-			.with_features($recv_node.node.invoice_features());
-		$crate::get_route_and_payment_hash!($send_node, $recv_node, payment_params, $recv_value, TEST_FINAL_CLTV)
-	}};
-	($send_node: expr, $recv_node: expr, $payment_params: expr, $recv_value: expr, $cltv: expr) => {{
-		let (payment_preimage, payment_hash, payment_secret) = $crate::get_payment_preimage_hash!($recv_node, Some($recv_value));
-		let route = $crate::get_route!($send_node, $payment_params, $recv_value, $cltv);
-		(route.unwrap(), payment_hash, payment_preimage, payment_secret)
-	}}
-}
-
-#[macro_export]
 macro_rules! expect_pending_htlcs_forwardable_conditions {
 	($node: expr, $expected_failures: expr) => {{
 		let expected_failures = $expected_failures;
@@ -1585,6 +1434,164 @@ macro_rules! expect_pending_htlcs_forwardable_from_events {
 		}
 	}}
 }
+
+#[macro_export]
+/// Performs the "commitment signed dance" - the series of message exchanges which occur after a
+/// commitment update.
+macro_rules! commitment_signed_dance {
+	($node_a: expr, $node_b: expr, $commitment_signed: expr, $fail_backwards: expr, true /* skip last step */) => {
+		$crate::ln::functional_test_utils::do_commitment_signed_dance(&$node_a, &$node_b, &$commitment_signed, $fail_backwards, true);
+	};
+	($node_a: expr, $node_b: expr, (), $fail_backwards: expr, true /* skip last step */, true /* return extra message */, true /* return last RAA */) => {
+		$crate::ln::functional_test_utils::do_main_commitment_signed_dance(&$node_a, &$node_b, $fail_backwards)
+	};
+	($node_a: expr, $node_b: expr, $commitment_signed: expr, $fail_backwards: expr, true /* skip last step */, false /* return extra message */, true /* return last RAA */) => {
+		{
+			check_added_monitors!($node_a, 0);
+			assert!($node_a.node.get_and_clear_pending_msg_events().is_empty());
+			$node_a.node.handle_commitment_signed(&$node_b.node.get_our_node_id(), &$commitment_signed);
+			check_added_monitors!($node_a, 1);
+			let (extra_msg_option, bs_revoke_and_ack) = $crate::ln::functional_test_utils::do_main_commitment_signed_dance(&$node_a, &$node_b, $fail_backwards);
+			assert!(extra_msg_option.is_none());
+			bs_revoke_and_ack
+		}
+	};
+	($node_a: expr, $node_b: expr, (), $fail_backwards: expr, true /* skip last step */, true /* return extra message */) => {
+		{
+			let (extra_msg_option, bs_revoke_and_ack) = $crate::ln::functional_test_utils::do_main_commitment_signed_dance(&$node_a, &$node_b, $fail_backwards);
+			$node_a.node.handle_revoke_and_ack(&$node_b.node.get_our_node_id(), &bs_revoke_and_ack);
+			check_added_monitors!($node_a, 1);
+			extra_msg_option
+		}
+	};
+	($node_a: expr, $node_b: expr, (), $fail_backwards: expr, true /* skip last step */, false /* no extra message */) => {
+		assert!(commitment_signed_dance!($node_a, $node_b, (), $fail_backwards, true, true).is_none());
+	};
+	($node_a: expr, $node_b: expr, $commitment_signed: expr, $fail_backwards: expr) => {
+		$crate::ln::functional_test_utils::do_commitment_signed_dance(&$node_a, &$node_b, &$commitment_signed, $fail_backwards, false);
+	}
+}
+
+
+pub fn do_main_commitment_signed_dance(node_a: &Node<'_, '_, '_>, node_b: &Node<'_, '_, '_>, fail_backwards: bool) -> (Option<MessageSendEvent>, msgs::RevokeAndACK) {
+	let (as_revoke_and_ack, as_commitment_signed) = get_revoke_commit_msgs!(node_a, node_b.node.get_our_node_id());
+	check_added_monitors!(node_b, 0);
+	assert!(node_b.node.get_and_clear_pending_msg_events().is_empty());
+	node_b.node.handle_revoke_and_ack(&node_a.node.get_our_node_id(), &as_revoke_and_ack);
+	assert!(node_b.node.get_and_clear_pending_msg_events().is_empty());
+	check_added_monitors!(node_b, 1);
+	node_b.node.handle_commitment_signed(&node_a.node.get_our_node_id(), &as_commitment_signed);
+	let (bs_revoke_and_ack, extra_msg_option) = {
+		let events = node_b.node.get_and_clear_pending_msg_events();
+		assert!(events.len() <= 2);
+		let (node_a_event, events) = remove_first_msg_event_to_node(&node_a.node.get_our_node_id(), &events);
+		(match node_a_event {
+			MessageSendEvent::SendRevokeAndACK { ref node_id, ref msg } => {
+				assert_eq!(*node_id, node_a.node.get_our_node_id());
+				(*msg).clone()
+			},
+			_ => panic!("Unexpected event"),
+		}, events.get(0).map(|e| e.clone()))
+	};
+	check_added_monitors!(node_b, 1);
+	if fail_backwards {
+		assert!(node_a.node.get_and_clear_pending_events().is_empty());
+		assert!(node_a.node.get_and_clear_pending_msg_events().is_empty());
+	}
+	(extra_msg_option, bs_revoke_and_ack)
+}
+
+pub fn do_commitment_signed_dance(node_a: &Node<'_, '_, '_>, node_b: &Node<'_, '_, '_>, commitment_signed: &msgs::CommitmentSigned, fail_backwards: bool, skip_last_step: bool) {
+	check_added_monitors!(node_a, 0);
+	assert!(node_a.node.get_and_clear_pending_msg_events().is_empty());
+	node_a.node.handle_commitment_signed(&node_b.node.get_our_node_id(), commitment_signed);
+	check_added_monitors!(node_a, 1);
+
+	commitment_signed_dance!(node_a, node_b, (), fail_backwards, true, false);
+
+	if skip_last_step { return; }
+
+	if fail_backwards {
+		expect_pending_htlcs_forwardable_and_htlc_handling_failed!(node_a,
+			vec![crate::util::events::HTLCDestination::NextHopChannel{ node_id: Some(node_b.node.get_our_node_id()), channel_id: commitment_signed.channel_id }]);
+		check_added_monitors!(node_a, 1);
+
+		let node_a_per_peer_state = node_a.node.per_peer_state.read().unwrap();
+		let mut number_of_msg_events = 0;
+		for (cp_id, peer_state_mutex) in node_a_per_peer_state.iter() {
+			let peer_state = peer_state_mutex.lock().unwrap();
+			let cp_pending_msg_events = &peer_state.pending_msg_events;
+			number_of_msg_events += cp_pending_msg_events.len();
+			if cp_pending_msg_events.len() == 1 {
+				if let MessageSendEvent::UpdateHTLCs { .. } = cp_pending_msg_events[0] {
+					assert_ne!(*cp_id, node_b.node.get_our_node_id());
+				} else { panic!("Unexpected event"); }
+			}
+		}
+		// Expecting the failure backwards event to the previous hop (not `node_b`)
+		assert_eq!(number_of_msg_events, 1);
+	} else {
+		assert!(node_a.node.get_and_clear_pending_msg_events().is_empty());
+	}
+}
+
+/// Get a payment preimage and hash.
+#[macro_export]
+macro_rules! get_payment_preimage_hash {
+	($dest_node: expr) => {
+		{
+			get_payment_preimage_hash!($dest_node, None)
+		}
+	};
+	($dest_node: expr, $min_value_msat: expr) => {
+		{
+			crate::get_payment_preimage_hash!($dest_node, $min_value_msat, None)
+		}
+	};
+	($dest_node: expr, $min_value_msat: expr, $min_final_cltv_expiry_delta: expr) => {
+		{
+			use bitcoin::hashes::Hash as _;
+			let mut payment_count = $dest_node.network_payment_count.borrow_mut();
+			let payment_preimage = $crate::ln::PaymentPreimage([*payment_count; 32]);
+			*payment_count += 1;
+			let payment_hash = $crate::ln::PaymentHash(
+				bitcoin::hashes::sha256::Hash::hash(&payment_preimage.0[..]).into_inner());
+			let payment_secret = $dest_node.node.create_inbound_payment_for_hash(payment_hash, $min_value_msat, 7200, $min_final_cltv_expiry_delta).unwrap();
+			(payment_preimage, payment_hash, payment_secret)
+		}
+	};
+}
+
+#[macro_export]
+macro_rules! get_route {
+	($send_node: expr, $payment_params: expr, $recv_value: expr, $cltv: expr) => {{
+		use $crate::chain::keysinterface::EntropySource;
+		let scorer = $crate::util::test_utils::TestScorer::with_penalty(0);
+		let keys_manager = $crate::util::test_utils::TestKeysInterface::new(&[0u8; 32], bitcoin::network::constants::Network::Testnet);
+		let random_seed_bytes = keys_manager.get_secure_random_bytes();
+		$crate::routing::router::get_route(
+			&$send_node.node.get_our_node_id(), &$payment_params, &$send_node.network_graph.read_only(),
+			Some(&$send_node.node.list_usable_channels().iter().collect::<Vec<_>>()),
+			$recv_value, $cltv, $send_node.logger, &scorer, &random_seed_bytes
+		)
+	}}
+}
+
+#[cfg(test)]
+#[macro_export]
+macro_rules! get_route_and_payment_hash {
+	($send_node: expr, $recv_node: expr, $recv_value: expr) => {{
+		let payment_params = $crate::routing::router::PaymentParameters::from_node_id($recv_node.node.get_our_node_id(), TEST_FINAL_CLTV)
+			.with_features($recv_node.node.invoice_features());
+		$crate::get_route_and_payment_hash!($send_node, $recv_node, payment_params, $recv_value, TEST_FINAL_CLTV)
+	}};
+	($send_node: expr, $recv_node: expr, $payment_params: expr, $recv_value: expr, $cltv: expr) => {{
+		let (payment_preimage, payment_hash, payment_secret) = $crate::get_payment_preimage_hash!($recv_node, Some($recv_value));
+		let route = $crate::get_route!($send_node, $payment_params, $recv_value, $cltv);
+		(route.unwrap(), payment_hash, payment_preimage, payment_secret)
+	}}
+}
+
 #[macro_export]
 #[cfg(any(test, feature = "_bench_unstable", feature = "_test_utils"))]
 macro_rules! expect_payment_claimable {
