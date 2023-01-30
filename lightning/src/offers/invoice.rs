@@ -338,8 +338,10 @@ struct InvoiceFields {
 
 impl Invoice {
 	/// Paths to the recipient originating from publicly reachable nodes, including information
-	/// needed for routing payments across them. Blinded paths provide recipient privacy by
-	/// obfuscating its node id.
+	/// needed for routing payments across them.
+	///
+	/// Blinded paths provide recipient privacy by obfuscating its node id. Note, however, that this
+	/// privacy is lost if a public node id is used for [`Invoice::signing_pubkey`].
 	pub fn payment_paths(&self) -> &[(BlindedPath, BlindedPayInfo)] {
 		&self.contents.fields().payment_paths[..]
 	}

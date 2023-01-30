@@ -118,9 +118,9 @@ impl RefundBuilder {
 		}
 
 		let refund = RefundContents {
-			payer: PayerContents(metadata), metadata: None, description, absolute_expiry: None,
-			issuer: None, paths: None, chain: None, amount_msats,
-			features: InvoiceRequestFeatures::empty(), payer_id, payer_note: None,
+			payer: PayerContents(metadata), description, absolute_expiry: None, issuer: None,
+			paths: None, chain: None, amount_msats, features: InvoiceRequestFeatures::empty(),
+			quantity: None, payer_id, payer_note: None,
 		};
 
 		Ok(RefundBuilder { refund })
@@ -159,6 +159,20 @@ impl RefundBuilder {
 	/// Successive calls to this method will override the previous setting.
 	pub fn chain(mut self, network: Network) -> Self {
 		self.refund.chain = Some(ChainHash::using_genesis_block(network));
+		self
+	}
+
+	/// Sets [`Refund::quantity`] of items. This is purely for informational purposes. It is useful
+	/// when the refund pertains to an [`Invoice`] that paid for more than one item from an
+	/// [`Offer`] as specified by [`InvoiceRequest::quantity`].
+	///
+	/// Successive calls to this method will override the previous setting.
+	///
+	/// [`Invoice`]: crate::offers::invoice::Invoice
+	/// [`InvoiceRequest::quantity`]: crate::offers::invoice_request::InvoiceRequest::quantity
+	/// [`Offer`]: crate::offers::offer::Offer
+	pub fn quantity(mut self, quantity: u64) -> Self {
+		self.refund.quantity = Some(quantity);
 		self
 	}
 
@@ -215,7 +229,6 @@ pub struct Refund {
 pub(super) struct RefundContents {
 	payer: PayerContents,
 	// offer fields
-	metadata: Option<Vec<u8>>,
 	description: String,
 	absolute_expiry: Option<Duration>,
 	issuer: Option<String>,
@@ -224,6 +237,7 @@ pub(super) struct RefundContents {
 	chain: Option<ChainHash>,
 	amount_msats: u64,
 	features: InvoiceRequestFeatures,
+	quantity: Option<u64>,
 	payer_id: PublicKey,
 	payer_note: Option<String>,
 }
@@ -285,6 +299,11 @@ impl Refund {
 		&self.contents.features
 	}
 
+	/// The quantity of an item that refund is for.
+	pub fn quantity(&self) -> Option<u64> {
+		self.contents.quantity
+	}
+
 	/// A public node id to send to in the case where there are no [`paths`]. Otherwise, a possibly
 	/// transient pubkey.
 	///
@@ -312,7 +331,9 @@ impl Refund {
 	/// offer, which does have a `signing_pubkey`.
 	///
 	/// The `payment_paths` parameter is useful for maintaining the payment recipient's privacy. It
-	/// must contain one or more elements.
+	/// must contain one or more elements ordered from most-preferred to least-preferred, if there's
+	/// a preference. Note, however, that any privacy is lost if a public node id is used for
+	/// `signing_pubkey`.
 	///
 	/// Errors if the request contains unknown required features.
 	///
@@ -375,7 +396,7 @@ impl RefundContents {
 
 		let offer = OfferTlvStreamRef {
 			chains: None,
-			metadata: self.metadata.as_ref(),
+			metadata: None,
 			currency: None,
 			amount: None,
 			description: Some(&self.description),
@@ -396,7 +417,7 @@ impl RefundContents {
 			chain: self.chain.as_ref(),
 			amount: Some(self.amount_msats),
 			features,
-			quantity: None,
+			quantity: self.quantity,
 			payer_id: Some(&self.payer_id),
 			payer_note: self.payer_note.as_ref(),
 		};
@@ -477,6 +498,10 @@ impl TryFrom<RefundTlvStream> for RefundContents {
 			Some(metadata) => PayerContents(metadata),
 		};
 
+		if metadata.is_some() {
+			return Err(SemanticError::UnexpectedMetadata);
+		}
+
 		if chains.is_some() {
 			return Err(SemanticError::UnexpectedChain);
 		}
@@ -514,20 +539,14 @@ impl TryFrom<RefundTlvStream> for RefundContents {
 
 		let features = features.unwrap_or_else(InvoiceRequestFeatures::empty);
 
-		// TODO: Check why this isn't in the spec.
-		if quantity.is_some() {
-			return Err(SemanticError::UnexpectedQuantity);
-		}
-
 		let payer_id = match payer_id {
 			None => return Err(SemanticError::MissingPayerId),
 			Some(payer_id) => payer_id,
 		};
 
-		// TODO: Should metadata be included?
 		Ok(RefundContents {
-			payer, metadata, description, absolute_expiry, issuer, paths, chain, amount_msats,
-			features, payer_id, payer_note,
+			payer, description, absolute_expiry, issuer, paths, chain, amount_msats, features,
+			quantity, payer_id, payer_note,
 		})
 	}
 }
@@ -756,6 +775,24 @@ mod tests {
 	}
 
 	#[test]
+	fn builds_refund_with_quantity() {
+		let refund = RefundBuilder::new("foo".into(), vec![1; 32], payer_pubkey(), 1000).unwrap()
+			.quantity(10)
+			.build().unwrap();
+		let (_, _, tlv_stream) = refund.as_tlv_stream();
+		assert_eq!(refund.quantity(), Some(10));
+		assert_eq!(tlv_stream.quantity, Some(10));
+
+		let refund = RefundBuilder::new("foo".into(), vec![1; 32], payer_pubkey(), 1000).unwrap()
+			.quantity(10)
+			.quantity(1)
+			.build().unwrap();
+		let (_, _, tlv_stream) = refund.as_tlv_stream();
+		assert_eq!(refund.quantity(), Some(1));
+		assert_eq!(tlv_stream.quantity, Some(1));
+	}
+
+	#[test]
 	fn builds_refund_with_payer_note() {
 		let refund = RefundBuilder::new("foo".into(), vec![1; 32], payer_pubkey(), 1000).unwrap()
 			.payer_note("bar".into())
@@ -888,6 +925,7 @@ mod tests {
 			.path(paths[1].clone())
 			.chain(Network::Testnet)
 			.features_unchecked(InvoiceRequestFeatures::unknown())
+			.quantity(10)
 			.payer_note("baz".into())
 			.build()
 			.unwrap();
@@ -900,6 +938,7 @@ mod tests {
 				assert_eq!(refund.issuer(), Some(PrintableString("bar")));
 				assert_eq!(refund.chain(), ChainHash::using_genesis_block(Network::Testnet));
 				assert_eq!(refund.features(), &InvoiceRequestFeatures::unknown());
+				assert_eq!(refund.quantity(), Some(10));
 				assert_eq!(refund.payer_note(), Some(PrintableString("baz")));
 			},
 			Err(e) => panic!("error parsing refund: {:?}", e),
@@ -912,6 +951,17 @@ mod tests {
 			.build().unwrap();
 		if let Err(e) = refund.to_string().parse::<Refund>() {
 			panic!("error parsing refund: {:?}", e);
+		}
+
+		let metadata = vec![42; 32];
+		let mut tlv_stream = refund.as_tlv_stream();
+		tlv_stream.1.metadata = Some(&metadata);
+
+		match Refund::try_from(tlv_stream.to_bytes()) {
+			Ok(_) => panic!("expected error"),
+			Err(e) => {
+				assert_eq!(e, ParseError::InvalidSemantics(SemanticError::UnexpectedMetadata));
+			},
 		}
 
 		let chains = vec![ChainHash::using_genesis_block(Network::Testnet)];
@@ -965,16 +1015,6 @@ mod tests {
 			Ok(_) => panic!("expected error"),
 			Err(e) => {
 				assert_eq!(e, ParseError::InvalidSemantics(SemanticError::UnexpectedSigningPubkey));
-			},
-		}
-
-		let mut tlv_stream = refund.as_tlv_stream();
-		tlv_stream.2.quantity = Some(10);
-
-		match Refund::try_from(tlv_stream.to_bytes()) {
-			Ok(_) => panic!("expected error"),
-			Err(e) => {
-				assert_eq!(e, ParseError::InvalidSemantics(SemanticError::UnexpectedQuantity));
 			},
 		}
 	}

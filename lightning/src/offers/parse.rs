@@ -157,6 +157,8 @@ pub enum SemanticError {
 	InvalidQuantity,
 	/// A quantity or quantity bounds was provided but was not expected.
 	UnexpectedQuantity,
+	/// Metadata was provided but was not expected.
+	UnexpectedMetadata,
 	/// Payer metadata was expected but was missing.
 	MissingPayerMetadata,
 	/// A payer id was expected but was missing.
