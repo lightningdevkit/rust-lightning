@@ -79,7 +79,7 @@ use crate::io;
 use crate::ln::features::OfferFeatures;
 use crate::ln::inbound_payment::{ExpandedKey, IV_LEN, Nonce};
 use crate::ln::msgs::MAX_VALUE_MSAT;
-use crate::offers::invoice_request::InvoiceRequestBuilder;
+use crate::offers::invoice_request::{DerivedPayerId, ExplicitPayerId, InvoiceRequestBuilder};
 use crate::offers::merkle::TlvStream;
 use crate::offers::parse::{Bech32Encode, ParseError, ParsedMessage, SemanticError};
 use crate::offers::signer::{Metadata, MetadataMaterial, self};
@@ -439,6 +439,51 @@ impl Offer {
 		self.contents.signing_pubkey()
 	}
 
+	/// Similar to [`Offer::request_invoice`] except it:
+	/// - derives the [`InvoiceRequest::payer_id`] such that a different key can be used for each
+	///   request, and
+	/// - sets the [`InvoiceRequest::metadata`] when [`InvoiceRequestBuilder::build`] is called such
+	///   that it can be used to determine if the invoice was requested using a base [`ExpandedKey`]
+	///   from which the payer id was derived.
+	///
+	/// Useful to protect the sender's privacy.
+	///
+	/// [`InvoiceRequest::payer_id`]: crate::offers::invoice_request::InvoiceRequest::payer_id
+	/// [`InvoiceRequest::metadata`]: crate::offers::invoice_request::InvoiceRequest::metadata
+	/// [`Invoice::verify`]: crate::offers::invoice::Invoice::verify
+	/// [`ExpandedKey`]: crate::ln::inbound_payment::ExpandedKey
+	pub fn request_invoice_deriving_payer_id<'a, 'b, ES: Deref, T: secp256k1::Signing>(
+		&'a self, expanded_key: &ExpandedKey, entropy_source: ES, secp_ctx: &'b Secp256k1<T>
+	) -> Result<InvoiceRequestBuilder<'a, 'b, DerivedPayerId, T>, SemanticError>
+	where
+		ES::Target: EntropySource,
+	{
+		if self.features().requires_unknown_bits() {
+			return Err(SemanticError::UnknownRequiredFeatures);
+		}
+
+		Ok(InvoiceRequestBuilder::deriving_payer_id(self, expanded_key, entropy_source, secp_ctx))
+	}
+
+	/// Similar to [`Offer::request_invoice_deriving_payer_id`] except uses `payer_id` for the
+	/// [`InvoiceRequest::payer_id`] instead of deriving a different key for each request.
+	///
+	/// Useful for recurring payments using the same `payer_id` with different invoices.
+	///
+	/// [`InvoiceRequest::payer_id`]: crate::offers::invoice_request::InvoiceRequest::payer_id
+	pub fn request_invoice_deriving_metadata<ES: Deref>(
+		&self, payer_id: PublicKey, expanded_key: &ExpandedKey, entropy_source: ES
+	) -> Result<InvoiceRequestBuilder<ExplicitPayerId, secp256k1::SignOnly>, SemanticError>
+	where
+		ES::Target: EntropySource,
+	{
+		if self.features().requires_unknown_bits() {
+			return Err(SemanticError::UnknownRequiredFeatures);
+		}
+
+		Ok(InvoiceRequestBuilder::deriving_metadata(self, payer_id, expanded_key, entropy_source))
+	}
+
 	/// Creates an [`InvoiceRequest`] for the offer with the given `metadata` and `payer_id`, which
 	/// will be reflected in the `Invoice` response.
 	///
@@ -454,7 +499,7 @@ impl Offer {
 	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 	pub fn request_invoice(
 		&self, metadata: Vec<u8>, payer_id: PublicKey
-	) -> Result<InvoiceRequestBuilder, SemanticError> {
+	) -> Result<InvoiceRequestBuilder<ExplicitPayerId, secp256k1::SignOnly>, SemanticError> {
 		if self.features().requires_unknown_bits() {
 			return Err(SemanticError::UnknownRequiredFeatures);
 		}

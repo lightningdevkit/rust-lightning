@@ -86,6 +86,7 @@ use crate::offers::invoice_request::{InvoiceRequestTlvStream, InvoiceRequestTlvS
 use crate::offers::offer::{OfferTlvStream, OfferTlvStreamRef};
 use crate::offers::parse::{Bech32Encode, ParseError, ParsedMessage, SemanticError};
 use crate::offers::payer::{PayerContents, PayerTlvStream, PayerTlvStreamRef};
+use crate::offers::signer::Metadata;
 use crate::onion_message::BlindedPath;
 use crate::util::ser::{SeekReadable, WithoutLength, Writeable, Writer};
 use crate::util::string::PrintableString;
@@ -117,6 +118,7 @@ impl RefundBuilder {
 			return Err(SemanticError::InvalidAmount);
 		}
 
+		let metadata = Metadata::Bytes(metadata);
 		let refund = RefundContents {
 			payer: PayerContents(metadata), description, absolute_expiry: None, issuer: None,
 			paths: None, chain: None, amount_msats, features: InvoiceRequestFeatures::empty(),
@@ -281,7 +283,7 @@ impl Refund {
 	///
 	/// [`payer_id`]: Self::payer_id
 	pub fn metadata(&self) -> &[u8] {
-		&self.contents.payer.0
+		&self.contents.payer.0.as_bytes().unwrap()[..]
 	}
 
 	/// A chain that the refund is valid for.
@@ -405,7 +407,7 @@ impl RefundContents {
 
 	pub(super) fn as_tlv_stream(&self) -> RefundTlvStreamRef {
 		let payer = PayerTlvStreamRef {
-			metadata: Some(&self.payer.0),
+			metadata: self.payer.0.as_bytes(),
 		};
 
 		let offer = OfferTlvStreamRef {
@@ -509,7 +511,7 @@ impl TryFrom<RefundTlvStream> for RefundContents {
 
 		let payer = match payer_metadata {
 			None => return Err(SemanticError::MissingPayerMetadata),
-			Some(metadata) => PayerContents(metadata),
+			Some(metadata) => PayerContents(Metadata::Bytes(metadata)),
 		};
 
 		if metadata.is_some() {

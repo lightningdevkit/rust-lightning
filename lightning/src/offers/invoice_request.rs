@@ -54,19 +54,22 @@
 
 use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::network::constants::Network;
-use bitcoin::secp256k1::{Message, PublicKey, Secp256k1, self};
+use bitcoin::secp256k1::{KeyPair, Message, PublicKey, Secp256k1, self};
 use bitcoin::secp256k1::schnorr::Signature;
-use core::convert::TryFrom;
+use core::convert::{Infallible, TryFrom};
+use core::ops::Deref;
+use crate::chain::keysinterface::EntropySource;
 use crate::io;
 use crate::ln::PaymentHash;
 use crate::ln::features::InvoiceRequestFeatures;
-use crate::ln::inbound_payment::ExpandedKey;
+use crate::ln::inbound_payment::{ExpandedKey, IV_LEN, Nonce};
 use crate::ln::msgs::DecodeError;
 use crate::offers::invoice::{BlindedPayInfo, InvoiceBuilder};
 use crate::offers::merkle::{SignError, SignatureTlvStream, SignatureTlvStreamRef, TlvStream, self};
 use crate::offers::offer::{Offer, OfferContents, OfferTlvStream, OfferTlvStreamRef};
 use crate::offers::parse::{ParseError, ParsedMessage, SemanticError};
 use crate::offers::payer::{PayerContents, PayerTlvStream, PayerTlvStreamRef};
+use crate::offers::signer::{Metadata, MetadataMaterial};
 use crate::onion_message::BlindedPath;
 use crate::util::ser::{HighZeroBytesDroppedBigSize, SeekReadable, WithoutLength, Writeable, Writer};
 use crate::util::string::PrintableString;
@@ -75,28 +78,83 @@ use crate::prelude::*;
 
 const SIGNATURE_TAG: &'static str = concat!("lightning", "invoice_request", "signature");
 
+const IV_BYTES: &[u8; IV_LEN] = b"LDK Invreq ~~~~~";
+
 /// Builds an [`InvoiceRequest`] from an [`Offer`] for the "offer to be paid" flow.
 ///
 /// See [module-level documentation] for usage.
 ///
 /// [module-level documentation]: self
-pub struct InvoiceRequestBuilder<'a> {
+pub struct InvoiceRequestBuilder<'a, 'b, P: PayerIdStrategy, T: secp256k1::Signing> {
 	offer: &'a Offer,
-	invoice_request: InvoiceRequestContents,
+	invoice_request: InvoiceRequestContentsWithoutPayerId,
+	payer_id: Option<PublicKey>,
+	payer_id_strategy: core::marker::PhantomData<P>,
+	secp_ctx: Option<&'b Secp256k1<T>>,
 }
 
-impl<'a> InvoiceRequestBuilder<'a> {
+/// Indicates how [`InvoiceRequest::payer_id`] will be set.
+pub trait PayerIdStrategy {}
+
+/// [`InvoiceRequest::payer_id`] will be explicitly set.
+pub struct ExplicitPayerId {}
+
+/// [`InvoiceRequest::payer_id`] will be derived.
+pub struct DerivedPayerId {}
+
+impl PayerIdStrategy for ExplicitPayerId {}
+impl PayerIdStrategy for DerivedPayerId {}
+
+impl<'a, 'b, T: secp256k1::Signing> InvoiceRequestBuilder<'a, 'b, ExplicitPayerId, T> {
 	pub(super) fn new(offer: &'a Offer, metadata: Vec<u8>, payer_id: PublicKey) -> Self {
 		Self {
 			offer,
-			invoice_request: InvoiceRequestContents {
-				inner: InvoiceRequestContentsWithoutPayerId {
-					payer: PayerContents(metadata), offer: offer.contents.clone(), chain: None,
-					amount_msats: None, features: InvoiceRequestFeatures::empty(), quantity: None,
-					payer_note: None,
-				},
-				payer_id,
-			},
+			invoice_request: Self::create_contents(offer, Metadata::Bytes(metadata)),
+			payer_id: Some(payer_id),
+			payer_id_strategy: core::marker::PhantomData,
+			secp_ctx: None,
+		}
+	}
+
+	pub(super) fn deriving_metadata<ES: Deref>(
+		offer: &'a Offer, payer_id: PublicKey, expanded_key: &ExpandedKey, entropy_source: ES
+	) -> Self where ES::Target: EntropySource {
+		let nonce = Nonce::from_entropy_source(entropy_source);
+		let derivation_material = MetadataMaterial::new(nonce, expanded_key, IV_BYTES);
+		let metadata = Metadata::Derived(derivation_material);
+		Self {
+			offer,
+			invoice_request: Self::create_contents(offer, metadata),
+			payer_id: Some(payer_id),
+			payer_id_strategy: core::marker::PhantomData,
+			secp_ctx: None,
+		}
+	}
+}
+
+impl<'a, 'b, T: secp256k1::Signing> InvoiceRequestBuilder<'a, 'b, DerivedPayerId, T> {
+	pub(super) fn deriving_payer_id<ES: Deref>(
+		offer: &'a Offer, expanded_key: &ExpandedKey, entropy_source: ES, secp_ctx: &'b Secp256k1<T>
+	) -> Self where ES::Target: EntropySource {
+		let nonce = Nonce::from_entropy_source(entropy_source);
+		let derivation_material = MetadataMaterial::new(nonce, expanded_key, IV_BYTES);
+		let metadata = Metadata::DerivedSigningPubkey(derivation_material);
+		Self {
+			offer,
+			invoice_request: Self::create_contents(offer, metadata),
+			payer_id: None,
+			payer_id_strategy: core::marker::PhantomData,
+			secp_ctx: Some(secp_ctx),
+		}
+	}
+}
+
+impl<'a, 'b, P: PayerIdStrategy, T: secp256k1::Signing> InvoiceRequestBuilder<'a, 'b, P, T> {
+	fn create_contents(offer: &Offer, metadata: Metadata) -> InvoiceRequestContentsWithoutPayerId {
+		let offer = offer.contents.clone();
+		InvoiceRequestContentsWithoutPayerId {
+			payer: PayerContents(metadata), offer, chain: None, amount_msats: None,
+			features: InvoiceRequestFeatures::empty(), quantity: None, payer_note: None,
 		}
 	}
 
@@ -111,7 +169,7 @@ impl<'a> InvoiceRequestBuilder<'a> {
 			return Err(SemanticError::UnsupportedChain);
 		}
 
-		self.invoice_request.inner.chain = Some(chain);
+		self.invoice_request.chain = Some(chain);
 		Ok(self)
 	}
 
@@ -122,10 +180,10 @@ impl<'a> InvoiceRequestBuilder<'a> {
 	///
 	/// [`quantity`]: Self::quantity
 	pub fn amount_msats(mut self, amount_msats: u64) -> Result<Self, SemanticError> {
-		self.invoice_request.inner.offer.check_amount_msats_for_quantity(
-			Some(amount_msats), self.invoice_request.inner.quantity
+		self.invoice_request.offer.check_amount_msats_for_quantity(
+			Some(amount_msats), self.invoice_request.quantity
 		)?;
-		self.invoice_request.inner.amount_msats = Some(amount_msats);
+		self.invoice_request.amount_msats = Some(amount_msats);
 		Ok(self)
 	}
 
@@ -134,8 +192,8 @@ impl<'a> InvoiceRequestBuilder<'a> {
 	///
 	/// Successive calls to this method will override the previous setting.
 	pub fn quantity(mut self, quantity: u64) -> Result<Self, SemanticError> {
-		self.invoice_request.inner.offer.check_quantity(Some(quantity))?;
-		self.invoice_request.inner.quantity = Some(quantity);
+		self.invoice_request.offer.check_quantity(Some(quantity))?;
+		self.invoice_request.quantity = Some(quantity);
 		Ok(self)
 	}
 
@@ -143,13 +201,14 @@ impl<'a> InvoiceRequestBuilder<'a> {
 	///
 	/// Successive calls to this method will override the previous setting.
 	pub fn payer_note(mut self, payer_note: String) -> Self {
-		self.invoice_request.inner.payer_note = Some(payer_note);
+		self.invoice_request.payer_note = Some(payer_note);
 		self
 	}
 
-	/// Builds an unsigned [`InvoiceRequest`] after checking for valid semantics. It can be signed
-	/// by [`UnsignedInvoiceRequest::sign`].
-	pub fn build(mut self) -> Result<UnsignedInvoiceRequest<'a>, SemanticError> {
+	fn build_with_checks(mut self) -> Result<
+		(UnsignedInvoiceRequest<'a>, Option<KeyPair>, Option<&'b Secp256k1<T>>),
+		SemanticError
+	> {
 		#[cfg(feature = "std")] {
 			if self.offer.is_expired() {
 				return Err(SemanticError::AlreadyExpired);
@@ -162,49 +221,114 @@ impl<'a> InvoiceRequestBuilder<'a> {
 		}
 
 		if chain == self.offer.implied_chain() {
-			self.invoice_request.inner.chain = None;
+			self.invoice_request.chain = None;
 		}
 
-		if self.offer.amount().is_none() && self.invoice_request.inner.amount_msats.is_none() {
+		if self.offer.amount().is_none() && self.invoice_request.amount_msats.is_none() {
 			return Err(SemanticError::MissingAmount);
 		}
 
-		self.invoice_request.inner.offer.check_quantity(self.invoice_request.inner.quantity)?;
-		self.invoice_request.inner.offer.check_amount_msats_for_quantity(
-			self.invoice_request.inner.amount_msats, self.invoice_request.inner.quantity
+		self.invoice_request.offer.check_quantity(self.invoice_request.quantity)?;
+		self.invoice_request.offer.check_amount_msats_for_quantity(
+			self.invoice_request.amount_msats, self.invoice_request.quantity
 		)?;
 
-		let InvoiceRequestBuilder { offer, invoice_request } = self;
-		Ok(UnsignedInvoiceRequest { offer, invoice_request })
+		Ok(self.build_without_checks())
+	}
+
+	fn build_without_checks(mut self) ->
+		(UnsignedInvoiceRequest<'a>, Option<KeyPair>, Option<&'b Secp256k1<T>>)
+	{
+		// Create the metadata for stateless verification of an Invoice.
+		let mut keys = None;
+		let secp_ctx = self.secp_ctx.clone();
+		if self.invoice_request.payer.0.has_derivation_material() {
+			let mut metadata = core::mem::take(&mut self.invoice_request.payer.0);
+
+			let mut tlv_stream = self.invoice_request.as_tlv_stream();
+			debug_assert!(tlv_stream.2.payer_id.is_none());
+			tlv_stream.0.metadata = None;
+			if !metadata.derives_keys() {
+				tlv_stream.2.payer_id = self.payer_id.as_ref();
+			}
+
+			let (derived_metadata, derived_keys) = metadata.derive_from(tlv_stream, self.secp_ctx);
+			metadata = derived_metadata;
+			keys = derived_keys;
+			if let Some(keys) = keys {
+				debug_assert!(self.payer_id.is_none());
+				self.payer_id = Some(keys.public_key());
+			}
+
+			self.invoice_request.payer.0 = metadata;
+		}
+
+		debug_assert!(self.invoice_request.payer.0.as_bytes().is_some());
+		debug_assert!(self.payer_id.is_some());
+		let payer_id = self.payer_id.unwrap();
+
+		let unsigned_invoice = UnsignedInvoiceRequest {
+			offer: self.offer,
+			invoice_request: InvoiceRequestContents {
+				inner: self.invoice_request,
+				payer_id,
+			},
+		};
+
+		(unsigned_invoice, keys, secp_ctx)
+	}
+}
+
+impl<'a, 'b, T: secp256k1::Signing> InvoiceRequestBuilder<'a, 'b, ExplicitPayerId, T> {
+	/// Builds an unsigned [`InvoiceRequest`] after checking for valid semantics. It can be signed
+	/// by [`UnsignedInvoiceRequest::sign`].
+	pub fn build(self) -> Result<UnsignedInvoiceRequest<'a>, SemanticError> {
+		let (unsigned_invoice_request, keys, _) = self.build_with_checks()?;
+		debug_assert!(keys.is_none());
+		Ok(unsigned_invoice_request)
+	}
+}
+
+impl<'a, 'b, T: secp256k1::Signing> InvoiceRequestBuilder<'a, 'b, DerivedPayerId, T> {
+	/// Builds a signed [`InvoiceRequest`] after checking for valid semantics.
+	pub fn build_and_sign(self) -> Result<InvoiceRequest, SemanticError> {
+		let (unsigned_invoice_request, keys, secp_ctx) = self.build_with_checks()?;
+		debug_assert!(keys.is_some());
+
+		let secp_ctx = secp_ctx.unwrap();
+		let keys = keys.unwrap();
+		let invoice_request = unsigned_invoice_request
+			.sign::<_, Infallible>(|digest| Ok(secp_ctx.sign_schnorr_no_aux_rand(digest, &keys)))
+			.unwrap();
+		Ok(invoice_request)
 	}
 }
 
 #[cfg(test)]
-impl<'a> InvoiceRequestBuilder<'a> {
+impl<'a, 'b, P: PayerIdStrategy, T: secp256k1::Signing> InvoiceRequestBuilder<'a, 'b, P, T> {
 	fn chain_unchecked(mut self, network: Network) -> Self {
 		let chain = ChainHash::using_genesis_block(network);
-		self.invoice_request.inner.chain = Some(chain);
+		self.invoice_request.chain = Some(chain);
 		self
 	}
 
 	fn amount_msats_unchecked(mut self, amount_msats: u64) -> Self {
-		self.invoice_request.inner.amount_msats = Some(amount_msats);
+		self.invoice_request.amount_msats = Some(amount_msats);
 		self
 	}
 
 	fn features_unchecked(mut self, features: InvoiceRequestFeatures) -> Self {
-		self.invoice_request.inner.features = features;
+		self.invoice_request.features = features;
 		self
 	}
 
 	fn quantity_unchecked(mut self, quantity: u64) -> Self {
-		self.invoice_request.inner.quantity = Some(quantity);
+		self.invoice_request.quantity = Some(quantity);
 		self
 	}
 
 	pub(super) fn build_unchecked(self) -> UnsignedInvoiceRequest<'a> {
-		let InvoiceRequestBuilder { offer, invoice_request } = self;
-		UnsignedInvoiceRequest { offer, invoice_request }
+		self.build_without_checks().0
 	}
 }
 
@@ -290,7 +414,7 @@ impl InvoiceRequest {
 	///
 	/// [`payer_id`]: Self::payer_id
 	pub fn metadata(&self) -> &[u8] {
-		&self.contents.inner.payer.0[..]
+		self.contents.metadata()
 	}
 
 	/// A chain from [`Offer::chains`] that the offer is valid for.
@@ -402,6 +526,10 @@ impl InvoiceRequest {
 }
 
 impl InvoiceRequestContents {
+	pub fn metadata(&self) -> &[u8] {
+		self.inner.metadata()
+	}
+
 	pub(super) fn chain(&self) -> ChainHash {
 		self.inner.chain()
 	}
@@ -414,13 +542,17 @@ impl InvoiceRequestContents {
 }
 
 impl InvoiceRequestContentsWithoutPayerId {
+	pub(super) fn metadata(&self) -> &[u8] {
+		self.payer.0.as_bytes().map(|bytes| bytes.as_slice()).unwrap_or(&[])
+	}
+
 	pub(super) fn chain(&self) -> ChainHash {
 		self.chain.unwrap_or_else(|| self.offer.implied_chain())
 	}
 
 	pub(super) fn as_tlv_stream(&self) -> PartialInvoiceRequestTlvStreamRef {
 		let payer = PayerTlvStreamRef {
-			metadata: Some(&self.payer.0),
+			metadata: self.payer.0.as_bytes(),
 		};
 
 		let offer = self.offer.as_tlv_stream();
@@ -530,7 +662,7 @@ impl TryFrom<PartialInvoiceRequestTlvStream> for InvoiceRequestContents {
 
 		let payer = match metadata {
 			None => return Err(SemanticError::MissingPayerMetadata),
-			Some(metadata) => PayerContents(metadata),
+			Some(metadata) => PayerContents(Metadata::Bytes(metadata)),
 		};
 		let offer = OfferContents::try_from(offer_tlv_stream)?;
 
@@ -1038,7 +1170,7 @@ mod tests {
 		let invoice_request = OfferBuilder::new("foo".into(), recipient_pubkey())
 			.amount_msats(1000)
 			.build().unwrap()
-			.request_invoice(vec![42; 32], payer_pubkey()).unwrap()
+			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
 			.build().unwrap()
 			.sign(payer_sign).unwrap();
 

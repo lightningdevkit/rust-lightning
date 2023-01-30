@@ -9,6 +9,7 @@
 
 //! Data structures and encoding for `invoice_request_metadata` records.
 
+use crate::offers::signer::Metadata;
 use crate::util::ser::WithoutLength;
 
 use crate::prelude::*;
@@ -19,7 +20,7 @@ use crate::prelude::*;
 /// [`InvoiceRequest::payer_id`]: crate::offers::invoice_request::InvoiceRequest::payer_id
 #[derive(Clone, Debug)]
 #[cfg_attr(test, derive(PartialEq))]
-pub(super) struct PayerContents(pub Vec<u8>);
+pub(super) struct PayerContents(pub Metadata);
 
 tlv_stream!(PayerTlvStream, PayerTlvStreamRef, 0..1, {
 	(0, metadata: (Vec<u8>, WithoutLength)),

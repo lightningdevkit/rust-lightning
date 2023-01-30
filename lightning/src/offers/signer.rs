@@ -96,6 +96,12 @@ impl Metadata {
 	}
 }
 
+impl Default for Metadata {
+	fn default() -> Self {
+		Metadata::Bytes(vec![])
+	}
+}
+
 impl fmt::Debug for Metadata {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
 		match self {
