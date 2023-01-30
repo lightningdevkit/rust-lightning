@@ -97,7 +97,7 @@ use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::hash_types::{WPubkeyHash, WScriptHash};
 use bitcoin::hashes::Hash;
 use bitcoin::network::constants::Network;
-use bitcoin::secp256k1::{Message, PublicKey};
+use bitcoin::secp256k1::{Message, PublicKey, Secp256k1, self};
 use bitcoin::secp256k1::schnorr::Signature;
 use bitcoin::util::address::{Address, Payload, WitnessVersion};
 use bitcoin::util::schnorr::TweakedPublicKey;
@@ -106,9 +106,10 @@ use core::time::Duration;
 use crate::io;
 use crate::ln::PaymentHash;
 use crate::ln::features::{BlindedHopFeatures, Bolt12InvoiceFeatures};
+use crate::ln::inbound_payment::ExpandedKey;
 use crate::ln::msgs::DecodeError;
 use crate::offers::invoice_request::{InvoiceRequest, InvoiceRequestContents, InvoiceRequestTlvStream, InvoiceRequestTlvStreamRef};
-use crate::offers::merkle::{SignError, SignatureTlvStream, SignatureTlvStreamRef, WithoutSignatures, self};
+use crate::offers::merkle::{SignError, SignatureTlvStream, SignatureTlvStreamRef, TlvStream, WithoutSignatures, self};
 use crate::offers::offer::{Amount, OfferTlvStream, OfferTlvStreamRef};
 use crate::offers::parse::{ParseError, ParsedMessage, SemanticError};
 use crate::offers::payer::{PayerTlvStream, PayerTlvStreamRef};
@@ -123,7 +124,7 @@ use std::time::SystemTime;
 
 const DEFAULT_RELATIVE_EXPIRY: Duration = Duration::from_secs(7200);
 
-const SIGNATURE_TAG: &'static str = concat!("lightning", "invoice", "signature");
+pub(super) const SIGNATURE_TAG: &'static str = concat!("lightning", "invoice", "signature");
 
 /// Builds an [`Invoice`] from either:
 /// - an [`InvoiceRequest`] for the "offer to be paid" flow or
@@ -476,8 +477,15 @@ impl Invoice {
 		merkle::message_digest(SIGNATURE_TAG, &self.bytes).as_ref().clone()
 	}
 
+	/// Verifies that the invoice was for a request or refund created using the given key.
+	pub fn verify<T: secp256k1::Signing>(
+		&self, key: &ExpandedKey, secp_ctx: &Secp256k1<T>
+	) -> bool {
+		self.contents.verify(TlvStream::new(&self.bytes), key, secp_ctx)
+	}
+
 	#[cfg(test)]
-	fn as_tlv_stream(&self) -> FullInvoiceTlvStreamRef {
+	pub(super) fn as_tlv_stream(&self) -> FullInvoiceTlvStreamRef {
 		let (payer_tlv_stream, offer_tlv_stream, invoice_request_tlv_stream, invoice_tlv_stream) =
 			self.contents.as_tlv_stream();
 		let signature_tlv_stream = SignatureTlvStreamRef {
@@ -517,6 +525,17 @@ impl InvoiceContents {
 		match self {
 			InvoiceContents::ForOffer { fields, .. } => fields,
 			InvoiceContents::ForRefund { fields, .. } => fields,
+		}
+	}
+
+	fn verify<T: secp256k1::Signing>(
+		&self, tlv_stream: TlvStream<'_>, key: &ExpandedKey, secp_ctx: &Secp256k1<T>
+	) -> bool {
+		match self {
+			InvoiceContents::ForOffer { invoice_request, .. } => {
+				invoice_request.verify(tlv_stream, key, secp_ctx)
+			},
+			_ => todo!(),
 		}
 	}
 

@@ -143,6 +143,7 @@ fn tagged_branch_hash_from_engine(
 
 /// [`Iterator`] over a sequence of bytes yielding [`TlvRecord`]s. The input is assumed to be a
 /// well-formed TLV stream.
+#[derive(Clone)]
 pub(super) struct TlvStream<'a> {
 	data: io::Cursor<&'a [u8]>,
 }

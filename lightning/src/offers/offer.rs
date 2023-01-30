@@ -443,8 +443,8 @@ impl Offer {
 	/// - derives the [`InvoiceRequest::payer_id`] such that a different key can be used for each
 	///   request, and
 	/// - sets the [`InvoiceRequest::metadata`] when [`InvoiceRequestBuilder::build`] is called such
-	///   that it can be used to determine if the invoice was requested using a base [`ExpandedKey`]
-	///   from which the payer id was derived.
+	///   that it can be used by [`Invoice::verify`] to determine if the invoice was requested using
+	///   a base [`ExpandedKey`] from which the payer id was derived.
 	///
 	/// Useful to protect the sender's privacy.
 	///
@@ -722,7 +722,7 @@ impl Quantity {
 }
 
 /// Valid type range for offer TLV records.
-const OFFER_TYPES: core::ops::Range<u64> = 1..80;
+pub(super) const OFFER_TYPES: core::ops::Range<u64> = 1..80;
 
 /// TLV record type for [`Offer::metadata`].
 const OFFER_METADATA_TYPE: u64 = 4;

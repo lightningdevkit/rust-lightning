@@ -22,6 +22,12 @@ use crate::prelude::*;
 #[cfg_attr(test, derive(PartialEq))]
 pub(super) struct PayerContents(pub Metadata);
 
+/// TLV record type for [`InvoiceRequest::metadata`] and [`Refund::metadata`].
+///
+/// [`InvoiceRequest::metadata`]: crate::offers::invoice_request::InvoiceRequest::metadata
+/// [`Refund::metadata`]: crate::offers::refund::Refund::metadata
+pub(super) const PAYER_METADATA_TYPE: u64 = 0;
+
 tlv_stream!(PayerTlvStream, PayerTlvStreamRef, 0..1, {
-	(0, metadata: (Vec<u8>, WithoutLength)),
+	(PAYER_METADATA_TYPE, metadata: (Vec<u8>, WithoutLength)),
 });
