@@ -176,6 +176,9 @@ pub trait Confirm {
 	/// Returns transactions that must be monitored for reorganization out of the chain along
 	/// with the hash of the block as part of which it had been previously confirmed.
 	///
+	/// Note that the returned `Option<BlockHash>` might be `None` for channels created with LDK
+	/// 0.0.112 and prior, in which case you need to manually track previous confirmations.
+	///
 	/// Will include any transactions passed to [`transactions_confirmed`] that have insufficient
 	/// confirmations to be safe from a chain reorganization. Will not include any transactions
 	/// passed to [`transaction_unconfirmed`], unless later reconfirmed.
