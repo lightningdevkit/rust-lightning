@@ -322,12 +322,30 @@ impl InvoiceRequest {
 		self.signature
 	}
 
+	/// Creates an [`Invoice`] for the request with the given required fields and using the
+	/// [`Duration`] since [`std::time::SystemTime::UNIX_EPOCH`] as the creation time.
+	///
+	/// See [`InvoiceRequest::respond_with_no_std`] for further details where the aforementioned
+	/// creation time is used for the `created_at` parameter.
+	///
+	/// [`Invoice`]: crate::offers::invoice::Invoice
+	/// [`Duration`]: core::time::Duration
+	#[cfg(feature = "std")]
+	pub fn respond_with(
+		&self, payment_paths: Vec<(BlindedPath, BlindedPayInfo)>, payment_hash: PaymentHash
+	) -> Result<InvoiceBuilder, SemanticError> {
+		let created_at = std::time::SystemTime::now()
+			.duration_since(std::time::SystemTime::UNIX_EPOCH)
+			.expect("SystemTime::now() should come after SystemTime::UNIX_EPOCH");
+
+		self.respond_with_no_std(payment_paths, payment_hash, created_at)
+	}
+
 	/// Creates an [`Invoice`] for the request with the given required fields.
 	///
 	/// Unless [`InvoiceBuilder::relative_expiry`] is set, the invoice will expire two hours after
-	/// calling this method in `std` builds. For `no-std` builds, a final [`Duration`] parameter
-	/// must be given, which is used to set [`Invoice::created_at`] since [`std::time::SystemTime`]
-	/// is not available.
+	/// `created_at`, which is used to set [`Invoice::created_at`]. Useful for `no-std` builds where
+	/// [`std::time::SystemTime`] is not available.
 	///
 	/// The caller is expected to remember the preimage of `payment_hash` in order to claim a payment
 	/// for the invoice.
@@ -339,22 +357,15 @@ impl InvoiceRequest {
 	///
 	/// Errors if the request contains unknown required features.
 	///
-	/// [`Duration`]: core::time::Duration
 	/// [`Invoice`]: crate::offers::invoice::Invoice
 	/// [`Invoice::created_at`]: crate::offers::invoice::Invoice::created_at
-	pub fn respond_with(
+	pub fn respond_with_no_std(
 		&self, payment_paths: Vec<(BlindedPath, BlindedPayInfo)>, payment_hash: PaymentHash,
-		#[cfg(any(test, not(feature = "std")))]
 		created_at: core::time::Duration
 	) -> Result<InvoiceBuilder, SemanticError> {
 		if self.features().requires_unknown_bits() {
 			return Err(SemanticError::UnknownRequiredFeatures);
 		}
-
-		#[cfg(all(not(test), feature = "std"))]
-		let created_at = std::time::SystemTime::now()
-			.duration_since(std::time::SystemTime::UNIX_EPOCH)
-			.expect("SystemTime::now() should come after SystemTime::UNIX_EPOCH");
 
 		InvoiceBuilder::for_offer(self, payment_paths, created_at, payment_hash)
 	}
