@@ -45,7 +45,12 @@
 //!
 //! // Invoice for the "offer to be paid" flow.
 //! InvoiceRequest::try_from(bytes)?
-//!     .respond_with(payment_paths, payment_hash)?
+#![cfg_attr(feature = "std", doc = "
+    .respond_with(payment_paths, payment_hash)?
+")]
+#![cfg_attr(not(feature = "std"), doc = "
+    .respond_with(payment_paths, payment_hash, core::time::Duration::from_secs(0))?
+")]
 //!     .relative_expiry(3600)
 //!     .allow_mpp()
 //!     .fallback_v0_p2wpkh(&wpubkey_hash)
@@ -69,7 +74,12 @@
 //! // Invoice for the "offer for money" flow.
 //! "lnr1qcp4256ypq"
 //!     .parse::<Refund>()?
-//!     .respond_with(payment_paths, payment_hash, pubkey)?
+#![cfg_attr(feature = "std", doc = "
+    .respond_with(payment_paths, payment_hash, pubkey)?
+")]
+#![cfg_attr(not(feature = "std"), doc = "
+    .respond_with(payment_paths, payment_hash, pubkey, core::time::Duration::from_secs(0))?
+")]
 //!     .relative_expiry(3600)
 //!     .allow_mpp()
 //!     .fallback_v0_p2wpkh(&wpubkey_hash)
