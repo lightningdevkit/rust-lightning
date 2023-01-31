@@ -84,6 +84,11 @@ impl fmt::Debug for NodeId {
 		write!(f, "NodeId({})", log_bytes!(self.0))
 	}
 }
+impl fmt::Display for NodeId {
+	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+		write!(f, "{}", log_bytes!(self.0))
+	}
+}
 
 impl core::hash::Hash for NodeId {
 	fn hash<H: core::hash::Hasher>(&self, hasher: &mut H) {
