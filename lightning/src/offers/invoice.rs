@@ -1034,6 +1034,42 @@ mod tests {
 
 	#[cfg(feature = "std")]
 	#[test]
+	fn builds_invoice_from_offer_with_expiration() {
+		let future_expiry = Duration::from_secs(u64::max_value());
+		let past_expiry = Duration::from_secs(0);
+
+		if let Err(e) = OfferBuilder::new("foo".into(), recipient_pubkey())
+			.amount_msats(1000)
+			.absolute_expiry(future_expiry)
+			.build().unwrap()
+			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.build().unwrap()
+			.sign(payer_sign).unwrap()
+			.respond_with(payment_paths(), payment_hash())
+			.unwrap()
+			.build()
+		{
+			panic!("error building invoice: {:?}", e);
+		}
+
+		match OfferBuilder::new("foo".into(), recipient_pubkey())
+			.amount_msats(1000)
+			.absolute_expiry(past_expiry)
+			.build().unwrap()
+			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.build_unchecked()
+			.sign(payer_sign).unwrap()
+			.respond_with(payment_paths(), payment_hash())
+			.unwrap()
+			.build()
+		{
+			Ok(_) => panic!("expected error"),
+			Err(e) => assert_eq!(e, SemanticError::AlreadyExpired),
+		}
+	}
+
+	#[cfg(feature = "std")]
+	#[test]
 	fn builds_invoice_from_refund_with_expiration() {
 		let future_expiry = Duration::from_secs(u64::max_value());
 		let past_expiry = Duration::from_secs(0);
