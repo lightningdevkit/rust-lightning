@@ -40,10 +40,7 @@ use core::time::Duration;
 /// `invoice_expiry_delta_secs` describes the number of seconds that the invoice is valid for
 /// in excess of the current time.
 /// 
-/// 'duration_since_epoch' is the current time since epoch in seconds.
-/// 
-/// ['std::time::SystemTime'] has been removed to allow this function to be used in a 'no_std' environment, 
-/// where [`std::time::SystemTime`] is not available and the current time is supplied by the caller.
+/// `duration_since_epoch` is the current time since epoch in seconds.
 ///
 /// You can specify a custom `min_final_cltv_expiry_delta`, or let LDK default it to
 /// [`MIN_FINAL_CLTV_EXPIRY_DELTA`]. The provided expiry must be at least [`MIN_FINAL_CLTV_EXPIRY_DELTA`] - 3.
@@ -60,6 +57,9 @@ use core::time::Duration;
 /// [`ChannelManager::create_inbound_payment_for_hash`]: lightning::ln::channelmanager::ChannelManager::create_inbound_payment_for_hash
 /// [`PhantomRouteHints::channels`]: lightning::ln::channelmanager::PhantomRouteHints::channels
 /// [`MIN_FINAL_CLTV_EXPIRY_DETLA`]: lightning::ln::channelmanager::MIN_FINAL_CLTV_EXPIRY_DELTA
+/// 
+/// This can be used in a `no_std` environment, where [`std::time::SystemTime`] is not
+/// available and the current time is supplied by the caller.
 pub fn create_phantom_invoice<ES: Deref, NS: Deref, L: Deref>(
 	amt_msat: Option<u64>, payment_hash: Option<PaymentHash>, description: String,
 	invoice_expiry_delta_secs: u32, phantom_route_hints: Vec<PhantomRouteHints>, entropy_source: ES,
@@ -100,10 +100,7 @@ where
 /// `invoice_expiry_delta_secs` describes the number of seconds that the invoice is valid for
 /// in excess of the current time.
 /// 
-/// 'duration_since_epoch' is the current time since epoch in seconds.
-/// 
-/// ['std::time::SystemTime'] has been removed to allow this function to be used in a 'no_std' environment, 
-/// where [`std::time::SystemTime`] is not available and the current time is supplied by the caller.
+/// `duration_since_epoch` is the current time since epoch in seconds.
 ///
 /// Note that the provided `keys_manager`'s `NodeSigner` implementation must support phantom
 /// invoices in its `sign_invoice` implementation ([`PhantomKeysManager`] satisfies this
@@ -114,6 +111,9 @@ where
 /// [`ChannelManager::create_inbound_payment`]: lightning::ln::channelmanager::ChannelManager::create_inbound_payment
 /// [`ChannelManager::create_inbound_payment_for_hash`]: lightning::ln::channelmanager::ChannelManager::create_inbound_payment_for_hash
 /// [`PhantomRouteHints::channels`]: lightning::ln::channelmanager::PhantomRouteHints::channels
+/// 
+/// This can be used in a `no_std` environment, where [`std::time::SystemTime`] is not
+/// available and the current time is supplied by the caller.
 pub fn create_phantom_invoice_with_description_hash<ES: Deref, NS: Deref, L: Deref>(
 	amt_msat: Option<u64>, payment_hash: Option<PaymentHash>, invoice_expiry_delta_secs: u32,
 	description_hash: Sha256, phantom_route_hints: Vec<PhantomRouteHints>, entropy_source: ES,
