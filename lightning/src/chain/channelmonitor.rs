@@ -1236,6 +1236,11 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 		self.inner.lock().unwrap().get_funding_txo().clone()
 	}
 
+	/// Gets whether we've seen a confirmed transaction spending the funding output.
+	pub(crate) fn detected_funding_spend(&self) -> bool {
+		self.inner.lock().unwrap().detected_funding_spend()
+	}
+
 	/// Gets a list of txids, with their output scripts (in the order they appear in the
 	/// transaction), which we must learn about spends of via block_connected().
 	pub fn get_outputs_to_watch(&self) -> Vec<(Txid, Vec<(u32, Script)>)> {
@@ -2275,12 +2280,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						// There's no need to broadcast our commitment transaction if we've seen one
 						// confirmed (even with 1 confirmation) as it'll be rejected as
 						// duplicate/conflicting.
-						let detected_funding_spend = self.funding_spend_confirmed.is_some() ||
-							self.onchain_events_awaiting_threshold_conf.iter().find(|event| match event.event {
-								OnchainEvent::FundingSpendConfirmation { .. } => true,
-								_ => false,
-							}).is_some();
-						if detected_funding_spend {
+						if self.detected_funding_spend() {
 							continue;
 						}
 						self.broadcast_latest_holder_commitment_txn(broadcaster, logger);
@@ -2336,6 +2336,15 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 
 	pub fn get_funding_txo(&self) -> &(OutPoint, Script) {
 		&self.funding_info
+	}
+
+	pub fn detected_funding_spend(&self) -> bool {
+			self.funding_spend_confirmed.is_some() ||
+			self.onchain_events_awaiting_threshold_conf
+				.iter().find(|event| match event.event {
+					OnchainEvent::FundingSpendConfirmation { .. } => true,
+					_ => false,
+			}).is_some()
 	}
 
 	pub fn get_outputs_to_watch(&self) -> &HashMap<Txid, Vec<(u32, Script)>> {
