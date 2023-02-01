@@ -1005,6 +1005,9 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 	/// [`send_data`] call on this descriptor has `resume_read` set (preventing DoS issues in the
 	/// send buffer).
 	///
+	/// In order to avoid processing too many messages at once per peer, `data` should be on the
+	/// order of 4KiB.
+	///
 	/// [`send_data`]: SocketDescriptor::send_data
 	/// [`process_events`]: PeerManager::process_events
 	pub fn read_event(&self, peer_descriptor: &mut Descriptor, data: &[u8]) -> Result<bool, PeerHandleError> {

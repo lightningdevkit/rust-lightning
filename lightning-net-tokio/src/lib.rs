@@ -176,8 +176,9 @@ impl Connection {
 		let (event_waker, event_receiver) = mpsc::channel(1);
 		tokio::spawn(Self::poll_event_process(peer_manager.clone(), event_receiver));
 
-		// 8KB is nice and big but also should never cause any issues with stack overflowing.
-		let mut buf = [0; 8192];
+		// 4KiB is nice and big without handling too many messages all at once, giving other peers
+		// a chance to do some work.
+		let mut buf = [0; 4096];
 
 		let mut our_descriptor = SocketDescriptor::new(us.clone());
 		// An enum describing why we did/are disconnecting:
