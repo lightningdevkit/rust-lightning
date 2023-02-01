@@ -460,20 +460,50 @@ macro_rules! _decode_tlv_stream_range {
 	} }
 }
 
+/// Implements [`Readable`]/[`Writeable`] for a message struct that may include non-TLV and
+/// TLV-encoded parts.
+///
+/// This is useful to implement a [`CustomMessageReader`].
+///
+/// Currently `$fieldty` may only be `option`, i.e., `$tlvfield` is optional field.
+///
+/// For example,
+/// ```
+/// # use lightning::impl_writeable_msg;
+/// struct MyCustomMessage {
+/// 	pub field_1: u32,
+/// 	pub field_2: bool,
+/// 	pub field_3: String,
+/// 	pub tlv_optional_integer: Option<u32>,
+/// }
+///
+/// impl_writeable_msg!(MyCustomMessage, {
+/// 	field_1,
+/// 	field_2,
+/// 	field_3
+/// }, {
+/// 	(1, tlv_optional_integer, option),
+/// });
+/// ```
+///
+/// [`Readable`]: crate::util::ser::Readable
+/// [`Writeable`]: crate::util::ser::Writeable
+/// [`CustomMessageReader`]: crate::ln::wire::CustomMessageReader
+#[macro_export]
 macro_rules! impl_writeable_msg {
 	($st:ident, {$($field:ident),* $(,)*}, {$(($type: expr, $tlvfield: ident, $fieldty: tt)),* $(,)*}) => {
 		impl $crate::util::ser::Writeable for $st {
 			fn write<W: $crate::util::ser::Writer>(&self, w: &mut W) -> Result<(), $crate::io::Error> {
 				$( self.$field.write(w)?; )*
-				encode_tlv_stream!(w, {$(($type, self.$tlvfield, $fieldty)),*});
+				$crate::encode_tlv_stream!(w, {$(($type, self.$tlvfield, $fieldty)),*});
 				Ok(())
 			}
 		}
 		impl $crate::util::ser::Readable for $st {
 			fn read<R: $crate::io::Read>(r: &mut R) -> Result<Self, $crate::ln::msgs::DecodeError> {
 				$(let $field = $crate::util::ser::Readable::read(r)?;)*
-				$(_init_tlv_field_var!($tlvfield, $fieldty);)*
-				decode_tlv_stream!(r, {$(($type, $tlvfield, $fieldty)),*});
+				$($crate::_init_tlv_field_var!($tlvfield, $fieldty);)*
+				$crate::decode_tlv_stream!(r, {$(($type, $tlvfield, $fieldty)),*});
 				Ok(Self {
 					$($field),*,
 					$($tlvfield),*
@@ -645,10 +675,10 @@ macro_rules! _init_and_read_tlv_fields {
 }
 
 /// Implements [`Readable`]/[`Writeable`] for a struct storing it as a set of TLVs
-/// If `$fieldty` is `required`, then `$field` is a required field that is not an Option nor a Vec.
+/// If `$fieldty` is `required`, then `$field` is a required field that is not an [`Option`] nor a [`Vec`].
 /// If `$fieldty` is `(default_value, $default)`, then `$field` will be set to `$default` if not present.
 /// If `$fieldty` is `option`, then `$field` is optional field.
-/// If `$fieldty` is `vec_type`, then `$field` is a Vec, which needs to have its individual elements serialized.
+/// If `$fieldty` is `vec_type`, then `$field` is a [`Vec`], which needs to have its individual elements serialized.
 ///
 /// For example,
 /// ```
