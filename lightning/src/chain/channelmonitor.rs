@@ -1216,6 +1216,8 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 	{
 		let mut locked_inner = self.inner.lock().unwrap();
 		if !locked_inner.detected_funding_spend() {
+			log_info!(logger, "Broadcasting latest holder commitment transaction for channel {}",
+				log_bytes!(locked_inner.get_funding_txo().0.to_channel_id()));
 			locked_inner.broadcast_latest_holder_commitment_txn(broadcaster, logger);
 		}
 	}

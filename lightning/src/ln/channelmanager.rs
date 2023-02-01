@@ -7209,7 +7209,6 @@ where
 
 		for (funding_txo, monitor) in args.channel_monitors.iter_mut() {
 			if !funding_txo_set.contains(funding_txo) {
-				log_info!(args.logger, "Broadcasting latest holder commitment transaction for closed channel {}", log_bytes!(funding_txo.to_channel_id()));
 				// There's no need to broadcast our commitment transaction if
 				// we've seen one confirmed (even with 1 confirmation) as it'll
 				// be rejected as duplicate/conflicting.
