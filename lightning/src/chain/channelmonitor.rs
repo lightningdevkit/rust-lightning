@@ -1206,6 +1206,20 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 		self.inner.lock().unwrap().broadcast_latest_holder_commitment_txn(broadcaster, logger);
 	}
 
+	pub(crate) fn broadcast_latest_holder_commitment_txn_if_unspent<B: Deref, L: Deref>(
+		&self,
+		broadcaster: &B,
+		logger: &L,
+	) where
+		B::Target: BroadcasterInterface,
+		L::Target: Logger,
+	{
+		let mut locked_inner = self.inner.lock().unwrap();
+		if !locked_inner.detected_funding_spend() {
+			locked_inner.broadcast_latest_holder_commitment_txn(broadcaster, logger);
+		}
+	}
+
 	/// Updates a ChannelMonitor on the basis of some new information provided by the Channel
 	/// itself.
 	///
@@ -1234,11 +1248,6 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 	/// Gets the funding transaction outpoint of the channel this ChannelMonitor is monitoring for.
 	pub fn get_funding_txo(&self) -> (OutPoint, Script) {
 		self.inner.lock().unwrap().get_funding_txo().clone()
-	}
-
-	/// Gets whether we've seen a confirmed transaction spending the funding output.
-	pub(crate) fn detected_funding_spend(&self) -> bool {
-		self.inner.lock().unwrap().detected_funding_spend()
 	}
 
 	/// Gets a list of txids, with their output scripts (in the order they appear in the

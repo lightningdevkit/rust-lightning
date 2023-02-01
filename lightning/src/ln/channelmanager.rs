@@ -7208,12 +7208,12 @@ where
 		}
 
 		for (funding_txo, monitor) in args.channel_monitors.iter_mut() {
-			// There's no need to broadcast our commitment transaction if we've seen one
-			// confirmed (even with 1 confirmation) as it'll be rejected as
-			// duplicate/conflicting.
-			if !funding_txo_set.contains(funding_txo) && !monitor.detected_funding_spend() {
+			if !funding_txo_set.contains(funding_txo) {
 				log_info!(args.logger, "Broadcasting latest holder commitment transaction for closed channel {}", log_bytes!(funding_txo.to_channel_id()));
-				monitor.broadcast_latest_holder_commitment_txn(&args.tx_broadcaster, &args.logger);
+				// There's no need to broadcast our commitment transaction if
+				// we've seen one confirmed (even with 1 confirmation) as it'll
+				// be rejected as duplicate/conflicting.
+				monitor.broadcast_latest_holder_commitment_txn_if_unspent(&args.tx_broadcaster, &args.logger);
 			}
 		}
 
