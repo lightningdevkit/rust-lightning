@@ -295,7 +295,7 @@ fn check_api_err(api_err: APIError) {
 			// all others. If you hit this panic, the list of acceptable errors
 			// is probably just stale and you should add new messages here.
 			match err.as_str() {
-				"Peer for first hop currently disconnected/pending monitor update!" => {},
+				"Peer for first hop currently disconnected" => {},
 				_ if err.starts_with("Cannot push more than their max accepted HTLCs ") => {},
 				_ if err.starts_with("Cannot send value that would put us over the max HTLC value in flight our peer will accept ") => {},
 				_ if err.starts_with("Cannot send value that would put our balance under counterparty-announced channel reserve value") => {},

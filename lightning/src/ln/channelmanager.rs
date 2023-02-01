@@ -2390,10 +2390,10 @@ where
 			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 			let peer_state = &mut *peer_state_lock;
 			if let hash_map::Entry::Occupied(mut chan) = peer_state.channel_by_id.entry(id) {
+				if !chan.get().is_live() {
+					return Err(APIError::ChannelUnavailable{err: "Peer for first hop currently disconnected".to_owned()});
+				}
 				match {
-					if !chan.get().is_live() {
-						return Err(APIError::ChannelUnavailable{err: "Peer for first hop currently disconnected/pending monitor update!".to_owned()});
-					}
 					break_chan_entry!(self, chan.get_mut().send_htlc_and_commit(
 						htlc_msat, payment_hash.clone(), htlc_cltv, HTLCSource::OutboundRoute {
 							path: path.clone(),
