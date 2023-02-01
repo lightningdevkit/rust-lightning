@@ -2339,12 +2339,12 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	}
 
 	pub fn detected_funding_spend(&self) -> bool {
-			self.funding_spend_confirmed.is_some() ||
-			self.onchain_events_awaiting_threshold_conf
-				.iter().find(|event| match event.event {
-					OnchainEvent::FundingSpendConfirmation { .. } => true,
-					_ => false,
-			}).is_some()
+		self.funding_spend_confirmed.is_some() ||
+		self.onchain_events_awaiting_threshold_conf
+			.iter().find(|event| match event.event {
+				OnchainEvent::FundingSpendConfirmation { .. } => true,
+				_ => false,
+		}).is_some()
 	}
 
 	pub fn get_outputs_to_watch(&self) -> &HashMap<Txid, Vec<(u32, Script)>> {
