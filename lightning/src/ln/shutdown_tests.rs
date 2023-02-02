@@ -93,9 +93,9 @@ fn updates_shutdown_wait() {
 
 	let (_, payment_hash, payment_secret) = get_payment_preimage_hash!(nodes[0]);
 
-	let payment_params_1 = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id()).with_features(nodes[1].node.invoice_features());
+	let payment_params_1 = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id(), TEST_FINAL_CLTV).with_features(nodes[1].node.invoice_features());
 	let route_1 = get_route(&nodes[0].node.get_our_node_id(), &payment_params_1, &nodes[0].network_graph.read_only(), None, 100000, TEST_FINAL_CLTV, &logger, &scorer, &random_seed_bytes).unwrap();
-	let payment_params_2 = PaymentParameters::from_node_id(nodes[0].node.get_our_node_id()).with_features(nodes[0].node.invoice_features());
+	let payment_params_2 = PaymentParameters::from_node_id(nodes[0].node.get_our_node_id(), TEST_FINAL_CLTV).with_features(nodes[0].node.invoice_features());
 	let route_2 = get_route(&nodes[1].node.get_our_node_id(), &payment_params_2, &nodes[1].network_graph.read_only(), None, 100000, TEST_FINAL_CLTV, &logger, &scorer, &random_seed_bytes).unwrap();
 	unwrap_send_err!(nodes[0].node.send_payment(&route_1, payment_hash, &Some(payment_secret), PaymentId(payment_hash.0)), true, APIError::ChannelUnavailable {..}, {});
 	unwrap_send_err!(nodes[1].node.send_payment(&route_2, payment_hash, &Some(payment_secret), PaymentId(payment_hash.0)), true, APIError::ChannelUnavailable {..}, {});

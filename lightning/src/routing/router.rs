@@ -372,6 +372,9 @@ pub struct RouteParameters {
 	pub final_value_msat: u64,
 
 	/// The CLTV on the final hop of the failed payment path.
+	///
+	/// This field is deprecated, [`PaymentParameters::final_cltv_expiry_delta`] should be used
+	/// instead, if available.
 	pub final_cltv_expiry_delta: u32,
 }
 
@@ -452,6 +455,11 @@ pub struct PaymentParameters {
 	/// payment to fail. Future attempts for the same payment shouldn't be relayed through any of
 	/// these SCIDs.
 	pub previously_failed_channels: Vec<u64>,
+
+	/// The minimum CLTV delta at the end of the route.
+	///
+	/// This field should always be set to `Some` and may be required in a future release.
+	pub final_cltv_expiry_delta: Option<u32>,
 }
 
 impl_writeable_tlv_based!(PaymentParameters, {
@@ -463,11 +471,15 @@ impl_writeable_tlv_based!(PaymentParameters, {
 	(5, max_channel_saturation_power_of_half, (default_value, 2)),
 	(6, expiry_time, option),
 	(7, previously_failed_channels, vec_type),
+	(9, final_cltv_expiry_delta, option),
 });
 
 impl PaymentParameters {
 	/// Creates a payee with the node id of the given `pubkey`.
-	pub fn from_node_id(payee_pubkey: PublicKey) -> Self {
+	///
+	/// The `final_cltv_expiry_delta` should match the expected final CLTV delta the recipient has
+	/// provided.
+	pub fn from_node_id(payee_pubkey: PublicKey, final_cltv_expiry_delta: u32) -> Self {
 		Self {
 			payee_pubkey,
 			features: None,
@@ -477,12 +489,16 @@ impl PaymentParameters {
 			max_path_count: DEFAULT_MAX_PATH_COUNT,
 			max_channel_saturation_power_of_half: 2,
 			previously_failed_channels: Vec::new(),
+			final_cltv_expiry_delta: Some(final_cltv_expiry_delta),
 		}
 	}
 
 	/// Creates a payee with the node id of the given `pubkey` to use for keysend payments.
-	pub fn for_keysend(payee_pubkey: PublicKey) -> Self {
-		Self::from_node_id(payee_pubkey).with_features(InvoiceFeatures::for_keysend())
+	///
+	/// The `final_cltv_expiry_delta` should match the expected final CLTV delta the recipient has
+	/// provided.
+	pub fn for_keysend(payee_pubkey: PublicKey, final_cltv_expiry_delta: u32) -> Self {
+		Self::from_node_id(payee_pubkey, final_cltv_expiry_delta).with_features(InvoiceFeatures::for_keysend())
 	}
 
 	/// Includes the payee's features.
@@ -948,8 +964,11 @@ pub fn find_route<L: Deref, GL: Deref, S: Score>(
 ) -> Result<Route, LightningError>
 where L::Target: Logger, GL::Target: Logger {
 	let graph_lock = network_graph.read_only();
+	let final_cltv_expiry_delta =
+		if let Some(delta) = route_params.payment_params.final_cltv_expiry_delta { delta }
+		else { route_params.final_cltv_expiry_delta };
 	let mut route = get_route(our_node_pubkey, &route_params.payment_params, &graph_lock, first_hops,
-		route_params.final_value_msat, route_params.final_cltv_expiry_delta, logger, scorer,
+		route_params.final_value_msat, final_cltv_expiry_delta, logger, scorer,
 		random_seed_bytes)?;
 	add_random_cltv_offset(&mut route, &route_params.payment_params, &graph_lock, random_seed_bytes);
 	Ok(route)
@@ -985,6 +1004,9 @@ where L::Target: Logger {
 	}
 	if payment_params.max_total_cltv_expiry_delta <= final_cltv_expiry_delta {
 		return Err(LightningError{err: "Can't find a route where the maximum total CLTV expiry delta is below the final CLTV expiry.".to_owned(), action: ErrorAction::IgnoreError});
+	}
+	if let Some(delta) = payment_params.final_cltv_expiry_delta {
+		debug_assert_eq!(delta, final_cltv_expiry_delta);
 	}
 
 	// The general routing idea is the following:
@@ -2165,7 +2187,7 @@ mod tests {
 	fn simple_route_test() {
 		let (secp_ctx, network_graph, _, _, logger) = build_graph();
 		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
-		let payment_params = PaymentParameters::from_node_id(nodes[2]);
+		let payment_params = PaymentParameters::from_node_id(nodes[2], 42);
 		let scorer = ln_test_utils::TestScorer::with_penalty(0);
 		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
 		let random_seed_bytes = keys_manager.get_secure_random_bytes();
@@ -2198,7 +2220,7 @@ mod tests {
 	fn invalid_first_hop_test() {
 		let (secp_ctx, network_graph, _, _, logger) = build_graph();
 		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
-		let payment_params = PaymentParameters::from_node_id(nodes[2]);
+		let payment_params = PaymentParameters::from_node_id(nodes[2], 42);
 		let scorer = ln_test_utils::TestScorer::with_penalty(0);
 		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
 		let random_seed_bytes = keys_manager.get_secure_random_bytes();
@@ -2220,7 +2242,7 @@ mod tests {
 	fn htlc_minimum_test() {
 		let (secp_ctx, network_graph, gossip_sync, _, logger) = build_graph();
 		let (our_privkey, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
-		let payment_params = PaymentParameters::from_node_id(nodes[2]);
+		let payment_params = PaymentParameters::from_node_id(nodes[2], 42);
 		let scorer = ln_test_utils::TestScorer::with_penalty(0);
 		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
 		let random_seed_bytes = keys_manager.get_secure_random_bytes();
@@ -2348,7 +2370,7 @@ mod tests {
 		let (secp_ctx, network_graph, gossip_sync, _, logger) = build_graph();
 		let (our_privkey, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
 		let config = UserConfig::default();
-		let payment_params = PaymentParameters::from_node_id(nodes[2]).with_features(channelmanager::provided_invoice_features(&config));
+		let payment_params = PaymentParameters::from_node_id(nodes[2], 42).with_features(channelmanager::provided_invoice_features(&config));
 		let scorer = ln_test_utils::TestScorer::with_penalty(0);
 		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
 		let random_seed_bytes = keys_manager.get_secure_random_bytes();
@@ -2486,7 +2508,7 @@ mod tests {
 	fn disable_channels_test() {
 		let (secp_ctx, network_graph, gossip_sync, _, logger) = build_graph();
 		let (our_privkey, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
-		let payment_params = PaymentParameters::from_node_id(nodes[2]);
+		let payment_params = PaymentParameters::from_node_id(nodes[2], 42);
 		let scorer = ln_test_utils::TestScorer::with_penalty(0);
 		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
 		let random_seed_bytes = keys_manager.get_secure_random_bytes();
@@ -2546,7 +2568,7 @@ mod tests {
 	fn disable_node_test() {
 		let (secp_ctx, network_graph, gossip_sync, _, logger) = build_graph();
 		let (_, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
-		let payment_params = PaymentParameters::from_node_id(nodes[2]);
+		let payment_params = PaymentParameters::from_node_id(nodes[2], 42);
 		let scorer = ln_test_utils::TestScorer::with_penalty(0);
 		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
 		let random_seed_bytes = keys_manager.get_secure_random_bytes();
@@ -2596,7 +2618,7 @@ mod tests {
 		let random_seed_bytes = keys_manager.get_secure_random_bytes();
 
 		// Route to 1 via 2 and 3 because our channel to 1 is disabled
-		let payment_params = PaymentParameters::from_node_id(nodes[0]);
+		let payment_params = PaymentParameters::from_node_id(nodes[0], 42);
 		let route = get_route(&our_id, &payment_params, &network_graph.read_only(), None, 100, 42, Arc::clone(&logger), &scorer, &random_seed_bytes).unwrap();
 		assert_eq!(route.paths[0].len(), 3);
 
@@ -2622,7 +2644,7 @@ mod tests {
 		assert_eq!(route.paths[0][2].channel_features.le_flags(), &id_to_feature_flags(3));
 
 		// If we specify a channel to node7, that overrides our local channel view and that gets used
-		let payment_params = PaymentParameters::from_node_id(nodes[2]);
+		let payment_params = PaymentParameters::from_node_id(nodes[2], 42);
 		let our_chans = vec![get_channel_details(Some(42), nodes[7].clone(), InitFeatures::from_le_bytes(vec![0b11]), 250_000_000)];
 		let route = get_route(&our_id, &payment_params, &network_graph.read_only(), Some(&our_chans.iter().collect::<Vec<_>>()), 100, 42, Arc::clone(&logger), &scorer, &random_seed_bytes).unwrap();
 		assert_eq!(route.paths[0].len(), 2);
@@ -2746,13 +2768,13 @@ mod tests {
 		let mut invalid_last_hops = last_hops_multi_private_channels(&nodes);
 		invalid_last_hops.push(invalid_last_hop);
 		{
-			let payment_params = PaymentParameters::from_node_id(nodes[6]).with_route_hints(invalid_last_hops);
+			let payment_params = PaymentParameters::from_node_id(nodes[6], 42).with_route_hints(invalid_last_hops);
 			if let Err(LightningError{err, action: ErrorAction::IgnoreError}) = get_route(&our_id, &payment_params, &network_graph.read_only(), None, 100, 42, Arc::clone(&logger), &scorer, &random_seed_bytes) {
 				assert_eq!(err, "Route hint cannot have the payee as the source.");
 			} else { panic!(); }
 		}
 
-		let payment_params = PaymentParameters::from_node_id(nodes[6]).with_route_hints(last_hops_multi_private_channels(&nodes));
+		let payment_params = PaymentParameters::from_node_id(nodes[6], 42).with_route_hints(last_hops_multi_private_channels(&nodes));
 		let route = get_route(&our_id, &payment_params, &network_graph.read_only(), None, 100, 42, Arc::clone(&logger), &scorer, &random_seed_bytes).unwrap();
 		assert_eq!(route.paths[0].len(), 5);
 
@@ -2822,7 +2844,7 @@ mod tests {
 	fn ignores_empty_last_hops_test() {
 		let (secp_ctx, network_graph, _, _, logger) = build_graph();
 		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
-		let payment_params = PaymentParameters::from_node_id(nodes[6]).with_route_hints(empty_last_hop(&nodes));
+		let payment_params = PaymentParameters::from_node_id(nodes[6], 42).with_route_hints(empty_last_hop(&nodes));
 		let scorer = ln_test_utils::TestScorer::with_penalty(0);
 		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
 		let random_seed_bytes = keys_manager.get_secure_random_bytes();
@@ -2902,7 +2924,7 @@ mod tests {
 		let (secp_ctx, network_graph, gossip_sync, _, logger) = build_graph();
 		let (_, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
 		let last_hops = multi_hop_last_hops_hint([nodes[2], nodes[3]]);
-		let payment_params = PaymentParameters::from_node_id(nodes[6]).with_route_hints(last_hops.clone());
+		let payment_params = PaymentParameters::from_node_id(nodes[6], 42).with_route_hints(last_hops.clone());
 		let scorer = ln_test_utils::TestScorer::with_penalty(0);
 		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
 		let random_seed_bytes = keys_manager.get_secure_random_bytes();
@@ -2976,7 +2998,7 @@ mod tests {
 		let non_announced_pubkey = PublicKey::from_secret_key(&secp_ctx, &non_announced_privkey);
 
 		let last_hops = multi_hop_last_hops_hint([nodes[2], non_announced_pubkey]);
-		let payment_params = PaymentParameters::from_node_id(nodes[6]).with_route_hints(last_hops.clone());
+		let payment_params = PaymentParameters::from_node_id(nodes[6], 42).with_route_hints(last_hops.clone());
 		let scorer = ln_test_utils::TestScorer::with_penalty(0);
 		// Test through channels 2, 3, 0xff00, 0xff01.
 		// Test shows that multiple hop hints are considered.
@@ -3082,7 +3104,7 @@ mod tests {
 	fn last_hops_with_public_channel_test() {
 		let (secp_ctx, network_graph, _, _, logger) = build_graph();
 		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
-		let payment_params = PaymentParameters::from_node_id(nodes[6]).with_route_hints(last_hops_with_public_channel(&nodes));
+		let payment_params = PaymentParameters::from_node_id(nodes[6], 42).with_route_hints(last_hops_with_public_channel(&nodes));
 		let scorer = ln_test_utils::TestScorer::with_penalty(0);
 		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
 		let random_seed_bytes = keys_manager.get_secure_random_bytes();
@@ -3141,7 +3163,7 @@ mod tests {
 		// Simple test with outbound channel to 4 to test that last_hops and first_hops connect
 		let our_chans = vec![get_channel_details(Some(42), nodes[3].clone(), InitFeatures::from_le_bytes(vec![0b11]), 250_000_000)];
 		let mut last_hops = last_hops(&nodes);
-		let payment_params = PaymentParameters::from_node_id(nodes[6]).with_route_hints(last_hops.clone());
+		let payment_params = PaymentParameters::from_node_id(nodes[6], 42).with_route_hints(last_hops.clone());
 		let route = get_route(&our_id, &payment_params, &network_graph.read_only(), Some(&our_chans.iter().collect::<Vec<_>>()), 100, 42, Arc::clone(&logger), &scorer, &random_seed_bytes).unwrap();
 		assert_eq!(route.paths[0].len(), 2);
 
@@ -3162,7 +3184,7 @@ mod tests {
 		last_hops[0].0[0].fees.base_msat = 1000;
 
 		// Revert to via 6 as the fee on 8 goes up
-		let payment_params = PaymentParameters::from_node_id(nodes[6]).with_route_hints(last_hops);
+		let payment_params = PaymentParameters::from_node_id(nodes[6], 42).with_route_hints(last_hops);
 		let route = get_route(&our_id, &payment_params, &network_graph.read_only(), None, 100, 42, Arc::clone(&logger), &scorer, &random_seed_bytes).unwrap();
 		assert_eq!(route.paths[0].len(), 4);
 
@@ -3255,7 +3277,7 @@ mod tests {
 			htlc_minimum_msat: None,
 			htlc_maximum_msat: last_hop_htlc_max,
 		}]);
-		let payment_params = PaymentParameters::from_node_id(target_node_id).with_route_hints(vec![last_hops]);
+		let payment_params = PaymentParameters::from_node_id(target_node_id, 42).with_route_hints(vec![last_hops]);
 		let our_chans = vec![get_channel_details(Some(42), middle_node_id, InitFeatures::from_le_bytes(vec![0b11]), outbound_capacity_msat)];
 		let scorer = ln_test_utils::TestScorer::with_penalty(0);
 		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
@@ -3322,7 +3344,7 @@ mod tests {
 		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
 		let random_seed_bytes = keys_manager.get_secure_random_bytes();
 		let config = UserConfig::default();
-		let payment_params = PaymentParameters::from_node_id(nodes[2]).with_features(channelmanager::provided_invoice_features(&config));
+		let payment_params = PaymentParameters::from_node_id(nodes[2], 42).with_features(channelmanager::provided_invoice_features(&config));
 
 		// We will use a simple single-path route from
 		// our node to node2 via node0: channels {1, 3}.
@@ -3597,7 +3619,7 @@ mod tests {
 		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
 		let random_seed_bytes = keys_manager.get_secure_random_bytes();
 		let config = UserConfig::default();
-		let payment_params = PaymentParameters::from_node_id(nodes[3]).with_features(channelmanager::provided_invoice_features(&config));
+		let payment_params = PaymentParameters::from_node_id(nodes[3], 42).with_features(channelmanager::provided_invoice_features(&config));
 
 		// Path via {node7, node2, node4} is channels {12, 13, 6, 11}.
 		// {12, 13, 11} have the capacities of 100, {6} has a capacity of 50.
@@ -3722,7 +3744,7 @@ mod tests {
 		let scorer = ln_test_utils::TestScorer::with_penalty(0);
 		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
 		let random_seed_bytes = keys_manager.get_secure_random_bytes();
-		let payment_params = PaymentParameters::from_node_id(nodes[2]);
+		let payment_params = PaymentParameters::from_node_id(nodes[2], 42);
 
 		// Path via node0 is channels {1, 3}. Limit them to 100 and 50 sats (total limit 50).
 		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
@@ -3771,7 +3793,7 @@ mod tests {
 		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
 		let random_seed_bytes = keys_manager.get_secure_random_bytes();
 		let config = UserConfig::default();
-		let payment_params = PaymentParameters::from_node_id(nodes[2])
+		let payment_params = PaymentParameters::from_node_id(nodes[2], 42)
 			.with_features(channelmanager::provided_invoice_features(&config));
 
 		// We need a route consisting of 3 paths:
@@ -3931,7 +3953,7 @@ mod tests {
 		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
 		let random_seed_bytes = keys_manager.get_secure_random_bytes();
 		let config = UserConfig::default();
-		let payment_params = PaymentParameters::from_node_id(nodes[3]).with_features(channelmanager::provided_invoice_features(&config));
+		let payment_params = PaymentParameters::from_node_id(nodes[3], 42).with_features(channelmanager::provided_invoice_features(&config));
 
 		// We need a route consisting of 3 paths:
 		// From our node to node3 via {node0, node2}, {node7, node2, node4} and {node7, node2}.
@@ -4096,7 +4118,7 @@ mod tests {
 		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
 		let random_seed_bytes = keys_manager.get_secure_random_bytes();
 		let config = UserConfig::default();
-		let payment_params = PaymentParameters::from_node_id(nodes[3]).with_features(channelmanager::provided_invoice_features(&config));
+		let payment_params = PaymentParameters::from_node_id(nodes[3], 42).with_features(channelmanager::provided_invoice_features(&config));
 
 		// This test checks that if we have two cheaper paths and one more expensive path,
 		// so that liquidity-wise any 2 of 3 combination is sufficient,
@@ -4266,7 +4288,7 @@ mod tests {
 		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
 		let random_seed_bytes = keys_manager.get_secure_random_bytes();
 		let config = UserConfig::default();
-		let payment_params = PaymentParameters::from_node_id(nodes[3]).with_features(channelmanager::provided_invoice_features(&config));
+		let payment_params = PaymentParameters::from_node_id(nodes[3], 42).with_features(channelmanager::provided_invoice_features(&config));
 
 		// We need a route consisting of 2 paths:
 		// From our node to node3 via {node0, node2} and {node7, node2, node4}.
@@ -4448,7 +4470,7 @@ mod tests {
 		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
 		let random_seed_bytes = keys_manager.get_secure_random_bytes();
 		let config = UserConfig::default();
-		let payment_params = PaymentParameters::from_node_id(PublicKey::from_slice(&[02; 33]).unwrap()).with_features(channelmanager::provided_invoice_features(&config))
+		let payment_params = PaymentParameters::from_node_id(PublicKey::from_slice(&[02; 33]).unwrap(), 42).with_features(channelmanager::provided_invoice_features(&config))
 			.with_route_hints(vec![RouteHint(vec![RouteHintHop {
 				src_node_id: nodes[2],
 				short_channel_id: 42,
@@ -4540,7 +4562,7 @@ mod tests {
 		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
 		let random_seed_bytes = keys_manager.get_secure_random_bytes();
 		let config = UserConfig::default();
-		let payment_params = PaymentParameters::from_node_id(nodes[2]).with_features(channelmanager::provided_invoice_features(&config))
+		let payment_params = PaymentParameters::from_node_id(nodes[2], 42).with_features(channelmanager::provided_invoice_features(&config))
 			.with_max_channel_saturation_power_of_half(0);
 
 		// We need a route consisting of 3 paths:
@@ -4701,7 +4723,7 @@ mod tests {
 		let scorer = ln_test_utils::TestScorer::with_penalty(0);
 		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
 		let random_seed_bytes = keys_manager.get_secure_random_bytes();
-		let payment_params = PaymentParameters::from_node_id(nodes[6]);
+		let payment_params = PaymentParameters::from_node_id(nodes[6], 42);
 
 		add_channel(&gossip_sync, &secp_ctx, &our_privkey, &privkeys[1], ChannelFeatures::from_le_bytes(id_to_feature_flags(6)), 6);
 		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
@@ -4832,7 +4854,7 @@ mod tests {
 		let scorer = ln_test_utils::TestScorer::with_penalty(0);
 		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
 		let random_seed_bytes = keys_manager.get_secure_random_bytes();
-		let payment_params = PaymentParameters::from_node_id(nodes[2]);
+		let payment_params = PaymentParameters::from_node_id(nodes[2], 42);
 
 		// We modify the graph to set the htlc_maximum of channel 2 to below the value we wish to
 		// send.
@@ -4897,7 +4919,7 @@ mod tests {
 		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
 		let random_seed_bytes = keys_manager.get_secure_random_bytes();
 		let config = UserConfig::default();
-		let payment_params = PaymentParameters::from_node_id(nodes[2]).with_features(channelmanager::provided_invoice_features(&config));
+		let payment_params = PaymentParameters::from_node_id(nodes[2], 42).with_features(channelmanager::provided_invoice_features(&config));
 
 		// We modify the graph to set the htlc_minimum of channel 2 and 4 as needed - channel 2
 		// gets an htlc_maximum_msat of 80_000 and channel 4 an htlc_minimum_msat of 90_000. We
@@ -4966,7 +4988,7 @@ mod tests {
 		let network_graph = NetworkGraph::new(genesis_hash, Arc::clone(&logger));
 		let scorer = ln_test_utils::TestScorer::with_penalty(0);
 		let config = UserConfig::default();
-		let payment_params = PaymentParameters::from_node_id(nodes[0]).with_features(channelmanager::provided_invoice_features(&config));
+		let payment_params = PaymentParameters::from_node_id(nodes[0], 42).with_features(channelmanager::provided_invoice_features(&config));
 		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
 		let random_seed_bytes = keys_manager.get_secure_random_bytes();
 
@@ -5032,7 +5054,7 @@ mod tests {
 	fn prefers_shorter_route_with_higher_fees() {
 		let (secp_ctx, network_graph, _, _, logger) = build_graph();
 		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
-		let payment_params = PaymentParameters::from_node_id(nodes[6]).with_route_hints(last_hops(&nodes));
+		let payment_params = PaymentParameters::from_node_id(nodes[6], 42).with_route_hints(last_hops(&nodes));
 
 		// Without penalizing each hop 100 msats, a longer path with lower fees is chosen.
 		let scorer = ln_test_utils::TestScorer::with_penalty(0);
@@ -5105,7 +5127,7 @@ mod tests {
 	fn avoids_routing_through_bad_channels_and_nodes() {
 		let (secp_ctx, network, _, _, logger) = build_graph();
 		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
-		let payment_params = PaymentParameters::from_node_id(nodes[6]).with_route_hints(last_hops(&nodes));
+		let payment_params = PaymentParameters::from_node_id(nodes[6], 42).with_route_hints(last_hops(&nodes));
 		let network_graph = network.read_only();
 
 		// A path to nodes[6] exists when no penalties are applied to any channel.
@@ -5228,7 +5250,7 @@ mod tests {
 
 		// Make sure that generally there is at least one route available
 		let feasible_max_total_cltv_delta = 1008;
-		let feasible_payment_params = PaymentParameters::from_node_id(nodes[6]).with_route_hints(last_hops(&nodes))
+		let feasible_payment_params = PaymentParameters::from_node_id(nodes[6], 0).with_route_hints(last_hops(&nodes))
 			.with_max_total_cltv_expiry_delta(feasible_max_total_cltv_delta);
 		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
 		let random_seed_bytes = keys_manager.get_secure_random_bytes();
@@ -5238,7 +5260,7 @@ mod tests {
 
 		// But not if we exclude all paths on the basis of their accumulated CLTV delta
 		let fail_max_total_cltv_delta = 23;
-		let fail_payment_params = PaymentParameters::from_node_id(nodes[6]).with_route_hints(last_hops(&nodes))
+		let fail_payment_params = PaymentParameters::from_node_id(nodes[6], 0).with_route_hints(last_hops(&nodes))
 			.with_max_total_cltv_expiry_delta(fail_max_total_cltv_delta);
 		match get_route(&our_id, &fail_payment_params, &network_graph, None, 100, 0, Arc::clone(&logger), &scorer, &random_seed_bytes)
 		{
@@ -5258,7 +5280,7 @@ mod tests {
 		let network_graph = network.read_only();
 
 		let scorer = ln_test_utils::TestScorer::with_penalty(0);
-		let mut payment_params = PaymentParameters::from_node_id(nodes[6]).with_route_hints(last_hops(&nodes))
+		let mut payment_params = PaymentParameters::from_node_id(nodes[6], 0).with_route_hints(last_hops(&nodes))
 			.with_max_path_count(1);
 		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
 		let random_seed_bytes = keys_manager.get_secure_random_bytes();
@@ -5289,14 +5311,14 @@ mod tests {
 		let random_seed_bytes = keys_manager.get_secure_random_bytes();
 
 		// First check we can actually create a long route on this graph.
-		let feasible_payment_params = PaymentParameters::from_node_id(nodes[18]);
+		let feasible_payment_params = PaymentParameters::from_node_id(nodes[18], 0);
 		let route = get_route(&our_id, &feasible_payment_params, &network_graph, None, 100, 0,
 			Arc::clone(&logger), &scorer, &random_seed_bytes).unwrap();
 		let path = route.paths[0].iter().map(|hop| hop.short_channel_id).collect::<Vec<_>>();
 		assert!(path.len() == MAX_PATH_LENGTH_ESTIMATE.into());
 
 		// But we can't create a path surpassing the MAX_PATH_LENGTH_ESTIMATE limit.
-		let fail_payment_params = PaymentParameters::from_node_id(nodes[19]);
+		let fail_payment_params = PaymentParameters::from_node_id(nodes[19], 0);
 		match get_route(&our_id, &fail_payment_params, &network_graph, None, 100, 0,
 			Arc::clone(&logger), &scorer, &random_seed_bytes)
 		{
@@ -5314,7 +5336,7 @@ mod tests {
 
 		let scorer = ln_test_utils::TestScorer::with_penalty(0);
 
-		let payment_params = PaymentParameters::from_node_id(nodes[6]).with_route_hints(last_hops(&nodes));
+		let payment_params = PaymentParameters::from_node_id(nodes[6], 42).with_route_hints(last_hops(&nodes));
 		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
 		let random_seed_bytes = keys_manager.get_secure_random_bytes();
 		let route = get_route(&our_id, &payment_params, &network_graph.read_only(), None, 100, 42, Arc::clone(&logger), &scorer, &random_seed_bytes).unwrap();
@@ -5347,7 +5369,7 @@ mod tests {
 		let network_nodes = network_graph.nodes();
 		let network_channels = network_graph.channels();
 		let scorer = ln_test_utils::TestScorer::with_penalty(0);
-		let payment_params = PaymentParameters::from_node_id(nodes[3]);
+		let payment_params = PaymentParameters::from_node_id(nodes[3], 0);
 		let keys_manager = ln_test_utils::TestKeysInterface::new(&[4u8; 32], Network::Testnet);
 		let random_seed_bytes = keys_manager.get_secure_random_bytes();
 
@@ -5414,7 +5436,7 @@ mod tests {
 		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
 		let random_seed_bytes = keys_manager.get_secure_random_bytes();
 
-		let payment_params = PaymentParameters::from_node_id(nodes[3]);
+		let payment_params = PaymentParameters::from_node_id(nodes[3], 0);
 		let hops = [nodes[1], nodes[2], nodes[4], nodes[3]];
 		let route = build_route_from_hops_internal(&our_id, &hops, &payment_params,
 			 &network_graph, 100, 0, Arc::clone(&logger), &random_seed_bytes).unwrap();
@@ -5460,7 +5482,7 @@ mod tests {
 		});
 
 		let config = UserConfig::default();
-		let payment_params = PaymentParameters::from_node_id(nodes[2]).with_features(channelmanager::provided_invoice_features(&config));
+		let payment_params = PaymentParameters::from_node_id(nodes[2], 42).with_features(channelmanager::provided_invoice_features(&config));
 		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
 		let random_seed_bytes = keys_manager.get_secure_random_bytes();
 		// 100,000 sats is less than the available liquidity on each channel, set above.
@@ -5507,7 +5529,7 @@ mod tests {
 				let src = &PublicKey::from_slice(nodes.unordered_keys().skip(seed % nodes.len()).next().unwrap().as_slice()).unwrap();
 				seed = seed.overflowing_mul(0xdeadbeef).0;
 				let dst = PublicKey::from_slice(nodes.unordered_keys().skip(seed % nodes.len()).next().unwrap().as_slice()).unwrap();
-				let payment_params = PaymentParameters::from_node_id(dst);
+				let payment_params = PaymentParameters::from_node_id(dst, 42);
 				let amt = seed as u64 % 200_000_000;
 				let params = ProbabilisticScoringParameters::default();
 				let scorer = ProbabilisticScorer::new(params, &graph, &logger);
@@ -5545,7 +5567,7 @@ mod tests {
 				let src = &PublicKey::from_slice(nodes.unordered_keys().skip(seed % nodes.len()).next().unwrap().as_slice()).unwrap();
 				seed = seed.overflowing_mul(0xdeadbeef).0;
 				let dst = PublicKey::from_slice(nodes.unordered_keys().skip(seed % nodes.len()).next().unwrap().as_slice()).unwrap();
-				let payment_params = PaymentParameters::from_node_id(dst).with_features(channelmanager::provided_invoice_features(&config));
+				let payment_params = PaymentParameters::from_node_id(dst, 42).with_features(channelmanager::provided_invoice_features(&config));
 				let amt = seed as u64 % 200_000_000;
 				let params = ProbabilisticScoringParameters::default();
 				let scorer = ProbabilisticScorer::new(params, &graph, &logger);
@@ -5578,7 +5600,7 @@ mod tests {
 		assert_eq!(scorer.channel_penalty_msat(42, &NodeId::from_pubkey(&nodes[3]), &NodeId::from_pubkey(&nodes[4]), usage), 456);
 
 		// Then check we can get a normal route
-		let payment_params = PaymentParameters::from_node_id(nodes[10]);
+		let payment_params = PaymentParameters::from_node_id(nodes[10], 42);
 		let route = get_route(&our_id, &payment_params, &network_graph.read_only(), None, 100, 42, Arc::clone(&logger), &scorer, &random_seed_bytes);
 		assert!(route.is_ok());
 
@@ -5745,7 +5767,7 @@ mod benches {
 				let src = PublicKey::from_slice(nodes.unordered_keys().skip(seed % nodes.len()).next().unwrap().as_slice()).unwrap();
 				seed *= 0xdeadbeef;
 				let dst = PublicKey::from_slice(nodes.unordered_keys().skip(seed % nodes.len()).next().unwrap().as_slice()).unwrap();
-				let params = PaymentParameters::from_node_id(dst).with_features(features.clone());
+				let params = PaymentParameters::from_node_id(dst, 42).with_features(features.clone());
 				let first_hop = first_hop(src);
 				let amt = seed as u64 % 1_000_000;
 				if let Ok(route) = get_route(&payer, &params, &graph.read_only(), Some(&[&first_hop]), amt, 42, &DummyLogger{}, &scorer, &random_seed_bytes) {

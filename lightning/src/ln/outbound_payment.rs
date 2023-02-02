@@ -16,6 +16,7 @@ use bitcoin::secp256k1::{self, Secp256k1, SecretKey};
 use crate::chain::keysinterface::{EntropySource, NodeSigner, Recipient};
 use crate::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
 use crate::ln::channelmanager::{ChannelDetails, HTLCSource, IDEMPOTENCY_TIMEOUT_TICKS, MIN_HTLC_RELAY_HOLDING_CELL_MILLIS, PaymentId};
+use crate::ln::channelmanager::MIN_FINAL_CLTV_EXPIRY_DELTA as LDK_DEFAULT_MIN_FINAL_CLTV_EXPIRY_DELTA;
 use crate::ln::msgs::DecodeError;
 use crate::ln::onion_utils::HTLCFailReason;
 use crate::routing::router::{InFlightHtlcs, PaymentParameters, Route, RouteHop, RouteParameters, RoutePath, Router};
@@ -41,9 +42,9 @@ pub(crate) enum PendingOutboundPayment {
 		session_privs: HashSet<[u8; 32]>,
 	},
 	Retryable {
-		retry_strategy: Retry,
+		retry_strategy: Option<Retry>,
 		attempts: PaymentAttempts,
-		route_params: Option<RouteParameters>,
+		payment_params: Option<PaymentParameters>,
 		session_privs: HashSet<[u8; 32]>,
 		payment_hash: PaymentHash,
 		payment_secret: Option<PaymentSecret>,
@@ -82,15 +83,37 @@ impl PendingOutboundPayment {
 			attempts.count += 1;
 		}
 	}
-	fn is_retryable_now(&self) -> bool {
-		if let PendingOutboundPayment::Retryable { retry_strategy, attempts, .. } = self {
-			return retry_strategy.is_retryable_now(&attempts)
+	fn is_auto_retryable_now(&self) -> bool {
+		match self {
+			PendingOutboundPayment::Retryable { retry_strategy: Some(strategy), attempts, .. } => {
+				strategy.is_retryable_now(&attempts)
+			},
+			_ => false,
 		}
-		false
+	}
+	fn is_retryable_now(&self) -> bool {
+		match self {
+			PendingOutboundPayment::Retryable { retry_strategy: None, .. } => {
+				// We're handling retries manually, we can always retry.
+				true
+			},
+			PendingOutboundPayment::Retryable { retry_strategy: Some(strategy), attempts, .. } => {
+				strategy.is_retryable_now(&attempts)
+			},
+			_ => false,
+		}
+	}
+	fn payment_parameters(&mut self) -> Option<&mut PaymentParameters> {
+		match self {
+			PendingOutboundPayment::Retryable { payment_params: Some(ref mut params), .. } => {
+				Some(params)
+			},
+			_ => None,
+		}
 	}
 	pub fn insert_previously_failed_scid(&mut self, scid: u64) {
-		if let PendingOutboundPayment::Retryable { route_params: Some(params), .. } = self {
-			params.payment_params.previously_failed_channels.push(scid);
+		if let PendingOutboundPayment::Retryable { payment_params: Some(params), .. } = self {
+			params.previously_failed_channels.push(scid);
 		}
 	}
 	pub(super) fn is_fulfilled(&self) -> bool {
@@ -212,9 +235,9 @@ impl PendingOutboundPayment {
 pub enum Retry {
 	/// Max number of attempts to retry payment.
 	///
-	/// Note that this is the number of *path* failures, not full payment retries. For multi-path
-	/// payments, if this is less than the total number of paths, we will never even retry all of the
-	/// payment's paths.
+	/// Each attempt may be multiple HTLCs along multiple paths if the router decides to split up a
+	/// retry, and may retry multiple failed HTLCs at once if they failed around the same time and
+	/// were retried along a route from a single call to [`Router::find_route`].
 	Attempts(usize),
 	#[cfg(not(feature = "no-std"))]
 	/// Time elapsed before abandoning retries for a payment.
@@ -378,22 +401,23 @@ impl OutboundPayments {
 		}
 	}
 
-	pub(super) fn send_payment<R: Deref, ES: Deref, NS: Deref, F>(
+	pub(super) fn send_payment<R: Deref, ES: Deref, NS: Deref, F, L: Deref>(
 		&self, payment_hash: PaymentHash, payment_secret: &Option<PaymentSecret>, payment_id: PaymentId,
 		retry_strategy: Retry, route_params: RouteParameters, router: &R,
 		first_hops: Vec<ChannelDetails>, inflight_htlcs: InFlightHtlcs, entropy_source: &ES,
-		node_signer: &NS, best_block_height: u32, send_payment_along_path: F
+		node_signer: &NS, best_block_height: u32, logger: &L, send_payment_along_path: F,
 	) -> Result<(), PaymentSendFailure>
 	where
 		R::Target: Router,
 		ES::Target: EntropySource,
 		NS::Target: NodeSigner,
+		L::Target: Logger,
 		F: Fn(&Vec<RouteHop>, &Option<PaymentParameters>, &PaymentHash, &Option<PaymentSecret>, u64,
 			 u32, PaymentId, &Option<PaymentPreimage>, [u8; 32]) -> Result<(), APIError>,
 	{
 		self.pay_internal(payment_id, Some((payment_hash, payment_secret, retry_strategy)),
 			route_params, router, first_hops, inflight_htlcs, entropy_source, node_signer,
-			best_block_height, &send_payment_along_path)
+			best_block_height, logger, &send_payment_along_path)
 			.map_err(|e| { self.remove_outbound_if_all_failed(payment_id, &e); e })
 	}
 
@@ -408,7 +432,7 @@ impl OutboundPayments {
 		F: Fn(&Vec<RouteHop>, &Option<PaymentParameters>, &PaymentHash, &Option<PaymentSecret>, u64,
 		   u32, PaymentId, &Option<PaymentPreimage>, [u8; 32]) -> Result<(), APIError>
 	{
-		let onion_session_privs = self.add_new_pending_payment(payment_hash, *payment_secret, payment_id, route, Retry::Attempts(0), None, entropy_source, best_block_height)?;
+		let onion_session_privs = self.add_new_pending_payment(payment_hash, *payment_secret, payment_id, route, None, None, entropy_source, best_block_height)?;
 		self.pay_route_internal(route, payment_hash, payment_secret, None, payment_id, None,
 			onion_session_privs, node_signer, best_block_height, &send_payment_along_path)
 			.map_err(|e| { self.remove_outbound_if_all_failed(payment_id, &e); e })
@@ -429,7 +453,7 @@ impl OutboundPayments {
 			None => PaymentPreimage(entropy_source.get_secure_random_bytes()),
 		};
 		let payment_hash = PaymentHash(Sha256::hash(&preimage.0).into_inner());
-		let onion_session_privs = self.add_new_pending_payment(payment_hash, None, payment_id, &route, Retry::Attempts(0), None, entropy_source, best_block_height)?;
+		let onion_session_privs = self.add_new_pending_payment(payment_hash, None, payment_id, &route, None, None, entropy_source, best_block_height)?;
 
 		match self.pay_route_internal(route, payment_hash, &None, Some(preimage), payment_id, None, onion_session_privs, node_signer, best_block_height, &send_payment_along_path) {
 			Ok(()) => Ok(payment_hash),
@@ -458,11 +482,19 @@ impl OutboundPayments {
 			let mut outbounds = self.pending_outbound_payments.lock().unwrap();
 			let mut retry_id_route_params = None;
 			for (pmt_id, pmt) in outbounds.iter_mut() {
-				if pmt.is_retryable_now() {
-					if let PendingOutboundPayment::Retryable { pending_amt_msat, total_msat, route_params: Some(params), .. } = pmt {
+				if pmt.is_auto_retryable_now() {
+					if let PendingOutboundPayment::Retryable { pending_amt_msat, total_msat, payment_params: Some(params), .. } = pmt {
 						if pending_amt_msat < total_msat {
-							retry_id_route_params = Some((*pmt_id, params.clone()));
-							pmt.increment_attempts();
+							retry_id_route_params = Some((*pmt_id, RouteParameters {
+								final_value_msat: *total_msat - *pending_amt_msat,
+								final_cltv_expiry_delta:
+									if let Some(delta) = params.final_cltv_expiry_delta { delta }
+									else {
+										debug_assert!(false, "We always set the final_cltv_expiry_delta when a path fails");
+										LDK_DEFAULT_MIN_FINAL_CLTV_EXPIRY_DELTA.into()
+									},
+								payment_params: params.clone(),
+							}));
 							break
 						}
 					}
@@ -470,24 +502,25 @@ impl OutboundPayments {
 			}
 			if let Some((payment_id, route_params)) = retry_id_route_params {
 				core::mem::drop(outbounds);
-				if let Err(e) = self.pay_internal(payment_id, None, route_params, router, first_hops(), inflight_htlcs(), entropy_source, node_signer, best_block_height, &send_payment_along_path) {
-					log_trace!(logger, "Errored retrying payment: {:?}", e);
+				if let Err(e) = self.pay_internal(payment_id, None, route_params, router, first_hops(), inflight_htlcs(), entropy_source, node_signer, best_block_height, logger, &send_payment_along_path) {
+					log_info!(logger, "Errored retrying payment: {:?}", e);
 				}
 			} else { break }
 		}
 	}
 
-	fn pay_internal<R: Deref, NS: Deref, ES: Deref, F>(
+	fn pay_internal<R: Deref, NS: Deref, ES: Deref, F, L: Deref>(
 		&self, payment_id: PaymentId,
 		initial_send_info: Option<(PaymentHash, &Option<PaymentSecret>, Retry)>,
 		route_params: RouteParameters, router: &R, first_hops: Vec<ChannelDetails>,
 		inflight_htlcs: InFlightHtlcs, entropy_source: &ES, node_signer: &NS, best_block_height: u32,
-		send_payment_along_path: &F
+		logger: &L, send_payment_along_path: &F,
 	) -> Result<(), PaymentSendFailure>
 	where
 		R::Target: Router,
 		ES::Target: EntropySource,
 		NS::Target: NodeSigner,
+		L::Target: Logger,
 		F: Fn(&Vec<RouteHop>, &Option<PaymentParameters>, &PaymentHash, &Option<PaymentSecret>, u64,
 		   u32, PaymentId, &Option<PaymentPreimage>, [u8; 32]) -> Result<(), APIError>
 	{
@@ -507,37 +540,26 @@ impl OutboundPayments {
 		}))?;
 
 		let res = if let Some((payment_hash, payment_secret, retry_strategy)) = initial_send_info {
-			let onion_session_privs = self.add_new_pending_payment(payment_hash, *payment_secret, payment_id, &route, retry_strategy, Some(route_params.clone()), entropy_source, best_block_height)?;
+			let onion_session_privs = self.add_new_pending_payment(payment_hash, *payment_secret, payment_id, &route, Some(retry_strategy), Some(route_params.payment_params.clone()), entropy_source, best_block_height)?;
 			self.pay_route_internal(&route, payment_hash, payment_secret, None, payment_id, None, onion_session_privs, node_signer, best_block_height, send_payment_along_path)
 		} else {
 			self.retry_payment_with_route(&route, payment_id, entropy_source, node_signer, best_block_height, send_payment_along_path)
 		};
 		match res {
 			Err(PaymentSendFailure::AllFailedResendSafe(_)) => {
-				let mut outbounds = self.pending_outbound_payments.lock().unwrap();
-				if let Some(payment) = outbounds.get_mut(&payment_id) {
-					let retryable = payment.is_retryable_now();
-					if retryable {
-						payment.increment_attempts();
-					} else { return res }
-				} else { return res }
-				core::mem::drop(outbounds);
-				self.pay_internal(payment_id, None, route_params, router, first_hops, inflight_htlcs, entropy_source, node_signer, best_block_height, send_payment_along_path)
+				let retry_res = self.pay_internal(payment_id, None, route_params, router, first_hops, inflight_htlcs, entropy_source, node_signer, best_block_height, logger, send_payment_along_path);
+				log_info!(logger, "Result retrying payment id {}: {:?}", log_bytes!(payment_id.0), retry_res);
+				if let Err(PaymentSendFailure::ParameterError(APIError::APIMisuseError { err })) = &retry_res {
+					if err.starts_with("Retries exhausted ") { return res; }
+				}
+				retry_res
 			},
-			Err(PaymentSendFailure::PartialFailure { failed_paths_retry: Some(retry), results, .. }) => {
-				let mut outbounds = self.pending_outbound_payments.lock().unwrap();
-				if let Some(payment) = outbounds.get_mut(&payment_id) {
-					let retryable = payment.is_retryable_now();
-					if retryable {
-						payment.increment_attempts();
-					} else { return Err(PaymentSendFailure::PartialFailure { failed_paths_retry: Some(retry), results, payment_id }) }
-				} else { return Err(PaymentSendFailure::PartialFailure { failed_paths_retry: Some(retry), results, payment_id }) }
-				core::mem::drop(outbounds);
-
+			Err(PaymentSendFailure::PartialFailure { failed_paths_retry: Some(retry), .. }) => {
 				// Some paths were sent, even if we failed to send the full MPP value our recipient may
 				// misbehave and claim the funds, at which point we have to consider the payment sent, so
 				// return `Ok()` here, ignoring any retry errors.
-				let _ = self.pay_internal(payment_id, None, retry, router, first_hops, inflight_htlcs, entropy_source, node_signer, best_block_height, send_payment_along_path);
+				let retry_res = self.pay_internal(payment_id, None, retry, router, first_hops, inflight_htlcs, entropy_source, node_signer, best_block_height, logger, send_payment_along_path);
+				log_info!(logger, "Result retrying payment id {}: {:?}", log_bytes!(payment_id.0), retry_res);
 				Ok(())
 			},
 			Err(PaymentSendFailure::PartialFailure { failed_paths_retry: None, .. }) => {
@@ -606,6 +628,12 @@ impl OutboundPayments {
 							}));
 						},
 					};
+					if !payment.is_retryable_now() {
+						return Err(PaymentSendFailure::ParameterError(APIError::APIMisuseError {
+							err: format!("Retries exhausted for payment id {}", log_bytes!(payment_id.0)),
+						}))
+					}
+					payment.increment_attempts();
 					for (path, session_priv_bytes) in route.paths.iter().zip(onion_session_privs.iter()) {
 						assert!(payment.insert(*session_priv_bytes, path));
 					}
@@ -641,7 +669,7 @@ impl OutboundPayments {
 		}
 
 		let route = Route { paths: vec![hops], payment_params: None };
-		let onion_session_privs = self.add_new_pending_payment(payment_hash, None, payment_id, &route, Retry::Attempts(0), None, entropy_source, best_block_height)?;
+		let onion_session_privs = self.add_new_pending_payment(payment_hash, None, payment_id, &route, None, None, entropy_source, best_block_height)?;
 
 		match self.pay_route_internal(&route, payment_hash, &None, None, payment_id, None, onion_session_privs, node_signer, best_block_height, &send_payment_along_path) {
 			Ok(()) => Ok((payment_hash, payment_id)),
@@ -655,14 +683,14 @@ impl OutboundPayments {
 	#[cfg(test)]
 	pub(super) fn test_add_new_pending_payment<ES: Deref>(
 		&self, payment_hash: PaymentHash, payment_secret: Option<PaymentSecret>, payment_id: PaymentId,
-		route: &Route, retry_strategy: Retry, entropy_source: &ES, best_block_height: u32
+		route: &Route, retry_strategy: Option<Retry>, entropy_source: &ES, best_block_height: u32
 	) -> Result<Vec<[u8; 32]>, PaymentSendFailure> where ES::Target: EntropySource {
 		self.add_new_pending_payment(payment_hash, payment_secret, payment_id, route, retry_strategy, None, entropy_source, best_block_height)
 	}
 
 	pub(super) fn add_new_pending_payment<ES: Deref>(
 		&self, payment_hash: PaymentHash, payment_secret: Option<PaymentSecret>, payment_id: PaymentId,
-		route: &Route, retry_strategy: Retry, route_params: Option<RouteParameters>,
+		route: &Route, retry_strategy: Option<Retry>, payment_params: Option<PaymentParameters>,
 		entropy_source: &ES, best_block_height: u32
 	) -> Result<Vec<[u8; 32]>, PaymentSendFailure> where ES::Target: EntropySource {
 		let mut onion_session_privs = Vec::with_capacity(route.paths.len());
@@ -677,7 +705,7 @@ impl OutboundPayments {
 				let payment = entry.insert(PendingOutboundPayment::Retryable {
 					retry_strategy,
 					attempts: PaymentAttempts::new(),
-					route_params,
+					payment_params,
 					session_privs: HashSet::new(),
 					pending_amt_msat: 0,
 					pending_fee_msat: Some(0),
@@ -789,7 +817,9 @@ impl OutboundPayments {
 						Some(RouteParameters {
 							payment_params: payment_params.clone(),
 							final_value_msat: pending_amt_unsent,
-							final_cltv_expiry_delta: max_unsent_cltv_delta,
+							final_cltv_expiry_delta:
+								if let Some(delta) = payment_params.final_cltv_expiry_delta { delta }
+								else { max_unsent_cltv_delta },
 						})
 					} else { None }
 				} else { None },
@@ -953,6 +983,7 @@ impl OutboundPayments {
 		let mut all_paths_failed = false;
 		let mut full_failure_ev = None;
 		let mut pending_retry_ev = None;
+		let mut retry = None;
 		let attempts_remaining = if let hash_map::Entry::Occupied(mut payment) = outbounds.entry(*payment_id) {
 			if !payment.get_mut().remove(&session_priv_bytes, Some(&path)) {
 				log_trace!(logger, "Received duplicative fail for HTLC with payment_hash {}", log_bytes!(payment_hash.0));
@@ -962,10 +993,37 @@ impl OutboundPayments {
 				log_trace!(logger, "Received failure of HTLC with payment_hash {} after payment completion", log_bytes!(payment_hash.0));
 				return
 			}
-			let is_retryable_now = payment.get().is_retryable_now();
+			let is_retryable_now = payment.get().is_auto_retryable_now();
 			if let Some(scid) = short_channel_id {
 				payment.get_mut().insert_previously_failed_scid(scid);
 			}
+
+			// We want to move towards only using the `PaymentParameters` in the outbound payments
+			// map. However, for backwards-compatibility, we still need to support passing the
+			// `PaymentParameters` data that was shoved in the HTLC (and given to us via
+			// `payment_params`) back to the user.
+			let path_last_hop = path.last().expect("Outbound payments must have had a valid path");
+			if let Some(params) = payment.get_mut().payment_parameters() {
+				if params.final_cltv_expiry_delta.is_none() {
+					// This should be rare, but a user could provide None for the payment data, and
+					// we need it when we go to retry the payment, so fill it in.
+					params.final_cltv_expiry_delta = Some(path_last_hop.cltv_expiry_delta);
+				}
+				retry = Some(RouteParameters {
+					payment_params: params.clone(),
+					final_value_msat: path_last_hop.fee_msat,
+					final_cltv_expiry_delta: params.final_cltv_expiry_delta.unwrap(),
+				});
+			} else if let Some(params) = payment_params {
+				retry = Some(RouteParameters {
+					payment_params: params.clone(),
+					final_value_msat: path_last_hop.fee_msat,
+					final_cltv_expiry_delta:
+						if let Some(delta) = params.final_cltv_expiry_delta { delta }
+						else { path_last_hop.cltv_expiry_delta },
+				});
+			}
+
 			if payment.get().remaining_parts() == 0 {
 				all_paths_failed = true;
 				if payment.get().abandoned() {
@@ -982,14 +1040,6 @@ impl OutboundPayments {
 			return
 		};
 		core::mem::drop(outbounds);
-		let mut retry = if let Some(payment_params_data) = payment_params {
-			let path_last_hop = path.last().expect("Outbound payments must have had a valid path");
-			Some(RouteParameters {
-				payment_params: payment_params_data.clone(),
-				final_value_msat: path_last_hop.fee_msat,
-				final_cltv_expiry_delta: path_last_hop.cltv_expiry_delta,
-			})
-		} else { None };
 		log_trace!(logger, "Failing outbound payment HTLC with payment_hash {}", log_bytes!(payment_hash.0));
 
 		let path_failure = {
@@ -1101,13 +1151,13 @@ impl_writeable_tlv_based_enum_upgradable!(PendingOutboundPayment,
 		(0, session_privs, required),
 		(1, pending_fee_msat, option),
 		(2, payment_hash, required),
-		(not_written, retry_strategy, (static_value, Retry::Attempts(0))),
+		(3, payment_params, option),
 		(4, payment_secret, option),
-		(not_written, attempts, (static_value, PaymentAttempts::new())),
 		(6, total_msat, required),
-		(not_written, route_params, (static_value, None)),
 		(8, pending_amt_msat, required),
 		(10, starting_block_height, required),
+		(not_written, retry_strategy, (static_value, None)),
+		(not_written, attempts, (static_value, PaymentAttempts::new())),
 	},
 	(3, Abandoned) => {
 		(0, session_privs, required),
@@ -1149,8 +1199,9 @@ mod tests {
 
 		let past_expiry_time = std::time::SystemTime::UNIX_EPOCH.elapsed().unwrap().as_secs() - 2;
 		let payment_params = PaymentParameters::from_node_id(
-			PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap()))
-			.with_expiry_time(past_expiry_time);
+				PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap()),
+				0
+			).with_expiry_time(past_expiry_time);
 		let expired_route_params = RouteParameters {
 			payment_params,
 			final_value_msat: 0,
@@ -1159,11 +1210,12 @@ mod tests {
 		let err = if on_retry {
 			outbound_payments.pay_internal(
 				PaymentId([0; 32]), None, expired_route_params, &&router, vec![], InFlightHtlcs::new(),
-				&&keys_manager, &&keys_manager, 0, &|_, _, _, _, _, _, _, _, _| Ok(())).unwrap_err()
+				&&keys_manager, &&keys_manager, 0, &&logger, &|_, _, _, _, _, _, _, _, _| Ok(())).unwrap_err()
 		} else {
 			outbound_payments.send_payment(
 				PaymentHash([0; 32]), &None, PaymentId([0; 32]), Retry::Attempts(0), expired_route_params,
-				&&router, vec![], InFlightHtlcs::new(), &&keys_manager, &&keys_manager, 0, |_, _, _, _, _, _, _, _, _| Ok(())).unwrap_err()
+				&&router, vec![], InFlightHtlcs::new(), &&keys_manager, &&keys_manager, 0, &&logger,
+				|_, _, _, _, _, _, _, _, _| Ok(())).unwrap_err()
 		};
 		if let PaymentSendFailure::ParameterError(APIError::APIMisuseError { err }) = err {
 			assert!(err.contains("Invoice expired"));
@@ -1184,26 +1236,28 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let keys_manager = test_utils::TestKeysInterface::new(&[0; 32], Network::Testnet);
 
-		router.expect_find_route(Err(LightningError { err: String::new(), action: ErrorAction::IgnoreError }));
-
 		let payment_params = PaymentParameters::from_node_id(
-			PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap()));
+			PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap()), 0);
 		let route_params = RouteParameters {
 			payment_params,
 			final_value_msat: 0,
 			final_cltv_expiry_delta: 0,
 		};
+		router.expect_find_route(route_params.clone(),
+			Err(LightningError { err: String::new(), action: ErrorAction::IgnoreError }));
+
 		let err = if on_retry {
 			outbound_payments.add_new_pending_payment(PaymentHash([0; 32]), None, PaymentId([0; 32]),
-			&Route { paths: vec![], payment_params: None }, Retry::Attempts(1), Some(route_params.clone()),
+			&Route { paths: vec![], payment_params: None }, Some(Retry::Attempts(1)), Some(route_params.payment_params.clone()),
 			&&keys_manager, 0).unwrap();
 			outbound_payments.pay_internal(
 				PaymentId([0; 32]), None, route_params, &&router, vec![], InFlightHtlcs::new(),
-				&&keys_manager, &&keys_manager, 0, &|_, _, _, _, _, _, _, _, _| Ok(())).unwrap_err()
+				&&keys_manager, &&keys_manager, 0, &&logger, &|_, _, _, _, _, _, _, _, _| Ok(())).unwrap_err()
 		} else {
 			outbound_payments.send_payment(
 				PaymentHash([0; 32]), &None, PaymentId([0; 32]), Retry::Attempts(0), route_params,
-				&&router, vec![], InFlightHtlcs::new(), &&keys_manager, &&keys_manager, 0, |_, _, _, _, _, _, _, _, _| Ok(())).unwrap_err()
+				&&router, vec![], InFlightHtlcs::new(), &&keys_manager, &&keys_manager, 0, &&logger,
+				|_, _, _, _, _, _, _, _, _| Ok(())).unwrap_err()
 		};
 		if let PaymentSendFailure::ParameterError(APIError::APIMisuseError { err }) = err {
 			assert!(err.contains("Failed to find a route"));

@@ -245,6 +245,10 @@ pub(crate) enum HTLCSource {
 		first_hop_htlc_msat: u64,
 		payment_id: PaymentId,
 		payment_secret: Option<PaymentSecret>,
+		/// Note that this is now "deprecated" - we write it for forwards (and read it for
+		/// backwards) compatibility reasons, but prefer to use the data in the
+		/// [`super::outbound_payment`] module, which stores per-payment data once instead of in
+		/// each HTLC.
 		payment_params: Option<PaymentParameters>,
 	},
 }
@@ -2473,7 +2477,7 @@ where
 		self.pending_outbound_payments
 			.send_payment(payment_hash, payment_secret, payment_id, retry_strategy, route_params,
 				&self.router, self.list_usable_channels(), self.compute_inflight_htlcs(),
-				&self.entropy_source, &self.node_signer, best_block_height,
+				&self.entropy_source, &self.node_signer, best_block_height, &self.logger,
 				|path, payment_params, payment_hash, payment_secret, total_value, cur_height, payment_id, keysend_preimage, session_priv|
 				self.send_payment_along_path(path, payment_params, payment_hash, payment_secret, total_value, cur_height, payment_id, keysend_preimage, session_priv))
 	}
@@ -2489,7 +2493,7 @@ where
 	#[cfg(test)]
 	pub(crate) fn test_add_new_pending_payment(&self, payment_hash: PaymentHash, payment_secret: Option<PaymentSecret>, payment_id: PaymentId, route: &Route) -> Result<Vec<[u8; 32]>, PaymentSendFailure> {
 		let best_block_height = self.best_block.read().unwrap().height();
-		self.pending_outbound_payments.test_add_new_pending_payment(payment_hash, payment_secret, payment_id, route, Retry::Attempts(0), &self.entropy_source, best_block_height)
+		self.pending_outbound_payments.test_add_new_pending_payment(payment_hash, payment_secret, payment_id, route, None, &self.entropy_source, best_block_height)
 	}
 
 
@@ -7357,9 +7361,9 @@ where
 								hash_map::Entry::Vacant(entry) => {
 									let path_fee = path.get_path_fees();
 									entry.insert(PendingOutboundPayment::Retryable {
-										retry_strategy: Retry::Attempts(0),
+										retry_strategy: None,
 										attempts: PaymentAttempts::new(),
-										route_params: None,
+										payment_params: None,
 										session_privs: [session_priv_bytes].iter().map(|a| *a).collect(),
 										payment_hash: htlc.payment_hash,
 										payment_secret,
@@ -7871,7 +7875,7 @@ mod tests {
 
 		// Next, attempt a keysend payment and make sure it fails.
 		let route_params = RouteParameters {
-			payment_params: PaymentParameters::for_keysend(expected_route.last().unwrap().node.get_our_node_id()),
+			payment_params: PaymentParameters::for_keysend(expected_route.last().unwrap().node.get_our_node_id(), TEST_FINAL_CLTV),
 			final_value_msat: 100_000,
 			final_cltv_expiry_delta: TEST_FINAL_CLTV,
 		};
@@ -7964,7 +7968,7 @@ mod tests {
 
 		let _chan = create_chan_between_nodes(&nodes[0], &nodes[1]);
 		let route_params = RouteParameters {
-			payment_params: PaymentParameters::for_keysend(payee_pubkey),
+			payment_params: PaymentParameters::for_keysend(payee_pubkey, 40),
 			final_value_msat: 10_000,
 			final_cltv_expiry_delta: 40,
 		};
@@ -8009,7 +8013,7 @@ mod tests {
 
 		let _chan = create_chan_between_nodes(&nodes[0], &nodes[1]);
 		let route_params = RouteParameters {
-			payment_params: PaymentParameters::for_keysend(payee_pubkey),
+			payment_params: PaymentParameters::for_keysend(payee_pubkey, 40),
 			final_value_msat: 10_000,
 			final_cltv_expiry_delta: 40,
 		};
@@ -8574,7 +8578,7 @@ pub mod bench {
 		macro_rules! send_payment {
 			($node_a: expr, $node_b: expr) => {
 				let usable_channels = $node_a.list_usable_channels();
-				let payment_params = PaymentParameters::from_node_id($node_b.get_our_node_id())
+				let payment_params = PaymentParameters::from_node_id($node_b.get_our_node_id(), TEST_FINAL_CLTV)
 					.with_features($node_b.invoice_features());
 				let scorer = test_utils::TestScorer::with_penalty(0);
 				let seed = [3u8; 32];
