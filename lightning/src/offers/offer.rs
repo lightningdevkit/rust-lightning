@@ -666,25 +666,16 @@ mod tests {
 
 	use bitcoin::blockdata::constants::ChainHash;
 	use bitcoin::network::constants::Network;
-	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 	use core::convert::TryFrom;
 	use core::num::NonZeroU64;
 	use core::time::Duration;
 	use crate::ln::features::OfferFeatures;
 	use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
 	use crate::offers::parse::{ParseError, SemanticError};
+	use crate::offers::test_utils::*;
 	use crate::onion_message::{BlindedHop, BlindedPath};
 	use crate::util::ser::{BigSize, Writeable};
 	use crate::util::string::PrintableString;
-
-	fn pubkey(byte: u8) -> PublicKey {
-		let secp_ctx = Secp256k1::new();
-		PublicKey::from_secret_key(&secp_ctx, &privkey(byte))
-	}
-
-	fn privkey(byte: u8) -> SecretKey {
-		SecretKey::from_slice(&[byte; 32]).unwrap()
-	}
 
 	#[test]
 	fn builds_offer_with_defaults() {

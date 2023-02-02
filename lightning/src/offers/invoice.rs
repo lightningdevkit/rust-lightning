@@ -777,67 +777,26 @@ impl TryFrom<PartialInvoiceTlvStream> for InvoiceContents {
 
 #[cfg(test)]
 mod tests {
-	use super::{DEFAULT_RELATIVE_EXPIRY, BlindedPayInfo, FallbackAddress, FullInvoiceTlvStreamRef, Invoice, InvoiceTlvStreamRef, SIGNATURE_TAG};
+	use super::{DEFAULT_RELATIVE_EXPIRY, FallbackAddress, FullInvoiceTlvStreamRef, Invoice, InvoiceTlvStreamRef, SIGNATURE_TAG};
 
 	use bitcoin::blockdata::script::Script;
 	use bitcoin::hashes::Hash;
 	use bitcoin::network::constants::Network;
-	use bitcoin::secp256k1::{KeyPair, Message, PublicKey, Secp256k1, SecretKey, XOnlyPublicKey, self};
-	use bitcoin::secp256k1::schnorr::Signature;
+	use bitcoin::secp256k1::{Message, Secp256k1, XOnlyPublicKey, self};
 	use bitcoin::util::address::{Address, Payload, WitnessVersion};
 	use bitcoin::util::schnorr::TweakedPublicKey;
-	use core::convert::{Infallible, TryFrom};
+	use core::convert::TryFrom;
 	use core::time::Duration;
-	use crate::ln::PaymentHash;
 	use crate::ln::msgs::DecodeError;
-	use crate::ln::features::{BlindedHopFeatures, Bolt12InvoiceFeatures};
+	use crate::ln::features::Bolt12InvoiceFeatures;
 	use crate::offers::invoice_request::InvoiceRequestTlvStreamRef;
 	use crate::offers::merkle::{SignError, SignatureTlvStreamRef, self};
 	use crate::offers::offer::{OfferBuilder, OfferTlvStreamRef, Quantity};
 	use crate::offers::parse::{ParseError, SemanticError};
 	use crate::offers::payer::PayerTlvStreamRef;
 	use crate::offers::refund::RefundBuilder;
-	use crate::onion_message::{BlindedHop, BlindedPath};
+	use crate::offers::test_utils::*;
 	use crate::util::ser::{BigSize, Iterable, Writeable};
-
-	fn payer_keys() -> KeyPair {
-		let secp_ctx = Secp256k1::new();
-		KeyPair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap())
-	}
-
-	fn payer_sign(digest: &Message) -> Result<Signature, Infallible> {
-		let secp_ctx = Secp256k1::new();
-		let keys = KeyPair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
-		Ok(secp_ctx.sign_schnorr_no_aux_rand(digest, &keys))
-	}
-
-	fn payer_pubkey() -> PublicKey {
-		payer_keys().public_key()
-	}
-
-	fn recipient_keys() -> KeyPair {
-		let secp_ctx = Secp256k1::new();
-		KeyPair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[43; 32]).unwrap())
-	}
-
-	fn recipient_sign(digest: &Message) -> Result<Signature, Infallible> {
-		let secp_ctx = Secp256k1::new();
-		let keys = KeyPair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[43; 32]).unwrap());
-		Ok(secp_ctx.sign_schnorr_no_aux_rand(digest, &keys))
-	}
-
-	fn recipient_pubkey() -> PublicKey {
-		recipient_keys().public_key()
-	}
-
-	fn pubkey(byte: u8) -> PublicKey {
-		let secp_ctx = Secp256k1::new();
-		PublicKey::from_secret_key(&secp_ctx, &privkey(byte))
-	}
-
-	fn privkey(byte: u8) -> SecretKey {
-		SecretKey::from_slice(&[byte; 32]).unwrap()
-	}
 
 	trait ToBytes {
 		fn to_bytes(&self) -> Vec<u8>;
@@ -853,58 +812,6 @@ mod tests {
 			self.4.write(&mut buffer).unwrap();
 			buffer
 		}
-	}
-
-	fn payment_paths() -> Vec<(BlindedPath, BlindedPayInfo)> {
-		let paths = vec![
-			BlindedPath {
-				introduction_node_id: pubkey(40),
-				blinding_point: pubkey(41),
-				blinded_hops: vec![
-					BlindedHop { blinded_node_id: pubkey(43), encrypted_payload: vec![0; 43] },
-					BlindedHop { blinded_node_id: pubkey(44), encrypted_payload: vec![0; 44] },
-				],
-			},
-			BlindedPath {
-				introduction_node_id: pubkey(40),
-				blinding_point: pubkey(41),
-				blinded_hops: vec![
-					BlindedHop { blinded_node_id: pubkey(45), encrypted_payload: vec![0; 45] },
-					BlindedHop { blinded_node_id: pubkey(46), encrypted_payload: vec![0; 46] },
-				],
-			},
-		];
-
-		let payinfo = vec![
-			BlindedPayInfo {
-				fee_base_msat: 1,
-				fee_proportional_millionths: 1_000,
-				cltv_expiry_delta: 42,
-				htlc_minimum_msat: 100,
-				htlc_maximum_msat: 1_000_000_000_000,
-				features: BlindedHopFeatures::empty(),
-			},
-			BlindedPayInfo {
-				fee_base_msat: 1,
-				fee_proportional_millionths: 1_000,
-				cltv_expiry_delta: 42,
-				htlc_minimum_msat: 100,
-				htlc_maximum_msat: 1_000_000_000_000,
-				features: BlindedHopFeatures::empty(),
-			},
-		];
-
-		paths.into_iter().zip(payinfo.into_iter()).collect()
-	}
-
-	fn payment_hash() -> PaymentHash {
-		PaymentHash([42; 32])
-	}
-
-	fn now() -> Duration {
-		std::time::SystemTime::now()
-			.duration_since(std::time::SystemTime::UNIX_EPOCH)
-			.expect("SystemTime::now() should come after SystemTime::UNIX_EPOCH")
 	}
 
 	#[test]

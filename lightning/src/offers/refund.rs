@@ -575,7 +575,7 @@ mod tests {
 
 	use bitcoin::blockdata::constants::ChainHash;
 	use bitcoin::network::constants::Network;
-	use bitcoin::secp256k1::{KeyPair, PublicKey, Secp256k1, SecretKey};
+	use bitcoin::secp256k1::{KeyPair, Secp256k1, SecretKey};
 	use core::convert::TryFrom;
 	use core::time::Duration;
 	use crate::ln::features::{InvoiceRequestFeatures, OfferFeatures};
@@ -584,23 +584,10 @@ mod tests {
 	use crate::offers::offer::OfferTlvStreamRef;
 	use crate::offers::parse::{ParseError, SemanticError};
 	use crate::offers::payer::PayerTlvStreamRef;
+	use crate::offers::test_utils::*;
 	use crate::onion_message::{BlindedHop, BlindedPath};
 	use crate::util::ser::{BigSize, Writeable};
 	use crate::util::string::PrintableString;
-
-	fn payer_pubkey() -> PublicKey {
-		let secp_ctx = Secp256k1::new();
-		KeyPair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap()).public_key()
-	}
-
-	fn pubkey(byte: u8) -> PublicKey {
-		let secp_ctx = Secp256k1::new();
-		PublicKey::from_secret_key(&secp_ctx, &privkey(byte))
-	}
-
-	fn privkey(byte: u8) -> SecretKey {
-		SecretKey::from_slice(&[byte; 32]).unwrap()
-	}
 
 	trait ToBytes {
 		fn to_bytes(&self) -> Vec<u8>;

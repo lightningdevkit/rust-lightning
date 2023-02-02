@@ -532,8 +532,7 @@ mod tests {
 
 	use bitcoin::blockdata::constants::ChainHash;
 	use bitcoin::network::constants::Network;
-	use bitcoin::secp256k1::{KeyPair, Message, PublicKey, Secp256k1, SecretKey, self};
-	use bitcoin::secp256k1::schnorr::Signature;
+	use bitcoin::secp256k1::{KeyPair, Secp256k1, SecretKey, self};
 	use core::convert::{Infallible, TryFrom};
 	use core::num::NonZeroU64;
 	#[cfg(feature = "std")]
@@ -544,34 +543,9 @@ mod tests {
 	use crate::offers::offer::{Amount, OfferBuilder, OfferTlvStreamRef, Quantity};
 	use crate::offers::parse::{ParseError, SemanticError};
 	use crate::offers::payer::PayerTlvStreamRef;
+	use crate::offers::test_utils::*;
 	use crate::util::ser::{BigSize, Writeable};
 	use crate::util::string::PrintableString;
-
-	fn payer_keys() -> KeyPair {
-		let secp_ctx = Secp256k1::new();
-		KeyPair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap())
-	}
-
-	fn payer_sign(digest: &Message) -> Result<Signature, Infallible> {
-		let secp_ctx = Secp256k1::new();
-		let keys = KeyPair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
-		Ok(secp_ctx.sign_schnorr_no_aux_rand(digest, &keys))
-	}
-
-	fn payer_pubkey() -> PublicKey {
-		payer_keys().public_key()
-	}
-
-	fn recipient_sign(digest: &Message) -> Result<Signature, Infallible> {
-		let secp_ctx = Secp256k1::new();
-		let keys = KeyPair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[43; 32]).unwrap());
-		Ok(secp_ctx.sign_schnorr_no_aux_rand(digest, &keys))
-	}
-
-	fn recipient_pubkey() -> PublicKey {
-		let secp_ctx = Secp256k1::new();
-		KeyPair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[43; 32]).unwrap()).public_key()
-	}
 
 	#[test]
 	fn builds_invoice_request_with_defaults() {
