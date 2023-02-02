@@ -745,10 +745,11 @@ mod tests {
 			Ok(TxOut { value: 1_000_000, script_pubkey: good_script }));
 
 		assert_eq!(chan_update_a.contents.timestamp, chan_update_b.contents.timestamp);
-		assert!(network_graph.read_only().channels()
+		let graph_lock = network_graph.read_only();
+		assert!(graph_lock.channels()
 				.get(&valid_announcement.contents.short_channel_id).as_ref().unwrap()
 				.one_to_two.as_ref().unwrap().last_update !=
-			network_graph.read_only().channels()
+			graph_lock.channels()
 				.get(&valid_announcement.contents.short_channel_id).as_ref().unwrap()
 				.two_to_one.as_ref().unwrap().last_update);
 	}

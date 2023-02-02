@@ -1426,9 +1426,11 @@ fn monitor_failed_no_reestablish_response() {
 	{
 		let mut node_0_per_peer_lock;
 		let mut node_0_peer_state_lock;
+		get_channel_ref!(nodes[0], nodes[1], node_0_per_peer_lock, node_0_peer_state_lock, channel_id).announcement_sigs_state = AnnouncementSigsState::PeerReceived;
+	}
+	{
 		let mut node_1_per_peer_lock;
 		let mut node_1_peer_state_lock;
-		get_channel_ref!(nodes[0], nodes[1], node_0_per_peer_lock, node_0_peer_state_lock, channel_id).announcement_sigs_state = AnnouncementSigsState::PeerReceived;
 		get_channel_ref!(nodes[1], nodes[0], node_1_per_peer_lock, node_1_peer_state_lock, channel_id).announcement_sigs_state = AnnouncementSigsState::PeerReceived;
 	}
 

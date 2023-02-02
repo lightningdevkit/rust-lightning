@@ -124,21 +124,13 @@ impl LockMetadata {
 		res
 	}
 
-	// Returns whether we were a recursive lock (only relevant for read)
-	fn _pre_lock(this: &Arc<LockMetadata>, read: bool) -> bool {
-		let mut inserted = false;
+	fn pre_lock(this: &Arc<LockMetadata>) {
 		LOCKS_HELD.with(|held| {
 			// For each lock which is currently locked, check that no lock's locked-before
 			// set includes the lock we're about to lock, which would imply a lockorder
 			// inversion.
-			for (locked_idx, _locked) in held.borrow().iter() {
-				if read && *locked_idx == this.lock_idx {
-					// Recursive read locks are explicitly allowed
-					return;
-				}
-			}
 			for (locked_idx, locked) in held.borrow().iter() {
-				if !read && *locked_idx == this.lock_idx {
+				if *locked_idx == this.lock_idx {
 					// With `feature = "backtrace"` set, we may be looking at different instances
 					// of the same lock.
 					debug_assert!(cfg!(feature = "backtrace"), "Tried to acquire a lock while it was held!");
@@ -162,13 +154,8 @@ impl LockMetadata {
 				}
 			}
 			held.borrow_mut().insert(this.lock_idx, Arc::clone(this));
-			inserted = true;
 		});
-		inserted
 	}
-
-	fn pre_lock(this: &Arc<LockMetadata>) { Self::_pre_lock(this, false); }
-	fn pre_read_lock(this: &Arc<LockMetadata>) -> bool { Self::_pre_lock(this, true) }
 
 	fn held_by_thread(this: &Arc<LockMetadata>) -> LockHeldState {
 		let mut res = LockHeldState::NotHeldByThread;
@@ -276,7 +263,6 @@ pub struct RwLock<T: Sized> {
 
 pub struct RwLockReadGuard<'a, T: Sized + 'a> {
 	lock: &'a RwLock<T>,
-	first_lock: bool,
 	guard: StdRwLockReadGuard<'a, T>,
 }
 
@@ -295,12 +281,6 @@ impl<T: Sized> Deref for RwLockReadGuard<'_, T> {
 
 impl<T: Sized> Drop for RwLockReadGuard<'_, T> {
 	fn drop(&mut self) {
-		if !self.first_lock {
-			// Note that its not strictly true that the first taken read lock will get unlocked
-			// last, but in practice our locks are always taken as RAII, so it should basically
-			// always be true.
-			return;
-		}
 		LOCKS_HELD.with(|held| {
 			held.borrow_mut().remove(&self.lock.deps.lock_idx);
 		});
@@ -335,8 +315,11 @@ impl<T> RwLock<T> {
 	}
 
 	pub fn read<'a>(&'a self) -> LockResult<RwLockReadGuard<'a, T>> {
-		let first_lock = LockMetadata::pre_read_lock(&self.deps);
-		self.inner.read().map(|guard| RwLockReadGuard { lock: self, guard, first_lock }).map_err(|_| ())
+		// Note that while we could be taking a recursive read lock here, Rust's `RwLock` may
+		// deadlock trying to take a second read lock if another thread is waiting on the write
+		// lock. Its platform dependent (but our in-tree `FairRwLock` guarantees this behavior).
+		LockMetadata::pre_lock(&self.deps);
+		self.inner.read().map(|guard| RwLockReadGuard { lock: self, guard }).map_err(|_| ())
 	}
 
 	pub fn write<'a>(&'a self) -> LockResult<RwLockWriteGuard<'a, T>> {
