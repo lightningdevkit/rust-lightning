@@ -1009,6 +1009,7 @@ impl OutboundPayments {
 		#[cfg(not(test))]
 		let (network_update, short_channel_id, payment_retryable, _, _) = onion_error.decode_onion_failure(secp_ctx, logger, &source);
 
+		let payment_is_probe = payment_is_probe(payment_hash, &payment_id, probing_cookie_secret);
 		let mut session_priv_bytes = [0; 32];
 		session_priv_bytes.copy_from_slice(&session_priv[..]);
 		let mut outbounds = self.pending_outbound_payments.lock().unwrap();
@@ -1025,7 +1026,7 @@ impl OutboundPayments {
 				log_trace!(logger, "Received failure of HTLC with payment_hash {} after payment completion", log_bytes!(payment_hash.0));
 				return
 			}
-			let is_retryable_now = payment.get().is_auto_retryable_now();
+			let mut is_retryable_now = payment.get().is_auto_retryable_now();
 			if let Some(scid) = short_channel_id {
 				payment.get_mut().insert_previously_failed_scid(scid);
 			}
@@ -1056,6 +1057,10 @@ impl OutboundPayments {
 				});
 			}
 
+			if !payment_is_probe && (!is_retryable_now || !payment_retryable || retry.is_none()) {
+				let _ = payment.get_mut().mark_abandoned(); // we'll only Err if it's a legacy payment
+				is_retryable_now = false;
+			}
 			if payment.get().remaining_parts() == 0 {
 				all_paths_failed = true;
 				if payment.get().abandoned() {
@@ -1075,7 +1080,7 @@ impl OutboundPayments {
 		log_trace!(logger, "Failing outbound payment HTLC with payment_hash {}", log_bytes!(payment_hash.0));
 
 		let path_failure = {
-			if payment_is_probe(payment_hash, &payment_id, probing_cookie_secret) {
+			if payment_is_probe {
 				if !payment_retryable {
 					events::Event::ProbeSuccessful {
 						payment_id: *payment_id,
@@ -1097,7 +1102,9 @@ impl OutboundPayments {
 				if let Some(scid) = short_channel_id {
 					retry.as_mut().map(|r| r.payment_params.previously_failed_channels.push(scid));
 				}
-				if payment_retryable && attempts_remaining && retry.is_some() {
+				// If we miss abandoning the payment above, we *must* generate an event here or else the
+				// payment will sit in our outbounds forever.
+				if attempts_remaining {
 					debug_assert!(full_failure_ev.is_none());
 					pending_retry_ev = Some(events::Event::PendingHTLCsForwardable {
 						time_forwardable: Duration::from_millis(MIN_HTLC_RELAY_HOLDING_CELL_MILLIS),

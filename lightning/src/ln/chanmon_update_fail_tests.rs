@@ -1752,12 +1752,18 @@ fn test_monitor_update_on_pending_forwards() {
 	commitment_signed_dance!(nodes[0], nodes[1], bs_updates.commitment_signed, false, true);
 
 	let events = nodes[0].node.get_and_clear_pending_events();
-	assert_eq!(events.len(), 2);
+	assert_eq!(events.len(), 3);
 	if let Event::PaymentPathFailed { payment_hash, payment_failed_permanently, .. } = events[0] {
 		assert_eq!(payment_hash, payment_hash_1);
 		assert!(payment_failed_permanently);
 	} else { panic!("Unexpected event!"); }
 	match events[1] {
+		Event::PaymentFailed { payment_hash, .. } => {
+			assert_eq!(payment_hash, payment_hash_1);
+		},
+		_ => panic!("Unexpected event"),
+	}
+	match events[2] {
 		Event::PendingHTLCsForwardable { .. } => { },
 		_ => panic!("Unexpected event"),
 	};
