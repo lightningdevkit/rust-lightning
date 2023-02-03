@@ -2597,9 +2597,7 @@ where
 	/// [`Event::PaymentSent`]: events::Event::PaymentSent
 	pub fn abandon_payment(&self, payment_id: PaymentId) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
-		if let Some(payment_failed_ev) = self.pending_outbound_payments.abandon_payment(payment_id) {
-			self.pending_events.lock().unwrap().push(payment_failed_ev);
-		}
+		self.pending_outbound_payments.abandon_payment(payment_id, &self.pending_events);
 	}
 
 	/// Send a spontaneous payment, which is a payment that does not require the recipient to have

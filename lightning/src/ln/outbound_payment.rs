@@ -1120,13 +1120,14 @@ impl OutboundPayments {
 		if let Some(ev) = pending_retry_ev { pending_events.push(ev); }
 	}
 
-	pub(super) fn abandon_payment(&self, payment_id: PaymentId) -> Option<events::Event> {
-		let mut failed_ev = None;
+	pub(super) fn abandon_payment(
+		&self, payment_id: PaymentId, pending_events: &Mutex<Vec<events::Event>>
+	) {
 		let mut outbounds = self.pending_outbound_payments.lock().unwrap();
 		if let hash_map::Entry::Occupied(mut payment) = outbounds.entry(payment_id) {
 			if let Ok(()) = payment.get_mut().mark_abandoned() {
 				if payment.get().remaining_parts() == 0 {
-					failed_ev = Some(events::Event::PaymentFailed {
+					pending_events.lock().unwrap().push(events::Event::PaymentFailed {
 						payment_id,
 						payment_hash: payment.get().payment_hash().expect("PendingOutboundPayments::RetriesExceeded always has a payment hash set"),
 					});
@@ -1134,7 +1135,6 @@ impl OutboundPayments {
 				}
 			}
 		}
-		failed_ev
 	}
 
 	#[cfg(test)]
