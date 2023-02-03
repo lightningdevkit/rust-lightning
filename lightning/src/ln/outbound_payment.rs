@@ -453,10 +453,8 @@ impl OutboundPayments {
 		F: Fn(&Vec<RouteHop>, &Option<PaymentParameters>, &PaymentHash, &Option<PaymentSecret>, u64,
 			 u32, PaymentId, &Option<PaymentPreimage>, [u8; 32]) -> Result<(), APIError>,
 	{
-		let preimage = match payment_preimage {
-			Some(p) => p,
-			None => PaymentPreimage(entropy_source.get_secure_random_bytes()),
-		};
+		let preimage = payment_preimage
+			.unwrap_or_else(|| PaymentPreimage(entropy_source.get_secure_random_bytes()));
 		let payment_hash = PaymentHash(Sha256::hash(&preimage.0).into_inner());
 		self.pay_internal(payment_id, Some((payment_hash, &None, Some(preimage), retry_strategy)),
 			route_params, router, first_hops, inflight_htlcs, entropy_source, node_signer,
@@ -475,10 +473,8 @@ impl OutboundPayments {
 		F: Fn(&Vec<RouteHop>, &Option<PaymentParameters>, &PaymentHash, &Option<PaymentSecret>, u64,
 		   u32, PaymentId, &Option<PaymentPreimage>, [u8; 32]) -> Result<(), APIError>
 	{
-		let preimage = match payment_preimage {
-			Some(p) => p,
-			None => PaymentPreimage(entropy_source.get_secure_random_bytes()),
-		};
+		let preimage = payment_preimage
+			.unwrap_or_else(|| PaymentPreimage(entropy_source.get_secure_random_bytes()));
 		let payment_hash = PaymentHash(Sha256::hash(&preimage.0).into_inner());
 		let onion_session_privs = self.add_new_pending_payment(payment_hash, None, payment_id, Some(preimage), &route, None, None, entropy_source, best_block_height)?;
 
