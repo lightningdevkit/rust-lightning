@@ -659,7 +659,7 @@ mod tests {
 	use bitcoin::secp256k1::{SecretKey, PublicKey, Secp256k1};
 	use lightning::chain::{BestBlock, Confirm, chainmonitor};
 	use lightning::chain::channelmonitor::ANTI_REORG_DELAY;
-	use lightning::chain::keysinterface::{InMemorySigner, EntropySource, KeysManager};
+	use lightning::chain::keysinterface::{InMemorySigner, KeysManager};
 	use lightning::chain::transaction::OutPoint;
 	use lightning::get_event_msg;
 	use lightning::ln::PaymentHash;
@@ -676,7 +676,6 @@ mod tests {
 	use lightning::util::ser::Writeable;
 	use lightning::util::test_utils;
 	use lightning::util::persist::KVStorePersister;
-	use lightning_invoice::payment::{InvoicePayer, Retry};
 	use lightning_persister::FilesystemPersister;
 	use std::collections::VecDeque;
 	use std::fs;
@@ -1324,22 +1323,6 @@ mod tests {
 
 		// all channels should now be pruned
 		assert_eq!(network_graph.read_only().channels().len(), 0);
-	}
-
-	#[test]
-	fn test_invoice_payer() {
-		let keys_manager = test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
-		let random_seed_bytes = keys_manager.get_secure_random_bytes();
-		let nodes = create_nodes(2, "test_invoice_payer".to_string());
-
-		// Initiate the background processors to watch each node.
-		let data_dir = nodes[0].persister.get_data_dir();
-		let persister = Arc::new(Persister::new(data_dir));
-		let router = Arc::new(DefaultRouter::new(Arc::clone(&nodes[0].network_graph), Arc::clone(&nodes[0].logger), random_seed_bytes, Arc::clone(&nodes[0].scorer)));
-		let invoice_payer = Arc::new(InvoicePayer::new(Arc::clone(&nodes[0].node), router, Arc::clone(&nodes[0].logger), |_: _| {}, Retry::Attempts(2)));
-		let event_handler = Arc::clone(&invoice_payer);
-		let bg_processor = BackgroundProcessor::start(persister, event_handler, nodes[0].chain_monitor.clone(), nodes[0].node.clone(), nodes[0].no_gossip_sync(), nodes[0].peer_manager.clone(), nodes[0].logger.clone(), Some(nodes[0].scorer.clone()));
-		assert!(bg_processor.stop().is_ok());
 	}
 
 	#[test]
