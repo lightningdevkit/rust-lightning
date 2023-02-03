@@ -163,13 +163,13 @@ impl PendingOutboundPayment {
 		let our_payment_hash;
 		core::mem::swap(&mut session_privs, match self {
 			PendingOutboundPayment::Legacy { .. } |
-				PendingOutboundPayment::Fulfilled { .. } =>
+			PendingOutboundPayment::Fulfilled { .. } =>
 				return Err(()),
-				PendingOutboundPayment::Retryable { session_privs, payment_hash, .. } |
-					PendingOutboundPayment::Abandoned { session_privs, payment_hash, .. } => {
-						our_payment_hash = *payment_hash;
-						session_privs
-					},
+			PendingOutboundPayment::Retryable { session_privs, payment_hash, .. } |
+			PendingOutboundPayment::Abandoned { session_privs, payment_hash, .. } => {
+				our_payment_hash = *payment_hash;
+				session_privs
+			},
 		});
 		*self = PendingOutboundPayment::Abandoned { session_privs, payment_hash: our_payment_hash };
 		Ok(())
