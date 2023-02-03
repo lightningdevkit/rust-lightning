@@ -491,7 +491,8 @@ impl OutboundPayments {
 
 	pub(super) fn check_retry_payments<R: Deref, ES: Deref, NS: Deref, SP, IH, FH, L: Deref>(
 		&self, router: &R, first_hops: FH, inflight_htlcs: IH, entropy_source: &ES, node_signer: &NS,
-		best_block_height: u32, logger: &L, send_payment_along_path: SP,
+		best_block_height: u32, pending_events: &Mutex<Vec<events::Event>>, logger: &L,
+		send_payment_along_path: SP,
 	)
 	where
 		R::Target: Router,
@@ -525,15 +526,19 @@ impl OutboundPayments {
 					}
 				}
 			}
+			core::mem::drop(outbounds);
 			if let Some((payment_id, route_params)) = retry_id_route_params {
-				core::mem::drop(outbounds);
 				if let Err(e) = self.pay_internal(payment_id, None, route_params, router, first_hops(), &inflight_htlcs, entropy_source, node_signer, best_block_height, logger, &send_payment_along_path) {
 					log_info!(logger, "Errored retrying payment: {:?}", e);
+					// If we error on retry, there is no chance of the payment succeeding and no HTLCs have
+					// been irrevocably committed to, so we can safely abandon.
+					self.abandon_payment(payment_id, pending_events);
 				}
 			} else { break }
 		}
 	}
 
+	/// Will return `Ok(())` iff at least one HTLC is sent for the payment.
 	fn pay_internal<R: Deref, NS: Deref, ES: Deref, IH, SP, L: Deref>(
 		&self, payment_id: PaymentId,
 		initial_send_info: Option<(PaymentHash, &Option<PaymentSecret>, Option<PaymentPreimage>, Retry)>,

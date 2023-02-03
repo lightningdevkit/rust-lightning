@@ -1615,6 +1615,7 @@ enum AutoRetry {
 	FailAttempts,
 	FailTimeout,
 	FailOnRestart,
+	FailOnRetry,
 }
 
 #[test]
@@ -1624,6 +1625,7 @@ fn automatic_retries() {
 	do_automatic_retries(AutoRetry::FailAttempts);
 	do_automatic_retries(AutoRetry::FailTimeout);
 	do_automatic_retries(AutoRetry::FailOnRestart);
+	do_automatic_retries(AutoRetry::FailOnRetry);
 }
 fn do_automatic_retries(test: AutoRetry) {
 	// Test basic automatic payment retries in ChannelManager. See individual `test` variant comments
@@ -1812,6 +1814,25 @@ fn do_automatic_retries(test: AutoRetry) {
 		assert_eq!(msg_events.len(), 0);
 
 		nodes[0].node.abandon_payment(PaymentId(payment_hash.0));
+		let mut events = nodes[0].node.get_and_clear_pending_events();
+		assert_eq!(events.len(), 1);
+		match events[0] {
+			Event::PaymentFailed { payment_hash: ref ev_payment_hash, payment_id: ref ev_payment_id } => {
+				assert_eq!(payment_hash, *ev_payment_hash);
+				assert_eq!(PaymentId(payment_hash.0), *ev_payment_id);
+			},
+			_ => panic!("Unexpected event"),
+		}
+	} else if test == AutoRetry::FailOnRetry {
+		nodes[0].node.send_payment_with_retry(payment_hash, &Some(payment_secret), PaymentId(payment_hash.0), route_params, Retry::Attempts(1)).unwrap();
+		pass_failed_attempt_with_retry_along_path!(channel_id_2, true);
+
+		// We retry payments in `process_pending_htlc_forwards`. Since our channel closed, we should
+		// fail to find a route.
+		nodes[0].node.process_pending_htlc_forwards();
+		let mut msg_events = nodes[0].node.get_and_clear_pending_msg_events();
+		assert_eq!(msg_events.len(), 0);
+
 		let mut events = nodes[0].node.get_and_clear_pending_events();
 		assert_eq!(events.len(), 1);
 		match events[0] {
