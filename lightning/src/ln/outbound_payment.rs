@@ -393,12 +393,14 @@ pub enum PaymentSendFailure {
 
 pub(super) struct OutboundPayments {
 	pub(super) pending_outbound_payments: Mutex<HashMap<PaymentId, PendingOutboundPayment>>,
+	pub(super) retry_lock: Mutex<()>,
 }
 
 impl OutboundPayments {
 	pub(super) fn new() -> Self {
 		Self {
-			pending_outbound_payments: Mutex::new(HashMap::new())
+			pending_outbound_payments: Mutex::new(HashMap::new()),
+			retry_lock: Mutex::new(()),
 		}
 	}
 
@@ -501,6 +503,7 @@ impl OutboundPayments {
 		FH: Fn() -> Vec<ChannelDetails>,
 		L::Target: Logger,
 	{
+		let _single_thread = self.retry_lock.lock().unwrap();
 		loop {
 			let mut outbounds = self.pending_outbound_payments.lock().unwrap();
 			let mut retry_id_route_params = None;

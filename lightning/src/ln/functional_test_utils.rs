@@ -350,6 +350,19 @@ impl<'a, 'b, 'c> Node<'a, 'b, 'c> {
 	}
 }
 
+/// If we need an unsafe pointer to a `Node` (ie to reference it in a thread
+/// pre-std::thread::scope), this provides that with `Sync`. Note that accessing some of the fields
+/// in the `Node` are not safe to use (i.e. the ones behind an `Rc`), but that's left to the caller
+/// to figure out.
+pub struct NodePtr(pub *const Node<'static, 'static, 'static>);
+impl NodePtr {
+	pub fn from_node<'a, 'b: 'a, 'c: 'b>(node: &Node<'a, 'b, 'c>) -> Self {
+		Self((node as *const Node<'a, 'b, 'c>).cast())
+	}
+}
+unsafe impl Send for NodePtr {}
+unsafe impl Sync for NodePtr {}
+
 impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 	fn drop(&mut self) {
 		if !panicking() {
