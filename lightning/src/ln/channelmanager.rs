@@ -53,7 +53,7 @@ use crate::ln::onion_utils::HTLCFailReason;
 use crate::ln::msgs::{ChannelMessageHandler, DecodeError, LightningError, MAX_VALUE_MSAT};
 #[cfg(test)]
 use crate::ln::outbound_payment;
-use crate::ln::outbound_payment::{OutboundPayments, PaymentAttempts, PendingOutboundPayment, Retry};
+use crate::ln::outbound_payment::{OutboundPayments, PaymentAttempts, PendingOutboundPayment};
 use crate::ln::wire::Encode;
 use crate::chain::keysinterface::{EntropySource, KeysManager, NodeSigner, Recipient, SignerProvider, ChannelSigner};
 use crate::util::config::{UserConfig, ChannelConfig};
@@ -76,7 +76,7 @@ use core::time::Duration;
 use core::ops::Deref;
 
 // Re-export this for use in the public API.
-pub use crate::ln::outbound_payment::PaymentSendFailure;
+pub use crate::ln::outbound_payment::{PaymentSendFailure, Retry};
 
 // We hold various information about HTLC relay in the HTLC objects in Channel itself:
 //
@@ -5522,6 +5522,12 @@ where
 		let event_handler = |event: events::Event| events.borrow_mut().push(event);
 		self.process_pending_events(&event_handler);
 		events.into_inner()
+	}
+
+	#[cfg(feature = "_test_utils")]
+	pub fn push_pending_event(&self, event: events::Event) {
+		let mut events = self.pending_events.lock().unwrap();
+		events.push(event);
 	}
 
 	#[cfg(test)]
