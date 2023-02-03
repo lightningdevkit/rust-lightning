@@ -4176,7 +4176,7 @@ where
 	}
 
 	fn channel_monitor_updated(&self, funding_txo: &OutPoint, highest_applied_update_id: u64, counterparty_node_id: Option<&PublicKey>) {
-		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
+		debug_assert!(self.total_consistency_lock.try_write().is_err()); // Caller holds read lock
 
 		let counterparty_node_id = match counterparty_node_id {
 			Some(cp_id) => cp_id.clone(),
@@ -5116,6 +5116,8 @@ where
 
 	/// Process pending events from the `chain::Watch`, returning whether any events were processed.
 	fn process_pending_monitor_events(&self) -> bool {
+		debug_assert!(self.total_consistency_lock.try_write().is_err()); // Caller holds read lock
+
 		let mut failed_channels = Vec::new();
 		let mut pending_monitor_events = self.chain_monitor.release_pending_monitor_events();
 		let has_pending_monitor_events = !pending_monitor_events.is_empty();
@@ -5193,7 +5195,13 @@ where
 	/// update events as a separate process method here.
 	#[cfg(fuzzing)]
 	pub fn process_monitor_events(&self) {
-		self.process_pending_monitor_events();
+		PersistenceNotifierGuard::optionally_notify(&self.total_consistency_lock, &self.persistence_notifier, || {
+			if self.process_pending_monitor_events() {
+				NotifyOption::DoPersist
+			} else {
+				NotifyOption::SkipPersist
+			}
+		});
 	}
 
 	/// Check the holding cell in each channel and free any pending HTLCs in them if possible.
