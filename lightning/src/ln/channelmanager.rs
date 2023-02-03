@@ -5520,6 +5520,12 @@ where
 		events.into_inner()
 	}
 
+	#[cfg(feature = "_test_utils")]
+	pub fn push_pending_event(&self, event: events::Event) {
+		let mut events = self.pending_events.lock().unwrap();
+		events.push(event);
+	}
+
 	#[cfg(test)]
 	pub fn pop_pending_event(&self) -> Option<events::Event> {
 		let mut events = self.pending_events.lock().unwrap();
