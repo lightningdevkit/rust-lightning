@@ -618,13 +618,14 @@ mod tests {
 	use lightning::chain::keysinterface::{InMemorySigner, EntropySource, KeysManager};
 	use lightning::chain::transaction::OutPoint;
 	use lightning::get_event_msg;
-	use lightning::ln::channelmanager::{BREAKDOWN_TIMEOUT, ChainParameters, ChannelManager, SimpleArcChannelManager};
+	use lightning::ln::channelmanager;
+	use lightning::ln::channelmanager::{BREAKDOWN_TIMEOUT, ChainParameters};
 	use lightning::ln::features::ChannelFeatures;
 	use lightning::ln::msgs::{ChannelMessageHandler, Init};
 	use lightning::ln::peer_handler::{PeerManager, MessageHandler, SocketDescriptor, IgnoringMessageHandler};
-	use lightning::routing::gossip::{NetworkGraph, P2PGossipSync};
-	use lightning::routing::router::DefaultRouter;
-	use lightning::routing::scoring::{ProbabilisticScoringParameters, ProbabilisticScorer};
+	use lightning::routing::gossip::{NetworkGraph, NodeId, P2PGossipSync};
+	use lightning::routing::router::{DefaultRouter, RouteHop};
+	use lightning::routing::scoring::{ChannelUsage, Score};
 	use lightning::util::config::UserConfig;
 	use lightning::util::events::{Event, MessageSendEventsProvider, MessageSendEvent};
 	use lightning::util::ser::Writeable;
@@ -632,6 +633,7 @@ mod tests {
 	use lightning::util::persist::KVStorePersister;
 	use lightning_invoice::payment::{InvoicePayer, Retry};
 	use lightning_persister::FilesystemPersister;
+	use std::collections::VecDeque;
 	use std::fs;
 	use std::path::PathBuf;
 	use std::sync::{Arc, Mutex};
@@ -654,13 +656,15 @@ mod tests {
 		fn disconnect_socket(&mut self) {}
 	}
 
+	type ChannelManager = channelmanager::ChannelManager<Arc<ChainMonitor>, Arc<test_utils::TestBroadcaster>, Arc<KeysManager>, Arc<KeysManager>, Arc<KeysManager>, Arc<test_utils::TestFeeEstimator>, Arc<DefaultRouter< Arc<NetworkGraph<Arc<test_utils::TestLogger>>>, Arc<test_utils::TestLogger>, Arc<Mutex<TestScorer>>>>, Arc<test_utils::TestLogger>>;
+
 	type ChainMonitor = chainmonitor::ChainMonitor<InMemorySigner, Arc<test_utils::TestChainSource>, Arc<test_utils::TestBroadcaster>, Arc<test_utils::TestFeeEstimator>, Arc<test_utils::TestLogger>, Arc<FilesystemPersister>>;
 
 	type PGS = Arc<P2PGossipSync<Arc<NetworkGraph<Arc<test_utils::TestLogger>>>, Arc<test_utils::TestChainSource>, Arc<test_utils::TestLogger>>>;
 	type RGS = Arc<RapidGossipSync<Arc<NetworkGraph<Arc<test_utils::TestLogger>>>, Arc<test_utils::TestLogger>>>;
 
 	struct Node {
-		node: Arc<SimpleArcChannelManager<ChainMonitor, test_utils::TestBroadcaster, test_utils::TestFeeEstimator, test_utils::TestLogger>>,
+		node: Arc<ChannelManager>,
 		p2p_gossip_sync: PGS,
 		rapid_gossip_sync: RGS,
 		peer_manager: Arc<PeerManager<TestDescriptor, Arc<test_utils::TestChannelMessageHandler>, Arc<test_utils::TestRoutingMessageHandler>, IgnoringMessageHandler, Arc<test_utils::TestLogger>, IgnoringMessageHandler, Arc<KeysManager>>>,
@@ -670,7 +674,7 @@ mod tests {
 		network_graph: Arc<NetworkGraph<Arc<test_utils::TestLogger>>>,
 		logger: Arc<test_utils::TestLogger>,
 		best_block: BestBlock,
-		scorer: Arc<Mutex<ProbabilisticScorer<Arc<NetworkGraph<Arc<test_utils::TestLogger>>>, Arc<test_utils::TestLogger>>>>,
+		scorer: Arc<Mutex<TestScorer>>,
 	}
 
 	impl Node {
@@ -756,6 +760,128 @@ mod tests {
 		}
 	}
 
+	struct TestScorer {
+		event_expectations: Option<VecDeque<TestResult>>,
+	}
+
+	#[derive(Debug)]
+	enum TestResult {
+		PaymentFailure { path: Vec<RouteHop>, short_channel_id: u64 },
+		PaymentSuccess { path: Vec<RouteHop> },
+		ProbeFailure { path: Vec<RouteHop> },
+		ProbeSuccess { path: Vec<RouteHop> },
+	}
+
+	impl TestScorer {
+		fn new() -> Self {
+			Self { event_expectations: None }
+		}
+
+		fn expect(&mut self, expectation: TestResult) {
+			self.event_expectations.get_or_insert_with(|| VecDeque::new()).push_back(expectation);
+		}
+	}
+
+	impl lightning::util::ser::Writeable for TestScorer {
+		fn write<W: lightning::util::ser::Writer>(&self, _: &mut W) -> Result<(), lightning::io::Error> { Ok(()) }
+	}
+
+	impl Score for TestScorer {
+		fn channel_penalty_msat(
+			&self, _short_channel_id: u64, _source: &NodeId, _target: &NodeId, _usage: ChannelUsage
+		) -> u64 { unimplemented!(); }
+
+		fn payment_path_failed(&mut self, actual_path: &[&RouteHop], actual_short_channel_id: u64) {
+			if let Some(expectations) = &mut self.event_expectations {
+				match expectations.pop_front().unwrap() {
+					TestResult::PaymentFailure { path, short_channel_id } => {
+						assert_eq!(actual_path, &path.iter().collect::<Vec<_>>()[..]);
+						assert_eq!(actual_short_channel_id, short_channel_id);
+					},
+					TestResult::PaymentSuccess { path } => {
+						panic!("Unexpected successful payment path: {:?}", path)
+					},
+					TestResult::ProbeFailure { path } => {
+						panic!("Unexpected probe failure: {:?}", path)
+					},
+					TestResult::ProbeSuccess { path } => {
+						panic!("Unexpected probe success: {:?}", path)
+					}
+				}
+			}
+		}
+
+		fn payment_path_successful(&mut self, actual_path: &[&RouteHop]) {
+			if let Some(expectations) = &mut self.event_expectations {
+				match expectations.pop_front().unwrap() {
+					TestResult::PaymentFailure { path, .. } => {
+						panic!("Unexpected payment path failure: {:?}", path)
+					},
+					TestResult::PaymentSuccess { path } => {
+						assert_eq!(actual_path, &path.iter().collect::<Vec<_>>()[..]);
+					},
+					TestResult::ProbeFailure { path } => {
+						panic!("Unexpected probe failure: {:?}", path)
+					},
+					TestResult::ProbeSuccess { path } => {
+						panic!("Unexpected probe success: {:?}", path)
+					}
+				}
+			}
+		}
+
+		fn probe_failed(&mut self, actual_path: &[&RouteHop], _: u64) {
+			if let Some(expectations) = &mut self.event_expectations {
+				match expectations.pop_front().unwrap() {
+					TestResult::PaymentFailure { path, .. } => {
+						panic!("Unexpected payment path failure: {:?}", path)
+					},
+					TestResult::PaymentSuccess { path } => {
+						panic!("Unexpected payment path success: {:?}", path)
+					},
+					TestResult::ProbeFailure { path } => {
+						assert_eq!(actual_path, &path.iter().collect::<Vec<_>>()[..]);
+					},
+					TestResult::ProbeSuccess { path } => {
+						panic!("Unexpected probe success: {:?}", path)
+					}
+				}
+			}
+		}
+		fn probe_successful(&mut self, actual_path: &[&RouteHop]) {
+			if let Some(expectations) = &mut self.event_expectations {
+				match expectations.pop_front().unwrap() {
+					TestResult::PaymentFailure { path, .. } => {
+						panic!("Unexpected payment path failure: {:?}", path)
+					},
+					TestResult::PaymentSuccess { path } => {
+						panic!("Unexpected payment path success: {:?}", path)
+					},
+					TestResult::ProbeFailure { path } => {
+						panic!("Unexpected probe failure: {:?}", path)
+					},
+					TestResult::ProbeSuccess { path } => {
+						assert_eq!(actual_path, &path.iter().collect::<Vec<_>>()[..]);
+					}
+				}
+			}
+		}
+	}
+
+	impl Drop for TestScorer {
+		fn drop(&mut self) {
+			if std::thread::panicking() {
+				return;
+			}
+
+			if let Some(event_expectations) = &self.event_expectations {
+				if !event_expectations.is_empty() {
+					panic!("Unsatisfied event expectations: {:?}", event_expectations);
+				}
+			}
+		}
+	}
+
 	fn get_full_filepath(filepath: String, filename: String) -> String {
 		let mut path = PathBuf::from(filepath);
 		path.push(filename);
@@ -771,8 +897,7 @@ mod tests {
 			let network = Network::Testnet;
 			let genesis_block = genesis_block(network);
 			let network_graph = Arc::new(NetworkGraph::new(genesis_block.header.block_hash(), logger.clone()));
-			let params = ProbabilisticScoringParameters::default();
-			let scorer = Arc::new(Mutex::new(ProbabilisticScorer::new(params, network_graph.clone(), logger.clone())));
+			let scorer = Arc::new(Mutex::new(TestScorer::new()));
 			let seed = [i as u8; 32];
 			let router = Arc::new(DefaultRouter::new(network_graph.clone(), logger.clone(), seed, scorer.clone()));
 			let chain_source = Arc::new(test_utils::TestChainSource::new(Network::Testnet));
