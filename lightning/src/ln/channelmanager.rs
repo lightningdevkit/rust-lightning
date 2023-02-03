@@ -1154,6 +1154,36 @@ impl ChannelDetails {
 	}
 }
 
+/// Used by [`ChannelManager::list_recent_payments`] to express the status of recent payments.
+/// These include payments that have yet to find a successful path, or have unresolved HTLCs.
+#[derive(Debug, PartialEq)]
+pub enum RecentPaymentDetails {
+	/// When a payment is still being sent and awaiting successful delivery.
+	Pending {
+		/// Hash of the payment that is currently being sent but has yet to be fulfilled or
+		/// abandoned.
+		payment_hash: PaymentHash,
+		/// Total amount (in msat, excluding fees) across all paths for this payment,
+		/// not just the amount currently inflight.
+		total_msat: u64,
+	},
+	/// When a pending payment is fulfilled, we continue tracking it until all pending HTLCs have
+	/// been resolved. Upon receiving [`Event::PaymentSent`], we delay for a few minutes before the
+	/// payment is removed from tracking.
+	Fulfilled {
+		/// Hash of the payment that was claimed. `None` for serializations of [`ChannelManager`]
+		/// made before LDK version 0.0.104.
+		payment_hash: Option<PaymentHash>,
+	},
+	/// After a payment is explicitly abandoned by calling [`ChannelManager::abandon_payment`], it
+	/// is marked as abandoned until an [`Event::PaymentFailed`] is generated. A payment could also
+	/// be marked as abandoned if pathfinding fails repeatedly or retries have been exhausted.
+	Abandoned {
+		/// Hash of the payment that we have given up trying to send.
+		payment_hash: PaymentHash,
+	},
+}
+
 /// Route hints used in constructing invoices for [phantom node payents].
 ///
 /// [phantom node payments]: crate::chain::keysinterface::PhantomKeysManager
@@ -1689,6 +1719,34 @@ where
 		// internal/external nomenclature, but that's ok cause that's probably what the user
 		// really wanted anyway.
 		self.list_channels_with_filter(|&(_, ref channel)| channel.is_live())
+	}
+
+	/// Returns in an undefined order recent payments that -- if not fulfilled -- have yet to find a
+	/// successful path, or have unresolved HTLCs.
+	///
+	/// This can be useful for payments that may have been prepared, but ultimately not sent, as a
+	/// result of a crash. If such a payment exists, is not listed here, and an
+	/// [`Event::PaymentSent`] has not been received, you may consider retrying the payment.
+	///
+	/// [`Event::PaymentSent`]: events::Event::PaymentSent
+	pub fn list_recent_payments(&self) -> Vec<RecentPaymentDetails> {
+		self.pending_outbound_payments.pending_outbound_payments.lock().unwrap().iter()
+			.filter_map(|(_, pending_outbound_payment)| match pending_outbound_payment {
+				PendingOutboundPayment::Retryable { payment_hash, total_msat, .. } => {
+					Some(RecentPaymentDetails::Pending {
+						payment_hash: *payment_hash,
+						total_msat: *total_msat,
+					})
+				},
+				PendingOutboundPayment::Abandoned { payment_hash, .. } => {
+					Some(RecentPaymentDetails::Abandoned { payment_hash: *payment_hash })
+				},
+				PendingOutboundPayment::Fulfilled { payment_hash, .. } => {
+					Some(RecentPaymentDetails::Fulfilled { payment_hash: *payment_hash })
+				},
+				PendingOutboundPayment::Legacy { .. } => None
+			})
+			.collect()
 	}
 
 	/// Helper function that issues the channel close events
@@ -2415,8 +2473,13 @@ where
 
 	/// Sends a payment along a given route.
 	///
-	/// Value parameters are provided via the last hop in route, see documentation for RouteHop
+	/// Value parameters are provided via the last hop in route, see documentation for [`RouteHop`]
 	/// fields for more info.
+	///
+	/// May generate SendHTLCs message(s) event on success, which should be relayed (e.g. via
+	/// [`PeerManager::process_events`]).
+	///
+	/// # Avoiding Duplicate Payments
 	///
 	/// If a pending payment is currently in-flight with the same [`PaymentId`] provided, this
 	/// method will error with an [`APIError::InvalidRoute`]. Note, however, that once a payment
@@ -2430,12 +2493,16 @@ where
 	/// consider using the [`PaymentHash`] as the key for tracking payments. In that case, the
 	/// [`PaymentId`] should be a copy of the [`PaymentHash`] bytes.
 	///
-	/// May generate SendHTLCs message(s) event on success, which should be relayed (e.g. via
-	/// [`PeerManager::process_events`]).
+	/// Additionally, in the scenario where we begin the process of sending a payment, but crash
+	/// before `send_payment` returns (or prior to [`ChannelMonitorUpdate`] persistence if you're
+	/// using [`ChannelMonitorUpdateStatus::InProgress`]), the payment may be lost on restart. See
+	/// [`ChannelManager::list_recent_payments`] for more information.
+	///
+	/// # Possible Error States on [`PaymentSendFailure`]
 	///
 	/// Each path may have a different return value, and PaymentSendValue may return a Vec with
 	/// each entry matching the corresponding-index entry in the route paths, see
-	/// PaymentSendFailure for more info.
+	/// [`PaymentSendFailure`] for more info.
 	///
 	/// In general, a path may raise:
 	///  * [`APIError::InvalidRoute`] when an invalid route or forwarding parameter (cltv_delta, fee,
@@ -2450,18 +2517,21 @@ where
 	/// irrevocably committed to on our end. In such a case, do NOT retry the payment with a
 	/// different route unless you intend to pay twice!
 	///
-	/// payment_secret is unrelated to payment_hash (or PaymentPreimage) and exists to authenticate
-	/// the sender to the recipient and prevent payment-probing (deanonymization) attacks. For
-	/// newer nodes, it will be provided to you in the invoice. If you do not have one, the Route
-	/// must not contain multiple paths as multi-path payments require a recipient-provided
-	/// payment_secret.
+	/// # A caution on `payment_secret`
 	///
-	/// If a payment_secret *is* provided, we assume that the invoice had the payment_secret feature
-	/// bit set (either as required or as available). If multiple paths are present in the Route,
-	/// we assume the invoice had the basic_mpp feature set.
+	/// `payment_secret` is unrelated to `payment_hash` (or [`PaymentPreimage`]) and exists to
+	/// authenticate the sender to the recipient and prevent payment-probing (deanonymization)
+	/// attacks. For newer nodes, it will be provided to you in the invoice. If you do not have one,
+	/// the [`Route`] must not contain multiple paths as multi-path payments require a
+	/// recipient-provided `payment_secret`.
+	///
+	/// If a `payment_secret` *is* provided, we assume that the invoice had the payment_secret
+	/// feature bit set (either as required or as available). If multiple paths are present in the
+	/// [`Route`], we assume the invoice had the basic_mpp feature set.
 	///
 	/// [`Event::PaymentSent`]: events::Event::PaymentSent
 	/// [`PeerManager::process_events`]: crate::ln::peer_handler::PeerManager::process_events
+	/// [`ChannelMonitorUpdateStatus::InProgress`]: crate::chain::ChannelMonitorUpdateStatus::InProgress
 	pub fn send_payment(&self, route: &Route, payment_hash: PaymentHash, payment_secret: &Option<PaymentSecret>, payment_id: PaymentId) -> Result<(), PaymentSendFailure> {
 		let best_block_height = self.best_block.read().unwrap().height();
 		self.pending_outbound_payments

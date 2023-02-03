@@ -16,7 +16,7 @@ use crate::chain::channelmonitor::{ANTI_REORG_DELAY, LATENCY_GRACE_PERIOD_BLOCKS
 use crate::chain::keysinterface::EntropySource;
 use crate::chain::transaction::OutPoint;
 use crate::ln::channel::EXPIRE_PREV_CONFIG_TICKS;
-use crate::ln::channelmanager::{BREAKDOWN_TIMEOUT, ChannelManager, MPP_TIMEOUT_TICKS, MIN_CLTV_EXPIRY_DELTA, PaymentId, PaymentSendFailure, IDEMPOTENCY_TIMEOUT_TICKS};
+use crate::ln::channelmanager::{BREAKDOWN_TIMEOUT, ChannelManager, MPP_TIMEOUT_TICKS, MIN_CLTV_EXPIRY_DELTA, PaymentId, PaymentSendFailure, IDEMPOTENCY_TIMEOUT_TICKS, RecentPaymentDetails};
 use crate::ln::features::InvoiceFeatures;
 use crate::ln::msgs;
 use crate::ln::msgs::ChannelMessageHandler;
@@ -1274,7 +1274,11 @@ fn test_trivial_inflight_htlc_tracking(){
 	let (_, _, chan_2_id, _) = create_announced_chan_between_nodes(&nodes, 1, 2);
 
 	// Send and claim the payment. Inflight HTLCs should be empty.
-	send_payment(&nodes[0], &vec!(&nodes[1], &nodes[2])[..], 500000);
+	let (route, payment_hash, payment_preimage, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], 500000);
+	nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret), PaymentId(payment_hash.0)).unwrap();
+	check_added_monitors!(nodes[0], 1);
+	pass_along_route(&nodes[0], &[&vec!(&nodes[1], &nodes[2])[..]], 500000, payment_hash, payment_secret);
+	claim_payment(&nodes[0], &vec!(&nodes[1], &nodes[2])[..], payment_preimage);
 	{
 		let inflight_htlcs = node_chanmgrs[0].compute_inflight_htlcs();
 
@@ -1299,9 +1303,17 @@ fn test_trivial_inflight_htlc_tracking(){
 		assert_eq!(chan_1_used_liquidity, None);
 		assert_eq!(chan_2_used_liquidity, None);
 	}
+	let pending_payments = nodes[0].node.list_recent_payments();
+	assert_eq!(pending_payments.len(), 1);
+	assert_eq!(pending_payments[0], RecentPaymentDetails::Fulfilled { payment_hash: Some(payment_hash) });
+
+	// Remove fulfilled payment
+	for _ in 0..=IDEMPOTENCY_TIMEOUT_TICKS {
+		nodes[0].node.timer_tick_occurred();
+	}
 
 	// Send the payment, but do not claim it. Our inflight HTLCs should contain the pending payment.
-	let (payment_preimage, _,  _) = route_payment(&nodes[0], &vec!(&nodes[1], &nodes[2])[..], 500000);
+	let (payment_preimage, payment_hash,  _) = route_payment(&nodes[0], &vec!(&nodes[1], &nodes[2])[..], 500000);
 	{
 		let inflight_htlcs = node_chanmgrs[0].compute_inflight_htlcs();
 
@@ -1327,9 +1339,18 @@ fn test_trivial_inflight_htlc_tracking(){
 		assert_eq!(chan_1_used_liquidity, Some(501000));
 		assert_eq!(chan_2_used_liquidity, Some(500000));
 	}
+	let pending_payments = nodes[0].node.list_recent_payments();
+	assert_eq!(pending_payments.len(), 1);
+	assert_eq!(pending_payments[0], RecentPaymentDetails::Pending { payment_hash, total_msat: 500000 });
 
 	// Now, let's claim the payment. This should result in the used liquidity to return `None`.
 	claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_preimage);
+
+	// Remove fulfilled payment
+	for _ in 0..=IDEMPOTENCY_TIMEOUT_TICKS {
+		nodes[0].node.timer_tick_occurred();
+	}
+
 	{
 		let inflight_htlcs = node_chanmgrs[0].compute_inflight_htlcs();
 
@@ -1354,6 +1375,9 @@ fn test_trivial_inflight_htlc_tracking(){
 		assert_eq!(chan_1_used_liquidity, None);
 		assert_eq!(chan_2_used_liquidity, None);
 	}
+
+	let pending_payments = nodes[0].node.list_recent_payments();
+	assert_eq!(pending_payments.len(), 0);
 }
 
 #[test]
