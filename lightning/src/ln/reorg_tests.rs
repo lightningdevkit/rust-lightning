@@ -13,7 +13,7 @@ use crate::chain::channelmonitor::ANTI_REORG_DELAY;
 use crate::chain::transaction::OutPoint;
 use crate::chain::Confirm;
 use crate::ln::channelmanager::ChannelManager;
-use crate::ln::msgs::ChannelMessageHandler;
+use crate::ln::msgs::{ChannelMessageHandler, Init};
 use crate::util::events::{Event, MessageSendEventsProvider, ClosureReason, HTLCDestination};
 use crate::util::test_utils;
 use crate::util::ser::Writeable;
@@ -374,6 +374,12 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool, use_funding_
 	nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().clear();
 
 	// Now check that we can create a new channel
+	if reload_node && nodes[0].node.per_peer_state.read().unwrap().len() == 0 {
+		// If we dropped the channel before reloading the node, nodes[1] was also dropped from
+		// nodes[0] storage, and hence not connected again on startup. We therefore need to
+		// reconnect to the node before attempting to create a new channel.
+		nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &Init { features: nodes[1].node.init_features(), remote_network_address: None }).unwrap();
+	}
 	create_announced_chan_between_nodes(&nodes, 0, 1);
 	send_payment(&nodes[0], &[&nodes[1]], 8000000);
 }

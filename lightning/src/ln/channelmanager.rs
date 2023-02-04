@@ -493,6 +493,18 @@ pub(super) struct PeerState<Signer: ChannelSigner> {
 	is_connected: bool,
 }
 
+impl <Signer: ChannelSigner> PeerState<Signer> {
+	/// Indicates that a peer meets the criteria where we're ok to remove it from our storage.
+	/// If true is passed for `require_disconnected`, the function will return false if we haven't
+	/// disconnected from the node already, ie. `PeerState::is_connected` is set to `true`.
+	fn ok_to_remove(&self, require_disconnected: bool) -> bool {
+		if require_disconnected && self.is_connected {
+			return false
+		}
+		self.channel_by_id.len() == 0
+	}
+}
+
 /// Stores a PaymentSecret and any other data we may need to validate an inbound payment is
 /// actually ours and not some duplicate HTLC sent to us by a node along the route.
 ///
@@ -3521,8 +3533,7 @@ where
 
 						true
 					});
-					let peer_should_be_removed = !peer_state.is_connected && peer_state.channel_by_id.len() == 0;
-					if peer_should_be_removed {
+					if peer_state.ok_to_remove(true) {
 						pending_peers_awaiting_removal.push(counterparty_node_id);
 					}
 				}
@@ -3544,7 +3555,7 @@ where
 							// have no channels to the peer.
 							let remove_entry = {
 								let peer_state = entry.get().lock().unwrap();
-								!peer_state.is_connected && peer_state.channel_by_id.len() == 0
+								peer_state.ok_to_remove(true)
 							};
 							if remove_entry {
 								entry.remove_entry();
@@ -6254,9 +6265,8 @@ where
 	fn peer_disconnected(&self, counterparty_node_id: &PublicKey, no_connection_possible: bool) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 		let mut failed_channels = Vec::new();
-		let mut no_channels_remain = true;
 		let mut per_peer_state = self.per_peer_state.write().unwrap();
-		{
+		let remove_peer = {
 			log_debug!(self.logger, "Marking channels with {} disconnected and generating channel_updates. We believe we {} make future connections to this peer.",
 				log_pubkey!(counterparty_node_id), if no_connection_possible { "cannot" } else { "can" });
 			if let Some(peer_state_mutex) = per_peer_state.get(counterparty_node_id) {
@@ -6269,8 +6279,6 @@ where
 						update_maps_on_chan_removal!(self, chan);
 						self.issue_channel_close_events(chan, ClosureReason::DisconnectedPeer);
 						return false;
-					} else {
-						no_channels_remain = false;
 					}
 					true
 				});
@@ -6300,9 +6308,10 @@ where
 				});
 				debug_assert!(peer_state.is_connected, "A disconnected peer cannot disconnect");
 				peer_state.is_connected = false;
-			}
-		}
-		if no_channels_remain {
+				peer_state.ok_to_remove(true)
+			} else { true }
+		};
+		if remove_peer {
 			per_peer_state.remove(counterparty_node_id);
 		}
 		mem::drop(per_peer_state);
@@ -6896,6 +6905,7 @@ where
 			best_block.block_hash().write(writer)?;
 		}
 
+		let mut serializable_peer_count: u64 = 0;
 		{
 			let per_peer_state = self.per_peer_state.read().unwrap();
 			let mut unfunded_channels = 0;
@@ -6903,6 +6913,9 @@ where
 			for (_, peer_state_mutex) in per_peer_state.iter() {
 				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 				let peer_state = &mut *peer_state_lock;
+				if !peer_state.ok_to_remove(false) {
+					serializable_peer_count += 1;
+				}
 				number_of_channels += peer_state.channel_by_id.len();
 				for (_, channel) in peer_state.channel_by_id.iter() {
 					if !channel.is_funding_initiated() {
@@ -6953,11 +6966,18 @@ where
 			htlc_purposes.push(purpose);
 		}
 
-		(per_peer_state.len() as u64).write(writer)?;
+		(serializable_peer_count).write(writer)?;
 		for (peer_pubkey, peer_state_mutex) in per_peer_state.iter() {
-			peer_pubkey.write(writer)?;
-			let peer_state = peer_state_mutex.lock().unwrap();
-			peer_state.latest_features.write(writer)?;
+			let peer_state_lock = peer_state_mutex.lock().unwrap();
+			let peer_state = &*peer_state_lock;
+			// Peers which we have no channels to should be dropped once disconnected. As we
+			// disconnect all peers when shutting down and serializing the ChannelManager, we
+			// consider all peers as disconnected here. There's therefore no need write peers with
+			// no channels.
+			if !peer_state.ok_to_remove(false) {
+				peer_pubkey.write(writer)?;
+				peer_state.latest_features.write(writer)?;
+			}
 		}
 
 		let events = self.pending_events.lock().unwrap();
