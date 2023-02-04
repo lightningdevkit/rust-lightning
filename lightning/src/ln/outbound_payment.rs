@@ -536,6 +536,21 @@ impl OutboundPayments {
 				}
 			} else { break }
 		}
+
+		let mut outbounds = self.pending_outbound_payments.lock().unwrap();
+		outbounds.retain(|pmt_id, pmt| {
+			let mut retain = true;
+			if !pmt.is_auto_retryable_now() && pmt.remaining_parts() == 0 {
+				if pmt.mark_abandoned().is_ok() {
+					pending_events.lock().unwrap().push(events::Event::PaymentFailed {
+						payment_id: *pmt_id,
+						payment_hash: pmt.payment_hash().expect("PendingOutboundPayments::Retryable always has a payment hash set"),
+					});
+					retain = false;
+				}
+			}
+			retain
+		});
 	}
 
 	/// Will return `Ok(())` iff at least one HTLC is sent for the payment.
