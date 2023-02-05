@@ -1270,6 +1270,13 @@ where L::Target: Logger {
 					// around again with a higher amount.
 					if !contributes_sufficient_value || exceeds_max_path_length ||
 						exceeds_cltv_delta_limit || payment_failed_on_this_channel {
+						if let Some(first_hops) = first_hops {    // for only first hop it will log feedback
+							for hop in first_hops {           
+								let _channel_id = hop.channel_id;
+							}
+						 	log_trace!(logger, "first Hop is excluded because unfulfilling condition"); 
+
+						 }
 						// Path isn't useful, ignore it and move on.
 					} else if may_overpay_to_meet_path_minimum_msat {
 						hit_minimum_limit = true;
