@@ -1275,7 +1275,6 @@ where L::Target: Logger {
 								let _channel_id = hop.channel_id;
 							}
 						 	log_trace!(logger, "first Hop is excluded because unfulfilling condition"); 
-
 						 }
 						// Path isn't useful, ignore it and move on.
 					} else if may_overpay_to_meet_path_minimum_msat {
