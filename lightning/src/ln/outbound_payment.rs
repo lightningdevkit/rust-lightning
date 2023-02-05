@@ -323,68 +323,58 @@ pub enum PaymentSendFailure {
 	///
 	/// You can freely resend the payment in full (with the parameter error fixed).
 	///
-	/// Because the payment failed outright, no payment tracking is done, you do not need to call
-	/// [`ChannelManager::abandon_payment`] and [`ChannelManager::retry_payment`] will *not* work
-	/// for this payment.
+	/// Because the payment failed outright, no payment tracking is done and no
+	/// [`Event::PaymentPathFailed`] or [`Event::PaymentFailed`] events will be generated.
 	///
-	/// [`ChannelManager::abandon_payment`]: crate::ln::channelmanager::ChannelManager::abandon_payment
-	/// [`ChannelManager::retry_payment`]: crate::ln::channelmanager::ChannelManager::retry_payment
+	/// [`Event::PaymentPathFailed`]: crate::util::events::Event::PaymentPathFailed
+	/// [`Event::PaymentFailed`]: crate::util::events::Event::PaymentFailed
 	ParameterError(APIError),
 	/// A parameter in a single path which was passed to send_payment was invalid, preventing us
 	/// from attempting to send the payment at all.
 	///
 	/// You can freely resend the payment in full (with the parameter error fixed).
 	///
+	/// Because the payment failed outright, no payment tracking is done and no
+	/// [`Event::PaymentPathFailed`] or [`Event::PaymentFailed`] events will be generated.
+	///
 	/// The results here are ordered the same as the paths in the route object which was passed to
 	/// send_payment.
 	///
-	/// Because the payment failed outright, no payment tracking is done, you do not need to call
-	/// [`ChannelManager::abandon_payment`] and [`ChannelManager::retry_payment`] will *not* work
-	/// for this payment.
-	///
-	/// [`ChannelManager::abandon_payment`]: crate::ln::channelmanager::ChannelManager::abandon_payment
-	/// [`ChannelManager::retry_payment`]: crate::ln::channelmanager::ChannelManager::retry_payment
+	/// [`Event::PaymentPathFailed`]: crate::util::events::Event::PaymentPathFailed
+	/// [`Event::PaymentFailed`]: crate::util::events::Event::PaymentFailed
 	PathParameterError(Vec<Result<(), APIError>>),
 	/// All paths which were attempted failed to send, with no channel state change taking place.
 	/// You can freely resend the payment in full (though you probably want to do so over different
 	/// paths than the ones selected).
 	///
-	/// Because the payment failed outright, no payment tracking is done, you do not need to call
-	/// [`ChannelManager::abandon_payment`] and [`ChannelManager::retry_payment`] will *not* work
-	/// for this payment.
+	/// Because the payment failed outright, no payment tracking is done and no
+	/// [`Event::PaymentPathFailed`] or [`Event::PaymentFailed`] events will be generated.
 	///
-	/// [`ChannelManager::abandon_payment`]: crate::ln::channelmanager::ChannelManager::abandon_payment
-	/// [`ChannelManager::retry_payment`]: crate::ln::channelmanager::ChannelManager::retry_payment
+	/// [`Event::PaymentPathFailed`]: crate::util::events::Event::PaymentPathFailed
+	/// [`Event::PaymentFailed`]: crate::util::events::Event::PaymentFailed
 	AllFailedResendSafe(Vec<APIError>),
 	/// Indicates that a payment for the provided [`PaymentId`] is already in-flight and has not
-	/// yet completed (i.e. generated an [`Event::PaymentSent`]) or been abandoned (via
-	/// [`ChannelManager::abandon_payment`]).
+	/// yet completed (i.e. generated an [`Event::PaymentSent`] or [`Event::PaymentFailed`]).
 	///
 	/// [`PaymentId`]: crate::ln::channelmanager::PaymentId
 	/// [`Event::PaymentSent`]: crate::util::events::Event::PaymentSent
-	/// [`ChannelManager::abandon_payment`]: crate::ln::channelmanager::ChannelManager::abandon_payment
+	/// [`Event::PaymentFailed`]: crate::util::events::Event::PaymentFailed
 	DuplicatePayment,
 	/// Some paths which were attempted failed to send, though possibly not all. At least some
-	/// paths have irrevocably committed to the HTLC and retrying the payment in full would result
-	/// in over-/re-payment.
+	/// paths have irrevocably committed to the HTLC.
 	///
 	/// The results here are ordered the same as the paths in the route object which was passed to
-	/// send_payment, and any `Err`s which are not [`APIError::MonitorUpdateInProgress`] can be
-	/// safely retried via [`ChannelManager::retry_payment`].
+	/// send_payment.
 	///
-	/// Any entries which contain `Err(APIError::MonitorUpdateInprogress)` or `Ok(())` MUST NOT be
-	/// retried as they will result in over-/re-payment. These HTLCs all either successfully sent
-	/// (in the case of `Ok(())`) or will send once a [`MonitorEvent::Completed`] is provided for
-	/// the next-hop channel with the latest update_id.
+	/// Any entries which contain `Err(APIError::MonitorUpdateInprogress)` will send once a
+	/// [`MonitorEvent::Completed`] is provided for the next-hop channel with the latest update_id.
 	///
-	/// [`ChannelManager::retry_payment`]: crate::ln::channelmanager::ChannelManager::retry_payment
 	/// [`MonitorEvent::Completed`]: crate::chain::channelmonitor::MonitorEvent::Completed
 	PartialFailure {
-		/// The errors themselves, in the same order as the route hops.
+		/// The errors themselves, in the same order as the paths from the route.
 		results: Vec<Result<(), APIError>>,
 		/// If some paths failed without irrevocably committing to the new HTLC(s), this will
-		/// contain a [`RouteParameters`] object which can be used to calculate a new route that
-		/// will pay all remaining unpaid balance.
+		/// contain a [`RouteParameters`] object for the failing paths.
 		failed_paths_retry: Option<RouteParameters>,
 		/// The payment id for the payment, which is now at least partially pending.
 		payment_id: PaymentId,
@@ -896,8 +886,8 @@ impl OutboundPayments {
 			.map_err(|e| { self.remove_outbound_if_all_failed(payment_id, &e); e })
 	}
 
-	// If we failed to send any paths, we should remove the new PaymentId from the
-	// `pending_outbound_payments` map, as the user isn't expected to `abandon_payment`.
+	// If we failed to send any paths, remove the new PaymentId from the `pending_outbound_payments`
+	// map as the payment is free to be resent.
 	fn remove_outbound_if_all_failed(&self, payment_id: PaymentId, err: &PaymentSendFailure) {
 		if let &PaymentSendFailure::AllFailedResendSafe(_) = err {
 			let removed = self.pending_outbound_payments.lock().unwrap().remove(&payment_id).is_some();

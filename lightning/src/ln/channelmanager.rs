@@ -1190,9 +1190,9 @@ pub enum RecentPaymentDetails {
 		/// made before LDK version 0.0.104.
 		payment_hash: Option<PaymentHash>,
 	},
-	/// After a payment is explicitly abandoned by calling [`ChannelManager::abandon_payment`], it
-	/// is marked as abandoned until an [`Event::PaymentFailed`] is generated. A payment could also
-	/// be marked as abandoned if pathfinding fails repeatedly or retries have been exhausted.
+	/// After a payment's retries are exhausted per the provided [`Retry`], or it is explicitly
+	/// abandoned via [`ChannelManager::abandon_payment`], it is marked as abandoned until all
+	/// pending HTLCs for this payment resolve and an [`Event::PaymentFailed`] is generated.
 	Abandoned {
 		/// Hash of the payment that we have given up trying to send.
 		payment_hash: PaymentHash,
@@ -1718,7 +1718,7 @@ where
 	///
 	/// This can be useful for payments that may have been prepared, but ultimately not sent, as a
 	/// result of a crash. If such a payment exists, is not listed here, and an
-	/// [`Event::PaymentSent`] has not been received, you may consider retrying the payment.
+	/// [`Event::PaymentSent`] has not been received, you may consider resending the payment.
 	///
 	/// [`Event::PaymentSent`]: events::Event::PaymentSent
 	pub fn list_recent_payments(&self) -> Vec<RecentPaymentDetails> {
@@ -2475,8 +2475,8 @@ where
 	/// If a pending payment is currently in-flight with the same [`PaymentId`] provided, this
 	/// method will error with an [`APIError::InvalidRoute`]. Note, however, that once a payment
 	/// is no longer pending (either via [`ChannelManager::abandon_payment`], or handling of an
-	/// [`Event::PaymentSent`]) LDK will not stop you from sending a second payment with the same
-	/// [`PaymentId`].
+	/// [`Event::PaymentSent`] or [`Event::PaymentFailed`]) LDK will not stop you from sending a
+	/// second payment with the same [`PaymentId`].
 	///
 	/// Thus, in order to ensure duplicate payments are not sent, you should implement your own
 	/// tracking of payments, including state to indicate once a payment has completed. Because you
@@ -2521,6 +2521,7 @@ where
 	/// [`Route`], we assume the invoice had the basic_mpp feature set.
 	///
 	/// [`Event::PaymentSent`]: events::Event::PaymentSent
+	/// [`Event::PaymentFailed`]: events::Event::PaymentFailed
 	/// [`PeerManager::process_events`]: crate::ln::peer_handler::PeerManager::process_events
 	/// [`ChannelMonitorUpdateStatus::InProgress`]: crate::chain::ChannelMonitorUpdateStatus::InProgress
 	pub fn send_payment(&self, route: &Route, payment_hash: PaymentHash, payment_secret: &Option<PaymentSecret>, payment_id: PaymentId) -> Result<(), PaymentSendFailure> {
@@ -2558,41 +2559,20 @@ where
 	}
 
 
-	/// Retries a payment along the given [`Route`].
+	/// Signals that no further retries for the given payment should occur. Useful if you have a
+	/// pending outbound payment with retries remaining, but wish to stop retrying the payment before
+	/// retries are exhausted.
 	///
-	/// Errors returned are a superset of those returned from [`send_payment`], so see
-	/// [`send_payment`] documentation for more details on errors. This method will also error if the
-	/// retry amount puts the payment more than 10% over the payment's total amount, if the payment
-	/// for the given `payment_id` cannot be found (likely due to timeout or success), or if
-	/// further retries have been disabled with [`abandon_payment`].
-	///
-	/// [`send_payment`]: [`ChannelManager::send_payment`]
-	/// [`abandon_payment`]: [`ChannelManager::abandon_payment`]
-	pub fn retry_payment(&self, route: &Route, payment_id: PaymentId) -> Result<(), PaymentSendFailure> {
-		let best_block_height = self.best_block.read().unwrap().height();
-		self.pending_outbound_payments.retry_payment_with_route(route, payment_id, &self.entropy_source, &self.node_signer, best_block_height,
-			|path, payment_params, payment_hash, payment_secret, total_value, cur_height, payment_id, keysend_preimage, session_priv|
-			self.send_payment_along_path(path, payment_params, payment_hash, payment_secret, total_value, cur_height, payment_id, keysend_preimage, session_priv))
-	}
-
-	/// Signals that no further retries for the given payment will occur.
-	///
-	/// After this method returns, no future calls to [`retry_payment`] for the given `payment_id`
-	/// are allowed. If no [`Event::PaymentFailed`] event had been generated before, one will be
-	/// generated as soon as there are no remaining pending HTLCs for this payment.
+	/// If no [`Event::PaymentFailed`] event had been generated before, one will be generated as soon
+	/// as there are no remaining pending HTLCs for this payment.
 	///
 	/// Note that calling this method does *not* prevent a payment from succeeding. You must still
 	/// wait until you receive either a [`Event::PaymentFailed`] or [`Event::PaymentSent`] event to
 	/// determine the ultimate status of a payment.
 	///
 	/// If an [`Event::PaymentFailed`] event is generated and we restart without this
-	/// [`ChannelManager`] having been persisted, the payment may still be in the pending state
-	/// upon restart. This allows further calls to [`retry_payment`] (and requiring a second call
-	/// to [`abandon_payment`] to mark the payment as failed again). Otherwise, future calls to
-	/// [`retry_payment`] will fail with [`PaymentSendFailure::ParameterError`].
+	/// [`ChannelManager`] having been persisted, another [`Event::PaymentFailed`] may be generated.
 	///
-	/// [`abandon_payment`]: Self::abandon_payment
-	/// [`retry_payment`]: Self::retry_payment
 	/// [`Event::PaymentFailed`]: events::Event::PaymentFailed
 	/// [`Event::PaymentSent`]: events::Event::PaymentSent
 	pub fn abandon_payment(&self, payment_id: PaymentId) {

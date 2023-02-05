@@ -237,55 +237,6 @@ fn mpp_receive_timeout() {
 }
 
 #[test]
-fn retry_expired_payment() {
-	let chanmon_cfgs = create_chanmon_cfgs(3);
-	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
-	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
-
-	let _chan_0 = create_announced_chan_between_nodes(&nodes, 0, 1);
-	let chan_1 = create_announced_chan_between_nodes(&nodes, 2, 1);
-	// Rebalance to find a route
-	send_payment(&nodes[2], &vec!(&nodes[1])[..], 3_000_000);
-
-	let (route, payment_hash, _, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], 100_000);
-
-	// Rebalance so that the first hop fails.
-	send_payment(&nodes[1], &vec!(&nodes[2])[..], 2_000_000);
-
-	// Make sure the payment fails on the first hop.
-	nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret), PaymentId(payment_hash.0)).unwrap();
-	check_added_monitors!(nodes[0], 1);
-	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
-	assert_eq!(events.len(), 1);
-	let mut payment_event = SendEvent::from_event(events.pop().unwrap());
-	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
-	check_added_monitors!(nodes[1], 0);
-	commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, false);
-	expect_pending_htlcs_forwardable!(nodes[1]);
-	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(&nodes[1], vec![HTLCDestination::NextHopChannel { node_id: Some(nodes[2].node.get_our_node_id()), channel_id: chan_1.2 }]);
-	let htlc_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
-	assert!(htlc_updates.update_add_htlcs.is_empty());
-	assert_eq!(htlc_updates.update_fail_htlcs.len(), 1);
-	assert!(htlc_updates.update_fulfill_htlcs.is_empty());
-	assert!(htlc_updates.update_fail_malformed_htlcs.is_empty());
-	check_added_monitors!(nodes[1], 1);
-	nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &htlc_updates.update_fail_htlcs[0]);
-	commitment_signed_dance!(nodes[0], nodes[1], htlc_updates.commitment_signed, false);
-	expect_payment_failed!(nodes[0], payment_hash, false);
-
-	// Mine blocks so the payment will have expired.
-	connect_blocks(&nodes[0], 3);
-
-	// Retry the payment and make sure it errors as expected.
-	if let Err(PaymentSendFailure::ParameterError(APIError::APIMisuseError { err })) = nodes[0].node.retry_payment(&route, PaymentId(payment_hash.0)) {
-		assert!(err.contains("not found"));
-	} else {
-		panic!("Unexpected error");
-	}
-}
-
-#[test]
 fn no_pending_leak_on_initial_send_failure() {
 	// In an earlier version of our payment tracking, we'd have a retry entry even when the initial
 	// HTLC for payment failed to send due to local channel errors (e.g. peer disconnected). In this
@@ -618,7 +569,10 @@ fn do_test_completed_payment_not_retryable_on_reload(use_dust: bool) {
 	// If we attempt to retry prior to the HTLC-Timeout (or commitment transaction, for dust HTLCs)
 	// confirming, we will fail as it's considered still-pending...
 	let (new_route, _, _, _) = get_route_and_payment_hash!(nodes[0], nodes[2], if use_dust { 1_000 } else { 1_000_000 });
-	assert!(nodes[0].node.retry_payment(&new_route, payment_id).is_err());
+	match nodes[0].node.send_payment(&new_route, payment_hash, &Some(payment_secret), payment_id) {
+		Err(PaymentSendFailure::DuplicatePayment) => {},
+		_ => panic!("Unexpected error")
+	}
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 
 	// After ANTI_REORG_DELAY confirmations, the HTLC should be failed and we can try the payment
@@ -648,7 +602,10 @@ fn do_test_completed_payment_not_retryable_on_reload(use_dust: bool) {
 	pass_along_route(&nodes[0], &[&[&nodes[1], &nodes[2]]], if use_dust { 1_000 } else { 1_000_000 }, payment_hash, payment_secret);
 	claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_preimage);
 
-	assert!(nodes[0].node.send_payment(&new_route, payment_hash, &Some(payment_secret), payment_id).is_err());
+	match nodes[0].node.send_payment(&new_route, payment_hash, &Some(payment_secret), payment_id) {
+		Err(PaymentSendFailure::DuplicatePayment) => {},
+		_ => panic!("Unexpected error")
+	}
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 
 	let chan_0_monitor_serialized = get_monitor!(nodes[0], chan_id).encode();
@@ -662,7 +619,10 @@ fn do_test_completed_payment_not_retryable_on_reload(use_dust: bool) {
 
 	reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
 
-	assert!(nodes[0].node.retry_payment(&new_route, payment_id).is_err());
+	match nodes[0].node.send_payment(&new_route, payment_hash, &Some(payment_secret), payment_id) {
+		Err(PaymentSendFailure::DuplicatePayment) => {},
+		_ => panic!("Unexpected error")
+	}
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 }
 
