@@ -27,13 +27,15 @@ use bitcoin::secp256k1::{Secp256k1, All};
 use crate::prelude::*;
 use crate::sync::{self, Arc};
 
+use crate::routing::gossip::NodeId;
+
 // Using the same keys for LN and BTC ids
 pub(super) fn add_channel(
 	gossip_sync: &P2PGossipSync<Arc<NetworkGraph<Arc<test_utils::TestLogger>>>, Arc<test_utils::TestChainSource>, Arc<test_utils::TestLogger>>,
 	secp_ctx: &Secp256k1<All>, node_1_privkey: &SecretKey, node_2_privkey: &SecretKey, features: ChannelFeatures, short_channel_id: u64
 ) {
-	let node_id_1 = PublicKey::from_secret_key(&secp_ctx, node_1_privkey);
-	let node_id_2 = PublicKey::from_secret_key(&secp_ctx, node_2_privkey);
+	let node_id_1 = NodeId::from_pubkey(&PublicKey::from_secret_key(&secp_ctx, node_1_privkey));
+	let node_id_2 = NodeId::from_pubkey(&PublicKey::from_secret_key(&secp_ctx, node_2_privkey));
 
 	let unsigned_announcement = UnsignedChannelAnnouncement {
 		features,

@@ -23,6 +23,7 @@ use crate::ln::{msgs, wire};
 use crate::ln::msgs::LightningError;
 use crate::ln::script::ShutdownScript;
 use crate::routing::gossip::NetworkGraph;
+use crate::routing::gossip::NodeId;
 use crate::routing::router::{find_route, InFlightHtlcs, Route, RouteHop, RouteParameters, Router, ScorerAccountingForInFlightHtlcs};
 use crate::routing::scoring::FixedPenaltyScorer;
 use crate::util::config::UserConfig;
@@ -435,10 +436,10 @@ fn get_dummy_channel_announcement(short_chan_id: u64) -> msgs::ChannelAnnounceme
 		features: ChannelFeatures::empty(),
 		chain_hash: genesis_block(network).header.block_hash(),
 		short_channel_id: short_chan_id,
-		node_id_1: PublicKey::from_secret_key(&secp_ctx, &node_1_privkey),
-		node_id_2: PublicKey::from_secret_key(&secp_ctx, &node_2_privkey),
-		bitcoin_key_1: PublicKey::from_secret_key(&secp_ctx, &node_1_btckey),
-		bitcoin_key_2: PublicKey::from_secret_key(&secp_ctx, &node_2_btckey),
+		node_id_1: NodeId::from_pubkey(&PublicKey::from_secret_key(&secp_ctx, &node_1_privkey)),
+		node_id_2: NodeId::from_pubkey(&PublicKey::from_secret_key(&secp_ctx, &node_2_privkey)),
+		bitcoin_key_1: NodeId::from_pubkey(&PublicKey::from_secret_key(&secp_ctx, &node_1_btckey)),
+		bitcoin_key_2: NodeId::from_pubkey(&PublicKey::from_secret_key(&secp_ctx, &node_2_btckey)),
 		excess_data: Vec::new(),
 	};
 

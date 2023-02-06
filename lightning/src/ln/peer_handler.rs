@@ -27,7 +27,7 @@ use crate::ln::peer_channel_encryptor::{PeerChannelEncryptor,NextNoiseStep};
 use crate::ln::wire;
 use crate::ln::wire::Encode;
 use crate::onion_message::{CustomOnionMessageContents, CustomOnionMessageHandler, SimpleArcOnionMessenger, SimpleRefOnionMessenger};
-use crate::routing::gossip::{NetworkGraph, P2PGossipSync};
+use crate::routing::gossip::{NetworkGraph, P2PGossipSync, NodeId};
 use crate::util::atomic_counter::AtomicCounter;
 use crate::util::events::{MessageSendEvent, MessageSendEventsProvider, OnionMessageProvider};
 use crate::util::logger::Logger;
@@ -1467,9 +1467,11 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 						log_gossip!(self.logger, "Skipping broadcast message to {:?} as its outbound buffer is full", peer.their_node_id);
 						continue;
 					}
-					if peer.their_node_id.as_ref() == Some(&msg.contents.node_id_1) ||
-					   peer.their_node_id.as_ref() == Some(&msg.contents.node_id_2) {
-						continue;
+					if let Some(their_node_id) = peer.their_node_id {
+						let their_node_id = NodeId::from_pubkey(&their_node_id);
+						if their_node_id == msg.contents.node_id_1 || their_node_id == msg.contents.node_id_2 {
+							continue;
+						}
 					}
 					if except_node.is_some() && peer.their_node_id.as_ref() == except_node {
 						continue;

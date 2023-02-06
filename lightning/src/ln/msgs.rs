@@ -46,6 +46,8 @@ use crate::util::ser::{LengthReadable, Readable, ReadableArgs, Writeable, Writer
 
 use crate::ln::{PaymentPreimage, PaymentHash, PaymentSecret};
 
+use crate::routing::gossip::NodeId;
+
 /// 21 million * 10^8 * 1000
 pub(crate) const MAX_VALUE_MSAT: u64 = 21_000_000_0000_0000_000;
 
@@ -698,13 +700,13 @@ pub struct UnsignedChannelAnnouncement {
 	/// The short channel ID
 	pub short_channel_id: u64,
 	/// One of the two `node_id`s which are endpoints of this channel
-	pub node_id_1: PublicKey,
+	pub node_id_1: NodeId,
 	/// The other of the two `node_id`s which are endpoints of this channel
-	pub node_id_2: PublicKey,
+	pub node_id_2: NodeId,
 	/// The funding key for the first node
-	pub bitcoin_key_1: PublicKey,
+	pub bitcoin_key_1: NodeId,
 	/// The funding key for the second node
-	pub bitcoin_key_2: PublicKey,
+	pub bitcoin_key_2: NodeId,
 	pub(crate) excess_data: Vec<u8>,
 }
 /// A [`channel_announcement`] message to be sent to or received from a peer.
@@ -2053,6 +2055,7 @@ mod tests {
 	use crate::ln::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
 	use crate::ln::msgs;
 	use crate::ln::msgs::{FinalOnionHopData, OptionalField, OnionErrorPacket, OnionHopDataFormat};
+	use crate::routing::gossip::NodeId;
 	use crate::util::ser::{Writeable, Readable, Hostname};
 
 	use bitcoin::hashes::hex::FromHex;
@@ -2160,10 +2163,10 @@ mod tests {
 			features,
 			chain_hash: BlockHash::from_hex("6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000").unwrap(),
 			short_channel_id: 2316138423780173,
-			node_id_1: pubkey_1,
-			node_id_2: pubkey_2,
-			bitcoin_key_1: pubkey_3,
-			bitcoin_key_2: pubkey_4,
+			node_id_1: NodeId::from_pubkey(&pubkey_1),
+			node_id_2: NodeId::from_pubkey(&pubkey_2),
+			bitcoin_key_1: NodeId::from_pubkey(&pubkey_3),
+			bitcoin_key_2: NodeId::from_pubkey(&pubkey_4),
 			excess_data: if excess_data { vec![10, 0, 0, 20, 0, 0, 30, 0, 0, 40] } else { Vec::new() },
 		};
 		let channel_announcement = msgs::ChannelAnnouncement {

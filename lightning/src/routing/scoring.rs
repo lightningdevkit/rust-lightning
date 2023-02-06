@@ -1779,10 +1779,10 @@ mod tests {
 			features: channelmanager::provided_channel_features(&UserConfig::default()),
 			chain_hash: genesis_hash,
 			short_channel_id,
-			node_id_1: PublicKey::from_secret_key(&secp_ctx, &node_1_key),
-			node_id_2: PublicKey::from_secret_key(&secp_ctx, &node_2_key),
-			bitcoin_key_1: PublicKey::from_secret_key(&secp_ctx, &node_1_secret),
-			bitcoin_key_2: PublicKey::from_secret_key(&secp_ctx, &node_2_secret),
+			node_id_1: NodeId::from_pubkey(&PublicKey::from_secret_key(&secp_ctx, &node_1_key)),
+			node_id_2: NodeId::from_pubkey(&PublicKey::from_secret_key(&secp_ctx, &node_2_key)),
+			bitcoin_key_1: NodeId::from_pubkey(&PublicKey::from_secret_key(&secp_ctx, &node_1_secret)),
+			bitcoin_key_2: NodeId::from_pubkey(&PublicKey::from_secret_key(&secp_ctx, &node_2_secret)),
 			excess_data: Vec::new(),
 		};
 		let msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_announcement.encode()[..])[..]);
