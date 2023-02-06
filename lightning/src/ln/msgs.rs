@@ -665,7 +665,7 @@ pub struct UnsignedNodeAnnouncement {
 	pub timestamp: u32,
 	/// The `node_id` this announcement originated from (don't rebroadcast the `node_announcement` back
 	/// to this node).
-	pub node_id: PublicKey,
+	pub node_id: NodeId,
 	/// An RGB color for UI purposes
 	pub rgb: [u8; 3],
 	/// An alias, for UI purposes.
@@ -1057,7 +1057,7 @@ pub trait RoutingMessageHandler : MessageSendEventsProvider {
 	/// the node *after* the provided pubkey and including up to one announcement immediately
 	/// higher (as defined by `<PublicKey as Ord>::cmp`) than `starting_point`.
 	/// If `None` is provided for `starting_point`, we start at the first node.
-	fn get_next_node_announcement(&self, starting_point: Option<&PublicKey>) -> Option<NodeAnnouncement>;
+	fn get_next_node_announcement(&self, starting_point: Option<&NodeId>) -> Option<NodeAnnouncement>;
 	/// Called when a connection is established with a peer. This can be used to
 	/// perform routing table synchronization using a strategy defined by the
 	/// implementor.
@@ -1845,7 +1845,7 @@ impl Readable for UnsignedNodeAnnouncement {
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		let features: NodeFeatures = Readable::read(r)?;
 		let timestamp: u32 = Readable::read(r)?;
-		let node_id: PublicKey = Readable::read(r)?;
+		let node_id: NodeId = Readable::read(r)?;
 		let mut rgb = [0; 3];
 		r.read_exact(&mut rgb)?;
 		let alias: [u8; 32] = Readable::read(r)?;
@@ -2248,7 +2248,7 @@ mod tests {
 		let unsigned_node_announcement = msgs::UnsignedNodeAnnouncement {
 			features,
 			timestamp: 20190119,
-			node_id: pubkey_1,
+			node_id: NodeId::from_pubkey(&pubkey_1),
 			rgb: [32; 3],
 			alias: [16;32],
 			addresses,

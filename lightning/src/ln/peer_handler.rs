@@ -71,7 +71,7 @@ impl RoutingMessageHandler for IgnoringMessageHandler {
 	fn handle_channel_update(&self, _msg: &msgs::ChannelUpdate) -> Result<bool, LightningError> { Ok(false) }
 	fn get_next_channel_announcement(&self, _starting_point: u64) ->
 		Option<(msgs::ChannelAnnouncement, Option<msgs::ChannelUpdate>, Option<msgs::ChannelUpdate>)> { None }
-	fn get_next_node_announcement(&self, _starting_point: Option<&PublicKey>) -> Option<msgs::NodeAnnouncement> { None }
+	fn get_next_node_announcement(&self, _starting_point: Option<&NodeId>) -> Option<msgs::NodeAnnouncement> { None }
 	fn peer_connected(&self, _their_node_id: &PublicKey, _init: &msgs::Init) -> Result<(), ()> { Ok(()) }
 	fn handle_reply_channel_range(&self, _their_node_id: &PublicKey, _msg: msgs::ReplyChannelRange) -> Result<(), LightningError> { Ok(()) }
 	fn handle_reply_short_channel_ids_end(&self, _their_node_id: &PublicKey, _msg: msgs::ReplyShortChannelIdsEnd) -> Result<(), LightningError> { Ok(()) }
@@ -345,7 +345,7 @@ impl error::Error for PeerHandleError {
 enum InitSyncTracker{
 	NoSyncRequested,
 	ChannelsSyncing(u64),
-	NodesSyncing(PublicKey),
+	NodesSyncing(NodeId),
 }
 
 /// The ratio between buffer sizes at which we stop sending initial sync messages vs when we stop
@@ -434,7 +434,7 @@ impl Peer {
 	}
 
 	/// Similar to the above, but for node announcements indexed by node_id.
-	fn should_forward_node_announcement(&self, node_id: PublicKey) -> bool {
+	fn should_forward_node_announcement(&self, node_id: NodeId) -> bool {
 		if self.their_features.as_ref().unwrap().supports_gossip_queries() &&
 			!self.sent_gossip_timestamp_filter {
 				return false;
@@ -442,7 +442,7 @@ impl Peer {
 		match self.sync_status {
 			InitSyncTracker::NoSyncRequested => true,
 			InitSyncTracker::ChannelsSyncing(_) => false,
-			InitSyncTracker::NodesSyncing(pk) => pk < node_id,
+			InitSyncTracker::NodesSyncing(sync_node_id) => sync_node_id.as_slice() < node_id.as_slice(),
 		}
 	}
 
@@ -889,8 +889,8 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 						}
 					},
 					InitSyncTracker::ChannelsSyncing(_) => unreachable!(),
-					InitSyncTracker::NodesSyncing(key) => {
-						if let Some(msg) = self.message_handler.route_handler.get_next_node_announcement(Some(&key)) {
+					InitSyncTracker::NodesSyncing(sync_node_id) => {
+						if let Some(msg) = self.message_handler.route_handler.get_next_node_announcement(Some(&sync_node_id)) {
 							self.enqueue_message(peer, &msg);
 							peer.sync_status = InitSyncTracker::NodesSyncing(msg.contents.node_id);
 						} else {
@@ -1493,8 +1493,10 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 						log_gossip!(self.logger, "Skipping broadcast message to {:?} as its outbound buffer is full", peer.their_node_id);
 						continue;
 					}
-					if peer.their_node_id.as_ref() == Some(&msg.contents.node_id) {
-						continue;
+					if let Some(their_node_id) = peer.their_node_id {
+						if NodeId::from_pubkey(&their_node_id) == msg.contents.node_id {
+							continue;
+						}
 					}
 					if except_node.is_some() && peer.their_node_id.as_ref() == except_node {
 						continue;
@@ -2023,7 +2025,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 		let announcement = msgs::UnsignedNodeAnnouncement {
 			features,
 			timestamp: self.last_node_announcement_serial.fetch_add(1, Ordering::AcqRel),
-			node_id: self.node_signer.get_node_id(Recipient::Node).unwrap(),
+			node_id: NodeId::from_pubkey(&self.node_signer.get_node_id(Recipient::Node).unwrap()),
 			rgb, alias, addresses,
 			excess_address_data: Vec::new(),
 			excess_data: Vec::new(),

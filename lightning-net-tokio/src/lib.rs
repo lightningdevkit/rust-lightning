@@ -584,6 +584,7 @@ mod tests {
 	use lightning::ln::msgs::*;
 	use lightning::ln::peer_handler::{MessageHandler, PeerManager};
 	use lightning::ln::features::NodeFeatures;
+	use lightning::routing::gossip::NodeId;
 	use lightning::util::events::*;
 	use lightning::util::test_utils::TestNodeSigner;
 	use bitcoin::secp256k1::{Secp256k1, SecretKey, PublicKey};
@@ -614,7 +615,7 @@ mod tests {
 		fn handle_channel_announcement(&self, _msg: &ChannelAnnouncement) -> Result<bool, LightningError> { Ok(false) }
 		fn handle_channel_update(&self, _msg: &ChannelUpdate) -> Result<bool, LightningError> { Ok(false) }
 		fn get_next_channel_announcement(&self, _starting_point: u64) -> Option<(ChannelAnnouncement, Option<ChannelUpdate>, Option<ChannelUpdate>)> { None }
-		fn get_next_node_announcement(&self, _starting_point: Option<&PublicKey>) -> Option<NodeAnnouncement> { None }
+		fn get_next_node_announcement(&self, _starting_point: Option<&NodeId>) -> Option<NodeAnnouncement> { None }
 		fn peer_connected(&self, _their_node_id: &PublicKey, _init_msg: &Init) -> Result<(), ()> { Ok(()) }
 		fn handle_reply_channel_range(&self, _their_node_id: &PublicKey, _msg: ReplyChannelRange) -> Result<(), LightningError> { Ok(()) }
 		fn handle_reply_short_channel_ids_end(&self, _their_node_id: &PublicKey, _msg: ReplyShortChannelIdsEnd) -> Result<(), LightningError> { Ok(()) }

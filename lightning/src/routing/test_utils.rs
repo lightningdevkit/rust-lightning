@@ -66,7 +66,7 @@ pub(super) fn add_or_update_node(
 	gossip_sync: &P2PGossipSync<Arc<NetworkGraph<Arc<test_utils::TestLogger>>>, Arc<test_utils::TestChainSource>, Arc<test_utils::TestLogger>>,
 	secp_ctx: &Secp256k1<All>, node_privkey: &SecretKey, features: NodeFeatures, timestamp: u32
 ) {
-	let node_id = PublicKey::from_secret_key(&secp_ctx, node_privkey);
+	let node_id = NodeId::from_pubkey(&PublicKey::from_secret_key(&secp_ctx, node_privkey));
 	let unsigned_announcement = UnsignedNodeAnnouncement {
 		features,
 		timestamp,

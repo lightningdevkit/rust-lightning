@@ -385,10 +385,10 @@ where C::Target: chain::Access, L::Target: Logger
 		None
 	}
 
-	fn get_next_node_announcement(&self, starting_point: Option<&PublicKey>) -> Option<NodeAnnouncement> {
+	fn get_next_node_announcement(&self, starting_point: Option<&NodeId>) -> Option<NodeAnnouncement> {
 		let nodes = self.network_graph.nodes.read().unwrap();
-		let iter = if let Some(pubkey) = starting_point {
-				nodes.range((Bound::Excluded(NodeId::from_pubkey(pubkey)), Bound::Unbounded))
+		let iter = if let Some(node_id) = starting_point {
+				nodes.range((Bound::Excluded(node_id), Bound::Unbounded))
 			} else {
 				nodes.range(..)
 			};
@@ -1286,7 +1286,7 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 	/// routing messages from a source using a protocol other than the lightning P2P protocol.
 	pub fn update_node_from_announcement(&self, msg: &msgs::NodeAnnouncement) -> Result<(), LightningError> {
 		let msg_hash = hash_to_message!(&Sha256dHash::hash(&msg.contents.encode()[..])[..]);
-		secp_verify_sig!(self.secp_ctx, &msg_hash, &msg.signature, &msg.contents.node_id, "node_announcement");
+		secp_verify_sig!(self.secp_ctx, &msg_hash, &msg.signature, &get_pubkey_from_node_id!(msg.contents.node_id, "node_announcement"), "node_announcement");
 		self.update_node_from_announcement_intern(&msg.contents, Some(&msg))
 	}
 
@@ -1299,7 +1299,7 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 	}
 
 	fn update_node_from_announcement_intern(&self, msg: &msgs::UnsignedNodeAnnouncement, full_msg: Option<&msgs::NodeAnnouncement>) -> Result<(), LightningError> {
-		match self.nodes.write().unwrap().get_mut(&NodeId::from_pubkey(&msg.node_id)) {
+		match self.nodes.write().unwrap().get_mut(&msg.node_id) {
 			None => Err(LightningError{err: "No existing channels for node_announcement".to_owned(), action: ErrorAction::IgnoreError}),
 			Some(node) => {
 				if let Some(node_info) = node.announcement_info.as_ref() {
@@ -1971,11 +1971,11 @@ mod tests {
 	}
 
 	fn get_signed_node_announcement<F: Fn(&mut UnsignedNodeAnnouncement)>(f: F, node_key: &SecretKey, secp_ctx: &Secp256k1<secp256k1::All>) -> NodeAnnouncement {
-		let node_id = PublicKey::from_secret_key(&secp_ctx, node_key);
+		let node_id = NodeId::from_pubkey(&PublicKey::from_secret_key(&secp_ctx, node_key));
 		let mut unsigned_announcement = UnsignedNodeAnnouncement {
 			features: channelmanager::provided_node_features(&UserConfig::default()),
 			timestamp: 100,
-			node_id: node_id,
+			node_id,
 			rgb: [0; 3],
 			alias: [0; 32],
 			addresses: Vec::new(),
@@ -2652,7 +2652,7 @@ mod tests {
 		let (secp_ctx, gossip_sync) = create_gossip_sync(&network_graph);
 		let node_1_privkey = &SecretKey::from_slice(&[42; 32]).unwrap();
 		let node_2_privkey = &SecretKey::from_slice(&[41; 32]).unwrap();
-		let node_id_1 = PublicKey::from_secret_key(&secp_ctx, node_1_privkey);
+		let node_id_1 = NodeId::from_pubkey(&PublicKey::from_secret_key(&secp_ctx, node_1_privkey));
 
 		// No nodes yet.
 		let next_announcements = gossip_sync.get_next_node_announcement(None);

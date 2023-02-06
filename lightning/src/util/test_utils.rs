@@ -511,7 +511,7 @@ impl msgs::RoutingMessageHandler for TestRoutingMessageHandler {
 		Some((chan_ann, Some(chan_upd_1), Some(chan_upd_2)))
 	}
 
-	fn get_next_node_announcement(&self, _starting_point: Option<&PublicKey>) -> Option<msgs::NodeAnnouncement> {
+	fn get_next_node_announcement(&self, _starting_point: Option<&NodeId>) -> Option<msgs::NodeAnnouncement> {
 		None
 	}
 

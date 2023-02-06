@@ -184,7 +184,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 					return;
 				}
 				let msg = decode_msg_with_len16!(msgs::UnsignedNodeAnnouncement, 288);
-				node_pks.insert(msg.node_id);
+				node_pks.insert(get_pubkey_from_node_id!(msg.node_id));
 				let _ = net_graph.update_node_from_unsigned_announcement(&msg);
 			},
 			1 => {
