@@ -810,6 +810,18 @@ mod tests {
 	}
 
 	#[test]
+	fn fails_responding_with_unknown_required_features() {
+		match RefundBuilder::new("foo".into(), vec![1; 32], payer_pubkey(), 1000).unwrap()
+			.features_unchecked(InvoiceRequestFeatures::unknown())
+			.build().unwrap()
+			.respond_with_no_std(payment_paths(), payment_hash(), recipient_pubkey(), now())
+		{
+			Ok(_) => panic!("expected error"),
+			Err(e) => assert_eq!(e, SemanticError::UnknownRequiredFeatures),
+		}
+	}
+
+	#[test]
 	fn parses_refund_with_metadata() {
 		let refund = RefundBuilder::new("foo".into(), vec![1; 32], payer_pubkey(), 1000).unwrap()
 			.build().unwrap();

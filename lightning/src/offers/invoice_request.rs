@@ -983,6 +983,22 @@ mod tests {
 	}
 
 	#[test]
+	fn fails_responding_with_unknown_required_features() {
+		match OfferBuilder::new("foo".into(), recipient_pubkey())
+			.amount_msats(1000)
+			.build().unwrap()
+			.request_invoice(vec![42; 32], payer_pubkey()).unwrap()
+			.features_unchecked(InvoiceRequestFeatures::unknown())
+			.build().unwrap()
+			.sign(payer_sign).unwrap()
+			.respond_with_no_std(payment_paths(), payment_hash(), now())
+		{
+			Ok(_) => panic!("expected error"),
+			Err(e) => assert_eq!(e, SemanticError::UnknownRequiredFeatures),
+		}
+	}
+
+	#[test]
 	fn parses_invoice_request_with_metadata() {
 		let invoice_request = OfferBuilder::new("foo".into(), recipient_pubkey())
 			.amount_msats(1000)
