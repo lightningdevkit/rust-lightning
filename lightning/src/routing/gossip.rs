@@ -971,7 +971,7 @@ impl EffectiveCapacity {
 /// Fees for routing via a given channel or a node
 #[derive(Eq, PartialEq, Copy, Clone, Debug, Hash)]
 pub struct RoutingFees {
-	/// Flat routing fee in satoshis
+	/// Flat routing fee in millisatoshis.
 	pub base_msat: u32,
 	/// Liquidity-based routing fee in millionths of a routed amount.
 	/// In other words, 10000 is 1%.
