@@ -313,6 +313,7 @@ impl Readable for Route {
 	fn read<R: io::Read>(reader: &mut R) -> Result<Route, DecodeError> {
 		let _ver = read_ver_prefix!(reader, SERIALIZATION_VERSION);
 		let path_count: u64 = Readable::read(reader)?;
+		if path_count == 0 { return Err(DecodeError::InvalidValue); }
 		let mut paths = Vec::with_capacity(cmp::min(path_count, 128) as usize);
 		for _ in 0..path_count {
 			let hop_count: u8 = Readable::read(reader)?;
@@ -320,6 +321,7 @@ impl Readable for Route {
 			for _ in 0..hop_count {
 				hops.push(Readable::read(reader)?);
 			}
+			if hops.is_empty() { return Err(DecodeError::InvalidValue); }
 			paths.push(hops);
 		}
 		let mut payment_params = None;

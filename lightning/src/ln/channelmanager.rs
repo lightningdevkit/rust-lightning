@@ -6745,7 +6745,7 @@ impl Readable for HTLCSource {
 			0 => {
 				let mut session_priv: crate::util::ser::RequiredWrapper<SecretKey> = crate::util::ser::RequiredWrapper(None);
 				let mut first_hop_htlc_msat: u64 = 0;
-				let mut path = Some(Vec::new());
+				let mut path: Option<Vec<RouteHop>> = Some(Vec::new());
 				let mut payment_id = None;
 				let mut payment_secret = None;
 				let mut payment_params = None;
@@ -6762,10 +6762,14 @@ impl Readable for HTLCSource {
 					// instead.
 					payment_id = Some(PaymentId(*session_priv.0.unwrap().as_ref()));
 				}
+				if path.is_none() || path.as_ref().unwrap().is_empty() {
+					return Err(DecodeError::InvalidValue);
+				}
+				let path = path.unwrap();
 				Ok(HTLCSource::OutboundRoute {
 					session_priv: session_priv.0.unwrap(),
 					first_hop_htlc_msat,
-					path: path.unwrap(),
+					path,
 					payment_id: payment_id.unwrap(),
 					payment_secret,
 					payment_params,
