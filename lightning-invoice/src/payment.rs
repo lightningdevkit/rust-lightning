@@ -156,7 +156,6 @@ fn pay_invoice_using_amount<P: Deref>(
 	let route_params = RouteParameters {
 		payment_params,
 		final_value_msat: amount_msats,
-		final_cltv_expiry_delta: invoice.min_final_cltv_expiry_delta() as u32,
 	};
 
 	payer.send_payment(payment_hash, &payment_secret, payment_id, route_params, retry_strategy)

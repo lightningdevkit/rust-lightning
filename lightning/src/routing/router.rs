@@ -19,7 +19,7 @@ use crate::ln::features::{ChannelFeatures, InvoiceFeatures, NodeFeatures};
 use crate::ln::msgs::{DecodeError, ErrorAction, LightningError, MAX_VALUE_MSAT};
 use crate::routing::gossip::{DirectedChannelInfo, EffectiveCapacity, ReadOnlyNetworkGraph, NetworkGraph, NodeId, RoutingFees};
 use crate::routing::scoring::{ChannelUsage, LockableScore, Score};
-use crate::util::ser::{Writeable, Readable, Writer};
+use crate::util::ser::{Writeable, Readable, ReadableArgs, Writer};
 use crate::util::logger::{Level, Logger};
 use crate::util::chacha20::ChaCha20;
 
@@ -315,18 +315,21 @@ impl Readable for Route {
 		let path_count: u64 = Readable::read(reader)?;
 		if path_count == 0 { return Err(DecodeError::InvalidValue); }
 		let mut paths = Vec::with_capacity(cmp::min(path_count, 128) as usize);
+		let mut min_final_cltv_expiry_delta = u32::max_value();
 		for _ in 0..path_count {
 			let hop_count: u8 = Readable::read(reader)?;
-			let mut hops = Vec::with_capacity(hop_count as usize);
+			let mut hops: Vec<RouteHop> = Vec::with_capacity(hop_count as usize);
 			for _ in 0..hop_count {
 				hops.push(Readable::read(reader)?);
 			}
 			if hops.is_empty() { return Err(DecodeError::InvalidValue); }
+			min_final_cltv_expiry_delta =
+				cmp::min(min_final_cltv_expiry_delta, hops.last().unwrap().cltv_expiry_delta);
 			paths.push(hops);
 		}
 		let mut payment_params = None;
 		read_tlv_fields!(reader, {
-			(1, payment_params, option),
+			(1, payment_params, (option: ReadableArgs, min_final_cltv_expiry_delta)),
 		});
 		Ok(Route { paths, payment_params })
 	}
@@ -345,19 +348,38 @@ pub struct RouteParameters {
 
 	/// The amount in msats sent on the failed payment path.
 	pub final_value_msat: u64,
-
-	/// The CLTV on the final hop of the failed payment path.
-	///
-	/// This field is deprecated, [`PaymentParameters::final_cltv_expiry_delta`] should be used
-	/// instead, if available.
-	pub final_cltv_expiry_delta: u32,
 }
 
-impl_writeable_tlv_based!(RouteParameters, {
-	(0, payment_params, required),
-	(2, final_value_msat, required),
-	(4, final_cltv_expiry_delta, required),
-});
+impl Writeable for RouteParameters {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		write_tlv_fields!(writer, {
+			(0, self.payment_params, required),
+			(2, self.final_value_msat, required),
+			// LDK versions prior to 0.0.114 had the `final_cltv_expiry_delta` parameter in
+			// `RouteParameters` directly. For compatibility, we write it here.
+			(4, self.payment_params.final_cltv_expiry_delta, required),
+		});
+		Ok(())
+	}
+}
+
+impl Readable for RouteParameters {
+	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
+		_init_and_read_tlv_fields!(reader, {
+			(0, payment_params, (required: ReadableArgs, 0)),
+			(2, final_value_msat, required),
+			(4, final_cltv_expiry_delta, required),
+		});
+		let mut payment_params: PaymentParameters = payment_params.0.unwrap();
+		if payment_params.final_cltv_expiry_delta == 0 {
+			payment_params.final_cltv_expiry_delta = final_cltv_expiry_delta.0.unwrap();
+		}
+		Ok(Self {
+			payment_params,
+			final_value_msat: final_value_msat.0.unwrap(),
+		})
+	}
+}
 
 /// Maximum total CTLV difference we allow for a full payment path.
 pub const DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA: u32 = 1008;
@@ -431,23 +453,54 @@ pub struct PaymentParameters {
 	/// these SCIDs.
 	pub previously_failed_channels: Vec<u64>,
 
-	/// The minimum CLTV delta at the end of the route.
-	///
-	/// This field should always be set to `Some` and may be required in a future release.
-	pub final_cltv_expiry_delta: Option<u32>,
+	/// The minimum CLTV delta at the end of the route. This value must not be zero.
+	pub final_cltv_expiry_delta: u32,
 }
 
-impl_writeable_tlv_based!(PaymentParameters, {
-	(0, payee_pubkey, required),
-	(1, max_total_cltv_expiry_delta, (default_value, DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA)),
-	(2, features, option),
-	(3, max_path_count, (default_value, DEFAULT_MAX_PATH_COUNT)),
-	(4, route_hints, vec_type),
-	(5, max_channel_saturation_power_of_half, (default_value, 2)),
-	(6, expiry_time, option),
-	(7, previously_failed_channels, vec_type),
-	(9, final_cltv_expiry_delta, option),
-});
+impl Writeable for PaymentParameters {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		write_tlv_fields!(writer, {
+			(0, self.payee_pubkey, required),
+			(1, self.max_total_cltv_expiry_delta, required),
+			(2, self.features, option),
+			(3, self.max_path_count, required),
+			(4, self.route_hints, vec_type),
+			(5, self.max_channel_saturation_power_of_half, required),
+			(6, self.expiry_time, option),
+			(7, self.previously_failed_channels, vec_type),
+			(9, self.final_cltv_expiry_delta, required),
+		});
+		Ok(())
+	}
+}
+
+impl ReadableArgs<u32> for PaymentParameters {
+	fn read<R: io::Read>(reader: &mut R, default_final_cltv_expiry_delta: u32) -> Result<Self, DecodeError> {
+		_init_and_read_tlv_fields!(reader, {
+			(0, payee_pubkey, required),
+			(1, max_total_cltv_expiry_delta, (default_value, DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA)),
+			(2, features, option),
+			(3, max_path_count, (default_value, DEFAULT_MAX_PATH_COUNT)),
+			(4, route_hints, vec_type),
+			(5, max_channel_saturation_power_of_half, (default_value, 2)),
+			(6, expiry_time, option),
+			(7, previously_failed_channels, vec_type),
+			(9, final_cltv_expiry_delta, (default_value, default_final_cltv_expiry_delta)),
+		});
+		Ok(Self {
+			payee_pubkey: _init_tlv_based_struct_field!(payee_pubkey, required),
+			max_total_cltv_expiry_delta: _init_tlv_based_struct_field!(max_total_cltv_expiry_delta, (default_value, unused)),
+			features,
+			max_path_count: _init_tlv_based_struct_field!(max_path_count, (default_value, unused)),
+			route_hints: route_hints.unwrap_or(Vec::new()),
+			max_channel_saturation_power_of_half: _init_tlv_based_struct_field!(max_channel_saturation_power_of_half, (default_value, unused)),
+			expiry_time,
+			previously_failed_channels: previously_failed_channels.unwrap_or(Vec::new()),
+			final_cltv_expiry_delta: _init_tlv_based_struct_field!(final_cltv_expiry_delta, (default_value, unused)),
+		})
+	}
+}
+
 
 impl PaymentParameters {
 	/// Creates a payee with the node id of the given `pubkey`.
@@ -464,7 +517,7 @@ impl PaymentParameters {
 			max_path_count: DEFAULT_MAX_PATH_COUNT,
 			max_channel_saturation_power_of_half: 2,
 			previously_failed_channels: Vec::new(),
-			final_cltv_expiry_delta: Some(final_cltv_expiry_delta),
+			final_cltv_expiry_delta,
 		}
 	}
 
@@ -939,9 +992,7 @@ pub fn find_route<L: Deref, GL: Deref, S: Score>(
 ) -> Result<Route, LightningError>
 where L::Target: Logger, GL::Target: Logger {
 	let graph_lock = network_graph.read_only();
-	let final_cltv_expiry_delta =
-		if let Some(delta) = route_params.payment_params.final_cltv_expiry_delta { delta }
-		else { route_params.final_cltv_expiry_delta };
+	let final_cltv_expiry_delta = route_params.payment_params.final_cltv_expiry_delta;
 	let mut route = get_route(our_node_pubkey, &route_params.payment_params, &graph_lock, first_hops,
 		route_params.final_value_msat, final_cltv_expiry_delta, logger, scorer,
 		random_seed_bytes)?;
@@ -980,9 +1031,9 @@ where L::Target: Logger {
 	if payment_params.max_total_cltv_expiry_delta <= final_cltv_expiry_delta {
 		return Err(LightningError{err: "Can't find a route where the maximum total CLTV expiry delta is below the final CLTV expiry.".to_owned(), action: ErrorAction::IgnoreError});
 	}
-	if let Some(delta) = payment_params.final_cltv_expiry_delta {
-		debug_assert_eq!(delta, final_cltv_expiry_delta);
-	}
+
+	// TODO: Remove the explicit final_cltv_expiry_delta parameter
+	debug_assert_eq!(final_cltv_expiry_delta, payment_params.final_cltv_expiry_delta);
 
 	// The general routing idea is the following:
 	// 1. Fill first/last hops communicated by the caller.
@@ -2021,7 +2072,8 @@ where L::Target: Logger, GL::Target: Logger {
 	let graph_lock = network_graph.read_only();
 	let mut route = build_route_from_hops_internal(
 		our_node_pubkey, hops, &route_params.payment_params, &graph_lock,
-		route_params.final_value_msat, route_params.final_cltv_expiry_delta, logger, random_seed_bytes)?;
+		route_params.final_value_msat, route_params.payment_params.final_cltv_expiry_delta,
+		logger, random_seed_bytes)?;
 	add_random_cltv_offset(&mut route, &route_params.payment_params, &graph_lock, random_seed_bytes);
 	Ok(route)
 }

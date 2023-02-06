@@ -686,7 +686,6 @@ mod test {
 		let route_params = RouteParameters {
 			payment_params,
 			final_value_msat: invoice.amount_milli_satoshis().unwrap(),
-			final_cltv_expiry_delta: invoice.min_final_cltv_expiry_delta() as u32,
 		};
 		let first_hops = nodes[0].node.list_usable_channels();
 		let network_graph = &node_cfgs[0].network_graph;
@@ -1050,7 +1049,6 @@ mod test {
 		let params = RouteParameters {
 			payment_params,
 			final_value_msat: invoice.amount_milli_satoshis().unwrap(),
-			final_cltv_expiry_delta: invoice.min_final_cltv_expiry_delta() as u32,
 		};
 		let first_hops = nodes[0].node.list_usable_channels();
 		let network_graph = &node_cfgs[0].network_graph;
