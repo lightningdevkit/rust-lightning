@@ -85,11 +85,12 @@ use crate::ln::features::InvoiceRequestFeatures;
 use crate::ln::inbound_payment::{ExpandedKey, IV_LEN, Nonce};
 use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
 use crate::offers::invoice::{BlindedPayInfo, InvoiceBuilder};
-use crate::offers::invoice_request::{InvoiceRequestTlvStream, InvoiceRequestTlvStreamRef};
-use crate::offers::offer::{OfferTlvStream, OfferTlvStreamRef};
+use crate::offers::invoice_request::{INVOICE_REQUEST_PAYER_ID_TYPE, INVOICE_REQUEST_TYPES, InvoiceRequestTlvStream, InvoiceRequestTlvStreamRef};
+use crate::offers::merkle::TlvStream;
+use crate::offers::offer::{OFFER_TYPES, OfferTlvStream, OfferTlvStreamRef};
 use crate::offers::parse::{Bech32Encode, ParseError, ParsedMessage, SemanticError};
-use crate::offers::payer::{PayerContents, PayerTlvStream, PayerTlvStreamRef};
-use crate::offers::signer::{Metadata, MetadataMaterial};
+use crate::offers::payer::{PAYER_METADATA_TYPE, PayerContents, PayerTlvStream, PayerTlvStreamRef};
+use crate::offers::signer::{Metadata, MetadataMaterial, self};
 use crate::onion_message::BlindedPath;
 use crate::util::ser::{SeekReadable, WithoutLength, Writeable, Writer};
 use crate::util::string::PrintableString;
@@ -343,7 +344,7 @@ impl Refund {
 	///
 	/// [`payer_id`]: Self::payer_id
 	pub fn metadata(&self) -> &[u8] {
-		self.contents.payer.0.as_bytes().map(|bytes| bytes.as_slice()).unwrap_or(&[])
+		self.contents.metadata()
 	}
 
 	/// A chain that the refund is valid for.
@@ -455,12 +456,32 @@ impl RefundContents {
 		}
 	}
 
+	fn metadata(&self) -> &[u8] {
+		self.payer.0.as_bytes().map(|bytes| bytes.as_slice()).unwrap_or(&[])
+	}
+
 	pub(super) fn chain(&self) -> ChainHash {
 		self.chain.unwrap_or_else(|| self.implied_chain())
 	}
 
 	pub fn implied_chain(&self) -> ChainHash {
 		ChainHash::using_genesis_block(Network::Bitcoin)
+	}
+
+	/// Verifies that the payer metadata was produced from the refund in the TLV stream.
+	pub(super) fn verify<T: secp256k1::Signing>(
+		&self, tlv_stream: TlvStream<'_>, key: &ExpandedKey, secp_ctx: &Secp256k1<T>
+	) -> bool {
+		let offer_records = tlv_stream.clone().range(OFFER_TYPES);
+		let invreq_records = tlv_stream.range(INVOICE_REQUEST_TYPES).filter(|record| {
+			match record.r#type {
+				PAYER_METADATA_TYPE => false, // Should be outside range
+				INVOICE_REQUEST_PAYER_ID_TYPE => !self.payer.0.derives_keys(),
+				_ => true,
+			}
+		});
+		let tlv_stream = offer_records.chain(invreq_records);
+		signer::verify_metadata(self.metadata(), key, IV_BYTES, self.payer_id, tlv_stream, secp_ctx)
 	}
 
 	pub(super) fn as_tlv_stream(&self) -> RefundTlvStreamRef {
@@ -640,7 +661,9 @@ mod tests {
 	use bitcoin::secp256k1::{KeyPair, Secp256k1, SecretKey};
 	use core::convert::TryFrom;
 	use core::time::Duration;
+	use crate::chain::keysinterface::KeyMaterial;
 	use crate::ln::features::{InvoiceRequestFeatures, OfferFeatures};
+	use crate::ln::inbound_payment::ExpandedKey;
 	use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
 	use crate::offers::invoice_request::InvoiceRequestTlvStreamRef;
 	use crate::offers::offer::OfferTlvStreamRef;
@@ -724,6 +747,118 @@ mod tests {
 			Ok(_) => panic!("expected error"),
 			Err(e) => assert_eq!(e, SemanticError::InvalidAmount),
 		}
+	}
+
+	#[test]
+	fn builds_refund_with_metadata_derived() {
+		let desc = "foo".to_string();
+		let node_id = payer_pubkey();
+		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let entropy = FixedEntropy {};
+		let secp_ctx = Secp256k1::new();
+
+		let refund = RefundBuilder
+			::deriving_payer_id(desc, node_id, &expanded_key, &entropy, &secp_ctx, 1000)
+			.unwrap()
+			.build().unwrap();
+		assert_eq!(refund.payer_id(), node_id);
+
+		// Fails verification with altered fields
+		let invoice = refund
+			.respond_with_no_std(payment_paths(), payment_hash(), recipient_pubkey(), now())
+			.unwrap()
+			.build().unwrap()
+			.sign(recipient_sign).unwrap();
+		assert!(invoice.verify(&expanded_key, &secp_ctx));
+
+		let mut tlv_stream = refund.as_tlv_stream();
+		tlv_stream.2.amount = Some(2000);
+
+		let mut encoded_refund = Vec::new();
+		tlv_stream.write(&mut encoded_refund).unwrap();
+
+		let invoice = Refund::try_from(encoded_refund).unwrap()
+			.respond_with_no_std(payment_paths(), payment_hash(), recipient_pubkey(), now())
+			.unwrap()
+			.build().unwrap()
+			.sign(recipient_sign).unwrap();
+		assert!(!invoice.verify(&expanded_key, &secp_ctx));
+
+		// Fails verification with altered metadata
+		let mut tlv_stream = refund.as_tlv_stream();
+		let metadata = tlv_stream.0.metadata.unwrap().iter().copied().rev().collect();
+		tlv_stream.0.metadata = Some(&metadata);
+
+		let mut encoded_refund = Vec::new();
+		tlv_stream.write(&mut encoded_refund).unwrap();
+
+		let invoice = Refund::try_from(encoded_refund).unwrap()
+			.respond_with_no_std(payment_paths(), payment_hash(), recipient_pubkey(), now())
+			.unwrap()
+			.build().unwrap()
+			.sign(recipient_sign).unwrap();
+		assert!(!invoice.verify(&expanded_key, &secp_ctx));
+	}
+
+	#[test]
+	fn builds_refund_with_derived_payer_id() {
+		let desc = "foo".to_string();
+		let node_id = payer_pubkey();
+		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let entropy = FixedEntropy {};
+		let secp_ctx = Secp256k1::new();
+
+		let blinded_path = BlindedPath {
+			introduction_node_id: pubkey(40),
+			blinding_point: pubkey(41),
+			blinded_hops: vec![
+				BlindedHop { blinded_node_id: pubkey(43), encrypted_payload: vec![0; 43] },
+				BlindedHop { blinded_node_id: node_id, encrypted_payload: vec![0; 44] },
+			],
+		};
+
+		let refund = RefundBuilder
+			::deriving_payer_id(desc, node_id, &expanded_key, &entropy, &secp_ctx, 1000)
+			.unwrap()
+			.path(blinded_path)
+			.build().unwrap();
+		assert_ne!(refund.payer_id(), node_id);
+
+		let invoice = refund
+			.respond_with_no_std(payment_paths(), payment_hash(), recipient_pubkey(), now())
+			.unwrap()
+			.build().unwrap()
+			.sign(recipient_sign).unwrap();
+		assert!(invoice.verify(&expanded_key, &secp_ctx));
+
+		// Fails verification with altered fields
+		let mut tlv_stream = refund.as_tlv_stream();
+		tlv_stream.2.amount = Some(2000);
+
+		let mut encoded_refund = Vec::new();
+		tlv_stream.write(&mut encoded_refund).unwrap();
+
+		let invoice = Refund::try_from(encoded_refund).unwrap()
+			.respond_with_no_std(payment_paths(), payment_hash(), recipient_pubkey(), now())
+			.unwrap()
+			.build().unwrap()
+			.sign(recipient_sign).unwrap();
+		assert!(!invoice.verify(&expanded_key, &secp_ctx));
+
+		// Fails verification with altered payer_id
+		let mut tlv_stream = refund.as_tlv_stream();
+		let payer_id = pubkey(1);
+		tlv_stream.2.payer_id = Some(&payer_id);
+
+		let mut encoded_refund = Vec::new();
+		tlv_stream.write(&mut encoded_refund).unwrap();
+
+		let invoice = Refund::try_from(encoded_refund).unwrap()
+			.respond_with_no_std(payment_paths(), payment_hash(), recipient_pubkey(), now())
+			.unwrap()
+			.build().unwrap()
+			.sign(recipient_sign).unwrap();
+		assert!(!invoice.verify(&expanded_key, &secp_ctx));
 	}
 
 	#[test]

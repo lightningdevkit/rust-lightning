@@ -602,12 +602,12 @@ impl Writeable for InvoiceRequestContents {
 }
 
 /// Valid type range for invoice_request TLV records.
-const INVOICE_REQUEST_TYPES: core::ops::Range<u64> = 80..160;
+pub(super) const INVOICE_REQUEST_TYPES: core::ops::Range<u64> = 80..160;
 
 /// TLV record type for [`InvoiceRequest::payer_id`] and [`Refund::payer_id`].
 ///
 /// [`Refund::payer_id`]: crate::offers::refund::Refund::payer_id
-const INVOICE_REQUEST_PAYER_ID_TYPE: u64 = 88;
+pub(super) const INVOICE_REQUEST_PAYER_ID_TYPE: u64 = 88;
 
 tlv_stream!(InvoiceRequestTlvStream, InvoiceRequestTlvStreamRef, INVOICE_REQUEST_TYPES, {
 	(80, chain: ChainHash),

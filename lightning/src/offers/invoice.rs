@@ -535,7 +535,9 @@ impl InvoiceContents {
 			InvoiceContents::ForOffer { invoice_request, .. } => {
 				invoice_request.verify(tlv_stream, key, secp_ctx)
 			},
-			_ => todo!(),
+			InvoiceContents::ForRefund { refund, .. } => {
+				refund.verify(tlv_stream, key, secp_ctx)
+			},
 		}
 	}
 
