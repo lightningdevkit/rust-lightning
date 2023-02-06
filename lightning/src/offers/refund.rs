@@ -73,20 +73,23 @@
 
 use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::network::constants::Network;
-use bitcoin::secp256k1::PublicKey;
+use bitcoin::secp256k1::{PublicKey, Secp256k1, self};
 use core::convert::TryFrom;
+use core::ops::Deref;
 use core::str::FromStr;
 use core::time::Duration;
+use crate::chain::keysinterface::EntropySource;
 use crate::io;
 use crate::ln::PaymentHash;
 use crate::ln::features::InvoiceRequestFeatures;
+use crate::ln::inbound_payment::{ExpandedKey, IV_LEN, Nonce};
 use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
 use crate::offers::invoice::{BlindedPayInfo, InvoiceBuilder};
 use crate::offers::invoice_request::{InvoiceRequestTlvStream, InvoiceRequestTlvStreamRef};
 use crate::offers::offer::{OfferTlvStream, OfferTlvStreamRef};
 use crate::offers::parse::{Bech32Encode, ParseError, ParsedMessage, SemanticError};
 use crate::offers::payer::{PayerContents, PayerTlvStream, PayerTlvStreamRef};
-use crate::offers::signer::Metadata;
+use crate::offers::signer::{Metadata, MetadataMaterial};
 use crate::onion_message::BlindedPath;
 use crate::util::ser::{SeekReadable, WithoutLength, Writeable, Writer};
 use crate::util::string::PrintableString;
@@ -96,16 +99,19 @@ use crate::prelude::*;
 #[cfg(feature = "std")]
 use std::time::SystemTime;
 
+const IV_BYTES: &[u8; IV_LEN] = b"LDK Refund ~~~~~";
+
 /// Builds a [`Refund`] for the "offer for money" flow.
 ///
 /// See [module-level documentation] for usage.
 ///
 /// [module-level documentation]: self
-pub struct RefundBuilder {
+pub struct RefundBuilder<'a, T: secp256k1::Signing> {
 	refund: RefundContents,
+	secp_ctx: Option<&'a Secp256k1<T>>,
 }
 
-impl RefundBuilder {
+impl<'a> RefundBuilder<'a, secp256k1::SignOnly> {
 	/// Creates a new builder for a refund using the [`Refund::payer_id`] for the public node id to
 	/// send to if no [`Refund::paths`] are set. Otherwise, it may be a transient pubkey.
 	///
@@ -119,13 +125,47 @@ impl RefundBuilder {
 		}
 
 		let metadata = Metadata::Bytes(metadata);
-		let refund = RefundContents {
-			payer: PayerContents(metadata), description, absolute_expiry: None, issuer: None,
-			paths: None, chain: None, amount_msats, features: InvoiceRequestFeatures::empty(),
-			quantity: None, payer_id, payer_note: None,
-		};
+		Ok(Self {
+			refund: RefundContents {
+				payer: PayerContents(metadata), description, absolute_expiry: None, issuer: None,
+				paths: None, chain: None, amount_msats, features: InvoiceRequestFeatures::empty(),
+				quantity: None, payer_id, payer_note: None,
+			},
+			secp_ctx: None,
+		})
+	}
+}
 
-		Ok(RefundBuilder { refund })
+impl<'a, T: secp256k1::Signing> RefundBuilder<'a, T> {
+	/// Similar to [`RefundBuilder::new`] except, if [`RefundBuilder::path`] is called, the payer id
+	/// is derived from the given [`ExpandedKey`] and nonce. This provides sender privacy by using a
+	/// different payer id for each refund, assuming a different nonce is used.  Otherwise, the
+	/// provided `node_id` is used for the payer id.
+	///
+	/// Also, sets the metadata when [`RefundBuilder::build`] is called such that it can be used to
+	/// verify that an [`InvoiceRequest`] was produced for the refund given an [`ExpandedKey`].
+	///
+	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
+	/// [`ExpandedKey`]: crate::ln::inbound_payment::ExpandedKey
+	pub fn deriving_payer_id<ES: Deref>(
+		description: String, node_id: PublicKey, expanded_key: &ExpandedKey, entropy_source: ES,
+		secp_ctx: &'a Secp256k1<T>, amount_msats: u64
+	) -> Result<Self, SemanticError> where ES::Target: EntropySource {
+		if amount_msats > MAX_VALUE_MSAT {
+			return Err(SemanticError::InvalidAmount);
+		}
+
+		let nonce = Nonce::from_entropy_source(entropy_source);
+		let derivation_material = MetadataMaterial::new(nonce, expanded_key, IV_BYTES);
+		let metadata = Metadata::DerivedSigningPubkey(derivation_material);
+		Ok(Self {
+			refund: RefundContents {
+				payer: PayerContents(metadata), description, absolute_expiry: None, issuer: None,
+				paths: None, chain: None, amount_msats, features: InvoiceRequestFeatures::empty(),
+				quantity: None, payer_id: node_id, payer_note: None,
+			},
+			secp_ctx: Some(secp_ctx),
+		})
 	}
 
 	/// Sets the [`Refund::absolute_expiry`] as seconds since the Unix epoch. Any expiry that has
@@ -192,18 +232,38 @@ impl RefundBuilder {
 			self.refund.chain = None;
 		}
 
+		// Create the metadata for stateless verification of an Invoice.
+		if self.refund.payer.0.has_derivation_material() {
+			let mut metadata = core::mem::take(&mut self.refund.payer.0);
+
+			if self.refund.paths.is_none() {
+				metadata = metadata.without_keys();
+			}
+
+			let mut tlv_stream = self.refund.as_tlv_stream();
+			tlv_stream.0.metadata = None;
+			if metadata.derives_keys() {
+				tlv_stream.2.payer_id = None;
+			}
+
+			let (derived_metadata, keys) = metadata.derive_from(tlv_stream, self.secp_ctx);
+			metadata = derived_metadata;
+			if let Some(keys) = keys {
+				self.refund.payer_id = keys.public_key();
+			}
+
+			self.refund.payer.0 = metadata;
+		}
+
 		let mut bytes = Vec::new();
 		self.refund.write(&mut bytes).unwrap();
 
-		Ok(Refund {
-			bytes,
-			contents: self.refund,
-		})
+		Ok(Refund { bytes, contents: self.refund })
 	}
 }
 
 #[cfg(test)]
-impl RefundBuilder {
+impl<'a, T: secp256k1::Signing> RefundBuilder<'a, T> {
 	fn features_unchecked(mut self, features: InvoiceRequestFeatures) -> Self {
 		self.refund.features = features;
 		self
@@ -283,7 +343,7 @@ impl Refund {
 	///
 	/// [`payer_id`]: Self::payer_id
 	pub fn metadata(&self) -> &[u8] {
-		&self.contents.payer.0.as_bytes().unwrap()[..]
+		self.contents.payer.0.as_bytes().map(|bytes| bytes.as_slice()).unwrap_or(&[])
 	}
 
 	/// A chain that the refund is valid for.
