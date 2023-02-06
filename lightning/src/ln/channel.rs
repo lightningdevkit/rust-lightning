@@ -2356,9 +2356,9 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 	/// If this call is successful, broadcast the funding transaction (and not before!)
 	pub fn funding_signed<SP: Deref, L: Deref>(
 		&mut self, msg: &msgs::FundingSigned, best_block: BestBlock, signer_provider: &SP, logger: &L
-	) -> Result<(ChannelMonitor<<SP::Target as SignerProvider>::Signer>, Transaction, Option<msgs::ChannelReady>), ChannelError>
+	) -> Result<ChannelMonitor<Signer>, ChannelError>
 	where
-		SP::Target: SignerProvider,
+		SP::Target: SignerProvider<Signer = Signer>,
 		L::Target: Logger
 	{
 		if !self.is_outbound() {
@@ -2431,7 +2431,9 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 
 		log_info!(logger, "Received funding_signed from peer for channel {}", log_bytes!(self.channel_id()));
 
-		Ok((channel_monitor, self.funding_transaction.as_ref().cloned().unwrap(), self.check_get_channel_ready(0)))
+		let need_channel_ready = self.check_get_channel_ready(0).is_some();
+		self.monitor_updating_paused(false, false, need_channel_ready, Vec::new(), Vec::new(), Vec::new());
+		Ok(channel_monitor)
 	}
 
 	/// Handles a channel_ready message from our peer. If we've already sent our channel_ready

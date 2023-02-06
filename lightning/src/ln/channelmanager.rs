@@ -1357,69 +1357,6 @@ macro_rules! remove_channel {
 	}
 }
 
-macro_rules! handle_monitor_update_res {
-	($self: ident, $err: expr, $chan: expr, $action_type: path, $resend_raa: expr, $resend_commitment: expr, $resend_channel_ready: expr, $failed_forwards: expr, $failed_fails: expr, $failed_finalized_fulfills: expr, $chan_id: expr) => {
-		match $err {
-			ChannelMonitorUpdateStatus::PermanentFailure => {
-				log_error!($self.logger, "Closing channel {} due to monitor update ChannelMonitorUpdateStatus::PermanentFailure", log_bytes!($chan_id[..]));
-				update_maps_on_chan_removal!($self, $chan);
-				let res: Result<(), _> = Err(MsgHandleErrInternal::from_finish_shutdown("ChannelMonitor storage failure".to_owned(), *$chan_id, $chan.get_user_id(),
-						$chan.force_shutdown(false), $self.get_channel_update_for_broadcast(&$chan).ok() ));
-				(res, true)
-			},
-			ChannelMonitorUpdateStatus::InProgress => {
-				log_info!($self.logger, "Disabling channel {} due to monitor update in progress. On restore will send {} and process {} forwards, {} fails, and {} fulfill finalizations",
-						log_bytes!($chan_id[..]),
-						if $resend_commitment && $resend_raa {
-								match $action_type {
-									RAACommitmentOrder::CommitmentFirst => { "commitment then RAA" },
-									RAACommitmentOrder::RevokeAndACKFirst => { "RAA then commitment" },
-								}
-							} else if $resend_commitment { "commitment" }
-							else if $resend_raa { "RAA" }
-							else { "nothing" },
-						(&$failed_forwards as &Vec<(PendingHTLCInfo, u64)>).len(),
-						(&$failed_fails as &Vec<(HTLCSource, PaymentHash, HTLCFailReason)>).len(),
-						(&$failed_finalized_fulfills as &Vec<HTLCSource>).len());
-				if !$resend_commitment {
-					debug_assert!($action_type == RAACommitmentOrder::RevokeAndACKFirst || !$resend_raa);
-				}
-				if !$resend_raa {
-					debug_assert!($action_type == RAACommitmentOrder::CommitmentFirst || !$resend_commitment);
-				}
-				$chan.monitor_updating_paused($resend_raa, $resend_commitment, $resend_channel_ready, $failed_forwards, $failed_fails, $failed_finalized_fulfills);
-				(Err(MsgHandleErrInternal::from_chan_no_close(ChannelError::Ignore("Failed to update ChannelMonitor".to_owned()), *$chan_id)), false)
-			},
-			ChannelMonitorUpdateStatus::Completed => {
-				(Ok(()), false)
-			},
-		}
-	};
-	($self: ident, $err: expr, $entry: expr, $action_type: path, $resend_raa: expr, $resend_commitment: expr, $resend_channel_ready: expr, $failed_forwards: expr, $failed_fails: expr, $failed_finalized_fulfills: expr) => { {
-		let (res, drop) = handle_monitor_update_res!($self, $err, $entry.get_mut(), $action_type, $resend_raa, $resend_commitment, $resend_channel_ready, $failed_forwards, $failed_fails, $failed_finalized_fulfills, $entry.key());
-		if drop {
-			$entry.remove_entry();
-		}
-		res
-	} };
-	($self: ident, $err: expr, $entry: expr, $action_type: path, $chan_id: expr, COMMITMENT_UPDATE_ONLY) => { {
-		debug_assert!($action_type == RAACommitmentOrder::CommitmentFirst);
-		handle_monitor_update_res!($self, $err, $entry, $action_type, false, true, false, Vec::new(), Vec::new(), Vec::new(), $chan_id)
-	} };
-	($self: ident, $err: expr, $entry: expr, $action_type: path, $chan_id: expr, NO_UPDATE) => {
-		handle_monitor_update_res!($self, $err, $entry, $action_type, false, false, false, Vec::new(), Vec::new(), Vec::new(), $chan_id)
-	};
-	($self: ident, $err: expr, $entry: expr, $action_type: path, $resend_channel_ready: expr, OPTIONALLY_RESEND_FUNDING_LOCKED) => {
-		handle_monitor_update_res!($self, $err, $entry, $action_type, false, false, $resend_channel_ready, Vec::new(), Vec::new(), Vec::new())
-	};
-	($self: ident, $err: expr, $entry: expr, $action_type: path, $resend_raa: expr, $resend_commitment: expr) => {
-		handle_monitor_update_res!($self, $err, $entry, $action_type, $resend_raa, $resend_commitment, false, Vec::new(), Vec::new(), Vec::new())
-	};
-	($self: ident, $err: expr, $entry: expr, $action_type: path, $resend_raa: expr, $resend_commitment: expr, $failed_forwards: expr, $failed_fails: expr) => {
-		handle_monitor_update_res!($self, $err, $entry, $action_type, $resend_raa, $resend_commitment, false, $failed_forwards, $failed_fails, Vec::new())
-	};
-}
-
 macro_rules! send_channel_ready {
 	($self: ident, $pending_msg_events: expr, $channel: expr, $channel_ready_msg: expr) => {{
 		$pending_msg_events.push(events::MessageSendEvent::SendChannelReady {
@@ -4492,49 +4429,34 @@ where
 	}
 
 	fn internal_funding_signed(&self, counterparty_node_id: &PublicKey, msg: &msgs::FundingSigned) -> Result<(), MsgHandleErrInternal> {
-		let funding_tx = {
-			let best_block = *self.best_block.read().unwrap();
-			let per_peer_state = self.per_peer_state.read().unwrap();
-			let peer_state_mutex = per_peer_state.get(counterparty_node_id)
-				.ok_or_else(|| {
-					debug_assert!(false);
-					MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id), msg.channel_id)
-				})?;
+		let best_block = *self.best_block.read().unwrap();
+		let per_peer_state = self.per_peer_state.read().unwrap();
+		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
+			.ok_or_else(|| {
+				debug_assert!(false);
+				MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id), msg.channel_id)
+			})?;
 
-			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
-			let peer_state = &mut *peer_state_lock;
-			match peer_state.channel_by_id.entry(msg.channel_id) {
-				hash_map::Entry::Occupied(mut chan) => {
-					let (monitor, funding_tx, channel_ready) = match chan.get_mut().funding_signed(&msg, best_block, &self.signer_provider, &self.logger) {
-						Ok(update) => update,
-						Err(e) => try_chan_entry!(self, Err(e), chan),
-					};
-					match self.chain_monitor.watch_channel(chan.get().get_funding_txo().unwrap(), monitor) {
-						ChannelMonitorUpdateStatus::Completed => {},
-						e => {
-							let mut res = handle_monitor_update_res!(self, e, chan, RAACommitmentOrder::RevokeAndACKFirst, channel_ready.is_some(), OPTIONALLY_RESEND_FUNDING_LOCKED);
-							if let Err(MsgHandleErrInternal { ref mut shutdown_finish, .. }) = res {
-								// We weren't able to watch the channel to begin with, so no updates should be made on
-								// it. Previously, full_stack_target found an (unreachable) panic when the
-								// monitor update contained within `shutdown_finish` was applied.
-								if let Some((ref mut shutdown_finish, _)) = shutdown_finish {
-									shutdown_finish.0.take();
-								}
-							}
-							return res
-						},
+		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+		let peer_state = &mut *peer_state_lock;
+		match peer_state.channel_by_id.entry(msg.channel_id) {
+			hash_map::Entry::Occupied(mut chan) => {
+				let monitor = try_chan_entry!(self,
+					chan.get_mut().funding_signed(&msg, best_block, &self.signer_provider, &self.logger), chan);
+				let update_res = self.chain_monitor.watch_channel(chan.get().get_funding_txo().unwrap(), monitor);
+				let mut res = handle_new_monitor_update!(self, update_res, 0, peer_state_lock, peer_state, chan);
+				if let Err(MsgHandleErrInternal { ref mut shutdown_finish, .. }) = res {
+					// We weren't able to watch the channel to begin with, so no updates should be made on
+					// it. Previously, full_stack_target found an (unreachable) panic when the
+					// monitor update contained within `shutdown_finish` was applied.
+					if let Some((ref mut shutdown_finish, _)) = shutdown_finish {
+						shutdown_finish.0.take();
 					}
-					if let Some(msg) = channel_ready {
-						send_channel_ready!(self, peer_state.pending_msg_events, chan.get(), msg);
-					}
-					funding_tx
-				},
-				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
-			}
-		};
-		log_info!(self.logger, "Broadcasting funding transaction with txid {}", funding_tx.txid());
-		self.tx_broadcaster.broadcast_transaction(&funding_tx);
-		Ok(())
+				}
+				res
+			},
+			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), msg.channel_id))
+		}
 	}
 
 	fn internal_channel_ready(&self, counterparty_node_id: &PublicKey, msg: &msgs::ChannelReady) -> Result<(), MsgHandleErrInternal> {
