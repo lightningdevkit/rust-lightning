@@ -20,13 +20,18 @@ macro_rules! hkdf_extract_expand {
 		let (k1, k2, _) = hkdf_extract_expand!($salt, $ikm);
 		(k1, k2)
 	}};
-	($salt: expr, $ikm: expr, 3) => {{
+	($salt: expr, $ikm: expr, 4) => {{
 		let (k1, k2, prk) = hkdf_extract_expand!($salt, $ikm);
 
 		let mut hmac = HmacEngine::<Sha256>::new(&prk[..]);
 		hmac.input(&k2);
 		hmac.input(&[3; 1]);
-		(k1, k2, Hmac::from_engine(hmac).into_inner())
+		let k3 = Hmac::from_engine(hmac).into_inner();
+
+		let mut hmac = HmacEngine::<Sha256>::new(&prk[..]);
+		hmac.input(&k3);
+		hmac.input(&[4; 1]);
+		(k1, k2, k3, Hmac::from_engine(hmac).into_inner())
 	}}
 }
 
@@ -34,8 +39,8 @@ pub fn hkdf_extract_expand_twice(salt: &[u8], ikm: &[u8]) -> ([u8; 32], [u8; 32]
 	hkdf_extract_expand!(salt, ikm, 2)
 }
 
-pub fn hkdf_extract_expand_thrice(salt: &[u8], ikm: &[u8]) -> ([u8; 32], [u8; 32], [u8; 32]) {
-	hkdf_extract_expand!(salt, ikm, 3)
+pub fn hkdf_extract_expand_4x(salt: &[u8], ikm: &[u8]) -> ([u8; 32], [u8; 32], [u8; 32], [u8; 32]) {
+	hkdf_extract_expand!(salt, ikm, 4)
 }
 
 #[inline]
