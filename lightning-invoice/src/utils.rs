@@ -1,7 +1,6 @@
 //! Convenient utilities to create an invoice.
 
 use crate::{CreationError, Currency, Invoice, InvoiceBuilder, SignOrCreationError};
-use crate::payment::Payer;
 
 use crate::{prelude::*, Description, InvoiceDescription, Sha256};
 use bech32::ToBase32;
@@ -9,12 +8,12 @@ use bitcoin_hashes::Hash;
 use lightning::chain;
 use lightning::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use lightning::chain::keysinterface::{Recipient, NodeSigner, SignerProvider, EntropySource};
-use lightning::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
-use lightning::ln::channelmanager::{ChannelDetails, ChannelManager, PaymentId, PaymentSendFailure, MIN_FINAL_CLTV_EXPIRY_DELTA};
+use lightning::ln::{PaymentHash, PaymentSecret};
+use lightning::ln::channelmanager::{ChannelDetails, ChannelManager, MIN_FINAL_CLTV_EXPIRY_DELTA};
 use lightning::ln::channelmanager::{PhantomRouteHints, MIN_CLTV_EXPIRY_DELTA};
 use lightning::ln::inbound_payment::{create, create_from_hash, ExpandedKey};
 use lightning::routing::gossip::RoutingFees;
-use lightning::routing::router::{InFlightHtlcs, Route, RouteHint, RouteHintHop, Router};
+use lightning::routing::router::{RouteHint, RouteHintHop, Router};
 use lightning::util::logger::Logger;
 use secp256k1::PublicKey;
 use core::ops::Deref;
@@ -632,51 +631,6 @@ fn filter_channels<L: Deref>(
 		})
 		.map(route_hint_from_channel)
 		.collect::<Vec<RouteHint>>()
-}
-
-impl<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, L: Deref> Payer for ChannelManager<M, T, ES, NS, SP, F, R, L>
-where
-	M::Target: chain::Watch<<SP::Target as SignerProvider>::Signer>,
-	T::Target: BroadcasterInterface,
-	ES::Target: EntropySource,
-	NS::Target: NodeSigner,
-	SP::Target: SignerProvider,
-	F::Target: FeeEstimator,
-	R::Target: Router,
-	L::Target: Logger,
-{
-	fn node_id(&self) -> PublicKey {
-		self.get_our_node_id()
-	}
-
-	fn first_hops(&self) -> Vec<ChannelDetails> {
-		self.list_usable_channels()
-	}
-
-	fn send_payment(
-		&self, route: &Route, payment_hash: PaymentHash, payment_secret: &Option<PaymentSecret>,
-		payment_id: PaymentId
-	) -> Result<(), PaymentSendFailure> {
-		self.send_payment(route, payment_hash, payment_secret, payment_id)
-	}
-
-	fn send_spontaneous_payment(
-		&self, route: &Route, payment_preimage: PaymentPreimage, payment_id: PaymentId,
-	) -> Result<(), PaymentSendFailure> {
-		self.send_spontaneous_payment(route, Some(payment_preimage), payment_id).map(|_| ())
-	}
-
-	fn retry_payment(
-		&self, route: &Route, payment_id: PaymentId
-	) -> Result<(), PaymentSendFailure> {
-		self.retry_payment(route, payment_id)
-	}
-
-	fn abandon_payment(&self, payment_id: PaymentId) {
-		self.abandon_payment(payment_id)
-	}
-
-	fn inflight_htlcs(&self) -> InFlightHtlcs { self.compute_inflight_htlcs() }
 }
 
 #[cfg(test)]

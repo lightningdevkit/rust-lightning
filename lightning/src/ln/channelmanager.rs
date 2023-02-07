@@ -2637,6 +2637,11 @@ where
 
 	/// Similar to [`ChannelManager::send_spontaneous_payment`], but will automatically find a route
 	/// based on `route_params` and retry failed payment paths based on `retry_strategy`.
+	///
+	/// See [`PaymentParameters::for_keysend`] for help in constructing `route_params` for spontaneous
+	/// payments.
+	///
+	/// [`PaymentParameters::for_keysend`]: crate::routing::router::PaymentParameters::for_keysend
 	pub fn send_spontaneous_payment_with_retry(&self, payment_preimage: Option<PaymentPreimage>, payment_id: PaymentId, route_params: RouteParameters, retry_strategy: Retry) -> Result<PaymentHash, PaymentSendFailure> {
 		let best_block_height = self.best_block.read().unwrap().height();
 		self.pending_outbound_payments.send_spontaneous_payment(payment_preimage, payment_id,
