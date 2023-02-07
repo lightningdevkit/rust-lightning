@@ -70,7 +70,7 @@ use crate::prelude::*;
 use core::{cmp, mem};
 use core::cell::RefCell;
 use crate::io::Read;
-use crate::sync::{Arc, Mutex, RwLock, RwLockReadGuard, FairRwLock};
+use crate::sync::{Arc, Mutex, RwLock, RwLockReadGuard, FairRwLock, LockTestExt, LockHeldState};
 use core::sync::atomic::{AtomicUsize, Ordering};
 use core::time::Duration;
 use core::ops::Deref;
@@ -1218,13 +1218,10 @@ macro_rules! handle_error {
 		match $internal {
 			Ok(msg) => Ok(msg),
 			Err(MsgHandleErrInternal { err, chan_id, shutdown_finish }) => {
-				#[cfg(any(feature = "_test_utils", test))]
-				{
-					// In testing, ensure there are no deadlocks where the lock is already held upon
-					// entering the macro.
-					debug_assert!($self.pending_events.try_lock().is_ok());
-					debug_assert!($self.per_peer_state.try_write().is_ok());
-				}
+				// In testing, ensure there are no deadlocks where the lock is already held upon
+				// entering the macro.
+				debug_assert_ne!($self.pending_events.held_by_thread(), LockHeldState::HeldByThread);
+				debug_assert_ne!($self.per_peer_state.held_by_thread(), LockHeldState::HeldByThread);
 
 				let mut msg_events = Vec::with_capacity(2);
 
@@ -3743,17 +3740,12 @@ where
 	/// Fails an HTLC backwards to the sender of it to us.
 	/// Note that we do not assume that channels corresponding to failed HTLCs are still available.
 	fn fail_htlc_backwards_internal(&self, source: &HTLCSource, payment_hash: &PaymentHash, onion_error: &HTLCFailReason, destination: HTLCDestination) {
-		#[cfg(any(feature = "_test_utils", test))]
-		{
-			// Ensure that the peer state channel storage lock is not held when calling this
-			// function.
-			// This ensures that future code doesn't introduce a lock_order requirement for
-			// `forward_htlcs` to be locked after the `per_peer_state` peer locks, which calling
-			// this function with any `per_peer_state` peer lock aquired would.
-			let per_peer_state = self.per_peer_state.read().unwrap();
-			for (_, peer) in per_peer_state.iter() {
-				debug_assert!(peer.try_lock().is_ok());
-			}
+		// Ensure that no peer state channel storage lock is held when calling this function.
+		// This ensures that future code doesn't introduce a lock-order requirement for
+		// `forward_htlcs` to be locked after the `per_peer_state` peer locks, which calling
+		// this function with any `per_peer_state` peer lock acquired would.
+		for (_, peer) in self.per_peer_state.read().unwrap().iter() {
+			debug_assert_ne!(peer.held_by_thread(), LockHeldState::HeldByThread);
 		}
 
 		//TODO: There is a timing attack here where if a node fails an HTLC back to us they can
