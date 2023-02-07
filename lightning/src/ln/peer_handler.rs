@@ -734,20 +734,26 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 		}
 	}
 
-	/// Get the list of node ids for peers which have completed the initial handshake.
+	/// Get a list of tuples mapping from node id to network addresses for peers which have
+	/// completed the initial handshake.
 	///
-	/// For outbound connections, this will be the same as the their_node_id parameter passed in to
-	/// new_outbound_connection, however entries will only appear once the initial handshake has
-	/// completed and we are sure the remote peer has the private key for the given node_id.
-	pub fn get_peer_node_ids(&self) -> Vec<PublicKey> {
+	/// For outbound connections, the [`PublicKey`] will be the same as the `their_node_id` parameter
+	/// passed in to [`Self::new_outbound_connection`], however entries will only appear once the initial
+	/// handshake has completed and we are sure the remote peer has the private key for the given
+	/// [`PublicKey`].
+	///
+	/// The returned `Option`s will only be `Some` if an address had been previously given via
+	/// [`Self::new_outbound_connection`] or [`Self::new_inbound_connection`].
+	pub fn get_peer_node_ids(&self) -> Vec<(PublicKey, Option<NetAddress>)> {
 		let peers = self.peers.read().unwrap();
 		peers.values().filter_map(|peer_mutex| {
 			let p = peer_mutex.lock().unwrap();
-			if !p.channel_encryptor.is_ready_for_encryption() || p.their_features.is_none() {
+			if !p.channel_encryptor.is_ready_for_encryption() || p.their_features.is_none() ||
+				p.their_node_id.is_none() {
 				return None;
 			}
-			p.their_node_id
-		}).map(|(node_id, _)| node_id).collect()
+			Some((p.their_node_id.unwrap().0, p.their_net_address.clone()))
+		}).collect()
 	}
 
 	fn get_ephemeral_key(&self) -> SecretKey {
@@ -757,7 +763,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 		SecretKey::from_slice(&Sha256::from_engine(ephemeral_hash).into_inner()).expect("You broke SHA-256!")
 	}
 
-	/// Indicates a new outbound connection has been established to a node with the given node_id
+	/// Indicates a new outbound connection has been established to a node with the given `node_id`
 	/// and an optional remote network address.
 	///
 	/// The remote network address adds the option to report a remote IP address back to a connecting
