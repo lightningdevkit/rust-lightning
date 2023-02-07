@@ -23,6 +23,7 @@ use bitcoin::hash_types::{Txid, PubkeyHash};
 
 use crate::ln::{PaymentHash, PaymentPreimage};
 use crate::ln::msgs::DecodeError;
+use crate::routing::gossip::NodeId;
 use crate::util::ser::{Readable, Writeable, Writer};
 use crate::util::transaction_utils;
 
@@ -660,13 +661,17 @@ pub fn make_funding_redeemscript(broadcaster: &PublicKey, countersignatory: &Pub
 	let broadcaster_funding_key = broadcaster.serialize();
 	let countersignatory_funding_key = countersignatory.serialize();
 
+	make_funding_redeemscript_from_slices(&broadcaster_funding_key, &countersignatory_funding_key)
+}
+
+pub(crate) fn make_funding_redeemscript_from_slices(broadcaster_funding_key: &[u8], countersignatory_funding_key: &[u8]) -> Script {
 	let builder = Builder::new().push_opcode(opcodes::all::OP_PUSHNUM_2);
 	if broadcaster_funding_key[..] < countersignatory_funding_key[..] {
-		builder.push_slice(&broadcaster_funding_key)
-			.push_slice(&countersignatory_funding_key)
+		builder.push_slice(broadcaster_funding_key)
+			.push_slice(countersignatory_funding_key)
 	} else {
-		builder.push_slice(&countersignatory_funding_key)
-			.push_slice(&broadcaster_funding_key)
+		builder.push_slice(countersignatory_funding_key)
+			.push_slice(broadcaster_funding_key)
 	}.push_opcode(opcodes::all::OP_PUSHNUM_2).push_opcode(opcodes::all::OP_CHECKMULTISIG).into_script()
 }
 

@@ -46,6 +46,8 @@ use crate::util::ser::{LengthReadable, Readable, ReadableArgs, Writeable, Writer
 
 use crate::ln::{PaymentPreimage, PaymentHash, PaymentSecret};
 
+use crate::routing::gossip::NodeId;
+
 /// 21 million * 10^8 * 1000
 pub(crate) const MAX_VALUE_MSAT: u64 = 21_000_000_0000_0000_000;
 
@@ -663,7 +665,7 @@ pub struct UnsignedNodeAnnouncement {
 	pub timestamp: u32,
 	/// The `node_id` this announcement originated from (don't rebroadcast the `node_announcement` back
 	/// to this node).
-	pub node_id: PublicKey,
+	pub node_id: NodeId,
 	/// An RGB color for UI purposes
 	pub rgb: [u8; 3],
 	/// An alias, for UI purposes.
@@ -698,13 +700,13 @@ pub struct UnsignedChannelAnnouncement {
 	/// The short channel ID
 	pub short_channel_id: u64,
 	/// One of the two `node_id`s which are endpoints of this channel
-	pub node_id_1: PublicKey,
+	pub node_id_1: NodeId,
 	/// The other of the two `node_id`s which are endpoints of this channel
-	pub node_id_2: PublicKey,
+	pub node_id_2: NodeId,
 	/// The funding key for the first node
-	pub bitcoin_key_1: PublicKey,
+	pub bitcoin_key_1: NodeId,
 	/// The funding key for the second node
-	pub bitcoin_key_2: PublicKey,
+	pub bitcoin_key_2: NodeId,
 	pub(crate) excess_data: Vec<u8>,
 }
 /// A [`channel_announcement`] message to be sent to or received from a peer.
@@ -1055,7 +1057,7 @@ pub trait RoutingMessageHandler : MessageSendEventsProvider {
 	/// the node *after* the provided pubkey and including up to one announcement immediately
 	/// higher (as defined by `<PublicKey as Ord>::cmp`) than `starting_point`.
 	/// If `None` is provided for `starting_point`, we start at the first node.
-	fn get_next_node_announcement(&self, starting_point: Option<&PublicKey>) -> Option<NodeAnnouncement>;
+	fn get_next_node_announcement(&self, starting_point: Option<&NodeId>) -> Option<NodeAnnouncement>;
 	/// Called when a connection is established with a peer. This can be used to
 	/// perform routing table synchronization using a strategy defined by the
 	/// implementor.
@@ -1843,7 +1845,7 @@ impl Readable for UnsignedNodeAnnouncement {
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		let features: NodeFeatures = Readable::read(r)?;
 		let timestamp: u32 = Readable::read(r)?;
-		let node_id: PublicKey = Readable::read(r)?;
+		let node_id: NodeId = Readable::read(r)?;
 		let mut rgb = [0; 3];
 		r.read_exact(&mut rgb)?;
 		let alias: [u8; 32] = Readable::read(r)?;
@@ -2053,6 +2055,7 @@ mod tests {
 	use crate::ln::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
 	use crate::ln::msgs;
 	use crate::ln::msgs::{FinalOnionHopData, OptionalField, OnionErrorPacket, OnionHopDataFormat};
+	use crate::routing::gossip::NodeId;
 	use crate::util::ser::{Writeable, Readable, Hostname};
 
 	use bitcoin::hashes::hex::FromHex;
@@ -2160,10 +2163,10 @@ mod tests {
 			features,
 			chain_hash: BlockHash::from_hex("6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000").unwrap(),
 			short_channel_id: 2316138423780173,
-			node_id_1: pubkey_1,
-			node_id_2: pubkey_2,
-			bitcoin_key_1: pubkey_3,
-			bitcoin_key_2: pubkey_4,
+			node_id_1: NodeId::from_pubkey(&pubkey_1),
+			node_id_2: NodeId::from_pubkey(&pubkey_2),
+			bitcoin_key_1: NodeId::from_pubkey(&pubkey_3),
+			bitcoin_key_2: NodeId::from_pubkey(&pubkey_4),
 			excess_data: if excess_data { vec![10, 0, 0, 20, 0, 0, 30, 0, 0, 40] } else { Vec::new() },
 		};
 		let channel_announcement = msgs::ChannelAnnouncement {
@@ -2245,7 +2248,7 @@ mod tests {
 		let unsigned_node_announcement = msgs::UnsignedNodeAnnouncement {
 			features,
 			timestamp: 20190119,
-			node_id: pubkey_1,
+			node_id: NodeId::from_pubkey(&pubkey_1),
 			rgb: [32; 3],
 			alias: [16;32],
 			addresses,
