@@ -402,22 +402,23 @@ impl OutboundPayments {
 		}
 	}
 
-	pub(super) fn send_payment<R: Deref, ES: Deref, NS: Deref, F, L: Deref>(
+	pub(super) fn send_payment<R: Deref, ES: Deref, NS: Deref, IH, SP, L: Deref>(
 		&self, payment_hash: PaymentHash, payment_secret: &Option<PaymentSecret>, payment_id: PaymentId,
 		retry_strategy: Retry, route_params: RouteParameters, router: &R,
-		first_hops: Vec<ChannelDetails>, inflight_htlcs: InFlightHtlcs, entropy_source: &ES,
-		node_signer: &NS, best_block_height: u32, logger: &L, send_payment_along_path: F,
+		first_hops: Vec<ChannelDetails>, compute_inflight_htlcs: IH, entropy_source: &ES,
+		node_signer: &NS, best_block_height: u32, logger: &L, send_payment_along_path: SP,
 	) -> Result<(), PaymentSendFailure>
 	where
 		R::Target: Router,
 		ES::Target: EntropySource,
 		NS::Target: NodeSigner,
 		L::Target: Logger,
-		F: Fn(&Vec<RouteHop>, &Option<PaymentParameters>, &PaymentHash, &Option<PaymentSecret>, u64,
+		IH: Fn() -> InFlightHtlcs,
+		SP: Fn(&Vec<RouteHop>, &Option<PaymentParameters>, &PaymentHash, &Option<PaymentSecret>, u64,
 			 u32, PaymentId, &Option<PaymentPreimage>, [u8; 32]) -> Result<(), APIError>,
 	{
 		self.pay_internal(payment_id, Some((payment_hash, payment_secret, None, retry_strategy)),
-			route_params, router, first_hops, inflight_htlcs, entropy_source, node_signer,
+			route_params, router, first_hops, &compute_inflight_htlcs, entropy_source, node_signer,
 			best_block_height, logger, &send_payment_along_path)
 			.map_err(|e| { self.remove_outbound_if_all_failed(payment_id, &e); e })
 	}
@@ -439,25 +440,26 @@ impl OutboundPayments {
 			.map_err(|e| { self.remove_outbound_if_all_failed(payment_id, &e); e })
 	}
 
-	pub(super) fn send_spontaneous_payment<R: Deref, ES: Deref, NS: Deref, F, L: Deref>(
+	pub(super) fn send_spontaneous_payment<R: Deref, ES: Deref, NS: Deref, IH, SP, L: Deref>(
 		&self, payment_preimage: Option<PaymentPreimage>, payment_id: PaymentId,
 		retry_strategy: Retry, route_params: RouteParameters, router: &R,
-		first_hops: Vec<ChannelDetails>, inflight_htlcs: InFlightHtlcs, entropy_source: &ES,
-		node_signer: &NS, best_block_height: u32, logger: &L, send_payment_along_path: F
+		first_hops: Vec<ChannelDetails>, inflight_htlcs: IH, entropy_source: &ES,
+		node_signer: &NS, best_block_height: u32, logger: &L, send_payment_along_path: SP
 	) -> Result<PaymentHash, PaymentSendFailure>
 	where
 		R::Target: Router,
 		ES::Target: EntropySource,
 		NS::Target: NodeSigner,
 		L::Target: Logger,
-		F: Fn(&Vec<RouteHop>, &Option<PaymentParameters>, &PaymentHash, &Option<PaymentSecret>, u64,
+		IH: Fn() -> InFlightHtlcs,
+		SP: Fn(&Vec<RouteHop>, &Option<PaymentParameters>, &PaymentHash, &Option<PaymentSecret>, u64,
 			 u32, PaymentId, &Option<PaymentPreimage>, [u8; 32]) -> Result<(), APIError>,
 	{
 		let preimage = payment_preimage
 			.unwrap_or_else(|| PaymentPreimage(entropy_source.get_secure_random_bytes()));
 		let payment_hash = PaymentHash(Sha256::hash(&preimage.0).into_inner());
 		self.pay_internal(payment_id, Some((payment_hash, &None, Some(preimage), retry_strategy)),
-			route_params, router, first_hops, inflight_htlcs, entropy_source, node_signer,
+			route_params, router, first_hops, &inflight_htlcs, entropy_source, node_signer,
 			best_block_height, logger, &send_payment_along_path)
 			.map(|()| payment_hash)
 			.map_err(|e| { self.remove_outbound_if_all_failed(payment_id, &e); e })
@@ -525,26 +527,27 @@ impl OutboundPayments {
 			}
 			if let Some((payment_id, route_params)) = retry_id_route_params {
 				core::mem::drop(outbounds);
-				if let Err(e) = self.pay_internal(payment_id, None, route_params, router, first_hops(), inflight_htlcs(), entropy_source, node_signer, best_block_height, logger, &send_payment_along_path) {
+				if let Err(e) = self.pay_internal(payment_id, None, route_params, router, first_hops(), &inflight_htlcs, entropy_source, node_signer, best_block_height, logger, &send_payment_along_path) {
 					log_info!(logger, "Errored retrying payment: {:?}", e);
 				}
 			} else { break }
 		}
 	}
 
-	fn pay_internal<R: Deref, NS: Deref, ES: Deref, F, L: Deref>(
+	fn pay_internal<R: Deref, NS: Deref, ES: Deref, IH, SP, L: Deref>(
 		&self, payment_id: PaymentId,
 		initial_send_info: Option<(PaymentHash, &Option<PaymentSecret>, Option<PaymentPreimage>, Retry)>,
 		route_params: RouteParameters, router: &R, first_hops: Vec<ChannelDetails>,
-		inflight_htlcs: InFlightHtlcs, entropy_source: &ES, node_signer: &NS, best_block_height: u32,
-		logger: &L, send_payment_along_path: &F,
+		inflight_htlcs: &IH, entropy_source: &ES, node_signer: &NS, best_block_height: u32,
+		logger: &L, send_payment_along_path: &SP,
 	) -> Result<(), PaymentSendFailure>
 	where
 		R::Target: Router,
 		ES::Target: EntropySource,
 		NS::Target: NodeSigner,
 		L::Target: Logger,
-		F: Fn(&Vec<RouteHop>, &Option<PaymentParameters>, &PaymentHash, &Option<PaymentSecret>, u64,
+		IH: Fn() -> InFlightHtlcs,
+		SP: Fn(&Vec<RouteHop>, &Option<PaymentParameters>, &PaymentHash, &Option<PaymentSecret>, u64,
 		   u32, PaymentId, &Option<PaymentPreimage>, [u8; 32]) -> Result<(), APIError>
 	{
 		#[cfg(feature = "std")] {
@@ -557,7 +560,7 @@ impl OutboundPayments {
 
 		let route = router.find_route(
 			&node_signer.get_node_id(Recipient::Node).unwrap(), &route_params,
-			Some(&first_hops.iter().collect::<Vec<_>>()), &inflight_htlcs
+			Some(&first_hops.iter().collect::<Vec<_>>()), &inflight_htlcs(),
 		).map_err(|e| PaymentSendFailure::ParameterError(APIError::APIMisuseError {
 			err: format!("Failed to find a route for payment {}: {:?}", log_bytes!(payment_id.0), e), // TODO: add APIError::RouteNotFound
 		}))?;
@@ -1235,12 +1238,12 @@ mod tests {
 		};
 		let err = if on_retry {
 			outbound_payments.pay_internal(
-				PaymentId([0; 32]), None, expired_route_params, &&router, vec![], InFlightHtlcs::new(),
+				PaymentId([0; 32]), None, expired_route_params, &&router, vec![], &|| InFlightHtlcs::new(),
 				&&keys_manager, &&keys_manager, 0, &&logger, &|_, _, _, _, _, _, _, _, _| Ok(())).unwrap_err()
 		} else {
 			outbound_payments.send_payment(
 				PaymentHash([0; 32]), &None, PaymentId([0; 32]), Retry::Attempts(0), expired_route_params,
-				&&router, vec![], InFlightHtlcs::new(), &&keys_manager, &&keys_manager, 0, &&logger,
+				&&router, vec![], || InFlightHtlcs::new(), &&keys_manager, &&keys_manager, 0, &&logger,
 				|_, _, _, _, _, _, _, _, _| Ok(())).unwrap_err()
 		};
 		if let PaymentSendFailure::ParameterError(APIError::APIMisuseError { err }) = err {
@@ -1278,12 +1281,12 @@ mod tests {
 				&Route { paths: vec![], payment_params: None }, Some(Retry::Attempts(1)),
 				Some(route_params.payment_params.clone()), &&keys_manager, 0).unwrap();
 			outbound_payments.pay_internal(
-				PaymentId([0; 32]), None, route_params, &&router, vec![], InFlightHtlcs::new(),
+				PaymentId([0; 32]), None, route_params, &&router, vec![], &|| InFlightHtlcs::new(),
 				&&keys_manager, &&keys_manager, 0, &&logger, &|_, _, _, _, _, _, _, _, _| Ok(())).unwrap_err()
 		} else {
 			outbound_payments.send_payment(
 				PaymentHash([0; 32]), &None, PaymentId([0; 32]), Retry::Attempts(0), route_params,
-				&&router, vec![], InFlightHtlcs::new(), &&keys_manager, &&keys_manager, 0, &&logger,
+				&&router, vec![], || InFlightHtlcs::new(), &&keys_manager, &&keys_manager, 0, &&logger,
 				|_, _, _, _, _, _, _, _, _| Ok(())).unwrap_err()
 		};
 		if let PaymentSendFailure::ParameterError(APIError::APIMisuseError { err }) = err {

@@ -21,8 +21,9 @@ use crate::ln::features::InvoiceFeatures;
 use crate::ln::msgs;
 use crate::ln::msgs::ChannelMessageHandler;
 use crate::ln::outbound_payment::Retry;
-use crate::routing::gossip::RoutingFees;
+use crate::routing::gossip::{EffectiveCapacity, RoutingFees};
 use crate::routing::router::{get_route, PaymentParameters, Route, RouteHint, RouteHintHop, RouteHop, RouteParameters};
+use crate::routing::scoring::ChannelUsage;
 use crate::util::events::{ClosureReason, Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider};
 use crate::util::test_utils;
 use crate::util::errors::APIError;
@@ -2174,6 +2175,16 @@ fn retry_multi_path_single_failed_payment() {
 			// not the amount remaining on the full payment, which should be changed.
 			final_value_msat: 100_000_001, final_cltv_expiry_delta: TEST_FINAL_CLTV
 		}, Ok(route.clone()));
+
+	{
+		let scorer = chanmon_cfgs[0].scorer.lock().unwrap();
+		// The initial send attempt, 2 paths
+		scorer.expect_usage(chans[0].short_channel_id.unwrap(), ChannelUsage { amount_msat: 10_000, inflight_htlc_msat: 0, effective_capacity: EffectiveCapacity::Unknown });
+		scorer.expect_usage(chans[1].short_channel_id.unwrap(), ChannelUsage { amount_msat: 100_000_001, inflight_htlc_msat: 0, effective_capacity: EffectiveCapacity::Unknown });
+		// The retry, 2 paths. Ensure that the in-flight HTLC amount is factored in.
+		scorer.expect_usage(chans[0].short_channel_id.unwrap(), ChannelUsage { amount_msat: 50_000_001, inflight_htlc_msat: 10_000, effective_capacity: EffectiveCapacity::Unknown });
+		scorer.expect_usage(chans[1].short_channel_id.unwrap(), ChannelUsage { amount_msat: 50_000_000, inflight_htlc_msat: 0, effective_capacity: EffectiveCapacity::Unknown });
+	}
 
 	nodes[0].node.send_payment_with_retry(payment_hash, &Some(payment_secret), PaymentId(payment_hash.0), route_params, Retry::Attempts(1)).unwrap();
 	let htlc_msgs = nodes[0].node.get_and_clear_pending_msg_events();
