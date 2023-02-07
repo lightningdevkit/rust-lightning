@@ -7,9 +7,9 @@ pub use debug_sync::*;
 mod test_lockorder_checks;
 
 #[cfg(all(feature = "std", any(feature = "_bench_unstable", not(test))))]
-pub use ::std::sync::{Arc, Mutex, Condvar, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
+pub(crate) mod fairrwlock;
 #[cfg(all(feature = "std", any(feature = "_bench_unstable", not(test))))]
-pub use crate::util::fairrwlock::FairRwLock;
+pub use {std::sync::{Arc, Mutex, Condvar, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard}, fairrwlock::FairRwLock};
 
 #[cfg(not(feature = "std"))]
 mod nostd_sync;
