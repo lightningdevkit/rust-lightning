@@ -1298,8 +1298,13 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 	}
 
 	fn update_node_from_announcement_intern(&self, msg: &msgs::UnsignedNodeAnnouncement, full_msg: Option<&msgs::NodeAnnouncement>) -> Result<(), LightningError> {
-		match self.nodes.write().unwrap().get_mut(&msg.node_id) {
-			None => Err(LightningError{err: "No existing channels for node_announcement".to_owned(), action: ErrorAction::IgnoreError}),
+		let mut nodes = self.nodes.write().unwrap();
+		match nodes.get_mut(&msg.node_id) {
+			None => {
+				core::mem::drop(nodes);
+				self.pending_checks.check_hold_pending_node_announcement(msg, full_msg)?;
+				Err(LightningError{err: "No existing channels for node_announcement".to_owned(), action: ErrorAction::IgnoreError})
+			},
 			Some(node) => {
 				if let Some(node_info) = node.announcement_info.as_ref() {
 					// The timestamp field is somewhat of a misnomer - the BOLTs use it to order
@@ -1724,7 +1729,11 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 
 		let mut channels = self.channels.write().unwrap();
 		match channels.get_mut(&msg.short_channel_id) {
-			None => return Err(LightningError{err: "Couldn't find channel for update".to_owned(), action: ErrorAction::IgnoreError}),
+			None => {
+				core::mem::drop(channels);
+				self.pending_checks.check_hold_pending_channel_update(msg, full_msg)?;
+				return Err(LightningError{err: "Couldn't find channel for update".to_owned(), action: ErrorAction::IgnoreError});
+			},
 			Some(channel) => {
 				if msg.htlc_maximum_msat > MAX_VALUE_MSAT {
 					return Err(LightningError{err:
