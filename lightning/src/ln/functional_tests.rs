@@ -5257,7 +5257,8 @@ fn test_key_derivation_params() {
 	let keys_manager = test_utils::TestKeysInterface::new(&seed, Network::Testnet);
 	let chain_monitor = test_utils::TestChainMonitor::new(Some(&chanmon_cfgs[0].chain_source), &chanmon_cfgs[0].tx_broadcaster, &chanmon_cfgs[0].logger, &chanmon_cfgs[0].fee_estimator, &chanmon_cfgs[0].persister, &keys_manager);
 	let network_graph = Arc::new(NetworkGraph::new(chanmon_cfgs[0].chain_source.genesis_hash, &chanmon_cfgs[0].logger));
-	let router = test_utils::TestRouter::new(network_graph.clone());
+	let scorer = Mutex::new(test_utils::TestScorer::new());
+	let router = test_utils::TestRouter::new(network_graph.clone(), &scorer);
 	let node = NodeCfg { chain_source: &chanmon_cfgs[0].chain_source, logger: &chanmon_cfgs[0].logger, tx_broadcaster: &chanmon_cfgs[0].tx_broadcaster, fee_estimator: &chanmon_cfgs[0].fee_estimator, router, chain_monitor, keys_manager: &keys_manager, network_graph, node_seed: seed, override_init_features: alloc::rc::Rc::new(core::cell::RefCell::new(None)) };
 	let mut node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	node_cfgs.remove(0);
@@ -6925,7 +6926,7 @@ fn test_check_htlc_underpaying() {
 	// Create some initial channels
 	create_announced_chan_between_nodes(&nodes, 0, 1);
 
-	let scorer = test_utils::TestScorer::with_penalty(0);
+	let scorer = test_utils::TestScorer::new();
 	let random_seed_bytes = chanmon_cfgs[1].keys_manager.get_secure_random_bytes();
 	let payment_params = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id(), TEST_FINAL_CLTV).with_features(nodes[1].node.invoice_features());
 	let route = get_route(&nodes[0].node.get_our_node_id(), &payment_params, &nodes[0].network_graph.read_only(), None, 10_000, TEST_FINAL_CLTV, nodes[0].logger, &scorer, &random_seed_bytes).unwrap();
@@ -7175,7 +7176,7 @@ fn test_bump_penalty_txn_on_revoked_htlcs() {
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1000000, 59000000);
 	// Lock HTLC in both directions (using a slightly lower CLTV delay to provide timely RBF bumps)
 	let payment_params = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id(), 50).with_features(nodes[1].node.invoice_features());
-	let scorer = test_utils::TestScorer::with_penalty(0);
+	let scorer = test_utils::TestScorer::new();
 	let random_seed_bytes = chanmon_cfgs[1].keys_manager.get_secure_random_bytes();
 	let route = get_route(&nodes[0].node.get_our_node_id(), &payment_params, &nodes[0].network_graph.read_only(), None,
 		3_000_000, 50, nodes[0].logger, &scorer, &random_seed_bytes).unwrap();
@@ -9186,7 +9187,7 @@ fn test_keysend_payments_to_public_node() {
 		final_value_msat: 10000,
 		final_cltv_expiry_delta: 40,
 	};
-	let scorer = test_utils::TestScorer::with_penalty(0);
+	let scorer = test_utils::TestScorer::new();
 	let random_seed_bytes = chanmon_cfgs[1].keys_manager.get_secure_random_bytes();
 	let route = find_route(&payer_pubkey, &route_params, &network_graph, None, nodes[0].logger, &scorer, &random_seed_bytes).unwrap();
 
@@ -9221,7 +9222,7 @@ fn test_keysend_payments_to_private_node() {
 	};
 	let network_graph = nodes[0].network_graph.clone();
 	let first_hops = nodes[0].node.list_usable_channels();
-	let scorer = test_utils::TestScorer::with_penalty(0);
+	let scorer = test_utils::TestScorer::new();
 	let random_seed_bytes = chanmon_cfgs[1].keys_manager.get_secure_random_bytes();
 	let route = find_route(
 		&payer_pubkey, &route_params, &network_graph, Some(&first_hops.iter().collect::<Vec<_>>()),

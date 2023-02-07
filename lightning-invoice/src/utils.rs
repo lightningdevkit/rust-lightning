@@ -691,7 +691,7 @@ mod test {
 		let first_hops = nodes[0].node.list_usable_channels();
 		let network_graph = &node_cfgs[0].network_graph;
 		let logger = test_utils::TestLogger::new();
-		let scorer = test_utils::TestScorer::with_penalty(0);
+		let scorer = test_utils::TestScorer::new();
 		let random_seed_bytes = chanmon_cfgs[1].keys_manager.get_secure_random_bytes();
 		let route = find_route(
 			&nodes[0].node.get_our_node_id(), &route_params, &network_graph,
@@ -1055,7 +1055,7 @@ mod test {
 		let first_hops = nodes[0].node.list_usable_channels();
 		let network_graph = &node_cfgs[0].network_graph;
 		let logger = test_utils::TestLogger::new();
-		let scorer = test_utils::TestScorer::with_penalty(0);
+		let scorer = test_utils::TestScorer::new();
 		let random_seed_bytes = chanmon_cfgs[1].keys_manager.get_secure_random_bytes();
 		let route = find_route(
 			&nodes[0].node.get_our_node_id(), &params, &network_graph,

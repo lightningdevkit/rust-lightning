@@ -928,7 +928,7 @@ macro_rules! get_phantom_route {
 						htlc_maximum_msat: None,
 					}
 		])]);
-		let scorer = test_utils::TestScorer::with_penalty(0);
+		let scorer = test_utils::TestScorer::new();
 		let network_graph = $nodes[0].network_graph.read_only();
 		(get_route(
 			&$nodes[0].node.get_our_node_id(), &payment_params, &network_graph,

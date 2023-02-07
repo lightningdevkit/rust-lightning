@@ -921,7 +921,7 @@ fn get_ldk_payment_preimage() {
 
 	let payment_params = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id(), TEST_FINAL_CLTV)
 		.with_features(nodes[1].node.invoice_features());
-	let scorer = test_utils::TestScorer::with_penalty(0);
+	let scorer = test_utils::TestScorer::new();
 	let keys_manager = test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
 	let random_seed_bytes = keys_manager.get_secure_random_bytes();
 	let route = get_route(
@@ -1442,7 +1442,7 @@ fn do_test_intercepted_payment(test: InterceptTest) {
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, Some(intercept_forwards_config), Some(zero_conf_chan_config)]);
 
 	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
-	let scorer = test_utils::TestScorer::with_penalty(0);
+	let scorer = test_utils::TestScorer::new();
 	let random_seed_bytes = chanmon_cfgs[0].keys_manager.get_secure_random_bytes();
 
 	let _ = create_announced_chan_between_nodes(&nodes, 0, 1).2;

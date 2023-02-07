@@ -7966,7 +7966,7 @@ mod tests {
 		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 		create_announced_chan_between_nodes(&nodes, 0, 1);
-		let scorer = test_utils::TestScorer::with_penalty(0);
+		let scorer = test_utils::TestScorer::new();
 		let random_seed_bytes = chanmon_cfgs[1].keys_manager.get_secure_random_bytes();
 
 		// To start (1), send a regular payment but don't claim it.
@@ -8074,7 +8074,7 @@ mod tests {
 		};
 		let network_graph = nodes[0].network_graph.clone();
 		let first_hops = nodes[0].node.list_usable_channels();
-		let scorer = test_utils::TestScorer::with_penalty(0);
+		let scorer = test_utils::TestScorer::new();
 		let random_seed_bytes = chanmon_cfgs[1].keys_manager.get_secure_random_bytes();
 		let route = find_route(
 			&payer_pubkey, &route_params, &network_graph, Some(&first_hops.iter().collect::<Vec<_>>()),
@@ -8119,7 +8119,7 @@ mod tests {
 		};
 		let network_graph = nodes[0].network_graph.clone();
 		let first_hops = nodes[0].node.list_usable_channels();
-		let scorer = test_utils::TestScorer::with_penalty(0);
+		let scorer = test_utils::TestScorer::new();
 		let random_seed_bytes = chanmon_cfgs[1].keys_manager.get_secure_random_bytes();
 		let route = find_route(
 			&payer_pubkey, &route_params, &network_graph, Some(&first_hops.iter().collect::<Vec<_>>()),
@@ -8589,7 +8589,8 @@ pub mod bench {
 		let tx_broadcaster = test_utils::TestBroadcaster{txn_broadcasted: Mutex::new(Vec::new()), blocks: Arc::new(Mutex::new(Vec::new()))};
 		let fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) };
 		let logger_a = test_utils::TestLogger::with_id("node a".to_owned());
-		let router = test_utils::TestRouter::new(Arc::new(NetworkGraph::new(genesis_hash, &logger_a)));
+		let scorer = Mutex::new(test_utils::TestScorer::new());
+		let router = test_utils::TestRouter::new(Arc::new(NetworkGraph::new(genesis_hash, &logger_a)), &scorer);
 
 		let mut config: UserConfig = Default::default();
 		config.channel_handshake_config.minimum_depth = 1;
@@ -8680,7 +8681,7 @@ pub mod bench {
 				let usable_channels = $node_a.list_usable_channels();
 				let payment_params = PaymentParameters::from_node_id($node_b.get_our_node_id(), TEST_FINAL_CLTV)
 					.with_features($node_b.invoice_features());
-				let scorer = test_utils::TestScorer::with_penalty(0);
+				let scorer = test_utils::TestScorer::new();
 				let seed = [3u8; 32];
 				let keys_manager = KeysManager::new(&seed, 42, 42);
 				let random_seed_bytes = keys_manager.get_secure_random_bytes();
