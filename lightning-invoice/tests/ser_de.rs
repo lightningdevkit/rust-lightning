@@ -5,9 +5,10 @@ extern crate lightning_invoice;
 extern crate secp256k1;
 extern crate hex;
 
+use bitcoin::util::address::WitnessVersion;
+use bitcoin::{PubkeyHash, ScriptHash};
 use bitcoin_hashes::hex::FromHex;
 use bitcoin_hashes::{sha256, Hash};
-use bech32::u5;
 use lightning::ln::PaymentSecret;
 use lightning::routing::gossip::RoutingFees;
 use lightning::routing::router::{RouteHint, RouteHintHop};
@@ -115,7 +116,7 @@ fn get_test_tuples() -> Vec<(String, SignedRawInvoice, bool, bool)> {
 				.payment_hash(sha256::Hash::from_hex(
 					"0001020304050607080900010203040506070809000102030405060708090102"
 				).unwrap())
-				.fallback(Fallback::PubKeyHash([49, 114, 181, 101, 79, 102, 131, 200, 251, 20, 105, 89, 211, 71, 206, 48, 60, 174, 76, 167]))
+				.fallback(Fallback::PubKeyHash(PubkeyHash::from_slice(&[49, 114, 181, 101, 79, 102, 131, 200, 251, 20, 105, 89, 211, 71, 206, 48, 60, 174, 76, 167]).unwrap()))
 				.build_raw()
 				.unwrap()
 				.sign(|_| {
@@ -137,7 +138,7 @@ fn get_test_tuples() -> Vec<(String, SignedRawInvoice, bool, bool)> {
 				.payment_hash(sha256::Hash::from_hex(
 					"0001020304050607080900010203040506070809000102030405060708090102"
 				).unwrap())
-				.fallback(Fallback::PubKeyHash([4, 182, 31, 125, 193, 234, 13, 201, 148, 36, 70, 76, 196, 6, 77, 197, 100, 217, 30, 137]))
+				.fallback(Fallback::PubKeyHash(PubkeyHash::from_slice(&[4, 182, 31, 125, 193, 234, 13, 201, 148, 36, 70, 76, 196, 6, 77, 197, 100, 217, 30, 137]).unwrap()))
 				.private_route(RouteHint(vec![RouteHintHop {
 					src_node_id: PublicKey::from_slice(&hex::decode(
 							"029e03a901b85534ff1e92c43c74431f7ce72046060fcf7a95c37e148f78c77255"
@@ -176,7 +177,7 @@ fn get_test_tuples() -> Vec<(String, SignedRawInvoice, bool, bool)> {
 				.payment_hash(sha256::Hash::from_hex(
 					"0001020304050607080900010203040506070809000102030405060708090102"
 				).unwrap())
-				.fallback(Fallback::ScriptHash([143, 85, 86, 59, 154, 25, 243, 33, 194, 17, 233, 185, 243, 140, 223, 104, 110, 160, 120, 69]))
+				.fallback(Fallback::ScriptHash(ScriptHash::from_slice(&[143, 85, 86, 59, 154, 25, 243, 33, 194, 17, 233, 185, 243, 140, 223, 104, 110, 160, 120, 69]).unwrap()))
 				.build_raw()
 				.unwrap()
 				.sign(|_| {
@@ -198,7 +199,7 @@ fn get_test_tuples() -> Vec<(String, SignedRawInvoice, bool, bool)> {
 				.payment_hash(sha256::Hash::from_hex(
 					"0001020304050607080900010203040506070809000102030405060708090102"
 				).unwrap())
-				.fallback(Fallback::SegWitProgram { version: u5::try_from_u8(0).unwrap(),
+				.fallback(Fallback::SegWitProgram { version: WitnessVersion::V0,
 					program: vec![117, 30, 118, 232, 25, 145, 150, 212, 84, 148, 28, 69, 209, 179, 163, 35, 241, 67, 59, 214]
 				})
 				.build_raw()
@@ -222,7 +223,7 @@ fn get_test_tuples() -> Vec<(String, SignedRawInvoice, bool, bool)> {
 				.payment_hash(sha256::Hash::from_hex(
 					"0001020304050607080900010203040506070809000102030405060708090102"
 				).unwrap())
-				.fallback(Fallback::SegWitProgram { version: u5::try_from_u8(0).unwrap(),
+				.fallback(Fallback::SegWitProgram { version: WitnessVersion::V0,
 					program: vec![24, 99, 20, 60, 20, 197, 22, 104, 4, 189, 25, 32, 51, 86, 218, 19, 108, 152, 86, 120, 205, 77, 39, 161, 184, 198, 50, 150, 4, 144, 50, 98]
 				})
 				.build_raw()

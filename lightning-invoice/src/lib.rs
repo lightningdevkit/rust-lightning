@@ -45,8 +45,9 @@ extern crate serde;
 use std::time::SystemTime;
 
 use bech32::u5;
-use bitcoin_hashes::Hash;
-use bitcoin_hashes::sha256;
+use bitcoin::{Address, Network, PubkeyHash, ScriptHash};
+use bitcoin::util::address::{Payload, WitnessVersion};
+use bitcoin_hashes::{Hash, sha256};
 use lightning::ln::PaymentSecret;
 use lightning::ln::features::InvoiceFeatures;
 #[cfg(any(doc, test))]
@@ -442,17 +443,16 @@ pub struct ExpiryTime(Duration);
 #[derive(Clone, Debug, Hash, Eq, PartialEq)]
 pub struct MinFinalCltvExpiryDelta(pub u64);
 
-// TODO: better types instead onf byte arrays
 /// Fallback address in case no LN payment is possible
 #[allow(missing_docs)]
 #[derive(Clone, Debug, Hash, Eq, PartialEq)]
 pub enum Fallback {
 	SegWitProgram {
-		version: u5,
+		version: WitnessVersion,
 		program: Vec<u8>,
 	},
-	PubKeyHash([u8; 20]),
-	ScriptHash([u8; 20]),
+	PubKeyHash(PubkeyHash),
+	ScriptHash(ScriptHash),
 }
 
 /// Recoverable signature
@@ -1258,6 +1258,33 @@ impl Invoice {
 		self.signed_invoice.fallbacks()
 	}
 
+	/// Returns a list of all fallback addresses as [`Address`]es
+	pub fn fallback_addresses(&self) -> Vec<Address> {
+		self.fallbacks().iter().map(|fallback| {
+			let network = match self.currency() {
+				Currency::Bitcoin => Network::Bitcoin,
+				Currency::BitcoinTestnet => Network::Testnet,
+				Currency::Regtest => Network::Regtest,
+				Currency::Simnet => Network::Regtest,
+				Currency::Signet => Network::Signet,
+			};
+
+			let payload = match fallback {
+				Fallback::SegWitProgram { version, program } => {
+					Payload::WitnessProgram { version: *version, program: program.to_vec() }
+				}
+				Fallback::PubKeyHash(pkh) => {
+					Payload::PubkeyHash(*pkh)
+				}
+				Fallback::ScriptHash(sh) => {
+					Payload::ScriptHash(*sh)
+				}
+			};
+
+			Address { payload, network }
+		}).collect()
+	}
+
 	/// Returns a list of all routes included in the invoice
 	pub fn private_routes(&self) -> Vec<&PrivateRoute> {
 		self.signed_invoice.private_routes()
@@ -1567,6 +1594,7 @@ impl<'de> Deserialize<'de> for Invoice {
 
 #[cfg(test)]
 mod test {
+	use bitcoin::Script;
 	use bitcoin_hashes::hex::FromHex;
 	use bitcoin_hashes::sha256;
 
@@ -1930,7 +1958,7 @@ mod test {
 			.payee_pub_key(public_key.clone())
 			.expiry_time(Duration::from_secs(54321))
 			.min_final_cltv_expiry_delta(144)
-			.fallback(Fallback::PubKeyHash([0;20]))
+			.fallback(Fallback::PubKeyHash(PubkeyHash::from_slice(&[0;20]).unwrap()))
 			.private_route(route_1.clone())
 			.private_route(route_2.clone())
 			.description_hash(sha256::Hash::from_slice(&[3;32][..]).unwrap())
@@ -1956,7 +1984,9 @@ mod test {
 		assert_eq!(invoice.payee_pub_key(), Some(&public_key));
 		assert_eq!(invoice.expiry_time(), Duration::from_secs(54321));
 		assert_eq!(invoice.min_final_cltv_expiry_delta(), 144);
-		assert_eq!(invoice.fallbacks(), vec![&Fallback::PubKeyHash([0;20])]);
+		assert_eq!(invoice.fallbacks(), vec![&Fallback::PubKeyHash(PubkeyHash::from_slice(&[0;20]).unwrap())]);
+		let address = Address::from_script(&Script::new_p2pkh(&PubkeyHash::from_slice(&[0;20]).unwrap()), Network::Testnet).unwrap();
+		assert_eq!(invoice.fallback_addresses(), vec![address]);
 		assert_eq!(invoice.private_routes(), vec![&PrivateRoute(route_1), &PrivateRoute(route_2)]);
 		assert_eq!(
 			invoice.description(),
