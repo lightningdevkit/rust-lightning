@@ -250,7 +250,7 @@ impl<'a> UnsignedInvoiceRequest<'a> {
 ///
 /// [`Invoice`]: crate::offers::invoice::Invoice
 /// [`Offer`]: crate::offers::offer::Offer
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct InvoiceRequest {
 	pub(super) bytes: Vec<u8>,
 	pub(super) contents: InvoiceRequestContents,
@@ -260,7 +260,7 @@ pub struct InvoiceRequest {
 /// The contents of an [`InvoiceRequest`], which may be shared with an [`Invoice`].
 ///
 /// [`Invoice`]: crate::offers::invoice::Invoice
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub(super) struct InvoiceRequestContents {
 	payer: PayerContents,
 	pub(super) offer: OfferContents,

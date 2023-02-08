@@ -307,6 +307,7 @@ impl<'a> UnsignedInvoice<'a> {
 /// [`Offer`]: crate::offers::offer::Offer
 /// [`Refund`]: crate::offers::refund::Refund
 /// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
+#[derive(Clone, Debug, PartialEq)]
 pub struct Invoice {
 	bytes: Vec<u8>,
 	contents: InvoiceContents,
@@ -317,6 +318,7 @@ pub struct Invoice {
 ///
 /// [`Offer`]: crate::offers::offer::Offer
 /// [`Refund`]: crate::offers::refund::Refund
+#[derive(Clone, Debug, PartialEq)]
 enum InvoiceContents {
 	/// Contents for an [`Invoice`] corresponding to an [`Offer`].
 	///
@@ -335,6 +337,7 @@ enum InvoiceContents {
 }
 
 /// Invoice-specific fields for an `invoice` message.
+#[derive(Clone, Debug, PartialEq)]
 struct InvoiceFields {
 	payment_paths: Vec<(BlindedPath, BlindedPayInfo)>,
 	created_at: Duration,
