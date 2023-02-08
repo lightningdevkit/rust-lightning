@@ -23,7 +23,7 @@ use crate::util::crypto::hkdf_extract_expand_4x;
 use crate::util::errors::APIError;
 use crate::util::logger::Logger;
 
-use core::convert::TryInto;
+use core::convert::{TryFrom, TryInto};
 use core::ops::Deref;
 
 pub(crate) const IV_LEN: usize = 16;
@@ -89,8 +89,8 @@ impl ExpandedKey {
 /// [`Offer::metadata`]: crate::offers::offer::Offer::metadata
 /// [`Offer::signing_pubkey`]: crate::offers::offer::Offer::signing_pubkey
 #[allow(unused)]
-#[derive(Clone, Copy)]
-pub(crate) struct Nonce([u8; Self::LENGTH]);
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Nonce(pub(crate) [u8; Self::LENGTH]);
 
 impl Nonce {
 	/// Number of bytes in the nonce.
@@ -111,6 +111,21 @@ impl Nonce {
 	/// Returns a slice of the underlying bytes of size [`Nonce::LENGTH`].
 	pub fn as_slice(&self) -> &[u8] {
 		&self.0
+	}
+}
+
+impl TryFrom<&[u8]> for Nonce {
+	type Error = ();
+
+	fn try_from(bytes: &[u8]) -> Result<Self, ()> {
+		if bytes.len() != Self::LENGTH {
+			return Err(());
+		}
+
+		let mut copied_bytes = [0u8; Self::LENGTH];
+		copied_bytes.copy_from_slice(bytes);
+
+		Ok(Self(copied_bytes))
 	}
 }
 

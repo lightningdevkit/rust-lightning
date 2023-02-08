@@ -13,6 +13,7 @@ use bitcoin::secp256k1::{KeyPair, Message, PublicKey, Secp256k1, SecretKey};
 use bitcoin::secp256k1::schnorr::Signature;
 use core::convert::Infallible;
 use core::time::Duration;
+use crate::chain::keysinterface::EntropySource;
 use crate::ln::PaymentHash;
 use crate::ln::features::BlindedHopFeatures;
 use crate::offers::invoice::BlindedPayInfo;
@@ -107,4 +108,12 @@ pub(super) fn now() -> Duration {
 	std::time::SystemTime::now()
 		.duration_since(std::time::SystemTime::UNIX_EPOCH)
 		.expect("SystemTime::now() should come after SystemTime::UNIX_EPOCH")
+}
+
+pub(super) struct FixedEntropy;
+
+impl EntropySource for FixedEntropy {
+	fn get_secure_random_bytes(&self) -> [u8; 32] {
+		[42; 32]
+	}
 }

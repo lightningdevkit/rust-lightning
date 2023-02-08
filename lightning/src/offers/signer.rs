@@ -10,12 +10,14 @@
 //! Utilities for signing offer messages and verifying metadata.
 
 use bitcoin::hashes::{Hash, HashEngine};
+use bitcoin::hashes::cmp::fixed_time_eq;
 use bitcoin::hashes::hmac::{Hmac, HmacEngine};
 use bitcoin::hashes::sha256::Hash as Sha256;
-use bitcoin::secp256k1::{KeyPair, Secp256k1, SecretKey, self};
-use core::convert::TryInto;
+use bitcoin::secp256k1::{KeyPair, PublicKey, Secp256k1, SecretKey, self};
+use core::convert::TryFrom;
 use core::fmt;
 use crate::ln::inbound_payment::{ExpandedKey, IV_LEN, Nonce};
+use crate::offers::merkle::TlvRecord;
 use crate::util::ser::Writeable;
 
 use crate::prelude::*;
@@ -56,7 +58,12 @@ impl Metadata {
 
 	pub fn derives_keys(&self) -> bool {
 		match self {
-			Metadata::Bytes(_) => false,
+			// Infer whether Metadata::derived_from was called on Metadata::DerivedSigningPubkey to
+			// produce Metadata::Bytes. This is merely to determine which fields should be included
+			// when verifying a message. It doesn't necessarily indicate that keys were in fact
+			// derived, as wouldn't be the case if a Metadata::Bytes with length Nonce::LENGTH had
+			// been set explicitly.
+			Metadata::Bytes(bytes) => bytes.len() == Nonce::LENGTH,
 			Metadata::Derived(_) => false,
 			Metadata::DerivedSigningPubkey(_) => true,
 		}
@@ -146,5 +153,43 @@ impl MetadataMaterial {
 		let privkey = SecretKey::from_slice(hmac.as_inner()).unwrap();
 		let keys = KeyPair::from_secret_key(secp_ctx, &privkey);
 		(self.nonce.as_slice().to_vec(), keys)
+	}
+}
+
+/// Verifies data given in a TLV stream was used to produce the given metadata, consisting of:
+/// - a 128-bit [`Nonce`] and possibly
+/// - a [`Sha256`] hash of the nonce and the TLV records using the [`ExpandedKey`].
+///
+/// If the latter is not included in the metadata, the TLV stream is used to check if the given
+/// `signing_pubkey` can be derived from it.
+pub(super) fn verify_metadata<'a, T: secp256k1::Signing>(
+	metadata: &Vec<u8>, expanded_key: &ExpandedKey, iv_bytes: &[u8; IV_LEN],
+	signing_pubkey: PublicKey, tlv_stream: impl core::iter::Iterator<Item = TlvRecord<'a>>,
+	secp_ctx: &Secp256k1<T>
+) -> bool {
+	if metadata.len() < Nonce::LENGTH {
+		return false;
+	}
+
+	let nonce = match Nonce::try_from(&metadata[..Nonce::LENGTH]) {
+		Ok(nonce) => nonce,
+		Err(_) => return false,
+	};
+	let mut hmac = expanded_key.hmac_for_offer(nonce, iv_bytes);
+
+	for record in tlv_stream {
+		hmac.input(record.record_bytes);
+	}
+
+	if metadata.len() == Nonce::LENGTH {
+		hmac.input(DERIVED_METADATA_AND_KEYS_HMAC_INPUT);
+		let hmac = Hmac::from_engine(hmac);
+		let derived_pubkey = SecretKey::from_slice(hmac.as_inner()).unwrap().public_key(&secp_ctx);
+		fixed_time_eq(&signing_pubkey.serialize(), &derived_pubkey.serialize())
+	} else if metadata[Nonce::LENGTH..].len() == Sha256::LEN {
+		hmac.input(DERIVED_METADATA_HMAC_INPUT);
+		fixed_time_eq(&metadata[Nonce::LENGTH..], &Hmac::from_engine(hmac).into_inner())
+	} else {
+		false
 	}
 }

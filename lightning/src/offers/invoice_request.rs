@@ -54,15 +54,16 @@
 
 use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::network::constants::Network;
-use bitcoin::secp256k1::{Message, PublicKey};
+use bitcoin::secp256k1::{Message, PublicKey, Secp256k1, self};
 use bitcoin::secp256k1::schnorr::Signature;
 use core::convert::TryFrom;
 use crate::io;
 use crate::ln::PaymentHash;
 use crate::ln::features::InvoiceRequestFeatures;
+use crate::ln::inbound_payment::ExpandedKey;
 use crate::ln::msgs::DecodeError;
 use crate::offers::invoice::{BlindedPayInfo, InvoiceBuilder};
-use crate::offers::merkle::{SignError, SignatureTlvStream, SignatureTlvStreamRef, self};
+use crate::offers::merkle::{SignError, SignatureTlvStream, SignatureTlvStreamRef, TlvStream, self};
 use crate::offers::offer::{Offer, OfferContents, OfferTlvStream, OfferTlvStreamRef};
 use crate::offers::parse::{ParseError, ParsedMessage, SemanticError};
 use crate::offers::payer::{PayerContents, PayerTlvStream, PayerTlvStreamRef};
@@ -370,6 +371,13 @@ impl InvoiceRequest {
 		}
 
 		InvoiceBuilder::for_offer(self, payment_paths, created_at, payment_hash)
+	}
+
+	/// Verifies that the request was for an offer created using the given key.
+	pub fn verify<T: secp256k1::Signing>(
+		&self, key: &ExpandedKey, secp_ctx: &Secp256k1<T>
+	) -> bool {
+		self.contents.offer.verify(TlvStream::new(&self.bytes), key, secp_ctx)
 	}
 
 	#[cfg(test)]

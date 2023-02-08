@@ -80,8 +80,9 @@ use crate::ln::features::OfferFeatures;
 use crate::ln::inbound_payment::{ExpandedKey, IV_LEN, Nonce};
 use crate::ln::msgs::MAX_VALUE_MSAT;
 use crate::offers::invoice_request::InvoiceRequestBuilder;
+use crate::offers::merkle::TlvStream;
 use crate::offers::parse::{Bech32Encode, ParseError, ParsedMessage, SemanticError};
-use crate::offers::signer::{Metadata, MetadataMaterial};
+use crate::offers::signer::{Metadata, MetadataMaterial, self};
 use crate::onion_message::BlindedPath;
 use crate::util::ser::{HighZeroBytesDroppedBigSize, WithoutLength, Writeable, Writer};
 use crate::util::string::PrintableString;
@@ -149,10 +150,11 @@ impl<'a, T: secp256k1::Signing> OfferBuilder<'a, DerivedMetadata, T> {
 	/// recipient privacy by using a different signing pubkey for each offer. Otherwise, the
 	/// provided `node_id` is used for the signing pubkey.
 	///
-	/// Also, sets the metadata when [`OfferBuilder::build`] is called such that it can be used to
-	/// verify that an [`InvoiceRequest`] was produced for the offer given an [`ExpandedKey`].
+	/// Also, sets the metadata when [`OfferBuilder::build`] is called such that it can be used by
+	/// [`InvoiceRequest::verify`] to determine if the request was produced for the offer given an
+	/// [`ExpandedKey`].
 	///
-	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
+	/// [`InvoiceRequest::verify`]: crate::offers::invoice_request::InvoiceRequest::verify
 	/// [`ExpandedKey`]: crate::ln::inbound_payment::ExpandedKey
 	pub fn deriving_signing_pubkey<ES: Deref>(
 		description: String, node_id: PublicKey, expanded_key: &ExpandedKey, entropy_source: ES,
@@ -566,6 +568,27 @@ impl OfferContents {
 		self.signing_pubkey
 	}
 
+	/// Verifies that the offer metadata was produced from the offer in the TLV stream.
+	pub(super) fn verify<T: secp256k1::Signing>(
+		&self, tlv_stream: TlvStream<'_>, key: &ExpandedKey, secp_ctx: &Secp256k1<T>
+	) -> bool {
+		match self.metadata() {
+			Some(metadata) => {
+				let tlv_stream = tlv_stream.range(OFFER_TYPES).filter(|record| {
+					match record.r#type {
+						OFFER_METADATA_TYPE => false,
+						OFFER_NODE_ID_TYPE => !self.metadata.as_ref().unwrap().derives_keys(),
+						_ => true,
+					}
+				});
+				signer::verify_metadata(
+					metadata, key, IV_BYTES, self.signing_pubkey(), tlv_stream, secp_ctx
+				)
+			},
+			None => false,
+		}
+	}
+
 	pub(super) fn as_tlv_stream(&self) -> OfferTlvStreamRef {
 		let (currency, amount) = match &self.amount {
 			None => (None, None),
@@ -653,9 +676,18 @@ impl Quantity {
 	}
 }
 
-tlv_stream!(OfferTlvStream, OfferTlvStreamRef, 1..80, {
+/// Valid type range for offer TLV records.
+const OFFER_TYPES: core::ops::Range<u64> = 1..80;
+
+/// TLV record type for [`Offer::metadata`].
+const OFFER_METADATA_TYPE: u64 = 4;
+
+/// TLV record type for [`Offer::signing_pubkey`].
+const OFFER_NODE_ID_TYPE: u64 = 22;
+
+tlv_stream!(OfferTlvStream, OfferTlvStreamRef, OFFER_TYPES, {
 	(2, chains: (Vec<ChainHash>, WithoutLength)),
-	(4, metadata: (Vec<u8>, WithoutLength)),
+	(OFFER_METADATA_TYPE, metadata: (Vec<u8>, WithoutLength)),
 	(6, currency: CurrencyCode),
 	(8, amount: (u64, HighZeroBytesDroppedBigSize)),
 	(10, description: (String, WithoutLength)),
@@ -664,7 +696,7 @@ tlv_stream!(OfferTlvStream, OfferTlvStreamRef, 1..80, {
 	(16, paths: (Vec<BlindedPath>, WithoutLength)),
 	(18, issuer: (String, WithoutLength)),
 	(20, quantity_max: (u64, HighZeroBytesDroppedBigSize)),
-	(22, node_id: PublicKey),
+	(OFFER_NODE_ID_TYPE, node_id: PublicKey),
 });
 
 impl Bech32Encode for Offer {
@@ -751,10 +783,13 @@ mod tests {
 
 	use bitcoin::blockdata::constants::ChainHash;
 	use bitcoin::network::constants::Network;
+	use bitcoin::secp256k1::Secp256k1;
 	use core::convert::TryFrom;
 	use core::num::NonZeroU64;
 	use core::time::Duration;
+	use crate::chain::keysinterface::KeyMaterial;
 	use crate::ln::features::OfferFeatures;
+	use crate::ln::inbound_payment::ExpandedKey;
 	use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
 	use crate::offers::parse::{ParseError, SemanticError};
 	use crate::offers::test_utils::*;
@@ -863,6 +898,110 @@ mod tests {
 			.unwrap();
 		assert_eq!(offer.metadata(), Some(&vec![43; 32]));
 		assert_eq!(offer.as_tlv_stream().metadata, Some(&vec![43; 32]));
+	}
+
+	#[test]
+	fn builds_offer_with_metadata_derived() {
+		let desc = "foo".to_string();
+		let node_id = recipient_pubkey();
+		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let entropy = FixedEntropy {};
+		let secp_ctx = Secp256k1::new();
+
+		let offer = OfferBuilder
+			::deriving_signing_pubkey(desc, node_id, &expanded_key, &entropy, &secp_ctx)
+			.amount_msats(1000)
+			.build().unwrap();
+		assert_eq!(offer.signing_pubkey(), node_id);
+
+		let invoice_request = offer.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.build().unwrap()
+			.sign(payer_sign).unwrap();
+		assert!(invoice_request.verify(&expanded_key, &secp_ctx));
+
+		// Fails verification with altered offer field
+		let mut tlv_stream = offer.as_tlv_stream();
+		tlv_stream.amount = Some(100);
+
+		let mut encoded_offer = Vec::new();
+		tlv_stream.write(&mut encoded_offer).unwrap();
+
+		let invoice_request = Offer::try_from(encoded_offer).unwrap()
+			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.build().unwrap()
+			.sign(payer_sign).unwrap();
+		assert!(!invoice_request.verify(&expanded_key, &secp_ctx));
+
+		// Fails verification with altered metadata
+		let mut tlv_stream = offer.as_tlv_stream();
+		let metadata = tlv_stream.metadata.unwrap().iter().copied().rev().collect();
+		tlv_stream.metadata = Some(&metadata);
+
+		let mut encoded_offer = Vec::new();
+		tlv_stream.write(&mut encoded_offer).unwrap();
+
+		let invoice_request = Offer::try_from(encoded_offer).unwrap()
+			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.build().unwrap()
+			.sign(payer_sign).unwrap();
+		assert!(!invoice_request.verify(&expanded_key, &secp_ctx));
+	}
+
+	#[test]
+	fn builds_offer_with_derived_signing_pubkey() {
+		let desc = "foo".to_string();
+		let node_id = recipient_pubkey();
+		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let entropy = FixedEntropy {};
+		let secp_ctx = Secp256k1::new();
+
+		let blinded_path = BlindedPath {
+			introduction_node_id: pubkey(40),
+			blinding_point: pubkey(41),
+			blinded_hops: vec![
+				BlindedHop { blinded_node_id: pubkey(42), encrypted_payload: vec![0; 43] },
+				BlindedHop { blinded_node_id: node_id, encrypted_payload: vec![0; 44] },
+			],
+		};
+
+		let offer = OfferBuilder
+			::deriving_signing_pubkey(desc, node_id, &expanded_key, &entropy, &secp_ctx)
+			.amount_msats(1000)
+			.path(blinded_path)
+			.build().unwrap();
+		assert_ne!(offer.signing_pubkey(), node_id);
+
+		let invoice_request = offer.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.build().unwrap()
+			.sign(payer_sign).unwrap();
+		assert!(invoice_request.verify(&expanded_key, &secp_ctx));
+
+		// Fails verification with altered offer field
+		let mut tlv_stream = offer.as_tlv_stream();
+		tlv_stream.amount = Some(100);
+
+		let mut encoded_offer = Vec::new();
+		tlv_stream.write(&mut encoded_offer).unwrap();
+
+		let invoice_request = Offer::try_from(encoded_offer).unwrap()
+			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.build().unwrap()
+			.sign(payer_sign).unwrap();
+		assert!(!invoice_request.verify(&expanded_key, &secp_ctx));
+
+		// Fails verification with altered signing pubkey
+		let mut tlv_stream = offer.as_tlv_stream();
+		let signing_pubkey = pubkey(1);
+		tlv_stream.node_id = Some(&signing_pubkey);
+
+		let mut encoded_offer = Vec::new();
+		tlv_stream.write(&mut encoded_offer).unwrap();
+
+		let invoice_request = Offer::try_from(encoded_offer).unwrap()
+			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.build().unwrap()
+			.sign(payer_sign).unwrap();
+		assert!(!invoice_request.verify(&expanded_key, &secp_ctx));
 	}
 
 	#[test]
