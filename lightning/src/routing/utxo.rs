@@ -42,6 +42,7 @@ pub enum UtxoLookupError {
 /// The result of a [`UtxoLookup::get_utxo`] call. A call may resolve either synchronously,
 /// returning the `Sync` variant, or asynchronously, returning an [`UtxoFuture`] in the `Async`
 /// variant.
+#[derive(Clone)]
 pub enum UtxoResult {
 	/// A result which was resolved synchronously. It either includes a [`TxOut`] for the output
 	/// requested or a [`UtxoLookupError`].

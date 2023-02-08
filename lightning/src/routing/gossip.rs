@@ -1927,7 +1927,7 @@ mod tests {
 	#[cfg(feature = "std")]
 	use crate::ln::features::InitFeatures;
 	use crate::routing::gossip::{P2PGossipSync, NetworkGraph, NetworkUpdate, NodeAlias, MAX_EXCESS_BYTES_FOR_RELAY, NodeId, RoutingFees, ChannelUpdateInfo, ChannelInfo, NodeAnnouncementInfo, NodeInfo};
-	use crate::routing::utxo::UtxoLookupError;
+	use crate::routing::utxo::{UtxoLookupError, UtxoResult};
 	use crate::ln::msgs::{RoutingMessageHandler, UnsignedNodeAnnouncement, NodeAnnouncement,
 		UnsignedChannelAnnouncement, ChannelAnnouncement, UnsignedChannelUpdate, ChannelUpdate,
 		ReplyChannelRange, QueryChannelRange, QueryShortChannelIds, MAX_VALUE_MSAT};
@@ -2159,7 +2159,7 @@ mod tests {
 
 		// Test if an associated transaction were not on-chain (or not confirmed).
 		let chain_source = test_utils::TestChainSource::new(Network::Testnet);
-		*chain_source.utxo_ret.lock().unwrap() = Err(UtxoLookupError::UnknownTx);
+		*chain_source.utxo_ret.lock().unwrap() = UtxoResult::Sync(Err(UtxoLookupError::UnknownTx));
 		let network_graph = NetworkGraph::new(genesis_hash, &logger);
 		gossip_sync = P2PGossipSync::new(&network_graph, Some(&chain_source), &logger);
 
@@ -2172,7 +2172,8 @@ mod tests {
 		};
 
 		// Now test if the transaction is found in the UTXO set and the script is correct.
-		*chain_source.utxo_ret.lock().unwrap() = Ok(TxOut { value: 0, script_pubkey: good_script.clone() });
+		*chain_source.utxo_ret.lock().unwrap() =
+			UtxoResult::Sync(Ok(TxOut { value: 0, script_pubkey: good_script.clone() }));
 		let valid_announcement = get_signed_channel_announcement(|unsigned_announcement| {
 			unsigned_announcement.short_channel_id += 2;
 		}, node_1_privkey, node_2_privkey, &secp_ctx);
@@ -2190,7 +2191,8 @@ mod tests {
 
 		// If we receive announcement for the same channel, once we've validated it against the
 		// chain, we simply ignore all new (duplicate) announcements.
-		*chain_source.utxo_ret.lock().unwrap() = Ok(TxOut { value: 0, script_pubkey: good_script });
+		*chain_source.utxo_ret.lock().unwrap() =
+			UtxoResult::Sync(Ok(TxOut { value: 0, script_pubkey: good_script }));
 		match gossip_sync.handle_channel_announcement(&valid_announcement) {
 			Ok(_) => panic!(),
 			Err(e) => assert_eq!(e.err, "Already have chain-validated channel")
@@ -2264,7 +2266,8 @@ mod tests {
 		{
 			// Announce a channel we will update
 			let good_script = get_channel_script(&secp_ctx);
-			*chain_source.utxo_ret.lock().unwrap() = Ok(TxOut { value: amount_sats, script_pubkey: good_script.clone() });
+			*chain_source.utxo_ret.lock().unwrap() =
+				UtxoResult::Sync(Ok(TxOut { value: amount_sats, script_pubkey: good_script.clone() }));
 
 			let valid_channel_announcement = get_signed_channel_announcement(|_| {}, node_1_privkey, node_2_privkey, &secp_ctx);
 			short_channel_id = valid_channel_announcement.contents.short_channel_id;

@@ -2112,6 +2112,7 @@ fn build_route_from_hops_internal<L: Deref>(
 #[cfg(test)]
 mod tests {
 	use crate::routing::gossip::{NetworkGraph, P2PGossipSync, NodeId, EffectiveCapacity};
+	use crate::routing::utxo::UtxoResult;
 	use crate::routing::router::{get_route, build_route_from_hops_internal, add_random_cltv_offset, default_node_features,
 		PaymentParameters, Route, RouteHint, RouteHintHop, RouteHop, RoutingFees,
 		DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA, MAX_PATH_LENGTH_ESTIMATE};
@@ -3526,7 +3527,8 @@ mod tests {
 		.push_opcode(opcodes::all::OP_PUSHNUM_2)
 		.push_opcode(opcodes::all::OP_CHECKMULTISIG).into_script().to_v0_p2wsh();
 
-		*chain_monitor.utxo_ret.lock().unwrap() = Ok(TxOut { value: 15, script_pubkey: good_script.clone() });
+		*chain_monitor.utxo_ret.lock().unwrap() =
+			UtxoResult::Sync(Ok(TxOut { value: 15, script_pubkey: good_script.clone() }));
 		gossip_sync.add_utxo_lookup(Some(chain_monitor));
 
 		add_channel(&gossip_sync, &secp_ctx, &privkeys[0], &privkeys[2], ChannelFeatures::from_le_bytes(id_to_feature_flags(3)), 333);

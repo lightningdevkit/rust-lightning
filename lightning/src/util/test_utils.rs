@@ -841,7 +841,8 @@ impl core::fmt::Debug for OnGetShutdownScriptpubkey {
 
 pub struct TestChainSource {
 	pub genesis_hash: BlockHash,
-	pub utxo_ret: Mutex<Result<TxOut, UtxoLookupError>>,
+	pub utxo_ret: Mutex<UtxoResult>,
+	pub get_utxo_call_count: AtomicUsize,
 	pub watched_txn: Mutex<HashSet<(Txid, Script)>>,
 	pub watched_outputs: Mutex<HashSet<(OutPoint, Script)>>,
 }
@@ -851,7 +852,8 @@ impl TestChainSource {
 		let script_pubkey = Builder::new().push_opcode(opcodes::OP_TRUE).into_script();
 		Self {
 			genesis_hash: genesis_block(network).block_hash(),
-			utxo_ret: Mutex::new(Ok(TxOut { value: u64::max_value(), script_pubkey })),
+			utxo_ret: Mutex::new(UtxoResult::Sync(Ok(TxOut { value: u64::max_value(), script_pubkey }))),
+			get_utxo_call_count: AtomicUsize::new(0),
 			watched_txn: Mutex::new(HashSet::new()),
 			watched_outputs: Mutex::new(HashSet::new()),
 		}
@@ -860,11 +862,12 @@ impl TestChainSource {
 
 impl UtxoLookup for TestChainSource {
 	fn get_utxo(&self, genesis_hash: &BlockHash, _short_channel_id: u64) -> UtxoResult {
+		self.get_utxo_call_count.fetch_add(1, Ordering::Relaxed);
 		if self.genesis_hash != *genesis_hash {
 			return UtxoResult::Sync(Err(UtxoLookupError::UnknownChain));
 		}
 
-		UtxoResult::Sync(self.utxo_ret.lock().unwrap().clone())
+		self.utxo_ret.lock().unwrap().clone()
 	}
 }
 
