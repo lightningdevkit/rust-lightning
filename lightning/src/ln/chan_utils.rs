@@ -23,7 +23,6 @@ use bitcoin::hash_types::{Txid, PubkeyHash};
 
 use crate::ln::{PaymentHash, PaymentPreimage};
 use crate::ln::msgs::DecodeError;
-use crate::routing::gossip::NodeId;
 use crate::util::ser::{Readable, Writeable, Writer};
 use crate::util::transaction_utils;
 
