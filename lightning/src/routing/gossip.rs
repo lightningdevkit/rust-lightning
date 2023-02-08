@@ -155,6 +155,8 @@ pub struct NetworkGraph<L: Deref> where L::Target: Logger {
 	/// resync them from gossip. Each `NodeId` is mapped to the time (in seconds) it was removed so
 	/// that once some time passes, we can potentially resync it from gossip again.
 	removed_nodes: Mutex<HashMap<NodeId, Option<u64>>>,
+	/// Announcement messages which are awaiting an on-chain lookup to be processed.
+	pub(super) pending_checks: utxo::PendingChecks,
 }
 
 /// A read-only view of [`NetworkGraph`].
@@ -1200,6 +1202,7 @@ impl<L: Deref> ReadableArgs<L> for NetworkGraph<L> where L::Target: Logger {
 			last_rapid_gossip_sync_timestamp: Mutex::new(last_rapid_gossip_sync_timestamp),
 			removed_nodes: Mutex::new(HashMap::new()),
 			removed_channels: Mutex::new(HashMap::new()),
+			pending_checks: utxo::PendingChecks::new(),
 		})
 	}
 }
@@ -1239,6 +1242,7 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 			last_rapid_gossip_sync_timestamp: Mutex::new(None),
 			removed_channels: Mutex::new(HashMap::new()),
 			removed_nodes: Mutex::new(HashMap::new()),
+			pending_checks: utxo::PendingChecks::new(),
 		}
 	}
 
@@ -1494,7 +1498,8 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 			}
 		}
 
-		let utxo_value = utxo::check_channel_announcement(utxo_lookup, msg)?;
+		let utxo_value = self.pending_checks.check_channel_announcement(
+			utxo_lookup, msg, full_msg)?;
 
 		#[allow(unused_mut, unused_assignments)]
 		let mut announcement_received_time = 0;

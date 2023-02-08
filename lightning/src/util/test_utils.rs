@@ -23,7 +23,7 @@ use crate::ln::{msgs, wire};
 use crate::ln::msgs::LightningError;
 use crate::ln::script::ShutdownScript;
 use crate::routing::gossip::{NetworkGraph, NodeId};
-use crate::routing::utxo::{UtxoLookup, UtxoLookupError};
+use crate::routing::utxo::{UtxoLookup, UtxoLookupError, UtxoResult};
 use crate::routing::router::{find_route, InFlightHtlcs, Route, RouteHop, RouteParameters, Router, ScorerAccountingForInFlightHtlcs};
 use crate::routing::scoring::FixedPenaltyScorer;
 use crate::util::config::UserConfig;
@@ -857,12 +857,12 @@ impl TestChainSource {
 }
 
 impl UtxoLookup for TestChainSource {
-	fn get_utxo(&self, genesis_hash: &BlockHash, _short_channel_id: u64) -> Result<TxOut, UtxoLookupError> {
+	fn get_utxo(&self, genesis_hash: &BlockHash, _short_channel_id: u64) -> UtxoResult {
 		if self.genesis_hash != *genesis_hash {
-			return Err(UtxoLookupError::UnknownChain);
+			return UtxoResult::Sync(Err(UtxoLookupError::UnknownChain));
 		}
 
-		self.utxo_ret.lock().unwrap().clone()
+		UtxoResult::Sync(self.utxo_ret.lock().unwrap().clone())
 	}
 }
 

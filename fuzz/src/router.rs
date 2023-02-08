@@ -15,7 +15,7 @@ use lightning::chain::transaction::OutPoint;
 use lightning::ln::channelmanager::{self, ChannelDetails, ChannelCounterparty};
 use lightning::ln::msgs;
 use lightning::routing::gossip::{NetworkGraph, RoutingFees};
-use lightning::routing::utxo::{UtxoLookup, UtxoLookupError};
+use lightning::routing::utxo::{UtxoFuture, UtxoLookup, UtxoLookupError, UtxoResult};
 use lightning::routing::router::{find_route, PaymentParameters, RouteHint, RouteHintHop, RouteParameters};
 use lightning::routing::scoring::FixedPenaltyScorer;
 use lightning::util::config::UserConfig;
@@ -81,17 +81,36 @@ impl InputData {
 	}
 }
 
-struct FuzzChainSource {
+struct FuzzChainSource<'a, 'b, Out: test_logger::Output> {
 	input: Arc<InputData>,
+	net_graph: &'a NetworkGraph<&'b test_logger::TestLogger<Out>>,
 }
-impl UtxoLookup for FuzzChainSource {
-	fn get_utxo(&self, _genesis_hash: &BlockHash, _short_channel_id: u64) -> Result<TxOut, UtxoLookupError> {
-		match self.input.get_slice(2) {
-			Some(&[0, _]) => Err(UtxoLookupError::UnknownChain),
-			Some(&[1, _]) => Err(UtxoLookupError::UnknownTx),
-			Some(&[_, x]) => Ok(TxOut { value: 0, script_pubkey: Builder::new().push_int(x as i64).into_script().to_v0_p2wsh() }),
-			None => Err(UtxoLookupError::UnknownTx),
-			_ => unreachable!(),
+impl<Out: test_logger::Output> UtxoLookup for FuzzChainSource<'_, '_, Out> {
+	fn get_utxo(&self, _genesis_hash: &BlockHash, _short_channel_id: u64) -> UtxoResult {
+		let input_slice = self.input.get_slice(2);
+		if input_slice.is_none() { return UtxoResult::Sync(Err(UtxoLookupError::UnknownTx)); }
+		let input_slice = input_slice.unwrap();
+		let txo_res = TxOut {
+			value: if input_slice[0] % 2 == 0 { 1_000_000 } else { 1_000 },
+			script_pubkey: Builder::new().push_int(input_slice[1] as i64).into_script().to_v0_p2wsh(),
+		};
+		match input_slice {
+			&[0, _] => UtxoResult::Sync(Err(UtxoLookupError::UnknownChain)),
+			&[1, _] => UtxoResult::Sync(Err(UtxoLookupError::UnknownTx)),
+			&[2, _] => {
+				let future = UtxoFuture::new();
+				future.resolve(self.net_graph, Ok(txo_res));
+				UtxoResult::Async(future.clone())
+			},
+			&[3, _] => {
+				let future = UtxoFuture::new();
+				future.resolve(self.net_graph, Err(UtxoLookupError::UnknownTx));
+				UtxoResult::Async(future.clone())
+			},
+			&[4, _] => {
+				UtxoResult::Async(UtxoFuture::new()) // the future will never resolve
+			},
+			&[..] => UtxoResult::Sync(Ok(txo_res)),
 		}
 	}
 }
@@ -171,6 +190,10 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 
 	let our_pubkey = get_pubkey!();
 	let net_graph = NetworkGraph::new(genesis_block(Network::Bitcoin).header.block_hash(), &logger);
+	let chain_source = FuzzChainSource {
+		input: Arc::clone(&input),
+		net_graph: &net_graph,
+	};
 
 	let mut node_pks = HashSet::new();
 	let mut scid = 42;
@@ -191,13 +214,14 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 				let msg = decode_msg_with_len16!(msgs::UnsignedChannelAnnouncement, 32+8+33*4);
 				node_pks.insert(get_pubkey_from_node_id!(msg.node_id_1));
 				node_pks.insert(get_pubkey_from_node_id!(msg.node_id_2));
-				let _ = net_graph.update_channel_from_unsigned_announcement::<&FuzzChainSource>(&msg, &None);
+				let _ = net_graph.update_channel_from_unsigned_announcement::
+					<&FuzzChainSource<'_, '_, Out>>(&msg, &None);
 			},
 			2 => {
 				let msg = decode_msg_with_len16!(msgs::UnsignedChannelAnnouncement, 32+8+33*4);
 				node_pks.insert(get_pubkey_from_node_id!(msg.node_id_1));
 				node_pks.insert(get_pubkey_from_node_id!(msg.node_id_2));
-				let _ = net_graph.update_channel_from_unsigned_announcement(&msg, &Some(&FuzzChainSource { input: Arc::clone(&input) }));
+				let _ = net_graph.update_channel_from_unsigned_announcement(&msg, &Some(&chain_source));
 			},
 			3 => {
 				let _ = net_graph.update_channel_unsigned(&decode_msg!(msgs::UnsignedChannelUpdate, 72));
