@@ -26,7 +26,7 @@ use crate::util::logger::Logger;
 use core::convert::TryInto;
 use core::ops::Deref;
 
-const IV_LEN: usize = 16;
+pub(crate) const IV_LEN: usize = 16;
 const METADATA_LEN: usize = 16;
 const METADATA_KEY_LEN: usize = 32;
 const AMT_MSAT_LEN: usize = 8;
@@ -65,6 +65,52 @@ impl ExpandedKey {
 			user_pmt_hash_key,
 			offers_base_key,
 		}
+	}
+
+	/// Returns an [`HmacEngine`] used to construct [`Offer::metadata`].
+	///
+	/// [`Offer::metadata`]: crate::offers::offer::Offer::metadata
+	#[allow(unused)]
+	pub(crate) fn hmac_for_offer(
+		&self, nonce: Nonce, iv_bytes: &[u8; IV_LEN]
+	) -> HmacEngine<Sha256> {
+		let mut hmac = HmacEngine::<Sha256>::new(&self.offers_base_key);
+		hmac.input(iv_bytes);
+		hmac.input(&nonce.0);
+		hmac
+	}
+}
+
+/// A 128-bit number used only once.
+///
+/// Needed when constructing [`Offer::metadata`] and deriving [`Offer::signing_pubkey`] from
+/// [`ExpandedKey`]. Must not be reused for any other derivation without first hashing.
+///
+/// [`Offer::metadata`]: crate::offers::offer::Offer::metadata
+/// [`Offer::signing_pubkey`]: crate::offers::offer::Offer::signing_pubkey
+#[allow(unused)]
+#[derive(Clone, Copy)]
+pub(crate) struct Nonce([u8; Self::LENGTH]);
+
+impl Nonce {
+	/// Number of bytes in the nonce.
+	pub const LENGTH: usize = 16;
+
+	/// Creates a `Nonce` from the given [`EntropySource`].
+	pub fn from_entropy_source<ES: Deref>(entropy_source: ES) -> Self
+	where
+		ES::Target: EntropySource,
+	{
+		let mut bytes = [0u8; Self::LENGTH];
+		let rand_bytes = entropy_source.get_secure_random_bytes();
+		bytes.copy_from_slice(&rand_bytes[..Self::LENGTH]);
+
+		Nonce(bytes)
+	}
+
+	/// Returns a slice of the underlying bytes of size [`Nonce::LENGTH`].
+	pub fn as_slice(&self) -> &[u8] {
+		&self.0
 	}
 }
 

@@ -313,7 +313,8 @@ impl<'a> UnsignedInvoice<'a> {
 /// [`Offer`]: crate::offers::offer::Offer
 /// [`Refund`]: crate::offers::refund::Refund
 /// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
+#[cfg_attr(test, derive(PartialEq))]
 pub struct Invoice {
 	bytes: Vec<u8>,
 	contents: InvoiceContents,
@@ -324,7 +325,8 @@ pub struct Invoice {
 ///
 /// [`Offer`]: crate::offers::offer::Offer
 /// [`Refund`]: crate::offers::refund::Refund
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
+#[cfg_attr(test, derive(PartialEq))]
 enum InvoiceContents {
 	/// Contents for an [`Invoice`] corresponding to an [`Offer`].
 	///
