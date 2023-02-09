@@ -140,10 +140,6 @@ impl Router for FuzzRouter {
 			action: msgs::ErrorAction::IgnoreError
 		})
 	}
-	fn notify_payment_path_failed(&self, _path: &[&RouteHop], _short_channel_id: u64) {}
-	fn notify_payment_path_successful(&self, _path: &[&RouteHop]) {}
-	fn notify_payment_probe_successful(&self, _path: &[&RouteHop]) {}
-	fn notify_payment_probe_failed(&self, _path: &[&RouteHop], _short_channel_id: u64) {}
 }
 
 struct TestBroadcaster {

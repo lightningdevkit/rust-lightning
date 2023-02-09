@@ -135,10 +135,6 @@ impl<'a> Router for TestRouter<'a> {
 			&[42; 32]
 		)
 	}
-	fn notify_payment_path_failed(&self, _path: &[&RouteHop], _short_channel_id: u64) {}
-	fn notify_payment_path_successful(&self, _path: &[&RouteHop]) {}
-	fn notify_payment_probe_successful(&self, _path: &[&RouteHop]) {}
-	fn notify_payment_probe_failed(&self, _path: &[&RouteHop], _short_channel_id: u64) {}
 }
 
 #[cfg(feature = "std")] // If we put this on the `if`, we get "attributes are not yet allowed on `if` expressions" on 1.41.1

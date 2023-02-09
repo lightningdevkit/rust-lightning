@@ -72,22 +72,6 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, S: Deref> Router for DefaultR
 			&random_seed_bytes
 		)
 	}
-
-	fn notify_payment_path_failed(&self, path: &[&RouteHop], short_channel_id: u64) {
-		self.scorer.lock().payment_path_failed(path, short_channel_id);
-	}
-
-	fn notify_payment_path_successful(&self, path: &[&RouteHop]) {
-		self.scorer.lock().payment_path_successful(path);
-	}
-
-	fn notify_payment_probe_successful(&self, path: &[&RouteHop]) {
-		self.scorer.lock().probe_successful(path);
-	}
-
-	fn notify_payment_probe_failed(&self, path: &[&RouteHop], short_channel_id: u64) {
-		self.scorer.lock().probe_failed(path, short_channel_id);
-	}
 }
 
 /// A trait defining behavior for routing a payment.
@@ -106,14 +90,6 @@ pub trait Router {
 	) -> Result<Route, LightningError> {
 		self.find_route(payer, route_params, first_hops, inflight_htlcs)
 	}
-	/// Lets the router know that payment through a specific path has failed.
-	fn notify_payment_path_failed(&self, path: &[&RouteHop], short_channel_id: u64);
-	/// Lets the router know that payment through a specific path was successful.
-	fn notify_payment_path_successful(&self, path: &[&RouteHop]);
-	/// Lets the router know that a payment probe was successful.
-	fn notify_payment_probe_successful(&self, path: &[&RouteHop]);
-	/// Lets the router know that a payment probe failed.
-	fn notify_payment_probe_failed(&self, path: &[&RouteHop], short_channel_id: u64);
 }
 
 /// [`Score`] implementation that factors in in-flight HTLC liquidity.
