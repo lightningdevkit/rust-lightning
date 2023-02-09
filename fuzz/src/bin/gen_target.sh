@@ -6,6 +6,7 @@ GEN_TEST() {
 	echo "void $1_run(const unsigned char* data, size_t data_len);" >> ../../targets.h
 }
 
+GEN_TEST bech32_parse
 GEN_TEST chanmon_deser
 GEN_TEST chanmon_consistency
 GEN_TEST full_stack
