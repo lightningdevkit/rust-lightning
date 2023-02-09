@@ -27,7 +27,7 @@ use crate::ln::peer_channel_encryptor::{PeerChannelEncryptor,NextNoiseStep};
 use crate::ln::wire;
 use crate::ln::wire::Encode;
 use crate::onion_message::{CustomOnionMessageContents, CustomOnionMessageHandler, SimpleArcOnionMessenger, SimpleRefOnionMessenger};
-use crate::routing::gossip::{NetworkGraph, P2PGossipSync};
+use crate::routing::gossip::{NetworkGraph, P2PGossipSync, NodeId};
 use crate::util::atomic_counter::AtomicCounter;
 use crate::util::events::{MessageSendEvent, MessageSendEventsProvider, OnionMessageProvider};
 use crate::util::logger::Logger;
@@ -71,7 +71,7 @@ impl RoutingMessageHandler for IgnoringMessageHandler {
 	fn handle_channel_update(&self, _msg: &msgs::ChannelUpdate) -> Result<bool, LightningError> { Ok(false) }
 	fn get_next_channel_announcement(&self, _starting_point: u64) ->
 		Option<(msgs::ChannelAnnouncement, Option<msgs::ChannelUpdate>, Option<msgs::ChannelUpdate>)> { None }
-	fn get_next_node_announcement(&self, _starting_point: Option<&PublicKey>) -> Option<msgs::NodeAnnouncement> { None }
+	fn get_next_node_announcement(&self, _starting_point: Option<&NodeId>) -> Option<msgs::NodeAnnouncement> { None }
 	fn peer_connected(&self, _their_node_id: &PublicKey, _init: &msgs::Init) -> Result<(), ()> { Ok(()) }
 	fn handle_reply_channel_range(&self, _their_node_id: &PublicKey, _msg: msgs::ReplyChannelRange) -> Result<(), LightningError> { Ok(()) }
 	fn handle_reply_short_channel_ids_end(&self, _their_node_id: &PublicKey, _msg: msgs::ReplyShortChannelIdsEnd) -> Result<(), LightningError> { Ok(()) }
@@ -345,7 +345,7 @@ impl error::Error for PeerHandleError {
 enum InitSyncTracker{
 	NoSyncRequested,
 	ChannelsSyncing(u64),
-	NodesSyncing(PublicKey),
+	NodesSyncing(NodeId),
 }
 
 /// The ratio between buffer sizes at which we stop sending initial sync messages vs when we stop
@@ -389,7 +389,9 @@ const BUFFER_DRAIN_MSGS_PER_TICK: usize = 32;
 
 struct Peer {
 	channel_encryptor: PeerChannelEncryptor,
-	their_node_id: Option<PublicKey>,
+	/// We cache a `NodeId` here to avoid serializing peers' keys every time we forward gossip
+	/// messages in `PeerManager`. Use `Peer::set_their_node_id` to modify this field.
+	their_node_id: Option<(PublicKey, NodeId)>,
 	their_features: Option<InitFeatures>,
 	their_net_address: Option<NetAddress>,
 
@@ -434,7 +436,7 @@ impl Peer {
 	}
 
 	/// Similar to the above, but for node announcements indexed by node_id.
-	fn should_forward_node_announcement(&self, node_id: PublicKey) -> bool {
+	fn should_forward_node_announcement(&self, node_id: NodeId) -> bool {
 		if self.their_features.as_ref().unwrap().supports_gossip_queries() &&
 			!self.sent_gossip_timestamp_filter {
 				return false;
@@ -442,7 +444,7 @@ impl Peer {
 		match self.sync_status {
 			InitSyncTracker::NoSyncRequested => true,
 			InitSyncTracker::ChannelsSyncing(_) => false,
-			InitSyncTracker::NodesSyncing(pk) => pk < node_id,
+			InitSyncTracker::NodesSyncing(sync_node_id) => sync_node_id.as_slice() < node_id.as_slice(),
 		}
 	}
 
@@ -480,6 +482,10 @@ impl Peer {
 
 		total_outbound_buffered > OUTBOUND_BUFFER_LIMIT_DROP_GOSSIP ||
 			self.msgs_sent_since_pong > BUFFER_DRAIN_MSGS_PER_TICK * FORWARD_INIT_SYNC_BUFFER_LIMIT_RATIO
+	}
+
+	fn set_their_node_id(&mut self, node_id: PublicKey) {
+		self.their_node_id = Some((node_id, NodeId::from_pubkey(&node_id)));
 	}
 }
 
@@ -651,10 +657,10 @@ impl<Descriptor: SocketDescriptor, RM: Deref, L: Deref, NS: Deref> PeerManager<D
 /// This works around `format!()` taking a reference to each argument, preventing
 /// `if let Some(node_id) = peer.their_node_id { format!(.., node_id) } else { .. }` from compiling
 /// due to lifetime errors.
-struct OptionalFromDebugger<'a>(&'a Option<PublicKey>);
+struct OptionalFromDebugger<'a>(&'a Option<(PublicKey, NodeId)>);
 impl core::fmt::Display for OptionalFromDebugger<'_> {
 	fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> Result<(), core::fmt::Error> {
-		if let Some(node_id) = self.0 { write!(f, " from {}", log_pubkey!(node_id)) } else { Ok(()) }
+		if let Some((node_id, _)) = self.0 { write!(f, " from {}", log_pubkey!(node_id)) } else { Ok(()) }
 	}
 }
 
@@ -741,7 +747,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 				return None;
 			}
 			p.their_node_id
-		}).collect()
+		}).map(|(node_id, _)| node_id).collect()
 	}
 
 	fn get_ephemeral_key(&self) -> SecretKey {
@@ -849,7 +855,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 	fn do_attempt_write_data(&self, descriptor: &mut Descriptor, peer: &mut Peer) {
 		while !peer.awaiting_write_event {
 			if peer.should_buffer_onion_message() {
-				if let Some(peer_node_id) = peer.their_node_id {
+				if let Some((peer_node_id, _)) = peer.their_node_id {
 					if let Some(next_onion_message) =
 						self.message_handler.onion_message_handler.next_onion_message_for_peer(peer_node_id) {
 							self.enqueue_message(peer, &next_onion_message);
@@ -889,8 +895,8 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 						}
 					},
 					InitSyncTracker::ChannelsSyncing(_) => unreachable!(),
-					InitSyncTracker::NodesSyncing(key) => {
-						if let Some(msg) = self.message_handler.route_handler.get_next_node_announcement(Some(&key)) {
+					InitSyncTracker::NodesSyncing(sync_node_id) => {
+						if let Some(msg) = self.message_handler.route_handler.get_next_node_announcement(Some(&sync_node_id)) {
 							self.enqueue_message(peer, &msg);
 							peer.sync_status = InitSyncTracker::NodesSyncing(msg.contents.node_id);
 						} else {
@@ -978,9 +984,9 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 	/// Append a message to a peer's pending outbound/write buffer
 	fn enqueue_message<M: wire::Type>(&self, peer: &mut Peer, message: &M) {
 		if is_gossip_msg(message.type_id()) {
-			log_gossip!(self.logger, "Enqueueing message {:?} to {}", message, log_pubkey!(peer.their_node_id.unwrap()));
+			log_gossip!(self.logger, "Enqueueing message {:?} to {}", message, log_pubkey!(peer.their_node_id.unwrap().0));
 		} else {
-			log_trace!(self.logger, "Enqueueing message {:?} to {}", message, log_pubkey!(peer.their_node_id.unwrap()))
+			log_trace!(self.logger, "Enqueueing message {:?} to {}", message, log_pubkey!(peer.their_node_id.unwrap().0))
 		}
 		peer.msgs_sent_since_pong += 1;
 		peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(message));
@@ -1065,14 +1071,14 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 
 						macro_rules! insert_node_id {
 							() => {
-								match self.node_id_to_descriptor.lock().unwrap().entry(peer.their_node_id.unwrap()) {
+								match self.node_id_to_descriptor.lock().unwrap().entry(peer.their_node_id.unwrap().0) {
 									hash_map::Entry::Occupied(_) => {
-										log_trace!(self.logger, "Got second connection with {}, closing", log_pubkey!(peer.their_node_id.unwrap()));
+										log_trace!(self.logger, "Got second connection with {}, closing", log_pubkey!(peer.their_node_id.unwrap().0));
 										peer.their_node_id = None; // Unset so that we don't generate a peer_disconnected event
 										return Err(PeerHandleError{ no_connection_possible: false })
 									},
 									hash_map::Entry::Vacant(entry) => {
-										log_debug!(self.logger, "Finished noise handshake for connection with {}", log_pubkey!(peer.their_node_id.unwrap()));
+										log_debug!(self.logger, "Finished noise handshake for connection with {}", log_pubkey!(peer.their_node_id.unwrap().0));
 										entry.insert(peer_descriptor.clone())
 									},
 								};
@@ -1096,7 +1102,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 								peer.pending_read_buffer = [0; 18].to_vec(); // Message length header is 18 bytes
 								peer.pending_read_is_header = true;
 
-								peer.their_node_id = Some(their_node_id);
+								peer.set_their_node_id(their_node_id);
 								insert_node_id!();
 								let features = self.message_handler.chan_handler.provided_init_features(&their_node_id)
 									.or(self.message_handler.route_handler.provided_init_features(&their_node_id))
@@ -1110,7 +1116,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 									peer.channel_encryptor.process_act_three(&peer.pending_read_buffer[..]));
 								peer.pending_read_buffer = [0; 18].to_vec(); // Message length header is 18 bytes
 								peer.pending_read_is_header = true;
-								peer.their_node_id = Some(their_node_id);
+								peer.set_their_node_id(their_node_id);
 								insert_node_id!();
 								let features = self.message_handler.chan_handler.provided_init_features(&their_node_id)
 									.or(self.message_handler.route_handler.provided_init_features(&their_node_id))
@@ -1212,7 +1218,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 		}
 
 		for msg in msgs_to_forward.drain(..) {
-			self.forward_broadcast_msg(&*peers, &msg, peer_node_id.as_ref());
+			self.forward_broadcast_msg(&*peers, &msg, peer_node_id.as_ref().map(|(pk, _)| pk));
 		}
 
 		Ok(pause_read)
@@ -1226,7 +1232,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 		mut peer_lock: MutexGuard<Peer>,
 		message: wire::Message<<<CMH as core::ops::Deref>::Target as wire::CustomMessageReader>::CustomMessage>
 	) -> Result<Option<wire::Message<<<CMH as core::ops::Deref>::Target as wire::CustomMessageReader>::CustomMessage>>, MessageHandlingError> {
-		let their_node_id = peer_lock.their_node_id.clone().expect("We know the peer's public key by the time we receive messages");
+		let their_node_id = peer_lock.their_node_id.clone().expect("We know the peer's public key by the time we receive messages").0;
 		peer_lock.received_message_since_timer_tick = true;
 
 		// Need an Init as first message
@@ -1467,11 +1473,12 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 						log_gossip!(self.logger, "Skipping broadcast message to {:?} as its outbound buffer is full", peer.their_node_id);
 						continue;
 					}
-					if peer.their_node_id.as_ref() == Some(&msg.contents.node_id_1) ||
-					   peer.their_node_id.as_ref() == Some(&msg.contents.node_id_2) {
-						continue;
+					if let Some((_, their_node_id)) = peer.their_node_id {
+						if their_node_id == msg.contents.node_id_1 || their_node_id == msg.contents.node_id_2 {
+							continue;
+						}
 					}
-					if except_node.is_some() && peer.their_node_id.as_ref() == except_node {
+					if except_node.is_some() && peer.their_node_id.as_ref().map(|(pk, _)| pk) == except_node {
 						continue;
 					}
 					self.enqueue_encoded_gossip_broadcast(&mut *peer, encoded_msg.clone());
@@ -1491,10 +1498,12 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 						log_gossip!(self.logger, "Skipping broadcast message to {:?} as its outbound buffer is full", peer.their_node_id);
 						continue;
 					}
-					if peer.their_node_id.as_ref() == Some(&msg.contents.node_id) {
-						continue;
+					if let Some((_, their_node_id)) = peer.their_node_id {
+						if their_node_id == msg.contents.node_id {
+							continue;
+						}
 					}
-					if except_node.is_some() && peer.their_node_id.as_ref() == except_node {
+					if except_node.is_some() && peer.their_node_id.as_ref().map(|(pk, _)| pk) == except_node {
 						continue;
 					}
 					self.enqueue_encoded_gossip_broadcast(&mut *peer, encoded_msg.clone());
@@ -1514,7 +1523,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 						log_gossip!(self.logger, "Skipping broadcast message to {:?} as its outbound buffer is full", peer.their_node_id);
 						continue;
 					}
-					if except_node.is_some() && peer.their_node_id.as_ref() == except_node {
+					if except_node.is_some() && peer.their_node_id.as_ref().map(|(pk, _)| pk) == except_node {
 						continue;
 					}
 					self.enqueue_encoded_gossip_broadcast(&mut *peer, encoded_msg.clone());
@@ -1833,7 +1842,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 			},
 			Some(peer_lock) => {
 				let peer = peer_lock.lock().unwrap();
-				if let Some(node_id) = peer.their_node_id {
+				if let Some((node_id, _)) = peer.their_node_id {
 					log_trace!(self.logger,
 						"Handling disconnection of peer {}, with {}future connection to the peer possible.",
 						log_pubkey!(node_id), if no_connection_possible { "no " } else { "" });
@@ -1873,7 +1882,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 		self.node_id_to_descriptor.lock().unwrap().clear();
 		let peers = &mut *peers_lock;
 		for (mut descriptor, peer) in peers.drain() {
-			if let Some(node_id) = peer.lock().unwrap().their_node_id {
+			if let Some((node_id, _)) = peer.lock().unwrap().their_node_id {
 				log_trace!(self.logger, "Disconnecting peer with id {} due to client request to disconnect all peers", node_id);
 				self.message_handler.chan_handler.peer_disconnected(&node_id, false);
 				self.message_handler.onion_message_handler.peer_disconnected(&node_id, false);
@@ -1963,7 +1972,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 				let mut peers_lock = self.peers.write().unwrap();
 				for descriptor in descriptors_needing_disconnect.iter() {
 					if let Some(peer) = peers_lock.remove(descriptor) {
-						if let Some(node_id) = peer.lock().unwrap().their_node_id {
+						if let Some((node_id, _)) = peer.lock().unwrap().their_node_id {
 							log_trace!(self.logger, "Disconnecting peer with id {} due to ping timeout", node_id);
 							self.node_id_to_descriptor.lock().unwrap().remove(&node_id);
 							self.message_handler.chan_handler.peer_disconnected(&node_id, false);
@@ -2021,7 +2030,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 		let announcement = msgs::UnsignedNodeAnnouncement {
 			features,
 			timestamp: self.last_node_announcement_serial.fetch_add(1, Ordering::AcqRel),
-			node_id: self.node_signer.get_node_id(Recipient::Node).unwrap(),
+			node_id: NodeId::from_pubkey(&self.node_signer.get_node_id(Recipient::Node).unwrap()),
 			rgb, alias, addresses,
 			excess_address_data: Vec::new(),
 			excess_data: Vec::new(),

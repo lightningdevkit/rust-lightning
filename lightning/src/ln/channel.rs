@@ -36,6 +36,7 @@ use crate::chain::chaininterface::{FeeEstimator, ConfirmationTarget, LowerBounde
 use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, LATENCY_GRACE_PERIOD_BLOCKS};
 use crate::chain::transaction::{OutPoint, TransactionData};
 use crate::chain::keysinterface::{WriteableEcdsaChannelSigner, EntropySource, ChannelSigner, SignerProvider, NodeSigner, Recipient};
+use crate::routing::gossip::NodeId;
 use crate::util::events::ClosureReason;
 use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer, VecWriter};
 use crate::util::logger::Logger;
@@ -5416,18 +5417,19 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			return Err(ChannelError::Ignore("Cannot get a ChannelAnnouncement if the channel is not currently usable".to_owned()));
 		}
 
-		let node_id = node_signer.get_node_id(Recipient::Node)
-			.map_err(|_| ChannelError::Ignore("Failed to retrieve own public key".to_owned()))?;
-		let were_node_one = node_id.serialize()[..] < self.counterparty_node_id.serialize()[..];
+		let node_id = NodeId::from_pubkey(&node_signer.get_node_id(Recipient::Node)
+			.map_err(|_| ChannelError::Ignore("Failed to retrieve own public key".to_owned()))?);
+		let counterparty_node_id = NodeId::from_pubkey(&self.get_counterparty_node_id());
+		let were_node_one = node_id.as_slice() < counterparty_node_id.as_slice();
 
 		let msg = msgs::UnsignedChannelAnnouncement {
 			features: channelmanager::provided_channel_features(&user_config),
 			chain_hash,
 			short_channel_id: self.get_short_channel_id().unwrap(),
-			node_id_1: if were_node_one { node_id } else { self.get_counterparty_node_id() },
-			node_id_2: if were_node_one { self.get_counterparty_node_id() } else { node_id },
-			bitcoin_key_1: if were_node_one { self.get_holder_pubkeys().funding_pubkey } else { self.counterparty_funding_pubkey().clone() },
-			bitcoin_key_2: if were_node_one { self.counterparty_funding_pubkey().clone() } else { self.get_holder_pubkeys().funding_pubkey },
+			node_id_1: if were_node_one { node_id } else { counterparty_node_id },
+			node_id_2: if were_node_one { counterparty_node_id } else { node_id },
+			bitcoin_key_1: NodeId::from_pubkey(if were_node_one { &self.get_holder_pubkeys().funding_pubkey } else { self.counterparty_funding_pubkey() }),
+			bitcoin_key_2: NodeId::from_pubkey(if were_node_one { self.counterparty_funding_pubkey() } else { &self.get_holder_pubkeys().funding_pubkey }),
 			excess_data: Vec::new(),
 		};
 
@@ -5497,8 +5499,8 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		&self, node_signer: &NS, announcement: msgs::UnsignedChannelAnnouncement
 	) -> Result<msgs::ChannelAnnouncement, ChannelError> where NS::Target: NodeSigner {
 		if let Some((their_node_sig, their_bitcoin_sig)) = self.announcement_sigs {
-			let our_node_key = node_signer.get_node_id(Recipient::Node)
-				.map_err(|_| ChannelError::Ignore("Signer failed to retrieve own public key".to_owned()))?;
+			let our_node_key = NodeId::from_pubkey(&node_signer.get_node_id(Recipient::Node)
+				.map_err(|_| ChannelError::Ignore("Signer failed to retrieve own public key".to_owned()))?);
 			let were_node_one = announcement.node_id_1 == our_node_key;
 
 			let our_node_sig = node_signer.sign_gossip_message(msgs::UnsignedGossipMessage::ChannelAnnouncement(&announcement))

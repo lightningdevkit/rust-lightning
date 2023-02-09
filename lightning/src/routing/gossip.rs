@@ -21,7 +21,7 @@ use bitcoin::hash_types::BlockHash;
 
 use crate::chain;
 use crate::chain::Access;
-use crate::ln::chan_utils::make_funding_redeemscript;
+use crate::ln::chan_utils::make_funding_redeemscript_from_slices;
 use crate::ln::features::{ChannelFeatures, NodeFeatures, InitFeatures};
 use crate::ln::msgs::{DecodeError, ErrorAction, Init, LightningError, RoutingMessageHandler, NetAddress, MAX_VALUE_MSAT};
 use crate::ln::msgs::{ChannelAnnouncement, ChannelUpdate, NodeAnnouncement, GossipTimestampFilter};
@@ -326,6 +326,22 @@ macro_rules! secp_verify_sig {
 	};
 }
 
+macro_rules! get_pubkey_from_node_id {
+	( $node_id: expr, $msg_type: expr ) => {
+		PublicKey::from_slice($node_id.as_slice())
+			.map_err(|_| LightningError {
+				err: format!("Invalid public key on {} message", $msg_type),
+				action: ErrorAction::SendWarningMessage {
+					msg: msgs::WarningMessage {
+						channel_id: [0; 32],
+						data: format!("Invalid public key on {} message", $msg_type),
+					},
+					log_level: Level::Trace
+				}
+			})?
+	}
+}
+
 impl<G: Deref<Target=NetworkGraph<L>>, C: Deref, L: Deref> RoutingMessageHandler for P2PGossipSync<G, C, L>
 where C::Target: chain::Access, L::Target: Logger
 {
@@ -369,10 +385,10 @@ where C::Target: chain::Access, L::Target: Logger
 		None
 	}
 
-	fn get_next_node_announcement(&self, starting_point: Option<&PublicKey>) -> Option<NodeAnnouncement> {
+	fn get_next_node_announcement(&self, starting_point: Option<&NodeId>) -> Option<NodeAnnouncement> {
 		let nodes = self.network_graph.nodes.read().unwrap();
-		let iter = if let Some(pubkey) = starting_point {
-				nodes.range((Bound::Excluded(NodeId::from_pubkey(pubkey)), Bound::Unbounded))
+		let iter = if let Some(node_id) = starting_point {
+				nodes.range((Bound::Excluded(node_id), Bound::Unbounded))
 			} else {
 				nodes.range(..)
 			};
@@ -1270,7 +1286,7 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 	/// routing messages from a source using a protocol other than the lightning P2P protocol.
 	pub fn update_node_from_announcement(&self, msg: &msgs::NodeAnnouncement) -> Result<(), LightningError> {
 		let msg_hash = hash_to_message!(&Sha256dHash::hash(&msg.contents.encode()[..])[..]);
-		secp_verify_sig!(self.secp_ctx, &msg_hash, &msg.signature, &msg.contents.node_id, "node_announcement");
+		secp_verify_sig!(self.secp_ctx, &msg_hash, &msg.signature, &get_pubkey_from_node_id!(msg.contents.node_id, "node_announcement"), "node_announcement");
 		self.update_node_from_announcement_intern(&msg.contents, Some(&msg))
 	}
 
@@ -1283,7 +1299,7 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 	}
 
 	fn update_node_from_announcement_intern(&self, msg: &msgs::UnsignedNodeAnnouncement, full_msg: Option<&msgs::NodeAnnouncement>) -> Result<(), LightningError> {
-		match self.nodes.write().unwrap().get_mut(&NodeId::from_pubkey(&msg.node_id)) {
+		match self.nodes.write().unwrap().get_mut(&msg.node_id) {
 			None => Err(LightningError{err: "No existing channels for node_announcement".to_owned(), action: ErrorAction::IgnoreError}),
 			Some(node) => {
 				if let Some(node_info) = node.announcement_info.as_ref() {
@@ -1330,10 +1346,10 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 		C::Target: chain::Access,
 	{
 		let msg_hash = hash_to_message!(&Sha256dHash::hash(&msg.contents.encode()[..])[..]);
-		secp_verify_sig!(self.secp_ctx, &msg_hash, &msg.node_signature_1, &msg.contents.node_id_1, "channel_announcement");
-		secp_verify_sig!(self.secp_ctx, &msg_hash, &msg.node_signature_2, &msg.contents.node_id_2, "channel_announcement");
-		secp_verify_sig!(self.secp_ctx, &msg_hash, &msg.bitcoin_signature_1, &msg.contents.bitcoin_key_1, "channel_announcement");
-		secp_verify_sig!(self.secp_ctx, &msg_hash, &msg.bitcoin_signature_2, &msg.contents.bitcoin_key_2, "channel_announcement");
+		secp_verify_sig!(self.secp_ctx, &msg_hash, &msg.node_signature_1, &get_pubkey_from_node_id!(msg.contents.node_id_1, "channel_announcement"), "channel_announcement");
+		secp_verify_sig!(self.secp_ctx, &msg_hash, &msg.node_signature_2, &get_pubkey_from_node_id!(msg.contents.node_id_2, "channel_announcement"), "channel_announcement");
+		secp_verify_sig!(self.secp_ctx, &msg_hash, &msg.bitcoin_signature_1, &get_pubkey_from_node_id!(msg.contents.bitcoin_key_1, "channel_announcement"), "channel_announcement");
+		secp_verify_sig!(self.secp_ctx, &msg_hash, &msg.bitcoin_signature_2, &get_pubkey_from_node_id!(msg.contents.bitcoin_key_2, "channel_announcement"), "channel_announcement");
 		self.update_channel_from_unsigned_announcement_intern(&msg.contents, Some(msg), chain_access)
 	}
 
@@ -1438,9 +1454,6 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 			return Err(LightningError{err: "Channel announcement node had a channel with itself".to_owned(), action: ErrorAction::IgnoreError});
 		}
 
-		let node_one = NodeId::from_pubkey(&msg.node_id_1);
-		let node_two = NodeId::from_pubkey(&msg.node_id_2);
-
 		{
 			let channels = self.channels.read().unwrap();
 
@@ -1457,7 +1470,7 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 					// We use the Node IDs rather than the bitcoin_keys to check for "equivalence"
 					// as we didn't (necessarily) store the bitcoin keys, and we only really care
 					// if the peers on the channel changed anyway.
-					if node_one == chan.node_one && node_two == chan.node_two {
+					if msg.node_id_1 == chan.node_one && msg.node_id_2 == chan.node_two {
 						return Err(LightningError {
 							err: "Already have chain-validated channel".to_owned(),
 							action: ErrorAction::IgnoreDuplicateGossip
@@ -1478,8 +1491,8 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 			let removed_channels = self.removed_channels.lock().unwrap();
 			let removed_nodes = self.removed_nodes.lock().unwrap();
 			if removed_channels.contains_key(&msg.short_channel_id) ||
-				removed_nodes.contains_key(&node_one) ||
-				removed_nodes.contains_key(&node_two) {
+				removed_nodes.contains_key(&msg.node_id_1) ||
+				removed_nodes.contains_key(&msg.node_id_2) {
 				return Err(LightningError{
 					err: format!("Channel with SCID {} or one of its nodes was removed from our network graph recently", &msg.short_channel_id),
 					action: ErrorAction::IgnoreAndLog(Level::Gossip)});
@@ -1495,7 +1508,7 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 				match chain_access.get_utxo(&msg.chain_hash, msg.short_channel_id) {
 					Ok(TxOut { value, script_pubkey }) => {
 						let expected_script =
-							make_funding_redeemscript(&msg.bitcoin_key_1, &msg.bitcoin_key_2).to_v0_p2wsh();
+							make_funding_redeemscript_from_slices(msg.bitcoin_key_1.as_slice(), msg.bitcoin_key_2.as_slice()).to_v0_p2wsh();
 						if script_pubkey != expected_script {
 							return Err(LightningError{err: format!("Channel announcement key ({}) didn't match on-chain script ({})", expected_script.to_hex(), script_pubkey.to_hex()), action: ErrorAction::IgnoreError});
 						}
@@ -1522,9 +1535,9 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 
 		let chan_info = ChannelInfo {
 			features: msg.features.clone(),
-			node_one,
+			node_one: msg.node_id_1,
 			one_to_two: None,
-			node_two,
+			node_two: msg.node_id_2,
 			two_to_one: None,
 			capacity_sats: utxo_value,
 			announcement_message: if msg.excess_data.len() <= MAX_EXCESS_BYTES_FOR_RELAY
@@ -1958,11 +1971,11 @@ mod tests {
 	}
 
 	fn get_signed_node_announcement<F: Fn(&mut UnsignedNodeAnnouncement)>(f: F, node_key: &SecretKey, secp_ctx: &Secp256k1<secp256k1::All>) -> NodeAnnouncement {
-		let node_id = PublicKey::from_secret_key(&secp_ctx, node_key);
+		let node_id = NodeId::from_pubkey(&PublicKey::from_secret_key(&secp_ctx, node_key));
 		let mut unsigned_announcement = UnsignedNodeAnnouncement {
 			features: channelmanager::provided_node_features(&UserConfig::default()),
 			timestamp: 100,
-			node_id: node_id,
+			node_id,
 			rgb: [0; 3],
 			alias: [0; 32],
 			addresses: Vec::new(),
@@ -1987,10 +2000,10 @@ mod tests {
 			features: channelmanager::provided_channel_features(&UserConfig::default()),
 			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
 			short_channel_id: 0,
-			node_id_1,
-			node_id_2,
-			bitcoin_key_1: PublicKey::from_secret_key(&secp_ctx, node_1_btckey),
-			bitcoin_key_2: PublicKey::from_secret_key(&secp_ctx, node_2_btckey),
+			node_id_1: NodeId::from_pubkey(&node_id_1),
+			node_id_2: NodeId::from_pubkey(&node_id_2),
+			bitcoin_key_1: NodeId::from_pubkey(&PublicKey::from_secret_key(&secp_ctx, node_1_btckey)),
+			bitcoin_key_2: NodeId::from_pubkey(&PublicKey::from_secret_key(&secp_ctx, node_2_btckey)),
 			excess_data: Vec::new(),
 		};
 		f(&mut unsigned_announcement);
@@ -2639,7 +2652,7 @@ mod tests {
 		let (secp_ctx, gossip_sync) = create_gossip_sync(&network_graph);
 		let node_1_privkey = &SecretKey::from_slice(&[42; 32]).unwrap();
 		let node_2_privkey = &SecretKey::from_slice(&[41; 32]).unwrap();
-		let node_id_1 = PublicKey::from_secret_key(&secp_ctx, node_1_privkey);
+		let node_id_1 = NodeId::from_pubkey(&PublicKey::from_secret_key(&secp_ctx, node_1_privkey));
 
 		// No nodes yet.
 		let next_announcements = gossip_sync.get_next_node_announcement(None);

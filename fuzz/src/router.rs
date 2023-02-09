@@ -149,6 +149,15 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 		}
 	}
 
+	macro_rules! get_pubkey_from_node_id {
+		($node_id: expr ) => {
+			match PublicKey::from_slice($node_id.as_slice()) {
+				Ok(pk) => pk,
+				Err(_) => return,
+			}
+		}
+	}
+
 	macro_rules! get_pubkey {
 		() => {
 			match PublicKey::from_slice(get_slice!(33)) {
@@ -175,19 +184,19 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 					return;
 				}
 				let msg = decode_msg_with_len16!(msgs::UnsignedNodeAnnouncement, 288);
-				node_pks.insert(msg.node_id);
+				node_pks.insert(get_pubkey_from_node_id!(msg.node_id));
 				let _ = net_graph.update_node_from_unsigned_announcement(&msg);
 			},
 			1 => {
 				let msg = decode_msg_with_len16!(msgs::UnsignedChannelAnnouncement, 32+8+33*4);
-				node_pks.insert(msg.node_id_1);
-				node_pks.insert(msg.node_id_2);
+				node_pks.insert(get_pubkey_from_node_id!(msg.node_id_1));
+				node_pks.insert(get_pubkey_from_node_id!(msg.node_id_2));
 				let _ = net_graph.update_channel_from_unsigned_announcement::<&FuzzChainSource>(&msg, &None);
 			},
 			2 => {
 				let msg = decode_msg_with_len16!(msgs::UnsignedChannelAnnouncement, 32+8+33*4);
-				node_pks.insert(msg.node_id_1);
-				node_pks.insert(msg.node_id_2);
+				node_pks.insert(get_pubkey_from_node_id!(msg.node_id_1));
+				node_pks.insert(get_pubkey_from_node_id!(msg.node_id_2));
 				let _ = net_graph.update_channel_from_unsigned_announcement(&msg, &Some(&FuzzChainSource { input: Arc::clone(&input) }));
 			},
 			3 => {
