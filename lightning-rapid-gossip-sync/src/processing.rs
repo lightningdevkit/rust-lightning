@@ -237,7 +237,6 @@ impl<NG: Deref<Target=NetworkGraph<L>>, L: Deref> RapidGossipSync<NG, L> where L
 
 #[cfg(test)]
 mod tests {
-	use bitcoin::blockdata::constants::genesis_block;
 	use bitcoin::Network;
 
 	use lightning::ln::msgs::DecodeError;
@@ -269,9 +268,8 @@ mod tests {
 
 	#[test]
 	fn network_graph_fails_to_update_from_clipped_input() {
-		let block_hash = genesis_block(Network::Bitcoin).block_hash();
 		let logger = TestLogger::new();
-		let network_graph = NetworkGraph::new(block_hash, &logger);
+		let network_graph = NetworkGraph::new(Network::Bitcoin, &logger);
 
 		let example_input = vec![
 			76, 68, 75, 1, 111, 226, 140, 10, 182, 241, 179, 114, 193, 166, 162, 70, 174, 99, 247,
@@ -309,9 +307,8 @@ mod tests {
 			68, 226, 0, 6, 11, 0, 1, 128,
 		];
 
-		let block_hash = genesis_block(Network::Bitcoin).block_hash();
 		let logger = TestLogger::new();
-		let network_graph = NetworkGraph::new(block_hash, &logger);
+		let network_graph = NetworkGraph::new(Network::Bitcoin, &logger);
 
 		assert_eq!(network_graph.read_only().channels().len(), 0);
 
@@ -338,9 +335,8 @@ mod tests {
 			2, 68, 226, 0, 6, 11, 0, 1, 128,
 		];
 
-		let block_hash = genesis_block(Network::Bitcoin).block_hash();
 		let logger = TestLogger::new();
-		let network_graph = NetworkGraph::new(block_hash, &logger);
+		let network_graph = NetworkGraph::new(Network::Bitcoin, &logger);
 
 		assert_eq!(network_graph.read_only().channels().len(), 0);
 
@@ -375,9 +371,8 @@ mod tests {
 			0, 1, 0, 0, 0, 125, 255, 2, 68, 226, 0, 6, 11, 0, 1, 5, 0, 0, 0, 0, 29, 129, 25, 192,
 		];
 
-		let block_hash = genesis_block(Network::Bitcoin).block_hash();
 		let logger = TestLogger::new();
-		let network_graph = NetworkGraph::new(block_hash, &logger);
+		let network_graph = NetworkGraph::new(Network::Bitcoin, &logger);
 
 		assert_eq!(network_graph.read_only().channels().len(), 0);
 
@@ -442,9 +437,8 @@ mod tests {
 			25, 192,
 		];
 
-		let block_hash = genesis_block(Network::Bitcoin).block_hash();
 		let logger = TestLogger::new();
-		let network_graph = NetworkGraph::new(block_hash, &logger);
+		let network_graph = NetworkGraph::new(Network::Bitcoin, &logger);
 
 		assert_eq!(network_graph.read_only().channels().len(), 0);
 
@@ -502,9 +496,8 @@ mod tests {
 			25, 192,
 		];
 
-		let block_hash = genesis_block(Network::Bitcoin).block_hash();
 		let logger = TestLogger::new();
-		let network_graph = NetworkGraph::new(block_hash, &logger);
+		let network_graph = NetworkGraph::new(Network::Bitcoin, &logger);
 
 		assert_eq!(network_graph.read_only().channels().len(), 0);
 
@@ -528,9 +521,8 @@ mod tests {
 
 	#[test]
 	fn full_update_succeeds() {
-		let block_hash = genesis_block(Network::Bitcoin).block_hash();
 		let logger = TestLogger::new();
-		let network_graph = NetworkGraph::new(block_hash, &logger);
+		let network_graph = NetworkGraph::new(Network::Bitcoin, &logger);
 
 		assert_eq!(network_graph.read_only().channels().len(), 0);
 
@@ -560,9 +552,8 @@ mod tests {
 
 	#[test]
 	fn full_update_succeeds_at_the_beginning_of_the_unix_era() {
-		let block_hash = genesis_block(Network::Bitcoin).block_hash();
 		let logger = TestLogger::new();
-		let network_graph = NetworkGraph::new(block_hash, &logger);
+		let network_graph = NetworkGraph::new(Network::Bitcoin, &logger);
 
 		assert_eq!(network_graph.read_only().channels().len(), 0);
 
@@ -576,14 +567,13 @@ mod tests {
 	#[test]
 	fn timestamp_edge_cases_are_handled_correctly() {
 		// this is the timestamp encoded in the binary data of valid_input below
-		let block_hash = genesis_block(Network::Bitcoin).block_hash();
 		let logger = TestLogger::new();
 
 		let latest_succeeding_time = VALID_BINARY_TIMESTAMP + STALE_RGS_UPDATE_AGE_LIMIT_SECS;
 		let earliest_failing_time = latest_succeeding_time + 1;
 
 		{
-			let network_graph = NetworkGraph::new(block_hash, &logger);
+			let network_graph = NetworkGraph::new(Network::Bitcoin, &logger);
 			assert_eq!(network_graph.read_only().channels().len(), 0);
 
 			let rapid_sync = RapidGossipSync::new(&network_graph);
@@ -593,7 +583,7 @@ mod tests {
 		}
 
 		{
-			let network_graph = NetworkGraph::new(block_hash, &logger);
+			let network_graph = NetworkGraph::new(Network::Bitcoin, &logger);
 			assert_eq!(network_graph.read_only().channels().len(), 0);
 
 			let rapid_sync = RapidGossipSync::new(&network_graph);
@@ -630,9 +620,8 @@ mod tests {
 			0, 0, 1,
 		];
 
-		let block_hash = genesis_block(Network::Bitcoin).block_hash();
 		let logger = TestLogger::new();
-		let network_graph = NetworkGraph::new(block_hash, &logger);
+		let network_graph = NetworkGraph::new(Network::Bitcoin, &logger);
 		let rapid_sync = RapidGossipSync::new(&network_graph);
 		let update_result = rapid_sync.update_network_graph(&unknown_version_input[..]);
 

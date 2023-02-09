@@ -8672,13 +8672,12 @@ pub mod bench {
 		// Note that this is unrealistic as each payment send will require at least two fsync
 		// calls per node.
 		let network = bitcoin::Network::Testnet;
-		let genesis_hash = bitcoin::blockdata::constants::genesis_block(network).header.block_hash();
 
 		let tx_broadcaster = test_utils::TestBroadcaster{txn_broadcasted: Mutex::new(Vec::new()), blocks: Arc::new(Mutex::new(Vec::new()))};
 		let fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) };
 		let logger_a = test_utils::TestLogger::with_id("node a".to_owned());
 		let scorer = Mutex::new(test_utils::TestScorer::new());
-		let router = test_utils::TestRouter::new(Arc::new(NetworkGraph::new(genesis_hash, &logger_a)), &scorer);
+		let router = test_utils::TestRouter::new(Arc::new(NetworkGraph::new(network, &logger_a)), &scorer);
 
 		let mut config: UserConfig = Default::default();
 		config.channel_handshake_config.minimum_depth = 1;
@@ -8722,7 +8721,7 @@ pub mod bench {
 		assert_eq!(&tx_broadcaster.txn_broadcasted.lock().unwrap()[..], &[tx.clone()]);
 
 		let block = Block {
-			header: BlockHeader { version: 0x20000000, prev_blockhash: genesis_hash, merkle_root: TxMerkleNode::all_zeros(), time: 42, bits: 42, nonce: 42 },
+			header: BlockHeader { version: 0x20000000, prev_blockhash: BestBlock::from_genesis(network), merkle_root: TxMerkleNode::all_zeros(), time: 42, bits: 42, nonce: 42 },
 			txdata: vec![tx],
 		};
 		Listen::block_connected(&node_a, &block, 1);
@@ -8761,7 +8760,7 @@ pub mod bench {
 			_ => panic!("Unexpected event"),
 		}
 
-		let dummy_graph = NetworkGraph::new(genesis_hash, &logger_a);
+		let dummy_graph = NetworkGraph::new(network, &logger_a);
 
 		let mut payment_count: u64 = 0;
 		macro_rules! send_payment {

@@ -941,7 +941,7 @@ mod tests {
 			let logger = Arc::new(test_utils::TestLogger::with_id(format!("node {}", i)));
 			let network = Network::Testnet;
 			let genesis_block = genesis_block(network);
-			let network_graph = Arc::new(NetworkGraph::new(genesis_block.header.block_hash(), logger.clone()));
+			let network_graph = Arc::new(NetworkGraph::new(network, logger.clone()));
 			let scorer = Arc::new(Mutex::new(TestScorer::new()));
 			let seed = [i as u8; 32];
 			let router = Arc::new(DefaultRouter::new(network_graph.clone(), logger.clone(), seed, scorer.clone()));

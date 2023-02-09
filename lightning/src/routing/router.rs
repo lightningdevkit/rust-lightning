@@ -3256,9 +3256,8 @@ mod tests {
 		let scorer = ln_test_utils::TestScorer::new();
 		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
 		let random_seed_bytes = keys_manager.get_secure_random_bytes();
-		let genesis_hash = genesis_block(Network::Testnet).header.block_hash();
 		let logger = ln_test_utils::TestLogger::new();
-		let network_graph = NetworkGraph::new(genesis_hash, &logger);
+		let network_graph = NetworkGraph::new(Network::Testnet, &logger);
 		let route = get_route(&source_node_id, &payment_params, &network_graph.read_only(),
 				Some(&our_chans.iter().collect::<Vec<_>>()), route_val, 42, &logger, &scorer, &random_seed_bytes);
 		route
@@ -4690,9 +4689,8 @@ mod tests {
 		// payment) htlc_minimum_msat. In the original algorithm, this resulted in node4's
 		// "previous hop" being set to node 3, creating a loop in the path.
 		let secp_ctx = Secp256k1::new();
-		let genesis_hash = genesis_block(Network::Testnet).header.block_hash();
 		let logger = Arc::new(ln_test_utils::TestLogger::new());
-		let network = Arc::new(NetworkGraph::new(genesis_hash, Arc::clone(&logger)));
+		let network = Arc::new(NetworkGraph::new(Network::Testnet, Arc::clone(&logger)));
 		let gossip_sync = P2PGossipSync::new(Arc::clone(&network), None, Arc::clone(&logger));
 		let (our_privkey, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
 		let scorer = ln_test_utils::TestScorer::new();
@@ -4958,9 +4956,8 @@ mod tests {
 		// route over multiple channels with the same first hop.
 		let secp_ctx = Secp256k1::new();
 		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
-		let genesis_hash = genesis_block(Network::Testnet).header.block_hash();
 		let logger = Arc::new(ln_test_utils::TestLogger::new());
-		let network_graph = NetworkGraph::new(genesis_hash, Arc::clone(&logger));
+		let network_graph = NetworkGraph::new(Network::Testnet, Arc::clone(&logger));
 		let scorer = ln_test_utils::TestScorer::new();
 		let config = UserConfig::default();
 		let payment_params = PaymentParameters::from_node_id(nodes[0], 42).with_features(channelmanager::provided_invoice_features(&config));

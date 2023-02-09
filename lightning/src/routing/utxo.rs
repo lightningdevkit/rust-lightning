@@ -561,16 +561,14 @@ mod tests {
 	use crate::util::test_utils::{TestChainSource, TestLogger};
 	use crate::ln::msgs;
 
-	use bitcoin::blockdata::constants::genesis_block;
 	use bitcoin::secp256k1::{Secp256k1, SecretKey};
 
 	use core::sync::atomic::Ordering;
 
 	fn get_network() -> (TestChainSource, NetworkGraph<Box<TestLogger>>) {
 		let logger = Box::new(TestLogger::new());
-		let genesis_hash = genesis_block(bitcoin::Network::Testnet).header.block_hash();
 		let chain_source = TestChainSource::new(bitcoin::Network::Testnet);
-		let network_graph = NetworkGraph::new(genesis_hash, logger);
+		let network_graph = NetworkGraph::new(bitcoin::Network::Testnet, logger);
 
 		(chain_source, network_graph)
 	}
