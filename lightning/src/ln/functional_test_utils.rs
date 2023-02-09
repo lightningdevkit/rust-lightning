@@ -62,9 +62,12 @@ pub fn confirm_transaction<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, tx: &Tran
 	scid
 }
 /// Mine a single block containing the given transaction
-pub fn mine_transaction<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, tx: &Transaction) {
+///
+/// Returns the SCID a channel confirmed in the given transaction will have, assuming the funding
+/// output is the 1st output in the transaction.
+pub fn mine_transaction<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, tx: &Transaction) -> u64 {
 	let height = node.best_block_info().1 + 1;
-	confirm_transaction_at(node, tx, height);
+	confirm_transaction_at(node, tx, height)
 }
 /// Mine a single block containing the given transactions
 pub fn mine_transactions<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, txn: &[&Transaction]) {
@@ -1061,6 +1064,10 @@ pub fn create_unannounced_chan_between_nodes_with_value<'a, 'b, 'c, 'd>(nodes: &
 	let cs_funding_signed = get_event_msg!(nodes[b], MessageSendEvent::SendFundingSigned, nodes[a].node.get_our_node_id());
 	nodes[a].node.handle_funding_signed(&nodes[b].node.get_our_node_id(), &cs_funding_signed);
 	check_added_monitors!(nodes[a], 1);
+
+	assert_eq!(nodes[a].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 1);
+	assert_eq!(nodes[a].tx_broadcaster.txn_broadcasted.lock().unwrap()[0], tx);
+	nodes[a].tx_broadcaster.txn_broadcasted.lock().unwrap().clear();
 
 	let conf_height = core::cmp::max(nodes[a].best_block_info().1 + 1, nodes[b].best_block_info().1 + 1);
 	confirm_transaction_at(&nodes[a], &tx, conf_height);
