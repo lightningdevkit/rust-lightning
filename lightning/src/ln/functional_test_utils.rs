@@ -1231,30 +1231,35 @@ macro_rules! check_warn_msg {
 
 /// Check that a channel's closing channel update has been broadcasted, and optionally
 /// check whether an error message event has occurred.
-#[macro_export]
-macro_rules! check_closed_broadcast {
-	($node: expr, $with_error_msg: expr) => {{
-		use $crate::util::events::MessageSendEvent;
-		use $crate::ln::msgs::ErrorAction;
-
-		let msg_events = $node.node.get_and_clear_pending_msg_events();
-		assert_eq!(msg_events.len(), if $with_error_msg { 2 } else { 1 });
-		match msg_events[0] {
-			MessageSendEvent::BroadcastChannelUpdate { ref msg } => {
-				assert_eq!(msg.contents.flags & 2, 2);
+pub fn check_closed_broadcast(node: &Node, with_error_msg: bool) -> Option<msgs::ErrorMessage> {
+	let msg_events = node.node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), if with_error_msg { 2 } else { 1 });
+	match msg_events[0] {
+		MessageSendEvent::BroadcastChannelUpdate { ref msg } => {
+			assert_eq!(msg.contents.flags & 2, 2);
+		},
+		_ => panic!("Unexpected event"),
+	}
+	if with_error_msg {
+		match msg_events[1] {
+			MessageSendEvent::HandleError { action: msgs::ErrorAction::SendErrorMessage { ref msg }, node_id: _ } => {
+				// TODO: Check node_id
+				Some(msg.clone())
 			},
 			_ => panic!("Unexpected event"),
 		}
-		if $with_error_msg {
-			match msg_events[1] {
-				MessageSendEvent::HandleError { action: ErrorAction::SendErrorMessage { ref msg }, node_id: _ } => {
-					// TODO: Check node_id
-					Some(msg.clone())
-				},
-				_ => panic!("Unexpected event"),
-			}
-		} else { None }
-	}}
+	} else { None }
+}
+
+/// Check that a channel's closing channel update has been broadcasted, and optionally
+/// check whether an error message event has occurred.
+///
+/// Don't use this, use the identically-named function instead.
+#[macro_export]
+macro_rules! check_closed_broadcast {
+	($node: expr, $with_error_msg: expr) => {
+		$crate::ln::functional_test_utils::check_closed_broadcast(&$node, $with_error_msg)
+	}
 }
 
 /// Check that a channel's closing channel events has been issued
