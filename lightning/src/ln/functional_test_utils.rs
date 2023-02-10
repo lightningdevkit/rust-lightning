@@ -1558,29 +1558,28 @@ pub fn do_commitment_signed_dance(node_a: &Node<'_, '_, '_>, node_b: &Node<'_, '
 }
 
 /// Get a payment preimage and hash.
+pub fn get_payment_preimage_hash(recipient: &Node, min_value_msat: Option<u64>, min_final_cltv_expiry_delta: Option<u16>) -> (PaymentPreimage, PaymentHash, PaymentSecret) {
+	let mut payment_count = recipient.network_payment_count.borrow_mut();
+	let payment_preimage = PaymentPreimage([*payment_count; 32]);
+	*payment_count += 1;
+	let payment_hash = PaymentHash(Sha256::hash(&payment_preimage.0[..]).into_inner());
+	let payment_secret = recipient.node.create_inbound_payment_for_hash(payment_hash, min_value_msat, 7200, min_final_cltv_expiry_delta).unwrap();
+	(payment_preimage, payment_hash, payment_secret)
+}
+
+/// Get a payment preimage and hash.
+///
+/// Don't use this, use the identically-named function instead.
 #[macro_export]
 macro_rules! get_payment_preimage_hash {
 	($dest_node: expr) => {
-		{
-			get_payment_preimage_hash!($dest_node, None)
-		}
+		get_payment_preimage_hash!($dest_node, None)
 	};
 	($dest_node: expr, $min_value_msat: expr) => {
-		{
-			crate::get_payment_preimage_hash!($dest_node, $min_value_msat, None)
-		}
+		crate::get_payment_preimage_hash!($dest_node, $min_value_msat, None)
 	};
 	($dest_node: expr, $min_value_msat: expr, $min_final_cltv_expiry_delta: expr) => {
-		{
-			use bitcoin::hashes::Hash as _;
-			let mut payment_count = $dest_node.network_payment_count.borrow_mut();
-			let payment_preimage = $crate::ln::PaymentPreimage([*payment_count; 32]);
-			*payment_count += 1;
-			let payment_hash = $crate::ln::PaymentHash(
-				bitcoin::hashes::sha256::Hash::hash(&payment_preimage.0[..]).into_inner());
-			let payment_secret = $dest_node.node.create_inbound_payment_for_hash(payment_hash, $min_value_msat, 7200, $min_final_cltv_expiry_delta).unwrap();
-			(payment_preimage, payment_hash, payment_secret)
-		}
+		$crate::ln::functional_test_utils::get_payment_preimage_hash(&$dest_node, $min_value_msat, $min_final_cltv_expiry_delta)
 	};
 }
 
@@ -1608,7 +1607,8 @@ macro_rules! get_route_and_payment_hash {
 		$crate::get_route_and_payment_hash!($send_node, $recv_node, payment_params, $recv_value, TEST_FINAL_CLTV)
 	}};
 	($send_node: expr, $recv_node: expr, $payment_params: expr, $recv_value: expr, $cltv: expr) => {{
-		let (payment_preimage, payment_hash, payment_secret) = $crate::get_payment_preimage_hash!($recv_node, Some($recv_value));
+		let (payment_preimage, payment_hash, payment_secret) =
+			$crate::ln::functional_test_utils::get_payment_preimage_hash(&$recv_node, Some($recv_value), None);
 		let route = $crate::get_route!($send_node, $payment_params, $recv_value, $cltv);
 		(route.unwrap(), payment_hash, payment_preimage, payment_secret)
 	}}
