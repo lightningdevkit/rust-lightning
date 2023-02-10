@@ -758,14 +758,19 @@ macro_rules! unwrap_send_err {
 }
 
 /// Check whether N channel monitor(s) have been added.
+pub fn check_added_monitors(node: &Node, count: usize) {
+	let mut added_monitors = node.chain_monitor.added_monitors.lock().unwrap();
+	assert_eq!(added_monitors.len(), count);
+	added_monitors.clear();
+}
+
+/// Check whether N channel monitor(s) have been added.
+///
+/// Don't use this, use the identically-named function instead.
 #[macro_export]
 macro_rules! check_added_monitors {
 	($node: expr, $count: expr) => {
-		{
-			let mut added_monitors = $node.chain_monitor.added_monitors.lock().unwrap();
-			assert_eq!(added_monitors.len(), $count);
-			added_monitors.clear();
-		}
+		$crate::ln::functional_test_utils::check_added_monitors(&$node, $count);
 	}
 }
 
@@ -1464,10 +1469,10 @@ macro_rules! commitment_signed_dance {
 	};
 	($node_a: expr, $node_b: expr, $commitment_signed: expr, $fail_backwards: expr, true /* skip last step */, false /* return extra message */, true /* return last RAA */) => {
 		{
-			check_added_monitors!($node_a, 0);
+			$crate::ln::functional_test_utils::check_added_monitors(&$node_a, 0);
 			assert!($node_a.node.get_and_clear_pending_msg_events().is_empty());
 			$node_a.node.handle_commitment_signed(&$node_b.node.get_our_node_id(), &$commitment_signed);
-			check_added_monitors!($node_a, 1);
+			check_added_monitors(&$node_a, 1);
 			let (extra_msg_option, bs_revoke_and_ack) = $crate::ln::functional_test_utils::do_main_commitment_signed_dance(&$node_a, &$node_b, $fail_backwards);
 			assert!(extra_msg_option.is_none());
 			bs_revoke_and_ack
@@ -1477,7 +1482,7 @@ macro_rules! commitment_signed_dance {
 		{
 			let (extra_msg_option, bs_revoke_and_ack) = $crate::ln::functional_test_utils::do_main_commitment_signed_dance(&$node_a, &$node_b, $fail_backwards);
 			$node_a.node.handle_revoke_and_ack(&$node_b.node.get_our_node_id(), &bs_revoke_and_ack);
-			check_added_monitors!($node_a, 1);
+			$crate::ln::functional_test_utils::check_added_monitors(&$node_a, 1);
 			extra_msg_option
 		}
 	};
