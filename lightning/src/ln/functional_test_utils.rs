@@ -576,21 +576,26 @@ macro_rules! get_event {
 	}
 }
 
+/// Gets an UpdateHTLCs MessageSendEvent
+pub fn get_htlc_update_msgs(node: &Node, recipient: &PublicKey) -> msgs::CommitmentUpdate {
+	let events = node.node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	match events[0] {
+		MessageSendEvent::UpdateHTLCs { ref node_id, ref updates } => {
+			assert_eq!(node_id, recipient);
+			(*updates).clone()
+		},
+		_ => panic!("Unexpected event"),
+	}
+}
+
 #[macro_export]
 /// Gets an UpdateHTLCs MessageSendEvent
+///
+/// Don't use this, use the identically-named function instead.
 macro_rules! get_htlc_update_msgs {
 	($node: expr, $node_id: expr) => {
-		{
-			let events = $node.node.get_and_clear_pending_msg_events();
-			assert_eq!(events.len(), 1);
-			match events[0] {
-				$crate::util::events::MessageSendEvent::UpdateHTLCs { ref node_id, ref updates } => {
-					assert_eq!(*node_id, $node_id);
-					(*updates).clone()
-				},
-				_ => panic!("Unexpected event"),
-			}
-		}
+		$crate::ln::functional_test_utils::get_htlc_update_msgs(&$node, &$node_id)
 	}
 }
 
