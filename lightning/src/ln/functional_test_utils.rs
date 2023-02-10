@@ -482,33 +482,46 @@ pub fn create_chan_between_nodes_with_value<'a, 'b, 'c, 'd>(node_a: &'a Node<'b,
 	(announcement, as_update, bs_update, channel_id, tx)
 }
 
+/// Gets an RAA and CS which were sent in response to a commitment update
+///
+/// Should only be used directly when the `$node` is not actually a [`Node`].
+macro_rules! do_get_revoke_commit_msgs {
+	($node: expr, $recipient: expr) => { {
+		let events = $node.node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 2);
+		(match events[0] {
+			MessageSendEvent::SendRevokeAndACK { ref node_id, ref msg } => {
+				assert_eq!(node_id, $recipient);
+				(*msg).clone()
+			},
+			_ => panic!("Unexpected event"),
+		}, match events[1] {
+			MessageSendEvent::UpdateHTLCs { ref node_id, ref updates } => {
+				assert_eq!(node_id, $recipient);
+				assert!(updates.update_add_htlcs.is_empty());
+				assert!(updates.update_fulfill_htlcs.is_empty());
+				assert!(updates.update_fail_htlcs.is_empty());
+				assert!(updates.update_fail_malformed_htlcs.is_empty());
+				assert!(updates.update_fee.is_none());
+				updates.commitment_signed.clone()
+			},
+			_ => panic!("Unexpected event"),
+		})
+	} }
+}
+
+/// Gets an RAA and CS which were sent in response to a commitment update
+pub fn get_revoke_commit_msgs(node: &Node, recipient: &PublicKey) -> (msgs::RevokeAndACK, msgs::CommitmentSigned) {
+	do_get_revoke_commit_msgs!(node, recipient)
+}
+
 #[macro_export]
 /// Gets an RAA and CS which were sent in response to a commitment update
+///
+/// Don't use this, use the identically-named function instead.
 macro_rules! get_revoke_commit_msgs {
 	($node: expr, $node_id: expr) => {
-		{
-			use $crate::util::events::MessageSendEvent;
-			let events = $node.node.get_and_clear_pending_msg_events();
-			assert_eq!(events.len(), 2);
-			(match events[0] {
-				MessageSendEvent::SendRevokeAndACK { ref node_id, ref msg } => {
-					assert_eq!(*node_id, $node_id);
-					(*msg).clone()
-				},
-				_ => panic!("Unexpected event"),
-			}, match events[1] {
-				MessageSendEvent::UpdateHTLCs { ref node_id, ref updates } => {
-					assert_eq!(*node_id, $node_id);
-					assert!(updates.update_add_htlcs.is_empty());
-					assert!(updates.update_fulfill_htlcs.is_empty());
-					assert!(updates.update_fail_htlcs.is_empty());
-					assert!(updates.update_fail_malformed_htlcs.is_empty());
-					assert!(updates.update_fee.is_none());
-					updates.commitment_signed.clone()
-				},
-				_ => panic!("Unexpected event"),
-			})
-		}
+		$crate::ln::functional_test_utils::get_revoke_commit_msgs(&$node, &$node_id)
 	}
 }
 

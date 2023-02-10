@@ -8831,7 +8831,7 @@ pub mod bench {
 				let payment_event = SendEvent::from_event($node_a.get_and_clear_pending_msg_events().pop().unwrap());
 				$node_b.handle_update_add_htlc(&$node_a.get_our_node_id(), &payment_event.msgs[0]);
 				$node_b.handle_commitment_signed(&$node_a.get_our_node_id(), &payment_event.commitment_msg);
-				let (raa, cs) = get_revoke_commit_msgs!(NodeHolder { node: &$node_b }, $node_a.get_our_node_id());
+				let (raa, cs) = do_get_revoke_commit_msgs!(NodeHolder { node: &$node_b }, &$node_a.get_our_node_id());
 				$node_a.handle_revoke_and_ack(&$node_b.get_our_node_id(), &raa);
 				$node_a.handle_commitment_signed(&$node_b.get_our_node_id(), &cs);
 				$node_b.handle_revoke_and_ack(&$node_a.get_our_node_id(), &get_event_msg!(NodeHolder { node: &$node_a }, MessageSendEvent::SendRevokeAndACK, $node_b.get_our_node_id()));
@@ -8850,7 +8850,7 @@ pub mod bench {
 					_ => panic!("Failed to generate claim event"),
 				}
 
-				let (raa, cs) = get_revoke_commit_msgs!(NodeHolder { node: &$node_a }, $node_b.get_our_node_id());
+				let (raa, cs) = do_get_revoke_commit_msgs!(NodeHolder { node: &$node_a }, &$node_b.get_our_node_id());
 				$node_b.handle_revoke_and_ack(&$node_a.get_our_node_id(), &raa);
 				$node_b.handle_commitment_signed(&$node_a.get_our_node_id(), &cs);
 				$node_a.handle_revoke_and_ack(&$node_b.get_our_node_id(), &get_event_msg!(NodeHolder { node: &$node_b }, MessageSendEvent::SendRevokeAndACK, $node_a.get_our_node_id()));
