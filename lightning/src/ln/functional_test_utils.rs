@@ -20,6 +20,7 @@ use crate::routing::router::{self, PaymentParameters, Route};
 use crate::ln::features::InitFeatures;
 use crate::ln::msgs;
 use crate::ln::msgs::{ChannelMessageHandler,RoutingMessageHandler};
+use crate::util::events::ClosureReason;
 use crate::util::enforcing_trait_impls::EnforcingSigner;
 use crate::util::scid_utils;
 use crate::util::test_utils;
@@ -1263,31 +1264,35 @@ macro_rules! check_closed_broadcast {
 }
 
 /// Check that a channel's closing channel events has been issued
+pub fn check_closed_event(node: &Node, events_count: usize, expected_reason: ClosureReason, is_check_discard_funding: bool) {
+	let events = node.node.get_and_clear_pending_events();
+	assert_eq!(events.len(), events_count, "{:?}", events);
+	let mut issues_discard_funding = false;
+	for event in events {
+		match event {
+			Event::ChannelClosed { ref reason, .. } => {
+				assert_eq!(*reason, expected_reason);
+			},
+			Event::DiscardFunding { .. } => {
+				issues_discard_funding = true;
+			}
+			_ => panic!("Unexpected event"),
+		}
+	}
+	assert_eq!(is_check_discard_funding, issues_discard_funding);
+}
+
+/// Check that a channel's closing channel events has been issued
+///
+/// Don't use this, use the identically-named function instead.
 #[macro_export]
 macro_rules! check_closed_event {
 	($node: expr, $events: expr, $reason: expr) => {
 		check_closed_event!($node, $events, $reason, false);
 	};
-	($node: expr, $events: expr, $reason: expr, $is_check_discard_funding: expr) => {{
-		use $crate::util::events::Event;
-
-		let events = $node.node.get_and_clear_pending_events();
-		assert_eq!(events.len(), $events, "{:?}", events);
-		let expected_reason = $reason;
-		let mut issues_discard_funding = false;
-		for event in events {
-			match event {
-				Event::ChannelClosed { ref reason, .. } => {
-					assert_eq!(*reason, expected_reason);
-				},
-				Event::DiscardFunding { .. } => {
-					issues_discard_funding = true;
-				}
-				_ => panic!("Unexpected event"),
-			}
-		}
-		assert_eq!($is_check_discard_funding, issues_discard_funding);
-	}}
+	($node: expr, $events: expr, $reason: expr, $is_check_discard_funding: expr) => {
+		$crate::ln::functional_test_utils::check_closed_event(&$node, $events, $reason, $is_check_discard_funding);
+	}
 }
 
 pub fn close_channel<'a, 'b, 'c>(outbound_node: &Node<'a, 'b, 'c>, inbound_node: &Node<'a, 'b, 'c>, channel_id: &[u8; 32], funding_tx: Transaction, close_inbound_first: bool) -> (msgs::ChannelUpdate, msgs::ChannelUpdate, Transaction) {
