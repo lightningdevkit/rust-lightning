@@ -8469,7 +8469,7 @@ mod tests {
 		// A MAX_UNFUNDED_CHANS_PER_PEER + 1 channel will be summarily rejected
 		open_channel_msg.temporary_channel_id = nodes[0].keys_manager.get_secure_random_bytes();
 		nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), &open_channel_msg);
-		assert_eq!(get_err_msg!(nodes[1], nodes[0].node.get_our_node_id()).channel_id,
+		assert_eq!(get_err_msg(&nodes[1], &nodes[0].node.get_our_node_id()).channel_id,
 			open_channel_msg.temporary_channel_id);
 
 		// Further, because all of our channels with nodes[0] are inbound, and none of them funded,
@@ -8516,7 +8516,7 @@ mod tests {
 			open_channel_msg.temporary_channel_id = nodes[0].keys_manager.get_secure_random_bytes();
 		}
 		nodes[1].node.handle_open_channel(&last_random_pk, &open_channel_msg);
-		assert_eq!(get_err_msg!(nodes[1], last_random_pk).channel_id,
+		assert_eq!(get_err_msg(&nodes[1], &last_random_pk).channel_id,
 			open_channel_msg.temporary_channel_id);
 
 		// Of course, however, outbound channels are always allowed
@@ -8558,7 +8558,7 @@ mod tests {
 		// Once we have MAX_UNFUNDED_CHANS_PER_PEER unfunded channels, new inbound channels will be
 		// rejected.
 		nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), &open_channel_msg);
-		assert_eq!(get_err_msg!(nodes[1], nodes[0].node.get_our_node_id()).channel_id,
+		assert_eq!(get_err_msg(&nodes[1], &nodes[0].node.get_our_node_id()).channel_id,
 			open_channel_msg.temporary_channel_id);
 
 		// but we can still open an outbound channel.
@@ -8567,7 +8567,7 @@ mod tests {
 
 		// but even with such an outbound channel, additional inbound channels will still fail.
 		nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), &open_channel_msg);
-		assert_eq!(get_err_msg!(nodes[1], nodes[0].node.get_our_node_id()).channel_id,
+		assert_eq!(get_err_msg(&nodes[1], &nodes[0].node.get_our_node_id()).channel_id,
 			open_channel_msg.temporary_channel_id);
 	}
 
@@ -8623,7 +8623,7 @@ mod tests {
 			}
 			_ => panic!("Unexpected event"),
 		}
-		assert_eq!(get_err_msg!(nodes[1], last_random_pk).channel_id,
+		assert_eq!(get_err_msg(&nodes[1], &last_random_pk).channel_id,
 			open_channel_msg.temporary_channel_id);
 
 		// ...however if we accept the same channel 0conf it should work just fine.
@@ -8665,7 +8665,7 @@ mod tests {
 			_ => panic!("Unexpected event"),
 		}
 
-		let error_msg = get_err_msg!(nodes[1], nodes[0].node.get_our_node_id());
+		let error_msg = get_err_msg(&nodes[1], &nodes[0].node.get_our_node_id());
 		nodes[0].node.handle_error(&nodes[1].node.get_our_node_id(), &error_msg);
 
 		let open_channel_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());

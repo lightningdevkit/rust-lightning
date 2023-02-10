@@ -544,22 +544,17 @@ macro_rules! get_event_msg {
 }
 
 /// Get an error message from the pending events queue.
-#[macro_export]
-macro_rules! get_err_msg {
-	($node: expr, $node_id: expr) => {
-		{
-			let events = $node.node.get_and_clear_pending_msg_events();
-			assert_eq!(events.len(), 1);
-			match events[0] {
-				$crate::util::events::MessageSendEvent::HandleError {
-					action: $crate::ln::msgs::ErrorAction::SendErrorMessage { ref msg }, ref node_id
-				} => {
-					assert_eq!(*node_id, $node_id);
-					(*msg).clone()
-				},
-				_ => panic!("Unexpected event"),
-			}
-		}
+pub fn get_err_msg(node: &Node, recipient: &PublicKey) -> msgs::ErrorMessage {
+	let events = node.node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	match events[0] {
+		MessageSendEvent::HandleError {
+			action: msgs::ErrorAction::SendErrorMessage { ref msg }, ref node_id
+		} => {
+			assert_eq!(node_id, recipient);
+			(*msg).clone()
+		},
+		_ => panic!("Unexpected event"),
 	}
 }
 

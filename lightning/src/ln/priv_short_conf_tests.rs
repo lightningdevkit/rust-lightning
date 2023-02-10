@@ -278,7 +278,7 @@ fn test_scid_privacy_on_pub_channel() {
 	assert_eq!(open_channel.channel_flags & 1, 1); // The `announce_channel` bit is set.
 
 	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), &open_channel);
-	let err = get_err_msg!(nodes[1], nodes[0].node.get_our_node_id());
+	let err = get_err_msg(&nodes[1], &nodes[0].node.get_our_node_id());
 	assert_eq!(err.data, "SCID Alias/Privacy Channel Type cannot be set on a public channel");
 }
 
@@ -721,7 +721,7 @@ fn test_0conf_close_no_early_chan_update() {
 	nodes[0].node.force_close_all_channels_broadcasting_latest_txn();
 	check_added_monitors!(nodes[0], 1);
 	check_closed_event!(&nodes[0], 1, ClosureReason::HolderForceClosed);
-	let _ = get_err_msg!(nodes[0], nodes[1].node.get_our_node_id());
+	let _ = get_err_msg(&nodes[0], &nodes[1].node.get_our_node_id());
 }
 
 #[test]
