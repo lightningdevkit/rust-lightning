@@ -734,20 +734,26 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 		}
 	}
 
-	/// Get the list of node ids for peers which have completed the initial handshake.
+	/// Get a list of tuples mapping from node id to network addresses for peers which have
+	/// completed the initial handshake.
 	///
-	/// For outbound connections, this will be the same as the their_node_id parameter passed in to
-	/// new_outbound_connection, however entries will only appear once the initial handshake has
-	/// completed and we are sure the remote peer has the private key for the given node_id.
-	pub fn get_peer_node_ids(&self) -> Vec<PublicKey> {
+	/// For outbound connections, the [`PublicKey`] will be the same as the `their_node_id` parameter
+	/// passed in to [`Self::new_outbound_connection`], however entries will only appear once the initial
+	/// handshake has completed and we are sure the remote peer has the private key for the given
+	/// [`PublicKey`].
+	///
+	/// The returned `Option`s will only be `Some` if an address had been previously given via
+	/// [`Self::new_outbound_connection`] or [`Self::new_inbound_connection`].
+	pub fn get_peer_node_ids(&self) -> Vec<(PublicKey, Option<NetAddress>)> {
 		let peers = self.peers.read().unwrap();
 		peers.values().filter_map(|peer_mutex| {
 			let p = peer_mutex.lock().unwrap();
-			if !p.channel_encryptor.is_ready_for_encryption() || p.their_features.is_none() {
+			if !p.channel_encryptor.is_ready_for_encryption() || p.their_features.is_none() ||
+				p.their_node_id.is_none() {
 				return None;
 			}
-			p.their_node_id
-		}).map(|(node_id, _)| node_id).collect()
+			Some((p.their_node_id.unwrap().0, p.their_net_address.clone()))
+		}).collect()
 	}
 
 	fn get_ephemeral_key(&self) -> SecretKey {
@@ -757,7 +763,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 		SecretKey::from_slice(&Sha256::from_engine(ephemeral_hash).into_inner()).expect("You broke SHA-256!")
 	}
 
-	/// Indicates a new outbound connection has been established to a node with the given node_id
+	/// Indicates a new outbound connection has been established to a node with the given `node_id`
 	/// and an optional remote network address.
 	///
 	/// The remote network address adds the option to report a remote IP address back to a connecting
@@ -2147,11 +2153,14 @@ mod tests {
 	}
 
 	fn establish_connection<'a>(peer_a: &PeerManager<FileDescriptor, &'a test_utils::TestChannelMessageHandler, &'a test_utils::TestRoutingMessageHandler, IgnoringMessageHandler, &'a test_utils::TestLogger, IgnoringMessageHandler, &'a test_utils::TestNodeSigner>, peer_b: &PeerManager<FileDescriptor, &'a test_utils::TestChannelMessageHandler, &'a test_utils::TestRoutingMessageHandler, IgnoringMessageHandler, &'a test_utils::TestLogger, IgnoringMessageHandler, &'a test_utils::TestNodeSigner>) -> (FileDescriptor, FileDescriptor) {
-		let a_id = peer_a.node_signer.get_node_id(Recipient::Node).unwrap();
+		let id_a = peer_a.node_signer.get_node_id(Recipient::Node).unwrap();
 		let mut fd_a = FileDescriptor { fd: 1, outbound_data: Arc::new(Mutex::new(Vec::new())) };
+		let addr_a = NetAddress::IPv4{addr: [127, 0, 0, 1], port: 1000};
+		let id_b = peer_b.node_signer.get_node_id(Recipient::Node).unwrap();
 		let mut fd_b = FileDescriptor { fd: 1, outbound_data: Arc::new(Mutex::new(Vec::new())) };
-		let initial_data = peer_b.new_outbound_connection(a_id, fd_b.clone(), None).unwrap();
-		peer_a.new_inbound_connection(fd_a.clone(), None).unwrap();
+		let addr_b = NetAddress::IPv4{addr: [127, 0, 0, 1], port: 1001};
+		let initial_data = peer_b.new_outbound_connection(id_a, fd_b.clone(), Some(addr_a.clone())).unwrap();
+		peer_a.new_inbound_connection(fd_a.clone(), Some(addr_b.clone())).unwrap();
 		assert_eq!(peer_a.read_event(&mut fd_a, &initial_data).unwrap(), false);
 		peer_a.process_events();
 
@@ -2165,6 +2174,9 @@ mod tests {
 		peer_a.process_events();
 		let a_data = fd_a.outbound_data.lock().unwrap().split_off(0);
 		assert_eq!(peer_b.read_event(&mut fd_b, &a_data).unwrap(), false);
+
+		assert!(peer_a.get_peer_node_ids().contains(&(id_b, Some(addr_b))));
+		assert!(peer_b.get_peer_node_ids().contains(&(id_a, Some(addr_a))));
 
 		(fd_a.clone(), fd_b.clone())
 	}
