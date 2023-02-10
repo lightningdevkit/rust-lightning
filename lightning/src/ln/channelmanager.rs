@@ -76,7 +76,7 @@ use core::time::Duration;
 use core::ops::Deref;
 
 // Re-export this for use in the public API.
-pub use crate::ln::outbound_payment::{PaymentSendFailure, Retry};
+pub use crate::ln::outbound_payment::{PaymentSendFailure, Retry, RetryableSendFailure};
 
 // We hold various information about HTLC relay in the HTLC objects in Channel itself:
 //
@@ -2531,7 +2531,7 @@ where
 
 	/// Similar to [`ChannelManager::send_payment`], but will automatically find a route based on
 	/// `route_params` and retry failed payment paths based on `retry_strategy`.
-	pub fn send_payment_with_retry(&self, payment_hash: PaymentHash, payment_secret: &Option<PaymentSecret>, payment_id: PaymentId, route_params: RouteParameters, retry_strategy: Retry) -> Result<(), PaymentSendFailure> {
+	pub fn send_payment_with_retry(&self, payment_hash: PaymentHash, payment_secret: &Option<PaymentSecret>, payment_id: PaymentId, route_params: RouteParameters, retry_strategy: Retry) -> Result<(), RetryableSendFailure> {
 		let best_block_height = self.best_block.read().unwrap().height();
 		self.pending_outbound_payments
 			.send_payment(payment_hash, payment_secret, payment_id, retry_strategy, route_params,
@@ -2609,7 +2609,7 @@ where
 	/// payments.
 	///
 	/// [`PaymentParameters::for_keysend`]: crate::routing::router::PaymentParameters::for_keysend
-	pub fn send_spontaneous_payment_with_retry(&self, payment_preimage: Option<PaymentPreimage>, payment_id: PaymentId, route_params: RouteParameters, retry_strategy: Retry) -> Result<PaymentHash, PaymentSendFailure> {
+	pub fn send_spontaneous_payment_with_retry(&self, payment_preimage: Option<PaymentPreimage>, payment_id: PaymentId, route_params: RouteParameters, retry_strategy: Retry) -> Result<PaymentHash, RetryableSendFailure> {
 		let best_block_height = self.best_block.read().unwrap().height();
 		self.pending_outbound_payments.send_spontaneous_payment(payment_preimage, payment_id,
 			retry_strategy, route_params, &self.router, self.list_usable_channels(),

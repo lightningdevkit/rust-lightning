@@ -1869,13 +1869,21 @@ fn auto_retry_partial_failure() {
 	// Send a payment that will partially fail on send, then partially fail on retry, then succeed.
 	nodes[0].node.send_payment_with_retry(payment_hash, &Some(payment_secret), PaymentId(payment_hash.0), route_params, Retry::Attempts(3)).unwrap();
 	let closed_chan_events = nodes[0].node.get_and_clear_pending_events();
-	assert_eq!(closed_chan_events.len(), 2);
+	assert_eq!(closed_chan_events.len(), 4);
 	match closed_chan_events[0] {
 		Event::ChannelClosed { .. } => {},
 		_ => panic!("Unexpected event"),
 	}
 	match closed_chan_events[1] {
+		Event::PaymentPathFailed { .. } => {},
+		_ => panic!("Unexpected event"),
+	}
+	match closed_chan_events[2] {
 		Event::ChannelClosed { .. } => {},
+		_ => panic!("Unexpected event"),
+	}
+	match closed_chan_events[3] {
+		Event::PaymentPathFailed { .. } => {},
 		_ => panic!("Unexpected event"),
 	}
 
@@ -1993,11 +2001,13 @@ fn auto_retry_zero_attempts_send_error() {
 	};
 
 	chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::PermanentFailure);
-	let err = nodes[0].node.send_payment_with_retry(payment_hash, &Some(payment_secret), PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap_err();
-	if let PaymentSendFailure::AllFailedResendSafe(_) = err {
-	} else { panic!("Unexpected error"); }
+	nodes[0].node.send_payment_with_retry(payment_hash, &Some(payment_secret), PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
 	assert_eq!(nodes[0].node.get_and_clear_pending_msg_events().len(), 2); // channel close messages
-	assert_eq!(nodes[0].node.get_and_clear_pending_events().len(), 1); // channel close event
+	let events = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 3);
+	if let Event::ChannelClosed { .. } = events[0] { } else { panic!(); }
+	if let Event::PaymentPathFailed { .. } = events[1] { } else { panic!(); }
+	if let Event::PaymentFailed { .. } = events[2] { } else { panic!(); }
 	check_added_monitors!(nodes[0], 2);
 }
 
@@ -2121,6 +2131,16 @@ fn retry_multi_path_single_failed_payment() {
 	}
 
 	nodes[0].node.send_payment_with_retry(payment_hash, &Some(payment_secret), PaymentId(payment_hash.0), route_params, Retry::Attempts(1)).unwrap();
+	let events = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	match events[0] {
+		Event::PaymentPathFailed { payment_hash: ev_payment_hash, payment_failed_permanently: false,
+			network_update: None, all_paths_failed: false, short_channel_id: Some(expected_scid), .. } => {
+			assert_eq!(payment_hash, ev_payment_hash);
+			assert_eq!(expected_scid, route.paths[1][0].short_channel_id);
+		},
+		_ => panic!("Unexpected event"),
+	}
 	let htlc_msgs = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(htlc_msgs.len(), 2);
 	check_added_monitors!(nodes[0], 2);
@@ -2182,6 +2202,16 @@ fn immediate_retry_on_failure() {
 		}, Ok(route.clone()));
 
 	nodes[0].node.send_payment_with_retry(payment_hash, &Some(payment_secret), PaymentId(payment_hash.0), route_params, Retry::Attempts(1)).unwrap();
+	let events = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	match events[0] {
+		Event::PaymentPathFailed { payment_hash: ev_payment_hash, payment_failed_permanently: false,
+		network_update: None, all_paths_failed: false, short_channel_id: Some(expected_scid), .. } => {
+			assert_eq!(payment_hash, ev_payment_hash);
+			assert_eq!(expected_scid, route.paths[1][0].short_channel_id);
+		},
+		_ => panic!("Unexpected event"),
+	}
 	let htlc_msgs = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(htlc_msgs.len(), 2);
 	check_added_monitors!(nodes[0], 2);
