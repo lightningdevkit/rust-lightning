@@ -16,14 +16,14 @@ use crate::chain::transaction::OutPoint;
 use crate::ln::{PaymentPreimage, PaymentHash, PaymentSecret};
 use crate::ln::channelmanager::{ChainParameters, ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, PaymentSendFailure, PaymentId, MIN_CLTV_EXPIRY_DELTA};
 use crate::routing::gossip::{P2PGossipSync, NetworkGraph, NetworkUpdate};
-use crate::routing::router::{PaymentParameters, Route, get_route};
+use crate::routing::router::{self, PaymentParameters, Route};
 use crate::ln::features::InitFeatures;
 use crate::ln::msgs;
 use crate::ln::msgs::{ChannelMessageHandler,RoutingMessageHandler};
 use crate::util::enforcing_trait_impls::EnforcingSigner;
 use crate::util::scid_utils;
 use crate::util::test_utils;
-use crate::util::test_utils::{panicking, TestChainMonitor};
+use crate::util::test_utils::{panicking, TestChainMonitor, TestScorer, TestKeysInterface};
 use crate::util::events::{Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, PathFailure, PaymentPurpose};
 use crate::util::errors::APIError;
 use crate::util::config::UserConfig;
@@ -1583,19 +1583,26 @@ macro_rules! get_payment_preimage_hash {
 	};
 }
 
+/// Gets a route from the given sender to the node described in `payment_params`.
+pub fn get_route(send_node: &Node, payment_params: &PaymentParameters, recv_value: u64, final_cltv_expiry_delta: u32) -> Result<Route, msgs::LightningError> {
+	let scorer = TestScorer::new();
+	let keys_manager = TestKeysInterface::new(&[0u8; 32], bitcoin::network::constants::Network::Testnet);
+	let random_seed_bytes = keys_manager.get_secure_random_bytes();
+	router::get_route(
+		&send_node.node.get_our_node_id(), payment_params, &send_node.network_graph.read_only(),
+		Some(&send_node.node.list_usable_channels().iter().collect::<Vec<_>>()),
+		recv_value, final_cltv_expiry_delta, send_node.logger, &scorer, &random_seed_bytes
+	)
+}
+
+/// Gets a route from the given sender to the node described in `payment_params`.
+///
+/// Don't use this, use the identically-named function instead.
 #[macro_export]
 macro_rules! get_route {
-	($send_node: expr, $payment_params: expr, $recv_value: expr, $cltv: expr) => {{
-		use $crate::chain::keysinterface::EntropySource;
-		let scorer = $crate::util::test_utils::TestScorer::new();
-		let keys_manager = $crate::util::test_utils::TestKeysInterface::new(&[0u8; 32], bitcoin::network::constants::Network::Testnet);
-		let random_seed_bytes = keys_manager.get_secure_random_bytes();
-		$crate::routing::router::get_route(
-			&$send_node.node.get_our_node_id(), &$payment_params, &$send_node.network_graph.read_only(),
-			Some(&$send_node.node.list_usable_channels().iter().collect::<Vec<_>>()),
-			$recv_value, $cltv, $send_node.logger, &scorer, &random_seed_bytes
-		)
-	}}
+	($send_node: expr, $payment_params: expr, $recv_value: expr, $cltv: expr) => {
+		$crate::ln::functional_test_utils::get_route(&$send_node, &$payment_params, $recv_value, $cltv)
+	}
 }
 
 #[cfg(test)]
@@ -1609,7 +1616,7 @@ macro_rules! get_route_and_payment_hash {
 	($send_node: expr, $recv_node: expr, $payment_params: expr, $recv_value: expr, $cltv: expr) => {{
 		let (payment_preimage, payment_hash, payment_secret) =
 			$crate::ln::functional_test_utils::get_payment_preimage_hash(&$recv_node, Some($recv_value), None);
-		let route = $crate::get_route!($send_node, $payment_params, $recv_value, $cltv);
+		let route = $crate::ln::functional_test_utils::get_route(&$send_node, &$payment_params, $recv_value, $cltv);
 		(route.unwrap(), payment_hash, payment_preimage, payment_secret)
 	}}
 }
@@ -2123,7 +2130,7 @@ pub const TEST_FINAL_CLTV: u32 = 70;
 pub fn route_payment<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route: &[&Node<'a, 'b, 'c>], recv_value: u64) -> (PaymentPreimage, PaymentHash, PaymentSecret) {
 	let payment_params = PaymentParameters::from_node_id(expected_route.last().unwrap().node.get_our_node_id(), TEST_FINAL_CLTV)
 		.with_features(expected_route.last().unwrap().node.invoice_features());
-	let route = get_route!(origin_node, payment_params, recv_value, TEST_FINAL_CLTV).unwrap();
+	let route = get_route(origin_node, &payment_params, recv_value, TEST_FINAL_CLTV).unwrap();
 	assert_eq!(route.paths.len(), 1);
 	assert_eq!(route.paths[0].len(), expected_route.len());
 	for (node, hop) in expected_route.iter().zip(route.paths[0].iter()) {
@@ -2142,7 +2149,7 @@ pub fn route_over_limit<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_rou
 	let seed = [0u8; 32];
 	let keys_manager = test_utils::TestKeysInterface::new(&seed, Network::Testnet);
 	let random_seed_bytes = keys_manager.get_secure_random_bytes();
-	let route = get_route(
+	let route = router::get_route(
 		&origin_node.node.get_our_node_id(), &payment_params, &network_graph,
 		None, recv_value, TEST_FINAL_CLTV, origin_node.logger, &scorer, &random_seed_bytes).unwrap();
 	assert_eq!(route.paths.len(), 1);
