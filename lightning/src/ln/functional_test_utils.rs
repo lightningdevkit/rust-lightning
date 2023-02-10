@@ -1394,22 +1394,11 @@ impl SendEvent {
 }
 
 #[macro_export]
+/// Don't use this, use the identically-named function instead.
 macro_rules! expect_pending_htlcs_forwardable_conditions {
-	($node: expr, $expected_failures: expr) => {{
-		let expected_failures = $expected_failures;
-		let events = $node.node.get_and_clear_pending_events();
-		match events[0] {
-			$crate::util::events::Event::PendingHTLCsForwardable { .. } => { },
-			_ => panic!("Unexpected event {:?}", events),
-		};
-
-		let count = expected_failures.len() + 1;
-		assert_eq!(events.len(), count);
-
-		if expected_failures.len() > 0 {
-			expect_htlc_handling_failed_destinations!(events, expected_failures)
-		}
-	}}
+	($node: expr, $expected_failures: expr) => {
+		$crate::ln::functional_test_utils::expect_pending_htlcs_forwardable_conditions($node.node.get_and_clear_pending_events(), &$expected_failures);
+	}
 }
 
 #[macro_export]
@@ -1427,27 +1416,49 @@ macro_rules! expect_htlc_handling_failed_destinations {
 	}}
 }
 
+/// Checks that an [`Event::PendingHTLCsForwardable`] is available in the given events and, if
+/// there are any [`Event::HTLCHandlingFailed`] events their [`HTLCDestination`] is included in the
+/// `expected_failures` set.
+pub fn expect_pending_htlcs_forwardable_conditions(events: Vec<Event>, expected_failures: &[HTLCDestination]) {
+	match events[0] {
+		Event::PendingHTLCsForwardable { .. } => { },
+		_ => panic!("Unexpected event {:?}", events),
+	};
+
+	let count = expected_failures.len() + 1;
+	assert_eq!(events.len(), count);
+
+	if expected_failures.len() > 0 {
+		expect_htlc_handling_failed_destinations!(events, expected_failures)
+	}
+}
+
 #[macro_export]
 /// Clears (and ignores) a PendingHTLCsForwardable event
+///
+/// Don't use this, call [`expect_pending_htlcs_forwardable_conditions()`] with an empty failure
+/// set instead.
 macro_rules! expect_pending_htlcs_forwardable_ignore {
-	($node: expr) => {{
-		expect_pending_htlcs_forwardable_conditions!($node, vec![]);
-	}};
+	($node: expr) => {
+		$crate::ln::functional_test_utils::expect_pending_htlcs_forwardable_conditions($node.node.get_and_clear_pending_events(), &[]);
+	}
 }
 
 #[macro_export]
 /// Clears (and ignores) PendingHTLCsForwardable and HTLCHandlingFailed events
+///
+/// Don't use this, call [`expect_pending_htlcs_forwardable_conditions()`] instead.
 macro_rules! expect_pending_htlcs_forwardable_and_htlc_handling_failed_ignore {
-	($node: expr, $expected_failures: expr) => {{
-		expect_pending_htlcs_forwardable_conditions!($node, $expected_failures);
-	}};
+	($node: expr, $expected_failures: expr) => {
+		$crate::ln::functional_test_utils::expect_pending_htlcs_forwardable_conditions($node.node.get_and_clear_pending_events(), &$expected_failures);
+	}
 }
 
 #[macro_export]
 /// Handles a PendingHTLCsForwardable event
 macro_rules! expect_pending_htlcs_forwardable {
 	($node: expr) => {{
-		expect_pending_htlcs_forwardable_ignore!($node);
+		$crate::ln::functional_test_utils::expect_pending_htlcs_forwardable_conditions($node.node.get_and_clear_pending_events(), &[]);
 		$node.node.process_pending_htlc_forwards();
 
 		// Ensure process_pending_htlc_forwards is idempotent.
@@ -1459,7 +1470,7 @@ macro_rules! expect_pending_htlcs_forwardable {
 /// Handles a PendingHTLCsForwardable and HTLCHandlingFailed event
 macro_rules! expect_pending_htlcs_forwardable_and_htlc_handling_failed {
 	($node: expr, $expected_failures: expr) => {{
-		expect_pending_htlcs_forwardable_and_htlc_handling_failed_ignore!($node, $expected_failures);
+		$crate::ln::functional_test_utils::expect_pending_htlcs_forwardable_conditions($node.node.get_and_clear_pending_events(), &$expected_failures);
 		$node.node.process_pending_htlc_forwards();
 
 		// Ensure process_pending_htlc_forwards is idempotent.
