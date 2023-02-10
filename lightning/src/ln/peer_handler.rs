@@ -2153,11 +2153,14 @@ mod tests {
 	}
 
 	fn establish_connection<'a>(peer_a: &PeerManager<FileDescriptor, &'a test_utils::TestChannelMessageHandler, &'a test_utils::TestRoutingMessageHandler, IgnoringMessageHandler, &'a test_utils::TestLogger, IgnoringMessageHandler, &'a test_utils::TestNodeSigner>, peer_b: &PeerManager<FileDescriptor, &'a test_utils::TestChannelMessageHandler, &'a test_utils::TestRoutingMessageHandler, IgnoringMessageHandler, &'a test_utils::TestLogger, IgnoringMessageHandler, &'a test_utils::TestNodeSigner>) -> (FileDescriptor, FileDescriptor) {
-		let a_id = peer_a.node_signer.get_node_id(Recipient::Node).unwrap();
+		let id_a = peer_a.node_signer.get_node_id(Recipient::Node).unwrap();
 		let mut fd_a = FileDescriptor { fd: 1, outbound_data: Arc::new(Mutex::new(Vec::new())) };
+		let addr_a = NetAddress::IPv4{addr: [127, 0, 0, 1], port: 1000};
+		let id_b = peer_b.node_signer.get_node_id(Recipient::Node).unwrap();
 		let mut fd_b = FileDescriptor { fd: 1, outbound_data: Arc::new(Mutex::new(Vec::new())) };
-		let initial_data = peer_b.new_outbound_connection(a_id, fd_b.clone(), None).unwrap();
-		peer_a.new_inbound_connection(fd_a.clone(), None).unwrap();
+		let addr_b = NetAddress::IPv4{addr: [127, 0, 0, 1], port: 1001};
+		let initial_data = peer_b.new_outbound_connection(id_a, fd_b.clone(), Some(addr_a.clone())).unwrap();
+		peer_a.new_inbound_connection(fd_a.clone(), Some(addr_b.clone())).unwrap();
 		assert_eq!(peer_a.read_event(&mut fd_a, &initial_data).unwrap(), false);
 		peer_a.process_events();
 
@@ -2171,6 +2174,9 @@ mod tests {
 		peer_a.process_events();
 		let a_data = fd_a.outbound_data.lock().unwrap().split_off(0);
 		assert_eq!(peer_b.read_event(&mut fd_b, &a_data).unwrap(), false);
+
+		assert!(peer_a.get_peer_node_ids().contains(&(id_b, Some(addr_b))));
+		assert!(peer_b.get_peer_node_ids().contains(&(id_a, Some(addr_a))));
 
 		(fd_a.clone(), fd_b.clone())
 	}
