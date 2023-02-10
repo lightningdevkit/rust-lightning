@@ -1149,6 +1149,24 @@ pub fn update_nodes_with_chan_announce<'a, 'b, 'c, 'd>(nodes: &'a Vec<Node<'b, '
 	}
 }
 
+pub fn do_check_spends<F: Fn(&bitcoin::blockdata::transaction::OutPoint) -> Option<TxOut>>(tx: &Transaction, get_output: F) {
+	for outp in tx.output.iter() {
+		assert!(outp.value >= outp.script_pubkey.dust_value().to_sat(), "Spending tx output didn't meet dust limit");
+	}
+	let mut total_value_in = 0;
+	for input in tx.input.iter() {
+		total_value_in += get_output(&input.previous_output).unwrap().value;
+	}
+	let mut total_value_out = 0;
+	for output in tx.output.iter() {
+		total_value_out += output.value;
+	}
+	let min_fee = (tx.weight() as u64 + 3) / 4; // One sat per vbyte (ie per weight/4, rounded up)
+	// Input amount - output amount = fee, so check that out + min_fee is smaller than input
+	assert!(total_value_out + min_fee <= total_value_in);
+	tx.verify(get_output).unwrap();
+}
+
 #[macro_export]
 macro_rules! check_spends {
 	($tx: expr, $($spends_txn: expr),*) => {
@@ -1158,9 +1176,6 @@ macro_rules! check_spends {
 				assert!(outp.value >= outp.script_pubkey.dust_value().to_sat(), "Input tx output didn't meet dust limit");
 			}
 			)*
-			for outp in $tx.output.iter() {
-				assert!(outp.value >= outp.script_pubkey.dust_value().to_sat(), "Spending tx output didn't meet dust limit");
-			}
 			let get_output = |out_point: &bitcoin::blockdata::transaction::OutPoint| {
 				$(
 					if out_point.txid == $spends_txn.txid() {
@@ -1169,18 +1184,7 @@ macro_rules! check_spends {
 				)*
 				None
 			};
-			let mut total_value_in = 0;
-			for input in $tx.input.iter() {
-				total_value_in += get_output(&input.previous_output).unwrap().value;
-			}
-			let mut total_value_out = 0;
-			for output in $tx.output.iter() {
-				total_value_out += output.value;
-			}
-			let min_fee = ($tx.weight() as u64 + 3) / 4; // One sat per vbyte (ie per weight/4, rounded up)
-			// Input amount - output amount = fee, so check that out + min_fee is smaller than input
-			assert!(total_value_out + min_fee <= total_value_in);
-			$tx.verify(get_output).unwrap();
+			$crate::ln::functional_test_utils::do_check_spends(&$tx, get_output);
 		}
 	}
 }
