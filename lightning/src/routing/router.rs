@@ -1271,7 +1271,7 @@ where L::Target: Logger {
 						for channel_details in target {
 							if let Some(short_channel_id_target) = channel_details.short_channel_id {
 								if short_channel_id == short_channel_id_target {
-        							log_trace!(logger, "first Hop of node id {our_node_id} is excluded due to a failed requirement.");
+        							log_trace!(logger, "first Hop of node id is excluded due to a failed requirement.");
     								}
 							}
 						}
