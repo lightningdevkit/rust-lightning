@@ -1267,11 +1267,12 @@ where L::Target: Logger {
 					// around again with a higher amount.
 					if !contributes_sufficient_value || exceeds_max_path_length ||
 						exceeds_cltv_delta_limit || payment_failed_on_this_channel {
+						let our_node_id = NodeId::from_pubkey(&our_node_pubkey);
 						let target = first_hop_targets.get(&NodeId::from_pubkey(&our_node_pubkey)).unwrap(); 
 						for channel_details in target {
 							if let Some(short_channel_id_target) = channel_details.short_channel_id {
 								if short_channel_id == short_channel_id_target {
-        							log_trace!(logger, "first Hop of node id is excluded due to a failed requirement.");
+        							log_trace!(logger, "first Hop of node id {our_node_id} is excluded due to a failed requirement.");
     								}
 							}
 						}
