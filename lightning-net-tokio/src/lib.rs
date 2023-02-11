@@ -33,12 +33,12 @@
 //! type FeeEstimator = dyn lightning::chain::chaininterface::FeeEstimator + Send + Sync;
 //! type Logger = dyn lightning::util::logger::Logger + Send + Sync;
 //! type NodeSigner = dyn lightning::chain::keysinterface::NodeSigner + Send + Sync;
-//! type ChainAccess = dyn lightning::chain::Access + Send + Sync;
+//! type UtxoLookup = dyn lightning::routing::utxo::UtxoLookup + Send + Sync;
 //! type ChainFilter = dyn lightning::chain::Filter + Send + Sync;
 //! type DataPersister = dyn lightning::chain::chainmonitor::Persist<lightning::chain::keysinterface::InMemorySigner> + Send + Sync;
 //! type ChainMonitor = lightning::chain::chainmonitor::ChainMonitor<lightning::chain::keysinterface::InMemorySigner, Arc<ChainFilter>, Arc<TxBroadcaster>, Arc<FeeEstimator>, Arc<Logger>, Arc<DataPersister>>;
 //! type ChannelManager = Arc<lightning::ln::channelmanager::SimpleArcChannelManager<ChainMonitor, TxBroadcaster, FeeEstimator, Logger>>;
-//! type PeerManager = Arc<lightning::ln::peer_handler::SimpleArcPeerManager<lightning_net_tokio::SocketDescriptor, ChainMonitor, TxBroadcaster, FeeEstimator, ChainAccess, Logger>>;
+//! type PeerManager = Arc<lightning::ln::peer_handler::SimpleArcPeerManager<lightning_net_tokio::SocketDescriptor, ChainMonitor, TxBroadcaster, FeeEstimator, UtxoLookup, Logger>>;
 //!
 //! // Connect to node with pubkey their_node_id at addr:
 //! async fn connect_to_node(peer_manager: PeerManager, chain_monitor: Arc<ChainMonitor>, channel_manager: ChannelManager, their_node_id: PublicKey, addr: SocketAddr) {
@@ -176,8 +176,9 @@ impl Connection {
 		let (event_waker, event_receiver) = mpsc::channel(1);
 		tokio::spawn(Self::poll_event_process(peer_manager.clone(), event_receiver));
 
-		// 8KB is nice and big but also should never cause any issues with stack overflowing.
-		let mut buf = [0; 8192];
+		// 4KiB is nice and big without handling too many messages all at once, giving other peers
+		// a chance to do some work.
+		let mut buf = [0; 4096];
 
 		let mut our_descriptor = SocketDescriptor::new(us.clone());
 		// An enum describing why we did/are disconnecting:
@@ -623,6 +624,7 @@ mod tests {
 		fn handle_query_short_channel_ids(&self, _their_node_id: &PublicKey, _msg: QueryShortChannelIds) -> Result<(), LightningError> { Ok(()) }
 		fn provided_node_features(&self) -> NodeFeatures { NodeFeatures::empty() }
 		fn provided_init_features(&self, _their_node_id: &PublicKey) -> InitFeatures { InitFeatures::empty() }
+		fn processing_queue_high(&self) -> bool { false }
 	}
 	impl ChannelMessageHandler for MsgHandler {
 		fn handle_open_channel(&self, _their_node_id: &PublicKey, _msg: &OpenChannel) {}

@@ -621,6 +621,9 @@ pub fn remove_first_msg_event_to_node(msg_node_id: &PublicKey, msg_events: &Vec<
 		MessageSendEvent::BroadcastChannelUpdate { .. } => {
 			false
 		},
+		MessageSendEvent::BroadcastNodeAnnouncement { .. } => {
+			false
+		},
 		MessageSendEvent::SendChannelUpdate { node_id, .. } => {
 			node_id == msg_node_id
 		},
@@ -1010,7 +1013,7 @@ pub fn create_chan_between_nodes_with_value_b<'a, 'b, 'c>(node_a: &Node<'a, 'b, 
 	assert_eq!(events_7.len(), 1);
 	let (announcement, bs_update) = match events_7[0] {
 		MessageSendEvent::BroadcastChannelAnnouncement { ref msg, ref update_msg } => {
-			(msg, update_msg)
+			(msg, update_msg.clone().unwrap())
 		},
 		_ => panic!("Unexpected event"),
 	};
@@ -1021,6 +1024,7 @@ pub fn create_chan_between_nodes_with_value_b<'a, 'b, 'c>(node_a: &Node<'a, 'b, 
 	let as_update = match events_8[0] {
 		MessageSendEvent::BroadcastChannelAnnouncement { ref msg, ref update_msg } => {
 			assert!(*announcement == *msg);
+			let update_msg = update_msg.clone().unwrap();
 			assert_eq!(update_msg.contents.short_channel_id, announcement.contents.short_channel_id);
 			assert_eq!(update_msg.contents.short_channel_id, bs_update.contents.short_channel_id);
 			update_msg
@@ -1031,7 +1035,7 @@ pub fn create_chan_between_nodes_with_value_b<'a, 'b, 'c>(node_a: &Node<'a, 'b, 
 	*node_a.network_chan_count.borrow_mut() += 1;
 
 	expect_channel_ready_event(&node_b, &node_a.node.get_our_node_id());
-	((*announcement).clone(), (*as_update).clone(), (*bs_update).clone())
+	((*announcement).clone(), as_update, bs_update)
 }
 
 pub fn create_announced_chan_between_nodes<'a, 'b, 'c, 'd>(nodes: &'a Vec<Node<'b, 'c, 'd>>, a: usize, b: usize) -> (msgs::ChannelUpdate, msgs::ChannelUpdate, [u8; 32], Transaction) {

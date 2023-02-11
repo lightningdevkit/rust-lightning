@@ -30,6 +30,7 @@ use lightning::ln::channelmanager::ChannelManager;
 use lightning::ln::msgs::{ChannelMessageHandler, OnionMessageHandler, RoutingMessageHandler};
 use lightning::ln::peer_handler::{CustomMessageHandler, PeerManager, SocketDescriptor};
 use lightning::routing::gossip::{NetworkGraph, P2PGossipSync};
+use lightning::routing::utxo::UtxoLookup;
 use lightning::routing::router::Router;
 use lightning::routing::scoring::{Score, WriteableScore};
 use lightning::util::events::{Event, EventHandler, EventsProvider};
@@ -116,13 +117,13 @@ const FIRST_NETWORK_PRUNE_TIMER: u64 = 1;
 
 /// Either [`P2PGossipSync`] or [`RapidGossipSync`].
 pub enum GossipSync<
-	P: Deref<Target = P2PGossipSync<G, A, L>>,
+	P: Deref<Target = P2PGossipSync<G, U, L>>,
 	R: Deref<Target = RapidGossipSync<G, L>>,
 	G: Deref<Target = NetworkGraph<L>>,
-	A: Deref,
+	U: Deref,
 	L: Deref,
 >
-where A::Target: chain::Access, L::Target: Logger {
+where U::Target: UtxoLookup, L::Target: Logger {
 	/// Gossip sync via the lightning peer-to-peer network as defined by BOLT 7.
 	P2P(P),
 	/// Rapid gossip sync from a trusted server.
@@ -132,13 +133,13 @@ where A::Target: chain::Access, L::Target: Logger {
 }
 
 impl<
-	P: Deref<Target = P2PGossipSync<G, A, L>>,
+	P: Deref<Target = P2PGossipSync<G, U, L>>,
 	R: Deref<Target = RapidGossipSync<G, L>>,
 	G: Deref<Target = NetworkGraph<L>>,
-	A: Deref,
+	U: Deref,
 	L: Deref,
-> GossipSync<P, R, G, A, L>
-where A::Target: chain::Access, L::Target: Logger {
+> GossipSync<P, R, G, U, L>
+where U::Target: UtxoLookup, L::Target: Logger {
 	fn network_graph(&self) -> Option<&G> {
 		match self {
 			GossipSync::P2P(gossip_sync) => Some(gossip_sync.network_graph()),
@@ -163,10 +164,10 @@ where A::Target: chain::Access, L::Target: Logger {
 }
 
 /// (C-not exported) as the bindings concretize everything and have constructors for us
-impl<P: Deref<Target = P2PGossipSync<G, A, L>>, G: Deref<Target = NetworkGraph<L>>, A: Deref, L: Deref>
-	GossipSync<P, &RapidGossipSync<G, L>, G, A, L>
+impl<P: Deref<Target = P2PGossipSync<G, U, L>>, G: Deref<Target = NetworkGraph<L>>, U: Deref, L: Deref>
+	GossipSync<P, &RapidGossipSync<G, L>, G, U, L>
 where
-	A::Target: chain::Access,
+	U::Target: UtxoLookup,
 	L::Target: Logger,
 {
 	/// Initializes a new [`GossipSync::P2P`] variant.
@@ -178,10 +179,10 @@ where
 /// (C-not exported) as the bindings concretize everything and have constructors for us
 impl<'a, R: Deref<Target = RapidGossipSync<G, L>>, G: Deref<Target = NetworkGraph<L>>, L: Deref>
 	GossipSync<
-		&P2PGossipSync<G, &'a (dyn chain::Access + Send + Sync), L>,
+		&P2PGossipSync<G, &'a (dyn UtxoLookup + Send + Sync), L>,
 		R,
 		G,
-		&'a (dyn chain::Access + Send + Sync),
+		&'a (dyn UtxoLookup + Send + Sync),
 		L,
 	>
 where
@@ -196,10 +197,10 @@ where
 /// (C-not exported) as the bindings concretize everything and have constructors for us
 impl<'a, L: Deref>
 	GossipSync<
-		&P2PGossipSync<&'a NetworkGraph<L>, &'a (dyn chain::Access + Send + Sync), L>,
+		&P2PGossipSync<&'a NetworkGraph<L>, &'a (dyn UtxoLookup + Send + Sync), L>,
 		&RapidGossipSync<&'a NetworkGraph<L>, L>,
 		&'a NetworkGraph<L>,
-		&'a (dyn chain::Access + Send + Sync),
+		&'a (dyn UtxoLookup + Send + Sync),
 		L,
 	>
 where
@@ -397,7 +398,7 @@ macro_rules! define_run_body {
 #[cfg(feature = "futures")]
 pub async fn process_events_async<
 	'a,
-	CA: 'static + Deref + Send + Sync,
+	UL: 'static + Deref + Send + Sync,
 	CF: 'static + Deref + Send + Sync,
 	CW: 'static + Deref + Send + Sync,
 	T: 'static + Deref + Send + Sync,
@@ -418,7 +419,7 @@ pub async fn process_events_async<
 	PS: 'static + Deref + Send,
 	M: 'static + Deref<Target = ChainMonitor<<SP::Target as SignerProvider>::Signer, CF, T, F, L, P>> + Send + Sync,
 	CM: 'static + Deref<Target = ChannelManager<CW, T, ES, NS, SP, F, R, L>> + Send + Sync,
-	PGS: 'static + Deref<Target = P2PGossipSync<G, CA, L>> + Send + Sync,
+	PGS: 'static + Deref<Target = P2PGossipSync<G, UL, L>> + Send + Sync,
 	RGS: 'static + Deref<Target = RapidGossipSync<G, L>> + Send,
 	UMH: 'static + Deref + Send + Sync,
 	PM: 'static + Deref<Target = PeerManager<Descriptor, CMH, RMH, OMH, L, UMH, NS>> + Send + Sync,
@@ -428,11 +429,11 @@ pub async fn process_events_async<
 	Sleeper: Fn(Duration) -> SleepFuture
 >(
 	persister: PS, event_handler: EventHandler, chain_monitor: M, channel_manager: CM,
-	gossip_sync: GossipSync<PGS, RGS, G, CA, L>, peer_manager: PM, logger: L, scorer: Option<S>,
+	gossip_sync: GossipSync<PGS, RGS, G, UL, L>, peer_manager: PM, logger: L, scorer: Option<S>,
 	sleeper: Sleeper,
 ) -> Result<(), io::Error>
 where
-	CA::Target: 'static + chain::Access,
+	UL::Target: 'static + UtxoLookup,
 	CF::Target: 'static + chain::Filter,
 	CW::Target: 'static + chain::Watch<<SP::Target as SignerProvider>::Signer>,
 	T::Target: 'static + BroadcasterInterface,
@@ -531,7 +532,7 @@ impl BackgroundProcessor {
 	/// [`NetworkGraph::write`]: lightning::routing::gossip::NetworkGraph#impl-Writeable
 	pub fn start<
 		'a,
-		CA: 'static + Deref + Send + Sync,
+		UL: 'static + Deref + Send + Sync,
 		CF: 'static + Deref + Send + Sync,
 		CW: 'static + Deref + Send + Sync,
 		T: 'static + Deref + Send + Sync,
@@ -551,7 +552,7 @@ impl BackgroundProcessor {
 		PS: 'static + Deref + Send,
 		M: 'static + Deref<Target = ChainMonitor<<SP::Target as SignerProvider>::Signer, CF, T, F, L, P>> + Send + Sync,
 		CM: 'static + Deref<Target = ChannelManager<CW, T, ES, NS, SP, F, R, L>> + Send + Sync,
-		PGS: 'static + Deref<Target = P2PGossipSync<G, CA, L>> + Send + Sync,
+		PGS: 'static + Deref<Target = P2PGossipSync<G, UL, L>> + Send + Sync,
 		RGS: 'static + Deref<Target = RapidGossipSync<G, L>> + Send,
 		UMH: 'static + Deref + Send + Sync,
 		PM: 'static + Deref<Target = PeerManager<Descriptor, CMH, RMH, OMH, L, UMH, NS>> + Send + Sync,
@@ -559,10 +560,10 @@ impl BackgroundProcessor {
 		SC: for <'b> WriteableScore<'b>,
 	>(
 		persister: PS, event_handler: EH, chain_monitor: M, channel_manager: CM,
-		gossip_sync: GossipSync<PGS, RGS, G, CA, L>, peer_manager: PM, logger: L, scorer: Option<S>,
+		gossip_sync: GossipSync<PGS, RGS, G, UL, L>, peer_manager: PM, logger: L, scorer: Option<S>,
 	) -> Self
 	where
-		CA::Target: 'static + chain::Access,
+		UL::Target: 'static + UtxoLookup,
 		CF::Target: 'static + chain::Filter,
 		CW::Target: 'static + chain::Watch<<SP::Target as SignerProvider>::Signer>,
 		T::Target: 'static + BroadcasterInterface,

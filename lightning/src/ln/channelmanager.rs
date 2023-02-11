@@ -5044,7 +5044,7 @@ where
 					), chan),
 					// Note that announcement_signatures fails if the channel cannot be announced,
 					// so get_channel_update_for_broadcast will never fail by the time we get here.
-					update_msg: self.get_channel_update_for_broadcast(chan.get()).unwrap(),
+					update_msg: Some(self.get_channel_update_for_broadcast(chan.get()).unwrap()),
 				});
 			},
 			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
@@ -5418,7 +5418,8 @@ where
 	/// [`PaymentHash`] and [`PaymentPreimage`] for you.
 	///
 	/// The [`PaymentPreimage`] will ultimately be returned to you in the [`PaymentClaimable`], which
-	/// will have the [`PaymentClaimable::payment_preimage`] field filled in. That should then be
+	/// will have the [`PaymentClaimable::purpose`] be [`PaymentPurpose::InvoicePayment`] with
+	/// its [`PaymentPurpose::InvoicePayment::payment_preimage`] field filled in. That should then be
 	/// passed directly to [`claim_funds`].
 	///
 	/// See [`create_inbound_payment_for_hash`] for detailed documentation on behavior and requirements.
@@ -5438,7 +5439,9 @@ where
 	///
 	/// [`claim_funds`]: Self::claim_funds
 	/// [`PaymentClaimable`]: events::Event::PaymentClaimable
-	/// [`PaymentClaimable::payment_preimage`]: events::Event::PaymentClaimable::payment_preimage
+	/// [`PaymentClaimable::purpose`]: events::Event::PaymentClaimable::purpose
+	/// [`PaymentPurpose::InvoicePayment`]: events::PaymentPurpose::InvoicePayment
+	/// [`PaymentPurpose::InvoicePayment::payment_preimage`]: events::PaymentPurpose::InvoicePayment::payment_preimage
 	/// [`create_inbound_payment_for_hash`]: Self::create_inbound_payment_for_hash
 	pub fn create_inbound_payment(&self, min_value_msat: Option<u64>, invoice_expiry_delta_secs: u32,
 		min_final_cltv_expiry_delta: Option<u16>) -> Result<(PaymentHash, PaymentSecret), ()> {
@@ -5970,7 +5973,7 @@ where
 										msg: announcement,
 										// Note that announcement_signatures fails if the channel cannot be announced,
 										// so get_channel_update_for_broadcast will never fail by the time we get here.
-										update_msg: self.get_channel_update_for_broadcast(channel).unwrap(),
+										update_msg: Some(self.get_channel_update_for_broadcast(channel).unwrap()),
 									});
 								}
 							}
@@ -6286,6 +6289,7 @@ where
 						&events::MessageSendEvent::SendChannelAnnouncement { .. } => false,
 						&events::MessageSendEvent::BroadcastChannelAnnouncement { .. } => true,
 						&events::MessageSendEvent::BroadcastChannelUpdate { .. } => true,
+						&events::MessageSendEvent::BroadcastNodeAnnouncement { .. } => true,
 						&events::MessageSendEvent::SendChannelUpdate { .. } => false,
 						&events::MessageSendEvent::HandleError { .. } => false,
 						&events::MessageSendEvent::SendChannelRangeQuery { .. } => false,

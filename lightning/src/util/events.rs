@@ -1612,12 +1612,17 @@ pub enum MessageSendEvent {
 		/// The channel_announcement which should be sent.
 		msg: msgs::ChannelAnnouncement,
 		/// The followup channel_update which should be sent.
-		update_msg: msgs::ChannelUpdate,
+		update_msg: Option<msgs::ChannelUpdate>,
 	},
 	/// Used to indicate that a channel_update should be broadcast to all peers.
 	BroadcastChannelUpdate {
 		/// The channel_update which should be sent.
 		msg: msgs::ChannelUpdate,
+	},
+	/// Used to indicate that a node_announcement should be broadcast to all peers.
+	BroadcastNodeAnnouncement {
+		/// The node_announcement which should be sent.
+		msg: msgs::NodeAnnouncement,
 	},
 	/// Used to indicate that a channel_update should be sent to a single peer.
 	/// In contrast to [`Self::BroadcastChannelUpdate`], this is used when the channel is a

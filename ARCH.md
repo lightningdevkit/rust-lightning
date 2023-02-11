@@ -51,9 +51,9 @@ At a high level, some of the common interfaces fit together as follows:
 --------------- /                  (as EventsProvider)         ^            |           |
 | PeerManager |-                             \                 |            |           |
 ---------------                               \                | (is-a)     |           |
- |                    -----------------        \       _----------------   /           /
- |                    | chain::Access |         \     / | ChainMonitor |---------------
- |                    -----------------          \   /  ----------------
+ |                    --------------           \       _----------------   /           /
+ |                    | UtxoLookup |            \     / | ChainMonitor |---------------
+ |                    --------------             \   /  ----------------
  |                            ^                   \ /          |
 (as RoutingMessageHandler)    |                    v           v
   \                   -----------------        ---------   -----------------
