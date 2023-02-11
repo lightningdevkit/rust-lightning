@@ -184,14 +184,14 @@ fn do_test_1_conf_open(connect_style: ConnectStyle) {
 		msg.clone()
 	} else { panic!("Unexpected event"); };
 	let (bs_announcement, bs_update) = if let MessageSendEvent::BroadcastChannelAnnouncement { ref msg, ref update_msg } = bs_announce_events[1] {
-		(msg.clone(), update_msg.clone())
+		(msg.clone(), update_msg.clone().unwrap())
 	} else { panic!("Unexpected event"); };
 
 	nodes[0].node.handle_announcement_signatures(&nodes[1].node.get_our_node_id(), &bs_announcement_sigs);
 	let as_announce_events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(as_announce_events.len(), 1);
 	let (announcement, as_update) = if let MessageSendEvent::BroadcastChannelAnnouncement { ref msg, ref update_msg } = as_announce_events[0] {
-		(msg.clone(), update_msg.clone())
+		(msg.clone(), update_msg.clone().unwrap())
 	} else { panic!("Unexpected event"); };
 	assert_eq!(announcement, bs_announcement);
 
@@ -757,7 +757,7 @@ fn test_public_0conf_channel() {
 	match bs_announcement[0] {
 		MessageSendEvent::BroadcastChannelAnnouncement { ref msg, ref update_msg } => {
 			announcement = msg.clone();
-			bs_update = update_msg.clone();
+			bs_update = update_msg.clone().unwrap();
 		},
 		_ => panic!("Unexpected event"),
 	};
@@ -767,6 +767,7 @@ fn test_public_0conf_channel() {
 	match as_announcement[0] {
 		MessageSendEvent::BroadcastChannelAnnouncement { ref msg, ref update_msg } => {
 			assert!(announcement == *msg);
+			let update_msg = update_msg.as_ref().unwrap();
 			assert_eq!(update_msg.contents.short_channel_id, scid);
 			assert_eq!(update_msg.contents.short_channel_id, announcement.contents.short_channel_id);
 			assert_eq!(update_msg.contents.short_channel_id, bs_update.contents.short_channel_id);

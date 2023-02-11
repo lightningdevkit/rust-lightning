@@ -81,6 +81,7 @@ impl RoutingMessageHandler for IgnoringMessageHandler {
 	fn provided_init_features(&self, _their_node_id: &PublicKey) -> InitFeatures {
 		InitFeatures::empty()
 	}
+	fn processing_queue_high(&self) -> bool { false }
 }
 impl OnionMessageProvider for IgnoringMessageHandler {
 	fn next_onion_message_for_peer(&self, _peer_node_id: PublicKey) -> Option<msgs::OnionMessage> { None }
@@ -414,6 +415,12 @@ struct Peer {
 	awaiting_pong_timer_tick_intervals: i8,
 	received_message_since_timer_tick: bool,
 	sent_gossip_timestamp_filter: bool,
+
+	/// Indicates we've received a `channel_announcement` since the last time we had
+	/// [`PeerManager::gossip_processing_backlogged`] set (or, really, that we've received a
+	/// `channel_announcement` at all - we set this unconditionally but unset it every time we
+	/// check if we're gossip-processing-backlogged).
+	received_channel_announce_since_backlogged: bool,
 }
 
 impl Peer {
@@ -450,8 +457,12 @@ impl Peer {
 
 	/// Returns whether we should be reading bytes from this peer, based on whether its outbound
 	/// buffer still has space and we don't need to pause reads to get some writes out.
-	fn should_read(&self) -> bool {
-		self.pending_outbound_buffer.len() < OUTBOUND_BUFFER_LIMIT_READ_PAUSE
+	fn should_read(&mut self, gossip_processing_backlogged: bool) -> bool {
+		if !gossip_processing_backlogged {
+			self.received_channel_announce_since_backlogged = false;
+		}
+		self.pending_outbound_buffer.len() < OUTBOUND_BUFFER_LIMIT_READ_PAUSE &&
+			(!gossip_processing_backlogged || !self.received_channel_announce_since_backlogged)
 	}
 
 	/// Determines if we should push additional gossip background sync (aka "backfill") onto a peer's
@@ -567,6 +578,9 @@ pub struct PeerManager<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: D
 	custom_message_handler: CMH,
 
 	peer_counter: AtomicCounter,
+
+	gossip_processing_backlogged: AtomicBool,
+	gossip_processing_backlog_lifted: AtomicBool,
 
 	node_signer: NS,
 
@@ -726,6 +740,8 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 			blocked_event_processors: AtomicBool::new(false),
 			ephemeral_key_midstate,
 			peer_counter: AtomicCounter::new(),
+			gossip_processing_backlogged: AtomicBool::new(false),
+			gossip_processing_backlog_lifted: AtomicBool::new(false),
 			last_node_announcement_serial: AtomicU32::new(current_time),
 			logger,
 			custom_message_handler,
@@ -805,6 +821,8 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 			awaiting_pong_timer_tick_intervals: 0,
 			received_message_since_timer_tick: false,
 			sent_gossip_timestamp_filter: false,
+
+			received_channel_announce_since_backlogged: false,
 		})).is_some() {
 			panic!("PeerManager driver duplicated descriptors!");
 		};
@@ -852,13 +870,28 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 			awaiting_pong_timer_tick_intervals: 0,
 			received_message_since_timer_tick: false,
 			sent_gossip_timestamp_filter: false,
+
+			received_channel_announce_since_backlogged: false,
 		})).is_some() {
 			panic!("PeerManager driver duplicated descriptors!");
 		};
 		Ok(())
 	}
 
-	fn do_attempt_write_data(&self, descriptor: &mut Descriptor, peer: &mut Peer) {
+	fn peer_should_read(&self, peer: &mut Peer) -> bool {
+		peer.should_read(self.gossip_processing_backlogged.load(Ordering::Relaxed))
+	}
+
+	fn update_gossip_backlogged(&self) {
+		let new_state = self.message_handler.route_handler.processing_queue_high();
+		let prev_state = self.gossip_processing_backlogged.swap(new_state, Ordering::Relaxed);
+		if prev_state && !new_state {
+			self.gossip_processing_backlog_lifted.store(true, Ordering::Relaxed);
+		}
+	}
+
+	fn do_attempt_write_data(&self, descriptor: &mut Descriptor, peer: &mut Peer, force_one_write: bool) {
+		let mut have_written = false;
 		while !peer.awaiting_write_event {
 			if peer.should_buffer_onion_message() {
 				if let Some((peer_node_id, _)) = peer.their_node_id {
@@ -915,13 +948,23 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 				self.maybe_send_extra_ping(peer);
 			}
 
+			let should_read = self.peer_should_read(peer);
 			let next_buff = match peer.pending_outbound_buffer.front() {
-				None => return,
+				None => {
+					if force_one_write && !have_written {
+						if should_read {
+							let data_sent = descriptor.send_data(&[], should_read);
+							debug_assert_eq!(data_sent, 0, "Can't write more than no data");
+						}
+					}
+					return
+				},
 				Some(buff) => buff,
 			};
 
 			let pending = &next_buff[peer.pending_outbound_buffer_first_msg_offset..];
-			let data_sent = descriptor.send_data(pending, peer.should_read());
+			let data_sent = descriptor.send_data(pending, should_read);
+			have_written = true;
 			peer.pending_outbound_buffer_first_msg_offset += data_sent;
 			if peer.pending_outbound_buffer_first_msg_offset == next_buff.len() {
 				peer.pending_outbound_buffer_first_msg_offset = 0;
@@ -956,7 +999,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 			Some(peer_mutex) => {
 				let mut peer = peer_mutex.lock().unwrap();
 				peer.awaiting_write_event = false;
-				self.do_attempt_write_data(descriptor, &mut peer);
+				self.do_attempt_write_data(descriptor, &mut peer, false);
 			}
 		};
 		Ok(())
@@ -973,6 +1016,9 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 	/// If `Ok(true)` is returned, further read_events should not be triggered until a
 	/// [`send_data`] call on this descriptor has `resume_read` set (preventing DoS issues in the
 	/// send buffer).
+	///
+	/// In order to avoid processing too many messages at once per peer, `data` should be on the
+	/// order of 4KiB.
 	///
 	/// [`send_data`]: SocketDescriptor::send_data
 	/// [`process_events`]: PeerManager::process_events
@@ -1203,7 +1249,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 							}
 						}
 					}
-					pause_read = !peer.should_read();
+					pause_read = !self.peer_should_read(peer);
 
 					if let Some(message) = msg_to_handle {
 						match self.handle_message(&peer_mutex, peer_lock, message) {
@@ -1287,6 +1333,10 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 				peer_lock.sync_status = InitSyncTracker::ChannelsSyncing(0);
 			}
 			return Ok(None);
+		}
+
+		if let wire::Message::ChannelAnnouncement(ref _msg) = message {
+			peer_lock.received_channel_announce_since_backlogged = true;
 		}
 
 		mem::drop(peer_lock);
@@ -1415,12 +1465,14 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 						.map_err(|e| -> MessageHandlingError { e.into() })? {
 					should_forward = Some(wire::Message::ChannelAnnouncement(msg));
 				}
+				self.update_gossip_backlogged();
 			},
 			wire::Message::NodeAnnouncement(msg) => {
 				if self.message_handler.route_handler.handle_node_announcement(&msg)
 						.map_err(|e| -> MessageHandlingError { e.into() })? {
 					should_forward = Some(wire::Message::NodeAnnouncement(msg));
 				}
+				self.update_gossip_backlogged();
 			},
 			wire::Message::ChannelUpdate(msg) => {
 				self.message_handler.chan_handler.handle_channel_update(&their_node_id, &msg);
@@ -1428,6 +1480,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 						.map_err(|e| -> MessageHandlingError { e.into() })? {
 					should_forward = Some(wire::Message::ChannelUpdate(msg));
 				}
+				self.update_gossip_backlogged();
 			},
 			wire::Message::QueryShortChannelIds(msg) => {
 				self.message_handler.route_handler.handle_query_short_channel_ids(&their_node_id, msg)?;
@@ -1578,6 +1631,9 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 			}
 		}
 
+		self.update_gossip_backlogged();
+		let flush_read_disabled = self.gossip_processing_backlog_lifted.swap(false, Ordering::Relaxed);
+
 		let mut peers_to_disconnect = HashMap::new();
 		let mut events_generated = self.message_handler.chan_handler.get_and_clear_pending_msg_events();
 		events_generated.append(&mut self.message_handler.route_handler.get_and_clear_pending_msg_events());
@@ -1722,10 +1778,12 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 								self.forward_broadcast_msg(peers, &wire::Message::ChannelAnnouncement(msg), None),
 							_ => {},
 						}
-						match self.message_handler.route_handler.handle_channel_update(&update_msg) {
-							Ok(_) | Err(LightningError { action: msgs::ErrorAction::IgnoreDuplicateGossip, .. }) =>
-								self.forward_broadcast_msg(peers, &wire::Message::ChannelUpdate(update_msg), None),
-							_ => {},
+						if let Some(msg) = update_msg {
+							match self.message_handler.route_handler.handle_channel_update(&msg) {
+								Ok(_) | Err(LightningError { action: msgs::ErrorAction::IgnoreDuplicateGossip, .. }) =>
+									self.forward_broadcast_msg(peers, &wire::Message::ChannelUpdate(msg), None),
+								_ => {},
+							}
 						}
 					},
 					MessageSendEvent::BroadcastChannelUpdate { msg } => {
@@ -1733,6 +1791,14 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 						match self.message_handler.route_handler.handle_channel_update(&msg) {
 							Ok(_) | Err(LightningError { action: msgs::ErrorAction::IgnoreDuplicateGossip, .. }) =>
 								self.forward_broadcast_msg(peers, &wire::Message::ChannelUpdate(msg), None),
+							_ => {},
+						}
+					},
+					MessageSendEvent::BroadcastNodeAnnouncement { msg } => {
+						log_debug!(self.logger, "Handling BroadcastNodeAnnouncement event in peer_handler for node {}", msg.contents.node_id);
+						match self.message_handler.route_handler.handle_node_announcement(&msg) {
+							Ok(_) | Err(LightningError { action: msgs::ErrorAction::IgnoreDuplicateGossip, .. }) =>
+								self.forward_broadcast_msg(peers, &wire::Message::NodeAnnouncement(msg), None),
 							_ => {},
 						}
 					},
@@ -1797,7 +1863,9 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 			}
 
 			for (descriptor, peer_mutex) in peers.iter() {
-				self.do_attempt_write_data(&mut (*descriptor).clone(), &mut *peer_mutex.lock().unwrap());
+				let mut peer = peer_mutex.lock().unwrap();
+				if flush_read_disabled { peer.received_channel_announce_since_backlogged = false; }
+				self.do_attempt_write_data(&mut (*descriptor).clone(), &mut *peer, flush_read_disabled);
 			}
 		}
 		if !peers_to_disconnect.is_empty() {
@@ -1819,7 +1887,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 							self.enqueue_message(&mut *peer, &msg);
 							// This isn't guaranteed to work, but if there is enough free
 							// room in the send buffer, put the error message there...
-							self.do_attempt_write_data(&mut descriptor, &mut *peer);
+							self.do_attempt_write_data(&mut descriptor, &mut *peer, false);
 						} else {
 							log_trace!(self.logger, "Handling DisconnectPeer HandleError event in peer_handler for node {} with no message", log_pubkey!(node_id));
 						}
@@ -1927,8 +1995,13 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 		{
 			let peers_lock = self.peers.read().unwrap();
 
+			self.update_gossip_backlogged();
+			let flush_read_disabled = self.gossip_processing_backlog_lifted.swap(false, Ordering::Relaxed);
+
 			for (descriptor, peer_mutex) in peers_lock.iter() {
 				let mut peer = peer_mutex.lock().unwrap();
+				if flush_read_disabled { peer.received_channel_announce_since_backlogged = false; }
+
 				if !peer.channel_encryptor.is_ready_for_encryption() || peer.their_node_id.is_none() {
 					// The peer needs to complete its handshake before we can exchange messages. We
 					// give peers one timer tick to complete handshake, reusing
@@ -1942,34 +2015,37 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 					continue;
 				}
 
-				if peer.awaiting_pong_timer_tick_intervals == -1 {
-					// Magic value set in `maybe_send_extra_ping`.
-					peer.awaiting_pong_timer_tick_intervals = 1;
+				loop { // Used as a `goto` to skip writing a Ping message.
+					if peer.awaiting_pong_timer_tick_intervals == -1 {
+						// Magic value set in `maybe_send_extra_ping`.
+						peer.awaiting_pong_timer_tick_intervals = 1;
+						peer.received_message_since_timer_tick = false;
+						break;
+					}
+
+					if (peer.awaiting_pong_timer_tick_intervals > 0 && !peer.received_message_since_timer_tick)
+						|| peer.awaiting_pong_timer_tick_intervals as u64 >
+							MAX_BUFFER_DRAIN_TICK_INTERVALS_PER_PEER as u64 * peers_lock.len() as u64
+					{
+						descriptors_needing_disconnect.push(descriptor.clone());
+						break;
+					}
 					peer.received_message_since_timer_tick = false;
-					continue;
-				}
 
-				if (peer.awaiting_pong_timer_tick_intervals > 0 && !peer.received_message_since_timer_tick)
-					|| peer.awaiting_pong_timer_tick_intervals as u64 >
-						MAX_BUFFER_DRAIN_TICK_INTERVALS_PER_PEER as u64 * peers_lock.len() as u64
-				{
-					descriptors_needing_disconnect.push(descriptor.clone());
-					continue;
-				}
-				peer.received_message_since_timer_tick = false;
+					if peer.awaiting_pong_timer_tick_intervals > 0 {
+						peer.awaiting_pong_timer_tick_intervals += 1;
+						break;
+					}
 
-				if peer.awaiting_pong_timer_tick_intervals > 0 {
-					peer.awaiting_pong_timer_tick_intervals += 1;
-					continue;
+					peer.awaiting_pong_timer_tick_intervals = 1;
+					let ping = msgs::Ping {
+						ponglen: 0,
+						byteslen: 64,
+					};
+					self.enqueue_message(&mut *peer, &ping);
+					break;
 				}
-
-				peer.awaiting_pong_timer_tick_intervals = 1;
-				let ping = msgs::Ping {
-					ponglen: 0,
-					byteslen: 64,
-				};
-				self.enqueue_message(&mut *peer, &ping);
-				self.do_attempt_write_data(&mut (descriptor.clone()), &mut *peer);
+				self.do_attempt_write_data(&mut (descriptor.clone()), &mut *peer, flush_read_disabled);
 			}
 		}
 

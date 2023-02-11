@@ -140,7 +140,7 @@ fn test_funding_peer_disconnect() {
 	assert_eq!(events_7.len(), 1);
 	let (chan_announcement, as_update) = match events_7[0] {
 		MessageSendEvent::BroadcastChannelAnnouncement { ref msg, ref update_msg } => {
-			(msg.clone(), update_msg.clone())
+			(msg.clone(), update_msg.clone().unwrap())
 		},
 		_ => panic!("Unexpected event {:?}", events_7[0]),
 	};
@@ -153,7 +153,7 @@ fn test_funding_peer_disconnect() {
 	let bs_update = match events_8[0] {
 		MessageSendEvent::BroadcastChannelAnnouncement { ref msg, ref update_msg } => {
 			assert_eq!(*msg, chan_announcement);
-			update_msg.clone()
+			update_msg.clone().unwrap()
 		},
 		_ => panic!("Unexpected event {:?}", events_8[0]),
 	};

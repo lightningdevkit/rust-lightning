@@ -7,10 +7,7 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-//! The top-level routing/network map tracking logic lives here.
-//!
-//! You probably want to create a P2PGossipSync and use that as your RoutingMessageHandler and then
-//! interrogate it to get routes for your own payments.
+//! The router finds paths within a [`NetworkGraph`] for a payment.
 
 use bitcoin::secp256k1::PublicKey;
 use bitcoin::hashes::Hash;
@@ -2115,6 +2112,7 @@ fn build_route_from_hops_internal<L: Deref>(
 #[cfg(test)]
 mod tests {
 	use crate::routing::gossip::{NetworkGraph, P2PGossipSync, NodeId, EffectiveCapacity};
+	use crate::routing::utxo::UtxoResult;
 	use crate::routing::router::{get_route, build_route_from_hops_internal, add_random_cltv_offset, default_node_features,
 		PaymentParameters, Route, RouteHint, RouteHintHop, RouteHop, RoutingFees,
 		DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA, MAX_PATH_LENGTH_ESTIMATE};
@@ -3529,8 +3527,9 @@ mod tests {
 		.push_opcode(opcodes::all::OP_PUSHNUM_2)
 		.push_opcode(opcodes::all::OP_CHECKMULTISIG).into_script().to_v0_p2wsh();
 
-		*chain_monitor.utxo_ret.lock().unwrap() = Ok(TxOut { value: 15, script_pubkey: good_script.clone() });
-		gossip_sync.add_chain_access(Some(chain_monitor));
+		*chain_monitor.utxo_ret.lock().unwrap() =
+			UtxoResult::Sync(Ok(TxOut { value: 15, script_pubkey: good_script.clone() }));
+		gossip_sync.add_utxo_lookup(Some(chain_monitor));
 
 		add_channel(&gossip_sync, &secp_ctx, &privkeys[0], &privkeys[2], ChannelFeatures::from_le_bytes(id_to_feature_flags(3)), 333);
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[0], UnsignedChannelUpdate {
