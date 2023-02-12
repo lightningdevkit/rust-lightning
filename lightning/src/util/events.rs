@@ -630,13 +630,12 @@ pub enum Event {
 	/// handle the HTLC.
 	///
 	/// Note that this does *not* indicate that all paths for an MPP payment have failed, see
-	/// [`Event::PaymentFailed`] and [`all_paths_failed`].
+	/// [`Event::PaymentFailed`].
 	///
 	/// See [`ChannelManager::abandon_payment`] for giving up on this payment before its retries have
 	/// been exhausted.
 	///
 	/// [`ChannelManager::abandon_payment`]: crate::ln::channelmanager::ChannelManager::abandon_payment
-	/// [`all_paths_failed`]: Self::PaymentPathFailed::all_paths_failed
 	PaymentPathFailed {
 		/// The id returned by [`ChannelManager::send_payment`] and used with
 		/// [`ChannelManager::abandon_payment`].
@@ -660,10 +659,6 @@ pub enum Event {
 		///
 		/// [`NetworkGraph`]: crate::routing::gossip::NetworkGraph
 		network_update: Option<NetworkUpdate>,
-		/// For both single-path and multi-path payments, this is set if all paths of the payment have
-		/// failed. This will be set to false if (1) this is an MPP payment and (2) other parts of the
-		/// larger MPP payment were still in flight when this event was generated.
-		all_paths_failed: bool,
 		/// The payment path that failed.
 		path: Vec<RouteHop>,
 		/// The channel responsible for the failed payment path.
@@ -966,7 +961,7 @@ impl Writeable for Event {
 			},
 			&Event::PaymentPathFailed {
 				ref payment_id, ref payment_hash, ref payment_failed_permanently, ref network_update,
-				ref all_paths_failed, ref path, ref short_channel_id, ref retry,
+				ref path, ref short_channel_id, ref retry,
 				#[cfg(test)]
 				ref error_code,
 				#[cfg(test)]
@@ -981,7 +976,7 @@ impl Writeable for Event {
 					(0, payment_hash, required),
 					(1, network_update, option),
 					(2, payment_failed_permanently, required),
-					(3, all_paths_failed, required),
+					(3, false, required), // all_paths_failed in LDK versions prior to 0.0.114
 					(5, *path, vec_type),
 					(7, short_channel_id, option),
 					(9, retry, option),
@@ -1198,7 +1193,6 @@ impl MaybeReadable for Event {
 					let mut payment_hash = PaymentHash([0; 32]);
 					let mut payment_failed_permanently = false;
 					let mut network_update = None;
-					let mut all_paths_failed = Some(true);
 					let mut path: Option<Vec<RouteHop>> = Some(vec![]);
 					let mut short_channel_id = None;
 					let mut retry = None;
@@ -1207,7 +1201,6 @@ impl MaybeReadable for Event {
 						(0, payment_hash, required),
 						(1, network_update, ignorable),
 						(2, payment_failed_permanently, required),
-						(3, all_paths_failed, option),
 						(5, path, vec_type),
 						(7, short_channel_id, option),
 						(9, retry, option),
@@ -1218,7 +1211,6 @@ impl MaybeReadable for Event {
 						payment_hash,
 						payment_failed_permanently,
 						network_update,
-						all_paths_failed: all_paths_failed.unwrap(),
 						path: path.unwrap(),
 						short_channel_id,
 						retry,

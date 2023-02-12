@@ -2139,7 +2139,7 @@ fn retry_multi_path_single_failed_payment() {
 	assert_eq!(events.len(), 1);
 	match events[0] {
 		Event::PaymentPathFailed { payment_hash: ev_payment_hash, payment_failed_permanently: false,
-			network_update: None, all_paths_failed: false, short_channel_id: Some(expected_scid), .. } => {
+			network_update: None, short_channel_id: Some(expected_scid), .. } => {
 			assert_eq!(payment_hash, ev_payment_hash);
 			assert_eq!(expected_scid, route.paths[1][0].short_channel_id);
 		},
@@ -2212,7 +2212,7 @@ fn immediate_retry_on_failure() {
 	assert_eq!(events.len(), 1);
 	match events[0] {
 		Event::PaymentPathFailed { payment_hash: ev_payment_hash, payment_failed_permanently: false,
-		network_update: None, all_paths_failed: false, short_channel_id: Some(expected_scid), .. } => {
+		network_update: None, short_channel_id: Some(expected_scid), .. } => {
 			assert_eq!(payment_hash, ev_payment_hash);
 			assert_eq!(expected_scid, route.paths[1][0].short_channel_id);
 		},
@@ -2226,7 +2226,8 @@ fn immediate_retry_on_failure() {
 #[test]
 fn no_extra_retries_on_back_to_back_fail() {
 	// In a previous release, we had a race where we may exceed the payment retry count if we
-	// get two failures in a row with the second having `all_paths_failed` set.
+	// get two failures in a row with the second indicating that all paths had failed (this field,
+	// `all_paths_failed`, has since been removed).
 	// Generally, when we give up trying to retry a payment, we don't know for sure what the
 	// current state of the ChannelManager event queue is. Specifically, we cannot be sure that
 	// there are not multiple additional `PaymentPathFailed` or even `PaymentSent` events

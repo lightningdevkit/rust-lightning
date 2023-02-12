@@ -1,0 +1,11 @@
+## API Updates
+- `Event::PaymentPathFailed::all_paths_failed` has been removed, as we've dropped support for manual
+	payment retries.
+
+## Backwards Compatibility
+- If downgrading from 0.0.114 to a previous version, `Event::PaymentPathFailed::all_paths_failed`
+	will always be set to `false`. Users who wish to support downgrading and currently rely on the
+	field should should first migrate to always calling `ChannelManager::abandon_payment` and awaiting
+	`PaymentFailed` events before retrying (see the field docs for more info on this approach:
+	<https://docs.rs/lightning/0.0.113/lightning/util/events/enum.Event.html#variant.PaymentPathFailed.field.all_paths_failed>),
+	and then migrate to 0.0.114.
