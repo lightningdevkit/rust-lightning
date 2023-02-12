@@ -64,13 +64,8 @@ pub(crate) enum PendingOutboundPayment {
 		payment_hash: Option<PaymentHash>,
 		timer_ticks_without_htlcs: u8,
 	},
-	/// When a payer gives up trying to retry a payment, they inform us, letting us generate a
-	/// `PaymentFailed` event when all HTLCs have irrevocably failed. This avoids a number of race
-	/// conditions in MPP-aware payment retriers (1), where the possibility of multiple
-	/// `PaymentPathFailed` events with `all_paths_failed` can be pending at once, confusing a
-	/// downstream event handler as to when a payment has actually failed.
-	///
-	/// (1) <https://github.com/lightningdevkit/rust-lightning/issues/1164>
+	/// When we've decided to give up retrying a payment, we mark it as abandoned so we can eventually
+	/// generate a `PaymentFailed` event when all HTLCs have irrevocably failed.
 	Abandoned {
 		session_privs: HashSet<[u8; 32]>,
 		payment_hash: PaymentHash,
