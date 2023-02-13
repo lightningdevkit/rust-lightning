@@ -360,13 +360,13 @@ pub enum PaymentSendFailure {
 	/// [`Event::PaymentSent`]: crate::util::events::Event::PaymentSent
 	/// [`Event::PaymentFailed`]: crate::util::events::Event::PaymentFailed
 	DuplicatePayment,
-	/// Some paths which were attempted failed to send, though possibly not all. At least some
-	/// paths have irrevocably committed to the HTLC.
+	/// Some paths that were attempted failed to send, though some paths may have succeeded. At least
+	/// some paths have irrevocably committed to the HTLC.
 	///
-	/// The results here are ordered the same as the paths in the route object which was passed to
+	/// The results here are ordered the same as the paths in the route object that was passed to
 	/// send_payment.
 	///
-	/// Any entries which contain `Err(APIError::MonitorUpdateInprogress)` will send once a
+	/// Any entries that contain `Err(APIError::MonitorUpdateInprogress)` will send once a
 	/// [`MonitorEvent::Completed`] is provided for the next-hop channel with the latest update_id.
 	///
 	/// [`MonitorEvent::Completed`]: crate::chain::channelmonitor::MonitorEvent::Completed
