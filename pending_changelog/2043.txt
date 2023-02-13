@@ -1,8 +1,13 @@
 ## API Updates
+- `Event::PaymentPathFailed::network_update` has been replaced by a new `Failure` enum, which may
+	contain the `network_update` within it. See `Event::PaymentPathFailed::failure` and `Failure` docs
+	for more
 - `Event::PaymentPathFailed::all_paths_failed` has been removed, as we've dropped support for manual
 	payment retries.
 
 ## Backwards Compatibility
+- If downgrading from 0.0.114 to a previous version, `Event::PaymentPathFailed::network_update` will
+	always be `None`.
 - If downgrading from 0.0.114 to a previous version, `Event::PaymentPathFailed::all_paths_failed`
 	will always be set to `false`. Users who wish to support downgrading and currently rely on the
 	field should should first migrate to always calling `ChannelManager::abandon_payment` and awaiting

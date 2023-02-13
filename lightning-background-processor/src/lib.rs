@@ -33,7 +33,7 @@ use lightning::routing::gossip::{NetworkGraph, P2PGossipSync};
 use lightning::routing::utxo::UtxoLookup;
 use lightning::routing::router::Router;
 use lightning::routing::scoring::{Score, WriteableScore};
-use lightning::util::events::{Event, EventHandler, EventsProvider};
+use lightning::util::events::{Event, EventHandler, EventsProvider, PathFailure};
 use lightning::util::logger::Logger;
 use lightning::util::persist::Persister;
 use lightning_rapid_gossip_sync::RapidGossipSync;
@@ -215,10 +215,10 @@ where
 fn handle_network_graph_update<L: Deref>(
 	network_graph: &NetworkGraph<L>, event: &Event
 ) where L::Target: Logger {
-	if let Event::PaymentPathFailed { ref network_update, .. } = event {
-		if let Some(network_update) = network_update {
-			network_graph.handle_network_update(&network_update);
-		}
+	if let Event::PaymentPathFailed {
+		failure: PathFailure::OnPath { network_update: Some(ref upd) }, .. } = event
+	{
+		network_graph.handle_network_update(upd);
 	}
 }
 
@@ -673,7 +673,7 @@ mod tests {
 	use lightning::routing::router::{DefaultRouter, RouteHop};
 	use lightning::routing::scoring::{ChannelUsage, Score};
 	use lightning::util::config::UserConfig;
-	use lightning::util::events::{Event, MessageSendEventsProvider, MessageSendEvent};
+	use lightning::util::events::{Event, PathFailure, MessageSendEventsProvider, MessageSendEvent};
 	use lightning::util::ser::Writeable;
 	use lightning::util::test_utils;
 	use lightning::util::persist::KVStorePersister;
@@ -1365,7 +1365,7 @@ mod tests {
 			payment_id: None,
 			payment_hash: PaymentHash([42; 32]),
 			payment_failed_permanently: false,
-			network_update: None,
+			failure: PathFailure::OnPath { network_update: None },
 			path: path.clone(),
 			short_channel_id: Some(scored_scid),
 			retry: None,
@@ -1385,7 +1385,7 @@ mod tests {
 			payment_id: None,
 			payment_hash: PaymentHash([42; 32]),
 			payment_failed_permanently: true,
-			network_update: None,
+			failure: PathFailure::OnPath { network_update: None },
 			path: path.clone(),
 			short_channel_id: None,
 			retry: None,
