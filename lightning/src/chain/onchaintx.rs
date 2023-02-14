@@ -215,7 +215,6 @@ type PackageID = [u8; 32];
 
 /// OnchainTxHandler receives claiming requests, aggregates them if it's sound, broadcast and
 /// do RBF bumping if possible.
-#[derive(PartialEq)]
 pub struct OnchainTxHandler<ChannelSigner: WriteableEcdsaChannelSigner> {
 	destination_script: Script,
 	holder_commitment: HolderCommitmentTransaction,
@@ -263,6 +262,22 @@ pub struct OnchainTxHandler<ChannelSigner: WriteableEcdsaChannelSigner> {
 	onchain_events_awaiting_threshold_conf: Vec<OnchainEventEntry>,
 
 	pub(super) secp_ctx: Secp256k1<secp256k1::All>,
+}
+
+impl<ChannelSigner: WriteableEcdsaChannelSigner> PartialEq for OnchainTxHandler<ChannelSigner> {
+	fn eq(&self, other: &Self) -> bool {
+		// `signer`, `secp_ctx`, and `pending_claim_events` are excluded on purpose.
+		self.destination_script == other.destination_script &&
+			self.holder_commitment == other.holder_commitment &&
+			self.holder_htlc_sigs == other.holder_htlc_sigs &&
+			self.prev_holder_commitment == other.prev_holder_commitment &&
+			self.prev_holder_htlc_sigs == other.prev_holder_htlc_sigs &&
+			self.channel_transaction_parameters == other.channel_transaction_parameters &&
+			self.pending_claim_requests == other.pending_claim_requests &&
+			self.claimable_outpoints == other.claimable_outpoints &&
+			self.locktimed_packages == other.locktimed_packages &&
+			self.onchain_events_awaiting_threshold_conf == other.onchain_events_awaiting_threshold_conf
+	}
 }
 
 const SERIALIZATION_VERSION: u8 = 1;
