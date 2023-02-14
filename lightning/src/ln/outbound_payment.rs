@@ -1268,8 +1268,7 @@ impl OutboundPayments {
 		(payment, onion_session_privs)
 	}
 
-	#[allow(unused)]
-	fn add_new_awaiting_invoice(
+	pub(super) fn add_new_awaiting_invoice(
 		&self, payment_id: PaymentId, absolute_expiry: Duration, retry_strategy: Retry,
 		max_total_routing_fee_msat: Option<u64>
 	) -> Result<(), ()> {

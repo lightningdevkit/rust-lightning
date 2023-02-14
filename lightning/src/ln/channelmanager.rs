@@ -55,6 +55,9 @@ use crate::ln::msgs::{ChannelMessageHandler, DecodeError, LightningError};
 use crate::ln::outbound_payment;
 use crate::ln::outbound_payment::{OutboundPayments, PaymentAttempts, PendingOutboundPayment, SendAlongPathArgs};
 use crate::ln::wire::Encode;
+use crate::offers::offer::{DerivedMetadata, OfferBuilder};
+use crate::offers::parse::Bolt12SemanticError;
+use crate::offers::refund::RefundBuilder;
 use crate::sign::{EntropySource, KeysManager, NodeSigner, Recipient, SignerProvider, WriteableEcdsaChannelSigner};
 use crate::util::config::{UserConfig, ChannelConfig, ChannelConfigUpdate};
 use crate::util::wakers::{Future, Notifier};
@@ -7121,6 +7124,59 @@ where
 			}
 			self.finish_close_channel(failure);
 		}
+	}
+
+	/// Creates an [`OfferBuilder`] such that the [`Offer`] it builds is recognized by the
+	/// [`ChannelManager`] when handling [`InvoiceRequest`] messages for the offer. The offer will
+	/// not have an expiration unless otherwise set on the builder.
+	///
+	/// [`Offer`]: crate::offers::offer::Offer
+	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
+	pub fn create_offer_builder(
+		&self, description: String
+	) -> OfferBuilder<DerivedMetadata, secp256k1::All> {
+		let node_id = self.get_our_node_id();
+		let expanded_key = &self.inbound_payment_key;
+		let entropy = &*self.entropy_source;
+		let secp_ctx = &self.secp_ctx;
+
+		// TODO: Set blinded paths
+		OfferBuilder::deriving_signing_pubkey(description, node_id, expanded_key, entropy, secp_ctx)
+			.chain_hash(self.chain_hash)
+	}
+
+	/// Creates a [`RefundBuilder`] such that the [`Refund`] it builds is recognized by the
+	/// [`ChannelManager`] when handling [`Bolt12Invoice`] messages for the refund. The builder will
+	/// have the provided expiration set. Any changes to the expiration on the returned builder will
+	/// not be honored by [`ChannelManager`].
+	///
+	/// The provided `payment_id` is used to ensure that only one invoice is paid for the refund.
+	///
+	/// [`Refund`]: crate::offers::refund::Refund
+	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
+	pub fn create_refund_builder(
+		&self, description: String, amount_msats: u64, absolute_expiry: Duration,
+		payment_id: PaymentId, retry_strategy: Retry, max_total_routing_fee_msat: Option<u64>
+	) -> Result<RefundBuilder<secp256k1::All>, Bolt12SemanticError> {
+		let node_id = self.get_our_node_id();
+		let expanded_key = &self.inbound_payment_key;
+		let entropy = &*self.entropy_source;
+		let secp_ctx = &self.secp_ctx;
+
+		// TODO: Set blinded paths
+		let builder = RefundBuilder::deriving_payer_id(
+			description, node_id, expanded_key, entropy, secp_ctx, amount_msats, payment_id
+		)?
+			.chain_hash(self.chain_hash)
+			.absolute_expiry(absolute_expiry);
+
+		self.pending_outbound_payments
+			.add_new_awaiting_invoice(
+				payment_id, absolute_expiry, retry_strategy, max_total_routing_fee_msat,
+			)
+			.map_err(|_| Bolt12SemanticError::DuplicatePaymentId)?;
+
+		Ok(builder)
 	}
 
 	/// Gets a payment secret and payment hash for use in an invoice given to a third party wishing
