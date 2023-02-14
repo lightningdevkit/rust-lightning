@@ -1267,15 +1267,30 @@ where L::Target: Logger {
 					// around again with a higher amount.
 					if !contributes_sufficient_value || exceeds_max_path_length ||
 						exceeds_cltv_delta_limit || payment_failed_on_this_channel {
-						let our_node_id = NodeId::from_pubkey(&our_node_pubkey);
-						let target = first_hop_targets.get(&NodeId::from_pubkey(&our_node_pubkey)).unwrap(); 
+						let empty_vec: Vec<&ChannelDetails> = Vec::new();
+						let target = match first_hop_targets.get(&NodeId::from_pubkey(&our_node_pubkey)) {
+					  		Some(value) => value,
+    							None => {
+        							&empty_vec
+    						 	}
+						};
 						for channel_details in target {
 							if let Some(short_channel_id_target) = channel_details.short_channel_id {
-								if short_channel_id == short_channel_id_target {
-        							log_trace!(logger, "first Hop of node id {our_node_id} is excluded due to a failed requirement.");
+								if short_channel_id == short_channel_id_target { // short_channel_id is hop id of candidate.
+									if !contributes_sufficient_value {
+        									log_trace!(logger, "First Hop {short_channel_id} is excluded due to insufficient balance");
+    									} else if exceeds_max_path_length {
+    										log_trace!(logger, "First Hop {short_channel_id} is excluded due to candidate hop excluded max path length");
+    									} else if exceeds_cltv_delta_limit {
+    										log_trace!(logger, "First Hop {short_channel_id} is excluded beacause it exceed the maximum total cltv expiry limit");
+    									} else if payment_failed_on_this_channel {
+    										log_trace!(logger, "First Hop {short_channel_id} is excluded beacause it was failed previously");
+    									}
+    									
     								}
 							}
 						}
+						// Path isn't useful, ignore it and move on.
 					} else if may_overpay_to_meet_path_minimum_msat {
 						hit_minimum_limit = true;
 					} else if over_path_minimum_msat {
