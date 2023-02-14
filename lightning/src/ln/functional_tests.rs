@@ -2747,7 +2747,7 @@ fn test_htlc_on_chain_success() {
 		},
 		_ => panic!()
 	}
-	let events = nodes[1].node.get_and_clear_pending_msg_events();
+	let mut events = nodes[1].node.get_and_clear_pending_msg_events();
 	{
 		let mut added_monitors = nodes[1].chain_monitor.added_monitors.lock().unwrap();
 		assert_eq!(added_monitors.len(), 2);
@@ -2757,8 +2757,8 @@ fn test_htlc_on_chain_success() {
 	}
 	assert_eq!(events.len(), 3);
 
-	let (nodes_2_event, events) = remove_first_msg_event_to_node(&nodes[2].node.get_our_node_id(), &events);
-	let (nodes_0_event, events) = remove_first_msg_event_to_node(&nodes[0].node.get_our_node_id(), &events);
+	let nodes_2_event = remove_first_msg_event_to_node(&nodes[2].node.get_our_node_id(), &mut events);
+	let nodes_0_event = remove_first_msg_event_to_node(&nodes[0].node.get_our_node_id(), &mut events);
 
 	match nodes_2_event {
 		MessageSendEvent::HandleError { action: ErrorAction::SendErrorMessage { .. }, node_id: _ } => {},
@@ -3196,14 +3196,15 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(deliver_bs_raa: bool, use
 			_ => panic!("Unexpected event"),
 		}
 	}
+
 	nodes[1].node.process_pending_htlc_forwards();
 	check_added_monitors!(nodes[1], 1);
 
 	let mut events = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), if deliver_bs_raa { 4 } else { 3 });
 
-	let events = if deliver_bs_raa {
-		let (nodes_2_event, events) = remove_first_msg_event_to_node(&nodes[2].node.get_our_node_id(), &events);
+	if deliver_bs_raa {
+		let nodes_2_event = remove_first_msg_event_to_node(&nodes[2].node.get_our_node_id(), &mut events);
 		match nodes_2_event {
 			MessageSendEvent::UpdateHTLCs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fail_htlcs, ref update_fulfill_htlcs, ref update_fail_malformed_htlcs, .. } } => {
 				assert_eq!(nodes[2].node.get_our_node_id(), *node_id);
@@ -3214,10 +3215,9 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(deliver_bs_raa: bool, use
 			},
 			_ => panic!("Unexpected event"),
 		}
-		events
-	} else { events };
+	}
 
-	let (nodes_2_event, events) = remove_first_msg_event_to_node(&nodes[2].node.get_our_node_id(), &events);
+	let nodes_2_event = remove_first_msg_event_to_node(&nodes[2].node.get_our_node_id(), &mut events);
 	match nodes_2_event {
 		MessageSendEvent::HandleError { action: ErrorAction::SendErrorMessage { msg: msgs::ErrorMessage { channel_id, ref data } }, node_id: _ } => {
 			assert_eq!(channel_id, chan_2.2);
@@ -3226,7 +3226,7 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(deliver_bs_raa: bool, use
 		_ => panic!("Unexpected event"),
 	}
 
-	let (nodes_0_event, events) = remove_first_msg_event_to_node(&nodes[0].node.get_our_node_id(), &events);
+	let nodes_0_event = remove_first_msg_event_to_node(&nodes[0].node.get_our_node_id(), &mut events);
 	match nodes_0_event {
 		MessageSendEvent::UpdateHTLCs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fail_htlcs, ref update_fulfill_htlcs, ref update_fail_malformed_htlcs, ref commitment_signed, .. } } => {
 			assert!(update_add_htlcs.is_empty());
@@ -3839,9 +3839,10 @@ fn do_test_drop_messages_peer_disconnect(messages_delivered: u8, simulate_broken
 	if messages_delivered == 1 || messages_delivered == 2 {
 		expect_payment_path_successful!(nodes[0]);
 	}
-
-	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
-	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+	if messages_delivered <= 5 {
+		nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
+		nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+	}
 	reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
 
 	if messages_delivered > 2 {
@@ -4641,10 +4642,10 @@ fn test_onchain_to_onchain_claim() {
 		_ => panic!("Unexpected event"),
 	}
 	check_added_monitors!(nodes[1], 1);
-	let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
+	let mut msg_events = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(msg_events.len(), 3);
-	let (nodes_2_event, msg_events) = remove_first_msg_event_to_node(&nodes[2].node.get_our_node_id(), &msg_events);
-	let (nodes_0_event, msg_events) = remove_first_msg_event_to_node(&nodes[0].node.get_our_node_id(), &msg_events);
+	let nodes_2_event = remove_first_msg_event_to_node(&nodes[2].node.get_our_node_id(), &mut msg_events);
+	let nodes_0_event = remove_first_msg_event_to_node(&nodes[0].node.get_our_node_id(), &mut msg_events);
 
 	match nodes_2_event {
 		MessageSendEvent::HandleError { action: ErrorAction::SendErrorMessage { .. }, node_id: _ } => {},
@@ -9210,8 +9211,6 @@ fn test_keysend_payments_to_private_node() {
 
 	let payer_pubkey = nodes[0].node.get_our_node_id();
 	let payee_pubkey = nodes[1].node.get_our_node_id();
-	nodes[0].node.peer_connected(&payee_pubkey, &msgs::Init { features: nodes[1].node.init_features(), remote_network_address: None }).unwrap();
-	nodes[1].node.peer_connected(&payer_pubkey, &msgs::Init { features: nodes[0].node.init_features(), remote_network_address: None }).unwrap();
 
 	let _chan = create_chan_between_nodes(&nodes[0], &nodes[1]);
 	let route_params = RouteParameters {
@@ -9285,7 +9284,7 @@ fn test_double_partial_claim() {
 
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 2);
-	let (node_1_msgs, _events) = remove_first_msg_event_to_node(&nodes[1].node.get_our_node_id(), &events);
+	let node_1_msgs = remove_first_msg_event_to_node(&nodes[1].node.get_our_node_id(), &mut events);
 	pass_along_path(&nodes[0], &[&nodes[1], &nodes[3]], 15_000_000, payment_hash, Some(payment_secret), node_1_msgs, false, None);
 
 	// At this point nodes[3] has received one half of the payment, and the user goes to handle
