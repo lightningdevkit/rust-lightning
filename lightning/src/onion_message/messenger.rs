@@ -216,8 +216,8 @@ impl<ES: Deref, NS: Deref, L: Deref, CMH: Deref> OnionMessenger<ES, NS, L, CMH>
 				return Err(SendError::TooFewBlindedHops);
 			}
 		}
-		let OnionMessageContents::Custom(ref msg) = message;
-		if msg.tlv_type() < 64 { return Err(SendError::InvalidMessage) }
+
+		if message.tlv_type() < 64 { return Err(SendError::InvalidMessage) }
 
 		// If we are sending straight to a blinded path and we are the introduction node, we need to
 		// advance the blinded path by 1 hop so the second hop is the new introduction node.
@@ -342,6 +342,7 @@ impl<ES: Deref, NS: Deref, L: Deref, CMH: Deref> OnionMessageHandler for OnionMe
 					"Received an onion message with path_id {:02x?} and {} reply_path",
 						path_id, if reply_path.is_some() { "a" } else { "no" });
 				match message {
+					OnionMessageContents::Offers(_msg) => todo!(),
 					OnionMessageContents::Custom(msg) => self.custom_handler.handle_custom_message(msg),
 				}
 			},

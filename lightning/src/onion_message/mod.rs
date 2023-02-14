@@ -21,6 +21,7 @@
 //! [blinded paths]: crate::blinded_path::BlindedPath
 
 mod messenger;
+mod offers;
 mod packet;
 #[cfg(test)]
 mod functional_tests;
