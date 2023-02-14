@@ -153,11 +153,11 @@ fn mpp_retry() {
 	assert_eq!(events.len(), 2);
 
 	// Pass half of the payment along the success path.
-	let (success_path_msgs, mut events) = remove_first_msg_event_to_node(&nodes[1].node.get_our_node_id(), &events);
+	let success_path_msgs = remove_first_msg_event_to_node(&nodes[1].node.get_our_node_id(), &mut events);
 	pass_along_path(&nodes[0], &[&nodes[1], &nodes[3]], 2_000_000, payment_hash, Some(payment_secret), success_path_msgs, false, None);
 
 	// Add the HTLC along the first hop.
-	let (fail_path_msgs_1, _events) = remove_first_msg_event_to_node(&nodes[2].node.get_our_node_id(), &events);
+	let fail_path_msgs_1 = remove_first_msg_event_to_node(&nodes[2].node.get_our_node_id(), &mut events);
 	let (update_add, commitment_signed) = match fail_path_msgs_1 {
 		MessageSendEvent::UpdateHTLCs { node_id: _, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref update_fee, ref commitment_signed } } => {
 			assert_eq!(update_add_htlcs.len(), 1);
@@ -237,7 +237,7 @@ fn do_mpp_receive_timeout(send_partial_mpp: bool) {
 	assert_eq!(events.len(), 2);
 
 	// Pass half of the payment along the first path.
-	let (node_1_msgs, mut events) = remove_first_msg_event_to_node(&nodes[1].node.get_our_node_id(), &events);
+	let node_1_msgs = remove_first_msg_event_to_node(&nodes[1].node.get_our_node_id(), &mut events);
 	pass_along_path(&nodes[0], &[&nodes[1], &nodes[3]], 200_000, payment_hash, Some(payment_secret), node_1_msgs, false, None);
 
 	if send_partial_mpp {
@@ -265,7 +265,7 @@ fn do_mpp_receive_timeout(send_partial_mpp: bool) {
 		expect_payment_failed_conditions(&nodes[0], payment_hash, false, PaymentFailedConditions::new().mpp_parts_remain().expected_htlc_error_data(23, &[][..]));
 	} else {
 		// Pass half of the payment along the second path.
-		let (node_2_msgs, _events) = remove_first_msg_event_to_node(&nodes[2].node.get_our_node_id(), &events);
+		let node_2_msgs = remove_first_msg_event_to_node(&nodes[2].node.get_our_node_id(), &mut events);
 		pass_along_path(&nodes[0], &[&nodes[2], &nodes[3]], 200_000, payment_hash, Some(payment_secret), node_2_msgs, true, None);
 
 		// Even after MPP_TIMEOUT_TICKS we should not timeout the MPP if we have all the parts
