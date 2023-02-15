@@ -462,7 +462,10 @@ pub enum BumpTransactionEvent {
 	/// [`EcdsaChannelSigner::sign_holder_htlc_transaction`]: crate::chain::keysinterface::EcdsaChannelSigner::sign_holder_htlc_transaction
 	/// [`HTLCDescriptor::tx_input_witness`]: HTLCDescriptor::tx_input_witness
 	HTLCResolution {
+		/// The target feerate that the resulting HTLC transaction must meet.
 		target_feerate_sat_per_1000_weight: u32,
+		/// The set of pending HTLCs on the confirmed commitment that need to be claimed, preferably
+		/// by the same transaction.
 		htlc_descriptors: Vec<HTLCDescriptor>,
 	},
 }
