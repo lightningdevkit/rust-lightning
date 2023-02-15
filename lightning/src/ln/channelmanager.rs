@@ -2691,7 +2691,7 @@ where
 					(chan, funding_msg)
 				},
 				Err(_) => { return Err(APIError::ChannelUnavailable {
-					err: "Error deriving keys or signing initial commitment transactions - either our RNG or our counterparty's RNG is broken or the Signer refused to sign".to_owned()
+					err: "Signer refused to sign the initial commitment transaction".to_owned()
 				}) },
 			}
 		};
