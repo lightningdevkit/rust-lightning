@@ -330,6 +330,7 @@ impl chaininterface::BroadcasterInterface for TestBroadcaster {
 pub struct TestChannelMessageHandler {
 	pub pending_events: Mutex<Vec<events::MessageSendEvent>>,
 	expected_recv_msgs: Mutex<Option<Vec<wire::Message<()>>>>,
+	connected_peers: Mutex<HashSet<PublicKey>>,
 }
 
 impl TestChannelMessageHandler {
@@ -337,6 +338,7 @@ impl TestChannelMessageHandler {
 		TestChannelMessageHandler {
 			pending_events: Mutex::new(Vec::new()),
 			expected_recv_msgs: Mutex::new(None),
+			connected_peers: Mutex::new(HashSet::new()),
 		}
 	}
 
@@ -421,8 +423,11 @@ impl msgs::ChannelMessageHandler for TestChannelMessageHandler {
 	fn handle_channel_reestablish(&self, _their_node_id: &PublicKey, msg: &msgs::ChannelReestablish) {
 		self.received_msg(wire::Message::ChannelReestablish(msg.clone()));
 	}
-	fn peer_disconnected(&self, _their_node_id: &PublicKey, _no_connection_possible: bool) {}
-	fn peer_connected(&self, _their_node_id: &PublicKey, _msg: &msgs::Init) -> Result<(), ()> {
+	fn peer_disconnected(&self, their_node_id: &PublicKey, _no_connection_possible: bool) {
+		assert!(self.connected_peers.lock().unwrap().remove(their_node_id));
+	}
+	fn peer_connected(&self, their_node_id: &PublicKey, _msg: &msgs::Init) -> Result<(), ()> {
+		assert!(self.connected_peers.lock().unwrap().insert(their_node_id.clone()));
 		// Don't bother with `received_msg` for Init as its auto-generated and we don't want to
 		// bother re-generating the expected Init message in all tests.
 		Ok(())

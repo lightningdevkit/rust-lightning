@@ -2171,6 +2171,7 @@ fn is_gossip_msg(type_id: u16) -> bool {
 #[cfg(test)]
 mod tests {
 	use crate::chain::keysinterface::{NodeSigner, Recipient};
+	use crate::ln::peer_channel_encryptor::PeerChannelEncryptor;
 	use crate::ln::peer_handler::{PeerManager, MessageHandler, SocketDescriptor, IgnoringMessageHandler, filter_addresses};
 	use crate::ln::{msgs, wire};
 	use crate::ln::msgs::NetAddress;
@@ -2279,19 +2280,15 @@ mod tests {
 		// Simple test which builds a network of PeerManager, connects and brings them to NoiseState::Finished and
 		// push a DisconnectPeer event to remove the node flagged by id
 		let cfgs = create_peermgr_cfgs(2);
-		let chan_handler = test_utils::TestChannelMessageHandler::new();
-		let mut peers = create_network(2, &cfgs);
+		let peers = create_network(2, &cfgs);
 		establish_connection(&peers[0], &peers[1]);
 		assert_eq!(peers[0].peers.read().unwrap().len(), 1);
 
 		let their_id = peers[1].node_signer.get_node_id(Recipient::Node).unwrap();
-
-		chan_handler.pending_events.lock().unwrap().push(events::MessageSendEvent::HandleError {
+		cfgs[0].chan_handler.pending_events.lock().unwrap().push(events::MessageSendEvent::HandleError {
 			node_id: their_id,
 			action: msgs::ErrorAction::DisconnectPeer { msg: None },
 		});
-		assert_eq!(chan_handler.pending_events.lock().unwrap().len(), 1);
-		peers[0].message_handler.chan_handler = &chan_handler;
 
 		peers[0].process_events();
 		assert_eq!(peers[0].peers.read().unwrap().len(), 0);
@@ -2323,6 +2320,35 @@ mod tests {
 
 		let a_data = fd_a.outbound_data.lock().unwrap().split_off(0);
 		assert_eq!(peers[1].read_event(&mut fd_b, &a_data).unwrap(), false);
+	}
+
+	#[test]
+	fn test_non_init_first_msg() {
+		// Simple test of the first message received over a connection being something other than
+		// Init. This results in an immediate disconnection, which previously included a spurious
+		// peer_disconnected event handed to event handlers (which would panic in
+		// `TestChannelMessageHandler` here).
+		let cfgs = create_peermgr_cfgs(2);
+		let peers = create_network(2, &cfgs);
+
+		let mut fd_dup = FileDescriptor { fd: 3, outbound_data: Arc::new(Mutex::new(Vec::new())) };
+		let addr_dup = NetAddress::IPv4{addr: [127, 0, 0, 1], port: 1003};
+		let id_a = cfgs[0].node_signer.get_node_id(Recipient::Node).unwrap();
+		peers[0].new_inbound_connection(fd_dup.clone(), Some(addr_dup.clone())).unwrap();
+
+		let mut dup_encryptor = PeerChannelEncryptor::new_outbound(id_a, SecretKey::from_slice(&[42; 32]).unwrap());
+		let initial_data = dup_encryptor.get_act_one(&peers[1].secp_ctx);
+		assert_eq!(peers[0].read_event(&mut fd_dup, &initial_data).unwrap(), false);
+		peers[0].process_events();
+
+		let a_data = fd_dup.outbound_data.lock().unwrap().split_off(0);
+		let (act_three, _) =
+			dup_encryptor.process_act_two(&a_data[..], &&cfgs[1].node_signer).unwrap();
+		assert_eq!(peers[0].read_event(&mut fd_dup, &act_three).unwrap(), false);
+
+		let not_init_msg = msgs::Ping { ponglen: 4, byteslen: 0 };
+		let msg_bytes = dup_encryptor.encrypt_message(&not_init_msg);
+		assert!(peers[0].read_event(&mut fd_dup, &msg_bytes).is_err());
 	}
 
 	#[test]
