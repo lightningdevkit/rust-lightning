@@ -444,6 +444,7 @@ impl Peer {
 	/// point and we shouldn't send it yet to avoid sending duplicate updates. If we've already
 	/// sent the old versions, we should send the update, and so return true here.
 	fn should_forward_channel_announcement(&self, channel_id: u64) -> bool {
+		if !self.handshake_complete() { return false; }
 		if self.their_features.as_ref().unwrap().supports_gossip_queries() &&
 			!self.sent_gossip_timestamp_filter {
 				return false;
@@ -457,6 +458,7 @@ impl Peer {
 
 	/// Similar to the above, but for node announcements indexed by node_id.
 	fn should_forward_node_announcement(&self, node_id: NodeId) -> bool {
+		if !self.handshake_complete() { return false; }
 		if self.their_features.as_ref().unwrap().supports_gossip_queries() &&
 			!self.sent_gossip_timestamp_filter {
 				return false;
@@ -483,19 +485,20 @@ impl Peer {
 	fn should_buffer_gossip_backfill(&self) -> bool {
 		self.pending_outbound_buffer.is_empty() && self.gossip_broadcast_buffer.is_empty()
 			&& self.msgs_sent_since_pong < BUFFER_DRAIN_MSGS_PER_TICK
+			&& self.handshake_complete()
 	}
 
 	/// Determines if we should push an onion message onto a peer's outbound buffer. This is checked
 	/// every time the peer's buffer may have been drained.
 	fn should_buffer_onion_message(&self) -> bool {
-		self.pending_outbound_buffer.is_empty()
+		self.pending_outbound_buffer.is_empty() && self.handshake_complete()
 			&& self.msgs_sent_since_pong < BUFFER_DRAIN_MSGS_PER_TICK
 	}
 
 	/// Determines if we should push additional gossip broadcast messages onto a peer's outbound
 	/// buffer. This is checked every time the peer's buffer may have been drained.
 	fn should_buffer_gossip_broadcast(&self) -> bool {
-		self.pending_outbound_buffer.is_empty()
+		self.pending_outbound_buffer.is_empty() && self.handshake_complete()
 			&& self.msgs_sent_since_pong < BUFFER_DRAIN_MSGS_PER_TICK
 	}
 
@@ -777,8 +780,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 		let peers = self.peers.read().unwrap();
 		peers.values().filter_map(|peer_mutex| {
 			let p = peer_mutex.lock().unwrap();
-			if !p.channel_encryptor.is_ready_for_encryption() || p.their_features.is_none() ||
-				p.their_node_id.is_none() {
+			if !p.handshake_complete() {
 				return None;
 			}
 			Some((p.their_node_id.unwrap().0, p.their_net_address.clone()))
@@ -1537,10 +1539,12 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 
 				for (_, peer_mutex) in peers.iter() {
 					let mut peer = peer_mutex.lock().unwrap();
-					if !peer.channel_encryptor.is_ready_for_encryption() || peer.their_features.is_none() ||
+					if !peer.handshake_complete() ||
 							!peer.should_forward_channel_announcement(msg.contents.short_channel_id) {
 						continue
 					}
+					debug_assert!(peer.their_node_id.is_some());
+					debug_assert!(peer.channel_encryptor.is_ready_for_encryption());
 					if peer.buffer_full_drop_gossip_broadcast() {
 						log_gossip!(self.logger, "Skipping broadcast message to {:?} as its outbound buffer is full", peer.their_node_id);
 						continue;
@@ -1562,10 +1566,12 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 
 				for (_, peer_mutex) in peers.iter() {
 					let mut peer = peer_mutex.lock().unwrap();
-					if !peer.channel_encryptor.is_ready_for_encryption() || peer.their_features.is_none() ||
+					if !peer.handshake_complete() ||
 							!peer.should_forward_node_announcement(msg.contents.node_id) {
 						continue
 					}
+					debug_assert!(peer.their_node_id.is_some());
+					debug_assert!(peer.channel_encryptor.is_ready_for_encryption());
 					if peer.buffer_full_drop_gossip_broadcast() {
 						log_gossip!(self.logger, "Skipping broadcast message to {:?} as its outbound buffer is full", peer.their_node_id);
 						continue;
@@ -1587,10 +1593,12 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 
 				for (_, peer_mutex) in peers.iter() {
 					let mut peer = peer_mutex.lock().unwrap();
-					if !peer.channel_encryptor.is_ready_for_encryption() || peer.their_features.is_none() ||
+					if !peer.handshake_complete() ||
 							!peer.should_forward_channel_announcement(msg.contents.short_channel_id)  {
 						continue
 					}
+					debug_assert!(peer.their_node_id.is_some());
+					debug_assert!(peer.channel_encryptor.is_ready_for_encryption());
 					if peer.buffer_full_drop_gossip_broadcast() {
 						log_gossip!(self.logger, "Skipping broadcast message to {:?} as its outbound buffer is full", peer.their_node_id);
 						continue;
@@ -1670,7 +1678,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 							Some(descriptor) => match peers.get(&descriptor) {
 								Some(peer_mutex) => {
 									let peer_lock = peer_mutex.lock().unwrap();
-									if peer_lock.their_features.is_none() {
+									if !peer_lock.handshake_complete() {
 										continue;
 									}
 									peer_lock
@@ -2024,7 +2032,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 				let mut peer = peer_mutex.lock().unwrap();
 				if flush_read_disabled { peer.received_channel_announce_since_backlogged = false; }
 
-				if !peer.channel_encryptor.is_ready_for_encryption() || peer.their_node_id.is_none() {
+				if !peer.handshake_complete() {
 					// The peer needs to complete its handshake before we can exchange messages. We
 					// give peers one timer tick to complete handshake, reusing
 					// `awaiting_pong_timer_tick_intervals` to track number of timer ticks taken
@@ -2036,6 +2044,8 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 					}
 					continue;
 				}
+				debug_assert!(peer.channel_encryptor.is_ready_for_encryption());
+				debug_assert!(peer.their_node_id.is_some());
 
 				loop { // Used as a `goto` to skip writing a Ping message.
 					if peer.awaiting_pong_timer_tick_intervals == -1 {
