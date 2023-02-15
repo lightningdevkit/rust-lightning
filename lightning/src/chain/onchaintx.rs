@@ -72,18 +72,23 @@ impl OnchainEventEntry {
 	}
 }
 
-/// Upon discovering of some classes of onchain tx by ChannelMonitor, we may have to take actions on it
-/// once they mature to enough confirmations (ANTI_REORG_DELAY)
+/// Events for claims the [`OnchainTxHandler`] has generated. Once the events are considered safe
+/// from a chain reorg, the [`OnchainTxHandler`] will act accordingly.
 #[derive(PartialEq, Eq)]
 enum OnchainEvent {
-	/// Outpoint under claim process by our own tx, once this one get enough confirmations, we remove it from
-	/// bump-txn candidate buffer.
+	/// A pending request has been claimed by a transaction spending the exact same set of outpoints
+	/// as the request. This claim can either be ours or from the counterparty. Once the claiming
+	/// transaction has met [`ANTI_REORG_DELAY`] confirmations, we consider it final and remove the
+	/// pending request.
 	Claim {
 		package_id: PackageID,
 	},
-	/// Claim tx aggregate multiple claimable outpoints. One of the outpoint may be claimed by a counterparty party tx.
-	/// In this case, we need to drop the outpoint and regenerate a new claim tx. By safety, we keep tracking
-	/// the outpoint to be sure to resurect it back to the claim tx if reorgs happen.
+	/// The counterparty has claimed an outpoint from one of our pending requests through a
+	/// different transaction than ours. If our transaction was attempting to claim multiple
+	/// outputs, we need to drop the outpoint claimed by the counterparty and regenerate a new claim
+	/// transaction for ourselves. We keep tracking, separately, the outpoint claimed by the
+	/// counterparty up to [`ANTI_REORG_DELAY`] confirmations to ensure we attempt to re-claim it
+	/// if the counterparty's claim is reorged from the chain.
 	ContentiousOutpoint {
 		package: PackageTemplate,
 	}
