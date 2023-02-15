@@ -6318,7 +6318,7 @@ where
 				debug_assert!(peer_state.is_connected, "A disconnected peer cannot disconnect");
 				peer_state.is_connected = false;
 				peer_state.ok_to_remove(true)
-			} else { true }
+			} else { debug_assert!(false, "Unconnected peer disconnected"); true }
 		};
 		if remove_peer {
 			per_peer_state.remove(counterparty_node_id);
