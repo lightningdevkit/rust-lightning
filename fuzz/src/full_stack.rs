@@ -442,7 +442,7 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 	let network = Network::Bitcoin;
 	let params = ChainParameters {
 		network,
-		best_block: BestBlock::from_genesis(network),
+		best_block: BestBlock::from_network(network),
 	};
 	let channelmanager = Arc::new(ChannelManager::new(fee_est.clone(), monitor.clone(), broadcast.clone(), &router, Arc::clone(&logger), keys_manager.clone(), keys_manager.clone(), keys_manager.clone(), config, params));
 	// Adding new calls to `EntropySource::get_secure_random_bytes` during startup can change all the

@@ -7175,7 +7175,7 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let seed = [42; 32];
 		let network = Network::Testnet;
-		let best_block = BestBlock::from_genesis(network);
+		let best_block = BestBlock::from_network(network);
 		let chain_hash = best_block.block_hash();
 		let keys_provider = test_utils::TestKeysInterface::new(&seed, network);
 

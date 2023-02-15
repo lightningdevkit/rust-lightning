@@ -418,7 +418,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 			let network = Network::Bitcoin;
 			let params = ChainParameters {
 				network,
-				best_block: BestBlock::from_genesis(network),
+				best_block: BestBlock::from_network(network),
 			};
 			(ChannelManager::new($fee_estimator.clone(), monitor.clone(), broadcast.clone(), &router, Arc::clone(&logger), keys_manager.clone(), keys_manager.clone(), keys_manager.clone(), config, params),
 			monitor, keys_manager)

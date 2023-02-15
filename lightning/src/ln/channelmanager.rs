@@ -8687,7 +8687,7 @@ pub mod bench {
 		let keys_manager_a = KeysManager::new(&seed_a, 42, 42);
 		let node_a = ChannelManager::new(&fee_estimator, &chain_monitor_a, &tx_broadcaster, &router, &logger_a, &keys_manager_a, &keys_manager_a, &keys_manager_a, config.clone(), ChainParameters {
 			network,
-			best_block: BestBlock::from_genesis(network),
+			best_block: BestBlock::from_network(network),
 		});
 		let node_a_holder = NodeHolder { node: &node_a };
 
@@ -8697,7 +8697,7 @@ pub mod bench {
 		let keys_manager_b = KeysManager::new(&seed_b, 42, 42);
 		let node_b = ChannelManager::new(&fee_estimator, &chain_monitor_b, &tx_broadcaster, &router, &logger_b, &keys_manager_b, &keys_manager_b, &keys_manager_b, config.clone(), ChainParameters {
 			network,
-			best_block: BestBlock::from_genesis(network),
+			best_block: BestBlock::from_network(network),
 		});
 		let node_b_holder = NodeHolder { node: &node_b };
 
@@ -8721,7 +8721,7 @@ pub mod bench {
 		assert_eq!(&tx_broadcaster.txn_broadcasted.lock().unwrap()[..], &[tx.clone()]);
 
 		let block = Block {
-			header: BlockHeader { version: 0x20000000, prev_blockhash: BestBlock::from_genesis(network), merkle_root: TxMerkleNode::all_zeros(), time: 42, bits: 42, nonce: 42 },
+			header: BlockHeader { version: 0x20000000, prev_blockhash: BestBlock::from_network(network).block_hash(), merkle_root: TxMerkleNode::all_zeros(), time: 42, bits: 42, nonce: 42 },
 			txdata: vec![tx],
 		};
 		Listen::block_connected(&node_a, &block, 1);

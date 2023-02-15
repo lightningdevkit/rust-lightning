@@ -40,7 +40,7 @@ pub struct BestBlock {
 impl BestBlock {
 	/// Constructs a `BestBlock` that represents the genesis block at height 0 of the given
 	/// network.
-	pub fn from_genesis(network: Network) -> Self {
+	pub fn from_network(network: Network) -> Self {
 		BestBlock {
 			block_hash: genesis_block(network).header.block_hash(),
 			height: 0,
