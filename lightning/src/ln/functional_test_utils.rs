@@ -305,6 +305,7 @@ pub struct TestChanMonCfg {
 	pub persister: test_utils::TestPersister,
 	pub logger: test_utils::TestLogger,
 	pub keys_manager: test_utils::TestKeysInterface,
+	pub scorer: Mutex<test_utils::TestScorer>,
 }
 
 pub struct NodeCfg<'a> {
@@ -427,6 +428,7 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 					channel_monitors.insert(monitor.get_funding_txo().0, monitor);
 				}
 
+				let scorer = Mutex::new(test_utils::TestScorer::new());
 				let mut w = test_utils::TestVecWriter(Vec::new());
 				self.node.write(&mut w).unwrap();
 				<(BlockHash, ChannelManager<&test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestRouter, &test_utils::TestLogger>)>::read(&mut io::Cursor::new(w.0), ChannelManagerReadArgs {
@@ -435,7 +437,7 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 					node_signer: self.keys_manager,
 					signer_provider: self.keys_manager,
 					fee_estimator: &test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) },
-					router: &test_utils::TestRouter::new(Arc::new(network_graph)),
+					router: &test_utils::TestRouter::new(Arc::new(network_graph), &scorer),
 					chain_monitor: self.chain_monitor,
 					tx_broadcaster: &broadcaster,
 					logger: &self.logger,
@@ -1568,7 +1570,7 @@ macro_rules! get_payment_preimage_hash {
 macro_rules! get_route {
 	($send_node: expr, $payment_params: expr, $recv_value: expr, $cltv: expr) => {{
 		use $crate::chain::keysinterface::EntropySource;
-		let scorer = $crate::util::test_utils::TestScorer::with_penalty(0);
+		let scorer = $crate::util::test_utils::TestScorer::new();
 		let keys_manager = $crate::util::test_utils::TestKeysInterface::new(&[0u8; 32], bitcoin::network::constants::Network::Testnet);
 		let random_seed_bytes = keys_manager.get_secure_random_bytes();
 		$crate::routing::router::get_route(
@@ -2120,7 +2122,7 @@ pub fn route_over_limit<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_rou
 	let payment_params = PaymentParameters::from_node_id(expected_route.last().unwrap().node.get_our_node_id(), TEST_FINAL_CLTV)
 		.with_features(expected_route.last().unwrap().node.invoice_features());
 	let network_graph = origin_node.network_graph.read_only();
-	let scorer = test_utils::TestScorer::with_penalty(0);
+	let scorer = test_utils::TestScorer::new();
 	let seed = [0u8; 32];
 	let keys_manager = test_utils::TestKeysInterface::new(&seed, Network::Testnet);
 	let random_seed_bytes = keys_manager.get_secure_random_bytes();
@@ -2285,8 +2287,9 @@ pub fn create_chanmon_cfgs(node_count: usize) -> Vec<TestChanMonCfg> {
 		let persister = test_utils::TestPersister::new();
 		let seed = [i as u8; 32];
 		let keys_manager = test_utils::TestKeysInterface::new(&seed, Network::Testnet);
+		let scorer = Mutex::new(test_utils::TestScorer::new());
 
-		chan_mon_cfgs.push(TestChanMonCfg { tx_broadcaster, fee_estimator, chain_source, logger, persister, keys_manager });
+		chan_mon_cfgs.push(TestChanMonCfg { tx_broadcaster, fee_estimator, chain_source, logger, persister, keys_manager, scorer });
 	}
 
 	chan_mon_cfgs
@@ -2304,7 +2307,7 @@ pub fn create_node_cfgs<'a>(node_count: usize, chanmon_cfgs: &'a Vec<TestChanMon
 			logger: &chanmon_cfgs[i].logger,
 			tx_broadcaster: &chanmon_cfgs[i].tx_broadcaster,
 			fee_estimator: &chanmon_cfgs[i].fee_estimator,
-			router: test_utils::TestRouter::new(network_graph.clone()),
+			router: test_utils::TestRouter::new(network_graph.clone(), &chanmon_cfgs[i].scorer),
 			chain_monitor,
 			keys_manager: &chanmon_cfgs[i].keys_manager,
 			node_seed: seed,
