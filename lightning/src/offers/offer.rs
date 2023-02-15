@@ -431,7 +431,8 @@ impl OfferContents {
 		};
 
 		if !self.expects_quantity() || quantity.is_some() {
-			let expected_amount_msats = offer_amount_msats * quantity.unwrap_or(1);
+			let expected_amount_msats = offer_amount_msats.checked_mul(quantity.unwrap_or(1))
+				.ok_or(SemanticError::InvalidAmount)?;
 			let amount_msats = amount_msats.unwrap_or(expected_amount_msats);
 
 			if amount_msats < expected_amount_msats {

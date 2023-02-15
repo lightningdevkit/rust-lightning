@@ -828,6 +828,18 @@ mod tests {
 			Ok(_) => panic!("expected error"),
 			Err(e) => assert_eq!(e, SemanticError::MissingAmount),
 		}
+
+		match OfferBuilder::new("foo".into(), recipient_pubkey())
+			.amount_msats(1000)
+			.supported_quantity(Quantity::Unbounded)
+			.build().unwrap()
+			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.quantity(u64::max_value()).unwrap()
+			.build()
+		{
+			Ok(_) => panic!("expected error"),
+			Err(e) => assert_eq!(e, SemanticError::InvalidAmount),
+		}
 	}
 
 	#[test]
@@ -1122,6 +1134,23 @@ mod tests {
 			Err(e) => {
 				assert_eq!(e, ParseError::InvalidSemantics(SemanticError::UnsupportedCurrency));
 			},
+		}
+
+		let invoice_request = OfferBuilder::new("foo".into(), recipient_pubkey())
+			.amount_msats(1000)
+			.supported_quantity(Quantity::Unbounded)
+			.build().unwrap()
+			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.quantity(u64::max_value()).unwrap()
+			.build_unchecked()
+			.sign(payer_sign).unwrap();
+
+		let mut buffer = Vec::new();
+		invoice_request.write(&mut buffer).unwrap();
+
+		match InvoiceRequest::try_from(buffer) {
+			Ok(_) => panic!("expected error"),
+			Err(e) => assert_eq!(e, ParseError::InvalidSemantics(SemanticError::InvalidAmount)),
 		}
 	}
 
