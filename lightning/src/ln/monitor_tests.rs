@@ -19,20 +19,34 @@ use crate::chain::chaininterface::LowerBoundedFeeEstimator;
 use crate::ln::channel;
 #[cfg(anchors)]
 use crate::ln::chan_utils;
+#[cfg(anchors)]
+use crate::ln::channelmanager::ChannelManager;
 use crate::ln::channelmanager::{BREAKDOWN_TIMEOUT, PaymentId};
 use crate::ln::msgs::ChannelMessageHandler;
 #[cfg(anchors)]
 use crate::util::config::UserConfig;
 #[cfg(anchors)]
+use crate::util::crypto::sign;
+#[cfg(anchors)]
 use crate::util::events::BumpTransactionEvent;
 use crate::util::events::{Event, MessageSendEvent, MessageSendEventsProvider, ClosureReason, HTLCDestination};
+#[cfg(anchors)]
+use crate::util::ser::Writeable;
+#[cfg(anchors)]
+use crate::util::test_utils;
 
+#[cfg(anchors)]
+use bitcoin::blockdata::transaction::EcdsaSighashType;
 use bitcoin::blockdata::script::Builder;
 use bitcoin::blockdata::opcodes;
 use bitcoin::secp256k1::Secp256k1;
 #[cfg(anchors)]
-use bitcoin::{Amount, Script, TxIn, TxOut, PackedLockTime};
+use bitcoin::secp256k1::SecretKey;
+#[cfg(anchors)]
+use bitcoin::{Amount, PublicKey, Script, TxIn, TxOut, PackedLockTime, Witness};
 use bitcoin::Transaction;
+#[cfg(anchors)]
+use bitcoin::util::sighash::SighashCache;
 
 use crate::prelude::*;
 
@@ -1748,7 +1762,7 @@ fn test_yield_anchors_events() {
 
 	let mut holder_events = nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events();
 	// Certain block `ConnectStyle`s cause an extra `ChannelClose` event to be emitted since the
-	// best block is being updated prior to the confirmed transactions.
+	// best block is updated before the confirmed transactions are notified.
 	match *nodes[0].connect_style.borrow() {
 		ConnectStyle::BestBlockFirst|ConnectStyle::BestBlockFirstReorgsOnlyTip|ConnectStyle::BestBlockFirstSkippingBlocks => {
 			assert_eq!(holder_events.len(), 3);
@@ -1814,4 +1828,359 @@ fn test_yield_anchors_events() {
 
 	// Clear the remaining events as they're not relevant to what we're testing.
 	nodes[0].node.get_and_clear_pending_events();
+}
+
+#[cfg(anchors)]
+#[test]
+fn test_anchors_aggregated_revoked_htlc_tx() {
+	// Test that `ChannelMonitor`s can properly detect and claim funds from a counterparty claiming
+	// multiple HTLCs from multiple channels in a single transaction via the success path from a
+	// revoked commitment.
+	let secp = Secp256k1::new();
+	let mut chanmon_cfgs = create_chanmon_cfgs(2);
+	// Required to sign a revoked commitment transaction
+	chanmon_cfgs[1].keys_manager.disable_revocation_policy_check = true;
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let mut anchors_config = UserConfig::default();
+	anchors_config.channel_handshake_config.announced_channel = true;
+	anchors_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(anchors_config), Some(anchors_config)]);
+
+	let bob_persister: test_utils::TestPersister;
+	let bob_chain_monitor: test_utils::TestChainMonitor;
+	let bob_deserialized: ChannelManager<
+		&test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface,
+		&test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator,
+		&test_utils::TestRouter, &test_utils::TestLogger,
+	>;
+
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let chan_a = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 20_000_000);
+	let chan_b = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 20_000_000);
+
+	// Route two payments for each channel from Alice to Bob to lock in the HTLCs.
+	let payment_a = route_payment(&nodes[0], &[&nodes[1]], 50_000_000);
+	let payment_b = route_payment(&nodes[0], &[&nodes[1]], 50_000_000);
+	let payment_c = route_payment(&nodes[0], &[&nodes[1]], 50_000_000);
+	let payment_d = route_payment(&nodes[0], &[&nodes[1]], 50_000_000);
+
+	// Serialize Bob with the HTLCs locked in. We'll restart Bob later on with the state at this
+	// point such that he broadcasts a revoked commitment transaction.
+	let bob_serialized = nodes[1].node.encode();
+	let bob_serialized_monitor_a = get_monitor!(nodes[1], chan_a.2).encode();
+	let bob_serialized_monitor_b = get_monitor!(nodes[1], chan_b.2).encode();
+
+	// Bob claims all the HTLCs...
+	claim_payment(&nodes[0], &[&nodes[1]], payment_a.0);
+	claim_payment(&nodes[0], &[&nodes[1]], payment_b.0);
+	claim_payment(&nodes[0], &[&nodes[1]], payment_c.0);
+	claim_payment(&nodes[0], &[&nodes[1]], payment_d.0);
+
+	// ...and sends one back through each channel such that he has a motive to broadcast his
+	// revoked state.
+	send_payment(&nodes[1], &[&nodes[0]], 30_000_000);
+	send_payment(&nodes[1], &[&nodes[0]], 30_000_000);
+
+	// Restart Bob with the revoked state and provide the HTLC preimages he claimed.
+	reload_node!(
+		nodes[1], anchors_config, bob_serialized, &[&bob_serialized_monitor_a, &bob_serialized_monitor_b],
+		bob_persister, bob_chain_monitor, bob_deserialized
+	);
+	for chan_id in [chan_a.2, chan_b.2].iter() {
+		let monitor = get_monitor!(nodes[1], chan_id);
+		for payment in [payment_a, payment_b, payment_c, payment_d].iter() {
+			monitor.provide_payment_preimage(
+				&payment.1, &payment.0, &node_cfgs[1].tx_broadcaster,
+				&LowerBoundedFeeEstimator::new(node_cfgs[1].fee_estimator), &nodes[1].logger
+			);
+		}
+	}
+
+	// Bob force closes by broadcasting his revoked state for each channel.
+	nodes[1].node.force_close_broadcasting_latest_txn(&chan_a.2, &nodes[0].node.get_our_node_id()).unwrap();
+	check_added_monitors(&nodes[1], 1);
+	check_closed_broadcast(&nodes[1], 1, true);
+	check_closed_event!(&nodes[1], 1, ClosureReason::HolderForceClosed);
+	let revoked_commitment_a = {
+		let mut txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
+		assert_eq!(txn.len(), 1);
+		let revoked_commitment = txn.pop().unwrap();
+		assert_eq!(revoked_commitment.output.len(), 6); // 2 HTLC outputs + 1 to_self output + 1 to_remote output + 2 anchor outputs
+		check_spends!(revoked_commitment, chan_a.3);
+		revoked_commitment
+	};
+	nodes[1].node.force_close_broadcasting_latest_txn(&chan_b.2, &nodes[0].node.get_our_node_id()).unwrap();
+	check_added_monitors(&nodes[1], 1);
+	check_closed_broadcast(&nodes[1], 1, true);
+	check_closed_event!(&nodes[1], 1, ClosureReason::HolderForceClosed);
+	let revoked_commitment_b = {
+		let mut txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
+		assert_eq!(txn.len(), 1);
+		let revoked_commitment = txn.pop().unwrap();
+		assert_eq!(revoked_commitment.output.len(), 6); // 2 HTLC outputs + 1 to_self output + 1 to_remote output + 2 anchor outputs
+		check_spends!(revoked_commitment, chan_b.3);
+		revoked_commitment
+	};
+
+	// Bob should now receive two events to bump his revoked commitment transaction fees.
+	assert!(nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());
+	let events = nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_events();
+	assert_eq!(events.len(), 2);
+	let anchor_tx = {
+		let secret_key = SecretKey::from_slice(&[1; 32]).unwrap();
+		let public_key = PublicKey::new(secret_key.public_key(&secp));
+		let fee_utxo_script = Script::new_v0_p2wpkh(&public_key.wpubkey_hash().unwrap());
+		let coinbase_tx = Transaction {
+			version: 2,
+			lock_time: PackedLockTime::ZERO,
+			input: vec![TxIn { ..Default::default() }],
+			output: vec![TxOut { // UTXO to attach fees to `anchor_tx`
+				value: Amount::ONE_BTC.to_sat(),
+				script_pubkey: fee_utxo_script.clone(),
+			}],
+		};
+		let mut anchor_tx = Transaction {
+			version: 2,
+			lock_time: PackedLockTime::ZERO,
+			input: vec![
+				TxIn { // Fee input
+					previous_output: bitcoin::OutPoint { txid: coinbase_tx.txid(), vout: 0 },
+					..Default::default()
+				},
+			],
+			output: vec![TxOut { // Fee input change
+				value: coinbase_tx.output[0].value / 2 ,
+				script_pubkey: Script::new_op_return(&[]),
+			}],
+		};
+		let mut signers = Vec::with_capacity(2);
+		for event in events {
+			match event {
+				Event::BumpTransaction(BumpTransactionEvent::ChannelClose { anchor_descriptor, .. })  => {
+					anchor_tx.input.push(TxIn {
+						previous_output: anchor_descriptor.outpoint,
+						..Default::default()
+					});
+					let signer = nodes[1].keys_manager.derive_channel_keys(
+						anchor_descriptor.channel_value_satoshis, &anchor_descriptor.channel_keys_id,
+					);
+					signers.push(signer);
+				},
+				_ => panic!("Unexpected event"),
+			}
+		}
+		for (i, signer) in signers.into_iter().enumerate() {
+			let anchor_idx = i + 1;
+			let funding_sig = signer.sign_holder_anchor_input(&mut anchor_tx, anchor_idx, &secp).unwrap();
+			anchor_tx.input[anchor_idx].witness = chan_utils::build_anchor_input_witness(
+				&signer.pubkeys().funding_pubkey, &funding_sig
+			);
+		}
+		let fee_utxo_sig = {
+			let witness_script = Script::new_p2pkh(&public_key.pubkey_hash());
+			let sighash = hash_to_message!(&SighashCache::new(&anchor_tx).segwit_signature_hash(
+				0, &witness_script, coinbase_tx.output[0].value, EcdsaSighashType::All
+			).unwrap()[..]);
+			let sig = sign(&secp, &sighash, &secret_key);
+			let mut sig = sig.serialize_der().to_vec();
+			sig.push(EcdsaSighashType::All as u8);
+			sig
+		};
+		anchor_tx.input[0].witness = Witness::from_vec(vec![fee_utxo_sig, public_key.to_bytes()]);
+		check_spends!(anchor_tx, coinbase_tx, revoked_commitment_a, revoked_commitment_b);
+		anchor_tx
+	};
+
+	for node in &nodes {
+		mine_transactions(node, &[&revoked_commitment_a, &revoked_commitment_b, &anchor_tx]);
+	}
+	check_added_monitors!(&nodes[0], 2);
+	check_closed_broadcast(&nodes[0], 2, true);
+	check_closed_event!(&nodes[0], 2, ClosureReason::CommitmentTxConfirmed);
+
+	// Alice should detect the confirmed revoked commitments, and attempt to claim all of the
+	// revoked outputs.
+	{
+		let txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
+		assert_eq!(txn.len(), 2);
+
+		let (revoked_claim_a, revoked_claim_b) = if txn[0].input[0].previous_output.txid == revoked_commitment_a.txid() {
+			(&txn[0], &txn[1])
+		} else {
+			(&txn[1], &txn[0])
+		};
+
+		// TODO: to_self claim must be separate from HTLC claims
+		assert_eq!(revoked_claim_a.input.len(), 3); // Spends both HTLC outputs and to_self output
+		assert_eq!(revoked_claim_a.output.len(), 1);
+		check_spends!(revoked_claim_a, revoked_commitment_a);
+		assert_eq!(revoked_claim_b.input.len(), 3); // Spends both HTLC outputs and to_self output
+		assert_eq!(revoked_claim_b.output.len(), 1);
+		check_spends!(revoked_claim_b, revoked_commitment_b);
+	}
+
+	// Since Bob was able to confirm his revoked commitment, he'll now try to claim the HTLCs
+	// through the success path.
+	assert!(nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());
+	let mut events = nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_events();
+	// Certain block `ConnectStyle`s cause an extra `ChannelClose` event to be emitted since the
+	// best block is updated before the confirmed transactions are notified.
+	match *nodes[1].connect_style.borrow() {
+		ConnectStyle::BestBlockFirst|ConnectStyle::BestBlockFirstReorgsOnlyTip|ConnectStyle::BestBlockFirstSkippingBlocks => {
+			assert_eq!(events.len(), 4);
+			if let Event::BumpTransaction(BumpTransactionEvent::ChannelClose { .. }) = events.remove(0) {}
+			else { panic!("unexpected event"); }
+			if let Event::BumpTransaction(BumpTransactionEvent::ChannelClose { .. }) = events.remove(1) {}
+			else { panic!("unexpected event"); }
+
+		},
+		_ => assert_eq!(events.len(), 2),
+	};
+	let htlc_tx = {
+		let secret_key = SecretKey::from_slice(&[1; 32]).unwrap();
+		let public_key = PublicKey::new(secret_key.public_key(&secp));
+		let fee_utxo_script = Script::new_v0_p2wpkh(&public_key.wpubkey_hash().unwrap());
+		let coinbase_tx = Transaction {
+			version: 2,
+			lock_time: PackedLockTime::ZERO,
+			input: vec![TxIn { ..Default::default() }],
+			output: vec![TxOut { // UTXO to attach fees to `htlc_tx`
+				value: Amount::ONE_BTC.to_sat(),
+				script_pubkey: fee_utxo_script.clone(),
+			}],
+		};
+		let mut htlc_tx = Transaction {
+			version: 2,
+			lock_time: PackedLockTime::ZERO,
+			input: vec![TxIn { // Fee input
+				previous_output: bitcoin::OutPoint { txid: coinbase_tx.txid(), vout: 0 },
+				..Default::default()
+			}],
+			output: vec![TxOut { // Fee input change
+				value: coinbase_tx.output[0].value / 2 ,
+				script_pubkey: Script::new_op_return(&[]),
+			}],
+		};
+		let mut descriptors = Vec::with_capacity(4);
+		for event in events {
+			if let Event::BumpTransaction(BumpTransactionEvent::HTLCResolution { mut htlc_descriptors, .. }) = event {
+				assert_eq!(htlc_descriptors.len(), 2);
+				for htlc_descriptor in &htlc_descriptors {
+					assert!(!htlc_descriptor.htlc.offered);
+					let signer = nodes[1].keys_manager.derive_channel_keys(
+						htlc_descriptor.channel_value_satoshis, &htlc_descriptor.channel_keys_id
+					);
+					let per_commitment_point = signer.get_per_commitment_point(htlc_descriptor.per_commitment_number, &secp);
+					htlc_tx.input.push(htlc_descriptor.unsigned_tx_input());
+					htlc_tx.output.push(htlc_descriptor.tx_output(&per_commitment_point, &secp));
+				}
+				descriptors.append(&mut htlc_descriptors);
+			} else {
+				panic!("Unexpected event");
+			}
+		}
+		for (idx, htlc_descriptor) in descriptors.into_iter().enumerate() {
+			let htlc_input_idx = idx + 1;
+			let signer = nodes[1].keys_manager.derive_channel_keys(
+				htlc_descriptor.channel_value_satoshis, &htlc_descriptor.channel_keys_id
+			);
+			let our_sig = signer.sign_holder_htlc_transaction(&htlc_tx, htlc_input_idx, &htlc_descriptor, &secp).unwrap();
+			let per_commitment_point = signer.get_per_commitment_point(htlc_descriptor.per_commitment_number, &secp);
+			let witness_script = htlc_descriptor.witness_script(&per_commitment_point, &secp);
+			htlc_tx.input[htlc_input_idx].witness = htlc_descriptor.tx_input_witness(&our_sig, &witness_script);
+		}
+		let fee_utxo_sig = {
+			let witness_script = Script::new_p2pkh(&public_key.pubkey_hash());
+			let sighash = hash_to_message!(&SighashCache::new(&htlc_tx).segwit_signature_hash(
+				0, &witness_script, coinbase_tx.output[0].value, EcdsaSighashType::All
+			).unwrap()[..]);
+			let sig = sign(&secp, &sighash, &secret_key);
+			let mut sig = sig.serialize_der().to_vec();
+			sig.push(EcdsaSighashType::All as u8);
+			sig
+		};
+		htlc_tx.input[0].witness = Witness::from_vec(vec![fee_utxo_sig, public_key.to_bytes()]);
+		check_spends!(htlc_tx, coinbase_tx, revoked_commitment_a, revoked_commitment_b);
+		htlc_tx
+	};
+
+	for node in &nodes {
+		mine_transaction(node, &htlc_tx);
+	}
+
+	// Alice should see that Bob is trying to claim to HTLCs, so she should now try to claim them at
+	// the second level instead.
+	let revoked_claims = {
+		let txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
+		assert_eq!(txn.len(), 4);
+
+		let revoked_to_self_claim_a = txn.iter().find(|tx|
+			tx.input.len() == 1 &&
+			tx.output.len() == 1 &&
+			tx.input[0].previous_output.txid == revoked_commitment_a.txid()
+		).unwrap();
+		check_spends!(revoked_to_self_claim_a, revoked_commitment_a);
+
+		let revoked_to_self_claim_b = txn.iter().find(|tx|
+			tx.input.len() == 1 &&
+			tx.output.len() == 1 &&
+			tx.input[0].previous_output.txid == revoked_commitment_b.txid()
+		).unwrap();
+		check_spends!(revoked_to_self_claim_b, revoked_commitment_b);
+
+		let revoked_htlc_claims = txn.iter().filter(|tx|
+			tx.input.len() == 2 &&
+			tx.output.len() == 1 &&
+			tx.input[0].previous_output.txid == htlc_tx.txid()
+		).collect::<Vec<_>>();
+		assert_eq!(revoked_htlc_claims.len(), 2);
+		for revoked_htlc_claim in revoked_htlc_claims {
+			check_spends!(revoked_htlc_claim, htlc_tx);
+		}
+
+		txn
+	};
+	for node in &nodes {
+		mine_transactions(node, &revoked_claims.iter().collect::<Vec<_>>());
+	}
+
+
+	// Connect one block to make sure the HTLC events are not yielded while ANTI_REORG_DELAY has not
+	// been reached.
+	connect_blocks(&nodes[0], 1);
+	connect_blocks(&nodes[1], 1);
+
+	assert!(nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());
+	assert!(nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());
+
+	// Connect the remaining blocks to reach ANTI_REORG_DELAY.
+	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 2);
+	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 2);
+
+	assert!(nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());
+	let spendable_output_events = nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events();
+	assert_eq!(spendable_output_events.len(), 4);
+	for (idx, event) in spendable_output_events.iter().enumerate() {
+		if let Event::SpendableOutputs { outputs } = event {
+			assert_eq!(outputs.len(), 1);
+			let spend_tx = nodes[0].keys_manager.backing.spend_spendable_outputs(
+				&[&outputs[0]], Vec::new(), Script::new_op_return(&[]), 253, &Secp256k1::new(),
+			).unwrap();
+			check_spends!(spend_tx, revoked_claims[idx]);
+		} else {
+			panic!("unexpected event");
+		}
+	}
+
+	assert!(nodes[0].node.list_channels().is_empty());
+	assert!(nodes[1].node.list_channels().is_empty());
+	assert!(nodes[0].chain_monitor.chain_monitor.get_claimable_balances(&[]).is_empty());
+	// TODO: From Bob's PoV, he still thinks he can claim the outputs from his revoked commitment.
+	// This needs to be fixed before we enable pruning `ChannelMonitor`s once they don't have any
+	// balances to claim.
+	//
+	// The 6 claimable balances correspond to his `to_self` outputs and the 2 HTLC outputs in each
+	// revoked commitment which Bob has the preimage for.
+	assert_eq!(nodes[1].chain_monitor.chain_monitor.get_claimable_balances(&[]).len(), 6);
 }
