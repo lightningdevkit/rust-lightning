@@ -941,6 +941,7 @@ fn successful_probe_yields_event() {
 		},
 		_ => panic!(),
 	};
+	assert!(!nodes[0].node.has_pending_payments());
 }
 
 #[test]
@@ -986,6 +987,7 @@ fn failed_probe_yields_event() {
 		},
 		_ => panic!(),
 	};
+	assert!(!nodes[0].node.has_pending_payments());
 }
 
 #[test]
@@ -1040,6 +1042,7 @@ fn onchain_failed_probe_yields_event() {
 		}
 	}
 	assert!(found_probe_failed);
+	assert!(!nodes[0].node.has_pending_payments());
 }
 
 #[test]
