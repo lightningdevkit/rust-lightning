@@ -179,6 +179,7 @@ jobs:
           cargo check --no-default-features --features=no-std --release
           cargo check --no-default-features --features=futures --release
           cargo doc --release
+          RUSTDOCFLAGS="--cfg=anchors" cargo doc --release
 
   fuzz:
     runs-on: ubuntu-latest
