@@ -9,5 +9,5 @@ Cargo.lock
 .idea
 lightning/target
 lightning/ldk-net_graph-*.bin
+lightning-custom-message/target
 no-std-check/target
-
