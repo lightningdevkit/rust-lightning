@@ -203,7 +203,7 @@ impl<T: CustomOnionMessageContents> Writeable for (Payload<T>, [u8; 32]) {
 }
 
 // Uses the provided secret to simultaneously decode and decrypt the control TLVs and data TLV.
-impl<H: CustomOnionMessageHandler, L: Logger>
+impl<H: CustomOnionMessageHandler, L: Logger + ?Sized>
 ReadableArgs<(SharedSecret, &H, &L)> for Payload<<H as CustomOnionMessageHandler>::CustomMessage> {
 	fn read<R: Read>(r: &mut R, args: (SharedSecret, &H, &L)) -> Result<Self, DecodeError> {
 		let (encrypted_tlvs_ss, handler, logger) = args;

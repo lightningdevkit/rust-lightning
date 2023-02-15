@@ -26,6 +26,15 @@ const INVOICE_REQUEST_TLV_TYPE: u64 = 64;
 const INVOICE_TLV_TYPE: u64 = 66;
 const INVOICE_ERROR_TLV_TYPE: u64 = 68;
 
+/// A handler for an [`OnionMessage`] containing a BOLT 12 Offers message as its payload.
+///
+/// [`OnionMessage`]: crate::ln::msgs::OnionMessage
+pub trait OffersMessageHandler {
+	/// Handles the given message by either responding with an [`Invoice`], sending a payment, or
+	/// replying with an error.
+	fn handle_message(&self, message: OffersMessage);
+}
+
 /// Possible BOLT 12 Offers messages sent and received via an [`OnionMessage`].
 ///
 /// [`OnionMessage`]: crate::ln::msgs::OnionMessage
@@ -82,7 +91,7 @@ impl Writeable for OffersMessage {
 	}
 }
 
-impl<L: Logger> ReadableArgs<(u64, &L)> for OffersMessage {
+impl<L: Logger + ?Sized> ReadableArgs<(u64, &L)> for OffersMessage {
 	fn read<R: Read>(r: &mut R, read_args: (u64, &L)) -> Result<Self, DecodeError> {
 		let (tlv_type, logger) = read_args;
 		if tlv_type == INVOICE_ERROR_TLV_TYPE {

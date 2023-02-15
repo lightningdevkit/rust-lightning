@@ -28,7 +28,7 @@ use crate::util::ser::{VecWriter, Writeable, Writer};
 use crate::ln::peer_channel_encryptor::{PeerChannelEncryptor,NextNoiseStep};
 use crate::ln::wire;
 use crate::ln::wire::{Encode, Type};
-use crate::onion_message::{CustomOnionMessageContents, CustomOnionMessageHandler, SimpleArcOnionMessenger, SimpleRefOnionMessenger};
+use crate::onion_message::{CustomOnionMessageContents, CustomOnionMessageHandler, OffersMessage, OffersMessageHandler, SimpleArcOnionMessenger, SimpleRefOnionMessenger};
 use crate::routing::gossip::{NetworkGraph, P2PGossipSync, NodeId, NodeAlias};
 use crate::util::atomic_counter::AtomicCounter;
 use crate::util::logger::Logger;
@@ -117,6 +117,9 @@ impl OnionMessageHandler for IgnoringMessageHandler {
 	fn provided_init_features(&self, _their_node_id: &PublicKey) -> InitFeatures {
 		InitFeatures::empty()
 	}
+}
+impl OffersMessageHandler for IgnoringMessageHandler {
+	fn handle_message(&self, _msg: OffersMessage) {}
 }
 impl CustomOnionMessageHandler for IgnoringMessageHandler {
 	type CustomMessage = Infallible;
