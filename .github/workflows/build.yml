@@ -12,52 +12,68 @@ jobs:
                      beta,
                      # 1.41.1 is MSRV for Rust-Lightning, lightning-invoice, and lightning-persister
                      1.41.1,
-                     # 1.45.2 is MSRV for lightning-net-tokio, lightning-block-sync, lightning-background-processor, and coverage generation
+                     # 1.45.2 is MSRV for lightning-net-tokio, lightning-block-sync, lightning-background-processor
                      1.45.2,
                      # 1.47.0 will be the MSRV for no-std builds using hashbrown once core2 is updated
-                     1.47.0]
+                     1.47.0,
+                     # 1.59.0 is the MSRV for lightning-transaction-sync
+                     1.59.0]
         include:
           - toolchain: stable
             build-net-tokio: true
             build-no-std: true
             build-futures: true
+            build-tx-sync: true
+            coverage: true
           - toolchain: stable
             platform: macos-latest
             build-net-tokio: true
             build-no-std: true
             build-futures: true
+            build-tx-sync: true
           - toolchain: beta
             platform: macos-latest
             build-net-tokio: true
             build-no-std: true
             build-futures: true
+            build-tx-sync: true
           - toolchain: stable
             platform: windows-latest
             build-net-tokio: true
             build-no-std: true
             build-futures: true
+            build-tx-sync: false
           - toolchain: beta
             platform: windows-latest
             build-net-tokio: true
             build-no-std: true
             build-futures: true
+            build-tx-sync: false
           - toolchain: beta
             build-net-tokio: true
             build-no-std: true
             build-futures: true
+            build-tx-sync: true
           - toolchain: 1.41.1
             build-no-std: false
             test-log-variants: true
             build-futures: false
+            build-tx-sync: false
           - toolchain: 1.45.2
             build-net-old-tokio: true
             build-net-tokio: true
             build-no-std: false
             build-futures: true
-            coverage: true
+            build-tx-sync: false
           - toolchain: 1.47.0
             build-futures: true
             build-no-std: true
+            build-tx-sync: false
+          - toolchain: 1.59.0
+            build-net-tokio: false
+            build-no-std: false
+            build-futures: false
+            build-tx-sync: true
     runs-on: ${{ matrix.platform }}
     steps:
       - name: Checkout source code
@@ -73,10 +89,10 @@ jobs:
         run: cargo update -p tokio --precise "1.14.0" --verbose
         env:
           CARGO_NET_GIT_FETCH_WITH_CLI: "true"
-      - name: Build on Rust ${{ matrix.toolchain }} with net-tokio
-        if: "matrix.build-net-tokio && !matrix.coverage"
+      - name: Build on Rust ${{ matrix.toolchain }} with net-tokio and tx-sync
+        if: "matrix.build-net-tokio && !matrix.coverage && matrix.build-tx-sync"
         run: cargo build --verbose --color always
-      - name: Build on Rust ${{ matrix.toolchain }} with net-tokio and full code-linking for coverage generation
+      - name: Build on Rust ${{ matrix.toolchain }} with net-tokio, tx-sync, and full code-linking for coverage generation
         if: matrix.coverage
         run: RUSTFLAGS="-C link-dead-code" cargo build --verbose --color always
       - name: Build on Rust ${{ matrix.toolchain }}
@@ -108,14 +124,32 @@ jobs:
           RUSTFLAGS="-C link-dead-code" cargo build --verbose --color always --features rpc-client
           RUSTFLAGS="-C link-dead-code" cargo build --verbose --color always --features rpc-client,rest-client
           RUSTFLAGS="-C link-dead-code" cargo build --verbose --color always --features rpc-client,rest-client,tokio
+      - name: Build Transaction Sync Clients on Rust ${{ matrix.toolchain }} with features
+        if: "matrix.build-tx-sync && !matrix.coverage"
+        run: |
+          cd lightning-transaction-sync
+          cargo build --verbose --color always --features esplora-blocking
+          cargo build --verbose --color always --features esplora-async
+      - name: Build transaction sync clients on Rust ${{ matrix.toolchain }} with features and full code-linking for coverage generation
+        if: "matrix.build-tx-sync && matrix.coverage"
+        run: |
+          cd lightning-transaction-sync
+          RUSTFLAGS="-C link-dead-code" cargo build --verbose --color always --features esplora-blocking
+          RUSTFLAGS="-C link-dead-code" cargo build --verbose --color always --features esplora-async
+      - name: Test transaction sync clients on Rust ${{ matrix.toolchain }} with features
+        if: "matrix.build-tx-sync"
+        run: |
+          cd lightning-transaction-sync
+          cargo test --verbose --color always --features esplora-blocking
+          cargo test --verbose --color always --features esplora-async
       - name: Test backtrace-debug builds on Rust ${{ matrix.toolchain }}
         if: "matrix.toolchain == 'stable'"
         run: |
           cd lightning && cargo test --verbose --color always --features backtrace
       - name: Test on Rust ${{ matrix.toolchain }} with net-tokio
-        if: "matrix.build-net-tokio && !matrix.coverage"
+        if: "matrix.build-net-tokio && !matrix.coverage && matrix.build-tx-sync"
         run: cargo test --verbose --color always
-      - name: Test on Rust ${{ matrix.toolchain }} with net-tokio and full code-linking for coverage generation
+      - name: Test on Rust ${{ matrix.toolchain }} with net-tokio, tx-sync, and full code-linking for coverage generation
         if: matrix.coverage
         run: RUSTFLAGS="-C link-dead-code" cargo test --verbose --color always
       - name: Test no-std builds on Rust ${{ matrix.toolchain }}
@@ -349,7 +383,7 @@ jobs:
   linting:
     runs-on: ubuntu-latest
     env:
-      TOOLCHAIN: 1.47.0
+      TOOLCHAIN: stable
     steps:
       - name: Checkout source code
         uses: actions/checkout@v3

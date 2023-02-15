@@ -935,7 +935,7 @@ fn do_test_monitor_update_fail_raa(test_ignore_second_cs: bool) {
 
 	// Note that the ordering of the events for different nodes is non-prescriptive, though the
 	// ordering of the two events that both go to nodes[2] have to stay in the same order.
-	let (nodes_0_event, events_3) = remove_first_msg_event_to_node(&nodes[0].node.get_our_node_id(), &events_3);
+	let nodes_0_event = remove_first_msg_event_to_node(&nodes[0].node.get_our_node_id(), &mut events_3);
 	let messages_a = match nodes_0_event {
 		MessageSendEvent::UpdateHTLCs { node_id, mut updates } => {
 			assert_eq!(node_id, nodes[0].node.get_our_node_id());
@@ -949,12 +949,12 @@ fn do_test_monitor_update_fail_raa(test_ignore_second_cs: bool) {
 		_ => panic!("Unexpected event type!"),
 	};
 
-	let (nodes_2_event, events_3) = remove_first_msg_event_to_node(&nodes[2].node.get_our_node_id(), &events_3);
+	let nodes_2_event = remove_first_msg_event_to_node(&nodes[2].node.get_our_node_id(), &mut events_3);
 	let send_event_b = SendEvent::from_event(nodes_2_event);
 	assert_eq!(send_event_b.node_id, nodes[2].node.get_our_node_id());
 
 	let raa = if test_ignore_second_cs {
-		let (nodes_2_event, _events_3) = remove_first_msg_event_to_node(&nodes[2].node.get_our_node_id(), &events_3);
+		let nodes_2_event = remove_first_msg_event_to_node(&nodes[2].node.get_our_node_id(), &mut events_3);
 		match nodes_2_event {
 			MessageSendEvent::SendRevokeAndACK { node_id, msg } => {
 				assert_eq!(node_id, nodes[2].node.get_our_node_id());

@@ -21,8 +21,9 @@ use crate::ln::features::InvoiceFeatures;
 use crate::ln::msgs;
 use crate::ln::msgs::ChannelMessageHandler;
 use crate::ln::outbound_payment::Retry;
-use crate::routing::gossip::RoutingFees;
+use crate::routing::gossip::{EffectiveCapacity, RoutingFees};
 use crate::routing::router::{get_route, PaymentParameters, Route, RouteHint, RouteHintHop, RouteHop, RouteParameters};
+use crate::routing::scoring::ChannelUsage;
 use crate::util::events::{ClosureReason, Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider};
 use crate::util::test_utils;
 use crate::util::errors::APIError;
@@ -153,11 +154,11 @@ fn mpp_retry() {
 	assert_eq!(events.len(), 2);
 
 	// Pass half of the payment along the success path.
-	let (success_path_msgs, mut events) = remove_first_msg_event_to_node(&nodes[1].node.get_our_node_id(), &events);
+	let success_path_msgs = remove_first_msg_event_to_node(&nodes[1].node.get_our_node_id(), &mut events);
 	pass_along_path(&nodes[0], &[&nodes[1], &nodes[3]], 2_000_000, payment_hash, Some(payment_secret), success_path_msgs, false, None);
 
 	// Add the HTLC along the first hop.
-	let (fail_path_msgs_1, _events) = remove_first_msg_event_to_node(&nodes[2].node.get_our_node_id(), &events);
+	let fail_path_msgs_1 = remove_first_msg_event_to_node(&nodes[2].node.get_our_node_id(), &mut events);
 	let (update_add, commitment_signed) = match fail_path_msgs_1 {
 		MessageSendEvent::UpdateHTLCs { node_id: _, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref update_fee, ref commitment_signed } } => {
 			assert_eq!(update_add_htlcs.len(), 1);
@@ -237,7 +238,7 @@ fn do_mpp_receive_timeout(send_partial_mpp: bool) {
 	assert_eq!(events.len(), 2);
 
 	// Pass half of the payment along the first path.
-	let (node_1_msgs, mut events) = remove_first_msg_event_to_node(&nodes[1].node.get_our_node_id(), &events);
+	let node_1_msgs = remove_first_msg_event_to_node(&nodes[1].node.get_our_node_id(), &mut events);
 	pass_along_path(&nodes[0], &[&nodes[1], &nodes[3]], 200_000, payment_hash, Some(payment_secret), node_1_msgs, false, None);
 
 	if send_partial_mpp {
@@ -265,7 +266,7 @@ fn do_mpp_receive_timeout(send_partial_mpp: bool) {
 		expect_payment_failed_conditions(&nodes[0], payment_hash, false, PaymentFailedConditions::new().mpp_parts_remain().expected_htlc_error_data(23, &[][..]));
 	} else {
 		// Pass half of the payment along the second path.
-		let (node_2_msgs, _events) = remove_first_msg_event_to_node(&nodes[2].node.get_our_node_id(), &events);
+		let node_2_msgs = remove_first_msg_event_to_node(&nodes[2].node.get_our_node_id(), &mut events);
 		pass_along_path(&nodes[0], &[&nodes[2], &nodes[3]], 200_000, payment_hash, Some(payment_secret), node_2_msgs, true, None);
 
 		// Even after MPP_TIMEOUT_TICKS we should not timeout the MPP if we have all the parts
@@ -921,7 +922,7 @@ fn get_ldk_payment_preimage() {
 
 	let payment_params = PaymentParameters::from_node_id(nodes[1].node.get_our_node_id(), TEST_FINAL_CLTV)
 		.with_features(nodes[1].node.invoice_features());
-	let scorer = test_utils::TestScorer::with_penalty(0);
+	let scorer = test_utils::TestScorer::new();
 	let keys_manager = test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
 	let random_seed_bytes = keys_manager.get_secure_random_bytes();
 	let route = get_route(
@@ -1442,7 +1443,7 @@ fn do_test_intercepted_payment(test: InterceptTest) {
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, Some(intercept_forwards_config), Some(zero_conf_chan_config)]);
 
 	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
-	let scorer = test_utils::TestScorer::with_penalty(0);
+	let scorer = test_utils::TestScorer::new();
 	let random_seed_bytes = chanmon_cfgs[0].keys_manager.get_secure_random_bytes();
 
 	let _ = create_announced_chan_between_nodes(&nodes, 0, 1).2;
@@ -2174,6 +2175,16 @@ fn retry_multi_path_single_failed_payment() {
 			// not the amount remaining on the full payment, which should be changed.
 			final_value_msat: 100_000_001, final_cltv_expiry_delta: TEST_FINAL_CLTV
 		}, Ok(route.clone()));
+
+	{
+		let scorer = chanmon_cfgs[0].scorer.lock().unwrap();
+		// The initial send attempt, 2 paths
+		scorer.expect_usage(chans[0].short_channel_id.unwrap(), ChannelUsage { amount_msat: 10_000, inflight_htlc_msat: 0, effective_capacity: EffectiveCapacity::Unknown });
+		scorer.expect_usage(chans[1].short_channel_id.unwrap(), ChannelUsage { amount_msat: 100_000_001, inflight_htlc_msat: 0, effective_capacity: EffectiveCapacity::Unknown });
+		// The retry, 2 paths. Ensure that the in-flight HTLC amount is factored in.
+		scorer.expect_usage(chans[0].short_channel_id.unwrap(), ChannelUsage { amount_msat: 50_000_001, inflight_htlc_msat: 10_000, effective_capacity: EffectiveCapacity::Unknown });
+		scorer.expect_usage(chans[1].short_channel_id.unwrap(), ChannelUsage { amount_msat: 50_000_000, inflight_htlc_msat: 0, effective_capacity: EffectiveCapacity::Unknown });
+	}
 
 	nodes[0].node.send_payment_with_retry(payment_hash, &Some(payment_secret), PaymentId(payment_hash.0), route_params, Retry::Attempts(1)).unwrap();
 	let htlc_msgs = nodes[0].node.get_and_clear_pending_msg_events();

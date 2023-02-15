@@ -22,10 +22,10 @@ use crate::ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 use crate::ln::{msgs, wire};
 use crate::ln::msgs::LightningError;
 use crate::ln::script::ShutdownScript;
-use crate::routing::gossip::NetworkGraph;
-use crate::routing::gossip::NodeId;
+use crate::routing::gossip::{EffectiveCapacity, NetworkGraph, NodeId};
+use crate::routing::utxo::{UtxoLookup, UtxoLookupError, UtxoResult};
 use crate::routing::router::{find_route, InFlightHtlcs, Route, RouteHop, RouteParameters, Router, ScorerAccountingForInFlightHtlcs};
-use crate::routing::scoring::FixedPenaltyScorer;
+use crate::routing::scoring::{ChannelUsage, Score};
 use crate::util::config::UserConfig;
 use crate::util::enforcing_trait_impls::{EnforcingSigner, EnforcementState};
 use crate::util::events;
@@ -48,6 +48,7 @@ use regex;
 
 use crate::io;
 use crate::prelude::*;
+use core::cell::RefCell;
 use core::time::Duration;
 use crate::sync::{Mutex, Arc};
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -79,11 +80,12 @@ impl chaininterface::FeeEstimator for TestFeeEstimator {
 pub struct TestRouter<'a> {
 	pub network_graph: Arc<NetworkGraph<&'a TestLogger>>,
 	pub next_routes: Mutex<VecDeque<(RouteParameters, Result<Route, LightningError>)>>,
+	pub scorer: &'a Mutex<TestScorer>,
 }
 
 impl<'a> TestRouter<'a> {
-	pub fn new(network_graph: Arc<NetworkGraph<&'a TestLogger>>) -> Self {
-		Self { network_graph, next_routes: Mutex::new(VecDeque::new()), }
+	pub fn new(network_graph: Arc<NetworkGraph<&'a TestLogger>>, scorer: &'a Mutex<TestScorer>) -> Self {
+		Self { network_graph, next_routes: Mutex::new(VecDeque::new()), scorer }
 	}
 
 	pub fn expect_find_route(&self, query: RouteParameters, result: Result<Route, LightningError>) {
@@ -99,19 +101,40 @@ impl<'a> Router for TestRouter<'a> {
 	) -> Result<Route, msgs::LightningError> {
 		if let Some((find_route_query, find_route_res)) = self.next_routes.lock().unwrap().pop_front() {
 			assert_eq!(find_route_query, *params);
+			if let Ok(ref route) = find_route_res {
+				let locked_scorer = self.scorer.lock().unwrap();
+				let scorer = ScorerAccountingForInFlightHtlcs::new(locked_scorer, inflight_htlcs);
+				for path in &route.paths {
+					let mut aggregate_msat = 0u64;
+					for (idx, hop) in path.iter().rev().enumerate() {
+						aggregate_msat += hop.fee_msat;
+						let usage = ChannelUsage {
+							amount_msat: aggregate_msat,
+							inflight_htlc_msat: 0,
+							effective_capacity: EffectiveCapacity::Unknown,
+						};
+
+						// Since the path is reversed, the last element in our iteration is the first
+						// hop.
+						if idx == path.len() - 1 {
+							scorer.channel_penalty_msat(hop.short_channel_id, &NodeId::from_pubkey(payer), &NodeId::from_pubkey(&hop.pubkey), usage);
+						} else {
+							let curr_hop_path_idx = path.len() - 1 - idx;
+							scorer.channel_penalty_msat(hop.short_channel_id, &NodeId::from_pubkey(&path[curr_hop_path_idx - 1].pubkey), &NodeId::from_pubkey(&hop.pubkey), usage);
+						}
+					}
+				}
+			}
 			return find_route_res;
 		}
 		let logger = TestLogger::new();
+		let scorer = self.scorer.lock().unwrap();
 		find_route(
 			payer, params, &self.network_graph, first_hops, &logger,
-			&ScorerAccountingForInFlightHtlcs::new(TestScorer::with_penalty(0), &inflight_htlcs),
+			&ScorerAccountingForInFlightHtlcs::new(scorer, &inflight_htlcs),
 			&[42; 32]
 		)
 	}
-	fn notify_payment_path_failed(&self, _path: &[&RouteHop], _short_channel_id: u64) {}
-	fn notify_payment_path_successful(&self, _path: &[&RouteHop]) {}
-	fn notify_payment_probe_successful(&self, _path: &[&RouteHop]) {}
-	fn notify_payment_probe_failed(&self, _path: &[&RouteHop], _short_channel_id: u64) {}
 }
 
 #[cfg(feature = "std")] // If we put this on the `if`, we get "attributes are not yet allowed on `if` expressions" on 1.41.1
@@ -571,6 +594,8 @@ impl msgs::RoutingMessageHandler for TestRoutingMessageHandler {
 		features.set_gossip_queries_optional();
 		features
 	}
+
+	fn processing_queue_high(&self) -> bool { false }
 }
 
 impl events::MessageSendEventsProvider for TestRoutingMessageHandler {
@@ -839,7 +864,8 @@ impl core::fmt::Debug for OnGetShutdownScriptpubkey {
 
 pub struct TestChainSource {
 	pub genesis_hash: BlockHash,
-	pub utxo_ret: Mutex<Result<TxOut, chain::AccessError>>,
+	pub utxo_ret: Mutex<UtxoResult>,
+	pub get_utxo_call_count: AtomicUsize,
 	pub watched_txn: Mutex<HashSet<(Txid, Script)>>,
 	pub watched_outputs: Mutex<HashSet<(OutPoint, Script)>>,
 }
@@ -849,17 +875,19 @@ impl TestChainSource {
 		let script_pubkey = Builder::new().push_opcode(opcodes::OP_TRUE).into_script();
 		Self {
 			genesis_hash: genesis_block(network).block_hash(),
-			utxo_ret: Mutex::new(Ok(TxOut { value: u64::max_value(), script_pubkey })),
+			utxo_ret: Mutex::new(UtxoResult::Sync(Ok(TxOut { value: u64::max_value(), script_pubkey }))),
+			get_utxo_call_count: AtomicUsize::new(0),
 			watched_txn: Mutex::new(HashSet::new()),
 			watched_outputs: Mutex::new(HashSet::new()),
 		}
 	}
 }
 
-impl chain::Access for TestChainSource {
-	fn get_utxo(&self, genesis_hash: &BlockHash, _short_channel_id: u64) -> Result<TxOut, chain::AccessError> {
+impl UtxoLookup for TestChainSource {
+	fn get_utxo(&self, genesis_hash: &BlockHash, _short_channel_id: u64) -> UtxoResult {
+		self.get_utxo_call_count.fetch_add(1, Ordering::Relaxed);
 		if self.genesis_hash != *genesis_hash {
-			return Err(chain::AccessError::UnknownChain);
+			return UtxoResult::Sync(Err(UtxoLookupError::UnknownChain));
 		}
 
 		self.utxo_ret.lock().unwrap().clone()
@@ -884,5 +912,65 @@ impl Drop for TestChainSource {
 	}
 }
 
-/// A scorer useful in testing, when the passage of time isn't a concern.
-pub type TestScorer = FixedPenaltyScorer;
+pub struct TestScorer {
+	/// Stores a tuple of (scid, ChannelUsage)
+	scorer_expectations: RefCell<Option<VecDeque<(u64, ChannelUsage)>>>,
+}
+
+impl TestScorer {
+	pub fn new() -> Self {
+		Self {
+			scorer_expectations: RefCell::new(None),
+		}
+	}
+
+	pub fn expect_usage(&self, scid: u64, expectation: ChannelUsage) {
+		self.scorer_expectations.borrow_mut().get_or_insert_with(|| VecDeque::new()).push_back((scid, expectation));
+	}
+}
+
+#[cfg(c_bindings)]
+impl crate::util::ser::Writeable for TestScorer {
+	fn write<W: crate::util::ser::Writer>(&self, _: &mut W) -> Result<(), crate::io::Error> { unreachable!(); }
+}
+
+impl Score for TestScorer {
+	fn channel_penalty_msat(
+		&self, short_channel_id: u64, _source: &NodeId, _target: &NodeId, usage: ChannelUsage
+	) -> u64 {
+		if let Some(scorer_expectations) = self.scorer_expectations.borrow_mut().as_mut() {
+			match scorer_expectations.pop_front() {
+				Some((scid, expectation)) => {
+					assert_eq!(expectation, usage);
+					assert_eq!(scid, short_channel_id);
+				},
+				None => {},
+			}
+		}
+		0
+	}
+
+	fn payment_path_failed(&mut self, _actual_path: &[&RouteHop], _actual_short_channel_id: u64) {}
+
+	fn payment_path_successful(&mut self, _actual_path: &[&RouteHop]) {}
+
+	fn probe_failed(&mut self, _actual_path: &[&RouteHop], _: u64) {}
+
+	fn probe_successful(&mut self, _actual_path: &[&RouteHop]) {}
+}
+
+impl Drop for TestScorer {
+	fn drop(&mut self) {
+		#[cfg(feature = "std")] {
+			if std::thread::panicking() {
+				return;
+			}
+		}
+
+		if let Some(scorer_expectations) = self.scorer_expectations.borrow().as_ref() {
+			if !scorer_expectations.is_empty() {
+				panic!("Unsatisfied scorer expectations: {:?}", scorer_expectations)
+			}
+		}
+	}
+}

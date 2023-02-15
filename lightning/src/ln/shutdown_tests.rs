@@ -76,7 +76,7 @@ fn updates_shutdown_wait() {
 	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1);
 	let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2);
 	let logger = test_utils::TestLogger::new();
-	let scorer = test_utils::TestScorer::with_penalty(0);
+	let scorer = test_utils::TestScorer::new();
 	let keys_manager = test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
 	let random_seed_bytes = keys_manager.get_secure_random_bytes();
 

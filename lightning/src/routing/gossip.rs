@@ -7,7 +7,7 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-//! The top-level network map tracking logic lives here.
+//! The [`NetworkGraph`] stores the network gossip and [`P2PGossipSync`] fetches it from peers
 
 use bitcoin::secp256k1::constants::PUBLIC_KEY_SIZE;
 use bitcoin::secp256k1::PublicKey;
@@ -16,17 +16,14 @@ use bitcoin::secp256k1;
 
 use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::hashes::Hash;
-use bitcoin::blockdata::transaction::TxOut;
 use bitcoin::hash_types::BlockHash;
 
-use crate::chain;
-use crate::chain::Access;
-use crate::ln::chan_utils::make_funding_redeemscript_from_slices;
 use crate::ln::features::{ChannelFeatures, NodeFeatures, InitFeatures};
 use crate::ln::msgs::{DecodeError, ErrorAction, Init, LightningError, RoutingMessageHandler, NetAddress, MAX_VALUE_MSAT};
 use crate::ln::msgs::{ChannelAnnouncement, ChannelUpdate, NodeAnnouncement, GossipTimestampFilter};
 use crate::ln::msgs::{QueryChannelRange, ReplyChannelRange, QueryShortChannelIds, ReplyShortChannelIdsEnd};
 use crate::ln::msgs;
+use crate::routing::utxo::{self, UtxoLookup};
 use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer, MaybeReadable};
 use crate::util::logger::{Logger, Level};
 use crate::util::events::{MessageSendEvent, MessageSendEventsProvider};
@@ -43,7 +40,6 @@ use crate::sync::{RwLock, RwLockReadGuard};
 use core::sync::atomic::{AtomicUsize, Ordering};
 use crate::sync::Mutex;
 use core::ops::{Bound, Deref};
-use bitcoin::hashes::hex::ToHex;
 
 #[cfg(feature = "std")]
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -159,6 +155,8 @@ pub struct NetworkGraph<L: Deref> where L::Target: Logger {
 	/// resync them from gossip. Each `NodeId` is mapped to the time (in seconds) it was removed so
 	/// that once some time passes, we can potentially resync it from gossip again.
 	removed_nodes: Mutex<HashMap<NodeId, Option<u64>>>,
+	/// Announcement messages which are awaiting an on-chain lookup to be processed.
+	pub(super) pending_checks: utxo::PendingChecks,
 }
 
 /// A read-only view of [`NetworkGraph`].
@@ -218,31 +216,30 @@ impl_writeable_tlv_based_enum_upgradable!(NetworkUpdate,
 /// This network graph is then used for routing payments.
 /// Provides interface to help with initial routing sync by
 /// serving historical announcements.
-pub struct P2PGossipSync<G: Deref<Target=NetworkGraph<L>>, C: Deref, L: Deref>
-where C::Target: chain::Access, L::Target: Logger
+pub struct P2PGossipSync<G: Deref<Target=NetworkGraph<L>>, U: Deref, L: Deref>
+where U::Target: UtxoLookup, L::Target: Logger
 {
 	network_graph: G,
-	chain_access: Option<C>,
+	utxo_lookup: Option<U>,
 	#[cfg(feature = "std")]
 	full_syncs_requested: AtomicUsize,
 	pending_events: Mutex<Vec<MessageSendEvent>>,
 	logger: L,
 }
 
-impl<G: Deref<Target=NetworkGraph<L>>, C: Deref, L: Deref> P2PGossipSync<G, C, L>
-where C::Target: chain::Access, L::Target: Logger
+impl<G: Deref<Target=NetworkGraph<L>>, U: Deref, L: Deref> P2PGossipSync<G, U, L>
+where U::Target: UtxoLookup, L::Target: Logger
 {
 	/// Creates a new tracker of the actual state of the network of channels and nodes,
 	/// assuming an existing Network Graph.
-	/// Chain monitor is used to make sure announced channels exist on-chain,
-	/// channel data is correct, and that the announcement is signed with
-	/// channel owners' keys.
-	pub fn new(network_graph: G, chain_access: Option<C>, logger: L) -> Self {
+	/// UTXO lookup is used to make sure announced channels exist on-chain, channel data is
+	/// correct, and the announcement is signed with channel owners' keys.
+	pub fn new(network_graph: G, utxo_lookup: Option<U>, logger: L) -> Self {
 		P2PGossipSync {
 			network_graph,
 			#[cfg(feature = "std")]
 			full_syncs_requested: AtomicUsize::new(0),
-			chain_access,
+			utxo_lookup,
 			pending_events: Mutex::new(vec![]),
 			logger,
 		}
@@ -251,8 +248,8 @@ where C::Target: chain::Access, L::Target: Logger
 	/// Adds a provider used to check new announcements. Does not affect
 	/// existing announcements unless they are updated.
 	/// Add, update or remove the provider would replace the current one.
-	pub fn add_chain_access(&mut self, chain_access: Option<C>) {
-		self.chain_access = chain_access;
+	pub fn add_utxo_lookup(&mut self, utxo_lookup: Option<U>) {
+		self.utxo_lookup = utxo_lookup;
 	}
 
 	/// Gets a reference to the underlying [`NetworkGraph`] which was provided in
@@ -274,6 +271,36 @@ where C::Target: chain::Access, L::Target: Logger
 		} else {
 			false
 		}
+	}
+
+	/// Used to broadcast forward gossip messages which were validated async.
+	///
+	/// Note that this will ignore events other than `Broadcast*` or messages with too much excess
+	/// data.
+	pub(super) fn forward_gossip_msg(&self, mut ev: MessageSendEvent) {
+		match &mut ev {
+			MessageSendEvent::BroadcastChannelAnnouncement { msg, ref mut update_msg } => {
+				if msg.contents.excess_data.len() > MAX_EXCESS_BYTES_FOR_RELAY { return; }
+				if update_msg.as_ref()
+					.map(|msg| msg.contents.excess_data.len()).unwrap_or(0) > MAX_EXCESS_BYTES_FOR_RELAY
+				{
+					*update_msg = None;
+				}
+			},
+			MessageSendEvent::BroadcastChannelUpdate { msg } => {
+				if msg.contents.excess_data.len() > MAX_EXCESS_BYTES_FOR_RELAY { return; }
+			},
+			MessageSendEvent::BroadcastNodeAnnouncement { msg } => {
+				if msg.contents.excess_data.len() >  MAX_EXCESS_BYTES_FOR_RELAY ||
+				   msg.contents.excess_address_data.len() > MAX_EXCESS_BYTES_FOR_RELAY ||
+				   msg.contents.excess_data.len() + msg.contents.excess_address_data.len() > MAX_EXCESS_BYTES_FOR_RELAY
+				{
+					return;
+				}
+			},
+			_ => return,
+		}
+		self.pending_events.lock().unwrap().push(ev);
 	}
 }
 
@@ -342,8 +369,8 @@ macro_rules! get_pubkey_from_node_id {
 	}
 }
 
-impl<G: Deref<Target=NetworkGraph<L>>, C: Deref, L: Deref> RoutingMessageHandler for P2PGossipSync<G, C, L>
-where C::Target: chain::Access, L::Target: Logger
+impl<G: Deref<Target=NetworkGraph<L>>, U: Deref, L: Deref> RoutingMessageHandler for P2PGossipSync<G, U, L>
+where U::Target: UtxoLookup, L::Target: Logger
 {
 	fn handle_node_announcement(&self, msg: &msgs::NodeAnnouncement) -> Result<bool, LightningError> {
 		self.network_graph.update_node_from_announcement(msg)?;
@@ -353,8 +380,7 @@ where C::Target: chain::Access, L::Target: Logger
 	}
 
 	fn handle_channel_announcement(&self, msg: &msgs::ChannelAnnouncement) -> Result<bool, LightningError> {
-		self.network_graph.update_channel_from_announcement(msg, &self.chain_access)?;
-		log_gossip!(self.logger, "Added channel_announcement for {}{}", msg.contents.short_channel_id, if !msg.contents.excess_data.is_empty() { " with excess uninterpreted data!" } else { "" });
+		self.network_graph.update_channel_from_announcement(msg, &self.utxo_lookup)?;
 		Ok(msg.contents.excess_data.len() <= MAX_EXCESS_BYTES_FOR_RELAY)
 	}
 
@@ -630,11 +656,15 @@ where C::Target: chain::Access, L::Target: Logger
 		features.set_gossip_queries_optional();
 		features
 	}
+
+	fn processing_queue_high(&self) -> bool {
+		self.network_graph.pending_checks.too_many_checks_pending()
+	}
 }
 
-impl<G: Deref<Target=NetworkGraph<L>>, C: Deref, L: Deref> MessageSendEventsProvider for P2PGossipSync<G, C, L>
+impl<G: Deref<Target=NetworkGraph<L>>, U: Deref, L: Deref> MessageSendEventsProvider for P2PGossipSync<G, U, L>
 where
-	C::Target: chain::Access,
+	U::Target: UtxoLookup,
 	L::Target: Logger,
 {
 	fn get_and_clear_pending_msg_events(&self) -> Vec<MessageSendEvent> {
@@ -938,7 +968,7 @@ impl<'a> fmt::Debug for DirectedChannelInfo<'a> {
 ///
 /// While this may be smaller than the actual channel capacity, amounts greater than
 /// [`Self::as_msat`] should not be routed through the channel.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum EffectiveCapacity {
 	/// The available liquidity in the channel known from being a channel counterparty, and thus a
 	/// direct hop.
@@ -1205,6 +1235,7 @@ impl<L: Deref> ReadableArgs<L> for NetworkGraph<L> where L::Target: Logger {
 			last_rapid_gossip_sync_timestamp: Mutex::new(last_rapid_gossip_sync_timestamp),
 			removed_nodes: Mutex::new(HashMap::new()),
 			removed_channels: Mutex::new(HashMap::new()),
+			pending_checks: utxo::PendingChecks::new(),
 		})
 	}
 }
@@ -1244,6 +1275,7 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 			last_rapid_gossip_sync_timestamp: Mutex::new(None),
 			removed_channels: Mutex::new(HashMap::new()),
 			removed_nodes: Mutex::new(HashMap::new()),
+			pending_checks: utxo::PendingChecks::new(),
 		}
 	}
 
@@ -1299,8 +1331,13 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 	}
 
 	fn update_node_from_announcement_intern(&self, msg: &msgs::UnsignedNodeAnnouncement, full_msg: Option<&msgs::NodeAnnouncement>) -> Result<(), LightningError> {
-		match self.nodes.write().unwrap().get_mut(&msg.node_id) {
-			None => Err(LightningError{err: "No existing channels for node_announcement".to_owned(), action: ErrorAction::IgnoreError}),
+		let mut nodes = self.nodes.write().unwrap();
+		match nodes.get_mut(&msg.node_id) {
+			None => {
+				core::mem::drop(nodes);
+				self.pending_checks.check_hold_pending_node_announcement(msg, full_msg)?;
+				Err(LightningError{err: "No existing channels for node_announcement".to_owned(), action: ErrorAction::IgnoreError})
+			},
 			Some(node) => {
 				if let Some(node_info) = node.announcement_info.as_ref() {
 					// The timestamp field is somewhat of a misnomer - the BOLTs use it to order
@@ -1337,35 +1374,35 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 	/// RoutingMessageHandler implementation to call it indirectly. This may be useful to accept
 	/// routing messages from a source using a protocol other than the lightning P2P protocol.
 	///
-	/// If a `chain::Access` object is provided via `chain_access`, it will be called to verify
+	/// If a [`UtxoLookup`] object is provided via `utxo_lookup`, it will be called to verify
 	/// the corresponding UTXO exists on chain and is correctly-formatted.
-	pub fn update_channel_from_announcement<C: Deref>(
-		&self, msg: &msgs::ChannelAnnouncement, chain_access: &Option<C>,
+	pub fn update_channel_from_announcement<U: Deref>(
+		&self, msg: &msgs::ChannelAnnouncement, utxo_lookup: &Option<U>,
 	) -> Result<(), LightningError>
 	where
-		C::Target: chain::Access,
+		U::Target: UtxoLookup,
 	{
 		let msg_hash = hash_to_message!(&Sha256dHash::hash(&msg.contents.encode()[..])[..]);
 		secp_verify_sig!(self.secp_ctx, &msg_hash, &msg.node_signature_1, &get_pubkey_from_node_id!(msg.contents.node_id_1, "channel_announcement"), "channel_announcement");
 		secp_verify_sig!(self.secp_ctx, &msg_hash, &msg.node_signature_2, &get_pubkey_from_node_id!(msg.contents.node_id_2, "channel_announcement"), "channel_announcement");
 		secp_verify_sig!(self.secp_ctx, &msg_hash, &msg.bitcoin_signature_1, &get_pubkey_from_node_id!(msg.contents.bitcoin_key_1, "channel_announcement"), "channel_announcement");
 		secp_verify_sig!(self.secp_ctx, &msg_hash, &msg.bitcoin_signature_2, &get_pubkey_from_node_id!(msg.contents.bitcoin_key_2, "channel_announcement"), "channel_announcement");
-		self.update_channel_from_unsigned_announcement_intern(&msg.contents, Some(msg), chain_access)
+		self.update_channel_from_unsigned_announcement_intern(&msg.contents, Some(msg), utxo_lookup)
 	}
 
 	/// Store or update channel info from a channel announcement without verifying the associated
 	/// signatures. Because we aren't given the associated signatures here we cannot relay the
 	/// channel announcement to any of our peers.
 	///
-	/// If a `chain::Access` object is provided via `chain_access`, it will be called to verify
+	/// If a [`UtxoLookup`] object is provided via `utxo_lookup`, it will be called to verify
 	/// the corresponding UTXO exists on chain and is correctly-formatted.
-	pub fn update_channel_from_unsigned_announcement<C: Deref>(
-		&self, msg: &msgs::UnsignedChannelAnnouncement, chain_access: &Option<C>
+	pub fn update_channel_from_unsigned_announcement<U: Deref>(
+		&self, msg: &msgs::UnsignedChannelAnnouncement, utxo_lookup: &Option<U>
 	) -> Result<(), LightningError>
 	where
-		C::Target: chain::Access,
+		U::Target: UtxoLookup,
 	{
-		self.update_channel_from_unsigned_announcement_intern(msg, None, chain_access)
+		self.update_channel_from_unsigned_announcement_intern(msg, None, utxo_lookup)
 	}
 
 	/// Update channel from partial announcement data received via rapid gossip sync
@@ -1444,11 +1481,11 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 		Ok(())
 	}
 
-	fn update_channel_from_unsigned_announcement_intern<C: Deref>(
-		&self, msg: &msgs::UnsignedChannelAnnouncement, full_msg: Option<&msgs::ChannelAnnouncement>, chain_access: &Option<C>
+	fn update_channel_from_unsigned_announcement_intern<U: Deref>(
+		&self, msg: &msgs::UnsignedChannelAnnouncement, full_msg: Option<&msgs::ChannelAnnouncement>, utxo_lookup: &Option<U>
 	) -> Result<(), LightningError>
 	where
-		C::Target: chain::Access,
+		U::Target: UtxoLookup,
 	{
 		if msg.node_id_1 == msg.node_id_2 || msg.bitcoin_key_1 == msg.bitcoin_key_2 {
 			return Err(LightningError{err: "Channel announcement node had a channel with itself".to_owned(), action: ErrorAction::IgnoreError});
@@ -1476,7 +1513,7 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 							action: ErrorAction::IgnoreDuplicateGossip
 						});
 					}
-				} else if chain_access.is_none() {
+				} else if utxo_lookup.is_none() {
 					// Similarly, if we can't check the chain right now anyway, ignore the
 					// duplicate announcement without bothering to take the channels write lock.
 					return Err(LightningError {
@@ -1499,32 +1536,8 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 			}
 		}
 
-		let utxo_value = match &chain_access {
-			&None => {
-				// Tentatively accept, potentially exposing us to DoS attacks
-				None
-			},
-			&Some(ref chain_access) => {
-				match chain_access.get_utxo(&msg.chain_hash, msg.short_channel_id) {
-					Ok(TxOut { value, script_pubkey }) => {
-						let expected_script =
-							make_funding_redeemscript_from_slices(msg.bitcoin_key_1.as_slice(), msg.bitcoin_key_2.as_slice()).to_v0_p2wsh();
-						if script_pubkey != expected_script {
-							return Err(LightningError{err: format!("Channel announcement key ({}) didn't match on-chain script ({})", expected_script.to_hex(), script_pubkey.to_hex()), action: ErrorAction::IgnoreError});
-						}
-						//TODO: Check if value is worth storing, use it to inform routing, and compare it
-						//to the new HTLC max field in channel_update
-						Some(value)
-					},
-					Err(chain::AccessError::UnknownChain) => {
-						return Err(LightningError{err: format!("Channel announced on an unknown chain ({})", msg.chain_hash.encode().to_hex()), action: ErrorAction::IgnoreError});
-					},
-					Err(chain::AccessError::UnknownTx) => {
-						return Err(LightningError{err: "Channel announced without corresponding UTXO entry".to_owned(), action: ErrorAction::IgnoreError});
-					},
-				}
-			},
-		};
+		let utxo_value = self.pending_checks.check_channel_announcement(
+			utxo_lookup, msg, full_msg)?;
 
 		#[allow(unused_mut, unused_assignments)]
 		let mut announcement_received_time = 0;
@@ -1545,7 +1558,10 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 			announcement_received_time,
 		};
 
-		self.add_channel_between_nodes(msg.short_channel_id, chan_info, utxo_value)
+		self.add_channel_between_nodes(msg.short_channel_id, chan_info, utxo_value)?;
+
+		log_gossip!(self.logger, "Added channel_announcement for {}{}", msg.short_channel_id, if !msg.excess_data.is_empty() { " with excess uninterpreted data!" } else { "" });
+		Ok(())
 	}
 
 	/// Marks a channel in the graph as failed if a corresponding HTLC fail was sent.
@@ -1749,7 +1765,11 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 
 		let mut channels = self.channels.write().unwrap();
 		match channels.get_mut(&msg.short_channel_id) {
-			None => return Err(LightningError{err: "Couldn't find channel for update".to_owned(), action: ErrorAction::IgnoreError}),
+			None => {
+				core::mem::drop(channels);
+				self.pending_checks.check_hold_pending_channel_update(msg, full_msg)?;
+				return Err(LightningError{err: "Couldn't find channel for update".to_owned(), action: ErrorAction::IgnoreError});
+			},
 			Some(channel) => {
 				if msg.htlc_maximum_msat > MAX_VALUE_MSAT {
 					return Err(LightningError{err:
@@ -1903,13 +1923,13 @@ impl ReadOnlyNetworkGraph<'_> {
 }
 
 #[cfg(test)]
-mod tests {
-	use crate::chain;
+pub(crate) mod tests {
 	use crate::ln::channelmanager;
 	use crate::ln::chan_utils::make_funding_redeemscript;
 	#[cfg(feature = "std")]
 	use crate::ln::features::InitFeatures;
 	use crate::routing::gossip::{P2PGossipSync, NetworkGraph, NetworkUpdate, NodeAlias, MAX_EXCESS_BYTES_FOR_RELAY, NodeId, RoutingFees, ChannelUpdateInfo, ChannelInfo, NodeAnnouncementInfo, NodeInfo};
+	use crate::routing::utxo::{UtxoLookupError, UtxoResult};
 	use crate::ln::msgs::{RoutingMessageHandler, UnsignedNodeAnnouncement, NodeAnnouncement,
 		UnsignedChannelAnnouncement, ChannelAnnouncement, UnsignedChannelUpdate, ChannelUpdate,
 		ReplyChannelRange, QueryChannelRange, QueryShortChannelIds, MAX_VALUE_MSAT};
@@ -1970,7 +1990,7 @@ mod tests {
 		assert!(!gossip_sync.should_request_full_sync(&node_id));
 	}
 
-	fn get_signed_node_announcement<F: Fn(&mut UnsignedNodeAnnouncement)>(f: F, node_key: &SecretKey, secp_ctx: &Secp256k1<secp256k1::All>) -> NodeAnnouncement {
+	pub(crate) fn get_signed_node_announcement<F: Fn(&mut UnsignedNodeAnnouncement)>(f: F, node_key: &SecretKey, secp_ctx: &Secp256k1<secp256k1::All>) -> NodeAnnouncement {
 		let node_id = NodeId::from_pubkey(&PublicKey::from_secret_key(&secp_ctx, node_key));
 		let mut unsigned_announcement = UnsignedNodeAnnouncement {
 			features: channelmanager::provided_node_features(&UserConfig::default()),
@@ -1990,7 +2010,7 @@ mod tests {
 		}
 	}
 
-	fn get_signed_channel_announcement<F: Fn(&mut UnsignedChannelAnnouncement)>(f: F, node_1_key: &SecretKey, node_2_key: &SecretKey, secp_ctx: &Secp256k1<secp256k1::All>) -> ChannelAnnouncement {
+	pub(crate) fn get_signed_channel_announcement<F: Fn(&mut UnsignedChannelAnnouncement)>(f: F, node_1_key: &SecretKey, node_2_key: &SecretKey, secp_ctx: &Secp256k1<secp256k1::All>) -> ChannelAnnouncement {
 		let node_id_1 = PublicKey::from_secret_key(&secp_ctx, node_1_key);
 		let node_id_2 = PublicKey::from_secret_key(&secp_ctx, node_2_key);
 		let node_1_btckey = &SecretKey::from_slice(&[40; 32]).unwrap();
@@ -2017,14 +2037,14 @@ mod tests {
 		}
 	}
 
-	fn get_channel_script(secp_ctx: &Secp256k1<secp256k1::All>) -> Script {
+	pub(crate) fn get_channel_script(secp_ctx: &Secp256k1<secp256k1::All>) -> Script {
 		let node_1_btckey = SecretKey::from_slice(&[40; 32]).unwrap();
 		let node_2_btckey = SecretKey::from_slice(&[39; 32]).unwrap();
 		make_funding_redeemscript(&PublicKey::from_secret_key(secp_ctx, &node_1_btckey),
 			&PublicKey::from_secret_key(secp_ctx, &node_2_btckey)).to_v0_p2wsh()
 	}
 
-	fn get_signed_channel_update<F: Fn(&mut UnsignedChannelUpdate)>(f: F, node_key: &SecretKey, secp_ctx: &Secp256k1<secp256k1::All>) -> ChannelUpdate {
+	pub(crate) fn get_signed_channel_update<F: Fn(&mut UnsignedChannelUpdate)>(f: F, node_key: &SecretKey, secp_ctx: &Secp256k1<secp256k1::All>) -> ChannelUpdate {
 		let mut unsigned_channel_update = UnsignedChannelUpdate {
 			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
 			short_channel_id: 0,
@@ -2141,7 +2161,7 @@ mod tests {
 
 		// Test if an associated transaction were not on-chain (or not confirmed).
 		let chain_source = test_utils::TestChainSource::new(Network::Testnet);
-		*chain_source.utxo_ret.lock().unwrap() = Err(chain::AccessError::UnknownTx);
+		*chain_source.utxo_ret.lock().unwrap() = UtxoResult::Sync(Err(UtxoLookupError::UnknownTx));
 		let network_graph = NetworkGraph::new(genesis_hash, &logger);
 		gossip_sync = P2PGossipSync::new(&network_graph, Some(&chain_source), &logger);
 
@@ -2154,7 +2174,8 @@ mod tests {
 		};
 
 		// Now test if the transaction is found in the UTXO set and the script is correct.
-		*chain_source.utxo_ret.lock().unwrap() = Ok(TxOut { value: 0, script_pubkey: good_script.clone() });
+		*chain_source.utxo_ret.lock().unwrap() =
+			UtxoResult::Sync(Ok(TxOut { value: 0, script_pubkey: good_script.clone() }));
 		let valid_announcement = get_signed_channel_announcement(|unsigned_announcement| {
 			unsigned_announcement.short_channel_id += 2;
 		}, node_1_privkey, node_2_privkey, &secp_ctx);
@@ -2172,7 +2193,8 @@ mod tests {
 
 		// If we receive announcement for the same channel, once we've validated it against the
 		// chain, we simply ignore all new (duplicate) announcements.
-		*chain_source.utxo_ret.lock().unwrap() = Ok(TxOut { value: 0, script_pubkey: good_script });
+		*chain_source.utxo_ret.lock().unwrap() =
+			UtxoResult::Sync(Ok(TxOut { value: 0, script_pubkey: good_script }));
 		match gossip_sync.handle_channel_announcement(&valid_announcement) {
 			Ok(_) => panic!(),
 			Err(e) => assert_eq!(e.err, "Already have chain-validated channel")
@@ -2246,7 +2268,8 @@ mod tests {
 		{
 			// Announce a channel we will update
 			let good_script = get_channel_script(&secp_ctx);
-			*chain_source.utxo_ret.lock().unwrap() = Ok(TxOut { value: amount_sats, script_pubkey: good_script.clone() });
+			*chain_source.utxo_ret.lock().unwrap() =
+				UtxoResult::Sync(Ok(TxOut { value: amount_sats, script_pubkey: good_script.clone() }));
 
 			let valid_channel_announcement = get_signed_channel_announcement(|_| {}, node_1_privkey, node_2_privkey, &secp_ctx);
 			short_channel_id = valid_channel_announcement.contents.short_channel_id;

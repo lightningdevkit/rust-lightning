@@ -140,7 +140,7 @@ fn test_funding_peer_disconnect() {
 	assert_eq!(events_7.len(), 1);
 	let (chan_announcement, as_update) = match events_7[0] {
 		MessageSendEvent::BroadcastChannelAnnouncement { ref msg, ref update_msg } => {
-			(msg.clone(), update_msg.clone())
+			(msg.clone(), update_msg.clone().unwrap())
 		},
 		_ => panic!("Unexpected event {:?}", events_7[0]),
 	};
@@ -153,7 +153,7 @@ fn test_funding_peer_disconnect() {
 	let bs_update = match events_8[0] {
 		MessageSendEvent::BroadcastChannelAnnouncement { ref msg, ref update_msg } => {
 			assert_eq!(*msg, chan_announcement);
-			update_msg.clone()
+			update_msg.clone().unwrap()
 		},
 		_ => panic!("Unexpected event {:?}", events_8[0]),
 	};
@@ -701,8 +701,8 @@ fn do_test_partial_claim_before_restart(persist_both_monitors: bool) {
 	// Send the payment through to nodes[3] *without* clearing the PaymentClaimable event
 	let mut send_events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(send_events.len(), 2);
-	let (node_1_msgs, mut send_events) = remove_first_msg_event_to_node(&nodes[1].node.get_our_node_id(), &send_events);
-	let (node_2_msgs, _send_events) = remove_first_msg_event_to_node(&nodes[2].node.get_our_node_id(), &send_events);
+	let node_1_msgs = remove_first_msg_event_to_node(&nodes[1].node.get_our_node_id(), &mut send_events);
+	let node_2_msgs = remove_first_msg_event_to_node(&nodes[2].node.get_our_node_id(), &mut send_events);
 	do_pass_along_path(&nodes[0], &[&nodes[1], &nodes[3]], 15_000_000, payment_hash, Some(payment_secret), node_1_msgs, true, false, None);
 	do_pass_along_path(&nodes[0], &[&nodes[2], &nodes[3]], 15_000_000, payment_hash, Some(payment_secret), node_2_msgs, true, false, None);
 
