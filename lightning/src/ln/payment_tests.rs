@@ -1857,13 +1857,15 @@ fn auto_retry_partial_failure() {
 		payment_params: Some(route_params.payment_params.clone()),
 	};
 	nodes[0].router.expect_find_route(route_params.clone(), Ok(send_route));
+	let mut payment_params = route_params.payment_params.clone();
+	payment_params.previously_failed_channels.push(chan_2_id);
 	nodes[0].router.expect_find_route(RouteParameters {
-			payment_params: route_params.payment_params.clone(),
-			final_value_msat: amt_msat / 2, final_cltv_expiry_delta: TEST_FINAL_CLTV
+			payment_params, final_value_msat: amt_msat / 2, final_cltv_expiry_delta: TEST_FINAL_CLTV
 		}, Ok(retry_1_route));
+	let mut payment_params = route_params.payment_params.clone();
+	payment_params.previously_failed_channels.push(chan_3_id);
 	nodes[0].router.expect_find_route(RouteParameters {
-			payment_params: route_params.payment_params.clone(),
-			final_value_msat: amt_msat / 4, final_cltv_expiry_delta: TEST_FINAL_CLTV
+			payment_params, final_value_msat: amt_msat / 4, final_cltv_expiry_delta: TEST_FINAL_CLTV
 		}, Ok(retry_2_route));
 
 	// Send a payment that will partially fail on send, then partially fail on retry, then succeed.
@@ -2113,8 +2115,10 @@ fn retry_multi_path_single_failed_payment() {
 	// On retry, split the payment across both channels.
 	route.paths[0][0].fee_msat = 50_000_001;
 	route.paths[1][0].fee_msat = 50_000_000;
+	let mut pay_params = route.payment_params.clone().unwrap();
+	pay_params.previously_failed_channels.push(chans[1].short_channel_id.unwrap());
 	nodes[0].router.expect_find_route(RouteParameters {
-			payment_params: route.payment_params.clone().unwrap(),
+			payment_params: pay_params,
 			// Note that the second request here requests the amount we originally failed to send,
 			// not the amount remaining on the full payment, which should be changed.
 			final_value_msat: 100_000_001, final_cltv_expiry_delta: TEST_FINAL_CLTV
@@ -2196,9 +2200,11 @@ fn immediate_retry_on_failure() {
 	route.paths[0][0].short_channel_id = chans[1].short_channel_id.unwrap();
 	route.paths[0][0].fee_msat = 50_000_000;
 	route.paths[1][0].fee_msat = 50_000_001;
+	let mut pay_params = route_params.payment_params.clone();
+	pay_params.previously_failed_channels.push(chans[0].short_channel_id.unwrap());
 	nodes[0].router.expect_find_route(RouteParameters {
-			payment_params: route_params.payment_params.clone(),
-			final_value_msat: amt_msat, final_cltv_expiry_delta: TEST_FINAL_CLTV
+			payment_params: pay_params, final_value_msat: amt_msat,
+			final_cltv_expiry_delta: TEST_FINAL_CLTV
 		}, Ok(route.clone()));
 
 	nodes[0].node.send_payment_with_retry(payment_hash, &Some(payment_secret), PaymentId(payment_hash.0), route_params, Retry::Attempts(1)).unwrap();

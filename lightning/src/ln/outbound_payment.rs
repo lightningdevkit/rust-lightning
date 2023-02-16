@@ -735,8 +735,8 @@ impl OutboundPayments {
 
 	fn handle_pay_route_err<R: Deref, NS: Deref, ES: Deref, IH, SP, L: Deref>(
 		&self, err: PaymentSendFailure, payment_id: PaymentId, payment_hash: PaymentHash, route: Route,
-		route_params: RouteParameters, router: &R, first_hops: Vec<ChannelDetails>, inflight_htlcs: &IH,
-		entropy_source: &ES, node_signer: &NS, best_block_height: u32, logger: &L,
+		mut route_params: RouteParameters, router: &R, first_hops: Vec<ChannelDetails>,
+		inflight_htlcs: &IH, entropy_source: &ES, node_signer: &NS, best_block_height: u32, logger: &L,
 		pending_events: &Mutex<Vec<events::Event>>, send_payment_along_path: &SP,
 	)
 	where
@@ -750,11 +750,11 @@ impl OutboundPayments {
 	{
 		match err {
 			PaymentSendFailure::AllFailedResendSafe(errs) => {
-				Self::push_payment_path_failed_evs(payment_id, payment_hash, route.paths, errs.into_iter().map(|e| Err(e)), pending_events);
+				Self::push_path_failed_evs_and_scids(payment_id, payment_hash, &mut route_params, route.paths, errs.into_iter().map(|e| Err(e)), pending_events);
 				self.retry_payment_internal(payment_id, route_params, router, first_hops, inflight_htlcs, entropy_source, node_signer, best_block_height, logger, pending_events, send_payment_along_path);
 			},
-			PaymentSendFailure::PartialFailure { failed_paths_retry: Some(retry), results, .. } => {
-				Self::push_payment_path_failed_evs(payment_id, payment_hash, route.paths, results.into_iter(), pending_events);
+			PaymentSendFailure::PartialFailure { failed_paths_retry: Some(mut retry), results, .. } => {
+				Self::push_path_failed_evs_and_scids(payment_id, payment_hash, &mut retry, route.paths, results.into_iter(), pending_events);
 				// Some paths were sent, even if we failed to send the full MPP value our recipient may
 				// misbehave and claim the funds, at which point we have to consider the payment sent, so
 				// return `Ok()` here, ignoring any retry errors.
@@ -766,7 +766,7 @@ impl OutboundPayments {
 				// initial HTLC-Add messages yet.
 			},
 			PaymentSendFailure::PathParameterError(results) => {
-				Self::push_payment_path_failed_evs(payment_id, payment_hash, route.paths, results.into_iter(), pending_events);
+				Self::push_path_failed_evs_and_scids(payment_id, payment_hash, &mut route_params, route.paths, results.into_iter(), pending_events);
 				self.abandon_payment(payment_id, pending_events);
 			},
 			PaymentSendFailure::ParameterError(e) => {
@@ -777,9 +777,9 @@ impl OutboundPayments {
 		}
 	}
 
-	fn push_payment_path_failed_evs<I: ExactSizeIterator + Iterator<Item = Result<(), APIError>>>(
-		payment_id: PaymentId, payment_hash: PaymentHash, paths: Vec<Vec<RouteHop>>, path_results: I,
-		pending_events: &Mutex<Vec<events::Event>>
+	fn push_path_failed_evs_and_scids<I: ExactSizeIterator + Iterator<Item = Result<(), APIError>>>(
+		payment_id: PaymentId, payment_hash: PaymentHash, route_params: &mut RouteParameters,
+		paths: Vec<Vec<RouteHop>>, path_results: I, pending_events: &Mutex<Vec<events::Event>>
 	) {
 		let mut events = pending_events.lock().unwrap();
 		debug_assert_eq!(paths.len(), path_results.len());
@@ -788,7 +788,9 @@ impl OutboundPayments {
 				let failed_scid = if let APIError::InvalidRoute { .. } = e {
 					None
 				} else {
-					Some(path[0].short_channel_id)
+					let scid = path[0].short_channel_id;
+					route_params.payment_params.previously_failed_channels.push(scid);
+					Some(scid)
 				};
 				events.push(events::Event::PaymentPathFailed {
 					payment_id: Some(payment_id),
