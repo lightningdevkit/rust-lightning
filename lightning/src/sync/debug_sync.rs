@@ -14,6 +14,8 @@ use std::sync::Condvar as StdCondvar;
 
 use crate::prelude::HashMap;
 
+use super::{LockTestExt, LockHeldState};
+
 #[cfg(feature = "backtrace")]
 use {crate::prelude::hash_map, backtrace::Backtrace, std::sync::Once};
 
@@ -168,6 +170,18 @@ impl LockMetadata {
 	fn pre_lock(this: &Arc<LockMetadata>) { Self::_pre_lock(this, false); }
 	fn pre_read_lock(this: &Arc<LockMetadata>) -> bool { Self::_pre_lock(this, true) }
 
+	fn held_by_thread(this: &Arc<LockMetadata>) -> LockHeldState {
+		let mut res = LockHeldState::NotHeldByThread;
+		LOCKS_HELD.with(|held| {
+			for (locked_idx, _locked) in held.borrow().iter() {
+				if *locked_idx == this.lock_idx {
+					res = LockHeldState::HeldByThread;
+				}
+			}
+		});
+		res
+	}
+
 	fn try_locked(this: &Arc<LockMetadata>) {
 		LOCKS_HELD.with(|held| {
 			// Since a try-lock will simply fail if the lock is held already, we do not
@@ -245,6 +259,13 @@ impl<T> Mutex<T> {
 			LockMetadata::try_locked(&self.deps);
 		}
 		res
+	}
+}
+
+impl <T> LockTestExt for Mutex<T> {
+	#[inline]
+	fn held_by_thread(&self) -> LockHeldState {
+		LockMetadata::held_by_thread(&self.deps)
 	}
 }
 
@@ -329,6 +350,13 @@ impl<T> RwLock<T> {
 			LockMetadata::try_locked(&self.deps);
 		}
 		res
+	}
+}
+
+impl <T> LockTestExt for RwLock<T> {
+	#[inline]
+	fn held_by_thread(&self) -> LockHeldState {
+		LockMetadata::held_by_thread(&self.deps)
 	}
 }
 

@@ -2,6 +2,7 @@ pub use ::alloc::sync::Arc;
 use core::ops::{Deref, DerefMut};
 use core::time::Duration;
 use core::cell::{RefCell, Ref, RefMut};
+use super::{LockTestExt, LockHeldState};
 
 pub type LockResult<Guard> = Result<Guard, ()>;
 
@@ -61,6 +62,14 @@ impl<T> Mutex<T> {
 	}
 }
 
+impl<T> LockTestExt for Mutex<T> {
+	#[inline]
+	fn held_by_thread(&self) -> LockHeldState {
+		if self.lock().is_err() { return LockHeldState::HeldByThread; }
+		else { return LockHeldState::NotHeldByThread; }
+	}
+}
+
 pub struct RwLock<T: ?Sized> {
 	inner: RefCell<T>
 }
@@ -113,6 +122,14 @@ impl<T> RwLock<T> {
 			Ok(lock) => Ok(RwLockWriteGuard { lock }),
 			Err(_) => Err(())
 		}
+	}
+}
+
+impl<T> LockTestExt for RwLock<T> {
+	#[inline]
+	fn held_by_thread(&self) -> LockHeldState {
+		if self.write().is_err() { return LockHeldState::HeldByThread; }
+		else { return LockHeldState::NotHeldByThread; }
 	}
 }
 

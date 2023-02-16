@@ -1,5 +1,10 @@
 use crate::sync::debug_sync::{RwLock, Mutex};
 
+use super::{LockHeldState, LockTestExt};
+
+use std::sync::Arc;
+use std::thread;
+
 #[test]
 #[should_panic]
 #[cfg(not(feature = "backtrace"))]
@@ -91,4 +96,23 @@ fn read_write_lockorder_fail() {
 		let _b = b.read().unwrap();
 		let _a = a.write().unwrap();
 	}
+}
+
+#[test]
+fn test_thread_locked_state() {
+	let mtx = Arc::new(Mutex::new(()));
+	let mtx_ref = Arc::clone(&mtx);
+	assert_eq!(mtx.held_by_thread(), LockHeldState::NotHeldByThread);
+
+	let lck = mtx.lock().unwrap();
+	assert_eq!(mtx.held_by_thread(), LockHeldState::HeldByThread);
+
+	let thrd = std::thread::spawn(move || {
+		assert_eq!(mtx_ref.held_by_thread(), LockHeldState::NotHeldByThread);
+	});
+	thrd.join().unwrap();
+	assert_eq!(mtx.held_by_thread(), LockHeldState::HeldByThread);
+
+	std::mem::drop(lck);
+	assert_eq!(mtx.held_by_thread(), LockHeldState::NotHeldByThread);
 }
