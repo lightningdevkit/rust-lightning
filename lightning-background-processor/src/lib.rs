@@ -1311,7 +1311,7 @@ mod tests {
 			0, 0, 0, 1, 0, 0, 0, 0, 58, 85, 116, 216, 255, 8, 153, 192, 0, 2, 27, 0, 0, 25, 0, 0,
 			0, 1, 0, 0, 0, 125, 255, 2, 68, 226, 0, 6, 11, 0, 1, 5, 0, 0, 0, 0, 29, 129, 25, 192,
 		];
-		nodes[0].rapid_gossip_sync.update_network_graph(&initialization_input[..]).unwrap();
+		nodes[0].rapid_gossip_sync.update_network_graph_no_std(&initialization_input[..], Some(1642291930)).unwrap();
 
 		// this should have added two channels
 		assert_eq!(network_graph.read_only().channels().len(), 3);
