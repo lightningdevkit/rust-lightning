@@ -148,7 +148,8 @@ impl<'a> InvoiceBuilder<'a> {
 			Some(amount_msats) => amount_msats,
 			None => match invoice_request.contents.offer.amount() {
 				Some(Amount::Bitcoin { amount_msats }) => {
-					amount_msats * invoice_request.quantity().unwrap_or(1)
+					amount_msats.checked_mul(invoice_request.quantity().unwrap_or(1))
+						.ok_or(SemanticError::InvalidAmount)?
 				},
 				Some(Amount::Currency { .. }) => return Err(SemanticError::UnsupportedCurrency),
 				None => return Err(SemanticError::MissingAmount),
@@ -787,7 +788,7 @@ mod tests {
 	use crate::ln::features::{BlindedHopFeatures, Bolt12InvoiceFeatures};
 	use crate::offers::invoice_request::InvoiceRequestTlvStreamRef;
 	use crate::offers::merkle::{SignError, SignatureTlvStreamRef, self};
-	use crate::offers::offer::{OfferBuilder, OfferTlvStreamRef};
+	use crate::offers::offer::{OfferBuilder, OfferTlvStreamRef, Quantity};
 	use crate::offers::parse::{ParseError, SemanticError};
 	use crate::offers::payer::PayerTlvStreamRef;
 	use crate::offers::refund::RefundBuilder;
@@ -1175,6 +1176,38 @@ mod tests {
 		let (_, _, _, tlv_stream, _) = invoice.as_tlv_stream();
 		assert_eq!(invoice.amount_msats(), 1001);
 		assert_eq!(tlv_stream.amount, Some(1001));
+	}
+
+	#[test]
+	fn builds_invoice_with_quantity_from_request() {
+		let invoice = OfferBuilder::new("foo".into(), recipient_pubkey())
+			.amount_msats(1000)
+			.supported_quantity(Quantity::Unbounded)
+			.build().unwrap()
+			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.quantity(2).unwrap()
+			.build().unwrap()
+			.sign(payer_sign).unwrap()
+			.respond_with_no_std(payment_paths(), payment_hash(), now()).unwrap()
+			.build().unwrap()
+			.sign(recipient_sign).unwrap();
+		let (_, _, _, tlv_stream, _) = invoice.as_tlv_stream();
+		assert_eq!(invoice.amount_msats(), 2000);
+		assert_eq!(tlv_stream.amount, Some(2000));
+
+		match OfferBuilder::new("foo".into(), recipient_pubkey())
+			.amount_msats(1000)
+			.supported_quantity(Quantity::Unbounded)
+			.build().unwrap()
+			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.quantity(u64::max_value()).unwrap()
+			.build_unchecked()
+			.sign(payer_sign).unwrap()
+			.respond_with_no_std(payment_paths(), payment_hash(), now())
+		{
+			Ok(_) => panic!("expected error"),
+			Err(e) => assert_eq!(e, SemanticError::InvalidAmount),
+		}
 	}
 
 	#[test]
