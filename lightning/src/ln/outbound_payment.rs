@@ -1062,17 +1062,19 @@ impl OutboundPayments {
 				});
 			}
 
-			if !payment_is_probe && (!is_retryable_now || !payment_retryable || retry.is_none()) {
+			if payment_is_probe || !is_retryable_now || !payment_retryable || retry.is_none() {
 				let _ = payment.get_mut().mark_abandoned(); // we'll only Err if it's a legacy payment
 				is_retryable_now = false;
 			}
 			if payment.get().remaining_parts() == 0 {
 				all_paths_failed = true;
 				if payment.get().abandoned() {
-					full_failure_ev = Some(events::Event::PaymentFailed {
-						payment_id: *payment_id,
-						payment_hash: payment.get().payment_hash().expect("PendingOutboundPayments::RetriesExceeded always has a payment hash set"),
-					});
+					if !payment_is_probe {
+						full_failure_ev = Some(events::Event::PaymentFailed {
+							payment_id: *payment_id,
+							payment_hash: payment.get().payment_hash().expect("PendingOutboundPayments::RetriesExceeded always has a payment hash set"),
+						});
+					}
 					payment.remove();
 				}
 			}
