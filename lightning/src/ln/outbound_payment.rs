@@ -546,6 +546,12 @@ impl OutboundPayments {
 		});
 	}
 
+	pub(super) fn needs_abandon(&self) -> bool {
+		let outbounds = self.pending_outbound_payments.lock().unwrap();
+		outbounds.iter().any(|(_, pmt)|
+			!pmt.is_auto_retryable_now() && pmt.remaining_parts() == 0 && !pmt.is_fulfilled())
+	}
+
 	/// Will return `Ok(())` iff at least one HTLC is sent for the payment.
 	fn pay_internal<R: Deref, NS: Deref, ES: Deref, IH, SP, L: Deref>(
 		&self, payment_id: PaymentId,

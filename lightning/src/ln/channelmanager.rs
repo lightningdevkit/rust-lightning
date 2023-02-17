@@ -7526,7 +7526,8 @@ where
 			}
 		}
 
-		if !forward_htlcs.is_empty() {
+		let pending_outbounds = OutboundPayments { pending_outbound_payments: Mutex::new(pending_outbound_payments.unwrap()), retry_lock: Mutex::new(()) };
+		if !forward_htlcs.is_empty() || pending_outbounds.needs_abandon() {
 			// If we have pending HTLCs to forward, assume we either dropped a
 			// `PendingHTLCsForwardable` or the user received it but never processed it as they
 			// shut down before the timer hit. Either way, set the time_forwardable to a small
@@ -7694,7 +7695,7 @@ where
 
 			inbound_payment_key: expanded_inbound_key,
 			pending_inbound_payments: Mutex::new(pending_inbound_payments),
-			pending_outbound_payments: OutboundPayments { pending_outbound_payments: Mutex::new(pending_outbound_payments.unwrap()), retry_lock: Mutex::new(()), },
+			pending_outbound_payments: pending_outbounds,
 			pending_intercepted_htlcs: Mutex::new(pending_intercepted_htlcs.unwrap()),
 
 			forward_htlcs: Mutex::new(forward_htlcs),
