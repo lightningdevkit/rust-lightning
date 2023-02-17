@@ -15,7 +15,7 @@ use bitcoin::secp256k1::{self, Secp256k1, SecretKey};
 
 use crate::chain::keysinterface::{EntropySource, NodeSigner, Recipient};
 use crate::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
-use crate::ln::channelmanager::{ChannelDetails, HTLCSource, IDEMPOTENCY_TIMEOUT_TICKS, MIN_HTLC_RELAY_HOLDING_CELL_MILLIS, PaymentId};
+use crate::ln::channelmanager::{ChannelDetails, HTLCSource, IDEMPOTENCY_TIMEOUT_TICKS, PaymentId};
 use crate::ln::channelmanager::MIN_FINAL_CLTV_EXPIRY_DELTA as LDK_DEFAULT_MIN_FINAL_CLTV_EXPIRY_DELTA;
 use crate::ln::msgs::DecodeError;
 use crate::ln::onion_utils::HTLCFailReason;
@@ -30,7 +30,6 @@ use crate::util::time::tests::SinceEpoch;
 use core::cmp;
 use core::fmt::{self, Display, Formatter};
 use core::ops::Deref;
-use core::time::Duration;
 
 use crate::prelude::*;
 use crate::sync::Mutex;
@@ -1012,12 +1011,13 @@ impl OutboundPayments {
 		});
 	}
 
+	// Returns a bool indicating whether a PendingHTLCsForwardable event should be generated.
 	pub(super) fn fail_htlc<L: Deref>(
 		&self, source: &HTLCSource, payment_hash: &PaymentHash, onion_error: &HTLCFailReason,
 		path: &Vec<RouteHop>, session_priv: &SecretKey, payment_id: &PaymentId,
 		payment_params: &Option<PaymentParameters>, probing_cookie_secret: [u8; 32],
 		secp_ctx: &Secp256k1<secp256k1::All>, pending_events: &Mutex<Vec<events::Event>>, logger: &L
-	) where L::Target: Logger {
+	) -> bool where L::Target: Logger {
 		#[cfg(test)]
 		let (network_update, short_channel_id, payment_retryable, onion_error_code, onion_error_data) = onion_error.decode_onion_failure(secp_ctx, logger, &source);
 		#[cfg(not(test))]
@@ -1044,16 +1044,16 @@ impl OutboundPayments {
 
 		let mut all_paths_failed = false;
 		let mut full_failure_ev = None;
-		let mut pending_retry_ev = None;
+		let mut pending_retry_ev = false;
 		let mut retry = None;
 		let attempts_remaining = if let hash_map::Entry::Occupied(mut payment) = outbounds.entry(*payment_id) {
 			if !payment.get_mut().remove(&session_priv_bytes, Some(&path)) {
 				log_trace!(logger, "Received duplicative fail for HTLC with payment_hash {}", log_bytes!(payment_hash.0));
-				return
+				return false
 			}
 			if payment.get().is_fulfilled() {
 				log_trace!(logger, "Received failure of HTLC with payment_hash {} after payment completion", log_bytes!(payment_hash.0));
-				return
+				return false
 			}
 			let mut is_retryable_now = payment.get().is_auto_retryable_now();
 			if let Some(scid) = short_channel_id {
@@ -1105,7 +1105,7 @@ impl OutboundPayments {
 			is_retryable_now
 		} else {
 			log_trace!(logger, "Received duplicative fail for HTLC with payment_hash {}", log_bytes!(payment_hash.0));
-			return
+			return false
 		};
 		core::mem::drop(outbounds);
 		log_trace!(logger, "Failing outbound payment HTLC with payment_hash {}", log_bytes!(payment_hash.0));
@@ -1137,9 +1137,7 @@ impl OutboundPayments {
 				// payment will sit in our outbounds forever.
 				if attempts_remaining && !already_awaiting_retry {
 					debug_assert!(full_failure_ev.is_none());
-					pending_retry_ev = Some(events::Event::PendingHTLCsForwardable {
-						time_forwardable: Duration::from_millis(MIN_HTLC_RELAY_HOLDING_CELL_MILLIS),
-					});
+					pending_retry_ev = true;
 				}
 				events::Event::PaymentPathFailed {
 					payment_id: Some(*payment_id),
@@ -1160,7 +1158,7 @@ impl OutboundPayments {
 		let mut pending_events = pending_events.lock().unwrap();
 		pending_events.push(path_failure);
 		if let Some(ev) = full_failure_ev { pending_events.push(ev); }
-		if let Some(ev) = pending_retry_ev { pending_events.push(ev); }
+		pending_retry_ev
 	}
 
 	pub(super) fn abandon_payment(
