@@ -2349,7 +2349,7 @@ fn no_extra_retries_on_back_to_back_fail() {
 	// Because we now retry payments as a batch, we simply return a single-path route in the
 	// second, batched, request, have that fail, ensure the payment was abandoned.
 	let mut events = nodes[0].node.get_and_clear_pending_events();
-	assert_eq!(events.len(), 4);
+	assert_eq!(events.len(), 3);
 	match events[0] {
 		Event::PaymentPathFailed { payment_hash: ev_payment_hash, payment_failed_permanently, ..  } => {
 			assert_eq!(payment_hash, ev_payment_hash);
@@ -2366,10 +2366,6 @@ fn no_extra_retries_on_back_to_back_fail() {
 			assert_eq!(payment_hash, ev_payment_hash);
 			assert_eq!(payment_failed_permanently, false);
 		},
-		_ => panic!("Unexpected event"),
-	}
-	match events[3] {
-		Event::PendingHTLCsForwardable { .. } => {},
 		_ => panic!("Unexpected event"),
 	}
 
