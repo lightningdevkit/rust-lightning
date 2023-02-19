@@ -23,7 +23,7 @@ use crate::ln::features::ChannelTypeFeatures;
 use crate::ln::msgs;
 use crate::ln::{PaymentPreimage, PaymentHash, PaymentSecret};
 use crate::routing::gossip::NetworkUpdate;
-use crate::util::ser::{BigSize, FixedLengthReader, Writeable, Writer, MaybeReadable, Readable, RequiredWrapper, WithoutLength};
+use crate::util::ser::{BigSize, FixedLengthReader, Writeable, Writer, MaybeReadable, Readable, RequiredWrapper, UpgradableRequired, WithoutLength};
 use crate::routing::router::{RouteHop, RouteParameters};
 
 use bitcoin::{PackedLockTime, Transaction};
@@ -1199,7 +1199,7 @@ impl MaybeReadable for Event {
 					let mut payment_id = None;
 					read_tlv_fields!(reader, {
 						(0, payment_hash, required),
-						(1, network_update, upgradable_required),
+						(1, network_update, upgradable_option),
 						(2, payment_failed_permanently, required),
 						(5, path, vec_type),
 						(7, short_channel_id, option),
@@ -1276,7 +1276,7 @@ impl MaybeReadable for Event {
 			9u8 => {
 				let f = || {
 					let mut channel_id = [0; 32];
-					let mut reason = None;
+					let mut reason = UpgradableRequired(None);
 					let mut user_channel_id_low_opt: Option<u64> = None;
 					let mut user_channel_id_high_opt: Option<u64> = None;
 					read_tlv_fields!(reader, {
@@ -1285,7 +1285,6 @@ impl MaybeReadable for Event {
 						(2, reason, upgradable_required),
 						(3, user_channel_id_high_opt, option),
 					});
-					if reason.is_none() { return Ok(None); }
 
 					// `user_channel_id` used to be a single u64 value. In order to remain
 					// backwards compatible with versions prior to 0.0.113, the u128 is serialized
@@ -1293,7 +1292,7 @@ impl MaybeReadable for Event {
 					let user_channel_id = (user_channel_id_low_opt.unwrap_or(0) as u128) +
 						((user_channel_id_high_opt.unwrap_or(0) as u128) << 64);
 
-					Ok(Some(Event::ChannelClosed { channel_id, user_channel_id, reason: reason.unwrap() }))
+					Ok(Some(Event::ChannelClosed { channel_id, user_channel_id, reason: _init_tlv_based_struct_field!(reason, upgradable_required) }))
 				};
 				f()
 			},
@@ -1349,7 +1348,7 @@ impl MaybeReadable for Event {
 			19u8 => {
 				let f = || {
 					let mut payment_hash = PaymentHash([0; 32]);
-					let mut purpose = None;
+					let mut purpose = UpgradableRequired(None);
 					let mut amount_msat = 0;
 					let mut receiver_node_id = None;
 					read_tlv_fields!(reader, {
@@ -1358,11 +1357,10 @@ impl MaybeReadable for Event {
 						(2, purpose, upgradable_required),
 						(4, amount_msat, required),
 					});
-					if purpose.is_none() { return Ok(None); }
 					Ok(Some(Event::PaymentClaimed {
 						receiver_node_id,
 						payment_hash,
-						purpose: purpose.unwrap(),
+						purpose: _init_tlv_based_struct_field!(purpose, upgradable_required),
 						amount_msat,
 					}))
 				};
@@ -1410,22 +1408,15 @@ impl MaybeReadable for Event {
 			25u8 => {
 				let f = || {
 					let mut prev_channel_id = [0; 32];
-					let mut failed_next_destination_opt = None;
+					let mut failed_next_destination_opt = UpgradableRequired(None);
 					read_tlv_fields!(reader, {
 						(0, prev_channel_id, required),
 						(2, failed_next_destination_opt, upgradable_required),
 					});
-					if let Some(failed_next_destination) = failed_next_destination_opt {
-						Ok(Some(Event::HTLCHandlingFailed {
-							prev_channel_id,
-							failed_next_destination,
-						}))
-					} else {
-						// If we fail to read a `failed_next_destination` assume it's because
-						// `MaybeReadable::read` returned `Ok(None)`, though it's also possible we
-						// were simply missing the field.
-						Ok(None)
-					}
+					Ok(Some(Event::HTLCHandlingFailed {
+						prev_channel_id,
+						failed_next_destination: _init_tlv_based_struct_field!(failed_next_destination_opt, upgradable_required),
+					}))
 				};
 				f()
 			},

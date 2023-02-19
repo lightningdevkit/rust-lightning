@@ -883,9 +883,9 @@ impl Readable for ChannelInfo {
 			(0, features, required),
 			(1, announcement_received_time, (default_value, 0)),
 			(2, node_one, required),
-			(4, one_to_two_wrap, upgradable_required),
+			(4, one_to_two_wrap, upgradable_option),
 			(6, node_two, required),
-			(8, two_to_one_wrap, upgradable_required),
+			(8, two_to_one_wrap, upgradable_option),
 			(10, capacity_sats, required),
 			(12, announcement_message, required),
 		});
@@ -1161,7 +1161,7 @@ impl Readable for NodeInfo {
 
 		read_tlv_fields!(reader, {
 			(0, _lowest_inbound_channel_fees, option),
-			(2, announcement_info_wrap, upgradable_required),
+			(2, announcement_info_wrap, upgradable_option),
 			(4, channels, vec_type),
 		});
 

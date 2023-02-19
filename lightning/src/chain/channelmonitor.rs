@@ -49,7 +49,7 @@ use crate::chain::onchaintx::OnchainTxHandler;
 use crate::chain::package::{CounterpartyOfferedHTLCOutput, CounterpartyReceivedHTLCOutput, HolderFundingOutput, HolderHTLCOutput, PackageSolvingData, PackageTemplate, RevokedOutput, RevokedHTLCOutput};
 use crate::chain::Filter;
 use crate::util::logger::Logger;
-use crate::util::ser::{Readable, ReadableArgs, RequiredWrapper, MaybeReadable, Writer, Writeable, U48};
+use crate::util::ser::{Readable, ReadableArgs, RequiredWrapper, MaybeReadable, UpgradableRequired, Writer, Writeable, U48};
 use crate::util::byte_utils;
 use crate::util::events::Event;
 #[cfg(anchors)]
@@ -454,7 +454,7 @@ impl MaybeReadable for OnchainEventEntry {
 		let mut transaction = None;
 		let mut block_hash = None;
 		let mut height = 0;
-		let mut event = None;
+		let mut event = UpgradableRequired(None);
 		read_tlv_fields!(reader, {
 			(0, txid, required),
 			(1, transaction, option),
@@ -462,11 +462,7 @@ impl MaybeReadable for OnchainEventEntry {
 			(3, block_hash, option),
 			(4, event, upgradable_required),
 		});
-		if let Some(ev) = event {
-			Ok(Some(Self { txid, transaction, height, block_hash, event: ev }))
-		} else {
-			Ok(None)
-		}
+		Ok(Some(Self { txid, transaction, height, block_hash, event: _init_tlv_based_struct_field!(event, upgradable_required) }))
 	}
 }
 

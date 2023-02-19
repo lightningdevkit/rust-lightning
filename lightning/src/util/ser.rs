@@ -303,6 +303,18 @@ impl<T: Readable> From<T> for RequiredWrapper<T> {
 	fn from(t: T) -> RequiredWrapper<T> { RequiredWrapper(Some(t)) }
 }
 
+/// Wrapper to read a required (non-optional) TLV record that may have been upgraded without
+/// backwards compat.
+pub struct UpgradableRequired<T: MaybeReadable>(pub Option<T>);
+impl<T: MaybeReadable> MaybeReadable for UpgradableRequired<T> {
+	#[inline]
+	fn read<R: Read>(reader: &mut R) -> Result<Option<Self>, DecodeError> {
+		let tlv = MaybeReadable::read(reader)?;
+		if let Some(tlv) = tlv { return Ok(Some(Self(Some(tlv)))) }
+		Ok(None)
+	}
+}
+
 pub(crate) struct U48(pub u64);
 impl Writeable for U48 {
 	#[inline]
