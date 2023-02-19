@@ -1721,8 +1721,9 @@ fn do_automatic_retries(test: AutoRetry) {
 		let chan_1_monitor_serialized = get_monitor!(nodes[0], channel_id_1).encode();
 		reload_node!(nodes[0], node_encoded, &[&chan_1_monitor_serialized], persister, new_chain_monitor, node_0_deserialized);
 
+		let mut events = nodes[0].node.get_and_clear_pending_events();
+		expect_pending_htlcs_forwardable_from_events!(nodes[0], events, true);
 		// Make sure we don't retry again.
-		nodes[0].node.process_pending_htlc_forwards();
 		let mut msg_events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(msg_events.len(), 0);
 
@@ -2348,7 +2349,7 @@ fn no_extra_retries_on_back_to_back_fail() {
 	// Because we now retry payments as a batch, we simply return a single-path route in the
 	// second, batched, request, have that fail, ensure the payment was abandoned.
 	let mut events = nodes[0].node.get_and_clear_pending_events();
-	assert_eq!(events.len(), 4);
+	assert_eq!(events.len(), 3);
 	match events[0] {
 		Event::PaymentPathFailed { payment_hash: ev_payment_hash, payment_failed_permanently, ..  } => {
 			assert_eq!(payment_hash, ev_payment_hash);
@@ -2365,10 +2366,6 @@ fn no_extra_retries_on_back_to_back_fail() {
 			assert_eq!(payment_hash, ev_payment_hash);
 			assert_eq!(payment_failed_permanently, false);
 		},
-		_ => panic!("Unexpected event"),
-	}
-	match events[3] {
-		Event::PendingHTLCsForwardable { .. } => {},
 		_ => panic!("Unexpected event"),
 	}
 
