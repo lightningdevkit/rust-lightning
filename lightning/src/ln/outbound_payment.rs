@@ -895,22 +895,22 @@ impl OutboundPayments {
 		   u32, PaymentId, &Option<PaymentPreimage>, [u8; 32]) -> Result<(), APIError>
 	{
 		if route.paths.len() < 1 {
-			return Err(PaymentSendFailure::ParameterError(APIError::InvalidRoute{err: "There must be at least one path to send over"}));
+			return Err(PaymentSendFailure::ParameterError(APIError::InvalidRoute{err: "There must be at least one path to send over".to_owned()}));
 		}
 		if payment_secret.is_none() && route.paths.len() > 1 {
-			return Err(PaymentSendFailure::ParameterError(APIError::APIMisuseError{err: "Payment secret is required for multi-path payments".to_string()}));
+			return Err(PaymentSendFailure::ParameterError(APIError::APIMisuseError{err: "Payment secret is required for multi-path payments".to_owned()}));
 		}
 		let mut total_value = 0;
 		let our_node_id = node_signer.get_node_id(Recipient::Node).unwrap(); // TODO no unwrap
 		let mut path_errs = Vec::with_capacity(route.paths.len());
 		'path_check: for path in route.paths.iter() {
 			if path.len() < 1 || path.len() > 20 {
-				path_errs.push(Err(APIError::InvalidRoute{err: "Path didn't go anywhere/had bogus size"}));
+				path_errs.push(Err(APIError::InvalidRoute{err: "Path didn't go anywhere/had bogus size".to_owned()}));
 				continue 'path_check;
 			}
 			for (idx, hop) in path.iter().enumerate() {
 				if idx != path.len() - 1 && hop.pubkey == our_node_id {
-					path_errs.push(Err(APIError::InvalidRoute{err: "Path went through us but wasn't a simple rebalance loop to us"}));
+					path_errs.push(Err(APIError::InvalidRoute{err: "Path went through us but wasn't a simple rebalance loop to us".to_owned()}));
 					continue 'path_check;
 				}
 			}
