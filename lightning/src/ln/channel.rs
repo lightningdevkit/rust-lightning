@@ -5965,9 +5965,16 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			return Err(APIError::ChannelUnavailable{err: "Cannot begin shutdown while peer is disconnected or we're waiting on a monitor update, maybe force-close instead?".to_owned()});
 		}
 
+		// If we haven't funded the channel yet, we don't need to bother ensuring the shutdown
+		// script is set, we just force-close and call it a day.
+		let mut chan_closed = false;
+		if self.channel_state < ChannelState::FundingSent as u32 {
+			chan_closed = true;
+		}
+
 		let update_shutdown_script = match self.shutdown_scriptpubkey {
 			Some(_) => false,
-			None => {
+			None if !chan_closed => {
 				let shutdown_scriptpubkey = signer_provider.get_shutdown_scriptpubkey();
 				if !shutdown_scriptpubkey.is_compatible(their_features) {
 					return Err(APIError::IncompatibleShutdownScript { script: shutdown_scriptpubkey.clone() });
@@ -5975,6 +5982,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 				self.shutdown_scriptpubkey = Some(shutdown_scriptpubkey);
 				true
 			},
+			None => false,
 		};
 
 		// From here on out, we may not fail!
