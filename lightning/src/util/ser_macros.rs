@@ -949,7 +949,7 @@ macro_rules! impl_writeable_tlv_based_enum_upgradable {
 						Ok(Some($st::$tuple_variant_name(Readable::read(reader)?)))
 					}),*)*
 					_ if id % 2 == 1 => Ok(None),
-					_ => Err(DecodeError::UnknownRequiredFeature),
+					_ => Err($crate::ln::msgs::DecodeError::UnknownRequiredFeature),
 				}
 			}
 		}

@@ -17,7 +17,6 @@ use crate::chain::keysinterface::{EntropySource, NodeSigner, Recipient};
 use crate::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
 use crate::ln::channelmanager::{ChannelDetails, HTLCSource, IDEMPOTENCY_TIMEOUT_TICKS, PaymentId};
 use crate::ln::channelmanager::MIN_FINAL_CLTV_EXPIRY_DELTA as LDK_DEFAULT_MIN_FINAL_CLTV_EXPIRY_DELTA;
-use crate::ln::msgs::DecodeError;
 use crate::ln::onion_utils::HTLCFailReason;
 use crate::routing::router::{InFlightHtlcs, PaymentParameters, Route, RouteHop, RouteParameters, RoutePath, Router};
 use crate::util::errors::APIError;

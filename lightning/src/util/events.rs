@@ -21,7 +21,6 @@ use crate::ln::channelmanager::{InterceptId, PaymentId};
 use crate::ln::channel::FUNDING_CONF_DEADLINE_BLOCKS;
 use crate::ln::features::ChannelTypeFeatures;
 use crate::ln::msgs;
-use crate::ln::msgs::DecodeError;
 use crate::ln::{PaymentPreimage, PaymentHash, PaymentSecret};
 use crate::routing::gossip::NetworkUpdate;
 use crate::util::ser::{BigSize, FixedLengthReader, Writeable, Writer, MaybeReadable, Readable, WithoutLength, OptionDeserWrapper};
