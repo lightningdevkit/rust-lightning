@@ -32,7 +32,7 @@ const INVOICE_ERROR_TLV_TYPE: u64 = 68;
 pub trait OffersMessageHandler {
 	/// Handles the given message by either responding with an [`Invoice`], sending a payment, or
 	/// replying with an error.
-	fn handle_message(&self, message: OffersMessage);
+	fn handle_message(&self, message: OffersMessage) -> Option<OffersMessage>;
 }
 
 /// Possible BOLT 12 Offers messages sent and received via an [`OnionMessage`].

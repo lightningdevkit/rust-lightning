@@ -224,8 +224,10 @@ pub trait CustomOnionMessageHandler {
 	/// The message known to the handler. To support multiple message types, you may want to make this
 	/// an enum with a variant for each supported message.
 	type CustomMessage: CustomOnionMessageContents;
-	/// Called with the custom message that was received.
-	fn handle_custom_message(&self, msg: Self::CustomMessage);
+
+	/// Called with the custom message that was received, returning a response to send, if any.
+	fn handle_custom_message(&self, msg: Self::CustomMessage) -> Option<Self::CustomMessage>;
+
 	/// Read a custom message of type `message_type` from `buffer`, returning `Ok(None)` if the
 	/// message type is unknown.
 	fn read_custom_message<R: io::Read>(&self, message_type: u64, buffer: &mut R) -> Result<Option<Self::CustomMessage>, msgs::DecodeError>;
@@ -320,6 +322,56 @@ where
 		}
 	}
 
+	fn respond_with_onion_message<T: CustomOnionMessageContents>(
+		&self, response: OnionMessageContents<T>, path_id: Option<[u8; 32]>,
+		reply_path: Option<BlindedPath>
+	) {
+		let sender = match self.node_signer.get_node_id(Recipient::Node) {
+			Ok(node_id) => node_id,
+			Err(_) => {
+				log_warn!(
+					self.logger, "Unable to retrieve node id when responding to onion message with \
+					path_id {:02x?}", path_id
+				);
+				return;
+			}
+		};
+
+		let peers = self.pending_messages.lock().unwrap().keys().copied().collect();
+
+		let destination = match reply_path {
+			Some(reply_path) => Destination::BlindedPath(reply_path),
+			None => {
+				log_trace!(
+					self.logger, "Missing reply path when responding to onion message with path_id \
+					{:02x?}", path_id
+				);
+				return;
+			},
+		};
+
+		let path = match self.message_router.find_path(sender, peers, destination) {
+			Ok(path) => path,
+			Err(()) => {
+				log_trace!(
+					self.logger, "Failed to find path when responding to onion message with \
+					path_id {:02x?}", path_id
+				);
+				return;
+			},
+		};
+
+		log_trace!(self.logger, "Responding to onion message with path_id {:02x?}", path_id);
+
+		if let Err(e) = self.send_onion_message(path, response, None) {
+			log_trace!(
+				self.logger, "Failed responding to onion message with path_id {:02x?}: {:?}",
+				path_id, e
+			);
+			return;
+		}
+	}
+
 	#[cfg(test)]
 	pub(super) fn release_pending_msgs(&self) -> HashMap<PublicKey, VecDeque<msgs::OnionMessage>> {
 		let mut pending_msgs = self.pending_messages.lock().unwrap();
@@ -403,9 +455,20 @@ where
 				log_info!(self.logger,
 					"Received an onion message with path_id {:02x?} and {} reply_path",
 						path_id, if reply_path.is_some() { "a" } else { "no" });
-				match message {
-					OnionMessageContents::Offers(msg) => self.offers_handler.handle_message(msg),
-					OnionMessageContents::Custom(msg) => self.custom_handler.handle_custom_message(msg),
+
+				let response = match message {
+					OnionMessageContents::Offers(msg) => {
+						self.offers_handler.handle_message(msg)
+							.map(|msg| OnionMessageContents::Offers(msg))
+					},
+					OnionMessageContents::Custom(msg) => {
+						self.custom_handler.handle_custom_message(msg)
+							.map(|msg| OnionMessageContents::Custom(msg))
+					},
+				};
+
+				if let Some(response) = response {
+					self.respond_with_onion_message(response, path_id, reply_path);
 				}
 			},
 			Ok((Payload::Forward(ForwardControlTlvs::Unblinded(ForwardTlvs {

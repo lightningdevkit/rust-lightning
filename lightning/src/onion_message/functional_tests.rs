@@ -58,8 +58,8 @@ impl MessageRouter for TestMessageRouter {
 struct TestOffersMessageHandler {}
 
 impl OffersMessageHandler for TestOffersMessageHandler {
-	fn handle_message(&self, _message: OffersMessage) {
-		todo!()
+	fn handle_message(&self, _message: OffersMessage) -> Option<OffersMessage> {
+		None
 	}
 }
 
@@ -104,8 +104,9 @@ impl Drop for TestCustomMessageHandler {
 
 impl CustomOnionMessageHandler for TestCustomMessageHandler {
 	type CustomMessage = TestCustomMessage;
-	fn handle_custom_message(&self, _msg: Self::CustomMessage) {
+	fn handle_custom_message(&self, _msg: Self::CustomMessage) -> Option<Self::CustomMessage> {
 		self.num_messages_expected.fetch_sub(1, Ordering::SeqCst);
+		None
 	}
 	fn read_custom_message<R: io::Read>(&self, message_type: u64, buffer: &mut R) -> Result<Option<Self::CustomMessage>, DecodeError> where Self: Sized {
 		if message_type == CUSTOM_MESSAGE_TYPE {
