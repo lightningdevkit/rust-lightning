@@ -126,12 +126,20 @@ impl<NG: Deref<Target=NetworkGraph<L>>, L: Deref> RapidGossipSync<NG, L> where L
 	/// Update network graph from binary data.
 	/// Returns the last sync timestamp to be used the next time rapid sync data is queried.
 	///
-	/// `network_graph`: network graph to be updated
-	///
 	/// `update_data`: `&[u8]` binary stream that comprises the update data
 	pub fn update_network_graph(&self, update_data: &[u8]) -> Result<u32, GraphSyncError> {
 		let mut read_cursor = io::Cursor::new(update_data);
 		self.update_network_graph_from_byte_stream(&mut read_cursor)
+	}
+
+	/// Update network graph from binary data.
+	/// Returns the last sync timestamp to be used the next time rapid sync data is queried.
+	///
+	/// `update_data`: `&[u8]` binary stream that comprises the update data
+	/// `current_time_unix`: `Option<u64>` optional current timestamp to verify data age
+	pub fn update_network_graph_no_std(&self, update_data: &[u8], current_time_unix: Option<u64>) -> Result<u32, GraphSyncError> {
+		let mut read_cursor = io::Cursor::new(update_data);
+		self.update_network_graph_from_byte_stream_no_std(&mut read_cursor, current_time_unix)
 	}
 
 	/// Gets a reference to the underlying [`NetworkGraph`] which was provided in

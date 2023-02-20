@@ -3170,7 +3170,7 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(deliver_bs_raa: bool, use
 	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
 
 	let events = nodes[1].node.get_and_clear_pending_events();
-	assert_eq!(events.len(), if deliver_bs_raa { 2 + nodes.len() - 1 } else { 3 + nodes.len() });
+	assert_eq!(events.len(), if deliver_bs_raa { 3 + nodes.len() - 1 } else { 4 + nodes.len() });
 	match events[0] {
 		Event::ChannelClosed { reason: ClosureReason::CommitmentTxConfirmed, .. } => { },
 		_ => panic!("Unexepected event"),
@@ -3181,20 +3181,11 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(deliver_bs_raa: bool, use
 		},
 		_ => panic!("Unexpected event"),
 	}
-	if !deliver_bs_raa {
-		match events[2] {
-			Event::PendingHTLCsForwardable { .. } => { },
-			_ => panic!("Unexpected event"),
-		};
-		nodes[1].node.abandon_payment(PaymentId(fourth_payment_hash.0));
-		let payment_failed_events = nodes[1].node.get_and_clear_pending_events();
-		assert_eq!(payment_failed_events.len(), 1);
-		match payment_failed_events[0] {
-			Event::PaymentFailed { ref payment_hash, .. } => {
-				assert_eq!(*payment_hash, fourth_payment_hash);
-			},
-			_ => panic!("Unexpected event"),
-		}
+	match events[2] {
+		Event::PaymentFailed { ref payment_hash, .. } => {
+			assert_eq!(*payment_hash, fourth_payment_hash);
+		},
+		_ => panic!("Unexpected event"),
 	}
 
 	nodes[1].node.process_pending_htlc_forwards();
@@ -3242,7 +3233,7 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(deliver_bs_raa: bool, use
 			commitment_signed_dance!(nodes[0], nodes[1], commitment_signed, false, true);
 
 			let events = nodes[0].node.get_and_clear_pending_events();
-			assert_eq!(events.len(), 3);
+			assert_eq!(events.len(), 6);
 			match events[0] {
 				Event::PaymentPathFailed { ref payment_hash, ref network_update, .. } => {
 					assert!(failed_htlcs.insert(payment_hash.0));
@@ -3255,9 +3246,8 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(deliver_bs_raa: bool, use
 				_ => panic!("Unexpected event"),
 			}
 			match events[1] {
-				Event::PaymentPathFailed { ref payment_hash, ref network_update, .. } => {
-					assert!(failed_htlcs.insert(payment_hash.0));
-					assert!(network_update.is_some());
+				Event::PaymentFailed { ref payment_hash, .. } => {
+					assert_eq!(*payment_hash, first_payment_hash);
 				},
 				_ => panic!("Unexpected event"),
 			}
@@ -3265,6 +3255,25 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(deliver_bs_raa: bool, use
 				Event::PaymentPathFailed { ref payment_hash, ref network_update, .. } => {
 					assert!(failed_htlcs.insert(payment_hash.0));
 					assert!(network_update.is_some());
+				},
+				_ => panic!("Unexpected event"),
+			}
+			match events[3] {
+				Event::PaymentFailed { ref payment_hash, .. } => {
+					assert_eq!(*payment_hash, second_payment_hash);
+				},
+				_ => panic!("Unexpected event"),
+			}
+			match events[4] {
+				Event::PaymentPathFailed { ref payment_hash, ref network_update, .. } => {
+					assert!(failed_htlcs.insert(payment_hash.0));
+					assert!(network_update.is_some());
+				},
+				_ => panic!("Unexpected event"),
+			}
+			match events[5] {
+				Event::PaymentFailed { ref payment_hash, .. } => {
+					assert_eq!(*payment_hash, third_payment_hash);
 				},
 				_ => panic!("Unexpected event"),
 			}
@@ -3354,7 +3363,7 @@ fn fail_backward_pending_htlc_upon_channel_failure() {
 		nodes[0].node.handle_update_add_htlc(&nodes[1].node.get_our_node_id(), &update_add_htlc);
 	}
 	let events = nodes[0].node.get_and_clear_pending_events();
-	assert_eq!(events.len(), 2);
+	assert_eq!(events.len(), 3);
 	// Check that Alice fails backward the pending HTLC from the second payment.
 	match events[0] {
 		Event::PaymentPathFailed { payment_hash, .. } => {
@@ -3363,6 +3372,12 @@ fn fail_backward_pending_htlc_upon_channel_failure() {
 		_ => panic!("Unexpected event"),
 	}
 	match events[1] {
+		Event::PaymentFailed { payment_hash, .. } => {
+			assert_eq!(payment_hash, failed_payment_hash);
+		},
+		_ => panic!("Unexpected event"),
+	}
+	match events[2] {
 		Event::ChannelClosed { reason: ClosureReason::ProcessingError { ref err }, .. } => {
 			assert_eq!(err, "Remote side tried to send a 0-msat HTLC");
 		},
@@ -3594,7 +3609,7 @@ fn test_simple_peer_disconnect() {
 	reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (0, 0), (0, 0), (1, 0), (1, 0), (false, false));
 	{
 		let events = nodes[0].node.get_and_clear_pending_events();
-		assert_eq!(events.len(), 3);
+		assert_eq!(events.len(), 4);
 		match events[0] {
 			Event::PaymentSent { payment_preimage, payment_hash, .. } => {
 				assert_eq!(payment_preimage, payment_preimage_3);
@@ -3610,6 +3625,12 @@ fn test_simple_peer_disconnect() {
 			_ => panic!("Unexpected event"),
 		}
 		match events[2] {
+			Event::PaymentFailed { payment_hash, .. } => {
+				assert_eq!(payment_hash, payment_hash_5);
+			},
+			_ => panic!("Unexpected event"),
+		}
+		match events[3] {
 			Event::PaymentPathSuccessful { .. } => {},
 			_ => panic!("Unexpected event"),
 		}
@@ -5123,7 +5144,7 @@ fn do_test_fail_backwards_unrevoked_remote_announce(deliver_last_raa: bool, anno
 	}
 
 	let as_events = nodes[0].node.get_and_clear_pending_events();
-	assert_eq!(as_events.len(), if announce_latest { 5 } else { 3 });
+	assert_eq!(as_events.len(), if announce_latest { 10 } else { 6 });
 	let mut as_failds = HashSet::new();
 	let mut as_updates = 0;
 	for event in as_events.iter() {
@@ -5137,6 +5158,7 @@ fn do_test_fail_backwards_unrevoked_remote_announce(deliver_last_raa: bool, anno
 			if network_update.is_some() {
 				as_updates += 1;
 			}
+		} else if let &Event::PaymentFailed { .. } = event {
 		} else { panic!("Unexpected event"); }
 	}
 	assert!(as_failds.contains(&payment_hash_1));
@@ -5148,7 +5170,7 @@ fn do_test_fail_backwards_unrevoked_remote_announce(deliver_last_raa: bool, anno
 	assert!(as_failds.contains(&payment_hash_6));
 
 	let bs_events = nodes[1].node.get_and_clear_pending_events();
-	assert_eq!(bs_events.len(), if announce_latest { 4 } else { 3 });
+	assert_eq!(bs_events.len(), if announce_latest { 8 } else { 6 });
 	let mut bs_failds = HashSet::new();
 	let mut bs_updates = 0;
 	for event in bs_events.iter() {
@@ -5162,6 +5184,7 @@ fn do_test_fail_backwards_unrevoked_remote_announce(deliver_last_raa: bool, anno
 			if network_update.is_some() {
 				bs_updates += 1;
 			}
+		} else if let &Event::PaymentFailed { .. } = event {
 		} else { panic!("Unexpected event"); }
 	}
 	assert!(bs_failds.contains(&payment_hash_1));
@@ -5670,7 +5693,7 @@ fn test_fail_holding_cell_htlc_upon_free() {
 
 	// Check that the payment failed to be sent out.
 	let events = nodes[0].node.get_and_clear_pending_events();
-	assert_eq!(events.len(), 1);
+	assert_eq!(events.len(), 2);
 	match &events[0] {
 		&Event::PaymentPathFailed { ref payment_id, ref payment_hash, ref payment_failed_permanently, ref network_update, ref all_paths_failed, ref short_channel_id, .. } => {
 			assert_eq!(PaymentId(our_payment_hash.0), *payment_id.as_ref().unwrap());
@@ -5679,6 +5702,12 @@ fn test_fail_holding_cell_htlc_upon_free() {
 			assert_eq!(*all_paths_failed, true);
 			assert_eq!(*network_update, None);
 			assert_eq!(*short_channel_id, Some(route.paths[0][0].short_channel_id));
+		},
+		_ => panic!("Unexpected event"),
+	}
+	match &events[1] {
+		&Event::PaymentFailed { ref payment_hash, .. } => {
+			assert_eq!(our_payment_hash.clone(), *payment_hash);
 		},
 		_ => panic!("Unexpected event"),
 	}
@@ -5755,7 +5784,7 @@ fn test_free_and_fail_holding_cell_htlcs() {
 
 	// Check that the second payment failed to be sent out.
 	let events = nodes[0].node.get_and_clear_pending_events();
-	assert_eq!(events.len(), 1);
+	assert_eq!(events.len(), 2);
 	match &events[0] {
 		&Event::PaymentPathFailed { ref payment_id, ref payment_hash, ref payment_failed_permanently, ref network_update, ref all_paths_failed, ref short_channel_id, .. } => {
 			assert_eq!(payment_id_2, *payment_id.as_ref().unwrap());
@@ -5764,6 +5793,12 @@ fn test_free_and_fail_holding_cell_htlcs() {
 			assert_eq!(*all_paths_failed, true);
 			assert_eq!(*network_update, None);
 			assert_eq!(*short_channel_id, Some(route_2.paths[0][0].short_channel_id));
+		},
+		_ => panic!("Unexpected event"),
+	}
+	match &events[1] {
+		&Event::PaymentFailed { ref payment_hash, .. } => {
+			assert_eq!(payment_hash_2.clone(), *payment_hash);
 		},
 		_ => panic!("Unexpected event"),
 	}
@@ -6649,7 +6684,7 @@ fn test_channel_failed_after_message_with_badonion_node_perm_bits_set() {
 	}
 
 	let events_5 = nodes[0].node.get_and_clear_pending_events();
-	assert_eq!(events_5.len(), 1);
+	assert_eq!(events_5.len(), 2);
 
 	// Expect a PaymentPathFailed event with a ChannelFailure network update for the channel between
 	// the node originating the error to its next hop.
@@ -6660,6 +6695,12 @@ fn test_channel_failed_after_message_with_badonion_node_perm_bits_set() {
 			assert_eq!(short_channel_id, chan_2.0.contents.short_channel_id);
 			assert!(is_permanent);
 			assert_eq!(error_code, Some(0x8000|0x4000|0x2000|4));
+		},
+		_ => panic!("Unexpected event"),
+	}
+	match events_5[1] {
+		Event::PaymentFailed { payment_hash, .. } => {
+			assert_eq!(payment_hash, our_payment_hash);
 		},
 		_ => panic!("Unexpected event"),
 	}
@@ -6734,7 +6775,7 @@ fn do_test_failure_delay_dust_htlc_local_commitment(announce_latest: bool) {
 	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
 	let events = nodes[0].node.get_and_clear_pending_events();
 	// Only 2 PaymentPathFailed events should show up, over-dust HTLC has to be failed by timeout tx
-	assert_eq!(events.len(), 2);
+	assert_eq!(events.len(), 4);
 	let mut first_failed = false;
 	for event in events {
 		match event {
@@ -6745,7 +6786,8 @@ fn do_test_failure_delay_dust_htlc_local_commitment(announce_latest: bool) {
 				} else {
 					assert_eq!(payment_hash, payment_hash_2);
 				}
-			}
+			},
+			Event::PaymentFailed { .. } => {}
 			_ => panic!("Unexpected event"),
 		}
 	}
@@ -9034,9 +9076,11 @@ fn do_test_dup_htlc_second_rejected(test_for_second_fail_panic: bool) {
 		commitment_signed_dance!(nodes[0], nodes[1], fail_updates_1.commitment_signed, false);
 
 		let failure_events = nodes[0].node.get_and_clear_pending_events();
-		assert_eq!(failure_events.len(), 2);
+		assert_eq!(failure_events.len(), 4);
 		if let Event::PaymentPathFailed { .. } = failure_events[0] {} else { panic!(); }
-		if let Event::PaymentPathFailed { .. } = failure_events[1] {} else { panic!(); }
+		if let Event::PaymentFailed { .. } = failure_events[1] {} else { panic!(); }
+		if let Event::PaymentPathFailed { .. } = failure_events[2] {} else { panic!(); }
+		if let Event::PaymentFailed { .. } = failure_events[3] {} else { panic!(); }
 	} else {
 		// Let the second HTLC fail and claim the first
 		expect_pending_htlcs_forwardable_and_htlc_handling_failed_ignore!(nodes[1], vec![HTLCDestination::FailedPayment { payment_hash: our_payment_hash }]);
@@ -9047,7 +9091,7 @@ fn do_test_dup_htlc_second_rejected(test_for_second_fail_panic: bool) {
 		nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &fail_updates_1.update_fail_htlcs[0]);
 		commitment_signed_dance!(nodes[0], nodes[1], fail_updates_1.commitment_signed, false);
 
-		expect_payment_failed_conditions(&nodes[0], our_payment_hash, true, PaymentFailedConditions::new().mpp_parts_remain());
+		expect_payment_failed_conditions(&nodes[0], our_payment_hash, true, PaymentFailedConditions::new());
 
 		claim_payment(&nodes[0], &[&nodes[1]], our_payment_preimage);
 	}
@@ -9169,7 +9213,27 @@ fn test_inconsistent_mpp_params() {
 	assert_eq!(events.len(), 1);
 	pass_along_path(&nodes[0], &[&nodes[2], &nodes[3]], 15_000_000, our_payment_hash, Some(our_payment_secret), events.pop().unwrap(), true, None);
 
-	claim_payment_along_route(&nodes[0], &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]], false, our_payment_preimage);
+	do_claim_payment_along_route(&nodes[0], &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]], false, our_payment_preimage);
+	let events = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 3);
+	match events[0] {
+		Event::PaymentSent { payment_hash, .. } => { // The payment was abandoned earlier, so the fee paid will be None
+			assert_eq!(payment_hash, our_payment_hash);
+		},
+		_ => panic!("Unexpected event")
+	}
+	match events[1] {
+		Event::PaymentPathSuccessful { payment_hash, .. } => {
+			assert_eq!(payment_hash.unwrap(), our_payment_hash);
+		},
+		_ => panic!("Unexpected event")
+	}
+	match events[2] {
+		Event::PaymentPathSuccessful { payment_hash, .. } => {
+			assert_eq!(payment_hash.unwrap(), our_payment_hash);
+		},
+		_ => panic!("Unexpected event")
+	}
 }
 
 #[test]

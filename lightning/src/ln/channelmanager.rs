@@ -70,7 +70,7 @@ use crate::prelude::*;
 use core::{cmp, mem};
 use core::cell::RefCell;
 use crate::io::Read;
-use crate::sync::{Arc, Mutex, RwLock, RwLockReadGuard, FairRwLock};
+use crate::sync::{Arc, Mutex, RwLock, RwLockReadGuard, FairRwLock, LockTestExt, LockHeldState};
 use core::sync::atomic::{AtomicUsize, Ordering};
 use core::time::Duration;
 use core::ops::Deref;
@@ -1190,9 +1190,9 @@ pub enum RecentPaymentDetails {
 		/// made before LDK version 0.0.104.
 		payment_hash: Option<PaymentHash>,
 	},
-	/// After a payment is explicitly abandoned by calling [`ChannelManager::abandon_payment`], it
-	/// is marked as abandoned until an [`Event::PaymentFailed`] is generated. A payment could also
-	/// be marked as abandoned if pathfinding fails repeatedly or retries have been exhausted.
+	/// After a payment's retries are exhausted per the provided [`Retry`], or it is explicitly
+	/// abandoned via [`ChannelManager::abandon_payment`], it is marked as abandoned until all
+	/// pending HTLCs for this payment resolve and an [`Event::PaymentFailed`] is generated.
 	Abandoned {
 		/// Hash of the payment that we have given up trying to send.
 		payment_hash: PaymentHash,
@@ -1218,13 +1218,10 @@ macro_rules! handle_error {
 		match $internal {
 			Ok(msg) => Ok(msg),
 			Err(MsgHandleErrInternal { err, chan_id, shutdown_finish }) => {
-				#[cfg(any(feature = "_test_utils", test))]
-				{
-					// In testing, ensure there are no deadlocks where the lock is already held upon
-					// entering the macro.
-					debug_assert!($self.pending_events.try_lock().is_ok());
-					debug_assert!($self.per_peer_state.try_write().is_ok());
-				}
+				// In testing, ensure there are no deadlocks where the lock is already held upon
+				// entering the macro.
+				debug_assert_ne!($self.pending_events.held_by_thread(), LockHeldState::HeldByThread);
+				debug_assert_ne!($self.per_peer_state.held_by_thread(), LockHeldState::HeldByThread);
 
 				let mut msg_events = Vec::with_capacity(2);
 
@@ -1718,7 +1715,7 @@ where
 	///
 	/// This can be useful for payments that may have been prepared, but ultimately not sent, as a
 	/// result of a crash. If such a payment exists, is not listed here, and an
-	/// [`Event::PaymentSent`] has not been received, you may consider retrying the payment.
+	/// [`Event::PaymentSent`] has not been received, you may consider resending the payment.
 	///
 	/// [`Event::PaymentSent`]: events::Event::PaymentSent
 	pub fn list_recent_payments(&self) -> Vec<RecentPaymentDetails> {
@@ -2475,8 +2472,8 @@ where
 	/// If a pending payment is currently in-flight with the same [`PaymentId`] provided, this
 	/// method will error with an [`APIError::InvalidRoute`]. Note, however, that once a payment
 	/// is no longer pending (either via [`ChannelManager::abandon_payment`], or handling of an
-	/// [`Event::PaymentSent`]) LDK will not stop you from sending a second payment with the same
-	/// [`PaymentId`].
+	/// [`Event::PaymentSent`] or [`Event::PaymentFailed`]) LDK will not stop you from sending a
+	/// second payment with the same [`PaymentId`].
 	///
 	/// Thus, in order to ensure duplicate payments are not sent, you should implement your own
 	/// tracking of payments, including state to indicate once a payment has completed. Because you
@@ -2521,6 +2518,7 @@ where
 	/// [`Route`], we assume the invoice had the basic_mpp feature set.
 	///
 	/// [`Event::PaymentSent`]: events::Event::PaymentSent
+	/// [`Event::PaymentFailed`]: events::Event::PaymentFailed
 	/// [`PeerManager::process_events`]: crate::ln::peer_handler::PeerManager::process_events
 	/// [`ChannelMonitorUpdateStatus::InProgress`]: crate::chain::ChannelMonitorUpdateStatus::InProgress
 	pub fn send_payment(&self, route: &Route, payment_hash: PaymentHash, payment_secret: &Option<PaymentSecret>, payment_id: PaymentId) -> Result<(), PaymentSendFailure> {
@@ -2558,48 +2556,25 @@ where
 	}
 
 
-	/// Retries a payment along the given [`Route`].
+	/// Signals that no further retries for the given payment should occur. Useful if you have a
+	/// pending outbound payment with retries remaining, but wish to stop retrying the payment before
+	/// retries are exhausted.
 	///
-	/// Errors returned are a superset of those returned from [`send_payment`], so see
-	/// [`send_payment`] documentation for more details on errors. This method will also error if the
-	/// retry amount puts the payment more than 10% over the payment's total amount, if the payment
-	/// for the given `payment_id` cannot be found (likely due to timeout or success), or if
-	/// further retries have been disabled with [`abandon_payment`].
-	///
-	/// [`send_payment`]: [`ChannelManager::send_payment`]
-	/// [`abandon_payment`]: [`ChannelManager::abandon_payment`]
-	pub fn retry_payment(&self, route: &Route, payment_id: PaymentId) -> Result<(), PaymentSendFailure> {
-		let best_block_height = self.best_block.read().unwrap().height();
-		self.pending_outbound_payments.retry_payment_with_route(route, payment_id, &self.entropy_source, &self.node_signer, best_block_height,
-			|path, payment_params, payment_hash, payment_secret, total_value, cur_height, payment_id, keysend_preimage, session_priv|
-			self.send_payment_along_path(path, payment_params, payment_hash, payment_secret, total_value, cur_height, payment_id, keysend_preimage, session_priv))
-	}
-
-	/// Signals that no further retries for the given payment will occur.
-	///
-	/// After this method returns, no future calls to [`retry_payment`] for the given `payment_id`
-	/// are allowed. If no [`Event::PaymentFailed`] event had been generated before, one will be
-	/// generated as soon as there are no remaining pending HTLCs for this payment.
+	/// If no [`Event::PaymentFailed`] event had been generated before, one will be generated as soon
+	/// as there are no remaining pending HTLCs for this payment.
 	///
 	/// Note that calling this method does *not* prevent a payment from succeeding. You must still
 	/// wait until you receive either a [`Event::PaymentFailed`] or [`Event::PaymentSent`] event to
 	/// determine the ultimate status of a payment.
 	///
 	/// If an [`Event::PaymentFailed`] event is generated and we restart without this
-	/// [`ChannelManager`] having been persisted, the payment may still be in the pending state
-	/// upon restart. This allows further calls to [`retry_payment`] (and requiring a second call
-	/// to [`abandon_payment`] to mark the payment as failed again). Otherwise, future calls to
-	/// [`retry_payment`] will fail with [`PaymentSendFailure::ParameterError`].
+	/// [`ChannelManager`] having been persisted, another [`Event::PaymentFailed`] may be generated.
 	///
-	/// [`abandon_payment`]: Self::abandon_payment
-	/// [`retry_payment`]: Self::retry_payment
 	/// [`Event::PaymentFailed`]: events::Event::PaymentFailed
 	/// [`Event::PaymentSent`]: events::Event::PaymentSent
 	pub fn abandon_payment(&self, payment_id: PaymentId) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
-		if let Some(payment_failed_ev) = self.pending_outbound_payments.abandon_payment(payment_id) {
-			self.pending_events.lock().unwrap().push(payment_failed_ev);
-		}
+		self.pending_outbound_payments.abandon_payment(payment_id, &self.pending_events);
 	}
 
 	/// Send a spontaneous payment, which is a payment that does not require the recipient to have
@@ -3372,7 +3347,8 @@ where
 
 		let best_block_height = self.best_block.read().unwrap().height();
 		self.pending_outbound_payments.check_retry_payments(&self.router, || self.list_usable_channels(),
-			|| self.compute_inflight_htlcs(), &self.entropy_source, &self.node_signer, best_block_height, &self.logger,
+			|| self.compute_inflight_htlcs(), &self.entropy_source, &self.node_signer, best_block_height,
+			&self.pending_events, &self.logger,
 			|path, payment_params, payment_hash, payment_secret, total_value, cur_height, payment_id, keysend_preimage, session_priv|
 			self.send_payment_along_path(path, payment_params, payment_hash, payment_secret, total_value, cur_height, payment_id, keysend_preimage, session_priv));
 
@@ -3743,17 +3719,12 @@ where
 	/// Fails an HTLC backwards to the sender of it to us.
 	/// Note that we do not assume that channels corresponding to failed HTLCs are still available.
 	fn fail_htlc_backwards_internal(&self, source: &HTLCSource, payment_hash: &PaymentHash, onion_error: &HTLCFailReason, destination: HTLCDestination) {
-		#[cfg(any(feature = "_test_utils", test))]
-		{
-			// Ensure that the peer state channel storage lock is not held when calling this
-			// function.
-			// This ensures that future code doesn't introduce a lock_order requirement for
-			// `forward_htlcs` to be locked after the `per_peer_state` peer locks, which calling
-			// this function with any `per_peer_state` peer lock aquired would.
-			let per_peer_state = self.per_peer_state.read().unwrap();
-			for (_, peer) in per_peer_state.iter() {
-				debug_assert!(peer.try_lock().is_ok());
-			}
+		// Ensure that no peer state channel storage lock is held when calling this function.
+		// This ensures that future code doesn't introduce a lock-order requirement for
+		// `forward_htlcs` to be locked after the `per_peer_state` peer locks, which calling
+		// this function with any `per_peer_state` peer lock acquired would.
+		for (_, peer) in self.per_peer_state.read().unwrap().iter() {
+			debug_assert_ne!(peer.held_by_thread(), LockHeldState::HeldByThread);
 		}
 
 		//TODO: There is a timing attack here where if a node fails an HTLC back to us they can
@@ -3766,16 +3737,19 @@ where
 		// being fully configured. See the docs for `ChannelManagerReadArgs` for more.
 		match source {
 			HTLCSource::OutboundRoute { ref path, ref session_priv, ref payment_id, ref payment_params, .. } => {
-				self.pending_outbound_payments.fail_htlc(source, payment_hash, onion_error, path, session_priv, payment_id, payment_params, self.probing_cookie_secret, &self.secp_ctx, &self.pending_events, &self.logger);
+				if self.pending_outbound_payments.fail_htlc(source, payment_hash, onion_error, path,
+					session_priv, payment_id, payment_params, self.probing_cookie_secret, &self.secp_ctx,
+					&self.pending_events, &self.logger)
+				{ self.push_pending_forwards_ev(); }
 			},
 			HTLCSource::PreviousHopData(HTLCPreviousHopData { ref short_channel_id, ref htlc_id, ref incoming_packet_shared_secret, ref phantom_shared_secret, ref outpoint }) => {
 				log_trace!(self.logger, "Failing HTLC with payment_hash {} backwards from us with {:?}", log_bytes!(payment_hash.0), onion_error);
 				let err_packet = onion_error.get_encrypted_failure_packet(incoming_packet_shared_secret, phantom_shared_secret);
 
-				let mut forward_event = None;
+				let mut push_forward_ev = false;
 				let mut forward_htlcs = self.forward_htlcs.lock().unwrap();
 				if forward_htlcs.is_empty() {
-					forward_event = Some(Duration::from_millis(MIN_HTLC_RELAY_HOLDING_CELL_MILLIS));
+					push_forward_ev = true;
 				}
 				match forward_htlcs.entry(*short_channel_id) {
 					hash_map::Entry::Occupied(mut entry) => {
@@ -3786,12 +3760,8 @@ where
 					}
 				}
 				mem::drop(forward_htlcs);
+				if push_forward_ev { self.push_pending_forwards_ev(); }
 				let mut pending_events = self.pending_events.lock().unwrap();
-				if let Some(time) = forward_event {
-					pending_events.push(events::Event::PendingHTLCsForwardable {
-						time_forwardable: time
-					});
-				}
 				pending_events.push(events::Event::HTLCHandlingFailed {
 					prev_channel_id: outpoint.to_channel_id(),
 					failed_next_destination: destination,
@@ -4868,7 +4838,7 @@ where
 	#[inline]
 	fn forward_htlcs(&self, per_source_pending_forwards: &mut [(u64, OutPoint, u128, Vec<(PendingHTLCInfo, u64)>)]) {
 		for &mut (prev_short_channel_id, prev_funding_outpoint, prev_user_channel_id, ref mut pending_forwards) in per_source_pending_forwards {
-			let mut forward_event = None;
+			let mut push_forward_event = false;
 			let mut new_intercept_events = Vec::new();
 			let mut failed_intercept_forwards = Vec::new();
 			if !pending_forwards.is_empty() {
@@ -4926,7 +4896,7 @@ where
 								// We don't want to generate a PendingHTLCsForwardable event if only intercepted
 								// payments are being processed.
 								if forward_htlcs_empty {
-									forward_event = Some(Duration::from_millis(MIN_HTLC_RELAY_HOLDING_CELL_MILLIS));
+									push_forward_event = true;
 								}
 								entry.insert(vec!(HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo {
 									prev_short_channel_id, prev_funding_outpoint, prev_htlc_id, prev_user_channel_id, forward_info })));
@@ -4944,16 +4914,21 @@ where
 				let mut events = self.pending_events.lock().unwrap();
 				events.append(&mut new_intercept_events);
 			}
+			if push_forward_event { self.push_pending_forwards_ev() }
+		}
+	}
 
-			match forward_event {
-				Some(time) => {
-					let mut pending_events = self.pending_events.lock().unwrap();
-					pending_events.push(events::Event::PendingHTLCsForwardable {
-						time_forwardable: time
-					});
-				}
-				None => {},
-			}
+	// We only want to push a PendingHTLCsForwardable event if no others are queued.
+	fn push_pending_forwards_ev(&self) {
+		let mut pending_events = self.pending_events.lock().unwrap();
+		let forward_ev_exists = pending_events.iter()
+			.find(|ev| if let events::Event::PendingHTLCsForwardable { .. } = ev { true } else { false })
+			.is_some();
+		if !forward_ev_exists {
+			pending_events.push(events::Event::PendingHTLCsForwardable {
+				time_forwardable:
+					Duration::from_millis(MIN_HTLC_RELAY_HOLDING_CELL_MILLIS),
+			});
 		}
 	}
 
@@ -7555,7 +7530,8 @@ where
 			}
 		}
 
-		if !forward_htlcs.is_empty() {
+		let pending_outbounds = OutboundPayments { pending_outbound_payments: Mutex::new(pending_outbound_payments.unwrap()), retry_lock: Mutex::new(()) };
+		if !forward_htlcs.is_empty() || pending_outbounds.needs_abandon() {
 			// If we have pending HTLCs to forward, assume we either dropped a
 			// `PendingHTLCsForwardable` or the user received it but never processed it as they
 			// shut down before the timer hit. Either way, set the time_forwardable to a small
@@ -7723,7 +7699,7 @@ where
 
 			inbound_payment_key: expanded_inbound_key,
 			pending_inbound_payments: Mutex::new(pending_inbound_payments),
-			pending_outbound_payments: OutboundPayments { pending_outbound_payments: Mutex::new(pending_outbound_payments.unwrap()) },
+			pending_outbound_payments: pending_outbounds,
 			pending_intercepted_htlcs: Mutex::new(pending_intercepted_htlcs.unwrap()),
 
 			forward_htlcs: Mutex::new(forward_htlcs),
