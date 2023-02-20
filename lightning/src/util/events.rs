@@ -1199,7 +1199,7 @@ impl MaybeReadable for Event {
 					let mut payment_id = None;
 					read_tlv_fields!(reader, {
 						(0, payment_hash, required),
-						(1, network_update, ignorable),
+						(1, network_update, upgradable_required),
 						(2, payment_failed_permanently, required),
 						(5, path, vec_type),
 						(7, short_channel_id, option),
@@ -1282,7 +1282,7 @@ impl MaybeReadable for Event {
 					read_tlv_fields!(reader, {
 						(0, channel_id, required),
 						(1, user_channel_id_low_opt, option),
-						(2, reason, ignorable),
+						(2, reason, upgradable_required),
 						(3, user_channel_id_high_opt, option),
 					});
 					if reason.is_none() { return Ok(None); }
@@ -1355,7 +1355,7 @@ impl MaybeReadable for Event {
 					read_tlv_fields!(reader, {
 						(0, payment_hash, required),
 						(1, receiver_node_id, option),
-						(2, purpose, ignorable),
+						(2, purpose, upgradable_required),
 						(4, amount_msat, required),
 					});
 					if purpose.is_none() { return Ok(None); }
@@ -1413,7 +1413,7 @@ impl MaybeReadable for Event {
 					let mut failed_next_destination_opt = None;
 					read_tlv_fields!(reader, {
 						(0, prev_channel_id, required),
-						(2, failed_next_destination_opt, ignorable),
+						(2, failed_next_destination_opt, upgradable_required),
 					});
 					if let Some(failed_next_destination) = failed_next_destination_opt {
 						Ok(Some(Event::HTLCHandlingFailed {

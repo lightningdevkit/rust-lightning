@@ -468,7 +468,7 @@ pub(crate) enum MonitorUpdateCompletionAction {
 
 impl_writeable_tlv_based_enum_upgradable!(MonitorUpdateCompletionAction,
 	(0, PaymentClaimed) => { (0, payment_hash, required) },
-	(2, EmitEvent) => { (0, event, ignorable) },
+	(2, EmitEvent) => { (0, event, upgradable_required) },
 );
 
 /// State we hold per-peer.

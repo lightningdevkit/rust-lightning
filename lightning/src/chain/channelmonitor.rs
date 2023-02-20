@@ -460,7 +460,7 @@ impl MaybeReadable for OnchainEventEntry {
 			(1, transaction, option),
 			(2, height, required),
 			(3, block_hash, option),
-			(4, event, ignorable),
+			(4, event, upgradable_required),
 		});
 		if let Some(ev) = event {
 			Ok(Some(Self { txid, transaction, height, block_hash, event: ev }))

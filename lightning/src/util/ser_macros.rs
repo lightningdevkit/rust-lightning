@@ -39,10 +39,10 @@ macro_rules! _encode_tlv {
 			field.write($stream)?;
 		}
 	};
-	($stream: expr, $type: expr, $field: expr, ignorable) => {
+	($stream: expr, $type: expr, $field: expr, upgradable_required) => {
 		$crate::_encode_tlv!($stream, $type, $field, required);
 	};
-	($stream: expr, $type: expr, $field: expr, ignorable_option) => {
+	($stream: expr, $type: expr, $field: expr, upgradable_option) => {
 		$crate::_encode_tlv!($stream, $type, $field, option);
 	};
 	($stream: expr, $type: expr, $field: expr, (option, encoding: ($fieldty: ty, $encoding: ident))) => {
@@ -161,10 +161,10 @@ macro_rules! _get_varint_length_prefixed_tlv_length {
 			$len.0 += field_len;
 		}
 	};
-	($len: expr, $type: expr, $field: expr, ignorable) => {
+	($len: expr, $type: expr, $field: expr, upgradable_required) => {
 		$crate::_get_varint_length_prefixed_tlv_length!($len, $type, $field, required);
 	};
-	($len: expr, $type: expr, $field: expr, ignorable_option) => {
+	($len: expr, $type: expr, $field: expr, upgradable_option) => {
 		$crate::_get_varint_length_prefixed_tlv_length!($len, $type, $field, option);
 	};
 }
@@ -216,10 +216,10 @@ macro_rules! _check_decoded_tlv_order {
 	($last_seen_type: expr, $typ: expr, $type: expr, $field: ident, vec_type) => {{
 		// no-op
 	}};
-	($last_seen_type: expr, $typ: expr, $type: expr, $field: ident, ignorable) => {{
+	($last_seen_type: expr, $typ: expr, $type: expr, $field: ident, upgradable_required) => {{
 		// no-op
 	}};
-	($last_seen_type: expr, $typ: expr, $type: expr, $field: ident, ignorable_option) => {{
+	($last_seen_type: expr, $typ: expr, $type: expr, $field: ident, upgradable_option) => {{
 		// no-op
 	}};
 	($last_seen_type: expr, $typ: expr, $type: expr, $field: ident, (option: $trait: ident $(, $read_arg: expr)?)) => {{
@@ -258,10 +258,10 @@ macro_rules! _check_missing_tlv {
 	($last_seen_type: expr, $type: expr, $field: ident, option) => {{
 		// no-op
 	}};
-	($last_seen_type: expr, $type: expr, $field: ident, ignorable) => {{
+	($last_seen_type: expr, $type: expr, $field: ident, upgradable_required) => {{
 		// no-op
 	}};
-	($last_seen_type: expr, $type: expr, $field: ident, ignorable_option) => {{
+	($last_seen_type: expr, $type: expr, $field: ident, upgradable_option) => {{
 		// no-op
 	}};
 	($last_seen_type: expr, $type: expr, $field: ident, (option: $trait: ident $(, $read_arg: expr)?)) => {{
@@ -292,10 +292,10 @@ macro_rules! _decode_tlv {
 	($reader: expr, $field: ident, option) => {{
 		$field = Some($crate::util::ser::Readable::read(&mut $reader)?);
 	}};
-	($reader: expr, $field: ident, ignorable) => {{
+	($reader: expr, $field: ident, upgradable_required) => {{
 		$field = $crate::util::ser::MaybeReadable::read(&mut $reader)?;
 	}};
-	($reader: expr, $field: ident, ignorable_option) => {{
+	($reader: expr, $field: ident, upgradable_option) => {{
 		$field = $crate::util::ser::MaybeReadable::read(&mut $reader)?;
 	}};
 	($reader: expr, $field: ident, (option: $trait: ident $(, $read_arg: expr)?)) => {{
@@ -635,10 +635,10 @@ macro_rules! _init_tlv_based_struct_field {
 	($field: ident, option) => {
 		$field
 	};
-	($field: ident, ignorable) => {
+	($field: ident, upgradable_required) => {
 		if $field.is_none() { return Ok(None); } else { $field.unwrap() }
 	};
-	($field: ident, ignorable_option) => {
+	($field: ident, upgradable_option) => {
 		$field
 	};
 	($field: ident, required) => {
@@ -670,10 +670,10 @@ macro_rules! _init_tlv_field_var {
 	($field: ident, option) => {
 		let mut $field = None;
 	};
-	($field: ident, ignorable) => {
+	($field: ident, upgradable_required) => {
 		let mut $field = None;
 	};
-	($field: ident, ignorable_option) => {
+	($field: ident, upgradable_option) => {
 		let mut $field = None;
 	};
 }
