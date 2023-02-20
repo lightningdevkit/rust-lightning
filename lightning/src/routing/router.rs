@@ -218,6 +218,15 @@ impl InFlightHtlcs {
 		}
 	}
 
+	/// Adds a known HTLC given the public key of the HTLC source, target, and short channel
+	/// id.
+	pub fn add_inflight_htlc(&mut self, source: &NodeId, target: &NodeId, channel_scid: u64, used_msat: u64){
+		self.0
+			.entry((channel_scid, source < target))
+			.and_modify(|used_liquidity_msat| *used_liquidity_msat += used_msat)
+			.or_insert(used_msat);
+	}
+
 	/// Returns liquidity in msat given the public key of the HTLC source, target, and short channel
 	/// id.
 	pub fn used_liquidity_msat(&self, source: &NodeId, target: &NodeId, channel_scid: u64) -> Option<u64> {
