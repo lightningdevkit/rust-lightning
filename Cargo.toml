@@ -12,6 +12,7 @@ members = [
 ]
 
 exclude = [
+    "lightning-custom-message",
     "no-std-check",
 ]
 

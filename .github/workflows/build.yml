@@ -31,6 +31,8 @@ jobs:
             build-no-std: true
             build-futures: true
             build-tx-sync: true
+          - toolchain: stable
+            test-custom-message: true
           - toolchain: beta
             platform: macos-latest
             build-net-tokio: true
@@ -54,6 +56,8 @@ jobs:
             build-no-std: true
             build-futures: true
             build-tx-sync: true
+          - toolchain: beta
+            test-custom-message: true
           - toolchain: 1.41.1
             build-no-std: false
             test-log-variants: true
@@ -226,6 +230,11 @@ jobs:
           RUSTFLAGS="-C link-dead-code" cargo test --verbose --color always --features rpc-client
           RUSTFLAGS="-C link-dead-code" cargo test --verbose --color always --features rpc-client,rest-client
           RUSTFLAGS="-C link-dead-code" cargo test --verbose --color always --features rpc-client,rest-client,tokio
+      - name: Test Custom Message Macros on Rust ${{ matrix.toolchain }}
+        if: "matrix.test-custom-message"
+        run: |
+          cd lightning-custom-message
+          cargo test --verbose --color always
       - name: Install deps for kcov
         if: matrix.coverage
         run: |

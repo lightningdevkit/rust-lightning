@@ -1,0 +1,18 @@
+[package]
+name = "lightning-custom-message"
+version = "0.0.113"
+authors = ["Jeffrey Czyz"]
+license = "MIT OR Apache-2.0"
+repository = "http://github.com/lightningdevkit/rust-lightning"
+description = """
+Utilities for supporting custom peer-to-peer messages in LDK.
+"""
+edition = "2021"
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[dependencies]
+bitcoin = "0.29.0"
+lightning = { version = "0.0.113", path = "../lightning" }

@@ -15,7 +15,7 @@ use bitcoin::secp256k1::{self, Secp256k1, SecretKey};
 
 use crate::chain::keysinterface::{EntropySource, NodeSigner, Recipient};
 use crate::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
-use crate::ln::channelmanager::{ChannelDetails, HTLCSource, IDEMPOTENCY_TIMEOUT_TICKS, MIN_HTLC_RELAY_HOLDING_CELL_MILLIS, PaymentId};
+use crate::ln::channelmanager::{ChannelDetails, HTLCSource, IDEMPOTENCY_TIMEOUT_TICKS, PaymentId};
 use crate::ln::channelmanager::MIN_FINAL_CLTV_EXPIRY_DELTA as LDK_DEFAULT_MIN_FINAL_CLTV_EXPIRY_DELTA;
 use crate::ln::msgs::DecodeError;
 use crate::ln::onion_utils::HTLCFailReason;
@@ -30,7 +30,6 @@ use crate::util::time::tests::SinceEpoch;
 use core::cmp;
 use core::fmt::{self, Display, Formatter};
 use core::ops::Deref;
-use core::time::Duration;
 
 use crate::prelude::*;
 use crate::sync::Mutex;
@@ -163,13 +162,13 @@ impl PendingOutboundPayment {
 		let our_payment_hash;
 		core::mem::swap(&mut session_privs, match self {
 			PendingOutboundPayment::Legacy { .. } |
-				PendingOutboundPayment::Fulfilled { .. } =>
+			PendingOutboundPayment::Fulfilled { .. } =>
 				return Err(()),
-				PendingOutboundPayment::Retryable { session_privs, payment_hash, .. } |
-					PendingOutboundPayment::Abandoned { session_privs, payment_hash, .. } => {
-						our_payment_hash = *payment_hash;
-						session_privs
-					},
+			PendingOutboundPayment::Retryable { session_privs, payment_hash, .. } |
+			PendingOutboundPayment::Abandoned { session_privs, payment_hash, .. } => {
+				our_payment_hash = *payment_hash;
+				session_privs
+			},
 		});
 		*self = PendingOutboundPayment::Abandoned { session_privs, payment_hash: our_payment_hash };
 		Ok(())
@@ -323,68 +322,58 @@ pub enum PaymentSendFailure {
 	///
 	/// You can freely resend the payment in full (with the parameter error fixed).
 	///
-	/// Because the payment failed outright, no payment tracking is done, you do not need to call
-	/// [`ChannelManager::abandon_payment`] and [`ChannelManager::retry_payment`] will *not* work
-	/// for this payment.
+	/// Because the payment failed outright, no payment tracking is done and no
+	/// [`Event::PaymentPathFailed`] or [`Event::PaymentFailed`] events will be generated.
 	///
-	/// [`ChannelManager::abandon_payment`]: crate::ln::channelmanager::ChannelManager::abandon_payment
-	/// [`ChannelManager::retry_payment`]: crate::ln::channelmanager::ChannelManager::retry_payment
+	/// [`Event::PaymentPathFailed`]: crate::util::events::Event::PaymentPathFailed
+	/// [`Event::PaymentFailed`]: crate::util::events::Event::PaymentFailed
 	ParameterError(APIError),
 	/// A parameter in a single path which was passed to send_payment was invalid, preventing us
 	/// from attempting to send the payment at all.
 	///
 	/// You can freely resend the payment in full (with the parameter error fixed).
 	///
+	/// Because the payment failed outright, no payment tracking is done and no
+	/// [`Event::PaymentPathFailed`] or [`Event::PaymentFailed`] events will be generated.
+	///
 	/// The results here are ordered the same as the paths in the route object which was passed to
 	/// send_payment.
 	///
-	/// Because the payment failed outright, no payment tracking is done, you do not need to call
-	/// [`ChannelManager::abandon_payment`] and [`ChannelManager::retry_payment`] will *not* work
-	/// for this payment.
-	///
-	/// [`ChannelManager::abandon_payment`]: crate::ln::channelmanager::ChannelManager::abandon_payment
-	/// [`ChannelManager::retry_payment`]: crate::ln::channelmanager::ChannelManager::retry_payment
+	/// [`Event::PaymentPathFailed`]: crate::util::events::Event::PaymentPathFailed
+	/// [`Event::PaymentFailed`]: crate::util::events::Event::PaymentFailed
 	PathParameterError(Vec<Result<(), APIError>>),
 	/// All paths which were attempted failed to send, with no channel state change taking place.
 	/// You can freely resend the payment in full (though you probably want to do so over different
 	/// paths than the ones selected).
 	///
-	/// Because the payment failed outright, no payment tracking is done, you do not need to call
-	/// [`ChannelManager::abandon_payment`] and [`ChannelManager::retry_payment`] will *not* work
-	/// for this payment.
+	/// Because the payment failed outright, no payment tracking is done and no
+	/// [`Event::PaymentPathFailed`] or [`Event::PaymentFailed`] events will be generated.
 	///
-	/// [`ChannelManager::abandon_payment`]: crate::ln::channelmanager::ChannelManager::abandon_payment
-	/// [`ChannelManager::retry_payment`]: crate::ln::channelmanager::ChannelManager::retry_payment
+	/// [`Event::PaymentPathFailed`]: crate::util::events::Event::PaymentPathFailed
+	/// [`Event::PaymentFailed`]: crate::util::events::Event::PaymentFailed
 	AllFailedResendSafe(Vec<APIError>),
 	/// Indicates that a payment for the provided [`PaymentId`] is already in-flight and has not
-	/// yet completed (i.e. generated an [`Event::PaymentSent`]) or been abandoned (via
-	/// [`ChannelManager::abandon_payment`]).
+	/// yet completed (i.e. generated an [`Event::PaymentSent`] or [`Event::PaymentFailed`]).
 	///
 	/// [`PaymentId`]: crate::ln::channelmanager::PaymentId
 	/// [`Event::PaymentSent`]: crate::util::events::Event::PaymentSent
-	/// [`ChannelManager::abandon_payment`]: crate::ln::channelmanager::ChannelManager::abandon_payment
+	/// [`Event::PaymentFailed`]: crate::util::events::Event::PaymentFailed
 	DuplicatePayment,
-	/// Some paths which were attempted failed to send, though possibly not all. At least some
-	/// paths have irrevocably committed to the HTLC and retrying the payment in full would result
-	/// in over-/re-payment.
+	/// Some paths that were attempted failed to send, though some paths may have succeeded. At least
+	/// some paths have irrevocably committed to the HTLC.
 	///
-	/// The results here are ordered the same as the paths in the route object which was passed to
-	/// send_payment, and any `Err`s which are not [`APIError::MonitorUpdateInProgress`] can be
-	/// safely retried via [`ChannelManager::retry_payment`].
+	/// The results here are ordered the same as the paths in the route object that was passed to
+	/// send_payment.
 	///
-	/// Any entries which contain `Err(APIError::MonitorUpdateInprogress)` or `Ok(())` MUST NOT be
-	/// retried as they will result in over-/re-payment. These HTLCs all either successfully sent
-	/// (in the case of `Ok(())`) or will send once a [`MonitorEvent::Completed`] is provided for
-	/// the next-hop channel with the latest update_id.
+	/// Any entries that contain `Err(APIError::MonitorUpdateInprogress)` will send once a
+	/// [`MonitorEvent::Completed`] is provided for the next-hop channel with the latest update_id.
 	///
-	/// [`ChannelManager::retry_payment`]: crate::ln::channelmanager::ChannelManager::retry_payment
 	/// [`MonitorEvent::Completed`]: crate::chain::channelmonitor::MonitorEvent::Completed
 	PartialFailure {
-		/// The errors themselves, in the same order as the route hops.
+		/// The errors themselves, in the same order as the paths from the route.
 		results: Vec<Result<(), APIError>>,
 		/// If some paths failed without irrevocably committing to the new HTLC(s), this will
-		/// contain a [`RouteParameters`] object which can be used to calculate a new route that
-		/// will pay all remaining unpaid balance.
+		/// contain a [`RouteParameters`] object for the failing paths.
 		failed_paths_retry: Option<RouteParameters>,
 		/// The payment id for the payment, which is now at least partially pending.
 		payment_id: PaymentId,
@@ -393,12 +382,14 @@ pub enum PaymentSendFailure {
 
 pub(super) struct OutboundPayments {
 	pub(super) pending_outbound_payments: Mutex<HashMap<PaymentId, PendingOutboundPayment>>,
+	pub(super) retry_lock: Mutex<()>,
 }
 
 impl OutboundPayments {
 	pub(super) fn new() -> Self {
 		Self {
-			pending_outbound_payments: Mutex::new(HashMap::new())
+			pending_outbound_payments: Mutex::new(HashMap::new()),
+			retry_lock: Mutex::new(()),
 		}
 	}
 
@@ -491,7 +482,8 @@ impl OutboundPayments {
 
 	pub(super) fn check_retry_payments<R: Deref, ES: Deref, NS: Deref, SP, IH, FH, L: Deref>(
 		&self, router: &R, first_hops: FH, inflight_htlcs: IH, entropy_source: &ES, node_signer: &NS,
-		best_block_height: u32, logger: &L, send_payment_along_path: SP,
+		best_block_height: u32, pending_events: &Mutex<Vec<events::Event>>, logger: &L,
+		send_payment_along_path: SP,
 	)
 	where
 		R::Target: Router,
@@ -503,6 +495,7 @@ impl OutboundPayments {
 		FH: Fn() -> Vec<ChannelDetails>,
 		L::Target: Logger,
 	{
+		let _single_thread = self.retry_lock.lock().unwrap();
 		loop {
 			let mut outbounds = self.pending_outbound_payments.lock().unwrap();
 			let mut retry_id_route_params = None;
@@ -525,15 +518,40 @@ impl OutboundPayments {
 					}
 				}
 			}
+			core::mem::drop(outbounds);
 			if let Some((payment_id, route_params)) = retry_id_route_params {
-				core::mem::drop(outbounds);
 				if let Err(e) = self.pay_internal(payment_id, None, route_params, router, first_hops(), &inflight_htlcs, entropy_source, node_signer, best_block_height, logger, &send_payment_along_path) {
 					log_info!(logger, "Errored retrying payment: {:?}", e);
+					// If we error on retry, there is no chance of the payment succeeding and no HTLCs have
+					// been irrevocably committed to, so we can safely abandon.
+					self.abandon_payment(payment_id, pending_events);
 				}
 			} else { break }
 		}
+
+		let mut outbounds = self.pending_outbound_payments.lock().unwrap();
+		outbounds.retain(|pmt_id, pmt| {
+			let mut retain = true;
+			if !pmt.is_auto_retryable_now() && pmt.remaining_parts() == 0 {
+				if pmt.mark_abandoned().is_ok() {
+					pending_events.lock().unwrap().push(events::Event::PaymentFailed {
+						payment_id: *pmt_id,
+						payment_hash: pmt.payment_hash().expect("PendingOutboundPayments::Retryable always has a payment hash set"),
+					});
+					retain = false;
+				}
+			}
+			retain
+		});
 	}
 
+	pub(super) fn needs_abandon(&self) -> bool {
+		let outbounds = self.pending_outbound_payments.lock().unwrap();
+		outbounds.iter().any(|(_, pmt)|
+			!pmt.is_auto_retryable_now() && pmt.remaining_parts() == 0 && !pmt.is_fulfilled())
+	}
+
+	/// Will return `Ok(())` iff at least one HTLC is sent for the payment.
 	fn pay_internal<R: Deref, NS: Deref, ES: Deref, IH, SP, L: Deref>(
 		&self, payment_id: PaymentId,
 		initial_send_info: Option<(PaymentHash, &Option<PaymentSecret>, Option<PaymentPreimage>, Retry)>,
@@ -876,8 +894,8 @@ impl OutboundPayments {
 			.map_err(|e| { self.remove_outbound_if_all_failed(payment_id, &e); e })
 	}
 
-	// If we failed to send any paths, we should remove the new PaymentId from the
-	// `pending_outbound_payments` map, as the user isn't expected to `abandon_payment`.
+	// If we failed to send any paths, remove the new PaymentId from the `pending_outbound_payments`
+	// map as the payment is free to be resent.
 	fn remove_outbound_if_all_failed(&self, payment_id: PaymentId, err: &PaymentSendFailure) {
 		if let &PaymentSendFailure::AllFailedResendSafe(_) = err {
 			let removed = self.pending_outbound_payments.lock().unwrap().remove(&payment_id).is_some();
@@ -993,34 +1011,51 @@ impl OutboundPayments {
 		});
 	}
 
+	// Returns a bool indicating whether a PendingHTLCsForwardable event should be generated.
 	pub(super) fn fail_htlc<L: Deref>(
 		&self, source: &HTLCSource, payment_hash: &PaymentHash, onion_error: &HTLCFailReason,
 		path: &Vec<RouteHop>, session_priv: &SecretKey, payment_id: &PaymentId,
 		payment_params: &Option<PaymentParameters>, probing_cookie_secret: [u8; 32],
 		secp_ctx: &Secp256k1<secp256k1::All>, pending_events: &Mutex<Vec<events::Event>>, logger: &L
-	) where L::Target: Logger {
+	) -> bool where L::Target: Logger {
 		#[cfg(test)]
 		let (network_update, short_channel_id, payment_retryable, onion_error_code, onion_error_data) = onion_error.decode_onion_failure(secp_ctx, logger, &source);
 		#[cfg(not(test))]
 		let (network_update, short_channel_id, payment_retryable, _, _) = onion_error.decode_onion_failure(secp_ctx, logger, &source);
 
+		let payment_is_probe = payment_is_probe(payment_hash, &payment_id, probing_cookie_secret);
 		let mut session_priv_bytes = [0; 32];
 		session_priv_bytes.copy_from_slice(&session_priv[..]);
 		let mut outbounds = self.pending_outbound_payments.lock().unwrap();
+
+		// If any payments already need retry, there's no need to generate a redundant
+		// `PendingHTLCsForwardable`.
+		let already_awaiting_retry = outbounds.iter().any(|(_, pmt)| {
+			let mut awaiting_retry = false;
+			if pmt.is_auto_retryable_now() {
+				if let PendingOutboundPayment::Retryable { pending_amt_msat, total_msat, .. } = pmt {
+					if pending_amt_msat < total_msat {
+						awaiting_retry = true;
+					}
+				}
+			}
+			awaiting_retry
+		});
+
 		let mut all_paths_failed = false;
 		let mut full_failure_ev = None;
-		let mut pending_retry_ev = None;
+		let mut pending_retry_ev = false;
 		let mut retry = None;
 		let attempts_remaining = if let hash_map::Entry::Occupied(mut payment) = outbounds.entry(*payment_id) {
 			if !payment.get_mut().remove(&session_priv_bytes, Some(&path)) {
 				log_trace!(logger, "Received duplicative fail for HTLC with payment_hash {}", log_bytes!(payment_hash.0));
-				return
+				return false
 			}
 			if payment.get().is_fulfilled() {
 				log_trace!(logger, "Received failure of HTLC with payment_hash {} after payment completion", log_bytes!(payment_hash.0));
-				return
+				return false
 			}
-			let is_retryable_now = payment.get().is_auto_retryable_now();
+			let mut is_retryable_now = payment.get().is_auto_retryable_now();
 			if let Some(scid) = short_channel_id {
 				payment.get_mut().insert_previously_failed_scid(scid);
 			}
@@ -1051,26 +1086,32 @@ impl OutboundPayments {
 				});
 			}
 
+			if payment_is_probe || !is_retryable_now || !payment_retryable || retry.is_none() {
+				let _ = payment.get_mut().mark_abandoned(); // we'll only Err if it's a legacy payment
+				is_retryable_now = false;
+			}
 			if payment.get().remaining_parts() == 0 {
 				all_paths_failed = true;
 				if payment.get().abandoned() {
-					full_failure_ev = Some(events::Event::PaymentFailed {
-						payment_id: *payment_id,
-						payment_hash: payment.get().payment_hash().expect("PendingOutboundPayments::RetriesExceeded always has a payment hash set"),
-					});
+					if !payment_is_probe {
+						full_failure_ev = Some(events::Event::PaymentFailed {
+							payment_id: *payment_id,
+							payment_hash: payment.get().payment_hash().expect("PendingOutboundPayments::RetriesExceeded always has a payment hash set"),
+						});
+					}
 					payment.remove();
 				}
 			}
 			is_retryable_now
 		} else {
 			log_trace!(logger, "Received duplicative fail for HTLC with payment_hash {}", log_bytes!(payment_hash.0));
-			return
+			return false
 		};
 		core::mem::drop(outbounds);
 		log_trace!(logger, "Failing outbound payment HTLC with payment_hash {}", log_bytes!(payment_hash.0));
 
 		let path_failure = {
-			if payment_is_probe(payment_hash, &payment_id, probing_cookie_secret) {
+			if payment_is_probe {
 				if !payment_retryable {
 					events::Event::ProbeSuccessful {
 						payment_id: *payment_id,
@@ -1092,11 +1133,11 @@ impl OutboundPayments {
 				if let Some(scid) = short_channel_id {
 					retry.as_mut().map(|r| r.payment_params.previously_failed_channels.push(scid));
 				}
-				if payment_retryable && attempts_remaining && retry.is_some() {
+				// If we miss abandoning the payment above, we *must* generate an event here or else the
+				// payment will sit in our outbounds forever.
+				if attempts_remaining && !already_awaiting_retry {
 					debug_assert!(full_failure_ev.is_none());
-					pending_retry_ev = Some(events::Event::PendingHTLCsForwardable {
-						time_forwardable: Duration::from_millis(MIN_HTLC_RELAY_HOLDING_CELL_MILLIS),
-					});
+					pending_retry_ev = true;
 				}
 				events::Event::PaymentPathFailed {
 					payment_id: Some(*payment_id),
@@ -1117,16 +1158,17 @@ impl OutboundPayments {
 		let mut pending_events = pending_events.lock().unwrap();
 		pending_events.push(path_failure);
 		if let Some(ev) = full_failure_ev { pending_events.push(ev); }
-		if let Some(ev) = pending_retry_ev { pending_events.push(ev); }
+		pending_retry_ev
 	}
 
-	pub(super) fn abandon_payment(&self, payment_id: PaymentId) -> Option<events::Event> {
-		let mut failed_ev = None;
+	pub(super) fn abandon_payment(
+		&self, payment_id: PaymentId, pending_events: &Mutex<Vec<events::Event>>
+	) {
 		let mut outbounds = self.pending_outbound_payments.lock().unwrap();
 		if let hash_map::Entry::Occupied(mut payment) = outbounds.entry(payment_id) {
 			if let Ok(()) = payment.get_mut().mark_abandoned() {
 				if payment.get().remaining_parts() == 0 {
-					failed_ev = Some(events::Event::PaymentFailed {
+					pending_events.lock().unwrap().push(events::Event::PaymentFailed {
 						payment_id,
 						payment_hash: payment.get().payment_hash().expect("PendingOutboundPayments::RetriesExceeded always has a payment hash set"),
 					});
@@ -1134,7 +1176,6 @@ impl OutboundPayments {
 				}
 			}
 		}
-		failed_ev
 	}
 
 	#[cfg(test)]

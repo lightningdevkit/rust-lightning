@@ -166,7 +166,7 @@ fn run_onion_failure_test_with_fail_intercept<F1,F2,F3>(_name: &str, test_case: 
 	commitment_signed_dance!(nodes[0], nodes[1], update_1_0.commitment_signed, false, true);
 
 	let events = nodes[0].node.get_and_clear_pending_events();
-	assert_eq!(events.len(), 1);
+	assert_eq!(events.len(), 2);
 	if let &Event::PaymentPathFailed { ref payment_failed_permanently, ref network_update, ref all_paths_failed, ref short_channel_id, ref error_code, .. } = &events[0] {
 		assert_eq!(*payment_failed_permanently, !expected_retryable);
 		assert_eq!(*all_paths_failed, true);
@@ -212,10 +212,7 @@ fn run_onion_failure_test_with_fail_intercept<F1,F2,F3>(_name: &str, test_case: 
 	} else {
 		panic!("Unexpected event");
 	}
-	nodes[0].node.abandon_payment(payment_id);
-	let events = nodes[0].node.get_and_clear_pending_events();
-	assert_eq!(events.len(), 1);
-	match events[0] {
+	match events[1] {
 		Event::PaymentFailed { payment_hash: ev_payment_hash, payment_id: ev_payment_id } => {
 			assert_eq!(*payment_hash, ev_payment_hash);
 			assert_eq!(payment_id, ev_payment_id);

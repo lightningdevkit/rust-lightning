@@ -1,5 +1,6 @@
 use std::sync::{LockResult, RwLock, RwLockReadGuard, RwLockWriteGuard, TryLockResult};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use super::{LockHeldState, LockTestExt};
 
 /// Rust libstd's RwLock does not provide any fairness guarantees (and, in fact, when used on
 /// Linux with pthreads under the hood, readers trivially and completely starve writers).
@@ -46,5 +47,13 @@ impl<T> FairRwLock<T> {
 
 	pub fn try_write(&self) -> TryLockResult<RwLockWriteGuard<'_, T>> {
 		self.lock.try_write()
+	}
+}
+
+impl<T> LockTestExt for FairRwLock<T> {
+	#[inline]
+	fn held_by_thread(&self) -> LockHeldState {
+		// fairrwlock is only built in non-test modes, so we should never support tests.
+		LockHeldState::Unsupported
 	}
 }

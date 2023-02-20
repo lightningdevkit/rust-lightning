@@ -137,11 +137,12 @@ impl<'a> Router for TestRouter<'a> {
 	}
 }
 
-#[cfg(feature = "std")] // If we put this on the `if`, we get "attributes are not yet allowed on `if` expressions" on 1.41.1
 impl<'a> Drop for TestRouter<'a> {
 	fn drop(&mut self) {
-		if std::thread::panicking() {
-			return;
+		#[cfg(feature = "std")] {
+			if std::thread::panicking() {
+				return;
+			}
 		}
 		assert!(self.next_routes.lock().unwrap().is_empty());
 	}

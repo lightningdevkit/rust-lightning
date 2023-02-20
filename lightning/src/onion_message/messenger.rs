@@ -43,15 +43,14 @@ use crate::prelude::*;
 /// # extern crate bitcoin;
 /// # use bitcoin::hashes::_export::_core::time::Duration;
 /// # use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
-/// # use lightning::chain::keysinterface::{InMemorySigner, KeysManager};
-/// # use lightning::ln::msgs::DecodeError;
+/// # use lightning::chain::keysinterface::KeysManager;
 /// # use lightning::ln::peer_handler::IgnoringMessageHandler;
 /// # use lightning::onion_message::{BlindedPath, CustomOnionMessageContents, Destination, OnionMessageContents, OnionMessenger};
 /// # use lightning::util::logger::{Logger, Record};
 /// # use lightning::util::ser::{Writeable, Writer};
 /// # use lightning::io;
 /// # use std::sync::Arc;
-/// # struct FakeLogger {};
+/// # struct FakeLogger;
 /// # impl Logger for FakeLogger {
 /// #     fn log(&self, record: &Record) { unimplemented!() }
 /// # }
@@ -67,7 +66,7 @@ use crate::prelude::*;
 /// # let your_custom_message_handler = IgnoringMessageHandler {};
 /// // Create the onion messenger. This must use the same `keys_manager` as is passed to your
 /// // ChannelManager.
-/// let onion_messenger = OnionMessenger::new(&keys_manager, &keys_manager, logger, your_custom_message_handler);
+/// let onion_messenger = OnionMessenger::new(&keys_manager, &keys_manager, logger, &your_custom_message_handler);
 ///
 /// # struct YourCustomMessage {}
 /// impl Writeable for YourCustomMessage {
