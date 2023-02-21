@@ -1,10 +1,11 @@
 //! This module has a map which can be iterated in a deterministic order. See the [`IndexedMap`].
 
 use crate::prelude::{HashMap, hash_map};
-use alloc::collections::{BTreeSet, btree_set};
+use alloc::vec::Vec;
+use alloc::slice::Iter;
 use core::hash::Hash;
 use core::cmp::Ord;
-use core::ops::RangeBounds;
+use core::ops::{Bound, RangeBounds};
 
 /// A map which can be iterated in a deterministic order.
 ///
@@ -21,11 +22,10 @@ use core::ops::RangeBounds;
 /// keys in the order defined by [`Ord`].
 ///
 /// [`BTreeMap`]: alloc::collections::BTreeMap
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Eq)]
 pub struct IndexedMap<K: Hash + Ord, V> {
 	map: HashMap<K, V>,
-	// TODO: Explore swapping this for a sorted vec (that is only sorted on first range() call)
-	keys: BTreeSet<K>,
+	keys: Vec<K>,
 }
 
 impl<K: Clone + Hash + Ord, V> IndexedMap<K, V> {
@@ -33,7 +33,7 @@ impl<K: Clone + Hash + Ord, V> IndexedMap<K, V> {
 	pub fn new() -> Self {
 		Self {
 			map: HashMap::new(),
-			keys: BTreeSet::new(),
+			keys: Vec::new(),
 		}
 	}
 
@@ -58,7 +58,8 @@ impl<K: Clone + Hash + Ord, V> IndexedMap<K, V> {
 	pub fn remove(&mut self, key: &K) -> Option<V> {
 		let ret = self.map.remove(key);
 		if let Some(_) = ret {
-			assert!(self.keys.remove(key), "map and keys must be consistent");
+			let idx = self.keys.iter().position(|k| k == key).expect("map and keys must be consistent");
+			self.keys.remove(idx);
 		}
 		ret
 	}
@@ -68,7 +69,7 @@ impl<K: Clone + Hash + Ord, V> IndexedMap<K, V> {
 	pub fn insert(&mut self, key: K, value: V) -> Option<V> {
 		let ret = self.map.insert(key.clone(), value);
 		if ret.is_none() {
-			assert!(self.keys.insert(key), "map and keys must be consistent");
+			self.keys.push(key);
 		}
 		ret
 	}
@@ -109,9 +110,21 @@ impl<K: Clone + Hash + Ord, V> IndexedMap<K, V> {
 	}
 
 	/// Returns an iterator which iterates over the `key`/`value` pairs in a given range.
-	pub fn range<R: RangeBounds<K>>(&self, range: R) -> Range<K, V> {
+	pub fn range<R: RangeBounds<K>>(&mut self, range: R) -> Range<K, V> {
+		self.keys.sort_unstable();
+		let start = match range.start_bound() {
+			Bound::Unbounded => 0,
+			Bound::Included(key) => self.keys.binary_search(key).unwrap_or_else(|index| index),
+			Bound::Excluded(key) => self.keys.binary_search(key).and_then(|index| Ok(index + 1)).unwrap_or_else(|index| index),
+		};
+		let end = match range.end_bound() {
+			Bound::Unbounded => self.keys.len(),
+			Bound::Included(key) => self.keys.binary_search(key).and_then(|index| Ok(index + 1)).unwrap_or_else(|index| index),
+			Bound::Excluded(key) => self.keys.binary_search(key).unwrap_or_else(|index| index),
+		};
+
 		Range {
-			inner_range: self.keys.range(range),
+			inner_range: self.keys[start..end].iter(),
 			map: &self.map,
 		}
 	}
@@ -127,9 +140,15 @@ impl<K: Clone + Hash + Ord, V> IndexedMap<K, V> {
 	}
 }
 
+impl<K: Hash + Ord + PartialEq, V: PartialEq> PartialEq for IndexedMap<K, V> {
+	fn eq(&self, other: &Self) -> bool {
+		self.map == other.map
+	}
+}
+
 /// An iterator over a range of values in an [`IndexedMap`]
 pub struct Range<'a, K: Hash + Ord, V> {
-	inner_range: btree_set::Range<'a, K>,
+	inner_range: Iter<'a, K>,
 	map: &'a HashMap<K, V>,
 }
 impl<'a, K: Hash + Ord, V: 'a> Iterator for Range<'a, K, V> {
@@ -148,7 +167,7 @@ pub struct VacantEntry<'a, K: Hash + Ord, V> {
 	#[cfg(not(feature = "hashbrown"))]
 	underlying_entry: hash_map::VacantEntry<'a, K, V>,
 	key: K,
-	keys: &'a mut BTreeSet<K>,
+	keys: &'a mut Vec<K>,
 }
 
 /// An [`Entry`] for an existing key-value pair
@@ -157,7 +176,7 @@ pub struct OccupiedEntry<'a, K: Hash + Ord, V> {
 	underlying_entry: hash_map::OccupiedEntry<'a, K, V, hash_map::DefaultHashBuilder>,
 	#[cfg(not(feature = "hashbrown"))]
 	underlying_entry: hash_map::OccupiedEntry<'a, K, V>,
-	keys: &'a mut BTreeSet<K>,
+	keys: &'a mut Vec<K>,
 }
 
 /// A mutable reference to a position in the map. This can be used to reference, add, or update the
@@ -172,7 +191,7 @@ pub enum Entry<'a, K: Hash + Ord, V> {
 impl<'a, K: Hash + Ord, V> VacantEntry<'a, K, V> {
 	/// Insert a value into the position described by this entry.
 	pub fn insert(self, value: V) -> &'a mut V {
-		assert!(self.keys.insert(self.key), "map and keys must be consistent");
+		self.keys.push(self.key);
 		self.underlying_entry.insert(value)
 	}
 }
@@ -181,7 +200,8 @@ impl<'a, K: Hash + Ord, V> OccupiedEntry<'a, K, V> {
 	/// Remove the value at the position described by this entry.
 	pub fn remove_entry(self) -> (K, V) {
 		let res = self.underlying_entry.remove_entry();
-		assert!(self.keys.remove(&res.0), "map and keys must be consistent");
+		let idx = self.keys.iter().position(|k| k == &res.0).expect("map and keys must be consistent");
+		self.keys.remove(idx);
 		res
 	}
 

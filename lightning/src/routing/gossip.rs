@@ -390,7 +390,7 @@ where U::Target: UtxoLookup, L::Target: Logger
 	}
 
 	fn get_next_channel_announcement(&self, starting_point: u64) -> Option<(ChannelAnnouncement, Option<ChannelUpdate>, Option<ChannelUpdate>)> {
-		let channels = self.network_graph.channels.read().unwrap();
+		let mut channels = self.network_graph.channels.write().unwrap();
 		for (_, ref chan) in channels.range(starting_point..) {
 			if chan.announcement_message.is_some() {
 				let chan_announcement = chan.announcement_message.clone().unwrap();
@@ -412,7 +412,7 @@ where U::Target: UtxoLookup, L::Target: Logger
 	}
 
 	fn get_next_node_announcement(&self, starting_point: Option<&NodeId>) -> Option<NodeAnnouncement> {
-		let nodes = self.network_graph.nodes.read().unwrap();
+		let mut nodes = self.network_graph.nodes.write().unwrap();
 		let iter = if let Some(node_id) = starting_point {
 				nodes.range((Bound::Excluded(node_id), Bound::Unbounded))
 			} else {
@@ -572,7 +572,7 @@ where U::Target: UtxoLookup, L::Target: Logger
 		// (has at least one update). A peer may still want to know the channel
 		// exists even if its not yet routable.
 		let mut batches: Vec<Vec<u64>> = vec![Vec::with_capacity(MAX_SCIDS_PER_REPLY)];
-		let channels = self.network_graph.channels.read().unwrap();
+		let mut channels = self.network_graph.channels.write().unwrap();
 		for (_, ref chan) in channels.range(inclusive_start_scid.unwrap()..exclusive_end_scid.unwrap()) {
 			if let Some(chan_announcement) = &chan.announcement_message {
 				// Construct a new batch if last one is full
