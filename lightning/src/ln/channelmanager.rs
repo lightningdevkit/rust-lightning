@@ -2666,7 +2666,7 @@ where
 					(chan, funding_msg)
 				},
 				Err(_) => { return Err(APIError::ChannelUnavailable {
-					err: "Error deriving keys or signing initial commitment transactions - either our RNG or our counterparty's RNG is broken or the Signer refused to sign".to_owned()
+					err: "Signer refused to sign the initial commitment transaction".to_owned()
 				}) },
 			}
 		};
@@ -6245,13 +6245,13 @@ where
 		let _ = handle_error!(self, self.internal_channel_reestablish(counterparty_node_id, msg), *counterparty_node_id);
 	}
 
-	fn peer_disconnected(&self, counterparty_node_id: &PublicKey, no_connection_possible: bool) {
+	fn peer_disconnected(&self, counterparty_node_id: &PublicKey) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 		let mut failed_channels = Vec::new();
 		let mut per_peer_state = self.per_peer_state.write().unwrap();
 		let remove_peer = {
-			log_debug!(self.logger, "Marking channels with {} disconnected and generating channel_updates. We believe we {} make future connections to this peer.",
-				log_pubkey!(counterparty_node_id), if no_connection_possible { "cannot" } else { "can" });
+			log_debug!(self.logger, "Marking channels with {} disconnected and generating channel_updates.",
+				log_pubkey!(counterparty_node_id));
 			if let Some(peer_state_mutex) = per_peer_state.get(counterparty_node_id) {
 				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 				let peer_state = &mut *peer_state_lock;
@@ -6293,7 +6293,7 @@ where
 				debug_assert!(peer_state.is_connected, "A disconnected peer cannot disconnect");
 				peer_state.is_connected = false;
 				peer_state.ok_to_remove(true)
-			} else { true }
+			} else { debug_assert!(false, "Unconnected peer disconnected"); true }
 		};
 		if remove_peer {
 			per_peer_state.remove(counterparty_node_id);
@@ -6307,7 +6307,7 @@ where
 
 	fn peer_connected(&self, counterparty_node_id: &PublicKey, init_msg: &msgs::Init) -> Result<(), ()> {
 		if !init_msg.features.supports_static_remote_key() {
-			log_debug!(self.logger, "Peer {} does not support static remote key, disconnecting with no_connection_possible", log_pubkey!(counterparty_node_id));
+			log_debug!(self.logger, "Peer {} does not support static remote key, disconnecting", log_pubkey!(counterparty_node_id));
 			return Err(());
 		}
 
@@ -8186,8 +8186,8 @@ mod tests {
 
 		let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
 
-		nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
-		nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+		nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
+		nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
 
 		nodes[0].node.force_close_broadcasting_latest_txn(&chan.2, &nodes[1].node.get_our_node_id()).unwrap();
 		check_closed_broadcast!(nodes[0], true);

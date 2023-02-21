@@ -425,7 +425,7 @@ impl<ES: Deref, NS: Deref, L: Deref, CMH: Deref> OnionMessageHandler for OnionMe
 		Ok(())
 	}
 
-	fn peer_disconnected(&self, their_node_id: &PublicKey, _no_connection_possible: bool) {
+	fn peer_disconnected(&self, their_node_id: &PublicKey) {
 		let mut pending_msgs = self.pending_messages.lock().unwrap();
 		pending_msgs.remove(their_node_id);
 	}

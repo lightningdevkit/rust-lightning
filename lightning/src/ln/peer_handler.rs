@@ -96,7 +96,7 @@ impl OnionMessageProvider for IgnoringMessageHandler {
 impl OnionMessageHandler for IgnoringMessageHandler {
 	fn handle_onion_message(&self, _their_node_id: &PublicKey, _msg: &msgs::OnionMessage) {}
 	fn peer_connected(&self, _their_node_id: &PublicKey, _init: &msgs::Init) -> Result<(), ()> { Ok(()) }
-	fn peer_disconnected(&self, _their_node_id: &PublicKey, _no_connection_possible: bool) {}
+	fn peer_disconnected(&self, _their_node_id: &PublicKey) {}
 	fn provided_node_features(&self) -> NodeFeatures { NodeFeatures::empty() }
 	fn provided_init_features(&self, _their_node_id: &PublicKey) -> InitFeatures {
 		InitFeatures::empty()
@@ -230,7 +230,7 @@ impl ChannelMessageHandler for ErroringMessageHandler {
 	}
 	// msgs::ChannelUpdate does not contain the channel_id field, so we just drop them.
 	fn handle_channel_update(&self, _their_node_id: &PublicKey, _msg: &msgs::ChannelUpdate) {}
-	fn peer_disconnected(&self, _their_node_id: &PublicKey, _no_connection_possible: bool) {}
+	fn peer_disconnected(&self, _their_node_id: &PublicKey) {}
 	fn peer_connected(&self, _their_node_id: &PublicKey, _init: &msgs::Init) -> Result<(), ()> { Ok(()) }
 	fn handle_error(&self, _their_node_id: &PublicKey, _msg: &msgs::ErrorMessage) {}
 	fn provided_node_features(&self) -> NodeFeatures { NodeFeatures::empty() }
@@ -322,16 +322,7 @@ pub trait SocketDescriptor : cmp::Eq + hash::Hash + Clone {
 /// generate no further read_event/write_buffer_space_avail/socket_disconnected calls for the
 /// descriptor.
 #[derive(Clone)]
-pub struct PeerHandleError {
-	/// Used to indicate that we probably can't make any future connections to this peer (e.g.
-	/// because we required features that our peer was missing, or vice versa).
-	///
-	/// While LDK's [`ChannelManager`] will not do it automatically, you likely wish to force-close
-	/// any channels with this peer or check for new versions of LDK.
-	///
-	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
-	pub no_connection_possible: bool,
-}
+pub struct PeerHandleError { }
 impl fmt::Debug for PeerHandleError {
 	fn fmt(&self, formatter: &mut fmt::Formatter) -> Result<(), fmt::Error> {
 		formatter.write_str("Peer Sent Invalid Data")
@@ -400,6 +391,12 @@ struct Peer {
 	/// We cache a `NodeId` here to avoid serializing peers' keys every time we forward gossip
 	/// messages in `PeerManager`. Use `Peer::set_their_node_id` to modify this field.
 	their_node_id: Option<(PublicKey, NodeId)>,
+	/// The features provided in the peer's [`msgs::Init`] message.
+	///
+	/// This is set only after we've processed the [`msgs::Init`] message and called relevant
+	/// `peer_connected` handler methods. Thus, this field is set *iff* we've finished our
+	/// handshake and can talk to this peer normally (though use [`Peer::handshake_complete`] to
+	/// check this.
 	their_features: Option<InitFeatures>,
 	their_net_address: Option<NetAddress>,
 
@@ -431,6 +428,13 @@ struct Peer {
 }
 
 impl Peer {
+	/// True after we've processed the [`msgs::Init`] message and called relevant `peer_connected`
+	/// handler methods. Thus, this implies we've finished our handshake and can talk to this peer
+	/// normally.
+	fn handshake_complete(&self) -> bool {
+		self.their_features.is_some()
+	}
+
 	/// Returns true if the channel announcements/updates for the given channel should be
 	/// forwarded to this peer.
 	/// If we are sending our routing table to this peer and we have not yet sent channel
@@ -438,6 +442,7 @@ impl Peer {
 	/// point and we shouldn't send it yet to avoid sending duplicate updates. If we've already
 	/// sent the old versions, we should send the update, and so return true here.
 	fn should_forward_channel_announcement(&self, channel_id: u64) -> bool {
+		if !self.handshake_complete() { return false; }
 		if self.their_features.as_ref().unwrap().supports_gossip_queries() &&
 			!self.sent_gossip_timestamp_filter {
 				return false;
@@ -451,6 +456,7 @@ impl Peer {
 
 	/// Similar to the above, but for node announcements indexed by node_id.
 	fn should_forward_node_announcement(&self, node_id: NodeId) -> bool {
+		if !self.handshake_complete() { return false; }
 		if self.their_features.as_ref().unwrap().supports_gossip_queries() &&
 			!self.sent_gossip_timestamp_filter {
 				return false;
@@ -477,19 +483,20 @@ impl Peer {
 	fn should_buffer_gossip_backfill(&self) -> bool {
 		self.pending_outbound_buffer.is_empty() && self.gossip_broadcast_buffer.is_empty()
 			&& self.msgs_sent_since_pong < BUFFER_DRAIN_MSGS_PER_TICK
+			&& self.handshake_complete()
 	}
 
 	/// Determines if we should push an onion message onto a peer's outbound buffer. This is checked
 	/// every time the peer's buffer may have been drained.
 	fn should_buffer_onion_message(&self) -> bool {
-		self.pending_outbound_buffer.is_empty()
+		self.pending_outbound_buffer.is_empty() && self.handshake_complete()
 			&& self.msgs_sent_since_pong < BUFFER_DRAIN_MSGS_PER_TICK
 	}
 
 	/// Determines if we should push additional gossip broadcast messages onto a peer's outbound
 	/// buffer. This is checked every time the peer's buffer may have been drained.
 	fn should_buffer_gossip_broadcast(&self) -> bool {
-		self.pending_outbound_buffer.is_empty()
+		self.pending_outbound_buffer.is_empty() && self.handshake_complete()
 			&& self.msgs_sent_since_pong < BUFFER_DRAIN_MSGS_PER_TICK
 	}
 
@@ -771,8 +778,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 		let peers = self.peers.read().unwrap();
 		peers.values().filter_map(|peer_mutex| {
 			let p = peer_mutex.lock().unwrap();
-			if !p.channel_encryptor.is_ready_for_encryption() || p.their_features.is_none() ||
-				p.their_node_id.is_none() {
+			if !p.handshake_complete() {
 				return None;
 			}
 			Some((p.their_node_id.unwrap().0, p.their_net_address.clone()))
@@ -1001,7 +1007,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 				// This is most likely a simple race condition where the user found that the socket
 				// was writeable, then we told the user to `disconnect_socket()`, then they called
 				// this method. Return an error to make sure we get disconnected.
-				return Err(PeerHandleError { no_connection_possible: false });
+				return Err(PeerHandleError { });
 			},
 			Some(peer_mutex) => {
 				let mut peer = peer_mutex.lock().unwrap();
@@ -1034,7 +1040,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 			Ok(res) => Ok(res),
 			Err(e) => {
 				log_trace!(self.logger, "Peer sent invalid data or we decided to disconnect due to a protocol error");
-				self.disconnect_event_internal(peer_descriptor, e.no_connection_possible);
+				self.disconnect_event_internal(peer_descriptor);
 				Err(e)
 			}
 		}
@@ -1067,7 +1073,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 				// This is most likely a simple race condition where the user read some bytes
 				// from the socket, then we told the user to `disconnect_socket()`, then they
 				// called this method. Return an error to make sure we get disconnected.
-				return Err(PeerHandleError { no_connection_possible: false });
+				return Err(PeerHandleError { });
 			},
 			Some(peer_mutex) => {
 				let mut read_pos = 0;
@@ -1081,7 +1087,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 										msgs::ErrorAction::DisconnectPeer { msg: _ } => {
 											//TODO: Try to push msg
 											log_debug!(self.logger, "Error handling message{}; disconnecting peer with: {}", OptionalFromDebugger(&peer_node_id), e.err);
-											return Err(PeerHandleError{ no_connection_possible: false });
+											return Err(PeerHandleError { });
 										},
 										msgs::ErrorAction::IgnoreAndLog(level) => {
 											log_given_level!(self.logger, level, "Error handling message{}; ignoring: {}", OptionalFromDebugger(&peer_node_id), e.err);
@@ -1134,7 +1140,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 									hash_map::Entry::Occupied(_) => {
 										log_trace!(self.logger, "Got second connection with {}, closing", log_pubkey!(peer.their_node_id.unwrap().0));
 										peer.their_node_id = None; // Unset so that we don't generate a peer_disconnected event
-										return Err(PeerHandleError{ no_connection_possible: false })
+										return Err(PeerHandleError { })
 									},
 									hash_map::Entry::Vacant(entry) => {
 										log_debug!(self.logger, "Finished noise handshake for connection with {}", log_pubkey!(peer.their_node_id.unwrap().0));
@@ -1191,7 +1197,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 									if peer.pending_read_buffer.capacity() > 8192 { peer.pending_read_buffer = Vec::new(); }
 									peer.pending_read_buffer.resize(msg_len as usize + 16, 0);
 									if msg_len < 2 { // Need at least the message type tag
-										return Err(PeerHandleError{ no_connection_possible: false });
+										return Err(PeerHandleError { });
 									}
 									peer.pending_read_is_header = false;
 								} else {
@@ -1234,19 +1240,19 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 												(msgs::DecodeError::UnknownRequiredFeature, ty) => {
 													log_gossip!(self.logger, "Received a message with an unknown required feature flag or TLV, you may want to update!");
 													self.enqueue_message(peer, &msgs::WarningMessage { channel_id: [0; 32], data: format!("Received an unknown required feature/TLV in message type {:?}", ty) });
-													return Err(PeerHandleError { no_connection_possible: false });
+													return Err(PeerHandleError { });
 												}
-												(msgs::DecodeError::UnknownVersion, _) => return Err(PeerHandleError { no_connection_possible: false }),
+												(msgs::DecodeError::UnknownVersion, _) => return Err(PeerHandleError { }),
 												(msgs::DecodeError::InvalidValue, _) => {
 													log_debug!(self.logger, "Got an invalid value while deserializing message");
-													return Err(PeerHandleError { no_connection_possible: false });
+													return Err(PeerHandleError { });
 												}
 												(msgs::DecodeError::ShortRead, _) => {
 													log_debug!(self.logger, "Deserialization failed due to shortness of message");
-													return Err(PeerHandleError { no_connection_possible: false });
+													return Err(PeerHandleError { });
 												}
-												(msgs::DecodeError::BadLengthDescriptor, _) => return Err(PeerHandleError { no_connection_possible: false }),
-												(msgs::DecodeError::Io(_), _) => return Err(PeerHandleError { no_connection_possible: false }),
+												(msgs::DecodeError::BadLengthDescriptor, _) => return Err(PeerHandleError { }),
+												(msgs::DecodeError::Io(_), _) => return Err(PeerHandleError { }),
 											}
 										}
 									};
@@ -1298,10 +1304,10 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 		if let wire::Message::Init(msg) = message {
 			if msg.features.requires_unknown_bits() {
 				log_debug!(self.logger, "Peer features required unknown version bits");
-				return Err(PeerHandleError{ no_connection_possible: true }.into());
+				return Err(PeerHandleError { }.into());
 			}
 			if peer_lock.their_features.is_some() {
-				return Err(PeerHandleError{ no_connection_possible: false }.into());
+				return Err(PeerHandleError { }.into());
 			}
 
 			log_info!(self.logger, "Received peer Init message from {}: {}", log_pubkey!(their_node_id), msg.features);
@@ -1313,22 +1319,22 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 
 			if let Err(()) = self.message_handler.route_handler.peer_connected(&their_node_id, &msg) {
 				log_debug!(self.logger, "Route Handler decided we couldn't communicate with peer {}", log_pubkey!(their_node_id));
-				return Err(PeerHandleError{ no_connection_possible: true }.into());
+				return Err(PeerHandleError { }.into());
 			}
 			if let Err(()) = self.message_handler.chan_handler.peer_connected(&their_node_id, &msg) {
 				log_debug!(self.logger, "Channel Handler decided we couldn't communicate with peer {}", log_pubkey!(their_node_id));
-				return Err(PeerHandleError{ no_connection_possible: true }.into());
+				return Err(PeerHandleError { }.into());
 			}
 			if let Err(()) = self.message_handler.onion_message_handler.peer_connected(&their_node_id, &msg) {
 				log_debug!(self.logger, "Onion Message Handler decided we couldn't communicate with peer {}", log_pubkey!(their_node_id));
-				return Err(PeerHandleError{ no_connection_possible: true }.into());
+				return Err(PeerHandleError { }.into());
 			}
 
 			peer_lock.their_features = Some(msg.features);
 			return Ok(None);
 		} else if peer_lock.their_features.is_none() {
 			log_debug!(self.logger, "Peer {} sent non-Init first message", log_pubkey!(their_node_id));
-			return Err(PeerHandleError{ no_connection_possible: false }.into());
+			return Err(PeerHandleError { }.into());
 		}
 
 		if let wire::Message::GossipTimestampFilter(_msg) = message {
@@ -1380,7 +1386,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 				}
 				self.message_handler.chan_handler.handle_error(&their_node_id, &msg);
 				if msg.channel_id == [0; 32] {
-					return Err(PeerHandleError{ no_connection_possible: true }.into());
+					return Err(PeerHandleError { }.into());
 				}
 			},
 			wire::Message::Warning(msg) => {
@@ -1510,8 +1516,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 			// Unknown messages:
 			wire::Message::Unknown(type_id) if message.is_even() => {
 				log_debug!(self.logger, "Received unknown even message of type {}, disconnecting peer!", type_id);
-				// Fail the channel if message is an even, unknown type as per BOLT #1.
-				return Err(PeerHandleError{ no_connection_possible: true }.into());
+				return Err(PeerHandleError { }.into());
 			},
 			wire::Message::Unknown(type_id) => {
 				log_trace!(self.logger, "Received unknown odd message of type {}, ignoring", type_id);
@@ -1531,10 +1536,12 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 
 				for (_, peer_mutex) in peers.iter() {
 					let mut peer = peer_mutex.lock().unwrap();
-					if !peer.channel_encryptor.is_ready_for_encryption() || peer.their_features.is_none() ||
+					if !peer.handshake_complete() ||
 							!peer.should_forward_channel_announcement(msg.contents.short_channel_id) {
 						continue
 					}
+					debug_assert!(peer.their_node_id.is_some());
+					debug_assert!(peer.channel_encryptor.is_ready_for_encryption());
 					if peer.buffer_full_drop_gossip_broadcast() {
 						log_gossip!(self.logger, "Skipping broadcast message to {:?} as its outbound buffer is full", peer.their_node_id);
 						continue;
@@ -1556,10 +1563,12 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 
 				for (_, peer_mutex) in peers.iter() {
 					let mut peer = peer_mutex.lock().unwrap();
-					if !peer.channel_encryptor.is_ready_for_encryption() || peer.their_features.is_none() ||
+					if !peer.handshake_complete() ||
 							!peer.should_forward_node_announcement(msg.contents.node_id) {
 						continue
 					}
+					debug_assert!(peer.their_node_id.is_some());
+					debug_assert!(peer.channel_encryptor.is_ready_for_encryption());
 					if peer.buffer_full_drop_gossip_broadcast() {
 						log_gossip!(self.logger, "Skipping broadcast message to {:?} as its outbound buffer is full", peer.their_node_id);
 						continue;
@@ -1581,10 +1590,12 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 
 				for (_, peer_mutex) in peers.iter() {
 					let mut peer = peer_mutex.lock().unwrap();
-					if !peer.channel_encryptor.is_ready_for_encryption() || peer.their_features.is_none() ||
+					if !peer.handshake_complete() ||
 							!peer.should_forward_channel_announcement(msg.contents.short_channel_id)  {
 						continue
 					}
+					debug_assert!(peer.their_node_id.is_some());
+					debug_assert!(peer.channel_encryptor.is_ready_for_encryption());
 					if peer.buffer_full_drop_gossip_broadcast() {
 						log_gossip!(self.logger, "Skipping broadcast message to {:?} as its outbound buffer is full", peer.their_node_id);
 						continue;
@@ -1664,7 +1675,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 							Some(descriptor) => match peers.get(&descriptor) {
 								Some(peer_mutex) => {
 									let peer_lock = peer_mutex.lock().unwrap();
-									if peer_lock.their_features.is_none() {
+									if !peer_lock.handshake_complete() {
 										continue;
 									}
 									peer_lock
@@ -1884,24 +1895,21 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 				// thread can be holding the peer lock if we have the global write
 				// lock).
 
-				if let Some(mut descriptor) = self.node_id_to_descriptor.lock().unwrap().remove(&node_id) {
+				let descriptor_opt = self.node_id_to_descriptor.lock().unwrap().remove(&node_id);
+				if let Some(mut descriptor) = descriptor_opt {
 					if let Some(peer_mutex) = peers.remove(&descriptor) {
+						let mut peer = peer_mutex.lock().unwrap();
 						if let Some(msg) = msg {
 							log_trace!(self.logger, "Handling DisconnectPeer HandleError event in peer_handler for node {} with message {}",
 									log_pubkey!(node_id),
 									msg.data);
-							let mut peer = peer_mutex.lock().unwrap();
 							self.enqueue_message(&mut *peer, &msg);
 							// This isn't guaranteed to work, but if there is enough free
 							// room in the send buffer, put the error message there...
 							self.do_attempt_write_data(&mut descriptor, &mut *peer, false);
-						} else {
-							log_trace!(self.logger, "Handling DisconnectPeer HandleError event in peer_handler for node {} with no message", log_pubkey!(node_id));
 						}
+						self.do_disconnect(descriptor, &*peer, "DisconnectPeer HandleError");
 					}
-					descriptor.disconnect_socket();
-					self.message_handler.chan_handler.peer_disconnected(&node_id, false);
-					self.message_handler.onion_message_handler.peer_disconnected(&node_id, false);
 				}
 			}
 		}
@@ -1909,10 +1917,26 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 
 	/// Indicates that the given socket descriptor's connection is now closed.
 	pub fn socket_disconnected(&self, descriptor: &Descriptor) {
-		self.disconnect_event_internal(descriptor, false);
+		self.disconnect_event_internal(descriptor);
 	}
 
-	fn disconnect_event_internal(&self, descriptor: &Descriptor, no_connection_possible: bool) {
+	fn do_disconnect(&self, mut descriptor: Descriptor, peer: &Peer, reason: &'static str) {
+		if !peer.handshake_complete() {
+			log_trace!(self.logger, "Disconnecting peer which hasn't completed handshake due to {}", reason);
+			descriptor.disconnect_socket();
+			return;
+		}
+
+		debug_assert!(peer.their_node_id.is_some());
+		if let Some((node_id, _)) = peer.their_node_id {
+			log_trace!(self.logger, "Disconnecting peer with id {} due to {}", node_id, reason);
+			self.message_handler.chan_handler.peer_disconnected(&node_id);
+			self.message_handler.onion_message_handler.peer_disconnected(&node_id);
+		}
+		descriptor.disconnect_socket();
+	}
+
+	fn disconnect_event_internal(&self, descriptor: &Descriptor) {
 		let mut peers = self.peers.write().unwrap();
 		let peer_option = peers.remove(descriptor);
 		match peer_option {
@@ -1923,13 +1947,13 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 			},
 			Some(peer_lock) => {
 				let peer = peer_lock.lock().unwrap();
+				if !peer.handshake_complete() { return; }
+				debug_assert!(peer.their_node_id.is_some());
 				if let Some((node_id, _)) = peer.their_node_id {
-					log_trace!(self.logger,
-						"Handling disconnection of peer {}, with {}future connection to the peer possible.",
-						log_pubkey!(node_id), if no_connection_possible { "no " } else { "" });
+					log_trace!(self.logger, "Handling disconnection of peer {}", log_pubkey!(node_id));
 					self.node_id_to_descriptor.lock().unwrap().remove(&node_id);
-					self.message_handler.chan_handler.peer_disconnected(&node_id, no_connection_possible);
-					self.message_handler.onion_message_handler.peer_disconnected(&node_id, no_connection_possible);
+					self.message_handler.chan_handler.peer_disconnected(&node_id);
+					self.message_handler.onion_message_handler.peer_disconnected(&node_id);
 				}
 			}
 		};
@@ -1937,21 +1961,17 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 
 	/// Disconnect a peer given its node id.
 	///
-	/// Set `no_connection_possible` to true to prevent any further connection with this peer,
-	/// force-closing any channels we have with it.
-	///
 	/// If a peer is connected, this will call [`disconnect_socket`] on the descriptor for the
 	/// peer. Thus, be very careful about reentrancy issues.
 	///
 	/// [`disconnect_socket`]: SocketDescriptor::disconnect_socket
-	pub fn disconnect_by_node_id(&self, node_id: PublicKey, no_connection_possible: bool) {
+	pub fn disconnect_by_node_id(&self, node_id: PublicKey) {
 		let mut peers_lock = self.peers.write().unwrap();
-		if let Some(mut descriptor) = self.node_id_to_descriptor.lock().unwrap().remove(&node_id) {
-			log_trace!(self.logger, "Disconnecting peer with id {} due to client request", node_id);
-			peers_lock.remove(&descriptor);
-			self.message_handler.chan_handler.peer_disconnected(&node_id, no_connection_possible);
-			self.message_handler.onion_message_handler.peer_disconnected(&node_id, no_connection_possible);
-			descriptor.disconnect_socket();
+		if let Some(descriptor) = self.node_id_to_descriptor.lock().unwrap().remove(&node_id) {
+			let peer_opt = peers_lock.remove(&descriptor);
+			if let Some(peer_mutex) = peer_opt {
+				self.do_disconnect(descriptor, &*peer_mutex.lock().unwrap(), "client request");
+			} else { debug_assert!(false, "node_id_to_descriptor thought we had a peer"); }
 		}
 	}
 
@@ -1962,13 +1982,8 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 		let mut peers_lock = self.peers.write().unwrap();
 		self.node_id_to_descriptor.lock().unwrap().clear();
 		let peers = &mut *peers_lock;
-		for (mut descriptor, peer) in peers.drain() {
-			if let Some((node_id, _)) = peer.lock().unwrap().their_node_id {
-				log_trace!(self.logger, "Disconnecting peer with id {} due to client request to disconnect all peers", node_id);
-				self.message_handler.chan_handler.peer_disconnected(&node_id, false);
-				self.message_handler.onion_message_handler.peer_disconnected(&node_id, false);
-			}
-			descriptor.disconnect_socket();
+		for (descriptor, peer_mutex) in peers.drain() {
+			self.do_disconnect(descriptor, &*peer_mutex.lock().unwrap(), "client request to disconnect all peers");
 		}
 	}
 
@@ -2009,7 +2024,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 				let mut peer = peer_mutex.lock().unwrap();
 				if flush_read_disabled { peer.received_channel_announce_since_backlogged = false; }
 
-				if !peer.channel_encryptor.is_ready_for_encryption() || peer.their_node_id.is_none() {
+				if !peer.handshake_complete() {
 					// The peer needs to complete its handshake before we can exchange messages. We
 					// give peers one timer tick to complete handshake, reusing
 					// `awaiting_pong_timer_tick_intervals` to track number of timer ticks taken
@@ -2021,6 +2036,8 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 					}
 					continue;
 				}
+				debug_assert!(peer.channel_encryptor.is_ready_for_encryption());
+				debug_assert!(peer.their_node_id.is_some());
 
 				loop { // Used as a `goto` to skip writing a Ping message.
 					if peer.awaiting_pong_timer_tick_intervals == -1 {
@@ -2059,20 +2076,15 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 		if !descriptors_needing_disconnect.is_empty() {
 			{
 				let mut peers_lock = self.peers.write().unwrap();
-				for descriptor in descriptors_needing_disconnect.iter() {
-					if let Some(peer) = peers_lock.remove(descriptor) {
-						if let Some((node_id, _)) = peer.lock().unwrap().their_node_id {
-							log_trace!(self.logger, "Disconnecting peer with id {} due to ping timeout", node_id);
+				for descriptor in descriptors_needing_disconnect {
+					if let Some(peer_mutex) = peers_lock.remove(&descriptor) {
+						let peer = peer_mutex.lock().unwrap();
+						if let Some((node_id, _)) = peer.their_node_id {
 							self.node_id_to_descriptor.lock().unwrap().remove(&node_id);
-							self.message_handler.chan_handler.peer_disconnected(&node_id, false);
-							self.message_handler.onion_message_handler.peer_disconnected(&node_id, false);
 						}
+						self.do_disconnect(descriptor, &*peer, "ping timeout");
 					}
 				}
-			}
-
-			for mut descriptor in descriptors_needing_disconnect.drain(..) {
-				descriptor.disconnect_socket();
 			}
 		}
 	}
@@ -2161,6 +2173,7 @@ fn is_gossip_msg(type_id: u16) -> bool {
 #[cfg(test)]
 mod tests {
 	use crate::chain::keysinterface::{NodeSigner, Recipient};
+	use crate::ln::peer_channel_encryptor::PeerChannelEncryptor;
 	use crate::ln::peer_handler::{PeerManager, MessageHandler, SocketDescriptor, IgnoringMessageHandler, filter_addresses};
 	use crate::ln::{msgs, wire};
 	use crate::ln::msgs::NetAddress;
@@ -2269,19 +2282,15 @@ mod tests {
 		// Simple test which builds a network of PeerManager, connects and brings them to NoiseState::Finished and
 		// push a DisconnectPeer event to remove the node flagged by id
 		let cfgs = create_peermgr_cfgs(2);
-		let chan_handler = test_utils::TestChannelMessageHandler::new();
-		let mut peers = create_network(2, &cfgs);
+		let peers = create_network(2, &cfgs);
 		establish_connection(&peers[0], &peers[1]);
 		assert_eq!(peers[0].peers.read().unwrap().len(), 1);
 
 		let their_id = peers[1].node_signer.get_node_id(Recipient::Node).unwrap();
-
-		chan_handler.pending_events.lock().unwrap().push(events::MessageSendEvent::HandleError {
+		cfgs[0].chan_handler.pending_events.lock().unwrap().push(events::MessageSendEvent::HandleError {
 			node_id: their_id,
 			action: msgs::ErrorAction::DisconnectPeer { msg: None },
 		});
-		assert_eq!(chan_handler.pending_events.lock().unwrap().len(), 1);
-		peers[0].message_handler.chan_handler = &chan_handler;
 
 		peers[0].process_events();
 		assert_eq!(peers[0].peers.read().unwrap().len(), 0);
@@ -2313,6 +2322,35 @@ mod tests {
 
 		let a_data = fd_a.outbound_data.lock().unwrap().split_off(0);
 		assert_eq!(peers[1].read_event(&mut fd_b, &a_data).unwrap(), false);
+	}
+
+	#[test]
+	fn test_non_init_first_msg() {
+		// Simple test of the first message received over a connection being something other than
+		// Init. This results in an immediate disconnection, which previously included a spurious
+		// peer_disconnected event handed to event handlers (which would panic in
+		// `TestChannelMessageHandler` here).
+		let cfgs = create_peermgr_cfgs(2);
+		let peers = create_network(2, &cfgs);
+
+		let mut fd_dup = FileDescriptor { fd: 3, outbound_data: Arc::new(Mutex::new(Vec::new())) };
+		let addr_dup = NetAddress::IPv4{addr: [127, 0, 0, 1], port: 1003};
+		let id_a = cfgs[0].node_signer.get_node_id(Recipient::Node).unwrap();
+		peers[0].new_inbound_connection(fd_dup.clone(), Some(addr_dup.clone())).unwrap();
+
+		let mut dup_encryptor = PeerChannelEncryptor::new_outbound(id_a, SecretKey::from_slice(&[42; 32]).unwrap());
+		let initial_data = dup_encryptor.get_act_one(&peers[1].secp_ctx);
+		assert_eq!(peers[0].read_event(&mut fd_dup, &initial_data).unwrap(), false);
+		peers[0].process_events();
+
+		let a_data = fd_dup.outbound_data.lock().unwrap().split_off(0);
+		let (act_three, _) =
+			dup_encryptor.process_act_two(&a_data[..], &&cfgs[1].node_signer).unwrap();
+		assert_eq!(peers[0].read_event(&mut fd_dup, &act_three).unwrap(), false);
+
+		let not_init_msg = msgs::Ping { ponglen: 4, byteslen: 0 };
+		let msg_bytes = dup_encryptor.encrypt_message(&not_init_msg);
+		assert!(peers[0].read_event(&mut fd_dup, &msg_bytes).is_err());
 	}
 
 	#[test]

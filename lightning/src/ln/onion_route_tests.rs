@@ -576,8 +576,8 @@ fn test_onion_failure() {
 	let short_channel_id = channels[1].0.contents.short_channel_id;
 	run_onion_failure_test("channel_disabled", 0, &nodes, &route, &payment_hash, &payment_secret, |_| {}, || {
 		// disconnect event to the channel between nodes[1] ~ nodes[2]
-		nodes[1].node.peer_disconnected(&nodes[2].node.get_our_node_id(), false);
-		nodes[2].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
+		nodes[1].node.peer_disconnected(&nodes[2].node.get_our_node_id());
+		nodes[2].node.peer_disconnected(&nodes[1].node.get_our_node_id());
 	}, true, Some(UPDATE|20), Some(NetworkUpdate::ChannelUpdateMessage{msg: ChannelUpdate::dummy(short_channel_id)}), Some(short_channel_id));
 	reconnect_nodes(&nodes[1], &nodes[2], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
 
