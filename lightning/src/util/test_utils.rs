@@ -423,7 +423,7 @@ impl msgs::ChannelMessageHandler for TestChannelMessageHandler {
 	fn handle_channel_reestablish(&self, _their_node_id: &PublicKey, msg: &msgs::ChannelReestablish) {
 		self.received_msg(wire::Message::ChannelReestablish(msg.clone()));
 	}
-	fn peer_disconnected(&self, their_node_id: &PublicKey, _no_connection_possible: bool) {
+	fn peer_disconnected(&self, their_node_id: &PublicKey) {
 		assert!(self.connected_peers.lock().unwrap().remove(their_node_id));
 	}
 	fn peer_connected(&self, their_node_id: &PublicKey, _msg: &msgs::Init) -> Result<(), ()> {

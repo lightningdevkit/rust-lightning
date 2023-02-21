@@ -90,8 +90,8 @@ fn test_priv_forwarding_rejection() {
 	// Now disconnect nodes[1] from its peers and restart with accept_forwards_to_priv_channels set
 	// to true. Sadly there is currently no way to change it at runtime.
 
-	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
-	nodes[2].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
+	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
+	nodes[2].node.peer_disconnected(&nodes[1].node.get_our_node_id());
 
 	let nodes_1_serialized = nodes[1].node.encode();
 	let monitor_a_serialized = get_monitor!(nodes[1], chan_id_1).encode();

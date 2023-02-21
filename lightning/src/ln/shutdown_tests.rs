@@ -243,8 +243,8 @@ fn do_test_shutdown_rebroadcast(recv_count: u8) {
 		}
 	}
 
-	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
-	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
+	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
 
 	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init { features: nodes[1].node.init_features(), remote_network_address: None }).unwrap();
 	let node_0_reestablish = get_chan_reestablish_msgs!(nodes[0], nodes[1]).pop().unwrap();
@@ -305,8 +305,8 @@ fn do_test_shutdown_rebroadcast(recv_count: u8) {
 		assert!(node_0_2nd_closing_signed.is_some());
 	}
 
-	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
-	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
+	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
 
 	nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id(), &msgs::Init { features: nodes[0].node.init_features(), remote_network_address: None }).unwrap();
 	let node_1_2nd_reestablish = get_chan_reestablish_msgs!(nodes[1], nodes[0]).pop().unwrap();

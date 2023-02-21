@@ -978,16 +978,16 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 
 			0x0c => {
 				if !chan_a_disconnected {
-					nodes[0].peer_disconnected(&nodes[1].get_our_node_id(), false);
-					nodes[1].peer_disconnected(&nodes[0].get_our_node_id(), false);
+					nodes[0].peer_disconnected(&nodes[1].get_our_node_id());
+					nodes[1].peer_disconnected(&nodes[0].get_our_node_id());
 					chan_a_disconnected = true;
 					drain_msg_events_on_disconnect!(0);
 				}
 			},
 			0x0d => {
 				if !chan_b_disconnected {
-					nodes[1].peer_disconnected(&nodes[2].get_our_node_id(), false);
-					nodes[2].peer_disconnected(&nodes[1].get_our_node_id(), false);
+					nodes[1].peer_disconnected(&nodes[2].get_our_node_id());
+					nodes[2].peer_disconnected(&nodes[1].get_our_node_id());
 					chan_b_disconnected = true;
 					drain_msg_events_on_disconnect!(2);
 				}
@@ -1039,7 +1039,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 
 			0x2c => {
 				if !chan_a_disconnected {
-					nodes[1].peer_disconnected(&nodes[0].get_our_node_id(), false);
+					nodes[1].peer_disconnected(&nodes[0].get_our_node_id());
 					chan_a_disconnected = true;
 					drain_msg_events_on_disconnect!(0);
 				}
@@ -1053,14 +1053,14 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 			},
 			0x2d => {
 				if !chan_a_disconnected {
-					nodes[0].peer_disconnected(&nodes[1].get_our_node_id(), false);
+					nodes[0].peer_disconnected(&nodes[1].get_our_node_id());
 					chan_a_disconnected = true;
 					nodes[0].get_and_clear_pending_msg_events();
 					ab_events.clear();
 					ba_events.clear();
 				}
 				if !chan_b_disconnected {
-					nodes[2].peer_disconnected(&nodes[1].get_our_node_id(), false);
+					nodes[2].peer_disconnected(&nodes[1].get_our_node_id());
 					chan_b_disconnected = true;
 					nodes[2].get_and_clear_pending_msg_events();
 					bc_events.clear();
@@ -1072,7 +1072,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 			},
 			0x2e => {
 				if !chan_b_disconnected {
-					nodes[1].peer_disconnected(&nodes[2].get_our_node_id(), false);
+					nodes[1].peer_disconnected(&nodes[2].get_our_node_id());
 					chan_b_disconnected = true;
 					drain_msg_events_on_disconnect!(2);
 				}

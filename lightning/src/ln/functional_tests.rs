@@ -3509,8 +3509,8 @@ fn test_dup_events_on_peer_disconnect() {
 	nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &claim_msgs.update_fulfill_htlcs[0]);
 	expect_payment_sent_without_paths!(nodes[0], payment_preimage);
 
-	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
-	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
+	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
 
 	reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (1, 0), (0, 0), (0, 0), (0, 0), (false, false));
 	expect_payment_path_successful!(nodes[0]);
@@ -3550,8 +3550,8 @@ fn test_peer_disconnected_before_funding_broadcasted() {
 
 	// Ensure that the channel is closed with `ClosureReason::DisconnectedPeer` when the peers are
 	// disconnected before the funding transaction was broadcasted.
-	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
-	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
+	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
 
 	check_closed_event!(nodes[0], 1, ClosureReason::DisconnectedPeer);
 	check_closed_event!(nodes[1], 1, ClosureReason::DisconnectedPeer);
@@ -3567,8 +3567,8 @@ fn test_simple_peer_disconnect() {
 	create_announced_chan_between_nodes(&nodes, 0, 1);
 	create_announced_chan_between_nodes(&nodes, 1, 2);
 
-	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
-	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
+	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
 	reconnect_nodes(&nodes[0], &nodes[1], (true, true), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
 
 	let payment_preimage_1 = route_payment(&nodes[0], &vec!(&nodes[1], &nodes[2])[..], 1000000).0;
@@ -3576,8 +3576,8 @@ fn test_simple_peer_disconnect() {
 	fail_payment(&nodes[0], &vec!(&nodes[1], &nodes[2]), payment_hash_2);
 	claim_payment(&nodes[0], &vec!(&nodes[1], &nodes[2]), payment_preimage_1);
 
-	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
-	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
+	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
 	reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
 
 	let (payment_preimage_3, payment_hash_3, _) = route_payment(&nodes[0], &vec!(&nodes[1], &nodes[2])[..], 1000000);
@@ -3585,8 +3585,8 @@ fn test_simple_peer_disconnect() {
 	let payment_hash_5 = route_payment(&nodes[0], &vec!(&nodes[1], &nodes[2])[..], 1000000).1;
 	let payment_hash_6 = route_payment(&nodes[0], &vec!(&nodes[1], &nodes[2])[..], 1000000).1;
 
-	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
-	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
+	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
 
 	claim_payment_along_route(&nodes[0], &[&[&nodes[1], &nodes[2]]], true, payment_preimage_3);
 	fail_payment_along_route(&nodes[0], &[&[&nodes[1], &nodes[2]]], true, payment_hash_5);
@@ -3680,8 +3680,8 @@ fn do_test_drop_messages_peer_disconnect(messages_delivered: u8, simulate_broken
 		}
 	}
 
-	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
-	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
+	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
 	if messages_delivered < 3 {
 		if simulate_broken_lnd {
 			// lnd has a long-standing bug where they send a channel_ready prior to a
@@ -3730,8 +3730,8 @@ fn do_test_drop_messages_peer_disconnect(messages_delivered: u8, simulate_broken
 		};
 	}
 
-	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
-	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
+	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
 	reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
 
 	nodes[1].node.process_pending_htlc_forwards();
@@ -3813,8 +3813,8 @@ fn do_test_drop_messages_peer_disconnect(messages_delivered: u8, simulate_broken
 		}
 	}
 
-	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
-	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
+	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
 	if messages_delivered < 2 {
 		reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (1, 0), (0, 0), (0, 0), (0, 0), (false, false));
 		if messages_delivered < 1 {
@@ -3840,8 +3840,8 @@ fn do_test_drop_messages_peer_disconnect(messages_delivered: u8, simulate_broken
 		expect_payment_path_successful!(nodes[0]);
 	}
 	if messages_delivered <= 5 {
-		nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
-		nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+		nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
+		nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
 	}
 	reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
 
@@ -3955,8 +3955,8 @@ fn test_drop_messages_peer_disconnect_dual_htlc() {
 		_ => panic!("Unexpected event"),
 	}
 
-	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
-	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
+	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
 
 	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init { features: nodes[1].node.init_features(), remote_network_address: None }).unwrap();
 	let reestablish_1 = get_chan_reestablish_msgs!(nodes[0], nodes[1]);
@@ -6257,8 +6257,8 @@ fn test_update_add_htlc_bolt2_receiver_check_repeated_id_ignore() {
 	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &updates.update_add_htlcs[0]);
 
 	//Disconnect and Reconnect
-	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
-	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
+	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
 	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init { features: nodes[1].node.init_features(), remote_network_address: None }).unwrap();
 	let reestablish_1 = get_chan_reestablish_msgs!(nodes[0], nodes[1]);
 	assert_eq!(reestablish_1.len(), 1);
@@ -6990,8 +6990,8 @@ fn test_announce_disable_channels() {
 	create_announced_chan_between_nodes(&nodes, 0, 1);
 
 	// Disconnect peers
-	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
-	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
+	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
 
 	nodes[0].node.timer_tick_occurred(); // Enabled -> DisabledStaged
 	nodes[0].node.timer_tick_occurred(); // DisabledStaged -> Disabled
@@ -8790,13 +8790,11 @@ fn test_error_chans_closed() {
 		_ => panic!("Unexpected event"),
 	}
 	// Note that at this point users of a standard PeerHandler will end up calling
-	// peer_disconnected with no_connection_possible set to false, duplicating the
-	// close-all-channels logic. That's OK, we don't want to end up not force-closing channels for
-	// users with their own peer handling logic. We duplicate the call here, however.
+	// peer_disconnected.
 	assert_eq!(nodes[0].node.list_usable_channels().len(), 1);
 	assert!(nodes[0].node.list_usable_channels()[0].channel_id == chan_3.2);
 
-	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), true);
+	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
 	assert_eq!(nodes[0].node.list_usable_channels().len(), 1);
 	assert!(nodes[0].node.list_usable_channels()[0].channel_id == chan_3.2);
 }
@@ -8912,8 +8910,8 @@ fn do_test_tx_confirmed_skipping_blocks_immediate_broadcast(test_height_before_t
 	create_announced_chan_between_nodes(&nodes, 0, 1);
 	let (chan_announce, _, channel_id, _) = create_announced_chan_between_nodes(&nodes, 1, 2);
 	let (_, payment_hash, _) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 1_000_000);
-	nodes[1].node.peer_disconnected(&nodes[2].node.get_our_node_id(), false);
-	nodes[2].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
+	nodes[1].node.peer_disconnected(&nodes[2].node.get_our_node_id());
+	nodes[2].node.peer_disconnected(&nodes[1].node.get_our_node_id());
 
 	nodes[1].node.force_close_broadcasting_latest_txn(&channel_id, &nodes[2].node.get_our_node_id()).unwrap();
 	check_closed_broadcast!(nodes[1], true);

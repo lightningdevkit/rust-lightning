@@ -181,8 +181,8 @@ fn do_test_simple_monitor_temporary_update_fail(disconnect: bool) {
 	assert_eq!(nodes[0].node.list_channels().len(), 1);
 
 	if disconnect {
-		nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
-		nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+		nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
+		nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
 		reconnect_nodes(&nodes[0], &nodes[1], (true, true), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
 	}
 
@@ -234,8 +234,8 @@ fn do_test_simple_monitor_temporary_update_fail(disconnect: bool) {
 	assert_eq!(nodes[0].node.list_channels().len(), 1);
 
 	if disconnect {
-		nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
-		nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+		nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
+		nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
 		reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
 	}
 
@@ -337,8 +337,8 @@ fn do_test_monitor_temporary_update_fail(disconnect_count: usize) {
 	};
 
 	if disconnect_count & !disconnect_flags > 0 {
-		nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
-		nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+		nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
+		nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
 	}
 
 	// Now fix monitor updating...
@@ -348,8 +348,8 @@ fn do_test_monitor_temporary_update_fail(disconnect_count: usize) {
 	check_added_monitors!(nodes[0], 0);
 
 	macro_rules! disconnect_reconnect_peers { () => { {
-		nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
-		nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+		nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
+		nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
 
 		nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init { features: nodes[1].node.init_features(), remote_network_address: None }).unwrap();
 		let reestablish_1 = get_chan_reestablish_msgs!(nodes[0], nodes[1]);
@@ -1110,8 +1110,8 @@ fn test_monitor_update_fail_reestablish() {
 
 	let (payment_preimage, payment_hash, _) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 1_000_000);
 
-	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
-	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
+	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
+	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
 
 	nodes[2].node.claim_funds(payment_preimage);
 	check_added_monitors!(nodes[2], 1);
@@ -1146,8 +1146,8 @@ fn test_monitor_update_fail_reestablish() {
 	nodes[1].node.get_and_clear_pending_msg_events(); // Free the holding cell
 	check_added_monitors!(nodes[1], 1);
 
-	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
-	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
+	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
+	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
 
 	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init { features: nodes[1].node.init_features(), remote_network_address: None }).unwrap();
 	nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id(), &msgs::Init { features: nodes[0].node.init_features(), remote_network_address: None }).unwrap();
@@ -1315,8 +1315,8 @@ fn claim_while_disconnected_monitor_update_fail() {
 	// Forward a payment for B to claim
 	let (payment_preimage_1, payment_hash_1, _) = route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
 
-	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
-	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
+	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
 
 	nodes[1].node.claim_funds(payment_preimage_1);
 	check_added_monitors!(nodes[1], 1);
@@ -1451,8 +1451,8 @@ fn monitor_failed_no_reestablish_response() {
 
 	// Now disconnect and immediately reconnect, delivering the channel_reestablish while nodes[1]
 	// is still failing to update monitors.
-	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
-	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
+	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
 
 	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init { features: nodes[1].node.init_features(), remote_network_address: None }).unwrap();
 	nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id(), &msgs::Init { features: nodes[0].node.init_features(), remote_network_address: None }).unwrap();
@@ -1873,8 +1873,8 @@ fn do_during_funding_monitor_fail(confirm_a_first: bool, restore_b_before_conf: 
 	}
 
 	// Make sure nodes[1] isn't stupid enough to re-send the ChannelReady on reconnect
-	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
-	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
+	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
 	reconnect_nodes(&nodes[0], &nodes[1], (false, confirm_a_first), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
@@ -2041,8 +2041,8 @@ fn test_pending_update_fee_ack_on_reconnect() {
 	let bs_first_raa = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, nodes[0].node.get_our_node_id());
 	// bs_first_raa is not delivered until it is re-generated after reconnect
 
-	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
-	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
+	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
 
 	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init { features: nodes[1].node.init_features(), remote_network_address: None }).unwrap();
 	let as_connect_msg = get_chan_reestablish_msgs!(nodes[0], nodes[1]).pop().unwrap();
@@ -2169,8 +2169,8 @@ fn do_update_fee_resend_test(deliver_update: bool, parallel_updates: bool) {
 		assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 	}
 
-	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
-	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
+	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
 
 	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init { features: nodes[1].node.init_features(), remote_network_address: None }).unwrap();
 	let as_connect_msg = get_chan_reestablish_msgs!(nodes[0], nodes[1]).pop().unwrap();
@@ -2303,9 +2303,9 @@ fn do_channel_holding_cell_serialize(disconnect: bool, reload_a: bool) {
 			let chan_0_monitor_serialized = get_monitor!(nodes[0], chan_id).encode();
 			reload_node!(nodes[0], &nodes[0].node.encode(), &[&chan_0_monitor_serialized], persister, new_chain_monitor, nodes_0_deserialized);
 		} else {
-			nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
+			nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
 		}
-		nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+		nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
 
 		// Now reconnect the two
 		nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init { features: nodes[1].node.init_features(), remote_network_address: None }).unwrap();
@@ -2493,8 +2493,8 @@ fn do_test_reconnect_dup_htlc_claims(htlc_status: HTLCStatusAtDupClaim, second_f
 		assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 	}
 
-	nodes[1].node.peer_disconnected(&nodes[2].node.get_our_node_id(), false);
-	nodes[2].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
+	nodes[1].node.peer_disconnected(&nodes[2].node.get_our_node_id());
+	nodes[2].node.peer_disconnected(&nodes[1].node.get_our_node_id());
 
 	if second_fails {
 		reconnect_nodes(&nodes[1], &nodes[2], (false, false), (0, 0), (0, 0), (1, 0), (0, 0), (0, 0), (false, false));
