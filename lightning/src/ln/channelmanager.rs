@@ -6941,7 +6941,10 @@ where
 		let mut monitor_update_blocked_actions_per_peer = None;
 		let mut peer_states = Vec::new();
 		for (_, peer_state_mutex) in per_peer_state.iter() {
-			peer_states.push(peer_state_mutex.lock().unwrap());
+			// Because we're holding the owning `per_peer_state` write lock here there's no chance
+			// of a lockorder violation deadlock - no other thread can be holding any
+			// per_peer_state lock at all.
+			peer_states.push(peer_state_mutex.unsafe_well_ordered_double_lock_self());
 		}
 
 		(serializable_peer_count).write(writer)?;
@@ -8280,9 +8283,9 @@ mod tests {
 			let nodes_0_lock = nodes[0].node.id_to_peer.lock().unwrap();
 			assert_eq!(nodes_0_lock.len(), 1);
 			assert!(nodes_0_lock.contains_key(channel_id));
-
-			assert_eq!(nodes[1].node.id_to_peer.lock().unwrap().len(), 0);
 		}
+
+		assert_eq!(nodes[1].node.id_to_peer.lock().unwrap().len(), 0);
 
 		let funding_created_msg = get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, nodes[1].node.get_our_node_id());
 
@@ -8291,7 +8294,9 @@ mod tests {
 			let nodes_0_lock = nodes[0].node.id_to_peer.lock().unwrap();
 			assert_eq!(nodes_0_lock.len(), 1);
 			assert!(nodes_0_lock.contains_key(channel_id));
+		}
 
+		{
 			// Assert that `nodes[1]`'s `id_to_peer` map is populated with the channel as soon as
 			// as it has the funding transaction.
 			let nodes_1_lock = nodes[1].node.id_to_peer.lock().unwrap();
@@ -8321,7 +8326,9 @@ mod tests {
 			let nodes_0_lock = nodes[0].node.id_to_peer.lock().unwrap();
 			assert_eq!(nodes_0_lock.len(), 1);
 			assert!(nodes_0_lock.contains_key(channel_id));
+		}
 
+		{
 			// At this stage, `nodes[1]` has proposed a fee for the closing transaction in the
 			// `handle_closing_signed` call above. As `nodes[1]` has not yet received the signature
 			// from `nodes[0]` for the closing transaction with the proposed fee, the channel is

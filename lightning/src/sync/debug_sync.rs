@@ -124,17 +124,26 @@ impl LockMetadata {
 		res
 	}
 
-	fn pre_lock(this: &Arc<LockMetadata>) {
+	fn pre_lock(this: &Arc<LockMetadata>, _double_lock_self_allowed: bool) {
 		LOCKS_HELD.with(|held| {
 			// For each lock which is currently locked, check that no lock's locked-before
 			// set includes the lock we're about to lock, which would imply a lockorder
 			// inversion.
 			for (locked_idx, locked) in held.borrow().iter() {
 				if *locked_idx == this.lock_idx {
-					// With `feature = "backtrace"` set, we may be looking at different instances
-					// of the same lock.
-					debug_assert!(cfg!(feature = "backtrace"), "Tried to acquire a lock while it was held!");
+					// Note that with `feature = "backtrace"` set, we may be looking at different
+					// instances of the same lock. Still, doing so is quite risky, a total order
+					// must be maintained, and doing so across a set of otherwise-identical mutexes
+					// is fraught with issues.
+					#[cfg(feature = "backtrace")]
+					debug_assert!(_double_lock_self_allowed,
+						"Tried to acquire a lock while it was held!\nLock constructed at {}",
+						get_construction_location(&this._lock_construction_bt));
+					#[cfg(not(feature = "backtrace"))]
+					panic!("Tried to acquire a lock while it was held!");
 				}
+			}
+			for (locked_idx, locked) in held.borrow().iter() {
 				for (locked_dep_idx, _locked_dep) in locked.locked_before.lock().unwrap().iter() {
 					if *locked_dep_idx == this.lock_idx && *locked_dep_idx != locked.lock_idx {
 						#[cfg(feature = "backtrace")]
@@ -236,7 +245,7 @@ impl<T> Mutex<T> {
 	}
 
 	pub fn lock<'a>(&'a self) -> LockResult<MutexGuard<'a, T>> {
-		LockMetadata::pre_lock(&self.deps);
+		LockMetadata::pre_lock(&self.deps, false);
 		self.inner.lock().map(|lock| MutexGuard { mutex: self, lock }).map_err(|_| ())
 	}
 
@@ -249,10 +258,16 @@ impl<T> Mutex<T> {
 	}
 }
 
-impl <T> LockTestExt for Mutex<T> {
+impl<'a, T: 'a> LockTestExt<'a> for Mutex<T> {
 	#[inline]
 	fn held_by_thread(&self) -> LockHeldState {
 		LockMetadata::held_by_thread(&self.deps)
+	}
+	type ExclLock = MutexGuard<'a, T>;
+	#[inline]
+	fn unsafe_well_ordered_double_lock_self(&'a self) -> MutexGuard<T> {
+		LockMetadata::pre_lock(&self.deps, true);
+		self.inner.lock().map(|lock| MutexGuard { mutex: self, lock }).unwrap()
 	}
 }
 
@@ -317,13 +332,14 @@ impl<T> RwLock<T> {
 	pub fn read<'a>(&'a self) -> LockResult<RwLockReadGuard<'a, T>> {
 		// Note that while we could be taking a recursive read lock here, Rust's `RwLock` may
 		// deadlock trying to take a second read lock if another thread is waiting on the write
-		// lock. Its platform dependent (but our in-tree `FairRwLock` guarantees this behavior).
-		LockMetadata::pre_lock(&self.deps);
+		// lock. This behavior is platform dependent, but our in-tree `FairRwLock` guarantees
+		// such a deadlock.
+		LockMetadata::pre_lock(&self.deps, false);
 		self.inner.read().map(|guard| RwLockReadGuard { lock: self, guard }).map_err(|_| ())
 	}
 
 	pub fn write<'a>(&'a self) -> LockResult<RwLockWriteGuard<'a, T>> {
-		LockMetadata::pre_lock(&self.deps);
+		LockMetadata::pre_lock(&self.deps, false);
 		self.inner.write().map(|guard| RwLockWriteGuard { lock: self, guard }).map_err(|_| ())
 	}
 
@@ -336,10 +352,16 @@ impl<T> RwLock<T> {
 	}
 }
 
-impl <T> LockTestExt for RwLock<T> {
+impl<'a, T: 'a> LockTestExt<'a> for RwLock<T> {
 	#[inline]
 	fn held_by_thread(&self) -> LockHeldState {
 		LockMetadata::held_by_thread(&self.deps)
+	}
+	type ExclLock = RwLockWriteGuard<'a, T>;
+	#[inline]
+	fn unsafe_well_ordered_double_lock_self(&'a self) -> RwLockWriteGuard<'a, T> {
+		LockMetadata::pre_lock(&self.deps, true);
+		self.inner.write().map(|guard| RwLockWriteGuard { lock: self, guard }).unwrap()
 	}
 }
 

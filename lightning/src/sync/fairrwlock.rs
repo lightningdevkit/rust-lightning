@@ -50,10 +50,15 @@ impl<T> FairRwLock<T> {
 	}
 }
 
-impl<T> LockTestExt for FairRwLock<T> {
+impl<'a, T: 'a> LockTestExt<'a> for FairRwLock<T> {
 	#[inline]
 	fn held_by_thread(&self) -> LockHeldState {
 		// fairrwlock is only built in non-test modes, so we should never support tests.
 		LockHeldState::Unsupported
+	}
+	type ExclLock = RwLockWriteGuard<'a, T>;
+	#[inline]
+	fn unsafe_well_ordered_double_lock_self(&'a self) -> RwLockWriteGuard<'a, T> {
+		self.write().unwrap()
 	}
 }

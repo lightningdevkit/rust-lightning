@@ -8150,12 +8150,13 @@ fn test_update_err_monitor_lockdown() {
 	let logger = test_utils::TestLogger::with_id(format!("node {}", 0));
 	let persister = test_utils::TestPersister::new();
 	let watchtower = {
-		let monitor = nodes[0].chain_monitor.chain_monitor.get_monitor(outpoint).unwrap();
-		let mut w = test_utils::TestVecWriter(Vec::new());
-		monitor.write(&mut w).unwrap();
-		let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingSigner>)>::read(
-				&mut io::Cursor::new(&w.0), (nodes[0].keys_manager, nodes[0].keys_manager)).unwrap().1;
-		assert!(new_monitor == *monitor);
+		let new_monitor = {
+			let monitor = nodes[0].chain_monitor.chain_monitor.get_monitor(outpoint).unwrap();
+			let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingSigner>)>::read(
+					&mut io::Cursor::new(&monitor.encode()), (nodes[0].keys_manager, nodes[0].keys_manager)).unwrap().1;
+			assert!(new_monitor == *monitor);
+			new_monitor
+		};
 		let watchtower = test_utils::TestChainMonitor::new(Some(&chain_source), &chanmon_cfgs[0].tx_broadcaster, &logger, &chanmon_cfgs[0].fee_estimator, &persister, &node_cfgs[0].keys_manager);
 		assert_eq!(watchtower.watch_channel(outpoint, new_monitor), ChannelMonitorUpdateStatus::Completed);
 		watchtower
@@ -8217,12 +8218,13 @@ fn test_concurrent_monitor_claim() {
 	let logger = test_utils::TestLogger::with_id(format!("node {}", "Alice"));
 	let persister = test_utils::TestPersister::new();
 	let watchtower_alice = {
-		let monitor = nodes[0].chain_monitor.chain_monitor.get_monitor(outpoint).unwrap();
-		let mut w = test_utils::TestVecWriter(Vec::new());
-		monitor.write(&mut w).unwrap();
-		let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingSigner>)>::read(
-				&mut io::Cursor::new(&w.0), (nodes[0].keys_manager, nodes[0].keys_manager)).unwrap().1;
-		assert!(new_monitor == *monitor);
+		let new_monitor = {
+			let monitor = nodes[0].chain_monitor.chain_monitor.get_monitor(outpoint).unwrap();
+			let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingSigner>)>::read(
+					&mut io::Cursor::new(&monitor.encode()), (nodes[0].keys_manager, nodes[0].keys_manager)).unwrap().1;
+			assert!(new_monitor == *monitor);
+			new_monitor
+		};
 		let watchtower = test_utils::TestChainMonitor::new(Some(&chain_source), &chanmon_cfgs[0].tx_broadcaster, &logger, &chanmon_cfgs[0].fee_estimator, &persister, &node_cfgs[0].keys_manager);
 		assert_eq!(watchtower.watch_channel(outpoint, new_monitor), ChannelMonitorUpdateStatus::Completed);
 		watchtower
@@ -8246,12 +8248,13 @@ fn test_concurrent_monitor_claim() {
 	let logger = test_utils::TestLogger::with_id(format!("node {}", "Bob"));
 	let persister = test_utils::TestPersister::new();
 	let watchtower_bob = {
-		let monitor = nodes[0].chain_monitor.chain_monitor.get_monitor(outpoint).unwrap();
-		let mut w = test_utils::TestVecWriter(Vec::new());
-		monitor.write(&mut w).unwrap();
-		let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingSigner>)>::read(
-				&mut io::Cursor::new(&w.0), (nodes[0].keys_manager, nodes[0].keys_manager)).unwrap().1;
-		assert!(new_monitor == *monitor);
+		let new_monitor = {
+			let monitor = nodes[0].chain_monitor.chain_monitor.get_monitor(outpoint).unwrap();
+			let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingSigner>)>::read(
+					&mut io::Cursor::new(&monitor.encode()), (nodes[0].keys_manager, nodes[0].keys_manager)).unwrap().1;
+			assert!(new_monitor == *monitor);
+			new_monitor
+		};
 		let watchtower = test_utils::TestChainMonitor::new(Some(&chain_source), &chanmon_cfgs[0].tx_broadcaster, &logger, &chanmon_cfgs[0].fee_estimator, &persister, &node_cfgs[0].keys_manager);
 		assert_eq!(watchtower.watch_channel(outpoint, new_monitor), ChannelMonitorUpdateStatus::Completed);
 		watchtower

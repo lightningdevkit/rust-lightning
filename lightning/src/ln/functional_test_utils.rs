@@ -44,7 +44,7 @@ use crate::io;
 use crate::prelude::*;
 use core::cell::RefCell;
 use alloc::rc::Rc;
-use crate::sync::{Arc, Mutex};
+use crate::sync::{Arc, Mutex, LockTestExt};
 use core::mem;
 use core::iter::repeat;
 use bitcoin::{PackedLockTime, TxMerkleNode};
@@ -466,8 +466,8 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 					panic!();
 				}
 			}
-			assert_eq!(*chain_source.watched_txn.lock().unwrap(), *self.chain_source.watched_txn.lock().unwrap());
-			assert_eq!(*chain_source.watched_outputs.lock().unwrap(), *self.chain_source.watched_outputs.lock().unwrap());
+			assert_eq!(*chain_source.watched_txn.unsafe_well_ordered_double_lock_self(), *self.chain_source.watched_txn.unsafe_well_ordered_double_lock_self());
+			assert_eq!(*chain_source.watched_outputs.unsafe_well_ordered_double_lock_self(), *self.chain_source.watched_outputs.unsafe_well_ordered_double_lock_self());
 		}
 	}
 }

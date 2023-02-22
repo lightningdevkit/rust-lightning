@@ -62,12 +62,15 @@ impl<T> Mutex<T> {
 	}
 }
 
-impl<T> LockTestExt for Mutex<T> {
+impl<'a, T: 'a> LockTestExt<'a> for Mutex<T> {
 	#[inline]
 	fn held_by_thread(&self) -> LockHeldState {
 		if self.lock().is_err() { return LockHeldState::HeldByThread; }
 		else { return LockHeldState::NotHeldByThread; }
 	}
+	type ExclLock = MutexGuard<'a, T>;
+	#[inline]
+	fn unsafe_well_ordered_double_lock_self(&'a self) -> MutexGuard<T> { self.lock().unwrap() }
 }
 
 pub struct RwLock<T: ?Sized> {
@@ -125,12 +128,15 @@ impl<T> RwLock<T> {
 	}
 }
 
-impl<T> LockTestExt for RwLock<T> {
+impl<'a, T: 'a> LockTestExt<'a> for RwLock<T> {
 	#[inline]
 	fn held_by_thread(&self) -> LockHeldState {
 		if self.write().is_err() { return LockHeldState::HeldByThread; }
 		else { return LockHeldState::NotHeldByThread; }
 	}
+	type ExclLock = RwLockWriteGuard<'a, T>;
+	#[inline]
+	fn unsafe_well_ordered_double_lock_self(&'a self) -> RwLockWriteGuard<T> { self.write().unwrap() }
 }
 
 pub type FairRwLock<T> = RwLock<T>;
