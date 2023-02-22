@@ -427,7 +427,7 @@ impl msgs::ChannelMessageHandler for TestChannelMessageHandler {
 	fn peer_disconnected(&self, their_node_id: &PublicKey) {
 		assert!(self.connected_peers.lock().unwrap().remove(their_node_id));
 	}
-	fn peer_connected(&self, their_node_id: &PublicKey, _msg: &msgs::Init) -> Result<(), ()> {
+	fn peer_connected(&self, their_node_id: &PublicKey, _msg: &msgs::Init, _inbound: bool) -> Result<(), ()> {
 		assert!(self.connected_peers.lock().unwrap().insert(their_node_id.clone()));
 		// Don't bother with `received_msg` for Init as its auto-generated and we don't want to
 		// bother re-generating the expected Init message in all tests.
@@ -544,7 +544,7 @@ impl msgs::RoutingMessageHandler for TestRoutingMessageHandler {
 		None
 	}
 
-	fn peer_connected(&self, their_node_id: &PublicKey, init_msg: &msgs::Init) -> Result<(), ()> {
+	fn peer_connected(&self, their_node_id: &PublicKey, init_msg: &msgs::Init, _inbound: bool) -> Result<(), ()> {
 		if !init_msg.features.supports_gossip_queries() {
 			return Ok(());
 		}
