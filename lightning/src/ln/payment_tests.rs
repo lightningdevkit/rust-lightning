@@ -2748,3 +2748,83 @@ fn test_threaded_payment_retries() {
 		}
 	}
 }
+
+fn do_no_missing_sent_on_midpoint_reload(persist_manager_with_payment: bool) {
+	// Test that if we reload in the middle of an HTLC claim commitment signed dance we'll still
+	// receive the PaymentSent event even if the ChannelManager had no idea about the payment when
+	// it was last persisted.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let (persister_a, persister_b, persister_c);
+	let (chain_monitor_a, chain_monitor_b, chain_monitor_c);
+	let (nodes_0_deserialized, nodes_0_deserialized_b, nodes_0_deserialized_c);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let chan_id = create_announced_chan_between_nodes(&nodes, 0, 1).2;
+
+	let mut nodes_0_serialized = Vec::new();
+	if !persist_manager_with_payment {
+		nodes_0_serialized = nodes[0].node.encode();
+	}
+
+	let (our_payment_preimage, our_payment_hash, _) = route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
+
+	if persist_manager_with_payment {
+		nodes_0_serialized = nodes[0].node.encode();
+	}
+
+	nodes[1].node.claim_funds(our_payment_preimage);
+	check_added_monitors!(nodes[1], 1);
+	expect_payment_claimed!(nodes[1], our_payment_hash, 1_000_000);
+
+	let updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+	nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &updates.update_fulfill_htlcs[0]);
+	nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &updates.commitment_signed);
+	check_added_monitors!(nodes[0], 1);
+
+	// The ChannelMonitor should always be the latest version, as we're required to persist it
+	// during the commitment signed handling.
+	let chan_0_monitor_serialized = get_monitor!(nodes[0], chan_id).encode();
+	reload_node!(nodes[0], test_default_channel_config(), &nodes_0_serialized, &[&chan_0_monitor_serialized], persister_a, chain_monitor_a, nodes_0_deserialized);
+
+	let events = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 2);
+	if let Event::ChannelClosed { reason: ClosureReason::OutdatedChannelManager, .. } = events[0] {} else { panic!(); }
+	if let Event::PaymentSent { payment_preimage, .. } = events[1] { assert_eq!(payment_preimage, our_payment_preimage); } else { panic!(); }
+	// Note that we don't get a PaymentPathSuccessful here as we leave the HTLC pending to avoid
+	// the double-claim that would otherwise appear at the end of this test.
+	let as_broadcasted_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
+	assert_eq!(as_broadcasted_txn.len(), 1);
+
+	// Ensure that, even after some time, if we restart we still include *something* in the current
+	// `ChannelManager` which prevents a `PaymentFailed` when we restart even if pending resolved
+	// payments have since been timed out thanks to `IDEMPOTENCY_TIMEOUT_TICKS`.
+	// A naive implementation of the fix here would wipe the pending payments set, causing a
+	// failure event when we restart.
+	for _ in 0..(IDEMPOTENCY_TIMEOUT_TICKS * 2) { nodes[0].node.timer_tick_occurred(); }
+
+	let chan_0_monitor_serialized = get_monitor!(nodes[0], chan_id).encode();
+	reload_node!(nodes[0], test_default_channel_config(), &nodes[0].node.encode(), &[&chan_0_monitor_serialized], persister_b, chain_monitor_b, nodes_0_deserialized_b);
+	let events = nodes[0].node.get_and_clear_pending_events();
+	assert!(events.is_empty());
+
+	// Ensure that we don't generate any further events even after the channel-closing commitment
+	// transaction is confirmed on-chain.
+	confirm_transaction(&nodes[0], &as_broadcasted_txn[0]);
+	for _ in 0..(IDEMPOTENCY_TIMEOUT_TICKS * 2) { nodes[0].node.timer_tick_occurred(); }
+
+	let events = nodes[0].node.get_and_clear_pending_events();
+	assert!(events.is_empty());
+
+	let chan_0_monitor_serialized = get_monitor!(nodes[0], chan_id).encode();
+	reload_node!(nodes[0], test_default_channel_config(), &nodes[0].node.encode(), &[&chan_0_monitor_serialized], persister_c, chain_monitor_c, nodes_0_deserialized_c);
+	let events = nodes[0].node.get_and_clear_pending_events();
+	assert!(events.is_empty());
+}
+
+#[test]
+fn no_missing_sent_on_midpoint_reload() {
+	do_no_missing_sent_on_midpoint_reload(false);
+	do_no_missing_sent_on_midpoint_reload(true);
+}

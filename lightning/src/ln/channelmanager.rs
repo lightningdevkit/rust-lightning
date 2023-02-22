@@ -234,6 +234,36 @@ impl Readable for InterceptId {
 		Ok(InterceptId(buf))
 	}
 }
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+/// Uniquely describes an HTLC by its source. Just the guaranteed-unique subset of [`HTLCSource`].
+pub(crate) enum SentHTLCId {
+	PreviousHopData { short_channel_id: u64, htlc_id: u64 },
+	OutboundRoute { session_priv: SecretKey },
+}
+impl SentHTLCId {
+	pub(crate) fn from_source(source: &HTLCSource) -> Self {
+		match source {
+			HTLCSource::PreviousHopData(hop_data) => Self::PreviousHopData {
+				short_channel_id: hop_data.short_channel_id,
+				htlc_id: hop_data.htlc_id,
+			},
+			HTLCSource::OutboundRoute { session_priv, .. } =>
+				Self::OutboundRoute { session_priv: *session_priv },
+		}
+	}
+}
+impl_writeable_tlv_based_enum!(SentHTLCId,
+	(0, PreviousHopData) => {
+		(0, short_channel_id, required),
+		(2, htlc_id, required),
+	},
+	(2, OutboundRoute) => {
+		(0, session_priv, required),
+	};
+);
+
+
 /// Tracks the inbound corresponding to an outbound HTLC
 #[allow(clippy::derive_hash_xor_eq)] // Our Hash is faithful to the data, we just don't have SecretKey::hash
 #[derive(Clone, PartialEq, Eq)]
@@ -7445,6 +7475,10 @@ where
 			probing_cookie_secret = Some(args.entropy_source.get_secure_random_bytes());
 		}
 
+		if !channel_closures.is_empty() {
+			pending_events_read.append(&mut channel_closures);
+		}
+
 		if pending_outbound_payments.is_none() && pending_outbound_payments_no_retry.is_none() {
 			pending_outbound_payments = Some(pending_outbound_payments_compat);
 		} else if pending_outbound_payments.is_none() {
@@ -7453,7 +7487,13 @@ where
 				outbounds.insert(id, PendingOutboundPayment::Legacy { session_privs });
 			}
 			pending_outbound_payments = Some(outbounds);
-		} else {
+		}
+		let pending_outbounds = OutboundPayments {
+			pending_outbound_payments: Mutex::new(pending_outbound_payments.unwrap()),
+			retry_lock: Mutex::new(())
+		};
+
+		{
 			// If we're tracking pending payments, ensure we haven't lost any by looking at the
 			// ChannelMonitor data for any channels for which we do not have authorative state
 			// (i.e. those for which we just force-closed above or we otherwise don't have a
@@ -7464,16 +7504,17 @@ where
 			// 0.0.102+
 			for (_, monitor) in args.channel_monitors.iter() {
 				if id_to_peer.get(&monitor.get_funding_txo().0.to_channel_id()).is_none() {
-					for (htlc_source, htlc) in monitor.get_pending_outbound_htlcs() {
+					for (htlc_source, (htlc, _)) in monitor.get_pending_or_resolved_outbound_htlcs() {
 						if let HTLCSource::OutboundRoute { payment_id, session_priv, path, payment_secret, .. } = htlc_source {
 							if path.is_empty() {
 								log_error!(args.logger, "Got an empty path for a pending payment");
 								return Err(DecodeError::InvalidValue);
 							}
+
 							let path_amt = path.last().unwrap().fee_msat;
 							let mut session_priv_bytes = [0; 32];
 							session_priv_bytes[..].copy_from_slice(&session_priv[..]);
-							match pending_outbound_payments.as_mut().unwrap().entry(payment_id) {
+							match pending_outbounds.pending_outbound_payments.lock().unwrap().entry(payment_id) {
 								hash_map::Entry::Occupied(mut entry) => {
 									let newly_added = entry.get_mut().insert(session_priv_bytes, &path);
 									log_info!(args.logger, "{} a pending payment path for {} msat for session priv {} on an existing pending payment with payment hash {}",
@@ -7500,51 +7541,64 @@ where
 							}
 						}
 					}
-					for (htlc_source, htlc) in monitor.get_all_current_outbound_htlcs() {
-						if let HTLCSource::PreviousHopData(prev_hop_data) = htlc_source {
-							let pending_forward_matches_htlc = |info: &PendingAddHTLCInfo| {
-								info.prev_funding_outpoint == prev_hop_data.outpoint &&
-									info.prev_htlc_id == prev_hop_data.htlc_id
-							};
-							// The ChannelMonitor is now responsible for this HTLC's
-							// failure/success and will let us know what its outcome is. If we
-							// still have an entry for this HTLC in `forward_htlcs` or
-							// `pending_intercepted_htlcs`, we were apparently not persisted after
-							// the monitor was when forwarding the payment.
-							forward_htlcs.retain(|_, forwards| {
-								forwards.retain(|forward| {
-									if let HTLCForwardInfo::AddHTLC(htlc_info) = forward {
-										if pending_forward_matches_htlc(&htlc_info) {
-											log_info!(args.logger, "Removing pending to-forward HTLC with hash {} as it was forwarded to the closed channel {}",
-												log_bytes!(htlc.payment_hash.0), log_bytes!(monitor.get_funding_txo().0.to_channel_id()));
-											false
-										} else { true }
-									} else { true }
-								});
-								!forwards.is_empty()
-							});
-							pending_intercepted_htlcs.as_mut().unwrap().retain(|intercepted_id, htlc_info| {
-								if pending_forward_matches_htlc(&htlc_info) {
-									log_info!(args.logger, "Removing pending intercepted HTLC with hash {} as it was forwarded to the closed channel {}",
-										log_bytes!(htlc.payment_hash.0), log_bytes!(monitor.get_funding_txo().0.to_channel_id()));
-									pending_events_read.retain(|event| {
-										if let Event::HTLCIntercepted { intercept_id: ev_id, .. } = event {
-											intercepted_id != ev_id
+					for (htlc_source, (htlc, preimage_opt)) in monitor.get_all_current_outbound_htlcs() {
+						match htlc_source {
+							HTLCSource::PreviousHopData(prev_hop_data) => {
+								let pending_forward_matches_htlc = |info: &PendingAddHTLCInfo| {
+									info.prev_funding_outpoint == prev_hop_data.outpoint &&
+										info.prev_htlc_id == prev_hop_data.htlc_id
+								};
+								// The ChannelMonitor is now responsible for this HTLC's
+								// failure/success and will let us know what its outcome is. If we
+								// still have an entry for this HTLC in `forward_htlcs` or
+								// `pending_intercepted_htlcs`, we were apparently not persisted after
+								// the monitor was when forwarding the payment.
+								forward_htlcs.retain(|_, forwards| {
+									forwards.retain(|forward| {
+										if let HTLCForwardInfo::AddHTLC(htlc_info) = forward {
+											if pending_forward_matches_htlc(&htlc_info) {
+												log_info!(args.logger, "Removing pending to-forward HTLC with hash {} as it was forwarded to the closed channel {}",
+													log_bytes!(htlc.payment_hash.0), log_bytes!(monitor.get_funding_txo().0.to_channel_id()));
+												false
+											} else { true }
 										} else { true }
 									});
-									false
-								} else { true }
-							});
+									!forwards.is_empty()
+								});
+								pending_intercepted_htlcs.as_mut().unwrap().retain(|intercepted_id, htlc_info| {
+									if pending_forward_matches_htlc(&htlc_info) {
+										log_info!(args.logger, "Removing pending intercepted HTLC with hash {} as it was forwarded to the closed channel {}",
+											log_bytes!(htlc.payment_hash.0), log_bytes!(monitor.get_funding_txo().0.to_channel_id()));
+										pending_events_read.retain(|event| {
+											if let Event::HTLCIntercepted { intercept_id: ev_id, .. } = event {
+												intercepted_id != ev_id
+											} else { true }
+										});
+										false
+									} else { true }
+								});
+							},
+							HTLCSource::OutboundRoute { payment_id, session_priv, path, .. } => {
+								if let Some(preimage) = preimage_opt {
+									let pending_events = Mutex::new(pending_events_read);
+									// Note that we set `from_onchain` to "false" here,
+									// deliberately keeping the pending payment around forever.
+									// Given it should only occur when we have a channel we're
+									// force-closing for being stale that's okay.
+									// The alternative would be to wipe the state when claiming,
+									// generating a `PaymentPathSuccessful` event but regenerating
+									// it and the `PaymentSent` on every restart until the
+									// `ChannelMonitor` is removed.
+									pending_outbounds.claim_htlc(payment_id, preimage, session_priv, path, false, &pending_events, &args.logger);
+									pending_events_read = pending_events.into_inner().unwrap();
+								}
+							},
 						}
 					}
 				}
 			}
 		}
 
-		let pending_outbounds = OutboundPayments {
-			pending_outbound_payments: Mutex::new(pending_outbound_payments.unwrap()),
-			retry_lock: Mutex::new(())
-		};
 		if !forward_htlcs.is_empty() || pending_outbounds.needs_abandon() {
 			// If we have pending HTLCs to forward, assume we either dropped a
 			// `PendingHTLCsForwardable` or the user received it but never processed it as they
@@ -7601,10 +7655,6 @@ where
 
 		let mut secp_ctx = Secp256k1::new();
 		secp_ctx.seeded_randomize(&args.entropy_source.get_secure_random_bytes());
-
-		if !channel_closures.is_empty() {
-			pending_events_read.append(&mut channel_closures);
-		}
 
 		let our_network_pubkey = match args.node_signer.get_node_id(Recipient::Node) {
 			Ok(key) => key,
