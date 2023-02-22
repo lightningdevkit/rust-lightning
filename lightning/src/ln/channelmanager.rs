@@ -2386,7 +2386,7 @@ where
 
 			let per_peer_state = self.per_peer_state.read().unwrap();
 			let peer_state_mutex = per_peer_state.get(&counterparty_node_id)
-				.ok_or_else(|| APIError::InvalidRoute{err: "No peer matching the path's first hop found!" })?;
+				.ok_or_else(|| APIError::ChannelUnavailable{err: "No peer matching the path's first hop found!".to_owned() })?;
 			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 			let peer_state = &mut *peer_state_lock;
 			if let hash_map::Entry::Occupied(mut chan) = peer_state.channel_by_id.entry(id) {
