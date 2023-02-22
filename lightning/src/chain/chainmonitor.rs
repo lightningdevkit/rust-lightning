@@ -796,7 +796,7 @@ mod tests {
 	use crate::ln::functional_test_utils::*;
 	use crate::ln::msgs::ChannelMessageHandler;
 	use crate::util::errors::APIError;
-	use crate::util::events::{ClosureReason, MessageSendEvent, MessageSendEventsProvider};
+	use crate::util::events::{Event, ClosureReason, MessageSendEvent, MessageSendEventsProvider};
 
 	#[test]
 	fn test_async_ooo_offchain_updates() {
@@ -819,10 +819,8 @@ mod tests {
 
 		nodes[1].node.claim_funds(payment_preimage_1);
 		check_added_monitors!(nodes[1], 1);
-		expect_payment_claimed!(nodes[1], payment_hash_1, 1_000_000);
 		nodes[1].node.claim_funds(payment_preimage_2);
 		check_added_monitors!(nodes[1], 1);
-		expect_payment_claimed!(nodes[1], payment_hash_2, 1_000_000);
 
 		let persistences = chanmon_cfgs[1].persister.offchain_monitor_updates.lock().unwrap().clone();
 		assert_eq!(persistences.len(), 1);
@@ -850,7 +848,23 @@ mod tests {
 			.find(|(txo, _)| txo == funding_txo).unwrap().1.contains(&next_update));
 		assert!(nodes[1].chain_monitor.release_pending_monitor_events().is_empty());
 		assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+		assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
 		nodes[1].chain_monitor.chain_monitor.channel_monitor_updated(*funding_txo, update_iter.next().unwrap().clone()).unwrap();
+
+		let claim_events = nodes[1].node.get_and_clear_pending_events();
+		assert_eq!(claim_events.len(), 2);
+		match claim_events[0] {
+			Event::PaymentClaimed { ref payment_hash, amount_msat: 1_000_000, .. } => {
+				assert_eq!(payment_hash_1, *payment_hash);
+			},
+			_ => panic!("Unexpected event"),
+		}
+		match claim_events[1] {
+			Event::PaymentClaimed { ref payment_hash, amount_msat: 1_000_000, .. } => {
+				assert_eq!(payment_hash_2, *payment_hash);
+			},
+			_ => panic!("Unexpected event"),
+		}
 
 		// Now manually walk the commitment signed dance - because we claimed two payments
 		// back-to-back it doesn't fit into the neat walk commitment_signed_dance does.

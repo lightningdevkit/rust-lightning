@@ -258,7 +258,7 @@ fn no_pending_leak_on_initial_send_failure() {
 
 	unwrap_send_err!(nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret), PaymentId(payment_hash.0)),
 		true, APIError::ChannelUnavailable { ref err },
-		assert_eq!(err, "Peer for first hop currently disconnected/pending monitor update!"));
+		assert_eq!(err, "Peer for first hop currently disconnected"));
 
 	assert!(!nodes[0].node.has_pending_payments());
 }
