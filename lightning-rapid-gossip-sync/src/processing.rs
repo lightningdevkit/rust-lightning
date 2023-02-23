@@ -169,23 +169,15 @@ impl<NG: Deref<Target=NetworkGraph<L>>, L: Deref> RapidGossipSync<NG, L> where L
 			if (channel_flags & 0b_1000_0000) != 0 {
 				// incremental update, field flags will indicate mutated values
 				let read_only_network_graph = network_graph.read_only();
-				if let Some(channel) = read_only_network_graph
-					.channels()
-					.get(&short_channel_id) {
-
-					let directional_info = channel
-						.get_directional_info(channel_flags)
-						.ok_or(LightningError {
-							err: "Couldn't find previous directional data for update".to_owned(),
-							action: ErrorAction::IgnoreError,
-						})?;
-
+				if let Some(directional_info) =
+					read_only_network_graph.channels().get(&short_channel_id)
+					.and_then(|channel| channel.get_directional_info(channel_flags))
+				{
 					synthetic_update.cltv_expiry_delta = directional_info.cltv_expiry_delta;
 					synthetic_update.htlc_minimum_msat = directional_info.htlc_minimum_msat;
 					synthetic_update.htlc_maximum_msat = directional_info.htlc_maximum_msat;
 					synthetic_update.fee_base_msat = directional_info.fees.base_msat;
 					synthetic_update.fee_proportional_millionths = directional_info.fees.proportional_millionths;
-
 				} else {
 					skip_update_for_unknown_channel = true;
 				}
@@ -341,16 +333,7 @@ mod tests {
 		assert_eq!(network_graph.read_only().channels().len(), 0);
 
 		let rapid_sync = RapidGossipSync::new(&network_graph);
-		let update_result = rapid_sync.update_network_graph(&announced_update_input[..]);
-		assert!(update_result.is_err());
-		if let Err(GraphSyncError::LightningError(lightning_error)) = update_result {
-			assert_eq!(
-				lightning_error.err,
-				"Couldn't find previous directional data for update"
-			);
-		} else {
-			panic!("Unexpected update result: {:?}", update_result)
-		}
+		rapid_sync.update_network_graph(&announced_update_input[..]).unwrap();
 	}
 
 	#[test]
@@ -405,16 +388,7 @@ mod tests {
 			0, 0, 0, 0, 0, 0, 0, 0, 0, 255, 8, 153, 192, 0, 2, 27, 0, 0, 136, 0, 0, 0, 221, 255, 2,
 			68, 226, 0, 6, 11, 0, 1, 128,
 		];
-		let update_result = rapid_sync.update_network_graph(&opposite_direction_incremental_update_input[..]);
-		assert!(update_result.is_err());
-		if let Err(GraphSyncError::LightningError(lightning_error)) = update_result {
-			assert_eq!(
-				lightning_error.err,
-				"Couldn't find previous directional data for update"
-			);
-		} else {
-			panic!("Unexpected update result: {:?}", update_result)
-		}
+		rapid_sync.update_network_graph(&opposite_direction_incremental_update_input[..]).unwrap();
 	}
 
 	#[test]
