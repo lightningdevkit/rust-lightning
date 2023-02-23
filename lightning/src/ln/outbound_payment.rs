@@ -235,7 +235,10 @@ pub enum Retry {
 	/// were retried along a route from a single call to [`Router::find_route`].
 	Attempts(usize),
 	#[cfg(not(feature = "no-std"))]
-	/// Time elapsed before abandoning retries for a payment.
+	/// Time elapsed before abandoning retries for a payment. At least one attempt at payment is made;
+	/// see [`PaymentParameters::expiry_time`] to avoid any attempt at payment after a specific time.
+	///
+	/// [`PaymentParameters::expiry_time`]: crate::routing::router::PaymentParameters::expiry_time
 	Timeout(core::time::Duration),
 }
 
