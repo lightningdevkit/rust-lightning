@@ -6,7 +6,6 @@ use core::num::ParseIntError;
 use core::str;
 use core::str::FromStr;
 
-
 use bech32::{u5, FromBase32};
 
 use bitcoin_hashes::Hash;
@@ -17,7 +16,6 @@ use lightning::routing::gossip::RoutingFees;
 use lightning::routing::router::{RouteHint, RouteHintHop};
 
 use num_traits::{CheckedAdd, CheckedMul};
-
 
 use secp256k1::ecdsa::{RecoveryId, RecoverableSignature};
 use secp256k1::PublicKey;

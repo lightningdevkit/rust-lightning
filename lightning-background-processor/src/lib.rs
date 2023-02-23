@@ -38,7 +38,6 @@ use lightning::util::logger::Logger;
 use lightning::util::persist::Persister;
 use lightning_rapid_gossip_sync::RapidGossipSync;
 
-
 use core::ops::Deref;
 use core::time::Duration;
 
@@ -1432,7 +1431,7 @@ mod tests {
 		nodes[0].node.push_pending_event(Event::ProbeFailed {
 			payment_id: PaymentId([42; 32]),
 			payment_hash: PaymentHash([42; 32]),
-			path: path,
+			path,
 			short_channel_id: Some(scored_scid),
 		});
 		let event = receiver

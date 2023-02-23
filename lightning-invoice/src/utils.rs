@@ -550,9 +550,9 @@ fn filter_channels<L: Deref>(
 		}
 
 		if channel.is_usable && !online_channel_exists {
-  				log_trace!(logger, "Channel with connected peer exists for invoice route hints");
-  				online_channel_exists = true;
-  			}
+			log_trace!(logger, "Channel with connected peer exists for invoice route hints");
+			online_channel_exists = true;
+		}
 
 		match filtered_channels.entry(channel.counterparty.node_id) {
 			hash_map::Entry::Occupied(mut entry) => {
@@ -595,7 +595,8 @@ fn filter_channels<L: Deref>(
 	// the payment value and where we're currently connected to the channel counterparty.
 	// Even if we cannot satisfy both goals, always ensure we include *some* hints, preferring
 	// those which meet at least one criteria.
-	filtered_channels.into_values()
+	filtered_channels
+		.into_values()
 		.filter(|channel| {
 			let has_enough_capacity = channel.inbound_capacity_msat >= min_inbound_capacity;
 			let include_channel = if online_min_capacity_channel_exists {

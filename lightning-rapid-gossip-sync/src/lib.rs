@@ -188,12 +188,10 @@ mod tests {
 				test
 			}
 			fn get_test_directory(&self) -> String {
-				
 				self.directory.clone() + "/graph-sync-tests"
 			}
 			fn get_test_file_path(&self) -> String {
 				let graph_sync_test_directory = self.get_test_directory();
-				
 				graph_sync_test_directory + "/test_data.lngossip"
 			}
 		}
