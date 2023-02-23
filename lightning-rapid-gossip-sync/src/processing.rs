@@ -10,6 +10,7 @@ use lightning::ln::msgs::{
 };
 use lightning::routing::gossip::NetworkGraph;
 use lightning::util::logger::Logger;
+use lightning::{log_warn, log_trace, log_given_level};
 use lightning::util::ser::{BigSize, Readable};
 use lightning::io;
 
@@ -120,6 +121,7 @@ impl<NG: Deref<Target=NetworkGraph<L>>, L: Deref> RapidGossipSync<NG, L> where L
 				if let ErrorAction::IgnoreDuplicateGossip = lightning_error.action {
 					// everything is fine, just a duplicate channel announcement
 				} else {
+					log_warn!(self.logger, "Failed to process channel announcement: {:?}", lightning_error);
 					return Err(lightning_error.into());
 				}
 			}
@@ -179,6 +181,9 @@ impl<NG: Deref<Target=NetworkGraph<L>>, L: Deref> RapidGossipSync<NG, L> where L
 					synthetic_update.fee_base_msat = directional_info.fees.base_msat;
 					synthetic_update.fee_proportional_millionths = directional_info.fees.proportional_millionths;
 				} else {
+					log_trace!(self.logger,
+						"Skipping application of channel update for chan {} with flags {} as original data is missing.",
+						short_channel_id, channel_flags);
 					skip_update_for_unknown_channel = true;
 				}
 			};
@@ -215,7 +220,9 @@ impl<NG: Deref<Target=NetworkGraph<L>>, L: Deref> RapidGossipSync<NG, L> where L
 			match network_graph.update_channel_unsigned(&synthetic_update) {
 				Ok(_) => {},
 				Err(LightningError { action: ErrorAction::IgnoreDuplicateGossip, .. }) => {},
-				Err(LightningError { action: ErrorAction::IgnoreAndLog(_), .. }) => {},
+				Err(LightningError { action: ErrorAction::IgnoreAndLog(level), err }) => {
+					log_given_level!(self.logger, level, "Failed to apply channel update: {:?}", err);
+				},
 				Err(LightningError { action: ErrorAction::IgnoreError, .. }) => {},
 				Err(e) => return Err(e.into()),
 			}
@@ -279,7 +286,7 @@ mod tests {
 			0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 58, 85, 116, 216, 255, 2, 68, 226, 0, 6, 11, 0, 1, 24, 0,
 			0, 3, 232, 0, 0, 0,
 		];
-		let rapid_sync = RapidGossipSync::new(&network_graph);
+		let rapid_sync = RapidGossipSync::new(&network_graph, &logger);
 		let update_result = rapid_sync.update_network_graph(&example_input[..]);
 		assert!(update_result.is_err());
 		if let Err(GraphSyncError::DecodeError(DecodeError::ShortRead)) = update_result {
@@ -304,7 +311,7 @@ mod tests {
 
 		assert_eq!(network_graph.read_only().channels().len(), 0);
 
-		let rapid_sync = RapidGossipSync::new(&network_graph);
+		let rapid_sync = RapidGossipSync::new(&network_graph, &logger);
 		let update_result = rapid_sync.update_network_graph(&incremental_update_input[..]);
 		assert!(update_result.is_ok());
 	}
@@ -332,7 +339,7 @@ mod tests {
 
 		assert_eq!(network_graph.read_only().channels().len(), 0);
 
-		let rapid_sync = RapidGossipSync::new(&network_graph);
+		let rapid_sync = RapidGossipSync::new(&network_graph, &logger);
 		rapid_sync.update_network_graph(&announced_update_input[..]).unwrap();
 	}
 
@@ -359,7 +366,7 @@ mod tests {
 
 		assert_eq!(network_graph.read_only().channels().len(), 0);
 
-		let rapid_sync = RapidGossipSync::new(&network_graph);
+		let rapid_sync = RapidGossipSync::new(&network_graph, &logger);
 		let initialization_result = rapid_sync.update_network_graph(&initialization_input[..]);
 		if initialization_result.is_err() {
 			panic!(
@@ -416,7 +423,7 @@ mod tests {
 
 		assert_eq!(network_graph.read_only().channels().len(), 0);
 
-		let rapid_sync = RapidGossipSync::new(&network_graph);
+		let rapid_sync = RapidGossipSync::new(&network_graph, &logger);
 		let initialization_result = rapid_sync.update_network_graph(&initialization_input[..]);
 		assert!(initialization_result.is_ok());
 
@@ -475,7 +482,7 @@ mod tests {
 
 		assert_eq!(network_graph.read_only().channels().len(), 0);
 
-		let rapid_sync = RapidGossipSync::new(&network_graph);
+		let rapid_sync = RapidGossipSync::new(&network_graph, &logger);
 		let initialization_result = rapid_sync.update_network_graph(&initialization_input[..]);
 		assert!(initialization_result.is_ok());
 
@@ -500,7 +507,7 @@ mod tests {
 
 		assert_eq!(network_graph.read_only().channels().len(), 0);
 
-		let rapid_sync = RapidGossipSync::new(&network_graph);
+		let rapid_sync = RapidGossipSync::new(&network_graph, &logger);
 		let update_result = rapid_sync.update_network_graph(&VALID_RGS_BINARY);
 		if update_result.is_err() {
 			panic!("Unexpected update result: {:?}", update_result)
@@ -531,7 +538,7 @@ mod tests {
 
 		assert_eq!(network_graph.read_only().channels().len(), 0);
 
-		let rapid_sync = RapidGossipSync::new(&network_graph);
+		let rapid_sync = RapidGossipSync::new(&network_graph, &logger);
 		// this is mostly for checking uint underflow issues before the fuzzer does
 		let update_result = rapid_sync.update_network_graph_no_std(&VALID_RGS_BINARY, Some(0));
 		assert!(update_result.is_ok());
@@ -550,7 +557,7 @@ mod tests {
 			let network_graph = NetworkGraph::new(Network::Bitcoin, &logger);
 			assert_eq!(network_graph.read_only().channels().len(), 0);
 
-			let rapid_sync = RapidGossipSync::new(&network_graph);
+			let rapid_sync = RapidGossipSync::new(&network_graph, &logger);
 			let update_result = rapid_sync.update_network_graph_no_std(&VALID_RGS_BINARY, Some(latest_succeeding_time));
 			assert!(update_result.is_ok());
 			assert_eq!(network_graph.read_only().channels().len(), 2);
@@ -560,7 +567,7 @@ mod tests {
 			let network_graph = NetworkGraph::new(Network::Bitcoin, &logger);
 			assert_eq!(network_graph.read_only().channels().len(), 0);
 
-			let rapid_sync = RapidGossipSync::new(&network_graph);
+			let rapid_sync = RapidGossipSync::new(&network_graph, &logger);
 			let update_result = rapid_sync.update_network_graph_no_std(&VALID_RGS_BINARY, Some(earliest_failing_time));
 			assert!(update_result.is_err());
 			if let Err(GraphSyncError::LightningError(lightning_error)) = update_result {
@@ -596,7 +603,7 @@ mod tests {
 
 		let logger = TestLogger::new();
 		let network_graph = NetworkGraph::new(Network::Bitcoin, &logger);
-		let rapid_sync = RapidGossipSync::new(&network_graph);
+		let rapid_sync = RapidGossipSync::new(&network_graph, &logger);
 		let update_result = rapid_sync.update_network_graph(&unknown_version_input[..]);
 
 		assert!(update_result.is_err());
