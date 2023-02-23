@@ -37,7 +37,7 @@ use lightning::util::events::{Event, EventHandler, EventsProvider};
 use lightning::util::logger::Logger;
 use lightning::util::persist::Persister;
 use lightning_rapid_gossip_sync::RapidGossipSync;
-use lightning::io;
+
 
 use core::ops::Deref;
 use core::time::Duration;
@@ -217,7 +217,7 @@ fn handle_network_graph_update<L: Deref>(
 ) where L::Target: Logger {
 	if let Event::PaymentPathFailed { ref network_update, .. } = event {
 		if let Some(network_update) = network_update {
-			network_graph.handle_network_update(&network_update);
+			network_graph.handle_network_update(network_update);
 		}
 	}
 }
@@ -756,7 +756,7 @@ mod tests {
 
 	impl Persister {
 		fn new(data_dir: String) -> Self {
-			let filesystem_persister = FilesystemPersister::new(data_dir.clone());
+			let filesystem_persister = FilesystemPersister::new(data_dir);
 			Self { graph_error: None, graph_persistence_notifier: None, manager_error: None, scorer_error: None, filesystem_persister }
 		}
 
@@ -823,7 +823,7 @@ mod tests {
 		}
 
 		fn expect(&mut self, expectation: TestResult) {
-			self.event_expectations.get_or_insert_with(|| VecDeque::new()).push_back(expectation);
+			self.event_expectations.get_or_insert_with(VecDeque::new).push_back(expectation);
 		}
 	}
 
@@ -1225,7 +1225,7 @@ mod tests {
 		// Set up a background event handler for SpendableOutputs events.
 		let (sender, receiver) = std::sync::mpsc::sync_channel(1);
 		let event_handler = move |event: Event| match event {
-			Event::SpendableOutputs { .. } => sender.send(event.clone()).unwrap(),
+			Event::SpendableOutputs { .. } => sender.send(event).unwrap(),
 			Event::ChannelReady { .. } => {},
 			Event::ChannelClosed { .. } => {},
 			_ => panic!("Unexpected event: {:?}", event),
@@ -1273,7 +1273,7 @@ mod tests {
 		let nodes = create_nodes(2, "test_not_pruning_network_graph_until_graph_sync_completion".to_string());
 		let data_dir = nodes[0].persister.get_data_dir();
 		let (sender, receiver) = std::sync::mpsc::sync_channel(1);
-		let persister = Arc::new(Persister::new(data_dir.clone()).with_graph_persistence_notifier(sender));
+		let persister = Arc::new(Persister::new(data_dir).with_graph_persistence_notifier(sender));
 		let network_graph = nodes[0].network_graph.clone();
 		let features = ChannelFeatures::empty();
 		network_graph.add_channel_from_partial_announcement(42, 53, features, nodes[0].node.get_our_node_id(), nodes[1].node.get_our_node_id())
@@ -1316,7 +1316,7 @@ mod tests {
 		// this should have added two channels
 		assert_eq!(network_graph.read_only().channels().len(), 3);
 
-		let _ = receiver
+		receiver
 			.recv_timeout(Duration::from_secs(super::FIRST_NETWORK_PRUNE_TIMER * 5))
 			.expect("Network graph not pruned within deadline");
 
@@ -1343,7 +1343,7 @@ mod tests {
 
 		let nodes = create_nodes(1, "test_payment_path_scoring".to_string());
 		let data_dir = nodes[0].persister.get_data_dir();
-		let persister = Arc::new(Persister::new(data_dir.clone()));
+		let persister = Arc::new(Persister::new(data_dir));
 		let bg_processor = BackgroundProcessor::start(persister, event_handler, nodes[0].chain_monitor.clone(), nodes[0].node.clone(), nodes[0].no_gossip_sync(), nodes[0].peer_manager.clone(), nodes[0].logger.clone(), Some(nodes[0].scorer.clone()));
 
 		let scored_scid = 4242;
@@ -1432,7 +1432,7 @@ mod tests {
 		nodes[0].node.push_pending_event(Event::ProbeFailed {
 			payment_id: PaymentId([42; 32]),
 			payment_hash: PaymentHash([42; 32]),
-			path: path.clone(),
+			path: path,
 			short_channel_id: Some(scored_scid),
 		});
 		let event = receiver

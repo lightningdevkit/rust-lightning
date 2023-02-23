@@ -60,8 +60,7 @@ impl Validate for BlockHeaderData {
 
 	fn validate(self, block_hash: BlockHash) -> BlockSourceResult<Self::T> {
 		let pow_valid_block_hash = self.header
-			.validate_pow(&self.header.target())
-			.or_else(|e| Err(BlockSourceError::persistent(e)))?;
+			.validate_pow(&self.header.target()).map_err(BlockSourceError::persistent)?;
 
 		if pow_valid_block_hash != block_hash {
 			return Err(BlockSourceError::persistent("invalid block hash"));
@@ -81,8 +80,7 @@ impl Validate for BlockData {
 		};
 
 		let pow_valid_block_hash = header
-			.validate_pow(&header.target())
-			.or_else(|e| Err(BlockSourceError::persistent(e)))?;
+			.validate_pow(&header.target()).map_err(BlockSourceError::persistent)?;
 
 		if pow_valid_block_hash != block_hash {
 			return Err(BlockSourceError::persistent("invalid block hash"));

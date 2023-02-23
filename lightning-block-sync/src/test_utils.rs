@@ -106,7 +106,7 @@ impl Blockchain {
 		BlockHeaderData {
 			chainwork: self.blocks[0].header.work() + Uint256::from_u64(height as u64).unwrap(),
 			height: height as u32,
-			header: self.blocks[height].header.clone(),
+			header: self.blocks[height].header,
 		}
 	}
 
@@ -162,7 +162,7 @@ impl BlockSource for Blockchain {
 					}
 
 					if self.filtered_blocks {
-						return Ok(BlockData::HeaderOnly(block.header.clone()));
+						return Ok(BlockData::HeaderOnly(block.header));
 					} else {
 						return Ok(BlockData::FullBlock(block.clone()));
 					}

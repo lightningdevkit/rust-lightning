@@ -176,7 +176,7 @@ mod tests {
 
 		let chanmon_cfgs = create_chanmon_cfgs(1);
 		let mut node_cfgs = create_node_cfgs(1, &chanmon_cfgs);
-		let chain_mon_0 = test_utils::TestChainMonitor::new(Some(&chanmon_cfgs[0].chain_source), &chanmon_cfgs[0].tx_broadcaster, &chanmon_cfgs[0].logger, &chanmon_cfgs[0].fee_estimator, &persister, &node_cfgs[0].keys_manager);
+		let chain_mon_0 = test_utils::TestChainMonitor::new(Some(&chanmon_cfgs[0].chain_source), &chanmon_cfgs[0].tx_broadcaster, &chanmon_cfgs[0].logger, &chanmon_cfgs[0].fee_estimator, &persister, node_cfgs[0].keys_manager);
 		node_cfgs[0].chain_monitor = chain_mon_0;
 		let node_chanmgrs = create_node_chanmgrs(1, &node_cfgs, &[None]);
 		let nodes = create_network(1, &node_cfgs, &node_chanmgrs);
@@ -196,8 +196,8 @@ mod tests {
 		let persister_1 = FilesystemPersister::new("test_filesystem_persister_1".to_string());
 		let chanmon_cfgs = create_chanmon_cfgs(2);
 		let mut node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-		let chain_mon_0 = test_utils::TestChainMonitor::new(Some(&chanmon_cfgs[0].chain_source), &chanmon_cfgs[0].tx_broadcaster, &chanmon_cfgs[0].logger, &chanmon_cfgs[0].fee_estimator, &persister_0, &node_cfgs[0].keys_manager);
-		let chain_mon_1 = test_utils::TestChainMonitor::new(Some(&chanmon_cfgs[1].chain_source), &chanmon_cfgs[1].tx_broadcaster, &chanmon_cfgs[1].logger, &chanmon_cfgs[1].fee_estimator, &persister_1, &node_cfgs[1].keys_manager);
+		let chain_mon_0 = test_utils::TestChainMonitor::new(Some(&chanmon_cfgs[0].chain_source), &chanmon_cfgs[0].tx_broadcaster, &chanmon_cfgs[0].logger, &chanmon_cfgs[0].fee_estimator, &persister_0, node_cfgs[0].keys_manager);
+		let chain_mon_1 = test_utils::TestChainMonitor::new(Some(&chanmon_cfgs[1].chain_source), &chanmon_cfgs[1].tx_broadcaster, &chanmon_cfgs[1].logger, &chanmon_cfgs[1].fee_estimator, &persister_1, node_cfgs[1].keys_manager);
 		node_cfgs[0].chain_monitor = chain_mon_0;
 		node_cfgs[1].chain_monitor = chain_mon_1;
 		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);

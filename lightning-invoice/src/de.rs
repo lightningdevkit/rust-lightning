@@ -6,7 +6,7 @@ use core::num::ParseIntError;
 use core::str;
 use core::str::FromStr;
 
-use bech32;
+
 use bech32::{u5, FromBase32};
 
 use bitcoin_hashes::Hash;
@@ -18,7 +18,7 @@ use lightning::routing::router::{RouteHint, RouteHintHop};
 
 use num_traits::{CheckedAdd, CheckedMul};
 
-use secp256k1;
+
 use secp256k1::ecdsa::{RecoveryId, RecoverableSignature};
 use secp256k1::PublicKey;
 
@@ -323,9 +323,9 @@ impl FromStr for RawHrp {
 		};
 
 		Ok(RawHrp {
-			currency: currency,
+			currency,
 			raw_amount: amount,
-			si_prefix: si_prefix,
+			si_prefix,
 		})
 	}
 }
@@ -342,7 +342,7 @@ impl FromBase32 for RawDataPart {
 		let tagged = parse_tagged_parts(&data[7..])?;
 
 		Ok(RawDataPart {
-			timestamp: timestamp,
+			timestamp,
 			tagged_fields: tagged,
 		})
 	}
@@ -515,7 +515,7 @@ impl FromBase32 for ExpiryTime {
 
 	fn from_base32(field_data: &[u5]) -> Result<ExpiryTime, ParseError> {
 		match parse_int_be::<u64, u5>(field_data, 32)
-			.map(|t| ExpiryTime::from_seconds(t))
+			.map(ExpiryTime::from_seconds)
 		{
 			Some(t) => Ok(t),
 			None => Err(ParseError::IntegerOverflowError),
@@ -540,7 +540,7 @@ impl FromBase32 for Fallback {
 	type Err = ParseError;
 
 	fn from_base32(field_data: &[u5]) -> Result<Fallback, ParseError> {
-		if field_data.len() < 1 {
+		if field_data.is_empty() {
 			return Err(ParseError::UnexpectedEndOfTaggedFields);
 		}
 
@@ -554,7 +554,7 @@ impl FromBase32 for Fallback {
 				}
 
 				Ok(Fallback::SegWitProgram {
-					version: version,
+					version,
 					program: bytes
 				})
 			},
