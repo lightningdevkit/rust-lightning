@@ -64,20 +64,31 @@ impl OffersMessageHandler for TestOffersMessageHandler {
 }
 
 #[derive(Clone)]
-struct TestCustomMessage {}
+enum TestCustomMessage {
+	Request,
+	Response,
+}
 
-const CUSTOM_MESSAGE_TYPE: u64 = 4242;
-const CUSTOM_MESSAGE_CONTENTS: [u8; 32] = [42; 32];
+const CUSTOM_REQUEST_MESSAGE_TYPE: u64 = 4242;
+const CUSTOM_RESPONSE_MESSAGE_TYPE: u64 = 4343;
+const CUSTOM_REQUEST_MESSAGE_CONTENTS: [u8; 32] = [42; 32];
+const CUSTOM_RESPONSE_MESSAGE_CONTENTS: [u8; 32] = [43; 32];
 
 impl CustomOnionMessageContents for TestCustomMessage {
 	fn tlv_type(&self) -> u64 {
-		CUSTOM_MESSAGE_TYPE
+		match self {
+			TestCustomMessage::Request => CUSTOM_REQUEST_MESSAGE_TYPE,
+			TestCustomMessage::Response => CUSTOM_RESPONSE_MESSAGE_TYPE,
+		}
 	}
 }
 
 impl Writeable for TestCustomMessage {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		Ok(CUSTOM_MESSAGE_CONTENTS.write(w)?)
+		match self {
+			TestCustomMessage::Request => Ok(CUSTOM_REQUEST_MESSAGE_CONTENTS.write(w)?),
+			TestCustomMessage::Response => Ok(CUSTOM_RESPONSE_MESSAGE_CONTENTS.write(w)?),
+		}
 	}
 }
 
@@ -104,17 +115,27 @@ impl Drop for TestCustomMessageHandler {
 
 impl CustomOnionMessageHandler for TestCustomMessageHandler {
 	type CustomMessage = TestCustomMessage;
-	fn handle_custom_message(&self, _msg: Self::CustomMessage) -> Option<Self::CustomMessage> {
+	fn handle_custom_message(&self, msg: Self::CustomMessage) -> Option<Self::CustomMessage> {
 		self.num_messages_expected.fetch_sub(1, Ordering::SeqCst);
-		None
+		match msg {
+			TestCustomMessage::Request => Some(TestCustomMessage::Response),
+			TestCustomMessage::Response => None,
+		}
 	}
 	fn read_custom_message<R: io::Read>(&self, message_type: u64, buffer: &mut R) -> Result<Option<Self::CustomMessage>, DecodeError> where Self: Sized {
-		if message_type == CUSTOM_MESSAGE_TYPE {
-			let buf = read_to_end(buffer)?;
-			assert_eq!(buf, CUSTOM_MESSAGE_CONTENTS);
-			return Ok(Some(TestCustomMessage {}))
+		match message_type {
+			CUSTOM_REQUEST_MESSAGE_TYPE => {
+				let buf = read_to_end(buffer)?;
+				assert_eq!(buf, CUSTOM_REQUEST_MESSAGE_CONTENTS);
+				Ok(Some(TestCustomMessage::Request))
+			},
+			CUSTOM_RESPONSE_MESSAGE_TYPE => {
+				let buf = read_to_end(buffer)?;
+				assert_eq!(buf, CUSTOM_RESPONSE_MESSAGE_CONTENTS);
+				Ok(Some(TestCustomMessage::Response))
+			},
+			_ => Ok(None),
 		}
-		Ok(None)
 	}
 }
 
@@ -166,7 +187,7 @@ fn pass_along_path(path: &Vec<MessengerNode>) {
 #[test]
 fn one_hop() {
 	let nodes = create_nodes(2);
-	let test_msg = OnionMessageContents::Custom(TestCustomMessage {});
+	let test_msg = OnionMessageContents::Custom(TestCustomMessage::Response);
 
 	let path = OnionMessagePath {
 		intermediate_nodes: vec![],
@@ -179,7 +200,7 @@ fn one_hop() {
 #[test]
 fn two_unblinded_hops() {
 	let nodes = create_nodes(3);
-	let test_msg = OnionMessageContents::Custom(TestCustomMessage {});
+	let test_msg = OnionMessageContents::Custom(TestCustomMessage::Response);
 
 	let path = OnionMessagePath {
 		intermediate_nodes: vec![nodes[1].get_node_pk()],
@@ -192,7 +213,7 @@ fn two_unblinded_hops() {
 #[test]
 fn two_unblinded_two_blinded() {
 	let nodes = create_nodes(5);
-	let test_msg = OnionMessageContents::Custom(TestCustomMessage {});
+	let test_msg = OnionMessageContents::Custom(TestCustomMessage::Response);
 
 	let secp_ctx = Secp256k1::new();
 	let blinded_path = BlindedPath::new_for_message(&[nodes[3].get_node_pk(), nodes[4].get_node_pk()], &*nodes[4].keys_manager, &secp_ctx).unwrap();
@@ -208,7 +229,7 @@ fn two_unblinded_two_blinded() {
 #[test]
 fn three_blinded_hops() {
 	let nodes = create_nodes(4);
-	let test_msg = OnionMessageContents::Custom(TestCustomMessage {});
+	let test_msg = OnionMessageContents::Custom(TestCustomMessage::Response);
 
 	let secp_ctx = Secp256k1::new();
 	let blinded_path = BlindedPath::new_for_message(&[nodes[1].get_node_pk(), nodes[2].get_node_pk(), nodes[3].get_node_pk()], &*nodes[3].keys_manager, &secp_ctx).unwrap();
@@ -225,7 +246,7 @@ fn three_blinded_hops() {
 fn too_big_packet_error() {
 	// Make sure we error as expected if a packet is too big to send.
 	let nodes = create_nodes(2);
-	let test_msg = OnionMessageContents::Custom(TestCustomMessage {});
+	let test_msg = OnionMessageContents::Custom(TestCustomMessage::Response);
 
 	let hop_node_id = nodes[1].get_node_pk();
 	let hops = vec![hop_node_id; 400];
@@ -242,7 +263,7 @@ fn we_are_intro_node() {
 	// If we are sending straight to a blinded path and we are the introduction node, we need to
 	// advance the blinded path by 1 hop so the second hop is the new introduction node.
 	let mut nodes = create_nodes(3);
-	let test_msg = TestCustomMessage {};
+	let test_msg = TestCustomMessage::Response;
 
 	let secp_ctx = Secp256k1::new();
 	let blinded_path = BlindedPath::new_for_message(&[nodes[0].get_node_pk(), nodes[1].get_node_pk(), nodes[2].get_node_pk()], &*nodes[2].keys_manager, &secp_ctx).unwrap();
@@ -269,7 +290,7 @@ fn we_are_intro_node() {
 fn invalid_blinded_path_error() {
 	// Make sure we error as expected if a provided blinded path has 0 or 1 hops.
 	let nodes = create_nodes(3);
-	let test_msg = TestCustomMessage {};
+	let test_msg = TestCustomMessage::Response;
 
 	// 0 hops
 	let secp_ctx = Secp256k1::new();
@@ -297,7 +318,7 @@ fn invalid_blinded_path_error() {
 #[test]
 fn reply_path() {
 	let nodes = create_nodes(4);
-	let test_msg = TestCustomMessage {};
+	let test_msg = TestCustomMessage::Response;
 	let secp_ctx = Secp256k1::new();
 
 	// Destination::Node
@@ -356,7 +377,7 @@ fn invalid_custom_message_type() {
 #[test]
 fn peer_buffer_full() {
 	let nodes = create_nodes(2);
-	let test_msg = TestCustomMessage {};
+	let test_msg = TestCustomMessage::Response;
 	let path = OnionMessagePath {
 		intermediate_nodes: vec![],
 		destination: Destination::Node(nodes[1].get_node_pk()),
@@ -374,7 +395,7 @@ fn many_hops() {
 	// of size [`crate::onion_message::packet::BIG_PACKET_HOP_DATA_LEN`].
 	let num_nodes: usize = 25;
 	let nodes = create_nodes(num_nodes as u8);
-	let test_msg = OnionMessageContents::Custom(TestCustomMessage {});
+	let test_msg = TestCustomMessage::Response;
 
 	let mut intermediate_nodes = vec![];
 	for i in 1..(num_nodes-1) {
@@ -385,6 +406,6 @@ fn many_hops() {
 		intermediate_nodes,
 		destination: Destination::Node(nodes[num_nodes-1].get_node_pk()),
 	};
-	nodes[0].messenger.send_onion_message(path, test_msg, None).unwrap();
+	nodes[0].messenger.send_onion_message(path, OnionMessageContents::Custom(test_msg), None).unwrap();
 	pass_along_path(&nodes);
 }
