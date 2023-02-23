@@ -46,7 +46,7 @@ use crate::prelude::*;
 /// # use lightning::blinded_path::BlindedPath;
 /// # use lightning::sign::KeysManager;
 /// # use lightning::ln::peer_handler::IgnoringMessageHandler;
-/// # use lightning::onion_message::{CustomOnionMessageContents, Destination, OnionMessageContents, OnionMessagePath, OnionMessenger};
+/// # use lightning::onion_message::{CustomOnionMessageContents, Destination, MessageRouter, OnionMessageContents, OnionMessagePath, OnionMessenger};
 /// # use lightning::util::logger::{Logger, Record};
 /// # use lightning::util::ser::{Writeable, Writer};
 /// # use lightning::io;
@@ -54,6 +54,12 @@ use crate::prelude::*;
 /// # struct FakeLogger;
 /// # impl Logger for FakeLogger {
 /// #     fn log(&self, record: &Record) { unimplemented!() }
+/// # }
+/// # struct FakeMessageRouter {}
+/// # impl MessageRouter for FakeMessageRouter {
+/// #     fn find_path(&self, sender: PublicKey, peers: Vec<PublicKey>, destination: Destination) -> Result<OnionMessagePath, ()> {
+/// #         unimplemented!()
+/// #     }
 /// # }
 /// # let seed = [42u8; 32];
 /// # let time = Duration::from_secs(123456);
@@ -64,11 +70,15 @@ use crate::prelude::*;
 /// # let hop_node_id1 = PublicKey::from_secret_key(&secp_ctx, &node_secret);
 /// # let (hop_node_id2, hop_node_id3, hop_node_id4) = (hop_node_id1, hop_node_id1, hop_node_id1);
 /// # let destination_node_id = hop_node_id1;
+/// # let message_router = Arc::new(FakeMessageRouter {});
 /// # let custom_message_handler = IgnoringMessageHandler {};
 /// # let offers_message_handler = IgnoringMessageHandler {};
 /// // Create the onion messenger. This must use the same `keys_manager` as is passed to your
 /// // ChannelManager.
-/// let onion_messenger = OnionMessenger::new(&keys_manager, &keys_manager, logger, &offers_message_handler, &custom_message_handler);
+/// let onion_messenger = OnionMessenger::new(
+///     &keys_manager, &keys_manager, logger, message_router, &offers_message_handler,
+///     &custom_message_handler
+/// );
 ///
 /// # struct YourCustomMessage {}
 /// impl Writeable for YourCustomMessage {
@@ -111,11 +121,12 @@ use crate::prelude::*;
 ///
 /// [offers]: <https://github.com/lightning/bolts/pull/798>
 /// [`OnionMessenger`]: crate::onion_message::OnionMessenger
-pub struct OnionMessenger<ES: Deref, NS: Deref, L: Deref, OMH: Deref, CMH: Deref>
+pub struct OnionMessenger<ES: Deref, NS: Deref, L: Deref, MR: Deref, OMH: Deref, CMH: Deref>
 where
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	L::Target: Logger,
+	MR::Target: MessageRouter,
 	OMH::Target: OffersMessageHandler,
 	CMH:: Target: CustomOnionMessageHandler,
 {
@@ -124,8 +135,21 @@ where
 	logger: L,
 	pending_messages: Mutex<HashMap<PublicKey, VecDeque<msgs::OnionMessage>>>,
 	secp_ctx: Secp256k1<secp256k1::All>,
+	message_router: MR,
 	offers_handler: OMH,
 	custom_handler: CMH,
+}
+
+/// A trait defining behavior for routing an [`OnionMessage`].
+///
+/// [`OnionMessage`]: msgs::OnionMessage
+pub trait MessageRouter {
+	/// Returns a route for sending an [`OnionMessage`] to the given [`Destination`].
+	///
+	/// [`OnionMessage`]: msgs::OnionMessage
+	fn find_path(
+		&self, sender: PublicKey, peers: Vec<PublicKey>, destination: Destination
+	) -> Result<OnionMessagePath, ()>;
 }
 
 /// A path for sending an [`msgs::OnionMessage`].
@@ -207,18 +231,21 @@ pub trait CustomOnionMessageHandler {
 	fn read_custom_message<R: io::Read>(&self, message_type: u64, buffer: &mut R) -> Result<Option<Self::CustomMessage>, msgs::DecodeError>;
 }
 
-impl<ES: Deref, NS: Deref, L: Deref, OMH: Deref, CMH: Deref> OnionMessenger<ES, NS, L, OMH, CMH>
+impl<ES: Deref, NS: Deref, L: Deref, MR: Deref, OMH: Deref, CMH: Deref>
+OnionMessenger<ES, NS, L, MR, OMH, CMH>
 where
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	L::Target: Logger,
+	MR::Target: MessageRouter,
 	OMH::Target: OffersMessageHandler,
 	CMH::Target: CustomOnionMessageHandler,
 {
 	/// Constructs a new `OnionMessenger` to send, forward, and delegate received onion messages to
 	/// their respective handlers.
 	pub fn new(
-		entropy_source: ES, node_signer: NS, logger: L, offers_handler: OMH, custom_handler: CMH
+		entropy_source: ES, node_signer: NS, logger: L, message_router: MR, offers_handler: OMH,
+		custom_handler: CMH
 	) -> Self {
 		let mut secp_ctx = Secp256k1::new();
 		secp_ctx.seeded_randomize(&entropy_source.get_secure_random_bytes());
@@ -228,6 +255,7 @@ where
 			pending_messages: Mutex::new(HashMap::new()),
 			secp_ctx,
 			logger,
+			message_router,
 			offers_handler,
 			custom_handler,
 		}
@@ -328,12 +356,13 @@ fn outbound_buffer_full(peer_node_id: &PublicKey, buffer: &HashMap<PublicKey, Ve
 	false
 }
 
-impl<ES: Deref, NS: Deref, L: Deref, OMH: Deref, CMH: Deref> OnionMessageHandler
-for OnionMessenger<ES, NS, L, OMH, CMH>
+impl<ES: Deref, NS: Deref, L: Deref, MR: Deref, OMH: Deref, CMH: Deref> OnionMessageHandler
+for OnionMessenger<ES, NS, L, MR, OMH, CMH>
 where
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	L::Target: Logger,
+	MR::Target: MessageRouter,
 	OMH::Target: OffersMessageHandler,
 	CMH::Target: CustomOnionMessageHandler + Sized,
 {
@@ -478,12 +507,13 @@ where
 	}
 }
 
-impl<ES: Deref, NS: Deref, L: Deref, OMH: Deref, CMH: Deref> OnionMessageProvider
-for OnionMessenger<ES, NS, L, OMH, CMH>
+impl<ES: Deref, NS: Deref, L: Deref, MR: Deref, OMH: Deref, CMH: Deref> OnionMessageProvider
+for OnionMessenger<ES, NS, L, MR, OMH, CMH>
 where
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	L::Target: Logger,
+	MR::Target: MessageRouter,
 	OMH::Target: OffersMessageHandler,
 	CMH::Target: CustomOnionMessageHandler,
 {
@@ -505,10 +535,11 @@ where
 ///
 /// [`SimpleArcChannelManager`]: crate::ln::channelmanager::SimpleArcChannelManager
 /// [`SimpleArcPeerManager`]: crate::ln::peer_handler::SimpleArcPeerManager
-pub type SimpleArcOnionMessenger<L> = OnionMessenger<
+pub type SimpleArcOnionMessenger<L, R> = OnionMessenger<
 	Arc<KeysManager>,
 	Arc<KeysManager>,
 	Arc<L>,
+	Arc<R>,
 	IgnoringMessageHandler,
 	IgnoringMessageHandler
 >;
@@ -520,10 +551,11 @@ pub type SimpleArcOnionMessenger<L> = OnionMessenger<
 ///
 /// [`SimpleRefChannelManager`]: crate::ln::channelmanager::SimpleRefChannelManager
 /// [`SimpleRefPeerManager`]: crate::ln::peer_handler::SimpleRefPeerManager
-pub type SimpleRefOnionMessenger<'a, 'b, L> = OnionMessenger<
+pub type SimpleRefOnionMessenger<'a, 'b, 'c, L, R> = OnionMessenger<
 	&'a KeysManager,
 	&'a KeysManager,
 	&'b L,
+	&'c R,
 	IgnoringMessageHandler,
 	IgnoringMessageHandler
 >;

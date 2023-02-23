@@ -607,7 +607,15 @@ impl Peer {
 /// issues such as overly long function definitions.
 ///
 /// This is not exported to bindings users as `Arc`s don't make sense in bindings.
-pub type SimpleArcPeerManager<SD, M, T, F, C, L> = PeerManager<SD, Arc<SimpleArcChannelManager<M, T, F, L>>, Arc<P2PGossipSync<Arc<NetworkGraph<Arc<L>>>, Arc<C>, Arc<L>>>, Arc<SimpleArcOnionMessenger<L>>, Arc<L>, IgnoringMessageHandler, Arc<KeysManager>>;
+pub type SimpleArcPeerManager<SD, M, T, F, C, L, R> = PeerManager<
+	SD,
+	Arc<SimpleArcChannelManager<M, T, F, L>>,
+	Arc<P2PGossipSync<Arc<NetworkGraph<Arc<L>>>, Arc<C>, Arc<L>>>,
+	Arc<SimpleArcOnionMessenger<L, R>>,
+	Arc<L>,
+	IgnoringMessageHandler,
+	Arc<KeysManager>
+>;
 
 /// SimpleRefPeerManager is a type alias for a PeerManager reference, and is the reference
 /// counterpart to the SimpleArcPeerManager type alias. Use this type by default when you don't
@@ -617,7 +625,17 @@ pub type SimpleArcPeerManager<SD, M, T, F, C, L> = PeerManager<SD, Arc<SimpleArc
 /// helps with issues such as long function definitions.
 ///
 /// This is not exported to bindings users as general type aliases don't make sense in bindings.
-pub type SimpleRefPeerManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, 'i, 'j, 'k, 'l, 'm, SD, M, T, F, C, L> = PeerManager<SD, SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'm, M, T, F, L>, &'f P2PGossipSync<&'g NetworkGraph<&'f L>, &'h C, &'f L>, &'i SimpleRefOnionMessenger<'j, 'k, L>, &'f L, IgnoringMessageHandler, &'c KeysManager>;
+pub type SimpleRefPeerManager<
+	'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, 'i, 'j, 'k, 'l, 'm, 'n, SD, M, T, F, C, L, R
+> = PeerManager<
+	SD,
+	&'n SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'm, M, T, F, L>,
+	&'f P2PGossipSync<&'g NetworkGraph<&'f L>, &'h C, &'f L>,
+	&'i SimpleRefOnionMessenger<'g, 'm, 'n, L, R>,
+	&'f L,
+	IgnoringMessageHandler,
+	&'c KeysManager
+>;
 
 
 /// A generic trait which is implemented for all [`PeerManager`]s. This makes bounding functions or

@@ -11,7 +11,7 @@ use lightning::ln::script::ShutdownScript;
 use lightning::util::enforcing_trait_impls::EnforcingSigner;
 use lightning::util::logger::Logger;
 use lightning::util::ser::{Readable, Writeable, Writer};
-use lightning::onion_message::{CustomOnionMessageContents, CustomOnionMessageHandler, OffersMessage, OffersMessageHandler, OnionMessenger};
+use lightning::onion_message::{CustomOnionMessageContents, CustomOnionMessageHandler, Destination, MessageRouter, OffersMessage, OffersMessageHandler, OnionMessagePath, OnionMessenger};
 
 use crate::utils::test_logger;
 
@@ -29,10 +29,12 @@ pub fn do_test<L: Logger>(data: &[u8], logger: &L) {
 			node_secret: secret,
 			counter: AtomicU64::new(0),
 		};
+		let message_router = TestMessageRouter {};
 		let offers_msg_handler = TestOffersMessageHandler {};
 		let custom_msg_handler = TestCustomMessageHandler {};
 		let onion_messenger = OnionMessenger::new(
-			&keys_manager, &keys_manager, logger, &offers_msg_handler, &custom_msg_handler
+			&keys_manager, &keys_manager, logger, &message_router, &offers_msg_handler,
+			&custom_msg_handler
 		);
 		let mut pk = [2; 33]; pk[1] = 0xff;
 		let peer_node_id_not_used = PublicKey::from_slice(&pk).unwrap();
@@ -51,6 +53,16 @@ pub fn onion_message_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 pub extern "C" fn onion_message_run(data: *const u8, datalen: usize) {
 	let logger = test_logger::TestLogger::new("".to_owned(), test_logger::DevNull {});
 	do_test(unsafe { std::slice::from_raw_parts(data, datalen) }, &logger);
+}
+
+struct TestMessageRouter {}
+
+impl MessageRouter for TestMessageRouter {
+	fn find_path(
+		&self, _sender: PublicKey, _peers: Vec<PublicKey>, _destination: Destination
+	) -> Result<OnionMessagePath, ()> {
+		unreachable!()
+	}
 }
 
 struct TestOffersMessageHandler {}

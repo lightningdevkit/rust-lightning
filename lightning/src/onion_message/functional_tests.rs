@@ -13,7 +13,7 @@ use crate::blinded_path::BlindedPath;
 use crate::sign::{NodeSigner, Recipient};
 use crate::ln::features::InitFeatures;
 use crate::ln::msgs::{self, DecodeError, OnionMessageHandler};
-use super::{CustomOnionMessageContents, CustomOnionMessageHandler, Destination, OffersMessage, OffersMessageHandler, OnionMessageContents, OnionMessagePath, OnionMessenger, SendError};
+use super::{CustomOnionMessageContents, CustomOnionMessageHandler, Destination, MessageRouter, OffersMessage, OffersMessageHandler, OnionMessageContents, OnionMessagePath, OnionMessenger, SendError};
 use crate::util::ser::{Writeable, Writer};
 use crate::util::test_utils;
 
@@ -27,7 +27,14 @@ use crate::sync::Arc;
 
 struct MessengerNode {
 	keys_manager: Arc<test_utils::TestKeysInterface>,
-	messenger: OnionMessenger<Arc<test_utils::TestKeysInterface>, Arc<test_utils::TestKeysInterface>, Arc<test_utils::TestLogger>, Arc<TestOffersMessageHandler>, Arc<TestCustomMessageHandler>>,
+	messenger: OnionMessenger<
+		Arc<test_utils::TestKeysInterface>,
+		Arc<test_utils::TestKeysInterface>,
+		Arc<test_utils::TestLogger>,
+		Arc<TestMessageRouter>,
+		Arc<TestOffersMessageHandler>,
+		Arc<TestCustomMessageHandler>
+	>,
 	custom_message_handler: Arc<TestCustomMessageHandler>,
 	logger: Arc<test_utils::TestLogger>,
 }
@@ -35,6 +42,16 @@ struct MessengerNode {
 impl MessengerNode {
 	fn get_node_pk(&self) -> PublicKey {
 		self.keys_manager.get_node_id(Recipient::Node).unwrap()
+	}
+}
+
+struct TestMessageRouter {}
+
+impl MessageRouter for TestMessageRouter {
+	fn find_path(
+		&self, _sender: PublicKey, _peers: Vec<PublicKey>, _destination: Destination
+	) -> Result<OnionMessagePath, ()> {
+		todo!()
 	}
 }
 
@@ -106,11 +123,15 @@ fn create_nodes(num_messengers: u8) -> Vec<MessengerNode> {
 		let logger = Arc::new(test_utils::TestLogger::with_id(format!("node {}", i)));
 		let seed = [i as u8; 32];
 		let keys_manager = Arc::new(test_utils::TestKeysInterface::new(&seed, Network::Testnet));
+		let message_router = Arc::new(TestMessageRouter {});
 		let offers_message_handler = Arc::new(TestOffersMessageHandler {});
 		let custom_message_handler = Arc::new(TestCustomMessageHandler::new());
 		nodes.push(MessengerNode {
 			keys_manager: keys_manager.clone(),
-			messenger: OnionMessenger::new(keys_manager.clone(), keys_manager, logger.clone(), offers_message_handler, custom_message_handler.clone()),
+			messenger: OnionMessenger::new(
+				keys_manager.clone(), keys_manager, logger.clone(), message_router,
+				offers_message_handler, custom_message_handler.clone()
+			),
 			custom_message_handler,
 			logger,
 		});
