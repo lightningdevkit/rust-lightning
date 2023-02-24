@@ -782,13 +782,13 @@ impl OutboundPayments {
 		debug_assert_eq!(paths.len(), path_results.len());
 		for (path, path_res) in paths.into_iter().zip(path_results) {
 			if let Err(e) = path_res {
-				let failed_scid = if let APIError::InvalidRoute { .. } = e {
-					None
-				} else {
+				if let APIError::MonitorUpdateInProgress = e { continue }
+				let mut failed_scid = None;
+				if let APIError::ChannelUnavailable { .. } = e {
 					let scid = path[0].short_channel_id;
+					failed_scid = Some(scid);
 					route_params.payment_params.previously_failed_channels.push(scid);
-					Some(scid)
-				};
+				}
 				events.push(events::Event::PaymentPathFailed {
 					payment_id: Some(payment_id),
 					payment_hash,
@@ -1353,12 +1353,14 @@ mod tests {
 
 	use crate::ln::PaymentHash;
 	use crate::ln::channelmanager::PaymentId;
+	use crate::ln::features::{ChannelFeatures, NodeFeatures};
 	use crate::ln::msgs::{ErrorAction, LightningError};
 	use crate::ln::outbound_payment::{OutboundPayments, Retry, RetryableSendFailure};
 	use crate::routing::gossip::NetworkGraph;
-	use crate::routing::router::{InFlightHtlcs, PaymentParameters, Route, RouteParameters};
+	use crate::routing::router::{InFlightHtlcs, PaymentParameters, Route, RouteHop, RouteParameters};
 	use crate::sync::{Arc, Mutex};
-	use crate::util::events::Event;
+	use crate::util::errors::APIError;
+	use crate::util::events::{Event, PathFailure};
 	use crate::util::test_utils;
 
 	#[test]
@@ -1454,5 +1456,93 @@ mod tests {
 			if let RetryableSendFailure::RouteNotFound = err {
 			} else { panic!("Unexpected error"); }
 		}
+	}
+
+	#[test]
+	fn initial_send_payment_path_failed_evs() {
+		let outbound_payments = OutboundPayments::new();
+		let logger = test_utils::TestLogger::new();
+		let genesis_hash = genesis_block(Network::Testnet).header.block_hash();
+		let network_graph = Arc::new(NetworkGraph::new(genesis_hash, &logger));
+		let scorer = Mutex::new(test_utils::TestScorer::new());
+		let router = test_utils::TestRouter::new(network_graph, &scorer);
+		let secp_ctx = Secp256k1::new();
+		let keys_manager = test_utils::TestKeysInterface::new(&[0; 32], Network::Testnet);
+
+		let sender_pk = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
+		let receiver_pk = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[43; 32]).unwrap());
+		let payment_params = PaymentParameters::from_node_id(sender_pk, 0);
+		let route_params = RouteParameters {
+			payment_params: payment_params.clone(),
+			final_value_msat: 0,
+			final_cltv_expiry_delta: 0,
+		};
+		let failed_scid = 42;
+		let route = Route {
+			paths: vec![vec![RouteHop {
+				pubkey: receiver_pk,
+				node_features: NodeFeatures::empty(),
+				short_channel_id: failed_scid,
+				channel_features: ChannelFeatures::empty(),
+				fee_msat: 0,
+				cltv_expiry_delta: 0,
+			}]],
+			payment_params: Some(payment_params),
+		};
+		router.expect_find_route(route_params.clone(), Ok(route.clone()));
+		let mut route_params_w_failed_scid = route_params.clone();
+		route_params_w_failed_scid.payment_params.previously_failed_channels.push(failed_scid);
+		router.expect_find_route(route_params_w_failed_scid, Ok(route.clone()));
+		router.expect_find_route(route_params.clone(), Ok(route.clone()));
+		router.expect_find_route(route_params.clone(), Ok(route.clone()));
+
+		// Ensure that a ChannelUnavailable error will result in blaming an scid in the
+		// PaymentPathFailed event.
+		let pending_events = Mutex::new(Vec::new());
+		outbound_payments.send_payment(
+			PaymentHash([0; 32]), &None, PaymentId([0; 32]), Retry::Attempts(0), route_params.clone(),
+			&&router, vec![], || InFlightHtlcs::new(), &&keys_manager, &&keys_manager, 0, &&logger,
+			&pending_events,
+			|_, _, _, _, _, _, _, _, _| Err(APIError::ChannelUnavailable { err: "test".to_owned() }))
+			.unwrap();
+		let mut events = pending_events.lock().unwrap();
+		assert_eq!(events.len(), 2);
+		if let Event::PaymentPathFailed {
+			short_channel_id,
+			failure: PathFailure::InitialSend { err: APIError::ChannelUnavailable { .. }}, .. } = events[0]
+		{
+			assert_eq!(short_channel_id, Some(failed_scid));
+		} else { panic!("Unexpected event"); }
+		if let Event::PaymentFailed { .. } = events[1] { } else { panic!("Unexpected event"); }
+		events.clear();
+		core::mem::drop(events);
+
+		// Ensure that a MonitorUpdateInProgress "error" will not result in a PaymentPathFailed event.
+		outbound_payments.send_payment(
+			PaymentHash([0; 32]), &None, PaymentId([0; 32]), Retry::Attempts(0), route_params.clone(),
+			&&router, vec![], || InFlightHtlcs::new(), &&keys_manager, &&keys_manager, 0, &&logger,
+			&pending_events, |_, _, _, _, _, _, _, _, _| Err(APIError::MonitorUpdateInProgress))
+			.unwrap();
+		{
+			let events = pending_events.lock().unwrap();
+			assert_eq!(events.len(), 0);
+		}
+
+		// Ensure that any other error will result in a PaymentPathFailed event but no blamed scid.
+		outbound_payments.send_payment(
+			PaymentHash([0; 32]), &None, PaymentId([1; 32]), Retry::Attempts(0), route_params.clone(),
+			&&router, vec![], || InFlightHtlcs::new(), &&keys_manager, &&keys_manager, 0, &&logger,
+			&pending_events,
+			|_, _, _, _, _, _, _, _, _| Err(APIError::APIMisuseError { err: "test".to_owned() }))
+			.unwrap();
+		let events = pending_events.lock().unwrap();
+		assert_eq!(events.len(), 2);
+		if let Event::PaymentPathFailed {
+			short_channel_id,
+			failure: PathFailure::InitialSend { err: APIError::APIMisuseError { .. }}, .. } = events[0]
+		{
+			assert_eq!(short_channel_id, None);
+		} else { panic!("Unexpected event"); }
+		if let Event::PaymentFailed { .. } = events[1] { } else { panic!("Unexpected event"); }
 	}
 }
