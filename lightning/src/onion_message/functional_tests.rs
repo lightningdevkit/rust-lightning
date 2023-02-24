@@ -20,10 +20,11 @@ use crate::util::test_utils;
 use bitcoin::network::constants::Network;
 use bitcoin::secp256k1::{PublicKey, Secp256k1};
 
-use core::sync::atomic::{AtomicU16, Ordering};
 use crate::io;
 use crate::io_extras::read_to_end;
-use crate::sync::Arc;
+use crate::sync::{Arc, Mutex};
+
+use crate::prelude::*;
 
 struct MessengerNode {
 	keys_manager: Arc<test_utils::TestKeysInterface>,
@@ -36,7 +37,6 @@ struct MessengerNode {
 		Arc<TestCustomMessageHandler>
 	>,
 	custom_message_handler: Arc<TestCustomMessageHandler>,
-	logger: Arc<test_utils::TestLogger>,
 }
 
 impl MessengerNode {
@@ -49,9 +49,12 @@ struct TestMessageRouter {}
 
 impl MessageRouter for TestMessageRouter {
 	fn find_path(
-		&self, _sender: PublicKey, _peers: Vec<PublicKey>, _destination: Destination
+		&self, _sender: PublicKey, _peers: Vec<PublicKey>, destination: Destination
 	) -> Result<OnionMessagePath, ()> {
-		todo!()
+		Ok(OnionMessagePath {
+			intermediate_nodes: vec![],
+			destination,
+		})
 	}
 }
 
@@ -63,7 +66,7 @@ impl OffersMessageHandler for TestOffersMessageHandler {
 	}
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 enum TestCustomMessage {
 	Request,
 	Response,
@@ -93,12 +96,16 @@ impl Writeable for TestCustomMessage {
 }
 
 struct TestCustomMessageHandler {
-	num_messages_expected: AtomicU16,
+	expected_messages: Mutex<VecDeque<TestCustomMessage>>,
 }
 
 impl TestCustomMessageHandler {
 	fn new() -> Self {
-		Self { num_messages_expected: AtomicU16::new(0) }
+		Self { expected_messages: Mutex::new(VecDeque::new()) }
+	}
+
+	fn expect_message(&self, message: TestCustomMessage) {
+		self.expected_messages.lock().unwrap().push_back(message);
 	}
 }
 
@@ -109,14 +116,18 @@ impl Drop for TestCustomMessageHandler {
 				return;
 			}
 		}
-		assert_eq!(self.num_messages_expected.load(Ordering::SeqCst), 0);
+		assert!(self.expected_messages.lock().unwrap().is_empty());
 	}
 }
 
 impl CustomOnionMessageHandler for TestCustomMessageHandler {
 	type CustomMessage = TestCustomMessage;
 	fn handle_custom_message(&self, msg: Self::CustomMessage) -> Option<Self::CustomMessage> {
-		self.num_messages_expected.fetch_sub(1, Ordering::SeqCst);
+		match self.expected_messages.lock().unwrap().pop_front() {
+			Some(expected_msg) => assert_eq!(expected_msg, msg),
+			None => panic!("Unexpected message: {:?}", msg),
+		}
+
 		match msg {
 			TestCustomMessage::Request => Some(TestCustomMessage::Response),
 			TestCustomMessage::Response => None,
@@ -155,7 +166,6 @@ fn create_nodes(num_messengers: u8) -> Vec<MessengerNode> {
 				offers_message_handler, custom_message_handler.clone()
 			),
 			custom_message_handler,
-			logger,
 		});
 	}
 	for idx in 0..num_messengers - 1 {
@@ -170,7 +180,6 @@ fn create_nodes(num_messengers: u8) -> Vec<MessengerNode> {
 }
 
 fn pass_along_path(path: &Vec<MessengerNode>) {
-	path[path.len() - 1].custom_message_handler.num_messages_expected.fetch_add(1, Ordering::SeqCst);
 	let mut prev_node = &path[0];
 	for node in path.into_iter().skip(1) {
 		let events = prev_node.messenger.release_pending_msgs();
@@ -194,6 +203,7 @@ fn one_hop() {
 		destination: Destination::Node(nodes[1].get_node_pk()),
 	};
 	nodes[0].messenger.send_onion_message(path, test_msg, None).unwrap();
+	nodes[1].custom_message_handler.expect_message(TestCustomMessage::Response);
 	pass_along_path(&nodes);
 }
 
@@ -207,6 +217,7 @@ fn two_unblinded_hops() {
 		destination: Destination::Node(nodes[2].get_node_pk()),
 	};
 	nodes[0].messenger.send_onion_message(path, test_msg, None).unwrap();
+	nodes[2].custom_message_handler.expect_message(TestCustomMessage::Response);
 	pass_along_path(&nodes);
 }
 
@@ -223,6 +234,7 @@ fn two_unblinded_two_blinded() {
 	};
 
 	nodes[0].messenger.send_onion_message(path, test_msg, None).unwrap();
+	nodes[4].custom_message_handler.expect_message(TestCustomMessage::Response);
 	pass_along_path(&nodes);
 }
 
@@ -239,6 +251,7 @@ fn three_blinded_hops() {
 	};
 
 	nodes[0].messenger.send_onion_message(path, test_msg, None).unwrap();
+	nodes[3].custom_message_handler.expect_message(TestCustomMessage::Response);
 	pass_along_path(&nodes);
 }
 
@@ -273,6 +286,7 @@ fn we_are_intro_node() {
 	};
 
 	nodes[0].messenger.send_onion_message(path, OnionMessageContents::Custom(test_msg.clone()), None).unwrap();
+	nodes[2].custom_message_handler.expect_message(TestCustomMessage::Response);
 	pass_along_path(&nodes);
 
 	// Try with a two-hop blinded path where we are the introduction node.
@@ -282,6 +296,7 @@ fn we_are_intro_node() {
 		destination: Destination::BlindedPath(blinded_path),
 	};
 	nodes[0].messenger.send_onion_message(path, OnionMessageContents::Custom(test_msg), None).unwrap();
+	nodes[1].custom_message_handler.expect_message(TestCustomMessage::Response);
 	nodes.remove(2);
 	pass_along_path(&nodes);
 }
@@ -317,8 +332,8 @@ fn invalid_blinded_path_error() {
 
 #[test]
 fn reply_path() {
-	let nodes = create_nodes(4);
-	let test_msg = TestCustomMessage::Response;
+	let mut nodes = create_nodes(4);
+	let test_msg = TestCustomMessage::Request;
 	let secp_ctx = Secp256k1::new();
 
 	// Destination::Node
@@ -328,11 +343,12 @@ fn reply_path() {
 	};
 	let reply_path = BlindedPath::new_for_message(&[nodes[2].get_node_pk(), nodes[1].get_node_pk(), nodes[0].get_node_pk()], &*nodes[0].keys_manager, &secp_ctx).unwrap();
 	nodes[0].messenger.send_onion_message(path, OnionMessageContents::Custom(test_msg.clone()), Some(reply_path)).unwrap();
+	nodes[3].custom_message_handler.expect_message(TestCustomMessage::Request);
 	pass_along_path(&nodes);
 	// Make sure the last node successfully decoded the reply path.
-	nodes[3].logger.assert_log_contains(
-		"lightning::onion_message::messenger",
-		&format!("Received an onion message with path_id None and a reply_path"), 1);
+	nodes[0].custom_message_handler.expect_message(TestCustomMessage::Response);
+	nodes.reverse();
+	pass_along_path(&nodes);
 
 	// Destination::BlindedPath
 	let blinded_path = BlindedPath::new_for_message(&[nodes[1].get_node_pk(), nodes[2].get_node_pk(), nodes[3].get_node_pk()], &*nodes[3].keys_manager, &secp_ctx).unwrap();
@@ -343,10 +359,13 @@ fn reply_path() {
 	let reply_path = BlindedPath::new_for_message(&[nodes[2].get_node_pk(), nodes[1].get_node_pk(), nodes[0].get_node_pk()], &*nodes[0].keys_manager, &secp_ctx).unwrap();
 
 	nodes[0].messenger.send_onion_message(path, OnionMessageContents::Custom(test_msg), Some(reply_path)).unwrap();
+	nodes[3].custom_message_handler.expect_message(TestCustomMessage::Request);
 	pass_along_path(&nodes);
-	nodes[3].logger.assert_log_contains(
-		"lightning::onion_message::messenger",
-		&format!("Received an onion message with path_id None and a reply_path"), 2);
+
+	// Make sure the last node successfully decoded the reply path.
+	nodes[0].custom_message_handler.expect_message(TestCustomMessage::Response);
+	nodes.reverse();
+	pass_along_path(&nodes);
 }
 
 #[test]
@@ -377,7 +396,7 @@ fn invalid_custom_message_type() {
 #[test]
 fn peer_buffer_full() {
 	let nodes = create_nodes(2);
-	let test_msg = TestCustomMessage::Response;
+	let test_msg = TestCustomMessage::Request;
 	let path = OnionMessagePath {
 		intermediate_nodes: vec![],
 		destination: Destination::Node(nodes[1].get_node_pk()),
@@ -407,5 +426,6 @@ fn many_hops() {
 		destination: Destination::Node(nodes[num_nodes-1].get_node_pk()),
 	};
 	nodes[0].messenger.send_onion_message(path, OnionMessageContents::Custom(test_msg), None).unwrap();
+	nodes[num_nodes-1].custom_message_handler.expect_message(TestCustomMessage::Response);
 	pass_along_path(&nodes);
 }
