@@ -16,14 +16,20 @@ exclude = [
     "no-std-check",
 ]
 
-# Our tests do actual crypto and lots of work, the tradeoff for -O1 is well worth it.
-# Ideally we would only do this in profile.test, but profile.test only applies to
-# the test binary, not dependencies, which means most of the critical code still
-# gets compiled as -O0. See
+# Our tests do actual crypto and lots of work, the tradeoff for -O2 is well
+# worth it. Note that we only apply optimizations to dependencies, not workspace
+# crates themselves.
 # https://doc.rust-lang.org/cargo/reference/profiles.html#profile-selection
+[profile.dev.package."*"]
+opt-level = 2
+
+# It appears some minimal optimizations are required to inline many std methods
+# and reduce the otherwise-substantial time spent in std self-checks. We do so
+# here but ensure we keep LTO disabled as otherwise we're re-optimizing all our
+# dependencies every time we make any local changes.
 [profile.dev]
 opt-level = 1
-panic = "abort"
+lto = "off"
 
 [profile.release]
 opt-level = 3
