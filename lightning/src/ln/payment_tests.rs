@@ -253,12 +253,12 @@ fn no_pending_leak_on_initial_send_failure() {
 
 	let (route, payment_hash, _, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], 100_000);
 
-	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
-	nodes[1].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
+	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
+	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
 
 	unwrap_send_err!(nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret), PaymentId(payment_hash.0)),
 		true, APIError::ChannelUnavailable { ref err },
-		assert_eq!(err, "Peer for first hop currently disconnected/pending monitor update!"));
+		assert_eq!(err, "Peer for first hop currently disconnected"));
 
 	assert!(!nodes[0].node.has_pending_payments());
 }
@@ -310,8 +310,8 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 	// We relay the payment to nodes[1] while its disconnected from nodes[2], causing the payment
 	// to be returned immediately to nodes[0], without having nodes[2] fail the inbound payment
 	// which would prevent retry.
-	nodes[1].node.peer_disconnected(&nodes[2].node.get_our_node_id(), false);
-	nodes[2].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
+	nodes[1].node.peer_disconnected(&nodes[2].node.get_our_node_id());
+	nodes[2].node.peer_disconnected(&nodes[1].node.get_our_node_id());
 
 	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
 	commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, false, true);
@@ -340,13 +340,13 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 	assert_eq!(as_broadcasted_txn.len(), 1);
 	assert_eq!(as_broadcasted_txn[0], as_commitment_tx);
 
-	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
-	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init { features: nodes[1].node.init_features(), remote_network_address: None }).unwrap();
+	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
+	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init { features: nodes[1].node.init_features(), remote_network_address: None }, true).unwrap();
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 
 	// Now nodes[1] should send a channel reestablish, which nodes[0] will respond to with an
 	// error, as the channel has hit the chain.
-	nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id(), &msgs::Init { features: nodes[0].node.init_features(), remote_network_address: None }).unwrap();
+	nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id(), &msgs::Init { features: nodes[0].node.init_features(), remote_network_address: None }, false).unwrap();
 	let bs_reestablish = get_chan_reestablish_msgs!(nodes[1], nodes[0]).pop().unwrap();
 	nodes[0].node.handle_channel_reestablish(&nodes[1].node.get_our_node_id(), &bs_reestablish);
 	let as_err = nodes[0].node.get_and_clear_pending_msg_events();
@@ -496,7 +496,7 @@ fn do_test_completed_payment_not_retryable_on_reload(use_dust: bool) {
 	let chan_0_monitor_serialized = get_monitor!(nodes[0], chan_id).encode();
 
 	reload_node!(nodes[0], test_default_channel_config(), nodes_0_serialized, &[&chan_0_monitor_serialized], first_persister, first_new_chain_monitor, first_nodes_0_deserialized);
-	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
 
 	// On reload, the ChannelManager should realize it is stale compared to the ChannelMonitor and
 	// force-close the channel.
@@ -505,12 +505,12 @@ fn do_test_completed_payment_not_retryable_on_reload(use_dust: bool) {
 	assert!(nodes[0].node.has_pending_payments());
 	assert_eq!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0).len(), 1);
 
-	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init { features: nodes[1].node.init_features(), remote_network_address: None }).unwrap();
+	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init { features: nodes[1].node.init_features(), remote_network_address: None }, true).unwrap();
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 
 	// Now nodes[1] should send a channel reestablish, which nodes[0] will respond to with an
 	// error, as the channel has hit the chain.
-	nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id(), &msgs::Init { features: nodes[0].node.init_features(), remote_network_address: None }).unwrap();
+	nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id(), &msgs::Init { features: nodes[0].node.init_features(), remote_network_address: None }, false).unwrap();
 	let bs_reestablish = get_chan_reestablish_msgs!(nodes[1], nodes[0]).pop().unwrap();
 	nodes[0].node.handle_channel_reestablish(&nodes[1].node.get_our_node_id(), &bs_reestablish);
 	let as_err = nodes[0].node.get_and_clear_pending_msg_events();
@@ -591,7 +591,7 @@ fn do_test_completed_payment_not_retryable_on_reload(use_dust: bool) {
 	assert!(!nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 
 	reload_node!(nodes[0], test_default_channel_config(), nodes_0_serialized, &[&chan_0_monitor_serialized, &chan_1_monitor_serialized], second_persister, second_new_chain_monitor, second_nodes_0_deserialized);
-	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
 
 	reconnect_nodes(&nodes[0], &nodes[1], (true, true), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
 
@@ -615,7 +615,7 @@ fn do_test_completed_payment_not_retryable_on_reload(use_dust: bool) {
 	// Check that after reload we can send the payment again (though we shouldn't, since it was
 	// claimed previously).
 	reload_node!(nodes[0], test_default_channel_config(), nodes_0_serialized, &[&chan_0_monitor_serialized, &chan_1_monitor_serialized], third_persister, third_new_chain_monitor, third_nodes_0_deserialized);
-	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
 
 	reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
 
@@ -660,8 +660,8 @@ fn do_test_dup_htlc_onchain_fails_on_reload(persist_manager_post_event: bool, co
 	check_added_monitors!(nodes[0], 1);
 	check_closed_event!(nodes[0], 1, ClosureReason::HolderForceClosed);
 
-	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
-	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
+	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
 
 	// Connect blocks until the CLTV timeout is up so that we get an HTLC-Timeout transaction
 	connect_blocks(&nodes[0], TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS + 1);
@@ -812,7 +812,7 @@ fn test_fulfill_restart_failure() {
 	// Now reload nodes[1]...
 	reload_node!(nodes[1], &chan_manager_serialized, &[&chan_0_monitor_serialized], persister, new_chain_monitor, nodes_1_deserialized);
 
-	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
+	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
 	reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
 
 	nodes[1].node.fail_htlc_backwards(&payment_hash);
@@ -1857,25 +1857,35 @@ fn auto_retry_partial_failure() {
 		payment_params: Some(route_params.payment_params.clone()),
 	};
 	nodes[0].router.expect_find_route(route_params.clone(), Ok(send_route));
+	let mut payment_params = route_params.payment_params.clone();
+	payment_params.previously_failed_channels.push(chan_2_id);
 	nodes[0].router.expect_find_route(RouteParameters {
-			payment_params: route_params.payment_params.clone(),
-			final_value_msat: amt_msat / 2, final_cltv_expiry_delta: TEST_FINAL_CLTV
+			payment_params, final_value_msat: amt_msat / 2, final_cltv_expiry_delta: TEST_FINAL_CLTV
 		}, Ok(retry_1_route));
+	let mut payment_params = route_params.payment_params.clone();
+	payment_params.previously_failed_channels.push(chan_3_id);
 	nodes[0].router.expect_find_route(RouteParameters {
-			payment_params: route_params.payment_params.clone(),
-			final_value_msat: amt_msat / 4, final_cltv_expiry_delta: TEST_FINAL_CLTV
+			payment_params, final_value_msat: amt_msat / 4, final_cltv_expiry_delta: TEST_FINAL_CLTV
 		}, Ok(retry_2_route));
 
 	// Send a payment that will partially fail on send, then partially fail on retry, then succeed.
 	nodes[0].node.send_payment_with_retry(payment_hash, &Some(payment_secret), PaymentId(payment_hash.0), route_params, Retry::Attempts(3)).unwrap();
 	let closed_chan_events = nodes[0].node.get_and_clear_pending_events();
-	assert_eq!(closed_chan_events.len(), 2);
+	assert_eq!(closed_chan_events.len(), 4);
 	match closed_chan_events[0] {
 		Event::ChannelClosed { .. } => {},
 		_ => panic!("Unexpected event"),
 	}
 	match closed_chan_events[1] {
+		Event::PaymentPathFailed { .. } => {},
+		_ => panic!("Unexpected event"),
+	}
+	match closed_chan_events[2] {
 		Event::ChannelClosed { .. } => {},
+		_ => panic!("Unexpected event"),
+	}
+	match closed_chan_events[3] {
+		Event::PaymentPathFailed { .. } => {},
 		_ => panic!("Unexpected event"),
 	}
 
@@ -1993,11 +2003,13 @@ fn auto_retry_zero_attempts_send_error() {
 	};
 
 	chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::PermanentFailure);
-	let err = nodes[0].node.send_payment_with_retry(payment_hash, &Some(payment_secret), PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap_err();
-	if let PaymentSendFailure::AllFailedResendSafe(_) = err {
-	} else { panic!("Unexpected error"); }
+	nodes[0].node.send_payment_with_retry(payment_hash, &Some(payment_secret), PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
 	assert_eq!(nodes[0].node.get_and_clear_pending_msg_events().len(), 2); // channel close messages
-	assert_eq!(nodes[0].node.get_and_clear_pending_events().len(), 1); // channel close event
+	let events = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 3);
+	if let Event::ChannelClosed { .. } = events[0] { } else { panic!(); }
+	if let Event::PaymentPathFailed { .. } = events[1] { } else { panic!(); }
+	if let Event::PaymentFailed { .. } = events[2] { } else { panic!(); }
 	check_added_monitors!(nodes[0], 2);
 }
 
@@ -2103,8 +2115,10 @@ fn retry_multi_path_single_failed_payment() {
 	// On retry, split the payment across both channels.
 	route.paths[0][0].fee_msat = 50_000_001;
 	route.paths[1][0].fee_msat = 50_000_000;
+	let mut pay_params = route.payment_params.clone().unwrap();
+	pay_params.previously_failed_channels.push(chans[1].short_channel_id.unwrap());
 	nodes[0].router.expect_find_route(RouteParameters {
-			payment_params: route.payment_params.clone().unwrap(),
+			payment_params: pay_params,
 			// Note that the second request here requests the amount we originally failed to send,
 			// not the amount remaining on the full payment, which should be changed.
 			final_value_msat: 100_000_001, final_cltv_expiry_delta: TEST_FINAL_CLTV
@@ -2121,6 +2135,16 @@ fn retry_multi_path_single_failed_payment() {
 	}
 
 	nodes[0].node.send_payment_with_retry(payment_hash, &Some(payment_secret), PaymentId(payment_hash.0), route_params, Retry::Attempts(1)).unwrap();
+	let events = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	match events[0] {
+		Event::PaymentPathFailed { payment_hash: ev_payment_hash, payment_failed_permanently: false,
+			network_update: None, all_paths_failed: false, short_channel_id: Some(expected_scid), .. } => {
+			assert_eq!(payment_hash, ev_payment_hash);
+			assert_eq!(expected_scid, route.paths[1][0].short_channel_id);
+		},
+		_ => panic!("Unexpected event"),
+	}
 	let htlc_msgs = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(htlc_msgs.len(), 2);
 	check_added_monitors!(nodes[0], 2);
@@ -2176,12 +2200,24 @@ fn immediate_retry_on_failure() {
 	route.paths[0][0].short_channel_id = chans[1].short_channel_id.unwrap();
 	route.paths[0][0].fee_msat = 50_000_000;
 	route.paths[1][0].fee_msat = 50_000_001;
+	let mut pay_params = route_params.payment_params.clone();
+	pay_params.previously_failed_channels.push(chans[0].short_channel_id.unwrap());
 	nodes[0].router.expect_find_route(RouteParameters {
-			payment_params: route_params.payment_params.clone(),
-			final_value_msat: amt_msat, final_cltv_expiry_delta: TEST_FINAL_CLTV
+			payment_params: pay_params, final_value_msat: amt_msat,
+			final_cltv_expiry_delta: TEST_FINAL_CLTV
 		}, Ok(route.clone()));
 
 	nodes[0].node.send_payment_with_retry(payment_hash, &Some(payment_secret), PaymentId(payment_hash.0), route_params, Retry::Attempts(1)).unwrap();
+	let events = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	match events[0] {
+		Event::PaymentPathFailed { payment_hash: ev_payment_hash, payment_failed_permanently: false,
+		network_update: None, all_paths_failed: false, short_channel_id: Some(expected_scid), .. } => {
+			assert_eq!(payment_hash, ev_payment_hash);
+			assert_eq!(expected_scid, route.paths[1][0].short_channel_id);
+		},
+		_ => panic!("Unexpected event"),
+	}
 	let htlc_msgs = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(htlc_msgs.len(), 2);
 	check_added_monitors!(nodes[0], 2);

@@ -37,7 +37,6 @@ use lightning::util::events::{Event, EventHandler, EventsProvider};
 use lightning::util::logger::Logger;
 use lightning::util::persist::Persister;
 use lightning_rapid_gossip_sync::RapidGossipSync;
-use lightning::io;
 
 use core::ops::Deref;
 use core::time::Duration;
@@ -431,7 +430,7 @@ pub async fn process_events_async<
 	persister: PS, event_handler: EventHandler, chain_monitor: M, channel_manager: CM,
 	gossip_sync: GossipSync<PGS, RGS, G, UL, L>, peer_manager: PM, logger: L, scorer: Option<S>,
 	sleeper: Sleeper,
-) -> Result<(), io::Error>
+) -> Result<(), lightning::io::Error>
 where
 	UL::Target: 'static + UtxoLookup,
 	CF::Target: 'static + chain::Filter,
@@ -963,8 +962,8 @@ mod tests {
 
 		for i in 0..num_nodes {
 			for j in (i+1)..num_nodes {
-				nodes[i].node.peer_connected(&nodes[j].node.get_our_node_id(), &Init { features: nodes[j].node.init_features(), remote_network_address: None }).unwrap();
-				nodes[j].node.peer_connected(&nodes[i].node.get_our_node_id(), &Init { features: nodes[i].node.init_features(), remote_network_address: None }).unwrap();
+				nodes[i].node.peer_connected(&nodes[j].node.get_our_node_id(), &Init { features: nodes[j].node.init_features(), remote_network_address: None }, true).unwrap();
+				nodes[j].node.peer_connected(&nodes[i].node.get_our_node_id(), &Init { features: nodes[i].node.init_features(), remote_network_address: None }, false).unwrap();
 			}
 		}
 

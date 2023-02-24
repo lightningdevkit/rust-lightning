@@ -13,14 +13,27 @@ use hashbrown::HashSet;
 
 use crate::utils::test_logger;
 
-fn check_eq(btree: &BTreeMap<u8, u8>, indexed: &IndexedMap<u8, u8>) {
+use std::ops::{RangeBounds, Bound};
+
+struct ExclLowerInclUpper(u8, u8);
+impl RangeBounds<u8> for ExclLowerInclUpper {
+	fn start_bound(&self) -> Bound<&u8> { Bound::Excluded(&self.0) }
+	fn end_bound(&self) -> Bound<&u8> { Bound::Included(&self.1) }
+}
+struct ExclLowerExclUpper(u8, u8);
+impl RangeBounds<u8> for ExclLowerExclUpper {
+	fn start_bound(&self) -> Bound<&u8> { Bound::Excluded(&self.0) }
+	fn end_bound(&self) -> Bound<&u8> { Bound::Excluded(&self.1) }
+}
+
+fn check_eq(btree: &BTreeMap<u8, u8>, mut indexed: IndexedMap<u8, u8>) {
 	assert_eq!(btree.len(), indexed.len());
 	assert_eq!(btree.is_empty(), indexed.is_empty());
 
 	let mut btree_clone = btree.clone();
 	assert!(btree_clone == *btree);
 	let mut indexed_clone = indexed.clone();
-	assert!(indexed_clone == *indexed);
+	assert!(indexed_clone == indexed);
 
 	for k in 0..=255 {
 		assert_eq!(btree.contains_key(&k), indexed.contains_key(&k));
@@ -43,16 +56,27 @@ fn check_eq(btree: &BTreeMap<u8, u8>, indexed: &IndexedMap<u8, u8>) {
 	}
 
 	const STRIDE: u8 = 16;
-	for k in 0..=255/STRIDE {
-		let lower_bound = k * STRIDE;
-		let upper_bound = lower_bound + (STRIDE - 1);
-		let mut btree_iter = btree.range(lower_bound..=upper_bound);
-		let mut indexed_iter = indexed.range(lower_bound..=upper_bound);
-		loop {
-			let b_v = btree_iter.next();
-			let i_v = indexed_iter.next();
-			assert_eq!(b_v, i_v);
-			if b_v.is_none() { break; }
+	for range_type in 0..4 {
+		for k in 0..=255/STRIDE {
+			let lower_bound = k * STRIDE;
+			let upper_bound = lower_bound + (STRIDE - 1);
+			macro_rules! range { ($map: expr) => {
+				match range_type {
+					0 => $map.range(lower_bound..upper_bound),
+					1 => $map.range(lower_bound..=upper_bound),
+					2 => $map.range(ExclLowerInclUpper(lower_bound, upper_bound)),
+					3 => $map.range(ExclLowerExclUpper(lower_bound, upper_bound)),
+					_ => unreachable!(),
+				}
+			} }
+			let mut btree_iter = range!(btree);
+			let mut indexed_iter = range!(indexed);
+			loop {
+				let b_v = btree_iter.next();
+				let i_v = indexed_iter.next();
+				assert_eq!(b_v, i_v);
+				if b_v.is_none() { break; }
+			}
 		}
 	}
 
@@ -91,7 +115,7 @@ pub fn do_test(data: &[u8]) {
 		let prev_value_i = indexed.insert(tuple[0], tuple[1]);
 		assert_eq!(prev_value_b, prev_value_i);
 	}
-	check_eq(&btree, &indexed);
+	check_eq(&btree, indexed.clone());
 
 	// Now, modify the maps in all the ways we have to do so, checking that the maps remain
 	// equivalent as we go.
@@ -99,7 +123,7 @@ pub fn do_test(data: &[u8]) {
 		*v = *k;
 		*btree.get_mut(k).unwrap() = *k;
 	}
-	check_eq(&btree, &indexed);
+	check_eq(&btree, indexed.clone());
 
 	for k in 0..=255 {
 		match btree.entry(k) {
@@ -124,7 +148,7 @@ pub fn do_test(data: &[u8]) {
 			},
 		}
 	}
-	check_eq(&btree, &indexed);
+	check_eq(&btree, indexed);
 }
 
 pub fn indexedmap_test<Out: test_logger::Output>(data: &[u8], _out: Out) {

@@ -993,21 +993,15 @@ pub trait ChannelMessageHandler : MessageSendEventsProvider {
 	fn handle_announcement_signatures(&self, their_node_id: &PublicKey, msg: &AnnouncementSignatures);
 
 	// Connection loss/reestablish:
-	/// Indicates a connection to the peer failed/an existing connection was lost. If no connection
-	/// is believed to be possible in the future (eg they're sending us messages we don't
-	/// understand or indicate they require unknown feature bits), `no_connection_possible` is set
-	/// and any outstanding channels should be failed.
-	///
-	/// Note that in some rare cases this may be called without a corresponding
-	/// [`Self::peer_connected`].
-	fn peer_disconnected(&self, their_node_id: &PublicKey, no_connection_possible: bool);
+	/// Indicates a connection to the peer failed/an existing connection was lost.
+	fn peer_disconnected(&self, their_node_id: &PublicKey);
 
 	/// Handle a peer reconnecting, possibly generating `channel_reestablish` message(s).
 	///
 	/// May return an `Err(())` if the features the peer supports are not sufficient to communicate
 	/// with us. Implementors should be somewhat conservative about doing so, however, as other
 	/// message handlers may still wish to communicate with this peer.
-	fn peer_connected(&self, their_node_id: &PublicKey, msg: &Init) -> Result<(), ()>;
+	fn peer_connected(&self, their_node_id: &PublicKey, msg: &Init, inbound: bool) -> Result<(), ()>;
 	/// Handle an incoming `channel_reestablish` message from the given peer.
 	fn handle_channel_reestablish(&self, their_node_id: &PublicKey, msg: &ChannelReestablish);
 
@@ -1065,7 +1059,7 @@ pub trait RoutingMessageHandler : MessageSendEventsProvider {
 	/// May return an `Err(())` if the features the peer supports are not sufficient to communicate
 	/// with us. Implementors should be somewhat conservative about doing so, however, as other
 	/// message handlers may still wish to communicate with this peer.
-	fn peer_connected(&self, their_node_id: &PublicKey, init: &Init) -> Result<(), ()>;
+	fn peer_connected(&self, their_node_id: &PublicKey, init: &Init, inbound: bool) -> Result<(), ()>;
 	/// Handles the reply of a query we initiated to learn about channels
 	/// for a given range of blocks. We can expect to receive one or more
 	/// replies to a single query.
@@ -1112,13 +1106,10 @@ pub trait OnionMessageHandler : OnionMessageProvider {
 	/// May return an `Err(())` if the features the peer supports are not sufficient to communicate
 	/// with us. Implementors should be somewhat conservative about doing so, however, as other
 	/// message handlers may still wish to communicate with this peer.
-	fn peer_connected(&self, their_node_id: &PublicKey, init: &Init) -> Result<(), ()>;
+	fn peer_connected(&self, their_node_id: &PublicKey, init: &Init, inbound: bool) -> Result<(), ()>;
 	/// Indicates a connection to the peer failed/an existing connection was lost. Allows handlers to
 	/// drop and refuse to forward onion messages to this peer.
-	///
-	/// Note that in some rare cases this may be called without a corresponding
-	/// [`Self::peer_connected`].
-	fn peer_disconnected(&self, their_node_id: &PublicKey, no_connection_possible: bool);
+	fn peer_disconnected(&self, their_node_id: &PublicKey);
 
 	// Handler information:
 	/// Gets the node feature flags which this handler itself supports. All available handlers are

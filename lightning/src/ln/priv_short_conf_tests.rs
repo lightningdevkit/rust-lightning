@@ -90,8 +90,8 @@ fn test_priv_forwarding_rejection() {
 	// Now disconnect nodes[1] from its peers and restart with accept_forwards_to_priv_channels set
 	// to true. Sadly there is currently no way to change it at runtime.
 
-	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
-	nodes[2].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
+	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
+	nodes[2].node.peer_disconnected(&nodes[1].node.get_our_node_id());
 
 	let nodes_1_serialized = nodes[1].node.encode();
 	let monitor_a_serialized = get_monitor!(nodes[1], chan_id_1).encode();
@@ -100,8 +100,8 @@ fn test_priv_forwarding_rejection() {
 	no_announce_cfg.accept_forwards_to_priv_channels = true;
 	reload_node!(nodes[1], no_announce_cfg, &nodes_1_serialized, &[&monitor_a_serialized, &monitor_b_serialized], persister, new_chain_monitor, nodes_1_deserialized);
 
-	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init { features: nodes[1].node.init_features(), remote_network_address: None }).unwrap();
-	nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id(), &msgs::Init { features: nodes[0].node.init_features(), remote_network_address: None }).unwrap();
+	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init { features: nodes[1].node.init_features(), remote_network_address: None }, true).unwrap();
+	nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id(), &msgs::Init { features: nodes[0].node.init_features(), remote_network_address: None }, false).unwrap();
 	let as_reestablish = get_chan_reestablish_msgs!(nodes[0], nodes[1]).pop().unwrap();
 	let bs_reestablish = get_chan_reestablish_msgs!(nodes[1], nodes[0]).pop().unwrap();
 	nodes[1].node.handle_channel_reestablish(&nodes[0].node.get_our_node_id(), &as_reestablish);
@@ -109,8 +109,8 @@ fn test_priv_forwarding_rejection() {
 	get_event_msg!(nodes[0], MessageSendEvent::SendChannelUpdate, nodes[1].node.get_our_node_id());
 	get_event_msg!(nodes[1], MessageSendEvent::SendChannelUpdate, nodes[0].node.get_our_node_id());
 
-	nodes[1].node.peer_connected(&nodes[2].node.get_our_node_id(), &msgs::Init { features: nodes[2].node.init_features(), remote_network_address: None }).unwrap();
-	nodes[2].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init { features: nodes[1].node.init_features(), remote_network_address: None }).unwrap();
+	nodes[1].node.peer_connected(&nodes[2].node.get_our_node_id(), &msgs::Init { features: nodes[2].node.init_features(), remote_network_address: None }, true).unwrap();
+	nodes[2].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init { features: nodes[1].node.init_features(), remote_network_address: None }, false).unwrap();
 	let bs_reestablish = get_chan_reestablish_msgs!(nodes[1], nodes[2]).pop().unwrap();
 	let cs_reestablish = get_chan_reestablish_msgs!(nodes[2], nodes[1]).pop().unwrap();
 	nodes[2].node.handle_channel_reestablish(&nodes[1].node.get_our_node_id(), &bs_reestablish);

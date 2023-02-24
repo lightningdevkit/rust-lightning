@@ -617,7 +617,7 @@ mod tests {
 		fn handle_channel_update(&self, _msg: &ChannelUpdate) -> Result<bool, LightningError> { Ok(false) }
 		fn get_next_channel_announcement(&self, _starting_point: u64) -> Option<(ChannelAnnouncement, Option<ChannelUpdate>, Option<ChannelUpdate>)> { None }
 		fn get_next_node_announcement(&self, _starting_point: Option<&NodeId>) -> Option<NodeAnnouncement> { None }
-		fn peer_connected(&self, _their_node_id: &PublicKey, _init_msg: &Init) -> Result<(), ()> { Ok(()) }
+		fn peer_connected(&self, _their_node_id: &PublicKey, _init_msg: &Init, _inbound: bool) -> Result<(), ()> { Ok(()) }
 		fn handle_reply_channel_range(&self, _their_node_id: &PublicKey, _msg: ReplyChannelRange) -> Result<(), LightningError> { Ok(()) }
 		fn handle_reply_short_channel_ids_end(&self, _their_node_id: &PublicKey, _msg: ReplyShortChannelIdsEnd) -> Result<(), LightningError> { Ok(()) }
 		fn handle_query_channel_range(&self, _their_node_id: &PublicKey, _msg: QueryChannelRange) -> Result<(), LightningError> { Ok(()) }
@@ -643,13 +643,13 @@ mod tests {
 		fn handle_update_fee(&self, _their_node_id: &PublicKey, _msg: &UpdateFee) {}
 		fn handle_announcement_signatures(&self, _their_node_id: &PublicKey, _msg: &AnnouncementSignatures) {}
 		fn handle_channel_update(&self, _their_node_id: &PublicKey, _msg: &ChannelUpdate) {}
-		fn peer_disconnected(&self, their_node_id: &PublicKey, _no_connection_possible: bool) {
+		fn peer_disconnected(&self, their_node_id: &PublicKey) {
 			if *their_node_id == self.expected_pubkey {
 				self.disconnected_flag.store(true, Ordering::SeqCst);
 				self.pubkey_disconnected.clone().try_send(()).unwrap();
 			}
 		}
-		fn peer_connected(&self, their_node_id: &PublicKey, _init_msg: &Init) -> Result<(), ()> {
+		fn peer_connected(&self, their_node_id: &PublicKey, _init_msg: &Init, _inbound: bool) -> Result<(), ()> {
 			if *their_node_id == self.expected_pubkey {
 				self.pubkey_connected.clone().try_send(()).unwrap();
 			}
