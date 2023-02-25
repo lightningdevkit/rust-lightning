@@ -656,13 +656,13 @@ macro_rules! _init_tlv_based_struct_field {
 #[macro_export]
 macro_rules! _init_tlv_field_var {
 	($field: ident, (default_value, $default: expr)) => {
-		let mut $field = $crate::util::ser::OptionDeserWrapper(None);
+		let mut $field = $crate::util::ser::RequiredWrapper(None);
 	};
 	($field: ident, (static_value, $value: expr)) => {
 		let $field;
 	};
 	($field: ident, required) => {
-		let mut $field = $crate::util::ser::OptionDeserWrapper(None);
+		let mut $field = $crate::util::ser::RequiredWrapper(None);
 	};
 	($field: ident, vec_type) => {
 		let mut $field = Some(Vec::new());

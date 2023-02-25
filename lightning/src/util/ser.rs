@@ -289,18 +289,18 @@ impl<T: Readable> MaybeReadable for T {
 }
 
 /// Wrapper to read a required (non-optional) TLV record.
-pub struct OptionDeserWrapper<T: Readable>(pub Option<T>);
-impl<T: Readable> Readable for OptionDeserWrapper<T> {
+pub struct RequiredWrapper<T: Readable>(pub Option<T>);
+impl<T: Readable> Readable for RequiredWrapper<T> {
 	#[inline]
 	fn read<R: Read>(reader: &mut R) -> Result<Self, DecodeError> {
 		Ok(Self(Some(Readable::read(reader)?)))
 	}
 }
 /// When handling `default_values`, we want to map the default-value T directly
-/// to a `OptionDeserWrapper<T>` in a way that works for `field: T = t;` as
+/// to a `RequiredWrapper<T>` in a way that works for `field: T = t;` as
 /// well. Thus, we assume `Into<T> for T` does nothing and use that.
-impl<T: Readable> From<T> for OptionDeserWrapper<T> {
-	fn from(t: T) -> OptionDeserWrapper<T> { OptionDeserWrapper(Some(t)) }
+impl<T: Readable> From<T> for RequiredWrapper<T> {
+	fn from(t: T) -> RequiredWrapper<T> { RequiredWrapper(Some(t)) }
 }
 
 pub(crate) struct U48(pub u64);

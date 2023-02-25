@@ -23,7 +23,7 @@ use crate::ln::features::ChannelTypeFeatures;
 use crate::ln::msgs;
 use crate::ln::{PaymentPreimage, PaymentHash, PaymentSecret};
 use crate::routing::gossip::NetworkUpdate;
-use crate::util::ser::{BigSize, FixedLengthReader, Writeable, Writer, MaybeReadable, Readable, WithoutLength, OptionDeserWrapper};
+use crate::util::ser::{BigSize, FixedLengthReader, Writeable, Writer, MaybeReadable, Readable, RequiredWrapper, WithoutLength};
 use crate::routing::router::{RouteHop, RouteParameters};
 
 use bitcoin::{PackedLockTime, Transaction};
@@ -1434,8 +1434,8 @@ impl MaybeReadable for Event {
 				let f = || {
 					let mut channel_id = [0; 32];
 					let mut user_channel_id: u128 = 0;
-					let mut counterparty_node_id = OptionDeserWrapper(None);
-					let mut channel_type = OptionDeserWrapper(None);
+					let mut counterparty_node_id = RequiredWrapper(None);
+					let mut channel_type = RequiredWrapper(None);
 					read_tlv_fields!(reader, {
 						(0, channel_id, required),
 						(2, user_channel_id, required),

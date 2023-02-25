@@ -49,7 +49,7 @@ use crate::chain::onchaintx::OnchainTxHandler;
 use crate::chain::package::{CounterpartyOfferedHTLCOutput, CounterpartyReceivedHTLCOutput, HolderFundingOutput, HolderHTLCOutput, PackageSolvingData, PackageTemplate, RevokedOutput, RevokedHTLCOutput};
 use crate::chain::Filter;
 use crate::util::logger::Logger;
-use crate::util::ser::{Readable, ReadableArgs, MaybeReadable, Writer, Writeable, U48, OptionDeserWrapper};
+use crate::util::ser::{Readable, ReadableArgs, RequiredWrapper, MaybeReadable, Writer, Writeable, U48};
 use crate::util::byte_utils;
 use crate::util::events::Event;
 #[cfg(anchors)]
@@ -314,8 +314,8 @@ impl Readable for CounterpartyCommitmentParameters {
 				}
 			}
 
-			let mut counterparty_delayed_payment_base_key = OptionDeserWrapper(None);
-			let mut counterparty_htlc_base_key = OptionDeserWrapper(None);
+			let mut counterparty_delayed_payment_base_key = RequiredWrapper(None);
+			let mut counterparty_htlc_base_key = RequiredWrapper(None);
 			let mut on_counterparty_tx_csv: u16 = 0;
 			read_tlv_fields!(r, {
 				(0, counterparty_delayed_payment_base_key, required),

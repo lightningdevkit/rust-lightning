@@ -6693,7 +6693,7 @@ impl Writeable for ClaimableHTLC {
 
 impl Readable for ClaimableHTLC {
 	fn read<R: Read>(reader: &mut R) -> Result<Self, DecodeError> {
-		let mut prev_hop = crate::util::ser::OptionDeserWrapper(None);
+		let mut prev_hop = crate::util::ser::RequiredWrapper(None);
 		let mut value = 0;
 		let mut payment_data: Option<msgs::FinalOnionHopData> = None;
 		let mut cltv_expiry = 0;
@@ -6743,7 +6743,7 @@ impl Readable for HTLCSource {
 		let id: u8 = Readable::read(reader)?;
 		match id {
 			0 => {
-				let mut session_priv: crate::util::ser::OptionDeserWrapper<SecretKey> = crate::util::ser::OptionDeserWrapper(None);
+				let mut session_priv: crate::util::ser::RequiredWrapper<SecretKey> = crate::util::ser::RequiredWrapper(None);
 				let mut first_hop_htlc_msat: u64 = 0;
 				let mut path = Some(Vec::new());
 				let mut payment_id = None;
