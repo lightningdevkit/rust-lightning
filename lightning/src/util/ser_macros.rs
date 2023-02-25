@@ -292,12 +292,19 @@ macro_rules! _decode_tlv {
 	($reader: expr, $field: ident, option) => {{
 		$field = Some($crate::util::ser::Readable::read(&mut $reader)?);
 	}};
+	// `upgradable_required` indicates we're reading a required TLV that may have been upgraded
+	// without backwards compat. We'll error if the field is missing, and return `Ok(None)` if the
+	// field is present but we can no longer understand it.
+	// Note that this variant can only be used within a `MaybeReadable` read.
 	($reader: expr, $field: ident, upgradable_required) => {{
 		$field = match $crate::util::ser::MaybeReadable::read(&mut $reader)? {
 			Some(res) => res,
 			_ => return Ok(None)
 		};
 	}};
+	// `upgradable_option` indicates we're reading an Option-al TLV that may have been upgraded
+	// without backwards compat. $field will be None if the TLV is missing or if the field is present
+	// but we can no longer understand it.
 	($reader: expr, $field: ident, upgradable_option) => {{
 		$field = $crate::util::ser::MaybeReadable::read(&mut $reader)?;
 	}};
