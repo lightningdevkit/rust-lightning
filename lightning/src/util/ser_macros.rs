@@ -378,7 +378,6 @@ macro_rules! decode_tlv_stream_with_custom_tlv_decode {
 macro_rules! _decode_tlv_stream_range {
 	($stream: expr, $range: expr, $rewind: ident, {$(($type: expr, $field: ident, $fieldty: tt)),* $(,)*}
 	 $(, $decode_custom_tlv: expr)?) => { {
-		use core::ops::RangeBounds;
 		use $crate::ln::msgs::DecodeError;
 		let mut last_seen_type: Option<u64> = None;
 		let mut stream_ref = $stream;
@@ -401,7 +400,7 @@ macro_rules! _decode_tlv_stream_range {
 						}
 					},
 					Err(e) => return Err(e),
-					Ok(t) => if $range.contains(&t.0) { t } else {
+					Ok(t) => if core::ops::RangeBounds::contains(&$range, &t.0) { t } else {
 						drop(tracking_reader);
 
 						// Assumes the type id is minimally encoded, which is enforced on read.

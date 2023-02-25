@@ -18,7 +18,7 @@
 //! [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 //! [`Offer`]: crate::offers::offer::Offer
 //!
-//! ```ignore
+//! ```
 //! extern crate bitcoin;
 //! extern crate core;
 //! extern crate lightning;
@@ -216,7 +216,7 @@ impl RefundBuilder {
 ///
 /// [`Invoice`]: crate::offers::invoice::Invoice
 /// [`Offer`]: crate::offers::offer::Offer
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Refund {
 	pub(super) bytes: Vec<u8>,
 	pub(super) contents: RefundContents,
@@ -225,7 +225,7 @@ pub struct Refund {
 /// The contents of a [`Refund`], which may be shared with an [`Invoice`].
 ///
 /// [`Invoice`]: crate::offers::invoice::Invoice
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub(super) struct RefundContents {
 	payer: PayerContents,
 	// offer fields
@@ -317,12 +317,31 @@ impl Refund {
 		self.contents.payer_note.as_ref().map(|payer_note| PrintableString(payer_note.as_str()))
 	}
 
+	/// Creates an [`Invoice`] for the refund with the given required fields and using the
+	/// [`Duration`] since [`std::time::SystemTime::UNIX_EPOCH`] as the creation time.
+	///
+	/// See [`Refund::respond_with_no_std`] for further details where the aforementioned creation
+	/// time is used for the `created_at` parameter.
+	///
+	/// [`Invoice`]: crate::offers::invoice::Invoice
+	/// [`Duration`]: core::time::Duration
+	#[cfg(feature = "std")]
+	pub fn respond_with(
+		&self, payment_paths: Vec<(BlindedPath, BlindedPayInfo)>, payment_hash: PaymentHash,
+		signing_pubkey: PublicKey,
+	) -> Result<InvoiceBuilder, SemanticError> {
+		let created_at = std::time::SystemTime::now()
+			.duration_since(std::time::SystemTime::UNIX_EPOCH)
+			.expect("SystemTime::now() should come after SystemTime::UNIX_EPOCH");
+
+		self.respond_with_no_std(payment_paths, payment_hash, signing_pubkey, created_at)
+	}
+
 	/// Creates an [`Invoice`] for the refund with the given required fields.
 	///
 	/// Unless [`InvoiceBuilder::relative_expiry`] is set, the invoice will expire two hours after
-	/// calling this method in `std` builds. For `no-std` builds, a final [`Duration`] parameter
-	/// must be given, which is used to set [`Invoice::created_at`] since [`std::time::SystemTime`]
-	/// is not available.
+	/// `created_at`, which is used to set [`Invoice::created_at`]. Useful for `no-std` builds where
+	/// [`std::time::SystemTime`] is not available.
 	///
 	/// The caller is expected to remember the preimage of `payment_hash` in order to
 	/// claim a payment for the invoice.
@@ -339,20 +358,13 @@ impl Refund {
 	///
 	/// [`Invoice`]: crate::offers::invoice::Invoice
 	/// [`Invoice::created_at`]: crate::offers::invoice::Invoice::created_at
-	pub fn respond_with(
+	pub fn respond_with_no_std(
 		&self, payment_paths: Vec<(BlindedPath, BlindedPayInfo)>, payment_hash: PaymentHash,
-		signing_pubkey: PublicKey,
-		#[cfg(any(test, not(feature = "std")))]
-		created_at: Duration
+		signing_pubkey: PublicKey, created_at: Duration
 	) -> Result<InvoiceBuilder, SemanticError> {
 		if self.features().requires_unknown_bits() {
 			return Err(SemanticError::UnknownRequiredFeatures);
 		}
-
-		#[cfg(all(not(test), feature = "std"))]
-		let created_at = std::time::SystemTime::now()
-			.duration_since(std::time::SystemTime::UNIX_EPOCH)
-			.expect("SystemTime::now() should come after SystemTime::UNIX_EPOCH");
 
 		InvoiceBuilder::for_refund(self, payment_paths, created_at, payment_hash, signing_pubkey)
 	}
