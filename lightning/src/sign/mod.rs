@@ -26,10 +26,9 @@ use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::hash_types::WPubkeyHash;
 
-use bitcoin::secp256k1::{SecretKey, PublicKey, Scalar};
-use bitcoin::secp256k1::{Secp256k1, ecdsa::Signature, Signing};
+use bitcoin::secp256k1::{PublicKey, Scalar, Secp256k1, SecretKey, Signing};
 use bitcoin::secp256k1::ecdh::SharedSecret;
-use bitcoin::secp256k1::ecdsa::RecoverableSignature;
+use bitcoin::secp256k1::ecdsa::{RecoverableSignature, Signature};
 use bitcoin::{PackedLockTime, secp256k1, Sequence, Witness};
 
 use crate::util::transaction_utils;

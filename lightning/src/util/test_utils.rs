@@ -44,9 +44,9 @@ use bitcoin::network::constants::Network;
 use bitcoin::hash_types::{BlockHash, Txid};
 use bitcoin::util::sighash::SighashCache;
 
-use bitcoin::secp256k1::{SecretKey, PublicKey, Secp256k1, ecdsa::Signature, Scalar};
+use bitcoin::secp256k1::{PublicKey, Scalar, Secp256k1, SecretKey};
 use bitcoin::secp256k1::ecdh::SharedSecret;
-use bitcoin::secp256k1::ecdsa::RecoverableSignature;
+use bitcoin::secp256k1::ecdsa::{RecoverableSignature, Signature};
 
 #[cfg(any(test, feature = "_test_utils"))]
 use regex;
