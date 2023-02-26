@@ -75,7 +75,7 @@ struct LockDep {
 }
 
 #[cfg(feature = "backtrace")]
-fn get_construction_location(backtrace: &Backtrace) -> String {
+fn get_construction_location(backtrace: &Backtrace) -> (String, Option<u32>) {
 	// Find the first frame that is after `debug_sync` (or that is in our tests) and use
 	// that as the mutex construction site. Note that the first few frames may be in
 	// the `backtrace` crate, so we have to ignore those.
@@ -86,13 +86,7 @@ fn get_construction_location(backtrace: &Backtrace) -> String {
 			let symbol_name = symbol.name().unwrap().as_str().unwrap();
 			if !sync_mutex_constr_regex.is_match(symbol_name) {
 				if found_debug_sync {
-					if let Some(col) = symbol.colno() {
-						return format!("{}:{}:{}", symbol.filename().unwrap().display(), symbol.lineno().unwrap(), col);
-					} else {
-						// Windows debug symbols don't support column numbers, so fall back to
-						// line numbers only if no `colno` is available
-						return format!("{}:{}", symbol.filename().unwrap().display(), symbol.lineno().unwrap());
-					}
+					return (format!("{}:{}", symbol.filename().unwrap().display(), symbol.lineno().unwrap()), symbol.colno());
 				}
 			} else { found_debug_sync = true; }
 		}
@@ -113,11 +107,17 @@ impl LockMetadata {
 
 		#[cfg(feature = "backtrace")]
 		{
-			let lock_constr_location = get_construction_location(&res._lock_construction_bt);
+			let (lock_constr_location, lock_constr_colno) =
+				get_construction_location(&res._lock_construction_bt);
 			LOCKS_INIT.call_once(|| { unsafe { LOCKS = Some(StdMutex::new(HashMap::new())); } });
 			let mut locks = unsafe { LOCKS.as_ref() }.unwrap().lock().unwrap();
 			match locks.entry(lock_constr_location) {
-				hash_map::Entry::Occupied(e) => return Arc::clone(e.get()),
+				hash_map::Entry::Occupied(e) => {
+					assert_eq!(lock_constr_colno,
+						get_construction_location(&e.get()._lock_construction_bt).1,
+						"Because Windows doesn't support column number results in backtraces, we cannot construct two mutexes on the same line or we risk lockorder detection false positives.");
+					return Arc::clone(e.get())
+				},
 				hash_map::Entry::Vacant(e) => { e.insert(Arc::clone(&res)); },
 			}
 		}
@@ -138,7 +138,7 @@ impl LockMetadata {
 					#[cfg(feature = "backtrace")]
 					debug_assert!(_double_lock_self_allowed,
 						"Tried to acquire a lock while it was held!\nLock constructed at {}",
-						get_construction_location(&this._lock_construction_bt));
+						get_construction_location(&this._lock_construction_bt).0);
 					#[cfg(not(feature = "backtrace"))]
 					panic!("Tried to acquire a lock while it was held!");
 				}
@@ -148,8 +148,10 @@ impl LockMetadata {
 					if *locked_dep_idx == this.lock_idx && *locked_dep_idx != locked.lock_idx {
 						#[cfg(feature = "backtrace")]
 						panic!("Tried to violate existing lockorder.\nMutex that should be locked after the current lock was created at the following backtrace.\nNote that to get a backtrace for the lockorder violation, you should set RUST_BACKTRACE=1\nLock being taken constructed at: {} ({}):\n{:?}\nLock constructed at: {} ({})\n{:?}\n\nLock dep created at:\n{:?}\n\n",
-							get_construction_location(&this._lock_construction_bt), this.lock_idx, this._lock_construction_bt,
-							get_construction_location(&locked._lock_construction_bt), locked.lock_idx, locked._lock_construction_bt,
+							get_construction_location(&this._lock_construction_bt).0,
+							this.lock_idx, this._lock_construction_bt,
+							get_construction_location(&locked._lock_construction_bt).0,
+							locked.lock_idx, locked._lock_construction_bt,
 							_locked_dep._lockdep_trace);
 						#[cfg(not(feature = "backtrace"))]
 						panic!("Tried to violate existing lockorder. Build with the backtrace feature for more info.");

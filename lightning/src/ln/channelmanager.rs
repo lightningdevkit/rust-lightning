@@ -7532,7 +7532,10 @@ where
 			}
 		}
 
-		let pending_outbounds = OutboundPayments { pending_outbound_payments: Mutex::new(pending_outbound_payments.unwrap()), retry_lock: Mutex::new(()) };
+		let pending_outbounds = OutboundPayments {
+			pending_outbound_payments: Mutex::new(pending_outbound_payments.unwrap()),
+			retry_lock: Mutex::new(())
+		};
 		if !forward_htlcs.is_empty() || pending_outbounds.needs_abandon() {
 			// If we have pending HTLCs to forward, assume we either dropped a
 			// `PendingHTLCsForwardable` or the user received it but never processed it as they
