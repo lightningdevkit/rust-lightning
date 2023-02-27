@@ -12,6 +12,7 @@
 use bitcoin::hashes::{Hash, HashEngine, sha256};
 use bitcoin::secp256k1::{Message, PublicKey, Secp256k1, self};
 use bitcoin::secp256k1::schnorr::Signature;
+use core::convert::AsRef;
 use crate::io;
 use crate::util::ser::{BigSize, Readable, Writeable, Writer};
 
@@ -24,6 +25,33 @@ tlv_stream!(SignatureTlvStream, SignatureTlvStreamRef, SIGNATURE_TYPES, {
 	(240, signature: Signature),
 });
 
+/// A hash for use in a specific context by tweaking with a context-dependent tag as per [BIP 340]
+/// and computed over the merkle root of a TLV stream to sign as defined in [BOLT 12].
+///
+/// [BIP 340]: https://github.com/bitcoin/bips/blob/master/bip-0340.mediawiki
+/// [BOLT 12]: https://github.com/rustyrussell/lightning-rfc/blob/guilt/offers/12-offer-encoding.md#signature-calculation
+pub struct TaggedHash(Message);
+
+impl TaggedHash {
+	/// Creates a tagged hash with the given parameters.
+	///
+	/// Panics if `tlv_stream` is not a well-formed TLV stream containing at least one TLV record.
+	pub(super) fn new(tag: &str, tlv_stream: &[u8]) -> Self {
+		Self(message_digest(tag, tlv_stream))
+	}
+
+	/// Returns the digest to sign.
+	pub fn as_digest(&self) -> &Message {
+		&self.0
+	}
+}
+
+impl AsRef<TaggedHash> for TaggedHash {
+	fn as_ref(&self) -> &TaggedHash {
+		self
+	}
+}
+
 /// Error when signing messages.
 #[derive(Debug, PartialEq)]
 pub enum SignError<E> {
@@ -33,22 +61,28 @@ pub enum SignError<E> {
 	Verification(secp256k1::Error),
 }
 
-/// Signs a message digest consisting of a tagged hash of the given bytes, checking if it can be
-/// verified with the supplied pubkey.
+/// Signs a [`TaggedHash`] computed over the merkle root of `message`'s TLV stream, checking if it
+/// can be verified with the supplied `pubkey`.
 ///
-/// Panics if `bytes` is not a well-formed TLV stream containing at least one TLV record.
-pub(super) fn sign_message<F, E>(
-	sign: F, tag: &str, bytes: &[u8], pubkey: PublicKey,
+/// Since `message` is any type that implements [`AsRef<TaggedHash>`], `sign` may be a closure that
+/// takes a message such as [`Bolt12Invoice`] or [`InvoiceRequest`]. This allows further message
+/// verification before signing its [`TaggedHash`].
+///
+/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
+/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
+pub(super) fn sign_message<F, E, T>(
+	sign: F, message: &T, pubkey: PublicKey,
 ) -> Result<Signature, SignError<E>>
 where
-	F: FnOnce(&Message) -> Result<Signature, E>
+	F: FnOnce(&T) -> Result<Signature, E>,
+	T: AsRef<TaggedHash>,
 {
-	let digest = message_digest(tag, bytes);
-	let signature = sign(&digest).map_err(|e| SignError::Signing(e))?;
+	let signature = sign(message).map_err(|e| SignError::Signing(e))?;
 
+	let digest = message.as_ref().as_digest();
 	let pubkey = pubkey.into();
 	let secp_ctx = Secp256k1::verification_only();
-	secp_ctx.verify_schnorr(&signature, &digest, &pubkey).map_err(|e| SignError::Verification(e))?;
+	secp_ctx.verify_schnorr(&signature, digest, &pubkey).map_err(|e| SignError::Verification(e))?;
 
 	Ok(signature)
 }
@@ -207,12 +241,12 @@ impl<'a> Iterator for TlvStream<'a> {
 /// Encoding for a pre-serialized TLV stream that excludes any signature TLV records.
 ///
 /// Panics if the wrapped bytes are not a well-formed TLV stream.
-pub(super) struct WithoutSignatures<'a>(pub &'a Vec<u8>);
+pub(super) struct WithoutSignatures<'a>(pub &'a [u8]);
 
 impl<'a> Writeable for WithoutSignatures<'a> {
 	#[inline]
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
-		let tlv_stream = TlvStream::new(&self.0[..]);
+		let tlv_stream = TlvStream::new(self.0);
 		for record in tlv_stream.skip_signatures() {
 			writer.write_all(record.record_bytes)?;
 		}
@@ -271,7 +305,9 @@ mod tests {
 			.build_unchecked()
 			.request_invoice(vec![0; 8], payer_keys.public_key()).unwrap()
 			.build_unchecked()
-			.sign::<_, Infallible>(|digest| Ok(secp_ctx.sign_schnorr_no_aux_rand(digest, &payer_keys)))
+			.sign::<_, Infallible>(
+				|message| Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &payer_keys))
+			)
 			.unwrap();
 		assert_eq!(
 			invoice_request.to_string(),
@@ -304,7 +340,9 @@ mod tests {
 			.build_unchecked()
 			.request_invoice(vec![0; 8], payer_keys.public_key()).unwrap()
 			.build_unchecked()
-			.sign::<_, Infallible>(|digest| Ok(secp_ctx.sign_schnorr_no_aux_rand(digest, &payer_keys)))
+			.sign::<_, Infallible>(
+				|message| Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &payer_keys))
+			)
 			.unwrap();
 
 		let mut bytes_without_signature = Vec::new();
@@ -334,7 +372,9 @@ mod tests {
 			.build_unchecked()
 			.request_invoice(vec![0; 8], payer_keys.public_key()).unwrap()
 			.build_unchecked()
-			.sign::<_, Infallible>(|digest| Ok(secp_ctx.sign_schnorr_no_aux_rand(digest, &payer_keys)))
+			.sign::<_, Infallible>(
+				|message| Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &payer_keys))
+			)
 			.unwrap();
 
 		let tlv_stream = TlvStream::new(&invoice_request.bytes).range(0..1)

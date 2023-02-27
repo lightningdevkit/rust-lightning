@@ -55,7 +55,9 @@
 //!     .allow_mpp()
 //!     .fallback_v0_p2wpkh(&wpubkey_hash)
 //!     .build()?
-//!     .sign::<_, Infallible>(|digest| Ok(secp_ctx.sign_schnorr_no_aux_rand(digest, &keys)))
+//!     .sign::<_, Infallible>(
+//!         |message| Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &keys))
+//!     )
 //!     .expect("failed verifying signature")
 //!     .write(&mut buffer)
 //!     .unwrap();
@@ -84,7 +86,9 @@
 //!     .allow_mpp()
 //!     .fallback_v0_p2wpkh(&wpubkey_hash)
 //!     .build()?
-//!     .sign::<_, Infallible>(|digest| Ok(secp_ctx.sign_schnorr_no_aux_rand(digest, &keys)))
+//!     .sign::<_, Infallible>(
+//!         |message| Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &keys))
+//!     )
 //!     .expect("failed verifying signature")
 //!     .write(&mut buffer)
 //!     .unwrap();
@@ -97,11 +101,11 @@ use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::hash_types::{WPubkeyHash, WScriptHash};
 use bitcoin::hashes::Hash;
 use bitcoin::network::constants::Network;
-use bitcoin::secp256k1::{KeyPair, Message, PublicKey, Secp256k1, self};
+use bitcoin::secp256k1::{KeyPair, PublicKey, Secp256k1, self};
 use bitcoin::secp256k1::schnorr::Signature;
 use bitcoin::util::address::{Address, Payload, WitnessVersion};
 use bitcoin::util::schnorr::TweakedPublicKey;
-use core::convert::{Infallible, TryFrom};
+use core::convert::{AsRef, Infallible, TryFrom};
 use core::time::Duration;
 use crate::io;
 use crate::blinded_path::BlindedPath;
@@ -110,7 +114,7 @@ use crate::ln::features::{BlindedHopFeatures, Bolt12InvoiceFeatures};
 use crate::ln::inbound_payment::ExpandedKey;
 use crate::ln::msgs::DecodeError;
 use crate::offers::invoice_request::{INVOICE_REQUEST_PAYER_ID_TYPE, INVOICE_REQUEST_TYPES, IV_BYTES as INVOICE_REQUEST_IV_BYTES, InvoiceRequest, InvoiceRequestContents, InvoiceRequestTlvStream, InvoiceRequestTlvStreamRef};
-use crate::offers::merkle::{SignError, SignatureTlvStream, SignatureTlvStreamRef, TlvStream, WithoutSignatures, self};
+use crate::offers::merkle::{SignError, SignatureTlvStream, SignatureTlvStreamRef, TaggedHash, TlvStream, WithoutSignatures, self};
 use crate::offers::offer::{Amount, OFFER_TYPES, OfferTlvStream, OfferTlvStreamRef};
 use crate::offers::parse::{Bolt12ParseError, Bolt12SemanticError, ParsedMessage};
 use crate::offers::payer::{PAYER_METADATA_TYPE, PayerTlvStream, PayerTlvStreamRef};
@@ -126,7 +130,8 @@ use std::time::SystemTime;
 
 const DEFAULT_RELATIVE_EXPIRY: Duration = Duration::from_secs(7200);
 
-pub(super) const SIGNATURE_TAG: &'static str = concat!("lightning", "invoice", "signature");
+/// Tag for the hash function used when signing a [`Bolt12Invoice`]'s merkle root.
+pub const SIGNATURE_TAG: &'static str = concat!("lightning", "invoice", "signature");
 
 /// Builds a [`Bolt12Invoice`] from either:
 /// - an [`InvoiceRequest`] for the "offer to be paid" flow or
@@ -331,7 +336,7 @@ impl<'a, S: SigningPubkeyStrategy> InvoiceBuilder<'a, S> {
 impl<'a> InvoiceBuilder<'a, ExplicitSigningPubkey> {
 	/// Builds an unsigned [`Bolt12Invoice`] after checking for valid semantics. It can be signed by
 	/// [`UnsignedBolt12Invoice::sign`].
-	pub fn build(self) -> Result<UnsignedBolt12Invoice<'a>, Bolt12SemanticError> {
+	pub fn build(self) -> Result<UnsignedBolt12Invoice, Bolt12SemanticError> {
 		#[cfg(feature = "std")] {
 			if self.invoice.is_offer_or_refund_expired() {
 				return Err(Bolt12SemanticError::AlreadyExpired);
@@ -339,7 +344,7 @@ impl<'a> InvoiceBuilder<'a, ExplicitSigningPubkey> {
 		}
 
 		let InvoiceBuilder { invreq_bytes, invoice, .. } = self;
-		Ok(UnsignedBolt12Invoice { invreq_bytes, invoice })
+		Ok(UnsignedBolt12Invoice::new(invreq_bytes, invoice))
 	}
 }
 
@@ -355,23 +360,42 @@ impl<'a> InvoiceBuilder<'a, DerivedSigningPubkey> {
 		}
 
 		let InvoiceBuilder { invreq_bytes, invoice, keys, .. } = self;
-		let unsigned_invoice = UnsignedBolt12Invoice { invreq_bytes, invoice };
+		let unsigned_invoice = UnsignedBolt12Invoice::new(invreq_bytes, invoice);
 
 		let keys = keys.unwrap();
 		let invoice = unsigned_invoice
-			.sign::<_, Infallible>(|digest| Ok(secp_ctx.sign_schnorr_no_aux_rand(digest, &keys)))
+			.sign::<_, Infallible>(
+				|message| Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &keys))
+			)
 			.unwrap();
 		Ok(invoice)
 	}
 }
 
 /// A semantically valid [`Bolt12Invoice`] that hasn't been signed.
-pub struct UnsignedBolt12Invoice<'a> {
-	invreq_bytes: &'a Vec<u8>,
+pub struct UnsignedBolt12Invoice {
+	bytes: Vec<u8>,
 	invoice: InvoiceContents,
+	tagged_hash: TaggedHash,
 }
 
-impl<'a> UnsignedBolt12Invoice<'a> {
+impl UnsignedBolt12Invoice {
+	fn new(invreq_bytes: &[u8], invoice: InvoiceContents) -> Self {
+		// Use the invoice_request bytes instead of the invoice_request TLV stream as the latter may
+		// have contained unknown TLV records, which are not stored in `InvoiceRequestContents` or
+		// `RefundContents`.
+		let (_, _, _, invoice_tlv_stream) = invoice.as_tlv_stream();
+		let invoice_request_bytes = WithoutSignatures(invreq_bytes);
+		let unsigned_tlv_stream = (invoice_request_bytes, invoice_tlv_stream);
+
+		let mut bytes = Vec::new();
+		unsigned_tlv_stream.write(&mut bytes).unwrap();
+
+		let tagged_hash = TaggedHash::new(SIGNATURE_TAG, &bytes);
+
+		Self { bytes, invoice, tagged_hash }
+	}
+
 	/// The public key corresponding to the key needed to sign the invoice.
 	pub fn signing_pubkey(&self) -> PublicKey {
 		self.invoice.fields().signing_pubkey
@@ -380,34 +404,30 @@ impl<'a> UnsignedBolt12Invoice<'a> {
 	/// Signs the invoice using the given function.
 	///
 	/// This is not exported to bindings users as functions aren't currently mapped.
-	pub fn sign<F, E>(self, sign: F) -> Result<Bolt12Invoice, SignError<E>>
+	pub fn sign<F, E>(mut self, sign: F) -> Result<Bolt12Invoice, SignError<E>>
 	where
-		F: FnOnce(&Message) -> Result<Signature, E>
+		F: FnOnce(&Self) -> Result<Signature, E>
 	{
-		// Use the invoice_request bytes instead of the invoice_request TLV stream as the latter may
-		// have contained unknown TLV records, which are not stored in `InvoiceRequestContents` or
-		// `RefundContents`.
-		let (_, _, _, invoice_tlv_stream) = self.invoice.as_tlv_stream();
-		let invoice_request_bytes = WithoutSignatures(self.invreq_bytes);
-		let unsigned_tlv_stream = (invoice_request_bytes, invoice_tlv_stream);
-
-		let mut bytes = Vec::new();
-		unsigned_tlv_stream.write(&mut bytes).unwrap();
-
 		let pubkey = self.invoice.fields().signing_pubkey;
-		let signature = merkle::sign_message(sign, SIGNATURE_TAG, &bytes, pubkey)?;
+		let signature = merkle::sign_message(sign, &self, pubkey)?;
 
 		// Append the signature TLV record to the bytes.
 		let signature_tlv_stream = SignatureTlvStreamRef {
 			signature: Some(&signature),
 		};
-		signature_tlv_stream.write(&mut bytes).unwrap();
+		signature_tlv_stream.write(&mut self.bytes).unwrap();
 
 		Ok(Bolt12Invoice {
-			bytes,
+			bytes: self.bytes,
 			contents: self.invoice,
 			signature,
 		})
+	}
+}
+
+impl AsRef<TaggedHash> for UnsignedBolt12Invoice {
+	fn as_ref(&self) -> &TaggedHash {
+		&self.tagged_hash
 	}
 }
 
@@ -1686,15 +1706,14 @@ mod tests {
 			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
 			.build().unwrap()
 			.sign(payer_sign).unwrap();
-		let mut unsigned_invoice = invoice_request
+		let mut invoice_builder = invoice_request
 			.respond_with_no_std(payment_paths(), payment_hash(), now()).unwrap()
 			.fallback_v0_p2wsh(&script.wscript_hash())
 			.fallback_v0_p2wpkh(&pubkey.wpubkey_hash().unwrap())
-			.fallback_v1_p2tr_tweaked(&tweaked_pubkey)
-			.build().unwrap();
+			.fallback_v1_p2tr_tweaked(&tweaked_pubkey);
 
 		// Only standard addresses will be included.
-		let fallbacks = unsigned_invoice.invoice.fields_mut().fallbacks.as_mut().unwrap();
+		let fallbacks = invoice_builder.invoice.fields_mut().fallbacks.as_mut().unwrap();
 		// Non-standard addresses
 		fallbacks.push(FallbackAddress { version: 1, program: vec![0u8; 41] });
 		fallbacks.push(FallbackAddress { version: 2, program: vec![0u8; 1] });
@@ -1703,7 +1722,7 @@ mod tests {
 		fallbacks.push(FallbackAddress { version: 1, program: vec![0u8; 33] });
 		fallbacks.push(FallbackAddress { version: 2, program: vec![0u8; 40] });
 
-		let invoice = unsigned_invoice.sign(recipient_sign).unwrap();
+		let invoice = invoice_builder.build().unwrap().sign(recipient_sign).unwrap();
 		let mut buffer = Vec::new();
 		invoice.write(&mut buffer).unwrap();
 

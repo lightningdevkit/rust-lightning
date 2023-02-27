@@ -44,7 +44,9 @@
 //!     .quantity(5)?
 //!     .payer_note("foo".to_string())
 //!     .build()?
-//!     .sign::<_, Infallible>(|digest| Ok(secp_ctx.sign_schnorr_no_aux_rand(digest, &keys)))
+//!     .sign::<_, Infallible>(
+//!         |message| Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &keys))
+//!     )
 //!     .expect("failed verifying signature")
 //!     .write(&mut buffer)
 //!     .unwrap();
@@ -54,9 +56,9 @@
 
 use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::network::constants::Network;
-use bitcoin::secp256k1::{KeyPair, Message, PublicKey, Secp256k1, self};
+use bitcoin::secp256k1::{KeyPair, PublicKey, Secp256k1, self};
 use bitcoin::secp256k1::schnorr::Signature;
-use core::convert::{Infallible, TryFrom};
+use core::convert::{AsRef, Infallible, TryFrom};
 use core::ops::Deref;
 use crate::sign::EntropySource;
 use crate::io;
@@ -66,7 +68,7 @@ use crate::ln::features::InvoiceRequestFeatures;
 use crate::ln::inbound_payment::{ExpandedKey, IV_LEN, Nonce};
 use crate::ln::msgs::DecodeError;
 use crate::offers::invoice::{BlindedPayInfo, DerivedSigningPubkey, ExplicitSigningPubkey, InvoiceBuilder};
-use crate::offers::merkle::{SignError, SignatureTlvStream, SignatureTlvStreamRef, self};
+use crate::offers::merkle::{SignError, SignatureTlvStream, SignatureTlvStreamRef, TaggedHash, self};
 use crate::offers::offer::{Offer, OfferContents, OfferTlvStream, OfferTlvStreamRef};
 use crate::offers::parse::{Bolt12ParseError, ParsedMessage, Bolt12SemanticError};
 use crate::offers::payer::{PayerContents, PayerTlvStream, PayerTlvStreamRef};
@@ -76,7 +78,8 @@ use crate::util::string::PrintableString;
 
 use crate::prelude::*;
 
-const SIGNATURE_TAG: &'static str = concat!("lightning", "invoice_request", "signature");
+/// Tag for the hash function used when signing an [`InvoiceRequest`]'s merkle root.
+pub const SIGNATURE_TAG: &'static str = concat!("lightning", "invoice_request", "signature");
 
 pub(super) const IV_BYTES: &[u8; IV_LEN] = b"LDK Invreq ~~~~~";
 
@@ -214,7 +217,7 @@ impl<'a, 'b, P: PayerIdStrategy, T: secp256k1::Signing> InvoiceRequestBuilder<'a
 	}
 
 	fn build_with_checks(mut self) -> Result<
-		(UnsignedInvoiceRequest<'a>, Option<KeyPair>, Option<&'b Secp256k1<T>>),
+		(UnsignedInvoiceRequest, Option<KeyPair>, Option<&'b Secp256k1<T>>),
 		Bolt12SemanticError
 	> {
 		#[cfg(feature = "std")] {
@@ -245,7 +248,7 @@ impl<'a, 'b, P: PayerIdStrategy, T: secp256k1::Signing> InvoiceRequestBuilder<'a
 	}
 
 	fn build_without_checks(mut self) ->
-		(UnsignedInvoiceRequest<'a>, Option<KeyPair>, Option<&'b Secp256k1<T>>)
+		(UnsignedInvoiceRequest, Option<KeyPair>, Option<&'b Secp256k1<T>>)
 	{
 		// Create the metadata for stateless verification of a Bolt12Invoice.
 		let mut keys = None;
@@ -275,22 +278,20 @@ impl<'a, 'b, P: PayerIdStrategy, T: secp256k1::Signing> InvoiceRequestBuilder<'a
 		debug_assert!(self.payer_id.is_some());
 		let payer_id = self.payer_id.unwrap();
 
-		let unsigned_invoice = UnsignedInvoiceRequest {
-			offer: self.offer,
-			invoice_request: InvoiceRequestContents {
-				inner: self.invoice_request,
-				payer_id,
-			},
+		let invoice_request = InvoiceRequestContents {
+			inner: self.invoice_request,
+			payer_id,
 		};
+		let unsigned_invoice_request = UnsignedInvoiceRequest::new(self.offer, invoice_request);
 
-		(unsigned_invoice, keys, secp_ctx)
+		(unsigned_invoice_request, keys, secp_ctx)
 	}
 }
 
 impl<'a, 'b, T: secp256k1::Signing> InvoiceRequestBuilder<'a, 'b, ExplicitPayerId, T> {
 	/// Builds an unsigned [`InvoiceRequest`] after checking for valid semantics. It can be signed
 	/// by [`UnsignedInvoiceRequest::sign`].
-	pub fn build(self) -> Result<UnsignedInvoiceRequest<'a>, Bolt12SemanticError> {
+	pub fn build(self) -> Result<UnsignedInvoiceRequest, Bolt12SemanticError> {
 		let (unsigned_invoice_request, keys, _) = self.build_with_checks()?;
 		debug_assert!(keys.is_none());
 		Ok(unsigned_invoice_request)
@@ -306,7 +307,9 @@ impl<'a, 'b, T: secp256k1::Signing> InvoiceRequestBuilder<'a, 'b, DerivedPayerId
 		let secp_ctx = secp_ctx.unwrap();
 		let keys = keys.unwrap();
 		let invoice_request = unsigned_invoice_request
-			.sign::<_, Infallible>(|digest| Ok(secp_ctx.sign_schnorr_no_aux_rand(digest, &keys)))
+			.sign::<_, Infallible>(
+				|message| Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &keys))
+			)
 			.unwrap();
 		Ok(invoice_request)
 	}
@@ -335,49 +338,62 @@ impl<'a, 'b, P: PayerIdStrategy, T: secp256k1::Signing> InvoiceRequestBuilder<'a
 		self
 	}
 
-	pub(super) fn build_unchecked(self) -> UnsignedInvoiceRequest<'a> {
+	pub(super) fn build_unchecked(self) -> UnsignedInvoiceRequest {
 		self.build_without_checks().0
 	}
 }
 
 /// A semantically valid [`InvoiceRequest`] that hasn't been signed.
-pub struct UnsignedInvoiceRequest<'a> {
-	offer: &'a Offer,
+pub struct UnsignedInvoiceRequest {
+	bytes: Vec<u8>,
 	invoice_request: InvoiceRequestContents,
+	tagged_hash: TaggedHash,
 }
 
-impl<'a> UnsignedInvoiceRequest<'a> {
-	/// Signs the invoice request using the given function.
-	///
-	/// This is not exported to bindings users as functions are not yet mapped.
-	pub fn sign<F, E>(self, sign: F) -> Result<InvoiceRequest, SignError<E>>
-	where
-		F: FnOnce(&Message) -> Result<Signature, E>
-	{
+impl UnsignedInvoiceRequest {
+	fn new(offer: &Offer, invoice_request: InvoiceRequestContents) -> Self {
 		// Use the offer bytes instead of the offer TLV stream as the offer may have contained
 		// unknown TLV records, which are not stored in `OfferContents`.
 		let (payer_tlv_stream, _offer_tlv_stream, invoice_request_tlv_stream) =
-			self.invoice_request.as_tlv_stream();
-		let offer_bytes = WithoutLength(&self.offer.bytes);
+			invoice_request.as_tlv_stream();
+		let offer_bytes = WithoutLength(&offer.bytes);
 		let unsigned_tlv_stream = (payer_tlv_stream, offer_bytes, invoice_request_tlv_stream);
 
 		let mut bytes = Vec::new();
 		unsigned_tlv_stream.write(&mut bytes).unwrap();
 
+		let tagged_hash = TaggedHash::new(SIGNATURE_TAG, &bytes);
+
+		Self { bytes, invoice_request, tagged_hash }
+	}
+
+	/// Signs the invoice request using the given function.
+	///
+	/// This is not exported to bindings users as functions are not yet mapped.
+	pub fn sign<F, E>(mut self, sign: F) -> Result<InvoiceRequest, SignError<E>>
+	where
+		F: FnOnce(&Self) -> Result<Signature, E>
+	{
 		let pubkey = self.invoice_request.payer_id;
-		let signature = merkle::sign_message(sign, SIGNATURE_TAG, &bytes, pubkey)?;
+		let signature = merkle::sign_message(sign, &self, pubkey)?;
 
 		// Append the signature TLV record to the bytes.
 		let signature_tlv_stream = SignatureTlvStreamRef {
 			signature: Some(&signature),
 		};
-		signature_tlv_stream.write(&mut bytes).unwrap();
+		signature_tlv_stream.write(&mut self.bytes).unwrap();
 
 		Ok(InvoiceRequest {
-			bytes,
+			bytes: self.bytes,
 			contents: self.invoice_request,
 			signature,
 		})
+	}
+}
+
+impl AsRef<TaggedHash> for UnsignedInvoiceRequest {
+	fn as_ref(&self) -> &TaggedHash {
+		&self.tagged_hash
 	}
 }
 
@@ -591,7 +607,7 @@ impl InvoiceRequest {
 }
 
 impl InvoiceRequestContents {
-	pub fn metadata(&self) -> &[u8] {
+	pub(super) fn metadata(&self) -> &[u8] {
 		self.inner.metadata()
 	}
 
@@ -790,7 +806,7 @@ mod tests {
 	use crate::ln::inbound_payment::ExpandedKey;
 	use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
 	use crate::offers::invoice::{Bolt12Invoice, SIGNATURE_TAG as INVOICE_SIGNATURE_TAG};
-	use crate::offers::merkle::{SignError, SignatureTlvStreamRef, self};
+	use crate::offers::merkle::{SignError, SignatureTlvStreamRef, TaggedHash, self};
 	use crate::offers::offer::{Amount, OfferBuilder, OfferTlvStreamRef, Quantity};
 	use crate::offers::parse::{Bolt12ParseError, Bolt12SemanticError};
 	use crate::offers::payer::PayerTlvStreamRef;
@@ -922,9 +938,8 @@ mod tests {
 		let mut bytes = Vec::new();
 		tlv_stream.write(&mut bytes).unwrap();
 
-		let signature = merkle::sign_message(
-			recipient_sign, INVOICE_SIGNATURE_TAG, &bytes, recipient_pubkey()
-		).unwrap();
+		let message = TaggedHash::new(INVOICE_SIGNATURE_TAG, &bytes);
+		let signature = merkle::sign_message(recipient_sign, &message, recipient_pubkey()).unwrap();
 		signature_tlv_stream.signature = Some(&signature);
 
 		let mut encoded_invoice = bytes;
@@ -946,9 +961,8 @@ mod tests {
 		let mut bytes = Vec::new();
 		tlv_stream.write(&mut bytes).unwrap();
 
-		let signature = merkle::sign_message(
-			recipient_sign, INVOICE_SIGNATURE_TAG, &bytes, recipient_pubkey()
-		).unwrap();
+		let message = TaggedHash::new(INVOICE_SIGNATURE_TAG, &bytes);
+		let signature = merkle::sign_message(recipient_sign, &message, recipient_pubkey()).unwrap();
 		signature_tlv_stream.signature = Some(&signature);
 
 		let mut encoded_invoice = bytes;
@@ -992,9 +1006,8 @@ mod tests {
 		let mut bytes = Vec::new();
 		tlv_stream.write(&mut bytes).unwrap();
 
-		let signature = merkle::sign_message(
-			recipient_sign, INVOICE_SIGNATURE_TAG, &bytes, recipient_pubkey()
-		).unwrap();
+		let message = TaggedHash::new(INVOICE_SIGNATURE_TAG, &bytes);
+		let signature = merkle::sign_message(recipient_sign, &message, recipient_pubkey()).unwrap();
 		signature_tlv_stream.signature = Some(&signature);
 
 		let mut encoded_invoice = bytes;
@@ -1016,9 +1029,8 @@ mod tests {
 		let mut bytes = Vec::new();
 		tlv_stream.write(&mut bytes).unwrap();
 
-		let signature = merkle::sign_message(
-			recipient_sign, INVOICE_SIGNATURE_TAG, &bytes, recipient_pubkey()
-		).unwrap();
+		let message = TaggedHash::new(INVOICE_SIGNATURE_TAG, &bytes);
+		let signature = merkle::sign_message(recipient_sign, &message, recipient_pubkey()).unwrap();
 		signature_tlv_stream.signature = Some(&signature);
 
 		let mut encoded_invoice = bytes;
@@ -1771,7 +1783,9 @@ mod tests {
 			.build().unwrap()
 			.request_invoice(vec![1; 32], keys.public_key()).unwrap()
 			.build().unwrap()
-			.sign::<_, Infallible>(|digest| Ok(secp_ctx.sign_schnorr_no_aux_rand(digest, &keys)))
+			.sign::<_, Infallible>(
+				|message| Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &keys))
+			)
 			.unwrap();
 
 		let mut encoded_invoice_request = Vec::new();

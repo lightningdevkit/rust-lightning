@@ -30,7 +30,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], _out: Out) {
 		if let Ok(invoice_request) = build_response(&offer, pubkey) {
 			invoice_request
 				.sign::<_, Infallible>(
-					|digest| Ok(secp_ctx.sign_schnorr_no_aux_rand(digest, &keys))
+					|message| Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &keys))
 				)
 				.unwrap()
 				.write(&mut buffer)
@@ -39,9 +39,9 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], _out: Out) {
 	}
 }
 
-fn build_response<'a>(
-	offer: &'a Offer, pubkey: PublicKey
-) -> Result<UnsignedInvoiceRequest<'a>, Bolt12SemanticError> {
+fn build_response(
+	offer: &Offer, pubkey: PublicKey
+) -> Result<UnsignedInvoiceRequest, Bolt12SemanticError> {
 	let mut builder = offer.request_invoice(vec![42; 64], pubkey)?;
 
 	builder = match offer.amount() {

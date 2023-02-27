@@ -38,7 +38,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], _out: Out) {
 			if signing_pubkey == odd_pubkey || signing_pubkey == even_pubkey {
 				unsigned_invoice
 					.sign::<_, Infallible>(
-						|digest| Ok(secp_ctx.sign_schnorr_no_aux_rand(digest, &keys))
+						|message| Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &keys))
 					)
 					.unwrap()
 					.write(&mut buffer)
@@ -46,7 +46,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], _out: Out) {
 			} else {
 				unsigned_invoice
 					.sign::<_, Infallible>(
-						|digest| Ok(secp_ctx.sign_schnorr_no_aux_rand(digest, &keys))
+						|message| Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &keys))
 					)
 					.unwrap_err();
 			}
@@ -69,9 +69,9 @@ fn privkey(byte: u8) -> SecretKey {
 	SecretKey::from_slice(&[byte; 32]).unwrap()
 }
 
-fn build_response<'a, T: secp256k1::Signing + secp256k1::Verification>(
-	invoice_request: &'a InvoiceRequest, secp_ctx: &Secp256k1<T>
-) -> Result<UnsignedBolt12Invoice<'a>, Bolt12SemanticError> {
+fn build_response<T: secp256k1::Signing + secp256k1::Verification>(
+	invoice_request: &InvoiceRequest, secp_ctx: &Secp256k1<T>
+) -> Result<UnsignedBolt12Invoice, Bolt12SemanticError> {
 	let entropy_source = Randomness {};
 	let paths = vec![
 		BlindedPath::new_for_message(&[pubkey(43), pubkey(44), pubkey(42)], &entropy_source, secp_ctx).unwrap(),

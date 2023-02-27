@@ -9,25 +9,26 @@
 
 //! Utilities for testing BOLT 12 Offers interfaces
 
-use bitcoin::secp256k1::{KeyPair, Message, PublicKey, Secp256k1, SecretKey};
+use bitcoin::secp256k1::{KeyPair, PublicKey, Secp256k1, SecretKey};
 use bitcoin::secp256k1::schnorr::Signature;
-use core::convert::Infallible;
+use core::convert::{AsRef, Infallible};
 use core::time::Duration;
 use crate::blinded_path::{BlindedHop, BlindedPath};
 use crate::sign::EntropySource;
 use crate::ln::PaymentHash;
 use crate::ln::features::BlindedHopFeatures;
 use crate::offers::invoice::BlindedPayInfo;
+use crate::offers::merkle::TaggedHash;
 
 pub(super) fn payer_keys() -> KeyPair {
 	let secp_ctx = Secp256k1::new();
 	KeyPair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap())
 }
 
-pub(super) fn payer_sign(digest: &Message) -> Result<Signature, Infallible> {
+pub(super) fn payer_sign<T: AsRef<TaggedHash>>(message: &T) -> Result<Signature, Infallible> {
 	let secp_ctx = Secp256k1::new();
 	let keys = KeyPair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
-	Ok(secp_ctx.sign_schnorr_no_aux_rand(digest, &keys))
+	Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &keys))
 }
 
 pub(super) fn payer_pubkey() -> PublicKey {
@@ -39,10 +40,10 @@ pub(super) fn recipient_keys() -> KeyPair {
 	KeyPair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[43; 32]).unwrap())
 }
 
-pub(super) fn recipient_sign(digest: &Message) -> Result<Signature, Infallible> {
+pub(super) fn recipient_sign<T: AsRef<TaggedHash>>(message: &T) -> Result<Signature, Infallible> {
 	let secp_ctx = Secp256k1::new();
 	let keys = KeyPair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[43; 32]).unwrap());
-	Ok(secp_ctx.sign_schnorr_no_aux_rand(digest, &keys))
+	Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &keys))
 }
 
 pub(super) fn recipient_pubkey() -> PublicKey {
