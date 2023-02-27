@@ -24,7 +24,7 @@ use crate::util::enforcing_trait_impls::EnforcingSigner;
 use crate::util::scid_utils;
 use crate::util::test_utils;
 use crate::util::test_utils::{panicking, TestChainMonitor};
-use crate::util::events::{Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, PaymentPurpose};
+use crate::util::events::{Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, PathFailure, PaymentPurpose};
 use crate::util::errors::APIError;
 use crate::util::config::UserConfig;
 use crate::util::ser::{ReadableArgs, Writeable};
@@ -1818,7 +1818,7 @@ pub fn expect_payment_failed_conditions_event<'a, 'b, 'c, 'd, 'e>(
 ) {
 	if conditions.expected_mpp_parts_remain { assert_eq!(payment_failed_events.len(), 1); } else { assert_eq!(payment_failed_events.len(), 2); }
 	let expected_payment_id = match &payment_failed_events[0] {
-		Event::PaymentPathFailed { payment_hash, payment_failed_permanently, path, retry, payment_id, network_update, short_channel_id,
+		Event::PaymentPathFailed { payment_hash, payment_failed_permanently, path, retry, payment_id, failure, short_channel_id,
 			#[cfg(test)]
 			error_code,
 			#[cfg(test)]
@@ -1843,23 +1843,24 @@ pub fn expect_payment_failed_conditions_event<'a, 'b, 'c, 'd, 'e>(
 			}
 
 			if let Some(chan_closed) = conditions.expected_blamed_chan_closed {
-				match network_update {
-					Some(NetworkUpdate::ChannelUpdateMessage { ref msg }) if !chan_closed => {
-						if let Some(scid) = conditions.expected_blamed_scid {
-							assert_eq!(msg.contents.short_channel_id, scid);
-						}
-						const CHAN_DISABLED_FLAG: u8 = 2;
-						assert_eq!(msg.contents.flags & CHAN_DISABLED_FLAG, 0);
-					},
-					Some(NetworkUpdate::ChannelFailure { short_channel_id, is_permanent }) if chan_closed => {
-						if let Some(scid) = conditions.expected_blamed_scid {
-							assert_eq!(*short_channel_id, scid);
-						}
-						assert!(is_permanent);
-					},
-					Some(_) => panic!("Unexpected update type"),
-					None => panic!("Expected update"),
-				}
+				if let PathFailure::OnPath { network_update: Some(upd) } = failure {
+					match upd {
+						NetworkUpdate::ChannelUpdateMessage { ref msg } if !chan_closed => {
+							if let Some(scid) = conditions.expected_blamed_scid {
+								assert_eq!(msg.contents.short_channel_id, scid);
+							}
+							const CHAN_DISABLED_FLAG: u8 = 2;
+							assert_eq!(msg.contents.flags & CHAN_DISABLED_FLAG, 0);
+						},
+						NetworkUpdate::ChannelFailure { short_channel_id, is_permanent } if chan_closed => {
+							if let Some(scid) = conditions.expected_blamed_scid {
+								assert_eq!(*short_channel_id, scid);
+							}
+							assert!(is_permanent);
+						},
+						_ => panic!("Unexpected update type"),
+					}
+				} else { panic!("Expected network update"); }
 			}
 
 			payment_id.unwrap()
@@ -2240,10 +2241,9 @@ pub fn pass_failed_payment_back<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expe
 			if i == expected_paths.len() - 1 { assert_eq!(events.len(), 2); } else { assert_eq!(events.len(), 1); }
 
 			let expected_payment_id = match events[0] {
-				Event::PaymentPathFailed { payment_hash, payment_failed_permanently, all_paths_failed, ref path, ref payment_id, .. } => {
+				Event::PaymentPathFailed { payment_hash, payment_failed_permanently, ref path, ref payment_id, .. } => {
 					assert_eq!(payment_hash, our_payment_hash);
 					assert!(payment_failed_permanently);
-					assert_eq!(all_paths_failed, i == expected_paths.len() - 1);
 					for (idx, hop) in expected_route.iter().enumerate() {
 						assert_eq!(hop.node.get_our_node_id(), path[idx].pubkey);
 					}

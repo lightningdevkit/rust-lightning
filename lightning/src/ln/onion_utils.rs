@@ -182,11 +182,11 @@ pub(super) fn build_onion_payloads(path: &Vec<RouteHop>, total_msat: u64, paymen
 		});
 		cur_value_msat += hop.fee_msat;
 		if cur_value_msat >= 21000000 * 100000000 * 1000 {
-			return Err(APIError::InvalidRoute{err: "Channel fees overflowed?"});
+			return Err(APIError::InvalidRoute{err: "Channel fees overflowed?".to_owned()});
 		}
 		cur_cltv += hop.cltv_expiry_delta as u32;
 		if cur_cltv >= 500000000 {
-			return Err(APIError::InvalidRoute{err: "Channel CLTV overflowed?"});
+			return Err(APIError::InvalidRoute{err: "Channel CLTV overflowed?".to_owned()});
 		}
 		last_short_channel_id = hop.short_channel_id;
 	}

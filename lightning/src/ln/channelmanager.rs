@@ -468,7 +468,7 @@ pub(crate) enum MonitorUpdateCompletionAction {
 
 impl_writeable_tlv_based_enum_upgradable!(MonitorUpdateCompletionAction,
 	(0, PaymentClaimed) => { (0, payment_hash, required) },
-	(2, EmitEvent) => { (0, event, ignorable) },
+	(2, EmitEvent) => { (0, event, upgradable_required) },
 );
 
 /// State we hold per-peer.
@@ -2420,10 +2420,10 @@ where
 		let session_priv = SecretKey::from_slice(&session_priv_bytes[..]).expect("RNG is busted");
 
 		let onion_keys = onion_utils::construct_onion_keys(&self.secp_ctx, &path, &session_priv)
-			.map_err(|_| APIError::InvalidRoute{err: "Pubkey along hop was maliciously selected"})?;
+			.map_err(|_| APIError::InvalidRoute{err: "Pubkey along hop was maliciously selected".to_owned()})?;
 		let (onion_payloads, htlc_msat, htlc_cltv) = onion_utils::build_onion_payloads(path, total_value, payment_secret, cur_height, keysend_preimage)?;
 		if onion_utils::route_size_insane(&onion_payloads) {
-			return Err(APIError::InvalidRoute{err: "Route size too large considering onion data"});
+			return Err(APIError::InvalidRoute{err: "Route size too large considering onion data".to_owned()});
 		}
 		let onion_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, prng_seed, payment_hash);
 
@@ -6693,7 +6693,7 @@ impl Writeable for ClaimableHTLC {
 
 impl Readable for ClaimableHTLC {
 	fn read<R: Read>(reader: &mut R) -> Result<Self, DecodeError> {
-		let mut prev_hop = crate::util::ser::OptionDeserWrapper(None);
+		let mut prev_hop = crate::util::ser::RequiredWrapper(None);
 		let mut value = 0;
 		let mut payment_data: Option<msgs::FinalOnionHopData> = None;
 		let mut cltv_expiry = 0;
@@ -6743,7 +6743,7 @@ impl Readable for HTLCSource {
 		let id: u8 = Readable::read(reader)?;
 		match id {
 			0 => {
-				let mut session_priv: crate::util::ser::OptionDeserWrapper<SecretKey> = crate::util::ser::OptionDeserWrapper(None);
+				let mut session_priv: crate::util::ser::RequiredWrapper<SecretKey> = crate::util::ser::RequiredWrapper(None);
 				let mut first_hop_htlc_msat: u64 = 0;
 				let mut path = Some(Vec::new());
 				let mut payment_id = None;

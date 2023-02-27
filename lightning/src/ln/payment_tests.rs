@@ -24,7 +24,7 @@ use crate::ln::outbound_payment::Retry;
 use crate::routing::gossip::{EffectiveCapacity, RoutingFees};
 use crate::routing::router::{get_route, PaymentParameters, Route, RouteHint, RouteHintHop, RouteHop, RouteParameters};
 use crate::routing::scoring::ChannelUsage;
-use crate::util::events::{ClosureReason, Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider};
+use crate::util::events::{ClosureReason, Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, PathFailure};
 use crate::util::test_utils;
 use crate::util::errors::APIError;
 use crate::util::ser::Writeable;
@@ -2139,9 +2139,12 @@ fn retry_multi_path_single_failed_payment() {
 	assert_eq!(events.len(), 1);
 	match events[0] {
 		Event::PaymentPathFailed { payment_hash: ev_payment_hash, payment_failed_permanently: false,
-			network_update: None, all_paths_failed: false, short_channel_id: Some(expected_scid), .. } => {
+			failure: PathFailure::InitialSend { err: APIError::ChannelUnavailable { err: ref err_msg }},
+			short_channel_id: Some(expected_scid), .. } =>
+		{
 			assert_eq!(payment_hash, ev_payment_hash);
 			assert_eq!(expected_scid, route.paths[1][0].short_channel_id);
+			assert!(err_msg.contains("max HTLC"));
 		},
 		_ => panic!("Unexpected event"),
 	}
@@ -2212,9 +2215,12 @@ fn immediate_retry_on_failure() {
 	assert_eq!(events.len(), 1);
 	match events[0] {
 		Event::PaymentPathFailed { payment_hash: ev_payment_hash, payment_failed_permanently: false,
-		network_update: None, all_paths_failed: false, short_channel_id: Some(expected_scid), .. } => {
+			failure: PathFailure::InitialSend { err: APIError::ChannelUnavailable { err: ref err_msg }},
+			short_channel_id: Some(expected_scid), .. } =>
+		{
 			assert_eq!(payment_hash, ev_payment_hash);
 			assert_eq!(expected_scid, route.paths[1][0].short_channel_id);
+			assert!(err_msg.contains("max HTLC"));
 		},
 		_ => panic!("Unexpected event"),
 	}
@@ -2226,7 +2232,8 @@ fn immediate_retry_on_failure() {
 #[test]
 fn no_extra_retries_on_back_to_back_fail() {
 	// In a previous release, we had a race where we may exceed the payment retry count if we
-	// get two failures in a row with the second having `all_paths_failed` set.
+	// get two failures in a row with the second indicating that all paths had failed (this field,
+	// `all_paths_failed`, has since been removed).
 	// Generally, when we give up trying to retry a payment, we don't know for sure what the
 	// current state of the ChannelManager event queue is. Specifically, we cannot be sure that
 	// there are not multiple additional `PaymentPathFailed` or even `PaymentSent` events

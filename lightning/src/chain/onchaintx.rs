@@ -36,7 +36,7 @@ use crate::chain::keysinterface::WriteableEcdsaChannelSigner;
 use crate::chain::package::PackageSolvingData;
 use crate::chain::package::PackageTemplate;
 use crate::util::logger::Logger;
-use crate::util::ser::{Readable, ReadableArgs, MaybeReadable, Writer, Writeable, VecWriter};
+use crate::util::ser::{Readable, ReadableArgs, MaybeReadable, UpgradableRequired, Writer, Writeable, VecWriter};
 
 use crate::io;
 use crate::prelude::*;
@@ -106,18 +106,14 @@ impl MaybeReadable for OnchainEventEntry {
 		let mut txid = Txid::all_zeros();
 		let mut height = 0;
 		let mut block_hash = None;
-		let mut event = None;
+		let mut event = UpgradableRequired(None);
 		read_tlv_fields!(reader, {
 			(0, txid, required),
 			(1, block_hash, option),
 			(2, height, required),
-			(4, event, ignorable),
+			(4, event, upgradable_required),
 		});
-		if let Some(ev) = event {
-			Ok(Some(Self { txid, height, block_hash, event: ev }))
-		} else {
-			Ok(None)
-		}
+		Ok(Some(Self { txid, height, block_hash, event: _init_tlv_based_struct_field!(event, upgradable_required) }))
 	}
 }
 
