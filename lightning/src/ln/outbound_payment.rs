@@ -1459,8 +1459,7 @@ mod tests {
 	fn initial_send_payment_path_failed_evs() {
 		let outbound_payments = OutboundPayments::new();
 		let logger = test_utils::TestLogger::new();
-		let genesis_hash = genesis_block(Network::Testnet).header.block_hash();
-		let network_graph = Arc::new(NetworkGraph::new(genesis_hash, &logger));
+		let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, &logger));
 		let scorer = Mutex::new(test_utils::TestScorer::new());
 		let router = test_utils::TestRouter::new(network_graph, &scorer);
 		let secp_ctx = Secp256k1::new();
