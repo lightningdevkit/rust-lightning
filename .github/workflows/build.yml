@@ -86,10 +86,10 @@ jobs:
         run: cargo update -p tokio --precise "1.14.0" --verbose
         env:
           CARGO_NET_GIT_FETCH_WITH_CLI: "true"
-      - name: Build on Rust ${{ matrix.toolchain }} with net-tokio and tx-sync
-        if: "matrix.build-net-tokio && !matrix.coverage && matrix.build-tx-sync"
+      - name: Build on Rust ${{ matrix.toolchain }} with net-tokio
+        if: "matrix.build-net-tokio && !matrix.coverage"
         run: cargo build --verbose --color always
-      - name: Build on Rust ${{ matrix.toolchain }} with net-tokio, tx-sync, and full code-linking for coverage generation
+      - name: Build on Rust ${{ matrix.toolchain }} with net-tokio, and full code-linking for coverage generation
         if: matrix.coverage
         run: RUSTFLAGS="-C link-dead-code" cargo build --verbose --color always
       - name: Build on Rust ${{ matrix.toolchain }}
@@ -144,9 +144,9 @@ jobs:
         run: |
           cd lightning && cargo test --verbose --color always --features backtrace
       - name: Test on Rust ${{ matrix.toolchain }} with net-tokio
-        if: "matrix.build-net-tokio && !matrix.coverage && matrix.build-tx-sync"
+        if: "matrix.build-net-tokio && !matrix.coverage"
         run: cargo test --verbose --color always
-      - name: Test on Rust ${{ matrix.toolchain }} with net-tokio, tx-sync, and full code-linking for coverage generation
+      - name: Test on Rust ${{ matrix.toolchain }} with net-tokio, and full code-linking for coverage generation
         if: matrix.coverage
         run: RUSTFLAGS="-C link-dead-code" cargo test --verbose --color always
       - name: Test no-std builds on Rust ${{ matrix.toolchain }}
