@@ -47,7 +47,7 @@ impl<'a, W: WriteBase32> BytesToBase32<'a, W> {
 			self.writer.write_u5(
 				u5::try_from_u8((self.buffer & 0b11111000) >> 3 ).expect("<32")
 			)?;
-			self.buffer = self.buffer << 5;
+			self.buffer <<= 5;
 			self.buffer_bits -= 5;
 		}
 
@@ -58,7 +58,7 @@ impl<'a, W: WriteBase32> BytesToBase32<'a, W> {
 
 		self.writer.write_u5(u5::try_from_u8(from_buffer | from_byte).expect("<32"))?;
 		self.buffer = byte << (5 - self.buffer_bits);
-		self.buffer_bits = 3 + self.buffer_bits;
+		self.buffer_bits += 3;
 
 		Ok(())
 	}
@@ -75,7 +75,7 @@ impl<'a, W: WriteBase32> BytesToBase32<'a, W> {
 			self.writer.write_u5(
 				u5::try_from_u8((self.buffer & 0b11111000) >> 3).expect("<32")
 			)?;
-			self.buffer = self.buffer << 5;
+			self.buffer <<= 5;
 			self.buffer_bits -= 5;
 		}
 

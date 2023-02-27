@@ -181,18 +181,17 @@ mod tests {
 				fs::create_dir_all(graph_sync_test_directory).unwrap();
 
 				let graph_sync_test_file = test.get_test_file_path();
-				fs::write(&graph_sync_test_file, valid_response).unwrap();
+				fs::write(graph_sync_test_file, valid_response).unwrap();
 
 				test
 			}
+
 			fn get_test_directory(&self) -> String {
-				let graph_sync_test_directory = self.directory.clone() + "/graph-sync-tests";
-				graph_sync_test_directory
+				self.directory.clone() + "/graph-sync-tests"
 			}
+
 			fn get_test_file_path(&self) -> String {
-				let graph_sync_test_directory = self.get_test_directory();
-				let graph_sync_test_file = graph_sync_test_directory.to_owned() + "/test_data.lngossip";
-				graph_sync_test_file
+				self.get_test_directory() + "/test_data.lngossip"
 			}
 		}
 

@@ -411,15 +411,15 @@ impl<'a, C: Cache, L: Deref> ChainNotifier<'a, C, L> where L::Target: chain::Lis
 			let height = header.height;
 			let block_data = chain_poller
 				.fetch_block(&header).await
-				.or_else(|e| Err((e, Some(new_tip))))?;
+				.map_err(|e| (e, Some(new_tip)))?;
 			debug_assert_eq!(block_data.block_hash, header.block_hash);
 
 			match block_data.deref() {
 				BlockData::FullBlock(block) => {
-					self.chain_listener.block_connected(&block, height);
+					self.chain_listener.block_connected(block, height);
 				},
 				BlockData::HeaderOnly(header) => {
-					self.chain_listener.filtered_block_connected(&header, &[], height);
+					self.chain_listener.filtered_block_connected(header, &[], height);
 				},
 			}
 
