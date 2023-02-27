@@ -2300,7 +2300,7 @@ pub fn create_node_cfgs<'a>(node_count: usize, chanmon_cfgs: &'a Vec<TestChanMon
 
 	for i in 0..node_count {
 		let chain_monitor = test_utils::TestChainMonitor::new(Some(&chanmon_cfgs[i].chain_source), &chanmon_cfgs[i].tx_broadcaster, &chanmon_cfgs[i].logger, &chanmon_cfgs[i].fee_estimator, &chanmon_cfgs[i].persister, &chanmon_cfgs[i].keys_manager);
-		let network_graph = Arc::new(NetworkGraph::new(chanmon_cfgs[i].chain_source.genesis_hash, &chanmon_cfgs[i].logger));
+		let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, &chanmon_cfgs[i].logger));
 		let seed = [i as u8; 32];
 		nodes.push(NodeCfg {
 			chain_source: &chanmon_cfgs[i].chain_source,
@@ -2341,7 +2341,7 @@ pub fn create_node_chanmgrs<'a, 'b>(node_count: usize, cfgs: &'a Vec<NodeCfg<'b>
 		let network = Network::Testnet;
 		let params = ChainParameters {
 			network,
-			best_block: BestBlock::from_genesis(network),
+			best_block: BestBlock::from_network(network),
 		};
 		let node = ChannelManager::new(cfgs[i].fee_estimator, &cfgs[i].chain_monitor, cfgs[i].tx_broadcaster, &cfgs[i].router, cfgs[i].logger, cfgs[i].keys_manager,
 			cfgs[i].keys_manager, cfgs[i].keys_manager, if node_config[i].is_some() { node_config[i].clone().unwrap() } else { test_default_channel_config() }, params);

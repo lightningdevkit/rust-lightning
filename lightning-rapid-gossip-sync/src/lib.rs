@@ -53,8 +53,7 @@
 //! # }
 //! # let logger = FakeLogger {};
 //!
-//! let block_hash = genesis_block(Network::Bitcoin).header.block_hash();
-//! let network_graph = NetworkGraph::new(block_hash, &logger);
+//! let network_graph = NetworkGraph::new(Network::Bitcoin, &logger);
 //! let rapid_sync = RapidGossipSync::new(&network_graph);
 //! let snapshot_contents: &[u8] = &[0; 0];
 //! let new_last_sync_timestamp_result = rapid_sync.update_network_graph(snapshot_contents);
@@ -161,7 +160,6 @@ impl<NG: Deref<Target=NetworkGraph<L>>, L: Deref> RapidGossipSync<NG, L> where L
 mod tests {
 	use std::fs;
 
-	use bitcoin::blockdata::constants::genesis_block;
 	use bitcoin::Network;
 
 	use lightning::ln::msgs::DecodeError;
@@ -225,9 +223,8 @@ mod tests {
 		let sync_test = FileSyncTest::new(tmp_directory, &valid_response);
 		let graph_sync_test_file = sync_test.get_test_file_path();
 
-		let block_hash = genesis_block(Network::Bitcoin).block_hash();
 		let logger = TestLogger::new();
-		let network_graph = NetworkGraph::new(block_hash, &logger);
+		let network_graph = NetworkGraph::new(Network::Bitcoin, &logger);
 
 		assert_eq!(network_graph.read_only().channels().len(), 0);
 
@@ -258,9 +255,8 @@ mod tests {
 
 	#[test]
 	fn measure_native_read_from_file() {
-		let block_hash = genesis_block(Network::Bitcoin).block_hash();
 		let logger = TestLogger::new();
-		let network_graph = NetworkGraph::new(block_hash, &logger);
+		let network_graph = NetworkGraph::new(Network::Bitcoin, &logger);
 
 		assert_eq!(network_graph.read_only().channels().len(), 0);
 
@@ -290,7 +286,6 @@ mod tests {
 pub mod bench {
 	use test::Bencher;
 
-	use bitcoin::blockdata::constants::genesis_block;
 	use bitcoin::Network;
 
 	use lightning::ln::msgs::DecodeError;
@@ -301,10 +296,9 @@ pub mod bench {
 
 	#[bench]
 	fn bench_reading_full_graph_from_file(b: &mut Bencher) {
-		let block_hash = genesis_block(Network::Bitcoin).block_hash();
 		let logger = TestLogger::new();
 		b.iter(|| {
-			let network_graph = NetworkGraph::new(block_hash, &logger);
+			let network_graph = NetworkGraph::new(Network::Bitcoin, &logger);
 			let rapid_sync = RapidGossipSync::new(&network_graph);
 			let sync_result = rapid_sync.sync_network_graph_with_file_path("./res/full_graph.lngossip");
 			if let Err(crate::error::GraphSyncError::DecodeError(DecodeError::Io(io_error))) = &sync_result {

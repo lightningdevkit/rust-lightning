@@ -4155,7 +4155,7 @@ mod tests {
 		// Prune with one old state and a holder commitment tx holding a few overlaps with the
 		// old state.
 		let shutdown_pubkey = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
-		let best_block = BestBlock::from_genesis(Network::Testnet);
+		let best_block = BestBlock::from_network(Network::Testnet);
 		let monitor = ChannelMonitor::new(Secp256k1::new(), keys,
 		                                  Some(ShutdownScript::new_p2wpkh_from_pubkey(shutdown_pubkey).into_inner()), 0, &Script::new(),
 		                                  (OutPoint { txid: Txid::from_slice(&[43; 32]).unwrap(), index: 0 }, Script::new()),

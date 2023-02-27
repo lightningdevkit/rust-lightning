@@ -1352,7 +1352,6 @@ impl_writeable_tlv_based_enum_upgradable!(PendingOutboundPayment,
 
 #[cfg(test)]
 mod tests {
-	use bitcoin::blockdata::constants::genesis_block;
 	use bitcoin::network::constants::Network;
 	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 
@@ -1376,8 +1375,7 @@ mod tests {
 	fn do_fails_paying_after_expiration(on_retry: bool) {
 		let outbound_payments = OutboundPayments::new();
 		let logger = test_utils::TestLogger::new();
-		let genesis_hash = genesis_block(Network::Testnet).header.block_hash();
-		let network_graph = Arc::new(NetworkGraph::new(genesis_hash, &logger));
+		let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, &logger));
 		let scorer = Mutex::new(test_utils::TestScorer::new());
 		let router = test_utils::TestRouter::new(network_graph, &scorer);
 		let secp_ctx = Secp256k1::new();
@@ -1422,8 +1420,7 @@ mod tests {
 	fn do_find_route_error(on_retry: bool) {
 		let outbound_payments = OutboundPayments::new();
 		let logger = test_utils::TestLogger::new();
-		let genesis_hash = genesis_block(Network::Testnet).header.block_hash();
-		let network_graph = Arc::new(NetworkGraph::new(genesis_hash, &logger));
+		let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, &logger));
 		let scorer = Mutex::new(test_utils::TestScorer::new());
 		let router = test_utils::TestRouter::new(network_graph, &scorer);
 		let secp_ctx = Secp256k1::new();

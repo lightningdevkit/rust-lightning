@@ -442,7 +442,7 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 	let network = Network::Bitcoin;
 	let params = ChainParameters {
 		network,
-		best_block: BestBlock::from_genesis(network),
+		best_block: BestBlock::from_network(network),
 	};
 	let channelmanager = Arc::new(ChannelManager::new(fee_est.clone(), monitor.clone(), broadcast.clone(), &router, Arc::clone(&logger), keys_manager.clone(), keys_manager.clone(), keys_manager.clone(), config, params));
 	// Adding new calls to `EntropySource::get_secure_random_bytes` during startup can change all the
@@ -450,7 +450,7 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 	// it's easier to just increment the counter here so the keys don't change.
 	keys_manager.counter.fetch_sub(3, Ordering::AcqRel);
 	let our_id = &keys_manager.get_node_id(Recipient::Node).unwrap();
-	let network_graph = Arc::new(NetworkGraph::new(genesis_block(network).block_hash(), Arc::clone(&logger)));
+	let network_graph = Arc::new(NetworkGraph::new(network, Arc::clone(&logger)));
 	let gossip_sync = Arc::new(P2PGossipSync::new(Arc::clone(&network_graph), None, Arc::clone(&logger)));
 	let scorer = FixedPenaltyScorer::with_penalty(0);
 
