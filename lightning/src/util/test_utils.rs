@@ -24,6 +24,8 @@ use crate::ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 use crate::ln::{msgs, wire};
 use crate::ln::msgs::LightningError;
 use crate::ln::script::ShutdownScript;
+use crate::offers::invoice::UnsignedBolt12Invoice;
+use crate::offers::invoice_request::UnsignedInvoiceRequest;
 use crate::routing::gossip::{EffectiveCapacity, NetworkGraph, NodeId};
 use crate::routing::utxo::{UtxoLookup, UtxoLookupError, UtxoResult};
 use crate::routing::router::{find_route, InFlightHtlcs, Path, Route, RouteParameters, Router, ScorerAccountingForInFlightHtlcs};
@@ -47,6 +49,7 @@ use bitcoin::util::sighash::SighashCache;
 use bitcoin::secp256k1::{PublicKey, Scalar, Secp256k1, SecretKey};
 use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1::ecdsa::{RecoverableSignature, Signature};
+use bitcoin::secp256k1::schnorr;
 
 #[cfg(any(test, feature = "_test_utils"))]
 use regex;
@@ -800,6 +803,18 @@ impl NodeSigner for TestNodeSigner {
 		unreachable!()
 	}
 
+	fn sign_bolt12_invoice_request(
+		&self, _invoice_request: &UnsignedInvoiceRequest
+	) -> Result<schnorr::Signature, ()> {
+		unreachable!()
+	}
+
+	fn sign_bolt12_invoice(
+		&self, _invoice: &UnsignedBolt12Invoice,
+	) -> Result<schnorr::Signature, ()> {
+		unreachable!()
+	}
+
 	fn sign_gossip_message(&self, _msg: msgs::UnsignedGossipMessage) -> Result<Signature, ()> {
 		unreachable!()
 	}
@@ -838,6 +853,18 @@ impl NodeSigner for TestKeysInterface {
 
 	fn sign_invoice(&self, hrp_bytes: &[u8], invoice_data: &[u5], recipient: Recipient) -> Result<RecoverableSignature, ()> {
 		self.backing.sign_invoice(hrp_bytes, invoice_data, recipient)
+	}
+
+	fn sign_bolt12_invoice_request(
+		&self, invoice_request: &UnsignedInvoiceRequest
+	) -> Result<schnorr::Signature, ()> {
+		self.backing.sign_bolt12_invoice_request(invoice_request)
+	}
+
+	fn sign_bolt12_invoice(
+		&self, invoice: &UnsignedBolt12Invoice,
+	) -> Result<schnorr::Signature, ()> {
+		self.backing.sign_bolt12_invoice(invoice)
 	}
 
 	fn sign_gossip_message(&self, msg: msgs::UnsignedGossipMessage) -> Result<Signature, ()> {

@@ -26,9 +26,10 @@ use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::hash_types::WPubkeyHash;
 
-use bitcoin::secp256k1::{PublicKey, Scalar, Secp256k1, SecretKey, Signing};
+use bitcoin::secp256k1::{KeyPair, PublicKey, Scalar, Secp256k1, SecretKey, Signing};
 use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1::ecdsa::{RecoverableSignature, Signature};
+use bitcoin::secp256k1::schnorr;
 use bitcoin::{PackedLockTime, secp256k1, Sequence, Witness};
 
 use crate::util::transaction_utils;
@@ -41,6 +42,8 @@ use crate::ln::{chan_utils, PaymentPreimage};
 use crate::ln::chan_utils::{HTLCOutputInCommitment, make_funding_redeemscript, ChannelPublicKeys, HolderCommitmentTransaction, ChannelTransactionParameters, CommitmentTransaction, ClosingTransaction};
 use crate::ln::msgs::{UnsignedChannelAnnouncement, UnsignedGossipMessage};
 use crate::ln::script::ShutdownScript;
+use crate::offers::invoice::UnsignedBolt12Invoice;
+use crate::offers::invoice_request::UnsignedInvoiceRequest;
 
 use crate::prelude::*;
 use core::convert::TryInto;
@@ -618,6 +621,36 @@ pub trait NodeSigner {
 	///
 	/// Errors if the [`Recipient`] variant is not supported by the implementation.
 	fn sign_invoice(&self, hrp_bytes: &[u8], invoice_data: &[u5], recipient: Recipient) -> Result<RecoverableSignature, ()>;
+
+	/// Signs the [`TaggedHash`] of a BOLT 12 invoice request.
+	///
+	/// May be called by a function passed to [`UnsignedInvoiceRequest::sign`] where
+	/// `invoice_request` is the callee.
+	///
+	/// Implementors may check that the `invoice_request` is expected rather than blindly signing
+	/// the tagged hash. An `Ok` result should sign `invoice_request.tagged_hash().as_digest()` with
+	/// the node's signing key or an ephemeral key to preserve privacy, whichever is associated with
+	/// [`UnsignedInvoiceRequest::payer_id`].
+	///
+	/// [`TaggedHash`]: crate::offers::merkle::TaggedHash
+	fn sign_bolt12_invoice_request(
+		&self, invoice_request: &UnsignedInvoiceRequest
+	) -> Result<schnorr::Signature, ()>;
+
+	/// Signs the [`TaggedHash`] of a BOLT 12 invoice.
+	///
+	/// May be called by a function passed to [`UnsignedBolt12Invoice::sign`] where `invoice` is the
+	/// callee.
+	///
+	/// Implementors may check that the `invoice` is expected rather than blindly signing the tagged
+	/// hash. An `Ok` result should sign `invoice.tagged_hash().as_digest()` with the node's signing
+	/// key or an ephemeral key to preserve privacy, whichever is associated with
+	/// [`UnsignedBolt12Invoice::signing_pubkey`].
+	///
+	/// [`TaggedHash`]: crate::offers::merkle::TaggedHash
+	fn sign_bolt12_invoice(
+		&self, invoice: &UnsignedBolt12Invoice
+	) -> Result<schnorr::Signature, ()>;
 
 	/// Sign a gossip message.
 	///
@@ -1449,6 +1482,24 @@ impl NodeSigner for KeysManager {
 		Ok(self.secp_ctx.sign_ecdsa_recoverable(&hash_to_message!(&Sha256::hash(&preimage)), secret))
 	}
 
+	fn sign_bolt12_invoice_request(
+		&self, invoice_request: &UnsignedInvoiceRequest
+	) -> Result<schnorr::Signature, ()> {
+		let message = invoice_request.tagged_hash().as_digest();
+		let keys = KeyPair::from_secret_key(&self.secp_ctx, &self.node_secret);
+		let aux_rand = self.get_secure_random_bytes();
+		Ok(self.secp_ctx.sign_schnorr_with_aux_rand(message, &keys, &aux_rand))
+	}
+
+	fn sign_bolt12_invoice(
+		&self, invoice: &UnsignedBolt12Invoice
+	) -> Result<schnorr::Signature, ()> {
+		let message = invoice.tagged_hash().as_digest();
+		let keys = KeyPair::from_secret_key(&self.secp_ctx, &self.node_secret);
+		let aux_rand = self.get_secure_random_bytes();
+		Ok(self.secp_ctx.sign_schnorr_with_aux_rand(message, &keys, &aux_rand))
+	}
+
 	fn sign_gossip_message(&self, msg: UnsignedGossipMessage) -> Result<Signature, ()> {
 		let msg_hash = hash_to_message!(&Sha256dHash::hash(&msg.encode()[..])[..]);
 		Ok(self.secp_ctx.sign_ecdsa(&msg_hash, &self.node_secret))
@@ -1555,6 +1606,18 @@ impl NodeSigner for PhantomKeysManager {
 			Recipient::PhantomNode => &self.phantom_secret,
 		};
 		Ok(self.inner.secp_ctx.sign_ecdsa_recoverable(&hash_to_message!(&Sha256::hash(&preimage)), secret))
+	}
+
+	fn sign_bolt12_invoice_request(
+		&self, invoice_request: &UnsignedInvoiceRequest
+	) -> Result<schnorr::Signature, ()> {
+		self.inner.sign_bolt12_invoice_request(invoice_request)
+	}
+
+	fn sign_bolt12_invoice(
+		&self, invoice: &UnsignedBolt12Invoice
+	) -> Result<schnorr::Signature, ()> {
+		self.inner.sign_bolt12_invoice(invoice)
 	}
 
 	fn sign_gossip_message(&self, msg: UnsignedGossipMessage) -> Result<Signature, ()> {

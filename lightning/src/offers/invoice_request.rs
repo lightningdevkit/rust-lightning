@@ -372,6 +372,11 @@ impl UnsignedInvoiceRequest {
 		Self { bytes, contents, tagged_hash }
 	}
 
+	/// Returns the [`TaggedHash`] of the invoice to sign.
+	pub fn tagged_hash(&self) -> &TaggedHash {
+		&self.tagged_hash
+	}
+
 	/// Signs the [`TaggedHash`] of the invoice request using the given function.
 	///
 	/// Note: The hash computation may have included unknown, odd TLV records.

@@ -4,10 +4,13 @@ use bitcoin::blockdata::script::Script;
 use bitcoin::secp256k1::{PublicKey, Scalar, Secp256k1, SecretKey};
 use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1::ecdsa::RecoverableSignature;
+use bitcoin::secp256k1::schnorr;
 
 use lightning::sign::{Recipient, KeyMaterial, EntropySource, NodeSigner, SignerProvider};
 use lightning::ln::msgs::{self, DecodeError, OnionMessageHandler};
 use lightning::ln::script::ShutdownScript;
+use lightning::offers::invoice::UnsignedBolt12Invoice;
+use lightning::offers::invoice_request::UnsignedInvoiceRequest;
 use lightning::util::enforcing_trait_impls::EnforcingSigner;
 use lightning::util::logger::Logger;
 use lightning::util::ser::{Readable, Writeable, Writer};
@@ -150,6 +153,18 @@ impl NodeSigner for KeyProvider {
 	fn get_inbound_payment_key_material(&self) -> KeyMaterial { unreachable!() }
 
 	fn sign_invoice(&self, _hrp_bytes: &[u8], _invoice_data: &[u5], _recipient: Recipient) -> Result<RecoverableSignature, ()> {
+		unreachable!()
+	}
+
+	fn sign_bolt12_invoice_request(
+		&self, _invoice_request: &UnsignedInvoiceRequest
+	) -> Result<schnorr::Signature, ()> {
+		unreachable!()
+	}
+
+	fn sign_bolt12_invoice(
+		&self, _invoice: &UnsignedBolt12Invoice,
+	) -> Result<schnorr::Signature, ()> {
 		unreachable!()
 	}
 

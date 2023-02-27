@@ -40,6 +40,8 @@ use lightning::ln::peer_handler::{MessageHandler,PeerManager,SocketDescriptor,Ig
 use lightning::ln::msgs::{self, DecodeError};
 use lightning::ln::script::ShutdownScript;
 use lightning::ln::functional_test_utils::*;
+use lightning::offers::invoice::UnsignedBolt12Invoice;
+use lightning::offers::invoice_request::UnsignedInvoiceRequest;
 use lightning::routing::gossip::{P2PGossipSync, NetworkGraph};
 use lightning::routing::utxo::UtxoLookup;
 use lightning::routing::router::{InFlightHtlcs, PaymentParameters, Route, RouteParameters, Router};
@@ -55,6 +57,7 @@ use crate::utils::test_persister::TestPersister;
 use bitcoin::secp256k1::{Message, PublicKey, SecretKey, Scalar, Secp256k1};
 use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1::ecdsa::{RecoverableSignature, Signature};
+use bitcoin::secp256k1::schnorr;
 
 use std::cell::RefCell;
 use hashbrown::{HashMap, hash_map};
@@ -313,6 +316,18 @@ impl NodeSigner for KeyProvider {
 	}
 
 	fn sign_invoice(&self, _hrp_bytes: &[u8], _invoice_data: &[u5], _recipient: Recipient) -> Result<RecoverableSignature, ()> {
+		unreachable!()
+	}
+
+	fn sign_bolt12_invoice_request(
+		&self, _invoice_request: &UnsignedInvoiceRequest
+	) -> Result<schnorr::Signature, ()> {
+		unreachable!()
+	}
+
+	fn sign_bolt12_invoice(
+		&self, _invoice: &UnsignedBolt12Invoice,
+	) -> Result<schnorr::Signature, ()> {
 		unreachable!()
 	}
 
