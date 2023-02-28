@@ -51,6 +51,10 @@ macro_rules! _encode_tlv {
 	($stream: expr, $type: expr, $field: expr, (option, encoding: $fieldty: ty)) => {
 		$crate::_encode_tlv!($stream, $type, $field, option);
 	};
+	($stream: expr, $type: expr, $field: expr, (option: $trait: ident $(, $read_arg: expr)?)) => {
+		// Just a read-mapped type
+		$crate::_encode_tlv!($stream, $type, $field, option);
+	};
 }
 
 /// Panics if the last seen TLV type is not numerically less than the TLV type currently being checked.
@@ -161,6 +165,9 @@ macro_rules! _get_varint_length_prefixed_tlv_length {
 			$len.0 += field_len;
 		}
 	};
+	($len: expr, $type: expr, $field: expr, (option: $trait: ident $(, $read_arg: expr)?)) => {
+		$crate::_get_varint_length_prefixed_tlv_length!($len, $type, $field, option);
+	};
 	($len: expr, $type: expr, $field: expr, upgradable_required) => {
 		$crate::_get_varint_length_prefixed_tlv_length!($len, $type, $field, required);
 	};
@@ -210,6 +217,9 @@ macro_rules! _check_decoded_tlv_order {
 			return Err(DecodeError::InvalidValue);
 		}
 	}};
+	($last_seen_type: expr, $typ: expr, $type: expr, $field: ident, (required: $trait: ident $(, $read_arg: expr)?)) => {{
+		$crate::_check_decoded_tlv_order!($last_seen_type, $typ, $type, $field, required);
+	}};
 	($last_seen_type: expr, $typ: expr, $type: expr, $field: ident, option) => {{
 		// no-op
 	}};
@@ -252,6 +262,9 @@ macro_rules! _check_missing_tlv {
 			return Err(DecodeError::InvalidValue);
 		}
 	}};
+	($last_seen_type: expr, $type: expr, $field: ident, (required: $trait: ident $(, $read_arg: expr)?)) => {{
+		$crate::_check_missing_tlv!($last_seen_type, $type, $field, required);
+	}};
 	($last_seen_type: expr, $type: expr, $field: ident, vec_type) => {{
 		// no-op
 	}};
@@ -284,6 +297,9 @@ macro_rules! _decode_tlv {
 	}};
 	($reader: expr, $field: ident, required) => {{
 		$field = $crate::util::ser::Readable::read(&mut $reader)?;
+	}};
+	($reader: expr, $field: ident, (required: $trait: ident $(, $read_arg: expr)?)) => {{
+		$field = $trait::read(&mut $reader $(, $read_arg)*)?;
 	}};
 	($reader: expr, $field: ident, vec_type) => {{
 		let f: $crate::util::ser::WithoutLength<Vec<_>> = $crate::util::ser::Readable::read(&mut $reader)?;
@@ -644,6 +660,9 @@ macro_rules! _init_tlv_based_struct_field {
 	($field: ident, option) => {
 		$field
 	};
+	($field: ident, (option: $trait: ident $(, $read_arg: expr)?)) => {
+		$crate::_init_tlv_based_struct_field!($field, option)
+	};
 	($field: ident, upgradable_required) => {
 		$field.0.unwrap()
 	};
@@ -673,11 +692,17 @@ macro_rules! _init_tlv_field_var {
 	($field: ident, required) => {
 		let mut $field = $crate::util::ser::RequiredWrapper(None);
 	};
+	($field: ident, (required: $trait: ident $(, $read_arg: expr)?)) => {
+		$crate::_init_tlv_field_var!($field, required);
+	};
 	($field: ident, vec_type) => {
 		let mut $field = Some(Vec::new());
 	};
 	($field: ident, option) => {
 		let mut $field = None;
+	};
+	($field: ident, (option: $trait: ident $(, $read_arg: expr)?)) => {
+		$crate::_init_tlv_field_var!($field, option);
 	};
 	($field: ident, upgradable_required) => {
 		let mut $field = $crate::util::ser::UpgradableRequired(None);

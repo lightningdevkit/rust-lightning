@@ -16,7 +16,6 @@ use bitcoin::secp256k1::{self, Secp256k1, SecretKey};
 use crate::chain::keysinterface::{EntropySource, NodeSigner, Recipient};
 use crate::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
 use crate::ln::channelmanager::{ChannelDetails, HTLCSource, IDEMPOTENCY_TIMEOUT_TICKS, PaymentId};
-use crate::ln::channelmanager::MIN_FINAL_CLTV_EXPIRY_DELTA as LDK_DEFAULT_MIN_FINAL_CLTV_EXPIRY_DELTA;
 use crate::ln::onion_utils::HTLCFailReason;
 use crate::routing::router::{InFlightHtlcs, PaymentParameters, Route, RouteHop, RouteParameters, RoutePath, Router};
 use crate::util::errors::APIError;
@@ -25,6 +24,7 @@ use crate::util::logger::Logger;
 use crate::util::time::Time;
 #[cfg(all(not(feature = "no-std"), test))]
 use crate::util::time::tests::SinceEpoch;
+use crate::util::ser::ReadableArgs;
 
 use core::cmp;
 use core::fmt::{self, Display, Formatter};
@@ -528,12 +528,6 @@ impl OutboundPayments {
 						if pending_amt_msat < total_msat {
 							retry_id_route_params = Some((*pmt_id, RouteParameters {
 								final_value_msat: *total_msat - *pending_amt_msat,
-								final_cltv_expiry_delta:
-									if let Some(delta) = params.final_cltv_expiry_delta { delta }
-									else {
-										debug_assert!(false, "We always set the final_cltv_expiry_delta when a path fails");
-										LDK_DEFAULT_MIN_FINAL_CLTV_EXPIRY_DELTA.into()
-									},
 								payment_params: params.clone(),
 							}));
 							break
@@ -976,9 +970,6 @@ impl OutboundPayments {
 						Some(RouteParameters {
 							payment_params: payment_params.clone(),
 							final_value_msat: pending_amt_unsent,
-							final_cltv_expiry_delta:
-								if let Some(delta) = payment_params.final_cltv_expiry_delta { delta }
-								else { max_unsent_cltv_delta },
 						})
 					} else { None }
 				} else { None },
@@ -1179,23 +1170,14 @@ impl OutboundPayments {
 			// `payment_params`) back to the user.
 			let path_last_hop = path.last().expect("Outbound payments must have had a valid path");
 			if let Some(params) = payment.get_mut().payment_parameters() {
-				if params.final_cltv_expiry_delta.is_none() {
-					// This should be rare, but a user could provide None for the payment data, and
-					// we need it when we go to retry the payment, so fill it in.
-					params.final_cltv_expiry_delta = Some(path_last_hop.cltv_expiry_delta);
-				}
 				retry = Some(RouteParameters {
 					payment_params: params.clone(),
 					final_value_msat: path_last_hop.fee_msat,
-					final_cltv_expiry_delta: params.final_cltv_expiry_delta.unwrap(),
 				});
 			} else if let Some(params) = payment_params {
 				retry = Some(RouteParameters {
 					payment_params: params.clone(),
 					final_value_msat: path_last_hop.fee_msat,
-					final_cltv_expiry_delta:
-						if let Some(delta) = params.final_cltv_expiry_delta { delta }
-						else { path_last_hop.cltv_expiry_delta },
 				});
 			}
 
@@ -1330,7 +1312,9 @@ impl_writeable_tlv_based_enum_upgradable!(PendingOutboundPayment,
 		(0, session_privs, required),
 		(1, pending_fee_msat, option),
 		(2, payment_hash, required),
-		(3, payment_params, option),
+		// Note that while we "default" payment_param's final CLTV expiry delta to 0 we should
+		// never see it - `payment_params` was added here after the field was added/required.
+		(3, payment_params, (option: ReadableArgs, 0)),
 		(4, payment_secret, option),
 		(5, keysend_preimage, option),
 		(6, total_msat, required),
@@ -1386,7 +1370,6 @@ mod tests {
 		let expired_route_params = RouteParameters {
 			payment_params,
 			final_value_msat: 0,
-			final_cltv_expiry_delta: 0,
 		};
 		let pending_events = Mutex::new(Vec::new());
 		if on_retry {
@@ -1428,7 +1411,6 @@ mod tests {
 		let route_params = RouteParameters {
 			payment_params,
 			final_value_msat: 0,
-			final_cltv_expiry_delta: 0,
 		};
 		router.expect_find_route(route_params.clone(),
 			Err(LightningError { err: String::new(), action: ErrorAction::IgnoreError }));
@@ -1471,7 +1453,6 @@ mod tests {
 		let route_params = RouteParameters {
 			payment_params: payment_params.clone(),
 			final_value_msat: 0,
-			final_cltv_expiry_delta: 0,
 		};
 		let failed_scid = 42;
 		let route = Route {

@@ -6745,27 +6745,36 @@ impl Readable for HTLCSource {
 			0 => {
 				let mut session_priv: crate::util::ser::RequiredWrapper<SecretKey> = crate::util::ser::RequiredWrapper(None);
 				let mut first_hop_htlc_msat: u64 = 0;
-				let mut path = Some(Vec::new());
+				let mut path: Option<Vec<RouteHop>> = Some(Vec::new());
 				let mut payment_id = None;
 				let mut payment_secret = None;
-				let mut payment_params = None;
+				let mut payment_params: Option<PaymentParameters> = None;
 				read_tlv_fields!(reader, {
 					(0, session_priv, required),
 					(1, payment_id, option),
 					(2, first_hop_htlc_msat, required),
 					(3, payment_secret, option),
 					(4, path, vec_type),
-					(5, payment_params, option),
+					(5, payment_params, (option: ReadableArgs, 0)),
 				});
 				if payment_id.is_none() {
 					// For backwards compat, if there was no payment_id written, use the session_priv bytes
 					// instead.
 					payment_id = Some(PaymentId(*session_priv.0.unwrap().as_ref()));
 				}
+				if path.is_none() || path.as_ref().unwrap().is_empty() {
+					return Err(DecodeError::InvalidValue);
+				}
+				let path = path.unwrap();
+				if let Some(params) = payment_params.as_mut() {
+					if params.final_cltv_expiry_delta == 0 {
+						params.final_cltv_expiry_delta = path.last().unwrap().cltv_expiry_delta;
+					}
+				}
 				Ok(HTLCSource::OutboundRoute {
 					session_priv: session_priv.0.unwrap(),
 					first_hop_htlc_msat,
-					path: path.unwrap(),
+					path,
 					payment_id: payment_id.unwrap(),
 					payment_secret,
 					payment_params,
@@ -7963,7 +7972,6 @@ mod tests {
 		let route_params = RouteParameters {
 			payment_params: PaymentParameters::for_keysend(expected_route.last().unwrap().node.get_our_node_id(), TEST_FINAL_CLTV),
 			final_value_msat: 100_000,
-			final_cltv_expiry_delta: TEST_FINAL_CLTV,
 		};
 		let route = find_route(
 			&nodes[0].node.get_our_node_id(), &route_params, &nodes[0].network_graph,
@@ -8054,7 +8062,6 @@ mod tests {
 		let route_params = RouteParameters {
 			payment_params: PaymentParameters::for_keysend(payee_pubkey, 40),
 			final_value_msat: 10_000,
-			final_cltv_expiry_delta: 40,
 		};
 		let network_graph = nodes[0].network_graph.clone();
 		let first_hops = nodes[0].node.list_usable_channels();
@@ -8097,7 +8104,6 @@ mod tests {
 		let route_params = RouteParameters {
 			payment_params: PaymentParameters::for_keysend(payee_pubkey, 40),
 			final_value_msat: 10_000,
-			final_cltv_expiry_delta: 40,
 		};
 		let network_graph = nodes[0].network_graph.clone();
 		let first_hops = nodes[0].node.list_usable_channels();

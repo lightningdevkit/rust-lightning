@@ -9241,7 +9241,6 @@ fn test_keysend_payments_to_public_node() {
 	let route_params = RouteParameters {
 		payment_params: PaymentParameters::for_keysend(payee_pubkey, 40),
 		final_value_msat: 10000,
-		final_cltv_expiry_delta: 40,
 	};
 	let scorer = test_utils::TestScorer::new();
 	let random_seed_bytes = chanmon_cfgs[1].keys_manager.get_secure_random_bytes();
@@ -9272,7 +9271,6 @@ fn test_keysend_payments_to_private_node() {
 	let route_params = RouteParameters {
 		payment_params: PaymentParameters::for_keysend(payee_pubkey, 40),
 		final_value_msat: 10000,
-		final_cltv_expiry_delta: 40,
 	};
 	let network_graph = nodes[0].network_graph.clone();
 	let first_hops = nodes[0].node.list_usable_channels();
