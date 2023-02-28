@@ -1192,33 +1192,31 @@ fn test_trivial_inflight_htlc_tracking(){
 	let (_, _, chan_2_id, _) = create_announced_chan_between_nodes(&nodes, 1, 2);
 
 	// Send and claim the payment. Inflight HTLCs should be empty.
-	let (route, payment_hash, payment_preimage, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], 500000);
-	nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret), PaymentId(payment_hash.0)).unwrap();
-	check_added_monitors!(nodes[0], 1);
-	pass_along_route(&nodes[0], &[&vec!(&nodes[1], &nodes[2])[..]], 500000, payment_hash, payment_secret);
-	claim_payment(&nodes[0], &vec!(&nodes[1], &nodes[2])[..], payment_preimage);
+	let payment_hash = send_payment(&nodes[0], &[&nodes[1], &nodes[2]], 500000).1;
+	let inflight_htlcs = node_chanmgrs[0].compute_inflight_htlcs();
 	{
-		let inflight_htlcs = node_chanmgrs[0].compute_inflight_htlcs();
-
 		let mut node_0_per_peer_lock;
 		let mut node_0_peer_state_lock;
-		let mut node_1_per_peer_lock;
-		let mut node_1_peer_state_lock;
 		let channel_1 =  get_channel_ref!(&nodes[0], nodes[1], node_0_per_peer_lock, node_0_peer_state_lock, chan_1_id);
-		let channel_2 =  get_channel_ref!(&nodes[1], nodes[2], node_1_per_peer_lock, node_1_peer_state_lock, chan_2_id);
 
 		let chan_1_used_liquidity = inflight_htlcs.used_liquidity_msat(
 			&NodeId::from_pubkey(&nodes[0].node.get_our_node_id()) ,
 			&NodeId::from_pubkey(&nodes[1].node.get_our_node_id()),
 			channel_1.get_short_channel_id().unwrap()
 		);
+		assert_eq!(chan_1_used_liquidity, None);
+	}
+	{
+		let mut node_1_per_peer_lock;
+		let mut node_1_peer_state_lock;
+		let channel_2 =  get_channel_ref!(&nodes[1], nodes[2], node_1_per_peer_lock, node_1_peer_state_lock, chan_2_id);
+
 		let chan_2_used_liquidity = inflight_htlcs.used_liquidity_msat(
 			&NodeId::from_pubkey(&nodes[1].node.get_our_node_id()) ,
 			&NodeId::from_pubkey(&nodes[2].node.get_our_node_id()),
 			channel_2.get_short_channel_id().unwrap()
 		);
 
-		assert_eq!(chan_1_used_liquidity, None);
 		assert_eq!(chan_2_used_liquidity, None);
 	}
 	let pending_payments = nodes[0].node.list_recent_payments();
@@ -1231,30 +1229,32 @@ fn test_trivial_inflight_htlc_tracking(){
 	}
 
 	// Send the payment, but do not claim it. Our inflight HTLCs should contain the pending payment.
-	let (payment_preimage, payment_hash,  _) = route_payment(&nodes[0], &vec!(&nodes[1], &nodes[2])[..], 500000);
+	let (payment_preimage, payment_hash,  _) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 500000);
+	let inflight_htlcs = node_chanmgrs[0].compute_inflight_htlcs();
 	{
-		let inflight_htlcs = node_chanmgrs[0].compute_inflight_htlcs();
-
 		let mut node_0_per_peer_lock;
 		let mut node_0_peer_state_lock;
-		let mut node_1_per_peer_lock;
-		let mut node_1_peer_state_lock;
 		let channel_1 =  get_channel_ref!(&nodes[0], nodes[1], node_0_per_peer_lock, node_0_peer_state_lock, chan_1_id);
-		let channel_2 =  get_channel_ref!(&nodes[1], nodes[2], node_1_per_peer_lock, node_1_peer_state_lock, chan_2_id);
 
 		let chan_1_used_liquidity = inflight_htlcs.used_liquidity_msat(
 			&NodeId::from_pubkey(&nodes[0].node.get_our_node_id()) ,
 			&NodeId::from_pubkey(&nodes[1].node.get_our_node_id()),
 			channel_1.get_short_channel_id().unwrap()
 		);
+		// First hop accounts for expected 1000 msat fee
+		assert_eq!(chan_1_used_liquidity, Some(501000));
+	}
+	{
+		let mut node_1_per_peer_lock;
+		let mut node_1_peer_state_lock;
+		let channel_2 =  get_channel_ref!(&nodes[1], nodes[2], node_1_per_peer_lock, node_1_peer_state_lock, chan_2_id);
+
 		let chan_2_used_liquidity = inflight_htlcs.used_liquidity_msat(
 			&NodeId::from_pubkey(&nodes[1].node.get_our_node_id()) ,
 			&NodeId::from_pubkey(&nodes[2].node.get_our_node_id()),
 			channel_2.get_short_channel_id().unwrap()
 		);
 
-		// First hop accounts for expected 1000 msat fee
-		assert_eq!(chan_1_used_liquidity, Some(501000));
 		assert_eq!(chan_2_used_liquidity, Some(500000));
 	}
 	let pending_payments = nodes[0].node.list_recent_payments();
@@ -1269,28 +1269,29 @@ fn test_trivial_inflight_htlc_tracking(){
 		nodes[0].node.timer_tick_occurred();
 	}
 
+	let inflight_htlcs = node_chanmgrs[0].compute_inflight_htlcs();
 	{
-		let inflight_htlcs = node_chanmgrs[0].compute_inflight_htlcs();
-
 		let mut node_0_per_peer_lock;
 		let mut node_0_peer_state_lock;
-		let mut node_1_per_peer_lock;
-		let mut node_1_peer_state_lock;
 		let channel_1 =  get_channel_ref!(&nodes[0], nodes[1], node_0_per_peer_lock, node_0_peer_state_lock, chan_1_id);
-		let channel_2 =  get_channel_ref!(&nodes[1], nodes[2], node_1_per_peer_lock, node_1_peer_state_lock, chan_2_id);
 
 		let chan_1_used_liquidity = inflight_htlcs.used_liquidity_msat(
 			&NodeId::from_pubkey(&nodes[0].node.get_our_node_id()) ,
 			&NodeId::from_pubkey(&nodes[1].node.get_our_node_id()),
 			channel_1.get_short_channel_id().unwrap()
 		);
+		assert_eq!(chan_1_used_liquidity, None);
+	}
+	{
+		let mut node_1_per_peer_lock;
+		let mut node_1_peer_state_lock;
+		let channel_2 =  get_channel_ref!(&nodes[1], nodes[2], node_1_per_peer_lock, node_1_peer_state_lock, chan_2_id);
+
 		let chan_2_used_liquidity = inflight_htlcs.used_liquidity_msat(
 			&NodeId::from_pubkey(&nodes[1].node.get_our_node_id()) ,
 			&NodeId::from_pubkey(&nodes[2].node.get_our_node_id()),
 			channel_2.get_short_channel_id().unwrap()
 		);
-
-		assert_eq!(chan_1_used_liquidity, None);
 		assert_eq!(chan_2_used_liquidity, None);
 	}
 
