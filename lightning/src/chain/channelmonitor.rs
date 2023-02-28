@@ -1202,17 +1202,6 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 			payment_hash, payment_preimage, broadcaster, fee_estimator, logger)
 	}
 
-	pub(crate) fn broadcast_latest_holder_commitment_txn<B: Deref, L: Deref>(
-		&self,
-		broadcaster: &B,
-		logger: &L,
-	) where
-		B::Target: BroadcasterInterface,
-		L::Target: Logger,
-	{
-		self.inner.lock().unwrap().broadcast_latest_holder_commitment_txn(broadcaster, logger);
-	}
-
 	/// Updates a ChannelMonitor on the basis of some new information provided by the Channel
 	/// itself.
 	///
