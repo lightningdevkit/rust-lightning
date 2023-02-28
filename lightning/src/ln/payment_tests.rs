@@ -334,9 +334,15 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 	check_closed_event!(nodes[0], 1, ClosureReason::OutdatedChannelManager);
 	assert!(nodes[0].node.list_channels().is_empty());
 	assert!(nodes[0].node.has_pending_payments());
-	let as_broadcasted_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
-	assert_eq!(as_broadcasted_txn.len(), 1);
-	assert_eq!(as_broadcasted_txn[0], as_commitment_tx);
+	nodes[0].node.timer_tick_occurred();
+	if !confirm_before_reload {
+		let as_broadcasted_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
+		assert_eq!(as_broadcasted_txn.len(), 1);
+		assert_eq!(as_broadcasted_txn[0], as_commitment_tx);
+	} else {
+		assert!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().is_empty());
+	}
+	check_added_monitors!(nodes[0], 1);
 
 	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
 	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init { features: nodes[1].node.init_features(), remote_network_address: None }, true).unwrap();
@@ -499,9 +505,11 @@ fn do_test_completed_payment_not_retryable_on_reload(use_dust: bool) {
 	// On reload, the ChannelManager should realize it is stale compared to the ChannelMonitor and
 	// force-close the channel.
 	check_closed_event!(nodes[0], 1, ClosureReason::OutdatedChannelManager);
+	nodes[0].node.timer_tick_occurred();
 	assert!(nodes[0].node.list_channels().is_empty());
 	assert!(nodes[0].node.has_pending_payments());
 	assert_eq!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0).len(), 1);
+	check_added_monitors!(nodes[0], 1);
 
 	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init { features: nodes[1].node.init_features(), remote_network_address: None }, true).unwrap();
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
@@ -2794,6 +2802,7 @@ fn do_no_missing_sent_on_midpoint_reload(persist_manager_with_payment: bool) {
 	if let Event::PaymentSent { payment_preimage, .. } = events[1] { assert_eq!(payment_preimage, our_payment_preimage); } else { panic!(); }
 	// Note that we don't get a PaymentPathSuccessful here as we leave the HTLC pending to avoid
 	// the double-claim that would otherwise appear at the end of this test.
+	nodes[0].node.timer_tick_occurred();
 	let as_broadcasted_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 	assert_eq!(as_broadcasted_txn.len(), 1);
 

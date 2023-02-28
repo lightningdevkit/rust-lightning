@@ -1859,15 +1859,18 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 	let chan_a = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 20_000_000);
 	let chan_b = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 20_000_000);
 
+	// Serialize Bob with the initial state of both channels, which we'll use later.
+	let bob_serialized = nodes[1].node.encode();
+
 	// Route two payments for each channel from Alice to Bob to lock in the HTLCs.
 	let payment_a = route_payment(&nodes[0], &[&nodes[1]], 50_000_000);
 	let payment_b = route_payment(&nodes[0], &[&nodes[1]], 50_000_000);
 	let payment_c = route_payment(&nodes[0], &[&nodes[1]], 50_000_000);
 	let payment_d = route_payment(&nodes[0], &[&nodes[1]], 50_000_000);
 
-	// Serialize Bob with the HTLCs locked in. We'll restart Bob later on with the state at this
-	// point such that he broadcasts a revoked commitment transaction.
-	let bob_serialized = nodes[1].node.encode();
+	// Serialize Bob's monitors with the HTLCs locked in. We'll restart Bob later on with the state
+	// at this point such that he broadcasts a revoked commitment transaction with the HTLCs
+	// present.
 	let bob_serialized_monitor_a = get_monitor!(nodes[1], chan_a.2).encode();
 	let bob_serialized_monitor_b = get_monitor!(nodes[1], chan_b.2).encode();
 
@@ -1897,30 +1900,26 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 		}
 	}
 
-	// Bob force closes by broadcasting his revoked state for each channel.
-	nodes[1].node.force_close_broadcasting_latest_txn(&chan_a.2, &nodes[0].node.get_our_node_id()).unwrap();
-	check_added_monitors(&nodes[1], 1);
-	check_closed_broadcast(&nodes[1], 1, true);
-	check_closed_event!(&nodes[1], 1, ClosureReason::HolderForceClosed);
-	let revoked_commitment_a = {
-		let mut txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
-		assert_eq!(txn.len(), 1);
-		let revoked_commitment = txn.pop().unwrap();
-		assert_eq!(revoked_commitment.output.len(), 6); // 2 HTLC outputs + 1 to_self output + 1 to_remote output + 2 anchor outputs
-		check_spends!(revoked_commitment, chan_a.3);
-		revoked_commitment
-	};
-	nodes[1].node.force_close_broadcasting_latest_txn(&chan_b.2, &nodes[0].node.get_our_node_id()).unwrap();
-	check_added_monitors(&nodes[1], 1);
-	check_closed_broadcast(&nodes[1], 1, true);
-	check_closed_event!(&nodes[1], 1, ClosureReason::HolderForceClosed);
-	let revoked_commitment_b = {
-		let mut txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
-		assert_eq!(txn.len(), 1);
-		let revoked_commitment = txn.pop().unwrap();
-		assert_eq!(revoked_commitment.output.len(), 6); // 2 HTLC outputs + 1 to_self output + 1 to_remote output + 2 anchor outputs
-		check_spends!(revoked_commitment, chan_b.3);
-		revoked_commitment
+	// Bob force closes by restarting with the outdated state, prompting the ChannelMonitors to
+	// broadcast the latest commitment transaction known to them, which in our case is the one with
+	// the HTLCs still pending.
+	nodes[1].node.timer_tick_occurred();
+	check_added_monitors(&nodes[1], 2);
+	check_closed_event!(&nodes[1], 2, ClosureReason::OutdatedChannelManager);
+	let (revoked_commitment_a, revoked_commitment_b) = {
+		let txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
+		assert_eq!(txn.len(), 2);
+		assert_eq!(txn[0].output.len(), 6); // 2 HTLC outputs + 1 to_self output + 1 to_remote output + 2 anchor outputs
+		assert_eq!(txn[1].output.len(), 6); // 2 HTLC outputs + 1 to_self output + 1 to_remote output + 2 anchor outputs
+		if txn[0].input[0].previous_output.txid == chan_a.3.txid() {
+			check_spends!(&txn[0], &chan_a.3);
+			check_spends!(&txn[1], &chan_b.3);
+			(txn[0].clone(), txn[1].clone())
+		} else {
+			check_spends!(&txn[1], &chan_a.3);
+			check_spends!(&txn[0], &chan_b.3);
+			(txn[1].clone(), txn[0].clone())
+		}
 	};
 
 	// Bob should now receive two events to bump his revoked commitment transaction fees.

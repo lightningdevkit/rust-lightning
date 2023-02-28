@@ -69,8 +69,7 @@ use crate::sync::{Mutex, LockTestExt};
 /// much smaller than a full [`ChannelMonitor`]. However, for large single commitment transaction
 /// updates (e.g. ones during which there are hundreds of HTLCs pending on the commitment
 /// transaction), a single update may reach upwards of 1 MiB in serialized size.
-#[cfg_attr(any(test, fuzzing, feature = "_test_utils"), derive(PartialEq, Eq))]
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 #[must_use]
 pub struct ChannelMonitorUpdate {
 	pub(crate) updates: Vec<ChannelMonitorUpdateStep>,
@@ -491,8 +490,7 @@ impl_writeable_tlv_based_enum_upgradable!(OnchainEvent,
 
 );
 
-#[cfg_attr(any(test, fuzzing, feature = "_test_utils"), derive(PartialEq, Eq))]
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) enum ChannelMonitorUpdateStep {
 	LatestHolderCommitmentTXInfo {
 		commitment_tx: HolderCommitmentTransaction,
@@ -2268,10 +2266,14 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	{
 		log_info!(logger, "Applying update to monitor {}, bringing update_id from {} to {} with {} changes.",
 			log_funding_info!(self), self.latest_update_id, updates.update_id, updates.updates.len());
-		// ChannelMonitor updates may be applied after force close if we receive a
-		// preimage for a broadcasted commitment transaction HTLC output that we'd
-		// like to claim on-chain. If this is the case, we no longer have guaranteed
-		// access to the monitor's update ID, so we use a sentinel value instead.
+		// ChannelMonitor updates may be applied after force close if we receive a preimage for a
+		// broadcasted commitment transaction HTLC output that we'd like to claim on-chain. If this
+		// is the case, we no longer have guaranteed access to the monitor's update ID, so we use a
+		// sentinel value instead.
+		//
+		// The `ChannelManager` may also queue redundant `ChannelForceClosed` updates if it still
+		// thinks the channel needs to have its commitment transaction broadcast, so we'll allow
+		// them as well.
 		if updates.update_id == CLOSED_CHANNEL_UPDATE_ID {
 			assert_eq!(updates.updates.len(), 1);
 			match updates.updates[0] {

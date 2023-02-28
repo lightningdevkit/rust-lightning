@@ -422,20 +422,22 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 	nodes_0_deserialized = nodes_0_deserialized_tmp;
 	assert!(nodes_0_read.is_empty());
 
-	{ // Channel close should result in a commitment tx
-		let txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
-		assert_eq!(txn.len(), 1);
-		check_spends!(txn[0], funding_tx);
-		assert_eq!(txn[0].input[0].previous_output.txid, funding_tx.txid());
-	}
-
 	for monitor in node_0_monitors.drain(..) {
 		assert_eq!(nodes[0].chain_monitor.watch_channel(monitor.get_funding_txo().0, monitor),
 			ChannelMonitorUpdateStatus::Completed);
 		check_added_monitors!(nodes[0], 1);
 	}
 	nodes[0].node = &nodes_0_deserialized;
+
 	check_closed_event!(nodes[0], 1, ClosureReason::OutdatedChannelManager);
+	{ // Channel close should result in a commitment tx
+		nodes[0].node.timer_tick_occurred();
+		let txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
+		assert_eq!(txn.len(), 1);
+		check_spends!(txn[0], funding_tx);
+		assert_eq!(txn[0].input[0].previous_output.txid, funding_tx.txid());
+	}
+	check_added_monitors!(nodes[0], 1);
 
 	// nodes[1] and nodes[2] have no lost state with nodes[0]...
 	reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
@@ -920,8 +922,10 @@ fn do_forwarded_payment_no_manager_persistence(use_cs_commitment: bool, claim_ht
 		});
 	}
 
+	nodes[1].node.timer_tick_occurred();
 	let bs_commitment_tx = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 	assert_eq!(bs_commitment_tx.len(), 1);
+	check_added_monitors!(nodes[1], 1);
 
 	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
 	reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));

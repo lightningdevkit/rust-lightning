@@ -320,12 +320,7 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool, use_funding_
 		let chan_0_monitor_serialized = get_monitor!(nodes[0], chan.2).encode();
 
 		reload_node!(nodes[0], *nodes[0].node.get_current_default_configuration(), &nodes_0_serialized, &[&chan_0_monitor_serialized], persister, new_chain_monitor, nodes_0_deserialized);
-		if !reorg_after_reload {
-			// If the channel is already closed when we reload the node, we'll broadcast a closing
-			// transaction via the ChannelMonitor which is missing a corresponding channel.
-			assert_eq!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 1);
-			nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().clear();
-		}
+		assert!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().is_empty());
 	}
 
 	if reorg_after_reload {
