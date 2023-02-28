@@ -76,27 +76,30 @@ pub struct ChannelMonitorUpdate {
 	pub(crate) updates: Vec<ChannelMonitorUpdateStep>,
 	/// The sequence number of this update. Updates *must* be replayed in-order according to this
 	/// sequence number (and updates may panic if they are not). The update_id values are strictly
-	/// increasing and increase by one for each new update, with one exception specified below.
+	/// increasing and increase by one for each new update, with two exceptions specified below.
 	///
 	/// This sequence number is also used to track up to which points updates which returned
 	/// [`ChannelMonitorUpdateStatus::InProgress`] have been applied to all copies of a given
 	/// ChannelMonitor when ChannelManager::channel_monitor_updated is called.
 	///
-	/// The only instance where update_id values are not strictly increasing is the case where we
-	/// allow post-force-close updates with a special update ID of [`CLOSED_CHANNEL_UPDATE_ID`]. See
-	/// its docs for more details.
+	/// The only instances we allow where update_id values are not strictly increasing have a
+	/// special update ID of [`CLOSED_CHANNEL_UPDATE_ID`]. This update ID is used for updates that
+	/// will force close the channel by broadcasting the latest commitment transaction or
+	/// special post-force-close updates, like providing preimages necessary to claim outputs on the
+	/// broadcast commitment transaction. See its docs for more details.
 	///
 	/// [`ChannelMonitorUpdateStatus::InProgress`]: super::ChannelMonitorUpdateStatus::InProgress
 	pub update_id: u64,
 }
 
-/// If:
-///    (1) a channel has been force closed and
-///    (2) we receive a preimage from a forward link that allows us to spend an HTLC output on
-///        this channel's (the backward link's) broadcasted commitment transaction
-/// then we allow the `ChannelManager` to send a `ChannelMonitorUpdate` with this update ID,
-/// with the update providing said payment preimage. No other update types are allowed after
-/// force-close.
+/// The update ID used for a [`ChannelMonitorUpdate`] that is either:
+///
+///	(1) attempting to force close the channel by broadcasting our latest commitment transaction or
+///	(2) providing a preimage (after the channel has been force closed) from a forward link that
+///		allows us to spend an HTLC output on this channel's (the backward link's) broadcasted
+///		commitment transaction.
+///
+/// No other [`ChannelMonitorUpdate`]s are allowed after force-close.
 pub const CLOSED_CHANNEL_UPDATE_ID: u64 = core::u64::MAX;
 
 impl Writeable for ChannelMonitorUpdate {
@@ -2272,7 +2275,11 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		if updates.update_id == CLOSED_CHANNEL_UPDATE_ID {
 			assert_eq!(updates.updates.len(), 1);
 			match updates.updates[0] {
-				ChannelMonitorUpdateStep::PaymentPreimage { .. } => {},
+				ChannelMonitorUpdateStep::ChannelForceClosed { .. } => {},
+				// We should have already seen a `ChannelForceClosed` update if we're trying to
+				// provide a preimage at this point.
+				ChannelMonitorUpdateStep::PaymentPreimage { .. } =>
+					debug_assert_eq!(self.latest_update_id, CLOSED_CHANNEL_UPDATE_ID),
 				_ => {
 					log_error!(logger, "Attempted to apply post-force-close ChannelMonitorUpdate of type {}", updates.updates[0].variant_name());
 					panic!("Attempted to apply post-force-close ChannelMonitorUpdate that wasn't providing a payment preimage");
