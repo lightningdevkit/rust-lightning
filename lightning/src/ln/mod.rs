@@ -38,7 +38,7 @@ pub(crate) mod channel;
 pub use channel_id::ChannelId;
 
 pub(crate) mod onion_utils;
-mod outbound_payment;
+pub mod outbound_payment;
 pub mod wire;
 
 pub use onion_utils::create_payment_onion;
