@@ -54,7 +54,7 @@
 //! # let logger = FakeLogger {};
 //!
 //! let network_graph = NetworkGraph::new(Network::Bitcoin, &logger);
-//! let rapid_sync = RapidGossipSync::new(&network_graph);
+//! let rapid_sync = RapidGossipSync::new(&network_graph, &logger);
 //! let snapshot_contents: &[u8] = &[0; 0];
 //! let new_last_sync_timestamp_result = rapid_sync.update_network_graph(snapshot_contents);
 //! ```
@@ -94,14 +94,16 @@ mod processing;
 pub struct RapidGossipSync<NG: Deref<Target=NetworkGraph<L>>, L: Deref>
 where L::Target: Logger {
 	network_graph: NG,
+	logger: L,
 	is_initial_sync_complete: AtomicBool
 }
 
 impl<NG: Deref<Target=NetworkGraph<L>>, L: Deref> RapidGossipSync<NG, L> where L::Target: Logger {
 	/// Instantiate a new [`RapidGossipSync`] instance.
-	pub fn new(network_graph: NG) -> Self {
+	pub fn new(network_graph: NG, logger: L) -> Self {
 		Self {
 			network_graph,
+			logger,
 			is_initial_sync_complete: AtomicBool::new(false)
 		}
 	}
@@ -228,7 +230,7 @@ mod tests {
 
 		assert_eq!(network_graph.read_only().channels().len(), 0);
 
-		let rapid_sync = RapidGossipSync::new(&network_graph);
+		let rapid_sync = RapidGossipSync::new(&network_graph, &logger);
 		let sync_result = rapid_sync.sync_network_graph_with_file_path(&graph_sync_test_file);
 
 		if sync_result.is_err() {
@@ -260,7 +262,7 @@ mod tests {
 
 		assert_eq!(network_graph.read_only().channels().len(), 0);
 
-		let rapid_sync = RapidGossipSync::new(&network_graph);
+		let rapid_sync = RapidGossipSync::new(&network_graph, &logger);
 		let start = std::time::Instant::now();
 		let sync_result = rapid_sync
 			.sync_network_graph_with_file_path("./res/full_graph.lngossip");
@@ -299,7 +301,7 @@ pub mod bench {
 		let logger = TestLogger::new();
 		b.iter(|| {
 			let network_graph = NetworkGraph::new(Network::Bitcoin, &logger);
-			let rapid_sync = RapidGossipSync::new(&network_graph);
+			let rapid_sync = RapidGossipSync::new(&network_graph, &logger);
 			let sync_result = rapid_sync.sync_network_graph_with_file_path("./res/full_graph.lngossip");
 			if let Err(crate::error::GraphSyncError::DecodeError(DecodeError::Io(io_error))) = &sync_result {
 				let error_string = format!("Input file lightning-rapid-gossip-sync/res/full_graph.lngossip is missing! Download it from https://bitcoin.ninja/ldk-compressed_graph-bc08df7542-2022-05-05.bin\n\n{:?}", io_error);

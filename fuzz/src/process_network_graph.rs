@@ -7,7 +7,7 @@ use crate::utils::test_logger;
 fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 	let logger = test_logger::TestLogger::new("".to_owned(), out);
 	let network_graph = lightning::routing::gossip::NetworkGraph::new(bitcoin::Network::Bitcoin, &logger);
-	let rapid_sync = RapidGossipSync::new(&network_graph);
+	let rapid_sync = RapidGossipSync::new(&network_graph, &logger);
 	let _ = rapid_sync.update_network_graph(data);
 }
 
