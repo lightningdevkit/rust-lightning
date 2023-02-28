@@ -1951,11 +1951,10 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 			},
 			Some(peer_lock) => {
 				let peer = peer_lock.lock().unwrap();
-				if !peer.handshake_complete() { return; }
-				debug_assert!(peer.their_node_id.is_some());
 				if let Some((node_id, _)) = peer.their_node_id {
 					log_trace!(self.logger, "Handling disconnection of peer {}", log_pubkey!(node_id));
 					self.node_id_to_descriptor.lock().unwrap().remove(&node_id);
+					if !peer.handshake_complete() { return; }
 					self.message_handler.chan_handler.peer_disconnected(&node_id);
 					self.message_handler.onion_message_handler.peer_disconnected(&node_id);
 				}
