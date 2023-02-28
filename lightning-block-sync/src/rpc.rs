@@ -13,7 +13,26 @@ use serde_json;
 
 use std::convert::TryFrom;
 use std::convert::TryInto;
+use std::error::Error;
+use std::fmt;
 use std::sync::atomic::{AtomicUsize, Ordering};
+
+/// An error returned by the RPC server.
+#[derive(Debug)]
+pub struct RpcError {
+	/// The error code.
+	pub code: i64,
+	/// The error message.
+	pub message: String,
+}
+
+impl fmt::Display for RpcError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "RPC error {}: {}", self.code, self.message)
+    }
+}
+
+impl Error for RpcError {}
 
 /// A simple RPC client for calling methods using HTTP `POST`.
 pub struct RpcClient {
@@ -69,8 +88,11 @@ impl RpcClient {
 		let error = &response["error"];
 		if !error.is_null() {
 			// TODO: Examine error code for a more precise std::io::ErrorKind.
-			let message = error["message"].as_str().unwrap_or("unknown error");
-			return Err(std::io::Error::new(std::io::ErrorKind::Other, message));
+			let rpc_error = RpcError { 
+				code: error["code"].as_i64().unwrap_or(-1), 
+				message: error["message"].as_str().unwrap_or("unknown error").to_string() 
+			};
+			return Err(std::io::Error::new(std::io::ErrorKind::Other, rpc_error));
 		}
 
 		let result = &mut response["result"];
@@ -163,7 +185,9 @@ mod tests {
 		match client.call_method::<u64>("getblock", &[invalid_block_hash]).await {
 			Err(e) => {
 				assert_eq!(e.kind(), std::io::ErrorKind::Other);
-				assert_eq!(e.get_ref().unwrap().to_string(), "invalid parameter");
+				let rpc_error: Box<RpcError> = e.into_inner().unwrap().downcast().unwrap();
+				assert_eq!(rpc_error.code, -8);
+				assert_eq!(rpc_error.message, "invalid parameter");
 			},
 			Ok(_) => panic!("Expected error"),
 		}
