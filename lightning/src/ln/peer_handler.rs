@@ -815,34 +815,40 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 		let pending_read_buffer = [0; 50].to_vec(); // Noise act two is 50 bytes
 
 		let mut peers = self.peers.write().unwrap();
-		if peers.insert(descriptor, Mutex::new(Peer {
-			channel_encryptor: peer_encryptor,
-			their_node_id: None,
-			their_features: None,
-			their_net_address: remote_network_address,
+		match peers.entry(descriptor) {
+			hash_map::Entry::Occupied(_) => {
+				debug_assert!(false, "PeerManager driver duplicated descriptors!");
+				Err(PeerHandleError {})
+			},
+			hash_map::Entry::Vacant(e) => {
+				e.insert(Mutex::new(Peer {
+					channel_encryptor: peer_encryptor,
+					their_node_id: None,
+					their_features: None,
+					their_net_address: remote_network_address,
 
-			pending_outbound_buffer: LinkedList::new(),
-			pending_outbound_buffer_first_msg_offset: 0,
-			gossip_broadcast_buffer: LinkedList::new(),
-			awaiting_write_event: false,
+					pending_outbound_buffer: LinkedList::new(),
+					pending_outbound_buffer_first_msg_offset: 0,
+					gossip_broadcast_buffer: LinkedList::new(),
+					awaiting_write_event: false,
 
-			pending_read_buffer,
-			pending_read_buffer_pos: 0,
-			pending_read_is_header: false,
+					pending_read_buffer,
+					pending_read_buffer_pos: 0,
+					pending_read_is_header: false,
 
-			sync_status: InitSyncTracker::NoSyncRequested,
+					sync_status: InitSyncTracker::NoSyncRequested,
 
-			msgs_sent_since_pong: 0,
-			awaiting_pong_timer_tick_intervals: 0,
-			received_message_since_timer_tick: false,
-			sent_gossip_timestamp_filter: false,
+					msgs_sent_since_pong: 0,
+					awaiting_pong_timer_tick_intervals: 0,
+					received_message_since_timer_tick: false,
+					sent_gossip_timestamp_filter: false,
 
-			received_channel_announce_since_backlogged: false,
-			inbound_connection: false,
-		})).is_some() {
-			panic!("PeerManager driver duplicated descriptors!");
-		};
-		Ok(res)
+					received_channel_announce_since_backlogged: false,
+					inbound_connection: false,
+				}));
+				Ok(res)
+			}
+		}
 	}
 
 	/// Indicates a new inbound connection has been established to a node with an optional remote
@@ -865,34 +871,40 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 		let pending_read_buffer = [0; 50].to_vec(); // Noise act one is 50 bytes
 
 		let mut peers = self.peers.write().unwrap();
-		if peers.insert(descriptor, Mutex::new(Peer {
-			channel_encryptor: peer_encryptor,
-			their_node_id: None,
-			their_features: None,
-			their_net_address: remote_network_address,
+		match peers.entry(descriptor) {
+			hash_map::Entry::Occupied(_) => {
+				debug_assert!(false, "PeerManager driver duplicated descriptors!");
+				Err(PeerHandleError {})
+			},
+			hash_map::Entry::Vacant(e) => {
+				e.insert(Mutex::new(Peer {
+					channel_encryptor: peer_encryptor,
+					their_node_id: None,
+					their_features: None,
+					their_net_address: remote_network_address,
 
-			pending_outbound_buffer: LinkedList::new(),
-			pending_outbound_buffer_first_msg_offset: 0,
-			gossip_broadcast_buffer: LinkedList::new(),
-			awaiting_write_event: false,
+					pending_outbound_buffer: LinkedList::new(),
+					pending_outbound_buffer_first_msg_offset: 0,
+					gossip_broadcast_buffer: LinkedList::new(),
+					awaiting_write_event: false,
 
-			pending_read_buffer,
-			pending_read_buffer_pos: 0,
-			pending_read_is_header: false,
+					pending_read_buffer,
+					pending_read_buffer_pos: 0,
+					pending_read_is_header: false,
 
-			sync_status: InitSyncTracker::NoSyncRequested,
+					sync_status: InitSyncTracker::NoSyncRequested,
 
-			msgs_sent_since_pong: 0,
-			awaiting_pong_timer_tick_intervals: 0,
-			received_message_since_timer_tick: false,
-			sent_gossip_timestamp_filter: false,
+					msgs_sent_since_pong: 0,
+					awaiting_pong_timer_tick_intervals: 0,
+					received_message_since_timer_tick: false,
+					sent_gossip_timestamp_filter: false,
 
-			received_channel_announce_since_backlogged: false,
-			inbound_connection: true,
-		})).is_some() {
-			panic!("PeerManager driver duplicated descriptors!");
-		};
-		Ok(())
+					received_channel_announce_since_backlogged: false,
+					inbound_connection: true,
+				}));
+				Ok(())
+			}
+		}
 	}
 
 	fn peer_should_read(&self, peer: &mut Peer) -> bool {
@@ -1141,9 +1153,13 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 						macro_rules! insert_node_id {
 							() => {
 								match self.node_id_to_descriptor.lock().unwrap().entry(peer.their_node_id.unwrap().0) {
-									hash_map::Entry::Occupied(_) => {
+									hash_map::Entry::Occupied(e) => {
 										log_trace!(self.logger, "Got second connection with {}, closing", log_pubkey!(peer.their_node_id.unwrap().0));
 										peer.their_node_id = None; // Unset so that we don't generate a peer_disconnected event
+										// Check that the peers map is consistent with the
+										// node_id_to_descriptor map, as this has been broken
+										// before.
+										debug_assert!(peers.get(e.get()).is_some());
 										return Err(PeerHandleError { })
 									},
 									hash_map::Entry::Vacant(entry) => {
@@ -1913,7 +1929,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 							self.do_attempt_write_data(&mut descriptor, &mut *peer, false);
 						}
 						self.do_disconnect(descriptor, &*peer, "DisconnectPeer HandleError");
-					}
+					} else { debug_assert!(false, "Missing connection for peer"); }
 				}
 			}
 		}
@@ -1953,7 +1969,8 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 				let peer = peer_lock.lock().unwrap();
 				if let Some((node_id, _)) = peer.their_node_id {
 					log_trace!(self.logger, "Handling disconnection of peer {}", log_pubkey!(node_id));
-					self.node_id_to_descriptor.lock().unwrap().remove(&node_id);
+					let removed = self.node_id_to_descriptor.lock().unwrap().remove(&node_id);
+					debug_assert!(removed.is_some(), "descriptor maps should be consistent");
 					if !peer.handshake_complete() { return; }
 					self.message_handler.chan_handler.peer_disconnected(&node_id);
 					self.message_handler.onion_message_handler.peer_disconnected(&node_id);
