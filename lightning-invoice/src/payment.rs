@@ -18,7 +18,8 @@ use lightning::chain;
 use lightning::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use lightning::sign::{NodeSigner, SignerProvider, EntropySource};
 use lightning::ln::PaymentHash;
-use lightning::ln::channelmanager::{AChannelManager, ChannelManager, PaymentId, Retry, RetryableSendFailure, RecipientOnionFields, ProbeSendFailure};
+use lightning::ln::channelmanager::{AChannelManager, ChannelManager, PaymentId};
+use lightning::ln::outbound_payment::{ProbeSendFailure, RecipientOnionFields, RetryableSendFailure, Retry};
 use lightning::routing::router::{PaymentParameters, RouteParameters, Router};
 use lightning::util::logger::Logger;
 
