@@ -2373,6 +2373,13 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				},
 			}
 		}
+
+		// If the updates succeeded and we were in an already closed channel state, then there's no
+		// need to refuse any updates we expect to receive afer seeing a confirmed commitment.
+		if ret.is_ok() && updates.update_id == CLOSED_CHANNEL_UPDATE_ID && self.latest_update_id == updates.update_id {
+			return Ok(());
+		}
+
 		self.latest_update_id = updates.update_id;
 
 		if ret.is_ok() && self.funding_spend_seen {
