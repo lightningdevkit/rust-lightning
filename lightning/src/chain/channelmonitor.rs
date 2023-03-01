@@ -2161,23 +2161,20 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	/// up-to-date as our holder commitment transaction is updated.
 	/// Panics if set_on_holder_tx_csv has never been called.
 	fn provide_latest_holder_commitment_tx(&mut self, holder_commitment_tx: HolderCommitmentTransaction, htlc_outputs: Vec<(HTLCOutputInCommitment, Option<Signature>, Option<HTLCSource>)>, claimed_htlcs: &[(SentHTLCId, PaymentPreimage)]) -> Result<(), &'static str> {
-		// block for Rust 1.34 compat
-		let mut new_holder_commitment_tx = {
-			let trusted_tx = holder_commitment_tx.trust();
-			let txid = trusted_tx.txid();
-			let tx_keys = trusted_tx.keys();
-			self.current_holder_commitment_number = trusted_tx.commitment_number();
-			HolderSignedTx {
-				txid,
-				revocation_key: tx_keys.revocation_key,
-				a_htlc_key: tx_keys.broadcaster_htlc_key,
-				b_htlc_key: tx_keys.countersignatory_htlc_key,
-				delayed_payment_key: tx_keys.broadcaster_delayed_payment_key,
-				per_commitment_point: tx_keys.per_commitment_point,
-				htlc_outputs,
-				to_self_value_sat: holder_commitment_tx.to_broadcaster_value_sat(),
-				feerate_per_kw: trusted_tx.feerate_per_kw(),
-			}
+		let trusted_tx = holder_commitment_tx.trust();
+		let txid = trusted_tx.txid();
+		let tx_keys = trusted_tx.keys();
+		self.current_holder_commitment_number = trusted_tx.commitment_number();
+		let mut new_holder_commitment_tx = HolderSignedTx {
+			txid,
+			revocation_key: tx_keys.revocation_key,
+			a_htlc_key: tx_keys.broadcaster_htlc_key,
+			b_htlc_key: tx_keys.countersignatory_htlc_key,
+			delayed_payment_key: tx_keys.broadcaster_delayed_payment_key,
+			per_commitment_point: tx_keys.per_commitment_point,
+			htlc_outputs,
+			to_self_value_sat: holder_commitment_tx.to_broadcaster_value_sat(),
+			feerate_per_kw: trusted_tx.feerate_per_kw(),
 		};
 		self.onchain_tx_handler.provide_latest_holder_tx(holder_commitment_tx);
 		mem::swap(&mut new_holder_commitment_tx, &mut self.current_holder_commitment_tx);
