@@ -428,8 +428,8 @@ impl OutboundPayments {
 		NS::Target: NodeSigner,
 		L::Target: Logger,
 		IH: Fn() -> InFlightHtlcs,
-		SP: Fn(&Vec<RouteHop>, &Option<PaymentParameters>, &PaymentHash, &Option<PaymentSecret>, u64,
-			 u32, PaymentId, &Option<PaymentPreimage>, [u8; 32]) -> Result<(), APIError>,
+		SP: Fn(&Vec<RouteHop>, &PaymentHash, &Option<PaymentSecret>, u64, u32, PaymentId,
+			&Option<PaymentPreimage>, [u8; 32]) -> Result<(), APIError>,
 	{
 		self.send_payment_internal(payment_id, payment_hash, payment_secret, None, retry_strategy,
 			route_params, router, first_hops, &compute_inflight_htlcs, entropy_source, node_signer,
@@ -444,8 +444,8 @@ impl OutboundPayments {
 	where
 		ES::Target: EntropySource,
 		NS::Target: NodeSigner,
-		F: Fn(&Vec<RouteHop>, &Option<PaymentParameters>, &PaymentHash, &Option<PaymentSecret>, u64,
-		   u32, PaymentId, &Option<PaymentPreimage>, [u8; 32]) -> Result<(), APIError>
+		F: Fn(&Vec<RouteHop>, &PaymentHash, &Option<PaymentSecret>, u64, u32, PaymentId,
+			&Option<PaymentPreimage>, [u8; 32]) -> Result<(), APIError>
 	{
 		let onion_session_privs = self.add_new_pending_payment(payment_hash, *payment_secret, payment_id, None, route, None, None, entropy_source, best_block_height)?;
 		self.pay_route_internal(route, payment_hash, payment_secret, None, payment_id, None,
@@ -466,8 +466,8 @@ impl OutboundPayments {
 		NS::Target: NodeSigner,
 		L::Target: Logger,
 		IH: Fn() -> InFlightHtlcs,
-		SP: Fn(&Vec<RouteHop>, &Option<PaymentParameters>, &PaymentHash, &Option<PaymentSecret>, u64,
-			 u32, PaymentId, &Option<PaymentPreimage>, [u8; 32]) -> Result<(), APIError>,
+		SP: Fn(&Vec<RouteHop>, &PaymentHash, &Option<PaymentSecret>, u64, u32, PaymentId,
+			&Option<PaymentPreimage>, [u8; 32]) -> Result<(), APIError>,
 	{
 		let preimage = payment_preimage
 			.unwrap_or_else(|| PaymentPreimage(entropy_source.get_secure_random_bytes()));
@@ -485,8 +485,8 @@ impl OutboundPayments {
 	where
 		ES::Target: EntropySource,
 		NS::Target: NodeSigner,
-		F: Fn(&Vec<RouteHop>, &Option<PaymentParameters>, &PaymentHash, &Option<PaymentSecret>, u64,
-		   u32, PaymentId, &Option<PaymentPreimage>, [u8; 32]) -> Result<(), APIError>
+		F: Fn(&Vec<RouteHop>, &PaymentHash, &Option<PaymentSecret>, u64, u32, PaymentId,
+			&Option<PaymentPreimage>, [u8; 32]) -> Result<(), APIError>
 	{
 		let preimage = payment_preimage
 			.unwrap_or_else(|| PaymentPreimage(entropy_source.get_secure_random_bytes()));
@@ -511,8 +511,8 @@ impl OutboundPayments {
 		R::Target: Router,
 		ES::Target: EntropySource,
 		NS::Target: NodeSigner,
-		SP: Fn(&Vec<RouteHop>, &Option<PaymentParameters>, &PaymentHash, &Option<PaymentSecret>, u64,
-		   u32, PaymentId, &Option<PaymentPreimage>, [u8; 32]) -> Result<(), APIError>,
+		SP: Fn(&Vec<RouteHop>, &PaymentHash, &Option<PaymentSecret>, u64, u32, PaymentId,
+			&Option<PaymentPreimage>, [u8; 32]) -> Result<(), APIError>,
 		IH: Fn() -> InFlightHtlcs,
 		FH: Fn() -> Vec<ChannelDetails>,
 		L::Target: Logger,
@@ -580,8 +580,8 @@ impl OutboundPayments {
 		NS::Target: NodeSigner,
 		L::Target: Logger,
 		IH: Fn() -> InFlightHtlcs,
-		SP: Fn(&Vec<RouteHop>, &Option<PaymentParameters>, &PaymentHash, &Option<PaymentSecret>, u64,
-		    u32, PaymentId, &Option<PaymentPreimage>, [u8; 32]) -> Result<(), APIError>
+		SP: Fn(&Vec<RouteHop>, &PaymentHash, &Option<PaymentSecret>, u64, u32, PaymentId,
+			&Option<PaymentPreimage>, [u8; 32]) -> Result<(), APIError>
 	{
 		#[cfg(feature = "std")] {
 			if has_expired(&route_params) {
@@ -621,8 +621,8 @@ impl OutboundPayments {
 		NS::Target: NodeSigner,
 		L::Target: Logger,
 		IH: Fn() -> InFlightHtlcs,
-		SP: Fn(&Vec<RouteHop>, &Option<PaymentParameters>, &PaymentHash, &Option<PaymentSecret>, u64,
-		    u32, PaymentId, &Option<PaymentPreimage>, [u8; 32]) -> Result<(), APIError>
+		SP: Fn(&Vec<RouteHop>, &PaymentHash, &Option<PaymentSecret>, u64, u32, PaymentId,
+			&Option<PaymentPreimage>, [u8; 32]) -> Result<(), APIError>
 	{
 		#[cfg(feature = "std")] {
 			if has_expired(&route_params) {
@@ -736,8 +736,8 @@ impl OutboundPayments {
 		NS::Target: NodeSigner,
 		L::Target: Logger,
 		IH: Fn() -> InFlightHtlcs,
-		SP: Fn(&Vec<RouteHop>, &Option<PaymentParameters>, &PaymentHash, &Option<PaymentSecret>, u64,
-		    u32, PaymentId, &Option<PaymentPreimage>, [u8; 32]) -> Result<(), APIError>
+		SP: Fn(&Vec<RouteHop>, &PaymentHash, &Option<PaymentSecret>, u64, u32, PaymentId,
+			&Option<PaymentPreimage>, [u8; 32]) -> Result<(), APIError>
 	{
 		match err {
 			PaymentSendFailure::AllFailedResendSafe(errs) => {
@@ -806,8 +806,8 @@ impl OutboundPayments {
 	where
 		ES::Target: EntropySource,
 		NS::Target: NodeSigner,
-		F: Fn(&Vec<RouteHop>, &Option<PaymentParameters>, &PaymentHash, &Option<PaymentSecret>, u64,
-		   u32, PaymentId, &Option<PaymentPreimage>, [u8; 32]) -> Result<(), APIError>
+		F: Fn(&Vec<RouteHop>, &PaymentHash, &Option<PaymentSecret>, u64, u32, PaymentId,
+			&Option<PaymentPreimage>, [u8; 32]) -> Result<(), APIError>
 	{
 		let payment_id = PaymentId(entropy_source.get_secure_random_bytes());
 
@@ -884,8 +884,8 @@ impl OutboundPayments {
 	) -> Result<(), PaymentSendFailure>
 	where
 		NS::Target: NodeSigner,
-		F: Fn(&Vec<RouteHop>, &Option<PaymentParameters>, &PaymentHash, &Option<PaymentSecret>, u64,
-		   u32, PaymentId, &Option<PaymentPreimage>, [u8; 32]) -> Result<(), APIError>
+		F: Fn(&Vec<RouteHop>, &PaymentHash, &Option<PaymentSecret>, u64, u32, PaymentId,
+			&Option<PaymentPreimage>, [u8; 32]) -> Result<(), APIError>
 	{
 		if route.paths.len() < 1 {
 			return Err(PaymentSendFailure::ParameterError(APIError::InvalidRoute{err: "There must be at least one path to send over".to_owned()}));
@@ -922,7 +922,7 @@ impl OutboundPayments {
 		let mut results = Vec::new();
 		debug_assert_eq!(route.paths.len(), onion_session_privs.len());
 		for (path, session_priv) in route.paths.iter().zip(onion_session_privs.into_iter()) {
-			let mut path_res = send_payment_along_path(&path, &route.payment_params, &payment_hash, payment_secret, total_value, cur_height, payment_id, &keysend_preimage, session_priv);
+			let mut path_res = send_payment_along_path(&path, &payment_hash, payment_secret, total_value, cur_height, payment_id, &keysend_preimage, session_priv);
 			match path_res {
 				Ok(_) => {},
 				Err(APIError::MonitorUpdateInProgress) => {
@@ -989,8 +989,8 @@ impl OutboundPayments {
 	) -> Result<(), PaymentSendFailure>
 	where
 		NS::Target: NodeSigner,
-		F: Fn(&Vec<RouteHop>, &Option<PaymentParameters>, &PaymentHash, &Option<PaymentSecret>, u64,
-		   u32, PaymentId, &Option<PaymentPreimage>, [u8; 32]) -> Result<(), APIError>
+		F: Fn(&Vec<RouteHop>, &PaymentHash, &Option<PaymentSecret>, u64, u32, PaymentId,
+			&Option<PaymentPreimage>, [u8; 32]) -> Result<(), APIError>
 	{
 		self.pay_route_internal(route, payment_hash, payment_secret, keysend_preimage, payment_id,
 			recv_value_msat, onion_session_privs, node_signer, best_block_height,
@@ -1356,7 +1356,7 @@ mod tests {
 			outbound_payments.retry_payment_internal(
 				PaymentHash([0; 32]), PaymentId([0; 32]), expired_route_params, &&router, vec![],
 				&|| InFlightHtlcs::new(), &&keys_manager, &&keys_manager, 0, &&logger,
-				&pending_events, &|_, _, _, _, _, _, _, _, _| Ok(()));
+				&pending_events, &|_, _, _, _, _, _, _, _| Ok(()));
 			let events = pending_events.lock().unwrap();
 			assert_eq!(events.len(), 1);
 			if let Event::PaymentFailed { .. } = events[0] { } else { panic!("Unexpected event"); }
@@ -1364,7 +1364,7 @@ mod tests {
 			let err = outbound_payments.send_payment(
 				PaymentHash([0; 32]), &None, PaymentId([0; 32]), Retry::Attempts(0), expired_route_params,
 				&&router, vec![], || InFlightHtlcs::new(), &&keys_manager, &&keys_manager, 0, &&logger,
-				&pending_events, |_, _, _, _, _, _, _, _, _| Ok(())).unwrap_err();
+				&pending_events, |_, _, _, _, _, _, _, _| Ok(())).unwrap_err();
 			if let RetryableSendFailure::PaymentExpired = err { } else { panic!("Unexpected error"); }
 		}
 	}
@@ -1400,7 +1400,7 @@ mod tests {
 			outbound_payments.retry_payment_internal(
 				PaymentHash([0; 32]), PaymentId([0; 32]), route_params, &&router, vec![],
 				&|| InFlightHtlcs::new(), &&keys_manager, &&keys_manager, 0, &&logger,
-				&pending_events, &|_, _, _, _, _, _, _, _, _| Ok(()));
+				&pending_events, &|_, _, _, _, _, _, _, _| Ok(()));
 			let events = pending_events.lock().unwrap();
 			assert_eq!(events.len(), 1);
 			if let Event::PaymentFailed { .. } = events[0] { } else { panic!("Unexpected event"); }
@@ -1408,7 +1408,7 @@ mod tests {
 			let err = outbound_payments.send_payment(
 				PaymentHash([0; 32]), &None, PaymentId([0; 32]), Retry::Attempts(0), route_params,
 				&&router, vec![], || InFlightHtlcs::new(), &&keys_manager, &&keys_manager, 0, &&logger,
-				&pending_events, |_, _, _, _, _, _, _, _, _| Ok(())).unwrap_err();
+				&pending_events, |_, _, _, _, _, _, _, _| Ok(())).unwrap_err();
 			if let RetryableSendFailure::RouteNotFound = err {
 			} else { panic!("Unexpected error"); }
 		}
@@ -1457,7 +1457,7 @@ mod tests {
 			PaymentHash([0; 32]), &None, PaymentId([0; 32]), Retry::Attempts(0), route_params.clone(),
 			&&router, vec![], || InFlightHtlcs::new(), &&keys_manager, &&keys_manager, 0, &&logger,
 			&pending_events,
-			|_, _, _, _, _, _, _, _, _| Err(APIError::ChannelUnavailable { err: "test".to_owned() }))
+			|_, _, _, _, _, _, _, _| Err(APIError::ChannelUnavailable { err: "test".to_owned() }))
 			.unwrap();
 		let mut events = pending_events.lock().unwrap();
 		assert_eq!(events.len(), 2);
@@ -1475,7 +1475,7 @@ mod tests {
 		outbound_payments.send_payment(
 			PaymentHash([0; 32]), &None, PaymentId([0; 32]), Retry::Attempts(0), route_params.clone(),
 			&&router, vec![], || InFlightHtlcs::new(), &&keys_manager, &&keys_manager, 0, &&logger,
-			&pending_events, |_, _, _, _, _, _, _, _, _| Err(APIError::MonitorUpdateInProgress))
+			&pending_events, |_, _, _, _, _, _, _, _| Err(APIError::MonitorUpdateInProgress))
 			.unwrap();
 		{
 			let events = pending_events.lock().unwrap();
@@ -1487,7 +1487,7 @@ mod tests {
 			PaymentHash([0; 32]), &None, PaymentId([1; 32]), Retry::Attempts(0), route_params.clone(),
 			&&router, vec![], || InFlightHtlcs::new(), &&keys_manager, &&keys_manager, 0, &&logger,
 			&pending_events,
-			|_, _, _, _, _, _, _, _, _| Err(APIError::APIMisuseError { err: "test".to_owned() }))
+			|_, _, _, _, _, _, _, _| Err(APIError::APIMisuseError { err: "test".to_owned() }))
 			.unwrap();
 		let events = pending_events.lock().unwrap();
 		assert_eq!(events.len(), 2);
