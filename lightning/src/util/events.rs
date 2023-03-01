@@ -701,10 +701,6 @@ pub enum Event {
 		/// If this is `Some`, then the corresponding channel should be avoided when the payment is
 		/// retried. May be `None` for older [`Event`] serializations.
 		short_channel_id: Option<u64>,
-		/// Parameters used by LDK to compute a new [`Route`] when retrying the failed payment path.
-		///
-		/// [`Route`]: crate::routing::router::Route
-		retry: Option<RouteParameters>,
 #[cfg(test)]
 		error_code: Option<u16>,
 #[cfg(test)]
@@ -992,7 +988,7 @@ impl Writeable for Event {
 			},
 			&Event::PaymentPathFailed {
 				ref payment_id, ref payment_hash, ref payment_failed_permanently, ref failure,
-				ref path, ref short_channel_id, ref retry,
+				ref path, ref short_channel_id,
 				#[cfg(test)]
 				ref error_code,
 				#[cfg(test)]
@@ -1010,7 +1006,7 @@ impl Writeable for Event {
 					(3, false, required), // all_paths_failed in LDK versions prior to 0.0.114
 					(5, *path, vec_type),
 					(7, short_channel_id, option),
-					(9, retry, option),
+					(9, None::<RouteParameters>, option), // retry in LDK versions prior to 0.0.115
 					(11, payment_id, option),
 					(13, failure, required),
 				});
@@ -1227,7 +1223,6 @@ impl MaybeReadable for Event {
 					let mut network_update = None;
 					let mut path: Option<Vec<RouteHop>> = Some(vec![]);
 					let mut short_channel_id = None;
-					let mut retry = None;
 					let mut payment_id = None;
 					let mut failure_opt = None;
 					read_tlv_fields!(reader, {
@@ -1236,7 +1231,6 @@ impl MaybeReadable for Event {
 						(2, payment_failed_permanently, required),
 						(5, path, vec_type),
 						(7, short_channel_id, option),
-						(9, retry, option),
 						(11, payment_id, option),
 						(13, failure_opt, upgradable_option),
 					});
@@ -1248,7 +1242,6 @@ impl MaybeReadable for Event {
 						failure,
 						path: path.unwrap(),
 						short_channel_id,
-						retry,
 						#[cfg(test)]
 						error_code,
 						#[cfg(test)]

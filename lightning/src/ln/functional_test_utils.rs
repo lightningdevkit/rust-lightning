@@ -1868,20 +1868,13 @@ pub fn expect_payment_failed_conditions_event<'a, 'b, 'c, 'd, 'e>(
 ) {
 	if conditions.expected_mpp_parts_remain { assert_eq!(payment_failed_events.len(), 1); } else { assert_eq!(payment_failed_events.len(), 2); }
 	let expected_payment_id = match &payment_failed_events[0] {
-		Event::PaymentPathFailed { payment_hash, payment_failed_permanently, path, retry, payment_id, failure, short_channel_id,
+		Event::PaymentPathFailed { payment_hash, payment_failed_permanently, payment_id, failure,
 			#[cfg(test)]
 			error_code,
 			#[cfg(test)]
 			error_data, .. } => {
 			assert_eq!(*payment_hash, expected_payment_hash, "unexpected payment_hash");
 			assert_eq!(*payment_failed_permanently, expected_payment_failed_permanently, "unexpected payment_failed_permanently value");
-			assert!(retry.is_some(), "expected retry.is_some()");
-			assert_eq!(retry.as_ref().unwrap().final_value_msat, path.last().unwrap().fee_msat, "Retry amount should match last hop in path");
-			assert_eq!(retry.as_ref().unwrap().payment_params.payee_pubkey, path.last().unwrap().pubkey, "Retry payee node_id should match last hop in path");
-			if let Some(scid) = short_channel_id {
-				assert!(retry.as_ref().unwrap().payment_params.previously_failed_channels.contains(&scid));
-			}
-
 			#[cfg(test)]
 			{
 				assert!(error_code.is_some(), "expected error_code.is_some() = true");

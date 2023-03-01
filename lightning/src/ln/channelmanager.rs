@@ -3834,9 +3834,9 @@ where
 		// from block_connected which may run during initialization prior to the chain_monitor
 		// being fully configured. See the docs for `ChannelManagerReadArgs` for more.
 		match source {
-			HTLCSource::OutboundRoute { ref path, ref session_priv, ref payment_id, ref payment_params, .. } => {
+			HTLCSource::OutboundRoute { ref path, ref session_priv, ref payment_id, .. } => {
 				if self.pending_outbound_payments.fail_htlc(source, payment_hash, onion_error, path,
-					session_priv, payment_id, payment_params, self.probing_cookie_secret, &self.secp_ctx,
+					session_priv, payment_id, self.probing_cookie_secret, &self.secp_ctx,
 					&self.pending_events, &self.logger)
 				{ self.push_pending_forwards_ev(); }
 			},
