@@ -275,11 +275,6 @@ pub(crate) enum HTLCSource {
 		first_hop_htlc_msat: u64,
 		payment_id: PaymentId,
 		payment_secret: Option<PaymentSecret>,
-		/// Note that this is now "deprecated" - we write it for forwards (and read it for
-		/// backwards) compatibility reasons, but prefer to use the data in the
-		/// [`super::outbound_payment`] module, which stores per-payment data once instead of in
-		/// each HTLC.
-		payment_params: Option<PaymentParameters>,
 	},
 }
 #[allow(clippy::derive_hash_xor_eq)] // Our Hash is faithful to the data, we just don't have SecretKey::hash
@@ -290,14 +285,13 @@ impl core::hash::Hash for HTLCSource {
 				0u8.hash(hasher);
 				prev_hop_data.hash(hasher);
 			},
-			HTLCSource::OutboundRoute { path, session_priv, payment_id, payment_secret, first_hop_htlc_msat, payment_params } => {
+			HTLCSource::OutboundRoute { path, session_priv, payment_id, payment_secret, first_hop_htlc_msat } => {
 				1u8.hash(hasher);
 				path.hash(hasher);
 				session_priv[..].hash(hasher);
 				payment_id.hash(hasher);
 				payment_secret.hash(hasher);
 				first_hop_htlc_msat.hash(hasher);
-				payment_params.hash(hasher);
 			},
 		}
 	}
@@ -312,7 +306,6 @@ impl HTLCSource {
 			first_hop_htlc_msat: 0,
 			payment_id: PaymentId([2; 32]),
 			payment_secret: None,
-			payment_params: None,
 		}
 	}
 }
@@ -2511,7 +2504,6 @@ where
 						first_hop_htlc_msat: htlc_msat,
 						payment_id,
 						payment_secret: payment_secret.clone(),
-						payment_params: payment_params.clone(),
 					}, onion_packet, &self.logger);
 				match break_chan_entry!(self, send_res, chan) {
 					Some(monitor_update) => {
@@ -6858,7 +6850,6 @@ impl Readable for HTLCSource {
 					path,
 					payment_id: payment_id.unwrap(),
 					payment_secret,
-					payment_params,
 				})
 			}
 			1 => Ok(HTLCSource::PreviousHopData(Readable::read(reader)?)),
@@ -6870,7 +6861,7 @@ impl Readable for HTLCSource {
 impl Writeable for HTLCSource {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), crate::io::Error> {
 		match self {
-			HTLCSource::OutboundRoute { ref session_priv, ref first_hop_htlc_msat, ref path, payment_id, payment_secret, payment_params } => {
+			HTLCSource::OutboundRoute { ref session_priv, ref first_hop_htlc_msat, ref path, payment_id, payment_secret } => {
 				0u8.write(writer)?;
 				let payment_id_opt = Some(payment_id);
 				write_tlv_fields!(writer, {
@@ -6879,7 +6870,7 @@ impl Writeable for HTLCSource {
 					(2, first_hop_htlc_msat, required),
 					(3, payment_secret, option),
 					(4, *path, vec_type),
-					(5, payment_params, option),
+					(5, None::<PaymentParameters>, option), // payment_params in LDK versions prior to 0.0.115
 				 });
 			}
 			HTLCSource::PreviousHopData(ref field) => {
