@@ -16,8 +16,6 @@ use bitcoin::secp256k1::{self, Secp256k1, SecretKey};
 use crate::chain::keysinterface::{EntropySource, NodeSigner, Recipient};
 use crate::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
 use crate::ln::channelmanager::{ChannelDetails, HTLCSource, IDEMPOTENCY_TIMEOUT_TICKS, PaymentId};
-use crate::ln::channelmanager::MIN_FINAL_CLTV_EXPIRY_DELTA as LDK_DEFAULT_MIN_FINAL_CLTV_EXPIRY_DELTA;
-use crate::ln::msgs::DecodeError;
 use crate::ln::onion_utils::HTLCFailReason;
 use crate::routing::router::{InFlightHtlcs, PaymentParameters, Route, RouteHop, RouteParameters, RoutePath, Router};
 use crate::util::errors::APIError;
@@ -26,6 +24,7 @@ use crate::util::logger::Logger;
 use crate::util::time::Time;
 #[cfg(all(not(feature = "no-std"), test))]
 use crate::util::time::tests::SinceEpoch;
+use crate::util::ser::ReadableArgs;
 
 use core::cmp;
 use core::fmt::{self, Display, Formatter};
@@ -529,12 +528,6 @@ impl OutboundPayments {
 						if pending_amt_msat < total_msat {
 							retry_id_route_params = Some((*pmt_id, RouteParameters {
 								final_value_msat: *total_msat - *pending_amt_msat,
-								final_cltv_expiry_delta:
-									if let Some(delta) = params.final_cltv_expiry_delta { delta }
-									else {
-										debug_assert!(false, "We always set the final_cltv_expiry_delta when a path fails");
-										LDK_DEFAULT_MIN_FINAL_CLTV_EXPIRY_DELTA.into()
-									},
 								payment_params: params.clone(),
 							}));
 							break
@@ -783,19 +776,18 @@ impl OutboundPayments {
 		debug_assert_eq!(paths.len(), path_results.len());
 		for (path, path_res) in paths.into_iter().zip(path_results) {
 			if let Err(e) = path_res {
-				let failed_scid = if let APIError::InvalidRoute { .. } = e {
-					None
-				} else {
+				if let APIError::MonitorUpdateInProgress = e { continue }
+				let mut failed_scid = None;
+				if let APIError::ChannelUnavailable { .. } = e {
 					let scid = path[0].short_channel_id;
+					failed_scid = Some(scid);
 					route_params.payment_params.previously_failed_channels.push(scid);
-					Some(scid)
-				};
+				}
 				events.push(events::Event::PaymentPathFailed {
 					payment_id: Some(payment_id),
 					payment_hash,
 					payment_failed_permanently: false,
-					network_update: None,
-					all_paths_failed: false,
+					failure: events::PathFailure::InitialSend { err: e },
 					path,
 					short_channel_id: failed_scid,
 					retry: None,
@@ -897,22 +889,22 @@ impl OutboundPayments {
 		   u32, PaymentId, &Option<PaymentPreimage>, [u8; 32]) -> Result<(), APIError>
 	{
 		if route.paths.len() < 1 {
-			return Err(PaymentSendFailure::ParameterError(APIError::InvalidRoute{err: "There must be at least one path to send over"}));
+			return Err(PaymentSendFailure::ParameterError(APIError::InvalidRoute{err: "There must be at least one path to send over".to_owned()}));
 		}
 		if payment_secret.is_none() && route.paths.len() > 1 {
-			return Err(PaymentSendFailure::ParameterError(APIError::APIMisuseError{err: "Payment secret is required for multi-path payments".to_string()}));
+			return Err(PaymentSendFailure::ParameterError(APIError::APIMisuseError{err: "Payment secret is required for multi-path payments".to_owned()}));
 		}
 		let mut total_value = 0;
 		let our_node_id = node_signer.get_node_id(Recipient::Node).unwrap(); // TODO no unwrap
 		let mut path_errs = Vec::with_capacity(route.paths.len());
 		'path_check: for path in route.paths.iter() {
 			if path.len() < 1 || path.len() > 20 {
-				path_errs.push(Err(APIError::InvalidRoute{err: "Path didn't go anywhere/had bogus size"}));
+				path_errs.push(Err(APIError::InvalidRoute{err: "Path didn't go anywhere/had bogus size".to_owned()}));
 				continue 'path_check;
 			}
 			for (idx, hop) in path.iter().enumerate() {
 				if idx != path.len() - 1 && hop.pubkey == our_node_id {
-					path_errs.push(Err(APIError::InvalidRoute{err: "Path went through us but wasn't a simple rebalance loop to us"}));
+					path_errs.push(Err(APIError::InvalidRoute{err: "Path went through us but wasn't a simple rebalance loop to us".to_owned()}));
 					continue 'path_check;
 				}
 			}
@@ -978,9 +970,6 @@ impl OutboundPayments {
 						Some(RouteParameters {
 							payment_params: payment_params.clone(),
 							final_value_msat: pending_amt_unsent,
-							final_cltv_expiry_delta:
-								if let Some(delta) = payment_params.final_cltv_expiry_delta { delta }
-								else { max_unsent_cltv_delta },
 						})
 					} else { None }
 				} else { None },
@@ -1158,7 +1147,6 @@ impl OutboundPayments {
 			awaiting_retry
 		});
 
-		let mut all_paths_failed = false;
 		let mut full_failure_ev = None;
 		let mut pending_retry_ev = false;
 		let mut retry = None;
@@ -1182,23 +1170,14 @@ impl OutboundPayments {
 			// `payment_params`) back to the user.
 			let path_last_hop = path.last().expect("Outbound payments must have had a valid path");
 			if let Some(params) = payment.get_mut().payment_parameters() {
-				if params.final_cltv_expiry_delta.is_none() {
-					// This should be rare, but a user could provide None for the payment data, and
-					// we need it when we go to retry the payment, so fill it in.
-					params.final_cltv_expiry_delta = Some(path_last_hop.cltv_expiry_delta);
-				}
 				retry = Some(RouteParameters {
 					payment_params: params.clone(),
 					final_value_msat: path_last_hop.fee_msat,
-					final_cltv_expiry_delta: params.final_cltv_expiry_delta.unwrap(),
 				});
 			} else if let Some(params) = payment_params {
 				retry = Some(RouteParameters {
 					payment_params: params.clone(),
 					final_value_msat: path_last_hop.fee_msat,
-					final_cltv_expiry_delta:
-						if let Some(delta) = params.final_cltv_expiry_delta { delta }
-						else { path_last_hop.cltv_expiry_delta },
 				});
 			}
 
@@ -1207,7 +1186,6 @@ impl OutboundPayments {
 				is_retryable_now = false;
 			}
 			if payment.get().remaining_parts() == 0 {
-				all_paths_failed = true;
 				if payment.get().abandoned() {
 					if !payment_is_probe {
 						full_failure_ev = Some(events::Event::PaymentFailed {
@@ -1259,8 +1237,7 @@ impl OutboundPayments {
 					payment_id: Some(*payment_id),
 					payment_hash: payment_hash.clone(),
 					payment_failed_permanently: !payment_retryable,
-					network_update,
-					all_paths_failed,
+					failure: events::PathFailure::OnPath { network_update },
 					path: path.clone(),
 					short_channel_id,
 					retry,
@@ -1335,7 +1312,9 @@ impl_writeable_tlv_based_enum_upgradable!(PendingOutboundPayment,
 		(0, session_privs, required),
 		(1, pending_fee_msat, option),
 		(2, payment_hash, required),
-		(3, payment_params, option),
+		// Note that while we "default" payment_param's final CLTV expiry delta to 0 we should
+		// never see it - `payment_params` was added here after the field was added/required.
+		(3, payment_params, (option: ReadableArgs, 0)),
 		(4, payment_secret, option),
 		(5, keysend_preimage, option),
 		(6, total_msat, required),
@@ -1352,18 +1331,19 @@ impl_writeable_tlv_based_enum_upgradable!(PendingOutboundPayment,
 
 #[cfg(test)]
 mod tests {
-	use bitcoin::blockdata::constants::genesis_block;
 	use bitcoin::network::constants::Network;
 	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 
 	use crate::ln::PaymentHash;
 	use crate::ln::channelmanager::PaymentId;
+	use crate::ln::features::{ChannelFeatures, NodeFeatures};
 	use crate::ln::msgs::{ErrorAction, LightningError};
 	use crate::ln::outbound_payment::{OutboundPayments, Retry, RetryableSendFailure};
 	use crate::routing::gossip::NetworkGraph;
-	use crate::routing::router::{InFlightHtlcs, PaymentParameters, Route, RouteParameters};
+	use crate::routing::router::{InFlightHtlcs, PaymentParameters, Route, RouteHop, RouteParameters};
 	use crate::sync::{Arc, Mutex};
-	use crate::util::events::Event;
+	use crate::util::errors::APIError;
+	use crate::util::events::{Event, PathFailure};
 	use crate::util::test_utils;
 
 	#[test]
@@ -1376,8 +1356,7 @@ mod tests {
 	fn do_fails_paying_after_expiration(on_retry: bool) {
 		let outbound_payments = OutboundPayments::new();
 		let logger = test_utils::TestLogger::new();
-		let genesis_hash = genesis_block(Network::Testnet).header.block_hash();
-		let network_graph = Arc::new(NetworkGraph::new(genesis_hash, &logger));
+		let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, &logger));
 		let scorer = Mutex::new(test_utils::TestScorer::new());
 		let router = test_utils::TestRouter::new(network_graph, &scorer);
 		let secp_ctx = Secp256k1::new();
@@ -1391,7 +1370,6 @@ mod tests {
 		let expired_route_params = RouteParameters {
 			payment_params,
 			final_value_msat: 0,
-			final_cltv_expiry_delta: 0,
 		};
 		let pending_events = Mutex::new(Vec::new());
 		if on_retry {
@@ -1422,8 +1400,7 @@ mod tests {
 	fn do_find_route_error(on_retry: bool) {
 		let outbound_payments = OutboundPayments::new();
 		let logger = test_utils::TestLogger::new();
-		let genesis_hash = genesis_block(Network::Testnet).header.block_hash();
-		let network_graph = Arc::new(NetworkGraph::new(genesis_hash, &logger));
+		let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, &logger));
 		let scorer = Mutex::new(test_utils::TestScorer::new());
 		let router = test_utils::TestRouter::new(network_graph, &scorer);
 		let secp_ctx = Secp256k1::new();
@@ -1434,7 +1411,6 @@ mod tests {
 		let route_params = RouteParameters {
 			payment_params,
 			final_value_msat: 0,
-			final_cltv_expiry_delta: 0,
 		};
 		router.expect_find_route(route_params.clone(),
 			Err(LightningError { err: String::new(), action: ErrorAction::IgnoreError }));
@@ -1459,5 +1435,91 @@ mod tests {
 			if let RetryableSendFailure::RouteNotFound = err {
 			} else { panic!("Unexpected error"); }
 		}
+	}
+
+	#[test]
+	fn initial_send_payment_path_failed_evs() {
+		let outbound_payments = OutboundPayments::new();
+		let logger = test_utils::TestLogger::new();
+		let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, &logger));
+		let scorer = Mutex::new(test_utils::TestScorer::new());
+		let router = test_utils::TestRouter::new(network_graph, &scorer);
+		let secp_ctx = Secp256k1::new();
+		let keys_manager = test_utils::TestKeysInterface::new(&[0; 32], Network::Testnet);
+
+		let sender_pk = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
+		let receiver_pk = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[43; 32]).unwrap());
+		let payment_params = PaymentParameters::from_node_id(sender_pk, 0);
+		let route_params = RouteParameters {
+			payment_params: payment_params.clone(),
+			final_value_msat: 0,
+		};
+		let failed_scid = 42;
+		let route = Route {
+			paths: vec![vec![RouteHop {
+				pubkey: receiver_pk,
+				node_features: NodeFeatures::empty(),
+				short_channel_id: failed_scid,
+				channel_features: ChannelFeatures::empty(),
+				fee_msat: 0,
+				cltv_expiry_delta: 0,
+			}]],
+			payment_params: Some(payment_params),
+		};
+		router.expect_find_route(route_params.clone(), Ok(route.clone()));
+		let mut route_params_w_failed_scid = route_params.clone();
+		route_params_w_failed_scid.payment_params.previously_failed_channels.push(failed_scid);
+		router.expect_find_route(route_params_w_failed_scid, Ok(route.clone()));
+		router.expect_find_route(route_params.clone(), Ok(route.clone()));
+		router.expect_find_route(route_params.clone(), Ok(route.clone()));
+
+		// Ensure that a ChannelUnavailable error will result in blaming an scid in the
+		// PaymentPathFailed event.
+		let pending_events = Mutex::new(Vec::new());
+		outbound_payments.send_payment(
+			PaymentHash([0; 32]), &None, PaymentId([0; 32]), Retry::Attempts(0), route_params.clone(),
+			&&router, vec![], || InFlightHtlcs::new(), &&keys_manager, &&keys_manager, 0, &&logger,
+			&pending_events,
+			|_, _, _, _, _, _, _, _, _| Err(APIError::ChannelUnavailable { err: "test".to_owned() }))
+			.unwrap();
+		let mut events = pending_events.lock().unwrap();
+		assert_eq!(events.len(), 2);
+		if let Event::PaymentPathFailed {
+			short_channel_id,
+			failure: PathFailure::InitialSend { err: APIError::ChannelUnavailable { .. }}, .. } = events[0]
+		{
+			assert_eq!(short_channel_id, Some(failed_scid));
+		} else { panic!("Unexpected event"); }
+		if let Event::PaymentFailed { .. } = events[1] { } else { panic!("Unexpected event"); }
+		events.clear();
+		core::mem::drop(events);
+
+		// Ensure that a MonitorUpdateInProgress "error" will not result in a PaymentPathFailed event.
+		outbound_payments.send_payment(
+			PaymentHash([0; 32]), &None, PaymentId([0; 32]), Retry::Attempts(0), route_params.clone(),
+			&&router, vec![], || InFlightHtlcs::new(), &&keys_manager, &&keys_manager, 0, &&logger,
+			&pending_events, |_, _, _, _, _, _, _, _, _| Err(APIError::MonitorUpdateInProgress))
+			.unwrap();
+		{
+			let events = pending_events.lock().unwrap();
+			assert_eq!(events.len(), 0);
+		}
+
+		// Ensure that any other error will result in a PaymentPathFailed event but no blamed scid.
+		outbound_payments.send_payment(
+			PaymentHash([0; 32]), &None, PaymentId([1; 32]), Retry::Attempts(0), route_params.clone(),
+			&&router, vec![], || InFlightHtlcs::new(), &&keys_manager, &&keys_manager, 0, &&logger,
+			&pending_events,
+			|_, _, _, _, _, _, _, _, _| Err(APIError::APIMisuseError { err: "test".to_owned() }))
+			.unwrap();
+		let events = pending_events.lock().unwrap();
+		assert_eq!(events.len(), 2);
+		if let Event::PaymentPathFailed {
+			short_channel_id,
+			failure: PathFailure::InitialSend { err: APIError::APIMisuseError { .. }}, .. } = events[0]
+		{
+			assert_eq!(short_channel_id, None);
+		} else { panic!("Unexpected event"); }
+		if let Event::PaymentFailed { .. } = events[1] { } else { panic!("Unexpected event"); }
 	}
 }

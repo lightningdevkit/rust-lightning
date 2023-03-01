@@ -18,6 +18,9 @@ use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::hashes::Hash;
 use bitcoin::hash_types::BlockHash;
 
+use bitcoin::network::constants::Network;
+use bitcoin::blockdata::constants::genesis_block;
+
 use crate::ln::features::{ChannelFeatures, NodeFeatures, InitFeatures};
 use crate::ln::msgs::{DecodeError, ErrorAction, Init, LightningError, RoutingMessageHandler, NetAddress, MAX_VALUE_MSAT};
 use crate::ln::msgs::{ChannelAnnouncement, ChannelUpdate, NodeAnnouncement, GossipTimestampFilter};
@@ -883,9 +886,9 @@ impl Readable for ChannelInfo {
 			(0, features, required),
 			(1, announcement_received_time, (default_value, 0)),
 			(2, node_one, required),
-			(4, one_to_two_wrap, ignorable),
+			(4, one_to_two_wrap, upgradable_option),
 			(6, node_two, required),
-			(8, two_to_one_wrap, ignorable),
+			(8, two_to_one_wrap, upgradable_option),
 			(10, capacity_sats, required),
 			(12, announcement_message, required),
 		});
@@ -1017,7 +1020,7 @@ impl EffectiveCapacity {
 /// Fees for routing via a given channel or a node
 #[derive(Eq, PartialEq, Copy, Clone, Debug, Hash)]
 pub struct RoutingFees {
-	/// Flat routing fee in satoshis
+	/// Flat routing fee in millisatoshis.
 	pub base_msat: u32,
 	/// Liquidity-based routing fee in millionths of a routed amount.
 	/// In other words, 10000 is 1%.
@@ -1161,7 +1164,7 @@ impl Readable for NodeInfo {
 
 		read_tlv_fields!(reader, {
 			(0, _lowest_inbound_channel_fees, option),
-			(2, announcement_info_wrap, ignorable),
+			(2, announcement_info_wrap, upgradable_option),
 			(4, channels, vec_type),
 		});
 
@@ -1265,10 +1268,10 @@ impl<L: Deref> PartialEq for NetworkGraph<L> where L::Target: Logger {
 
 impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 	/// Creates a new, empty, network graph.
-	pub fn new(genesis_hash: BlockHash, logger: L) -> NetworkGraph<L> {
+	pub fn new(network: Network, logger: L) -> NetworkGraph<L> {
 		Self {
 			secp_ctx: Secp256k1::verification_only(),
-			genesis_hash,
+			genesis_hash: genesis_block(network).header.block_hash(),
 			logger,
 			channels: RwLock::new(IndexedMap::new()),
 			nodes: RwLock::new(IndexedMap::new()),
@@ -1960,9 +1963,8 @@ pub(crate) mod tests {
 	use crate::sync::Arc;
 
 	fn create_network_graph() -> NetworkGraph<Arc<test_utils::TestLogger>> {
-		let genesis_hash = genesis_block(Network::Testnet).header.block_hash();
 		let logger = Arc::new(test_utils::TestLogger::new());
-		NetworkGraph::new(genesis_hash, logger)
+		NetworkGraph::new(Network::Testnet, logger)
 	}
 
 	fn create_gossip_sync(network_graph: &NetworkGraph<Arc<test_utils::TestLogger>>) -> (
@@ -2137,8 +2139,7 @@ pub(crate) mod tests {
 		let valid_announcement = get_signed_channel_announcement(|_| {}, node_1_privkey, node_2_privkey, &secp_ctx);
 
 		// Test if the UTXO lookups were not supported
-		let genesis_hash = genesis_block(Network::Testnet).header.block_hash();
-		let network_graph = NetworkGraph::new(genesis_hash, &logger);
+		let network_graph = NetworkGraph::new(Network::Testnet, &logger);
 		let mut gossip_sync = P2PGossipSync::new(&network_graph, None, &logger);
 		match gossip_sync.handle_channel_announcement(&valid_announcement) {
 			Ok(res) => assert!(res),
@@ -2162,7 +2163,7 @@ pub(crate) mod tests {
 		// Test if an associated transaction were not on-chain (or not confirmed).
 		let chain_source = test_utils::TestChainSource::new(Network::Testnet);
 		*chain_source.utxo_ret.lock().unwrap() = UtxoResult::Sync(Err(UtxoLookupError::UnknownTx));
-		let network_graph = NetworkGraph::new(genesis_hash, &logger);
+		let network_graph = NetworkGraph::new(Network::Testnet, &logger);
 		gossip_sync = P2PGossipSync::new(&network_graph, Some(&chain_source), &logger);
 
 		let valid_announcement = get_signed_channel_announcement(|unsigned_announcement| {
@@ -2255,8 +2256,7 @@ pub(crate) mod tests {
 		let secp_ctx = Secp256k1::new();
 		let logger = test_utils::TestLogger::new();
 		let chain_source = test_utils::TestChainSource::new(Network::Testnet);
-		let genesis_hash = genesis_block(Network::Testnet).header.block_hash();
-		let network_graph = NetworkGraph::new(genesis_hash, &logger);
+		let network_graph = NetworkGraph::new(Network::Testnet, &logger);
 		let gossip_sync = P2PGossipSync::new(&network_graph, Some(&chain_source), &logger);
 
 		let node_1_privkey = &SecretKey::from_slice(&[42; 32]).unwrap();
@@ -2358,8 +2358,7 @@ pub(crate) mod tests {
 	#[test]
 	fn handling_network_update() {
 		let logger = test_utils::TestLogger::new();
-		let genesis_hash = genesis_block(Network::Testnet).header.block_hash();
-		let network_graph = NetworkGraph::new(genesis_hash, &logger);
+		let network_graph = NetworkGraph::new(Network::Testnet, &logger);
 		let secp_ctx = Secp256k1::new();
 
 		let node_1_privkey = &SecretKey::from_slice(&[42; 32]).unwrap();
@@ -2424,7 +2423,7 @@ pub(crate) mod tests {
 
 		{
 			// Get a new network graph since we don't want to track removed nodes in this test with "std"
-			let network_graph = NetworkGraph::new(genesis_hash, &logger);
+			let network_graph = NetworkGraph::new(Network::Testnet, &logger);
 
 			// Announce a channel to test permanent node failure
 			let valid_channel_announcement = get_signed_channel_announcement(|_| {}, node_1_privkey, node_2_privkey, &secp_ctx);
@@ -2459,8 +2458,7 @@ pub(crate) mod tests {
 		// Test the removal of channels with `remove_stale_channels_and_tracking`.
 		let logger = test_utils::TestLogger::new();
 		let chain_source = test_utils::TestChainSource::new(Network::Testnet);
-		let genesis_hash = genesis_block(Network::Testnet).header.block_hash();
-		let network_graph = NetworkGraph::new(genesis_hash, &logger);
+		let network_graph = NetworkGraph::new(Network::Testnet, &logger);
 		let gossip_sync = P2PGossipSync::new(&network_graph, Some(&chain_source), &logger);
 		let secp_ctx = Secp256k1::new();
 

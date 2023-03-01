@@ -26,7 +26,7 @@ use crate::util::ser::Writeable;
 use crate::prelude::*;
 
 use alloc::sync::{Arc, Weak};
-use crate::sync::Mutex;
+use crate::sync::{Mutex, LockTestExt};
 use core::ops::Deref;
 
 /// An error when accessing the chain via [`UtxoLookup`].
@@ -404,7 +404,10 @@ impl PendingChecks {
 				// lookup if we haven't gotten that far yet).
 				match Weak::upgrade(&e.get()) {
 					Some(pending_msgs) => {
-						let pending_matches = match &pending_msgs.lock().unwrap().channel_announce {
+						// This may be called with the mutex held on a different UtxoMessages
+						// struct, however in that case we have a global lockorder of new messages
+						// -> old messages, which makes this safe.
+						let pending_matches = match &pending_msgs.unsafe_well_ordered_double_lock_self().channel_announce {
 							Some(ChannelAnnouncement::Full(pending_msg)) => Some(pending_msg) == full_msg,
 							Some(ChannelAnnouncement::Unsigned(pending_msg)) => pending_msg == msg,
 							None => {
@@ -561,16 +564,14 @@ mod tests {
 	use crate::util::test_utils::{TestChainSource, TestLogger};
 	use crate::ln::msgs;
 
-	use bitcoin::blockdata::constants::genesis_block;
 	use bitcoin::secp256k1::{Secp256k1, SecretKey};
 
 	use core::sync::atomic::Ordering;
 
 	fn get_network() -> (TestChainSource, NetworkGraph<Box<TestLogger>>) {
 		let logger = Box::new(TestLogger::new());
-		let genesis_hash = genesis_block(bitcoin::Network::Testnet).header.block_hash();
 		let chain_source = TestChainSource::new(bitcoin::Network::Testnet);
-		let network_graph = NetworkGraph::new(genesis_hash, logger);
+		let network_graph = NetworkGraph::new(bitcoin::Network::Testnet, logger);
 
 		(chain_source, network_graph)
 	}
@@ -747,10 +748,11 @@ mod tests {
 			Ok(TxOut { value: 1_000_000, script_pubkey: good_script }));
 
 		assert_eq!(chan_update_a.contents.timestamp, chan_update_b.contents.timestamp);
-		assert!(network_graph.read_only().channels()
+		let graph_lock = network_graph.read_only();
+		assert!(graph_lock.channels()
 				.get(&valid_announcement.contents.short_channel_id).as_ref().unwrap()
 				.one_to_two.as_ref().unwrap().last_update !=
-			network_graph.read_only().channels()
+			graph_lock.channels()
 				.get(&valid_announcement.contents.short_channel_id).as_ref().unwrap()
 				.two_to_one.as_ref().unwrap().last_update);
 	}

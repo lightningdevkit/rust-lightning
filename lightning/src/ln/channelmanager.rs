@@ -468,7 +468,7 @@ pub(crate) enum MonitorUpdateCompletionAction {
 
 impl_writeable_tlv_based_enum_upgradable!(MonitorUpdateCompletionAction,
 	(0, PaymentClaimed) => { (0, payment_hash, required) },
-	(2, EmitEvent) => { (0, event, ignorable) },
+	(2, EmitEvent) => { (0, event, upgradable_required) },
 );
 
 /// State we hold per-peer.
@@ -1417,7 +1417,7 @@ macro_rules! emit_channel_ready_event {
 }
 
 macro_rules! handle_monitor_update_completion {
-	($self: ident, $update_id: expr, $peer_state_lock: expr, $peer_state: expr, $chan: expr) => { {
+	($self: ident, $update_id: expr, $peer_state_lock: expr, $peer_state: expr, $per_peer_state_lock: expr, $chan: expr) => { {
 		let mut updates = $chan.monitor_updating_restored(&$self.logger,
 			&$self.node_signer, $self.genesis_hash, &$self.default_configuration,
 			$self.best_block.read().unwrap().height());
@@ -1450,6 +1450,7 @@ macro_rules! handle_monitor_update_completion {
 
 		let channel_id = $chan.channel_id();
 		core::mem::drop($peer_state_lock);
+		core::mem::drop($per_peer_state_lock);
 
 		$self.handle_monitor_update_completion_actions(update_actions);
 
@@ -1465,7 +1466,7 @@ macro_rules! handle_monitor_update_completion {
 }
 
 macro_rules! handle_new_monitor_update {
-	($self: ident, $update_res: expr, $update_id: expr, $peer_state_lock: expr, $peer_state: expr, $chan: expr, MANUALLY_REMOVING, $remove: expr) => { {
+	($self: ident, $update_res: expr, $update_id: expr, $peer_state_lock: expr, $peer_state: expr, $per_peer_state_lock: expr, $chan: expr, MANUALLY_REMOVING, $remove: expr) => { {
 		// update_maps_on_chan_removal needs to be able to take id_to_peer, so make sure we can in
 		// any case so that it won't deadlock.
 		debug_assert!($self.id_to_peer.try_lock().is_ok());
@@ -1492,14 +1493,14 @@ macro_rules! handle_new_monitor_update {
 					.update_id == $update_id) &&
 					$chan.get_latest_monitor_update_id() == $update_id
 				{
-					handle_monitor_update_completion!($self, $update_id, $peer_state_lock, $peer_state, $chan);
+					handle_monitor_update_completion!($self, $update_id, $peer_state_lock, $peer_state, $per_peer_state_lock, $chan);
 				}
 				Ok(())
 			},
 		}
 	} };
-	($self: ident, $update_res: expr, $update_id: expr, $peer_state_lock: expr, $peer_state: expr, $chan_entry: expr) => {
-		handle_new_monitor_update!($self, $update_res, $update_id, $peer_state_lock, $peer_state, $chan_entry.get_mut(), MANUALLY_REMOVING, $chan_entry.remove_entry())
+	($self: ident, $update_res: expr, $update_id: expr, $peer_state_lock: expr, $peer_state: expr, $per_peer_state_lock: expr, $chan_entry: expr) => {
+		handle_new_monitor_update!($self, $update_res, $update_id, $peer_state_lock, $peer_state, $per_peer_state_lock, $chan_entry.get_mut(), MANUALLY_REMOVING, $chan_entry.remove_entry())
 	}
 }
 
@@ -1835,7 +1836,7 @@ where
 					if let Some(monitor_update) = monitor_update_opt.take() {
 						let update_id = monitor_update.update_id;
 						let update_res = self.chain_monitor.update_channel(funding_txo_opt.unwrap(), monitor_update);
-						break handle_new_monitor_update!(self, update_res, update_id, peer_state_lock, peer_state, chan_entry);
+						break handle_new_monitor_update!(self, update_res, update_id, peer_state_lock, peer_state, per_peer_state, chan_entry);
 					}
 
 					if chan_entry.get().is_shutdown() {
@@ -2413,21 +2414,27 @@ where
 		})
 	}
 
-	// Only public for testing, this should otherwise never be called direcly
-	pub(crate) fn send_payment_along_path(&self, path: &Vec<RouteHop>, payment_params: &Option<PaymentParameters>, payment_hash: &PaymentHash, payment_secret: &Option<PaymentSecret>, total_value: u64, cur_height: u32, payment_id: PaymentId, keysend_preimage: &Option<PaymentPreimage>, session_priv_bytes: [u8; 32]) -> Result<(), APIError> {
+	#[cfg(test)]
+	pub(crate) fn test_send_payment_along_path(&self, path: &Vec<RouteHop>, payment_params: &Option<PaymentParameters>, payment_hash: &PaymentHash, payment_secret: &Option<PaymentSecret>, total_value: u64, cur_height: u32, payment_id: PaymentId, keysend_preimage: &Option<PaymentPreimage>, session_priv_bytes: [u8; 32]) -> Result<(), APIError> {
+		let _lck = self.total_consistency_lock.read().unwrap();
+		self.send_payment_along_path(path, payment_params, payment_hash, payment_secret, total_value, cur_height, payment_id, keysend_preimage, session_priv_bytes)
+	}
+
+	fn send_payment_along_path(&self, path: &Vec<RouteHop>, payment_params: &Option<PaymentParameters>, payment_hash: &PaymentHash, payment_secret: &Option<PaymentSecret>, total_value: u64, cur_height: u32, payment_id: PaymentId, keysend_preimage: &Option<PaymentPreimage>, session_priv_bytes: [u8; 32]) -> Result<(), APIError> {
+		// The top-level caller should hold the total_consistency_lock read lock.
+		debug_assert!(self.total_consistency_lock.try_write().is_err());
+
 		log_trace!(self.logger, "Attempting to send payment for path with next hop {}", path.first().unwrap().short_channel_id);
 		let prng_seed = self.entropy_source.get_secure_random_bytes();
 		let session_priv = SecretKey::from_slice(&session_priv_bytes[..]).expect("RNG is busted");
 
 		let onion_keys = onion_utils::construct_onion_keys(&self.secp_ctx, &path, &session_priv)
-			.map_err(|_| APIError::InvalidRoute{err: "Pubkey along hop was maliciously selected"})?;
+			.map_err(|_| APIError::InvalidRoute{err: "Pubkey along hop was maliciously selected".to_owned()})?;
 		let (onion_payloads, htlc_msat, htlc_cltv) = onion_utils::build_onion_payloads(path, total_value, payment_secret, cur_height, keysend_preimage)?;
 		if onion_utils::route_size_insane(&onion_payloads) {
-			return Err(APIError::InvalidRoute{err: "Route size too large considering onion data"});
+			return Err(APIError::InvalidRoute{err: "Route size too large considering onion data".to_owned()});
 		}
 		let onion_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, prng_seed, payment_hash);
-
-		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 
 		let err: Result<(), _> = loop {
 			let (counterparty_node_id, id) = match self.short_to_chan_info.read().unwrap().get(&path.first().unwrap().short_channel_id) {
@@ -2458,7 +2465,7 @@ where
 					Some(monitor_update) => {
 						let update_id = monitor_update.update_id;
 						let update_res = self.chain_monitor.update_channel(funding_txo, monitor_update);
-						if let Err(e) = handle_new_monitor_update!(self, update_res, update_id, peer_state_lock, peer_state, chan) {
+						if let Err(e) = handle_new_monitor_update!(self, update_res, update_id, peer_state_lock, peer_state, per_peer_state, chan) {
 							break Err(e);
 						}
 						if update_res == ChannelMonitorUpdateStatus::InProgress {
@@ -2555,6 +2562,7 @@ where
 	/// [`ChannelMonitorUpdateStatus::InProgress`]: crate::chain::ChannelMonitorUpdateStatus::InProgress
 	pub fn send_payment(&self, route: &Route, payment_hash: PaymentHash, payment_secret: &Option<PaymentSecret>, payment_id: PaymentId) -> Result<(), PaymentSendFailure> {
 		let best_block_height = self.best_block.read().unwrap().height();
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 		self.pending_outbound_payments
 			.send_payment_with_route(route, payment_hash, payment_secret, payment_id, &self.entropy_source, &self.node_signer, best_block_height,
 				|path, payment_params, payment_hash, payment_secret, total_value, cur_height, payment_id, keysend_preimage, session_priv|
@@ -2565,6 +2573,7 @@ where
 	/// `route_params` and retry failed payment paths based on `retry_strategy`.
 	pub fn send_payment_with_retry(&self, payment_hash: PaymentHash, payment_secret: &Option<PaymentSecret>, payment_id: PaymentId, route_params: RouteParameters, retry_strategy: Retry) -> Result<(), RetryableSendFailure> {
 		let best_block_height = self.best_block.read().unwrap().height();
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 		self.pending_outbound_payments
 			.send_payment(payment_hash, payment_secret, payment_id, retry_strategy, route_params,
 				&self.router, self.list_usable_channels(), || self.compute_inflight_htlcs(),
@@ -2577,6 +2586,7 @@ where
 	#[cfg(test)]
 	fn test_send_payment_internal(&self, route: &Route, payment_hash: PaymentHash, payment_secret: &Option<PaymentSecret>, keysend_preimage: Option<PaymentPreimage>, payment_id: PaymentId, recv_value_msat: Option<u64>, onion_session_privs: Vec<[u8; 32]>) -> Result<(), PaymentSendFailure> {
 		let best_block_height = self.best_block.read().unwrap().height();
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 		self.pending_outbound_payments.test_send_payment_internal(route, payment_hash, payment_secret, keysend_preimage, payment_id, recv_value_msat, onion_session_privs, &self.node_signer, best_block_height,
 			|path, payment_params, payment_hash, payment_secret, total_value, cur_height, payment_id, keysend_preimage, session_priv|
 			self.send_payment_along_path(path, payment_params, payment_hash, payment_secret, total_value, cur_height, payment_id, keysend_preimage, session_priv))
@@ -2627,6 +2637,7 @@ where
 	/// [`send_payment`]: Self::send_payment
 	pub fn send_spontaneous_payment(&self, route: &Route, payment_preimage: Option<PaymentPreimage>, payment_id: PaymentId) -> Result<PaymentHash, PaymentSendFailure> {
 		let best_block_height = self.best_block.read().unwrap().height();
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 		self.pending_outbound_payments.send_spontaneous_payment_with_route(
 			route, payment_preimage, payment_id, &self.entropy_source, &self.node_signer,
 			best_block_height,
@@ -2643,6 +2654,7 @@ where
 	/// [`PaymentParameters::for_keysend`]: crate::routing::router::PaymentParameters::for_keysend
 	pub fn send_spontaneous_payment_with_retry(&self, payment_preimage: Option<PaymentPreimage>, payment_id: PaymentId, route_params: RouteParameters, retry_strategy: Retry) -> Result<PaymentHash, RetryableSendFailure> {
 		let best_block_height = self.best_block.read().unwrap().height();
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 		self.pending_outbound_payments.send_spontaneous_payment(payment_preimage, payment_id,
 			retry_strategy, route_params, &self.router, self.list_usable_channels(),
 			|| self.compute_inflight_htlcs(),  &self.entropy_source, &self.node_signer, best_block_height,
@@ -2656,6 +2668,7 @@ where
 	/// us to easily discern them from real payments.
 	pub fn send_probe(&self, hops: Vec<RouteHop>) -> Result<(PaymentHash, PaymentId), PaymentSendFailure> {
 		let best_block_height = self.best_block.read().unwrap().height();
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 		self.pending_outbound_payments.send_probe(hops, self.probing_cookie_secret, &self.entropy_source, &self.node_signer, best_block_height,
 			|path, payment_params, payment_hash, payment_secret, total_value, cur_height, payment_id, keysend_preimage, session_priv|
 			self.send_payment_along_path(path, payment_params, payment_hash, payment_secret, total_value, cur_height, payment_id, keysend_preimage, session_priv))
@@ -3979,7 +3992,8 @@ where
 			)
 		).unwrap_or(None);
 
-		if let Some(mut peer_state_lock) = peer_state_opt.take() {
+		if peer_state_opt.is_some() {
+			let mut peer_state_lock = peer_state_opt.unwrap();
 			let peer_state = &mut *peer_state_lock;
 			if let hash_map::Entry::Occupied(mut chan) = peer_state.channel_by_id.entry(chan_id) {
 				let counterparty_node_id = chan.get().get_counterparty_node_id();
@@ -3994,7 +4008,7 @@ where
 					let update_id = monitor_update.update_id;
 					let update_res = self.chain_monitor.update_channel(prev_hop.outpoint, monitor_update);
 					let res = handle_new_monitor_update!(self, update_res, update_id, peer_state_lock,
-						peer_state, chan);
+						peer_state, per_peer_state, chan);
 					if let Err(e) = res {
 						// TODO: This is a *critical* error - we probably updated the outbound edge
 						// of the HTLC's monitor with a preimage. We should retry this monitor
@@ -4164,7 +4178,7 @@ where
 	}
 
 	fn channel_monitor_updated(&self, funding_txo: &OutPoint, highest_applied_update_id: u64, counterparty_node_id: Option<&PublicKey>) {
-		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
+		debug_assert!(self.total_consistency_lock.try_write().is_err()); // Caller holds read lock
 
 		let counterparty_node_id = match counterparty_node_id {
 			Some(cp_id) => cp_id.clone(),
@@ -4195,7 +4209,7 @@ where
 		if !channel.get().is_awaiting_monitor_update() || channel.get().get_latest_monitor_update_id() != highest_applied_update_id {
 			return;
 		}
-		handle_monitor_update_completion!(self, highest_applied_update_id, peer_state_lock, peer_state, channel.get_mut());
+		handle_monitor_update_completion!(self, highest_applied_update_id, peer_state_lock, peer_state, per_peer_state, channel.get_mut());
 	}
 
 	/// Accepts a request to open a channel after a [`Event::OpenChannelRequest`].
@@ -4501,7 +4515,8 @@ where
 				let monitor_res = self.chain_monitor.watch_channel(monitor.get_funding_txo().0, monitor);
 
 				let chan = e.insert(chan);
-				let mut res = handle_new_monitor_update!(self, monitor_res, 0, peer_state_lock, peer_state, chan, MANUALLY_REMOVING, { peer_state.channel_by_id.remove(&new_channel_id) });
+				let mut res = handle_new_monitor_update!(self, monitor_res, 0, peer_state_lock, peer_state,
+					per_peer_state, chan, MANUALLY_REMOVING, { peer_state.channel_by_id.remove(&new_channel_id) });
 
 				// Note that we reply with the new channel_id in error messages if we gave up on the
 				// channel, not the temporary_channel_id. This is compatible with ourselves, but the
@@ -4534,7 +4549,7 @@ where
 				let monitor = try_chan_entry!(self,
 					chan.get_mut().funding_signed(&msg, best_block, &self.signer_provider, &self.logger), chan);
 				let update_res = self.chain_monitor.watch_channel(chan.get().get_funding_txo().unwrap(), monitor);
-				let mut res = handle_new_monitor_update!(self, update_res, 0, peer_state_lock, peer_state, chan);
+				let mut res = handle_new_monitor_update!(self, update_res, 0, peer_state_lock, peer_state, per_peer_state, chan);
 				if let Err(MsgHandleErrInternal { ref mut shutdown_finish, .. }) = res {
 					// We weren't able to watch the channel to begin with, so no updates should be made on
 					// it. Previously, full_stack_target found an (unreachable) panic when the
@@ -4630,7 +4645,7 @@ where
 					if let Some(monitor_update) = monitor_update_opt {
 						let update_id = monitor_update.update_id;
 						let update_res = self.chain_monitor.update_channel(funding_txo_opt.unwrap(), monitor_update);
-						break handle_new_monitor_update!(self, update_res, update_id, peer_state_lock, peer_state, chan_entry);
+						break handle_new_monitor_update!(self, update_res, update_id, peer_state_lock, peer_state, per_peer_state, chan_entry);
 					}
 					break Ok(());
 				},
@@ -4822,7 +4837,7 @@ where
 				let update_res = self.chain_monitor.update_channel(funding_txo.unwrap(), monitor_update);
 				let update_id = monitor_update.update_id;
 				handle_new_monitor_update!(self, update_res, update_id, peer_state_lock,
-					peer_state, chan)
+					peer_state, per_peer_state, chan)
 			},
 			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
 		}
@@ -4928,12 +4943,11 @@ where
 	fn internal_revoke_and_ack(&self, counterparty_node_id: &PublicKey, msg: &msgs::RevokeAndACK) -> Result<(), MsgHandleErrInternal> {
 		let (htlcs_to_fail, res) = {
 			let per_peer_state = self.per_peer_state.read().unwrap();
-			let peer_state_mutex = per_peer_state.get(counterparty_node_id)
+			let mut peer_state_lock = per_peer_state.get(counterparty_node_id)
 				.ok_or_else(|| {
 					debug_assert!(false);
 					MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id), msg.channel_id)
-				})?;
-			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+				}).map(|mtx| mtx.lock().unwrap())?;
 			let peer_state = &mut *peer_state_lock;
 			match peer_state.channel_by_id.entry(msg.channel_id) {
 				hash_map::Entry::Occupied(mut chan) => {
@@ -4941,8 +4955,8 @@ where
 					let (htlcs_to_fail, monitor_update) = try_chan_entry!(self, chan.get_mut().revoke_and_ack(&msg, &self.logger), chan);
 					let update_res = self.chain_monitor.update_channel(funding_txo.unwrap(), monitor_update);
 					let update_id = monitor_update.update_id;
-					let res = handle_new_monitor_update!(self, update_res, update_id, peer_state_lock,
-						peer_state, chan);
+					let res = handle_new_monitor_update!(self, update_res, update_id,
+						peer_state_lock, peer_state, per_peer_state, chan);
 					(htlcs_to_fail, res)
 				},
 				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
@@ -5104,6 +5118,8 @@ where
 
 	/// Process pending events from the `chain::Watch`, returning whether any events were processed.
 	fn process_pending_monitor_events(&self) -> bool {
+		debug_assert!(self.total_consistency_lock.try_write().is_err()); // Caller holds read lock
+
 		let mut failed_channels = Vec::new();
 		let mut pending_monitor_events = self.chain_monitor.release_pending_monitor_events();
 		let has_pending_monitor_events = !pending_monitor_events.is_empty();
@@ -5181,7 +5197,13 @@ where
 	/// update events as a separate process method here.
 	#[cfg(fuzzing)]
 	pub fn process_monitor_events(&self) {
-		self.process_pending_monitor_events();
+		PersistenceNotifierGuard::optionally_notify(&self.total_consistency_lock, &self.persistence_notifier, || {
+			if self.process_pending_monitor_events() {
+				NotifyOption::DoPersist
+			} else {
+				NotifyOption::SkipPersist
+			}
+		});
 	}
 
 	/// Check the holding cell in each channel and free any pending HTLCs in them if possible.
@@ -5191,38 +5213,45 @@ where
 		let mut has_monitor_update = false;
 		let mut failed_htlcs = Vec::new();
 		let mut handle_errors = Vec::new();
-		let per_peer_state = self.per_peer_state.read().unwrap();
 
-		for (_cp_id, peer_state_mutex) in per_peer_state.iter() {
-			'chan_loop: loop {
-				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
-				let peer_state: &mut PeerState<_> = &mut *peer_state_lock;
-				for (channel_id, chan) in peer_state.channel_by_id.iter_mut() {
-					let counterparty_node_id = chan.get_counterparty_node_id();
-					let funding_txo = chan.get_funding_txo();
-					let (monitor_opt, holding_cell_failed_htlcs) =
-						chan.maybe_free_holding_cell_htlcs(&self.logger);
-					if !holding_cell_failed_htlcs.is_empty() {
-						failed_htlcs.push((holding_cell_failed_htlcs, *channel_id, counterparty_node_id));
-					}
-					if let Some(monitor_update) = monitor_opt {
-						has_monitor_update = true;
-
-						let update_res = self.chain_monitor.update_channel(
-							funding_txo.expect("channel is live"), monitor_update);
-						let update_id = monitor_update.update_id;
-						let channel_id: [u8; 32] = *channel_id;
-						let res = handle_new_monitor_update!(self, update_res, update_id,
-							peer_state_lock, peer_state, chan, MANUALLY_REMOVING,
-							peer_state.channel_by_id.remove(&channel_id));
-						if res.is_err() {
-							handle_errors.push((counterparty_node_id, res));
+		// Walk our list of channels and find any that need to update. Note that when we do find an
+		// update, if it includes actions that must be taken afterwards, we have to drop the
+		// per-peer state lock as well as the top level per_peer_state lock. Thus, we loop until we
+		// manage to go through all our peers without finding a single channel to update.
+		'peer_loop: loop {
+			let per_peer_state = self.per_peer_state.read().unwrap();
+			for (_cp_id, peer_state_mutex) in per_peer_state.iter() {
+				'chan_loop: loop {
+					let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+					let peer_state: &mut PeerState<_> = &mut *peer_state_lock;
+					for (channel_id, chan) in peer_state.channel_by_id.iter_mut() {
+						let counterparty_node_id = chan.get_counterparty_node_id();
+						let funding_txo = chan.get_funding_txo();
+						let (monitor_opt, holding_cell_failed_htlcs) =
+							chan.maybe_free_holding_cell_htlcs(&self.logger);
+						if !holding_cell_failed_htlcs.is_empty() {
+							failed_htlcs.push((holding_cell_failed_htlcs, *channel_id, counterparty_node_id));
 						}
-						continue 'chan_loop;
+						if let Some(monitor_update) = monitor_opt {
+							has_monitor_update = true;
+
+							let update_res = self.chain_monitor.update_channel(
+								funding_txo.expect("channel is live"), monitor_update);
+							let update_id = monitor_update.update_id;
+							let channel_id: [u8; 32] = *channel_id;
+							let res = handle_new_monitor_update!(self, update_res, update_id,
+								peer_state_lock, peer_state, per_peer_state, chan, MANUALLY_REMOVING,
+								peer_state.channel_by_id.remove(&channel_id));
+							if res.is_err() {
+								handle_errors.push((counterparty_node_id, res));
+							}
+							continue 'peer_loop;
+						}
 					}
+					break 'chan_loop;
 				}
-				break 'chan_loop;
 			}
+			break 'peer_loop;
 		}
 
 		let has_update = has_monitor_update || !failed_htlcs.is_empty() || !handle_errors.is_empty();
@@ -6693,7 +6722,7 @@ impl Writeable for ClaimableHTLC {
 
 impl Readable for ClaimableHTLC {
 	fn read<R: Read>(reader: &mut R) -> Result<Self, DecodeError> {
-		let mut prev_hop = crate::util::ser::OptionDeserWrapper(None);
+		let mut prev_hop = crate::util::ser::RequiredWrapper(None);
 		let mut value = 0;
 		let mut payment_data: Option<msgs::FinalOnionHopData> = None;
 		let mut cltv_expiry = 0;
@@ -6743,29 +6772,38 @@ impl Readable for HTLCSource {
 		let id: u8 = Readable::read(reader)?;
 		match id {
 			0 => {
-				let mut session_priv: crate::util::ser::OptionDeserWrapper<SecretKey> = crate::util::ser::OptionDeserWrapper(None);
+				let mut session_priv: crate::util::ser::RequiredWrapper<SecretKey> = crate::util::ser::RequiredWrapper(None);
 				let mut first_hop_htlc_msat: u64 = 0;
-				let mut path = Some(Vec::new());
+				let mut path: Option<Vec<RouteHop>> = Some(Vec::new());
 				let mut payment_id = None;
 				let mut payment_secret = None;
-				let mut payment_params = None;
+				let mut payment_params: Option<PaymentParameters> = None;
 				read_tlv_fields!(reader, {
 					(0, session_priv, required),
 					(1, payment_id, option),
 					(2, first_hop_htlc_msat, required),
 					(3, payment_secret, option),
 					(4, path, vec_type),
-					(5, payment_params, option),
+					(5, payment_params, (option: ReadableArgs, 0)),
 				});
 				if payment_id.is_none() {
 					// For backwards compat, if there was no payment_id written, use the session_priv bytes
 					// instead.
 					payment_id = Some(PaymentId(*session_priv.0.unwrap().as_ref()));
 				}
+				if path.is_none() || path.as_ref().unwrap().is_empty() {
+					return Err(DecodeError::InvalidValue);
+				}
+				let path = path.unwrap();
+				if let Some(params) = payment_params.as_mut() {
+					if params.final_cltv_expiry_delta == 0 {
+						params.final_cltv_expiry_delta = path.last().unwrap().cltv_expiry_delta;
+					}
+				}
 				Ok(HTLCSource::OutboundRoute {
 					session_priv: session_priv.0.unwrap(),
 					first_hop_htlc_msat,
-					path: path.unwrap(),
+					path,
 					payment_id: payment_id.unwrap(),
 					payment_secret,
 					payment_params,
@@ -6912,7 +6950,10 @@ where
 		let mut monitor_update_blocked_actions_per_peer = None;
 		let mut peer_states = Vec::new();
 		for (_, peer_state_mutex) in per_peer_state.iter() {
-			peer_states.push(peer_state_mutex.lock().unwrap());
+			// Because we're holding the owning `per_peer_state` write lock here there's no chance
+			// of a lockorder violation deadlock - no other thread can be holding any
+			// per_peer_state lock at all.
+			peer_states.push(peer_state_mutex.unsafe_well_ordered_double_lock_self());
 		}
 
 		(serializable_peer_count).write(writer)?;
@@ -7500,7 +7541,10 @@ where
 			}
 		}
 
-		let pending_outbounds = OutboundPayments { pending_outbound_payments: Mutex::new(pending_outbound_payments.unwrap()), retry_lock: Mutex::new(()) };
+		let pending_outbounds = OutboundPayments {
+			pending_outbound_payments: Mutex::new(pending_outbound_payments.unwrap()),
+			retry_lock: Mutex::new(())
+		};
 		if !forward_htlcs.is_empty() || pending_outbounds.needs_abandon() {
 			// If we have pending HTLCs to forward, assume we either dropped a
 			// `PendingHTLCsForwardable` or the user received it but never processed it as they
@@ -7841,7 +7885,7 @@ mod tests {
 		// indicates there are more HTLCs coming.
 		let cur_height = CHAN_CONFIRM_DEPTH + 1; // route_payment calls send_payment, which adds 1 to the current height. So we do the same here to match.
 		let session_privs = nodes[0].node.test_add_new_pending_payment(our_payment_hash, Some(payment_secret), payment_id, &mpp_route).unwrap();
-		nodes[0].node.send_payment_along_path(&mpp_route.paths[0], &route.payment_params, &our_payment_hash, &Some(payment_secret), 200_000, cur_height, payment_id, &None, session_privs[0]).unwrap();
+		nodes[0].node.test_send_payment_along_path(&mpp_route.paths[0], &route.payment_params, &our_payment_hash, &Some(payment_secret), 200_000, cur_height, payment_id, &None, session_privs[0]).unwrap();
 		check_added_monitors!(nodes[0], 1);
 		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1);
@@ -7871,7 +7915,7 @@ mod tests {
 		expect_payment_failed!(nodes[0], our_payment_hash, true);
 
 		// Send the second half of the original MPP payment.
-		nodes[0].node.send_payment_along_path(&mpp_route.paths[1], &route.payment_params, &our_payment_hash, &Some(payment_secret), 200_000, cur_height, payment_id, &None, session_privs[1]).unwrap();
+		nodes[0].node.test_send_payment_along_path(&mpp_route.paths[1], &route.payment_params, &our_payment_hash, &Some(payment_secret), 200_000, cur_height, payment_id, &None, session_privs[1]).unwrap();
 		check_added_monitors!(nodes[0], 1);
 		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1);
@@ -7963,7 +8007,6 @@ mod tests {
 		let route_params = RouteParameters {
 			payment_params: PaymentParameters::for_keysend(expected_route.last().unwrap().node.get_our_node_id(), TEST_FINAL_CLTV),
 			final_value_msat: 100_000,
-			final_cltv_expiry_delta: TEST_FINAL_CLTV,
 		};
 		let route = find_route(
 			&nodes[0].node.get_our_node_id(), &route_params, &nodes[0].network_graph,
@@ -8054,7 +8097,6 @@ mod tests {
 		let route_params = RouteParameters {
 			payment_params: PaymentParameters::for_keysend(payee_pubkey, 40),
 			final_value_msat: 10_000,
-			final_cltv_expiry_delta: 40,
 		};
 		let network_graph = nodes[0].network_graph.clone();
 		let first_hops = nodes[0].node.list_usable_channels();
@@ -8097,7 +8139,6 @@ mod tests {
 		let route_params = RouteParameters {
 			payment_params: PaymentParameters::for_keysend(payee_pubkey, 40),
 			final_value_msat: 10_000,
-			final_cltv_expiry_delta: 40,
 		};
 		let network_graph = nodes[0].network_graph.clone();
 		let first_hops = nodes[0].node.list_usable_channels();
@@ -8251,9 +8292,9 @@ mod tests {
 			let nodes_0_lock = nodes[0].node.id_to_peer.lock().unwrap();
 			assert_eq!(nodes_0_lock.len(), 1);
 			assert!(nodes_0_lock.contains_key(channel_id));
-
-			assert_eq!(nodes[1].node.id_to_peer.lock().unwrap().len(), 0);
 		}
+
+		assert_eq!(nodes[1].node.id_to_peer.lock().unwrap().len(), 0);
 
 		let funding_created_msg = get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, nodes[1].node.get_our_node_id());
 
@@ -8262,7 +8303,9 @@ mod tests {
 			let nodes_0_lock = nodes[0].node.id_to_peer.lock().unwrap();
 			assert_eq!(nodes_0_lock.len(), 1);
 			assert!(nodes_0_lock.contains_key(channel_id));
+		}
 
+		{
 			// Assert that `nodes[1]`'s `id_to_peer` map is populated with the channel as soon as
 			// as it has the funding transaction.
 			let nodes_1_lock = nodes[1].node.id_to_peer.lock().unwrap();
@@ -8292,7 +8335,9 @@ mod tests {
 			let nodes_0_lock = nodes[0].node.id_to_peer.lock().unwrap();
 			assert_eq!(nodes_0_lock.len(), 1);
 			assert!(nodes_0_lock.contains_key(channel_id));
+		}
 
+		{
 			// At this stage, `nodes[1]` has proposed a fee for the closing transaction in the
 			// `handle_closing_signed` call above. As `nodes[1]` has not yet received the signature
 			// from `nodes[0]` for the closing transaction with the proposed fee, the channel is
@@ -8673,13 +8718,12 @@ pub mod bench {
 		// Note that this is unrealistic as each payment send will require at least two fsync
 		// calls per node.
 		let network = bitcoin::Network::Testnet;
-		let genesis_hash = bitcoin::blockdata::constants::genesis_block(network).header.block_hash();
 
 		let tx_broadcaster = test_utils::TestBroadcaster{txn_broadcasted: Mutex::new(Vec::new()), blocks: Arc::new(Mutex::new(Vec::new()))};
 		let fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) };
 		let logger_a = test_utils::TestLogger::with_id("node a".to_owned());
 		let scorer = Mutex::new(test_utils::TestScorer::new());
-		let router = test_utils::TestRouter::new(Arc::new(NetworkGraph::new(genesis_hash, &logger_a)), &scorer);
+		let router = test_utils::TestRouter::new(Arc::new(NetworkGraph::new(network, &logger_a)), &scorer);
 
 		let mut config: UserConfig = Default::default();
 		config.channel_handshake_config.minimum_depth = 1;
@@ -8689,7 +8733,7 @@ pub mod bench {
 		let keys_manager_a = KeysManager::new(&seed_a, 42, 42);
 		let node_a = ChannelManager::new(&fee_estimator, &chain_monitor_a, &tx_broadcaster, &router, &logger_a, &keys_manager_a, &keys_manager_a, &keys_manager_a, config.clone(), ChainParameters {
 			network,
-			best_block: BestBlock::from_genesis(network),
+			best_block: BestBlock::from_network(network),
 		});
 		let node_a_holder = NodeHolder { node: &node_a };
 
@@ -8699,7 +8743,7 @@ pub mod bench {
 		let keys_manager_b = KeysManager::new(&seed_b, 42, 42);
 		let node_b = ChannelManager::new(&fee_estimator, &chain_monitor_b, &tx_broadcaster, &router, &logger_b, &keys_manager_b, &keys_manager_b, &keys_manager_b, config.clone(), ChainParameters {
 			network,
-			best_block: BestBlock::from_genesis(network),
+			best_block: BestBlock::from_network(network),
 		});
 		let node_b_holder = NodeHolder { node: &node_b };
 
@@ -8723,7 +8767,7 @@ pub mod bench {
 		assert_eq!(&tx_broadcaster.txn_broadcasted.lock().unwrap()[..], &[tx.clone()]);
 
 		let block = Block {
-			header: BlockHeader { version: 0x20000000, prev_blockhash: genesis_hash, merkle_root: TxMerkleNode::all_zeros(), time: 42, bits: 42, nonce: 42 },
+			header: BlockHeader { version: 0x20000000, prev_blockhash: BestBlock::from_network(network).block_hash(), merkle_root: TxMerkleNode::all_zeros(), time: 42, bits: 42, nonce: 42 },
 			txdata: vec![tx],
 		};
 		Listen::block_connected(&node_a, &block, 1);
@@ -8762,7 +8806,7 @@ pub mod bench {
 			_ => panic!("Unexpected event"),
 		}
 
-		let dummy_graph = NetworkGraph::new(genesis_hash, &logger_a);
+		let dummy_graph = NetworkGraph::new(network, &logger_a);
 
 		let mut payment_count: u64 = 0;
 		macro_rules! send_payment {

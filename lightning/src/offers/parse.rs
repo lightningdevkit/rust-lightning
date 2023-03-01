@@ -10,69 +10,83 @@
 //! Parsing and formatting for bech32 message encoding.
 
 use bitcoin::bech32;
-use bitcoin::bech32::{FromBase32, ToBase32};
 use bitcoin::secp256k1;
 use core::convert::TryFrom;
-use core::fmt;
 use crate::io;
 use crate::ln::msgs::DecodeError;
 use crate::util::ser::SeekReadable;
 
 use crate::prelude::*;
 
-/// Indicates a message can be encoded using bech32.
-pub(super) trait Bech32Encode: AsRef<[u8]> + TryFrom<Vec<u8>, Error=ParseError> {
-	/// Human readable part of the message's bech32 encoding.
-	const BECH32_HRP: &'static str;
+#[cfg(not(fuzzing))]
+pub(super) use sealed::Bech32Encode;
 
-	/// Parses a bech32-encoded message into a TLV stream.
-	fn from_bech32_str(s: &str) -> Result<Self, ParseError> {
-		// Offer encoding may be split by '+' followed by optional whitespace.
-		let encoded = match s.split('+').skip(1).next() {
-			Some(_) => {
-				for chunk in s.split('+') {
-					let chunk = chunk.trim_start();
-					if chunk.is_empty() || chunk.contains(char::is_whitespace) {
-						return Err(ParseError::InvalidContinuation);
+#[cfg(fuzzing)]
+pub use sealed::Bech32Encode;
+
+mod sealed {
+	use bitcoin::bech32;
+	use bitcoin::bech32::{FromBase32, ToBase32};
+	use core::convert::TryFrom;
+	use core::fmt;
+	use super::ParseError;
+
+	use crate::prelude::*;
+
+	/// Indicates a message can be encoded using bech32.
+	pub trait Bech32Encode: AsRef<[u8]> + TryFrom<Vec<u8>, Error=ParseError> {
+		/// Human readable part of the message's bech32 encoding.
+		const BECH32_HRP: &'static str;
+
+		/// Parses a bech32-encoded message into a TLV stream.
+		fn from_bech32_str(s: &str) -> Result<Self, ParseError> {
+			// Offer encoding may be split by '+' followed by optional whitespace.
+			let encoded = match s.split('+').skip(1).next() {
+				Some(_) => {
+					for chunk in s.split('+') {
+						let chunk = chunk.trim_start();
+						if chunk.is_empty() || chunk.contains(char::is_whitespace) {
+							return Err(ParseError::InvalidContinuation);
+						}
 					}
-				}
 
-				let s = s.chars().filter(|c| *c != '+' && !c.is_whitespace()).collect::<String>();
-				Bech32String::Owned(s)
-			},
-			None => Bech32String::Borrowed(s),
-		};
+					let s: String = s.chars().filter(|c| *c != '+' && !c.is_whitespace()).collect();
+					Bech32String::Owned(s)
+				},
+				None => Bech32String::Borrowed(s),
+			};
 
-		let (hrp, data) = bech32::decode_without_checksum(encoded.as_ref())?;
+			let (hrp, data) = bech32::decode_without_checksum(encoded.as_ref())?;
 
-		if hrp != Self::BECH32_HRP {
-			return Err(ParseError::InvalidBech32Hrp);
+			if hrp != Self::BECH32_HRP {
+				return Err(ParseError::InvalidBech32Hrp);
+			}
+
+			let data = Vec::<u8>::from_base32(&data)?;
+			Self::try_from(data)
 		}
 
-		let data = Vec::<u8>::from_base32(&data)?;
-		Self::try_from(data)
+		/// Formats the message using bech32-encoding.
+		fn fmt_bech32_str(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
+			bech32::encode_without_checksum_to_fmt(f, Self::BECH32_HRP, self.as_ref().to_base32())
+				.expect("HRP is invalid").unwrap();
+
+			Ok(())
+		}
 	}
 
-	/// Formats the message using bech32-encoding.
-	fn fmt_bech32_str(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
-		bech32::encode_without_checksum_to_fmt(f, Self::BECH32_HRP, self.as_ref().to_base32())
-			.expect("HRP is invalid").unwrap();
-
-		Ok(())
+	// Used to avoid copying a bech32 string not containing the continuation character (+).
+	enum Bech32String<'a> {
+		Borrowed(&'a str),
+		Owned(String),
 	}
-}
 
-// Used to avoid copying a bech32 string not containing the continuation character (+).
-enum Bech32String<'a> {
-	Borrowed(&'a str),
-	Owned(String),
-}
-
-impl<'a> AsRef<str> for Bech32String<'a> {
-	fn as_ref(&self) -> &str {
-		match self {
-			Bech32String::Borrowed(s) => s,
-			Bech32String::Owned(s) => s,
+	impl<'a> AsRef<str> for Bech32String<'a> {
+		fn as_ref(&self) -> &str {
+			match self {
+				Bech32String::Borrowed(s) => s,
+				Bech32String::Owned(s) => s,
+			}
 		}
 	}
 }

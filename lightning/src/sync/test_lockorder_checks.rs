@@ -15,6 +15,8 @@ fn recursive_lock_fail() {
 }
 
 #[test]
+#[should_panic]
+#[cfg(not(feature = "backtrace"))]
 fn recursive_read() {
 	let lock = RwLock::new(());
 	let _a = lock.read().unwrap();
@@ -56,23 +58,6 @@ fn write_lockorder_fail() {
 fn read_lockorder_fail() {
 	let a = RwLock::new(());
 	let b = RwLock::new(());
-	{
-		let _a = a.read().unwrap();
-		let _b = b.read().unwrap();
-	}
-	{
-		let _b = b.read().unwrap();
-		let _a = a.read().unwrap();
-	}
-}
-
-#[test]
-fn read_recursive_no_lockorder() {
-	// Like the above, but note that no lockorder is implied when we recursively read-lock a
-	// RwLock, causing this to pass just fine.
-	let a = RwLock::new(());
-	let b = RwLock::new(());
-	let _outer = a.read().unwrap();
 	{
 		let _a = a.read().unwrap();
 		let _b = b.read().unwrap();

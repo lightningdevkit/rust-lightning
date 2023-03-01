@@ -1759,8 +1759,7 @@ mod tests {
 	}
 
 	fn network_graph(logger: &TestLogger) -> NetworkGraph<&TestLogger> {
-		let genesis_hash = genesis_block(Network::Testnet).header.block_hash();
-		let mut network_graph = NetworkGraph::new(genesis_hash, logger);
+		let mut network_graph = NetworkGraph::new(Network::Testnet, logger);
 		add_channel(&mut network_graph, 42, source_privkey(), target_privkey());
 		add_channel(&mut network_graph, 43, target_privkey(), recipient_privkey());
 
@@ -2226,8 +2225,7 @@ mod tests {
 		// we do not score such channels.
 		let secp_ctx = Secp256k1::new();
 		let logger = TestLogger::new();
-		let genesis_hash = genesis_block(Network::Testnet).header.block_hash();
-		let mut network_graph = NetworkGraph::new(genesis_hash, &logger);
+		let mut network_graph = NetworkGraph::new(Network::Testnet, &logger);
 		let secret_a = SecretKey::from_slice(&[42; 32]).unwrap();
 		let secret_b = SecretKey::from_slice(&[43; 32]).unwrap();
 		let secret_c = SecretKey::from_slice(&[44; 32]).unwrap();

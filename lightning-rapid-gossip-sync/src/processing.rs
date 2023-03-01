@@ -10,6 +10,7 @@ use lightning::ln::msgs::{
 };
 use lightning::routing::gossip::NetworkGraph;
 use lightning::util::logger::Logger;
+use lightning::{log_warn, log_trace, log_given_level};
 use lightning::util::ser::{BigSize, Readable};
 use lightning::io;
 
@@ -120,6 +121,7 @@ impl<NG: Deref<Target=NetworkGraph<L>>, L: Deref> RapidGossipSync<NG, L> where L
 				if let ErrorAction::IgnoreDuplicateGossip = lightning_error.action {
 					// everything is fine, just a duplicate channel announcement
 				} else {
+					log_warn!(self.logger, "Failed to process channel announcement: {:?}", lightning_error);
 					return Err(lightning_error.into());
 				}
 			}
@@ -169,24 +171,19 @@ impl<NG: Deref<Target=NetworkGraph<L>>, L: Deref> RapidGossipSync<NG, L> where L
 			if (channel_flags & 0b_1000_0000) != 0 {
 				// incremental update, field flags will indicate mutated values
 				let read_only_network_graph = network_graph.read_only();
-				if let Some(channel) = read_only_network_graph
-					.channels()
-					.get(&short_channel_id) {
-
-					let directional_info = channel
-						.get_directional_info(channel_flags)
-						.ok_or(LightningError {
-							err: "Couldn't find previous directional data for update".to_owned(),
-							action: ErrorAction::IgnoreError,
-						})?;
-
+				if let Some(directional_info) =
+					read_only_network_graph.channels().get(&short_channel_id)
+					.and_then(|channel| channel.get_directional_info(channel_flags))
+				{
 					synthetic_update.cltv_expiry_delta = directional_info.cltv_expiry_delta;
 					synthetic_update.htlc_minimum_msat = directional_info.htlc_minimum_msat;
 					synthetic_update.htlc_maximum_msat = directional_info.htlc_maximum_msat;
 					synthetic_update.fee_base_msat = directional_info.fees.base_msat;
 					synthetic_update.fee_proportional_millionths = directional_info.fees.proportional_millionths;
-
 				} else {
+					log_trace!(self.logger,
+						"Skipping application of channel update for chan {} with flags {} as original data is missing.",
+						short_channel_id, channel_flags);
 					skip_update_for_unknown_channel = true;
 				}
 			};
@@ -223,7 +220,9 @@ impl<NG: Deref<Target=NetworkGraph<L>>, L: Deref> RapidGossipSync<NG, L> where L
 			match network_graph.update_channel_unsigned(&synthetic_update) {
 				Ok(_) => {},
 				Err(LightningError { action: ErrorAction::IgnoreDuplicateGossip, .. }) => {},
-				Err(LightningError { action: ErrorAction::IgnoreAndLog(_), .. }) => {},
+				Err(LightningError { action: ErrorAction::IgnoreAndLog(level), err }) => {
+					log_given_level!(self.logger, level, "Failed to apply channel update: {:?}", err);
+				},
 				Err(LightningError { action: ErrorAction::IgnoreError, .. }) => {},
 				Err(e) => return Err(e.into()),
 			}
@@ -237,7 +236,6 @@ impl<NG: Deref<Target=NetworkGraph<L>>, L: Deref> RapidGossipSync<NG, L> where L
 
 #[cfg(test)]
 mod tests {
-	use bitcoin::blockdata::constants::genesis_block;
 	use bitcoin::Network;
 
 	use lightning::ln::msgs::DecodeError;
@@ -269,9 +267,8 @@ mod tests {
 
 	#[test]
 	fn network_graph_fails_to_update_from_clipped_input() {
-		let block_hash = genesis_block(Network::Bitcoin).block_hash();
 		let logger = TestLogger::new();
-		let network_graph = NetworkGraph::new(block_hash, &logger);
+		let network_graph = NetworkGraph::new(Network::Bitcoin, &logger);
 
 		let example_input = vec![
 			76, 68, 75, 1, 111, 226, 140, 10, 182, 241, 179, 114, 193, 166, 162, 70, 174, 99, 247,
@@ -289,7 +286,7 @@ mod tests {
 			0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 58, 85, 116, 216, 255, 2, 68, 226, 0, 6, 11, 0, 1, 24, 0,
 			0, 3, 232, 0, 0, 0,
 		];
-		let rapid_sync = RapidGossipSync::new(&network_graph);
+		let rapid_sync = RapidGossipSync::new(&network_graph, &logger);
 		let update_result = rapid_sync.update_network_graph(&example_input[..]);
 		assert!(update_result.is_err());
 		if let Err(GraphSyncError::DecodeError(DecodeError::ShortRead)) = update_result {
@@ -309,13 +306,12 @@ mod tests {
 			68, 226, 0, 6, 11, 0, 1, 128,
 		];
 
-		let block_hash = genesis_block(Network::Bitcoin).block_hash();
 		let logger = TestLogger::new();
-		let network_graph = NetworkGraph::new(block_hash, &logger);
+		let network_graph = NetworkGraph::new(Network::Bitcoin, &logger);
 
 		assert_eq!(network_graph.read_only().channels().len(), 0);
 
-		let rapid_sync = RapidGossipSync::new(&network_graph);
+		let rapid_sync = RapidGossipSync::new(&network_graph, &logger);
 		let update_result = rapid_sync.update_network_graph(&incremental_update_input[..]);
 		assert!(update_result.is_ok());
 	}
@@ -338,23 +334,13 @@ mod tests {
 			2, 68, 226, 0, 6, 11, 0, 1, 128,
 		];
 
-		let block_hash = genesis_block(Network::Bitcoin).block_hash();
 		let logger = TestLogger::new();
-		let network_graph = NetworkGraph::new(block_hash, &logger);
+		let network_graph = NetworkGraph::new(Network::Bitcoin, &logger);
 
 		assert_eq!(network_graph.read_only().channels().len(), 0);
 
-		let rapid_sync = RapidGossipSync::new(&network_graph);
-		let update_result = rapid_sync.update_network_graph(&announced_update_input[..]);
-		assert!(update_result.is_err());
-		if let Err(GraphSyncError::LightningError(lightning_error)) = update_result {
-			assert_eq!(
-				lightning_error.err,
-				"Couldn't find previous directional data for update"
-			);
-		} else {
-			panic!("Unexpected update result: {:?}", update_result)
-		}
+		let rapid_sync = RapidGossipSync::new(&network_graph, &logger);
+		rapid_sync.update_network_graph(&announced_update_input[..]).unwrap();
 	}
 
 	#[test]
@@ -375,13 +361,12 @@ mod tests {
 			0, 1, 0, 0, 0, 125, 255, 2, 68, 226, 0, 6, 11, 0, 1, 5, 0, 0, 0, 0, 29, 129, 25, 192,
 		];
 
-		let block_hash = genesis_block(Network::Bitcoin).block_hash();
 		let logger = TestLogger::new();
-		let network_graph = NetworkGraph::new(block_hash, &logger);
+		let network_graph = NetworkGraph::new(Network::Bitcoin, &logger);
 
 		assert_eq!(network_graph.read_only().channels().len(), 0);
 
-		let rapid_sync = RapidGossipSync::new(&network_graph);
+		let rapid_sync = RapidGossipSync::new(&network_graph, &logger);
 		let initialization_result = rapid_sync.update_network_graph(&initialization_input[..]);
 		if initialization_result.is_err() {
 			panic!(
@@ -410,16 +395,7 @@ mod tests {
 			0, 0, 0, 0, 0, 0, 0, 0, 0, 255, 8, 153, 192, 0, 2, 27, 0, 0, 136, 0, 0, 0, 221, 255, 2,
 			68, 226, 0, 6, 11, 0, 1, 128,
 		];
-		let update_result = rapid_sync.update_network_graph(&opposite_direction_incremental_update_input[..]);
-		assert!(update_result.is_err());
-		if let Err(GraphSyncError::LightningError(lightning_error)) = update_result {
-			assert_eq!(
-				lightning_error.err,
-				"Couldn't find previous directional data for update"
-			);
-		} else {
-			panic!("Unexpected update result: {:?}", update_result)
-		}
+		rapid_sync.update_network_graph(&opposite_direction_incremental_update_input[..]).unwrap();
 	}
 
 	#[test]
@@ -442,13 +418,12 @@ mod tests {
 			25, 192,
 		];
 
-		let block_hash = genesis_block(Network::Bitcoin).block_hash();
 		let logger = TestLogger::new();
-		let network_graph = NetworkGraph::new(block_hash, &logger);
+		let network_graph = NetworkGraph::new(Network::Bitcoin, &logger);
 
 		assert_eq!(network_graph.read_only().channels().len(), 0);
 
-		let rapid_sync = RapidGossipSync::new(&network_graph);
+		let rapid_sync = RapidGossipSync::new(&network_graph, &logger);
 		let initialization_result = rapid_sync.update_network_graph(&initialization_input[..]);
 		assert!(initialization_result.is_ok());
 
@@ -502,13 +477,12 @@ mod tests {
 			25, 192,
 		];
 
-		let block_hash = genesis_block(Network::Bitcoin).block_hash();
 		let logger = TestLogger::new();
-		let network_graph = NetworkGraph::new(block_hash, &logger);
+		let network_graph = NetworkGraph::new(Network::Bitcoin, &logger);
 
 		assert_eq!(network_graph.read_only().channels().len(), 0);
 
-		let rapid_sync = RapidGossipSync::new(&network_graph);
+		let rapid_sync = RapidGossipSync::new(&network_graph, &logger);
 		let initialization_result = rapid_sync.update_network_graph(&initialization_input[..]);
 		assert!(initialization_result.is_ok());
 
@@ -528,13 +502,12 @@ mod tests {
 
 	#[test]
 	fn full_update_succeeds() {
-		let block_hash = genesis_block(Network::Bitcoin).block_hash();
 		let logger = TestLogger::new();
-		let network_graph = NetworkGraph::new(block_hash, &logger);
+		let network_graph = NetworkGraph::new(Network::Bitcoin, &logger);
 
 		assert_eq!(network_graph.read_only().channels().len(), 0);
 
-		let rapid_sync = RapidGossipSync::new(&network_graph);
+		let rapid_sync = RapidGossipSync::new(&network_graph, &logger);
 		let update_result = rapid_sync.update_network_graph(&VALID_RGS_BINARY);
 		if update_result.is_err() {
 			panic!("Unexpected update result: {:?}", update_result)
@@ -560,13 +533,12 @@ mod tests {
 
 	#[test]
 	fn full_update_succeeds_at_the_beginning_of_the_unix_era() {
-		let block_hash = genesis_block(Network::Bitcoin).block_hash();
 		let logger = TestLogger::new();
-		let network_graph = NetworkGraph::new(block_hash, &logger);
+		let network_graph = NetworkGraph::new(Network::Bitcoin, &logger);
 
 		assert_eq!(network_graph.read_only().channels().len(), 0);
 
-		let rapid_sync = RapidGossipSync::new(&network_graph);
+		let rapid_sync = RapidGossipSync::new(&network_graph, &logger);
 		// this is mostly for checking uint underflow issues before the fuzzer does
 		let update_result = rapid_sync.update_network_graph_no_std(&VALID_RGS_BINARY, Some(0));
 		assert!(update_result.is_ok());
@@ -576,27 +548,26 @@ mod tests {
 	#[test]
 	fn timestamp_edge_cases_are_handled_correctly() {
 		// this is the timestamp encoded in the binary data of valid_input below
-		let block_hash = genesis_block(Network::Bitcoin).block_hash();
 		let logger = TestLogger::new();
 
 		let latest_succeeding_time = VALID_BINARY_TIMESTAMP + STALE_RGS_UPDATE_AGE_LIMIT_SECS;
 		let earliest_failing_time = latest_succeeding_time + 1;
 
 		{
-			let network_graph = NetworkGraph::new(block_hash, &logger);
+			let network_graph = NetworkGraph::new(Network::Bitcoin, &logger);
 			assert_eq!(network_graph.read_only().channels().len(), 0);
 
-			let rapid_sync = RapidGossipSync::new(&network_graph);
+			let rapid_sync = RapidGossipSync::new(&network_graph, &logger);
 			let update_result = rapid_sync.update_network_graph_no_std(&VALID_RGS_BINARY, Some(latest_succeeding_time));
 			assert!(update_result.is_ok());
 			assert_eq!(network_graph.read_only().channels().len(), 2);
 		}
 
 		{
-			let network_graph = NetworkGraph::new(block_hash, &logger);
+			let network_graph = NetworkGraph::new(Network::Bitcoin, &logger);
 			assert_eq!(network_graph.read_only().channels().len(), 0);
 
-			let rapid_sync = RapidGossipSync::new(&network_graph);
+			let rapid_sync = RapidGossipSync::new(&network_graph, &logger);
 			let update_result = rapid_sync.update_network_graph_no_std(&VALID_RGS_BINARY, Some(earliest_failing_time));
 			assert!(update_result.is_err());
 			if let Err(GraphSyncError::LightningError(lightning_error)) = update_result {
@@ -630,10 +601,9 @@ mod tests {
 			0, 0, 1,
 		];
 
-		let block_hash = genesis_block(Network::Bitcoin).block_hash();
 		let logger = TestLogger::new();
-		let network_graph = NetworkGraph::new(block_hash, &logger);
-		let rapid_sync = RapidGossipSync::new(&network_graph);
+		let network_graph = NetworkGraph::new(Network::Bitcoin, &logger);
+		let rapid_sync = RapidGossipSync::new(&network_graph, &logger);
 		let update_result = rapid_sync.update_network_graph(&unknown_version_input[..]);
 
 		assert!(update_result.is_err());

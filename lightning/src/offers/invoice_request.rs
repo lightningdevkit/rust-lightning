@@ -19,7 +19,7 @@
 //! [`Invoice`]: crate::offers::invoice::Invoice
 //! [`Refund`]: crate::offers::refund::Refund
 //!
-//! ```ignore
+//! ```
 //! extern crate bitcoin;
 //! extern crate lightning;
 //!
@@ -250,7 +250,7 @@ impl<'a> UnsignedInvoiceRequest<'a> {
 ///
 /// [`Invoice`]: crate::offers::invoice::Invoice
 /// [`Offer`]: crate::offers::offer::Offer
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct InvoiceRequest {
 	pub(super) bytes: Vec<u8>,
 	pub(super) contents: InvoiceRequestContents,
@@ -260,7 +260,7 @@ pub struct InvoiceRequest {
 /// The contents of an [`InvoiceRequest`], which may be shared with an [`Invoice`].
 ///
 /// [`Invoice`]: crate::offers::invoice::Invoice
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub(super) struct InvoiceRequestContents {
 	payer: PayerContents,
 	pub(super) offer: OfferContents,
@@ -322,12 +322,30 @@ impl InvoiceRequest {
 		self.signature
 	}
 
+	/// Creates an [`Invoice`] for the request with the given required fields and using the
+	/// [`Duration`] since [`std::time::SystemTime::UNIX_EPOCH`] as the creation time.
+	///
+	/// See [`InvoiceRequest::respond_with_no_std`] for further details where the aforementioned
+	/// creation time is used for the `created_at` parameter.
+	///
+	/// [`Invoice`]: crate::offers::invoice::Invoice
+	/// [`Duration`]: core::time::Duration
+	#[cfg(feature = "std")]
+	pub fn respond_with(
+		&self, payment_paths: Vec<(BlindedPath, BlindedPayInfo)>, payment_hash: PaymentHash
+	) -> Result<InvoiceBuilder, SemanticError> {
+		let created_at = std::time::SystemTime::now()
+			.duration_since(std::time::SystemTime::UNIX_EPOCH)
+			.expect("SystemTime::now() should come after SystemTime::UNIX_EPOCH");
+
+		self.respond_with_no_std(payment_paths, payment_hash, created_at)
+	}
+
 	/// Creates an [`Invoice`] for the request with the given required fields.
 	///
 	/// Unless [`InvoiceBuilder::relative_expiry`] is set, the invoice will expire two hours after
-	/// calling this method in `std` builds. For `no-std` builds, a final [`Duration`] parameter
-	/// must be given, which is used to set [`Invoice::created_at`] since [`std::time::SystemTime`]
-	/// is not available.
+	/// `created_at`, which is used to set [`Invoice::created_at`]. Useful for `no-std` builds where
+	/// [`std::time::SystemTime`] is not available.
 	///
 	/// The caller is expected to remember the preimage of `payment_hash` in order to claim a payment
 	/// for the invoice.
@@ -339,22 +357,15 @@ impl InvoiceRequest {
 	///
 	/// Errors if the request contains unknown required features.
 	///
-	/// [`Duration`]: core::time::Duration
 	/// [`Invoice`]: crate::offers::invoice::Invoice
 	/// [`Invoice::created_at`]: crate::offers::invoice::Invoice::created_at
-	pub fn respond_with(
+	pub fn respond_with_no_std(
 		&self, payment_paths: Vec<(BlindedPath, BlindedPayInfo)>, payment_hash: PaymentHash,
-		#[cfg(any(test, not(feature = "std")))]
 		created_at: core::time::Duration
 	) -> Result<InvoiceBuilder, SemanticError> {
 		if self.features().requires_unknown_bits() {
 			return Err(SemanticError::UnknownRequiredFeatures);
 		}
-
-		#[cfg(all(not(test), feature = "std"))]
-		let created_at = std::time::SystemTime::now()
-			.duration_since(std::time::SystemTime::UNIX_EPOCH)
-			.expect("SystemTime::now() should come after SystemTime::UNIX_EPOCH");
 
 		InvoiceBuilder::for_offer(self, payment_paths, created_at, payment_hash)
 	}
@@ -817,6 +828,18 @@ mod tests {
 			Ok(_) => panic!("expected error"),
 			Err(e) => assert_eq!(e, SemanticError::MissingAmount),
 		}
+
+		match OfferBuilder::new("foo".into(), recipient_pubkey())
+			.amount_msats(1000)
+			.supported_quantity(Quantity::Unbounded)
+			.build().unwrap()
+			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.quantity(u64::max_value()).unwrap()
+			.build()
+		{
+			Ok(_) => panic!("expected error"),
+			Err(e) => assert_eq!(e, SemanticError::InvalidAmount),
+		}
 	}
 
 	#[test]
@@ -1111,6 +1134,23 @@ mod tests {
 			Err(e) => {
 				assert_eq!(e, ParseError::InvalidSemantics(SemanticError::UnsupportedCurrency));
 			},
+		}
+
+		let invoice_request = OfferBuilder::new("foo".into(), recipient_pubkey())
+			.amount_msats(1000)
+			.supported_quantity(Quantity::Unbounded)
+			.build().unwrap()
+			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.quantity(u64::max_value()).unwrap()
+			.build_unchecked()
+			.sign(payer_sign).unwrap();
+
+		let mut buffer = Vec::new();
+		invoice_request.write(&mut buffer).unwrap();
+
+		match InvoiceRequest::try_from(buffer) {
+			Ok(_) => panic!("expected error"),
+			Err(e) => assert_eq!(e, ParseError::InvalidSemantics(SemanticError::InvalidAmount)),
 		}
 	}
 

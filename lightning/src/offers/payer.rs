@@ -17,7 +17,7 @@ use crate::prelude::*;
 /// [`InvoiceRequest::payer_id`].
 ///
 /// [`InvoiceRequest::payer_id`]: crate::offers::invoice_request::InvoiceRequest::payer_id
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub(super) struct PayerContents(pub Vec<u8>);
 
 tlv_stream!(PayerTlvStream, PayerTlvStreamRef, 0..1, {

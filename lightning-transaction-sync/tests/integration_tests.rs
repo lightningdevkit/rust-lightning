@@ -32,7 +32,9 @@ fn get_bitcoind() -> &'static BitcoinD {
 				);
 		let mut conf = bitcoind::Conf::default();
 		conf.network = "regtest";
-		BitcoinD::with_conf(bitcoind_exe, &conf).unwrap()
+		let bitcoind = BitcoinD::with_conf(bitcoind_exe, &conf).unwrap();
+		std::thread::sleep(Duration::from_secs(1));
+		bitcoind
 	})
 }
 
@@ -46,29 +48,42 @@ fn get_electrsd() -> &'static ElectrsD {
 		let mut conf = electrsd::Conf::default();
 		conf.http_enabled = true;
 		conf.network = "regtest";
-		ElectrsD::with_conf(electrs_exe, &bitcoind, &conf).unwrap()
+		let electrsd = ElectrsD::with_conf(electrs_exe, &bitcoind, &conf).unwrap();
+		std::thread::sleep(Duration::from_secs(1));
+		electrsd
 	})
 }
 
 fn generate_blocks_and_wait(num: usize) {
 	let miner_lock = MINER_LOCK.get_or_init(|| Mutex::new(()));
 	let _miner = miner_lock.lock().unwrap();
-	let cur_height = get_bitcoind().client.get_block_count().unwrap();
-	let address = get_bitcoind().client.get_new_address(Some("test"), Some(AddressType::Legacy)).unwrap();
-	let _block_hashes = get_bitcoind().client.generate_to_address(num as u64, &address).unwrap();
+	let cur_height = get_bitcoind().client.get_block_count().expect("failed to get current block height");
+	let address = get_bitcoind().client.get_new_address(Some("test"), Some(AddressType::Legacy)).expect("failed to get new address");
+	// TODO: expect this Result once the WouldBlock issue is resolved upstream.
+	let _block_hashes_res = get_bitcoind().client.generate_to_address(num as u64, &address);
 	wait_for_block(cur_height as usize + num);
 }
 
 fn wait_for_block(min_height: usize) {
-	let mut header = get_electrsd().client.block_headers_subscribe().unwrap();
+	let mut header = match get_electrsd().client.block_headers_subscribe() {
+		Ok(header) => header,
+		Err(_) => {
+			// While subscribing should succeed the first time around, we ran into some cases where
+			// it didn't. Since we can't proceed without subscribing, we try again after a delay
+			// and panic if it still fails.
+			std::thread::sleep(Duration::from_secs(1));
+			get_electrsd().client.block_headers_subscribe().expect("failed to subscribe to block headers")
+		}
+	};
+
 	loop {
 		if header.height >= min_height {
 			break;
 		}
 		header = exponential_backoff_poll(|| {
-			get_electrsd().trigger().unwrap();
-			get_electrsd().client.ping().unwrap();
-			get_electrsd().client.block_headers_pop().unwrap()
+			get_electrsd().trigger().expect("failed to trigger electrsd");
+			get_electrsd().client.ping().expect("failed to ping electrsd");
+			get_electrsd().client.block_headers_pop().expect("failed to pop block header")
 		});
 	}
 }
