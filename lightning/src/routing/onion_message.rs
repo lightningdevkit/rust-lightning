@@ -54,49 +54,83 @@ pub fn find_path<L: Deref, GL: Deref>(
 	let start = NodeId::from_pubkey(&our_node_pubkey);
 	let mut valid_first_hops = HashSet::new();
 	let mut frontier = BinaryHeap::new();
-	frontier.push(PathBuildingHop { cost: 0, node_id: start, parent_node_id: start });
+	let mut visited = HashMap::new();
 	if let Some(first_hops) = first_hops {
 		for hop in first_hops {
+			if &hop.counterparty.node_id == destination { return Ok(vec![*destination]) }
 			if hop.counterparty.node_id == *our_node_pubkey { return Err(Error::InvalidFirstHop) }
 			#[cfg(not(feature = "_bench_unstable"))]
 			if !hop.counterparty.features.supports_onion_messages() { continue; }
 			let node_id = NodeId::from_pubkey(&hop.counterparty.node_id);
-			frontier.push(PathBuildingHop { cost: 1, node_id, parent_node_id: start });
+			match visited.entry(node_id) {
+				hash_map::Entry::Occupied(_) => continue,
+				hash_map::Entry::Vacant(e) => { e.insert(start); },
+			};
+			if let Some(node_info) = network_nodes.get(&node_id) {
+				for scid in &node_info.channels {
+					if let Some(chan_info) = network_channels.get(&scid) {
+						if let Some((directed_channel, successor)) = chan_info.as_directed_from(&node_id) {
+							if *successor == start { continue } // TODO: test
+							if directed_channel.direction().enabled {
+								frontier.push(PathBuildingHop {
+									cost: 1, scid: *scid, one_to_two: chan_info.node_one == node_id,
+								});
+							}
+						}
+					}
+				}
+			}
 			valid_first_hops.insert(node_id);
 		}
 	}
-
-	let mut visited = HashMap::new();
-	while let Some(PathBuildingHop { cost, node_id, parent_node_id }) = frontier.pop() {
-		match visited.entry(node_id) {
-			hash_map::Entry::Occupied(_) => continue,
-			hash_map::Entry::Vacant(e) => e.insert(parent_node_id),
-		};
-		if node_id == dest_node_id {
-			let path = reverse_path(visited, our_node_id, dest_node_id)?;
-			log_info!(logger, "Got route to {:?}: {:?}", destination, path);
-			return Ok(path)
-		}
-		if let Some(node_info) = network_nodes.get(&node_id) {
-			// Only consider the network graph if first_hops does not override it.
-			if valid_first_hops.contains(&node_id) || node_id == our_node_id {
-			} else if let Some(node_ann) = &node_info.announcement_info {
-				#[cfg(not(feature = "_bench_unstable"))]
-				if !node_ann.features.supports_onion_messages() || node_ann.features.requires_unknown_bits()
-				{ continue; }
-			} else { continue; }
+	if frontier.is_empty() {
+		if let Some(node_info) = network_nodes.get(&start) {
 			for scid in &node_info.channels {
 				if let Some(chan_info) = network_channels.get(&scid) {
-					if let Some((directed_channel, successor)) = chan_info.as_directed_from(&node_id) {
+					if let Some((directed_channel, successor)) = chan_info.as_directed_from(&start) {
 						if directed_channel.direction().enabled {
-							// We may push a given successor multiple times, but the heap should sort its best
-							// entry to the top. We do this because there is no way to adjust the priority of an
-							// existing entry in `BinaryHeap`.
 							frontier.push(PathBuildingHop {
-								cost: cost + 1,
-								node_id: *successor,
-								parent_node_id: node_id,
+								cost: 1, scid: *scid, one_to_two: chan_info.node_one == start,
 							});
+						}
+					}
+				}
+			}
+		}
+	}
+
+	while let Some(PathBuildingHop { cost, scid, one_to_two }) = frontier.pop() {
+		if let Some(chan_info) = network_channels.get(&scid) {
+			let directed_from_node_id = if one_to_two { chan_info.node_one } else { chan_info.node_two };
+			let directed_to_node_id = if one_to_two { chan_info.node_two } else { chan_info.node_one };
+			match visited.entry(directed_to_node_id) {
+				hash_map::Entry::Occupied(_) => continue,
+				hash_map::Entry::Vacant(e) => e.insert(directed_from_node_id),
+			};
+			if directed_to_node_id == dest_node_id {
+				let path = reverse_path(visited, our_node_id, dest_node_id)?;
+				log_info!(logger, "Got route to {:?}: {:?}", destination, path);
+				return Ok(path)
+			}
+			if let Some(node_info) = network_nodes.get(&directed_to_node_id) {
+				// Only consider the network graph if first_hops does not override it.
+				if valid_first_hops.contains(&directed_to_node_id) || directed_to_node_id == our_node_id {
+				} else if let Some(node_ann) = &node_info.announcement_info {
+					#[cfg(not(feature = "_bench_unstable"))]
+					if !node_ann.features.supports_onion_messages() || node_ann.features.requires_unknown_bits()
+					{ continue; }
+				} else { continue; }
+				for scid_to_push in &node_info.channels {
+					if let Some(chan_info) = network_channels.get(&scid_to_push) {
+						if let Some((directed_channel, successor)) = chan_info.as_directed_from(&directed_to_node_id) {
+							if directed_channel.direction().enabled {
+								let one_to_two = if let Some(chan_info) = network_channels.get(&scid_to_push) {
+									directed_to_node_id == chan_info.node_one
+								} else { continue };
+								frontier.push(PathBuildingHop {
+									cost: cost + 1, scid: *scid_to_push, one_to_two,
+								});
+							}
 						}
 					}
 				}
@@ -138,8 +172,8 @@ impl std::error::Error for Error {}
 #[derive(Eq, PartialEq)]
 struct PathBuildingHop {
 	cost: u64,
-	node_id: NodeId,
-	parent_node_id: NodeId,
+	scid: u64,
+	one_to_two: bool,
 }
 
 impl PartialOrd for PathBuildingHop {
@@ -250,7 +284,7 @@ mod tests {
 		// Route to 1 via 2 and 3 because our channel to 1 is disabled
 		let path = super::find_path(&our_id, &node_pks[0], &network_graph, None, Arc::clone(&logger)).unwrap();
 		assert_eq!(path.len(), 3);
-		assert_eq!(path[0], node_pks[1]);
+		assert!((path[0] == node_pks[1]) || (path[0] == node_pks[7]));
 		assert_eq!(path[1], node_pks[2]);
 		assert_eq!(path[2], node_pks[0]);
 
