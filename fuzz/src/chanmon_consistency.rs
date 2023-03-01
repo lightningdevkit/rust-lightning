@@ -295,7 +295,7 @@ fn check_api_err(api_err: APIError) {
 			// all others. If you hit this panic, the list of acceptable errors
 			// is probably just stale and you should add new messages here.
 			match err.as_str() {
-				"Peer for first hop currently disconnected/pending monitor update!" => {},
+				"Peer for first hop currently disconnected" => {},
 				_ if err.starts_with("Cannot push more than their max accepted HTLCs ") => {},
 				_ if err.starts_with("Cannot send value that would put us over the max HTLC value in flight our peer will accept ") => {},
 				_ if err.starts_with("Cannot send value that would put our balance under counterparty-announced channel reserve value") => {},
@@ -418,7 +418,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 			let network = Network::Bitcoin;
 			let params = ChainParameters {
 				network,
-				best_block: BestBlock::from_genesis(network),
+				best_block: BestBlock::from_network(network),
 			};
 			(ChannelManager::new($fee_estimator.clone(), monitor.clone(), broadcast.clone(), &router, Arc::clone(&logger), keys_manager.clone(), keys_manager.clone(), keys_manager.clone(), config, params),
 			monitor, keys_manager)
@@ -474,8 +474,8 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 	let mut channel_txn = Vec::new();
 	macro_rules! make_channel {
 		($source: expr, $dest: expr, $chan_id: expr) => { {
-			$source.peer_connected(&$dest.get_our_node_id(), &Init { features: $dest.init_features(), remote_network_address: None }).unwrap();
-			$dest.peer_connected(&$source.get_our_node_id(), &Init { features: $source.init_features(), remote_network_address: None }).unwrap();
+			$source.peer_connected(&$dest.get_our_node_id(), &Init { features: $dest.init_features(), remote_network_address: None }, true).unwrap();
+			$dest.peer_connected(&$source.get_our_node_id(), &Init { features: $source.init_features(), remote_network_address: None }, false).unwrap();
 
 			$source.create_channel($dest.get_our_node_id(), 100_000, 42, 0, None).unwrap();
 			let open_channel = {
@@ -979,31 +979,31 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 
 			0x0c => {
 				if !chan_a_disconnected {
-					nodes[0].peer_disconnected(&nodes[1].get_our_node_id(), false);
-					nodes[1].peer_disconnected(&nodes[0].get_our_node_id(), false);
+					nodes[0].peer_disconnected(&nodes[1].get_our_node_id());
+					nodes[1].peer_disconnected(&nodes[0].get_our_node_id());
 					chan_a_disconnected = true;
 					drain_msg_events_on_disconnect!(0);
 				}
 			},
 			0x0d => {
 				if !chan_b_disconnected {
-					nodes[1].peer_disconnected(&nodes[2].get_our_node_id(), false);
-					nodes[2].peer_disconnected(&nodes[1].get_our_node_id(), false);
+					nodes[1].peer_disconnected(&nodes[2].get_our_node_id());
+					nodes[2].peer_disconnected(&nodes[1].get_our_node_id());
 					chan_b_disconnected = true;
 					drain_msg_events_on_disconnect!(2);
 				}
 			},
 			0x0e => {
 				if chan_a_disconnected {
-					nodes[0].peer_connected(&nodes[1].get_our_node_id(), &Init { features: nodes[1].init_features(), remote_network_address: None }).unwrap();
-					nodes[1].peer_connected(&nodes[0].get_our_node_id(), &Init { features: nodes[0].init_features(), remote_network_address: None }).unwrap();
+					nodes[0].peer_connected(&nodes[1].get_our_node_id(), &Init { features: nodes[1].init_features(), remote_network_address: None }, true).unwrap();
+					nodes[1].peer_connected(&nodes[0].get_our_node_id(), &Init { features: nodes[0].init_features(), remote_network_address: None }, false).unwrap();
 					chan_a_disconnected = false;
 				}
 			},
 			0x0f => {
 				if chan_b_disconnected {
-					nodes[1].peer_connected(&nodes[2].get_our_node_id(), &Init { features: nodes[2].init_features(), remote_network_address: None }).unwrap();
-					nodes[2].peer_connected(&nodes[1].get_our_node_id(), &Init { features: nodes[1].init_features(), remote_network_address: None }).unwrap();
+					nodes[1].peer_connected(&nodes[2].get_our_node_id(), &Init { features: nodes[2].init_features(), remote_network_address: None }, true).unwrap();
+					nodes[2].peer_connected(&nodes[1].get_our_node_id(), &Init { features: nodes[1].init_features(), remote_network_address: None }, false).unwrap();
 					chan_b_disconnected = false;
 				}
 			},
@@ -1040,7 +1040,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 
 			0x2c => {
 				if !chan_a_disconnected {
-					nodes[1].peer_disconnected(&nodes[0].get_our_node_id(), false);
+					nodes[1].peer_disconnected(&nodes[0].get_our_node_id());
 					chan_a_disconnected = true;
 					drain_msg_events_on_disconnect!(0);
 				}
@@ -1054,14 +1054,14 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 			},
 			0x2d => {
 				if !chan_a_disconnected {
-					nodes[0].peer_disconnected(&nodes[1].get_our_node_id(), false);
+					nodes[0].peer_disconnected(&nodes[1].get_our_node_id());
 					chan_a_disconnected = true;
 					nodes[0].get_and_clear_pending_msg_events();
 					ab_events.clear();
 					ba_events.clear();
 				}
 				if !chan_b_disconnected {
-					nodes[2].peer_disconnected(&nodes[1].get_our_node_id(), false);
+					nodes[2].peer_disconnected(&nodes[1].get_our_node_id());
 					chan_b_disconnected = true;
 					nodes[2].get_and_clear_pending_msg_events();
 					bc_events.clear();
@@ -1073,7 +1073,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 			},
 			0x2e => {
 				if !chan_b_disconnected {
-					nodes[1].peer_disconnected(&nodes[2].get_our_node_id(), false);
+					nodes[1].peer_disconnected(&nodes[2].get_our_node_id());
 					chan_b_disconnected = true;
 					drain_msg_events_on_disconnect!(2);
 				}
@@ -1198,13 +1198,13 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 
 				// Next, make sure peers are all connected to each other
 				if chan_a_disconnected {
-					nodes[0].peer_connected(&nodes[1].get_our_node_id(), &Init { features: nodes[1].init_features(), remote_network_address: None }).unwrap();
-					nodes[1].peer_connected(&nodes[0].get_our_node_id(), &Init { features: nodes[0].init_features(), remote_network_address: None }).unwrap();
+					nodes[0].peer_connected(&nodes[1].get_our_node_id(), &Init { features: nodes[1].init_features(), remote_network_address: None }, true).unwrap();
+					nodes[1].peer_connected(&nodes[0].get_our_node_id(), &Init { features: nodes[0].init_features(), remote_network_address: None }, false).unwrap();
 					chan_a_disconnected = false;
 				}
 				if chan_b_disconnected {
-					nodes[1].peer_connected(&nodes[2].get_our_node_id(), &Init { features: nodes[2].init_features(), remote_network_address: None }).unwrap();
-					nodes[2].peer_connected(&nodes[1].get_our_node_id(), &Init { features: nodes[1].init_features(), remote_network_address: None }).unwrap();
+					nodes[1].peer_connected(&nodes[2].get_our_node_id(), &Init { features: nodes[2].init_features(), remote_network_address: None }, true).unwrap();
+					nodes[2].peer_connected(&nodes[1].get_our_node_id(), &Init { features: nodes[1].init_features(), remote_network_address: None }, false).unwrap();
 					chan_b_disconnected = false;
 				}
 

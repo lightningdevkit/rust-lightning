@@ -378,7 +378,7 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool, use_funding_
 		// If we dropped the channel before reloading the node, nodes[1] was also dropped from
 		// nodes[0] storage, and hence not connected again on startup. We therefore need to
 		// reconnect to the node before attempting to create a new channel.
-		nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &Init { features: nodes[1].node.init_features(), remote_network_address: None }).unwrap();
+		nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &Init { features: nodes[1].node.init_features(), remote_network_address: None }, true).unwrap();
 	}
 	create_announced_chan_between_nodes(&nodes, 0, 1);
 	send_payment(&nodes[0], &[&nodes[1]], 8000000);

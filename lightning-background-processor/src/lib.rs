@@ -33,11 +33,10 @@ use lightning::routing::gossip::{NetworkGraph, P2PGossipSync};
 use lightning::routing::utxo::UtxoLookup;
 use lightning::routing::router::Router;
 use lightning::routing::scoring::{Score, WriteableScore};
-use lightning::util::events::{Event, EventHandler, EventsProvider};
+use lightning::util::events::{Event, EventHandler, EventsProvider, PathFailure};
 use lightning::util::logger::Logger;
 use lightning::util::persist::Persister;
 use lightning_rapid_gossip_sync::RapidGossipSync;
-use lightning::io;
 
 use core::ops::Deref;
 use core::time::Duration;
@@ -215,10 +214,10 @@ where
 fn handle_network_graph_update<L: Deref>(
 	network_graph: &NetworkGraph<L>, event: &Event
 ) where L::Target: Logger {
-	if let Event::PaymentPathFailed { ref network_update, .. } = event {
-		if let Some(network_update) = network_update {
-			network_graph.handle_network_update(&network_update);
-		}
+	if let Event::PaymentPathFailed {
+		failure: PathFailure::OnPath { network_update: Some(ref upd) }, .. } = event
+	{
+		network_graph.handle_network_update(upd);
 	}
 }
 
@@ -431,7 +430,7 @@ pub async fn process_events_async<
 	persister: PS, event_handler: EventHandler, chain_monitor: M, channel_manager: CM,
 	gossip_sync: GossipSync<PGS, RGS, G, UL, L>, peer_manager: PM, logger: L, scorer: Option<S>,
 	sleeper: Sleeper,
-) -> Result<(), io::Error>
+) -> Result<(), lightning::io::Error>
 where
 	UL::Target: 'static + UtxoLookup,
 	CF::Target: 'static + chain::Filter,
@@ -673,7 +672,7 @@ mod tests {
 	use lightning::routing::router::{DefaultRouter, RouteHop};
 	use lightning::routing::scoring::{ChannelUsage, Score};
 	use lightning::util::config::UserConfig;
-	use lightning::util::events::{Event, MessageSendEventsProvider, MessageSendEvent};
+	use lightning::util::events::{Event, PathFailure, MessageSendEventsProvider, MessageSendEvent};
 	use lightning::util::ser::Writeable;
 	use lightning::util::test_utils;
 	use lightning::util::persist::KVStorePersister;
@@ -941,7 +940,7 @@ mod tests {
 			let logger = Arc::new(test_utils::TestLogger::with_id(format!("node {}", i)));
 			let network = Network::Testnet;
 			let genesis_block = genesis_block(network);
-			let network_graph = Arc::new(NetworkGraph::new(genesis_block.header.block_hash(), logger.clone()));
+			let network_graph = Arc::new(NetworkGraph::new(network, logger.clone()));
 			let scorer = Arc::new(Mutex::new(TestScorer::new()));
 			let seed = [i as u8; 32];
 			let router = Arc::new(DefaultRouter::new(network_graph.clone(), logger.clone(), seed, scorer.clone()));
@@ -950,11 +949,11 @@ mod tests {
 			let now = Duration::from_secs(genesis_block.header.time as u64);
 			let keys_manager = Arc::new(KeysManager::new(&seed, now.as_secs(), now.subsec_nanos()));
 			let chain_monitor = Arc::new(chainmonitor::ChainMonitor::new(Some(chain_source.clone()), tx_broadcaster.clone(), logger.clone(), fee_estimator.clone(), persister.clone()));
-			let best_block = BestBlock::from_genesis(network);
+			let best_block = BestBlock::from_network(network);
 			let params = ChainParameters { network, best_block };
 			let manager = Arc::new(ChannelManager::new(fee_estimator.clone(), chain_monitor.clone(), tx_broadcaster.clone(), router.clone(), logger.clone(), keys_manager.clone(), keys_manager.clone(), keys_manager.clone(), UserConfig::default(), params));
 			let p2p_gossip_sync = Arc::new(P2PGossipSync::new(network_graph.clone(), Some(chain_source.clone()), logger.clone()));
-			let rapid_gossip_sync = Arc::new(RapidGossipSync::new(network_graph.clone()));
+			let rapid_gossip_sync = Arc::new(RapidGossipSync::new(network_graph.clone(), logger.clone()));
 			let msg_handler = MessageHandler { chan_handler: Arc::new(test_utils::TestChannelMessageHandler::new()), route_handler: Arc::new(test_utils::TestRoutingMessageHandler::new()), onion_message_handler: IgnoringMessageHandler{}};
 			let peer_manager = Arc::new(PeerManager::new(msg_handler, 0, &seed, logger.clone(), IgnoringMessageHandler{}, keys_manager.clone()));
 			let node = Node { node: manager, p2p_gossip_sync, rapid_gossip_sync, peer_manager, chain_monitor, persister, tx_broadcaster, network_graph, logger, best_block, scorer };
@@ -963,8 +962,8 @@ mod tests {
 
 		for i in 0..num_nodes {
 			for j in (i+1)..num_nodes {
-				nodes[i].node.peer_connected(&nodes[j].node.get_our_node_id(), &Init { features: nodes[j].node.init_features(), remote_network_address: None }).unwrap();
-				nodes[j].node.peer_connected(&nodes[i].node.get_our_node_id(), &Init { features: nodes[i].node.init_features(), remote_network_address: None }).unwrap();
+				nodes[i].node.peer_connected(&nodes[j].node.get_our_node_id(), &Init { features: nodes[j].node.init_features(), remote_network_address: None }, true).unwrap();
+				nodes[j].node.peer_connected(&nodes[i].node.get_our_node_id(), &Init { features: nodes[i].node.init_features(), remote_network_address: None }, false).unwrap();
 			}
 		}
 
@@ -1365,8 +1364,7 @@ mod tests {
 			payment_id: None,
 			payment_hash: PaymentHash([42; 32]),
 			payment_failed_permanently: false,
-			network_update: None,
-			all_paths_failed: true,
+			failure: PathFailure::OnPath { network_update: None },
 			path: path.clone(),
 			short_channel_id: Some(scored_scid),
 			retry: None,
@@ -1386,8 +1384,7 @@ mod tests {
 			payment_id: None,
 			payment_hash: PaymentHash([42; 32]),
 			payment_failed_permanently: true,
-			network_update: None,
-			all_paths_failed: true,
+			failure: PathFailure::OnPath { network_update: None },
 			path: path.clone(),
 			short_channel_id: None,
 			retry: None,

@@ -39,13 +39,20 @@ macro_rules! _encode_tlv {
 			field.write($stream)?;
 		}
 	};
-	($stream: expr, $type: expr, $field: expr, ignorable) => {
+	($stream: expr, $type: expr, $field: expr, upgradable_required) => {
 		$crate::_encode_tlv!($stream, $type, $field, required);
+	};
+	($stream: expr, $type: expr, $field: expr, upgradable_option) => {
+		$crate::_encode_tlv!($stream, $type, $field, option);
 	};
 	($stream: expr, $type: expr, $field: expr, (option, encoding: ($fieldty: ty, $encoding: ident))) => {
 		$crate::_encode_tlv!($stream, $type, $field.map(|f| $encoding(f)), option);
 	};
 	($stream: expr, $type: expr, $field: expr, (option, encoding: $fieldty: ty)) => {
+		$crate::_encode_tlv!($stream, $type, $field, option);
+	};
+	($stream: expr, $type: expr, $field: expr, (option: $trait: ident $(, $read_arg: expr)?)) => {
+		// Just a read-mapped type
 		$crate::_encode_tlv!($stream, $type, $field, option);
 	};
 }
@@ -158,8 +165,14 @@ macro_rules! _get_varint_length_prefixed_tlv_length {
 			$len.0 += field_len;
 		}
 	};
-	($len: expr, $type: expr, $field: expr, ignorable) => {
+	($len: expr, $type: expr, $field: expr, (option: $trait: ident $(, $read_arg: expr)?)) => {
+		$crate::_get_varint_length_prefixed_tlv_length!($len, $type, $field, option);
+	};
+	($len: expr, $type: expr, $field: expr, upgradable_required) => {
 		$crate::_get_varint_length_prefixed_tlv_length!($len, $type, $field, required);
+	};
+	($len: expr, $type: expr, $field: expr, upgradable_option) => {
+		$crate::_get_varint_length_prefixed_tlv_length!($len, $type, $field, option);
 	};
 }
 
@@ -204,13 +217,19 @@ macro_rules! _check_decoded_tlv_order {
 			return Err(DecodeError::InvalidValue);
 		}
 	}};
+	($last_seen_type: expr, $typ: expr, $type: expr, $field: ident, (required: $trait: ident $(, $read_arg: expr)?)) => {{
+		$crate::_check_decoded_tlv_order!($last_seen_type, $typ, $type, $field, required);
+	}};
 	($last_seen_type: expr, $typ: expr, $type: expr, $field: ident, option) => {{
 		// no-op
 	}};
 	($last_seen_type: expr, $typ: expr, $type: expr, $field: ident, vec_type) => {{
 		// no-op
 	}};
-	($last_seen_type: expr, $typ: expr, $type: expr, $field: ident, ignorable) => {{
+	($last_seen_type: expr, $typ: expr, $type: expr, $field: ident, upgradable_required) => {{
+		_check_decoded_tlv_order!($last_seen_type, $typ, $type, $field, required)
+	}};
+	($last_seen_type: expr, $typ: expr, $type: expr, $field: ident, upgradable_option) => {{
 		// no-op
 	}};
 	($last_seen_type: expr, $typ: expr, $type: expr, $field: ident, (option: $trait: ident $(, $read_arg: expr)?)) => {{
@@ -243,13 +262,19 @@ macro_rules! _check_missing_tlv {
 			return Err(DecodeError::InvalidValue);
 		}
 	}};
+	($last_seen_type: expr, $type: expr, $field: ident, (required: $trait: ident $(, $read_arg: expr)?)) => {{
+		$crate::_check_missing_tlv!($last_seen_type, $type, $field, required);
+	}};
 	($last_seen_type: expr, $type: expr, $field: ident, vec_type) => {{
 		// no-op
 	}};
 	($last_seen_type: expr, $type: expr, $field: ident, option) => {{
 		// no-op
 	}};
-	($last_seen_type: expr, $type: expr, $field: ident, ignorable) => {{
+	($last_seen_type: expr, $type: expr, $field: ident, upgradable_required) => {{
+		_check_missing_tlv!($last_seen_type, $type, $field, required)
+	}};
+	($last_seen_type: expr, $type: expr, $field: ident, upgradable_option) => {{
 		// no-op
 	}};
 	($last_seen_type: expr, $type: expr, $field: ident, (option: $trait: ident $(, $read_arg: expr)?)) => {{
@@ -273,6 +298,9 @@ macro_rules! _decode_tlv {
 	($reader: expr, $field: ident, required) => {{
 		$field = $crate::util::ser::Readable::read(&mut $reader)?;
 	}};
+	($reader: expr, $field: ident, (required: $trait: ident $(, $read_arg: expr)?)) => {{
+		$field = $trait::read(&mut $reader $(, $read_arg)*)?;
+	}};
 	($reader: expr, $field: ident, vec_type) => {{
 		let f: $crate::util::ser::WithoutLength<Vec<_>> = $crate::util::ser::Readable::read(&mut $reader)?;
 		$field = Some(f.0);
@@ -280,7 +308,20 @@ macro_rules! _decode_tlv {
 	($reader: expr, $field: ident, option) => {{
 		$field = Some($crate::util::ser::Readable::read(&mut $reader)?);
 	}};
-	($reader: expr, $field: ident, ignorable) => {{
+	// `upgradable_required` indicates we're reading a required TLV that may have been upgraded
+	// without backwards compat. We'll error if the field is missing, and return `Ok(None)` if the
+	// field is present but we can no longer understand it.
+	// Note that this variant can only be used within a `MaybeReadable` read.
+	($reader: expr, $field: ident, upgradable_required) => {{
+		$field = match $crate::util::ser::MaybeReadable::read(&mut $reader)? {
+			Some(res) => res,
+			_ => return Ok(None)
+		};
+	}};
+	// `upgradable_option` indicates we're reading an Option-al TLV that may have been upgraded
+	// without backwards compat. $field will be None if the TLV is missing or if the field is present
+	// but we can no longer understand it.
+	($reader: expr, $field: ident, upgradable_option) => {{
 		$field = $crate::util::ser::MaybeReadable::read(&mut $reader)?;
 	}};
 	($reader: expr, $field: ident, (option: $trait: ident $(, $read_arg: expr)?)) => {{
@@ -378,7 +419,6 @@ macro_rules! decode_tlv_stream_with_custom_tlv_decode {
 macro_rules! _decode_tlv_stream_range {
 	($stream: expr, $range: expr, $rewind: ident, {$(($type: expr, $field: ident, $fieldty: tt)),* $(,)*}
 	 $(, $decode_custom_tlv: expr)?) => { {
-		use core::ops::RangeBounds;
 		use $crate::ln::msgs::DecodeError;
 		let mut last_seen_type: Option<u64> = None;
 		let mut stream_ref = $stream;
@@ -401,7 +441,7 @@ macro_rules! _decode_tlv_stream_range {
 						}
 					},
 					Err(e) => return Err(e),
-					Ok(t) => if $range.contains(&t.0) { t } else {
+					Ok(t) => if core::ops::RangeBounds::contains(&$range, &t.0) { t } else {
 						drop(tracking_reader);
 
 						// Assumes the type id is minimally encoded, which is enforced on read.
@@ -620,8 +660,14 @@ macro_rules! _init_tlv_based_struct_field {
 	($field: ident, option) => {
 		$field
 	};
-	($field: ident, ignorable) => {
-		if $field.is_none() { return Ok(None); } else { $field.unwrap() }
+	($field: ident, (option: $trait: ident $(, $read_arg: expr)?)) => {
+		$crate::_init_tlv_based_struct_field!($field, option)
+	};
+	($field: ident, upgradable_required) => {
+		$field.0.unwrap()
+	};
+	($field: ident, upgradable_option) => {
+		$field
 	};
 	($field: ident, required) => {
 		$field.0.unwrap()
@@ -638,13 +684,16 @@ macro_rules! _init_tlv_based_struct_field {
 #[macro_export]
 macro_rules! _init_tlv_field_var {
 	($field: ident, (default_value, $default: expr)) => {
-		let mut $field = $crate::util::ser::OptionDeserWrapper(None);
+		let mut $field = $crate::util::ser::RequiredWrapper(None);
 	};
 	($field: ident, (static_value, $value: expr)) => {
 		let $field;
 	};
 	($field: ident, required) => {
-		let mut $field = $crate::util::ser::OptionDeserWrapper(None);
+		let mut $field = $crate::util::ser::RequiredWrapper(None);
+	};
+	($field: ident, (required: $trait: ident $(, $read_arg: expr)?)) => {
+		$crate::_init_tlv_field_var!($field, required);
 	};
 	($field: ident, vec_type) => {
 		let mut $field = Some(Vec::new());
@@ -652,7 +701,13 @@ macro_rules! _init_tlv_field_var {
 	($field: ident, option) => {
 		let mut $field = None;
 	};
-	($field: ident, ignorable) => {
+	($field: ident, (option: $trait: ident $(, $read_arg: expr)?)) => {
+		$crate::_init_tlv_field_var!($field, option);
+	};
+	($field: ident, upgradable_required) => {
+		let mut $field = $crate::util::ser::UpgradableRequired(None);
+	};
+	($field: ident, upgradable_option) => {
 		let mut $field = None;
 	};
 }
@@ -949,7 +1004,7 @@ macro_rules! impl_writeable_tlv_based_enum_upgradable {
 						Ok(Some($st::$tuple_variant_name(Readable::read(reader)?)))
 					}),*)*
 					_ if id % 2 == 1 => Ok(None),
-					_ => Err(DecodeError::UnknownRequiredFeature),
+					_ => Err($crate::ln::msgs::DecodeError::UnknownRequiredFeature),
 				}
 			}
 		}
@@ -1027,6 +1082,47 @@ mod tests {
 				concat!("0208deadbeef1badbeef", "03041bad1dea", "040401020304")
 				).unwrap()[..]).unwrap(),
 			(0xdeadbeef1badbeef, 0x1bad1dea, Some(0x01020304)));
+	}
+
+	#[derive(Debug, PartialEq)]
+	struct TestUpgradable {
+		a: u32,
+		b: u32,
+		c: Option<u32>,
+	}
+
+	fn upgradable_tlv_reader(s: &[u8]) -> Result<Option<TestUpgradable>, DecodeError> {
+		let mut s = Cursor::new(s);
+		let mut a = 0;
+		let mut b = 0;
+		let mut c: Option<u32> = None;
+		decode_tlv_stream!(&mut s, {(2, a, upgradable_required), (3, b, upgradable_required), (4, c, upgradable_option)});
+		Ok(Some(TestUpgradable { a, b, c, }))
+	}
+
+	#[test]
+	fn upgradable_tlv_simple_good_cases() {
+		assert_eq!(upgradable_tlv_reader(&::hex::decode(
+			concat!("0204deadbeef", "03041bad1dea", "0404deadbeef")
+		).unwrap()[..]).unwrap(),
+		Some(TestUpgradable { a: 0xdeadbeef, b: 0x1bad1dea, c: Some(0xdeadbeef) }));
+
+		assert_eq!(upgradable_tlv_reader(&::hex::decode(
+			concat!("0204deadbeef", "03041bad1dea")
+		).unwrap()[..]).unwrap(),
+		Some(TestUpgradable { a: 0xdeadbeef, b: 0x1bad1dea, c: None}));
+	}
+
+	#[test]
+	fn missing_required_upgradable() {
+		if let Err(DecodeError::InvalidValue) = upgradable_tlv_reader(&::hex::decode(
+			concat!("0100", "0204deadbeef")
+			).unwrap()[..]) {
+		} else { panic!(); }
+		if let Err(DecodeError::InvalidValue) = upgradable_tlv_reader(&::hex::decode(
+			concat!("0100", "03041bad1dea")
+		).unwrap()[..]) {
+		} else { panic!(); }
 	}
 
 	// BOLT TLV test cases

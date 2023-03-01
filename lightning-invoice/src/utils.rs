@@ -686,7 +686,6 @@ mod test {
 		let route_params = RouteParameters {
 			payment_params,
 			final_value_msat: invoice.amount_milli_satoshis().unwrap(),
-			final_cltv_expiry_delta: invoice.min_final_cltv_expiry_delta() as u32,
 		};
 		let first_hops = nodes[0].node.list_usable_channels();
 		let network_graph = &node_cfgs[0].network_graph;
@@ -842,13 +841,13 @@ mod test {
 
 		// With only one sufficient-value peer connected we should only get its hint
 		scid_aliases.remove(&chan_b.0.short_channel_id_alias.unwrap());
-		nodes[0].node.peer_disconnected(&nodes[2].node.get_our_node_id(), false);
+		nodes[0].node.peer_disconnected(&nodes[2].node.get_our_node_id());
 		match_invoice_routes(Some(1_000_000_000), &nodes[0], scid_aliases.clone());
 
 		// If we don't have any sufficient-value peers connected we should get all hints with
 		// sufficient value, even though there is a connected insufficient-value peer.
 		scid_aliases.insert(chan_b.0.short_channel_id_alias.unwrap());
-		nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
+		nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
 		match_invoice_routes(Some(1_000_000_000), &nodes[0], scid_aliases);
 	}
 
@@ -1050,7 +1049,6 @@ mod test {
 		let params = RouteParameters {
 			payment_params,
 			final_value_msat: invoice.amount_milli_satoshis().unwrap(),
-			final_cltv_expiry_delta: invoice.min_final_cltv_expiry_delta() as u32,
 		};
 		let first_hops = nodes[0].node.list_usable_channels();
 		let network_graph = &node_cfgs[0].network_graph;

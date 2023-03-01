@@ -14,13 +14,18 @@ extern crate hex;
 
 pub mod utils;
 
+pub mod bech32_parse;
 pub mod chanmon_deser;
 pub mod chanmon_consistency;
 pub mod full_stack;
 pub mod indexedmap;
+pub mod invoice_deser;
+pub mod invoice_request_deser;
+pub mod offer_deser;
 pub mod onion_message;
 pub mod peer_crypt;
 pub mod process_network_graph;
+pub mod refund_deser;
 pub mod router;
 pub mod zbase32;
 

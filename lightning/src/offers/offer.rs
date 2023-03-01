@@ -13,7 +13,7 @@
 //! published as a QR code to be scanned by a customer. The customer uses the offer to request an
 //! invoice from the merchant to be paid.
 //!
-//! ```ignore
+//! ```
 //! extern crate bitcoin;
 //! extern crate core;
 //! extern crate lightning;
@@ -242,7 +242,7 @@ impl OfferBuilder {
 ///
 /// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 /// [`Invoice`]: crate::offers::invoice::Invoice
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Offer {
 	// The serialized offer. Needed when creating an `InvoiceRequest` if the offer contains unknown
 	// fields.
@@ -254,7 +254,7 @@ pub struct Offer {
 ///
 /// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 /// [`Invoice`]: crate::offers::invoice::Invoice
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub(super) struct OfferContents {
 	chains: Option<Vec<ChainHash>>,
 	metadata: Option<Vec<u8>>,
@@ -431,7 +431,8 @@ impl OfferContents {
 		};
 
 		if !self.expects_quantity() || quantity.is_some() {
-			let expected_amount_msats = offer_amount_msats * quantity.unwrap_or(1);
+			let expected_amount_msats = offer_amount_msats.checked_mul(quantity.unwrap_or(1))
+				.ok_or(SemanticError::InvalidAmount)?;
 			let amount_msats = amount_msats.unwrap_or(expected_amount_msats);
 
 			if amount_msats < expected_amount_msats {

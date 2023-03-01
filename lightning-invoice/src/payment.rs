@@ -17,7 +17,7 @@ use lightning::chain;
 use lightning::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use lightning::chain::keysinterface::{NodeSigner, SignerProvider, EntropySource};
 use lightning::ln::{PaymentHash, PaymentSecret};
-use lightning::ln::channelmanager::{ChannelManager, PaymentId, PaymentSendFailure, Retry};
+use lightning::ln::channelmanager::{ChannelManager, PaymentId, Retry, RetryableSendFailure};
 use lightning::routing::router::{PaymentParameters, RouteParameters, Router};
 use lightning::util::logger::Logger;
 
@@ -156,7 +156,6 @@ fn pay_invoice_using_amount<P: Deref>(
 	let route_params = RouteParameters {
 		payment_params,
 		final_value_msat: amount_msats,
-		final_cltv_expiry_delta: invoice.min_final_cltv_expiry_delta() as u32,
 	};
 
 	payer.send_payment(payment_hash, &payment_secret, payment_id, route_params, retry_strategy)
@@ -172,7 +171,7 @@ pub enum PaymentError {
 	/// An error resulting from the provided [`Invoice`] or payment hash.
 	Invoice(&'static str),
 	/// An error occurring when sending a payment.
-	Sending(PaymentSendFailure),
+	Sending(RetryableSendFailure),
 }
 
 /// A trait defining behavior of an [`Invoice`] payer.

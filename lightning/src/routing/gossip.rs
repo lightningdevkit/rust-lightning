@@ -18,6 +18,9 @@ use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::hashes::Hash;
 use bitcoin::hash_types::BlockHash;
 
+use bitcoin::network::constants::Network;
+use bitcoin::blockdata::constants::genesis_block;
+
 use crate::ln::features::{ChannelFeatures, NodeFeatures, InitFeatures};
 use crate::ln::msgs::{DecodeError, ErrorAction, Init, LightningError, RoutingMessageHandler, NetAddress, MAX_VALUE_MSAT};
 use crate::ln::msgs::{ChannelAnnouncement, ChannelUpdate, NodeAnnouncement, GossipTimestampFilter};
@@ -390,7 +393,7 @@ where U::Target: UtxoLookup, L::Target: Logger
 	}
 
 	fn get_next_channel_announcement(&self, starting_point: u64) -> Option<(ChannelAnnouncement, Option<ChannelUpdate>, Option<ChannelUpdate>)> {
-		let channels = self.network_graph.channels.read().unwrap();
+		let mut channels = self.network_graph.channels.write().unwrap();
 		for (_, ref chan) in channels.range(starting_point..) {
 			if chan.announcement_message.is_some() {
 				let chan_announcement = chan.announcement_message.clone().unwrap();
@@ -412,7 +415,7 @@ where U::Target: UtxoLookup, L::Target: Logger
 	}
 
 	fn get_next_node_announcement(&self, starting_point: Option<&NodeId>) -> Option<NodeAnnouncement> {
-		let nodes = self.network_graph.nodes.read().unwrap();
+		let mut nodes = self.network_graph.nodes.write().unwrap();
 		let iter = if let Some(node_id) = starting_point {
 				nodes.range((Bound::Excluded(node_id), Bound::Unbounded))
 			} else {
@@ -437,7 +440,7 @@ where U::Target: UtxoLookup, L::Target: Logger
 	/// to request gossip messages for each channel. The sync is considered complete
 	/// when the final reply_scids_end message is received, though we are not
 	/// tracking this directly.
-	fn peer_connected(&self, their_node_id: &PublicKey, init_msg: &Init) -> Result<(), ()> {
+	fn peer_connected(&self, their_node_id: &PublicKey, init_msg: &Init, _inbound: bool) -> Result<(), ()> {
 		// We will only perform a sync with peers that support gossip_queries.
 		if !init_msg.features.supports_gossip_queries() {
 			// Don't disconnect peers for not supporting gossip queries. We may wish to have
@@ -572,7 +575,7 @@ where U::Target: UtxoLookup, L::Target: Logger
 		// (has at least one update). A peer may still want to know the channel
 		// exists even if its not yet routable.
 		let mut batches: Vec<Vec<u64>> = vec![Vec::with_capacity(MAX_SCIDS_PER_REPLY)];
-		let channels = self.network_graph.channels.read().unwrap();
+		let mut channels = self.network_graph.channels.write().unwrap();
 		for (_, ref chan) in channels.range(inclusive_start_scid.unwrap()..exclusive_end_scid.unwrap()) {
 			if let Some(chan_announcement) = &chan.announcement_message {
 				// Construct a new batch if last one is full
@@ -883,9 +886,9 @@ impl Readable for ChannelInfo {
 			(0, features, required),
 			(1, announcement_received_time, (default_value, 0)),
 			(2, node_one, required),
-			(4, one_to_two_wrap, ignorable),
+			(4, one_to_two_wrap, upgradable_option),
 			(6, node_two, required),
-			(8, two_to_one_wrap, ignorable),
+			(8, two_to_one_wrap, upgradable_option),
 			(10, capacity_sats, required),
 			(12, announcement_message, required),
 		});
@@ -1017,7 +1020,7 @@ impl EffectiveCapacity {
 /// Fees for routing via a given channel or a node
 #[derive(Eq, PartialEq, Copy, Clone, Debug, Hash)]
 pub struct RoutingFees {
-	/// Flat routing fee in satoshis
+	/// Flat routing fee in millisatoshis.
 	pub base_msat: u32,
 	/// Liquidity-based routing fee in millionths of a routed amount.
 	/// In other words, 10000 is 1%.
@@ -1161,7 +1164,7 @@ impl Readable for NodeInfo {
 
 		read_tlv_fields!(reader, {
 			(0, _lowest_inbound_channel_fees, option),
-			(2, announcement_info_wrap, ignorable),
+			(2, announcement_info_wrap, upgradable_option),
 			(4, channels, vec_type),
 		});
 
@@ -1265,10 +1268,10 @@ impl<L: Deref> PartialEq for NetworkGraph<L> where L::Target: Logger {
 
 impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 	/// Creates a new, empty, network graph.
-	pub fn new(genesis_hash: BlockHash, logger: L) -> NetworkGraph<L> {
+	pub fn new(network: Network, logger: L) -> NetworkGraph<L> {
 		Self {
 			secp_ctx: Secp256k1::verification_only(),
-			genesis_hash,
+			genesis_hash: genesis_block(network).header.block_hash(),
 			logger,
 			channels: RwLock::new(IndexedMap::new()),
 			nodes: RwLock::new(IndexedMap::new()),
@@ -1960,9 +1963,8 @@ pub(crate) mod tests {
 	use crate::sync::Arc;
 
 	fn create_network_graph() -> NetworkGraph<Arc<test_utils::TestLogger>> {
-		let genesis_hash = genesis_block(Network::Testnet).header.block_hash();
 		let logger = Arc::new(test_utils::TestLogger::new());
-		NetworkGraph::new(genesis_hash, logger)
+		NetworkGraph::new(Network::Testnet, logger)
 	}
 
 	fn create_gossip_sync(network_graph: &NetworkGraph<Arc<test_utils::TestLogger>>) -> (
@@ -2137,8 +2139,7 @@ pub(crate) mod tests {
 		let valid_announcement = get_signed_channel_announcement(|_| {}, node_1_privkey, node_2_privkey, &secp_ctx);
 
 		// Test if the UTXO lookups were not supported
-		let genesis_hash = genesis_block(Network::Testnet).header.block_hash();
-		let network_graph = NetworkGraph::new(genesis_hash, &logger);
+		let network_graph = NetworkGraph::new(Network::Testnet, &logger);
 		let mut gossip_sync = P2PGossipSync::new(&network_graph, None, &logger);
 		match gossip_sync.handle_channel_announcement(&valid_announcement) {
 			Ok(res) => assert!(res),
@@ -2162,7 +2163,7 @@ pub(crate) mod tests {
 		// Test if an associated transaction were not on-chain (or not confirmed).
 		let chain_source = test_utils::TestChainSource::new(Network::Testnet);
 		*chain_source.utxo_ret.lock().unwrap() = UtxoResult::Sync(Err(UtxoLookupError::UnknownTx));
-		let network_graph = NetworkGraph::new(genesis_hash, &logger);
+		let network_graph = NetworkGraph::new(Network::Testnet, &logger);
 		gossip_sync = P2PGossipSync::new(&network_graph, Some(&chain_source), &logger);
 
 		let valid_announcement = get_signed_channel_announcement(|unsigned_announcement| {
@@ -2255,8 +2256,7 @@ pub(crate) mod tests {
 		let secp_ctx = Secp256k1::new();
 		let logger = test_utils::TestLogger::new();
 		let chain_source = test_utils::TestChainSource::new(Network::Testnet);
-		let genesis_hash = genesis_block(Network::Testnet).header.block_hash();
-		let network_graph = NetworkGraph::new(genesis_hash, &logger);
+		let network_graph = NetworkGraph::new(Network::Testnet, &logger);
 		let gossip_sync = P2PGossipSync::new(&network_graph, Some(&chain_source), &logger);
 
 		let node_1_privkey = &SecretKey::from_slice(&[42; 32]).unwrap();
@@ -2358,8 +2358,7 @@ pub(crate) mod tests {
 	#[test]
 	fn handling_network_update() {
 		let logger = test_utils::TestLogger::new();
-		let genesis_hash = genesis_block(Network::Testnet).header.block_hash();
-		let network_graph = NetworkGraph::new(genesis_hash, &logger);
+		let network_graph = NetworkGraph::new(Network::Testnet, &logger);
 		let secp_ctx = Secp256k1::new();
 
 		let node_1_privkey = &SecretKey::from_slice(&[42; 32]).unwrap();
@@ -2424,7 +2423,7 @@ pub(crate) mod tests {
 
 		{
 			// Get a new network graph since we don't want to track removed nodes in this test with "std"
-			let network_graph = NetworkGraph::new(genesis_hash, &logger);
+			let network_graph = NetworkGraph::new(Network::Testnet, &logger);
 
 			// Announce a channel to test permanent node failure
 			let valid_channel_announcement = get_signed_channel_announcement(|_| {}, node_1_privkey, node_2_privkey, &secp_ctx);
@@ -2459,8 +2458,7 @@ pub(crate) mod tests {
 		// Test the removal of channels with `remove_stale_channels_and_tracking`.
 		let logger = test_utils::TestLogger::new();
 		let chain_source = test_utils::TestChainSource::new(Network::Testnet);
-		let genesis_hash = genesis_block(Network::Testnet).header.block_hash();
-		let network_graph = NetworkGraph::new(genesis_hash, &logger);
+		let network_graph = NetworkGraph::new(Network::Testnet, &logger);
 		let gossip_sync = P2PGossipSync::new(&network_graph, Some(&chain_source), &logger);
 		let secp_ctx = Secp256k1::new();
 
@@ -2791,7 +2789,7 @@ pub(crate) mod tests {
 		// It should ignore if gossip_queries feature is not enabled
 		{
 			let init_msg = Init { features: InitFeatures::empty(), remote_network_address: None };
-			gossip_sync.peer_connected(&node_id_1, &init_msg).unwrap();
+			gossip_sync.peer_connected(&node_id_1, &init_msg, true).unwrap();
 			let events = gossip_sync.get_and_clear_pending_msg_events();
 			assert_eq!(events.len(), 0);
 		}
@@ -2801,7 +2799,7 @@ pub(crate) mod tests {
 			let mut features = InitFeatures::empty();
 			features.set_gossip_queries_optional();
 			let init_msg = Init { features, remote_network_address: None };
-			gossip_sync.peer_connected(&node_id_1, &init_msg).unwrap();
+			gossip_sync.peer_connected(&node_id_1, &init_msg, true).unwrap();
 			let events = gossip_sync.get_and_clear_pending_msg_events();
 			assert_eq!(events.len(), 1);
 			match &events[0] {

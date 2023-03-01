@@ -7,8 +7,17 @@ pub(crate) enum LockHeldState {
 	Unsupported,
 }
 
-pub(crate) trait LockTestExt {
+pub(crate) trait LockTestExt<'a> {
 	fn held_by_thread(&self) -> LockHeldState;
+	type ExclLock;
+	/// If two instances of the same mutex are being taken at the same time, it's very easy to have
+	/// a lockorder inversion and risk deadlock. Thus, we default to disabling such locks.
+	///
+	/// However, sometimes they cannot be avoided. In such cases, this method exists to take a
+	/// mutex while avoiding a test failure. It is deliberately verbose and includes the term
+	/// "unsafe" to indicate that special care needs to be taken to ensure no deadlocks are
+	/// possible.
+	fn unsafe_well_ordered_double_lock_self(&'a self) -> Self::ExclLock;
 }
 
 #[cfg(all(feature = "std", not(feature = "_bench_unstable"), test))]
@@ -27,13 +36,19 @@ pub use {std::sync::{Arc, Mutex, Condvar, MutexGuard, RwLock, RwLockReadGuard, R
 #[cfg(all(feature = "std", any(feature = "_bench_unstable", not(test))))]
 mod ext_impl {
 	use super::*;
-	impl<T> LockTestExt for Mutex<T> {
+	impl<'a, T: 'a> LockTestExt<'a> for Mutex<T> {
 		#[inline]
 		fn held_by_thread(&self) -> LockHeldState { LockHeldState::Unsupported }
+		type ExclLock = MutexGuard<'a, T>;
+		#[inline]
+		fn unsafe_well_ordered_double_lock_self(&'a self) -> MutexGuard<T> { self.lock().unwrap() }
 	}
-	impl<T> LockTestExt for RwLock<T> {
+	impl<'a, T: 'a> LockTestExt<'a> for RwLock<T> {
 		#[inline]
 		fn held_by_thread(&self) -> LockHeldState { LockHeldState::Unsupported }
+		type ExclLock = RwLockWriteGuard<'a, T>;
+		#[inline]
+		fn unsafe_well_ordered_double_lock_self(&'a self) -> RwLockWriteGuard<T> { self.write().unwrap() }
 	}
 }
 

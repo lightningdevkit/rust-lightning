@@ -1,15 +1,13 @@
 // Imports that need to be added manually
 use lightning_rapid_gossip_sync::RapidGossipSync;
-use bitcoin::hashes::Hash as TraitImport;
 
 use crate::utils::test_logger;
 
 /// Actual fuzz test, method signature and name are fixed
 fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
-	let block_hash = bitcoin::BlockHash::all_zeros();
 	let logger = test_logger::TestLogger::new("".to_owned(), out);
-	let network_graph = lightning::routing::gossip::NetworkGraph::new(block_hash, &logger);
-	let rapid_sync = RapidGossipSync::new(&network_graph);
+	let network_graph = lightning::routing::gossip::NetworkGraph::new(bitcoin::Network::Bitcoin, &logger);
+	let rapid_sync = RapidGossipSync::new(&network_graph, &logger);
 	let _ = rapid_sync.update_network_graph(data);
 }
 

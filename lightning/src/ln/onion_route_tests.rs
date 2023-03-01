@@ -23,7 +23,7 @@ use crate::ln::features::{InitFeatures, InvoiceFeatures};
 use crate::ln::msgs;
 use crate::ln::msgs::{ChannelMessageHandler, ChannelUpdate};
 use crate::ln::wire::Encode;
-use crate::util::events::{Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider};
+use crate::util::events::{Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, PathFailure};
 use crate::util::ser::{Writeable, Writer};
 use crate::util::test_utils;
 use crate::util::config::{UserConfig, ChannelConfig};
@@ -167,9 +167,8 @@ fn run_onion_failure_test_with_fail_intercept<F1,F2,F3>(_name: &str, test_case: 
 
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 2);
-	if let &Event::PaymentPathFailed { ref payment_failed_permanently, ref network_update, ref all_paths_failed, ref short_channel_id, ref error_code, .. } = &events[0] {
+	if let &Event::PaymentPathFailed { ref payment_failed_permanently, ref short_channel_id, ref error_code, failure: PathFailure::OnPath { ref network_update }, .. } = &events[0] {
 		assert_eq!(*payment_failed_permanently, !expected_retryable);
-		assert_eq!(*all_paths_failed, true);
 		assert_eq!(*error_code, expected_error_code);
 		if expected_channel_update.is_some() {
 			match network_update {
@@ -576,8 +575,8 @@ fn test_onion_failure() {
 	let short_channel_id = channels[1].0.contents.short_channel_id;
 	run_onion_failure_test("channel_disabled", 0, &nodes, &route, &payment_hash, &payment_secret, |_| {}, || {
 		// disconnect event to the channel between nodes[1] ~ nodes[2]
-		nodes[1].node.peer_disconnected(&nodes[2].node.get_our_node_id(), false);
-		nodes[2].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
+		nodes[1].node.peer_disconnected(&nodes[2].node.get_our_node_id());
+		nodes[2].node.peer_disconnected(&nodes[1].node.get_our_node_id());
 	}, true, Some(UPDATE|20), Some(NetworkUpdate::ChannelUpdateMessage{msg: ChannelUpdate::dummy(short_channel_id)}), Some(short_channel_id));
 	reconnect_nodes(&nodes[1], &nodes[2], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
 

@@ -24,7 +24,6 @@ use lightning::util::ser::Readable;
 use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::PublicKey;
 use bitcoin::network::constants::Network;
-use bitcoin::blockdata::constants::genesis_block;
 
 use crate::utils::test_logger;
 
@@ -189,7 +188,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 	let logger = test_logger::TestLogger::new("".to_owned(), out);
 
 	let our_pubkey = get_pubkey!();
-	let net_graph = NetworkGraph::new(genesis_block(Network::Bitcoin).header.block_hash(), &logger);
+	let net_graph = NetworkGraph::new(Network::Bitcoin, &logger);
 	let chain_source = FuzzChainSource {
 		input: Arc::clone(&input),
 		net_graph: &net_graph,
@@ -302,7 +301,6 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 						payment_params: PaymentParameters::from_node_id(*target, final_cltv_expiry_delta)
 							.with_route_hints(last_hops.clone()),
 						final_value_msat,
-						final_cltv_expiry_delta,
 					};
 					let _ = find_route(&our_pubkey, &route_params, &net_graph,
 						first_hops.map(|c| c.iter().collect::<Vec<_>>()).as_ref().map(|a| a.as_slice()),

@@ -141,8 +141,7 @@ pub(super) fn build_line_graph() -> (
 	let secp_ctx = Secp256k1::new();
 	let logger = Arc::new(test_utils::TestLogger::new());
 	let chain_monitor = Arc::new(test_utils::TestChainSource::new(Network::Testnet));
-	let genesis_hash = genesis_block(Network::Testnet).header.block_hash();
-	let network_graph = Arc::new(NetworkGraph::new(genesis_hash, Arc::clone(&logger)));
+	let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, Arc::clone(&logger)));
 	let gossip_sync = P2PGossipSync::new(Arc::clone(&network_graph), None, Arc::clone(&logger));
 
 	// Build network from our_id to node 19:
@@ -195,8 +194,7 @@ pub(super) fn build_graph() -> (
 	let secp_ctx = Secp256k1::new();
 	let logger = Arc::new(test_utils::TestLogger::new());
 	let chain_monitor = Arc::new(test_utils::TestChainSource::new(Network::Testnet));
-	let genesis_hash = genesis_block(Network::Testnet).header.block_hash();
-	let network_graph = Arc::new(NetworkGraph::new(genesis_hash, Arc::clone(&logger)));
+	let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, Arc::clone(&logger)));
 	let gossip_sync = P2PGossipSync::new(Arc::clone(&network_graph), None, Arc::clone(&logger));
 	// Build network from our_id to node6:
 	//

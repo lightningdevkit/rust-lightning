@@ -31,7 +31,7 @@ use crate::ln::msgs;
 use crate::ln::msgs::{ChannelMessageHandler, RoutingMessageHandler, ErrorAction};
 use crate::util::enforcing_trait_impls::EnforcingSigner;
 use crate::util::test_utils;
-use crate::util::events::{Event, MessageSendEvent, MessageSendEventsProvider, PaymentPurpose, ClosureReason, HTLCDestination};
+use crate::util::events::{Event, MessageSendEvent, MessageSendEventsProvider, PathFailure, PaymentPurpose, ClosureReason, HTLCDestination};
 use crate::util::errors::APIError;
 use crate::util::ser::{Writeable, ReadableArgs};
 use crate::util::config::UserConfig;
@@ -3235,12 +3235,12 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(deliver_bs_raa: bool, use
 			let events = nodes[0].node.get_and_clear_pending_events();
 			assert_eq!(events.len(), 6);
 			match events[0] {
-				Event::PaymentPathFailed { ref payment_hash, ref network_update, .. } => {
+				Event::PaymentPathFailed { ref payment_hash, ref failure, .. } => {
 					assert!(failed_htlcs.insert(payment_hash.0));
 					// If we delivered B's RAA we got an unknown preimage error, not something
 					// that we should update our routing table for.
 					if !deliver_bs_raa {
-						assert!(network_update.is_some());
+						if let PathFailure::OnPath { network_update: Some(_) } = failure { } else { panic!("Unexpected path failure") }
 					}
 				},
 				_ => panic!("Unexpected event"),
@@ -3252,9 +3252,8 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(deliver_bs_raa: bool, use
 				_ => panic!("Unexpected event"),
 			}
 			match events[2] {
-				Event::PaymentPathFailed { ref payment_hash, ref network_update, .. } => {
+				Event::PaymentPathFailed { ref payment_hash, failure: PathFailure::OnPath { network_update: Some(_) }, .. } => {
 					assert!(failed_htlcs.insert(payment_hash.0));
-					assert!(network_update.is_some());
 				},
 				_ => panic!("Unexpected event"),
 			}
@@ -3265,9 +3264,8 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(deliver_bs_raa: bool, use
 				_ => panic!("Unexpected event"),
 			}
 			match events[4] {
-				Event::PaymentPathFailed { ref payment_hash, ref network_update, .. } => {
+				Event::PaymentPathFailed { ref payment_hash, failure: PathFailure::OnPath { network_update: Some(_) }, .. } => {
 					assert!(failed_htlcs.insert(payment_hash.0));
-					assert!(network_update.is_some());
 				},
 				_ => panic!("Unexpected event"),
 			}
@@ -3524,8 +3522,8 @@ fn test_dup_events_on_peer_disconnect() {
 	nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &claim_msgs.update_fulfill_htlcs[0]);
 	expect_payment_sent_without_paths!(nodes[0], payment_preimage);
 
-	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
-	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
+	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
 
 	reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (1, 0), (0, 0), (0, 0), (0, 0), (false, false));
 	expect_payment_path_successful!(nodes[0]);
@@ -3565,8 +3563,8 @@ fn test_peer_disconnected_before_funding_broadcasted() {
 
 	// Ensure that the channel is closed with `ClosureReason::DisconnectedPeer` when the peers are
 	// disconnected before the funding transaction was broadcasted.
-	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
-	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
+	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
 
 	check_closed_event!(nodes[0], 1, ClosureReason::DisconnectedPeer);
 	check_closed_event!(nodes[1], 1, ClosureReason::DisconnectedPeer);
@@ -3582,8 +3580,8 @@ fn test_simple_peer_disconnect() {
 	create_announced_chan_between_nodes(&nodes, 0, 1);
 	create_announced_chan_between_nodes(&nodes, 1, 2);
 
-	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
-	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
+	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
 	reconnect_nodes(&nodes[0], &nodes[1], (true, true), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
 
 	let payment_preimage_1 = route_payment(&nodes[0], &vec!(&nodes[1], &nodes[2])[..], 1000000).0;
@@ -3591,8 +3589,8 @@ fn test_simple_peer_disconnect() {
 	fail_payment(&nodes[0], &vec!(&nodes[1], &nodes[2]), payment_hash_2);
 	claim_payment(&nodes[0], &vec!(&nodes[1], &nodes[2]), payment_preimage_1);
 
-	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
-	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
+	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
 	reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
 
 	let (payment_preimage_3, payment_hash_3, _) = route_payment(&nodes[0], &vec!(&nodes[1], &nodes[2])[..], 1000000);
@@ -3600,8 +3598,8 @@ fn test_simple_peer_disconnect() {
 	let payment_hash_5 = route_payment(&nodes[0], &vec!(&nodes[1], &nodes[2])[..], 1000000).1;
 	let payment_hash_6 = route_payment(&nodes[0], &vec!(&nodes[1], &nodes[2])[..], 1000000).1;
 
-	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
-	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
+	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
 
 	claim_payment_along_route(&nodes[0], &[&[&nodes[1], &nodes[2]]], true, payment_preimage_3);
 	fail_payment_along_route(&nodes[0], &[&[&nodes[1], &nodes[2]]], true, payment_hash_5);
@@ -3618,20 +3616,20 @@ fn test_simple_peer_disconnect() {
 			_ => panic!("Unexpected event"),
 		}
 		match events[1] {
+			Event::PaymentPathSuccessful { .. } => {},
+			_ => panic!("Unexpected event"),
+		}
+		match events[2] {
 			Event::PaymentPathFailed { payment_hash, payment_failed_permanently, .. } => {
 				assert_eq!(payment_hash, payment_hash_5);
 				assert!(payment_failed_permanently);
 			},
 			_ => panic!("Unexpected event"),
 		}
-		match events[2] {
+		match events[3] {
 			Event::PaymentFailed { payment_hash, .. } => {
 				assert_eq!(payment_hash, payment_hash_5);
 			},
-			_ => panic!("Unexpected event"),
-		}
-		match events[3] {
-			Event::PaymentPathSuccessful { .. } => {},
 			_ => panic!("Unexpected event"),
 		}
 	}
@@ -3701,8 +3699,8 @@ fn do_test_drop_messages_peer_disconnect(messages_delivered: u8, simulate_broken
 		}
 	}
 
-	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
-	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
+	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
 	if messages_delivered < 3 {
 		if simulate_broken_lnd {
 			// lnd has a long-standing bug where they send a channel_ready prior to a
@@ -3751,8 +3749,8 @@ fn do_test_drop_messages_peer_disconnect(messages_delivered: u8, simulate_broken
 		};
 	}
 
-	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
-	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
+	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
 	reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
 
 	nodes[1].node.process_pending_htlc_forwards();
@@ -3834,8 +3832,8 @@ fn do_test_drop_messages_peer_disconnect(messages_delivered: u8, simulate_broken
 		}
 	}
 
-	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
-	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
+	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
 	if messages_delivered < 2 {
 		reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (1, 0), (0, 0), (0, 0), (0, 0), (false, false));
 		if messages_delivered < 1 {
@@ -3861,8 +3859,8 @@ fn do_test_drop_messages_peer_disconnect(messages_delivered: u8, simulate_broken
 		expect_payment_path_successful!(nodes[0]);
 	}
 	if messages_delivered <= 5 {
-		nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
-		nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+		nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
+		nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
 	}
 	reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
 
@@ -3976,13 +3974,13 @@ fn test_drop_messages_peer_disconnect_dual_htlc() {
 		_ => panic!("Unexpected event"),
 	}
 
-	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
-	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
+	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
 
-	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init { features: nodes[1].node.init_features(), remote_network_address: None }).unwrap();
+	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init { features: nodes[1].node.init_features(), remote_network_address: None }, true).unwrap();
 	let reestablish_1 = get_chan_reestablish_msgs!(nodes[0], nodes[1]);
 	assert_eq!(reestablish_1.len(), 1);
-	nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id(), &msgs::Init { features: nodes[0].node.init_features(), remote_network_address: None }).unwrap();
+	nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id(), &msgs::Init { features: nodes[0].node.init_features(), remote_network_address: None }, false).unwrap();
 	let reestablish_2 = get_chan_reestablish_msgs!(nodes[1], nodes[0]);
 	assert_eq!(reestablish_2.len(), 1);
 
@@ -4085,7 +4083,7 @@ fn do_test_htlc_timeout(send_partial_mpp: bool) {
 		let cur_height = CHAN_CONFIRM_DEPTH + 1; // route_payment calls send_payment, which adds 1 to the current height. So we do the same here to match.
 		let payment_id = PaymentId([42; 32]);
 		let session_privs = nodes[0].node.test_add_new_pending_payment(our_payment_hash, Some(payment_secret), payment_id, &route).unwrap();
-		nodes[0].node.send_payment_along_path(&route.paths[0], &route.payment_params, &our_payment_hash, &Some(payment_secret), 200_000, cur_height, payment_id, &None, session_privs[0]).unwrap();
+		nodes[0].node.test_send_payment_along_path(&route.paths[0], &route.payment_params, &our_payment_hash, &Some(payment_secret), 200_000, cur_height, payment_id, &None, session_privs[0]).unwrap();
 		check_added_monitors!(nodes[0], 1);
 		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1);
@@ -5148,14 +5146,14 @@ fn do_test_fail_backwards_unrevoked_remote_announce(deliver_last_raa: bool, anno
 	let mut as_failds = HashSet::new();
 	let mut as_updates = 0;
 	for event in as_events.iter() {
-		if let &Event::PaymentPathFailed { ref payment_hash, ref payment_failed_permanently, ref network_update, .. } = event {
+		if let &Event::PaymentPathFailed { ref payment_hash, ref payment_failed_permanently, ref failure, .. } = event {
 			assert!(as_failds.insert(*payment_hash));
 			if *payment_hash != payment_hash_2 {
 				assert_eq!(*payment_failed_permanently, deliver_last_raa);
 			} else {
 				assert!(!payment_failed_permanently);
 			}
-			if network_update.is_some() {
+			if let PathFailure::OnPath { network_update: Some(_) } = failure {
 				as_updates += 1;
 			}
 		} else if let &Event::PaymentFailed { .. } = event {
@@ -5174,14 +5172,14 @@ fn do_test_fail_backwards_unrevoked_remote_announce(deliver_last_raa: bool, anno
 	let mut bs_failds = HashSet::new();
 	let mut bs_updates = 0;
 	for event in bs_events.iter() {
-		if let &Event::PaymentPathFailed { ref payment_hash, ref payment_failed_permanently, ref network_update, .. } = event {
+		if let &Event::PaymentPathFailed { ref payment_hash, ref payment_failed_permanently, ref failure, .. } = event {
 			assert!(bs_failds.insert(*payment_hash));
 			if *payment_hash != payment_hash_1 && *payment_hash != payment_hash_5 {
 				assert_eq!(*payment_failed_permanently, deliver_last_raa);
 			} else {
 				assert!(!payment_failed_permanently);
 			}
-			if network_update.is_some() {
+			if let PathFailure::OnPath { network_update: Some(_) } = failure {
 				bs_updates += 1;
 			}
 		} else if let &Event::PaymentFailed { .. } = event {
@@ -5280,7 +5278,7 @@ fn test_key_derivation_params() {
 	let seed = [42; 32];
 	let keys_manager = test_utils::TestKeysInterface::new(&seed, Network::Testnet);
 	let chain_monitor = test_utils::TestChainMonitor::new(Some(&chanmon_cfgs[0].chain_source), &chanmon_cfgs[0].tx_broadcaster, &chanmon_cfgs[0].logger, &chanmon_cfgs[0].fee_estimator, &chanmon_cfgs[0].persister, &keys_manager);
-	let network_graph = Arc::new(NetworkGraph::new(chanmon_cfgs[0].chain_source.genesis_hash, &chanmon_cfgs[0].logger));
+	let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, &chanmon_cfgs[0].logger));
 	let scorer = Mutex::new(test_utils::TestScorer::new());
 	let router = test_utils::TestRouter::new(network_graph.clone(), &scorer);
 	let node = NodeCfg { chain_source: &chanmon_cfgs[0].chain_source, logger: &chanmon_cfgs[0].logger, tx_broadcaster: &chanmon_cfgs[0].tx_broadcaster, fee_estimator: &chanmon_cfgs[0].fee_estimator, router, chain_monitor, keys_manager: &keys_manager, network_graph, node_seed: seed, override_init_features: alloc::rc::Rc::new(core::cell::RefCell::new(None)) };
@@ -5695,12 +5693,10 @@ fn test_fail_holding_cell_htlc_upon_free() {
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 2);
 	match &events[0] {
-		&Event::PaymentPathFailed { ref payment_id, ref payment_hash, ref payment_failed_permanently, ref network_update, ref all_paths_failed, ref short_channel_id, .. } => {
+		&Event::PaymentPathFailed { ref payment_id, ref payment_hash, ref payment_failed_permanently, failure: PathFailure::OnPath { network_update: None }, ref short_channel_id, .. } => {
 			assert_eq!(PaymentId(our_payment_hash.0), *payment_id.as_ref().unwrap());
 			assert_eq!(our_payment_hash.clone(), *payment_hash);
 			assert_eq!(*payment_failed_permanently, false);
-			assert_eq!(*all_paths_failed, true);
-			assert_eq!(*network_update, None);
 			assert_eq!(*short_channel_id, Some(route.paths[0][0].short_channel_id));
 		},
 		_ => panic!("Unexpected event"),
@@ -5786,12 +5782,10 @@ fn test_free_and_fail_holding_cell_htlcs() {
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 2);
 	match &events[0] {
-		&Event::PaymentPathFailed { ref payment_id, ref payment_hash, ref payment_failed_permanently, ref network_update, ref all_paths_failed, ref short_channel_id, .. } => {
+		&Event::PaymentPathFailed { ref payment_id, ref payment_hash, ref payment_failed_permanently, failure: PathFailure::OnPath { network_update: None }, ref short_channel_id, .. } => {
 			assert_eq!(payment_id_2, *payment_id.as_ref().unwrap());
 			assert_eq!(payment_hash_2.clone(), *payment_hash);
 			assert_eq!(*payment_failed_permanently, false);
-			assert_eq!(*all_paths_failed, true);
-			assert_eq!(*network_update, None);
 			assert_eq!(*short_channel_id, Some(route_2.paths[0][0].short_channel_id));
 		},
 		_ => panic!("Unexpected event"),
@@ -6292,12 +6286,12 @@ fn test_update_add_htlc_bolt2_receiver_check_repeated_id_ignore() {
 	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &updates.update_add_htlcs[0]);
 
 	//Disconnect and Reconnect
-	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
-	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
-	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init { features: nodes[1].node.init_features(), remote_network_address: None }).unwrap();
+	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
+	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
+	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init { features: nodes[1].node.init_features(), remote_network_address: None }, true).unwrap();
 	let reestablish_1 = get_chan_reestablish_msgs!(nodes[0], nodes[1]);
 	assert_eq!(reestablish_1.len(), 1);
-	nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id(), &msgs::Init { features: nodes[0].node.init_features(), remote_network_address: None }).unwrap();
+	nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id(), &msgs::Init { features: nodes[0].node.init_features(), remote_network_address: None }, false).unwrap();
 	let reestablish_2 = get_chan_reestablish_msgs!(nodes[1], nodes[0]);
 	assert_eq!(reestablish_2.len(), 1);
 	nodes[0].node.handle_channel_reestablish(&nodes[1].node.get_our_node_id(), &reestablish_2[0]);
@@ -6689,8 +6683,7 @@ fn test_channel_failed_after_message_with_badonion_node_perm_bits_set() {
 	// Expect a PaymentPathFailed event with a ChannelFailure network update for the channel between
 	// the node originating the error to its next hop.
 	match events_5[0] {
-		Event::PaymentPathFailed { network_update:
-			Some(NetworkUpdate::ChannelFailure { short_channel_id, is_permanent }), error_code, ..
+		Event::PaymentPathFailed { error_code, failure: PathFailure::OnPath { network_update: Some(NetworkUpdate::ChannelFailure { short_channel_id, is_permanent }) }, ..
 		} => {
 			assert_eq!(short_channel_id, chan_2.0.contents.short_channel_id);
 			assert!(is_permanent);
@@ -7032,8 +7025,8 @@ fn test_announce_disable_channels() {
 	create_announced_chan_between_nodes(&nodes, 0, 1);
 
 	// Disconnect peers
-	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
-	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id(), false);
+	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
+	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
 
 	nodes[0].node.timer_tick_occurred(); // Enabled -> DisabledStaged
 	nodes[0].node.timer_tick_occurred(); // DisabledStaged -> Disabled
@@ -7053,10 +7046,10 @@ fn test_announce_disable_channels() {
 		}
 	}
 	// Reconnect peers
-	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init { features: nodes[1].node.init_features(), remote_network_address: None }).unwrap();
+	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init { features: nodes[1].node.init_features(), remote_network_address: None }, true).unwrap();
 	let reestablish_1 = get_chan_reestablish_msgs!(nodes[0], nodes[1]);
 	assert_eq!(reestablish_1.len(), 3);
-	nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id(), &msgs::Init { features: nodes[0].node.init_features(), remote_network_address: None }).unwrap();
+	nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id(), &msgs::Init { features: nodes[0].node.init_features(), remote_network_address: None }, false).unwrap();
 	let reestablish_2 = get_chan_reestablish_msgs!(nodes[1], nodes[0]);
 	assert_eq!(reestablish_2.len(), 3);
 
@@ -8157,12 +8150,13 @@ fn test_update_err_monitor_lockdown() {
 	let logger = test_utils::TestLogger::with_id(format!("node {}", 0));
 	let persister = test_utils::TestPersister::new();
 	let watchtower = {
-		let monitor = nodes[0].chain_monitor.chain_monitor.get_monitor(outpoint).unwrap();
-		let mut w = test_utils::TestVecWriter(Vec::new());
-		monitor.write(&mut w).unwrap();
-		let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingSigner>)>::read(
-				&mut io::Cursor::new(&w.0), (nodes[0].keys_manager, nodes[0].keys_manager)).unwrap().1;
-		assert!(new_monitor == *monitor);
+		let new_monitor = {
+			let monitor = nodes[0].chain_monitor.chain_monitor.get_monitor(outpoint).unwrap();
+			let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingSigner>)>::read(
+					&mut io::Cursor::new(&monitor.encode()), (nodes[0].keys_manager, nodes[0].keys_manager)).unwrap().1;
+			assert!(new_monitor == *monitor);
+			new_monitor
+		};
 		let watchtower = test_utils::TestChainMonitor::new(Some(&chain_source), &chanmon_cfgs[0].tx_broadcaster, &logger, &chanmon_cfgs[0].fee_estimator, &persister, &node_cfgs[0].keys_manager);
 		assert_eq!(watchtower.watch_channel(outpoint, new_monitor), ChannelMonitorUpdateStatus::Completed);
 		watchtower
@@ -8186,7 +8180,7 @@ fn test_update_err_monitor_lockdown() {
 		let mut node_0_per_peer_lock;
 		let mut node_0_peer_state_lock;
 		let mut channel = get_channel_ref!(nodes[0], nodes[1], node_0_per_peer_lock, node_0_peer_state_lock, chan_1.2);
-		if let Ok((_, _, update)) = channel.commitment_signed(&updates.commitment_signed, &node_cfgs[0].logger) {
+		if let Ok(update) = channel.commitment_signed(&updates.commitment_signed, &node_cfgs[0].logger) {
 			assert_eq!(watchtower.chain_monitor.update_channel(outpoint, &update), ChannelMonitorUpdateStatus::PermanentFailure);
 			assert_eq!(nodes[0].chain_monitor.update_channel(outpoint, &update), ChannelMonitorUpdateStatus::Completed);
 		} else { assert!(false); }
@@ -8224,12 +8218,13 @@ fn test_concurrent_monitor_claim() {
 	let logger = test_utils::TestLogger::with_id(format!("node {}", "Alice"));
 	let persister = test_utils::TestPersister::new();
 	let watchtower_alice = {
-		let monitor = nodes[0].chain_monitor.chain_monitor.get_monitor(outpoint).unwrap();
-		let mut w = test_utils::TestVecWriter(Vec::new());
-		monitor.write(&mut w).unwrap();
-		let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingSigner>)>::read(
-				&mut io::Cursor::new(&w.0), (nodes[0].keys_manager, nodes[0].keys_manager)).unwrap().1;
-		assert!(new_monitor == *monitor);
+		let new_monitor = {
+			let monitor = nodes[0].chain_monitor.chain_monitor.get_monitor(outpoint).unwrap();
+			let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingSigner>)>::read(
+					&mut io::Cursor::new(&monitor.encode()), (nodes[0].keys_manager, nodes[0].keys_manager)).unwrap().1;
+			assert!(new_monitor == *monitor);
+			new_monitor
+		};
 		let watchtower = test_utils::TestChainMonitor::new(Some(&chain_source), &chanmon_cfgs[0].tx_broadcaster, &logger, &chanmon_cfgs[0].fee_estimator, &persister, &node_cfgs[0].keys_manager);
 		assert_eq!(watchtower.watch_channel(outpoint, new_monitor), ChannelMonitorUpdateStatus::Completed);
 		watchtower
@@ -8253,12 +8248,13 @@ fn test_concurrent_monitor_claim() {
 	let logger = test_utils::TestLogger::with_id(format!("node {}", "Bob"));
 	let persister = test_utils::TestPersister::new();
 	let watchtower_bob = {
-		let monitor = nodes[0].chain_monitor.chain_monitor.get_monitor(outpoint).unwrap();
-		let mut w = test_utils::TestVecWriter(Vec::new());
-		monitor.write(&mut w).unwrap();
-		let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingSigner>)>::read(
-				&mut io::Cursor::new(&w.0), (nodes[0].keys_manager, nodes[0].keys_manager)).unwrap().1;
-		assert!(new_monitor == *monitor);
+		let new_monitor = {
+			let monitor = nodes[0].chain_monitor.chain_monitor.get_monitor(outpoint).unwrap();
+			let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<EnforcingSigner>)>::read(
+					&mut io::Cursor::new(&monitor.encode()), (nodes[0].keys_manager, nodes[0].keys_manager)).unwrap().1;
+			assert!(new_monitor == *monitor);
+			new_monitor
+		};
 		let watchtower = test_utils::TestChainMonitor::new(Some(&chain_source), &chanmon_cfgs[0].tx_broadcaster, &logger, &chanmon_cfgs[0].fee_estimator, &persister, &node_cfgs[0].keys_manager);
 		assert_eq!(watchtower.watch_channel(outpoint, new_monitor), ChannelMonitorUpdateStatus::Completed);
 		watchtower
@@ -8280,7 +8276,7 @@ fn test_concurrent_monitor_claim() {
 		let mut node_0_per_peer_lock;
 		let mut node_0_peer_state_lock;
 		let mut channel = get_channel_ref!(nodes[0], nodes[1], node_0_per_peer_lock, node_0_peer_state_lock, chan_1.2);
-		if let Ok((_, _, update)) = channel.commitment_signed(&updates.commitment_signed, &node_cfgs[0].logger) {
+		if let Ok(update) = channel.commitment_signed(&updates.commitment_signed, &node_cfgs[0].logger) {
 			// Watchtower Alice should already have seen the block and reject the update
 			assert_eq!(watchtower_alice.chain_monitor.update_channel(outpoint, &update), ChannelMonitorUpdateStatus::PermanentFailure);
 			assert_eq!(watchtower_bob.chain_monitor.update_channel(outpoint, &update), ChannelMonitorUpdateStatus::Completed);
@@ -8736,9 +8732,9 @@ fn test_duplicate_chan_id() {
 	};
 	check_added_monitors!(nodes[0], 0);
 	nodes[1].node.handle_funding_created(&nodes[0].node.get_our_node_id(), &funding_created);
-	// At this point we'll try to add a duplicate channel monitor, which will be rejected, but
-	// still needs to be cleared here.
-	check_added_monitors!(nodes[1], 1);
+	// At this point we'll look up if the channel_id is present and immediately fail the channel
+	// without trying to persist the `ChannelMonitor`.
+	check_added_monitors!(nodes[1], 0);
 
 	// ...still, nodes[1] will reject the duplicate channel.
 	{
@@ -8832,13 +8828,11 @@ fn test_error_chans_closed() {
 		_ => panic!("Unexpected event"),
 	}
 	// Note that at this point users of a standard PeerHandler will end up calling
-	// peer_disconnected with no_connection_possible set to false, duplicating the
-	// close-all-channels logic. That's OK, we don't want to end up not force-closing channels for
-	// users with their own peer handling logic. We duplicate the call here, however.
+	// peer_disconnected.
 	assert_eq!(nodes[0].node.list_usable_channels().len(), 1);
 	assert!(nodes[0].node.list_usable_channels()[0].channel_id == chan_3.2);
 
-	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id(), true);
+	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
 	assert_eq!(nodes[0].node.list_usable_channels().len(), 1);
 	assert!(nodes[0].node.list_usable_channels()[0].channel_id == chan_3.2);
 }
@@ -8954,8 +8948,8 @@ fn do_test_tx_confirmed_skipping_blocks_immediate_broadcast(test_height_before_t
 	create_announced_chan_between_nodes(&nodes, 0, 1);
 	let (chan_announce, _, channel_id, _) = create_announced_chan_between_nodes(&nodes, 1, 2);
 	let (_, payment_hash, _) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 1_000_000);
-	nodes[1].node.peer_disconnected(&nodes[2].node.get_our_node_id(), false);
-	nodes[2].node.peer_disconnected(&nodes[1].node.get_our_node_id(), false);
+	nodes[1].node.peer_disconnected(&nodes[2].node.get_our_node_id());
+	nodes[2].node.peer_disconnected(&nodes[1].node.get_our_node_id());
 
 	nodes[1].node.force_close_broadcasting_latest_txn(&channel_id, &nodes[2].node.get_our_node_id()).unwrap();
 	check_closed_broadcast!(nodes[1], true);
@@ -9150,20 +9144,20 @@ fn test_inconsistent_mpp_params() {
 		dup_route.paths.push(route.paths[1].clone());
 		nodes[0].node.test_add_new_pending_payment(our_payment_hash, Some(our_payment_secret), payment_id, &dup_route).unwrap()
 	};
-	{
-		nodes[0].node.send_payment_along_path(&route.paths[0], &payment_params_opt, &our_payment_hash, &Some(our_payment_secret), 15_000_000, cur_height, payment_id, &None, session_privs[0]).unwrap();
-		check_added_monitors!(nodes[0], 1);
+	nodes[0].node.test_send_payment_along_path(&route.paths[0], &payment_params_opt, &our_payment_hash, &Some(our_payment_secret), 15_000_000, cur_height, payment_id, &None, session_privs[0]).unwrap();
+	check_added_monitors!(nodes[0], 1);
 
+	{
 		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1);
 		pass_along_path(&nodes[0], &[&nodes[1], &nodes[3]], 15_000_000, our_payment_hash, Some(our_payment_secret), events.pop().unwrap(), false, None);
 	}
 	assert!(nodes[3].node.get_and_clear_pending_events().is_empty());
 
-	{
-		nodes[0].node.send_payment_along_path(&route.paths[1], &payment_params_opt, &our_payment_hash, &Some(our_payment_secret), 14_000_000, cur_height, payment_id, &None, session_privs[1]).unwrap();
-		check_added_monitors!(nodes[0], 1);
+	nodes[0].node.test_send_payment_along_path(&route.paths[1], &payment_params_opt, &our_payment_hash, &Some(our_payment_secret), 14_000_000, cur_height, payment_id, &None, session_privs[1]).unwrap();
+	check_added_monitors!(nodes[0], 1);
 
+	{
 		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1);
 		let payment_event = SendEvent::from_event(events.pop().unwrap());
@@ -9206,7 +9200,7 @@ fn test_inconsistent_mpp_params() {
 
 	expect_payment_failed_conditions(&nodes[0], our_payment_hash, true, PaymentFailedConditions::new().mpp_parts_remain());
 
-	nodes[0].node.send_payment_along_path(&route.paths[1], &payment_params_opt, &our_payment_hash, &Some(our_payment_secret), 15_000_000, cur_height, payment_id, &None, session_privs[2]).unwrap();
+	nodes[0].node.test_send_payment_along_path(&route.paths[1], &payment_params_opt, &our_payment_hash, &Some(our_payment_secret), 15_000_000, cur_height, payment_id, &None, session_privs[2]).unwrap();
 	check_added_monitors!(nodes[0], 1);
 
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
@@ -9250,7 +9244,6 @@ fn test_keysend_payments_to_public_node() {
 	let route_params = RouteParameters {
 		payment_params: PaymentParameters::for_keysend(payee_pubkey, 40),
 		final_value_msat: 10000,
-		final_cltv_expiry_delta: 40,
 	};
 	let scorer = test_utils::TestScorer::new();
 	let random_seed_bytes = chanmon_cfgs[1].keys_manager.get_secure_random_bytes();
@@ -9281,7 +9274,6 @@ fn test_keysend_payments_to_private_node() {
 	let route_params = RouteParameters {
 		payment_params: PaymentParameters::for_keysend(payee_pubkey, 40),
 		final_value_msat: 10000,
-		final_cltv_expiry_delta: 40,
 	};
 	let network_graph = nodes[0].network_graph.clone();
 	let first_hops = nodes[0].node.list_usable_channels();
