@@ -536,14 +536,11 @@ pub enum Amount {
 	/// An amount of currency specified using ISO 4712.
 	Currency {
 		/// The currency that the amount is denominated in.
-		iso4217_code: CurrencyCode,
+		iso4217_code: [u8; 3],
 		/// The amount in the currency unit adjusted by the ISO 4712 exponent (e.g., USD cents).
 		amount: u64,
 	},
 }
-
-/// An ISO 4712 three-letter currency code (e.g., USD).
-pub type CurrencyCode = [u8; 3];
 
 /// Quantity of items supported by an [`Offer`].
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -573,7 +570,7 @@ impl Quantity {
 tlv_stream!(OfferTlvStream, OfferTlvStreamRef, 1..80, {
 	(2, chains: (Vec<ChainHash>, WithoutLength)),
 	(4, metadata: (Vec<u8>, WithoutLength)),
-	(6, currency: CurrencyCode),
+	(6, currency: [u8; 3]),
 	(8, amount: (u64, HighZeroBytesDroppedBigSize)),
 	(10, description: (String, WithoutLength)),
 	(12, features: (OfferFeatures, WithoutLength)),
