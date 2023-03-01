@@ -916,7 +916,6 @@ impl OutboundPayments {
 			return Err(PaymentSendFailure::PathParameterError(path_errs));
 		}
 		if let Some(amt_msat) = recv_value_msat {
-			debug_assert!(amt_msat >= total_value);
 			total_value = amt_msat;
 		}
 
