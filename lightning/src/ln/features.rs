@@ -45,6 +45,8 @@
 //!     and HTLC transactions are pre-signed with zero fee (see
 //!     [BOLT-3](https://github.com/lightning/bolts/blob/master/03-transactions.md) for more
 //!     information).
+//! - `RouteBlinding` - requires/supports that a node can relay payments over blinded paths
+//!     (see [BOLT-4](https://github.com/lightning/bolts/blob/master/04-onion-routing.md#route-blinding) for more information).
 //! - `ShutdownAnySegwit` - requires/supports that future segwit versions are allowed in `shutdown`
 //!     (see [BOLT-2](https://github.com/lightning/bolts/blob/master/02-peer-protocol.md) for more information).
 //! - `OnionMessages` - requires/supports forwarding onion messages
@@ -143,7 +145,7 @@ mod sealed {
 		// Byte 2
 		BasicMPP | Wumbo | AnchorsNonzeroFeeHtlcTx | AnchorsZeroFeeHtlcTx,
 		// Byte 3
-		ShutdownAnySegwit | Taproot,
+		RouteBlinding | ShutdownAnySegwit | Taproot,
 		// Byte 4
 		OnionMessages,
 		// Byte 5
@@ -159,7 +161,7 @@ mod sealed {
 		// Byte 2
 		BasicMPP | Wumbo | AnchorsNonzeroFeeHtlcTx | AnchorsZeroFeeHtlcTx,
 		// Byte 3
-		ShutdownAnySegwit | Taproot,
+		RouteBlinding | ShutdownAnySegwit | Taproot,
 		// Byte 4
 		OnionMessages,
 		// Byte 5
@@ -391,6 +393,9 @@ mod sealed {
 	define_feature!(23, AnchorsZeroFeeHtlcTx, [InitContext, NodeContext, ChannelTypeContext],
 		"Feature flags for `option_anchors_zero_fee_htlc_tx`.", set_anchors_zero_fee_htlc_tx_optional,
 		set_anchors_zero_fee_htlc_tx_required, supports_anchors_zero_fee_htlc_tx, requires_anchors_zero_fee_htlc_tx);
+	define_feature!(25, RouteBlinding, [InitContext, NodeContext],
+		"Feature flags for `option_route_blinding`.", set_route_blinding_optional,
+		set_route_blinding_required, supports_route_blinding, requires_route_blinding);
 	define_feature!(27, ShutdownAnySegwit, [InitContext, NodeContext],
 		"Feature flags for `opt_shutdown_anysegwit`.", set_shutdown_any_segwit_optional,
 		set_shutdown_any_segwit_required, supports_shutdown_anysegwit, requires_shutdown_anysegwit);
@@ -1053,6 +1058,7 @@ mod tests {
 		init_features.set_basic_mpp_optional();
 		init_features.set_wumbo_optional();
 		init_features.set_anchors_zero_fee_htlc_tx_optional();
+		init_features.set_route_blinding_optional();
 		init_features.set_shutdown_any_segwit_optional();
 		init_features.set_onion_messages_optional();
 		init_features.set_channel_type_optional();
@@ -1069,7 +1075,7 @@ mod tests {
 			// - option_data_loss_protect (req)
 			// - var_onion_optin (req) | static_remote_key (req) | payment_secret(req)
 			// - basic_mpp | wumbo | option_anchors_zero_fee_htlc_tx
-			// - opt_shutdown_anysegwit
+			// - option_route_blinding | opt_shutdown_anysegwit
 			// - onion_messages
 			// - option_channel_type | option_scid_alias
 			// - option_zeroconf
@@ -1077,7 +1083,7 @@ mod tests {
 			assert_eq!(node_features.flags[0], 0b00000001);
 			assert_eq!(node_features.flags[1], 0b01010001);
 			assert_eq!(node_features.flags[2], 0b10001010);
-			assert_eq!(node_features.flags[3], 0b00001000);
+			assert_eq!(node_features.flags[3], 0b00001010);
 			assert_eq!(node_features.flags[4], 0b10000000);
 			assert_eq!(node_features.flags[5], 0b10100000);
 			assert_eq!(node_features.flags[6], 0b00001000);
