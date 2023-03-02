@@ -41,6 +41,10 @@
 //!     (see [BOLT-4](https://github.com/lightning/bolts/blob/master/04-onion-routing.md#basic-multi-part-payments) for more information).
 //! - `Wumbo` - requires/supports that a node create large channels. Called `option_support_large_channel` in the spec.
 //!     (see [BOLT-2](https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#the-open_channel-message) for more information).
+//! - `AnchorsZeroFeeHtlcTx` - requires/supports that commitment transactions include anchor outputs
+//!     and HTLC transactions are pre-signed with zero fee (see
+//!     [BOLT-3](https://github.com/lightning/bolts/blob/master/03-transactions.md) for more
+//!     information).
 //! - `ShutdownAnySegwit` - requires/supports that future segwit versions are allowed in `shutdown`
 //!     (see [BOLT-2](https://github.com/lightning/bolts/blob/master/02-peer-protocol.md) for more information).
 //! - `OnionMessages` - requires/supports forwarding onion messages
@@ -60,10 +64,6 @@
 //!      for more info).
 //! - `Keysend` - send funds to a node without an invoice
 //!     (see the [`Keysend` feature assignment proposal](https://github.com/lightning/bolts/issues/605#issuecomment-606679798) for more information).
-//! - `AnchorsZeroFeeHtlcTx` - requires/supports that commitment transactions include anchor outputs
-//!     and HTLC transactions are pre-signed with zero fee (see
-//!     [BOLT-3](https://github.com/lightning/bolts/blob/master/03-transactions.md) for more
-//!     information).
 //!
 //! LDK knows about the following features, but does not support them:
 //! - `AnchorsNonzeroFeeHtlcTx` - the initial version of anchor outputs, which was later found to be
@@ -1068,7 +1068,7 @@ mod tests {
 			// Check that the flags are as expected:
 			// - option_data_loss_protect (req)
 			// - var_onion_optin (req) | static_remote_key (req) | payment_secret(req)
-			// - basic_mpp | wumbo | anchors_zero_fee_htlc_tx
+			// - basic_mpp | wumbo | option_anchors_zero_fee_htlc_tx
 			// - opt_shutdown_anysegwit
 			// - onion_messages
 			// - option_channel_type | option_scid_alias
