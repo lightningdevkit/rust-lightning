@@ -200,6 +200,35 @@ where
 		invoice = invoice.amount_milli_satoshis(amt);
 	}
 
+	for route_hint in select_phantom_hints(amt_msat, phantom_route_hints, logger) {
+		invoice = invoice.private_route(route_hint);
+	}
+
+	let raw_invoice = match invoice.build_raw() {
+		Ok(inv) => inv,
+		Err(e) => return Err(SignOrCreationError::CreationError(e))
+	};
+	let hrp_str = raw_invoice.hrp.to_string();
+	let hrp_bytes = hrp_str.as_bytes();
+	let data_without_signature = raw_invoice.data.to_base32();
+	let signed_raw_invoice = raw_invoice.sign(|_| node_signer.sign_invoice(hrp_bytes, &data_without_signature, Recipient::PhantomNode));
+	match signed_raw_invoice {
+		Ok(inv) => Ok(Invoice::from_signed(inv).unwrap()),
+		Err(e) => Err(SignOrCreationError::SignError(e))
+	}
+}
+
+/// Utility to select route hints for phantom invoices.
+/// See [`PhantomKeysManager`] for more information on phantom node payments.
+/// 
+/// [`PhantomKeysManager`]: lightning::chain::keysinterface::PhantomKeysManager
+fn select_phantom_hints<L: Deref>(amt_msat: Option<u64>, phantom_route_hints: Vec<PhantomRouteHints>,
+	logger: L) -> Vec<RouteHint>
+where
+	L::Target: Logger,
+{
+	let mut phantom_hints: Vec<RouteHint> = Vec::new();
+
 	for PhantomRouteHints { channels, phantom_scid, real_node_pubkey } in phantom_route_hints {
 		log_trace!(logger, "Generating phantom route hints for node {}",
 			log_pubkey!(real_node_pubkey));
@@ -223,22 +252,12 @@ where
 				cltv_expiry_delta: MIN_CLTV_EXPIRY_DELTA,
 				htlc_minimum_msat: None,
 				htlc_maximum_msat: None,});
-			invoice = invoice.private_route(route_hint.clone());
+
+			phantom_hints.push(route_hint.clone());
 		}
 	}
 
-	let raw_invoice = match invoice.build_raw() {
-		Ok(inv) => inv,
-		Err(e) => return Err(SignOrCreationError::CreationError(e))
-	};
-	let hrp_str = raw_invoice.hrp.to_string();
-	let hrp_bytes = hrp_str.as_bytes();
-	let data_without_signature = raw_invoice.data.to_base32();
-	let signed_raw_invoice = raw_invoice.sign(|_| node_signer.sign_invoice(hrp_bytes, &data_without_signature, Recipient::PhantomNode));
-	match signed_raw_invoice {
-		Ok(inv) => Ok(Invoice::from_signed(inv).unwrap()),
-		Err(e) => Err(SignOrCreationError::SignError(e))
-	}
+	phantom_hints
 }
 
 #[cfg(feature = "std")]
