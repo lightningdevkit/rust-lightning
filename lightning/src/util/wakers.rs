@@ -105,7 +105,10 @@ impl Notifier {
 	pub(crate) fn notify(&self) {
 		let mut lock = self.notify_pending.lock().unwrap();
 		if let Some(future_state) = &lock.1 {
-			future_state.lock().unwrap().complete();
+			if future_state.lock().unwrap().complete() {
+				lock.1 = None;
+				return;
+			}
 		}
 		lock.0 = true;
 		mem::drop(lock);
@@ -161,12 +164,13 @@ pub(crate) struct FutureState {
 }
 
 impl FutureState {
-	fn complete(&mut self) {
+	fn complete(&mut self) -> bool {
 		for (counts_as_call, callback) in self.callbacks.drain(..) {
 			callback.call();
 			self.callbacks_made |= counts_as_call;
 		}
 		self.complete = true;
+		self.callbacks_made
 	}
 }
 
@@ -468,5 +472,64 @@ mod tests {
 		assert!(woken.load(Ordering::SeqCst));
 		assert_eq!(Pin::new(&mut future).poll(&mut Context::from_waker(&waker)), Poll::Ready(()));
 		assert!(!notifier.wait_timeout(Duration::from_millis(1)));
+	}
+
+	#[test]
+	fn test_poll_post_notify_completes() {
+		// Tests that if we have a future state that has completed, and we haven't yet requested a
+		// new future, if we get a notify prior to requesting that second future it is generated
+		// pre-completed.
+		let notifier = Notifier::new();
+
+		notifier.notify();
+		let mut future = notifier.get_future();
+		let (woken, waker) = create_waker();
+		assert_eq!(Pin::new(&mut future).poll(&mut Context::from_waker(&waker)), Poll::Ready(()));
+		assert!(!woken.load(Ordering::SeqCst));
+
+		notifier.notify();
+		let mut future = notifier.get_future();
+		let (woken, waker) = create_waker();
+		assert_eq!(Pin::new(&mut future).poll(&mut Context::from_waker(&waker)), Poll::Ready(()));
+		assert!(!woken.load(Ordering::SeqCst));
+
+		let mut future = notifier.get_future();
+		let (woken, waker) = create_waker();
+		assert_eq!(Pin::new(&mut future).poll(&mut Context::from_waker(&waker)), Poll::Pending);
+		assert!(!woken.load(Ordering::SeqCst));
+
+		notifier.notify();
+		assert!(woken.load(Ordering::SeqCst));
+		assert_eq!(Pin::new(&mut future).poll(&mut Context::from_waker(&waker)), Poll::Ready(()));
+	}
+
+	#[test]
+	fn test_poll_post_notify_completes_initial_notified() {
+		// Identical to the previous test, but the first future completes via a wake rather than an
+		// immediate `Poll::Ready`.
+		let notifier = Notifier::new();
+
+		let mut future = notifier.get_future();
+		let (woken, waker) = create_waker();
+		assert_eq!(Pin::new(&mut future).poll(&mut Context::from_waker(&waker)), Poll::Pending);
+
+		notifier.notify();
+		assert!(woken.load(Ordering::SeqCst));
+		assert_eq!(Pin::new(&mut future).poll(&mut Context::from_waker(&waker)), Poll::Ready(()));
+
+		notifier.notify();
+		let mut future = notifier.get_future();
+		let (woken, waker) = create_waker();
+		assert_eq!(Pin::new(&mut future).poll(&mut Context::from_waker(&waker)), Poll::Ready(()));
+		assert!(!woken.load(Ordering::SeqCst));
+
+		let mut future = notifier.get_future();
+		let (woken, waker) = create_waker();
+		assert_eq!(Pin::new(&mut future).poll(&mut Context::from_waker(&waker)), Poll::Pending);
+		assert!(!woken.load(Ordering::SeqCst));
+
+		notifier.notify();
+		assert!(woken.load(Ordering::SeqCst));
+		assert_eq!(Pin::new(&mut future).poll(&mut Context::from_waker(&waker)), Poll::Ready(()));
 	}
 }
