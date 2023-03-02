@@ -86,9 +86,11 @@ where
 ///   participating node
 /// * It is fine to cache `phantom_route_hints` and reuse it across invoices, as long as the data is
 ///   updated when a channel becomes disabled or closes
-/// * Note that if too many channels are included in [`PhantomRouteHints::channels`], the invoice
-///   may be too long for QR code scanning. To fix this, `PhantomRouteHints::channels` may be pared
-///   down
+/// * Note that the route hints generated from `phantom_route_hints` will be limited to a maximum
+///   of 3 hints to ensure that the invoice can be scanned in a QR code. These hints are selected
+///   in the order that the nodes in `PhantomRouteHints` are specified, selecting one hint per node
+///   until the maximum is hit. Callers may provide as many `PhantomRouteHints::channels` as
+///   desired, but note that some nodes will be trimmed if more than 3 nodes are provided.
 ///
 /// `description_hash` is a SHA-256 hash of the description text
 ///
@@ -220,14 +222,18 @@ where
 
 /// Utility to select route hints for phantom invoices.
 /// See [`PhantomKeysManager`] for more information on phantom node payments.
-/// 
+///
+/// To ensure that the phantom invoice is still readable by QR code, we limit to 3 hints per invoice:
+/// * Select up to three channels per node.
+/// * Select one hint from each node, up to three hints or until we run out of hints.
+///
 /// [`PhantomKeysManager`]: lightning::chain::keysinterface::PhantomKeysManager
 fn select_phantom_hints<L: Deref>(amt_msat: Option<u64>, phantom_route_hints: Vec<PhantomRouteHints>,
 	logger: L) -> Vec<RouteHint>
 where
 	L::Target: Logger,
 {
-	let mut phantom_hints: Vec<RouteHint> = Vec::new();
+	let mut phantom_hints: Vec<Vec<RouteHint>> = Vec::new();
 
 	for PhantomRouteHints { channels, phantom_scid, real_node_pubkey } in phantom_route_hints {
 		log_trace!(logger, "Generating phantom route hints for node {}",
@@ -241,7 +247,7 @@ where
 		if route_hints.is_empty() {
 			route_hints.push(RouteHint(vec![]))
 		}
-		for mut route_hint in route_hints {
+		for route_hint in &mut route_hints {
 			route_hint.0.push(RouteHintHop {
 				src_node_id: real_node_pubkey,
 				short_channel_id: phantom_scid,
@@ -252,12 +258,38 @@ where
 				cltv_expiry_delta: MIN_CLTV_EXPIRY_DELTA,
 				htlc_minimum_msat: None,
 				htlc_maximum_msat: None,});
-
-			phantom_hints.push(route_hint.clone());
 		}
+
+		phantom_hints.push(route_hints);
 	}
 
-	phantom_hints
+	// We have one vector per real node involved in creating the phantom invoice. To distribute
+	// the hints across our real nodes we add one hint from each in turn until no node has any hints
+	// left (if one node has more hints than any other, these will accumulate at the end of the
+	// vector).
+	let mut invoice_hints: Vec<RouteHint> = Vec::new();
+	let mut hint_idx = 0;
+
+	loop {
+		let mut remaining_hints = false;
+
+		for hints in phantom_hints.iter() {
+			if invoice_hints.len() == 3 {
+				return invoice_hints
+			}
+
+			if hint_idx < hints.len() {
+				invoice_hints.push(hints[hint_idx].clone());
+				remaining_hints = true
+			}
+		}
+
+		if !remaining_hints {
+			return invoice_hints
+		}
+
+		hint_idx +=1;
+	}
 }
 
 #[cfg(feature = "std")]
@@ -1721,7 +1753,98 @@ mod test {
 		);
 	}
 
-	#[cfg(feature = "std")]
+	#[test]
+	fn test_multi_node_hints_limited_to_3() {
+		let mut chanmon_cfgs = create_chanmon_cfgs(6);
+		let seed_1 = [42 as u8; 32];
+		let seed_2 = [43 as u8; 32];
+		let seed_3 = [44 as u8; 32];
+		let seed_4 = [45 as u8; 32];
+		let cross_node_seed = [44 as u8; 32];
+		chanmon_cfgs[2].keys_manager.backing = PhantomKeysManager::new(&seed_1, 43, 44, &cross_node_seed);
+		chanmon_cfgs[3].keys_manager.backing = PhantomKeysManager::new(&seed_2, 43, 44, &cross_node_seed);
+		chanmon_cfgs[4].keys_manager.backing = PhantomKeysManager::new(&seed_3, 43, 44, &cross_node_seed);
+		chanmon_cfgs[5].keys_manager.backing = PhantomKeysManager::new(&seed_4, 43, 44, &cross_node_seed);
+		let node_cfgs = create_node_cfgs(6, &chanmon_cfgs);
+		let node_chanmgrs = create_node_chanmgrs(6, &node_cfgs, &[None, None, None, None, None, None]);
+		let nodes = create_network(6, &node_cfgs, &node_chanmgrs);
+
+		// Setup each phantom node with two channels from distinct peers.
+		let chan_0_2 = create_unannounced_chan_between_nodes_with_value(&nodes, 0, 2, 10_000, 0);
+		let chan_1_2 = create_unannounced_chan_between_nodes_with_value(&nodes, 1, 2, 20_000, 0);
+		let chan_0_3 = create_unannounced_chan_between_nodes_with_value(&nodes, 0, 3, 20_000, 0);
+		let _chan_1_3 = create_unannounced_chan_between_nodes_with_value(&nodes, 1, 3, 10_000, 0);
+		let chan_0_4 = create_unannounced_chan_between_nodes_with_value(&nodes, 0, 4, 20_000, 0);
+		let _chan_1_4 = create_unannounced_chan_between_nodes_with_value(&nodes, 1, 4, 10_000, 0);
+		let _chan_0_5 = create_unannounced_chan_between_nodes_with_value(&nodes, 0, 5, 20_000, 0);
+		let _chan_1_5 = create_unannounced_chan_between_nodes_with_value(&nodes, 1, 5, 10_000, 0);
+
+		// Set invoice amount > all channels inbound so that every one is eligible for inclusion
+		// and hints will be sorted by largest inbound capacity.
+		let invoice_amt = Some(100_000_000);
+
+		// With 4 phantom nodes, assert that we include 1 hint per node, up to 3 nodes.
+		let mut scid_aliases = HashSet::new();
+		scid_aliases.insert(chan_1_2.0.short_channel_id_alias.unwrap());
+		scid_aliases.insert(chan_0_3.0.short_channel_id_alias.unwrap());
+		scid_aliases.insert(chan_0_4.0.short_channel_id_alias.unwrap());
+
+		match_multi_node_invoice_routes(
+			invoice_amt,
+			&nodes[3],
+			vec![&nodes[2], &nodes[3], &nodes[4], &nodes[5]],
+			scid_aliases,
+			false,
+		);
+
+		// With 2 phantom nodes, assert that we include no more than 3 hints.
+		let mut scid_aliases = HashSet::new();
+		scid_aliases.insert(chan_1_2.0.short_channel_id_alias.unwrap());
+		scid_aliases.insert(chan_0_3.0.short_channel_id_alias.unwrap());
+		scid_aliases.insert(chan_0_2.0.short_channel_id_alias.unwrap());
+
+		match_multi_node_invoice_routes(
+			invoice_amt,
+			&nodes[3],
+			vec![&nodes[2], &nodes[3]],
+			scid_aliases,
+			false,
+		);
+	}
+
+	#[test]
+	fn test_multi_node_hints_at_least_3() {
+		let mut chanmon_cfgs = create_chanmon_cfgs(5);
+		let seed_1 = [42 as u8; 32];
+		let seed_2 = [43 as u8; 32];
+		let cross_node_seed = [44 as u8; 32];
+		chanmon_cfgs[1].keys_manager.backing = PhantomKeysManager::new(&seed_1, 43, 44, &cross_node_seed);
+		chanmon_cfgs[2].keys_manager.backing = PhantomKeysManager::new(&seed_2, 43, 44, &cross_node_seed);
+		let node_cfgs = create_node_cfgs(5, &chanmon_cfgs);
+		let node_chanmgrs = create_node_chanmgrs(5, &node_cfgs, &[None, None, None, None, None]);
+		let nodes = create_network(5, &node_cfgs, &node_chanmgrs);
+
+		let _chan_0_3 = create_unannounced_chan_between_nodes_with_value(&nodes, 0, 3, 10_000, 0);
+		let chan_1_3 = create_unannounced_chan_between_nodes_with_value(&nodes, 1, 3, 20_000, 0);
+		let chan_2_3 = create_unannounced_chan_between_nodes_with_value(&nodes, 2, 3, 30_000, 0);
+		let chan_0_4 = create_unannounced_chan_between_nodes_with_value(&nodes, 0, 4, 10_000, 0);
+
+		// Since the invoice amount is above all channels inbound, all four are eligible. Test that
+		// we still include 3 hints from 2 distinct nodes sorted by inbound.
+		let mut scid_aliases = HashSet::new();
+		scid_aliases.insert(chan_1_3.0.short_channel_id_alias.unwrap());
+		scid_aliases.insert(chan_2_3.0.short_channel_id_alias.unwrap());
+		scid_aliases.insert(chan_0_4.0.short_channel_id_alias.unwrap());
+
+		match_multi_node_invoice_routes(
+			Some(100_000_000),
+			&nodes[3],
+			vec![&nodes[3], &nodes[4],],
+			scid_aliases,
+			false,
+		);
+	}
+
 	fn match_multi_node_invoice_routes<'a, 'b: 'a, 'c: 'b>(
 		invoice_amt: Option<u64>,
 		invoice_node: &Node<'a, 'b, 'c>,
