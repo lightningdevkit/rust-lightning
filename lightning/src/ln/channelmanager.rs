@@ -3982,7 +3982,7 @@ where
 			None => None
 		};
 
-		let mut peer_state_opt = counterparty_node_id_opt.as_ref().map(
+		let peer_state_opt = counterparty_node_id_opt.as_ref().map(
 			|counterparty_node_id| per_peer_state.get(counterparty_node_id).map(
 				|peer_mutex| peer_mutex.lock().unwrap()
 			)

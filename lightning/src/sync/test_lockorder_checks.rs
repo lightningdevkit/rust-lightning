@@ -3,7 +3,6 @@ use crate::sync::debug_sync::{RwLock, Mutex};
 use super::{LockHeldState, LockTestExt};
 
 use std::sync::Arc;
-use std::thread;
 
 #[test]
 #[should_panic]
