@@ -13,11 +13,9 @@
 //! responsible for tracking which channels are open, HTLCs are in flight and reestablishing those
 //! upon reconnect to the relevant peer(s).
 //!
-//! It does not manage routing logic (see [`find_route`] for that) nor does it manage constructing
+//! It does not manage routing logic (see [`Router`] for that) nor does it manage constructing
 //! on-chain transactions (it only monitors the chain to watch for any force-closes that might
 //! imply it needs to fail HTLCs/payments/channels it manages).
-//!
-//! [`find_route`]: crate::routing::router::find_route
 
 use bitcoin::blockdata::block::BlockHeader;
 use bitcoin::blockdata::transaction::Transaction;
@@ -1745,14 +1743,12 @@ where
 		self.list_channels_with_filter(|_| true)
 	}
 
-	/// Gets the list of usable channels, in random order. Useful as an argument to [`find_route`]
-	/// to ensure non-announced channels are used.
+	/// Gets the list of usable channels, in random order. Useful as an argument to
+	/// [`Router::find_route`] to ensure non-announced channels are used.
 	///
 	/// These are guaranteed to have their [`ChannelDetails::is_usable`] value set to true, see the
 	/// documentation for [`ChannelDetails::is_usable`] for more info on exactly what the criteria
 	/// are.
-	///
-	/// [`find_route`]: crate::routing::router::find_route
 	pub fn list_usable_channels(&self) -> Vec<ChannelDetails> {
 		// Note we use is_live here instead of usable which leads to somewhat confused
 		// internal/external nomenclature, but that's ok cause that's probably what the user
