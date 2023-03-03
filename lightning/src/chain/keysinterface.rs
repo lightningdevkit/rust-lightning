@@ -1064,6 +1064,12 @@ impl KeysManager {
 			Err(_) => panic!("Your rng is busted"),
 		}
 	}
+
+	/// Gets the "node_id" secret key used to sign gossip announcements, decode onion data, etc.
+	pub fn get_node_secret_key(&self) -> SecretKey {
+		self.node_secret
+	}
+
 	/// Derive an old [`WriteableEcdsaChannelSigner`] containing per-channel secrets based on a key derivation parameters.
 	pub fn derive_channel_keys(&self, channel_value_satoshis: u64, params: &[u8; 32]) -> InMemorySigner {
 		let chan_id = u64::from_be_bytes(params[0..8].try_into().unwrap());
@@ -1457,6 +1463,17 @@ impl PhantomKeysManager {
 	/// See [`KeysManager::derive_channel_keys`] for documentation on this method.
 	pub fn derive_channel_keys(&self, channel_value_satoshis: u64, params: &[u8; 32]) -> InMemorySigner {
 		self.inner.derive_channel_keys(channel_value_satoshis, params)
+	}
+
+	/// Gets the "node_id" secret key used to sign gossip announcements, decode onion data, etc.
+	pub fn get_node_secret_key(&self) -> SecretKey {
+		self.inner.get_node_secret_key()
+	}
+
+	/// Gets the "node_id" secret key of the phantom node used to sign invoices, decode the
+	/// last-hop onion data, etc.
+	pub fn get_phantom_node_secret_key(&self) -> SecretKey {
+		self.phantom_secret
 	}
 }
 
