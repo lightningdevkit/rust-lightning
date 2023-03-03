@@ -201,6 +201,11 @@ pub struct Mutex<T: Sized> {
 	inner: StdMutex<T>,
 	deps: Arc<LockMetadata>,
 }
+impl<T: Sized> Mutex<T> {
+	pub(crate) fn into_inner(self) -> LockResult<T> {
+		self.inner.into_inner().map_err(|_| ())
+	}
+}
 
 #[must_use = "if unused the Mutex will immediately unlock"]
 pub struct MutexGuard<'a, T: Sized + 'a> {

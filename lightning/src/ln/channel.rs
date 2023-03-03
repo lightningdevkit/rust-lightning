@@ -27,7 +27,7 @@ use crate::ln::features::{ChannelTypeFeatures, InitFeatures};
 use crate::ln::msgs;
 use crate::ln::msgs::{DecodeError, OptionalField, DataLossProtect};
 use crate::ln::script::{self, ShutdownScript};
-use crate::ln::channelmanager::{self, CounterpartyForwardingInfo, PendingHTLCStatus, HTLCSource, HTLCFailureMsg, PendingHTLCInfo, RAACommitmentOrder, BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA, MAX_LOCAL_BREAKDOWN_TIMEOUT};
+use crate::ln::channelmanager::{self, CounterpartyForwardingInfo, PendingHTLCStatus, HTLCSource, SentHTLCId, HTLCFailureMsg, PendingHTLCInfo, RAACommitmentOrder, BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA, MAX_LOCAL_BREAKDOWN_TIMEOUT};
 use crate::ln::chan_utils::{CounterpartyCommitmentSecrets, TxCreationKeys, HTLCOutputInCommitment, htlc_success_tx_weight, htlc_timeout_tx_weight, make_funding_redeemscript, ChannelPublicKeys, CommitmentTransaction, HolderCommitmentTransaction, ChannelTransactionParameters, CounterpartyChannelTransactionParameters, MAX_HTLCS, get_commitment_transaction_number_obscure_factor, ClosingTransaction};
 use crate::ln::chan_utils;
 use crate::ln::onion_utils::HTLCFailReason;
@@ -192,6 +192,7 @@ enum OutboundHTLCState {
 
 #[derive(Clone)]
 enum OutboundHTLCOutcome {
+	/// LDK version 0.0.105+ will always fill in the preimage here.
 	Success(Option<PaymentPreimage>),
 	Failure(HTLCFailReason),
 }
@@ -3159,15 +3160,6 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			}
 		}
 
-		self.latest_monitor_update_id += 1;
-		let mut monitor_update = ChannelMonitorUpdate {
-			update_id: self.latest_monitor_update_id,
-			updates: vec![ChannelMonitorUpdateStep::LatestHolderCommitmentTXInfo {
-				commitment_tx: holder_commitment_tx,
-				htlc_outputs: htlcs_and_sigs
-			}]
-		};
-
 		for htlc in self.pending_inbound_htlcs.iter_mut() {
 			let new_forward = if let &InboundHTLCState::RemoteAnnounced(ref forward_info) = &htlc.state {
 				Some(forward_info.clone())
@@ -3179,6 +3171,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 				need_commitment = true;
 			}
 		}
+		let mut claimed_htlcs = Vec::new();
 		for htlc in self.pending_outbound_htlcs.iter_mut() {
 			if let &mut OutboundHTLCState::RemoteRemoved(ref mut outcome) = &mut htlc.state {
 				log_trace!(logger, "Updating HTLC {} to AwaitingRemoteRevokeToRemove due to commitment_signed in channel {}.",
@@ -3186,10 +3179,29 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 				// Grab the preimage, if it exists, instead of cloning
 				let mut reason = OutboundHTLCOutcome::Success(None);
 				mem::swap(outcome, &mut reason);
+				if let OutboundHTLCOutcome::Success(Some(preimage)) = reason {
+					// If a user (a) receives an HTLC claim using LDK 0.0.104 or before, then (b)
+					// upgrades to LDK 0.0.114 or later before the HTLC is fully resolved, we could
+					// have a `Success(None)` reason. In this case we could forget some HTLC
+					// claims, but such an upgrade is unlikely and including claimed HTLCs here
+					// fixes a bug which the user was exposed to on 0.0.104 when they started the
+					// claim anyway.
+					claimed_htlcs.push((SentHTLCId::from_source(&htlc.source), preimage));
+				}
 				htlc.state = OutboundHTLCState::AwaitingRemoteRevokeToRemove(reason);
 				need_commitment = true;
 			}
 		}
+
+		self.latest_monitor_update_id += 1;
+		let mut monitor_update = ChannelMonitorUpdate {
+			update_id: self.latest_monitor_update_id,
+			updates: vec![ChannelMonitorUpdateStep::LatestHolderCommitmentTXInfo {
+				commitment_tx: holder_commitment_tx,
+				htlc_outputs: htlcs_and_sigs,
+				claimed_htlcs,
+			}]
+		};
 
 		self.cur_holder_commitment_transaction_number -= 1;
 		// Note that if we need_commitment & !AwaitingRemoteRevoke we'll call
