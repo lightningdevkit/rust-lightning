@@ -168,7 +168,7 @@ jobs:
           done
           # check no-std compatibility across dependencies
           cd no-std-check
-          cargo check --verbose --color always
+          cargo check --verbose --color always --features lightning-transaction-sync
       - name: Build no-std-check on Rust ${{ matrix.toolchain }} for ARM Embedded
         if: "matrix.build-no-std && matrix.platform == 'ubuntu-latest'"
         run: |
