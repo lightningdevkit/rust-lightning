@@ -30,6 +30,7 @@ use bitcoin::secp256k1::{SecretKey,PublicKey};
 use bitcoin::secp256k1::Secp256k1;
 use bitcoin::{LockTime, secp256k1, Sequence};
 
+use crate::blinded_path::BlindedPath;
 use crate::chain;
 use crate::chain::{Confirm, ChannelMonitorUpdateStatus, Watch, BestBlock};
 use crate::chain::chaininterface::{BroadcasterInterface, ConfirmationTarget, FeeEstimator, LowerBoundedFeeEstimator};
@@ -7130,6 +7131,11 @@ where
 	/// [`ChannelManager`] when handling [`InvoiceRequest`] messages for the offer. The offer will
 	/// not have an expiration unless otherwise set on the builder.
 	///
+	/// Uses a one-hop [`BlindedPath`] for the offer with [`ChannelManager::get_our_node_id`] as the
+	/// introduction node and a derived signing pubkey for recipient privacy. As such, currently,
+	/// the node must be announced. Otherwise, there is no way to find a path to the introduction
+	/// node in order to send the [`InvoiceRequest`].
+	///
 	/// [`Offer`]: crate::offers::offer::Offer
 	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 	pub fn create_offer_builder(
@@ -7139,10 +7145,11 @@ where
 		let expanded_key = &self.inbound_payment_key;
 		let entropy = &*self.entropy_source;
 		let secp_ctx = &self.secp_ctx;
+		let path = self.create_one_hop_blinded_path();
 
-		// TODO: Set blinded paths
 		OfferBuilder::deriving_signing_pubkey(description, node_id, expanded_key, entropy, secp_ctx)
 			.chain_hash(self.chain_hash)
+			.path(path)
 	}
 
 	/// Creates a [`RefundBuilder`] such that the [`Refund`] it builds is recognized by the
@@ -7151,6 +7158,11 @@ where
 	/// not be honored by [`ChannelManager`].
 	///
 	/// The provided `payment_id` is used to ensure that only one invoice is paid for the refund.
+	///
+	/// Uses a one-hop [`BlindedPath`] for the refund with [`ChannelManager::get_our_node_id`] as
+	/// the introduction node and a derived payer id for sender privacy. As such, currently, the
+	/// node must be announced. Otherwise, there is no way to find a path to the introduction node
+	/// in order to send the [`Bolt12Invoice`].
 	///
 	/// [`Refund`]: crate::offers::refund::Refund
 	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
@@ -7162,13 +7174,14 @@ where
 		let expanded_key = &self.inbound_payment_key;
 		let entropy = &*self.entropy_source;
 		let secp_ctx = &self.secp_ctx;
+		let path = self.create_one_hop_blinded_path();
 
-		// TODO: Set blinded paths
 		let builder = RefundBuilder::deriving_payer_id(
 			description, node_id, expanded_key, entropy, secp_ctx, amount_msats, payment_id
 		)?
 			.chain_hash(self.chain_hash)
-			.absolute_expiry(absolute_expiry);
+			.absolute_expiry(absolute_expiry)
+			.path(path);
 
 		self.pending_outbound_payments
 			.add_new_awaiting_invoice(
@@ -7277,6 +7290,14 @@ where
 	/// [`create_inbound_payment`]: Self::create_inbound_payment
 	pub fn get_payment_preimage(&self, payment_hash: PaymentHash, payment_secret: PaymentSecret) -> Result<PaymentPreimage, APIError> {
 		inbound_payment::get_payment_preimage(payment_hash, payment_secret, &self.inbound_payment_key)
+	}
+
+	/// Creates a one-hop blinded path with [`ChannelManager::get_our_node_id`] as the introduction
+	/// node.
+	fn create_one_hop_blinded_path(&self) -> BlindedPath {
+		let entropy_source = self.entropy_source.deref();
+		let secp_ctx = &self.secp_ctx;
+		BlindedPath::one_hop_for_message(self.get_our_node_id(), entropy_source, secp_ctx).unwrap()
 	}
 
 	/// Gets a fake short channel id for use in receiving [phantom node payments]. These fake scids
