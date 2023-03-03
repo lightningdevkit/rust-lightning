@@ -3683,14 +3683,14 @@ where
 	/// [`events::Event::PaymentClaimed`] events even for payments you intend to fail, especially on
 	/// startup during which time claims that were in-progress at shutdown may be replayed.
 	pub fn fail_htlc_backwards(&self, payment_hash: &PaymentHash) {
-		self.fail_htlc_backwards_with_reason(payment_hash, &FailureCode::IncorrectOrUnknownPaymentDetails);
+		self.fail_htlc_backwards_with_reason(payment_hash, FailureCode::IncorrectOrUnknownPaymentDetails);
 	}
 
 	/// This is a variant of [`ChannelManager::fail_htlc_backwards`] that allows you to specify the
 	/// reason for the failure.
 	///
 	/// See [`FailureCode`] for valid failure codes.
-	pub fn fail_htlc_backwards_with_reason(&self, payment_hash: &PaymentHash, failure_code: &FailureCode) {
+	pub fn fail_htlc_backwards_with_reason(&self, payment_hash: &PaymentHash, failure_code: FailureCode) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 
 		let removed_source = self.claimable_payments.lock().unwrap().claimable_htlcs.remove(payment_hash);
@@ -3705,14 +3705,14 @@ where
 	}
 
 	/// Gets error data to form an [`HTLCFailReason`] given a [`FailureCode`] and [`ClaimableHTLC`].
-	fn get_htlc_fail_reason_from_failure_code(&self, failure_code: &FailureCode, htlc: &ClaimableHTLC) -> HTLCFailReason {
+	fn get_htlc_fail_reason_from_failure_code(&self, failure_code: FailureCode, htlc: &ClaimableHTLC) -> HTLCFailReason {
 		match failure_code {
-			FailureCode::TemporaryNodeFailure => HTLCFailReason::from_failure_code(*failure_code as u16),
-			FailureCode::RequiredNodeFeatureMissing => HTLCFailReason::from_failure_code(*failure_code as u16),
+			FailureCode::TemporaryNodeFailure => HTLCFailReason::from_failure_code(failure_code as u16),
+			FailureCode::RequiredNodeFeatureMissing => HTLCFailReason::from_failure_code(failure_code as u16),
 			FailureCode::IncorrectOrUnknownPaymentDetails => {
 				let mut htlc_msat_height_data = htlc.value.to_be_bytes().to_vec();
 				htlc_msat_height_data.extend_from_slice(&self.best_block.read().unwrap().height().to_be_bytes());
-				HTLCFailReason::reason(*failure_code as u16, htlc_msat_height_data)
+				HTLCFailReason::reason(failure_code as u16, htlc_msat_height_data)
 			}
 		}
 	}
