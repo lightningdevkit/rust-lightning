@@ -45,6 +45,7 @@ impl<T> FairRwLock<T> {
 		self.lock.read()
 	}
 
+	#[allow(dead_code)]
 	pub fn try_write(&self) -> TryLockResult<RwLockWriteGuard<'_, T>> {
 		self.lock.try_write()
 	}

@@ -35,6 +35,9 @@ impl fmt::Display for RpcError {
 impl Error for RpcError {}
 
 /// A simple RPC client for calling methods using HTTP `POST`.
+///
+/// Implements [`BlockSource`] and may return an `Err` containing [`RpcError`]. See
+/// [`RpcClient::call_method`] for details.
 pub struct RpcClient {
 	basic_auth: String,
 	endpoint: HttpEndpoint,
@@ -57,6 +60,9 @@ impl RpcClient {
 	}
 
 	/// Calls a method with the response encoded in JSON format and interpreted as type `T`.
+	///
+	/// When an `Err` is returned, [`std::io::Error::into_inner`] may contain an [`RpcError`] if
+	/// [`std::io::Error::kind`] is [`std::io::ErrorKind::Other`].
 	pub async fn call_method<T>(&self, method: &str, params: &[serde_json::Value]) -> std::io::Result<T>
 	where JsonResponse: TryFrom<Vec<u8>, Error = std::io::Error> + TryInto<T, Error = std::io::Error> {
 		let host = format!("{}:{}", self.endpoint.host(), self.endpoint.port());

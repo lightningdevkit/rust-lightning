@@ -42,7 +42,7 @@ impl<NG: Deref<Target=NetworkGraph<L>>, L: Deref> RapidGossipSync<NG, L> where L
 		&self,
 		read_cursor: &mut R,
 	) -> Result<u32, GraphSyncError> {
-		#[allow(unused_mut)]
+		#[allow(unused_mut, unused_assignments)]
 		let mut current_time_unix = None;
 		#[cfg(all(feature = "std", not(test)))]
 		{

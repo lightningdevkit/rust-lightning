@@ -33,7 +33,9 @@ use lightning::routing::gossip::{NetworkGraph, P2PGossipSync};
 use lightning::routing::utxo::UtxoLookup;
 use lightning::routing::router::Router;
 use lightning::routing::scoring::{Score, WriteableScore};
-use lightning::util::events::{Event, EventHandler, EventsProvider, PathFailure};
+use lightning::util::events::{Event, PathFailure};
+#[cfg(feature = "std")]
+use lightning::util::events::{EventHandler, EventsProvider};
 use lightning::util::logger::Logger;
 use lightning::util::persist::Persister;
 use lightning_rapid_gossip_sync::RapidGossipSync;
