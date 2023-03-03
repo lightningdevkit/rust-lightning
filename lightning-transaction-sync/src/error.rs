@@ -22,7 +22,7 @@ impl fmt::Display for TxSyncError {
 pub(crate) enum InternalError {
 	/// A transaction sync failed and needs to be retried eventually.
 	Failed,
-	/// An inconsisteny was encounterd during transaction sync.
+	/// An inconsistency was encountered during transaction sync.
 	Inconsistency,
 }
 
@@ -32,7 +32,7 @@ impl fmt::Display for InternalError {
 		match *self {
 			Self::Failed => write!(f, "Failed to conduct transaction sync."),
 			Self::Inconsistency => {
-				write!(f, "Encountered an inconsisteny during transaction sync.")
+				write!(f, "Encountered an inconsistency during transaction sync.")
 			}
 		}
 	}
