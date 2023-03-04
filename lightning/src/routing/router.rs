@@ -1296,8 +1296,7 @@ where L::Target: Logger {
 					// around again with a higher amount.
 					if !contributes_sufficient_value || exceeds_max_path_length ||
 						exceeds_cltv_delta_limit || payment_failed_on_this_channel {
-						 
-						let logger_test = crate::util::test_utils::TestLogger::new();
+
 						let mut is_first_hop = true;
 						for (key , _channel) in &first_hop_targets {
 							if key == &$dest_node_id {
