@@ -129,7 +129,7 @@ impl LockMetadata {
 			// For each lock which is currently locked, check that no lock's locked-before
 			// set includes the lock we're about to lock, which would imply a lockorder
 			// inversion.
-			for (locked_idx, locked) in held.borrow().iter() {
+			for (locked_idx, _locked) in held.borrow().iter() {
 				if *locked_idx == this.lock_idx {
 					// Note that with `feature = "backtrace"` set, we may be looking at different
 					// instances of the same lock. Still, doing so is quite risky, a total order
@@ -143,7 +143,7 @@ impl LockMetadata {
 					panic!("Tried to acquire a lock while it was held!");
 				}
 			}
-			for (locked_idx, locked) in held.borrow().iter() {
+			for (_locked_idx, locked) in held.borrow().iter() {
 				for (locked_dep_idx, _locked_dep) in locked.locked_before.lock().unwrap().iter() {
 					if *locked_dep_idx == this.lock_idx && *locked_dep_idx != locked.lock_idx {
 						#[cfg(feature = "backtrace")]
@@ -200,6 +200,11 @@ impl LockMetadata {
 pub struct Mutex<T: Sized> {
 	inner: StdMutex<T>,
 	deps: Arc<LockMetadata>,
+}
+impl<T: Sized> Mutex<T> {
+	pub(crate) fn into_inner(self) -> LockResult<T> {
+		self.inner.into_inner().map_err(|_| ())
+	}
 }
 
 #[must_use = "if unused the Mutex will immediately unlock"]

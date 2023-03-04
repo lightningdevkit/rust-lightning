@@ -21,6 +21,8 @@ use core::ops::{Bound, RangeBounds};
 /// actually backed by a [`HashMap`], with some additional tracking to ensure we can iterate over
 /// keys in the order defined by [`Ord`].
 ///
+/// (C-not exported) as bindings provide alternate accessors rather than exposing maps directly.
+///
 /// [`BTreeMap`]: alloc::collections::BTreeMap
 #[derive(Clone, Debug, Eq)]
 pub struct IndexedMap<K: Hash + Ord, V> {
@@ -147,6 +149,8 @@ impl<K: Hash + Ord + PartialEq, V: PartialEq> PartialEq for IndexedMap<K, V> {
 }
 
 /// An iterator over a range of values in an [`IndexedMap`]
+///
+/// (C-not exported) as bindings provide alternate accessors rather than exposing maps directly.
 pub struct Range<'a, K: Hash + Ord, V> {
 	inner_range: Iter<'a, K>,
 	map: &'a HashMap<K, V>,
@@ -161,6 +165,8 @@ impl<'a, K: Hash + Ord, V: 'a> Iterator for Range<'a, K, V> {
 }
 
 /// An [`Entry`] for a key which currently has no value
+///
+/// (C-not exported) as bindings provide alternate accessors rather than exposing maps directly.
 pub struct VacantEntry<'a, K: Hash + Ord, V> {
 	#[cfg(feature = "hashbrown")]
 	underlying_entry: hash_map::VacantEntry<'a, K, V, hash_map::DefaultHashBuilder>,
@@ -171,6 +177,8 @@ pub struct VacantEntry<'a, K: Hash + Ord, V> {
 }
 
 /// An [`Entry`] for an existing key-value pair
+///
+/// (C-not exported) as bindings provide alternate accessors rather than exposing maps directly.
 pub struct OccupiedEntry<'a, K: Hash + Ord, V> {
 	#[cfg(feature = "hashbrown")]
 	underlying_entry: hash_map::OccupiedEntry<'a, K, V, hash_map::DefaultHashBuilder>,
@@ -181,6 +189,8 @@ pub struct OccupiedEntry<'a, K: Hash + Ord, V> {
 
 /// A mutable reference to a position in the map. This can be used to reference, add, or update the
 /// value at a fixed key.
+///
+/// (C-not exported) as bindings provide alternate accessors rather than exposing maps directly.
 pub enum Entry<'a, K: Hash + Ord, V> {
 	/// A mutable reference to a position within the map where there is no value.
 	Vacant(VacantEntry<'a, K, V>),

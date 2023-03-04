@@ -242,6 +242,13 @@ fn test_routed_scid_alias() {
 	check_added_monitors!(nodes[0], 1);
 
 	pass_along_route(&nodes[0], &[&[&nodes[1], &nodes[2]]], 100_000, payment_hash, payment_secret);
+
+	as_channel_ready.short_channel_id_alias = Some(0xeadbeef);
+	nodes[2].node.handle_channel_ready(&nodes[1].node.get_our_node_id(), &as_channel_ready);
+	// Note that we always respond to a channel_ready with a channel_update. Not a lot of reason
+	// to bother updating that code, so just drop the message here.
+	get_event_msg!(nodes[2], MessageSendEvent::SendChannelUpdate, nodes[1].node.get_our_node_id());
+
 	claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_preimage);
 
 	// Now test that if a peer sends us a second channel_ready after the channel is operational we

@@ -276,7 +276,11 @@ pub(crate) struct PaymentAttemptsUsingTime<T: Time> {
 	/// it means the result of the first attempt is not known yet.
 	pub(crate) count: usize,
 	/// This field is only used when retry is `Retry::Timeout` which is only build with feature std
-	first_attempted_at: T
+	#[cfg(not(feature = "no-std"))]
+	first_attempted_at: T,
+	#[cfg(feature = "no-std")]
+	phantom: core::marker::PhantomData<T>,
+
 }
 
 #[cfg(not(any(feature = "no-std", test)))]
@@ -290,7 +294,10 @@ impl<T: Time> PaymentAttemptsUsingTime<T> {
 	pub(crate) fn new() -> Self {
 		PaymentAttemptsUsingTime {
 			count: 0,
-			first_attempted_at: T::now()
+			#[cfg(not(feature = "no-std"))]
+			first_attempted_at: T::now(),
+			#[cfg(feature = "no-std")]
+			phantom: core::marker::PhantomData,
 		}
 	}
 }

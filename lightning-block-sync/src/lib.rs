@@ -132,6 +132,9 @@ impl BlockSourceError {
 	}
 
 	/// Converts the error into the underlying error.
+	///
+	/// May contain an [`std::io::Error`] from the [`BlockSource`]. See implementations for further
+	/// details, if any.
 	pub fn into_inner(self) -> Box<dyn std::error::Error + Send + Sync> {
 		self.error
 	}

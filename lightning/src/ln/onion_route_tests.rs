@@ -848,7 +848,7 @@ fn do_test_fail_htlc_backwards_with_reason(failure_code: FailureCode) {
 
 	expect_pending_htlcs_forwardable!(nodes[1]);
 	expect_payment_claimable!(nodes[1], payment_hash, payment_secret, payment_amount);
-	nodes[1].node.fail_htlc_backwards_with_reason(&payment_hash, &failure_code);
+	nodes[1].node.fail_htlc_backwards_with_reason(&payment_hash, failure_code);
 
 	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[1], vec![HTLCDestination::FailedPayment { payment_hash: payment_hash }]);
 	check_added_monitors!(nodes[1], 1);
