@@ -1,3 +1,117 @@
+# 0.0.114 - Mar 3, 2023 - "Faster Async BOLT12 Retries"
+
+## API Updates
+ * `InvoicePayer` has been removed and its features moved directly into
+   `ChannelManager`. As such it now requires a simplified `Router` and supports
+   `send_payment_with_retry` (and friends). `ChannelManager::retry_payment` was
+   removed in favor of the automated retries. Invoice payment utilities in
+   `lightning-invoice` now call the new code (#1812, #1916, #1929, #2007, etc).
+ * `Sign`/`BaseSign` has been renamed `ChannelSigner`, with `EcdsaChannelSigner`
+   split out in anticipation of future schnorr/taproot support (#1967).
+ * The catch-all `KeysInterface` was split into `EntropySource`, `NodeSigner`,
+   and `SignerProvider`. `KeysManager` implements all three (#1910, #1930).
+ * `KeysInterface::get_node_secret` is now `KeysManager::get_node_secret_key`
+   and is no longer required for external signers (#1951, #2070).
+ * A `lightning-transaction-sync` crate has been added which implements keeping
+   LDK in sync with the chain via an esplora server (#1870). Note that it can
+   only be used on nodes that *never* ran a previous version of LDK.
+ * `Score` is updated in `BackgroundProcessor` instead of via `Router` (#1996).
+ * `ChainAccess::get_utxo` (now `UtxoAccess`) can now be resolved async (#1980).
+ * BOLT12 `Offer`, `InvoiceRequest`, `Invoice` and `Refund` structs as well as
+   associated builders have been added. Such invoices cannot yet be paid due to
+   missing support for blinded path payments (#1927, #1908, #1926).
+ * A `lightning-custom-message` crate has been added to make combining multiple
+   custom messages into one enum/handler easier (#1832).
+ * `Event::PaymentPathFailure` is now generated for failure to send an HTLC
+   over the first hop on our local channel (#2014, #2043).
+ * `lightning-net-tokio` no longer requires an `Arc` on `PeerManager` (#1968).
+ * `ChannelManager::list_recent_payments` was added (#1873).
+ * `lightning-background-processor` `std` is now optional in async mode (#1962).
+ * `create_phantom_invoice` can now be used in `no-std` (#1985).
+ * The required final CLTV delta on inbound payments is now configurable (#1878)
+ * bitcoind RPC error code and message are now surfaced in `block-sync` (#2057).
+ * Get `historical_estimated_channel_liquidity_probabilities` was added (#1961).
+ * `ChannelManager::fail_htlc_backwards_with_reason` was added (#1948).
+ * Macros which implement serialization using TLVs or straight writing of struct
+   fields are now public (#1823, #1976, #1977).
+
+## Backwards Compatibility
+ * Any inbound payments with a custom final CLTV delta will be rejected by LDK
+   if you downgrade prior to receipt (#1878).
+ * `Event::PaymentPathFailed::network_update` will always be `None` if an
+   0.0.114-generated event is read by a prior version of LDK (#2043).
+ * `Event::PaymentPathFailed::all_paths_removed` will always be false if an
+   0.0.114-generated event is read by a prior version of LDK. Users who rely on
+   it to determine payment retries should migrate to `Event::PaymentFailed`, in
+   a separate release prior to upgrading to LDK 0.0.114 if downgrading is
+   supported (#2043).
+
+## Performance Improvements
+ * Channel data is now stored per-peer and channel updates across multiple
+   peers can be operated on simultaneously (#1507).
+ * Routefinding is roughly 1.5x faster (#1799).
+ * Deserializing a `NetworkGraph` is roughly 6x faster (#2016).
+ * Memory usage for a `NetworkGraph` has been reduced substantially (#2040).
+ * `KeysInterface::get_secure_random_bytes` is roughly 200x faster (#1974).
+
+## Bug Fixes
+ * Fixed a bug where a delay in processing a `PaymentSent` event longer than the
+   time taken to persist a `ChannelMonitor` update, when occurring immediately
+   prior to a crash, may result in the `PaymentSent` event being lost (#2048).
+ * Fixed spurious rejections of rapid gossip sync data when the graph has been
+   updated by other means between gossip syncs (#2046).
+ * Fixed a panic in `KeysManager` when the high bit of `starting_time_nanos`
+   is set (#1935).
+ * Resolved an issue where the `ChannelManager::get_persistable_update_future`
+   future would fail to wake until a second notification occurs (#2064).
+ * Resolved a memory leak when using `ChannelManager::send_probe` (#2037).
+ * Fixed a deadlock on some platforms at least when using async `ChannelMonitor`
+   updating (#2006).
+ * Removed debug-only assertions which were reachable in threaded code (#1964).
+ * In some cases when payment sending fails on our local channel retries no
+   longer take the same path and thus never succeed (#2014).
+ * Retries for spontaneous payments have been fixed (#2002).
+ * Return an `Err` if `lightning-persister` fails to read the directory listing
+   rather than panicing (#1943).
+ * `peer_disconnected` will now never be called without `peer_connected` (#2035)
+
+## Security
+0.0.114 fixes several denial-of-service vulnerabilities which are reachable from
+untrusted input from channel counterparties or in deployments accepting inbound
+connections or channels. It also fixes a denial-of-service vulnerability in rare
+cases in the route finding logic.
+ * The number of pending un-funded channels as well as peers without funded
+   channels is now limited to avoid denial of service (#1988).
+ * A second `channel_ready` message received immediately after the first could
+   lead to a spurious panic (#2071). This issue was introduced with 0conf
+   support in LDK 0.0.107.
+ * A division-by-zero issue was fixed in the `ProbabilisticScorer` if the amount
+   being sent (including previous-hop fees) is equal to a channel's capacity
+   while walking the graph (#2072). The division-by-zero was introduced with
+   historical data tracking in LDK 0.0.112.
+
+In total, this release features 130 files changed, 21457 insertions, 10113
+deletions in 343 commits from 18 authors, in alphabetical order:
+ * Alec Chen
+ * Allan Douglas R. de Oliveira
+ * Andrei
+ * Arik Sosman
+ * Daniel Granhão
+ * Duncan Dean
+ * Elias Rohrer
+ * Jeffrey Czyz
+ * John Cantrell
+ * Kurtsley
+ * Matt Corallo
+ * Max Fang
+ * Omer Yacine
+ * Valentine Wallace
+ * Viktor Tigerström
+ * Wilmer Paulino
+ * benthecarman
+ * jurvis
+
+
 # 0.0.113 - Dec 16, 2022 - "Big Movement Intercepted"
 
 ## API Updates
