@@ -506,7 +506,7 @@ fn test_scid_alias_returned() {
 		fee_proportional_millionths: last_hop[0].counterparty.forwarding_info.as_ref().unwrap().fee_proportional_millionths,
 		excess_data: Vec::new(),
 	};
-	let signature = nodes[1].keys_manager.sign_gossip_message(msgs::UnsignedGossipMessage::ChannelUpdate(&contents)).unwrap();
+	let signature = nodes[1].keys_manager.sign_gossip_message(msgs::UnsignedGossipMessage::ChannelUpdate(contents.clone())).unwrap();
 	let msg = msgs::ChannelUpdate { signature, contents };
 
 	let mut err_data = Vec::new();
