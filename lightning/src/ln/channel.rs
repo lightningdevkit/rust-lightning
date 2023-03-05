@@ -4941,7 +4941,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 				return None;
 			}
 		};
-		let our_node_sig = match node_signer.sign_gossip_message(msgs::UnsignedGossipMessage::ChannelAnnouncement(&announcement)) {
+		let our_node_sig = match node_signer.sign_gossip_message(msgs::UnsignedGossipMessage::ChannelAnnouncement(announcement.clone())) {
 			Err(_) => {
 				log_error!(logger, "Failed to generate node signature for channel_announcement. Channel will not be announced!");
 				return None;
@@ -4980,7 +4980,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 				.map_err(|_| ChannelError::Ignore("Signer failed to retrieve own public key".to_owned()))?);
 			let were_node_one = announcement.node_id_1 == our_node_key;
 
-			let our_node_sig = node_signer.sign_gossip_message(msgs::UnsignedGossipMessage::ChannelAnnouncement(&announcement))
+			let our_node_sig = node_signer.sign_gossip_message(msgs::UnsignedGossipMessage::ChannelAnnouncement(announcement.clone()))
 				.map_err(|_| ChannelError::Ignore("Failed to generate node signature for channel_announcement".to_owned()))?;
 			let our_bitcoin_sig = self.context.holder_signer.sign_channel_announcement_with_funding_key(&announcement, &self.context.secp_ctx)
 				.map_err(|_| ChannelError::Ignore("Signer rejected channel_announcement".to_owned()))?;

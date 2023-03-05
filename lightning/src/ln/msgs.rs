@@ -901,16 +901,17 @@ impl Readable for NetAddress {
 }
 
 /// Represents the set of gossip messages that require a signature from a node's identity key.
-pub enum UnsignedGossipMessage<'a> {
+#[derive(Clone)]
+pub enum UnsignedGossipMessage {
 	/// An unsigned channel announcement.
-	ChannelAnnouncement(&'a UnsignedChannelAnnouncement),
+	ChannelAnnouncement(UnsignedChannelAnnouncement),
 	/// An unsigned channel update.
-	ChannelUpdate(&'a UnsignedChannelUpdate),
+	ChannelUpdate(UnsignedChannelUpdate),
 	/// An unsigned node announcement.
-	NodeAnnouncement(&'a UnsignedNodeAnnouncement)
+	NodeAnnouncement(UnsignedNodeAnnouncement)
 }
 
-impl<'a> Writeable for UnsignedGossipMessage<'a> {
+impl Writeable for UnsignedGossipMessage {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		match self {
 			UnsignedGossipMessage::ChannelAnnouncement(ref msg) => msg.write(writer),
