@@ -2450,7 +2450,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 			excess_data: Vec::new(),
 		};
 		let node_announce_sig = match self.node_signer.sign_gossip_message(
-			msgs::UnsignedGossipMessage::NodeAnnouncement(&announcement)
+			msgs::UnsignedGossipMessage::NodeAnnouncement(announcement.clone())
 		) {
 			Ok(sig) => sig,
 			Err(_) => {
