@@ -76,7 +76,7 @@ use core::time::Duration;
 use core::ops::Deref;
 
 // Re-export this for use in the public API.
-pub use crate::ln::outbound_payment::{PaymentSendFailure, Retry, RetryableSendFailure};
+use crate::ln::outbound_payment::{PaymentSendFailure, Retry, RetryableSendFailure};
 
 // We hold various information about HTLC relay in the HTLC objects in Channel itself:
 //
@@ -2432,7 +2432,7 @@ where
 		// If we returned an error and the `node_signer` cannot provide a signature for whatever
 		// reason`, we wouldn't be able to receive inbound payments through the corresponding
 		// channel.
-		let sig = self.node_signer.sign_gossip_message(msgs::UnsignedGossipMessage::ChannelUpdate(&unsigned)).unwrap();
+		let sig = self.node_signer.sign_gossip_message(msgs::UnsignedGossipMessage::ChannelUpdate(unsigned.clone())).unwrap();
 
 		Ok(msgs::ChannelUpdate {
 			signature: sig,

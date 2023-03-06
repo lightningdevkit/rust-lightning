@@ -168,6 +168,8 @@ impl InFlightHtlcs {
 	pub fn new() -> Self { InFlightHtlcs(HashMap::new()) }
 
 	/// Takes in a path with payer's node id and adds the path's details to `InFlightHtlcs`.
+	///
+	/// (C-not exported) as slices require memory layouts we cannot capture in bindings
 	pub fn process_path(&mut self, path: &[RouteHop], payer_node_id: PublicKey) {
 		if path.is_empty() { return };
 		// total_inflight_map needs to be direction-sensitive when keeping track of the HTLC value
