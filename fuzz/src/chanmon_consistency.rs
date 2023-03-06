@@ -259,7 +259,7 @@ impl SignerProvider for KeyProvider {
 		})
 	}
 
-	fn get_destination_script(&self) -> Script {
+	fn get_destination_script(&self, _channel_keys_id : [u8; 32]) -> Script {
 		let secp_ctx = Secp256k1::signing_only();
 		let channel_monitor_claim_key = SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, self.node_secret[31]]).unwrap();
 		let our_channel_monitor_claim_key_hash = WPubkeyHash::hash(&PublicKey::from_secret_key(&secp_ctx, &channel_monitor_claim_key).serialize());

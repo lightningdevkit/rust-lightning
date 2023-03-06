@@ -180,7 +180,7 @@ impl SignerProvider for OnlyReadsKeysInterface {
 		))
 	}
 
-	fn get_destination_script(&self) -> Script { unreachable!(); }
+	fn get_destination_script(&self, _channel_keys_id: [u8; 32]) -> Script { unreachable!(); }
 	fn get_shutdown_scriptpubkey(&self) -> ShutdownScript { unreachable!(); }
 }
 
@@ -809,7 +809,7 @@ impl SignerProvider for TestKeysInterface {
 		))
 	}
 
-	fn get_destination_script(&self) -> Script { self.backing.get_destination_script() }
+	fn get_destination_script(&self, channel_keys_id: [u8; 32]) -> Script { self.backing.get_destination_script(channel_keys_id) }
 
 	fn get_shutdown_scriptpubkey(&self) -> ShutdownScript {
 		match &mut *self.expectations.lock().unwrap() {
