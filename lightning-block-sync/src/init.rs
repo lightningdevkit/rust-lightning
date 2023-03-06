@@ -181,7 +181,7 @@ pub async fn synchronize_listeners<B: Deref + Sized + Send + Sync, C: Cache, L: 
 		let chain_listener = &ChainListenerSet(chain_listeners_at_height);
 		let mut chain_notifier = ChainNotifier { header_cache, chain_listener };
 		chain_notifier.connect_blocks(common_ancestor, most_connected_blocks, &mut chain_poller)
-			.await.or_else(|(e, _)| Err(e))?;
+			.await.map_err(|(e, _)| e)?;
 	}
 
 	Ok(best_header)

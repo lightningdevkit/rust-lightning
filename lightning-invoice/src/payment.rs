@@ -144,11 +144,11 @@ fn pay_invoice_using_amount<P: Deref>(
 	invoice: &Invoice, amount_msats: u64, payment_id: PaymentId, retry_strategy: Retry,
 	payer: P
 ) -> Result<(), PaymentError> where P::Target: Payer {
-	let payment_hash = PaymentHash(invoice.payment_hash().clone().into_inner());
-	let payment_secret = Some(invoice.payment_secret().clone());
+	let payment_hash = PaymentHash((*invoice.payment_hash()).into_inner());
+	let payment_secret = Some(*invoice.payment_secret());
 	let mut payment_params = PaymentParameters::from_node_id(invoice.recover_payee_pub_key(),
 		invoice.min_final_cltv_expiry_delta() as u32)
-		.with_expiry_time(expiry_time_from_unix_epoch(&invoice).as_secs())
+		.with_expiry_time(expiry_time_from_unix_epoch(invoice).as_secs())
 		.with_route_hints(invoice.route_hints());
 	if let Some(features) = invoice.features() {
 		payment_params = payment_params.with_features(features.clone());
@@ -203,7 +203,7 @@ where
 		payment_id: PaymentId, route_params: RouteParameters, retry_strategy: Retry
 	) -> Result<(), PaymentError> {
 		self.send_payment_with_retry(payment_hash, payment_secret, payment_id, route_params, retry_strategy)
-			.map_err(|e| PaymentError::Sending(e))
+			.map_err(PaymentError::Sending)
 	}
 }
 
@@ -344,7 +344,7 @@ mod tests {
 		let invoice = invoice(payment_preimage);
 		let amt_msat = 10_000;
 
-		match pay_zero_value_invoice(&invoice, amt_msat, Retry::Attempts(0), &nodes[0].node) {
+		match pay_zero_value_invoice(&invoice, amt_msat, Retry::Attempts(0), nodes[0].node) {
 			Err(PaymentError::Invoice("amount unexpected")) => {},
 			_ => panic!()
 		}

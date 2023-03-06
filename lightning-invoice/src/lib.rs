@@ -585,13 +585,13 @@ impl<D: tb::Bool, H: tb::Bool, C: tb::Bool, S: tb::Bool> InvoiceBuilder<D, H, tb
 		}).collect::<Vec<_>>();
 
 		let data = RawDataPart {
-			timestamp: timestamp,
-			tagged_fields: tagged_fields,
+			timestamp,
+			tagged_fields,
 		};
 
 		Ok(RawInvoice {
-			hrp: hrp,
-			data: data,
+			hrp,
+			data,
 		})
 	}
 }
@@ -781,7 +781,7 @@ impl SignedRawInvoice {
 			recovered_pub_key = Some(recovered);
 		}
 
-		let pub_key = included_pub_key.or_else(|| recovered_pub_key.as_ref())
+		let pub_key = included_pub_key.or(recovered_pub_key.as_ref())
 			.expect("One is always present");
 
 		let hash = Message::from_slice(&self.hash[..])
@@ -1014,9 +1014,9 @@ impl PositiveTimestamp {
 }
 
 #[cfg(feature = "std")]
-impl Into<SystemTime> for PositiveTimestamp {
-	fn into(self) -> SystemTime {
-		SystemTime::UNIX_EPOCH + self.0
+impl From<PositiveTimestamp> for SystemTime {
+	fn from(val: PositiveTimestamp) -> Self {
+		SystemTime::UNIX_EPOCH + val.0
 	}
 }
 
@@ -1147,7 +1147,7 @@ impl Invoice {
 	/// ```
 	pub fn from_signed(signed_invoice: SignedRawInvoice) -> Result<Self, SemanticError> {
 		let invoice = Invoice {
-			signed_invoice: signed_invoice,
+			signed_invoice,
 		};
 		invoice.check_field_counts()?;
 		invoice.check_feature_bits()?;
@@ -1185,9 +1185,9 @@ impl Invoice {
 	///
 	/// (C-not exported) because we don't yet export InvoiceDescription
 	pub fn description(&self) -> InvoiceDescription {
-		if let Some(ref direct) = self.signed_invoice.description() {
+		if let Some(direct) = self.signed_invoice.description() {
 			return InvoiceDescription::Direct(direct);
-		} else if let Some(ref hash) = self.signed_invoice.description_hash() {
+		} else if let Some(hash) = self.signed_invoice.description_hash() {
 			return InvoiceDescription::Hash(hash);
 		}
 		unreachable!("ensured by constructor");
@@ -1332,9 +1332,9 @@ impl Description {
 	}
 }
 
-impl Into<String> for Description {
-	fn into(self) -> String {
-		self.into_inner()
+impl From<Description> for String {
+	fn from(val: Description) -> Self {
+		val.into_inner()
 	}
 }
 
@@ -1398,9 +1398,9 @@ impl PrivateRoute {
 	}
 }
 
-impl Into<RouteHint> for PrivateRoute {
-	fn into(self) -> RouteHint {
-		self.into_inner()
+impl From<PrivateRoute> for RouteHint {
+	fn from(val: PrivateRoute) -> Self {
+		val.into_inner()
 	}
 }
 
@@ -1766,7 +1766,7 @@ mod test {
 
 		// Multiple payment secrets
 		let invoice = {
-			let mut invoice = invoice_template.clone();
+			let mut invoice = invoice_template;
 			invoice.data.tagged_fields.push(PaymentSecret(payment_secret).into());
 			invoice.data.tagged_fields.push(PaymentSecret(payment_secret).into());
 			invoice.sign::<_, ()>(|hash| Ok(Secp256k1::new().sign_ecdsa_recoverable(hash, &private_key)))
@@ -1792,7 +1792,7 @@ mod test {
 		assert_eq!(invoice.hrp.raw_amount, Some(15));
 
 
-		let invoice = builder.clone()
+		let invoice = builder
 			.amount_milli_satoshis(150)
 			.build_raw()
 			.unwrap();
@@ -1846,7 +1846,7 @@ mod test {
 			.build_raw();
 		assert_eq!(long_route_res, Err(CreationError::RouteTooLong));
 
-		let sign_error_res = builder.clone()
+		let sign_error_res = builder
 			.description("Test".into())
 			.payment_secret(PaymentSecret([0; 32]))
 			.try_build_signed(|_| {
@@ -1876,7 +1876,7 @@ mod test {
 
 		let route_1 = RouteHint(vec![
 			RouteHintHop {
-				src_node_id: public_key.clone(),
+				src_node_id: public_key,
 				short_channel_id: de::parse_int_be(&[123; 8], 256).expect("short chan ID slice too big?"),
 				fees: RoutingFees {
 					base_msat: 2,
@@ -1887,7 +1887,7 @@ mod test {
 				htlc_maximum_msat: None,
 			},
 			RouteHintHop {
-				src_node_id: public_key.clone(),
+				src_node_id: public_key,
 				short_channel_id: de::parse_int_be(&[42; 8], 256).expect("short chan ID slice too big?"),
 				fees: RoutingFees {
 					base_msat: 3,
@@ -1901,7 +1901,7 @@ mod test {
 
 		let route_2 = RouteHint(vec![
 			RouteHintHop {
-				src_node_id: public_key.clone(),
+				src_node_id: public_key,
 				short_channel_id: 0,
 				fees: RoutingFees {
 					base_msat: 4,
@@ -1912,7 +1912,7 @@ mod test {
 				htlc_maximum_msat: None,
 			},
 			RouteHintHop {
-				src_node_id: public_key.clone(),
+				src_node_id: public_key,
 				short_channel_id: de::parse_int_be(&[1; 8], 256).expect("short chan ID slice too big?"),
 				fees: RoutingFees {
 					base_msat: 5,
@@ -1927,7 +1927,7 @@ mod test {
 		let builder = InvoiceBuilder::new(Currency::BitcoinTestnet)
 			.amount_milli_satoshis(123)
 			.duration_since_epoch(Duration::from_secs(1234567))
-			.payee_pub_key(public_key.clone())
+			.payee_pub_key(public_key)
 			.expiry_time(Duration::from_secs(54321))
 			.min_final_cltv_expiry_delta(144)
 			.fallback(Fallback::PubKeyHash([0;20]))
