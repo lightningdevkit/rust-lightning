@@ -837,7 +837,7 @@ fn do_test_closing_signed_reinit_timeout(timeout_step: TimeoutStep) {
 		{
 			let mut node_0_per_peer_lock;
 			let mut node_0_peer_state_lock;
-			get_channel_ref!(nodes[0], nodes[1], node_0_per_peer_lock, node_0_peer_state_lock, chan_id).closing_fee_limits.as_mut().unwrap().1 *= 10;
+			get_channel_ref!(nodes[0], nodes[1], node_0_per_peer_lock, node_0_peer_state_lock, chan_id).context.closing_fee_limits.as_mut().unwrap().1 *= 10;
 		}
 		nodes[1].node.handle_closing_signed(&nodes[0].node.get_our_node_id(), &node_0_closing_signed);
 		let node_1_closing_signed = get_event_msg!(nodes[1], MessageSendEvent::SendClosingSigned, nodes[0].node.get_our_node_id());

@@ -5623,7 +5623,7 @@ where
 							});
 						}
 					}
-					let need_lnd_workaround = chan.get_mut().workaround_lnd_bug_4006.take();
+					let need_lnd_workaround = chan.get_mut().context.workaround_lnd_bug_4006.take();
 					htlc_forwards = self.handle_channel_resumption(
 						&mut peer_state.pending_msg_events, chan.get_mut(), responses.raa, responses.commitment_update, responses.order,
 						Vec::new(), None, responses.channel_ready, responses.announcement_sigs);
