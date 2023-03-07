@@ -2686,10 +2686,45 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		}
 		balance_msat -= outbound_stats.pending_htlcs_value_msat;
 
-		let outbound_capacity_msat = cmp::max(self.value_to_self_msat as i64
-				- outbound_stats.pending_htlcs_value_msat as i64
-				- self.counterparty_selected_channel_reserve_satoshis.unwrap_or(0) as i64 * 1000,
-			0) as u64;
+		let outbound_capacity_msat = self.value_to_self_msat
+				.saturating_sub(outbound_stats.pending_htlcs_value_msat)
+				.saturating_sub(
+					self.counterparty_selected_channel_reserve_satoshis.unwrap_or(0) * 1000);
+
+		let mut available_capacity_msat = outbound_capacity_msat;
+
+		if self.is_outbound() {
+			// We should mind channel commit tx fee when computing how much of the available capacity
+			// can be used in the next htlc. Mirrors the logic in send_htlc.
+			//
+			// The fee depends on whether the amount we will be sending is above dust or not,
+			// and the answer will in turn change the amount itself — making it a circular
+			// dependency.
+			// This complicates the computation around dust-values, up to the one-htlc-value.
+			let mut real_dust_limit_timeout_sat = self.holder_dust_limit_satoshis;
+			if !self.opt_anchors() {
+				real_dust_limit_timeout_sat += self.feerate_per_kw as u64 * htlc_timeout_tx_weight(false) / 1000;
+			}
+
+			let htlc_above_dust = HTLCCandidate::new(real_dust_limit_timeout_sat * 1000, HTLCInitiator::LocalOffered);
+			let max_reserved_commit_tx_fee_msat = FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE * self.next_local_commit_tx_fee_msat(htlc_above_dust, Some(()));
+			let htlc_dust = HTLCCandidate::new(real_dust_limit_timeout_sat * 1000 - 1, HTLCInitiator::LocalOffered);
+			let min_reserved_commit_tx_fee_msat = FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE * self.next_local_commit_tx_fee_msat(htlc_dust, Some(()));
+
+			// We will first subtract the fee as if we were above-dust. Then, if the resulting
+			// value ends up being below dust, we have this fee available again. In that case,
+			// match the value to right-below-dust.
+			let mut capacity_minus_commitment_fee_msat: i64 = (available_capacity_msat as i64) - (max_reserved_commit_tx_fee_msat as i64);
+			if capacity_minus_commitment_fee_msat < (real_dust_limit_timeout_sat as i64) * 1000 {
+				let one_htlc_difference_msat = max_reserved_commit_tx_fee_msat - min_reserved_commit_tx_fee_msat;
+				debug_assert!(one_htlc_difference_msat != 0);
+				capacity_minus_commitment_fee_msat += one_htlc_difference_msat as i64;
+				capacity_minus_commitment_fee_msat = cmp::min(real_dust_limit_timeout_sat as i64 * 1000 - 1, capacity_minus_commitment_fee_msat);
+				available_capacity_msat = cmp::max(0, cmp::min(capacity_minus_commitment_fee_msat, available_capacity_msat as i64)) as u64;
+			} else {
+				available_capacity_msat = capacity_minus_commitment_fee_msat as u64;
+			}
+		}
 		AvailableBalances {
 			inbound_capacity_msat: cmp::max(self.channel_value_satoshis as i64 * 1000
 					- self.value_to_self_msat as i64
@@ -2697,7 +2732,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 					- self.holder_selected_channel_reserve_satoshis as i64 * 1000,
 				0) as u64,
 			outbound_capacity_msat,
-			next_outbound_htlc_limit_msat: cmp::max(cmp::min(outbound_capacity_msat as i64,
+			next_outbound_htlc_limit_msat: cmp::max(cmp::min(available_capacity_msat as i64,
 					self.counterparty_max_htlc_value_in_flight_msat as i64
 						- outbound_stats.pending_htlcs_value_msat as i64),
 				0) as u64,
@@ -5896,6 +5931,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		let holder_balance_msat = self.value_to_self_msat
 			.saturating_sub(outbound_stats.pending_htlcs_value_msat);
 		if holder_balance_msat < amount_msat {
+			debug_assert!(amount_msat > self.get_available_balances().next_outbound_htlc_limit_msat);
 			return Err(ChannelError::Ignore(format!("Cannot send value that would overdraw remaining funds. Amount: {}, pending value to self {}", amount_msat, holder_balance_msat)));
 		}
 
@@ -5905,6 +5941,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE * self.next_local_commit_tx_fee_msat(htlc_candidate, Some(()))
 		} else { 0 };
 		if holder_balance_msat - amount_msat < commit_tx_fee_msat {
+			debug_assert!(amount_msat > self.get_available_balances().next_outbound_htlc_limit_msat);
 			return Err(ChannelError::Ignore(format!("Cannot send value that would not leave enough to pay for fees. Pending value to self: {}. local_commit_tx_fee {}", holder_balance_msat, commit_tx_fee_msat)));
 		}
 
@@ -5912,6 +5949,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		// reserve for the remote to have something to claim if we misbehave)
 		let chan_reserve_msat = self.counterparty_selected_channel_reserve_satoshis.unwrap() * 1000;
 		if holder_balance_msat - amount_msat - commit_tx_fee_msat < chan_reserve_msat {
+			debug_assert!(amount_msat > self.get_available_balances().next_outbound_htlc_limit_msat);
 			return Err(ChannelError::Ignore(format!("Cannot send value that would put our balance under counterparty-announced channel reserve value ({})", chan_reserve_msat)));
 		}
 

@@ -1342,7 +1342,9 @@ fn test_basic_channel_reserve() {
 	// The 2* and +1 are for the fee spike reserve.
 	let commit_tx_fee = 2 * commit_tx_fee_msat(get_feerate!(nodes[0], nodes[1], chan.2), 1 + 1, get_opt_anchors!(nodes[0], nodes[1], chan.2));
 	let max_can_send = 5000000 - channel_reserve - commit_tx_fee;
-	let (route, our_payment_hash, _, our_payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], max_can_send + 1);
+	let (mut route, our_payment_hash, _, our_payment_secret) =
+		get_route_and_payment_hash!(nodes[0], nodes[1], max_can_send);
+	route.paths[0].hops.last_mut().unwrap().fee_msat += 1;
 	let err = nodes[0].node.send_payment_with_route(&route, our_payment_hash,
 		RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)).err().unwrap();
 	match err {
@@ -1369,7 +1371,9 @@ fn test_fee_spike_violation_fails_htlc() {
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 95000000);
 
-	let (route, payment_hash, _, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], 3460001);
+	let (mut route, payment_hash, _, payment_secret) =
+		get_route_and_payment_hash!(nodes[0], nodes[1], 3460000);
+	route.paths[0].hops[0].fee_msat += 1;
 	// Need to manually create the update_add_htlc message to go around the channel reserve check in send_htlc()
 	let secp_ctx = Secp256k1::new();
 	let session_priv = SecretKey::from_slice(&[42; 32]).expect("RNG is bad!");
@@ -1732,7 +1736,8 @@ fn test_chan_reserve_violation_inbound_htlc_inbound_chan() {
 	let commit_tx_fee_2_htlcs = commit_tx_fee_msat(feerate, 2, opt_anchors);
 	let recv_value_2 = chan_stat.value_to_self_msat - amt_msat_1 - chan_stat.channel_reserve_msat - total_routing_fee_msat - commit_tx_fee_2_htlcs + 1;
 	let amt_msat_2 = recv_value_2 + total_routing_fee_msat;
-	let (route_2, _, _, _) = get_route_and_payment_hash!(nodes[0], nodes[2], amt_msat_2);
+	let mut route_2 = route_1.clone();
+	route_2.paths[0].hops.last_mut().unwrap().fee_msat = amt_msat_2;
 
 	// Need to manually create the update_add_htlc message to go around the channel reserve check in send_htlc()
 	let secp_ctx = Secp256k1::new();
@@ -1901,7 +1906,9 @@ fn test_channel_reserve_holding_cell_htlcs() {
 	// channel reserve test with htlc pending output > 0
 	let recv_value_2 = stat01.value_to_self_msat - amt_msat_1 - stat01.channel_reserve_msat - total_fee_msat - commit_tx_fee_2_htlcs;
 	{
-		let (route, our_payment_hash, _, our_payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], recv_value_2 + 1);
+		let mut route = route_1.clone();
+		route.paths[0].hops.last_mut().unwrap().fee_msat = recv_value_2 + 1;
+		let (_, our_payment_hash, our_payment_secret) = get_payment_preimage_hash!(nodes[2]);
 		unwrap_send_err!(nodes[0].node.send_payment_with_route(&route, our_payment_hash,
 				RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)
 			), true, APIError::ChannelUnavailable { ref err },
@@ -1930,7 +1937,9 @@ fn test_channel_reserve_holding_cell_htlcs() {
 
 	// test with outbound holding cell amount > 0
 	{
-		let (route, our_payment_hash, _, our_payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], recv_value_22+1);
+		let (mut route, our_payment_hash, _, our_payment_secret) =
+			get_route_and_payment_hash!(nodes[0], nodes[2], recv_value_22);
+		route.paths[0].hops.last_mut().unwrap().fee_msat += 1;
 		unwrap_send_err!(nodes[0].node.send_payment_with_route(&route, our_payment_hash,
 				RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)
 			), true, APIError::ChannelUnavailable { ref err },
@@ -6241,12 +6250,15 @@ fn test_update_add_htlc_bolt2_receiver_check_max_htlc_limit() {
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 95000000);
 
-	let (route, our_payment_hash, _, our_payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], 3999999);
+	let send_amt = 3999999;
+	let (mut route, our_payment_hash, _, our_payment_secret) =
+		get_route_and_payment_hash!(nodes[0], nodes[1], 1000);
+	route.paths[0].hops[0].fee_msat = send_amt;
 	let session_priv = SecretKey::from_slice(&[42; 32]).unwrap();
 	let cur_height = nodes[0].node.best_block.read().unwrap().height() + 1;
 	let onion_keys = onion_utils::construct_onion_keys(&Secp256k1::signing_only(), &route.paths[0], &session_priv).unwrap();
 	let (onion_payloads, _htlc_msat, htlc_cltv) = onion_utils::build_onion_payloads(
-		&route.paths[0], 3999999, RecipientOnionFields::secret_only(our_payment_secret), cur_height, &None).unwrap();
+		&route.paths[0], send_amt, RecipientOnionFields::secret_only(our_payment_secret), cur_height, &None).unwrap();
 	let onion_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, [0; 32], &our_payment_hash).unwrap();
 
 	let mut msg = msgs::UpdateAddHTLC {
