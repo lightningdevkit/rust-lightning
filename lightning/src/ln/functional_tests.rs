@@ -7926,6 +7926,101 @@ fn test_can_not_accept_unknown_inbound_channel() {
 	}
 }
 
+#[test]
+fn test_onion_value_mpp_set_calculation() {
+	// Test that we use the onion value `amt_to_forward` when
+	// calculating whether we've reached the `total_msat` of an MPP
+	// by having a routing node forward more than `amt_to_forward`
+	// and checking that the receiving node doesn't generate
+	// a PaymentClaimable event too early
+	let node_count = 4;
+	let chanmon_cfgs = create_chanmon_cfgs(node_count);
+	let node_cfgs = create_node_cfgs(node_count, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(node_count, &node_cfgs, &vec![None; node_count]);
+	let mut nodes = create_network(node_count, &node_cfgs, &node_chanmgrs);
+
+	let chan_1_id = create_announced_chan_between_nodes(&nodes, 0, 1).0.contents.short_channel_id;
+	let chan_2_id = create_announced_chan_between_nodes(&nodes, 0, 2).0.contents.short_channel_id;
+	let chan_3_id = create_announced_chan_between_nodes(&nodes, 1, 3).0.contents.short_channel_id;
+	let chan_4_id = create_announced_chan_between_nodes(&nodes, 2, 3).0.contents.short_channel_id;
+
+	let total_msat = 100_000;
+	let expected_paths: &[&[&Node]] = &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]];
+	let (mut route, our_payment_hash, our_payment_preimage, our_payment_secret) = get_route_and_payment_hash!(&nodes[0], nodes[3], total_msat);
+	let sample_path = route.paths.pop().unwrap();
+
+	let mut path_1 = sample_path.clone();
+	path_1[0].pubkey = nodes[1].node.get_our_node_id();
+	path_1[0].short_channel_id = chan_1_id;
+	path_1[1].pubkey = nodes[3].node.get_our_node_id();
+	path_1[1].short_channel_id = chan_3_id;
+	path_1[1].fee_msat = 100_000;
+	route.paths.push(path_1);
+
+	let mut path_2 = sample_path.clone();
+	path_2[0].pubkey = nodes[2].node.get_our_node_id();
+	path_2[0].short_channel_id = chan_2_id;
+	path_2[1].pubkey = nodes[3].node.get_our_node_id();
+	path_2[1].short_channel_id = chan_4_id;
+	path_2[1].fee_msat = 1_000;
+	route.paths.push(path_2);
+
+	// Send payment
+	let payment_id = PaymentId(nodes[0].keys_manager.backing.get_secure_random_bytes());
+	let onion_session_privs = nodes[0].node.test_add_new_pending_payment(our_payment_hash, Some(our_payment_secret), payment_id, &route).unwrap();
+	nodes[0].node.test_send_payment_internal(&route, our_payment_hash, &Some(our_payment_secret), None, payment_id, Some(total_msat), onion_session_privs).unwrap();
+	check_added_monitors!(nodes[0], expected_paths.len());
+
+	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), expected_paths.len());
+
+	// First path
+	let ev = remove_first_msg_event_to_node(&expected_paths[0][0].node.get_our_node_id(), &mut events);
+	let mut payment_event = SendEvent::from_event(ev);
+	let mut prev_node = &nodes[0];
+
+	for (idx, &node) in expected_paths[0].iter().enumerate() {
+		assert_eq!(node.node.get_our_node_id(), payment_event.node_id);
+
+		if idx == 0 { // routing node
+			let session_priv = [3; 32];
+			let height = nodes[0].best_block_info().1;
+			let session_priv = SecretKey::from_slice(&session_priv).unwrap();
+			let mut onion_keys = onion_utils::construct_onion_keys(&Secp256k1::new(), &route.paths[0], &session_priv).unwrap();
+			let (mut onion_payloads, _, _) = onion_utils::build_onion_payloads(&route.paths[0], 100_000, &Some(our_payment_secret), height + 1, &None).unwrap();
+			// Edit amt_to_forward to simulate the sender having set
+			// the final amount and the routing node taking less fee
+			onion_payloads[1].amt_to_forward = 99_000;
+			let new_onion_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, [0; 32], &our_payment_hash);
+			payment_event.msgs[0].onion_routing_packet = new_onion_packet;
+		}
+
+		node.node.handle_update_add_htlc(&prev_node.node.get_our_node_id(), &payment_event.msgs[0]);
+		check_added_monitors!(node, 0);
+		commitment_signed_dance!(node, prev_node, payment_event.commitment_msg, false);
+		expect_pending_htlcs_forwardable!(node);
+
+		if idx == 0 {
+			let mut events_2 = node.node.get_and_clear_pending_msg_events();
+			assert_eq!(events_2.len(), 1);
+			check_added_monitors!(node, 1);
+			payment_event = SendEvent::from_event(events_2.remove(0));
+			assert_eq!(payment_event.msgs.len(), 1);
+		} else {
+			let events_2 = node.node.get_and_clear_pending_events();
+			assert!(events_2.is_empty());
+		}
+
+		prev_node = node;
+	}
+
+	// Second path
+	let ev = remove_first_msg_event_to_node(&expected_paths[1][0].node.get_our_node_id(), &mut events);
+	pass_along_path(&nodes[0], expected_paths[1], 101_000, our_payment_hash.clone(), Some(our_payment_secret), ev, true, None);
+
+	claim_payment_along_route(&nodes[0], expected_paths, false, our_payment_preimage);
+}
+
 fn do_test_overshoot_mpp(msat_amounts: &[u64], total_msat: u64) {
 
 	let routing_node_count = msat_amounts.len();

@@ -120,7 +120,10 @@ pub(super) struct PendingHTLCInfo {
 	pub(super) routing: PendingHTLCRouting,
 	pub(super) incoming_shared_secret: [u8; 32],
 	payment_hash: PaymentHash,
+	/// Amount received
 	pub(super) incoming_amt_msat: Option<u64>, // Added in 0.0.113
+	/// Sender intended amount to forward or receive (actual amount received
+	/// may overshoot this in either case)
 	pub(super) outgoing_amt_msat: u64,
 	pub(super) outgoing_cltv_value: u32,
 }
@@ -192,6 +195,9 @@ struct ClaimableHTLC {
 	cltv_expiry: u32,
 	/// The amount (in msats) of this MPP part
 	value: u64,
+	/// The amount (in msats) that the sender intended to be sent in this MPP
+	/// part (used for validating total MPP amount)
+	sender_intended_value: u64,
 	onion_payload: OnionPayload,
 	timer_ticks: u8,
 	/// The total value received for a payment (sum of all MPP parts if the payment is a MPP).
@@ -2181,7 +2187,7 @@ where
 			payment_hash,
 			incoming_shared_secret: shared_secret,
 			incoming_amt_msat: Some(amt_msat),
-			outgoing_amt_msat: amt_msat,
+			outgoing_amt_msat: hop_data.amt_to_forward,
 			outgoing_cltv_value: hop_data.outgoing_cltv_value,
 		})
 	}
@@ -3261,7 +3267,7 @@ where
 							HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo {
 								prev_short_channel_id, prev_htlc_id, prev_funding_outpoint, prev_user_channel_id,
 								forward_info: PendingHTLCInfo {
-									routing, incoming_shared_secret, payment_hash, outgoing_amt_msat, ..
+									routing, incoming_shared_secret, payment_hash, incoming_amt_msat, outgoing_amt_msat, ..
 								}
 							}) => {
 								let (cltv_expiry, onion_payload, payment_data, phantom_shared_secret) = match routing {
@@ -3283,7 +3289,11 @@ where
 										incoming_packet_shared_secret: incoming_shared_secret,
 										phantom_shared_secret,
 									},
-									value: outgoing_amt_msat,
+									// We differentiate the received value from the sender intended value
+									// if possible so that we don't prematurely mark MPP payments complete
+									// if routing nodes overpay
+									value: incoming_amt_msat.unwrap_or(outgoing_amt_msat),
+									sender_intended_value: outgoing_amt_msat,
 									timer_ticks: 0,
 									total_value_received: None,
 									total_msat: if let Some(data) = &payment_data { data.total_msat } else { outgoing_amt_msat },
@@ -3339,9 +3349,9 @@ where
 												continue
 											}
 										}
-										let mut total_value = claimable_htlc.value;
+										let mut total_value = claimable_htlc.sender_intended_value;
 										for htlc in htlcs.iter() {
-											total_value += htlc.value;
+											total_value += htlc.sender_intended_value;
 											match &htlc.onion_payload {
 												OnionPayload::Invoice { .. } => {
 													if htlc.total_msat != $payment_data.total_msat {
@@ -3354,9 +3364,11 @@ where
 												_ => unreachable!(),
 											}
 										}
+										// The condition determining whether an MPP is complete must
+										// match exactly the condition used in `timer_tick_occurred`
 										if total_value >= msgs::MAX_VALUE_MSAT {
 											fail_htlc!(claimable_htlc, payment_hash);
-										} else if total_value - claimable_htlc.value >= $payment_data.total_msat {
+										} else if total_value - claimable_htlc.sender_intended_value >= $payment_data.total_msat {
 											log_trace!(self.logger, "Failing HTLC with payment_hash {} as payment is already claimable",
 												log_bytes!(payment_hash.0));
 											fail_htlc!(claimable_htlc, payment_hash);
@@ -3431,7 +3443,7 @@ where
 														new_events.push(events::Event::PaymentClaimable {
 															receiver_node_id: Some(receiver_node_id),
 															payment_hash,
-															amount_msat: outgoing_amt_msat,
+															amount_msat,
 															purpose,
 															via_channel_id: Some(prev_channel_id),
 															via_user_channel_id: Some(prev_user_channel_id),
@@ -3691,7 +3703,9 @@ where
 				if let OnionPayload::Invoice { .. } = htlcs[0].onion_payload {
 					// Check if we've received all the parts we need for an MPP (the value of the parts adds to total_msat).
 					// In this case we're not going to handle any timeouts of the parts here.
-					if htlcs[0].total_msat <= htlcs.iter().fold(0, |total, htlc| total + htlc.value) {
+					// This condition determining whether the MPP is complete here must match
+					// exactly the condition used in `process_pending_htlc_forwards`.
+					if htlcs[0].total_msat <= htlcs.iter().fold(0, |total, htlc| total + htlc.sender_intended_value) {
 						return true;
 					} else if htlcs.into_iter().any(|htlc| {
 						htlc.timer_ticks += 1;
@@ -6813,6 +6827,7 @@ impl Writeable for ClaimableHTLC {
 			(0, self.prev_hop, required),
 			(1, self.total_msat, required),
 			(2, self.value, required),
+			(3, self.sender_intended_value, required),
 			(4, payment_data, option),
 			(5, self.total_value_received, option),
 			(6, self.cltv_expiry, required),
@@ -6826,6 +6841,7 @@ impl Readable for ClaimableHTLC {
 	fn read<R: Read>(reader: &mut R) -> Result<Self, DecodeError> {
 		let mut prev_hop = crate::util::ser::RequiredWrapper(None);
 		let mut value = 0;
+		let mut sender_intended_value = None;
 		let mut payment_data: Option<msgs::FinalOnionHopData> = None;
 		let mut cltv_expiry = 0;
 		let mut total_value_received = None;
@@ -6835,6 +6851,7 @@ impl Readable for ClaimableHTLC {
 			(0, prev_hop, required),
 			(1, total_msat, option),
 			(2, value, required),
+			(3, sender_intended_value, option),
 			(4, payment_data, option),
 			(5, total_value_received, option),
 			(6, cltv_expiry, required),
@@ -6864,6 +6881,7 @@ impl Readable for ClaimableHTLC {
 			prev_hop: prev_hop.0.unwrap(),
 			timer_ticks: 0,
 			value,
+			sender_intended_value: sender_intended_value.unwrap_or(value),
 			total_value_received,
 			total_msat: total_msat.unwrap(),
 			onion_payload,
