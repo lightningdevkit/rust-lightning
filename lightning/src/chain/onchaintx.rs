@@ -12,6 +12,8 @@
 //! OnchainTxHandler objects are fully-part of ChannelMonitor and encapsulates all
 //! building, tracking, bumping and notifications functions.
 
+#[cfg(anchors)]
+use bitcoin::PackedLockTime;
 use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::blockdata::transaction::OutPoint as BitcoinOutPoint;
 use bitcoin::blockdata::script::Script;
@@ -201,6 +203,7 @@ pub(crate) enum ClaimEvent {
 	BumpHTLC {
 		target_feerate_sat_per_1000_weight: u32,
 		htlcs: Vec<ExternalHTLCClaim>,
+		tx_lock_time: PackedLockTime,
 	},
 }
 
@@ -544,6 +547,7 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner> OnchainTxHandler<ChannelSigner>
 							OnchainClaim::Event(ClaimEvent::BumpHTLC {
 								target_feerate_sat_per_1000_weight,
 								htlcs,
+								tx_lock_time: PackedLockTime(cached_request.package_locktime(cur_height)),
 							}),
 						));
 					} else {

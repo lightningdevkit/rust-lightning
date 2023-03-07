@@ -227,5 +227,7 @@ pub enum BumpTransactionEvent {
 		/// The set of pending HTLCs on the confirmed commitment that need to be claimed, preferably
 		/// by the same transaction.
 		htlc_descriptors: Vec<HTLCDescriptor>,
+		/// The locktime required for the resulting HTLC transaction.
+		tx_lock_time: PackedLockTime,
 	},
 }
