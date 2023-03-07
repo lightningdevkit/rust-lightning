@@ -53,7 +53,7 @@ use crate::ln::msgs::{ChannelMessageHandler, DecodeError, LightningError, MAX_VA
 use crate::ln::outbound_payment;
 use crate::ln::outbound_payment::{OutboundPayments, PaymentAttempts, PendingOutboundPayment};
 use crate::ln::wire::Encode;
-use crate::chain::keysinterface::{EntropySource, KeysManager, NodeSigner, Recipient, SignerProvider, ChannelSigner};
+use crate::chain::keysinterface::{EntropySource, KeysManager, NodeSigner, Recipient, SignerProvider, ChannelSigner, WriteableEcdsaChannelSigner};
 use crate::util::config::{UserConfig, ChannelConfig};
 use crate::util::events::{Event, EventHandler, EventsProvider, MessageSendEvent, MessageSendEventsProvider, ClosureReason, HTLCDestination};
 use crate::util::events;
@@ -1229,6 +1229,55 @@ impl ChannelDetails {
 	pub fn get_outbound_payment_scid(&self) -> Option<u64> {
 		self.short_channel_id.or(self.outbound_scid_alias)
 	}
+
+	fn from_channel<Signer: WriteableEcdsaChannelSigner>(channel: &Channel<Signer>,
+		best_block_height: u32, latest_features: InitFeatures) -> Self {
+
+		let balance = channel.get_available_balances();
+		let (to_remote_reserve_satoshis, to_self_reserve_satoshis) =
+			channel.get_holder_counterparty_selected_channel_reserve_satoshis();
+		ChannelDetails {
+			channel_id: channel.channel_id(),
+			counterparty: ChannelCounterparty {
+				node_id: channel.get_counterparty_node_id(),
+				features: latest_features,
+				unspendable_punishment_reserve: to_remote_reserve_satoshis,
+				forwarding_info: channel.counterparty_forwarding_info(),
+				// Ensures that we have actually received the `htlc_minimum_msat` value
+				// from the counterparty through the `OpenChannel` or `AcceptChannel`
+				// message (as they are always the first message from the counterparty).
+				// Else `Channel::get_counterparty_htlc_minimum_msat` could return the
+				// default `0` value set by `Channel::new_outbound`.
+				outbound_htlc_minimum_msat: if channel.have_received_message() {
+					Some(channel.get_counterparty_htlc_minimum_msat()) } else { None },
+				outbound_htlc_maximum_msat: channel.get_counterparty_htlc_maximum_msat(),
+			},
+			funding_txo: channel.get_funding_txo(),
+			// Note that accept_channel (or open_channel) is always the first message, so
+			// `have_received_message` indicates that type negotiation has completed.
+			channel_type: if channel.have_received_message() { Some(channel.get_channel_type().clone()) } else { None },
+			short_channel_id: channel.get_short_channel_id(),
+			outbound_scid_alias: if channel.is_usable() { Some(channel.outbound_scid_alias()) } else { None },
+			inbound_scid_alias: channel.latest_inbound_scid_alias(),
+			channel_value_satoshis: channel.get_value_satoshis(),
+			unspendable_punishment_reserve: to_self_reserve_satoshis,
+			balance_msat: balance.balance_msat,
+			inbound_capacity_msat: balance.inbound_capacity_msat,
+			outbound_capacity_msat: balance.outbound_capacity_msat,
+			next_outbound_htlc_limit_msat: balance.next_outbound_htlc_limit_msat,
+			user_channel_id: channel.get_user_id(),
+			confirmations_required: channel.minimum_depth(),
+			confirmations: Some(channel.get_funding_tx_confirmations(best_block_height)),
+			force_close_spend_delay: channel.get_counterparty_selected_contest_delay(),
+			is_outbound: channel.is_outbound(),
+			is_channel_ready: channel.is_usable(),
+			is_usable: channel.is_live(),
+			is_public: channel.should_announce(),
+			inbound_htlc_minimum_msat: Some(channel.get_holder_htlc_minimum_msat()),
+			inbound_htlc_maximum_msat: channel.get_holder_htlc_maximum_msat(),
+			config: Some(channel.config()),
+		}
+	}
 }
 
 /// Used by [`ChannelManager::list_recent_payments`] to express the status of recent payments.
@@ -1716,51 +1765,10 @@ where
 			for (_cp_id, peer_state_mutex) in per_peer_state.iter() {
 				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 				let peer_state = &mut *peer_state_lock;
-				for (channel_id, channel) in peer_state.channel_by_id.iter().filter(f) {
-					let balance = channel.get_available_balances();
-					let (to_remote_reserve_satoshis, to_self_reserve_satoshis) =
-						channel.get_holder_counterparty_selected_channel_reserve_satoshis();
-					res.push(ChannelDetails {
-						channel_id: (*channel_id).clone(),
-						counterparty: ChannelCounterparty {
-							node_id: channel.get_counterparty_node_id(),
-							features: peer_state.latest_features.clone(),
-							unspendable_punishment_reserve: to_remote_reserve_satoshis,
-							forwarding_info: channel.counterparty_forwarding_info(),
-							// Ensures that we have actually received the `htlc_minimum_msat` value
-							// from the counterparty through the `OpenChannel` or `AcceptChannel`
-							// message (as they are always the first message from the counterparty).
-							// Else `Channel::get_counterparty_htlc_minimum_msat` could return the
-							// default `0` value set by `Channel::new_outbound`.
-							outbound_htlc_minimum_msat: if channel.have_received_message() {
-								Some(channel.get_counterparty_htlc_minimum_msat()) } else { None },
-							outbound_htlc_maximum_msat: channel.get_counterparty_htlc_maximum_msat(),
-						},
-						funding_txo: channel.get_funding_txo(),
-						// Note that accept_channel (or open_channel) is always the first message, so
-						// `have_received_message` indicates that type negotiation has completed.
-						channel_type: if channel.have_received_message() { Some(channel.get_channel_type().clone()) } else { None },
-						short_channel_id: channel.get_short_channel_id(),
-						outbound_scid_alias: if channel.is_usable() { Some(channel.outbound_scid_alias()) } else { None },
-						inbound_scid_alias: channel.latest_inbound_scid_alias(),
-						channel_value_satoshis: channel.get_value_satoshis(),
-						unspendable_punishment_reserve: to_self_reserve_satoshis,
-						balance_msat: balance.balance_msat,
-						inbound_capacity_msat: balance.inbound_capacity_msat,
-						outbound_capacity_msat: balance.outbound_capacity_msat,
-						next_outbound_htlc_limit_msat: balance.next_outbound_htlc_limit_msat,
-						user_channel_id: channel.get_user_id(),
-						confirmations_required: channel.minimum_depth(),
-						confirmations: Some(channel.get_funding_tx_confirmations(best_block_height)),
-						force_close_spend_delay: channel.get_counterparty_selected_contest_delay(),
-						is_outbound: channel.is_outbound(),
-						is_channel_ready: channel.is_usable(),
-						is_usable: channel.is_live(),
-						is_public: channel.should_announce(),
-						inbound_htlc_minimum_msat: Some(channel.get_holder_htlc_minimum_msat()),
-						inbound_htlc_maximum_msat: channel.get_holder_htlc_maximum_msat(),
-						config: Some(channel.config()),
-					});
+				for (_channel_id, channel) in peer_state.channel_by_id.iter().filter(f) {
+					let details = ChannelDetails::from_channel(channel, best_block_height,
+						peer_state.latest_features.clone());
+					res.push(details);
 				}
 			}
 		}
@@ -1784,6 +1792,24 @@ where
 		// internal/external nomenclature, but that's ok cause that's probably what the user
 		// really wanted anyway.
 		self.list_channels_with_filter(|&(_, ref channel)| channel.is_live())
+	}
+
+	/// Gets the list of channels we have with a given counterparty, in random order.
+	pub fn list_channels_with_counterparty(&self, counterparty_node_id: &PublicKey) -> Vec<ChannelDetails> {
+		let best_block_height = self.best_block.read().unwrap().height();
+		let per_peer_state = self.per_peer_state.read().unwrap();
+
+		if let Some(peer_state_mutex) = per_peer_state.get(counterparty_node_id) {
+			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+			let peer_state = &mut *peer_state_lock;
+			let features = &peer_state.latest_features;
+			return peer_state.channel_by_id
+				.iter()
+				.map(|(_, channel)|
+					ChannelDetails::from_channel(channel, best_block_height, features.clone()))
+				.collect();
+		}
+		vec![]
 	}
 
 	/// Returns in an undefined order recent payments that -- if not fulfilled -- have yet to find a
@@ -7854,8 +7880,10 @@ mod tests {
 		// to connect messages with new values
 		chan.0.contents.fee_base_msat *= 2;
 		chan.1.contents.fee_base_msat *= 2;
-		let node_a_chan_info = nodes[0].node.list_channels()[0].clone();
-		let node_b_chan_info = nodes[1].node.list_channels()[0].clone();
+		let node_a_chan_info = nodes[0].node.list_channels_with_counterparty(
+			&nodes[1].node.get_our_node_id()).pop().unwrap();
+		let node_b_chan_info = nodes[1].node.list_channels_with_counterparty(
+			&nodes[0].node.get_our_node_id()).pop().unwrap();
 
 		// The first two nodes (which opened a channel) should now require fresh persistence
 		assert!(nodes[0].node.await_persistable_update_timeout(Duration::from_millis(1)));
