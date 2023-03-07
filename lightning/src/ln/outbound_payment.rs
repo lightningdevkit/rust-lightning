@@ -79,7 +79,9 @@ impl PendingOutboundPayment {
 	}
 	fn is_auto_retryable_now(&self) -> bool {
 		match self {
-			PendingOutboundPayment::Retryable { retry_strategy: Some(strategy), attempts, .. } => {
+			PendingOutboundPayment::Retryable {
+				retry_strategy: Some(strategy), attempts, payment_params: Some(_), ..
+			} => {
 				strategy.is_retryable_now(&attempts)
 			},
 			_ => false,
@@ -531,7 +533,7 @@ impl OutboundPayments {
 							}));
 							break
 						}
-					}
+					} else { debug_assert!(false); }
 				}
 			}
 			core::mem::drop(outbounds);
