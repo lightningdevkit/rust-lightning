@@ -17,7 +17,7 @@ use crate::chain::channelmonitor::{ANTI_REORG_DELAY, Balance};
 use crate::chain::transaction::OutPoint;
 use crate::chain::chaininterface::LowerBoundedFeeEstimator;
 #[cfg(anchors)]
-use crate::events::BumpTransactionEvent;
+use crate::events::bump_transaction::BumpTransactionEvent;
 use crate::events::{Event, MessageSendEvent, MessageSendEventsProvider, ClosureReason, HTLCDestination};
 use crate::ln::channel;
 #[cfg(anchors)]

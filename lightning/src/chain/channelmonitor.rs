@@ -53,7 +53,7 @@ use crate::util::ser::{Readable, ReadableArgs, RequiredWrapper, MaybeReadable, U
 use crate::util::byte_utils;
 use crate::events::Event;
 #[cfg(anchors)]
-use crate::events::{AnchorDescriptor, HTLCDescriptor, BumpTransactionEvent};
+use crate::events::bump_transaction::{AnchorDescriptor, HTLCDescriptor, BumpTransactionEvent};
 
 use crate::prelude::*;
 use core::{cmp, mem};

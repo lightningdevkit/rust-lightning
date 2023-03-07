@@ -36,7 +36,7 @@ use crate::util::crypto::{hkdf_extract_expand_twice, sign};
 use crate::util::ser::{Writeable, Writer, Readable};
 use crate::chain::transaction::OutPoint;
 #[cfg(anchors)]
-use crate::events::HTLCDescriptor;
+use crate::events::bump_transaction::HTLCDescriptor;
 use crate::ln::channel::ANCHOR_OUTPUT_VALUE_SATOSHI;
 use crate::ln::{chan_utils, PaymentPreimage};
 use crate::ln::chan_utils::{HTLCOutputInCommitment, make_funding_redeemscript, ChannelPublicKeys, HolderCommitmentTransaction, ChannelTransactionParameters, CommitmentTransaction, ClosingTransaction};
