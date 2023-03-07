@@ -26,6 +26,9 @@ use lightning::chain;
 use lightning::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use lightning::chain::chainmonitor::{ChainMonitor, Persist};
 use lightning::chain::keysinterface::{EntropySource, NodeSigner, SignerProvider};
+use lightning::events::{Event, PathFailure};
+#[cfg(feature = "std")]
+use lightning::events::{EventHandler, EventsProvider};
 use lightning::ln::channelmanager::ChannelManager;
 use lightning::ln::msgs::{ChannelMessageHandler, OnionMessageHandler, RoutingMessageHandler};
 use lightning::ln::peer_handler::{CustomMessageHandler, PeerManager, SocketDescriptor};
@@ -33,9 +36,6 @@ use lightning::routing::gossip::{NetworkGraph, P2PGossipSync};
 use lightning::routing::utxo::UtxoLookup;
 use lightning::routing::router::Router;
 use lightning::routing::scoring::{Score, WriteableScore};
-use lightning::util::events::{Event, PathFailure};
-#[cfg(feature = "std")]
-use lightning::util::events::{EventHandler, EventsProvider};
 use lightning::util::logger::Logger;
 use lightning::util::persist::Persister;
 use lightning_rapid_gossip_sync::RapidGossipSync;
@@ -80,7 +80,7 @@ use alloc::vec::Vec;
 /// unilateral chain closure fees are at risk.
 ///
 /// [`ChannelMonitor`]: lightning::chain::channelmonitor::ChannelMonitor
-/// [`Event`]: lightning::util::events::Event
+/// [`Event`]: lightning::events::Event
 #[cfg(feature = "std")]
 #[must_use = "BackgroundProcessor will immediately stop on drop. It should be stored until shutdown."]
 pub struct BackgroundProcessor {
@@ -663,6 +663,7 @@ mod tests {
 	use lightning::chain::channelmonitor::ANTI_REORG_DELAY;
 	use lightning::chain::keysinterface::{InMemorySigner, KeysManager};
 	use lightning::chain::transaction::OutPoint;
+	use lightning::events::{Event, PathFailure, MessageSendEventsProvider, MessageSendEvent};
 	use lightning::get_event_msg;
 	use lightning::ln::PaymentHash;
 	use lightning::ln::channelmanager;
@@ -674,7 +675,6 @@ mod tests {
 	use lightning::routing::router::{DefaultRouter, RouteHop};
 	use lightning::routing::scoring::{ChannelUsage, Score};
 	use lightning::util::config::UserConfig;
-	use lightning::util::events::{Event, PathFailure, MessageSendEventsProvider, MessageSendEvent};
 	use lightning::util::ser::Writeable;
 	use lightning::util::test_utils;
 	use lightning::util::persist::KVStorePersister;

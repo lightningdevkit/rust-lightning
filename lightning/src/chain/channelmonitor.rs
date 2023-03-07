@@ -51,9 +51,9 @@ use crate::chain::Filter;
 use crate::util::logger::Logger;
 use crate::util::ser::{Readable, ReadableArgs, RequiredWrapper, MaybeReadable, UpgradableRequired, Writer, Writeable, U48};
 use crate::util::byte_utils;
-use crate::util::events::Event;
+use crate::events::Event;
 #[cfg(anchors)]
-use crate::util::events::{AnchorDescriptor, HTLCDescriptor, BumpTransactionEvent};
+use crate::events::{AnchorDescriptor, HTLCDescriptor, BumpTransactionEvent};
 
 use crate::prelude::*;
 use core::{cmp, mem};
@@ -1279,7 +1279,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 	/// This is called by the [`EventsProvider::process_pending_events`] implementation for
 	/// [`ChainMonitor`].
 	///
-	/// [`EventsProvider::process_pending_events`]: crate::util::events::EventsProvider::process_pending_events
+	/// [`EventsProvider::process_pending_events`]: crate::events::EventsProvider::process_pending_events
 	/// [`ChainMonitor`]: crate::chain::chainmonitor::ChainMonitor
 	pub fn get_and_clear_pending_events(&self) -> Vec<Event> {
 		self.inner.lock().unwrap().get_and_clear_pending_events()
@@ -4005,6 +4005,7 @@ mod tests {
 	use crate::chain::package::{weight_offered_htlc, weight_received_htlc, weight_revoked_offered_htlc, weight_revoked_received_htlc, WEIGHT_REVOKED_OUTPUT};
 	use crate::chain::transaction::OutPoint;
 	use crate::chain::keysinterface::InMemorySigner;
+	use crate::events::ClosureReason;
 	use crate::ln::{PaymentPreimage, PaymentHash};
 	use crate::ln::chan_utils;
 	use crate::ln::chan_utils::{HTLCOutputInCommitment, ChannelPublicKeys, ChannelTransactionParameters, HolderCommitmentTransaction, CounterpartyChannelTransactionParameters};
@@ -4012,7 +4013,6 @@ mod tests {
 	use crate::ln::functional_test_utils::*;
 	use crate::ln::script::ShutdownScript;
 	use crate::util::errors::APIError;
-	use crate::util::events::ClosureReason;
 	use crate::util::test_utils::{TestLogger, TestBroadcaster, TestFeeEstimator};
 	use crate::util::ser::{ReadableArgs, Writeable};
 	use crate::sync::{Arc, Mutex};

@@ -13,6 +13,7 @@
 use crate::chain::{BestBlock, ChannelMonitorUpdateStatus, Confirm, Listen, Watch, keysinterface::EntropySource};
 use crate::chain::channelmonitor::ChannelMonitor;
 use crate::chain::transaction::OutPoint;
+use crate::events::{ClosureReason, Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, PathFailure, PaymentPurpose};
 use crate::ln::{PaymentPreimage, PaymentHash, PaymentSecret};
 use crate::ln::channelmanager::{ChainParameters, ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, PaymentSendFailure, PaymentId, MIN_CLTV_EXPIRY_DELTA};
 use crate::routing::gossip::{P2PGossipSync, NetworkGraph, NetworkUpdate};
@@ -20,12 +21,10 @@ use crate::routing::router::{self, PaymentParameters, Route};
 use crate::ln::features::InitFeatures;
 use crate::ln::msgs;
 use crate::ln::msgs::{ChannelMessageHandler,RoutingMessageHandler};
-use crate::util::events::ClosureReason;
 use crate::util::enforcing_trait_impls::EnforcingSigner;
 use crate::util::scid_utils;
 use crate::util::test_utils;
 use crate::util::test_utils::{panicking, TestChainMonitor, TestScorer, TestKeysInterface};
-use crate::util::events::{Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, PathFailure, PaymentPurpose};
 use crate::util::errors::APIError;
 use crate::util::config::UserConfig;
 use crate::util::ser::{ReadableArgs, Writeable};
@@ -1412,8 +1411,8 @@ macro_rules! expect_htlc_handling_failed_destinations {
 	($events: expr, $expected_failures: expr) => {{
 		for event in $events {
 			match event {
-				$crate::util::events::Event::PendingHTLCsForwardable { .. } => { },
-				$crate::util::events::Event::HTLCHandlingFailed { ref failed_next_destination, .. } => {
+				$crate::events::Event::PendingHTLCsForwardable { .. } => { },
+				$crate::events::Event::HTLCHandlingFailed { ref failed_next_destination, .. } => {
 					assert!($expected_failures.contains(&failed_next_destination))
 				},
 				_ => panic!("Unexpected destination"),
@@ -1579,7 +1578,7 @@ pub fn do_commitment_signed_dance(node_a: &Node<'_, '_, '_>, node_b: &Node<'_, '
 
 	if fail_backwards {
 		expect_pending_htlcs_forwardable_and_htlc_handling_failed!(node_a,
-			vec![crate::util::events::HTLCDestination::NextHopChannel{ node_id: Some(node_b.node.get_our_node_id()), channel_id: commitment_signed.channel_id }]);
+			vec![crate::events::HTLCDestination::NextHopChannel{ node_id: Some(node_b.node.get_our_node_id()), channel_id: commitment_signed.channel_id }]);
 		check_added_monitors!(node_a, 1);
 
 		let node_a_per_peer_state = node_a.node.per_peer_state.read().unwrap();
@@ -1675,12 +1674,12 @@ macro_rules! expect_payment_claimable {
 		let events = $node.node.get_and_clear_pending_events();
 		assert_eq!(events.len(), 1);
 		match events[0] {
-			$crate::util::events::Event::PaymentClaimable { ref payment_hash, ref purpose, amount_msat, receiver_node_id, via_channel_id: _, via_user_channel_id: _ } => {
+			$crate::events::Event::PaymentClaimable { ref payment_hash, ref purpose, amount_msat, receiver_node_id, via_channel_id: _, via_user_channel_id: _ } => {
 				assert_eq!($expected_payment_hash, *payment_hash);
 				assert_eq!($expected_recv_value, amount_msat);
 				assert_eq!($expected_receiver_node_id, receiver_node_id.unwrap());
 				match purpose {
-					$crate::util::events::PaymentPurpose::InvoicePayment { payment_preimage, payment_secret, .. } => {
+					$crate::events::PaymentPurpose::InvoicePayment { payment_preimage, payment_secret, .. } => {
 						assert_eq!(&$expected_payment_preimage, payment_preimage);
 						assert_eq!($expected_payment_secret, *payment_secret);
 					},
@@ -1699,7 +1698,7 @@ macro_rules! expect_payment_claimed {
 		let events = $node.node.get_and_clear_pending_events();
 		assert_eq!(events.len(), 1);
 		match events[0] {
-			$crate::util::events::Event::PaymentClaimed { ref payment_hash, amount_msat, .. } => {
+			$crate::events::Event::PaymentClaimed { ref payment_hash, amount_msat, .. } => {
 				assert_eq!($expected_payment_hash, *payment_hash);
 				assert_eq!($expected_recv_value, amount_msat);
 			},
@@ -1738,7 +1737,7 @@ macro_rules! expect_payment_sent {
 			assert_eq!(events.len(), 1);
 		}
 		let expected_payment_id = match events[0] {
-			$crate::util::events::Event::PaymentSent { ref payment_id, ref payment_preimage, ref payment_hash, ref fee_paid_msat } => {
+			$crate::events::Event::PaymentSent { ref payment_id, ref payment_preimage, ref payment_hash, ref fee_paid_msat } => {
 				assert_eq!($expected_payment_preimage, *payment_preimage);
 				assert_eq!(expected_payment_hash, *payment_hash);
 				assert!(fee_paid_msat.is_some());
@@ -1752,7 +1751,7 @@ macro_rules! expect_payment_sent {
 		if $expect_paths {
 			for i in 1..events.len() {
 				match events[i] {
-					$crate::util::events::Event::PaymentPathSuccessful { payment_id, payment_hash, .. } => {
+					$crate::events::Event::PaymentPathSuccessful { payment_id, payment_hash, .. } => {
 						assert_eq!(payment_id, expected_payment_id);
 						assert_eq!(payment_hash, Some(expected_payment_hash));
 					},
@@ -1770,7 +1769,7 @@ macro_rules! expect_payment_path_successful {
 		let events = $node.node.get_and_clear_pending_events();
 		assert_eq!(events.len(), 1);
 		match events[0] {
-			$crate::util::events::Event::PaymentPathSuccessful { .. } => {},
+			$crate::events::Event::PaymentPathSuccessful { .. } => {},
 			_ => panic!("Unexpected event"),
 		}
 	}
@@ -1804,7 +1803,7 @@ pub fn expect_channel_ready_event<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, ex
 	let events = node.node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match events[0] {
-		crate::util::events::Event::ChannelReady{ ref counterparty_node_id, .. } => {
+		crate::events::Event::ChannelReady{ ref counterparty_node_id, .. } => {
 			assert_eq!(*expected_counterparty_node_id, *counterparty_node_id);
 		},
 		_ => panic!("Unexpected event"),

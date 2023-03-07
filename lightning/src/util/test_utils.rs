@@ -17,6 +17,7 @@ use crate::chain::channelmonitor;
 use crate::chain::channelmonitor::MonitorEvent;
 use crate::chain::transaction::OutPoint;
 use crate::chain::keysinterface;
+use crate::events;
 use crate::ln::channelmanager;
 use crate::ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 use crate::ln::{msgs, wire};
@@ -28,7 +29,6 @@ use crate::routing::router::{find_route, InFlightHtlcs, Route, RouteHop, RoutePa
 use crate::routing::scoring::{ChannelUsage, Score};
 use crate::util::config::UserConfig;
 use crate::util::enforcing_trait_impls::{EnforcingSigner, EnforcementState};
-use crate::util::events;
 use crate::util::logger::{Logger, Level, Record};
 use crate::util::ser::{Readable, ReadableArgs, Writer, Writeable};
 

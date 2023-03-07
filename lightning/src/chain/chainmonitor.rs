@@ -32,11 +32,11 @@ use crate::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, Balance, MonitorEvent, TransactionOutputs, LATENCY_GRACE_PERIOD_BLOCKS};
 use crate::chain::transaction::{OutPoint, TransactionData};
 use crate::chain::keysinterface::WriteableEcdsaChannelSigner;
+use crate::events;
+use crate::events::{Event, EventHandler};
 use crate::util::atomic_counter::AtomicCounter;
 use crate::util::logger::Logger;
 use crate::util::errors::APIError;
-use crate::util::events;
-use crate::util::events::{Event, EventHandler};
 use crate::ln::channelmanager::ChannelDetails;
 
 use crate::prelude::*;
@@ -490,7 +490,7 @@ where C::Target: chain::Filter,
 
 	#[cfg(any(test, fuzzing, feature = "_test_utils"))]
 	pub fn get_and_clear_pending_events(&self) -> Vec<events::Event> {
-		use crate::util::events::EventsProvider;
+		use crate::events::EventsProvider;
 		let events = core::cell::RefCell::new(Vec::new());
 		let event_handler = |event: events::Event| events.borrow_mut().push(event);
 		self.process_pending_events(&event_handler);
@@ -502,7 +502,7 @@ where C::Target: chain::Filter,
 	///
 	/// See the trait-level documentation of [`EventsProvider`] for requirements.
 	///
-	/// [`EventsProvider`]: crate::util::events::EventsProvider
+	/// [`EventsProvider`]: crate::events::EventsProvider
 	pub async fn process_pending_events_async<Future: core::future::Future, H: Fn(Event) -> Future>(
 		&self, handler: H
 	) {
@@ -792,11 +792,11 @@ mod tests {
 	use crate::{get_htlc_update_msgs, get_local_commitment_txn, get_revoke_commit_msgs, get_route_and_payment_hash, unwrap_send_err};
 	use crate::chain::{ChannelMonitorUpdateStatus, Confirm, Watch};
 	use crate::chain::channelmonitor::LATENCY_GRACE_PERIOD_BLOCKS;
+	use crate::events::{Event, ClosureReason, MessageSendEvent, MessageSendEventsProvider};
 	use crate::ln::channelmanager::{PaymentSendFailure, PaymentId};
 	use crate::ln::functional_test_utils::*;
 	use crate::ln::msgs::ChannelMessageHandler;
 	use crate::util::errors::APIError;
-	use crate::util::events::{Event, ClosureReason, MessageSendEvent, MessageSendEventsProvider};
 
 	#[test]
 	fn test_async_ooo_offchain_updates() {

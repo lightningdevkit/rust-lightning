@@ -523,7 +523,7 @@ pub struct UserConfig {
 	///
 	/// Default value: false.
 	///
-	/// [`Event::OpenChannelRequest`]: crate::util::events::Event::OpenChannelRequest
+	/// [`Event::OpenChannelRequest`]: crate::events::Event::OpenChannelRequest
 	/// [`msgs::OpenChannel`]: crate::ln::msgs::OpenChannel
 	/// [`msgs::AcceptChannel`]: crate::ln::msgs::AcceptChannel
 	pub manually_accept_inbound_channels: bool,
@@ -536,7 +536,7 @@ pub struct UserConfig {
 	///  Default value: false.
 	///
 	/// [`ChannelManager::get_intercept_scid`]: crate::ln::channelmanager::ChannelManager::get_intercept_scid
-	/// [`Event::HTLCIntercepted`]: crate::util::events::Event::HTLCIntercepted
+	/// [`Event::HTLCIntercepted`]: crate::events::Event::HTLCIntercepted
 	pub accept_intercept_htlcs: bool,
 }
 

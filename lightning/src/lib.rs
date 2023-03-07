@@ -81,6 +81,7 @@ pub mod ln;
 pub mod offers;
 pub mod routing;
 pub mod onion_message;
+pub mod events;
 
 #[cfg(feature = "std")]
 /// Re-export of either `core2::io` or `std::io`, depending on the `std` feature flag.

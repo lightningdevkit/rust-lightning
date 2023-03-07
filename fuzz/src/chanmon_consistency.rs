@@ -38,6 +38,8 @@ use lightning::chain::channelmonitor::{ChannelMonitor, MonitorEvent};
 use lightning::chain::transaction::OutPoint;
 use lightning::chain::chaininterface::{BroadcasterInterface, ConfirmationTarget, FeeEstimator};
 use lightning::chain::keysinterface::{KeyMaterial, InMemorySigner, Recipient, EntropySource, NodeSigner, SignerProvider};
+use lightning::events;
+use lightning::events::MessageSendEventsProvider;
 use lightning::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
 use lightning::ln::channelmanager::{ChainParameters, ChannelDetails, ChannelManager, PaymentSendFailure, ChannelManagerReadArgs, PaymentId};
 use lightning::ln::channel::FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE;
@@ -45,10 +47,8 @@ use lightning::ln::msgs::{self, CommitmentUpdate, ChannelMessageHandler, DecodeE
 use lightning::ln::script::ShutdownScript;
 use lightning::util::enforcing_trait_impls::{EnforcingSigner, EnforcementState};
 use lightning::util::errors::APIError;
-use lightning::util::events;
 use lightning::util::logger::Logger;
 use lightning::util::config::UserConfig;
-use lightning::util::events::MessageSendEventsProvider;
 use lightning::util::ser::{Readable, ReadableArgs, Writeable, Writer};
 use lightning::routing::router::{InFlightHtlcs, Route, RouteHop, RouteParameters, Router};
 

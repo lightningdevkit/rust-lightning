@@ -13,6 +13,7 @@
 
 use crate::chain::ChannelMonitorUpdateStatus;
 use crate::chain::keysinterface::NodeSigner;
+use crate::events::{ClosureReason, Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider};
 use crate::ln::channelmanager::{ChannelManager, MIN_CLTV_EXPIRY_DELTA, PaymentId};
 use crate::routing::gossip::RoutingFees;
 use crate::routing::router::{PaymentParameters, RouteHint, RouteHintHop};
@@ -20,7 +21,6 @@ use crate::ln::features::ChannelTypeFeatures;
 use crate::ln::msgs;
 use crate::ln::msgs::{ChannelMessageHandler, RoutingMessageHandler, ChannelUpdate, ErrorAction};
 use crate::ln::wire::Encode;
-use crate::util::events::{ClosureReason, Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider};
 use crate::util::config::UserConfig;
 use crate::util::ser::Writeable;
 use crate::util::test_utils;

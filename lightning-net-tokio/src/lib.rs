@@ -24,7 +24,7 @@
 //! ```
 //! use std::net::TcpStream;
 //! use bitcoin::secp256k1::PublicKey;
-//! use lightning::util::events::{Event, EventHandler, EventsProvider};
+//! use lightning::events::{Event, EventHandler, EventsProvider};
 //! use std::net::SocketAddr;
 //! use std::sync::Arc;
 //!
@@ -586,7 +586,7 @@ mod tests {
 	use lightning::ln::peer_handler::{MessageHandler, PeerManager};
 	use lightning::ln::features::NodeFeatures;
 	use lightning::routing::gossip::NodeId;
-	use lightning::util::events::*;
+	use lightning::events::*;
 	use lightning::util::test_utils::TestNodeSigner;
 	use bitcoin::secp256k1::{Secp256k1, SecretKey, PublicKey};
 

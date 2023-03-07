@@ -15,6 +15,7 @@ use crate::chain::{ChannelMonitorUpdateStatus, Confirm, Listen, Watch};
 use crate::chain::channelmonitor::{ANTI_REORG_DELAY, LATENCY_GRACE_PERIOD_BLOCKS};
 use crate::chain::keysinterface::EntropySource;
 use crate::chain::transaction::OutPoint;
+use crate::events::{ClosureReason, Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, PathFailure};
 use crate::ln::channel::EXPIRE_PREV_CONFIG_TICKS;
 use crate::ln::channelmanager::{BREAKDOWN_TIMEOUT, ChannelManager, MPP_TIMEOUT_TICKS, MIN_CLTV_EXPIRY_DELTA, PaymentId, PaymentSendFailure, IDEMPOTENCY_TIMEOUT_TICKS, RecentPaymentDetails};
 use crate::ln::features::InvoiceFeatures;
@@ -24,7 +25,6 @@ use crate::ln::outbound_payment::Retry;
 use crate::routing::gossip::{EffectiveCapacity, RoutingFees};
 use crate::routing::router::{get_route, PaymentParameters, Route, RouteHint, RouteHintHop, RouteHop, RouteParameters};
 use crate::routing::scoring::ChannelUsage;
-use crate::util::events::{ClosureReason, Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, PathFailure};
 use crate::util::test_utils;
 use crate::util::errors::APIError;
 use crate::util::ser::Writeable;
@@ -934,7 +934,7 @@ fn successful_probe_yields_event() {
 	let mut events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match events.drain(..).next().unwrap() {
-		crate::util::events::Event::ProbeSuccessful { payment_id: ev_pid, payment_hash: ev_ph, .. } => {
+		crate::events::Event::ProbeSuccessful { payment_id: ev_pid, payment_hash: ev_ph, .. } => {
 			assert_eq!(payment_id, ev_pid);
 			assert_eq!(payment_hash, ev_ph);
 		},
@@ -980,7 +980,7 @@ fn failed_probe_yields_event() {
 	let mut events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match events.drain(..).next().unwrap() {
-		crate::util::events::Event::ProbeFailed { payment_id: ev_pid, payment_hash: ev_ph, .. } => {
+		crate::events::Event::ProbeFailed { payment_id: ev_pid, payment_hash: ev_ph, .. } => {
 			assert_eq!(payment_id, ev_pid);
 			assert_eq!(payment_hash, ev_ph);
 		},
@@ -1414,7 +1414,7 @@ fn do_test_intercepted_payment(test: InterceptTest) {
 	let events = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	let (intercept_id, expected_outbound_amount_msat) = match events[0] {
-		crate::util::events::Event::HTLCIntercepted {
+		crate::events::Event::HTLCIntercepted {
 			intercept_id, expected_outbound_amount_msat, payment_hash: pmt_hash, inbound_amount_msat, requested_next_hop_scid: short_channel_id
 		} => {
 			assert_eq!(pmt_hash, payment_hash);
