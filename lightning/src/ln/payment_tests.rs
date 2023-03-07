@@ -20,6 +20,7 @@ use crate::ln::channelmanager::{BREAKDOWN_TIMEOUT, ChannelManager, MPP_TIMEOUT_T
 use crate::ln::features::InvoiceFeatures;
 use crate::ln::msgs;
 use crate::ln::msgs::ChannelMessageHandler;
+use crate::ln::msgs::{LightningError, ErrorAction};
 use crate::ln::outbound_payment::Retry;
 use crate::routing::gossip::{EffectiveCapacity, RoutingFees};
 use crate::routing::router::{get_route, PaymentParameters, Route, RouteHint, RouteHintHop, RouteHop, RouteParameters};
@@ -2751,4 +2752,27 @@ fn test_threaded_payment_retries() {
 			break;
 		}
 	}
+}
+
+#[test]
+fn test_route_minds_commit_tx_fee() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let amount_sats = 100_000;
+	// Less than 10% should be on our side so that we don't hit the htlc limit of 10%.
+	let our_amount_sats = amount_sats * 9 / 100;
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, amount_sats, (amount_sats - our_amount_sats) * 1000);
+
+	let extra_htlc_cost = 1365;
+	let route_err1 = get_route_or_error!(&nodes[0], nodes[1], (our_amount_sats - extra_htlc_cost) * 1000).0;
+
+	if let Err(LightningError{err, action: ErrorAction::IgnoreError}) = route_err1 {
+		assert_eq!(err, "Failed to find a sufficient route to the given destination");
+	} else { panic!(); }
+
+	let (route, _, _, _) = get_route_and_payment_hash!(&nodes[0], nodes[1], (our_amount_sats - extra_htlc_cost - 1) * 1000);
+	assert_eq!(route.paths.len(), 1);
+	// TODO: test other limits, e.g. that our router doesn't ignore counterparty_selected_channel_reserve_satoshis.
 }

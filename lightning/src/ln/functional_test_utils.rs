@@ -1609,6 +1609,19 @@ macro_rules! get_route_and_payment_hash {
 	}}
 }
 
+#[cfg(test)]
+#[macro_export]
+macro_rules! get_route_or_error {
+	($send_node: expr, $recv_node: expr, $recv_value: expr) => {{
+		let payment_params = $crate::routing::router::PaymentParameters::from_node_id($recv_node.node.get_our_node_id(), TEST_FINAL_CLTV)
+			.with_features($recv_node.node.invoice_features());
+		let (payment_preimage, payment_hash, payment_secret) = $crate::get_payment_preimage_hash!($recv_node, Some($recv_value));
+		let route_or_error = $crate::get_route!($send_node, payment_params, $recv_value, TEST_FINAL_CLTV);
+		(route_or_error, payment_hash, payment_preimage, payment_secret)
+	}}
+}
+
+
 #[macro_export]
 #[cfg(any(test, feature = "_bench_unstable", feature = "_test_utils"))]
 macro_rules! expect_payment_claimable {
