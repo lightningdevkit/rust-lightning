@@ -2095,9 +2095,9 @@ where
 		payment_hash: PaymentHash, amt_msat: u64, cltv_expiry: u32, phantom_shared_secret: Option<[u8; 32]>) -> Result<PendingHTLCInfo, ReceiveError>
 	{
 		// final_incorrect_cltv_expiry
-		if hop_data.outgoing_cltv_value != cltv_expiry {
+		if hop_data.outgoing_cltv_value > cltv_expiry {
 			return Err(ReceiveError {
-				msg: "Upstream node set CLTV to the wrong value",
+				msg: "Upstream node set CLTV to less than the CLTV set by the sender",
 				err_code: 18,
 				err_data: cltv_expiry.to_be_bytes().to_vec()
 			})
