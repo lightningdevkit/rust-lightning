@@ -1272,4 +1272,46 @@ mod tests {
 		hostname.write(&mut buf).unwrap();
 		assert_eq!(Hostname::read(&mut buf.as_slice()).unwrap().as_str(), "test");
 	}
+
+	#[test]
+	fn bigsize_encoding_decoding() {
+		let values = vec![0, 252, 253, 65535, 65536, 4294967295, 4294967296, 18446744073709551615];
+		let bytes = vec![
+			"00", 
+			"fc",
+			"fd00fd",
+			"fdffff",
+			"fe00010000",
+			"feffffffff",
+			"ff0000000100000000",
+			"ffffffffffffffffff"
+		];
+		for i in 0..=7 {	
+			let mut stream = crate::io::Cursor::new(::hex::decode(bytes[i]).unwrap());
+			assert_eq!(super::BigSize::read(&mut stream).unwrap().0, values[i]);
+			let mut stream = super::VecWriter(Vec::new());
+			super::BigSize(values[i]).write(&mut stream).unwrap();
+			assert_eq!(stream.0, ::hex::decode(bytes[i]).unwrap());
+		}
+		let err_bytes = vec![
+			"fd00fc",
+			"fe0000ffff",
+			"ff00000000ffffffff",
+			"fd00",
+			"feffff",
+			"ffffffffff",
+			"fd",
+			"fe",
+			"ff",
+			""
+		];
+		for i in 0..=9 {
+			let mut stream = crate::io::Cursor::new(::hex::decode(err_bytes[i]).unwrap());
+			if i < 3 {
+				assert_eq!(super::BigSize::read(&mut stream).err(), Some(crate::ln::msgs::DecodeError::InvalidValue));
+			} else {
+				assert_eq!(super::BigSize::read(&mut stream).err(), Some(crate::ln::msgs::DecodeError::ShortRead));
+			}
+		}
+	}
 }
