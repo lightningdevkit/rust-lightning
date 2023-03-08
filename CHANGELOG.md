@@ -22,7 +22,7 @@
    missing support for blinded path payments (#1927, #1908, #1926).
  * A `lightning-custom-message` crate has been added to make combining multiple
    custom messages into one enum/handler easier (#1832).
- * `Event::PaymentPathFailure` is now generated for failure to send an HTLC
+ * `Event::PaymentPathFailed` is now generated for failure to send an HTLC
    over the first hop on our local channel (#2014, #2043).
  * `lightning-net-tokio` no longer requires an `Arc` on `PeerManager` (#1968).
  * `ChannelManager::list_recent_payments` was added (#1873).
@@ -40,7 +40,7 @@
    if you downgrade prior to receipt (#1878).
  * `Event::PaymentPathFailed::network_update` will always be `None` if an
    0.0.114-generated event is read by a prior version of LDK (#2043).
- * `Event::PaymentPathFailed::all_paths_removed` will always be false if an
+ * `Event::PaymentPathFailed::all_paths_failed` will always be false if an
    0.0.114-generated event is read by a prior version of LDK. Users who rely on
    it to determine payment retries should migrate to `Event::PaymentFailed`, in
    a separate release prior to upgrading to LDK 0.0.114 if downgrading is
