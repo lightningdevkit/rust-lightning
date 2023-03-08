@@ -40,7 +40,7 @@
    if you downgrade prior to receipt (#1878).
  * `Event::PaymentPathFailed::network_update` will always be `None` if an
    0.0.114-generated event is read by a prior version of LDK (#2043).
- * `Event::PaymentPathFailed::all_paths_removed` will always be false if an
+ * `Event::PaymentPathFailed::all_paths_failed` will always be false if an
    0.0.114-generated event is read by a prior version of LDK. Users who rely on
    it to determine payment retries should migrate to `Event::PaymentFailed`, in
    a separate release prior to upgrading to LDK 0.0.114 if downgrading is
