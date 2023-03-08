@@ -127,18 +127,21 @@ jobs:
           cd lightning-transaction-sync
           cargo build --verbose --color always --features esplora-blocking
           cargo build --verbose --color always --features esplora-async
+          cargo build --verbose --color always --features esplora-async-https
       - name: Build transaction sync clients on Rust ${{ matrix.toolchain }} with features and full code-linking for coverage generation
         if: "matrix.build-tx-sync && matrix.coverage"
         run: |
           cd lightning-transaction-sync
           RUSTFLAGS="-C link-dead-code" cargo build --verbose --color always --features esplora-blocking
           RUSTFLAGS="-C link-dead-code" cargo build --verbose --color always --features esplora-async
+          RUSTFLAGS="-C link-dead-code" cargo build --verbose --color always --features esplora-async-https
       - name: Test transaction sync clients on Rust ${{ matrix.toolchain }} with features
         if: "matrix.build-tx-sync"
         run: |
           cd lightning-transaction-sync
           cargo test --verbose --color always --features esplora-blocking
           cargo test --verbose --color always --features esplora-async
+          cargo test --verbose --color always --features esplora-async-https
       - name: Test backtrace-debug builds on Rust ${{ matrix.toolchain }}
         if: "matrix.toolchain == 'stable'"
         shell: bash # Default on Winblows is powershell
