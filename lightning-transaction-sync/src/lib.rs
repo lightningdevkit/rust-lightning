@@ -7,8 +7,9 @@
 //!
 //! ## Features and Backend Support
 //!
-//!- `esplora_blocking` enables syncing against an Esplora backend based on a blocking client.
-//!- `esplora_async` enables syncing against an Esplora backend based on an async client.
+//!- `esplora-blocking` enables syncing against an Esplora backend based on a blocking client.
+//!- `esplora-async` enables syncing against an Esplora backend based on an async client.
+//!- `esplora-async-https` enables the async Esplora client with support for HTTPS.
 //!
 //! ## Version Compatibility
 //!
