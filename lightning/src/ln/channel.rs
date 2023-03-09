@@ -4777,7 +4777,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			})
 	}
 
-	pub fn get_feerate(&self) -> u32 {
+	pub fn get_feerate_sat_per_1000_weight(&self) -> u32 {
 		self.feerate_per_kw
 	}
 

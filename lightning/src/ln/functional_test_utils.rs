@@ -697,7 +697,7 @@ macro_rules! get_feerate {
 			let mut per_peer_state_lock;
 			let mut peer_state_lock;
 			let chan = get_channel_ref!($node, $counterparty_node, per_peer_state_lock, peer_state_lock, $channel_id);
-			chan.get_feerate()
+			chan.get_feerate_sat_per_1000_weight()
 		}
 	}
 }

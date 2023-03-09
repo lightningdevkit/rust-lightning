@@ -1118,6 +1118,11 @@ pub struct ChannelDetails {
 	/// inbound. This may be zero for inbound channels serialized with LDK versions prior to
 	/// 0.0.113.
 	pub user_channel_id: u128,
+	/// The currently negotiated fee rate denominated in satoshi per 1000 weight units,
+	/// which is applied to commitment and HTLC transactions.
+	///
+	/// This value will be `None` for objects serialized with LDK versions prior to 0.0.115.
+	pub feerate_sat_per_1000_weight: Option<u32>,
 	/// Our total balance.  This is the amount we would get if we close the channel.
 	/// This value is not exact. Due to various in-flight changes and feerate changes, exactly this
 	/// amount is not likely to be recoverable on close.
@@ -1260,6 +1265,7 @@ impl ChannelDetails {
 			outbound_scid_alias: if channel.is_usable() { Some(channel.outbound_scid_alias()) } else { None },
 			inbound_scid_alias: channel.latest_inbound_scid_alias(),
 			channel_value_satoshis: channel.get_value_satoshis(),
+			feerate_sat_per_1000_weight: Some(channel.get_feerate_sat_per_1000_weight()),
 			unspendable_punishment_reserve: to_self_reserve_satoshis,
 			balance_msat: balance.balance_msat,
 			inbound_capacity_msat: balance.inbound_capacity_msat,
@@ -3500,18 +3506,18 @@ where
 	fn update_channel_fee(&self, chan_id: &[u8; 32], chan: &mut Channel<<SP::Target as SignerProvider>::Signer>, new_feerate: u32) -> NotifyOption {
 		if !chan.is_outbound() { return NotifyOption::SkipPersist; }
 		// If the feerate has decreased by less than half, don't bother
-		if new_feerate <= chan.get_feerate() && new_feerate * 2 > chan.get_feerate() {
+		if new_feerate <= chan.get_feerate_sat_per_1000_weight() && new_feerate * 2 > chan.get_feerate_sat_per_1000_weight() {
 			log_trace!(self.logger, "Channel {} does not qualify for a feerate change from {} to {}.",
-				log_bytes!(chan_id[..]), chan.get_feerate(), new_feerate);
+				log_bytes!(chan_id[..]), chan.get_feerate_sat_per_1000_weight(), new_feerate);
 			return NotifyOption::SkipPersist;
 		}
 		if !chan.is_live() {
 			log_trace!(self.logger, "Channel {} does not qualify for a feerate change from {} to {} as it cannot currently be updated (probably the peer is disconnected).",
-				log_bytes!(chan_id[..]), chan.get_feerate(), new_feerate);
+				log_bytes!(chan_id[..]), chan.get_feerate_sat_per_1000_weight(), new_feerate);
 			return NotifyOption::SkipPersist;
 		}
 		log_trace!(self.logger, "Channel {} qualifies for a feerate change from {} to {}.",
-			log_bytes!(chan_id[..]), chan.get_feerate(), new_feerate);
+			log_bytes!(chan_id[..]), chan.get_feerate_sat_per_1000_weight(), new_feerate);
 
 		chan.queue_update_fee(new_feerate, &self.logger);
 		NotifyOption::DoPersist
@@ -6570,6 +6576,7 @@ impl Writeable for ChannelDetails {
 			(33, self.inbound_htlc_minimum_msat, option),
 			(35, self.inbound_htlc_maximum_msat, option),
 			(37, user_channel_id_high_opt, option),
+			(39, self.feerate_sat_per_1000_weight, option),
 		});
 		Ok(())
 	}
@@ -6605,6 +6612,7 @@ impl Readable for ChannelDetails {
 			(33, inbound_htlc_minimum_msat, option),
 			(35, inbound_htlc_maximum_msat, option),
 			(37, user_channel_id_high_opt, option),
+			(39, feerate_sat_per_1000_weight, option),
 		});
 
 		// `user_channel_id` used to be a single u64 value. In order to remain backwards compatible with
@@ -6638,6 +6646,7 @@ impl Readable for ChannelDetails {
 			is_public: is_public.0.unwrap(),
 			inbound_htlc_minimum_msat,
 			inbound_htlc_maximum_msat,
+			feerate_sat_per_1000_weight,
 		})
 	}
 }
