@@ -643,7 +643,7 @@ impl BackgroundProcessor {
 			define_run_body!(persister, chain_monitor, chain_monitor.process_pending_events(&event_handler),
 				channel_manager, channel_manager.process_pending_events(&event_handler),
 				gossip_sync, peer_manager, logger, scorer, stop_thread.load(Ordering::Acquire),
-				channel_manager.await_persistable_update_timeout(Duration::from_millis(100)),
+				channel_manager.get_persistable_update_future().wait_timeout(Duration::from_millis(100)),
 				|_| Instant::now(), |time: &Instant, dur| time.elapsed().as_secs() > dur)
 		});
 		Self { stop_thread: stop_thread_clone, thread_handle: Some(handle) }

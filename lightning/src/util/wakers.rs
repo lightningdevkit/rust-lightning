@@ -39,15 +39,6 @@ impl Notifier {
 		}
 	}
 
-	pub(crate) fn wait(&self) {
-		Sleeper::from_single_future(self.get_future()).wait();
-	}
-
-	#[cfg(any(test, feature = "std"))]
-	pub(crate) fn wait_timeout(&self, max_wait: Duration) -> bool {
-		Sleeper::from_single_future(self.get_future()).wait_timeout(max_wait)
-	}
-
 	/// Wake waiters, tracking that wake needs to occur even if there are currently no waiters.
 	pub(crate) fn notify(&self) {
 		let mut lock = self.notify_pending.lock().unwrap();
@@ -166,6 +157,19 @@ impl Future {
 	#[cfg(c_bindings)]
 	pub fn register_callback_fn<F: 'static + FutureCallback>(&self, callback: F) {
 		self.register_callback(Box::new(callback));
+	}
+
+	/// Waits until this [`Future`] completes.
+	pub fn wait(self) {
+		Sleeper::from_single_future(self).wait();
+	}
+
+	/// Waits until this [`Future`] completes or the given amount of time has elapsed.
+	///
+	/// Returns true if the [`Future`] completed, false if the time elapsed.
+	#[cfg(any(test, feature = "std"))]
+	pub fn wait_timeout(self, max_wait: Duration) -> bool {
+		Sleeper::from_single_future(self).wait_timeout(max_wait)
 	}
 }
 
@@ -369,12 +373,12 @@ mod tests {
 		});
 
 		// Check that we can block indefinitely until updates are available.
-		let _ = persistence_notifier.wait();
+		let _ = persistence_notifier.get_future().wait();
 
 		// Check that the Notifier will return after the given duration if updates are
 		// available.
 		loop {
-			if persistence_notifier.wait_timeout(Duration::from_millis(100)) {
+			if persistence_notifier.get_future().wait_timeout(Duration::from_millis(100)) {
 				break
 			}
 		}
@@ -384,7 +388,7 @@ mod tests {
 		// Check that the Notifier will return after the given duration even if no updates
 		// are available.
 		loop {
-			if !persistence_notifier.wait_timeout(Duration::from_millis(100)) {
+			if !persistence_notifier.get_future().wait_timeout(Duration::from_millis(100)) {
 				break
 			}
 		}
@@ -482,8 +486,8 @@ mod tests {
 
 		// If we get a future and don't touch it we're definitely still notify-required.
 		notifier.get_future();
-		assert!(notifier.wait_timeout(Duration::from_millis(1)));
-		assert!(!notifier.wait_timeout(Duration::from_millis(1)));
+		assert!(notifier.get_future().wait_timeout(Duration::from_millis(1)));
+		assert!(!notifier.get_future().wait_timeout(Duration::from_millis(1)));
 
 		// Even if we poll'd once but didn't observe a `Ready`, we should be notify-required.
 		let mut future = notifier.get_future();
@@ -492,7 +496,7 @@ mod tests {
 
 		notifier.notify();
 		assert!(woken.load(Ordering::SeqCst));
-		assert!(notifier.wait_timeout(Duration::from_millis(1)));
+		assert!(notifier.get_future().wait_timeout(Duration::from_millis(1)));
 
 		// However, once we do poll `Ready` it should wipe the notify-required flag.
 		let mut future = notifier.get_future();
@@ -502,7 +506,7 @@ mod tests {
 		notifier.notify();
 		assert!(woken.load(Ordering::SeqCst));
 		assert_eq!(Pin::new(&mut future).poll(&mut Context::from_waker(&waker)), Poll::Ready(()));
-		assert!(!notifier.wait_timeout(Duration::from_millis(1)));
+		assert!(!notifier.get_future().wait_timeout(Duration::from_millis(1)));
 	}
 
 	#[test]
