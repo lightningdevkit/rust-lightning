@@ -2611,10 +2611,13 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		}
 		balance_msat -= outbound_stats.pending_htlcs_value_msat;
 
-		let mut outbound_capacity_msat = cmp::max(self.value_to_self_msat as i64
+		let outbound_capacity_msat = cmp::max(self.value_to_self_msat as i64
 											  - outbound_stats.pending_htlcs_value_msat as i64
 											  - self.counterparty_selected_channel_reserve_satoshis.unwrap_or(0) as i64 * 1000,
 			0) as u64;
+
+		let mut available_capacity_msat = outbound_capacity_msat;
+
 		if self.is_outbound() {
 			// Mind commit tx fee.
 			let mut real_dust_limit_success_msat = self.holder_dust_limit_satoshis * 1000;
@@ -2626,13 +2629,13 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			let max_reserved_commit_tx_fee_msat = FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE * self.next_local_commit_tx_fee_msat(htlc_above_dust, None);
 			let htlc_dust = HTLCCandidate::new(real_dust_limit_success_msat - 1000, HTLCInitiator::RemoteOffered);
 			let min_reserved_commit_tx_fee_msat = FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE * self.next_local_commit_tx_fee_msat(htlc_dust, None);
-			let one_htlc_difference_msat = max_reserved_commit_tx_fee_msat - min_reserved_commit_tx_fee_msat;
-			assert!(one_htlc_difference_msat != 0);
 
-			outbound_capacity_msat -= max_reserved_commit_tx_fee_msat;
-			if outbound_capacity_msat < real_dust_limit_success_msat {
-				outbound_capacity_msat += one_htlc_difference_msat;
-				outbound_capacity_msat = std::cmp::max(real_dust_limit_success_msat - 1, outbound_capacity_msat);
+			available_capacity_msat -= max_reserved_commit_tx_fee_msat;
+			if available_capacity_msat < real_dust_limit_success_msat {
+				let one_htlc_difference_msat = max_reserved_commit_tx_fee_msat - min_reserved_commit_tx_fee_msat;
+				assert!(one_htlc_difference_msat != 0);
+				available_capacity_msat += one_htlc_difference_msat;
+				available_capacity_msat = std::cmp::max(real_dust_limit_success_msat - 1, available_capacity_msat);
 			}
 		}
 		AvailableBalances {
@@ -2642,7 +2645,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 					- self.holder_selected_channel_reserve_satoshis as i64 * 1000,
 				0) as u64,
 			outbound_capacity_msat,
-			next_outbound_htlc_limit_msat: cmp::max(cmp::min(outbound_capacity_msat as i64,
+			next_outbound_htlc_limit_msat: cmp::max(cmp::min(available_capacity_msat as i64,
 					self.counterparty_max_htlc_value_in_flight_msat as i64
 						- outbound_stats.pending_htlcs_value_msat as i64),
 				0) as u64,
