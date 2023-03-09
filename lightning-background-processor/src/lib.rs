@@ -38,6 +38,8 @@ use lightning::routing::router::Router;
 use lightning::routing::scoring::{Score, WriteableScore};
 use lightning::util::logger::Logger;
 use lightning::util::persist::Persister;
+#[cfg(feature = "std")]
+use lightning::util::wakers::Sleeper;
 use lightning_rapid_gossip_sync::RapidGossipSync;
 
 use core::ops::Deref;
@@ -388,15 +390,20 @@ pub(crate) mod futures_util {
 	use core::task::{Poll, Waker, RawWaker, RawWakerVTable};
 	use core::pin::Pin;
 	use core::marker::Unpin;
-	pub(crate) struct Selector<A: Future<Output=()> + Unpin, B: Future<Output=bool> + Unpin> {
+	pub(crate) struct Selector<
+		A: Future<Output=()> + Unpin, B: Future<Output=()> + Unpin, C: Future<Output=bool> + Unpin
+	> {
 		pub a: A,
 		pub b: B,
+		pub c: C,
 	}
 	pub(crate) enum SelectorOutput {
-		A, B(bool),
+		A, B, C(bool),
 	}
 
-	impl<A: Future<Output=()> + Unpin, B: Future<Output=bool> + Unpin> Future for Selector<A, B> {
+	impl<
+		A: Future<Output=()> + Unpin, B: Future<Output=()> + Unpin, C: Future<Output=bool> + Unpin
+	> Future for Selector<A, B, C> {
 		type Output = SelectorOutput;
 		fn poll(mut self: Pin<&mut Self>, ctx: &mut core::task::Context<'_>) -> Poll<SelectorOutput> {
 			match Pin::new(&mut self.a).poll(ctx) {
@@ -404,7 +411,11 @@ pub(crate) mod futures_util {
 				Poll::Pending => {},
 			}
 			match Pin::new(&mut self.b).poll(ctx) {
-				Poll::Ready(res) => { return Poll::Ready(SelectorOutput::B(res)); },
+				Poll::Ready(()) => { return Poll::Ready(SelectorOutput::B); },
+				Poll::Pending => {},
+			}
+			match Pin::new(&mut self.c).poll(ctx) {
+				Poll::Ready(res) => { return Poll::Ready(SelectorOutput::C(res)); },
 				Poll::Pending => {},
 			}
 			Poll::Pending
@@ -514,11 +525,13 @@ where
 		gossip_sync, peer_manager, logger, scorer, should_break, {
 			let fut = Selector {
 				a: channel_manager.get_persistable_update_future(),
-				b: sleeper(Duration::from_millis(100)),
+				b: chain_monitor.get_update_future(),
+				c: sleeper(Duration::from_millis(100)),
 			};
 			match fut.await {
 				SelectorOutput::A => true,
-				SelectorOutput::B(exit) => {
+				SelectorOutput::B => false,
+				SelectorOutput::C(exit) => {
 					should_break = exit;
 					false
 				}
@@ -643,7 +656,10 @@ impl BackgroundProcessor {
 			define_run_body!(persister, chain_monitor, chain_monitor.process_pending_events(&event_handler),
 				channel_manager, channel_manager.process_pending_events(&event_handler),
 				gossip_sync, peer_manager, logger, scorer, stop_thread.load(Ordering::Acquire),
-				channel_manager.get_persistable_update_future().wait_timeout(Duration::from_millis(100)),
+				Sleeper::from_two_futures(
+					channel_manager.get_persistable_update_future(),
+					chain_monitor.get_update_future()
+				).wait_timeout(Duration::from_millis(100)),
 				|_| Instant::now(), |time: &Instant, dur| time.elapsed().as_secs() > dur)
 		});
 		Self { stop_thread: stop_thread_clone, thread_handle: Some(handle) }

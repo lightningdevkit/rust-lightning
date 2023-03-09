@@ -37,6 +37,7 @@ use crate::events::{Event, EventHandler};
 use crate::util::atomic_counter::AtomicCounter;
 use crate::util::logger::Logger;
 use crate::util::errors::APIError;
+use crate::util::wakers::{Future, Notifier};
 use crate::ln::channelmanager::ChannelDetails;
 
 use crate::prelude::*;
@@ -240,6 +241,8 @@ pub struct ChainMonitor<ChannelSigner: WriteableEcdsaChannelSigner, C: Deref, T:
 	pending_monitor_events: Mutex<Vec<(OutPoint, Vec<MonitorEvent>, Option<PublicKey>)>>,
 	/// The best block height seen, used as a proxy for the passage of time.
 	highest_chain_height: AtomicUsize,
+
+	event_notifier: Notifier,
 }
 
 impl<ChannelSigner: WriteableEcdsaChannelSigner, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref> ChainMonitor<ChannelSigner, C, T, F, L, P>
@@ -300,6 +303,7 @@ where C::Target: chain::Filter,
 					ChannelMonitorUpdateStatus::PermanentFailure => {
 						monitor_state.channel_perm_failed.store(true, Ordering::Release);
 						self.pending_monitor_events.lock().unwrap().push((*funding_outpoint, vec![MonitorEvent::UpdateFailed(*funding_outpoint)], monitor.get_counterparty_node_id()));
+						self.event_notifier.notify();
 					},
 					ChannelMonitorUpdateStatus::InProgress => {
 						log_debug!(self.logger, "Channel Monitor sync for channel {} in progress, holding events until completion!", log_funding_info!(monitor));
@@ -345,6 +349,7 @@ where C::Target: chain::Filter,
 			persister,
 			pending_monitor_events: Mutex::new(Vec::new()),
 			highest_chain_height: AtomicUsize::new(0),
+			event_notifier: Notifier::new(),
 		}
 	}
 
@@ -472,6 +477,7 @@ where C::Target: chain::Filter,
 				}
 			},
 		}
+		self.event_notifier.notify();
 		Ok(())
 	}
 
@@ -486,6 +492,7 @@ where C::Target: chain::Filter,
 			funding_txo,
 			monitor_update_id,
 		}], counterparty_node_id));
+		self.event_notifier.notify();
 	}
 
 	#[cfg(any(test, fuzzing, feature = "_test_utils"))]
@@ -513,6 +520,18 @@ where C::Target: chain::Filter,
 		for event in pending_events {
 			handler(event).await;
 		}
+	}
+
+	/// Gets a [`Future`] that completes when an event is available either via
+	/// [`chain::Watch::release_pending_monitor_events`] or
+	/// [`EventsProvider::process_pending_events`].
+	///
+	/// Note that callbacks registered on the [`Future`] MUST NOT call back into this
+	/// [`ChainMonitor`] and should instead register actions to be taken later.
+	///
+	/// [`EventsProvider::process_pending_events`]: crate::events::EventsProvider::process_pending_events
+	pub fn get_update_future(&self) -> Future {
+		self.event_notifier.get_future()
 	}
 }
 
