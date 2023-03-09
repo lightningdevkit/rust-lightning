@@ -231,7 +231,7 @@ pub enum Retry {
 	///
 	/// Each attempt may be multiple HTLCs along multiple paths if the router decides to split up a
 	/// retry, and may retry multiple failed HTLCs at once if they failed around the same time and
-	/// were retried along a route from a single call to [`Router::find_route`].
+	/// were retried along a route from a single call to [`Router::find_route_with_id`].
 	Attempts(usize),
 	#[cfg(not(feature = "no-std"))]
 	/// Time elapsed before abandoning retries for a payment. At least one attempt at payment is made;
@@ -531,9 +531,9 @@ impl OutboundPayments {
 			let mut retry_id_route_params = None;
 			for (pmt_id, pmt) in outbounds.iter_mut() {
 				if pmt.is_auto_retryable_now() {
-					if let PendingOutboundPayment::Retryable { pending_amt_msat, total_msat, payment_params: Some(params), .. } = pmt {
+					if let PendingOutboundPayment::Retryable { pending_amt_msat, total_msat, payment_params: Some(params), payment_hash, .. } = pmt {
 						if pending_amt_msat < total_msat {
-							retry_id_route_params = Some((*pmt_id, RouteParameters {
+							retry_id_route_params = Some((*payment_hash, *pmt_id, RouteParameters {
 								final_value_msat: *total_msat - *pending_amt_msat,
 								payment_params: params.clone(),
 							}));
@@ -543,8 +543,8 @@ impl OutboundPayments {
 				}
 			}
 			core::mem::drop(outbounds);
-			if let Some((payment_id, route_params)) = retry_id_route_params {
-				self.retry_payment_internal(payment_id, route_params, router, first_hops(), &inflight_htlcs, entropy_source, node_signer, best_block_height, logger, pending_events, &send_payment_along_path)
+			if let Some((payment_hash, payment_id, route_params)) = retry_id_route_params {
+				self.retry_payment_internal(payment_hash, payment_id, route_params, router, first_hops(), &inflight_htlcs, entropy_source, node_signer, best_block_height, logger, pending_events, &send_payment_along_path)
 			} else { break }
 		}
 
@@ -597,9 +597,10 @@ impl OutboundPayments {
 			}
 		}
 
-		let route = router.find_route(
+		let route = router.find_route_with_id(
 			&node_signer.get_node_id(Recipient::Node).unwrap(), &route_params,
-			Some(&first_hops.iter().collect::<Vec<_>>()), &inflight_htlcs()
+			Some(&first_hops.iter().collect::<Vec<_>>()), &inflight_htlcs(),
+			payment_hash, payment_id,
 		).map_err(|_| RetryableSendFailure::RouteNotFound)?;
 
 		let onion_session_privs = self.add_new_pending_payment(payment_hash, *payment_secret,
@@ -617,10 +618,10 @@ impl OutboundPayments {
 	}
 
 	fn retry_payment_internal<R: Deref, NS: Deref, ES: Deref, IH, SP, L: Deref>(
-		&self, payment_id: PaymentId, route_params: RouteParameters, router: &R,
-		first_hops: Vec<ChannelDetails>, inflight_htlcs: &IH, entropy_source: &ES, node_signer: &NS,
-		best_block_height: u32, logger: &L, pending_events: &Mutex<Vec<events::Event>>,
-		send_payment_along_path: &SP,
+		&self, payment_hash: PaymentHash, payment_id: PaymentId, route_params: RouteParameters,
+		router: &R, first_hops: Vec<ChannelDetails>, inflight_htlcs: &IH, entropy_source: &ES,
+		node_signer: &NS, best_block_height: u32, logger: &L,
+		pending_events: &Mutex<Vec<events::Event>>, send_payment_along_path: &SP,
 	)
 	where
 		R::Target: Router,
@@ -639,9 +640,10 @@ impl OutboundPayments {
 			}
 		}
 
-		let route = match router.find_route(
+		let route = match router.find_route_with_id(
 			&node_signer.get_node_id(Recipient::Node).unwrap(), &route_params,
-			Some(&first_hops.iter().collect::<Vec<_>>()), &inflight_htlcs()
+			Some(&first_hops.iter().collect::<Vec<_>>()), &inflight_htlcs(),
+			payment_hash, payment_id,
 		) {
 			Ok(route) => route,
 			Err(e) => {
@@ -665,32 +667,31 @@ impl OutboundPayments {
 		}
 
 		macro_rules! abandon_with_entry {
-			($payment_id: expr, $payment_hash: expr, $payment: expr, $pending_events: expr) => {
+			($payment: expr) => {
 				if $payment.get_mut().mark_abandoned().is_ok() && $payment.get().remaining_parts() == 0 {
-					$pending_events.lock().unwrap().push(events::Event::PaymentFailed {
-						payment_id: $payment_id,
-						payment_hash: $payment_hash,
+					pending_events.lock().unwrap().push(events::Event::PaymentFailed {
+						payment_id,
+						payment_hash,
 					});
 					$payment.remove();
 				}
 			}
 		}
-		let (total_msat, payment_hash, payment_secret, keysend_preimage) = {
+		let (total_msat, payment_secret, keysend_preimage) = {
 			let mut outbounds = self.pending_outbound_payments.lock().unwrap();
 			match outbounds.entry(payment_id) {
 				hash_map::Entry::Occupied(mut payment) => {
 					let res = match payment.get() {
 						PendingOutboundPayment::Retryable {
-							total_msat, payment_hash, keysend_preimage, payment_secret, pending_amt_msat, ..
+							total_msat, keysend_preimage, payment_secret, pending_amt_msat, ..
 						} => {
 							let retry_amt_msat: u64 = route.paths.iter().map(|path| path.last().unwrap().fee_msat).sum();
 							if retry_amt_msat + *pending_amt_msat > *total_msat * (100 + RETRY_OVERFLOW_PERCENTAGE) / 100 {
 								log_error!(logger, "retry_amt_msat of {} will put pending_amt_msat (currently: {}) more than 10% over total_payment_amt_msat of {}", retry_amt_msat, pending_amt_msat, total_msat);
-								let payment_hash = *payment_hash;
-								abandon_with_entry!(payment_id, payment_hash, payment, pending_events);
+								abandon_with_entry!(payment);
 								return
 							}
-							(*total_msat, *payment_hash, *payment_secret, *keysend_preimage)
+							(*total_msat, *payment_secret, *keysend_preimage)
 						},
 						PendingOutboundPayment::Legacy { .. } => {
 							log_error!(logger, "Unable to retry payments that were initially sent on LDK versions prior to 0.0.102");
@@ -707,7 +708,7 @@ impl OutboundPayments {
 					};
 					if !payment.get().is_retryable_now() {
 						log_error!(logger, "Retries exhausted for payment id {}", log_bytes!(payment_id.0));
-						abandon_with_entry!(payment_id, res.1, payment, pending_events);
+						abandon_with_entry!(payment);
 						return
 					}
 					payment.get_mut().increment_attempts();
@@ -749,14 +750,14 @@ impl OutboundPayments {
 		match err {
 			PaymentSendFailure::AllFailedResendSafe(errs) => {
 				Self::push_path_failed_evs_and_scids(payment_id, payment_hash, &mut route_params, route.paths, errs.into_iter().map(|e| Err(e)), pending_events);
-				self.retry_payment_internal(payment_id, route_params, router, first_hops, inflight_htlcs, entropy_source, node_signer, best_block_height, logger, pending_events, send_payment_along_path);
+				self.retry_payment_internal(payment_hash, payment_id, route_params, router, first_hops, inflight_htlcs, entropy_source, node_signer, best_block_height, logger, pending_events, send_payment_along_path);
 			},
 			PaymentSendFailure::PartialFailure { failed_paths_retry: Some(mut retry), results, .. } => {
 				Self::push_path_failed_evs_and_scids(payment_id, payment_hash, &mut retry, route.paths, results.into_iter(), pending_events);
 				// Some paths were sent, even if we failed to send the full MPP value our recipient may
 				// misbehave and claim the funds, at which point we have to consider the payment sent, so
 				// return `Ok()` here, ignoring any retry errors.
-				self.retry_payment_internal(payment_id, retry, router, first_hops, inflight_htlcs, entropy_source, node_signer, best_block_height, logger, pending_events, send_payment_along_path);
+				self.retry_payment_internal(payment_hash, payment_id, retry, router, first_hops, inflight_htlcs, entropy_source, node_signer, best_block_height, logger, pending_events, send_payment_along_path);
 			},
 			PaymentSendFailure::PartialFailure { failed_paths_retry: None, .. } => {
 				// This may happen if we send a payment and some paths fail, but only due to a temporary
@@ -1384,9 +1385,9 @@ mod tests {
 			&Route { paths: vec![], payment_params: None }, Some(Retry::Attempts(1)),
 			Some(expired_route_params.payment_params.clone()), &&keys_manager, 0).unwrap();
 			outbound_payments.retry_payment_internal(
-				PaymentId([0; 32]), expired_route_params, &&router, vec![], &|| InFlightHtlcs::new(),
-				&&keys_manager, &&keys_manager, 0, &&logger, &pending_events,
-				&|_, _, _, _, _, _, _, _, _| Ok(()));
+				PaymentHash([0; 32]), PaymentId([0; 32]), expired_route_params, &&router, vec![],
+				&|| InFlightHtlcs::new(), &&keys_manager, &&keys_manager, 0, &&logger,
+				&pending_events, &|_, _, _, _, _, _, _, _, _| Ok(()));
 			let events = pending_events.lock().unwrap();
 			assert_eq!(events.len(), 1);
 			if let Event::PaymentFailed { .. } = events[0] { } else { panic!("Unexpected event"); }
@@ -1428,9 +1429,9 @@ mod tests {
 				&Route { paths: vec![], payment_params: None }, Some(Retry::Attempts(1)),
 				Some(route_params.payment_params.clone()), &&keys_manager, 0).unwrap();
 			outbound_payments.retry_payment_internal(
-				PaymentId([0; 32]), route_params, &&router, vec![], &|| InFlightHtlcs::new(),
-				&&keys_manager, &&keys_manager, 0, &&logger, &pending_events,
-				&|_, _, _, _, _, _, _, _, _| Ok(()));
+				PaymentHash([0; 32]), PaymentId([0; 32]), route_params, &&router, vec![],
+				&|| InFlightHtlcs::new(), &&keys_manager, &&keys_manager, 0, &&logger,
+				&pending_events, &|_, _, _, _, _, _, _, _, _| Ok(()));
 			let events = pending_events.lock().unwrap();
 			assert_eq!(events.len(), 1);
 			if let Event::PaymentFailed { .. } = events[0] { } else { panic!("Unexpected event"); }
