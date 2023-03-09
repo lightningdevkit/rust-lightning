@@ -667,10 +667,10 @@ impl OutboundPayments {
 		}
 
 		macro_rules! abandon_with_entry {
-			($payment_id: expr, $payment: expr, $pending_events: expr) => {
+			($payment: expr) => {
 				if $payment.get_mut().mark_abandoned().is_ok() && $payment.get().remaining_parts() == 0 {
-					$pending_events.lock().unwrap().push(events::Event::PaymentFailed {
-						payment_id: $payment_id,
+					pending_events.lock().unwrap().push(events::Event::PaymentFailed {
+						payment_id,
 						payment_hash,
 					});
 					$payment.remove();
@@ -688,7 +688,7 @@ impl OutboundPayments {
 							let retry_amt_msat: u64 = route.paths.iter().map(|path| path.last().unwrap().fee_msat).sum();
 							if retry_amt_msat + *pending_amt_msat > *total_msat * (100 + RETRY_OVERFLOW_PERCENTAGE) / 100 {
 								log_error!(logger, "retry_amt_msat of {} will put pending_amt_msat (currently: {}) more than 10% over total_payment_amt_msat of {}", retry_amt_msat, pending_amt_msat, total_msat);
-								abandon_with_entry!(payment_id, payment, pending_events);
+								abandon_with_entry!(payment);
 								return
 							}
 							(*total_msat, *payment_secret, *keysend_preimage)
@@ -708,7 +708,7 @@ impl OutboundPayments {
 					};
 					if !payment.get().is_retryable_now() {
 						log_error!(logger, "Retries exhausted for payment id {}", log_bytes!(payment_id.0));
-						abandon_with_entry!(payment_id, payment, pending_events);
+						abandon_with_entry!(payment);
 						return
 					}
 					payment.get_mut().increment_attempts();
