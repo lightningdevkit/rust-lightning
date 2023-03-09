@@ -874,6 +874,8 @@ macro_rules! tlv_record_ref_type {
 	($type:ty) => { &'a $type };
 }
 
+#[doc(hidden)]
+#[macro_export]
 macro_rules! _impl_writeable_tlv_based_enum_common {
 	($st: ident, $(($variant_id: expr, $variant_name: ident) =>
 		{$(($type: expr, $field: ident, $fieldty: tt)),* $(,)*}
@@ -885,7 +887,7 @@ macro_rules! _impl_writeable_tlv_based_enum_common {
 					$($st::$variant_name { $(ref $field),* } => {
 						let id: u8 = $variant_id;
 						id.write(writer)?;
-						write_tlv_fields!(writer, {
+						$crate::write_tlv_fields!(writer, {
 							$(($type, *$field, $fieldty)),*
 						});
 					}),*
@@ -923,7 +925,7 @@ macro_rules! impl_writeable_tlv_based_enum {
 		{$(($type: expr, $field: ident, $fieldty: tt)),* $(,)*}
 	),* $(,)*;
 	$(($tuple_variant_id: expr, $tuple_variant_name: ident)),*  $(,)*) => {
-		_impl_writeable_tlv_based_enum_common!($st,
+		$crate::_impl_writeable_tlv_based_enum_common!($st,
 			$(($variant_id, $variant_name) => {$(($type, $field, $fieldty)),*}),*;
 			$(($tuple_variant_id, $tuple_variant_name)),*);
 
@@ -935,12 +937,12 @@ macro_rules! impl_writeable_tlv_based_enum {
 						// Because read_tlv_fields creates a labeled loop, we cannot call it twice
 						// in the same function body. Instead, we define a closure and call it.
 						let f = || {
-							_init_and_read_tlv_fields!(reader, {
+							$crate::_init_and_read_tlv_fields!(reader, {
 								$(($type, $field, $fieldty)),*
 							});
 							Ok($st::$variant_name {
 								$(
-									$field: _init_tlv_based_struct_field!($field, $fieldty)
+									$field: $crate::_init_tlv_based_struct_field!($field, $fieldty)
 								),*
 							})
 						};
@@ -977,7 +979,7 @@ macro_rules! impl_writeable_tlv_based_enum_upgradable {
 	),* $(,)*
 	$(;
 	$(($tuple_variant_id: expr, $tuple_variant_name: ident)),*  $(,)*)*) => {
-		_impl_writeable_tlv_based_enum_common!($st,
+		$crate::_impl_writeable_tlv_based_enum_common!($st,
 			$(($variant_id, $variant_name) => {$(($type, $field, $fieldty)),*}),*;
 			$($(($tuple_variant_id, $tuple_variant_name)),*)*);
 
@@ -989,12 +991,12 @@ macro_rules! impl_writeable_tlv_based_enum_upgradable {
 						// Because read_tlv_fields creates a labeled loop, we cannot call it twice
 						// in the same function body. Instead, we define a closure and call it.
 						let f = || {
-							_init_and_read_tlv_fields!(reader, {
+							$crate::_init_and_read_tlv_fields!(reader, {
 								$(($type, $field, $fieldty)),*
 							});
 							Ok(Some($st::$variant_name {
 								$(
-									$field: _init_tlv_based_struct_field!($field, $fieldty)
+									$field: $crate::_init_tlv_based_struct_field!($field, $fieldty)
 								),*
 							}))
 						};
