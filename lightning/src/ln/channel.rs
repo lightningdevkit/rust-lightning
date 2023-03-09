@@ -2619,7 +2619,13 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		let mut available_capacity_msat = outbound_capacity_msat;
 
 		if self.is_outbound() {
-			// Mind commit tx fee.
+			// We should mind channel commit tx fee when computing how much of the available capacity
+			// can be used in the next htlc. Mirrors the logic in send_htlc.
+			//
+			// The fee depends on whether the amount we will be sending is above dust or not,
+			// and the answer will in turn change the amount itself — making it a circular
+			// dependency.
+			// This complicates the computation around dust-values, up to the one-htlc-value.
 			let mut real_dust_limit_success_msat = self.holder_dust_limit_satoshis * 1000;
 			if !self.opt_anchors() {
 				real_dust_limit_success_msat += self.feerate_per_kw as u64 * htlc_success_tx_weight(false);
@@ -2630,6 +2636,9 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			let htlc_dust = HTLCCandidate::new(real_dust_limit_success_msat - 1000, HTLCInitiator::RemoteOffered);
 			let min_reserved_commit_tx_fee_msat = FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE * self.next_local_commit_tx_fee_msat(htlc_dust, None);
 
+			// We will first subtract the fee as if we were above-dust. Then, if the resulting
+			// value ends up being below dust, we have this fee available again. In that case,
+			// match the value to right-below-dust.
 			available_capacity_msat -= max_reserved_commit_tx_fee_msat;
 			if available_capacity_msat < real_dust_limit_success_msat {
 				let one_htlc_difference_msat = max_reserved_commit_tx_fee_msat - min_reserved_commit_tx_fee_msat;
