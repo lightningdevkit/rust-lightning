@@ -90,9 +90,12 @@ impl<'a> InvoiceRequestBuilder<'a> {
 		Self {
 			offer,
 			invoice_request: InvoiceRequestContents {
-				payer: PayerContents(metadata), offer: offer.contents.clone(), chain: None,
-				amount_msats: None, features: InvoiceRequestFeatures::empty(), quantity: None,
-				payer_id, payer_note: None,
+				inner: InvoiceRequestContentsWithoutPayerId {
+					payer: PayerContents(metadata), offer: offer.contents.clone(), chain: None,
+					amount_msats: None, features: InvoiceRequestFeatures::empty(), quantity: None,
+					payer_note: None,
+				},
+				payer_id,
 			},
 		}
 	}
@@ -108,7 +111,7 @@ impl<'a> InvoiceRequestBuilder<'a> {
 			return Err(SemanticError::UnsupportedChain);
 		}
 
-		self.invoice_request.chain = Some(chain);
+		self.invoice_request.inner.chain = Some(chain);
 		Ok(self)
 	}
 
@@ -119,10 +122,10 @@ impl<'a> InvoiceRequestBuilder<'a> {
 	///
 	/// [`quantity`]: Self::quantity
 	pub fn amount_msats(mut self, amount_msats: u64) -> Result<Self, SemanticError> {
-		self.invoice_request.offer.check_amount_msats_for_quantity(
-			Some(amount_msats), self.invoice_request.quantity
+		self.invoice_request.inner.offer.check_amount_msats_for_quantity(
+			Some(amount_msats), self.invoice_request.inner.quantity
 		)?;
-		self.invoice_request.amount_msats = Some(amount_msats);
+		self.invoice_request.inner.amount_msats = Some(amount_msats);
 		Ok(self)
 	}
 
@@ -131,8 +134,8 @@ impl<'a> InvoiceRequestBuilder<'a> {
 	///
 	/// Successive calls to this method will override the previous setting.
 	pub fn quantity(mut self, quantity: u64) -> Result<Self, SemanticError> {
-		self.invoice_request.offer.check_quantity(Some(quantity))?;
-		self.invoice_request.quantity = Some(quantity);
+		self.invoice_request.inner.offer.check_quantity(Some(quantity))?;
+		self.invoice_request.inner.quantity = Some(quantity);
 		Ok(self)
 	}
 
@@ -140,7 +143,7 @@ impl<'a> InvoiceRequestBuilder<'a> {
 	///
 	/// Successive calls to this method will override the previous setting.
 	pub fn payer_note(mut self, payer_note: String) -> Self {
-		self.invoice_request.payer_note = Some(payer_note);
+		self.invoice_request.inner.payer_note = Some(payer_note);
 		self
 	}
 
@@ -159,16 +162,16 @@ impl<'a> InvoiceRequestBuilder<'a> {
 		}
 
 		if chain == self.offer.implied_chain() {
-			self.invoice_request.chain = None;
+			self.invoice_request.inner.chain = None;
 		}
 
-		if self.offer.amount().is_none() && self.invoice_request.amount_msats.is_none() {
+		if self.offer.amount().is_none() && self.invoice_request.inner.amount_msats.is_none() {
 			return Err(SemanticError::MissingAmount);
 		}
 
-		self.invoice_request.offer.check_quantity(self.invoice_request.quantity)?;
-		self.invoice_request.offer.check_amount_msats_for_quantity(
-			self.invoice_request.amount_msats, self.invoice_request.quantity
+		self.invoice_request.inner.offer.check_quantity(self.invoice_request.inner.quantity)?;
+		self.invoice_request.inner.offer.check_amount_msats_for_quantity(
+			self.invoice_request.inner.amount_msats, self.invoice_request.inner.quantity
 		)?;
 
 		let InvoiceRequestBuilder { offer, invoice_request } = self;
@@ -180,22 +183,22 @@ impl<'a> InvoiceRequestBuilder<'a> {
 impl<'a> InvoiceRequestBuilder<'a> {
 	fn chain_unchecked(mut self, network: Network) -> Self {
 		let chain = ChainHash::using_genesis_block(network);
-		self.invoice_request.chain = Some(chain);
+		self.invoice_request.inner.chain = Some(chain);
 		self
 	}
 
 	fn amount_msats_unchecked(mut self, amount_msats: u64) -> Self {
-		self.invoice_request.amount_msats = Some(amount_msats);
+		self.invoice_request.inner.amount_msats = Some(amount_msats);
 		self
 	}
 
 	fn features_unchecked(mut self, features: InvoiceRequestFeatures) -> Self {
-		self.invoice_request.features = features;
+		self.invoice_request.inner.features = features;
 		self
 	}
 
 	fn quantity_unchecked(mut self, quantity: u64) -> Self {
-		self.invoice_request.quantity = Some(quantity);
+		self.invoice_request.inner.quantity = Some(quantity);
 		self
 	}
 
@@ -265,13 +268,19 @@ pub struct InvoiceRequest {
 #[derive(Clone, Debug)]
 #[cfg_attr(test, derive(PartialEq))]
 pub(super) struct InvoiceRequestContents {
+	pub(super) inner: InvoiceRequestContentsWithoutPayerId,
+	payer_id: PublicKey,
+}
+
+#[derive(Clone, Debug)]
+#[cfg_attr(test, derive(PartialEq))]
+pub(super) struct InvoiceRequestContentsWithoutPayerId {
 	payer: PayerContents,
 	pub(super) offer: OfferContents,
 	chain: Option<ChainHash>,
 	amount_msats: Option<u64>,
 	features: InvoiceRequestFeatures,
 	quantity: Option<u64>,
-	payer_id: PublicKey,
 	payer_note: Option<String>,
 }
 
@@ -281,7 +290,7 @@ impl InvoiceRequest {
 	///
 	/// [`payer_id`]: Self::payer_id
 	pub fn metadata(&self) -> &[u8] {
-		&self.contents.payer.0[..]
+		&self.contents.inner.payer.0[..]
 	}
 
 	/// A chain from [`Offer::chains`] that the offer is valid for.
@@ -294,17 +303,17 @@ impl InvoiceRequest {
 	///
 	/// [`chain`]: Self::chain
 	pub fn amount_msats(&self) -> Option<u64> {
-		self.contents.amount_msats
+		self.contents.inner.amount_msats
 	}
 
 	/// Features pertaining to requesting an invoice.
 	pub fn features(&self) -> &InvoiceRequestFeatures {
-		&self.contents.features
+		&self.contents.inner.features
 	}
 
 	/// The quantity of the offer's item conforming to [`Offer::is_valid_quantity`].
 	pub fn quantity(&self) -> Option<u64> {
-		self.contents.quantity
+		self.contents.inner.quantity
 	}
 
 	/// A possibly transient pubkey used to sign the invoice request.
@@ -315,7 +324,8 @@ impl InvoiceRequest {
 	/// A payer-provided note which will be seen by the recipient and reflected back in the invoice
 	/// response.
 	pub fn payer_note(&self) -> Option<PrintableString> {
-		self.contents.payer_note.as_ref().map(|payer_note| PrintableString(payer_note.as_str()))
+		self.contents.inner.payer_note.as_ref()
+			.map(|payer_note| PrintableString(payer_note.as_str()))
 	}
 
 	/// Signature of the invoice request using [`payer_id`].
@@ -377,7 +387,7 @@ impl InvoiceRequest {
 	pub fn verify<T: secp256k1::Signing>(
 		&self, key: &ExpandedKey, secp_ctx: &Secp256k1<T>
 	) -> bool {
-		self.contents.offer.verify(TlvStream::new(&self.bytes), key, secp_ctx)
+		self.contents.inner.offer.verify(TlvStream::new(&self.bytes), key, secp_ctx)
 	}
 
 	#[cfg(test)]
@@ -392,6 +402,18 @@ impl InvoiceRequest {
 }
 
 impl InvoiceRequestContents {
+	pub(super) fn chain(&self) -> ChainHash {
+		self.inner.chain()
+	}
+
+	pub(super) fn as_tlv_stream(&self) -> PartialInvoiceRequestTlvStreamRef {
+		let (payer, offer, mut invoice_request) = self.inner.as_tlv_stream();
+		invoice_request.payer_id = Some(&self.payer_id);
+		(payer, offer, invoice_request)
+	}
+}
+
+impl InvoiceRequestContentsWithoutPayerId {
 	pub(super) fn chain(&self) -> ChainHash {
 		self.chain.unwrap_or_else(|| self.offer.implied_chain())
 	}
@@ -413,7 +435,7 @@ impl InvoiceRequestContents {
 			amount: self.amount_msats,
 			features,
 			quantity: self.quantity,
-			payer_id: Some(&self.payer_id),
+			payer_id: None,
 			payer_note: self.payer_note.as_ref(),
 		};
 
@@ -531,7 +553,10 @@ impl TryFrom<PartialInvoiceRequestTlvStream> for InvoiceRequestContents {
 		};
 
 		Ok(InvoiceRequestContents {
-			payer, offer, chain, amount_msats: amount, features, quantity, payer_id, payer_note,
+			inner: InvoiceRequestContentsWithoutPayerId {
+				payer, offer, chain, amount_msats: amount, features, quantity, payer_note,
+			},
+			payer_id,
 		})
 	}
 }

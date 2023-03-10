@@ -146,7 +146,7 @@ impl<'a> InvoiceBuilder<'a> {
 	) -> Result<Self, SemanticError> {
 		let amount_msats = match invoice_request.amount_msats() {
 			Some(amount_msats) => amount_msats,
-			None => match invoice_request.contents.offer.amount() {
+			None => match invoice_request.contents.inner.offer.amount() {
 				Some(Amount::Bitcoin { amount_msats }) => {
 					amount_msats.checked_mul(invoice_request.quantity().unwrap_or(1))
 						.ok_or(SemanticError::InvalidAmount)?
@@ -161,7 +161,7 @@ impl<'a> InvoiceBuilder<'a> {
 			fields: InvoiceFields {
 				payment_paths, created_at, relative_expiry: None, payment_hash, amount_msats,
 				fallbacks: None, features: Bolt12InvoiceFeatures::empty(),
-				signing_pubkey: invoice_request.contents.offer.signing_pubkey(),
+				signing_pubkey: invoice_request.contents.inner.offer.signing_pubkey(),
 			},
 		};
 
@@ -493,7 +493,8 @@ impl InvoiceContents {
 	#[cfg(feature = "std")]
 	fn is_offer_or_refund_expired(&self) -> bool {
 		match self {
-			InvoiceContents::ForOffer { invoice_request, .. } => invoice_request.offer.is_expired(),
+			InvoiceContents::ForOffer { invoice_request, .. } =>
+				invoice_request.inner.offer.is_expired(),
 			InvoiceContents::ForRefund { refund, .. } => refund.is_expired(),
 		}
 	}
