@@ -984,7 +984,7 @@ impl_writeable_tlv_based!(HolderCommitmentTransaction, {
 
 impl HolderCommitmentTransaction {
 	#[cfg(test)]
-	pub fn dummy() -> Self {
+	pub fn dummy(htlcs: &mut Vec<(HTLCOutputInCommitment, ())>) -> Self {
 		let secp_ctx = Secp256k1::new();
 		let dummy_key = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let dummy_sig = sign(&secp_ctx, &secp256k1::Message::from_slice(&[42; 32]).unwrap(), &SecretKey::from_slice(&[42; 32]).unwrap());
@@ -1012,12 +1012,16 @@ impl HolderCommitmentTransaction {
 			opt_anchors: None,
 			opt_non_zero_fee_anchors: None,
 		};
-		let mut htlcs_with_aux: Vec<(_, ())> = Vec::new();
-		let inner = CommitmentTransaction::new_with_auxiliary_htlc_data(0, 0, 0, false, dummy_key.clone(), dummy_key.clone(), keys, 0, &mut htlcs_with_aux, &channel_parameters.as_counterparty_broadcastable());
+		let mut counterparty_htlc_sigs = Vec::new();
+		for _ in 0..htlcs.len() {
+			counterparty_htlc_sigs.push(dummy_sig);
+		}
+		let inner = CommitmentTransaction::new_with_auxiliary_htlc_data(0, 0, 0, false, dummy_key.clone(), dummy_key.clone(), keys, 0, htlcs, &channel_parameters.as_counterparty_broadcastable());
+		htlcs.sort_by_key(|htlc| htlc.0.transaction_output_index);
 		HolderCommitmentTransaction {
 			inner,
 			counterparty_sig: dummy_sig,
-			counterparty_htlc_sigs: Vec::new(),
+			counterparty_htlc_sigs,
 			holder_sig_first: false
 		}
 	}

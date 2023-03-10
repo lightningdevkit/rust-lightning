@@ -302,9 +302,9 @@ impl core::hash::Hash for HTLCSource {
 		}
 	}
 }
-#[cfg(not(feature = "grind_signatures"))]
-#[cfg(test)]
 impl HTLCSource {
+	#[cfg(not(feature = "grind_signatures"))]
+	#[cfg(test)]
 	pub fn dummy() -> Self {
 		HTLCSource::OutboundRoute {
 			path: Vec::new(),
@@ -313,6 +313,18 @@ impl HTLCSource {
 			payment_id: PaymentId([2; 32]),
 			payment_secret: None,
 			payment_params: None,
+		}
+	}
+
+	#[cfg(debug_assertions)]
+	/// Checks whether this HTLCSource could possibly match the given HTLC output in a commitment
+	/// transaction. Useful to ensure different datastructures match up.
+	pub(crate) fn possibly_matches_output(&self, htlc: &super::chan_utils::HTLCOutputInCommitment) -> bool {
+		if let HTLCSource::OutboundRoute { first_hop_htlc_msat, .. } = self {
+			*first_hop_htlc_msat == htlc.amount_msat
+		} else {
+			// There's nothing we can check for forwarded HTLCs
+			true
 		}
 	}
 }
