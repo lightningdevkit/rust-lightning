@@ -883,6 +883,7 @@ pub fn sign_funding_transaction<'a, 'b, 'c>(node_a: &Node<'a, 'b, 'c>, node_b: &
 		assert_eq!(added_monitors[0].0, funding_output);
 		added_monitors.clear();
 	}
+	expect_channel_pending_event(&node_b, &node_a.node.get_our_node_id());
 
 	node_a.node.handle_funding_signed(&node_b.node.get_our_node_id(), &get_event_msg!(node_b, MessageSendEvent::SendFundingSigned, node_a.node.get_our_node_id()));
 	{
@@ -891,6 +892,7 @@ pub fn sign_funding_transaction<'a, 'b, 'c>(node_a: &Node<'a, 'b, 'c>, node_b: &
 		assert_eq!(added_monitors[0].0, funding_output);
 		added_monitors.clear();
 	}
+	expect_channel_pending_event(&node_a, &node_b.node.get_our_node_id());
 
 	let events_4 = node_a.node.get_and_clear_pending_events();
 	assert_eq!(events_4.len(), 0);
@@ -942,6 +944,8 @@ pub fn open_zero_conf_channel<'a, 'b, 'c, 'd>(initiator: &'a Node<'b, 'c, 'd>, r
 		MessageSendEvent::SendFundingSigned { node_id, msg } => {
 			assert_eq!(*node_id, initiator.node.get_our_node_id());
 			initiator.node.handle_funding_signed(&receiver.node.get_our_node_id(), &msg);
+			expect_channel_pending_event(&initiator, &receiver.node.get_our_node_id());
+			expect_channel_pending_event(&receiver, &initiator.node.get_our_node_id());
 			check_added_monitors!(initiator, 1);
 
 			assert_eq!(initiator.tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 1);
@@ -955,11 +959,13 @@ pub fn open_zero_conf_channel<'a, 'b, 'c, 'd>(initiator: &'a Node<'b, 'c, 'd>, r
 		MessageSendEvent::SendChannelReady { node_id, msg } => {
 			assert_eq!(*node_id, initiator.node.get_our_node_id());
 			initiator.node.handle_channel_ready(&receiver.node.get_our_node_id(), &msg);
+			expect_channel_ready_event(&initiator, &receiver.node.get_our_node_id());
 		}
 		_ => panic!("Unexpected event"),
 	}
 
 	receiver.node.handle_channel_ready(&initiator.node.get_our_node_id(), &as_channel_ready);
+	expect_channel_ready_event(&receiver, &initiator.node.get_our_node_id());
 
 	let as_channel_update = get_event_msg!(initiator, MessageSendEvent::SendChannelUpdate, receiver.node.get_our_node_id());
 	let bs_channel_update = get_event_msg!(receiver, MessageSendEvent::SendChannelUpdate, initiator.node.get_our_node_id());
@@ -969,9 +975,6 @@ pub fn open_zero_conf_channel<'a, 'b, 'c, 'd>(initiator: &'a Node<'b, 'c, 'd>, r
 
 	assert_eq!(initiator.node.list_usable_channels().len(), initiator_channels + 1);
 	assert_eq!(receiver.node.list_usable_channels().len(), receiver_channels + 1);
-
-	expect_channel_ready_event(&initiator, &receiver.node.get_our_node_id());
-	expect_channel_ready_event(&receiver, &initiator.node.get_our_node_id());
 
 	(tx, as_channel_ready.channel_id)
 }
@@ -1097,7 +1100,10 @@ pub fn create_unannounced_chan_between_nodes_with_value<'a, 'b, 'c, 'd>(nodes: &
 	check_added_monitors!(nodes[b], 1);
 
 	let cs_funding_signed = get_event_msg!(nodes[b], MessageSendEvent::SendFundingSigned, nodes[a].node.get_our_node_id());
+	expect_channel_pending_event(&nodes[b], &nodes[a].node.get_our_node_id());
+
 	nodes[a].node.handle_funding_signed(&nodes[b].node.get_our_node_id(), &cs_funding_signed);
+	expect_channel_pending_event(&nodes[a], &nodes[b].node.get_our_node_id());
 	check_added_monitors!(nodes[a], 1);
 
 	assert_eq!(nodes[a].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 1);
@@ -1802,6 +1808,18 @@ macro_rules! expect_payment_forwarded {
 }
 
 #[cfg(any(test, feature = "_bench_unstable", feature = "_test_utils"))]
+pub fn expect_channel_pending_event<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, expected_counterparty_node_id: &PublicKey) {
+	let events = node.node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	match events[0] {
+		crate::events::Event::ChannelPending { ref counterparty_node_id, .. } => {
+			assert_eq!(*expected_counterparty_node_id, *counterparty_node_id);
+		},
+		_ => panic!("Unexpected event"),
+	}
+}
+
+#[cfg(any(test, feature = "_bench_unstable", feature = "_test_utils"))]
 pub fn expect_channel_ready_event<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, expected_counterparty_node_id: &PublicKey) {
 	let events = node.node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
@@ -1812,7 +1830,6 @@ pub fn expect_channel_ready_event<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, ex
 		_ => panic!("Unexpected event"),
 	}
 }
-
 
 pub struct PaymentFailedConditions<'a> {
 	pub(crate) expected_htlc_error_data: Option<(u16, &'a [u8])>,

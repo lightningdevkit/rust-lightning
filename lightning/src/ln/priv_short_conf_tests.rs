@@ -362,7 +362,10 @@ fn test_inbound_scid_privacy() {
 	check_added_monitors!(nodes[2], 1);
 
 	let cs_funding_signed = get_event_msg!(nodes[2], MessageSendEvent::SendFundingSigned, nodes[1].node.get_our_node_id());
+	expect_channel_pending_event(&nodes[2], &nodes[1].node.get_our_node_id());
+
 	nodes[1].node.handle_funding_signed(&nodes[2].node.get_our_node_id(), &cs_funding_signed);
+	expect_channel_pending_event(&nodes[1], &nodes[2].node.get_our_node_id());
 	check_added_monitors!(nodes[1], 1);
 
 	let conf_height = core::cmp::max(nodes[1].best_block_info().1 + 1, nodes[2].best_block_info().1 + 1);
@@ -599,6 +602,7 @@ fn test_0conf_channel_with_async_monitor() {
 
 	let channel_id = funding_output.to_channel_id();
 	nodes[1].chain_monitor.complete_sole_pending_chan_update(&channel_id);
+	expect_channel_pending_event(&nodes[1], &nodes[0].node.get_our_node_id());
 
 	let bs_signed_locked = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(bs_signed_locked.len(), 2);
@@ -624,6 +628,22 @@ fn test_0conf_channel_with_async_monitor() {
 
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 	nodes[0].chain_monitor.complete_sole_pending_chan_update(&channel_id);
+
+	let events = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 2);
+	match events[0] {
+		crate::events::Event::ChannelPending { ref counterparty_node_id, .. } => {
+			assert_eq!(nodes[1].node.get_our_node_id(), *counterparty_node_id);
+		},
+		_ => panic!("Unexpected event"),
+	}
+	match events[1] {
+		crate::events::Event::ChannelReady { ref counterparty_node_id, .. } => {
+			assert_eq!(nodes[1].node.get_our_node_id(), *counterparty_node_id);
+		},
+		_ => panic!("Unexpected event"),
+	}
+
 	let as_locked_update = nodes[0].node.get_and_clear_pending_msg_events();
 
 	// Note that the funding transaction is actually released when
@@ -638,7 +658,6 @@ fn test_0conf_channel_with_async_monitor() {
 		}
 		_ => panic!("Unexpected event"),
 	}
-	expect_channel_ready_event(&nodes[0], &nodes[1].node.get_our_node_id());
 	expect_channel_ready_event(&nodes[1], &nodes[0].node.get_our_node_id());
 
 	let bs_channel_update = get_event_msg!(nodes[1], MessageSendEvent::SendChannelUpdate, nodes[0].node.get_our_node_id());

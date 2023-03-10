@@ -499,6 +499,7 @@ pub(super) struct Channel<Signer: ChannelSigner> {
 	user_id: u128,
 
 	channel_id: [u8; 32],
+	temporary_channel_id: Option<[u8; 32]>, // Will be `None` for channels created prior to 0.0.115.
 	channel_state: u32,
 
 	// When we reach max(6 blocks, minimum_depth), we need to send an AnnouncementSigs message to
@@ -728,6 +729,9 @@ pub(super) struct Channel<Signer: ChannelSigner> {
 	// don't currently support node id aliases and eventually privacy should be provided with
 	// blinded paths instead of simple scid+node_id aliases.
 	outbound_scid_alias: u64,
+
+	// We track whether we already emitted a `ChannelPending` event.
+	channel_pending_event_emitted: bool,
 
 	// We track whether we already emitted a `ChannelReady` event.
 	channel_ready_event_emitted: bool,
@@ -991,6 +995,8 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			}
 		}
 
+		let temporary_channel_id = entropy_source.get_secure_random_bytes();
+
 		Ok(Channel {
 			user_id,
 
@@ -1004,7 +1010,8 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 
 			inbound_handshake_limits_override: Some(config.channel_handshake_limits.clone()),
 
-			channel_id: entropy_source.get_secure_random_bytes(),
+			channel_id: temporary_channel_id,
+			temporary_channel_id: Some(temporary_channel_id),
 			channel_state: ChannelState::OurInitSent as u32,
 			announcement_sigs_state: AnnouncementSigsState::NotSent,
 			secp_ctx,
@@ -1103,6 +1110,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			latest_inbound_scid_alias: None,
 			outbound_scid_alias,
 
+			channel_pending_event_emitted: false,
 			channel_ready_event_emitted: false,
 
 			#[cfg(any(test, fuzzing))]
@@ -1350,6 +1358,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			inbound_handshake_limits_override: None,
 
 			channel_id: msg.temporary_channel_id,
+			temporary_channel_id: Some(msg.temporary_channel_id),
 			channel_state: (ChannelState::OurInitSent as u32) | (ChannelState::TheirInitSent as u32),
 			announcement_sigs_state: AnnouncementSigsState::NotSent,
 			secp_ctx,
@@ -1451,6 +1460,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			latest_inbound_scid_alias: None,
 			outbound_scid_alias,
 
+			channel_pending_event_emitted: false,
 			channel_ready_event_emitted: false,
 
 			#[cfg(any(test, fuzzing))]
@@ -4550,6 +4560,13 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		self.channel_id
 	}
 
+	// Return the `temporary_channel_id` used during channel establishment.
+	//
+	// Will return `None` for channels created prior to LDK version 0.0.115.
+	pub fn temporary_channel_id(&self) -> Option<[u8; 32]> {
+		self.temporary_channel_id
+	}
+
 	pub fn minimum_depth(&self) -> Option<u32> {
 		self.minimum_depth
 	}
@@ -4692,6 +4709,21 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 	/// Returns the previous [`ChannelConfig`] applied to this channel, if any.
 	pub fn prev_config(&self) -> Option<ChannelConfig> {
 		self.prev_config.map(|prev_config| prev_config.0)
+	}
+
+	// Checks whether we should emit a `ChannelPending` event.
+	pub(crate) fn should_emit_channel_pending_event(&mut self) -> bool {
+		self.is_funding_initiated() && !self.channel_pending_event_emitted
+	}
+
+	// Returns whether we already emitted a `ChannelPending` event.
+	pub(crate) fn channel_pending_event_emitted(&self) -> bool {
+		self.channel_pending_event_emitted
+	}
+
+	// Remembers that we already emitted a `ChannelPending` event.
+	pub(crate) fn set_channel_pending_event_emitted(&mut self) {
+		self.channel_pending_event_emitted = true;
 	}
 
 	// Checks whether we should emit a `ChannelReady` event.
@@ -6420,6 +6452,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Writeable for Channel<Signer> {
 			if self.holder_max_htlc_value_in_flight_msat != Self::get_holder_max_htlc_value_in_flight_msat(self.channel_value_satoshis, &old_max_in_flight_percent_config)
 			{ Some(self.holder_max_htlc_value_in_flight_msat) } else { None };
 
+		let channel_pending_event_emitted = Some(self.channel_pending_event_emitted);
 		let channel_ready_event_emitted = Some(self.channel_ready_event_emitted);
 
 		// `user_id` used to be a single u64 value. In order to remain backwards compatible with
@@ -6452,6 +6485,8 @@ impl<Signer: WriteableEcdsaChannelSigner> Writeable for Channel<Signer> {
 			(23, channel_ready_event_emitted, option),
 			(25, user_id_high_opt, option),
 			(27, self.channel_keys_id, required),
+			(29, self.temporary_channel_id, option),
+			(31, channel_pending_event_emitted, option),
 		});
 
 		Ok(())
@@ -6719,10 +6754,12 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 		let mut announcement_sigs_state = Some(AnnouncementSigsState::NotSent);
 		let mut latest_inbound_scid_alias = None;
 		let mut outbound_scid_alias = None;
+		let mut channel_pending_event_emitted = None;
 		let mut channel_ready_event_emitted = None;
 
 		let mut user_id_high_opt: Option<u64> = None;
 		let mut channel_keys_id: Option<[u8; 32]> = None;
+		let mut temporary_channel_id: Option<[u8; 32]> = None;
 
 		read_tlv_fields!(reader, {
 			(0, announcement_sigs, option),
@@ -6743,6 +6780,8 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 			(23, channel_ready_event_emitted, option),
 			(25, user_id_high_opt, option),
 			(27, channel_keys_id, option),
+			(29, temporary_channel_id, option),
+			(31, channel_pending_event_emitted, option),
 		});
 
 		let (channel_keys_id, holder_signer) = if let Some(channel_keys_id) = channel_keys_id {
@@ -6807,6 +6846,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 			inbound_handshake_limits_override: None,
 
 			channel_id,
+			temporary_channel_id,
 			channel_state,
 			announcement_sigs_state: announcement_sigs_state.unwrap(),
 			secp_ctx,
@@ -6899,6 +6939,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 			// Later in the ChannelManager deserialization phase we scan for channels and assign scid aliases if its missing
 			outbound_scid_alias: outbound_scid_alias.unwrap_or(0),
 
+			channel_pending_event_emitted: channel_pending_event_emitted.unwrap_or(true),
 			channel_ready_event_emitted: channel_ready_event_emitted.unwrap_or(true),
 
 			#[cfg(any(test, fuzzing))]

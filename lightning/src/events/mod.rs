@@ -32,7 +32,9 @@ use crate::util::ser::{BigSize, FixedLengthReader, Writeable, Writer, MaybeReada
 use crate::util::string::UntrustedString;
 use crate::routing::router::{RouteHop, RouteParameters};
 
-use bitcoin::{PackedLockTime, Transaction};
+use bitcoin::{PackedLockTime, Transaction, OutPoint};
+#[cfg(anchors)]
+use bitcoin::{Txid, TxIn, TxOut, Witness};
 use bitcoin::blockdata::script::Script;
 use bitcoin::hashes::Hash;
 use bitcoin::hashes::sha256::Hash as Sha256;
@@ -608,12 +610,14 @@ pub enum Event {
 		/// The caveat described above the `fee_earned_msat` field applies here as well.
 		outbound_amount_forwarded_msat: Option<u64>,
 	},
-	/// Used to indicate that a channel with the given `channel_id` is ready to
-	/// be used. This event is emitted either when the funding transaction has been confirmed
-	/// on-chain, or, in case of a 0conf channel, when both parties have confirmed the channel
-	/// establishment.
-	ChannelReady {
-		/// The channel_id of the channel that is ready.
+	/// Used to indicate that a channel with the given `channel_id` is being opened and pending
+	/// confirmation on-chain.
+	///
+	/// This event is emitted when the funding transaction has been signed and is broadcast to the
+	/// network. For 0conf channels it will be immediately followed by the corresponding
+	/// [`Event::ChannelReady`] event.
+	ChannelPending {
+		/// The `channel_id` of the channel that is pending confirmation.
 		channel_id: [u8; 32],
 		/// The `user_channel_id` value passed in to [`ChannelManager::create_channel`] for outbound
 		/// channels, or to [`ChannelManager::accept_inbound_channel`] for inbound channels if
@@ -624,7 +628,32 @@ pub enum Event {
 		/// [`ChannelManager::accept_inbound_channel`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel
 		/// [`UserConfig::manually_accept_inbound_channels`]: crate::util::config::UserConfig::manually_accept_inbound_channels
 		user_channel_id: u128,
-		/// The node_id of the channel counterparty.
+		/// The `temporary_channel_id` this channel used to be known by during channel establishment.
+		///
+		/// Will be `None` for channels created prior to LDK version 0.0.115.
+		former_temporary_channel_id: Option<[u8; 32]>,
+		/// The `node_id` of the channel counterparty.
+		counterparty_node_id: PublicKey,
+		/// The outpoint of the channel's funding transaction.
+		funding_txo: OutPoint,
+	},
+	/// Used to indicate that a channel with the given `channel_id` is ready to
+	/// be used. This event is emitted either when the funding transaction has been confirmed
+	/// on-chain, or, in case of a 0conf channel, when both parties have confirmed the channel
+	/// establishment.
+	ChannelReady {
+		/// The `channel_id` of the channel that is ready.
+		channel_id: [u8; 32],
+		/// The `user_channel_id` value passed in to [`ChannelManager::create_channel`] for outbound
+		/// channels, or to [`ChannelManager::accept_inbound_channel`] for inbound channels if
+		/// [`UserConfig::manually_accept_inbound_channels`] config flag is set to true. Otherwise
+		/// `user_channel_id` will be randomized for an inbound channel.
+		///
+		/// [`ChannelManager::create_channel`]: crate::ln::channelmanager::ChannelManager::create_channel
+		/// [`ChannelManager::accept_inbound_channel`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel
+		/// [`UserConfig::manually_accept_inbound_channels`]: crate::util::config::UserConfig::manually_accept_inbound_channels
+		user_channel_id: u128,
+		/// The `node_id` of the channel counterparty.
 		counterparty_node_id: PublicKey,
 		/// The features that this channel will operate with.
 		channel_type: ChannelTypeFeatures,
@@ -632,7 +661,7 @@ pub enum Event {
 	/// Used to indicate that a previously opened channel with the given `channel_id` is in the
 	/// process of closure.
 	ChannelClosed  {
-		/// The channel_id of the channel which has been closed. Note that on-chain transactions
+		/// The `channel_id` of the channel which has been closed. Note that on-chain transactions
 		/// resolving the channel are likely still awaiting confirmation.
 		channel_id: [u8; 32],
 		/// The `user_channel_id` value passed in to [`ChannelManager::create_channel`] for outbound
@@ -929,6 +958,16 @@ impl Writeable for Event {
 					(2, user_channel_id, required),
 					(4, counterparty_node_id, required),
 					(6, channel_type, required),
+				});
+			},
+			&Event::ChannelPending { ref channel_id, ref user_channel_id, ref former_temporary_channel_id, ref counterparty_node_id, ref funding_txo } => {
+				31u8.write(writer)?;
+				write_tlv_fields!(writer, {
+					(0, channel_id, required),
+					(2, user_channel_id, required),
+					(4, former_temporary_channel_id, required),
+					(6, counterparty_node_id, required),
+					(8, funding_txo, required),
 				});
 			},
 			// Note that, going forward, all new events must only write data inside of
@@ -1267,6 +1306,31 @@ impl MaybeReadable for Event {
 						user_channel_id,
 						counterparty_node_id: counterparty_node_id.0.unwrap(),
 						channel_type: channel_type.0.unwrap()
+					}))
+				};
+				f()
+			},
+			31u8 => {
+				let f = || {
+					let mut channel_id = [0; 32];
+					let mut user_channel_id: u128 = 0;
+					let mut former_temporary_channel_id = None;
+					let mut counterparty_node_id = RequiredWrapper(None);
+					let mut funding_txo = RequiredWrapper(None);
+					read_tlv_fields!(reader, {
+						(0, channel_id, required),
+						(2, user_channel_id, required),
+						(4, former_temporary_channel_id, required),
+						(6, counterparty_node_id, required),
+						(8, funding_txo, required),
+					});
+
+					Ok(Some(Event::ChannelPending {
+						channel_id,
+						user_channel_id,
+						former_temporary_channel_id,
+						counterparty_node_id: counterparty_node_id.0.unwrap(),
+						funding_txo: funding_txo.0.unwrap()
 					}))
 				};
 				f()

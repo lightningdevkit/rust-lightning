@@ -261,6 +261,9 @@ fn test_manager_serialize_deserialize_events() {
 	}
 	// Normally, this is where node_a would broadcast the funding transaction, but the test de/serializes first instead
 
+	expect_channel_pending_event(&node_a, &node_b.node.get_our_node_id());
+	expect_channel_pending_event(&node_b, &node_a.node.get_our_node_id());
+
 	nodes.push(node_a);
 	nodes.push(node_b);
 

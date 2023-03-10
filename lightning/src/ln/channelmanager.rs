@@ -1496,18 +1496,31 @@ macro_rules! send_channel_ready {
 	}}
 }
 
+macro_rules! emit_channel_pending_event {
+	($locked_events: expr, $channel: expr) => {
+		if $channel.should_emit_channel_pending_event() {
+			$locked_events.push(events::Event::ChannelPending {
+				channel_id: $channel.channel_id(),
+				former_temporary_channel_id: $channel.temporary_channel_id(),
+				counterparty_node_id: $channel.get_counterparty_node_id(),
+				user_channel_id: $channel.get_user_id(),
+				funding_txo: $channel.get_funding_txo().unwrap().into_bitcoin_outpoint(),
+			});
+			$channel.set_channel_pending_event_emitted();
+		}
+	}
+}
+
 macro_rules! emit_channel_ready_event {
-	($self: expr, $channel: expr) => {
+	($locked_events: expr, $channel: expr) => {
 		if $channel.should_emit_channel_ready_event() {
-			{
-				let mut pending_events = $self.pending_events.lock().unwrap();
-				pending_events.push(events::Event::ChannelReady {
-					channel_id: $channel.channel_id(),
-					user_channel_id: $channel.get_user_id(),
-					counterparty_node_id: $channel.get_counterparty_node_id(),
-					channel_type: $channel.get_channel_type().clone(),
-				});
-			}
+			debug_assert!($channel.channel_pending_event_emitted());
+			$locked_events.push(events::Event::ChannelReady {
+				channel_id: $channel.channel_id(),
+				user_channel_id: $channel.get_user_id(),
+				counterparty_node_id: $channel.get_counterparty_node_id(),
+				channel_type: $channel.get_channel_type().clone(),
+			});
 			$channel.set_channel_ready_event_emitted();
 		}
 	}
@@ -4253,8 +4266,6 @@ where
 			});
 		}
 
-		emit_channel_ready_event!(self, channel);
-
 		macro_rules! handle_cs { () => {
 			if let Some(update) = commitment_update {
 				pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
@@ -4285,6 +4296,12 @@ where
 		if let Some(tx) = funding_broadcastable {
 			log_info!(self.logger, "Broadcasting funding transaction with txid {}", tx.txid());
 			self.tx_broadcaster.broadcast_transaction(&tx);
+		}
+
+		{
+			let mut pending_events = self.pending_events.lock().unwrap();
+			emit_channel_pending_event!(pending_events, channel);
+			emit_channel_ready_event!(pending_events, channel);
 		}
 
 		htlc_forwards
@@ -4711,7 +4728,10 @@ where
 					}
 				}
 
-				emit_channel_ready_event!(self, chan.get_mut());
+				{
+					let mut pending_events = self.pending_events.lock().unwrap();
+					emit_channel_ready_event!(pending_events, chan.get_mut());
+				}
 
 				Ok(())
 			},
@@ -6036,7 +6056,10 @@ where
 							}
 						}
 
-						emit_channel_ready_event!(self, channel);
+						{
+							let mut pending_events = self.pending_events.lock().unwrap();
+							emit_channel_ready_event!(pending_events, channel);
+						}
 
 						if let Some(announcement_sigs) = announcement_sigs {
 							log_trace!(self.logger, "Sending announcement_signatures for channel {}", log_bytes!(channel.channel_id()));
@@ -8463,6 +8486,7 @@ mod tests {
 			assert_eq!(nodes_0_lock.len(), 1);
 			assert!(nodes_0_lock.contains_key(channel_id));
 		}
+		expect_channel_pending_event(&nodes[1], &nodes[0].node.get_our_node_id());
 
 		{
 			// Assert that `nodes[1]`'s `id_to_peer` map is populated with the channel as soon as
@@ -8475,6 +8499,7 @@ mod tests {
 		let funding_signed = get_event_msg!(nodes[1], MessageSendEvent::SendFundingSigned, nodes[0].node.get_our_node_id());
 		nodes[0].node.handle_funding_signed(&nodes[1].node.get_our_node_id(), &funding_signed);
 		check_added_monitors!(nodes[0], 1);
+		expect_channel_pending_event(&nodes[0], &nodes[1].node.get_our_node_id());
 		let (channel_ready, _) = create_chan_between_nodes_with_value_confirm(&nodes[0], &nodes[1], &tx);
 		let (announcement, nodes_0_update, nodes_1_update) = create_chan_between_nodes_with_value_b(&nodes[0], &nodes[1], &channel_ready);
 		update_nodes_with_chan_announce(&nodes, 0, 1, &announcement, &nodes_0_update, &nodes_1_update);
@@ -8617,10 +8642,13 @@ mod tests {
 
 				nodes[1].node.handle_funding_created(&nodes[0].node.get_our_node_id(), &funding_created_msg);
 				check_added_monitors!(nodes[1], 1);
+				expect_channel_pending_event(&nodes[1], &nodes[0].node.get_our_node_id());
+
 				let funding_signed = get_event_msg!(nodes[1], MessageSendEvent::SendFundingSigned, nodes[0].node.get_our_node_id());
 
 				nodes[0].node.handle_funding_signed(&nodes[1].node.get_our_node_id(), &funding_signed);
 				check_added_monitors!(nodes[0], 1);
+				expect_channel_pending_event(&nodes[0], &nodes[1].node.get_our_node_id());
 			}
 			open_channel_msg.temporary_channel_id = nodes[0].keys_manager.get_secure_random_bytes();
 		}
@@ -8840,7 +8868,7 @@ pub mod bench {
 	use crate::chain::chainmonitor::{ChainMonitor, Persist};
 	use crate::chain::keysinterface::{EntropySource, KeysManager, InMemorySigner};
 	use crate::events::{Event, MessageSendEvent, MessageSendEventsProvider};
-	use crate::ln::channelmanager::{self, BestBlock, ChainParameters, ChannelManager, PaymentHash, PaymentPreimage, PaymentId};
+	use crate::ln::channelmanager::{BestBlock, ChainParameters, ChannelManager, PaymentHash, PaymentPreimage, PaymentId};
 	use crate::ln::functional_test_utils::*;
 	use crate::ln::msgs::{ChannelMessageHandler, Init};
 	use crate::routing::gossip::NetworkGraph;
@@ -8921,7 +8949,24 @@ pub mod bench {
 		} else { panic!(); }
 
 		node_b.handle_funding_created(&node_a.get_our_node_id(), &get_event_msg!(node_a_holder, MessageSendEvent::SendFundingCreated, node_b.get_our_node_id()));
+		let events_b = node_b.get_and_clear_pending_events();
+		assert_eq!(events_b.len(), 1);
+		match events_b[0] {
+			Event::ChannelPending{ ref counterparty_node_id, .. } => {
+				assert_eq!(*counterparty_node_id, node_a.get_our_node_id());
+			},
+			_ => panic!("Unexpected event"),
+		}
+
 		node_a.handle_funding_signed(&node_b.get_our_node_id(), &get_event_msg!(node_b_holder, MessageSendEvent::SendFundingSigned, node_a.get_our_node_id()));
+		let events_a = node_a.get_and_clear_pending_events();
+		assert_eq!(events_a.len(), 1);
+		match events_a[0] {
+			Event::ChannelPending{ ref counterparty_node_id, .. } => {
+				assert_eq!(*counterparty_node_id, node_b.get_our_node_id());
+			},
+			_ => panic!("Unexpected event"),
+		}
 
 		assert_eq!(&tx_broadcaster.txn_broadcasted.lock().unwrap()[..], &[tx.clone()]);
 
