@@ -275,11 +275,6 @@ pub(crate) enum HTLCSource {
 		first_hop_htlc_msat: u64,
 		payment_id: PaymentId,
 		payment_secret: Option<PaymentSecret>,
-		/// Note that this is now "deprecated" - we write it for forwards (and read it for
-		/// backwards) compatibility reasons, but prefer to use the data in the
-		/// [`super::outbound_payment`] module, which stores per-payment data once instead of in
-		/// each HTLC.
-		payment_params: Option<PaymentParameters>,
 	},
 }
 #[allow(clippy::derive_hash_xor_eq)] // Our Hash is faithful to the data, we just don't have SecretKey::hash
@@ -290,14 +285,13 @@ impl core::hash::Hash for HTLCSource {
 				0u8.hash(hasher);
 				prev_hop_data.hash(hasher);
 			},
-			HTLCSource::OutboundRoute { path, session_priv, payment_id, payment_secret, first_hop_htlc_msat, payment_params } => {
+			HTLCSource::OutboundRoute { path, session_priv, payment_id, payment_secret, first_hop_htlc_msat } => {
 				1u8.hash(hasher);
 				path.hash(hasher);
 				session_priv[..].hash(hasher);
 				payment_id.hash(hasher);
 				payment_secret.hash(hasher);
 				first_hop_htlc_msat.hash(hasher);
-				payment_params.hash(hasher);
 			},
 		}
 	}
@@ -312,7 +306,6 @@ impl HTLCSource {
 			first_hop_htlc_msat: 0,
 			payment_id: PaymentId([2; 32]),
 			payment_secret: None,
-			payment_params: None,
 		}
 	}
 }
@@ -2467,12 +2460,12 @@ where
 	}
 
 	#[cfg(test)]
-	pub(crate) fn test_send_payment_along_path(&self, path: &Vec<RouteHop>, payment_params: &Option<PaymentParameters>, payment_hash: &PaymentHash, payment_secret: &Option<PaymentSecret>, total_value: u64, cur_height: u32, payment_id: PaymentId, keysend_preimage: &Option<PaymentPreimage>, session_priv_bytes: [u8; 32]) -> Result<(), APIError> {
+	pub(crate) fn test_send_payment_along_path(&self, path: &Vec<RouteHop>, payment_hash: &PaymentHash, payment_secret: &Option<PaymentSecret>, total_value: u64, cur_height: u32, payment_id: PaymentId, keysend_preimage: &Option<PaymentPreimage>, session_priv_bytes: [u8; 32]) -> Result<(), APIError> {
 		let _lck = self.total_consistency_lock.read().unwrap();
-		self.send_payment_along_path(path, payment_params, payment_hash, payment_secret, total_value, cur_height, payment_id, keysend_preimage, session_priv_bytes)
+		self.send_payment_along_path(path, payment_hash, payment_secret, total_value, cur_height, payment_id, keysend_preimage, session_priv_bytes)
 	}
 
-	fn send_payment_along_path(&self, path: &Vec<RouteHop>, payment_params: &Option<PaymentParameters>, payment_hash: &PaymentHash, payment_secret: &Option<PaymentSecret>, total_value: u64, cur_height: u32, payment_id: PaymentId, keysend_preimage: &Option<PaymentPreimage>, session_priv_bytes: [u8; 32]) -> Result<(), APIError> {
+	fn send_payment_along_path(&self, path: &Vec<RouteHop>, payment_hash: &PaymentHash, payment_secret: &Option<PaymentSecret>, total_value: u64, cur_height: u32, payment_id: PaymentId, keysend_preimage: &Option<PaymentPreimage>, session_priv_bytes: [u8; 32]) -> Result<(), APIError> {
 		// The top-level caller should hold the total_consistency_lock read lock.
 		debug_assert!(self.total_consistency_lock.try_write().is_err());
 
@@ -2511,7 +2504,6 @@ where
 						first_hop_htlc_msat: htlc_msat,
 						payment_id,
 						payment_secret: payment_secret.clone(),
-						payment_params: payment_params.clone(),
 					}, onion_packet, &self.logger);
 				match break_chan_entry!(self, send_res, chan) {
 					Some(monitor_update) => {
@@ -2617,8 +2609,8 @@ where
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 		self.pending_outbound_payments
 			.send_payment_with_route(route, payment_hash, payment_secret, payment_id, &self.entropy_source, &self.node_signer, best_block_height,
-				|path, payment_params, payment_hash, payment_secret, total_value, cur_height, payment_id, keysend_preimage, session_priv|
-				self.send_payment_along_path(path, payment_params, payment_hash, payment_secret, total_value, cur_height, payment_id, keysend_preimage, session_priv))
+				|path, payment_hash, payment_secret, total_value, cur_height, payment_id, keysend_preimage, session_priv|
+				self.send_payment_along_path(path, payment_hash, payment_secret, total_value, cur_height, payment_id, keysend_preimage, session_priv))
 	}
 
 	/// Similar to [`ChannelManager::send_payment`], but will automatically find a route based on
@@ -2631,8 +2623,8 @@ where
 				&self.router, self.list_usable_channels(), || self.compute_inflight_htlcs(),
 				&self.entropy_source, &self.node_signer, best_block_height, &self.logger,
 				&self.pending_events,
-				|path, payment_params, payment_hash, payment_secret, total_value, cur_height, payment_id, keysend_preimage, session_priv|
-				self.send_payment_along_path(path, payment_params, payment_hash, payment_secret, total_value, cur_height, payment_id, keysend_preimage, session_priv))
+				|path, payment_hash, payment_secret, total_value, cur_height, payment_id, keysend_preimage, session_priv|
+				self.send_payment_along_path(path, payment_hash, payment_secret, total_value, cur_height, payment_id, keysend_preimage, session_priv))
 	}
 
 	#[cfg(test)]
@@ -2640,8 +2632,8 @@ where
 		let best_block_height = self.best_block.read().unwrap().height();
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 		self.pending_outbound_payments.test_send_payment_internal(route, payment_hash, payment_secret, keysend_preimage, payment_id, recv_value_msat, onion_session_privs, &self.node_signer, best_block_height,
-			|path, payment_params, payment_hash, payment_secret, total_value, cur_height, payment_id, keysend_preimage, session_priv|
-			self.send_payment_along_path(path, payment_params, payment_hash, payment_secret, total_value, cur_height, payment_id, keysend_preimage, session_priv))
+			|path, payment_hash, payment_secret, total_value, cur_height, payment_id, keysend_preimage, session_priv|
+			self.send_payment_along_path(path, payment_hash, payment_secret, total_value, cur_height, payment_id, keysend_preimage, session_priv))
 	}
 
 	#[cfg(test)]
@@ -2693,8 +2685,8 @@ where
 		self.pending_outbound_payments.send_spontaneous_payment_with_route(
 			route, payment_preimage, payment_id, &self.entropy_source, &self.node_signer,
 			best_block_height,
-			|path, payment_params, payment_hash, payment_secret, total_value, cur_height, payment_id, keysend_preimage, session_priv|
-			self.send_payment_along_path(path, payment_params, payment_hash, payment_secret, total_value, cur_height, payment_id, keysend_preimage, session_priv))
+			|path, payment_hash, payment_secret, total_value, cur_height, payment_id, keysend_preimage, session_priv|
+			self.send_payment_along_path(path, payment_hash, payment_secret, total_value, cur_height, payment_id, keysend_preimage, session_priv))
 	}
 
 	/// Similar to [`ChannelManager::send_spontaneous_payment`], but will automatically find a route
@@ -2711,8 +2703,8 @@ where
 			retry_strategy, route_params, &self.router, self.list_usable_channels(),
 			|| self.compute_inflight_htlcs(),  &self.entropy_source, &self.node_signer, best_block_height,
 			&self.logger, &self.pending_events,
-			|path, payment_params, payment_hash, payment_secret, total_value, cur_height, payment_id, keysend_preimage, session_priv|
-			self.send_payment_along_path(path, payment_params, payment_hash, payment_secret, total_value, cur_height, payment_id, keysend_preimage, session_priv))
+			|path, payment_hash, payment_secret, total_value, cur_height, payment_id, keysend_preimage, session_priv|
+			self.send_payment_along_path(path, payment_hash, payment_secret, total_value, cur_height, payment_id, keysend_preimage, session_priv))
 	}
 
 	/// Send a payment that is probing the given route for liquidity. We calculate the
@@ -2722,8 +2714,8 @@ where
 		let best_block_height = self.best_block.read().unwrap().height();
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 		self.pending_outbound_payments.send_probe(hops, self.probing_cookie_secret, &self.entropy_source, &self.node_signer, best_block_height,
-			|path, payment_params, payment_hash, payment_secret, total_value, cur_height, payment_id, keysend_preimage, session_priv|
-			self.send_payment_along_path(path, payment_params, payment_hash, payment_secret, total_value, cur_height, payment_id, keysend_preimage, session_priv))
+			|path, payment_hash, payment_secret, total_value, cur_height, payment_id, keysend_preimage, session_priv|
+			self.send_payment_along_path(path, payment_hash, payment_secret, total_value, cur_height, payment_id, keysend_preimage, session_priv))
 	}
 
 	/// Returns whether a payment with the given [`PaymentHash`] and [`PaymentId`] is, in fact, a
@@ -3447,8 +3439,8 @@ where
 		self.pending_outbound_payments.check_retry_payments(&self.router, || self.list_usable_channels(),
 			|| self.compute_inflight_htlcs(), &self.entropy_source, &self.node_signer, best_block_height,
 			&self.pending_events, &self.logger,
-			|path, payment_params, payment_hash, payment_secret, total_value, cur_height, payment_id, keysend_preimage, session_priv|
-			self.send_payment_along_path(path, payment_params, payment_hash, payment_secret, total_value, cur_height, payment_id, keysend_preimage, session_priv));
+			|path, payment_hash, payment_secret, total_value, cur_height, payment_id, keysend_preimage, session_priv|
+			self.send_payment_along_path(path, payment_hash, payment_secret, total_value, cur_height, payment_id, keysend_preimage, session_priv));
 
 		for (htlc_source, payment_hash, failure_reason, destination) in failed_forwards.drain(..) {
 			self.fail_htlc_backwards_internal(&htlc_source, &payment_hash, &failure_reason, destination);
@@ -3834,9 +3826,9 @@ where
 		// from block_connected which may run during initialization prior to the chain_monitor
 		// being fully configured. See the docs for `ChannelManagerReadArgs` for more.
 		match source {
-			HTLCSource::OutboundRoute { ref path, ref session_priv, ref payment_id, ref payment_params, .. } => {
+			HTLCSource::OutboundRoute { ref path, ref session_priv, ref payment_id, .. } => {
 				if self.pending_outbound_payments.fail_htlc(source, payment_hash, onion_error, path,
-					session_priv, payment_id, payment_params, self.probing_cookie_secret, &self.secp_ctx,
+					session_priv, payment_id, self.probing_cookie_secret, &self.secp_ctx,
 					&self.pending_events, &self.logger)
 				{ self.push_pending_forwards_ev(); }
 			},
@@ -6858,7 +6850,6 @@ impl Readable for HTLCSource {
 					path,
 					payment_id: payment_id.unwrap(),
 					payment_secret,
-					payment_params,
 				})
 			}
 			1 => Ok(HTLCSource::PreviousHopData(Readable::read(reader)?)),
@@ -6870,7 +6861,7 @@ impl Readable for HTLCSource {
 impl Writeable for HTLCSource {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), crate::io::Error> {
 		match self {
-			HTLCSource::OutboundRoute { ref session_priv, ref first_hop_htlc_msat, ref path, payment_id, payment_secret, payment_params } => {
+			HTLCSource::OutboundRoute { ref session_priv, ref first_hop_htlc_msat, ref path, payment_id, payment_secret } => {
 				0u8.write(writer)?;
 				let payment_id_opt = Some(payment_id);
 				write_tlv_fields!(writer, {
@@ -6879,7 +6870,7 @@ impl Writeable for HTLCSource {
 					(2, first_hop_htlc_msat, required),
 					(3, payment_secret, option),
 					(4, *path, vec_type),
-					(5, payment_params, option),
+					(5, None::<PaymentParameters>, option), // payment_params in LDK versions prior to 0.0.115
 				 });
 			}
 			HTLCSource::PreviousHopData(ref field) => {
@@ -7959,7 +7950,7 @@ mod tests {
 		// indicates there are more HTLCs coming.
 		let cur_height = CHAN_CONFIRM_DEPTH + 1; // route_payment calls send_payment, which adds 1 to the current height. So we do the same here to match.
 		let session_privs = nodes[0].node.test_add_new_pending_payment(our_payment_hash, Some(payment_secret), payment_id, &mpp_route).unwrap();
-		nodes[0].node.test_send_payment_along_path(&mpp_route.paths[0], &route.payment_params, &our_payment_hash, &Some(payment_secret), 200_000, cur_height, payment_id, &None, session_privs[0]).unwrap();
+		nodes[0].node.test_send_payment_along_path(&mpp_route.paths[0], &our_payment_hash, &Some(payment_secret), 200_000, cur_height, payment_id, &None, session_privs[0]).unwrap();
 		check_added_monitors!(nodes[0], 1);
 		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1);
@@ -7989,7 +7980,7 @@ mod tests {
 		expect_payment_failed!(nodes[0], our_payment_hash, true);
 
 		// Send the second half of the original MPP payment.
-		nodes[0].node.test_send_payment_along_path(&mpp_route.paths[1], &route.payment_params, &our_payment_hash, &Some(payment_secret), 200_000, cur_height, payment_id, &None, session_privs[1]).unwrap();
+		nodes[0].node.test_send_payment_along_path(&mpp_route.paths[1], &our_payment_hash, &Some(payment_secret), 200_000, cur_height, payment_id, &None, session_privs[1]).unwrap();
 		check_added_monitors!(nodes[0], 1);
 		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1);

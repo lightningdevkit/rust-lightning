@@ -1369,7 +1369,6 @@ mod tests {
 			failure: PathFailure::OnPath { network_update: None },
 			path: path.clone(),
 			short_channel_id: Some(scored_scid),
-			retry: None,
 		});
 		let event = receiver
 			.recv_timeout(Duration::from_secs(EVENT_DEADLINE))
@@ -1389,7 +1388,6 @@ mod tests {
 			failure: PathFailure::OnPath { network_update: None },
 			path: path.clone(),
 			short_channel_id: None,
-			retry: None,
 		});
 		let event = receiver
 			.recv_timeout(Duration::from_secs(EVENT_DEADLINE))
