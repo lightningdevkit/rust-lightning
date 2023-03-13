@@ -86,6 +86,11 @@ jobs:
         run: cargo update -p tokio --precise "1.14.0" --verbose
         env:
           CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+      - name: Pin tokio to 1.26 for Windows
+        if: "matrix.platform == 'windows-latest'"
+        run: cargo update -p tokio --precise "1.26.0" --verbose
+        env:
+          CARGO_NET_GIT_FETCH_WITH_CLI: "true"
       - name: Build on Rust ${{ matrix.toolchain }} with net-tokio
         if: "matrix.build-net-tokio && !matrix.coverage"
         run: cargo build --verbose --color always
