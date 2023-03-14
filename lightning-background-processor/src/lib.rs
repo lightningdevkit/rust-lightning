@@ -116,6 +116,13 @@ const FIRST_NETWORK_PRUNE_TIMER: u64 = 60;
 #[cfg(test)]
 const FIRST_NETWORK_PRUNE_TIMER: u64 = 1;
 
+#[cfg(feature = "futures")]
+/// core::cmp::min is not currently const, so we define a trivial (and equivalent) replacement
+const fn min_u64(a: u64, b: u64) -> u64 { if a < b { a } else { b } }
+#[cfg(feature = "futures")]
+const FASTEST_TIMER: u64 = min_u64(min_u64(FRESHNESS_TIMER, PING_TIMER),
+	min_u64(SCORER_PERSIST_TIMER, FIRST_NETWORK_PRUNE_TIMER));
+
 /// Either [`P2PGossipSync`] or [`RapidGossipSync`].
 pub enum GossipSync<
 	P: Deref<Target = P2PGossipSync<G, U, L>>,
@@ -258,7 +265,8 @@ macro_rules! define_run_body {
 	($persister: ident, $chain_monitor: ident, $process_chain_monitor_events: expr,
 	 $channel_manager: ident, $process_channel_manager_events: expr,
 	 $gossip_sync: ident, $peer_manager: ident, $logger: ident, $scorer: ident,
-	 $loop_exit_check: expr, $await: expr, $get_timer: expr, $timer_elapsed: expr)
+	 $loop_exit_check: expr, $await: expr, $get_timer: expr, $timer_elapsed: expr,
+	 $check_slow_await: expr)
 	=> { {
 		log_trace!($logger, "Calling ChannelManager's timer_tick_occurred on startup");
 		$channel_manager.timer_tick_occurred();
@@ -288,9 +296,10 @@ macro_rules! define_run_body {
 
 			// We wait up to 100ms, but track how long it takes to detect being put to sleep,
 			// see `await_start`'s use below.
-			let mut await_start = $get_timer(1);
+			let mut await_start = None;
+			if $check_slow_await { await_start = Some($get_timer(1)); }
 			let updates_available = $await;
-			let await_slow = $timer_elapsed(&mut await_start, 1);
+			let await_slow = if $check_slow_await { $timer_elapsed(&mut await_start.unwrap(), 1) } else { false };
 
 			if updates_available {
 				log_trace!($logger, "Persisting ChannelManager...");
@@ -449,6 +458,11 @@ use core::task;
 /// feature, doing so will skip calling [`NetworkGraph::remove_stale_channels_and_tracking`],
 /// you should call [`NetworkGraph::remove_stale_channels_and_tracking_with_time`] regularly
 /// manually instead.
+///
+/// The `mobile_interruptable_platform` flag should be set if we're currently running on a
+/// mobile device, where we may need to check for interruption of the application regularly. If you
+/// are unsure, you should set the flag, as the performance impact of it is minimal unless there
+/// are hundreds or thousands of simultaneous process calls running.
 #[cfg(feature = "futures")]
 pub async fn process_events_async<
 	'a,
@@ -484,7 +498,7 @@ pub async fn process_events_async<
 >(
 	persister: PS, event_handler: EventHandler, chain_monitor: M, channel_manager: CM,
 	gossip_sync: GossipSync<PGS, RGS, G, UL, L>, peer_manager: PM, logger: L, scorer: Option<S>,
-	sleeper: Sleeper,
+	sleeper: Sleeper, mobile_interruptable_platform: bool,
 ) -> Result<(), lightning::io::Error>
 where
 	UL::Target: 'static + UtxoLookup,
@@ -526,7 +540,7 @@ where
 			let fut = Selector {
 				a: channel_manager.get_persistable_update_future(),
 				b: chain_monitor.get_update_future(),
-				c: sleeper(Duration::from_millis(100)),
+				c: sleeper(if mobile_interruptable_platform { Duration::from_millis(100) } else { Duration::from_secs(FASTEST_TIMER) }),
 			};
 			match fut.await {
 				SelectorOutput::A => true,
@@ -541,7 +555,7 @@ where
 			let mut waker = dummy_waker();
 			let mut ctx = task::Context::from_waker(&mut waker);
 			core::pin::Pin::new(fut).poll(&mut ctx).is_ready()
-		})
+		}, mobile_interruptable_platform)
 }
 
 #[cfg(feature = "std")]
@@ -660,7 +674,7 @@ impl BackgroundProcessor {
 					channel_manager.get_persistable_update_future(),
 					chain_monitor.get_update_future()
 				).wait_timeout(Duration::from_millis(100)),
-				|_| Instant::now(), |time: &Instant, dur| time.elapsed().as_secs() > dur)
+				|_| Instant::now(), |time: &Instant, dur| time.elapsed().as_secs() > dur, false)
 		});
 		Self { stop_thread: stop_thread_clone, thread_handle: Some(handle) }
 	}
