@@ -42,7 +42,7 @@ pub(crate) trait TestEq {}
 impl<T> TestEq for T {}
 
 
-/// A Lightning message returned by [`read()`] when decoding bytes received over the wire. Each
+/// A Lightning message returned by [`read`] when decoding bytes received over the wire. Each
 /// variant contains a message from [`msgs`] or otherwise the message type if unknown.
 #[allow(missing_docs)]
 #[derive(Debug)]

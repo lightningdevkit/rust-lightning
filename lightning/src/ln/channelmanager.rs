@@ -9,7 +9,7 @@
 
 //! The top-level channel management and payment tracking stuff lives here.
 //!
-//! The ChannelManager is the main chunk of logic implementing the lightning protocol and is
+//! The [`ChannelManager`] is the main chunk of logic implementing the lightning protocol and is
 //! responsible for tracking which channels are open, HTLCs are in flight and reestablishing those
 //! upon reconnect to the relevant peer(s).
 //!
@@ -559,13 +559,14 @@ struct PendingInboundPayment {
 	min_value_msat: Option<u64>,
 }
 
-/// SimpleArcChannelManager is useful when you need a ChannelManager with a static lifetime, e.g.
-/// when you're using lightning-net-tokio (since tokio::spawn requires parameters with static
+/// [`SimpleArcChannelManager`] is useful when you need a [`ChannelManager`] with a static lifetime, e.g.
+/// when you're using `lightning-net-tokio` (since `tokio::spawn` requires parameters with static
 /// lifetimes). Other times you can afford a reference, which is more efficient, in which case
-/// SimpleRefChannelManager is the more appropriate type. Defining these type aliases prevents
-/// issues such as overly long function definitions. Note that the ChannelManager can take any type
-/// that implements KeysInterface or Router for its keys manager and router, respectively, but this
-/// type alias chooses the concrete types of KeysManager and DefaultRouter.
+/// [`SimpleRefChannelManager`] is the more appropriate type. Defining these type aliases prevents
+/// issues such as overly long function definitions. Note that the `ChannelManager` can take any type
+/// that implements [`NodeSigner`], [`EntropySource`], and [`SignerProvider`] for its keys manager,
+/// or, respectively, [`Router`] for its router, but this type alias chooses the concrete types
+/// of [`KeysManager`] and [`DefaultRouter`].
 ///
 /// (C-not exported) as Arcs don't make sense in bindings
 pub type SimpleArcChannelManager<M, T, F, L> = ChannelManager<
@@ -583,14 +584,15 @@ pub type SimpleArcChannelManager<M, T, F, L> = ChannelManager<
 	Arc<L>
 >;
 
-/// SimpleRefChannelManager is a type alias for a ChannelManager reference, and is the reference
-/// counterpart to the SimpleArcChannelManager type alias. Use this type by default when you don't
+/// [`SimpleRefChannelManager`] is a type alias for a ChannelManager reference, and is the reference
+/// counterpart to the [`SimpleArcChannelManager`] type alias. Use this type by default when you don't
 /// need a ChannelManager with a static lifetime. You'll need a static lifetime in cases such as
-/// usage of lightning-net-tokio (since tokio::spawn requires parameters with static lifetimes).
+/// usage of lightning-net-tokio (since `tokio::spawn` requires parameters with static lifetimes).
 /// But if this is not necessary, using a reference is more efficient. Defining these type aliases
 /// issues such as overly long function definitions. Note that the ChannelManager can take any type
-/// that implements KeysInterface or Router for its keys manager and router, respectively, but this
-/// type alias chooses the concrete types of KeysManager and DefaultRouter.
+/// that implements [`NodeSigner`], [`EntropySource`], and [`SignerProvider`] for its keys manager,
+/// or, respectively, [`Router`]  for its router, but this type alias chooses the concrete types
+/// of [`KeysManager`] and [`DefaultRouter`].
 ///
 /// (C-not exported) as Arcs don't make sense in bindings
 pub type SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, M, T, F, L> = ChannelManager<&'a M, &'b T, &'c KeysManager, &'c KeysManager, &'c KeysManager, &'d F, &'e DefaultRouter<&'f NetworkGraph<&'g L>, &'g L, &'h Mutex<ProbabilisticScorer<&'f NetworkGraph<&'g L>, &'g L>>>, &'g L>;
@@ -598,35 +600,33 @@ pub type SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, M, T, F, L> = C
 /// Manager which keeps track of a number of channels and sends messages to the appropriate
 /// channel, also tracking HTLC preimages and forwarding onion packets appropriately.
 ///
-/// Implements ChannelMessageHandler, handling the multi-channel parts and passing things through
+/// Implements [`ChannelMessageHandler`], handling the multi-channel parts and passing things through
 /// to individual Channels.
 ///
-/// Implements Writeable to write out all channel state to disk. Implies peer_disconnected() for
+/// Implements [`Writeable`] to write out all channel state to disk. Implies [`peer_disconnected`] for
 /// all peers during write/read (though does not modify this instance, only the instance being
-/// serialized). This will result in any channels which have not yet exchanged funding_created (ie
-/// called funding_transaction_generated for outbound channels).
+/// serialized). This will result in any channels which have not yet exchanged [`funding_created`] (i.e.,
+/// called [`funding_transaction_generated`] for outbound channels) being closed.
 ///
-/// Note that you can be a bit lazier about writing out ChannelManager than you can be with
-/// ChannelMonitors. With ChannelMonitors you MUST write each monitor update out to disk before
-/// returning from chain::Watch::watch_/update_channel, with ChannelManagers, writing updates
-/// happens out-of-band (and will prevent any other ChannelManager operations from occurring during
+/// Note that you can be a bit lazier about writing out `ChannelManager` than you can be with
+/// [`ChannelMonitor`]. With [`ChannelMonitor`] you MUST write each monitor update out to disk before
+/// returning from [`chain::Watch::watch_channel`]/[`update_channel`], with ChannelManagers, writing updates
+/// happens out-of-band (and will prevent any other `ChannelManager` operations from occurring during
 /// the serialization process). If the deserialized version is out-of-date compared to the
-/// ChannelMonitors passed by reference to read(), those channels will be force-closed based on the
-/// ChannelMonitor state and no funds will be lost (mod on-chain transaction fees).
+/// [`ChannelMonitor`] passed by reference to [`read`], those channels will be force-closed based on the
+/// `ChannelMonitor` state and no funds will be lost (mod on-chain transaction fees).
 ///
-/// Note that the deserializer is only implemented for (BlockHash, ChannelManager), which
-/// tells you the last block hash which was block_connect()ed. You MUST rescan any blocks along
-/// the "reorg path" (ie call block_disconnected() until you get to a common block and then call
-/// block_connected() to step towards your best block) upon deserialization before using the
-/// object!
+/// Note that the deserializer is only implemented for `(`[`BlockHash`]`, `[`ChannelManager`]`)`, which
+/// tells you the last block hash which was connected. You should get the best block tip before using the manager.
+/// See [`chain::Listen`] and [`chain::Confirm`] for more details.
 ///
-/// Note that ChannelManager is responsible for tracking liveness of its channels and generating
-/// ChannelUpdate messages informing peers that the channel is temporarily disabled. To avoid
+/// Note that `ChannelManager` is responsible for tracking liveness of its channels and generating
+/// [`ChannelUpdate`] messages informing peers that the channel is temporarily disabled. To avoid
 /// spam due to quick disconnection/reconnection, updates are not sent until the channel has been
 /// offline for a full minute. In order to track this, you must call
-/// timer_tick_occurred roughly once per minute, though it doesn't have to be perfect.
+/// [`timer_tick_occurred`] roughly once per minute, though it doesn't have to be perfect.
 ///
-/// To avoid trivial DoS issues, ChannelManager limits the number of inbound connections and
+/// To avoid trivial DoS issues, `ChannelManager` limits the number of inbound connections and
 /// inbound channels without confirmed funding transactions. This may result in nodes which we do
 /// not have a channel with being unable to connect to us or open new channels with us if we have
 /// many peers with unfunded channels.
@@ -635,11 +635,20 @@ pub type SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, M, T, F, L> = C
 /// exempted from the count of unfunded channels. Similarly, outbound channels and connections are
 /// never limited. Please ensure you limit the count of such channels yourself.
 ///
-/// Rather than using a plain ChannelManager, it is preferable to use either a SimpleArcChannelManager
-/// a SimpleRefChannelManager, for conciseness. See their documentation for more details, but
-/// essentially you should default to using a SimpleRefChannelManager, and use a
-/// SimpleArcChannelManager when you require a ChannelManager with a static lifetime, such as when
+/// Rather than using a plain `ChannelManager`, it is preferable to use either a [`SimpleArcChannelManager`]
+/// a [`SimpleRefChannelManager`], for conciseness. See their documentation for more details, but
+/// essentially you should default to using a [`SimpleRefChannelManager`], and use a
+/// [`SimpleArcChannelManager`] when you require a `ChannelManager` with a static lifetime, such as when
 /// you're using lightning-net-tokio.
+///
+/// [`peer_disconnected`]: msgs::ChannelMessageHandler::peer_disconnected
+/// [`funding_created`]: msgs::FundingCreated
+/// [`funding_transaction_generated`]: Self::funding_transaction_generated
+/// [`BlockHash`]: bitcoin::hash_types::BlockHash
+/// [`update_channel`]: chain::Watch::update_channel
+/// [`ChannelUpdate`]: msgs::ChannelUpdate
+/// [`timer_tick_occurred`]: Self::timer_tick_occurred
+/// [`read`]: ReadableArgs::read
 //
 // Lock order:
 // The tree structure below illustrates the lock order requirements for the different locks of the
@@ -1040,7 +1049,7 @@ pub struct ChannelCounterparty {
 	pub outbound_htlc_maximum_msat: Option<u64>,
 }
 
-/// Details of a channel, as returned by ChannelManager::list_channels and ChannelManager::list_usable_channels
+/// Details of a channel, as returned by [`ChannelManager::list_channels`] and [`ChannelManager::list_usable_channels`]
 #[derive(Clone, Debug, PartialEq)]
 pub struct ChannelDetails {
 	/// The channel's ID (prior to funding transaction generation, this is a random 32 bytes,
@@ -1585,16 +1594,21 @@ where
 	R::Target: Router,
 	L::Target: Logger,
 {
-	/// Constructs a new ChannelManager to hold several channels and route between them.
+	/// Constructs a new `ChannelManager` to hold several channels and route between them.
 	///
 	/// This is the main "logic hub" for all channel-related actions, and implements
-	/// ChannelMessageHandler.
+	/// [`ChannelMessageHandler`].
 	///
 	/// Non-proportional fees are fixed according to our risk using the provided fee estimator.
 	///
-	/// Users need to notify the new ChannelManager when a new block is connected or
-	/// disconnected using its `block_connected` and `block_disconnected` methods, starting
-	/// from after `params.latest_hash`.
+	/// Users need to notify the new `ChannelManager` when a new block is connected or
+	/// disconnected using its [`block_connected`] and [`block_disconnected`] methods, starting
+	/// from after [`params.best_block.block_hash`]. See [`chain::Listen`] and [`chain::Confirm`] for
+	/// more details.
+	///
+	/// [`block_connected`]: chain::Listen::block_connected
+	/// [`block_disconnected`]: chain::Listen::block_disconnected
+	/// [`params.best_block.block_hash`]: chain::BestBlock::block_hash
 	pub fn new(fee_est: F, chain_monitor: M, tx_broadcaster: T, router: R, logger: L, entropy_source: ES, node_signer: NS, signer_provider: SP, config: UserConfig, params: ChainParameters) -> Self {
 		let mut secp_ctx = Secp256k1::new();
 		secp_ctx.seeded_randomize(&entropy_source.get_secure_random_bytes());
@@ -1768,7 +1782,7 @@ where
 		res
 	}
 
-	/// Gets the list of open channels, in random order. See ChannelDetail field documentation for
+	/// Gets the list of open channels, in random order. See [`ChannelDetails`] field documentation for
 	/// more information.
 	pub fn list_channels(&self) -> Vec<ChannelDetails> {
 		self.list_channels_with_filter(|_| true)
@@ -1921,11 +1935,12 @@ where
 	///    would appear on a force-closure transaction, whichever is lower. We will allow our
 	///    counterparty to pay as much fee as they'd like, however.
 	///
-	/// May generate a SendShutdown message event on success, which should be relayed.
+	/// May generate a [`SendShutdown`] message event on success, which should be relayed.
 	///
 	/// [`ChannelConfig::force_close_avoidance_max_fee_satoshis`]: crate::util::config::ChannelConfig::force_close_avoidance_max_fee_satoshis
 	/// [`Background`]: crate::chain::chaininterface::ConfirmationTarget::Background
 	/// [`Normal`]: crate::chain::chaininterface::ConfirmationTarget::Normal
+	/// [`SendShutdown`]: crate::util::events::MessageSendEvent::SendShutdown
 	pub fn close_channel(&self, channel_id: &[u8; 32], counterparty_node_id: &PublicKey) -> Result<(), APIError> {
 		self.close_channel_internal(channel_id, counterparty_node_id, None)
 	}
@@ -1944,11 +1959,12 @@ where
 	///    transaction feerate below `target_feerate_sat_per_1000_weight` (or the feerate which
 	///    will appear on a force-closure transaction, whichever is lower).
 	///
-	/// May generate a SendShutdown message event on success, which should be relayed.
+	/// May generate a [`SendShutdown`] message event on success, which should be relayed.
 	///
 	/// [`ChannelConfig::force_close_avoidance_max_fee_satoshis`]: crate::util::config::ChannelConfig::force_close_avoidance_max_fee_satoshis
 	/// [`Background`]: crate::chain::chaininterface::ConfirmationTarget::Background
 	/// [`Normal`]: crate::chain::chaininterface::ConfirmationTarget::Normal
+	/// [`SendShutdown`]: crate::util::events::MessageSendEvent::SendShutdown
 	pub fn close_channel_with_target_feerate(&self, channel_id: &[u8; 32], counterparty_node_id: &PublicKey, target_feerate_sats_per_1000_weight: u32) -> Result<(), APIError> {
 		self.close_channel_internal(channel_id, counterparty_node_id, Some(target_feerate_sats_per_1000_weight))
 	}
@@ -2393,13 +2409,16 @@ where
 		pending_forward_info
 	}
 
-	/// Gets the current channel_update for the given channel. This first checks if the channel is
+	/// Gets the current [`channel_update`] for the given channel. This first checks if the channel is
 	/// public, and thus should be called whenever the result is going to be passed out in a
 	/// [`MessageSendEvent::BroadcastChannelUpdate`] event.
 	///
-	/// Note that in `internal_closing_signed`, this function is called without the `peer_state`
+	/// Note that in [`internal_closing_signed`], this function is called without the `peer_state`
 	/// corresponding to the channel's counterparty locked, as the channel been removed from the
 	/// storage and the `peer_state` lock has been dropped.
+	///
+	/// [`channel_update`]: msgs::ChannelUpdate
+	/// [`internal_closing_signed`]: Self::internal_closing_signed
 	fn get_channel_update_for_broadcast(&self, chan: &Channel<<SP::Target as SignerProvider>::Signer>) -> Result<msgs::ChannelUpdate, LightningError> {
 		if !chan.should_announce() {
 			return Err(LightningError {
@@ -2414,14 +2433,17 @@ where
 		self.get_channel_update_for_unicast(chan)
 	}
 
-	/// Gets the current channel_update for the given channel. This does not check if the channel
-	/// is public (only returning an Err if the channel does not yet have an assigned short_id),
+	/// Gets the current [`channel_update`] for the given channel. This does not check if the channel
+	/// is public (only returning an `Err` if the channel does not yet have an assigned SCID),
 	/// and thus MUST NOT be called unless the recipient of the resulting message has already
 	/// provided evidence that they know about the existence of the channel.
 	///
-	/// Note that through `internal_closing_signed`, this function is called without the
+	/// Note that through [`internal_closing_signed`], this function is called without the
 	/// `peer_state`  corresponding to the channel's counterparty locked, as the channel been
 	/// removed from the storage and the `peer_state` lock has been dropped.
+	///
+	/// [`channel_update`]: msgs::ChannelUpdate
+	/// [`internal_closing_signed`]: Self::internal_closing_signed
 	fn get_channel_update_for_unicast(&self, chan: &Channel<<SP::Target as SignerProvider>::Signer>) -> Result<msgs::ChannelUpdate, LightningError> {
 		log_trace!(self.logger, "Attempting to generate channel update for channel {}", log_bytes!(chan.channel_id()));
 		let short_channel_id = match chan.get_short_channel_id().or(chan.latest_inbound_scid_alias()) {
@@ -2547,7 +2569,7 @@ where
 	/// Value parameters are provided via the last hop in route, see documentation for [`RouteHop`]
 	/// fields for more info.
 	///
-	/// May generate SendHTLCs message(s) event on success, which should be relayed (e.g. via
+	/// May generate [`UpdateHTLCs`] message(s) event on success, which should be relayed (e.g. via
 	/// [`PeerManager::process_events`]).
 	///
 	/// # Avoiding Duplicate Payments
@@ -2571,7 +2593,7 @@ where
 	///
 	/// # Possible Error States on [`PaymentSendFailure`]
 	///
-	/// Each path may have a different return value, and PaymentSendValue may return a Vec with
+	/// Each path may have a different return value, and [`PaymentSendFailure`] may return a `Vec` with
 	/// each entry matching the corresponding-index entry in the route paths, see
 	/// [`PaymentSendFailure`] for more info.
 	///
@@ -2584,7 +2606,7 @@ where
 	///  * [`APIError::MonitorUpdateInProgress`] if a new monitor update failure prevented sending the
 	///    relevant updates.
 	///
-	/// Note that depending on the type of the PaymentSendFailure the HTLC may have been
+	/// Note that depending on the type of the [`PaymentSendFailure`] the HTLC may have been
 	/// irrevocably committed to on our end. In such a case, do NOT retry the payment with a
 	/// different route unless you intend to pay twice!
 	///
@@ -2602,6 +2624,7 @@ where
 	///
 	/// [`Event::PaymentSent`]: events::Event::PaymentSent
 	/// [`Event::PaymentFailed`]: events::Event::PaymentFailed
+	/// [`UpdateHTLCs`]: events::MessageSendEvent::UpdateHTLCs
 	/// [`PeerManager::process_events`]: crate::ln::peer_handler::PeerManager::process_events
 	/// [`ChannelMonitorUpdateStatus::InProgress`]: crate::chain::ChannelMonitorUpdateStatus::InProgress
 	pub fn send_payment(&self, route: &Route, payment_hash: PaymentHash, payment_secret: &Option<PaymentSecret>, payment_id: PaymentId) -> Result<(), PaymentSendFailure> {
@@ -3538,15 +3561,18 @@ where
 	///
 	/// This currently includes:
 	///  * Increasing or decreasing the on-chain feerate estimates for our outbound channels,
-	///  * Broadcasting `ChannelUpdate` messages if we've been disconnected from our peer for more
+	///  * Broadcasting [`ChannelUpdate`] messages if we've been disconnected from our peer for more
 	///    than a minute, informing the network that they should no longer attempt to route over
 	///    the channel.
-	///  * Expiring a channel's previous `ChannelConfig` if necessary to only allow forwarding HTLCs
-	///    with the current `ChannelConfig`.
+	///  * Expiring a channel's previous [`ChannelConfig`] if necessary to only allow forwarding HTLCs
+	///    with the current [`ChannelConfig`].
 	///  * Removing peers which have disconnected but and no longer have any channels.
 	///
-	/// Note that this may cause reentrancy through `chain::Watch::update_channel` calls or feerate
+	/// Note that this may cause reentrancy through [`chain::Watch::update_channel`] calls or feerate
 	/// estimate fetches.
+	///
+	/// [`ChannelUpdate`]: msgs::ChannelUpdate
+	/// [`ChannelConfig`]: crate::util::config::ChannelConfig
 	pub fn timer_tick_occurred(&self) {
 		PersistenceNotifierGuard::optionally_notify(&self.total_consistency_lock, &self.persistence_notifier, || {
 			let mut should_persist = NotifyOption::SkipPersist;
@@ -5160,7 +5186,7 @@ where
 		Ok(())
 	}
 
-	/// Process pending events from the `chain::Watch`, returning whether any events were processed.
+	/// Process pending events from the [`chain::Watch`], returning whether any events were processed.
 	fn process_pending_monitor_events(&self) -> bool {
 		debug_assert!(self.total_consistency_lock.try_write().is_err()); // Caller holds read lock
 
@@ -6487,8 +6513,8 @@ pub(crate) fn provided_channel_type_features(config: &UserConfig) -> ChannelType
 /// [`ChannelManager`].
 pub fn provided_init_features(_config: &UserConfig) -> InitFeatures {
 	// Note that if new features are added here which other peers may (eventually) require, we
-	// should also add the corresponding (optional) bit to the ChannelMessageHandler impl for
-	// ErroringMessageHandler.
+	// should also add the corresponding (optional) bit to the [`ChannelMessageHandler`] impl for
+	// [`ErroringMessageHandler`].
 	let mut features = InitFeatures::empty();
 	features.set_data_loss_protect_optional();
 	features.set_upfront_shutdown_script_optional();

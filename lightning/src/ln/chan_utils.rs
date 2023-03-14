@@ -8,7 +8,7 @@
 // licenses.
 
 //! Various utilities for building scripts and deriving keys related to channels. These are
-//! largely of interest for those implementing chain::keysinterface::Sign message signing by hand.
+//! largely of interest for those implementing the traits on [`chain::keysinterface`] by hand.
 
 use bitcoin::blockdata::script::{Script,Builder};
 use bitcoin::blockdata::opcodes;

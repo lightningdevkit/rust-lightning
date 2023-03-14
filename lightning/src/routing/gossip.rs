@@ -234,7 +234,7 @@ impl<G: Deref<Target=NetworkGraph<L>>, U: Deref, L: Deref> P2PGossipSync<G, U, L
 where U::Target: UtxoLookup, L::Target: Logger
 {
 	/// Creates a new tracker of the actual state of the network of channels and nodes,
-	/// assuming an existing Network Graph.
+	/// assuming an existing [`NetworkGraph`].
 	/// UTXO lookup is used to make sure announced channels exist on-chain, channel data is
 	/// correct, and the announcement is signed with channel owners' keys.
 	pub fn new(network_graph: G, utxo_lookup: Option<U>, logger: L) -> Self {
@@ -432,14 +432,20 @@ where U::Target: UtxoLookup, L::Target: Logger
 	}
 
 	/// Initiates a stateless sync of routing gossip information with a peer
-	/// using gossip_queries. The default strategy used by this implementation
+	/// using [`gossip_queries`]. The default strategy used by this implementation
 	/// is to sync the full block range with several peers.
 	///
-	/// We should expect one or more reply_channel_range messages in response
-	/// to our query_channel_range. Each reply will enqueue a query_scid message
+	/// We should expect one or more [`reply_channel_range`] messages in response
+	/// to our [`query_channel_range`]. Each reply will enqueue a [`query_scid`] message
 	/// to request gossip messages for each channel. The sync is considered complete
-	/// when the final reply_scids_end message is received, though we are not
+	/// when the final [`reply_scids_end`] message is received, though we are not
 	/// tracking this directly.
+	///
+	/// [`gossip_queries`]: https://github.com/lightning/bolts/blob/master/07-routing-gossip.md#query-messages
+	/// [`reply_channel_range`]: msgs::ReplyChannelRange
+	/// [`query_channel_range`]: msgs::QueryChannelRange
+	/// [`query_scid`]: msgs::QueryShortChannelIds
+	/// [`reply_scids_end`]: msgs::ReplyShortChannelIdsEnd
 	fn peer_connected(&self, their_node_id: &PublicKey, init_msg: &Init, _inbound: bool) -> Result<(), ()> {
 		// We will only perform a sync with peers that support gossip_queries.
 		if !init_msg.features.supports_gossip_queries() {
