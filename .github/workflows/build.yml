@@ -14,34 +14,27 @@ jobs:
                      1.48.0]
         include:
           - toolchain: stable
-            build-futures: true
             build-tx-sync: true
             coverage: true
           - toolchain: stable
             platform: macos-latest
-            build-futures: true
             build-tx-sync: true
           - toolchain: stable
             test-custom-message: true
           - toolchain: beta
             platform: macos-latest
-            build-futures: true
             build-tx-sync: true
           - toolchain: stable
             platform: windows-latest
-            build-futures: true
             build-tx-sync: false
           - toolchain: beta
             platform: windows-latest
-            build-futures: true
             build-tx-sync: false
           - toolchain: beta
-            build-futures: true
             build-tx-sync: true
           - toolchain: beta
             test-custom-message: true
           - toolchain: 1.48.0
-            build-futures: true
             build-tx-sync: false
     runs-on: ${{ matrix.platform }}
     steps:
@@ -155,13 +148,13 @@ jobs:
           cd lightning
           RUSTFLAGS="-C link-dead-code" cargo test --verbose --color always --no-default-features --features no-std
       - name: Test futures builds on Rust ${{ matrix.toolchain }}
-        if: "matrix.build-futures && !matrix.coverage"
+        if: "!matrix.coverage"
         shell: bash # Default on Winblows is powershell
         run: |
           cd lightning-background-processor
           cargo test --verbose --color always --no-default-features --features futures
       - name: Test futures builds on Rust ${{ matrix.toolchain }} and full code-linking for coverage generation
-        if: "matrix.build-futures && matrix.coverage"
+        if: "matrix.coverage"
         shell: bash # Default on Winblows is powershell
         run: |
           cd lightning-background-processor
