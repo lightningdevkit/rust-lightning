@@ -20,6 +20,7 @@ use bitcoin::network::constants::Network;
 use bitcoin::secp256k1::{PublicKey, Secp256k1};
 
 use crate::io;
+use crate::io_extras::read_to_end;
 use crate::sync::Arc;
 
 struct MessengerNode {
@@ -59,8 +60,7 @@ impl CustomOnionMessageHandler for TestCustomMessageHandler {
 	fn handle_custom_message(&self, _msg: Self::CustomMessage) {}
 	fn read_custom_message<R: io::Read>(&self, message_type: u64, buffer: &mut R) -> Result<Option<Self::CustomMessage>, DecodeError> where Self: Sized {
 		if message_type == CUSTOM_MESSAGE_TYPE {
-			let mut buf = Vec::new();
-			buffer.read_to_end(&mut buf)?;
+			let buf = read_to_end(buffer)?;
 			assert_eq!(buf, CUSTOM_MESSAGE_CONTENTS);
 			return Ok(Some(TestCustomMessage {}))
 		}
