@@ -2147,8 +2147,7 @@ mod tests {
 		PaymentParameters, Route, RouteHint, RouteHintHop, RouteHop, RoutingFees,
 		DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA, MAX_PATH_LENGTH_ESTIMATE};
 	use crate::routing::scoring::{ChannelUsage, FixedPenaltyScorer, Score, ProbabilisticScorer, ProbabilisticScoringParameters};
-	use crate::routing::test_utils::{add_channel, add_or_update_node, build_graph, build_line_graph, id_to_feature_flags, get_nodes, update_channel};
-	use crate::chain::transaction::OutPoint;
+	use crate::routing::test_utils::*;
 	use crate::chain::keysinterface::EntropySource;
 	use crate::ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 	use crate::ln::msgs::{ErrorAction, LightningError, UnsignedChannelUpdate, MAX_VALUE_MSAT};
@@ -2159,7 +2158,6 @@ mod tests {
 	#[cfg(c_bindings)]
 	use crate::util::ser::{Writeable, Writer};
 
-	use bitcoin::hashes::Hash;
 	use bitcoin::network::constants::Network;
 	use bitcoin::blockdata::constants::genesis_block;
 	use bitcoin::blockdata::script::Builder;
@@ -2175,41 +2173,6 @@ mod tests {
 	use crate::sync::Arc;
 
 	use core::convert::TryInto;
-
-	fn get_channel_details(short_channel_id: Option<u64>, node_id: PublicKey,
-			features: InitFeatures, outbound_capacity_msat: u64) -> channelmanager::ChannelDetails {
-		channelmanager::ChannelDetails {
-			channel_id: [0; 32],
-			counterparty: channelmanager::ChannelCounterparty {
-				features,
-				node_id,
-				unspendable_punishment_reserve: 0,
-				forwarding_info: None,
-				outbound_htlc_minimum_msat: None,
-				outbound_htlc_maximum_msat: None,
-			},
-			funding_txo: Some(OutPoint { txid: bitcoin::Txid::from_slice(&[0; 32]).unwrap(), index: 0 }),
-			channel_type: None,
-			short_channel_id,
-			outbound_scid_alias: None,
-			inbound_scid_alias: None,
-			channel_value_satoshis: 0,
-			user_channel_id: 0,
-			balance_msat: 0,
-			outbound_capacity_msat,
-			next_outbound_htlc_limit_msat: outbound_capacity_msat,
-			inbound_capacity_msat: 42,
-			unspendable_punishment_reserve: None,
-			confirmations_required: None,
-			confirmations: None,
-			force_close_spend_delay: None,
-			is_outbound: true, is_channel_ready: true,
-			is_usable: true, is_public: true,
-			inbound_htlc_minimum_msat: None,
-			inbound_htlc_maximum_msat: None,
-			config: None,
-		}
-	}
 
 	#[test]
 	fn simple_route_test() {
@@ -5328,7 +5291,8 @@ mod tests {
 
 	#[test]
 	fn limits_path_length() {
-		let (secp_ctx, network, _, _, logger) = build_line_graph();
+		let features = NodeFeatures::from_le_bytes(id_to_feature_flags(1));
+		let (secp_ctx, network, _, _, logger) = build_line_graph_with_features(features);
 		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
 		let network_graph = network.read_only();
 
@@ -5606,7 +5570,8 @@ mod tests {
 
 	#[test]
 	fn honors_manual_penalties() {
-		let (secp_ctx, network_graph, _, _, logger) = build_line_graph();
+		let features = NodeFeatures::from_le_bytes(id_to_feature_flags(1));
+		let (secp_ctx, network_graph, _, _, logger) = build_line_graph_with_features(features);
 		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
 
 		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
@@ -5644,7 +5609,11 @@ mod tests {
 
 #[cfg(all(test, not(feature = "no-std")))]
 pub(crate) mod bench_utils {
+	#[cfg(all(test, feature = "_bench_unstable", not(feature = "no-std")))]
+	use bitcoin::secp256k1::PublicKey;
+
 	use std::fs::File;
+
 	/// Tries to open a network graph file, or panics with a URL to fetch it.
 	pub(crate) fn get_route_file() -> Result<std::fs::File, &'static str> {
 		let res = File::open("net_graph-2023-01-18.bin") // By default we're run in RL/lightning
@@ -5667,42 +5636,15 @@ pub(crate) mod bench_utils {
 		#[cfg(not(require_route_graph_test))]
 		return res;
 	}
-}
-
-#[cfg(all(test, feature = "_bench_unstable", not(feature = "no-std")))]
-mod benches {
-	use super::*;
-	use bitcoin::hashes::Hash;
-	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
-	use crate::chain::transaction::OutPoint;
-	use crate::chain::keysinterface::{EntropySource, KeysManager};
-	use crate::ln::channelmanager::{self, ChannelCounterparty, ChannelDetails};
-	use crate::ln::features::InvoiceFeatures;
-	use crate::routing::gossip::NetworkGraph;
-	use crate::routing::scoring::{FixedPenaltyScorer, ProbabilisticScorer, ProbabilisticScoringParameters};
-	use crate::util::config::UserConfig;
-	use crate::util::logger::{Logger, Record};
-	use crate::util::ser::ReadableArgs;
-
-	use test::Bencher;
-
-	struct DummyLogger {}
-	impl Logger for DummyLogger {
-		fn log(&self, _record: &Record) {}
-	}
-
-	fn read_network_graph(logger: &DummyLogger) -> NetworkGraph<&DummyLogger> {
-		let mut d = bench_utils::get_route_file().unwrap();
-		NetworkGraph::read(&mut d, logger).unwrap()
-	}
-
-	fn payer_pubkey() -> PublicKey {
-		let secp_ctx = Secp256k1::new();
-		PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap())
-	}
 
 	#[inline]
-	fn first_hop(node_id: PublicKey) -> ChannelDetails {
+	#[cfg(all(test, feature = "_bench_unstable", not(feature = "no-std")))]
+	pub(crate) fn first_hop(node_id: PublicKey) -> crate::ln::channelmanager::ChannelDetails {
+		use bitcoin::hashes::Hash;
+		use crate::chain::transaction::OutPoint;
+		use crate::ln::channelmanager::{self, ChannelCounterparty, ChannelDetails};
+		use crate::util::config::UserConfig;
+
 		ChannelDetails {
 			channel_id: [0; 32],
 			counterparty: ChannelCounterparty {
@@ -5738,6 +5680,37 @@ mod benches {
 			inbound_htlc_maximum_msat: None,
 			config: None,
 		}
+	}
+}
+
+#[cfg(all(test, feature = "_bench_unstable", not(feature = "no-std")))]
+mod benches {
+	use super::*;
+	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
+	use crate::chain::keysinterface::{EntropySource, KeysManager};
+	use crate::ln::channelmanager;
+	use crate::ln::features::InvoiceFeatures;
+	use crate::routing::gossip::NetworkGraph;
+	use crate::routing::scoring::{FixedPenaltyScorer, ProbabilisticScorer, ProbabilisticScoringParameters};
+	use crate::util::config::UserConfig;
+	use crate::util::logger::{Logger, Record};
+	use crate::util::ser::ReadableArgs;
+
+	use test::Bencher;
+
+	struct DummyLogger {}
+	impl Logger for DummyLogger {
+		fn log(&self, _record: &Record) {}
+	}
+
+	fn read_network_graph(logger: &DummyLogger) -> NetworkGraph<&DummyLogger> {
+		let mut d = bench_utils::get_route_file().unwrap();
+		NetworkGraph::read(&mut d, logger).unwrap()
+	}
+
+	fn payer_pubkey() -> PublicKey {
+		let secp_ctx = Secp256k1::new();
+		PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap())
 	}
 
 	#[bench]
@@ -5794,7 +5767,7 @@ mod benches {
 				seed *= 0xdeadbeef;
 				let dst = PublicKey::from_slice(nodes.unordered_keys().skip(seed % nodes.len()).next().unwrap().as_slice()).unwrap();
 				let params = PaymentParameters::from_node_id(dst, 42).with_features(features.clone());
-				let first_hop = first_hop(src);
+				let first_hop = bench_utils::first_hop(src);
 				let amt = seed as u64 % 1_000_000;
 				if let Ok(route) = get_route(&payer, &params, &graph.read_only(), Some(&[&first_hop]), amt, 42, &DummyLogger{}, &scorer, &random_seed_bytes) {
 					routes.push(route);

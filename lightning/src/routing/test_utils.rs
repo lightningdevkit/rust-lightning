@@ -7,8 +7,10 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
+use crate::chain::transaction::OutPoint;
 use crate::routing::gossip::{NetworkGraph, P2PGossipSync};
-use crate::ln::features::{ChannelFeatures, NodeFeatures};
+use crate::ln::channelmanager::{ChannelCounterparty, ChannelDetails};
+use crate::ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 use crate::ln::msgs::{UnsignedChannelAnnouncement, ChannelAnnouncement, RoutingMessageHandler,
 	NodeAnnouncement, UnsignedNodeAnnouncement, ChannelUpdate, UnsignedChannelUpdate, MAX_VALUE_MSAT};
 use crate::util::test_utils;
@@ -28,6 +30,41 @@ use crate::prelude::*;
 use crate::sync::{self, Arc};
 
 use crate::routing::gossip::NodeId;
+
+pub(super) fn get_channel_details(short_channel_id: Option<u64>, node_id: PublicKey,
+	features: InitFeatures, outbound_capacity_msat: u64) -> ChannelDetails {
+	ChannelDetails {
+		channel_id: [0; 32],
+		counterparty: ChannelCounterparty {
+			features,
+			node_id,
+			unspendable_punishment_reserve: 0,
+			forwarding_info: None,
+			outbound_htlc_minimum_msat: None,
+			outbound_htlc_maximum_msat: None,
+		},
+		funding_txo: Some(OutPoint { txid: bitcoin::Txid::from_slice(&[0; 32]).unwrap(), index: 0 }),
+		channel_type: None,
+		short_channel_id,
+		outbound_scid_alias: None,
+		inbound_scid_alias: None,
+		channel_value_satoshis: 0,
+		user_channel_id: 0,
+		balance_msat: 0,
+		outbound_capacity_msat,
+		next_outbound_htlc_limit_msat: outbound_capacity_msat,
+		inbound_capacity_msat: 42,
+		unspendable_punishment_reserve: None,
+		confirmations_required: None,
+		confirmations: None,
+		force_close_spend_delay: None,
+		is_outbound: true, is_channel_ready: true,
+		is_usable: true, is_public: true,
+		inbound_htlc_minimum_msat: None,
+		inbound_htlc_maximum_msat: None,
+		config: None,
+	}
+}
 
 // Using the same keys for LN and BTC ids
 pub(super) fn add_channel(
@@ -133,7 +170,7 @@ pub(super) fn id_to_feature_flags(id: u8) -> Vec<u8> {
 	}
 }
 
-pub(super) fn build_line_graph() -> (
+pub(super) fn build_line_graph_with_features(node_features: NodeFeatures) -> (
 	Secp256k1<All>, sync::Arc<NetworkGraph<Arc<test_utils::TestLogger>>>,
 	P2PGossipSync<sync::Arc<NetworkGraph<Arc<test_utils::TestLogger>>>, sync::Arc<test_utils::TestChainSource>, sync::Arc<test_utils::TestLogger>>,
 	sync::Arc<test_utils::TestChainSource>, sync::Arc<test_utils::TestLogger>,
@@ -178,13 +215,33 @@ pub(super) fn build_line_graph() -> (
 				excess_data: Vec::new()
 			});
 			add_or_update_node(&gossip_sync, &secp_ctx, &next_privkey,
-				NodeFeatures::from_le_bytes(id_to_feature_flags(1)), 0);
+				node_features.clone(), 0);
 		}
 
 	(secp_ctx, network_graph, gossip_sync, chain_monitor, logger)
 }
 
 pub(super) fn build_graph() -> (
+	Secp256k1<All>,
+	sync::Arc<NetworkGraph<Arc<test_utils::TestLogger>>>,
+	P2PGossipSync<sync::Arc<NetworkGraph<Arc<test_utils::TestLogger>>>, sync::Arc<test_utils::TestChainSource>, sync::Arc<test_utils::TestLogger>>,
+	sync::Arc<test_utils::TestChainSource>,
+	sync::Arc<test_utils::TestLogger>,
+) {
+	build_graph_inner(None)
+}
+
+pub(super) fn build_graph_with_features(features: NodeFeatures) -> (
+	Secp256k1<All>,
+	sync::Arc<NetworkGraph<Arc<test_utils::TestLogger>>>,
+	P2PGossipSync<sync::Arc<NetworkGraph<Arc<test_utils::TestLogger>>>, sync::Arc<test_utils::TestChainSource>, sync::Arc<test_utils::TestLogger>>,
+	sync::Arc<test_utils::TestChainSource>,
+	sync::Arc<test_utils::TestLogger>,
+) {
+	build_graph_inner(Some(features))
+}
+
+fn build_graph_inner(features: Option<NodeFeatures>) -> (
 	Secp256k1<All>,
 	sync::Arc<NetworkGraph<Arc<test_utils::TestLogger>>>,
 	P2PGossipSync<sync::Arc<NetworkGraph<Arc<test_utils::TestLogger>>>, sync::Arc<test_utils::TestChainSource>, sync::Arc<test_utils::TestLogger>>,
@@ -271,7 +328,7 @@ pub(super) fn build_graph() -> (
 		excess_data: Vec::new()
 	});
 
-	add_or_update_node(&gossip_sync, &secp_ctx, &privkeys[0], NodeFeatures::from_le_bytes(id_to_feature_flags(1)), 0);
+	add_or_update_node(&gossip_sync, &secp_ctx, &privkeys[0], features.clone().unwrap_or_else(|| NodeFeatures::from_le_bytes(id_to_feature_flags(1))), 0);
 
 	add_channel(&gossip_sync, &secp_ctx, &our_privkey, &privkeys[1], ChannelFeatures::from_le_bytes(id_to_feature_flags(2)), 2);
 	update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
@@ -299,7 +356,7 @@ pub(super) fn build_graph() -> (
 		excess_data: Vec::new()
 	});
 
-	add_or_update_node(&gossip_sync, &secp_ctx, &privkeys[1], NodeFeatures::from_le_bytes(id_to_feature_flags(2)), 0);
+	add_or_update_node(&gossip_sync, &secp_ctx, &privkeys[1], features.clone().unwrap_or_else(|| NodeFeatures::from_le_bytes(id_to_feature_flags(2))), 0);
 
 	add_channel(&gossip_sync, &secp_ctx, &our_privkey, &privkeys[7], ChannelFeatures::from_le_bytes(id_to_feature_flags(12)), 12);
 	update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
@@ -327,7 +384,7 @@ pub(super) fn build_graph() -> (
 		excess_data: Vec::new()
 	});
 
-	add_or_update_node(&gossip_sync, &secp_ctx, &privkeys[7], NodeFeatures::from_le_bytes(id_to_feature_flags(8)), 0);
+	add_or_update_node(&gossip_sync, &secp_ctx, &privkeys[7], features.clone().unwrap_or_else(|| NodeFeatures::from_le_bytes(id_to_feature_flags(8))), 0);
 
 	add_channel(&gossip_sync, &secp_ctx, &privkeys[0], &privkeys[2], ChannelFeatures::from_le_bytes(id_to_feature_flags(3)), 3);
 	update_channel(&gossip_sync, &secp_ctx, &privkeys[0], UnsignedChannelUpdate {
@@ -407,7 +464,7 @@ pub(super) fn build_graph() -> (
 		excess_data: Vec::new()
 	});
 
-	add_or_update_node(&gossip_sync, &secp_ctx, &privkeys[2], NodeFeatures::from_le_bytes(id_to_feature_flags(3)), 0);
+	add_or_update_node(&gossip_sync, &secp_ctx, &privkeys[2], features.clone().unwrap_or_else(|| NodeFeatures::from_le_bytes(id_to_feature_flags(3))), 0);
 
 	add_channel(&gossip_sync, &secp_ctx, &privkeys[2], &privkeys[4], ChannelFeatures::from_le_bytes(id_to_feature_flags(6)), 6);
 	update_channel(&gossip_sync, &secp_ctx, &privkeys[2], UnsignedChannelUpdate {
@@ -461,9 +518,9 @@ pub(super) fn build_graph() -> (
 		excess_data: Vec::new()
 	});
 
-	add_or_update_node(&gossip_sync, &secp_ctx, &privkeys[4], NodeFeatures::from_le_bytes(id_to_feature_flags(5)), 0);
+	add_or_update_node(&gossip_sync, &secp_ctx, &privkeys[4], features.clone().unwrap_or_else(|| NodeFeatures::from_le_bytes(id_to_feature_flags(5))), 0);
 
-	add_or_update_node(&gossip_sync, &secp_ctx, &privkeys[3], NodeFeatures::from_le_bytes(id_to_feature_flags(4)), 0);
+	add_or_update_node(&gossip_sync, &secp_ctx, &privkeys[3], features.clone().unwrap_or_else(|| NodeFeatures::from_le_bytes(id_to_feature_flags(4))), 0);
 
 	add_channel(&gossip_sync, &secp_ctx, &privkeys[2], &privkeys[5], ChannelFeatures::from_le_bytes(id_to_feature_flags(7)), 7);
 	update_channel(&gossip_sync, &secp_ctx, &privkeys[2], UnsignedChannelUpdate {
@@ -491,7 +548,7 @@ pub(super) fn build_graph() -> (
 		excess_data: Vec::new()
 	});
 
-	add_or_update_node(&gossip_sync, &secp_ctx, &privkeys[5], NodeFeatures::from_le_bytes(id_to_feature_flags(6)), 0);
+	add_or_update_node(&gossip_sync, &secp_ctx, &privkeys[5], features.clone().unwrap_or_else(|| NodeFeatures::from_le_bytes(id_to_feature_flags(6))), 0);
 
 	(secp_ctx, network_graph, gossip_sync, chain_monitor, logger)
 }

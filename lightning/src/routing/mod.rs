@@ -11,6 +11,9 @@
 
 pub mod utxo;
 pub mod gossip;
+#[allow(unused)]
+// Keep this module private until scoring is added.
+mod onion_message;
 pub mod router;
 pub mod scoring;
 #[cfg(test)]
