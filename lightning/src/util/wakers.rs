@@ -137,6 +137,7 @@ impl Notifier {
 	}
 }
 
+macro_rules! define_callback { ($($bounds: path),*) => {
 /// A callback which is called when a [`Future`] completes.
 ///
 /// Note that this MUST NOT call back into LDK directly, it must instead schedule actions to be
@@ -145,14 +146,20 @@ impl Notifier {
 ///
 /// Note that the [`std::future::Future`] implementation may only work for runtimes which schedule
 /// futures when they receive a wake, rather than immediately executing them.
-pub trait FutureCallback : Send {
+pub trait FutureCallback : $($bounds +)* {
 	/// The method which is called.
 	fn call(&self);
 }
 
-impl<F: Fn() + Send> FutureCallback for F {
+impl<F: Fn() $(+ $bounds)*> FutureCallback for F {
 	fn call(&self) { (self)(); }
 }
+} }
+
+#[cfg(feature = "std")]
+define_callback!(Send);
+#[cfg(not(feature = "std"))]
+define_callback!();
 
 pub(crate) struct FutureState {
 	// When we're tracking whether a callback counts as having woken the user's code, we check the
