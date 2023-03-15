@@ -1680,11 +1680,8 @@ macro_rules! handle_new_monitor_update {
 				res
 			},
 			ChannelMonitorUpdateStatus::Completed => {
-				if ($update_id == 0 || $chan.get_next_monitor_update()
-					.expect("We can't be processing a monitor update if it isn't queued")
-					.update_id == $update_id) &&
-					$chan.get_latest_monitor_update_id() == $update_id
-				{
+				$chan.complete_one_mon_update($update_id);
+				if $chan.no_monitor_updates_pending() {
 					handle_monitor_update_completion!($self, $update_id, $peer_state_lock, $peer_state, $per_peer_state_lock, $chan);
 				}
 				Ok(())
@@ -5131,11 +5128,13 @@ where
 		match peer_state.channel_by_id.entry(msg.channel_id) {
 			hash_map::Entry::Occupied(mut chan) => {
 				let funding_txo = chan.get().get_funding_txo();
-				let monitor_update = try_chan_entry!(self, chan.get_mut().commitment_signed(&msg, &self.logger), chan);
-				let update_res = self.chain_monitor.update_channel(funding_txo.unwrap(), monitor_update);
-				let update_id = monitor_update.update_id;
-				handle_new_monitor_update!(self, update_res, update_id, peer_state_lock,
-					peer_state, per_peer_state, chan)
+				let monitor_update_opt = try_chan_entry!(self, chan.get_mut().commitment_signed(&msg, &self.logger), chan);
+				if let Some(monitor_update) = monitor_update_opt {
+					let update_res = self.chain_monitor.update_channel(funding_txo.unwrap(), monitor_update);
+					let update_id = monitor_update.update_id;
+					handle_new_monitor_update!(self, update_res, update_id, peer_state_lock,
+						peer_state, per_peer_state, chan)
+				} else { Ok(()) }
 			},
 			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
 		}
@@ -5250,11 +5249,13 @@ where
 			match peer_state.channel_by_id.entry(msg.channel_id) {
 				hash_map::Entry::Occupied(mut chan) => {
 					let funding_txo = chan.get().get_funding_txo();
-					let (htlcs_to_fail, monitor_update) = try_chan_entry!(self, chan.get_mut().revoke_and_ack(&msg, &self.logger), chan);
-					let update_res = self.chain_monitor.update_channel(funding_txo.unwrap(), monitor_update);
-					let update_id = monitor_update.update_id;
-					let res = handle_new_monitor_update!(self, update_res, update_id,
-						peer_state_lock, peer_state, per_peer_state, chan);
+					let (htlcs_to_fail, monitor_update_opt) = try_chan_entry!(self, chan.get_mut().revoke_and_ack(&msg, &self.logger), chan);
+					let res = if let Some(monitor_update) = monitor_update_opt {
+						let update_res = self.chain_monitor.update_channel(funding_txo.unwrap(), monitor_update);
+						let update_id = monitor_update.update_id;
+						handle_new_monitor_update!(self, update_res, update_id,
+							peer_state_lock, peer_state, per_peer_state, chan)
+					} else { Ok(()) };
 					(htlcs_to_fail, res)
 				},
 				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
