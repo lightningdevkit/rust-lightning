@@ -14,41 +14,34 @@ jobs:
                      1.48.0]
         include:
           - toolchain: stable
-            build-no-std: true
             build-futures: true
             build-tx-sync: true
             coverage: true
           - toolchain: stable
             platform: macos-latest
-            build-no-std: true
             build-futures: true
             build-tx-sync: true
           - toolchain: stable
             test-custom-message: true
           - toolchain: beta
             platform: macos-latest
-            build-no-std: true
             build-futures: true
             build-tx-sync: true
           - toolchain: stable
             platform: windows-latest
-            build-no-std: true
             build-futures: true
             build-tx-sync: false
           - toolchain: beta
             platform: windows-latest
-            build-no-std: true
             build-futures: true
             build-tx-sync: false
           - toolchain: beta
-            build-no-std: true
             build-futures: true
             build-tx-sync: true
           - toolchain: beta
             test-custom-message: true
           - toolchain: 1.48.0
             build-futures: true
-            build-no-std: true
             build-tx-sync: false
     runs-on: ${{ matrix.platform }}
     steps:
@@ -131,7 +124,7 @@ jobs:
         if: matrix.coverage
         run: RUSTFLAGS="-C link-dead-code" cargo test --verbose --color always
       - name: Test no-std builds on Rust ${{ matrix.toolchain }}
-        if: "matrix.build-no-std && !matrix.coverage"
+        if: "!matrix.coverage"
         shell: bash # Default on Winblows is powershell
         run: |
           for DIR in lightning lightning-invoice lightning-rapid-gossip-sync; do
@@ -150,14 +143,14 @@ jobs:
           cd no-std-check
           cargo check --verbose --color always --features lightning-transaction-sync
       - name: Build no-std-check on Rust ${{ matrix.toolchain }} for ARM Embedded
-        if: "matrix.build-no-std && matrix.platform == 'ubuntu-latest'"
+        if: "matrix.platform == 'ubuntu-latest'"
         run: |
           cd no-std-check
           rustup target add thumbv7m-none-eabi
           sudo apt-get -y install gcc-arm-none-eabi
           cargo build --target=thumbv7m-none-eabi
       - name: Test on no-std builds Rust ${{ matrix.toolchain }} and full code-linking for coverage generation
-        if: "matrix.build-no-std && matrix.coverage"
+        if: "matrix.coverage"
         run: |
           cd lightning
           RUSTFLAGS="-C link-dead-code" cargo test --verbose --color always --no-default-features --features no-std
