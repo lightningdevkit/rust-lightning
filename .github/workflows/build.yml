@@ -10,12 +10,8 @@ jobs:
         platform: [ ubuntu-latest ]
         toolchain: [ stable,
                      beta,
-                     # 1.41.1 is MSRV for Rust-Lightning, lightning-invoice, and lightning-persister
-                     1.41.1,
-                     # 1.45.2 is MSRV for lightning-net-tokio, lightning-block-sync, lightning-background-processor
-                     1.45.2,
-                     # 1.47.0 will be the MSRV for no-std builds using hashbrown once core2 is updated
-                     1.47.0]
+                     # 1.48.0 is the MSRV for all LDK crates except lightning-transaction-sync and Windows
+                     1.48.0]
         include:
           - toolchain: stable
             build-net-tokio: true
@@ -56,18 +52,7 @@ jobs:
             build-tx-sync: true
           - toolchain: beta
             test-custom-message: true
-          - toolchain: 1.41.1
-            build-no-std: false
-            test-log-variants: true
-            build-futures: false
-            build-tx-sync: false
-          - toolchain: 1.45.2
-            build-net-old-tokio: true
-            build-net-tokio: true
-            build-no-std: false
-            build-futures: true
-            build-tx-sync: false
-          - toolchain: 1.47.0
+          - toolchain: 1.48.0
             build-futures: true
             build-no-std: true
             build-tx-sync: false
