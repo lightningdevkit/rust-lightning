@@ -1449,6 +1449,22 @@ macro_rules! remove_channel {
 	}
 }
 
+macro_rules! channel_ready_pending {
+	($self: ident, $pending_msg_events: expr, $channel: expr, $channel_ready_msg: expr) => {{
+		if $channel.requires_manual_readiness_signal() {
+			let mut pending_events = $self.pending_events.lock().unwrap();
+			pending_events.push(events::Event::PendingChannelReady {
+				channel_id: $channel.channel_id(),
+				user_channel_id: $channel.get_user_id(),
+				counterparty_node_id: $channel.get_counterparty_node_id(),
+				funding_outpoint: $channel.get_funding_txo().unwrap(),
+			});
+		} else {
+			send_channel_ready!($self, $pending_msg_events, $channel, $channel_ready_msg);
+		}
+	}}
+}
+
 macro_rules! send_channel_ready {
 	($self: ident, $pending_msg_events: expr, $channel: expr, $channel_ready_msg: expr) => {{
 		$pending_msg_events.push(events::MessageSendEvent::SendChannelReady {
@@ -4175,7 +4191,7 @@ where
 		}
 
 		if let Some(msg) = channel_ready {
-			send_channel_ready!(self, pending_msg_events, channel, msg);
+			channel_ready_pending!(self, pending_msg_events, channel, msg);
 		}
 		if let Some(msg) = announcement_sigs {
 			pending_msg_events.push(events::MessageSendEvent::SendAnnouncementSignatures {
@@ -4351,6 +4367,38 @@ where
 				return Err(APIError::ChannelUnavailable { err: format!("Channel with id {} not found for the passed counterparty node_id {}", log_bytes!(*temporary_channel_id), counterparty_node_id) });
 			}
 		}
+		Ok(())
+	}
+
+	/// Signals channel readiness after a [`Event::PendingChannelReady`].
+	///
+	/// The `channel_id` parameter indicates which channel should signal readiness,
+	/// and the `counterparty_node_id` parameter is the id of the peer the channel is with.
+	///
+	/// [`Event::PendingChannelReady`]: events::Event::PendingChannelReady
+	pub fn signal_channel_readiness(&self, channel_id: &[u8; 32], counterparty_node_id: &PublicKey) -> Result<(), APIError> {
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
+
+		let per_peer_state = self.per_peer_state.read().unwrap();
+		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
+			.ok_or_else(|| APIError::ChannelUnavailable { err: format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id) })?;
+		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+		let peer_state = &mut *peer_state_lock;
+		let pending_msg_events = &mut peer_state.pending_msg_events;
+		match peer_state.channel_by_id.entry(channel_id.clone()) {
+			hash_map::Entry::Occupied(mut channel) => {
+				let best_block_height = self.best_block.read().unwrap().height();
+				let channel = channel.get_mut();
+				match channel.check_get_channel_ready(best_block_height) {
+					Some(channel_ready) => send_channel_ready!(self, pending_msg_events, channel, channel_ready),
+					None => return Err(APIError::APIMisuseError { err: "The channel isn't currently in a state where we can signal readiness.".to_owned() })
+				}				
+			}
+			hash_map::Entry::Vacant(_) => {
+				return Err(APIError::ChannelUnavailable { err: format!("Channel with id {} not found for the passed counterparty node_id {}", log_bytes!(*channel_id), counterparty_node_id) });
+			}
+		}
+
 		Ok(())
 	}
 
@@ -5953,7 +6001,7 @@ where
 								HTLCDestination::NextHopChannel { node_id: Some(channel.get_counterparty_node_id()), channel_id: channel.channel_id() }));
 						}
 						if let Some(channel_ready) = channel_ready_opt {
-							send_channel_ready!(self, pending_msg_events, channel, channel_ready);
+							channel_ready_pending!(self, pending_msg_events, channel, channel_ready);
 							if channel.is_usable() {
 								log_trace!(self.logger, "Sending channel_ready with private initial channel_update for our counterparty on channel {}", log_bytes!(channel.channel_id()));
 								if let Ok(msg) = self.get_channel_update_for_unicast(channel) {

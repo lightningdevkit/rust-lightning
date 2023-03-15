@@ -612,6 +612,14 @@ pub(super) struct Channel<Signer: ChannelSigner> {
 	/// `accept_inbound_channel`, and `funding_created` should therefore not execute successfully.
 	inbound_awaiting_accept: bool,
 
+	/// A flag that indicates whether the channel requires the user to signal readiness to send
+	/// the `msgs::ChannelReady` message.  This is only set to true if the channel was created with a
+	/// `ChannelHandshakeConfig::manually_signal_channel_ready` flag set to true.
+	/// 
+	/// When a user signals readiness via `ChannelManager::signal_channel_readiness` this flag is
+	/// flipped to false.
+	requires_manual_readiness_signal: bool,
+
 	/// The hash of the block in which the funding transaction was included.
 	funding_tx_confirmed_in: Option<BlockHash>,
 	funding_tx_confirmation_height: u32,
@@ -1049,6 +1057,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			target_closing_feerate_sats_per_kw: None,
 
 			inbound_awaiting_accept: false,
+			requires_manual_readiness_signal: config.channel_handshake_config.manually_signal_channel_ready,
 
 			funding_tx_confirmed_in: None,
 			funding_tx_confirmation_height: 0,
@@ -1393,6 +1402,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			target_closing_feerate_sats_per_kw: None,
 
 			inbound_awaiting_accept: true,
+			requires_manual_readiness_signal: config.channel_handshake_config.manually_signal_channel_ready,
 
 			funding_tx_confirmed_in: None,
 			funding_tx_confirmation_height: 0,
@@ -4968,10 +4978,11 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		self.channel_update_status = status;
 	}
 
-	fn check_get_channel_ready(&mut self, height: u32) -> Option<msgs::ChannelReady> {
+	pub fn check_get_channel_ready(&mut self, height: u32) -> Option<msgs::ChannelReady> {
 		// Called:
 		//  * always when a new block/transactions are confirmed with the new height
 		//  * when funding is signed with a height of 0
+		//  * when user calls ChannelManager::signal_channel_readiness
 		if self.funding_tx_confirmation_height == 0 && self.minimum_depth != Some(0) {
 			return None;
 		}
@@ -5271,6 +5282,10 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 
 	pub fn inbound_is_awaiting_accept(&self) -> bool {
 		self.inbound_awaiting_accept
+	}
+
+	pub fn requires_manual_readiness_signal(&self) -> bool {
+		self.requires_manual_readiness_signal
 	}
 
 	/// Sets this channel to accepting 0conf, must be done before `get_accept_channel`
@@ -6426,6 +6441,8 @@ impl<Signer: WriteableEcdsaChannelSigner> Writeable for Channel<Signer> {
 		// versions prior to 0.0.113, the u128 is serialized as two separate u64 values. Therefore,
 		// we write the high bytes as an option here.
 		let user_id_high_opt = Some((self.user_id >> 64) as u64);
+		
+		let requires_manual_readiness_signal = Some(self.requires_manual_readiness_signal);
 
 		write_tlv_fields!(writer, {
 			(0, self.announcement_sigs, option),
@@ -6452,6 +6469,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Writeable for Channel<Signer> {
 			(23, channel_ready_event_emitted, option),
 			(25, user_id_high_opt, option),
 			(27, self.channel_keys_id, required),
+			(29, requires_manual_readiness_signal, option)
 		});
 
 		Ok(())
@@ -6723,6 +6741,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 
 		let mut user_id_high_opt: Option<u64> = None;
 		let mut channel_keys_id: Option<[u8; 32]> = None;
+		let mut requires_manual_readiness_signal: Option<bool> = Some(false);
 
 		read_tlv_fields!(reader, {
 			(0, announcement_sigs, option),
@@ -6743,6 +6762,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 			(23, channel_ready_event_emitted, option),
 			(25, user_id_high_opt, option),
 			(27, channel_keys_id, option),
+			(29, requires_manual_readiness_signal, option),
 		});
 
 		let (channel_keys_id, holder_signer) = if let Some(channel_keys_id) = channel_keys_id {
@@ -6853,6 +6873,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 			target_closing_feerate_sats_per_kw,
 
 			inbound_awaiting_accept: false,
+			requires_manual_readiness_signal: requires_manual_readiness_signal.unwrap(),
 
 			funding_tx_confirmed_in,
 			funding_tx_confirmation_height,

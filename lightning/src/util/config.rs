@@ -149,6 +149,17 @@ pub struct ChannelHandshakeConfig {
 	/// Maximum value: 1,000,000, any values larger than 1 Million will be treated as 1 Million (or 100%)
 	///                instead, although channel negotiations will fail in that case.
 	pub their_channel_reserve_proportional_millionths: u32,
+	/// If this is set to true, the user needs to manually signal readiness for an inbound channel.
+	///
+	/// When set to true, [`Event::PendingChannelReady`] will be triggered once LDK has seen sufficient
+	/// confirmations of the funding transaction. In that case, a [`msgs::ChannelReady`] message will not be 
+	/// sent to the counterparty node unless the user explicitly chooses to signal readiness.
+	///
+	/// Default value: false.
+	///
+	/// [`Event::PendingChannelReady`]: crate::util::events::Event::PendingChannelReady
+	/// [`msgs::ChannelReady`]: crate::ln::msgs::ChannelReady
+	pub manually_signal_channel_ready: bool,
 	#[cfg(anchors)]
 	/// If set, we attempt to negotiate the `anchors_zero_fee_htlc_tx`option for outbound channels.
 	///
@@ -183,6 +194,7 @@ impl Default for ChannelHandshakeConfig {
 			announced_channel: false,
 			commit_upfront_shutdown_pubkey: true,
 			their_channel_reserve_proportional_millionths: 10_000,
+			manually_signal_channel_ready: false,
 			#[cfg(anchors)]
 			negotiate_anchors_zero_fee_htlc_tx: false,
 		}
