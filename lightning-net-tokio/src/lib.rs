@@ -205,7 +205,7 @@ impl Connection {
 			tokio::select! {
 				v = write_avail_receiver.recv() => {
 					assert!(v.is_some()); // We can't have dropped the sending end, its in the us Arc!
-					if let Err(_) = peer_manager.write_buffer_space_avail(&mut our_descriptor) {
+					if peer_manager.write_buffer_space_avail(&mut our_descriptor).is_err() {
 						break Disconnect::CloseConnection;
 					}
 				},
@@ -313,7 +313,7 @@ pub fn setup_inbound<PM, CMH, RMH, OMH, L, UMH, NS>(
 	#[cfg(test)]
 	let last_us = Arc::clone(&us);
 
-	let handle_opt = if let Ok(_) = peer_manager.new_inbound_connection(SocketDescriptor::new(us.clone()), remote_addr) {
+	let handle_opt = if peer_manager.new_inbound_connection(SocketDescriptor::new(us.clone()), remote_addr).is_ok() {
 		Some(tokio::spawn(Connection::schedule_read(peer_manager, us, reader, read_receiver, write_receiver)))
 	} else {
 		// Note that we will skip socket_disconnected here, in accordance with the PeerManager

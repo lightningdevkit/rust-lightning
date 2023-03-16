@@ -2334,7 +2334,7 @@ mod tests {
 					let addr_b = NetAddress::IPv4{addr: [127, 0, 0, 1], port: 1001};
 					let initial_data = peers[1].new_outbound_connection(id_a, fd_b.clone(), Some(addr_a.clone())).unwrap();
 					peers[0].new_inbound_connection(fd_a.clone(), Some(addr_b.clone())).unwrap();
-					assert_eq!(peers[0].read_event(&mut fd_a, &initial_data).unwrap(), false);
+					if peers[0].read_event(&mut fd_a, &initial_data).is_err() { break; }
 
 					while start_time.elapsed() < std::time::Duration::from_secs(1) {
 						peers[0].process_events();
@@ -2364,8 +2364,10 @@ mod tests {
 								},
 							});
 
-						peers[0].timer_tick_occurred();
-						peers[1].timer_tick_occurred();
+						if ctr % 2 == 0 {
+							peers[0].timer_tick_occurred();
+							peers[1].timer_tick_occurred();
+						}
 					}
 
 					peers[0].socket_disconnected(&fd_a);

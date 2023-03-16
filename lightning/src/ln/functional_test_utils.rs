@@ -16,14 +16,15 @@ use crate::chain::transaction::OutPoint;
 use crate::ln::{PaymentPreimage, PaymentHash, PaymentSecret};
 use crate::ln::channelmanager::{ChainParameters, ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, PaymentSendFailure, PaymentId, MIN_CLTV_EXPIRY_DELTA};
 use crate::routing::gossip::{P2PGossipSync, NetworkGraph, NetworkUpdate};
-use crate::routing::router::{PaymentParameters, Route, get_route};
+use crate::routing::router::{self, PaymentParameters, Route};
 use crate::ln::features::InitFeatures;
 use crate::ln::msgs;
 use crate::ln::msgs::{ChannelMessageHandler,RoutingMessageHandler};
+use crate::util::events::ClosureReason;
 use crate::util::enforcing_trait_impls::EnforcingSigner;
 use crate::util::scid_utils;
 use crate::util::test_utils;
-use crate::util::test_utils::{panicking, TestChainMonitor};
+use crate::util::test_utils::{panicking, TestChainMonitor, TestScorer, TestKeysInterface};
 use crate::util::events::{Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, PathFailure, PaymentPurpose};
 use crate::util::errors::APIError;
 use crate::util::config::UserConfig;
@@ -482,33 +483,46 @@ pub fn create_chan_between_nodes_with_value<'a, 'b, 'c, 'd>(node_a: &'a Node<'b,
 	(announcement, as_update, bs_update, channel_id, tx)
 }
 
+/// Gets an RAA and CS which were sent in response to a commitment update
+///
+/// Should only be used directly when the `$node` is not actually a [`Node`].
+macro_rules! do_get_revoke_commit_msgs {
+	($node: expr, $recipient: expr) => { {
+		let events = $node.node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 2);
+		(match events[0] {
+			MessageSendEvent::SendRevokeAndACK { ref node_id, ref msg } => {
+				assert_eq!(node_id, $recipient);
+				(*msg).clone()
+			},
+			_ => panic!("Unexpected event"),
+		}, match events[1] {
+			MessageSendEvent::UpdateHTLCs { ref node_id, ref updates } => {
+				assert_eq!(node_id, $recipient);
+				assert!(updates.update_add_htlcs.is_empty());
+				assert!(updates.update_fulfill_htlcs.is_empty());
+				assert!(updates.update_fail_htlcs.is_empty());
+				assert!(updates.update_fail_malformed_htlcs.is_empty());
+				assert!(updates.update_fee.is_none());
+				updates.commitment_signed.clone()
+			},
+			_ => panic!("Unexpected event"),
+		})
+	} }
+}
+
+/// Gets an RAA and CS which were sent in response to a commitment update
+pub fn get_revoke_commit_msgs(node: &Node, recipient: &PublicKey) -> (msgs::RevokeAndACK, msgs::CommitmentSigned) {
+	do_get_revoke_commit_msgs!(node, recipient)
+}
+
 #[macro_export]
 /// Gets an RAA and CS which were sent in response to a commitment update
+///
+/// Don't use this, use the identically-named function instead.
 macro_rules! get_revoke_commit_msgs {
 	($node: expr, $node_id: expr) => {
-		{
-			use $crate::util::events::MessageSendEvent;
-			let events = $node.node.get_and_clear_pending_msg_events();
-			assert_eq!(events.len(), 2);
-			(match events[0] {
-				MessageSendEvent::SendRevokeAndACK { ref node_id, ref msg } => {
-					assert_eq!(*node_id, $node_id);
-					(*msg).clone()
-				},
-				_ => panic!("Unexpected event"),
-			}, match events[1] {
-				MessageSendEvent::UpdateHTLCs { ref node_id, ref updates } => {
-					assert_eq!(*node_id, $node_id);
-					assert!(updates.update_add_htlcs.is_empty());
-					assert!(updates.update_fulfill_htlcs.is_empty());
-					assert!(updates.update_fail_htlcs.is_empty());
-					assert!(updates.update_fail_malformed_htlcs.is_empty());
-					assert!(updates.update_fee.is_none());
-					updates.commitment_signed.clone()
-				},
-				_ => panic!("Unexpected event"),
-			})
-		}
+		$crate::ln::functional_test_utils::get_revoke_commit_msgs(&$node, &$node_id)
 	}
 }
 
@@ -531,22 +545,17 @@ macro_rules! get_event_msg {
 }
 
 /// Get an error message from the pending events queue.
-#[macro_export]
-macro_rules! get_err_msg {
-	($node: expr, $node_id: expr) => {
-		{
-			let events = $node.node.get_and_clear_pending_msg_events();
-			assert_eq!(events.len(), 1);
-			match events[0] {
-				$crate::util::events::MessageSendEvent::HandleError {
-					action: $crate::ln::msgs::ErrorAction::SendErrorMessage { ref msg }, ref node_id
-				} => {
-					assert_eq!(*node_id, $node_id);
-					(*msg).clone()
-				},
-				_ => panic!("Unexpected event"),
-			}
-		}
+pub fn get_err_msg(node: &Node, recipient: &PublicKey) -> msgs::ErrorMessage {
+	let events = node.node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	match events[0] {
+		MessageSendEvent::HandleError {
+			action: msgs::ErrorAction::SendErrorMessage { ref msg }, ref node_id
+		} => {
+			assert_eq!(node_id, recipient);
+			(*msg).clone()
+		},
+		_ => panic!("Unexpected event"),
 	}
 }
 
@@ -568,21 +577,26 @@ macro_rules! get_event {
 	}
 }
 
+/// Gets an UpdateHTLCs MessageSendEvent
+pub fn get_htlc_update_msgs(node: &Node, recipient: &PublicKey) -> msgs::CommitmentUpdate {
+	let events = node.node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	match events[0] {
+		MessageSendEvent::UpdateHTLCs { ref node_id, ref updates } => {
+			assert_eq!(node_id, recipient);
+			(*updates).clone()
+		},
+		_ => panic!("Unexpected event"),
+	}
+}
+
 #[macro_export]
 /// Gets an UpdateHTLCs MessageSendEvent
+///
+/// Don't use this, use the identically-named function instead.
 macro_rules! get_htlc_update_msgs {
 	($node: expr, $node_id: expr) => {
-		{
-			let events = $node.node.get_and_clear_pending_msg_events();
-			assert_eq!(events.len(), 1);
-			match events[0] {
-				$crate::util::events::MessageSendEvent::UpdateHTLCs { ref node_id, ref updates } => {
-					assert_eq!(*node_id, $node_id);
-					(*updates).clone()
-				},
-				_ => panic!("Unexpected event"),
-			}
-		}
+		$crate::ln::functional_test_utils::get_htlc_update_msgs(&$node, &$node_id)
 	}
 }
 
@@ -683,7 +697,7 @@ macro_rules! get_feerate {
 			let mut per_peer_state_lock;
 			let mut peer_state_lock;
 			let chan = get_channel_ref!($node, $counterparty_node, per_peer_state_lock, peer_state_lock, $channel_id);
-			chan.get_feerate()
+			chan.get_feerate_sat_per_1000_weight()
 		}
 	}
 }
@@ -758,14 +772,19 @@ macro_rules! unwrap_send_err {
 }
 
 /// Check whether N channel monitor(s) have been added.
+pub fn check_added_monitors(node: &Node, count: usize) {
+	let mut added_monitors = node.chain_monitor.added_monitors.lock().unwrap();
+	assert_eq!(added_monitors.len(), count);
+	added_monitors.clear();
+}
+
+/// Check whether N channel monitor(s) have been added.
+///
+/// Don't use this, use the identically-named function instead.
 #[macro_export]
 macro_rules! check_added_monitors {
 	($node: expr, $count: expr) => {
-		{
-			let mut added_monitors = $node.chain_monitor.added_monitors.lock().unwrap();
-			assert_eq!(added_monitors.len(), $count);
-			added_monitors.clear();
-		}
+		$crate::ln::functional_test_utils::check_added_monitors(&$node, $count);
 	}
 }
 
@@ -1131,6 +1150,24 @@ pub fn update_nodes_with_chan_announce<'a, 'b, 'c, 'd>(nodes: &'a Vec<Node<'b, '
 	}
 }
 
+pub fn do_check_spends<F: Fn(&bitcoin::blockdata::transaction::OutPoint) -> Option<TxOut>>(tx: &Transaction, get_output: F) {
+	for outp in tx.output.iter() {
+		assert!(outp.value >= outp.script_pubkey.dust_value().to_sat(), "Spending tx output didn't meet dust limit");
+	}
+	let mut total_value_in = 0;
+	for input in tx.input.iter() {
+		total_value_in += get_output(&input.previous_output).unwrap().value;
+	}
+	let mut total_value_out = 0;
+	for output in tx.output.iter() {
+		total_value_out += output.value;
+	}
+	let min_fee = (tx.weight() as u64 + 3) / 4; // One sat per vbyte (ie per weight/4, rounded up)
+	// Input amount - output amount = fee, so check that out + min_fee is smaller than input
+	assert!(total_value_out + min_fee <= total_value_in);
+	tx.verify(get_output).unwrap();
+}
+
 #[macro_export]
 macro_rules! check_spends {
 	($tx: expr, $($spends_txn: expr),*) => {
@@ -1140,9 +1177,6 @@ macro_rules! check_spends {
 				assert!(outp.value >= outp.script_pubkey.dust_value().to_sat(), "Input tx output didn't meet dust limit");
 			}
 			)*
-			for outp in $tx.output.iter() {
-				assert!(outp.value >= outp.script_pubkey.dust_value().to_sat(), "Spending tx output didn't meet dust limit");
-			}
 			let get_output = |out_point: &bitcoin::blockdata::transaction::OutPoint| {
 				$(
 					if out_point.txid == $spends_txn.txid() {
@@ -1151,18 +1185,7 @@ macro_rules! check_spends {
 				)*
 				None
 			};
-			let mut total_value_in = 0;
-			for input in $tx.input.iter() {
-				total_value_in += get_output(&input.previous_output).unwrap().value;
-			}
-			let mut total_value_out = 0;
-			for output in $tx.output.iter() {
-				total_value_out += output.value;
-			}
-			let min_fee = ($tx.weight() as u64 + 3) / 4; // One sat per vbyte (ie per weight/4, rounded up)
-			// Input amount - output amount = fee, so check that out + min_fee is smaller than input
-			assert!(total_value_out + min_fee <= total_value_in);
-			$tx.verify(get_output).unwrap();
+			$crate::ln::functional_test_utils::do_check_spends(&$tx, get_output);
 		}
 	}
 }
@@ -1209,58 +1232,67 @@ macro_rules! check_warn_msg {
 
 /// Check that a channel's closing channel update has been broadcasted, and optionally
 /// check whether an error message event has occurred.
-#[macro_export]
-macro_rules! check_closed_broadcast {
-	($node: expr, $with_error_msg: expr) => {{
-		use $crate::util::events::MessageSendEvent;
-		use $crate::ln::msgs::ErrorAction;
-
-		let msg_events = $node.node.get_and_clear_pending_msg_events();
-		assert_eq!(msg_events.len(), if $with_error_msg { 2 } else { 1 });
-		match msg_events[0] {
-			MessageSendEvent::BroadcastChannelUpdate { ref msg } => {
-				assert_eq!(msg.contents.flags & 2, 2);
+pub fn check_closed_broadcast(node: &Node, with_error_msg: bool) -> Option<msgs::ErrorMessage> {
+	let msg_events = node.node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), if with_error_msg { 2 } else { 1 });
+	match msg_events[0] {
+		MessageSendEvent::BroadcastChannelUpdate { ref msg } => {
+			assert_eq!(msg.contents.flags & 2, 2);
+		},
+		_ => panic!("Unexpected event"),
+	}
+	if with_error_msg {
+		match msg_events[1] {
+			MessageSendEvent::HandleError { action: msgs::ErrorAction::SendErrorMessage { ref msg }, node_id: _ } => {
+				// TODO: Check node_id
+				Some(msg.clone())
 			},
 			_ => panic!("Unexpected event"),
 		}
-		if $with_error_msg {
-			match msg_events[1] {
-				MessageSendEvent::HandleError { action: ErrorAction::SendErrorMessage { ref msg }, node_id: _ } => {
-					// TODO: Check node_id
-					Some(msg.clone())
-				},
-				_ => panic!("Unexpected event"),
-			}
-		} else { None }
-	}}
+	} else { None }
+}
+
+/// Check that a channel's closing channel update has been broadcasted, and optionally
+/// check whether an error message event has occurred.
+///
+/// Don't use this, use the identically-named function instead.
+#[macro_export]
+macro_rules! check_closed_broadcast {
+	($node: expr, $with_error_msg: expr) => {
+		$crate::ln::functional_test_utils::check_closed_broadcast(&$node, $with_error_msg)
+	}
 }
 
 /// Check that a channel's closing channel events has been issued
+pub fn check_closed_event(node: &Node, events_count: usize, expected_reason: ClosureReason, is_check_discard_funding: bool) {
+	let events = node.node.get_and_clear_pending_events();
+	assert_eq!(events.len(), events_count, "{:?}", events);
+	let mut issues_discard_funding = false;
+	for event in events {
+		match event {
+			Event::ChannelClosed { ref reason, .. } => {
+				assert_eq!(*reason, expected_reason);
+			},
+			Event::DiscardFunding { .. } => {
+				issues_discard_funding = true;
+			}
+			_ => panic!("Unexpected event"),
+		}
+	}
+	assert_eq!(is_check_discard_funding, issues_discard_funding);
+}
+
+/// Check that a channel's closing channel events has been issued
+///
+/// Don't use this, use the identically-named function instead.
 #[macro_export]
 macro_rules! check_closed_event {
 	($node: expr, $events: expr, $reason: expr) => {
 		check_closed_event!($node, $events, $reason, false);
 	};
-	($node: expr, $events: expr, $reason: expr, $is_check_discard_funding: expr) => {{
-		use $crate::util::events::Event;
-
-		let events = $node.node.get_and_clear_pending_events();
-		assert_eq!(events.len(), $events, "{:?}", events);
-		let expected_reason = $reason;
-		let mut issues_discard_funding = false;
-		for event in events {
-			match event {
-				Event::ChannelClosed { ref reason, .. } => {
-					assert_eq!(*reason, expected_reason);
-				},
-				Event::DiscardFunding { .. } => {
-					issues_discard_funding = true;
-				}
-				_ => panic!("Unexpected event"),
-			}
-		}
-		assert_eq!($is_check_discard_funding, issues_discard_funding);
-	}}
+	($node: expr, $events: expr, $reason: expr, $is_check_discard_funding: expr) => {
+		$crate::ln::functional_test_utils::check_closed_event(&$node, $events, $reason, $is_check_discard_funding);
+	}
 }
 
 pub fn close_channel<'a, 'b, 'c>(outbound_node: &Node<'a, 'b, 'c>, inbound_node: &Node<'a, 'b, 'c>, channel_id: &[u8; 32], funding_tx: Transaction, close_inbound_first: bool) -> (msgs::ChannelUpdate, msgs::ChannelUpdate, Transaction) {
@@ -1362,22 +1394,11 @@ impl SendEvent {
 }
 
 #[macro_export]
+/// Don't use this, use the identically-named function instead.
 macro_rules! expect_pending_htlcs_forwardable_conditions {
-	($node: expr, $expected_failures: expr) => {{
-		let expected_failures = $expected_failures;
-		let events = $node.node.get_and_clear_pending_events();
-		match events[0] {
-			$crate::util::events::Event::PendingHTLCsForwardable { .. } => { },
-			_ => panic!("Unexpected event {:?}", events),
-		};
-
-		let count = expected_failures.len() + 1;
-		assert_eq!(events.len(), count);
-
-		if expected_failures.len() > 0 {
-			expect_htlc_handling_failed_destinations!(events, expected_failures)
-		}
-	}}
+	($node: expr, $expected_failures: expr) => {
+		$crate::ln::functional_test_utils::expect_pending_htlcs_forwardable_conditions($node.node.get_and_clear_pending_events(), &$expected_failures);
+	}
 }
 
 #[macro_export]
@@ -1395,27 +1416,49 @@ macro_rules! expect_htlc_handling_failed_destinations {
 	}}
 }
 
+/// Checks that an [`Event::PendingHTLCsForwardable`] is available in the given events and, if
+/// there are any [`Event::HTLCHandlingFailed`] events their [`HTLCDestination`] is included in the
+/// `expected_failures` set.
+pub fn expect_pending_htlcs_forwardable_conditions(events: Vec<Event>, expected_failures: &[HTLCDestination]) {
+	match events[0] {
+		Event::PendingHTLCsForwardable { .. } => { },
+		_ => panic!("Unexpected event {:?}", events),
+	};
+
+	let count = expected_failures.len() + 1;
+	assert_eq!(events.len(), count);
+
+	if expected_failures.len() > 0 {
+		expect_htlc_handling_failed_destinations!(events, expected_failures)
+	}
+}
+
 #[macro_export]
 /// Clears (and ignores) a PendingHTLCsForwardable event
+///
+/// Don't use this, call [`expect_pending_htlcs_forwardable_conditions()`] with an empty failure
+/// set instead.
 macro_rules! expect_pending_htlcs_forwardable_ignore {
-	($node: expr) => {{
-		expect_pending_htlcs_forwardable_conditions!($node, vec![]);
-	}};
+	($node: expr) => {
+		$crate::ln::functional_test_utils::expect_pending_htlcs_forwardable_conditions($node.node.get_and_clear_pending_events(), &[]);
+	}
 }
 
 #[macro_export]
 /// Clears (and ignores) PendingHTLCsForwardable and HTLCHandlingFailed events
+///
+/// Don't use this, call [`expect_pending_htlcs_forwardable_conditions()`] instead.
 macro_rules! expect_pending_htlcs_forwardable_and_htlc_handling_failed_ignore {
-	($node: expr, $expected_failures: expr) => {{
-		expect_pending_htlcs_forwardable_conditions!($node, $expected_failures);
-	}};
+	($node: expr, $expected_failures: expr) => {
+		$crate::ln::functional_test_utils::expect_pending_htlcs_forwardable_conditions($node.node.get_and_clear_pending_events(), &$expected_failures);
+	}
 }
 
 #[macro_export]
 /// Handles a PendingHTLCsForwardable event
 macro_rules! expect_pending_htlcs_forwardable {
 	($node: expr) => {{
-		expect_pending_htlcs_forwardable_ignore!($node);
+		$crate::ln::functional_test_utils::expect_pending_htlcs_forwardable_conditions($node.node.get_and_clear_pending_events(), &[]);
 		$node.node.process_pending_htlc_forwards();
 
 		// Ensure process_pending_htlc_forwards is idempotent.
@@ -1427,7 +1470,7 @@ macro_rules! expect_pending_htlcs_forwardable {
 /// Handles a PendingHTLCsForwardable and HTLCHandlingFailed event
 macro_rules! expect_pending_htlcs_forwardable_and_htlc_handling_failed {
 	($node: expr, $expected_failures: expr) => {{
-		expect_pending_htlcs_forwardable_and_htlc_handling_failed_ignore!($node, $expected_failures);
+		$crate::ln::functional_test_utils::expect_pending_htlcs_forwardable_conditions($node.node.get_and_clear_pending_events(), &$expected_failures);
 		$node.node.process_pending_htlc_forwards();
 
 		// Ensure process_pending_htlc_forwards is idempotent.
@@ -1464,10 +1507,10 @@ macro_rules! commitment_signed_dance {
 	};
 	($node_a: expr, $node_b: expr, $commitment_signed: expr, $fail_backwards: expr, true /* skip last step */, false /* return extra message */, true /* return last RAA */) => {
 		{
-			check_added_monitors!($node_a, 0);
+			$crate::ln::functional_test_utils::check_added_monitors(&$node_a, 0);
 			assert!($node_a.node.get_and_clear_pending_msg_events().is_empty());
 			$node_a.node.handle_commitment_signed(&$node_b.node.get_our_node_id(), &$commitment_signed);
-			check_added_monitors!($node_a, 1);
+			check_added_monitors(&$node_a, 1);
 			let (extra_msg_option, bs_revoke_and_ack) = $crate::ln::functional_test_utils::do_main_commitment_signed_dance(&$node_a, &$node_b, $fail_backwards);
 			assert!(extra_msg_option.is_none());
 			bs_revoke_and_ack
@@ -1477,7 +1520,7 @@ macro_rules! commitment_signed_dance {
 		{
 			let (extra_msg_option, bs_revoke_and_ack) = $crate::ln::functional_test_utils::do_main_commitment_signed_dance(&$node_a, &$node_b, $fail_backwards);
 			$node_a.node.handle_revoke_and_ack(&$node_b.node.get_our_node_id(), &bs_revoke_and_ack);
-			check_added_monitors!($node_a, 1);
+			$crate::ln::functional_test_utils::check_added_monitors(&$node_a, 1);
 			extra_msg_option
 		}
 	};
@@ -1553,45 +1596,51 @@ pub fn do_commitment_signed_dance(node_a: &Node<'_, '_, '_>, node_b: &Node<'_, '
 }
 
 /// Get a payment preimage and hash.
+pub fn get_payment_preimage_hash(recipient: &Node, min_value_msat: Option<u64>, min_final_cltv_expiry_delta: Option<u16>) -> (PaymentPreimage, PaymentHash, PaymentSecret) {
+	let mut payment_count = recipient.network_payment_count.borrow_mut();
+	let payment_preimage = PaymentPreimage([*payment_count; 32]);
+	*payment_count += 1;
+	let payment_hash = PaymentHash(Sha256::hash(&payment_preimage.0[..]).into_inner());
+	let payment_secret = recipient.node.create_inbound_payment_for_hash(payment_hash, min_value_msat, 7200, min_final_cltv_expiry_delta).unwrap();
+	(payment_preimage, payment_hash, payment_secret)
+}
+
+/// Get a payment preimage and hash.
+///
+/// Don't use this, use the identically-named function instead.
 #[macro_export]
 macro_rules! get_payment_preimage_hash {
 	($dest_node: expr) => {
-		{
-			get_payment_preimage_hash!($dest_node, None)
-		}
+		get_payment_preimage_hash!($dest_node, None)
 	};
 	($dest_node: expr, $min_value_msat: expr) => {
-		{
-			crate::get_payment_preimage_hash!($dest_node, $min_value_msat, None)
-		}
+		crate::get_payment_preimage_hash!($dest_node, $min_value_msat, None)
 	};
 	($dest_node: expr, $min_value_msat: expr, $min_final_cltv_expiry_delta: expr) => {
-		{
-			use bitcoin::hashes::Hash as _;
-			let mut payment_count = $dest_node.network_payment_count.borrow_mut();
-			let payment_preimage = $crate::ln::PaymentPreimage([*payment_count; 32]);
-			*payment_count += 1;
-			let payment_hash = $crate::ln::PaymentHash(
-				bitcoin::hashes::sha256::Hash::hash(&payment_preimage.0[..]).into_inner());
-			let payment_secret = $dest_node.node.create_inbound_payment_for_hash(payment_hash, $min_value_msat, 7200, $min_final_cltv_expiry_delta).unwrap();
-			(payment_preimage, payment_hash, payment_secret)
-		}
+		$crate::ln::functional_test_utils::get_payment_preimage_hash(&$dest_node, $min_value_msat, $min_final_cltv_expiry_delta)
 	};
 }
 
+/// Gets a route from the given sender to the node described in `payment_params`.
+pub fn get_route(send_node: &Node, payment_params: &PaymentParameters, recv_value: u64, final_cltv_expiry_delta: u32) -> Result<Route, msgs::LightningError> {
+	let scorer = TestScorer::new();
+	let keys_manager = TestKeysInterface::new(&[0u8; 32], bitcoin::network::constants::Network::Testnet);
+	let random_seed_bytes = keys_manager.get_secure_random_bytes();
+	router::get_route(
+		&send_node.node.get_our_node_id(), payment_params, &send_node.network_graph.read_only(),
+		Some(&send_node.node.list_usable_channels().iter().collect::<Vec<_>>()),
+		recv_value, final_cltv_expiry_delta, send_node.logger, &scorer, &random_seed_bytes
+	)
+}
+
+/// Gets a route from the given sender to the node described in `payment_params`.
+///
+/// Don't use this, use the identically-named function instead.
 #[macro_export]
 macro_rules! get_route {
-	($send_node: expr, $payment_params: expr, $recv_value: expr, $cltv: expr) => {{
-		use $crate::chain::keysinterface::EntropySource;
-		let scorer = $crate::util::test_utils::TestScorer::new();
-		let keys_manager = $crate::util::test_utils::TestKeysInterface::new(&[0u8; 32], bitcoin::network::constants::Network::Testnet);
-		let random_seed_bytes = keys_manager.get_secure_random_bytes();
-		$crate::routing::router::get_route(
-			&$send_node.node.get_our_node_id(), &$payment_params, &$send_node.network_graph.read_only(),
-			Some(&$send_node.node.list_usable_channels().iter().collect::<Vec<_>>()),
-			$recv_value, $cltv, $send_node.logger, &scorer, &random_seed_bytes
-		)
-	}}
+	($send_node: expr, $payment_params: expr, $recv_value: expr, $cltv: expr) => {
+		$crate::ln::functional_test_utils::get_route(&$send_node, &$payment_params, $recv_value, $cltv)
+	}
 }
 
 #[cfg(test)]
@@ -1603,8 +1652,9 @@ macro_rules! get_route_and_payment_hash {
 		$crate::get_route_and_payment_hash!($send_node, $recv_node, payment_params, $recv_value, TEST_FINAL_CLTV)
 	}};
 	($send_node: expr, $recv_node: expr, $payment_params: expr, $recv_value: expr, $cltv: expr) => {{
-		let (payment_preimage, payment_hash, payment_secret) = $crate::get_payment_preimage_hash!($recv_node, Some($recv_value));
-		let route = $crate::get_route!($send_node, $payment_params, $recv_value, $cltv);
+		let (payment_preimage, payment_hash, payment_secret) =
+			$crate::ln::functional_test_utils::get_payment_preimage_hash(&$recv_node, Some($recv_value), None);
+		let route = $crate::ln::functional_test_utils::get_route(&$send_node, &$payment_params, $recv_value, $cltv);
 		(route.unwrap(), payment_hash, payment_preimage, payment_secret)
 	}}
 }
@@ -1818,20 +1868,13 @@ pub fn expect_payment_failed_conditions_event<'a, 'b, 'c, 'd, 'e>(
 ) {
 	if conditions.expected_mpp_parts_remain { assert_eq!(payment_failed_events.len(), 1); } else { assert_eq!(payment_failed_events.len(), 2); }
 	let expected_payment_id = match &payment_failed_events[0] {
-		Event::PaymentPathFailed { payment_hash, payment_failed_permanently, path, retry, payment_id, failure, short_channel_id,
+		Event::PaymentPathFailed { payment_hash, payment_failed_permanently, payment_id, failure,
 			#[cfg(test)]
 			error_code,
 			#[cfg(test)]
 			error_data, .. } => {
 			assert_eq!(*payment_hash, expected_payment_hash, "unexpected payment_hash");
 			assert_eq!(*payment_failed_permanently, expected_payment_failed_permanently, "unexpected payment_failed_permanently value");
-			assert!(retry.is_some(), "expected retry.is_some()");
-			assert_eq!(retry.as_ref().unwrap().final_value_msat, path.last().unwrap().fee_msat, "Retry amount should match last hop in path");
-			assert_eq!(retry.as_ref().unwrap().payment_params.payee_pubkey, path.last().unwrap().pubkey, "Retry payee node_id should match last hop in path");
-			if let Some(scid) = short_channel_id {
-				assert!(retry.as_ref().unwrap().payment_params.previously_failed_channels.contains(&scid));
-			}
-
 			#[cfg(test)]
 			{
 				assert!(error_code.is_some(), "expected error_code.is_some() = true");
@@ -2118,7 +2161,7 @@ pub const TEST_FINAL_CLTV: u32 = 70;
 pub fn route_payment<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route: &[&Node<'a, 'b, 'c>], recv_value: u64) -> (PaymentPreimage, PaymentHash, PaymentSecret) {
 	let payment_params = PaymentParameters::from_node_id(expected_route.last().unwrap().node.get_our_node_id(), TEST_FINAL_CLTV)
 		.with_features(expected_route.last().unwrap().node.invoice_features());
-	let route = get_route!(origin_node, payment_params, recv_value, TEST_FINAL_CLTV).unwrap();
+	let route = get_route(origin_node, &payment_params, recv_value, TEST_FINAL_CLTV).unwrap();
 	assert_eq!(route.paths.len(), 1);
 	assert_eq!(route.paths[0].len(), expected_route.len());
 	for (node, hop) in expected_route.iter().zip(route.paths[0].iter()) {
@@ -2137,7 +2180,7 @@ pub fn route_over_limit<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_rou
 	let seed = [0u8; 32];
 	let keys_manager = test_utils::TestKeysInterface::new(&seed, Network::Testnet);
 	let random_seed_bytes = keys_manager.get_secure_random_bytes();
-	let route = get_route(
+	let route = router::get_route(
 		&origin_node.node.get_our_node_id(), &payment_params, &network_graph,
 		None, recv_value, TEST_FINAL_CLTV, origin_node.logger, &scorer, &random_seed_bytes).unwrap();
 	assert_eq!(route.paths.len(), 1);

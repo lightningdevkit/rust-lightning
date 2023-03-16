@@ -102,10 +102,10 @@ mod tests {
 		let test_writeable = TestWriteable{};
 		let filename = "test_readonly_dir_persister_filename".to_string();
 		let path = "test_readonly_dir_persister_dir";
-		fs::create_dir_all(path.to_string()).unwrap();
-		let mut perms = fs::metadata(path.to_string()).unwrap().permissions();
+		fs::create_dir_all(path).unwrap();
+		let mut perms = fs::metadata(path).unwrap().permissions();
 		perms.set_readonly(true);
-		fs::set_permissions(path.to_string(), perms).unwrap();
+		fs::set_permissions(path, perms).unwrap();
 		let mut dest_file = PathBuf::from(path);
 		dest_file.push(filename);
 		match write_to_file(dest_file, &test_writeable) {

@@ -2,7 +2,7 @@ use crate::error::{TxSyncError, InternalError};
 use crate::common::{SyncState, FilterQueue, ConfirmedTx};
 
 use lightning::util::logger::Logger;
-use lightning::{log_error, log_given_level, log_info, log_internal, log_debug, log_trace};
+use lightning::{log_error, log_info, log_debug, log_trace};
 use lightning::chain::WatchedOutput;
 use lightning::chain::{Confirm, Filter};
 

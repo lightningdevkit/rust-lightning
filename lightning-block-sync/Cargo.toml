@@ -28,4 +28,4 @@ chunked_transfer = { version = "1.4", optional = true }
 
 [dev-dependencies]
 lightning = { version = "0.0.114", path = "../lightning", features = ["_test_utils"] }
-tokio = { version = "~1.14", features = [ "macros", "rt" ] }
+tokio = { version = "1.14", features = [ "macros", "rt" ] }
