@@ -2227,6 +2227,7 @@ mod tests {
 			inbound_htlc_minimum_msat: None,
 			inbound_htlc_maximum_msat: None,
 			config: None,
+			feerate_sat_per_1000_weight: None
 		}
 	}
 
@@ -5815,6 +5816,7 @@ mod benches {
 			inbound_htlc_minimum_msat: None,
 			inbound_htlc_maximum_msat: None,
 			config: None,
+			feerate_sat_per_1000_weight: None,
 		}
 	}
 
