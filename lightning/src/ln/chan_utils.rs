@@ -1272,7 +1272,7 @@ impl CommitmentTransaction {
 	///
 	/// Only include HTLCs that are above the dust limit for the channel.
 	///
-	/// (C-not exported) due to the generic though we likely should expose a version without
+	/// This is not exported to bindings users due to the generic though we likely should expose a version without
 	pub fn new_with_auxiliary_htlc_data<T>(commitment_number: u64, to_broadcaster_value_sat: u64, to_countersignatory_value_sat: u64, opt_anchors: bool, broadcaster_funding_key: PublicKey, countersignatory_funding_key: PublicKey, keys: TxCreationKeys, feerate_per_kw: u32, htlcs_with_aux: &mut Vec<(HTLCOutputInCommitment, T)>, channel_parameters: &DirectedChannelTransactionParameters) -> CommitmentTransaction {
 		// Sort outputs and populate output indices while keeping track of the auxiliary data
 		let (outputs, htlcs) = Self::internal_build_outputs(&keys, to_broadcaster_value_sat, to_countersignatory_value_sat, htlcs_with_aux, channel_parameters, opt_anchors, &broadcaster_funding_key, &countersignatory_funding_key).unwrap();
@@ -1298,7 +1298,7 @@ impl CommitmentTransaction {
 
 	/// Use non-zero fee anchors
 	///
-	/// (C-not exported) due to move, and also not likely to be useful for binding users
+	/// This is not exported to bindings users due to move, and also not likely to be useful for binding users
 	pub fn with_non_zero_fee_anchors(mut self) -> Self {
 		self.opt_non_zero_fee_anchors = Some(());
 		self
@@ -1479,7 +1479,7 @@ impl CommitmentTransaction {
 	/// which were included in this commitment transaction in output order.
 	/// The transaction index is always populated.
 	///
-	/// (C-not exported) as we cannot currently convert Vec references to/from C, though we should
+	/// This is not exported to bindings users as we cannot currently convert Vec references to/from C, though we should
 	/// expose a less effecient version which creates a Vec of references in the future.
 	pub fn htlcs(&self) -> &Vec<HTLCOutputInCommitment> {
 		&self.htlcs

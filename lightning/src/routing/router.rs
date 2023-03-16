@@ -531,42 +531,42 @@ impl PaymentParameters {
 
 	/// Includes the payee's features.
 	///
-	/// (C-not exported) since bindings don't support move semantics
+	/// This is not exported to bindings users since bindings don't support move semantics
 	pub fn with_features(self, features: InvoiceFeatures) -> Self {
 		Self { features: Some(features), ..self }
 	}
 
 	/// Includes hints for routing to the payee.
 	///
-	/// (C-not exported) since bindings don't support move semantics
+	/// This is not exported to bindings users since bindings don't support move semantics
 	pub fn with_route_hints(self, route_hints: Vec<RouteHint>) -> Self {
 		Self { route_hints, ..self }
 	}
 
 	/// Includes a payment expiration in seconds relative to the UNIX epoch.
 	///
-	/// (C-not exported) since bindings don't support move semantics
+	/// This is not exported to bindings users since bindings don't support move semantics
 	pub fn with_expiry_time(self, expiry_time: u64) -> Self {
 		Self { expiry_time: Some(expiry_time), ..self }
 	}
 
 	/// Includes a limit for the total CLTV expiry delta which is considered during routing
 	///
-	/// (C-not exported) since bindings don't support move semantics
+	/// This is not exported to bindings users since bindings don't support move semantics
 	pub fn with_max_total_cltv_expiry_delta(self, max_total_cltv_expiry_delta: u32) -> Self {
 		Self { max_total_cltv_expiry_delta, ..self }
 	}
 
 	/// Includes a limit for the maximum number of payment paths that may be used.
 	///
-	/// (C-not exported) since bindings don't support move semantics
+	/// This is not exported to bindings users since bindings don't support move semantics
 	pub fn with_max_path_count(self, max_path_count: u8) -> Self {
 		Self { max_path_count, ..self }
 	}
 
 	/// Includes a limit for the maximum number of payment paths that may be used.
 	///
-	/// (C-not exported) since bindings don't support move semantics
+	/// This is not exported to bindings users since bindings don't support move semantics
 	pub fn with_max_channel_saturation_power_of_half(self, max_channel_saturation_power_of_half: u8) -> Self {
 		Self { max_channel_saturation_power_of_half, ..self }
 	}

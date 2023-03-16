@@ -55,7 +55,7 @@ use crate::util::invoice::construct_invoice_preimage;
 /// Used as initial key material, to be expanded into multiple secret keys (but not to be used
 /// directly). This is used within LDK to encrypt/decrypt inbound payment data.
 ///
-/// (C-not exported) as we just use `[u8; 32]` directly
+/// This is not exported to bindings users as we just use `[u8; 32]` directly
 #[derive(Hash, Copy, Clone, PartialEq, Eq, Debug)]
 pub struct KeyMaterial(pub [u8; 32]);
 

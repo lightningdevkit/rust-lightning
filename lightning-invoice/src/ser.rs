@@ -124,7 +124,7 @@ impl Display for SignedRawInvoice {
 	}
 }
 
-/// (C-not exported)
+/// This is not exported to bindings users
 impl Display for RawHrp {
 	fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
 		let amount = match self.raw_amount {

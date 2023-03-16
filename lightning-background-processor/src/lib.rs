@@ -164,7 +164,7 @@ where U::Target: UtxoLookup, L::Target: Logger {
 	}
 }
 
-/// (C-not exported) as the bindings concretize everything and have constructors for us
+/// This is not exported to bindings users as the bindings concretize everything and have constructors for us
 impl<P: Deref<Target = P2PGossipSync<G, U, L>>, G: Deref<Target = NetworkGraph<L>>, U: Deref, L: Deref>
 	GossipSync<P, &RapidGossipSync<G, L>, G, U, L>
 where
@@ -177,7 +177,7 @@ where
 	}
 }
 
-/// (C-not exported) as the bindings concretize everything and have constructors for us
+/// This is not exported to bindings users as the bindings concretize everything and have constructors for us
 impl<'a, R: Deref<Target = RapidGossipSync<G, L>>, G: Deref<Target = NetworkGraph<L>>, L: Deref>
 	GossipSync<
 		&P2PGossipSync<G, &'a (dyn UtxoLookup + Send + Sync), L>,
@@ -195,7 +195,7 @@ where
 	}
 }
 
-/// (C-not exported) as the bindings concretize everything and have constructors for us
+/// This is not exported to bindings users as the bindings concretize everything and have constructors for us
 impl<'a, L: Deref>
 	GossipSync<
 		&P2PGossipSync<&'a NetworkGraph<L>, &'a (dyn UtxoLookup + Send + Sync), L>,

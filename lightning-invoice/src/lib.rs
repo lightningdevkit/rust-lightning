@@ -216,7 +216,7 @@ pub const DEFAULT_MIN_FINAL_CLTV_EXPIRY_DELTA: u64 = 18;
 ///  * `H`: exactly one `PaymentHash`
 ///  * `T`: the timestamp is set
 ///
-/// (C-not exported) as we likely need to manually select one set of boolean type parameters.
+/// This is not exported to bindings users as we likely need to manually select one set of boolean type parameters.
 #[derive(Eq, PartialEq, Debug, Clone)]
 pub struct InvoiceBuilder<D: tb::Bool, H: tb::Bool, T: tb::Bool, C: tb::Bool, S: tb::Bool> {
 	currency: Currency,
@@ -247,7 +247,7 @@ pub struct Invoice {
 /// Represents the description of an invoice which has to be either a directly included string or
 /// a hash of a description provided out of band.
 ///
-/// (C-not exported) As we don't have a good way to map the reference lifetimes making this
+/// This is not exported to bindings users as we don't have a good way to map the reference lifetimes making this
 /// practically impossible to use safely in languages like C.
 #[derive(Eq, PartialEq, Debug, Clone)]
 pub enum InvoiceDescription<'f> {
@@ -297,7 +297,7 @@ pub struct RawInvoice {
 
 /// Data of the `RawInvoice` that is encoded in the human readable part
 ///
-/// (C-not exported) As we don't yet support `Option<Enum>`
+/// This is not exported to bindings users as we don't yet support `Option<Enum>`
 #[derive(Eq, PartialEq, Debug, Clone, Hash)]
 pub struct RawHrp {
 	/// The currency deferred from the 3rd and 4th character of the bech32 transaction
@@ -357,7 +357,7 @@ impl SiPrefix {
 	/// Returns all enum variants of `SiPrefix` sorted in descending order of their associated
 	/// multiplier.
 	///
-	/// (C-not exported) As we don't yet support a slice of enums, and also because this function
+	/// This is not exported to bindings users as we don't yet support a slice of enums, and also because this function
 	/// isn't the most critical to expose.
 	pub fn values_desc() -> &'static [SiPrefix] {
 		use crate::SiPrefix::*;
@@ -387,7 +387,7 @@ pub enum Currency {
 
 /// Tagged field which may have an unknown tag
 ///
-/// (C-not exported) as we don't currently support TaggedField
+/// This is not exported to bindings users as we don't currently support TaggedField
 #[derive(Clone, Debug, Hash, Eq, PartialEq)]
 pub enum RawTaggedField {
 	/// Parsed tagged field with known tag
@@ -400,7 +400,7 @@ pub enum RawTaggedField {
 ///
 /// For descriptions of the enum values please refer to the enclosed type's docs.
 ///
-/// (C-not exported) As we don't yet support enum variants with the same name the struct contained
+/// This is not exported to bindings users as we don't yet support enum variants with the same name the struct contained
 /// in the variant.
 #[allow(missing_docs)]
 #[derive(Clone, Debug, Hash, Eq, PartialEq)]
@@ -419,7 +419,7 @@ pub enum TaggedField {
 
 /// SHA-256 hash
 #[derive(Clone, Debug, Hash, Eq, PartialEq)]
-pub struct Sha256(/// (C-not exported) as the native hash types are not currently mapped
+pub struct Sha256(/// This is not exported to bindings users as the native hash types are not currently mapped
 	pub sha256::Hash);
 
 /// Description string
@@ -873,7 +873,7 @@ impl RawInvoice {
 	/// of type `E`. Since the signature of a `SignedRawInvoice` is not required to be valid there
 	/// are no constraints regarding the validity of the produced signature.
 	///
-	/// (C-not exported) As we don't currently support passing function pointers into methods
+	/// This is not exported to bindings users as we don't currently support passing function pointers into methods
 	/// explicitly.
 	pub fn sign<F, E>(self, sign_method: F) -> Result<SignedRawInvoice, E>
 		where F: FnOnce(&Message) -> Result<RecoverableSignature, E>
@@ -892,7 +892,7 @@ impl RawInvoice {
 
 	/// Returns an iterator over all tagged fields with known semantics.
 	///
-	/// (C-not exported) As there is not yet a manual mapping for a FilterMap
+	/// This is not exported to bindings users as there is not yet a manual mapping for a FilterMap
 	pub fn known_tagged_fields(&self)
 		-> FilterMap<Iter<RawTaggedField>, fn(&RawTaggedField) -> Option<&TaggedField>>
 	{
@@ -941,7 +941,7 @@ impl RawInvoice {
 		find_extract!(self.known_tagged_fields(), TaggedField::Features(ref x), x)
 	}
 
-	/// (C-not exported) as we don't support Vec<&NonOpaqueType>
+	/// This is not exported to bindings users as we don't support Vec<&NonOpaqueType>
 	pub fn fallbacks(&self) -> Vec<&Fallback> {
 		find_all_extract!(self.known_tagged_fields(), TaggedField::Fallback(ref x), x).collect()
 	}
@@ -1170,7 +1170,7 @@ impl Invoice {
 
 	/// Returns an iterator over all tagged fields of this Invoice.
 	///
-	/// (C-not exported) As there is not yet a manual mapping for a FilterMap
+	/// This is not exported to bindings users as there is not yet a manual mapping for a FilterMap
 	pub fn tagged_fields(&self)
 		-> FilterMap<Iter<RawTaggedField>, fn(&RawTaggedField) -> Option<&TaggedField>> {
 		self.signed_invoice.raw_invoice().known_tagged_fields()
@@ -1183,7 +1183,7 @@ impl Invoice {
 
 	/// Return the description or a hash of it for longer ones
 	///
-	/// (C-not exported) because we don't yet export InvoiceDescription
+	/// This is not exported to bindings users because we don't yet export InvoiceDescription
 	pub fn description(&self) -> InvoiceDescription {
 		if let Some(direct) = self.signed_invoice.description() {
 			return InvoiceDescription::Direct(direct);
@@ -1253,7 +1253,7 @@ impl Invoice {
 
 	/// Returns a list of all fallback addresses
 	///
-	/// (C-not exported) as we don't support Vec<&NonOpaqueType>
+	/// This is not exported to bindings users as we don't support Vec<&NonOpaqueType>
 	pub fn fallbacks(&self) -> Vec<&Fallback> {
 		self.signed_invoice.fallbacks()
 	}
