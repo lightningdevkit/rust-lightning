@@ -1555,23 +1555,30 @@ macro_rules! commitment_signed_dance {
 			bs_revoke_and_ack
 		}
 	};
-	($node_a: expr, $node_b: expr, (), $fail_backwards: expr, true /* skip last step */, true /* return extra message */) => {
-		{
-			let (extra_msg_option, bs_revoke_and_ack) = $crate::ln::functional_test_utils::do_main_commitment_signed_dance(&$node_a, &$node_b, $fail_backwards);
-			$node_a.node.handle_revoke_and_ack(&$node_b.node.get_our_node_id(), &bs_revoke_and_ack);
-			$crate::ln::functional_test_utils::check_added_monitors(&$node_a, 1);
-			extra_msg_option
-		}
-	};
 	($node_a: expr, $node_b: expr, (), $fail_backwards: expr, true /* skip last step */, false /* no extra message */) => {
-		assert!(commitment_signed_dance!($node_a, $node_b, (), $fail_backwards, true, true).is_none());
+		assert!($crate::ln::functional_test_utils::commitment_signed_dance_through_cp_raa(&$node_a, &$node_b, $fail_backwards).is_none());
 	};
 	($node_a: expr, $node_b: expr, $commitment_signed: expr, $fail_backwards: expr) => {
 		$crate::ln::functional_test_utils::do_commitment_signed_dance(&$node_a, &$node_b, &$commitment_signed, $fail_backwards, false);
 	}
 }
 
+/// Runs the commitment_signed dance after the initial commitment_signed is delivered through to
+/// the initiator's `revoke_and_ack` response. i.e. [`do_main_commitment_signed_dance`] plus the
+/// `revoke_and_ack` response to it.
+///
+/// Returns any additional message `node_b` generated in addition to the `revoke_and_ack` response.
+pub fn commitment_signed_dance_through_cp_raa(node_a: &Node<'_, '_, '_>, node_b: &Node<'_, '_, '_>, fail_backwards: bool) -> Option<MessageSendEvent> {
+	let (extra_msg_option, bs_revoke_and_ack) = do_main_commitment_signed_dance(node_a, node_b, fail_backwards);
+	node_a.node.handle_revoke_and_ack(&node_b.node.get_our_node_id(), &bs_revoke_and_ack);
+	check_added_monitors(node_a, 1);
+	extra_msg_option
+}
 
+/// Does the main logic in the commitment_signed dance. After the first `commitment_signed` has
+/// been delivered, this method picks up and delivers the response `revoke_and_ack` and
+/// `commitment_signed`, returning the recipient's `revoke_and_ack` and any extra message it may
+/// have included.
 pub fn do_main_commitment_signed_dance(node_a: &Node<'_, '_, '_>, node_b: &Node<'_, '_, '_>, fail_backwards: bool) -> (Option<MessageSendEvent>, msgs::RevokeAndACK) {
 	let (as_revoke_and_ack, as_commitment_signed) = get_revoke_commit_msgs!(node_a, node_b.node.get_our_node_id());
 	check_added_monitors!(node_b, 0);
@@ -1600,6 +1607,11 @@ pub fn do_main_commitment_signed_dance(node_a: &Node<'_, '_, '_>, node_b: &Node<
 	(extra_msg_option, bs_revoke_and_ack)
 }
 
+/// Runs a full commitment_signed dance, delivering a commitment_signed, the responding
+/// `revoke_and_ack` and `commitment_signed`, and then the final `revoke_and_ack` response.
+///
+/// If `skip_last_step` is unset, also checks for the payment failure update for the previous hop
+/// on failure or that no new messages are left over on success.
 pub fn do_commitment_signed_dance(node_a: &Node<'_, '_, '_>, node_b: &Node<'_, '_, '_>, commitment_signed: &msgs::CommitmentSigned, fail_backwards: bool, skip_last_step: bool) {
 	check_added_monitors!(node_a, 0);
 	assert!(node_a.node.get_and_clear_pending_msg_events().is_empty());
@@ -1741,6 +1753,44 @@ macro_rules! expect_payment_claimed {
 	}
 }
 
+pub fn expect_payment_sent<CM: AChannelManager, H: NodeHolder<CM=CM>>(node: &H,
+	expected_payment_preimage: PaymentPreimage, expected_fee_msat_opt: Option<Option<u64>>,
+	expect_per_path_claims: bool,
+) {
+	let events = node.node().get_and_clear_pending_events();
+	let expected_payment_hash = PaymentHash(
+		bitcoin::hashes::sha256::Hash::hash(&expected_payment_preimage.0).into_inner());
+	if expect_per_path_claims {
+		assert!(events.len() > 1);
+	} else {
+		assert_eq!(events.len(), 1);
+	}
+	let expected_payment_id = match events[0] {
+		Event::PaymentSent { ref payment_id, ref payment_preimage, ref payment_hash, ref fee_paid_msat } => {
+			assert_eq!(expected_payment_preimage, *payment_preimage);
+			assert_eq!(expected_payment_hash, *payment_hash);
+			if let Some(expected_fee_msat) = expected_fee_msat_opt {
+				assert_eq!(*fee_paid_msat, expected_fee_msat);
+			} else {
+				assert!(fee_paid_msat.is_some());
+			}
+			payment_id.unwrap()
+		},
+		_ => panic!("Unexpected event"),
+	};
+	if expect_per_path_claims {
+		for i in 1..events.len() {
+			match events[i] {
+				Event::PaymentPathSuccessful { payment_id, payment_hash, .. } => {
+					assert_eq!(payment_id, expected_payment_id);
+					assert_eq!(payment_hash, Some(expected_payment_hash));
+				},
+				_ => panic!("Unexpected event"),
+			}
+		}
+	}
+}
+
 #[cfg(test)]
 #[macro_export]
 macro_rules! expect_payment_sent_without_paths {
@@ -1760,40 +1810,10 @@ macro_rules! expect_payment_sent {
 	($node: expr, $expected_payment_preimage: expr, $expected_fee_msat_opt: expr) => {
 		$crate::expect_payment_sent!($node, $expected_payment_preimage, $expected_fee_msat_opt, true);
 	};
-	($node: expr, $expected_payment_preimage: expr, $expected_fee_msat_opt: expr, $expect_paths: expr) => { {
-		use bitcoin::hashes::Hash as _;
-		let events = $node.node.get_and_clear_pending_events();
-		let expected_payment_hash = $crate::ln::PaymentHash(
-			bitcoin::hashes::sha256::Hash::hash(&$expected_payment_preimage.0).into_inner());
-		if $expect_paths {
-			assert!(events.len() > 1);
-		} else {
-			assert_eq!(events.len(), 1);
-		}
-		let expected_payment_id = match events[0] {
-			$crate::events::Event::PaymentSent { ref payment_id, ref payment_preimage, ref payment_hash, ref fee_paid_msat } => {
-				assert_eq!($expected_payment_preimage, *payment_preimage);
-				assert_eq!(expected_payment_hash, *payment_hash);
-				assert!(fee_paid_msat.is_some());
-				if $expected_fee_msat_opt.is_some() {
-					assert_eq!(*fee_paid_msat, $expected_fee_msat_opt);
-				}
-				payment_id.unwrap()
-			},
-			_ => panic!("Unexpected event"),
-		};
-		if $expect_paths {
-			for i in 1..events.len() {
-				match events[i] {
-					$crate::events::Event::PaymentPathSuccessful { payment_id, payment_hash, .. } => {
-						assert_eq!(payment_id, expected_payment_id);
-						assert_eq!(payment_hash, Some(expected_payment_hash));
-					},
-					_ => panic!("Unexpected event"),
-				}
-			}
-		}
-	} }
+	($node: expr, $expected_payment_preimage: expr, $expected_fee_msat_opt: expr, $expect_paths: expr) => {
+		$crate::ln::functional_test_utils::expect_payment_sent(&$node, $expected_payment_preimage,
+			$expected_fee_msat_opt.map(|o| Some(o)), $expect_paths);
+	}
 }
 
 #[cfg(test)]
