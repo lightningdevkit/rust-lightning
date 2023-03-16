@@ -27,18 +27,18 @@ use core::ops::Deref;
 use crate::io::{self, Cursor};
 use crate::prelude::*;
 
-/// Onion messages can be sent and received to blinded paths, which serve to hide the identity of
-/// the recipient.
+/// Onion messages and payments can be sent and received to blinded paths, which serve to hide the
+/// identity of the recipient.
 #[derive(Clone, Debug, PartialEq)]
 pub struct BlindedPath {
 	/// To send to a blinded path, the sender first finds a route to the unblinded
 	/// `introduction_node_id`, which can unblind its [`encrypted_payload`] to find out the onion
-	/// message's next hop and forward it along.
+	/// message or payment's next hop and forward it along.
 	///
 	/// [`encrypted_payload`]: BlindedHop::encrypted_payload
 	pub(crate) introduction_node_id: PublicKey,
 	/// Used by the introduction node to decrypt its [`encrypted_payload`] to forward the onion
-	/// message.
+	/// message or payment.
 	///
 	/// [`encrypted_payload`]: BlindedHop::encrypted_payload
 	pub(crate) blinding_point: PublicKey,
@@ -59,12 +59,12 @@ pub struct BlindedHop {
 }
 
 impl BlindedPath {
-	/// Create a blinded path to be forwarded along `node_pks`. The last node pubkey in `node_pks`
-	/// will be the destination node.
+	/// Create a blinded path for an onion message, to be forwarded along `node_pks`. The last node
+	/// pubkey in `node_pks` will be the destination node.
 	///
 	/// Errors if less than two hops are provided or if `node_pk`(s) are invalid.
 	//  TODO: make all payloads the same size with padding + add dummy hops
-	pub fn new<ES: EntropySource, T: secp256k1::Signing + secp256k1::Verification>
+	pub fn new_for_message<ES: EntropySource, T: secp256k1::Signing + secp256k1::Verification>
 		(node_pks: &[PublicKey], entropy_source: &ES, secp_ctx: &Secp256k1<T>) -> Result<Self, ()>
 	{
 		if node_pks.len() < 2 { return Err(()) }
@@ -75,12 +75,13 @@ impl BlindedPath {
 		Ok(BlindedPath {
 			introduction_node_id,
 			blinding_point: PublicKey::from_secret_key(secp_ctx, &blinding_secret),
-			blinded_hops: blinded_hops(secp_ctx, node_pks, &blinding_secret).map_err(|_| ())?,
+			blinded_hops: blinded_message_hops(secp_ctx, node_pks, &blinding_secret).map_err(|_| ())?,
 		})
 	}
 
-	// Advance the blinded path by one hop, so make the second hop into the new introduction node.
-	pub(super) fn advance_by_one<NS: Deref, T: secp256k1::Signing + secp256k1::Verification>
+	// Advance the blinded onion message path by one hop, so make the second hop into the new
+	// introduction node.
+	pub(super) fn advance_message_path_by_one<NS: Deref, T: secp256k1::Signing + secp256k1::Verification>
 		(&mut self, node_signer: &NS, secp_ctx: &Secp256k1<T>) -> Result<(), ()>
 		where NS::Target: NodeSigner
 	{
@@ -115,8 +116,8 @@ impl BlindedPath {
 	}
 }
 
-/// Construct blinded hops for the given `unblinded_path`.
-fn blinded_hops<T: secp256k1::Signing + secp256k1::Verification>(
+/// Construct blinded onion message hops for the given `unblinded_path`.
+fn blinded_message_hops<T: secp256k1::Signing + secp256k1::Verification>(
 	secp_ctx: &Secp256k1<T>, unblinded_path: &[PublicKey], session_priv: &SecretKey
 ) -> Result<Vec<BlindedHop>, secp256k1::Error> {
 	let mut blinded_hops = Vec::with_capacity(unblinded_path.len());

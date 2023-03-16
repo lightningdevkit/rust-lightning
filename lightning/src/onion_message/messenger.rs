@@ -91,7 +91,7 @@ use crate::prelude::*;
 /// // Create a blinded path to yourself, for someone to send an onion message to.
 /// # let your_node_id = hop_node_id1;
 /// let hops = [hop_node_id3, hop_node_id4, your_node_id];
-/// let blinded_path = BlindedPath::new(&hops, &keys_manager, &secp_ctx).unwrap();
+/// let blinded_path = BlindedPath::new_for_message(&hops, &keys_manager, &secp_ctx).unwrap();
 ///
 /// // Send a custom onion message to a blinded path.
 /// # let intermediate_hops = [hop_node_id1, hop_node_id2];
@@ -226,7 +226,7 @@ impl<ES: Deref, NS: Deref, L: Deref, CMH: Deref> OnionMessenger<ES, NS, L, CMH>
 				let our_node_id = self.node_signer.get_node_id(Recipient::Node)
 					.map_err(|()| SendError::GetNodeIdFailed)?;
 				if blinded_path.introduction_node_id == our_node_id {
-					blinded_path.advance_by_one(&self.node_signer, &self.secp_ctx)
+					blinded_path.advance_message_path_by_one(&self.node_signer, &self.secp_ctx)
 						.map_err(|()| SendError::BlindedPathAdvanceFailed)?;
 				}
 			}
