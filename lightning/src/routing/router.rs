@@ -1303,13 +1303,13 @@ where L::Target: Logger {
 								if is_first_hop && !contributes_sufficient_value {
         								log_trace!(logger, "First Hop {} is excluded due to insufficient value", short_channel_id);
         									
-    								} else if is_first_hop && exceeds_max_path_length {
+    								} if is_first_hop && exceeds_max_path_length {
     									log_trace!(logger, "First Hop {} is excluded due to candidate hop excluded max path length", short_channel_id);
     									
-    								} else if is_first_hop && exceeds_cltv_delta_limit {
+    								} if is_first_hop && exceeds_cltv_delta_limit {
     									log_trace!(logger, "First Hop {} is excluded beacause it exceed the maximum total cltv expiry limit" , short_channel_id);
     										
-    								} else if is_first_hop && payment_failed_on_this_channel {
+    								} if is_first_hop && payment_failed_on_this_channel {
     									log_trace!(logger, "First Hop {} is excluded beacause it was failed previously" , short_channel_id);
     								}
     								is_first_hop = false;			
@@ -3831,7 +3831,66 @@ mod tests {
 			assert_eq!(total_amount_paid_msat, 50_000);
 		}
 	}
-
+	
+	#[test]
+	fn test_my_logging_function() {   // commit
+		let (secp_ctx, network_graph, gossip_sync, _, logger) = build_graph();
+		let (our_privkey, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
+		let scorer = ln_test_utils::TestScorer::with_penalty(0);
+		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
+		let random_seed_bytes = keys_manager.get_secure_random_bytes();
+		let payment_params = PaymentParameters::from_node_id(nodes[2], 42);
+		let logger = crate::util::test_utils::TestLogger::new();
+		
+		update_channel(&gossip_sync, &secp_ctx, &our_privkey, UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 1,
+			timestamp: 2,
+			flags: 0,
+			cltv_expiry_delta: 0,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: 100_000,
+			fee_base_msat: 1_000_000,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+		update_channel(&gossip_sync, &secp_ctx, &privkeys[0], UnsignedChannelUpdate {
+			chain_hash: genesis_block(Network::Testnet).header.block_hash(),
+			short_channel_id: 3,
+			timestamp: 2,
+			flags: 0,
+			cltv_expiry_delta: 0,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: 50_000,
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new()
+		});
+		
+		// we can make four test for different condition or all condition in diffrent tests.
+		let is_first_hop = true;
+		let contributes_sufficient_value = false ; // for contributes_suffiecient value , understand where this value came from. what is contribute_sufficent value. 
+		 
+		let exceeds_max_path_length = false;
+		let exceeds_cltv_delta_limit = false;
+		let payment_failed_on_this_channel = false;
+	
+		// For this test to run I want short_channel_id , dest_node_id . 	
+		let route = get_route(&our_id, &payment_params, &network_graph.read_only(), None, 49_000, 42, &logger, &scorer, &random_seed_bytes).unwrap();
+        	
+        	// Retrieve the log message from TestLogger
+    		let lines = logger.lines.lock().unwrap();
+		let mut log_output = String::new();
+		for ((module, file), line) in &*lines {
+			log_output.push_str(&format!("{} [{}] {}: {}\n", line, module, line, file));
+    		}
+    		// Check for expected messages in the log output
+    		assert!(log_output.contains("First Hop 3 is excluded due to insufficient value"));   // 
+    		// assert_log_contains(log_ouptuts , 1);
+	}	
+	
+	
+	
 	#[test]
 	fn simple_mpp_route_test() {
 		let (secp_ctx, network_graph, gossip_sync, _, logger) = build_graph();
