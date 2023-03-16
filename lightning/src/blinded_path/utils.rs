@@ -15,15 +15,15 @@ use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::secp256k1::{self, PublicKey, Secp256k1, SecretKey, Scalar};
 use bitcoin::secp256k1::ecdh::SharedSecret;
 
+use super::BlindedPath;
 use crate::ln::onion_utils;
-use super::blinded_path::BlindedPath;
-use super::messenger::Destination;
+use crate::onion_message::Destination;
 
 use crate::prelude::*;
 
 // TODO: DRY with onion_utils::construct_onion_keys_callback
 #[inline]
-pub(super) fn construct_keys_callback<T: secp256k1::Signing + secp256k1::Verification,
+pub(crate) fn construct_keys_callback<T: secp256k1::Signing + secp256k1::Verification,
 	FType: FnMut(PublicKey, SharedSecret, PublicKey, [u8; 32], Option<PublicKey>, Option<Vec<u8>>)>(
 	secp_ctx: &Secp256k1<T>, unblinded_path: &[PublicKey], destination: Option<Destination>,
 	session_priv: &SecretKey, mut callback: FType

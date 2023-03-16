@@ -9,13 +9,14 @@
 
 //! Creating blinded paths and related utilities live here.
 
+pub(crate) mod utils;
+
 use bitcoin::hashes::{Hash, HashEngine};
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::secp256k1::{self, PublicKey, Scalar, Secp256k1, SecretKey};
 
 use crate::chain::keysinterface::{EntropySource, NodeSigner, Recipient};
-use super::packet::ControlTlvs;
-use super::utils;
+use crate::onion_message::ControlTlvs;
 use crate::ln::msgs::DecodeError;
 use crate::ln::onion_utils;
 use crate::util::chacha20poly1305rfc::{ChaChaPolyReadAdapter, ChaChaPolyWriteAdapter};

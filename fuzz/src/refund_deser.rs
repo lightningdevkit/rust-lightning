@@ -10,13 +10,13 @@
 use bitcoin::secp256k1::{KeyPair, PublicKey, Secp256k1, SecretKey, self};
 use crate::utils::test_logger;
 use core::convert::{Infallible, TryFrom};
+use lightning::blinded_path::BlindedPath;
 use lightning::chain::keysinterface::EntropySource;
 use lightning::ln::PaymentHash;
 use lightning::ln::features::BlindedHopFeatures;
 use lightning::offers::invoice::{BlindedPayInfo, UnsignedInvoice};
 use lightning::offers::parse::SemanticError;
 use lightning::offers::refund::Refund;
-use lightning::onion_message::BlindedPath;
 use lightning::util::ser::Writeable;
 
 #[inline]
