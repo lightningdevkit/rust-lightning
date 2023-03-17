@@ -13,10 +13,12 @@ use bitcoin::secp256k1::PublicKey;
 use bitcoin::hashes::Hash;
 use bitcoin::hashes::sha256::Hash as Sha256;
 
+use crate::blinded_path::BlindedPath;
 use crate::ln::PaymentHash;
 use crate::ln::channelmanager::{ChannelDetails, PaymentId};
 use crate::ln::features::{ChannelFeatures, InvoiceFeatures, NodeFeatures};
 use crate::ln::msgs::{DecodeError, ErrorAction, LightningError, MAX_VALUE_MSAT};
+use crate::offers::invoice::BlindedPayInfo;
 use crate::routing::gossip::{DirectedChannelInfo, EffectiveCapacity, ReadOnlyNetworkGraph, NetworkGraph, NodeId, RoutingFees};
 use crate::routing::scoring::{ChannelUsage, LockableScore, Score};
 use crate::util::ser::{Writeable, Readable, ReadableArgs, Writer};
@@ -420,7 +422,7 @@ pub struct PaymentParameters {
 	pub features: Option<InvoiceFeatures>,
 
 	/// Hints for routing to the payee, containing channels connecting the payee to public nodes.
-	pub route_hints: Vec<RouteHint>,
+	pub route_hints: Hints,
 
 	/// Expiration of a payment to the payee, in seconds relative to the UNIX epoch.
 	pub expiry_time: Option<u64>,
@@ -459,15 +461,22 @@ pub struct PaymentParameters {
 
 impl Writeable for PaymentParameters {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		let mut clear_hints = &vec![];
+		let mut blinded_hints = &vec![];
+		match &self.route_hints {
+			Hints::Clear(hints) => clear_hints = hints,
+			Hints::Blinded(hints) => blinded_hints = hints,
+		}
 		write_tlv_fields!(writer, {
 			(0, self.payee_pubkey, required),
 			(1, self.max_total_cltv_expiry_delta, required),
 			(2, self.features, option),
 			(3, self.max_path_count, required),
-			(4, self.route_hints, vec_type),
+			(4, *clear_hints, vec_type),
 			(5, self.max_channel_saturation_power_of_half, required),
 			(6, self.expiry_time, option),
 			(7, self.previously_failed_channels, vec_type),
+			(8, *blinded_hints, optional_vec),
 			(9, self.final_cltv_expiry_delta, required),
 		});
 		Ok(())
@@ -485,14 +494,23 @@ impl ReadableArgs<u32> for PaymentParameters {
 			(5, max_channel_saturation_power_of_half, (default_value, 2)),
 			(6, expiry_time, option),
 			(7, previously_failed_channels, vec_type),
+			(8, blinded_route_hints, optional_vec),
 			(9, final_cltv_expiry_delta, (default_value, default_final_cltv_expiry_delta)),
 		});
+		let clear_route_hints = route_hints.unwrap_or(vec![]);
+		let blinded_route_hints = blinded_route_hints.unwrap_or(vec![]);
+		let route_hints = if blinded_route_hints.len() != 0 {
+			if clear_route_hints.len() != 0 { return Err(DecodeError::InvalidValue) }
+			Hints::Blinded(blinded_route_hints)
+		} else {
+			Hints::Clear(clear_route_hints)
+		};
 		Ok(Self {
 			payee_pubkey: _init_tlv_based_struct_field!(payee_pubkey, required),
 			max_total_cltv_expiry_delta: _init_tlv_based_struct_field!(max_total_cltv_expiry_delta, (default_value, unused)),
 			features,
 			max_path_count: _init_tlv_based_struct_field!(max_path_count, (default_value, unused)),
-			route_hints: route_hints.unwrap_or(Vec::new()),
+			route_hints,
 			max_channel_saturation_power_of_half: _init_tlv_based_struct_field!(max_channel_saturation_power_of_half, (default_value, unused)),
 			expiry_time,
 			previously_failed_channels: previously_failed_channels.unwrap_or(Vec::new()),
@@ -511,7 +529,7 @@ impl PaymentParameters {
 		Self {
 			payee_pubkey,
 			features: None,
-			route_hints: vec![],
+			route_hints: Hints::Clear(vec![]),
 			expiry_time: None,
 			max_total_cltv_expiry_delta: DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA,
 			max_path_count: DEFAULT_MAX_PATH_COUNT,
@@ -540,7 +558,7 @@ impl PaymentParameters {
 	///
 	/// This is not exported to bindings users since bindings don't support move semantics
 	pub fn with_route_hints(self, route_hints: Vec<RouteHint>) -> Self {
-		Self { route_hints, ..self }
+		Self { route_hints: Hints::Clear(route_hints), ..self }
 	}
 
 	/// Includes a payment expiration in seconds relative to the UNIX epoch.
@@ -570,6 +588,16 @@ impl PaymentParameters {
 	pub fn with_max_channel_saturation_power_of_half(self, max_channel_saturation_power_of_half: u8) -> Self {
 		Self { max_channel_saturation_power_of_half, ..self }
 	}
+}
+
+/// Routing hints for the tail of the route.
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub enum Hints {
+	/// The recipient provided blinded paths and payinfo to reach them. The blinded paths themselves
+	/// will be included in the final [`Route`].
+	Blinded(Vec<(BlindedPayInfo, BlindedPath)>),
+	/// The recipient included these route hints in their BOLT11 invoice.
+	Clear(Vec<RouteHint>),
 }
 
 /// A list of hops along a payment path terminating with a channel to the recipient.
@@ -1021,12 +1049,18 @@ where L::Target: Logger {
 		return Err(LightningError{err: "Cannot send a payment of 0 msat".to_owned(), action: ErrorAction::IgnoreError});
 	}
 
-	for route in payment_params.route_hints.iter() {
-		for hop in &route.0 {
-			if hop.src_node_id == payment_params.payee_pubkey {
-				return Err(LightningError{err: "Route hint cannot have the payee as the source.".to_owned(), action: ErrorAction::IgnoreError});
+	match &payment_params.route_hints {
+		Hints::Clear(hints) => {
+			for route in hints.iter() {
+				for hop in &route.0 {
+					if hop.src_node_id == payment_params.payee_pubkey {
+						return Err(LightningError{err: "Route hint cannot have the payee as the source.".to_owned(), action: ErrorAction::IgnoreError});
+					}
+				}
 			}
-		}
+		},
+		_ => return Err(LightningError{err: "Routing to blinded paths isn't supported yet".to_owned(), action: ErrorAction::IgnoreError}),
+
 	}
 	if payment_params.max_total_cltv_expiry_delta <= final_cltv_expiry_delta {
 		return Err(LightningError{err: "Can't find a route where the maximum total CLTV expiry delta is below the final CLTV expiry.".to_owned(), action: ErrorAction::IgnoreError});
@@ -1551,7 +1585,11 @@ where L::Target: Logger {
 		// If a caller provided us with last hops, add them to routing targets. Since this happens
 		// earlier than general path finding, they will be somewhat prioritized, although currently
 		// it matters only if the fees are exactly the same.
-		for route in payment_params.route_hints.iter().filter(|route| !route.0.is_empty()) {
+		let route_hints = match &payment_params.route_hints {
+			Hints::Clear(hints) => hints,
+			_ => return Err(LightningError{err: "Routing to blinded paths isn't supported yet".to_owned(), action: ErrorAction::IgnoreError}),
+		};
+		for route in route_hints.iter().filter(|route| !route.0.is_empty()) {
 			let first_hop_in_route = &(route.0)[0];
 			let have_hop_src_in_graph =
 				// Only add the hops in this route to our candidate set if either

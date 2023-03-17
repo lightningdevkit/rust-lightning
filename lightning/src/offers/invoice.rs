@@ -732,7 +732,7 @@ type BlindedPayInfoIter<'a> = core::iter::Map<
 >;
 
 /// Information needed to route a payment across a [`BlindedPath`].
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Hash, Eq, PartialEq)]
 pub struct BlindedPayInfo {
 	/// Base fee charged (in millisatoshi) for the entire blinded path.
 	pub fee_base_msat: u32,
