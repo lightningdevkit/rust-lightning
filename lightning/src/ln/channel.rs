@@ -489,6 +489,11 @@ struct PendingChannelMonitorUpdate {
 	blocked: bool,
 }
 
+impl_writeable_tlv_based!(PendingChannelMonitorUpdate, {
+	(0, update, required),
+	(2, blocked, required),
+});
+
 // TODO: We should refactor this to be an Inbound/OutboundChannel until initial setup handshaking
 // has been completed, and then turn into a Channel to get compiler-time enforcement of things like
 // calling channel_id() before we're set up or things like get_outbound_funding_signed on an
@@ -4984,6 +4989,11 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		(self.channel_state & ChannelState::MonitorUpdateInProgress as u32) != 0
 	}
 
+	pub fn get_latest_complete_monitor_update_id(&self) -> u64 {
+		if self.pending_monitor_updates.is_empty() { return self.get_latest_monitor_update_id(); }
+		self.pending_monitor_updates[0].update.update_id - 1
+	}
+
 	/// Returns the next blocked monitor update, if one exists, and a bool which indicates a
 	/// further blocked monitor update exists after the next.
 	pub fn unblock_next_blocked_monitor_update(&mut self) -> Option<(&ChannelMonitorUpdate, bool)> {
@@ -6597,6 +6607,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Writeable for Channel<Signer> {
 			(28, holder_max_accepted_htlcs, option),
 			(29, self.temporary_channel_id, option),
 			(31, channel_pending_event_emitted, option),
+			(33, self.pending_monitor_updates, vec_type),
 		});
 
 		Ok(())
@@ -6873,6 +6884,8 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 		let mut temporary_channel_id: Option<[u8; 32]> = None;
 		let mut holder_max_accepted_htlcs: Option<u16> = None;
 
+		let mut pending_monitor_updates = Some(Vec::new());
+
 		read_tlv_fields!(reader, {
 			(0, announcement_sigs, option),
 			(1, minimum_depth, option),
@@ -6895,6 +6908,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 			(28, holder_max_accepted_htlcs, option),
 			(29, temporary_channel_id, option),
 			(31, channel_pending_event_emitted, option),
+			(33, pending_monitor_updates, vec_type),
 		});
 
 		let (channel_keys_id, holder_signer) = if let Some(channel_keys_id) = channel_keys_id {
@@ -7064,7 +7078,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 			channel_type: channel_type.unwrap(),
 			channel_keys_id,
 
-			pending_monitor_updates: Vec::new(),
+			pending_monitor_updates: pending_monitor_updates.unwrap(),
 		})
 	}
 }
