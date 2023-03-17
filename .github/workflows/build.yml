@@ -7,70 +7,21 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        platform: [ ubuntu-latest ]
-        toolchain: [ stable,
-                     beta,
-                     # 1.41.1 is MSRV for Rust-Lightning, lightning-invoice, and lightning-persister
-                     1.41.1,
-                     # 1.45.2 is MSRV for lightning-net-tokio, lightning-block-sync, lightning-background-processor
-                     1.45.2,
-                     # 1.47.0 will be the MSRV for no-std builds using hashbrown once core2 is updated
-                     1.47.0]
+        platform: [ ubuntu-latest, windows-latest, macos-latest ]
+        toolchain: [ stable, beta ]
         include:
           - toolchain: stable
-            build-net-tokio: true
-            build-no-std: true
-            build-futures: true
-            build-tx-sync: true
+            platform: ubuntu-latest
             coverage: true
-          - toolchain: stable
-            platform: macos-latest
-            build-net-tokio: true
-            build-no-std: true
-            build-futures: true
-            build-tx-sync: true
-          - toolchain: stable
-            test-custom-message: true
-          - toolchain: beta
-            platform: macos-latest
-            build-net-tokio: true
-            build-no-std: true
-            build-futures: true
-            build-tx-sync: true
-          - toolchain: stable
+          # 1.48.0 is the MSRV for all crates except lightning-transaction-sync and Win/Mac
+          - toolchain: 1.48.0
+            platform: ubuntu-latest
+          # Windows requires 1.49.0 because that's the MSRV for supported Tokio
+          - toolchain: 1.49.0
             platform: windows-latest
-            build-net-tokio: true
-            build-no-std: true
-            build-futures: true
-            build-tx-sync: false
-          - toolchain: beta
-            platform: windows-latest
-            build-net-tokio: true
-            build-no-std: true
-            build-futures: true
-            build-tx-sync: false
-          - toolchain: beta
-            build-net-tokio: true
-            build-no-std: true
-            build-futures: true
-            build-tx-sync: true
-          - toolchain: beta
-            test-custom-message: true
-          - toolchain: 1.41.1
-            build-no-std: false
-            test-log-variants: true
-            build-futures: false
-            build-tx-sync: false
-          - toolchain: 1.45.2
-            build-net-old-tokio: true
-            build-net-tokio: true
-            build-no-std: false
-            build-futures: true
-            build-tx-sync: false
-          - toolchain: 1.47.0
-            build-futures: true
-            build-no-std: true
-            build-tx-sync: false
+          # MacOS-latest requires 1.54.0 because that's what's required for linking to work properly
+          - toolchain: 1.54.0
+            platform: macos-latest
     runs-on: ${{ matrix.platform }}
     steps:
       - name: Checkout source code
@@ -81,162 +32,24 @@ jobs:
           toolchain: ${{ matrix.toolchain }}
           override: true
           profile: minimal
-      - name: Pin tokio to 1.14 for Rust 1.45
-        if: "matrix.build-net-old-tokio"
-        run: cargo update -p tokio --precise "1.14.0" --verbose
-        env:
-          CARGO_NET_GIT_FETCH_WITH_CLI: "true"
-      - name: Pin tokio to 1.26 for Windows
-        if: "matrix.platform == 'windows-latest'"
-        run: cargo update -p tokio --precise "1.26.0" --verbose
-        env:
-          CARGO_NET_GIT_FETCH_WITH_CLI: "true"
-      - name: Build on Rust ${{ matrix.toolchain }} with net-tokio
-        if: "matrix.build-net-tokio && !matrix.coverage"
-        run: cargo build --verbose --color always
-      - name: Build on Rust ${{ matrix.toolchain }} with net-tokio, and full code-linking for coverage generation
-        if: matrix.coverage
-        run: RUSTFLAGS="-C link-dead-code" cargo build --verbose --color always
-      - name: Build on Rust ${{ matrix.toolchain }}
-        if: "! matrix.build-net-tokio"
+      - name: Install no-std-check dependencies for ARM Embedded
+        if: "matrix.platform == 'ubuntu-latest'"
         run: |
-          cargo build --verbose  --color always -p lightning
-          cargo build --verbose  --color always -p lightning-invoice
-          cargo build --verbose  --color always -p lightning-persister
-      - name: Build on Rust ${{ matrix.toolchain }} with all Log-Limiting features
-        if: matrix.test-log-variants
-        run: |
-          cd lightning
-          for FEATURE in $(cat Cargo.toml | grep '^max_level_' | awk '{ print $1 }'); do
-            cargo build --verbose --color always --features $FEATURE
-          done
-      - name: Build Block Sync Clients on Rust ${{ matrix.toolchain }} with features
-        if: "matrix.build-net-tokio && !matrix.coverage"
-        run: |
-          cd lightning-block-sync
-          cargo build --verbose --color always --features rest-client
-          cargo build --verbose --color always --features rpc-client
-          cargo build --verbose --color always --features rpc-client,rest-client
-          cargo build --verbose --color always --features rpc-client,rest-client,tokio
-      - name: Build Block Sync Clients on Rust ${{ matrix.toolchain }} with features and full code-linking for coverage generation
-        if: matrix.coverage
-        run: |
-          cd lightning-block-sync
-          RUSTFLAGS="-C link-dead-code" cargo build --verbose --color always --features rest-client
-          RUSTFLAGS="-C link-dead-code" cargo build --verbose --color always --features rpc-client
-          RUSTFLAGS="-C link-dead-code" cargo build --verbose --color always --features rpc-client,rest-client
-          RUSTFLAGS="-C link-dead-code" cargo build --verbose --color always --features rpc-client,rest-client,tokio
-      - name: Build Transaction Sync Clients on Rust ${{ matrix.toolchain }} with features
-        if: "matrix.build-tx-sync && !matrix.coverage"
-        run: |
-          cd lightning-transaction-sync
-          cargo build --verbose --color always --features esplora-blocking
-          cargo build --verbose --color always --features esplora-async
-          cargo build --verbose --color always --features esplora-async-https
-      - name: Build transaction sync clients on Rust ${{ matrix.toolchain }} with features and full code-linking for coverage generation
-        if: "matrix.build-tx-sync && matrix.coverage"
-        run: |
-          cd lightning-transaction-sync
-          RUSTFLAGS="-C link-dead-code" cargo build --verbose --color always --features esplora-blocking
-          RUSTFLAGS="-C link-dead-code" cargo build --verbose --color always --features esplora-async
-          RUSTFLAGS="-C link-dead-code" cargo build --verbose --color always --features esplora-async-https
-      - name: Test transaction sync clients on Rust ${{ matrix.toolchain }} with features
-        if: "matrix.build-tx-sync"
-        run: |
-          cd lightning-transaction-sync
-          cargo test --verbose --color always --features esplora-blocking
-          cargo test --verbose --color always --features esplora-async
-          cargo test --verbose --color always --features esplora-async-https
-      - name: Test backtrace-debug builds on Rust ${{ matrix.toolchain }}
-        if: "matrix.toolchain == 'stable'"
-        shell: bash # Default on Winblows is powershell
-        run: |
-          cd lightning && RUST_BACKTRACE=1 cargo test --verbose --color always --features backtrace
-      - name: Test on Rust ${{ matrix.toolchain }} with net-tokio
-        if: "matrix.build-net-tokio && !matrix.coverage"
-        run: cargo test --verbose --color always
-      - name: Test on Rust ${{ matrix.toolchain }} with net-tokio, and full code-linking for coverage generation
-        if: matrix.coverage
-        run: RUSTFLAGS="-C link-dead-code" cargo test --verbose --color always
-      - name: Test no-std builds on Rust ${{ matrix.toolchain }}
-        if: "matrix.build-no-std && !matrix.coverage"
-        shell: bash # Default on Winblows is powershell
-        run: |
-          for DIR in lightning lightning-invoice lightning-rapid-gossip-sync; do
-          cd $DIR
-            cargo test --verbose --color always --no-default-features --features no-std
-            # check if there is a conflict between no-std and the default std feature
-            cargo test --verbose --color always --features no-std
-            # check that things still pass without grind_signatures
-            # note that outbound_commitment_test only runs in this mode, because of hardcoded signature values
-            cargo test --verbose --color always --no-default-features --features std
-            # check if there is a conflict between no-std and the c_bindings cfg
-            RUSTFLAGS="--cfg=c_bindings" cargo test --verbose --color always --no-default-features --features=no-std
-            cd ..
-          done
-          # check no-std compatibility across dependencies
-          cd no-std-check
-          cargo check --verbose --color always --features lightning-transaction-sync
-      - name: Build no-std-check on Rust ${{ matrix.toolchain }} for ARM Embedded
-        if: "matrix.build-no-std && matrix.platform == 'ubuntu-latest'"
-        run: |
-          cd no-std-check
           rustup target add thumbv7m-none-eabi
           sudo apt-get -y install gcc-arm-none-eabi
-          cargo build --target=thumbv7m-none-eabi
-      - name: Test on no-std builds Rust ${{ matrix.toolchain }} and full code-linking for coverage generation
-        if: "matrix.build-no-std && matrix.coverage"
+      - name: shellcheck the CI script
+        if: "matrix.platform == 'ubuntu-latest'"
         run: |
-          cd lightning
-          RUSTFLAGS="-C link-dead-code" cargo test --verbose --color always --no-default-features --features no-std
-      - name: Test futures builds on Rust ${{ matrix.toolchain }}
-        if: "matrix.build-futures && !matrix.coverage"
-        shell: bash # Default on Winblows is powershell
-        run: |
-          cd lightning-background-processor
-          cargo test --verbose --color always --no-default-features --features futures
-      - name: Test futures builds on Rust ${{ matrix.toolchain }} and full code-linking for coverage generation
-        if: "matrix.build-futures && matrix.coverage"
-        shell: bash # Default on Winblows is powershell
-        run: |
-          cd lightning-background-processor
-          RUSTFLAGS="-C link-dead-code" cargo test --verbose --color always --no-default-features --features futures
-      - name: Test on Rust ${{ matrix.toolchain }}
-        if: "! matrix.build-net-tokio"
-        run: |
-          cargo test --verbose --color always -p lightning
-          cargo test --verbose --color always -p lightning-invoice
-          cargo test --verbose --color always -p lightning-rapid-gossip-sync
-          cargo test --verbose --color always -p lightning-persister
-          cargo test --verbose --color always -p lightning-background-processor
-      - name: Test C Bindings Modifications on Rust ${{ matrix.toolchain }}
-        if: "! matrix.build-net-tokio"
-        run: |
-          RUSTFLAGS="--cfg=c_bindings" cargo test --verbose --color always  -p lightning
-          RUSTFLAGS="--cfg=c_bindings" cargo test --verbose --color always  -p lightning-invoice
-          RUSTFLAGS="--cfg=c_bindings" cargo build --verbose  --color always -p lightning-persister
-          RUSTFLAGS="--cfg=c_bindings" cargo build --verbose  --color always -p lightning-background-processor
-      - name: Test Block Sync Clients on Rust ${{ matrix.toolchain }} with features
-        if: "matrix.build-net-tokio && !matrix.coverage"
-        run: |
-          cd lightning-block-sync
-          cargo test --verbose --color always --features rest-client
-          cargo test --verbose --color always --features rpc-client
-          cargo test --verbose --color always --features rpc-client,rest-client
-          cargo test --verbose --color always --features rpc-client,rest-client,tokio
-      - name: Test Block Sync Clients on Rust ${{ matrix.toolchain }} with features and full code-linking for coverage generation
+          sudo apt-get -y install shellcheck
+          shellcheck ci/ci-tests.sh
+      - name: Run CI script with coverage generation
         if: matrix.coverage
-        run: |
-          cd lightning-block-sync
-          RUSTFLAGS="-C link-dead-code" cargo test --verbose --color always --features rest-client
-          RUSTFLAGS="-C link-dead-code" cargo test --verbose --color always --features rpc-client
-          RUSTFLAGS="-C link-dead-code" cargo test --verbose --color always --features rpc-client,rest-client
-          RUSTFLAGS="-C link-dead-code" cargo test --verbose --color always --features rpc-client,rest-client,tokio
-      - name: Test Custom Message Macros on Rust ${{ matrix.toolchain }}
-        if: "matrix.test-custom-message"
-        run: |
-          cd lightning-custom-message
-          cargo test --verbose --color always
+        shell: bash # Default on Winblows is powershell
+        run: LDK_COVERAGE_BUILD=true ./ci/ci-tests.sh
+      - name: Run CI script
+        if: "!matrix.coverage"
+        shell: bash # Default on Winblows is powershell
+        run: ./ci/ci-tests.sh
       - name: Install deps for kcov
         if: matrix.coverage
         run: |
