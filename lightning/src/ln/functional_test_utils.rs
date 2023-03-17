@@ -15,7 +15,7 @@ use crate::chain::channelmonitor::ChannelMonitor;
 use crate::chain::transaction::OutPoint;
 use crate::events::{ClosureReason, Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, PathFailure, PaymentPurpose, PaymentFailureReason};
 use crate::ln::{PaymentPreimage, PaymentHash, PaymentSecret};
-use crate::ln::channelmanager::{ChainParameters, ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, PaymentSendFailure, RecipientOnionFields, PaymentId, MIN_CLTV_EXPIRY_DELTA};
+use crate::ln::channelmanager::{AChannelManager, ChainParameters, ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, PaymentSendFailure, RecipientOnionFields, PaymentId, MIN_CLTV_EXPIRY_DELTA};
 use crate::routing::gossip::{P2PGossipSync, NetworkGraph, NetworkUpdate};
 use crate::routing::router::{self, PaymentParameters, Route};
 use crate::ln::features::InitFeatures;
@@ -324,6 +324,8 @@ pub struct NodeCfg<'a> {
 	pub override_init_features: Rc<RefCell<Option<InitFeatures>>>,
 }
 
+type TestChannelManager<'a, 'b, 'c> = ChannelManager<&'b TestChainMonitor<'c>, &'c test_utils::TestBroadcaster, &'b test_utils::TestKeysInterface, &'b test_utils::TestKeysInterface, &'b test_utils::TestKeysInterface, &'c test_utils::TestFeeEstimator, &'b test_utils::TestRouter<'c>, &'c test_utils::TestLogger>;
+
 pub struct Node<'a, 'b: 'a, 'c: 'b> {
 	pub chain_source: &'c test_utils::TestChainSource,
 	pub tx_broadcaster: &'c test_utils::TestBroadcaster,
@@ -331,7 +333,7 @@ pub struct Node<'a, 'b: 'a, 'c: 'b> {
 	pub router: &'b test_utils::TestRouter<'c>,
 	pub chain_monitor: &'b test_utils::TestChainMonitor<'c>,
 	pub keys_manager: &'b test_utils::TestKeysInterface,
-	pub node: &'a ChannelManager<&'b TestChainMonitor<'c>, &'c test_utils::TestBroadcaster, &'b test_utils::TestKeysInterface, &'b test_utils::TestKeysInterface, &'b test_utils::TestKeysInterface, &'c test_utils::TestFeeEstimator, &'b test_utils::TestRouter<'c>, &'c test_utils::TestLogger>,
+	pub node: &'a TestChannelManager<'a, 'b, 'c>,
 	pub network_graph: &'a NetworkGraph<&'c test_utils::TestLogger>,
 	pub gossip_sync: P2PGossipSync<&'b NetworkGraph<&'c test_utils::TestLogger>, &'c test_utils::TestChainSource, &'c test_utils::TestLogger>,
 	pub node_seed: [u8; 32],
@@ -366,6 +368,39 @@ impl NodePtr {
 }
 unsafe impl Send for NodePtr {}
 unsafe impl Sync for NodePtr {}
+
+
+pub trait NodeHolder {
+	type CM: AChannelManager;
+	fn node(&self) -> &ChannelManager<
+		<Self::CM as AChannelManager>::M,
+		<Self::CM as AChannelManager>::T,
+		<Self::CM as AChannelManager>::ES,
+		<Self::CM as AChannelManager>::NS,
+		<Self::CM as AChannelManager>::SP,
+		<Self::CM as AChannelManager>::F,
+		<Self::CM as AChannelManager>::R,
+		<Self::CM as AChannelManager>::L>;
+	fn chain_monitor(&self) -> Option<&test_utils::TestChainMonitor>;
+}
+impl<H: NodeHolder> NodeHolder for &H {
+	type CM = H::CM;
+	fn node(&self) -> &ChannelManager<
+		<Self::CM as AChannelManager>::M,
+		<Self::CM as AChannelManager>::T,
+		<Self::CM as AChannelManager>::ES,
+		<Self::CM as AChannelManager>::NS,
+		<Self::CM as AChannelManager>::SP,
+		<Self::CM as AChannelManager>::F,
+		<Self::CM as AChannelManager>::R,
+		<Self::CM as AChannelManager>::L> { (*self).node() }
+	fn chain_monitor(&self) -> Option<&test_utils::TestChainMonitor> { (*self).chain_monitor() }
+}
+impl<'a, 'b: 'a, 'c: 'b> NodeHolder for Node<'a, 'b, 'c> {
+	type CM = TestChannelManager<'a, 'b, 'c>;
+	fn node(&self) -> &TestChannelManager<'a, 'b, 'c> { &self.node }
+	fn chain_monitor(&self) -> Option<&test_utils::TestChainMonitor> { Some(self.chain_monitor) }
+}
 
 impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 	fn drop(&mut self) {
@@ -486,36 +521,27 @@ pub fn create_chan_between_nodes_with_value<'a, 'b, 'c, 'd>(node_a: &'a Node<'b,
 }
 
 /// Gets an RAA and CS which were sent in response to a commitment update
-///
-/// Should only be used directly when the `$node` is not actually a [`Node`].
-macro_rules! do_get_revoke_commit_msgs {
-	($node: expr, $recipient: expr) => { {
-		let events = $node.node.get_and_clear_pending_msg_events();
-		assert_eq!(events.len(), 2);
-		(match events[0] {
-			MessageSendEvent::SendRevokeAndACK { ref node_id, ref msg } => {
-				assert_eq!(node_id, $recipient);
-				(*msg).clone()
-			},
-			_ => panic!("Unexpected event"),
-		}, match events[1] {
-			MessageSendEvent::UpdateHTLCs { ref node_id, ref updates } => {
-				assert_eq!(node_id, $recipient);
-				assert!(updates.update_add_htlcs.is_empty());
-				assert!(updates.update_fulfill_htlcs.is_empty());
-				assert!(updates.update_fail_htlcs.is_empty());
-				assert!(updates.update_fail_malformed_htlcs.is_empty());
-				assert!(updates.update_fee.is_none());
-				updates.commitment_signed.clone()
-			},
-			_ => panic!("Unexpected event"),
-		})
-	} }
-}
-
-/// Gets an RAA and CS which were sent in response to a commitment update
-pub fn get_revoke_commit_msgs(node: &Node, recipient: &PublicKey) -> (msgs::RevokeAndACK, msgs::CommitmentSigned) {
-	do_get_revoke_commit_msgs!(node, recipient)
+pub fn get_revoke_commit_msgs<CM: AChannelManager, H: NodeHolder<CM=CM>>(node: &H, recipient: &PublicKey) -> (msgs::RevokeAndACK, msgs::CommitmentSigned) {
+	let events = node.node().get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 2);
+	(match events[0] {
+		MessageSendEvent::SendRevokeAndACK { ref node_id, ref msg } => {
+			assert_eq!(node_id, recipient);
+			(*msg).clone()
+		},
+		_ => panic!("Unexpected event"),
+	}, match events[1] {
+		MessageSendEvent::UpdateHTLCs { ref node_id, ref updates } => {
+			assert_eq!(node_id, recipient);
+			assert!(updates.update_add_htlcs.is_empty());
+			assert!(updates.update_fulfill_htlcs.is_empty());
+			assert!(updates.update_fail_htlcs.is_empty());
+			assert!(updates.update_fail_malformed_htlcs.is_empty());
+			assert!(updates.update_fee.is_none());
+			updates.commitment_signed.clone()
+		},
+		_ => panic!("Unexpected event"),
+	})
 }
 
 #[macro_export]
@@ -774,10 +800,12 @@ macro_rules! unwrap_send_err {
 }
 
 /// Check whether N channel monitor(s) have been added.
-pub fn check_added_monitors(node: &Node, count: usize) {
-	let mut added_monitors = node.chain_monitor.added_monitors.lock().unwrap();
-	assert_eq!(added_monitors.len(), count);
-	added_monitors.clear();
+pub fn check_added_monitors<CM: AChannelManager, H: NodeHolder<CM=CM>>(node: &H, count: usize) {
+	if let Some(chain_monitor) = node.chain_monitor() {
+		let mut added_monitors = chain_monitor.added_monitors.lock().unwrap();
+		assert_eq!(added_monitors.len(), count);
+		added_monitors.clear();
+	}
 }
 
 /// Check whether N channel monitor(s) have been added.
