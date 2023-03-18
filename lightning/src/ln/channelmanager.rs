@@ -59,6 +59,7 @@ use crate::util::events::{Event, EventHandler, EventsProvider, MessageSendEvent,
 use crate::util::events;
 use crate::util::wakers::{Future, Notifier};
 use crate::util::scid_utils::fake_scid;
+use crate::util::string::UntrustedString;
 use crate::util::ser::{BigSize, FixedLengthReader, Readable, ReadableArgs, MaybeReadable, Writeable, Writer, VecWriter};
 use crate::util::logger::{Level, Logger};
 use crate::util::errors::APIError;
@@ -1990,7 +1991,7 @@ where
 			let peer_state = &mut *peer_state_lock;
 			if let hash_map::Entry::Occupied(chan) = peer_state.channel_by_id.entry(channel_id.clone()) {
 				if let Some(peer_msg) = peer_msg {
-					self.issue_channel_close_events(chan.get(),ClosureReason::CounterpartyForceClosed { peer_msg: peer_msg.to_string() });
+					self.issue_channel_close_events(chan.get(),ClosureReason::CounterpartyForceClosed { peer_msg: UntrustedString(peer_msg.to_string()) });
 				} else {
 					self.issue_channel_close_events(chan.get(),ClosureReason::HolderForceClosed);
 				}

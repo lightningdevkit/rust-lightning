@@ -25,6 +25,7 @@ use crate::ln::{PaymentPreimage, PaymentHash, PaymentSecret};
 use crate::routing::gossip::NetworkUpdate;
 use crate::util::errors::APIError;
 use crate::util::ser::{BigSize, FixedLengthReader, Writeable, Writer, MaybeReadable, Readable, RequiredWrapper, UpgradableRequired, WithoutLength};
+use crate::util::string::UntrustedString;
 use crate::routing::router::{RouteHop, RouteParameters};
 
 use bitcoin::{PackedLockTime, Transaction};
@@ -125,10 +126,12 @@ pub enum ClosureReason {
 	CounterpartyForceClosed {
 		/// The error which the peer sent us.
 		///
-		/// The string should be sanitized before it is used (e.g emitted to logs
-		/// or printed to stdout). Otherwise, a well crafted error message may exploit
+		/// Be careful about printing the peer_msg, a well-crafted message could exploit
 		/// a security vulnerability in the terminal emulator or the logging subsystem.
-		peer_msg: String,
+		/// To be safe, use `Display` on `UntrustedString`
+		/// 
+		/// [`UntrustedString`]: crate::util::string::UntrustedString
+		peer_msg: UntrustedString,
 	},
 	/// Closure generated from [`ChannelManager::force_close_channel`], called by the user.
 	///
@@ -173,8 +176,7 @@ impl core::fmt::Display for ClosureReason {
 		f.write_str("Channel closed because ")?;
 		match self {
 			ClosureReason::CounterpartyForceClosed { peer_msg } => {
-				f.write_str("counterparty force-closed with message ")?;
-				f.write_str(&peer_msg)
+				f.write_fmt(format_args!("counterparty force-closed with message: {}", peer_msg))
 			},
 			ClosureReason::HolderForceClosed => f.write_str("user manually force-closed the channel"),
 			ClosureReason::CooperativeClosure => f.write_str("the channel was cooperatively closed"),

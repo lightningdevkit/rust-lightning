@@ -34,6 +34,7 @@ use crate::util::test_utils;
 use crate::util::events::{Event, MessageSendEvent, MessageSendEventsProvider, PathFailure, PaymentPurpose, ClosureReason, HTLCDestination};
 use crate::util::errors::APIError;
 use crate::util::ser::{Writeable, ReadableArgs};
+use crate::util::string::UntrustedString;
 use crate::util::config::UserConfig;
 
 use bitcoin::hash_types::BlockHash;
@@ -8344,7 +8345,7 @@ fn test_pre_lockin_no_chan_closed_update() {
 	let channel_id = crate::chain::transaction::OutPoint { txid: funding_created_msg.funding_txid, index: funding_created_msg.funding_output_index }.to_channel_id();
 	nodes[0].node.handle_error(&nodes[1].node.get_our_node_id(), &msgs::ErrorMessage { channel_id, data: "Hi".to_owned() });
 	assert!(nodes[0].chain_monitor.added_monitors.lock().unwrap().is_empty());
-	check_closed_event!(nodes[0], 2, ClosureReason::CounterpartyForceClosed { peer_msg: "Hi".to_string() }, true);
+	check_closed_event!(nodes[0], 2, ClosureReason::CounterpartyForceClosed { peer_msg: UntrustedString("Hi".to_string()) }, true);
 }
 
 #[test]
@@ -8802,7 +8803,7 @@ fn test_error_chans_closed() {
 	nodes[0].node.handle_error(&nodes[1].node.get_our_node_id(), &msgs::ErrorMessage { channel_id: chan_2.2, data: "ERR".to_owned() });
 	check_added_monitors!(nodes[0], 1);
 	check_closed_broadcast!(nodes[0], false);
-	check_closed_event!(nodes[0], 1, ClosureReason::CounterpartyForceClosed { peer_msg: "ERR".to_string() });
+	check_closed_event!(nodes[0], 1, ClosureReason::CounterpartyForceClosed { peer_msg: UntrustedString("ERR".to_string()) });
 	assert_eq!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0).len(), 1);
 	assert_eq!(nodes[0].node.list_usable_channels().len(), 2);
 	assert!(nodes[0].node.list_usable_channels()[0].channel_id == chan_1.2 || nodes[0].node.list_usable_channels()[1].channel_id == chan_1.2);
@@ -8812,7 +8813,7 @@ fn test_error_chans_closed() {
 	let _chan_4 = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 10001);
 	nodes[0].node.handle_error(&nodes[1].node.get_our_node_id(), &msgs::ErrorMessage { channel_id: [0; 32], data: "ERR".to_owned() });
 	check_added_monitors!(nodes[0], 2);
-	check_closed_event!(nodes[0], 2, ClosureReason::CounterpartyForceClosed { peer_msg: "ERR".to_string() });
+	check_closed_event!(nodes[0], 2, ClosureReason::CounterpartyForceClosed { peer_msg: UntrustedString("ERR".to_string()) });
 	let events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 2);
 	match events[0] {
