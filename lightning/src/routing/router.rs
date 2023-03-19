@@ -5741,6 +5741,8 @@ mod benches {
 			inbound_htlc_maximum_msat: None,
 			config: None,
 			feerate_sat_per_1000_weight: None,
+			inflight_outbound_msat: 0,
+			inflight_forwarded_msat: 0,
 		}
 	}
 
