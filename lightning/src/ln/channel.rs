@@ -244,6 +244,12 @@ enum HTLCUpdateAwaitingACK {
 	},
 }
 
+// total msats in inflight HTLCs
+pub struct InflightBalances{
+	pub outbound:  u64,
+	pub forwarded: u64,
+}
+
 /// There are a few "states" and then a number of flags which can be applied:
 /// We first move through init with OurInitSent -> TheirInitSent -> FundingCreated -> FundingSent.
 /// TheirChannelReady and OurChannelReady then get set on FundingSent, and when both are set we
@@ -6104,6 +6110,39 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 				}
 			})
 			.chain(self.pending_outbound_htlcs.iter().map(|htlc| (&htlc.source, &htlc.payment_hash)))
+	}
+
+	pub fn inflight_msats(&self) -> InflightBalances {
+		let mut outbound = 0;
+		let mut forwarded = 0;
+		for h in self.holding_cell_htlc_updates.iter() {
+			match &h {
+				&HTLCUpdateAwaitingACK::AddHTLC{amount_msat, source, .. } => {
+					match source {
+						HTLCSource::OutboundRoute { .. } => {
+							outbound += amount_msat;
+						},
+						HTLCSource::PreviousHopData(_) => {
+							forwarded += amount_msat;
+						}
+					}
+				}
+				_ => {}
+			}
+		}
+		for h in self.pending_outbound_htlcs.iter() {
+			match h.source {
+				HTLCSource::OutboundRoute { .. } => {
+					outbound += h.amount_msat;
+				},
+				HTLCSource::PreviousHopData(_) => {
+					forwarded += h.amount_msat;
+				}
+			}
+		}
+		InflightBalances {
+			outbound, forwarded
+		}
 	}
 }
 

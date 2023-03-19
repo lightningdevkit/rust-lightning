@@ -1205,6 +1205,10 @@ pub struct ChannelDetails {
 	///
 	/// This field is only `None` for `ChannelDetails` objects serialized prior to LDK 0.0.109.
 	pub config: Option<ChannelConfig>,
+	/// The total msat currently in in-flight outbound HTLCs
+	pub inflight_outbound_msat: u64,
+	/// The total msat currently in in-flight forwarded HTLCs
+	pub inflight_forwarded_msat: u64,
 }
 
 impl ChannelDetails {
@@ -1234,6 +1238,7 @@ impl ChannelDetails {
 		let balance = channel.get_available_balances();
 		let (to_remote_reserve_satoshis, to_self_reserve_satoshis) =
 			channel.get_holder_counterparty_selected_channel_reserve_satoshis();
+		let inflight_msats = channel.inflight_msats();
 		ChannelDetails {
 			channel_id: channel.channel_id(),
 			counterparty: ChannelCounterparty {
@@ -1275,6 +1280,8 @@ impl ChannelDetails {
 			inbound_htlc_minimum_msat: Some(channel.get_holder_htlc_minimum_msat()),
 			inbound_htlc_maximum_msat: channel.get_holder_htlc_maximum_msat(),
 			config: Some(channel.config()),
+			inflight_outbound_msat: inflight_msats.outbound,
+			inflight_forwarded_msat: inflight_msats.forwarded,
 		}
 	}
 }
@@ -6569,6 +6576,8 @@ impl Writeable for ChannelDetails {
 			(35, self.inbound_htlc_maximum_msat, option),
 			(37, user_channel_id_high_opt, option),
 			(39, self.feerate_sat_per_1000_weight, option),
+			(41, self.inflight_outbound_msat, required),
+			(43, self.inflight_forwarded_msat, required),
 		});
 		Ok(())
 	}
@@ -6605,6 +6614,8 @@ impl Readable for ChannelDetails {
 			(35, inbound_htlc_maximum_msat, option),
 			(37, user_channel_id_high_opt, option),
 			(39, feerate_sat_per_1000_weight, option),
+			(41, inflight_outbound_msat, required),
+			(43, inflight_forwarded_msat, required),
 		});
 
 		// `user_channel_id` used to be a single u64 value. In order to remain backwards compatible with
@@ -6639,6 +6650,8 @@ impl Readable for ChannelDetails {
 			inbound_htlc_minimum_msat,
 			inbound_htlc_maximum_msat,
 			feerate_sat_per_1000_weight,
+			inflight_outbound_msat: inflight_outbound_msat.0.unwrap(),
+			inflight_forwarded_msat: inflight_forwarded_msat.0.unwrap(),
 		})
 	}
 }
