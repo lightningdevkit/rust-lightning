@@ -269,6 +269,8 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 								inbound_htlc_maximum_msat: None,
 								config: None,
 								feerate_sat_per_1000_weight: None,
+								inflight_outbound_msat: 0,
+								inflight_forwarded_msat: 0,
 							});
 						}
 						Some(&first_hops_vec[..])
