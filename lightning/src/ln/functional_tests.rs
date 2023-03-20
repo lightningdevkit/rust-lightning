@@ -94,7 +94,7 @@ fn test_insane_channel_opens() {
 		if let MessageSendEvent::HandleError { ref action, .. } = msg_events[0] {
 			match action {
 				&ErrorAction::SendErrorMessage { .. } => {
-					nodes[1].logger.assert_log_regex("lightning::ln::channelmanager".to_string(), expected_regex, 1);
+					nodes[1].logger.assert_log_regex("lightning::ln::channelmanager", expected_regex, 1);
 				},
 				_ => panic!("unexpected event!"),
 			}
@@ -1118,7 +1118,7 @@ fn holding_cell_htlc_counting() {
 		unwrap_send_err!(nodes[1].node.send_payment(&route, payment_hash_1, &Some(payment_secret_1), PaymentId(payment_hash_1.0)), true, APIError::ChannelUnavailable { ref err },
 			assert!(regex::Regex::new(r"Cannot push more than their max accepted HTLCs \(\d+\)").unwrap().is_match(err)));
 		assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
-		nodes[1].logger.assert_log_contains("lightning::ln::channelmanager".to_string(), "Cannot push more than their max accepted HTLCs".to_string(), 1);
+		nodes[1].logger.assert_log_contains("lightning::ln::channelmanager", "Cannot push more than their max accepted HTLCs", 1);
 	}
 
 	// This should also be true if we try to forward a payment.
@@ -1346,7 +1346,7 @@ fn test_basic_channel_reserve() {
 		_ => panic!("Unexpected error variant"),
 	}
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
-	nodes[0].logger.assert_log_contains("lightning::ln::channelmanager".to_string(), "Cannot send value that would put our balance under counterparty-announced channel reserve value".to_string(), 1);
+	nodes[0].logger.assert_log_contains("lightning::ln::channelmanager", "Cannot send value that would put our balance under counterparty-announced channel reserve value", 1);
 
 	send_payment(&nodes[0], &vec![&nodes[1]], max_can_send);
 }
@@ -1811,7 +1811,7 @@ fn test_channel_reserve_holding_cell_htlcs() {
 		unwrap_send_err!(nodes[0].node.send_payment(&route, our_payment_hash, &Some(our_payment_secret), PaymentId(our_payment_hash.0)), true, APIError::ChannelUnavailable { ref err },
 			assert!(regex::Regex::new(r"Cannot send value that would put us over the max HTLC value in flight our peer will accept \(\d+\)").unwrap().is_match(err)));
 		assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
-		nodes[0].logger.assert_log_contains("lightning::ln::channelmanager".to_string(), "Cannot send value that would put us over the max HTLC value in flight our peer will accept".to_string(), 1);
+		nodes[0].logger.assert_log_contains("lightning::ln::channelmanager", "Cannot send value that would put us over the max HTLC value in flight our peer will accept", 1);
 	}
 
 	// channel reserve is bigger than their_max_htlc_value_in_flight_msat so loop to deplete
@@ -1906,7 +1906,7 @@ fn test_channel_reserve_holding_cell_htlcs() {
 		unwrap_send_err!(nodes[0].node.send_payment(&route, our_payment_hash, &Some(our_payment_secret), PaymentId(our_payment_hash.0)), true, APIError::ChannelUnavailable { ref err },
 			assert!(regex::Regex::new(r"Cannot send value that would put our balance under counterparty-announced channel reserve value \(\d+\)").unwrap().is_match(err)));
 		assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
-		nodes[0].logger.assert_log_contains("lightning::ln::channelmanager".to_string(), "Cannot send value that would put our balance under counterparty-announced channel reserve value".to_string(), 2);
+		nodes[0].logger.assert_log_contains("lightning::ln::channelmanager", "Cannot send value that would put our balance under counterparty-announced channel reserve value", 2);
 	}
 
 	let (route_22, our_payment_hash_22, our_payment_preimage_22, our_payment_secret_22) = get_route_and_payment_hash!(nodes[0], nodes[2], recv_value_22);
@@ -5987,7 +5987,7 @@ fn test_update_add_htlc_bolt2_sender_value_below_minimum_msat() {
 	unwrap_send_err!(nodes[0].node.send_payment(&route, our_payment_hash, &Some(our_payment_secret), PaymentId(our_payment_hash.0)), true, APIError::ChannelUnavailable { ref err },
 		assert!(regex::Regex::new(r"Cannot send less than their minimum HTLC value \(\d+\)").unwrap().is_match(err)));
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
-	nodes[0].logger.assert_log_contains("lightning::ln::channelmanager".to_string(), "Cannot send less than their minimum HTLC value".to_string(), 1);
+	nodes[0].logger.assert_log_contains("lightning::ln::channelmanager", "Cannot send less than their minimum HTLC value", 1);
 }
 
 #[test]
@@ -6005,7 +6005,7 @@ fn test_update_add_htlc_bolt2_sender_zero_value_msat() {
 		assert_eq!(err, "Cannot send 0-msat HTLC"));
 
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
-	nodes[0].logger.assert_log_contains("lightning::ln::channelmanager".to_string(), "Cannot send 0-msat HTLC".to_string(), 1);
+	nodes[0].logger.assert_log_contains("lightning::ln::channelmanager", "Cannot send 0-msat HTLC", 1);
 }
 
 #[test]
@@ -6088,7 +6088,7 @@ fn test_update_add_htlc_bolt2_sender_exceed_max_htlc_num_and_htlc_id_increment()
 		assert!(regex::Regex::new(r"Cannot push more than their max accepted HTLCs \(\d+\)").unwrap().is_match(err)));
 
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
-	nodes[0].logger.assert_log_contains("lightning::ln::channelmanager".to_string(), "Cannot push more than their max accepted HTLCs".to_string(), 1);
+	nodes[0].logger.assert_log_contains("lightning::ln::channelmanager", "Cannot push more than their max accepted HTLCs", 1);
 }
 
 #[test]
@@ -6112,7 +6112,7 @@ fn test_update_add_htlc_bolt2_sender_exceed_max_htlc_value_in_flight() {
 		assert!(regex::Regex::new(r"Cannot send value that would put us over the max HTLC value in flight our peer will accept \(\d+\)").unwrap().is_match(err)));
 
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
-	nodes[0].logger.assert_log_contains("lightning::ln::channelmanager".to_string(), "Cannot send value that would put us over the max HTLC value in flight our peer will accept".to_string(), 1);
+	nodes[0].logger.assert_log_contains("lightning::ln::channelmanager", "Cannot send value that would put us over the max HTLC value in flight our peer will accept", 1);
 
 	send_payment(&nodes[0], &[&nodes[1]], max_in_flight);
 }
@@ -9502,7 +9502,7 @@ fn do_test_max_dust_htlc_exposure(dust_outbound_balance: bool, exposure_breach_e
 		}
 		nodes[0].node.timer_tick_occurred();
 		check_added_monitors!(nodes[0], 1);
-		nodes[0].logger.assert_log_contains("lightning::ln::channel".to_string(), "Cannot afford to send new feerate at 2530 without infringing max dust htlc exposure".to_string(), 1);
+		nodes[0].logger.assert_log_contains("lightning::ln::channel", "Cannot afford to send new feerate at 2530 without infringing max dust htlc exposure", 1);
 	}
 
 	let _ = nodes[0].node.get_and_clear_pending_msg_events();

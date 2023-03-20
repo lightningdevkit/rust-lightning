@@ -104,8 +104,8 @@ fn pass_along_path(path: &Vec<MessengerNode>, expected_path_id: Option<[u8; 32]>
 		node.messenger.handle_onion_message(&prev_node.get_node_pk(), &onion_msg);
 		if idx == num_nodes - 1 {
 			node.logger.assert_log_contains(
-				"lightning::onion_message::messenger".to_string(),
-				format!("Received an onion message with path_id: {:02x?}", expected_path_id).to_string(), 1);
+				"lightning::onion_message::messenger",
+				&format!("Received an onion message with path_id: {:02x?}", expected_path_id), 1);
 		}
 		prev_node = node;
 	}
@@ -218,8 +218,8 @@ fn reply_path() {
 	pass_along_path(&nodes, None);
 	// Make sure the last node successfully decoded the reply path.
 	nodes[3].logger.assert_log_contains(
-		"lightning::onion_message::messenger".to_string(),
-		format!("Received an onion message with path_id None and a reply_path").to_string(), 1);
+		"lightning::onion_message::messenger",
+		&format!("Received an onion message with path_id None and a reply_path"), 1);
 
 	// Destination::BlindedPath
 	let blinded_path = BlindedPath::new(&[nodes[1].get_node_pk(), nodes[2].get_node_pk(), nodes[3].get_node_pk()], &*nodes[3].keys_manager, &secp_ctx).unwrap();
@@ -228,8 +228,8 @@ fn reply_path() {
 	nodes[0].messenger.send_onion_message(&[], Destination::BlindedPath(blinded_path), OnionMessageContents::Custom(test_msg), Some(reply_path)).unwrap();
 	pass_along_path(&nodes, None);
 	nodes[3].logger.assert_log_contains(
-		"lightning::onion_message::messenger".to_string(),
-		format!("Received an onion message with path_id None and a reply_path").to_string(), 2);
+		"lightning::onion_message::messenger",
+		&format!("Received an onion message with path_id None and a reply_path"), 2);
 }
 
 #[test]

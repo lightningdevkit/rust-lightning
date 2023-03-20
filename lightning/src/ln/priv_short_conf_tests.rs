@@ -423,7 +423,7 @@ fn test_inbound_scid_privacy() {
 	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
 	commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, true, true);
 
-	nodes[1].logger.assert_log_regex("lightning::ln::channelmanager".to_string(), regex::Regex::new(r"Refusing to forward over real channel SCID as our counterparty requested").unwrap(), 1);
+	nodes[1].logger.assert_log_regex("lightning::ln::channelmanager", regex::Regex::new(r"Refusing to forward over real channel SCID as our counterparty requested").unwrap(), 1);
 
 	let mut updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 	nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &updates.update_fail_htlcs[0]);
