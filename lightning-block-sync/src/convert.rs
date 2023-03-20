@@ -5,10 +5,8 @@ use crate::{BlockHeaderData, BlockSourceError};
 use bitcoin::blockdata::block::{Block, BlockHeader};
 use bitcoin::consensus::encode;
 use bitcoin::hash_types::{BlockHash, TxMerkleNode, Txid};
-use bitcoin::hashes::hex::{FromHex, ToHex};
+use bitcoin::hashes::hex::FromHex;
 use bitcoin::Transaction;
-
-use serde::Deserialize;
 
 use serde_json;
 
@@ -46,7 +44,7 @@ impl TryInto<BlockHeaderData> for JsonResponse {
 	type Error = std::io::Error;
 
 	fn try_into(self) -> std::io::Result<BlockHeaderData> {
-		let mut header = match self.0 {
+		let header = match self.0 {
 			serde_json::Value::Array(mut array) if !array.is_empty() => array.drain(..).next().unwrap(),
 			serde_json::Value::Object(_) => self.0,
 			_ => return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "unexpected JSON type")),
@@ -57,51 +55,34 @@ impl TryInto<BlockHeaderData> for JsonResponse {
 		}
 
 		// Add an empty previousblockhash for the genesis block.
-		if let None = header.get("previousblockhash") {
-			let hash: BlockHash = BlockHash::all_zeros();
-			header.as_object_mut().unwrap().insert("previousblockhash".to_string(), serde_json::json!(hash.to_hex()));
-		}
-
-		match serde_json::from_value::<GetHeaderResponse>(header) {
-			Err(_) => Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid header response")),
-			Ok(response) => match response.try_into() {
-				Err(_) => Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid header data")),
-				Ok(header) => Ok(header),
-			},
+		match header.try_into() {
+			Err(_) => Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid header data")),
+			Ok(header) => Ok(header),
 		}
 	}
 }
 
-/// Response data from `getblockheader` RPC and `headers` REST requests.
-#[derive(Deserialize)]
-struct GetHeaderResponse {
-	pub version: i32,
-	pub merkleroot: String,
-	pub time: u32,
-	pub nonce: u32,
-	pub bits: String,
-	pub previousblockhash: String,
+impl TryFrom<serde_json::Value> for BlockHeaderData {
+	type Error = ();
 
-	pub chainwork: String,
-	pub height: u32,
-}
+	fn try_from(response: serde_json::Value) -> Result<Self, ()> {
+		macro_rules! get_field { ($name: expr, $ty_access: tt) => {
+			response.get($name).ok_or(())?.$ty_access().ok_or(())?
+		} }
 
-/// Converts from `GetHeaderResponse` to `BlockHeaderData`.
-impl TryFrom<GetHeaderResponse> for BlockHeaderData {
-	type Error = bitcoin::hashes::hex::Error;
-
-	fn try_from(response: GetHeaderResponse) -> Result<Self, bitcoin::hashes::hex::Error> {
 		Ok(BlockHeaderData {
 			header: BlockHeader {
-				version: response.version,
-				prev_blockhash: BlockHash::from_hex(&response.previousblockhash)?,
-				merkle_root: TxMerkleNode::from_hex(&response.merkleroot)?,
-				time: response.time,
-				bits: u32::from_be_bytes(<[u8; 4]>::from_hex(&response.bits)?),
-				nonce: response.nonce,
+				version: get_field!("version", as_i64).try_into().map_err(|_| ())?,
+				prev_blockhash: if let Some(hash_str) = response.get("previousblockhash") {
+						BlockHash::from_hex(hash_str.as_str().ok_or(())?).map_err(|_| ())?
+					} else { BlockHash::all_zeros() },
+				merkle_root: TxMerkleNode::from_hex(get_field!("merkleroot", as_str)).map_err(|_| ())?,
+				time: get_field!("time", as_u64).try_into().map_err(|_| ())?,
+				bits: u32::from_be_bytes(<[u8; 4]>::from_hex(get_field!("bits", as_str)).map_err(|_| ())?),
+				nonce: get_field!("nonce", as_u64).try_into().map_err(|_| ())?,
 			},
-			chainwork: hex_to_uint256(&response.chainwork)?,
-			height: response.height,
+			chainwork: hex_to_uint256(get_field!("chainwork", as_str)).map_err(|_| ())?,
+			height: get_field!("height", as_u64).try_into().map_err(|_| ())?,
 		})
 	}
 }
@@ -250,6 +231,7 @@ pub(crate) mod tests {
 	use super::*;
 	use bitcoin::blockdata::constants::genesis_block;
 	use bitcoin::hashes::Hash;
+	use bitcoin::hashes::hex::ToHex;
 	use bitcoin::network::constants::Network;
 	use serde_json::value::Number;
 	use serde_json::Value;
@@ -308,7 +290,7 @@ pub(crate) mod tests {
 		match TryInto::<BlockHeaderData>::try_into(response) {
 			Err(e) => {
 				assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
-				assert_eq!(e.get_ref().unwrap().to_string(), "invalid header response");
+				assert_eq!(e.get_ref().unwrap().to_string(), "invalid header data");
 			},
 			Ok(_) => panic!("Expected error"),
 		}
