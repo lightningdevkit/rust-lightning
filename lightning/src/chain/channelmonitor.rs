@@ -4012,7 +4012,7 @@ mod tests {
 	use crate::ln::functional_test_utils::*;
 	use crate::ln::script::ShutdownScript;
 	use crate::util::errors::APIError;
-	use crate::util::events::{ClosureReason, MessageSendEventsProvider};
+	use crate::util::events::ClosureReason;
 	use crate::util::test_utils::{TestLogger, TestBroadcaster, TestFeeEstimator};
 	use crate::util::ser::{ReadableArgs, Writeable};
 	use crate::sync::{Arc, Mutex};

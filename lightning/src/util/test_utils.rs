@@ -642,10 +642,10 @@ impl TestLogger {
 	/// 1. belongs to the specified module and
 	/// 2. contains `line` in it.
 	/// And asserts if the number of occurrences is the same with the given `count`
-	pub fn assert_log_contains(&self, module: String, line: String, count: usize) {
+	pub fn assert_log_contains(&self, module: &str, line: &str, count: usize) {
 		let log_entries = self.lines.lock().unwrap();
 		let l: usize = log_entries.iter().filter(|&(&(ref m, ref l), _c)| {
-			m == &module && l.contains(line.as_str())
+			m == module && l.contains(line)
 		}).map(|(_, c) | { c }).sum();
 		assert_eq!(l, count)
 	}
@@ -654,10 +654,10 @@ impl TestLogger {
 	/// 1. belong to the specified module and
 	/// 2. match the given regex pattern.
 	/// Assert that the number of occurrences equals the given `count`
-	pub fn assert_log_regex(&self, module: String, pattern: regex::Regex, count: usize) {
+	pub fn assert_log_regex(&self, module: &str, pattern: regex::Regex, count: usize) {
 		let log_entries = self.lines.lock().unwrap();
 		let l: usize = log_entries.iter().filter(|&(&(ref m, ref l), _c)| {
-			m == &module && pattern.is_match(&l)
+			m == module && pattern.is_match(&l)
 		}).map(|(_, c) | { c }).sum();
 		assert_eq!(l, count)
 	}
