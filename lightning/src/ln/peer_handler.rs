@@ -284,7 +284,7 @@ pub struct MessageHandler<CM: Deref, RM: Deref, OM: Deref> where
 /// to a remote host. You will need to be able to generate multiple of these which meet Eq and
 /// implement Hash to meet the PeerManager API.
 ///
-/// For efficiency, Clone should be relatively cheap for this type.
+/// For efficiency, [`Clone`] should be relatively cheap for this type.
 ///
 /// Two descriptors may compare equal (by [`cmp::Eq`] and [`hash::Hash`]) as long as the original
 /// has been disconnected, the [`PeerManager`] has been informed of the disconnection (either by it
@@ -547,10 +547,10 @@ pub type SimpleRefPeerManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, 'i, 'j, 'k, 'l, 'm
 /// [`PeerManager`] functions related to the same connection must occur only in serial, making new
 /// calls only after previous ones have returned.
 ///
-/// Rather than using a plain PeerManager, it is preferable to use either a SimpleArcPeerManager
-/// a SimpleRefPeerManager, for conciseness. See their documentation for more details, but
-/// essentially you should default to using a SimpleRefPeerManager, and use a
-/// SimpleArcPeerManager when you require a PeerManager with a static lifetime, such as when
+/// Rather than using a plain [`PeerManager`], it is preferable to use either a [`SimpleArcPeerManager`]
+/// a [`SimpleRefPeerManager`], for conciseness. See their documentation for more details, but
+/// essentially you should default to using a [`SimpleRefPeerManager`], and use a
+/// [`SimpleArcPeerManager`] when you require a `PeerManager` with a static lifetime, such as when
 /// you're using lightning-net-tokio.
 ///
 /// [`read_event`]: PeerManager::read_event
@@ -638,7 +638,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, OM: Deref, L: Deref, NS: Deref> Pe
 	/// `OnionMessageHandler`. No routing message handler is used and network graph messages are
 	/// ignored.
 	///
-	/// ephemeral_random_data is used to derive per-connection ephemeral keys and must be
+	/// `ephemeral_random_data` is used to derive per-connection ephemeral keys and must be
 	/// cryptographically secure random bytes.
 	///
 	/// `current_time` is used as an always-increasing counter that survives across restarts and is
@@ -670,7 +670,7 @@ impl<Descriptor: SocketDescriptor, RM: Deref, L: Deref, NS: Deref> PeerManager<D
 	/// timestamp, however if it is not available a persistent counter that increases once per
 	/// minute should suffice.
 	///
-	/// ephemeral_random_data is used to derive per-connection ephemeral keys and must be
+	/// `ephemeral_random_data` is used to derive per-connection ephemeral keys and must be
 	/// cryptographically secure random bytes.
 	///
 	/// (C-not exported) as we can't export a PeerManager with a dummy channel handler
@@ -732,8 +732,9 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 		CMH::Target: CustomMessageHandler,
 		NS::Target: NodeSigner
 {
-	/// Constructs a new PeerManager with the given message handlers and node_id secret key
-	/// ephemeral_random_data is used to derive per-connection ephemeral keys and must be
+	/// Constructs a new `PeerManager` with the given message handlers.
+	///
+	/// `ephemeral_random_data` is used to derive per-connection ephemeral keys and must be
 	/// cryptographically secure random bytes.
 	///
 	/// `current_time` is used as an always-increasing counter that survives across restarts and is
@@ -806,9 +807,9 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 	/// Returns a small number of bytes to send to the remote node (currently always 50).
 	///
 	/// Panics if descriptor is duplicative with some other descriptor which has not yet been
-	/// [`socket_disconnected()`].
+	/// [`socket_disconnected`].
 	///
-	/// [`socket_disconnected()`]: PeerManager::socket_disconnected
+	/// [`socket_disconnected`]: PeerManager::socket_disconnected
 	pub fn new_outbound_connection(&self, their_node_id: PublicKey, descriptor: Descriptor, remote_network_address: Option<NetAddress>) -> Result<Vec<u8>, PeerHandleError> {
 		let mut peer_encryptor = PeerChannelEncryptor::new_outbound(their_node_id.clone(), self.get_ephemeral_key());
 		let res = peer_encryptor.get_act_one(&self.secp_ctx).to_vec();
@@ -863,9 +864,9 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 	/// the connection immediately.
 	///
 	/// Panics if descriptor is duplicative with some other descriptor which has not yet been
-	/// [`socket_disconnected()`].
+	/// [`socket_disconnected`].
 	///
-	/// [`socket_disconnected()`]: PeerManager::socket_disconnected
+	/// [`socket_disconnected`]: PeerManager::socket_disconnected
 	pub fn new_inbound_connection(&self, descriptor: Descriptor, remote_network_address: Option<NetAddress>) -> Result<(), PeerHandleError> {
 		let peer_encryptor = PeerChannelEncryptor::new_inbound(&self.node_signer);
 		let pending_read_buffer = [0; 50].to_vec(); // Noise act one is 50 bytes
@@ -1011,7 +1012,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 	/// May call [`send_data`] on the descriptor passed in (or an equal descriptor) before
 	/// returning. Thus, be very careful with reentrancy issues! The invariants around calling
 	/// [`write_buffer_space_avail`] in case a write did not fully complete must still hold - be
-	/// ready to call `[write_buffer_space_avail`] again if a write call generated here isn't
+	/// ready to call [`write_buffer_space_avail`] again if a write call generated here isn't
 	/// sufficient!
 	///
 	/// [`send_data`]: SocketDescriptor::send_data

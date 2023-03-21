@@ -861,7 +861,7 @@ mod tests {
 		// 0085 3d00000000000000000000000000000000000000000000000000000000000000 0900000000000000000000000000000000000000000000000000000000000000 020b00000000000000000000000000000000000000000000000000000000000000 03000000000000000000000000000000 - revoke_and_ack and mac
 		//
 		// 07 - process the now-pending HTLC forward
-		// - client now sends id 1 update_add_htlc and commitment_signed (CHECK 7: SendHTLCs event for node 03020000 with 1 HTLCs for channel 3f000000)
+		// - client now sends id 1 update_add_htlc and commitment_signed (CHECK 7: UpdateHTLCs event for node 03020000 with 1 HTLCs for channel 3f000000)
 		//
 		// - we respond with commitment_signed then revoke_and_ack (a weird, but valid, order)
 		// 030112 - inbound read from peer id 1 of len 18
