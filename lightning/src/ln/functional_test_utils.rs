@@ -1239,24 +1239,23 @@ macro_rules! check_warn_msg {
 
 /// Check that a channel's closing channel update has been broadcasted, and optionally
 /// check whether an error message event has occurred.
-pub fn check_closed_broadcast(node: &Node, with_error_msg: bool) -> Option<msgs::ErrorMessage> {
+pub fn check_closed_broadcast(node: &Node, num_channels: usize, with_error_msg: bool) -> Vec<msgs::ErrorMessage> {
 	let msg_events = node.node.get_and_clear_pending_msg_events();
-	assert_eq!(msg_events.len(), if with_error_msg { 2 } else { 1 });
-	match msg_events[0] {
-		MessageSendEvent::BroadcastChannelUpdate { ref msg } => {
-			assert_eq!(msg.contents.flags & 2, 2);
-		},
-		_ => panic!("Unexpected event"),
-	}
-	if with_error_msg {
-		match msg_events[1] {
+	assert_eq!(msg_events.len(), if with_error_msg { num_channels * 2 } else { num_channels });
+	msg_events.into_iter().filter_map(|msg_event| {
+		match msg_event {
+			MessageSendEvent::BroadcastChannelUpdate { ref msg } => {
+				assert_eq!(msg.contents.flags & 2, 2);
+				None
+			},
 			MessageSendEvent::HandleError { action: msgs::ErrorAction::SendErrorMessage { ref msg }, node_id: _ } => {
+				assert!(with_error_msg);
 				// TODO: Check node_id
 				Some(msg.clone())
 			},
 			_ => panic!("Unexpected event"),
 		}
-	} else { None }
+	}).collect()
 }
 
 /// Check that a channel's closing channel update has been broadcasted, and optionally
@@ -1266,7 +1265,7 @@ pub fn check_closed_broadcast(node: &Node, with_error_msg: bool) -> Option<msgs:
 #[macro_export]
 macro_rules! check_closed_broadcast {
 	($node: expr, $with_error_msg: expr) => {
-		$crate::ln::functional_test_utils::check_closed_broadcast(&$node, $with_error_msg)
+		$crate::ln::functional_test_utils::check_closed_broadcast(&$node, 1, $with_error_msg).pop()
 	}
 }
 

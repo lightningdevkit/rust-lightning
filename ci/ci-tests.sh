@@ -89,3 +89,8 @@ if [ "$RUSTC_MINOR_VERSION" -gt 55 ]; then
 	cargo test --verbose --color always
 	popd
 fi
+
+echo -e "\n\nTest anchors builds"
+pushd lightning
+RUSTFLAGS="$RUSTFLAGS --cfg=anchors" cargo test --verbose --color always -p lightning
+popd

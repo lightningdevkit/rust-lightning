@@ -256,7 +256,7 @@ impl_writeable_tlv_based_enum_upgradable!(HTLCDestination,
 
 #[cfg(anchors)]
 /// A descriptor used to sign for a commitment transaction's anchor output.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AnchorDescriptor {
 	/// A unique identifier used along with `channel_value_satoshis` to re-derive the
 	/// [`InMemorySigner`] required to sign `input`.
@@ -276,7 +276,7 @@ pub struct AnchorDescriptor {
 
 #[cfg(anchors)]
 /// A descriptor used to sign for a commitment transaction's HTLC output.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HTLCDescriptor {
 	/// A unique identifier used along with `channel_value_satoshis` to re-derive the
 	/// [`InMemorySigner`] required to sign `input`.
@@ -290,10 +290,10 @@ pub struct HTLCDescriptor {
 	/// [`InMemorySigner`]: crate::chain::keysinterface::InMemorySigner
 	pub channel_value_satoshis: u64,
 	/// The necessary channel parameters that need to be provided to the re-derived
-	/// [`InMemorySigner`] through [`BaseSign::provide_channel_parameters`].
+	/// [`InMemorySigner`] through [`ChannelSigner::provide_channel_parameters`].
 	///
 	/// [`InMemorySigner`]: crate::chain::keysinterface::InMemorySigner
-	/// [`BaseSign::provide_channel_parameters`]: crate::chain::keysinterface::BaseSign::provide_channel_parameters
+	/// [`ChannelSigner::provide_channel_parameters`]: crate::chain::keysinterface::ChannelSigner::provide_channel_parameters
 	pub channel_parameters: ChannelTransactionParameters,
 	/// The txid of the commitment transaction in which the HTLC output lives.
 	pub commitment_txid: Txid,
@@ -369,7 +369,7 @@ impl HTLCDescriptor {
 
 #[cfg(anchors)]
 /// Represents the different types of transactions, originating from LDK, to be bumped.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BumpTransactionEvent {
 	/// Indicates that a channel featuring anchor outputs is to be closed by broadcasting the local
 	/// commitment transaction. Since commitment transactions have a static feerate pre-agreed upon,
@@ -387,7 +387,7 @@ pub enum BumpTransactionEvent {
 	/// child anchor transaction. To sign its anchor input, an [`InMemorySigner`] should be
 	/// re-derived through [`KeysManager::derive_channel_keys`] with the help of
 	/// [`AnchorDescriptor::channel_keys_id`] and [`AnchorDescriptor::channel_value_satoshis`]. The
-	/// anchor input signature can be computed with [`BaseSign::sign_holder_anchor_input`],
+	/// anchor input signature can be computed with [`EcdsaChannelSigner::sign_holder_anchor_input`],
 	/// which can then be provided to [`build_anchor_input_witness`] along with the `funding_pubkey`
 	/// to obtain the full witness required to spend.
 	///
@@ -410,7 +410,7 @@ pub enum BumpTransactionEvent {
 	///
 	/// [`InMemorySigner`]: crate::chain::keysinterface::InMemorySigner
 	/// [`KeysManager::derive_channel_keys`]: crate::chain::keysinterface::KeysManager::derive_channel_keys
-	/// [`BaseSign::sign_holder_anchor_input`]: crate::chain::keysinterface::BaseSign::sign_holder_anchor_input
+	/// [`EcdsaChannelSigner::sign_holder_anchor_input`]: crate::chain::keysinterface::EcdsaChannelSigner::sign_holder_anchor_input
 	/// [`build_anchor_input_witness`]: crate::ln::chan_utils::build_anchor_input_witness
 	ChannelClose {
 		/// The target feerate that the transaction package, which consists of the commitment
@@ -444,7 +444,7 @@ pub enum BumpTransactionEvent {
 	/// HTLC transaction. To sign HTLC inputs, an [`InMemorySigner`] should be re-derived through
 	/// [`KeysManager::derive_channel_keys`] with the help of `channel_keys_id` and
 	/// `channel_value_satoshis`. Each HTLC input's signature can be computed with
-	/// [`BaseSign::sign_holder_htlc_transaction`], which can then be provided to
+	/// [`EcdsaChannelSigner::sign_holder_htlc_transaction`], which can then be provided to
 	/// [`HTLCDescriptor::tx_input_witness`] to obtain the fully signed witness required to spend.
 	///
 	/// It is possible to receive more than one instance of this event if a valid HTLC transaction
@@ -459,10 +459,13 @@ pub enum BumpTransactionEvent {
 	///
 	/// [`InMemorySigner`]: crate::chain::keysinterface::InMemorySigner
 	/// [`KeysManager::derive_channel_keys`]: crate::chain::keysinterface::KeysManager::derive_channel_keys
-	/// [`BaseSign::sign_holder_htlc_transaction`]: crate::chain::keysinterface::BaseSign::sign_holder_htlc_transaction
+	/// [`EcdsaChannelSigner::sign_holder_htlc_transaction`]: crate::chain::keysinterface::EcdsaChannelSigner::sign_holder_htlc_transaction
 	/// [`HTLCDescriptor::tx_input_witness`]: HTLCDescriptor::tx_input_witness
 	HTLCResolution {
+		/// The target feerate that the resulting HTLC transaction must meet.
 		target_feerate_sat_per_1000_weight: u32,
+		/// The set of pending HTLCs on the confirmed commitment that need to be claimed, preferably
+		/// by the same transaction.
 		htlc_descriptors: Vec<HTLCDescriptor>,
 	},
 }

@@ -811,7 +811,7 @@ pub fn build_anchor_input_witness(funding_key: &PublicKey, funding_sig: &Signatu
 ///
 /// Normally, this is converted to the broadcaster/countersignatory-organized DirectedChannelTransactionParameters
 /// before use, via the as_holder_broadcastable and as_counterparty_broadcastable functions.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChannelTransactionParameters {
 	/// Holder public keys
 	pub holder_pubkeys: ChannelPublicKeys,
@@ -835,7 +835,7 @@ pub struct ChannelTransactionParameters {
 }
 
 /// Late-bound per-channel counterparty data used to build transactions.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CounterpartyChannelTransactionParameters {
 	/// Counter-party public keys
 	pub pubkeys: ChannelPublicKeys,
