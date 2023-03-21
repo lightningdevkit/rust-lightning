@@ -321,13 +321,12 @@ impl Refund {
 		self.contents.payer_note.as_ref().map(|payer_note| PrintableString(payer_note.as_str()))
 	}
 
-	/// Creates an [`Invoice`] for the refund with the given required fields and using the
+	/// Creates an [`InvoiceBuilder`] for the refund with the given required fields and using the
 	/// [`Duration`] since [`std::time::SystemTime::UNIX_EPOCH`] as the creation time.
 	///
 	/// See [`Refund::respond_with_no_std`] for further details where the aforementioned creation
 	/// time is used for the `created_at` parameter.
 	///
-	/// [`Invoice`]: crate::offers::invoice::Invoice
 	/// [`Duration`]: core::time::Duration
 	#[cfg(feature = "std")]
 	pub fn respond_with(
@@ -341,7 +340,7 @@ impl Refund {
 		self.respond_with_no_std(payment_paths, payment_hash, signing_pubkey, created_at)
 	}
 
-	/// Creates an [`Invoice`] for the refund with the given required fields.
+	/// Creates an [`InvoiceBuilder`] for the refund with the given required fields.
 	///
 	/// Unless [`InvoiceBuilder::relative_expiry`] is set, the invoice will expire two hours after
 	/// `created_at`, which is used to set [`Invoice::created_at`]. Useful for `no-std` builds where
@@ -360,7 +359,6 @@ impl Refund {
 	///
 	/// Errors if the request contains unknown required features.
 	///
-	/// [`Invoice`]: crate::offers::invoice::Invoice
 	/// [`Invoice::created_at`]: crate::offers::invoice::Invoice::created_at
 	pub fn respond_with_no_std(
 		&self, payment_paths: Vec<(BlindedPath, BlindedPayInfo)>, payment_hash: PaymentHash,

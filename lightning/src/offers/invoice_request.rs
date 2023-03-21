@@ -459,13 +459,12 @@ impl InvoiceRequest {
 		self.signature
 	}
 
-	/// Creates an [`Invoice`] for the request with the given required fields and using the
+	/// Creates an [`InvoiceBuilder`] for the request with the given required fields and using the
 	/// [`Duration`] since [`std::time::SystemTime::UNIX_EPOCH`] as the creation time.
 	///
 	/// See [`InvoiceRequest::respond_with_no_std`] for further details where the aforementioned
 	/// creation time is used for the `created_at` parameter.
 	///
-	/// [`Invoice`]: crate::offers::invoice::Invoice
 	/// [`Duration`]: core::time::Duration
 	#[cfg(feature = "std")]
 	pub fn respond_with(
@@ -478,7 +477,7 @@ impl InvoiceRequest {
 		self.respond_with_no_std(payment_paths, payment_hash, created_at)
 	}
 
-	/// Creates an [`Invoice`] for the request with the given required fields.
+	/// Creates an [`InvoiceBuilder`] for the request with the given required fields.
 	///
 	/// Unless [`InvoiceBuilder::relative_expiry`] is set, the invoice will expire two hours after
 	/// `created_at`, which is used to set [`Invoice::created_at`]. Useful for `no-std` builds where
@@ -494,7 +493,6 @@ impl InvoiceRequest {
 	///
 	/// Errors if the request contains unknown required features.
 	///
-	/// [`Invoice`]: crate::offers::invoice::Invoice
 	/// [`Invoice::created_at`]: crate::offers::invoice::Invoice::created_at
 	pub fn respond_with_no_std(
 		&self, payment_paths: Vec<(BlindedPath, BlindedPayInfo)>, payment_hash: PaymentHash,

@@ -484,8 +484,8 @@ impl Offer {
 		Ok(InvoiceRequestBuilder::deriving_metadata(self, payer_id, expanded_key, entropy_source))
 	}
 
-	/// Creates an [`InvoiceRequest`] for the offer with the given `metadata` and `payer_id`, which
-	/// will be reflected in the `Invoice` response.
+	/// Creates an [`InvoiceRequestBuilder`] for the offer with the given `metadata` and `payer_id`,
+	/// which will be reflected in the `Invoice` response.
 	///
 	/// The `metadata` is useful for including information about the derivation of `payer_id` such
 	/// that invoice response handling can be stateless. Also serves as payer-provided entropy while
