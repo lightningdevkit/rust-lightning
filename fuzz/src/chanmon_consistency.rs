@@ -41,7 +41,7 @@ use lightning::chain::keysinterface::{KeyMaterial, InMemorySigner, Recipient, En
 use lightning::events;
 use lightning::events::MessageSendEventsProvider;
 use lightning::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
-use lightning::ln::channelmanager::{ChainParameters, ChannelDetails, ChannelManager, PaymentSendFailure, ChannelManagerReadArgs, PaymentId};
+use lightning::ln::channelmanager::{ChainParameters, ChannelDetails, ChannelManager, PaymentSendFailure, ChannelManagerReadArgs, PaymentId, RecipientOnionFields};
 use lightning::ln::channel::FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE;
 use lightning::ln::msgs::{self, CommitmentUpdate, ChannelMessageHandler, DecodeError, UpdateAddHTLC, Init};
 use lightning::ln::script::ShutdownScript;
@@ -351,7 +351,7 @@ fn send_payment(source: &ChanMan, dest: &ChanMan, dest_chan_id: u64, amt: u64, p
 	let mut payment_id = [0; 32];
 	payment_id[0..8].copy_from_slice(&payment_idx.to_ne_bytes());
 	*payment_idx += 1;
-	if let Err(err) = source.send_payment(&Route {
+	if let Err(err) = source.send_payment_with_route(&Route {
 		paths: vec![vec![RouteHop {
 			pubkey: dest.get_our_node_id(),
 			node_features: dest.node_features(),
@@ -361,7 +361,7 @@ fn send_payment(source: &ChanMan, dest: &ChanMan, dest_chan_id: u64, amt: u64, p
 			cltv_expiry_delta: 200,
 		}]],
 		payment_params: None,
-	}, payment_hash, &Some(payment_secret), PaymentId(payment_id)) {
+	}, payment_hash, RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_id)) {
 		check_payment_err(err);
 		false
 	} else { true }
@@ -373,7 +373,7 @@ fn send_hop_payment(source: &ChanMan, middle: &ChanMan, middle_chan_id: u64, des
 	let mut payment_id = [0; 32];
 	payment_id[0..8].copy_from_slice(&payment_idx.to_ne_bytes());
 	*payment_idx += 1;
-	if let Err(err) = source.send_payment(&Route {
+	if let Err(err) = source.send_payment_with_route(&Route {
 		paths: vec![vec![RouteHop {
 			pubkey: middle.get_our_node_id(),
 			node_features: middle.node_features(),
@@ -390,7 +390,7 @@ fn send_hop_payment(source: &ChanMan, middle: &ChanMan, middle_chan_id: u64, des
 			cltv_expiry_delta: 200,
 		}]],
 		payment_params: None,
-	}, payment_hash, &Some(payment_secret), PaymentId(payment_id)) {
+	}, payment_hash, RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_id)) {
 		check_payment_err(err);
 		false
 	} else { true }

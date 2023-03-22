@@ -664,13 +664,13 @@ mod test {
 	use crate::{Currency, Description, InvoiceDescription, SignOrCreationError, CreationError};
 	use bitcoin_hashes::{Hash, sha256};
 	use bitcoin_hashes::sha256::Hash as Sha256;
-	use lightning::chain::keysinterface::{EntropySource, PhantomKeysManager};
+	use lightning::chain::keysinterface::PhantomKeysManager;
 	use lightning::events::{MessageSendEvent, MessageSendEventsProvider, Event};
 	use lightning::ln::{PaymentPreimage, PaymentHash};
-	use lightning::ln::channelmanager::{PhantomRouteHints, MIN_FINAL_CLTV_EXPIRY_DELTA, PaymentId};
+	use lightning::ln::channelmanager::{PhantomRouteHints, MIN_FINAL_CLTV_EXPIRY_DELTA, PaymentId, RecipientOnionFields, Retry};
 	use lightning::ln::functional_test_utils::*;
 	use lightning::ln::msgs::ChannelMessageHandler;
-	use lightning::routing::router::{PaymentParameters, RouteParameters, find_route};
+	use lightning::routing::router::{PaymentParameters, RouteParameters};
 	use lightning::util::test_utils;
 	use lightning::util::config::UserConfig;
 	use crate::utils::create_invoice_from_channelmanager_and_duration_since_epoch;
@@ -712,20 +712,12 @@ mod test {
 			payment_params,
 			final_value_msat: invoice.amount_milli_satoshis().unwrap(),
 		};
-		let first_hops = nodes[0].node.list_usable_channels();
-		let network_graph = &node_cfgs[0].network_graph;
-		let logger = test_utils::TestLogger::new();
-		let scorer = test_utils::TestScorer::new();
-		let random_seed_bytes = chanmon_cfgs[1].keys_manager.get_secure_random_bytes();
-		let route = find_route(
-			&nodes[0].node.get_our_node_id(), &route_params, network_graph,
-			Some(&first_hops.iter().collect::<Vec<_>>()), &logger, &scorer, &random_seed_bytes
-		).unwrap();
-
 		let payment_event = {
 			let mut payment_hash = PaymentHash([0; 32]);
 			payment_hash.0.copy_from_slice(&invoice.payment_hash().as_ref()[0..32]);
-			nodes[0].node.send_payment(&route, payment_hash, &Some(*invoice.payment_secret()), PaymentId(payment_hash.0)).unwrap();
+			nodes[0].node.send_payment(payment_hash,
+				RecipientOnionFields::secret_only(*invoice.payment_secret()),
+				PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
 			let mut added_monitors = nodes[0].chain_monitor.added_monitors.lock().unwrap();
 			assert_eq!(added_monitors.len(), 1);
 			added_monitors.clear();
@@ -1132,19 +1124,12 @@ mod test {
 			payment_params,
 			final_value_msat: invoice.amount_milli_satoshis().unwrap(),
 		};
-		let first_hops = nodes[0].node.list_usable_channels();
-		let network_graph = &node_cfgs[0].network_graph;
-		let logger = test_utils::TestLogger::new();
-		let scorer = test_utils::TestScorer::new();
-		let random_seed_bytes = chanmon_cfgs[1].keys_manager.get_secure_random_bytes();
-		let route = find_route(
-			&nodes[0].node.get_our_node_id(), &params, network_graph,
-			Some(&first_hops.iter().collect::<Vec<_>>()), &logger, &scorer, &random_seed_bytes
-		).unwrap();
 		let (payment_event, fwd_idx) = {
 			let mut payment_hash = PaymentHash([0; 32]);
 			payment_hash.0.copy_from_slice(&invoice.payment_hash().as_ref()[0..32]);
-			nodes[0].node.send_payment(&route, payment_hash, &Some(*invoice.payment_secret()), PaymentId(payment_hash.0)).unwrap();
+			nodes[0].node.send_payment(payment_hash,
+				RecipientOnionFields::secret_only(*invoice.payment_secret()),
+				PaymentId(payment_hash.0), params, Retry::Attempts(0)).unwrap();
 			let mut added_monitors = nodes[0].chain_monitor.added_monitors.lock().unwrap();
 			assert_eq!(added_monitors.len(), 1);
 			added_monitors.clear();
@@ -1173,7 +1158,7 @@ mod test {
 		nodes[fwd_idx].node.process_pending_htlc_forwards();
 
 		let payment_preimage_opt = if user_generated_pmt_hash { None } else { Some(payment_preimage) };
-		expect_payment_claimable!(&nodes[fwd_idx], payment_hash, payment_secret, payment_amt, payment_preimage_opt, route.paths[0].last().unwrap().pubkey);
+		expect_payment_claimable!(&nodes[fwd_idx], payment_hash, payment_secret, payment_amt, payment_preimage_opt, invoice.recover_payee_pub_key());
 		do_claim_payment_along_route(&nodes[0], &[&vec!(&nodes[fwd_idx])[..]], false, payment_preimage);
 		let events = nodes[0].node.get_and_clear_pending_events();
 		assert_eq!(events.len(), 2);

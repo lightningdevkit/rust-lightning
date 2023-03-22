@@ -77,7 +77,7 @@ use core::time::Duration;
 use core::ops::Deref;
 
 // Re-export this for use in the public API.
-pub use crate::ln::outbound_payment::{PaymentSendFailure, Retry, RetryableSendFailure};
+pub use crate::ln::outbound_payment::{PaymentSendFailure, Retry, RetryableSendFailure, RecipientOnionFields};
 
 // We hold various information about HTLC relay in the HTLC objects in Channel itself:
 //
@@ -2637,39 +2637,27 @@ where
 	/// irrevocably committed to on our end. In such a case, do NOT retry the payment with a
 	/// different route unless you intend to pay twice!
 	///
-	/// # A caution on `payment_secret`
-	///
-	/// `payment_secret` is unrelated to `payment_hash` (or [`PaymentPreimage`]) and exists to
-	/// authenticate the sender to the recipient and prevent payment-probing (deanonymization)
-	/// attacks. For newer nodes, it will be provided to you in the invoice. If you do not have one,
-	/// the [`Route`] must not contain multiple paths as multi-path payments require a
-	/// recipient-provided `payment_secret`.
-	///
-	/// If a `payment_secret` *is* provided, we assume that the invoice had the payment_secret
-	/// feature bit set (either as required or as available). If multiple paths are present in the
-	/// [`Route`], we assume the invoice had the basic_mpp feature set.
-	///
 	/// [`Event::PaymentSent`]: events::Event::PaymentSent
 	/// [`Event::PaymentFailed`]: events::Event::PaymentFailed
 	/// [`UpdateHTLCs`]: events::MessageSendEvent::UpdateHTLCs
 	/// [`PeerManager::process_events`]: crate::ln::peer_handler::PeerManager::process_events
 	/// [`ChannelMonitorUpdateStatus::InProgress`]: crate::chain::ChannelMonitorUpdateStatus::InProgress
-	pub fn send_payment(&self, route: &Route, payment_hash: PaymentHash, payment_secret: &Option<PaymentSecret>, payment_id: PaymentId) -> Result<(), PaymentSendFailure> {
+	pub fn send_payment_with_route(&self, route: &Route, payment_hash: PaymentHash, recipient_onion: RecipientOnionFields, payment_id: PaymentId) -> Result<(), PaymentSendFailure> {
 		let best_block_height = self.best_block.read().unwrap().height();
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 		self.pending_outbound_payments
-			.send_payment_with_route(route, payment_hash, payment_secret, payment_id, &self.entropy_source, &self.node_signer, best_block_height,
+			.send_payment_with_route(route, payment_hash, &recipient_onion.payment_secret, payment_id, &self.entropy_source, &self.node_signer, best_block_height,
 				|path, payment_hash, payment_secret, total_value, cur_height, payment_id, keysend_preimage, session_priv|
 				self.send_payment_along_path(path, payment_hash, payment_secret, total_value, cur_height, payment_id, keysend_preimage, session_priv))
 	}
 
 	/// Similar to [`ChannelManager::send_payment`], but will automatically find a route based on
 	/// `route_params` and retry failed payment paths based on `retry_strategy`.
-	pub fn send_payment_with_retry(&self, payment_hash: PaymentHash, payment_secret: &Option<PaymentSecret>, payment_id: PaymentId, route_params: RouteParameters, retry_strategy: Retry) -> Result<(), RetryableSendFailure> {
+	pub fn send_payment(&self, payment_hash: PaymentHash, recipient_onion: RecipientOnionFields, payment_id: PaymentId, route_params: RouteParameters, retry_strategy: Retry) -> Result<(), RetryableSendFailure> {
 		let best_block_height = self.best_block.read().unwrap().height();
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 		self.pending_outbound_payments
-			.send_payment(payment_hash, payment_secret, payment_id, retry_strategy, route_params,
+			.send_payment(payment_hash, &recipient_onion.payment_secret, payment_id, retry_strategy, route_params,
 				&self.router, self.list_usable_channels(), || self.compute_inflight_htlcs(),
 				&self.entropy_source, &self.node_signer, best_block_height, &self.logger,
 				&self.pending_events,
@@ -7927,7 +7915,7 @@ mod tests {
 	use core::sync::atomic::Ordering;
 	use crate::events::{Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, ClosureReason};
 	use crate::ln::{PaymentPreimage, PaymentHash, PaymentSecret};
-	use crate::ln::channelmanager::{inbound_payment, PaymentId, PaymentSendFailure, InterceptId};
+	use crate::ln::channelmanager::{inbound_payment, PaymentId, PaymentSendFailure, RecipientOnionFields, InterceptId};
 	use crate::ln::functional_test_utils::*;
 	use crate::ln::msgs;
 	use crate::ln::msgs::ChannelMessageHandler;
@@ -8207,7 +8195,8 @@ mod tests {
 
 		// Next, attempt a regular payment and make sure it fails.
 		let payment_secret = PaymentSecret([43; 32]);
-		nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret), PaymentId(payment_hash.0)).unwrap();
+		nodes[0].node.send_payment_with_route(&route, payment_hash,
+			RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)).unwrap();
 		check_added_monitors!(nodes[0], 1);
 		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1);
@@ -8342,7 +8331,9 @@ mod tests {
 		route.paths[1][0].short_channel_id = chan_2_id;
 		route.paths[1][1].short_channel_id = chan_4_id;
 
-		match nodes[0].node.send_payment(&route, payment_hash, &None, PaymentId(payment_hash.0)).unwrap_err() {
+		match nodes[0].node.send_payment_with_route(&route, payment_hash,
+			RecipientOnionFields::spontaneous_empty(), PaymentId(payment_hash.0))
+		.unwrap_err() {
 			PaymentSendFailure::ParameterError(APIError::APIMisuseError { ref err }) => {
 				assert!(regex::Regex::new(r"Payment secret is required for multi-path payments").unwrap().is_match(err))
 			},
@@ -8837,13 +8828,13 @@ mod tests {
 pub mod bench {
 	use crate::chain::Listen;
 	use crate::chain::chainmonitor::{ChainMonitor, Persist};
-	use crate::chain::keysinterface::{EntropySource, KeysManager, InMemorySigner};
+	use crate::chain::keysinterface::{KeysManager, InMemorySigner};
 	use crate::events::{Event, MessageSendEvent, MessageSendEventsProvider};
-	use crate::ln::channelmanager::{BestBlock, ChainParameters, ChannelManager, PaymentHash, PaymentPreimage, PaymentId};
+	use crate::ln::channelmanager::{BestBlock, ChainParameters, ChannelManager, PaymentHash, PaymentPreimage, PaymentId, RecipientOnionFields, Retry};
 	use crate::ln::functional_test_utils::*;
 	use crate::ln::msgs::{ChannelMessageHandler, Init};
 	use crate::routing::gossip::NetworkGraph;
-	use crate::routing::router::{PaymentParameters, get_route};
+	use crate::routing::router::{PaymentParameters, RouteParameters};
 	use crate::util::test_utils;
 	use crate::util::config::UserConfig;
 
@@ -8981,28 +8972,21 @@ pub mod bench {
 			_ => panic!("Unexpected event"),
 		}
 
-		let dummy_graph = NetworkGraph::new(network, &logger_a);
-
 		let mut payment_count: u64 = 0;
 		macro_rules! send_payment {
 			($node_a: expr, $node_b: expr) => {
-				let usable_channels = $node_a.list_usable_channels();
 				let payment_params = PaymentParameters::from_node_id($node_b.get_our_node_id(), TEST_FINAL_CLTV)
 					.with_features($node_b.invoice_features());
-				let scorer = test_utils::TestScorer::new();
-				let seed = [3u8; 32];
-				let keys_manager = KeysManager::new(&seed, 42, 42);
-				let random_seed_bytes = keys_manager.get_secure_random_bytes();
-				let route = get_route(&$node_a.get_our_node_id(), &payment_params, &dummy_graph.read_only(),
-					Some(&usable_channels.iter().map(|r| r).collect::<Vec<_>>()), 10_000, TEST_FINAL_CLTV, &logger_a, &scorer, &random_seed_bytes).unwrap();
-
 				let mut payment_preimage = PaymentPreimage([0; 32]);
 				payment_preimage.0[0..8].copy_from_slice(&payment_count.to_le_bytes());
 				payment_count += 1;
 				let payment_hash = PaymentHash(Sha256::hash(&payment_preimage.0[..]).into_inner());
 				let payment_secret = $node_b.create_inbound_payment_for_hash(payment_hash, None, 7200, None).unwrap();
 
-				$node_a.send_payment(&route, payment_hash, &Some(payment_secret), PaymentId(payment_hash.0)).unwrap();
+				$node_a.send_payment(payment_hash, RecipientOnionFields::secret_only(payment_secret),
+					PaymentId(payment_hash.0), RouteParameters {
+						payment_params, final_value_msat: 10_000,
+					}, Retry::Attempts(0)).unwrap();
 				let payment_event = SendEvent::from_event($node_a.get_and_clear_pending_msg_events().pop().unwrap());
 				$node_b.handle_update_add_htlc(&$node_a.get_our_node_id(), &payment_event.msgs[0]);
 				$node_b.handle_commitment_signed(&$node_a.get_our_node_id(), &payment_event.commitment_msg);

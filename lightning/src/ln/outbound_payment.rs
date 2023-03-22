@@ -310,10 +310,10 @@ impl<T: Time> Display for PaymentAttemptsUsingTime<T> {
 	}
 }
 
-/// Indicates an immediate error on [`ChannelManager::send_payment_with_retry`]. Further errors
-/// may be surfaced later via [`Event::PaymentPathFailed`] and [`Event::PaymentFailed`].
+/// Indicates an immediate error on [`ChannelManager::send_payment`]. Further errors may be
+/// surfaced later via [`Event::PaymentPathFailed`] and [`Event::PaymentFailed`].
 ///
-/// [`ChannelManager::send_payment_with_retry`]: crate::ln::channelmanager::ChannelManager::send_payment_with_retry
+/// [`ChannelManager::send_payment`]: crate::ln::channelmanager::ChannelManager::send_payment
 /// [`Event::PaymentPathFailed`]: crate::events::Event::PaymentPathFailed
 /// [`Event::PaymentFailed`]: crate::events::Event::PaymentFailed
 #[derive(Clone, Debug)]
@@ -334,11 +334,11 @@ pub enum RetryableSendFailure {
 	DuplicatePayment,
 }
 
-/// If a payment fails to send with [`ChannelManager::send_payment`], it can be in one of several
-/// states. This enum is returned as the Err() type describing which state the payment is in, see
-/// the description of individual enum states for more.
+/// If a payment fails to send with [`ChannelManager::send_payment_with_route`], it can be in one
+/// of several states. This enum is returned as the Err() type describing which state the payment
+/// is in, see the description of individual enum states for more.
 ///
-/// [`ChannelManager::send_payment`]: crate::ln::channelmanager::ChannelManager::send_payment
+/// [`ChannelManager::send_payment_with_route`]: crate::ln::channelmanager::ChannelManager::send_payment_with_route
 #[derive(Clone, Debug)]
 pub enum PaymentSendFailure {
 	/// A parameter which was passed to send_payment was invalid, preventing us from attempting to
@@ -402,6 +402,40 @@ pub enum PaymentSendFailure {
 		/// The payment id for the payment, which is now at least partially pending.
 		payment_id: PaymentId,
 	},
+}
+
+/// Information which is provided, encrypted, to the payment recipient when sending HTLCs.
+///
+/// This should generally be constructed with data communicated to us from the recipient (via a
+/// BOLT11 or BOLT12 invoice).
+#[derive(Clone)]
+pub struct RecipientOnionFields {
+	/// The [`PaymentSecret`] is an arbitrary 32 bytes provided by the recipient for us to repeat
+	/// in the onion. It is unrelated to `payment_hash` (or [`PaymentPreimage`]) and exists to
+	/// authenticate the sender to the recipient and prevent payment-probing (deanonymization)
+	/// attacks.
+	///
+	/// If you do not have one, the [`Route`] you pay over must not contain multiple paths as
+	/// multi-path payments require a recipient-provided secret.
+	pub payment_secret: Option<PaymentSecret>,
+}
+
+impl RecipientOnionFields {
+	/// Creates a [`RecipientOnionFields`] from only a [`PaymentSecret`]. This is the most common
+	/// set of onion fields for today's BOLT11 invoices - most nodes require a [`PaymentSecret`]
+	/// but do not require or provide any further data.
+	pub fn secret_only(payment_secret: PaymentSecret) -> Self {
+		Self { payment_secret: Some(payment_secret) }
+	}
+
+	/// Creates a new [`RecipientOnionFields`] with no fields. This generally does not create
+	/// payable HTLCs except for spontaneous payments, i.e. this should generally only be used for
+	/// calls to [`ChannelManager::send_spontaneous_payment`].
+	///
+	/// [`ChannelManager::send_spontaneous_payment`]: super::channelmanager::ChannelManager::send_spontaneous_payment
+	pub fn spontaneous_empty() -> Self {
+		Self { payment_secret: None }
+	}
 }
 
 pub(super) struct OutboundPayments {
