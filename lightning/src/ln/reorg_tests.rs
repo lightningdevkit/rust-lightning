@@ -17,6 +17,7 @@ use crate::ln::msgs::{ChannelMessageHandler, Init};
 use crate::util::events::{Event, MessageSendEventsProvider, ClosureReason, HTLCDestination};
 use crate::util::test_utils;
 use crate::util::ser::Writeable;
+use crate::util::string::UntrustedString;
 
 use bitcoin::blockdata::block::{Block, BlockHeader};
 use bitcoin::blockdata::script::Builder;
@@ -368,7 +369,7 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool, use_funding_
 	nodes[0].node.test_process_background_events(); // Required to free the pending background monitor update
 	check_added_monitors!(nodes[0], 1);
 	let expected_err = "Funding transaction was un-confirmed. Locked at 6 confs, now have 0 confs.";
-	check_closed_event!(nodes[1], 1, ClosureReason::CounterpartyForceClosed { peer_msg: "Channel closed because of an exception: ".to_owned() + expected_err });
+	check_closed_event!(nodes[1], 1, ClosureReason::CounterpartyForceClosed { peer_msg: UntrustedString(format!("Channel closed because of an exception: {}", expected_err)) });
 	check_closed_event!(nodes[0], 1, ClosureReason::ProcessingError { err: expected_err.to_owned() });
 	assert_eq!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 1);
 	nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().clear();

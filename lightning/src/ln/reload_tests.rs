@@ -23,6 +23,7 @@ use crate::util::errors::APIError;
 use crate::util::events::{ClosureReason, Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider};
 use crate::util::ser::{Writeable, ReadableArgs};
 use crate::util::config::UserConfig;
+use crate::util::string::UntrustedString;
 
 use bitcoin::hash_types::BlockHash;
 
@@ -566,7 +567,7 @@ fn do_test_data_loss_protect(reconnect_panicing: bool) {
 	nodes[1].node.handle_error(&nodes[0].node.get_our_node_id(), &err_msgs_0[0]);
 	assert!(nodes[1].node.list_usable_channels().is_empty());
 	check_added_monitors!(nodes[1], 1);
-	check_closed_event!(nodes[1], 1, ClosureReason::CounterpartyForceClosed { peer_msg: format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", &nodes[1].node.get_our_node_id()) });
+	check_closed_event!(nodes[1], 1, ClosureReason::CounterpartyForceClosed { peer_msg: UntrustedString(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", &nodes[1].node.get_our_node_id())) });
 	check_closed_broadcast!(nodes[1], false);
 }
 
