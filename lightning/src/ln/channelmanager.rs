@@ -286,7 +286,6 @@ pub(crate) enum HTLCSource {
 		/// doing a double-pass on route when we get a failure back
 		first_hop_htlc_msat: u64,
 		payment_id: PaymentId,
-		payment_secret: Option<PaymentSecret>,
 	},
 }
 #[allow(clippy::derive_hash_xor_eq)] // Our Hash is faithful to the data, we just don't have SecretKey::hash
@@ -297,12 +296,11 @@ impl core::hash::Hash for HTLCSource {
 				0u8.hash(hasher);
 				prev_hop_data.hash(hasher);
 			},
-			HTLCSource::OutboundRoute { path, session_priv, payment_id, payment_secret, first_hop_htlc_msat } => {
+			HTLCSource::OutboundRoute { path, session_priv, payment_id, first_hop_htlc_msat } => {
 				1u8.hash(hasher);
 				path.hash(hasher);
 				session_priv[..].hash(hasher);
 				payment_id.hash(hasher);
-				payment_secret.hash(hasher);
 				first_hop_htlc_msat.hash(hasher);
 			},
 		}
@@ -317,7 +315,6 @@ impl HTLCSource {
 			session_priv: SecretKey::from_slice(&[1; 32]).unwrap(),
 			first_hop_htlc_msat: 0,
 			payment_id: PaymentId([2; 32]),
-			payment_secret: None,
 		}
 	}
 }
@@ -2556,7 +2553,6 @@ where
 						session_priv: session_priv.clone(),
 						first_hop_htlc_msat: htlc_msat,
 						payment_id,
-						payment_secret: payment_secret.clone(),
 					}, onion_packet, &self.logger);
 				match break_chan_entry!(self, send_res, chan) {
 					Some(monitor_update) => {
@@ -6900,13 +6896,11 @@ impl Readable for HTLCSource {
 				let mut first_hop_htlc_msat: u64 = 0;
 				let mut path: Option<Vec<RouteHop>> = Some(Vec::new());
 				let mut payment_id = None;
-				let mut payment_secret = None;
 				let mut payment_params: Option<PaymentParameters> = None;
 				read_tlv_fields!(reader, {
 					(0, session_priv, required),
 					(1, payment_id, option),
 					(2, first_hop_htlc_msat, required),
-					(3, payment_secret, option),
 					(4, path, vec_type),
 					(5, payment_params, (option: ReadableArgs, 0)),
 				});
@@ -6929,7 +6923,6 @@ impl Readable for HTLCSource {
 					first_hop_htlc_msat,
 					path,
 					payment_id: payment_id.unwrap(),
-					payment_secret,
 				})
 			}
 			1 => Ok(HTLCSource::PreviousHopData(Readable::read(reader)?)),
@@ -6941,14 +6934,14 @@ impl Readable for HTLCSource {
 impl Writeable for HTLCSource {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), crate::io::Error> {
 		match self {
-			HTLCSource::OutboundRoute { ref session_priv, ref first_hop_htlc_msat, ref path, payment_id, payment_secret } => {
+			HTLCSource::OutboundRoute { ref session_priv, ref first_hop_htlc_msat, ref path, payment_id } => {
 				0u8.write(writer)?;
 				let payment_id_opt = Some(payment_id);
 				write_tlv_fields!(writer, {
 					(0, session_priv, required),
 					(1, payment_id_opt, option),
 					(2, first_hop_htlc_msat, required),
-					(3, payment_secret, option),
+					// 3 was previously used to write a PaymentSecret for the payment.
 					(4, *path, vec_type),
 					(5, None::<PaymentParameters>, option), // payment_params in LDK versions prior to 0.0.115
 				 });
@@ -7611,7 +7604,7 @@ where
 			for (_, monitor) in args.channel_monitors.iter() {
 				if id_to_peer.get(&monitor.get_funding_txo().0.to_channel_id()).is_none() {
 					for (htlc_source, (htlc, _)) in monitor.get_pending_or_resolved_outbound_htlcs() {
-						if let HTLCSource::OutboundRoute { payment_id, session_priv, path, payment_secret, .. } = htlc_source {
+						if let HTLCSource::OutboundRoute { payment_id, session_priv, path, .. } = htlc_source {
 							if path.is_empty() {
 								log_error!(args.logger, "Got an empty path for a pending payment");
 								return Err(DecodeError::InvalidValue);
@@ -7634,7 +7627,7 @@ where
 										payment_params: None,
 										session_privs: [session_priv_bytes].iter().map(|a| *a).collect(),
 										payment_hash: htlc.payment_hash,
-										payment_secret,
+										payment_secret: None, // only used for retries, and we'll never retry on startup
 										keysend_preimage: None, // only used for retries, and we'll never retry on startup
 										pending_amt_msat: path_amt,
 										pending_fee_msat: Some(path_fee),
