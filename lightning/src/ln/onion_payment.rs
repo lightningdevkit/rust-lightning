@@ -449,6 +449,7 @@ mod tests {
 			payment_hash,
 			onion_routing_packet,
 			skimmed_fee_msat: None,
+			blinding_point: None,
 		}
 	}
 
