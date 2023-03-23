@@ -1213,6 +1213,12 @@ impl Invoice {
 		self.signed_invoice.recover_payee_pub_key().expect("was checked by constructor").0
 	}
 
+	/// Returns the Duration since the Unix epoch at which the invoice expires.
+	/// Returning None if overflow occurred.
+	pub fn expires_at(&self) -> Option<Duration> {
+		self.duration_since_epoch().checked_add(self.expiry_time())
+	}
+
 	/// Returns the invoice's expiry time, if present, otherwise [`DEFAULT_EXPIRY_TIME`].
 	pub fn expiry_time(&self) -> Duration {
 		self.signed_invoice.expiry_time()
@@ -1233,6 +1239,20 @@ impl Invoice {
 			Ok(elapsed) => elapsed > expiry_time,
 			Err(_) => false,
 		}
+	}
+
+	/// Returns the Duration remaining until the invoice expires.
+	#[cfg(feature = "std")]
+	pub fn duration_until_expiry(&self) -> Duration {
+		SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)
+			.map(|now| self.expiration_remaining_from_epoch(now))
+			.unwrap_or(Duration::from_nanos(0))
+	}
+
+	/// Returns the Duration remaining until the invoice expires given the current time.
+	/// `time` is the timestamp as a duration since the Unix epoch.
+	pub fn expiration_remaining_from_epoch(&self, time: Duration) -> Duration {
+		self.expires_at().map(|x| x.checked_sub(time)).flatten().unwrap_or(Duration::from_nanos(0))
 	}
 
 	/// Returns whether the expiry time would pass at the given point in time.
