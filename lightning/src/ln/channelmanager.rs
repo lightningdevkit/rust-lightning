@@ -194,7 +194,10 @@ struct ClaimableHTLC {
 	value: u64,
 	onion_payload: OnionPayload,
 	timer_ticks: u8,
-	/// The sum total of all MPP parts
+	/// The total value received for a payment (sum of all MPP parts if the payment is a MPP).
+	/// Gets set to the amount reported when pushing [`Event::PaymentClaimable`].
+	total_value_received: Option<u64>,
+	/// The sender intended sum total of all MPP parts specified in the onion
 	total_msat: u64,
 }
 
@@ -3272,7 +3275,7 @@ where
 										panic!("short_channel_id == 0 should imply any pending_forward entries are of type Receive");
 									}
 								};
-								let claimable_htlc = ClaimableHTLC {
+								let mut claimable_htlc = ClaimableHTLC {
 									prev_hop: HTLCPreviousHopData {
 										short_channel_id: prev_short_channel_id,
 										outpoint: prev_funding_outpoint,
@@ -3282,6 +3285,7 @@ where
 									},
 									value: outgoing_amt_msat,
 									timer_ticks: 0,
+									total_value_received: None,
 									total_msat: if let Some(data) = &payment_data { data.total_msat } else { outgoing_amt_msat },
 									cltv_expiry,
 									onion_payload,
@@ -3326,7 +3330,7 @@ where
 											fail_htlc!(claimable_htlc, payment_hash);
 											continue
 										}
-										let (_, htlcs) = claimable_payments.claimable_htlcs.entry(payment_hash)
+										let (_, ref mut htlcs) = claimable_payments.claimable_htlcs.entry(payment_hash)
 											.or_insert_with(|| (purpose(), Vec::new()));
 										if htlcs.len() == 1 {
 											if let OnionPayload::Spontaneous(_) = htlcs[0].onion_payload {
@@ -3357,11 +3361,13 @@ where
 										} else if total_value == $payment_data.total_msat {
 											let prev_channel_id = prev_funding_outpoint.to_channel_id();
 											htlcs.push(claimable_htlc);
+											let amount_msat = htlcs.iter().map(|htlc| htlc.value).sum();
+											htlcs.iter_mut().for_each(|htlc| htlc.total_value_received = Some(amount_msat));
 											new_events.push(events::Event::PaymentClaimable {
 												receiver_node_id: Some(receiver_node_id),
 												payment_hash,
 												purpose: purpose(),
-												amount_msat: total_value,
+												amount_msat,
 												via_channel_id: Some(prev_channel_id),
 												via_user_channel_id: Some(prev_user_channel_id),
 											});
@@ -3415,6 +3421,8 @@ where
 												}
 												match claimable_payments.claimable_htlcs.entry(payment_hash) {
 													hash_map::Entry::Vacant(e) => {
+														let amount_msat = claimable_htlc.value;
+														claimable_htlc.total_value_received = Some(amount_msat);
 														let purpose = events::PaymentPurpose::SpontaneousPayment(preimage);
 														e.insert((purpose.clone(), vec![claimable_htlc]));
 														let prev_channel_id = prev_funding_outpoint.to_channel_id();
@@ -3960,6 +3968,7 @@ where
 		// provide the preimage, so worrying too much about the optimal handling isn't worth
 		// it.
 		let mut claimable_amt_msat = 0;
+		let mut prev_total_msat = None;
 		let mut expected_amt_msat = None;
 		let mut valid_mpp = true;
 		let mut errs = Vec::new();
@@ -3987,14 +3996,22 @@ where
 				break;
 			}
 
-			if expected_amt_msat.is_some() && expected_amt_msat != Some(htlc.total_msat) {
-				log_error!(self.logger, "Somehow ended up with an MPP payment with different total amounts - this should not be reachable!");
+			if prev_total_msat.is_some() && prev_total_msat != Some(htlc.total_msat) {
+				log_error!(self.logger, "Somehow ended up with an MPP payment with different expected total amounts - this should not be reachable!");
 				debug_assert!(false);
 				valid_mpp = false;
 				break;
 			}
+			prev_total_msat = Some(htlc.total_msat);
 
-			expected_amt_msat = Some(htlc.total_msat);
+			if expected_amt_msat.is_some() && expected_amt_msat != htlc.total_value_received {
+				log_error!(self.logger, "Somehow ended up with an MPP payment with different received total amounts - this should not be reachable!");
+				debug_assert!(false);
+				valid_mpp = false;
+				break;
+			}
+			expected_amt_msat = htlc.total_value_received;
+
 			if let OnionPayload::Spontaneous(_) = &htlc.onion_payload {
 				// We don't currently support MPP for spontaneous payments, so just check
 				// that there's one payment here and move on.
@@ -6795,6 +6812,7 @@ impl Writeable for ClaimableHTLC {
 			(1, self.total_msat, required),
 			(2, self.value, required),
 			(4, payment_data, option),
+			(5, self.total_value_received, option),
 			(6, self.cltv_expiry, required),
 			(8, keysend_preimage, option),
 		});
@@ -6808,6 +6826,7 @@ impl Readable for ClaimableHTLC {
 		let mut value = 0;
 		let mut payment_data: Option<msgs::FinalOnionHopData> = None;
 		let mut cltv_expiry = 0;
+		let mut total_value_received = None;
 		let mut total_msat = None;
 		let mut keysend_preimage: Option<PaymentPreimage> = None;
 		read_tlv_fields!(reader, {
@@ -6815,6 +6834,7 @@ impl Readable for ClaimableHTLC {
 			(1, total_msat, option),
 			(2, value, required),
 			(4, payment_data, option),
+			(5, total_value_received, option),
 			(6, cltv_expiry, required),
 			(8, keysend_preimage, option)
 		});
@@ -6842,6 +6862,7 @@ impl Readable for ClaimableHTLC {
 			prev_hop: prev_hop.0.unwrap(),
 			timer_ticks: 0,
 			value,
+			total_value_received,
 			total_msat: total_msat.unwrap(),
 			onion_payload,
 			cltv_expiry,
