@@ -1379,7 +1379,8 @@ fn test_fee_spike_violation_fails_htlc() {
 	let cur_height = nodes[1].node.best_block.read().unwrap().height() + 1;
 
 	let onion_keys = onion_utils::construct_onion_keys(&secp_ctx, &route.paths[0], &session_priv).unwrap();
-	let (onion_payloads, htlc_msat, htlc_cltv) = onion_utils::build_onion_payloads(&route.paths[0], 3460001, &Some(payment_secret), cur_height, &None).unwrap();
+	let (onion_payloads, htlc_msat, htlc_cltv) = onion_utils::build_onion_payloads(&route.paths[0],
+		3460001, RecipientOnionFields::secret_only(payment_secret), cur_height, &None).unwrap();
 	let onion_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, [0; 32], &payment_hash);
 	let msg = msgs::UpdateAddHTLC {
 		channel_id: chan.2,
@@ -1562,7 +1563,8 @@ fn test_chan_reserve_violation_inbound_htlc_outbound_channel() {
 	let session_priv = SecretKey::from_slice(&[42; 32]).unwrap();
 	let cur_height = nodes[1].node.best_block.read().unwrap().height() + 1;
 	let onion_keys = onion_utils::construct_onion_keys(&secp_ctx, &route.paths[0], &session_priv).unwrap();
-	let (onion_payloads, htlc_msat, htlc_cltv) = onion_utils::build_onion_payloads(&route.paths[0], 700_000, &Some(payment_secret), cur_height, &None).unwrap();
+	let (onion_payloads, htlc_msat, htlc_cltv) = onion_utils::build_onion_payloads(&route.paths[0],
+		700_000, RecipientOnionFields::secret_only(payment_secret), cur_height, &None).unwrap();
 	let onion_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, [0; 32], &payment_hash);
 	let msg = msgs::UpdateAddHTLC {
 		channel_id: chan.2,
@@ -1735,7 +1737,8 @@ fn test_chan_reserve_violation_inbound_htlc_inbound_chan() {
 	let session_priv = SecretKey::from_slice(&[42; 32]).unwrap();
 	let cur_height = nodes[0].node.best_block.read().unwrap().height() + 1;
 	let onion_keys = onion_utils::construct_onion_keys(&secp_ctx, &route_2.paths[0], &session_priv).unwrap();
-	let (onion_payloads, htlc_msat, htlc_cltv) = onion_utils::build_onion_payloads(&route_2.paths[0], recv_value_2, &None, cur_height, &None).unwrap();
+	let (onion_payloads, htlc_msat, htlc_cltv) = onion_utils::build_onion_payloads(
+		&route_2.paths[0], recv_value_2, RecipientOnionFields::spontaneous_empty(), cur_height, &None).unwrap();
 	let onion_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, [0; 32], &our_payment_hash_1);
 	let msg = msgs::UpdateAddHTLC {
 		channel_id: chan.2,
@@ -3378,7 +3381,8 @@ fn fail_backward_pending_htlc_upon_channel_failure() {
 		let secp_ctx = Secp256k1::new();
 		let session_priv = SecretKey::from_slice(&[42; 32]).unwrap();
 		let current_height = nodes[1].node.best_block.read().unwrap().height() + 1;
-		let (onion_payloads, _amount_msat, cltv_expiry) = onion_utils::build_onion_payloads(&route.paths[0], 50_000, &Some(payment_secret), current_height, &None).unwrap();
+		let (onion_payloads, _amount_msat, cltv_expiry) = onion_utils::build_onion_payloads(
+			&route.paths[0], 50_000, RecipientOnionFields::secret_only(payment_secret), current_height, &None).unwrap();
 		let onion_keys = onion_utils::construct_onion_keys(&secp_ctx, &route.paths[0], &session_priv).unwrap();
 		let onion_routing_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, [0; 32], &payment_hash);
 
@@ -4118,8 +4122,11 @@ fn do_test_htlc_timeout(send_partial_mpp: bool) {
 		// indicates there are more HTLCs coming.
 		let cur_height = CHAN_CONFIRM_DEPTH + 1; // route_payment calls send_payment, which adds 1 to the current height. So we do the same here to match.
 		let payment_id = PaymentId([42; 32]);
-		let session_privs = nodes[0].node.test_add_new_pending_payment(our_payment_hash, Some(payment_secret), payment_id, &route).unwrap();
-		nodes[0].node.test_send_payment_along_path(&route.paths[0], &our_payment_hash, &Some(payment_secret), 200_000, cur_height, payment_id, &None, session_privs[0]).unwrap();
+		let session_privs = nodes[0].node.test_add_new_pending_payment(our_payment_hash,
+			RecipientOnionFields::secret_only(payment_secret), payment_id, &route).unwrap();
+		nodes[0].node.test_send_payment_along_path(&route.paths[0], &our_payment_hash,
+			RecipientOnionFields::secret_only(payment_secret), 200_000, cur_height, payment_id,
+			&None, session_privs[0]).unwrap();
 		check_added_monitors!(nodes[0], 1);
 		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1);
@@ -6252,7 +6259,8 @@ fn test_update_add_htlc_bolt2_receiver_check_max_htlc_limit() {
 	let session_priv = SecretKey::from_slice(&[42; 32]).unwrap();
 	let cur_height = nodes[0].node.best_block.read().unwrap().height() + 1;
 	let onion_keys = onion_utils::construct_onion_keys(&Secp256k1::signing_only(), &route.paths[0], &session_priv).unwrap();
-	let (onion_payloads, _htlc_msat, htlc_cltv) = onion_utils::build_onion_payloads(&route.paths[0], 3999999, &Some(our_payment_secret), cur_height, &None).unwrap();
+	let (onion_payloads, _htlc_msat, htlc_cltv) = onion_utils::build_onion_payloads(
+		&route.paths[0], 3999999, RecipientOnionFields::secret_only(our_payment_secret), cur_height, &None).unwrap();
 	let onion_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, [0; 32], &our_payment_hash);
 
 	let mut msg = msgs::UpdateAddHTLC {
@@ -8033,8 +8041,10 @@ fn test_onion_value_mpp_set_calculation() {
 
 	// Send payment
 	let payment_id = PaymentId(nodes[0].keys_manager.backing.get_secure_random_bytes());
-	let onion_session_privs = nodes[0].node.test_add_new_pending_payment(our_payment_hash, Some(our_payment_secret), payment_id, &route).unwrap();
-	nodes[0].node.test_send_payment_internal(&route, our_payment_hash, &Some(our_payment_secret), None, payment_id, Some(total_msat), onion_session_privs).unwrap();
+	let onion_session_privs = nodes[0].node.test_add_new_pending_payment(our_payment_hash,
+		RecipientOnionFields::secret_only(our_payment_secret), payment_id, &route).unwrap();
+	nodes[0].node.test_send_payment_internal(&route, our_payment_hash,
+		RecipientOnionFields::secret_only(our_payment_secret), None, payment_id, Some(total_msat), onion_session_privs).unwrap();
 	check_added_monitors!(nodes[0], expected_paths.len());
 
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
@@ -8053,7 +8063,8 @@ fn test_onion_value_mpp_set_calculation() {
 			let height = nodes[0].best_block_info().1;
 			let session_priv = SecretKey::from_slice(&session_priv).unwrap();
 			let mut onion_keys = onion_utils::construct_onion_keys(&Secp256k1::new(), &route.paths[0], &session_priv).unwrap();
-			let (mut onion_payloads, _, _) = onion_utils::build_onion_payloads(&route.paths[0], 100_000, &Some(our_payment_secret), height + 1, &None).unwrap();
+			let (mut onion_payloads, _, _) = onion_utils::build_onion_payloads(&route.paths[0], 100_000,
+				RecipientOnionFields::secret_only(our_payment_secret), height + 1, &None).unwrap();
 			// Edit amt_to_forward to simulate the sender having set
 			// the final amount and the routing node taking less fee
 			onion_payloads[1].amt_to_forward = 99_000;
@@ -8132,8 +8143,10 @@ fn do_test_overshoot_mpp(msat_amounts: &[u64], total_msat: u64) {
 
 	// Send payment with manually set total_msat
 	let payment_id = PaymentId(nodes[src_idx].keys_manager.backing.get_secure_random_bytes());
-	let onion_session_privs = nodes[src_idx].node.test_add_new_pending_payment(our_payment_hash, Some(our_payment_secret), payment_id, &route).unwrap();
-	nodes[src_idx].node.test_send_payment_internal(&route, our_payment_hash, &Some(our_payment_secret), None, payment_id, Some(total_msat), onion_session_privs).unwrap();
+	let onion_session_privs = nodes[src_idx].node.test_add_new_pending_payment(our_payment_hash,
+		RecipientOnionFields::secret_only(our_payment_secret), payment_id, &route).unwrap();
+	nodes[src_idx].node.test_send_payment_internal(&route, our_payment_hash,
+		RecipientOnionFields::secret_only(our_payment_secret), None, payment_id, Some(total_msat), onion_session_privs).unwrap();
 	check_added_monitors!(nodes[src_idx], expected_paths.len());
 
 	let mut events = nodes[src_idx].node.get_and_clear_pending_msg_events();
@@ -9384,9 +9397,12 @@ fn test_inconsistent_mpp_params() {
 		// ultimately have, just not right away.
 		let mut dup_route = route.clone();
 		dup_route.paths.push(route.paths[1].clone());
-		nodes[0].node.test_add_new_pending_payment(our_payment_hash, Some(our_payment_secret), payment_id, &dup_route).unwrap()
+		nodes[0].node.test_add_new_pending_payment(our_payment_hash,
+			RecipientOnionFields::secret_only(our_payment_secret), payment_id, &dup_route).unwrap()
 	};
-	nodes[0].node.test_send_payment_along_path(&route.paths[0], &our_payment_hash, &Some(our_payment_secret), 15_000_000, cur_height, payment_id, &None, session_privs[0]).unwrap();
+	nodes[0].node.test_send_payment_along_path(&route.paths[0], &our_payment_hash,
+		RecipientOnionFields::secret_only(our_payment_secret), 15_000_000, cur_height, payment_id,
+		&None, session_privs[0]).unwrap();
 	check_added_monitors!(nodes[0], 1);
 
 	{
@@ -9396,7 +9412,8 @@ fn test_inconsistent_mpp_params() {
 	}
 	assert!(nodes[3].node.get_and_clear_pending_events().is_empty());
 
-	nodes[0].node.test_send_payment_along_path(&route.paths[1], &our_payment_hash, &Some(our_payment_secret), 14_000_000, cur_height, payment_id, &None, session_privs[1]).unwrap();
+	nodes[0].node.test_send_payment_along_path(&route.paths[1], &our_payment_hash,
+		RecipientOnionFields::secret_only(our_payment_secret), 14_000_000, cur_height, payment_id, &None, session_privs[1]).unwrap();
 	check_added_monitors!(nodes[0], 1);
 
 	{
@@ -9442,7 +9459,9 @@ fn test_inconsistent_mpp_params() {
 
 	expect_payment_failed_conditions(&nodes[0], our_payment_hash, true, PaymentFailedConditions::new().mpp_parts_remain());
 
-	nodes[0].node.test_send_payment_along_path(&route.paths[1], &our_payment_hash, &Some(our_payment_secret), 15_000_000, cur_height, payment_id, &None, session_privs[2]).unwrap();
+	nodes[0].node.test_send_payment_along_path(&route.paths[1], &our_payment_hash,
+		RecipientOnionFields::secret_only(our_payment_secret), 15_000_000, cur_height, payment_id,
+		&None, session_privs[2]).unwrap();
 	check_added_monitors!(nodes[0], 1);
 
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
