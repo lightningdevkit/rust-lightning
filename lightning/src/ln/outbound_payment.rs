@@ -417,6 +417,10 @@ pub struct RecipientOnionFields {
 	///
 	/// If you do not have one, the [`Route`] you pay over must not contain multiple paths as
 	/// multi-path payments require a recipient-provided secret.
+	///
+	/// Note that for spontaneous payments most lightning nodes do not currently support MPP
+	/// receives, thus you should generally never be providing a secret here for spontaneous
+	/// payments.
 	pub payment_secret: Option<PaymentSecret>,
 }
 

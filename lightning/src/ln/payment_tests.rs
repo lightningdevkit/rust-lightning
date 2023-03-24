@@ -1087,7 +1087,8 @@ fn claimed_send_payment_idempotent() {
 
 			// Further, if we try to send a spontaneous payment with the same payment_id it should
 			// also be rejected.
-			let send_result = nodes[0].node.send_spontaneous_payment(&route, None, payment_id);
+			let send_result = nodes[0].node.send_spontaneous_payment(
+				&route, None, RecipientOnionFields::spontaneous_empty(), payment_id);
 			match send_result {
 				Err(PaymentSendFailure::DuplicatePayment) => {},
 				_ => panic!("Unexpected send result: {:?}", send_result),
@@ -1161,7 +1162,8 @@ fn abandoned_send_payment_idempotent() {
 
 			// Further, if we try to send a spontaneous payment with the same payment_id it should
 			// also be rejected.
-			let send_result = nodes[0].node.send_spontaneous_payment(&route, None, payment_id);
+			let send_result = nodes[0].node.send_spontaneous_payment(
+				&route, None, RecipientOnionFields::spontaneous_empty(), payment_id);
 			match send_result {
 				Err(PaymentSendFailure::DuplicatePayment) => {},
 				_ => panic!("Unexpected send result: {:?}", send_result),
@@ -1671,7 +1673,9 @@ fn do_automatic_retries(test: AutoRetry) {
 		pass_along_path(&nodes[0], &[&nodes[1], &nodes[2]], amt_msat, payment_hash, Some(payment_secret), msg_events.pop().unwrap(), true, None);
 		claim_payment_along_route(&nodes[0], &[&[&nodes[1], &nodes[2]]], false, payment_preimage);
 	} else if test == AutoRetry::Spontaneous {
-		nodes[0].node.send_spontaneous_payment_with_retry(Some(payment_preimage), PaymentId(payment_hash.0), route_params, Retry::Attempts(1)).unwrap();
+		nodes[0].node.send_spontaneous_payment_with_retry(Some(payment_preimage),
+			RecipientOnionFields::spontaneous_empty(), PaymentId(payment_hash.0), route_params,
+			Retry::Attempts(1)).unwrap();
 		pass_failed_attempt_with_retry_along_path!(channel_id_2, true);
 
 		// Open a new channel with liquidity on the second hop so we can find a route for the retry

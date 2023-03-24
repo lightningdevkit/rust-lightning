@@ -2717,7 +2717,7 @@ where
 	/// Note that `route` must have exactly one path.
 	///
 	/// [`send_payment`]: Self::send_payment
-	pub fn send_spontaneous_payment(&self, route: &Route, payment_preimage: Option<PaymentPreimage>, payment_id: PaymentId) -> Result<PaymentHash, PaymentSendFailure> {
+	pub fn send_spontaneous_payment(&self, route: &Route, payment_preimage: Option<PaymentPreimage>, recipient_onion: RecipientOnionFields, payment_id: PaymentId) -> Result<PaymentHash, PaymentSendFailure> {
 		let best_block_height = self.best_block.read().unwrap().height();
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 		self.pending_outbound_payments.send_spontaneous_payment_with_route(
@@ -2734,7 +2734,7 @@ where
 	/// payments.
 	///
 	/// [`PaymentParameters::for_keysend`]: crate::routing::router::PaymentParameters::for_keysend
-	pub fn send_spontaneous_payment_with_retry(&self, payment_preimage: Option<PaymentPreimage>, payment_id: PaymentId, route_params: RouteParameters, retry_strategy: Retry) -> Result<PaymentHash, RetryableSendFailure> {
+	pub fn send_spontaneous_payment_with_retry(&self, payment_preimage: Option<PaymentPreimage>, recipient_onion: RecipientOnionFields, payment_id: PaymentId, route_params: RouteParameters, retry_strategy: Retry) -> Result<PaymentHash, RetryableSendFailure> {
 		let best_block_height = self.best_block.read().unwrap().height();
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 		self.pending_outbound_payments.send_spontaneous_payment(payment_preimage, payment_id,
@@ -8032,7 +8032,8 @@ mod tests {
 		pass_along_path(&nodes[0], &[&nodes[1]], 200_000, our_payment_hash, Some(payment_secret), events.drain(..).next().unwrap(), false, None);
 
 		// Next, send a keysend payment with the same payment_hash and make sure it fails.
-		nodes[0].node.send_spontaneous_payment(&route, Some(payment_preimage), PaymentId(payment_preimage.0)).unwrap();
+		nodes[0].node.send_spontaneous_payment(&route, Some(payment_preimage),
+			RecipientOnionFields::spontaneous_empty(), PaymentId(payment_preimage.0)).unwrap();
 		check_added_monitors!(nodes[0], 1);
 		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1);
@@ -8152,7 +8153,8 @@ mod tests {
 			&nodes[0].node.get_our_node_id(), &route_params, &nodes[0].network_graph,
 			None, nodes[0].logger, &scorer, &random_seed_bytes
 		).unwrap();
-		nodes[0].node.send_spontaneous_payment(&route, Some(payment_preimage), PaymentId(payment_preimage.0)).unwrap();
+		nodes[0].node.send_spontaneous_payment(&route, Some(payment_preimage),
+			RecipientOnionFields::spontaneous_empty(), PaymentId(payment_preimage.0)).unwrap();
 		check_added_monitors!(nodes[0], 1);
 		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1);
@@ -8185,7 +8187,8 @@ mod tests {
 			&nodes[0].node.get_our_node_id(), &route_params, &nodes[0].network_graph,
 			None, nodes[0].logger, &scorer, &random_seed_bytes
 		).unwrap();
-		let payment_hash = nodes[0].node.send_spontaneous_payment(&route, Some(payment_preimage), PaymentId(payment_preimage.0)).unwrap();
+		let payment_hash = nodes[0].node.send_spontaneous_payment(&route, Some(payment_preimage),
+			RecipientOnionFields::spontaneous_empty(), PaymentId(payment_preimage.0)).unwrap();
 		check_added_monitors!(nodes[0], 1);
 		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1);
