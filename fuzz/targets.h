@@ -13,6 +13,7 @@ void refund_deser_run(const unsigned char* data, size_t data_len);
 void router_run(const unsigned char* data, size_t data_len);
 void zbase32_run(const unsigned char* data, size_t data_len);
 void indexedmap_run(const unsigned char* data, size_t data_len);
+void onion_hop_data_run(const unsigned char* data, size_t data_len);
 void msg_accept_channel_run(const unsigned char* data, size_t data_len);
 void msg_announcement_signatures_run(const unsigned char* data, size_t data_len);
 void msg_channel_reestablish_run(const unsigned char* data, size_t data_len);
@@ -40,7 +41,6 @@ void msg_gossip_timestamp_filter_run(const unsigned char* data, size_t data_len)
 void msg_update_add_htlc_run(const unsigned char* data, size_t data_len);
 void msg_error_message_run(const unsigned char* data, size_t data_len);
 void msg_channel_update_run(const unsigned char* data, size_t data_len);
-void msg_onion_hop_data_run(const unsigned char* data, size_t data_len);
 void msg_ping_run(const unsigned char* data, size_t data_len);
 void msg_pong_run(const unsigned char* data, size_t data_len);
 void msg_channel_details_run(const unsigned char* data, size_t data_len);

@@ -2617,7 +2617,7 @@ where
 	}
 
 	fn construct_fwd_pending_htlc_info(
-		&self, msg: &msgs::UpdateAddHTLC, hop_data: msgs::OnionHopData, hop_hmac: [u8; 32],
+		&self, msg: &msgs::UpdateAddHTLC, hop_data: msgs::InboundOnionPayload, hop_hmac: [u8; 32],
 		new_packet_bytes: [u8; onion_utils::ONION_DATA_LEN], shared_secret: [u8; 32],
 		next_packet_pubkey_opt: Option<Result<PublicKey, secp256k1::Error>>
 	) -> Result<PendingHTLCInfo, InboundOnionErr> {
@@ -2626,18 +2626,18 @@ where
 			version: 0,
 			public_key: next_packet_pubkey_opt.unwrap_or(Err(secp256k1::Error::InvalidPublicKey)),
 			hop_data: new_packet_bytes,
-			hmac: hop_hmac.clone(),
+			hmac: hop_hmac,
 		};
 
-		let short_channel_id = match hop_data.format {
-			msgs::OnionHopDataFormat::NonFinalNode { short_channel_id } => short_channel_id,
-			msgs::OnionHopDataFormat::FinalNode { .. } => {
+		let (short_channel_id, amt_to_forward, outgoing_cltv_value) = match hop_data {
+			msgs::InboundOnionPayload::Forward { short_channel_id, amt_to_forward, outgoing_cltv_value } =>
+				(short_channel_id, amt_to_forward, outgoing_cltv_value),
+			msgs::InboundOnionPayload::Receive { .. } =>
 				return Err(InboundOnionErr {
 					msg: "Final Node OnionHopData provided for us as an intermediary node",
 					err_code: 0x4000 | 22,
 					err_data: Vec::new(),
-				})
-			},
+				}),
 		};
 
 		Ok(PendingHTLCInfo {
@@ -2645,23 +2645,25 @@ where
 				onion_packet: outgoing_packet,
 				short_channel_id,
 			},
-			payment_hash: msg.payment_hash.clone(),
+			payment_hash: msg.payment_hash,
 			incoming_shared_secret: shared_secret,
 			incoming_amt_msat: Some(msg.amount_msat),
-			outgoing_amt_msat: hop_data.amt_to_forward,
-			outgoing_cltv_value: hop_data.outgoing_cltv_value,
+			outgoing_amt_msat: amt_to_forward,
+			outgoing_cltv_value,
 			skimmed_fee_msat: None,
 		})
 	}
 
 	fn construct_recv_pending_htlc_info(
-		&self, hop_data: msgs::OnionHopData, shared_secret: [u8; 32], payment_hash: PaymentHash,
+		&self, hop_data: msgs::InboundOnionPayload, shared_secret: [u8; 32], payment_hash: PaymentHash,
 		amt_msat: u64, cltv_expiry: u32, phantom_shared_secret: Option<[u8; 32]>, allow_underpay: bool,
 		counterparty_skimmed_fee_msat: Option<u64>,
 	) -> Result<PendingHTLCInfo, InboundOnionErr> {
-		let (payment_data, keysend_preimage, payment_metadata) = match hop_data.format {
-			msgs::OnionHopDataFormat::FinalNode { payment_data, keysend_preimage, payment_metadata } =>
-				(payment_data, keysend_preimage, payment_metadata),
+		let (payment_data, keysend_preimage, onion_amt_msat, outgoing_cltv_value, payment_metadata) = match hop_data {
+			msgs::InboundOnionPayload::Receive {
+				payment_data, keysend_preimage, amt_msat, outgoing_cltv_value, payment_metadata, ..
+			} =>
+				(payment_data, keysend_preimage, amt_msat, outgoing_cltv_value, payment_metadata),
 			_ =>
 				return Err(InboundOnionErr {
 					err_code: 0x4000|22,
@@ -2670,7 +2672,7 @@ where
 				}),
 		};
 		// final_incorrect_cltv_expiry
-		if hop_data.outgoing_cltv_value > cltv_expiry {
+		if outgoing_cltv_value > cltv_expiry {
 			return Err(InboundOnionErr {
 				msg: "Upstream node set CLTV to less than the CLTV set by the sender",
 				err_code: 18,
@@ -2685,7 +2687,7 @@ where
 		// payment logic has enough time to fail the HTLC backward before our onchain logic triggers a
 		// channel closure (see HTLC_FAIL_BACK_BUFFER rationale).
 		let current_height: u32 = self.best_block.read().unwrap().height();
-		if (hop_data.outgoing_cltv_value as u64) <= current_height as u64 + HTLC_FAIL_BACK_BUFFER as u64 + 1 {
+		if (outgoing_cltv_value as u64) <= current_height as u64 + HTLC_FAIL_BACK_BUFFER as u64 + 1 {
 			let mut err_data = Vec::with_capacity(12);
 			err_data.extend_from_slice(&amt_msat.to_be_bytes());
 			err_data.extend_from_slice(&current_height.to_be_bytes());
@@ -2694,8 +2696,8 @@ where
 				msg: "The final CLTV expiry is too soon to handle",
 			});
 		}
-		if (!allow_underpay && hop_data.amt_to_forward > amt_msat) ||
-			(allow_underpay && hop_data.amt_to_forward >
+		if (!allow_underpay && onion_amt_msat > amt_msat) ||
+			(allow_underpay && onion_amt_msat >
 			 amt_msat.saturating_add(counterparty_skimmed_fee_msat.unwrap_or(0)))
 		{
 			return Err(InboundOnionErr {
@@ -2730,13 +2732,13 @@ where
 				payment_data,
 				payment_preimage,
 				payment_metadata,
-				incoming_cltv_expiry: hop_data.outgoing_cltv_value,
+				incoming_cltv_expiry: outgoing_cltv_value,
 			}
 		} else if let Some(data) = payment_data {
 			PendingHTLCRouting::Receive {
 				payment_data: data,
 				payment_metadata,
-				incoming_cltv_expiry: hop_data.outgoing_cltv_value,
+				incoming_cltv_expiry: outgoing_cltv_value,
 				phantom_shared_secret,
 			}
 		} else {
@@ -2751,8 +2753,8 @@ where
 			payment_hash,
 			incoming_shared_secret: shared_secret,
 			incoming_amt_msat: Some(amt_msat),
-			outgoing_amt_msat: hop_data.amt_to_forward,
-			outgoing_cltv_value: hop_data.outgoing_cltv_value,
+			outgoing_amt_msat: onion_amt_msat,
+			outgoing_cltv_value,
 			skimmed_fee_msat: counterparty_skimmed_fee_msat,
 		})
 	}
@@ -2816,9 +2818,8 @@ where
 		};
 		let (outgoing_scid, outgoing_amt_msat, outgoing_cltv_value, next_packet_pk_opt) = match next_hop {
 			onion_utils::Hop::Forward {
-				next_hop_data: msgs::OnionHopData {
-					format: msgs::OnionHopDataFormat::NonFinalNode { short_channel_id }, amt_to_forward,
-					outgoing_cltv_value,
+				next_hop_data: msgs::InboundOnionPayload::Forward {
+					short_channel_id, amt_to_forward, outgoing_cltv_value
 				}, ..
 			} => {
 				let next_pk = onion_utils::next_hop_packet_pubkey(&self.secp_ctx,
@@ -2828,9 +2829,7 @@ where
 			// We'll do receive checks in [`Self::construct_pending_htlc_info`] so we have access to the
 			// inbound channel's state.
 			onion_utils::Hop::Receive { .. } => return Ok((next_hop, shared_secret, None)),
-			onion_utils::Hop::Forward {
-				next_hop_data: msgs::OnionHopData { format: msgs::OnionHopDataFormat::FinalNode { .. }, .. }, ..
-			} => {
+			onion_utils::Hop::Forward { next_hop_data: msgs::InboundOnionPayload::Receive { .. }, .. } => {
 				return_err!("Final Node OnionHopData provided for us as an intermediary node", 0x4000 | 22, &[0; 0]);
 			}
 		};
@@ -10020,16 +10019,14 @@ mod tests {
 		let node = create_network(1, &node_cfg, &node_chanmgr);
 		let sender_intended_amt_msat = 100;
 		let extra_fee_msat = 10;
-		let hop_data = msgs::OnionHopData {
-			amt_to_forward: 100,
+		let hop_data = msgs::InboundOnionPayload::Receive {
+			amt_msat: 100,
 			outgoing_cltv_value: 42,
-			format: msgs::OnionHopDataFormat::FinalNode {
-				keysend_preimage: None,
-				payment_metadata: None,
-				payment_data: Some(msgs::FinalOnionHopData {
-					payment_secret: PaymentSecret([0; 32]), total_msat: sender_intended_amt_msat,
-				}),
-			}
+			payment_metadata: None,
+			keysend_preimage: None,
+			payment_data: Some(msgs::FinalOnionHopData {
+				payment_secret: PaymentSecret([0; 32]), total_msat: sender_intended_amt_msat,
+			}),
 		};
 		// Check that if the amount we received + the penultimate hop extra fee is less than the sender
 		// intended amount, we fail the payment.
@@ -10041,16 +10038,14 @@ mod tests {
 		} else { panic!(); }
 
 		// If amt_received + extra_fee is equal to the sender intended amount, we're fine.
-		let hop_data = msgs::OnionHopData { // This is the same hop_data as above, OnionHopData doesn't implement Clone
-			amt_to_forward: 100,
+		let hop_data = msgs::InboundOnionPayload::Receive { // This is the same payload as above, InboundOnionPayload doesn't implement Clone
+			amt_msat: 100,
 			outgoing_cltv_value: 42,
-			format: msgs::OnionHopDataFormat::FinalNode {
-				keysend_preimage: None,
-				payment_metadata: None,
-				payment_data: Some(msgs::FinalOnionHopData {
-					payment_secret: PaymentSecret([0; 32]), total_msat: sender_intended_amt_msat,
-				}),
-			}
+			payment_metadata: None,
+			keysend_preimage: None,
+			payment_data: Some(msgs::FinalOnionHopData {
+				payment_secret: PaymentSecret([0; 32]), total_msat: sender_intended_amt_msat,
+			}),
 		};
 		assert!(node[0].node.construct_recv_pending_htlc_info(hop_data, [0; 32], PaymentHash([0; 32]),
 			sender_intended_amt_msat - extra_fee_msat, 42, None, true, Some(extra_fee_msat)).is_ok());
