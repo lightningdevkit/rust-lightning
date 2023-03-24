@@ -42,7 +42,7 @@ use crate::io_extras::read_to_end;
 
 use crate::events::{MessageSendEventsProvider, OnionMessageProvider};
 use crate::util::logger;
-use crate::util::ser::{LengthReadable, Readable, ReadableArgs, Writeable, Writer, FixedLengthReader, HighZeroBytesDroppedBigSize, Hostname};
+use crate::util::ser::{LengthReadable, Readable, ReadableArgs, Writeable, Writer, WithoutLength, FixedLengthReader, HighZeroBytesDroppedBigSize, Hostname};
 
 use crate::ln::{PaymentPreimage, PaymentHash, PaymentSecret};
 
@@ -1168,6 +1168,7 @@ mod fuzzy_internal_msgs {
 		},
 		FinalNode {
 			payment_data: Option<FinalOnionHopData>,
+			payment_metadata: Option<Vec<u8>>,
 			keysend_preimage: Option<PaymentPreimage>,
 		},
 	}
@@ -1661,11 +1662,12 @@ impl Writeable for OnionHopData {
 					(6, short_channel_id, required)
 				});
 			},
-			OnionHopDataFormat::FinalNode { ref payment_data, ref keysend_preimage } => {
+			OnionHopDataFormat::FinalNode { ref payment_data, ref payment_metadata, ref keysend_preimage } => {
 				_encode_varint_length_prefixed_tlv!(w, {
 					(2, HighZeroBytesDroppedBigSize(self.amt_to_forward), required),
 					(4, HighZeroBytesDroppedBigSize(self.outgoing_cltv_value), required),
 					(8, payment_data, option),
+					(16, payment_metadata.as_ref().map(|m| WithoutLength(m)), option),
 					(5482373484, keysend_preimage, option)
 				});
 			},
@@ -1680,29 +1682,33 @@ impl Readable for OnionHopData {
 		let mut cltv_value = HighZeroBytesDroppedBigSize(0u32);
 		let mut short_id: Option<u64> = None;
 		let mut payment_data: Option<FinalOnionHopData> = None;
+		let mut payment_metadata: Option<WithoutLength<Vec<u8>>> = None;
 		let mut keysend_preimage: Option<PaymentPreimage> = None;
 		read_tlv_fields!(r, {
 			(2, amt, required),
 			(4, cltv_value, required),
 			(6, short_id, option),
 			(8, payment_data, option),
+			(16, payment_metadata, option),
 			// See https://github.com/lightning/blips/blob/master/blip-0003.md
 			(5482373484, keysend_preimage, option)
 		});
 
 		let format = if let Some(short_channel_id) = short_id {
 			if payment_data.is_some() { return Err(DecodeError::InvalidValue); }
+			if payment_metadata.is_some() { return Err(DecodeError::InvalidValue); }
 			OnionHopDataFormat::NonFinalNode {
 				short_channel_id,
 			}
 		} else {
-			if let &Some(ref data) = &payment_data {
+			if let Some(data) = &payment_data {
 				if data.total_msat > MAX_VALUE_MSAT {
 					return Err(DecodeError::InvalidValue);
 				}
 			}
 			OnionHopDataFormat::FinalNode {
 				payment_data,
+				payment_metadata: payment_metadata.map(|w| w.0),
 				keysend_preimage,
 			}
 		};
@@ -2880,6 +2886,7 @@ mod tests {
 		let mut msg = msgs::OnionHopData {
 			format: OnionHopDataFormat::FinalNode {
 				payment_data: None,
+				payment_metadata: None,
 				keysend_preimage: None,
 			},
 			amt_to_forward: 0x0badf00d01020304,
@@ -2903,6 +2910,7 @@ mod tests {
 					payment_secret: expected_payment_secret,
 					total_msat: 0x1badca1f
 				}),
+				payment_metadata: None,
 				keysend_preimage: None,
 			},
 			amt_to_forward: 0x0badf00d01020304,
@@ -2917,6 +2925,7 @@ mod tests {
 				payment_secret,
 				total_msat: 0x1badca1f
 			}),
+			payment_metadata: None,
 			keysend_preimage: None,
 		} = msg.format {
 			assert_eq!(payment_secret, expected_payment_secret);

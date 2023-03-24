@@ -2163,7 +2163,7 @@ where
 					msg: "Got non final data with an HMAC of 0",
 				});
 			},
-			msgs::OnionHopDataFormat::FinalNode { payment_data, keysend_preimage } => {
+			msgs::OnionHopDataFormat::FinalNode { payment_data, keysend_preimage, .. } => { // TODO: expose the payment_metadata to the user
 				if payment_data.is_some() && keysend_preimage.is_some() {
 					return Err(ReceiveError {
 						err_code: 0x4000|22,

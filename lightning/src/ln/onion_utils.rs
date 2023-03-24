@@ -170,6 +170,7 @@ pub(super) fn build_onion_payloads(path: &Vec<RouteHop>, total_msat: u64, mut re
 							total_msat,
 						})
 					} else { None },
+					payment_metadata: None,
 					keysend_preimage: *keysend_preimage,
 				}
 			} else {
