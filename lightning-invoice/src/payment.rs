@@ -145,8 +145,10 @@ fn pay_invoice_using_amount<P: Deref>(
 	payer: P
 ) -> Result<(), PaymentError> where P::Target: Payer {
 	let payment_hash = PaymentHash((*invoice.payment_hash()).into_inner());
-	let payment_secret = Some(*invoice.payment_secret());
-	let recipient_onion = RecipientOnionFields { payment_secret };
+	let recipient_onion = RecipientOnionFields {
+		payment_secret: Some(*invoice.payment_secret()),
+		payment_metadata: invoice.payment_metadata().map(|v| v.clone()),
+	};
 	let mut payment_params = PaymentParameters::from_node_id(invoice.recover_payee_pub_key(),
 		invoice.min_final_cltv_expiry_delta() as u32)
 		.with_expiry_time(expiry_time_from_unix_epoch(invoice).as_secs())

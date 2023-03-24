@@ -7603,6 +7603,7 @@ where
 										session_privs: [session_priv_bytes].iter().map(|a| *a).collect(),
 										payment_hash: htlc.payment_hash,
 										payment_secret: None, // only used for retries, and we'll never retry on startup
+										payment_metadata: None, // only used for retries, and we'll never retry on startup
 										keysend_preimage: None, // only used for retries, and we'll never retry on startup
 										pending_amt_msat: path_amt,
 										pending_fee_msat: Some(path_fee),
