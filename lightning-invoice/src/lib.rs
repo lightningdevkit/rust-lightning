@@ -611,6 +611,18 @@ impl<H: tb::Bool, T: tb::Bool, C: tb::Bool, S: tb::Bool> InvoiceBuilder<tb::Fals
 		self.tagged_fields.push(TaggedField::DescriptionHash(Sha256(description_hash)));
 		self.set_flags()
 	}
+
+	/// Set the description or description hash. This function is only available if no description (hash) was set.
+	pub fn invoice_description(self, description: InvoiceDescription) -> InvoiceBuilder<tb::True, H, T, C, S> {
+		match description {
+			InvoiceDescription::Direct(desc) => {
+				self.description(desc.clone().into_inner())
+			}
+			InvoiceDescription::Hash(hash) => {
+				self.description_hash(hash.0)
+			}
+		}
+	}
 }
 
 impl<D: tb::Bool, T: tb::Bool, C: tb::Bool, S: tb::Bool> InvoiceBuilder<D, tb::False, T, C, S> {
