@@ -1442,22 +1442,20 @@ mod fuzzy_internal_msgs {
 		},
 	}
 
-	pub(crate) enum OnionHopDataFormat {
-		NonFinalNode {
+	pub(crate) enum OutboundOnionPayload {
+		Forward {
 			short_channel_id: u64,
+			/// The value, in msat, of the payment after this hop's fee is deducted.
+			amt_to_forward: u64,
+			outgoing_cltv_value: u32,
 		},
-		FinalNode {
+		Receive {
 			payment_data: Option<FinalOnionHopData>,
 			payment_metadata: Option<Vec<u8>>,
 			keysend_preimage: Option<PaymentPreimage>,
+			amt_msat: u64,
+			outgoing_cltv_value: u32,
 		},
-	}
-
-	pub struct OnionHopData {
-		pub(crate) format: OnionHopDataFormat,
-		/// The value, in msat, of the payment after this hop's fee is deducted.
-		pub(crate) amt_to_forward: u64,
-		pub(crate) outgoing_cltv_value: u32,
 	}
 
 	pub struct DecodedOnionErrorPacket {
@@ -1966,20 +1964,22 @@ impl Readable for FinalOnionHopData {
 	}
 }
 
-impl Writeable for OnionHopData {
+impl Writeable for OutboundOnionPayload {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		match self.format {
-			OnionHopDataFormat::NonFinalNode { short_channel_id } => {
+		match self {
+			Self::Forward { short_channel_id, amt_to_forward, outgoing_cltv_value } => {
 				_encode_varint_length_prefixed_tlv!(w, {
-					(2, HighZeroBytesDroppedBigSize(self.amt_to_forward), required),
-					(4, HighZeroBytesDroppedBigSize(self.outgoing_cltv_value), required),
+					(2, HighZeroBytesDroppedBigSize(*amt_to_forward), required),
+					(4, HighZeroBytesDroppedBigSize(*outgoing_cltv_value), required),
 					(6, short_channel_id, required)
 				});
 			},
-			OnionHopDataFormat::FinalNode { ref payment_data, ref payment_metadata, ref keysend_preimage } => {
+			Self::Receive {
+				ref payment_data, ref payment_metadata, ref keysend_preimage, amt_msat, outgoing_cltv_value
+			} => {
 				_encode_varint_length_prefixed_tlv!(w, {
-					(2, HighZeroBytesDroppedBigSize(self.amt_to_forward), required),
-					(4, HighZeroBytesDroppedBigSize(self.outgoing_cltv_value), required),
+					(2, HighZeroBytesDroppedBigSize(*amt_msat), required),
+					(4, HighZeroBytesDroppedBigSize(*outgoing_cltv_value), required),
 					(8, payment_data, option),
 					(16, payment_metadata.as_ref().map(|m| WithoutLength(m)), option),
 					(5482373484, keysend_preimage, option)
@@ -2454,7 +2454,7 @@ mod tests {
 	use hex;
 	use crate::ln::{PaymentPreimage, PaymentHash, PaymentSecret};
 	use crate::ln::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
-	use crate::ln::msgs::{self, FinalOnionHopData, OnionErrorPacket, OnionHopDataFormat};
+	use crate::ln::msgs::{self, FinalOnionHopData, OnionErrorPacket};
 	use crate::routing::gossip::{NodeAlias, NodeId};
 	use crate::util::ser::{Writeable, Readable, Hostname, TransactionU16LenLimited};
 
@@ -3537,14 +3537,12 @@ mod tests {
 
 	#[test]
 	fn encoding_nonfinal_onion_hop_data() {
-		let msg = msgs::OnionHopData {
-			format: OnionHopDataFormat::NonFinalNode {
-				short_channel_id: 0xdeadbeef1bad1dea,
-			},
+		let outbound_msg = msgs::OutboundOnionPayload::Forward {
+			short_channel_id: 0xdeadbeef1bad1dea,
 			amt_to_forward: 0x0badf00d01020304,
 			outgoing_cltv_value: 0xffffffff,
 		};
-		let encoded_value = msg.encode();
+		let encoded_value = outbound_msg.encode();
 		let target_value = hex::decode("1a02080badf00d010203040404ffffffff0608deadbeef1bad1dea").unwrap();
 		assert_eq!(encoded_value, target_value);
 
@@ -3558,16 +3556,14 @@ mod tests {
 
 	#[test]
 	fn encoding_final_onion_hop_data() {
-		let msg = msgs::OnionHopData {
-			format: OnionHopDataFormat::FinalNode {
-				payment_data: None,
-				payment_metadata: None,
-				keysend_preimage: None,
-			},
-			amt_to_forward: 0x0badf00d01020304,
+		let outbound_msg = msgs::OutboundOnionPayload::Receive {
+			payment_data: None,
+			payment_metadata: None,
+			keysend_preimage: None,
+			amt_msat: 0x0badf00d01020304,
 			outgoing_cltv_value: 0xffffffff,
 		};
-		let encoded_value = msg.encode();
+		let encoded_value = outbound_msg.encode();
 		let target_value = hex::decode("1002080badf00d010203040404ffffffff").unwrap();
 		assert_eq!(encoded_value, target_value);
 
@@ -3581,19 +3577,17 @@ mod tests {
 	#[test]
 	fn encoding_final_onion_hop_data_with_secret() {
 		let expected_payment_secret = PaymentSecret([0x42u8; 32]);
-		let msg = msgs::OnionHopData {
-			format: OnionHopDataFormat::FinalNode {
-				payment_data: Some(FinalOnionHopData {
-					payment_secret: expected_payment_secret,
-					total_msat: 0x1badca1f
-				}),
-				payment_metadata: None,
-				keysend_preimage: None,
-			},
-			amt_to_forward: 0x0badf00d01020304,
+		let outbound_msg = msgs::OutboundOnionPayload::Receive {
+			payment_data: Some(FinalOnionHopData {
+				payment_secret: expected_payment_secret,
+				total_msat: 0x1badca1f
+			}),
+			payment_metadata: None,
+			keysend_preimage: None,
+			amt_msat: 0x0badf00d01020304,
 			outgoing_cltv_value: 0xffffffff,
 		};
-		let encoded_value = msg.encode();
+		let encoded_value = outbound_msg.encode();
 		let target_value = hex::decode("3602080badf00d010203040404ffffffff082442424242424242424242424242424242424242424242424242424242424242421badca1f").unwrap();
 		assert_eq!(encoded_value, target_value);
 
@@ -3765,20 +3759,18 @@ mod tests {
 	// see above test, needs to be a separate method for use of the serialization macros.
 	fn encode_big_payload() -> Result<Vec<u8>, io::Error> {
 		use crate::util::ser::HighZeroBytesDroppedBigSize;
-		let payload = msgs::OnionHopData {
-			format: OnionHopDataFormat::NonFinalNode {
-				short_channel_id: 0xdeadbeef1bad1dea,
-			},
+		let payload = msgs::OutboundOnionPayload::Forward {
+			short_channel_id: 0xdeadbeef1bad1dea,
 			amt_to_forward: 1000,
 			outgoing_cltv_value: 0xffffffff,
 		};
 		let mut encoded_payload = Vec::new();
 		let test_bytes = vec![42u8; 1000];
-		if let OnionHopDataFormat::NonFinalNode { short_channel_id } = payload.format {
+		if let msgs::OutboundOnionPayload::Forward { short_channel_id, amt_to_forward, outgoing_cltv_value } = payload {
 			_encode_varint_length_prefixed_tlv!(&mut encoded_payload, {
 				(1, test_bytes, required_vec),
-				(2, HighZeroBytesDroppedBigSize(payload.amt_to_forward), required),
-				(4, HighZeroBytesDroppedBigSize(payload.outgoing_cltv_value), required),
+				(2, HighZeroBytesDroppedBigSize(amt_to_forward), required),
+				(4, HighZeroBytesDroppedBigSize(outgoing_cltv_value), required),
 				(6, short_channel_id, required)
 			});
 		}
