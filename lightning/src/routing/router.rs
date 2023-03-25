@@ -5622,8 +5622,8 @@ mod tests {
 			inflight_htlc_msat: 0,
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 1_024_000, htlc_maximum_msat: 1_000 },
 		};
-		scorer.set_manual_penalty(&NodeId::from_pubkey(&nodes[3]), 123);
-		scorer.set_manual_penalty(&NodeId::from_pubkey(&nodes[4]), 456);
+		scorer.set_manual_penalty(&NodeId::from_pubkey(&nodes[3]), 123, false);
+		scorer.set_manual_penalty(&NodeId::from_pubkey(&nodes[4]), 456, false);
 		assert_eq!(scorer.channel_penalty_msat(42, &NodeId::from_pubkey(&nodes[3]), &NodeId::from_pubkey(&nodes[4]), usage), 456);
 
 		// Then check we can get a normal route
