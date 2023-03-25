@@ -508,10 +508,12 @@ pub struct ProbabilisticScoringParameters {
 
 	/// Manual penalties used for the given nodes. Allows to set a particular penalty for a given
 	/// node. Note that a manual penalty of `u64::max_value()` means the node would not ever be
-	/// considered during path finding.
+	/// considered during path finding. Second value in tuple indicates whether the penalty is
+	/// added to the calculated penalty or replaces it. False means it is replaced and true means
+	/// it is added.
 	///
 	/// (C-not exported)
-	pub manual_node_penalties: HashMap<NodeId, u64>,
+	pub manual_node_penalties: HashMap<NodeId, (u64, bool)>,
 
 	/// This penalty is applied when `htlc_maximum_msat` is equal to or larger than half of the
 	/// channel's capacity, which makes us prefer nodes with a smaller `htlc_maximum_msat`. We
@@ -846,7 +848,7 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> ProbabilisticScorerU
 	/// Marks the node with the given `node_id` as banned, i.e.,
 	/// it will be avoided during path finding.
 	pub fn add_banned(&mut self, node_id: &NodeId) {
-		self.params.manual_node_penalties.insert(*node_id, u64::max_value());
+		self.params.manual_node_penalties.insert(*node_id, (u64::max_value(), false));
 	}
 
 	/// Removes the node with the given `node_id` from the list of nodes to avoid.
@@ -855,8 +857,8 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> ProbabilisticScorerU
 	}
 
 	/// Sets a manual penalty for the given node.
-	pub fn set_manual_penalty(&mut self, node_id: &NodeId, penalty: u64) {
-		self.params.manual_node_penalties.insert(*node_id, penalty);
+	pub fn set_manual_penalty(&mut self, node_id: &NodeId, penalty: u64, add:bool) {
+		self.params.manual_node_penalties.insert(*node_id, (penalty, add));
 	}
 
 	/// Removes the node with the given `node_id` from the list of manual penalties.
@@ -892,7 +894,7 @@ impl ProbabilisticScoringParameters {
 	/// they will be avoided during path finding.
 	pub fn add_banned_from_list(&mut self, node_ids: Vec<NodeId>) {
 		for id in node_ids {
-			self.manual_node_penalties.insert(id, u64::max_value());
+			self.manual_node_penalties.insert(id, (u64::max_value(), false));
 		}
 	}
 }
@@ -1197,9 +1199,15 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> Score for Probabilis
 	fn channel_penalty_msat(
 		&self, short_channel_id: u64, source: &NodeId, target: &NodeId, usage: ChannelUsage
 	) -> u64 {
-		if let Some(penalty) = self.params.manual_node_penalties.get(target) {
-			return *penalty;
-		}
+		let add_penalty = if let Some(penalty) = self.params.manual_node_penalties.get(target) {
+			if penalty.1 {
+				penalty.0
+			} else {
+				return penalty.0;
+			}
+		} else {
+			0
+		};
 
 		let base_penalty_msat = self.params.base_penalty_msat.saturating_add(
 			self.params.base_penalty_amount_multiplier_msat
@@ -1232,6 +1240,7 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> Score for Probabilis
 			.penalty_msat(amount_msat, &self.params)
 			.saturating_add(anti_probing_penalty_msat)
 			.saturating_add(base_penalty_msat)
+			.saturating_add(add_penalty)
 	}
 
 	fn payment_path_failed(&mut self, path: &[&RouteHop], short_channel_id: u64) {
