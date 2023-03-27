@@ -258,7 +258,7 @@ where U::Target: UtxoLookup, L::Target: Logger
 	/// Gets a reference to the underlying [`NetworkGraph`] which was provided in
 	/// [`P2PGossipSync::new`].
 	///
-	/// (C-not exported) as bindings don't support a reference-to-a-reference yet
+	/// This is not exported to bindings users as bindings don't support a reference-to-a-reference yet
 	pub fn network_graph(&self) -> &G {
 		&self.network_graph
 	}
@@ -1912,7 +1912,7 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 impl ReadOnlyNetworkGraph<'_> {
 	/// Returns all known valid channels' short ids along with announced channel info.
 	///
-	/// (C-not exported) because we don't want to return lifetime'd references
+	/// This is not exported to bindings users because we don't want to return lifetime'd references
 	pub fn channels(&self) -> &IndexedMap<u64, ChannelInfo> {
 		&*self.channels
 	}
@@ -1930,7 +1930,7 @@ impl ReadOnlyNetworkGraph<'_> {
 
 	/// Returns all known nodes' public keys along with announced node info.
 	///
-	/// (C-not exported) because we don't want to return lifetime'd references
+	/// This is not exported to bindings users because we don't want to return lifetime'd references
 	pub fn nodes(&self) -> &IndexedMap<NodeId, NodeInfo> {
 		&*self.nodes
 	}

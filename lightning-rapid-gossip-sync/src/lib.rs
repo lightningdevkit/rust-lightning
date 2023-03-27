@@ -146,7 +146,7 @@ impl<NG: Deref<Target=NetworkGraph<L>>, L: Deref> RapidGossipSync<NG, L> where L
 	/// Gets a reference to the underlying [`NetworkGraph`] which was provided in
 	/// [`RapidGossipSync::new`].
 	///
-	/// (C-not exported) as bindings don't support a reference-to-a-reference yet
+	/// This is not exported to bindings users as bindings don't support a reference-to-a-reference yet
 	pub fn network_graph(&self) -> &NG {
 		&self.network_graph
 	}

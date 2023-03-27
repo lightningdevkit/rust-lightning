@@ -393,7 +393,7 @@ mod sealed {
 /// Tracks the set of features which a node implements, templated by the context in which it
 /// appears.
 ///
-/// (C-not exported) as we map the concrete feature types below directly instead
+/// This is not exported to bindings users as we map the concrete feature types below directly instead
 #[derive(Eq)]
 pub struct Features<T: sealed::Context> {
 	/// Note that, for convenience, flags is LITTLE endian (despite being big-endian on the wire)
@@ -622,7 +622,8 @@ impl<T: sealed::Context> Features<T> {
 
 	/// Create a Features given a set of flags, in little-endian. This is in reverse byte order from
 	/// most on-the-wire encodings.
-	/// (C-not exported) as we don't support export across multiple T
+	///
+	/// This is not exported to bindings users as we don't support export across multiple T
 	pub fn from_le_bytes(flags: Vec<u8>) -> Features<T> {
 		Features {
 			flags,

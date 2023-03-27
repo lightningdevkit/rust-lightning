@@ -116,7 +116,8 @@ pub struct Record<'a> {
 
 impl<'a> Record<'a> {
 	/// Returns a new Record.
-	/// (C-not exported) as fmt can't be used in C
+	///
+	/// This is not exported to bindings users as fmt can't be used in C
 	#[inline]
 	pub fn new(level: Level, args: fmt::Arguments<'a>, module_path: &'static str, file: &'static str, line: u32) -> Record<'a> {
 		Record {
@@ -141,7 +142,8 @@ pub trait Logger {
 }
 
 /// Wrapper for logging a [`PublicKey`] in hex format.
-/// (C-not exported) as fmt can't be used in C
+///
+/// This is not exported to bindings users as fmt can't be used in C
 #[doc(hidden)]
 pub struct DebugPubKey<'a>(pub &'a PublicKey);
 impl<'a> core::fmt::Display for DebugPubKey<'a> {
@@ -154,7 +156,8 @@ impl<'a> core::fmt::Display for DebugPubKey<'a> {
 }
 
 /// Wrapper for logging byte slices in hex format.
-/// (C-not exported) as fmt can't be used in C
+///
+/// This is not exported to bindings users as fmt can't be used in C
 #[doc(hidden)]
 pub struct DebugBytes<'a>(pub &'a [u8]);
 impl<'a> core::fmt::Display for DebugBytes<'a> {

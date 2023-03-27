@@ -522,7 +522,7 @@ impl Peer {
 /// SimpleRefPeerManager is the more appropriate type. Defining these type aliases prevents
 /// issues such as overly long function definitions.
 ///
-/// (C-not exported) as `Arc`s don't make sense in bindings.
+/// This is not exported to bindings users as `Arc`s don't make sense in bindings.
 pub type SimpleArcPeerManager<SD, M, T, F, C, L> = PeerManager<SD, Arc<SimpleArcChannelManager<M, T, F, L>>, Arc<P2PGossipSync<Arc<NetworkGraph<Arc<L>>>, Arc<C>, Arc<L>>>, Arc<SimpleArcOnionMessenger<L>>, Arc<L>, IgnoringMessageHandler, Arc<KeysManager>>;
 
 /// SimpleRefPeerManager is a type alias for a PeerManager reference, and is the reference
@@ -532,7 +532,7 @@ pub type SimpleArcPeerManager<SD, M, T, F, C, L> = PeerManager<SD, Arc<SimpleArc
 /// But if this is not necessary, using a reference is more efficient. Defining these type aliases
 /// helps with issues such as long function definitions.
 ///
-/// (C-not exported) as general type aliases don't make sense in bindings.
+/// This is not exported to bindings users as general type aliases don't make sense in bindings.
 pub type SimpleRefPeerManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, 'i, 'j, 'k, 'l, 'm, SD, M, T, F, C, L> = PeerManager<SD, SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'm, M, T, F, L>, &'f P2PGossipSync<&'g NetworkGraph<&'f L>, &'h C, &'f L>, &'i SimpleRefOnionMessenger<'j, 'k, L>, &'f L, IgnoringMessageHandler, &'c KeysManager>;
 
 /// A PeerManager manages a set of peers, described by their [`SocketDescriptor`] and marshalls
@@ -646,7 +646,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, OM: Deref, L: Deref, NS: Deref> Pe
 	/// timestamp, however if it is not available a persistent counter that increases once per
 	/// minute should suffice.
 	///
-	/// (C-not exported) as we can't export a PeerManager with a dummy route handler
+	/// This is not exported to bindings users as we can't export a PeerManager with a dummy route handler
 	pub fn new_channel_only(channel_message_handler: CM, onion_message_handler: OM, current_time: u32, ephemeral_random_data: &[u8; 32], logger: L, node_signer: NS) -> Self {
 		Self::new(MessageHandler {
 			chan_handler: channel_message_handler,
@@ -673,7 +673,7 @@ impl<Descriptor: SocketDescriptor, RM: Deref, L: Deref, NS: Deref> PeerManager<D
 	/// `ephemeral_random_data` is used to derive per-connection ephemeral keys and must be
 	/// cryptographically secure random bytes.
 	///
-	/// (C-not exported) as we can't export a PeerManager with a dummy channel handler
+	/// This is not exported to bindings users as we can't export a PeerManager with a dummy channel handler
 	pub fn new_routing_only(routing_message_handler: RM, current_time: u32, ephemeral_random_data: &[u8; 32], logger: L, node_signer: NS) -> Self {
 		Self::new(MessageHandler {
 			chan_handler: ErroringMessageHandler::new(),

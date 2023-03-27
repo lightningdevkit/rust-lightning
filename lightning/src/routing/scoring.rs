@@ -165,8 +165,7 @@ pub trait WriteableScore<'a>: LockableScore<'a> + Writeable {}
 
 #[cfg(not(c_bindings))]
 impl<'a, T> WriteableScore<'a> for T where T: LockableScore<'a> + Writeable {}
-
-/// (C-not exported)
+/// This is not exported to bindings users
 impl<'a, T: 'a + Score> LockableScore<'a> for Mutex<T> {
 	type Locked = MutexGuard<'a, T>;
 
@@ -244,7 +243,7 @@ impl<T: Score> MultiThreadedLockableScore<T> {
 }
 
 #[cfg(c_bindings)]
-/// (C-not exported)
+/// This is not exported to bindings users
 impl<'a, T: Writeable> Writeable for RefMut<'a, T> {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		T::write(&**self, writer)
@@ -252,7 +251,7 @@ impl<'a, T: Writeable> Writeable for RefMut<'a, T> {
 }
 
 #[cfg(c_bindings)]
-/// (C-not exported)
+/// This is not exported to bindings users
 impl<'a, S: Writeable> Writeable for MutexGuard<'a, S> {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		S::write(&**self, writer)
@@ -363,7 +362,7 @@ pub type ProbabilisticScorer<G, L> = ProbabilisticScorerUsingTime::<G, L, Config
 
 /// Probabilistic [`Score`] implementation.
 ///
-/// (C-not exported) generally all users should use the [`ProbabilisticScorer`] type alias.
+/// This is not exported to bindings users generally all users should use the [`ProbabilisticScorer`] type alias.
 pub struct ProbabilisticScorerUsingTime<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time>
 where L::Target: Logger {
 	params: ProbabilisticScoringParameters,
@@ -510,7 +509,7 @@ pub struct ProbabilisticScoringParameters {
 	/// node. Note that a manual penalty of `u64::max_value()` means the node would not ever be
 	/// considered during path finding.
 	///
-	/// (C-not exported)
+	/// This is not exported to bindings users
 	pub manual_node_penalties: HashMap<NodeId, u64>,
 
 	/// This penalty is applied when `htlc_maximum_msat` is equal to or larger than half of the

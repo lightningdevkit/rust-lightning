@@ -199,7 +199,8 @@ struct ClaimableHTLC {
 }
 
 /// A payment identifier used to uniquely identify a payment to LDK.
-/// (C-not exported) as we just use [u8; 32] directly
+///
+/// This is not exported to bindings users as we just use [u8; 32] directly
 #[derive(Hash, Copy, Clone, PartialEq, Eq, Debug)]
 pub struct PaymentId(pub [u8; 32]);
 
@@ -217,7 +218,8 @@ impl Readable for PaymentId {
 }
 
 /// An identifier used to uniquely identify an intercepted HTLC to LDK.
-/// (C-not exported) as we just use [u8; 32] directly
+///
+/// This is not exported to bindings users as we just use [u8; 32] directly
 #[derive(Hash, Copy, Clone, PartialEq, Eq, Debug)]
 pub struct InterceptId(pub [u8; 32]);
 
@@ -569,7 +571,7 @@ struct PendingInboundPayment {
 /// or, respectively, [`Router`] for its router, but this type alias chooses the concrete types
 /// of [`KeysManager`] and [`DefaultRouter`].
 ///
-/// (C-not exported) as Arcs don't make sense in bindings
+/// This is not exported to bindings users as Arcs don't make sense in bindings
 pub type SimpleArcChannelManager<M, T, F, L> = ChannelManager<
 	Arc<M>,
 	Arc<T>,
@@ -595,7 +597,7 @@ pub type SimpleArcChannelManager<M, T, F, L> = ChannelManager<
 /// or, respectively, [`Router`]  for its router, but this type alias chooses the concrete types
 /// of [`KeysManager`] and [`DefaultRouter`].
 ///
-/// (C-not exported) as Arcs don't make sense in bindings
+/// This is not exported to bindings users as Arcs don't make sense in bindings
 pub type SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, M, T, F, L> = ChannelManager<&'a M, &'b T, &'c KeysManager, &'c KeysManager, &'c KeysManager, &'d F, &'e DefaultRouter<&'f NetworkGraph<&'g L>, &'g L, &'h Mutex<ProbabilisticScorer<&'f NetworkGraph<&'g L>, &'g L>>>, &'g L>;
 
 /// Manager which keeps track of a number of channels and sends messages to the appropriate
@@ -7236,7 +7238,7 @@ where
 	/// In such cases the latest local transactions will be sent to the tx_broadcaster included in
 	/// this struct.
 	///
-	/// (C-not exported) because we have no HashMap bindings
+	/// This is not exported to bindings users because we have no HashMap bindings
 	pub channel_monitors: HashMap<OutPoint, &'a mut ChannelMonitor<<SP::Target as SignerProvider>::Signer>>,
 }
 

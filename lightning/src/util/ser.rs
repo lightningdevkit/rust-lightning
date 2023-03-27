@@ -48,7 +48,7 @@ pub const MAX_BUF_SIZE: usize = 64 * 1024;
 /// A simplified version of [`std::io::Write`] that exists largely for backwards compatibility.
 /// An impl is provided for any type that also impls [`std::io::Write`].
 ///
-/// (C-not exported) as we only export serialization to/from byte arrays instead
+/// This is not exported to bindings users as we only export serialization to/from byte arrays instead
 pub trait Writer {
 	/// Writes the given buf out. See std::io::Write::write_all for more
 	fn write_all(&mut self, buf: &[u8]) -> Result<(), io::Error>;
@@ -90,7 +90,7 @@ impl Writer for VecWriter {
 /// Writer that only tracks the amount of data written - useful if you need to calculate the length
 /// of some data when serialized but don't yet need the full data.
 ///
-/// (C-not exported) as manual TLV building is not currently supported in bindings
+/// This is not exported to bindings users as manual TLV building is not currently supported in bindings
 pub struct LengthCalculatingWriter(pub usize);
 impl Writer for LengthCalculatingWriter {
 	#[inline]
@@ -103,7 +103,7 @@ impl Writer for LengthCalculatingWriter {
 /// Essentially [`std::io::Take`] but a bit simpler and with a method to walk the underlying stream
 /// forward to ensure we always consume exactly the fixed length specified.
 ///
-/// (C-not exported) as manual TLV building is not currently supported in bindings
+/// This is not exported to bindings users as manual TLV building is not currently supported in bindings
 pub struct FixedLengthReader<R: Read> {
 	read: R,
 	bytes_read: u64,
@@ -160,7 +160,7 @@ impl<R: Read> LengthRead for FixedLengthReader<R> {
 /// A [`Read`] implementation which tracks whether any bytes have been read at all. This allows us to distinguish
 /// between "EOF reached before we started" and "EOF reached mid-read".
 ///
-/// (C-not exported) as manual TLV building is not currently supported in bindings
+/// This is not exported to bindings users as manual TLV building is not currently supported in bindings
 pub struct ReadTrackingReader<R: Read> {
 	read: R,
 	/// Returns whether we have read from this reader or not yet.
@@ -188,7 +188,7 @@ impl<R: Read> Read for ReadTrackingReader<R> {
 
 /// A trait that various LDK types implement allowing them to be written out to a [`Writer`].
 ///
-/// (C-not exported) as we only export serialization to/from byte arrays instead
+/// This is not exported to bindings users as we only export serialization to/from byte arrays instead
 pub trait Writeable {
 	/// Writes `self` out to the given [`Writer`].
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error>;
@@ -228,7 +228,7 @@ impl<'a, T: Writeable> Writeable for &'a T {
 
 /// A trait that various LDK types implement allowing them to be read in from a [`Read`].
 ///
-/// (C-not exported) as we only export serialization to/from byte arrays instead
+/// This is not exported to bindings users as we only export serialization to/from byte arrays instead
 pub trait Readable
 	where Self: Sized
 {
@@ -246,7 +246,7 @@ pub(crate) trait SeekReadable where Self: Sized {
 /// A trait that various higher-level LDK types implement allowing them to be read in
 /// from a [`Read`] given some additional set of arguments which is required to deserialize.
 ///
-/// (C-not exported) as we only export serialization to/from byte arrays instead
+/// This is not exported to bindings users as we only export serialization to/from byte arrays instead
 pub trait ReadableArgs<P>
 	where Self: Sized
 {
@@ -279,7 +279,7 @@ pub(crate) trait LengthReadable where Self: Sized
 
 /// A trait that various LDK types implement allowing them to (maybe) be read in from a [`Read`].
 ///
-/// (C-not exported) as we only export serialization to/from byte arrays instead
+/// This is not exported to bindings users as we only export serialization to/from byte arrays instead
 pub trait MaybeReadable
 	where Self: Sized
 {
@@ -296,7 +296,7 @@ impl<T: Readable> MaybeReadable for T {
 
 /// Wrapper to read a required (non-optional) TLV record.
 ///
-/// (C-not exported) as manual TLV building is not currently supported in bindings
+/// This is not exported to bindings users as manual TLV building is not currently supported in bindings
 pub struct RequiredWrapper<T>(pub Option<T>);
 impl<T: Readable> Readable for RequiredWrapper<T> {
 	#[inline]
@@ -320,7 +320,7 @@ impl<T> From<T> for RequiredWrapper<T> {
 /// Wrapper to read a required (non-optional) TLV record that may have been upgraded without
 /// backwards compat.
 ///
-/// (C-not exported) as manual TLV building is not currently supported in bindings
+/// This is not exported to bindings users as manual TLV building is not currently supported in bindings
 pub struct UpgradableRequired<T: MaybeReadable>(pub Option<T>);
 impl<T: MaybeReadable> MaybeReadable for UpgradableRequired<T> {
 	#[inline]
@@ -602,7 +602,7 @@ impl Readable for [u16; 8] {
 /// A type for variable-length values within TLV record where the length is encoded as part of the record.
 /// Used to prevent encoding the length twice.
 ///
-/// (C-not exported) as manual TLV building is not currently supported in bindings
+/// This is not exported to bindings users as manual TLV building is not currently supported in bindings
 pub struct WithoutLength<T>(pub T);
 
 impl Writeable for WithoutLength<&String> {

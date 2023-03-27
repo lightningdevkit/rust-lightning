@@ -183,7 +183,7 @@ impl Future {
 	/// Registers a callback to be called upon completion of this future. If the future has already
 	/// completed, the callback will be called immediately.
 	///
-	/// (C-not exported) use the bindings-only `register_callback_fn` instead
+	/// This is not exported to bindings users, use the bindings-only `register_callback_fn` instead
 	pub fn register_callback(&self, callback: Box<dyn FutureCallback>) {
 		let mut state = self.state.lock().unwrap();
 		if state.complete {
@@ -212,7 +212,7 @@ impl FutureCallback for StdWaker {
 	fn call(&self) { self.0.wake_by_ref() }
 }
 
-/// (C-not exported) as Rust Futures aren't usable in language bindings.
+/// This is not exported to bindings users as Rust Futures aren't usable in language bindings.
 impl<'a> StdFuture for Future {
 	type Output = ();
 

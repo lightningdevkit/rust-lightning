@@ -939,7 +939,7 @@ pub struct CommitmentUpdate {
 /// [`OptionalField`] simply gets `Present` if there are enough bytes to read into it), we have a
 /// separate enum type for them.
 ///
-/// (C-not exported) due to a free generic in `T`
+/// This is not exported to bindings users due to a free generic in `T`
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OptionalField<T> {
 	/// Optional field is included in message
