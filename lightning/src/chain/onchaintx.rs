@@ -558,7 +558,9 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner> OnchainTxHandler<ChannelSigner>
 			) {
 				assert!(new_feerate != 0);
 
-				let transaction = cached_request.finalize_malleable_package(self, output_value, self.destination_script.clone(), logger).unwrap();
+				let transaction = cached_request.finalize_malleable_package(
+					cur_height, self, output_value, self.destination_script.clone(), logger
+				).unwrap();
 				log_trace!(logger, "...with timer {} and feerate {}", new_timer.unwrap(), new_feerate);
 				assert!(predicted_weight >= transaction.weight());
 				return Some((new_timer, new_feerate, OnchainClaim::Tx(transaction)));

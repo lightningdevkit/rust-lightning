@@ -2843,7 +2843,7 @@ fn test_htlc_on_chain_success() {
 	assert_eq!(commitment_spend.input.len(), 2);
 	assert_eq!(commitment_spend.input[0].witness.last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT);
 	assert_eq!(commitment_spend.input[1].witness.last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT);
-	assert_eq!(commitment_spend.lock_time.0, 0);
+	assert_eq!(commitment_spend.lock_time.0, nodes[1].best_block_info().1 + 1);
 	assert!(commitment_spend.output[0].script_pubkey.is_v0_p2wpkh()); // direct payment
 	// We don't bother to check that B can claim the HTLC output on its commitment tx here as
 	// we already checked the same situation with A.
@@ -4699,7 +4699,7 @@ fn test_onchain_to_onchain_claim() {
 	check_spends!(b_txn[0], commitment_tx[0]);
 	assert_eq!(b_txn[0].input[0].witness.clone().last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT);
 	assert!(b_txn[0].output[0].script_pubkey.is_v0_p2wpkh()); // direct payment
-	assert_eq!(b_txn[0].lock_time.0, 0); // Success tx
+	assert_eq!(b_txn[0].lock_time.0, nodes[1].best_block_info().1 + 1); // Success tx
 
 	check_closed_broadcast!(nodes[1], true);
 	check_added_monitors!(nodes[1], 1);
@@ -6860,7 +6860,7 @@ fn do_test_sweep_outbound_htlc_failure_update(revoked: bool, local: bool) {
 		if !revoked {
 			assert_eq!(timeout_tx[0].input[0].witness.last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT);
 		} else {
-			assert_eq!(timeout_tx[0].lock_time.0, 0);
+			assert_eq!(timeout_tx[0].lock_time.0, 12);
 		}
 		// We fail non-dust-HTLC 2 by broadcast of local timeout/revocation-claim tx
 		mine_transaction(&nodes[0], &timeout_tx[0]);
