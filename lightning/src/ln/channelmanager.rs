@@ -4184,6 +4184,7 @@ where
 								claim_from_onchain_tx: from_onchain,
 								prev_channel_id,
 								next_channel_id,
+								outbound_amount_forwarded_msat: forwarded_htlc_value_msat,
 							}})
 						} else { None }
 					});

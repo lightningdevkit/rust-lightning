@@ -1780,7 +1780,10 @@ macro_rules! expect_payment_forwarded {
 		let events = $node.node.get_and_clear_pending_events();
 		assert_eq!(events.len(), 1);
 		match events[0] {
-			Event::PaymentForwarded { fee_earned_msat, prev_channel_id, claim_from_onchain_tx, next_channel_id } => {
+			Event::PaymentForwarded {
+				fee_earned_msat, prev_channel_id, claim_from_onchain_tx, next_channel_id,
+				outbound_amount_forwarded_msat: _
+			} => {
 				assert_eq!(fee_earned_msat, $expected_fee);
 				if fee_earned_msat.is_some() {
 					// Is the event prev_channel_id in one of the channels between the two nodes?
