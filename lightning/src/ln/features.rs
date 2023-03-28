@@ -45,17 +45,25 @@
 //!     (see [BOLT-2](https://github.com/lightning/bolts/blob/master/02-peer-protocol.md) for more information).
 //! - `OnionMessages` - requires/supports forwarding onion messages
 //!     (see [BOLT-7](https://github.com/lightning/bolts/pull/759/files) for more information).
-//!     TODO: update link
+//     TODO: update link
 //! - `ChannelType` - node supports the channel_type field in open/accept
 //!     (see [BOLT-2](https://github.com/lightning/bolts/blob/master/02-peer-protocol.md) for more information).
 //! - `SCIDPrivacy` - supply channel aliases for routing
 //!     (see [BOLT-2](https://github.com/lightning/bolts/blob/master/02-peer-protocol.md) for more information).
+//! - `PaymentMetadata` - include additional data in invoices which is passed to recipients in the
+//!      onion.
+//!      (see [BOLT-11](https://github.com/lightning/bolts/blob/master/11-payment-encoding.md) for
+//!      more).
+//! - `ZeroConf` - supports accepting HTLCs and using channels prior to funding confirmation
+//!      (see
+//!      [BOLT-2](https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#the-channel_ready-message)
+//!      for more info).
 //! - `Keysend` - send funds to a node without an invoice
 //!     (see the [`Keysend` feature assignment proposal](https://github.com/lightning/bolts/issues/605#issuecomment-606679798) for more information).
 //! - `AnchorsZeroFeeHtlcTx` - requires/supports that commitment transactions include anchor outputs
-//!   and HTLC transactions are pre-signed with zero fee (see
-//!   [BOLT-3](https://github.com/lightning/bolts/blob/master/03-transactions.md) for more
-//!   information).
+//!     and HTLC transactions are pre-signed with zero fee (see
+//!     [BOLT-3](https://github.com/lightning/bolts/blob/master/03-transactions.md) for more
+//!     information).
 //!
 //! [BOLT #9]: https://github.com/lightning/bolts/blob/master/09-features.md
 //! [messages]: crate::ln::msgs
@@ -393,6 +401,7 @@ mod sealed {
 	define_feature!(55, Keysend, [NodeContext],
 		"Feature flags for keysend payments.", set_keysend_optional, set_keysend_required,
 		supports_keysend, requires_keysend);
+	// Note: update the module-level docs when a new feature bit is added!
 
 	#[cfg(test)]
 	define_feature!(123456789, UnknownFeature,
