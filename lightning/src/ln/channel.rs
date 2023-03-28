@@ -78,7 +78,8 @@ pub struct AvailableBalances {
 pub(crate) struct ChainActionUpdates {
 	pub(crate) channel_ready_msg: Option<msgs::ChannelReady>, 
 	pub(crate) timed_out_htlcs: Vec<(HTLCSource, PaymentHash)>,
-	pub(crate) announcement_sigs: Option<msgs::AnnouncementSignatures>
+	pub(crate) announcement_sigs: Option<msgs::AnnouncementSignatures>,
+	pub(crate) pending_channel_ready: bool
 }
 
 impl ChainActionUpdates {
@@ -87,6 +88,7 @@ impl ChainActionUpdates {
 			channel_ready_msg: None,
 			timed_out_htlcs: Vec::new(),
 			announcement_sigs: None,
+			pending_channel_ready: false,
 		}
 	}
 }
@@ -628,6 +630,14 @@ pub(super) struct Channel<Signer: ChannelSigner> {
 	/// `accept_inbound_channel`, and `funding_created` should therefore not execute successfully.
 	inbound_awaiting_accept: bool,
 
+	/// A flag that indicates whether the channel requires the user to signal readiness to send
+	/// the `msgs::ChannelReady` message.  This is only set to true if the channel was created with a
+	/// `ChannelHandshakeConfig::manually_signal_channel_ready` flag set to true.
+	/// 
+	/// When a user signals readiness via `ChannelManager::signal_channel_readiness` this flag is
+	/// flipped to false.
+	requires_manual_readiness_signal: bool,
+
 	/// The hash of the block in which the funding transaction was included.
 	funding_tx_confirmed_in: Option<BlockHash>,
 	funding_tx_confirmation_height: u32,
@@ -747,6 +757,8 @@ pub(super) struct Channel<Signer: ChannelSigner> {
 
 	// We track whether we already emitted a `ChannelReady` event.
 	channel_ready_event_emitted: bool,
+	// We track whether we already emitted a `PendingChannelReady` event.
+	pending_channel_ready_event_emitted: bool,
 
 	/// The unique identifier used to re-derive the private key material for the channel through
 	/// [`SignerProvider::derive_channel_signer`].
@@ -1065,6 +1077,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			target_closing_feerate_sats_per_kw: None,
 
 			inbound_awaiting_accept: false,
+			requires_manual_readiness_signal: config.channel_handshake_config.manually_signal_channel_ready,
 
 			funding_tx_confirmed_in: None,
 			funding_tx_confirmation_height: 0,
@@ -1120,6 +1133,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			outbound_scid_alias,
 
 			channel_ready_event_emitted: false,
+			pending_channel_ready_event_emitted: false,
 
 			#[cfg(any(test, fuzzing))]
 			historical_inbound_htlc_fulfills: HashSet::new(),
@@ -1409,6 +1423,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			target_closing_feerate_sats_per_kw: None,
 
 			inbound_awaiting_accept: true,
+			requires_manual_readiness_signal: config.channel_handshake_config.manually_signal_channel_ready,
 
 			funding_tx_confirmed_in: None,
 			funding_tx_confirmation_height: 0,
@@ -1468,6 +1483,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			outbound_scid_alias,
 
 			channel_ready_event_emitted: false,
+			pending_channel_ready_event_emitted: false,
 
 			#[cfg(any(test, fuzzing))]
 			historical_inbound_htlc_fulfills: HashSet::new(),
@@ -2363,7 +2379,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 
 		log_info!(logger, "Generated funding_signed for peer for channel {}", log_bytes!(self.channel_id()));
 
-		let need_channel_ready = self.check_get_channel_ready(0).is_some();
+		let need_channel_ready = self.check_get_channel_ready(0).0.is_some();
 		self.monitor_updating_paused(false, false, need_channel_ready, Vec::new(), Vec::new(), Vec::new());
 
 		Ok((msgs::FundingSigned {
@@ -2451,7 +2467,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 
 		log_info!(logger, "Received funding_signed from peer for channel {}", log_bytes!(self.channel_id()));
 
-		let need_channel_ready = self.check_get_channel_ready(0).is_some();
+		let need_channel_ready = self.check_get_channel_ready(0).0.is_some();
 		self.monitor_updating_paused(false, false, need_channel_ready, Vec::new(), Vec::new(), Vec::new());
 		Ok(channel_monitor)
 	}
@@ -4720,6 +4736,20 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		self.channel_ready_event_emitted = true;
 	}
 
+	// Checks whether we should emit a `PendingChannelReady` event.
+	pub(crate) fn should_emit_pending_channel_ready_event(&self) -> bool {
+		self.requires_manual_readiness_signal && !self.pending_channel_ready_event_emitted
+	}
+
+	// Remembers that we already emitted a `PendingChannelReady` event.
+	pub(crate) fn set_pending_channel_ready_event_emitted(&mut self) {
+		self.pending_channel_ready_event_emitted = true;
+	}
+
+	pub(crate) fn unset_requires_manual_readiness_signal(&mut self) {
+		self.requires_manual_readiness_signal = false;
+	}
+
 	/// Tracks the number of ticks elapsed since the previous [`ChannelConfig`] was updated. Once
 	/// [`EXPIRE_PREV_CONFIG_TICKS`] is reached, the previous config is considered expired and will
 	/// no longer be considered when forwarding HTLCs.
@@ -4984,12 +5014,12 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		self.channel_update_status = status;
 	}
 
-	fn check_get_channel_ready(&mut self, height: u32) -> Option<msgs::ChannelReady> {
+	pub fn check_get_channel_ready(&mut self, height: u32) -> (Option<msgs::ChannelReady>, bool) {
 		// Called:
 		//  * always when a new block/transactions are confirmed with the new height
 		//  * when funding is signed with a height of 0
 		if self.funding_tx_confirmation_height == 0 && self.minimum_depth != Some(0) {
-			return None;
+			return (None, false);
 		}
 
 		let funding_tx_confirmations = height as i64 - self.funding_tx_confirmation_height as i64 + 1;
@@ -4998,7 +5028,11 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		}
 
 		if funding_tx_confirmations < self.minimum_depth.unwrap_or(0) as i64 {
-			return None;
+			return (None, false);
+		}
+
+		if self.should_emit_pending_channel_ready_event() {
+			return (None, true);
 		}
 
 		let non_shutdown_state = self.channel_state & (!MULTI_STATE_FLAGS);
@@ -5032,17 +5066,17 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 				if self.channel_state & (ChannelState::PeerDisconnected as u32) == 0 {
 					let next_per_commitment_point =
 						self.holder_signer.get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - 1, &self.secp_ctx);
-					return Some(msgs::ChannelReady {
+					return (Some(msgs::ChannelReady {
 						channel_id: self.channel_id,
 						next_per_commitment_point,
 						short_channel_id_alias: Some(self.outbound_scid_alias),
-					});
+					}), false);
 				}
 			} else {
 				self.monitor_pending_channel_ready = true;
 			}
 		}
-		None
+		(None, false)
 	}
 
 	/// When a transaction is confirmed, we check whether it is or spends the funding transaction
@@ -5099,13 +5133,23 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 					// If we allow 1-conf funding, we may need to check for channel_ready here and
 					// send it immediately instead of waiting for a best_block_updated call (which
 					// may have already happened for this block).
-					if let Some(channel_ready) = self.check_get_channel_ready(height) {
+					let (channel_ready_opt, generate_pending_channel_ready) = self.check_get_channel_ready(height);
+
+					if let Some(channel_ready) = channel_ready_opt {
 						log_info!(logger, "Sending a channel_ready to our peer for channel {}", log_bytes!(self.channel_id));
 						let announcement_sigs = self.get_announcement_sigs(node_signer, genesis_block_hash, user_config, height, logger);
 						return Ok(ChainActionUpdates {
 							channel_ready_msg: Some(channel_ready), 
 							announcement_sigs,
-							timed_out_htlcs: vec![]
+							timed_out_htlcs: vec![],
+							pending_channel_ready: false
+						});
+					} else if generate_pending_channel_ready {
+						return Ok(ChainActionUpdates {
+							channel_ready_msg: None,
+							announcement_sigs: None,
+							timed_out_htlcs: vec![],
+							pending_channel_ready: true
 						});
 					}
 				}
@@ -5117,11 +5161,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 				}
 			}
 		}
-		Ok(ChainActionUpdates {
-			channel_ready_msg: None,
-			announcement_sigs: None,
-			timed_out_htlcs: vec![]
-		})
+		Ok(ChainActionUpdates::no_updates())
 	}
 
 	/// When a new block is connected, we check the height of the block against outbound holding
@@ -5173,7 +5213,8 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 
 		self.update_time_counter = cmp::max(self.update_time_counter, highest_header_time);
 
-		if let Some(channel_ready) = self.check_get_channel_ready(height) {
+		let (channel_ready_opt, generate_pending_channel_ready) = self.check_get_channel_ready(height);
+		if let Some(channel_ready) = channel_ready_opt {
 			let announcement_sigs = if let Some((genesis_block_hash, node_signer, user_config)) = genesis_node_signer {
 				self.get_announcement_sigs(node_signer, genesis_block_hash, user_config, height, logger)
 			} else { None };
@@ -5181,7 +5222,8 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			return Ok(ChainActionUpdates {
 				channel_ready_msg: Some(channel_ready), 
 				timed_out_htlcs, 
-				announcement_sigs
+				announcement_sigs,
+				pending_channel_ready: false
 			});
 		}
 
@@ -5225,7 +5267,8 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		Ok(ChainActionUpdates {
 			channel_ready_msg: None, 
 			timed_out_htlcs, 
-			announcement_sigs
+			announcement_sigs,
+			pending_channel_ready: generate_pending_channel_ready
 		})
 	}
 
@@ -5303,6 +5346,10 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 
 	pub fn inbound_is_awaiting_accept(&self) -> bool {
 		self.inbound_awaiting_accept
+	}
+
+	pub fn requires_manual_readiness_signal(&self) -> bool {
+		self.requires_manual_readiness_signal
 	}
 
 	/// Sets this channel to accepting 0conf, must be done before `get_accept_channel`
@@ -6453,12 +6500,15 @@ impl<Signer: WriteableEcdsaChannelSigner> Writeable for Channel<Signer> {
 			{ Some(self.holder_max_htlc_value_in_flight_msat) } else { None };
 
 		let channel_ready_event_emitted = Some(self.channel_ready_event_emitted);
+		let pending_channel_ready_event_emitted = Some(self.pending_channel_ready_event_emitted);
 
 		// `user_id` used to be a single u64 value. In order to remain backwards compatible with
 		// versions prior to 0.0.113, the u128 is serialized as two separate u64 values. Therefore,
 		// we write the high bytes as an option here.
 		let user_id_high_opt = Some((self.user_id >> 64) as u64);
 
+		let requires_manual_readiness_signal = Some(self.requires_manual_readiness_signal);
+		
 		write_tlv_fields!(writer, {
 			(0, self.announcement_sigs, option),
 			// minimum_depth and counterparty_selected_channel_reserve_satoshis used to have a
@@ -6484,6 +6534,8 @@ impl<Signer: WriteableEcdsaChannelSigner> Writeable for Channel<Signer> {
 			(23, channel_ready_event_emitted, option),
 			(25, user_id_high_opt, option),
 			(27, self.channel_keys_id, required),
+			(29, requires_manual_readiness_signal, option),
+			(31, pending_channel_ready_event_emitted, option),
 		});
 
 		Ok(())
@@ -6755,6 +6807,8 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 
 		let mut user_id_high_opt: Option<u64> = None;
 		let mut channel_keys_id: Option<[u8; 32]> = None;
+		let mut requires_manual_readiness_signal: Option<bool> = Some(false);
+		let mut pending_channel_ready_event_emitted = None;
 
 		read_tlv_fields!(reader, {
 			(0, announcement_sigs, option),
@@ -6775,6 +6829,8 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 			(23, channel_ready_event_emitted, option),
 			(25, user_id_high_opt, option),
 			(27, channel_keys_id, option),
+			(29, requires_manual_readiness_signal, option),
+			(31, pending_channel_ready_event_emitted, option),
 		});
 
 		let (channel_keys_id, holder_signer) = if let Some(channel_keys_id) = channel_keys_id {
@@ -6885,6 +6941,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 			target_closing_feerate_sats_per_kw,
 
 			inbound_awaiting_accept: false,
+			requires_manual_readiness_signal: requires_manual_readiness_signal.unwrap(),
 
 			funding_tx_confirmed_in,
 			funding_tx_confirmation_height,
@@ -6932,6 +6989,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 			outbound_scid_alias: outbound_scid_alias.unwrap_or(0),
 
 			channel_ready_event_emitted: channel_ready_event_emitted.unwrap_or(true),
+			pending_channel_ready_event_emitted: pending_channel_ready_event_emitted.unwrap_or(true),
 
 			#[cfg(any(test, fuzzing))]
 			historical_inbound_htlc_fulfills,

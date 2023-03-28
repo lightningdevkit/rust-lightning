@@ -21,6 +21,7 @@ pub mod bump_transaction;
 pub use bump_transaction::BumpTransactionEvent;
 
 use crate::chain::keysinterface::SpendableOutputDescriptor;
+use crate::chain::transaction::OutPoint;
 use crate::ln::channelmanager::{InterceptId, PaymentId};
 use crate::ln::channel::FUNDING_CONF_DEADLINE_BLOCKS;
 use crate::ln::features::ChannelTypeFeatures;
@@ -604,6 +605,50 @@ pub enum Event {
 		/// transaction.
 		claim_from_onchain_tx: bool,
 	},
+	/// Indicates a channel has received sufficient confirmations and LDK is ready to send [`msgs::ChannelReady`].
+	///
+	/// To signal readiness, call [`ChannelManager::signal_channel_readiness`]. To reject the
+	/// request, call [`ChannelManager::force_close_broadcasting_latest_txn`].
+	///
+	/// The event is only triggered when the [`ChannelHandshakeConfig::manually_signal_channel_ready`] 
+	/// config flag is set to true.
+	///
+	/// [`ChannelManager::signal_channel_readiness`]: crate::ln::channelmanager::ChannelManager::signal_channel_readiness
+	/// [`ChannelManager::force_close_broadcasting_latest_txn`]: crate::ln::channelmanager::ChannelManager::force_close_broadcasting_latest_txn
+	/// [`ChannelHandshakeConfig::manually_signal_channel_ready`]: crate::util::config::ChannelHandshakeConfig::manually_signal_channel_ready
+	/// [`msgs::ChannelReady`]: crate::ln::msgs::ChannelReady
+	PendingChannelReady {
+		/// The channel ID of the channel.
+		///
+		/// When responding to the request, the `channel_id` should be passed
+		/// back to the ChannelManager through [`ChannelManager::signal_channel_readiness`] to signal,
+		/// or through [`ChannelManager::force_close_broadcasting_latest_txn`] to reject.
+		///
+		/// [`ChannelManager::signal_channel_readiness`]: crate::ln::channelmanager::ChannelManager::signal_channel_readiness
+		/// [`ChannelManager::force_close_broadcasting_latest_txn`]: crate::ln::channelmanager::ChannelManager::force_close_broadcasting_latest_txn
+		channel_id: [u8; 32],
+		/// The `user_channel_id` value passed in to [`ChannelManager::create_channel`] for outbound
+		/// channels, or to [`ChannelManager::accept_inbound_channel`] for inbound channels if
+		/// [`UserConfig::manually_accept_inbound_channels`] config flag is set to true. Otherwise
+		/// `user_channel_id` will be randomized for an inbound channel.
+		///
+		/// [`ChannelManager::create_channel`]: crate::ln::channelmanager::ChannelManager::create_channel
+		/// [`ChannelManager::accept_inbound_channel`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel
+		/// [`UserConfig::manually_accept_inbound_channels`]: crate::util::config::UserConfig::manually_accept_inbound_channels
+		user_channel_id: u128,
+		/// The node_id of the counterparty requesting to open the channel.
+		///
+		/// When responding to the request, the `counterparty_node_id` should be passed
+		/// back to the `ChannelManager` through [`ChannelManager::signal_channel_readiness`] to
+		/// signal readiness, or through [`ChannelManager::force_close_broadcasting_latest_txn`] to reject the
+		/// request.
+		///
+		/// [`ChannelManager::signal_channel_readiness`]: crate::ln::channelmanager::ChannelManager::signal_channel_readiness
+		/// [`ChannelManager::force_close_broadcasting_latest_txn`]: crate::ln::channelmanager::ChannelManager::force_close_broadcasting_latest_txn
+		counterparty_node_id: PublicKey,
+		/// The outpoint that holds the channel funds on-chain.
+		funding_outpoint: OutPoint,
+	},
 	/// Used to indicate that a channel with the given `channel_id` is ready to
 	/// be used. This event is emitted either when the funding transaction has been confirmed
 	/// on-chain, or, in case of a 0conf channel, when both parties have confirmed the channel
@@ -921,6 +966,15 @@ impl Writeable for Event {
 					(2, user_channel_id, required),
 					(4, counterparty_node_id, required),
 					(6, channel_type, required),
+				});
+			},
+			&Event::PendingChannelReady { ref channel_id, ref user_channel_id, ref counterparty_node_id, ref funding_outpoint } => {
+				31u8.write(writer)?;
+				write_tlv_fields!(writer, {
+					(0, channel_id, required),
+					(2, user_channel_id, required),
+					(4, counterparty_node_id, required),
+					(6, funding_outpoint, required)
 				});
 			},
 			// Note that, going forward, all new events must only write data inside of
@@ -1254,6 +1308,28 @@ impl MaybeReadable for Event {
 						user_channel_id,
 						counterparty_node_id: counterparty_node_id.0.unwrap(),
 						channel_type: channel_type.0.unwrap()
+					}))
+				};
+				f()
+			},
+			31u8 => {
+				let f = || {
+					let mut channel_id = [0; 32];
+					let mut user_channel_id: u128 = 0;
+					let mut counterparty_node_id = RequiredWrapper(None);
+					let mut funding_outpoint = RequiredWrapper(None);
+					read_tlv_fields!(reader, {
+						(0, channel_id, required),
+						(2, user_channel_id, required),
+						(4, counterparty_node_id, required),
+						(6, funding_outpoint, required),
+					});
+
+					Ok(Some(Event::PendingChannelReady {
+						channel_id,
+						user_channel_id,
+						counterparty_node_id: counterparty_node_id.0.unwrap(),
+						funding_outpoint: funding_outpoint.0.unwrap()
 					}))
 				};
 				f()
