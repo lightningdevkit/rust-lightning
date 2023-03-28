@@ -75,6 +75,22 @@ pub struct AvailableBalances {
 	pub next_outbound_htlc_limit_msat: u64,
 }
 
+pub(crate) struct ChainActionUpdates {
+	pub(crate) channel_ready_msg: Option<msgs::ChannelReady>, 
+	pub(crate) timed_out_htlcs: Vec<(HTLCSource, PaymentHash)>,
+	pub(crate) announcement_sigs: Option<msgs::AnnouncementSignatures>
+}
+
+impl ChainActionUpdates {
+	pub fn no_updates() -> Self {
+		ChainActionUpdates {
+			channel_ready_msg: None,
+			timed_out_htlcs: Vec::new(),
+			announcement_sigs: None,
+		}
+	}
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum FeeUpdateState {
 	// Inbound states mirroring InboundHTLCState
@@ -5035,7 +5051,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 	pub fn transactions_confirmed<NS: Deref, L: Deref>(
 		&mut self, block_hash: &BlockHash, height: u32, txdata: &TransactionData,
 		genesis_block_hash: BlockHash, node_signer: &NS, user_config: &UserConfig, logger: &L
-	) -> Result<(Option<msgs::ChannelReady>, Option<msgs::AnnouncementSignatures>), ClosureReason>
+	) -> Result<ChainActionUpdates, ClosureReason>
 	where
 		NS::Target: NodeSigner,
 		L::Target: Logger
@@ -5086,7 +5102,11 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 					if let Some(channel_ready) = self.check_get_channel_ready(height) {
 						log_info!(logger, "Sending a channel_ready to our peer for channel {}", log_bytes!(self.channel_id));
 						let announcement_sigs = self.get_announcement_sigs(node_signer, genesis_block_hash, user_config, height, logger);
-						return Ok((Some(channel_ready), announcement_sigs));
+						return Ok(ChainActionUpdates {
+							channel_ready_msg: Some(channel_ready), 
+							announcement_sigs,
+							timed_out_htlcs: vec![]
+						});
 					}
 				}
 				for inp in tx.input.iter() {
@@ -5097,7 +5117,11 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 				}
 			}
 		}
-		Ok((None, None))
+		Ok(ChainActionUpdates {
+			channel_ready_msg: None,
+			announcement_sigs: None,
+			timed_out_htlcs: vec![]
+		})
 	}
 
 	/// When a new block is connected, we check the height of the block against outbound holding
@@ -5114,7 +5138,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 	pub fn best_block_updated<NS: Deref, L: Deref>(
 		&mut self, height: u32, highest_header_time: u32, genesis_block_hash: BlockHash,
 		node_signer: &NS, user_config: &UserConfig, logger: &L
-	) -> Result<(Option<msgs::ChannelReady>, Vec<(HTLCSource, PaymentHash)>, Option<msgs::AnnouncementSignatures>), ClosureReason>
+	) -> Result<ChainActionUpdates, ClosureReason>
 	where
 		NS::Target: NodeSigner,
 		L::Target: Logger
@@ -5125,7 +5149,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 	fn do_best_block_updated<NS: Deref, L: Deref>(
 		&mut self, height: u32, highest_header_time: u32,
 		genesis_node_signer: Option<(BlockHash, &NS, &UserConfig)>, logger: &L
-	) -> Result<(Option<msgs::ChannelReady>, Vec<(HTLCSource, PaymentHash)>, Option<msgs::AnnouncementSignatures>), ClosureReason>
+	) -> Result<ChainActionUpdates, ClosureReason>
 	where
 		NS::Target: NodeSigner,
 		L::Target: Logger
@@ -5154,7 +5178,11 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 				self.get_announcement_sigs(node_signer, genesis_block_hash, user_config, height, logger)
 			} else { None };
 			log_info!(logger, "Sending a channel_ready to our peer for channel {}", log_bytes!(self.channel_id));
-			return Ok((Some(channel_ready), timed_out_htlcs, announcement_sigs));
+			return Ok(ChainActionUpdates {
+				channel_ready_msg: Some(channel_ready), 
+				timed_out_htlcs, 
+				announcement_sigs
+			});
 		}
 
 		let non_shutdown_state = self.channel_state & (!MULTI_STATE_FLAGS);
@@ -5194,7 +5222,11 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		let announcement_sigs = if let Some((genesis_block_hash, node_signer, user_config)) = genesis_node_signer {
 			self.get_announcement_sigs(node_signer, genesis_block_hash, user_config, height, logger)
 		} else { None };
-		Ok((None, timed_out_htlcs, announcement_sigs))
+		Ok(ChainActionUpdates {
+			channel_ready_msg: None, 
+			timed_out_htlcs, 
+			announcement_sigs
+		})
 	}
 
 	/// Indicates the funding transaction is no longer confirmed in the main chain. This may
@@ -5210,10 +5242,10 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			// time we saw and it will be ignored.
 			let best_time = self.update_time_counter;
 			match self.do_best_block_updated(reorg_height, best_time, None::<(BlockHash, &&NodeSigner, &UserConfig)>, logger) {
-				Ok((channel_ready, timed_out_htlcs, announcement_sigs)) => {
-					assert!(channel_ready.is_none(), "We can't generate a funding with 0 confirmations?");
-					assert!(timed_out_htlcs.is_empty(), "We can't have accepted HTLCs with a timeout before our funding confirmation?");
-					assert!(announcement_sigs.is_none(), "We can't generate an announcement_sigs with 0 confirmations?");
+				Ok(chain_action_updates) => {
+					assert!(chain_action_updates.channel_ready_msg.is_none(), "We can't generate a funding with 0 confirmations?");
+					assert!(chain_action_updates.timed_out_htlcs.is_empty(), "We can't have accepted HTLCs with a timeout before our funding confirmation?");
+					assert!(chain_action_updates.announcement_sigs.is_none(), "We can't generate an announcement_sigs with 0 confirmations?");
 					Ok(())
 				},
 				Err(e) => Err(e)
