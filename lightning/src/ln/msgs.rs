@@ -51,6 +51,11 @@ use crate::routing::gossip::NodeId;
 /// 21 million * 10^8 * 1000
 pub(crate) const MAX_VALUE_MSAT: u64 = 21_000_000_0000_0000_000;
 
+#[cfg(taproot)]
+/// A partial signature that also contains the Musig2 nonce its signer used
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PartialSignatureWithNonce(pub musig2::types::PartialSignature, pub musig2::types::PublicNonce);
+
 /// An error in decoding a message or struct.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DecodeError {
