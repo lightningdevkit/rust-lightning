@@ -16,6 +16,9 @@ use crate::chain::channelmonitor::LATENCY_GRACE_PERIOD_BLOCKS;
 use crate::chain::channelmonitor::{ANTI_REORG_DELAY, Balance};
 use crate::chain::transaction::OutPoint;
 use crate::chain::chaininterface::LowerBoundedFeeEstimator;
+#[cfg(anchors)]
+use crate::events::bump_transaction::BumpTransactionEvent;
+use crate::events::{Event, MessageSendEvent, MessageSendEventsProvider, ClosureReason, HTLCDestination};
 use crate::ln::channel;
 #[cfg(anchors)]
 use crate::ln::chan_utils;
@@ -27,9 +30,6 @@ use crate::ln::msgs::ChannelMessageHandler;
 use crate::util::config::UserConfig;
 #[cfg(anchors)]
 use crate::util::crypto::sign;
-#[cfg(anchors)]
-use crate::util::events::BumpTransactionEvent;
-use crate::util::events::{Event, MessageSendEvent, MessageSendEventsProvider, ClosureReason, HTLCDestination};
 #[cfg(anchors)]
 use crate::util::ser::Writeable;
 #[cfg(anchors)]

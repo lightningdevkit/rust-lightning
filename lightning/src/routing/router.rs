@@ -255,7 +255,7 @@ pub struct Route {
 	/// This is used by `ChannelManager` to track information which may be required for retries,
 	/// provided back to you via [`Event::PaymentPathFailed`].
 	///
-	/// [`Event::PaymentPathFailed`]: crate::util::events::Event::PaymentPathFailed
+	/// [`Event::PaymentPathFailed`]: crate::events::Event::PaymentPathFailed
 	pub payment_params: Option<PaymentParameters>,
 }
 
@@ -340,7 +340,7 @@ impl Readable for Route {
 /// Passed to [`find_route`] and [`build_route_from_hops`], but also provided in
 /// [`Event::PaymentPathFailed`].
 ///
-/// [`Event::PaymentPathFailed`]: crate::util::events::Event::PaymentPathFailed
+/// [`Event::PaymentPathFailed`]: crate::events::Event::PaymentPathFailed
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RouteParameters {
 	/// The parameters of the failed payment path.
@@ -983,7 +983,7 @@ fn default_node_features() -> NodeFeatures {
 /// [`ChannelManager::list_usable_channels`] will never include such channels.
 ///
 /// [`ChannelManager::list_usable_channels`]: crate::ln::channelmanager::ChannelManager::list_usable_channels
-/// [`Event::PaymentPathFailed`]: crate::util::events::Event::PaymentPathFailed
+/// [`Event::PaymentPathFailed`]: crate::events::Event::PaymentPathFailed
 /// [`NetworkGraph`]: crate::routing::gossip::NetworkGraph
 pub fn find_route<L: Deref, GL: Deref, S: Score>(
 	our_node_pubkey: &PublicKey, route_params: &RouteParameters,

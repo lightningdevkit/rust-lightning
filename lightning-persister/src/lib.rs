@@ -143,8 +143,8 @@ mod tests {
 	use lightning::chain::chainmonitor::Persist;
 	use lightning::chain::transaction::OutPoint;
 	use lightning::{check_closed_broadcast, check_closed_event, check_added_monitors};
+	use lightning::events::{ClosureReason, MessageSendEventsProvider};
 	use lightning::ln::functional_test_utils::*;
-	use lightning::util::events::{ClosureReason, MessageSendEventsProvider};
 	use lightning::util::test_utils;
 	use std::fs;
 	use bitcoin::hashes::Hash;

@@ -21,6 +21,7 @@ use bitcoin::hash_types::BlockHash;
 use bitcoin::network::constants::Network;
 use bitcoin::blockdata::constants::genesis_block;
 
+use crate::events::{MessageSendEvent, MessageSendEventsProvider};
 use crate::ln::features::{ChannelFeatures, NodeFeatures, InitFeatures};
 use crate::ln::msgs::{DecodeError, ErrorAction, Init, LightningError, RoutingMessageHandler, NetAddress, MAX_VALUE_MSAT};
 use crate::ln::msgs::{ChannelAnnouncement, ChannelUpdate, NodeAnnouncement, GossipTimestampFilter};
@@ -29,7 +30,6 @@ use crate::ln::msgs;
 use crate::routing::utxo::{self, UtxoLookup};
 use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer, MaybeReadable};
 use crate::util::logger::{Logger, Level};
-use crate::util::events::{MessageSendEvent, MessageSendEventsProvider};
 use crate::util::scid_utils::{block_from_scid, scid_from_parts, MAX_SCID_BLOCK};
 use crate::util::string::PrintableString;
 use crate::util::indexed_map::{IndexedMap, Entry as IndexedMapEntry};
@@ -310,7 +310,7 @@ where U::Target: UtxoLookup, L::Target: Logger
 impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 	/// Handles any network updates originating from [`Event`]s.
 	///
-	/// [`Event`]: crate::util::events::Event
+	/// [`Event`]: crate::events::Event
 	pub fn handle_network_update(&self, network_update: &NetworkUpdate) {
 		match *network_update {
 			NetworkUpdate::ChannelUpdateMessage { ref msg } => {
@@ -1957,6 +1957,7 @@ impl ReadOnlyNetworkGraph<'_> {
 
 #[cfg(test)]
 pub(crate) mod tests {
+	use crate::events::{MessageSendEvent, MessageSendEventsProvider};
 	use crate::ln::channelmanager;
 	use crate::ln::chan_utils::make_funding_redeemscript;
 	#[cfg(feature = "std")]
@@ -1969,7 +1970,6 @@ pub(crate) mod tests {
 	use crate::util::config::UserConfig;
 	use crate::util::test_utils;
 	use crate::util::ser::{ReadableArgs, Readable, Writeable};
-	use crate::util::events::{MessageSendEvent, MessageSendEventsProvider};
 	use crate::util::scid_utils::scid_from_parts;
 
 	use crate::routing::gossip::REMOVED_ENTRIES_TRACKING_AGE_LIMIT_SECS;

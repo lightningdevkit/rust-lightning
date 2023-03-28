@@ -16,6 +16,7 @@ use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::secp256k1::{self, PublicKey, Scalar, Secp256k1, SecretKey};
 
 use crate::chain::keysinterface::{EntropySource, KeysManager, NodeSigner, Recipient};
+use crate::events::OnionMessageProvider;
 use crate::ln::features::{InitFeatures, NodeFeatures};
 use crate::ln::msgs::{self, OnionMessageHandler};
 use crate::ln::onion_utils;
@@ -24,7 +25,6 @@ use super::blinded_path::{BlindedPath, ForwardTlvs, ReceiveTlvs};
 pub use super::packet::{CustomOnionMessageContents, OnionMessageContents};
 use super::packet::{BIG_PACKET_HOP_DATA_LEN, ForwardControlTlvs, Packet, Payload, ReceiveControlTlvs, SMALL_PACKET_HOP_DATA_LEN};
 use super::utils;
-use crate::util::events::OnionMessageProvider;
 use crate::util::logger::Logger;
 use crate::util::ser::Writeable;
 

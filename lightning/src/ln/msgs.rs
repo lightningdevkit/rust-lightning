@@ -40,7 +40,7 @@ use core::fmt::Debug;
 use crate::io::{self, Read};
 use crate::io_extras::read_to_end;
 
-use crate::util::events::{MessageSendEventsProvider, OnionMessageProvider};
+use crate::events::{MessageSendEventsProvider, OnionMessageProvider};
 use crate::util::logger;
 use crate::util::ser::{LengthReadable, Readable, ReadableArgs, Writeable, Writer, FixedLengthReader, HighZeroBytesDroppedBigSize, Hostname};
 

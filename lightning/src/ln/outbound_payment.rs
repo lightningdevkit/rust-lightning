@@ -14,12 +14,12 @@ use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::secp256k1::{self, Secp256k1, SecretKey};
 
 use crate::chain::keysinterface::{EntropySource, NodeSigner, Recipient};
+use crate::events;
 use crate::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
 use crate::ln::channelmanager::{ChannelDetails, HTLCSource, IDEMPOTENCY_TIMEOUT_TICKS, PaymentId};
 use crate::ln::onion_utils::HTLCFailReason;
 use crate::routing::router::{InFlightHtlcs, PaymentParameters, Route, RouteHop, RouteParameters, RoutePath, Router};
 use crate::util::errors::APIError;
-use crate::util::events;
 use crate::util::logger::Logger;
 use crate::util::time::Time;
 #[cfg(all(not(feature = "no-std"), test))]
@@ -314,8 +314,8 @@ impl<T: Time> Display for PaymentAttemptsUsingTime<T> {
 /// may be surfaced later via [`Event::PaymentPathFailed`] and [`Event::PaymentFailed`].
 ///
 /// [`ChannelManager::send_payment_with_retry`]: crate::ln::channelmanager::ChannelManager::send_payment_with_retry
-/// [`Event::PaymentPathFailed`]: crate::util::events::Event::PaymentPathFailed
-/// [`Event::PaymentFailed`]: crate::util::events::Event::PaymentFailed
+/// [`Event::PaymentPathFailed`]: crate::events::Event::PaymentPathFailed
+/// [`Event::PaymentFailed`]: crate::events::Event::PaymentFailed
 #[derive(Clone, Debug)]
 pub enum RetryableSendFailure {
 	/// The provided [`PaymentParameters::expiry_time`] indicated that the payment has expired. Note
@@ -329,8 +329,8 @@ pub enum RetryableSendFailure {
 	/// yet completed (i.e. generated an [`Event::PaymentSent`] or [`Event::PaymentFailed`]).
 	///
 	/// [`PaymentId`]: crate::ln::channelmanager::PaymentId
-	/// [`Event::PaymentSent`]: crate::util::events::Event::PaymentSent
-	/// [`Event::PaymentFailed`]: crate::util::events::Event::PaymentFailed
+	/// [`Event::PaymentSent`]: crate::events::Event::PaymentSent
+	/// [`Event::PaymentFailed`]: crate::events::Event::PaymentFailed
 	DuplicatePayment,
 }
 
@@ -349,8 +349,8 @@ pub enum PaymentSendFailure {
 	/// Because the payment failed outright, no payment tracking is done and no
 	/// [`Event::PaymentPathFailed`] or [`Event::PaymentFailed`] events will be generated.
 	///
-	/// [`Event::PaymentPathFailed`]: crate::util::events::Event::PaymentPathFailed
-	/// [`Event::PaymentFailed`]: crate::util::events::Event::PaymentFailed
+	/// [`Event::PaymentPathFailed`]: crate::events::Event::PaymentPathFailed
+	/// [`Event::PaymentFailed`]: crate::events::Event::PaymentFailed
 	ParameterError(APIError),
 	/// A parameter in a single path which was passed to send_payment was invalid, preventing us
 	/// from attempting to send the payment at all.
@@ -363,8 +363,8 @@ pub enum PaymentSendFailure {
 	/// The results here are ordered the same as the paths in the route object which was passed to
 	/// send_payment.
 	///
-	/// [`Event::PaymentPathFailed`]: crate::util::events::Event::PaymentPathFailed
-	/// [`Event::PaymentFailed`]: crate::util::events::Event::PaymentFailed
+	/// [`Event::PaymentPathFailed`]: crate::events::Event::PaymentPathFailed
+	/// [`Event::PaymentFailed`]: crate::events::Event::PaymentFailed
 	PathParameterError(Vec<Result<(), APIError>>),
 	/// All paths which were attempted failed to send, with no channel state change taking place.
 	/// You can freely resend the payment in full (though you probably want to do so over different
@@ -373,15 +373,15 @@ pub enum PaymentSendFailure {
 	/// Because the payment failed outright, no payment tracking is done and no
 	/// [`Event::PaymentPathFailed`] or [`Event::PaymentFailed`] events will be generated.
 	///
-	/// [`Event::PaymentPathFailed`]: crate::util::events::Event::PaymentPathFailed
-	/// [`Event::PaymentFailed`]: crate::util::events::Event::PaymentFailed
+	/// [`Event::PaymentPathFailed`]: crate::events::Event::PaymentPathFailed
+	/// [`Event::PaymentFailed`]: crate::events::Event::PaymentFailed
 	AllFailedResendSafe(Vec<APIError>),
 	/// Indicates that a payment for the provided [`PaymentId`] is already in-flight and has not
 	/// yet completed (i.e. generated an [`Event::PaymentSent`] or [`Event::PaymentFailed`]).
 	///
 	/// [`PaymentId`]: crate::ln::channelmanager::PaymentId
-	/// [`Event::PaymentSent`]: crate::util::events::Event::PaymentSent
-	/// [`Event::PaymentFailed`]: crate::util::events::Event::PaymentFailed
+	/// [`Event::PaymentSent`]: crate::events::Event::PaymentSent
+	/// [`Event::PaymentFailed`]: crate::events::Event::PaymentFailed
 	DuplicatePayment,
 	/// Some paths that were attempted failed to send, though some paths may have succeeded. At least
 	/// some paths have irrevocably committed to the HTLC.
@@ -567,8 +567,8 @@ impl OutboundPayments {
 	/// Errors immediately on [`RetryableSendFailure`] error conditions. Otherwise, further errors may
 	/// be surfaced asynchronously via [`Event::PaymentPathFailed`] and [`Event::PaymentFailed`].
 	///
-	/// [`Event::PaymentPathFailed`]: crate::util::events::Event::PaymentPathFailed
-	/// [`Event::PaymentFailed`]: crate::util::events::Event::PaymentFailed
+	/// [`Event::PaymentPathFailed`]: crate::events::Event::PaymentPathFailed
+	/// [`Event::PaymentFailed`]: crate::events::Event::PaymentFailed
 	fn send_payment_internal<R: Deref, NS: Deref, ES: Deref, IH, SP, L: Deref>(
 		&self, payment_id: PaymentId, payment_hash: PaymentHash, payment_secret: &Option<PaymentSecret>,
 		keysend_preimage: Option<PaymentPreimage>, retry_strategy: Retry, route_params: RouteParameters,
@@ -1313,6 +1313,7 @@ mod tests {
 	use bitcoin::network::constants::Network;
 	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 
+	use crate::events::{Event, PathFailure};
 	use crate::ln::PaymentHash;
 	use crate::ln::channelmanager::PaymentId;
 	use crate::ln::features::{ChannelFeatures, NodeFeatures};
@@ -1322,7 +1323,6 @@ mod tests {
 	use crate::routing::router::{InFlightHtlcs, PaymentParameters, Route, RouteHop, RouteParameters};
 	use crate::sync::{Arc, Mutex};
 	use crate::util::errors::APIError;
-	use crate::util::events::{Event, PathFailure};
 	use crate::util::test_utils;
 
 	#[test]

@@ -665,12 +665,12 @@ mod test {
 	use bitcoin_hashes::{Hash, sha256};
 	use bitcoin_hashes::sha256::Hash as Sha256;
 	use lightning::chain::keysinterface::{EntropySource, PhantomKeysManager};
+	use lightning::events::{MessageSendEvent, MessageSendEventsProvider, Event};
 	use lightning::ln::{PaymentPreimage, PaymentHash};
 	use lightning::ln::channelmanager::{PhantomRouteHints, MIN_FINAL_CLTV_EXPIRY_DELTA, PaymentId};
 	use lightning::ln::functional_test_utils::*;
 	use lightning::ln::msgs::ChannelMessageHandler;
 	use lightning::routing::router::{PaymentParameters, RouteParameters, find_route};
-	use lightning::util::events::{MessageSendEvent, MessageSendEventsProvider, Event};
 	use lightning::util::test_utils;
 	use lightning::util::config::UserConfig;
 	use crate::utils::create_invoice_from_channelmanager_and_duration_since_epoch;

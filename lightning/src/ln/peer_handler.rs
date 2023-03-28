@@ -18,6 +18,7 @@
 use bitcoin::secp256k1::{self, Secp256k1, SecretKey, PublicKey};
 
 use crate::chain::keysinterface::{KeysManager, NodeSigner, Recipient};
+use crate::events::{MessageSendEvent, MessageSendEventsProvider, OnionMessageProvider};
 use crate::ln::features::{InitFeatures, NodeFeatures};
 use crate::ln::msgs;
 use crate::ln::msgs::{ChannelMessageHandler, LightningError, NetAddress, OnionMessageHandler, RoutingMessageHandler};
@@ -29,7 +30,6 @@ use crate::ln::wire::Encode;
 use crate::onion_message::{CustomOnionMessageContents, CustomOnionMessageHandler, SimpleArcOnionMessenger, SimpleRefOnionMessenger};
 use crate::routing::gossip::{NetworkGraph, P2PGossipSync, NodeId};
 use crate::util::atomic_counter::AtomicCounter;
-use crate::util::events::{MessageSendEvent, MessageSendEventsProvider, OnionMessageProvider};
 use crate::util::logger::Logger;
 
 use crate::prelude::*;
@@ -2194,11 +2194,11 @@ fn is_gossip_msg(type_id: u16) -> bool {
 #[cfg(test)]
 mod tests {
 	use crate::chain::keysinterface::{NodeSigner, Recipient};
+	use crate::events;
 	use crate::ln::peer_channel_encryptor::PeerChannelEncryptor;
 	use crate::ln::peer_handler::{PeerManager, MessageHandler, SocketDescriptor, IgnoringMessageHandler, filter_addresses};
 	use crate::ln::{msgs, wire};
 	use crate::ln::msgs::NetAddress;
-	use crate::util::events;
 	use crate::util::test_utils;
 
 	use bitcoin::secp256k1::SecretKey;
@@ -2349,7 +2349,7 @@ mod tests {
 						if peers[0].read_event(&mut fd_a, &b_data).is_err() { break; }
 
 						cfgs[0].chan_handler.pending_events.lock().unwrap()
-							.push(crate::util::events::MessageSendEvent::SendShutdown {
+							.push(crate::events::MessageSendEvent::SendShutdown {
 								node_id: peers[1].node_signer.get_node_id(Recipient::Node).unwrap(),
 								msg: msgs::Shutdown {
 									channel_id: [0; 32],
@@ -2357,7 +2357,7 @@ mod tests {
 								},
 							});
 						cfgs[1].chan_handler.pending_events.lock().unwrap()
-							.push(crate::util::events::MessageSendEvent::SendShutdown {
+							.push(crate::events::MessageSendEvent::SendShutdown {
 								node_id: peers[0].node_signer.get_node_id(Recipient::Node).unwrap(),
 								msg: msgs::Shutdown {
 									channel_id: [0; 32],

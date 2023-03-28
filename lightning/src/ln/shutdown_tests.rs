@@ -11,6 +11,7 @@
 
 use crate::chain::keysinterface::{EntropySource, SignerProvider};
 use crate::chain::transaction::OutPoint;
+use crate::events::{Event, MessageSendEvent, MessageSendEventsProvider, ClosureReason};
 use crate::ln::channelmanager::{self, PaymentSendFailure, PaymentId};
 use crate::routing::router::{PaymentParameters, get_route};
 use crate::ln::msgs;
@@ -18,7 +19,6 @@ use crate::ln::msgs::{ChannelMessageHandler, ErrorAction};
 use crate::ln::script::ShutdownScript;
 use crate::util::test_utils;
 use crate::util::test_utils::OnGetShutdownScriptpubkey;
-use crate::util::events::{Event, MessageSendEvent, MessageSendEventsProvider, ClosureReason};
 use crate::util::errors::APIError;
 use crate::util::config::UserConfig;
 use crate::util::string::UntrustedString;

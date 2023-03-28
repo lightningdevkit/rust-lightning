@@ -34,9 +34,9 @@ use bitcoin::{PackedLockTime, secp256k1, Sequence, Witness};
 use crate::util::transaction_utils;
 use crate::util::crypto::{hkdf_extract_expand_twice, sign};
 use crate::util::ser::{Writeable, Writer, Readable};
-#[cfg(anchors)]
-use crate::util::events::HTLCDescriptor;
 use crate::chain::transaction::OutPoint;
+#[cfg(anchors)]
+use crate::events::bump_transaction::HTLCDescriptor;
 use crate::ln::channel::ANCHOR_OUTPUT_VALUE_SATOSHI;
 use crate::ln::{chan_utils, PaymentPreimage};
 use crate::ln::chan_utils::{HTLCOutputInCommitment, make_funding_redeemscript, ChannelPublicKeys, HolderCommitmentTransaction, ChannelTransactionParameters, CommitmentTransaction, ClosingTransaction};
@@ -135,7 +135,7 @@ impl_writeable_tlv_based!(StaticPaymentOutputDescriptor, {
 /// outpoint describing which `txid` and output `index` is available, the full output which exists
 /// at that `txid`/`index`, and any keys or other information required to sign.
 ///
-/// [`SpendableOutputs`]: crate::util::events::Event::SpendableOutputs
+/// [`SpendableOutputs`]: crate::events::Event::SpendableOutputs
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SpendableOutputDescriptor {
 	/// An output to a script which was provided via [`SignerProvider`] directly, either from

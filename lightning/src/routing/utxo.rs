@@ -16,10 +16,10 @@
 use bitcoin::{BlockHash, TxOut};
 use bitcoin::hashes::hex::ToHex;
 
+use crate::events::MessageSendEvent;
 use crate::ln::chan_utils::make_funding_redeemscript_from_slices;
 use crate::ln::msgs::{self, LightningError, ErrorAction};
 use crate::routing::gossip::{NetworkGraph, NodeId, P2PGossipSync};
-use crate::util::events::MessageSendEvent;
 use crate::util::logger::{Level, Logger};
 use crate::util::ser::Writeable;
 

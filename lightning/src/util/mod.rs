@@ -15,7 +15,6 @@ pub(crate) mod fuzz_wrappers;
 #[macro_use]
 pub mod ser_macros;
 
-pub mod events;
 pub mod errors;
 pub mod ser;
 pub mod message_signing;
