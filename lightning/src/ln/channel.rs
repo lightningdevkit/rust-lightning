@@ -5332,6 +5332,8 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 				None => Builder::new().into_script(),
 			}),
 			channel_type: Some(self.channel_type.clone()),
+			#[cfg(taproot)]
+			next_local_nonce: None,
 		}
 	}
 
