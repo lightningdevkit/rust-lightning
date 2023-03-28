@@ -460,18 +460,23 @@ impl PackageSolvingData {
 			_ => { panic!("API Error!"); }
 		}
 	}
-	fn absolute_tx_timelock(&self, output_conf_height: u32) -> u32 {
-		// Get the absolute timelock at which this output can be spent given the height at which
-		// this output was confirmed. We use `output_conf_height + 1` as a safe default as we can
-		// be confirmed in the next block and transactions with time lock `current_height + 1`
-		// always propagate.
+	fn absolute_tx_timelock(&self, current_height: u32) -> u32 {
+		// We use `current_height + 1` as our default locktime to discourage fee sniping and because
+		// transactions with it always propagate.
 		let absolute_timelock = match self {
-			PackageSolvingData::RevokedOutput(_) => output_conf_height + 1,
-			PackageSolvingData::RevokedHTLCOutput(_) => output_conf_height + 1,
-			PackageSolvingData::CounterpartyOfferedHTLCOutput(_) => output_conf_height + 1,
-			PackageSolvingData::CounterpartyReceivedHTLCOutput(ref outp) => cmp::max(outp.htlc.cltv_expiry, output_conf_height + 1),
-			PackageSolvingData::HolderHTLCOutput(ref outp) => cmp::max(outp.cltv_expiry, output_conf_height + 1),
-			PackageSolvingData::HolderFundingOutput(_) => output_conf_height + 1,
+			PackageSolvingData::RevokedOutput(_) => current_height + 1,
+			PackageSolvingData::RevokedHTLCOutput(_) => current_height + 1,
+			PackageSolvingData::CounterpartyOfferedHTLCOutput(_) => current_height + 1,
+			PackageSolvingData::CounterpartyReceivedHTLCOutput(ref outp) => cmp::max(outp.htlc.cltv_expiry, current_height + 1),
+			// HTLC timeout/success transactions rely on a fixed timelock due to the counterparty's
+			// signature.
+			PackageSolvingData::HolderHTLCOutput(ref outp) => {
+				if outp.preimage.is_some() {
+					debug_assert_eq!(outp.cltv_expiry, 0);
+				}
+				outp.cltv_expiry
+			},
+			PackageSolvingData::HolderFundingOutput(_) => current_height + 1,
 		};
 		absolute_timelock
 	}
@@ -638,9 +643,36 @@ impl PackageTemplate {
 		}
 		amounts
 	}
-	pub(crate) fn package_timelock(&self) -> u32 {
-		self.inputs.iter().map(|(_, outp)| outp.absolute_tx_timelock(self.height_original))
-			.max().expect("There must always be at least one output to spend in a PackageTemplate")
+	pub(crate) fn package_locktime(&self, current_height: u32) -> u32 {
+		let locktime = self.inputs.iter().map(|(_, outp)| outp.absolute_tx_timelock(current_height))
+			.max().expect("There must always be at least one output to spend in a PackageTemplate");
+
+		// If we ever try to aggregate a `HolderHTLCOutput`s with another output type, we'll likely
+		// end up with an incorrect transaction locktime since the counterparty has included it in
+		// its HTLC signature. This should never happen unless we decide to aggregate outputs across
+		// different channel commitments.
+		#[cfg(debug_assertions)] {
+			if self.inputs.iter().any(|(_, outp)|
+				if let PackageSolvingData::HolderHTLCOutput(outp) = outp {
+					outp.preimage.is_some()
+				} else {
+					false
+				}
+			) {
+				debug_assert_eq!(locktime, 0);
+			};
+			for timeout_htlc_expiry in self.inputs.iter().filter_map(|(_, outp)|
+				if let PackageSolvingData::HolderHTLCOutput(outp) = outp {
+					if outp.preimage.is_none() {
+						Some(outp.cltv_expiry)
+					} else { None }
+				} else { None }
+			) {
+				debug_assert_eq!(locktime, timeout_htlc_expiry);
+			}
+		}
+
+		locktime
 	}
 	pub(crate) fn package_weight(&self, destination_script: &Script) -> usize {
 		let mut inputs_weight = 0;

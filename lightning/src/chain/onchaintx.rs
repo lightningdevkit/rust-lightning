@@ -654,16 +654,17 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner> OnchainTxHandler<ChannelSigner>
 					.find(|locked_package| locked_package.outpoints() == req.outpoints());
 				if let Some(package) = timelocked_equivalent_package {
 					log_info!(logger, "Ignoring second claim for outpoint {}:{}, we already have one which we're waiting on a timelock at {} for.",
-						req.outpoints()[0].txid, req.outpoints()[0].vout, package.package_timelock());
+						req.outpoints()[0].txid, req.outpoints()[0].vout, package.package_locktime(cur_height));
 					continue;
 				}
 
-				if req.package_timelock() > cur_height + 1 {
-					log_info!(logger, "Delaying claim of package until its timelock at {} (current height {}), the following outpoints are spent:", req.package_timelock(), cur_height);
+				let package_locktime = req.package_locktime(cur_height);
+				if package_locktime > cur_height + 1 {
+					log_info!(logger, "Delaying claim of package until its timelock at {} (current height {}), the following outpoints are spent:", package_locktime, cur_height);
 					for outpoint in req.outpoints() {
 						log_info!(logger, "  Outpoint {}", outpoint);
 					}
-					self.locktimed_packages.entry(req.package_timelock()).or_insert(Vec::new()).push(req);
+					self.locktimed_packages.entry(package_locktime).or_insert(Vec::new()).push(req);
 					continue;
 				}
 
