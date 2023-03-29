@@ -2426,7 +2426,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					}));
 				},
 				ClaimEvent::BumpHTLC {
-					target_feerate_sat_per_1000_weight, htlcs,
+					target_feerate_sat_per_1000_weight, htlcs, tx_lock_time,
 				} => {
 					let mut htlc_descriptors = Vec::with_capacity(htlcs.len());
 					for htlc in htlcs {
@@ -2444,6 +2444,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					ret.push(Event::BumpTransaction(BumpTransactionEvent::HTLCResolution {
 						target_feerate_sat_per_1000_weight,
 						htlc_descriptors,
+						tx_lock_time,
 					}));
 				}
 			}

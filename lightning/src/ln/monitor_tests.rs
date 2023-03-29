@@ -1775,7 +1775,7 @@ fn test_yield_anchors_events() {
 	let mut htlc_txs = Vec::with_capacity(2);
 	for event in holder_events {
 		match event {
-			Event::BumpTransaction(BumpTransactionEvent::HTLCResolution { htlc_descriptors, .. }) => {
+			Event::BumpTransaction(BumpTransactionEvent::HTLCResolution { htlc_descriptors, tx_lock_time, .. }) => {
 				assert_eq!(htlc_descriptors.len(), 1);
 				let htlc_descriptor = &htlc_descriptors[0];
 				let signer = nodes[0].keys_manager.derive_channel_keys(
@@ -1784,11 +1784,7 @@ fn test_yield_anchors_events() {
 				let per_commitment_point = signer.get_per_commitment_point(htlc_descriptor.per_commitment_number, &secp);
 				let mut htlc_tx = Transaction {
 					version: 2,
-					lock_time: if htlc_descriptor.htlc.offered {
-						PackedLockTime(htlc_descriptor.htlc.cltv_expiry)
-					} else {
-						PackedLockTime::ZERO
-					},
+					lock_time: tx_lock_time,
 					input: vec![
 						htlc_descriptor.unsigned_tx_input(), // HTLC input
 						TxIn { ..Default::default() } // Fee input
@@ -2064,7 +2060,7 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 		};
 		let mut descriptors = Vec::with_capacity(4);
 		for event in events {
-			if let Event::BumpTransaction(BumpTransactionEvent::HTLCResolution { mut htlc_descriptors, .. }) = event {
+			if let Event::BumpTransaction(BumpTransactionEvent::HTLCResolution { mut htlc_descriptors, tx_lock_time, .. }) = event {
 				assert_eq!(htlc_descriptors.len(), 2);
 				for htlc_descriptor in &htlc_descriptors {
 					assert!(!htlc_descriptor.htlc.offered);
@@ -2076,6 +2072,7 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 					htlc_tx.output.push(htlc_descriptor.tx_output(&per_commitment_point, &secp));
 				}
 				descriptors.append(&mut htlc_descriptors);
+				htlc_tx.lock_time = tx_lock_time;
 			} else {
 				panic!("Unexpected event");
 			}
