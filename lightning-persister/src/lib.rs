@@ -141,6 +141,7 @@ mod tests {
 	use bitcoin::{Txid, TxMerkleNode};
 	use lightning::chain::ChannelMonitorUpdateStatus;
 	use lightning::chain::chainmonitor::Persist;
+	use lightning::chain::channelmonitor::CLOSED_CHANNEL_UPDATE_ID;
 	use lightning::chain::transaction::OutPoint;
 	use lightning::{check_closed_broadcast, check_closed_event, check_added_monitors};
 	use lightning::events::{ClosureReason, MessageSendEventsProvider};
@@ -253,7 +254,7 @@ mod tests {
 		check_added_monitors!(nodes[1], 1);
 
 		// Make sure everything is persisted as expected after close.
-		check_persisted_data!(11);
+		check_persisted_data!(CLOSED_CHANNEL_UPDATE_ID);
 	}
 
 	// Test that if the persister's path to channel data is read-only, writing a

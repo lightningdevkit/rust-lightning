@@ -7354,6 +7354,7 @@ where
 		let mut id_to_peer = HashMap::with_capacity(cmp::min(channel_count as usize, 128));
 		let mut short_to_chan_info = HashMap::with_capacity(cmp::min(channel_count as usize, 128));
 		let mut channel_closures = Vec::new();
+		let mut pending_background_events = Vec::new();
 		for _ in 0..channel_count {
 			let mut channel: Channel<<SP::Target as SignerProvider>::Signer> = Channel::read(reader, (
 				&args.entropy_source, &args.signer_provider, best_block_height, &provided_channel_type_features(&args.default_config)
@@ -7383,9 +7384,11 @@ where
 					log_error!(args.logger, " The channel will be force-closed and the latest commitment transaction from the ChannelMonitor broadcast.");
 					log_error!(args.logger, " The ChannelMonitor for channel {} is at update_id {} but the ChannelManager is at update_id {}.",
 						log_bytes!(channel.channel_id()), monitor.get_latest_update_id(), channel.get_latest_monitor_update_id());
-					let (_, mut new_failed_htlcs) = channel.force_shutdown(true);
+					let (monitor_update, mut new_failed_htlcs) = channel.force_shutdown(true);
+					if let Some(monitor_update) = monitor_update {
+						pending_background_events.push(BackgroundEvent::ClosingMonitorUpdate(monitor_update));
+					}
 					failed_htlcs.append(&mut new_failed_htlcs);
-					monitor.broadcast_latest_holder_commitment_txn(&args.tx_broadcaster, &args.logger);
 					channel_closures.push(events::Event::ChannelClosed {
 						channel_id: channel.channel_id(),
 						user_channel_id: channel.get_user_id(),
@@ -7450,10 +7453,13 @@ where
 			}
 		}
 
-		for (funding_txo, monitor) in args.channel_monitors.iter_mut() {
+		for (funding_txo, _) in args.channel_monitors.iter() {
 			if !funding_txo_set.contains(funding_txo) {
-				log_info!(args.logger, "Broadcasting latest holder commitment transaction for closed channel {}", log_bytes!(funding_txo.to_channel_id()));
-				monitor.broadcast_latest_holder_commitment_txn(&args.tx_broadcaster, &args.logger);
+				let monitor_update = ChannelMonitorUpdate {
+					update_id: CLOSED_CHANNEL_UPDATE_ID,
+					updates: vec![ChannelMonitorUpdateStep::ChannelForceClosed { should_broadcast: true }],
+				};
+				pending_background_events.push(BackgroundEvent::ClosingMonitorUpdate((*funding_txo, monitor_update)));
 			}
 		}
 
@@ -7506,10 +7512,17 @@ where
 		}
 
 		let background_event_count: u64 = Readable::read(reader)?;
-		let mut pending_background_events_read: Vec<BackgroundEvent> = Vec::with_capacity(cmp::min(background_event_count as usize, MAX_ALLOC_SIZE/mem::size_of::<BackgroundEvent>()));
 		for _ in 0..background_event_count {
 			match <u8 as Readable>::read(reader)? {
-				0 => pending_background_events_read.push(BackgroundEvent::ClosingMonitorUpdate((Readable::read(reader)?, Readable::read(reader)?))),
+				0 => {
+					let (funding_txo, monitor_update): (OutPoint, ChannelMonitorUpdate) = (Readable::read(reader)?, Readable::read(reader)?);
+					if pending_background_events.iter().find(|e| {
+						let BackgroundEvent::ClosingMonitorUpdate((pending_funding_txo, pending_monitor_update)) = e;
+						*pending_funding_txo == funding_txo && *pending_monitor_update == monitor_update
+					}).is_none() {
+						pending_background_events.push(BackgroundEvent::ClosingMonitorUpdate((funding_txo, monitor_update)));
+					}
+				}
 				_ => return Err(DecodeError::InvalidValue),
 			}
 		}
@@ -7884,7 +7897,7 @@ where
 			per_peer_state: FairRwLock::new(per_peer_state),
 
 			pending_events: Mutex::new(pending_events_read),
-			pending_background_events: Mutex::new(pending_background_events_read),
+			pending_background_events: Mutex::new(pending_background_events),
 			total_consistency_lock: RwLock::new(()),
 			persistence_notifier: Notifier::new(),
 

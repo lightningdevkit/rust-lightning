@@ -69,34 +69,36 @@ use crate::sync::{Mutex, LockTestExt};
 /// much smaller than a full [`ChannelMonitor`]. However, for large single commitment transaction
 /// updates (e.g. ones during which there are hundreds of HTLCs pending on the commitment
 /// transaction), a single update may reach upwards of 1 MiB in serialized size.
-#[cfg_attr(any(test, fuzzing, feature = "_test_utils"), derive(PartialEq, Eq))]
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 #[must_use]
 pub struct ChannelMonitorUpdate {
 	pub(crate) updates: Vec<ChannelMonitorUpdateStep>,
 	/// The sequence number of this update. Updates *must* be replayed in-order according to this
 	/// sequence number (and updates may panic if they are not). The update_id values are strictly
-	/// increasing and increase by one for each new update, with one exception specified below.
+	/// increasing and increase by one for each new update, with two exceptions specified below.
 	///
 	/// This sequence number is also used to track up to which points updates which returned
 	/// [`ChannelMonitorUpdateStatus::InProgress`] have been applied to all copies of a given
 	/// ChannelMonitor when ChannelManager::channel_monitor_updated is called.
 	///
-	/// The only instance where update_id values are not strictly increasing is the case where we
-	/// allow post-force-close updates with a special update ID of [`CLOSED_CHANNEL_UPDATE_ID`]. See
-	/// its docs for more details.
+	/// The only instances we allow where update_id values are not strictly increasing have a
+	/// special update ID of [`CLOSED_CHANNEL_UPDATE_ID`]. This update ID is used for updates that
+	/// will force close the channel by broadcasting the latest commitment transaction or
+	/// special post-force-close updates, like providing preimages necessary to claim outputs on the
+	/// broadcast commitment transaction. See its docs for more details.
 	///
 	/// [`ChannelMonitorUpdateStatus::InProgress`]: super::ChannelMonitorUpdateStatus::InProgress
 	pub update_id: u64,
 }
 
-/// If:
-///    (1) a channel has been force closed and
-///    (2) we receive a preimage from a forward link that allows us to spend an HTLC output on
-///        this channel's (the backward link's) broadcasted commitment transaction
-/// then we allow the `ChannelManager` to send a `ChannelMonitorUpdate` with this update ID,
-/// with the update providing said payment preimage. No other update types are allowed after
-/// force-close.
+/// The update ID used for a [`ChannelMonitorUpdate`] that is either:
+///
+///	(1) attempting to force close the channel by broadcasting our latest commitment transaction or
+///	(2) providing a preimage (after the channel has been force closed) from a forward link that
+///		allows us to spend an HTLC output on this channel's (the backward link's) broadcasted
+///		commitment transaction.
+///
+/// No other [`ChannelMonitorUpdate`]s are allowed after force-close.
 pub const CLOSED_CHANNEL_UPDATE_ID: u64 = core::u64::MAX;
 
 impl Writeable for ChannelMonitorUpdate {
@@ -488,8 +490,7 @@ impl_writeable_tlv_based_enum_upgradable!(OnchainEvent,
 
 );
 
-#[cfg_attr(any(test, fuzzing, feature = "_test_utils"), derive(PartialEq, Eq))]
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) enum ChannelMonitorUpdateStep {
 	LatestHolderCommitmentTXInfo {
 		commitment_tx: HolderCommitmentTransaction,
@@ -1199,17 +1200,6 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 	{
 		self.inner.lock().unwrap().provide_payment_preimage(
 			payment_hash, payment_preimage, broadcaster, fee_estimator, logger)
-	}
-
-	pub(crate) fn broadcast_latest_holder_commitment_txn<B: Deref, L: Deref>(
-		&self,
-		broadcaster: &B,
-		logger: &L,
-	) where
-		B::Target: BroadcasterInterface,
-		L::Target: Logger,
-	{
-		self.inner.lock().unwrap().broadcast_latest_holder_commitment_txn(broadcaster, logger);
 	}
 
 	/// Updates a ChannelMonitor on the basis of some new information provided by the Channel
@@ -2265,14 +2255,22 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	{
 		log_info!(logger, "Applying update to monitor {}, bringing update_id from {} to {} with {} changes.",
 			log_funding_info!(self), self.latest_update_id, updates.update_id, updates.updates.len());
-		// ChannelMonitor updates may be applied after force close if we receive a
-		// preimage for a broadcasted commitment transaction HTLC output that we'd
-		// like to claim on-chain. If this is the case, we no longer have guaranteed
-		// access to the monitor's update ID, so we use a sentinel value instead.
+		// ChannelMonitor updates may be applied after force close if we receive a preimage for a
+		// broadcasted commitment transaction HTLC output that we'd like to claim on-chain. If this
+		// is the case, we no longer have guaranteed access to the monitor's update ID, so we use a
+		// sentinel value instead.
+		//
+		// The `ChannelManager` may also queue redundant `ChannelForceClosed` updates if it still
+		// thinks the channel needs to have its commitment transaction broadcast, so we'll allow
+		// them as well.
 		if updates.update_id == CLOSED_CHANNEL_UPDATE_ID {
 			assert_eq!(updates.updates.len(), 1);
 			match updates.updates[0] {
-				ChannelMonitorUpdateStep::PaymentPreimage { .. } => {},
+				ChannelMonitorUpdateStep::ChannelForceClosed { .. } => {},
+				// We should have already seen a `ChannelForceClosed` update if we're trying to
+				// provide a preimage at this point.
+				ChannelMonitorUpdateStep::PaymentPreimage { .. } =>
+					debug_assert_eq!(self.latest_update_id, CLOSED_CHANNEL_UPDATE_ID),
 				_ => {
 					log_error!(logger, "Attempted to apply post-force-close ChannelMonitorUpdate of type {}", updates.updates[0].variant_name());
 					panic!("Attempted to apply post-force-close ChannelMonitorUpdate that wasn't providing a payment preimage");
@@ -2364,6 +2362,13 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				},
 			}
 		}
+
+		// If the updates succeeded and we were in an already closed channel state, then there's no
+		// need to refuse any updates we expect to receive afer seeing a confirmed commitment.
+		if ret.is_ok() && updates.update_id == CLOSED_CHANNEL_UPDATE_ID && self.latest_update_id == updates.update_id {
+			return Ok(());
+		}
+
 		self.latest_update_id = updates.update_id;
 
 		if ret.is_ok() && self.funding_spend_seen {
