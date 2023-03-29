@@ -170,6 +170,19 @@ pub struct ChannelHandshakeConfig {
 	/// [`DecodeError::InvalidValue`]: crate::ln::msgs::DecodeError::InvalidValue
 	/// [`SIGHASH_SINGLE + update_fee Considered Harmful`]: https://lists.linuxfoundation.org/pipermail/lightning-dev/2020-September/002796.html
 	pub negotiate_anchors_zero_fee_htlc_tx: bool,
+
+	/// The maximum number of HTLCs in-flight from our counterparty towards us at the same time.
+	///
+	/// Increasing the value can help improve liquidity and stability in
+	/// routing at the cost of higher long term disk / DB usage.
+	///
+	/// Note: Versions of LDK earlier than v0.0.115 will fail to read channels with a configuration
+	/// other than the default value.
+	///
+	/// Default value: 50
+	/// Maximum value: 483, any values larger will be treated as 483.
+	///                     This is the BOLT #2 spec limit on `max_accepted_htlcs`.
+	pub our_max_accepted_htlcs: u16,
 }
 
 impl Default for ChannelHandshakeConfig {
@@ -185,6 +198,7 @@ impl Default for ChannelHandshakeConfig {
 			their_channel_reserve_proportional_millionths: 10_000,
 			#[cfg(anchors)]
 			negotiate_anchors_zero_fee_htlc_tx: false,
+			our_max_accepted_htlcs: 50,
 		}
 	}
 }

@@ -653,7 +653,7 @@ pub(super) struct Channel<Signer: ChannelSigner> {
 	pub counterparty_max_accepted_htlcs: u16,
 	#[cfg(not(test))]
 	counterparty_max_accepted_htlcs: u16,
-	//implied by OUR_MAX_HTLCS: max_accepted_htlcs: u16,
+	holder_max_accepted_htlcs: u16,
 	minimum_depth: Option<u32>,
 
 	counterparty_forwarding_info: Option<CounterpartyForwardingInfo>,
@@ -756,7 +756,7 @@ struct CommitmentTxInfoCached {
 	feerate: u32,
 }
 
-pub const OUR_MAX_HTLCS: u16 = 50; //TODO
+pub const DEFAULT_MAX_HTLCS: u16 = 50;
 
 pub(crate) fn commitment_tx_base_weight(opt_anchors: bool) -> u64 {
 	const COMMITMENT_TX_BASE_WEIGHT: u64 = 724;
@@ -1072,6 +1072,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			counterparty_htlc_minimum_msat: 0,
 			holder_htlc_minimum_msat: if config.channel_handshake_config.our_htlc_minimum_msat == 0 { 1 } else { config.channel_handshake_config.our_htlc_minimum_msat },
 			counterparty_max_accepted_htlcs: 0,
+			holder_max_accepted_htlcs: cmp::min(config.channel_handshake_config.our_max_accepted_htlcs, MAX_HTLCS),
 			minimum_depth: None, // Filled in in accept_channel
 
 			counterparty_forwarding_info: None,
@@ -1419,6 +1420,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			counterparty_htlc_minimum_msat: msg.htlc_minimum_msat,
 			holder_htlc_minimum_msat: if config.channel_handshake_config.our_htlc_minimum_msat == 0 { 1 } else { config.channel_handshake_config.our_htlc_minimum_msat },
 			counterparty_max_accepted_htlcs: msg.max_accepted_htlcs,
+			holder_max_accepted_htlcs: cmp::min(config.channel_handshake_config.our_max_accepted_htlcs, MAX_HTLCS),
 			minimum_depth: Some(cmp::max(config.channel_handshake_config.minimum_depth, 1)),
 
 			counterparty_forwarding_info: None,
@@ -2874,8 +2876,8 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 
 		let inbound_stats = self.get_inbound_pending_htlc_stats(None);
 		let outbound_stats = self.get_outbound_pending_htlc_stats(None);
-		if inbound_stats.pending_htlcs + 1 > OUR_MAX_HTLCS as u32 {
-			return Err(ChannelError::Close(format!("Remote tried to push more than our max accepted HTLCs ({})", OUR_MAX_HTLCS)));
+		if inbound_stats.pending_htlcs + 1 > self.holder_max_accepted_htlcs as u32 {
+			return Err(ChannelError::Close(format!("Remote tried to push more than our max accepted HTLCs ({})", self.holder_max_accepted_htlcs)));
 		}
 		if inbound_stats.pending_htlcs_value_msat + msg.amount_msat > self.holder_max_htlc_value_in_flight_msat {
 			return Err(ChannelError::Close(format!("Remote HTLC add would put them over our max HTLC value ({})", self.holder_max_htlc_value_in_flight_msat)));
@@ -5313,7 +5315,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			htlc_minimum_msat: self.holder_htlc_minimum_msat,
 			feerate_per_kw: self.feerate_per_kw as u32,
 			to_self_delay: self.get_holder_selected_contest_delay(),
-			max_accepted_htlcs: OUR_MAX_HTLCS,
+			max_accepted_htlcs: self.holder_max_accepted_htlcs,
 			funding_pubkey: keys.funding_pubkey,
 			revocation_basepoint: keys.revocation_basepoint,
 			payment_point: keys.payment_point,
@@ -5380,7 +5382,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			htlc_minimum_msat: self.holder_htlc_minimum_msat,
 			minimum_depth: self.minimum_depth.unwrap(),
 			to_self_delay: self.get_holder_selected_contest_delay(),
-			max_accepted_htlcs: OUR_MAX_HTLCS,
+			max_accepted_htlcs: self.holder_max_accepted_htlcs,
 			funding_pubkey: keys.funding_pubkey,
 			revocation_basepoint: keys.revocation_basepoint,
 			payment_point: keys.payment_point,
@@ -6496,6 +6498,8 @@ impl<Signer: WriteableEcdsaChannelSigner> Writeable for Channel<Signer> {
 		// we write the high bytes as an option here.
 		let user_id_high_opt = Some((self.user_id >> 64) as u64);
 
+		let holder_max_accepted_htlcs = if self.holder_max_accepted_htlcs == DEFAULT_MAX_HTLCS { None } else { Some(self.holder_max_accepted_htlcs) };
+
 		write_tlv_fields!(writer, {
 			(0, self.announcement_sigs, option),
 			// minimum_depth and counterparty_selected_channel_reserve_satoshis used to have a
@@ -6521,6 +6525,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Writeable for Channel<Signer> {
 			(23, channel_ready_event_emitted, option),
 			(25, user_id_high_opt, option),
 			(27, self.channel_keys_id, required),
+			(28, holder_max_accepted_htlcs, option),
 			(29, self.temporary_channel_id, option),
 			(31, channel_pending_event_emitted, option),
 		});
@@ -6589,7 +6594,8 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 		let value_to_self_msat = Readable::read(reader)?;
 
 		let pending_inbound_htlc_count: u64 = Readable::read(reader)?;
-		let mut pending_inbound_htlcs = Vec::with_capacity(cmp::min(pending_inbound_htlc_count as usize, OUR_MAX_HTLCS as usize));
+
+		let mut pending_inbound_htlcs = Vec::with_capacity(cmp::min(pending_inbound_htlc_count as usize, DEFAULT_MAX_HTLCS as usize));
 		for _ in 0..pending_inbound_htlc_count {
 			pending_inbound_htlcs.push(InboundHTLCOutput {
 				htlc_id: Readable::read(reader)?,
@@ -6607,7 +6613,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 		}
 
 		let pending_outbound_htlc_count: u64 = Readable::read(reader)?;
-		let mut pending_outbound_htlcs = Vec::with_capacity(cmp::min(pending_outbound_htlc_count as usize, OUR_MAX_HTLCS as usize));
+		let mut pending_outbound_htlcs = Vec::with_capacity(cmp::min(pending_outbound_htlc_count as usize, DEFAULT_MAX_HTLCS as usize));
 		for _ in 0..pending_outbound_htlc_count {
 			pending_outbound_htlcs.push(OutboundHTLCOutput {
 				htlc_id: Readable::read(reader)?,
@@ -6636,7 +6642,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 		}
 
 		let holding_cell_htlc_update_count: u64 = Readable::read(reader)?;
-		let mut holding_cell_htlc_updates = Vec::with_capacity(cmp::min(holding_cell_htlc_update_count as usize, OUR_MAX_HTLCS as usize*2));
+		let mut holding_cell_htlc_updates = Vec::with_capacity(cmp::min(holding_cell_htlc_update_count as usize, DEFAULT_MAX_HTLCS as usize*2));
 		for _ in 0..holding_cell_htlc_update_count {
 			holding_cell_htlc_updates.push(match <u8 as Readable>::read(reader)? {
 				0 => HTLCUpdateAwaitingACK::AddHTLC {
@@ -6669,13 +6675,13 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 		let monitor_pending_commitment_signed = Readable::read(reader)?;
 
 		let monitor_pending_forwards_count: u64 = Readable::read(reader)?;
-		let mut monitor_pending_forwards = Vec::with_capacity(cmp::min(monitor_pending_forwards_count as usize, OUR_MAX_HTLCS as usize));
+		let mut monitor_pending_forwards = Vec::with_capacity(cmp::min(monitor_pending_forwards_count as usize, DEFAULT_MAX_HTLCS as usize));
 		for _ in 0..monitor_pending_forwards_count {
 			monitor_pending_forwards.push((Readable::read(reader)?, Readable::read(reader)?));
 		}
 
 		let monitor_pending_failures_count: u64 = Readable::read(reader)?;
-		let mut monitor_pending_failures = Vec::with_capacity(cmp::min(monitor_pending_failures_count as usize, OUR_MAX_HTLCS as usize));
+		let mut monitor_pending_failures = Vec::with_capacity(cmp::min(monitor_pending_failures_count as usize, DEFAULT_MAX_HTLCS as usize));
 		for _ in 0..monitor_pending_failures_count {
 			monitor_pending_failures.push((Readable::read(reader)?, Readable::read(reader)?, Readable::read(reader)?));
 		}
@@ -6796,6 +6802,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 		let mut user_id_high_opt: Option<u64> = None;
 		let mut channel_keys_id: Option<[u8; 32]> = None;
 		let mut temporary_channel_id: Option<[u8; 32]> = None;
+		let mut holder_max_accepted_htlcs: Option<u16> = None;
 
 		read_tlv_fields!(reader, {
 			(0, announcement_sigs, option),
@@ -6816,6 +6823,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 			(23, channel_ready_event_emitted, option),
 			(25, user_id_high_opt, option),
 			(27, channel_keys_id, option),
+			(28, holder_max_accepted_htlcs, option),
 			(29, temporary_channel_id, option),
 			(31, channel_pending_event_emitted, option),
 		});
@@ -6870,6 +6878,8 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 		// separate u64 values.
 		let user_id = user_id_low as u128 + ((user_id_high_opt.unwrap_or(0) as u128) << 64);
 
+		let holder_max_accepted_htlcs = holder_max_accepted_htlcs.unwrap_or(DEFAULT_MAX_HTLCS);
+
 		Ok(Channel {
 			user_id,
 
@@ -6898,6 +6908,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 			cur_counterparty_commitment_transaction_number,
 			value_to_self_msat,
 
+			holder_max_accepted_htlcs,
 			pending_inbound_htlcs,
 			pending_outbound_htlcs,
 			holding_cell_htlc_updates,
