@@ -230,7 +230,7 @@ pub enum HTLCDestination {
 	///
 	/// Some of the reasons may include:
 	/// * HTLC Timeouts
-	/// * Expected MPP amount to claim does not equal HTLC total
+	/// * Expected MPP amount has already been reached
 	/// * Claimable amount does not match expected amount
 	FailedPayment {
 		/// The payment hash of the payment we attempted to process.
@@ -712,7 +712,7 @@ pub enum Event {
 	/// * Insufficient capacity in the outbound channel
 	/// * While waiting to forward the HTLC, the channel it is meant to be forwarded through closes
 	/// * When an unknown SCID is requested for forwarding a payment.
-	/// * Claiming an amount for an MPP payment that exceeds the HTLC total
+	/// * Expected MPP amount has already been reached
 	/// * The HTLC has timed out
 	///
 	/// This event, however, does not get generated if an HTLC fails to meet the forwarding

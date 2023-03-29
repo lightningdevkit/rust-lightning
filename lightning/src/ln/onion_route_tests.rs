@@ -552,7 +552,7 @@ fn test_onion_failure() {
 			for f in pending_forwards.iter_mut() {
 				match f {
 					&mut HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo { ref mut forward_info, .. }) =>
-						forward_info.outgoing_cltv_value += 1,
+						forward_info.outgoing_cltv_value -= 1,
 					_ => {},
 				}
 			}
@@ -600,6 +600,48 @@ fn test_onion_failure() {
 	}, ||{
 		nodes[2].node.fail_htlc_backwards(&payment_hash);
 	}, true, Some(23), None, None);
+}
+
+#[test]
+fn test_overshoot_final_cltv() {
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None; 3]);
+	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	create_announced_chan_between_nodes(&nodes, 0, 1);
+	create_announced_chan_between_nodes(&nodes, 1, 2);
+	let (route, payment_hash, payment_preimage, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], 40000);
+
+	let payment_id = PaymentId(nodes[0].keys_manager.backing.get_secure_random_bytes());
+	nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret), payment_id).unwrap();
+
+	check_added_monitors!(nodes[0], 1);
+	let update_0 = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+	let mut update_add_0 = update_0.update_add_htlcs[0].clone();
+	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &update_add_0);
+	commitment_signed_dance!(nodes[1], nodes[0], &update_0.commitment_signed, false, true);
+
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+	for (_, pending_forwards) in nodes[1].node.forward_htlcs.lock().unwrap().iter_mut() {
+		for f in pending_forwards.iter_mut() {
+			match f {
+				&mut HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo { ref mut forward_info, .. }) =>
+					forward_info.outgoing_cltv_value += 1,
+				_ => {},
+			}
+		}
+	}
+	expect_pending_htlcs_forwardable!(nodes[1]);
+
+	check_added_monitors!(&nodes[1], 1);
+	let update_1 = get_htlc_update_msgs!(nodes[1], nodes[2].node.get_our_node_id());
+	let mut update_add_1 = update_1.update_add_htlcs[0].clone();
+	nodes[2].node.handle_update_add_htlc(&nodes[1].node.get_our_node_id(), &update_add_1);
+	commitment_signed_dance!(nodes[2], nodes[1], update_1.commitment_signed, false, true);
+
+	expect_pending_htlcs_forwardable!(nodes[2]);
+	expect_payment_claimable!(nodes[2], payment_hash, payment_secret, 40_000);
+	claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_preimage);
 }
 
 fn do_test_onion_failure_stale_channel_update(announced_channel: bool) {
@@ -1096,7 +1138,7 @@ fn test_phantom_final_incorrect_cltv_expiry() {
 				&mut HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo {
 					forward_info: PendingHTLCInfo { ref mut outgoing_cltv_value, .. }, ..
 				}) => {
-					*outgoing_cltv_value += 1;
+					*outgoing_cltv_value -= 1;
 				},
 				_ => panic!("Unexpected forward"),
 			}
@@ -1114,7 +1156,7 @@ fn test_phantom_final_incorrect_cltv_expiry() {
 	commitment_signed_dance!(nodes[0], nodes[1], update_1.commitment_signed, false);
 
 	// Ensure the payment fails with the expected error.
-	let expected_cltv: u32 = 82;
+	let expected_cltv: u32 = 80;
 	let error_data = expected_cltv.to_be_bytes().to_vec();
 	let mut fail_conditions = PaymentFailedConditions::new()
 		.blamed_scid(phantom_scid)
