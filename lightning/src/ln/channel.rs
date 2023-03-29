@@ -5398,7 +5398,11 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			temporary_channel_id,
 			funding_txid: funding_txo.txid,
 			funding_output_index: funding_txo.index,
-			signature
+			signature,
+			#[cfg(taproot)]
+			partial_signature_with_nonce: None,
+			#[cfg(taproot)]
+			next_local_nonce: None,
 		})
 	}
 

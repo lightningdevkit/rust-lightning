@@ -267,6 +267,12 @@ pub struct FundingCreated {
 	pub funding_output_index: u16,
 	/// The signature of the channel initiator (funder) on the initial commitment transaction
 	pub signature: Signature,
+	#[cfg(taproot)]
+	/// The partial signature of the channel initiator (funder)
+	pub partial_signature_with_nonce: Option<PartialSignatureWithNonce>,
+	#[cfg(taproot)]
+	/// Next nonce the channel acceptor should use to finalize the funding output signature
+	pub next_local_nonce: Option<musig2::types::PublicNonce>
 }
 
 /// A [`funding_signed`] message to be sent to or received from a peer.
@@ -1405,12 +1411,23 @@ impl_writeable!(DecodedOnionErrorPacket, {
 	pad
 });
 
+#[cfg(not(taproot))]
 impl_writeable_msg!(FundingCreated, {
 	temporary_channel_id,
 	funding_txid,
 	funding_output_index,
 	signature
 }, {});
+#[cfg(taproot)]
+impl_writeable_msg!(FundingCreated, {
+	temporary_channel_id,
+	funding_txid,
+	funding_output_index,
+	signature
+}, {
+	(2, partial_signature_with_nonce, option),
+	(4, next_local_nonce, option)
+});
 
 impl_writeable_msg!(FundingSigned, {
 	channel_id,
@@ -2501,6 +2518,10 @@ mod tests {
 			funding_txid: Txid::from_hex("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap(),
 			funding_output_index: 255,
 			signature: sig_1,
+			#[cfg(taproot)]
+			partial_signature_with_nonce: None,
+			#[cfg(taproot)]
+			next_local_nonce: None,
 		};
 		let encoded_value = funding_created.encode();
 		let target_value = hex::decode("02020202020202020202020202020202020202020202020202020202020202026e96fe9f8b0ddcd729ba03cfafa5a27b050b39d354dd980814268dfa9a44d4c200ffd977cb9b53d93a6ff64bb5f1e158b4094b66e798fb12911168a3ccdf80a83096340a6a95da0ae8d9f776528eecdbb747eb6b545495a4319ed5378e35b21e073a").unwrap();
