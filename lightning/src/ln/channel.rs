@@ -5923,6 +5923,8 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			channel_id: self.channel_id,
 			signature,
 			htlc_signatures,
+			#[cfg(taproot)]
+			partial_signature_with_nonce: None,
 		}, (counterparty_commitment_txid, commitment_stats.htlcs_included)))
 	}
 

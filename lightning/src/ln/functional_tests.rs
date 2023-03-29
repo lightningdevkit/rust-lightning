@@ -735,7 +735,9 @@ fn test_update_fee_that_funder_cannot_afford() {
 	let commit_signed_msg = msgs::CommitmentSigned {
 		channel_id: chan.2,
 		signature: res.0,
-		htlc_signatures: res.1
+		htlc_signatures: res.1,
+		#[cfg(taproot)]
+		partial_signature_with_nonce: None,
 	};
 
 	let update_fee = msgs::UpdateFee {
@@ -1455,7 +1457,9 @@ fn test_fee_spike_violation_fails_htlc() {
 	let commit_signed_msg = msgs::CommitmentSigned {
 		channel_id: chan.2,
 		signature: res.0,
-		htlc_signatures: res.1
+		htlc_signatures: res.1,
+		#[cfg(taproot)]
+		partial_signature_with_nonce: None,
 	};
 
 	// Send the commitment_signed message to the nodes[1].

@@ -426,6 +426,9 @@ pub struct CommitmentSigned {
 	pub signature: Signature,
 	/// Signatures on the HTLC transactions
 	pub htlc_signatures: Vec<Signature>,
+	#[cfg(taproot)]
+	/// The partial Taproot signature on the commitment transaction
+	pub partial_signature_with_nonce: Option<PartialSignatureWithNonce>,
 }
 
 /// A [`revoke_and_ack`] message to be sent to or received from a peer.
@@ -1402,11 +1405,21 @@ impl_writeable!(ClosingSignedFeeRange, {
 	max_fee_satoshis
 });
 
+#[cfg(not(taproot))]
 impl_writeable_msg!(CommitmentSigned, {
 	channel_id,
 	signature,
 	htlc_signatures
 }, {});
+
+#[cfg(taproot)]
+impl_writeable_msg!(CommitmentSigned, {
+	channel_id,
+	signature,
+	htlc_signatures
+}, {
+	(2, partial_signature_with_nonce, option)
+});
 
 impl_writeable!(DecodedOnionErrorPacket, {
 	hmac,
@@ -2713,6 +2726,8 @@ mod tests {
 			channel_id: [2; 32],
 			signature: sig_1,
 			htlc_signatures: if htlcs { vec![sig_2, sig_3, sig_4] } else { Vec::new() },
+			#[cfg(taproot)]
+			partial_signature_with_nonce: None,
 		};
 		let encoded_value = commitment_signed.encode();
 		let mut target_value = hex::decode("0202020202020202020202020202020202020202020202020202020202020202d977cb9b53d93a6ff64bb5f1e158b4094b66e798fb12911168a3ccdf80a83096340a6a95da0ae8d9f776528eecdbb747eb6b545495a4319ed5378e35b21e073a").unwrap();
