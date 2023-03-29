@@ -442,6 +442,9 @@ pub struct RevokeAndACK {
 	pub per_commitment_secret: [u8; 32],
 	/// The next sender-broadcast commitment transaction's per-commitment point
 	pub next_per_commitment_point: PublicKey,
+	#[cfg(taproot)]
+	/// Musig nonce the recipient should use in their next commitment signature message
+	pub next_local_nonce: Option<musig2::types::PublicNonce>
 }
 
 /// An [`update_fee`] message to be sent to or received from a peer
@@ -1518,11 +1521,21 @@ impl_writeable_msg!(OpenChannel, {
 	(1, channel_type, option),
 });
 
+#[cfg(not(taproot))]
 impl_writeable_msg!(RevokeAndACK, {
 	channel_id,
 	per_commitment_secret,
 	next_per_commitment_point
 }, {});
+
+#[cfg(taproot)]
+impl_writeable_msg!(RevokeAndACK, {
+	channel_id,
+	per_commitment_secret,
+	next_per_commitment_point
+}, {
+	(4, next_local_nonce, option)
+});
 
 impl_writeable_msg!(Shutdown, {
 	channel_id,
@@ -2753,6 +2766,8 @@ mod tests {
 			channel_id: [2; 32],
 			per_commitment_secret: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
 			next_per_commitment_point: pubkey_1,
+			#[cfg(taproot)]
+			next_local_nonce: None,
 		};
 		let encoded_value = raa.encode();
 		let target_value = hex::decode("02020202020202020202020202020202020202020202020202020202020202020101010101010101010101010101010101010101010101010101010101010101031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f").unwrap();

@@ -3910,6 +3910,8 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			channel_id: self.channel_id,
 			per_commitment_secret,
 			next_per_commitment_point,
+			#[cfg(taproot)]
+			next_local_nonce: None,
 		}
 	}
 
