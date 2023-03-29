@@ -40,7 +40,7 @@ use crate::events::{Event, EventHandler, EventsProvider, MessageSendEvent, Messa
 // Since this struct is returned in `list_channels` methods, expose it here in case users want to
 // construct one themselves.
 use crate::ln::{inbound_payment, PaymentHash, PaymentPreimage, PaymentSecret};
-use crate::ln::channel::{Channel, ChannelError, ChannelUpdateStatus, UpdateFulfillCommitFetch, ChainActionUpdates};
+use crate::ln::channel::{Channel, ChannelError, ChannelUpdateStatus, UpdateFulfillCommitFetch, ChainActionUpdates, ChannelReadyStatus};
 use crate::ln::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
 #[cfg(any(feature = "_test_utils", test))]
 use crate::ln::features::InvoiceFeatures;
@@ -4425,13 +4425,12 @@ where
 			hash_map::Entry::Occupied(mut channel) => {
 				let best_block_height = self.best_block.read().unwrap().height();
 				let channel = channel.get_mut();
-				let (channel_ready_opt, _) = channel.check_get_channel_ready(best_block_height);
-				match channel_ready_opt {
-					Some(channel_ready) => {
+				match channel.check_get_channel_ready(best_block_height) {
+					ChannelReadyStatus::ReadyToSend(channel_ready) => {
 						channel.unset_requires_manual_readiness_signal();
 						send_channel_ready!(self, pending_msg_events, channel, channel_ready);
 					}
-					None => return Err(APIError::APIMisuseError { err: "The channel isn't currently in a state where we can signal readiness.".to_owned() })
+					_ => return Err(APIError::APIMisuseError { err: "The channel isn't currently in a state where we can signal readiness.".to_owned() })
 				}				
 			}
 			hash_map::Entry::Vacant(_) => {
