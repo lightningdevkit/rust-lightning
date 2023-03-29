@@ -2352,7 +2352,9 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 
 		Ok((msgs::FundingSigned {
 			channel_id: self.channel_id,
-			signature
+			signature,
+			#[cfg(taproot)]
+			partial_signature_with_nonce: None,
 		}, channel_monitor))
 	}
 

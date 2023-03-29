@@ -284,6 +284,9 @@ pub struct FundingSigned {
 	pub channel_id: [u8; 32],
 	/// The signature of the channel acceptor (fundee) on the initial commitment transaction
 	pub signature: Signature,
+	#[cfg(taproot)]
+	/// The partial signature of the channel acceptor (fundee)
+	pub partial_signature_with_nonce: Option<PartialSignatureWithNonce>,
 }
 
 /// A [`channel_ready`] message to be sent to or received from a peer.
@@ -1429,10 +1432,19 @@ impl_writeable_msg!(FundingCreated, {
 	(4, next_local_nonce, option)
 });
 
+#[cfg(not(taproot))]
 impl_writeable_msg!(FundingSigned, {
 	channel_id,
 	signature
 }, {});
+
+#[cfg(taproot)]
+impl_writeable_msg!(FundingSigned, {
+	channel_id,
+	signature
+}, {
+	(2, partial_signature_with_nonce, option)
+});
 
 impl_writeable_msg!(ChannelReady, {
 	channel_id,
@@ -2536,6 +2548,8 @@ mod tests {
 		let funding_signed = msgs::FundingSigned {
 			channel_id: [2; 32],
 			signature: sig_1,
+			#[cfg(taproot)]
+			partial_signature_with_nonce: None,
 		};
 		let encoded_value = funding_signed.encode();
 		let target_value = hex::decode("0202020202020202020202020202020202020202020202020202020202020202d977cb9b53d93a6ff64bb5f1e158b4094b66e798fb12911168a3ccdf80a83096340a6a95da0ae8d9f776528eecdbb747eb6b545495a4319ed5378e35b21e073a").unwrap();
