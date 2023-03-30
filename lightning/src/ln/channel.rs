@@ -304,6 +304,85 @@ const MULTI_STATE_FLAGS: u32 = BOTH_SIDES_SHUTDOWN_MASK | ChannelState::PeerDisc
 
 pub const INITIAL_COMMITMENT_NUMBER: u64 = (1 << 48) - 1;
 
+pub const DEFAULT_MAX_HTLCS: u16 = 50;
+
+pub(crate) fn commitment_tx_base_weight(opt_anchors: bool) -> u64 {
+	const COMMITMENT_TX_BASE_WEIGHT: u64 = 724;
+	const COMMITMENT_TX_BASE_ANCHOR_WEIGHT: u64 = 1124;
+	if opt_anchors { COMMITMENT_TX_BASE_ANCHOR_WEIGHT } else { COMMITMENT_TX_BASE_WEIGHT }
+}
+
+#[cfg(not(test))]
+const COMMITMENT_TX_WEIGHT_PER_HTLC: u64 = 172;
+#[cfg(test)]
+pub const COMMITMENT_TX_WEIGHT_PER_HTLC: u64 = 172;
+
+pub const ANCHOR_OUTPUT_VALUE_SATOSHI: u64 = 330;
+
+/// The percentage of the channel value `holder_max_htlc_value_in_flight_msat` used to be set to,
+/// before this was made configurable. The percentage was made configurable in LDK 0.0.107,
+/// although LDK 0.0.104+ enabled serialization of channels with a different value set for
+/// `holder_max_htlc_value_in_flight_msat`.
+pub const MAX_IN_FLIGHT_PERCENT_LEGACY: u8 = 10;
+
+/// Maximum `funding_satoshis` value according to the BOLT #2 specification, if
+/// `option_support_large_channel` (aka wumbo channels) is not supported.
+/// It's 2^24 - 1.
+pub const MAX_FUNDING_SATOSHIS_NO_WUMBO: u64 = (1 << 24) - 1;
+
+/// Total bitcoin supply in satoshis.
+pub const TOTAL_BITCOIN_SUPPLY_SATOSHIS: u64 = 21_000_000 * 1_0000_0000;
+
+/// The maximum network dust limit for standard script formats. This currently represents the
+/// minimum output value for a P2SH output before Bitcoin Core 22 considers the entire
+/// transaction non-standard and thus refuses to relay it.
+/// We also use this as the maximum counterparty `dust_limit_satoshis` allowed, given many
+/// implementations use this value for their dust limit today.
+pub const MAX_STD_OUTPUT_DUST_LIMIT_SATOSHIS: u64 = 546;
+
+/// The maximum channel dust limit we will accept from our counterparty.
+pub const MAX_CHAN_DUST_LIMIT_SATOSHIS: u64 = MAX_STD_OUTPUT_DUST_LIMIT_SATOSHIS;
+
+/// The dust limit is used for both the commitment transaction outputs as well as the closing
+/// transactions. For cooperative closing transactions, we require segwit outputs, though accept
+/// *any* segwit scripts, which are allowed to be up to 42 bytes in length.
+/// In order to avoid having to concern ourselves with standardness during the closing process, we
+/// simply require our counterparty to use a dust limit which will leave any segwit output
+/// standard.
+/// See <https://github.com/lightning/bolts/issues/905> for more details.
+pub const MIN_CHAN_DUST_LIMIT_SATOSHIS: u64 = 354;
+
+// Just a reasonable implementation-specific safe lower bound, higher than the dust limit.
+pub const MIN_THEIR_CHAN_RESERVE_SATOSHIS: u64 = 1000;
+
+/// Used to return a simple Error back to ChannelManager. Will get converted to a
+/// msgs::ErrorAction::SendErrorMessage or msgs::ErrorAction::IgnoreError as appropriate with our
+/// channel_id in ChannelManager.
+pub(super) enum ChannelError {
+	Ignore(String),
+	Warn(String),
+	Close(String),
+}
+
+impl fmt::Debug for ChannelError {
+	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+		match self {
+			&ChannelError::Ignore(ref e) => write!(f, "Ignore : {}", e),
+			&ChannelError::Warn(ref e) => write!(f, "Warn : {}", e),
+			&ChannelError::Close(ref e) => write!(f, "Close : {}", e),
+		}
+	}
+}
+
+macro_rules! secp_check {
+	($res: expr, $err: expr) => {
+		match $res {
+			Ok(thing) => thing,
+			Err(_) => return Err(ChannelError::Close($err)),
+		}
+	};
+}
+
 /// The "channel disabled" bit in channel_update must be set based on whether we are connected to
 /// our counterparty or not. However, we don't want to announce updates right away to avoid
 /// spamming the network with updates if the connection is flapping. Instead, we "stage" updates to
@@ -1872,85 +1951,6 @@ struct CommitmentTxInfoCached {
 	next_holder_htlc_id: u64,
 	next_counterparty_htlc_id: u64,
 	feerate: u32,
-}
-
-pub const DEFAULT_MAX_HTLCS: u16 = 50;
-
-pub(crate) fn commitment_tx_base_weight(opt_anchors: bool) -> u64 {
-	const COMMITMENT_TX_BASE_WEIGHT: u64 = 724;
-	const COMMITMENT_TX_BASE_ANCHOR_WEIGHT: u64 = 1124;
-	if opt_anchors { COMMITMENT_TX_BASE_ANCHOR_WEIGHT } else { COMMITMENT_TX_BASE_WEIGHT }
-}
-
-#[cfg(not(test))]
-const COMMITMENT_TX_WEIGHT_PER_HTLC: u64 = 172;
-#[cfg(test)]
-pub const COMMITMENT_TX_WEIGHT_PER_HTLC: u64 = 172;
-
-pub const ANCHOR_OUTPUT_VALUE_SATOSHI: u64 = 330;
-
-/// The percentage of the channel value `holder_max_htlc_value_in_flight_msat` used to be set to,
-/// before this was made configurable. The percentage was made configurable in LDK 0.0.107,
-/// although LDK 0.0.104+ enabled serialization of channels with a different value set for
-/// `holder_max_htlc_value_in_flight_msat`.
-pub const MAX_IN_FLIGHT_PERCENT_LEGACY: u8 = 10;
-
-/// Maximum `funding_satoshis` value according to the BOLT #2 specification, if
-/// `option_support_large_channel` (aka wumbo channels) is not supported.
-/// It's 2^24 - 1.
-pub const MAX_FUNDING_SATOSHIS_NO_WUMBO: u64 = (1 << 24) - 1;
-
-/// Total bitcoin supply in satoshis.
-pub const TOTAL_BITCOIN_SUPPLY_SATOSHIS: u64 = 21_000_000 * 1_0000_0000;
-
-/// The maximum network dust limit for standard script formats. This currently represents the
-/// minimum output value for a P2SH output before Bitcoin Core 22 considers the entire
-/// transaction non-standard and thus refuses to relay it.
-/// We also use this as the maximum counterparty `dust_limit_satoshis` allowed, given many
-/// implementations use this value for their dust limit today.
-pub const MAX_STD_OUTPUT_DUST_LIMIT_SATOSHIS: u64 = 546;
-
-/// The maximum channel dust limit we will accept from our counterparty.
-pub const MAX_CHAN_DUST_LIMIT_SATOSHIS: u64 = MAX_STD_OUTPUT_DUST_LIMIT_SATOSHIS;
-
-/// The dust limit is used for both the commitment transaction outputs as well as the closing
-/// transactions. For cooperative closing transactions, we require segwit outputs, though accept
-/// *any* segwit scripts, which are allowed to be up to 42 bytes in length.
-/// In order to avoid having to concern ourselves with standardness during the closing process, we
-/// simply require our counterparty to use a dust limit which will leave any segwit output
-/// standard.
-/// See <https://github.com/lightning/bolts/issues/905> for more details.
-pub const MIN_CHAN_DUST_LIMIT_SATOSHIS: u64 = 354;
-
-// Just a reasonable implementation-specific safe lower bound, higher than the dust limit.
-pub const MIN_THEIR_CHAN_RESERVE_SATOSHIS: u64 = 1000;
-
-/// Used to return a simple Error back to ChannelManager. Will get converted to a
-/// msgs::ErrorAction::SendErrorMessage or msgs::ErrorAction::IgnoreError as appropriate with our
-/// channel_id in ChannelManager.
-pub(super) enum ChannelError {
-	Ignore(String),
-	Warn(String),
-	Close(String),
-}
-
-impl fmt::Debug for ChannelError {
-	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-		match self {
-			&ChannelError::Ignore(ref e) => write!(f, "Ignore : {}", e),
-			&ChannelError::Warn(ref e) => write!(f, "Warn : {}", e),
-			&ChannelError::Close(ref e) => write!(f, "Close : {}", e),
-		}
-	}
-}
-
-macro_rules! secp_check {
-	($res: expr, $err: expr) => {
-		match $res {
-			Ok(thing) => thing,
-			Err(_) => return Err(ChannelError::Close($err)),
-		}
-	};
 }
 
 impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
