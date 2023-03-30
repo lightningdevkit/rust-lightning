@@ -2731,20 +2731,22 @@ fn test_htlc_on_chain_success() {
 	}
 	let chan_id = Some(chan_1.2);
 	match forwarded_events[1] {
-		Event::PaymentForwarded { fee_earned_msat, prev_channel_id, claim_from_onchain_tx, next_channel_id } => {
+		Event::PaymentForwarded { fee_earned_msat, prev_channel_id, claim_from_onchain_tx, next_channel_id, outbound_amount_forwarded_msat } => {
 			assert_eq!(fee_earned_msat, Some(1000));
 			assert_eq!(prev_channel_id, chan_id);
 			assert_eq!(claim_from_onchain_tx, true);
 			assert_eq!(next_channel_id, Some(chan_2.2));
+			assert_eq!(outbound_amount_forwarded_msat, Some(3000000));
 		},
 		_ => panic!()
 	}
 	match forwarded_events[2] {
-		Event::PaymentForwarded { fee_earned_msat, prev_channel_id, claim_from_onchain_tx, next_channel_id } => {
+		Event::PaymentForwarded { fee_earned_msat, prev_channel_id, claim_from_onchain_tx, next_channel_id, outbound_amount_forwarded_msat } => {
 			assert_eq!(fee_earned_msat, Some(1000));
 			assert_eq!(prev_channel_id, chan_id);
 			assert_eq!(claim_from_onchain_tx, true);
 			assert_eq!(next_channel_id, Some(chan_2.2));
+			assert_eq!(outbound_amount_forwarded_msat, Some(3000000));
 		},
 		_ => panic!()
 	}
@@ -4653,11 +4655,12 @@ fn test_onchain_to_onchain_claim() {
 		_ => panic!("Unexpected event"),
 	}
 	match events[1] {
-		Event::PaymentForwarded { fee_earned_msat, prev_channel_id, claim_from_onchain_tx, next_channel_id } => {
+		Event::PaymentForwarded { fee_earned_msat, prev_channel_id, claim_from_onchain_tx, next_channel_id, outbound_amount_forwarded_msat } => {
 			assert_eq!(fee_earned_msat, Some(1000));
 			assert_eq!(prev_channel_id, Some(chan_1.2));
 			assert_eq!(claim_from_onchain_tx, true);
 			assert_eq!(next_channel_id, Some(chan_2.2));
+			assert_eq!(outbound_amount_forwarded_msat, Some(3000000));
 		},
 		_ => panic!("Unexpected event"),
 	}

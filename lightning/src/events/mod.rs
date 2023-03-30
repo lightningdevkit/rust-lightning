@@ -603,6 +603,10 @@ pub enum Event {
 		/// If this is `true`, the forwarded HTLC was claimed by our counterparty via an on-chain
 		/// transaction.
 		claim_from_onchain_tx: bool,
+		/// The final amount forwarded, in milli-satoshis, after the fee is deducted.
+		///
+		/// The caveat described above the `fee_earned_msat` field applies here as well.
+		outbound_amount_forwarded_msat: Option<u64>,
 	},
 	/// Used to indicate that a channel with the given `channel_id` is ready to
 	/// be used. This event is emitted either when the funding transaction has been confirmed
@@ -820,13 +824,17 @@ impl Writeable for Event {
 					(8, expected_outbound_amount_msat, required),
 				});
 			}
-			&Event::PaymentForwarded { fee_earned_msat, prev_channel_id, claim_from_onchain_tx, next_channel_id } => {
+			&Event::PaymentForwarded {
+				fee_earned_msat, prev_channel_id, claim_from_onchain_tx,
+				next_channel_id, outbound_amount_forwarded_msat
+			} => {
 				7u8.write(writer)?;
 				write_tlv_fields!(writer, {
 					(0, fee_earned_msat, option),
 					(1, prev_channel_id, option),
 					(2, claim_from_onchain_tx, required),
 					(3, next_channel_id, option),
+					(5, outbound_amount_forwarded_msat, option),
 				});
 			},
 			&Event::ChannelClosed { ref channel_id, ref user_channel_id, ref reason } => {
@@ -1078,13 +1086,18 @@ impl MaybeReadable for Event {
 					let mut prev_channel_id = None;
 					let mut claim_from_onchain_tx = false;
 					let mut next_channel_id = None;
+					let mut outbound_amount_forwarded_msat = None;
 					read_tlv_fields!(reader, {
 						(0, fee_earned_msat, option),
 						(1, prev_channel_id, option),
 						(2, claim_from_onchain_tx, required),
 						(3, next_channel_id, option),
+						(5, outbound_amount_forwarded_msat, option),
 					});
-					Ok(Some(Event::PaymentForwarded { fee_earned_msat, prev_channel_id, claim_from_onchain_tx, next_channel_id }))
+					Ok(Some(Event::PaymentForwarded {
+						fee_earned_msat, prev_channel_id, claim_from_onchain_tx, next_channel_id,
+						outbound_amount_forwarded_msat
+					}))
 				};
 				f()
 			},
