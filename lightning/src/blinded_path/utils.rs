@@ -16,11 +16,13 @@ use bitcoin::secp256k1::{self, PublicKey, Secp256k1, SecretKey, Scalar};
 use bitcoin::secp256k1::ecdh::SharedSecret;
 
 use super::BlindedPath;
+use crate::ln::msgs::DecodeError;
 use crate::ln::onion_utils;
 use crate::onion_message::Destination;
 use crate::util::chacha20poly1305rfc::ChaChaPolyWriteAdapter;
-use crate::util::ser::{VecWriter, Writeable};
+use crate::util::ser::{Readable, VecWriter, Writeable};
 
+use crate::io;
 use crate::prelude::*;
 
 // TODO: DRY with onion_utils::construct_onion_keys_callback
@@ -107,3 +109,17 @@ pub(super) fn encrypt_payload<P: Writeable>(payload: P, encrypted_tlvs_ss: [u8; 
 	writer.0
 }
 
+/// Blinded path encrypted payloads may be padded to ensure they are equal length.
+///
+/// Reads padding to the end, ignoring what's read.
+pub(crate) struct Padding {}
+impl Readable for Padding {
+	#[inline]
+	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
+		loop {
+			let mut buf = [0; 8192];
+			if reader.read(&mut buf[..])? == 0 { break; }
+		}
+		Ok(Self {})
+	}
+}

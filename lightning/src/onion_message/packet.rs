@@ -14,6 +14,7 @@ use bitcoin::secp256k1::ecdh::SharedSecret;
 
 use crate::blinded_path::BlindedPath;
 use crate::blinded_path::message::{ForwardTlvs, ReceiveTlvs};
+use crate::blinded_path::utils::Padding;
 use crate::ln::msgs::DecodeError;
 use crate::ln::onion_utils;
 use super::messenger::CustomOnionMessageHandler;
@@ -304,18 +305,5 @@ impl Readable for ControlTlvs {
 		};
 
 		Ok(payload_fmt)
-	}
-}
-
-/// Reads padding to the end, ignoring what's read.
-pub(crate) struct Padding {}
-impl Readable for Padding {
-	#[inline]
-	fn read<R: Read>(reader: &mut R) -> Result<Self, DecodeError> {
-		loop {
-			let mut buf = [0; 8192];
-			if reader.read(&mut buf[..])? == 0 { break; }
-		}
-		Ok(Self {})
 	}
 }
