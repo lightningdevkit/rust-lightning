@@ -7,8 +7,6 @@ use crate::http::{HttpClient, HttpEndpoint, HttpError, JsonResponse};
 use bitcoin::hash_types::BlockHash;
 use bitcoin::hashes::hex::ToHex;
 
-use futures_util::lock::Mutex;
-
 use serde_json;
 
 use std::convert::TryFrom;
@@ -41,7 +39,6 @@ impl Error for RpcError {}
 pub struct RpcClient {
 	basic_auth: String,
 	endpoint: HttpEndpoint,
-	client: Mutex<HttpClient>,
 	id: AtomicUsize,
 }
 
@@ -50,11 +47,9 @@ impl RpcClient {
 	/// credentials should be a base64 encoding of a user name and password joined by a colon, as is
 	/// required for HTTP basic access authentication.
 	pub fn new(credentials: &str, endpoint: HttpEndpoint) -> std::io::Result<Self> {
-		let client = Mutex::new(HttpClient::connect(&endpoint)?);
 		Ok(Self {
 			basic_auth: "Basic ".to_string() + credentials,
 			endpoint,
-			client,
 			id: AtomicUsize::new(0),
 		})
 	}
@@ -73,7 +68,8 @@ impl RpcClient {
 			"id": &self.id.fetch_add(1, Ordering::AcqRel).to_string()
 		});
 
-		let mut response = match self.client.lock().await.post::<JsonResponse>(&uri, &host, &self.basic_auth, content).await {
+		let mut client = HttpClient::connect(&self.endpoint)?;
+		let mut response = match client.post::<JsonResponse>(&uri, &host, &self.basic_auth, content).await {
 			Ok(JsonResponse(response)) => response,
 			Err(e) if e.kind() == std::io::ErrorKind::Other => {
 				match e.get_ref().unwrap().downcast_ref::<HttpError>() {
