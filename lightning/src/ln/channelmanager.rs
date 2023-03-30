@@ -1623,6 +1623,36 @@ macro_rules! handle_new_monitor_update {
 	}
 }
 
+macro_rules! process_events_body {
+	($self: expr, $event_to_handle: expr, $handle_event: expr) => {
+		// We'll acquire our total consistency lock until the returned future completes so that
+		// we can be sure no other persists happen while processing events.
+		let _read_guard = $self.total_consistency_lock.read().unwrap();
+
+		let mut result = NotifyOption::SkipPersist;
+
+		// TODO: This behavior should be documented. It's unintuitive that we query
+		// ChannelMonitors when clearing other events.
+		if $self.process_pending_monitor_events() {
+			result = NotifyOption::DoPersist;
+		}
+
+		let pending_events = mem::replace(&mut *$self.pending_events.lock().unwrap(), vec![]);
+		if !pending_events.is_empty() {
+			result = NotifyOption::DoPersist;
+		}
+
+		for event in pending_events {
+			$event_to_handle = event;
+			$handle_event;
+		}
+
+		if result == NotifyOption::DoPersist {
+			$self.persistence_notifier.notify();
+		}
+	}
+}
+
 impl<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, L: Deref> ChannelManager<M, T, ES, NS, SP, F, R, L>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::Signer>,
@@ -5720,30 +5750,8 @@ where
 	pub async fn process_pending_events_async<Future: core::future::Future, H: Fn(Event) -> Future>(
 		&self, handler: H
 	) {
-		// We'll acquire our total consistency lock until the returned future completes so that
-		// we can be sure no other persists happen while processing events.
-		let _read_guard = self.total_consistency_lock.read().unwrap();
-
-		let mut result = NotifyOption::SkipPersist;
-
-		// TODO: This behavior should be documented. It's unintuitive that we query
-		// ChannelMonitors when clearing other events.
-		if self.process_pending_monitor_events() {
-			result = NotifyOption::DoPersist;
-		}
-
-		let pending_events = mem::replace(&mut *self.pending_events.lock().unwrap(), vec![]);
-		if !pending_events.is_empty() {
-			result = NotifyOption::DoPersist;
-		}
-
-		for event in pending_events {
-			handler(event).await;
-		}
-
-		if result == NotifyOption::DoPersist {
-			self.persistence_notifier.notify();
-		}
+		let mut ev;
+		process_events_body!(self, ev, { handler(ev).await });
 	}
 }
 
@@ -5825,26 +5833,8 @@ where
 	/// An [`EventHandler`] may safely call back to the provider in order to handle an event.
 	/// However, it must not call [`Writeable::write`] as doing so would result in a deadlock.
 	fn process_pending_events<H: Deref>(&self, handler: H) where H::Target: EventHandler {
-		PersistenceNotifierGuard::optionally_notify(&self.total_consistency_lock, &self.persistence_notifier, || {
-			let mut result = NotifyOption::SkipPersist;
-
-			// TODO: This behavior should be documented. It's unintuitive that we query
-			// ChannelMonitors when clearing other events.
-			if self.process_pending_monitor_events() {
-				result = NotifyOption::DoPersist;
-			}
-
-			let pending_events = mem::replace(&mut *self.pending_events.lock().unwrap(), vec![]);
-			if !pending_events.is_empty() {
-				result = NotifyOption::DoPersist;
-			}
-
-			for event in pending_events {
-				handler.handle_event(event);
-			}
-
-			result
-		});
+		let mut ev;
+		process_events_body!(self, ev, handler.handle_event(ev));
 	}
 }
 
