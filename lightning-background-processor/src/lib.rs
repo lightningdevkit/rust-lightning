@@ -53,7 +53,7 @@ use std::thread::{self, JoinHandle};
 use std::time::Instant;
 
 #[cfg(feature = "futures")]
-use futures_util::{select_biased, future::FutureExt, task};
+use futures_util::task;
 #[cfg(not(feature = "std"))]
 use alloc::vec::Vec;
 
@@ -384,6 +384,40 @@ macro_rules! define_run_body {
 	} }
 }
 
+#[cfg(feature = "futures")]
+use core::future::Future;
+#[cfg(feature = "futures")]
+use core::task::Poll;
+#[cfg(feature = "futures")]
+use core::pin::Pin;
+#[cfg(feature = "futures")]
+use core::marker::Unpin;
+#[cfg(feature = "futures")]
+struct Selector<A: Future<Output=()> + Unpin, B: Future<Output=bool> + Unpin> {
+	a: A,
+	b: B,
+}
+#[cfg(feature = "futures")]
+enum SelectorOutput {
+	A, B(bool),
+}
+
+#[cfg(feature = "futures")]
+impl<A: Future<Output=()> + Unpin, B: Future<Output=bool> + Unpin> Future for Selector<A, B> {
+	type Output = SelectorOutput;
+	fn poll(mut self: Pin<&mut Self>, ctx: &mut core::task::Context<'_>) -> Poll<SelectorOutput> {
+		match Pin::new(&mut self.a).poll(ctx) {
+			Poll::Ready(()) => { return Poll::Ready(SelectorOutput::A); },
+			Poll::Pending => {},
+		}
+		match Pin::new(&mut self.b).poll(ctx) {
+			Poll::Ready(res) => { return Poll::Ready(SelectorOutput::B(res)); },
+			Poll::Pending => {},
+		}
+		Poll::Pending
+	}
+}
+
 /// Processes background events in a future.
 ///
 /// `sleeper` should return a future which completes in the given amount of time and returns a
@@ -470,9 +504,13 @@ where
 		chain_monitor, chain_monitor.process_pending_events_async(async_event_handler).await,
 		channel_manager, channel_manager.process_pending_events_async(async_event_handler).await,
 		gossip_sync, peer_manager, logger, scorer, should_break, {
-			select_biased! {
-				_ = channel_manager.get_persistable_update_future().fuse() => true,
-				exit = sleeper(Duration::from_millis(100)).fuse() => {
+			let fut = Selector {
+				a: channel_manager.get_persistable_update_future(),
+				b: sleeper(Duration::from_millis(100)),
+			};
+			match fut.await {
+				SelectorOutput::A => true,
+				SelectorOutput::B(exit) => {
 					should_break = exit;
 					false
 				}
