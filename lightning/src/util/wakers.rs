@@ -15,11 +15,13 @@
 
 use alloc::sync::Arc;
 use core::mem;
-use crate::sync::{Condvar, Mutex};
+use crate::sync::Mutex;
 
 use crate::prelude::*;
 
-#[cfg(any(test, feature = "std"))]
+#[cfg(feature = "std")]
+use crate::sync::Condvar;
+#[cfg(feature = "std")]
 use std::time::Duration;
 
 use core::future::Future as StdFuture;
@@ -160,6 +162,7 @@ impl Future {
 	}
 
 	/// Waits until this [`Future`] completes.
+	#[cfg(feature = "std")]
 	pub fn wait(self) {
 		Sleeper::from_single_future(self).wait();
 	}
@@ -167,9 +170,18 @@ impl Future {
 	/// Waits until this [`Future`] completes or the given amount of time has elapsed.
 	///
 	/// Returns true if the [`Future`] completed, false if the time elapsed.
-	#[cfg(any(test, feature = "std"))]
+	#[cfg(feature = "std")]
 	pub fn wait_timeout(self, max_wait: Duration) -> bool {
 		Sleeper::from_single_future(self).wait_timeout(max_wait)
+	}
+
+	#[cfg(test)]
+	pub fn poll_is_complete(&self) -> bool {
+		let mut state = self.state.lock().unwrap();
+		if state.complete {
+			state.callbacks_made = true;
+			true
+		} else { false }
 	}
 }
 
@@ -198,10 +210,12 @@ impl<'a> StdFuture for Future {
 
 /// A struct which can be used to select across many [`Future`]s at once without relying on a full
 /// async context.
+#[cfg(feature = "std")]
 pub struct Sleeper {
 	notifiers: Vec<Arc<Mutex<FutureState>>>,
 }
 
+#[cfg(feature = "std")]
 impl Sleeper {
 	/// Constructs a new sleeper from one future, allowing blocking on it.
 	pub fn from_single_future(future: Future) -> Self {
@@ -252,7 +266,6 @@ impl Sleeper {
 	/// Wait until one of the [`Future`]s registered with this [`Sleeper`] has completed or the
 	/// given amount of time has elapsed. Returns true if a [`Future`] completed, false if the time
 	/// elapsed.
-	#[cfg(any(test, feature = "std"))]
 	pub fn wait_timeout(&self, max_wait: Duration) -> bool {
 		let (cv, notified_fut_mtx) = self.setup_wait();
 		let notified_fut =
@@ -478,6 +491,7 @@ mod tests {
 	}
 
 	#[test]
+	#[cfg(feature = "std")]
 	fn test_dropped_future_doesnt_count() {
 		// Tests that if a Future gets drop'd before it is poll()ed `Ready` it doesn't count as
 		// having been woken, leaving the notify-required flag set.
@@ -569,6 +583,7 @@ mod tests {
 	}
 
 	#[test]
+	#[cfg(feature = "std")]
 	fn test_multi_future_sleep() {
 		// Tests the `Sleeper` with multiple futures.
 		let notifier_a = Notifier::new();

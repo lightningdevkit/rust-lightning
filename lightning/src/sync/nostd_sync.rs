@@ -1,50 +1,9 @@
 pub use ::alloc::sync::Arc;
 use core::ops::{Deref, DerefMut};
-use core::time::Duration;
 use core::cell::{RefCell, Ref, RefMut};
 use super::{LockTestExt, LockHeldState};
 
 pub type LockResult<Guard> = Result<Guard, ()>;
-
-pub struct Condvar {}
-
-pub struct WaitTimeoutResult(bool);
-impl WaitTimeoutResult {
-	pub fn timed_out(&self) -> bool { self.0 }
-}
-
-impl Condvar {
-	pub fn new() -> Condvar {
-		Condvar { }
-	}
-
-	pub fn wait<'a, T>(&'a self, guard: MutexGuard<'a, T>) -> LockResult<MutexGuard<'a, T>> {
-		Ok(guard)
-	}
-
-	#[allow(unused)]
-	pub fn wait_timeout<'a, T>(&'a self, guard: MutexGuard<'a, T>, _dur: Duration) -> LockResult<(MutexGuard<'a, T>, ())> {
-		Ok((guard, ()))
-	}
-
-	pub fn wait_while<'a, T, F: FnMut(&mut T) -> bool>(&'a self, mut guard: MutexGuard<'a, T>, mut condition: F)
-	-> LockResult<MutexGuard<'a, T>> {
-		assert!(!condition(&mut *guard));
-		Ok(guard)
-	}
-
-	#[allow(unused)]
-	pub fn wait_timeout_while<'a, T, F: FnMut(&mut T) -> bool>(&'a self, mut guard: MutexGuard<'a, T>, dur: Duration, mut condition: F)
-	-> LockResult<(MutexGuard<'a, T>, WaitTimeoutResult)> {
-		if condition(&mut *guard) {
-			Ok((guard, WaitTimeoutResult(true)))
-		} else {
-			Ok((guard, WaitTimeoutResult(false)))
-		}
-	}
-
-	pub fn notify_all(&self) {}
-}
 
 pub struct Mutex<T: ?Sized> {
 	inner: RefCell<T>

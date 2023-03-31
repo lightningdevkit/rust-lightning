@@ -37,22 +37,11 @@ impl Condvar {
 		Condvar { inner: StdCondvar::new() }
 	}
 
-	pub fn wait<'a, T>(&'a self, guard: MutexGuard<'a, T>) -> LockResult<MutexGuard<'a, T>> {
-		let mutex: &'a Mutex<T> = guard.mutex;
-		self.inner.wait(guard.into_inner()).map(|lock| MutexGuard { mutex, lock }).map_err(|_| ())
-	}
-
 	pub fn wait_while<'a, T, F: FnMut(&mut T) -> bool>(&'a self, guard: MutexGuard<'a, T>, condition: F)
 	-> LockResult<MutexGuard<'a, T>> {
 		let mutex: &'a Mutex<T> = guard.mutex;
 		self.inner.wait_while(guard.into_inner(), condition).map(|lock| MutexGuard { mutex, lock })
 			.map_err(|_| ())
-	}
-
-	#[allow(unused)]
-	pub fn wait_timeout<'a, T>(&'a self, guard: MutexGuard<'a, T>, dur: Duration) -> LockResult<(MutexGuard<'a, T>, ())> {
-		let mutex = guard.mutex;
-		self.inner.wait_timeout(guard.into_inner(), dur).map(|(lock, _)| (MutexGuard { mutex, lock }, ())).map_err(|_| ())
 	}
 
 	#[allow(unused)]
