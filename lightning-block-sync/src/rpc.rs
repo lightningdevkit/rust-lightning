@@ -7,7 +7,7 @@ use crate::http::{HttpClient, HttpEndpoint, HttpError, JsonResponse};
 use bitcoin::hash_types::BlockHash;
 use bitcoin::hashes::hex::ToHex;
 
-use futures_util::lock::Mutex;
+use std::sync::Mutex;
 
 use serde_json;
 
@@ -41,7 +41,7 @@ impl Error for RpcError {}
 pub struct RpcClient {
 	basic_auth: String,
 	endpoint: HttpEndpoint,
-	client: Mutex<HttpClient>,
+	client: Mutex<Option<HttpClient>>,
 	id: AtomicUsize,
 }
 
@@ -50,11 +50,10 @@ impl RpcClient {
 	/// credentials should be a base64 encoding of a user name and password joined by a colon, as is
 	/// required for HTTP basic access authentication.
 	pub fn new(credentials: &str, endpoint: HttpEndpoint) -> std::io::Result<Self> {
-		let client = Mutex::new(HttpClient::connect(&endpoint)?);
 		Ok(Self {
 			basic_auth: "Basic ".to_string() + credentials,
 			endpoint,
-			client,
+			client: Mutex::new(None),
 			id: AtomicUsize::new(0),
 		})
 	}
@@ -73,7 +72,12 @@ impl RpcClient {
 			"id": &self.id.fetch_add(1, Ordering::AcqRel).to_string()
 		});
 
-		let mut response = match self.client.lock().await.post::<JsonResponse>(&uri, &host, &self.basic_auth, content).await {
+		let mut client = if let Some(client) = self.client.lock().unwrap().take() { client }
+			else { HttpClient::connect(&self.endpoint)? };
+		let http_response = client.post::<JsonResponse>(&uri, &host, &self.basic_auth, content).await;
+		*self.client.lock().unwrap() = Some(client);
+
+		let mut response = match http_response {
 			Ok(JsonResponse(response)) => response,
 			Err(e) if e.kind() == std::io::ErrorKind::Other => {
 				match e.get_ref().unwrap().downcast_ref::<HttpError>() {

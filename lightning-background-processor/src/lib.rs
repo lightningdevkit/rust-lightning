@@ -7,7 +7,7 @@
 #![deny(private_intra_doc_links)]
 
 #![deny(missing_docs)]
-#![deny(unsafe_code)]
+#![cfg_attr(not(feature = "futures"), deny(unsafe_code))]
 
 #![cfg_attr(docsrs, feature(doc_auto_cfg))]
 
@@ -52,8 +52,6 @@ use std::thread::{self, JoinHandle};
 #[cfg(feature = "std")]
 use std::time::Instant;
 
-#[cfg(feature = "futures")]
-use futures_util::{select_biased, future::FutureExt, task};
 #[cfg(not(feature = "std"))]
 use alloc::vec::Vec;
 
@@ -384,6 +382,50 @@ macro_rules! define_run_body {
 	} }
 }
 
+#[cfg(feature = "futures")]
+pub(crate) mod futures_util {
+	use core::future::Future;
+	use core::task::{Poll, Waker, RawWaker, RawWakerVTable};
+	use core::pin::Pin;
+	use core::marker::Unpin;
+	pub(crate) struct Selector<A: Future<Output=()> + Unpin, B: Future<Output=bool> + Unpin> {
+		pub a: A,
+		pub b: B,
+	}
+	pub(crate) enum SelectorOutput {
+		A, B(bool),
+	}
+
+	impl<A: Future<Output=()> + Unpin, B: Future<Output=bool> + Unpin> Future for Selector<A, B> {
+		type Output = SelectorOutput;
+		fn poll(mut self: Pin<&mut Self>, ctx: &mut core::task::Context<'_>) -> Poll<SelectorOutput> {
+			match Pin::new(&mut self.a).poll(ctx) {
+				Poll::Ready(()) => { return Poll::Ready(SelectorOutput::A); },
+				Poll::Pending => {},
+			}
+			match Pin::new(&mut self.b).poll(ctx) {
+				Poll::Ready(res) => { return Poll::Ready(SelectorOutput::B(res)); },
+				Poll::Pending => {},
+			}
+			Poll::Pending
+		}
+	}
+
+	// If we want to poll a future without an async context to figure out if it has completed or
+	// not without awaiting, we need a Waker, which needs a vtable...we fill it with dummy values
+	// but sadly there's a good bit of boilerplate here.
+	fn dummy_waker_clone(_: *const ()) -> RawWaker { RawWaker::new(core::ptr::null(), &DUMMY_WAKER_VTABLE) }
+	fn dummy_waker_action(_: *const ()) { }
+
+	const DUMMY_WAKER_VTABLE: RawWakerVTable = RawWakerVTable::new(
+		dummy_waker_clone, dummy_waker_action, dummy_waker_action, dummy_waker_action);
+	pub(crate) fn dummy_waker() -> Waker { unsafe { Waker::from_raw(RawWaker::new(core::ptr::null(), &DUMMY_WAKER_VTABLE)) } }
+}
+#[cfg(feature = "futures")]
+use futures_util::{Selector, SelectorOutput, dummy_waker};
+#[cfg(feature = "futures")]
+use core::task;
+
 /// Processes background events in a future.
 ///
 /// `sleeper` should return a future which completes in the given amount of time and returns a
@@ -470,16 +512,20 @@ where
 		chain_monitor, chain_monitor.process_pending_events_async(async_event_handler).await,
 		channel_manager, channel_manager.process_pending_events_async(async_event_handler).await,
 		gossip_sync, peer_manager, logger, scorer, should_break, {
-			select_biased! {
-				_ = channel_manager.get_persistable_update_future().fuse() => true,
-				exit = sleeper(Duration::from_millis(100)).fuse() => {
+			let fut = Selector {
+				a: channel_manager.get_persistable_update_future(),
+				b: sleeper(Duration::from_millis(100)),
+			};
+			match fut.await {
+				SelectorOutput::A => true,
+				SelectorOutput::B(exit) => {
 					should_break = exit;
 					false
 				}
 			}
 		}, |t| sleeper(Duration::from_secs(t)),
 		|fut: &mut SleepFuture, _| {
-			let mut waker = task::noop_waker();
+			let mut waker = dummy_waker();
 			let mut ctx = task::Context::from_waker(&mut waker);
 			core::pin::Pin::new(fut).poll(&mut ctx).is_ready()
 		})

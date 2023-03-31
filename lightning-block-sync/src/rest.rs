@@ -7,15 +7,14 @@ use crate::http::{BinaryResponse, HttpEndpoint, HttpClient, JsonResponse};
 use bitcoin::hash_types::BlockHash;
 use bitcoin::hashes::hex::ToHex;
 
-use futures_util::lock::Mutex;
-
 use std::convert::TryFrom;
 use std::convert::TryInto;
+use std::sync::Mutex;
 
 /// A simple REST client for requesting resources using HTTP `GET`.
 pub struct RestClient {
 	endpoint: HttpEndpoint,
-	client: Mutex<HttpClient>,
+	client: Mutex<Option<HttpClient>>,
 }
 
 impl RestClient {
@@ -23,8 +22,7 @@ impl RestClient {
 	///
 	/// The endpoint should contain the REST path component (e.g., http://127.0.0.1:8332/rest).
 	pub fn new(endpoint: HttpEndpoint) -> std::io::Result<Self> {
-		let client = Mutex::new(HttpClient::connect(&endpoint)?);
-		Ok(Self { endpoint, client })
+		Ok(Self { endpoint, client: Mutex::new(None) })
 	}
 
 	/// Requests a resource encoded in `F` format and interpreted as type `T`.
@@ -32,7 +30,11 @@ impl RestClient {
 	where F: TryFrom<Vec<u8>, Error = std::io::Error> + TryInto<T, Error = std::io::Error> {
 		let host = format!("{}:{}", self.endpoint.host(), self.endpoint.port());
 		let uri = format!("{}/{}", self.endpoint.path().trim_end_matches("/"), resource_path);
-		self.client.lock().await.get::<F>(&uri, &host).await?.try_into()
+		let mut client = if let Some(client) = self.client.lock().unwrap().take() { client }
+			else { HttpClient::connect(&self.endpoint)? };
+		let res = client.get::<F>(&uri, &host).await?.try_into();
+		*self.client.lock().unwrap() = Some(client);
+		res
 	}
 }
 
