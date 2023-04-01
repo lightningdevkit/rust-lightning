@@ -475,6 +475,9 @@ pub enum Event {
 		///
 		/// [`ChannelManager::send_payment`]: crate::ln::channelmanager::ChannelManager::send_payment
 		payment_hash: PaymentHash,
+		/// The reason the payment failed. This is only `None` for events generated or serialized
+		/// by versions prior to 0.0.115.
+		reason: Option<PaymentFailureReason>,
 	},
 	/// Indicates that a path for an outbound payment was successful.
 	///
@@ -940,10 +943,11 @@ impl Writeable for Event {
 					(4, *path, vec_type)
 				})
 			},
-			&Event::PaymentFailed { ref payment_id, ref payment_hash } => {
+			&Event::PaymentFailed { ref payment_id, ref payment_hash, ref reason } => {
 				15u8.write(writer)?;
 				write_tlv_fields!(writer, {
 					(0, payment_id, required),
+					(1, reason, option),
 					(2, payment_hash, required),
 				})
 			},
@@ -1245,13 +1249,16 @@ impl MaybeReadable for Event {
 				let f = || {
 					let mut payment_hash = PaymentHash([0; 32]);
 					let mut payment_id = PaymentId([0; 32]);
+					let mut reason = None;
 					read_tlv_fields!(reader, {
 						(0, payment_id, required),
+						(1, reason, upgradable_option),
 						(2, payment_hash, required),
 					});
 					Ok(Some(Event::PaymentFailed {
 						payment_id,
 						payment_hash,
+						reason,
 					}))
 				};
 				f()

@@ -36,7 +36,7 @@ use crate::chain::chaininterface::{BroadcasterInterface, ConfirmationTarget, Fee
 use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, HTLC_FAIL_BACK_BUFFER, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ANTI_REORG_DELAY, MonitorEvent, CLOSED_CHANNEL_UPDATE_ID};
 use crate::chain::transaction::{OutPoint, TransactionData};
 use crate::events;
-use crate::events::{Event, EventHandler, EventsProvider, MessageSendEvent, MessageSendEventsProvider, ClosureReason, HTLCDestination};
+use crate::events::{Event, EventHandler, EventsProvider, MessageSendEvent, MessageSendEventsProvider, ClosureReason, HTLCDestination, PaymentFailureReason};
 // Since this struct is returned in `list_channels` methods, expose it here in case users want to
 // construct one themselves.
 use crate::ln::{inbound_payment, PaymentHash, PaymentPreimage, PaymentSecret};
@@ -2711,7 +2711,7 @@ where
 	/// [`Event::PaymentSent`]: events::Event::PaymentSent
 	pub fn abandon_payment(&self, payment_id: PaymentId) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
-		self.pending_outbound_payments.abandon_payment(payment_id, &self.pending_events);
+		self.pending_outbound_payments.abandon_payment(payment_id, PaymentFailureReason::UserAbandoned, &self.pending_events);
 	}
 
 	/// Send a spontaneous payment, which is a payment that does not require the recipient to have

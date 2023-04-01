@@ -14,7 +14,7 @@ use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::secp256k1::{self, Secp256k1, SecretKey};
 
 use crate::chain::keysinterface::{EntropySource, NodeSigner, Recipient};
-use crate::events;
+use crate::events::{self, PaymentFailureReason};
 use crate::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
 use crate::ln::channelmanager::{ChannelDetails, HTLCSource, IDEMPOTENCY_TIMEOUT_TICKS, PaymentId};
 use crate::ln::onion_utils::HTLCFailReason;
@@ -68,6 +68,8 @@ pub(crate) enum PendingOutboundPayment {
 	Abandoned {
 		session_privs: HashSet<[u8; 32]>,
 		payment_hash: PaymentHash,
+		/// Will be `None` if the payment was serialized before 0.0.115.
+		reason: Option<PaymentFailureReason>,
 	},
 }
 
@@ -145,21 +147,16 @@ impl PendingOutboundPayment {
 		*self = PendingOutboundPayment::Fulfilled { session_privs, payment_hash, timer_ticks_without_htlcs: 0 };
 	}
 
-	fn mark_abandoned(&mut self) -> Result<(), ()> {
-		let mut session_privs = HashSet::new();
-		let our_payment_hash;
-		core::mem::swap(&mut session_privs, match self {
-			PendingOutboundPayment::Legacy { .. } |
-			PendingOutboundPayment::Fulfilled { .. } =>
-				return Err(()),
-			PendingOutboundPayment::Retryable { session_privs, payment_hash, .. } |
-			PendingOutboundPayment::Abandoned { session_privs, payment_hash, .. } => {
-				our_payment_hash = *payment_hash;
-				session_privs
-			},
-		});
-		*self = PendingOutboundPayment::Abandoned { session_privs, payment_hash: our_payment_hash };
-		Ok(())
+	fn mark_abandoned(&mut self, reason: PaymentFailureReason) {
+		if let PendingOutboundPayment::Retryable { session_privs, payment_hash, .. } = self {
+			let mut our_session_privs = HashSet::new();
+			core::mem::swap(&mut our_session_privs, session_privs);
+			*self = PendingOutboundPayment::Abandoned {
+				session_privs: our_session_privs,
+				payment_hash: *payment_hash,
+				reason: Some(reason)
+			};
+		}
 	}
 
 	/// panics if path is None and !self.is_fulfilled
@@ -588,10 +585,12 @@ impl OutboundPayments {
 		outbounds.retain(|pmt_id, pmt| {
 			let mut retain = true;
 			if !pmt.is_auto_retryable_now() && pmt.remaining_parts() == 0 {
-				if pmt.mark_abandoned().is_ok() {
+				pmt.mark_abandoned(PaymentFailureReason::RetriesExhausted);
+				if let PendingOutboundPayment::Abandoned { payment_hash, reason, .. } = pmt {
 					pending_events.lock().unwrap().push(events::Event::PaymentFailed {
 						payment_id: *pmt_id,
-						payment_hash: pmt.payment_hash().expect("PendingOutboundPayments::Retryable always has a payment hash set"),
+						payment_hash: *payment_hash,
+						reason: *reason,
 					});
 					retain = false;
 				}
@@ -671,7 +670,7 @@ impl OutboundPayments {
 		#[cfg(feature = "std")] {
 			if has_expired(&route_params) {
 				log_error!(logger, "Payment params expired on retry, abandoning payment {}", log_bytes!(payment_id.0));
-				self.abandon_payment(payment_id, pending_events);
+				self.abandon_payment(payment_id, PaymentFailureReason::PaymentExpired, pending_events);
 				return
 			}
 		}
@@ -684,14 +683,14 @@ impl OutboundPayments {
 			Ok(route) => route,
 			Err(e) => {
 				log_error!(logger, "Failed to find a route on retry, abandoning payment {}: {:#?}", log_bytes!(payment_id.0), e);
-				self.abandon_payment(payment_id, pending_events);
+				self.abandon_payment(payment_id, PaymentFailureReason::RouteNotFound, pending_events);
 				return
 			}
 		};
 		for path in route.paths.iter() {
 			if path.len() == 0 {
 				log_error!(logger, "length-0 path in route");
-				self.abandon_payment(payment_id, pending_events);
+				self.abandon_payment(payment_id, PaymentFailureReason::UnexpectedError, pending_events);
 				return
 			}
 		}
@@ -703,13 +702,17 @@ impl OutboundPayments {
 		}
 
 		macro_rules! abandon_with_entry {
-			($payment: expr) => {
-				if $payment.get_mut().mark_abandoned().is_ok() && $payment.get().remaining_parts() == 0 {
-					pending_events.lock().unwrap().push(events::Event::PaymentFailed {
-						payment_id,
-						payment_hash,
-					});
-					$payment.remove();
+			($payment: expr, $reason: expr) => {
+				$payment.get_mut().mark_abandoned($reason);
+				if let PendingOutboundPayment::Abandoned { reason, .. } = $payment.get() {
+					if $payment.get().remaining_parts() == 0 {
+						pending_events.lock().unwrap().push(events::Event::PaymentFailed {
+							payment_id,
+							payment_hash,
+							reason: *reason,
+						});
+						$payment.remove();
+					}
 				}
 			}
 		}
@@ -724,7 +727,7 @@ impl OutboundPayments {
 							let retry_amt_msat: u64 = route.paths.iter().map(|path| path.last().unwrap().fee_msat).sum();
 							if retry_amt_msat + *pending_amt_msat > *total_msat * (100 + RETRY_OVERFLOW_PERCENTAGE) / 100 {
 								log_error!(logger, "retry_amt_msat of {} will put pending_amt_msat (currently: {}) more than 10% over total_payment_amt_msat of {}", retry_amt_msat, pending_amt_msat, total_msat);
-								abandon_with_entry!(payment);
+								abandon_with_entry!(payment, PaymentFailureReason::UnexpectedError);
 								return
 							}
 							(*total_msat, RecipientOnionFields {
@@ -746,7 +749,7 @@ impl OutboundPayments {
 					};
 					if !payment.get().is_retryable_now() {
 						log_error!(logger, "Retries exhausted for payment id {}", log_bytes!(payment_id.0));
-						abandon_with_entry!(payment);
+						abandon_with_entry!(payment, PaymentFailureReason::RetriesExhausted);
 						return
 					}
 					payment.get_mut().increment_attempts();
@@ -787,11 +790,11 @@ impl OutboundPayments {
 	{
 		match err {
 			PaymentSendFailure::AllFailedResendSafe(errs) => {
-				Self::push_path_failed_evs_and_scids(payment_id, payment_hash, &mut route_params, route.paths, errs.into_iter().map(|e| Err(e)), pending_events);
+				Self::push_path_failed_evs_and_scids(payment_id, payment_hash, &mut route_params, route.paths, errs.into_iter().map(|e| Err(e)), logger, pending_events);
 				self.retry_payment_internal(payment_hash, payment_id, route_params, router, first_hops, inflight_htlcs, entropy_source, node_signer, best_block_height, logger, pending_events, send_payment_along_path);
 			},
 			PaymentSendFailure::PartialFailure { failed_paths_retry: Some(mut retry), results, .. } => {
-				Self::push_path_failed_evs_and_scids(payment_id, payment_hash, &mut retry, route.paths, results.into_iter(), pending_events);
+				Self::push_path_failed_evs_and_scids(payment_id, payment_hash, &mut retry, route.paths, results.into_iter(), logger, pending_events);
 				// Some paths were sent, even if we failed to send the full MPP value our recipient may
 				// misbehave and claim the funds, at which point we have to consider the payment sent, so
 				// return `Ok()` here, ignoring any retry errors.
@@ -803,26 +806,28 @@ impl OutboundPayments {
 				// initial HTLC-Add messages yet.
 			},
 			PaymentSendFailure::PathParameterError(results) => {
-				Self::push_path_failed_evs_and_scids(payment_id, payment_hash, &mut route_params, route.paths, results.into_iter(), pending_events);
-				self.abandon_payment(payment_id, pending_events);
+				log_error!(logger, "Failed to send to route due to parameter error in a single path. Your router is buggy");
+				Self::push_path_failed_evs_and_scids(payment_id, payment_hash, &mut route_params, route.paths, results.into_iter(), logger, pending_events);
+				self.abandon_payment(payment_id, PaymentFailureReason::UnexpectedError, pending_events);
 			},
 			PaymentSendFailure::ParameterError(e) => {
 				log_error!(logger, "Failed to send to route due to parameter error: {:?}. Your router is buggy", e);
-				self.abandon_payment(payment_id, pending_events);
+				self.abandon_payment(payment_id, PaymentFailureReason::UnexpectedError, pending_events);
 			},
 			PaymentSendFailure::DuplicatePayment => debug_assert!(false), // unreachable
 		}
 	}
 
-	fn push_path_failed_evs_and_scids<I: ExactSizeIterator + Iterator<Item = Result<(), APIError>>>(
+	fn push_path_failed_evs_and_scids<I: ExactSizeIterator + Iterator<Item = Result<(), APIError>>, L: Deref>(
 		payment_id: PaymentId, payment_hash: PaymentHash, route_params: &mut RouteParameters,
-		paths: Vec<Vec<RouteHop>>, path_results: I, pending_events: &Mutex<Vec<events::Event>>
-	) {
+		paths: Vec<Vec<RouteHop>>, path_results: I, logger: &L, pending_events: &Mutex<Vec<events::Event>>
+	) where L::Target: Logger {
 		let mut events = pending_events.lock().unwrap();
 		debug_assert_eq!(paths.len(), path_results.len());
 		for (path, path_res) in paths.into_iter().zip(path_results) {
 			if let Err(e) = path_res {
 				if let APIError::MonitorUpdateInProgress = e { continue }
+				log_error!(logger, "Failed to send along path due to error: {:?}", e);
 				let mut failed_scid = None;
 				if let APIError::ChannelUnavailable { .. } = e {
 					let scid = path[0].short_channel_id;
@@ -1216,15 +1221,21 @@ impl OutboundPayments {
 			}
 
 			if payment_is_probe || !is_retryable_now || !payment_retryable {
-				let _ = payment.get_mut().mark_abandoned(); // we'll only Err if it's a legacy payment
+				let reason = if !payment_retryable {
+					PaymentFailureReason::RecipientRejected
+				} else {
+					PaymentFailureReason::RetriesExhausted
+				};
+				payment.get_mut().mark_abandoned(reason);
 				is_retryable_now = false;
 			}
 			if payment.get().remaining_parts() == 0 {
-				if payment.get().abandoned() {
+				if let PendingOutboundPayment::Abandoned { payment_hash, reason, .. }= payment.get() {
 					if !payment_is_probe {
 						full_failure_ev = Some(events::Event::PaymentFailed {
 							payment_id: *payment_id,
-							payment_hash: payment.get().payment_hash().expect("PendingOutboundPayments::RetriesExceeded always has a payment hash set"),
+							payment_hash: *payment_hash,
+							reason: *reason,
 						});
 					}
 					payment.remove();
@@ -1282,15 +1293,17 @@ impl OutboundPayments {
 	}
 
 	pub(super) fn abandon_payment(
-		&self, payment_id: PaymentId, pending_events: &Mutex<Vec<events::Event>>
+		&self, payment_id: PaymentId, reason: PaymentFailureReason, pending_events: &Mutex<Vec<events::Event>>
 	) {
 		let mut outbounds = self.pending_outbound_payments.lock().unwrap();
 		if let hash_map::Entry::Occupied(mut payment) = outbounds.entry(payment_id) {
-			if let Ok(()) = payment.get_mut().mark_abandoned() {
+			payment.get_mut().mark_abandoned(reason);
+			if let PendingOutboundPayment::Abandoned { payment_hash, reason, .. } = payment.get() {
 				if payment.get().remaining_parts() == 0 {
 					pending_events.lock().unwrap().push(events::Event::PaymentFailed {
 						payment_id,
-						payment_hash: payment.get().payment_hash().expect("PendingOutboundPayments::RetriesExceeded always has a payment hash set"),
+						payment_hash: *payment_hash,
+						reason: *reason,
 					});
 					payment.remove();
 				}
@@ -1352,6 +1365,7 @@ impl_writeable_tlv_based_enum_upgradable!(PendingOutboundPayment,
 	},
 	(3, Abandoned) => {
 		(0, session_privs, required),
+		(1, reason, option),
 		(2, payment_hash, required),
 	},
 );
@@ -1361,7 +1375,7 @@ mod tests {
 	use bitcoin::network::constants::Network;
 	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 
-	use crate::events::{Event, PathFailure};
+	use crate::events::{Event, PathFailure, PaymentFailureReason};
 	use crate::ln::PaymentHash;
 	use crate::ln::channelmanager::{PaymentId, RecipientOnionFields};
 	use crate::ln::features::{ChannelFeatures, NodeFeatures};
@@ -1410,7 +1424,9 @@ mod tests {
 				&pending_events, &|_, _, _, _, _, _, _, _| Ok(()));
 			let events = pending_events.lock().unwrap();
 			assert_eq!(events.len(), 1);
-			if let Event::PaymentFailed { .. } = events[0] { } else { panic!("Unexpected event"); }
+			if let Event::PaymentFailed { ref reason, .. } = events[0] {
+				assert_eq!(reason.unwrap(), PaymentFailureReason::PaymentExpired);
+			} else { panic!("Unexpected event"); }
 		} else {
 			let err = outbound_payments.send_payment(
 				PaymentHash([0; 32]), RecipientOnionFields::spontaneous_empty(), PaymentId([0; 32]),
