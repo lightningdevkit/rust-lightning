@@ -518,7 +518,7 @@ where
 	UMH::Target: 'static + CustomMessageHandler,
 	PS::Target: 'static + Persister<'a, CW, T, ES, NS, SP, F, R, L, SC>,
 {
-	let mut should_break = true;
+	let mut should_break = false;
 	let async_event_handler = |event| {
 		let network_graph = gossip_sync.network_graph();
 		let event_handler = &event_handler;
