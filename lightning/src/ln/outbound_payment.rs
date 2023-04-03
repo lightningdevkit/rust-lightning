@@ -26,7 +26,6 @@ use crate::util::time::Time;
 use crate::util::time::tests::SinceEpoch;
 use crate::util::ser::ReadableArgs;
 
-use core::cmp;
 use core::fmt::{self, Display, Formatter};
 use core::ops::Deref;
 
@@ -1048,7 +1047,6 @@ impl OutboundPayments {
 		let mut has_ok = false;
 		let mut has_err = false;
 		let mut pending_amt_unsent = 0;
-		let mut max_unsent_cltv_delta = 0;
 		for (res, path) in results.iter().zip(route.paths.iter()) {
 			if res.is_ok() { has_ok = true; }
 			if res.is_err() { has_err = true; }
@@ -1059,7 +1057,6 @@ impl OutboundPayments {
 				has_ok = true;
 			} else if res.is_err() {
 				pending_amt_unsent += path.last().unwrap().fee_msat;
-				max_unsent_cltv_delta = cmp::max(max_unsent_cltv_delta, path.last().unwrap().cltv_expiry_delta);
 			}
 		}
 		if has_err && has_ok {
