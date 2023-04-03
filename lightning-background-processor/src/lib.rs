@@ -1237,6 +1237,35 @@ mod tests {
 		}
 	}
 
+	#[tokio::test]
+	#[cfg(feature = "futures")]
+	async fn test_channel_manager_persist_error_async() {
+		// Test that if we encounter an error during manager persistence, the thread panics.
+		let nodes = create_nodes(2, "test_persist_error_sync".to_string());
+		open_channel!(nodes[0], nodes[1], 100000);
+
+		let data_dir = nodes[0].persister.get_data_dir();
+		let persister = Arc::new(Persister::new(data_dir).with_manager_error(std::io::ErrorKind::Other, "test"));
+
+		let bp_future = super::process_events_async(
+			persister, |_: _| {async {}}, nodes[0].chain_monitor.clone(), nodes[0].node.clone(),
+			nodes[0].rapid_gossip_sync(), nodes[0].peer_manager.clone(), nodes[0].logger.clone(),
+			Some(nodes[0].scorer.clone()), move |dur: Duration| {
+				Box::pin(async move {
+					tokio::time::sleep(dur).await;
+					false // Never exit
+				})
+			}, false,
+		);
+		match bp_future.await {
+			Ok(_) => panic!("Expected error persisting manager"),
+			Err(e) => {
+				assert_eq!(e.kind(), std::io::ErrorKind::Other);
+				assert_eq!(e.get_ref().unwrap().to_string(), "test");
+			},
+		}
+	}
+
 	#[test]
 	fn test_network_graph_persist_error() {
 		// Test that if we encounter an error during network graph persistence, an error gets returned.
