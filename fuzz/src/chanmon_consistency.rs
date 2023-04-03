@@ -526,7 +526,18 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 					msg.clone()
 				} else { panic!("Wrong event type"); }
 			};
+			let events = $dest.get_and_clear_pending_events();
+			assert_eq!(events.len(), 1);
+			if let events::Event::ChannelPending{ ref counterparty_node_id, .. } = events[0] {
+				assert_eq!(counterparty_node_id, &$source.get_our_node_id());
+			} else { panic!("Wrong event type"); }
+
 			$source.handle_funding_signed(&$dest.get_our_node_id(), &funding_signed);
+			let events = $source.get_and_clear_pending_events();
+			assert_eq!(events.len(), 1);
+			if let events::Event::ChannelPending{ ref counterparty_node_id, .. } = events[0] {
+				assert_eq!(counterparty_node_id, &$dest.get_our_node_id());
+			} else { panic!("Wrong event type"); }
 
 			funding_output
 		} }

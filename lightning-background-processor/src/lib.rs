@@ -710,7 +710,7 @@ mod tests {
 	use lightning::chain::keysinterface::{InMemorySigner, KeysManager};
 	use lightning::chain::transaction::OutPoint;
 	use lightning::events::{Event, PathFailure, MessageSendEventsProvider, MessageSendEvent};
-	use lightning::get_event_msg;
+	use lightning::{get_event_msg, get_event};
 	use lightning::ln::PaymentHash;
 	use lightning::ln::channelmanager;
 	use lightning::ln::channelmanager::{BREAKDOWN_TIMEOUT, ChainParameters, MIN_CLTV_EXPIRY_DELTA, PaymentId};
@@ -1058,7 +1058,10 @@ mod tests {
 		($node_a: expr, $node_b: expr, $temporary_channel_id: expr, $tx: expr) => {{
 			$node_a.node.funding_transaction_generated(&$temporary_channel_id, &$node_b.node.get_our_node_id(), $tx.clone()).unwrap();
 			$node_b.node.handle_funding_created(&$node_a.node.get_our_node_id(), &get_event_msg!($node_a, MessageSendEvent::SendFundingCreated, $node_b.node.get_our_node_id()));
+			get_event!($node_b, Event::ChannelPending);
+
 			$node_a.node.handle_funding_signed(&$node_b.node.get_our_node_id(), &get_event_msg!($node_b, MessageSendEvent::SendFundingSigned, $node_a.node.get_our_node_id()));
+			get_event!($node_a, Event::ChannelPending);
 		}}
 	}
 
