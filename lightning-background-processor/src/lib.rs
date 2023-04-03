@@ -1186,7 +1186,9 @@ mod tests {
 		let filepath = get_full_filepath("test_background_processor_persister_0".to_string(), "scorer".to_string());
 		check_persisted_data!(nodes[0].scorer, filepath.clone());
 
-		assert!(bg_processor.stop().is_ok());
+		if !std::thread::panicking() {
+			bg_processor.stop().unwrap();
+		}
 	}
 
 	#[test]
@@ -1208,7 +1210,9 @@ mod tests {
 			}
 		}
 
-		assert!(bg_processor.stop().is_ok());
+		if !std::thread::panicking() {
+			bg_processor.stop().unwrap();
+		}
 	}
 
 	#[test]
@@ -1300,7 +1304,9 @@ mod tests {
 		nodes[1].node.handle_channel_ready(&nodes[0].node.get_our_node_id(), &as_funding);
 		let _bs_channel_update = get_event_msg!(nodes[1], MessageSendEvent::SendChannelUpdate, nodes[0].node.get_our_node_id());
 
-		assert!(bg_processor.stop().is_ok());
+		if !std::thread::panicking() {
+			bg_processor.stop().unwrap();
+		}
 
 		// Set up a background event handler for SpendableOutputs events.
 		let (sender, receiver) = std::sync::mpsc::sync_channel(1);
@@ -1326,7 +1332,9 @@ mod tests {
 			_ => panic!("Unexpected event: {:?}", event),
 		}
 
-		assert!(bg_processor.stop().is_ok());
+		if !std::thread::panicking() {
+			bg_processor.stop().unwrap();
+		}
 	}
 
 	#[test]
@@ -1345,7 +1353,9 @@ mod tests {
 			}
 		}
 
-		assert!(bg_processor.stop().is_ok());
+		if !std::thread::panicking() {
+			bg_processor.stop().unwrap();
+		}
 	}
 
 	#[test]
@@ -1519,6 +1529,8 @@ mod tests {
 			_ => panic!("Unexpected event"),
 		}
 
-		assert!(bg_processor.stop().is_ok());
+		if !std::thread::panicking() {
+			bg_processor.stop().unwrap();
+		}
 	}
 }
