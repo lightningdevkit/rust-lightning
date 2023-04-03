@@ -3674,8 +3674,9 @@ where
 	}
 }
 
-impl<Signer: WriteableEcdsaChannelSigner, T: Deref, F: Deref, L: Deref> chain::Confirm for (ChannelMonitor<Signer>, T, F, L)
+impl<Signer: WriteableEcdsaChannelSigner, M, T: Deref, F: Deref, L: Deref> chain::Confirm for (M, T, F, L)
 where
+	M: Deref<Target = ChannelMonitor<Signer>>,
 	T::Target: BroadcasterInterface,
 	F::Target: FeeEstimator,
 	L::Target: Logger,
