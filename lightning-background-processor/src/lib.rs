@@ -554,7 +554,10 @@ where
 		|fut: &mut SleepFuture, _| {
 			let mut waker = dummy_waker();
 			let mut ctx = task::Context::from_waker(&mut waker);
-			core::pin::Pin::new(fut).poll(&mut ctx).is_ready()
+			match core::pin::Pin::new(fut).poll(&mut ctx) {
+				task::Poll::Ready(exit) => { should_break = exit; true },
+				task::Poll::Pending => false,
+			}
 		}, mobile_interruptable_platform)
 }
 
