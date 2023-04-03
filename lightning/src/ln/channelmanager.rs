@@ -6170,34 +6170,11 @@ where
 		}
 	}
 
-	/// Blocks until ChannelManager needs to be persisted or a timeout is reached. It returns a bool
-	/// indicating whether persistence is necessary. Only one listener on
-	/// [`await_persistable_update`], [`await_persistable_update_timeout`], or a future returned by
-	/// [`get_persistable_update_future`] is guaranteed to be woken up.
+	/// Gets a [`Future`] that completes when this [`ChannelManager`] needs to be persisted.
 	///
-	/// Note that this method is not available with the `no-std` feature.
+	/// Note that callbacks registered on the [`Future`] MUST NOT call back into this
+	/// [`ChannelManager`] and should instead register actions to be taken later.
 	///
-	/// [`await_persistable_update`]: Self::await_persistable_update
-	/// [`await_persistable_update_timeout`]: Self::await_persistable_update_timeout
-	/// [`get_persistable_update_future`]: Self::get_persistable_update_future
-	#[cfg(any(test, feature = "std"))]
-	pub fn await_persistable_update_timeout(&self, max_wait: Duration) -> bool {
-		self.persistence_notifier.wait_timeout(max_wait)
-	}
-
-	/// Blocks until ChannelManager needs to be persisted. Only one listener on
-	/// [`await_persistable_update`], `await_persistable_update_timeout`, or a future returned by
-	/// [`get_persistable_update_future`] is guaranteed to be woken up.
-	///
-	/// [`await_persistable_update`]: Self::await_persistable_update
-	/// [`get_persistable_update_future`]: Self::get_persistable_update_future
-	pub fn await_persistable_update(&self) {
-		self.persistence_notifier.wait()
-	}
-
-	/// Gets a [`Future`] that completes when a persistable update is available. Note that
-	/// callbacks registered on the [`Future`] MUST NOT call back into this [`ChannelManager`] and
-	/// should instead register actions to be taken later.
 	pub fn get_persistable_update_future(&self) -> Future {
 		self.persistence_notifier.get_future()
 	}
@@ -7952,6 +7929,7 @@ mod tests {
 	use bitcoin::hashes::Hash;
 	use bitcoin::hashes::sha256::Hash as Sha256;
 	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
+	#[cfg(feature = "std")]
 	use core::time::Duration;
 	use core::sync::atomic::Ordering;
 	use crate::events::{Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, ClosureReason};
@@ -7977,9 +7955,9 @@ mod tests {
 
 		// All nodes start with a persistable update pending as `create_network` connects each node
 		// with all other nodes to make most tests simpler.
-		assert!(nodes[0].node.await_persistable_update_timeout(Duration::from_millis(1)));
-		assert!(nodes[1].node.await_persistable_update_timeout(Duration::from_millis(1)));
-		assert!(nodes[2].node.await_persistable_update_timeout(Duration::from_millis(1)));
+		assert!(nodes[0].node.get_persistable_update_future().poll_is_complete());
+		assert!(nodes[1].node.get_persistable_update_future().poll_is_complete());
+		assert!(nodes[2].node.get_persistable_update_future().poll_is_complete());
 
 		let mut chan = create_announced_chan_between_nodes(&nodes, 0, 1);
 
@@ -7993,19 +7971,19 @@ mod tests {
 			&nodes[0].node.get_our_node_id()).pop().unwrap();
 
 		// The first two nodes (which opened a channel) should now require fresh persistence
-		assert!(nodes[0].node.await_persistable_update_timeout(Duration::from_millis(1)));
-		assert!(nodes[1].node.await_persistable_update_timeout(Duration::from_millis(1)));
+		assert!(nodes[0].node.get_persistable_update_future().poll_is_complete());
+		assert!(nodes[1].node.get_persistable_update_future().poll_is_complete());
 		// ... but the last node should not.
-		assert!(!nodes[2].node.await_persistable_update_timeout(Duration::from_millis(1)));
+		assert!(!nodes[2].node.get_persistable_update_future().poll_is_complete());
 		// After persisting the first two nodes they should no longer need fresh persistence.
-		assert!(!nodes[0].node.await_persistable_update_timeout(Duration::from_millis(1)));
-		assert!(!nodes[1].node.await_persistable_update_timeout(Duration::from_millis(1)));
+		assert!(!nodes[0].node.get_persistable_update_future().poll_is_complete());
+		assert!(!nodes[1].node.get_persistable_update_future().poll_is_complete());
 
 		// Node 3, unrelated to the only channel, shouldn't care if it receives a channel_update
 		// about the channel.
 		nodes[2].node.handle_channel_update(&nodes[1].node.get_our_node_id(), &chan.0);
 		nodes[2].node.handle_channel_update(&nodes[1].node.get_our_node_id(), &chan.1);
-		assert!(!nodes[2].node.await_persistable_update_timeout(Duration::from_millis(1)));
+		assert!(!nodes[2].node.get_persistable_update_future().poll_is_complete());
 
 		// The nodes which are a party to the channel should also ignore messages from unrelated
 		// parties.
@@ -8013,8 +7991,8 @@ mod tests {
 		nodes[0].node.handle_channel_update(&nodes[2].node.get_our_node_id(), &chan.1);
 		nodes[1].node.handle_channel_update(&nodes[2].node.get_our_node_id(), &chan.0);
 		nodes[1].node.handle_channel_update(&nodes[2].node.get_our_node_id(), &chan.1);
-		assert!(!nodes[0].node.await_persistable_update_timeout(Duration::from_millis(1)));
-		assert!(!nodes[1].node.await_persistable_update_timeout(Duration::from_millis(1)));
+		assert!(!nodes[0].node.get_persistable_update_future().poll_is_complete());
+		assert!(!nodes[1].node.get_persistable_update_future().poll_is_complete());
 
 		// At this point the channel info given by peers should still be the same.
 		assert_eq!(nodes[0].node.list_channels()[0], node_a_chan_info);
@@ -8031,8 +8009,8 @@ mod tests {
 		// persisted and that its channel info remains the same.
 		nodes[0].node.handle_channel_update(&nodes[1].node.get_our_node_id(), &as_update);
 		nodes[1].node.handle_channel_update(&nodes[0].node.get_our_node_id(), &bs_update);
-		assert!(!nodes[0].node.await_persistable_update_timeout(Duration::from_millis(1)));
-		assert!(!nodes[1].node.await_persistable_update_timeout(Duration::from_millis(1)));
+		assert!(!nodes[0].node.get_persistable_update_future().poll_is_complete());
+		assert!(!nodes[1].node.get_persistable_update_future().poll_is_complete());
 		assert_eq!(nodes[0].node.list_channels()[0], node_a_chan_info);
 		assert_eq!(nodes[1].node.list_channels()[0], node_b_chan_info);
 
@@ -8040,8 +8018,8 @@ mod tests {
 		// the channel info has updated.
 		nodes[0].node.handle_channel_update(&nodes[1].node.get_our_node_id(), &bs_update);
 		nodes[1].node.handle_channel_update(&nodes[0].node.get_our_node_id(), &as_update);
-		assert!(nodes[0].node.await_persistable_update_timeout(Duration::from_millis(1)));
-		assert!(nodes[1].node.await_persistable_update_timeout(Duration::from_millis(1)));
+		assert!(nodes[0].node.get_persistable_update_future().poll_is_complete());
+		assert!(nodes[1].node.get_persistable_update_future().poll_is_complete());
 		assert_ne!(nodes[0].node.list_channels()[0], node_a_chan_info);
 		assert_ne!(nodes[1].node.list_channels()[0], node_b_chan_info);
 	}

@@ -12,6 +12,8 @@ use std::sync::RwLockReadGuard as StdRwLockReadGuard;
 use std::sync::RwLockWriteGuard as StdRwLockWriteGuard;
 use std::sync::Condvar as StdCondvar;
 
+pub use std::sync::WaitTimeoutResult;
+
 use crate::prelude::HashMap;
 
 use super::{LockTestExt, LockHeldState};
@@ -35,15 +37,19 @@ impl Condvar {
 		Condvar { inner: StdCondvar::new() }
 	}
 
-	pub fn wait<'a, T>(&'a self, guard: MutexGuard<'a, T>) -> LockResult<MutexGuard<'a, T>> {
+	pub fn wait_while<'a, T, F: FnMut(&mut T) -> bool>(&'a self, guard: MutexGuard<'a, T>, condition: F)
+	-> LockResult<MutexGuard<'a, T>> {
 		let mutex: &'a Mutex<T> = guard.mutex;
-		self.inner.wait(guard.into_inner()).map(|lock| MutexGuard { mutex, lock }).map_err(|_| ())
+		self.inner.wait_while(guard.into_inner(), condition).map(|lock| MutexGuard { mutex, lock })
+			.map_err(|_| ())
 	}
 
 	#[allow(unused)]
-	pub fn wait_timeout<'a, T>(&'a self, guard: MutexGuard<'a, T>, dur: Duration) -> LockResult<(MutexGuard<'a, T>, ())> {
+	pub fn wait_timeout_while<'a, T, F: FnMut(&mut T) -> bool>(&'a self, guard: MutexGuard<'a, T>, dur: Duration, condition: F)
+	-> LockResult<(MutexGuard<'a, T>, WaitTimeoutResult)> {
 		let mutex = guard.mutex;
-		self.inner.wait_timeout(guard.into_inner(), dur).map(|(lock, _)| (MutexGuard { mutex, lock }, ())).map_err(|_| ())
+		self.inner.wait_timeout_while(guard.into_inner(), dur, condition).map_err(|_| ())
+			.map(|(lock, e)| (MutexGuard { mutex, lock }, e))
 	}
 
 	pub fn notify_all(&self) { self.inner.notify_all(); }
