@@ -738,7 +738,9 @@ fn test_update_fee_that_funder_cannot_afford() {
 	let commit_signed_msg = msgs::CommitmentSigned {
 		channel_id: chan.2,
 		signature: res.0,
-		htlc_signatures: res.1
+		htlc_signatures: res.1,
+		#[cfg(taproot)]
+		partial_signature_with_nonce: None,
 	};
 
 	let update_fee = msgs::UpdateFee {
@@ -1458,7 +1460,9 @@ fn test_fee_spike_violation_fails_htlc() {
 	let commit_signed_msg = msgs::CommitmentSigned {
 		channel_id: chan.2,
 		signature: res.0,
-		htlc_signatures: res.1
+		htlc_signatures: res.1,
+		#[cfg(taproot)]
+		partial_signature_with_nonce: None,
 	};
 
 	// Send the commitment_signed message to the nodes[1].
@@ -1469,7 +1473,9 @@ fn test_fee_spike_violation_fails_htlc() {
 	let raa_msg = msgs::RevokeAndACK {
 		channel_id: chan.2,
 		per_commitment_secret: local_secret,
-		next_per_commitment_point: next_local_point
+		next_per_commitment_point: next_local_point,
+		#[cfg(taproot)]
+		next_local_nonce: None,
 	};
 	nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &raa_msg);
 
@@ -7497,7 +7503,13 @@ fn test_counterparty_raa_skip_no_crash() {
 	}
 
 	nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(),
-		&msgs::RevokeAndACK { channel_id, per_commitment_secret, next_per_commitment_point });
+		&msgs::RevokeAndACK {
+			channel_id,
+			per_commitment_secret,
+			next_per_commitment_point,
+			#[cfg(taproot)]
+			next_local_nonce: None,
+		});
 	assert_eq!(check_closed_broadcast!(nodes[1], true).unwrap().data, "Received an unexpected revoke_and_ack");
 	check_added_monitors!(nodes[1], 1);
 	check_closed_event!(nodes[1], 1, ClosureReason::ProcessingError { err: "Received an unexpected revoke_and_ack".to_string() });

@@ -38,6 +38,8 @@ use bitcoin::hash_types::{Txid, BlockHash};
 use core::marker::Sized;
 use core::time::Duration;
 use crate::ln::msgs::DecodeError;
+#[cfg(taproot)]
+use crate::ln::msgs::PartialSignatureWithNonce;
 use crate::ln::{PaymentPreimage, PaymentHash, PaymentSecret};
 
 use crate::util::byte_utils::{be48_to_array, slice_to_be48};
@@ -574,6 +576,7 @@ impl_array!(16); // for IPv6
 impl_array!(32); // for channel id & hmac
 impl_array!(PUBLIC_KEY_SIZE); // for PublicKey
 impl_array!(64); // for ecdsa::Signature and schnorr::Signature
+impl_array!(66); // for MuSig2 nonces
 impl_array!(1300); // for OnionPacket.hop_data
 
 impl Writeable for [u16; 8] {
@@ -858,6 +861,39 @@ impl Readable for SecretKey {
 			Ok(key) => Ok(key),
 			Err(_) => return Err(DecodeError::InvalidValue),
 		}
+	}
+}
+
+#[cfg(taproot)]
+impl Writeable for musig2::types::PublicNonce {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		self.serialize().write(w)
+	}
+}
+
+#[cfg(taproot)]
+impl Readable for musig2::types::PublicNonce {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let buf: [u8; PUBLIC_KEY_SIZE * 2] = Readable::read(r)?;
+		musig2::types::PublicNonce::from_slice(&buf).map_err(|_| DecodeError::InvalidValue)
+	}
+}
+
+#[cfg(taproot)]
+impl Writeable for PartialSignatureWithNonce {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		self.0.serialize().write(w)?;
+		self.1.write(w)
+	}
+}
+
+#[cfg(taproot)]
+impl Readable for PartialSignatureWithNonce {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let partial_signature_buf: [u8; SECRET_KEY_SIZE] = Readable::read(r)?;
+		let partial_signature = musig2::types::PartialSignature::from_slice(&partial_signature_buf).map_err(|_| DecodeError::InvalidValue)?;
+		let public_nonce: musig2::types::PublicNonce = Readable::read(r)?;
+		Ok(PartialSignatureWithNonce(partial_signature, public_nonce))
 	}
 }
 
@@ -1251,6 +1287,7 @@ impl Readable for Duration {
 #[cfg(test)]
 mod tests {
 	use core::convert::TryFrom;
+	use bitcoin::secp256k1::ecdsa;
 	use crate::util::ser::{Readable, Hostname, Writeable};
 
 	#[test]
@@ -1274,10 +1311,21 @@ mod tests {
 	}
 
 	#[test]
+	/// Taproot will likely fill legacy signature fields with all 0s.
+	/// This test ensures that doing so won't break serialization.
+	fn null_signature_codec() {
+		let buffer = vec![0u8; 64];
+		let mut cursor = crate::io::Cursor::new(buffer.clone());
+		let signature = ecdsa::Signature::read(&mut cursor).unwrap();
+		let serialization = signature.serialize_compact();
+		assert_eq!(buffer, serialization.to_vec())
+	}
+
+	#[test]
 	fn bigsize_encoding_decoding() {
 		let values = vec![0, 252, 253, 65535, 65536, 4294967295, 4294967296, 18446744073709551615];
 		let bytes = vec![
-			"00", 
+			"00",
 			"fc",
 			"fd00fd",
 			"fdffff",
@@ -1286,7 +1334,7 @@ mod tests {
 			"ff0000000100000000",
 			"ffffffffffffffffff"
 		];
-		for i in 0..=7 {	
+		for i in 0..=7 {
 			let mut stream = crate::io::Cursor::new(::hex::decode(bytes[i]).unwrap());
 			assert_eq!(super::BigSize::read(&mut stream).unwrap().0, values[i]);
 			let mut stream = super::VecWriter(Vec::new());

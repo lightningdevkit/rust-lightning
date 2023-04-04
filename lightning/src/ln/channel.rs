@@ -2362,7 +2362,9 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 
 		Ok((msgs::FundingSigned {
 			channel_id: self.channel_id,
-			signature
+			signature,
+			#[cfg(taproot)]
+			partial_signature_with_nonce: None,
 		}, channel_monitor))
 	}
 
@@ -3918,6 +3920,8 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			channel_id: self.channel_id,
 			per_commitment_secret,
 			next_per_commitment_point,
+			#[cfg(taproot)]
+			next_local_nonce: None,
 		}
 	}
 
@@ -5364,6 +5368,8 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 				None => Builder::new().into_script(),
 			}),
 			channel_type: Some(self.channel_type.clone()),
+			#[cfg(taproot)]
+			next_local_nonce: None,
 		}
 	}
 
@@ -5428,7 +5434,11 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			temporary_channel_id,
 			funding_txid: funding_txo.txid,
 			funding_output_index: funding_txo.index,
-			signature
+			signature,
+			#[cfg(taproot)]
+			partial_signature_with_nonce: None,
+			#[cfg(taproot)]
+			next_local_nonce: None,
 		})
 	}
 
@@ -5947,6 +5957,8 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			channel_id: self.channel_id,
 			signature,
 			htlc_signatures,
+			#[cfg(taproot)]
+			partial_signature_with_nonce: None,
 		}, (counterparty_commitment_txid, commitment_stats.htlcs_included)))
 	}
 
