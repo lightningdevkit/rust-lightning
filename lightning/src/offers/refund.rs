@@ -85,12 +85,11 @@ use crate::ln::features::InvoiceRequestFeatures;
 use crate::ln::inbound_payment::{ExpandedKey, IV_LEN, Nonce};
 use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
 use crate::offers::invoice::{BlindedPayInfo, InvoiceBuilder};
-use crate::offers::invoice_request::{INVOICE_REQUEST_PAYER_ID_TYPE, INVOICE_REQUEST_TYPES, InvoiceRequestTlvStream, InvoiceRequestTlvStreamRef};
-use crate::offers::merkle::TlvStream;
-use crate::offers::offer::{OFFER_TYPES, OfferTlvStream, OfferTlvStreamRef};
+use crate::offers::invoice_request::{InvoiceRequestTlvStream, InvoiceRequestTlvStreamRef};
+use crate::offers::offer::{OfferTlvStream, OfferTlvStreamRef};
 use crate::offers::parse::{Bech32Encode, ParseError, ParsedMessage, SemanticError};
-use crate::offers::payer::{PAYER_METADATA_TYPE, PayerContents, PayerTlvStream, PayerTlvStreamRef};
-use crate::offers::signer::{Metadata, MetadataMaterial, self};
+use crate::offers::payer::{PayerContents, PayerTlvStream, PayerTlvStreamRef};
+use crate::offers::signer::{Metadata, MetadataMaterial};
 use crate::onion_message::BlindedPath;
 use crate::util::ser::{SeekReadable, WithoutLength, Writeable, Writer};
 use crate::util::string::PrintableString;
@@ -100,7 +99,7 @@ use crate::prelude::*;
 #[cfg(feature = "std")]
 use std::time::SystemTime;
 
-const IV_BYTES: &[u8; IV_LEN] = b"LDK Refund ~~~~~";
+pub(super) const IV_BYTES: &[u8; IV_LEN] = b"LDK Refund ~~~~~";
 
 /// Builds a [`Refund`] for the "offer for money" flow.
 ///
@@ -456,7 +455,7 @@ impl RefundContents {
 		}
 	}
 
-	fn metadata(&self) -> &[u8] {
+	pub(super) fn metadata(&self) -> &[u8] {
 		self.payer.0.as_bytes().map(|bytes| bytes.as_slice()).unwrap_or(&[])
 	}
 
@@ -468,20 +467,12 @@ impl RefundContents {
 		ChainHash::using_genesis_block(Network::Bitcoin)
 	}
 
-	/// Verifies that the payer metadata was produced from the refund in the TLV stream.
-	pub(super) fn verify<T: secp256k1::Signing>(
-		&self, tlv_stream: TlvStream<'_>, key: &ExpandedKey, secp_ctx: &Secp256k1<T>
-	) -> bool {
-		let offer_records = tlv_stream.clone().range(OFFER_TYPES);
-		let invreq_records = tlv_stream.range(INVOICE_REQUEST_TYPES).filter(|record| {
-			match record.r#type {
-				PAYER_METADATA_TYPE => false, // Should be outside range
-				INVOICE_REQUEST_PAYER_ID_TYPE => !self.payer.0.derives_keys(),
-				_ => true,
-			}
-		});
-		let tlv_stream = offer_records.chain(invreq_records);
-		signer::verify_metadata(self.metadata(), key, IV_BYTES, self.payer_id, tlv_stream, secp_ctx)
+	pub(super) fn derives_keys(&self) -> bool {
+		self.payer.0.derives_keys()
+	}
+
+	pub(super) fn payer_id(&self) -> PublicKey {
+		self.payer_id
 	}
 
 	pub(super) fn as_tlv_stream(&self) -> RefundTlvStreamRef {

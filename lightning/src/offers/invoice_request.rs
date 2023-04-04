@@ -66,10 +66,10 @@ use crate::ln::inbound_payment::{ExpandedKey, IV_LEN, Nonce};
 use crate::ln::msgs::DecodeError;
 use crate::offers::invoice::{BlindedPayInfo, InvoiceBuilder};
 use crate::offers::merkle::{SignError, SignatureTlvStream, SignatureTlvStreamRef, TlvStream, self};
-use crate::offers::offer::{OFFER_TYPES, Offer, OfferContents, OfferTlvStream, OfferTlvStreamRef};
+use crate::offers::offer::{Offer, OfferContents, OfferTlvStream, OfferTlvStreamRef};
 use crate::offers::parse::{ParseError, ParsedMessage, SemanticError};
-use crate::offers::payer::{PAYER_METADATA_TYPE, PayerContents, PayerTlvStream, PayerTlvStreamRef};
-use crate::offers::signer::{Metadata, MetadataMaterial, self};
+use crate::offers::payer::{PayerContents, PayerTlvStream, PayerTlvStreamRef};
+use crate::offers::signer::{Metadata, MetadataMaterial};
 use crate::onion_message::BlindedPath;
 use crate::util::ser::{HighZeroBytesDroppedBigSize, SeekReadable, WithoutLength, Writeable, Writer};
 use crate::util::string::PrintableString;
@@ -78,7 +78,7 @@ use crate::prelude::*;
 
 const SIGNATURE_TAG: &'static str = concat!("lightning", "invoice_request", "signature");
 
-const IV_BYTES: &[u8; IV_LEN] = b"LDK Invreq ~~~~~";
+pub(super) const IV_BYTES: &[u8; IV_LEN] = b"LDK Invreq ~~~~~";
 
 /// Builds an [`InvoiceRequest`] from an [`Offer`] for the "offer to be paid" flow.
 ///
@@ -528,24 +528,16 @@ impl InvoiceRequestContents {
 		self.inner.metadata()
 	}
 
+	pub(super) fn derives_keys(&self) -> bool {
+		self.inner.payer.0.derives_keys()
+	}
+
 	pub(super) fn chain(&self) -> ChainHash {
 		self.inner.chain()
 	}
 
-	/// Verifies that the payer metadata was produced from the invoice request in the TLV stream.
-	pub(super) fn verify<T: secp256k1::Signing>(
-		&self, tlv_stream: TlvStream<'_>, key: &ExpandedKey, secp_ctx: &Secp256k1<T>
-	) -> bool {
-		let offer_records = tlv_stream.clone().range(OFFER_TYPES);
-		let invreq_records = tlv_stream.range(INVOICE_REQUEST_TYPES).filter(|record| {
-			match record.r#type {
-				PAYER_METADATA_TYPE => false, // Should be outside range
-				INVOICE_REQUEST_PAYER_ID_TYPE => !self.inner.payer.0.derives_keys(),
-				_ => true,
-			}
-		});
-		let tlv_stream = offer_records.chain(invreq_records);
-		signer::verify_metadata(self.metadata(), key, IV_BYTES, self.payer_id, tlv_stream, secp_ctx)
+	pub(super) fn payer_id(&self) -> PublicKey {
+		self.payer_id
 	}
 
 	pub(super) fn as_tlv_stream(&self) -> PartialInvoiceRequestTlvStreamRef {

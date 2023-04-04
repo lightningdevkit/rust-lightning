@@ -108,12 +108,13 @@ use crate::ln::PaymentHash;
 use crate::ln::features::{BlindedHopFeatures, Bolt12InvoiceFeatures};
 use crate::ln::inbound_payment::ExpandedKey;
 use crate::ln::msgs::DecodeError;
-use crate::offers::invoice_request::{InvoiceRequest, InvoiceRequestContents, InvoiceRequestTlvStream, InvoiceRequestTlvStreamRef};
+use crate::offers::invoice_request::{INVOICE_REQUEST_PAYER_ID_TYPE, INVOICE_REQUEST_TYPES, IV_BYTES as INVOICE_REQUEST_IV_BYTES, InvoiceRequest, InvoiceRequestContents, InvoiceRequestTlvStream, InvoiceRequestTlvStreamRef};
 use crate::offers::merkle::{SignError, SignatureTlvStream, SignatureTlvStreamRef, TlvStream, WithoutSignatures, self};
-use crate::offers::offer::{Amount, OfferTlvStream, OfferTlvStreamRef};
+use crate::offers::offer::{Amount, OFFER_TYPES, OfferTlvStream, OfferTlvStreamRef};
 use crate::offers::parse::{ParseError, ParsedMessage, SemanticError};
-use crate::offers::payer::{PayerTlvStream, PayerTlvStreamRef};
-use crate::offers::refund::{Refund, RefundContents};
+use crate::offers::payer::{PAYER_METADATA_TYPE, PayerTlvStream, PayerTlvStreamRef};
+use crate::offers::refund::{IV_BYTES as REFUND_IV_BYTES, Refund, RefundContents};
+use crate::offers::signer;
 use crate::onion_message::BlindedPath;
 use crate::util::ser::{HighZeroBytesDroppedBigSize, Iterable, SeekReadable, WithoutLength, Writeable, Writer};
 
@@ -531,13 +532,32 @@ impl InvoiceContents {
 	fn verify<T: secp256k1::Signing>(
 		&self, tlv_stream: TlvStream<'_>, key: &ExpandedKey, secp_ctx: &Secp256k1<T>
 	) -> bool {
-		match self {
+		let offer_records = tlv_stream.clone().range(OFFER_TYPES);
+		let invreq_records = tlv_stream.range(INVOICE_REQUEST_TYPES).filter(|record| {
+			match record.r#type {
+				PAYER_METADATA_TYPE => false, // Should be outside range
+				INVOICE_REQUEST_PAYER_ID_TYPE => !self.derives_keys(),
+				_ => true,
+			}
+		});
+		let tlv_stream = offer_records.chain(invreq_records);
+
+		let (metadata, payer_id, iv_bytes) = match self {
 			InvoiceContents::ForOffer { invoice_request, .. } => {
-				invoice_request.verify(tlv_stream, key, secp_ctx)
+				(invoice_request.metadata(), invoice_request.payer_id(), INVOICE_REQUEST_IV_BYTES)
 			},
 			InvoiceContents::ForRefund { refund, .. } => {
-				refund.verify(tlv_stream, key, secp_ctx)
+				(refund.metadata(), refund.payer_id(), REFUND_IV_BYTES)
 			},
+		};
+
+		signer::verify_metadata(metadata, key, iv_bytes, payer_id, tlv_stream, secp_ctx)
+	}
+
+	fn derives_keys(&self) -> bool {
+		match self {
+			InvoiceContents::ForOffer { invoice_request, .. } => invoice_request.derives_keys(),
+			InvoiceContents::ForRefund { refund, .. } => refund.derives_keys(),
 		}
 	}
 
