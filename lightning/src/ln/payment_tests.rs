@@ -12,7 +12,7 @@
 //! payments thereafter.
 
 use crate::chain::{ChannelMonitorUpdateStatus, Confirm, Listen, Watch};
-use crate::chain::channelmonitor::{ANTI_REORG_DELAY, LATENCY_GRACE_PERIOD_BLOCKS};
+use crate::chain::channelmonitor::{ANTI_REORG_DELAY, HTLC_FAIL_BACK_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS};
 use crate::chain::keysinterface::EntropySource;
 use crate::chain::transaction::OutPoint;
 use crate::events::{ClosureReason, Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, PathFailure};
@@ -23,7 +23,7 @@ use crate::ln::msgs;
 use crate::ln::msgs::ChannelMessageHandler;
 use crate::ln::outbound_payment::Retry;
 use crate::routing::gossip::{EffectiveCapacity, RoutingFees};
-use crate::routing::router::{get_route, PaymentParameters, Route, RouteHint, RouteHintHop, RouteHop, RouteParameters};
+use crate::routing::router::{get_route, PaymentParameters, Route, Router, RouteHint, RouteHintHop, RouteHop, RouteParameters};
 use crate::routing::scoring::ChannelUsage;
 use crate::util::test_utils;
 use crate::util::errors::APIError;
@@ -2837,4 +2837,139 @@ fn do_no_missing_sent_on_midpoint_reload(persist_manager_with_payment: bool) {
 fn no_missing_sent_on_midpoint_reload() {
 	do_no_missing_sent_on_midpoint_reload(false);
 	do_no_missing_sent_on_midpoint_reload(true);
+}
+
+fn do_claim_from_closed_chan(fail_payment: bool) {
+	// Previously, LDK would refuse to claim a payment if a channel on which the payment was
+	// received had been closed between when the HTLC was received and when we went to claim it.
+	// This makes sense in the payment case - why pay an on-chain fee to claim the HTLC when
+	// presumably the sender may retry later. Long ago it also reduced total code in the claim
+	// pipeline.
+	//
+	// However, this doesn't make sense if you're trying to do an atomic swap or some other
+	// protocol that requires atomicity with some other action - if your money got claimed
+	// elsewhere you need to be able to claim the HTLC in lightning no matter what. Further, this
+	// is an over-optimization - there should be a very, very low likelihood that a channel closes
+	// between when we receive the last HTLC for a payment and the user goes to claim the payment.
+	// Since we now have code to handle this anyway we should allow it.
+
+	// Build 4 nodes and send an MPP payment across two paths. By building a route manually set the
+	// CLTVs on the paths to different value resulting in a different claim deadline.
+	let chanmon_cfgs = create_chanmon_cfgs(4);
+	let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, None, None, None]);
+	let mut nodes = create_network(4, &node_cfgs, &node_chanmgrs);
+
+	create_announced_chan_between_nodes(&nodes, 0, 1);
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 2, 1_000_000, 0);
+	let chan_bd = create_announced_chan_between_nodes_with_value(&nodes, 1, 3, 1_000_000, 0).2;
+	create_announced_chan_between_nodes(&nodes, 2, 3);
+
+	let (payment_preimage, payment_hash, payment_secret) = get_payment_preimage_hash!(nodes[3]);
+	let mut route_params = RouteParameters {
+		payment_params: PaymentParameters::from_node_id(nodes[3].node.get_our_node_id(), TEST_FINAL_CLTV)
+			.with_features(nodes[1].node.invoice_features()),
+		final_value_msat: 10_000_000,
+	};
+	let mut route = nodes[0].router.find_route(&nodes[0].node.get_our_node_id(), &route_params,
+		None, &nodes[0].node.compute_inflight_htlcs()).unwrap();
+	// Make sure the route is ordered as the B->D path before C->D
+	route.paths.sort_by(|a, _| if a[0].pubkey == nodes[1].node.get_our_node_id() {
+		std::cmp::Ordering::Less } else { std::cmp::Ordering::Greater });
+
+	// Note that we add an extra 1 in the send pipeline to compensate for any blocks found while
+	// the HTLC is being relayed.
+	route.paths[0][1].cltv_expiry_delta = TEST_FINAL_CLTV + 8;
+	route.paths[1][1].cltv_expiry_delta = TEST_FINAL_CLTV + 12;
+	let final_cltv = nodes[0].best_block_info().1 + TEST_FINAL_CLTV + 8 + 1;
+
+	nodes[0].router.expect_find_route(route_params.clone(), Ok(route.clone()));
+	nodes[0].node.send_payment_with_retry(payment_hash, &Some(payment_secret),
+		PaymentId(payment_hash.0), route_params.clone(), Retry::Attempts(1)).unwrap();
+	check_added_monitors(&nodes[0], 2);
+	let mut send_msgs = nodes[0].node.get_and_clear_pending_msg_events();
+	send_msgs.sort_by(|a, _| {
+		let a_node_id =
+			if let MessageSendEvent::UpdateHTLCs { node_id, .. } = a { node_id } else { panic!() };
+		let node_b_id = nodes[1].node.get_our_node_id();
+		if *a_node_id == node_b_id { std::cmp::Ordering::Less } else { std::cmp::Ordering::Greater }
+	});
+
+	assert_eq!(send_msgs.len(), 2);
+	pass_along_path(&nodes[0], &[&nodes[1], &nodes[3]], 10_000_000,
+		payment_hash, Some(payment_secret), send_msgs.remove(0), false, None);
+	pass_along_path(&nodes[0], &[&nodes[2], &nodes[3]], 10_000_000,
+		payment_hash, Some(payment_secret), send_msgs.remove(0), true, None);
+
+	// Ensure that the claim_deadline is correct, with the payment failing at exactly the given
+	// height.
+	connect_blocks(&nodes[3], final_cltv - HTLC_FAIL_BACK_BUFFER - nodes[3].best_block_info().1
+		- if fail_payment { 0 } else { 2 });
+	if fail_payment {
+		// We fail the HTLC on the A->B->D path first as it expires 4 blocks earlier. We go ahead
+		// and expire both immediately, though, by connecting another 4 blocks.
+		let reason = HTLCDestination::FailedPayment { payment_hash };
+		expect_pending_htlcs_forwardable_and_htlc_handling_failed!(&nodes[3], [reason.clone()]);
+		connect_blocks(&nodes[3], 4);
+		expect_pending_htlcs_forwardable_and_htlc_handling_failed!(&nodes[3], [reason]);
+		pass_failed_payment_back(&nodes[0], &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]], false, payment_hash);
+	} else {
+		nodes[1].node.force_close_broadcasting_latest_txn(&chan_bd, &nodes[3].node.get_our_node_id()).unwrap();
+		check_closed_event(&nodes[1], 1, ClosureReason::HolderForceClosed, false);
+		check_closed_broadcast(&nodes[1], 1, true);
+		let bs_tx = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
+		assert_eq!(bs_tx.len(), 1);
+
+		mine_transaction(&nodes[3], &bs_tx[0]);
+		check_added_monitors(&nodes[3], 1);
+		check_closed_broadcast(&nodes[3], 1, true);
+		check_closed_event(&nodes[3], 1, ClosureReason::CommitmentTxConfirmed, false);
+
+		nodes[3].node.claim_funds(payment_preimage);
+		check_added_monitors(&nodes[3], 2);
+		expect_payment_claimed!(nodes[3], payment_hash, 10_000_000);
+
+		let ds_tx = nodes[3].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
+		assert_eq!(ds_tx.len(), 1);
+		check_spends!(&ds_tx[0], &bs_tx[0]);
+
+		mine_transactions(&nodes[1], &[&bs_tx[0], &ds_tx[0]]);
+		check_added_monitors(&nodes[1], 1);
+		expect_payment_forwarded!(nodes[1], nodes[0], nodes[3], Some(1000), false, true);
+
+		let bs_claims = nodes[1].node.get_and_clear_pending_msg_events();
+		check_added_monitors(&nodes[1], 1);
+		assert_eq!(bs_claims.len(), 1);
+		if let MessageSendEvent::UpdateHTLCs { updates, .. } = &bs_claims[0] {
+			nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &updates.update_fulfill_htlcs[0]);
+			commitment_signed_dance!(nodes[0], nodes[1], updates.commitment_signed, false, true);
+		} else { panic!(); }
+
+		expect_payment_sent!(nodes[0], payment_preimage);
+
+		let ds_claim_msgs = nodes[3].node.get_and_clear_pending_msg_events();
+		assert_eq!(ds_claim_msgs.len(), 1);
+		let cs_claim_msgs = if let MessageSendEvent::UpdateHTLCs { updates, .. } = &ds_claim_msgs[0] {
+			nodes[2].node.handle_update_fulfill_htlc(&nodes[3].node.get_our_node_id(), &updates.update_fulfill_htlcs[0]);
+			let cs_claim_msgs = nodes[2].node.get_and_clear_pending_msg_events();
+			check_added_monitors(&nodes[2], 1);
+			commitment_signed_dance!(nodes[2], nodes[3], updates.commitment_signed, false, true);
+			expect_payment_forwarded!(nodes[2], nodes[0], nodes[3], Some(1000), false, false);
+			cs_claim_msgs
+		} else { panic!(); };
+
+		assert_eq!(cs_claim_msgs.len(), 1);
+		if let MessageSendEvent::UpdateHTLCs { updates, .. } = &cs_claim_msgs[0] {
+			nodes[0].node.handle_update_fulfill_htlc(&nodes[2].node.get_our_node_id(), &updates.update_fulfill_htlcs[0]);
+			commitment_signed_dance!(nodes[0], nodes[2], updates.commitment_signed, false, true);
+		} else { panic!(); }
+
+		expect_payment_path_successful!(nodes[0]);
+	}
+}
+
+#[test]
+fn claim_from_closed_chan() {
+	do_claim_from_closed_chan(true);
+	do_claim_from_closed_chan(false);
 }

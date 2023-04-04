@@ -3981,21 +3981,10 @@ where
 		};
 		debug_assert!(!sources.is_empty());
 
-		// If we are claiming an MPP payment, we check that all channels which contain a claimable
-		// HTLC still exist. While this isn't guaranteed to remain true if a channel closes while
-		// we're claiming (or even after we claim, before the commitment update dance completes),
-		// it should be a relatively rare race, and we'd rather not claim HTLCs that require us to
-		// go on-chain (and lose the on-chain fee to do so) than just reject the payment.
-		//
-		// Note that we'll still always get our funds - as long as the generated
-		// `ChannelMonitorUpdate` makes it out to the relevant monitor we can claim on-chain.
-		//
-		// If we find an HTLC which we would need to claim but for which we do not have a
-		// channel, we will fail all parts of the MPP payment. While we could wait and see if
-		// the sender retries the already-failed path(s), it should be a pretty rare case where
-		// we got all the HTLCs and then a channel closed while we were waiting for the user to
-		// provide the preimage, so worrying too much about the optimal handling isn't worth
-		// it.
+		// Just in case one HTLC has been failed between when we generated the `PaymentClaimable`
+		// and when we got here we need to check that the amount we're about to claim matches the
+		// amount we told the user in the last `PaymentClaimable`. We also do a sanity-check that
+		// the MPP parts all have the same `total_msat`.
 		let mut claimable_amt_msat = 0;
 		let mut prev_total_msat = None;
 		let mut expected_amt_msat = None;
@@ -4003,28 +3992,6 @@ where
 		let mut errs = Vec::new();
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		for htlc in sources.iter() {
-			let (counterparty_node_id, chan_id) = match self.short_to_chan_info.read().unwrap().get(&htlc.prev_hop.short_channel_id) {
-				Some((cp_id, chan_id)) => (cp_id.clone(), chan_id.clone()),
-				None => {
-					valid_mpp = false;
-					break;
-				}
-			};
-
-			let peer_state_mutex_opt = per_peer_state.get(&counterparty_node_id);
-			if peer_state_mutex_opt.is_none() {
-				valid_mpp = false;
-				break;
-			}
-
-			let mut peer_state_lock = peer_state_mutex_opt.unwrap().lock().unwrap();
-			let peer_state = &mut *peer_state_lock;
-
-			if peer_state.channel_by_id.get(&chan_id).is_none() {
-				valid_mpp = false;
-				break;
-			}
-
 			if prev_total_msat.is_some() && prev_total_msat != Some(htlc.total_msat) {
 				log_error!(self.logger, "Somehow ended up with an MPP payment with different expected total amounts - this should not be reachable!");
 				debug_assert!(false);
