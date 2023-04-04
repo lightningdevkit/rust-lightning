@@ -10,7 +10,7 @@ use lightning::ln::msgs::{
 };
 use lightning::routing::gossip::NetworkGraph;
 use lightning::util::logger::Logger;
-use lightning::{log_warn, log_trace, log_given_level};
+use lightning::{log_debug, log_warn, log_trace, log_given_level, log_gossip};
 use lightning::util::ser::{BigSize, Readable};
 use lightning::io;
 
@@ -58,6 +58,7 @@ impl<NG: Deref<Target=NetworkGraph<L>>, L: Deref> RapidGossipSync<NG, L> where L
 		mut read_cursor: &mut R,
 		current_time_unix: Option<u64>
 	) -> Result<u32, GraphSyncError> {
+		log_trace!(self.logger, "Processing RGS data...");
 		let mut prefix = [0u8; 4];
 		read_cursor.read_exact(&mut prefix)?;
 
@@ -110,6 +111,9 @@ impl<NG: Deref<Target=NetworkGraph<L>>, L: Deref> RapidGossipSync<NG, L> where L
 			let node_id_1 = node_ids[node_id_1_index.0 as usize];
 			let node_id_2 = node_ids[node_id_2_index.0 as usize];
 
+			log_gossip!(self.logger, "Adding channel {} from RGS announcement at {}",
+				short_channel_id, latest_seen_timestamp);
+
 			let announcement_result = network_graph.add_channel_from_partial_announcement(
 				short_channel_id,
 				backdated_timestamp as u64,
@@ -130,6 +134,8 @@ impl<NG: Deref<Target=NetworkGraph<L>>, L: Deref> RapidGossipSync<NG, L> where L
 		previous_scid = 0; // updates start at a new scid
 
 		let update_count: u32 = Readable::read(read_cursor)?;
+		log_debug!(self.logger, "Processing RGS update from {} with {} nodes, {} channel announcements and {} channel updates.",
+			latest_seen_timestamp, node_id_count, announcement_count, update_count);
 		if update_count == 0 {
 			return Ok(latest_seen_timestamp);
 		}
@@ -217,6 +223,8 @@ impl<NG: Deref<Target=NetworkGraph<L>>, L: Deref> RapidGossipSync<NG, L> where L
 				continue;
 			}
 
+			log_gossip!(self.logger, "Updating channel {} with flags {} from RGS announcement at {}",
+				short_channel_id, channel_flags, latest_seen_timestamp);
 			match network_graph.update_channel_unsigned(&synthetic_update) {
 				Ok(_) => {},
 				Err(LightningError { action: ErrorAction::IgnoreDuplicateGossip, .. }) => {},
@@ -230,6 +238,7 @@ impl<NG: Deref<Target=NetworkGraph<L>>, L: Deref> RapidGossipSync<NG, L> where L
 
 		self.network_graph.set_last_rapid_gossip_sync_timestamp(latest_seen_timestamp);
 		self.is_initial_sync_complete.store(true, Ordering::Release);
+		log_trace!(self.logger, "Done processing RGS data from {}", latest_seen_timestamp);
 		Ok(latest_seen_timestamp)
 	}
 }
