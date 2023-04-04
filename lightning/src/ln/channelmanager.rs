@@ -3363,8 +3363,10 @@ where
 											}
 										}
 										let mut total_value = claimable_htlc.sender_intended_value;
+										let mut earliest_expiry = claimable_htlc.cltv_expiry;
 										for htlc in htlcs.iter() {
 											total_value += htlc.sender_intended_value;
+											earliest_expiry = cmp::min(earliest_expiry, htlc.cltv_expiry);
 											match &htlc.onion_payload {
 												OnionPayload::Invoice { .. } => {
 													if htlc.total_msat != $payment_data.total_msat {
@@ -3397,6 +3399,7 @@ where
 												amount_msat,
 												via_channel_id: Some(prev_channel_id),
 												via_user_channel_id: Some(prev_user_channel_id),
+												claim_deadline: Some(earliest_expiry - HTLC_FAIL_BACK_BUFFER),
 											});
 											payment_claimable_generated = true;
 										} else {
@@ -3450,6 +3453,7 @@ where
 													hash_map::Entry::Vacant(e) => {
 														let amount_msat = claimable_htlc.value;
 														claimable_htlc.total_value_received = Some(amount_msat);
+														let claim_deadline = Some(claimable_htlc.cltv_expiry - HTLC_FAIL_BACK_BUFFER);
 														let purpose = events::PaymentPurpose::SpontaneousPayment(preimage);
 														e.insert((purpose.clone(), vec![claimable_htlc]));
 														let prev_channel_id = prev_funding_outpoint.to_channel_id();
@@ -3460,6 +3464,7 @@ where
 															purpose,
 															via_channel_id: Some(prev_channel_id),
 															via_user_channel_id: Some(prev_user_channel_id),
+															claim_deadline,
 														});
 													},
 													hash_map::Entry::Occupied(_) => {
@@ -3935,9 +3940,10 @@ where
 	/// Provides a payment preimage in response to [`Event::PaymentClaimable`], generating any
 	/// [`MessageSendEvent`]s needed to claim the payment.
 	///
-	/// Note that calling this method does *not* guarantee that the payment has been claimed. You
-	/// *must* wait for an [`Event::PaymentClaimed`] event which upon a successful claim will be
-	/// provided to your [`EventHandler`] when [`process_pending_events`] is next called.
+	/// This method is guaranteed to ensure the payment has been claimed but only if the current
+	/// height is strictly below [`Event::PaymentClaimable::claim_deadline`]. To avoid race
+	/// conditions, you should wait for an [`Event::PaymentClaimed`] before considering the payment
+	/// successful. It will generally be available in the next [`process_pending_events`] call.
 	///
 	/// Note that if you did not set an `amount_msat` when calling [`create_inbound_payment`] or
 	/// [`create_inbound_payment_for_hash`] you must check that the amount in the `PaymentClaimable`
@@ -3945,6 +3951,7 @@ where
 	/// the sender "proof-of-payment" when they did not fulfill the full expected payment.
 	///
 	/// [`Event::PaymentClaimable`]: crate::events::Event::PaymentClaimable
+	/// [`Event::PaymentClaimable::claim_deadline`]: crate::events::Event::PaymentClaimable::claim_deadline
 	/// [`Event::PaymentClaimed`]: crate::events::Event::PaymentClaimed
 	/// [`process_pending_events`]: EventsProvider::process_pending_events
 	/// [`create_inbound_payment`]: Self::create_inbound_payment

@@ -1680,7 +1680,7 @@ macro_rules! expect_payment_claimable {
 		let events = $node.node.get_and_clear_pending_events();
 		assert_eq!(events.len(), 1);
 		match events[0] {
-			$crate::events::Event::PaymentClaimable { ref payment_hash, ref purpose, amount_msat, receiver_node_id, via_channel_id: _, via_user_channel_id: _ } => {
+			$crate::events::Event::PaymentClaimable { ref payment_hash, ref purpose, amount_msat, receiver_node_id, .. } => {
 				assert_eq!($expected_payment_hash, *payment_hash);
 				assert_eq!($expected_recv_value, amount_msat);
 				assert_eq!($expected_receiver_node_id, receiver_node_id.unwrap());
@@ -1962,9 +1962,10 @@ pub fn send_along_route_with_secret<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, 
 	payment_id
 }
 
-pub fn do_pass_along_path<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_path: &[&Node<'a, 'b, 'c>], recv_value: u64, our_payment_hash: PaymentHash, our_payment_secret: Option<PaymentSecret>, ev: MessageSendEvent, payment_claimable_expected: bool, clear_recipient_events: bool, expected_preimage: Option<PaymentPreimage>) {
+pub fn do_pass_along_path<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_path: &[&Node<'a, 'b, 'c>], recv_value: u64, our_payment_hash: PaymentHash, our_payment_secret: Option<PaymentSecret>, ev: MessageSendEvent, payment_claimable_expected: bool, clear_recipient_events: bool, expected_preimage: Option<PaymentPreimage>) -> Option<Event> {
 	let mut payment_event = SendEvent::from_event(ev);
 	let mut prev_node = origin_node;
+	let mut event = None;
 
 	for (idx, &node) in expected_path.iter().enumerate() {
 		assert_eq!(node.node.get_our_node_id(), payment_event.node_id);
@@ -1980,7 +1981,7 @@ pub fn do_pass_along_path<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_p
 			if payment_claimable_expected {
 				assert_eq!(events_2.len(), 1);
 				match events_2[0] {
-					Event::PaymentClaimable { ref payment_hash, ref purpose, amount_msat, receiver_node_id, ref via_channel_id, ref via_user_channel_id } => {
+					Event::PaymentClaimable { ref payment_hash, ref purpose, amount_msat, receiver_node_id, ref via_channel_id, ref via_user_channel_id, claim_deadline } => {
 						assert_eq!(our_payment_hash, *payment_hash);
 						assert_eq!(node.node.get_our_node_id(), receiver_node_id.unwrap());
 						match &purpose {
@@ -1996,9 +1997,11 @@ pub fn do_pass_along_path<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_p
 						assert_eq!(amount_msat, recv_value);
 						assert!(node.node.list_channels().iter().any(|details| details.channel_id == via_channel_id.unwrap()));
 						assert!(node.node.list_channels().iter().any(|details| details.user_channel_id == via_user_channel_id.unwrap()));
+						assert!(claim_deadline.unwrap() > node.best_block_info().1);
 					},
 					_ => panic!("Unexpected event"),
 				}
+				event = Some(events_2[0].clone());
 			} else {
 				assert!(events_2.is_empty());
 			}
@@ -2012,10 +2015,11 @@ pub fn do_pass_along_path<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_p
 
 		prev_node = node;
 	}
+	event
 }
 
-pub fn pass_along_path<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_path: &[&Node<'a, 'b, 'c>], recv_value: u64, our_payment_hash: PaymentHash, our_payment_secret: Option<PaymentSecret>, ev: MessageSendEvent, payment_claimable_expected: bool, expected_preimage: Option<PaymentPreimage>) {
-	do_pass_along_path(origin_node, expected_path, recv_value, our_payment_hash, our_payment_secret, ev, payment_claimable_expected, true, expected_preimage);
+pub fn pass_along_path<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_path: &[&Node<'a, 'b, 'c>], recv_value: u64, our_payment_hash: PaymentHash, our_payment_secret: Option<PaymentSecret>, ev: MessageSendEvent, payment_claimable_expected: bool, expected_preimage: Option<PaymentPreimage>) -> Option<Event> {
+	do_pass_along_path(origin_node, expected_path, recv_value, our_payment_hash, our_payment_secret, ev, payment_claimable_expected, true, expected_preimage)
 }
 
 pub fn pass_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route: &[&[&Node<'a, 'b, 'c>]], recv_value: u64, our_payment_hash: PaymentHash, our_payment_secret: PaymentSecret) {

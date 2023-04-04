@@ -2898,8 +2898,15 @@ fn do_claim_from_closed_chan(fail_payment: bool) {
 	assert_eq!(send_msgs.len(), 2);
 	pass_along_path(&nodes[0], &[&nodes[1], &nodes[3]], 10_000_000,
 		payment_hash, Some(payment_secret), send_msgs.remove(0), false, None);
-	pass_along_path(&nodes[0], &[&nodes[2], &nodes[3]], 10_000_000,
+	let receive_event = pass_along_path(&nodes[0], &[&nodes[2], &nodes[3]], 10_000_000,
 		payment_hash, Some(payment_secret), send_msgs.remove(0), true, None);
+
+	match receive_event.unwrap() {
+		Event::PaymentClaimable { claim_deadline, .. } => {
+			assert_eq!(claim_deadline.unwrap(), final_cltv - HTLC_FAIL_BACK_BUFFER);
+		},
+		_ => panic!(),
+	}
 
 	// Ensure that the claim_deadline is correct, with the payment failing at exactly the given
 	// height.
