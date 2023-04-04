@@ -5050,8 +5050,23 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		self.pending_monitor_updates.is_empty()
 	}
 
+	pub fn complete_all_mon_updates_through(&mut self, update_id: u64) {
+		self.pending_monitor_updates.retain(|upd| {
+			if upd.update.update_id <= update_id {
+				assert!(!upd.blocked, "Completed update must have flown");
+				false
+			} else { true }
+		});
+	}
+
 	pub fn complete_one_mon_update(&mut self, update_id: u64) {
 		self.pending_monitor_updates.retain(|upd| upd.update.update_id != update_id);
+	}
+
+	/// Returns an iterator over all unblocked monitor updates which have not yet completed.
+	pub fn uncompleted_unblocked_mon_updates(&self) -> impl Iterator<Item=&ChannelMonitorUpdate> {
+		self.pending_monitor_updates.iter()
+			.filter_map(|upd| if upd.blocked { None } else { Some(&upd.update) })
 	}
 
 	/// Returns true if funding_created was sent/received.

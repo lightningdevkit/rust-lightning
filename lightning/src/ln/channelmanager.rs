@@ -7882,7 +7882,10 @@ where
 						}
 					}
 				} else {
-					log_info!(args.logger, "Successfully loaded channel {}", log_bytes!(channel.channel_id()));
+					log_info!(args.logger, "Successfully loaded channel {} at update_id {} against monitor at update id {}",
+						log_bytes!(channel.channel_id()), channel.get_latest_monitor_update_id(),
+						monitor.get_latest_update_id());
+					channel.complete_all_mon_updates_through(monitor.get_latest_update_id());
 					if let Some(short_channel_id) = channel.get_short_channel_id() {
 						short_to_chan_info.insert(short_channel_id, (channel.get_counterparty_node_id(), channel.channel_id()));
 					}
@@ -7993,6 +7996,24 @@ where
 					let _: ChannelMonitorUpdate = Readable::read(reader)?;
 				}
 				_ => return Err(DecodeError::InvalidValue),
+			}
+		}
+
+		for (node_id, peer_mtx) in per_peer_state.iter() {
+			let peer_state = peer_mtx.lock().unwrap();
+			for (_, chan) in peer_state.channel_by_id.iter() {
+				for update in chan.uncompleted_unblocked_mon_updates() {
+					if let Some(funding_txo) = chan.get_funding_txo() {
+						log_trace!(args.logger, "Replaying ChannelMonitorUpdate {} for channel {}",
+							update.update_id, log_bytes!(funding_txo.to_channel_id()));
+						pending_background_events.push(
+							BackgroundEvent::MonitorUpdateRegeneratedOnStartup {
+								counterparty_node_id: *node_id, funding_txo, update: update.clone(),
+							});
+					} else {
+						return Err(DecodeError::InvalidValue);
+					}
+				}
 			}
 		}
 
