@@ -245,14 +245,15 @@ impl<NG: Deref<Target=NetworkGraph<L>>, L: Deref> RapidGossipSync<NG, L> where L
 
 #[cfg(test)]
 mod tests {
-	use bitcoin::Network;
+	use bitcoin::{BlockHash, Network};
 
 	use lightning::ln::msgs::DecodeError;
 	use lightning::routing::gossip::NetworkGraph;
+	use lightning::util::ser::Writeable;
 	use lightning::util::test_utils::TestLogger;
 
 	use crate::error::GraphSyncError;
-	use crate::processing::STALE_RGS_UPDATE_AGE_LIMIT_SECS;
+	use crate::processing::{GOSSIP_PREFIX, STALE_RGS_UPDATE_AGE_LIMIT_SECS};
 	use crate::RapidGossipSync;
 
 	const VALID_RGS_BINARY: [u8; 300] = [
@@ -622,5 +623,58 @@ mod tests {
 		} else {
 			panic!("Unexpected update result: {:?}", update_result)
 		}
+	}
+
+	fn generate_blank_rgs_blob(chain_hash: &BlockHash, timestamp: u32) -> Vec<u8> {
+		let mut blob = GOSSIP_PREFIX.to_vec();
+
+		chain_hash.write(&mut blob).unwrap();
+		timestamp.write(&mut blob).unwrap();
+
+		0u32.write(&mut blob); // node count
+		0u32.write(&mut blob); // announcement count
+		0u32.write(&mut blob); // update count
+
+		blob
+	}
+
+	#[test]
+	fn network_graph_is_not_modified_by_blank_update() {
+		let logger = TestLogger::new();
+		let network_graph = NetworkGraph::new(Network::Bitcoin, &logger);
+
+		assert_eq!(network_graph.read_only().channels().len(), 0);
+
+		// apply initialization blob
+		let rapid_sync = RapidGossipSync::new(&network_graph, &logger);
+		let update_result = rapid_sync.update_network_graph(&VALID_RGS_BINARY);
+		if update_result.is_err() {
+			panic!("Unexpected update result: {:?}", update_result)
+		}
+
+		// apply delta blob
+		let genesis_block = bitcoin::blockdata::constants::genesis_block(Network::Bitcoin).block_hash();
+		let blank_delta = generate_blank_rgs_blob(&genesis_block, 0);
+		let update_result = rapid_sync.update_network_graph(&blank_delta);
+		if update_result.is_err() {
+			panic!("Unexpected update result: {:?}", update_result)
+		}
+
+		assert_eq!(network_graph.read_only().channels().len(), 2);
+		let after = network_graph.to_string();
+		assert!(
+			after.contains("021607cfce19a4c5e7e6e738663dfafbbbac262e4ff76c2c9b30dbeefc35c00643")
+		);
+		assert!(
+			after.contains("02247d9db0dfafea745ef8c9e161eb322f73ac3f8858d8730b6fd97254747ce76b")
+		);
+		assert!(
+			after.contains("029e01f279986acc83ba235d46d80aede0b7595f410353b93a8ab540bb677f4432")
+		);
+		assert!(
+			after.contains("02c913118a8895b9e29c89af6e20ed00d95a1f64e4952edbafa84d048f26804c61")
+		);
+		assert!(after.contains("619737530008010752"));
+		assert!(after.contains("783241506229452801"));
 	}
 }
