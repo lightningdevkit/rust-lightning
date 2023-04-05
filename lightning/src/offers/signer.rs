@@ -172,14 +172,40 @@ pub(super) fn verify_metadata<'a, T: secp256k1::Signing>(
 	metadata: &[u8], expanded_key: &ExpandedKey, iv_bytes: &[u8; IV_LEN],
 	signing_pubkey: PublicKey, tlv_stream: impl core::iter::Iterator<Item = TlvRecord<'a>>,
 	secp_ctx: &Secp256k1<T>
-) -> bool {
+) -> Result<Option<KeyPair>, ()> {
+	let hmac = hmac_for_message(metadata, expanded_key, iv_bytes, tlv_stream)?;
+
+	if metadata.len() == Nonce::LENGTH {
+		let derived_keys = KeyPair::from_secret_key(
+			secp_ctx, &SecretKey::from_slice(hmac.as_inner()).unwrap()
+		);
+		if fixed_time_eq(&signing_pubkey.serialize(), &derived_keys.public_key().serialize()) {
+			Ok(Some(derived_keys))
+		} else {
+			Err(())
+		}
+	} else if metadata[Nonce::LENGTH..].len() == Sha256::LEN {
+		if fixed_time_eq(&metadata[Nonce::LENGTH..], &hmac.into_inner()) {
+			Ok(None)
+		} else {
+			Err(())
+		}
+	} else {
+		Err(())
+	}
+}
+
+fn hmac_for_message<'a>(
+	metadata: &[u8], expanded_key: &ExpandedKey, iv_bytes: &[u8; IV_LEN],
+	tlv_stream: impl core::iter::Iterator<Item = TlvRecord<'a>>
+) -> Result<Hmac<Sha256>, ()> {
 	if metadata.len() < Nonce::LENGTH {
-		return false;
+		return Err(());
 	}
 
 	let nonce = match Nonce::try_from(&metadata[..Nonce::LENGTH]) {
 		Ok(nonce) => nonce,
-		Err(_) => return false,
+		Err(_) => return Err(()),
 	};
 	let mut hmac = expanded_key.hmac_for_offer(nonce, iv_bytes);
 
@@ -189,13 +215,9 @@ pub(super) fn verify_metadata<'a, T: secp256k1::Signing>(
 
 	if metadata.len() == Nonce::LENGTH {
 		hmac.input(DERIVED_METADATA_AND_KEYS_HMAC_INPUT);
-		let hmac = Hmac::from_engine(hmac);
-		let derived_pubkey = SecretKey::from_slice(hmac.as_inner()).unwrap().public_key(&secp_ctx);
-		fixed_time_eq(&signing_pubkey.serialize(), &derived_pubkey.serialize())
-	} else if metadata[Nonce::LENGTH..].len() == Sha256::LEN {
-		hmac.input(DERIVED_METADATA_HMAC_INPUT);
-		fixed_time_eq(&metadata[Nonce::LENGTH..], &Hmac::from_engine(hmac).into_inner())
 	} else {
-		false
+		hmac.input(DERIVED_METADATA_HMAC_INPUT);
 	}
+
+	Ok(Hmac::from_engine(hmac))
 }

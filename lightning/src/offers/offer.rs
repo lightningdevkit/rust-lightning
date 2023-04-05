@@ -68,7 +68,7 @@
 
 use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::network::constants::Network;
-use bitcoin::secp256k1::{PublicKey, Secp256k1, self};
+use bitcoin::secp256k1::{KeyPair, PublicKey, Secp256k1, self};
 use core::convert::TryFrom;
 use core::num::NonZeroU64;
 use core::ops::Deref;
@@ -92,7 +92,7 @@ use crate::prelude::*;
 #[cfg(feature = "std")]
 use std::time::SystemTime;
 
-const IV_BYTES: &[u8; IV_LEN] = b"LDK Offer ~~~~~~";
+pub(super) const IV_BYTES: &[u8; IV_LEN] = b"LDK Offer ~~~~~~";
 
 /// Builds an [`Offer`] for the "offer to be paid" flow.
 ///
@@ -615,11 +615,11 @@ impl OfferContents {
 
 	/// Verifies that the offer metadata was produced from the offer in the TLV stream.
 	pub(super) fn verify<T: secp256k1::Signing>(
-		&self, tlv_stream: TlvStream<'_>, key: &ExpandedKey, secp_ctx: &Secp256k1<T>
-	) -> bool {
+		&self, bytes: &[u8], key: &ExpandedKey, secp_ctx: &Secp256k1<T>
+	) -> Result<Option<KeyPair>, ()> {
 		match self.metadata() {
 			Some(metadata) => {
-				let tlv_stream = tlv_stream.range(OFFER_TYPES).filter(|record| {
+				let tlv_stream = TlvStream::new(bytes).range(OFFER_TYPES).filter(|record| {
 					match record.r#type {
 						OFFER_METADATA_TYPE => false,
 						OFFER_NODE_ID_TYPE => !self.metadata.as_ref().unwrap().derives_keys(),
@@ -630,7 +630,7 @@ impl OfferContents {
 					metadata, key, IV_BYTES, self.signing_pubkey(), tlv_stream, secp_ctx
 				)
 			},
-			None => false,
+			None => Err(()),
 		}
 	}
 
@@ -962,7 +962,7 @@ mod tests {
 		let invoice_request = offer.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
 			.build().unwrap()
 			.sign(payer_sign).unwrap();
-		assert!(invoice_request.verify(&expanded_key, &secp_ctx));
+		assert!(invoice_request.verify(&expanded_key, &secp_ctx).is_ok());
 
 		// Fails verification with altered offer field
 		let mut tlv_stream = offer.as_tlv_stream();
@@ -975,7 +975,7 @@ mod tests {
 			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
 			.build().unwrap()
 			.sign(payer_sign).unwrap();
-		assert!(!invoice_request.verify(&expanded_key, &secp_ctx));
+		assert!(invoice_request.verify(&expanded_key, &secp_ctx).is_err());
 
 		// Fails verification with altered metadata
 		let mut tlv_stream = offer.as_tlv_stream();
@@ -989,7 +989,7 @@ mod tests {
 			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
 			.build().unwrap()
 			.sign(payer_sign).unwrap();
-		assert!(!invoice_request.verify(&expanded_key, &secp_ctx));
+		assert!(invoice_request.verify(&expanded_key, &secp_ctx).is_err());
 	}
 
 	#[test]
@@ -1019,7 +1019,7 @@ mod tests {
 		let invoice_request = offer.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
 			.build().unwrap()
 			.sign(payer_sign).unwrap();
-		assert!(invoice_request.verify(&expanded_key, &secp_ctx));
+		assert!(invoice_request.verify(&expanded_key, &secp_ctx).is_ok());
 
 		// Fails verification with altered offer field
 		let mut tlv_stream = offer.as_tlv_stream();
@@ -1032,7 +1032,7 @@ mod tests {
 			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
 			.build().unwrap()
 			.sign(payer_sign).unwrap();
-		assert!(!invoice_request.verify(&expanded_key, &secp_ctx));
+		assert!(invoice_request.verify(&expanded_key, &secp_ctx).is_err());
 
 		// Fails verification with altered signing pubkey
 		let mut tlv_stream = offer.as_tlv_stream();
@@ -1046,7 +1046,7 @@ mod tests {
 			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
 			.build().unwrap()
 			.sign(payer_sign).unwrap();
-		assert!(!invoice_request.verify(&expanded_key, &secp_ctx));
+		assert!(invoice_request.verify(&expanded_key, &secp_ctx).is_err());
 	}
 
 	#[test]

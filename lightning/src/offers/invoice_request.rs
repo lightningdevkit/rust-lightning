@@ -64,8 +64,8 @@ use crate::ln::PaymentHash;
 use crate::ln::features::InvoiceRequestFeatures;
 use crate::ln::inbound_payment::{ExpandedKey, IV_LEN, Nonce};
 use crate::ln::msgs::DecodeError;
-use crate::offers::invoice::{BlindedPayInfo, InvoiceBuilder};
-use crate::offers::merkle::{SignError, SignatureTlvStream, SignatureTlvStreamRef, TlvStream, self};
+use crate::offers::invoice::{BlindedPayInfo, DerivedSigningPubkey, ExplicitSigningPubkey, InvoiceBuilder};
+use crate::offers::merkle::{SignError, SignatureTlvStream, SignatureTlvStreamRef, self};
 use crate::offers::offer::{Offer, OfferContents, OfferTlvStream, OfferTlvStreamRef};
 use crate::offers::parse::{ParseError, ParsedMessage, SemanticError};
 use crate::offers::payer::{PayerContents, PayerTlvStream, PayerTlvStreamRef};
@@ -469,7 +469,7 @@ impl InvoiceRequest {
 	#[cfg(feature = "std")]
 	pub fn respond_with(
 		&self, payment_paths: Vec<(BlindedPath, BlindedPayInfo)>, payment_hash: PaymentHash
-	) -> Result<InvoiceBuilder, SemanticError> {
+	) -> Result<InvoiceBuilder<ExplicitSigningPubkey>, SemanticError> {
 		let created_at = std::time::SystemTime::now()
 			.duration_since(std::time::SystemTime::UNIX_EPOCH)
 			.expect("SystemTime::now() should come after SystemTime::UNIX_EPOCH");
@@ -497,7 +497,7 @@ impl InvoiceRequest {
 	pub fn respond_with_no_std(
 		&self, payment_paths: Vec<(BlindedPath, BlindedPayInfo)>, payment_hash: PaymentHash,
 		created_at: core::time::Duration
-	) -> Result<InvoiceBuilder, SemanticError> {
+	) -> Result<InvoiceBuilder<ExplicitSigningPubkey>, SemanticError> {
 		if self.features().requires_unknown_bits() {
 			return Err(SemanticError::UnknownRequiredFeatures);
 		}
@@ -505,11 +505,60 @@ impl InvoiceRequest {
 		InvoiceBuilder::for_offer(self, payment_paths, created_at, payment_hash)
 	}
 
-	/// Verifies that the request was for an offer created using the given key.
+	/// Creates an [`InvoiceBuilder`] for the request using the given required fields and that uses
+	/// derived signing keys from the originating [`Offer`] to sign the [`Invoice`]. Must use the
+	/// same [`ExpandedKey`] as the one used to create the offer.
+	///
+	/// See [`InvoiceRequest::respond_with`] for further details.
+	///
+	/// [`Invoice`]: crate::offers::invoice::Invoice
+	#[cfg(feature = "std")]
+	pub fn verify_and_respond_using_derived_keys<T: secp256k1::Signing>(
+		&self, payment_paths: Vec<(BlindedPath, BlindedPayInfo)>, payment_hash: PaymentHash,
+		expanded_key: &ExpandedKey, secp_ctx: &Secp256k1<T>
+	) -> Result<InvoiceBuilder<DerivedSigningPubkey>, SemanticError> {
+		let created_at = std::time::SystemTime::now()
+			.duration_since(std::time::SystemTime::UNIX_EPOCH)
+			.expect("SystemTime::now() should come after SystemTime::UNIX_EPOCH");
+
+		self.verify_and_respond_using_derived_keys_no_std(
+			payment_paths, payment_hash, created_at, expanded_key, secp_ctx
+		)
+	}
+
+	/// Creates an [`InvoiceBuilder`] for the request using the given required fields and that uses
+	/// derived signing keys from the originating [`Offer`] to sign the [`Invoice`]. Must use the
+	/// same [`ExpandedKey`] as the one used to create the offer.
+	///
+	/// See [`InvoiceRequest::respond_with_no_std`] for further details.
+	///
+	/// [`Invoice`]: crate::offers::invoice::Invoice
+	pub fn verify_and_respond_using_derived_keys_no_std<T: secp256k1::Signing>(
+		&self, payment_paths: Vec<(BlindedPath, BlindedPayInfo)>, payment_hash: PaymentHash,
+		created_at: core::time::Duration, expanded_key: &ExpandedKey, secp_ctx: &Secp256k1<T>
+	) -> Result<InvoiceBuilder<DerivedSigningPubkey>, SemanticError> {
+		if self.features().requires_unknown_bits() {
+			return Err(SemanticError::UnknownRequiredFeatures);
+		}
+
+		let keys = match self.verify(expanded_key, secp_ctx) {
+			Err(()) => return Err(SemanticError::InvalidMetadata),
+			Ok(None) => return Err(SemanticError::InvalidMetadata),
+			Ok(Some(keys)) => keys,
+		};
+
+		InvoiceBuilder::for_offer_using_keys(self, payment_paths, created_at, payment_hash, keys)
+	}
+
+	/// Verifies that the request was for an offer created using the given key. Returns the derived
+	/// keys need to sign an [`Invoice`] for the request if they could be extracted from the
+	/// metadata.
+	///
+	/// [`Invoice`]: crate::offers::invoice::Invoice
 	pub fn verify<T: secp256k1::Signing>(
 		&self, key: &ExpandedKey, secp_ctx: &Secp256k1<T>
-	) -> bool {
-		self.contents.inner.offer.verify(TlvStream::new(&self.bytes), key, secp_ctx)
+	) -> Result<Option<KeyPair>, ()> {
+		self.contents.inner.offer.verify(&self.bytes, key, secp_ctx)
 	}
 
 	#[cfg(test)]

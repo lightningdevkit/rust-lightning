@@ -84,7 +84,7 @@ use crate::ln::PaymentHash;
 use crate::ln::features::InvoiceRequestFeatures;
 use crate::ln::inbound_payment::{ExpandedKey, IV_LEN, Nonce};
 use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
-use crate::offers::invoice::{BlindedPayInfo, InvoiceBuilder};
+use crate::offers::invoice::{BlindedPayInfo, ExplicitSigningPubkey, InvoiceBuilder};
 use crate::offers::invoice_request::{InvoiceRequestTlvStream, InvoiceRequestTlvStreamRef};
 use crate::offers::offer::{OfferTlvStream, OfferTlvStreamRef};
 use crate::offers::parse::{Bech32Encode, ParseError, ParsedMessage, SemanticError};
@@ -392,7 +392,7 @@ impl Refund {
 	pub fn respond_with(
 		&self, payment_paths: Vec<(BlindedPath, BlindedPayInfo)>, payment_hash: PaymentHash,
 		signing_pubkey: PublicKey,
-	) -> Result<InvoiceBuilder, SemanticError> {
+	) -> Result<InvoiceBuilder<ExplicitSigningPubkey>, SemanticError> {
 		let created_at = std::time::SystemTime::now()
 			.duration_since(std::time::SystemTime::UNIX_EPOCH)
 			.expect("SystemTime::now() should come after SystemTime::UNIX_EPOCH");
@@ -423,7 +423,7 @@ impl Refund {
 	pub fn respond_with_no_std(
 		&self, payment_paths: Vec<(BlindedPath, BlindedPayInfo)>, payment_hash: PaymentHash,
 		signing_pubkey: PublicKey, created_at: Duration
-	) -> Result<InvoiceBuilder, SemanticError> {
+	) -> Result<InvoiceBuilder<ExplicitSigningPubkey>, SemanticError> {
 		if self.features().requires_unknown_bits() {
 			return Err(SemanticError::UnknownRequiredFeatures);
 		}
