@@ -6437,6 +6437,26 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 	}
 }
 
+/// A not-yet-funded outbound (from holder) channel using V1 channel establishment.
+pub(super) struct OutboundV1Channel<Signer: ChannelSigner> {
+	#[cfg(not(test))]
+	context: ChannelContext<Signer>,
+	#[cfg(test)]
+	pub context: ChannelContext<Signer>,
+}
+
+impl<Signer: WriteableEcdsaChannelSigner> OutboundV1Channel<Signer> {}
+
+/// A not-yet-funded inbound (from counterparty) channel using V1 channel establishment.
+pub(super) struct InboundV1Channel<Signer: ChannelSigner> {
+	#[cfg(not(test))]
+	context: ChannelContext<Signer>,
+	#[cfg(test)]
+	pub context: ChannelContext<Signer>,
+}
+
+impl<Signer: WriteableEcdsaChannelSigner> InboundV1Channel<Signer> {}
+
 const SERIALIZATION_VERSION: u8 = 3;
 const MIN_SERIALIZATION_VERSION: u8 = 2;
 
