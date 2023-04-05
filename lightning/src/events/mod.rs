@@ -387,7 +387,7 @@ pub enum Event {
 	/// Note for MPP payments: in rare cases, this event may be preceded by a `PaymentPathFailed`
 	/// event. In this situation, you SHOULD treat this payment as having succeeded.
 	PaymentSent {
-		/// The id returned by [`ChannelManager::send_payment`].
+		/// The `payment_id` passed to [`ChannelManager::send_payment`].
 		///
 		/// [`ChannelManager::send_payment`]: crate::ln::channelmanager::ChannelManager::send_payment
 		payment_id: Option<PaymentId>,
@@ -420,11 +420,9 @@ pub enum Event {
 	/// [`Retry`]: crate::ln::channelmanager::Retry
 	/// [`ChannelManager::abandon_payment`]: crate::ln::channelmanager::ChannelManager::abandon_payment
 	PaymentFailed {
-		/// The id returned by [`ChannelManager::send_payment`] and used with
-		/// [`ChannelManager::abandon_payment`].
+		/// The `payment_id` passed to [`ChannelManager::send_payment`].
 		///
 		/// [`ChannelManager::send_payment`]: crate::ln::channelmanager::ChannelManager::send_payment
-		/// [`ChannelManager::abandon_payment`]: crate::ln::channelmanager::ChannelManager::abandon_payment
 		payment_id: PaymentId,
 		/// The hash that was given to [`ChannelManager::send_payment`].
 		///
@@ -436,7 +434,7 @@ pub enum Event {
 	/// Always generated after [`Event::PaymentSent`] and thus useful for scoring channels. See
 	/// [`Event::PaymentSent`] for obtaining the payment preimage.
 	PaymentPathSuccessful {
-		/// The id returned by [`ChannelManager::send_payment`].
+		/// The `payment_id` passed to [`ChannelManager::send_payment`].
 		///
 		/// [`ChannelManager::send_payment`]: crate::ln::channelmanager::ChannelManager::send_payment
 		payment_id: PaymentId,
@@ -460,8 +458,7 @@ pub enum Event {
 	///
 	/// [`ChannelManager::abandon_payment`]: crate::ln::channelmanager::ChannelManager::abandon_payment
 	PaymentPathFailed {
-		/// The id returned by [`ChannelManager::send_payment`] and used with
-		/// [`ChannelManager::abandon_payment`].
+		/// The `payment_id` passed to [`ChannelManager::send_payment`].
 		///
 		/// [`ChannelManager::send_payment`]: crate::ln::channelmanager::ChannelManager::send_payment
 		/// [`ChannelManager::abandon_payment`]: crate::ln::channelmanager::ChannelManager::abandon_payment
