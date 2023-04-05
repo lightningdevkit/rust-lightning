@@ -212,7 +212,8 @@ impl Readable for InFlightHtlcs {
 	}
 }
 
-/// A hop in a route
+/// A hop in a route, and additional metadata about it. "Hop" is defined as a node and the channel
+/// that leads to it.
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct RouteHop {
 	/// The node_id of the node at this hop.
@@ -226,11 +227,10 @@ pub struct RouteHop {
 	/// to reach this node.
 	pub channel_features: ChannelFeatures,
 	/// The fee taken on this hop (for paying for the use of the *next* channel in the path).
-	/// For the last hop, this should be the full value of the payment (might be more than
-	/// requested if we had to match htlc_minimum_msat).
+	/// For the last hop, this should be the full value of this path's part of the payment.
 	pub fee_msat: u64,
-	/// The CLTV delta added for this hop. For the last hop, this should be the full CLTV value
-	/// expected at the destination, in excess of the current block height.
+	/// The CLTV delta added for this hop. For the last hop, this is the CLTV delta expected at the
+	/// destination.
 	pub cltv_expiry_delta: u32,
 }
 
@@ -247,11 +247,11 @@ impl_writeable_tlv_based!(RouteHop, {
 /// it can take multiple paths. Each path is composed of one or more hops through the network.
 #[derive(Clone, Hash, PartialEq, Eq)]
 pub struct Route {
-	/// The list of routes taken for a single (potentially-)multi-part payment. The pubkey of the
-	/// last RouteHop in each path must be the same. Each entry represents a list of hops, NOT
-	/// INCLUDING our own, where the last hop is the destination. Thus, this must always be at
-	/// least length one. While the maximum length of any given path is variable, keeping the length
-	/// of any path less or equal to 19 should currently ensure it is viable.
+	/// The list of paths taken for a single (potentially-)multi-part payment. The pubkey of the
+	/// last [`RouteHop`] in each path must be the same. Each entry represents a list of hops, where
+	/// the last hop is the destination. Thus, this must always be at least length one. While the
+	/// maximum length of any given path is variable, keeping the length of any path less or equal to
+	/// 19 should currently ensure it is viable.
 	pub paths: Vec<Vec<RouteHop>>,
 	/// The `payment_params` parameter passed to [`find_route`].
 	/// This is used by `ChannelManager` to track information which may be required for retries,
@@ -283,7 +283,8 @@ impl Route {
 		self.paths.iter().map(|path| path.get_path_fees()).sum()
 	}
 
-	/// Returns the total amount paid on this [`Route`], excluding the fees.
+	/// Returns the total amount paid on this [`Route`], excluding the fees. Might be more than
+	/// requested if we had to reach htlc_minimum_msat.
 	pub fn get_total_amount(&self) -> u64 {
 		return self.paths.iter()
 			.map(|path| path.split_last().map(|(hop, _)| hop.fee_msat).unwrap_or(0))
