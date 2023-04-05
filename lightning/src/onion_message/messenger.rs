@@ -567,6 +567,6 @@ fn construct_onion_message_packet<T: CustomOnionMessageContents>(payloads: Vec<(
 		BIG_PACKET_HOP_DATA_LEN
 	} else { return Err(()) };
 
-	Ok(onion_utils::construct_onion_message_packet::<_, _>(
-		payloads, onion_keys, prng_seed, hop_data_len))
+	onion_utils::construct_onion_message_packet::<_, _>(
+		payloads, onion_keys, prng_seed, hop_data_len)
 }

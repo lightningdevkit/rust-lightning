@@ -1383,7 +1383,7 @@ fn test_fee_spike_violation_fails_htlc() {
 	let onion_keys = onion_utils::construct_onion_keys(&secp_ctx, &route.paths[0], &session_priv).unwrap();
 	let (onion_payloads, htlc_msat, htlc_cltv) = onion_utils::build_onion_payloads(&route.paths[0],
 		3460001, RecipientOnionFields::secret_only(payment_secret), cur_height, &None).unwrap();
-	let onion_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, [0; 32], &payment_hash);
+	let onion_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, [0; 32], &payment_hash).unwrap();
 	let msg = msgs::UpdateAddHTLC {
 		channel_id: chan.2,
 		htlc_id: 0,
@@ -1571,7 +1571,7 @@ fn test_chan_reserve_violation_inbound_htlc_outbound_channel() {
 	let onion_keys = onion_utils::construct_onion_keys(&secp_ctx, &route.paths[0], &session_priv).unwrap();
 	let (onion_payloads, htlc_msat, htlc_cltv) = onion_utils::build_onion_payloads(&route.paths[0],
 		700_000, RecipientOnionFields::secret_only(payment_secret), cur_height, &None).unwrap();
-	let onion_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, [0; 32], &payment_hash);
+	let onion_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, [0; 32], &payment_hash).unwrap();
 	let msg = msgs::UpdateAddHTLC {
 		channel_id: chan.2,
 		htlc_id: MIN_AFFORDABLE_HTLC_COUNT as u64,
@@ -1745,7 +1745,7 @@ fn test_chan_reserve_violation_inbound_htlc_inbound_chan() {
 	let onion_keys = onion_utils::construct_onion_keys(&secp_ctx, &route_2.paths[0], &session_priv).unwrap();
 	let (onion_payloads, htlc_msat, htlc_cltv) = onion_utils::build_onion_payloads(
 		&route_2.paths[0], recv_value_2, RecipientOnionFields::spontaneous_empty(), cur_height, &None).unwrap();
-	let onion_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, [0; 32], &our_payment_hash_1);
+	let onion_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, [0; 32], &our_payment_hash_1).unwrap();
 	let msg = msgs::UpdateAddHTLC {
 		channel_id: chan.2,
 		htlc_id: 1,
@@ -3398,7 +3398,7 @@ fn fail_backward_pending_htlc_upon_channel_failure() {
 		let (onion_payloads, _amount_msat, cltv_expiry) = onion_utils::build_onion_payloads(
 			&route.paths[0], 50_000, RecipientOnionFields::secret_only(payment_secret), current_height, &None).unwrap();
 		let onion_keys = onion_utils::construct_onion_keys(&secp_ctx, &route.paths[0], &session_priv).unwrap();
-		let onion_routing_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, [0; 32], &payment_hash);
+		let onion_routing_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, [0; 32], &payment_hash).unwrap();
 
 		// Send a 0-msat update_add_htlc to fail the channel.
 		let update_add_htlc = msgs::UpdateAddHTLC {
@@ -6267,7 +6267,7 @@ fn test_update_add_htlc_bolt2_receiver_check_max_htlc_limit() {
 	let onion_keys = onion_utils::construct_onion_keys(&Secp256k1::signing_only(), &route.paths[0], &session_priv).unwrap();
 	let (onion_payloads, _htlc_msat, htlc_cltv) = onion_utils::build_onion_payloads(
 		&route.paths[0], 3999999, RecipientOnionFields::secret_only(our_payment_secret), cur_height, &None).unwrap();
-	let onion_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, [0; 32], &our_payment_hash);
+	let onion_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, [0; 32], &our_payment_hash).unwrap();
 
 	let mut msg = msgs::UpdateAddHTLC {
 		channel_id: chan.2,
@@ -8087,7 +8087,7 @@ fn test_onion_value_mpp_set_calculation() {
 			// Edit amt_to_forward to simulate the sender having set
 			// the final amount and the routing node taking less fee
 			onion_payloads[1].amt_to_forward = 99_000;
-			let new_onion_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, [0; 32], &our_payment_hash);
+			let new_onion_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, [0; 32], &our_payment_hash).unwrap();
 			payment_event.msgs[0].onion_routing_packet = new_onion_packet;
 		}
 

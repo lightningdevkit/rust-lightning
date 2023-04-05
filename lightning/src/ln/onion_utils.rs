@@ -208,22 +208,7 @@ fn shift_slice_right(arr: &mut [u8], amt: usize) {
 	}
 }
 
-pub(super) fn route_size_insane(payloads: &Vec<msgs::OnionHopData>) -> bool {
-	let mut len = 0;
-	for payload in payloads.iter() {
-		let mut payload_len = LengthCalculatingWriter(0);
-		payload.write(&mut payload_len).expect("Failed to calculate length");
-		assert!(payload_len.0 + 32 < ONION_DATA_LEN);
-		len += payload_len.0 + 32;
-		if len > ONION_DATA_LEN {
-			return true;
-		}
-	}
-	false
-}
-
-/// panics if route_size_insane(payloads)
-pub(super) fn construct_onion_packet(payloads: Vec<msgs::OnionHopData>, onion_keys: Vec<OnionKeys>, prng_seed: [u8; 32], associated_data: &PaymentHash) -> msgs::OnionPacket {
+pub(super) fn construct_onion_packet(payloads: Vec<msgs::OnionHopData>, onion_keys: Vec<OnionKeys>, prng_seed: [u8; 32], associated_data: &PaymentHash) -> Result<msgs::OnionPacket, ()> {
 	let mut packet_data = [0; ONION_DATA_LEN];
 
 	let mut chacha = ChaCha20::new(&prng_seed, &[0; 8]);
@@ -236,7 +221,7 @@ pub(super) fn construct_onion_packet(payloads: Vec<msgs::OnionHopData>, onion_ke
 #[cfg(test)]
 /// Used in testing to write bogus `BogusOnionHopData` as well as `RawOnionHopData`, which is
 /// otherwise not representable in `msgs::OnionHopData`.
-pub(super) fn construct_onion_packet_with_writable_hopdata<HD: Writeable>(payloads: Vec<HD>, onion_keys: Vec<OnionKeys>, prng_seed: [u8; 32], associated_data: &PaymentHash) -> msgs::OnionPacket {
+pub(super) fn construct_onion_packet_with_writable_hopdata<HD: Writeable>(payloads: Vec<HD>, onion_keys: Vec<OnionKeys>, prng_seed: [u8; 32], associated_data: &PaymentHash) -> Result<msgs::OnionPacket, ()> {
 	let mut packet_data = [0; ONION_DATA_LEN];
 
 	let mut chacha = ChaCha20::new(&prng_seed, &[0; 8]);
@@ -268,9 +253,8 @@ pub(crate) fn payloads_serialized_length<HD: Writeable>(payloads: &Vec<HD>) -> u
 	payloads.iter().map(|p| p.serialized_length() + 32 /* HMAC */).sum()
 }
 
-/// panics if payloads_serialized_length(payloads) > packet_data_len
 pub(crate) fn construct_onion_message_packet<HD: Writeable, P: Packet<Data = Vec<u8>>>(
-	payloads: Vec<HD>, onion_keys: Vec<OnionKeys>, prng_seed: [u8; 32], packet_data_len: usize) -> P
+	payloads: Vec<HD>, onion_keys: Vec<OnionKeys>, prng_seed: [u8; 32], packet_data_len: usize) -> Result<P, ()>
 {
 	let mut packet_data = vec![0; packet_data_len];
 
@@ -280,9 +264,8 @@ pub(crate) fn construct_onion_message_packet<HD: Writeable, P: Packet<Data = Vec
 	construct_onion_packet_with_init_noise::<_, _>(payloads, onion_keys, packet_data, None)
 }
 
-/// panics if payloads_serialized_length(payloads) > packet_data.len()
 fn construct_onion_packet_with_init_noise<HD: Writeable, P: Packet>(
-	mut payloads: Vec<HD>, onion_keys: Vec<OnionKeys>, mut packet_data: P::Data, associated_data: Option<&PaymentHash>) -> P
+	mut payloads: Vec<HD>, onion_keys: Vec<OnionKeys>, mut packet_data: P::Data, associated_data: Option<&PaymentHash>) -> Result<P, ()>
 {
 	let filler = {
 		let packet_data = packet_data.as_mut();
@@ -302,7 +285,9 @@ fn construct_onion_packet_with_init_noise<HD: Writeable, P: Packet>(
 			let mut payload_len = LengthCalculatingWriter(0);
 			payload.write(&mut payload_len).expect("Failed to calculate length");
 			pos += payload_len.0 + 32;
-			assert!(pos <= packet_data.len());
+			if pos > packet_data.len() {
+				return Err(());
+			}
 
 			res.resize(pos, 0u8);
 			chacha.process_in_place(&mut res);
@@ -324,8 +309,9 @@ fn construct_onion_packet_with_init_noise<HD: Writeable, P: Packet>(
 		chacha.process_in_place(packet_data);
 
 		if i == 0 {
-			let onion_data_len = packet_data.len();
-			packet_data[onion_data_len - filler.len()..onion_data_len].copy_from_slice(&filler[..]);
+			let stop_index = packet_data.len();
+			let start_index = stop_index.checked_sub(filler.len()).ok_or(())?;
+			packet_data[start_index..stop_index].copy_from_slice(&filler[..]);
 		}
 
 		let mut hmac = HmacEngine::<Sha256>::new(&keys.mu);
@@ -336,7 +322,7 @@ fn construct_onion_packet_with_init_noise<HD: Writeable, P: Packet>(
 		hmac_res = Hmac::from_engine(hmac).into_inner();
 	}
 
-	P::new(onion_keys.first().unwrap().ephemeral_pubkey, packet_data, hmac_res)
+	Ok(P::new(onion_keys.first().unwrap().ephemeral_pubkey, packet_data, hmac_res))
 }
 
 /// Encrypts a failure packet. raw_packet can either be a
@@ -1082,7 +1068,7 @@ mod tests {
 
 		let pad_keytype_seed = super::gen_pad_from_shared_secret(&get_test_session_key().secret_bytes());
 
-		let packet: msgs::OnionPacket = super::construct_onion_packet_with_writable_hopdata::<_>(payloads, onion_keys, pad_keytype_seed, &PaymentHash([0x42; 32]));
+		let packet: msgs::OnionPacket = super::construct_onion_packet_with_writable_hopdata::<_>(payloads, onion_keys, pad_keytype_seed, &PaymentHash([0x42; 32])).unwrap();
 
 		assert_eq!(packet.encode(), hex::decode("0002EEC7245D6B7D2CCB30380BFBE2A3648CD7A942653F5AA340EDCEA1F283686619F7F3416A5AA36DC7EEB3EC6D421E9615471AB870A33AC07FA5D5A51DF0A8823AABE3FEA3F90D387529D4F72837F9E687230371CCD8D263072206DBED0234F6505E21E282ABD8C0E4F5B9FF8042800BBAB065036EADD0149B37F27DDE664725A49866E052E809D2B0198AB9610FAA656BBF4EC516763A59F8F42C171B179166BA38958D4F51B39B3E98706E2D14A2DAFD6A5DF808093ABFCA5AEAACA16EDED5DB7D21FB0294DD1A163EDF0FB445D5C8D7D688D6DD9C541762BF5A5123BF9939D957FE648416E88F1B0928BFA034982B22548E1A4D922690EECF546275AFB233ACF4323974680779F1A964CFE687456035CC0FBA8A5428430B390F0057B6D1FE9A8875BFA89693EEB838CE59F09D207A503EE6F6299C92D6361BC335FCBF9B5CD44747AADCE2CE6069CFDC3D671DAEF9F8AE590CF93D957C9E873E9A1BC62D9640DC8FC39C14902D49A1C80239B6C5B7FD91D05878CBF5FFC7DB2569F47C43D6C0D27C438ABFF276E87364DEB8858A37E5A62C446AF95D8B786EAF0B5FCF78D98B41496794F8DCAAC4EEF34B2ACFB94C7E8C32A9E9866A8FA0B6F2A06F00A1CCDE569F97EEC05C803BA7500ACC96691D8898D73D8E6A47B8F43C3D5DE74458D20EDA61474C426359677001FBD75A74D7D5DB6CB4FEB83122F133206203E4E2D293F838BF8C8B3A29ACB321315100B87E80E0EDB272EE80FDA944E3FB6084ED4D7F7C7D21C69D9DA43D31A90B70693F9B0CC3EAC74C11AB8FF655905688916CFA4EF0BD04135F2E50B7C689A21D04E8E981E74C6058188B9B1F9DFC3EEC6838E9FFBCF22CE738D8A177C19318DFFEF090CEE67E12DE1A3E2A39F61247547BA5257489CBC11D7D91ED34617FCC42F7A9DA2E3CF31A94A210A1018143173913C38F60E62B24BF0D7518F38B5BAB3E6A1F8AEB35E31D6442C8ABB5178EFC892D2E787D79C6AD9E2FC271792983FA9955AC4D1D84A36C024071BC6E431B625519D556AF38185601F70E29035EA6A09C8B676C9D88CF7E05E0F17098B584C4168735940263F940033A220F40BE4C85344128B14BEB9E75696DB37014107801A59B13E89CD9D2258C169D523BE6D31552C44C82FF4BB18EC9F099F3BF0E5B1BB2BA9A87D7E26F98D294927B600B5529C47E04D98956677CBCEE8FA2B60F49776D8B8C367465B7C626DA53700684FB6C918EAD0EAB8360E4F60EDD25B4F43816A75ECF70F909301825B512469F8389D79402311D8AECB7B3EF8599E79485A4388D87744D899F7C47EE644361E17040A7958C8911BE6F463AB6A9B2AFACD688EC55EF517B38F1339EFC54487232798BB25522FF4572FF68567FE830F92F7B8113EFCE3E98C3FFFBAEDCE4FD8B50E41DA97C0C08E423A72689CC68E68F752A5E3A9003E64E35C957CA2E1C48BB6F64B05F56B70B575AD2F278D57850A7AD568C24A4D32A3D74B29F03DC125488BC7C637DA582357F40B0A52D16B3B40BB2C2315D03360BC24209E20972C200566BCF3BBE5C5B0AEDD83132A8A4D5B4242BA370B6D67D9B67EB01052D132C7866B9CB502E44796D9D356E4E3CB47CC527322CD24976FE7C9257A2864151A38E568EF7A79F10D6EF27CC04CE382347A2488B1F404FDBF407FE1CA1C9D0D5649E34800E25E18951C98CAE9F43555EEF65FEE1EA8F15828807366C3B612CD5753BF9FB8FCED08855F742CDDD6F765F74254F03186683D646E6F09AC2805586C7CF11998357CAFC5DF3F285329366F475130C928B2DCEBA4AA383758E7A9D20705C4BB9DB619E2992F608A1BA65DB254BB389468741D0502E2588AEB54390AC600C19AF5C8E61383FC1BEBE0029E4474051E4EF908828DB9CCA13277EF65DB3FD47CCC2179126AAEFB627719F421E20").unwrap());
 	}

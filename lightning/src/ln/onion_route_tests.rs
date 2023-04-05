@@ -359,7 +359,7 @@ fn test_onion_failure() {
 		// break the first (non-final) hop payload by swapping the realm (0) byte for a byte
 		// describing a length-1 TLV payload, which is obviously bogus.
 		new_payloads[0].data[0] = 1;
-		msg.onion_routing_packet = onion_utils::construct_onion_packet_with_writable_hopdata(new_payloads, onion_keys, [0; 32], &payment_hash);
+		msg.onion_routing_packet = onion_utils::construct_onion_packet_with_writable_hopdata(new_payloads, onion_keys, [0; 32], &payment_hash).unwrap();
 	}, ||{}, true, Some(PERM|22), Some(NetworkUpdate::ChannelFailure{short_channel_id, is_permanent: true}), Some(short_channel_id));
 
 	// final node failure
@@ -377,7 +377,7 @@ fn test_onion_failure() {
 		// break the last-hop payload by swapping the realm (0) byte for a byte describing a
 		// length-1 TLV payload, which is obviously bogus.
 		new_payloads[1].data[0] = 1;
-		msg.onion_routing_packet = onion_utils::construct_onion_packet_with_writable_hopdata(new_payloads, onion_keys, [0; 32], &payment_hash);
+		msg.onion_routing_packet = onion_utils::construct_onion_packet_with_writable_hopdata(new_payloads, onion_keys, [0; 32], &payment_hash).unwrap();
 	}, ||{}, false, Some(PERM|22), Some(NetworkUpdate::ChannelFailure{short_channel_id, is_permanent: true}), Some(short_channel_id));
 
 	// the following three with run_onion_failure_test_with_fail_intercept() test only the origin node
@@ -607,7 +607,7 @@ fn test_onion_failure() {
 		let onion_keys = onion_utils::construct_onion_keys(&Secp256k1::new(), &route.paths[0], &session_priv).unwrap();
 		let (onion_payloads, _, htlc_cltv) = onion_utils::build_onion_payloads(
 			&route.paths[0], 40000, RecipientOnionFields::spontaneous_empty(), height, &None).unwrap();
-		let onion_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, [0; 32], &payment_hash);
+		let onion_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, [0; 32], &payment_hash).unwrap();
 		msg.cltv_expiry = htlc_cltv;
 		msg.onion_routing_packet = onion_packet;
 	}, ||{}, true, Some(21), Some(NetworkUpdate::NodeFailure{node_id: route.paths[0].hops[0].pubkey, is_permanent: true}), Some(route.paths[0].hops[0].short_channel_id));
@@ -1106,7 +1106,7 @@ fn test_phantom_invalid_onion_payload() {
 					onion_keys.remove(0);
 					onion_payloads.remove(0);
 
-					let new_onion_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, [0; 32], &payment_hash);
+					let new_onion_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, [0; 32], &payment_hash).unwrap();
 					onion_packet.hop_data = new_onion_packet.hop_data;
 					onion_packet.hmac = new_onion_packet.hmac;
 				},
