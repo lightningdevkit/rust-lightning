@@ -39,6 +39,11 @@ macro_rules! _encode_tlv {
 			field.write($stream)?;
 		}
 	};
+	($stream: expr, $type: expr, $field: expr, optional_vec) => {
+		if !$field.is_empty() {
+			$crate::_encode_tlv!($stream, $type, $field, vec_type);
+		}
+	};
 	($stream: expr, $type: expr, $field: expr, upgradable_required) => {
 		$crate::_encode_tlv!($stream, $type, $field, required);
 	};
@@ -165,6 +170,11 @@ macro_rules! _get_varint_length_prefixed_tlv_length {
 			$len.0 += field_len;
 		}
 	};
+	($len: expr, $type: expr, $field: expr, optional_vec) => {
+		if !$field.is_empty() {
+			$crate::_get_varint_length_prefixed_tlv_length!($len, $type, $field, vec_type);
+		}
+	};
 	($len: expr, $type: expr, $field: expr, (option: $trait: ident $(, $read_arg: expr)?)) => {
 		$crate::_get_varint_length_prefixed_tlv_length!($len, $type, $field, option);
 	};
@@ -226,6 +236,9 @@ macro_rules! _check_decoded_tlv_order {
 	($last_seen_type: expr, $typ: expr, $type: expr, $field: ident, vec_type) => {{
 		// no-op
 	}};
+	($last_seen_type: expr, $typ: expr, $type: expr, $field: ident, optional_vec) => {{
+		// no-op
+	}};
 	($last_seen_type: expr, $typ: expr, $type: expr, $field: ident, upgradable_required) => {{
 		_check_decoded_tlv_order!($last_seen_type, $typ, $type, $field, required)
 	}};
@@ -271,6 +284,9 @@ macro_rules! _check_missing_tlv {
 	($last_seen_type: expr, $type: expr, $field: ident, option) => {{
 		// no-op
 	}};
+	($last_seen_type: expr, $type: expr, $field: ident, optional_vec) => {{
+		// no-op
+	}};
 	($last_seen_type: expr, $type: expr, $field: ident, upgradable_required) => {{
 		_check_missing_tlv!($last_seen_type, $type, $field, required)
 	}};
@@ -307,6 +323,9 @@ macro_rules! _decode_tlv {
 	}};
 	($reader: expr, $field: ident, option) => {{
 		$field = Some($crate::util::ser::Readable::read(&mut $reader)?);
+	}};
+	($reader: expr, $field: ident, optional_vec) => {{
+		$crate::_decode_tlv!($reader, $field, vec_type);
 	}};
 	// `upgradable_required` indicates we're reading a required TLV that may have been upgraded
 	// without backwards compat. We'll error if the field is missing, and return `Ok(None)` if the
@@ -675,6 +694,9 @@ macro_rules! _init_tlv_based_struct_field {
 	($field: ident, vec_type) => {
 		$field.unwrap()
 	};
+	($field: ident, optional_vec) => {
+		$field.unwrap()
+	};
 }
 
 /// Initializes the variable we are going to read the TLV into.
@@ -700,6 +722,9 @@ macro_rules! _init_tlv_field_var {
 	};
 	($field: ident, option) => {
 		let mut $field = None;
+	};
+	($field: ident, optional_vec) => {
+		let mut $field = Some(Vec::new());
 	};
 	($field: ident, (option: $trait: ident $(, $read_arg: expr)?)) => {
 		$crate::_init_tlv_field_var!($field, option);
@@ -733,7 +758,8 @@ macro_rules! _init_and_read_tlv_fields {
 /// If `$fieldty` is `required`, then `$field` is a required field that is not an [`Option`] nor a [`Vec`].
 /// If `$fieldty` is `(default_value, $default)`, then `$field` will be set to `$default` if not present.
 /// If `$fieldty` is `option`, then `$field` is optional field.
-/// If `$fieldty` is `vec_type`, then `$field` is a [`Vec`], which needs to have its individual elements serialized.
+/// If `$fieldty` is `optional_vec`, then `$field` is a [`Vec`], which needs to have its individual elements serialized.
+///    Note that for `optional_vec` no bytes are written if the vec is empty
 ///
 /// For example,
 /// ```
@@ -749,7 +775,7 @@ macro_rules! _init_and_read_tlv_fields {
 /// 	(0, tlv_integer, required),
 /// 	(1, tlv_default_integer, (default_value, 7)),
 /// 	(2, tlv_optional_integer, option),
-/// 	(3, tlv_vec_type_integer, vec_type),
+/// 	(3, tlv_vec_type_integer, optional_vec),
 /// });
 /// ```
 ///
@@ -909,7 +935,7 @@ macro_rules! _impl_writeable_tlv_based_enum_common {
 /// ```ignore
 /// impl_writeable_tlv_based_enum!(EnumName,
 ///   (0, StructVariantA) => {(0, required_variant_field, required), (1, optional_variant_field, option)},
-///   (1, StructVariantB) => {(0, variant_field_a, required), (1, variant_field_b, required), (2, variant_vec_field, vec_type)};
+///   (1, StructVariantB) => {(0, variant_field_a, required), (1, variant_field_b, required), (2, variant_vec_field, optional_vec)};
 ///   (2, TupleVariantA), (3, TupleVariantB),
 /// );
 /// ```
