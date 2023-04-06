@@ -1026,6 +1026,11 @@ impl From<PositiveTimestamp> for SystemTime {
 }
 
 impl Invoice {
+	/// The hash of the [`RawInvoice`] that was signed.
+	pub fn signable_hash(&self) -> [u8; 32] {
+		self.signed_invoice.hash
+	}
+
 	/// Transform the `Invoice` into it's unchecked version
 	pub fn into_signed_raw(self) -> SignedRawInvoice {
 		self.signed_invoice
