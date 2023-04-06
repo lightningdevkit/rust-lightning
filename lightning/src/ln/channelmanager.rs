@@ -4116,45 +4116,46 @@ where
 	-> Result<(), (PublicKey, MsgHandleErrInternal)> {
 		//TODO: Delay the claimed_funds relaying just like we do outbound relay!
 
-		let per_peer_state = self.per_peer_state.read().unwrap();
-		let chan_id = prev_hop.outpoint.to_channel_id();
-		let counterparty_node_id_opt = match self.short_to_chan_info.read().unwrap().get(&prev_hop.short_channel_id) {
-			Some((cp_id, _dup_chan_id)) => Some(cp_id.clone()),
-			None => None
-		};
+		{
+			let per_peer_state = self.per_peer_state.read().unwrap();
+			let chan_id = prev_hop.outpoint.to_channel_id();
+			let counterparty_node_id_opt = match self.short_to_chan_info.read().unwrap().get(&prev_hop.short_channel_id) {
+				Some((cp_id, _dup_chan_id)) => Some(cp_id.clone()),
+				None => None
+			};
 
-		let peer_state_opt = counterparty_node_id_opt.as_ref().map(
-			|counterparty_node_id| per_peer_state.get(counterparty_node_id).map(
-				|peer_mutex| peer_mutex.lock().unwrap()
-			)
-		).unwrap_or(None);
+			let peer_state_opt = counterparty_node_id_opt.as_ref().map(
+				|counterparty_node_id| per_peer_state.get(counterparty_node_id)
+					.map(|peer_mutex| peer_mutex.lock().unwrap())
+			).unwrap_or(None);
 
-		if peer_state_opt.is_some() {
-			let mut peer_state_lock = peer_state_opt.unwrap();
-			let peer_state = &mut *peer_state_lock;
-			if let hash_map::Entry::Occupied(mut chan) = peer_state.channel_by_id.entry(chan_id) {
-				let counterparty_node_id = chan.get().get_counterparty_node_id();
-				let fulfill_res = chan.get_mut().get_update_fulfill_htlc_and_commit(prev_hop.htlc_id, payment_preimage, &self.logger);
+			if peer_state_opt.is_some() {
+				let mut peer_state_lock = peer_state_opt.unwrap();
+				let peer_state = &mut *peer_state_lock;
+				if let hash_map::Entry::Occupied(mut chan) = peer_state.channel_by_id.entry(chan_id) {
+					let counterparty_node_id = chan.get().get_counterparty_node_id();
+					let fulfill_res = chan.get_mut().get_update_fulfill_htlc_and_commit(prev_hop.htlc_id, payment_preimage, &self.logger);
 
-				if let UpdateFulfillCommitFetch::NewClaim { htlc_value_msat, monitor_update } = fulfill_res {
-					if let Some(action) = completion_action(Some(htlc_value_msat)) {
-						log_trace!(self.logger, "Tracking monitor update completion action for channel {}: {:?}",
-							log_bytes!(chan_id), action);
-						peer_state.monitor_update_blocked_actions.entry(chan_id).or_insert(Vec::new()).push(action);
+					if let UpdateFulfillCommitFetch::NewClaim { htlc_value_msat, monitor_update } = fulfill_res {
+						if let Some(action) = completion_action(Some(htlc_value_msat)) {
+							log_trace!(self.logger, "Tracking monitor update completion action for channel {}: {:?}",
+								log_bytes!(chan_id), action);
+							peer_state.monitor_update_blocked_actions.entry(chan_id).or_insert(Vec::new()).push(action);
+						}
+						let update_id = monitor_update.update_id;
+						let update_res = self.chain_monitor.update_channel(prev_hop.outpoint, monitor_update);
+						let res = handle_new_monitor_update!(self, update_res, update_id, peer_state_lock,
+							peer_state, per_peer_state, chan);
+						if let Err(e) = res {
+							// TODO: This is a *critical* error - we probably updated the outbound edge
+							// of the HTLC's monitor with a preimage. We should retry this monitor
+							// update over and over again until morale improves.
+							log_error!(self.logger, "Failed to update channel monitor with preimage {:?}", payment_preimage);
+							return Err((counterparty_node_id, e));
+						}
 					}
-					let update_id = monitor_update.update_id;
-					let update_res = self.chain_monitor.update_channel(prev_hop.outpoint, monitor_update);
-					let res = handle_new_monitor_update!(self, update_res, update_id, peer_state_lock,
-						peer_state, per_peer_state, chan);
-					if let Err(e) = res {
-						// TODO: This is a *critical* error - we probably updated the outbound edge
-						// of the HTLC's monitor with a preimage. We should retry this monitor
-						// update over and over again until morale improves.
-						log_error!(self.logger, "Failed to update channel monitor with preimage {:?}", payment_preimage);
-						return Err((counterparty_node_id, e));
-					}
+					return Ok(());
 				}
-				return Ok(());
 			}
 		}
 		let preimage_update = ChannelMonitorUpdate {
