@@ -237,6 +237,11 @@ impl<NG: Deref<Target=NetworkGraph<L>>, L: Deref> RapidGossipSync<NG, L> where L
 		}
 
 		self.network_graph.set_last_rapid_gossip_sync_timestamp(latest_seen_timestamp);
+
+		if let Some(time) = current_time_unix {
+			self.network_graph.remove_stale_channels_and_tracking_with_time(time)
+		}
+
 		self.is_initial_sync_complete.store(true, Ordering::Release);
 		log_trace!(self.logger, "Done processing RGS data from {}", latest_seen_timestamp);
 		Ok(latest_seen_timestamp)
@@ -555,6 +560,34 @@ mod tests {
 	}
 
 	#[test]
+	fn prunes_after_update() {
+		// this is the timestamp encoded in the binary data of valid_input below
+		let logger = TestLogger::new();
+
+		let latest_nonpruning_time = VALID_BINARY_TIMESTAMP + 60 * 60 * 24 * 7;
+
+		{
+			let network_graph = NetworkGraph::new(Network::Bitcoin, &logger);
+			assert_eq!(network_graph.read_only().channels().len(), 0);
+
+			let rapid_sync = RapidGossipSync::new(&network_graph, &logger);
+			let update_result = rapid_sync.update_network_graph_no_std(&VALID_RGS_BINARY, Some(latest_nonpruning_time));
+			assert!(update_result.is_ok());
+			assert_eq!(network_graph.read_only().channels().len(), 2);
+		}
+
+		{
+			let network_graph = NetworkGraph::new(Network::Bitcoin, &logger);
+			assert_eq!(network_graph.read_only().channels().len(), 0);
+
+			let rapid_sync = RapidGossipSync::new(&network_graph, &logger);
+			let update_result = rapid_sync.update_network_graph_no_std(&VALID_RGS_BINARY, Some(latest_nonpruning_time + 1));
+			assert!(update_result.is_ok());
+			assert_eq!(network_graph.read_only().channels().len(), 0);
+		}
+	}
+
+	#[test]
 	fn timestamp_edge_cases_are_handled_correctly() {
 		// this is the timestamp encoded in the binary data of valid_input below
 		let logger = TestLogger::new();
@@ -569,7 +602,7 @@ mod tests {
 			let rapid_sync = RapidGossipSync::new(&network_graph, &logger);
 			let update_result = rapid_sync.update_network_graph_no_std(&VALID_RGS_BINARY, Some(latest_succeeding_time));
 			assert!(update_result.is_ok());
-			assert_eq!(network_graph.read_only().channels().len(), 2);
+			assert_eq!(network_graph.read_only().channels().len(), 0);
 		}
 
 		{

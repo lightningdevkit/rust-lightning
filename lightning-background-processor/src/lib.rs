@@ -1429,8 +1429,8 @@ mod tests {
 			];
 			$nodes[0].rapid_gossip_sync.update_network_graph_no_std(&initialization_input[..], Some(1642291930)).unwrap();
 
-			// this should have added two channels
-			assert_eq!($nodes[0].network_graph.read_only().channels().len(), 3);
+			// this should have added two channels and pruned the previous one.
+			assert_eq!($nodes[0].network_graph.read_only().channels().len(), 2);
 
 			$receive.expect("Network graph not pruned within deadline");
 
