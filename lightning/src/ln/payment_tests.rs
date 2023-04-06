@@ -609,6 +609,9 @@ fn do_test_completed_payment_not_retryable_on_reload(use_dust: bool) {
 	reload_node!(nodes[0], test_default_channel_config(), nodes_0_serialized, &[&chan_0_monitor_serialized, &chan_1_monitor_serialized], second_persister, second_new_chain_monitor, second_nodes_0_deserialized);
 	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
 
+	nodes[0].node.test_process_background_events();
+	check_added_monitors(&nodes[0], 1);
+
 	reconnect_nodes(&nodes[0], &nodes[1], (true, true), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
 
 	// Now resend the payment, delivering the HTLC and actually claiming it this time. This ensures
@@ -633,6 +636,9 @@ fn do_test_completed_payment_not_retryable_on_reload(use_dust: bool) {
 	// claimed previously).
 	reload_node!(nodes[0], test_default_channel_config(), nodes_0_serialized, &[&chan_0_monitor_serialized, &chan_1_monitor_serialized], third_persister, third_new_chain_monitor, third_nodes_0_deserialized);
 	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
+
+	nodes[0].node.test_process_background_events();
+	check_added_monitors(&nodes[0], 1);
 
 	reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
 
@@ -782,6 +788,7 @@ fn do_test_dup_htlc_onchain_fails_on_reload(persist_manager_post_event: bool, co
 	let height = nodes[0].blocks.lock().unwrap().len() as u32 - 1;
 	nodes[0].chain_monitor.chain_monitor.block_connected(&claim_block, height);
 	assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
+	check_added_monitors(&nodes[0], 1);
 }
 
 #[test]
@@ -2869,6 +2876,7 @@ fn do_no_missing_sent_on_midpoint_reload(persist_manager_with_payment: bool) {
 	reload_node!(nodes[0], test_default_channel_config(), &nodes[0].node.encode(), &[&chan_0_monitor_serialized], persister_c, chain_monitor_c, nodes_0_deserialized_c);
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert!(events.is_empty());
+	check_added_monitors(&nodes[0], 1);
 }
 
 #[test]
