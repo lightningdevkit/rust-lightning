@@ -12,7 +12,7 @@
 //! returned errors decode to the correct thing.
 
 use crate::chain::channelmonitor::{CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS};
-use crate::chain::keysinterface::{EntropySource, NodeSigner, Recipient};
+use crate::chain::signer::{EntropySource, NodeSigner, Recipient};
 use crate::events::{Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, PathFailure};
 use crate::ln::{PaymentHash, PaymentSecret};
 use crate::ln::channel::EXPIRE_PREV_CONFIG_TICKS;

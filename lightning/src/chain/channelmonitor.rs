@@ -42,7 +42,7 @@ use crate::chain;
 use crate::chain::{BestBlock, WatchedOutput};
 use crate::chain::chaininterface::{BroadcasterInterface, FeeEstimator, LowerBoundedFeeEstimator};
 use crate::chain::transaction::{OutPoint, TransactionData};
-use crate::chain::keysinterface::{SpendableOutputDescriptor, StaticPaymentOutputDescriptor, DelayedPaymentOutputDescriptor, WriteableEcdsaChannelSigner, SignerProvider, EntropySource};
+use crate::chain::signer::{SpendableOutputDescriptor, StaticPaymentOutputDescriptor, DelayedPaymentOutputDescriptor, WriteableEcdsaChannelSigner, SignerProvider, EntropySource};
 #[cfg(anchors)]
 use crate::chain::onchaintx::ClaimEvent;
 use crate::chain::onchaintx::OnchainTxHandler;
@@ -411,7 +411,8 @@ enum OnchainEvent {
 		/// If the funding spend transaction was a known remote commitment transaction, we track
 		/// the output index and amount of the counterparty's `to_self` output here.
 		///
-		/// This allows us to generate a [`Balance::CounterpartyRevokedOutputClaimable`] for the
+		/// This allows us to generate a [`Balance::CounterpartyRevokedOutputClaimable`] for
+        /// thechaannmo
 		/// counterparty output.
 		commitment_tx_to_counterparty_output: CommitmentTxCounterpartyOutputInfo,
 	},
@@ -4011,7 +4012,7 @@ mod tests {
 	use crate::chain::channelmonitor::ChannelMonitor;
 	use crate::chain::package::{weight_offered_htlc, weight_received_htlc, weight_revoked_offered_htlc, weight_revoked_received_htlc, WEIGHT_REVOKED_OUTPUT};
 	use crate::chain::transaction::OutPoint;
-	use crate::chain::keysinterface::InMemorySigner;
+	use crate::chain::signer::InMemorySigner;
 	use crate::events::ClosureReason;
 	use crate::ln::{PaymentPreimage, PaymentHash};
 	use crate::ln::chan_utils;

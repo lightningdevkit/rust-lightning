@@ -13,7 +13,7 @@ use bitcoin::hashes::Hash;
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::secp256k1::{self, Secp256k1, SecretKey};
 
-use crate::chain::keysinterface::{EntropySource, NodeSigner, Recipient};
+use crate::chain::signer::{EntropySource, NodeSigner, Recipient};
 use crate::events;
 use crate::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
 use crate::ln::channelmanager::{ChannelDetails, HTLCSource, IDEMPOTENCY_TIMEOUT_TICKS, PaymentId};

@@ -17,7 +17,7 @@
 
 use bitcoin::secp256k1::{self, Secp256k1, SecretKey, PublicKey};
 
-use crate::chain::keysinterface::{KeysManager, NodeSigner, Recipient};
+use crate::chain::signer::{KeysManager, NodeSigner, Recipient};
 use crate::events::{MessageSendEvent, MessageSendEventsProvider, OnionMessageProvider};
 use crate::ln::features::{InitFeatures, NodeFeatures};
 use crate::ln::msgs;
@@ -2193,7 +2193,7 @@ fn is_gossip_msg(type_id: u16) -> bool {
 
 #[cfg(test)]
 mod tests {
-	use crate::chain::keysinterface::{NodeSigner, Recipient};
+	use crate::chain::signer::{NodeSigner, Recipient};
 	use crate::events;
 	use crate::ln::peer_channel_encryptor::PeerChannelEncryptor;
 	use crate::ln::peer_handler::{PeerManager, MessageHandler, SocketDescriptor, IgnoringMessageHandler, filter_addresses};

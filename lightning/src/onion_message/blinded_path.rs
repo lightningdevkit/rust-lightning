@@ -13,7 +13,7 @@ use bitcoin::hashes::{Hash, HashEngine};
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::secp256k1::{self, PublicKey, Scalar, Secp256k1, SecretKey};
 
-use crate::chain::keysinterface::{EntropySource, NodeSigner, Recipient};
+use crate::chain::signer::{EntropySource, NodeSigner, Recipient};
 use super::packet::ControlTlvs;
 use super::utils;
 use crate::ln::msgs::DecodeError;

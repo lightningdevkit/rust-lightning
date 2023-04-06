@@ -9,7 +9,7 @@
 
 //! Onion message testing and test utilities live here.
 
-use crate::chain::keysinterface::{NodeSigner, Recipient};
+use crate::chain::signer::{NodeSigner, Recipient};
 use crate::ln::features::InitFeatures;
 use crate::ln::msgs::{self, DecodeError, OnionMessageHandler};
 use super::{BlindedPath, CustomOnionMessageContents, CustomOnionMessageHandler, Destination, OnionMessageContents, OnionMessenger, SendError};

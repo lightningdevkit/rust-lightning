@@ -20,7 +20,7 @@ pub mod bump_transaction;
 #[cfg(anchors)]
 pub use bump_transaction::BumpTransactionEvent;
 
-use crate::chain::keysinterface::SpendableOutputDescriptor;
+use crate::chain::signer::SpendableOutputDescriptor;
 use crate::ln::channelmanager::{InterceptId, PaymentId};
 use crate::ln::channel::FUNDING_CONF_DEADLINE_BLOCKS;
 use crate::ln::features::ChannelTypeFeatures;

@@ -55,7 +55,7 @@ use crate::ln::msgs::{ChannelMessageHandler, DecodeError, LightningError, MAX_VA
 use crate::ln::outbound_payment;
 use crate::ln::outbound_payment::{OutboundPayments, PaymentAttempts, PendingOutboundPayment};
 use crate::ln::wire::Encode;
-use crate::chain::keysinterface::{EntropySource, KeysManager, NodeSigner, Recipient, SignerProvider, ChannelSigner, WriteableEcdsaChannelSigner};
+use crate::chain::signer::{EntropySource, KeysManager, NodeSigner, Recipient, SignerProvider, ChannelSigner, WriteableEcdsaChannelSigner};
 use crate::util::config::{UserConfig, ChannelConfig};
 use crate::util::wakers::{Future, Notifier};
 use crate::util::scid_utils::fake_scid;
@@ -7942,7 +7942,7 @@ mod tests {
 	use crate::util::errors::APIError;
 	use crate::util::test_utils;
 	use crate::util::config::ChannelConfig;
-	use crate::chain::keysinterface::EntropySource;
+	use crate::chain::signer::EntropySource;
 
 	#[test]
 	fn test_notify_limits() {

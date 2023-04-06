@@ -68,7 +68,7 @@ pub fn scid_from_parts(block: u64, tx_index: u64, vout_index: u64) -> Result<u64
 pub(crate) mod fake_scid {
 	use bitcoin::hash_types::BlockHash;
 	use bitcoin::hashes::hex::FromHex;
-	use crate::chain::keysinterface::EntropySource;
+	use crate::chain::signer::EntropySource;
 	use crate::util::chacha20::ChaCha20;
 	use crate::util::scid_utils;
 

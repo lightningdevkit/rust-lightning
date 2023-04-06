@@ -9,7 +9,7 @@
 
 use crate::prelude::*;
 
-use crate::chain::keysinterface::{NodeSigner, Recipient};
+use crate::chain::signer::{NodeSigner, Recipient};
 use crate::ln::msgs::LightningError;
 use crate::ln::msgs;
 use crate::ln::wire;
