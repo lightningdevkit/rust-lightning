@@ -66,7 +66,7 @@ pub(super) fn verify_signature(
 	secp_ctx.verify_schnorr(signature, &digest, &pubkey)
 }
 
-fn message_digest(tag: &str, bytes: &[u8]) -> Message {
+pub(super) fn message_digest(tag: &str, bytes: &[u8]) -> Message {
 	let tag = sha256::Hash::hash(tag.as_bytes());
 	let merkle_root = root_hash(bytes);
 	Message::from_slice(&tagged_hash(tag, merkle_root)).unwrap()
