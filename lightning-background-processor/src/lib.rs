@@ -1057,7 +1057,11 @@ mod tests {
 			let events = $node_a.node.get_and_clear_pending_events();
 			assert_eq!(events.len(), 1);
 			let (temporary_channel_id, tx) = handle_funding_generation_ready!(events[0], $channel_value);
-			end_open_channel!($node_a, $node_b, temporary_channel_id, tx);
+			$node_a.node.funding_transaction_generated(&temporary_channel_id, &$node_b.node.get_our_node_id(), tx.clone()).unwrap();
+			$node_b.node.handle_funding_created(&$node_a.node.get_our_node_id(), &get_event_msg!($node_a, MessageSendEvent::SendFundingCreated, $node_b.node.get_our_node_id()));
+			get_event!($node_b, Event::ChannelPending);
+			$node_a.node.handle_funding_signed(&$node_b.node.get_our_node_id(), &get_event_msg!($node_b, MessageSendEvent::SendFundingSigned, $node_a.node.get_our_node_id()));
+			get_event!($node_a, Event::ChannelPending);
 			tx
 		}}
 	}
@@ -1084,17 +1088,6 @@ mod tests {
 				},
 				_ => panic!("Unexpected event"),
 			}
-		}}
-	}
-
-	macro_rules! end_open_channel {
-		($node_a: expr, $node_b: expr, $temporary_channel_id: expr, $tx: expr) => {{
-			$node_a.node.funding_transaction_generated(&$temporary_channel_id, &$node_b.node.get_our_node_id(), $tx.clone()).unwrap();
-			$node_b.node.handle_funding_created(&$node_a.node.get_our_node_id(), &get_event_msg!($node_a, MessageSendEvent::SendFundingCreated, $node_b.node.get_our_node_id()));
-			get_event!($node_b, Event::ChannelPending);
-
-			$node_a.node.handle_funding_signed(&$node_b.node.get_our_node_id(), &get_event_msg!($node_b, MessageSendEvent::SendFundingSigned, $node_a.node.get_our_node_id()));
-			get_event!($node_a, Event::ChannelPending);
 		}}
 	}
 
@@ -1310,9 +1303,11 @@ mod tests {
 		let persister = Arc::new(Persister::new(data_dir.clone()));
 
 		// Set up a background event handler for FundingGenerationReady events.
-		let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+		let (funding_generation_send, funding_generation_recv) = std::sync::mpsc::sync_channel(1);
+		let (channel_pending_send, channel_pending_recv) = std::sync::mpsc::sync_channel(1);
 		let event_handler = move |event: Event| match event {
-			Event::FundingGenerationReady { .. } => sender.send(handle_funding_generation_ready!(event, channel_value)).unwrap(),
+			Event::FundingGenerationReady { .. } => funding_generation_send.send(handle_funding_generation_ready!(event, channel_value)).unwrap(),
+			Event::ChannelPending { .. } => channel_pending_send.send(()).unwrap(),
 			Event::ChannelReady { .. } => {},
 			_ => panic!("Unexpected event: {:?}", event),
 		};
@@ -1321,10 +1316,15 @@ mod tests {
 
 		// Open a channel and check that the FundingGenerationReady event was handled.
 		begin_open_channel!(nodes[0], nodes[1], channel_value);
-		let (temporary_channel_id, funding_tx) = receiver
+		let (temporary_channel_id, funding_tx) = funding_generation_recv
 			.recv_timeout(Duration::from_secs(EVENT_DEADLINE))
 			.expect("FundingGenerationReady not handled within deadline");
-		end_open_channel!(nodes[0], nodes[1], temporary_channel_id, funding_tx);
+		nodes[0].node.funding_transaction_generated(&temporary_channel_id, &nodes[1].node.get_our_node_id(), funding_tx.clone()).unwrap();
+		nodes[1].node.handle_funding_created(&nodes[0].node.get_our_node_id(), &get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, nodes[1].node.get_our_node_id()));
+		get_event!(nodes[1], Event::ChannelPending);
+		nodes[0].node.handle_funding_signed(&nodes[1].node.get_our_node_id(), &get_event_msg!(nodes[1], MessageSendEvent::SendFundingSigned, nodes[0].node.get_our_node_id()));
+		let _ = channel_pending_recv.recv_timeout(Duration::from_secs(EVENT_DEADLINE))
+			.expect("ChannelPending not handled within deadline");
 
 		// Confirm the funding transaction.
 		confirm_transaction(&mut nodes[0], &funding_tx);
