@@ -2811,7 +2811,13 @@ where
 					},
 				}
 			},
-			None => { return Err(APIError::ChannelUnavailable { err: format!("Channel with id {} not found for the passed counterparty node_id {}", log_bytes!(*temporary_channel_id), counterparty_node_id) }) },
+			None => {
+				return Err(APIError::ChannelUnavailable {
+					err: format!(
+						"Channel with id {} not found for the passed counterparty node_id {}",
+						log_bytes!(*temporary_channel_id), counterparty_node_id),
+				})
+			},
 		};
 
 		peer_state.pending_msg_events.push(events::MessageSendEvent::SendFundingCreated {
