@@ -1981,21 +1981,26 @@ pub fn do_pass_along_path<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_p
 			let events_2 = node.node.get_and_clear_pending_events();
 			if payment_claimable_expected {
 				assert_eq!(events_2.len(), 1);
-				match events_2[0] {
-					Event::PaymentClaimable { ref payment_hash, ref purpose, amount_msat, receiver_node_id, ref via_channel_id, ref via_user_channel_id, claim_deadline } => {
+				match &events_2[0] {
+					Event::PaymentClaimable { ref payment_hash, ref purpose, amount_msat,
+						receiver_node_id, ref via_channel_id, ref via_user_channel_id,
+						claim_deadline, onion_fields,
+					} => {
 						assert_eq!(our_payment_hash, *payment_hash);
 						assert_eq!(node.node.get_our_node_id(), receiver_node_id.unwrap());
+						assert!(onion_fields.is_some());
 						match &purpose {
 							PaymentPurpose::InvoicePayment { payment_preimage, payment_secret, .. } => {
 								assert_eq!(expected_preimage, *payment_preimage);
 								assert_eq!(our_payment_secret.unwrap(), *payment_secret);
+								assert_eq!(Some(*payment_secret), onion_fields.as_ref().unwrap().payment_secret);
 							},
 							PaymentPurpose::SpontaneousPayment(payment_preimage) => {
 								assert_eq!(expected_preimage.unwrap(), *payment_preimage);
 								assert!(our_payment_secret.is_none());
 							},
 						}
-						assert_eq!(amount_msat, recv_value);
+						assert_eq!(*amount_msat, recv_value);
 						assert!(node.node.list_channels().iter().any(|details| details.channel_id == via_channel_id.unwrap()));
 						assert!(node.node.list_channels().iter().any(|details| details.user_channel_id == via_user_channel_id.unwrap()));
 						assert!(claim_deadline.unwrap() > node.best_block_info().1);

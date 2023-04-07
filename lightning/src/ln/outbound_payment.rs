@@ -409,7 +409,7 @@ pub enum PaymentSendFailure {
 ///
 /// This should generally be constructed with data communicated to us from the recipient (via a
 /// BOLT11 or BOLT12 invoice).
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RecipientOnionFields {
 	/// The [`PaymentSecret`] is an arbitrary 32 bytes provided by the recipient for us to repeat
 	/// in the onion. It is unrelated to `payment_hash` (or [`PaymentPreimage`]) and exists to

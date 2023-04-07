@@ -3432,6 +3432,7 @@ where
 												via_channel_id: Some(prev_channel_id),
 												via_user_channel_id: Some(prev_user_channel_id),
 												claim_deadline: Some(earliest_expiry - HTLC_FAIL_BACK_BUFFER),
+												onion_fields: claimable_payment.onion_fields.clone(),
 											});
 											payment_claimable_generated = true;
 										} else {
@@ -3501,6 +3502,7 @@ where
 															via_channel_id: Some(prev_channel_id),
 															via_user_channel_id: Some(prev_user_channel_id),
 															claim_deadline,
+															onion_fields: Some(onion_fields),
 														});
 													},
 													hash_map::Entry::Occupied(_) => {
