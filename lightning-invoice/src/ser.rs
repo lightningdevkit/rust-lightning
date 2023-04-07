@@ -329,7 +329,7 @@ impl ToBase32 for Fallback {
 	fn write_base32<W: WriteBase32>(&self, writer: &mut W) -> Result<(), <W as WriteBase32>::Err> {
 		match *self {
 			Fallback::SegWitProgram {version: v, program: ref p} => {
-				writer.write_u5(v)?;
+				writer.write_u5(Into::<u5>::into(v))?;
 				p.write_base32(writer)
 			},
 			Fallback::PubKeyHash(ref hash) => {
