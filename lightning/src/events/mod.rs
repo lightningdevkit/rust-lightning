@@ -321,7 +321,9 @@ pub enum Event {
 	///
 	/// # Note
 	/// LDK will not stop an inbound payment from being paid multiple times, so multiple
-	/// `PaymentClaimable` events may be generated for the same payment.
+	/// `PaymentClaimable` events may be generated for the same payment. In such a case it is
+	/// polite (and required in the lightning specification) to fail the payment the second time
+	/// and give the sender their money back rather than accepting double payment.
 	///
 	/// # Note
 	/// This event used to be called `PaymentReceived` in LDK versions 0.0.112 and earlier.
@@ -349,6 +351,14 @@ pub enum Event {
 		via_channel_id: Option<[u8; 32]>,
 		/// The `user_channel_id` indicating over which channel we received the payment.
 		via_user_channel_id: Option<u128>,
+		/// The block height at which this payment will be failed back and will no longer be
+		/// eligible for claiming.
+		///
+		/// Prior to this height, a call to [`ChannelManager::claim_funds`] is guaranteed to
+		/// succeed, however you should wait for [`Event::PaymentClaimed`] to be sure.
+		///
+		/// [`ChannelManager::claim_funds`]: crate::ln::channelmanager::ChannelManager::claim_funds
+		claim_deadline: Option<u32>,
 	},
 	/// Indicates a payment has been claimed and we've received money!
 	///
@@ -770,7 +780,7 @@ impl Writeable for Event {
 				// We never write out FundingGenerationReady events as, upon disconnection, peers
 				// drop any channels which have not yet exchanged funding_signed.
 			},
-			&Event::PaymentClaimable { ref payment_hash, ref amount_msat, ref purpose, ref receiver_node_id, ref via_channel_id, ref via_user_channel_id } => {
+			&Event::PaymentClaimable { ref payment_hash, ref amount_msat, ref purpose, ref receiver_node_id, ref via_channel_id, ref via_user_channel_id, ref claim_deadline } => {
 				1u8.write(writer)?;
 				let mut payment_secret = None;
 				let payment_preimage;
@@ -791,6 +801,7 @@ impl Writeable for Event {
 					(4, amount_msat, required),
 					(5, via_user_channel_id, option),
 					(6, 0u64, required), // user_payment_id required for compatibility with 0.0.103 and earlier
+					(7, claim_deadline, option),
 					(8, payment_preimage, option),
 				});
 			},
@@ -989,6 +1000,7 @@ impl MaybeReadable for Event {
 					let mut receiver_node_id = None;
 					let mut _user_payment_id = None::<u64>; // For compatibility with 0.0.103 and earlier
 					let mut via_channel_id = None;
+					let mut claim_deadline = None;
 					let mut via_user_channel_id = None;
 					read_tlv_fields!(reader, {
 						(0, payment_hash, required),
@@ -998,6 +1010,7 @@ impl MaybeReadable for Event {
 						(4, amount_msat, required),
 						(5, via_user_channel_id, option),
 						(6, _user_payment_id, option),
+						(7, claim_deadline, option),
 						(8, payment_preimage, option),
 					});
 					let purpose = match payment_secret {
@@ -1015,6 +1028,7 @@ impl MaybeReadable for Event {
 						purpose,
 						via_channel_id,
 						via_user_channel_id,
+						claim_deadline,
 					}))
 				};
 				f()

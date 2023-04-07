@@ -3359,8 +3359,10 @@ where
 											}
 										}
 										let mut total_value = claimable_htlc.sender_intended_value;
+										let mut earliest_expiry = claimable_htlc.cltv_expiry;
 										for htlc in htlcs.iter() {
 											total_value += htlc.sender_intended_value;
+											earliest_expiry = cmp::min(earliest_expiry, htlc.cltv_expiry);
 											match &htlc.onion_payload {
 												OnionPayload::Invoice { .. } => {
 													if htlc.total_msat != $payment_data.total_msat {
@@ -3393,6 +3395,7 @@ where
 												amount_msat,
 												via_channel_id: Some(prev_channel_id),
 												via_user_channel_id: Some(prev_user_channel_id),
+												claim_deadline: Some(earliest_expiry - HTLC_FAIL_BACK_BUFFER),
 											});
 											payment_claimable_generated = true;
 										} else {
@@ -3446,6 +3449,7 @@ where
 													hash_map::Entry::Vacant(e) => {
 														let amount_msat = claimable_htlc.value;
 														claimable_htlc.total_value_received = Some(amount_msat);
+														let claim_deadline = Some(claimable_htlc.cltv_expiry - HTLC_FAIL_BACK_BUFFER);
 														let purpose = events::PaymentPurpose::SpontaneousPayment(preimage);
 														e.insert((purpose.clone(), vec![claimable_htlc]));
 														let prev_channel_id = prev_funding_outpoint.to_channel_id();
@@ -3456,6 +3460,7 @@ where
 															purpose,
 															via_channel_id: Some(prev_channel_id),
 															via_user_channel_id: Some(prev_user_channel_id),
+															claim_deadline,
 														});
 													},
 													hash_map::Entry::Occupied(_) => {
@@ -3931,9 +3936,10 @@ where
 	/// Provides a payment preimage in response to [`Event::PaymentClaimable`], generating any
 	/// [`MessageSendEvent`]s needed to claim the payment.
 	///
-	/// Note that calling this method does *not* guarantee that the payment has been claimed. You
-	/// *must* wait for an [`Event::PaymentClaimed`] event which upon a successful claim will be
-	/// provided to your [`EventHandler`] when [`process_pending_events`] is next called.
+	/// This method is guaranteed to ensure the payment has been claimed but only if the current
+	/// height is strictly below [`Event::PaymentClaimable::claim_deadline`]. To avoid race
+	/// conditions, you should wait for an [`Event::PaymentClaimed`] before considering the payment
+	/// successful. It will generally be available in the next [`process_pending_events`] call.
 	///
 	/// Note that if you did not set an `amount_msat` when calling [`create_inbound_payment`] or
 	/// [`create_inbound_payment_for_hash`] you must check that the amount in the `PaymentClaimable`
@@ -3941,6 +3947,7 @@ where
 	/// the sender "proof-of-payment" when they did not fulfill the full expected payment.
 	///
 	/// [`Event::PaymentClaimable`]: crate::events::Event::PaymentClaimable
+	/// [`Event::PaymentClaimable::claim_deadline`]: crate::events::Event::PaymentClaimable::claim_deadline
 	/// [`Event::PaymentClaimed`]: crate::events::Event::PaymentClaimed
 	/// [`process_pending_events`]: EventsProvider::process_pending_events
 	/// [`create_inbound_payment`]: Self::create_inbound_payment
@@ -3977,21 +3984,10 @@ where
 		};
 		debug_assert!(!sources.is_empty());
 
-		// If we are claiming an MPP payment, we check that all channels which contain a claimable
-		// HTLC still exist. While this isn't guaranteed to remain true if a channel closes while
-		// we're claiming (or even after we claim, before the commitment update dance completes),
-		// it should be a relatively rare race, and we'd rather not claim HTLCs that require us to
-		// go on-chain (and lose the on-chain fee to do so) than just reject the payment.
-		//
-		// Note that we'll still always get our funds - as long as the generated
-		// `ChannelMonitorUpdate` makes it out to the relevant monitor we can claim on-chain.
-		//
-		// If we find an HTLC which we would need to claim but for which we do not have a
-		// channel, we will fail all parts of the MPP payment. While we could wait and see if
-		// the sender retries the already-failed path(s), it should be a pretty rare case where
-		// we got all the HTLCs and then a channel closed while we were waiting for the user to
-		// provide the preimage, so worrying too much about the optimal handling isn't worth
-		// it.
+		// Just in case one HTLC has been failed between when we generated the `PaymentClaimable`
+		// and when we got here we need to check that the amount we're about to claim matches the
+		// amount we told the user in the last `PaymentClaimable`. We also do a sanity-check that
+		// the MPP parts all have the same `total_msat`.
 		let mut claimable_amt_msat = 0;
 		let mut prev_total_msat = None;
 		let mut expected_amt_msat = None;
@@ -3999,28 +3995,6 @@ where
 		let mut errs = Vec::new();
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		for htlc in sources.iter() {
-			let (counterparty_node_id, chan_id) = match self.short_to_chan_info.read().unwrap().get(&htlc.prev_hop.short_channel_id) {
-				Some((cp_id, chan_id)) => (cp_id.clone(), chan_id.clone()),
-				None => {
-					valid_mpp = false;
-					break;
-				}
-			};
-
-			let peer_state_mutex_opt = per_peer_state.get(&counterparty_node_id);
-			if peer_state_mutex_opt.is_none() {
-				valid_mpp = false;
-				break;
-			}
-
-			let mut peer_state_lock = peer_state_mutex_opt.unwrap().lock().unwrap();
-			let peer_state = &mut *peer_state_lock;
-
-			if peer_state.channel_by_id.get(&chan_id).is_none() {
-				valid_mpp = false;
-				break;
-			}
-
 			if prev_total_msat.is_some() && prev_total_msat != Some(htlc.total_msat) {
 				log_error!(self.logger, "Somehow ended up with an MPP payment with different expected total amounts - this should not be reachable!");
 				debug_assert!(false);
