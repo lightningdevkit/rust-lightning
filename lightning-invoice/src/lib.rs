@@ -18,9 +18,11 @@
 //! invoices and functions to create, encode and decode these. If you just want to use the standard
 //! en-/decoding functionality this should get you started:
 //!
-//!   * For parsing use `str::parse::<Invoice>(&self)` (see the docs of `impl FromStr for Invoice`)
-//!   * For constructing invoices use the `InvoiceBuilder`
-//!   * For serializing invoices use the `Display`/`ToString` traits
+//!   * For parsing use `str::parse::<Invoice>(&self)` (see [`Invoice::from_str`])
+//!   * For constructing invoices use the [`InvoiceBuilder`]
+//!   * For serializing invoices use the [`Display`]/[`ToString`] traits
+//!
+//! [`Invoice::from_str`]: crate::Invoice#impl-FromStr
 
 #[cfg(not(any(feature = "std", feature = "no-std")))]
 compile_error!("at least one of the `std` or `no-std` features must be enabled");
@@ -160,7 +162,7 @@ pub const DEFAULT_EXPIRY_TIME: u64 = 3600;
 /// [`MIN_FINAL_CLTV_EXPIRY_DELTA`]: lightning::ln::channelmanager::MIN_FINAL_CLTV_EXPIRY_DELTA
 pub const DEFAULT_MIN_FINAL_CLTV_EXPIRY_DELTA: u64 = 18;
 
-/// Builder for `Invoice`s. It's the most convenient and advised way to use this library. It ensures
+/// Builder for [`Invoice`]s. It's the most convenient and advised way to use this library. It ensures
 /// that only a semantically and syntactically correct Invoice can be built using it.
 ///
 /// ```
@@ -212,8 +214,8 @@ pub const DEFAULT_MIN_FINAL_CLTV_EXPIRY_DELTA: u64 = 18;
 /// # Type parameters
 /// The two parameters `D` and `H` signal if the builder already contains the correct amount of the
 /// given field:
-///  * `D`: exactly one `Description` or `DescriptionHash`
-///  * `H`: exactly one `PaymentHash`
+///  * `D`: exactly one [`TaggedField::Description`] or [`TaggedField::DescriptionHash`]
+///  * `H`: exactly one [`TaggedField::PaymentHash`]
 ///  * `T`: the timestamp is set
 ///
 /// This is not exported to bindings users as we likely need to manually select one set of boolean type parameters.
@@ -236,9 +238,11 @@ pub struct InvoiceBuilder<D: tb::Bool, H: tb::Bool, T: tb::Bool, C: tb::Bool, S:
 /// Represents a syntactically and semantically correct lightning BOLT11 invoice.
 ///
 /// There are three ways to construct an `Invoice`:
-///  1. using `InvoiceBuilder`
-///  2. using `Invoice::from_signed(SignedRawInvoice)`
-///  3. using `str::parse::<Invoice>(&str)`
+///  1. using [`InvoiceBuilder`]
+///  2. using [`Invoice::from_signed`]
+///  3. using `str::parse::<Invoice>(&str)` (see [`Invoice::from_str`])
+///
+/// [`Invoice::from_str`]: crate::Invoice#impl-FromStr
 #[derive(Eq, PartialEq, Debug, Clone, Hash)]
 pub struct Invoice {
 	signed_invoice: SignedRawInvoice,
@@ -258,34 +262,34 @@ pub enum InvoiceDescription<'f> {
 	Hash(&'f Sha256),
 }
 
-/// Represents a signed `RawInvoice` with cached hash. The signature is not checked and may be
+/// Represents a signed [`RawInvoice`] with cached hash. The signature is not checked and may be
 /// invalid.
 ///
 /// # Invariants
-/// The hash has to be either from the deserialized invoice or from the serialized `raw_invoice`.
+/// The hash has to be either from the deserialized invoice or from the serialized [`RawInvoice`].
 #[derive(Eq, PartialEq, Debug, Clone, Hash)]
 pub struct SignedRawInvoice {
 	/// The rawInvoice that the signature belongs to
 	raw_invoice: RawInvoice,
 
-	/// Hash of the `RawInvoice` that will be used to check the signature.
+	/// Hash of the [`RawInvoice`] that will be used to check the signature.
 	///
 	/// * if the `SignedRawInvoice` was deserialized the hash is of from the original encoded form,
 	/// since it's not guaranteed that encoding it again will lead to the same result since integers
 	/// could have been encoded with leading zeroes etc.
 	/// * if the `SignedRawInvoice` was constructed manually the hash will be the calculated hash
-	/// from the `RawInvoice`
+	/// from the [`RawInvoice`]
 	hash: [u8; 32],
 
 	/// signature of the payment request
 	signature: InvoiceSignature,
 }
 
-/// Represents an syntactically correct Invoice for a payment on the lightning network,
+/// Represents an syntactically correct [`Invoice`] for a payment on the lightning network,
 /// but without the signature information.
-/// De- and encoding should not lead to information loss but may lead to different hashes.
+/// Decoding and encoding should not lead to information loss but may lead to different hashes.
 ///
-/// For methods without docs see the corresponding methods in `Invoice`.
+/// For methods without docs see the corresponding methods in [`Invoice`].
 #[derive(Eq, PartialEq, Debug, Clone, Hash)]
 pub struct RawInvoice {
 	/// human readable part
@@ -295,7 +299,7 @@ pub struct RawInvoice {
 	pub data: RawDataPart,
 }
 
-/// Data of the `RawInvoice` that is encoded in the human readable part
+/// Data of the [`RawInvoice`] that is encoded in the human readable part.
 ///
 /// This is not exported to bindings users as we don't yet support `Option<Enum>`
 #[derive(Eq, PartialEq, Debug, Clone, Hash)]
@@ -310,7 +314,7 @@ pub struct RawHrp {
 	pub si_prefix: Option<SiPrefix>,
 }
 
-/// Data of the `RawInvoice` that is encoded in the data part
+/// Data of the [`RawInvoice`] that is encoded in the data part
 #[derive(Eq, PartialEq, Debug, Clone, Hash)]
 pub struct RawDataPart {
 	/// generation time of the invoice
@@ -564,7 +568,8 @@ impl<D: tb::Bool, H: tb::Bool, T: tb::Bool, C: tb::Bool, S: tb::Bool> InvoiceBui
 }
 
 impl<D: tb::Bool, H: tb::Bool, C: tb::Bool, S: tb::Bool> InvoiceBuilder<D, H, tb::True, C, S> {
-	/// Builds a `RawInvoice` if no `CreationError` occurred while construction any of the fields.
+	/// Builds a [`RawInvoice`] if no [`CreationError`] occurred while construction any of the
+	/// fields.
 	pub fn build_raw(self) -> Result<RawInvoice, CreationError> {
 
 		// If an error occurred at any time before, return it now
@@ -753,17 +758,17 @@ impl SignedRawInvoice {
 		(self.raw_invoice, self.hash, self.signature)
 	}
 
-	/// The `RawInvoice` which was signed.
+	/// The [`RawInvoice`] which was signed.
 	pub fn raw_invoice(&self) -> &RawInvoice {
 		&self.raw_invoice
 	}
 
-	/// The hash of the `RawInvoice` that was signed.
+	/// The hash of the [`RawInvoice`] that was signed.
 	pub fn signable_hash(&self) -> &[u8; 32] {
 		&self.hash
 	}
 
-	/// InvoiceSignature for the invoice.
+	/// Signature for the invoice.
 	pub fn signature(&self) -> &InvoiceSignature {
 		&self.signature
 	}
@@ -881,8 +886,8 @@ impl RawInvoice {
 		)
 	}
 
-	/// Signs the invoice using the supplied `sign_function`. This function MAY fail with an error
-	/// of type `E`. Since the signature of a `SignedRawInvoice` is not required to be valid there
+	/// Signs the invoice using the supplied `sign_method`. This function MAY fail with an error of
+	/// type `E`. Since the signature of a [`SignedRawInvoice`] is not required to be valid there
 	/// are no constraints regarding the validity of the produced signature.
 	///
 	/// This is not exported to bindings users as we don't currently support passing function pointers into methods
@@ -1033,6 +1038,11 @@ impl From<PositiveTimestamp> for SystemTime {
 }
 
 impl Invoice {
+	/// The hash of the [`RawInvoice`] that was signed.
+	pub fn signable_hash(&self) -> [u8; 32] {
+		self.signed_invoice.hash
+	}
+
 	/// Transform the `Invoice` into it's unchecked version
 	pub fn into_signed_raw(self) -> SignedRawInvoice {
 		self.signed_invoice
@@ -1137,7 +1147,7 @@ impl Invoice {
 		Ok(())
 	}
 
-	/// Constructs an `Invoice` from a `SignedRawInvoice` by checking all its invariants.
+	/// Constructs an `Invoice` from a [`SignedRawInvoice`] by checking all its invariants.
 	/// ```
 	/// use lightning_invoice::*;
 	///
@@ -1347,7 +1357,7 @@ impl TaggedField {
 impl Description {
 
 	/// Creates a new `Description` if `description` is at most 1023 __bytes__ long,
-	/// returns `CreationError::DescriptionTooLong` otherwise
+	/// returns [`CreationError::DescriptionTooLong`] otherwise
 	///
 	/// Please note that single characters may use more than one byte due to UTF8 encoding.
 	pub fn new(description: String) -> Result<Description, CreationError> {
@@ -1358,7 +1368,7 @@ impl Description {
 		}
 	}
 
-	/// Returns the underlying description `String`
+	/// Returns the underlying description [`String`]
 	pub fn into_inner(self) -> String {
 		self.0
 	}
@@ -1398,7 +1408,7 @@ impl ExpiryTime {
 		ExpiryTime(Duration::from_secs(seconds))
 	}
 
-	/// Construct an `ExpiryTime` from a `Duration`, dropping the sub-second part.
+	/// Construct an `ExpiryTime` from a [`Duration`], dropping the sub-second part.
 	pub fn from_duration(duration: Duration) -> ExpiryTime {
 		Self::from_seconds(duration.as_secs())
 	}
@@ -1408,7 +1418,7 @@ impl ExpiryTime {
 		self.0.as_secs()
 	}
 
-	/// Returns a reference to the underlying `Duration` (=expiry time)
+	/// Returns a reference to the underlying [`Duration`] (=expiry time)
 	pub fn as_duration(&self) -> &Duration {
 		&self.0
 	}
@@ -1460,10 +1470,10 @@ impl Deref for SignedRawInvoice {
 	}
 }
 
-/// Errors that may occur when constructing a new `RawInvoice` or `Invoice`
+/// Errors that may occur when constructing a new [`RawInvoice`] or [`Invoice`]
 #[derive(Eq, PartialEq, Debug, Clone)]
 pub enum CreationError {
-	/// The supplied description string was longer than 639 __bytes__ (see [`Description::new(…)`](./struct.Description.html#method.new))
+	/// The supplied description string was longer than 639 __bytes__ (see [`Description::new`])
 	DescriptionTooLong,
 
 	/// The specified route has too many hops and can't be encoded
@@ -1504,7 +1514,7 @@ impl Display for CreationError {
 #[cfg(feature = "std")]
 impl std::error::Error for CreationError { }
 
-/// Errors that may occur when converting a `RawInvoice` to an `Invoice`. They relate to the
+/// Errors that may occur when converting a [`RawInvoice`] to an [`Invoice`]. They relate to the
 /// requirements sections in BOLT #11
 #[derive(Eq, PartialEq, Debug, Clone)]
 pub enum SemanticError {
@@ -1560,7 +1570,7 @@ impl Display for SemanticError {
 #[cfg(feature = "std")]
 impl std::error::Error for SemanticError { }
 
-/// When signing using a fallible method either an user-supplied `SignError` or a `CreationError`
+/// When signing using a fallible method either an user-supplied `SignError` or a [`CreationError`]
 /// may occur.
 #[derive(Eq, PartialEq, Debug, Clone)]
 pub enum SignOrCreationError<S = ()> {

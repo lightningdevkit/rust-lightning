@@ -469,6 +469,11 @@ impl Invoice {
 		self.signature
 	}
 
+	/// Hash that was used for signing the invoice.
+	pub fn signable_hash(&self) -> [u8; 32] {
+		merkle::message_digest(SIGNATURE_TAG, &self.bytes).as_ref().clone()
+	}
+
 	#[cfg(test)]
 	fn as_tlv_stream(&self) -> FullInvoiceTlvStreamRef {
 		let (payer_tlv_stream, offer_tlv_stream, invoice_request_tlv_stream, invoice_tlv_stream) =
@@ -936,6 +941,11 @@ mod tests {
 				&invoice.signature, SIGNATURE_TAG, &invoice.bytes, recipient_pubkey()
 			).is_ok()
 		);
+
+		let digest = Message::from_slice(&invoice.signable_hash()).unwrap();
+		let pubkey = recipient_pubkey().into();
+		let secp_ctx = Secp256k1::verification_only();
+		assert!(secp_ctx.verify_schnorr(&invoice.signature, &digest, &pubkey).is_ok());
 
 		assert_eq!(
 			invoice.as_tlv_stream(),
