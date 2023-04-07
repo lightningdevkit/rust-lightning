@@ -1354,15 +1354,15 @@ pub struct PhantomRouteHints {
 }
 
 macro_rules! handle_error {
-	($self: ident, $internal: expr, $counterparty_node_id: expr) => {
+	($self: ident, $internal: expr, $counterparty_node_id: expr) => { {
+		// In testing, ensure there are no deadlocks where the lock is already held upon
+		// entering the macro.
+		debug_assert_ne!($self.pending_events.held_by_thread(), LockHeldState::HeldByThread);
+		debug_assert_ne!($self.per_peer_state.held_by_thread(), LockHeldState::HeldByThread);
+
 		match $internal {
 			Ok(msg) => Ok(msg),
 			Err(MsgHandleErrInternal { err, chan_id, shutdown_finish }) => {
-				// In testing, ensure there are no deadlocks where the lock is already held upon
-				// entering the macro.
-				debug_assert_ne!($self.pending_events.held_by_thread(), LockHeldState::HeldByThread);
-				debug_assert_ne!($self.per_peer_state.held_by_thread(), LockHeldState::HeldByThread);
-
 				let mut msg_events = Vec::with_capacity(2);
 
 				if let Some((shutdown_res, update_option)) = shutdown_finish {
@@ -1401,7 +1401,7 @@ macro_rules! handle_error {
 				Err(err)
 			},
 		}
-	}
+	} }
 }
 
 macro_rules! update_maps_on_chan_removal {
@@ -2786,29 +2786,34 @@ where
 
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
-		let (chan, msg) = {
-			let (res, chan) = {
-				match peer_state.channel_by_id.remove(temporary_channel_id) {
-					Some(mut chan) => {
-						let funding_txo = find_funding_output(&chan, &funding_transaction)?;
+		let (msg, chan) = match peer_state.channel_by_id.remove(temporary_channel_id) {
+			Some(mut chan) => {
+				let funding_txo = find_funding_output(&chan, &funding_transaction)?;
 
-						(chan.get_outbound_funding_created(funding_transaction, funding_txo, &self.logger)
-							.map_err(|e| if let ChannelError::Close(msg) = e {
-								MsgHandleErrInternal::from_finish_shutdown(msg, chan.channel_id(), chan.get_user_id(), chan.force_shutdown(true), None)
-							} else { unreachable!(); })
-						, chan)
+				let funding_res = chan.get_outbound_funding_created(funding_transaction, funding_txo, &self.logger)
+					.map_err(|e| if let ChannelError::Close(msg) = e {
+						MsgHandleErrInternal::from_finish_shutdown(msg, chan.channel_id(), chan.get_user_id(), chan.force_shutdown(true), None)
+					} else { unreachable!(); });
+				match funding_res {
+					Ok(funding_msg) => (funding_msg, chan),
+					Err(_) => {
+						mem::drop(peer_state_lock);
+						mem::drop(per_peer_state);
+
+						let _ = handle_error!(self, funding_res, chan.get_counterparty_node_id());
+						return Err(APIError::ChannelUnavailable {
+							err: "Signer refused to sign the initial commitment transaction".to_owned()
+						});
 					},
-					None => { return Err(APIError::ChannelUnavailable { err: format!("Channel with id {} not found for the passed counterparty node_id {}", log_bytes!(*temporary_channel_id), counterparty_node_id) }) },
 				}
-			};
-			match handle_error!(self, res, chan.get_counterparty_node_id()) {
-				Ok(funding_msg) => {
-					(chan, funding_msg)
-				},
-				Err(_) => { return Err(APIError::ChannelUnavailable {
-					err: "Signer refused to sign the initial commitment transaction".to_owned()
-				}) },
-			}
+			},
+			None => {
+				return Err(APIError::ChannelUnavailable {
+					err: format!(
+						"Channel with id {} not found for the passed counterparty node_id {}",
+						log_bytes!(*temporary_channel_id), counterparty_node_id),
+				})
+			},
 		};
 
 		peer_state.pending_msg_events.push(events::MessageSendEvent::SendFundingCreated {
