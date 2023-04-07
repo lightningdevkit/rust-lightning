@@ -438,6 +438,11 @@ pub struct RecipientOnionFields {
 	pub payment_metadata: Option<Vec<u8>>,
 }
 
+impl_writeable_tlv_based!(RecipientOnionFields, {
+	(0, payment_secret, option),
+	(2, payment_metadata, option),
+});
+
 impl RecipientOnionFields {
 	/// Creates a [`RecipientOnionFields`] from only a [`PaymentSecret`]. This is the most common
 	/// set of onion fields for today's BOLT11 invoices - most nodes require a [`PaymentSecret`]
@@ -453,6 +458,20 @@ impl RecipientOnionFields {
 	/// [`ChannelManager::send_spontaneous_payment`]: super::channelmanager::ChannelManager::send_spontaneous_payment
 	pub fn spontaneous_empty() -> Self {
 		Self { payment_secret: None, payment_metadata: None }
+	}
+
+	/// When we have received some HTLC(s) towards an MPP payment, as we receive further HTLC(s) we
+	/// have to make sure that some fields match exactly across the parts. For those that aren't
+	/// required to match, if they don't match we should remove them so as to not expose data
+	/// that's dependent on the HTLC receive order to users.
+	///
+	/// Here we implement this, first checking compatibility then mutating two objects and then
+	/// dropping any remaining non-matching fields from both.
+	pub(super) fn check_merge(&mut self, further_htlc_fields: &mut Self) -> Result<(), ()> {
+		if self.payment_secret != further_htlc_fields.payment_secret { return Err(()); }
+		if self.payment_metadata != further_htlc_fields.payment_metadata { return Err(()); }
+		// For custom TLVs we should just drop non-matching ones, but not reject the payment.
+		Ok(())
 	}
 }
 

@@ -106,11 +106,13 @@ pub(super) enum PendingHTLCRouting {
 	},
 	Receive {
 		payment_data: msgs::FinalOnionHopData,
+		payment_metadata: Option<Vec<u8>>,
 		incoming_cltv_expiry: u32, // Used to track when we should expire pending HTLCs that go unclaimed
 		phantom_shared_secret: Option<[u8; 32]>,
 	},
 	ReceiveKeysend {
 		payment_preimage: PaymentPreimage,
+		payment_metadata: Option<Vec<u8>>,
 		incoming_cltv_expiry: u32, // Used to track when we should expire pending HTLCs that go unclaimed
 	},
 }
@@ -472,6 +474,7 @@ impl_writeable_tlv_based!(ClaimingPayment, {
 
 struct ClaimablePayment {
 	purpose: events::PaymentPurpose,
+	onion_fields: Option<RecipientOnionFields>,
 	htlcs: Vec<ClaimableHTLC>,
 }
 
@@ -2168,7 +2171,7 @@ where
 					msg: "Got non final data with an HMAC of 0",
 				});
 			},
-			msgs::OnionHopDataFormat::FinalNode { payment_data, keysend_preimage, .. } => { // TODO: expose the payment_metadata to the user
+			msgs::OnionHopDataFormat::FinalNode { payment_data, keysend_preimage, payment_metadata } => {
 				if payment_data.is_some() && keysend_preimage.is_some() {
 					return Err(ReceiveError {
 						err_code: 0x4000|22,
@@ -2178,6 +2181,7 @@ where
 				} else if let Some(data) = payment_data {
 					PendingHTLCRouting::Receive {
 						payment_data: data,
+						payment_metadata,
 						incoming_cltv_expiry: hop_data.outgoing_cltv_value,
 						phantom_shared_secret,
 					}
@@ -2198,6 +2202,7 @@ where
 
 					PendingHTLCRouting::ReceiveKeysend {
 						payment_preimage,
+						payment_metadata,
 						incoming_cltv_expiry: hop_data.outgoing_cltv_value,
 					}
 				} else {
@@ -3284,13 +3289,19 @@ where
 									routing, incoming_shared_secret, payment_hash, incoming_amt_msat, outgoing_amt_msat, ..
 								}
 							}) => {
-								let (cltv_expiry, onion_payload, payment_data, phantom_shared_secret) = match routing {
-									PendingHTLCRouting::Receive { payment_data, incoming_cltv_expiry, phantom_shared_secret } => {
+								let (cltv_expiry, onion_payload, payment_data, phantom_shared_secret, mut onion_fields) = match routing {
+									PendingHTLCRouting::Receive { payment_data, payment_metadata, incoming_cltv_expiry, phantom_shared_secret } => {
 										let _legacy_hop_data = Some(payment_data.clone());
-										(incoming_cltv_expiry, OnionPayload::Invoice { _legacy_hop_data }, Some(payment_data), phantom_shared_secret)
+										let onion_fields =
+											RecipientOnionFields { payment_secret: Some(payment_data.payment_secret), payment_metadata };
+										(incoming_cltv_expiry, OnionPayload::Invoice { _legacy_hop_data },
+											Some(payment_data), phantom_shared_secret, onion_fields)
 									},
-									PendingHTLCRouting::ReceiveKeysend { payment_preimage, incoming_cltv_expiry } =>
-										(incoming_cltv_expiry, OnionPayload::Spontaneous(payment_preimage), None, None),
+									PendingHTLCRouting::ReceiveKeysend { payment_preimage, payment_metadata, incoming_cltv_expiry } => {
+										let onion_fields = RecipientOnionFields { payment_secret: None, payment_metadata };
+										(incoming_cltv_expiry, OnionPayload::Spontaneous(payment_preimage),
+											None, None, onion_fields)
+									},
 									_ => {
 										panic!("short_channel_id == 0 should imply any pending_forward entries are of type Receive");
 									}
@@ -3363,9 +3374,16 @@ where
 											.or_insert_with(|| {
 												committed_to_claimable = true;
 												ClaimablePayment {
-													purpose: purpose(), htlcs: Vec::new()
+													purpose: purpose(), htlcs: Vec::new(), onion_fields: None,
 												}
 											});
+										if let Some(earlier_fields) = &mut claimable_payment.onion_fields {
+											if earlier_fields.check_merge(&mut onion_fields).is_err() {
+												fail_htlc!(claimable_htlc, payment_hash);
+											}
+										} else {
+											claimable_payment.onion_fields = Some(onion_fields);
+										}
 										let ref mut htlcs = &mut claimable_payment.htlcs;
 										if htlcs.len() == 1 {
 											if let OnionPayload::Spontaneous(_) = htlcs[0].onion_payload {
@@ -3471,6 +3489,7 @@ where
 														let purpose = events::PaymentPurpose::SpontaneousPayment(preimage);
 														e.insert(ClaimablePayment {
 															purpose: purpose.clone(),
+															onion_fields: Some(onion_fields.clone()),
 															htlcs: vec![claimable_htlc],
 														});
 														let prev_channel_id = prev_funding_outpoint.to_channel_id();
@@ -6715,10 +6734,12 @@ impl_writeable_tlv_based_enum!(PendingHTLCRouting,
 		(0, payment_data, required),
 		(1, phantom_shared_secret, option),
 		(2, incoming_cltv_expiry, required),
+		(3, payment_metadata, option),
 	},
 	(2, ReceiveKeysend) => {
 		(0, payment_preimage, required),
 		(2, incoming_cltv_expiry, required),
+		(3, payment_metadata, option),
 	},
 ;);
 
@@ -7051,6 +7072,7 @@ where
 		let pending_outbound_payments = self.pending_outbound_payments.pending_outbound_payments.lock().unwrap();
 
 		let mut htlc_purposes: Vec<&events::PaymentPurpose> = Vec::new();
+		let mut htlc_onion_fields: Vec<&_> = Vec::new();
 		(claimable_payments.claimable_payments.len() as u64).write(writer)?;
 		for (payment_hash, payment) in claimable_payments.claimable_payments.iter() {
 			payment_hash.write(writer)?;
@@ -7059,6 +7081,7 @@ where
 				htlc.write(writer)?;
 			}
 			htlc_purposes.push(&payment.purpose);
+			htlc_onion_fields.push(&payment.onion_fields);
 		}
 
 		let mut monitor_update_blocked_actions_per_peer = None;
@@ -7173,6 +7196,7 @@ where
 			(7, self.fake_scid_rand_bytes, required),
 			(9, htlc_purposes, vec_type),
 			(11, self.probing_cookie_secret, required),
+			(13, htlc_onion_fields, optional_vec),
 		});
 
 		Ok(())
@@ -7551,6 +7575,7 @@ where
 		let mut fake_scid_rand_bytes: Option<[u8; 32]> = None;
 		let mut probing_cookie_secret: Option<[u8; 32]> = None;
 		let mut claimable_htlc_purposes = None;
+		let mut claimable_htlc_onion_fields = None;
 		let mut pending_claiming_payments = Some(HashMap::new());
 		let mut monitor_update_blocked_actions_per_peer = Some(Vec::new());
 		read_tlv_fields!(reader, {
@@ -7563,6 +7588,7 @@ where
 			(7, fake_scid_rand_bytes, option),
 			(9, claimable_htlc_purposes, vec_type),
 			(11, probing_cookie_secret, option),
+			(13, claimable_htlc_onion_fields, optional_vec),
 		});
 		if fake_scid_rand_bytes.is_none() {
 			fake_scid_rand_bytes = Some(args.entropy_source.get_secure_random_bytes());
@@ -7712,15 +7738,29 @@ where
 		let expanded_inbound_key = inbound_payment::ExpandedKey::new(&inbound_pmt_key_material);
 
 		let mut claimable_payments = HashMap::with_capacity(claimable_htlcs_list.len());
-		if let Some(mut purposes) = claimable_htlc_purposes {
+		if let Some(purposes) = claimable_htlc_purposes {
 			if purposes.len() != claimable_htlcs_list.len() {
 				return Err(DecodeError::InvalidValue);
 			}
-			for (purpose, (payment_hash, htlcs)) in purposes.drain(..).zip(claimable_htlcs_list.drain(..)) {
-				let existing_payment = claimable_payments.insert(payment_hash, ClaimablePayment {
-					purpose, htlcs,
-				});
-				if existing_payment.is_some() { return Err(DecodeError::InvalidValue); }
+			if let Some(onion_fields) = claimable_htlc_onion_fields {
+				if onion_fields.len() != claimable_htlcs_list.len() {
+					return Err(DecodeError::InvalidValue);
+				}
+				for (purpose, (onion, (payment_hash, htlcs))) in
+					purposes.into_iter().zip(onion_fields.into_iter().zip(claimable_htlcs_list.into_iter()))
+				{
+					let existing_payment = claimable_payments.insert(payment_hash, ClaimablePayment {
+						purpose, htlcs, onion_fields: onion,
+					});
+					if existing_payment.is_some() { return Err(DecodeError::InvalidValue); }
+				}
+			} else {
+				for (purpose, (payment_hash, htlcs)) in purposes.into_iter().zip(claimable_htlcs_list.into_iter()) {
+					let existing_payment = claimable_payments.insert(payment_hash, ClaimablePayment {
+						purpose, htlcs, onion_fields: None,
+					});
+					if existing_payment.is_some() { return Err(DecodeError::InvalidValue); }
+				}
 			}
 		} else {
 			// LDK versions prior to 0.0.107 did not write a `pending_htlc_purposes`, but do
@@ -7751,7 +7791,7 @@ where
 						events::PaymentPurpose::SpontaneousPayment(*payment_preimage),
 				};
 				claimable_payments.insert(payment_hash, ClaimablePayment {
-					purpose, htlcs,
+					purpose, htlcs, onion_fields: None,
 				});
 			}
 		}
