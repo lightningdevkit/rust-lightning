@@ -17,7 +17,7 @@ use crate::chain::keysinterface::EntropySource;
 use crate::chain::transaction::OutPoint;
 use crate::events::{ClosureReason, Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, PathFailure};
 use crate::ln::channel::EXPIRE_PREV_CONFIG_TICKS;
-use crate::ln::channelmanager::{BREAKDOWN_TIMEOUT, ChannelManager, MPP_TIMEOUT_TICKS, MIN_CLTV_EXPIRY_DELTA, PaymentId, PaymentSendFailure, IDEMPOTENCY_TIMEOUT_TICKS, RecentPaymentDetails};
+use crate::ln::channelmanager::{BREAKDOWN_TIMEOUT, ChannelManager, MPP_TIMEOUT_TICKS, MIN_CLTV_EXPIRY_DELTA, PaymentId, PaymentSendFailure, IDEMPOTENCY_TIMEOUT_TICKS, RecentPaymentDetails, RecipientOnionFields};
 use crate::ln::features::InvoiceFeatures;
 use crate::ln::msgs;
 use crate::ln::msgs::ChannelMessageHandler;
@@ -102,7 +102,8 @@ fn mpp_retry() {
 	};
 
 	nodes[0].router.expect_find_route(route_params.clone(), Ok(route.clone()));
-	nodes[0].node.send_payment_with_retry(payment_hash, &Some(payment_secret), payment_id, route_params.clone(), Retry::Attempts(1)).unwrap();
+	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::secret_only(payment_secret),
+		payment_id, route_params.clone(), Retry::Attempts(1)).unwrap();
 	check_added_monitors!(nodes[0], 2); // one monitor per path
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 2);
@@ -184,7 +185,8 @@ fn do_mpp_receive_timeout(send_partial_mpp: bool) {
 	route.paths[1][1].short_channel_id = chan_4_update.contents.short_channel_id;
 
 	// Initiate the MPP payment.
-	nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret), PaymentId(payment_hash.0)).unwrap();
+	nodes[0].node.send_payment_with_route(&route, payment_hash,
+		RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)).unwrap();
 	check_added_monitors!(nodes[0], 2); // one monitor per path
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 2);
@@ -256,8 +258,9 @@ fn no_pending_leak_on_initial_send_failure() {
 	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
 	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
 
-	unwrap_send_err!(nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret), PaymentId(payment_hash.0)),
-		true, APIError::ChannelUnavailable { ref err },
+	unwrap_send_err!(nodes[0].node.send_payment_with_route(&route, payment_hash,
+			RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)
+		), true, APIError::ChannelUnavailable { ref err },
 		assert_eq!(err, "Peer for first hop currently disconnected"));
 
 	assert!(!nodes[0].node.has_pending_payments());
@@ -298,7 +301,8 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 		payment_params: route.payment_params.clone().unwrap(),
 		final_value_msat: amt_msat,
 	};
-	nodes[0].node.send_payment_with_retry(payment_hash, &Some(payment_secret), PaymentId(payment_hash.0), route_params, Retry::Attempts(1)).unwrap();
+	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::secret_only(payment_secret),
+		PaymentId(payment_hash.0), route_params, Retry::Attempts(1)).unwrap();
 	check_added_monitors!(nodes[0], 1);
 
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
@@ -439,8 +443,10 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 		nodes[1].node.timer_tick_occurred();
 	}
 
-	assert!(nodes[0].node.send_payment(&new_route, payment_hash, &Some(payment_secret), payment_id_1).is_err()); // Shouldn't be allowed to retry a fulfilled payment
-	nodes[0].node.send_payment(&new_route, payment_hash, &Some(payment_secret), PaymentId(payment_hash.0)).unwrap();
+	assert!(nodes[0].node.send_payment_with_route(&new_route, payment_hash, // Shouldn't be allowed to retry a fulfilled payment
+		RecipientOnionFields::secret_only(payment_secret), payment_id_1).is_err());
+	nodes[0].node.send_payment_with_route(&new_route, payment_hash,
+		RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)).unwrap();
 	check_added_monitors!(nodes[0], 1);
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
@@ -576,7 +582,7 @@ fn do_test_completed_payment_not_retryable_on_reload(use_dust: bool) {
 	// If we attempt to retry prior to the HTLC-Timeout (or commitment transaction, for dust HTLCs)
 	// confirming, we will fail as it's considered still-pending...
 	let (new_route, _, _, _) = get_route_and_payment_hash!(nodes[0], nodes[2], if use_dust { 1_000 } else { 1_000_000 });
-	match nodes[0].node.send_payment(&new_route, payment_hash, &Some(payment_secret), payment_id) {
+	match nodes[0].node.send_payment_with_route(&new_route, payment_hash, RecipientOnionFields::secret_only(payment_secret), payment_id) {
 		Err(PaymentSendFailure::DuplicatePayment) => {},
 		_ => panic!("Unexpected error")
 	}
@@ -594,7 +600,8 @@ fn do_test_completed_payment_not_retryable_on_reload(use_dust: bool) {
 	nodes_0_serialized = nodes[0].node.encode();
 
 	// After the payment failed, we're free to send it again.
-	assert!(nodes[0].node.send_payment(&new_route, payment_hash, &Some(payment_secret), payment_id).is_ok());
+	assert!(nodes[0].node.send_payment_with_route(&new_route, payment_hash,
+		RecipientOnionFields::secret_only(payment_secret), payment_id).is_ok());
 	assert!(!nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 
 	reload_node!(nodes[0], test_default_channel_config(), nodes_0_serialized, &[&chan_0_monitor_serialized, &chan_1_monitor_serialized], second_persister, second_new_chain_monitor, second_nodes_0_deserialized);
@@ -604,12 +611,13 @@ fn do_test_completed_payment_not_retryable_on_reload(use_dust: bool) {
 
 	// Now resend the payment, delivering the HTLC and actually claiming it this time. This ensures
 	// the payment is not (spuriously) listed as still pending.
-	assert!(nodes[0].node.send_payment(&new_route, payment_hash, &Some(payment_secret), payment_id).is_ok());
+	assert!(nodes[0].node.send_payment_with_route(&new_route, payment_hash,
+		RecipientOnionFields::secret_only(payment_secret), payment_id).is_ok());
 	check_added_monitors!(nodes[0], 1);
 	pass_along_route(&nodes[0], &[&[&nodes[1], &nodes[2]]], if use_dust { 1_000 } else { 1_000_000 }, payment_hash, payment_secret);
 	claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_preimage);
 
-	match nodes[0].node.send_payment(&new_route, payment_hash, &Some(payment_secret), payment_id) {
+	match nodes[0].node.send_payment_with_route(&new_route, payment_hash, RecipientOnionFields::secret_only(payment_secret), payment_id) {
 		Err(PaymentSendFailure::DuplicatePayment) => {},
 		_ => panic!("Unexpected error")
 	}
@@ -626,7 +634,7 @@ fn do_test_completed_payment_not_retryable_on_reload(use_dust: bool) {
 
 	reconnect_nodes(&nodes[0], &nodes[1], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
 
-	match nodes[0].node.send_payment(&new_route, payment_hash, &Some(payment_secret), payment_id) {
+	match nodes[0].node.send_payment_with_route(&new_route, payment_hash, RecipientOnionFields::secret_only(payment_secret), payment_id) {
 		Err(PaymentSendFailure::DuplicatePayment) => {},
 		_ => panic!("Unexpected error")
 	}
@@ -855,7 +863,8 @@ fn get_ldk_payment_preimage() {
 		&nodes[0].node.get_our_node_id(), &payment_params, &nodes[0].network_graph.read_only(),
 		Some(&nodes[0].node.list_usable_channels().iter().collect::<Vec<_>>()),
 		amt_msat, TEST_FINAL_CLTV, nodes[0].logger, &scorer, &random_seed_bytes).unwrap();
-	nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret), PaymentId(payment_hash.0)).unwrap();
+	nodes[0].node.send_payment_with_route(&route, payment_hash,
+		RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)).unwrap();
 	check_added_monitors!(nodes[0], 1);
 
 	// Make sure to use `get_payment_preimage`
@@ -1069,7 +1078,8 @@ fn claimed_send_payment_idempotent() {
 		() => {
 			// If we try to resend a new payment with a different payment_hash but with the same
 			// payment_id, it should be rejected.
-			let send_result = nodes[0].node.send_payment(&route, second_payment_hash, &Some(second_payment_secret), payment_id);
+			let send_result = nodes[0].node.send_payment_with_route(&route, second_payment_hash,
+				RecipientOnionFields::secret_only(second_payment_secret), payment_id);
 			match send_result {
 				Err(PaymentSendFailure::DuplicatePayment) => {},
 				_ => panic!("Unexpected send result: {:?}", send_result),
@@ -1077,7 +1087,8 @@ fn claimed_send_payment_idempotent() {
 
 			// Further, if we try to send a spontaneous payment with the same payment_id it should
 			// also be rejected.
-			let send_result = nodes[0].node.send_spontaneous_payment(&route, None, payment_id);
+			let send_result = nodes[0].node.send_spontaneous_payment(
+				&route, None, RecipientOnionFields::spontaneous_empty(), payment_id);
 			match send_result {
 				Err(PaymentSendFailure::DuplicatePayment) => {},
 				_ => panic!("Unexpected send result: {:?}", send_result),
@@ -1117,7 +1128,8 @@ fn claimed_send_payment_idempotent() {
 		nodes[0].node.timer_tick_occurred();
 	}
 
-	nodes[0].node.send_payment(&route, second_payment_hash, &Some(second_payment_secret), payment_id).unwrap();
+	nodes[0].node.send_payment_with_route(&route, second_payment_hash,
+		RecipientOnionFields::secret_only(second_payment_secret), payment_id).unwrap();
 	check_added_monitors!(nodes[0], 1);
 	pass_along_route(&nodes[0], &[&[&nodes[1]]], 100_000, second_payment_hash, second_payment_secret);
 	claim_payment(&nodes[0], &[&nodes[1]], second_payment_preimage);
@@ -1141,7 +1153,8 @@ fn abandoned_send_payment_idempotent() {
 		() => {
 			// If we try to resend a new payment with a different payment_hash but with the same
 			// payment_id, it should be rejected.
-			let send_result = nodes[0].node.send_payment(&route, second_payment_hash, &Some(second_payment_secret), payment_id);
+			let send_result = nodes[0].node.send_payment_with_route(&route, second_payment_hash,
+				RecipientOnionFields::secret_only(second_payment_secret), payment_id);
 			match send_result {
 				Err(PaymentSendFailure::DuplicatePayment) => {},
 				_ => panic!("Unexpected send result: {:?}", send_result),
@@ -1149,7 +1162,8 @@ fn abandoned_send_payment_idempotent() {
 
 			// Further, if we try to send a spontaneous payment with the same payment_id it should
 			// also be rejected.
-			let send_result = nodes[0].node.send_spontaneous_payment(&route, None, payment_id);
+			let send_result = nodes[0].node.send_spontaneous_payment(
+				&route, None, RecipientOnionFields::spontaneous_empty(), payment_id);
 			match send_result {
 				Err(PaymentSendFailure::DuplicatePayment) => {},
 				_ => panic!("Unexpected send result: {:?}", send_result),
@@ -1173,7 +1187,8 @@ fn abandoned_send_payment_idempotent() {
 
 	// However, we can reuse the PaymentId immediately after we `abandon_payment` upon passing the
 	// failed payment back.
-	nodes[0].node.send_payment(&route, second_payment_hash, &Some(second_payment_secret), payment_id).unwrap();
+	nodes[0].node.send_payment_with_route(&route, second_payment_hash,
+		RecipientOnionFields::secret_only(second_payment_secret), payment_id).unwrap();
 	check_added_monitors!(nodes[0], 1);
 	pass_along_route(&nodes[0], &[&[&nodes[1]]], 100_000, second_payment_hash, second_payment_secret);
 	claim_payment(&nodes[0], &[&nodes[1]], second_payment_preimage);
@@ -1322,9 +1337,11 @@ fn test_holding_cell_inflight_htlcs() {
 	// Queue up two payments - one will be delivered right away, one immediately goes into the
 	// holding cell as nodes[0] is AwaitingRAA.
 	{
-		nodes[0].node.send_payment(&route, payment_hash_1, &Some(payment_secret_1), PaymentId(payment_hash_1.0)).unwrap();
+		nodes[0].node.send_payment_with_route(&route, payment_hash_1,
+			RecipientOnionFields::secret_only(payment_secret_1), PaymentId(payment_hash_1.0)).unwrap();
 		check_added_monitors!(nodes[0], 1);
-		nodes[0].node.send_payment(&route, payment_hash_2, &Some(payment_secret_2), PaymentId(payment_hash_2.0)).unwrap();
+		nodes[0].node.send_payment_with_route(&route, payment_hash_2,
+			RecipientOnionFields::secret_only(payment_secret_2), PaymentId(payment_hash_2.0)).unwrap();
 		check_added_monitors!(nodes[0], 0);
 	}
 
@@ -1404,7 +1421,8 @@ fn do_test_intercepted_payment(test: InterceptTest) {
 	).unwrap();
 
 	let (payment_hash, payment_secret) = nodes[2].node.create_inbound_payment(Some(amt_msat), 60 * 60, None).unwrap();
-	nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret), PaymentId(payment_hash.0)).unwrap();
+	nodes[0].node.send_payment_with_route(&route, payment_hash,
+		RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)).unwrap();
 	let payment_event = {
 		{
 			let mut added_monitors = nodes[0].chain_monitor.added_monitors.lock().unwrap();
@@ -1639,7 +1657,8 @@ fn do_automatic_retries(test: AutoRetry) {
 
 	if test == AutoRetry::Success {
 		// Test that we can succeed on the first retry.
-		nodes[0].node.send_payment_with_retry(payment_hash, &Some(payment_secret), PaymentId(payment_hash.0), route_params, Retry::Attempts(1)).unwrap();
+		nodes[0].node.send_payment(payment_hash, RecipientOnionFields::secret_only(payment_secret),
+			PaymentId(payment_hash.0), route_params, Retry::Attempts(1)).unwrap();
 		pass_failed_attempt_with_retry_along_path!(channel_id_2, true);
 
 		// Open a new channel with liquidity on the second hop so we can find a route for the retry
@@ -1654,7 +1673,9 @@ fn do_automatic_retries(test: AutoRetry) {
 		pass_along_path(&nodes[0], &[&nodes[1], &nodes[2]], amt_msat, payment_hash, Some(payment_secret), msg_events.pop().unwrap(), true, None);
 		claim_payment_along_route(&nodes[0], &[&[&nodes[1], &nodes[2]]], false, payment_preimage);
 	} else if test == AutoRetry::Spontaneous {
-		nodes[0].node.send_spontaneous_payment_with_retry(Some(payment_preimage), PaymentId(payment_hash.0), route_params, Retry::Attempts(1)).unwrap();
+		nodes[0].node.send_spontaneous_payment_with_retry(Some(payment_preimage),
+			RecipientOnionFields::spontaneous_empty(), PaymentId(payment_hash.0), route_params,
+			Retry::Attempts(1)).unwrap();
 		pass_failed_attempt_with_retry_along_path!(channel_id_2, true);
 
 		// Open a new channel with liquidity on the second hop so we can find a route for the retry
@@ -1670,7 +1691,8 @@ fn do_automatic_retries(test: AutoRetry) {
 		claim_payment_along_route(&nodes[0], &[&[&nodes[1], &nodes[2]]], false, payment_preimage);
 	} else if test == AutoRetry::FailAttempts {
 		// Ensure ChannelManager will not retry a payment if it has run out of payment attempts.
-		nodes[0].node.send_payment_with_retry(payment_hash, &Some(payment_secret), PaymentId(payment_hash.0), route_params, Retry::Attempts(1)).unwrap();
+		nodes[0].node.send_payment(payment_hash, RecipientOnionFields::secret_only(payment_secret),
+			PaymentId(payment_hash.0), route_params, Retry::Attempts(1)).unwrap();
 		pass_failed_attempt_with_retry_along_path!(channel_id_2, true);
 
 		// Open a new channel with no liquidity on the second hop so we can find a (bad) route for
@@ -1688,7 +1710,8 @@ fn do_automatic_retries(test: AutoRetry) {
 	} else if test == AutoRetry::FailTimeout {
 		#[cfg(not(feature = "no-std"))] {
 			// Ensure ChannelManager will not retry a payment if it times out due to Retry::Timeout.
-			nodes[0].node.send_payment_with_retry(payment_hash, &Some(payment_secret), PaymentId(payment_hash.0), route_params, Retry::Timeout(Duration::from_secs(60))).unwrap();
+			nodes[0].node.send_payment(payment_hash, RecipientOnionFields::secret_only(payment_secret),
+				PaymentId(payment_hash.0), route_params, Retry::Timeout(Duration::from_secs(60))).unwrap();
 			pass_failed_attempt_with_retry_along_path!(channel_id_2, true);
 
 			// Advance the time so the second attempt fails due to timeout.
@@ -1712,7 +1735,8 @@ fn do_automatic_retries(test: AutoRetry) {
 	} else if test == AutoRetry::FailOnRestart {
 		// Ensure ChannelManager will not retry a payment after restart, even if there were retry
 		// attempts remaining prior to restart.
-		nodes[0].node.send_payment_with_retry(payment_hash, &Some(payment_secret), PaymentId(payment_hash.0), route_params, Retry::Attempts(2)).unwrap();
+		nodes[0].node.send_payment(payment_hash, RecipientOnionFields::secret_only(payment_secret),
+			PaymentId(payment_hash.0), route_params, Retry::Attempts(2)).unwrap();
 		pass_failed_attempt_with_retry_along_path!(channel_id_2, true);
 
 		// Open a new channel with no liquidity on the second hop so we can find a (bad) route for
@@ -1744,7 +1768,8 @@ fn do_automatic_retries(test: AutoRetry) {
 			_ => panic!("Unexpected event"),
 		}
 	} else if test == AutoRetry::FailOnRetry {
-		nodes[0].node.send_payment_with_retry(payment_hash, &Some(payment_secret), PaymentId(payment_hash.0), route_params, Retry::Attempts(1)).unwrap();
+		nodes[0].node.send_payment(payment_hash, RecipientOnionFields::secret_only(payment_secret),
+			PaymentId(payment_hash.0), route_params, Retry::Attempts(1)).unwrap();
 		pass_failed_attempt_with_retry_along_path!(channel_id_2, true);
 
 		// We retry payments in `process_pending_htlc_forwards`. Since our channel closed, we should
@@ -1875,7 +1900,8 @@ fn auto_retry_partial_failure() {
 		}, Ok(retry_2_route));
 
 	// Send a payment that will partially fail on send, then partially fail on retry, then succeed.
-	nodes[0].node.send_payment_with_retry(payment_hash, &Some(payment_secret), PaymentId(payment_hash.0), route_params, Retry::Attempts(3)).unwrap();
+	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::secret_only(payment_secret),
+		PaymentId(payment_hash.0), route_params, Retry::Attempts(3)).unwrap();
 	let closed_chan_events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(closed_chan_events.len(), 4);
 	match closed_chan_events[0] {
@@ -2008,7 +2034,8 @@ fn auto_retry_zero_attempts_send_error() {
 	};
 
 	chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::PermanentFailure);
-	nodes[0].node.send_payment_with_retry(payment_hash, &Some(payment_secret), PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
+	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::secret_only(payment_secret),
+		PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
 	assert_eq!(nodes[0].node.get_and_clear_pending_msg_events().len(), 2); // channel close messages
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 3);
@@ -2046,7 +2073,8 @@ fn fails_paying_after_rejected_by_payee() {
 		final_value_msat: amt_msat,
 	};
 
-	nodes[0].node.send_payment_with_retry(payment_hash, &Some(payment_secret), PaymentId(payment_hash.0), route_params, Retry::Attempts(1)).unwrap();
+	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::secret_only(payment_secret),
+		PaymentId(payment_hash.0), route_params, Retry::Attempts(1)).unwrap();
 	check_added_monitors!(nodes[0], 1);
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
@@ -2137,7 +2165,8 @@ fn retry_multi_path_single_failed_payment() {
 		scorer.expect_usage(chans[1].short_channel_id.unwrap(), ChannelUsage { amount_msat: 50_000_000, inflight_htlc_msat: 0, effective_capacity: EffectiveCapacity::Unknown });
 	}
 
-	nodes[0].node.send_payment_with_retry(payment_hash, &Some(payment_secret), PaymentId(payment_hash.0), route_params, Retry::Attempts(1)).unwrap();
+	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::secret_only(payment_secret),
+		PaymentId(payment_hash.0), route_params, Retry::Attempts(1)).unwrap();
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match events[0] {
@@ -2211,7 +2240,8 @@ fn immediate_retry_on_failure() {
 			payment_params: pay_params, final_value_msat: amt_msat,
 		}, Ok(route.clone()));
 
-	nodes[0].node.send_payment_with_retry(payment_hash, &Some(payment_secret), PaymentId(payment_hash.0), route_params, Retry::Attempts(1)).unwrap();
+	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::secret_only(payment_secret),
+		PaymentId(payment_hash.0), route_params, Retry::Attempts(1)).unwrap();
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match events[0] {
@@ -2319,7 +2349,8 @@ fn no_extra_retries_on_back_to_back_fail() {
 			final_value_msat: amt_msat,
 		}, Ok(route.clone()));
 
-	nodes[0].node.send_payment_with_retry(payment_hash, &Some(payment_secret), PaymentId(payment_hash.0), route_params, Retry::Attempts(1)).unwrap();
+	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::secret_only(payment_secret),
+		PaymentId(payment_hash.0), route_params, Retry::Attempts(1)).unwrap();
 	let htlc_updates = SendEvent::from_node(&nodes[0]);
 	check_added_monitors!(nodes[0], 1);
 	assert_eq!(htlc_updates.msgs.len(), 1);
@@ -2518,7 +2549,8 @@ fn test_simple_partial_retry() {
 			final_value_msat: amt_msat / 2,
 		}, Ok(route.clone()));
 
-	nodes[0].node.send_payment_with_retry(payment_hash, &Some(payment_secret), PaymentId(payment_hash.0), route_params, Retry::Attempts(1)).unwrap();
+	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::secret_only(payment_secret),
+		PaymentId(payment_hash.0), route_params, Retry::Attempts(1)).unwrap();
 	let htlc_updates = SendEvent::from_node(&nodes[0]);
 	check_added_monitors!(nodes[0], 1);
 	assert_eq!(htlc_updates.msgs.len(), 1);
@@ -2675,7 +2707,8 @@ fn test_threaded_payment_retries() {
 	};
 	nodes[0].router.expect_find_route(route_params.clone(), Ok(route.clone()));
 
-	nodes[0].node.send_payment_with_retry(payment_hash, &Some(payment_secret), PaymentId(payment_hash.0), route_params.clone(), Retry::Attempts(0xdeadbeef)).unwrap();
+	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::secret_only(payment_secret),
+		PaymentId(payment_hash.0), route_params.clone(), Retry::Attempts(0xdeadbeef)).unwrap();
 	check_added_monitors!(nodes[0], 2);
 	let mut send_msg_events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(send_msg_events.len(), 2);

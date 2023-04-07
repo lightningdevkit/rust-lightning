@@ -16,8 +16,8 @@ use bitcoin_hashes::Hash;
 use lightning::chain;
 use lightning::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use lightning::chain::keysinterface::{NodeSigner, SignerProvider, EntropySource};
-use lightning::ln::{PaymentHash, PaymentSecret};
-use lightning::ln::channelmanager::{ChannelManager, PaymentId, Retry, RetryableSendFailure};
+use lightning::ln::PaymentHash;
+use lightning::ln::channelmanager::{ChannelManager, PaymentId, Retry, RetryableSendFailure, RecipientOnionFields};
 use lightning::routing::router::{PaymentParameters, RouteParameters, Router};
 use lightning::util::logger::Logger;
 
@@ -146,6 +146,7 @@ fn pay_invoice_using_amount<P: Deref>(
 ) -> Result<(), PaymentError> where P::Target: Payer {
 	let payment_hash = PaymentHash((*invoice.payment_hash()).into_inner());
 	let payment_secret = Some(*invoice.payment_secret());
+	let recipient_onion = RecipientOnionFields { payment_secret };
 	let mut payment_params = PaymentParameters::from_node_id(invoice.recover_payee_pub_key(),
 		invoice.min_final_cltv_expiry_delta() as u32)
 		.with_expiry_time(expiry_time_from_unix_epoch(invoice).as_secs())
@@ -158,7 +159,7 @@ fn pay_invoice_using_amount<P: Deref>(
 		final_value_msat: amount_msats,
 	};
 
-	payer.send_payment(payment_hash, &payment_secret, payment_id, route_params, retry_strategy)
+	payer.send_payment(payment_hash, recipient_onion, payment_id, route_params, retry_strategy)
 }
 
 fn expiry_time_from_unix_epoch(invoice: &Invoice) -> Duration {
@@ -182,7 +183,7 @@ trait Payer {
 	///
 	/// [`Route`]: lightning::routing::router::Route
 	fn send_payment(
-		&self, payment_hash: PaymentHash, payment_secret: &Option<PaymentSecret>,
+		&self, payment_hash: PaymentHash, recipient_onion: RecipientOnionFields,
 		payment_id: PaymentId, route_params: RouteParameters, retry_strategy: Retry
 	) -> Result<(), PaymentError>;
 }
@@ -199,10 +200,10 @@ where
 		L::Target: Logger,
 {
 	fn send_payment(
-		&self, payment_hash: PaymentHash, payment_secret: &Option<PaymentSecret>,
+		&self, payment_hash: PaymentHash, recipient_onion: RecipientOnionFields,
 		payment_id: PaymentId, route_params: RouteParameters, retry_strategy: Retry
 	) -> Result<(), PaymentError> {
-		self.send_payment_with_retry(payment_hash, payment_secret, payment_id, route_params, retry_strategy)
+		self.send_payment(payment_hash, recipient_onion, payment_id, route_params, retry_strategy)
 			.map_err(PaymentError::Sending)
 	}
 }
@@ -212,7 +213,7 @@ mod tests {
 	use super::*;
 	use crate::{InvoiceBuilder, Currency};
 	use bitcoin_hashes::sha256::Hash as Sha256;
-	use lightning::ln::PaymentPreimage;
+	use lightning::ln::{PaymentPreimage, PaymentSecret};
 	use lightning::ln::functional_test_utils::*;
 	use secp256k1::{SecretKey, Secp256k1};
 	use std::collections::VecDeque;
@@ -249,7 +250,7 @@ mod tests {
 
 	impl Payer for TestPayer {
 		fn send_payment(
-			&self, _payment_hash: PaymentHash, _payment_secret: &Option<PaymentSecret>,
+			&self, _payment_hash: PaymentHash, _recipient_onion: RecipientOnionFields,
 			_payment_id: PaymentId, route_params: RouteParameters, _retry_strategy: Retry
 		) -> Result<(), PaymentError> {
 			self.check_value_msats(Amount(route_params.final_value_msat));

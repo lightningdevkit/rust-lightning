@@ -812,7 +812,7 @@ mod tests {
 	use crate::chain::{ChannelMonitorUpdateStatus, Confirm, Watch};
 	use crate::chain::channelmonitor::LATENCY_GRACE_PERIOD_BLOCKS;
 	use crate::events::{Event, ClosureReason, MessageSendEvent, MessageSendEventsProvider};
-	use crate::ln::channelmanager::{PaymentSendFailure, PaymentId};
+	use crate::ln::channelmanager::{PaymentSendFailure, PaymentId, RecipientOnionFields};
 	use crate::ln::functional_test_utils::*;
 	use crate::ln::msgs::ChannelMessageHandler;
 	use crate::util::errors::APIError;
@@ -964,8 +964,9 @@ mod tests {
 		// If the ChannelManager tries to update the channel, however, the ChainMonitor will pass
 		// the update through to the ChannelMonitor which will refuse it (as the channel is closed).
 		chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
-		unwrap_send_err!(nodes[0].node.send_payment(&route, second_payment_hash, &Some(second_payment_secret), PaymentId(second_payment_hash.0)),
-			true, APIError::ChannelUnavailable { ref err },
+		unwrap_send_err!(nodes[0].node.send_payment_with_route(&route, second_payment_hash,
+				RecipientOnionFields::secret_only(second_payment_secret), PaymentId(second_payment_hash.0)
+			), true, APIError::ChannelUnavailable { ref err },
 			assert!(err.contains("ChannelMonitor storage failure")));
 		check_added_monitors!(nodes[0], 2); // After the failure we generate a close-channel monitor update
 		check_closed_broadcast!(nodes[0], true);
