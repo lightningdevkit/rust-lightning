@@ -2917,7 +2917,7 @@ fn do_claim_from_closed_chan(fail_payment: bool) {
 	let final_cltv = nodes[0].best_block_info().1 + TEST_FINAL_CLTV + 8 + 1;
 
 	nodes[0].router.expect_find_route(route_params.clone(), Ok(route.clone()));
-	nodes[0].node.send_payment_with_retry(payment_hash, &Some(payment_secret),
+	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::secret_only(payment_secret),
 		PaymentId(payment_hash.0), route_params.clone(), Retry::Attempts(1)).unwrap();
 	check_added_monitors(&nodes[0], 2);
 	let mut send_msgs = nodes[0].node.get_and_clear_pending_msg_events();
