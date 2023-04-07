@@ -3276,7 +3276,7 @@ where
 						}
 					}
 				} else {
-					for forward_info in pending_forwards.drain(..) {
+					'next_forwardable_htlc: for forward_info in pending_forwards.drain(..) {
 						match forward_info {
 							HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo {
 								prev_short_channel_id, prev_htlc_id, prev_funding_outpoint, prev_user_channel_id,
@@ -3334,6 +3334,7 @@ where
 											HTLCFailReason::reason(0x4000 | 15, htlc_msat_height_data),
 											HTLCDestination::FailedPayment { payment_hash: $payment_hash },
 										));
+										continue 'next_forwardable_htlc;
 									}
 								}
 								let phantom_shared_secret = claimable_htlc.prev_hop.phantom_shared_secret;
@@ -3355,7 +3356,6 @@ where
 										let mut claimable_payments = self.claimable_payments.lock().unwrap();
 										if claimable_payments.pending_claiming_payments.contains_key(&payment_hash) {
 											fail_htlc!(claimable_htlc, payment_hash);
-											continue
 										}
 										let ref mut claimable_payment = claimable_payments.claimable_payments
 											.entry(payment_hash)
@@ -3371,7 +3371,6 @@ where
 											if let OnionPayload::Spontaneous(_) = htlcs[0].onion_payload {
 												log_trace!(self.logger, "Failing new HTLC with payment_hash {} as we already had an existing keysend HTLC with the same payment hash", log_bytes!(payment_hash.0));
 												fail_htlc!(claimable_htlc, payment_hash);
-												continue
 											}
 										}
 										let mut total_value = claimable_htlc.sender_intended_value;
@@ -3447,7 +3446,6 @@ where
 													Err(()) => {
 														log_trace!(self.logger, "Failing new HTLC with payment_hash {} as payment verification failed", log_bytes!(payment_hash.0));
 														fail_htlc!(claimable_htlc, payment_hash);
-														continue
 													}
 												};
 												if let Some(min_final_cltv_expiry_delta) = min_final_cltv_expiry_delta {
@@ -3456,7 +3454,6 @@ where
 														log_trace!(self.logger, "Failing new HTLC with payment_hash {} as its CLTV expiry was too soon (had {}, earliest expected {})",
 															log_bytes!(payment_hash.0), cltv_expiry, expected_min_expiry_height);
 														fail_htlc!(claimable_htlc, payment_hash);
-														continue;
 													}
 												}
 												check_total_value!(payment_data, payment_preimage);
@@ -3465,7 +3462,6 @@ where
 												let mut claimable_payments = self.claimable_payments.lock().unwrap();
 												if claimable_payments.pending_claiming_payments.contains_key(&payment_hash) {
 													fail_htlc!(claimable_htlc, payment_hash);
-													continue
 												}
 												match claimable_payments.claimable_payments.entry(payment_hash) {
 													hash_map::Entry::Vacant(e) => {
@@ -3500,7 +3496,6 @@ where
 										if payment_data.is_none() {
 											log_trace!(self.logger, "Failing new keysend HTLC with payment_hash {} because we already have an inbound payment with the same payment hash", log_bytes!(payment_hash.0));
 											fail_htlc!(claimable_htlc, payment_hash);
-											continue
 										};
 										let payment_data = payment_data.unwrap();
 										if inbound_payment.get().payment_secret != payment_data.payment_secret {
