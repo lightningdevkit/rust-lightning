@@ -38,13 +38,14 @@ const MAX_INITIAL_NODE_ID_VECTOR_CAPACITY: u32 = 50_000;
 const STALE_RGS_UPDATE_AGE_LIMIT_SECS: u64 = 60 * 60 * 24 * 14;
 
 impl<NG: Deref<Target=NetworkGraph<L>>, L: Deref> RapidGossipSync<NG, L> where L::Target: Logger {
+	#[cfg(feature = "std")]
 	pub(crate) fn update_network_graph_from_byte_stream<R: io::Read>(
 		&self,
 		read_cursor: &mut R,
 	) -> Result<u32, GraphSyncError> {
 		#[allow(unused_mut, unused_assignments)]
 		let mut current_time_unix = None;
-		#[cfg(all(feature = "std", not(test)))]
+		#[cfg(not(test))]
 		{
 			// Note that many tests rely on being able to set arbitrarily old timestamps, thus we
 			// disable this check during tests!
@@ -237,6 +238,11 @@ impl<NG: Deref<Target=NetworkGraph<L>>, L: Deref> RapidGossipSync<NG, L> where L
 		}
 
 		self.network_graph.set_last_rapid_gossip_sync_timestamp(latest_seen_timestamp);
+
+		if let Some(time) = current_time_unix {
+			self.network_graph.remove_stale_channels_and_tracking_with_time(time)
+		}
+
 		self.is_initial_sync_complete.store(true, Ordering::Release);
 		log_trace!(self.logger, "Done processing RGS data from {}", latest_seen_timestamp);
 		Ok(latest_seen_timestamp)
@@ -247,7 +253,9 @@ impl<NG: Deref<Target=NetworkGraph<L>>, L: Deref> RapidGossipSync<NG, L> where L
 mod tests {
 	use bitcoin::Network;
 
+	#[cfg(feature = "std")]
 	use lightning::ln::msgs::DecodeError;
+
 	use lightning::routing::gossip::NetworkGraph;
 	use lightning::util::test_utils::TestLogger;
 
@@ -275,6 +283,7 @@ mod tests {
 	const VALID_BINARY_TIMESTAMP: u64 = 1642291930;
 
 	#[test]
+	#[cfg(feature = "std")]
 	fn network_graph_fails_to_update_from_clipped_input() {
 		let logger = TestLogger::new();
 		let network_graph = NetworkGraph::new(Network::Bitcoin, &logger);
@@ -306,6 +315,7 @@ mod tests {
 	}
 
 	#[test]
+	#[cfg(feature = "std")]
 	fn incremental_only_update_ignores_missing_channel() {
 		let incremental_update_input = vec![
 			76, 68, 75, 1, 111, 226, 140, 10, 182, 241, 179, 114, 193, 166, 162, 70, 174, 99, 247,
@@ -326,6 +336,7 @@ mod tests {
 	}
 
 	#[test]
+	#[cfg(feature = "std")]
 	fn incremental_only_update_fails_without_prior_updates() {
 		let announced_update_input = vec![
 			76, 68, 75, 1, 111, 226, 140, 10, 182, 241, 179, 114, 193, 166, 162, 70, 174, 99, 247,
@@ -353,6 +364,7 @@ mod tests {
 	}
 
 	#[test]
+	#[cfg(feature = "std")]
 	fn incremental_only_update_fails_without_prior_same_direction_updates() {
 		let initialization_input = vec![
 			76, 68, 75, 1, 111, 226, 140, 10, 182, 241, 179, 114, 193, 166, 162, 70, 174, 99, 247,
@@ -408,6 +420,7 @@ mod tests {
 	}
 
 	#[test]
+	#[cfg(feature = "std")]
 	fn incremental_update_succeeds_with_prior_announcements_and_full_updates() {
 		let initialization_input = vec![
 			76, 68, 75, 1, 111, 226, 140, 10, 182, 241, 179, 114, 193, 166, 162, 70, 174, 99, 247,
@@ -467,6 +480,7 @@ mod tests {
 	}
 
 	#[test]
+	#[cfg(feature = "std")]
 	fn update_succeeds_when_duplicate_gossip_is_applied() {
 		let initialization_input = vec![
 			76, 68, 75, 1, 111, 226, 140, 10, 182, 241, 179, 114, 193, 166, 162, 70, 174, 99, 247,
@@ -510,6 +524,7 @@ mod tests {
 	}
 
 	#[test]
+	#[cfg(feature = "std")]
 	fn full_update_succeeds() {
 		let logger = TestLogger::new();
 		let network_graph = NetworkGraph::new(Network::Bitcoin, &logger);
@@ -555,6 +570,34 @@ mod tests {
 	}
 
 	#[test]
+	fn prunes_after_update() {
+		// this is the timestamp encoded in the binary data of valid_input below
+		let logger = TestLogger::new();
+
+		let latest_nonpruning_time = VALID_BINARY_TIMESTAMP + 60 * 60 * 24 * 7;
+
+		{
+			let network_graph = NetworkGraph::new(Network::Bitcoin, &logger);
+			assert_eq!(network_graph.read_only().channels().len(), 0);
+
+			let rapid_sync = RapidGossipSync::new(&network_graph, &logger);
+			let update_result = rapid_sync.update_network_graph_no_std(&VALID_RGS_BINARY, Some(latest_nonpruning_time));
+			assert!(update_result.is_ok());
+			assert_eq!(network_graph.read_only().channels().len(), 2);
+		}
+
+		{
+			let network_graph = NetworkGraph::new(Network::Bitcoin, &logger);
+			assert_eq!(network_graph.read_only().channels().len(), 0);
+
+			let rapid_sync = RapidGossipSync::new(&network_graph, &logger);
+			let update_result = rapid_sync.update_network_graph_no_std(&VALID_RGS_BINARY, Some(latest_nonpruning_time + 1));
+			assert!(update_result.is_ok());
+			assert_eq!(network_graph.read_only().channels().len(), 0);
+		}
+	}
+
+	#[test]
 	fn timestamp_edge_cases_are_handled_correctly() {
 		// this is the timestamp encoded in the binary data of valid_input below
 		let logger = TestLogger::new();
@@ -569,7 +612,7 @@ mod tests {
 			let rapid_sync = RapidGossipSync::new(&network_graph, &logger);
 			let update_result = rapid_sync.update_network_graph_no_std(&VALID_RGS_BINARY, Some(latest_succeeding_time));
 			assert!(update_result.is_ok());
-			assert_eq!(network_graph.read_only().channels().len(), 2);
+			assert_eq!(network_graph.read_only().channels().len(), 0);
 		}
 
 		{
@@ -591,6 +634,7 @@ mod tests {
 	}
 
 	#[test]
+	#[cfg(feature = "std")]
 	pub fn update_fails_with_unknown_version() {
 		let unknown_version_input = vec![
 			76, 68, 75, 2, 111, 226, 140, 10, 182, 241, 179, 114, 193, 166, 162, 70, 174, 99, 247,
