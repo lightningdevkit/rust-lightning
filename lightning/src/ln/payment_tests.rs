@@ -3013,3 +3013,151 @@ fn claim_from_closed_chan() {
 	do_claim_from_closed_chan(true);
 	do_claim_from_closed_chan(false);
 }
+
+fn do_test_payment_metadata_consistency(do_reload: bool, do_modify: bool) {
+	// Check that a payment metadata received on one HTLC that doesn't match the one received on
+	// another results in the HTLC being rejected.
+	//
+	// We first set up a diamond shaped network, allowing us to split a payment into two HTLCs, the
+	// first of which we'll deliver and the second of which we'll fail and then re-send with
+	// modified payment metadata, which will in turn result in it being failed by the recipient.
+	let chanmon_cfgs = create_chanmon_cfgs(4);
+	let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
+	let mut config = test_default_channel_config();
+	config.channel_handshake_config.max_inbound_htlc_value_in_flight_percent_of_channel = 50;
+	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, Some(config), Some(config), Some(config)]);
+
+	let persister;
+	let new_chain_monitor;
+	let nodes_0_deserialized;
+
+	let mut nodes = create_network(4, &node_cfgs, &node_chanmgrs);
+
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
+	let chan_id_bd = create_announced_chan_between_nodes_with_value(&nodes, 1, 3, 1_000_000, 0).2;
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 2, 1_000_000, 0);
+	let chan_id_cd = create_announced_chan_between_nodes_with_value(&nodes, 2, 3, 1_000_000, 0).2;
+
+	// Pay more than half of each channel's max, requiring MPP
+	let amt_msat = 750_000_000;
+	let (payment_preimage, payment_hash, payment_secret) = get_payment_preimage_hash!(nodes[3], Some(amt_msat));
+	let payment_id = PaymentId(payment_hash.0);
+	let payment_metadata = vec![44, 49, 52, 142];
+
+	let payment_params = PaymentParameters::from_node_id(nodes[3].node.get_our_node_id(), TEST_FINAL_CLTV)
+		.with_features(nodes[1].node.invoice_features());
+	let mut route_params = RouteParameters {
+		payment_params,
+		final_value_msat: amt_msat,
+	};
+
+	// Send the MPP payment, delivering the updated commitment state to nodes[1].
+	nodes[0].node.send_payment(payment_hash, RecipientOnionFields {
+			payment_secret: Some(payment_secret), payment_metadata: Some(payment_metadata),
+		}, payment_id, route_params.clone(), Retry::Attempts(1)).unwrap();
+	check_added_monitors!(nodes[0], 2);
+
+	let mut send_events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(send_events.len(), 2);
+	let first_send = SendEvent::from_event(send_events.pop().unwrap());
+	let second_send = SendEvent::from_event(send_events.pop().unwrap());
+
+	let (b_recv_ev, c_recv_ev) = if first_send.node_id == nodes[1].node.get_our_node_id() {
+		(&first_send, &second_send)
+	} else {
+		(&second_send, &first_send)
+	};
+	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &b_recv_ev.msgs[0]);
+	commitment_signed_dance!(nodes[1], nodes[0], b_recv_ev.commitment_msg, false, true);
+
+	expect_pending_htlcs_forwardable!(nodes[1]);
+	check_added_monitors(&nodes[1], 1);
+	let b_forward_ev = SendEvent::from_node(&nodes[1]);
+	nodes[3].node.handle_update_add_htlc(&nodes[1].node.get_our_node_id(), &b_forward_ev.msgs[0]);
+	commitment_signed_dance!(nodes[3], nodes[1], b_forward_ev.commitment_msg, false, true);
+
+	expect_pending_htlcs_forwardable!(nodes[3]);
+
+	// Before delivering the second MPP HTLC to nodes[2], disconnect nodes[2] and nodes[3], which
+	// will result in nodes[2] failing the HTLC back.
+	nodes[2].node.peer_disconnected(&nodes[3].node.get_our_node_id());
+	nodes[3].node.peer_disconnected(&nodes[2].node.get_our_node_id());
+
+	nodes[2].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &c_recv_ev.msgs[0]);
+	commitment_signed_dance!(nodes[2], nodes[0], c_recv_ev.commitment_msg, false, true);
+
+	let cs_fail = get_htlc_update_msgs(&nodes[2], &nodes[0].node.get_our_node_id());
+	nodes[0].node.handle_update_fail_htlc(&nodes[2].node.get_our_node_id(), &cs_fail.update_fail_htlcs[0]);
+	commitment_signed_dance!(nodes[0], nodes[2], cs_fail.commitment_signed, false, true);
+
+	let payment_fail_retryable_evs = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(payment_fail_retryable_evs.len(), 2);
+	if let Event::PaymentPathFailed { .. } = payment_fail_retryable_evs[0] {} else { panic!(); }
+	if let Event::PendingHTLCsForwardable { .. } = payment_fail_retryable_evs[1] {} else { panic!(); }
+
+	// Before we allow the HTLC to be retried, optionally change the payment_metadata we have
+	// stored for our payment.
+	if do_modify {
+		nodes[0].node.test_set_payment_metadata(payment_id, Some(Vec::new()));
+	}
+
+	// Optionally reload nodes[3] to check that the payment_metadata is properly serialized with
+	// the payment state.
+	if do_reload {
+		let mon_bd = get_monitor!(nodes[3], chan_id_bd).encode();
+		let mon_cd = get_monitor!(nodes[3], chan_id_cd).encode();
+		reload_node!(nodes[3], config, &nodes[3].node.encode(), &[&mon_bd, &mon_cd],
+			persister, new_chain_monitor, nodes_0_deserialized);
+		nodes[1].node.peer_disconnected(&nodes[3].node.get_our_node_id());
+		reconnect_nodes(&nodes[1], &nodes[3], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+	}
+	reconnect_nodes(&nodes[2], &nodes[3], (true, true), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));
+
+	// Create a new channel between C and D as A will refuse to retry on the existing one because
+	// it just failed.
+	let chan_id_cd_2 = create_announced_chan_between_nodes_with_value(&nodes, 2, 3, 1_000_000, 0).2;
+
+	// Now retry the failed HTLC.
+	nodes[0].node.process_pending_htlc_forwards();
+	check_added_monitors(&nodes[0], 1);
+	let as_resend = SendEvent::from_node(&nodes[0]);
+	nodes[2].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &as_resend.msgs[0]);
+	commitment_signed_dance!(nodes[2], nodes[0], as_resend.commitment_msg, false, true);
+
+	expect_pending_htlcs_forwardable!(nodes[2]);
+	check_added_monitors(&nodes[2], 1);
+	let cs_forward = SendEvent::from_node(&nodes[2]);
+	nodes[3].node.handle_update_add_htlc(&nodes[2].node.get_our_node_id(), &cs_forward.msgs[0]);
+	commitment_signed_dance!(nodes[3], nodes[2], cs_forward.commitment_msg, false, true);
+
+	// Finally, check that nodes[3] does the correct thing - either accepting the payment or, if
+	// the payment metadata was modified, failing only the one modified HTLC and retaining the
+	// other.
+	if do_modify {
+		expect_pending_htlcs_forwardable_ignore!(nodes[3]);
+		nodes[3].node.process_pending_htlc_forwards();
+		expect_pending_htlcs_forwardable_conditions(nodes[3].node.get_and_clear_pending_events(),
+			&[HTLCDestination::FailedPayment {payment_hash}]);
+		nodes[3].node.process_pending_htlc_forwards();
+
+		check_added_monitors(&nodes[3], 1);
+		let ds_fail = get_htlc_update_msgs(&nodes[3], &nodes[2].node.get_our_node_id());
+
+		nodes[2].node.handle_update_fail_htlc(&nodes[3].node.get_our_node_id(), &ds_fail.update_fail_htlcs[0]);
+		commitment_signed_dance!(nodes[2], nodes[3], ds_fail.commitment_signed, false, true);
+		expect_pending_htlcs_forwardable_conditions(nodes[2].node.get_and_clear_pending_events(),
+			&[HTLCDestination::NextHopChannel { node_id: Some(nodes[3].node.get_our_node_id()), channel_id: chan_id_cd_2 }]);
+	} else {
+		expect_pending_htlcs_forwardable!(nodes[3]);
+		expect_payment_claimable!(nodes[3], payment_hash, payment_secret, amt_msat);
+		claim_payment_along_route(&nodes[0], &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]], false, payment_preimage);
+	}
+}
+
+#[test]
+fn test_payment_metadata_consistency() {
+	do_test_payment_metadata_consistency(true, true);
+	do_test_payment_metadata_consistency(true, false);
+	do_test_payment_metadata_consistency(false, true);
+	do_test_payment_metadata_consistency(false, false);
+}

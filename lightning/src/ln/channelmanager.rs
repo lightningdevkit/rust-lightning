@@ -2702,6 +2702,11 @@ where
 		self.pending_outbound_payments.test_add_new_pending_payment(payment_hash, recipient_onion, payment_id, route, None, &self.entropy_source, best_block_height)
 	}
 
+	#[cfg(test)]
+	pub(crate) fn test_set_payment_metadata(&self, payment_id: PaymentId, new_payment_metadata: Option<Vec<u8>>) {
+		self.pending_outbound_payments.test_set_payment_metadata(payment_id, new_payment_metadata);
+	}
+
 
 	/// Signals that no further retries for the given payment should occur. Useful if you have a
 	/// pending outbound payment with retries remaining, but wish to stop retrying the payment before

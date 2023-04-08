@@ -916,6 +916,18 @@ impl OutboundPayments {
 	}
 
 	#[cfg(test)]
+	pub(super) fn test_set_payment_metadata(
+		&self, payment_id: PaymentId, new_payment_metadata: Option<Vec<u8>>
+	) {
+		match self.pending_outbound_payments.lock().unwrap().get_mut(&payment_id).unwrap() {
+			PendingOutboundPayment::Retryable { payment_metadata, .. } => {
+				*payment_metadata = new_payment_metadata;
+			},
+			_ => panic!("Need a retryable payment to update metadata on"),
+		}
+	}
+
+	#[cfg(test)]
 	pub(super) fn test_add_new_pending_payment<ES: Deref>(
 		&self, payment_hash: PaymentHash, recipient_onion: RecipientOnionFields, payment_id: PaymentId,
 		route: &Route, retry_strategy: Option<Retry>, entropy_source: &ES, best_block_height: u32
