@@ -45,7 +45,7 @@ use crate::ln::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, No
 #[cfg(any(feature = "_test_utils", test))]
 use crate::ln::features::InvoiceFeatures;
 use crate::routing::gossip::NetworkGraph;
-use crate::routing::router::{DefaultRouter, InFlightHtlcs, Path, PaymentParameters, Route, RouteHop, RouteParameters, Router};
+use crate::routing::router::{BlindedTail, DefaultRouter, InFlightHtlcs, Path, PaymentParameters, Route, RouteHop, RouteParameters, Router};
 use crate::routing::scoring::ProbabilisticScorer;
 use crate::ln::msgs;
 use crate::ln::onion_utils;
@@ -7007,19 +7007,21 @@ impl Readable for HTLCSource {
 				let mut path_hops: Option<Vec<RouteHop>> = Some(Vec::new());
 				let mut payment_id = None;
 				let mut payment_params: Option<PaymentParameters> = None;
+				let mut blinded_tail: Option<BlindedTail> = None;
 				read_tlv_fields!(reader, {
 					(0, session_priv, required),
 					(1, payment_id, option),
 					(2, first_hop_htlc_msat, required),
 					(4, path_hops, vec_type),
 					(5, payment_params, (option: ReadableArgs, 0)),
+					(6, blinded_tail, option),
 				});
 				if payment_id.is_none() {
 					// For backwards compat, if there was no payment_id written, use the session_priv bytes
 					// instead.
 					payment_id = Some(PaymentId(*session_priv.0.unwrap().as_ref()));
 				}
-				let path = Path { hops: path_hops.ok_or(DecodeError::InvalidValue)?, blinded_tail: None };
+				let path = Path { hops: path_hops.ok_or(DecodeError::InvalidValue)?, blinded_tail };
 				if path.hops.len() == 0 {
 					return Err(DecodeError::InvalidValue);
 				}
@@ -7054,6 +7056,7 @@ impl Writeable for HTLCSource {
 					// 3 was previously used to write a PaymentSecret for the payment.
 					(4, path.hops, vec_type),
 					(5, None::<PaymentParameters>, option), // payment_params in LDK versions prior to 0.0.115
+					(6, path.blinded_tail, option),
 				 });
 			}
 			HTLCSource::PreviousHopData(ref field) => {
