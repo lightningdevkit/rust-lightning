@@ -725,7 +725,7 @@ impl HistoricalMinMaxBuckets<'_> {
 
 	#[inline]
 	fn calculate_success_probability_times_billion<T: Time>(
-		&self, now: T, last_updated: T, half_life: Duration, payment_amt_64th_bucket: u8)
+		&self, now: T, last_updated: T, half_life: Duration, amount_msat: u64, capacity_msat: u64)
 	-> Option<u64> {
 		// If historical penalties are enabled, calculate the penalty by walking the set of
 		// historical liquidity bucket (min, max) combinations (where min_idx < max_idx) and, for
@@ -747,6 +747,20 @@ impl HistoricalMinMaxBuckets<'_> {
 		// If we used the middle of each bucket we'd never assign any penalty at all when sending
 		// less than 1/16th of a channel's capacity, or 1/8th if we used the top of the bucket.
 		let mut total_valid_points_tracked = 0;
+
+		let payment_amt_64th_bucket: u8 = if amount_msat < u64::max_value() / 64 {
+			(amount_msat * 64 / capacity_msat.saturating_add(1))
+				.try_into().unwrap_or(65)
+		} else {
+			// Only use 128-bit arithmetic when multiplication will overflow to avoid 128-bit
+			// division. This branch should only be hit in fuzz testing since the amount would
+			// need to be over 2.88 million BTC in practice.
+			((amount_msat as u128) * 64 / (capacity_msat as u128).saturating_add(1))
+				.try_into().unwrap_or(65)
+		};
+		#[cfg(not(fuzzing))]
+		debug_assert!(payment_amt_64th_bucket <= 64);
+		if payment_amt_64th_bucket >= 64 { return None; }
 
 		// Check if all our buckets are zero, once decayed and treat it as if we had no data. We
 		// don't actually use the decayed buckets, though, as that would lose precision.
@@ -1078,26 +1092,13 @@ impl<L: Deref<Target = u64>, BRT: Deref<Target = HistoricalBucketRangeTracker>, 
 
 		if score_params.historical_liquidity_penalty_multiplier_msat != 0 ||
 		   score_params.historical_liquidity_penalty_amount_multiplier_msat != 0 {
-			let payment_amt_64th_bucket = if amount_msat < u64::max_value() / 64 {
-				amount_msat * 64 / self.capacity_msat.saturating_add(1)
-			} else {
-				// Only use 128-bit arithmetic when multiplication will overflow to avoid 128-bit
-				// division. This branch should only be hit in fuzz testing since the amount would
-				// need to be over 2.88 million BTC in practice.
-				((amount_msat as u128) * 64 / (self.capacity_msat as u128).saturating_add(1))
-					.try_into().unwrap_or(65)
-			};
-			#[cfg(not(fuzzing))]
-			debug_assert!(payment_amt_64th_bucket <= 64);
-			if payment_amt_64th_bucket > 64 { return res; }
-
 			let buckets = HistoricalMinMaxBuckets {
 				min_liquidity_offset_history: &self.min_liquidity_offset_history,
 				max_liquidity_offset_history: &self.max_liquidity_offset_history,
 			};
 			if let Some(cumulative_success_prob_times_billion) = buckets
 				.calculate_success_probability_times_billion(self.now, *self.last_updated,
-					self.decay_params.historical_no_updates_half_life, payment_amt_64th_bucket as u8)
+					self.decay_params.historical_no_updates_half_life, amount_msat, self.capacity_msat)
 			{
 				let historical_negative_log10_times_2048 = approx::negative_log10_times_2048(cumulative_success_prob_times_billion + 1, 1024 * 1024 * 1024);
 				res = res.saturating_add(Self::combined_penalty_msat(amount_msat,
