@@ -2180,6 +2180,10 @@ fn add_random_cltv_offset(route: &mut Route, payment_params: &PaymentParameters,
 		shadow_ctlv_expiry_delta_offset = cmp::min(shadow_ctlv_expiry_delta_offset, max_path_offset);
 
 		// Add 'shadow' CLTV offset to the final hop
+		if let Some(tail) = path.blinded_tail.as_mut() {
+			tail.excess_final_cltv_expiry_delta = tail.excess_final_cltv_expiry_delta
+				.checked_add(shadow_ctlv_expiry_delta_offset).unwrap_or(tail.excess_final_cltv_expiry_delta);
+		}
 		if let Some(last_hop) = path.hops.last_mut() {
 			last_hop.cltv_expiry_delta = last_hop.cltv_expiry_delta
 				.checked_add(shadow_ctlv_expiry_delta_offset).unwrap_or(last_hop.cltv_expiry_delta);
@@ -5871,6 +5875,50 @@ mod tests {
 		inflight_htlcs.process_path(&path, ln_test_utils::pubkey(44));
 		assert_eq!(*inflight_htlcs.0.get(&(42, true)).unwrap(), 301);
 		assert_eq!(*inflight_htlcs.0.get(&(43, false)).unwrap(), 201);
+	}
+
+	#[test]
+	fn blinded_path_cltv_shadow_offset() {
+		// Make sure we add a shadow offset when sending to blinded paths.
+		let blinded_path = BlindedPath {
+			introduction_node_id: ln_test_utils::pubkey(43),
+			blinding_point: ln_test_utils::pubkey(44),
+			blinded_hops: vec![
+				BlindedHop { blinded_node_id: ln_test_utils::pubkey(45), encrypted_payload: Vec::new() },
+				BlindedHop { blinded_node_id: ln_test_utils::pubkey(46), encrypted_payload: Vec::new() }
+			],
+		};
+		let mut route = Route { paths: vec![Path {
+			hops: vec![RouteHop {
+				pubkey: ln_test_utils::pubkey(42),
+				node_features: NodeFeatures::empty(),
+				short_channel_id: 42,
+				channel_features: ChannelFeatures::empty(),
+				fee_msat: 100,
+				cltv_expiry_delta: 0,
+			},
+			RouteHop {
+				pubkey: blinded_path.introduction_node_id,
+				node_features: NodeFeatures::empty(),
+				short_channel_id: 43,
+				channel_features: ChannelFeatures::empty(),
+				fee_msat: 1,
+				cltv_expiry_delta: 0,
+			}
+			],
+			blinded_tail: Some(BlindedTail {
+				hops: blinded_path.blinded_hops,
+				blinding_point: blinded_path.blinding_point,
+				excess_final_cltv_expiry_delta: 0,
+				final_value_msat: 200,
+			}),
+		}], payment_params: None};
+
+		let payment_params = PaymentParameters::from_node_id(ln_test_utils::pubkey(47), 18);
+		let (_, network_graph, _, _, _) = build_line_graph();
+		add_random_cltv_offset(&mut route, &payment_params, &network_graph.read_only(), &[0; 32]);
+		assert_eq!(route.paths[0].blinded_tail.as_ref().unwrap().excess_final_cltv_expiry_delta, 40);
+		assert_eq!(route.paths[0].hops.last().unwrap().cltv_expiry_delta, 40);
 	}
 }
 
