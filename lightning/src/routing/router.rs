@@ -358,14 +358,25 @@ impl Writeable for Route {
 	fn write<W: crate::util::ser::Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		write_ver_prefix!(writer, SERIALIZATION_VERSION, MIN_SERIALIZATION_VERSION);
 		(self.paths.len() as u64).write(writer)?;
+		let mut blinded_tails = Vec::new();
 		for path in self.paths.iter() {
 			(path.hops.len() as u8).write(writer)?;
-			for hop in path.hops.iter() {
+			for (idx, hop) in path.hops.iter().enumerate() {
 				hop.write(writer)?;
+				if let Some(blinded_tail) = &path.blinded_tail {
+					if blinded_tails.is_empty() {
+						blinded_tails = Vec::with_capacity(path.hops.len());
+						for _ in 0..idx {
+							blinded_tails.push(None);
+						}
+					}
+					blinded_tails.push(Some(blinded_tail));
+				} else if !blinded_tails.is_empty() { blinded_tails.push(None); }
 			}
 		}
 		write_tlv_fields!(writer, {
 			(1, self.payment_params, option),
+			(2, blinded_tails, optional_vec),
 		});
 		Ok(())
 	}
@@ -389,10 +400,17 @@ impl Readable for Route {
 				cmp::min(min_final_cltv_expiry_delta, hops.last().unwrap().cltv_expiry_delta);
 			paths.push(Path { hops, blinded_tail: None });
 		}
-		let mut payment_params = None;
-		read_tlv_fields!(reader, {
+		_init_and_read_tlv_fields!(reader, {
 			(1, payment_params, (option: ReadableArgs, min_final_cltv_expiry_delta)),
+			(2, blinded_tails, optional_vec),
 		});
+		let blinded_tails = blinded_tails.unwrap_or(Vec::new());
+		if blinded_tails.len() != 0 {
+			if blinded_tails.len() != paths.len() { return Err(DecodeError::InvalidValue) }
+			for (mut path, blinded_tail_opt) in paths.iter_mut().zip(blinded_tails.into_iter()) {
+				path.blinded_tail = blinded_tail_opt;
+			}
+		}
 		Ok(Route { paths, payment_params })
 	}
 }
@@ -2245,10 +2263,11 @@ fn build_route_from_hops_internal<L: Deref>(
 
 #[cfg(test)]
 mod tests {
+	use crate::blinded_path::{BlindedHop, BlindedPath};
 	use crate::routing::gossip::{NetworkGraph, P2PGossipSync, NodeId, EffectiveCapacity};
 	use crate::routing::utxo::UtxoResult;
 	use crate::routing::router::{get_route, build_route_from_hops_internal, add_random_cltv_offset, default_node_features,
-		Path, PaymentParameters, Route, RouteHint, RouteHintHop, RouteHop, RoutingFees,
+		BlindedTail, Path, PaymentParameters, Route, RouteHint, RouteHintHop, RouteHop, RoutingFees,
 		DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA, MAX_PATH_LENGTH_ESTIMATE};
 	use crate::routing::scoring::{ChannelUsage, FixedPenaltyScorer, Score, ProbabilisticScorer, ProbabilisticScoringParameters};
 	use crate::routing::test_utils::{add_channel, add_or_update_node, build_graph, build_line_graph, id_to_feature_flags, get_nodes, update_channel};
@@ -2260,8 +2279,9 @@ mod tests {
 	use crate::util::config::UserConfig;
 	use crate::util::test_utils as ln_test_utils;
 	use crate::util::chacha20::ChaCha20;
+	use crate::util::ser::{Readable, Writeable};
 	#[cfg(c_bindings)]
-	use crate::util::ser::{Writeable, Writer};
+	use crate::util::ser::Writer;
 
 	use bitcoin::hashes::Hash;
 	use bitcoin::network::constants::Network;
@@ -2275,6 +2295,7 @@ mod tests {
 	use bitcoin::secp256k1::{PublicKey,SecretKey};
 	use bitcoin::secp256k1::Secp256k1;
 
+	use crate::io::Cursor;
 	use crate::prelude::*;
 	use crate::sync::Arc;
 
@@ -5744,6 +5765,68 @@ mod tests {
 		scorer.remove_banned(&NodeId::from_pubkey(&nodes[3]));
 		let route = get_route(&our_id, &payment_params, &network_graph.read_only(), None, 100, 42, Arc::clone(&logger), &scorer, &random_seed_bytes);
 		assert!(route.is_ok());
+	}
+
+	#[test]
+	fn blinded_route_ser() {
+		let blinded_path_1 = BlindedPath {
+			introduction_node_id: ln_test_utils::pubkey(42),
+			blinding_point: ln_test_utils::pubkey(43),
+			blinded_hops: vec![
+				BlindedHop { blinded_node_id: ln_test_utils::pubkey(44), encrypted_payload: Vec::new() },
+				BlindedHop { blinded_node_id: ln_test_utils::pubkey(45), encrypted_payload: Vec::new() }
+			],
+		};
+		let blinded_path_2 = BlindedPath {
+			introduction_node_id: ln_test_utils::pubkey(46),
+			blinding_point: ln_test_utils::pubkey(47),
+			blinded_hops: vec![
+				BlindedHop { blinded_node_id: ln_test_utils::pubkey(48), encrypted_payload: Vec::new() },
+				BlindedHop { blinded_node_id: ln_test_utils::pubkey(49), encrypted_payload: Vec::new() }
+			],
+		};
+		// (De)serialize a Route with 1 blinded path out of two total paths.
+		let mut route = Route { paths: vec![Path {
+			hops: vec![RouteHop {
+				pubkey: ln_test_utils::pubkey(50),
+				node_features: NodeFeatures::empty(),
+				short_channel_id: 42,
+				channel_features: ChannelFeatures::empty(),
+				fee_msat: 100,
+				cltv_expiry_delta: 0,
+			}],
+			blinded_tail: Some(BlindedTail {
+				hops: blinded_path_1.blinded_hops,
+				blinding_point: blinded_path_1.blinding_point,
+				excess_final_cltv_expiry_delta: 40,
+				final_value_msat: 100,
+			})}, Path {
+			hops: vec![RouteHop {
+				pubkey: ln_test_utils::pubkey(51),
+				node_features: NodeFeatures::empty(),
+				short_channel_id: 43,
+				channel_features: ChannelFeatures::empty(),
+				fee_msat: 100,
+				cltv_expiry_delta: 0,
+			}], blinded_tail: None }],
+			payment_params: None,
+		};
+		let encoded_route = route.encode();
+		let decoded_route: Route = Readable::read(&mut Cursor::new(&encoded_route[..])).unwrap();
+		assert_eq!(decoded_route.paths[0].blinded_tail, route.paths[0].blinded_tail);
+		assert_eq!(decoded_route.paths[1].blinded_tail, route.paths[1].blinded_tail);
+
+		// (De)serialize a Route with two paths, each containing a blinded tail.
+		route.paths[1].blinded_tail = Some(BlindedTail {
+			hops: blinded_path_2.blinded_hops,
+			blinding_point: blinded_path_2.blinding_point,
+			excess_final_cltv_expiry_delta: 41,
+			final_value_msat: 101,
+		});
+		let encoded_route = route.encode();
+		let decoded_route: Route = Readable::read(&mut Cursor::new(&encoded_route[..])).unwrap();
+		assert_eq!(decoded_route.paths[0].blinded_tail, route.paths[0].blinded_tail);
+		assert_eq!(decoded_route.paths[1].blinded_tail, route.paths[1].blinded_tail);
 	}
 }
 

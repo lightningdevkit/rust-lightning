@@ -60,6 +60,15 @@ use crate::chain::keysinterface::{InMemorySigner, Recipient, EntropySource, Node
 use std::time::{SystemTime, UNIX_EPOCH};
 use bitcoin::Sequence;
 
+pub fn pubkey(byte: u8) -> PublicKey {
+	let secp_ctx = Secp256k1::new();
+	PublicKey::from_secret_key(&secp_ctx, &privkey(byte))
+}
+
+pub fn privkey(byte: u8) -> SecretKey {
+	SecretKey::from_slice(&[byte; 32]).unwrap()
+}
+
 pub struct TestVecWriter(pub Vec<u8>);
 impl Writer for TestVecWriter {
 	fn write_all(&mut self, buf: &[u8]) -> Result<(), io::Error> {
