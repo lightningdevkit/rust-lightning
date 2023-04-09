@@ -30,7 +30,7 @@ use crate::routing::gossip::NetworkUpdate;
 use crate::util::errors::APIError;
 use crate::util::ser::{BigSize, FixedLengthReader, Writeable, Writer, MaybeReadable, Readable, RequiredWrapper, UpgradableRequired, WithoutLength};
 use crate::util::string::UntrustedString;
-use crate::routing::router::{RouteHop, RouteParameters};
+use crate::routing::router::{Path, RouteHop, RouteParameters};
 
 use bitcoin::{PackedLockTime, Transaction, OutPoint};
 #[cfg(anchors)]
@@ -503,7 +503,7 @@ pub enum Event {
 		/// The payment path that was successful.
 		///
 		/// May contain a closed channel if the HTLC sent along the path was fulfilled on chain.
-		path: Vec<RouteHop>,
+		path: Path,
 	},
 	/// Indicates an outbound HTLC we sent failed, likely due to an intermediary node being unable to
 	/// handle the HTLC.
@@ -535,7 +535,7 @@ pub enum Event {
 		/// [`NetworkGraph`]: crate::routing::gossip::NetworkGraph
 		failure: PathFailure,
 		/// The payment path that failed.
-		path: Vec<RouteHop>,
+		path: Path,
 		/// The channel responsible for the failed payment path.
 		///
 		/// Note that for route hints or for the first hop in a path this may be an SCID alias and
@@ -561,7 +561,7 @@ pub enum Event {
 		/// [`ChannelManager::send_probe`]: crate::ln::channelmanager::ChannelManager::send_probe
 		payment_hash: PaymentHash,
 		/// The payment path that was successful.
-		path: Vec<RouteHop>,
+		path: Path,
 	},
 	/// Indicates that a probe payment we sent failed at an intermediary node on the path.
 	ProbeFailed {
@@ -574,7 +574,7 @@ pub enum Event {
 		/// [`ChannelManager::send_probe`]: crate::ln::channelmanager::ChannelManager::send_probe
 		payment_hash: PaymentHash,
 		/// The payment path that failed.
-		path: Vec<RouteHop>,
+		path: Path,
 		/// The channel responsible for the failed probe.
 		///
 		/// Note that for route hints or for the first hop in a path this may be an SCID alias and
@@ -884,7 +884,7 @@ impl Writeable for Event {
 					(1, None::<NetworkUpdate>, option), // network_update in LDK versions prior to 0.0.114
 					(2, payment_failed_permanently, required),
 					(3, false, required), // all_paths_failed in LDK versions prior to 0.0.114
-					(5, *path, vec_type),
+					(5, path.hops, vec_type),
 					(7, short_channel_id, option),
 					(9, None::<RouteParameters>, option), // retry in LDK versions prior to 0.0.115
 					(11, payment_id, option),
@@ -952,7 +952,7 @@ impl Writeable for Event {
 				write_tlv_fields!(writer, {
 					(0, payment_id, required),
 					(2, payment_hash, option),
-					(4, *path, vec_type)
+					(4, path.hops, vec_type),
 				})
 			},
 			&Event::PaymentFailed { ref payment_id, ref payment_hash, ref reason } => {
@@ -982,7 +982,7 @@ impl Writeable for Event {
 				write_tlv_fields!(writer, {
 					(0, payment_id, required),
 					(2, payment_hash, required),
-					(4, *path, vec_type)
+					(4, path.hops, vec_type),
 				})
 			},
 			&Event::ProbeFailed { ref payment_id, ref payment_hash, ref path, ref short_channel_id } => {
@@ -990,7 +990,7 @@ impl Writeable for Event {
 				write_tlv_fields!(writer, {
 					(0, payment_id, required),
 					(2, payment_hash, required),
-					(4, *path, vec_type),
+					(4, path.hops, vec_type),
 					(6, short_channel_id, option),
 				})
 			},
@@ -1141,7 +1141,7 @@ impl MaybeReadable for Event {
 						payment_hash,
 						payment_failed_permanently,
 						failure,
-						path: path.unwrap(),
+						path: Path { hops: path.unwrap() },
 						short_channel_id,
 						#[cfg(test)]
 						error_code,
@@ -1255,7 +1255,7 @@ impl MaybeReadable for Event {
 					Ok(Some(Event::PaymentPathSuccessful {
 						payment_id,
 						payment_hash,
-						path: path.unwrap(),
+						path: Path { hops: path.unwrap() },
 					}))
 				};
 				f()
@@ -1316,7 +1316,7 @@ impl MaybeReadable for Event {
 					Ok(Some(Event::ProbeSuccessful {
 						payment_id,
 						payment_hash,
-						path: path.unwrap(),
+						path: Path { hops: path.unwrap() },
 					}))
 				};
 				f()
@@ -1336,7 +1336,7 @@ impl MaybeReadable for Event {
 					Ok(Some(Event::ProbeFailed {
 						payment_id,
 						payment_hash,
-						path: path.unwrap(),
+						path: Path { hops: path.unwrap() },
 						short_channel_id,
 					}))
 				};

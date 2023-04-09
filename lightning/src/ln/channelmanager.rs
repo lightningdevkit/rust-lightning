@@ -45,7 +45,7 @@ use crate::ln::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, No
 #[cfg(any(feature = "_test_utils", test))]
 use crate::ln::features::InvoiceFeatures;
 use crate::routing::gossip::NetworkGraph;
-use crate::routing::router::{DefaultRouter, InFlightHtlcs, PaymentParameters, Route, RouteHop, RouteParameters, RoutePath, Router};
+use crate::routing::router::{DefaultRouter, InFlightHtlcs, Path, PaymentParameters, Route, RouteHop, RouteParameters, Router};
 use crate::routing::scoring::ProbabilisticScorer;
 use crate::ln::msgs;
 use crate::ln::onion_utils;
@@ -282,7 +282,7 @@ impl_writeable_tlv_based_enum!(SentHTLCId,
 pub(crate) enum HTLCSource {
 	PreviousHopData(HTLCPreviousHopData),
 	OutboundRoute {
-		path: Vec<RouteHop>,
+		path: Path,
 		session_priv: SecretKey,
 		/// Technically we can recalculate this from the route, but we cache it here to avoid
 		/// doing a double-pass on route when we get a failure back
@@ -313,7 +313,7 @@ impl HTLCSource {
 	#[cfg(test)]
 	pub fn dummy() -> Self {
 		HTLCSource::OutboundRoute {
-			path: Vec::new(),
+			path: Path { hops: Vec::new(), blinded_tail: None },
 			session_priv: SecretKey::from_slice(&[1; 32]).unwrap(),
 			first_hop_htlc_msat: 0,
 			payment_id: PaymentId([2; 32]),
@@ -2639,16 +2639,16 @@ where
 	}
 
 	#[cfg(test)]
-	pub(crate) fn test_send_payment_along_path(&self, path: &Vec<RouteHop>, payment_hash: &PaymentHash, recipient_onion: RecipientOnionFields, total_value: u64, cur_height: u32, payment_id: PaymentId, keysend_preimage: &Option<PaymentPreimage>, session_priv_bytes: [u8; 32]) -> Result<(), APIError> {
+	pub(crate) fn test_send_payment_along_path(&self, path: &Path, payment_hash: &PaymentHash, recipient_onion: RecipientOnionFields, total_value: u64, cur_height: u32, payment_id: PaymentId, keysend_preimage: &Option<PaymentPreimage>, session_priv_bytes: [u8; 32]) -> Result<(), APIError> {
 		let _lck = self.total_consistency_lock.read().unwrap();
 		self.send_payment_along_path(path, payment_hash, recipient_onion, total_value, cur_height, payment_id, keysend_preimage, session_priv_bytes)
 	}
 
-	fn send_payment_along_path(&self, path: &Vec<RouteHop>, payment_hash: &PaymentHash, recipient_onion: RecipientOnionFields, total_value: u64, cur_height: u32, payment_id: PaymentId, keysend_preimage: &Option<PaymentPreimage>, session_priv_bytes: [u8; 32]) -> Result<(), APIError> {
+	fn send_payment_along_path(&self, path: &Path, payment_hash: &PaymentHash, recipient_onion: RecipientOnionFields, total_value: u64, cur_height: u32, payment_id: PaymentId, keysend_preimage: &Option<PaymentPreimage>, session_priv_bytes: [u8; 32]) -> Result<(), APIError> {
 		// The top-level caller should hold the total_consistency_lock read lock.
 		debug_assert!(self.total_consistency_lock.try_write().is_err());
 
-		log_trace!(self.logger, "Attempting to send payment for path with next hop {}", path.first().unwrap().short_channel_id);
+		log_trace!(self.logger, "Attempting to send payment for path with next hop {}", path.hops.first().unwrap().short_channel_id);
 		let prng_seed = self.entropy_source.get_secure_random_bytes();
 		let session_priv = SecretKey::from_slice(&session_priv_bytes[..]).expect("RNG is busted");
 
@@ -2661,7 +2661,7 @@ where
 		let onion_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, prng_seed, payment_hash);
 
 		let err: Result<(), _> = loop {
-			let (counterparty_node_id, id) = match self.short_to_chan_info.read().unwrap().get(&path.first().unwrap().short_channel_id) {
+			let (counterparty_node_id, id) = match self.short_to_chan_info.read().unwrap().get(&path.hops.first().unwrap().short_channel_id) {
 				None => return Err(APIError::ChannelUnavailable{err: "No channel available with first hop!".to_owned()}),
 				Some((cp_id, chan_id)) => (cp_id.clone(), chan_id.clone()),
 			};
@@ -2712,7 +2712,7 @@ where
 			return Ok(());
 		};
 
-		match handle_error!(self, err, path.first().unwrap().pubkey) {
+		match handle_error!(self, err, path.hops.first().unwrap().pubkey) {
 			Ok(_) => unreachable!(),
 			Err(e) => {
 				Err(APIError::ChannelUnavailable { err: e.err })
@@ -2882,10 +2882,10 @@ where
 	/// Send a payment that is probing the given route for liquidity. We calculate the
 	/// [`PaymentHash`] of probes based on a static secret and a random [`PaymentId`], which allows
 	/// us to easily discern them from real payments.
-	pub fn send_probe(&self, hops: Vec<RouteHop>) -> Result<(PaymentHash, PaymentId), PaymentSendFailure> {
+	pub fn send_probe(&self, path: Path) -> Result<(PaymentHash, PaymentId), PaymentSendFailure> {
 		let best_block_height = self.best_block.read().unwrap().height();
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
-		self.pending_outbound_payments.send_probe(hops, self.probing_cookie_secret, &self.entropy_source, &self.node_signer, best_block_height,
+		self.pending_outbound_payments.send_probe(path, self.probing_cookie_secret, &self.entropy_source, &self.node_signer, best_block_height,
 			|path, payment_hash, recipient_onion, total_value, cur_height, payment_id, keysend_preimage, session_priv|
 			self.send_payment_along_path(path, payment_hash, recipient_onion, total_value, cur_height, payment_id, keysend_preimage, session_priv))
 	}
@@ -7004,14 +7004,14 @@ impl Readable for HTLCSource {
 			0 => {
 				let mut session_priv: crate::util::ser::RequiredWrapper<SecretKey> = crate::util::ser::RequiredWrapper(None);
 				let mut first_hop_htlc_msat: u64 = 0;
-				let mut path: Option<Vec<RouteHop>> = Some(Vec::new());
+				let mut path_hops: Option<Vec<RouteHop>> = Some(Vec::new());
 				let mut payment_id = None;
 				let mut payment_params: Option<PaymentParameters> = None;
 				read_tlv_fields!(reader, {
 					(0, session_priv, required),
 					(1, payment_id, option),
 					(2, first_hop_htlc_msat, required),
-					(4, path, vec_type),
+					(4, path_hops, vec_type),
 					(5, payment_params, (option: ReadableArgs, 0)),
 				});
 				if payment_id.is_none() {
@@ -7019,10 +7019,10 @@ impl Readable for HTLCSource {
 					// instead.
 					payment_id = Some(PaymentId(*session_priv.0.unwrap().as_ref()));
 				}
-				if path.is_none() || path.as_ref().unwrap().is_empty() {
+				let path = Path { hops: path_hops.ok_or(DecodeError::InvalidValue)? };
+				if path.hops.len() == 0 {
 					return Err(DecodeError::InvalidValue);
 				}
-				let path = path.unwrap();
 				if let Some(params) = payment_params.as_mut() {
 					if params.final_cltv_expiry_delta == 0 {
 						params.final_cltv_expiry_delta = path.final_cltv_expiry_delta();
@@ -7052,7 +7052,7 @@ impl Writeable for HTLCSource {
 					(1, payment_id_opt, option),
 					(2, first_hop_htlc_msat, required),
 					// 3 was previously used to write a PaymentSecret for the payment.
-					(4, *path, vec_type),
+					(4, path.hops, vec_type),
 					(5, None::<PaymentParameters>, option), // payment_params in LDK versions prior to 0.0.115
 				 });
 			}
@@ -7720,7 +7720,7 @@ where
 				if id_to_peer.get(&monitor.get_funding_txo().0.to_channel_id()).is_none() {
 					for (htlc_source, (htlc, _)) in monitor.get_pending_or_resolved_outbound_htlcs() {
 						if let HTLCSource::OutboundRoute { payment_id, session_priv, path, .. } = htlc_source {
-							if path.is_empty() {
+							if path.hops.is_empty() {
 								log_error!(args.logger, "Got an empty path for a pending payment");
 								return Err(DecodeError::InvalidValue);
 							}
@@ -8482,12 +8482,12 @@ mod tests {
 		let (mut route, payment_hash, _, _) = get_route_and_payment_hash!(&nodes[0], nodes[3], 100000);
 		let path = route.paths[0].clone();
 		route.paths.push(path);
-		route.paths[0][0].pubkey = nodes[1].node.get_our_node_id();
-		route.paths[0][0].short_channel_id = chan_1_id;
-		route.paths[0][1].short_channel_id = chan_3_id;
-		route.paths[1][0].pubkey = nodes[2].node.get_our_node_id();
-		route.paths[1][0].short_channel_id = chan_2_id;
-		route.paths[1][1].short_channel_id = chan_4_id;
+		route.paths[0].hops[0].pubkey = nodes[1].node.get_our_node_id();
+		route.paths[0].hops[0].short_channel_id = chan_1_id;
+		route.paths[0].hops[1].short_channel_id = chan_3_id;
+		route.paths[1].hops[0].pubkey = nodes[2].node.get_our_node_id();
+		route.paths[1].hops[0].short_channel_id = chan_2_id;
+		route.paths[1].hops[1].short_channel_id = chan_4_id;
 
 		match nodes[0].node.send_payment_with_route(&route, payment_hash,
 			RecipientOnionFields::spontaneous_empty(), PaymentId(payment_hash.0))

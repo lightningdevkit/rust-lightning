@@ -236,26 +236,21 @@ fn update_scorer<'a, S: 'static + Deref<Target = SC> + Send + Sync, SC: 'a + Wri
 	let mut score = scorer.lock();
 	match event {
 		Event::PaymentPathFailed { ref path, short_channel_id: Some(scid), .. } => {
-			let path = path.iter().collect::<Vec<_>>();
-			score.payment_path_failed(&path, *scid);
+			score.payment_path_failed(path, *scid);
 		},
 		Event::PaymentPathFailed { ref path, payment_failed_permanently: true, .. } => {
 			// Reached if the destination explicitly failed it back. We treat this as a successful probe
 			// because the payment made it all the way to the destination with sufficient liquidity.
-			let path = path.iter().collect::<Vec<_>>();
-			score.probe_successful(&path);
+			score.probe_successful(path);
 		},
 		Event::PaymentPathSuccessful { path, .. } => {
-			let path = path.iter().collect::<Vec<_>>();
-			score.payment_path_successful(&path);
+			score.payment_path_successful(path);
 		},
 		Event::ProbeSuccessful { path, .. } => {
-			let path = path.iter().collect::<Vec<_>>();
-			score.probe_successful(&path);
+			score.probe_successful(path);
 		},
 		Event::ProbeFailed { path, short_channel_id: Some(scid), .. } => {
-			let path = path.iter().collect::<Vec<_>>();
-			score.probe_failed(&path, *scid);
+			score.probe_failed(path, *scid);
 		},
 		_ => {},
 	}
@@ -751,7 +746,7 @@ mod tests {
 	use lightning::ln::msgs::{ChannelMessageHandler, Init};
 	use lightning::ln::peer_handler::{PeerManager, MessageHandler, SocketDescriptor, IgnoringMessageHandler};
 	use lightning::routing::gossip::{NetworkGraph, NodeId, P2PGossipSync};
-	use lightning::routing::router::{DefaultRouter, RouteHop};
+	use lightning::routing::router::{DefaultRouter, Path, RouteHop};
 	use lightning::routing::scoring::{ChannelUsage, Score};
 	use lightning::util::config::UserConfig;
 	use lightning::util::ser::Writeable;
@@ -891,10 +886,10 @@ mod tests {
 
 	#[derive(Debug)]
 	enum TestResult {
-		PaymentFailure { path: Vec<RouteHop>, short_channel_id: u64 },
-		PaymentSuccess { path: Vec<RouteHop> },
-		ProbeFailure { path: Vec<RouteHop> },
-		ProbeSuccess { path: Vec<RouteHop> },
+		PaymentFailure { path: Path, short_channel_id: u64 },
+		PaymentSuccess { path: Path },
+		ProbeFailure { path: Path },
+		ProbeSuccess { path: Path },
 	}
 
 	impl TestScorer {
@@ -916,11 +911,11 @@ mod tests {
 			&self, _short_channel_id: u64, _source: &NodeId, _target: &NodeId, _usage: ChannelUsage
 		) -> u64 { unimplemented!(); }
 
-		fn payment_path_failed(&mut self, actual_path: &[&RouteHop], actual_short_channel_id: u64) {
+		fn payment_path_failed(&mut self, actual_path: &Path, actual_short_channel_id: u64) {
 			if let Some(expectations) = &mut self.event_expectations {
 				match expectations.pop_front().unwrap() {
 					TestResult::PaymentFailure { path, short_channel_id } => {
-						assert_eq!(actual_path, &path.iter().collect::<Vec<_>>()[..]);
+						assert_eq!(actual_path, &path);
 						assert_eq!(actual_short_channel_id, short_channel_id);
 					},
 					TestResult::PaymentSuccess { path } => {
@@ -936,14 +931,14 @@ mod tests {
 			}
 		}
 
-		fn payment_path_successful(&mut self, actual_path: &[&RouteHop]) {
+		fn payment_path_successful(&mut self, actual_path: &Path) {
 			if let Some(expectations) = &mut self.event_expectations {
 				match expectations.pop_front().unwrap() {
 					TestResult::PaymentFailure { path, .. } => {
 						panic!("Unexpected payment path failure: {:?}", path)
 					},
 					TestResult::PaymentSuccess { path } => {
-						assert_eq!(actual_path, &path.iter().collect::<Vec<_>>()[..]);
+						assert_eq!(actual_path, &path);
 					},
 					TestResult::ProbeFailure { path } => {
 						panic!("Unexpected probe failure: {:?}", path)
@@ -955,7 +950,7 @@ mod tests {
 			}
 		}
 
-		fn probe_failed(&mut self, actual_path: &[&RouteHop], _: u64) {
+		fn probe_failed(&mut self, actual_path: &Path, _: u64) {
 			if let Some(expectations) = &mut self.event_expectations {
 				match expectations.pop_front().unwrap() {
 					TestResult::PaymentFailure { path, .. } => {
@@ -965,7 +960,7 @@ mod tests {
 						panic!("Unexpected payment path success: {:?}", path)
 					},
 					TestResult::ProbeFailure { path } => {
-						assert_eq!(actual_path, &path.iter().collect::<Vec<_>>()[..]);
+						assert_eq!(actual_path, &path);
 					},
 					TestResult::ProbeSuccess { path } => {
 						panic!("Unexpected probe success: {:?}", path)
@@ -973,7 +968,7 @@ mod tests {
 				}
 			}
 		}
-		fn probe_successful(&mut self, actual_path: &[&RouteHop]) {
+		fn probe_successful(&mut self, actual_path: &Path) {
 			if let Some(expectations) = &mut self.event_expectations {
 				match expectations.pop_front().unwrap() {
 					TestResult::PaymentFailure { path, .. } => {
@@ -986,7 +981,7 @@ mod tests {
 						panic!("Unexpected probe failure: {:?}", path)
 					},
 					TestResult::ProbeSuccess { path } => {
-						assert_eq!(actual_path, &path.iter().collect::<Vec<_>>()[..]);
+						assert_eq!(actual_path, &path);
 					}
 				}
 			}
@@ -1510,14 +1505,14 @@ mod tests {
 			let node_1_privkey = SecretKey::from_slice(&[42; 32]).unwrap();
 			let node_1_id = PublicKey::from_secret_key(&secp_ctx, &node_1_privkey);
 
-			let path = vec![RouteHop {
+			let path = Path { hops: vec![RouteHop {
 				pubkey: node_1_id,
 				node_features: NodeFeatures::empty(),
 				short_channel_id: scored_scid,
 				channel_features: ChannelFeatures::empty(),
 				fee_msat: 0,
 				cltv_expiry_delta: MIN_CLTV_EXPIRY_DELTA as u32,
-			}];
+			}]};
 
 			$nodes[0].scorer.lock().unwrap().expect(TestResult::PaymentFailure { path: path.clone(), short_channel_id: scored_scid });
 			$nodes[0].node.push_pending_event(Event::PaymentPathFailed {

@@ -56,7 +56,7 @@
 
 use crate::ln::msgs::DecodeError;
 use crate::routing::gossip::{EffectiveCapacity, NetworkGraph, NodeId};
-use crate::routing::router::{RouteHop, RoutePath};
+use crate::routing::router::Path;
 use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer};
 use crate::util::logger::Logger;
 use crate::util::time::Time;
@@ -99,16 +99,16 @@ pub trait Score $(: $supertrait)* {
 	) -> u64;
 
 	/// Handles updating channel penalties after failing to route through a channel.
-	fn payment_path_failed(&mut self, path: &[&RouteHop], short_channel_id: u64);
+	fn payment_path_failed(&mut self, path: &Path, short_channel_id: u64);
 
 	/// Handles updating channel penalties after successfully routing along a path.
-	fn payment_path_successful(&mut self, path: &[&RouteHop]);
+	fn payment_path_successful(&mut self, path: &Path);
 
 	/// Handles updating channel penalties after a probe over the given path failed.
-	fn probe_failed(&mut self, path: &[&RouteHop], short_channel_id: u64);
+	fn probe_failed(&mut self, path: &Path, short_channel_id: u64);
 
 	/// Handles updating channel penalties after a probe over the given path succeeded.
-	fn probe_successful(&mut self, path: &[&RouteHop]);
+	fn probe_successful(&mut self, path: &Path);
 }
 
 impl<S: Score, T: DerefMut<Target=S> $(+ $supertrait)*> Score for T {
@@ -118,19 +118,19 @@ impl<S: Score, T: DerefMut<Target=S> $(+ $supertrait)*> Score for T {
 		self.deref().channel_penalty_msat(short_channel_id, source, target, usage)
 	}
 
-	fn payment_path_failed(&mut self, path: &[&RouteHop], short_channel_id: u64) {
+	fn payment_path_failed(&mut self, path: &Path, short_channel_id: u64) {
 		self.deref_mut().payment_path_failed(path, short_channel_id)
 	}
 
-	fn payment_path_successful(&mut self, path: &[&RouteHop]) {
+	fn payment_path_successful(&mut self, path: &Path) {
 		self.deref_mut().payment_path_successful(path)
 	}
 
-	fn probe_failed(&mut self, path: &[&RouteHop], short_channel_id: u64) {
+	fn probe_failed(&mut self, path: &Path, short_channel_id: u64) {
 		self.deref_mut().probe_failed(path, short_channel_id)
 	}
 
-	fn probe_successful(&mut self, path: &[&RouteHop]) {
+	fn probe_successful(&mut self, path: &Path) {
 		self.deref_mut().probe_successful(path)
 	}
 }
@@ -195,16 +195,16 @@ impl<'a, T: Score + 'a> Score for MultiThreadedScoreLock<'a, T> {
 	fn channel_penalty_msat(&self, scid: u64, source: &NodeId, target: &NodeId, usage: ChannelUsage) -> u64 {
 		self.0.channel_penalty_msat(scid, source, target, usage)
 	}
-	fn payment_path_failed(&mut self, path: &[&RouteHop], short_channel_id: u64) {
+	fn payment_path_failed(&mut self, path: &Path, short_channel_id: u64) {
 		self.0.payment_path_failed(path, short_channel_id)
 	}
-	fn payment_path_successful(&mut self, path: &[&RouteHop]) {
+	fn payment_path_successful(&mut self, path: &Path) {
 		self.0.payment_path_successful(path)
 	}
-	fn probe_failed(&mut self, path: &[&RouteHop], short_channel_id: u64) {
+	fn probe_failed(&mut self, path: &Path, short_channel_id: u64) {
 		self.0.probe_failed(path, short_channel_id)
 	}
-	fn probe_successful(&mut self, path: &[&RouteHop]) {
+	fn probe_successful(&mut self, path: &Path) {
 		self.0.probe_successful(path)
 	}
 }
@@ -290,13 +290,13 @@ impl Score for FixedPenaltyScorer {
 		self.penalty_msat
 	}
 
-	fn payment_path_failed(&mut self, _path: &[&RouteHop], _short_channel_id: u64) {}
+	fn payment_path_failed(&mut self, _path: &Path, _short_channel_id: u64) {}
 
-	fn payment_path_successful(&mut self, _path: &[&RouteHop]) {}
+	fn payment_path_successful(&mut self, _path: &Path) {}
 
-	fn probe_failed(&mut self, _path: &[&RouteHop], _short_channel_id: u64) {}
+	fn probe_failed(&mut self, _path: &Path, _short_channel_id: u64) {}
 
-	fn probe_successful(&mut self, _path: &[&RouteHop]) {}
+	fn probe_successful(&mut self, _path: &Path) {}
 }
 
 impl Writeable for FixedPenaltyScorer {
@@ -1233,11 +1233,11 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> Score for Probabilis
 			.saturating_add(base_penalty_msat)
 	}
 
-	fn payment_path_failed(&mut self, path: &[&RouteHop], short_channel_id: u64) {
+	fn payment_path_failed(&mut self, path: &Path, short_channel_id: u64) {
 		let amount_msat = path.final_value_msat();
 		log_trace!(self.logger, "Scoring path through to SCID {} as having failed at {} msat", short_channel_id, amount_msat);
 		let network_graph = self.network_graph.read_only();
-		for (hop_idx, hop) in path.iter().enumerate() {
+		for (hop_idx, hop) in path.hops.iter().enumerate() {
 			let target = NodeId::from_pubkey(&hop.pubkey);
 			let channel_directed_from_source = network_graph.channels()
 				.get(&hop.short_channel_id)
@@ -1272,12 +1272,12 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> Score for Probabilis
 		}
 	}
 
-	fn payment_path_successful(&mut self, path: &[&RouteHop]) {
+	fn payment_path_successful(&mut self, path: &Path) {
 		let amount_msat = path.final_value_msat();
 		log_trace!(self.logger, "Scoring path through SCID {} as having succeeded at {} msat.",
-			path.split_last().map(|(hop, _)| hop.short_channel_id).unwrap_or(0), amount_msat);
+			path.hops.split_last().map(|(hop, _)| hop.short_channel_id).unwrap_or(0), amount_msat);
 		let network_graph = self.network_graph.read_only();
-		for hop in path {
+		for hop in &path.hops {
 			let target = NodeId::from_pubkey(&hop.pubkey);
 			let channel_directed_from_source = network_graph.channels()
 				.get(&hop.short_channel_id)
@@ -1298,11 +1298,11 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> Score for Probabilis
 		}
 	}
 
-	fn probe_failed(&mut self, path: &[&RouteHop], short_channel_id: u64) {
+	fn probe_failed(&mut self, path: &Path, short_channel_id: u64) {
 		self.payment_path_failed(path, short_channel_id)
 	}
 
-	fn probe_successful(&mut self, path: &[&RouteHop]) {
+	fn probe_successful(&mut self, path: &Path) {
 		self.payment_path_failed(path, u64::max_value())
 	}
 }
@@ -1709,7 +1709,7 @@ mod tests {
 	use crate::ln::channelmanager;
 	use crate::ln::msgs::{ChannelAnnouncement, ChannelUpdate, UnsignedChannelAnnouncement, UnsignedChannelUpdate};
 	use crate::routing::gossip::{EffectiveCapacity, NetworkGraph, NodeId};
-	use crate::routing::router::RouteHop;
+	use crate::routing::router::{Path, RouteHop};
 	use crate::routing::scoring::{ChannelUsage, Score};
 	use crate::util::ser::{ReadableArgs, Writeable};
 	use crate::util::test_utils::TestLogger;
@@ -1858,12 +1858,14 @@ mod tests {
 		}
 	}
 
-	fn payment_path_for_amount(amount_msat: u64) -> Vec<RouteHop> {
-		vec![
-			path_hop(source_pubkey(), 41, 1),
-			path_hop(target_pubkey(), 42, 2),
-			path_hop(recipient_pubkey(), 43, amount_msat),
-		]
+	fn payment_path_for_amount(amount_msat: u64) -> Path {
+		Path {
+			hops: vec![
+				path_hop(source_pubkey(), 41, 1),
+				path_hop(target_pubkey(), 42, 2),
+				path_hop(recipient_pubkey(), 43, amount_msat),
+			],
+		}
 	}
 
 	#[test]
@@ -2161,10 +2163,10 @@ mod tests {
 
 		assert_eq!(scorer.channel_penalty_msat(41, &sender, &source, usage), 301);
 
-		scorer.payment_path_failed(&failed_path.iter().collect::<Vec<_>>(), 41);
+		scorer.payment_path_failed(&failed_path, 41);
 		assert_eq!(scorer.channel_penalty_msat(41, &sender, &source, usage), 301);
 
-		scorer.payment_path_successful(&successful_path.iter().collect::<Vec<_>>());
+		scorer.payment_path_successful(&successful_path);
 		assert_eq!(scorer.channel_penalty_msat(41, &sender, &source, usage), 301);
 	}
 
@@ -2192,7 +2194,7 @@ mod tests {
 		let usage = ChannelUsage { amount_msat: 750, ..usage };
 		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 602);
 
-		scorer.payment_path_failed(&path.iter().collect::<Vec<_>>(), 43);
+		scorer.payment_path_failed(&path, 43);
 
 		let usage = ChannelUsage { amount_msat: 250, ..usage };
 		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 0);
@@ -2227,7 +2229,7 @@ mod tests {
 		let usage = ChannelUsage { amount_msat: 750, ..usage };
 		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 602);
 
-		scorer.payment_path_failed(&path.iter().collect::<Vec<_>>(), 42);
+		scorer.payment_path_failed(&path, 42);
 
 		let usage = ChannelUsage { amount_msat: 250, ..usage };
 		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 300);
@@ -2287,7 +2289,7 @@ mod tests {
 		assert_eq!(scorer.channel_penalty_msat(43, &node_b, &node_c, usage), 128);
 		assert_eq!(scorer.channel_penalty_msat(44, &node_c, &node_d, usage), 128);
 
-		scorer.payment_path_failed(&path.iter().collect::<Vec<_>>(), 43);
+		scorer.payment_path_failed(&Path { hops: path }, 43);
 
 		assert_eq!(scorer.channel_penalty_msat(42, &node_a, &node_b, usage), 80);
 		// Note that a default liquidity bound is used for B -> C as no channel exists
@@ -2313,13 +2315,12 @@ mod tests {
 			inflight_htlc_msat: 0,
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 1_000, htlc_maximum_msat: 1_000 },
 		};
-		let path = payment_path_for_amount(500);
 
 		assert_eq!(scorer.channel_penalty_msat(41, &sender, &source, usage), 128);
 		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 128);
 		assert_eq!(scorer.channel_penalty_msat(43, &target, &recipient, usage), 128);
 
-		scorer.payment_path_successful(&path.iter().collect::<Vec<_>>());
+		scorer.payment_path_successful(&payment_path_for_amount(500));
 
 		assert_eq!(scorer.channel_penalty_msat(41, &sender, &source, usage), 128);
 		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 300);
@@ -2349,8 +2350,8 @@ mod tests {
 		let usage = ChannelUsage { amount_msat: 1_023, ..usage };
 		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 2_000);
 
-		scorer.payment_path_failed(&payment_path_for_amount(768).iter().collect::<Vec<_>>(), 42);
-		scorer.payment_path_failed(&payment_path_for_amount(128).iter().collect::<Vec<_>>(), 43);
+		scorer.payment_path_failed(&payment_path_for_amount(768), 42);
+		scorer.payment_path_failed(&payment_path_for_amount(128), 43);
 
 		let usage = ChannelUsage { amount_msat: 128, ..usage };
 		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 0);
@@ -2425,7 +2426,7 @@ mod tests {
 		};
 		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 125);
 
-		scorer.payment_path_failed(&payment_path_for_amount(512).iter().collect::<Vec<_>>(), 42);
+		scorer.payment_path_failed(&payment_path_for_amount(512), 42);
 		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 281);
 
 		// An unchecked right shift 64 bits or more in DirectedChannelLiquidity::decayed_offset_msat
@@ -2458,8 +2459,8 @@ mod tests {
 		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 300);
 
 		// More knowledge gives higher confidence (256, 768), meaning a lower penalty.
-		scorer.payment_path_failed(&payment_path_for_amount(768).iter().collect::<Vec<_>>(), 42);
-		scorer.payment_path_failed(&payment_path_for_amount(256).iter().collect::<Vec<_>>(), 43);
+		scorer.payment_path_failed(&payment_path_for_amount(768), 42);
+		scorer.payment_path_failed(&payment_path_for_amount(256), 43);
 		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 281);
 
 		// Decaying knowledge gives less confidence (128, 896), meaning a higher penalty.
@@ -2468,12 +2469,12 @@ mod tests {
 
 		// Reducing the upper bound gives more confidence (128, 832) that the payment amount (512)
 		// is closer to the upper bound, meaning a higher penalty.
-		scorer.payment_path_successful(&payment_path_for_amount(64).iter().collect::<Vec<_>>());
+		scorer.payment_path_successful(&payment_path_for_amount(64));
 		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 331);
 
 		// Increasing the lower bound gives more confidence (256, 832) that the payment amount (512)
 		// is closer to the lower bound, meaning a lower penalty.
-		scorer.payment_path_failed(&payment_path_for_amount(256).iter().collect::<Vec<_>>(), 43);
+		scorer.payment_path_failed(&payment_path_for_amount(256), 43);
 		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 245);
 
 		// Further decaying affects the lower bound more than the upper bound (128, 928).
@@ -2500,13 +2501,13 @@ mod tests {
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 1_000, htlc_maximum_msat: 1_000 },
 		};
 
-		scorer.payment_path_failed(&payment_path_for_amount(500).iter().collect::<Vec<_>>(), 42);
+		scorer.payment_path_failed(&payment_path_for_amount(500), 42);
 		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), u64::max_value());
 
 		SinceEpoch::advance(Duration::from_secs(10));
 		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 473);
 
-		scorer.payment_path_failed(&payment_path_for_amount(250).iter().collect::<Vec<_>>(), 43);
+		scorer.payment_path_failed(&payment_path_for_amount(250), 43);
 		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 300);
 
 		let mut serialized_scorer = Vec::new();
@@ -2537,7 +2538,7 @@ mod tests {
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 1_000, htlc_maximum_msat: 1_000 },
 		};
 
-		scorer.payment_path_failed(&payment_path_for_amount(500).iter().collect::<Vec<_>>(), 42);
+		scorer.payment_path_failed(&payment_path_for_amount(500), 42);
 		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), u64::max_value());
 
 		let mut serialized_scorer = Vec::new();
@@ -2550,7 +2551,7 @@ mod tests {
 			<ProbabilisticScorer>::read(&mut serialized_scorer, (params, &network_graph, &logger)).unwrap();
 		assert_eq!(deserialized_scorer.channel_penalty_msat(42, &source, &target, usage), 473);
 
-		scorer.payment_path_failed(&payment_path_for_amount(250).iter().collect::<Vec<_>>(), 43);
+		scorer.payment_path_failed(&payment_path_for_amount(250), 43);
 		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 300);
 
 		SinceEpoch::advance(Duration::from_secs(10));
@@ -2773,7 +2774,7 @@ mod tests {
 		assert_eq!(scorer.historical_estimated_channel_liquidity_probabilities(42, &target),
 			None);
 
-		scorer.payment_path_failed(&payment_path_for_amount(1).iter().collect::<Vec<_>>(), 42);
+		scorer.payment_path_failed(&payment_path_for_amount(1), 42);
 		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 2048);
 		// The "it failed" increment is 32, where the probability should lie fully in the first
 		// octile.
@@ -2782,7 +2783,7 @@ mod tests {
 
 		// Even after we tell the scorer we definitely have enough available liquidity, it will
 		// still remember that there was some failure in the past, and assign a non-0 penalty.
-		scorer.payment_path_failed(&payment_path_for_amount(1000).iter().collect::<Vec<_>>(), 43);
+		scorer.payment_path_failed(&payment_path_for_amount(1000), 43);
 		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 198);
 		// The first octile should be decayed just slightly and the last octile has a new point.
 		assert_eq!(scorer.historical_estimated_channel_liquidity_probabilities(42, &target),
@@ -2802,7 +2803,7 @@ mod tests {
 			inflight_htlc_msat: 1024,
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 1_024, htlc_maximum_msat: 1_024 },
 		};
-		scorer.payment_path_failed(&payment_path_for_amount(1).iter().collect::<Vec<_>>(), 42);
+		scorer.payment_path_failed(&payment_path_for_amount(1), 42);
 		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 409);
 
 		let usage = ChannelUsage {
@@ -2822,7 +2823,7 @@ mod tests {
 			path_hop(source_pubkey(), 42, 1),
 			path_hop(sender_pubkey(), 41, 0),
 		];
-		scorer.payment_path_failed(&path.iter().collect::<Vec<_>>(), 42);
+		scorer.payment_path_failed(&Path { hops: path }, 42);
 	}
 
 	#[test]
