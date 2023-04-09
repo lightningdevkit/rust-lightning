@@ -172,6 +172,12 @@ impl InFlightHtlcs {
 	/// Takes in a path with payer's node id and adds the path's details to `InFlightHtlcs`.
 	pub fn process_path(&mut self, path: &Path, payer_node_id: PublicKey) {
 		if path.hops.is_empty() { return };
+
+		let mut cumulative_msat = 0;
+		if let Some(tail) = &path.blinded_tail {
+			cumulative_msat += tail.final_value_msat;
+		}
+
 		// total_inflight_map needs to be direction-sensitive when keeping track of the HTLC value
 		// that is held up. However, the `hops` array, which is a path returned by `find_route` in
 		// the router excludes the payer node. In the following lines, the payer's information is
@@ -180,7 +186,6 @@ impl InFlightHtlcs {
 		let reversed_hops_with_payer = path.hops.iter().rev().skip(1)
 			.map(|hop| hop.pubkey)
 			.chain(core::iter::once(payer_node_id));
-		let mut cumulative_msat = 0;
 
 		// Taking the reversed vector from above, we zip it with just the reversed hops list to
 		// work "backwards" of the given path, since the last hop's `fee_msat` actually represents
@@ -2267,7 +2272,7 @@ mod tests {
 	use crate::routing::gossip::{NetworkGraph, P2PGossipSync, NodeId, EffectiveCapacity};
 	use crate::routing::utxo::UtxoResult;
 	use crate::routing::router::{get_route, build_route_from_hops_internal, add_random_cltv_offset, default_node_features,
-		BlindedTail, Path, PaymentParameters, Route, RouteHint, RouteHintHop, RouteHop, RoutingFees,
+		BlindedTail, InFlightHtlcs, Path, PaymentParameters, Route, RouteHint, RouteHintHop, RouteHop, RoutingFees,
 		DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA, MAX_PATH_LENGTH_ESTIMATE};
 	use crate::routing::scoring::{ChannelUsage, FixedPenaltyScorer, Score, ProbabilisticScorer, ProbabilisticScoringParameters};
 	use crate::routing::test_utils::{add_channel, add_or_update_node, build_graph, build_line_graph, id_to_feature_flags, get_nodes, update_channel};
@@ -5827,6 +5832,45 @@ mod tests {
 		let decoded_route: Route = Readable::read(&mut Cursor::new(&encoded_route[..])).unwrap();
 		assert_eq!(decoded_route.paths[0].blinded_tail, route.paths[0].blinded_tail);
 		assert_eq!(decoded_route.paths[1].blinded_tail, route.paths[1].blinded_tail);
+	}
+
+	#[test]
+	fn blinded_path_inflight_processing() {
+		// Ensure we'll score the channel that's inbound to a blinded path's introduction node, and
+		// account for the blinded tail's final amount_msat.
+		let mut inflight_htlcs = InFlightHtlcs::new();
+		let blinded_path = BlindedPath {
+			introduction_node_id: ln_test_utils::pubkey(43),
+			blinding_point: ln_test_utils::pubkey(48),
+			blinded_hops: vec![BlindedHop { blinded_node_id: ln_test_utils::pubkey(49), encrypted_payload: Vec::new() }],
+		};
+		let path = Path {
+			hops: vec![RouteHop {
+				pubkey: ln_test_utils::pubkey(42),
+				node_features: NodeFeatures::empty(),
+				short_channel_id: 42,
+				channel_features: ChannelFeatures::empty(),
+				fee_msat: 100,
+				cltv_expiry_delta: 0,
+			},
+			RouteHop {
+				pubkey: blinded_path.introduction_node_id,
+				node_features: NodeFeatures::empty(),
+				short_channel_id: 43,
+				channel_features: ChannelFeatures::empty(),
+				fee_msat: 1,
+				cltv_expiry_delta: 0,
+			}],
+			blinded_tail: Some(BlindedTail {
+				hops: blinded_path.blinded_hops,
+				blinding_point: blinded_path.blinding_point,
+				excess_final_cltv_expiry_delta: 0,
+				final_value_msat: 200,
+			}),
+		};
+		inflight_htlcs.process_path(&path, ln_test_utils::pubkey(44));
+		assert_eq!(*inflight_htlcs.0.get(&(42, true)).unwrap(), 301);
+		assert_eq!(*inflight_htlcs.0.get(&(43, false)).unwrap(), 201);
 	}
 }
 
