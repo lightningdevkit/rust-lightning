@@ -390,6 +390,29 @@ pub enum Currency {
 	Signet,
 }
 
+impl From<Network> for Currency {
+	fn from(network: Network) -> Self {
+		match network {
+			Network::Bitcoin => Currency::Bitcoin,
+			Network::Testnet => Currency::BitcoinTestnet,
+			Network::Regtest => Currency::Regtest,
+			Network::Signet => Currency::Signet,
+		}
+	}
+}
+
+impl From<Currency> for Network {
+	fn from(currency: Currency) -> Self {
+		match currency {
+			Currency::Bitcoin => Network::Bitcoin,
+			Currency::BitcoinTestnet => Network::Testnet,
+			Currency::Regtest => Network::Regtest,
+			Currency::Simnet => Network::Regtest,
+			Currency::Signet => Network::Signet,
+		}
+	}
+}
+
 /// Tagged field which may have an unknown tag
 ///
 /// This is not exported to bindings users as we don't currently support TaggedField
@@ -1303,14 +1326,6 @@ impl Invoice {
 	/// Returns a list of all fallback addresses as [`Address`]es
 	pub fn fallback_addresses(&self) -> Vec<Address> {
 		self.fallbacks().iter().map(|fallback| {
-			let network = match self.currency() {
-				Currency::Bitcoin => Network::Bitcoin,
-				Currency::BitcoinTestnet => Network::Testnet,
-				Currency::Regtest => Network::Regtest,
-				Currency::Simnet => Network::Regtest,
-				Currency::Signet => Network::Signet,
-			};
-
 			let payload = match fallback {
 				Fallback::SegWitProgram { version, program } => {
 					Payload::WitnessProgram { version: *version, program: program.to_vec() }
@@ -1323,7 +1338,7 @@ impl Invoice {
 				}
 			};
 
-			Address { payload, network }
+			Address { payload, network: self.network() }
 		}).collect()
 	}
 
@@ -1342,6 +1357,11 @@ impl Invoice {
 	/// Returns the currency for which the invoice was issued
 	pub fn currency(&self) -> Currency {
 		self.signed_invoice.currency()
+	}
+
+	/// Returns the network for which the invoice was issued
+	pub fn network(&self) -> Network {
+		self.signed_invoice.currency().into()
 	}
 
 	/// Returns the amount if specified in the invoice as millisatoshis.
