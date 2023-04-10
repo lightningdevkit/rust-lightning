@@ -1035,6 +1035,7 @@ impl<L: Deref<Target = u64>, BRT: Deref<Target = HistoricalBucketRangeTracker>, 
 	/// Returns a liquidity penalty for routing the given HTLC `amount_msat` through the channel in
 	/// this direction.
 	fn penalty_msat(&self, amount_msat: u64, score_params: &ProbabilisticScoringFeeParameters) -> u64 {
+		let available_capacity = self.available_capacity();
 		let max_liquidity_msat = self.max_liquidity_msat();
 		let min_liquidity_msat = core::cmp::min(self.min_liquidity_msat(), max_liquidity_msat);
 
@@ -1065,6 +1066,15 @@ impl<L: Deref<Target = u64>, BRT: Deref<Target = HistoricalBucketRangeTracker>, 
 					score_params.liquidity_penalty_amount_multiplier_msat)
 			}
 		};
+
+		if amount_msat >= available_capacity {
+			// We're trying to send more than the capacity, use a max penalty.
+			res = res.saturating_add(Self::combined_penalty_msat(amount_msat,
+				NEGATIVE_LOG10_UPPER_BOUND * 2048,
+				score_params.historical_liquidity_penalty_multiplier_msat,
+				score_params.historical_liquidity_penalty_amount_multiplier_msat));
+			return res;
+		}
 
 		if score_params.historical_liquidity_penalty_multiplier_msat != 0 ||
 		   score_params.historical_liquidity_penalty_amount_multiplier_msat != 0 {
@@ -1130,17 +1140,20 @@ impl<L: Deref<Target = u64>, BRT: Deref<Target = HistoricalBucketRangeTracker>, 
 	}
 
 	/// Returns the lower bound of the channel liquidity balance in this direction.
+	#[inline(always)]
 	fn min_liquidity_msat(&self) -> u64 {
 		self.decayed_offset_msat(*self.min_liquidity_offset_msat)
 	}
 
 	/// Returns the upper bound of the channel liquidity balance in this direction.
+	#[inline(always)]
 	fn max_liquidity_msat(&self) -> u64 {
 		self.available_capacity()
 			.saturating_sub(self.decayed_offset_msat(*self.max_liquidity_offset_msat))
 	}
 
 	/// Returns the capacity minus the in-flight HTLCs in this direction.
+	#[inline(always)]
 	fn available_capacity(&self) -> u64 {
 		self.capacity_msat.saturating_sub(self.inflight_htlc_msat)
 	}
@@ -2858,12 +2871,14 @@ mod tests {
 		assert_eq!(scorer.historical_estimated_channel_liquidity_probabilities(42, &target),
 			Some(([0; 8], [0; 8])));
 
-		let usage = ChannelUsage {
+		let mut usage = ChannelUsage {
 			amount_msat: 100,
 			inflight_htlc_msat: 1024,
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 1_024, htlc_maximum_msat: 1_024 },
 		};
 		scorer.payment_path_failed(&payment_path_for_amount(1), 42);
+		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 2048);
+		usage.inflight_htlc_msat = 0;
 		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 409);
 
 		let usage = ChannelUsage {
