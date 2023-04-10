@@ -162,6 +162,14 @@ impl MetadataMaterial {
 	}
 }
 
+pub(super) fn derive_keys(nonce: Nonce, expanded_key: &ExpandedKey) -> KeyPair {
+	const IV_BYTES: &[u8; IV_LEN] = b"LDK Invoice ~~~~";
+	let secp_ctx = Secp256k1::new();
+	let hmac = Hmac::from_engine(expanded_key.hmac_for_offer(nonce, IV_BYTES));
+	let privkey = SecretKey::from_slice(hmac.as_inner()).unwrap();
+	KeyPair::from_secret_key(&secp_ctx, &privkey)
+}
+
 /// Verifies data given in a TLV stream was used to produce the given metadata, consisting of:
 /// - a 128-bit [`Nonce`] and possibly
 /// - a [`Sha256`] hash of the nonce and the TLV records using the [`ExpandedKey`].

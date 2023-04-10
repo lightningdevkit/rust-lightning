@@ -207,6 +207,22 @@ impl<'a> InvoiceBuilder<'a, DerivedSigningPubkey> {
 
 		Self::new(&invoice_request.bytes, contents, Some(keys))
 	}
+
+	pub(super) fn for_refund_using_keys(
+		refund: &'a Refund, payment_paths: Vec<(BlindedPath, BlindedPayInfo)>, created_at: Duration,
+		payment_hash: PaymentHash, keys: KeyPair,
+	) -> Result<Self, SemanticError> {
+		let contents = InvoiceContents::ForRefund {
+			refund: refund.contents.clone(),
+			fields: InvoiceFields {
+				payment_paths, created_at, relative_expiry: None, payment_hash,
+				amount_msats: refund.amount_msats(), fallbacks: None,
+				features: Bolt12InvoiceFeatures::empty(), signing_pubkey: keys.public_key(),
+			},
+		};
+
+		Self::new(&refund.bytes, contents, Some(keys))
+	}
 }
 
 impl<'a, S: SigningPubkeyStrategy> InvoiceBuilder<'a, S> {
@@ -322,12 +338,9 @@ impl<'a> InvoiceBuilder<'a, DerivedSigningPubkey> {
 		}
 
 		let InvoiceBuilder { invreq_bytes, invoice, keys, .. } = self;
-		let keys = match &invoice {
-			InvoiceContents::ForOffer { .. } => keys.unwrap(),
-			InvoiceContents::ForRefund { .. } => unreachable!(),
-		};
-
 		let unsigned_invoice = UnsignedInvoice { invreq_bytes, invoice };
+
+		let keys = keys.unwrap();
 		let invoice = unsigned_invoice
 			.sign::<_, Infallible>(|digest| Ok(secp_ctx.sign_schnorr_no_aux_rand(digest, &keys)))
 			.unwrap();
@@ -1220,6 +1233,26 @@ mod tests {
 		) {
 			Ok(_) => panic!("expected error"),
 			Err(e) => assert_eq!(e, SemanticError::InvalidMetadata),
+		}
+	}
+
+	#[test]
+	fn builds_invoice_from_refund_using_derived_keys() {
+		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let entropy = FixedEntropy {};
+		let secp_ctx = Secp256k1::new();
+
+		let refund = RefundBuilder::new("foo".into(), vec![1; 32], payer_pubkey(), 1000).unwrap()
+			.build().unwrap();
+
+		if let Err(e) = refund
+			.respond_using_derived_keys_no_std(
+				payment_paths(), payment_hash(), now(), &expanded_key, &entropy
+			)
+			.unwrap()
+			.build_and_sign(&secp_ctx)
+		{
+			panic!("error building invoice: {:?}", e);
 		}
 	}
 
