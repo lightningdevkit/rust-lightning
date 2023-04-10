@@ -1123,15 +1123,15 @@ impl<L: Deref<Target = u64>, BRT: Deref<Target = HistoricalBucketRangeTracker>, 
 
 	/// Computes the liquidity penalty from the penalty multipliers.
 	#[inline(always)]
-	fn combined_penalty_msat(amount_msat: u64, negative_log10_times_2048: u64,
+	fn combined_penalty_msat(amount_msat: u64, mut negative_log10_times_2048: u64,
 		liquidity_penalty_multiplier_msat: u64, liquidity_penalty_amount_multiplier_msat: u64,
 	) -> u64 {
-		let liquidity_penalty_msat = {
-			// Upper bound the liquidity penalty to ensure some channel is selected.
-			let multiplier_msat = liquidity_penalty_multiplier_msat;
-			let max_penalty_msat = multiplier_msat.saturating_mul(NEGATIVE_LOG10_UPPER_BOUND);
-			(negative_log10_times_2048.saturating_mul(multiplier_msat) / 2048).min(max_penalty_msat)
-		};
+		negative_log10_times_2048 =
+			negative_log10_times_2048.min(NEGATIVE_LOG10_UPPER_BOUND * 2048);
+
+		// Upper bound the liquidity penalty to ensure some channel is selected.
+		let liquidity_penalty_msat = negative_log10_times_2048
+			.saturating_mul(liquidity_penalty_multiplier_msat) / 2048;
 		let amount_penalty_msat = negative_log10_times_2048
 			.saturating_mul(liquidity_penalty_amount_multiplier_msat)
 			.saturating_mul(amount_msat) / 2048 / AMOUNT_PENALTY_DIVISOR;
