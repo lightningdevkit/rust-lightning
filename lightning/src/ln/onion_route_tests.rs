@@ -13,7 +13,7 @@
 
 use crate::chain::channelmonitor::{CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS};
 use crate::chain::keysinterface::{EntropySource, NodeSigner, Recipient};
-use crate::events::{Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, PathFailure};
+use crate::events::{Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, PathFailure, PaymentFailureReason};
 use crate::ln::{PaymentHash, PaymentSecret};
 use crate::ln::channel::EXPIRE_PREV_CONFIG_TICKS;
 use crate::ln::channelmanager::{HTLCForwardInfo, FailureCode, CLTV_FAR_FAR_AWAY, MIN_CLTV_EXPIRY_DELTA, PendingAddHTLCInfo, PendingHTLCInfo, PendingHTLCRouting, PaymentId, RecipientOnionFields};
@@ -213,9 +213,14 @@ fn run_onion_failure_test_with_fail_intercept<F1,F2,F3>(_name: &str, test_case: 
 		panic!("Unexpected event");
 	}
 	match events[1] {
-		Event::PaymentFailed { payment_hash: ev_payment_hash, payment_id: ev_payment_id } => {
+		Event::PaymentFailed { payment_hash: ev_payment_hash, payment_id: ev_payment_id, reason: ref ev_reason } => {
 			assert_eq!(*payment_hash, ev_payment_hash);
 			assert_eq!(payment_id, ev_payment_id);
+			assert_eq!(if expected_retryable {
+				PaymentFailureReason::RetriesExhausted
+			} else {
+				PaymentFailureReason::RecipientRejected
+			}, ev_reason.unwrap());
 		}
 		_ => panic!("Unexpected second event"),
 	}

@@ -15,7 +15,7 @@ use crate::chain::{ChannelMonitorUpdateStatus, Confirm, Listen, Watch};
 use crate::chain::channelmonitor::{ANTI_REORG_DELAY, HTLC_FAIL_BACK_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS};
 use crate::chain::keysinterface::EntropySource;
 use crate::chain::transaction::OutPoint;
-use crate::events::{ClosureReason, Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, PathFailure};
+use crate::events::{ClosureReason, Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, PathFailure, PaymentFailureReason};
 use crate::ln::channel::EXPIRE_PREV_CONFIG_TICKS;
 use crate::ln::channelmanager::{BREAKDOWN_TIMEOUT, ChannelManager, MPP_TIMEOUT_TICKS, MIN_CLTV_EXPIRY_DELTA, PaymentId, PaymentSendFailure, IDEMPOTENCY_TIMEOUT_TICKS, RecentPaymentDetails, RecipientOnionFields};
 use crate::ln::features::InvoiceFeatures;
@@ -1183,7 +1183,7 @@ fn abandoned_send_payment_idempotent() {
 	}
 	check_send_rejected!();
 
-	pass_failed_payment_back(&nodes[0], &[&[&nodes[1]]], false, first_payment_hash);
+	pass_failed_payment_back(&nodes[0], &[&[&nodes[1]]], false, first_payment_hash, PaymentFailureReason::RecipientRejected);
 
 	// However, we can reuse the PaymentId immediately after we `abandon_payment` upon passing the
 	// failed payment back.
@@ -1725,9 +1725,10 @@ fn do_automatic_retries(test: AutoRetry) {
 			let mut events = nodes[0].node.get_and_clear_pending_events();
 			assert_eq!(events.len(), 1);
 			match events[0] {
-				Event::PaymentFailed { payment_hash: ref ev_payment_hash, payment_id: ref ev_payment_id } => {
+				Event::PaymentFailed { payment_hash: ref ev_payment_hash, payment_id: ref ev_payment_id, reason: ref ev_reason } => {
 					assert_eq!(payment_hash, *ev_payment_hash);
 					assert_eq!(PaymentId(payment_hash.0), *ev_payment_id);
+					assert_eq!(PaymentFailureReason::RetriesExhausted, ev_reason.unwrap());
 				},
 				_ => panic!("Unexpected event"),
 			}
@@ -1761,9 +1762,10 @@ fn do_automatic_retries(test: AutoRetry) {
 		let mut events = nodes[0].node.get_and_clear_pending_events();
 		assert_eq!(events.len(), 1);
 		match events[0] {
-			Event::PaymentFailed { payment_hash: ref ev_payment_hash, payment_id: ref ev_payment_id } => {
+			Event::PaymentFailed { payment_hash: ref ev_payment_hash, payment_id: ref ev_payment_id, reason: ref ev_reason } => {
 				assert_eq!(payment_hash, *ev_payment_hash);
 				assert_eq!(PaymentId(payment_hash.0), *ev_payment_id);
+				assert_eq!(PaymentFailureReason::RetriesExhausted, ev_reason.unwrap());
 			},
 			_ => panic!("Unexpected event"),
 		}
@@ -1781,9 +1783,10 @@ fn do_automatic_retries(test: AutoRetry) {
 		let mut events = nodes[0].node.get_and_clear_pending_events();
 		assert_eq!(events.len(), 1);
 		match events[0] {
-			Event::PaymentFailed { payment_hash: ref ev_payment_hash, payment_id: ref ev_payment_id } => {
+			Event::PaymentFailed { payment_hash: ref ev_payment_hash, payment_id: ref ev_payment_id, reason: ref ev_reason } => {
 				assert_eq!(payment_hash, *ev_payment_hash);
 				assert_eq!(PaymentId(payment_hash.0), *ev_payment_id);
+				assert_eq!(PaymentFailureReason::RouteNotFound, ev_reason.unwrap());
 			},
 			_ => panic!("Unexpected event"),
 		}
@@ -2087,7 +2090,7 @@ fn fails_paying_after_rejected_by_payee() {
 
 	nodes[1].node.fail_htlc_backwards(&payment_hash);
 	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(nodes[1], [HTLCDestination::FailedPayment { payment_hash }]);
-	pass_failed_payment_back(&nodes[0], &[&[&nodes[1]]], false, payment_hash);
+	pass_failed_payment_back(&nodes[0], &[&[&nodes[1]]], false, payment_hash, PaymentFailureReason::RecipientRejected);
 }
 
 #[test]
@@ -2463,9 +2466,10 @@ fn no_extra_retries_on_back_to_back_fail() {
 		_ => panic!("Unexpected event"),
 	}
 	match events[1] {
-		Event::PaymentFailed { payment_hash: ref ev_payment_hash, payment_id: ref ev_payment_id } => {
+		Event::PaymentFailed { payment_hash: ref ev_payment_hash, payment_id: ref ev_payment_id, reason: ref ev_reason } => {
 			assert_eq!(payment_hash, *ev_payment_hash);
 			assert_eq!(PaymentId(payment_hash.0), *ev_payment_id);
+			assert_eq!(PaymentFailureReason::RetriesExhausted, ev_reason.unwrap());
 		},
 		_ => panic!("Unexpected event"),
 	}
@@ -2952,7 +2956,7 @@ fn do_claim_from_closed_chan(fail_payment: bool) {
 		expect_pending_htlcs_forwardable_and_htlc_handling_failed!(&nodes[3], [reason.clone()]);
 		connect_blocks(&nodes[3], 4);
 		expect_pending_htlcs_forwardable_and_htlc_handling_failed!(&nodes[3], [reason]);
-		pass_failed_payment_back(&nodes[0], &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]], false, payment_hash);
+		pass_failed_payment_back(&nodes[0], &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]], false, payment_hash, PaymentFailureReason::RecipientRejected);
 	} else {
 		nodes[1].node.force_close_broadcasting_latest_txn(&chan_bd, &nodes[3].node.get_our_node_id()).unwrap();
 		check_closed_event(&nodes[1], 1, ClosureReason::HolderForceClosed, false);

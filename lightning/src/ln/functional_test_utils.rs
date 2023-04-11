@@ -13,7 +13,7 @@
 use crate::chain::{BestBlock, ChannelMonitorUpdateStatus, Confirm, Listen, Watch, keysinterface::EntropySource};
 use crate::chain::channelmonitor::ChannelMonitor;
 use crate::chain::transaction::OutPoint;
-use crate::events::{ClosureReason, Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, PathFailure, PaymentPurpose};
+use crate::events::{ClosureReason, Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, PathFailure, PaymentPurpose, PaymentFailureReason};
 use crate::ln::{PaymentPreimage, PaymentHash, PaymentSecret};
 use crate::ln::channelmanager::{ChainParameters, ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, PaymentSendFailure, RecipientOnionFields, PaymentId, MIN_CLTV_EXPIRY_DELTA};
 use crate::routing::gossip::{P2PGossipSync, NetworkGraph, NetworkUpdate};
@@ -1937,9 +1937,14 @@ pub fn expect_payment_failed_conditions_event<'a, 'b, 'c, 'd, 'e>(
 	};
 	if !conditions.expected_mpp_parts_remain {
 		match &payment_failed_events[1] {
-			Event::PaymentFailed { ref payment_hash, ref payment_id } => {
+			Event::PaymentFailed { ref payment_hash, ref payment_id, ref reason } => {
 				assert_eq!(*payment_hash, expected_payment_hash, "unexpected second payment_hash");
 				assert_eq!(*payment_id, expected_payment_id);
+				assert_eq!(reason.unwrap(), if expected_payment_failed_permanently {
+					PaymentFailureReason::RecipientRejected
+				} else {
+					PaymentFailureReason::RetriesExhausted
+				});
 			}
 			_ => panic!("Unexpected second event"),
 		}
@@ -2240,10 +2245,10 @@ pub fn fail_payment_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expe
 	let expected_destinations: Vec<HTLCDestination> = repeat(HTLCDestination::FailedPayment { payment_hash: our_payment_hash }).take(expected_paths.len()).collect();
 	expect_pending_htlcs_forwardable_and_htlc_handling_failed!(expected_paths[0].last().unwrap(), expected_destinations);
 
-	pass_failed_payment_back(origin_node, expected_paths, skip_last, our_payment_hash);
+	pass_failed_payment_back(origin_node, expected_paths, skip_last, our_payment_hash, PaymentFailureReason::RecipientRejected);
 }
 
-pub fn pass_failed_payment_back<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_paths_slice: &[&[&Node<'a, 'b, 'c>]], skip_last: bool, our_payment_hash: PaymentHash) {
+pub fn pass_failed_payment_back<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_paths_slice: &[&[&Node<'a, 'b, 'c>]], skip_last: bool, our_payment_hash: PaymentHash, expected_fail_reason: PaymentFailureReason) {
 	let mut expected_paths: Vec<_> = expected_paths_slice.iter().collect();
 	check_added_monitors!(expected_paths[0].last().unwrap(), expected_paths.len());
 
@@ -2329,9 +2334,10 @@ pub fn pass_failed_payment_back<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expe
 			};
 			if i == expected_paths.len() - 1 {
 				match events[1] {
-					Event::PaymentFailed { ref payment_hash, ref payment_id } => {
+					Event::PaymentFailed { ref payment_hash, ref payment_id, ref reason } => {
 						assert_eq!(*payment_hash, our_payment_hash, "unexpected second payment_hash");
 						assert_eq!(*payment_id, expected_payment_id);
+						assert_eq!(reason.unwrap(), expected_fail_reason);
 					}
 					_ => panic!("Unexpected second event"),
 				}
