@@ -71,7 +71,7 @@ use crate::prelude::*;
 use core::{cmp, mem};
 use core::cell::RefCell;
 use crate::io::Read;
-use crate::sync::{Arc, Mutex, RwLock, RwLockReadGuard, FairRwLock, LockTestExt, LockHeldState};
+use crate::sync::{Arc, Mutex, RwLock, SendableRwLock, SendableRwLockReadGuard, FairRwLock, LockTestExt, LockHeldState};
 use core::sync::atomic::{AtomicUsize, Ordering};
 use core::time::Duration;
 use core::ops::Deref;
@@ -879,7 +879,7 @@ where
 	/// When acquiring this lock in read mode, rather than acquiring it directly, call
 	/// `PersistenceNotifierGuard::notify_on_drop(..)` and pass the lock to it, to ensure the
 	/// Notifier the lock contains sends out a notification when the lock is released.
-	total_consistency_lock: RwLock<()>,
+	total_consistency_lock: SendableRwLock,
 
 	persistence_notifier: Notifier,
 
@@ -926,15 +926,15 @@ struct PersistenceNotifierGuard<'a, F: Fn() -> NotifyOption> {
 	persistence_notifier: &'a Notifier,
 	should_persist: F,
 	// We hold onto this result so the lock doesn't get released immediately.
-	_read_guard: RwLockReadGuard<'a, ()>,
+	_read_guard: SendableRwLockReadGuard<'a>,
 }
 
 impl<'a> PersistenceNotifierGuard<'a, fn() -> NotifyOption> { // We don't care what the concrete F is here, it's unused
-	fn notify_on_drop(lock: &'a RwLock<()>, notifier: &'a Notifier) -> PersistenceNotifierGuard<'a, impl Fn() -> NotifyOption> {
+	fn notify_on_drop(lock: &'a SendableRwLock, notifier: &'a Notifier) -> PersistenceNotifierGuard<'a, impl Fn() -> NotifyOption> {
 		PersistenceNotifierGuard::optionally_notify(lock, notifier, || -> NotifyOption { NotifyOption::DoPersist })
 	}
 
-	fn optionally_notify<F: Fn() -> NotifyOption>(lock: &'a RwLock<()>, notifier: &'a Notifier, persist_check: F) -> PersistenceNotifierGuard<'a, F> {
+	fn optionally_notify<F: Fn() -> NotifyOption>(lock: &'a SendableRwLock, notifier: &'a Notifier, persist_check: F) -> PersistenceNotifierGuard<'a, F> {
 		let read_guard = lock.read().unwrap();
 
 		PersistenceNotifierGuard {
@@ -1687,7 +1687,7 @@ where
 
 			pending_events: Mutex::new(Vec::new()),
 			pending_background_events: Mutex::new(Vec::new()),
-			total_consistency_lock: RwLock::new(()),
+			total_consistency_lock: SendableRwLock::new(()),
 			persistence_notifier: Notifier::new(),
 
 			entropy_source,
@@ -7872,7 +7872,7 @@ where
 
 			pending_events: Mutex::new(pending_events_read),
 			pending_background_events: Mutex::new(pending_background_events),
-			total_consistency_lock: RwLock::new(()),
+			total_consistency_lock: SendableRwLock::new(()),
 			persistence_notifier: Notifier::new(),
 
 			entropy_source: args.entropy_source,
@@ -7902,8 +7902,6 @@ mod tests {
 	use bitcoin::hashes::Hash;
 	use bitcoin::hashes::sha256::Hash as Sha256;
 	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
-	#[cfg(feature = "std")]
-	use core::time::Duration;
 	use core::sync::atomic::Ordering;
 	use crate::events::{Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, ClosureReason};
 	use crate::ln::{PaymentPreimage, PaymentHash, PaymentSecret};

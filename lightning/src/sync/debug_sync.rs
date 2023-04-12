@@ -373,6 +373,7 @@ impl<T> RwLock<T> {
 		self.inner.write().map(|guard| RwLockWriteGuard { lock: self, guard }).map_err(|_| ())
 	}
 
+	#[allow(dead_code)]
 	pub fn try_write<'a>(&'a self) -> LockResult<RwLockWriteGuard<'a, T>> {
 		let res = self.inner.try_write().map(|guard| RwLockWriteGuard { lock: self, guard }).map_err(|_| ());
 		if res.is_ok() {

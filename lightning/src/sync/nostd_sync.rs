@@ -124,3 +124,6 @@ impl<'a, T: 'a> LockTestExt<'a> for RwLock<T> {
 }
 
 pub type FairRwLock<T> = RwLock<T>;
+pub type SendableRwLock = RwLock<()>;
+pub type SendableRwLockReadGuard<'a> = RwLockReadGuard<'a, ()>;
+pub type SendableRwLockWriteGuard<'a> = RwLockWriteGuard<'a, ()>;

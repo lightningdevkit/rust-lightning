@@ -24,6 +24,10 @@ pub(crate) trait LockTestExt<'a> {
 mod debug_sync;
 #[cfg(all(feature = "std", not(feature = "_bench_unstable"), test))]
 pub use debug_sync::*;
+#[cfg(feature = "std")]
+mod sendablerwlock;
+#[cfg(feature = "std")]
+pub use sendablerwlock::*;
 #[cfg(all(feature = "std", not(feature = "_bench_unstable"), test))]
 // Note that to make debug_sync's regex work this must not contain `debug_string` in the module name
 mod test_lockorder_checks;
