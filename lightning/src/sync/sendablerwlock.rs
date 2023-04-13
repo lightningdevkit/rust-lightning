@@ -61,7 +61,6 @@ impl SendableRwLock {
 		guard.writers_waiting = guard.writers_waiting.checked_sub(1)
 			.expect("Read/write lock accounting is off.");
 
-		debug_assert!(!guard.writer_is_active);
 		guard.writer_is_active = true;
 
 		Ok(SendableRwLockWriteGuard::new(&self.inner, &self.notifier))
@@ -75,7 +74,6 @@ impl SendableRwLock {
 			return Err(());
 		}
 
-		debug_assert!(!guard.writer_is_active);
 		guard.writer_is_active = true;
 
 		Ok(SendableRwLockWriteGuard::new(&self.inner, &self.notifier))
