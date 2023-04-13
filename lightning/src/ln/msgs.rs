@@ -46,7 +46,7 @@ use crate::util::ser::{LengthReadable, Readable, ReadableArgs, Writeable, Writer
 
 use crate::ln::{PaymentPreimage, PaymentHash, PaymentSecret};
 
-use crate::routing::gossip::NodeId;
+use crate::routing::gossip::{NodeAlias, NodeId};
 
 /// 21 million * 10^8 * 1000
 pub(crate) const MAX_VALUE_MSAT: u64 = 21_000_000_0000_0000_000;
@@ -694,7 +694,7 @@ pub struct UnsignedNodeAnnouncement {
 	/// An alias, for UI purposes.
 	///
 	/// This should be sanitized before use. There is no guarantee of uniqueness.
-	pub alias: [u8; 32],
+	pub alias: NodeAlias,
 	/// List of addresses on which this node is reachable
 	pub addresses: Vec<NetAddress>,
 	pub(crate) excess_address_data: Vec<u8>,
@@ -1931,7 +1931,7 @@ impl Readable for UnsignedNodeAnnouncement {
 		let node_id: NodeId = Readable::read(r)?;
 		let mut rgb = [0; 3];
 		r.read_exact(&mut rgb)?;
-		let alias: [u8; 32] = Readable::read(r)?;
+		let alias: NodeAlias = Readable::read(r)?;
 
 		let addr_len: u16 = Readable::read(r)?;
 		let mut addresses: Vec<NetAddress> = Vec::new();
@@ -2138,7 +2138,7 @@ mod tests {
 	use crate::ln::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
 	use crate::ln::msgs;
 	use crate::ln::msgs::{FinalOnionHopData, OptionalField, OnionErrorPacket, OnionHopDataFormat};
-	use crate::routing::gossip::NodeId;
+	use crate::routing::gossip::{NodeAlias, NodeId};
 	use crate::util::ser::{Writeable, Readable, Hostname};
 
 	use bitcoin::hashes::hex::FromHex;
@@ -2333,7 +2333,7 @@ mod tests {
 			timestamp: 20190119,
 			node_id: NodeId::from_pubkey(&pubkey_1),
 			rgb: [32; 3],
-			alias: [16;32],
+			alias: NodeAlias([16;32]),
 			addresses,
 			excess_address_data: if excess_address_data { vec![33, 108, 40, 11, 83, 149, 162, 84, 110, 126, 75, 38, 99, 224, 79, 129, 22, 34, 241, 90, 79, 146, 232, 58, 162, 233, 43, 162, 165, 115, 193, 57, 20, 44, 84, 174, 99, 7, 42, 30, 193, 238, 125, 192, 192, 75, 222, 92, 132, 120, 6, 23, 42, 160, 92, 146, 194, 42, 232, 227, 8, 209, 210, 105] } else { Vec::new() },
 			excess_data: if excess_data { vec![59, 18, 204, 25, 92, 224, 162, 209, 189, 166, 168, 139, 239, 161, 159, 160, 127, 81, 202, 167, 92, 232, 56, 55, 242, 137, 101, 96, 11, 138, 172, 171, 8, 85, 255, 176, 231, 65, 236, 95, 124, 65, 66, 30, 152, 41, 169, 212, 134, 17, 200, 200, 49, 247, 27, 229, 234, 115, 230, 101, 148, 151, 127, 253] } else { Vec::new() },

@@ -28,7 +28,7 @@ use crate::ln::peer_channel_encryptor::{PeerChannelEncryptor,NextNoiseStep};
 use crate::ln::wire;
 use crate::ln::wire::Encode;
 use crate::onion_message::{CustomOnionMessageContents, CustomOnionMessageHandler, SimpleArcOnionMessenger, SimpleRefOnionMessenger};
-use crate::routing::gossip::{NetworkGraph, P2PGossipSync, NodeId};
+use crate::routing::gossip::{NetworkGraph, P2PGossipSync, NodeId, NodeAlias};
 use crate::util::atomic_counter::AtomicCounter;
 use crate::util::logger::Logger;
 
@@ -2153,7 +2153,9 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 			features,
 			timestamp: self.last_node_announcement_serial.fetch_add(1, Ordering::AcqRel),
 			node_id: NodeId::from_pubkey(&self.node_signer.get_node_id(Recipient::Node).unwrap()),
-			rgb, alias, addresses,
+			rgb,
+			alias: NodeAlias(alias),
+			addresses,
 			excess_address_data: Vec::new(),
 			excess_data: Vec::new(),
 		};

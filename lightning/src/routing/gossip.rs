@@ -1103,7 +1103,7 @@ impl Readable for NodeAnnouncementInfo {
 ///
 /// Since node aliases are provided by third parties, they are a potential avenue for injection
 /// attacks. Care must be taken when processing.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct NodeAlias(pub [u8; 32]);
 
 impl fmt::Display for NodeAlias {
@@ -1396,7 +1396,7 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 					features: msg.features.clone(),
 					last_update: msg.timestamp,
 					rgb: msg.rgb,
-					alias: NodeAlias(msg.alias),
+					alias: msg.alias,
 					announcement_message: if should_relay { full_msg.cloned() } else { None },
 				});
 
@@ -2029,7 +2029,7 @@ pub(crate) mod tests {
 			timestamp: 100,
 			node_id,
 			rgb: [0; 3],
-			alias: [0; 32],
+			alias: NodeAlias([0; 32]),
 			addresses: Vec::new(),
 			excess_address_data: Vec::new(),
 			excess_data: Vec::new(),

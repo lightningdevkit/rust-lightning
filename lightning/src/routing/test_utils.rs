@@ -7,7 +7,7 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-use crate::routing::gossip::{NetworkGraph, P2PGossipSync};
+use crate::routing::gossip::{NetworkGraph, NodeAlias, P2PGossipSync};
 use crate::ln::features::{ChannelFeatures, NodeFeatures};
 use crate::ln::msgs::{UnsignedChannelAnnouncement, ChannelAnnouncement, RoutingMessageHandler,
 	NodeAnnouncement, UnsignedNodeAnnouncement, ChannelUpdate, UnsignedChannelUpdate, MAX_VALUE_MSAT};
@@ -72,7 +72,7 @@ pub(super) fn add_or_update_node(
 		timestamp,
 		node_id,
 		rgb: [0; 3],
-		alias: [0; 32],
+		alias: NodeAlias([0; 32]),
 		addresses: Vec::new(),
 		excess_address_data: Vec::new(),
 		excess_data: Vec::new(),
