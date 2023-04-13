@@ -38,6 +38,7 @@ use crate::io;
 use crate::io_extras::{copy, sink};
 use crate::prelude::*;
 use core::{cmp, fmt};
+use core::convert::TryFrom;
 use crate::sync::{RwLock, RwLockReadGuard};
 #[cfg(feature = "std")]
 use core::sync::atomic::{AtomicUsize, Ordering};
@@ -75,6 +76,11 @@ impl NodeId {
 	/// Get the public key slice from this NodeId
 	pub fn as_slice(&self) -> &[u8] {
 		&self.0
+	}
+
+	/// Get the public key from this NodeId
+	pub fn as_pubkey(&self) -> Result<PublicKey, secp256k1::Error> {
+		PublicKey::from_slice(&self.0)
 	}
 }
 
@@ -127,6 +133,20 @@ impl Readable for NodeId {
 		let mut buf = [0; PUBLIC_KEY_SIZE];
 		reader.read_exact(&mut buf)?;
 		Ok(Self(buf))
+	}
+}
+
+impl From<PublicKey> for NodeId {
+	fn from(pubkey: PublicKey) -> Self {
+		Self::from_pubkey(&pubkey)
+	}
+}
+
+impl TryFrom<NodeId> for PublicKey {
+	type Error = secp256k1::Error;
+
+	fn try_from(node_id: NodeId) -> Result<Self, Self::Error> {
+		node_id.as_pubkey()
 	}
 }
 
