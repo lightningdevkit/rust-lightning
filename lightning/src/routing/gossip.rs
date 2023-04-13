@@ -16,6 +16,7 @@ use bitcoin::secp256k1;
 
 use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::hashes::Hash;
+use bitcoin::hashes::hex::FromHex;
 use bitcoin::hash_types::BlockHash;
 
 use bitcoin::network::constants::Network;
@@ -44,6 +45,7 @@ use crate::sync::{RwLock, RwLockReadGuard};
 use core::sync::atomic::{AtomicUsize, Ordering};
 use crate::sync::Mutex;
 use core::ops::{Bound, Deref};
+use core::str::FromStr;
 
 #[cfg(feature = "std")]
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -147,6 +149,15 @@ impl TryFrom<NodeId> for PublicKey {
 
 	fn try_from(node_id: NodeId) -> Result<Self, Self::Error> {
 		node_id.as_pubkey()
+	}
+}
+
+impl FromStr for NodeId {
+	type Err = bitcoin::hashes::hex::Error;
+
+	fn from_str(s: &str) -> Result<Self, Self::Err> {
+		let data: [u8; PUBLIC_KEY_SIZE] = FromHex::from_hex(s)?;
+		Ok(NodeId(data))
 	}
 }
 
