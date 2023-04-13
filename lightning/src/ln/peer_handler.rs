@@ -1246,8 +1246,8 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 								peer.set_their_node_id(their_node_id);
 								insert_node_id!();
 								let features = self.message_handler.chan_handler.provided_init_features(&their_node_id)
-									.or(self.message_handler.route_handler.provided_init_features(&their_node_id))
-									.or(self.message_handler.onion_message_handler.provided_init_features(&their_node_id));
+									| self.message_handler.route_handler.provided_init_features(&their_node_id)
+									| self.message_handler.onion_message_handler.provided_init_features(&their_node_id);
 								let resp = msgs::Init { features, remote_network_address: filter_addresses(peer.their_net_address.clone()) };
 								self.enqueue_message(peer, &resp);
 								peer.awaiting_pong_timer_tick_intervals = 0;
@@ -1260,8 +1260,8 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 								peer.set_their_node_id(their_node_id);
 								insert_node_id!();
 								let features = self.message_handler.chan_handler.provided_init_features(&their_node_id)
-									.or(self.message_handler.route_handler.provided_init_features(&their_node_id))
-									.or(self.message_handler.onion_message_handler.provided_init_features(&their_node_id));
+									| self.message_handler.route_handler.provided_init_features(&their_node_id)
+									| self.message_handler.onion_message_handler.provided_init_features(&their_node_id);
 								let resp = msgs::Init { features, remote_network_address: filter_addresses(peer.their_net_address.clone()) };
 								self.enqueue_message(peer, &resp);
 								peer.awaiting_pong_timer_tick_intervals = 0;
@@ -2202,8 +2202,8 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 		addresses.sort_by_key(|addr| addr.get_id());
 
 		let features = self.message_handler.chan_handler.provided_node_features()
-			.or(self.message_handler.route_handler.provided_node_features())
-			.or(self.message_handler.onion_message_handler.provided_node_features());
+			| self.message_handler.route_handler.provided_node_features()
+			| self.message_handler.onion_message_handler.provided_node_features();
 		let announcement = msgs::UnsignedNodeAnnouncement {
 			features,
 			timestamp: self.last_node_announcement_serial.fetch_add(1, Ordering::AcqRel),

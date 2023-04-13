@@ -422,8 +422,10 @@ pub struct Features<T: sealed::Context> {
 	mark: PhantomData<T>,
 }
 
-impl <T: sealed::Context> Features<T> {
-	pub(crate) fn or(mut self, o: Self) -> Self {
+impl<T: sealed::Context> core::ops::BitOr for Features<T> {
+	type Output = Self;
+
+	fn bitor(mut self, o: Self) -> Self {
 		let total_feature_len = cmp::max(self.flags.len(), o.flags.len());
 		self.flags.resize(total_feature_len, 0u8);
 		for (byte, o_byte) in self.flags.iter_mut().zip(o.flags.iter()) {
