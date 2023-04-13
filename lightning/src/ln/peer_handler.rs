@@ -64,6 +64,20 @@ pub trait CustomMessageHandler: wire::CustomMessageReader {
 	/// in the process. Each message is paired with the node id of the intended recipient. If no
 	/// connection to the node exists, then the message is simply not sent.
 	fn get_and_clear_pending_msg(&self) -> Vec<(PublicKey, Self::CustomMessage)>;
+
+	/// Gets the node feature flags which this handler itself supports. All available handlers are
+	/// queried similarly and their feature flags are OR'd together to form the [`NodeFeatures`]
+	/// which are broadcasted in our [`NodeAnnouncement`] message.
+	///
+	/// [`NodeAnnouncement`]: crate::ln::msgs::NodeAnnouncement
+	fn provided_node_features(&self) -> NodeFeatures;
+
+	/// Gets the init feature flags which should be sent to the given peer. All available handlers
+	/// are queried similarly and their feature flags are OR'd together to form the [`InitFeatures`]
+	/// which are sent in our [`Init`] message.
+	///
+	/// [`Init`]: crate::ln::msgs::Init
+	fn provided_init_features(&self, their_node_id: &PublicKey) -> InitFeatures;
 }
 
 /// A dummy struct which implements `RoutingMessageHandler` without storing any routing information
@@ -149,6 +163,12 @@ impl CustomMessageHandler for IgnoringMessageHandler {
 	}
 
 	fn get_and_clear_pending_msg(&self) -> Vec<(PublicKey, Self::CustomMessage)> { Vec::new() }
+
+	fn provided_node_features(&self) -> NodeFeatures { NodeFeatures::empty() }
+
+	fn provided_init_features(&self, _their_node_id: &PublicKey) -> InitFeatures {
+		InitFeatures::empty()
+	}
 }
 
 /// A dummy struct which implements `ChannelMessageHandler` without having any channels.
@@ -1247,7 +1267,8 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 								insert_node_id!();
 								let features = self.message_handler.chan_handler.provided_init_features(&their_node_id)
 									| self.message_handler.route_handler.provided_init_features(&their_node_id)
-									| self.message_handler.onion_message_handler.provided_init_features(&their_node_id);
+									| self.message_handler.onion_message_handler.provided_init_features(&their_node_id)
+									| self.message_handler.custom_message_handler.provided_init_features(&their_node_id);
 								let resp = msgs::Init { features, remote_network_address: filter_addresses(peer.their_net_address.clone()) };
 								self.enqueue_message(peer, &resp);
 								peer.awaiting_pong_timer_tick_intervals = 0;
@@ -1261,7 +1282,8 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 								insert_node_id!();
 								let features = self.message_handler.chan_handler.provided_init_features(&their_node_id)
 									| self.message_handler.route_handler.provided_init_features(&their_node_id)
-									| self.message_handler.onion_message_handler.provided_init_features(&their_node_id);
+									| self.message_handler.onion_message_handler.provided_init_features(&their_node_id)
+									| self.message_handler.custom_message_handler.provided_init_features(&their_node_id);
 								let resp = msgs::Init { features, remote_network_address: filter_addresses(peer.their_net_address.clone()) };
 								self.enqueue_message(peer, &resp);
 								peer.awaiting_pong_timer_tick_intervals = 0;
@@ -2203,7 +2225,8 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 
 		let features = self.message_handler.chan_handler.provided_node_features()
 			| self.message_handler.route_handler.provided_node_features()
-			| self.message_handler.onion_message_handler.provided_node_features();
+			| self.message_handler.onion_message_handler.provided_node_features()
+			| self.message_handler.custom_message_handler.provided_node_features();
 		let announcement = msgs::UnsignedNodeAnnouncement {
 			features,
 			timestamp: self.last_node_announcement_serial.fetch_add(1, Ordering::AcqRel),
