@@ -1588,7 +1588,7 @@ macro_rules! handle_new_monitor_update {
 	($self: ident, $update_res: expr, $update_id: expr, $peer_state_lock: expr, $peer_state: expr, $per_peer_state_lock: expr, $chan: expr, MANUALLY_REMOVING, $remove: expr) => { {
 		// update_maps_on_chan_removal needs to be able to take id_to_peer, so make sure we can in
 		// any case so that it won't deadlock.
-		debug_assert!($self.id_to_peer.try_lock().is_ok());
+		debug_assert_ne!($self.id_to_peer.held_by_thread(), LockHeldState::HeldByThread);
 		match $update_res {
 			ChannelMonitorUpdateStatus::InProgress => {
 				log_debug!($self.logger, "ChannelMonitor update for {} in flight, holding messages until the update completes.",
