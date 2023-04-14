@@ -16,6 +16,7 @@ use bitcoin::secp256k1;
 
 use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::hashes::Hash;
+use bitcoin::hashes::hex::FromHex;
 use bitcoin::hash_types::BlockHash;
 
 use bitcoin::network::constants::Network;
@@ -38,11 +39,13 @@ use crate::io;
 use crate::io_extras::{copy, sink};
 use crate::prelude::*;
 use core::{cmp, fmt};
+use core::convert::TryFrom;
 use crate::sync::{RwLock, RwLockReadGuard};
 #[cfg(feature = "std")]
 use core::sync::atomic::{AtomicUsize, Ordering};
 use crate::sync::Mutex;
 use core::ops::{Bound, Deref};
+use core::str::FromStr;
 
 #[cfg(feature = "std")]
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -75,6 +78,11 @@ impl NodeId {
 	/// Get the public key slice from this NodeId
 	pub fn as_slice(&self) -> &[u8] {
 		&self.0
+	}
+
+	/// Get the public key from this NodeId
+	pub fn as_pubkey(&self) -> Result<PublicKey, secp256k1::Error> {
+		PublicKey::from_slice(&self.0)
 	}
 }
 
@@ -127,6 +135,29 @@ impl Readable for NodeId {
 		let mut buf = [0; PUBLIC_KEY_SIZE];
 		reader.read_exact(&mut buf)?;
 		Ok(Self(buf))
+	}
+}
+
+impl From<PublicKey> for NodeId {
+	fn from(pubkey: PublicKey) -> Self {
+		Self::from_pubkey(&pubkey)
+	}
+}
+
+impl TryFrom<NodeId> for PublicKey {
+	type Error = secp256k1::Error;
+
+	fn try_from(node_id: NodeId) -> Result<Self, Self::Error> {
+		node_id.as_pubkey()
+	}
+}
+
+impl FromStr for NodeId {
+	type Err = bitcoin::hashes::hex::Error;
+
+	fn from_str(s: &str) -> Result<Self, Self::Err> {
+		let data: [u8; PUBLIC_KEY_SIZE] = FromHex::from_hex(s)?;
+		Ok(NodeId(data))
 	}
 }
 
