@@ -538,7 +538,7 @@ pub struct PackageTemplate {
 	feerate_previous: u64,
 	// Cache of next height at which fee-bumping and rebroadcast will be attempted. In
 	// the future, we might abstract it to an observed mempool fluctuation.
-	height_timer: Option<u32>,
+	height_timer: u32,
 	// Confirmation height of the claimed outputs set transaction. In case of reorg reaching
 	// it, we wipe out and forget the package.
 	height_original: u32,
@@ -557,13 +557,10 @@ impl PackageTemplate {
 	pub(crate) fn set_feerate(&mut self, new_feerate: u64) {
 		self.feerate_previous = new_feerate;
 	}
-	pub(crate) fn timer(&self) -> Option<u32> {
-		if let Some(ref timer) = self.height_timer {
-			return Some(*timer);
-		}
-		None
+	pub(crate) fn timer(&self) -> u32 {
+		self.height_timer
 	}
-	pub(crate) fn set_timer(&mut self, new_timer: Option<u32>) {
+	pub(crate) fn set_timer(&mut self, new_timer: u32) {
 		self.height_timer = new_timer;
 	}
 	pub(crate) fn outpoints(&self) -> Vec<&BitcoinOutPoint> {
@@ -837,7 +834,7 @@ impl PackageTemplate {
 			soonest_conf_deadline,
 			aggregable,
 			feerate_previous: 0,
-			height_timer: None,
+			height_timer: height_original,
 			height_original,
 		}
 	}
@@ -854,7 +851,7 @@ impl Writeable for PackageTemplate {
 			(0, self.soonest_conf_deadline, required),
 			(2, self.feerate_previous, required),
 			(4, self.height_original, required),
-			(6, self.height_timer, option)
+			(6, self.height_timer, required)
 		});
 		Ok(())
 	}
@@ -893,13 +890,16 @@ impl Readable for PackageTemplate {
 			(4, height_original, required),
 			(6, height_timer, option),
 		});
+		if height_timer.is_none() {
+			height_timer = Some(height_original);
+		}
 		Ok(PackageTemplate {
 			inputs,
 			malleability,
 			soonest_conf_deadline,
 			aggregable,
 			feerate_previous,
-			height_timer,
+			height_timer: height_timer.unwrap(),
 			height_original,
 		})
 	}
@@ -1177,12 +1177,9 @@ mod tests {
 		let revk_outp = dumb_revk_output!(secp_ctx);
 
 		let mut package = PackageTemplate::build_package(txid, 0, revk_outp, 1000, true, 100);
-		let timer_none = package.timer();
-		assert!(timer_none.is_none());
-		package.set_timer(Some(100));
-		if let Some(timer_some) = package.timer() {
-			assert_eq!(timer_some, 100);
-		} else { panic!() }
+		assert_eq!(package.timer(), 100);
+		package.set_timer(101);
+		assert_eq!(package.timer(), 101);
 	}
 
 	#[test]
