@@ -3006,10 +3006,11 @@ where
 		}
 		{
 			let height = self.best_block.read().unwrap().height();
-			// Transactions are evaluated as final by network mempools at the next block. However, the modules
-			// constituting our Lightning node might not have perfect sync about their blockchain views. Thus, if
-			// the wallet module is in advance on the LDK view, allow one more block of headroom.
-			if !funding_transaction.input.iter().all(|input| input.sequence == Sequence::MAX) && LockTime::from(funding_transaction.lock_time).is_block_height() && funding_transaction.lock_time.0 > height + 2 {
+			// Transactions are evaluated as final by network mempools if their locktime is strictly
+			// lower than the next block height. However, the modules constituting our Lightning
+			// node might not have perfect sync about their blockchain views. Thus, if the wallet
+			// module is ahead of LDK, only allow one more block of headroom.
+			if !funding_transaction.input.iter().all(|input| input.sequence == Sequence::MAX) && LockTime::from(funding_transaction.lock_time).is_block_height() && funding_transaction.lock_time.0 > height + 1 {
 				return Err(APIError::APIMisuseError {
 					err: "Funding transaction absolute timelock is non-final".to_owned()
 				});

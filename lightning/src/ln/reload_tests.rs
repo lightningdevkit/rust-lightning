@@ -948,7 +948,7 @@ fn do_forwarded_payment_no_manager_persistence(use_cs_commitment: bool, claim_ht
 		if claim_htlc {
 			confirm_transaction(&nodes[1], &cs_commitment_tx[1]);
 		} else {
-			connect_blocks(&nodes[1], htlc_expiry - nodes[1].best_block_info().1);
+			connect_blocks(&nodes[1], htlc_expiry - nodes[1].best_block_info().1 + 1);
 			let bs_htlc_timeout_tx = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 			assert_eq!(bs_htlc_timeout_tx.len(), 1);
 			confirm_transaction(&nodes[1], &bs_htlc_timeout_tx[0]);

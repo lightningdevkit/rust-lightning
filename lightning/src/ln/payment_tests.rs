@@ -562,8 +562,8 @@ fn do_test_completed_payment_not_retryable_on_reload(use_dust: bool) {
 	mine_transaction(&nodes[0], &bs_commitment_tx[0]);
 	mine_transaction(&nodes[1], &bs_commitment_tx[0]);
 	if !use_dust {
-		connect_blocks(&nodes[0], TEST_FINAL_CLTV - 1 + (MIN_CLTV_EXPIRY_DELTA as u32));
-		connect_blocks(&nodes[1], TEST_FINAL_CLTV - 1 + (MIN_CLTV_EXPIRY_DELTA as u32));
+		connect_blocks(&nodes[0], TEST_FINAL_CLTV + (MIN_CLTV_EXPIRY_DELTA as u32));
+		connect_blocks(&nodes[1], TEST_FINAL_CLTV + (MIN_CLTV_EXPIRY_DELTA as u32));
 		let as_htlc_timeout = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 		check_spends!(as_htlc_timeout[0], bs_commitment_tx[0]);
 		assert_eq!(as_htlc_timeout.len(), 1);

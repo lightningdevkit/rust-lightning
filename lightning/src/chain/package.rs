@@ -460,13 +460,13 @@ impl PackageSolvingData {
 		}
 	}
 	fn absolute_tx_timelock(&self, current_height: u32) -> u32 {
-		// We use `current_height + 1` as our default locktime to discourage fee sniping and because
+		// We use `current_height` as our default locktime to discourage fee sniping and because
 		// transactions with it always propagate.
 		let absolute_timelock = match self {
-			PackageSolvingData::RevokedOutput(_) => current_height + 1,
-			PackageSolvingData::RevokedHTLCOutput(_) => current_height + 1,
-			PackageSolvingData::CounterpartyOfferedHTLCOutput(_) => current_height + 1,
-			PackageSolvingData::CounterpartyReceivedHTLCOutput(ref outp) => cmp::max(outp.htlc.cltv_expiry, current_height + 1),
+			PackageSolvingData::RevokedOutput(_) => current_height,
+			PackageSolvingData::RevokedHTLCOutput(_) => current_height,
+			PackageSolvingData::CounterpartyOfferedHTLCOutput(_) => current_height,
+			PackageSolvingData::CounterpartyReceivedHTLCOutput(ref outp) => cmp::max(outp.htlc.cltv_expiry, current_height),
 			// HTLC timeout/success transactions rely on a fixed timelock due to the counterparty's
 			// signature.
 			PackageSolvingData::HolderHTLCOutput(ref outp) => {
@@ -475,7 +475,7 @@ impl PackageSolvingData {
 				}
 				outp.cltv_expiry
 			},
-			PackageSolvingData::HolderFundingOutput(_) => current_height + 1,
+			PackageSolvingData::HolderFundingOutput(_) => current_height,
 		};
 		absolute_timelock
 	}

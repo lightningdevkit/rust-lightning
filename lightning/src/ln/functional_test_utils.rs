@@ -230,6 +230,9 @@ fn do_connect_block<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, block: Block, sk
 	#[cfg(feature = "std")] {
 		eprintln!("Connecting block using Block Connection Style: {:?}", *node.connect_style.borrow());
 	}
+	// Update the block internally before handing it over to LDK, to ensure our assertions regarding
+	// transaction broadcast are correct.
+	node.blocks.lock().unwrap().push((block.clone(), height));
 	if !skip_intermediaries {
 		let txdata: Vec<_> = block.txdata.iter().enumerate().collect();
 		match *node.connect_style.borrow() {
@@ -279,7 +282,6 @@ fn do_connect_block<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, block: Block, sk
 	}
 	call_claimable_balances(node);
 	node.node.test_process_background_events();
-	node.blocks.lock().unwrap().push((block, height));
 }
 
 pub fn disconnect_blocks<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, count: u32) {
