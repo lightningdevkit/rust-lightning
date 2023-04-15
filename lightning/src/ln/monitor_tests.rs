@@ -30,9 +30,7 @@ use crate::ln::msgs::ChannelMessageHandler;
 use crate::util::config::UserConfig;
 #[cfg(anchors)]
 use crate::util::crypto::sign;
-#[cfg(anchors)]
 use crate::util::ser::Writeable;
-#[cfg(anchors)]
 use crate::util::test_utils;
 
 #[cfg(anchors)]
@@ -1324,20 +1322,29 @@ fn test_revoked_counterparty_htlc_tx_balances() {
 	check_closed_broadcast!(nodes[1], true);
 	check_added_monitors!(nodes[1], 1);
 	check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed);
-	let revoked_htlc_success_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
-
-	assert_eq!(revoked_htlc_success_txn.len(), 1);
-	assert_eq!(revoked_htlc_success_txn[0].input.len(), 1);
-	assert_eq!(revoked_htlc_success_txn[0].input[0].witness.last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT);
-	check_spends!(revoked_htlc_success_txn[0], revoked_local_txn[0]);
+	let revoked_htlc_success = {
+		let mut txn = nodes[1].tx_broadcaster.txn_broadcast();
+		assert_eq!(txn.len(), 1);
+		assert_eq!(txn[0].input.len(), 1);
+		assert_eq!(txn[0].input[0].witness.last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT);
+		check_spends!(txn[0], revoked_local_txn[0]);
+		txn.pop().unwrap()
+	};
 
 	connect_blocks(&nodes[1], TEST_FINAL_CLTV);
-	let revoked_htlc_timeout_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
-	assert_eq!(revoked_htlc_timeout_txn.len(), 1);
-	check_spends!(revoked_htlc_timeout_txn[0], revoked_local_txn[0]);
-	assert_ne!(revoked_htlc_success_txn[0].input[0].previous_output, revoked_htlc_timeout_txn[0].input[0].previous_output);
-	assert_eq!(revoked_htlc_success_txn[0].lock_time.0, 0);
-	assert_ne!(revoked_htlc_timeout_txn[0].lock_time.0, 0);
+	let revoked_htlc_timeout = {
+		let mut txn = nodes[1].tx_broadcaster.unique_txn_broadcast();
+		assert_eq!(txn.len(), 2);
+		if txn[0].input[0].previous_output == revoked_htlc_success.input[0].previous_output {
+			txn.remove(1)
+		} else {
+			txn.remove(0)
+		}
+	};
+	check_spends!(revoked_htlc_timeout, revoked_local_txn[0]);
+	assert_ne!(revoked_htlc_success.input[0].previous_output, revoked_htlc_timeout.input[0].previous_output);
+	assert_eq!(revoked_htlc_success.lock_time.0, 0);
+	assert_ne!(revoked_htlc_timeout.lock_time.0, 0);
 
 	// A will generate justice tx from B's revoked commitment/HTLC tx
 	mine_transaction(&nodes[0], &revoked_local_txn[0]);
@@ -1369,10 +1376,10 @@ fn test_revoked_counterparty_htlc_tx_balances() {
 	assert_eq!(as_balances,
 		sorted_vec(nodes[0].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
 
-	mine_transaction(&nodes[0], &revoked_htlc_success_txn[0]);
+	mine_transaction(&nodes[0], &revoked_htlc_success);
 	let as_htlc_claim_tx = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 	assert_eq!(as_htlc_claim_tx.len(), 2);
-	check_spends!(as_htlc_claim_tx[0], revoked_htlc_success_txn[0]);
+	check_spends!(as_htlc_claim_tx[0], revoked_htlc_success);
 	check_spends!(as_htlc_claim_tx[1], revoked_local_txn[0]); // A has to generate a new claim for the remaining revoked
 	                                                          // outputs (which no longer includes the spent HTLC output)
 
@@ -1381,7 +1388,7 @@ fn test_revoked_counterparty_htlc_tx_balances() {
 
 	assert_eq!(as_htlc_claim_tx[0].output.len(), 1);
 	fuzzy_assert_eq(as_htlc_claim_tx[0].output[0].value,
-		3_000 - chan_feerate * (revoked_htlc_success_txn[0].weight() + as_htlc_claim_tx[0].weight()) as u64 / 1000);
+		3_000 - chan_feerate * (revoked_htlc_success.weight() + as_htlc_claim_tx[0].weight()) as u64 / 1000);
 
 	mine_transaction(&nodes[0], &as_htlc_claim_tx[0]);
 	assert_eq!(sorted_vec(vec![Balance::ClaimableAwaitingConfirmations {
@@ -1423,7 +1430,7 @@ fn test_revoked_counterparty_htlc_tx_balances() {
 		}]),
 		sorted_vec(nodes[0].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
 
-	connect_blocks(&nodes[0], revoked_htlc_timeout_txn[0].lock_time.0 - nodes[0].best_block_info().1);
+	connect_blocks(&nodes[0], revoked_htlc_timeout.lock_time.0 - nodes[0].best_block_info().1);
 	expect_pending_htlcs_forwardable_and_htlc_handling_failed_ignore!(&nodes[0],
 		[HTLCDestination::FailedPayment { payment_hash: failed_payment_hash }]);
 	// As time goes on A may split its revocation claim transaction into multiple.
@@ -1440,11 +1447,11 @@ fn test_revoked_counterparty_htlc_tx_balances() {
 		check_spends!(tx, revoked_local_txn[0]);
 	}
 
-	mine_transaction(&nodes[0], &revoked_htlc_timeout_txn[0]);
+	mine_transaction(&nodes[0], &revoked_htlc_timeout);
 	let as_second_htlc_claim_tx = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 	assert_eq!(as_second_htlc_claim_tx.len(), 2);
 
-	check_spends!(as_second_htlc_claim_tx[0], revoked_htlc_timeout_txn[0]);
+	check_spends!(as_second_htlc_claim_tx[0], revoked_htlc_timeout);
 	check_spends!(as_second_htlc_claim_tx[1], revoked_local_txn[0]);
 
 	// Connect blocks to finalize the HTLC resolution with the HTLC-Timeout transaction. In a
@@ -1693,6 +1700,65 @@ fn test_revoked_counterparty_aggregated_claims() {
 	connect_blocks(&nodes[1], 6);
 	assert!(nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());
 	assert!(nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances().is_empty());
+}
+
+fn do_test_restored_packages_retry() {
+	// Tests that we'll retry packages that were previously timelocked after we've restored them.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	// Open a channel, lock in an HTLC, and immediately broadcast the commitment transaction. This
+	// ensures that the HTLC timeout package is held until we reach its expiration height.
+	let (_, _, chan_id, funding_tx) = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100_000, 50_000_000);
+	route_payment(&nodes[0], &[&nodes[1]], 10_000_000);
+
+	nodes[0].node.force_close_broadcasting_latest_txn(&chan_id, &nodes[1].node.get_our_node_id()).unwrap();
+	check_added_monitors(&nodes[0], 1);
+	check_closed_broadcast(&nodes[0], 1, true);
+	check_closed_event(&nodes[0], 1, ClosureReason::HolderForceClosed, false);
+
+	let commitment_tx = {
+		let mut txn = nodes[0].tx_broadcaster.txn_broadcast();
+		assert_eq!(txn.len(), 1);
+		assert_eq!(txn[0].output.len(), 3);
+		check_spends!(txn[0], funding_tx);
+		txn.pop().unwrap()
+	};
+
+	mine_transaction(&nodes[0], &commitment_tx);
+
+	// Connect blocks until the HTLC's expiration is met, expecting a transaction broadcast.
+	connect_blocks(&nodes[0], TEST_FINAL_CLTV - 1);
+	let htlc_timeout_tx = {
+		let mut txn = nodes[0].tx_broadcaster.txn_broadcast();
+		assert_eq!(txn.len(), 1);
+		check_spends!(txn[0], commitment_tx);
+		txn.pop().unwrap()
+	};
+
+	// Connecting more blocks should result in the HTLC transactions being rebroadcast.
+	connect_blocks(&nodes[0], 6);
+	{
+		let txn = nodes[0].tx_broadcaster.txn_broadcast();
+		if !nodes[0].connect_style.borrow().skips_blocks() {
+			assert_eq!(txn.len(), 6);
+		} else {
+			assert!(txn.len() < 6);
+		}
+		for tx in txn {
+			assert_eq!(tx.input.len(), htlc_timeout_tx.input.len());
+			assert_eq!(tx.output.len(), htlc_timeout_tx.output.len());
+			assert_eq!(tx.input[0].previous_output, htlc_timeout_tx.input[0].previous_output);
+			assert_eq!(tx.output[0], htlc_timeout_tx.output[0]);
+		}
+	}
+}
+
+#[test]
+fn test_restored_packages_retry() {
+	do_test_restored_packages_retry();
 }
 
 #[cfg(anchors)]

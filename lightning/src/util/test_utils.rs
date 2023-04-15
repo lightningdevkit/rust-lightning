@@ -311,6 +311,17 @@ impl TestBroadcaster {
 	pub fn new(blocks: Arc<Mutex<Vec<(Block, u32)>>>) -> TestBroadcaster {
 		TestBroadcaster { txn_broadcasted: Mutex::new(Vec::new()), blocks }
 	}
+
+	pub fn txn_broadcast(&self) -> Vec<Transaction> {
+		self.txn_broadcasted.lock().unwrap().split_off(0)
+	}
+
+	pub fn unique_txn_broadcast(&self) -> Vec<Transaction> {
+		let mut txn = self.txn_broadcasted.lock().unwrap().split_off(0);
+		let mut seen = HashSet::new();
+		txn.retain(|tx| seen.insert(tx.txid()));
+		txn
+	}
 }
 
 impl chaininterface::BroadcasterInterface for TestBroadcaster {

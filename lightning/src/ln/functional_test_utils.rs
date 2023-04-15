@@ -137,6 +137,20 @@ pub enum ConnectStyle {
 }
 
 impl ConnectStyle {
+	pub fn skips_blocks(&self) -> bool {
+		match self {
+			ConnectStyle::BestBlockFirst => false,
+			ConnectStyle::BestBlockFirstSkippingBlocks => true,
+			ConnectStyle::BestBlockFirstReorgsOnlyTip => true,
+			ConnectStyle::TransactionsFirst => false,
+			ConnectStyle::TransactionsFirstSkippingBlocks => true,
+			ConnectStyle::TransactionsDuplicativelyFirstSkippingBlocks => true,
+			ConnectStyle::HighlyRedundantTransactionsFirstSkippingBlocks => true,
+			ConnectStyle::TransactionsFirstReorgsOnlyTip => true,
+			ConnectStyle::FullBlockViaListen => false,
+		}
+	}
+
 	fn random_style() -> ConnectStyle {
 		#[cfg(feature = "std")] {
 			use core::hash::{BuildHasher, Hasher};
@@ -164,12 +178,7 @@ impl ConnectStyle {
 }
 
 pub fn connect_blocks<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, depth: u32) -> BlockHash {
-	let skip_intermediaries = match *node.connect_style.borrow() {
-		ConnectStyle::BestBlockFirstSkippingBlocks|ConnectStyle::TransactionsFirstSkippingBlocks|
-			ConnectStyle::TransactionsDuplicativelyFirstSkippingBlocks|ConnectStyle::HighlyRedundantTransactionsFirstSkippingBlocks|
-			ConnectStyle::BestBlockFirstReorgsOnlyTip|ConnectStyle::TransactionsFirstReorgsOnlyTip => true,
-		_ => false,
-	};
+	let skip_intermediaries = node.connect_style.borrow().skips_blocks();
 
 	let height = node.best_block_info().1 + 1;
 	let mut block = Block {
@@ -2535,6 +2544,8 @@ pub enum HTLCType { NONE, TIMEOUT, SUCCESS }
 /// also fail.
 pub fn test_txn_broadcast<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, chan: &(msgs::ChannelUpdate, msgs::ChannelUpdate, [u8; 32], Transaction), commitment_tx: Option<Transaction>, has_htlc_tx: HTLCType) -> Vec<Transaction>  {
 	let mut node_txn = node.tx_broadcaster.txn_broadcasted.lock().unwrap();
+	let mut txn_seen = HashSet::new();
+	node_txn.retain(|tx| txn_seen.insert(tx.txid()));
 	assert!(node_txn.len() >= if commitment_tx.is_some() { 0 } else { 1 } + if has_htlc_tx == HTLCType::NONE { 0 } else { 1 });
 
 	let mut res = Vec::with_capacity(2);
@@ -2598,22 +2609,23 @@ pub fn test_revoked_htlc_claim_txn_broadcast<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>
 
 pub fn check_preimage_claim<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, prev_txn: &Vec<Transaction>) -> Vec<Transaction>  {
 	let mut node_txn = node.tx_broadcaster.txn_broadcasted.lock().unwrap();
+	let mut txn_seen = HashSet::new();
+	node_txn.retain(|tx| txn_seen.insert(tx.txid()));
 
-	assert!(node_txn.len() >= 1);
-	assert_eq!(node_txn[0].input.len(), 1);
 	let mut found_prev = false;
+	for prev_tx in prev_txn {
+		for tx in &*node_txn {
+			if tx.input[0].previous_output.txid == prev_tx.txid() {
+				check_spends!(tx, prev_tx);
+				let mut iter = tx.input[0].witness.iter();
+				iter.next().expect("expected 3 witness items");
+				iter.next().expect("expected 3 witness items");
+				assert!(iter.next().expect("expected 3 witness items").len() > 106); // must spend an htlc output
+				assert_eq!(tx.input.len(), 1); // must spend a commitment tx
 
-	for tx in prev_txn {
-		if node_txn[0].input[0].previous_output.txid == tx.txid() {
-			check_spends!(node_txn[0], tx);
-			let mut iter = node_txn[0].input[0].witness.iter();
-			iter.next().expect("expected 3 witness items");
-			iter.next().expect("expected 3 witness items");
-			assert!(iter.next().expect("expected 3 witness items").len() > 106); // must spend an htlc output
-			assert_eq!(tx.input.len(), 1); // must spend a commitment tx
-
-			found_prev = true;
-			break;
+				found_prev = true;
+				break;
+			}
 		}
 	}
 	assert!(found_prev);

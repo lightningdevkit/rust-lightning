@@ -583,7 +583,7 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner> OnchainTxHandler<ChannelSigner>
 				None => return None,
 			};
 			if !cached_request.requires_external_funding() {
-				return Some((None, 0, OnchainClaim::Tx(tx)));
+				return Some((new_timer, 0, OnchainClaim::Tx(tx)));
 			}
 			#[cfg(anchors)]
 			return inputs.find_map(|input| match input {
