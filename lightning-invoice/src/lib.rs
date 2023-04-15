@@ -1648,7 +1648,7 @@ impl<'de> Deserialize<'de> for Invoice {
 	fn deserialize<D>(deserializer: D) -> Result<Invoice, D::Error> where D: Deserializer<'de> {
 		let bolt11 = String::deserialize(deserializer)?
 			.parse::<Invoice>()
-			.map_err(|e| D::Error::custom(format!("{:?}", e)))?;
+			.map_err(|e| D::Error::custom(alloc::format!("{:?}", e)))?;
 
 		Ok(bolt11)
 	}
