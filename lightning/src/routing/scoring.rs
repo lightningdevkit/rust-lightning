@@ -1070,7 +1070,7 @@ impl<L: DerefMut<Target = u64>, BRT: DerefMut<Target = HistoricalBucketRangeTrac
 			log_trace!(logger, "Max liquidity of {} is {} (already less than or equal to {})",
 				chan_descr, existing_max_msat, amount_msat);
 		}
-		self.update_history_buckets();
+		self.update_history_buckets(0);
 	}
 
 	/// Adjusts the channel liquidity balance bounds when failing to route `amount_msat` downstream.
@@ -1083,7 +1083,7 @@ impl<L: DerefMut<Target = u64>, BRT: DerefMut<Target = HistoricalBucketRangeTrac
 			log_trace!(logger, "Min liquidity of {} is {} (already greater than or equal to {})",
 				chan_descr, existing_min_msat, amount_msat);
 		}
-		self.update_history_buckets();
+		self.update_history_buckets(0);
 	}
 
 	/// Adjusts the channel liquidity balance bounds when successfully routing `amount_msat`.
@@ -1091,10 +1091,14 @@ impl<L: DerefMut<Target = u64>, BRT: DerefMut<Target = HistoricalBucketRangeTrac
 		let max_liquidity_msat = self.max_liquidity_msat().checked_sub(amount_msat).unwrap_or(0);
 		log_debug!(logger, "Subtracting {} from max liquidity of {} (setting it to {})", amount_msat, chan_descr, max_liquidity_msat);
 		self.set_max_liquidity_msat(max_liquidity_msat);
-		self.update_history_buckets();
+		self.update_history_buckets(amount_msat);
 	}
 
-	fn update_history_buckets(&mut self) {
+	/// Updates the history buckets for this channel. Because the history buckets track what we now
+	/// know about the channel's state *prior to our payment* (i.e. what we assume is "steady
+	/// state"), we allow the caller to set an offset applied to our liquidity bounds which
+	/// represents the amount of the successful payment we just made.
+	fn update_history_buckets(&mut self, bucket_offset_msat: u64) {
 		let half_lives = self.now.duration_since(*self.last_updated).as_secs()
 			.checked_div(self.decay_params.historical_no_updates_half_life.as_secs())
 			.map(|v| v.try_into().unwrap_or(u32::max_value())).unwrap_or(u32::max_value());
@@ -1103,11 +1107,11 @@ impl<L: DerefMut<Target = u64>, BRT: DerefMut<Target = HistoricalBucketRangeTrac
 
 		let min_liquidity_offset_msat = self.decayed_offset_msat(*self.min_liquidity_offset_msat);
 		self.liquidity_history.min_liquidity_offset_history.track_datapoint(
-			min_liquidity_offset_msat, self.capacity_msat
+			min_liquidity_offset_msat + bucket_offset_msat, self.capacity_msat
 		);
 		let max_liquidity_offset_msat = self.decayed_offset_msat(*self.max_liquidity_offset_msat);
 		self.liquidity_history.max_liquidity_offset_history.track_datapoint(
-			max_liquidity_offset_msat, self.capacity_msat
+			max_liquidity_offset_msat.saturating_sub(bucket_offset_msat), self.capacity_msat
 		);
 	}
 
