@@ -4169,7 +4169,7 @@ mod tests {
 		replay_update.updates.push(ChannelMonitorUpdateStep::PaymentPreimage { payment_preimage: payment_preimage_1 });
 		replay_update.updates.push(ChannelMonitorUpdateStep::PaymentPreimage { payment_preimage: payment_preimage_2 });
 
-		let broadcaster = TestBroadcaster::new(Arc::clone(&nodes[1].blocks));
+		let broadcaster = TestBroadcaster::with_blocks(Arc::clone(&nodes[1].blocks));
 		assert!(
 			pre_update_monitor.update_monitor(&replay_update, &&broadcaster, &chanmon_cfgs[1].fee_estimator, &nodes[1].logger)
 			.is_err());
@@ -4195,10 +4195,7 @@ mod tests {
 	fn test_prune_preimages() {
 		let secp_ctx = Secp256k1::new();
 		let logger = Arc::new(TestLogger::new());
-		let broadcaster = Arc::new(TestBroadcaster {
-			txn_broadcasted: Mutex::new(Vec::new()),
-			blocks: Arc::new(Mutex::new(Vec::new()))
-		});
+		let broadcaster = Arc::new(TestBroadcaster::new(Network::Testnet));
 		let fee_estimator = TestFeeEstimator { sat_per_kw: Mutex::new(253) };
 
 		let dummy_key = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());

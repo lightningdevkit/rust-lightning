@@ -308,8 +308,15 @@ pub struct TestBroadcaster {
 }
 
 impl TestBroadcaster {
-	pub fn new(blocks: Arc<Mutex<Vec<(Block, u32)>>>) -> TestBroadcaster {
-		TestBroadcaster { txn_broadcasted: Mutex::new(Vec::new()), blocks }
+	pub fn new(network: Network) -> Self {
+		Self {
+			txn_broadcasted: Mutex::new(Vec::new()),
+			blocks: Arc::new(Mutex::new(vec![(genesis_block(network), 0)])),
+		}
+	}
+
+	pub fn with_blocks(blocks: Arc<Mutex<Vec<(Block, u32)>>>) -> Self {
+		Self { txn_broadcasted: Mutex::new(Vec::new()), blocks }
 	}
 
 	pub fn txn_broadcast(&self) -> Vec<Transaction> {

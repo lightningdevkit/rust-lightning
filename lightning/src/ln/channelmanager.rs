@@ -9035,7 +9035,7 @@ pub mod bench {
 		// calls per node.
 		let network = bitcoin::Network::Testnet;
 
-		let tx_broadcaster = test_utils::TestBroadcaster{txn_broadcasted: Mutex::new(Vec::new()), blocks: Arc::new(Mutex::new(Vec::new()))};
+		let tx_broadcaster = test_utils::TestBroadcaster::new(network);
 		let fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) };
 		let logger_a = test_utils::TestLogger::with_id("node a".to_owned());
 		let scorer = Mutex::new(test_utils::TestScorer::new());

@@ -8434,7 +8434,7 @@ fn test_update_err_monitor_lockdown() {
 	let block = Block { header, txdata: vec![] };
 	// Make the tx_broadcaster aware of enough blocks that it doesn't think we're violating
 	// transaction lock time requirements here.
-	chanmon_cfgs[0].tx_broadcaster.blocks.lock().unwrap().resize(200, (block.clone(), 0));
+	chanmon_cfgs[0].tx_broadcaster.blocks.lock().unwrap().resize(200, (block.clone(), 200));
 	watchtower.chain_monitor.block_connected(&block, 200);
 
 	// Try to update ChannelMonitor
@@ -8486,6 +8486,9 @@ fn test_concurrent_monitor_claim() {
 	let chain_source = test_utils::TestChainSource::new(Network::Testnet);
 	let logger = test_utils::TestLogger::with_id(format!("node {}", "Alice"));
 	let persister = test_utils::TestPersister::new();
+	let alice_broadcaster = test_utils::TestBroadcaster::with_blocks(
+		Arc::new(Mutex::new(nodes[0].blocks.lock().unwrap().clone())),
+	);
 	let watchtower_alice = {
 		let new_monitor = {
 			let monitor = nodes[0].chain_monitor.chain_monitor.get_monitor(outpoint).unwrap();
@@ -8494,20 +8497,21 @@ fn test_concurrent_monitor_claim() {
 			assert!(new_monitor == *monitor);
 			new_monitor
 		};
-		let watchtower = test_utils::TestChainMonitor::new(Some(&chain_source), &chanmon_cfgs[0].tx_broadcaster, &logger, &chanmon_cfgs[0].fee_estimator, &persister, &node_cfgs[0].keys_manager);
+		let watchtower = test_utils::TestChainMonitor::new(Some(&chain_source), &alice_broadcaster, &logger, &chanmon_cfgs[0].fee_estimator, &persister, &node_cfgs[0].keys_manager);
 		assert_eq!(watchtower.watch_channel(outpoint, new_monitor), ChannelMonitorUpdateStatus::Completed);
 		watchtower
 	};
 	let header = BlockHeader { version: 0x20000000, prev_blockhash: BlockHash::all_zeros(), merkle_root: TxMerkleNode::all_zeros(), time: 42, bits: 42, nonce: 42 };
 	let block = Block { header, txdata: vec![] };
-	// Make the tx_broadcaster aware of enough blocks that it doesn't think we're violating
-	// transaction lock time requirements here.
-	chanmon_cfgs[0].tx_broadcaster.blocks.lock().unwrap().resize((CHAN_CONFIRM_DEPTH + 1 + TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS) as usize, (block.clone(), 0));
-	watchtower_alice.chain_monitor.block_connected(&block, CHAN_CONFIRM_DEPTH + 1 + TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS);
+	// Make Alice aware of enough blocks that it doesn't think we're violating transaction lock time
+	// requirements here.
+	const HTLC_TIMEOUT_BROADCAST: u32 = CHAN_CONFIRM_DEPTH + 1 + TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS;
+	alice_broadcaster.blocks.lock().unwrap().resize((HTLC_TIMEOUT_BROADCAST) as usize, (block.clone(), HTLC_TIMEOUT_BROADCAST));
+	watchtower_alice.chain_monitor.block_connected(&block, HTLC_TIMEOUT_BROADCAST);
 
 	// Watchtower Alice should have broadcast a commitment/HTLC-timeout
 	let alice_state = {
-		let mut txn = chanmon_cfgs[0].tx_broadcaster.txn_broadcast();
+		let mut txn = alice_broadcaster.txn_broadcast();
 		assert_eq!(txn.len(), 2);
 		txn.remove(0)
 	};
@@ -8516,6 +8520,7 @@ fn test_concurrent_monitor_claim() {
 	let chain_source = test_utils::TestChainSource::new(Network::Testnet);
 	let logger = test_utils::TestLogger::with_id(format!("node {}", "Bob"));
 	let persister = test_utils::TestPersister::new();
+	let bob_broadcaster = test_utils::TestBroadcaster::with_blocks(Arc::clone(&alice_broadcaster.blocks));
 	let watchtower_bob = {
 		let new_monitor = {
 			let monitor = nodes[0].chain_monitor.chain_monitor.get_monitor(outpoint).unwrap();
@@ -8524,12 +8529,12 @@ fn test_concurrent_monitor_claim() {
 			assert!(new_monitor == *monitor);
 			new_monitor
 		};
-		let watchtower = test_utils::TestChainMonitor::new(Some(&chain_source), &chanmon_cfgs[0].tx_broadcaster, &logger, &chanmon_cfgs[0].fee_estimator, &persister, &node_cfgs[0].keys_manager);
+		let watchtower = test_utils::TestChainMonitor::new(Some(&chain_source), &bob_broadcaster, &logger, &chanmon_cfgs[0].fee_estimator, &persister, &node_cfgs[0].keys_manager);
 		assert_eq!(watchtower.watch_channel(outpoint, new_monitor), ChannelMonitorUpdateStatus::Completed);
 		watchtower
 	};
 	let header = BlockHeader { version: 0x20000000, prev_blockhash: BlockHash::all_zeros(), merkle_root: TxMerkleNode::all_zeros(), time: 42, bits: 42, nonce: 42 };
-	watchtower_bob.chain_monitor.block_connected(&Block { header, txdata: vec![] }, CHAN_CONFIRM_DEPTH + TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS);
+	watchtower_bob.chain_monitor.block_connected(&Block { header, txdata: vec![] }, HTLC_TIMEOUT_BROADCAST - 1);
 
 	// Route another payment to generate another update with still previous HTLC pending
 	let (route, payment_hash, _, payment_secret) = get_route_and_payment_hash!(nodes[1], nodes[0], 3000000);
@@ -8556,21 +8561,26 @@ fn test_concurrent_monitor_claim() {
 
 	//// Provide one more block to watchtower Bob, expect broadcast of commitment and HTLC-Timeout
 	let header = BlockHeader { version: 0x20000000, prev_blockhash: BlockHash::all_zeros(), merkle_root: TxMerkleNode::all_zeros(), time: 42, bits: 42, nonce: 42 };
-	watchtower_bob.chain_monitor.block_connected(&Block { header, txdata: vec![] }, CHAN_CONFIRM_DEPTH + 1 + TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS);
+	watchtower_bob.chain_monitor.block_connected(&Block { header, txdata: vec![] }, HTLC_TIMEOUT_BROADCAST);
 
 	// Watchtower Bob should have broadcast a commitment/HTLC-timeout
 	let bob_state_y;
 	{
-		let mut txn = chanmon_cfgs[0].tx_broadcaster.txn_broadcast();
+		let mut txn = bob_broadcaster.txn_broadcast();
 		assert_eq!(txn.len(), 2);
 		bob_state_y = txn.remove(0);
 	};
 
 	// We confirm Bob's state Y on Alice, she should broadcast a HTLC-timeout
 	let header = BlockHeader { version: 0x20000000, prev_blockhash: BlockHash::all_zeros(), merkle_root: TxMerkleNode::all_zeros(), time: 42, bits: 42, nonce: 42 };
-	watchtower_alice.chain_monitor.block_connected(&Block { header, txdata: vec![bob_state_y.clone()] }, CHAN_CONFIRM_DEPTH + 2 + TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS);
+	let height = HTLC_TIMEOUT_BROADCAST + 1;
+	connect_blocks(&nodes[0], height - nodes[0].best_block_info().1);
+	check_closed_broadcast(&nodes[0], 1, true);
+	check_closed_event(&nodes[0], 1, ClosureReason::CommitmentTxConfirmed, false);
+	watchtower_alice.chain_monitor.block_connected(&Block { header, txdata: vec![bob_state_y.clone()] }, height);
+	check_added_monitors(&nodes[0], 1);
 	{
-		let htlc_txn = chanmon_cfgs[0].tx_broadcaster.txn_broadcast();
+		let htlc_txn = alice_broadcaster.txn_broadcast();
 		assert_eq!(htlc_txn.len(), 2);
 		check_spends!(htlc_txn[0], bob_state_y);
 		// Alice doesn't clean up the old HTLC claim since it hasn't seen a conflicting spend for

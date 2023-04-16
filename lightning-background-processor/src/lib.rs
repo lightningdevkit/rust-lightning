@@ -1028,12 +1028,12 @@ mod tests {
 	}
 
 	fn create_nodes(num_nodes: usize, persist_dir: String) -> Vec<Node> {
+		let network = Network::Testnet;
 		let mut nodes = Vec::new();
 		for i in 0..num_nodes {
-			let tx_broadcaster = Arc::new(test_utils::TestBroadcaster{txn_broadcasted: Mutex::new(Vec::new()), blocks: Arc::new(Mutex::new(Vec::new()))});
+			let tx_broadcaster = Arc::new(test_utils::TestBroadcaster::new(network));
 			let fee_estimator = Arc::new(test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) });
 			let logger = Arc::new(test_utils::TestLogger::with_id(format!("node {}", i)));
-			let network = Network::Testnet;
 			let genesis_block = genesis_block(network);
 			let network_graph = Arc::new(NetworkGraph::new(network, logger.clone()));
 			let scorer = Arc::new(Mutex::new(TestScorer::new()));
