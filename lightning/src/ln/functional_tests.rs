@@ -1107,7 +1107,7 @@ fn holding_cell_htlc_counting() {
 	let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2);
 
 	let mut payments = Vec::new();
-	for _ in 0..crate::ln::channel::OUR_MAX_HTLCS {
+	for _ in 0..50 {
 		let (route, payment_hash, payment_preimage, payment_secret) = get_route_and_payment_hash!(nodes[1], nodes[2], 100000);
 		nodes[1].node.send_payment_with_route(&route, payment_hash,
 			RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)).unwrap();
@@ -6270,11 +6270,11 @@ fn test_update_add_htlc_bolt2_receiver_check_max_htlc_limit() {
 		onion_routing_packet: onion_packet.clone(),
 	};
 
-	for i in 0..super::channel::OUR_MAX_HTLCS {
+	for i in 0..50 {
 		msg.htlc_id = i as u64;
 		nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &msg);
 	}
-	msg.htlc_id = (super::channel::OUR_MAX_HTLCS) as u64;
+	msg.htlc_id = (50) as u64;
 	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &msg);
 
 	assert!(nodes[1].node.list_channels().is_empty());
