@@ -161,13 +161,12 @@ impl<'a> InvoiceBuilder<'a, ExplicitSigningPubkey> {
 		created_at: Duration, payment_hash: PaymentHash
 	) -> Result<Self, SemanticError> {
 		let amount_msats = Self::check_amount_msats(invoice_request)?;
+		let signing_pubkey = invoice_request.contents.inner.offer.signing_pubkey();
 		let contents = InvoiceContents::ForOffer {
 			invoice_request: invoice_request.contents.clone(),
-			fields: InvoiceFields {
-				payment_paths, created_at, relative_expiry: None, payment_hash, amount_msats,
-				fallbacks: None, features: Bolt12InvoiceFeatures::empty(),
-				signing_pubkey: invoice_request.contents.inner.offer.signing_pubkey(),
-			},
+			fields: Self::fields(
+				payment_paths, created_at, payment_hash, amount_msats, signing_pubkey
+			),
 		};
 
 		Self::new(&invoice_request.bytes, contents, None)
@@ -177,13 +176,12 @@ impl<'a> InvoiceBuilder<'a, ExplicitSigningPubkey> {
 		refund: &'a Refund, payment_paths: Vec<(BlindedPath, BlindedPayInfo)>, created_at: Duration,
 		payment_hash: PaymentHash, signing_pubkey: PublicKey
 	) -> Result<Self, SemanticError> {
+		let amount_msats = refund.amount_msats();
 		let contents = InvoiceContents::ForRefund {
 			refund: refund.contents.clone(),
-			fields: InvoiceFields {
-				payment_paths, created_at, relative_expiry: None, payment_hash,
-				amount_msats: refund.amount_msats(), fallbacks: None,
-				features: Bolt12InvoiceFeatures::empty(), signing_pubkey,
-			},
+			fields: Self::fields(
+				payment_paths, created_at, payment_hash, amount_msats, signing_pubkey
+			),
 		};
 
 		Self::new(&refund.bytes, contents, None)
@@ -196,13 +194,12 @@ impl<'a> InvoiceBuilder<'a, DerivedSigningPubkey> {
 		created_at: Duration, payment_hash: PaymentHash, keys: KeyPair
 	) -> Result<Self, SemanticError> {
 		let amount_msats = Self::check_amount_msats(invoice_request)?;
+		let signing_pubkey = invoice_request.contents.inner.offer.signing_pubkey();
 		let contents = InvoiceContents::ForOffer {
 			invoice_request: invoice_request.contents.clone(),
-			fields: InvoiceFields {
-				payment_paths, created_at, relative_expiry: None, payment_hash, amount_msats,
-				fallbacks: None, features: Bolt12InvoiceFeatures::empty(),
-				signing_pubkey: invoice_request.contents.inner.offer.signing_pubkey(),
-			},
+			fields: Self::fields(
+				payment_paths, created_at, payment_hash, amount_msats, signing_pubkey
+			),
 		};
 
 		Self::new(&invoice_request.bytes, contents, Some(keys))
@@ -212,13 +209,13 @@ impl<'a> InvoiceBuilder<'a, DerivedSigningPubkey> {
 		refund: &'a Refund, payment_paths: Vec<(BlindedPath, BlindedPayInfo)>, created_at: Duration,
 		payment_hash: PaymentHash, keys: KeyPair,
 	) -> Result<Self, SemanticError> {
+		let amount_msats = refund.amount_msats();
+		let signing_pubkey = keys.public_key();
 		let contents = InvoiceContents::ForRefund {
 			refund: refund.contents.clone(),
-			fields: InvoiceFields {
-				payment_paths, created_at, relative_expiry: None, payment_hash,
-				amount_msats: refund.amount_msats(), fallbacks: None,
-				features: Bolt12InvoiceFeatures::empty(), signing_pubkey: keys.public_key(),
-			},
+			fields: Self::fields(
+				payment_paths, created_at, payment_hash, amount_msats, signing_pubkey
+			),
 		};
 
 		Self::new(&refund.bytes, contents, Some(keys))
@@ -237,6 +234,16 @@ impl<'a, S: SigningPubkeyStrategy> InvoiceBuilder<'a, S> {
 				Some(Amount::Currency { .. }) => Err(SemanticError::UnsupportedCurrency),
 				None => Err(SemanticError::MissingAmount),
 			},
+		}
+	}
+
+	fn fields(
+		payment_paths: Vec<(BlindedPath, BlindedPayInfo)>, created_at: Duration,
+		payment_hash: PaymentHash, amount_msats: u64, signing_pubkey: PublicKey
+	) -> InvoiceFields {
+		InvoiceFields {
+			payment_paths, created_at, relative_expiry: None, payment_hash, amount_msats,
+			fallbacks: None, features: Bolt12InvoiceFeatures::empty(), signing_pubkey,
 		}
 	}
 
