@@ -1,6 +1,12 @@
 name: Continuous Integration Checks
 
-on: [push, pull_request]
+on:
+  push:
+    branches-ignore:
+      - master
+  pull_request:
+    branches-ignore:
+      - master
 
 jobs:
   build:
