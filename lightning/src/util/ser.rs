@@ -596,7 +596,7 @@ impl Readable for [u16; 8] {
 		r.read_exact(&mut buf)?;
 		let mut res = [0u16; 8];
 		for (idx, v) in res.iter_mut().enumerate() {
-			*v = (buf[idx] as u16) << 8 | (buf[idx + 1] as u16)
+			*v = (buf[idx*2] as u16) << 8 | (buf[idx*2 + 1] as u16)
 		}
 		Ok(res)
 	}
