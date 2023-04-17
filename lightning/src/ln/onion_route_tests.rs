@@ -16,7 +16,7 @@ use crate::chain::keysinterface::{EntropySource, NodeSigner, Recipient};
 use crate::events::{Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, PathFailure, PaymentFailureReason};
 use crate::ln::{PaymentHash, PaymentSecret};
 use crate::ln::channel::EXPIRE_PREV_CONFIG_TICKS;
-use crate::ln::channelmanager::{HTLCForwardInfo, FailureCode, CLTV_FAR_FAR_AWAY, MIN_CLTV_EXPIRY_DELTA, PendingAddHTLCInfo, PendingHTLCInfo, PendingHTLCRouting, PaymentId, RecipientOnionFields};
+use crate::ln::channelmanager::{HTLCForwardInfo, FailureCode, CLTV_FAR_FAR_AWAY, DISABLE_GOSSIP_TICKS, MIN_CLTV_EXPIRY_DELTA, PendingAddHTLCInfo, PendingHTLCInfo, PendingHTLCRouting, PaymentId, RecipientOnionFields};
 use crate::ln::onion_utils;
 use crate::routing::gossip::{NetworkUpdate, RoutingFees};
 use crate::routing::router::{get_route, PaymentParameters, Route, RouteHint, RouteHintHop};
@@ -589,12 +589,12 @@ fn test_onion_failure() {
 		nodes[2].node.peer_disconnected(&nodes[1].node.get_our_node_id());
 	}, true, Some(UPDATE|7), Some(NetworkUpdate::ChannelUpdateMessage{msg: ChannelUpdate::dummy(short_channel_id)}), Some(short_channel_id));
 	run_onion_failure_test("channel_disabled", 0, &nodes, &route, &payment_hash, &payment_secret, |_| {}, || {
-		// Tick the timer twice on each node to mark the channel as disabled.
-		nodes[1].node.timer_tick_occurred();
-		nodes[1].node.timer_tick_occurred();
+		// disconnect event to the channel between nodes[1] ~ nodes[2]
+		for _ in 0..DISABLE_GOSSIP_TICKS + 1 {
+			nodes[1].node.timer_tick_occurred();
+			nodes[2].node.timer_tick_occurred();
+		}
 		nodes[1].node.get_and_clear_pending_msg_events();
-		nodes[2].node.timer_tick_occurred();
-		nodes[2].node.timer_tick_occurred();
 		nodes[2].node.get_and_clear_pending_msg_events();
 	}, true, Some(UPDATE|20), Some(NetworkUpdate::ChannelUpdateMessage{msg: ChannelUpdate::dummy(short_channel_id)}), Some(short_channel_id));
 	reconnect_nodes(&nodes[1], &nodes[2], (false, false), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (false, false));

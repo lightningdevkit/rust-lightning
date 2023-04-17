@@ -1070,6 +1070,14 @@ pub(crate) const MPP_TIMEOUT_TICKS: u8 = 3;
 /// [`OutboundPayments::remove_stale_resolved_payments`].
 pub(crate) const IDEMPOTENCY_TIMEOUT_TICKS: u8 = 7;
 
+/// The number of ticks of [`ChannelManager::timer_tick_occurred`] where a peer is disconnected
+/// until we mark the channel disabled and gossip the update.
+pub(crate) const DISABLE_GOSSIP_TICKS: u8 = 10;
+
+/// The number of ticks of [`ChannelManager::timer_tick_occurred`] where a peer is connected until
+/// we mark the channel enabled and gossip the update.
+pub(crate) const ENABLE_GOSSIP_TICKS: u8 = 5;
+
 /// The maximum number of unfunded channels we can have per-peer before we start rejecting new
 /// (inbound) ones. The number of peers with unfunded channels is limited separately in
 /// [`MAX_UNFUNDED_CHANNEL_PEERS`].
@@ -2591,9 +2599,9 @@ where
 
 		let enabled = chan.is_usable() && match chan.channel_update_status() {
 			ChannelUpdateStatus::Enabled => true,
-			ChannelUpdateStatus::DisabledStaged => true,
+			ChannelUpdateStatus::DisabledStaged(_) => true,
 			ChannelUpdateStatus::Disabled => false,
-			ChannelUpdateStatus::EnabledStaged => false,
+			ChannelUpdateStatus::EnabledStaged(_) => false,
 		};
 
 		let unsigned = msgs::UnsignedChannelUpdate {
@@ -3750,27 +3758,39 @@ where
 						}
 
 						match chan.channel_update_status() {
-							ChannelUpdateStatus::Enabled if !chan.is_live() => chan.set_channel_update_status(ChannelUpdateStatus::DisabledStaged),
-							ChannelUpdateStatus::Disabled if chan.is_live() => chan.set_channel_update_status(ChannelUpdateStatus::EnabledStaged),
-							ChannelUpdateStatus::DisabledStaged if chan.is_live() => chan.set_channel_update_status(ChannelUpdateStatus::Enabled),
-							ChannelUpdateStatus::EnabledStaged if !chan.is_live() => chan.set_channel_update_status(ChannelUpdateStatus::Disabled),
-							ChannelUpdateStatus::DisabledStaged if !chan.is_live() => {
-								chan.set_channel_update_status(ChannelUpdateStatus::Disabled);
-								if let Ok(update) = self.get_channel_update_for_broadcast(&chan) {
-									pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
-										msg: update
-									});
+							ChannelUpdateStatus::Enabled if !chan.is_live() => chan.set_channel_update_status(ChannelUpdateStatus::DisabledStaged(0)),
+							ChannelUpdateStatus::Disabled if chan.is_live() => chan.set_channel_update_status(ChannelUpdateStatus::EnabledStaged(0)),
+							ChannelUpdateStatus::DisabledStaged(_) if chan.is_live()
+								=> chan.set_channel_update_status(ChannelUpdateStatus::Enabled),
+							ChannelUpdateStatus::EnabledStaged(_) if !chan.is_live()
+								=> chan.set_channel_update_status(ChannelUpdateStatus::Disabled),
+							ChannelUpdateStatus::DisabledStaged(mut n) if !chan.is_live() => {
+								n += 1;
+								if n >= DISABLE_GOSSIP_TICKS {
+									chan.set_channel_update_status(ChannelUpdateStatus::Disabled);
+									if let Ok(update) = self.get_channel_update_for_broadcast(&chan) {
+										pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
+											msg: update
+										});
+									}
+									should_persist = NotifyOption::DoPersist;
+								} else {
+									chan.set_channel_update_status(ChannelUpdateStatus::DisabledStaged(n));
 								}
-								should_persist = NotifyOption::DoPersist;
 							},
-							ChannelUpdateStatus::EnabledStaged if chan.is_live() => {
-								chan.set_channel_update_status(ChannelUpdateStatus::Enabled);
-								if let Ok(update) = self.get_channel_update_for_broadcast(&chan) {
-									pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
-										msg: update
-									});
+							ChannelUpdateStatus::EnabledStaged(mut n) if chan.is_live() => {
+								n += 1;
+								if n >= ENABLE_GOSSIP_TICKS {
+									chan.set_channel_update_status(ChannelUpdateStatus::Enabled);
+									if let Ok(update) = self.get_channel_update_for_broadcast(&chan) {
+										pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
+											msg: update
+										});
+									}
+									should_persist = NotifyOption::DoPersist;
+								} else {
+									chan.set_channel_update_status(ChannelUpdateStatus::EnabledStaged(n));
 								}
-								should_persist = NotifyOption::DoPersist;
 							},
 							_ => {},
 						}

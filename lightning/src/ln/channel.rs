@@ -312,9 +312,9 @@ pub(super) enum ChannelUpdateStatus {
 	/// We've announced the channel as enabled and are connected to our peer.
 	Enabled,
 	/// Our channel is no longer live, but we haven't announced the channel as disabled yet.
-	DisabledStaged,
+	DisabledStaged(u8),
 	/// Our channel is live again, but we haven't announced the channel as enabled yet.
-	EnabledStaged,
+	EnabledStaged(u8),
 	/// We've announced the channel as disabled.
 	Disabled,
 }
@@ -6193,8 +6193,8 @@ impl Writeable for ChannelUpdateStatus {
 		// channel as enabled, so we write 0. For EnabledStaged, we similarly write a 1.
 		match self {
 			ChannelUpdateStatus::Enabled => 0u8.write(writer)?,
-			ChannelUpdateStatus::DisabledStaged => 0u8.write(writer)?,
-			ChannelUpdateStatus::EnabledStaged => 1u8.write(writer)?,
+			ChannelUpdateStatus::DisabledStaged(_) => 0u8.write(writer)?,
+			ChannelUpdateStatus::EnabledStaged(_) => 1u8.write(writer)?,
 			ChannelUpdateStatus::Disabled => 1u8.write(writer)?,
 		}
 		Ok(())
