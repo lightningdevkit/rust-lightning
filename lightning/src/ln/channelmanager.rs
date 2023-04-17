@@ -618,6 +618,61 @@ pub type SimpleArcChannelManager<M, T, F, L> = ChannelManager<
 /// This is not exported to bindings users as Arcs don't make sense in bindings
 pub type SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, M, T, F, L> = ChannelManager<&'a M, &'b T, &'c KeysManager, &'c KeysManager, &'c KeysManager, &'d F, &'e DefaultRouter<&'f NetworkGraph<&'g L>, &'g L, &'h Mutex<ProbabilisticScorer<&'f NetworkGraph<&'g L>, &'g L>>>, &'g L>;
 
+/// A trivial trait which describes any [`ChannelManager`] used in testing.
+#[cfg(any(test, feature = "_test_utils"))]
+pub trait AChannelManager {
+	type Watch: chain::Watch<Self::Signer>;
+	type M: Deref<Target = Self::Watch>;
+	type Broadcaster: BroadcasterInterface;
+	type T: Deref<Target = Self::Broadcaster>;
+	type EntropySource: EntropySource;
+	type ES: Deref<Target = Self::EntropySource>;
+	type NodeSigner: NodeSigner;
+	type NS: Deref<Target = Self::NodeSigner>;
+	type Signer: WriteableEcdsaChannelSigner;
+	type SignerProvider: SignerProvider<Signer = Self::Signer>;
+	type SP: Deref<Target = Self::SignerProvider>;
+	type FeeEstimator: FeeEstimator;
+	type F: Deref<Target = Self::FeeEstimator>;
+	type Router: Router;
+	type R: Deref<Target = Self::Router>;
+	type Logger: Logger;
+	type L: Deref<Target = Self::Logger>;
+	fn get_cm(&self) -> &ChannelManager<Self::M, Self::T, Self::ES, Self::NS, Self::SP, Self::F, Self::R, Self::L>;
+}
+#[cfg(any(test, feature = "_test_utils"))]
+impl<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, L: Deref> AChannelManager
+for ChannelManager<M, T, ES, NS, SP, F, R, L>
+where
+	M::Target: chain::Watch<<SP::Target as SignerProvider>::Signer> + Sized,
+	T::Target: BroadcasterInterface + Sized,
+	ES::Target: EntropySource + Sized,
+	NS::Target: NodeSigner + Sized,
+	SP::Target: SignerProvider + Sized,
+	F::Target: FeeEstimator + Sized,
+	R::Target: Router + Sized,
+	L::Target: Logger + Sized,
+{
+	type Watch = M::Target;
+	type M = M;
+	type Broadcaster = T::Target;
+	type T = T;
+	type EntropySource = ES::Target;
+	type ES = ES;
+	type NodeSigner = NS::Target;
+	type NS = NS;
+	type Signer = <SP::Target as SignerProvider>::Signer;
+	type SignerProvider = SP::Target;
+	type SP = SP;
+	type FeeEstimator = F::Target;
+	type F = F;
+	type Router = R::Target;
+	type R = R;
+	type Logger = L::Target;
+	type L = L;
+	fn get_cm(&self) -> &ChannelManager<M, T, ES, NS, SP, F, R, L> { self }
+}
+
 /// Manager which keeps track of a number of channels and sends messages to the appropriate
 /// channel, also tracking HTLC preimages and forwarding onion packets appropriately.
 ///
@@ -1620,6 +1675,36 @@ macro_rules! handle_new_monitor_update {
 	} };
 	($self: ident, $update_res: expr, $update_id: expr, $peer_state_lock: expr, $peer_state: expr, $per_peer_state_lock: expr, $chan_entry: expr) => {
 		handle_new_monitor_update!($self, $update_res, $update_id, $peer_state_lock, $peer_state, $per_peer_state_lock, $chan_entry.get_mut(), MANUALLY_REMOVING, $chan_entry.remove_entry())
+	}
+}
+
+macro_rules! process_events_body {
+	($self: expr, $event_to_handle: expr, $handle_event: expr) => {
+		// We'll acquire our total consistency lock until the returned future completes so that
+		// we can be sure no other persists happen while processing events.
+		let _read_guard = $self.total_consistency_lock.read().unwrap();
+
+		let mut result = NotifyOption::SkipPersist;
+
+		// TODO: This behavior should be documented. It's unintuitive that we query
+		// ChannelMonitors when clearing other events.
+		if $self.process_pending_monitor_events() {
+			result = NotifyOption::DoPersist;
+		}
+
+		let pending_events = mem::replace(&mut *$self.pending_events.lock().unwrap(), vec![]);
+		if !pending_events.is_empty() {
+			result = NotifyOption::DoPersist;
+		}
+
+		for event in pending_events {
+			$event_to_handle = event;
+			$handle_event;
+		}
+
+		if result == NotifyOption::DoPersist {
+			$self.persistence_notifier.notify();
+		}
 	}
 }
 
@@ -5720,30 +5805,8 @@ where
 	pub async fn process_pending_events_async<Future: core::future::Future, H: Fn(Event) -> Future>(
 		&self, handler: H
 	) {
-		// We'll acquire our total consistency lock until the returned future completes so that
-		// we can be sure no other persists happen while processing events.
-		let _read_guard = self.total_consistency_lock.read().unwrap();
-
-		let mut result = NotifyOption::SkipPersist;
-
-		// TODO: This behavior should be documented. It's unintuitive that we query
-		// ChannelMonitors when clearing other events.
-		if self.process_pending_monitor_events() {
-			result = NotifyOption::DoPersist;
-		}
-
-		let pending_events = mem::replace(&mut *self.pending_events.lock().unwrap(), vec![]);
-		if !pending_events.is_empty() {
-			result = NotifyOption::DoPersist;
-		}
-
-		for event in pending_events {
-			handler(event).await;
-		}
-
-		if result == NotifyOption::DoPersist {
-			self.persistence_notifier.notify();
-		}
+		let mut ev;
+		process_events_body!(self, ev, { handler(ev).await });
 	}
 }
 
@@ -5825,26 +5888,8 @@ where
 	/// An [`EventHandler`] may safely call back to the provider in order to handle an event.
 	/// However, it must not call [`Writeable::write`] as doing so would result in a deadlock.
 	fn process_pending_events<H: Deref>(&self, handler: H) where H::Target: EventHandler {
-		PersistenceNotifierGuard::optionally_notify(&self.total_consistency_lock, &self.persistence_notifier, || {
-			let mut result = NotifyOption::SkipPersist;
-
-			// TODO: This behavior should be documented. It's unintuitive that we query
-			// ChannelMonitors when clearing other events.
-			if self.process_pending_monitor_events() {
-				result = NotifyOption::DoPersist;
-			}
-
-			let pending_events = mem::replace(&mut *self.pending_events.lock().unwrap(), vec![]);
-			if !pending_events.is_empty() {
-				result = NotifyOption::DoPersist;
-			}
-
-			for event in pending_events {
-				handler.handle_event(event);
-			}
-
-			result
-		});
+		let mut ev;
+		process_events_body!(self, ev, handler.handle_event(ev));
 	}
 }
 
@@ -8849,14 +8894,23 @@ pub mod bench {
 
 	use test::Bencher;
 
-	struct NodeHolder<'a, P: Persist<InMemorySigner>> {
-		node: &'a ChannelManager<
-			&'a ChainMonitor<InMemorySigner, &'a test_utils::TestChainSource,
-				&'a test_utils::TestBroadcaster, &'a test_utils::TestFeeEstimator,
-				&'a test_utils::TestLogger, &'a P>,
-			&'a test_utils::TestBroadcaster, &'a KeysManager, &'a KeysManager, &'a KeysManager,
-			&'a test_utils::TestFeeEstimator, &'a test_utils::TestRouter<'a>,
-			&'a test_utils::TestLogger>,
+	type Manager<'a, P> = ChannelManager<
+		&'a ChainMonitor<InMemorySigner, &'a test_utils::TestChainSource,
+			&'a test_utils::TestBroadcaster, &'a test_utils::TestFeeEstimator,
+			&'a test_utils::TestLogger, &'a P>,
+		&'a test_utils::TestBroadcaster, &'a KeysManager, &'a KeysManager, &'a KeysManager,
+		&'a test_utils::TestFeeEstimator, &'a test_utils::TestRouter<'a>,
+		&'a test_utils::TestLogger>;
+
+	struct ANodeHolder<'a, P: Persist<InMemorySigner>> {
+		node: &'a Manager<'a, P>,
+	}
+	impl<'a, P: Persist<InMemorySigner>> NodeHolder for ANodeHolder<'a, P> {
+		type CM = Manager<'a, P>;
+		#[inline]
+		fn node(&self) -> &Manager<'a, P> { self.node }
+		#[inline]
+		fn chain_monitor(&self) -> Option<&test_utils::TestChainMonitor> { None }
 	}
 
 	#[cfg(test)]
@@ -8887,7 +8941,7 @@ pub mod bench {
 			network,
 			best_block: BestBlock::from_network(network),
 		});
-		let node_a_holder = NodeHolder { node: &node_a };
+		let node_a_holder = ANodeHolder { node: &node_a };
 
 		let logger_b = test_utils::TestLogger::with_id("node a".to_owned());
 		let chain_monitor_b = ChainMonitor::new(None, &tx_broadcaster, &logger_a, &fee_estimator, &persister_b);
@@ -8897,7 +8951,7 @@ pub mod bench {
 			network,
 			best_block: BestBlock::from_network(network),
 		});
-		let node_b_holder = NodeHolder { node: &node_b };
+		let node_b_holder = ANodeHolder { node: &node_b };
 
 		node_a.peer_connected(&node_b.get_our_node_id(), &Init { features: node_b.init_features(), remote_network_address: None }, true).unwrap();
 		node_b.peer_connected(&node_a.get_our_node_id(), &Init { features: node_a.init_features(), remote_network_address: None }, false).unwrap();
@@ -8993,15 +9047,15 @@ pub mod bench {
 				let payment_event = SendEvent::from_event($node_a.get_and_clear_pending_msg_events().pop().unwrap());
 				$node_b.handle_update_add_htlc(&$node_a.get_our_node_id(), &payment_event.msgs[0]);
 				$node_b.handle_commitment_signed(&$node_a.get_our_node_id(), &payment_event.commitment_msg);
-				let (raa, cs) = do_get_revoke_commit_msgs!(NodeHolder { node: &$node_b }, &$node_a.get_our_node_id());
+				let (raa, cs) = get_revoke_commit_msgs(&ANodeHolder { node: &$node_b }, &$node_a.get_our_node_id());
 				$node_a.handle_revoke_and_ack(&$node_b.get_our_node_id(), &raa);
 				$node_a.handle_commitment_signed(&$node_b.get_our_node_id(), &cs);
-				$node_b.handle_revoke_and_ack(&$node_a.get_our_node_id(), &get_event_msg!(NodeHolder { node: &$node_a }, MessageSendEvent::SendRevokeAndACK, $node_b.get_our_node_id()));
+				$node_b.handle_revoke_and_ack(&$node_a.get_our_node_id(), &get_event_msg!(ANodeHolder { node: &$node_a }, MessageSendEvent::SendRevokeAndACK, $node_b.get_our_node_id()));
 
-				expect_pending_htlcs_forwardable!(NodeHolder { node: &$node_b });
-				expect_payment_claimable!(NodeHolder { node: &$node_b }, payment_hash, payment_secret, 10_000);
+				expect_pending_htlcs_forwardable!(ANodeHolder { node: &$node_b });
+				expect_payment_claimable!(ANodeHolder { node: &$node_b }, payment_hash, payment_secret, 10_000);
 				$node_b.claim_funds(payment_preimage);
-				expect_payment_claimed!(NodeHolder { node: &$node_b }, payment_hash, 10_000);
+				expect_payment_claimed!(ANodeHolder { node: &$node_b }, payment_hash, 10_000);
 
 				match $node_b.get_and_clear_pending_msg_events().pop().unwrap() {
 					MessageSendEvent::UpdateHTLCs { node_id, updates } => {
@@ -9012,12 +9066,12 @@ pub mod bench {
 					_ => panic!("Failed to generate claim event"),
 				}
 
-				let (raa, cs) = do_get_revoke_commit_msgs!(NodeHolder { node: &$node_a }, &$node_b.get_our_node_id());
+				let (raa, cs) = get_revoke_commit_msgs(&ANodeHolder { node: &$node_a }, &$node_b.get_our_node_id());
 				$node_b.handle_revoke_and_ack(&$node_a.get_our_node_id(), &raa);
 				$node_b.handle_commitment_signed(&$node_a.get_our_node_id(), &cs);
-				$node_a.handle_revoke_and_ack(&$node_b.get_our_node_id(), &get_event_msg!(NodeHolder { node: &$node_b }, MessageSendEvent::SendRevokeAndACK, $node_a.get_our_node_id()));
+				$node_a.handle_revoke_and_ack(&$node_b.get_our_node_id(), &get_event_msg!(ANodeHolder { node: &$node_b }, MessageSendEvent::SendRevokeAndACK, $node_a.get_our_node_id()));
 
-				expect_payment_sent!(NodeHolder { node: &$node_a }, payment_preimage);
+				expect_payment_sent!(ANodeHolder { node: &$node_a }, payment_preimage);
 			}
 		}
 

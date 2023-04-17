@@ -4897,15 +4897,7 @@ fn test_duplicate_payment_hash_one_failure_one_success() {
 
 	nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &updates.update_fulfill_htlcs[0]);
 	commitment_signed_dance!(nodes[0], nodes[1], &updates.commitment_signed, false);
-
-	let events = nodes[0].node.get_and_clear_pending_events();
-	match events[0] {
-		Event::PaymentSent { ref payment_preimage, ref payment_hash, .. } => {
-			assert_eq!(*payment_preimage, our_payment_preimage);
-			assert_eq!(*payment_hash, duplicate_payment_hash);
-		}
-		_ => panic!("Unexpected event"),
-	}
+	expect_payment_sent(&nodes[0], our_payment_preimage, None, true);
 }
 
 #[test]
@@ -9481,26 +9473,7 @@ fn test_inconsistent_mpp_params() {
 	pass_along_path(&nodes[0], &[&nodes[2], &nodes[3]], 15_000_000, our_payment_hash, Some(our_payment_secret), events.pop().unwrap(), true, None);
 
 	do_claim_payment_along_route(&nodes[0], &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]], false, our_payment_preimage);
-	let events = nodes[0].node.get_and_clear_pending_events();
-	assert_eq!(events.len(), 3);
-	match events[0] {
-		Event::PaymentSent { payment_hash, .. } => { // The payment was abandoned earlier, so the fee paid will be None
-			assert_eq!(payment_hash, our_payment_hash);
-		},
-		_ => panic!("Unexpected event")
-	}
-	match events[1] {
-		Event::PaymentPathSuccessful { payment_hash, .. } => {
-			assert_eq!(payment_hash.unwrap(), our_payment_hash);
-		},
-		_ => panic!("Unexpected event")
-	}
-	match events[2] {
-		Event::PaymentPathSuccessful { payment_hash, .. } => {
-			assert_eq!(payment_hash.unwrap(), our_payment_hash);
-		},
-		_ => panic!("Unexpected event")
-	}
+	expect_payment_sent(&nodes[0], our_payment_preimage, Some(None), true);
 }
 
 #[test]
