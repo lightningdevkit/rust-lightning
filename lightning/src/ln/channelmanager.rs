@@ -7947,8 +7947,6 @@ mod tests {
 	use bitcoin::hashes::Hash;
 	use bitcoin::hashes::sha256::Hash as Sha256;
 	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
-	#[cfg(feature = "std")]
-	use core::time::Duration;
 	use core::sync::atomic::Ordering;
 	use crate::events::{Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, ClosureReason};
 	use crate::ln::{PaymentPreimage, PaymentHash, PaymentSecret};
