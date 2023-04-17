@@ -151,6 +151,20 @@ impl ConnectStyle {
 		}
 	}
 
+	pub fn updates_best_block_first(&self) -> bool {
+		match self {
+			ConnectStyle::BestBlockFirst => true,
+			ConnectStyle::BestBlockFirstSkippingBlocks => true,
+			ConnectStyle::BestBlockFirstReorgsOnlyTip => true,
+			ConnectStyle::TransactionsFirst => false,
+			ConnectStyle::TransactionsFirstSkippingBlocks => false,
+			ConnectStyle::TransactionsDuplicativelyFirstSkippingBlocks => false,
+			ConnectStyle::HighlyRedundantTransactionsFirstSkippingBlocks => false,
+			ConnectStyle::TransactionsFirstReorgsOnlyTip => false,
+			ConnectStyle::FullBlockViaListen => false,
+		}
+	}
+
 	fn random_style() -> ConnectStyle {
 		#[cfg(feature = "std")] {
 			use core::hash::{BuildHasher, Hasher};

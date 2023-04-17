@@ -1778,6 +1778,157 @@ fn test_restored_packages_retry() {
 	do_test_restored_packages_retry(true);
 }
 
+fn do_test_monitor_rebroadcast_pending_claims(anchors: bool) {
+	// Test that we will retry broadcasting pending claims for a force-closed channel on every
+	// `ChainMonitor::rebroadcast_pending_claims` call.
+	if anchors {
+		assert!(cfg!(anchors));
+	}
+	let secp = Secp256k1::new();
+	let mut chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let mut config = test_default_channel_config();
+	if anchors {
+		#[cfg(anchors)] {
+			config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+		}
+	}
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config), Some(config)]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let (_, _, _, chan_id, funding_tx) = create_chan_between_nodes_with_value(
+		&nodes[0], &nodes[1], 1_000_000, 500_000_000
+	);
+	const HTLC_AMT_MSAT: u64 = 1_000_000;
+	const HTLC_AMT_SAT: u64 = HTLC_AMT_MSAT / 1000;
+	route_payment(&nodes[0], &[&nodes[1]], HTLC_AMT_MSAT);
+
+	let htlc_expiry = nodes[0].best_block_info().1 + TEST_FINAL_CLTV + 1;
+
+	let commitment_txn = get_local_commitment_txn!(&nodes[0], &chan_id);
+	assert_eq!(commitment_txn.len(), if anchors { 1 /* commitment tx only */} else { 2 /* commitment and htlc timeout tx */ });
+	check_spends!(&commitment_txn[0], &funding_tx);
+	mine_transaction(&nodes[0], &commitment_txn[0]);
+	check_closed_broadcast!(&nodes[0], true);
+	check_closed_event(&nodes[0], 1, ClosureReason::CommitmentTxConfirmed, false);
+	check_added_monitors(&nodes[0], 1);
+
+	// Set up a helper closure we'll use throughout our test. We should only expect retries without
+	// bumps if fees have not increased after a block has been connected (assuming the height timer
+	// re-evaluates at every block) or after `ChainMonitor::rebroadcast_pending_claims` is called.
+	let mut prev_htlc_tx_feerate = None;
+	let mut check_htlc_retry = |should_retry: bool, should_bump: bool| -> Option<Transaction> {
+		let (htlc_tx, htlc_tx_feerate) = if anchors {
+			assert!(nodes[0].tx_broadcaster.txn_broadcast().is_empty());
+			let mut events = nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events();
+			assert_eq!(events.len(), if should_retry { 1 } else { 0 });
+			if !should_retry {
+				return None;
+			}
+			#[allow(unused_assignments)]
+			let mut tx = Transaction {
+				version: 2,
+				lock_time: bitcoin::PackedLockTime::ZERO,
+				input: vec![],
+				output: vec![],
+			};
+			#[allow(unused_assignments)]
+			let mut feerate = 0;
+			#[cfg(anchors)] {
+				feerate = if let Event::BumpTransaction(BumpTransactionEvent::HTLCResolution {
+					target_feerate_sat_per_1000_weight, mut htlc_descriptors, tx_lock_time,
+				}) = events.pop().unwrap() {
+					assert_eq!(htlc_descriptors.len(), 1);
+					let descriptor = htlc_descriptors.pop().unwrap();
+					assert_eq!(descriptor.commitment_txid, commitment_txn[0].txid());
+					let htlc_output_idx = descriptor.htlc.transaction_output_index.unwrap() as usize;
+					assert!(htlc_output_idx < commitment_txn[0].output.len());
+					tx.lock_time = tx_lock_time;
+					// Note that we don't care about actually making the HTLC transaction meet the
+					// feerate for the test, we just want to make sure the feerates we receive from
+					// the events never decrease.
+					tx.input.push(descriptor.unsigned_tx_input());
+					let signer = nodes[0].keys_manager.derive_channel_keys(
+						descriptor.channel_value_satoshis, &descriptor.channel_keys_id,
+					);
+					let per_commitment_point = signer.get_per_commitment_point(
+						descriptor.per_commitment_number, &secp
+					);
+					tx.output.push(descriptor.tx_output(&per_commitment_point, &secp));
+					let our_sig = signer.sign_holder_htlc_transaction(&mut tx, 0, &descriptor, &secp).unwrap();
+					let witness_script = descriptor.witness_script(&per_commitment_point, &secp);
+					tx.input[0].witness = descriptor.tx_input_witness(&our_sig, &witness_script);
+					target_feerate_sat_per_1000_weight as u64
+				} else { panic!("unexpected event"); };
+			}
+			(tx, feerate)
+		} else {
+			assert!(nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());
+			let mut txn = nodes[0].tx_broadcaster.txn_broadcast();
+			assert_eq!(txn.len(), if should_retry { 1 } else { 0 });
+			if !should_retry {
+				return None;
+			}
+			let htlc_tx = txn.pop().unwrap();
+			check_spends!(htlc_tx, commitment_txn[0]);
+			let htlc_tx_fee = HTLC_AMT_SAT - htlc_tx.output[0].value;
+			let htlc_tx_feerate = htlc_tx_fee * 1000 / htlc_tx.weight() as u64;
+			(htlc_tx, htlc_tx_feerate)
+		};
+		if should_bump {
+			assert!(htlc_tx_feerate > prev_htlc_tx_feerate.take().unwrap());
+		} else if let Some(prev_feerate) = prev_htlc_tx_feerate.take() {
+			assert_eq!(htlc_tx_feerate, prev_feerate);
+		}
+		prev_htlc_tx_feerate = Some(htlc_tx_feerate);
+		Some(htlc_tx)
+	};
+
+	// Connect blocks up to one before the HTLC expires. This should not result in a claim/retry.
+	connect_blocks(&nodes[0], htlc_expiry - nodes[0].best_block_info().1 - 2);
+	check_htlc_retry(false, false);
+
+	// Connect one more block, producing our first claim.
+	connect_blocks(&nodes[0], 1);
+	check_htlc_retry(true, false);
+
+	// Connect one more block, expecting a retry with a fee bump. Unfortunately, we cannot bump HTLC
+	// transactions pre-anchors.
+	connect_blocks(&nodes[0], 1);
+	check_htlc_retry(true, anchors);
+
+	// Trigger a call and we should have another retry, but without a bump.
+	nodes[0].chain_monitor.chain_monitor.rebroadcast_pending_claims();
+	check_htlc_retry(true, false);
+
+	// Double the feerate and trigger a call, expecting a fee-bumped retry.
+	*nodes[0].fee_estimator.sat_per_kw.lock().unwrap() *= 2;
+	nodes[0].chain_monitor.chain_monitor.rebroadcast_pending_claims();
+	check_htlc_retry(true, anchors);
+
+	// Connect one more block, expecting a retry with a fee bump. Unfortunately, we cannot bump HTLC
+	// transactions pre-anchors.
+	connect_blocks(&nodes[0], 1);
+	let htlc_tx = check_htlc_retry(true, anchors).unwrap();
+
+	// Mine the HTLC transaction to ensure we don't retry claims while they're confirmed.
+	mine_transaction(&nodes[0], &htlc_tx);
+	// If we have a `ConnectStyle` that advertises the new block first without the transasctions,
+	// we'll receive an extra bumped claim.
+	if nodes[0].connect_style.borrow().updates_best_block_first() {
+		check_htlc_retry(true, anchors);
+	}
+	nodes[0].chain_monitor.chain_monitor.rebroadcast_pending_claims();
+	check_htlc_retry(false, false);
+}
+
+#[test]
+fn test_monitor_timer_based_claim() {
+	do_test_monitor_rebroadcast_pending_claims(false);
+	#[cfg(anchors)]
+	do_test_monitor_rebroadcast_pending_claims(true);
+}
+
 #[cfg(anchors)]
 #[test]
 fn test_yield_anchors_events() {

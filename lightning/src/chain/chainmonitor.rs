@@ -217,8 +217,15 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner> Deref for LockedChannelMonitor<
 /// or used independently to monitor channels remotely. See the [module-level documentation] for
 /// details.
 ///
+/// Note that `ChainMonitor` should regularly trigger rebroadcasts/fee bumps of pending claims from
+/// a force-closed channel. This is crucial in preventing certain classes of pinning attacks,
+/// detecting substantial mempool feerate changes between blocks, and ensuring reliability if
+/// broadcasting fails. We recommend invoking this every 30 seconds, or lower if running in an
+/// environment with spotty connections, like on mobile.
+///
 /// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 /// [module-level documentation]: crate::chain::chainmonitor
+/// [`rebroadcast_pending_claims`]: Self::rebroadcast_pending_claims
 pub struct ChainMonitor<ChannelSigner: WriteableEcdsaChannelSigner, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref>
 	where C::Target: chain::Filter,
         T::Target: BroadcasterInterface,
@@ -532,6 +539,20 @@ where C::Target: chain::Filter,
 	/// [`EventsProvider::process_pending_events`]: crate::events::EventsProvider::process_pending_events
 	pub fn get_update_future(&self) -> Future {
 		self.event_notifier.get_future()
+	}
+
+	/// Triggers rebroadcasts/fee-bumps of pending claims from a force-closed channel. This is
+	/// crucial in preventing certain classes of pinning attacks, detecting substantial mempool
+	/// feerate changes between blocks, and ensuring reliability if broadcasting fails. We recommend
+	/// invoking this every 30 seconds, or lower if running in an environment with spotty
+	/// connections, like on mobile.
+	pub fn rebroadcast_pending_claims(&self) {
+		let monitors = self.monitors.read().unwrap();
+		for (_, monitor_holder) in &*monitors {
+			monitor_holder.monitor.rebroadcast_pending_claims(
+				&*self.broadcaster, &*self.fee_estimator, &*self.logger
+			)
+		}
 	}
 }
 

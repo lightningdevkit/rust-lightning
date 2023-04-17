@@ -554,6 +554,9 @@ impl PackageTemplate {
 	pub(crate) fn aggregable(&self) -> bool {
 		self.aggregable
 	}
+	pub(crate) fn previous_feerate(&self) -> u64 {
+		self.feerate_previous
+	}
 	pub(crate) fn set_feerate(&mut self, new_feerate: u64) {
 		self.feerate_previous = new_feerate;
 	}

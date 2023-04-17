@@ -481,6 +481,59 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner> OnchainTxHandler<ChannelSigner>
 		events.into_iter().map(|(_, event)| event).collect()
 	}
 
+	/// Triggers rebroadcasts/fee-bumps of pending claims from a force-closed channel. This is
+	/// crucial in preventing certain classes of pinning attacks, detecting substantial mempool
+	/// feerate changes between blocks, and ensuring reliability if broadcasting fails. We recommend
+	/// invoking this every 30 seconds, or lower if running in an environment with spotty
+	/// connections, like on mobile.
+	pub(crate) fn rebroadcast_pending_claims<B: Deref, F: Deref, L: Deref>(
+		&mut self, current_height: u32, broadcaster: &B, fee_estimator: &LowerBoundedFeeEstimator<F>,
+		logger: &L,
+	)
+	where
+		B::Target: BroadcasterInterface,
+		F::Target: FeeEstimator,
+		L::Target: Logger,
+	{
+		let mut bump_requests = Vec::with_capacity(self.pending_claim_requests.len());
+		for (package_id, request) in self.pending_claim_requests.iter() {
+			let inputs = request.outpoints();
+			log_info!(logger, "Triggering rebroadcast/fee-bump for request with inputs {:?}", inputs);
+			bump_requests.push((*package_id, request.clone()));
+		}
+		for (package_id, request) in bump_requests {
+			self.generate_claim(current_height, &request, false /* force_feerate_bump */, fee_estimator, logger)
+				.map(|(_, new_feerate, claim)| {
+					let mut bumped_feerate = false;
+					if let Some(mut_request) = self.pending_claim_requests.get_mut(&package_id) {
+						bumped_feerate = request.previous_feerate() > new_feerate;
+						mut_request.set_feerate(new_feerate);
+					}
+					match claim {
+						OnchainClaim::Tx(tx) => {
+							let log_start = if bumped_feerate { "Broadcasting RBF-bumped" } else { "Rebroadcasting" };
+							log_info!(logger, "{} onchain {}", log_start, log_tx!(tx));
+							broadcaster.broadcast_transaction(&tx);
+						},
+						#[cfg(anchors)]
+						OnchainClaim::Event(event) => {
+							let log_start = if bumped_feerate { "Yielding fee-bumped" } else { "Replaying" };
+							log_info!(logger, "{} onchain event to spend inputs {:?}", log_start,
+								request.outpoints());
+							#[cfg(debug_assertions)] {
+								debug_assert!(request.requires_external_funding());
+								let num_existing = self.pending_claim_events.iter()
+									.filter(|entry| entry.0 == package_id).count();
+								assert!(num_existing == 0 || num_existing == 1);
+							}
+							self.pending_claim_events.retain(|event| event.0 != package_id);
+							self.pending_claim_events.push((package_id, event));
+						}
+					}
+				});
+		}
+	}
+
 	/// Lightning security model (i.e being able to redeem/timeout HTLC or penalize counterparty
 	/// onchain) lays on the assumption of claim transactions getting confirmed before timelock
 	/// expiration (CSV or CLTV following cases). In case of high-fee spikes, claim tx may get stuck
