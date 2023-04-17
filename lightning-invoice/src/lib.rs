@@ -1360,6 +1360,8 @@ impl Invoice {
 	}
 
 	/// Returns the network for which the invoice was issued
+	///
+	/// This is not exported to bindings users, see [`Self::currency`] instead.
 	pub fn network(&self) -> Network {
 		self.signed_invoice.currency().into()
 	}
