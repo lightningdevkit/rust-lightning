@@ -495,9 +495,9 @@ pub mod constants {
 impl InvoiceBuilder<tb::False, tb::False, tb::False, tb::False, tb::False, tb::False> {
 	/// Construct new, empty `InvoiceBuilder`. All necessary fields have to be filled first before
 	/// `InvoiceBuilder::build(self)` becomes available.
-	pub fn new(currrency: Currency) -> Self {
+	pub fn new(currency: Currency) -> Self {
 		InvoiceBuilder {
-			currency: currrency,
+			currency,
 			amount: None,
 			si_prefix: None,
 			timestamp: None,
