@@ -42,6 +42,11 @@ for DIR in lightning lightning-invoice lightning-rapid-gossip-sync; do
 	RUSTFLAGS="--cfg=c_bindings" cargo test --verbose --color always --no-default-features --features=no-std
 	popd
 done
+# This one only works for lightning-invoice
+pushd lightning-invoice
+# check that compile with no-std and serde works in lightning-invoice
+cargo test --verbose --color always --no-default-features --features no-std --features serde
+popd
 
 echo -e "\n\nTesting no-std build on a downstream no-std crate"
 # check no-std compatibility across dependencies
