@@ -2457,7 +2457,14 @@ where
 						// hopefully an attacker trying to path-trace payments cannot make this occur
 						// on a small/per-node/per-channel scale.
 						if !chan.is_live() { // channel_disabled
-							break Some(("Forwarding channel is not in a ready state.", 0x1000 | 20, chan_update_opt));
+							// If the channel_update we're going to return is disabled (i.e. the
+							// peer has been disabled for some time), return `channel_disabled`,
+							// otherwise return `temporary_channel_failure`.
+							if chan_update_opt.as_ref().map(|u| u.contents.flags & 2 == 2).unwrap_or(false) {
+								break Some(("Forwarding channel has been disconnected for some time.", 0x1000 | 20, chan_update_opt));
+							} else {
+								break Some(("Forwarding channel is not in a ready state.", 0x1000 | 7, chan_update_opt));
+							}
 						}
 						if *outgoing_amt_msat < chan.get_counterparty_htlc_minimum_msat() { // amount_below_minimum
 							break Some(("HTLC amount was below the htlc_minimum_msat", 0x1000 | 11, chan_update_opt));
@@ -2582,11 +2589,18 @@ where
 		log_trace!(self.logger, "Generating channel update for channel {}", log_bytes!(chan.channel_id()));
 		let were_node_one = self.our_network_pubkey.serialize()[..] < chan.get_counterparty_node_id().serialize()[..];
 
+		let enabled = chan.is_usable() && match chan.channel_update_status() {
+			ChannelUpdateStatus::Enabled => true,
+			ChannelUpdateStatus::DisabledStaged => true,
+			ChannelUpdateStatus::Disabled => false,
+			ChannelUpdateStatus::EnabledStaged => false,
+		};
+
 		let unsigned = msgs::UnsignedChannelUpdate {
 			chain_hash: self.genesis_hash,
 			short_channel_id,
 			timestamp: chan.get_update_time_counter(),
-			flags: (!were_node_one) as u8 | ((!chan.is_live() as u8) << 1),
+			flags: (!were_node_one) as u8 | ((!enabled as u8) << 1),
 			cltv_expiry_delta: chan.get_cltv_expiry_delta(),
 			htlc_minimum_msat: chan.get_counterparty_htlc_minimum_msat(),
 			htlc_maximum_msat: chan.get_announced_htlc_max_msat(),
@@ -3741,22 +3755,22 @@ where
 							ChannelUpdateStatus::DisabledStaged if chan.is_live() => chan.set_channel_update_status(ChannelUpdateStatus::Enabled),
 							ChannelUpdateStatus::EnabledStaged if !chan.is_live() => chan.set_channel_update_status(ChannelUpdateStatus::Disabled),
 							ChannelUpdateStatus::DisabledStaged if !chan.is_live() => {
+								chan.set_channel_update_status(ChannelUpdateStatus::Disabled);
 								if let Ok(update) = self.get_channel_update_for_broadcast(&chan) {
 									pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
 										msg: update
 									});
 								}
 								should_persist = NotifyOption::DoPersist;
-								chan.set_channel_update_status(ChannelUpdateStatus::Disabled);
 							},
 							ChannelUpdateStatus::EnabledStaged if chan.is_live() => {
+								chan.set_channel_update_status(ChannelUpdateStatus::Enabled);
 								if let Ok(update) = self.get_channel_update_for_broadcast(&chan) {
 									pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
 										msg: update
 									});
 								}
 								should_persist = NotifyOption::DoPersist;
-								chan.set_channel_update_status(ChannelUpdateStatus::Enabled);
 							},
 							_ => {},
 						}
