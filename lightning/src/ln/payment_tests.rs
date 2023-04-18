@@ -1846,7 +1846,7 @@ fn auto_retry_partial_failure() {
 				channel_features: nodes[1].node.channel_features(),
 				fee_msat: amt_msat / 2,
 				cltv_expiry_delta: 100,
-			}]},
+			}], blinded_tail: None },
 			Path { hops: vec![RouteHop {
 				pubkey: nodes[1].node.get_our_node_id(),
 				node_features: nodes[1].node.node_features(),
@@ -1854,7 +1854,7 @@ fn auto_retry_partial_failure() {
 				channel_features: nodes[1].node.channel_features(),
 				fee_msat: amt_msat / 2,
 				cltv_expiry_delta: 100,
-			}]},
+			}], blinded_tail: None },
 		],
 		payment_params: Some(route_params.payment_params.clone()),
 	};
@@ -1867,7 +1867,7 @@ fn auto_retry_partial_failure() {
 				channel_features: nodes[1].node.channel_features(),
 				fee_msat: amt_msat / 4,
 				cltv_expiry_delta: 100,
-			}]},
+			}], blinded_tail: None },
 			Path { hops: vec![RouteHop {
 				pubkey: nodes[1].node.get_our_node_id(),
 				node_features: nodes[1].node.node_features(),
@@ -1875,7 +1875,7 @@ fn auto_retry_partial_failure() {
 				channel_features: nodes[1].node.channel_features(),
 				fee_msat: amt_msat / 4,
 				cltv_expiry_delta: 100,
-			}]},
+			}], blinded_tail: None },
 		],
 		payment_params: Some(route_params.payment_params.clone()),
 	};
@@ -1888,7 +1888,7 @@ fn auto_retry_partial_failure() {
 				channel_features: nodes[1].node.channel_features(),
 				fee_msat: amt_msat / 4,
 				cltv_expiry_delta: 100,
-			}]},
+			}], blinded_tail: None },
 		],
 		payment_params: Some(route_params.payment_params.clone()),
 	};
@@ -2135,7 +2135,7 @@ fn retry_multi_path_single_failed_payment() {
 				channel_features: nodes[1].node.channel_features(),
 				fee_msat: 10_000,
 				cltv_expiry_delta: 100,
-			}]},
+			}], blinded_tail: None },
 			Path { hops: vec![RouteHop {
 				pubkey: nodes[1].node.get_our_node_id(),
 				node_features: nodes[1].node.node_features(),
@@ -2143,7 +2143,7 @@ fn retry_multi_path_single_failed_payment() {
 				channel_features: nodes[1].node.channel_features(),
 				fee_msat: 100_000_001, // Our default max-HTLC-value is 10% of the channel value, which this is one more than
 				cltv_expiry_delta: 100,
-			}]},
+			}], blinded_tail: None },
 		],
 		payment_params: Some(payment_params),
 	};
@@ -2229,7 +2229,7 @@ fn immediate_retry_on_failure() {
 				channel_features: nodes[1].node.channel_features(),
 				fee_msat: 100_000_001, // Our default max-HTLC-value is 10% of the channel value, which this is one more than
 				cltv_expiry_delta: 100,
-			}]},
+			}], blinded_tail: None },
 		],
 		payment_params: Some(PaymentParameters::from_node_id(nodes[1].node.get_our_node_id(), TEST_FINAL_CLTV)),
 	};
@@ -2324,7 +2324,7 @@ fn no_extra_retries_on_back_to_back_fail() {
 				channel_features: nodes[2].node.channel_features(),
 				fee_msat: 100_000_000,
 				cltv_expiry_delta: 100,
-			}]},
+			}], blinded_tail: None },
 			Path { hops: vec![RouteHop {
 				pubkey: nodes[1].node.get_our_node_id(),
 				node_features: nodes[1].node.node_features(),
@@ -2339,7 +2339,7 @@ fn no_extra_retries_on_back_to_back_fail() {
 				channel_features: nodes[2].node.channel_features(),
 				fee_msat: 100_000_000,
 				cltv_expiry_delta: 100,
-			}]}
+			}], blinded_tail: None }
 		],
 		payment_params: Some(PaymentParameters::from_node_id(nodes[2].node.get_our_node_id(), TEST_FINAL_CLTV)),
 	};
@@ -2526,7 +2526,7 @@ fn test_simple_partial_retry() {
 				channel_features: nodes[2].node.channel_features(),
 				fee_msat: 100_000_000,
 				cltv_expiry_delta: 100,
-			}]},
+			}], blinded_tail: None },
 			Path { hops: vec![RouteHop {
 				pubkey: nodes[1].node.get_our_node_id(),
 				node_features: nodes[1].node.node_features(),
@@ -2541,7 +2541,7 @@ fn test_simple_partial_retry() {
 				channel_features: nodes[2].node.channel_features(),
 				fee_msat: 100_000_000,
 				cltv_expiry_delta: 100,
-			}]}
+			}], blinded_tail: None }
 		],
 		payment_params: Some(PaymentParameters::from_node_id(nodes[2].node.get_our_node_id(), TEST_FINAL_CLTV)),
 	};
@@ -2692,7 +2692,7 @@ fn test_threaded_payment_retries() {
 				channel_features: nodes[2].node.channel_features(),
 				fee_msat: amt_msat / 1000,
 				cltv_expiry_delta: 100,
-			}]},
+			}], blinded_tail: None },
 			Path { hops: vec![RouteHop {
 				pubkey: nodes[2].node.get_our_node_id(),
 				node_features: nodes[2].node.node_features(),
@@ -2707,7 +2707,7 @@ fn test_threaded_payment_retries() {
 				channel_features: nodes[3].node.channel_features(),
 				fee_msat: amt_msat - amt_msat / 1000,
 				cltv_expiry_delta: 100,
-			}]}
+			}], blinded_tail: None }
 		],
 		payment_params: Some(PaymentParameters::from_node_id(nodes[2].node.get_our_node_id(), TEST_FINAL_CLTV)),
 	};

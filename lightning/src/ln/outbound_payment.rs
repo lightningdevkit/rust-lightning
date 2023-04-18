@@ -1000,6 +1000,10 @@ impl OutboundPayments {
 				path_errs.push(Err(APIError::InvalidRoute{err: "Path didn't go anywhere/had bogus size".to_owned()}));
 				continue 'path_check;
 			}
+			if path.blinded_tail.is_some() {
+				path_errs.push(Err(APIError::InvalidRoute{err: "Sending to blinded paths isn't supported yet".to_owned()}));
+				continue 'path_check;
+			}
 			for (idx, hop) in path.hops.iter().enumerate() {
 				if idx != path.hops.len() - 1 && hop.pubkey == our_node_id {
 					path_errs.push(Err(APIError::InvalidRoute{err: "Path went through us but wasn't a simple rebalance loop to us".to_owned()}));
@@ -1552,7 +1556,7 @@ mod tests {
 				channel_features: ChannelFeatures::empty(),
 				fee_msat: 0,
 				cltv_expiry_delta: 0,
-			}]}],
+			}], blinded_tail: None }],
 			payment_params: Some(payment_params),
 		};
 		router.expect_find_route(route_params.clone(), Ok(route.clone()));

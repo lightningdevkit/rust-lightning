@@ -1864,7 +1864,7 @@ mod tests {
 				path_hop(source_pubkey(), 41, 1),
 				path_hop(target_pubkey(), 42, 2),
 				path_hop(recipient_pubkey(), 43, amount_msat),
-			],
+			], blinded_tail: None,
 		}
 	}
 
@@ -2289,7 +2289,7 @@ mod tests {
 		assert_eq!(scorer.channel_penalty_msat(43, &node_b, &node_c, usage), 128);
 		assert_eq!(scorer.channel_penalty_msat(44, &node_c, &node_d, usage), 128);
 
-		scorer.payment_path_failed(&Path { hops: path }, 43);
+		scorer.payment_path_failed(&Path { hops: path, blinded_tail: None }, 43);
 
 		assert_eq!(scorer.channel_penalty_msat(42, &node_a, &node_b, usage), 80);
 		// Note that a default liquidity bound is used for B -> C as no channel exists
@@ -2823,7 +2823,7 @@ mod tests {
 			path_hop(source_pubkey(), 42, 1),
 			path_hop(sender_pubkey(), 41, 0),
 		];
-		scorer.payment_path_failed(&Path { hops: path }, 42);
+		scorer.payment_path_failed(&Path { hops: path, blinded_tail: None }, 42);
 	}
 
 	#[test]

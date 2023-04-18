@@ -13,7 +13,7 @@ use bitcoin::secp256k1::PublicKey;
 use bitcoin::hashes::Hash;
 use bitcoin::hashes::sha256::Hash as Sha256;
 
-use crate::blinded_path::BlindedPath;
+use crate::blinded_path::{BlindedHop, BlindedPath};
 use crate::ln::PaymentHash;
 use crate::ln::channelmanager::{ChannelDetails, PaymentId};
 use crate::ln::features::{ChannelFeatures, InvoiceFeatures, NodeFeatures};
@@ -227,10 +227,18 @@ pub struct RouteHop {
 	/// to reach this node.
 	pub channel_features: ChannelFeatures,
 	/// The fee taken on this hop (for paying for the use of the *next* channel in the path).
-	/// For the last hop, this should be the full value of this path's part of the payment.
+	/// If this is the last hop in [`Path::hops`]:
+	/// * if we're sending to a [`BlindedPath`], this is the fee paid for use of the entire blinded path
+	/// * otherwise, this is the full value of this [`Path`]'s part of the payment
+	///
+	/// [`BlindedPath`]: crate::blinded_path::BlindedPath
 	pub fee_msat: u64,
-	/// The CLTV delta added for this hop. For the last hop, this is the CLTV delta expected at the
-	/// destination.
+	/// The CLTV delta added for this hop.
+	/// If this is the last hop in [`Path::hops`]:
+	/// * if we're sending to a [`BlindedPath`], this is the CLTV delta for the entire blinded path
+	/// * otherwise, this is the CLTV delta expected at the destination
+	///
+	/// [`BlindedPath`]: crate::blinded_path::BlindedPath
 	pub cltv_expiry_delta: u32,
 }
 
@@ -243,30 +251,71 @@ impl_writeable_tlv_based!(RouteHop, {
 	(10, cltv_expiry_delta, required),
 });
 
-/// A path in a [`Route`] to the payment recipient.
+/// The blinded portion of a [`Path`], if we're routing to a recipient who provided blinded paths in
+/// their BOLT12 [`Invoice`].
+///
+/// [`Invoice`]: crate::offers::invoice::Invoice
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub struct BlindedTail {
+	/// The hops of the [`BlindedPath`] provided by the recipient.
+	///
+	/// [`BlindedPath`]: crate::blinded_path::BlindedPath
+	pub hops: Vec<BlindedHop>,
+	/// The blinding point of the [`BlindedPath`] provided by the recipient.
+	///
+	/// [`BlindedPath`]: crate::blinded_path::BlindedPath
+	pub blinding_point: PublicKey,
+	/// Excess CLTV delta added to the recipient's CLTV expiry to deter intermediate nodes from
+	/// inferring the destination. May be 0.
+	pub excess_final_cltv_expiry_delta: u32,
+	/// The total amount paid on this [`Path`], excluding the fees.
+	pub final_value_msat: u64,
+}
+
+impl_writeable_tlv_based!(BlindedTail, {
+	(0, hops, vec_type),
+	(2, blinding_point, required),
+	(4, excess_final_cltv_expiry_delta, required),
+	(6, final_value_msat, required),
+});
+
+/// A path in a [`Route`] to the payment recipient. Must always be at least length one.
+/// If no [`Path::blinded_tail`] is present, then [`Path::hops`] length may be up to 19.
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct Path {
-	/// The list of unblinded hops in this [`Path`].
+	/// The list of unblinded hops in this [`Path`]. Must be at least length one.
 	pub hops: Vec<RouteHop>,
+	/// The blinded path at which this path terminates, if we're sending to one, and its metadata.
+	pub blinded_tail: Option<BlindedTail>,
 }
 
 impl Path {
 	/// Gets the fees for a given path, excluding any excess paid to the recipient.
 	pub fn fee_msat(&self) -> u64 {
-		// Do not count last hop of each path since that's the full value of the payment
-		self.hops.split_last().map(|(_, path_prefix)| path_prefix).unwrap_or(&[])
-			.iter().map(|hop| &hop.fee_msat)
-			.sum()
+		match &self.blinded_tail {
+			Some(_) => self.hops.iter().map(|hop| hop.fee_msat).sum::<u64>(),
+			None => {
+				// Do not count last hop of each path since that's the full value of the payment
+				self.hops.split_last().map_or(0,
+					|(_, path_prefix)| path_prefix.iter().map(|hop| hop.fee_msat).sum())
+			}
+		}
 	}
 
 	/// Gets the total amount paid on this [`Path`], excluding the fees.
 	pub fn final_value_msat(&self) -> u64 {
-		self.hops.last().map_or(0, |hop| hop.fee_msat)
+		match &self.blinded_tail {
+			Some(blinded_tail) => blinded_tail.final_value_msat,
+			None => self.hops.last().map_or(0, |hop| hop.fee_msat)
+		}
 	}
 
 	/// Gets the final hop's CLTV expiry delta.
-	pub fn final_cltv_expiry_delta(&self) -> u32 {
-		self.hops.last().map_or(0, |hop| hop.cltv_expiry_delta)
+	pub fn final_cltv_expiry_delta(&self) -> Option<u32> {
+		match &self.blinded_tail {
+			Some(_) => None,
+			None => self.hops.last().map(|hop| hop.cltv_expiry_delta)
+		}
 	}
 }
 
@@ -274,11 +323,9 @@ impl Path {
 /// it can take multiple paths. Each path is composed of one or more hops through the network.
 #[derive(Clone, Hash, PartialEq, Eq)]
 pub struct Route {
-	/// The list of paths taken for a single (potentially-)multi-part payment. The pubkey of the
-	/// last [`RouteHop`] in each path must be the same. Each entry represents a list of hops, where
-	/// the last hop is the destination. Thus, this must always be at least length one. While the
-	/// maximum length of any given path is variable, keeping the length of any path less or equal to
-	/// 19 should currently ensure it is viable.
+	/// The list of [`Path`]s taken for a single (potentially-)multi-part payment. If no
+	/// [`BlindedTail`]s are present, then the pubkey of the last [`RouteHop`] in each path must be
+	/// the same.
 	pub paths: Vec<Path>,
 	/// The `payment_params` parameter passed to [`find_route`].
 	/// This is used by `ChannelManager` to track information which may be required for retries,
@@ -340,7 +387,7 @@ impl Readable for Route {
 			if hops.is_empty() { return Err(DecodeError::InvalidValue); }
 			min_final_cltv_expiry_delta =
 				cmp::min(min_final_cltv_expiry_delta, hops.last().unwrap().cltv_expiry_delta);
-			paths.push(Path { hops });
+			paths.push(Path { hops, blinded_tail: None });
 		}
 		let mut payment_params = None;
 		read_tlv_fields!(reader, {
@@ -2021,7 +2068,7 @@ where L::Target: Logger {
 	for results_vec in selected_paths {
 		let mut hops = Vec::with_capacity(results_vec.len());
 		for res in results_vec { hops.push(res?); }
-		paths.push(Path { hops });
+		paths.push(Path { hops, blinded_tail: None });
 	}
 	let route = Route {
 		paths,
@@ -5272,7 +5319,7 @@ mod tests {
 					channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
 					short_channel_id: 0, fee_msat: 225, cltv_expiry_delta: 0
 				},
-			]}],
+			], blinded_tail: None }],
 			payment_params: None,
 		};
 
@@ -5294,7 +5341,7 @@ mod tests {
 					channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
 					short_channel_id: 0, fee_msat: 150, cltv_expiry_delta: 0
 				},
-			]}, Path { hops: vec![
+			], blinded_tail: None }, Path { hops: vec![
 				RouteHop {
 					pubkey: PublicKey::from_slice(&hex::decode("02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619").unwrap()[..]).unwrap(),
 					channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
@@ -5305,7 +5352,7 @@ mod tests {
 					channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
 					short_channel_id: 0, fee_msat: 150, cltv_expiry_delta: 0
 				},
-			]}],
+			], blinded_tail: None }],
 			payment_params: None,
 		};
 

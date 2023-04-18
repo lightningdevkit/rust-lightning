@@ -1044,7 +1044,7 @@ fn fake_network_test() {
 	});
 	hops[1].fee_msat = chan_4.1.contents.fee_base_msat as u64 + chan_4.1.contents.fee_proportional_millionths as u64 * hops[2].fee_msat as u64 / 1000000;
 	hops[0].fee_msat = chan_3.0.contents.fee_base_msat as u64 + chan_3.0.contents.fee_proportional_millionths as u64 * hops[1].fee_msat as u64 / 1000000;
-	let payment_preimage_1 = send_along_route(&nodes[1], Route { paths: vec![Path { hops }], payment_params: None }, &vec!(&nodes[2], &nodes[3], &nodes[1])[..], 1000000).0;
+	let payment_preimage_1 = send_along_route(&nodes[1], Route { paths: vec![Path { hops, blinded_tail: None }], payment_params: None }, &vec!(&nodes[2], &nodes[3], &nodes[1])[..], 1000000).0;
 
 	let mut hops = Vec::with_capacity(3);
 	hops.push(RouteHop {
@@ -1073,7 +1073,7 @@ fn fake_network_test() {
 	});
 	hops[1].fee_msat = chan_2.1.contents.fee_base_msat as u64 + chan_2.1.contents.fee_proportional_millionths as u64 * hops[2].fee_msat as u64 / 1000000;
 	hops[0].fee_msat = chan_3.1.contents.fee_base_msat as u64 + chan_3.1.contents.fee_proportional_millionths as u64 * hops[1].fee_msat as u64 / 1000000;
-	let payment_hash_2 = send_along_route(&nodes[1], Route { paths: vec![Path { hops }], payment_params: None }, &vec!(&nodes[3], &nodes[2], &nodes[1])[..], 1000000).1;
+	let payment_hash_2 = send_along_route(&nodes[1], Route { paths: vec![Path { hops, blinded_tail: None }], payment_params: None }, &vec!(&nodes[3], &nodes[2], &nodes[1])[..], 1000000).1;
 
 	// Claim the rebalances...
 	fail_payment(&nodes[1], &vec!(&nodes[3], &nodes[2], &nodes[1])[..], payment_hash_2);

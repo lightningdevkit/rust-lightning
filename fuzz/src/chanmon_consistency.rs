@@ -359,7 +359,7 @@ fn send_payment(source: &ChanMan, dest: &ChanMan, dest_chan_id: u64, amt: u64, p
 			channel_features: dest.channel_features(),
 			fee_msat: amt,
 			cltv_expiry_delta: 200,
-		}]}],
+		}], blinded_tail: None }],
 		payment_params: None,
 	}, payment_hash, RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_id)) {
 		check_payment_err(err);
@@ -388,7 +388,7 @@ fn send_hop_payment(source: &ChanMan, middle: &ChanMan, middle_chan_id: u64, des
 			channel_features: dest.channel_features(),
 			fee_msat: amt,
 			cltv_expiry_delta: 200,
-		}]}],
+		}], blinded_tail: None }],
 		payment_params: None,
 	}, payment_hash, RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_id)) {
 		check_payment_err(err);

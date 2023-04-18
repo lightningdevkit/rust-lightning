@@ -929,7 +929,7 @@ mod tests {
 						channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
 						short_channel_id: 0, fee_msat: 0, cltv_expiry_delta: 0 // We fill in the payloads manually instead of generating them from RouteHops.
 					},
-			]}],
+			], blinded_tail: None }],
 			payment_params: None,
 		};
 

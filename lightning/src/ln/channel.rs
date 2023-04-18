@@ -7202,7 +7202,7 @@ mod tests {
 			cltv_expiry: 200000000,
 			state: OutboundHTLCState::Committed,
 			source: HTLCSource::OutboundRoute {
-				path: Path { hops: Vec::new() },
+				path: Path { hops: Vec::new(), blinded_tail: None },
 				session_priv: SecretKey::from_slice(&hex::decode("0fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff").unwrap()[..]).unwrap(),
 				first_hop_htlc_msat: 548,
 				payment_id: PaymentId([42; 32]),

@@ -7019,13 +7019,13 @@ impl Readable for HTLCSource {
 					// instead.
 					payment_id = Some(PaymentId(*session_priv.0.unwrap().as_ref()));
 				}
-				let path = Path { hops: path_hops.ok_or(DecodeError::InvalidValue)? };
+				let path = Path { hops: path_hops.ok_or(DecodeError::InvalidValue)?, blinded_tail: None };
 				if path.hops.len() == 0 {
 					return Err(DecodeError::InvalidValue);
 				}
 				if let Some(params) = payment_params.as_mut() {
 					if params.final_cltv_expiry_delta == 0 {
-						params.final_cltv_expiry_delta = path.final_cltv_expiry_delta();
+						params.final_cltv_expiry_delta = path.final_cltv_expiry_delta().ok_or(DecodeError::InvalidValue)?;
 					}
 				}
 				Ok(HTLCSource::OutboundRoute {
