@@ -870,6 +870,13 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 		SecretKey::from_slice(&Sha256::from_engine(ephemeral_hash).into_inner()).expect("You broke SHA-256!")
 	}
 
+	fn init_features(&self, their_node_id: &PublicKey) -> InitFeatures {
+		self.message_handler.chan_handler.provided_init_features(their_node_id)
+			| self.message_handler.route_handler.provided_init_features(their_node_id)
+			| self.message_handler.onion_message_handler.provided_init_features(their_node_id)
+			| self.message_handler.custom_message_handler.provided_init_features(their_node_id)
+	}
+
 	/// Indicates a new outbound connection has been established to a node with the given `node_id`
 	/// and an optional remote network address.
 	///
@@ -1265,10 +1272,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 
 								peer.set_their_node_id(their_node_id);
 								insert_node_id!();
-								let features = self.message_handler.chan_handler.provided_init_features(&their_node_id)
-									| self.message_handler.route_handler.provided_init_features(&their_node_id)
-									| self.message_handler.onion_message_handler.provided_init_features(&their_node_id)
-									| self.message_handler.custom_message_handler.provided_init_features(&their_node_id);
+								let features = self.init_features(&their_node_id);
 								let resp = msgs::Init { features, remote_network_address: filter_addresses(peer.their_net_address.clone()) };
 								self.enqueue_message(peer, &resp);
 								peer.awaiting_pong_timer_tick_intervals = 0;
@@ -1280,10 +1284,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 								peer.pending_read_is_header = true;
 								peer.set_their_node_id(their_node_id);
 								insert_node_id!();
-								let features = self.message_handler.chan_handler.provided_init_features(&their_node_id)
-									| self.message_handler.route_handler.provided_init_features(&their_node_id)
-									| self.message_handler.onion_message_handler.provided_init_features(&their_node_id)
-									| self.message_handler.custom_message_handler.provided_init_features(&their_node_id);
+								let features = self.init_features(&their_node_id);
 								let resp = msgs::Init { features, remote_network_address: filter_addresses(peer.their_net_address.clone()) };
 								self.enqueue_message(peer, &resp);
 								peer.awaiting_pong_timer_tick_intervals = 0;
