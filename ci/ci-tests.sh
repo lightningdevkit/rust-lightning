@@ -86,7 +86,7 @@ fi
 
 echo -e "\n\nTest futures builds"
 pushd lightning-background-processor
-cargo test --verbose --color always --no-default-features --features futures
+cargo test --verbose --color always --features futures
 popd
 
 if [ "$RUSTC_MINOR_VERSION" -gt 55 ]; then
