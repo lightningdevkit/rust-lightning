@@ -21,7 +21,7 @@ use crate::chain::keysinterface::{ChannelSigner, EcdsaChannelSigner, EntropySour
 use crate::events::{Event, MessageSendEvent, MessageSendEventsProvider, PathFailure, PaymentPurpose, ClosureReason, HTLCDestination, PaymentFailureReason};
 use crate::ln::{PaymentPreimage, PaymentSecret, PaymentHash};
 use crate::ln::channel::{commitment_tx_base_weight, COMMITMENT_TX_WEIGHT_PER_HTLC, CONCURRENT_INBOUND_HTLC_FEE_BUFFER, FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE, MIN_AFFORDABLE_HTLC_COUNT};
-use crate::ln::channelmanager::{self, PaymentId, RAACommitmentOrder, PaymentSendFailure, RecipientOnionFields, BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA};
+use crate::ln::channelmanager::{self, PaymentId, RAACommitmentOrder, PaymentSendFailure, RecipientOnionFields, BREAKDOWN_TIMEOUT, ENABLE_GOSSIP_TICKS, DISABLE_GOSSIP_TICKS, MIN_CLTV_EXPIRY_DELTA};
 use crate::ln::channel::{Channel, ChannelError};
 use crate::ln::{chan_utils, onion_utils};
 use crate::ln::chan_utils::{OFFERED_HTLC_SCRIPT_WEIGHT, htlc_success_tx_weight, htlc_timeout_tx_weight, HTLCOutputInCommitment};
@@ -7100,8 +7100,9 @@ fn test_announce_disable_channels() {
 	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
 	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
 
-	nodes[0].node.timer_tick_occurred(); // Enabled -> DisabledStaged
-	nodes[0].node.timer_tick_occurred(); // DisabledStaged -> Disabled
+	for _ in 0..DISABLE_GOSSIP_TICKS + 1 {
+		nodes[0].node.timer_tick_occurred();
+	}
 	let msg_events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(msg_events.len(), 3);
 	let mut chans_disabled = HashMap::new();
@@ -7141,7 +7142,9 @@ fn test_announce_disable_channels() {
 	nodes[1].node.handle_channel_reestablish(&nodes[0].node.get_our_node_id(), &reestablish_1[2]);
 	handle_chan_reestablish_msgs!(nodes[1], nodes[0]);
 
-	nodes[0].node.timer_tick_occurred();
+	for _ in 0..ENABLE_GOSSIP_TICKS {
+		nodes[0].node.timer_tick_occurred();
+	}
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 	nodes[0].node.timer_tick_occurred();
 	let msg_events = nodes[0].node.get_and_clear_pending_msg_events();
