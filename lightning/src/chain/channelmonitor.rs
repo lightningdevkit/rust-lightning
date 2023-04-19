@@ -4235,6 +4235,7 @@ mod tests {
 			[41; 32],
 			0,
 			[0; 32],
+			[0; 32],
 		);
 
 		let counterparty_pubkeys = ChannelPublicKeys {

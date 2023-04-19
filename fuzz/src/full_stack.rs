@@ -48,7 +48,7 @@ use lightning::util::config::UserConfig;
 use lightning::util::errors::APIError;
 use lightning::util::enforcing_trait_impls::{EnforcingSigner, EnforcementState};
 use lightning::util::logger::Logger;
-use lightning::util::ser::{Readable, Writeable};
+use lightning::util::ser::{Readable, ReadableArgs, Writeable};
 
 use crate::utils::test_logger;
 use crate::utils::test_persister::TestPersister;
@@ -347,6 +347,7 @@ impl SignerProvider for KeyProvider {
 				[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 6, ctr],
 				channel_value_satoshis,
 				channel_keys_id,
+				channel_keys_id,
 			)
 		} else {
 			InMemorySigner::new(
@@ -359,12 +360,13 @@ impl SignerProvider for KeyProvider {
 				[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 12, ctr],
 				channel_value_satoshis,
 				channel_keys_id,
+				channel_keys_id,
 			)
 		}, state, false)
 	}
 
 	fn read_chan_signer(&self, mut data: &[u8]) -> Result<EnforcingSigner, DecodeError> {
-		let inner: InMemorySigner = Readable::read(&mut data)?;
+		let inner: InMemorySigner = ReadableArgs::read(&mut data, self)?;
 		let state = Arc::new(Mutex::new(EnforcementState::new()));
 
 		Ok(EnforcingSigner::new_with_revoked(

@@ -33,7 +33,7 @@ use bitcoin::{PackedLockTime, secp256k1, Sequence, Witness};
 
 use crate::util::transaction_utils;
 use crate::util::crypto::{hkdf_extract_expand_twice, sign};
-use crate::util::ser::{Writeable, Writer, Readable};
+use crate::util::ser::{Writeable, Writer, Readable, ReadableArgs};
 use crate::chain::transaction::OutPoint;
 #[cfg(anchors)]
 use crate::events::bump_transaction::HTLCDescriptor;
@@ -45,6 +45,7 @@ use crate::ln::script::ShutdownScript;
 
 use crate::prelude::*;
 use core::convert::TryInto;
+use core::ops::Deref;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use crate::io::{self, Error};
 use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
@@ -553,7 +554,6 @@ pub trait SignerProvider {
 	fn get_shutdown_scriptpubkey(&self) -> ShutdownScript;
 }
 
-#[derive(Clone)]
 /// A simple implementation of [`WriteableEcdsaChannelSigner`] that just keeps the private keys in memory.
 ///
 /// This implementation performs no policy checks and is insufficient by itself as
@@ -580,6 +580,30 @@ pub struct InMemorySigner {
 	channel_value_satoshis: u64,
 	/// Key derivation parameters.
 	channel_keys_id: [u8; 32],
+	/// Seed from which all randomness produced is derived from.
+	rand_bytes_unique_start: [u8; 32],
+	/// Tracks the number of times we've produced randomness to ensure we don't return the same
+	/// bytes twice.
+	rand_bytes_index: AtomicCounter,
+}
+
+impl Clone for InMemorySigner {
+	fn clone(&self) -> Self {
+		Self {
+			funding_key: self.funding_key.clone(),
+			revocation_base_key: self.revocation_base_key.clone(),
+			payment_key: self.payment_key.clone(),
+			delayed_payment_base_key: self.delayed_payment_base_key.clone(),
+			htlc_base_key: self.htlc_base_key.clone(),
+			commitment_seed: self.commitment_seed.clone(),
+			holder_channel_pubkeys: self.holder_channel_pubkeys.clone(),
+			channel_parameters: self.channel_parameters.clone(),
+			channel_value_satoshis: self.channel_value_satoshis,
+			channel_keys_id: self.channel_keys_id,
+			rand_bytes_unique_start: self.get_secure_random_bytes(),
+			rand_bytes_index: AtomicCounter::new(),
+		}
+	}
 }
 
 impl InMemorySigner {
@@ -594,6 +618,7 @@ impl InMemorySigner {
 		commitment_seed: [u8; 32],
 		channel_value_satoshis: u64,
 		channel_keys_id: [u8; 32],
+		rand_bytes_unique_start: [u8; 32],
 	) -> InMemorySigner {
 		let holder_channel_pubkeys =
 			InMemorySigner::make_holder_keys(secp_ctx, &funding_key, &revocation_base_key,
@@ -610,6 +635,8 @@ impl InMemorySigner {
 			holder_channel_pubkeys,
 			channel_parameters: None,
 			channel_keys_id,
+			rand_bytes_unique_start,
+			rand_bytes_index: AtomicCounter::new(),
 		}
 	}
 
@@ -733,6 +760,15 @@ impl InMemorySigner {
 		witness.push(vec!()); //MINIMALIF
 		witness.push(witness_script.clone().into_bytes());
 		Ok(witness)
+	}
+}
+
+impl EntropySource for InMemorySigner {
+	fn get_secure_random_bytes(&self) -> [u8; 32] {
+		let index = self.rand_bytes_index.get_increment();
+		let mut nonce = [0u8; 16];
+		nonce[..8].copy_from_slice(&index.to_be_bytes());
+		ChaCha20::get_single_block(&self.rand_bytes_unique_start, &nonce)
 	}
 }
 
@@ -922,8 +958,8 @@ impl Writeable for InMemorySigner {
 	}
 }
 
-impl Readable for InMemorySigner {
-	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
+impl<ES: Deref> ReadableArgs<ES> for InMemorySigner where ES::Target: EntropySource {
+	fn read<R: io::Read>(reader: &mut R, entropy_source: ES) -> Result<Self, DecodeError> {
 		let _ver = read_ver_prefix!(reader, SERIALIZATION_VERSION);
 
 		let funding_key = Readable::read(reader)?;
@@ -953,6 +989,8 @@ impl Readable for InMemorySigner {
 			holder_channel_pubkeys,
 			channel_parameters: counterparty_channel_data,
 			channel_keys_id: keys_id,
+			rand_bytes_unique_start: entropy_source.get_secure_random_bytes(),
+			rand_bytes_index: AtomicCounter::new(),
 		})
 	}
 }
@@ -1107,6 +1145,7 @@ impl KeysManager {
 		let payment_key = key_step!(b"payment key", revocation_base_key);
 		let delayed_payment_base_key = key_step!(b"delayed payment base key", payment_key);
 		let htlc_base_key = key_step!(b"HTLC base key", delayed_payment_base_key);
+		let prng_seed = self.get_secure_random_bytes();
 
 		InMemorySigner::new(
 			&self.secp_ctx,
@@ -1118,6 +1157,7 @@ impl KeysManager {
 			commitment_seed,
 			channel_value_satoshis,
 			params.clone(),
+			prng_seed,
 		)
 	}
 
@@ -1323,7 +1363,7 @@ impl SignerProvider for KeysManager {
 	}
 
 	fn read_chan_signer(&self, reader: &[u8]) -> Result<Self::Signer, DecodeError> {
-		InMemorySigner::read(&mut io::Cursor::new(reader))
+		InMemorySigner::read(&mut io::Cursor::new(reader), self)
 	}
 
 	fn get_destination_script(&self) -> Script {
