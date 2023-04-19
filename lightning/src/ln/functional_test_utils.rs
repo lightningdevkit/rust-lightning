@@ -46,7 +46,7 @@ use alloc::rc::Rc;
 use crate::sync::{Arc, Mutex, LockTestExt, RwLock};
 use core::mem;
 use core::iter::repeat;
-use bitcoin::{PackedLockTime, TxMerkleNode};
+use bitcoin::{PackedLockTime, TxIn, TxMerkleNode};
 
 pub const CHAN_CONFIRM_DEPTH: u32 = 10;
 
@@ -1005,7 +1005,23 @@ macro_rules! reload_node {
 	};
 }
 
-pub fn create_funding_transaction<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, expected_counterparty_node_id: &PublicKey, expected_chan_value: u64, expected_user_chan_id: u128) -> (ChannelId, Transaction, OutPoint) {
+pub fn create_funding_transaction<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>,
+	expected_counterparty_node_id: &PublicKey, expected_chan_value: u64, expected_user_chan_id: u128)
+ -> (ChannelId, Transaction, OutPoint)
+{
+	internal_create_funding_transaction(node, expected_counterparty_node_id, expected_chan_value, expected_user_chan_id, false)
+}
+
+pub fn create_coinbase_funding_transaction<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>,
+	expected_counterparty_node_id: &PublicKey, expected_chan_value: u64, expected_user_chan_id: u128)
+ -> (ChannelId, Transaction, OutPoint)
+{
+	internal_create_funding_transaction(node, expected_counterparty_node_id, expected_chan_value, expected_user_chan_id, true)
+}
+
+fn internal_create_funding_transaction<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>,
+	expected_counterparty_node_id: &PublicKey, expected_chan_value: u64, expected_user_chan_id: u128,
+	coinbase: bool) -> (ChannelId, Transaction, OutPoint) {
 	let chan_id = *node.network_chan_count.borrow();
 
 	let events = node.node.get_and_clear_pending_events();
@@ -1016,7 +1032,16 @@ pub fn create_funding_transaction<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, expected_
 			assert_eq!(*channel_value_satoshis, expected_chan_value);
 			assert_eq!(user_channel_id, expected_user_chan_id);
 
-			let tx = Transaction { version: chan_id as i32, lock_time: PackedLockTime::ZERO, input: Vec::new(), output: vec![TxOut {
+			let input = if coinbase {
+				vec![TxIn {
+					previous_output: bitcoin::OutPoint::null(),
+					..Default::default()
+				}]
+			} else {
+				Vec::new()
+			};
+
+			let tx = Transaction { version: chan_id as i32, lock_time: PackedLockTime::ZERO, input, output: vec![TxOut {
 				value: *channel_value_satoshis, script_pubkey: output_script.clone(),
 			}]};
 			let funding_outpoint = OutPoint { txid: tx.txid(), index: 0 };
@@ -1025,6 +1050,7 @@ pub fn create_funding_transaction<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, expected_
 		_ => panic!("Unexpected event"),
 	}
 }
+
 pub fn sign_funding_transaction<'a, 'b, 'c>(node_a: &Node<'a, 'b, 'c>, node_b: &Node<'a, 'b, 'c>, channel_value: u64, expected_temporary_channel_id: ChannelId) -> Transaction {
 	let (temporary_channel_id, tx, funding_output) = create_funding_transaction(node_a, &node_b.node.get_our_node_id(), channel_value, 42);
 	assert_eq!(temporary_channel_id, expected_temporary_channel_id);
