@@ -928,7 +928,7 @@ impl EcdsaChannelSigner for InMemorySigner {
 		&self, msg: &UnsignedChannelAnnouncement, secp_ctx: &Secp256k1<secp256k1::All>
 	) -> Result<Signature, ()> {
 		let msghash = hash_to_message!(&Sha256dHash::hash(&msg.encode()[..])[..]);
-		Ok(sign(secp_ctx, &msghash, &self.funding_key))
+		Ok(secp_ctx.sign_ecdsa(&msghash, &self.funding_key))
 	}
 }
 
@@ -1335,7 +1335,7 @@ impl NodeSigner for KeysManager {
 
 	fn sign_gossip_message(&self, msg: UnsignedGossipMessage) -> Result<Signature, ()> {
 		let msg_hash = hash_to_message!(&Sha256dHash::hash(&msg.encode()[..])[..]);
-		Ok(sign(&self.secp_ctx, &msg_hash, &self.node_secret))
+		Ok(self.secp_ctx.sign_ecdsa(&msg_hash, &self.node_secret))
 	}
 }
 
