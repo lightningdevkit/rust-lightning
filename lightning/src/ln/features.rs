@@ -964,12 +964,12 @@ mod tests {
 		init_features.set_payment_secret_required();
 		init_features.set_basic_mpp_optional();
 		init_features.set_wumbo_optional();
+		init_features.set_anchors_zero_fee_htlc_tx_optional();
 		init_features.set_shutdown_any_segwit_optional();
 		init_features.set_onion_messages_optional();
 		init_features.set_channel_type_optional();
 		init_features.set_scid_privacy_optional();
 		init_features.set_zero_conf_optional();
-		init_features.set_anchors_zero_fee_htlc_tx_optional();
 
 		assert!(init_features.initial_routing_sync());
 		assert!(!init_features.supports_upfront_shutdown_script());
@@ -980,7 +980,7 @@ mod tests {
 			// Check that the flags are as expected:
 			// - option_data_loss_protect (req)
 			// - var_onion_optin (req) | static_remote_key (req) | payment_secret(req)
-			// - basic_mpp | wumbo
+			// - basic_mpp | wumbo | anchors_zero_fee_htlc_tx
 			// - opt_shutdown_anysegwit
 			// - onion_messages
 			// - option_channel_type | option_scid_alias
