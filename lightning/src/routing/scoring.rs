@@ -1702,6 +1702,7 @@ impl<T: Time> Readable for ChannelLiquidity<T> {
 #[cfg(test)]
 mod tests {
 	use super::{ChannelLiquidity, HistoricalBucketRangeTracker, ProbabilisticScoringParameters, ProbabilisticScorerUsingTime};
+	use crate::blinded_path::{BlindedHop, BlindedPath};
 	use crate::util::config::UserConfig;
 	use crate::util::time::Time;
 	use crate::util::time::tests::SinceEpoch;
@@ -1709,10 +1710,10 @@ mod tests {
 	use crate::ln::channelmanager;
 	use crate::ln::msgs::{ChannelAnnouncement, ChannelUpdate, UnsignedChannelAnnouncement, UnsignedChannelUpdate};
 	use crate::routing::gossip::{EffectiveCapacity, NetworkGraph, NodeId};
-	use crate::routing::router::{Path, RouteHop};
+	use crate::routing::router::{BlindedTail, Path, RouteHop};
 	use crate::routing::scoring::{ChannelUsage, Score};
 	use crate::util::ser::{ReadableArgs, Writeable};
-	use crate::util::test_utils::TestLogger;
+	use crate::util::test_utils::{self, TestLogger};
 
 	use bitcoin::blockdata::constants::genesis_block;
 	use bitcoin::hashes::Hash;
@@ -2869,5 +2870,55 @@ mod tests {
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 1_024_000, htlc_maximum_msat: 511_999 },
 		};
 		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 0);
+	}
+
+	#[test]
+	fn scores_with_blinded_path() {
+		// Make sure we'll account for a blinded path's final_value_msat in scoring
+		let logger = TestLogger::new();
+		let network_graph = network_graph(&logger);
+		let params = ProbabilisticScoringParameters {
+			liquidity_penalty_multiplier_msat: 1_000,
+			liquidity_offset_half_life: Duration::from_secs(10),
+			..ProbabilisticScoringParameters::zero_penalty()
+		};
+		let mut scorer = ProbabilisticScorer::new(params, &network_graph, &logger);
+		let source = source_node_id();
+		let target = target_node_id();
+		let usage = ChannelUsage {
+			amount_msat: 512,
+			inflight_htlc_msat: 0,
+			effective_capacity: EffectiveCapacity::Total { capacity_msat: 1_024, htlc_maximum_msat: 1_000 },
+		};
+		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage), 300);
+
+		let mut path = payment_path_for_amount(768);
+		let recipient_hop = path.hops.pop().unwrap();
+		let blinded_path = BlindedPath {
+			introduction_node_id: path.hops.last().as_ref().unwrap().pubkey,
+			blinding_point: test_utils::pubkey(42),
+			blinded_hops: vec![
+				BlindedHop { blinded_node_id: test_utils::pubkey(44), encrypted_payload: Vec::new() }
+			],
+		};
+		path.blinded_tail = Some(BlindedTail {
+			hops: blinded_path.blinded_hops,
+			blinding_point: blinded_path.blinding_point,
+			excess_final_cltv_expiry_delta: recipient_hop.cltv_expiry_delta,
+			final_value_msat: recipient_hop.fee_msat,
+		});
+
+		// Check the liquidity before and after scoring payment failures to ensure the blinded path's
+		// final value is taken into account.
+		assert!(scorer.channel_liquidities.get(&42).is_none());
+
+		scorer.payment_path_failed(&path, 42);
+		path.blinded_tail.as_mut().unwrap().final_value_msat = 256;
+		scorer.payment_path_failed(&path, 43);
+
+		let liquidity = scorer.channel_liquidities.get(&42).unwrap()
+			.as_directed(&source, &target, 0, 1_000, &scorer.params);
+		assert_eq!(liquidity.min_liquidity_msat(), 256);
+		assert_eq!(liquidity.max_liquidity_msat(), 768);
 	}
 }
