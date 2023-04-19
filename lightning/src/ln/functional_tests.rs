@@ -3461,7 +3461,7 @@ fn test_htlc_ignore_latest_remote_commitment() {
 
 	let node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 	assert_eq!(node_txn.len(), 3);
-	assert_eq!(node_txn[0], node_txn[1]);
+	assert_eq!(node_txn[0].txid(), node_txn[1].txid());
 
 	let mut header = BlockHeader { version: 0x20000000, prev_blockhash: nodes[1].best_block_hash(), merkle_root: TxMerkleNode::all_zeros(), time: 42, bits: 42, nonce: 42 };
 	connect_block(&nodes[1], &Block { header, txdata: vec![node_txn[0].clone(), node_txn[1].clone()]});
@@ -9248,7 +9248,7 @@ fn do_test_tx_confirmed_skipping_blocks_immediate_broadcast(test_height_before_t
 		// We should broadcast an HTLC transaction spending our funding transaction first
 		let spending_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 		assert_eq!(spending_txn.len(), 2);
-		assert_eq!(spending_txn[0], node_txn[0]);
+		assert_eq!(spending_txn[0].txid(), node_txn[0].txid());
 		check_spends!(spending_txn[1], node_txn[0]);
 		// We should also generate a SpendableOutputs event with the to_self output (as its
 		// timelock is up).

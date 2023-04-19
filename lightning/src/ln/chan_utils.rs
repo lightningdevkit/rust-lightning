@@ -21,6 +21,7 @@ use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::ripemd160::Hash as Ripemd160;
 use bitcoin::hash_types::{Txid, PubkeyHash};
 
+use crate::chain::keysinterface::EntropySource;
 use crate::ln::{PaymentHash, PaymentPreimage};
 use crate::ln::msgs::DecodeError;
 use crate::util::ser::{Readable, Writeable, Writer};
@@ -39,7 +40,7 @@ use crate::util::transaction_utils::sort_outputs;
 use crate::ln::channel::{INITIAL_COMMITMENT_NUMBER, ANCHOR_OUTPUT_VALUE_SATOSHI};
 use core::ops::Deref;
 use crate::chain;
-use crate::util::crypto::sign;
+use crate::util::crypto::{sign, sign_with_aux_rand};
 
 /// Maximum number of one-way in-flight HTLC (protocol-level value).
 pub const MAX_HTLCS: u16 = 483;
@@ -1081,11 +1082,19 @@ impl BuiltCommitmentTransaction {
 		hash_to_message!(sighash)
 	}
 
-	/// Sign a transaction, either because we are counter-signing the counterparty's transaction or
-	/// because we are about to broadcast a holder transaction.
-	pub fn sign<T: secp256k1::Signing>(&self, funding_key: &SecretKey, funding_redeemscript: &Script, channel_value_satoshis: u64, secp_ctx: &Secp256k1<T>) -> Signature {
+	/// Signs the counterparty's commitment transaction.
+	pub fn sign_counterparty_commitment<T: secp256k1::Signing>(&self, funding_key: &SecretKey, funding_redeemscript: &Script, channel_value_satoshis: u64, secp_ctx: &Secp256k1<T>) -> Signature {
 		let sighash = self.get_sighash_all(funding_redeemscript, channel_value_satoshis);
 		sign(secp_ctx, &sighash, funding_key)
+	}
+
+	/// Signs the holder commitment transaction because we are about to broadcast it.
+	pub fn sign_holder_commitment<T: secp256k1::Signing, ES: Deref>(
+		&self, funding_key: &SecretKey, funding_redeemscript: &Script, channel_value_satoshis: u64,
+		entropy_source: &ES, secp_ctx: &Secp256k1<T>
+	) -> Signature where ES::Target: EntropySource {
+		let sighash = self.get_sighash_all(funding_redeemscript, channel_value_satoshis);
+		sign_with_aux_rand(secp_ctx, &sighash, funding_key, entropy_source)
 	}
 }
 
@@ -1563,7 +1572,10 @@ impl<'a> TrustedCommitmentTransaction<'a> {
 	/// The returned Vec has one entry for each HTLC, and in the same order.
 	///
 	/// This function is only valid in the holder commitment context, it always uses EcdsaSighashType::All.
-	pub fn get_htlc_sigs<T: secp256k1::Signing>(&self, htlc_base_key: &SecretKey, channel_parameters: &DirectedChannelTransactionParameters, secp_ctx: &Secp256k1<T>) -> Result<Vec<Signature>, ()> {
+	pub fn get_htlc_sigs<T: secp256k1::Signing, ES: Deref>(
+		&self, htlc_base_key: &SecretKey, channel_parameters: &DirectedChannelTransactionParameters,
+		entropy_source: &ES, secp_ctx: &Secp256k1<T>,
+	) -> Result<Vec<Signature>, ()> where ES::Target: EntropySource {
 		let inner = self.inner;
 		let keys = &inner.keys;
 		let txid = inner.built.txid;
@@ -1577,7 +1589,7 @@ impl<'a> TrustedCommitmentTransaction<'a> {
 			let htlc_redeemscript = get_htlc_redeemscript_with_explicit_keys(&this_htlc, self.opt_anchors(), &keys.broadcaster_htlc_key, &keys.countersignatory_htlc_key, &keys.revocation_key);
 
 			let sighash = hash_to_message!(&sighash::SighashCache::new(&htlc_tx).segwit_signature_hash(0, &htlc_redeemscript, this_htlc.amount_msat / 1000, EcdsaSighashType::All).unwrap()[..]);
-			ret.push(sign(secp_ctx, &sighash, &holder_htlc_key));
+			ret.push(sign_with_aux_rand(secp_ctx, &sighash, &holder_htlc_key, entropy_source));
 		}
 		Ok(ret)
 	}
