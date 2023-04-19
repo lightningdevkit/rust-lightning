@@ -35,13 +35,14 @@ for DIR in lightning lightning-invoice lightning-rapid-gossip-sync; do
 	cargo test --verbose --color always --no-default-features --features no-std
 	# check if there is a conflict between no-std and the default std feature
 	cargo test --verbose --color always --features no-std
-	# check that things still pass without grind_signatures
-	# note that outbound_commitment_test only runs in this mode, because of hardcoded signature values
-	cargo test --verbose --color always --no-default-features --features std
 	# check if there is a conflict between no-std and the c_bindings cfg
 	RUSTFLAGS="--cfg=c_bindings" cargo test --verbose --color always --no-default-features --features=no-std
 	popd
 done
+# Note that outbound_commitment_test only runs in this mode because of hardcoded signature values
+pushd lightning
+cargo test --verbose --color always --no-default-features --features=std,_test_vectors
+popd
 # This one only works for lightning-invoice
 pushd lightning-invoice
 # check that compile with no-std and serde works in lightning-invoice

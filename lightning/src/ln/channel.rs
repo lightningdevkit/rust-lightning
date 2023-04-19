@@ -7516,7 +7516,7 @@ mod tests {
 		}
 	}
 
-	#[cfg(not(feature = "grind_signatures"))]
+	#[cfg(feature = "_test_vectors")]
 	#[test]
 	fn outbound_commitment_test() {
 		use bitcoin::util::sighash;
