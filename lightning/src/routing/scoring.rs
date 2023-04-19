@@ -56,7 +56,7 @@
 
 use crate::ln::msgs::DecodeError;
 use crate::routing::gossip::{EffectiveCapacity, NetworkGraph, NodeId};
-use crate::routing::router::RouteHop;
+use crate::routing::router::{RouteHop, RoutePath};
 use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer};
 use crate::util::logger::Logger;
 use crate::util::time::Time;
@@ -1234,7 +1234,7 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> Score for Probabilis
 	}
 
 	fn payment_path_failed(&mut self, path: &[&RouteHop], short_channel_id: u64) {
-		let amount_msat = path.split_last().map(|(hop, _)| hop.fee_msat).unwrap_or(0);
+		let amount_msat = path.final_value_msat();
 		log_trace!(self.logger, "Scoring path through to SCID {} as having failed at {} msat", short_channel_id, amount_msat);
 		let network_graph = self.network_graph.read_only();
 		for (hop_idx, hop) in path.iter().enumerate() {
@@ -1273,7 +1273,7 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> Score for Probabilis
 	}
 
 	fn payment_path_successful(&mut self, path: &[&RouteHop]) {
-		let amount_msat = path.split_last().map(|(hop, _)| hop.fee_msat).unwrap_or(0);
+		let amount_msat = path.final_value_msat();
 		log_trace!(self.logger, "Scoring path through SCID {} as having succeeded at {} msat.",
 			path.split_last().map(|(hop, _)| hop.short_channel_id).unwrap_or(0), amount_msat);
 		let network_graph = self.network_graph.read_only();

@@ -261,16 +261,42 @@ pub struct Route {
 	pub payment_params: Option<PaymentParameters>,
 }
 
+// This trait is deleted in the next commit
 pub(crate) trait RoutePath {
 	/// Gets the fees for a given path, excluding any excess paid to the recipient.
-	fn get_path_fees(&self) -> u64;
+	fn fee_msat(&self) -> u64;
+
+	/// Gets the total amount paid on this path, excluding the fees.
+	fn final_value_msat(&self) -> u64;
+
+	/// Gets the final hop's CLTV expiry delta.
+	fn final_cltv_expiry_delta(&self) -> u32;
 }
 impl RoutePath for Vec<RouteHop> {
-	fn get_path_fees(&self) -> u64 {
+	fn fee_msat(&self) -> u64 {
 		// Do not count last hop of each path since that's the full value of the payment
 		self.split_last().map(|(_, path_prefix)| path_prefix).unwrap_or(&[])
 			.iter().map(|hop| &hop.fee_msat)
 			.sum()
+	}
+	fn final_value_msat(&self) -> u64 {
+		self.last().map_or(0, |hop| hop.fee_msat)
+	}
+	fn final_cltv_expiry_delta(&self) -> u32 {
+		self.last().map_or(0, |hop| hop.cltv_expiry_delta)
+	}
+}
+impl RoutePath for &[&RouteHop] {
+	fn fee_msat(&self) -> u64 {
+		self.split_last().map(|(_, path_prefix)| path_prefix).unwrap_or(&[])
+			.iter().map(|hop| &hop.fee_msat)
+			.sum()
+	}
+	fn final_value_msat(&self) -> u64 {
+		self.last().map_or(0, |hop| hop.fee_msat)
+	}
+	fn final_cltv_expiry_delta(&self) -> u32 {
+		self.last().map_or(0, |hop| hop.cltv_expiry_delta)
 	}
 }
 
@@ -280,15 +306,13 @@ impl Route {
 	/// This doesn't include any extra payment made to the recipient, which can happen in excess of
 	/// the amount passed to [`find_route`]'s `params.final_value_msat`.
 	pub fn get_total_fees(&self) -> u64 {
-		self.paths.iter().map(|path| path.get_path_fees()).sum()
+		self.paths.iter().map(|path| path.fee_msat()).sum()
 	}
 
 	/// Returns the total amount paid on this [`Route`], excluding the fees. Might be more than
 	/// requested if we had to reach htlc_minimum_msat.
 	pub fn get_total_amount(&self) -> u64 {
-		return self.paths.iter()
-			.map(|path| path.split_last().map(|(hop, _)| hop.fee_msat).unwrap_or(0))
-			.sum();
+		self.paths.iter().map(|path| path.final_value_msat()).sum()
 	}
 }
 
@@ -2183,7 +2207,7 @@ mod tests {
 	use crate::routing::gossip::{NetworkGraph, P2PGossipSync, NodeId, EffectiveCapacity};
 	use crate::routing::utxo::UtxoResult;
 	use crate::routing::router::{get_route, build_route_from_hops_internal, add_random_cltv_offset, default_node_features,
-		PaymentParameters, Route, RouteHint, RouteHintHop, RouteHop, RoutingFees,
+		PaymentParameters, Route, RouteHint, RouteHintHop, RouteHop, RoutingFees, RoutePath,
 		DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA, MAX_PATH_LENGTH_ESTIMATE};
 	use crate::routing::scoring::{ChannelUsage, FixedPenaltyScorer, Score, ProbabilisticScorer, ProbabilisticScoringParameters};
 	use crate::routing::test_utils::{add_channel, add_or_update_node, build_graph, build_line_graph, id_to_feature_flags, get_nodes, update_channel};
@@ -3487,7 +3511,7 @@ mod tests {
 			let path = route.paths.last().unwrap();
 			assert_eq!(path.len(), 2);
 			assert_eq!(path.last().unwrap().pubkey, nodes[2]);
-			assert_eq!(path.last().unwrap().fee_msat, 250_000_000);
+			assert_eq!(path.final_value_msat(), 250_000_000);
 		}
 
 		// Check that setting next_outbound_htlc_limit_msat in first_hops limits the channels.
@@ -3523,7 +3547,7 @@ mod tests {
 			let path = route.paths.last().unwrap();
 			assert_eq!(path.len(), 2);
 			assert_eq!(path.last().unwrap().pubkey, nodes[2]);
-			assert_eq!(path.last().unwrap().fee_msat, 200_000_000);
+			assert_eq!(path.final_value_msat(), 200_000_000);
 		}
 
 		// Enable channel #1 back.
@@ -3570,7 +3594,7 @@ mod tests {
 			let path = route.paths.last().unwrap();
 			assert_eq!(path.len(), 2);
 			assert_eq!(path.last().unwrap().pubkey, nodes[2]);
-			assert_eq!(path.last().unwrap().fee_msat, 15_000);
+			assert_eq!(path.final_value_msat(), 15_000);
 		}
 
 		// Now let's see if routing works if we know only capacity from the UTXO.
@@ -3641,7 +3665,7 @@ mod tests {
 			let path = route.paths.last().unwrap();
 			assert_eq!(path.len(), 2);
 			assert_eq!(path.last().unwrap().pubkey, nodes[2]);
-			assert_eq!(path.last().unwrap().fee_msat, 15_000);
+			assert_eq!(path.final_value_msat(), 15_000);
 		}
 
 		// Now let's see if routing chooses htlc_maximum_msat over UTXO capacity.
@@ -3673,7 +3697,7 @@ mod tests {
 			let path = route.paths.last().unwrap();
 			assert_eq!(path.len(), 2);
 			assert_eq!(path.last().unwrap().pubkey, nodes[2]);
-			assert_eq!(path.last().unwrap().fee_msat, 10_000);
+			assert_eq!(path.final_value_msat(), 10_000);
 		}
 	}
 
@@ -3786,7 +3810,7 @@ mod tests {
 			for path in &route.paths {
 				assert_eq!(path.len(), 4);
 				assert_eq!(path.last().unwrap().pubkey, nodes[3]);
-				total_amount_paid_msat += path.last().unwrap().fee_msat;
+				total_amount_paid_msat += path.final_value_msat();
 			}
 			assert_eq!(total_amount_paid_msat, 49_000);
 		}
@@ -3799,7 +3823,7 @@ mod tests {
 			for path in &route.paths {
 				assert_eq!(path.len(), 4);
 				assert_eq!(path.last().unwrap().pubkey, nodes[3]);
-				total_amount_paid_msat += path.last().unwrap().fee_msat;
+				total_amount_paid_msat += path.final_value_msat();
 			}
 			assert_eq!(total_amount_paid_msat, 50_000);
 		}
@@ -3847,7 +3871,7 @@ mod tests {
 			for path in &route.paths {
 				assert_eq!(path.len(), 2);
 				assert_eq!(path.last().unwrap().pubkey, nodes[2]);
-				total_amount_paid_msat += path.last().unwrap().fee_msat;
+				total_amount_paid_msat += path.final_value_msat();
 			}
 			assert_eq!(total_amount_paid_msat, 50_000);
 		}
@@ -3993,7 +4017,7 @@ mod tests {
 			for path in &route.paths {
 				assert_eq!(path.len(), 2);
 				assert_eq!(path.last().unwrap().pubkey, nodes[2]);
-				total_amount_paid_msat += path.last().unwrap().fee_msat;
+				total_amount_paid_msat += path.final_value_msat();
 			}
 			assert_eq!(total_amount_paid_msat, 250_000);
 		}
@@ -4007,7 +4031,7 @@ mod tests {
 			for path in &route.paths {
 				assert_eq!(path.len(), 2);
 				assert_eq!(path.last().unwrap().pubkey, nodes[2]);
-				total_amount_paid_msat += path.last().unwrap().fee_msat;
+				total_amount_paid_msat += path.final_value_msat();
 			}
 			assert_eq!(total_amount_paid_msat, 290_000);
 		}
@@ -4171,7 +4195,7 @@ mod tests {
 			let mut total_amount_paid_msat = 0;
 			for path in &route.paths {
 				assert_eq!(path.last().unwrap().pubkey, nodes[3]);
-				total_amount_paid_msat += path.last().unwrap().fee_msat;
+				total_amount_paid_msat += path.final_value_msat();
 			}
 			assert_eq!(total_amount_paid_msat, 300_000);
 		}
@@ -4333,7 +4357,7 @@ mod tests {
 			let mut total_paid_msat = 0;
 			for path in &route.paths {
 				assert_eq!(path.last().unwrap().pubkey, nodes[3]);
-				total_value_transferred_msat += path.last().unwrap().fee_msat;
+				total_value_transferred_msat += path.final_value_msat();
 				for hop in path {
 					total_paid_msat += hop.fee_msat;
 				}
@@ -4510,7 +4534,7 @@ mod tests {
 			let mut total_amount_paid_msat = 0;
 			for path in &route.paths {
 				assert_eq!(path.last().unwrap().pubkey, nodes[3]);
-				total_amount_paid_msat += path.last().unwrap().fee_msat;
+				total_amount_paid_msat += path.final_value_msat();
 			}
 			assert_eq!(total_amount_paid_msat, 200_000);
 			assert_eq!(route.get_total_fees(), 150_000);
@@ -4737,7 +4761,7 @@ mod tests {
 			for path in &route.paths {
 				assert_eq!(path.len(), 2);
 				assert_eq!(path.last().unwrap().pubkey, nodes[2]);
-				total_amount_paid_msat += path.last().unwrap().fee_msat;
+				total_amount_paid_msat += path.final_value_msat();
 			}
 			assert_eq!(total_amount_paid_msat, 125_000);
 		}
@@ -4750,7 +4774,7 @@ mod tests {
 			for path in &route.paths {
 				assert_eq!(path.len(), 2);
 				assert_eq!(path.last().unwrap().pubkey, nodes[2]);
-				total_amount_paid_msat += path.last().unwrap().fee_msat;
+				total_amount_paid_msat += path.final_value_msat();
 			}
 			assert_eq!(total_amount_paid_msat, 90_000);
 		}

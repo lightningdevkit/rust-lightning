@@ -172,10 +172,9 @@ impl PendingOutboundPayment {
 		if remove_res {
 			if let PendingOutboundPayment::Retryable { ref mut pending_amt_msat, ref mut pending_fee_msat, .. } = self {
 				let path = path.expect("Fulfilling a payment should always come with a path");
-				let path_last_hop = path.last().expect("Outbound payments must have had a valid path");
-				*pending_amt_msat -= path_last_hop.fee_msat;
+				*pending_amt_msat -= path.final_value_msat();
 				if let Some(fee_msat) = pending_fee_msat.as_mut() {
-					*fee_msat -= path.get_path_fees();
+					*fee_msat -= path.fee_msat();
 				}
 			}
 		}
@@ -193,10 +192,9 @@ impl PendingOutboundPayment {
 		};
 		if insert_res {
 			if let PendingOutboundPayment::Retryable { ref mut pending_amt_msat, ref mut pending_fee_msat, .. } = self {
-				let path_last_hop = path.last().expect("Outbound payments must have had a valid path");
-				*pending_amt_msat += path_last_hop.fee_msat;
+				*pending_amt_msat += path.final_value_msat();
 				if let Some(fee_msat) = pending_fee_msat.as_mut() {
-					*fee_msat += path.get_path_fees();
+					*fee_msat += path.fee_msat();
 				}
 			}
 		}
@@ -756,7 +754,7 @@ impl OutboundPayments {
 						PendingOutboundPayment::Retryable {
 							total_msat, keysend_preimage, payment_secret, payment_metadata, pending_amt_msat, ..
 						} => {
-							let retry_amt_msat: u64 = route.paths.iter().map(|path| path.last().unwrap().fee_msat).sum();
+							let retry_amt_msat = route.get_total_amount();
 							if retry_amt_msat + *pending_amt_msat > *total_msat * (100 + RETRY_OVERFLOW_PERCENTAGE) / 100 {
 								log_error!(logger, "retry_amt_msat of {} will put pending_amt_msat (currently: {}) more than 10% over total_payment_amt_msat of {}", retry_amt_msat, pending_amt_msat, total_msat);
 								abandon_with_entry!(payment, PaymentFailureReason::UnexpectedError);
@@ -1008,7 +1006,7 @@ impl OutboundPayments {
 					continue 'path_check;
 				}
 			}
-			total_value += path.last().unwrap().fee_msat;
+			total_value += path.final_value_msat();
 			path_errs.push(Ok(()));
 		}
 		if path_errs.iter().any(|e| e.is_err()) {
@@ -1056,7 +1054,7 @@ impl OutboundPayments {
 				has_err = true;
 				has_ok = true;
 			} else if res.is_err() {
-				pending_amt_unsent += path.last().unwrap().fee_msat;
+				pending_amt_unsent += path.final_value_msat();
 			}
 		}
 		if has_err && has_ok {

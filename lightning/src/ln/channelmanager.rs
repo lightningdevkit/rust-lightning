@@ -7025,7 +7025,7 @@ impl Readable for HTLCSource {
 				let path = path.unwrap();
 				if let Some(params) = payment_params.as_mut() {
 					if params.final_cltv_expiry_delta == 0 {
-						params.final_cltv_expiry_delta = path.last().unwrap().cltv_expiry_delta;
+						params.final_cltv_expiry_delta = path.final_cltv_expiry_delta();
 					}
 				}
 				Ok(HTLCSource::OutboundRoute {
@@ -7725,7 +7725,7 @@ where
 								return Err(DecodeError::InvalidValue);
 							}
 
-							let path_amt = path.last().unwrap().fee_msat;
+							let path_amt = path.final_value_msat();
 							let mut session_priv_bytes = [0; 32];
 							session_priv_bytes[..].copy_from_slice(&session_priv[..]);
 							match pending_outbounds.pending_outbound_payments.lock().unwrap().entry(payment_id) {
@@ -7735,7 +7735,7 @@ where
 										if newly_added { "Added" } else { "Had" }, path_amt, log_bytes!(session_priv_bytes), log_bytes!(htlc.payment_hash.0));
 								},
 								hash_map::Entry::Vacant(entry) => {
-									let path_fee = path.get_path_fees();
+									let path_fee = path.fee_msat();
 									entry.insert(PendingOutboundPayment::Retryable {
 										retry_strategy: None,
 										attempts: PaymentAttempts::new(),
