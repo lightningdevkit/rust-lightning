@@ -106,11 +106,13 @@ pub(super) enum PendingHTLCRouting {
 	},
 	Receive {
 		payment_data: msgs::FinalOnionHopData,
+		payment_metadata: Option<Vec<u8>>,
 		incoming_cltv_expiry: u32, // Used to track when we should expire pending HTLCs that go unclaimed
 		phantom_shared_secret: Option<[u8; 32]>,
 	},
 	ReceiveKeysend {
 		payment_preimage: PaymentPreimage,
+		payment_metadata: Option<Vec<u8>>,
 		incoming_cltv_expiry: u32, // Used to track when we should expire pending HTLCs that go unclaimed
 	},
 }
@@ -470,6 +472,12 @@ impl_writeable_tlv_based!(ClaimingPayment, {
 	(4, receiver_node_id, required),
 });
 
+struct ClaimablePayment {
+	purpose: events::PaymentPurpose,
+	onion_fields: Option<RecipientOnionFields>,
+	htlcs: Vec<ClaimableHTLC>,
+}
+
 /// Information about claimable or being-claimed payments
 struct ClaimablePayments {
 	/// Map from payment hash to the payment data and any HTLCs which are to us and can be
@@ -480,7 +488,7 @@ struct ClaimablePayments {
 	///
 	/// When adding to the map, [`Self::pending_claiming_payments`] must also be checked to ensure
 	/// we don't get a duplicate payment.
-	claimable_htlcs: HashMap<PaymentHash, (events::PaymentPurpose, Vec<ClaimableHTLC>)>,
+	claimable_payments: HashMap<PaymentHash, ClaimablePayment>,
 
 	/// Map from payment hash to the payment data for HTLCs which we have begun claiming, but which
 	/// are waiting on a [`ChannelMonitorUpdate`] to complete in order to be surfaced to the user
@@ -1761,7 +1769,7 @@ where
 			pending_inbound_payments: Mutex::new(HashMap::new()),
 			pending_outbound_payments: OutboundPayments::new(),
 			forward_htlcs: Mutex::new(HashMap::new()),
-			claimable_payments: Mutex::new(ClaimablePayments { claimable_htlcs: HashMap::new(), pending_claiming_payments: HashMap::new() }),
+			claimable_payments: Mutex::new(ClaimablePayments { claimable_payments: HashMap::new(), pending_claiming_payments: HashMap::new() }),
 			pending_intercepted_htlcs: Mutex::new(HashMap::new()),
 			id_to_peer: Mutex::new(HashMap::new()),
 			short_to_chan_info: FairRwLock::new(HashMap::new()),
@@ -2256,7 +2264,7 @@ where
 					msg: "Got non final data with an HMAC of 0",
 				});
 			},
-			msgs::OnionHopDataFormat::FinalNode { payment_data, keysend_preimage } => {
+			msgs::OnionHopDataFormat::FinalNode { payment_data, keysend_preimage, payment_metadata } => {
 				if payment_data.is_some() && keysend_preimage.is_some() {
 					return Err(ReceiveError {
 						err_code: 0x4000|22,
@@ -2266,6 +2274,7 @@ where
 				} else if let Some(data) = payment_data {
 					PendingHTLCRouting::Receive {
 						payment_data: data,
+						payment_metadata,
 						incoming_cltv_expiry: hop_data.outgoing_cltv_value,
 						phantom_shared_secret,
 					}
@@ -2286,6 +2295,7 @@ where
 
 					PendingHTLCRouting::ReceiveKeysend {
 						payment_preimage,
+						payment_metadata,
 						incoming_cltv_expiry: hop_data.outgoing_cltv_value,
 					}
 				} else {
@@ -2797,6 +2807,11 @@ where
 	pub(crate) fn test_add_new_pending_payment(&self, payment_hash: PaymentHash, recipient_onion: RecipientOnionFields, payment_id: PaymentId, route: &Route) -> Result<Vec<[u8; 32]>, PaymentSendFailure> {
 		let best_block_height = self.best_block.read().unwrap().height();
 		self.pending_outbound_payments.test_add_new_pending_payment(payment_hash, recipient_onion, payment_id, route, None, &self.entropy_source, best_block_height)
+	}
+
+	#[cfg(test)]
+	pub(crate) fn test_set_payment_metadata(&self, payment_id: PaymentId, new_payment_metadata: Option<Vec<u8>>) {
+		self.pending_outbound_payments.test_set_payment_metadata(payment_id, new_payment_metadata);
 	}
 
 
@@ -3383,7 +3398,7 @@ where
 						}
 					}
 				} else {
-					for forward_info in pending_forwards.drain(..) {
+					'next_forwardable_htlc: for forward_info in pending_forwards.drain(..) {
 						match forward_info {
 							HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo {
 								prev_short_channel_id, prev_htlc_id, prev_funding_outpoint, prev_user_channel_id,
@@ -3391,13 +3406,19 @@ where
 									routing, incoming_shared_secret, payment_hash, incoming_amt_msat, outgoing_amt_msat, ..
 								}
 							}) => {
-								let (cltv_expiry, onion_payload, payment_data, phantom_shared_secret) = match routing {
-									PendingHTLCRouting::Receive { payment_data, incoming_cltv_expiry, phantom_shared_secret } => {
+								let (cltv_expiry, onion_payload, payment_data, phantom_shared_secret, mut onion_fields) = match routing {
+									PendingHTLCRouting::Receive { payment_data, payment_metadata, incoming_cltv_expiry, phantom_shared_secret } => {
 										let _legacy_hop_data = Some(payment_data.clone());
-										(incoming_cltv_expiry, OnionPayload::Invoice { _legacy_hop_data }, Some(payment_data), phantom_shared_secret)
+										let onion_fields =
+											RecipientOnionFields { payment_secret: Some(payment_data.payment_secret), payment_metadata };
+										(incoming_cltv_expiry, OnionPayload::Invoice { _legacy_hop_data },
+											Some(payment_data), phantom_shared_secret, onion_fields)
 									},
-									PendingHTLCRouting::ReceiveKeysend { payment_preimage, incoming_cltv_expiry } =>
-										(incoming_cltv_expiry, OnionPayload::Spontaneous(payment_preimage), None, None),
+									PendingHTLCRouting::ReceiveKeysend { payment_preimage, payment_metadata, incoming_cltv_expiry } => {
+										let onion_fields = RecipientOnionFields { payment_secret: None, payment_metadata };
+										(incoming_cltv_expiry, OnionPayload::Spontaneous(payment_preimage),
+											None, None, onion_fields)
+									},
 									_ => {
 										panic!("short_channel_id == 0 should imply any pending_forward entries are of type Receive");
 									}
@@ -3422,8 +3443,11 @@ where
 									onion_payload,
 								};
 
+								let mut committed_to_claimable = false;
+
 								macro_rules! fail_htlc {
 									($htlc: expr, $payment_hash: expr) => {
+										debug_assert!(!committed_to_claimable);
 										let mut htlc_msat_height_data = $htlc.value.to_be_bytes().to_vec();
 										htlc_msat_height_data.extend_from_slice(
 											&self.best_block.read().unwrap().height().to_be_bytes(),
@@ -3438,6 +3462,7 @@ where
 											HTLCFailReason::reason(0x4000 | 15, htlc_msat_height_data),
 											HTLCDestination::FailedPayment { payment_hash: $payment_hash },
 										));
+										continue 'next_forwardable_htlc;
 									}
 								}
 								let phantom_shared_secret = claimable_htlc.prev_hop.phantom_shared_secret;
@@ -3459,15 +3484,28 @@ where
 										let mut claimable_payments = self.claimable_payments.lock().unwrap();
 										if claimable_payments.pending_claiming_payments.contains_key(&payment_hash) {
 											fail_htlc!(claimable_htlc, payment_hash);
-											continue
 										}
-										let (_, ref mut htlcs) = claimable_payments.claimable_htlcs.entry(payment_hash)
-											.or_insert_with(|| (purpose(), Vec::new()));
+										let ref mut claimable_payment = claimable_payments.claimable_payments
+											.entry(payment_hash)
+											// Note that if we insert here we MUST NOT fail_htlc!()
+											.or_insert_with(|| {
+												committed_to_claimable = true;
+												ClaimablePayment {
+													purpose: purpose(), htlcs: Vec::new(), onion_fields: None,
+												}
+											});
+										if let Some(earlier_fields) = &mut claimable_payment.onion_fields {
+											if earlier_fields.check_merge(&mut onion_fields).is_err() {
+												fail_htlc!(claimable_htlc, payment_hash);
+											}
+										} else {
+											claimable_payment.onion_fields = Some(onion_fields);
+										}
+										let ref mut htlcs = &mut claimable_payment.htlcs;
 										if htlcs.len() == 1 {
 											if let OnionPayload::Spontaneous(_) = htlcs[0].onion_payload {
 												log_trace!(self.logger, "Failing new HTLC with payment_hash {} as we already had an existing keysend HTLC with the same payment hash", log_bytes!(payment_hash.0));
 												fail_htlc!(claimable_htlc, payment_hash);
-												continue
 											}
 										}
 										let mut total_value = claimable_htlc.sender_intended_value;
@@ -3496,6 +3534,9 @@ where
 												log_bytes!(payment_hash.0));
 											fail_htlc!(claimable_htlc, payment_hash);
 										} else if total_value >= $payment_data.total_msat {
+											#[allow(unused_assignments)] {
+												committed_to_claimable = true;
+											}
 											let prev_channel_id = prev_funding_outpoint.to_channel_id();
 											htlcs.push(claimable_htlc);
 											let amount_msat = htlcs.iter().map(|htlc| htlc.value).sum();
@@ -3508,6 +3549,7 @@ where
 												via_channel_id: Some(prev_channel_id),
 												via_user_channel_id: Some(prev_user_channel_id),
 												claim_deadline: Some(earliest_expiry - HTLC_FAIL_BACK_BUFFER),
+												onion_fields: claimable_payment.onion_fields.clone(),
 											});
 											payment_claimable_generated = true;
 										} else {
@@ -3515,6 +3557,9 @@ where
 											// payment value yet, wait until we receive more
 											// MPP parts.
 											htlcs.push(claimable_htlc);
+											#[allow(unused_assignments)] {
+												committed_to_claimable = true;
+											}
 										}
 										payment_claimable_generated
 									}}
@@ -3537,7 +3582,6 @@ where
 													Err(()) => {
 														log_trace!(self.logger, "Failing new HTLC with payment_hash {} as payment verification failed", log_bytes!(payment_hash.0));
 														fail_htlc!(claimable_htlc, payment_hash);
-														continue
 													}
 												};
 												if let Some(min_final_cltv_expiry_delta) = min_final_cltv_expiry_delta {
@@ -3546,7 +3590,6 @@ where
 														log_trace!(self.logger, "Failing new HTLC with payment_hash {} as its CLTV expiry was too soon (had {}, earliest expected {})",
 															log_bytes!(payment_hash.0), cltv_expiry, expected_min_expiry_height);
 														fail_htlc!(claimable_htlc, payment_hash);
-														continue;
 													}
 												}
 												check_total_value!(payment_data, payment_preimage);
@@ -3555,15 +3598,18 @@ where
 												let mut claimable_payments = self.claimable_payments.lock().unwrap();
 												if claimable_payments.pending_claiming_payments.contains_key(&payment_hash) {
 													fail_htlc!(claimable_htlc, payment_hash);
-													continue
 												}
-												match claimable_payments.claimable_htlcs.entry(payment_hash) {
+												match claimable_payments.claimable_payments.entry(payment_hash) {
 													hash_map::Entry::Vacant(e) => {
 														let amount_msat = claimable_htlc.value;
 														claimable_htlc.total_value_received = Some(amount_msat);
 														let claim_deadline = Some(claimable_htlc.cltv_expiry - HTLC_FAIL_BACK_BUFFER);
 														let purpose = events::PaymentPurpose::SpontaneousPayment(preimage);
-														e.insert((purpose.clone(), vec![claimable_htlc]));
+														e.insert(ClaimablePayment {
+															purpose: purpose.clone(),
+															onion_fields: Some(onion_fields.clone()),
+															htlcs: vec![claimable_htlc],
+														});
 														let prev_channel_id = prev_funding_outpoint.to_channel_id();
 														new_events.push(events::Event::PaymentClaimable {
 															receiver_node_id: Some(receiver_node_id),
@@ -3573,6 +3619,7 @@ where
 															via_channel_id: Some(prev_channel_id),
 															via_user_channel_id: Some(prev_user_channel_id),
 															claim_deadline,
+															onion_fields: Some(onion_fields),
 														});
 													},
 													hash_map::Entry::Occupied(_) => {
@@ -3587,7 +3634,6 @@ where
 										if payment_data.is_none() {
 											log_trace!(self.logger, "Failing new keysend HTLC with payment_hash {} because we already have an inbound payment with the same payment hash", log_bytes!(payment_hash.0));
 											fail_htlc!(claimable_htlc, payment_hash);
-											continue
 										};
 										let payment_data = payment_data.unwrap();
 										if inbound_payment.get().payment_secret != payment_data.payment_secret {
@@ -3832,24 +3878,27 @@ where
 				}
 			}
 
-			self.claimable_payments.lock().unwrap().claimable_htlcs.retain(|payment_hash, (_, htlcs)| {
-				if htlcs.is_empty() {
+			self.claimable_payments.lock().unwrap().claimable_payments.retain(|payment_hash, payment| {
+				if payment.htlcs.is_empty() {
 					// This should be unreachable
 					debug_assert!(false);
 					return false;
 				}
-				if let OnionPayload::Invoice { .. } = htlcs[0].onion_payload {
+				if let OnionPayload::Invoice { .. } = payment.htlcs[0].onion_payload {
 					// Check if we've received all the parts we need for an MPP (the value of the parts adds to total_msat).
 					// In this case we're not going to handle any timeouts of the parts here.
 					// This condition determining whether the MPP is complete here must match
 					// exactly the condition used in `process_pending_htlc_forwards`.
-					if htlcs[0].total_msat <= htlcs.iter().fold(0, |total, htlc| total + htlc.sender_intended_value) {
+					if payment.htlcs[0].total_msat <= payment.htlcs.iter()
+						.fold(0, |total, htlc| total + htlc.sender_intended_value)
+					{
 						return true;
-					} else if htlcs.into_iter().any(|htlc| {
+					} else if payment.htlcs.iter_mut().any(|htlc| {
 						htlc.timer_ticks += 1;
 						return htlc.timer_ticks >= MPP_TIMEOUT_TICKS
 					}) {
-						timed_out_mpp_htlcs.extend(htlcs.drain(..).map(|htlc: ClaimableHTLC| (htlc.prev_hop, *payment_hash)));
+						timed_out_mpp_htlcs.extend(payment.htlcs.drain(..)
+							.map(|htlc: ClaimableHTLC| (htlc.prev_hop, *payment_hash)));
 						return false;
 					}
 				}
@@ -3904,9 +3953,9 @@ where
 	pub fn fail_htlc_backwards_with_reason(&self, payment_hash: &PaymentHash, failure_code: FailureCode) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 
-		let removed_source = self.claimable_payments.lock().unwrap().claimable_htlcs.remove(payment_hash);
-		if let Some((_, mut sources)) = removed_source {
-			for htlc in sources.drain(..) {
+		let removed_source = self.claimable_payments.lock().unwrap().claimable_payments.remove(payment_hash);
+		if let Some(payment) = removed_source {
+			for htlc in payment.htlcs {
 				let reason = self.get_htlc_fail_reason_from_failure_code(failure_code, &htlc);
 				let source = HTLCSource::PreviousHopData(htlc.prev_hop);
 				let receiver = HTLCDestination::FailedPayment { payment_hash: *payment_hash };
@@ -4083,9 +4132,9 @@ where
 
 		let mut sources = {
 			let mut claimable_payments = self.claimable_payments.lock().unwrap();
-			if let Some((payment_purpose, sources)) = claimable_payments.claimable_htlcs.remove(&payment_hash) {
+			if let Some(payment) = claimable_payments.claimable_payments.remove(&payment_hash) {
 				let mut receiver_node_id = self.our_network_pubkey;
-				for htlc in sources.iter() {
+				for htlc in payment.htlcs.iter() {
 					if htlc.prev_hop.phantom_shared_secret.is_some() {
 						let phantom_pubkey = self.node_signer.get_node_id(Recipient::PhantomNode)
 							.expect("Failed to get node_id for phantom node recipient");
@@ -4095,15 +4144,15 @@ where
 				}
 
 				let dup_purpose = claimable_payments.pending_claiming_payments.insert(payment_hash,
-					ClaimingPayment { amount_msat: sources.iter().map(|source| source.value).sum(),
-					payment_purpose, receiver_node_id,
+					ClaimingPayment { amount_msat: payment.htlcs.iter().map(|source| source.value).sum(),
+					payment_purpose: payment.purpose, receiver_node_id,
 				});
 				if dup_purpose.is_some() {
 					debug_assert!(false, "Shouldn't get a duplicate pending claim event ever");
 					log_error!(self.logger, "Got a duplicate pending claimable event on payment hash {}! Please report this bug",
 						log_bytes!(payment_hash.0));
 				}
-				sources
+				payment.htlcs
 			} else { return; }
 		};
 		debug_assert!(!sources.is_empty());
@@ -6175,8 +6224,8 @@ where
 		}
 
 		if let Some(height) = height_opt {
-			self.claimable_payments.lock().unwrap().claimable_htlcs.retain(|payment_hash, (_, htlcs)| {
-				htlcs.retain(|htlc| {
+			self.claimable_payments.lock().unwrap().claimable_payments.retain(|payment_hash, payment| {
+				payment.htlcs.retain(|htlc| {
 					// If height is approaching the number of blocks we think it takes us to get
 					// our commitment transaction confirmed before the HTLC expires, plus the
 					// number of blocks we generally consider it to take to do a commitment update,
@@ -6191,7 +6240,7 @@ where
 						false
 					} else { true }
 				});
-				!htlcs.is_empty() // Only retain this entry if htlcs has at least one entry.
+				!payment.htlcs.is_empty() // Only retain this entry if htlcs has at least one entry.
 			});
 
 			let mut intercepted_htlcs = self.pending_intercepted_htlcs.lock().unwrap();
@@ -6776,10 +6825,12 @@ impl_writeable_tlv_based_enum!(PendingHTLCRouting,
 		(0, payment_data, required),
 		(1, phantom_shared_secret, option),
 		(2, incoming_cltv_expiry, required),
+		(3, payment_metadata, option),
 	},
 	(2, ReceiveKeysend) => {
 		(0, payment_preimage, required),
 		(2, incoming_cltv_expiry, required),
+		(3, payment_metadata, option),
 	},
 ;);
 
@@ -7112,14 +7163,16 @@ where
 		let pending_outbound_payments = self.pending_outbound_payments.pending_outbound_payments.lock().unwrap();
 
 		let mut htlc_purposes: Vec<&events::PaymentPurpose> = Vec::new();
-		(claimable_payments.claimable_htlcs.len() as u64).write(writer)?;
-		for (payment_hash, (purpose, previous_hops)) in claimable_payments.claimable_htlcs.iter() {
+		let mut htlc_onion_fields: Vec<&_> = Vec::new();
+		(claimable_payments.claimable_payments.len() as u64).write(writer)?;
+		for (payment_hash, payment) in claimable_payments.claimable_payments.iter() {
 			payment_hash.write(writer)?;
-			(previous_hops.len() as u64).write(writer)?;
-			for htlc in previous_hops.iter() {
+			(payment.htlcs.len() as u64).write(writer)?;
+			for htlc in payment.htlcs.iter() {
 				htlc.write(writer)?;
 			}
-			htlc_purposes.push(purpose);
+			htlc_purposes.push(&payment.purpose);
+			htlc_onion_fields.push(&payment.onion_fields);
 		}
 
 		let mut monitor_update_blocked_actions_per_peer = None;
@@ -7234,6 +7287,7 @@ where
 			(7, self.fake_scid_rand_bytes, required),
 			(9, htlc_purposes, vec_type),
 			(11, self.probing_cookie_secret, required),
+			(13, htlc_onion_fields, optional_vec),
 		});
 
 		Ok(())
@@ -7612,6 +7666,7 @@ where
 		let mut fake_scid_rand_bytes: Option<[u8; 32]> = None;
 		let mut probing_cookie_secret: Option<[u8; 32]> = None;
 		let mut claimable_htlc_purposes = None;
+		let mut claimable_htlc_onion_fields = None;
 		let mut pending_claiming_payments = Some(HashMap::new());
 		let mut monitor_update_blocked_actions_per_peer = Some(Vec::new());
 		read_tlv_fields!(reader, {
@@ -7624,6 +7679,7 @@ where
 			(7, fake_scid_rand_bytes, option),
 			(9, claimable_htlc_purposes, vec_type),
 			(11, probing_cookie_secret, option),
+			(13, claimable_htlc_onion_fields, optional_vec),
 		});
 		if fake_scid_rand_bytes.is_none() {
 			fake_scid_rand_bytes = Some(args.entropy_source.get_secure_random_bytes());
@@ -7687,6 +7743,7 @@ where
 										session_privs: [session_priv_bytes].iter().map(|a| *a).collect(),
 										payment_hash: htlc.payment_hash,
 										payment_secret: None, // only used for retries, and we'll never retry on startup
+										payment_metadata: None, // only used for retries, and we'll never retry on startup
 										keysend_preimage: None, // only used for retries, and we'll never retry on startup
 										pending_amt_msat: path_amt,
 										pending_fee_msat: Some(path_fee),
@@ -7771,22 +7828,39 @@ where
 		let inbound_pmt_key_material = args.node_signer.get_inbound_payment_key_material();
 		let expanded_inbound_key = inbound_payment::ExpandedKey::new(&inbound_pmt_key_material);
 
-		let mut claimable_htlcs = HashMap::with_capacity(claimable_htlcs_list.len());
-		if let Some(mut purposes) = claimable_htlc_purposes {
+		let mut claimable_payments = HashMap::with_capacity(claimable_htlcs_list.len());
+		if let Some(purposes) = claimable_htlc_purposes {
 			if purposes.len() != claimable_htlcs_list.len() {
 				return Err(DecodeError::InvalidValue);
 			}
-			for (purpose, (payment_hash, previous_hops)) in purposes.drain(..).zip(claimable_htlcs_list.drain(..)) {
-				claimable_htlcs.insert(payment_hash, (purpose, previous_hops));
+			if let Some(onion_fields) = claimable_htlc_onion_fields {
+				if onion_fields.len() != claimable_htlcs_list.len() {
+					return Err(DecodeError::InvalidValue);
+				}
+				for (purpose, (onion, (payment_hash, htlcs))) in
+					purposes.into_iter().zip(onion_fields.into_iter().zip(claimable_htlcs_list.into_iter()))
+				{
+					let existing_payment = claimable_payments.insert(payment_hash, ClaimablePayment {
+						purpose, htlcs, onion_fields: onion,
+					});
+					if existing_payment.is_some() { return Err(DecodeError::InvalidValue); }
+				}
+			} else {
+				for (purpose, (payment_hash, htlcs)) in purposes.into_iter().zip(claimable_htlcs_list.into_iter()) {
+					let existing_payment = claimable_payments.insert(payment_hash, ClaimablePayment {
+						purpose, htlcs, onion_fields: None,
+					});
+					if existing_payment.is_some() { return Err(DecodeError::InvalidValue); }
+				}
 			}
 		} else {
 			// LDK versions prior to 0.0.107 did not write a `pending_htlc_purposes`, but do
 			// include a `_legacy_hop_data` in the `OnionPayload`.
-			for (payment_hash, previous_hops) in claimable_htlcs_list.drain(..) {
-				if previous_hops.is_empty() {
+			for (payment_hash, htlcs) in claimable_htlcs_list.drain(..) {
+				if htlcs.is_empty() {
 					return Err(DecodeError::InvalidValue);
 				}
-				let purpose = match &previous_hops[0].onion_payload {
+				let purpose = match &htlcs[0].onion_payload {
 					OnionPayload::Invoice { _legacy_hop_data } => {
 						if let Some(hop_data) = _legacy_hop_data {
 							events::PaymentPurpose::InvoicePayment {
@@ -7807,7 +7881,9 @@ where
 					OnionPayload::Spontaneous(payment_preimage) =>
 						events::PaymentPurpose::SpontaneousPayment(*payment_preimage),
 				};
-				claimable_htlcs.insert(payment_hash, (purpose, previous_hops));
+				claimable_payments.insert(payment_hash, ClaimablePayment {
+					purpose, htlcs, onion_fields: None,
+				});
 			}
 		}
 
@@ -7859,17 +7935,17 @@ where
 
 		for (_, monitor) in args.channel_monitors.iter() {
 			for (payment_hash, payment_preimage) in monitor.get_stored_preimages() {
-				if let Some((payment_purpose, claimable_htlcs)) = claimable_htlcs.remove(&payment_hash) {
+				if let Some(payment) = claimable_payments.remove(&payment_hash) {
 					log_info!(args.logger, "Re-claiming HTLCs with payment hash {} as we've released the preimage to a ChannelMonitor!", log_bytes!(payment_hash.0));
 					let mut claimable_amt_msat = 0;
 					let mut receiver_node_id = Some(our_network_pubkey);
-					let phantom_shared_secret = claimable_htlcs[0].prev_hop.phantom_shared_secret;
+					let phantom_shared_secret = payment.htlcs[0].prev_hop.phantom_shared_secret;
 					if phantom_shared_secret.is_some() {
 						let phantom_pubkey = args.node_signer.get_node_id(Recipient::PhantomNode)
 							.expect("Failed to get node_id for phantom node recipient");
 						receiver_node_id = Some(phantom_pubkey)
 					}
-					for claimable_htlc in claimable_htlcs {
+					for claimable_htlc in payment.htlcs {
 						claimable_amt_msat += claimable_htlc.value;
 
 						// Add a holding-cell claim of the payment to the Channel, which should be
@@ -7903,7 +7979,7 @@ where
 					pending_events_read.push(events::Event::PaymentClaimed {
 						receiver_node_id,
 						payment_hash,
-						purpose: payment_purpose,
+						purpose: payment.purpose,
 						amount_msat: claimable_amt_msat,
 					});
 				}
@@ -7934,7 +8010,7 @@ where
 			pending_intercepted_htlcs: Mutex::new(pending_intercepted_htlcs.unwrap()),
 
 			forward_htlcs: Mutex::new(forward_htlcs),
-			claimable_payments: Mutex::new(ClaimablePayments { claimable_htlcs, pending_claiming_payments: pending_claiming_payments.unwrap() }),
+			claimable_payments: Mutex::new(ClaimablePayments { claimable_payments, pending_claiming_payments: pending_claiming_payments.unwrap() }),
 			outbound_scid_aliases: Mutex::new(outbound_scid_aliases),
 			id_to_peer: Mutex::new(id_to_peer),
 			short_to_chan_info: FairRwLock::new(short_to_chan_info),

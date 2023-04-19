@@ -145,8 +145,10 @@ fn pay_invoice_using_amount<P: Deref>(
 	payer: P
 ) -> Result<(), PaymentError> where P::Target: Payer {
 	let payment_hash = PaymentHash((*invoice.payment_hash()).into_inner());
-	let payment_secret = Some(*invoice.payment_secret());
-	let recipient_onion = RecipientOnionFields { payment_secret };
+	let recipient_onion = RecipientOnionFields {
+		payment_secret: Some(*invoice.payment_secret()),
+		payment_metadata: invoice.payment_metadata().map(|v| v.clone()),
+	};
 	let mut payment_params = PaymentParameters::from_node_id(invoice.recover_payee_pub_key(),
 		invoice.min_final_cltv_expiry_delta() as u32)
 		.with_expiry_time(expiry_time_from_unix_epoch(invoice).as_secs())
@@ -213,6 +215,8 @@ mod tests {
 	use super::*;
 	use crate::{InvoiceBuilder, Currency};
 	use bitcoin_hashes::sha256::Hash as Sha256;
+	use lightning::events::Event;
+	use lightning::ln::msgs::ChannelMessageHandler;
 	use lightning::ln::{PaymentPreimage, PaymentSecret};
 	use lightning::ln::functional_test_utils::*;
 	use secp256k1::{SecretKey, Secp256k1};
@@ -348,6 +352,54 @@ mod tests {
 		match pay_zero_value_invoice(&invoice, amt_msat, Retry::Attempts(0), nodes[0].node) {
 			Err(PaymentError::Invoice("amount unexpected")) => {},
 			_ => panic!()
+		}
+	}
+
+	#[test]
+	#[cfg(feature = "std")]
+	fn payment_metadata_end_to_end() {
+		// Test that a payment metadata read from an invoice passed to `pay_invoice` makes it all
+		// the way out through the `PaymentClaimable` event.
+		let chanmon_cfgs = create_chanmon_cfgs(2);
+		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+		create_announced_chan_between_nodes(&nodes, 0, 1);
+
+		let payment_metadata = vec![42, 43, 44, 45, 46, 47, 48, 49, 42];
+
+		let (payment_hash, payment_secret) =
+			nodes[1].node.create_inbound_payment(None, 7200, None).unwrap();
+
+		let invoice = InvoiceBuilder::new(Currency::Bitcoin)
+			.description("test".into())
+			.payment_hash(Sha256::from_slice(&payment_hash.0).unwrap())
+			.payment_secret(payment_secret)
+			.current_timestamp()
+			.min_final_cltv_expiry_delta(144)
+			.amount_milli_satoshis(50_000)
+			.payment_metadata(payment_metadata.clone())
+			.build_signed(|hash| {
+				Secp256k1::new().sign_ecdsa_recoverable(hash,
+					&nodes[1].keys_manager.backing.get_node_secret_key())
+			})
+			.unwrap();
+
+		pay_invoice(&invoice, Retry::Attempts(0), nodes[0].node).unwrap();
+		check_added_monitors(&nodes[0], 1);
+		let send_event = SendEvent::from_node(&nodes[0]);
+		nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &send_event.msgs[0]);
+		commitment_signed_dance!(nodes[1], nodes[0], &send_event.commitment_msg, false);
+
+		expect_pending_htlcs_forwardable!(nodes[1]);
+
+		let mut events = nodes[1].node.get_and_clear_pending_events();
+		assert_eq!(events.len(), 1);
+		match events.pop().unwrap() {
+			Event::PaymentClaimable { onion_fields, .. } => {
+				assert_eq!(Some(payment_metadata), onion_fields.unwrap().payment_metadata);
+			},
+			_ => panic!("Unexpected event")
 		}
 	}
 }

@@ -45,17 +45,25 @@
 //!     (see [BOLT-2](https://github.com/lightning/bolts/blob/master/02-peer-protocol.md) for more information).
 //! - `OnionMessages` - requires/supports forwarding onion messages
 //!     (see [BOLT-7](https://github.com/lightning/bolts/pull/759/files) for more information).
-//!     TODO: update link
+//     TODO: update link
 //! - `ChannelType` - node supports the channel_type field in open/accept
 //!     (see [BOLT-2](https://github.com/lightning/bolts/blob/master/02-peer-protocol.md) for more information).
 //! - `SCIDPrivacy` - supply channel aliases for routing
 //!     (see [BOLT-2](https://github.com/lightning/bolts/blob/master/02-peer-protocol.md) for more information).
+//! - `PaymentMetadata` - include additional data in invoices which is passed to recipients in the
+//!      onion.
+//!      (see [BOLT-11](https://github.com/lightning/bolts/blob/master/11-payment-encoding.md) for
+//!      more).
+//! - `ZeroConf` - supports accepting HTLCs and using channels prior to funding confirmation
+//!      (see
+//!      [BOLT-2](https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#the-channel_ready-message)
+//!      for more info).
 //! - `Keysend` - send funds to a node without an invoice
 //!     (see the [`Keysend` feature assignment proposal](https://github.com/lightning/bolts/issues/605#issuecomment-606679798) for more information).
 //! - `AnchorsZeroFeeHtlcTx` - requires/supports that commitment transactions include anchor outputs
-//!   and HTLC transactions are pre-signed with zero fee (see
-//!   [BOLT-3](https://github.com/lightning/bolts/blob/master/03-transactions.md) for more
-//!   information).
+//!     and HTLC transactions are pre-signed with zero fee (see
+//!     [BOLT-3](https://github.com/lightning/bolts/blob/master/03-transactions.md) for more
+//!     information).
 //!
 //! [BOLT #9]: https://github.com/lightning/bolts/blob/master/09-features.md
 //! [messages]: crate::ln::msgs
@@ -160,6 +168,14 @@ mod sealed {
 		VariableLengthOnion | PaymentSecret,
 		// Byte 2
 		BasicMPP,
+		// Byte 3
+		,
+		// Byte 4
+		,
+		// Byte 5
+		,
+		// Byte 6
+		PaymentMetadata,
 	]);
 	define_context!(OfferContext, []);
 	define_context!(InvoiceRequestContext, []);
@@ -259,6 +275,7 @@ mod sealed {
 					}
 
 					flags[Self::BYTE_OFFSET] |= Self::REQUIRED_MASK;
+					flags[Self::BYTE_OFFSET] &= !Self::OPTIONAL_MASK;
 				}
 
 				/// Sets the feature's optional (odd) bit in the given flags.
@@ -376,12 +393,16 @@ mod sealed {
 	define_feature!(47, SCIDPrivacy, [InitContext, NodeContext, ChannelTypeContext],
 		"Feature flags for only forwarding with SCID aliasing. Called `option_scid_alias` in the BOLTs",
 		set_scid_privacy_optional, set_scid_privacy_required, supports_scid_privacy, requires_scid_privacy);
+	define_feature!(49, PaymentMetadata, [InvoiceContext],
+		"Feature flags for payment metadata in invoices.", set_payment_metadata_optional,
+		set_payment_metadata_required, supports_payment_metadata, requires_payment_metadata);
 	define_feature!(51, ZeroConf, [InitContext, NodeContext, ChannelTypeContext],
 		"Feature flags for accepting channels with zero confirmations. Called `option_zeroconf` in the BOLTs",
 		set_zero_conf_optional, set_zero_conf_required, supports_zero_conf, requires_zero_conf);
 	define_feature!(55, Keysend, [NodeContext],
 		"Feature flags for keysend payments.", set_keysend_optional, set_keysend_required,
 		supports_keysend, requires_keysend);
+	// Note: update the module-level docs when a new feature bit is added!
 
 	#[cfg(test)]
 	define_feature!(123456789, UnknownFeature,
@@ -885,13 +906,13 @@ mod tests {
 	#[test]
 	fn convert_to_context_with_unknown_flags() {
 		// Ensure the `from` context has fewer known feature bytes than the `to` context.
-		assert!(<sealed::InvoiceContext as sealed::Context>::KNOWN_FEATURE_MASK.len() <
-			<sealed::NodeContext as sealed::Context>::KNOWN_FEATURE_MASK.len());
-		let mut invoice_features = InvoiceFeatures::empty();
-		invoice_features.set_unknown_feature_optional();
-		assert!(invoice_features.supports_unknown_bits());
-		let node_features: NodeFeatures = invoice_features.to_context();
-		assert!(!node_features.supports_unknown_bits());
+		assert!(<sealed::ChannelContext as sealed::Context>::KNOWN_FEATURE_MASK.len() <
+			<sealed::InvoiceContext as sealed::Context>::KNOWN_FEATURE_MASK.len());
+		let mut channel_features = ChannelFeatures::empty();
+		channel_features.set_unknown_feature_optional();
+		assert!(channel_features.supports_unknown_bits());
+		let invoice_features: InvoiceFeatures = channel_features.to_context_internal();
+		assert!(!invoice_features.supports_unknown_bits());
 	}
 
 	#[test]

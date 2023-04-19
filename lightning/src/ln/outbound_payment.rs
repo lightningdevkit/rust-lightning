@@ -46,6 +46,7 @@ pub(crate) enum PendingOutboundPayment {
 		session_privs: HashSet<[u8; 32]>,
 		payment_hash: PaymentHash,
 		payment_secret: Option<PaymentSecret>,
+		payment_metadata: Option<Vec<u8>>,
 		keysend_preimage: Option<PaymentPreimage>,
 		pending_amt_msat: u64,
 		/// Used to track the fee paid. Only present if the payment was serialized on 0.0.103+.
@@ -405,7 +406,7 @@ pub enum PaymentSendFailure {
 ///
 /// This should generally be constructed with data communicated to us from the recipient (via a
 /// BOLT11 or BOLT12 invoice).
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RecipientOnionFields {
 	/// The [`PaymentSecret`] is an arbitrary 32 bytes provided by the recipient for us to repeat
 	/// in the onion. It is unrelated to `payment_hash` (or [`PaymentPreimage`]) and exists to
@@ -419,14 +420,32 @@ pub struct RecipientOnionFields {
 	/// receives, thus you should generally never be providing a secret here for spontaneous
 	/// payments.
 	pub payment_secret: Option<PaymentSecret>,
+	/// The payment metadata serves a similar purpose as [`Self::payment_secret`] but is of
+	/// arbitrary length. This gives recipients substantially more flexibility to receive
+	/// additional data.
+	///
+	/// In LDK, while the [`Self::payment_secret`] is fixed based on an internal authentication
+	/// scheme to authenticate received payments against expected payments and invoices, this field
+	/// is not used in LDK for received payments, and can be used to store arbitrary data in
+	/// invoices which will be received with the payment.
+	///
+	/// Note that this field was added to the lightning specification more recently than
+	/// [`Self::payment_secret`] and while nearly all lightning senders support secrets, metadata
+	/// may not be supported as universally.
+	pub payment_metadata: Option<Vec<u8>>,
 }
+
+impl_writeable_tlv_based!(RecipientOnionFields, {
+	(0, payment_secret, option),
+	(2, payment_metadata, option),
+});
 
 impl RecipientOnionFields {
 	/// Creates a [`RecipientOnionFields`] from only a [`PaymentSecret`]. This is the most common
 	/// set of onion fields for today's BOLT11 invoices - most nodes require a [`PaymentSecret`]
 	/// but do not require or provide any further data.
 	pub fn secret_only(payment_secret: PaymentSecret) -> Self {
-		Self { payment_secret: Some(payment_secret) }
+		Self { payment_secret: Some(payment_secret), payment_metadata: None }
 	}
 
 	/// Creates a new [`RecipientOnionFields`] with no fields. This generally does not create
@@ -435,7 +454,21 @@ impl RecipientOnionFields {
 	///
 	/// [`ChannelManager::send_spontaneous_payment`]: super::channelmanager::ChannelManager::send_spontaneous_payment
 	pub fn spontaneous_empty() -> Self {
-		Self { payment_secret: None }
+		Self { payment_secret: None, payment_metadata: None }
+	}
+
+	/// When we have received some HTLC(s) towards an MPP payment, as we receive further HTLC(s) we
+	/// have to make sure that some fields match exactly across the parts. For those that aren't
+	/// required to match, if they don't match we should remove them so as to not expose data
+	/// that's dependent on the HTLC receive order to users.
+	///
+	/// Here we implement this, first checking compatibility then mutating two objects and then
+	/// dropping any remaining non-matching fields from both.
+	pub(super) fn check_merge(&mut self, further_htlc_fields: &mut Self) -> Result<(), ()> {
+		if self.payment_secret != further_htlc_fields.payment_secret { return Err(()); }
+		if self.payment_metadata != further_htlc_fields.payment_metadata { return Err(()); }
+		// For custom TLVs we should just drop non-matching ones, but not reject the payment.
+		Ok(())
 	}
 }
 
@@ -722,7 +755,7 @@ impl OutboundPayments {
 				hash_map::Entry::Occupied(mut payment) => {
 					let res = match payment.get() {
 						PendingOutboundPayment::Retryable {
-							total_msat, keysend_preimage, payment_secret, pending_amt_msat, ..
+							total_msat, keysend_preimage, payment_secret, payment_metadata, pending_amt_msat, ..
 						} => {
 							let retry_amt_msat: u64 = route.paths.iter().map(|path| path.last().unwrap().fee_msat).sum();
 							if retry_amt_msat + *pending_amt_msat > *total_msat * (100 + RETRY_OVERFLOW_PERCENTAGE) / 100 {
@@ -732,6 +765,7 @@ impl OutboundPayments {
 							}
 							(*total_msat, RecipientOnionFields {
 									payment_secret: *payment_secret,
+									payment_metadata: payment_metadata.clone(),
 								}, *keysend_preimage)
 						},
 						PendingOutboundPayment::Legacy { .. } => {
@@ -887,6 +921,18 @@ impl OutboundPayments {
 	}
 
 	#[cfg(test)]
+	pub(super) fn test_set_payment_metadata(
+		&self, payment_id: PaymentId, new_payment_metadata: Option<Vec<u8>>
+	) {
+		match self.pending_outbound_payments.lock().unwrap().get_mut(&payment_id).unwrap() {
+			PendingOutboundPayment::Retryable { payment_metadata, .. } => {
+				*payment_metadata = new_payment_metadata;
+			},
+			_ => panic!("Need a retryable payment to update metadata on"),
+		}
+	}
+
+	#[cfg(test)]
 	pub(super) fn test_add_new_pending_payment<ES: Deref>(
 		&self, payment_hash: PaymentHash, recipient_onion: RecipientOnionFields, payment_id: PaymentId,
 		route: &Route, retry_strategy: Option<Retry>, entropy_source: &ES, best_block_height: u32
@@ -917,6 +963,7 @@ impl OutboundPayments {
 					pending_fee_msat: Some(0),
 					payment_hash,
 					payment_secret: recipient_onion.payment_secret,
+					payment_metadata: recipient_onion.payment_metadata,
 					keysend_preimage,
 					starting_block_height: best_block_height,
 					total_msat: route.get_total_amount(),
@@ -1358,6 +1405,7 @@ impl_writeable_tlv_based_enum_upgradable!(PendingOutboundPayment,
 		(4, payment_secret, option),
 		(5, keysend_preimage, option),
 		(6, total_msat, required),
+		(7, payment_metadata, option),
 		(8, pending_amt_msat, required),
 		(10, starting_block_height, required),
 		(not_written, retry_strategy, (static_value, None)),

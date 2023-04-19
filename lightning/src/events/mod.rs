@@ -21,7 +21,7 @@ pub mod bump_transaction;
 pub use bump_transaction::BumpTransactionEvent;
 
 use crate::chain::keysinterface::SpendableOutputDescriptor;
-use crate::ln::channelmanager::{InterceptId, PaymentId};
+use crate::ln::channelmanager::{InterceptId, PaymentId, RecipientOnionFields};
 use crate::ln::channel::FUNDING_CONF_DEADLINE_BLOCKS;
 use crate::ln::features::ChannelTypeFeatures;
 use crate::ln::msgs;
@@ -232,8 +232,11 @@ pub enum HTLCDestination {
 	///
 	/// Some of the reasons may include:
 	/// * HTLC Timeouts
-	/// * Expected MPP amount has already been reached
-	/// * Claimable amount does not match expected amount
+	/// * Excess HTLCs for a payment that we have already fully received, over-paying for the
+	///   payment,
+	/// * The counterparty node modified the HTLC in transit,
+	/// * A probing attack where an intermediary node is trying to detect if we are the ultimate
+	///   recipient for a payment.
 	FailedPayment {
 		/// The payment hash of the payment we attempted to process.
 		payment_hash: PaymentHash
@@ -379,6 +382,11 @@ pub enum Event {
 		/// The hash for which the preimage should be handed to the ChannelManager. Note that LDK will
 		/// not stop you from registering duplicate payment hashes for inbound payments.
 		payment_hash: PaymentHash,
+		/// The fields in the onion which were received with each HTLC. Only fields which were
+		/// identical in each HTLC involved in the payment will be included here.
+		///
+		/// Payments received on LDK versions prior to 0.0.115 will have this field unset.
+		onion_fields: Option<RecipientOnionFields>,
 		/// The value, in thousandths of a satoshi, that this payment is for.
 		amount_msat: u64,
 		/// Information for claiming this received payment, based on whether the purpose of the
@@ -820,7 +828,10 @@ impl Writeable for Event {
 				// We never write out FundingGenerationReady events as, upon disconnection, peers
 				// drop any channels which have not yet exchanged funding_signed.
 			},
-			&Event::PaymentClaimable { ref payment_hash, ref amount_msat, ref purpose, ref receiver_node_id, ref via_channel_id, ref via_user_channel_id, ref claim_deadline } => {
+			&Event::PaymentClaimable { ref payment_hash, ref amount_msat, ref purpose,
+				ref receiver_node_id, ref via_channel_id, ref via_user_channel_id,
+				ref claim_deadline, ref onion_fields
+			} => {
 				1u8.write(writer)?;
 				let mut payment_secret = None;
 				let payment_preimage;
@@ -843,6 +854,7 @@ impl Writeable for Event {
 					(6, 0u64, required), // user_payment_id required for compatibility with 0.0.103 and earlier
 					(7, claim_deadline, option),
 					(8, payment_preimage, option),
+					(9, onion_fields, option),
 				});
 			},
 			&Event::PaymentSent { ref payment_id, ref payment_preimage, ref payment_hash, ref fee_paid_msat } => {
@@ -1043,6 +1055,7 @@ impl MaybeReadable for Event {
 					let mut via_channel_id = None;
 					let mut claim_deadline = None;
 					let mut via_user_channel_id = None;
+					let mut onion_fields = None;
 					read_tlv_fields!(reader, {
 						(0, payment_hash, required),
 						(1, receiver_node_id, option),
@@ -1053,6 +1066,7 @@ impl MaybeReadable for Event {
 						(6, _user_payment_id, option),
 						(7, claim_deadline, option),
 						(8, payment_preimage, option),
+						(9, onion_fields, option),
 					});
 					let purpose = match payment_secret {
 						Some(secret) => PaymentPurpose::InvoicePayment {
@@ -1070,6 +1084,7 @@ impl MaybeReadable for Event {
 						via_channel_id,
 						via_user_channel_id,
 						claim_deadline,
+						onion_fields,
 					}))
 				};
 				f()
