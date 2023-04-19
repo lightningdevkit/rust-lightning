@@ -746,6 +746,50 @@ impl<T: sealed::Context> Features<T> {
 		}
 		true
 	}
+
+	/// Sets a required custom feature bit. Errors if `bit` is outside the custom range as defined
+	/// by [bLIP 2] or if it is a known `T` feature.
+	///
+	/// Note: Required bits are even. If an odd bit is given, then the corresponding even bit will
+	/// be set instead (i.e., `bit - 1`).
+	///
+	/// [bLIP 2]: https://github.com/lightning/blips/blob/master/blip-0002.md#feature-bits
+	pub fn set_required_custom_bit(&mut self, bit: usize) -> Result<(), ()> {
+		self.set_custom_bit(bit - (bit % 2))
+	}
+
+	/// Sets an optional custom feature bit. Errors if `bit` is outside the custom range as defined
+	/// by [bLIP 2] or if it is a known `T` feature.
+	///
+	/// Note: Optional bits are odd. If an even bit is given, then the corresponding odd bit will be
+	/// set instead (i.e., `bit + 1`).
+	///
+	/// [bLIP 2]: https://github.com/lightning/blips/blob/master/blip-0002.md#feature-bits
+	pub fn set_optional_custom_bit(&mut self, bit: usize) -> Result<(), ()> {
+		self.set_custom_bit(bit + (1 - (bit % 2)))
+	}
+
+	fn set_custom_bit(&mut self, bit: usize) -> Result<(), ()> {
+		if bit < 256 {
+			return Err(());
+		}
+
+		let byte_offset = bit / 8;
+		let mask = 1 << (bit - 8 * byte_offset);
+		if byte_offset < T::KNOWN_FEATURE_MASK.len() {
+			if (T::KNOWN_FEATURE_MASK[byte_offset] & mask) != 0 {
+				return Err(());
+			}
+		}
+
+		if self.flags.len() <= byte_offset {
+			self.flags.resize(byte_offset + 1, 0u8);
+		}
+
+		self.flags[byte_offset] |= mask;
+
+		Ok(())
+	}
 }
 
 impl<T: sealed::UpfrontShutdownScript> Features<T> {
@@ -982,6 +1026,36 @@ mod tests {
 		assert!(!features.requires_basic_mpp());
 		assert!(features.requires_payment_secret());
 		assert!(features.supports_payment_secret());
+	}
+
+	#[test]
+	fn set_custom_bits() {
+		let mut features = InvoiceFeatures::empty();
+		features.set_variable_length_onion_optional();
+		assert_eq!(features.flags[1], 0b00000010);
+
+		assert!(features.set_optional_custom_bit(255).is_err());
+		assert!(features.set_required_custom_bit(256).is_ok());
+		assert!(features.set_required_custom_bit(258).is_ok());
+		assert_eq!(features.flags[31], 0b00000000);
+		assert_eq!(features.flags[32], 0b00000101);
+
+		let known_bit = <sealed::InvoiceContext as sealed::PaymentSecret>::EVEN_BIT;
+		let byte_offset = <sealed::InvoiceContext as sealed::PaymentSecret>::BYTE_OFFSET;
+		assert_eq!(byte_offset, 1);
+		assert_eq!(features.flags[byte_offset], 0b00000010);
+		assert!(features.set_required_custom_bit(known_bit).is_err());
+		assert_eq!(features.flags[byte_offset], 0b00000010);
+
+		let mut features = InvoiceFeatures::empty();
+		assert!(features.set_optional_custom_bit(256).is_ok());
+		assert!(features.set_optional_custom_bit(259).is_ok());
+		assert_eq!(features.flags[32], 0b00001010);
+
+		let mut features = InvoiceFeatures::empty();
+		assert!(features.set_required_custom_bit(257).is_ok());
+		assert!(features.set_required_custom_bit(258).is_ok());
+		assert_eq!(features.flags[32], 0b00000101);
 	}
 
 	#[test]
