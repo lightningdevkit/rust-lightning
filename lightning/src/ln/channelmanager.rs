@@ -3315,8 +3315,11 @@ where
 									onion_payload,
 								};
 
+								let mut committed_to_claimable = false;
+
 								macro_rules! fail_htlc {
 									($htlc: expr, $payment_hash: expr) => {
+										debug_assert!(!committed_to_claimable);
 										let mut htlc_msat_height_data = $htlc.value.to_be_bytes().to_vec();
 										htlc_msat_height_data.extend_from_slice(
 											&self.best_block.read().unwrap().height().to_be_bytes(),
@@ -3357,8 +3360,11 @@ where
 										let ref mut claimable_payment = claimable_payments.claimable_payments
 											.entry(payment_hash)
 											// Note that if we insert here we MUST NOT fail_htlc!()
-											.or_insert_with(|| ClaimablePayment {
-												purpose: purpose(), htlcs: Vec::new()
+											.or_insert_with(|| {
+												committed_to_claimable = true;
+												ClaimablePayment {
+													purpose: purpose(), htlcs: Vec::new()
+												}
 											});
 										let ref mut htlcs = &mut claimable_payment.htlcs;
 										if htlcs.len() == 1 {
@@ -3394,6 +3400,9 @@ where
 												log_bytes!(payment_hash.0));
 											fail_htlc!(claimable_htlc, payment_hash);
 										} else if total_value >= $payment_data.total_msat {
+											#[allow(unused_assignments)] {
+												committed_to_claimable = true;
+											}
 											let prev_channel_id = prev_funding_outpoint.to_channel_id();
 											htlcs.push(claimable_htlc);
 											let amount_msat = htlcs.iter().map(|htlc| htlc.value).sum();
@@ -3413,6 +3422,9 @@ where
 											// payment value yet, wait until we receive more
 											// MPP parts.
 											htlcs.push(claimable_htlc);
+											#[allow(unused_assignments)] {
+												committed_to_claimable = true;
+											}
 										}
 										payment_claimable_generated
 									}}
