@@ -719,7 +719,7 @@ impl OutboundPayments {
 		};
 		for path in route.paths.iter() {
 			if path.hops.len() == 0 {
-				log_error!(logger, "length-0 path in route");
+				log_error!(logger, "Unusable path in route (path.hops.len() must be at least 1");
 				self.abandon_payment(payment_id, PaymentFailureReason::UnexpectedError, pending_events);
 				return
 			}
@@ -895,7 +895,7 @@ impl OutboundPayments {
 
 		let payment_hash = probing_cookie_from_id(&payment_id, probing_cookie_secret);
 
-		if path.hops.len() < 2 {
+		if path.hops.len() < 2 && path.blinded_tail.is_none() {
 			return Err(PaymentSendFailure::ParameterError(APIError::APIMisuseError {
 				err: "No need probing a path with less than two hops".to_string()
 			}))
@@ -1004,8 +1004,10 @@ impl OutboundPayments {
 				path_errs.push(Err(APIError::InvalidRoute{err: "Sending to blinded paths isn't supported yet".to_owned()}));
 				continue 'path_check;
 			}
+			let dest_hop_idx = if path.blinded_tail.is_some() && path.blinded_tail.as_ref().unwrap().hops.len() > 1 {
+				usize::max_value() } else { path.hops.len() - 1 };
 			for (idx, hop) in path.hops.iter().enumerate() {
-				if idx != path.hops.len() - 1 && hop.pubkey == our_node_id {
+				if idx != dest_hop_idx && hop.pubkey == our_node_id {
 					path_errs.push(Err(APIError::InvalidRoute{err: "Path went through us but wasn't a simple rebalance loop to us".to_owned()}));
 					continue 'path_check;
 				}
