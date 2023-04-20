@@ -343,7 +343,7 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 	if !confirm_before_reload {
 		let as_broadcasted_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 		assert_eq!(as_broadcasted_txn.len(), 1);
-		assert_eq!(as_broadcasted_txn[0], as_commitment_tx);
+		assert_eq!(as_broadcasted_txn[0].txid(), as_commitment_tx.txid());
 	} else {
 		assert!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().is_empty());
 	}
@@ -684,7 +684,7 @@ fn do_test_dup_htlc_onchain_fails_on_reload(persist_manager_post_event: bool, co
 	connect_blocks(&nodes[0], TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS + 1);
 	let node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 	assert_eq!(node_txn.len(), 3);
-	assert_eq!(node_txn[0], node_txn[1]);
+	assert_eq!(node_txn[0].txid(), node_txn[1].txid());
 	check_spends!(node_txn[1], funding_tx);
 	check_spends!(node_txn[2], node_txn[1]);
 	let timeout_txn = vec![node_txn[2].clone()];

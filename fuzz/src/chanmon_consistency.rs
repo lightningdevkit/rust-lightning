@@ -240,6 +240,7 @@ impl SignerProvider for KeyProvider {
 			[id, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9, self.node_secret[31]],
 			channel_value_satoshis,
 			channel_keys_id,
+			channel_keys_id,
 		);
 		let revoked_commitment = self.make_enforcement_state_cell(keys.commitment_seed);
 		EnforcingSigner::new_with_revoked(keys, revoked_commitment, false)
@@ -248,7 +249,7 @@ impl SignerProvider for KeyProvider {
 	fn read_chan_signer(&self, buffer: &[u8]) -> Result<Self::Signer, DecodeError> {
 		let mut reader = std::io::Cursor::new(buffer);
 
-		let inner: InMemorySigner = Readable::read(&mut reader)?;
+		let inner: InMemorySigner = ReadableArgs::read(&mut reader, self)?;
 		let state = self.make_enforcement_state_cell(inner.commitment_seed);
 
 		Ok(EnforcingSigner {

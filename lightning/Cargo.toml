@@ -29,6 +29,8 @@ max_level_trace = []
 # This is unsafe to use in production because it may result in the counterparty publishing taking our funds.
 unsafe_revoked_tx_signing = []
 _bench_unstable = []
+# Override signing to not include randomness when generating signatures for test vectors.
+_test_vectors = []
 
 no-std = ["hashbrown", "bitcoin/no-std", "core2/alloc"]
 std = ["bitcoin/std"]
