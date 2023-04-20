@@ -117,6 +117,7 @@ use crate::offers::refund::{IV_BYTES as REFUND_IV_BYTES, Refund, RefundContents}
 use crate::offers::signer;
 use crate::onion_message::BlindedPath;
 use crate::util::ser::{HighZeroBytesDroppedBigSize, Iterable, SeekReadable, WithoutLength, Writeable, Writer};
+use crate::util::string::PrintableString;
 
 use crate::prelude::*;
 
@@ -452,6 +453,12 @@ struct InvoiceFields {
 }
 
 impl Invoice {
+	/// A complete description of the purpose of the originating offer or refund. Intended to be
+	/// displayed to the user but with the caveat that it has not been verified in any way.
+	pub fn description(&self) -> PrintableString {
+		self.contents.description()
+	}
+
 	/// Paths to the recipient originating from publicly reachable nodes, including information
 	/// needed for routing payments across them.
 	///
@@ -604,6 +611,15 @@ impl InvoiceContents {
 		match self {
 			InvoiceContents::ForOffer { invoice_request, .. } => invoice_request.chain(),
 			InvoiceContents::ForRefund { refund, .. } => refund.chain(),
+		}
+	}
+
+	fn description(&self) -> PrintableString {
+		match self {
+			InvoiceContents::ForOffer { invoice_request, .. } => {
+				invoice_request.inner.offer.description()
+			},
+			InvoiceContents::ForRefund { refund, .. } => refund.description(),
 		}
 	}
 
@@ -939,6 +955,7 @@ mod tests {
 	use crate::offers::test_utils::*;
 	use crate::onion_message::{BlindedHop, BlindedPath};
 	use crate::util::ser::{BigSize, Iterable, Writeable};
+	use crate::util::string::PrintableString;
 
 	trait ToBytes {
 		fn to_bytes(&self) -> Vec<u8>;
@@ -975,6 +992,7 @@ mod tests {
 		invoice.write(&mut buffer).unwrap();
 
 		assert_eq!(invoice.bytes, buffer.as_slice());
+		assert_eq!(invoice.description(), PrintableString("foo"));
 		assert_eq!(invoice.payment_paths(), payment_paths.as_slice());
 		assert_eq!(invoice.created_at(), now);
 		assert_eq!(invoice.relative_expiry(), DEFAULT_RELATIVE_EXPIRY);
@@ -1057,6 +1075,7 @@ mod tests {
 		invoice.write(&mut buffer).unwrap();
 
 		assert_eq!(invoice.bytes, buffer.as_slice());
+		assert_eq!(invoice.description(), PrintableString("foo"));
 		assert_eq!(invoice.payment_paths(), payment_paths.as_slice());
 		assert_eq!(invoice.created_at(), now);
 		assert_eq!(invoice.relative_expiry(), DEFAULT_RELATIVE_EXPIRY);

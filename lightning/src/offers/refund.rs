@@ -310,7 +310,7 @@ impl Refund {
 	/// A complete description of the purpose of the refund. Intended to be displayed to the user
 	/// but with the caveat that it has not been verified in any way.
 	pub fn description(&self) -> PrintableString {
-		PrintableString(&self.contents.description)
+		self.contents.description()
 	}
 
 	/// Duration since the Unix epoch when an invoice should no longer be sent.
@@ -489,6 +489,10 @@ impl AsRef<[u8]> for Refund {
 }
 
 impl RefundContents {
+	pub fn description(&self) -> PrintableString {
+		PrintableString(&self.description)
+	}
+
 	#[cfg(feature = "std")]
 	pub(super) fn is_expired(&self) -> bool {
 		match self.absolute_expiry {

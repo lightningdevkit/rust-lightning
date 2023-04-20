@@ -384,7 +384,7 @@ impl Offer {
 	/// A complete description of the purpose of the payment. Intended to be displayed to the user
 	/// but with the caveat that it has not been verified in any way.
 	pub fn description(&self) -> PrintableString {
-		PrintableString(&self.contents.description)
+		self.contents.description()
 	}
 
 	/// Features pertaining to the offer.
@@ -534,6 +534,10 @@ impl OfferContents {
 
 	pub fn metadata(&self) -> Option<&Vec<u8>> {
 		self.metadata.as_ref().and_then(|metadata| metadata.as_bytes())
+	}
+
+	pub fn description(&self) -> PrintableString {
+		PrintableString(&self.description)
 	}
 
 	#[cfg(feature = "std")]
