@@ -342,7 +342,8 @@ macro_rules! define_run_body {
 			// falling back to our usual hourly prunes. This avoids short-lived clients never
 			// pruning their network graph. We run once 60 seconds after startup before
 			// continuing our normal cadence.
-			if $timer_elapsed(&mut last_prune_call, if have_pruned { NETWORK_PRUNE_TIMER } else { FIRST_NETWORK_PRUNE_TIMER }) {
+			let prune_timer = if have_pruned { NETWORK_PRUNE_TIMER } else { FIRST_NETWORK_PRUNE_TIMER };
+			if $timer_elapsed(&mut last_prune_call, prune_timer) {
 				// The network graph must not be pruned while rapid sync completion is pending
 				if let Some(network_graph) = $gossip_sync.prunable_network_graph() {
 					#[cfg(feature = "std")] {
@@ -360,7 +361,8 @@ macro_rules! define_run_body {
 
 					have_pruned = true;
 				}
-				last_prune_call = $get_timer(NETWORK_PRUNE_TIMER);
+				let prune_timer = if have_pruned { NETWORK_PRUNE_TIMER } else { FIRST_NETWORK_PRUNE_TIMER };
+				last_prune_call = $get_timer(prune_timer);
 			}
 
 			if $timer_elapsed(&mut last_scorer_persist_call, SCORER_PERSIST_TIMER) {
@@ -867,7 +869,10 @@ mod tests {
 
 			if key == "network_graph" {
 				if let Some(sender) = &self.graph_persistence_notifier {
-					sender.send(()).unwrap();
+					match sender.send(()) {
+						Ok(()) => {},
+						Err(std::sync::mpsc::SendError(())) => println!("Persister failed to notify as receiver went away."),
+					}
 				};
 
 				if let Some((error, message)) = self.graph_error {
