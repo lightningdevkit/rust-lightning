@@ -68,16 +68,21 @@
 
 use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::network::constants::Network;
-use bitcoin::secp256k1::PublicKey;
+use bitcoin::secp256k1::{KeyPair, PublicKey, Secp256k1, self};
 use core::convert::TryFrom;
 use core::num::NonZeroU64;
+use core::ops::Deref;
 use core::str::FromStr;
 use core::time::Duration;
+use crate::chain::keysinterface::EntropySource;
 use crate::io;
 use crate::ln::features::OfferFeatures;
+use crate::ln::inbound_payment::{ExpandedKey, IV_LEN, Nonce};
 use crate::ln::msgs::MAX_VALUE_MSAT;
-use crate::offers::invoice_request::InvoiceRequestBuilder;
+use crate::offers::invoice_request::{DerivedPayerId, ExplicitPayerId, InvoiceRequestBuilder};
+use crate::offers::merkle::TlvStream;
 use crate::offers::parse::{Bech32Encode, ParseError, ParsedMessage, SemanticError};
+use crate::offers::signer::{Metadata, MetadataMaterial, self};
 use crate::onion_message::BlindedPath;
 use crate::util::ser::{HighZeroBytesDroppedBigSize, WithoutLength, Writeable, Writer};
 use crate::util::string::PrintableString;
@@ -87,30 +92,90 @@ use crate::prelude::*;
 #[cfg(feature = "std")]
 use std::time::SystemTime;
 
+pub(super) const IV_BYTES: &[u8; IV_LEN] = b"LDK Offer ~~~~~~";
+
 /// Builds an [`Offer`] for the "offer to be paid" flow.
 ///
 /// See [module-level documentation] for usage.
 ///
 /// [module-level documentation]: self
-pub struct OfferBuilder {
+pub struct OfferBuilder<'a, M: MetadataStrategy, T: secp256k1::Signing> {
 	offer: OfferContents,
+	metadata_strategy: core::marker::PhantomData<M>,
+	secp_ctx: Option<&'a Secp256k1<T>>,
 }
 
-impl OfferBuilder {
+/// Indicates how [`Offer::metadata`] may be set.
+pub trait MetadataStrategy {}
+
+/// [`Offer::metadata`] may be explicitly set or left empty.
+pub struct ExplicitMetadata {}
+
+/// [`Offer::metadata`] will be derived.
+pub struct DerivedMetadata {}
+
+impl MetadataStrategy for ExplicitMetadata {}
+impl MetadataStrategy for DerivedMetadata {}
+
+impl<'a> OfferBuilder<'a, ExplicitMetadata, secp256k1::SignOnly> {
 	/// Creates a new builder for an offer setting the [`Offer::description`] and using the
 	/// [`Offer::signing_pubkey`] for signing invoices. The associated secret key must be remembered
 	/// while the offer is valid.
 	///
 	/// Use a different pubkey per offer to avoid correlating offers.
 	pub fn new(description: String, signing_pubkey: PublicKey) -> Self {
-		let offer = OfferContents {
-			chains: None, metadata: None, amount: None, description,
-			features: OfferFeatures::empty(), absolute_expiry: None, issuer: None, paths: None,
-			supported_quantity: Quantity::One, signing_pubkey,
-		};
-		OfferBuilder { offer }
+		OfferBuilder {
+			offer: OfferContents {
+				chains: None, metadata: None, amount: None, description,
+				features: OfferFeatures::empty(), absolute_expiry: None, issuer: None, paths: None,
+				supported_quantity: Quantity::One, signing_pubkey,
+			},
+			metadata_strategy: core::marker::PhantomData,
+			secp_ctx: None,
+		}
 	}
 
+	/// Sets the [`Offer::metadata`] to the given bytes.
+	///
+	/// Successive calls to this method will override the previous setting.
+	pub fn metadata(mut self, metadata: Vec<u8>) -> Result<Self, SemanticError> {
+		self.offer.metadata = Some(Metadata::Bytes(metadata));
+		Ok(self)
+	}
+}
+
+impl<'a, T: secp256k1::Signing> OfferBuilder<'a, DerivedMetadata, T> {
+	/// Similar to [`OfferBuilder::new`] except, if [`OfferBuilder::path`] is called, the signing
+	/// pubkey is derived from the given [`ExpandedKey`] and [`EntropySource`]. This provides
+	/// recipient privacy by using a different signing pubkey for each offer. Otherwise, the
+	/// provided `node_id` is used for the signing pubkey.
+	///
+	/// Also, sets the metadata when [`OfferBuilder::build`] is called such that it can be used by
+	/// [`InvoiceRequest::verify`] to determine if the request was produced for the offer given an
+	/// [`ExpandedKey`].
+	///
+	/// [`InvoiceRequest::verify`]: crate::offers::invoice_request::InvoiceRequest::verify
+	/// [`ExpandedKey`]: crate::ln::inbound_payment::ExpandedKey
+	pub fn deriving_signing_pubkey<ES: Deref>(
+		description: String, node_id: PublicKey, expanded_key: &ExpandedKey, entropy_source: ES,
+		secp_ctx: &'a Secp256k1<T>
+	) -> Self where ES::Target: EntropySource {
+		let nonce = Nonce::from_entropy_source(entropy_source);
+		let derivation_material = MetadataMaterial::new(nonce, expanded_key, IV_BYTES);
+		let metadata = Metadata::DerivedSigningPubkey(derivation_material);
+		OfferBuilder {
+			offer: OfferContents {
+				chains: None, metadata: Some(metadata), amount: None, description,
+				features: OfferFeatures::empty(), absolute_expiry: None, issuer: None, paths: None,
+				supported_quantity: Quantity::One, signing_pubkey: node_id,
+			},
+			metadata_strategy: core::marker::PhantomData,
+			secp_ctx: Some(secp_ctx),
+		}
+	}
+}
+
+impl<'a, M: MetadataStrategy, T: secp256k1::Signing> OfferBuilder<'a, M, T> {
 	/// Adds the chain hash of the given [`Network`] to [`Offer::chains`]. If not called,
 	/// the chain hash of [`Network::Bitcoin`] is assumed to be the only one supported.
 	///
@@ -124,14 +189,6 @@ impl OfferBuilder {
 			chains.push(chain);
 		}
 
-		self
-	}
-
-	/// Sets the [`Offer::metadata`].
-	///
-	/// Successive calls to this method will override the previous setting.
-	pub fn metadata(mut self, metadata: Vec<u8>) -> Self {
-		self.offer.metadata = Some(metadata);
 		self
 	}
 
@@ -204,28 +261,50 @@ impl OfferBuilder {
 			}
 		}
 
+		Ok(self.build_without_checks())
+	}
+
+	fn build_without_checks(mut self) -> Offer {
+		// Create the metadata for stateless verification of an InvoiceRequest.
+		if let Some(mut metadata) = self.offer.metadata.take() {
+			if metadata.has_derivation_material() {
+				if self.offer.paths.is_none() {
+					metadata = metadata.without_keys();
+				}
+
+				let mut tlv_stream = self.offer.as_tlv_stream();
+				debug_assert_eq!(tlv_stream.metadata, None);
+				tlv_stream.metadata = None;
+				if metadata.derives_keys() {
+					tlv_stream.node_id = None;
+				}
+
+				let (derived_metadata, keys) = metadata.derive_from(tlv_stream, self.secp_ctx);
+				metadata = derived_metadata;
+				if let Some(keys) = keys {
+					self.offer.signing_pubkey = keys.public_key();
+				}
+			}
+
+			self.offer.metadata = Some(metadata);
+		}
+
 		let mut bytes = Vec::new();
 		self.offer.write(&mut bytes).unwrap();
 
-		Ok(Offer {
-			bytes,
-			contents: self.offer,
-		})
+		Offer { bytes, contents: self.offer }
 	}
 }
 
 #[cfg(test)]
-impl OfferBuilder {
+impl<'a, M: MetadataStrategy, T: secp256k1::Signing> OfferBuilder<'a, M, T> {
 	fn features_unchecked(mut self, features: OfferFeatures) -> Self {
 		self.offer.features = features;
 		self
 	}
 
 	pub(super) fn build_unchecked(self) -> Offer {
-		let mut bytes = Vec::new();
-		self.offer.write(&mut bytes).unwrap();
-
-		Offer { bytes, contents: self.offer }
+		self.build_without_checks()
 	}
 }
 
@@ -242,7 +321,8 @@ impl OfferBuilder {
 ///
 /// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 /// [`Invoice`]: crate::offers::invoice::Invoice
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
+#[cfg_attr(test, derive(PartialEq))]
 pub struct Offer {
 	// The serialized offer. Needed when creating an `InvoiceRequest` if the offer contains unknown
 	// fields.
@@ -254,10 +334,11 @@ pub struct Offer {
 ///
 /// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 /// [`Invoice`]: crate::offers::invoice::Invoice
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
+#[cfg_attr(test, derive(PartialEq))]
 pub(super) struct OfferContents {
 	chains: Option<Vec<ChainHash>>,
-	metadata: Option<Vec<u8>>,
+	metadata: Option<Metadata>,
 	amount: Option<Amount>,
 	description: String,
 	features: OfferFeatures,
@@ -292,7 +373,7 @@ impl Offer {
 	/// Opaque bytes set by the originator. Useful for authentication and validating fields since it
 	/// is reflected in `invoice_request` messages along with all the other fields from the `offer`.
 	pub fn metadata(&self) -> Option<&Vec<u8>> {
-		self.contents.metadata.as_ref()
+		self.contents.metadata()
 	}
 
 	/// The minimum amount required for a successful payment of a single item.
@@ -358,8 +439,53 @@ impl Offer {
 		self.contents.signing_pubkey()
 	}
 
-	/// Creates an [`InvoiceRequest`] for the offer with the given `metadata` and `payer_id`, which
-	/// will be reflected in the `Invoice` response.
+	/// Similar to [`Offer::request_invoice`] except it:
+	/// - derives the [`InvoiceRequest::payer_id`] such that a different key can be used for each
+	///   request, and
+	/// - sets the [`InvoiceRequest::metadata`] when [`InvoiceRequestBuilder::build`] is called such
+	///   that it can be used by [`Invoice::verify`] to determine if the invoice was requested using
+	///   a base [`ExpandedKey`] from which the payer id was derived.
+	///
+	/// Useful to protect the sender's privacy.
+	///
+	/// [`InvoiceRequest::payer_id`]: crate::offers::invoice_request::InvoiceRequest::payer_id
+	/// [`InvoiceRequest::metadata`]: crate::offers::invoice_request::InvoiceRequest::metadata
+	/// [`Invoice::verify`]: crate::offers::invoice::Invoice::verify
+	/// [`ExpandedKey`]: crate::ln::inbound_payment::ExpandedKey
+	pub fn request_invoice_deriving_payer_id<'a, 'b, ES: Deref, T: secp256k1::Signing>(
+		&'a self, expanded_key: &ExpandedKey, entropy_source: ES, secp_ctx: &'b Secp256k1<T>
+	) -> Result<InvoiceRequestBuilder<'a, 'b, DerivedPayerId, T>, SemanticError>
+	where
+		ES::Target: EntropySource,
+	{
+		if self.features().requires_unknown_bits() {
+			return Err(SemanticError::UnknownRequiredFeatures);
+		}
+
+		Ok(InvoiceRequestBuilder::deriving_payer_id(self, expanded_key, entropy_source, secp_ctx))
+	}
+
+	/// Similar to [`Offer::request_invoice_deriving_payer_id`] except uses `payer_id` for the
+	/// [`InvoiceRequest::payer_id`] instead of deriving a different key for each request.
+	///
+	/// Useful for recurring payments using the same `payer_id` with different invoices.
+	///
+	/// [`InvoiceRequest::payer_id`]: crate::offers::invoice_request::InvoiceRequest::payer_id
+	pub fn request_invoice_deriving_metadata<ES: Deref>(
+		&self, payer_id: PublicKey, expanded_key: &ExpandedKey, entropy_source: ES
+	) -> Result<InvoiceRequestBuilder<ExplicitPayerId, secp256k1::SignOnly>, SemanticError>
+	where
+		ES::Target: EntropySource,
+	{
+		if self.features().requires_unknown_bits() {
+			return Err(SemanticError::UnknownRequiredFeatures);
+		}
+
+		Ok(InvoiceRequestBuilder::deriving_metadata(self, payer_id, expanded_key, entropy_source))
+	}
+
+	/// Creates an [`InvoiceRequestBuilder`] for the offer with the given `metadata` and `payer_id`,
+	/// which will be reflected in the `Invoice` response.
 	///
 	/// The `metadata` is useful for including information about the derivation of `payer_id` such
 	/// that invoice response handling can be stateless. Also serves as payer-provided entropy while
@@ -373,7 +499,7 @@ impl Offer {
 	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 	pub fn request_invoice(
 		&self, metadata: Vec<u8>, payer_id: PublicKey
-	) -> Result<InvoiceRequestBuilder, SemanticError> {
+	) -> Result<InvoiceRequestBuilder<ExplicitPayerId, secp256k1::SignOnly>, SemanticError> {
 		if self.features().requires_unknown_bits() {
 			return Err(SemanticError::UnknownRequiredFeatures);
 		}
@@ -404,6 +530,10 @@ impl OfferContents {
 
 	pub fn supports_chain(&self, chain: ChainHash) -> bool {
 		self.chains().contains(&chain)
+	}
+
+	pub fn metadata(&self) -> Option<&Vec<u8>> {
+		self.metadata.as_ref().and_then(|metadata| metadata.as_bytes())
 	}
 
 	#[cfg(feature = "std")]
@@ -483,6 +613,27 @@ impl OfferContents {
 		self.signing_pubkey
 	}
 
+	/// Verifies that the offer metadata was produced from the offer in the TLV stream.
+	pub(super) fn verify<T: secp256k1::Signing>(
+		&self, bytes: &[u8], key: &ExpandedKey, secp_ctx: &Secp256k1<T>
+	) -> Result<Option<KeyPair>, ()> {
+		match self.metadata() {
+			Some(metadata) => {
+				let tlv_stream = TlvStream::new(bytes).range(OFFER_TYPES).filter(|record| {
+					match record.r#type {
+						OFFER_METADATA_TYPE => false,
+						OFFER_NODE_ID_TYPE => !self.metadata.as_ref().unwrap().derives_keys(),
+						_ => true,
+					}
+				});
+				signer::verify_metadata(
+					metadata, key, IV_BYTES, self.signing_pubkey(), tlv_stream, secp_ctx
+				)
+			},
+			None => Err(()),
+		}
+	}
+
 	pub(super) fn as_tlv_stream(&self) -> OfferTlvStreamRef {
 		let (currency, amount) = match &self.amount {
 			None => (None, None),
@@ -498,7 +649,7 @@ impl OfferContents {
 
 		OfferTlvStreamRef {
 			chains: self.chains.as_ref(),
-			metadata: self.metadata.as_ref(),
+			metadata: self.metadata(),
 			currency,
 			amount,
 			description: Some(&self.description),
@@ -570,9 +721,18 @@ impl Quantity {
 	}
 }
 
-tlv_stream!(OfferTlvStream, OfferTlvStreamRef, 1..80, {
+/// Valid type range for offer TLV records.
+pub(super) const OFFER_TYPES: core::ops::Range<u64> = 1..80;
+
+/// TLV record type for [`Offer::metadata`].
+const OFFER_METADATA_TYPE: u64 = 4;
+
+/// TLV record type for [`Offer::signing_pubkey`].
+const OFFER_NODE_ID_TYPE: u64 = 22;
+
+tlv_stream!(OfferTlvStream, OfferTlvStreamRef, OFFER_TYPES, {
 	(2, chains: (Vec<ChainHash>, WithoutLength)),
-	(4, metadata: (Vec<u8>, WithoutLength)),
+	(OFFER_METADATA_TYPE, metadata: (Vec<u8>, WithoutLength)),
 	(6, currency: CurrencyCode),
 	(8, amount: (u64, HighZeroBytesDroppedBigSize)),
 	(10, description: (String, WithoutLength)),
@@ -581,7 +741,7 @@ tlv_stream!(OfferTlvStream, OfferTlvStreamRef, 1..80, {
 	(16, paths: (Vec<BlindedPath>, WithoutLength)),
 	(18, issuer: (String, WithoutLength)),
 	(20, quantity_max: (u64, HighZeroBytesDroppedBigSize)),
-	(22, node_id: PublicKey),
+	(OFFER_NODE_ID_TYPE, node_id: PublicKey),
 });
 
 impl Bech32Encode for Offer {
@@ -615,6 +775,8 @@ impl TryFrom<OfferTlvStream> for OfferContents {
 			chains, metadata, currency, amount, description, features, absolute_expiry, paths,
 			issuer, quantity_max, node_id,
 		} = tlv_stream;
+
+		let metadata = metadata.map(|metadata| Metadata::Bytes(metadata));
 
 		let amount = match (currency, amount) {
 			(None, None) => None,
@@ -666,25 +828,19 @@ mod tests {
 
 	use bitcoin::blockdata::constants::ChainHash;
 	use bitcoin::network::constants::Network;
-	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
+	use bitcoin::secp256k1::Secp256k1;
 	use core::convert::TryFrom;
 	use core::num::NonZeroU64;
 	use core::time::Duration;
+	use crate::chain::keysinterface::KeyMaterial;
 	use crate::ln::features::OfferFeatures;
+	use crate::ln::inbound_payment::ExpandedKey;
 	use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
 	use crate::offers::parse::{ParseError, SemanticError};
+	use crate::offers::test_utils::*;
 	use crate::onion_message::{BlindedHop, BlindedPath};
 	use crate::util::ser::{BigSize, Writeable};
 	use crate::util::string::PrintableString;
-
-	fn pubkey(byte: u8) -> PublicKey {
-		let secp_ctx = Secp256k1::new();
-		PublicKey::from_secret_key(&secp_ctx, &privkey(byte))
-	}
-
-	fn privkey(byte: u8) -> SecretKey {
-		SecretKey::from_slice(&[byte; 32]).unwrap()
-	}
 
 	#[test]
 	fn builds_offer_with_defaults() {
@@ -774,19 +930,123 @@ mod tests {
 	#[test]
 	fn builds_offer_with_metadata() {
 		let offer = OfferBuilder::new("foo".into(), pubkey(42))
-			.metadata(vec![42; 32])
+			.metadata(vec![42; 32]).unwrap()
 			.build()
 			.unwrap();
 		assert_eq!(offer.metadata(), Some(&vec![42; 32]));
 		assert_eq!(offer.as_tlv_stream().metadata, Some(&vec![42; 32]));
 
 		let offer = OfferBuilder::new("foo".into(), pubkey(42))
-			.metadata(vec![42; 32])
-			.metadata(vec![43; 32])
+			.metadata(vec![42; 32]).unwrap()
+			.metadata(vec![43; 32]).unwrap()
 			.build()
 			.unwrap();
 		assert_eq!(offer.metadata(), Some(&vec![43; 32]));
 		assert_eq!(offer.as_tlv_stream().metadata, Some(&vec![43; 32]));
+	}
+
+	#[test]
+	fn builds_offer_with_metadata_derived() {
+		let desc = "foo".to_string();
+		let node_id = recipient_pubkey();
+		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let entropy = FixedEntropy {};
+		let secp_ctx = Secp256k1::new();
+
+		let offer = OfferBuilder
+			::deriving_signing_pubkey(desc, node_id, &expanded_key, &entropy, &secp_ctx)
+			.amount_msats(1000)
+			.build().unwrap();
+		assert_eq!(offer.signing_pubkey(), node_id);
+
+		let invoice_request = offer.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.build().unwrap()
+			.sign(payer_sign).unwrap();
+		assert!(invoice_request.verify(&expanded_key, &secp_ctx).is_ok());
+
+		// Fails verification with altered offer field
+		let mut tlv_stream = offer.as_tlv_stream();
+		tlv_stream.amount = Some(100);
+
+		let mut encoded_offer = Vec::new();
+		tlv_stream.write(&mut encoded_offer).unwrap();
+
+		let invoice_request = Offer::try_from(encoded_offer).unwrap()
+			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.build().unwrap()
+			.sign(payer_sign).unwrap();
+		assert!(invoice_request.verify(&expanded_key, &secp_ctx).is_err());
+
+		// Fails verification with altered metadata
+		let mut tlv_stream = offer.as_tlv_stream();
+		let metadata = tlv_stream.metadata.unwrap().iter().copied().rev().collect();
+		tlv_stream.metadata = Some(&metadata);
+
+		let mut encoded_offer = Vec::new();
+		tlv_stream.write(&mut encoded_offer).unwrap();
+
+		let invoice_request = Offer::try_from(encoded_offer).unwrap()
+			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.build().unwrap()
+			.sign(payer_sign).unwrap();
+		assert!(invoice_request.verify(&expanded_key, &secp_ctx).is_err());
+	}
+
+	#[test]
+	fn builds_offer_with_derived_signing_pubkey() {
+		let desc = "foo".to_string();
+		let node_id = recipient_pubkey();
+		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let entropy = FixedEntropy {};
+		let secp_ctx = Secp256k1::new();
+
+		let blinded_path = BlindedPath {
+			introduction_node_id: pubkey(40),
+			blinding_point: pubkey(41),
+			blinded_hops: vec![
+				BlindedHop { blinded_node_id: pubkey(42), encrypted_payload: vec![0; 43] },
+				BlindedHop { blinded_node_id: node_id, encrypted_payload: vec![0; 44] },
+			],
+		};
+
+		let offer = OfferBuilder
+			::deriving_signing_pubkey(desc, node_id, &expanded_key, &entropy, &secp_ctx)
+			.amount_msats(1000)
+			.path(blinded_path)
+			.build().unwrap();
+		assert_ne!(offer.signing_pubkey(), node_id);
+
+		let invoice_request = offer.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.build().unwrap()
+			.sign(payer_sign).unwrap();
+		assert!(invoice_request.verify(&expanded_key, &secp_ctx).is_ok());
+
+		// Fails verification with altered offer field
+		let mut tlv_stream = offer.as_tlv_stream();
+		tlv_stream.amount = Some(100);
+
+		let mut encoded_offer = Vec::new();
+		tlv_stream.write(&mut encoded_offer).unwrap();
+
+		let invoice_request = Offer::try_from(encoded_offer).unwrap()
+			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.build().unwrap()
+			.sign(payer_sign).unwrap();
+		assert!(invoice_request.verify(&expanded_key, &secp_ctx).is_err());
+
+		// Fails verification with altered signing pubkey
+		let mut tlv_stream = offer.as_tlv_stream();
+		let signing_pubkey = pubkey(1);
+		tlv_stream.node_id = Some(&signing_pubkey);
+
+		let mut encoded_offer = Vec::new();
+		tlv_stream.write(&mut encoded_offer).unwrap();
+
+		let invoice_request = Offer::try_from(encoded_offer).unwrap()
+			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.build().unwrap()
+			.sign(payer_sign).unwrap();
+		assert!(invoice_request.verify(&expanded_key, &secp_ctx).is_err());
 	}
 
 	#[test]

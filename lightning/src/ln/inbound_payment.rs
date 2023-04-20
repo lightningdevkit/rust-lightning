@@ -19,14 +19,14 @@ use crate::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
 use crate::ln::msgs;
 use crate::ln::msgs::MAX_VALUE_MSAT;
 use crate::util::chacha20::ChaCha20;
-use crate::util::crypto::hkdf_extract_expand_thrice;
+use crate::util::crypto::hkdf_extract_expand_4x;
 use crate::util::errors::APIError;
 use crate::util::logger::Logger;
 
-use core::convert::TryInto;
+use core::convert::{TryFrom, TryInto};
 use core::ops::Deref;
 
-const IV_LEN: usize = 16;
+pub(crate) const IV_LEN: usize = 16;
 const METADATA_LEN: usize = 16;
 const METADATA_KEY_LEN: usize = 32;
 const AMT_MSAT_LEN: usize = 8;
@@ -48,6 +48,8 @@ pub struct ExpandedKey {
 	/// The key used to authenticate a user-provided payment hash and metadata as previously
 	/// registered with LDK.
 	user_pmt_hash_key: [u8; 32],
+	/// The base key used to derive signing keys and authenticate messages for BOLT 12 Offers.
+	offers_base_key: [u8; 32],
 }
 
 impl ExpandedKey {
@@ -55,13 +57,75 @@ impl ExpandedKey {
 	///
 	/// It is recommended to cache this value and not regenerate it for each new inbound payment.
 	pub fn new(key_material: &KeyMaterial) -> ExpandedKey {
-		let (metadata_key, ldk_pmt_hash_key, user_pmt_hash_key) =
-			hkdf_extract_expand_thrice(b"LDK Inbound Payment Key Expansion", &key_material.0);
+		let (metadata_key, ldk_pmt_hash_key, user_pmt_hash_key, offers_base_key) =
+			hkdf_extract_expand_4x(b"LDK Inbound Payment Key Expansion", &key_material.0);
 		Self {
 			metadata_key,
 			ldk_pmt_hash_key,
 			user_pmt_hash_key,
+			offers_base_key,
 		}
+	}
+
+	/// Returns an [`HmacEngine`] used to construct [`Offer::metadata`].
+	///
+	/// [`Offer::metadata`]: crate::offers::offer::Offer::metadata
+	#[allow(unused)]
+	pub(crate) fn hmac_for_offer(
+		&self, nonce: Nonce, iv_bytes: &[u8; IV_LEN]
+	) -> HmacEngine<Sha256> {
+		let mut hmac = HmacEngine::<Sha256>::new(&self.offers_base_key);
+		hmac.input(iv_bytes);
+		hmac.input(&nonce.0);
+		hmac
+	}
+}
+
+/// A 128-bit number used only once.
+///
+/// Needed when constructing [`Offer::metadata`] and deriving [`Offer::signing_pubkey`] from
+/// [`ExpandedKey`]. Must not be reused for any other derivation without first hashing.
+///
+/// [`Offer::metadata`]: crate::offers::offer::Offer::metadata
+/// [`Offer::signing_pubkey`]: crate::offers::offer::Offer::signing_pubkey
+#[allow(unused)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Nonce(pub(crate) [u8; Self::LENGTH]);
+
+impl Nonce {
+	/// Number of bytes in the nonce.
+	pub const LENGTH: usize = 16;
+
+	/// Creates a `Nonce` from the given [`EntropySource`].
+	pub fn from_entropy_source<ES: Deref>(entropy_source: ES) -> Self
+	where
+		ES::Target: EntropySource,
+	{
+		let mut bytes = [0u8; Self::LENGTH];
+		let rand_bytes = entropy_source.get_secure_random_bytes();
+		bytes.copy_from_slice(&rand_bytes[..Self::LENGTH]);
+
+		Nonce(bytes)
+	}
+
+	/// Returns a slice of the underlying bytes of size [`Nonce::LENGTH`].
+	pub fn as_slice(&self) -> &[u8] {
+		&self.0
+	}
+}
+
+impl TryFrom<&[u8]> for Nonce {
+	type Error = ();
+
+	fn try_from(bytes: &[u8]) -> Result<Self, ()> {
+		if bytes.len() != Self::LENGTH {
+			return Err(());
+		}
+
+		let mut copied_bytes = [0u8; Self::LENGTH];
+		copied_bytes.copy_from_slice(bytes);
+
+		Ok(Self(copied_bytes))
 	}
 }
 

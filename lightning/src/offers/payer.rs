@@ -9,6 +9,7 @@
 
 //! Data structures and encoding for `invoice_request_metadata` records.
 
+use crate::offers::signer::Metadata;
 use crate::util::ser::WithoutLength;
 
 use crate::prelude::*;
@@ -17,9 +18,16 @@ use crate::prelude::*;
 /// [`InvoiceRequest::payer_id`].
 ///
 /// [`InvoiceRequest::payer_id`]: crate::offers::invoice_request::InvoiceRequest::payer_id
-#[derive(Clone, Debug, PartialEq)]
-pub(super) struct PayerContents(pub Vec<u8>);
+#[derive(Clone, Debug)]
+#[cfg_attr(test, derive(PartialEq))]
+pub(super) struct PayerContents(pub Metadata);
+
+/// TLV record type for [`InvoiceRequest::metadata`] and [`Refund::metadata`].
+///
+/// [`InvoiceRequest::metadata`]: crate::offers::invoice_request::InvoiceRequest::metadata
+/// [`Refund::metadata`]: crate::offers::refund::Refund::metadata
+pub(super) const PAYER_METADATA_TYPE: u64 = 0;
 
 tlv_stream!(PayerTlvStream, PayerTlvStreamRef, 0..1, {
-	(0, metadata: (Vec<u8>, WithoutLength)),
+	(PAYER_METADATA_TYPE, metadata: (Vec<u8>, WithoutLength)),
 });

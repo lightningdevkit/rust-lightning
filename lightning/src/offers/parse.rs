@@ -171,6 +171,8 @@ pub enum SemanticError {
 	InvalidQuantity,
 	/// A quantity or quantity bounds was provided but was not expected.
 	UnexpectedQuantity,
+	/// Metadata could not be used to verify the offers message.
+	InvalidMetadata,
 	/// Metadata was provided but was not expected.
 	UnexpectedMetadata,
 	/// Payer metadata was expected but was missing.

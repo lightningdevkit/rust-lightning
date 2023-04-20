@@ -19,3 +19,7 @@ pub mod offer;
 pub mod parse;
 mod payer;
 pub mod refund;
+#[allow(unused)]
+pub(crate) mod signer;
+#[cfg(test)]
+mod test_utils;
