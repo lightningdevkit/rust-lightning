@@ -406,9 +406,11 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 	mine_transaction(&nodes[0], &bs_htlc_claim_txn[0]);
 	expect_payment_sent!(nodes[0], payment_preimage_1);
 	connect_blocks(&nodes[0], TEST_FINAL_CLTV*4 + 20);
-	let as_htlc_timeout_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
-	assert_eq!(as_htlc_timeout_txn.len(), 2);
-	let (first_htlc_timeout_tx, second_htlc_timeout_tx) = (&as_htlc_timeout_txn[0], &as_htlc_timeout_txn[1]);
+	let (first_htlc_timeout_tx, second_htlc_timeout_tx) = {
+		let mut txn = nodes[0].tx_broadcaster.unique_txn_broadcast();
+		assert_eq!(txn.len(), 2);
+		(txn.remove(0), txn.remove(0))
+	};
 	check_spends!(first_htlc_timeout_tx, as_commitment_tx);
 	check_spends!(second_htlc_timeout_tx, as_commitment_tx);
 	if first_htlc_timeout_tx.input[0].previous_output == bs_htlc_claim_txn[0].input[0].previous_output {

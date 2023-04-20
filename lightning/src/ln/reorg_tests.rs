@@ -9,7 +9,7 @@
 
 //! Further functional tests which test blockchain reorganizations.
 
-use crate::chain::channelmonitor::ANTI_REORG_DELAY;
+use crate::chain::channelmonitor::{ANTI_REORG_DELAY, LATENCY_GRACE_PERIOD_BLOCKS};
 use crate::chain::transaction::OutPoint;
 use crate::chain::Confirm;
 use crate::events::{Event, MessageSendEventsProvider, ClosureReason, HTLCDestination};
@@ -467,19 +467,21 @@ fn test_set_outpoints_partial_claiming() {
 	}
 
 	// Connect blocks on node B
-	connect_blocks(&nodes[1], 135);
+	connect_blocks(&nodes[1], TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS + 1);
 	check_closed_broadcast!(nodes[1], true);
 	check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed);
 	check_added_monitors!(nodes[1], 1);
 	// Verify node B broadcast 2 HTLC-timeout txn
 	let partial_claim_tx = {
-		let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
+		let mut node_txn = nodes[1].tx_broadcaster.unique_txn_broadcast();
 		assert_eq!(node_txn.len(), 3);
+		check_spends!(node_txn[0], chan.3);
 		check_spends!(node_txn[1], node_txn[0]);
 		check_spends!(node_txn[2], node_txn[0]);
 		assert_eq!(node_txn[1].input.len(), 1);
 		assert_eq!(node_txn[2].input.len(), 1);
-		node_txn[1].clone()
+		assert_ne!(node_txn[1].input[0].previous_output, node_txn[2].input[0].previous_output);
+		node_txn.remove(1)
 	};
 
 	// Broadcast partial claim on node A, should regenerate a claiming tx with HTLC dropped

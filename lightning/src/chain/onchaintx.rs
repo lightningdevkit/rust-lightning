@@ -489,7 +489,7 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner> OnchainTxHandler<ChannelSigner>
 	///
 	/// Panics if there are signing errors, because signing operations in reaction to on-chain
 	/// events are not expected to fail, and if they do, we may lose funds.
-	fn generate_claim<F: Deref, L: Deref>(&mut self, cur_height: u32, cached_request: &PackageTemplate, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L) -> Option<(Option<u32>, u64, OnchainClaim)>
+	fn generate_claim<F: Deref, L: Deref>(&mut self, cur_height: u32, cached_request: &PackageTemplate, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L) -> Option<(u32, u64, OnchainClaim)>
 		where F::Target: FeeEstimator,
 					L::Target: Logger,
 	{
@@ -533,7 +533,7 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner> OnchainTxHandler<ChannelSigner>
 
 		// Compute new height timer to decide when we need to regenerate a new bumped version of the claim tx (if we
 		// didn't receive confirmation of it before, or not enough reorg-safe depth on top of it).
-		let new_timer = Some(cached_request.get_height_timer(cur_height));
+		let new_timer = cached_request.get_height_timer(cur_height);
 		if cached_request.is_malleable() {
 			#[cfg(anchors)]
 			{ // Attributes are not allowed on if expressions on our current MSRV of 1.41.
@@ -565,7 +565,7 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner> OnchainTxHandler<ChannelSigner>
 				let transaction = cached_request.finalize_malleable_package(
 					cur_height, self, output_value, self.destination_script.clone(), logger
 				).unwrap();
-				log_trace!(logger, "...with timer {} and feerate {}", new_timer.unwrap(), new_feerate);
+				log_trace!(logger, "...with timer {} and feerate {}", new_timer, new_feerate);
 				assert!(predicted_weight >= transaction.weight());
 				return Some((new_timer, new_feerate, OnchainClaim::Tx(transaction)));
 			}
@@ -583,7 +583,7 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner> OnchainTxHandler<ChannelSigner>
 				None => return None,
 			};
 			if !cached_request.requires_external_funding() {
-				return Some((None, 0, OnchainClaim::Tx(tx)));
+				return Some((new_timer, 0, OnchainClaim::Tx(tx)));
 			}
 			#[cfg(anchors)]
 			return inputs.find_map(|input| match input {
@@ -616,7 +616,7 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner> OnchainTxHandler<ChannelSigner>
 						// attempt to broadcast the transaction with its current fee rate and hope
 						// it confirms. This is essentially the same behavior as a commitment
 						// transaction without anchor outputs.
-						None => Some((None, 0, OnchainClaim::Tx(tx.clone()))),
+						None => Some((new_timer, 0, OnchainClaim::Tx(tx.clone()))),
 					}
 				},
 				_ => {
@@ -885,10 +885,8 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner> OnchainTxHandler<ChannelSigner>
 
 		// Check if any pending claim request must be rescheduled
 		for (package_id, request) in self.pending_claim_requests.iter() {
-			if let Some(h) = request.timer() {
-				if cur_height >= h {
-					bump_candidates.insert(*package_id, request.clone());
-				}
+			if cur_height >= request.timer() {
+				bump_candidates.insert(*package_id, request.clone());
 			}
 		}
 

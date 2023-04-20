@@ -2390,8 +2390,8 @@ fn channel_monitor_network_test() {
 }
 
 #[test]
-fn test_justice_tx() {
-	// Test justice txn built on revoked HTLC-Success tx, against both sides
+fn test_justice_tx_htlc_timeout() {
+	// Test justice txn built on revoked HTLC-Timeout tx, against both sides
 	let mut alice_config = UserConfig::default();
 	alice_config.channel_handshake_config.announced_channel = true;
 	alice_config.channel_handshake_limits.force_announced_channel_preference = false;
@@ -2407,7 +2407,6 @@ fn test_justice_tx() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &user_cfgs);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	*nodes[0].connect_style.borrow_mut() = ConnectStyle::FullBlockViaListen;
 	// Create some new channels:
 	let chan_5 = create_announced_chan_between_nodes(&nodes, 0, 1);
 
@@ -2431,7 +2430,6 @@ fn test_justice_tx() {
 			let mut node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
 			assert_eq!(node_txn.len(), 1); // ChannelMonitor: penalty tx
 			assert_eq!(node_txn[0].input.len(), 2); // We should claim the revoked output and the HTLC output
-
 			check_spends!(node_txn[0], revoked_local_txn[0]);
 			node_txn.swap_remove(0);
 		}
@@ -2450,17 +2448,30 @@ fn test_justice_tx() {
 		test_revoked_htlc_claim_txn_broadcast(&nodes[1], node_txn[1].clone(), revoked_local_txn[0].clone());
 	}
 	get_announce_close_broadcast_events(&nodes, 0, 1);
-
 	assert_eq!(nodes[0].node.list_channels().len(), 0);
 	assert_eq!(nodes[1].node.list_channels().len(), 0);
+}
 
-	// We test justice_tx build by A on B's revoked HTLC-Success tx
+#[test]
+fn test_justice_tx_htlc_success() {
+	// Test justice txn built on revoked HTLC-Success tx, against both sides
+	let mut alice_config = UserConfig::default();
+	alice_config.channel_handshake_config.announced_channel = true;
+	alice_config.channel_handshake_limits.force_announced_channel_preference = false;
+	alice_config.channel_handshake_config.our_to_self_delay = 6 * 24 * 5;
+	let mut bob_config = UserConfig::default();
+	bob_config.channel_handshake_config.announced_channel = true;
+	bob_config.channel_handshake_limits.force_announced_channel_preference = false;
+	bob_config.channel_handshake_config.our_to_self_delay = 6 * 24 * 3;
+	let user_cfgs = [Some(alice_config), Some(bob_config)];
+	let mut chanmon_cfgs = create_chanmon_cfgs(2);
+	chanmon_cfgs[0].keys_manager.disable_revocation_policy_check = true;
+	chanmon_cfgs[1].keys_manager.disable_revocation_policy_check = true;
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &user_cfgs);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	// Create some new channels:
 	let chan_6 = create_announced_chan_between_nodes(&nodes, 0, 1);
-	{
-		let mut node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
-		node_txn.clear();
-	}
 
 	// A pending HTLC which will be revoked:
 	let payment_preimage_4 = route_payment(&nodes[0], &vec!(&nodes[1])[..], 3000000).0;
@@ -2638,8 +2649,7 @@ fn claim_htlc_outputs_single_tx() {
 		connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
 		assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
 
-		let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
-		assert_eq!(node_txn.len(), 7);
+		let mut node_txn = nodes[1].tx_broadcaster.txn_broadcast();
 
 		// Check the pair local commitment and HTLC-timeout broadcast due to HTLC expiration
 		assert_eq!(node_txn[0].input.len(), 1);
@@ -2649,19 +2659,22 @@ fn claim_htlc_outputs_single_tx() {
 		assert_eq!(witness_script.len(), OFFERED_HTLC_SCRIPT_WEIGHT); //Spending an offered htlc output
 		check_spends!(node_txn[1], node_txn[0]);
 
-		// Justice transactions are indices 2-3-4
-		assert_eq!(node_txn[2].input.len(), 1);
-		assert_eq!(node_txn[3].input.len(), 1);
-		assert_eq!(node_txn[4].input.len(), 1);
+		// Filter out any non justice transactions.
+		node_txn.retain(|tx| tx.input[0].previous_output.txid == revoked_local_txn[0].txid());
+		assert!(node_txn.len() > 3);
 
+		assert_eq!(node_txn[0].input.len(), 1);
+		assert_eq!(node_txn[1].input.len(), 1);
+		assert_eq!(node_txn[2].input.len(), 1);
+
+		check_spends!(node_txn[0], revoked_local_txn[0]);
+		check_spends!(node_txn[1], revoked_local_txn[0]);
 		check_spends!(node_txn[2], revoked_local_txn[0]);
-		check_spends!(node_txn[3], revoked_local_txn[0]);
-		check_spends!(node_txn[4], revoked_local_txn[0]);
 
 		let mut witness_lens = BTreeSet::new();
+		witness_lens.insert(node_txn[0].input[0].witness.last().unwrap().len());
+		witness_lens.insert(node_txn[1].input[0].witness.last().unwrap().len());
 		witness_lens.insert(node_txn[2].input[0].witness.last().unwrap().len());
-		witness_lens.insert(node_txn[3].input[0].witness.last().unwrap().len());
-		witness_lens.insert(node_txn[4].input[0].witness.last().unwrap().len());
 		assert_eq!(witness_lens.len(), 3);
 		assert_eq!(*witness_lens.iter().skip(0).next().unwrap(), 77); // revoked to_local
 		assert_eq!(*witness_lens.iter().skip(1).next().unwrap(), OFFERED_HTLC_SCRIPT_WEIGHT); // revoked offered HTLC
@@ -2669,9 +2682,9 @@ fn claim_htlc_outputs_single_tx() {
 
 		// Finally, mine the penalty transactions and check that we get an HTLC failure after
 		// ANTI_REORG_DELAY confirmations.
+		mine_transaction(&nodes[1], &node_txn[0]);
+		mine_transaction(&nodes[1], &node_txn[1]);
 		mine_transaction(&nodes[1], &node_txn[2]);
-		mine_transaction(&nodes[1], &node_txn[3]);
-		mine_transaction(&nodes[1], &node_txn[4]);
 		connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
 		expect_payment_failed!(nodes[1], payment_hash_2, false);
 	}
@@ -2970,25 +2983,20 @@ fn do_test_htlc_on_chain_timeout(connect_style: ConnectStyle) {
 
 	// Broadcast timeout transaction by B on received output from C's commitment tx on B's chain
 	// Verify that B's ChannelManager is able to detect that HTLC is timeout by its own tx and react backward in consequence
-	connect_blocks(&nodes[1], 200 - nodes[2].best_block_info().1);
 	mine_transaction(&nodes[1], &commitment_tx[0]);
-	check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed);
-	let timeout_tx;
-	{
-		let mut node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
-		assert_eq!(node_txn.len(), 3); // 2 (local commitment tx + HTLC-timeout), 1 timeout tx
-
-		check_spends!(node_txn[2], commitment_tx[0]);
-		assert_eq!(node_txn[2].clone().input[0].witness.last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT);
-
-		check_spends!(node_txn[0], chan_2.3);
-		check_spends!(node_txn[1], node_txn[0]);
-		assert_eq!(node_txn[0].clone().input[0].witness.last().unwrap().len(), 71);
-		assert_eq!(node_txn[1].clone().input[0].witness.last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT);
-
-		timeout_tx = node_txn[2].clone();
-		node_txn.clear();
-	}
+	check_closed_event(&nodes[1], 1, ClosureReason::CommitmentTxConfirmed, false);
+	connect_blocks(&nodes[1], 200 - nodes[2].best_block_info().1);
+	let timeout_tx = {
+		let mut txn = nodes[1].tx_broadcaster.txn_broadcast();
+		if nodes[1].connect_style.borrow().skips_blocks() {
+			assert_eq!(txn.len(), 1);
+		} else {
+			assert_eq!(txn.len(), 2); // Extra rebroadcast of timeout transaction
+		}
+		check_spends!(txn[0], commitment_tx[0]);
+		assert_eq!(txn[0].clone().input[0].witness.last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT);
+		txn.remove(0)
+	};
 
 	mine_transaction(&nodes[1], &timeout_tx);
 	check_added_monitors!(nodes[1], 1);
@@ -7312,17 +7320,21 @@ fn test_bump_penalty_txn_on_revoked_htlcs() {
 	check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed);
 	connect_blocks(&nodes[1], 49); // Confirm blocks until the HTLC expires (note CLTV was explicitly 50 above)
 
-	let revoked_htlc_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
-	assert_eq!(revoked_htlc_txn.len(), 2);
+	let revoked_htlc_txn = {
+		let txn = nodes[1].tx_broadcaster.unique_txn_broadcast();
+		assert_eq!(txn.len(), 2);
 
-	assert_eq!(revoked_htlc_txn[0].input[0].witness.last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT);
-	assert_eq!(revoked_htlc_txn[0].input.len(), 1);
-	check_spends!(revoked_htlc_txn[0], revoked_local_txn[0]);
+		assert_eq!(txn[0].input[0].witness.last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT);
+		assert_eq!(txn[0].input.len(), 1);
+		check_spends!(txn[0], revoked_local_txn[0]);
 
-	assert_eq!(revoked_htlc_txn[1].input.len(), 1);
-	assert_eq!(revoked_htlc_txn[1].input[0].witness.last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT);
-	assert_eq!(revoked_htlc_txn[1].output.len(), 1);
-	check_spends!(revoked_htlc_txn[1], revoked_local_txn[0]);
+		assert_eq!(txn[1].input.len(), 1);
+		assert_eq!(txn[1].input[0].witness.last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT);
+		assert_eq!(txn[1].output.len(), 1);
+		check_spends!(txn[1], revoked_local_txn[0]);
+
+		txn
+	};
 
 	// Broadcast set of revoked txn on A
 	let hash_128 = connect_blocks(&nodes[0], 40);
@@ -8494,11 +8506,11 @@ fn test_concurrent_monitor_claim() {
 	watchtower_alice.chain_monitor.block_connected(&block, CHAN_CONFIRM_DEPTH + 1 + TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS);
 
 	// Watchtower Alice should have broadcast a commitment/HTLC-timeout
-	{
-		let mut txn = chanmon_cfgs[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
+	let alice_state = {
+		let mut txn = chanmon_cfgs[0].tx_broadcaster.txn_broadcast();
 		assert_eq!(txn.len(), 2);
-		txn.clear();
-	}
+		txn.remove(0)
+	};
 
 	// Copy ChainMonitor to simulate watchtower Bob and make it receive a commitment update first.
 	let chain_source = test_utils::TestChainSource::new(Network::Testnet);
@@ -8549,19 +8561,21 @@ fn test_concurrent_monitor_claim() {
 	// Watchtower Bob should have broadcast a commitment/HTLC-timeout
 	let bob_state_y;
 	{
-		let mut txn = chanmon_cfgs[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
+		let mut txn = chanmon_cfgs[0].tx_broadcaster.txn_broadcast();
 		assert_eq!(txn.len(), 2);
-		bob_state_y = txn[0].clone();
-		txn.clear();
+		bob_state_y = txn.remove(0);
 	};
 
 	// We confirm Bob's state Y on Alice, she should broadcast a HTLC-timeout
 	let header = BlockHeader { version: 0x20000000, prev_blockhash: BlockHash::all_zeros(), merkle_root: TxMerkleNode::all_zeros(), time: 42, bits: 42, nonce: 42 };
 	watchtower_alice.chain_monitor.block_connected(&Block { header, txdata: vec![bob_state_y.clone()] }, CHAN_CONFIRM_DEPTH + 2 + TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS);
 	{
-		let htlc_txn = chanmon_cfgs[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
-		assert_eq!(htlc_txn.len(), 1);
+		let htlc_txn = chanmon_cfgs[0].tx_broadcaster.txn_broadcast();
+		assert_eq!(htlc_txn.len(), 2);
 		check_spends!(htlc_txn[0], bob_state_y);
+		// Alice doesn't clean up the old HTLC claim since it hasn't seen a conflicting spend for
+		// it. However, she should, because it now has an invalid parent.
+		check_spends!(htlc_txn[1], alice_state);
 	}
 }
 
