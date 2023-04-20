@@ -2991,9 +2991,9 @@ fn do_test_htlc_on_chain_timeout(connect_style: ConnectStyle) {
 		if nodes[1].connect_style.borrow().skips_blocks() {
 			assert_eq!(txn.len(), 1);
 		} else {
-			assert_eq!(txn.len(), 2); // Extra rebroadcast of timeout transaction
+			assert_eq!(txn.len(), 3); // Two extra fee bumps for timeout transaction
 		}
-		check_spends!(txn[0], commitment_tx[0]);
+		txn.iter().for_each(|tx| check_spends!(tx, commitment_tx[0]));
 		assert_eq!(txn[0].clone().input[0].witness.last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT);
 		txn.remove(0)
 	};
@@ -7510,7 +7510,7 @@ fn test_bump_penalty_txn_on_remote_commitment() {
 	assert_ne!(feerate_preimage, 0);
 
 	// After exhaustion of height timer, new bumped claim txn should have been broadcast, check it
-	connect_blocks(&nodes[1], 15);
+	connect_blocks(&nodes[1], 1);
 	{
 		let mut node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
 		assert_eq!(node_txn.len(), 1);

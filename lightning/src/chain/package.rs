@@ -762,16 +762,23 @@ impl PackageTemplate {
 	/// Returns value in satoshis to be included as package outgoing output amount and feerate
 	/// which was used to generate the value. Will not return less than `dust_limit_sats` for the
 	/// value.
-	pub(crate) fn compute_package_output<F: Deref, L: Deref>(&self, predicted_weight: usize, dust_limit_sats: u64, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L) -> Option<(u64, u64)>
-		where F::Target: FeeEstimator,
-		      L::Target: Logger,
+	pub(crate) fn compute_package_output<F: Deref, L: Deref>(
+		&self, predicted_weight: usize, dust_limit_sats: u64, force_feerate_bump: bool,
+		fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
+	) -> Option<(u64, u64)>
+	where
+		F::Target: FeeEstimator,
+		L::Target: Logger,
 	{
 		debug_assert!(self.malleability == PackageMalleability::Malleable, "The package output is fixed for non-malleable packages");
 		let input_amounts = self.package_amount();
 		assert!(dust_limit_sats as i64 > 0, "Output script must be broadcastable/have a 'real' dust limit.");
 		// If old feerate is 0, first iteration of this claim, use normal fee calculation
 		if self.feerate_previous != 0 {
-			if let Some((new_fee, feerate)) = feerate_bump(predicted_weight, input_amounts, self.feerate_previous, fee_estimator, logger) {
+			if let Some((new_fee, feerate)) = feerate_bump(
+				predicted_weight, input_amounts, self.feerate_previous, force_feerate_bump,
+				fee_estimator, logger,
+			) {
 				return Some((cmp::max(input_amounts as i64 - new_fee as i64, dust_limit_sats as i64) as u64, feerate));
 			}
 		} else {
@@ -784,16 +791,19 @@ impl PackageTemplate {
 
 	#[cfg(anchors)]
 	/// Computes a feerate based on the given confirmation target. If a previous feerate was used,
-	/// and the new feerate is below it, we'll use a 25% increase of the previous feerate instead of
-	/// the new one.
+	/// the new feerate is below it, and `force_feerate_bump` is set, we'll use a 25% increase of
+	/// the previous feerate instead of the new feerate.
 	pub(crate) fn compute_package_feerate<F: Deref>(
 		&self, fee_estimator: &LowerBoundedFeeEstimator<F>, conf_target: ConfirmationTarget,
+		force_feerate_bump: bool,
 	) -> u32 where F::Target: FeeEstimator {
 		let feerate_estimate = fee_estimator.bounded_sat_per_1000_weight(conf_target);
 		if self.feerate_previous != 0 {
 			// If old feerate inferior to actual one given back by Fee Estimator, use it to compute new fee...
 			if feerate_estimate as u64 > self.feerate_previous {
 				feerate_estimate
+			} else if !force_feerate_bump {
+				self.feerate_previous.try_into().unwrap_or(u32::max_value())
 			} else {
 				// ...else just increase the previous feerate by 25% (because that's a nice number)
 				(self.feerate_previous + (self.feerate_previous / 4)).try_into().unwrap_or(u32::max_value())
@@ -945,31 +955,46 @@ fn compute_fee_from_spent_amounts<F: Deref, L: Deref>(input_amounts: u64, predic
 
 /// Attempt to propose a bumping fee for a transaction from its spent output's values and predicted
 /// weight. If feerates proposed by the fee-estimator have been increasing since last fee-bumping
-/// attempt, use them. Otherwise, blindly bump the feerate by 25% of the previous feerate. We also
-/// verify that those bumping heuristics respect BIP125 rules 3) and 4) and if required adjust
-/// the new fee to meet the RBF policy requirement.
-fn feerate_bump<F: Deref, L: Deref>(predicted_weight: usize, input_amounts: u64, previous_feerate: u64, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L) -> Option<(u64, u64)>
-	where F::Target: FeeEstimator,
-	      L::Target: Logger,
+/// attempt, use them. If `force_feerate_bump` is set, we bump the feerate by 25% of the previous
+/// feerate, or just use the previous feerate otherwise. If a feerate bump did happen, we also
+/// verify that those bumping heuristics respect BIP125 rules 3) and 4) and if required adjust the
+/// new fee to meet the RBF policy requirement.
+fn feerate_bump<F: Deref, L: Deref>(
+	predicted_weight: usize, input_amounts: u64, previous_feerate: u64, force_feerate_bump: bool,
+	fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
+) -> Option<(u64, u64)>
+where
+	F::Target: FeeEstimator,
+	L::Target: Logger,
 {
 	// If old feerate inferior to actual one given back by Fee Estimator, use it to compute new fee...
-	let new_fee = if let Some((new_fee, _)) = compute_fee_from_spent_amounts(input_amounts, predicted_weight, fee_estimator, logger) {
-		let updated_feerate = new_fee / (predicted_weight as u64 * 1000);
-		if updated_feerate > previous_feerate {
-			new_fee
+	let (new_fee, new_feerate) = if let Some((new_fee, new_feerate)) = compute_fee_from_spent_amounts(input_amounts, predicted_weight, fee_estimator, logger) {
+		if new_feerate > previous_feerate {
+			(new_fee, new_feerate)
+		} else if !force_feerate_bump {
+			let previous_fee = previous_feerate * (predicted_weight as u64) / 1000;
+			(previous_fee, previous_feerate)
 		} else {
 			// ...else just increase the previous feerate by 25% (because that's a nice number)
-			let new_fee = previous_feerate * (predicted_weight as u64) / 750;
-			if input_amounts <= new_fee {
+			let bumped_feerate = previous_feerate + (previous_feerate / 4);
+			let bumped_fee = bumped_feerate * (predicted_weight as u64) / 1000;
+			if input_amounts <= bumped_fee {
 				log_warn!(logger, "Can't 25% bump new claiming tx, amount {} is too small", input_amounts);
 				return None;
 			}
-			new_fee
+			(bumped_fee, bumped_feerate)
 		}
 	} else {
 		log_warn!(logger, "Can't new-estimation bump new claiming tx, amount {} is too small", input_amounts);
 		return None;
 	};
+
+	// Our feerates should never decrease. If it hasn't changed though, we just need to
+	// rebroadcast/re-sign the previous claim.
+	debug_assert!(new_feerate >= previous_feerate);
+	if new_feerate == previous_feerate {
+		return Some((new_fee, new_feerate));
+	}
 
 	let previous_fee = previous_feerate * (predicted_weight as u64) / 1000;
 	let min_relay_fee = MIN_RELAY_FEE_SAT_PER_1000_WEIGHT * (predicted_weight as u64) / 1000;
