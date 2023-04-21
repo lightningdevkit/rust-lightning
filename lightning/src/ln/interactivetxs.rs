@@ -20,6 +20,7 @@ const MAX_RECEIVED_TX_ADD_INPUT_COUNT: u16 = 4096;
 /// The number of received `tx_add_output` messages during a negotiation at which point the
 /// negotiation MUST be failed.
 const MAX_RECEIVED_TX_ADD_OUTPUT_COUNT: u16 = 4096;
+const MAX_MONEY: u64 = 2_100_000_000_000_000;
 
 type SerialId = u64;
 trait SerialIdExt {
@@ -38,6 +39,7 @@ pub(crate) enum InteractiveTxConstructionError {
 	SerialIdUnknown,
 	DuplicateSerialId,
 	PrevTxOutInvalid,
+	ExceedMaxiumSatsAllowed,
 }
 
 // States
@@ -200,6 +202,13 @@ impl<S> InteractiveTxConstructor<S>
 			//  - MUST fail the negotiation if:
 			//     - if has received 4096 `tx_add_output` messages during this negotiation
 			return self.fail_negotiation(InteractiveTxConstructionError::ReceivedTooManyTxAddOutputs);
+		}
+
+		if output.value > MAX_MONEY {
+			// The receiving node:
+			// - MUST fail the negotiation if:
+			//		- the sats amount is greater than 2,100,000,000,000,000 (MAX_MONEY)
+			return self.fail_negotiation(InteractiveTxConstructionError::ExceedMaxiumSatsAllowed);
 		}
 
 		if let None = self.inner.outputs.insert(serial_id, output) {
