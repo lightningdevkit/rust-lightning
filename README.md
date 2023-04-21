@@ -94,7 +94,7 @@ In general, `rust-lightning` does not provide (but LDK has implementations of):
   wanted to run your full Lightning node on a hardware wallet, you could, by
   piping the Lightning network messages over USB/serial and then sending them in
   a TCP socket from another machine.
-* private keys - again we have "default implementations", but users can chose to
+* private keys - again we have "default implementations", but users can choose to
   provide private keys to RL/LDK in any way they wish following a simple API. We
   even support a generic API for signing transactions, allowing users to run
   RL/LDK without any private keys in memory/putting private keys only on
