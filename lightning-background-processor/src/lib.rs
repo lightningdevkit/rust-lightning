@@ -1485,10 +1485,9 @@ mod tests {
 				})
 			}, false,
 		);
-		// TODO: Drop _local and simply spawn after #2003
-		let local_set = tokio::task::LocalSet::new();
-		local_set.spawn_local(bp_future);
-		local_set.spawn_local(async move {
+
+		let t1 = tokio::spawn(bp_future);
+		let t2 = tokio::spawn(async move {
 			do_test_not_pruning_network_graph_until_graph_sync_completion!(nodes, {
 				let mut i = 0;
 				loop {
@@ -1500,7 +1499,9 @@ mod tests {
 			}, tokio::time::sleep(Duration::from_millis(1)).await);
 			exit_sender.send(()).unwrap();
 		});
-		local_set.await;
+		let (r1, r2) = tokio::join!(t1, t2);
+		r1.unwrap().unwrap();
+		r2.unwrap()
 	}
 
 	macro_rules! do_test_payment_path_scoring {
@@ -1654,13 +1655,14 @@ mod tests {
 				})
 			}, false,
 		);
-		// TODO: Drop _local and simply spawn after #2003
-		let local_set = tokio::task::LocalSet::new();
-		local_set.spawn_local(bp_future);
-		local_set.spawn_local(async move {
+		let t1 = tokio::spawn(bp_future);
+		let t2 = tokio::spawn(async move {
 			do_test_payment_path_scoring!(nodes, receiver.recv().await);
 			exit_sender.send(()).unwrap();
 		});
-		local_set.await;
+
+		let (r1, r2) = tokio::join!(t1, t2);
+		r1.unwrap().unwrap();
+		r2.unwrap()
 	}
 }
