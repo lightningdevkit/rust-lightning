@@ -1036,8 +1036,10 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner> OnchainTxHandler<ChannelSigner>
 			}
 		}
 		for ((_package_id, _), ref mut request) in bump_candidates.iter_mut() {
+			// `height` is the height being disconnected, so our `current_height` is 1 lower.
+			let current_height = height - 1;
 			if let Some((new_timer, new_feerate, bump_claim)) = self.generate_claim(
-				height, &request, true /* force_feerate_bump */, fee_estimator, &&*logger
+				current_height, &request, true /* force_feerate_bump */, fee_estimator, &&*logger
 			) {
 				request.set_timer(new_timer);
 				request.set_feerate(new_feerate);
