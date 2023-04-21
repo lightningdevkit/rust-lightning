@@ -1467,6 +1467,27 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 	pub fn current_best_block(&self) -> BestBlock {
 		self.inner.lock().unwrap().best_block.clone()
 	}
+
+	/// Triggers rebroadcasts/fee-bumps of pending claims from a force-closed channel. This is
+	/// crucial in preventing certain classes of pinning attacks, detecting substantial mempool
+	/// feerate changes between blocks, and ensuring reliability if broadcasting fails. We recommend
+	/// invoking this every 30 seconds, or lower if running in an environment with spotty
+	/// connections, like on mobile.
+	pub fn rebroadcast_pending_claims<B: Deref, F: Deref, L: Deref>(
+		&self, broadcaster: B, fee_estimator: F, logger: L,
+	)
+	where
+		B::Target: BroadcasterInterface,
+		F::Target: FeeEstimator,
+		L::Target: Logger,
+	{
+		let fee_estimator = LowerBoundedFeeEstimator::new(fee_estimator);
+		let mut inner = self.inner.lock().unwrap();
+		let current_height = inner.best_block.height;
+		inner.onchain_tx_handler.rebroadcast_pending_claims(
+			current_height, &broadcaster, &fee_estimator, &logger,
+		);
+	}
 }
 
 impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {

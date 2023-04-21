@@ -64,8 +64,8 @@ use alloc::vec::Vec;
 /// * Monitoring whether the [`ChannelManager`] needs to be re-persisted to disk, and if so,
 ///   writing it to disk/backups by invoking the callback given to it at startup.
 ///   [`ChannelManager`] persistence should be done in the background.
-/// * Calling [`ChannelManager::timer_tick_occurred`] and [`PeerManager::timer_tick_occurred`]
-///   at the appropriate intervals.
+/// * Calling [`ChannelManager::timer_tick_occurred`], [`ChainMonitor::rebroadcast_pending_claims`]
+///   and [`PeerManager::timer_tick_occurred`] at the appropriate intervals.
 /// * Calling [`NetworkGraph::remove_stale_channels_and_tracking`] (if a [`GossipSync`] with a
 ///   [`NetworkGraph`] is provided to [`BackgroundProcessor::start`]).
 ///
@@ -116,12 +116,17 @@ const FIRST_NETWORK_PRUNE_TIMER: u64 = 60;
 #[cfg(test)]
 const FIRST_NETWORK_PRUNE_TIMER: u64 = 1;
 
+#[cfg(not(test))]
+const REBROADCAST_TIMER: u64 = 30;
+#[cfg(test)]
+const REBROADCAST_TIMER: u64 = 1;
+
 #[cfg(feature = "futures")]
 /// core::cmp::min is not currently const, so we define a trivial (and equivalent) replacement
 const fn min_u64(a: u64, b: u64) -> u64 { if a < b { a } else { b } }
 #[cfg(feature = "futures")]
 const FASTEST_TIMER: u64 = min_u64(min_u64(FRESHNESS_TIMER, PING_TIMER),
-	min_u64(SCORER_PERSIST_TIMER, FIRST_NETWORK_PRUNE_TIMER));
+	min_u64(SCORER_PERSIST_TIMER, min_u64(FIRST_NETWORK_PRUNE_TIMER, REBROADCAST_TIMER)));
 
 /// Either [`P2PGossipSync`] or [`RapidGossipSync`].
 pub enum GossipSync<
@@ -270,11 +275,14 @@ macro_rules! define_run_body {
 	=> { {
 		log_trace!($logger, "Calling ChannelManager's timer_tick_occurred on startup");
 		$channel_manager.timer_tick_occurred();
+		log_trace!($logger, "Rebroadcasting monitor's pending claims on startup");
+		$chain_monitor.rebroadcast_pending_claims();
 
 		let mut last_freshness_call = $get_timer(FRESHNESS_TIMER);
 		let mut last_ping_call = $get_timer(PING_TIMER);
 		let mut last_prune_call = $get_timer(FIRST_NETWORK_PRUNE_TIMER);
 		let mut last_scorer_persist_call = $get_timer(SCORER_PERSIST_TIMER);
+		let mut last_rebroadcast_call = $get_timer(REBROADCAST_TIMER);
 		let mut have_pruned = false;
 
 		loop {
@@ -371,6 +379,12 @@ macro_rules! define_run_body {
 					}
 				}
 				last_scorer_persist_call = $get_timer(SCORER_PERSIST_TIMER);
+			}
+
+			if $timer_elapsed(&mut last_rebroadcast_call, REBROADCAST_TIMER) {
+				log_trace!($logger, "Rebroadcasting monitor's pending claims");
+				$chain_monitor.rebroadcast_pending_claims();
+				last_rebroadcast_call = $get_timer(REBROADCAST_TIMER);
 			}
 		}
 
@@ -1189,8 +1203,9 @@ mod tests {
 
 	#[test]
 	fn test_timer_tick_called() {
-		// Test that ChannelManager's and PeerManager's `timer_tick_occurred` is called every
-		// `FRESHNESS_TIMER`.
+		// Test that `ChannelManager::timer_tick_occurred` is called every `FRESHNESS_TIMER`,
+		// `ChainMonitor::rebroadcast_pending_claims` is called every `REBROADCAST_TIMER`, and
+		// `PeerManager::timer_tick_occurred` every `PING_TIMER`.
 		let nodes = create_nodes(1, "test_timer_tick_called".to_string());
 		let data_dir = nodes[0].persister.get_data_dir();
 		let persister = Arc::new(Persister::new(data_dir));
@@ -1198,10 +1213,12 @@ mod tests {
 		let bg_processor = BackgroundProcessor::start(persister, event_handler, nodes[0].chain_monitor.clone(), nodes[0].node.clone(), nodes[0].no_gossip_sync(), nodes[0].peer_manager.clone(), nodes[0].logger.clone(), Some(nodes[0].scorer.clone()));
 		loop {
 			let log_entries = nodes[0].logger.lines.lock().unwrap();
-			let desired_log = "Calling ChannelManager's timer_tick_occurred".to_string();
-			let second_desired_log = "Calling PeerManager's timer_tick_occurred".to_string();
-			if log_entries.get(&("lightning_background_processor".to_string(), desired_log)).is_some() &&
-					log_entries.get(&("lightning_background_processor".to_string(), second_desired_log)).is_some() {
+			let desired_log_1 = "Calling ChannelManager's timer_tick_occurred".to_string();
+			let desired_log_2 = "Calling PeerManager's timer_tick_occurred".to_string();
+			let desired_log_3 = "Rebroadcasting monitor's pending claims".to_string();
+			if log_entries.get(&("lightning_background_processor".to_string(), desired_log_1)).is_some() &&
+				log_entries.get(&("lightning_background_processor".to_string(), desired_log_2)).is_some() &&
+				log_entries.get(&("lightning_background_processor".to_string(), desired_log_3)).is_some() {
 				break
 			}
 		}
