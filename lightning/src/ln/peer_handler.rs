@@ -2103,7 +2103,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 						if let Some((node_id, _)) = peer.their_node_id {
 							self.node_id_to_descriptor.lock().unwrap().remove(&node_id);
 						}
-						self.do_disconnect(descriptor, &*peer, "ping timeout");
+						self.do_disconnect(descriptor, &*peer, "ping/handshake timeout");
 					}
 				}
 			}
