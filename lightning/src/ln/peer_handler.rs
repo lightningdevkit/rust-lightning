@@ -1056,7 +1056,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 		match self.do_read_event(peer_descriptor, data) {
 			Ok(res) => Ok(res),
 			Err(e) => {
-				log_trace!(self.logger, "Peer sent invalid data or we decided to disconnect due to a protocol error");
+				log_trace!(self.logger, "Disconnecting peer due to a protocol error (usually a duplicate connection).");
 				self.disconnect_event_internal(peer_descriptor);
 				Err(e)
 			}
