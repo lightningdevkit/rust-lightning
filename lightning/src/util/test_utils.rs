@@ -308,8 +308,15 @@ pub struct TestBroadcaster {
 }
 
 impl TestBroadcaster {
-	pub fn new(blocks: Arc<Mutex<Vec<(Block, u32)>>>) -> TestBroadcaster {
-		TestBroadcaster { txn_broadcasted: Mutex::new(Vec::new()), blocks }
+	pub fn new(network: Network) -> Self {
+		Self {
+			txn_broadcasted: Mutex::new(Vec::new()),
+			blocks: Arc::new(Mutex::new(vec![(genesis_block(network), 0)])),
+		}
+	}
+
+	pub fn with_blocks(blocks: Arc<Mutex<Vec<(Block, u32)>>>) -> Self {
+		Self { txn_broadcasted: Mutex::new(Vec::new()), blocks }
 	}
 
 	pub fn txn_broadcast(&self) -> Vec<Transaction> {
@@ -328,7 +335,7 @@ impl chaininterface::BroadcasterInterface for TestBroadcaster {
 	fn broadcast_transaction(&self, tx: &Transaction) {
 		let lock_time = tx.lock_time.0;
 		assert!(lock_time < 1_500_000_000);
-		if lock_time > self.blocks.lock().unwrap().len() as u32 + 1 && lock_time < 500_000_000 {
+		if bitcoin::LockTime::from(tx.lock_time).is_block_height() && lock_time > self.blocks.lock().unwrap().last().unwrap().1 {
 			for inp in tx.input.iter() {
 				if inp.sequence != Sequence::MAX {
 					panic!("We should never broadcast a transaction before its locktime ({})!", tx.lock_time);

@@ -748,8 +748,8 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner> OnchainTxHandler<ChannelSigner>
 			preprocessed_requests.push(req);
 		}
 
-		// Claim everything up to and including cur_height + 1
-		let remaining_locked_packages = self.locktimed_packages.split_off(&(cur_height + 2));
+		// Claim everything up to and including `cur_height`
+		let remaining_locked_packages = self.locktimed_packages.split_off(&(cur_height + 1));
 		for (pop_height, mut entry) in self.locktimed_packages.iter_mut() {
 			log_trace!(logger, "Restoring delayed claim of package(s) at their timelock at {}.", pop_height);
 			preprocessed_requests.append(&mut entry);
@@ -1036,8 +1036,10 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner> OnchainTxHandler<ChannelSigner>
 			}
 		}
 		for ((_package_id, _), ref mut request) in bump_candidates.iter_mut() {
+			// `height` is the height being disconnected, so our `current_height` is 1 lower.
+			let current_height = height - 1;
 			if let Some((new_timer, new_feerate, bump_claim)) = self.generate_claim(
-				height, &request, true /* force_feerate_bump */, fee_estimator, &&*logger
+				current_height, &request, true /* force_feerate_bump */, fee_estimator, &&*logger
 			) {
 				request.set_timer(new_timer);
 				request.set_feerate(new_feerate);

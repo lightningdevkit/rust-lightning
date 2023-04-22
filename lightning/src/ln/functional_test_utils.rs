@@ -230,6 +230,9 @@ fn do_connect_block<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, block: Block, sk
 	#[cfg(feature = "std")] {
 		eprintln!("Connecting block using Block Connection Style: {:?}", *node.connect_style.borrow());
 	}
+	// Update the block internally before handing it over to LDK, to ensure our assertions regarding
+	// transaction broadcast are correct.
+	node.blocks.lock().unwrap().push((block.clone(), height));
 	if !skip_intermediaries {
 		let txdata: Vec<_> = block.txdata.iter().enumerate().collect();
 		match *node.connect_style.borrow() {
@@ -279,7 +282,6 @@ fn do_connect_block<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, block: Block, sk
 	}
 	call_claimable_balances(node);
 	node.node.test_process_background_events();
-	node.blocks.lock().unwrap().push((block, height));
 }
 
 pub fn disconnect_blocks<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, count: u32) {
@@ -2435,10 +2437,7 @@ pub fn fail_payment<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_path: &
 pub fn create_chanmon_cfgs(node_count: usize) -> Vec<TestChanMonCfg> {
 	let mut chan_mon_cfgs = Vec::new();
 	for i in 0..node_count {
-		let tx_broadcaster = test_utils::TestBroadcaster {
-			txn_broadcasted: Mutex::new(Vec::new()),
-			blocks: Arc::new(Mutex::new(vec![(genesis_block(Network::Testnet), 0)])),
-		};
+		let tx_broadcaster = test_utils::TestBroadcaster::new(Network::Testnet);
 		let fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) };
 		let chain_source = test_utils::TestChainSource::new(Network::Testnet);
 		let logger = test_utils::TestLogger::with_id(format!("node {}", i));

@@ -3026,10 +3026,11 @@ where
 		}
 		{
 			let height = self.best_block.read().unwrap().height();
-			// Transactions are evaluated as final by network mempools at the next block. However, the modules
-			// constituting our Lightning node might not have perfect sync about their blockchain views. Thus, if
-			// the wallet module is in advance on the LDK view, allow one more block of headroom.
-			if !funding_transaction.input.iter().all(|input| input.sequence == Sequence::MAX) && LockTime::from(funding_transaction.lock_time).is_block_height() && funding_transaction.lock_time.0 > height + 2 {
+			// Transactions are evaluated as final by network mempools if their locktime is strictly
+			// lower than the next block height. However, the modules constituting our Lightning
+			// node might not have perfect sync about their blockchain views. Thus, if the wallet
+			// module is ahead of LDK, only allow one more block of headroom.
+			if !funding_transaction.input.iter().all(|input| input.sequence == Sequence::MAX) && LockTime::from(funding_transaction.lock_time).is_block_height() && funding_transaction.lock_time.0 > height + 1 {
 				return Err(APIError::APIMisuseError {
 					err: "Funding transaction absolute timelock is non-final".to_owned()
 				});
@@ -9054,7 +9055,7 @@ pub mod bench {
 		// calls per node.
 		let network = bitcoin::Network::Testnet;
 
-		let tx_broadcaster = test_utils::TestBroadcaster{txn_broadcasted: Mutex::new(Vec::new()), blocks: Arc::new(Mutex::new(Vec::new()))};
+		let tx_broadcaster = test_utils::TestBroadcaster::new(network);
 		let fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) };
 		let logger_a = test_utils::TestLogger::with_id("node a".to_owned());
 		let scorer = Mutex::new(test_utils::TestScorer::new());

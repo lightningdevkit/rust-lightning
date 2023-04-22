@@ -103,7 +103,7 @@ fn do_test_onchain_htlc_reorg(local_commitment: bool, claim: bool) {
 
 		// Give node 1 node 2's commitment transaction and get its response (timing the HTLC out)
 		mine_transaction(&nodes[1], &node_2_commitment_txn[0]);
-		connect_blocks(&nodes[1], TEST_FINAL_CLTV - 1); // Confirm blocks until the HTLC expires
+		connect_blocks(&nodes[1], TEST_FINAL_CLTV); // Confirm blocks until the HTLC expires
 		let node_1_commitment_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().clone();
 		assert_eq!(node_1_commitment_txn.len(), 1); // ChannelMonitor: 1 offered HTLC-Timeout
 		check_spends!(node_1_commitment_txn[0], node_2_commitment_txn[0]);

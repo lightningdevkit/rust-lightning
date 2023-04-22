@@ -497,7 +497,7 @@ fn do_test_claim_value_force_close(prev_commitment_tx: bool) {
 		nodes[0].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances());
 
 	// When the HTLC timeout output is spendable in the next block, A should broadcast it
-	connect_blocks(&nodes[0], htlc_cltv_timeout - nodes[0].best_block_info().1 - 1);
+	connect_blocks(&nodes[0], htlc_cltv_timeout - nodes[0].best_block_info().1);
 	let a_broadcast_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 	assert_eq!(a_broadcast_txn.len(), 2);
 	assert_eq!(a_broadcast_txn[0].input.len(), 1);
@@ -887,7 +887,7 @@ fn test_no_preimage_inbound_htlc_balances() {
 	// HTLC has been spent, even after the HTLC expires. We'll also fail the inbound HTLC, but it
 	// won't do anything as the channel is already closed.
 
-	connect_blocks(&nodes[0], TEST_FINAL_CLTV - 1);
+	connect_blocks(&nodes[0], TEST_FINAL_CLTV);
 	let as_htlc_timeout_claim = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 	assert_eq!(as_htlc_timeout_claim.len(), 1);
 	check_spends!(as_htlc_timeout_claim[0], as_txn[0]);
@@ -908,7 +908,7 @@ fn test_no_preimage_inbound_htlc_balances() {
 
 	// The next few blocks for B look the same as for A, though for the opposite HTLC
 	nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().clear();
-	connect_blocks(&nodes[1], TEST_FINAL_CLTV - (ANTI_REORG_DELAY - 1) - 1);
+	connect_blocks(&nodes[1], TEST_FINAL_CLTV - (ANTI_REORG_DELAY - 1));
 	expect_pending_htlcs_forwardable_conditions!(nodes[1],
 		[HTLCDestination::FailedPayment { payment_hash: to_b_failed_payment_hash }]);
 	let bs_htlc_timeout_claim = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
@@ -1734,7 +1734,7 @@ fn do_test_restored_packages_retry(check_old_monitor_retries_after_upgrade: bool
 	mine_transaction(&nodes[0], &commitment_tx);
 
 	// Connect blocks until the HTLC's expiration is met, expecting a transaction broadcast.
-	connect_blocks(&nodes[0], TEST_FINAL_CLTV - 1);
+	connect_blocks(&nodes[0], TEST_FINAL_CLTV);
 	let htlc_timeout_tx = {
 		let mut txn = nodes[0].tx_broadcaster.txn_broadcast();
 		assert_eq!(txn.len(), 1);
@@ -1885,7 +1885,7 @@ fn do_test_monitor_rebroadcast_pending_claims(anchors: bool) {
 	};
 
 	// Connect blocks up to one before the HTLC expires. This should not result in a claim/retry.
-	connect_blocks(&nodes[0], htlc_expiry - nodes[0].best_block_info().1 - 2);
+	connect_blocks(&nodes[0], htlc_expiry - nodes[0].best_block_info().1 - 1);
 	check_htlc_retry(false, false);
 
 	// Connect one more block, producing our first claim.
