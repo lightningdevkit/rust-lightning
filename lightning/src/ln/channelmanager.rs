@@ -1854,6 +1854,10 @@ where
 	/// Raises [`APIError::APIMisuseError`] when `channel_value_satoshis` > 2**24 or `push_msat` is
 	/// greater than `channel_value_satoshis * 1k` or `channel_value_satoshis < 1000`.
 	///
+	/// Raises [`APIError::ChannelUnavailable`] if the channel cannot be opened due to failing to
+	/// generate a shutdown scriptpubkey or destination script set by
+	/// [`SignerProvider::get_shutdown_scriptpubkey`] or [`SignerProvider::get_destination_script`].
+	///
 	/// Note that we do not check if you are currently connected to the given peer. If no
 	/// connection is available, the outbound `open_channel` message may fail to send, resulting in
 	/// the channel eventually being silently forgotten (dropped on reload).
@@ -2098,6 +2102,11 @@ where
 	///
 	/// May generate a [`SendShutdown`] message event on success, which should be relayed.
 	///
+	/// Raises [`APIError::ChannelUnavailable`] if the channel cannot be closed due to failing to
+	/// generate a shutdown scriptpubkey or destination script set by
+	/// [`SignerProvider::get_shutdown_scriptpubkey`]. A force-closure may be needed to close the
+	/// channel.
+	///
 	/// [`ChannelConfig::force_close_avoidance_max_fee_satoshis`]: crate::util::config::ChannelConfig::force_close_avoidance_max_fee_satoshis
 	/// [`Background`]: crate::chain::chaininterface::ConfirmationTarget::Background
 	/// [`Normal`]: crate::chain::chaininterface::ConfirmationTarget::Normal
@@ -2121,6 +2130,11 @@ where
 	///    will appear on a force-closure transaction, whichever is lower).
 	///
 	/// May generate a [`SendShutdown`] message event on success, which should be relayed.
+	///
+	/// Raises [`APIError::ChannelUnavailable`] if the channel cannot be closed due to failing to
+	/// generate a shutdown scriptpubkey or destination script set by
+	/// [`SignerProvider::get_shutdown_scriptpubkey`]. A force-closure may be needed to close the
+	/// channel.
 	///
 	/// [`ChannelConfig::force_close_avoidance_max_fee_satoshis`]: crate::util::config::ChannelConfig::force_close_avoidance_max_fee_satoshis
 	/// [`Background`]: crate::chain::chaininterface::ConfirmationTarget::Background
