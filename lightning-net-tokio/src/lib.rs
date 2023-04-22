@@ -189,7 +189,7 @@ impl Connection {
 			// our timeslice to another task we may just spin on this peer, starving other peers
 			// and eventually disconnecting them for ping timeouts. Instead, we explicitly yield
 			// here.
-			tokio::task::yield_now().await;
+			let _ = tokio::task::yield_now().await;
 		};
 		let writer_option = us.lock().unwrap().writer.take();
 		if let Some(mut writer) = writer_option {

@@ -72,7 +72,7 @@ use core::{cmp, mem};
 use core::cell::RefCell;
 use crate::io::Read;
 use crate::sync::{Arc, Mutex, RwLock, RwLockReadGuard, FairRwLock, LockTestExt, LockHeldState};
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicUsize, AtomicBool, Ordering};
 use core::time::Duration;
 use core::ops::Deref;
 
@@ -934,6 +934,8 @@ where
 
 	/// See `ChannelManager` struct-level documentation for lock order requirements.
 	pending_events: Mutex<Vec<events::Event>>,
+	/// A simple atomic flag to ensure only one task at a time can be processing events asynchronously.
+	pending_events_processor: AtomicBool,
 	/// See `ChannelManager` struct-level documentation for lock order requirements.
 	pending_background_events: Mutex<Vec<BackgroundEvent>>,
 	/// Used when we have to take a BIG lock to make sure everything is self-consistent.
@@ -1696,30 +1698,47 @@ macro_rules! handle_new_monitor_update {
 
 macro_rules! process_events_body {
 	($self: expr, $event_to_handle: expr, $handle_event: expr) => {
-		// We'll acquire our total consistency lock until the returned future completes so that
-		// we can be sure no other persists happen while processing events.
-		let _read_guard = $self.total_consistency_lock.read().unwrap();
+		let mut processed_all_events = false;
+		while !processed_all_events {
+			if $self.pending_events_processor.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
+				return;
+			}
 
-		let mut result = NotifyOption::SkipPersist;
+			let mut result = NotifyOption::SkipPersist;
 
-		// TODO: This behavior should be documented. It's unintuitive that we query
-		// ChannelMonitors when clearing other events.
-		if $self.process_pending_monitor_events() {
-			result = NotifyOption::DoPersist;
-		}
+			{
+				// We'll acquire our total consistency lock so that we can be sure no other
+				// persists happen while processing monitor events.
+				let _read_guard = $self.total_consistency_lock.read().unwrap();
 
-		let pending_events = mem::replace(&mut *$self.pending_events.lock().unwrap(), vec![]);
-		if !pending_events.is_empty() {
-			result = NotifyOption::DoPersist;
-		}
+				// TODO: This behavior should be documented. It's unintuitive that we query
+				// ChannelMonitors when clearing other events.
+				if $self.process_pending_monitor_events() {
+					result = NotifyOption::DoPersist;
+				}
+			}
 
-		for event in pending_events {
-			$event_to_handle = event;
-			$handle_event;
-		}
+			let pending_events = $self.pending_events.lock().unwrap().clone();
+			let num_events = pending_events.len();
+			if !pending_events.is_empty() {
+				result = NotifyOption::DoPersist;
+			}
 
-		if result == NotifyOption::DoPersist {
-			$self.persistence_notifier.notify();
+			for event in pending_events {
+				$event_to_handle = event;
+				$handle_event;
+			}
+
+			{
+				let mut pending_events = $self.pending_events.lock().unwrap();
+				pending_events.drain(..num_events);
+				processed_all_events = pending_events.is_empty();
+				$self.pending_events_processor.store(false, Ordering::Release);
+			}
+
+			if result == NotifyOption::DoPersist {
+				$self.persistence_notifier.notify();
+			}
 		}
 	}
 }
@@ -1787,6 +1806,7 @@ where
 			per_peer_state: FairRwLock::new(HashMap::new()),
 
 			pending_events: Mutex::new(Vec::new()),
+			pending_events_processor: AtomicBool::new(false),
 			pending_background_events: Mutex::new(Vec::new()),
 			total_consistency_lock: RwLock::new(()),
 			persistence_notifier: Notifier::new(),
@@ -8026,6 +8046,7 @@ where
 			per_peer_state: FairRwLock::new(per_peer_state),
 
 			pending_events: Mutex::new(pending_events_read),
+			pending_events_processor: AtomicBool::new(false),
 			pending_background_events: Mutex::new(pending_background_events),
 			total_consistency_lock: RwLock::new(()),
 			persistence_notifier: Notifier::new(),
@@ -8057,8 +8078,6 @@ mod tests {
 	use bitcoin::hashes::Hash;
 	use bitcoin::hashes::sha256::Hash as Sha256;
 	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
-	#[cfg(feature = "std")]
-	use core::time::Duration;
 	use core::sync::atomic::Ordering;
 	use crate::events::{Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, ClosureReason};
 	use crate::ln::{PaymentPreimage, PaymentHash, PaymentSecret};

@@ -350,7 +350,8 @@ macro_rules! define_run_body {
 			// falling back to our usual hourly prunes. This avoids short-lived clients never
 			// pruning their network graph. We run once 60 seconds after startup before
 			// continuing our normal cadence.
-			if $timer_elapsed(&mut last_prune_call, if have_pruned { NETWORK_PRUNE_TIMER } else { FIRST_NETWORK_PRUNE_TIMER }) {
+			let prune_timer = if have_pruned { NETWORK_PRUNE_TIMER } else { FIRST_NETWORK_PRUNE_TIMER };
+			if $timer_elapsed(&mut last_prune_call, prune_timer) {
 				// The network graph must not be pruned while rapid sync completion is pending
 				if let Some(network_graph) = $gossip_sync.prunable_network_graph() {
 					#[cfg(feature = "std")] {
@@ -368,7 +369,8 @@ macro_rules! define_run_body {
 
 					have_pruned = true;
 				}
-				last_prune_call = $get_timer(NETWORK_PRUNE_TIMER);
+				let prune_timer = if have_pruned { NETWORK_PRUNE_TIMER } else { FIRST_NETWORK_PRUNE_TIMER };
+				last_prune_call = $get_timer(prune_timer);
 			}
 
 			if $timer_elapsed(&mut last_scorer_persist_call, SCORER_PERSIST_TIMER) {
@@ -881,7 +883,10 @@ mod tests {
 
 			if key == "network_graph" {
 				if let Some(sender) = &self.graph_persistence_notifier {
-					sender.send(()).unwrap();
+					match sender.send(()) {
+						Ok(()) => {},
+						Err(std::sync::mpsc::SendError(())) => println!("Persister failed to notify as receiver went away."),
+					}
 				};
 
 				if let Some((error, message)) = self.graph_error {
@@ -1497,10 +1502,9 @@ mod tests {
 				})
 			}, false,
 		);
-		// TODO: Drop _local and simply spawn after #2003
-		let local_set = tokio::task::LocalSet::new();
-		local_set.spawn_local(bp_future);
-		local_set.spawn_local(async move {
+
+		let t1 = tokio::spawn(bp_future);
+		let t2 = tokio::spawn(async move {
 			do_test_not_pruning_network_graph_until_graph_sync_completion!(nodes, {
 				let mut i = 0;
 				loop {
@@ -1512,7 +1516,9 @@ mod tests {
 			}, tokio::time::sleep(Duration::from_millis(1)).await);
 			exit_sender.send(()).unwrap();
 		});
-		local_set.await;
+		let (r1, r2) = tokio::join!(t1, t2);
+		r1.unwrap().unwrap();
+		r2.unwrap()
 	}
 
 	macro_rules! do_test_payment_path_scoring {
@@ -1666,13 +1672,14 @@ mod tests {
 				})
 			}, false,
 		);
-		// TODO: Drop _local and simply spawn after #2003
-		let local_set = tokio::task::LocalSet::new();
-		local_set.spawn_local(bp_future);
-		local_set.spawn_local(async move {
+		let t1 = tokio::spawn(bp_future);
+		let t2 = tokio::spawn(async move {
 			do_test_payment_path_scoring!(nodes, receiver.recv().await);
 			exit_sender.send(()).unwrap();
 		});
-		local_set.await;
+
+		let (r1, r2) = tokio::join!(t1, t2);
+		r1.unwrap().unwrap();
+		r2.unwrap()
 	}
 }
