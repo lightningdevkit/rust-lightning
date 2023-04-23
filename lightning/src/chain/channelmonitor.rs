@@ -621,6 +621,8 @@ pub enum Balance {
 		/// The height at which we will be able to claim the balance if our counterparty has not
 		/// done so.
 		claimable_height: u32,
+		/// The payment hash whose preimage our counterparty needs to claim this HTLC.
+		payment_hash: PaymentHash,
 	},
 	/// HTLCs which we received from our counterparty which are claimable with a preimage which we
 	/// do not currently have. This will only be claimable if we receive the preimage from the node
@@ -1606,6 +1608,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				return Some(Balance::MaybeTimeoutClaimableHTLC {
 					claimable_amount_satoshis: htlc.amount_msat / 1000,
 					claimable_height: htlc.cltv_expiry,
+					payment_hash: htlc.payment_hash,
 				});
 			}
 		} else if let Some(payment_preimage) = self.payment_preimages.get(&htlc.payment_hash) {
@@ -1793,6 +1796,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 					res.push(Balance::MaybeTimeoutClaimableHTLC {
 						claimable_amount_satoshis: htlc.amount_msat / 1000,
 						claimable_height: htlc.cltv_expiry,
+						payment_hash: htlc.payment_hash,
 					});
 				} else if us.payment_preimages.get(&htlc.payment_hash).is_some() {
 					claimable_inbound_htlc_value_sat += htlc.amount_msat / 1000;
