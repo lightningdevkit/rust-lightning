@@ -515,7 +515,7 @@ fn test_unsupported_anysegwit_upfront_shutdown_script() {
 		.into_script();
 
 	// Check script when handling an open_channel message
-	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100000, 10001, 42, None).unwrap();
+	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100000, 10001, 42, None, None).unwrap();
 	let mut open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
 	open_channel.shutdown_scriptpubkey = Present(anysegwit_shutdown_script.clone());
 	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), &open_channel);
@@ -538,7 +538,7 @@ fn test_unsupported_anysegwit_upfront_shutdown_script() {
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	// Check script when handling an accept_channel message
-	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100000, 10001, 42, None).unwrap();
+	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100000, 10001, 42, None, None).unwrap();
 	let open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
 	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), &open_channel);
 	let mut accept_channel = get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id());
@@ -564,7 +564,7 @@ fn test_invalid_upfront_shutdown_script() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
-	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100000, 10001, 42, None).unwrap();
+	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100000, 10001, 42, None, None).unwrap();
 
 	// Use a segwit v0 script with an unsupported witness program
 	let mut open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
@@ -582,6 +582,21 @@ fn test_invalid_upfront_shutdown_script() {
 		},
 		_ => panic!("Unexpected event"),
 	}
+}
+
+fn test_invalid_user_upfront_shutdown_script() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let invalid_script = Builder::new().push_int(0)
+		.push_slice(&[0, 0])
+		.into_script();
+
+	let result = nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100000, 10001, 42, Some(invalid_script), None);
+	assert!(result.is_err());
+	assert_eq!(result.err().unwrap(), APIError::APIMisuseError { err: "Invalid shutdown script provided".to_string() });
 }
 
 #[test]

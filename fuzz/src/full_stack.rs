@@ -557,7 +557,7 @@ pub fn do_test(data: &[u8], logger: &Arc<dyn Logger>) {
 				let their_key = get_pubkey!();
 				let chan_value = slice_to_be24(get_slice!(3)) as u64;
 				let push_msat_value = slice_to_be24(get_slice!(3)) as u64;
-				if channelmanager.create_channel(their_key, chan_value, push_msat_value, 0, None).is_err() { return; }
+				if channelmanager.create_channel(their_key, chan_value, push_msat_value, 0, None, None).is_err() { return; }
 			},
 			6 => {
 				let mut channels = channelmanager.list_channels();
