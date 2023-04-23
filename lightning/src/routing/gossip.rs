@@ -212,7 +212,7 @@ pub enum NetworkUpdate {
 		msg: ChannelUpdate,
 	},
 	/// An error indicating that a channel failed to route a payment, which should be applied via
-	/// [`NetworkGraph::channel_failed`].
+	/// [`NetworkGraph::channel_failed_permanent`] if permanent.
 	ChannelFailure {
 		/// The short channel id of the closed channel.
 		short_channel_id: u64,
@@ -352,9 +352,10 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 				let _ = self.update_channel(msg);
 			},
 			NetworkUpdate::ChannelFailure { short_channel_id, is_permanent } => {
-				let action = if is_permanent { "Removing" } else { "Disabling" };
-				log_debug!(self.logger, "{} channel graph entry for {} due to a payment failure.", action, short_channel_id);
-				self.channel_failed(short_channel_id, is_permanent);
+				if is_permanent {
+					log_debug!(self.logger, "Removing channel graph entry for {} due to a payment failure.", short_channel_id);
+					self.channel_failed_permanent(short_channel_id);
+				}
 			},
 			NetworkUpdate::NodeFailure { ref node_id, is_permanent } => {
 				if is_permanent {
@@ -1632,40 +1633,27 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 		Ok(())
 	}
 
-	/// Marks a channel in the graph as failed if a corresponding HTLC fail was sent.
-	/// If permanent, removes a channel from the local storage.
-	/// May cause the removal of nodes too, if this was their last channel.
-	/// If not permanent, makes channels unavailable for routing.
-	pub fn channel_failed(&self, short_channel_id: u64, is_permanent: bool) {
+	/// Marks a channel in the graph as failed permanently.
+	///
+	/// The channel and any node for which this was their last channel are removed from the graph.
+	pub fn channel_failed_permanent(&self, short_channel_id: u64) {
 		#[cfg(feature = "std")]
 		let current_time_unix = Some(SystemTime::now().duration_since(UNIX_EPOCH).expect("Time must be > 1970").as_secs());
 		#[cfg(not(feature = "std"))]
 		let current_time_unix = None;
 
-		self.channel_failed_with_time(short_channel_id, is_permanent, current_time_unix)
+		self.channel_failed_permanent_with_time(short_channel_id, current_time_unix)
 	}
 
-	/// Marks a channel in the graph as failed if a corresponding HTLC fail was sent.
-	/// If permanent, removes a channel from the local storage.
-	/// May cause the removal of nodes too, if this was their last channel.
-	/// If not permanent, makes channels unavailable for routing.
-	fn channel_failed_with_time(&self, short_channel_id: u64, is_permanent: bool, current_time_unix: Option<u64>) {
+	/// Marks a channel in the graph as failed permanently.
+	///
+	/// The channel and any node for which this was their last channel are removed from the graph.
+	fn channel_failed_permanent_with_time(&self, short_channel_id: u64, current_time_unix: Option<u64>) {
 		let mut channels = self.channels.write().unwrap();
-		if is_permanent {
-			if let Some(chan) = channels.remove(&short_channel_id) {
-				let mut nodes = self.nodes.write().unwrap();
-				self.removed_channels.lock().unwrap().insert(short_channel_id, current_time_unix);
-				Self::remove_channel_in_nodes(&mut nodes, &chan, short_channel_id);
-			}
-		} else {
-			if let Some(chan) = channels.get_mut(&short_channel_id) {
-				if let Some(one_to_two) = chan.one_to_two.as_mut() {
-					one_to_two.enabled = false;
-				}
-				if let Some(two_to_one) = chan.two_to_one.as_mut() {
-					two_to_one.enabled = false;
-				}
-			}
+		if let Some(chan) = channels.remove(&short_channel_id) {
+			let mut nodes = self.nodes.write().unwrap();
+			self.removed_channels.lock().unwrap().insert(short_channel_id, current_time_unix);
+			Self::remove_channel_in_nodes(&mut nodes, &chan, short_channel_id);
 		}
 	}
 
@@ -2450,7 +2438,7 @@ pub(crate) mod tests {
 			assert!(network_graph.read_only().channels().get(&short_channel_id).unwrap().one_to_two.is_some());
 		}
 
-		// Non-permanent closing just disables a channel
+		// Non-permanent failure doesn't touch the channel at all
 		{
 			match network_graph.read_only().channels().get(&short_channel_id) {
 				None => panic!(),
@@ -2467,7 +2455,7 @@ pub(crate) mod tests {
 			match network_graph.read_only().channels().get(&short_channel_id) {
 				None => panic!(),
 				Some(channel_info) => {
-					assert!(!channel_info.one_to_two.as_ref().unwrap().enabled);
+					assert!(channel_info.one_to_two.as_ref().unwrap().enabled);
 				}
 			};
 		}
@@ -2601,7 +2589,7 @@ pub(crate) mod tests {
 
 			// Mark the channel as permanently failed. This will also remove the two nodes
 			// and all of the entries will be tracked as removed.
-			network_graph.channel_failed_with_time(short_channel_id, true, Some(tracking_time));
+			network_graph.channel_failed_permanent_with_time(short_channel_id, Some(tracking_time));
 
 			// Should not remove from tracking if insufficient time has passed
 			network_graph.remove_stale_channels_and_tracking_with_time(
@@ -2634,7 +2622,7 @@ pub(crate) mod tests {
 
 			// Mark the channel as permanently failed. This will also remove the two nodes
 			// and all of the entries will be tracked as removed.
-			network_graph.channel_failed(short_channel_id, true);
+			network_graph.channel_failed_permanent(short_channel_id);
 
 			// The first time we call the following, the channel will have a removal time assigned.
 			network_graph.remove_stale_channels_and_tracking_with_time(removal_time);

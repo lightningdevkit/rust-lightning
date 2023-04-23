@@ -227,7 +227,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 			},
 			4 => {
 				let short_channel_id = slice_to_be64(get_slice!(8));
-				net_graph.channel_failed(short_channel_id, false);
+				net_graph.channel_failed_permanent(short_channel_id);
 			},
 			_ if node_pks.is_empty() => {},
 			_ => {
