@@ -6050,7 +6050,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 	/// May jump to the channel being fully shutdown (see [`Self::is_shutdown`]) in which case no
 	/// [`ChannelMonitorUpdate`] will be returned).
 	pub fn get_shutdown<SP: Deref>(&mut self, signer_provider: &SP, their_features: &InitFeatures,
-		target_feerate_sats_per_kw: Option<u32>)
+		target_feerate_sats_per_kw: Option<u32>, override_shutdown_script: Option<ShutdownScript>)
 	-> Result<(msgs::Shutdown, Option<&ChannelMonitorUpdate>, Vec<(HTLCSource, PaymentHash)>), APIError>
 	where SP::Target: SignerProvider {
 		for htlc in self.pending_outbound_htlcs.iter() {
@@ -6065,6 +6065,9 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 			else if (self.channel_state & ChannelState::RemoteShutdownSent as u32) == ChannelState::RemoteShutdownSent as u32 {
 				return Err(APIError::ChannelUnavailable{err: "Shutdown already in progress by remote".to_owned()});
 			}
+		}
+		if self.shutdown_scriptpubkey.is_some() && override_shutdown_script.is_some() {
+			return Err(APIError::APIMisuseError{err: "Cannot override shutdown script for a channel with one already set".to_owned()});
 		}
 		assert_eq!(self.channel_state & ChannelState::ShutdownComplete as u32, 0);
 		if self.channel_state & (ChannelState::PeerDisconnected as u32 | ChannelState::MonitorUpdateInProgress as u32) != 0 {
@@ -6081,9 +6084,16 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		let update_shutdown_script = match self.shutdown_scriptpubkey {
 			Some(_) => false,
 			None if !chan_closed => {
-				let shutdown_scriptpubkey = match signer_provider.get_shutdown_scriptpubkey() {
-					Ok(scriptpubkey) => scriptpubkey,
-					Err(_) => return Err(APIError::ChannelUnavailable { err: "Failed to get shutdown scriptpubkey".to_owned() }),
+				// use override shutdown script if provided
+				let shutdown_scriptpubkey = match override_shutdown_script {
+					Some(script) => script,
+					None => {
+						// otherwise, use the shutdown scriptpubkey provided by the signer
+						match signer_provider.get_shutdown_scriptpubkey() {
+							Ok(scriptpubkey) => scriptpubkey,
+							Err(_) => return Err(APIError::ChannelUnavailable{err: "Failed to get shutdown scriptpubkey".to_owned()}),
+						}
+					},
 				};
 				if !shutdown_scriptpubkey.is_compatible(their_features) {
 					return Err(APIError::IncompatibleShutdownScript { script: shutdown_scriptpubkey.clone() });

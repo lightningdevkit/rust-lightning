@@ -78,6 +78,7 @@ use core::ops::Deref;
 
 // Re-export this for use in the public API.
 pub use crate::ln::outbound_payment::{PaymentSendFailure, Retry, RetryableSendFailure, RecipientOnionFields};
+use crate::ln::script::ShutdownScript;
 
 // We hold various information about HTLC relay in the HTLC objects in Channel itself:
 //
@@ -2028,7 +2029,7 @@ where
 		});
 	}
 
-	fn close_channel_internal(&self, channel_id: &[u8; 32], counterparty_node_id: &PublicKey, target_feerate_sats_per_1000_weight: Option<u32>) -> Result<(), APIError> {
+	fn close_channel_internal(&self, channel_id: &[u8; 32], counterparty_node_id: &PublicKey, target_feerate_sats_per_1000_weight: Option<u32>, override_shutdown_script: Option<ShutdownScript>) -> Result<(), APIError> {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 
 		let mut failed_htlcs: Vec<(HTLCSource, PaymentHash)>;
@@ -2045,7 +2046,7 @@ where
 					let funding_txo_opt = chan_entry.get().get_funding_txo();
 					let their_features = &peer_state.latest_features;
 					let (shutdown_msg, mut monitor_update_opt, htlcs) = chan_entry.get_mut()
-						.get_shutdown(&self.signer_provider, their_features, target_feerate_sats_per_1000_weight)?;
+						.get_shutdown(&self.signer_provider, their_features, target_feerate_sats_per_1000_weight, override_shutdown_script)?;
 					failed_htlcs = htlcs;
 
 					// We can send the `shutdown` message before updating the `ChannelMonitor`
@@ -2112,7 +2113,7 @@ where
 	/// [`Normal`]: crate::chain::chaininterface::ConfirmationTarget::Normal
 	/// [`SendShutdown`]: crate::events::MessageSendEvent::SendShutdown
 	pub fn close_channel(&self, channel_id: &[u8; 32], counterparty_node_id: &PublicKey) -> Result<(), APIError> {
-		self.close_channel_internal(channel_id, counterparty_node_id, None)
+		self.close_channel_internal(channel_id, counterparty_node_id, None, None)
 	}
 
 	/// Begins the process of closing a channel. After this call (plus some timeout), no new HTLCs
@@ -2129,6 +2130,11 @@ where
 	///    transaction feerate below `target_feerate_sat_per_1000_weight` (or the feerate which
 	///    will appear on a force-closure transaction, whichever is lower).
 	///
+	/// The `shutdown_script` provided  will be used as the `scriptPubKey` for the closing transaction.
+	/// Will fail if a shutdown script has already been set for this channel by
+	/// ['ChannelHandshakeConfig::commit_upfront_shutdown_pubkey`]. The given shutdown script must
+	/// also be compatible with our and the counterparty's features.
+	///
 	/// May generate a [`SendShutdown`] message event on success, which should be relayed.
 	///
 	/// Raises [`APIError::ChannelUnavailable`] if the channel cannot be closed due to failing to
@@ -2140,8 +2146,8 @@ where
 	/// [`Background`]: crate::chain::chaininterface::ConfirmationTarget::Background
 	/// [`Normal`]: crate::chain::chaininterface::ConfirmationTarget::Normal
 	/// [`SendShutdown`]: crate::events::MessageSendEvent::SendShutdown
-	pub fn close_channel_with_target_feerate(&self, channel_id: &[u8; 32], counterparty_node_id: &PublicKey, target_feerate_sats_per_1000_weight: u32) -> Result<(), APIError> {
-		self.close_channel_internal(channel_id, counterparty_node_id, Some(target_feerate_sats_per_1000_weight))
+	pub fn close_channel_with_feerate_and_script(&self, channel_id: &[u8; 32], counterparty_node_id: &PublicKey, target_feerate_sats_per_1000_weight: Option<u32>, shutdown_script: Option<ShutdownScript>) -> Result<(), APIError> {
+		self.close_channel_internal(channel_id, counterparty_node_id, target_feerate_sats_per_1000_weight, shutdown_script)
 	}
 
 	#[inline]
