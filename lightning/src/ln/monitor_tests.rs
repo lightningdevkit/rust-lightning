@@ -1784,7 +1784,6 @@ fn do_test_monitor_rebroadcast_pending_claims(anchors: bool) {
 	if anchors {
 		assert!(cfg!(anchors));
 	}
-	let secp = Secp256k1::new();
 	let mut chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let mut config = test_default_channel_config();
@@ -1838,6 +1837,7 @@ fn do_test_monitor_rebroadcast_pending_claims(anchors: bool) {
 				feerate = if let Event::BumpTransaction(BumpTransactionEvent::HTLCResolution {
 					target_feerate_sat_per_1000_weight, mut htlc_descriptors, tx_lock_time,
 				}) = events.pop().unwrap() {
+					let secp = Secp256k1::new();
 					assert_eq!(htlc_descriptors.len(), 1);
 					let descriptor = htlc_descriptors.pop().unwrap();
 					assert_eq!(descriptor.commitment_txid, commitment_txn[0].txid());
