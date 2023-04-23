@@ -606,6 +606,10 @@ pub enum Balance {
 		/// The height at which the counterparty may be able to claim the balance if we have not
 		/// done so.
 		timeout_height: u32,
+		/// The payment hash that locks this HTLC.
+		payment_hash: PaymentHash,
+		/// The preimage that can be used to claim this HTLC.
+		payment_preimage: PaymentPreimage,
 	},
 	/// HTLCs which we sent to our counterparty which are claimable after a timeout (less on-chain
 	/// fees) if the counterparty does not know the preimage for the HTLCs. These are somewhat
@@ -1604,7 +1608,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					claimable_height: htlc.cltv_expiry,
 				});
 			}
-		} else if self.payment_preimages.get(&htlc.payment_hash).is_some() {
+		} else if let Some(payment_preimage) = self.payment_preimages.get(&htlc.payment_hash) {
 			// Otherwise (the payment was inbound), only expose it as claimable if
 			// we know the preimage.
 			// Note that if there is a pending claim, but it did not use the
@@ -1620,6 +1624,8 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				return Some(Balance::ContentiousClaimable {
 					claimable_amount_satoshis: htlc.amount_msat / 1000,
 					timeout_height: htlc.cltv_expiry,
+					payment_hash: htlc.payment_hash,
+					payment_preimage: *payment_preimage,
 				});
 			}
 		} else if htlc_resolved.is_none() {

@@ -317,10 +317,14 @@ fn do_test_claim_value_force_close(prev_commitment_tx: bool) {
 	let received_htlc_claiming_balance = Balance::ContentiousClaimable {
 		claimable_amount_satoshis: 3_000,
 		timeout_height: htlc_cltv_timeout,
+		payment_hash,
+		payment_preimage,
 	};
 	let received_htlc_timeout_claiming_balance = Balance::ContentiousClaimable {
 		claimable_amount_satoshis: 4_000,
 		timeout_height: htlc_cltv_timeout,
+		payment_hash: timeout_payment_hash,
+		payment_preimage: timeout_payment_preimage,
 	};
 
 	// Before B receives the payment preimage, it only suggests the push_msat value of 1_000 sats
