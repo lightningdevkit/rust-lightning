@@ -311,10 +311,12 @@ fn do_test_claim_value_force_close(prev_commitment_tx: bool) {
 	let received_htlc_balance = Balance::MaybePreimageClaimableHTLC {
 		claimable_amount_satoshis: 3_000,
 		expiry_height: htlc_cltv_timeout,
+		payment_hash,
 	};
 	let received_htlc_timeout_balance = Balance::MaybePreimageClaimableHTLC {
 		claimable_amount_satoshis: 4_000,
 		expiry_height: htlc_cltv_timeout,
+		payment_hash: timeout_payment_hash,
 	};
 	let received_htlc_claiming_balance = Balance::ContentiousClaimable {
 		claimable_amount_satoshis: 3_000,
@@ -775,10 +777,12 @@ fn test_no_preimage_inbound_htlc_balances() {
 	let a_received_htlc_balance = Balance::MaybePreimageClaimableHTLC {
 		claimable_amount_satoshis: 20_000,
 		expiry_height: htlc_cltv_timeout,
+		payment_hash: to_a_failed_payment_hash,
 	};
 	let b_received_htlc_balance = Balance::MaybePreimageClaimableHTLC {
 		claimable_amount_satoshis: 10_000,
 		expiry_height: htlc_cltv_timeout,
+		payment_hash: to_b_failed_payment_hash,
 	};
 	let b_sent_htlc_balance = Balance::MaybeTimeoutClaimableHTLC {
 		claimable_amount_satoshis: 20_000,

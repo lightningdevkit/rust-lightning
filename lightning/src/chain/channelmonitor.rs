@@ -634,6 +634,8 @@ pub enum Balance {
 		/// The height at which our counterparty will be able to claim the balance if we have not
 		/// yet received the preimage and claimed it ourselves.
 		expiry_height: u32,
+		/// The payment hash whose preimage we need to claim this HTLC.
+		payment_hash: PaymentHash,
 	},
 	/// The channel has been closed, and our counterparty broadcasted a revoked commitment
 	/// transaction.
@@ -1635,6 +1637,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			return Some(Balance::MaybePreimageClaimableHTLC {
 				claimable_amount_satoshis: htlc.amount_msat / 1000,
 				expiry_height: htlc.cltv_expiry,
+				payment_hash: htlc.payment_hash,
 			});
 		}
 		None
@@ -1806,6 +1809,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 					res.push(Balance::MaybePreimageClaimableHTLC {
 						claimable_amount_satoshis: htlc.amount_msat / 1000,
 						expiry_height: htlc.cltv_expiry,
+						payment_hash: htlc.payment_hash,
 					});
 				}
 			}
