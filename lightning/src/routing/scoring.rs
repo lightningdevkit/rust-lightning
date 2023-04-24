@@ -893,7 +893,7 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> ProbabilisticScorerU
 	/// [`Self::historical_estimated_channel_liquidity_probabilities`] (but not those returned by
 	/// [`Self::estimated_channel_liquidity_range`]).
 	pub fn historical_estimated_payment_success_probability(
-		&self, scid: u64, target: &NodeId, amount_msat: u64)
+		&self, scid: u64, target: &NodeId, amount_msat: u64, params: &ProbabilisticScoringFeeParameters)
 	-> Option<f64> {
 		let graph = self.network_graph.read_only();
 
@@ -905,7 +905,8 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, T: Time> ProbabilisticScorerU
 
 					return dir_liq.liquidity_history.calculate_success_probability_times_billion(
 						dir_liq.now, *dir_liq.last_updated,
-						self.decay_params.historical_no_updates_half_life, amount_msat, capacity_msat
+						self.decay_params.historical_no_updates_half_life, &params, amount_msat,
+						capacity_msat
 					).map(|p| p as f64 / (1024 * 1024 * 1024) as f64);
 				}
 			}
@@ -997,6 +998,23 @@ const PRECISION_LOWER_BOUND_DENOMINATOR: u64 = approx::LOWER_BITS_BOUND;
 const AMOUNT_PENALTY_DIVISOR: u64 = 1 << 20;
 const BASE_AMOUNT_PENALTY_DIVISOR: u64 = 1 << 30;
 
+/// Given liquidity bounds, calculates the success probability (in the form of a numerator and
+/// denominator) of an HTLC. This is a key assumption in our scoring models.
+///
+/// Must not return a numerator or denominator greater than 2^31 for arguments less than 2^31.
+///
+/// min_zero_implies_no_successes signals that a `min_liquidity_msat` of 0 means we've not
+/// (recently) seen an HTLC successfully complete over this channel.
+#[inline(always)]
+fn success_probability(
+	amount_msat: u64, min_liquidity_msat: u64, max_liquidity_msat: u64, _capacity_msat: u64,
+	_params: &ProbabilisticScoringFeeParameters, _min_zero_implies_no_successes: bool,
+) -> (u64, u64) {
+	let numerator = max_liquidity_msat - amount_msat;
+	let denominator = (max_liquidity_msat - min_liquidity_msat).saturating_add(1);
+	(numerator, denominator)
+}
+
 impl<L: Deref<Target = u64>, BRT: Deref<Target = HistoricalBucketRangeTracker>, T: Time, U: Deref<Target = T>> DirectedChannelLiquidity< L, BRT, T, U> {
 	/// Returns a liquidity penalty for routing the given HTLC `amount_msat` through the channel in
 	/// this direction.
@@ -1017,9 +1035,9 @@ impl<L: Deref<Target = u64>, BRT: Deref<Target = HistoricalBucketRangeTracker>, 
 					score_params.liquidity_penalty_amount_multiplier_msat)
 				.saturating_add(score_params.considered_impossible_penalty_msat)
 		} else {
-			let numerator = (max_liquidity_msat - amount_msat).saturating_add(1);
-			let denominator = (max_liquidity_msat - min_liquidity_msat).saturating_add(1);
-			if amount_msat - min_liquidity_msat < denominator / PRECISION_LOWER_BOUND_DENOMINATOR {
+			let (numerator, denominator) = success_probability(amount_msat,
+				min_liquidity_msat, max_liquidity_msat, available_capacity, score_params, false);
+			if denominator - numerator < denominator / PRECISION_LOWER_BOUND_DENOMINATOR {
 				// If the failure probability is < 1.5625% (as 1 - numerator/denominator < 1/64),
 				// don't bother trying to use the log approximation as it gets too noisy to be
 				// particularly helpful, instead just round down to 0.
@@ -1046,7 +1064,8 @@ impl<L: Deref<Target = u64>, BRT: Deref<Target = HistoricalBucketRangeTracker>, 
 		   score_params.historical_liquidity_penalty_amount_multiplier_msat != 0 {
 			if let Some(cumulative_success_prob_times_billion) = self.liquidity_history
 				.calculate_success_probability_times_billion(self.now, *self.last_updated,
-					self.decay_params.historical_no_updates_half_life, amount_msat, self.capacity_msat)
+					self.decay_params.historical_no_updates_half_life, score_params, amount_msat,
+					self.capacity_msat)
 			{
 				let historical_negative_log10_times_2048 = approx::negative_log10_times_2048(cumulative_success_prob_times_billion + 1, 1024 * 1024 * 1024);
 				res = res.saturating_add(Self::combined_penalty_msat(amount_msat,
@@ -1056,9 +1075,8 @@ impl<L: Deref<Target = u64>, BRT: Deref<Target = HistoricalBucketRangeTracker>, 
 				// If we don't have any valid points (or, once decayed, we have less than a full
 				// point), redo the non-historical calculation with no liquidity bounds tracked and
 				// the historical penalty multipliers.
-				let available_capacity = self.available_capacity();
-				let numerator = available_capacity.saturating_sub(amount_msat).saturating_add(1);
-				let denominator = available_capacity.saturating_add(1);
+				let (numerator, denominator) = success_probability(amount_msat, 0,
+					available_capacity, available_capacity, score_params, true);
 				let negative_log10_times_2048 =
 					approx::negative_log10_times_2048(numerator, denominator);
 				res = res.saturating_add(Self::combined_penalty_msat(amount_msat, negative_log10_times_2048,
@@ -1851,8 +1869,9 @@ mod bucketed_history {
 
 		#[inline]
 		pub(super) fn calculate_success_probability_times_billion<T: Time>(
-			&self, now: T, last_updated: T, half_life: Duration, amount_msat: u64, capacity_msat: u64)
-		-> Option<u64> {
+			&self, now: T, last_updated: T, half_life: Duration,
+			params: &ProbabilisticScoringFeeParameters, amount_msat: u64, capacity_msat: u64
+		) -> Option<u64> {
 			// If historical penalties are enabled, we try to calculate a probability of success
 			// given our historical distribution of min- and max-liquidity bounds in a channel.
 			// To do so, we walk the set of historical liquidity bucket (min, max) combinations
@@ -1887,14 +1906,13 @@ mod bucketed_history {
 				}
 				let max_bucket_end_pos = BUCKET_START_POS[32 - highest_max_bucket_with_points] - 1;
 				if payment_pos < max_bucket_end_pos {
+					let (numerator, denominator) = success_probability(payment_pos as u64, 0,
+						max_bucket_end_pos as u64, POSITION_TICKS as u64 - 1, params, true);
 					let bucket_prob_times_billion =
 						(self.min_liquidity_offset_history.buckets[0] as u64) * total_max_points
 							* 1024 * 1024 * 1024 / total_valid_points_tracked;
 					cumulative_success_prob_times_billion += bucket_prob_times_billion *
-						((max_bucket_end_pos - payment_pos) as u64) /
-						// Add an additional one in the divisor as the payment bucket has been
-						// rounded down.
-						(max_bucket_end_pos + 1) as u64;
+						numerator / denominator;
 				}
 			}
 
@@ -1912,11 +1930,11 @@ mod bucketed_history {
 					} else if payment_pos < min_bucket_start_pos {
 						cumulative_success_prob_times_billion += bucket_prob_times_billion;
 					} else {
+						let (numerator, denominator) = success_probability(payment_pos as u64,
+							min_bucket_start_pos as u64, max_bucket_end_pos as u64,
+							POSITION_TICKS as u64 - 1, params, true);
 						cumulative_success_prob_times_billion += bucket_prob_times_billion *
-							((max_bucket_end_pos - payment_pos) as u64) /
-							// Add an additional one in the divisor as the payment bucket has been
-							// rounded down.
-							((max_bucket_end_pos - min_bucket_start_pos + 1) as u64);
+							numerator / denominator;
 					}
 				}
 			}
@@ -2719,7 +2737,7 @@ mod tests {
 		let usage = ChannelUsage { amount_msat: 256, ..usage };
 		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 106);
 		let usage = ChannelUsage { amount_msat: 768, ..usage };
-		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 916);
+		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 921);
 		let usage = ChannelUsage { amount_msat: 896, ..usage };
 		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), u64::max_value());
 
@@ -2919,7 +2937,7 @@ mod tests {
 		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 300);
 
 		SinceEpoch::advance(Duration::from_secs(10));
-		assert_eq!(deserialized_scorer.channel_penalty_msat(42, &source, &target, usage, &params), 365);
+		assert_eq!(deserialized_scorer.channel_penalty_msat(42, &source, &target, usage, &params), 370);
 	}
 
 	#[test]
@@ -3146,7 +3164,7 @@ mod tests {
 		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 47);
 		assert_eq!(scorer.historical_estimated_channel_liquidity_probabilities(42, &target),
 			None);
-		assert_eq!(scorer.historical_estimated_payment_success_probability(42, &target, 42),
+		assert_eq!(scorer.historical_estimated_payment_success_probability(42, &target, 42, &params),
 			None);
 
 		scorer.payment_path_failed(&payment_path_for_amount(1), 42);
@@ -3157,9 +3175,9 @@ mod tests {
 		assert_eq!(scorer.historical_estimated_channel_liquidity_probabilities(42, &target),
 			Some(([32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
 				[0, 0, 0, 0, 0, 0, 32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])));
-		assert!(scorer.historical_estimated_payment_success_probability(42, &target, 1)
+		assert!(scorer.historical_estimated_payment_success_probability(42, &target, 1, &params)
 			.unwrap() > 0.35);
-		assert_eq!(scorer.historical_estimated_payment_success_probability(42, &target, 500),
+		assert_eq!(scorer.historical_estimated_payment_success_probability(42, &target, 500, &params),
 			Some(0.0));
 
 		// Even after we tell the scorer we definitely have enough available liquidity, it will
@@ -3174,11 +3192,11 @@ mod tests {
 		// The exact success probability is a bit complicated and involves integer rounding, so we
 		// simply check bounds here.
 		let five_hundred_prob =
-			scorer.historical_estimated_payment_success_probability(42, &target, 500).unwrap();
+			scorer.historical_estimated_payment_success_probability(42, &target, 500, &params).unwrap();
 		assert!(five_hundred_prob > 0.66);
 		assert!(five_hundred_prob < 0.68);
 		let one_prob =
-			scorer.historical_estimated_payment_success_probability(42, &target, 1).unwrap();
+			scorer.historical_estimated_payment_success_probability(42, &target, 1, &params).unwrap();
 		assert!(one_prob < 1.0);
 		assert!(one_prob > 0.95);
 
@@ -3190,7 +3208,7 @@ mod tests {
 		// data entirely instead.
 		assert_eq!(scorer.historical_estimated_channel_liquidity_probabilities(42, &target),
 			None);
-		assert_eq!(scorer.historical_estimated_payment_success_probability(42, &target, 1), None);
+		assert_eq!(scorer.historical_estimated_payment_success_probability(42, &target, 1, &params), None);
 
 		let mut usage = ChannelUsage {
 			amount_msat: 100,
@@ -3354,7 +3372,7 @@ mod tests {
 		assert_eq!(scorer.channel_penalty_msat(42, &source, &target, usage, &params), 0);
 		assert_eq!(scorer.historical_estimated_channel_liquidity_probabilities(42, &target),
 			None);
-		assert_eq!(scorer.historical_estimated_payment_success_probability(42, &target, 42),
+		assert_eq!(scorer.historical_estimated_payment_success_probability(42, &target, 42, &params),
 			None);
 
 		// Fail to pay once, and then check the buckets and penalty.
@@ -3369,14 +3387,14 @@ mod tests {
 			Some(([32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
 				[0, 32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])));
 		// The success probability estimate itself should be zero.
-		assert_eq!(scorer.historical_estimated_payment_success_probability(42, &target, amount_msat),
+		assert_eq!(scorer.historical_estimated_payment_success_probability(42, &target, amount_msat, &params),
 			Some(0.0));
 
 		// Now test again with the amount in the bottom bucket.
 		amount_msat /= 2;
 		// The new amount is entirely within the only minimum bucket with score, so the probability
 		// we assign is 1/2.
-		assert_eq!(scorer.historical_estimated_payment_success_probability(42, &target, amount_msat),
+		assert_eq!(scorer.historical_estimated_payment_success_probability(42, &target, amount_msat, &params),
 			Some(0.5));
 
 		// ...but once we see a failure, we consider the payment to be substantially less likely,
@@ -3386,7 +3404,7 @@ mod tests {
 		assert_eq!(scorer.historical_estimated_channel_liquidity_probabilities(42, &target),
 			Some(([63, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
 				[32, 31, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])));
-		assert_eq!(scorer.historical_estimated_payment_success_probability(42, &target, amount_msat),
+		assert_eq!(scorer.historical_estimated_payment_success_probability(42, &target, amount_msat, &params),
 			Some(0.0));
 	}
 }
