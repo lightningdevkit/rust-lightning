@@ -493,21 +493,28 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(secp_ctx: &
 									} else {
 										log_trace!(logger, "Failure provided features a channel update without type prefix. Deprecated, but allowing for now.");
 									}
-									if let Ok(chan_update) = msgs::ChannelUpdate::read(&mut Cursor::new(&update_slice)) {
+									let update_opt = msgs::ChannelUpdate::read(&mut Cursor::new(&update_slice));
+									if update_opt.is_ok() || update_slice.is_empty() {
 										// if channel_update should NOT have caused the failure:
 										// MAY treat the channel_update as invalid.
 										let is_chan_update_invalid = match error_code & 0xff {
 											7 => false,
-											11 => amt_to_forward > chan_update.contents.htlc_minimum_msat,
-											12 => amt_to_forward
-												.checked_mul(chan_update.contents.fee_proportional_millionths as u64)
+											11 => update_opt.is_ok() &&
+												amt_to_forward >
+													update_opt.as_ref().unwrap().contents.htlc_minimum_msat,
+											12 => update_opt.is_ok() && amt_to_forward
+												.checked_mul(update_opt.as_ref().unwrap()
+													.contents.fee_proportional_millionths as u64)
 												.map(|prop_fee| prop_fee / 1_000_000)
-												.and_then(|prop_fee| prop_fee.checked_add(chan_update.contents.fee_base_msat as u64))
+												.and_then(|prop_fee| prop_fee.checked_add(
+													update_opt.as_ref().unwrap().contents.fee_base_msat as u64))
 												.map(|fee_msats| route_hop.fee_msat >= fee_msats)
 												.unwrap_or(false),
-											13 => route_hop.cltv_expiry_delta as u16 >= chan_update.contents.cltv_expiry_delta,
+											13 => update_opt.is_ok() &&
+												route_hop.cltv_expiry_delta as u16 >=
+													update_opt.as_ref().unwrap().contents.cltv_expiry_delta,
 											14 => false, // expiry_too_soon; always valid?
-											20 => chan_update.contents.flags & 2 == 0,
+											20 => update_opt.as_ref().unwrap().contents.flags & 2 == 0,
 											_ => false, // unknown error code; take channel_update as valid
 										};
 										if is_chan_update_invalid {
@@ -518,17 +525,31 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(secp_ctx: &
 												is_permanent: true,
 											});
 										} else {
-											// Make sure the ChannelUpdate contains the expected
-											// short channel id.
-											if failing_route_hop.short_channel_id == chan_update.contents.short_channel_id {
-												short_channel_id = Some(failing_route_hop.short_channel_id);
+											if let Ok(chan_update) = update_opt {
+												// Make sure the ChannelUpdate contains the expected
+												// short channel id.
+												if failing_route_hop.short_channel_id == chan_update.contents.short_channel_id {
+													short_channel_id = Some(failing_route_hop.short_channel_id);
+												} else {
+													log_info!(logger, "Node provided a channel_update for which it was not authoritative, ignoring.");
+												}
+												network_update = Some(NetworkUpdate::ChannelUpdateMessage {
+													msg: chan_update,
+												})
 											} else {
-												log_info!(logger, "Node provided a channel_update for which it was not authoritative, ignoring.");
+												network_update = Some(NetworkUpdate::ChannelFailure {
+													short_channel_id: route_hop.short_channel_id,
+													is_permanent: false,
+												});
 											}
-											network_update = Some(NetworkUpdate::ChannelUpdateMessage {
-												msg: chan_update,
-											})
 										};
+									} else {
+										// If the channel_update had a non-zero length (i.e. was
+										// present) but we couldn't read it, treat it as a total
+										// node failure.
+										log_info!(logger,
+											"Failed to read a channel_update of len {} in an onion",
+											update_slice.len());
 									}
 								}
 							}
